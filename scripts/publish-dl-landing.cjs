@@ -5,6 +5,7 @@ const path = require('node:path')
 const { spawnSync } = require('node:child_process')
 
 const { validateLocalRelease } = require('./update-release-utils.cjs')
+const { releaseArtifactNames } = require('./macos-artifact-names.cjs')
 
 const packageVersion = require('../package.json').version
 const PROJECT_ROOT = path.resolve(__dirname, '..')
@@ -64,8 +65,8 @@ function installerFileNames(version) {
   const safe = assertSafeVersion(version)
   return {
     win: `XingMang-AI-Manager-${safe}-Setup.exe`,
-    macArm64: `XingMang-AI-Manager-${safe}-arm64.dmg`,
-    macX64: `XingMang-AI-Manager-${safe}-x64.dmg`,
+    macArm64: releaseArtifactNames(safe, 'arm64').dmg,
+    macX64: releaseArtifactNames(safe, 'x64').dmg,
     windowsArtifact: `windows-release-${safe}`,
     testSignedArtifact: `TEST-SIGNED-DO-NOT-PUBLISH-${safe}`,
   }

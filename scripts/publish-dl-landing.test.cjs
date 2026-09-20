@@ -109,11 +109,11 @@ test('wraps a remote path in single quotes and escapes any quote inside it', () 
   assert.equal(quoteRemotePath("/www/it's"), "'/www/it'\\''s'")
 })
 
-test('names landing installers after the electron-builder artifacts', () => {
+test('names landing installers after the released artifacts, chip label included', () => {
   assert.deepEqual(installerFileNames('0.1.22'), {
     win: 'XingMang-AI-Manager-0.1.22-Setup.exe',
-    macArm64: 'XingMang-AI-Manager-0.1.22-arm64.dmg',
-    macX64: 'XingMang-AI-Manager-0.1.22-x64.dmg',
+    macArm64: 'XingMang-AI-Manager-0.1.22-Apple-Silicon-arm64.dmg',
+    macX64: 'XingMang-AI-Manager-0.1.22-Intel-x64.dmg',
     windowsArtifact: 'windows-release-0.1.22',
     testSignedArtifact: 'TEST-SIGNED-DO-NOT-PUBLISH-0.1.22',
   })
@@ -123,8 +123,8 @@ test('builds latest.json paths that match those installer file names', () => {
   assert.deepEqual(buildLatestManifest('0.1.22'), {
     version: '0.1.22',
     win: '/files/latest/XingMang-AI-Manager-0.1.22-Setup.exe',
-    macArm64: '/files/latest/XingMang-AI-Manager-0.1.22-arm64.dmg',
-    macX64: '/files/latest/XingMang-AI-Manager-0.1.22-x64.dmg',
+    macArm64: '/files/latest/XingMang-AI-Manager-0.1.22-Apple-Silicon-arm64.dmg',
+    macX64: '/files/latest/XingMang-AI-Manager-0.1.22-Intel-x64.dmg',
   })
   assert.equal(
     formatLatestJson(buildLatestManifest('0.1.22')),
@@ -162,7 +162,7 @@ test('collects the three landing files and ignores update extras', () => {
     fs.writeFileSync(path.join(nested, 'latest.yml'), 'yml')
     fs.writeFileSync(path.join(directory, names.macArm64), 'arm')
     fs.writeFileSync(path.join(directory, names.macX64), 'intel')
-    fs.writeFileSync(path.join(directory, `XingMang-AI-Manager-0.1.22-arm64.zip`), 'zip')
+    fs.writeFileSync(path.join(directory, `XingMang-AI-Manager-0.1.22-Apple-Silicon-arm64.zip`), 'zip')
 
     const found = collectInstallers([directory], names)
     assert.equal(path.basename(found.win), names.win)
@@ -177,7 +177,7 @@ test('collects the three landing files and ignores update extras', () => {
 test('explains that mac installers are not in the Windows GitHub artifact', () => {
   const names = installerFileNames('0.1.22')
   const message = missingInstallerMessage(names, { win: 'a.exe', macArm64: '', macX64: '' })
-  assert.match(message, /XingMang-AI-Manager-0.1.22-arm64.dmg/)
+  assert.match(message, /XingMang-AI-Manager-0.1.22-Apple-Silicon-arm64.dmg/)
   assert.match(message, /release-build 只出 Windows/)
 })
 

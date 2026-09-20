@@ -69,11 +69,11 @@ async function createReleaseFixture(t) {
   await fs.promises.writeFile(path.join(directory, 'latest.yml'), fixtureMetadata(fileName, contents))
   const macFiles = [
     {
-      fileName: 'XingMang-AI-Manager-1.2.3-arm64.zip',
+      fileName: 'XingMang-AI-Manager-1.2.3-Apple-Silicon-arm64.zip',
       contents: Buffer.from('mac-arm64-update-fixture'),
     },
     {
-      fileName: 'XingMang-AI-Manager-1.2.3-x64.zip',
+      fileName: 'XingMang-AI-Manager-1.2.3-Intel-x64.zip',
       contents: Buffer.from('mac-x64-update-fixture'),
     },
   ]
@@ -196,16 +196,16 @@ test('rejects website HTML and unsafe artifact paths as latest.yml metadata', ()
 })
 
 test('preserves the raw metadata URL and primary path spelling alongside normalized paths', () => {
-  const fileName = 'XingMang-AI-Manager-1.2.3-arm64.zip'
+  const fileName = 'XingMang-AI-Manager-1.2.3-Apple-Silicon-arm64.zip'
   const contents = Buffer.from('fixture')
   const value = YAML.parse(fixtureMetadata(fileName, contents))
   value.files[0].url = ` ${fileName} `
-  value.path = '%58ingMang-AI-Manager-1.2.3-arm64.zip'
+  value.path = '%58ingMang-AI-Manager-1.2.3-Apple-Silicon-arm64.zip'
   const metadata = parseLatestMetadata(YAML.stringify(value), 'latest-mac.yml')
 
   assert.equal(metadata.files[0].relativePath, fileName)
   assert.equal(metadata.files[0].rawUrl, ` ${fileName} `)
-  assert.equal(metadata.rawPrimaryPath, '%58ingMang-AI-Manager-1.2.3-arm64.zip')
+  assert.equal(metadata.rawPrimaryPath, '%58ingMang-AI-Manager-1.2.3-Apple-Silicon-arm64.zip')
   assert.equal(metadata.primaryPath, fileName)
 })
 
@@ -587,7 +587,7 @@ test('macOS feed verification requires a version-matched ZIP for both architectu
 test('macOS feed verification rejects additional or ambiguously named ZIP candidates', async (t) => {
   const fixture = await createReleaseFixture(t)
   const extraZip = {
-    fileName: 'XingMang-AI-Manager-1.2.3-arm64-copy.zip',
+    fileName: 'XingMang-AI-Manager-1.2.3-Apple-Silicon-arm64-copy.zip',
     contents: Buffer.from('ambiguous-arm64-update-fixture'),
   }
   await fs.promises.writeFile(
@@ -607,7 +607,7 @@ test('macOS feed verification rejects additional or ambiguously named ZIP candid
 test('macOS feed verification requires the primary update to be an architecture ZIP', async (t) => {
   const fixture = await createReleaseFixture(t)
   const primaryDmg = {
-    fileName: 'XingMang-AI-Manager-1.2.3-arm64.dmg',
+    fileName: 'XingMang-AI-Manager-1.2.3-Apple-Silicon-arm64.dmg',
     contents: Buffer.from('mac-arm64-dmg-fixture'),
   }
   await fs.promises.writeFile(

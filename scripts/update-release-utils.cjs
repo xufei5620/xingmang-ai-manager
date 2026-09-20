@@ -3,6 +3,10 @@ const path = require('node:path')
 const { createHash } = require('node:crypto')
 const { gunzipSync } = require('node:zlib')
 const YAML = require('yaml')
+const {
+  ARCHITECTURES: MACOS_ARCHITECTURES,
+  releaseArtifactNames,
+} = require('./macos-artifact-names.cjs')
 
 const LEGACY_UPDATE_URL = 'https://updates.shenfengwl.fun/xingmang-manager/'
 const NEW_UPDATE_URL = 'https://updatesnew.shenfengwl.fun/xingmang-manager/'
@@ -297,8 +301,8 @@ function parseLatestMetadata(text, metadataFile = 'latest.yml') {
 
 function assertMacosUpdateArchitectureInventory(metadata) {
   const expectedPaths = []
-  for (const architecture of ['arm64', 'x64']) {
-    const expectedPath = `XingMang-AI-Manager-${metadata.version}-${architecture}.zip`
+  for (const architecture of MACOS_ARCHITECTURES) {
+    const expectedPath = releaseArtifactNames(metadata.version, architecture).zip
     expectedPaths.push(expectedPath)
     if (!metadata.files.some((file) => file.relativePath === expectedPath)) {
       throw validationError(

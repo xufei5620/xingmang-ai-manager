@@ -21,7 +21,7 @@
 | 平台 | 里面是什么 | 怎么装 |
 |---|---|---|
 | Windows | `星芒AI管理工具 Setup <版本>.exe`，外加 `.blockmap` 和 `latest.yml` | 双击 exe。会弹「未知发布者」，这是预期的，0.2.7 本来就没有代码签名证书 |
-| macOS | 两个 `.dmg`（arm64 / x64）、两个 `.zip`、`latest-mac.yml`、`SHA256SUMS` | 打开对应架构的 dmg，把 App 拖进「应用程序」，**第一次要右键点图标选「打开」**，直接双击会被拦 |
+| macOS | 两个 `.dmg`（`Apple-Silicon-arm64` / `Intel-x64`）、两个 `.zip`、`latest-mac.yml`、`SHA256SUMS` | 按自己的芯片打开对应的 dmg（「关于本机」里写 Apple M 系列就选 Apple-Silicon，写 Intel 就选 Intel），把 App 拖进「应用程序」，**第一次要右键点图标选「打开」**，直接双击会被拦 |
 
 `.blockmap` / `latest.yml` / `latest-mac.yml` 是给自动更新用的，本地安装用不到，留着是为了这份产物和正式发布的产物形状完全一致。
 

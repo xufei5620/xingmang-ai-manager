@@ -91,7 +91,7 @@ XINGMANG_MAC_SIGNING_SHA256="记录的 64 位 SHA-256 指纹" \
 npm run dist:mac:free
 ```
 
-runner 会只为 electron-builder 子进程自动启用免费发布模式，调用者不需要设置该模式变量。该命令先执行发布身份预检，再生成 arm64 与 x64 各一份 DMG 和 ZIP，以及两份 ZIP blockmap、`latest-mac.yml` 和 `SHA256SUMS`。公开安装库存必须精确为两份 DMG 加两份 ZIP；自动更新清单必须只精确引用两份 ZIP；顶层 blockmap 必须只包含两份 ZIP blockmap；`SHA256SUMS` 必须覆盖这六个文件。runner 还会校验严格的 codesign 结果、固定证书指纹及 blockmap 格式。它使用 `--publish never`，只构建和验证本地产物，绝不会上传文件。
+runner 会只为 electron-builder 子进程自动启用免费发布模式，调用者不需要设置该模式变量。该命令先执行发布身份预检，再生成 arm64 与 x64 各一份 DMG 和 ZIP，以及两份 ZIP blockmap、`latest-mac.yml` 和 `SHA256SUMS`。产物校验之前，六个文件会由 `scripts/rename-macos-chip-artifacts.cjs` 从 electron-builder 的构建名统一改成带芯片名的发行名（`…-Apple-Silicon-arm64.…` 与 `…-Intel-x64.…`），`latest-mac.yml` 的引用同步改写；命名只在 `scripts/macos-artifact-names.cjs` 定义一处，架构后缀必须保留，electron-updater 靠 URL 里的 `arm64` 子串分架构下载。公开安装库存必须精确为两份 DMG 加两份 ZIP；自动更新清单必须只精确引用两份 ZIP；顶层 blockmap 必须只包含两份 ZIP blockmap；`SHA256SUMS` 必须覆盖这六个文件。runner 还会校验严格的 codesign 结果、固定证书指纹及 blockmap 格式。它使用 `--publish never`，只构建和验证本地产物，绝不会上传文件。
 
 ### 携带私有加速线路（可选，默认不带）
 
@@ -115,7 +115,7 @@ npm run dist:mac:free -- \
 
 自动更新只在更新服务器完整提供 macOS 清单和它引用的文件后才能工作。如果服务器缺少 `latest-mac.yml`，免费包仍然会启用更新功能，但检查结果会是“更新失败”，而不是“本地开发包不检查更新”。
 
-1. 先上传新版本的 arm64/x64 ZIP、DMG 和两份 ZIP blockmap；`latest-mac.yml` 只引用两份 ZIP，不引用手动安装用的 DMG。
+1. 先上传新版本的两份 ZIP、两份 DMG 和两份 ZIP blockmap（文件名原样保留，`…-Apple-Silicon-arm64.…` / `…-Intel-x64.…`）；`latest-mac.yml` 只引用两份 ZIP，不引用手动安装用的 DMG。
 2. 确认这些文件可以通过 HTTPS 直接下载，不能跳转，也不能返回网站的 HTML 备用页。
 3. 在所有版本文件都就绪后，最后以原子替换方式发布 `latest-mac.yml`，避免用户读到半更新状态。
 4. 发布后执行 `npm run update:verify-feed -- --platform=macos`，只有 macOS 双架构元数据、所有引用文件的大小与 SHA-512，以及两份 ZIP blockmap 都验证通过才能对外通知更新。需要联合检查两条通道时，再执行不带 `--platform` 的默认双平台校验。
