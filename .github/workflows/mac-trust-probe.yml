@@ -1,0 +1,131 @@
+# 临时探针，不合进 main。
+#
+# 回答一个问题：在 GitHub 托管的 macOS runner 上，要怎么设置信任，才能让
+# `security find-identity -v -p codesigning` 列出一张自签的代码签名身份。
+#
+# 这是 2026-09-20 正式发布连红四次里唯一还没弄清的一环：用户域的
+# add-trusted-cert 会挂死（没有图形会话可以确认授权），管理员域返回成功却没能让
+# 身份通过策略评估，而管理员域的 remove-trusted-cert 反过来又挂死。这些都只能在
+# 真的 runner 上测出来，本地和沙箱都复现不了。
+#
+# 探针不读任何 secret，用的是现场生成的一次性证书，所以不需要 release 环境的批准，
+# 也就不用每试一次就找产品所有者点一次。
+name: mac-trust-probe
+
+on:
+  push:
+    branches:
+      - claude/mac-keep-published-signing-identity-9mudp7
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - name: Probe how a self-signed code signing identity becomes valid
+        run: |
+          set -eu
+          work="$RUNNER_TEMP/trust-probe"
+          mkdir -p "$work"
+          cd "$work"
+          name='XingMang Probe Identity'
+          p12pass='ProbeP12Pass1234!aA'
+          kcpass='ProbeKeychainPass1234!aA'
+          kc="$work/probe.keychain-db"
+
+          # 用 printf 而不是 heredoc：YAML 块里的缩进会原样进 heredoc，openssl 的
+          # 配置解析器不该被这种事绊倒。
+          printf '%s\n' \
+            '[req]' 'distinguished_name = dn' 'prompt = no' \
+            '[dn]' "CN = $name" \
+            '[ca_ext]' \
+            'basicConstraints = critical,CA:TRUE,pathlen:0' \
+            'keyUsage = critical,digitalSignature,keyCertSign' \
+            'extendedKeyUsage = critical,codeSigning' \
+            'subjectKeyIdentifier = hash' > probe.cnf
+          cat probe.cnf
+
+          echo "::group::生成与旧发布证书同 profile 的一次性证书"
+          /usr/bin/openssl version
+          /usr/bin/openssl req -x509 -newkey rsa:2048 -keyout probe.key -out probe.crt \
+            -days 7300 -nodes -config probe.cnf -extensions ca_ext
+          /usr/bin/openssl x509 -in probe.crt -noout -text | sed -n '/X509v3/,/Signature Algorithm/p'
+          /usr/bin/openssl pkcs12 -export -inkey probe.key -in probe.crt -out probe.p12 \
+            -name "$name" -passout "pass:$p12pass"
+          echo "::endgroup::"
+
+          echo "::group::导入一次性 keychain 并接进用户搜索列表"
+          security create-keychain -p "$kcpass" "$kc"
+          security set-keychain-settings -lut 21600 "$kc"
+          security unlock-keychain -p "$kcpass" "$kc"
+          security import probe.p12 -k "$kc" -f pkcs12 -P "$p12pass" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$kcpass" "$kc" > /dev/null
+          orig=$(security list-keychains -d user | sed -e 's/^[[:space:]]*"//' -e 's/"$//')
+          echo "原始搜索列表：$orig"
+          # shellcheck disable=SC2086
+          security list-keychains -d user -s "$kc" $orig
+          security list-keychains -d user
+          echo "::endgroup::"
+
+          # 每一条都限时并吞掉失败，目的是把四种设法的结果一次看全，而不是停在第一条。
+          # runner 的默认 shell 带 -e，不关掉的话第一条挂死或报错就把整个探针结束了。
+          set +e
+          attempt() {
+            label="$1"; shift
+            echo "--- $label"
+            start=$(date +%s)
+            timeout 25 "$@"
+            status=$?
+            echo "--- $label 退出码=$status 用时=$(( $(date +%s) - start ))s"
+          }
+          report() {
+            echo "--- find-identity -p codesigning（不过滤）"
+            security find-identity -p codesigning || true
+            echo "--- find-identity -v -p codesigning（这条决定构建能不能选到身份）"
+            security find-identity -v -p codesigning || true
+          }
+
+          echo "::group::基线：没有任何信任设置"
+          report
+          echo "::endgroup::"
+
+          echo "::group::A 管理员域 + 只给 codeSign 策略（发布工作流现在用的就是这条）"
+          attempt 'A add' sudo -n security add-trusted-cert -d -r trustRoot -p codeSign \
+            -k /Library/Keychains/System.keychain probe.crt
+          security dump-trust-settings -d || true
+          report
+          attempt 'A remove' sudo -n security remove-trusted-cert -d probe.crt
+          report
+          echo "::endgroup::"
+
+          echo "::group::B 管理员域 + 不限策略、不指定 keychain"
+          attempt 'B add' sudo -n security add-trusted-cert -d -r trustRoot probe.crt
+          security dump-trust-settings -d || true
+          report
+          attempt 'B remove' sudo -n security remove-trusted-cert -d probe.crt
+          echo "::endgroup::"
+
+          echo "::group::C 用户域（预期会挂到 25 秒）"
+          attempt 'C add' security add-trusted-cert -r trustRoot -p codeSign \
+            -k "$HOME/Library/Keychains/login.keychain-db" probe.crt
+          security dump-trust-settings || true
+          report
+          attempt 'C remove' security remove-trusted-cert probe.crt
+          echo "::endgroup::"
+
+          echo "::group::D 先放开 authorizationdb，再写用户域"
+          attempt 'D authdb' sudo -n security authorizationdb write com.apple.trust-settings.admin allow
+          attempt 'D add' security add-trusted-cert -d -r trustRoot -p codeSign \
+            -k /Library/Keychains/System.keychain probe.crt
+          security dump-trust-settings -d || true
+          report
+          echo "::endgroup::"
+
+          echo "::group::收尾"
+          # shellcheck disable=SC2086
+          security list-keychains -d user -s $orig || true
+          security delete-keychain "$kc" || true
+          echo "::endgroup::"
