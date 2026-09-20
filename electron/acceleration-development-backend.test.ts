@@ -2,7 +2,7 @@ import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { createAccelerationDevelopmentBackend } from './acceleration-development-backend'
+import { classifyAccelerationStartFailure, createAccelerationDevelopmentBackend } from './acceleration-development-backend'
 import { accelerationBonusCode, accelerationBonusSeconds, accelerationTrialSeconds } from './acceleration-contract'
 import * as safe from './safe-local-data'
 
@@ -33,6 +33,7 @@ async function setup(existingPath?: string, pingLine?: (lineId: string) => Promi
   const events: string[] = []
   const scheduled = new Set<{ at: number; callback: () => void }>()
   const onDiagnostic = vi.fn()
+  const onStartDiagnostic = vi.fn()
   const runtime = {
     start: vi.fn(async () => { events.push('runtime:start'); running = true; return { line, proxyPort: 19001 } }),
     stop: vi.fn(async () => { events.push('runtime:stop'); running = false }),
@@ -44,7 +45,7 @@ async function setup(existingPath?: string, pingLine?: (lineId: string) => Promi
   }
   const backend = createAccelerationDevelopmentBackend({
     runtime, proxy, ledgerPath, now: () => wall, monotonicNow: () => monotonic,
-    listLines: async () => [line], pingLine, entitlementSource, onDiagnostic,
+    listLines: async () => [line], pingLine, entitlementSource, onDiagnostic, onStartDiagnostic,
     schedule(callback, milliseconds) {
       const timer = { at: monotonic + milliseconds, callback }
       scheduled.add(timer)
@@ -57,7 +58,7 @@ async function setup(existingPath?: string, pingLine?: (lineId: string) => Promi
     await backend.dispose().catch(() => undefined)
   })
   return {
-    backend, runtime, proxy, events, ledgerPath, scheduled, onDiagnostic,
+    backend, runtime, proxy, events, ledgerPath, scheduled, onDiagnostic, onStartDiagnostic,
     setRunning: (value: boolean) => { running = value },
     setWall: (value: number) => { wall = value },
     elapse(milliseconds: number) { wall += milliseconds; monotonic += milliseconds },
@@ -756,5 +757,74 @@ describe('device-local acceleration bonus redemption', () => {
     expect((await test.readLedger()).accounts[scope].bonusRedeemed).toBeUndefined()
     await test.backend.dispose()
     await expect(test.backend.redeemAccelerationCode!(scope, accelerationBonusCode)).rejects.toThrow('正在关闭')
+  })
+})
+
+describe('acceleration start failure classification', () => {
+  // The messages below are the authored strings these modules actually throw;
+  // a rename that breaks the mapping should break this, not go unnoticed in a
+  // log that then only ever says 'unknown'.
+  it.each([
+    ['加速内核与目标 Mac 架构不一致。', 'core-architecture'],
+    ['加速内核架构不受支持。', 'core-architecture'],
+    ['加速内核校验失败', 'core-integrity'],
+    ['加速内核 Mach-O 结构不完整。', 'core-integrity'],
+    ['加速内核不是可执行程序。', 'core-integrity'],
+    ['加速内核启动失败', 'core-launch'],
+    ['加速内核已退出', 'core-launch'],
+    ['加速内核意外退出', 'core-launch'],
+    ['暂无可用加速线路，请稍后重试。', 'line-unavailable'],
+    ['加速运行目录必须是普通目录', 'core-storage'],
+    ['加速连接配置写入被系统占用，请稍后重试', 'core-storage'],
+    ['本机加速进程通信失败。', 'unknown'],
+  ])('maps %s raised while starting the core', (message, stage) => {
+    expect(classifyAccelerationStartFailure(new Error(message), 'runtime')).toBe(stage)
+  })
+
+  it('classifies by phase once the core is up', () => {
+    expect(classifyAccelerationStartFailure(new Error('加速内核启动失败'), 'verify')).toBe('runtime-invalid')
+    expect(classifyAccelerationStartFailure(new Error('加速内核启动失败'), 'ledger')).toBe('ledger-write')
+    expect(classifyAccelerationStartFailure(new Error('系统代理组件不可用，请重新安装或联系支持'), 'proxy')).toBe('proxy-helper')
+    expect(classifyAccelerationStartFailure(new Error('设置系统代理失败'), 'proxy')).toBe('proxy-enable')
+  })
+
+  it('reads the macOS authorization code before anything else', () => {
+    const error = Object.assign(new Error('系统代理授权未完成，请授权后重试'), { code: 'MACOS_PROXY_AUTHORIZATION' })
+    for (const phase of ['runtime', 'verify', 'ledger', 'proxy'] as const) {
+      expect(classifyAccelerationStartFailure(error, phase)).toBe('proxy-authorization')
+    }
+  })
+
+  it('reports a non-Error rejection as unclassified rather than forwarding it', () => {
+    expect(classifyAccelerationStartFailure('私密路径', 'runtime')).toBe('unknown')
+  })
+})
+
+describe('acceleration start failure reporting', () => {
+  it('reports the stage when the core never starts, while the user still sees one sentence', async () => {
+    const test = await setup()
+    test.runtime.start.mockRejectedValueOnce(new Error('加速内核启动失败'))
+    const state = await test.backend.startAcceleration(scope, 'system-proxy')
+    expect(state).toMatchObject({ phase: 'error', error: '加速连接失败，请检查线路和网络连接后重试。' })
+    expect(test.onStartDiagnostic.mock.calls).toEqual([['core-launch']])
+  })
+
+  it('separates a system proxy failure from a core failure', async () => {
+    const test = await setup()
+    test.proxy.enable.mockRejectedValueOnce(new Error('系统代理组件不可用，请重新安装或联系支持'))
+    await test.backend.startAcceleration(scope, 'system-proxy')
+    expect(test.onStartDiagnostic.mock.calls).toEqual([['proxy-helper']])
+  })
+
+  it('reports a failed line probe, which starts the core the same way', async () => {
+    const test = await setup(undefined, vi.fn(async () => { throw new Error('暂无可用加速线路，请稍后重试。') }))
+    await expect(test.backend.pingAccelerationLine!(scope, line.id)).rejects.toThrow('暂无可用加速线路')
+    expect(test.onStartDiagnostic.mock.calls).toEqual([['line-unavailable']])
+  })
+
+  it('stays silent when the connection succeeds', async () => {
+    const test = await setup()
+    expect(await test.backend.startAcceleration(scope, 'system-proxy')).toMatchObject({ phase: 'active' })
+    expect(test.onStartDiagnostic).not.toHaveBeenCalled()
   })
 })

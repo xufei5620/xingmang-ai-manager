@@ -6,7 +6,7 @@ import { trustedCommandEnvironment } from './command-runner'
 import { readSafeUtf8File } from './safe-local-data'
 import { accelerationWorkerArgument } from './acceleration-worker-entry'
 import { createAccelerationElectronProfile } from './acceleration-electron-profile'
-import type { AccelerationStopFailureStage } from './acceleration-development-backend'
+import type { AccelerationStartFailureStage, AccelerationStopFailureStage } from './acceleration-development-backend'
 
 export interface AccelerationDevelopmentConfig {
   version: 1
@@ -65,6 +65,26 @@ export async function readAccelerationDevelopmentConfig(options: {
   } catch { throw new Error('本机加速配置无效。') }
 }
 
+/** Whoever reads the log should not have to open the source to learn what a
+ *  stage name means. Exhaustive by construction: adding a stage without a
+ *  sentence here is a compile error, and the accepted set below is derived
+ *  from these keys so the two cannot drift apart. */
+export const accelerationStartFailureDescriptions: Record<AccelerationStartFailureStage, string> = {
+  'core-architecture': '加速内核与本机架构不一致',
+  'core-integrity': '加速内核完整性校验未通过',
+  'core-launch': '加速内核未能启动或提前退出',
+  'core-storage': '加速运行目录或内核文件未通过本地安全检查',
+  'line-unavailable': '没有可用的加速线路',
+  'runtime-invalid': '加速内核已启动但状态不可用',
+  'ledger-write': '本机免费时长账本写入失败',
+  'proxy-authorization': '系统代理授权未完成',
+  'proxy-helper': '系统代理组件不可用',
+  'proxy-enable': '系统代理设置失败',
+  unknown: '未归类的失败',
+}
+const stopFailureStages: readonly string[] = ['proxy-restore', 'core-stop', 'ledger-write']
+const startFailureStages: readonly string[] = Object.keys(accelerationStartFailureDescriptions)
+
 /** The worker owns the core and proxy lease. Parent IPC loss triggers its cleanup. */
 export function createAccelerationDevelopmentHost(options: {
   config: AccelerationDevelopmentConfig
@@ -72,6 +92,7 @@ export function createAccelerationDevelopmentHost(options: {
   packaged?: boolean
   entitlementSource?: 'local-device'
   onDiagnostic?(stage: AccelerationStopFailureStage): void
+  onStartDiagnostic?(stage: AccelerationStartFailureStage): void
 }): AccelerationDevelopmentHost {
   const config = parseAccelerationDevelopmentConfig(options.config)
   const entitlementSource = parseAccelerationEntitlementSource(options.entitlementSource)
@@ -168,10 +189,18 @@ export function createAccelerationDevelopmentHost(options: {
       if (!message || typeof message !== 'object' || Array.isArray(message)) return
       const response = message as Record<string, unknown>
       if (response.type === 'acceleration-diagnostic') {
-        if (child !== worker || response.event !== 'stop.failed'
-          || Object.keys(response).some((key) => !['type', 'event', 'stage'].includes(key))
-          || !['proxy-restore', 'core-stop', 'ledger-write'].includes(response.stage as string)) return
-        try { options.onDiagnostic?.(response.stage as AccelerationStopFailureStage) } catch { /* Diagnostics must not interrupt recovery. */ }
+        if (child !== worker || Object.keys(response).some((key) => !['type', 'event', 'stage'].includes(key))) return
+        // The worker is the one process allowed to see the underlying error.
+        // Only a member of the stage set it is allowed to report crosses here,
+        // so a compromised or confused worker cannot turn this into a channel
+        // for arbitrary text reaching the log.
+        if (response.event === 'stop.failed' && stopFailureStages.includes(response.stage as string)) {
+          try { options.onDiagnostic?.(response.stage as AccelerationStopFailureStage) } catch { /* Diagnostics must not interrupt recovery. */ }
+          return
+        }
+        if (response.event === 'start.failed' && startFailureStages.includes(response.stage as string)) {
+          try { options.onStartDiagnostic?.(response.stage as AccelerationStartFailureStage) } catch { /* Diagnostics must not interrupt recovery. */ }
+        }
         return
       }
       if (child !== worker) return

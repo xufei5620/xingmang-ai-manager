@@ -20,7 +20,7 @@ import { autoUpdater } from 'electron-updater'
 import { AccountCredentialStore } from './account-credential-store'
 import { AnnouncementReadStore } from './announcement-read-store'
 import { createAccelerationService } from './acceleration-service'
-import { createAccelerationDevelopmentHost, readAccelerationDevelopmentConfig } from './acceleration-development-host'
+import { accelerationStartFailureDescriptions, createAccelerationDevelopmentHost, readAccelerationDevelopmentConfig } from './acceleration-development-host'
 import { readBundledAccelerationConfig } from './acceleration-bundled-config'
 import { AiAssetStore, resolveAiOutputRoot } from './ai-asset-store'
 import { AI_CHAT_STREAM_LIMITS, createAiChatService } from './ai-chat-service'
@@ -1415,6 +1415,12 @@ if (!hasSingleInstanceLock) {
         config: accelerationConfig, dataDirectory: managerDataDirectory, packaged: app.isPackaged,
         onDiagnostic: (stage) => runtimeLog.log('warn', 'network', 'acceleration.stop.failed',
           '加速停止尚未完成，将保留恢复记录并重试', { stage }),
+        // A failed connect resolves with an error-carrying state rather than
+        // rejecting, so the IPC layer records it as a success. Without this the
+        // only trace of a machine that can never connect is a sentence on
+        // screen that means the same thing for every possible cause.
+        onStartDiagnostic: (stage) => runtimeLog.log('error', 'network', 'acceleration.start.failed',
+          `加速连接失败：${accelerationStartFailureDescriptions[stage]}`, { stage }),
         ...(app.isPackaged ? { entitlementSource: 'local-device' as const } : {}),
       })
     } catch {
