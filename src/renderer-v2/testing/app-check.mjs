@@ -985,6 +985,26 @@ test('installing a new CLI while signed in writes only that provider Key', async
   } finally { await page.close() }
 })
 
+test('an updated tool row stays on the running install until the rescan lands', async () => {
+  const page = await open('cliUpdate=1')
+  try {
+    const row = page.getByTestId('tool-row-claude')
+    const update = row.getByRole('button', { name: '更新', exact: true })
+    await update.waitFor()
+    // 重现用户看到的那一段：安装命令已经返回，同步 Key 和重新检测还在跑。
+    await page.evaluate(() => window.v2Test.holdNextScan())
+    await update.click()
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'installCli'))
+    await row.getByText('安装完成，正在同步账号 Key 并刷新状态', { exact: true }).waitFor()
+    assert.equal(await update.count(), 0, '刷新落地之前不能把「更新」按钮放回来')
+    assert.equal(await row.getByText('v1.2.3', { exact: false }).count(), 0, '刷新落地之前不能把旧版本号放回来')
+    await page.evaluate(() => window.v2Test.releaseScan())
+    await row.getByText('v2.0.0', { exact: false }).waitFor()
+    assert.equal(await update.count(), 0, '装到最新版之后不该还挂着「更新」')
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('saved-account switching keeps CLI synchronization opt-in', async () => {
   const page = await open('savedAccount=1')
   try {

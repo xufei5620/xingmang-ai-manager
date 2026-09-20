@@ -20,6 +20,12 @@ export interface ToolJobOptions {
   cancel?: () => Promise<InstallCancelResult>
 }
 
+/** 让长任务在运行途中改写工具行上那句话（安装完成后还要同步 Key、重新检测）。 */
+export type ToolJobReport = (label: string, percent?: number) => void
+
+/** 安装命令已经返回、但同步 Key 与重新检测还没跑完时，工具行显示的那句话。 */
+export const installedToolSyncLabel = '安装完成，正在同步账号 Key 并刷新状态'
+
 export function useToolbox(bridge: XingmangApi | null, enabled: boolean, scope: string) {
   const [snapshot, setSnapshot] = useState<ToolboxSnapshot | null>(null)
   const [loading, setLoading] = useState(false)
@@ -110,14 +116,23 @@ export function useToolbox(bridge: XingmangApi | null, enabled: boolean, scope: 
     ]
     return () => callbacks.forEach((unsubscribe) => unsubscribe())
   }, [bridge])
-  const run = useCallback(async (key: string, label: string, operation: () => Promise<unknown>, options?: ToolJobOptions) => {
+  const run = useCallback(async (key: string, label: string, operation: (report: ToolJobReport) => Promise<unknown>, options?: ToolJobOptions) => {
     if (locks.current.has(key)) return false
     locks.current.add(key)
     cancelRequests.current.delete(key)
     if (options?.cancel) cancellers.current.set(key, options.cancel)
     setJobs((current) => ({ ...current, [key]: { label, log: [label], cancellable: Boolean(options?.cancel) } }))
+    const report: ToolJobReport = (next, percent) => {
+      if (!active.current) return
+      setJobs((current) => {
+        const job = current[key]
+        // 同 update：展开原来的 job，别把「能不能取消」「正在取消」洗掉。
+        if (!job) return current
+        return { ...current, [key]: { ...job, label: next, percent, log: [...job.log, next].slice(-200) } }
+      })
+    }
     try {
-      await operation()
+      await operation(report)
       if (!key.startsWith('launch:') && /安装|更新|准备运行环境/.test(label)) {
         void platformApi()?.notifyActivity('install', `install:${key}:${Date.now()}`).catch(() => undefined)
       }

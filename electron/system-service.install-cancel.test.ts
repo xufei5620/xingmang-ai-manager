@@ -114,6 +114,11 @@ function createCancellableInstallFixture() {
     new AppSettingsStore(path.join(root, 'settings.json'), root),
     {
       platform: 'linux',
+      // installCliOperation 里有几处读的是真实的 process.platform，注入的 platform
+      // 管不到它们。在 Windows runner 上跑到 trusted-only 分支就会去建机器级的
+      // 托管 npm 目录、再落进受信任临时目录，这条路径和本文件要测的取消无关。
+      // 钉成 same-user，三个平台走的都是同一段：mkdtemp + 注入的 runCommand。
+      windowsExecutionMode: 'same-user',
       runCommand: runCommand as unknown as SystemServiceOptions['runCommand'],
       findExecutable: vi.fn(async (command: string) => command === 'npm' ? npmExecutable : null),
     },
