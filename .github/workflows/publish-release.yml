@@ -407,15 +407,44 @@ jobs:
           # 附注 tag 要有打标人，而 runner 上没有配过 git 身份。
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          # 打的是本次实际出包的那个 commit，不是"今天的 main"——提升版本号之后、
-          # 构建之前可能又合进了别的改动。附注 tag 自带打标时间，推上去之后不移动。
-          git tag -a "v$PACKAGE_VERSION" "$SHIPPED_SHA" -m "$PACKAGE_VERSION"
-          git push origin "v$PACKAGE_VERSION"
+          tag="v$PACKAGE_VERSION"
+          # 这一步会跑第二次：platforms 选单个平台时，一个版本要分两次发（先出
+          # Windows，之后补发 macOS），tag 与 Release 那时都已经存在。而它排在上传
+          # 产物与覆盖清单**之后**——在这里失败，线上已经是新版本了，作业却报红，
+          # 正是最难判断的那种半完成状态。所以两件事都写成「没有就建，有就补」。
+          existing=$(git ls-remote origin "refs/tags/$tag^{}" | awk '{print $1}')
+          if [ -z "$existing" ]; then
+            existing=$(git ls-remote origin "refs/tags/$tag" | awk '{print $1}')
+          fi
+          if [ -z "$existing" ]; then
+            # 打的是本次实际出包的那个 commit，不是"今天的 main"——提升版本号之后、
+            # 构建之前可能又合进了别的改动。附注 tag 自带打标时间，推上去之后不移动。
+            git tag -a "$tag" "$SHIPPED_SHA" -m "$PACKAGE_VERSION"
+            git push origin "$tag"
+          elif [ "$existing" != "$SHIPPED_SHA" ]; then
+            # 已存在的 tag 指着别的 commit，说明同一个版本号发过两份不同的产物。
+            # 这必须有人来看，不能默默接着传。tag 本身不动：移动一个已发布的 tag
+            # 会让所有按 tag 取源码的人拿到和当初不同的东西。
+            echo "::error::$tag 已存在且指向 $existing，与本次出包的 $SHIPPED_SHA 不一致"
+            exit 1
+          else
+            echo "$tag 已存在且指向同一个 commit，跳过打标"
+          fi
           # release-notes.md 里是从 0.1.x 起的全部历史，Release 正文只要这一版那一节。
           node scripts/extract-release-notes.cjs --version "$PACKAGE_VERSION" --output "$RUNNER_TEMP/release-section.md"
           shopt -s nullglob
           assets=(release-artifacts/*Setup.exe release-artifacts/*.dmg)
-          gh release create "v$PACKAGE_VERSION" \
-            --title "$PACKAGE_VERSION" \
-            --notes-file "$RUNNER_TEMP/release-section.md" \
-            "${assets[@]}"
+          if gh release view "$tag" > /dev/null 2>&1; then
+            # Release 已经在了，只把这一次出的包挂上去。正文不重写：发布者可能已经
+            # 在上面补过话，补发一个平台不该把那些改动冲掉。
+            if [ "${#assets[@]}" -gt 0 ]; then
+              gh release upload "$tag" "${assets[@]}" --clobber
+            else
+              echo "没有可上传的安装包，Release 保持原样"
+            fi
+          else
+            gh release create "$tag" \
+              --title "$PACKAGE_VERSION" \
+              --notes-file "$RUNNER_TEMP/release-section.md" \
+              "${assets[@]}"
+          fi
