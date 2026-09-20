@@ -34,6 +34,13 @@ import {
   type NativeConfigInspection,
 } from './config-files'
 import type { InstallationQueue } from './installation-queue'
+import {
+  InstallCancellationRegistry,
+  InstallCancelledError,
+  isInstallCancelledError,
+  type InstallCancellationHandle,
+  type InstallCancellationOutcome,
+} from './install-cancellation'
 import { buildMacosCodexAppLaunchPlan, type inspectMacosCodexApp, type MacosCodexAppInspection } from './macos-codex-app'
 import { describeProbeFailure } from './probe-failure'
 import { resolveWindowsExplorerExecutable } from './system-shell'
@@ -107,6 +114,10 @@ const maximumCodexDesktopPackageBytes = 1_500 * 1024 * 1024
 const maximumCodexDesktopManifestBytes = 1024 * 1024
 const maximumCodexDesktopAppManifestBytes = 512 * 1024
 const codexDesktopManifestRefreshParameter = 'xm_refresh'
+const codexDesktopInstallKey = 'desktop:codex:install'
+// 下载可以随时丢掉，Add-AppxPackage 不行：它中途被杀会留下一个装了一半的包，
+// 之后既打不开也更新不了。这是拒绝取消时给用户看的原因。
+const codexDesktopInstallSealReason = '正在安装 Codex 桌面端，这一步中断会留下装了一半的程序，请等它结束。'
 // First-run AppX startup can spend several seconds registering WebView and
 // scanning the package. Keep the fast path responsive, but give the fallback
 // enough time to observe a healthy process on a cold machine.
@@ -706,9 +717,15 @@ export async function downloadCodexDesktopPackage(
   destination: string,
   onProgress: (progress: CodexDesktopDownloadProgress) => void,
   fetchImplementation: typeof fetch,
+  cancelSignal?: AbortSignal,
 ): Promise<CodexDesktopDownloadResult> {
   const controller = new AbortController()
   const responseTimeout = setTimeout(() => controller.abort(), 20_000)
+  // 取消和超时都会中止这次请求，但用户看到的原因必须分得开：
+  // 下面的 catch 靠 cancelSignal 判断，而不是把两者都说成「下载超时」。
+  const abortOnCancel = () => controller.abort(cancelSignal?.reason)
+  if (cancelSignal?.aborted) abortOnCancel()
+  cancelSignal?.addEventListener('abort', abortOnCancel, { once: true })
   let file: fs.promises.FileHandle | null = null
   try {
     const response = await fetchTrustedCodexDesktopResource(source.url, {
@@ -784,15 +801,18 @@ export async function downloadCodexDesktopPackage(
     await file.sync()
     return { transferred, total, sha256Base64 }
   } catch (error) {
-    const cause = error instanceof Error && error.name === 'AbortError'
-      ? new Error(`${source.label}连接或下载超时`)
-      : error
+    const cause = cancelSignal?.aborted
+      ? cancelSignal.reason
+      : error instanceof Error && error.name === 'AbortError'
+        ? new Error(`${source.label}连接或下载超时`)
+        : error
     await file?.close().catch(() => undefined)
     file = null
     await fs.promises.rm(destination, { force: true }).catch(() => undefined)
     throw cause
   } finally {
     clearTimeout(responseTimeout)
+    cancelSignal?.removeEventListener('abort', abortOnCancel)
     await file?.close().catch(() => undefined)
   }
 }
@@ -822,6 +842,8 @@ export interface CodexDesktopCandidateDownloadOptions {
     candidate: CodexDesktopManifestCandidate,
     packagePath: string,
   ) => Promise<void>
+  /** 用户点「取消」后中止下载，并且不再换下一路镜像重试。 */
+  signal?: AbortSignal
 }
 
 export async function downloadCodexDesktopPackageFromCandidates(
@@ -838,6 +860,7 @@ export async function downloadCodexDesktopPackageFromCandidates(
     const packageSource = candidate.packageSource
     if (!release || !packageSource) continue
 
+    options.signal?.throwIfAborted()
     await fs.promises.rm(destination, { force: true }).catch(() => undefined)
     options.onAttempt?.(candidate, attemptIndex, failures.at(-1) ?? null)
     const source: CodexDesktopPackageSource = {
@@ -851,6 +874,7 @@ export async function downloadCodexDesktopPackageFromCandidates(
         destination,
         (progress) => options.onProgress?.(candidate, progress),
         options.fetchImplementation,
+        options.signal,
       )
       if (download.total !== release.contentLength || download.transferred !== release.contentLength) {
         throw new Error(
@@ -864,6 +888,8 @@ export async function downloadCodexDesktopPackageFromCandidates(
       return { candidate, download }
     } catch (error) {
       await fs.promises.rm(destination, { force: true }).catch(() => undefined)
+      // 取消要就地中断：继续 push 失败原因就等于换一路镜像接着下。
+      options.signal?.throwIfAborted()
       const detail = error instanceof Error ? error.message : String(error)
       failures.push(`${source.label}（${release.version}）：${detail || '校验失败'}`)
     }
@@ -1445,6 +1471,8 @@ export interface CodexDesktopService {
   inspectCodexDesktop(): Promise<DesktopAppStatus>
   inspectCodexDesktopUpdate(forceRefresh?: boolean): Promise<DesktopAppStatus>
   installCodexDesktop(target: RendererMessageTarget): Promise<CodexDesktopInstallResult>
+  /** 中止正在进行的安装或更新;已经开始装 MSIX 时会被拒绝并给出原因。 */
+  cancelCodexDesktopInstall(): InstallCancellationOutcome
   uninstallCodexDesktop(): Promise<ToolUninstallResult>
   launchCodexDesktop(
     mode: CodexDesktopLaunchMode,
@@ -1480,6 +1508,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
     injectCodexDesktopChineseLocale = injectCodexDesktopChineseLocaleDefault,
   } = options
   let codexDesktopInstalling = false
+  const installCancellations = new InstallCancellationRegistry()
   let codexDesktopManifestCache: {
     expiresAt: number
     value: DesktopManifestProbeBundle
@@ -1701,7 +1730,10 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
 
   async function installCodexDesktopOperation(
     target: RendererMessageTarget,
+    cancellation?: InstallCancellationHandle,
   ): Promise<CodexDesktopInstallResult> {
+    // 排队等待期间点的取消在这里生效：一个字节都不用下。
+    cancellation?.throwIfCancelled()
     if (platform === 'darwin') {
       throw new Error('macOS 上 Codex App 的安装由 Codex App 管理，请使用“打开”操作由已验证的 Codex CLI 完成安装或启动')
     }
@@ -1809,6 +1841,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
         probeErrors: readonly string[],
       ): Promise<CodexDesktopCandidateDownloadResult> => downloadCodexDesktopPackageFromCandidates(candidates, packagePath, {
         fetchImplementation: downloadFetch,
+        ...(cancellation ? { signal: cancellation.signal } : {}),
         onAttempt: (candidate, attemptIndex, previousFailure) => {
           const release = candidate.release
           const source = candidate.packageSource
@@ -1864,6 +1897,9 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
       try {
         selected = await downloadWithProgress(installCandidates, installProbeErrors)
       } catch (error) {
+        // 取消之后不再回落到上一版本：那是另一次完整下载。
+        if (isInstallCancelledError(error)) throw error
+        cancellation?.throwIfCancelled()
         if (!firstInstall) throw error
         if (previousCandidatesLoaded) {
           const detail = error instanceof Error ? error.message : String(error)
@@ -1891,6 +1927,10 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
       const release = selected.candidate.release
       if (!release) throw new Error('镜像候选缺少安装元数据')
 
+      cancellation?.throwIfCancelled()
+      // 从这里开始就会动这台机器上的 Codex Desktop：先关掉正在跑的进程，
+      // 再交给 Add-AppxPackage。中途中断会留下一个装了一半的包，所以封存。
+      cancellation?.seal(codexDesktopInstallSealReason)
       const processes = await listCodexDesktopProcesses()
       if (processes.length) {
         sendCodexDesktopInstallProgress(target, {
@@ -1936,12 +1976,19 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
 
   async function installCodexDesktopOperationWithProgress(
     target: RendererMessageTarget,
+    cancellation?: InstallCancellationHandle,
   ): Promise<CodexDesktopInstallResult> {
     if (codexDesktopInstalling) throw new Error('Codex 桌面端正在安装或更新，请勿重复操作')
     codexDesktopInstalling = true
     try {
-      return await installCodexDesktopOperation(target)
+      return await installCodexDesktopOperation(target, cancellation)
     } catch (error) {
+      // 取消是用户自己按的，不是安装失败：换成统一的中文文案，免得界面像出了故障。
+      if (isInstallCancelledError(error) || cancellation?.cancelled === true) {
+        const cancelled = new InstallCancelledError('Codex 桌面端安装已取消')
+        sendCodexDesktopInstallProgress(target, { phase: 'error', percent: null, message: cancelled.message })
+        throw cancelled
+      }
       const message = error instanceof Error ? error.message : String(error)
       sendCodexDesktopInstallProgress(target, { phase: 'error', percent: null, message })
       throw error
@@ -1953,10 +2000,24 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
   function installCodexDesktop(
     target: RendererMessageTarget,
   ): Promise<CodexDesktopInstallResult> {
+    // 重复点击复用队列里的同一个 Promise，所以这里也不能再开一个取消句柄：
+    // 后点的那次会把前一次的句柄挤掉，取消按钮就再也找不到正在跑的安装。
+    if (installCancellations.has(codexDesktopInstallKey)) {
+      return installationQueue.enqueue(
+        codexDesktopInstallKey,
+        () => installCodexDesktopOperationWithProgress(target),
+      )
+    }
+    // 句柄在入队之前登记：排在别的安装后面等待时也要能取消。
+    const cancellation = installCancellations.begin(codexDesktopInstallKey)
     return installationQueue.enqueue(
-      'desktop:codex:install',
-      () => installCodexDesktopOperationWithProgress(target),
-    )
+      codexDesktopInstallKey,
+      () => installCodexDesktopOperationWithProgress(target, cancellation),
+    ).finally(() => cancellation.release())
+  }
+
+  function cancelCodexDesktopInstall(): InstallCancellationOutcome {
+    return installCancellations.cancel(codexDesktopInstallKey)
   }
 
   async function inspectCodexDesktopUpdate(forceRefresh = false): Promise<DesktopAppStatus> {
@@ -2293,6 +2354,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
     inspectCodexDesktop,
     inspectCodexDesktopUpdate,
     installCodexDesktop,
+    cancelCodexDesktopInstall,
     uninstallCodexDesktop,
     launchCodexDesktop,
   }

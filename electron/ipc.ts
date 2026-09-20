@@ -1697,6 +1697,14 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   })
   registerTrustedHandler('setup:codex-status', () => service.inspectCodexSetupStatus())
   registerTrustedHandler('desktop:install-codex', (event) => service.installCodexDesktop(event.sender))
+  registerTrustedHandler('desktop:cancel-install-codex', () => {
+    const outcome = service.cancelCodexDesktopInstall()
+    options.runtimeLog.log('info', 'maintenance', 'desktop.codex.install.cancel-requested', '收到取消 Codex 桌面端安装的请求', {
+      cancelled: outcome.cancelled,
+      ...(outcome.reason ? { reason: outcome.reason } : {}),
+    })
+    return outcome
+  })
   registerTrustedHandler('desktop:uninstall-codex', () => service.uninstallCodexDesktop())
   registerTrustedHandler('desktop:check-update-codex', () => service.inspectCodexDesktopUpdate(true))
   registerTrustedHandler('cli:launch', (_event, provider: unknown, workspace: unknown) => {

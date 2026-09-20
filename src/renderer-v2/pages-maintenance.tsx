@@ -877,11 +877,12 @@ export function MaintenancePage({
       },
       (result) => result === 'cancelled' ? '安装已取消' : '安装完成，工具状态已更新',
     )
-  const cancelInstall = (id: Provider) => {
+  const cancelInstall = (id: Provider | 'codexDesktop') => {
     cancelRequested.current.add(id)
     setCancelling(id)
     setCancelNotice('')
-    void api.cancelCliInstall(id).then((outcome) => {
+    const requested = id === 'codexDesktop' ? api.cancelCodexDesktopInstall() : api.cancelCliInstall(id)
+    void requested.then((outcome) => {
       if (outcome.cancelled) return
       // 已经走到写入工具目录那一步：这次安装还会跑完，取消标记必须撤掉，
       // 否则真失败时会被当成取消吞掉。
@@ -1021,7 +1022,7 @@ export function MaintenancePage({
                   >
                     {rescan ? '重新检测' : status?.installed ? '重新安装' : '安装'}
                   </Button>
-                  {operation.busy === id && isProvider(id) && (
+                  {operation.busy === id && (
                     <Button
                       size="sm"
                       variant="ghost"

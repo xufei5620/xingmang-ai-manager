@@ -289,13 +289,11 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     const runtimeBlocked = id === 'codexDesktop' ? null : cliRuntimeBlockMessage(state.system.runtime)
     if (runtimeBlocked) throw new Error(runtimeBlocked)
     if (tools.find((tool) => tool.id === id)?.requires.includes('python') && (!state.system.runtime.python.installed || state.system.runtime.python.detectionFailed)) throw new Error('Gemini 还需要 Python 环境。请先在运行环境卡中准备 Python，再安装工具。')
-    // 只有四个 CLI 给取消入口：Codex 桌面端走 MSIX 安装器，中途中断会留下半装的包，
-    // 那里放一个按了必被拒绝的按钮比没有按钮更糟。
     const completed = await toolbox.run(
       id,
       version ? `正在安装 ${version}` : '正在安装',
       () => toolsApi.install(id, version),
-      id === 'codexDesktop' ? undefined : { cancel: () => toolsApi.cancelInstall(id) },
+      { cancel: () => toolsApi.cancelInstall(id) },
     )
     // 用户中途取消时 run 返回 false：不要再写 Key，本来就没装上。
     if (!completed) return

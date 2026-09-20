@@ -60,14 +60,22 @@ describe('CLI install cancellation routing', () => {
     await expect(api.cancelInstall('codex')).resolves.toEqual(refusal)
   })
 
-  it('says Codex Desktop cannot be cancelled instead of reaching for a CLI channel', async () => {
+  it('sends a Codex Desktop cancel to its own channel, not the CLI one', async () => {
     const cancelCliInstall = vi.fn(async () => ({ cancelled: true, reason: null }))
-    const api = createToolsApi({ cancelCliInstall } as unknown as XingmangApi)
+    const cancelCodexDesktopInstall = vi.fn(async () => ({ cancelled: true, reason: null }))
+    const api = createToolsApi({ cancelCliInstall, cancelCodexDesktopInstall } as unknown as XingmangApi)
 
-    const outcome = await api.cancelInstall('codexDesktop')
-    expect(outcome.cancelled).toBe(false)
-    expect(outcome.reason).toContain('不能取消')
+    await expect(api.cancelInstall('codexDesktop')).resolves.toEqual({ cancelled: true, reason: null })
+    expect(cancelCodexDesktopInstall).toHaveBeenCalledWith()
     expect(cancelCliInstall).not.toHaveBeenCalled()
+  })
+
+  it('passes the Codex Desktop refusal through once the MSIX install has begun', async () => {
+    const refusal = { cancelled: false, reason: '正在安装 Codex 桌面端，这一步中断会留下装了一半的程序，请等它结束。' }
+    const cancelCodexDesktopInstall = vi.fn(async () => refusal)
+    const api = createToolsApi({ cancelCodexDesktopInstall } as unknown as XingmangApi)
+
+    await expect(api.cancelInstall('codexDesktop')).resolves.toEqual(refusal)
   })
 })
 

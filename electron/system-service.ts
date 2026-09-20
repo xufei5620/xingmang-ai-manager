@@ -691,6 +691,7 @@ export interface SystemService {
   uninstallCli(provider: ProviderId): Promise<ToolUninstallResult>
   inspectCliUpdate(provider: ProviderId, forceRefresh?: boolean): Promise<CliStatus>
   installCodexDesktop(target: RendererMessageTarget): Promise<CodexDesktopInstallResult>
+  cancelCodexDesktopInstall(): InstallCancellationOutcome
   uninstallCodexDesktop(): Promise<ToolUninstallResult>
   inspectCodexDesktopUpdate(forceRefresh?: boolean): Promise<DesktopAppStatus>
   launchProvider(provider: ProviderId, workspace: string): Promise<void>
@@ -3278,6 +3279,7 @@ export function createSystemService(
     inspectCodexDesktop,
     inspectCodexDesktopUpdate,
     installCodexDesktop: installCodexDesktopOperation,
+    cancelCodexDesktopInstall,
     uninstallCodexDesktop: uninstallCodexDesktopOperation,
     launchCodexDesktop: launchCodexDesktopOperation,
   } = createCodexDesktopService({
@@ -3908,6 +3910,7 @@ export function createSystemService(
     uninstallCli,
     inspectCliUpdate,
     installCodexDesktop,
+    cancelCodexDesktopInstall,
     uninstallCodexDesktop,
     inspectCodexDesktopUpdate,
     launchProvider,
