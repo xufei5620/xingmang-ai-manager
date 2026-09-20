@@ -66,8 +66,14 @@ test('the fallback only creates a shortcut that is missing, never a second one',
 test('the fallback never deletes a shortcut the user already has', () => {
   const contents = readCustomInclude()
   // 升级安装时把用户自己挪过位置或改过名字的图标删掉，比不建还糟。
+  // 断言只看 customInstall 这一段：同一个文件里的卸载部分本来就要删文件
+  // （见 windows-installer-install-directory.test.cjs），那是另一回事。
+  const body = contents.slice(
+    contents.indexOf('!macro customInstall'),
+    contents.indexOf('!macroend', contents.indexOf('!macro customInstall')),
+  )
   for (const forbidden of [/^\s*Delete\s/m, /^\s*RMDir\s/m, /UninstShortcut/]) {
-    assert.doesNotMatch(contents, forbidden)
+    assert.doesNotMatch(body, forbidden)
   }
 })
 
