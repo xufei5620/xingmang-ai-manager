@@ -83,6 +83,14 @@ jobs:
             status=$?
             echo "--- $label 退出码=$status 用时=$(( $(date +%s) - start ))s"
           }
+          attempt60() {
+            label="$1"; shift
+            echo "--- $label"
+            start=$(date +%s)
+            /usr/bin/perl -e 'alarm shift; exec @ARGV' 60 "$@"
+            status=$?
+            echo "--- $label 退出码=$status 用时=$(( $(date +%s) - start ))s"
+          }
           report() {
             # 不过滤的那份会把被过滤掉的原因附在条目后面，例如
             # (CSSMERR_TP_NOT_TRUSTED)，这正是需要看的东西。
@@ -98,64 +106,61 @@ jobs:
           report
           echo "::endgroup::"
 
-          echo "::group::A 管理员域 + 只给 codeSign 策略（发布工作流现在用的就是这条）"
+          # 第二轮已经问出来的（run 35532230420）：
+          #   * `sudo -n security add-trusted-cert -d -r trustRoot -p codeSign
+          #     -k /Library/Keychains/System.keychain` 立刻返回 0，身份当场变成 valid。
+          #   * 但它把证书**又装进了一个 keychain**，于是同一个身份被列出两次，
+          #     预检的「匹配项必须恰好一个」就判成歧义——第四轮正式发布红的就是这个。
+          #   * 不带 -k 会挂死；`remove-trusted-cert -d` 也会挂死。
+          # 这一轮只问三件事。
+          echo "::group::A 管理员域，-k 指向本来就装着证书的那个一次性 keychain"
           attempt 'A add' sudo -n security add-trusted-cert -d -r trustRoot -p codeSign \
-            -k /Library/Keychains/System.keychain probe.crt
+            -k "$kc" probe.crt
           security dump-trust-settings -d || true
           report
-          # 排除「设置写进去了但 trustd 还在用旧缓存」这一种可能。
-          echo "--- 重启 trustd 后再看一次"
-          sudo -n killall -HUP trustd || true
-          sleep 3
-          report
-          attempt 'A remove' sudo -n security remove-trusted-cert -d probe.crt
+          echo "--- 匹配项数量（必须恰好 1，否则预检判成歧义）"
+          security find-identity -v -p codesigning | grep -c 'XingMang Probe Identity' || true
           echo "::endgroup::"
 
-          echo "::group::B 管理员域 + 不限策略、不指定 keychain"
-          attempt 'B add' sudo -n security add-trusted-cert -d -r trustRoot probe.crt
+          echo "::group::B 撤销：给足 60 秒，看它到底是慢还是根本回不来"
+          attempt60 'B remove -d' sudo -n security remove-trusted-cert -d probe.crt
           security dump-trust-settings -d || true
-          report
-          attempt 'B remove' sudo -n security remove-trusted-cert -d probe.crt
           echo "::endgroup::"
 
-          echo "::group::C 用户域（预期会挂到 25 秒）"
-          attempt 'C add' security add-trusted-cert -r trustRoot -p codeSign \
-            -k "$HOME/Library/Keychains/login.keychain-db" probe.crt
-          security dump-trust-settings || true
-          report
-          attempt 'C remove' security remove-trusted-cert probe.crt
-          echo "::endgroup::"
-
-          echo "::group::D 先放开 authorizationdb，再写用户域"
-          attempt 'D authdb' sudo -n security authorizationdb write com.apple.trust-settings.admin allow
-          attempt 'D add' security add-trusted-cert -d -r trustRoot -p codeSign \
-            -k /Library/Keychains/System.keychain probe.crt
+          echo "::group::C 删掉一次性 keychain 之后，信任设置还剩什么"
+          security delete-keychain "$kc" || true
           security dump-trust-settings -d || true
-          report
-          attempt 'D remove' sudo -n security remove-trusted-cert -d probe.crt
+          security find-identity -v -p codesigning || true
           echo "::endgroup::"
 
-          echo "::group::E 管理员域 + trustAsRoot（CA:TRUE 也试一下这一支）"
-          attempt 'E add' sudo -n security add-trusted-cert -d -r trustAsRoot -p codeSign \
-            -k /Library/Keychains/System.keychain probe.crt
-          security dump-trust-settings -d || true
-          report
-          attempt 'E remove' sudo -n security remove-trusted-cert -d probe.crt
-          echo "::endgroup::"
-
-          echo "::group::F 不改信任设置，直接用 codesign 签一个探针（这条通了就说明可以绕开信任）"
-          cp /bin/echo probe-binary
-          chmod 755 probe-binary
-          sha1=$(security find-identity -p codesigning "$kc" | /usr/bin/awk '/\)/ {print $2; exit}')
-          echo "身份 SHA-1：$sha1"
-          attempt 'F codesign' /usr/bin/codesign --force --sign "$sha1" --keychain "$kc" \
-            --timestamp=none --options runtime probe-binary
-          attempt 'F verify' /usr/bin/codesign --verify --strict --verbose=2 probe-binary
-          /usr/bin/codesign -dvvv probe-binary 2>&1 | head -20 || true
+          echo "::group::D 轮换后的新 profile（CA:FALSE）该用哪个 -r"
+          printf '%s\n' \
+            '[req]' 'distinguished_name = dn' 'prompt = no' \
+            '[dn]' 'CN = XingMang Probe Leaf' \
+            '[leaf_ext]' \
+            'basicConstraints = critical,CA:FALSE' \
+            'keyUsage = critical,digitalSignature' \
+            'extendedKeyUsage = critical,codeSigning' \
+            'subjectKeyIdentifier = hash' > leaf.cnf
+          /usr/bin/openssl req -x509 -newkey rsa:2048 -keyout leaf.key -out leaf.crt \
+            -days 3650 -nodes -config leaf.cnf -extensions leaf_ext
+          /usr/bin/openssl pkcs12 -export -inkey leaf.key -in leaf.crt -out leaf.p12 \
+            -name 'XingMang Probe Leaf' -passout "pass:$p12pass"
+          kc2="$work/probe-leaf.keychain-db"
+          security create-keychain -p "$kcpass" "$kc2"
+          security set-keychain-settings -lut 21600 "$kc2"
+          security unlock-keychain -p "$kcpass" "$kc2"
+          security import leaf.p12 -k "$kc2" -f pkcs12 -P "$p12pass" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$kcpass" "$kc2" > /dev/null
+          # shellcheck disable=SC2086
+          security list-keychains -d user -s "$kc2" $orig
+          attempt 'D trustRoot' sudo -n security add-trusted-cert -d -r trustRoot -p codeSign -k "$kc2" leaf.crt
+          attempt 'D trustAsRoot' sudo -n security add-trusted-cert -d -r trustAsRoot -p codeSign -k "$kc2" leaf.crt
+          security find-identity -v -p codesigning || true
+          security delete-keychain "$kc2" || true
           echo "::endgroup::"
 
           echo "::group::收尾"
           # shellcheck disable=SC2086
           security list-keychains -d user -s $orig || true
-          security delete-keychain "$kc" || true
           echo "::endgroup::"
