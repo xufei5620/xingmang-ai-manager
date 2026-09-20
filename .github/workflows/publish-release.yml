@@ -164,6 +164,13 @@ jobs:
       # dist:mac:free 自己会跑 npm test，其中的浏览器套件要这个。
       - run: npx --no-install playwright install chromium
 
+      # prepare-acceleration-bundle.cjs 用的是主进程里那套安全读写与内核校验，
+      # 所以它跑之前必须先有 dist-electron。少了这一步，它会在第一秒就报
+      # 「请先编译主进程」（2026-09-20 首次正式发布就红在这里）。dist:mac:free
+      # 随后还会自己跑一次完整的 npm run compile，这一次只是给暂存工具用的。
+      - name: Compile the main process the staging tool needs
+        run: node node_modules/typescript/bin/tsc -p tsconfig.electron.json
+
       # 两个架构各准备一份：Mac 的资源清单里记着架构，内核也是按架构的 Mach-O，
       # 混用会被打包前的校验直接拒掉。
       - name: Prepare the private acceleration bundles
