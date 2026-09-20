@@ -230,7 +230,7 @@ const SHELL_PATH = '/bin/bash'
 const shellUnavailable = process.platform === 'win32' || !fs.existsSync(SHELL_PATH)
 const posixOnly = { skip: shellUnavailable && `需要 ${SHELL_PATH}，publish 作业只在 ubuntu-latest 上跑` }
 
-function runTagStep({ existingTagSha, releaseExists, assets = true }) {
+function runTagStep({ existingTagSha, releaseExists, assets = true, annotated = false }) {
   const step = publishJob.steps.find((entry) => /Tag the commit that shipped/.test(entry.name || ''))
   const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-publish-tag-'))
   const binDirectory = path.join(workspace, 'bin')
@@ -244,17 +244,29 @@ function runTagStep({ existingTagSha, releaseExists, assets = true }) {
   }
   const logPath = path.join(workspace, 'commands.log')
 
-  // git ls-remote 的输出是「对象 id + TAB + ref」；解析错一个字段，存在性判断就会
-  // 悄悄永远为真或永远为假，所以这里照真实格式喂。
+  // 打标走的是 gh，git 一次都不该被调到；留着这个桩就是为了在日志里抓到它。
   const gitStub = `#!/bin/bash
 printf 'git %s\\n' "$*" >> ${JSON.stringify(logPath)}
-if [ "$1" = 'ls-remote' ]; then
-  ${existingTagSha ? `printf '%s\\trefs/tags/v9.9.9\\n' ${JSON.stringify(existingTagSha)}` : 'true'}
-fi
 exit 0
 `
+  // 0.1.x 那批 tag 是 git tag -a 推上去的附注 tag，ref 指向 tag 对象而不是 commit；
+  // 现在建的是轻量 tag，ref 直接指向 commit。补发一个平台时两种都可能撞上，所以
+  // 桩要能演出两种形状，解引用漏掉一层会让比对永远不相等、把补发判成版本号撞车。
+  const TAG_OBJECT_SHA = 'f'.repeat(40)
+  const refResponse = existingTagSha === null
+    ? 'exit 1'
+    : (annotated
+      ? `printf 'tag %s\\n' ${JSON.stringify(TAG_OBJECT_SHA)}`
+      : `printf 'commit %s\\n' ${JSON.stringify(existingTagSha)}`)
   const ghStub = `#!/bin/bash
 printf 'gh %s\\n' "$*" >> ${JSON.stringify(logPath)}
+if [ "$1" = 'api' ]; then
+  case "$2" in
+    */git/ref/tags/*) ${refResponse} ;;
+    */git/tags/*) printf '%s\\n' ${JSON.stringify(existingTagSha || '')} ;;
+  esac
+  exit 0
+fi
 if [ "$1" = 'release' ] && [ "$2" = 'view' ]; then exit ${releaseExists ? '0' : '1'}; fi
 exit 0
 `
@@ -279,6 +291,7 @@ exit 0
       PACKAGE_VERSION: '9.9.9',
       SHIPPED_SHA: 'a'.repeat(40),
       GH_TOKEN: 'stub',
+      GITHUB_REPOSITORY: 'xufei5620/xingmang-ai-manager',
     },
   })
   const log = fs.existsSync(logPath) ? fs.readFileSync(logPath, 'utf8') : ''
@@ -290,10 +303,17 @@ test('a first release of a version tags the commit that shipped and creates the 
   const run = runTagStep({ existingTagSha: null, releaseExists: false })
 
   assert.equal(run.status, 0, run.stderr)
-  assert.match(run.log, /git tag -a v9\.9\.9 a{40} -m 9\.9\.9/)
-  assert.match(run.log, /git push origin v9\.9\.9/)
-  assert.match(run.log, /gh release create v9\.9\.9/)
+  // tag 由 --target 建出来，指向本次出包的那个 commit。
+  assert.match(run.log, new RegExp(`gh release create v9\\.9\\.9 --target ${'a'.repeat(40)}`))
   assert.doesNotMatch(run.log, /gh release upload/)
+})
+
+test('the release tag is created through the API instead of git push', posixOnly, () => {
+  // GITHUB_TOKEN 是 GitHub App 令牌，推新 ref 会被「没有 workflows 权限就不许创建或
+  // 更新 .github/workflows/*」拒掉，而那个权限给不了。0.2.8 就是这样红在最后一步的。
+  const run = runTagStep({ existingTagSha: null, releaseExists: false })
+
+  assert.doesNotMatch(run.log, /^git /m)
 })
 
 test('re-publishing the same version adds its assets instead of failing on the existing tag', posixOnly, () => {
@@ -301,11 +321,28 @@ test('re-publishing the same version adds its assets instead of failing on the e
 
   assert.equal(run.status, 0, run.stderr)
   // 先发 Windows、之后补发 macOS 是被支持的发布方式；第二次不该在收尾炸掉。
-  assert.doesNotMatch(run.log, /git tag -a/)
-  assert.doesNotMatch(run.log, /git push origin/)
   assert.match(run.log, /gh release upload v9\.9\.9 .*--clobber/)
   // 正文不重写：发布者可能已经在上面补过话。
   assert.doesNotMatch(run.log, /gh release create/)
+})
+
+test('an annotated tag from an older release is dereferenced before it is compared', posixOnly, () => {
+  const run = runTagStep({ existingTagSha: 'a'.repeat(40), releaseExists: true, annotated: true })
+
+  // 漏掉解引用那一层，比对的就是 tag 对象的 id，永远不等于出包的 commit，
+  // 补发会被判成「同一个版本号发过两份不同的产物」而停掉。
+  assert.equal(run.status, 0, run.stderr)
+  assert.match(run.log, /gh api repos\/.*\/git\/tags\/f{40}/)
+  assert.match(run.log, /gh release upload v9\.9\.9 .*--clobber/)
+})
+
+test('a tag left behind by a failed finish still gets its Release', posixOnly, () => {
+  // 0.2.8 的收尾就停在两者之间：tag 推上去之前失败，Release 也没建。补发时
+  // tag 可能已经在了而 Release 还没有，这一支不能报红。
+  const run = runTagStep({ existingTagSha: 'a'.repeat(40), releaseExists: false })
+
+  assert.equal(run.status, 0, run.stderr)
+  assert.match(run.log, /gh release create v9\.9\.9/)
 })
 
 test('a tag that already points somewhere else stops the job instead of being moved', posixOnly, () => {
@@ -314,8 +351,7 @@ test('a tag that already points somewhere else stops the job instead of being mo
   // 同一个版本号发过两份不同的产物，这必须有人来看。
   assert.notEqual(run.status, 0)
   assert.match(run.stdout + run.stderr, /::error::/)
-  assert.doesNotMatch(run.log, /git tag/)
-  assert.doesNotMatch(run.log, /gh release/)
+  assert.doesNotMatch(run.log, /gh release (create|upload)/)
 })
 
 test('the release tag is never moved or force-pushed', () => {
@@ -323,14 +359,7 @@ test('the release tag is never moved or force-pushed', () => {
 
   // 移动一个已发布的 tag 会让所有按 tag 取源码的人拿到和当初不同的东西。
   assert.doesNotMatch(String(step.run), /git tag -f|--force|-d\s+"?v?\$/)
+  // 注释里提到 git push 是在说明为什么不走它，所以只认行首的真命令。
+  assert.doesNotMatch(String(step.run), /^\s*git push/m)
 })
 
-test('an asset-less re-publish leaves the existing Release alone instead of erroring', posixOnly, () => {
-  // nullglob 下两个 glob 都不匹配就是空数组，而 `gh release upload <tag>` 不带文件
-  // 会以非零退出——在这一步报红，等于在"已经传上去了"之后再盖一层看不懂的失败。
-  const run = runTagStep({ existingTagSha: 'a'.repeat(40), releaseExists: true, assets: false })
-
-  assert.equal(run.status, 0, run.stderr)
-  assert.doesNotMatch(run.log, /gh release upload/)
-  assert.doesNotMatch(run.log, /gh release create/)
-})

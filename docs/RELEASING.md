@@ -246,6 +246,8 @@ git push origin v0.2.7
 
 约定三条：tag 名固定为 `v` 加 `package.json` 里的版本号；用附注 tag（`-a`）而不是轻量 tag，让 tag 自带打标时间和打标人；tag 推上去之后不移动、不删除。本次产物有问题时提升版本号重新发布，按第 8 节回滚，不要让同一个 tag 指向另一个 commit。
 
+走 `publish-release` 工作流发布时这一步是自动的，但建出来的是**轻量 tag**：那条作业用的 `GITHUB_TOKEN` 是 GitHub App 令牌，`git push` 一个新的 ref 会被「没有 `workflows` 权限就不许创建或更新 `.github/workflows/*`」这条服务端规则拒掉，而 `workflows` 不在 `GITHUB_TOKEN` 可以被授予的权限里。所以那边改成让 `gh release create --target <出包的 commit>` 由服务端建 ref。手工发布时仍然用附注 tag。
+
 #### 补打历史版本的 tag
 
 0.2.1 ~ 0.2.6 都已经发出去且没有 tag。下面是按 `package.json` 版本变更推断出的候选 commit，**仅供确认用**——如上所述，提升版本号的 commit 未必就是当时实际出包的那个。补打之前要由产品所有者逐个核对，确认不了的版本宁可不补，也不要打一个指向错误 commit 的 tag。
