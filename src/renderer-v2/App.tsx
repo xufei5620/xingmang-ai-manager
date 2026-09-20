@@ -13,7 +13,7 @@ import { createToolsApi } from './features/tools/api'
 import { chineseRuntimePatchAnswerMissing, shouldAskForChineseRuntimePatch } from './features/tools/chinese-runtime-choice'
 import { cliRuntimeBlockMessage, nodeRuntimeReady } from './features/tools/runtime-readiness'
 import { isToolId, presentTools, providerFor, type ToolId } from './features/tools/model'
-import { useToolbox } from './features/tools/useToolbox'
+import { installedToolSyncLabel, useToolbox } from './features/tools/useToolbox'
 import { ManualUninstallDialog, type ManualUninstallState } from './features/tools/ManualUninstall'
 import { presentOperationError, type OperationActionId } from './operation-error'
 import { accountTabs } from './registry/business'
@@ -289,8 +289,14 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     const runtimeBlocked = id === 'codexDesktop' ? null : cliRuntimeBlockMessage(state.system.runtime)
     if (runtimeBlocked) throw new Error(runtimeBlocked)
     if (tools.find((tool) => tool.id === id)?.requires.includes('python') && (!state.system.runtime.python.installed || state.system.runtime.python.detectionFailed)) throw new Error('Gemini 还需要 Python 环境。请先在运行环境卡中准备 Python，再安装工具。')
-    await toolbox.run(id, version ? `正在安装 ${version}` : '正在安装', () => toolsApi.install(id, version))
-    await syncAfterToolInstalled(id)
+    // 收尾必须留在同一个安装任务里。任务一结束工具行就回落到安装前的快照：
+    // 同步 Key 和重新检测还没跑完，版本号已经退回旧值、「更新」按钮跟着回弹，
+    // 用户看到的是「装完了又要装一次」（yoyo 2026-09-20 真机反馈①）。
+    await toolbox.run(id, version ? `正在安装 ${version}` : '正在安装', async (report) => {
+      await toolsApi.install(id, version)
+      report(installedToolSyncLabel)
+      await syncAfterToolInstalled(id)
+    })
   }
   /**
    * 装完一个工具要做两件收尾：把账号 Key 写进刚装好的工具，再刷新检测结果。
