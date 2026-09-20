@@ -435,12 +435,30 @@ test('the Windows packaging job runs every smoke that has no other home', () => 
   }
 })
 
-// Wiring this one would pin CI to an expectation the product contradicts: it
-// asserts the window zoom equals contentWidth / 1280 down to 960, but
-// calculateUiZoom clamps at UI_MIN_ZOOM = 0.8. Keep it out until the script is
-// reconciled with that clamp, so nobody re-adds it from the T-G5 list alone.
-test('the native renderer smoke stays out of CI while its zoom expectation is stale', () => {
-  assert.ok(!runSteps('windows-package').includes('node e2e/renderer-v2-native.mjs'))
+// T-G5: these two were the last never-wired smokes. The first used to pin CI to
+// an expectation the product contradicts — it read the zoom floor off
+// window-preferences.ts (0.8) while the window that actually receives the zoom
+// is driven by platform/renderer-v2.ts (0.7) — and both used to assume a desktop
+// big enough that resolveWindowPlacement would not maximize the window. Both are
+// reconciled now, so the gate flips: they must run, after the compile they need,
+// each under its own step bound.
+test('both native renderer smokes run in CI once the application is compiled', () => {
+  const commands = runSteps('windows-package')
+  const packageSteps = workflow.jobs['windows-package'].steps
+  const compileIndex = commands.indexOf('npm run compile')
+
+  assert.notEqual(compileIndex, -1)
+  for (const smoke of [
+    'node e2e/renderer-v2-native.mjs',
+    'node e2e/renderer-v2-native-close-race.mjs',
+  ]) {
+    const index = commands.indexOf(smoke)
+    assert.notEqual(index, -1, `${smoke} must run somewhere in CI`)
+    assert.ok(index > compileIndex, `${smoke} needs the compiled application`)
+    const step = packageSteps.find((entry) => entry.run === smoke)
+
+    assert.ok(step['timeout-minutes'] > 0, `${smoke} must carry its own step bound`)
+  }
 })
 
 test('the Windows job packages and exercises a hardened non-publishing build', () => {
@@ -641,7 +659,16 @@ test('quality checks cannot publish a release', () => {
   assert.doesNotMatch(serialized, /gh release|create-release|dist:mac:free|release:build/i)
 })
 
-const playwrightElectronSmokes = ['e2e/electron-ci-smoke.mjs', 'e2e/window-close-smoke.mjs', 'e2e/realm-account-smoke.mjs']
+// T-G5: the last two entries were written, documented and never wired; they
+// join this list the moment they run in CI, because an unbounded wait inside a
+// Playwright Electron smoke is what #131 and #133 cost a whole job.
+const playwrightElectronSmokes = [
+  'e2e/electron-ci-smoke.mjs',
+  'e2e/window-close-smoke.mjs',
+  'e2e/realm-account-smoke.mjs',
+  'e2e/renderer-v2-native.mjs',
+  'e2e/renderer-v2-native-close-race.mjs',
+]
 
 test('a Playwright Electron smoke can never consume a whole job again', () => {
   // #131 and #133: a wedged Electron made the close smoke run for ten minutes
