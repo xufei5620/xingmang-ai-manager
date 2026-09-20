@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { AccelerationApi, AccelerationMode, AccelerationRedemptionResult, AccelerationState } from './acceleration-contract'
-import { accelerationBonusCode, accelerationBonusSeconds, accelerationTrialSeconds } from './acceleration-contract'
+import { accelerationBonusCode, accelerationBonusSeconds, accelerationConflictNotice, accelerationTrialSeconds } from './acceleration-contract'
 import { createAccelerationService } from './acceleration-service'
 
 const scope = 'xm-account:42'
@@ -218,11 +218,36 @@ describe('acceleration-service', () => {
     { phase: 'exhausted', remainingSeconds: 1 }, { error: 'password=top-secret' },
     { line: { id: 'jp', name: 'https://user:pass@node.example', region: '日本', latencyMs: 5 } },
     { line: { id: 'jp', name: '东京', region: '日本', latencyMs: Number.NaN } },
+    { conflicts: [] }, { conflicts: 'system-proxy' }, { conflicts: ['vpn'] },
+    { conflicts: ['system-proxy', 'system-proxy'] },
   ])('rejects malformed or unsafe backend data: %j', async (invalidFields) => {
     const backend = createBackend()
     vi.mocked(backend.getAccelerationState).mockResolvedValue({ ...state(), ...invalidFields } as AccelerationState)
     const service = createAccelerationService({ getAccountScope: () => scope, backend })
     await expect(service.getAccelerationState(scope)).rejects.toThrow('加速服务暂不可用')
+  })
+
+  it('projects a conflict refusal and forwards the user override to the backend', async () => {
+    const backend = createBackend()
+    const refusal = state({ phase: 'error', error: accelerationConflictNotice, conflicts: ['system-proxy', 'virtual-adapter'] })
+    vi.mocked(backend.startAcceleration).mockResolvedValueOnce(refusal)
+    const service = createAccelerationService({ getAccountScope: () => scope, backend })
+    const blocked = await service.startAcceleration(scope, 'system-proxy')
+    expect(blocked).toEqual(refusal)
+    expect(blocked.conflicts).not.toBe(refusal.conflicts)
+    expect(backend.startAcceleration).toHaveBeenLastCalledWith(scope, 'system-proxy', undefined, undefined)
+
+    const retried = await service.startAcceleration(scope, 'system-proxy', undefined, true)
+    expect(retried.phase).toBe('active')
+    expect(backend.startAcceleration).toHaveBeenLastCalledWith(scope, 'system-proxy', undefined, true)
+  })
+
+  it('rejects a non-boolean override without reaching the backend', async () => {
+    const backend = createBackend()
+    const service = createAccelerationService({ getAccountScope: () => scope, backend })
+    await expect(service.startAcceleration(scope, 'system-proxy', undefined, 'yes' as unknown as boolean))
+      .rejects.toThrow('加速冲突确认参数无效。')
+    expect(backend.startAcceleration).not.toHaveBeenCalled()
   })
 
   it('does not leak backend exception text', async () => {

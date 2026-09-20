@@ -1,7 +1,7 @@
 import path from 'node:path'
 import { performance } from 'node:perf_hooks'
-import type { AccelerationApi, AccelerationLine, AccelerationRedemptionResult, AccelerationState } from './acceleration-contract'
-import { accelerationBonusSeconds, accelerationTrialSeconds, isAccelerationBonusCode } from './acceleration-contract'
+import type { AccelerationApi, AccelerationConflictKind, AccelerationLine, AccelerationRedemptionResult, AccelerationState } from './acceleration-contract'
+import { accelerationBonusSeconds, accelerationConflictNotice, accelerationTrialSeconds, isAccelerationBonusCode } from './acceleration-contract'
 import { ensureSafeDataDirectory, readSafeUtf8File, writeAtomicSafeUtf8File } from './safe-local-data'
 
 export type AccelerationStopFailureStage = 'proxy-restore' | 'core-stop' | 'ledger-write'
@@ -51,6 +51,12 @@ export interface AccelerationDevelopmentBackendOptions {
    *  a failed start left no trace at all: it resolves with an error-carrying
    *  state instead of rejecting, so the IPC layer above logged it as a success. */
   onStartDiagnostic?: (stage: AccelerationStartFailureStage) => void
+  /** Read-only look at who else holds the OS proxy before a connect touches it.
+   *  Omitted by hosts that cannot inspect the platform, which keeps the start
+   *  path exactly as it was before this check existed. */
+  detectConflicts?: () => Promise<AccelerationConflictKind[]>
+  /** Both the finding and what the user decided about it, one call per kind. */
+  onConflictDiagnostic?: (kind: AccelerationConflictKind, ignored: boolean) => void
 }
 
 export interface AccelerationDevelopmentBackend extends AccelerationApi {
@@ -171,6 +177,7 @@ export function createAccelerationDevelopmentBackend(options: AccelerationDevelo
   let disposed = false
   let probeNeedsCleanup = false
   const lastErrors = new Map<string, string>()
+  const lastConflicts = new Map<string, AccelerationConflictKind[]>()
   const lastSessionSeconds = new Map<string, number>()
 
   function enqueue<T>(operation: () => Promise<T>): Promise<T> {
@@ -249,6 +256,7 @@ export function createAccelerationDevelopmentBackend(options: AccelerationDevelo
     const spent = current ? elapsed(current) : needsRecovery && entry.startedAt !== null ? crashElapsed(entry.startedAt, totalMs) : 0
     const remainingMs = Math.max(0, totalMs - entry.usedMs - spent)
     const error = current?.error ?? recoveryError ?? lastErrors.get(scope) ?? null
+    const conflicts = current ? [] : lastConflicts.get(scope) ?? []
     const pendingRecovery = needsRecovery && entry.startedAt !== null
     const phase = current ? current.phase === 'active' && remainingMs === 0 ? 'stopping' : current.phase
       : pendingRecovery ? 'stopping' : remainingMs === 0 ? 'exhausted' : error ? 'error' : 'idle'
@@ -260,6 +268,7 @@ export function createAccelerationDevelopmentBackend(options: AccelerationDevelo
       connectedAt: current?.connectedAt ?? (pendingRecovery ? new Date(entry.startedAt!).toISOString() : null),
       line: current?.line ?? null, error,
       entitlementSource, supportedModes: ['system-proxy'],
+      ...(conflicts.length ? { conflicts } : {}),
     }
     return result
   }
@@ -273,6 +282,25 @@ export function createAccelerationDevelopmentBackend(options: AccelerationDevelo
   function reportStartFailure(error: unknown, phase: AccelerationStartFailurePhase) {
     try { options.onStartDiagnostic?.(classifyAccelerationStartFailure(error, phase)) }
     catch { /* Reporting must not change recovery behavior. */ }
+  }
+  /** Runs before any OS state is touched, so a refused start costs no time and
+   *  leaves nothing to undo. A detector that cannot read the platform reports
+   *  nothing, which is the pre-check behavior. */
+  async function detectConflicts(scope: string, ignore: boolean): Promise<boolean> {
+    if (!options.detectConflicts) return false
+    let conflicts: AccelerationConflictKind[] = []
+    try { conflicts = await options.detectConflicts() }
+    catch { return false }
+    lastConflicts.delete(scope)
+    if (!conflicts.length) return false
+    for (const kind of conflicts) {
+      try { options.onConflictDiagnostic?.(kind, ignore) }
+      catch { /* Reporting must not change what the user asked for. */ }
+    }
+    if (ignore) return false
+    lastConflicts.set(scope, conflicts)
+    lastErrors.set(scope, accelerationConflictNotice)
+    return true
   }
   function arm(milliseconds: number) {
     clearTimer()
@@ -322,6 +350,7 @@ export function createAccelerationDevelopmentBackend(options: AccelerationDevelo
         { usedMs: Math.min(totalMs, usage(current.scope).usedMs + spent), startedAt: null }))
       lastSessionSeconds.set(current.scope, Math.min(totalMs / 1000, Math.floor(spent / 1000)))
       lastErrors.delete(current.scope)
+      lastConflicts.delete(current.scope)
       session = null
     } catch {
       current.error = stopFailure
@@ -370,9 +399,10 @@ export function createAccelerationDevelopmentBackend(options: AccelerationDevelo
         return { status: 'redeemed', addedSeconds: accelerationBonusSeconds, state: state(scope) }
       })
     },
-    startAcceleration(scope, mode, lineId) {
+    startAcceleration(scope, mode, lineId, ignoreConflicts) {
       assertScope(scope)
       if (lineId !== undefined) assertLineId(lineId)
+      if (ignoreConflicts !== undefined && typeof ignoreConflicts !== 'boolean') throw new Error('加速冲突确认参数无效。')
       return enqueue(async () => {
         if (closing || disposed) throw new Error('本机加速服务正在关闭。')
         if (mode !== 'system-proxy') throw new Error('本机开发加速暂不支持 TUN，请关闭 TUN 后重试。')
@@ -383,7 +413,9 @@ export function createAccelerationDevelopmentBackend(options: AccelerationDevelo
           try { await stopSession() } catch { throw new Error(stopFailure) }
         }
         lastErrors.delete(scope)
+        lastConflicts.delete(scope)
         if (usage(scope).usedMs >= accountTotalMs(usage(scope))) return state(scope)
+        if (await detectConflicts(scope, ignoreConflicts === true)) return state(scope)
         // Persist intent before touching OS state. A crash in the startup gap
         // is conservatively billed; an ordinary failed start clears it unpaid.
         try { await saveAccount(scope, { usedMs: usage(scope).usedMs, startedAt: now() }) }
@@ -460,6 +492,7 @@ export function createAccelerationDevelopmentBackend(options: AccelerationDevelo
         } else {
           if (probeNeedsCleanup) await stopSession()
           lastErrors.delete(scope)
+          lastConflicts.delete(scope)
         }
         return state(scope)
       })

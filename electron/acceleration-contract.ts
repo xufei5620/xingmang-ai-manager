@@ -10,6 +10,30 @@ export function isAccelerationBonusCode(value: unknown): value is string {
 export type AccelerationPhase = 'unavailable' | 'idle' | 'connecting' | 'active' | 'stopping' | 'exhausted' | 'error'
 export type AccelerationMode = 'system-proxy' | 'tun'
 
+/**
+ * Acceleration only takes over the OS proxy setting, so anything else holding
+ * that setting -- another proxy client, a PAC script, a VPN with its own
+ * virtual adapter -- decides where traffic actually goes once both are on. A
+ * closed set rather than free text: the host reports what it found and the
+ * renderer owns the wording, so a detection detail can never reach the screen
+ * or the log as arbitrary text (I13).
+ */
+export const accelerationConflictKinds = ['system-proxy', 'proxy-auto-config', 'virtual-adapter'] as const
+export type AccelerationConflictKind = (typeof accelerationConflictKinds)[number]
+
+export const accelerationConflictDescriptions: Record<AccelerationConflictKind, string> = {
+  'system-proxy': '系统代理已被其他程序设置',
+  'proxy-auto-config': '系统正在使用自动代理脚本',
+  'virtual-adapter': '检测到 VPN 虚拟网卡',
+}
+
+/** One sentence for every combination: the user's next step is the same. */
+export const accelerationConflictNotice = '检测到其他代理或 VPN 正在运行，可能与加速互相干扰，建议先关闭后再连接。'
+
+export function isAccelerationConflictKind(value: unknown): value is AccelerationConflictKind {
+  return accelerationConflictKinds.some((kind) => kind === value)
+}
+
 export interface AccelerationLine {
   id: string
   name: string
@@ -31,11 +55,14 @@ export interface AccelerationState {
   connectedAt: string | null
   line: AccelerationLine | null
   error: string | null
+  /** Present only when a start was refused for a conflict the user can override. */
+  conflicts?: AccelerationConflictKind[]
 }
 
 export interface AccelerationApi {
   getAccelerationState(scope: string): Promise<AccelerationState>
-  startAcceleration(scope: string, mode: AccelerationMode, lineId?: string): Promise<AccelerationState>
+  /** `ignoreConflicts` is the user answering the conflict warning with 仍然连接. */
+  startAcceleration(scope: string, mode: AccelerationMode, lineId?: string, ignoreConflicts?: boolean): Promise<AccelerationState>
   stopAcceleration(scope: string): Promise<AccelerationState>
   /** A fixed promotion, claimed once per account in the device-local ledger. */
   redeemAccelerationCode?(scope: string, code: string): Promise<AccelerationRedemptionResult>

@@ -14,7 +14,7 @@ export interface AccelerationController {
   setScope(scope: string | null): void
   setVisible(visible: boolean): void
   refresh(): Promise<void>
-  start(lineId?: string): Promise<void>
+  start(lineId?: string, ignoreConflicts?: boolean): Promise<void>
   stop(): Promise<void>
   redeem(code: string): Promise<AccelerationRedemptionResult | null>
   setMode(mode: AccelerationMode): void
@@ -169,7 +169,7 @@ export function createAccelerationController(api: AccelerationApi, { now = () =>
     return flight.promise
   }
 
-  function run(kind: 'start' | 'stop', lineId?: string): Promise<void> {
+  function run(kind: 'start' | 'stop', lineId?: string, ignoreConflicts?: boolean): Promise<void> {
     if (disposed || !scope) return Promise.resolve()
     if (mutation) return mutation.promise
     if (!source || (kind === 'start' && (connected(source) || source.phase === 'connecting' || source.phase === 'unavailable' || source.remainingSeconds === null || source.remainingSeconds <= 0))
@@ -195,7 +195,9 @@ export function createAccelerationController(api: AccelerationApi, { now = () =>
       if (!current()) return
       try {
         const state = kind === 'start'
-          ? lineId === undefined ? await api.startAcceleration(requestScope, mode) : await api.startAcceleration(requestScope, mode, lineId)
+          ? ignoreConflicts === undefined
+            ? lineId === undefined ? await api.startAcceleration(requestScope, mode) : await api.startAcceleration(requestScope, mode, lineId)
+            : await api.startAcceleration(requestScope, mode, lineId, ignoreConflicts)
           : await api.stopAcceleration(requestScope)
         if (current()) accept(state)
       } catch (cause) {
@@ -217,7 +219,7 @@ export function createAccelerationController(api: AccelerationApi, { now = () =>
     return flight.promise
   }
 
-  function start(lineId?: string) { return run('start', lineId) }
+  function start(lineId?: string, ignoreConflicts?: boolean) { return run('start', lineId, ignoreConflicts) }
   function stop() { return run('stop') }
 
   function redeem(code: string): Promise<AccelerationRedemptionResult | null> {

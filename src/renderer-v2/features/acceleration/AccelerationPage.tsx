@@ -12,6 +12,7 @@ export function AccelerationPage({ connection, scope, onLogin, onHelp, preview =
   return <AccelerationView state={snapshot.state} busy={snapshot.busy} error={snapshot.error}
     signedIn={scope !== null} mode={snapshot.mode} onModeChange={setMode}
     lines={lines} selectedLineId={selectedLineId} linesBusy={linesBusy} linesError={linesError} onSelectLine={setSelectedLineId} onPingLine={pingLine} onRefreshLines={() => { void refreshLines() }}
-    onStart={() => { void start(selectedLineId ?? undefined) }} onStop={() => { void stop() }} onRefresh={() => { void refresh() }}
+    onStart={() => { void start(selectedLineId ?? undefined) }} onStartAnyway={() => { void start(selectedLineId ?? undefined, true) }}
+    onStop={() => { void stop() }} onRefresh={() => { void refresh() }}
     onLogin={onLogin} onHelp={onHelp} preview={preview} />
 }

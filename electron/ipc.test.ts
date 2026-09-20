@@ -398,6 +398,10 @@ describe('registerIpcHandlers', () => {
     await stop(trustedEvent(), 'xm-account:7')
     expect(acceleration.startAcceleration).toHaveBeenCalledWith('xm-account:7', 'tun')
     expect(acceleration.stopAcceleration).toHaveBeenCalledWith('xm-account:7')
+    // 「仍然连接」只能是布尔：这条参数代表用户对冲突提示做了决定。
+    expect(() => start(trustedEvent(), 'xm-account:7', 'tun', undefined, 'yes')).toThrow('加速冲突确认参数无效')
+    await start(trustedEvent(), 'xm-account:7', 'system-proxy', 'jp-01', true)
+    expect(acceleration.startAcceleration).toHaveBeenLastCalledWith('xm-account:7', 'system-proxy', 'jp-01', true)
   })
 
   it('routes a fixed acceleration redemption through trusted IPC without logging the hidden code', async () => {

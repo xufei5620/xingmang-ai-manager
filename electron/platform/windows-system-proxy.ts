@@ -343,6 +343,7 @@ export function createWindowsSystemProxy(options: WindowsSystemProxyOptions): {
   enable(port: number): Promise<void>
   restore(): Promise<void>
   recover(): Promise<void>
+  inspect(): Promise<WindowsProxySnapshot>
 } {
   if (!path.isAbsolute(options.journalPath)) throw new Error('系统代理恢复记录必须使用绝对路径。')
   const journalPath = path.resolve(options.journalPath)
@@ -493,5 +494,12 @@ export function createWindowsSystemProxy(options: WindowsSystemProxyOptions): {
     },
     restore: () => serialized(() => restorePending(false)),
     recover: () => serialized(() => restorePending(true)),
+    /** Read-only, so it takes neither the operation queue nor the OS mutex: a
+     *  reading is a point in time either way, and blocking a look behind a
+     *  running enable/restore would only make it staler. */
+    async inspect() {
+      if (platformCapabilitiesFor(options.platform ?? process.platform).platform !== 'windows') throw new Error('当前系统暂不支持此系统代理模式。')
+      return parseWindowsProxySnapshot((await invoke({ operation: 'inspect', pid: process.pid })).snapshot)
+    },
   }
 }

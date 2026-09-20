@@ -1,6 +1,7 @@
 import path from 'node:path'
 import { accelerationDevelopmentDirectory, parseAccelerationDevelopmentConfig, parseAccelerationEntitlementSource } from './acceleration-development-host'
 import { createAccelerationDevelopmentBackend } from './acceleration-development-backend'
+import { createAccelerationConflictDetector } from './acceleration-conflict'
 import { accelerationLinesFromProfile, createMihomoRuntime } from './acceleration-mihomo-runtime'
 import { createWindowsSystemProxy } from './platform/windows-system-proxy'
 import { createMacosSystemProxy } from './platform/macos-system-proxy'
@@ -42,7 +43,9 @@ async function initialize(message: Record<string, unknown>): Promise<void> {
       `macos-system-proxy-${process.arch}`),
     })
     : null
-  const proxy = macProxy ?? createWindowsSystemProxy({ journalPath })
+  const windowsProxy = macProxy ? null : createWindowsSystemProxy({ journalPath })
+  const proxy = macProxy ?? windowsProxy
+  if (!proxy) throw new Error('开发加速进程初始化无效。')
   if (macProxy) disposeProxy = () => macProxy.dispose()
   pendingProxyRecovery = () => proxy.recover()
   try { await proxy.recover() } catch (error) {
@@ -56,6 +59,11 @@ async function initialize(message: Record<string, unknown>): Promise<void> {
     onUnexpectedExit: () => { void backend?.notifyRuntimeExit().catch(() => undefined) },
   })
   let anotherOwnerDuringInitialization = false
+  // Read-only: it looks at who already holds the OS proxy, never writes it.
+  const conflicts = createAccelerationConflictDetector({
+    platform: process.platform,
+    ...(windowsProxy ? { inspectWindowsProxy: () => windowsProxy.inspect() } : {}),
+  })
   backend = createAccelerationDevelopmentBackend({
     ledgerPath: path.join(directory, 'trial-ledger.json'),
     entitlementSource,
@@ -64,6 +72,10 @@ async function initialize(message: Record<string, unknown>): Promise<void> {
     },
     onStartDiagnostic: (stage) => {
       if (process.connected) process.send?.({ type: 'acceleration-diagnostic', event: 'start.failed', stage }, () => undefined)
+    },
+    detectConflicts: () => conflicts.read(),
+    onConflictDiagnostic: (stage, ignored) => {
+      if (process.connected) process.send?.({ type: 'acceleration-diagnostic', event: 'start.conflict', stage, ignored }, () => undefined)
     },
     proxy: {
       enable: (port) => proxy.enable(port),
@@ -128,7 +140,8 @@ async function handle(message: unknown): Promise<unknown> {
     return backend.redeemAccelerationCode?.(request.scope, request.code)
   }
   if (request.operation === 'start' && (request.mode === 'system-proxy' || request.mode === 'tun')) {
-    return backend.startAcceleration(request.scope, request.mode, typeof request.lineId === 'string' ? request.lineId : undefined)
+    return backend.startAcceleration(request.scope, request.mode,
+      typeof request.lineId === 'string' ? request.lineId : undefined, request.ignoreConflicts === true)
   }
   throw new Error('开发加速操作无效。')
 }
