@@ -31,6 +31,8 @@ describe('acceleration conflict notice', () => {
     expect(markup).toContain('data-testid="acceleration-conflict"')
     expect(markup).toContain(accelerationConflictNotice)
     expect(markup).toContain('系统代理已被其他程序设置；检测到 VPN 虚拟网卡')
+    // 重新检测靠主按钮走一次完整的连接请求，这里不放一个只会重读缓存状态的按钮。
+    expect(markup).toContain('关掉之后再点「开始加速」会重新检测')
     expect(markup).toContain('data-testid="acceleration-conflict-force"')
     expect(markup).toContain('仍然连接')
     // 开始加速仍然可用：冲突是提醒，不是把入口关掉。

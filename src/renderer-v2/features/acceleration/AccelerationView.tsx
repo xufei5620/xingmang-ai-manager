@@ -128,9 +128,8 @@ export function AccelerationView({ state, mode, busy, signedIn, error, preview, 
       <ShieldAlert size={16} aria-hidden="true" />
       <div className="acceleration-conflict-text">
         <strong>{accelerationConflictNotice}</strong>
-        <span>{conflicts.map(kind => accelerationConflictDescriptions[kind]).join('；')}</span>
+        <span>{conflicts.map(kind => accelerationConflictDescriptions[kind]).join('；')}。关掉之后再点「开始加速」会重新检测。</span>
       </div>
-      <Button variant="ghost" size="sm" icon={RefreshCw} onClick={onRefresh} disabled={busy} testId="acceleration-conflict-recheck">重新检查</Button>
       <Button variant="secondary" size="sm" icon={Power} onClick={onStartAnyway} disabled={actionDisabled} testId="acceleration-conflict-force">仍然连接</Button>
     </div>}
 
