@@ -267,6 +267,46 @@ git tag -a v0.2.6 43e09af -m "0.2.6"
 git push origin v0.2.6
 ```
 
+### CI 发布
+
+上面第 1~7 步都可以交给 `.github/workflows/publish-release.yml` 做，只有「在真机上装一遍验收」搬不走。手工路径没有作废，两条都能用。
+
+工作流在 Actions 页面选 **publish-release**，点 Run workflow，填两项：
+
+- **要发布的版本号**：必须与 `package.json` 完全一致，对不上直接失败（防误发）。
+- **这次发布哪些平台的包**：`both` / `windows` / `macos`。
+
+然后它会：出 Windows 包（走 `release:build:unsigned` 的完整发布门禁，带私有加速线路）→ 出 macOS 双架构包（用已发布的那张签名证书，见 2.2）→ **先传安装包与 blockmap → 逐字节复核能从客户会用的地址下载下来 → 最后才覆盖 `latest.yml` / `latest-mac.yml`** → 两个平台各跑一次 `update:verify-feed` → 给出包的 commit 打 tag、建 GitHub Release。
+
+这个顺序是发布正确性的一部分，不是风格问题：清单先落地，用户会在安装包还没传完时就被告知有新版本，点下载拿到 404。`scripts/publish-workflow-config.test.cjs` 把它钉住了。
+
+**一次发布要批准两次。** 读 `.p12` 的 macOS 出包作业和上传的 publish 作业都挂 `environment: release`，运行会各停一次等你按 Approve。第一次批准之后什么都还没有对外发生，产物只躺在 Actions artifact 里——把包下下来装机验收，过了再批第二次。这两下就是本节开头说的「明确发布授权」。
+
+#### release 环境要先配好
+
+**这不是可选的加固。** 环境不存在时 GitHub 会在首次运行时自动建一个同名环境，而自动建出来的环境**没有任何保护规则**，上面那两次批准就都不存在了。
+
+在仓库 **Settings → Environments → release** 里：
+
+1. 打开 **Required reviewers**，把自己加进去。
+2. **Deployment branches** 限制为 `main`。
+3. 加下面八个 secret。**必须放环境级，不要放仓库级**：`workflow_dispatch` 可以指定任意分支，仓库级 secret 对任意分支可见。
+
+| Secret | 是什么 | 谁用 |
+|---|---|---|
+| `CSC_NAME` | 签名身份名，即证书的 Common Name | macOS 出包 |
+| `XINGMANG_MAC_SIGNING_P12_BASE64` | 发布签名证书（含私钥）导出的 `.p12`，base64 | macOS 出包 |
+| `XINGMANG_MAC_SIGNING_P12_PASSWORD` | 上面那个 `.p12` 的密码 | macOS 出包 |
+| `XINGMANG_MAC_SIGNING_SHA256` | 该证书的 SHA-256 指纹（不是机密，但要和上面成套；格式见 2.2） | macOS 出包 |
+| `R2_ACCOUNT_ID` | R2 账号 ID，拼 S3 端点用 | 上传 |
+| `R2_BUCKET` | 桶名 | 上传 |
+| `R2_ACCESS_KEY_ID` | R2 凭据 | 上传 |
+| `R2_SECRET_ACCESS_KEY` | R2 凭据 | 上传 |
+
+R2 凭据的**权限只给 `xingmang-manager/` 前缀的写入**，不要给整桶、不要给删除。
+
+`.p12` 只能从钥匙串里导出、用 GitHub 的 secret 输入框直接粘，**不要经过任何聊天、工单或邮件**：那份私钥泄露等于别人能签出一个客户端会当成「同一发布者」的更新包。`XINGMANG_MAC_SIGNING_SHA256` 填的必须是 2.2 里登记的那张已发布证书的指纹，换一张证书会在签名预检那一步直接失败。
+
 ### Codex Desktop 国内镜像
 
 管理工具使用 OpenAI 官方清单判断最新商店版本，并通过以下固定国内镜像读取可下载版本和 MSIX：
