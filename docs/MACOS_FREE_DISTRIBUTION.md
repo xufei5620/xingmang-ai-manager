@@ -67,9 +67,15 @@ P12 丢失、泄露或替换都会中断更新连续性；即使新证书名称�
 
 ### 证书轮换（有效期十年）
 
-生成器签发的证书有效期为十年，且是不能签发下级证书的终端证书（`basicConstraints=critical,CA:FALSE`、`keyUsage=critical,digitalSignature`）。这三条都是发布门禁会校验的硬性条件：`npm run dist:mac:free` 的签名预检读取证书文本，发现它是 CA、`keyUsage` 里带 `Certificate Sign`／`CRL Sign`、`basicConstraints` 不是 critical 的 `CA:FALSE`，或者有效期超过 3650 天，都会直接失败。早期版本的生成器签发的是 20 年期、`CA:TRUE` 且带 `keyCertSign` 的证书；那种证书被发布 Mac 标记为代码签名可信之后，拿到 P12 的人就能在那台机器上继续签发链到可信锚的证书。手上还留着这种旧证书的，必须重新生成后再发布。
+生成器签发的证书有效期为十年，且是不能签发下级证书的终端证书（`basicConstraints=critical,CA:FALSE`、`keyUsage=critical,digitalSignature`）。这三条都是发布门禁会校验的硬性条件：`npm run dist:mac:free` 的签名预检读取证书文本，发现它是 CA、`keyUsage` 里带 `Certificate Sign`／`CRL Sign`、`basicConstraints` 不是 critical 的 `CA:FALSE`，或者有效期超过 3650 天，都会直接失败。早期版本的生成器签发的是 20 年期、`CA:TRUE` 且带 `keyCertSign` 的证书；那种证书被发布 Mac 标记为代码签名可信之后，拿到 P12 的人就能在那台机器上继续签发链到可信锚的证书。
+
+**本项目已发布的那张证书就是这种旧证书，并且 2026-09-20 产品所有者决定继续用它、不轮换。** 换证书会让所有已装正式 Mac 包的客户失去自动更新（下载完成后在「重启并安装」那一刻被 Squirrel.Mac 拒绝），这个代价被判定高于旧 profile 带来的风险。具体口径、台账文件和豁免边界见 [发布手册 2.2](RELEASING.md)：把这张证书的 SHA-256 登记进 `scripts/macos-published-signing-identity.cjs` 之后，预检只对它放宽 `CA:TRUE`、`keyCertSign` 与有效期三条，其余检查一条都不放松；同一个台账还会拦住「这次发布用的证书和上一版不是同一张」。
 
 **不要为了“定期轮换”去换证书。** 换证书必然中断 Squirrel.Mac 的更新连续性：老用户的自动更新会拒绝新版本（失败方向是安全的），每个人都要手动重装一次。只有两种情况才轮换——证书临近到期，或者私钥确认泄露（P12 或其备份落到别人手里、发布 Mac 失窃或被入侵）。私钥泄露时立刻轮换，不要等到期。
+
+轮换时除了下面的步骤，还要更新 `scripts/macos-published-signing-identity.cjs`：把
+`PUBLISHED_CERTIFICATE_SHA256` 换成新证书的指纹，并把
+`LEGACY_PROFILE_EXEMPT_CERTIFICATE_SHA256` 清空（新证书是严格 profile，不需要豁免）。
 
 轮换步骤：
 

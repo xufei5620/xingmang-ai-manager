@@ -3,6 +3,11 @@ const os = require('node:os')
 const path = require('node:path')
 const { X509Certificate } = require('node:crypto')
 const { spawnSync } = require('node:child_process')
+const {
+  LEGACY_PROFILE_MAX_VALIDITY_DAYS,
+  assertPublishedSigningCertificate,
+  isLegacyProfileExemptCertificate,
+} = require('./macos-published-signing-identity.cjs')
 
 const OPENSSL_PATH = '/usr/bin/openssl'
 const SECURITY_PATH = '/usr/bin/security'
@@ -102,15 +107,25 @@ function hasExclusiveCriticalCodeSigningEku(certificateText) {
  * needs the signing certificate to be a CA, so the release gate refuses one
  * outright rather than relying on the generator having produced the right
  * profile. */
-function assertNonIssuingSigningCertificate(certificateText) {
+function assertNonIssuingSigningCertificate(certificateText, legacyProfileExempt = false) {
   const basicConstraints = criticalExtensionValues(certificateText, 'Basic Constraints')
-  if (basicConstraints === null || basicConstraints.length !== 1 ||
-    !/^CA:FALSE$/i.test(basicConstraints[0])) {
+  const isCertificateAuthority = basicConstraints !== null &&
+    basicConstraints.some((value) => /^CA:TRUE$/i.test(value))
+  // 豁免只认旧生成器那一种 profile：CA:TRUE 配 pathlen:0，不是「带 CA:TRUE 就放行」。
+  const legacyBasicConstraints = legacyProfileExempt && isCertificateAuthority &&
+    basicConstraints.length === 2 && /^pathlen:0$/i.test(basicConstraints[1])
+  if (!legacyBasicConstraints && (basicConstraints === null || basicConstraints.length !== 1 ||
+    !/^CA:FALSE$/i.test(basicConstraints[0]))) {
     fail('证书必须带 critical 的 basicConstraints=CA:FALSE：发布签名证书不能是 CA，请用 npm run mac:free:create-certificate 重新生成')
   }
   const keyUsage = criticalExtensionValues(certificateText, 'Key Usage')
+  // keyCertSign 与 CA:TRUE 是同一个缺陷的两半，所以豁免只在放行了 CA:TRUE 之后
+  // 才一并放行它，而且 CRL Sign 任何时候都不放行。
+  const forbiddenKeyUsage = legacyBasicConstraints
+    ? /^CRL Sign$/i
+    : /^(?:Certificate Sign|CRL Sign)$/i
   if (keyUsage === null || !keyUsage.some((value) => /^Digital Signature$/i.test(value)) ||
-    keyUsage.some((value) => /^(?:Certificate Sign|CRL Sign)$/i.test(value))) {
+    keyUsage.some((value) => forbiddenKeyUsage.test(value))) {
     fail('证书的 critical keyUsage 必须只授予签名用途，不能包含 Certificate Sign 或 CRL Sign，请重新生成证书')
   }
 }
@@ -204,6 +219,11 @@ function verifyFreeMacSigningIdentity(options = {}) {
     options.timeoutMs,
   )
   const verifySelfSignature = options.verifySelfSignature || verifyCertificateSelfSignature
+  // CI 的一次性签名身份每次都是新的，和已发布身份无关，所以连续性核对与旧证书
+  // 豁免都只作用在发布路径上。
+  const publishedIdentity = options.publishedIdentity !== false
+  const assertPublishedIdentity = options.assertPublishedIdentity || assertPublishedSigningCertificate
+  const isLegacyProfileExempt = options.isLegacyProfileExempt || isLegacyProfileExemptCertificate
   const now = options.now || new Date()
   const certificatePem = outputOf(runSecurity, ['find-certificate', '-c', identityName, '-p'])
   if (!certificatePem.includes('BEGIN CERTIFICATE')) fail('找不到 CSC_NAME 对应的证书')
@@ -216,6 +236,8 @@ function verifyFreeMacSigningIdentity(options = {}) {
       'x509', '-in', certificatePath, '-noout', '-fingerprint', '-sha256',
     ]), 'SHA256', '证书 SHA-256', 32)
     if (fingerprint !== expectedFingerprint) fail('证书指纹与 XINGMANG_MAC_SIGNING_SHA256 不一致')
+    if (publishedIdentity) assertPublishedIdentity(fingerprint, '本次发布使用的签名证书')
+    const legacyProfileExempt = publishedIdentity && isLegacyProfileExempt(fingerprint)
 
     const subjectIssuer = outputOf(runOpenSsl, ['x509', '-in', certificatePath, '-noout', '-subject', '-issuer'])
     if (certificateField(subjectIssuer, 'subject').replace(/\s+/g, '') !==
@@ -230,15 +252,16 @@ function verifyFreeMacSigningIdentity(options = {}) {
     if (Number.isNaN(notBefore.getTime()) || Number.isNaN(notAfter.getTime())) fail('证书有效期格式无效')
     if (notBefore > now) fail('证书尚未生效')
     if (notAfter <= now) fail('证书已经过期')
-    if (notAfter.getTime() - notBefore.getTime() > (MAX_VALIDITY_DAYS + 2) * DAY_MS) {
-      fail(`证书有效期不能超过 ${MAX_VALIDITY_DAYS} 天，请用 npm run mac:free:create-certificate 重新生成`)
+    const maximumValidityDays = legacyProfileExempt ? LEGACY_PROFILE_MAX_VALIDITY_DAYS : MAX_VALIDITY_DAYS
+    if (notAfter.getTime() - notBefore.getTime() > (maximumValidityDays + 2) * DAY_MS) {
+      fail(`证书有效期不能超过 ${maximumValidityDays} 天，请用 npm run mac:free:create-certificate 重新生成`)
     }
 
     const text = outputOf(runOpenSsl, ['x509', '-in', certificatePath, '-noout', '-text'])
     if (!hasExclusiveCriticalCodeSigningEku(text)) {
       fail('证书必须仅包含 critical codeSigning EKU')
     }
-    assertNonIssuingSigningCertificate(text)
+    assertNonIssuingSigningCertificate(text, legacyProfileExempt)
 
     const sha1 = fingerprintFromOpenSsl(outputOf(runOpenSsl, [
       'x509', '-in', certificatePath, '-noout', '-fingerprint', '-sha1',

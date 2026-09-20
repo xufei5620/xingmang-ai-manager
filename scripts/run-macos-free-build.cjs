@@ -401,6 +401,7 @@ async function runFreeMacBuild(options = {}) {
     identityName: build.identityName,
     expectedFingerprint: build.signingCertificateSha256,
     env: build.baseEnvironment,
+    publishedIdentity: !build.ephemeralSigning,
   })
 
   // The runner contract is "resolve on success, throw on failure": the default
@@ -474,6 +475,7 @@ async function runFreeMacBuild(options = {}) {
       signingCertificateSha256: build.signingCertificateSha256,
       expectedUpdateUrl: build.expectedUpdateUrl,
       env: build.baseEnvironment,
+      publishedIdentity: !build.ephemeralSigning,
     })
     return { ...artifacts, outputDirectory: build.outputDirectory }
   } catch (error) {

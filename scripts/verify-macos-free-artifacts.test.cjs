@@ -1491,3 +1491,36 @@ test('names the drifting identity fields when a private copy stops matching', as
     }),
   }), /已变更或被替换（(?:mtimeMs|ctimeMs) \d/)
 })
+
+test('refuses a release whose signing certificate is not the published one', async (t) => {
+  // Squirrel.Mac 只接受和已装应用同一张叶证书签出的更新，所以换证书 = 全部已装
+  // macOS 客户静默失去自动更新。期望指纹是发布时人工传进来的，以前没有任何东西
+  // 拿它跟上一版发布的身份对账。
+  const artifacts = createFreeArtifacts(t)
+  const seen = []
+  await assert.rejects(() => verifyMacosFreeArtifacts({
+    projectRoot: artifacts.projectRoot,
+    outputDirectory: artifacts.outputDirectory,
+    version: '1.2.3',
+    signingCertificateSha256: 'ab'.repeat(32),
+    assertPublishedIdentity: (fingerprint, label) => {
+      seen.push([fingerprint, label])
+      throw new Error('本次发布产物的签名证书与仓库登记的已发布签名证书不一致')
+    },
+    ...bothArtifactVerifiers(async (_artifactPath, architecture) => verifiedApplication(architecture)),
+  }), /已发布签名证书不一致/)
+  // 台账两边都会再规范化一次，所以大小写在这里不重要。
+  assert.deepEqual(seen, [['ab'.repeat(32), '本次发布产物的签名证书']])
+
+  // CI 的一次性签名身份和已发布身份无关，那条路径不做连续性核对。
+  const ciArtifacts = createFreeArtifacts(t)
+  await assert.doesNotReject(() => verifyMacosFreeArtifacts({
+    projectRoot: ciArtifacts.projectRoot,
+    outputDirectory: ciArtifacts.outputDirectory,
+    version: '1.2.3',
+    signingCertificateSha256: 'ab'.repeat(32),
+    publishedIdentity: false,
+    assertPublishedIdentity: () => { throw new Error('应当跳过') },
+    ...bothArtifactVerifiers(async (_artifactPath, architecture) => verifiedApplication(architecture)),
+  }))
+})

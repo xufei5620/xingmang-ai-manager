@@ -104,6 +104,52 @@ CI 的真实打包门禁（`--ci-temporary-signing`）不走这条路：runner �
 `scripts/macos-build-config.test.cjs` 的断言、`scripts/verify-macos-free-artifacts.cjs` 会按签名自己的
 `TeamIdentifier` 自动改判允许清单（不必改），并补 notarization。
 
+### 2.2 已发布的 macOS 签名身份不可更换
+
+macOS 的自动更新不是本程序自己校验的：`electron-updater` 只在 Windows 上校验安装包签名
+（`verifyUpdateCodeSignature` 只存在于它的 `NsisUpdater`），macOS 那一侧它把下载好的 ZIP 通过本地
+代理交给系统的 Squirrel.Mac，由 Squirrel 拿**已装应用的指定要求**去验候选更新。本程序包的指定要求是
+`identifier "com.xingmang.ai.manager" and certificate leaf = H"<签名证书 SHA-1>"`
+（见 `scripts/verify-macos-free-artifacts.cjs` 的 `parseDesignatedRequirement`），叶证书哈希直接钉在
+里面。
+
+所以**换一张签名证书，所有已经装了正式 Mac 包的客户都会失去自动更新**：包能下载完，点「重启并安装」
+那一刻被 Squirrel 拒绝，之后每 3 小时重试一次、一直失败，只能每人手动重新下载安装一次。
+
+`scripts/macos-published-signing-identity.cjs` 是已发布签名身份的台账：
+
+- `PUBLISHED_CERTIFICATE_SHA256` 记着已发布的那张证书的 SHA-256。签名预检和产物校验都会拿本次发布
+  用的证书跟它对账，不一致直接失败。登记之前（值为空）不拦，**发布 macOS 正式版之前必须登记**。
+  指纹不是秘密，在发布 Mac 上读出来即可，两条命令分别粘贴执行：
+
+  ```bash
+  security find-identity -p codesigning -v
+  ```
+
+  ```bash
+  security find-certificate -c "<上一条列出的身份名>" -p | openssl x509 -noout -fingerprint -sha256
+  ```
+
+  两种格式都认，大小写不限：64 位连写（`aabbcc…`）或冒号分隔（`AA:BB:CC:…`）。台账这一项还接受把命令
+  输出整行粘进去（`SHA256 Fingerprint=AA:BB:…`）。**发布时的环境变量 `XINGMANG_MAC_SIGNING_SHA256`
+  只接受前两种，不要带 `SHA256 Fingerprint=` 前缀。** 格式不对会在 `npm test` 或发布预检里直接报错，
+  不会被当成「指纹不匹配」。
+
+- `LEGACY_PROFILE_EXEMPT_CERTIFICATE_SHA256` 是**有意接受的一条风险**。2026-09-20 产品所有者拍板
+  继续使用已发布的那张旧自签证书，不轮换，理由就是上面那条更新连续性。那张证书由 #201 之前的生成器
+  签发：20 年有效期、`CA:TRUE,pathlen:0`、`keyUsage` 带 `keyCertSign`，而这三条正是现在的发布预检
+  会拒绝的（P-22）。台账里登记了指纹之后，预检只对这一张证书放宽这三条，其余检查一条都不放松：
+  `CRL Sign` 仍然拒、`CA:TRUE` 必须配 `pathlen:0`、EKU 仍必须只有 critical 的 codeSigning、自签名与
+  身份唯一性照旧、有效期上限也只放宽到旧 profile 的 7300 天而不是取消。
+
+  接受的风险是：这张证书在发布 Mac 上被标记为代码签名可信，而它能签发下级证书，所以拿到它 P12 的人
+  可以在那台机器上继续签发链到可信锚的证书。换证书的代价是老客户全部手动重装，两害相权的结果是留着
+  它。**换证书那天把这一行清空**，预检自动恢复到严格口径，同时按
+  [macOS 免费自签版分发手册](MACOS_FREE_DISTRIBUTION.md) 的轮换步骤通知用户手动重装一次。
+
+CI 的一次性临时签名身份（`--ci-temporary-signing`）与已发布身份无关，那条路径不做连续性核对，也拿不到
+旧证书豁免。
+
 ## 3. 发布前置条件
 
 依赖安全审计固定使用官方 npm registry：

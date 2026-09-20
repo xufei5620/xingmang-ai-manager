@@ -409,3 +409,104 @@ test('signing preflight accepts a certificate whose subject is a bare common nam
       : healthyOptions().runOpenSsl(args),
   })))
 })
+
+// 旧生成器（#201 之前）签发的 profile：20 年、CA:TRUE,pathlen:0、带 keyCertSign。
+const LEGACY_CERTIFICATE_TEXT = HEALTHY_CERTIFICATE_TEXT
+  .replace('                CA:FALSE', '                CA:TRUE, pathlen:0')
+  .replace('                Digital Signature', '                Digital Signature, Certificate Sign')
+const LEGACY_VALIDITY = 'notBefore=Aug  1 00:00:00 2026 GMT\nnotAfter=Jul 28 00:00:00 2046 GMT\n'
+
+function legacyOptions(overrides = {}) {
+  const base = healthyOptions()
+  return healthyOptions({
+    isLegacyProfileExempt: () => true,
+    runOpenSsl: (args) => {
+      if (args.includes('-text')) return LEGACY_CERTIFICATE_TEXT
+      if (args.includes('-startdate')) return LEGACY_VALIDITY
+      return base.runOpenSsl(args)
+    },
+    ...overrides,
+  })
+}
+
+test('signing preflight refuses a release signed by a certificate other than the published one', () => {
+  const seen = []
+  assert.throws(() => verifyFreeMacSigningIdentity(healthyOptions({
+    assertPublishedIdentity: (fingerprint) => {
+      seen.push(fingerprint)
+      throw new Error('本次发布使用的签名证书与仓库登记的已发布签名证书不一致')
+    },
+  })), /已发布签名证书不一致/)
+  assert.deepEqual(seen, ['AABBCCDDEEFF00112233445566778899AABBCCDDEEFF00112233445566778899'])
+
+  // CI 的一次性签名身份与已发布身份无关，那条路径不做连续性核对。
+  assert.doesNotThrow(() => verifyFreeMacSigningIdentity(healthyOptions({
+    publishedIdentity: false,
+    assertPublishedIdentity: () => { throw new Error('应当跳过') },
+  })))
+})
+
+test('signing preflight accepts the published legacy certificate profile only by fingerprint', () => {
+  // 2026-09-20 产品所有者选择沿用已发布的旧证书：换证书会让所有已装 macOS
+  // 客户的自动更新在「重启并安装」时失败。
+  assert.equal(
+    verifyFreeMacSigningIdentity(legacyOptions()).identityName,
+    'XingMang Free Update Identity',
+  )
+
+  // 没登记在台账里的同款证书照样拒，豁免的是一张证书而不是一种 profile。
+  // 有效期那条先于 CA 那条触发，所以这里用十年内的日期，让 CA 那条自己说话。
+  const base = healthyOptions()
+  const legacyExtensionsOnly = (overrides) => legacyOptions({
+    runOpenSsl: (args) => (args.includes('-text') ? LEGACY_CERTIFICATE_TEXT : base.runOpenSsl(args)),
+    ...overrides,
+  })
+  assert.throws(
+    () => verifyFreeMacSigningIdentity(legacyExtensionsOnly({ isLegacyProfileExempt: () => false })),
+    /CA/,
+  )
+  // CI 的一次性身份走不到豁免上。
+  assert.throws(
+    () => verifyFreeMacSigningIdentity(legacyExtensionsOnly({ publishedIdentity: false })),
+    /CA/,
+  )
+})
+
+test('the published legacy exemption relaxes nothing beyond CA:TRUE, keyCertSign and the ten-year cap', () => {
+  const base = healthyOptions()
+  const withText = (text) => legacyOptions({
+    runOpenSsl: (args) => {
+      if (args.includes('-text')) return text
+      if (args.includes('-startdate')) return LEGACY_VALIDITY
+      return base.runOpenSsl(args)
+    },
+  })
+
+  // CRL Sign 任何时候都不放行。
+  assert.throws(() => verifyFreeMacSigningIdentity(withText(
+    LEGACY_CERTIFICATE_TEXT.replace('Digital Signature, Certificate Sign', 'Digital Signature, CRL Sign'),
+  )), /keyUsage/)
+  // 只认旧生成器那一种 basicConstraints，不是「带 CA:TRUE 就放行」。
+  assert.throws(() => verifyFreeMacSigningIdentity(withText(
+    LEGACY_CERTIFICATE_TEXT.replace('CA:TRUE, pathlen:0', 'CA:TRUE'),
+  )), /CA/)
+  assert.throws(() => verifyFreeMacSigningIdentity(withText(
+    LEGACY_CERTIFICATE_TEXT.replace('X509v3 Basic Constraints: critical', 'X509v3 Basic Constraints:'),
+  )), /CA/)
+  // EKU 与自签名两条照旧。
+  assert.throws(() => verifyFreeMacSigningIdentity(withText(
+    LEGACY_CERTIFICATE_TEXT.replace('                Code Signing', '                TLS Web Server Authentication'),
+  )), /codeSigning EKU/)
+  assert.throws(
+    () => verifyFreeMacSigningIdentity(legacyOptions({ verifySelfSignature: () => false })),
+    /自签名验证失败/,
+  )
+  // 有效期上限只放宽到旧 profile 的 20 年，不是取消上限。
+  assert.throws(() => verifyFreeMacSigningIdentity(legacyOptions({
+    runOpenSsl: (args) => {
+      if (args.includes('-text')) return LEGACY_CERTIFICATE_TEXT
+      if (args.includes('-startdate')) return 'notBefore=Aug  1 00:00:00 2026 GMT\nnotAfter=Jul 28 00:00:00 2056 GMT\n'
+      return base.runOpenSsl(args)
+    },
+  })), /有效期不能超过 7300 天/)
+})
