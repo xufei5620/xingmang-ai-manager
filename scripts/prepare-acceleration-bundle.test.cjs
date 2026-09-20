@@ -6,7 +6,7 @@ const test = require('node:test')
 const { createHash } = require('node:crypto')
 const { gzipSync } = require('node:zlib')
 const {
-  ALLOWED_HOSTS, assertAllowedUrl, fetchAccelerationCore, parseArguments,
+  ALLOWED_HOSTS, assertAllowedUrl, assertPortableAmd64Core, fetchAccelerationCore, parseArguments,
   prepareAccelerationBundle, readCoreCatalog, resolveCoreTarget,
 } = require('./prepare-acceleration-bundle.cjs')
 
@@ -75,6 +75,40 @@ test('the catalog shipped in the repository is a valid one', () => {
     assert.equal(resolved.licenseUrl, `https://raw.githubusercontent.com/MetaCubeX/mihomo/${catalog.sourceRef}/LICENSE`)
     assert.equal(resolved.coreFile, target.startsWith('darwin-') ? 'mihomo' : 'mihomo.exe')
   }
+})
+
+test('both amd64 targets are pinned to the compatible build', () => {
+  // mihomo 的 `amd64` 产物是 GOAMD64=v3：2026-09-20 一台 MacBook Air 装了 x64 包，
+  // 内核启动即退出，界面只说「加速连接失败」。掉回 v3 资产不会让哈希对账失败，
+  // 只会让一部分机器的加速永远连不上，所以名字这一层也钉住。
+  const catalog = readCoreCatalog(projectRoot)
+  for (const target of ['win32-x64', 'darwin-x64']) {
+    assert.match(catalog.targets[target].asset, /amd64-compatible/, `${target} 必须钉 amd64-compatible 资产`)
+  }
+  assert.doesNotMatch(catalog.targets['darwin-arm64'].asset, /amd64/)
+})
+
+test('a GOAMD64=v3 core is refused even though both its hashes match', async (t) => {
+  const v3Core = Buffer.concat([core, Buffer.from('This program can only be run on AMD64 processors with v3 microarchitecture support.')])
+  const catalog = catalogFixture()
+  catalog.targets['darwin-x64'] = {
+    asset: 'mihomo-darwin-amd64-v1.19.29.gz', assetSha256: digest(gzipSync(v3Core)),
+    archive: 'gzip', coreFile: 'mihomo', coreSha256: digest(v3Core),
+  }
+  const target = resolveCoreTarget(catalog, 'darwin-x64')
+  const { implementation } = stubFetch({
+    [target.url]: respond(gzipSync(v3Core)),
+    [target.licenseUrl]: respond(license),
+  })
+  await assert.rejects(
+    fetchAccelerationCore(target, workspace(t), { fetchImplementation: implementation }),
+    /amd64/,
+  )
+})
+
+test('the portability check reads the bytes, not the asset name', () => {
+  assert.doesNotThrow(() => assertPortableAmd64Core(core))
+  assert.throws(() => assertPortableAmd64Core(Buffer.from('... v3 microarchitecture support.')), /amd64-compatible/)
 })
 
 test('a target the catalog does not pin is refused rather than guessed at', () => {

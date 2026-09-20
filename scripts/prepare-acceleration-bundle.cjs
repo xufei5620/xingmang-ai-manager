@@ -44,7 +44,23 @@ const ALLOWED_HOSTS = new Set([
 // bsdtar，Windows 10+ 与 macOS 都自带，两边都认 zip。按绝对路径取，不查 PATH：
 // 当前目录里放一个 tar.exe 就被执行是 Windows 上最经典的一条提权路径（I14）。
 const TAR_PATHS = { win32: 'C:\\Windows\\System32\\tar.exe', darwin: '/usr/bin/tar' }
-const TARGET_PLATFORMS = { 'win32-x64': { platform: 'win32' }, 'darwin-arm64': { platform: 'darwin', arch: 'arm64' }, 'darwin-x64': { platform: 'darwin', arch: 'x64' } }
+const TARGET_PLATFORMS = { 'win32-x64': { platform: 'win32', amd64: true }, 'darwin-arm64': { platform: 'darwin', arch: 'arm64' }, 'darwin-x64': { platform: 'darwin', arch: 'x64', amd64: true } }
+
+// mihomo 发布页上的 `amd64` 产物是 GOAMD64=v3 构建，要求 AVX/AVX2：Haswell（2013）
+// 之前的 Intel CPU 跑不了，Rosetta 2 也不提供 AVX，所以在 Apple 芯片上装 x64 包
+// 必然失败。2026-09-20 一台 MacBook Air 上就是如此 —— 内核一启动就退出，而界面
+// 只会说「加速连接失败」。要取的是 `amd64-compatible`（GOAMD64=v1）那一份。
+//
+// v3 构建把这句运行时拒绝文案编进了二进制，所以拿到字节就能判定，不需要在目标
+// CPU 上真的跑一次；否则这道检查只能在一台老 Intel 或 Rosetta 机器上生效，而
+// CI 上一台都没有。
+const GOAMD64_V3_MARKER = Buffer.from('v3 microarchitecture')
+
+function assertPortableAmd64Core(core) {
+  if (Buffer.from(core).includes(GOAMD64_V3_MARKER)) {
+    throw new Error('加速内核是 amd64（v3）构建，旧 Intel CPU 与 Rosetta 上无法运行，请改钉 amd64-compatible 资产。')
+  }
+}
 
 function sha256(bytes) {
   return createHash('sha256').update(bytes).digest('hex')
@@ -162,6 +178,8 @@ async function fetchAccelerationCore(target, workingDirectory, dependencies = {}
   if (sha256(core) !== target.coreSha256) {
     throw new Error('解出的加速内核与对账表的 SHA256 不一致，已放弃。')
   }
+  // 两道哈希只证明拿到的是对账表钉的那一份，不证明那一份跑得起来。
+  if (target.amd64) assertPortableAmd64Core(core)
   const license = await downloadBytes(target.licenseUrl, MAX_LICENSE_BYTES, fetchImplementation)
   if (sha256(license) !== target.licenseSha256) {
     throw new Error('下载到的 Mihomo 许可文本与对账表的 SHA256 不一致，已放弃。')
@@ -226,6 +244,7 @@ module.exports = {
   ALLOWED_HOSTS,
   MAX_ASSET_BYTES,
   assertAllowedUrl,
+  assertPortableAmd64Core,
   fetchAccelerationCore,
   parseArguments,
   prepareAccelerationBundle,
