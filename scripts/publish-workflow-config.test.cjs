@@ -125,6 +125,10 @@ test('the macOS packages are signed with the published identity, never an epheme
   assert.doesNotMatch(String(build.run), /--ci-temporary-signing/)
   assert.match(String(build.run), /--acceleration-arm64/)
   assert.match(String(build.run), /--acceleration-x64/)
+  // 排练开关把台账对账的对象换成一张一次性证书。它在 PR 上是必要的，在这条工作流
+  // 里出现就等于把「换证书会断掉全部已装 Mac 客户的自动更新」那道核对拆掉。
+  // createRehearsalSigningLedger 已经拒绝真指纹，这一条挡的是别的写法。
+  assert.doesNotMatch(JSON.stringify(workflow), /--rehearsal-identity/)
 })
 
 test('no dispatch input, secret or step output is substituted into a shell script', () => {

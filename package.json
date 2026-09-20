@@ -48,6 +48,7 @@
     "dl:publish": "node scripts/publish-dl-landing.cjs",
     "test:mac:dev-origin": "npm run compile && node --test e2e/macos-dev-origin.test.mjs",
     "test:mac:release-keychain": "bash scripts/macos-release-keychain-rehearsal.sh",
+    "test:mac:release-path": "bash scripts/macos-release-keychain-rehearsal.sh --with-release-build",
     "test:mac:free-signing": "node --test scripts/create-macos-free-signing-certificate.test.cjs scripts/macos-ephemeral-signing.test.cjs scripts/verify-macos-free-signing.test.cjs scripts/verify-macos-free-artifacts.test.cjs scripts/run-macos-free-build.test.cjs",
     "mac:free:create-certificate": "node scripts/create-macos-free-signing-certificate.cjs",
     "dist:mac:free": "node scripts/run-macos-free-build.cjs",

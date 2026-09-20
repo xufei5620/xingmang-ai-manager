@@ -344,6 +344,56 @@ jobs:
         timeout-minutes: 6
         run: node e2e/macos-launch-smoke.mjs
 
+  macos-release-rehearsal:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: macos-15
+    # publish-release.yml 的 macos-build 挂 environment: release，PR 上从来不跑，
+    # 于是整条发布路径此前唯一的验证机会就是真的发一次版，而每次都要产品所有者点
+    # 一次批准。2026-09-20 连红四次，前两次红在签名身份、后两次红在它下游。这个
+    # 作业把那条路整段搬到 PR 上，用现场生成的一次性证书，不读任何 secret。
+    #
+    # 与 macos-test 里那条 --ci-temporary-signing 的区别正是发布路径独有的四件事：
+    # electron-builder 按 CSC_NAME 自己在 keychain 里找身份（而不是走自定义 sign
+    # 钩子）、publishedIdentity 口径的签名预检、按架构分两次构建再合并、带私有
+    # 加速线路。这四件事以前在 PR 上一件都没跑过。
+    #
+    # 它与 macos-test 并行，所以这十几分钟不落在流水线的关键路径上。
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --registry=https://registry.npmjs.org/
+      # 与 publish-release.yml 同样的先后：暂存工具用的是主进程里那套安全读写与内核
+      # 校验，所以它跑之前必须先有 dist-electron；少了这一步它会在第一秒就报
+      # 「请先编译主进程」。
+      - name: Compile the main process the staging tool needs
+        run: node node_modules/typescript/bin/tsc -p tsconfig.electron.json
+      - name: Prepare the private acceleration bundles
+        env:
+          ACCELERATION_ARM64: ${{ runner.temp }}/acceleration-darwin-arm64
+          ACCELERATION_X64: ${{ runner.temp }}/acceleration-darwin-x64
+        run: |
+          node scripts/prepare-acceleration-bundle.cjs --target darwin-arm64 --output "$ACCELERATION_ARM64"
+          node scripts/prepare-acceleration-bundle.cjs --target darwin-x64 --output "$ACCELERATION_X64"
+      # 排练不重跑 typecheck 与 npm test（macos-test 与 Windows 分片已经跑过），但
+      # electron-builder 打的是编译产物。发布那条路径由 dist:mac:free 自己跑这一步，
+      # 排练跳过了检查，所以要自己补上。
+      - run: npm run compile
+      - name: Rehearse the whole release path on a throwaway certificate
+        # 两个架构各跑一遍 electron-builder，再加产物校验与一次真启动。步骤自己有
+        # 上界，否则一处 codesign 卡住会在作业上限才失败，而且说不出卡在哪一步。
+        timeout-minutes: 40
+        env:
+          REHEARSAL_ACCELERATION_ARM64: ${{ runner.temp }}/acceleration-darwin-arm64
+          REHEARSAL_ACCELERATION_X64: ${{ runner.temp }}/acceleration-darwin-x64
+        run: npm run test:mac:release-path
+
   linux-test:
     needs: changes
     if: needs.changes.outputs.code == 'true'
@@ -419,7 +469,7 @@ jobs:
 
   quality-gate:
     if: always()
-    needs: [changes, test, macos-test, linux-test, audit]
+    needs: [changes, test, macos-test, macos-release-rehearsal, linux-test, audit]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -432,7 +482,7 @@ jobs:
           const code = jobs.changes.outputs.code
           if (jobs.changes.result !== 'success' || !['true', 'false'].includes(code)) process.exit(1)
           const expected = code === 'true' ? 'success' : 'skipped'
-          if (['macos-test', 'linux-test', 'audit'].some(name => jobs[name].result !== expected)) process.exit(1)
+          if (['macos-test', 'macos-release-rehearsal', 'linux-test', 'audit'].some(name => jobs[name].result !== expected)) process.exit(1)
           // `test` folds the Windows shards together and applies that same
           // expectation itself, so it reports success — never "skipped" — for a
           // documentation-only change.

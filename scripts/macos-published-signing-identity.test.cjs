@@ -5,6 +5,7 @@ const test = require('node:test')
 const {
   LEGACY_PROFILE_MAX_VALIDITY_DAYS,
   assertPublishedSigningCertificate,
+  createRehearsalSigningLedger,
   isLegacyProfileExemptCertificate,
   legacyProfileExemptCertificateSha256,
   normalizeCertificateSha256,
@@ -68,4 +69,29 @@ test('the ledger never carries private key material', () => {
 
 test('the legacy validity cap matches the profile the old generator produced', () => {
   assert.equal(LEGACY_PROFILE_MAX_VALIDITY_DAYS, 7300)
+})
+
+test('the rehearsal ledger only ever stands in for a throwaway certificate', () => {
+  const rehearsal = 'AB'.repeat(32)
+  const ledger = createRehearsalSigningLedger(rehearsal)
+
+  assert.equal(ledger.assertPublishedIdentity(rehearsal, '本次发布使用的签名证书'), rehearsal)
+  // 一次性证书刻意按已发布那张的 profile 生成，所以豁免判定也要跟着换过去，
+  // 否则排练会红在 P-22 上——而那恰恰是已发布证书被明确豁免掉的一条。
+  assert.equal(ledger.isLegacyProfileExempt(rehearsal), true)
+  assert.equal(ledger.isLegacyProfileExempt(rehearsal.match(/../g).join(':').toLowerCase()), true)
+  assert.equal(ledger.isLegacyProfileExempt('CD'.repeat(32)), false)
+  assert.throws(() => ledger.assertPublishedIdentity('CD'.repeat(32), '本次发布使用的签名证书'), /不一致/)
+
+  // 这不是「关掉连续性核对」的开关：把真指纹传进来的唯一用处就是绕过那道核对。
+  const published = publishedSigningCertificateSha256()
+  if (published !== null) {
+    assert.throws(() => createRehearsalSigningLedger(published), /不能指向已发布的那张证书/)
+    assert.throws(
+      () => createRehearsalSigningLedger(published.match(/../g).join(':').toLowerCase()),
+      /不能指向已发布的那张证书/,
+    )
+  }
+  assert.throws(() => createRehearsalSigningLedger(''), /不能为空/)
+  assert.throws(() => createRehearsalSigningLedger('not-a-fingerprint'), /SHA-256/)
 })

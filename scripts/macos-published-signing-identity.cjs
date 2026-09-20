@@ -84,9 +84,42 @@ function isLegacyProfileExemptCertificate(fingerprint) {
   return actual !== null && actual === exempt
 }
 
+/**
+ * 排练用的台账替身：让 PR 上的排练走与正式发布**完全相同**的校验路径，只把对账的
+ * 对象换成现场生成的一次性证书。
+ *
+ * 它不是「关掉连续性核对」的开关。指纹必须与登记的已发布证书不同，否则当场报错：
+ * 把真指纹传进来的唯一用处就是绕过那道核对，所以那条路直接堵死。正式发布的
+ * 工作流里不得出现这个开关，scripts/publish-workflow-config.test.cjs 钉着这一条。
+ *
+ * 一次性证书刻意按已发布那张的 profile 生成（CA:TRUE、keyCertSign、20 年），
+ * 所以豁免判定也要跟着换成它，否则排练会红在 P-22 上，而那正是已发布证书被明确
+ * 豁免掉的一条，排练红在这里没有任何信息量。
+ */
+function createRehearsalSigningLedger(fingerprint) {
+  const rehearsal = normalizeCertificateSha256(fingerprint, '排练签名证书指纹')
+  if (rehearsal === null) throw new Error('排练签名证书指纹不能为空')
+  if (rehearsal === publishedSigningCertificateSha256()) {
+    throw new Error('排练台账不能指向已发布的那张证书：这个开关只服务于现场生成的一次性证书')
+  }
+  return {
+    assertPublishedIdentity(actual, label) {
+      const normalized = normalizeCertificateSha256(actual, label)
+      if (normalized === null || normalized !== rehearsal) {
+        throw new Error(`${label}与本次排练现场生成的证书不一致`)
+      }
+      return normalized
+    },
+    isLegacyProfileExempt(actual) {
+      return normalizeCertificateSha256(actual, '证书指纹') === rehearsal
+    },
+  }
+}
+
 module.exports = {
   LEGACY_PROFILE_MAX_VALIDITY_DAYS,
   assertPublishedSigningCertificate,
+  createRehearsalSigningLedger,
   isLegacyProfileExemptCertificate,
   legacyProfileExemptCertificateSha256,
   normalizeCertificateSha256,
