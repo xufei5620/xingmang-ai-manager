@@ -85,6 +85,7 @@ import { attachPlatformAuditLog } from './platform/runtime-log-bridge'
 import { recordStartupFailure } from './startup-log'
 import { inspectProviderConfig } from './config-files'
 import { rootedMainServiceOptions } from './main-service-options'
+import { buildMacosInstallLocationNotice, inspectMacosInstallLocation } from './macos-install-location'
 import { privacyPolicyUrl, relaySiteExternalUrls, relaySites, resolveRelaySite, sub2ApiSupportServiceUrl, supportServiceUrl, userAgreementUrl } from './relay-sites'
 import { createPaymentWindowController } from './payment-window'
 import { createPaymentOrderStatusReader } from './payment-status-reader'
@@ -631,6 +632,36 @@ if (!hasSingleInstanceLock) {
     })
     if (manualUninstallVisualFixtureEnabled) {
       runtimeLog.log('warn', 'testing', 'manual-uninstall.fixture', '手动卸载视觉测试状态已启用')
+    }
+    // 装在「应用程序」之外时加速起不来，但用户只看到「加速连接失败」，会以为
+    // 是服务的问题。这一步放在服务与窗口之前：那之后再提示，用户已经开始用了。
+    const installLocation = inspectMacosInstallLocation({
+      platform: process.platform,
+      packaged: app.isPackaged,
+      appPath: app.getAppPath(),
+      executablePath: process.execPath,
+    })
+    if (installLocation) {
+      const notice = buildMacosInstallLocationNotice(installLocation)
+      runtimeLog.log('warn', 'main', 'app.install-location.unsupported', notice.message, {
+        location: installLocation,
+        appPath: app.getAppPath(),
+      })
+      const answer = dialog.showMessageBoxSync({
+        type: 'warning',
+        title: notice.title,
+        message: notice.message,
+        detail: notice.detail,
+        buttons: [...notice.buttons],
+        defaultId: notice.defaultId,
+        cancelId: notice.cancelId,
+      })
+      if (answer === notice.cancelId) {
+        runtimeLog.log('info', 'main', 'app.install-location.quit', '用户选择退出以移动程序位置')
+        app.quit()
+        return
+      }
+      runtimeLog.log('warn', 'main', 'app.install-location.continued', '用户选择从当前位置继续运行')
     }
     const onUncaughtException = (error: Error) => {
       runtimeLog.exception('main', 'uncaught.exception', error)
