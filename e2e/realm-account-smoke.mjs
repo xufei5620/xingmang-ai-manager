@@ -200,6 +200,7 @@ let stderr = ''
 let stage = 'initial startup'
 let isolationChecks = 0
 let customerUiScans = 0
+let applicationStarts = 0
 const errors = []
 const processIds = []
 
@@ -219,6 +220,14 @@ const expectedAssertions = ['dual-realm-login', 'explicit-source-selection', 'id
   'no-fallback-on-rejection', 'two-factor-preserves-session', 'source-bound-recovery', 'remembered-routing',
   'platform-details-hidden', 'saved-switch', 'key-stores-separated', 'canvas-realm-events', 'restore-and-logout']
 const passedAssertions = []
+
+// Each restart launches a fresh Electron process with a fresh fixture, so the
+// counters inside it only ever describe the instance currently running. Reading
+// them once at the end would report the last of three as though it covered the
+// whole run — the same "looks like a measurement but is not one" problem T-G8 is
+// about. Every instance is folded in here before it is shut down instead.
+const fixtureTotals = { served: 0, refused: 0, egressDenied: 0, generation: 0,
+  rendererOrigins: new Set(), keyGroups: { solov: [], solovApi: [] } }
 
 function recordPass(name) {
   // A typo would otherwise drop a name from the evidence with nothing failing.
@@ -294,12 +303,28 @@ function readFixtureStats() {
   return evaluateInMainProcess('fixture network statistics', () => globalThis.__realmSmoke.stats())
 }
 
+// Reads the running instance's counters and adds them to the run's totals. Every
+// request the application made ends up in exactly one of served or refused, so a
+// request that had escaped to a real site would have to be missing from both.
+async function foldFixtureStats() {
+  const stats = await readFixtureStats()
+  fixtureTotals.served += stats.calls.filter((call) => call.outcome === 'served').length
+  fixtureTotals.refused += stats.calls.filter((call) => call.outcome === 'denied').length
+  fixtureTotals.egressDenied += stats.blocked.length
+  fixtureTotals.generation += stats.calls.filter((call) => generationRoute.test(call.route)).length
+  for (const origin of stats.rendererBlocked) fixtureTotals.rendererOrigins.add(origin)
+  fixtureTotals.keyGroups.solov.push(...stats.groups.xm)
+  fixtureTotals.keyGroups.solovApi.push(...stats.groups.api)
+  return stats
+}
+
 function loginCallOrigins(stats) {
   return stats.calls.filter((call) => call.route.endsWith('/login'))
 }
 
 async function start() {
   progress('launching the isolated fixture application')
+  applicationStarts++
   application = await withDeadline('Electron launch', stepBudgetMs, () => electron.launch({
     cwd: projectRoot, args: [bootstrap, `--user-data-dir=${userData}`], env, timeout: stepBudgetMs }))
   currentProcessId = application.process().pid
@@ -497,7 +522,9 @@ async function main() {
     // one without ever being handed a credential.
     recordPass('saved-switch')
     recordPass('canvas-realm-events')
-    const stats = await readFixtureStats()
+    // Also the first instance's fold: nothing below issues a request before the
+    // restart that replaces it.
+    const stats = await foldFixtureStats()
     assert.deepEqual(new Set(stats.groups.api), new Set(['Codex_pro', 'Claude-MAX(不限客户端)', 'Gemini', 'grok-heavy']))
     assert.equal(stats.groups.api.length, 4)
     assert.equal(stats.groups.xm.length, 4)
@@ -512,6 +539,7 @@ async function main() {
     assert.equal((await evaluateInRenderer(page, 'restored saved accounts', () => window.xingmang.listSavedAccounts())).length, 2)
     beginStage('logout and restart')
     await evaluateInRenderer(page, 'logout', () => window.xingmang.logoutAccount())
+    await foldFixtureStats()
     await stop()
     page = await start()
     assert.equal((await evaluateInRenderer(page, 'session after logout', () => window.xingmang.getAccountSession())).authenticated, false)
@@ -530,31 +558,36 @@ async function main() {
     assert.deepEqual(preferredLoginCalls.map((call) => call.origin), ['https://api.solov.cc'])
     await evaluateInRenderer(page, 'final logout', () => window.xingmang.logoutAccount())
     assert.deepEqual(errors, [])
-    // Read once more so the numbers below cover the whole run, including the two
-    // restarts and the logins after them, rather than the point mid-run where
-    // the group assertions happened to look.
-    const finalStats = await readFixtureStats()
+    // The third instance's fold, which completes the run's totals.
+    const finalStats = await foldFixtureStats()
     assert.deepEqual(finalStats.calls.filter((call) => generationRoute.test(call.route)), [],
       'the fixture must never route a paid generation request')
+    assert.equal(fixtureTotals.generation, 0, 'no instance may route a paid generation request')
+    // Keeps a future edit from starting the application without proving, in that
+    // process, that every network transport is still closed.
+    assert.equal(isolationChecks, applicationStarts, 'every application start must run the isolation probes')
     // A run that quietly stopped reaching a step would otherwise ship a shorter
     // list and still exit 0.
     assert.deepEqual([...passedAssertions].sort(), [...expectedAssertions].sort())
     const result = {
       passedAssertions,
-      // Every number here is read back out of the fixture. Answered plus
-      // refused is every HTTP request the application made, so a request that
-      // escaped to a real site would have to be missing from both;
-      // egressAttemptsDenied also counts the non-fetch transports, which the
-      // fixture replaces with a refusal rather than a reply.
+      // Every number here was counted during the run, summed over all three
+      // application instances. "Refused" is the fixture's normal answer to any
+      // route it does not mock, not a failure; what matters is that answered
+      // plus refused is every HTTP request the application made, so a request
+      // that had escaped to a real site would be missing from both.
+      // egressAttemptsDenied additionally covers the non-fetch transports the
+      // fixture replaces with a refusal.
       measured: {
-        requestsAnsweredByFixture: finalStats.calls.filter((call) => call.outcome === 'served').length,
-        requestsRefusedByFixture: finalStats.calls.filter((call) => call.outcome === 'denied').length,
-        egressAttemptsDenied: finalStats.blocked.length,
-        rendererOriginsBlocked: [...new Set(finalStats.rendererBlocked)],
-        generationRequests: finalStats.calls.filter((call) => generationRoute.test(call.route)).length,
+        applicationStarts,
+        requestsAnsweredByFixture: fixtureTotals.served,
+        requestsRefusedByFixture: fixtureTotals.refused,
+        egressAttemptsDenied: fixtureTotals.egressDenied,
+        rendererOriginsBlocked: [...fixtureTotals.rendererOrigins],
+        generationRequests: fixtureTotals.generation,
         isolationProbeRuns: isolationChecks,
         customerUiScans,
-        managedKeyGroups: { solov: finalStats.groups.xm, solovApi: finalStats.groups.api },
+        managedKeyGroups: fixtureTotals.keyGroups,
       },
       fixtureProcessIds: processIds,
     }
