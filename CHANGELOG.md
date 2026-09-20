@@ -16,6 +16,68 @@
 > **0.1.14 ~ 0.1.20 没有条目**：这些版本号在本仓 `main` 的 `package.json` 历史里从未出现过
 > （0.1.13 直接跳到 0.1.21），只有 `release-notes.md` 留下了 0.1.20 的用户条目。
 
+## 0.2.8 - 2026-09-20
+
+- 加速连接与线路检测失败原本不留任何痕迹：`startAcceleration` 失败时返回带错误文案的状态而不是抛错，`ipc.ts` 因此把一次失败的连接记成 info 级的「完成」，而真实错误在 `connectionFailure()` 换成固定文案时就被丢掉了。2026-09-19 交给测试的 Mac 包加速起不来，日志里除了这条「完成」什么都没有。
+- 新增 `AccelerationStartFailureStage` 封闭枚举与 `classifyAccelerationStartFailure()`，在 backend 里按失败阶段（`runtime` / `verify` / `ledger` / `proxy`）加错误文本归类，经 worker 的既有诊断通道送到主进程，由 `main.ts` 以 error 级写进 `runtime.jsonl`。
+- 跨进程只传枚举成员，不传原始错误文本 —— 与 `onDiagnostic` 既有的「stage only」约束一致：运行时与原生代理助手抛出的错误可能带私有路径或代理细节（I13）。host 侧按枚举白名单过滤，未知 stage 直接丢弃。
+- 行为不变：用户看到的文案、状态机、时长计费都没有改动，只增加日志。
+- `bundled-acceleration/cores.json` 的两个 amd64 目标原本钉的是 mihomo 的 `amd64` 产物，那是 GOAMD64=v3 构建，要求 AVX/AVX2。Haswell（2013）之前的 Intel CPU 跑不了，Rosetta 2 也不提供 AVX，所以在 Apple 芯片上装 x64 包必然失败：内核一启动就退出，界面只说「加速连接失败」。2026-09-20 的 Mac 真机测试即是此因（`mihomo -v` 直接回 `This program can only be run on AMD64 processors with v3 microarchitecture support.`）。
+- `win32-x64` 与 `darwin-x64` 改钉 `amd64-compatible`（GOAMD64=v1）资产，三处 SHA-256 与 zip 内文件名同步更新。arm64 不受影响。原设计（`docs/superpowers/specs/2026-09-14-macos-acceleration-design.md`）写的就是 `darwin-amd64-v1`，此次是把实现拉回设计。
+- 两道哈希只证明拿到的是对账表钉的那一份，不证明那一份跑得起来。`prepare-acceleration-bundle.cjs` 在哈希对账之后新增 `assertPortableAmd64Core()`：v3 构建把运行时拒绝文案编进了二进制，按字节判定即可，不需要一台老 Intel 或 Rosetta 机器。另有单测钉住两个 amd64 目标必须是 `-compatible` 资产。
+- 按产品策略将现有 12 条共享加速线路及 SHA-256 纳入 `bundled-acceleration`，Windows 和 macOS 资源准备配置省略 `profilePath` 时复用仓库节点，保留外部自定义配置及平台内核、许可、资源完整性校验。
+- 新增 `scripts/prepare-acceleration-bundle.cjs`：按 `bundled-acceleration/cores.json` 钉住的版本从 Mihomo 上游取内核与同版本 GPL v3 正文，逐一核对资产、内核、许可三道 SHA-256 后交给
+  `stage-acceleration-bundle.cjs` 生成资源目录；下载限定 GitHub 域名与 https，重定向逐跳复校（I10）。`package-for-testing` 两个平台的包因此都带上私有加速线路，
+  `run-macos-free-build.cjs` 的「CI 临时签名不携带加速线路」限制随之取消。
+- 新增手动触发的 `package-for-testing` 工作流：在 GitHub Actions 上直接出一份可安装的 Windows（走
+  `release:build:unsigned` 的完整门禁）与 macOS 包并挂成 artifact，供发布者下载装机验收。macOS 侧由 runner
+  现场生成的一次性身份签名，artifact 名字里已自曝身份。
+- `scripts/run-macos-free-build.cjs` 新增 `--ci-keep-package`：只与 `--ci-temporary-signing` 同用，把演练
+  产物留在 `release-free-ci-<版本>/` 交给 upload-artifact，签名材料与 keychain 搜索列表照旧清理；失败路径
+  仍由 `runFreeMacBuild` 自己删掉未完成的输出。
+- 新增 `scripts/package-workflow-config.test.cjs` 钉住这条链路的边界：工作流不读任何 secret、run 块里不做
+  `${{ }}` 文本替换、第三方 action 钉完整提交号、macOS 侧与 quality 门禁跑的是同一条命令。
+- 新增 `docs/CI-PACKAGING.md`：出包步骤、这两份包做不到的事，以及把加速线路、macOS 发布签名和整条发版
+  搬上 GitHub 需要准备什么（后者只出方案，未实现）。
+- `docs/RELEASING.md` 记录 2026-09-19 产品所有者的决定：推翻原来的「私有节点不得上传 GitHub」，三份加速
+  资源改为直接提交进本仓库。构建入口「加速资源目录必须位于项目目录之外」那道检查不因此放松。
+- 新增 `electron/download-proxy.ts`：解析 Chromium `session.resolveProxy` 的结果，产出下载用的代理端点，
+  以及给包管理器子进程的 `HTTP(S)_PROXY` / `NO_PROXY`。只取列表首项（Chromium 自己会走的那条），
+  无法识别的一律按直连处理。
+- `createSystemService` 新增 `downloadFetch` 与 `resolveSubprocessProxyEnvironment` 两个注入点，`main.ts`
+  分别接到 `net.fetch` 和 `session.defaultSession.resolveProxy`。Grok 二进制下载与 Node.js LTS 下载以前用
+  全局 `fetch`（Node 自带网络栈不读系统代理），npm 子进程则完全没有代理变量，两条路都是直连出去。
+- 子进程只接受**回环**代理：Windows 安装路径会跨提权边界执行 npm，而系统代理是普通用户可改的设置，
+  把任意远端代理交给提权子进程等于让那个设置决定包从哪来。远端系统代理仍然作用于进程内的下载——
+  那里由 Chromium 在本进程内终止连接，且每个产物都有签名与摘要校验。
+- `scripts/verify-packaged-hardening.cjs` 新增 `assertNoDefaultAppFallback`：打包产物的 `resources/` 里不得
+  残留 `default_app.asar`，那是 Electron 找不到应用归档时的回落入口，会自己开窗口。
+- `build/entitlements.mac.adhoc.plist` 与它的 inherit 版现在用于**全部** macOS 构建（原先只用于 ad-hoc
+  `--dir` 构建），即在 `allow-jit` 之外授予 `com.apple.security.cs.disable-library-validation`。
+  hardened runtime 的 library validation 要求进程与它加载的每个库带同一个 team identifier，而该字段
+  只有苹果签发的证书才有：没有它，这道校验分辨不出随包框架和任何别的框架，唯一效果是让包起不来
+  （dyld：`mapping process and mapped file (non-platform) have different Team IDs`）。签名封印与 hardened
+  runtime 的其余部分不变。`build/entitlements.mac.plist` 保留给 Developer ID，撤回步骤写在
+  `docs/RELEASING.md` 第 2.1 节。
+- 撤回本次发布周期内先前那次无效修法：`scripts/create-macos-free-signing-certificate.cjs` 的证书主题
+  改回 `/CN=<名称>`，`scripts/verify-macos-free-signing.cjs` 去掉要求 `OU` 的
+  `assertSigningCertificateTeamIdentifier`。带 OU 的证书签出来的包实测仍是 `TeamIdentifier=not set`，
+  codesign 不会把自签证书的任何主题字段当作 team identifier。**因此没有因为这条而必须重新生成证书。**
+- `scripts/verify-macos-free-artifacts.cjs` 不再写死一张 entitlements 允许清单，改为先读签名自己的
+  `TeamIdentifier`（`parseCodesignTeamIdentifier`，唯一一行、失败即拒）再推导：没有 team identifier 时
+  必须带 `disable-library-validation`，有时必须不带，两个方向都判失败；并核对每个 helper 与主可执行文件
+  的 team identifier 一致。
+- 新增 `e2e/macos-launch-smoke.mjs`，解压对应架构的 ZIP 并在隔离 HOME 与独立 user-data 下真正启动打包后的
+  `.app`，进程自行退出即失败并打印 dyld 输出。`quality.yml` 的 macOS 作业（改用 `--ci-keep-package`）与
+  `package-for-testing.yml` 的 macOS 作业都会跑它——2026-09-19 那份包通过了全部产物校验，**读产物的检查
+  永远看不见启动期的失败**。
+- 修复 `npm run release:build:unsigned` 里 `npm test` 必挂的一处环境继承：`scripts/macos-build-config.test.cjs`
+  与 `scripts/update-release-utils.test.cjs` 有十处 spawn 直接摊开 `process.env`，把门禁自己设的
+  `XINGMANG_UNSIGNED_RELEASE=1` 带给了加载 `electron-builder.config.cjs` 的子进程，配置于是在用例断言
+  之前先抛「两种发布模式不能同时启用」，五条用例一起红。改成从一份删掉构建模式变量的环境出发，并加一条
+  用例钉住这一点。`BUILD_MODE_ENVIRONMENT_NAMES` 随之从 `scripts/run-macos-free-build.cjs` 导出，
+  并补进调试放行开关 `XINGMANG_ALLOW_UNSIGNED_RELEASE`（只加禁止项，不放宽 P-24 的清洗）。
+
 ## 0.2.7 - 2026-09-19
 
 - 删除中转站点表里与主站点逐字段相同的 `sub2api` 别名条目，只保留 `resolveRelaySite` / `realmForExplicitSite` 里的 `'sub2api' → 'solov'` id 映射，老配置文件照常解析到同一站点；随之删掉 `site-runtime.ts` 里专为该别名写的一致性校验，并把显式账号边界（`requireRelaySite`、站点运行时、后端注册表）改为拒绝这个已退役的 id（D-10）。
