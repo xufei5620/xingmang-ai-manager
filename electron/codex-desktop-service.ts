@@ -801,8 +801,10 @@ export async function downloadCodexDesktopPackage(
     await file.sync()
     return { transferred, total, sha256Base64 }
   } catch (error) {
+    // reason 兜一层:本函数是导出的,调用方给的信号不一定带 reason,
+    // 少了这一层就会 throw undefined,上层只能报一句没有内容的失败。
     const cause = cancelSignal?.aborted
-      ? cancelSignal.reason
+      ? cancelSignal.reason ?? new InstallCancelledError()
       : error instanceof Error && error.name === 'AbortError'
         ? new Error(`${source.label}连接或下载超时`)
         : error
