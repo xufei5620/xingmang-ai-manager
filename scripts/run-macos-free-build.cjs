@@ -14,6 +14,7 @@ const { createFreeMacSigningCertificate } = require('./create-macos-free-signing
 const { verifyEphemeralMacSigningIdentity } = require('./macos-ephemeral-signing.cjs')
 const { validateManifest } = require('./stage-acceleration-bundle.cjs')
 const { mergeMacosFreeArchitectureOutputs } = require('./merge-macos-free-artifacts.cjs')
+const { renameMacosChipArtifacts } = require('./rename-macos-chip-artifacts.cjs')
 
 const SECURITY_PATH = '/usr/bin/security'
 const SECURITY_COMMAND_TIMEOUT_MS = 30_000
@@ -353,6 +354,7 @@ function resolveFreeMacBuildOptions(options = {}) {
     verifySigning: options.verifySigning || verifyFreeMacSigningIdentity,
     verifyArtifacts: options.verifyArtifacts || verifyMacosFreeArtifacts,
     mergeArtifacts: options.mergeArtifacts || mergeMacosFreeArchitectureOutputs,
+    renameArtifacts: options.renameArtifacts || renameMacosChipArtifacts,
   }
 }
 
@@ -455,6 +457,14 @@ async function runFreeMacBuild(options = {}) {
         '--publish', 'never',
       ], build.builderEnvironment)
     }
+
+    // electron-builder 只会打出带 -arm64 / -x64 的名字，客户看不懂该装哪个，所以
+    // 发行名在这里统一换成带芯片名的那一套。必须在校验之前：产物校验、SHA256SUMS
+    // 和更新清单核对认的都是发行名。
+    await build.renameArtifacts({
+      outputDirectory: build.outputDirectory,
+      version: build.packageVersion,
+    })
 
     const artifacts = await build.verifyArtifacts({
       projectRoot: build.projectRoot,

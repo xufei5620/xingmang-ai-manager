@@ -370,6 +370,9 @@ function validOptions(t, overrides = {}) {
       CSC_NAME: 'XingMang Free Update Identity',
       XINGMANG_MAC_SIGNING_SHA256: fingerprint,
     },
+    // 这些用例喂的是假的 commandRunner，目录里没有真产物可改名；改名本身由
+    // 「renames the artifacts to their chip names before verification」单测覆盖。
+    renameArtifacts: async () => {},
     ...overrides,
   }
 }
@@ -998,6 +1001,7 @@ test('a failed build removes the output directory it created so the next run is 
       XINGMANG_MAC_SIGNING_SHA256: fingerprint,
     },
     verifySigning: () => ({ identityName: 'XingMang Free Update Identity', fingerprint }),
+    renameArtifacts: async () => {},
   }
 
   await assert.rejects(() => runFreeMacBuild({
@@ -1017,6 +1021,47 @@ test('a failed build removes the output directory it created so the next run is 
   })
   assert.equal(result.outputDirectory, outputDirectory)
   assert.equal(fs.existsSync(outputDirectory), true)
+})
+
+test('renames the artifacts to their chip names before verification, with and without acceleration', async (t) => {
+  for (const withAcceleration of [false, true]) {
+    const order = []
+    const renames = []
+    const overrides = {
+      skipChecks: true,
+      verifySigning: () => ({ identityName: 'XingMang Free Update Identity', fingerprint }),
+      commandRunner: async () => { order.push('build') },
+      mergeArtifacts: async () => { order.push('merge') },
+      renameArtifacts: async (value) => {
+        order.push('rename')
+        renames.push(value)
+      },
+      verifyArtifacts: async (value) => {
+        order.push('verify')
+        return { outputDirectory: value.outputDirectory }
+      },
+    }
+    if (withAcceleration) {
+      overrides.accelerationBundles = {
+        arm64: stageAccelerationBundle(t, 'arm64'),
+        x64: stageAccelerationBundle(t, 'x64'),
+      }
+    }
+    const options = validOptions(t, overrides)
+
+    await runFreeMacBuild(options)
+
+    // 改名要在合并之后、校验之前：产物校验、SHA256SUMS 和更新清单核对认的都是
+    // 带芯片名的发行名，改名跑晚一步就等于把构建名发出去。
+    assert.deepEqual(
+      order,
+      withAcceleration ? ['build', 'build', 'merge', 'rename', 'verify'] : ['build', 'rename', 'verify'],
+    )
+    assert.deepEqual(renames, [{
+      outputDirectory: path.join(options.projectRoot, 'release-free-1.2.3'),
+      version: '1.2.3',
+    }])
+  }
 })
 
 test('a failed build keeps an output directory it did not create and names it in the error', async (t) => {

@@ -14,10 +14,10 @@ const {
   normalizeUpdateBaseUrl,
   parseLatestMetadata,
 } = require('./update-release-utils.cjs')
+const { ARCHITECTURES, releaseArtifactNames } = require('./macos-artifact-names.cjs')
 
 const runFile = promisify(execFile)
 const APP_IDENTIFIER = 'com.xingmang.ai.manager'
-const ARCHITECTURES = ['arm64', 'x64']
 const MACHO_ARCHITECTURES = {
   arm64: 'arm64',
   x64: 'x86_64',
@@ -51,16 +51,16 @@ function expectedFreeArtifactNames(version) {
   if (typeof version !== 'string' || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(version)) {
     throw new Error('版本号无效，无法验证 macOS 免费分发产物')
   }
-  return ARCHITECTURES.flatMap((architecture) => [
-    `XingMang-AI-Manager-${version}-${architecture}.dmg`,
-    `XingMang-AI-Manager-${version}-${architecture}.zip`,
-  ])
+  // 校验的是发布出去的那一份，所以这里只认带芯片名的发行名：构建名还留在目录里
+  // 就说明改名那一步没跑完。
+  return ARCHITECTURES.flatMap((architecture) => {
+    const names = releaseArtifactNames(version, architecture)
+    return [names.dmg, names.zip]
+  })
 }
 
 function expectedFreeBlockmapNames(version) {
-  return ARCHITECTURES.map((architecture) => (
-    `XingMang-AI-Manager-${version}-${architecture}.zip.blockmap`
-  ))
+  return ARCHITECTURES.map((architecture) => releaseArtifactNames(version, architecture).blockmap)
 }
 
 function isOutside(root, candidate) {
@@ -1082,7 +1082,7 @@ async function verifyMacosFreeArtifacts(options = {}) {
     // packaged inspection as the update ZIP instead of only being hashed.
     for (const architecture of ARCHITECTURES) {
       for (const kind of ['zip', 'dmg']) {
-        const artifactName = `XingMang-AI-Manager-${version}-${architecture}.${kind}`
+        const artifactName = releaseArtifactNames(version, architecture)[kind]
         const privateArtifact = privateArtifacts.get(artifactName)
         if (!privateArtifact) throw new Error(`${kind.toUpperCase()} 私有副本缺失：${artifactName}`)
         const result = await verifiers[kind](privateArtifact.path, architecture, {

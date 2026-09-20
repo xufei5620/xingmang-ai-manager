@@ -328,10 +328,10 @@ test('requires the exact trusted generic HTTPS updater configuration in packaged
 
 test('requires the four versioned public free-distribution artifact names', () => {
   assert.deepEqual(expectedFreeArtifactNames('0.1.12'), [
-    'XingMang-AI-Manager-0.1.12-arm64.dmg',
-    'XingMang-AI-Manager-0.1.12-arm64.zip',
-    'XingMang-AI-Manager-0.1.12-x64.dmg',
-    'XingMang-AI-Manager-0.1.12-x64.zip',
+    'XingMang-AI-Manager-0.1.12-Apple-Silicon-arm64.dmg',
+    'XingMang-AI-Manager-0.1.12-Apple-Silicon-arm64.zip',
+    'XingMang-AI-Manager-0.1.12-Intel-x64.dmg',
+    'XingMang-AI-Manager-0.1.12-Intel-x64.zip',
   ])
 })
 
@@ -351,8 +351,8 @@ test('parses latest-mac metadata only when it exactly references the two update 
   const parsed = parseLatestMacMetadata(latestMacMetadata(names), '1.2.3', names)
   assert.equal(parsed.version, '1.2.3')
   assert.deepEqual(parsed.files.map((entry) => entry.rawUrl).sort(), [
-    'XingMang-AI-Manager-1.2.3-arm64.zip',
-    'XingMang-AI-Manager-1.2.3-x64.zip',
+    'XingMang-AI-Manager-1.2.3-Apple-Silicon-arm64.zip',
+    'XingMang-AI-Manager-1.2.3-Intel-x64.zip',
   ])
   assert.throws(() => parseLatestMacMetadata('<!doctype html><html></html>', '1.2.3', []), /HTML/)
   assert.throws(() => parseLatestMacMetadata(latestMacMetadata(names, '9.9.9'), '1.2.3', []), /版本/)
@@ -696,10 +696,10 @@ test('verifies both ZIP applications, continuity, metadata, and writes SHA256SUM
     }),
   })
   assert.deepEqual(verified, [
-    ['XingMang-AI-Manager-1.2.3-arm64.zip', 'arm64', 'https://updates.shenfengwl.fun/xingmang-manager/'],
-    ['XingMang-AI-Manager-1.2.3-arm64.dmg', 'arm64', 'https://updates.shenfengwl.fun/xingmang-manager/'],
-    ['XingMang-AI-Manager-1.2.3-x64.zip', 'x64', 'https://updates.shenfengwl.fun/xingmang-manager/'],
-    ['XingMang-AI-Manager-1.2.3-x64.dmg', 'x64', 'https://updates.shenfengwl.fun/xingmang-manager/'],
+    ['XingMang-AI-Manager-1.2.3-Apple-Silicon-arm64.zip', 'arm64', 'https://updates.shenfengwl.fun/xingmang-manager/'],
+    ['XingMang-AI-Manager-1.2.3-Apple-Silicon-arm64.dmg', 'arm64', 'https://updates.shenfengwl.fun/xingmang-manager/'],
+    ['XingMang-AI-Manager-1.2.3-Intel-x64.zip', 'x64', 'https://updates.shenfengwl.fun/xingmang-manager/'],
+    ['XingMang-AI-Manager-1.2.3-Intel-x64.dmg', 'x64', 'https://updates.shenfengwl.fun/xingmang-manager/'],
   ])
   assert.equal(fs.readFileSync(path.join(fixture.outputDirectory, 'preserve-me.txt'), 'utf8'), 'preserve-me')
   assert.equal(fs.readFileSync(result.sha256ManifestPath, 'utf8'), formatSha256Manifest(result.entries))
@@ -1420,7 +1420,7 @@ test('accepts the timestamps a DMG mount leaves on the private copy', async (t) 
       return verifiedApplication(architecture)
     },
   })
-  assert.deepEqual(mounted, ['XingMang-AI-Manager-1.2.3-arm64.dmg', 'XingMang-AI-Manager-1.2.3-x64.dmg'])
+  assert.deepEqual(mounted, ['XingMang-AI-Manager-1.2.3-Apple-Silicon-arm64.dmg', 'XingMang-AI-Manager-1.2.3-Intel-x64.dmg'])
   assert.equal(result.entries.length, 6)
 })
 
@@ -1435,7 +1435,7 @@ test('still rejects a stamped private copy on the ZIP path, which mounts nothing
       stampPrivateCopy(artifactPath)
       return verifiedApplication(architecture)
     }),
-  }), /私有副本 XingMang-AI-Manager-1\.2\.3-arm64\.zip 在验证期间已变更或被替换/)
+  }), /私有副本 XingMang-AI-Manager-1\.2\.3-Apple-Silicon-arm64\.zip 在验证期间已变更或被替换/)
 })
 
 test('rejects a private DMG copy whose contents change while it is inspected', async (t) => {
@@ -1451,7 +1451,7 @@ test('rejects a private DMG copy whose contents change while it is inspected', a
       fs.writeFileSync(artifactPath, 'x'.repeat(fs.statSync(artifactPath).size))
       return verifiedApplication(architecture)
     },
-  }), /私有副本 XingMang-AI-Manager-1\.2\.3-arm64\.dmg 在验证期间内容已变更/)
+  }), /私有副本 XingMang-AI-Manager-1\.2\.3-Apple-Silicon-arm64\.dmg 在验证期间内容已变更/)
 })
 
 test('rejects a private DMG copy replaced by a link while it is inspected', async (t) => {
@@ -1475,7 +1475,7 @@ test('rejects a private DMG copy replaced by a link while it is inspected', asyn
       fs.symlinkSync(decoy, artifactPath)
       return verifiedApplication(architecture)
     },
-  }), /私有副本 XingMang-AI-Manager-1\.2\.3-arm64\.dmg 必须是非空普通文件，不能是链接/)
+  }), /私有副本 XingMang-AI-Manager-1\.2\.3-Apple-Silicon-arm64\.dmg 必须是非空普通文件，不能是链接/)
 })
 
 test('names the drifting identity fields when a private copy stops matching', async (t) => {

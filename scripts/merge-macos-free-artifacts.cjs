@@ -10,17 +10,16 @@ const fs = require('node:fs')
 const path = require('node:path')
 const YAML = require('yaml')
 const { parseLatestMacMetadata } = require('./verify-macos-free-artifacts.cjs')
+const { ARCHITECTURES, builderArtifactNames } = require('./macos-artifact-names.cjs')
 
-const ARCHITECTURES = ['arm64', 'x64']
 const METADATA_FILE = 'latest-mac.yml'
 const MAX_METADATA_BYTES = 1024 * 1024
 
+// 合并发生在改名之前，所以这里看到的仍然是 electron-builder 的构建名；带芯片名
+// 的发行名由 rename-macos-chip-artifacts.cjs 在合并之后统一换上。
 function architectureArtifactNames(version, architecture) {
-  return [
-    `XingMang-AI-Manager-${version}-${architecture}.dmg`,
-    `XingMang-AI-Manager-${version}-${architecture}.zip`,
-    `XingMang-AI-Manager-${version}-${architecture}.zip.blockmap`,
-  ]
+  const names = builderArtifactNames(version, architecture)
+  return [names.dmg, names.zip, names.blockmap]
 }
 
 function assertPlainDirectory(directory, label) {

@@ -81,7 +81,16 @@ npm run build:mac:dir
 npm run build:mac
 ```
 
-该命令依次运行类型检查、测试和编译，然后生成 arm64 与 x64 的 DMG 和 ZIP 候选。每个产物使用 `XingMang-AI-Manager-${version}-${arch}.${ext}` 命名；ZIP 是 Electron updater 所需的 macOS 更新载荷。两个命令均使用 `--publish never`，不会上传文件、修改更新源或发布版本。
+该命令依次运行类型检查、测试和编译，然后生成 arm64 与 x64 的 DMG 和 ZIP 候选。electron-builder 按 `XingMang-AI-Manager-${version}-${arch}.${ext}` 命名，也就是 `-arm64` / `-x64` 结尾的**构建名**；ZIP 是 Electron updater 所需的 macOS 更新载荷。两个命令均使用 `--publish never`，不会上传文件、修改更新源或发布版本。
+
+发布链路（`npm run dist:mac:free`）会在产物校验之前把六个文件统一改成带芯片名的**发行名**，并同步改写 `latest-mac.yml`：
+
+```
+XingMang-AI-Manager-<版本号>-Apple-Silicon-arm64.dmg / .zip / .zip.blockmap
+XingMang-AI-Manager-<版本号>-Intel-x64.dmg / .zip / .zip.blockmap
+```
+
+芯片名是给客户看的（「关于本机」里写的就是「芯片：Apple M4」或「处理器：Intel …」），架构后缀必须保留：electron-updater 的 `MacUpdater` 靠更新文件 URL 里是否含 `arm64` 子串来分架构下载，`e2e/macos-launch-smoke.mjs` 和产物校验也按 `-<架构>.zip` 结尾匹配。命名只在 `scripts/macos-artifact-names.cjs` 定义一处，改名由 `scripts/rename-macos-chip-artifacts.cjs` 执行（`npm run build:mac` 这类本机构建不改名，拿到的是构建名）。
 
 ## 免费自签发布
 
