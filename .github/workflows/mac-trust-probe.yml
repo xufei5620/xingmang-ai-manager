@@ -73,19 +73,25 @@ jobs:
           # 每一条都限时并吞掉失败，目的是把四种设法的结果一次看全，而不是停在第一条。
           # runner 的默认 shell 带 -e，不关掉的话第一条挂死或报错就把整个探针结束了。
           set +e
+          # macOS 不带 GNU 的 timeout（第一次跑探针就栽在这里，四条命令全是 127）。
+          # perl 的 alarm 是系统自带的等价物。
           attempt() {
             label="$1"; shift
             echo "--- $label"
             start=$(date +%s)
-            timeout 25 "$@"
+            /usr/bin/perl -e 'alarm shift; exec @ARGV' 25 "$@"
             status=$?
             echo "--- $label 退出码=$status 用时=$(( $(date +%s) - start ))s"
           }
           report() {
-            echo "--- find-identity -p codesigning（不过滤）"
+            # 不过滤的那份会把被过滤掉的原因附在条目后面，例如
+            # (CSSMERR_TP_NOT_TRUSTED)，这正是需要看的东西。
+            echo "--- find-identity -p codesigning（不过滤，带过滤原因）"
             security find-identity -p codesigning || true
             echo "--- find-identity -v -p codesigning（这条决定构建能不能选到身份）"
             security find-identity -v -p codesigning || true
+            echo "--- verify-cert -p codeSign"
+            security verify-cert -c probe.crt -p codeSign || true
           }
 
           echo "::group::基线：没有任何信任设置"
@@ -97,8 +103,12 @@ jobs:
             -k /Library/Keychains/System.keychain probe.crt
           security dump-trust-settings -d || true
           report
-          attempt 'A remove' sudo -n security remove-trusted-cert -d probe.crt
+          # 排除「设置写进去了但 trustd 还在用旧缓存」这一种可能。
+          echo "--- 重启 trustd 后再看一次"
+          sudo -n killall -HUP trustd || true
+          sleep 3
           report
+          attempt 'A remove' sudo -n security remove-trusted-cert -d probe.crt
           echo "::endgroup::"
 
           echo "::group::B 管理员域 + 不限策略、不指定 keychain"
@@ -122,6 +132,26 @@ jobs:
             -k /Library/Keychains/System.keychain probe.crt
           security dump-trust-settings -d || true
           report
+          attempt 'D remove' sudo -n security remove-trusted-cert -d probe.crt
+          echo "::endgroup::"
+
+          echo "::group::E 管理员域 + trustAsRoot（CA:TRUE 也试一下这一支）"
+          attempt 'E add' sudo -n security add-trusted-cert -d -r trustAsRoot -p codeSign \
+            -k /Library/Keychains/System.keychain probe.crt
+          security dump-trust-settings -d || true
+          report
+          attempt 'E remove' sudo -n security remove-trusted-cert -d probe.crt
+          echo "::endgroup::"
+
+          echo "::group::F 不改信任设置，直接用 codesign 签一个探针（这条通了就说明可以绕开信任）"
+          cp /bin/echo probe-binary
+          chmod 755 probe-binary
+          sha1=$(security find-identity -p codesigning "$kc" | /usr/bin/awk '/\)/ {print $2; exit}')
+          echo "身份 SHA-1：$sha1"
+          attempt 'F codesign' /usr/bin/codesign --force --sign "$sha1" --keychain "$kc" \
+            --timestamp=none --options runtime probe-binary
+          attempt 'F verify' /usr/bin/codesign --verify --strict --verbose=2 probe-binary
+          /usr/bin/codesign -dvvv probe-binary 2>&1 | head -20 || true
           echo "::endgroup::"
 
           echo "::group::收尾"
