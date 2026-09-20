@@ -24,6 +24,7 @@ import {
   buildDesktopUpdateStatus,
   canAttemptCodexDesktopFirstInstallFallback,
   describeCodexDesktopLaunchFailure,
+  describeCodexDesktopPrimaryMirrorSkip,
   desktopMirrorUpdateAvailable,
   downloadCodexDesktopPackage,
   downloadCodexDesktopPackageFromCandidates,
@@ -34,6 +35,7 @@ import {
   parseCodexDesktopWindowsLaunchContext,
   validateCodexDesktopResourceUrl,
   type CodexDesktopManifestCandidate,
+  type CodexDesktopServiceOptions,
   type CodexDesktopWindowsProbes,
 } from './codex-desktop-service'
 
@@ -833,6 +835,72 @@ describe('Codex Desktop update state', () => {
   }, 180_000)
 })
 
+describe('Codex Desktop mirror fallback disclosure', () => {
+  it('keeps the primary mirror download message unchanged', () => {
+    expect(describeCodexDesktopPrimaryMirrorSkip(
+      { label: '国内镜像', url: 'https://codexapp.agentsmirror.com/latest/win-x64' },
+      ['镜像备用源：查询超时'],
+    )).toBeNull()
+  })
+
+  it('explains why the primary mirror was skipped before the fallback download', () => {
+    expect(describeCodexDesktopPrimaryMirrorSkip(
+      { label: '镜像备用源', url: 'https://codexapp-r2.agentsmirror.com/latest/win-x64' },
+      ['国内镜像：查询超时'],
+    )).toBe('国内镜像本次不可用（查询超时）')
+  })
+
+  it('stays silent when the fallback simply published a newer build', () => {
+    expect(describeCodexDesktopPrimaryMirrorSkip(
+      { label: '镜像备用源', url: 'https://codexapp-r2.agentsmirror.com/latest/win-x64' },
+      ['OpenAI 官方源：返回 HTTP 503'],
+    )).toBeNull()
+  })
+
+  it('reads the failure the historical probe actually produces', async () => {
+    const fallbackManifestUrl = 'https://codexapp-r2.agentsmirror.com/previous/manifest'
+    const fetchMock = vi.fn(async (value: string | URL | Request) => {
+      const url = String(value)
+      if (url.startsWith(fallbackManifestUrl)) {
+        const response = new Response(JSON.stringify(testMirrorManifest('26.721.4979.0')), {
+          headers: { 'Content-Type': 'application/json' },
+        })
+        Object.defineProperty(response, 'url', { value: url })
+        return response
+      }
+      throw new Error('连接被拒绝')
+    })
+
+    const result = await fetchCodexDesktopPreviousManifestCandidates('x64', fetchMock)
+    const packageSource = result.candidates[0]?.packageSource
+    expect(packageSource?.label).toBe('镜像备用源上一版本')
+    expect(describeCodexDesktopPrimaryMirrorSkip(packageSource!, result.errors))
+      .toBe('国内镜像本次不可用（连接被拒绝）')
+  })
+
+  it('refuses a service built without the proxy-aware download fetch', () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-codex-fetch-'))
+    temporaryDirectories.push(directory)
+    const { downloadFetch, ...withoutDownloadFetch } = {
+      platform: 'linux' as const,
+      installationQueue: new InstallationQueue(),
+      createInstallTemporaryDirectory: async () => { throw new Error('未使用') },
+      detectMacosCodexApp: async () => { throw new Error('未使用') },
+      executeCommand: async () => { throw new Error('未使用') },
+      codexEnv: {},
+      store: new AppSettingsStore(path.join(directory, 'settings.json'), directory),
+      inspectNativeProviderConfig: () => relayCodexConfig(directory),
+      spawnDetached: async () => { throw new Error('未使用') },
+      downloadFetch: async () => { throw new Error('未使用') },
+    } satisfies CodexDesktopServiceOptions
+    expect(typeof downloadFetch).toBe('function')
+    // 全局 fetch 不读系统代理，漏传就等于开着加速也走直连。这一行本该编译不过。
+    // @ts-expect-error downloadFetch 是必填项
+    const incomplete: CodexDesktopServiceOptions = withoutDownloadFetch
+    expect(incomplete.platform).toBe('linux')
+  })
+})
+
 describe('Codex Desktop update state', () => {
   it('reports the official newer Windows build as available', () => {
     expect(buildDesktopUpdateStatus('26.715.8383.0', {
@@ -1139,6 +1207,7 @@ function queuedCodexDesktopFixture(installationQueue = new InstallationQueue()) 
     store: new AppSettingsStore(path.join(directory, 'settings.json'), directory),
     inspectNativeProviderConfig,
     spawnDetached: async () => { throw new Error('未使用') },
+    downloadFetch: async () => { throw new Error('未使用') },
   })
   return { service, installationQueue, inspectNativeProviderConfig, target: { isDestroyed: () => false, send: vi.fn() } }
 }
