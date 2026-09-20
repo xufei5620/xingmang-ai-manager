@@ -2,7 +2,7 @@
 
 这份文档回答一个问题：**怎么不碰自己的电脑，就拿到一份能装上试的星芒安装包。**
 
-分两部分：第 1~4 节是现在就能用的「出测试包」，第 5 节是「把整条发版也搬到 GitHub」的方案，还没拍板、也还没实现。
+分两部分：第 1~4 节是「出测试包」，第 5 节是「出正式包并发布」。
 
 ---
 
@@ -109,39 +109,41 @@ node scripts/prepare-acceleration-bundle.cjs --target darwin-arm64 --output "$RU
 
 ---
 
-## 5. 方案（待拍板）：把整条发版搬到 GitHub
+## 5. 把整条发版搬到 GitHub
 
-目标是把现在要在自己电脑上做的这几步搬上去：汇总变更日志、改版本号、出包、传 R2、打 tag、发 GitHub Release。**装到真机上点一遍验收这一步搬不走**，还是得自己做。
+2026-09-20 已落地为 `.github/workflows/publish-release.yml`。它把过去要在自己电脑上做的这几步搬上去：出包、传 R2、打 tag、发 GitHub Release。**装到真机上点一遍验收这一步搬不走**，还是得自己做——工作流特意在那里停下来等你。
 
-### 5.1 拆成三段
+版本收口仍然是一个单独的 PR：`npm run changelog:collect`、两份日志的标题改成版本号、`package.json` 改版本号（`release-notes.md` 首行必须等于 `package.json` 版本，这条已经有门禁）。合进 main 就是「这一版定了」，然后才点 Run workflow。
 
-**第一段：版本收口（PR）**
-一个 PR 做完 `npm run changelog:collect`、两份日志的标题改成版本号、`package.json` 改版本号。`release-notes.md` 首行必须等于 `package.json` 版本，这条已经有门禁。合进 main 就是「这一版定了」。
+### 5.1 一次发布，两次批准
 
-**第二段：出正式包（workflow_dispatch，跑在 `release` 环境）**
-输入一个 `confirm_version`，与 `package.json` 不一致就拒（release-build.yml 已有这段，照抄）。跑完整发布门禁出 Windows 和 macOS 两份包，带上第 4 节的加速线路和 4.5 的 macOS 签名。产物只上传 Actions artifact，**不传任何地方**。
+工作流分三个作业：
 
-**第三段：发布（workflow_dispatch，跑在 `release` 环境，要人工审批）**
-拿第二段的产物，按 `docs/RELEASING.md` 的顺序传 R2：**先安装包和 blockmap，最后才覆盖 `latest.yml` / `latest-mac.yml`**；反了的话用户会在文件还没传完时就被告知有新版本。传完打 tag、建 GitHub Release。
+1. **windows-build** —— 走 `release:build:unsigned` 的完整发布门禁，带第 4 节的加速线路。不读任何 secret。
+2. **macos-build** —— 用**已发布的那张签名证书**出双架构包，带加速线路，出完立刻把包启动一遍。它要读 `.p12`，所以挂 `environment: release`，会停下来等第一次 Approve。
+3. **publish** —— 传 R2、打 tag、建 Release。同样挂 `environment: release`，等第二次 Approve。
 
-三段分开而不是一条龙，是因为第三段之前必须插进「在真机上装一遍」这个人工环节。
+第一次批准放行的只是「用真证书出一份包」，产物只躺在 Actions artifact 里，对外什么都没发生。把包下下来装机验收，过了再批第二次。
+
+macOS 这一半与第 1 节那条测试路径的区别就在这张证书：测试包用 runner 现场生成的一次性身份，**绝不能**进更新源；正式包必须沿用已发布的那张，换一张等于让所有已装的 Mac 客户静默失去自动更新（原理见 `docs/RELEASING.md` 的 2.2）。签名预检会拿证书指纹跟 `scripts/macos-published-signing-identity.cjs` 里登记的台账对账，对不上直接失败。
+
+上传顺序固定为**先安装包和 blockmap → 逐字节复核能从客户会用的地址下载下来 → 最后才覆盖 `latest.yml` / `latest-mac.yml`**；反了的话用户会在文件还没传完时就被告知有新版本。`scripts/publish-workflow-config.test.cjs` 把这个顺序钉住了。
 
 ### 5.2 要准备的 secret
 
-全部放进仓库 Settings 的 **Environments → release**（不要放仓库级：`workflow_dispatch` 可以指定任意分支，仓库级 secret 对任意分支可见）。`release` 环境还要配上 required reviewers，并把 deployment branches 限制为 `main`。
+全部放进仓库 Settings 的 **Environments → release**（不要放仓库级：`workflow_dispatch` 可以指定任意分支，仓库级 secret 对任意分支可见）。`release` 环境还要配上 required reviewers，并把 deployment branches 限制为 `main`——那两次批准就是靠它实现的，环境不存在时 GitHub 会自动建一个**没有任何保护规则**的同名环境。
 
-| Secret | 是什么 | 用在哪一段 |
+| Secret | 是什么 | 用在哪个作业 |
 |---|---|---|
-| `MAC_SIGNING_P12_BASE64` | 发布签名证书（含私钥）导出的 .p12，base64 | 第二段 |
-| `MAC_SIGNING_P12_PASSWORD` | 上面那个 .p12 的密码 | 第二段 |
-| `MAC_SIGNING_SHA256` | 该证书的 SHA-256 指纹（不是机密，但要和上面成套） | 第二段 |
-| `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY` | R2 凭据，**权限只给 `xingmang-manager/` 前缀的写入**，不要给整桶、不要给删除 | 第三段 |
-| `R2_ACCOUNT_ID` / `R2_BUCKET` | R2 桶的定位信息 | 第三段 |
+| `CSC_NAME` | 签名身份名，即证书的 Common Name | macos-build |
+| `XINGMANG_MAC_SIGNING_P12_BASE64` | 发布签名证书（含私钥）导出的 .p12，base64 | macos-build |
+| `XINGMANG_MAC_SIGNING_P12_PASSWORD` | 上面那个 .p12 的密码 | macos-build |
+| `XINGMANG_MAC_SIGNING_SHA256` | 该证书的 SHA-256 指纹（不是机密，但要和上面成套） | macos-build |
+| `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY` | R2 凭据，**权限只给 `xingmang-manager/` 前缀的写入**，不要给整桶、不要给删除 | publish |
+| `R2_ACCOUNT_ID` / `R2_BUCKET` | R2 桶的定位信息 | publish |
+
+`.p12` 只能从钥匙串导出后用 GitHub 的 secret 输入框直接粘，不要经过聊天、工单或邮件。
 
 ### 5.3 还没决定的地方
 
-- 第三段要不要顺手发 GitHub Release（Release 的附件是公开可下载的；线路资源本身已经决定公开进仓库，这一点不再构成阻碍）。
-- tag 只在第三段成功之后打，还是第一段合并时就打。
-- 历史版本的 tag 要不要补。
-
-先按这三段实现，还是把第二段和第三段合成一个带审批的工作流，等拍板。
+- 历史版本的 tag 要不要补（候选 commit 表在 `docs/RELEASING.md` 第 5 节，要逐个核对过才能打）。

@@ -1,0 +1,414 @@
+# 手动触发的**正式发布**：出包、传更新源、打 tag、建 GitHub Release（2026-09-19
+# 应「整条发版搬上 GitHub」的要求添加）。
+#
+# 与 package-for-testing.yml 的分工：那条出的是给发布者自己装机验收的包，产物只
+# 躺在 Actions artifact 里；这条把包送到客户会更新到的地方。
+#
+# ## 为什么这条工作流可以自动上传，而 release-build.yml 明说不行
+#
+# `docs/RELEASING.md` 要求「上传文件、修改 Cloudflare R2 或切换线上 latest.yml
+# 必须获得产品所有者针对当前版本的明确发布授权」，release-build.yml 因此干脆不配
+# 任何对象存储凭据。这条工作流没有取消那道授权，而是把它变成一次点击：上传发生在
+# `publish` 作业里，该作业挂 `environment: release`，而 release 环境配了 required
+# reviewers —— 运行会停在那里等产品所有者按下 Approve，批准的正是这一次运行、这一个
+# 版本。没有那一下，什么都不会被上传。
+#
+# **所以 release 环境的 required reviewers 是承重墙，不是可选的加固。** 环境不存在
+# 时 GitHub 会在首次运行时自动创建一个同名环境，而自动创建出来的环境**没有任何保护
+# 规则**，那会把上面这段话变成一句空话。配置步骤见 docs/RELEASING.md 的「CI 发布」。
+#
+# ## 两个平台，两次批准
+#
+# macOS 必须用**已发布的那张证书**签：Squirrel.Mac 按已装应用的指定要求校验候选更新，
+# 而指定要求钉着叶证书的 SHA-1，换一张证书等于让所有已装的 Mac 客户失去自动更新。所以
+# macOS 作业要读 release 环境里的 .p12，也就同样会停下来等一次 Approve。一次发布因此
+# 有两次批准：一次放行「用真证书出包」，一次放行「传到更新源」。第一次批准之后什么都
+# 还没有对外发生，产物只躺在 Actions artifact 里。
+#
+# runner 现场生成的一次性身份（见 package-for-testing.yml）**绝不能**进更新源：老用户的
+# 机器不认它会拒绝更新，新装用户拿到的又是一个没人认得的发布者。本工作流不走那条路径。
+#
+# ## 上传顺序
+#
+# `latest.yml` / `latest-mac.yml` 是客户端用来判断"有没有新版本"的清单。它一旦先
+# 落地，用户会在安装包还没传完时就被告知有新版本，点下载拿到 404。所以顺序固定为：
+# **先传安装包与 blockmap → 逐字节确认它们能从客户会用的地址下载下来 → 最后才覆盖
+# 两份清单**。这三步在下面是三个独立的步骤，顺序由
+# scripts/publish-workflow-config.test.cjs 钉住。
+name: publish-release
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_version:
+        description: '要发布的版本号，必须与 package.json 完全一致（防止误发）'
+        required: true
+        type: string
+      platforms:
+        description: '这次发布哪些平台的包'
+        required: true
+        default: both
+        type: choice
+        options:
+          - both
+          - windows
+          - macos
+
+permissions:
+  contents: read
+
+concurrency:
+  # 两个并发发布会产出两套同版本却不同哈希的产物，而 latest.yml 里只能有一份 SHA-512。
+  group: publish-release
+  cancel-in-progress: false
+
+jobs:
+  windows-build:
+    if: ${{ inputs.platforms != 'macos' }}
+    runs-on: windows-latest
+    # 这个作业不读任何 secret，也不挂 environment：它只是出包。凭据集中在 publish
+    # 作业里，那里才有需要保护的东西。
+    timeout-minutes: 120
+    outputs:
+      version: ${{ steps.metadata.outputs.version }}
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Confirm the requested version matches package.json
+        id: metadata
+        shell: pwsh
+        env:
+          # P-26：写进 run 正文的 ${{ }} 是文本替换，不是变量绑定。带单引号的取值
+          # 会闭合字符串并执行后面的内容。绑进 env: 再用 $env: 读，PowerShell 看到
+          # 的就只是数据。
+          CONFIRM_VERSION: ${{ inputs.confirm_version }}
+        run: |
+          $declared = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          if ($declared -ne $env:CONFIRM_VERSION) {
+            Write-Error "版本不一致：package.json 是 $declared，本次触发填的是 $env:CONFIRM_VERSION"
+            exit 1
+          }
+          "version=$declared" >> $env:GITHUB_OUTPUT
+
+      - run: npm ci --registry=https://registry.npmjs.org/
+
+      - name: Install the Chromium the layout tests need
+        run: npx --no-install playwright install chromium
+
+      - name: Compile the main process the staging tool needs
+        run: node node_modules/typescript/bin/tsc -p tsconfig.electron.json
+
+      - name: Prepare the private acceleration bundle
+        env:
+          ACCELERATION_BUNDLE_DIR: ${{ runner.temp }}\acceleration-win32-x64
+        run: node scripts/prepare-acceleration-bundle.cjs --target win32-x64 --output "$env:ACCELERATION_BUNDLE_DIR"
+
+      - name: Build the installer through the full release gate
+        env:
+          XINGMANG_ACCELERATION_BUNDLE_DIR: ${{ runner.temp }}\acceleration-win32-x64
+        run: npm run release:build:unsigned
+
+      - name: Upload the release artifacts for the publish job
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: windows-release-${{ steps.metadata.outputs.version }}
+          path: |
+            release-${{ steps.metadata.outputs.version }}/*Setup.exe
+            release-${{ steps.metadata.outputs.version }}/*.blockmap
+            release-${{ steps.metadata.outputs.version }}/latest.yml
+          retention-days: 14
+          if-no-files-found: error
+
+
+  macos-build:
+    if: ${{ inputs.platforms != 'windows' }}
+    runs-on: macos-15
+    # 这个作业要读发布证书的 .p12，所以也挂 release 环境，也就同样停下来等批准。
+    # 批准它放行的只是「用真证书出一份包」，产物仍然只进 Actions artifact。
+    environment: release
+    timeout-minutes: 150
+    outputs:
+      version: ${{ steps.metadata.outputs.version }}
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Confirm the requested version matches package.json
+        id: metadata
+        env:
+          CONFIRM_VERSION: ${{ inputs.confirm_version }}
+        run: |
+          set -euo pipefail
+          declared=$(node -p "require('./package.json').version")
+          if [ "$declared" != "$CONFIRM_VERSION" ]; then
+            echo "::error::版本不一致：package.json 是 $declared，本次触发填的是 $CONFIRM_VERSION"
+            exit 1
+          fi
+          echo "version=$declared" >> "$GITHUB_OUTPUT"
+
+      - run: npm ci --registry=https://registry.npmjs.org/
+
+      # dist:mac:free 自己会跑 npm test，其中的浏览器套件要这个。
+      - run: npx --no-install playwright install chromium
+
+      # 两个架构各准备一份：Mac 的资源清单里记着架构，内核也是按架构的 Mach-O，
+      # 混用会被打包前的校验直接拒掉。
+      - name: Prepare the private acceleration bundles
+        env:
+          ACCELERATION_ARM64: ${{ runner.temp }}/acceleration-darwin-arm64
+          ACCELERATION_X64: ${{ runner.temp }}/acceleration-darwin-x64
+        run: |
+          node scripts/prepare-acceleration-bundle.cjs --target darwin-arm64 --output "$ACCELERATION_ARM64"
+          node scripts/prepare-acceleration-bundle.cjs --target darwin-x64 --output "$ACCELERATION_X64"
+
+      - name: Import the published signing identity into a throwaway keychain
+        env:
+          CSC_NAME: ${{ secrets.CSC_NAME }}
+          XINGMANG_MAC_SIGNING_P12_BASE64: ${{ secrets.XINGMANG_MAC_SIGNING_P12_BASE64 }}
+          XINGMANG_MAC_SIGNING_P12_PASSWORD: ${{ secrets.XINGMANG_MAC_SIGNING_P12_PASSWORD }}
+          XINGMANG_MAC_SIGNING_SHA256: ${{ secrets.XINGMANG_MAC_SIGNING_SHA256 }}
+          SIGNING_STATE: ${{ runner.temp }}/release-signing-state.json
+        run: node scripts/macos-release-keychain.cjs --import --state "$SIGNING_STATE"
+
+      - name: Build and verify the macOS packages with the published identity
+        # 签名预检会把这张证书的 SHA-256 跟 scripts/macos-published-signing-identity.cjs
+        # 里登记的已发布身份对账，对不上直接失败 —— 换证书就是全部已装 Mac 客户静默
+        # 失去自动更新，这一关是专门用来挡住它的。
+        timeout-minutes: 75
+        env:
+          CSC_NAME: ${{ secrets.CSC_NAME }}
+          XINGMANG_MAC_SIGNING_SHA256: ${{ secrets.XINGMANG_MAC_SIGNING_SHA256 }}
+          ACCELERATION_ARM64: ${{ runner.temp }}/acceleration-darwin-arm64
+          ACCELERATION_X64: ${{ runner.temp }}/acceleration-darwin-x64
+        run: npm run dist:mac:free -- --acceleration-arm64 "$ACCELERATION_ARM64" --acceleration-x64 "$ACCELERATION_X64"
+
+      - name: Launch the packaged macOS app and require it to stay alive
+        # 2026-09-19 那份每一项产物校验都绿的包，装上去一启动就被 dyld 杀掉。读产物
+        # 的检查看不见这件事，只有真的把它跑起来才看得见。
+        timeout-minutes: 6
+        env:
+          PACKAGE_VERSION: ${{ steps.metadata.outputs.version }}
+        run: node e2e/macos-launch-smoke.mjs "release-free-$PACKAGE_VERSION"
+
+      - name: Revoke the signing keychain and its trust setting
+        # 失败、取消都要走到这里：用户 keychain 搜索列表是全局状态，不能停在指向一个
+        # 已被回收的 keychain 上。
+        if: ${{ always() }}
+        env:
+          SIGNING_STATE: ${{ runner.temp }}/release-signing-state.json
+        run: |
+          if [ -f "$SIGNING_STATE" ]; then
+            node scripts/macos-release-keychain.cjs --release --state "$SIGNING_STATE"
+          fi
+
+      - name: Print artifact checksums
+        env:
+          PACKAGE_VERSION: ${{ steps.metadata.outputs.version }}
+        run: cat "release-free-$PACKAGE_VERSION/SHA256SUMS"
+
+      - name: Upload the macOS release artifacts for the publish job
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: macos-release-${{ steps.metadata.outputs.version }}
+          path: |
+            release-free-${{ steps.metadata.outputs.version }}/*.dmg
+            release-free-${{ steps.metadata.outputs.version }}/*.zip
+            release-free-${{ steps.metadata.outputs.version }}/*.blockmap
+            release-free-${{ steps.metadata.outputs.version }}/latest-mac.yml
+          retention-days: 14
+          if-no-files-found: error
+
+  publish:
+    needs: [windows-build, macos-build]
+    # 只发一个平台时另一个作业是 skipped，而被跳过的 needs 默认会把依赖它的作业也
+    # 跳过。这里显式写出「没取消、没有失败的依赖、至少有一个出了包」。
+    if: >-
+      ${{ !cancelled()
+      && needs.windows-build.result != 'failure'
+      && needs.macos-build.result != 'failure'
+      && (needs.windows-build.result == 'success' || needs.macos-build.result == 'success') }}
+    runs-on: ubuntu-latest
+    # 产品所有者按下 Approve 的那一刻，就是 RELEASING.md 要求的「针对当前版本的
+    # 明确发布授权」。没有这一行，凭据会对任意分支可见，而 workflow_dispatch 允许
+    # 指定任意 ref。
+    environment: release
+    permissions:
+      # 只有这一段需要写权限：打 tag 和建 Release。出包那一段仍是只读。
+      contents: write
+    timeout-minutes: 60
+    env:
+      # 两个出包作业各自核对过 confirm_version 与 package.json 一致，取跑过的那个。
+      PACKAGE_VERSION: ${{ needs.windows-build.outputs.version || needs.macos-build.outputs.version }}
+      # R2 桶里的前缀，也是 R2 凭据被限制到的那个前缀。
+      OBJECT_PREFIX: xingmang-manager
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci --registry=https://registry.npmjs.org/
+
+      - name: Fail early when the R2 credentials are not configured
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+        run: |
+          # 只判断非空，绝不回显取值。缺哪个就报哪个的名字，省得对着一条 403 猜。
+          missing=""
+          for name in R2_ACCOUNT_ID R2_BUCKET AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY; do
+            [ -n "${!name}" ] || missing="$missing $name"
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::release 环境缺少这些 secret：$missing（见 docs/RELEASING.md 的「CI 发布」一节）"
+            exit 1
+          fi
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        if: ${{ needs.windows-build.result == 'success' }}
+        with:
+          name: windows-release-${{ needs.windows-build.outputs.version }}
+          path: release-artifacts
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        if: ${{ needs.macos-build.result == 'success' }}
+        with:
+          name: macos-release-${{ needs.macos-build.outputs.version }}
+          path: release-artifacts
+
+      - name: List what is about to be published
+        run: |
+          ls -l release-artifacts
+          sha256sum release-artifacts/*
+
+      - name: Resolve the address clients will actually fetch from
+        id: feed
+        # 更新地址随版本迁移过一次（update-release-utils.cjs 的 resolveUpdateUrlForVersion），
+        # 在这里抄一份字面量就等于埋下「下次迁移后复核的是旧地址」。
+        run: |
+          set -euo pipefail
+          base=$(node -p "require('./scripts/update-release-utils.cjs').resolveUpdateUrlForVersion(require('./package.json').version)")
+          echo "base=${base%/}" >> "$GITHUB_OUTPUT"
+
+      # 第一步：安装包与 blockmap。这些文件先落地，客户端此刻还不知道有新版本。
+      - name: Upload the installers and their blockmaps
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+        run: |
+          set -euo pipefail
+          # 只发一个平台时另一半的通配符不该展开成字面量再被 aws 当成文件名。
+          shopt -s nullglob
+          endpoint="https://$R2_ACCOUNT_ID.r2.cloudflarestorage.com"
+          for file in release-artifacts/*Setup.exe release-artifacts/*.dmg release-artifacts/*.zip release-artifacts/*.blockmap; do
+            case "$file" in
+              *Setup.exe) type=application/vnd.microsoft.portable-executable ;;
+              *.dmg) type=application/x-apple-diskimage ;;
+              *.zip) type=application/zip ;;
+              *) type=application/octet-stream ;;
+            esac
+            aws s3 cp "$file" "s3://$R2_BUCKET/$OBJECT_PREFIX/$(basename "$file")" \
+              --endpoint-url "$endpoint" \
+              --content-type "$type"
+          done
+
+      # 第二步：确认它们真的能从客户会用的那个地址下载下来，而且字节一致。R2 写入
+      # 成功不等于自定义域已经能取到，中间还隔着一层缓存和路由。
+      - name: Verify the uploaded files are downloadable and byte-identical
+        env:
+          PUBLIC_BASE: ${{ steps.feed.outputs.base }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          checked=0
+          for file in release-artifacts/*Setup.exe release-artifacts/*.dmg release-artifacts/*.zip release-artifacts/*.blockmap; do
+            name=$(basename "$file")
+            curl --fail --silent --show-error --location --max-time 900 \
+              --output "$RUNNER_TEMP/$name" "$PUBLIC_BASE/$name"
+            if ! cmp -s "$file" "$RUNNER_TEMP/$name"; then
+              echo "::error::$name 上传后的内容与本地产物不一致，已停在覆盖更新清单之前"
+              exit 1
+            fi
+            checked=$((checked + 1))
+          done
+          # 一个都没核到，说明产物目录是空的或者名字变了，绝不能继续去覆盖清单。
+          if [ "$checked" -eq 0 ]; then
+            echo "::error::没有任何产物通过下载复核，已停在覆盖更新清单之前"
+            exit 1
+          fi
+          echo "已逐字节复核 $checked 个产物"
+
+      # 第三步，且必须是最后一步：更新清单。到这里为止线上仍是旧版本，随时可以放弃。
+      # 两份清单都在这一步，别的步骤一律不许碰它们 —— 顺手 cp 一次就让上面这道顺序
+      # 形同虚设，由 scripts/publish-workflow-config.test.cjs 钉住。
+      - name: Publish the update manifests
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+        run: |
+          set -euo pipefail
+          endpoint="https://$R2_ACCOUNT_ID.r2.cloudflarestorage.com"
+          for manifest in latest.yml latest-mac.yml; do
+            [ -f "release-artifacts/$manifest" ] || continue
+            aws s3 cp "release-artifacts/$manifest" \
+              "s3://$R2_BUCKET/$OBJECT_PREFIX/$manifest" \
+              --endpoint-url "$endpoint" \
+              --content-type text/yaml \
+              --cache-control 'no-cache'
+          done
+
+      - name: Re-verify the published Windows update feed end to end
+        # 重新下载远端 latest.yml 和安装程序、重算 SHA-512、确认 blockmap 可访问。
+        # 这一步失败就意味着线上处于半发布状态，必须立刻按 RELEASING.md 第 8 节
+        # 恢复旧的清单。
+        if: ${{ needs.windows-build.result == 'success' }}
+        run: npm run update:verify-feed -- --platform=windows
+
+      - name: Re-verify the published macOS update feed end to end
+        if: ${{ needs.macos-build.result == 'success' }}
+        run: npm run update:verify-feed -- --platform=macos
+
+      - name: Tag the commit that shipped and create the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHIPPED_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          # 附注 tag 要有打标人，而 runner 上没有配过 git 身份。
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # 打的是本次实际出包的那个 commit，不是"今天的 main"——提升版本号之后、
+          # 构建之前可能又合进了别的改动。附注 tag 自带打标时间，推上去之后不移动。
+          git tag -a "v$PACKAGE_VERSION" "$SHIPPED_SHA" -m "$PACKAGE_VERSION"
+          git push origin "v$PACKAGE_VERSION"
+          # release-notes.md 里是从 0.1.x 起的全部历史，Release 正文只要这一版那一节。
+          node scripts/extract-release-notes.cjs --version "$PACKAGE_VERSION" --output "$RUNNER_TEMP/release-section.md"
+          shopt -s nullglob
+          assets=(release-artifacts/*Setup.exe release-artifacts/*.dmg)
+          gh release create "v$PACKAGE_VERSION" \
+            --title "$PACKAGE_VERSION" \
+            --notes-file "$RUNNER_TEMP/release-section.md" \
+            "${assets[@]}"
