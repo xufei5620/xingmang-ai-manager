@@ -85,6 +85,10 @@ function healthyOptions(overrides = {}) {
   return {
     identityName: 'XingMang Free Update Identity',
     verifySelfSignature: () => true,
+    // 夹具指纹不是仓库登记的那张已发布证书，所以把台账核对让开；旧 profile 豁免
+    // 仍然走真实实现，也就是说下面那些 CA / keyUsage / 有效期断言照旧生效。
+    // 台账本身由本文件末尾那两条用例和 macos-published-signing-identity.test.cjs 覆盖。
+    assertPublishedIdentity: () => null,
     expectedFingerprint: 'AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99',
     now: new Date('2026-08-03T00:00:00Z'),
     runSecurity: (args) => {
@@ -124,6 +128,7 @@ test('signing preflight passes its explicit environment to every default securit
     env,
     now: expected.now,
     verifySelfSignature: () => true,
+    assertPublishedIdentity: expected.assertPublishedIdentity,
     spawnSync: (executable, args, options) => {
       calls.push({ executable, args, options })
       const output = executable === '/usr/bin/security'
