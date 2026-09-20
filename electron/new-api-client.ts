@@ -1057,7 +1057,11 @@ async function performRequest(
         throw new NewApiNetworkError('intercepted', `${label}请求被重定向到不受信任的地址`)
       }
     }
-    if (redirectStatuses.has(response.status)) {
+    // redirect:'manual' 下，真实的 3xx 按 fetch 规范会被过滤成 opaqueredirect：
+    // status 0、body 为空、url 也是空串，所以上面按状态码和按 url 的两道检查都
+    // 看不见它。漏掉这一条，校园网门户的那次 302 最后会变成一句「服务返回
+    // HTTP 0」——既说不清原因，也谈不上拒绝重定向。
+    if (response.type === 'opaqueredirect' || redirectStatuses.has(response.status)) {
       throw new NewApiNetworkError('intercepted', `${label}请求被重定向，已拒绝`)
     }
     const bodyText = await readBoundedResponseText(

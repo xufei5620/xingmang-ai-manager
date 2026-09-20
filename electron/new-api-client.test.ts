@@ -55,6 +55,20 @@ function jsonResponse(body: unknown, init: ResponseInit = {}, setCookies: string
   return response
 }
 
+/**
+ * redirect:'manual' 下 fetch 交回来的不是那个 302，而是一个被过滤过的响应：
+ * status 0、type 'opaqueredirect'、url 空串。门户认证页的重定向在真实运行时
+ * 长的就是这个样子，手写的 302 fixture 反而测不到它。
+ */
+function opaqueRedirectResponse(): Response {
+  const response = new Response(null, { status: 200 })
+  Object.defineProperty(response, 'type', { value: 'opaqueredirect' })
+  Object.defineProperty(response, 'status', { value: 0 })
+  Object.defineProperty(response, 'ok', { value: false })
+  Object.defineProperty(response, 'url', { value: '' })
+  return response
+}
+
 function withUrl(response: Response, url: string): Response {
   Object.defineProperty(response, 'url', { value: url })
   return response
@@ -714,6 +728,7 @@ describe('login', () => {
   it.each([
     ['a portal redirect', withUrl(jsonResponse({ success: true, data: {} }), 'https://portal.campus.test/login')],
     ['a 302 to the portal', new Response('', { status: 302, headers: { location: 'https://portal.campus.test/login' } })],
+    ['the opaque redirect fetch actually hands back', opaqueRedirectResponse()],
     ['a portal page served as HTTP 200', new Response('<html>请先完成上网认证</html>', { status: 200, headers: { 'Content-Type': 'text/html' } })],
   ])('reports %s as an interception instead of a login failure', async (_label, response) => {
     const fetchImpl = vi.fn<NewApiFetch>().mockResolvedValue(response)
