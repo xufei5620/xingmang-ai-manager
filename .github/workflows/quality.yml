@@ -213,13 +213,30 @@ jobs:
         # more room than the two either side of it.
         timeout-minutes: 8
         run: node e2e/realm-vault-recovery-smoke.mjs
-      # e2e/renderer-v2-native.mjs is deliberately not wired here: it asserts the
-      # window zoom equals contentWidth / 1280 for widths down to 960, while
-      # calculateUiZoom clamps to UI_MIN_ZOOM = 0.8, so 960 can only ever produce
-      # 0.8. The runner makes it worse — its work area is under 1280x720, so
-      # resolveWindowPlacement starts the window maximized and setContentSize is
-      # a no-op on Windows. It needs a desktop and a product expectation CI does
-      # not have; it belongs with the manual acceptance scripts.
+      # T-G5: the last two of the never-wired smokes. Both were blocked on the
+      # same two things and both were fixed rather than worked around: they
+      # assumed a desktop large enough that resolveWindowPlacement would not
+      # maximize the window (a maximized window ignores setContentSize on
+      # Windows, so every resize silently did nothing), and neither bounded a
+      # single wait, so a wedged Electron would have taken the job down at its
+      # cap with nothing printed. They now pin their own window state and run
+      # through the shared smoke runtime like the smokes above.
+      #
+      # Windows only on purpose: the zoom the first one asserts is written by
+      # electron/platform/renderer-v2.ts, whose title-bar overlay half is
+      # win32-specific, and macos-test is already the longest job in the matrix.
+      # Together they are a couple of seconds.
+      - name: Verify the native window zoom, star canvas and preference persistence
+        # The script budgets itself to 4 minutes. This is the backstop for a
+        # hang that outlives even that.
+        timeout-minutes: 6
+        run: node e2e/renderer-v2-native.mjs
+      - name: Verify a close during a committing reload does not wait for the renderer
+        # Budgets itself to 3 minutes; the whole run is under a second when the
+        # close path is healthy, and the point of the smoke is that it is not
+        # fifteen seconds.
+        timeout-minutes: 5
+        run: node e2e/renderer-v2-native-close-race.mjs
       - run: npm run build:win:ci
       - run: node scripts/verify-packaged-hardening.cjs release/win-unpacked
       - run: node e2e/packaged-hardening-smoke.mjs "release/win-unpacked/星芒AI管理工具.exe"

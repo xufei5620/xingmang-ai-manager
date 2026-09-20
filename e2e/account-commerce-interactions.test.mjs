@@ -20,6 +20,25 @@ async function visit(page, url) {
   await page.locator('#root > *').first().waitFor({ timeout: fixtureReadyTimeoutMs })
 }
 
+// 控件的暗色底可能是半透明叠加（disabled 就是 rgba(255,255,255,.075)），只看
+// backgroundColor 会把 255 当成「亮底」误判。把从祖先到自身的背景依次画进 1x1 画布，
+// 取的才是用户真正看到的那个颜色。
+async function compositedBackgroundColor(locator) {
+  return locator.evaluate((element) => {
+    const canvas = document.createElement('canvas')
+    canvas.width = canvas.height = 1
+    const context = canvas.getContext('2d')
+    const ancestors = []
+    for (let current = element; current; current = current.parentElement) ancestors.unshift(current)
+    for (const ancestor of ancestors) {
+      context.fillStyle = getComputedStyle(ancestor).backgroundColor
+      context.fillRect(0, 0, 1, 1)
+    }
+    const pixels = Array.from(context.getImageData(0, 0, 1, 1).data)
+    return `rgb(${pixels.slice(0, 3).join(', ')})`
+  })
+}
+
 function parseRgb(value) {
   const channels = value.match(/[\d.]+/g)?.slice(0, 3).map(Number)
   if (!channels || channels.length !== 3) throw new Error(`无法解析颜色: ${value}`)
@@ -798,8 +817,13 @@ test('dark account form controls use readable adaptive surfaces in every interac
       assert.equal(focusStyle.border, focusStyle.accent, `${section} focus 边框应使用当前皮肤的强调色`)
       assert.notEqual(focusStyle.shadow, 'none')
 
-      await firstInput.evaluate((element) => { element.disabled = true })
-      const disabledBackground = await firstInput.evaluate((element) => getComputedStyle(element).backgroundColor)
+      // 背景色带 150ms 过渡：禁用之后立刻读，拿到的还是上一帧的 focus 底色，这条断言
+      // 于是从来没真的看过 disabled 状态。等过渡跑完再读，macOS 上偶发的失败也随之消失。
+      await firstInput.evaluate(async (element) => {
+        element.disabled = true
+        await Promise.all(element.getAnimations().map((animation) => animation.finished.catch(() => undefined)))
+      })
+      const disabledBackground = await compositedBackgroundColor(firstInput)
       assert.ok(Math.max(...parseRgb(disabledBackground)) < 60, `${section} disabled 状态不应变成亮色背景`)
     }
 
@@ -809,21 +833,10 @@ test('dark account form controls use readable adaptive surfaces in every interac
 
     await visit(page, `${baseUrl}/e2e/account-commerce-fixture.html?scenario=visual&theme=dark&section=usage`)
     for (const selector of ['.account-usage-page-buttons button.active', '.account-center-recharge-button']) {
-      const style = await page.locator(selector).first().evaluate((element) => {
-        const computed = getComputedStyle(element)
-        const canvas = document.createElement('canvas')
-        canvas.width = canvas.height = 1
-        const context = canvas.getContext('2d')
-        const ancestors = []
-        for (let current = element; current; current = current.parentElement) ancestors.unshift(current)
-        for (const ancestor of ancestors) {
-          context.fillStyle = getComputedStyle(ancestor).backgroundColor
-          context.fillRect(0, 0, 1, 1)
-        }
-        const pixels = Array.from(context.getImageData(0, 0, 1, 1).data)
-        return { background: `rgb(${pixels.slice(0, 3).join(', ')})`, color: computed.color }
-      })
-      assert.ok(contrastRatio(style.color, style.background) >= 4.5, `${selector} 文字对比度不足`)
+      const target = page.locator(selector).first()
+      const background = await compositedBackgroundColor(target)
+      const color = await target.evaluate((element) => getComputedStyle(element).color)
+      assert.ok(contrastRatio(color, background) >= 4.5, `${selector} 文字对比度不足`)
     }
     await page.screenshot({ path: path.join(artifactDirectory, '1590x875-usage-dark.png'), fullPage: false })
   }, { viewport: { width: 1590, height: 875 } })
