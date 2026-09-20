@@ -234,6 +234,13 @@ module.exports = {
     allowToChangeInstallationDirectory: true,
     createDesktopShortcut: true,
     createStartMenuShortcut: true,
+    // 上面两项打开的是 electron-builder 自己那一步,它有两条会一声不吭跳过的
+    // 路径(更新器拉起的 --updated 安装、以及写公共桌面失败不检查返回值),客户
+    // 机上就表现为"装完桌面没图标"。build/installer.nsh 的 customInstall 在安装
+    // 收尾时补齐缺的那一个,只增不删,所以升级安装既不会多出图标也不会删掉用户
+    // 已有的。**这一行不能删**:少了它兜底脚本不会被编进安装程序,而打包日志
+    // 全绿,和现在一模一样。
+    include: 'installer.nsh',
     shortcutName: '星芒AI管理工具',
     uninstallDisplayName: '星芒AI管理工具',
   },
