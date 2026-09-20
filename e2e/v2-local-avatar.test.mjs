@@ -1,43 +1,27 @@
 import assert from 'node:assert/strict'
-import path from 'node:path'
 import { before, after, test } from 'node:test'
-import { chromium } from '@playwright/test'
-import { createServer } from 'vite'
-import { createPageErrorCollector } from './page-errors.mjs'
+import { createBrowserFixture, imageActionTimeoutMs, navigationTimeoutMs } from './harness.mjs'
 
-let server, browser, origin
-const pageErrors = createPageErrorCollector()
+const localAvatar = createBrowserFixture({
+  cacheDir: 'node_modules/.vite-v2-avatar',
+  viewport: { width: 1280, height: 900 },
+  sameOriginOnly: true,
+  // 这个套件的断言等的是图片解码与 canvas 缩放，比纯 DOM 断言慢一档。
+  actionTimeoutMs: imageActionTimeoutMs,
+  navigationTimeoutMs,
+})
 before(async () => {
   process.env.XINGMANG_RENDERER = 'v2'
-  server = await createServer({
-    root: path.resolve('.'),
-    cacheDir: 'node_modules/.vite-v2-avatar',
-    logLevel: 'error',
-    server: { host: '127.0.0.1', port: 5196, strictPort: false },
-  })
-  await server.listen()
-  origin = `http://127.0.0.1:${server.httpServer.address().port}`
-  browser = await chromium.launch({
-    headless: true,
-    executablePath: process.env.XINGMANG_E2E_CHROMIUM || undefined,
-  })
+  await localAvatar.start()
 })
 after(async () => {
-  await browser?.close()
-  await server?.close()
-  pageErrors.assertNone()
+  await localAvatar.stop()
+  localAvatar.assertNoPageErrors()
 })
 async function fixture(init) {
-  const page = pageErrors.watch(await browser.newPage({ viewport: { width: 1280, height: 900 } }))
-  page.setDefaultTimeout(7000)
-  page.setDefaultNavigationTimeout(30000)
-  await page.route('**/*', (route) =>
-    new URL(route.request().url()).origin === origin
-      ? route.continue()
-      : route.abort(),
-  )
+  const page = await localAvatar.newPage()
   if (init) await page.addInitScript(init)
-  await page.goto(`${origin}/e2e/v2-local-avatar-fixture.html`)
+  await page.goto(`${localAvatar.baseUrl}/e2e/v2-local-avatar-fixture.html`)
   await page.getByRole('button', { name: '更换头像', exact: true }).click()
   return page
 }
@@ -274,9 +258,9 @@ test('a discarded render of the next account does not block saving for the accou
 })
 
 test('account header matches the return-and-identity layout and moves refresh into its menu', async () => {
-  const page = pageErrors.watch(await browser.newPage({ viewport: { width: 1280, height: 900 } }))
+  const page = await localAvatar.newPage()
   try {
-    await page.goto(`${origin}/e2e/v2-business-fixture.html?page=account`)
+    await page.goto(`${localAvatar.baseUrl}/e2e/v2-business-fixture.html?page=account`)
     await page
       .getByText('管理你的星芒账号、余额与 Key。', { exact: true })
       .waitFor()

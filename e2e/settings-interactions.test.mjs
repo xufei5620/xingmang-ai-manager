@@ -2,24 +2,12 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { test } from 'node:test'
-import { fileURLToPath } from 'node:url'
-import { chromium } from '@playwright/test'
-import { createServer } from 'vite'
-
-const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+import { projectRoot as root, withBrowserFixture } from './harness.mjs'
 
 async function withFixture(run) {
-  const server = await createServer({ configFile: path.join(root, 'vite.config.ts'), root, logLevel: 'error', server: { host: '127.0.0.1', port: 0, strictPort: false } })
-  await server.listen()
-  const address = server.httpServer.address()
-  const browser = await chromium.launch({ headless: true, executablePath: process.env.XINGMANG_E2E_CHROMIUM || undefined })
-  try {
-    const page = await browser.newPage({ viewport: { width: 960, height: 560 } })
-    const errors = []
-    page.on('pageerror', (error) => errors.push(error.message))
-    await run(page, `http://127.0.0.1:${address.port}/e2e/settings-fixture.html`)
-    assert.deepEqual(errors, [])
-  } finally { await browser.close(); await server.close() }
+  await withBrowserFixture({ viewport: { width: 960, height: 560 } }, async (fixture) => {
+    await run(await fixture.newPage(), `${fixture.baseUrl}/e2e/settings-fixture.html`)
+  })
 }
 
 test('settings saves independent fields and rolls a failed switch back without losing a directory draft', async () => {

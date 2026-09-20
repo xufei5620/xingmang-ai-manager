@@ -1,25 +1,15 @@
 import assert from 'node:assert/strict'
-import path from 'node:path'
 import { before, after, test } from 'node:test'
-import { chromium } from '@playwright/test'
-import { createServer } from 'vite'
 import { fixtureReadyTimeoutMs } from './fixture-readiness.mjs'
-import { createPageErrorCollector } from './page-errors.mjs'
+import { createBrowserFixture, defaultViewport } from './harness.mjs'
 
-let server, browser, baseUrl
-const pageErrors = createPageErrorCollector()
-before(async () => {
-  server = await createServer({ root: path.resolve('.'), logLevel: 'error', server: { host: '127.0.0.1', port: 0, strictPort: false } })
-  await server.listen()
-  baseUrl = `http://127.0.0.1:${server.httpServer.address().port}`
-  browser = await chromium.launch({ headless: true, executablePath: process.env.XINGMANG_E2E_CHROMIUM || undefined })
-})
-after(async () => { await browser?.close(); await server?.close(); pageErrors.assertNone() })
+const shell = createBrowserFixture({ sameOriginOnly: true })
+before(async () => { await shell.start() })
+after(async () => { await shell.stop(); shell.assertNoPageErrors() })
 
-async function fixture(query = '', viewport = { width: 1280, height: 820 }) {
-  const page = pageErrors.watch(await browser.newPage({ viewport }))
-  await page.route('**/*', (route) => new URL(route.request().url()).origin === baseUrl ? route.continue() : route.abort())
-  await page.goto(`${baseUrl}/e2e/shell-navigation-fixture.html?${query}`)
+async function fixture(query = '', viewport = defaultViewport) {
+  const page = await shell.newPage({ viewport })
+  await page.goto(`${shell.baseUrl}/e2e/shell-navigation-fixture.html?${query}`)
   await page.locator('.shell-topbar').waitFor({ timeout: fixtureReadyTimeoutMs })
   return page
 }
@@ -87,7 +77,7 @@ test('untrusted announcements neither execute HTML nor fetch remote media', asyn
   const page = await fixture('announcement=malicious')
   try {
     const external = []
-    page.on('request', (request) => { if (new URL(request.url()).origin !== baseUrl) external.push(request.url()) })
+    page.on('request', (request) => { if (new URL(request.url()).origin !== shell.baseUrl) external.push(request.url()) })
     await page.getByRole('button', { name: /^公告/ }).click()
     await page.locator('.shell-announcement').waitFor()
     assert.equal(await page.locator('.shell-announcement script,.shell-announcement iframe,.shell-announcement img').count(), 0)

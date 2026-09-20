@@ -8,7 +8,8 @@ const server = await createServer({
   root: path.resolve('.'),
   cacheDir: 'node_modules/.vite-v2-business-screenshots',
   logLevel: 'error',
-  server: { host: '127.0.0.1', port: 5191, strictPort: false, watch: null, hmr: false },
+  // T-B2: 端口交给内核分配。写死首选端口在 strictPort:false 下只会静默换号，没有保障。
+  server: { host: '127.0.0.1', port: 0, strictPort: false, watch: null, hmr: false },
 })
 await server.listen()
 const origin = `http://127.0.0.1:${server.httpServer.address().port}`

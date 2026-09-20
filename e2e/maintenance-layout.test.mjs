@@ -1,39 +1,26 @@
 import assert from 'node:assert/strict'
-import path from 'node:path'
 import { after, before, test } from 'node:test'
-import { fileURLToPath } from 'node:url'
-import { chromium } from '@playwright/test'
-import { createServer } from 'vite'
 import { fixtureReadyTimeoutMs } from './fixture-readiness.mjs'
-import { createPageErrorCollector } from './page-errors.mjs'
+import { createBrowserFixture } from './harness.mjs'
 
-const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
-const pageErrors = createPageErrorCollector()
-let server
-let browser
+// 此前这个文件开 page 时不传 viewport，拿的是 Playwright 的 1280x720 默认值。
+// 换成显式写出来，免得以后 harness 的默认视口一改就悄悄改了这里的布局断言。
+const fixture = createBrowserFixture({ viewport: { width: 1280, height: 720 } })
 let page
 let row
 
 before(async () => {
-  server = await createServer({ configFile: path.join(projectRoot, 'vite.config.ts'), root: projectRoot, logLevel: 'error', server: { host: '127.0.0.1', port: 0, strictPort: false } })
-  await server.listen()
-  const baseUrl = `http://127.0.0.1:${server.httpServer.address().port}`
-  // Hosted CI installs the exact browser revision Playwright expects, but
-  // ad-hoc containers (cloud agent sessions) often ship a different one and
-  // fail the launch with "Executable doesn't exist". Honouring an explicit
-  // executable keeps `npm test` runnable there; CI leaves the variable unset
-  // and keeps using the managed download.
-  browser = await chromium.launch({ headless: true, executablePath: process.env.XINGMANG_E2E_CHROMIUM || undefined })
+  await fixture.start()
   // 一个 page 走完整个文件，不按用例开。browser.newPage() 每次都新建一个
   // BrowserContext，HTTP 缓存是空的，整张模块图要从 Vite dev server 重新取一遍；
   // Windows runner 上好几个 e2e 文件并行跑时，第二次冷开连 90 秒都不够（quality
   // run 35423428733 实测：同一文件第一个用例 4.1 秒通过，第二个卡满 90 秒超时）。
-  page = pageErrors.watch(await browser.newPage())
-  await page.goto(`${baseUrl}/e2e/maintenance-layout-fixture.html`)
+  page = await fixture.newPage()
+  await page.goto(`${fixture.baseUrl}/e2e/maintenance-layout-fixture.html`)
   row = page.locator('.maintenance-cli-section .maintenance-row').first()
   await row.waitFor({ timeout: fixtureReadyTimeoutMs })
 })
-after(async () => { await browser?.close(); await server?.close(); pageErrors.assertNone() })
+after(async () => { await fixture.stop(); fixture.assertNoPageErrors() })
 
 // 量的是 MaintenancePage 真正渲染出来的那一行,而不是抄进测试的一份 markup 副本:
 // 抄下来的副本在组件结构改掉之后照样能让这些断言全绿。

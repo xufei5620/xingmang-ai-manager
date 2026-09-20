@@ -2,31 +2,21 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { after, before, test } from 'node:test'
-import { fileURLToPath } from 'node:url'
-import { chromium } from '@playwright/test'
-import { createServer } from 'vite'
 import { fixtureReadyTimeoutMs } from './fixture-readiness.mjs'
-import { createPageErrorCollector } from './page-errors.mjs'
+import { createBrowserFixture, defaultViewport, projectRoot } from './harness.mjs'
 
-const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const artifacts = path.join(projectRoot, '.project-surgeon/audits/20260906-ui-implementation/primary-views')
-let server
-let browser
-let baseUrl
-const pageErrors = createPageErrorCollector()
+const fixture = createBrowserFixture()
 
 before(async () => {
-  server = await createServer({ configFile: path.join(projectRoot, 'vite.config.ts'), root: projectRoot, logLevel: 'error', server: { host: '127.0.0.1', port: 0, strictPort: false } })
-  await server.listen()
-  baseUrl = `http://127.0.0.1:${server.httpServer.address().port}`
-  browser = await chromium.launch({ headless: true, executablePath: process.env.XINGMANG_E2E_CHROMIUM || undefined })
+  await fixture.start()
   await fs.mkdir(artifacts, { recursive: true })
 })
-after(async () => { await browser?.close(); await server?.close(); pageErrors.assertNone() })
+after(async () => { await fixture.stop(); fixture.assertNoPageErrors() })
 
-async function openFixture(scenario, viewport = { width: 1280, height: 820 }, theme = 'dark') {
-  const page = pageErrors.watch(await browser.newPage({ viewport }))
-  await page.goto(`${baseUrl}/e2e/primary-views-fixture.html?scenario=${scenario}&theme=${theme}`)
+async function openFixture(scenario, viewport = defaultViewport, theme = 'dark') {
+  const page = await fixture.newPage({ viewport })
+  await page.goto(`${fixture.baseUrl}/e2e/primary-views-fixture.html?scenario=${scenario}&theme=${theme}`)
   await page.locator(scenario === 'welcome' ? '.welcome-v3' : '.dashboard-v3').waitFor({ timeout: fixtureReadyTimeoutMs })
   return page
 }
@@ -76,7 +66,7 @@ test('tools preserve configure, launch, update and account actions; missing runt
     const history = page.getByRole('button', { name: /查看记录/ })
     await history.evaluate((element) => element.click())
     assert.deepEqual(await page.evaluate(() => window.primaryViewActions), ['launch:claude', 'configure:claude', 'install:claude', 'account', 'history'])
-    await page.goto(`${baseUrl}/e2e/primary-views-fixture.html?scenario=missing`)
+    await page.goto(`${fixture.baseUrl}/e2e/primary-views-fixture.html?scenario=missing`)
     await page.locator('[data-provider-id="codex-desktop"]').getByRole('button').evaluate((element) => element.click())
     await page.locator('[data-provider-id="claude"]').getByRole('button', { name: '准备环境' }).evaluate((element) => element.click())
     assert.deepEqual(await page.evaluate(() => window.primaryViewActions), ['install:desktop', 'node'])
@@ -91,10 +81,10 @@ test('official and unknown sources stay distinct and detection failure exposes r
     assert.doesNotMatch(await page.locator('[data-provider-id="claude"]').innerText(), /已登录/)
     await page.locator('[data-provider-id="codex"]').getByRole('button', { name: '刷新额度', exact: true }).click()
     assert.deepEqual(await page.evaluate(() => window.primaryViewActions), ['official-usage'])
-    await page.goto(`${baseUrl}/e2e/primary-views-fixture.html?scenario=third-party`)
+    await page.goto(`${fixture.baseUrl}/e2e/primary-views-fixture.html?scenario=third-party`)
     await page.locator('[data-provider-id="claude"]').getByRole('button', { name: '检查配置' }).click()
     assert.deepEqual(await page.evaluate(() => window.primaryViewActions), ['configure:claude'])
-    await page.goto(`${baseUrl}/e2e/primary-views-fixture.html?scenario=failed`)
+    await page.goto(`${fixture.baseUrl}/e2e/primary-views-fixture.html?scenario=failed`)
     await page.locator('[data-provider-id="grok"]').getByRole('button', { name: '重试' }).evaluate((element) => element.click())
     assert.deepEqual(await page.evaluate(() => window.primaryViewActions), ['scan'])
   } finally { await page.close() }

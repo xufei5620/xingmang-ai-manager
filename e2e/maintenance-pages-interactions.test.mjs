@@ -2,29 +2,19 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { after, before, test } from 'node:test'
-import { fileURLToPath } from 'node:url'
-import { chromium } from '@playwright/test'
-import { createServer } from 'vite'
 import { fixtureReadyTimeoutMs } from './fixture-readiness.mjs'
-import { createPageErrorCollector } from './page-errors.mjs'
+import { createBrowserFixture, defaultViewport, projectRoot } from './harness.mjs'
 
-const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const artifacts = path.join(projectRoot, '.project-surgeon/audits/20260906-ui-implementation/maintenance-pages')
-let server
-let browser
-let baseUrl
-const pageErrors = createPageErrorCollector()
+const fixture = createBrowserFixture()
 before(async () => {
-  server = await createServer({ configFile: path.join(projectRoot, 'vite.config.ts'), root: projectRoot, logLevel: 'error', server: { host: '127.0.0.1', port: 0, strictPort: false } })
-  await server.listen()
-  baseUrl = `http://127.0.0.1:${server.httpServer.address().port}`
-  browser = await chromium.launch({ headless: true, executablePath: process.env.XINGMANG_E2E_CHROMIUM || undefined })
+  await fixture.start()
   await fs.mkdir(artifacts, { recursive: true })
 })
-after(async () => { await browser?.close(); await server?.close(); pageErrors.assertNone() })
-async function openFixture(query = '', viewport = { width: 1280, height: 820 }) {
-  const page = pageErrors.watch(await browser.newPage({ viewport }))
-  await page.goto(`${baseUrl}/e2e/maintenance-pages-fixture.html?${query}`)
+after(async () => { await fixture.stop(); fixture.assertNoPageErrors() })
+async function openFixture(query = '', viewport = defaultViewport) {
+  const page = await fixture.newPage({ viewport })
+  await page.goto(`${fixture.baseUrl}/e2e/maintenance-pages-fixture.html?${query}`)
   await page.locator('.maintenance-v3').waitFor({ timeout: fixtureReadyTimeoutMs })
   return page
 }
@@ -46,7 +36,7 @@ test('health guards duplicate runs, preserves its own results and passes exact r
     await page.getByRole('heading', { name: '逐项结果' }).waitFor()
     await page.getByRole('button', { name: '导出报告' }).click()
     assert.equal(await page.evaluate(() => window.maintenanceHarness.exportHealthCalls), 1)
-    await page.goto(`${baseUrl}/e2e/maintenance-pages-fixture.html?view=health&scenario=standalone-health`)
+    await page.goto(`${fixture.baseUrl}/e2e/maintenance-pages-fixture.html?view=health&scenario=standalone-health`)
     await page.getByRole('button', { name: '开始检查', exact: true }).click()
     await page.getByRole('heading', { name: '逐项结果' }).waitFor()
     assert.equal(await page.getByRole('heading', { name: '还没检查过' }).count(), 0)
@@ -116,7 +106,7 @@ test('log and preview failures do not produce a fake empty log list or fake repo
     await page.evaluate(() => { window.maintenanceHarness.loadFailure = false })
     await page.getByRole('button', { name: '重试读取', exact: true }).click()
     await page.getByRole('log').waitFor()
-    await page.goto(`${baseUrl}/e2e/maintenance-pages-fixture.html?view=feedback&scenario=preview-fails-once`)
+    await page.goto(`${fixture.baseUrl}/e2e/maintenance-pages-fixture.html?view=feedback&scenario=preview-fails-once`)
     await page.getByRole('button', { name: '预览脱敏报告', exact: true }).click()
     await page.getByRole('alert').waitFor()
     assert.equal(await page.getByTestId('feedback-report-text').count(), 0)
@@ -145,13 +135,13 @@ test('update distinguishes authoritative recheck, redownload, progress and devel
     await page.getByRole('heading', { name: '发现新版本', exact: true }).waitFor()
     await page.getByRole('button', { name: '下载更新', exact: true }).click()
     assert.deepEqual(await page.evaluate(() => window.maintenanceHarness.updates), ['check', 'download'])
-    await page.goto(`${baseUrl}/e2e/maintenance-pages-fixture.html?view=update&phase=cancelled`)
+    await page.goto(`${fixture.baseUrl}/e2e/maintenance-pages-fixture.html?view=update&phase=cancelled`)
     await page.getByRole('button', { name: '重新下载', exact: true }).click()
     assert.deepEqual(await page.evaluate(() => window.maintenanceHarness.updates), ['retry-download'])
-    await page.goto(`${baseUrl}/e2e/maintenance-pages-fixture.html?view=update&phase=downloading`)
+    await page.goto(`${fixture.baseUrl}/e2e/maintenance-pages-fixture.html?view=update&phase=downloading`)
     assert.equal(await page.locator('progress').getAttribute('value'), '64')
     assert.equal(await page.getByRole('button', { name: '下载更新', exact: true }).isDisabled(), true)
-    await page.goto(`${baseUrl}/e2e/maintenance-pages-fixture.html?view=update&phase=disabled`)
+    await page.goto(`${fixture.baseUrl}/e2e/maintenance-pages-fixture.html?view=update&phase=disabled`)
     assert.equal(await page.getByRole('button', { name: '检查更新', exact: true }).isDisabled(), true)
     assert.equal(await page.getByRole('button', { name: '重启并安装', exact: true }).isDisabled(), true)
   } finally { await page.close() }

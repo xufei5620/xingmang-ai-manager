@@ -1,44 +1,28 @@
 import assert from 'node:assert/strict'
-import path from 'node:path'
 import fs from 'node:fs/promises'
+import path from 'node:path'
 import { before, after, test } from 'node:test'
-import { chromium } from '@playwright/test'
-import { createServer } from 'vite'
 import { fixtureReadyTimeoutMs } from './fixture-readiness.mjs'
-import { createPageErrorCollector } from './page-errors.mjs'
+import { actionTimeoutMs, createBrowserFixture, navigationTimeoutMs } from './harness.mjs'
 
-let browser, server, origin
-const pageErrors = createPageErrorCollector()
+const business = createBrowserFixture({
+  cacheDir: 'node_modules/.vite-v2-business-tests',
+  viewport: { width: 1280, height: 900 },
+  sameOriginOnly: true,
+  actionTimeoutMs,
+  navigationTimeoutMs,
+})
 before(async () => {
   process.env.XINGMANG_RENDERER = 'v2'
-  server = await createServer({
-    root: path.resolve('.'),
-    cacheDir: 'node_modules/.vite-v2-business-tests',
-    logLevel: 'error',
-    server: { host: '127.0.0.1', port: 5191, strictPort: false },
-  })
-  await server.listen()
-  origin = `http://127.0.0.1:${server.httpServer.address().port}`
-  browser = await chromium.launch({
-    headless: true,
-    executablePath: process.env.XINGMANG_E2E_CHROMIUM || undefined,
-  })
+  await business.start()
 })
 after(async () => {
-  await browser?.close()
-  await server?.close()
-  pageErrors.assertNone()
+  await business.stop()
+  business.assertNoPageErrors()
 })
 const fixture = async (route) => {
-  const page = pageErrors.watch(await browser.newPage({ viewport: { width: 1280, height: 900 } }))
-  page.setDefaultTimeout(5000)
-  page.setDefaultNavigationTimeout(30000)
-  await page.route('**/*', (route) =>
-    new URL(route.request().url()).origin === origin
-      ? route.continue()
-      : route.abort(),
-  )
-  await page.goto(`${origin}/e2e/v2-business-fixture.html?${route}`)
+  const page = await business.newPage()
+  await page.goto(`${business.baseUrl}/e2e/v2-business-fixture.html?${route}`)
   // First paint waits on Vite transforming the module graph on demand, which on a
   // cold Windows runner under Defender routinely takes longer than the 5s default
   // the assertions below rely on. Waiting for the mount separately keeps that

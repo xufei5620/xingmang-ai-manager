@@ -1,28 +1,19 @@
 import assert from 'node:assert/strict'
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { fileURLToPath } from 'node:url'
 import { test } from 'node:test'
-import { chromium } from '@playwright/test'
-import { createServer } from 'vite'
+import { projectRoot as root, withBrowserFixture } from './harness.mjs'
 
-const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 async function withCanvas(run, search = '', openProject = true) {
-  const server = await createServer({ configFile: path.join(root, 'vite.config.ts'), root, logLevel: 'error', server: { host: '127.0.0.1', port: 0, strictPort: false } })
-  await server.listen()
-  const browser = await chromium.launch({ headless: true, executablePath: process.env.XINGMANG_E2E_CHROMIUM || undefined })
-  try {
-    const page = await browser.newPage({ viewport: { width: 1280, height: 820 } })
-    const errors = []
-    page.on('pageerror', (error) => errors.push(error.message))
-    await page.goto(`http://127.0.0.1:${server.httpServer.address().port}/e2e/canvas-close-fixture.html${search}`)
+  await withBrowserFixture({}, async (fixture) => {
+    const page = await fixture.newPage()
+    await page.goto(`${fixture.baseUrl}/e2e/canvas-close-fixture.html${search}`)
     if (openProject) {
       await page.getByRole('button', { name: '打开项目：关闭保护验收' }).click()
       await page.locator('.react-flow__node[data-id="prompt-1"]').waitFor()
     }
     await run(page)
-    assert.deepEqual(errors, [])
-  } finally { await browser.close(); await server.close() }
+  })
 }
 
 test('canvas project name drafts survive cancelling a native close request', async () => {

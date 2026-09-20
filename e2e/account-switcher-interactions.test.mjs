@@ -2,29 +2,20 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { after, before, test } from 'node:test'
-import { fileURLToPath } from 'node:url'
-import { chromium } from '@playwright/test'
-import { createServer } from 'vite'
 import { fixtureReadyTimeoutMs } from './fixture-readiness.mjs'
-import { createPageErrorCollector } from './page-errors.mjs'
+import { createBrowserFixture, projectRoot } from './harness.mjs'
 
-const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const artifacts = path.join(projectRoot, '.project-surgeon/audits/20260906-ui-implementation/account-switcher')
-let server
-let browser
-let baseUrl
-const pageErrors = createPageErrorCollector()
+const switcherViewport = { width: 960, height: 720 }
+const fixture = createBrowserFixture({ viewport: switcherViewport })
 before(async () => {
-  server = await createServer({ configFile: path.join(projectRoot, 'vite.config.ts'), root: projectRoot, logLevel: 'error', server: { host: '127.0.0.1', port: 0, strictPort: false } })
-  await server.listen()
-  baseUrl = `http://127.0.0.1:${server.httpServer.address().port}`
-  browser = await chromium.launch({ headless: true, executablePath: process.env.XINGMANG_E2E_CHROMIUM || undefined })
+  await fixture.start()
   await fs.mkdir(artifacts, { recursive: true })
 })
-after(async () => { await browser?.close(); await server?.close(); pageErrors.assertNone() })
-async function openFixture(query = '', viewport = { width: 960, height: 720 }) {
-  const page = pageErrors.watch(await browser.newPage({ viewport }))
-  await page.goto(`${baseUrl}/e2e/account-switcher-fixture.html?${query}`)
+after(async () => { await fixture.stop(); fixture.assertNoPageErrors() })
+async function openFixture(query = '', viewport = switcherViewport) {
+  const page = await fixture.newPage({ viewport })
+  await page.goto(`${fixture.baseUrl}/e2e/account-switcher-fixture.html?${query}`)
   await page.locator('#open-switcher').waitFor({ timeout: fixtureReadyTimeoutMs })
   await page.locator('#open-switcher').click()
   await page.getByRole('dialog').waitFor()

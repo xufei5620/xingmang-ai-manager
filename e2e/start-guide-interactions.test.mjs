@@ -2,29 +2,19 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { after, before, test } from 'node:test'
-import { fileURLToPath } from 'node:url'
-import { chromium } from '@playwright/test'
-import { createServer } from 'vite'
 import { fixtureReadyTimeoutMs } from './fixture-readiness.mjs'
-import { createPageErrorCollector } from './page-errors.mjs'
+import { createBrowserFixture, defaultViewport, projectRoot } from './harness.mjs'
 
-const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const artifacts = path.join(projectRoot, '.project-surgeon/audits/20260906-ui-implementation/start-guide')
-let server
-let browser
-let baseUrl
-const pageErrors = createPageErrorCollector()
+const fixture = createBrowserFixture()
 before(async () => {
-  server = await createServer({ configFile: path.join(projectRoot, 'vite.config.ts'), root: projectRoot, logLevel: 'error', server: { host: '127.0.0.1', port: 0, strictPort: false } })
-  await server.listen()
-  baseUrl = `http://127.0.0.1:${server.httpServer.address().port}`
-  browser = await chromium.launch({ headless: true, executablePath: process.env.XINGMANG_E2E_CHROMIUM || undefined })
+  await fixture.start()
   await fs.mkdir(artifacts, { recursive: true })
 })
-after(async () => { await browser?.close(); await server?.close(); pageErrors.assertNone() })
-async function openFixture(query = '', viewport = { width: 1280, height: 820 }) {
-  const page = pageErrors.watch(await browser.newPage({ viewport }))
-  await page.goto(`${baseUrl}/e2e/start-guide-fixture.html?${query}`)
+after(async () => { await fixture.stop(); fixture.assertNoPageErrors() })
+async function openFixture(query = '', viewport = defaultViewport) {
+  const page = await fixture.newPage({ viewport })
+  await page.goto(`${fixture.baseUrl}/e2e/start-guide-fixture.html?${query}`)
   await page.getByTestId('start-guide').waitFor({ timeout: fixtureReadyTimeoutMs })
   return page
 }
