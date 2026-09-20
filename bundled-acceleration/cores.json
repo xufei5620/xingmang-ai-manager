@@ -8,12 +8,12 @@
   },
   "targets": {
     "win32-x64": {
-      "asset": "mihomo-windows-amd64-v1.19.29.zip",
-      "assetSha256": "1a8520cfe425441eba3eba8623b27b985020031243fe1ecaa1af2b92358a03f9",
+      "asset": "mihomo-windows-amd64-compatible-v1.19.29.zip",
+      "assetSha256": "322aaa5957ba9e72afdda9b71cc4329f691d2d45ec39e70bbca3f7bf5aa93d52",
       "archive": "zip",
-      "entry": "mihomo-windows-amd64.exe",
+      "entry": "mihomo-windows-amd64-compatible.exe",
       "coreFile": "mihomo.exe",
-      "coreSha256": "4316ff91fecec2fca9acb5612d7400ba228c069ffd325b1f17f46f1d4ef7e0cd"
+      "coreSha256": "82cd796a23492f43a71c1ec27e4e5e0b3d58932014da5a36e79ed9b11fee8162"
     },
     "darwin-arm64": {
       "asset": "mihomo-darwin-arm64-v1.19.29.gz",
@@ -23,11 +23,11 @@
       "coreSha256": "ec66e3e883bdc3fca06753784e324e08921e13239f8e945587cb1bfbf4c6b936"
     },
     "darwin-x64": {
-      "asset": "mihomo-darwin-amd64-v1.19.29.gz",
-      "assetSha256": "b57fec2e38462532fe75252792b355b99db16b0b8ea2d6bdf0cd8bc7ddacb9d2",
+      "asset": "mihomo-darwin-amd64-compatible-v1.19.29.gz",
+      "assetSha256": "b43980c9bbcf10911f264662a8be4fdf4c95f4567244d6824c3f5365bab0e7d9",
       "archive": "gzip",
       "coreFile": "mihomo",
-      "coreSha256": "a15f68b62227c9058fcd158600808126c29a709174b23a5d51c0177b4611b595"
+      "coreSha256": "1b83bcab10da6a7d855314752badc9d38a54f3e7ce19b78d2ed5b317d3e4c0c2"
     }
   }
 }

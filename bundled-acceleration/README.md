@@ -18,6 +18,8 @@
 }
 ```
 
+**x64 一律取上游的 `amd64-compatible`（GOAMD64=v1）产物，不要取 `amd64`。** 后者是 v3 构建，要求 AVX/AVX2：Haswell（2013）之前的 Intel CPU 跑不了，Rosetta 2 也不提供 AVX，所以在 Apple 芯片上装 x64 包必然失败——内核一启动就退出，用户只看到「加速连接失败」。2026-09-20 的 Mac 真机测试就是栽在这里。`prepare-acceleration-bundle.cjs` 在两道哈希之后还会检查 x64 内核字节里有没有 v3 构建的运行时拒绝文案，钉错了会当场失败。
+
 Mac 的 `corePath` 改为目标架构 Mach-O 内核的绝对路径；arm64、x64 分别准备配置及对应的 `coreSha256`。仍可显式填写 `profilePath`，指向本目录 `profile.yaml` 的绝对路径，或原有仓库外自定义 YAML。其他仓库内路径会被拒绝。
 
 Windows 示例（路径均替换为实际路径）：
