@@ -1,3 +1,4 @@
+import { matchNetworkFailureMessage } from '../../../../electron/network-failure'
 import { matchAccountErrorMessage } from './account-errors'
 
 export interface RegistrationDraft { email: string; username: string; password: string; confirm: string; code: string; invite: string; agreed: boolean }
@@ -85,6 +86,12 @@ export function authErrorMessage(error: unknown, action: string): string {
   const message = error instanceof Error ? error.message : typeof error === 'string' ? error : ''
   if (/账号安全存储不可用|本地账号存储/.test(message)) return '本地账号安全存储暂不可用，原有数据已保留。请完全退出软件后重试；若仍失败，请联系支持并提供诊断日志。'
   if (requiresBrowserAuthentication(error)) return '此账号需要双重验证。客户端暂不支持该验证方式，请前往所选账号官网登录或联系官网客服。'
+  // 主进程已经把受限网络下的失败分好类并写好了中文（DNS / 证书被替换 / 门户认证
+  // 未完成 / 连接被切断），原样上屏。放在启发式之前：下面那几条正则宽到会把
+  // 「证书被替换」也说成「连接超时」，那会让用户在一个换网络才能解决的问题上
+  // 一遍遍重试密码。文案只有 electron/network-failure.ts 一份，不在这里复述。
+  const network = matchNetworkFailureMessage(message)
+  if (network) return network
   // The precise new-api table runs before the heuristics below: those are broad
   // enough to swallow a message whose real cause the server already named. A
   // change-password failure saying the original password is wrong would

@@ -1303,6 +1303,27 @@ describe('registerIpcHandlers', () => {
     expect(login).toHaveBeenLastCalledWith(expect.objectContaining({ siteId: 'solov' }))
   })
 
+  // 受限网络的排查成本几乎全在日志上：只写一句「登录失败」，客服看不出是 DNS、
+  // 证书还是门户认证。归得出原因就单列一个字段，归不出来不要硬塞。
+  it('records why a login failed on a restricted network in the runtime log', async () => {
+    const login = vi.fn(async () => { throw new Error('net::ERR_NAME_NOT_RESOLVED') })
+    const { runtimeLog } = register(undefined, undefined, undefined, undefined, undefined, undefined, { realmAccounts: { login } as never })
+    const handler = electronMocks.handlers.get('account:login')!
+    await expect(handler(trustedEvent(), { username: 'user@example.test', password: 'fixture-password' })).rejects.toThrow()
+    expect(runtimeLog.log).toHaveBeenCalledWith('error', 'ipc', 'account:login', expect.stringContaining('失败'),
+      expect.objectContaining({ networkFailure: 'dns' }))
+    expect(JSON.stringify(runtimeLog.log.mock.calls)).not.toContain('fixture-password')
+  })
+
+  it('does not label a failure it cannot attribute to the network', async () => {
+    const login = vi.fn(async () => { throw new Error('账号或密码错误，请检查后重试') })
+    const { runtimeLog } = register(undefined, undefined, undefined, undefined, undefined, undefined, { realmAccounts: { login } as never })
+    const handler = electronMocks.handlers.get('account:login')!
+    await expect(handler(trustedEvent(), { username: 'user@example.test', password: 'fixture-password' })).rejects.toThrow()
+    const failure = runtimeLog.log.mock.calls.find((call) => call[0] === 'error' && call[2] === 'account:login')
+    expect(failure?.[4]).not.toHaveProperty('networkFailure')
+  })
+
   it('reads remembered credentials only from the last successful identity without exposing its backend', async () => {
     const wrong = { read: vi.fn(async () => ({ identifier: 'unrelated@example.test', password: 'wrong-secret' })), save: vi.fn(), clear: vi.fn() }
     const right = { read: vi.fn(async () => ({ identifier: 'USER@example.test', password: 'right-secret' })), save: vi.fn(), clear: vi.fn() }
