@@ -117,8 +117,16 @@ if (query.has('desktopOnly')) {
 if (query.has('cliUpdate')) {
   system.clis.claude = { ...system.clis.claude, latestVersion: '2.0.0', updateAvailable: true }
 }
+// 探针抛错时主进程给的就是这个形状（`buildToolStatusFromSettled`）：装没装没有结论，
+// 版本号也没有，只有一句原因。
 if (query.has('detectionFailed')) {
-  system.clis.claude = { ...system.clis.claude, detectionFailed: true, detectionError: '本地探针暂时不可用' }
+  system.clis.claude = { ...system.clis.claude, installed: false, version: null, path: null,
+    detectionFailed: true, detectionError: '本地探针暂时不可用' }
+}
+// 更新检查失败的 CLI：装是装上了，但这次没能比出有没有新版本，页面要说清原因。
+if (query.has('cliUpdateFailed')) {
+  system.clis.claude = { ...system.clis.claude, updateAvailable: false, updateCheck: 'failed',
+    updateError: '已安装 CLI 的版本号无法解析，不能判断是否有更新' }
 }
 if (query.has('desktopDetectionFailed')) {
   system.desktopApps.codex = { ...system.desktopApps.codex, installed: false, version: null, path: null, appVersion: null,

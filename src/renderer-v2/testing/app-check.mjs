@@ -668,6 +668,24 @@ test('a failed probe offers a rescan on the maintenance page instead of an insta
     await row.getByText('检测失败', { exact: true }).waitFor()
     await row.getByRole('button', { name: '重新检测', exact: true }).waitFor()
     assert.equal(await row.getByRole('button', { name: '安装', exact: true }).count(), 0)
+    // A4：原因原样上屏，而版本位不谎报「未找到版本」——这次根本没探到。
+    assert.equal(await page.getByTestId('maintenance-reason-claude').innerText(), '本地探针暂时不可用')
+    assert.match(await row.innerText(), /版本未读到/)
+    await clean(page)
+  } finally { await page.close() }
+})
+// A4：`buildCliStatus` 早就写好了这两条原因，渲染层一直没人读它们。
+test('a failed update comparison says why on the maintenance page instead of going quiet', async () => {
+  const page = await open('cliUpdateFailed=1')
+  try {
+    await page.getByTestId('nav-more').click()
+    await page.getByTestId('nav-maintenance').click()
+    const row = page.getByTestId('maintenance-tool-claude')
+    await row.getByText('已安装', { exact: true }).waitFor()
+    assert.equal(
+      await page.getByTestId('maintenance-reason-claude').innerText(),
+      '已安装 CLI 的版本号无法解析，不能判断是否有更新',
+    )
     await clean(page)
   } finally { await page.close() }
 })

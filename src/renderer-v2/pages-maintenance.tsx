@@ -69,6 +69,7 @@ import {
 } from './registry/business'
 import { tools } from './registry/tools'
 import { canUninstallTool } from './features/tools/model'
+import { ToolStatusMeta, ToolStatusReason } from './features/tools/ToolStatusMeta'
 import { connectionCheckView } from './features/tools/connection-check'
 import { maintenanceFailureNotice, readMaintenanceStatus } from './features/tools/maintenance-status'
 import { ManualUninstallDialog, type ManualUninstallState } from './features/tools/ManualUninstall'
@@ -993,14 +994,21 @@ export function MaintenancePage({
                   {tool.name}
                 </>
               }
-              desc={tool.vendor}
+              desc={
+                <ToolStatusReason
+                  vendor={tool.vendor}
+                  status={status}
+                  statusUnknown={statusUnknown}
+                  testId={'maintenance-reason-' + id}
+                />
+              }
               meta={
-                <>
-                  {version || (statusUnknown ? '版本未读到' : '未找到版本')}{' '}
-                  <Pill tone={detectionFailed ? 'bad' : statusUnknown ? 'warn' : status?.installed ? 'ok' : 'neutral'}>
-                    {detectionFailed ? '检测失败' : statusUnknown ? '状态未读到' : status?.installed ? '已安装' : '未安装'}
-                  </Pill>
-                </>
+                <ToolStatusMeta
+                  version={version}
+                  status={status}
+                  statusUnknown={statusUnknown}
+                  testId={'maintenance-state-' + id}
+                />
               }
               actions={
                 <>
