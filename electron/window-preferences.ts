@@ -27,7 +27,12 @@ export interface WindowPlacement {
 }
 
 export const UI_DESIGN_WIDTH_DIP = 1280
-export const UI_MIN_ZOOM = 0.8
+// The floor is what the narrowest allowed window needs, not a readability
+// preference. resolveWindowPlacement pins the minimum width at 960 DIP, and
+// 960 / 1280 = 0.75, so any floor above 0.75 stops the renderer from laying
+// out at its 1280 design width and crops the layout instead of scaling it.
+// 0.7 leaves headroom for the displays whose work area is narrower than 960.
+export const UI_MIN_ZOOM = 0.7
 export const UI_MAX_ZOOM = 1.25
 
 const MAX_WINDOW_DIMENSION = 32_768
@@ -115,7 +120,17 @@ export function resolveWindowPlacement(
   }
 }
 
-/** Uses the complete WebContents width in DIP, before browser zoom. */
+/**
+ * Uses the complete WebContents width in DIP, before browser zoom.
+ *
+ * This is the only zoom formula in the product. Two windows-level appliers
+ * call it -- main.ts on resize/did-finish-load and platform/renderer-v2.ts on
+ * the same two events -- and both are registered on the same window, so the
+ * one that happens to run last decides the zoom the user sees. That is only
+ * safe while they cannot disagree: platform/zoom.ts must keep delegating here
+ * rather than re-deriving the clamp. 之前两份公式的下限分别是 0.8 和 0.7,
+ * 960 宽时各自算出 0.8 与 0.75, 谁生效纯靠监听注册顺序。
+ */
 export function calculateUiZoom(contentWidthDip: number, scale: AppUiScale = 'auto'): number {
   if (!Number.isFinite(contentWidthDip) || contentWidthDip <= 0) return 1
   const automatic = clamp(contentWidthDip / UI_DESIGN_WIDTH_DIP, UI_MIN_ZOOM, UI_MAX_ZOOM)

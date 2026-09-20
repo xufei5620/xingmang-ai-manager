@@ -13,16 +13,18 @@ import { createSmokeRuntime } from './smoke-runtime.mjs'
 //    非最大化的 windowState，改尺寸前再 unmaximize 一次兜底，并断言真实拿到的内容
 //    宽度就是请求的宽度——runner 要是仍然拒绝，这里要红得能看出原因，而不是被绕过。
 //
-// 2. 它把期望缩放写成 contentWidth / 1280。真正决定缩放的是
-//    electron/platform/renderer-v2.ts 的 apply()，用的是 calculatePlatformZoom
-//    （下限 0.7）。main.ts 的 applyPreferences 另有一份下限 0.8 的
-//    calculateUiZoom，两者在 960 宽时给出不同答案（0.75 与 0.8）；平台层的 resize
-//    监听在 queueMicrotask 里注册，晚于 main.ts 那条，所以最后写入的是平台层那份。
-//    期望值照平台层的公式算，顺带把这条「最后写入者」钉住：注册顺序一变这里就红。
+// 2. 它把期望缩放写成 contentWidth / 1280。写进窗口的是
+//    electron/platform/renderer-v2.ts 的 apply()，它的 resize 监听在
+//    queueMicrotask 里注册、晚于 main.ts 的 applyPreferences，所以最后写入的是
+//    平台层那条。当时两处各有一份公式、下限不同（0.7 与 0.8），960 宽算出
+//    0.75 与 0.8 两个答案；公式随后已合成一份（platform/zoom.ts 转调
+//    calculateUiZoom，统一下限 0.7），两个入口再也算不出不同值。这里的期望值
+//    照同一条公式算，不再依赖哪一条监听最后跑。
 
 const UI_DESIGN_WIDTH_DIP = 1280
-// 与 electron/platform/zoom.ts 的常量同值。冒烟脚本不 import 主进程产物（那是压缩过的
-// CommonJS），这份重复是有意的：它表达的是「产品应该算出什么」，独立于被测代码。
+// 与 electron/window-preferences.ts 那份唯一公式的常量同值（platform/zoom.ts 转出的就是
+// 它们）。冒烟脚本不 import 主进程产物（那是压缩过的 CommonJS），这份重复是有意的：
+// 它表达的是「产品应该算出什么」，独立于被测代码。
 const UI_MIN_ZOOM = 0.7
 const UI_MAX_ZOOM = 1.25
 const widths = [960, 1280, 1440]

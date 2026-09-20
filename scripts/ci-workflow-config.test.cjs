@@ -436,12 +436,14 @@ test('the Windows packaging job runs every smoke that has no other home', () => 
 })
 
 // T-G5: these two were the last never-wired smokes. The first used to pin CI to
-// an expectation the product contradicts — it read the zoom floor off
-// window-preferences.ts (0.8) while the window that actually receives the zoom
-// is driven by platform/renderer-v2.ts (0.7) — and both used to assume a desktop
-// big enough that resolveWindowPlacement would not maximize the window. Both are
-// reconciled now, so the gate flips: they must run, after the compile they need,
-// each under its own step bound.
+// an expectation the product contradicted at the time — it read the zoom floor
+// off window-preferences.ts (then 0.8) while the window that actually receives
+// the zoom is driven by platform/renderer-v2.ts (0.7) — and both used to assume
+// a desktop big enough that resolveWindowPlacement would not maximize the
+// window. The two floors no longer disagree: platform/zoom.ts now delegates to
+// calculateUiZoom, which is the product's single formula and floors at 0.7.
+// Both are reconciled, so the gate flips: they must run, after the compile they
+// need, each under its own step bound.
 test('both native renderer smokes run in CI once the application is compiled', () => {
   const commands = runSteps('windows-package')
   const packageSteps = workflow.jobs['windows-package'].steps
