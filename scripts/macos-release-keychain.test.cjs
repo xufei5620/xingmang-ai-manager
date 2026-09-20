@@ -4,6 +4,7 @@ const os = require('node:os')
 const path = require('node:path')
 const test = require('node:test')
 const {
+  describeImportFailure,
   importReleaseSigningIdentity,
   parseArguments,
   parseKeychainSearchList,
@@ -139,6 +140,37 @@ test('a failed import deletes the keychain it created', (t) => {
   assert.ok(calls.includes('delete-keychain'))
   // 搜索列表还没被动过，就不能去「还原」它。
   assert.equal(calls.includes('find-certificate'), false)
+})
+
+test('a rejected passphrase is reported with the three things worth checking', (t) => {
+  // security says the same sentence for a wrong password, a .p12 exported
+  // without one, and a base64 blob that lost bytes. On 2026-09-20 that cost a
+  // whole approval round to tell apart by hand.
+  const directory = temporaryDirectory(t)
+  assert.throws(() => importReleaseSigningIdentity({
+    env: healthyEnvironment(),
+    platform: 'darwin',
+    statePath: path.join(directory, 'state.json'),
+    runSecurity: (args) => {
+      if (args[0] === 'import') {
+        throw new Error('security import失败：security: SecKeychainItemImport: The user name or passphrase you entered is not correct.')
+      }
+      if (args[0] === 'create-keychain') fs.writeFileSync(path.join(directory, 'release-signing.keychain-db'), '')
+      if (args[0] === 'list-keychains' && args.length === 3) return ORIGINAL_SEARCH_LIST
+      return ''
+    },
+  }), (error) => {
+    assert.match(error.message, /XINGMANG_MAC_SIGNING_P12_PASSWORD/)
+    assert.match(error.message, /openssl pkcs12/)
+    // 指引里绝不能把密码本身带出来。
+    assert.doesNotMatch(error.message, /p12-password/)
+    return true
+  })
+})
+
+test('an unrelated import failure is passed through untouched', () => {
+  // 只有提到口令的那一句才配得上这段指引；别的错误加上它只会把人带偏。
+  assert.equal(describeImportFailure('security import失败：disk full'), 'security import失败：disk full')
 })
 
 test('the release signing import refuses anything but a throwaway hosted runner', (t) => {
