@@ -8,6 +8,15 @@ import { inspectClaudeDesktopStoreVirtualization } from './claude-desktop-manife
 const installationPath = 'C:\\Program Files\\WindowsApps\\Claude_2.2553.1.0_x64__pzs8sxrjxfjjc\\app\\Claude.exe'
 const allVirtualized = { localProfileVirtualized: true, roamingProfileVirtualized: true, roamingDeveloperVirtualized: true }
 
+// The Windows-only case below cold-starts Windows PowerShell 5.1 before it can assert anything,
+// and that start is not what it tests. Six jobs share one windows-latest runner, and on #244 the
+// first probe was killed at the old fixed 60s budget; the production code deliberately swallows
+// the child's error (I13), so all CI showed was the generic 「清单无法安全读取」. Same treatment
+// #219 gave electron/codex-desktop-appx.test.ts: a budget wide enough for a cold start behind
+// Defender, still bounded, and overridable through the same variable on a machine where even
+// this is not enough. The 180s case timeout below still bounds the test as a whole.
+const powerShellStartupTimeoutMs = Number(process.env.XINGMANG_POWERSHELL_TEST_TIMEOUT_MS ?? 90_000)
+
 function result(spec: CommandSpec, value: unknown): CommandResult {
   const stdout = JSON.stringify(value)
   return { executable: spec.executable, argv: [...spec.argv], exitCode: 0, signal: null, stdout, stderr: '', outputBytes: Buffer.byteLength(stdout), durationMs: 0 }
@@ -126,7 +135,7 @@ describe('inspectClaudeDesktopStoreVirtualization', () => {
     const options = {
       platform: 'win32' as const, osRelease: '10.0.22621', installationPath: path.join(packageDirectory, 'app', 'Claude.exe'),
       // Hosted runners can cold-start PowerShell beyond the production probe budget.
-      execute: (spec: CommandSpec, commandOptions?: RunCommandOptions) => runCommand(spec, { ...commandOptions, timeoutMs: 60000 }),
+      execute: (spec: CommandSpec, commandOptions?: RunCommandOptions) => runCommand(spec, { ...commandOptions, timeoutMs: powerShellStartupTimeoutMs }),
     }
     try {
       fs.writeFileSync(manifestPath, manifest(), 'utf8')

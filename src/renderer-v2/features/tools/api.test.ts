@@ -43,6 +43,42 @@ describe('CLI install version passthrough', () => {
   })
 })
 
+describe('CLI install cancellation routing', () => {
+  it('forwards a CLI cancel to the main process', async () => {
+    const cancelCliInstall = vi.fn(async () => ({ cancelled: true, reason: null }))
+    const api = createToolsApi({ cancelCliInstall } as unknown as XingmangApi)
+
+    await expect(api.cancelInstall('claude')).resolves.toEqual({ cancelled: true, reason: null })
+    expect(cancelCliInstall).toHaveBeenCalledWith('claude')
+  })
+
+  it('passes the main process refusal through untouched', async () => {
+    const refusal = { cancelled: false, reason: '正在把新版本写入工具目录，这一步中断会让工具用不了，请等它结束。' }
+    const cancelCliInstall = vi.fn(async () => refusal)
+    const api = createToolsApi({ cancelCliInstall } as unknown as XingmangApi)
+
+    await expect(api.cancelInstall('codex')).resolves.toEqual(refusal)
+  })
+
+  it('sends a Codex Desktop cancel to its own channel, not the CLI one', async () => {
+    const cancelCliInstall = vi.fn(async () => ({ cancelled: true, reason: null }))
+    const cancelCodexDesktopInstall = vi.fn(async () => ({ cancelled: true, reason: null }))
+    const api = createToolsApi({ cancelCliInstall, cancelCodexDesktopInstall } as unknown as XingmangApi)
+
+    await expect(api.cancelInstall('codexDesktop')).resolves.toEqual({ cancelled: true, reason: null })
+    expect(cancelCodexDesktopInstall).toHaveBeenCalledWith()
+    expect(cancelCliInstall).not.toHaveBeenCalled()
+  })
+
+  it('passes the Codex Desktop refusal through once the MSIX install has begun', async () => {
+    const refusal = { cancelled: false, reason: '正在安装 Codex 桌面端，这一步中断会留下装了一半的程序，请等它结束。' }
+    const cancelCodexDesktopInstall = vi.fn(async () => refusal)
+    const api = createToolsApi({ cancelCodexDesktopInstall } as unknown as XingmangApi)
+
+    await expect(api.cancelInstall('codexDesktop')).resolves.toEqual(refusal)
+  })
+})
+
 describe('toolbox read partial failures', () => {
   const system = { checkedAt: '2026-09-18T00:00:00.000Z', clis: {}, desktopApps: {}, runtime: {} }
   const platform = { platform: 'windows', codexDesktop: { launch: false } }

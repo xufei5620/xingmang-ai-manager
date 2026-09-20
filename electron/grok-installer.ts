@@ -57,6 +57,8 @@ export interface DownloadLatestGrokOptions {
   createTemporaryDirectory?: () => Promise<string>
   verifyBinary?: typeof verifyOfficialNativeCliFile
   onProgress?: (progress: GrokDownloadProgress) => void
+  /** 用户点「取消」后中止下载,并且不再换下一条镜像重试。 */
+  signal?: AbortSignal
 }
 
 export interface InstallDownloadedGrokOptions {
@@ -165,10 +167,16 @@ async function downloadArtifact(
   destination: string,
   fetchImpl: GrokVersionFetch,
   onProgress: (progress: GrokDownloadProgress) => void,
+  cancelSignal?: AbortSignal,
 ): Promise<{ size: number; sha256Hex: string }> {
   const controller = new AbortController()
   const connectionTimeout = setTimeout(() => controller.abort(), connectionTimeoutMs)
   connectionTimeout.unref?.()
+  // 取消和超时是两个独立的中止源,合成一个信号交给 fetch,
+  // 免得取消后还要等连接超时才真正断开。
+  const abortOnCancel = () => controller.abort(cancelSignal?.reason)
+  if (cancelSignal?.aborted) abortOnCancel()
+  cancelSignal?.addEventListener('abort', abortOnCancel, { once: true })
   let file: fs.promises.FileHandle | null = null
   try {
     const response = await fetchImpl(url, {
@@ -236,6 +244,7 @@ async function downloadArtifact(
     throw error
   } finally {
     clearTimeout(connectionTimeout)
+    cancelSignal?.removeEventListener('abort', abortOnCancel)
     await file?.close().catch(() => undefined)
   }
 }
@@ -257,12 +266,15 @@ export async function downloadLatestGrokBinary(
   const errors: string[] = []
   try {
     for (const url of buildGrokArtifactUrls(stable.version, architecture, stable.sourceUrl)) {
+      // 取消之后不许再试下一条镜像:否则点了取消,下载只是换了个地址继续。
+      options.signal?.throwIfAborted()
       try {
         const downloaded = await downloadArtifact(
           url,
           binaryPath,
           fetchImpl,
           options.onProgress ?? (() => undefined),
+          options.signal,
         )
         const verified = await verifyBinary('grok', binaryPath)
         if (verified.size !== downloaded.size || verified.sha256Hex !== downloaded.sha256Hex) {
@@ -277,8 +289,9 @@ export async function downloadLatestGrokBinary(
           sha256Hex: downloaded.sha256Hex,
         }
       } catch (error) {
-        errors.push(`${new URL(url).hostname}：${compactError(error)}`)
         await fs.promises.rm(binaryPath, { force: true }).catch(() => undefined)
+        options.signal?.throwIfAborted()
+        errors.push(`${new URL(url).hostname}：${compactError(error)}`)
       }
     }
     throw new Error(`Grok 官方二进制下载或签名校验失败：${errors.join('；')}`)

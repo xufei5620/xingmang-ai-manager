@@ -19,6 +19,7 @@ import type { ConfigBackupStore } from './backups'
 import { parseLocalNoticeReadSync, type AnnouncementReadStore } from './announcement-read-store'
 import type { AccelerationApi } from './acceleration-contract'
 import { cliCatalog, isProviderId, type ProviderId } from './catalog'
+import { isInstallCancelledError } from './install-cancellation'
 import {
   configureManagedClis,
   syncManagedCliKeySummary,
@@ -1654,9 +1655,24 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
       await service.installCli(provider, event.sender, requestedVersion)
       options.runtimeLog.log('info', 'maintenance', 'cli.install.completed', `${providerName} 安装或更新完成`, { provider })
     } catch (error) {
+      // 用户按的取消不是故障,记成 info,免得诊断导出里一片红。
+      if (isInstallCancelledError(error)) {
+        options.runtimeLog.log('info', 'maintenance', 'cli.install.cancelled', `${providerName} 安装已被用户取消`, { provider })
+        throw error
+      }
       options.runtimeLog.exception('maintenance', 'cli.install.failed', error, { provider })
       throw error
     }
+  })
+  registerTrustedHandler('cli:cancel-install', (_event, provider: unknown) => {
+    if (!isProviderId(provider)) throw new Error('未知的 CLI 类型')
+    const outcome = service.cancelCliInstall(provider)
+    options.runtimeLog.log('info', 'maintenance', 'cli.install.cancel-requested', `收到取消 ${cliCatalog[provider].name} 安装的请求`, {
+      provider,
+      cancelled: outcome.cancelled,
+      ...(outcome.reason ? { reason: outcome.reason } : {}),
+    })
+    return outcome
   })
   registerTrustedHandler('cli:uninstall', async (_event, provider: unknown) => {
     if (!isProviderId(provider)) throw new Error('未知的 CLI 类型')
@@ -1681,6 +1697,14 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   })
   registerTrustedHandler('setup:codex-status', () => service.inspectCodexSetupStatus())
   registerTrustedHandler('desktop:install-codex', (event) => service.installCodexDesktop(event.sender))
+  registerTrustedHandler('desktop:cancel-install-codex', () => {
+    const outcome = service.cancelCodexDesktopInstall()
+    options.runtimeLog.log('info', 'maintenance', 'desktop.codex.install.cancel-requested', '收到取消 Codex 桌面端安装的请求', {
+      cancelled: outcome.cancelled,
+      ...(outcome.reason ? { reason: outcome.reason } : {}),
+    })
+    return outcome
+  })
   registerTrustedHandler('desktop:uninstall-codex', () => service.uninstallCodexDesktop())
   registerTrustedHandler('desktop:check-update-codex', () => service.inspectCodexDesktopUpdate(true))
   registerTrustedHandler('cli:launch', (_event, provider: unknown, workspace: unknown) => {

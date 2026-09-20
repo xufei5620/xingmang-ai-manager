@@ -419,6 +419,13 @@ export interface AiChatCancelResult {
   mayStillComplete: boolean
 }
 
+export interface InstallCancelResult {
+  /** 取消请求是否被接受。 */
+  cancelled: boolean
+  /** 没能取消时给用户看的中文原因；取消成功为 null。 */
+  reason: string | null
+}
+
 export interface InstallProgress {
   provider: ProviderId
   state: 'started' | 'output' | 'success' | 'error'
@@ -524,10 +531,14 @@ export interface XingmangInvokeContract {
   installPythonRuntime: IpcInvokeDefinition<'runtime:install-python', [], PythonRuntimeInstallResult>
   /** version 省略时由主进程按已验证版本名单与设置决定装哪个版本(N1)。 */
   installCli: IpcInvokeDefinition<'cli:install', [provider: ProviderId, version?: string], void>
+  /** 中止正在进行的安装或更新;已经走到写入工具目录那一步时会被拒绝并给出原因。 */
+  cancelCliInstall: IpcInvokeDefinition<'cli:cancel-install', [provider: ProviderId], InstallCancelResult>
   uninstallCli: IpcInvokeDefinition<'cli:uninstall', [provider: ProviderId], ToolUninstallResult>
   checkCliUpdate: IpcInvokeDefinition<'cli:check-update', [provider: ProviderId], CliStatus>
   getCodexSetupStatus: IpcInvokeDefinition<'setup:codex-status', [], CodexSetupStatus>
   installCodexDesktop: IpcInvokeDefinition<'desktop:install-codex', [], CodexDesktopInstallResult>
+  /** 中止正在进行的安装或更新;已经开始装 MSIX 时会被拒绝并给出原因。 */
+  cancelCodexDesktopInstall: IpcInvokeDefinition<'desktop:cancel-install-codex', [], InstallCancelResult>
   uninstallCodexDesktop: IpcInvokeDefinition<'desktop:uninstall-codex', [], ToolUninstallResult>
   checkCodexDesktopUpdate: IpcInvokeDefinition<'desktop:check-update-codex', [], DesktopAppStatus>
   launchCli: IpcInvokeDefinition<'cli:launch', [provider: ProviderId, workspace: string], void>
@@ -890,10 +901,12 @@ export const ipcInvokeChannels = {
   restartWindows: 'runtime:restart-windows',
   installPythonRuntime: 'runtime:install-python',
   installCli: 'cli:install',
+  cancelCliInstall: 'cli:cancel-install',
   uninstallCli: 'cli:uninstall',
   checkCliUpdate: 'cli:check-update',
   getCodexSetupStatus: 'setup:codex-status',
   installCodexDesktop: 'desktop:install-codex',
+  cancelCodexDesktopInstall: 'desktop:cancel-install-codex',
   uninstallCodexDesktop: 'desktop:uninstall-codex',
   checkCodexDesktopUpdate: 'desktop:check-update-codex',
   launchCli: 'cli:launch',
