@@ -1,25 +1,15 @@
 import assert from 'node:assert/strict'
-import path from 'node:path'
 import { before, after, test } from 'node:test'
-import { chromium } from '@playwright/test'
-import { createServer } from 'vite'
 import { fixtureReadyTimeoutMs } from './fixture-readiness.mjs'
-import { createPageErrorCollector } from './page-errors.mjs'
+import { createBrowserFixture } from './harness.mjs'
 
-let server, browser, baseUrl
-const pageErrors = createPageErrorCollector()
-before(async () => {
-  server = await createServer({ root: path.resolve('.'), logLevel: 'error', server: { host: '127.0.0.1', port: 0, strictPort: false } })
-  await server.listen()
-  baseUrl = `http://127.0.0.1:${server.httpServer.address().port}`
-  browser = await chromium.launch({ headless: true, executablePath: process.env.XINGMANG_E2E_CHROMIUM || undefined })
-})
-after(async () => { await browser?.close(); await server?.close(); pageErrors.assertNone() })
+const fixture = createBrowserFixture({ sameOriginOnly: true })
+before(async () => { await fixture.start() })
+after(async () => { await fixture.stop(); fixture.assertNoPageErrors() })
 
 async function open(query = '') {
-  const page = pageErrors.watch(await browser.newPage({ viewport: { width: 1280, height: 820 } }))
-  await page.route('**/*', (route) => new URL(route.request().url()).origin === baseUrl ? route.continue() : route.abort())
-  await page.goto(`${baseUrl}/e2e/app-v3-fixture.html?${query}`)
+  const page = await fixture.newPage()
+  await page.goto(`${fixture.baseUrl}/e2e/app-v3-fixture.html?${query}`)
   // Vite transforms the module graph on demand, so first paint can take seconds on
   // a cold Windows runner, and assertions like count() / getAttribute() do not retry.
   // Wait for the mount before handing the page over.

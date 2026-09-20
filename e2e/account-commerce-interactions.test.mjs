@@ -2,38 +2,13 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { test } from 'node:test'
-import { fileURLToPath } from 'node:url'
-import { chromium } from '@playwright/test'
-import { createServer } from 'vite'
 import { fixtureReadyTimeoutMs } from './fixture-readiness.mjs'
-import { createPageErrorCollector } from './page-errors.mjs'
-
-const testDirectory = path.dirname(fileURLToPath(import.meta.url))
-const projectRoot = path.resolve(testDirectory, '..')
+import { projectRoot, withBrowserFixture } from './harness.mjs'
 
 async function withFixture(run, { viewport = { width: 1100, height: 760 } } = {}) {
-  const server = await createServer({
-    configFile: path.join(projectRoot, 'vite.config.ts'),
-    root: projectRoot,
-    logLevel: 'error',
-    server: { host: '127.0.0.1', port: 0, strictPort: false },
+  await withBrowserFixture({ viewport }, async (fixture) => {
+    await run(await fixture.newPage(), fixture.baseUrl)
   })
-  await server.listen()
-  const address = server.httpServer?.address()
-  if (!address || typeof address === 'string') throw new Error('Vite test server did not expose a TCP port')
-  const browser = await chromium.launch({
-    headless: true,
-    executablePath: process.env.XINGMANG_E2E_CHROMIUM || undefined,
-  })
-  const pageErrors = createPageErrorCollector()
-  try {
-    const page = pageErrors.watch(await browser.newPage({ viewport }))
-    await run(page, `http://127.0.0.1:${address.port}`)
-    pageErrors.assertNone()
-  } finally {
-    await browser.close()
-    await server.close()
-  }
 }
 
 // Every case in this suite opens its own cold page, so first paint waits on Vite

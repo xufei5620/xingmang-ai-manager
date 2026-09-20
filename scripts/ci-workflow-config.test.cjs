@@ -783,18 +783,56 @@ test('no browser suite can go green while its fixture threw', () => {
   // A suite with no browser has no page to listen to. Selecting on the import
   // rather than the file name keeps a real browser suite from opting out by
   // dropping its listener, which a name based allowlist would not notice.
+  // T-B1 moved most launches behind e2e/harness.mjs, so a suite now reaches a
+  // browser through either import.
   const suites = fs.readdirSync(path.join(root, 'e2e'))
     .filter((name) => name.endsWith('.test.mjs'))
     .map((name) => `e2e/${name}`)
-    .filter((suite) => /@playwright\/test/.test(fs.readFileSync(path.join(root, suite), 'utf8')))
+    .filter((suite) => /@playwright\/test|from '\.\/harness\.mjs'/.test(fs.readFileSync(path.join(root, suite), 'utf8')))
 
   assert.ok(suites.length >= 15, 'the e2e browser suite list must not silently shrink')
   for (const suite of suites) {
     const source = fs.readFileSync(path.join(root, suite), 'utf8')
+    // The harness owns the listener and the assertion for everything it opens;
+    // a suite that uses it must still be the one that empties the record, so
+    // that dropping the call is what fails rather than nothing at all.
+    const harnessed = /from '\.\/harness\.mjs'/.test(source)
+      && (/\.assertNoPageErrors\(\)/.test(source) || /withBrowserFixture\(/.test(source))
     const shared = /from '\.\/page-errors\.mjs'/.test(source) && /pageErrors\.assertNone\(\)/.test(source)
     const inline = /page\.on\('pageerror'/.test(source) && /assert\.deepEqual\(errors, \[\]\)/.test(source)
 
-    assert.ok(shared || inline, `${suite} must record pageerror and assert it stayed empty`)
+    assert.ok(harnessed || shared || inline, `${suite} must record pageerror and assert it stayed empty`)
+  }
+
+  // Everything above now leans on the harness actually doing it.
+  const harness = fs.readFileSync(path.join(root, 'e2e', 'harness.mjs'), 'utf8')
+  assert.match(harness, /from '\.\/page-errors\.mjs'/, 'the harness must collect pageerror for every page it opens')
+  assert.match(harness, /pageErrors\.watch\(/, 'every page the harness hands out must be watched')
+  assert.match(harness, /pageErrors\.assertNone\(\)/, 'the harness must expose the assertion its suites call')
+  // T-B2: a fixed preferred port is only ever a silent renumber under
+  // strictPort:false, so the harness must not reintroduce one.
+  assert.match(harness, /port: 0/, 'the shared fixture server must let the kernel pick the port')
+  assert.doesNotMatch(harness, /port: [1-9]/, 'the shared fixture server must not prefer a fixed port')
+  // T-S5: the container fallback lives in exactly one place now.
+  assert.match(harness, /XINGMANG_E2E_CHROMIUM/, 'the harness must honour the container browser override')
+})
+
+// T-B1: the boilerplate the harness replaced must not grow back one suite at a
+// time. A suite that launches its own Chromium is also a suite that silently
+// opts out of the container override and the pageerror collection above.
+test('e2e browser suites launch through the shared harness', () => {
+  const exempt = new Set([
+    // Drives Electron rather than Chromium, and asserts on the dev-server
+    // origin the main process is given, so it needs its own server options.
+    'e2e/macos-dev-origin.test.mjs',
+  ])
+  for (const name of fs.readdirSync(path.join(root, 'e2e')).filter((entry) => entry.endsWith('.test.mjs'))) {
+    const suite = `e2e/${name}`
+    if (exempt.has(suite)) continue
+    const source = fs.readFileSync(path.join(root, suite), 'utf8')
+    if (!/chromium\.launch\(/.test(source)) continue
+
+    assert.fail(`${suite} must open its browser through e2e/harness.mjs rather than launching its own`)
   }
 })
 
