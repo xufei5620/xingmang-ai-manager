@@ -4,7 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { _electron as electron, expect } from '@playwright/test'
-import { fixtureReadyTimeoutMs } from './fixture-readiness.mjs'
+import { collectedPromiseAttempts, collectedPromiseBackoffFor, fixtureReadyTimeoutMs } from './fixture-readiness.mjs'
 import { createSmokeRuntime } from './smoke-runtime.mjs'
 
 // Run after npm run compile. Every network transport is replaced before the
@@ -81,13 +81,12 @@ function bootFixture(config) {
     blocked.push({ origin, route })
     throw new Error('Network unavailable in isolated realm fixture')
   }
-  const fetchMock = async (input, init = {}) => {
+  const serveRequest = async (input, init) => {
     const raw = typeof input === 'string' ? input : input.url ?? String(input)
     const url = new URL(raw)
     const method = init.method ?? 'GET'
     const route = url.pathname
     const headers = new Headers(init.headers)
-    calls.push({ origin: url.origin, route, method })
     const body = typeof init.body === 'string' ? JSON.parse(init.body) : {}
     const xm = (data, cookie) => reply(raw, { success: true, message: '', data }, cookie)
     const api = (data) => reply(raw, { code: 0, data })
@@ -136,6 +135,17 @@ function bootFixture(config) {
       return reply(raw, { object: 'list', data: ['gpt-5.6-sol', 'gemini-3.7-flash', 'gpt-image-2'].map((id) => ({ id, object: 'model' })) })
     }
     return deny(url.origin, route)
+  }
+  // Each request records how it ended instead of the evidence file asserting the
+  // outcome afterwards: a route that stops being mocked has to surface as a
+  // refusal rather than still counting as one the fixture answered (T-G8).
+  const fetchMock = async (input, init = {}) => {
+    const url = new URL(typeof input === 'string' ? input : input.url ?? String(input))
+    const record = { origin: url.origin, route: url.pathname, method: init.method ?? 'GET', outcome: 'denied' }
+    calls.push(record)
+    const response = await serveRequest(input, init)
+    record.outcome = 'served'
+    return response
   }
   net.fetch = fetchMock
   globalThis.fetch = fetchMock
@@ -189,8 +199,41 @@ let currentProcessId
 let stderr = ''
 let stage = 'initial startup'
 let isolationChecks = 0
+let customerUiScans = 0
+let applicationStarts = 0
 const errors = []
 const processIds = []
+
+// A request the fixture must never route, because answering one would be the
+// fixture paying for real generation. Declared once so the mid-run assertion and
+// the measurement written into the evidence file cannot drift apart.
+const generationRoute = /images\/generations|chat\/completions|\/responses|\/videos/
+
+// T-G8, and the same treatment the other three evidence producers already got:
+// this file used to be a wall of literal `true` written after the last
+// assertion, which reads like a measurement once it is pasted into a review
+// document. Two of them were not even verdicts — the request count and the
+// "no paid generation" flag were constants with no counter behind them. Only a
+// name pushed by the step that proved it reaches the evidence now, and every
+// number in it is read back out of the fixture.
+const expectedAssertions = ['dual-realm-login', 'explicit-source-selection', 'identical-credentials',
+  'no-fallback-on-rejection', 'two-factor-preserves-session', 'source-bound-recovery', 'remembered-routing',
+  'platform-details-hidden', 'saved-switch', 'key-stores-separated', 'canvas-realm-events', 'restore-and-logout']
+const passedAssertions = []
+
+// Each restart launches a fresh Electron process with a fresh fixture, so the
+// counters inside it only ever describe the instance currently running. Reading
+// them once at the end would report the last of three as though it covered the
+// whole run — the same "looks like a measurement but is not one" problem T-G8 is
+// about. Every instance is folded in here before it is shut down instead.
+const fixtureTotals = { served: 0, refused: 0, egressDenied: 0, generation: 0,
+  rendererOrigins: new Set(), keyGroups: { solov: [], solovApi: [] } }
+
+function recordPass(name) {
+  // A typo would otherwise drop a name from the evidence with nothing failing.
+  if (!expectedAssertions.includes(name)) throw new Error(`Unknown smoke assertion: ${name}`)
+  if (!passedAssertions.includes(name)) passedAssertions.push(name)
+}
 
 function beginStage(label) {
   stage = label
@@ -223,18 +266,33 @@ async function prepareSandbox() {
 // #139). Everything routed through here either reads fixture state or repaints
 // a window, so replaying one changes nothing; the single evaluation that drives
 // the quit lifecycle stays out of it and is bounded without a retry.
+//
+// The replays back off rather than repeating on a fixed interval: what collects
+// the wrapper is the main process being stalled, and a stall long enough to take
+// one attempt is long enough to take three that follow 500ms apart. Run #236
+// spent all three between 131.0s and 132.0s on one stall. Both the attempt count
+// and the backoff come from the shared readiness budget, and every line below
+// names the attempt and the wait so a CI log says how much patience was spent.
 async function evaluateInMainProcess(label, body, argument) {
   let collected
-  for (let attempt = 1; attempt <= 3; attempt += 1) {
-    try { return await withDeadline(`${label} (attempt ${attempt})`, stepBudgetMs, () => application.evaluate(body, argument)) }
+  let backedOffMs = 0
+  for (let attempt = 1; attempt <= collectedPromiseAttempts; attempt += 1) {
+    try {
+      return await withDeadline(`${label} (attempt ${attempt}/${collectedPromiseAttempts})`, stepBudgetMs,
+        () => application.evaluate(body, argument))
+    }
     catch (error) {
       if (!/Resulting promise was garbage collected/.test(String(error?.message))) throw error
       collected = error
-      progress(`${label}: the inspector promise was collected, retrying`)
-      await new Promise((resolve) => setTimeout(resolve, 500))
+      if (attempt === collectedPromiseAttempts) break
+      const backoffMs = collectedPromiseBackoffFor(attempt)
+      progress(`${label}: the inspector promise was collected on attempt ${attempt}/${collectedPromiseAttempts}, retrying in ${backoffMs}ms (${backedOffMs}ms of backoff spent so far)`)
+      await new Promise((resolve) => setTimeout(resolve, backoffMs))
+      backedOffMs += backoffMs
     }
   }
-  throw collected
+  throw new Error(`${label}: the inspector promise was collected on all ${collectedPromiseAttempts} attempts, spread over ${backedOffMs}ms of backoff`,
+    { cause: collected })
 }
 
 function evaluateInRenderer(target, label, body, argument) {
@@ -245,12 +303,28 @@ function readFixtureStats() {
   return evaluateInMainProcess('fixture network statistics', () => globalThis.__realmSmoke.stats())
 }
 
+// Reads the running instance's counters and adds them to the run's totals. Every
+// request the application made ends up in exactly one of served or refused, so a
+// request that had escaped to a real site would have to be missing from both.
+async function foldFixtureStats() {
+  const stats = await readFixtureStats()
+  fixtureTotals.served += stats.calls.filter((call) => call.outcome === 'served').length
+  fixtureTotals.refused += stats.calls.filter((call) => call.outcome === 'denied').length
+  fixtureTotals.egressDenied += stats.blocked.length
+  fixtureTotals.generation += stats.calls.filter((call) => generationRoute.test(call.route)).length
+  for (const origin of stats.rendererBlocked) fixtureTotals.rendererOrigins.add(origin)
+  fixtureTotals.keyGroups.solov.push(...stats.groups.xm)
+  fixtureTotals.keyGroups.solovApi.push(...stats.groups.api)
+  return stats
+}
+
 function loginCallOrigins(stats) {
   return stats.calls.filter((call) => call.route.endsWith('/login'))
 }
 
 async function start() {
   progress('launching the isolated fixture application')
+  applicationStarts++
   application = await withDeadline('Electron launch', stepBudgetMs, () => electron.launch({
     cwd: projectRoot, args: [bootstrap, `--user-data-dir=${userData}`], env, timeout: stepBudgetMs }))
   currentProcessId = application.process().pid
@@ -293,6 +367,8 @@ async function stop() {
 
 async function assertCustomerUi(page) {
   assert.doesNotMatch(await page.locator('body').innerText(), /new[ -]?api|sub2api|xm\.solov\.cc|api\.solov\.cc/i)
+  customerUiScans++
+  recordPass('platform-details-hidden')
 }
 async function openLoginWithUi(page) {
   await page.getByRole('button', { name: '登录', exact: true }).click({ timeout: fixtureReadyTimeoutMs })
@@ -388,6 +464,7 @@ async function main() {
       const attempts = loginCallOrigins(await readFixtureStats())
       assert.deepEqual(attempts.slice(before).map((call) => call.origin), ['https://api.solov.cc'])
       assert.equal(await page.getByTestId('login-password').inputValue(), 'fixture-shared-password-123')
+      recordPass(outcome === 'two-factor' ? 'two-factor-preserves-session' : 'no-fallback-on-rejection')
     }
     await evaluateInMainProcess('restore the fixture login outcome', () => globalThis.__realmSmoke.setLoginOutcome('success'))
     beginStage('historical account recovery isolation')
@@ -399,6 +476,11 @@ async function main() {
     await loginWithUi(page, 'solov-api')
     const explicitLoginCalls = loginCallOrigins(await readFixtureStats())
     assert.deepEqual(explicitLoginCalls.map((call) => call.origin), ['https://xm.solov.cc', 'https://api.solov.cc', 'https://api.solov.cc', 'https://api.solov.cc'])
+    // Both realms have now accepted the same identifier and the same password,
+    // each one contacted only after it was picked by hand.
+    recordPass('dual-realm-login')
+    recordPass('identical-credentials')
+    recordPass('explicit-source-selection')
     for (const explicit of [true, false]) {
       const rejectedRecovery = await evaluateInRenderer(page, 'refused password recovery', async (selected) => {
         try {
@@ -412,6 +494,7 @@ async function main() {
     await evaluateInRenderer(page, 'password recovery on the official site', () => window.xingmang.sendPasswordResetCode('same@example.test', 'solov'))
     assert.equal((await readFixtureStats()).calls
       .filter((call) => call.route === '/api/reset_password' && call.origin === 'https://xm.solov.cc').length, 1)
+    recordPass('source-bound-recovery')
     await expect.poll(() => evaluateInRenderer(canvas, 'latest canvas realm event', () => window.__realmEvents.at(-1)),
       { timeout: fixtureReadyTimeoutMs }).toMatchObject({ siteId: 'solov-api', userId: 7 })
     const canvasGroups = await evaluateInRenderer(canvas, 'canvas groups', () => window.xingmangCanvasHost.listGroups())
@@ -428,19 +511,27 @@ async function main() {
       const remembered = await window.xingmang.getRememberedAccountLogin()
       return remembered?.identifier === 'same@example.test' && remembered.password === 'fixture-shared-password-123'
     }), true, 'Remembered login must follow the last successful input rather than the currently viewed account')
+    recordPass('remembered-routing')
     await expect.poll(() => evaluateInRenderer(canvas, 'latest canvas realm event', () => window.__realmEvents.at(-1)),
       { timeout: fixtureReadyTimeoutMs }).toMatchObject({ siteId: 'solov', userId: 7 })
     await switchWithUi(page, 'https://api.solov.cc')
     assert.equal((await evaluateInRenderer(page, 'session after switching forward', () => window.xingmang.getAccountSession())).siteId, 'solov-api')
     await expect.poll(() => evaluateInRenderer(canvas, 'latest canvas realm event', () => window.__realmEvents.at(-1)),
       { timeout: fixtureReadyTimeoutMs }).toMatchObject({ siteId: 'solov-api', userId: 7 })
-    const stats = await readFixtureStats()
+    // Both directions of the switch landed, and the canvas window followed each
+    // one without ever being handed a credential.
+    recordPass('saved-switch')
+    recordPass('canvas-realm-events')
+    // Also the first instance's fold: nothing below issues a request before the
+    // restart that replaces it.
+    const stats = await foldFixtureStats()
     assert.deepEqual(new Set(stats.groups.api), new Set(['Codex_pro', 'Claude-MAX(不限客户端)', 'Gemini', 'grok-heavy']))
     assert.equal(stats.groups.api.length, 4)
     assert.equal(stats.groups.xm.length, 4)
-    assert.ok(stats.calls.every((call) => !/images\/generations|chat\/completions|\/responses|\/videos/.test(call.route)))
+    assert.deepEqual(stats.calls.filter((call) => generationRoute.test(call.route)), [])
     await fs.access(path.join(userData, 'managed-cli-keys.dat'))
     await fs.access(path.join(userData, 'realms/api-account/managed-cli-keys.dat'))
+    recordPass('key-stores-separated')
     beginStage('restart with sub2api active')
     await stop()
     page = await start()
@@ -448,12 +539,14 @@ async function main() {
     assert.equal((await evaluateInRenderer(page, 'restored saved accounts', () => window.xingmang.listSavedAccounts())).length, 2)
     beginStage('logout and restart')
     await evaluateInRenderer(page, 'logout', () => window.xingmang.logoutAccount())
+    await foldFixtureStats()
     await stop()
     page = await start()
     assert.equal((await evaluateInRenderer(page, 'session after logout', () => window.xingmang.getAccountSession())).authenticated, false)
     const afterLogout = await evaluateInRenderer(page, 'saved accounts after logout', () => window.xingmang.listSavedAccounts())
     assert.equal(afterLogout.length, 1)
     assert.equal(afterLogout[0].origin, 'https://xm.solov.cc')
+    recordPass('restore-and-logout')
     beginStage('preferred backend after logout and restart')
     await openLoginWithUi(page)
     await page.getByTestId('auth-source').getByRole('button', { name: '历史账号', exact: true }).click()
@@ -465,11 +558,39 @@ async function main() {
     assert.deepEqual(preferredLoginCalls.map((call) => call.origin), ['https://api.solov.cc'])
     await evaluateInRenderer(page, 'final logout', () => window.xingmang.logoutAccount())
     assert.deepEqual(errors, [])
-    const result = { dualRealmLogin: true, explicitSourceSelection: true, identicalCredentials: true, noFallbackOnRejection: true,
-      twoFactorPreservesSession: true, sourceBoundRecovery: true, rememberedRouting: true, platformDetailsHidden: true,
-      savedSwitch: true, keyStoresSeparated: true,
-      canvasRealmEvents: true, restoreAndLogout: true, actualNetworkRequests: 0, generatedContent: false,
-      isolationChecks, fixtureProcessIds: processIds }
+    // The third instance's fold, which completes the run's totals.
+    const finalStats = await foldFixtureStats()
+    assert.deepEqual(finalStats.calls.filter((call) => generationRoute.test(call.route)), [],
+      'the fixture must never route a paid generation request')
+    assert.equal(fixtureTotals.generation, 0, 'no instance may route a paid generation request')
+    // Keeps a future edit from starting the application without proving, in that
+    // process, that every network transport is still closed.
+    assert.equal(isolationChecks, applicationStarts, 'every application start must run the isolation probes')
+    // A run that quietly stopped reaching a step would otherwise ship a shorter
+    // list and still exit 0.
+    assert.deepEqual([...passedAssertions].sort(), [...expectedAssertions].sort())
+    const result = {
+      passedAssertions,
+      // Every number here was counted during the run, summed over all three
+      // application instances. "Refused" is the fixture's normal answer to any
+      // route it does not mock, not a failure; what matters is that answered
+      // plus refused is every HTTP request the application made, so a request
+      // that had escaped to a real site would be missing from both.
+      // egressAttemptsDenied additionally covers the non-fetch transports the
+      // fixture replaces with a refusal.
+      measured: {
+        applicationStarts,
+        requestsAnsweredByFixture: fixtureTotals.served,
+        requestsRefusedByFixture: fixtureTotals.refused,
+        egressAttemptsDenied: fixtureTotals.egressDenied,
+        rendererOriginsBlocked: [...fixtureTotals.rendererOrigins],
+        generationRequests: fixtureTotals.generation,
+        isolationProbeRuns: isolationChecks,
+        customerUiScans,
+        managedKeyGroups: fixtureTotals.keyGroups,
+      },
+      fixtureProcessIds: processIds,
+    }
     await fs.writeFile(resultPath, JSON.stringify(result, null, 2) + '\n', 'utf8')
     return result
   } catch (error) {

@@ -774,6 +774,38 @@ test('a cold fixture open cannot be reported as a failed assertion again', () =>
   assert.match(appCheck, /await waitForFixtureReady\(page\)/, 'every app-check page must wait for the fixture to install')
 })
 
+// The inspector replay used to wait a flat 500ms three times, so on a Windows
+// runner all three landed inside one Defender stall (run #236 spent the whole
+// allowance between 131.0s and 132.0s) and took the packaging job with them.
+// Backing off only helps while the waits actually grow and while the smoke
+// keeps reading them from the shared module instead of restating a number.
+test('the inspector replay backs off instead of repeating on a fixed interval', async () => {
+  const readiness = await import(require('node:url').pathToFileURL(path.join(root, fixtureReadinessModule)).href)
+
+  assert.ok(readiness.collectedPromiseAttempts >= 3, 'a single collected promise must not end the run')
+  assert.ok(readiness.collectedPromiseBackoffMs > 0, 'the replay must wait before it retries')
+  assert.ok(readiness.collectedPromiseBackoffCapMs >= readiness.collectedPromiseBackoffMs,
+    'the ceiling must not sit below the first wait')
+
+  const waits = Array.from({ length: readiness.collectedPromiseAttempts - 1 },
+    (_, index) => readiness.collectedPromiseBackoffFor(index + 1))
+
+  assert.equal(waits[0], readiness.collectedPromiseBackoffMs)
+  for (const [index, wait] of waits.entries()) {
+    assert.ok(wait <= readiness.collectedPromiseBackoffCapMs, 'no single wait may exceed the ceiling')
+    if (index > 0) assert.ok(wait > waits[index - 1] || waits[index - 1] === readiness.collectedPromiseBackoffCapMs,
+      'each wait must grow until it reaches the ceiling')
+  }
+  // Wide enough to outlast the stall that collected the wrapper three times in
+  // a second, and still a small fraction of the step budget it spends from.
+  const total = waits.reduce((sum, wait) => sum + wait, 0)
+  assert.ok(total >= 3_000, `the replays must spread over at least 3s of backoff, got ${total}ms`)
+
+  const smoke = fs.readFileSync(path.join(root, 'e2e/realm-account-smoke.mjs'), 'utf8')
+  assert.match(smoke, /collectedPromiseBackoffFor/, 'the smoke must take its backoff from the shared module')
+  assert.doesNotMatch(smoke, /setTimeout\(resolve, \d/, 'the smoke must not restate a retry interval of its own')
+})
+
 // A React render crash or an unhandled rejection inside a fixture leaves the
 // page standing with whatever it had already committed, so a suite that only
 // asserts on the elements it touches stays green through it. Every browser
@@ -859,6 +891,9 @@ const evidenceProducers = [
   'e2e/canvas-group-refresh.mjs',
   'e2e/acceleration-profile-isolation-smoke.mjs',
   'e2e/renderer-v2-native.mjs',
+  // T-G8 的最后一处：这条冒烟的证据文件里还躺着 `actualNetworkRequests: 0` 和
+  // `generatedContent: false` 两个没有计数器支撑的常量。
+  'e2e/realm-account-smoke.mjs',
 ]
 
 test('acceptance evidence reports what the run observed, not literals', () => {
@@ -873,4 +908,19 @@ test('acceptance evidence reports what the run observed, not literals', () => {
         `${producer} must not state a behaviour as a literal beside the assertions it measured`)
     }
   }
+
+  // The realm smoke builds its payload as a named object rather than inline, so
+  // the scan above cannot see it. Its every field is either the recorded list or
+  // a number read back out of the fixture; the two constants T-G8 named must not
+  // come back, and the recorded list must be checked against the names the run
+  // was supposed to reach rather than simply written out however short it is.
+  const realmSmoke = fs.readFileSync(path.join(root, 'e2e/realm-account-smoke.mjs'), 'utf8')
+  const payload = realmSmoke.match(/const result = \{[\s\S]*?\n {4}\}\n/)
+
+  assert.ok(payload, 'the realm smoke must build its evidence payload in one place')
+  assert.doesNotMatch(payload[0], /:\s*(?:true|false)\b/, 'no field in the realm evidence may be a literal verdict')
+  assert.doesNotMatch(payload[0], /actualNetworkRequests|generatedContent/,
+    'both constants T-G8 named had no counter behind them')
+  assert.match(realmSmoke, /assert\.deepEqual\(\[\.\.\.passedAssertions\]\.sort\(\), \[\.\.\.expectedAssertions\]\.sort\(\)\)/,
+    'a run that stopped reaching a step must fail rather than ship a shorter list')
 })
