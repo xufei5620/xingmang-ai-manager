@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { ProviderConfigSummary, ProviderId } from '../../../../electron/ipc-contract'
-import { canUninstallTool, codexDesktopUpdateKind, connectionReady, presentTools, providerFor, rollbackVersion, sourceFor, versionSubtitle, type ToolboxSnapshot, type ToolPresentation } from './model'
+import { canUninstallTool, codexDesktopUpdateKind, connectionReady, presentTools, providerFor, rollbackVersion, sourceFor, toolAvailability, updateCheckFailure, versionSubtitle, type ToolboxSnapshot, type ToolPresentation } from './model'
 import {
   writeManualSourceMarker,
   type SourceMarkerStorage,
@@ -238,5 +238,68 @@ describe('renderer CLI version advice', () => {
     expect(rollbackVersion(row(advice, null) as ToolPresentation)).toBeNull()
     expect(rollbackVersion(row(null) as ToolPresentation)).toBeNull()
     expect(rollbackVersion(row({ ...advice, rollbackAvailable: false }) as ToolPresentation)).toBeNull()
+  })
+})
+
+describe('renderer tool availability', () => {
+  it('names the probe failure reason instead of collapsing it into "not installed"', () => {
+    const availability = toolAvailability({ installed: false, detectionFailed: true, detectionError: 'npm 查询超时' })
+    expect(availability.state).toBe('detectionFailed')
+    expect(availability.label).toBe('检测失败')
+    expect(availability.tone).toBe('bad')
+    expect(availability.reason).toBe('npm 查询超时')
+    // 没探到不是「未找到版本」,那是一个这次并没有得出的结论。
+    expect(availability.versionFallback).toBe('版本未读到')
+  })
+
+  it('still says the probe failed when the main process sent no reason', () => {
+    const availability = toolAvailability({ installed: false, detectionFailed: true, detectionError: null })
+    expect(availability.state).toBe('detectionFailed')
+    expect(availability.reason).toBe('检测没有完成，装没装无法确认')
+  })
+
+  it('keeps a failed probe distinct from "not installed" even when the probe claims installed:false', () => {
+    expect(toolAvailability({ installed: true, detectionFailed: false, detectionError: null }))
+      .toMatchObject({ state: 'installed', label: '已安装', tone: 'ok', reason: null, versionFallback: '未找到版本' })
+    expect(toolAvailability({ installed: false, detectionFailed: false, detectionError: null }))
+      .toMatchObject({ state: 'missing', label: '未安装', tone: 'neutral', reason: null, versionFallback: '未找到版本' })
+  })
+
+  it('reports an unread partition as unknown rather than as a conclusion', () => {
+    expect(toolAvailability(undefined, true))
+      .toMatchObject({ state: 'unknown', label: '状态未读到', tone: 'warn', reason: null, versionFallback: '版本未读到' })
+  })
+
+  it('redacts a home directory out of the probe reason before it reaches the row', () => {
+    const availability = toolAvailability({
+      installed: false, detectionFailed: true,
+      detectionError: 'C:\\Users\\peaker\\AppData\\npm 目录不可读',
+    })
+    expect(availability.reason).not.toContain('peaker')
+  })
+})
+
+describe('renderer CLI update check failure', () => {
+  it('surfaces the two reasons buildCliStatus writes when it cannot compare versions', () => {
+    expect(updateCheckFailure({ updateCheck: 'failed', updateError: '已安装 CLI 的版本号无法解析，不能判断是否有更新' }))
+      .toBe('已安装 CLI 的版本号无法解析，不能判断是否有更新')
+    expect(updateCheckFailure({ updateCheck: 'failed', updateError: '已安装版本高于 npm latest，可能来自其他分发通道，无法可靠比较' }))
+      .toBe('已安装版本高于 npm latest，可能来自其他分发通道，无法可靠比较')
+  })
+
+  it('says the check did not finish when it failed without a reason', () => {
+    expect(updateCheckFailure({ updateCheck: 'failed', updateError: null }))
+      .toBe('这次更新检查没有完成，无法判断是否有新版本')
+  })
+
+  it('stays silent when the check succeeded, was skipped, or never ran', () => {
+    expect(updateCheckFailure({ updateCheck: 'checked', updateError: null })).toBeNull()
+    expect(updateCheckFailure({ updateCheck: 'skipped', updateError: null })).toBeNull()
+    expect(updateCheckFailure({})).toBeNull()
+    expect(updateCheckFailure(undefined)).toBeNull()
+  })
+
+  it('keeps a stale error from a previous run off the row once the check succeeded', () => {
+    expect(updateCheckFailure({ updateCheck: 'checked', updateError: 'npm latest 查询超时' })).toBeNull()
   })
 })

@@ -1,4 +1,4 @@
-import type { AppConfigSummary, CliVersionAdvice, DesktopAppStatus, PlatformCapabilities, ProviderConfigSummary, ProviderId, SystemSnapshot, ToolStatus } from '../../../../electron/ipc-contract'
+import type { AppConfigSummary, CliStatus, CliVersionAdvice, DesktopAppStatus, PlatformCapabilities, ProviderConfigSummary, ProviderId, SystemSnapshot, ToolStatus } from '../../../../electron/ipc-contract'
 import { snapshotErrorMessage } from '../../business-common'
 import { tools } from '../../registry/tools'
 import {
@@ -29,6 +29,57 @@ export interface ToolPresentation {
   /** 已验证版本名单(N1)对这一行的建议;Codex 桌面端与没有名单的工具为 null。 */
   versionAdvice: CliVersionAdvice | null
   error: string | null
+}
+
+export type ToolAvailabilityState = 'unknown' | 'detectionFailed' | 'installed' | 'missing'
+
+export interface ToolAvailability {
+  state: ToolAvailabilityState
+  /** 状态标签文案。 */
+  label: string
+  tone: 'ok' | 'warn' | 'bad' | 'neutral'
+  /** 没有版本号时代替版本号的那句话。 */
+  versionFallback: string
+  /** 探测失败的原因原文;其余状态为 null。 */
+  reason: string | null
+}
+
+/**
+ * 装没装这件事有四种答案,不是两种。探测失败说明这次什么都没问出来,把它画成
+ * 「未安装」会让用户对着一个其实装好了的工具反复点安装(issue #17 ①、#10);
+ * 版本号同理,没探到不等于「未找到版本」。
+ *
+ * 这里刻意不引入真正的第三态 broken(装了但跑不起来):那要改主进程的探测异常
+ * 分类,值得单开一条。
+ */
+export function toolAvailability(
+  status: Pick<ToolStatus, 'installed' | 'detectionFailed' | 'detectionError'> | null | undefined,
+  statusUnknown = false,
+): ToolAvailability {
+  if (status?.detectionFailed === true) {
+    return {
+      state: 'detectionFailed', label: '检测失败', tone: 'bad', versionFallback: '版本未读到',
+      reason: snapshotErrorMessage(status.detectionError) ?? '检测没有完成，装没装无法确认',
+    }
+  }
+  if (statusUnknown) {
+    return { state: 'unknown', label: '状态未读到', tone: 'warn', versionFallback: '版本未读到', reason: null }
+  }
+  return status?.installed === true
+    ? { state: 'installed', label: '已安装', tone: 'ok', versionFallback: '未找到版本', reason: null }
+    : { state: 'missing', label: '未安装', tone: 'neutral', versionFallback: '未找到版本', reason: null }
+}
+
+/**
+ * 更新检查失败的原因。`buildCliStatus` 早就写好了「版本号无法解析」「已安装版本
+ * 高于源」两条,但渲染层一直没人读它们:用户只看到「更新」按钮不出现,不知道是
+ * 已经最新还是这次根本没比出来。
+ */
+export function updateCheckFailure(
+  status: Pick<CliStatus, 'updateCheck' | 'updateError'> | null | undefined,
+): string | null {
+  if (!status || status.updateCheck !== 'failed') return null
+  return snapshotErrorMessage(status.updateError) ?? '这次更新检查没有完成，无法判断是否有新版本'
 }
 
 /** Whether the native status advertises a safe in-app uninstall operation. */
