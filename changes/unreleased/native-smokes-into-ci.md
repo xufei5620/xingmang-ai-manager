@@ -23,3 +23,8 @@
 - 顺带把这条冒烟里的 ElectronApplication 句柄改名为 `application`，并在门禁里钉住这个命名：
   「不许出现没有上界的 `await application.evaluate(`」那两条断言是按名字写的，句柄叫别的名字
   就会从旁边绕过去——上面那次丢档正是这么发生的。
+- `e2e/account-commerce-interactions.test.mjs` 的暗色 disabled 断言改成确定性的：控件背景带
+  150ms 过渡，禁用之后立刻读拿到的还是上一帧的 focus 底色，这条断言此前从没真的看过
+  disabled 状态，macOS runner 上偶尔读到真实值就当场红（本 PR 的 macos-test 第一轮即如此）。
+  现在等过渡跑完再读，并把背景按祖先叠加成实际可见色——disabled 底是
+  `rgba(255,255,255,.075)`，只看 `backgroundColor` 会把 255 误判成亮底。
