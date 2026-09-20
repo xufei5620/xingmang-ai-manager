@@ -11,7 +11,7 @@ import type { AccountSiteId } from '../../account-context'
 import { ResultNotice, dollars, useOperation, useResource } from '../../business-common'
 import { tools } from '../../registry/tools'
 import type { V2Bridge } from '../../types'
-import { Button, Card, Input, ListRow, Skeleton } from '../../ui'
+import { Button, Card, Input, ListRow, Pill, Skeleton } from '../../ui'
 
 type Balance = Awaited<ReturnType<V2Bridge['getAccountBalance']>>
 
@@ -24,10 +24,20 @@ export function toolKeyLimitValue(limit: ManagedCliKeyLimit): string {
   return limit.unlimited || limit.remaining === null ? '' : String(Math.round(limit.remaining * 100) / 100)
 }
 
+/** 上限已经用光:这个工具的请求从这一刻起会被拒绝。 */
+export function toolKeyLimitReached(limit: ManagedCliKeyLimit): boolean {
+  return Boolean(limit.key) && !limit.unlimited && limit.remaining !== null && limit.remaining <= 0
+}
+
 export function toolKeyLimitDescription(limit: ManagedCliKeyLimit): string {
   if (!limit.key) return '还没有这把密钥，在首页配置一次这个工具就会自动签发。'
   const used = `已用 ${dollars(limit.used)}`
-  return limit.unlimited ? `${used} · 不限额度` : `${used} · 上限剩余 ${dollars(limit.remaining)}`
+  if (limit.unlimited) return `${used} · 不限额度`
+  // 「上限剩余 $0.00」不告诉用户任何事:工具已经在报错了,而屏幕上只有一个零。
+  // 目录里 noBalance 的正文(「充值到账后立即恢复」)在这里是错的——充值不会
+  // 放开单个工具的上限,只有把上限改大才会,所以这句照 N4 的真实语义写。
+  if (toolKeyLimitReached(limit)) return `${used} · 上限已用完，这个工具的请求会被拒绝；把上限改大或留空即可恢复`
+  return `${used} · 上限剩余 ${dollars(limit.remaining)}`
 }
 
 export function ToolKeyLimitRow({
@@ -51,6 +61,7 @@ export function ToolKeyLimitRow({
       icon={Gauge}
       title={name}
       desc={toolKeyLimitDescription(limit)}
+      badge={toolKeyLimitReached(limit) ? <Pill tone="bad">已到上限</Pill> : undefined}
       off={!limit.key}
       testId={`tool-key-limit-${limit.provider}`}
       actions={

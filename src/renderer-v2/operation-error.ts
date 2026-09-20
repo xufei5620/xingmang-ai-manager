@@ -22,11 +22,16 @@ const rules: Array<{ key: OperationErrorHint['key']; match: (message: string) =>
   { key: 'tooManyRequests', match: (message) => /(^|\D)429(\D|$)|too many requests|rate limit|请求(太|过于)频繁/i.test(message) },
   { key: 'noBalance', match: (message) => /余额不足|额度不足|insufficient[_ ]quota|余额已用完/i.test(message) },
   { key: 'keyInvalid', match: (message) => /invalid[_ ]api[_ ]key|令牌(无效|已失效|不存在)|密钥(无效|已失效)|无可用渠道/i.test(message) },
-  { key: 'backupIntegrity', match: (message) => /备份[^。；]{0,12}(校验|完整性)[^。；]{0,8}(失败|不一致|无效)/.test(message) },
+  // backups.ts 抛的是「备份文件已损坏或被篡改」，不是「校验失败」——只认后者时
+  // 这条目录文案对用户真正会遇到的那句话是死的。两种说法都收。
+  { key: 'backupIntegrity', match: (message) => /备份[^。；]{0,12}(校验|完整性)[^。；]{0,8}(失败|不一致|无效)|备份[^。；]{0,12}(已损坏|被篡改)/.test(message) },
   // Only an update can promise "当前版本不受影响"; a first install has no
   // previous version to fall back to, so an integrity mismatch there keeps the
   // raw wording rather than borrowing a reassurance that would be false.
   { key: 'updateIntegrity', match: (message) => /更新|升级/.test(message) && /(SHA-512|完整性|校验)[^。；]{0,12}(失败|不一致|无效)/.test(message) },
+  // safe-storage-backend.ts 的「当前系统没有可用的密钥环，安全存储只能以明文保存」。
+  // 这不是权限问题：目录写得进去，是这台机器没有可用的凭据服务。
+  { key: 'unsafeStorage', match: (message) => /密钥环|安全存储[^。；]{0,12}明文|只能以明文保存/.test(message) },
   { key: 'permission', match: (message) => /EPERM|EACCES|operation not permitted|permission denied|拒绝访问|访问被拒绝|权限不足|需要管理员/i.test(message) },
   { key: 'installBlocked', match: (message) => /EBUSY|resource busy or locked|杀毒|防病毒|病毒|Defender|已被隔离|文件被占用|正在被使用/i.test(message) },
   // 「服务暂时不可用」is deliberately absent: features/auth/account-errors.ts
@@ -67,9 +72,40 @@ const actionIds: Record<string, OperationActionId | undefined> = {
   检查网络: 'network',
 }
 
+/**
+ * 「恢复」「还原」刻意不在这张表里：恢复备份失败本身就叫「恢复失败」，那是一次
+ * 普通的操作失败，不是撤回没做成。
+ *
+ * 主进程在回滚也失败时会明说（system-service.ts 的「托管 npm 更新失败，且旧版本
+ * 回滚失败」）。目录里几条文案的正文全是安抚——「当前版本不受影响」「已安装的
+ * 工具不受影响」「未做任何改动」——把它们盖在这种句子上等于告诉用户没事。
+ * 这种失败不套文案，让后端原话自己说话。
+ */
+function undoFailed(message: string): boolean {
+  return /(回滚|回退|撤回)[^。；]{0,6}失败/.test(message)
+}
+
+function honourableActions(labels: readonly string[]): OperationAction[] {
+  const actions: OperationAction[] = []
+  for (const label of labels) {
+    const id = actionIds[label]
+    if (id) actions.push({ id, label })
+  }
+  return actions
+}
+
+/**
+ * 认不出的失败也要有出口。errors.unknown 的按钮就是为这一格写的：没有它，
+ * 用户读完一句英文原文只剩「返回」，下一步只能自己猜（issue #17 ④）。
+ */
+export function operationFallbackActions(): OperationAction[] {
+  return honourableActions(errors.unknown.actions)
+}
+
 export function presentOperationError(message: string): OperationErrorHint | null {
   const text = message.trim()
   if (!text) return null
+  if (undoFailed(text)) return null
   const key = classifyOperationError(text)
   if (key === 'unknown') return null
   const entry = errors[key]
@@ -77,11 +113,7 @@ export function presentOperationError(message: string): OperationErrorHint | nul
   // account layer reuses this wording). Repeating it as a heading above the
   // very same line reads as a bug, so leave those untouched.
   if (text.includes(entry.title)) return null
-  const actions: OperationAction[] = []
-  for (const label of entry.actions) {
-    const id = actionIds[label]
-    if (id) actions.push({ id, label })
-  }
+  const actions = honourableActions(entry.actions)
   return {
     key,
     title: entry.title,

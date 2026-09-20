@@ -2,7 +2,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import { resolveManagedCliKeyLimits } from '../../../../electron/account-key-quota'
 import type { AccountKey } from '../../../../electron/ipc-contract'
-import { ToolKeyLimitRow, toolKeyLimitDescription, toolKeyLimitValue } from './ToolKeyLimits'
+import { ToolKeyLimitRow, toolKeyLimitDescription, toolKeyLimitReached, toolKeyLimitValue } from './ToolKeyLimits'
 
 function key(overrides: Partial<AccountKey> & Pick<AccountKey, 'id' | 'name'>): AccountKey {
   return {
@@ -71,5 +71,23 @@ describe('tool key limit rows', () => {
       )
       .join('')
     expect(html).not.toMatch(/solov|new-api|sub2api|NewAPI|Sub2API/i)
+  })
+
+  it('says the tool is refusing requests once its limit is spent, instead of showing a bare zero', () => {
+    const spent = { ...claude, remaining: 0 }
+    expect(toolKeyLimitReached(spent)).toBe(true)
+    expect(toolKeyLimitDescription(spent)).toContain('上限已用完')
+    expect(toolKeyLimitDescription(spent)).toContain('把上限改大或留空即可恢复')
+    expect(toolKeyLimitDescription(spent)).not.toContain('上限剩余')
+    const html = renderToStaticMarkup(
+      <ToolKeyLimitRow limit={spent} value="0" busy={false} disabled={false} onChange={() => undefined} onSave={() => undefined} />,
+    )
+    expect(html).toContain('已到上限')
+  })
+
+  it('leaves an unlimited tool and a tool with budget left alone', () => {
+    expect(toolKeyLimitReached(claude)).toBe(false)
+    expect(toolKeyLimitReached(codex)).toBe(false)
+    expect(toolKeyLimitReached(gemini)).toBe(false)
   })
 })
