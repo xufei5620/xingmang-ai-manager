@@ -12,7 +12,7 @@ import path from 'node:path'
 // and residual Electron processes are killed before the process exits.
 
 function windowsSystemExecutable(name) {
-  // Same reasoning as the main process (CLAUDE.md I14): never resolve a Windows
+  // Same reasoning as the main process (AGENTS.md I14): never resolve a Windows
   // system binary through PATH, because the working directory is searched first.
   return path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', name)
 }

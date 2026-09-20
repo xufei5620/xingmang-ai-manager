@@ -1,6 +1,6 @@
 // Pure helpers for the 个人中心 (account center) page (W4a). Kept in their own
 // module instead of inlined in AccountCenterPage.tsx: src/ has no DOM test
-// environment (CLAUDE.md T7 -- no vitest.config.ts, default `node`
+// environment (AGENTS.md T7 -- no vitest.config.ts, default `node`
 // environment, zero render() calls anywhere under src/), so these pure
 // functions are the only part of the page's logic that can actually be unit
 // tested. Quota-to-USD *math* is deliberately not duplicated here -- see

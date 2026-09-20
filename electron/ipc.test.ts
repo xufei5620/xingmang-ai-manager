@@ -106,7 +106,7 @@ function serviceStub(): SystemService {
 // falls through to registerIpcHandlers' own default of a real
 // createNewApiClient() talking to production xm.solov.cc -- the account:*
 // handlers would otherwise be the one corner of this suite able to reach the
-// network. See CLAUDE.md's automated-tests-never-touch-production rule.
+// network. See AGENTS.md's automated-tests-never-touch-production rule.
 function accountServiceStub(): NewApiClientService {
   return {
     // new-api (the only backend today) reports every RelayBackendCapabilities
@@ -3035,7 +3035,7 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
     it('does not enforce UUID hyphen positions, but still excludes traversal characters', () => {
       // Documents the actual (looser than RFC 4122) contract: any 36 characters
       // drawn from [0-9a-f-] pass, because this regex's job is blocking path
-      // traversal characters, not validating UUID shape (see CLAUDE.md I5).
+      // traversal characters, not validating UUID shape (see AGENTS.md I5).
       const { sessionsService } = register()
       const handler = electronMocks.handlers.get('sessions:restore')!
       const allHyphens = '-'.repeat(36)

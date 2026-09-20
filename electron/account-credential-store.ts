@@ -10,7 +10,7 @@ import { isSafeStorageUsable } from './safe-storage-backend'
 
 // Persists the "记住密码" login credential -- the identifier + password the
 // user asked the login dialog to keep. Same posture as account-session-store:
-// this is the app's OWN login credential, not the relay API Key CLAUDE.md's
+// this is the app's OWN login credential, not the relay API Key AGENTS.md's
 // "不给 API Key 加密" rule targets, so safeStorage encryption at rest is the
 // correct (and already-established) treatment. The plaintext only ever
 // crosses IPC on the dedicated account:get-remembered-login channel -- the

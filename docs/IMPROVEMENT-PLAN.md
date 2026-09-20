@@ -195,7 +195,7 @@ Grok CLI 二进制**完全没有国内镜像**。`grok-installer.ts:20-21` 的 `
 
 ### 3.1 【高危】提权模式下交互式终端继承未净化环境变量
 
-> **✅ 已落地**（`8c6a476`）：按下述方案参数化了净化基底，trusted-only 传 `trustedCommandEnvironment`（现 `system-service.ts` 的 `launchProviderOperation` Windows 分支），CLAUDE.md I2 已收录该约定。以下为原始分析，留档。
+> **✅ 已落地**（`8c6a476`）：按下述方案参数化了净化基底，trusted-only 传 `trustedCommandEnvironment`（现 `system-service.ts` 的 `launchProviderOperation` Windows 分支），AGENTS.md I2 已收录该约定。以下为原始分析，留档。
 
 `electron/system-service.ts:3033`，`launchProviderOperation` 的 Windows 分支无条件传 `interactiveTerminalEnvironment()`，trusted-only 与 same-user 共用同一行。
 

@@ -4,7 +4,7 @@
 
 ## 依据与边界
 
-按 CLAUDE.md §0、HANDOFF、一页纸、旧新对照、阶段文档执行。最终视觉基线为 `ui-spec/prototype/星芒AI管理工具-可交互原型.html`，SHA-256：`eb8f18a299c345e26cc5705e5d06fcb2972faeb890b0e23bc9f326d30d9b4aa6`。包内较旧的欢迎页缩略工作台不作为最终依据；当前欢迎页为星轨场景。
+按 AGENTS.md §0、HANDOFF、一页纸、旧新对照、阶段文档执行。最终视觉基线为 `ui-spec/prototype/星芒AI管理工具-可交互原型.html`，SHA-256：`eb8f18a299c345e26cc5705e5d06fcb2972faeb890b0e23bc9f326d30d9b4aa6`。包内较旧的欢迎页缩略工作台不作为最终依据；当前欢迎页为星轨场景。
 
 - `src/renderer-v2/` 从零建立。旧 `src/` 保留为只读回滚与功能核对；运行时 AST 和 Vite 产物检查禁止新版导入旧 UI。
 - 既有 Electron 业务、IPC 和 canvas 工作流逻辑保留；本轮仅在明确接入点补充关闭竞态、账号所有权边界、受控编辑同步和 canvas token 加载顺序。package main、Vite、tsconfig 与 `electron/platform/` 负责 v2 启动和平台能力。
@@ -40,10 +40,10 @@
 
 审查总表 `R-S12` 把双树并存的成本摆出来之后给了三个选项（定退役日期 / 冻结只修安全 / 维持现状并重排 #30），yoyo 选了**冻结**。
 
-- legacy 渲染层（`src/` 下除 `src/renderer-v2/` 以外的源码，加 `tooling/legacy-renderer/`）**只接受安全修复**：违反 `CLAUDE.md` 第 4 节 I1–I15 的问题照常修，新功能、界面调整、一般与建议级缺陷、重构、补测试一律只在 `src/renderer-v2/` 做。
+- legacy 渲染层（`src/` 下除 `src/renderer-v2/` 以外的源码，加 `tooling/legacy-renderer/`）**只接受安全修复**：违反 `AGENTS.md` 第 4 节 I1–I15 的问题照常修，新功能、界面调整、一般与建议级缺陷、重构、补测试一律只在 `src/renderer-v2/` 做。
 - **不删代码、不改行为**：不定退役日期，`npm run compile:legacy` 与 `npm run dev:legacy` 保持可用，legacy 的既有 vitest 用例继续在 `npm test` 里跑。冻结不是退役。
 - **#30**（拆 legacy `App.tsx`）按这条决定关闭：它的目的是让多个 agent 能并行改 legacy，冻结之后这个目的不再存在。v2 侧的同类问题（`pages-account.tsx` / `pages-maintenance.tsx` / `pages-management.tsx` 三块大文件）另行处理。
-- 落地位置：`CLAUDE.md` 第 2/3/5（T14）/7/10 节、`docs/MODULE-MAP.md`、`docs/AGENT-RUNBOOK.md`（领任务前置条件）、`docs/COLLABORATION.md`（第 4.1 节 ④）、`.claude/rules/legacy-renderer.md`（按路径自动加载）、`.claude/rules/renderer-v2.md`。
+- 落地位置：`AGENTS.md` 第 2/3/5（T14）/7/10 节、`docs/MODULE-MAP.md`、`docs/AGENT-RUNBOOK.md`（领任务前置条件）、`docs/COLLABORATION.md`（第 4.1 节 ④）、`.claude/rules/legacy-renderer.md`（按路径自动加载）、`.claude/rules/renderer-v2.md`。
 - legacy 若连构建或启动都不成立（`R-F1` 那一类），属于「冻结还有没有意义」的问题，需要 yoyo 重新拍板，不在 legacy 上做功能性修复来救它。
 
 ## 已验证

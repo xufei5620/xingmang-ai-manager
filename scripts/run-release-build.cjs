@@ -47,7 +47,7 @@ function buildReleaseSteps({ npmCli, releaseOutputDirectory, unsignedReleaseMode
     // 这里不区分平台:`npm test` 自己就是关文件级并行 + 30s 超时的那一套
     // (test:vitest 带 --no-file-parallelism --testTimeout=30000)。发布门禁跑在
     // 真实磁盘上,两阶段提交叠加 Defender 实时扫描会让若干用例卡过 vitest 默认的
-    // 5s 超时(CLAUDE.md 的 Windows 基线一节 / Issue #40)。CI runner 上这几乎
+    // 5s 超时(AGENTS.md 的 Windows 基线一节 / Issue #40)。CI runner 上这几乎
     // 必现——2026-08-12 首次 CI 正式构建就死在 system-service.test.ts 的 5s
     // 超时上,而同一提交在 Linux 全绿。放宽的是超时不是断言:真回归照样红。
     { label: '全部测试', executable: process.execPath, args: [npmCli, 'test'] },

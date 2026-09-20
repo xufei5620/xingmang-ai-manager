@@ -6,7 +6,7 @@ const ts = require('typescript')
 
 const projectRoot = path.resolve(__dirname, '..')
 
-// R-B5: CLAUDE.md §6 记录的格式约定此前只靠人肉遵守，仓库没有 linter，于是两棵渲染树
+// R-B5: AGENTS.md §6 记录的格式约定此前只靠人肉遵守，仓库没有 linter，于是两棵渲染树
 // 的风格已经分叉——审查时实测「行尾分号 legacy 0 / v2 300 多处」「顶层箭头函数 legacy 0 /
 // v2 十几处」，新 agent 读完 §6 写出的代码在两棵树里都不对。这个门禁把 §6 里能机械判定的
 // 三条钉住，并把 v2 那套带分号的写法**限定在它已经存在的目录里**，不让它继续外溢。
@@ -19,7 +19,7 @@ const projectRoot = path.resolve(__dirname, '..')
 const scannedRoots = ['src', 'electron']
 
 // v2 的组件层与注册表是照 ui-spec 原型抄下来的，通篇带分号；那是既成事实，全量重排会
-// 摧毁 git blame（CLAUDE.md §7 明令不做），所以这里承认它、但把它框住：只有这几处可以
+// 摧毁 git blame（AGENTS.md §7 明令不做），所以这里承认它、但把它框住：只有这几处可以
 // 带行尾分号，v2 的其余目录和整个主进程、legacy 树一律不许。
 const semicolonDialect = [
   'src/renderer-v2/ui/',
@@ -115,7 +115,7 @@ test('keeps line-ending semicolons inside the v2 component layer that already us
     const hits = lineEndingSemicolons(parse(file.absolutePath))
     if (hits.length) offenders.push(`${file.id}: 第 ${hits.join('、')} 行`)
   }
-  assert.deepEqual(offenders, [], `这些文件出现了行尾分号，CLAUDE.md §6 要求这里不加；带分号的写法只保留在 ${semicolonDialect.join('、')}：\n${offenders.join('\n')}`)
+  assert.deepEqual(offenders, [], `这些文件出现了行尾分号，AGENTS.md §6 要求这里不加；带分号的写法只保留在 ${semicolonDialect.join('、')}：\n${offenders.join('\n')}`)
 })
 
 test('declares module-level functions with the function keyword outside tests', () => {
@@ -127,7 +127,7 @@ test('declares module-level functions with the function keyword outside tests', 
     const found = topLevelConstFunctions(parse(file.absolutePath))
     if (found.length) offenders.push(`${file.id}: ${found.join('、')}`)
   }
-  assert.deepEqual(offenders, [], `模块顶层要用 function 声明而不是 const 箭头函数（CLAUDE.md §6）：\n${offenders.join('\n')}`)
+  assert.deepEqual(offenders, [], `模块顶层要用 function 声明而不是 const 箭头函数（AGENTS.md §6）：\n${offenders.join('\n')}`)
 })
 
 test('keeps the typing escape hatches out of both trees', () => {
@@ -142,8 +142,8 @@ test('keeps the typing escape hatches out of both trees', () => {
       if (!isTestFile(file.id) && /@ts-expect-error/.test(line)) suppressions.push(`${file.id}: 第 ${index + 1} 行`)
     }
   }
-  assert.deepEqual(assertions, [], `不许用 as any（CLAUDE.md §6）：\n${assertions.join('\n')}`)
-  assert.deepEqual(suppressions, [], `不许用 @ts-ignore / eslint-disable，@ts-expect-error 只能出现在测试里（CLAUDE.md §6）：\n${suppressions.join('\n')}`)
+  assert.deepEqual(assertions, [], `不许用 as any（AGENTS.md §6）：\n${assertions.join('\n')}`)
+  assert.deepEqual(suppressions, [], `不许用 @ts-ignore / eslint-disable，@ts-expect-error 只能出现在测试里（AGENTS.md §6）：\n${suppressions.join('\n')}`)
 })
 
 // 门禁自身要能失败：三个探测器都用合成源码正反各验一次，免得某天 AST 遍历写错了，

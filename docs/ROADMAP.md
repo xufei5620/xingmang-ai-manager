@@ -1,7 +1,7 @@
 # 星芒 AI · 总体规划
 
 > 本文档是整个产品与技术规划的**唯一主入口**。所有 agent 与开发者动工前先读本文件。
-> 配套文档：`CLAUDE.md`（代码上下文）、`COLLABORATION.md`（协作规范）、`IMPROVEMENT-PLAN.md`（现有代码问题清单）。
+> 配套文档：`AGENTS.md`（代码上下文）、`COLLABORATION.md`（协作规范）、`IMPROVEMENT-PLAN.md`（现有代码问题清单）。
 
 ---
 
@@ -154,7 +154,7 @@
 
 1. **停止在「通用能力」上追赶** —— 不再堆工具数量、供应商预设、云同步。与 cc-switch 在这条线竞争必输（它免费、有赞助、122k star）。资源全压到：账号充值闭环、无限画布、绑定自营的免配置体验。
 2. **把 cc-switch 当参考实现，不当依赖** —— 它是 MIT，可自由读代码学做法。重点借鉴：UI/UX 设计（见文末附录）。（2026-08-10 更新：当年两大欠账已还清——Mac 安全边界已由 `darwin-path-trust.ts` 完整实现；`ipc.ts` 校验函数已补 104 例测试。）**读代码零成本，迁代码成本极高——只做前者。**
-3. ~~补上测试与 Mac 边界两个欠账~~ → **✅ 已还清**（vitest 约 1450 例、三平台 CI 全绿；Mac 边界见 CLAUDE.md T5）。剩余缺口只在组件层测试（11 个页面中 3 个有测试），非阻塞。
+3. ~~补上测试与 Mac 边界两个欠账~~ → **✅ 已还清**（vitest 约 1450 例、三平台 CI 全绿；Mac 边界见 AGENTS.md T5）。剩余缺口只在组件层测试（11 个页面中 3 个有测试），非阻塞。
 
 **什么情况下重新评估 fork**（任一成立）：
 - 转型做中立工具（定位②）→ 多 provider 能力立刻变核心价值
@@ -258,7 +258,7 @@ if meta.MaxTokens != 0 { preConsumedTokens += meta.MaxTokens }   // max_tokens �
 | ❌ 后端账号系统自建 | new-api 全有，自建是几个月重复劳动 |
 | ❌ 客户端做故障转移 | 应在网关侧做 |
 | ❌ 深改 new-api 源码 | 触发 AGPL 传染；用外层 BFF |
-| ❌ Prettier / 状态管理库 / DOM 测试设施（现有 Electron 库） | 见 CLAUDE.md 第 8 节，过度工程 |
+| ❌ Prettier / 状态管理库 / DOM 测试设施（现有 Electron 库） | 见 AGENTS.md 第 8 节，过度工程 |
 | ❌ API Key 加密存储 | CLI 配置本就明文，加密无意义（但**登录 PAT 必须**用系统凭据库） |
 
 ---
@@ -299,7 +299,7 @@ if meta.MaxTokens != 0 { preConsumedTokens += meta.MaxTokens }   // max_tokens �
 |---|---|
 | **#14** | ~~typecheck 覆盖 electron 测试文件~~ → **✅ 已解决**（三段式 typecheck，53 条存量已清零，`854c1b4`） |
 | **#15** | ~~补 `ipc.ts` 输入校验函数测试~~ → **✅ 已解决**（15 个 parse 函数共 104 例，`6f57921`） |
-| **#16** | ~~补 macOS 安全边界~~ → **✅ 已解决**（`darwin-path-trust.ts` 完整实现 macOS 路径信任模型，CLAUDE.md T5 有语义说明） |
+| **#16** | ~~补 macOS 安全边界~~ → **✅ 已解决**（`darwin-path-trust.ts` 完整实现 macOS 路径信任模型，AGENTS.md T5 有语义说明） |
 | **#17** | 借鉴竞品 UI 设计（见文末附录） |
 
 ### 5.4 P1 — 降低并行开发摩擦的重构（见 §5.6）
@@ -357,7 +357,7 @@ if meta.MaxTokens != 0 { preConsumedTokens += meta.MaxTokens }   // max_tokens �
 |---|---|
 | **合并扩展管理的两套子系统**（`codex-extensions` vs `provider-extensions`） | 5-8 人天的大手术，收益是内部整洁，**用户完全无感**。而且尽调结论明确写了「**不要做后端合并**」，正确做法是在 renderer 侧加一层薄适配 |
 | **拆 `styles.css`**（约 8000 行） | 虽然是冲突热点，但 CSS 拆分有级联顺序风险，收益远不如拆 `App.tsx` |
-| Prettier / 状态管理库 / jsdom 组件测试 / code-splitting / 主进程 bundler | 见 §4「不做清单」与 `CLAUDE.md` 第 8 节 |
+| Prettier / 状态管理库 / jsdom 组件测试 / code-splitting / 主进程 bundler | 见 §4「不做清单」与 `AGENTS.md` 第 8 节 |
 
 **判断原则**：这个代码库的问题不是「写得烂」（近 7 万行里 `any` / `@ts-ignore` / `TODO` 均为个位数，命名约定全仓无破例），而是**「一个人写得很好，但只有这个人能改」**。所以重构的目标是**降低协作摩擦**，不是提升代码美观度。
 

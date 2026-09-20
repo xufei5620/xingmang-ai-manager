@@ -171,7 +171,7 @@ export function requireRelaySite(id: unknown): RelaySite {
  * main.ts folds this into its `externalUrlAllowlist` (I12, href full
  * equality); kept here as a pure function, rather than inlined in main.ts,
  * so the derivation is unit-testable without importing Electron (main.ts
- * has no test file for exactly that reason -- see CLAUDE.md T-notes).
+ * has no test file for exactly that reason -- see AGENTS.md T-notes).
  *
  * Deduplicated via Set: the registry has held two entries sharing one relay
  * domain before (the sub2api alias, removed in D-10), and may again if a

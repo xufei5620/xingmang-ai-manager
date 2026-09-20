@@ -21,7 +21,7 @@
 
 ## 检查项
 
-- [ ] 已阅读 `CLAUDE.md` 的关键不变量与改动陷阱
+- [ ] 已阅读 `AGENTS.md` 的关键不变量与改动陷阱
 - [ ] 未引入 `as any` / `@ts-ignore` / `eslint-disable`
 - [ ] 面向用户的错误消息是中文，测试名是英文
 - [ ] 若涉及 IPC 通道增删：已确认无其他人同时在改（`serial-only`）

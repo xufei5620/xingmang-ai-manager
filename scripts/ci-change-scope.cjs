@@ -2,7 +2,7 @@ const fs = require('node:fs')
 const { execFileSync } = require('node:child_process')
 
 function requiresCodeChecks(files) {
-  const documentation = new Set(['README.md', 'CHANGELOG.md', 'HANDOFF.md', 'MAC_SOURCE_README.md', 'CLAUDE.md', 'LICENSE'])
+  const documentation = new Set(['README.md', 'CHANGELOG.md', 'HANDOFF.md', 'MAC_SOURCE_README.md', 'AGENTS.md', 'CLAUDE.md', 'LICENSE'])
   return files.some((file) => {
     // This Markdown ledger is validated against the shipped canvas assets.
     if (file === 'docs/CANVAS-THIRD-PARTY.md') return true

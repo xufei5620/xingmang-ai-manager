@@ -35,7 +35,7 @@
 
 **为什么领域逻辑层不重写。** 它不是「前端」,是被 41 个测试文件钉死的纯函数,其中数条直接管付费安全:`runtime/run-preflight.ts` 在付费 IPC 之前阻断不兼容的模型/分组/尺寸组合;`persistence/workflow-sanitizer.ts` 剥离 apiKey/token/cookie/绝对路径/远程 URL(I15 的兑现方式之一,有自动门禁盯着);`runtime/candidates.ts` 的「新候选不自动覆盖已采纳结果、丢弃不删素材」是产品决策。重写它们等于把已通过对抗审查的结论重新论证一遍,风险全在下行方向。
 
-**唯一的越界**:批次 2 的 pinned 参数要在持久化 schema 增加一个可选字段。按 CLAUDE.md 约定做成 `field?:`、缺省等于旧行为,不改迁移链。
+**唯一的越界**:批次 2 的 pinned 参数要在持久化 schema 增加一个可选字段。按 AGENTS.md 约定做成 `field?:`、缺省等于旧行为,不改迁移链。
 
 ---
 

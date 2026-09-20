@@ -17,7 +17,7 @@
     与 `managed-cli-keys.dat`（`settings.json` 可选）。脚本把它们复制到临时 userData，不动源目录。
   - `XINGMANG_E2E_USERNAME` + `XINGMANG_E2E_PASSWORD`：脚本自己走一次登录。
 - **会对 `xm.solov.cc` 发真实请求**，并可能在账号下签发真实密钥。这正是它不能进 CI、
-  也不能被自动化测试模仿的原因（自动化测试一律 mock，见 CLAUDE.md T12）。
+  也不能被自动化测试模仿的原因（自动化测试一律 mock，见 AGENTS.md T12）。
 - 证据写在 `artifacts/` 下，临时 userData 用 `os.tmpdir()` 里的新目录，跑完不残留在用户资料里。
 
 ## `announcement-native-visual.mjs`
