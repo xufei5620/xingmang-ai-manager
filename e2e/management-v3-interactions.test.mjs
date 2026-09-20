@@ -1,25 +1,15 @@
 import assert from 'node:assert/strict'
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { fileURLToPath } from 'node:url'
 import { test } from 'node:test'
-import { chromium } from '@playwright/test'
-import { createServer } from 'vite'
+import { defaultViewport, projectRoot as root, withBrowserFixture } from './harness.mjs'
 
-const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
-async function withPage(query, run, viewport = { width: 1280, height: 820 }) {
-  const server = await createServer({ configFile: path.join(root, 'vite.config.ts'), root, logLevel: 'error', server: { host: '127.0.0.1', port: 0, strictPort: false } })
-  await server.listen()
-  const browser = await chromium.launch({ headless: true, executablePath: process.env.XINGMANG_E2E_CHROMIUM || undefined })
-  try {
-    const page = await browser.newPage({ viewport })
-    const errors = []
-    page.on('pageerror', (error) => errors.push(error.message))
-    const address = server.httpServer.address()
-    await page.goto(`http://127.0.0.1:${address.port}/e2e/management-v3-fixture.html?${query}`)
+async function withPage(query, run, viewport = defaultViewport) {
+  await withBrowserFixture({ viewport }, async (fixture) => {
+    const page = await fixture.newPage()
+    await page.goto(`${fixture.baseUrl}/e2e/management-v3-fixture.html?${query}`)
     await run(page)
-    assert.deepEqual(errors, [])
-  } finally { await browser.close(); await server.close() }
+  })
 }
 
 test('session drawers recover read errors, constrain focus and retain filters after navigation', async () => {
