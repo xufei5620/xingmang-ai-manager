@@ -289,8 +289,22 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     const runtimeBlocked = id === 'codexDesktop' ? null : cliRuntimeBlockMessage(state.system.runtime)
     if (runtimeBlocked) throw new Error(runtimeBlocked)
     if (tools.find((tool) => tool.id === id)?.requires.includes('python') && (!state.system.runtime.python.installed || state.system.runtime.python.detectionFailed)) throw new Error('Gemini 还需要 Python 环境。请先在运行环境卡中准备 Python，再安装工具。')
-    await toolbox.run(id, version ? `正在安装 ${version}` : '正在安装', () => toolsApi.install(id, version))
+    // 只有四个 CLI 给取消入口：Codex 桌面端走 MSIX 安装器，中途中断会留下半装的包，
+    // 那里放一个按了必被拒绝的按钮比没有按钮更糟。
+    const completed = await toolbox.run(
+      id,
+      version ? `正在安装 ${version}` : '正在安装',
+      () => toolsApi.install(id, version),
+      id === 'codexDesktop' ? undefined : { cancel: () => toolsApi.cancelInstall(id) },
+    )
+    // 用户中途取消时 run 返回 false：不要再写 Key，本来就没装上。
+    if (!completed) return
     await syncAfterToolInstalled(id)
+  }
+  async function cancelInstall(id: ToolId) {
+    const outcome = await toolbox.cancel(id)
+    // 主进程拒绝取消时必须说清楚为什么，否则按钮看起来像坏了。
+    if (!outcome.cancelled && outcome.reason) toast.show(outcome.reason, 'warn')
   }
   /**
    * 装完一个工具要做两件收尾：把账号 Key 写进刚装好的工具，再刷新检测结果。
@@ -529,7 +543,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
             </div>}
             {page === 'home' ? <Home api={toolsApi} supportsUsage={accountSupports(session, 'supportsUsage')} supportsBilling={accountSupports(session, 'supportsBilling')} snapshot={toolbox.snapshot} loading={toolbox.loading} error={toolbox.error} failures={toolbox.failures} account={session.account} balance={balance} jobs={toolbox.jobs} bootstrap={accountBootstrap?.scope === scope ? accountBootstrap : null}
               externalClients={toolbox.externalClients} externalLoading={toolbox.externalLoading} externalError={toolbox.externalError}
-              onScan={() => { void toolbox.refresh(true).catch(() => undefined); void toolbox.refreshExternal().catch(() => undefined) }} onInstall={(id, version) => void perform('安装工具', () => install(id, version))} onLaunch={requestLaunch} onConfigure={openToolConfig} onUninstall={requestUninstall}
+              onScan={() => { void toolbox.refresh(true).catch(() => undefined); void toolbox.refreshExternal().catch(() => undefined) }} onInstall={(id, version) => void perform('安装工具', () => install(id, version))} onCancelInstall={(id) => void perform('取消安装', () => cancelInstall(id))} onLaunch={requestLaunch} onConfigure={openToolConfig} onUninstall={requestUninstall}
               onInstallExternal={(id) => void perform('安装客户端', () => installExternal(id))} onLaunchExternal={(id) => void perform('打开客户端', () => launchExternal(id))}
               onConfigureExternal={setExternalClient} onCodexModels={() => { setCodexModelFilter('non-gpt'); setConfigTool(platform?.codexDesktop.launch ? 'codexDesktop' : 'codex') }}
               onRuntime={(runtime) => void perform('准备环境', () => installRuntime(runtime))} onNavigate={navigate} onGuide={() => setGuide(true)} onBootstrapRetry={() => { if (session.account) void runAccountBootstrap(session.account.userId, 'login', true) }} />

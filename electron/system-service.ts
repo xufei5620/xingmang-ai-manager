@@ -81,6 +81,13 @@ import {
   type PythonRuntimeInstallResult,
 } from './python-runtime'
 import { InstallationQueue } from './installation-queue'
+import {
+  InstallCancellationRegistry,
+  InstallCancelledError,
+  isInstallCancelledError,
+  type InstallCancellationHandle,
+  type InstallCancellationOutcome,
+} from './install-cancellation'
 import { ToolConfigOwnershipStore, toolConfigIdentity } from './tool-config-ownership'
 import type { StoredManagedCliKey } from './managed-cli-key-store'
 import { ExternalClientOwnershipStore } from './external-client-ownership'
@@ -158,6 +165,10 @@ const maximumNpmPackageLockBytes = 16 * 1024 * 1024
 export const networkLocationCacheTtlMs = 10 * 60_000
 const npmOfficialRegistry = 'https://registry.npmjs.org'
 const npmMirrorRegistry = 'https://registry.npmmirror.com'
+// 安装走到「把新版本换进全局目录」这一步就不能再中断了：半个目录被替换掉的
+// CLI 既跑不起来也回不去。这两条是拒绝取消时给用户看的原因。
+const managedPrefixSwapSealReason = '正在把新版本写入工具目录，这一步中断会让工具用不了，请等它结束。'
+const grokBinarySwapSealReason = '正在替换 Grok CLI 可执行文件，这一步中断会让工具用不了，请等它结束。'
 const networkLocationUrl = 'https://www.cloudflare.com/cdn-cgi/trace'
 const networkLocationFallbackUrls = [
   'https://myip.ipip.net/',
@@ -676,6 +687,7 @@ export interface SystemService {
   restartWindows(): Promise<void>
   installPythonRuntime(target: RendererMessageTarget): Promise<PythonRuntimeInstallResult>
   installCli(provider: ProviderId, target: RendererMessageTarget, version?: string): Promise<void>
+  cancelCliInstall(provider: ProviderId): InstallCancellationOutcome
   uninstallCli(provider: ProviderId): Promise<ToolUninstallResult>
   inspectCliUpdate(provider: ProviderId, forceRefresh?: boolean): Promise<CliStatus>
   installCodexDesktop(target: RendererMessageTarget): Promise<CodexDesktopInstallResult>
@@ -1831,6 +1843,7 @@ export function createSystemService(
   const resolveWindowsMachinePathsForService = serviceOptions.resolveWindowsMachinePaths ?? resolveWindowsMachinePaths
   const installing = new Set<ProviderId>()
   const installationQueue = new InstallationQueue()
+  const installCancellations = new InstallCancellationRegistry()
   const externalClientRuntime = serviceOptions.externalClientRuntime ?? createExternalClientRuntime({
     installationQueue, platform, userHome: providerRoots.userHome, runCommand: executeCommand, windowsExecutionMode,
   })
@@ -2569,9 +2582,13 @@ export function createSystemService(
     provider: ProviderId,
     target: RendererMessageTarget,
     requestedVersion?: string,
+    cancellation?: InstallCancellationHandle,
   ): Promise<void> {
     const grokInstallStrategy = provider === 'grok' ? grokInstallStrategyFor(platform) : null
     if (installing.has(provider)) throw new Error(`${cliCatalog[provider].name} 正在安装中`)
+    // 排队等待期间点的取消在这里生效:队列把任务交给我们时才发现已经取消,
+    // 直接退出,一条 npm 命令都不要起。
+    cancellation?.throwIfCancelled()
     installing.add(provider)
     const definition = cliCatalog[provider]
     let downloadedGrokBinary: DownloadedGrokBinary | null = null
@@ -2609,6 +2626,7 @@ export function createSystemService(
           try {
             downloadedGrokBinary = await downloadLatestGrokBinary({
               fetchImpl: downloadFetch,
+              ...(cancellation ? { signal: cancellation.signal } : {}),
               createTemporaryDirectory: () => createInstallTemporaryDirectory('grok-binary'),
               onProgress: ({ percent, transferred, total }) => {
                 lastDownloadActivity = Date.now()
@@ -2633,12 +2651,14 @@ export function createSystemService(
             'output',
             `xAI 签名与文件校验通过（${downloadedGrokBinary.version}，SHA-256 ${downloadedGrokBinary.sha256Hex.slice(0, 16)}…）`,
           )
+          cancellation?.seal(grokBinarySwapSealReason)
           const installed = await installDownloadedGrokBinary(downloadedGrokBinary, sameUserInstall
             ? {
                 managedRoot: path.join(os.homedir(), '.grok', 'bin'),
                 protectInstallDirectory: false,
               }
             : {})
+          cancellation?.unseal()
           invalidateCliUpdateCache(provider)
           const verification = await inspectCliTool(provider, null, null, installed.executablePath)
           if (
@@ -2761,6 +2781,7 @@ export function createSystemService(
           trustedPaths: managedNpmLayout
             ? [npmUserConfig, transaction]
             : undefined,
+          ...(cancellation ? { signal: cancellation.signal } : {}),
           cwd,
           timeoutMs,
           maxOutputBytes: 8 * 1024 * 1024,
@@ -2835,6 +2856,7 @@ export function createSystemService(
       let installed = false
       let verification: Awaited<ReturnType<typeof inspectCliTool>> | null = null
       for (const [index, registry] of registries.entries()) {
+        cancellation?.throwIfCancelled()
         if (index > 0) {
           sendInstallProgress(
             target,
@@ -2919,6 +2941,8 @@ export function createSystemService(
           installed = true
           break
         } catch (error) {
+          if (isInstallCancelledError(error)) throw error
+          cancellation?.throwIfCancelled()
           const detail = error instanceof Error ? error.message : String(error)
           installErrors.push(
             `${registry === npmMirrorRegistry ? '国内 npm 镜像' : 'npm 官方源'}：${redactCommandText(detail).replace(/\s+/g, ' ').trim().slice(0, 300) || '安装失败'}`,
@@ -2948,6 +2972,7 @@ export function createSystemService(
       }
 
       if (managedNpmLayout && managedNpmTransaction && installPrefix) {
+        cancellation?.seal(managedPrefixSwapSealReason)
         await replaceManagedNpmPrefixAtomically(
           managedNpmLayout.prefix,
           installPrefix,
@@ -2994,6 +3019,13 @@ export function createSystemService(
       if (error instanceof ManagedNpmRollbackError) {
         preserveManagedNpmTransaction = error.preserveTransaction
       }
+      // 取消是用户自己按的,不是安装失败:换成统一的中文文案,并且把底层
+      // 「命令被中止」这类实现细节挡在外面,否则界面会像出了故障。
+      if (isInstallCancelledError(error) || cancellation?.cancelled === true) {
+        const cancelled = new InstallCancelledError(`${definition.name} 安装已取消`)
+        sendInstallProgress(target, provider, 'error', cancelled.message)
+        throw cancelled
+      }
       const message = error instanceof Error ? error.message : String(error)
       sendInstallProgress(target, provider, 'error', message)
       throw error
@@ -3009,7 +3041,24 @@ export function createSystemService(
   function installCli(provider: ProviderId, target: RendererMessageTarget, version?: string): Promise<void> {
     // 队列 key 刻意不含版本:同一个工具的两次安装必须串行(I11),
     // 让「更新」和「回到推荐版本」同时跑会互相看到半完成的全局目录。
-    return installationQueue.enqueue(`cli:install:${provider}`, () => installCliOperation(provider, target, version))
+    const key = `cli:install:${provider}`
+    // 重复点击复用队列里的同一个 Promise,所以这里也不能再开一个取消句柄:
+    // 后点的那次会把前一次的句柄挤掉,取消按钮就再也找不到正在跑的安装。
+    if (installCancellations.has(key)) {
+      return installationQueue.enqueue(key, () => installCliOperation(provider, target, version))
+    }
+    // 句柄在入队之前登记:排在别人后面等待的那次安装也要能取消,
+    // 否则用户只能干等前一个工具装完。
+    const cancellation = installCancellations.begin(key)
+    const finished = installationQueue.enqueue(
+      key,
+      () => installCliOperation(provider, target, version, cancellation),
+    )
+    return finished.finally(() => cancellation.release())
+  }
+
+  function cancelCliInstall(provider: ProviderId): InstallCancellationOutcome {
+    return installCancellations.cancel(`cli:install:${provider}`)
   }
 
   async function removeDirectoryFromUserPath(directory: string): Promise<void> {
@@ -3844,6 +3893,7 @@ export function createSystemService(
     restartWindows,
     installPythonRuntime,
     installCli,
+    cancelCliInstall,
     uninstallCli,
     inspectCliUpdate,
     installCodexDesktop,

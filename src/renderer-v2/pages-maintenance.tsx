@@ -25,6 +25,7 @@ import {
   Trash2,
   UserRound,
   Wrench,
+  X,
   Zap,
 } from 'lucide-react'
 import {
@@ -834,6 +835,10 @@ export function MaintenancePage({
   const operation = useOperation()
   const [logs, setLogs] = useState<string[]>([])
   const [remove, setRemove] = useState<Provider | 'codexDesktop' | null>(null)
+  // 主进程拒绝取消时的中文原因，和检测失败共用页面顶部那条提示。
+  const [cancelNotice, setCancelNotice] = useState('')
+  const [cancelling, setCancelling] = useState('')
+  const cancelRequested = useRef(new Set<string>())
   const [manualUninstall, setManualUninstall] = useState<ManualUninstallState | null>(null)
   useEffect(() => {
     const stopCli = api.onInstallProgress((event) =>
@@ -851,15 +856,44 @@ export function MaintenancePage({
     void operation.execute(
       id,
       async () => {
-        if (id === 'codexDesktop') await api.installCodexDesktop()
-        else await api.installCli(id)
+        cancelRequested.current.delete(id)
+        setCancelNotice('')
+        try {
+          if (id === 'codexDesktop') await api.installCodexDesktop()
+          else await api.installCli(id)
+        } catch (cause) {
+          // 用户自己点的取消不是失败，不进红色提示条。
+          if (!cancelRequested.current.has(id)) throw cause
+          return 'cancelled' as const
+        } finally {
+          cancelRequested.current.delete(id)
+          setCancelling('')
+        }
         // 先让 App 写 Key 并刷新全局检测，再读本页数据：顺序反过来这一页会先
         // 拿到一份还没配置 Key 的快照，而提示语已经说「工具状态已更新」。
         await onToolsChanged?.(id)
         await resource.reload()
+        return 'installed' as const
       },
-      '安装完成，工具状态已更新',
+      (result) => result === 'cancelled' ? '安装已取消' : '安装完成，工具状态已更新',
     )
+  const cancelInstall = (id: Provider) => {
+    cancelRequested.current.add(id)
+    setCancelling(id)
+    setCancelNotice('')
+    void api.cancelCliInstall(id).then((outcome) => {
+      if (outcome.cancelled) return
+      // 已经走到写入工具目录那一步：这次安装还会跑完，取消标记必须撤掉，
+      // 否则真失败时会被当成取消吞掉。
+      cancelRequested.current.delete(id)
+      setCancelling('')
+      setCancelNotice(outcome.reason ?? '这一步已经不能取消了。')
+    }).catch(() => {
+      cancelRequested.current.delete(id)
+      setCancelling('')
+      setCancelNotice('取消请求没有送达，请重试。')
+    })
+  }
   const check = (id: Provider | 'codexDesktop') =>
     void operation.execute(
       `check-${id}`,
@@ -890,7 +924,7 @@ export function MaintenancePage({
         }
       />
       <ResultNotice
-        error={resource.error || operation.error}
+        error={resource.error || operation.error || cancelNotice}
         message={operation.message}
       />
       {failures.map((failure) => {
@@ -987,6 +1021,18 @@ export function MaintenancePage({
                   >
                     {rescan ? '重新检测' : status?.installed ? '重新安装' : '安装'}
                   </Button>
+                  {operation.busy === id && isProvider(id) && (
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      icon={X}
+                      loading={cancelling === id}
+                      onClick={() => cancelInstall(id)}
+                      testId={'maintenance-cancel-' + id}
+                    >
+                      {cancelling === id ? '取消中' : '取消'}
+                    </Button>
+                  )}
                   <Menu
                     label={`${tool.name} 的更多操作`}
                     anchor={<MoreHorizontal size={18} />}

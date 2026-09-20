@@ -3,6 +3,7 @@ import {
   type AppConfigSummary,
   type CodexDesktopLaunchMode,
   type ExternalToolId,
+  type InstallCancelResult,
   type ProviderConfigSummary,
   type ProviderId,
   type XingmangApi,
@@ -76,6 +77,10 @@ export function createToolsApi(bridge: XingmangApi) {
     // version 省略时由主进程按已验证版本名单与设置决定装哪个版本(N1);
     // 只有「回到推荐版本」会点名版本。
     install: (id: ToolId, version?: string) => id === 'codexDesktop' ? bridge.installCodexDesktop() : bridge.installCli(id, version),
+    // 只有四个 CLI 能取消:Codex 桌面端走 MSIX 安装器,中途中断会留下半装的包。
+    cancelInstall: (id: ToolId): Promise<InstallCancelResult> => id === 'codexDesktop'
+      ? Promise.resolve({ cancelled: false, reason: 'Codex 桌面端的安装暂时不能取消。' })
+      : bridge.cancelCliInstall(id),
     uninstall: (id: ToolId) => id === 'codexDesktop' ? bridge.uninstallCodexDesktop() : bridge.uninstallCli(id),
     checkUpdate: (id: ToolId) => id === 'codexDesktop' ? bridge.checkCodexDesktopUpdate() : bridge.checkCliUpdate(id),
     launch: (id: ToolId, workspace: string, mode: CodexDesktopLaunchMode = 'open') => id === 'codexDesktop'

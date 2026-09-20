@@ -1,11 +1,24 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
-import type { DesktopAppStatus, ExternalClientStatus, InstallProgress, XingmangApi } from '../../../../electron/ipc-contract'
+import type { DesktopAppStatus, ExternalClientStatus, InstallCancelResult, InstallProgress, XingmangApi } from '../../../../electron/ipc-contract'
 import { createToolsApi, type ToolboxPartitionFailure } from './api'
 import type { ToolboxSnapshot } from './model'
 import { platformApi } from '../../platform-api'
 import { errorMessage } from '../../business-common'
 
-export interface ToolJob { label: string; percent?: number; log: string[] }
+export interface ToolJob {
+  label: string
+  percent?: number
+  log: string[]
+  /** 这一步能不能中途取消；缺省 = 不能（旧行为）。 */
+  cancellable?: boolean
+  /** 取消已经发出去，还在等主进程收尾。 */
+  cancelling?: boolean
+}
+
+export interface ToolJobOptions {
+  /** 提供后工具行会出现「取消」；返回主进程是否真的接受了这次取消。 */
+  cancel?: () => Promise<InstallCancelResult>
+}
 
 export function useToolbox(bridge: XingmangApi | null, enabled: boolean, scope: string) {
   const [snapshot, setSnapshot] = useState<ToolboxSnapshot | null>(null)
@@ -20,6 +33,8 @@ export function useToolbox(bridge: XingmangApi | null, enabled: boolean, scope: 
   const request = useRef(0)
   const active = useRef(true)
   const locks = useRef(new Set<string>())
+  const cancellers = useRef(new Map<string, () => Promise<InstallCancelResult>>())
+  const cancelRequests = useRef(new Set<string>())
   const desktopRevision = useRef(0)
   const latestDesktop = useRef<DesktopAppStatus | null>(null)
   const currentScope = useRef(scope)
@@ -75,8 +90,11 @@ export function useToolbox(bridge: XingmangApi | null, enabled: boolean, scope: 
   useEffect(() => {
     if (!bridge) return
     const update = (key: string, label: string, percent?: number) => setJobs((current) => {
-      if (!current[key]) return current
-      return { ...current, [key]: { label, percent, log: [...current[key].log, label].slice(-200) } }
+      const job = current[key]
+      // 展开原来的 job：进度事件不能把「能不能取消」「正在取消」这两个标记洗掉，
+      // 否则安装一有输出，取消按钮就消失了。
+      if (!job) return current
+      return { ...current, [key]: { ...job, label, percent, log: [...job.log, label].slice(-200) } }
     })
     const callbacks = [
       bridge.onInstallProgress((event: InstallProgress) => update(event.provider, event.message, event.percent)),
@@ -92,20 +110,52 @@ export function useToolbox(bridge: XingmangApi | null, enabled: boolean, scope: 
     ]
     return () => callbacks.forEach((unsubscribe) => unsubscribe())
   }, [bridge])
-  const run = useCallback(async (key: string, label: string, operation: () => Promise<unknown>) => {
+  const run = useCallback(async (key: string, label: string, operation: () => Promise<unknown>, options?: ToolJobOptions) => {
     if (locks.current.has(key)) return false
     locks.current.add(key)
-    setJobs((current) => ({ ...current, [key]: { label, log: [label] } }))
+    cancelRequests.current.delete(key)
+    if (options?.cancel) cancellers.current.set(key, options.cancel)
+    setJobs((current) => ({ ...current, [key]: { label, log: [label], cancellable: Boolean(options?.cancel) } }))
     try {
       await operation()
       if (!key.startsWith('launch:') && /安装|更新|准备运行环境/.test(label)) {
         void platformApi()?.notifyActivity('install', `install:${key}:${Date.now()}`).catch(() => undefined)
       }
       return true
+    } catch (cause) {
+      // 用户自己点的取消不是失败：吞掉这次拒绝，调用方按「没做完」处理，
+      // 界面就不会再弹一条红色的「安装工具没有完成」。
+      if (cancelRequests.current.has(key)) return false
+      throw cause
     } finally {
       locks.current.delete(key)
+      cancellers.current.delete(key)
+      cancelRequests.current.delete(key)
       if (active.current) setJobs((current) => { const next = { ...current }; delete next[key]; return next })
     }
   }, [])
-  return { snapshot, loading, error, failures, refresh, externalClients, externalLoading, externalError, refreshExternal, jobs, run, setSnapshot }
+  const markCancelling = useCallback((key: string, cancelling: boolean) => {
+    setJobs((current) => current[key] ? { ...current, [key]: { ...current[key], cancelling } } : current)
+  }, [])
+  const cancel = useCallback(async (key: string): Promise<InstallCancelResult> => {
+    const requestCancel = cancellers.current.get(key)
+    if (!requestCancel) return { cancelled: false, reason: '这一步已经不能取消了。' }
+    cancelRequests.current.add(key)
+    markCancelling(key, true)
+    let outcome: InstallCancelResult
+    try { outcome = await requestCancel() }
+    catch (cause) {
+      cancelRequests.current.delete(key)
+      if (active.current) markCancelling(key, false)
+      throw cause
+    }
+    // 主进程拒绝了（正在写入工具目录那一步），这次安装还会继续跑完，
+    // 所以取消标记要撤掉，否则真失败时会被当成取消默默吞掉。
+    if (!outcome.cancelled) {
+      cancelRequests.current.delete(key)
+      if (active.current) markCancelling(key, false)
+    }
+    return outcome
+  }, [markCancelling])
+  return { snapshot, loading, error, failures, refresh, externalClients, externalLoading, externalError, refreshExternal, jobs, run, cancel, setSnapshot }
 }

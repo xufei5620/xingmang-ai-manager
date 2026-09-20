@@ -80,6 +80,7 @@ function serviceStub(): SystemService {
     restartWindows: vi.fn() as never,
     installPythonRuntime: vi.fn() as never,
     installCli: vi.fn() as never,
+    cancelCliInstall: vi.fn(() => ({ cancelled: true, reason: null })) as never,
     uninstallCli: vi.fn() as never,
     inspectCliUpdate: vi.fn() as never,
     installCodexDesktop: vi.fn() as never,

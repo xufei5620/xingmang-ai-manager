@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { ArrowRight, ArrowUpRight, BookOpen, Download, FolderOpen, History, MessageSquare, Plug, RefreshCw, RotateCcw, Zap } from 'lucide-react'
+import { ArrowRight, ArrowUpRight, BookOpen, Download, FolderOpen, History, MessageSquare, Plug, RefreshCw, RotateCcw, X, Zap } from 'lucide-react'
 import type { AccountBalance, AccountProfile, ExternalClientStatus, ExternalToolId, MultiProviderSessionPage, OfficialChatGptAccount } from '../../../../electron/ipc-contract'
 import { presentExternalClients } from './external-model'
 import { useSharedAccountBalance } from '../app/balance-context'
@@ -30,6 +30,8 @@ export interface HomeProps {
   onScan(): void
   /** version 省略 = 让主进程按已验证版本名单决定;点名 = 回到推荐版本(N1)。 */
   onInstall(tool: ToolId, version?: string): void
+  /** 中止正在进行的安装或更新。 */
+  onCancelInstall(tool: ToolId): void
   onLaunch(tool: ToolId): void
   onConfigure(tool: ToolId): void
   onConfigureExternal(tool: ExternalToolId): void
@@ -123,9 +125,11 @@ export function Home(props: HomeProps) {
       version={tool.status.installed ? versionSubtitle(tool) ?? '版本暂未识别' : undefined}
       model={tool.status.installed ? tool.source === 'official' ? '官方账号' : tool.model || undefined : undefined}
       progress={job?.percent}
-      extraAction={rollback && blocked
-        ? <Button variant="ghost" size="sm" icon={RotateCcw} title={blocked} onClick={() => props.onInstall(tool.id, rollback)} testId={`tool-${tool.id}-rollback`}>回到推荐版本</Button>
-        : tool.updateAvailable && !job ? <Button variant="ghost" size="sm" icon={Download} onClick={() => props.onInstall(tool.id)}>更新</Button> : undefined}
+      extraAction={installJob?.cancellable
+        ? <Button variant="ghost" size="sm" icon={X} loading={installJob.cancelling} onClick={() => props.onCancelInstall(tool.id)} testId={`tool-${tool.id}-cancel`}>{installJob.cancelling ? '取消中' : '取消'}</Button>
+        : rollback && blocked
+          ? <Button variant="ghost" size="sm" icon={RotateCcw} title={blocked} onClick={() => props.onInstall(tool.id, rollback)} testId={`tool-${tool.id}-rollback`}>回到推荐版本</Button>
+          : tool.updateAvailable && !job ? <Button variant="ghost" size="sm" icon={Download} onClick={() => props.onInstall(tool.id)}>更新</Button> : undefined}
       primaryAction={<Button size="sm" variant={tool.status.installed ? 'primary' : 'secondary'} loading={Boolean(job)}
         disabled={loading || launchBusy || bootstrapBusy && !tool.configured && !configUnavailable} icon={tool.status.installed && !bootstrapBusy ? ArrowUpRight : undefined} onClick={primary} testId={`tool-${tool.id}-primary`}>{primaryLabel}</Button>}
       menu={tool.status.installed && !job ? [

@@ -43,6 +43,34 @@ describe('CLI install version passthrough', () => {
   })
 })
 
+describe('CLI install cancellation routing', () => {
+  it('forwards a CLI cancel to the main process', async () => {
+    const cancelCliInstall = vi.fn(async () => ({ cancelled: true, reason: null }))
+    const api = createToolsApi({ cancelCliInstall } as unknown as XingmangApi)
+
+    await expect(api.cancelInstall('claude')).resolves.toEqual({ cancelled: true, reason: null })
+    expect(cancelCliInstall).toHaveBeenCalledWith('claude')
+  })
+
+  it('passes the main process refusal through untouched', async () => {
+    const refusal = { cancelled: false, reason: '正在把新版本写入工具目录，这一步中断会让工具用不了，请等它结束。' }
+    const cancelCliInstall = vi.fn(async () => refusal)
+    const api = createToolsApi({ cancelCliInstall } as unknown as XingmangApi)
+
+    await expect(api.cancelInstall('codex')).resolves.toEqual(refusal)
+  })
+
+  it('says Codex Desktop cannot be cancelled instead of reaching for a CLI channel', async () => {
+    const cancelCliInstall = vi.fn(async () => ({ cancelled: true, reason: null }))
+    const api = createToolsApi({ cancelCliInstall } as unknown as XingmangApi)
+
+    const outcome = await api.cancelInstall('codexDesktop')
+    expect(outcome.cancelled).toBe(false)
+    expect(outcome.reason).toContain('不能取消')
+    expect(cancelCliInstall).not.toHaveBeenCalled()
+  })
+})
+
 describe('toolbox read partial failures', () => {
   const system = { checkedAt: '2026-09-18T00:00:00.000Z', clis: {}, desktopApps: {}, runtime: {} }
   const platform = { platform: 'windows', codexDesktop: { launch: false } }

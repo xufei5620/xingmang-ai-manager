@@ -38,7 +38,7 @@ function render(
   const props: HomeProps = {
     api: {} as ToolsApi, snapshot: snapshot(clis), loading: false, error: '', account: null,
     balance: null, jobs, externalClients: [], externalLoading: false, externalError: '',
-    onScan: noop, onInstall: noop, onLaunch: noop, onConfigure: noop, onConfigureExternal: noop,
+    onScan: noop, onInstall: noop, onCancelInstall: noop, onLaunch: noop, onConfigure: noop, onConfigureExternal: noop,
     onInstallExternal: noop, onLaunchExternal: noop, onCodexModels: noop, onUninstall: noop,
     onRuntime: noop, onNavigate: noop, onGuide: noop,
     ...overrides,
@@ -122,5 +122,34 @@ describe('renderer-v2 home partial read failures (R-S8)', () => {
     const markup = render({})
     expect(markup).not.toContain('data-testid="home-config-failure"')
     expect(markup).not.toContain('配置暂未读到')
+  })
+})
+
+describe('renderer-v2 home install cancellation', () => {
+  it('offers 取消 on the row whose install can still be stopped', () => {
+    const markup = render({ claude: { label: '正在安装', log: [], cancellable: true } })
+    expect(markup).toContain('data-testid="tool-claude-cancel"')
+    expect(markup).toContain('取消')
+  })
+
+  it('reports that the cancel request is still being handled', () => {
+    const markup = render({ claude: { label: '正在安装', log: [], cancellable: true, cancelling: true } })
+    expect(markup).toContain('data-testid="tool-claude-cancel"')
+    expect(markup).toContain('取消中')
+  })
+
+  it('leaves an install that cannot be cancelled without the button', () => {
+    const markup = render({ claude: { label: '正在安装', log: [] } })
+    expect(markup).not.toContain('data-testid="tool-claude-cancel"')
+  })
+
+  it('does not offer 取消 on a row that is idle', () => {
+    const markup = render({})
+    expect(markup).not.toContain('data-testid="tool-claude-cancel"')
+  })
+
+  it('keeps 取消 off the launch job, which is not an install', () => {
+    const markup = render({ 'launch:claude': { label: '正在打开工具', log: [], cancellable: true } })
+    expect(markup).not.toContain('data-testid="tool-claude-cancel"')
   })
 })
