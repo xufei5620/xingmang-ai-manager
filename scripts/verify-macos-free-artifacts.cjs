@@ -7,6 +7,7 @@ const { promisify } = require('node:util')
 const asar = require('@electron/asar')
 const YAML = require('yaml')
 const { assertElectronFuseHardening } = require('./electron-fuse-hardening.cjs')
+const { assertPublishedSigningCertificate } = require('./macos-published-signing-identity.cjs')
 const {
   DEFAULT_UPDATE_URL,
   MAX_BLOCKMAP_BYTES,
@@ -1008,6 +1009,13 @@ async function verifyMacosFreeArtifacts(options = {}) {
   const publicNames = [...names, ...blockmapNames]
   const env = options.env || process.env
   const expectedCertificateSha256 = normalizeSha256(options.signingCertificateSha256 || env.XINGMANG_MAC_SIGNING_SHA256)
+  // 期望指纹是发布时由发布者传进来的，传错了这里以前照样全绿，而换一张证书就是
+  // 全部已装 macOS 客户静默失去自动更新。台账核对把这条堵上；CI 的一次性签名
+  // 身份与已发布身份无关，由调用方关掉。
+  if (options.publishedIdentity !== false) {
+    const assertPublishedIdentity = options.assertPublishedIdentity || assertPublishedSigningCertificate
+    assertPublishedIdentity(expectedCertificateSha256, '本次发布产物的签名证书')
+  }
   const expectedUpdateUrl = normalizeUpdateBaseUrl(options.expectedUpdateUrl || DEFAULT_UPDATE_URL)
   const outputDirectoryIdentity = captureDirectoryIdentity(outputDirectory, '输出目录')
   assertPublicArtifactInventory(outputDirectory, publicNames)
