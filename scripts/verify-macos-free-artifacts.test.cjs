@@ -7,6 +7,11 @@ const test = require('node:test')
 const { gzipSync } = require('node:zlib')
 const asar = require('@electron/asar')
 const YAML = require('yaml')
+const { publishedSigningCertificateSha256 } = require('./macos-published-signing-identity.cjs')
+
+// 夹具直接用仓库登记的那张已发布证书，好让跨版本连续性核对在每条用例里都真的跑
+// 一遍；换证书的拒绝路径由下面那条专门的用例覆盖。
+const PUBLISHED_CERTIFICATE_SHA256 = publishedSigningCertificateSha256().toLowerCase()
 const { FuseState } = require('@electron/fuses/dist/constants')
 const { EXPECTED_FUSES, describeFuseMismatches, readFuseWires } = require('./electron-fuse-hardening.cjs')
 const {
@@ -149,7 +154,7 @@ function bothArtifactVerifiers(verify) {
 function verifiedApplication(architecture, certificateSha1 = 'cd'.repeat(20), slot = 'root') {
   return {
     architecture,
-    certificateSha256: 'ab'.repeat(32),
+    certificateSha256: PUBLISHED_CERTIFICATE_SHA256,
     certificateSha1,
     designatedRequirement: `identifier "com.xingmang.ai.manager" and certificate ${slot} = H"${certificateSha1}"`,
   }
@@ -455,7 +460,7 @@ test('requires each ZIP metadata entry to match the exact bytes before verificat
     projectRoot: changedFile.projectRoot,
     outputDirectory: changedFile.outputDirectory,
     version: '1.2.3',
-    signingCertificateSha256: 'ab'.repeat(32),
+    signingCertificateSha256: PUBLISHED_CERTIFICATE_SHA256,
     ...bothArtifactVerifiers(async (_artifactPath, architecture) => verifiedApplication(architecture)),
   }), /SHA-512|大小/)
 
@@ -468,7 +473,7 @@ test('requires each ZIP metadata entry to match the exact bytes before verificat
     projectRoot: changedSize.projectRoot,
     outputDirectory: changedSize.outputDirectory,
     version: '1.2.3',
-    signingCertificateSha256: 'ab'.repeat(32),
+    signingCertificateSha256: PUBLISHED_CERTIFICATE_SHA256,
     ...bothArtifactVerifiers(async (_artifactPath, architecture) => verifiedApplication(architecture)),
   }), /SHA-512|大小/)
 
@@ -481,7 +486,7 @@ test('requires each ZIP metadata entry to match the exact bytes before verificat
     projectRoot: missingSize.projectRoot,
     outputDirectory: missingSize.outputDirectory,
     version: '1.2.3',
-    signingCertificateSha256: 'ab'.repeat(32),
+    signingCertificateSha256: PUBLISHED_CERTIFICATE_SHA256,
     ...bothArtifactVerifiers(async (_artifactPath, architecture) => verifiedApplication(architecture)),
   }), /大小/)
 })
@@ -500,7 +505,7 @@ test('rejects extra top-level ZIP, DMG, or blockmap inventory entries regardless
       projectRoot: fixture.projectRoot,
       outputDirectory: fixture.outputDirectory,
       version: '1.2.3',
-      signingCertificateSha256: 'ab'.repeat(32),
+      signingCertificateSha256: PUBLISHED_CERTIFICATE_SHA256,
       ...bothArtifactVerifiers(async (_artifactPath, architecture) => verifiedApplication(architecture)),
     }), /顶层|额外|ZIP|DMG/, extraName)
   }
@@ -512,7 +517,7 @@ test('rejects extra top-level ZIP, DMG, or blockmap inventory entries regardless
     projectRoot: linked.projectRoot,
     outputDirectory: linked.outputDirectory,
     version: '1.2.3',
-    signingCertificateSha256: 'ab'.repeat(32),
+    signingCertificateSha256: PUBLISHED_CERTIFICATE_SHA256,
     ...bothArtifactVerifiers(async (_artifactPath, architecture) => verifiedApplication(architecture)),
   }), /顶层|额外|ZIP|链接/)
 })
@@ -526,7 +531,7 @@ test('copies latest-mac metadata without following symlinks and detects replacem
     projectRoot: linked.projectRoot,
     outputDirectory: linked.outputDirectory,
     version: '1.2.3',
-    signingCertificateSha256: 'ab'.repeat(32),
+    signingCertificateSha256: PUBLISHED_CERTIFICATE_SHA256,
     ...bothArtifactVerifiers(async (_artifactPath, architecture) => verifiedApplication(architecture)),
   }), /latest-mac\.yml.*链接|latest-mac\.yml.*普通文件/)
 
@@ -536,7 +541,7 @@ test('copies latest-mac metadata without following symlinks and detects replacem
     projectRoot: replaced.projectRoot,
     outputDirectory: replaced.outputDirectory,
     version: '1.2.3',
-    signingCertificateSha256: 'ab'.repeat(32),
+    signingCertificateSha256: PUBLISHED_CERTIFICATE_SHA256,
     ...bothArtifactVerifiers(async (_artifactPath, architecture) => {
       if (architecture === 'arm64') {
         const contents = fs.readFileSync(replacedMetadataPath)
@@ -555,7 +560,7 @@ test('detects output directory replacement even when artifact inodes are preserv
     projectRoot: fixture.projectRoot,
     outputDirectory: fixture.outputDirectory,
     version: '1.2.3',
-    signingCertificateSha256: 'ab'.repeat(32),
+    signingCertificateSha256: PUBLISHED_CERTIFICATE_SHA256,
     ...bothArtifactVerifiers(async (_artifactPath, architecture) => {
       if (architecture === 'arm64') {
         fs.renameSync(fixture.outputDirectory, movedDirectory)
@@ -587,7 +592,7 @@ test('rejects universal architectures and unsafe ZIP entry paths before extracti
   const zipPath = path.join(temporaryDirectory(t), 'fixture.zip')
   fs.writeFileSync(zipPath, 'fixture')
   await assert.rejects(() => verifyZipApplication(zipPath, 'arm64', {
-    expectedCertificateSha256: 'ab'.repeat(32),
+    expectedCertificateSha256: PUBLISHED_CERTIFICATE_SHA256,
     commandRunner: async (command, args) => {
       // The listing has to carry permission bits, so the entry type is known
       // before ditto runs rather than after (P-21).
@@ -648,14 +653,14 @@ test('ZIP verifier passes its explicit environment to the default command bounda
   fs.writeFileSync(zipPath, 'fixture')
   const env = {
     CSC_NAME: 'XingMang Free Update Identity',
-    XINGMANG_MAC_SIGNING_SHA256: 'ab'.repeat(32),
+    XINGMANG_MAC_SIGNING_SHA256: PUBLISHED_CERTIFICATE_SHA256,
     CSC_LINK: undefined,
     APPLE_API_KEY: undefined,
     AZURE_CLIENT_SECRET: undefined,
   }
   const calls = []
   await assert.rejects(() => verifyZipApplication(zipPath, 'arm64', {
-    expectedCertificateSha256: 'ab'.repeat(32),
+    expectedCertificateSha256: PUBLISHED_CERTIFICATE_SHA256,
     env,
     runFile: async (command, args, options) => {
       calls.push({ command, args, options })
@@ -689,7 +694,7 @@ test('verifies both ZIP applications, continuity, metadata, and writes SHA256SUM
     projectRoot: fixture.projectRoot,
     outputDirectory: fixture.outputDirectory,
     version: '1.2.3',
-    signingCertificateSha256: 'ab'.repeat(32),
+    signingCertificateSha256: PUBLISHED_CERTIFICATE_SHA256,
     ...bothArtifactVerifiers(async (artifactPath, architecture, options) => {
       verified.push([path.basename(artifactPath), architecture, options.expectedUpdateUrl])
       return verifiedApplication(architecture)
@@ -708,7 +713,7 @@ test('verifies both ZIP applications, continuity, metadata, and writes SHA256SUM
     projectRoot: fixture.projectRoot,
     outputDirectory: fixture.outputDirectory,
     version: '1.2.3',
-    signingCertificateSha256: 'ab'.repeat(32),
+    signingCertificateSha256: PUBLISHED_CERTIFICATE_SHA256,
     ...bothArtifactVerifiers(async (_artifactPath, architecture) => verifiedApplication(
       architecture,
       architecture === 'arm64' ? 'cd'.repeat(20) : 'ef'.repeat(20),
@@ -724,7 +729,7 @@ test('rejects a free release when either architecture ZIP blockmap is missing', 
     projectRoot: fixture.projectRoot,
     outputDirectory: fixture.outputDirectory,
     version: '1.2.3',
-    signingCertificateSha256: 'ab'.repeat(32),
+    signingCertificateSha256: PUBLISHED_CERTIFICATE_SHA256,
     ...bothArtifactVerifiers(async (_artifactPath, architecture) => verifiedApplication(architecture)),
   }), /blockmap/i)
 })
@@ -737,7 +742,7 @@ test('rejects a malformed ZIP blockmap before publishing free artifacts', async 
     projectRoot: fixture.projectRoot,
     outputDirectory: fixture.outputDirectory,
     version: '1.2.3',
-    signingCertificateSha256: 'ab'.repeat(32),
+    signingCertificateSha256: PUBLISHED_CERTIFICATE_SHA256,
     ...bothArtifactVerifiers(async (_artifactPath, architecture) => verifiedApplication(architecture)),
   }), /blockmap/i)
 })
@@ -748,7 +753,7 @@ test('includes both verified ZIP blockmaps in SHA256SUMS', async (t) => {
     projectRoot: fixture.projectRoot,
     outputDirectory: fixture.outputDirectory,
     version: '1.2.3',
-    signingCertificateSha256: 'ab'.repeat(32),
+    signingCertificateSha256: PUBLISHED_CERTIFICATE_SHA256,
     ...bothArtifactVerifiers(async (_artifactPath, architecture) => verifiedApplication(architecture)),
   })
 
@@ -780,7 +785,7 @@ test('builds SHA256SUMS from bound private-copy digests without reopening public
       projectRoot: fixture.projectRoot,
       outputDirectory: fixture.outputDirectory,
       version: '1.2.3',
-      signingCertificateSha256: 'ab'.repeat(32),
+      signingCertificateSha256: PUBLISHED_CERTIFICATE_SHA256,
       ...bothArtifactVerifiers(async (_artifactPath, architecture) => {
         if (architecture === 'x64') blockPublicReads = true
         return verifiedApplication(architecture)
@@ -824,7 +829,7 @@ test('fails closed when an artifact, metadata, or output directory changes durin
         projectRoot: fixture.projectRoot,
         outputDirectory: fixture.outputDirectory,
         version: '1.2.3',
-        signingCertificateSha256: 'ab'.repeat(32),
+        signingCertificateSha256: PUBLISHED_CERTIFICATE_SHA256,
         ...bothArtifactVerifiers(async (_artifactPath, architecture) => verifiedApplication(architecture)),
       }), /已变更|替换/)
       assert.equal(mutationRan, true)
@@ -840,7 +845,7 @@ test('rejects a ZIP source that changes while its private verification copy is i
     projectRoot: fixture.projectRoot,
     outputDirectory: fixture.outputDirectory,
     version: '1.2.3',
-    signingCertificateSha256: 'ab'.repeat(32),
+    signingCertificateSha256: PUBLISHED_CERTIFICATE_SHA256,
     ...bothArtifactVerifiers(async (_artifactPath, architecture) => {
       if (architecture === 'arm64') fs.writeFileSync(path.join(fixture.outputDirectory, fixture.names[1]), 'swapped')
       return verifiedApplication(architecture)
@@ -897,7 +902,7 @@ test('requires the designated requirement slot hash to be the extracted leaf cer
     projectRoot: fixture.projectRoot,
     outputDirectory: fixture.outputDirectory,
     version: '1.2.3',
-    signingCertificateSha256: 'ab'.repeat(32),
+    signingCertificateSha256: PUBLISHED_CERTIFICATE_SHA256,
     ...bothArtifactVerifiers(async (_artifactPath, architecture) => ({
       ...verifiedApplication(architecture),
       certificateSha1: 'ef'.repeat(20),
@@ -911,7 +916,7 @@ test('accepts a leaf designated requirement only when all four artifacts bind it
     projectRoot: fixture.projectRoot,
     outputDirectory: fixture.outputDirectory,
     version: '1.2.3',
-    signingCertificateSha256: 'ab'.repeat(32),
+    signingCertificateSha256: PUBLISHED_CERTIFICATE_SHA256,
     ...bothArtifactVerifiers(async (_artifactPath, architecture) => verifiedApplication(architecture, 'cd'.repeat(20), 'leaf')),
   })
   assert.deepEqual(result.applications.map((application) => application.kind), ['zip', 'dmg', 'zip', 'dmg'])
@@ -1340,7 +1345,7 @@ test('rejects a free release whose DMGs are signed by a different certificate th
     projectRoot: fixture.projectRoot,
     outputDirectory: fixture.outputDirectory,
     version: '1.2.3',
-    signingCertificateSha256: 'ab'.repeat(32),
+    signingCertificateSha256: PUBLISHED_CERTIFICATE_SHA256,
     verifyZipApplication: async (_artifactPath, architecture) => verifiedApplication(architecture),
     verifyDmgApplication: async (_artifactPath, architecture) => verifiedApplication(architecture, 'ef'.repeat(20)),
   }), /连续性.*\.dmg/)
@@ -1390,7 +1395,7 @@ test('macOS ZIP integration rejects an extracted unsigned application', {
   )
   assert.equal(status, 0, stderr)
   await assert.rejects(() => verifyZipApplication(zipPath, 'arm64', {
-    expectedCertificateSha256: 'ab'.repeat(32),
+    expectedCertificateSha256: PUBLISHED_CERTIFICATE_SHA256,
     expectedVersion: '1.2.3',
     commandRunner: undefined,
   }), /codesign|签名|完整性/)
@@ -1412,7 +1417,7 @@ test('accepts the timestamps a DMG mount leaves on the private copy', async (t) 
     projectRoot: fixture.projectRoot,
     outputDirectory: fixture.outputDirectory,
     version: '1.2.3',
-    signingCertificateSha256: 'ab'.repeat(32),
+    signingCertificateSha256: PUBLISHED_CERTIFICATE_SHA256,
     verifyZipApplication: async (_artifactPath, architecture) => verifiedApplication(architecture),
     verifyDmgApplication: async (artifactPath, architecture) => {
       stampPrivateCopy(artifactPath)
@@ -1430,7 +1435,7 @@ test('still rejects a stamped private copy on the ZIP path, which mounts nothing
     projectRoot: fixture.projectRoot,
     outputDirectory: fixture.outputDirectory,
     version: '1.2.3',
-    signingCertificateSha256: 'ab'.repeat(32),
+    signingCertificateSha256: PUBLISHED_CERTIFICATE_SHA256,
     ...bothArtifactVerifiers(async (artifactPath, architecture) => {
       stampPrivateCopy(artifactPath)
       return verifiedApplication(architecture)
@@ -1444,7 +1449,7 @@ test('rejects a private DMG copy whose contents change while it is inspected', a
     projectRoot: fixture.projectRoot,
     outputDirectory: fixture.outputDirectory,
     version: '1.2.3',
-    signingCertificateSha256: 'ab'.repeat(32),
+    signingCertificateSha256: PUBLISHED_CERTIFICATE_SHA256,
     verifyZipApplication: async (_artifactPath, architecture) => verifiedApplication(architecture),
     verifyDmgApplication: async (artifactPath, architecture) => {
       // Same length, so only the content hash can catch this.
@@ -1461,7 +1466,7 @@ test('rejects a private DMG copy replaced by a link while it is inspected', asyn
     projectRoot: fixture.projectRoot,
     outputDirectory: fixture.outputDirectory,
     version: '1.2.3',
-    signingCertificateSha256: 'ab'.repeat(32),
+    signingCertificateSha256: PUBLISHED_CERTIFICATE_SHA256,
     verifyZipApplication: async (_artifactPath, architecture) => verifiedApplication(architecture),
     verifyDmgApplication: async (artifactPath, architecture) => {
       // The decoy holds the same bytes, so the content hash passes and only the
@@ -1484,7 +1489,7 @@ test('names the drifting identity fields when a private copy stops matching', as
     projectRoot: fixture.projectRoot,
     outputDirectory: fixture.outputDirectory,
     version: '1.2.3',
-    signingCertificateSha256: 'ab'.repeat(32),
+    signingCertificateSha256: PUBLISHED_CERTIFICATE_SHA256,
     ...bothArtifactVerifiers(async (artifactPath, architecture) => {
       stampPrivateCopy(artifactPath)
       return verifiedApplication(architecture)
@@ -1496,31 +1501,32 @@ test('refuses a release whose signing certificate is not the published one', asy
   // Squirrel.Mac 只接受和已装应用同一张叶证书签出的更新，所以换证书 = 全部已装
   // macOS 客户静默失去自动更新。期望指纹是发布时人工传进来的，以前没有任何东西
   // 拿它跟上一版发布的身份对账。
+  // 走真实台账，不注入：一张别的证书必须在这里就被拦下来。
+  const otherCertificate = 'ab'.repeat(32)
+  assert.notEqual(otherCertificate, PUBLISHED_CERTIFICATE_SHA256)
   const artifacts = createFreeArtifacts(t)
-  const seen = []
   await assert.rejects(() => verifyMacosFreeArtifacts({
     projectRoot: artifacts.projectRoot,
     outputDirectory: artifacts.outputDirectory,
     version: '1.2.3',
-    signingCertificateSha256: 'ab'.repeat(32),
-    assertPublishedIdentity: (fingerprint, label) => {
-      seen.push([fingerprint, label])
-      throw new Error('本次发布产物的签名证书与仓库登记的已发布签名证书不一致')
-    },
+    signingCertificateSha256: otherCertificate,
     ...bothArtifactVerifiers(async (_artifactPath, architecture) => verifiedApplication(architecture)),
   }), /已发布签名证书不一致/)
-  // 台账两边都会再规范化一次，所以大小写在这里不重要。
-  assert.deepEqual(seen, [['ab'.repeat(32), '本次发布产物的签名证书']])
 
-  // CI 的一次性签名身份和已发布身份无关，那条路径不做连续性核对。
+  // CI 的一次性签名身份和已发布身份无关，那条路径不做连续性核对。它的产物指纹
+  // 同样不是已发布的那一张，走到这里不该被拦。
   const ciArtifacts = createFreeArtifacts(t)
-  await assert.doesNotReject(() => verifyMacosFreeArtifacts({
-    projectRoot: ciArtifacts.projectRoot,
-    outputDirectory: ciArtifacts.outputDirectory,
-    version: '1.2.3',
-    signingCertificateSha256: 'ab'.repeat(32),
-    publishedIdentity: false,
-    assertPublishedIdentity: () => { throw new Error('应当跳过') },
-    ...bothArtifactVerifiers(async (_artifactPath, architecture) => verifiedApplication(architecture)),
-  }))
+  await assert.rejects(
+    () => verifyMacosFreeArtifacts({
+      projectRoot: ciArtifacts.projectRoot,
+      outputDirectory: ciArtifacts.outputDirectory,
+      version: '1.2.3',
+      signingCertificateSha256: otherCertificate,
+      publishedIdentity: false,
+      ...bothArtifactVerifiers(async (_artifactPath, architecture) => verifiedApplication(architecture)),
+    }),
+    // 跳过的只是台账核对：产物自己的叶证书仍然必须等于传进来的那个指纹，
+    // 所以这里换来的是那条错误，而不是「与已发布签名证书不一致」。
+    (error) => /叶证书 SHA-256 与预期签名证书不匹配/.test(error.message),
+  )
 })

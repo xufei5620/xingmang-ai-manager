@@ -13,7 +13,7 @@
 // here is what the gates compare against.
 //
 // 指纹不是秘密，证书的公开部分算出来的哈希而已；私钥永远不进仓库。
-const PUBLISHED_CERTIFICATE_SHA256 = ''
+const PUBLISHED_CERTIFICATE_SHA256 = 'E42381A8DFC717865E9ECDDF26EB548AEED76C5FBE7FBFB5806FCF2EDD2ADB08'
 
 // 2026-09-20 产品所有者拍板：继续使用这张已发布的自签证书，不轮换。
 //
@@ -28,7 +28,7 @@ const PUBLISHED_CERTIFICATE_SHA256 = ''
 // keyCertSign 是同一个缺陷的两半（一张能签发下级证书的证书），不可能只放宽其中
 // 一条，所以豁免覆盖这两条加上 3650 天有效期上限，其余检查一条都不放松。
 // 换证书那天把这一行清空，预检自动恢复到严格口径。
-const LEGACY_PROFILE_EXEMPT_CERTIFICATE_SHA256 = ''
+const LEGACY_PROFILE_EXEMPT_CERTIFICATE_SHA256 = 'E42381A8DFC717865E9ECDDF26EB548AEED76C5FBE7FBFB5806FCF2EDD2ADB08'
 
 // 旧生成器签发的有效期：20 年。豁免只放宽到这个上限，不是取消上限。
 const LEGACY_PROFILE_MAX_VALIDITY_DAYS = 7300
