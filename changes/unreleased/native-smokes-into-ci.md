@@ -15,3 +15,11 @@
 - `scripts/ci-workflow-config.test.cjs`：原先那条「native 冒烟必须留在 CI 之外」的门禁翻转
   成「两条都必须在 compile 之后跑、各带步骤上界」，两条也加进 `playwrightElectronSmokes`，
   未来新增的等待漏了 `withDeadline` 会当场红。
+- `renderer-v2-native.mjs` 的主进程求值补上 `electron-ci-smoke.mjs` 那套重试：Playwright 走
+  主进程的 Node inspector，V8 会在主进程繁忙时回收 inspector 的 promise 包装，Windows runner
+  上会命中（quality run 35542609628 就这么丢了 1440 那一档，同一个 commit 上一轮还是绿的）。
+  这里的求值全是读几何、截一帧、或设一个窗口可能已经是的尺寸，重放不改变任何东西；
+  close-race 那条刻意不重试，它的求值驱动的是退出流程。
+- 顺带把这条冒烟里的 ElectronApplication 句柄改名为 `application`，并在门禁里钉住这个命名：
+  「不许出现没有上界的 `await application.evaluate(`」那两条断言是按名字写的，句柄叫别的名字
+  就会从旁边绕过去——上面那次丢档正是这么发生的。

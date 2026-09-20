@@ -60,7 +60,7 @@ async function main() {
   attachEvidence(resultPath)
 
   progress('launching Electron')
-  const app = await withDeadline('Electron launch', stepBudgetMs, () => electron.launch({
+  const application = await withDeadline('Electron launch', stepBudgetMs, () => electron.launch({
     args: ['.', `--user-data-dir=${userData}`],
     timeout: stepBudgetMs,
     env: {
@@ -73,7 +73,7 @@ async function main() {
       XINGMANG_DISABLE_SINGLE_INSTANCE: '1',
     },
   }))
-  const launchedPid = app.process().pid
+  const launchedPid = application.process().pid
   if (launchedPid) trackProcessIds([launchedPid])
 
   const checks = []
@@ -84,8 +84,26 @@ async function main() {
   // 证据只在 finally 里写一次，失败时写的是「跑到哪为止」的那一份。
   const evidence = { checks, errors, passedAssertions, profile: sandbox }
 
-  function evaluateInMainProcess(label, body, argument) {
-    return withDeadline(label, stepBudgetMs, () => app.evaluate(body, argument))
+  // Playwright drives ElectronApplication.evaluate through the main process's
+  // Node inspector, and V8 can collect the inspector's promise wrapper while
+  // that process is busy. Windows runners hit it where Linux never does: quality
+  // run 35542609628 lost the 1440px iteration to it after the same commit had
+  // passed one run earlier. Every evaluation below either reads window geometry,
+  // captures a frame, or sets a size the window may already have, so replaying
+  // one changes nothing. The close-race smoke deliberately does not retry,
+  // because its evaluations drive the quit lifecycle.
+  async function evaluateInMainProcess(label, body, argument) {
+    let collected
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      try { return await withDeadline(`${label} (attempt ${attempt})`, stepBudgetMs, () => application.evaluate(body, argument)) }
+      catch (error) {
+        if (!/Resulting promise was garbage collected/.test(String(error?.message))) throw error
+        collected = error
+        progress(`${label}: the inspector promise was collected, retrying`)
+        await new Promise((resolve) => setTimeout(resolve, 500))
+      }
+    }
+    throw collected
   }
 
   async function readWindowState() {
@@ -109,10 +127,10 @@ async function main() {
 
   try {
     progress('waiting for the first window')
-    const page = await withDeadline('first window', stepBudgetMs, () => app.firstWindow({ timeout: stepBudgetMs }))
+    const page = await withDeadline('first window', stepBudgetMs, () => application.firstWindow({ timeout: stepBudgetMs }))
     // `electron.launch()` can resolve as soon as the main process is spawned,
     // before Playwright has attached its Electron RPC bridge. Calling
-    // `app.evaluate()` in that gap is flaky (`Resulting promise was garbage
+    // `application.evaluate()` in that gap is flaky (`Resulting promise was garbage
     // collected`). Acquiring the first renderer window establishes the ready
     // event before using main-process evaluation.
     const profile = await evaluateInMainProcess('profile path', ({ app }) => app.getPath('userData'))
@@ -178,8 +196,8 @@ async function main() {
   } finally {
     progress('closing Electron')
     await fs.writeFile(resultPath, `${JSON.stringify(evidence, null, 2)}\n`, 'utf8').catch(() => undefined)
-    await withDeadline('exit', 20_000, () => app.evaluate(({ app }) => app.exit(0))).catch(() => undefined)
-    await withDeadline('close', 20_000, () => app.close()).catch(() => undefined)
+    await withDeadline('exit', 20_000, () => application.evaluate(({ app }) => app.exit(0))).catch(() => undefined)
+    await withDeadline('close', 20_000, () => application.close()).catch(() => undefined)
   }
 }
 

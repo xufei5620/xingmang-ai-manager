@@ -744,6 +744,11 @@ test('no wait in a Playwright Electron smoke is left unbounded', () => {
     // .close() have no default timeout of their own. Awaiting one of them
     // directly is how a failing assertion ended up hidden behind a ten minute
     // hang instead of being printed.
+    // The two assertions below name the handle, so a smoke that calls its
+    // ElectronApplication something else would slip past them unbounded — which
+    // is exactly what e2e/renderer-v2-native.mjs did until quality run
+    // 35542609628 lost an iteration to a collected inspector promise.
+    assert.match(source, /\bapplication = await\b/, `${smoke} must call its ElectronApplication handle "application"`)
     assert.doesNotMatch(source, /await page\.evaluate\(/, smoke)
     assert.doesNotMatch(source, /await application\.evaluate\(/, smoke)
     assert.doesNotMatch(source, /await application\.close\(\)/, smoke)
