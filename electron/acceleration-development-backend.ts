@@ -6,6 +6,28 @@ import { ensureSafeDataDirectory, readSafeUtf8File, writeAtomicSafeUtf8File } fr
 
 export type AccelerationStopFailureStage = 'proxy-restore' | 'core-stop' | 'ledger-write'
 
+/** Why a connect or a line probe never reached an active session. A closed set
+ *  rather than the error text: the worker sends this to the main process, and
+ *  an error raised down in the runtime or the native proxy helper can carry a
+ *  private path or proxy detail (see I13 and the stop-side note below). */
+export type AccelerationStartFailureStage =
+  | 'core-architecture'
+  | 'core-integrity'
+  | 'core-launch'
+  | 'core-storage'
+  | 'line-unavailable'
+  | 'runtime-invalid'
+  | 'ledger-write'
+  | 'proxy-authorization'
+  | 'proxy-helper'
+  | 'proxy-enable'
+  | 'unknown'
+
+/** Where the attempt was when it threw. The same message means different
+ *  things on either side of `proxy.enable`, so the caller tracks this rather
+ *  than the classifier guessing it back out of the text. */
+export type AccelerationStartFailurePhase = 'runtime' | 'verify' | 'ledger' | 'proxy'
+
 export interface AccelerationDevelopmentBackendOptions {
   /** Both sources use the local ledger, never a server-issued entitlement. */
   entitlementSource?: 'local-device' | 'local-development'
@@ -25,6 +47,10 @@ export interface AccelerationDevelopmentBackendOptions {
   pingLine?: (lineId: string) => Promise<AccelerationLine>
   /** Stage only: native errors can contain private proxy or configuration data. */
   onDiagnostic?: (stage: AccelerationStopFailureStage) => void
+  /** Same constraint, for a failed connect or line probe. Until this existed,
+   *  a failed start left no trace at all: it resolves with an error-carrying
+   *  state instead of rejecting, so the IPC layer above logged it as a success. */
+  onStartDiagnostic?: (stage: AccelerationStartFailureStage) => void
 }
 
 export interface AccelerationDevelopmentBackend extends AccelerationApi {
@@ -98,6 +124,27 @@ function parseLedger(raw: string | null): ParsedLedger {
     }
   }
   return { ledger: { version: 2, accounts }, needsRewrite }
+}
+
+/** Maps the authored failure messages this backend can observe onto the closed
+ *  diagnostic set. Every branch matches a message written in this repository;
+ *  anything else is reported as `unknown` rather than forwarded, because an
+ *  unrecognised message is exactly the one that might not be ours. */
+export function classifyAccelerationStartFailure(
+  error: unknown,
+  phase: AccelerationStartFailurePhase,
+): AccelerationStartFailureStage {
+  const message = error instanceof Error ? error.message : ''
+  if (error instanceof Error && 'code' in error && error.code === 'MACOS_PROXY_AUTHORIZATION') return 'proxy-authorization'
+  if (phase === 'proxy') return /系统代理组件不可用/.test(message) ? 'proxy-helper' : 'proxy-enable'
+  if (phase === 'ledger') return 'ledger-write'
+  if (phase === 'verify') return 'runtime-invalid'
+  if (/架构/.test(message)) return 'core-architecture'
+  if (/校验失败|Mach-O|不是可执行程序/.test(message)) return 'core-integrity'
+  if (/内核启动失败|内核已退出|内核意外退出/.test(message)) return 'core-launch'
+  if (/^暂无可用加速线路/.test(message)) return 'line-unavailable'
+  if (/^加速(运行目录|内核|连接配置)/.test(message)) return 'core-storage'
+  return 'unknown'
 }
 
 /** Device-local accounting only. This ledger is not a server-issued entitlement. */
@@ -223,6 +270,10 @@ export function createAccelerationDevelopmentBackend(options: AccelerationDevelo
       throw error
     }
   }
+  function reportStartFailure(error: unknown, phase: AccelerationStartFailurePhase) {
+    try { options.onStartDiagnostic?.(classifyAccelerationStartFailure(error, phase)) }
+    catch { /* Reporting must not change recovery behavior. */ }
+  }
   function arm(milliseconds: number) {
     clearTimer()
     const scheduledSession = session
@@ -336,22 +387,30 @@ export function createAccelerationDevelopmentBackend(options: AccelerationDevelo
         // Persist intent before touching OS state. A crash in the startup gap
         // is conservatively billed; an ordinary failed start clears it unpaid.
         try { await saveAccount(scope, { usedMs: usage(scope).usedMs, startedAt: now() }) }
-        catch { lastErrors.set(scope, ledgerFailure); return state(scope) }
+        catch (error) { reportStartFailure(error, 'ledger'); lastErrors.set(scope, ledgerFailure); return state(scope) }
         session = { scope, phase: 'connecting', line: null, connectedAt: null, startedMono: null, stoppedMono: null, error: null }
+        // The user-facing text below collapses every cause into one sentence on
+        // purpose. `phase` is what survives that collapse for the log.
+        let phase: AccelerationStartFailurePhase = 'runtime'
         try {
           const result = await options.runtime.start(lineId)
+          phase = 'verify'
           if (!Number.isInteger(result.proxyPort) || result.proxyPort < 1 || result.proxyPort > 65535 || !options.runtime.isRunning()) throw new Error(startFailure)
           session.line = { id: result.line.id, name: result.line.name, region: result.line.region, latencyMs: result.line.latencyMs }
+          phase = 'proxy'
           await options.proxy.enable(result.proxyPort)
+          phase = 'verify'
           if (!options.runtime.isRunning()) throw new Error(startFailure)
           session.startedMono = monotonicNow()
           const startedAt = now()
           session.connectedAt = new Date(startedAt).toISOString()
+          phase = 'ledger'
           await saveAccount(scope, { usedMs: usage(scope).usedMs, startedAt })
           session.phase = 'active'
           arm(accountTotalMs(usage(scope)) - usage(scope).usedMs - elapsed(session))
           return state(scope)
         } catch (error) {
+          reportStartFailure(error, phase)
           try { await stopSession(); lastErrors.set(scope, connectionFailure(error)) }
           catch { arm(5000) }
           return state(scope)
@@ -382,6 +441,9 @@ export function createAccelerationDevelopmentBackend(options: AccelerationDevelo
           // A probe may fail after spawning the temporary core. Cleanup belongs
           // to this serialized owner and remains retryable by stop/dispose.
           try { return await options.pingLine(lineId) }
+          // A probe starts the core the same way a connect does, so it fails
+          // for the same reasons and is worth the same log line.
+          catch (error) { reportStartFailure(error, 'runtime'); throw error }
           finally { await stopSession() }
         }
         // A host may omit active probing (for example in fixture mode). Keep

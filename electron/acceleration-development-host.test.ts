@@ -5,7 +5,7 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { EventEmitter } from 'node:events'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { accelerationBonusCode } from './acceleration-contract'
-import { accelerationDevelopmentDirectory, createAccelerationDevelopmentHost, parseAccelerationDevelopmentConfig, parseAccelerationEntitlementSource, readAccelerationDevelopmentConfig } from './acceleration-development-host'
+import { accelerationDevelopmentDirectory, accelerationStartFailureDescriptions, createAccelerationDevelopmentHost, parseAccelerationDevelopmentConfig, parseAccelerationEntitlementSource, readAccelerationDevelopmentConfig } from './acceleration-development-host'
 
 const mocks = vi.hoisted(() => ({ fork: vi.fn(), spawn: vi.fn(), read: vi.fn(), environment: vi.fn(), profile: vi.fn(), profileCleanup: vi.fn() }))
 vi.mock('node:child_process', async (original) => ({ ...await original<typeof import('node:child_process')>(), fork: mocks.fork, spawn: mocks.spawn }))
@@ -205,6 +205,45 @@ describe('development acceleration worker host', () => {
     worker.emit('exit', 0)
     worker.emit('message', { type: 'acceleration-diagnostic', event: 'stop.failed', stage: 'core-stop' })
     expect(onDiagnostic).toHaveBeenCalledTimes(3)
+  })
+
+  it('forwards only known start stages and never the worker\u2019s own error text', async () => {
+    const worker = new FakeWorker()
+    mocks.fork.mockReturnValue(worker)
+    const onStartDiagnostic = vi.fn(() => { throw new Error('logging unavailable') })
+    const host = createAccelerationDevelopmentHost({ config, dataDirectory, onStartDiagnostic })
+    const request = host.getAccelerationState('xm-account:1')
+    await flush()
+    for (const stage of Object.keys(accelerationStartFailureDescriptions)) {
+      worker.emit('message', { type: 'acceleration-diagnostic', event: 'start.failed', stage })
+    }
+    for (const message of [
+      { type: 'acceleration-diagnostic', event: 'start.failed', stage: 'private-secret' },
+      { type: 'acceleration-diagnostic', event: 'start.failed', stage: 'proxy-restore' },
+      { type: 'acceleration-diagnostic', event: 'start.failed', stage: 'core-launch', error: 'private-secret' },
+    ]) worker.emit('message', message)
+    expect(onStartDiagnostic.mock.calls.flat()).toEqual(Object.keys(accelerationStartFailureDescriptions))
+    worker.respond(2, true, { phase: 'idle' })
+    await expect(request).resolves.toEqual({ phase: 'idle' })
+    await host.dispose()
+  })
+
+  it('keeps the two diagnostic events apart', async () => {
+    const worker = new FakeWorker()
+    mocks.fork.mockReturnValue(worker)
+    const onDiagnostic = vi.fn()
+    const onStartDiagnostic = vi.fn()
+    const host = createAccelerationDevelopmentHost({ config, dataDirectory, onDiagnostic, onStartDiagnostic })
+    const request = host.getAccelerationState('xm-account:1')
+    await flush()
+    // 'ledger-write' is a member of both sets, so only the event name decides.
+    worker.emit('message', { type: 'acceleration-diagnostic', event: 'start.failed', stage: 'ledger-write' })
+    worker.emit('message', { type: 'acceleration-diagnostic', event: 'stop.failed', stage: 'ledger-write' })
+    expect(onStartDiagnostic.mock.calls).toEqual([['ledger-write']])
+    expect(onDiagnostic.mock.calls).toEqual([['ledger-write']])
+    worker.respond(2, true, { phase: 'idle' })
+    await expect(request).resolves.toEqual({ phase: 'idle' })
+    await host.dispose()
   })
 
   it('lazily forks a hidden Node worker with a trusted environment and sends paths without YAML content', async () => {

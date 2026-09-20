@@ -62,6 +62,9 @@ async function initialize(message: Record<string, unknown>): Promise<void> {
     onDiagnostic: (stage) => {
       if (process.connected) process.send?.({ type: 'acceleration-diagnostic', event: 'stop.failed', stage }, () => undefined)
     },
+    onStartDiagnostic: (stage) => {
+      if (process.connected) process.send?.({ type: 'acceleration-diagnostic', event: 'start.failed', stage }, () => undefined)
+    },
     proxy: {
       enable: (port) => proxy.enable(port),
       async restore() {
