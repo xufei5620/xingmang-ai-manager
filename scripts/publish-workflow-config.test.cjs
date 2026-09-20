@@ -221,6 +221,15 @@ test('two publishes cannot run at once', () => {
 // 报红，而「究竟发出去没有」是发布现场最不该需要人去猜的一件事。platforms 选单个
 // 平台时一个版本要分两次发，第二次跑到这里 tag 与 Release 都已经存在——原来的写法
 // 会在那里直接炸。
+//
+// 这几条把工作流里的那段 `run` 真的跑起来，所以要一个 POSIX shell 和能当可执行文件
+// 用的打桩脚本。publish 作业本身 runs-on: ubuntu-latest，这段脚本永远不会在 Windows
+// 上执行，所以 Windows 分片上跳过的是「跑不起来的环境」，不是「在 Windows 上不成立
+// 的断言」——Linux 与 macOS 分片照跑，覆盖没有减少。
+const SHELL_PATH = '/bin/bash'
+const shellUnavailable = process.platform === 'win32' || !fs.existsSync(SHELL_PATH)
+const posixOnly = { skip: shellUnavailable && `需要 ${SHELL_PATH}，publish 作业只在 ubuntu-latest 上跑` }
+
 function runTagStep({ existingTagSha, releaseExists, assets = true }) {
   const step = publishJob.steps.find((entry) => /Tag the commit that shipped/.test(entry.name || ''))
   const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-publish-tag-'))
@@ -260,7 +269,7 @@ exit 0
     fs.chmodSync(executable, 0o755)
   }
 
-  const result = spawnSync('/bin/bash', ['-c', step.run], {
+  const result = spawnSync(SHELL_PATH, ['-c', step.run], {
     cwd: workspace,
     encoding: 'utf8',
     env: {
@@ -277,7 +286,7 @@ exit 0
   return { status: result.status, stdout: result.stdout, stderr: result.stderr, log }
 }
 
-test('a first release of a version tags the commit that shipped and creates the Release', () => {
+test('a first release of a version tags the commit that shipped and creates the Release', posixOnly, () => {
   const run = runTagStep({ existingTagSha: null, releaseExists: false })
 
   assert.equal(run.status, 0, run.stderr)
@@ -287,7 +296,7 @@ test('a first release of a version tags the commit that shipped and creates the 
   assert.doesNotMatch(run.log, /gh release upload/)
 })
 
-test('re-publishing the same version adds its assets instead of failing on the existing tag', () => {
+test('re-publishing the same version adds its assets instead of failing on the existing tag', posixOnly, () => {
   const run = runTagStep({ existingTagSha: 'a'.repeat(40), releaseExists: true })
 
   assert.equal(run.status, 0, run.stderr)
@@ -299,7 +308,7 @@ test('re-publishing the same version adds its assets instead of failing on the e
   assert.doesNotMatch(run.log, /gh release create/)
 })
 
-test('a tag that already points somewhere else stops the job instead of being moved', () => {
+test('a tag that already points somewhere else stops the job instead of being moved', posixOnly, () => {
   const run = runTagStep({ existingTagSha: 'b'.repeat(40), releaseExists: true })
 
   // 同一个版本号发过两份不同的产物，这必须有人来看。
@@ -316,7 +325,7 @@ test('the release tag is never moved or force-pushed', () => {
   assert.doesNotMatch(String(step.run), /git tag -f|--force|-d\s+"?v?\$/)
 })
 
-test('an asset-less re-publish leaves the existing Release alone instead of erroring', () => {
+test('an asset-less re-publish leaves the existing Release alone instead of erroring', posixOnly, () => {
   // nullglob 下两个 glob 都不匹配就是空数组，而 `gh release upload <tag>` 不带文件
   // 会以非零退出——在这一步报红，等于在"已经传上去了"之后再盖一层看不懂的失败。
   const run = runTagStep({ existingTagSha: 'a'.repeat(40), releaseExists: true, assets: false })
