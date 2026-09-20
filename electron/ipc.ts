@@ -12,6 +12,7 @@ import { usageDateRange } from './usage-date-range'
 import type { AppSettingsUpdate, AppTheme } from './app-settings'
 import { parseWindowState } from './window-preferences'
 import { parseWindowCloseReport, type WindowCloseReport } from './window-close-query'
+import { classifyNetworkFailure } from './network-failure'
 import type { ExternalDeepLink } from './external-deep-links'
 import { savedAccountId, type SavedAccountsStore } from './saved-accounts'
 import type { ConfigBackupStore } from './backups'
@@ -1382,9 +1383,13 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
         if (quietIpcFailureChannels.has(channel)) return
         const reason = error instanceof Error ? error.message : String(error)
         const label = ipcOperationLabels[channel] ?? channel
+        // 受限网络下最贵的排查成本是「日志里只写了一句请求失败」。归得出原因就
+        // 单列一个字段，客服和诊断导出不用再从错误文本里猜 DNS 还是证书。
+        const networkFailure = classifyNetworkFailure(error)
         options.runtimeLog.log('error', 'ipc', channel, `${label}失败：${reason || '未知错误'}`, {
           durationMs: Date.now() - startedAt,
           error,
+          ...(networkFailure ? { networkFailure } : {}),
         })
       }
       const senderUrl = event.senderFrame?.url ?? event.sender.getURL()
@@ -2015,10 +2020,14 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     accelerationService().pingAccelerationLine?.(requiredString(scope, '加速账号', 64), requiredString(lineId, '加速线路', 80))
       ?? Promise.reject(new Error('线路检测服务暂未准备好，请稍后重试。'))
   ))
-  registerTrustedHandler('acceleration:start', (_event, scope: unknown, mode: unknown, lineId: unknown) => {
+  registerTrustedHandler('acceleration:start', (_event, scope: unknown, mode: unknown, lineId: unknown, ignoreConflicts: unknown) => {
     if (mode !== 'system-proxy' && mode !== 'tun') throw new Error('加速模式无效。')
     if (lineId !== undefined && typeof lineId !== 'string') throw new Error('加速线路参数无效。')
+    // The renderer only sets this after the user answered the conflict warning
+    // with 仍然连接; it is a decision, never a default.
+    if (ignoreConflicts !== undefined && typeof ignoreConflicts !== 'boolean') throw new Error('加速冲突确认参数无效。')
     const accountScope = requiredString(scope, '加速账号', 64)
+    if (ignoreConflicts !== undefined) return accelerationService().startAcceleration(accountScope, mode, lineId, ignoreConflicts)
     return lineId === undefined
       ? accelerationService().startAcceleration(accountScope, mode)
       : accelerationService().startAcceleration(accountScope, mode, lineId)

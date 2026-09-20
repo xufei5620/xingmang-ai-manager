@@ -4,7 +4,7 @@ import os from 'node:os'
 import { setTimeout as delay } from 'node:timers/promises'
 import { EventEmitter } from 'node:events'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { accelerationBonusCode } from './acceleration-contract'
+import { accelerationBonusCode, accelerationConflictKinds } from './acceleration-contract'
 import { accelerationDevelopmentDirectory, accelerationStartFailureDescriptions, createAccelerationDevelopmentHost, parseAccelerationDevelopmentConfig, parseAccelerationEntitlementSource, readAccelerationDevelopmentConfig } from './acceleration-development-host'
 
 const mocks = vi.hoisted(() => ({ fork: vi.fn(), spawn: vi.fn(), read: vi.fn(), environment: vi.fn(), profile: vi.fn(), profileCleanup: vi.fn() }))
@@ -226,6 +226,47 @@ describe('development acceleration worker host', () => {
     worker.respond(2, true, { phase: 'idle' })
     await expect(request).resolves.toEqual({ phase: 'idle' })
     await host.dispose()
+  })
+
+  it('forwards only known conflict kinds with an explicit user decision', async () => {
+    const worker = new FakeWorker()
+    mocks.fork.mockReturnValue(worker)
+    const onConflictDiagnostic = vi.fn(() => { throw new Error('logging unavailable') })
+    const host = createAccelerationDevelopmentHost({ config, dataDirectory, onConflictDiagnostic })
+    const request = host.getAccelerationState('xm-account:1')
+    await flush()
+    for (const kind of accelerationConflictKinds) {
+      worker.emit('message', { type: 'acceleration-diagnostic', event: 'start.conflict', stage: kind, ignored: false })
+    }
+    worker.emit('message', { type: 'acceleration-diagnostic', event: 'start.conflict', stage: 'system-proxy', ignored: true })
+    for (const message of [
+      { type: 'acceleration-diagnostic', event: 'start.conflict', stage: 'private-secret', ignored: false },
+      { type: 'acceleration-diagnostic', event: 'start.conflict', stage: 'core-stop', ignored: false },
+      // A decision the worker did not state is not a decision to record.
+      { type: 'acceleration-diagnostic', event: 'start.conflict', stage: 'system-proxy' },
+      { type: 'acceleration-diagnostic', event: 'start.conflict', stage: 'system-proxy', ignored: 'yes' },
+      { type: 'acceleration-diagnostic', event: 'start.conflict', stage: 'system-proxy', ignored: false, error: 'private-secret' },
+    ]) worker.emit('message', message)
+    expect(onConflictDiagnostic.mock.calls).toEqual([
+      ...accelerationConflictKinds.map((kind) => [kind, false]), ['system-proxy', true],
+    ])
+    worker.respond(2, true, { phase: 'idle' })
+    await expect(request).resolves.toEqual({ phase: 'idle' })
+    await host.dispose()
+  })
+
+  it('sends the user override to the worker only when it was given', async () => {
+    const { worker, host } = setup()
+    const pending = [
+      host.startAcceleration('xm-account:1', 'system-proxy', 'line-1').catch(() => undefined),
+    ]
+    await flush()
+    pending.push(host.startAcceleration('xm-account:1', 'system-proxy', 'line-1', true).catch(() => undefined))
+    await flush()
+    expect(worker.sent.map((message) => message.ignoreConflicts)).toEqual([undefined, undefined, true])
+    expect(Object.keys(worker.sent[1])).not.toContain('ignoreConflicts')
+    await host.dispose().catch(() => undefined)
+    await Promise.all(pending)
   })
 
   it('keeps the two diagnostic events apart', async () => {

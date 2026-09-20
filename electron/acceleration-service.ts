@@ -1,5 +1,5 @@
-import type { AccelerationApi, AccelerationLine, AccelerationMode, AccelerationPhase, AccelerationRedemptionResult, AccelerationState } from './acceleration-contract'
-import { accelerationBonusSeconds, accelerationTrialSeconds } from './acceleration-contract'
+import type { AccelerationApi, AccelerationConflictKind, AccelerationLine, AccelerationMode, AccelerationPhase, AccelerationRedemptionResult, AccelerationState } from './acceleration-contract'
+import { accelerationBonusSeconds, accelerationConflictKinds, accelerationTrialSeconds, isAccelerationConflictKind } from './acceleration-contract'
 
 export interface AccelerationService extends AccelerationApi {
   redeemAccelerationCode(scope: string, code: string): Promise<AccelerationRedemptionResult>
@@ -29,6 +29,10 @@ function assertScope(scope: unknown): asserts scope is string {
 
 function assertMode(mode: unknown): asserts mode is AccelerationMode {
   if (mode !== 'system-proxy' && mode !== 'tun') throw new Error('加速模式无效。')
+}
+
+function assertIgnoreConflicts(value: unknown): asserts value is boolean | undefined {
+  if (value !== undefined && typeof value !== 'boolean') throw new Error('加速冲突确认参数无效。')
 }
 
 function assertLineId(lineId: unknown): asserts lineId is string {
@@ -97,6 +101,9 @@ function projectState(value: unknown, scope: string): AccelerationState {
     throw new Error(INVALID_RESPONSE)
   }
   if (phase === 'exhausted' && value.remainingSeconds !== 0) throw new Error(INVALID_RESPONSE)
+  if (value.conflicts !== undefined && (!Array.isArray(value.conflicts) || !value.conflicts.length
+    || value.conflicts.length > accelerationConflictKinds.length || new Set(value.conflicts).size !== value.conflicts.length
+    || !value.conflicts.every(isAccelerationConflictKind))) throw new Error(INVALID_RESPONSE)
   let line: AccelerationState['line'] = null
   if (value.line !== null) {
     if (!isRecord(value.line) || typeof value.line.id !== 'string' || !/^[a-z\d_.-]{1,80}$/i.test(value.line.id)
@@ -110,6 +117,7 @@ function projectState(value: unknown, scope: string): AccelerationState {
   return {
     ...(value.entitlementSource === 'server' || value.entitlementSource === 'local-device' || value.entitlementSource === 'local-development' ? { entitlementSource: value.entitlementSource } : {}),
     ...(Array.isArray(value.supportedModes) ? { supportedModes: [...value.supportedModes] as AccelerationMode[] } : {}),
+    ...(Array.isArray(value.conflicts) ? { conflicts: [...value.conflicts] as AccelerationConflictKind[] } : {}),
     scope, phase, mode: value.mode, totalSeconds: value.totalSeconds, remainingSeconds: value.remainingSeconds,
     sessionSeconds: value.sessionSeconds, measuredAt: value.measuredAt, connectedAt: value.connectedAt, line, error: value.error,
   }
@@ -176,15 +184,18 @@ export function createAccelerationService(options: AccelerationServiceOptions): 
     }
   }
 
-  function request(scope: string, operation: 'get' | 'start' | 'stop', mode?: AccelerationMode, lineId?: string): Promise<AccelerationState> {
+  function request(scope: string, operation: 'get' | 'start' | 'stop', mode?: AccelerationMode, lineId?: string, ignoreConflicts?: boolean): Promise<AccelerationState> {
     try {
       assertScope(scope)
       if (operation === 'start') assertMode(mode)
       if (lineId !== undefined) assertLineId(lineId)
+      assertIgnoreConflicts(ignoreConflicts)
       assertCurrent(scope, revision)
     } catch (error) { return Promise.reject(error) }
     const expectedRevision = revision
-    const key = `${revision}:${scope}:${operation}:${mode ?? ''}:${lineId ?? ''}`
+    // A retry that overrides the conflict warning is a different request from
+    // the one that raised it, so it must not be served the refusal in flight.
+    const key = `${revision}:${scope}:${operation}:${mode ?? ''}:${lineId ?? ''}:${ignoreConflicts === true}`
     if (operation !== 'get' && lastMutation?.key === key) return lastMutation.promise
     const promise = enqueue(async () => {
       await stopOtherAccounts(options.getAccountScope())
@@ -199,7 +210,7 @@ export function createAccelerationService(options: AccelerationServiceOptions): 
         let raw: unknown
         if (operation === 'start') {
           assertMode(mode)
-          raw = await backend.startAcceleration(scope, mode, lineId)
+          raw = await backend.startAcceleration(scope, mode, lineId, ignoreConflicts)
         } else if (operation === 'get') raw = await backend.getAccelerationState(scope)
         else raw = await backend.stopAcceleration(scope)
         state = projectState(raw, scope)
@@ -226,7 +237,7 @@ export function createAccelerationService(options: AccelerationServiceOptions): 
 
   return {
     getAccelerationState: (scope) => request(scope, 'get'),
-    startAcceleration: (scope, mode, lineId) => request(scope, 'start', mode, lineId),
+    startAcceleration: (scope, mode, lineId, ignoreConflicts) => request(scope, 'start', mode, lineId, ignoreConflicts),
     stopAcceleration: (scope) => request(scope, 'stop'),
     redeemAccelerationCode(scope, code) {
       try {

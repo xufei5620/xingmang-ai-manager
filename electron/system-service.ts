@@ -3261,6 +3261,15 @@ export function createSystemService(
     })
   }
 
+  // A Chromium proxy reload has no AbortSignal, so the Codex Desktop install
+  // must not await it unbounded -- reuse the same bounded wrapper the network
+  // location refresh uses.
+  function reloadDownloadProxyConfig(): Promise<void> {
+    const reload = serviceOptions.reloadNetworkProxyConfig
+    if (!reload) return Promise.resolve()
+    return reloadNetworkProxyConfiguration(reload)
+  }
+
   // Owns the Codex Desktop version-probe caches and the install/uninstall/
   // launch busy lock in its own closure; only the pieces that cross the
   // CLI-launch trust boundary or touch the shared installation queue are
@@ -3281,6 +3290,8 @@ export function createSystemService(
     store,
     inspectNativeProviderConfig,
     spawnDetached,
+    downloadFetch,
+    reloadDownloadProxyConfig,
   })
 
   async function installCodexDesktop(target: RendererMessageTarget): Promise<CodexDesktopInstallResult> {

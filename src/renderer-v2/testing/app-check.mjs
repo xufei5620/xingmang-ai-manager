@@ -274,6 +274,39 @@ test('external clients recognize complete manual configurations without claiming
   } finally { await page.close() }
 })
 
+test('every tool row offers configuration in exactly one place', async () => {
+  const page = await open('externalInstalled=1&externalReady=workbuddy&externalAccountOwned=workbuddy')
+  try {
+    // 已配好的外部客户端：主按钮是「打开」，配置只在「…」菜单里，行上不再有独立的「配置」按钮。
+    const ready = page.getByTestId('tool-row-workbuddy')
+    await ready.getByRole('button', { name: '打开', exact: true }).waitFor()
+    assert.equal(await ready.getByRole('button', { name: '配置', exact: true }).count(), 0)
+    await ready.getByRole('button', { name: '更多操作', exact: true }).click()
+    const readyMenu = page.getByRole('menu')
+    assert.equal(await readyMenu.getByRole('menuitem', { name: '配置', exact: true }).count(), 1)
+    // 主按钮已经是「打开」，菜单里不再重复给一个「打开」。
+    assert.equal(await readyMenu.getByRole('menuitem', { name: '打开', exact: true }).count(), 0)
+    await page.getByTestId('home-client-workbuddy').click()
+    await page.getByTestId('external-client-dialog').waitFor()
+    await page.getByTestId('external-client-dialog').getByRole('button', { name: '取消', exact: true }).click()
+    // 还没配好的外部客户端：主按钮本身就是「配置」，菜单里不再重复。
+    const pending = page.getByTestId('tool-row-opencode')
+    await pending.getByRole('button', { name: '配置', exact: true }).waitFor()
+    await pending.getByRole('button', { name: '更多操作', exact: true }).click()
+    const pendingMenu = page.getByRole('menu')
+    assert.equal(await pendingMenu.getByRole('menuitem', { name: '配置', exact: true }).count(), 0)
+    assert.equal(await pendingMenu.getByRole('menuitem', { name: '打开', exact: true }).count(), 1)
+    await page.keyboard.press('Escape')
+    // 四个 CLI 行一直只有菜单入口，行上没有独立「配置」按钮，两类工具行现在给法一致。
+    const cli = page.getByTestId('tool-row-codex')
+    assert.equal(await cli.getByRole('button', { name: '配置', exact: true }).count(), 0)
+    await cli.getByRole('button', { name: '更多操作', exact: true }).click()
+    assert.equal(await page.getByRole('menu').getByRole('menuitem', { name: '配置', exact: true }).count(), 1)
+    await page.keyboard.press('Escape')
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('external client incomplete Claude configuration requires setup before primary launch', async () => {
   const page = await open('externalInstalled=1&externalOther=claudeDesktop')
   try {

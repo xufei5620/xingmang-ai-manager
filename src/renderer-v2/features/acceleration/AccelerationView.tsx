@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
-import { ArrowUpRight, Check, CircleHelp, Clock3, Globe2, Laptop, Pause, Power, RefreshCw, Route, ShieldCheck, Timer, Zap } from 'lucide-react'
-import { accelerationTrialSeconds, type AccelerationMode, type AccelerationPhase, type AccelerationState } from '../../../../electron/acceleration-contract'
+import { ArrowUpRight, Check, CircleHelp, Clock3, Globe2, Laptop, Pause, Power, RefreshCw, Route, ShieldAlert, ShieldCheck, Timer, Zap } from 'lucide-react'
+import { accelerationConflictDescriptions, accelerationConflictNotice, accelerationTrialSeconds, type AccelerationMode, type AccelerationPhase, type AccelerationState } from '../../../../electron/acceleration-contract'
 import { Button, Switch } from '../../ui'
 import { Globe } from './Globe'
 import './acceleration.css'
@@ -14,6 +14,8 @@ interface AccelerationViewProps {
   preview?: boolean
   onModeChange(mode: AccelerationMode): void
   onStart(): void
+  /** 用户看过冲突提示后仍要连接：同一次连接，只是跳过检测。 */
+  onStartAnyway(): void
   onStop(): void
   onRefresh(): void
   onLogin(): void
@@ -47,7 +49,7 @@ function describePhase(phase: AccelerationPhase | undefined, signedIn: boolean) 
   }
 }
 
-export function AccelerationView({ state, mode, busy, signedIn, error, preview, onModeChange, onStart, onStop, onRefresh, onLogin, onHelp, lines, selectedLineId, linesBusy, linesError, onSelectLine, onPingLine, onRefreshLines }: AccelerationViewProps) {
+export function AccelerationView({ state, mode, busy, signedIn, error, preview, onModeChange, onStart, onStartAnyway, onStop, onRefresh, onLogin, onHelp, lines, selectedLineId, linesBusy, linesError, onSelectLine, onPingLine, onRefreshLines }: AccelerationViewProps) {
   const [visible, setVisible] = useState(() => typeof document === 'undefined' || !document.hidden)
   const [linePickerOpen, setLinePickerOpen] = useState(false)
   useEffect(() => {
@@ -60,7 +62,9 @@ export function AccelerationView({ state, mode, busy, signedIn, error, preview, 
   const localDevelopment = state?.entitlementSource === 'local-development'
   const localDevice = state?.entitlementSource === 'local-device'
   const tunAvailable = state?.supportedModes?.includes('tun') ?? true
-  const notice = (error || state?.error)?.replaceAll('系统代理', '网络设置').replaceAll('代理', '网络连接')
+  const conflicts = state?.conflicts ?? []
+  // 冲突有自己的提示块（带「仍然连接」），不要再在下面重复一条通用错误。
+  const notice = conflicts.length ? null : (error || state?.error)?.replaceAll('系统代理', '网络设置').replaceAll('代理', '网络连接')
   const stopRetry = phase === 'stopping' && Boolean(notice) && !busy
   const active = phase === 'active'
   const transitioning = phase === 'connecting' || (phase === 'stopping' && !stopRetry)
@@ -119,6 +123,15 @@ export function AccelerationView({ state, mode, busy, signedIn, error, preview, 
         <div className="acceleration-mode"><div><strong>TUN 模式</strong><p>{!tunAvailable ? '暂未开放' : modeLocked ? '停止加速后可切换模式' : mode === 'tun' ? '扩展游戏与应用的连接范围' : '开启后可扩展连接范围'}</p></div><Switch checked={effectiveMode === 'tun'} onChange={checked => onModeChange(checked ? 'tun' : 'system-proxy')} disabled={modeLocked} aria-label="TUN 模式" testId="acceleration-mode-toggle" /></div>
       </section>
     </div>
+
+    {conflicts.length > 0 && <div className="acceleration-conflict" role="alert" data-testid="acceleration-conflict">
+      <ShieldAlert size={16} aria-hidden="true" />
+      <div className="acceleration-conflict-text">
+        <strong>{accelerationConflictNotice}</strong>
+        <span>{conflicts.map(kind => accelerationConflictDescriptions[kind]).join('；')}。关掉之后再点「开始加速」会重新检测。</span>
+      </div>
+      <Button variant="secondary" size="sm" icon={Power} onClick={onStartAnyway} disabled={actionDisabled} testId="acceleration-conflict-force">仍然连接</Button>
+    </div>}
 
     {notice && <div className="acceleration-error" role="alert"><CircleHelp size={16} aria-hidden="true" /><span>{notice}</span><Button variant="ghost" size="sm" icon={RefreshCw} onClick={onRefresh} disabled={busy}>重新检查</Button></div>}
 

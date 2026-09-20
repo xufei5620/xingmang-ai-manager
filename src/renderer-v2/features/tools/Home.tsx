@@ -155,10 +155,11 @@ export function Home(props: HomeProps) {
     return <ToolRow key={tool.id} tool={tool.id} status={status} detail={job?.label ?? tool.detail} progress={installJob?.percent}
       primaryAction={<Button size="sm" variant={tool.status.installed ? 'primary' : 'secondary'} loading={Boolean(job)} disabled={props.externalLoading || launchBusy || tool.disabled} title={tool.disabled ? tool.status.installHint ?? '当前平台暂不支持此操作' : undefined}
         icon={tool.action === 'launch' ? ArrowUpRight : undefined} onClick={primary} testId={tool.action === 'configure' ? `home-client-${tool.id}` : `tool-${tool.id}-primary`}>{primaryLabel}</Button>}
-      extraAction={tool.status.installed && tool.action !== 'configure' && !job ? <Button size="sm" variant="ghost" onClick={() => props.onConfigureExternal(tool.id)} testId={`home-client-${tool.id}`}>配置</Button> : undefined}
       menu={tool.status.installed && !job ? [
-        { label: '配置', onSelect: () => props.onConfigureExternal(tool.id) },
-        { label: '打开', disabled: !tool.status.launchSupported || launchBusy, onSelect: () => props.onLaunchExternal(tool.id) },
+        // 配置入口只留「…」菜单这一处：行左边不再放独立的「配置」按钮，否则同一行会出现两个配置入口，
+        // 而四个 CLI 行从来只有菜单入口，用户看到的是同类工具行给法不一致。主按钮已经是这个动作时菜单里不再重复。
+        ...(tool.action === 'configure' ? [] : [{ label: '配置', testId: `home-client-${tool.id}`, onSelect: () => props.onConfigureExternal(tool.id) }]),
+        ...(tool.action === 'launch' ? [] : [{ label: '打开', disabled: !tool.status.launchSupported || launchBusy, onSelect: () => props.onLaunchExternal(tool.id) }]),
       ] : undefined} testId={`tool-row-${tool.id}`} />
   }
   return <section className="v2-page v2-home" data-testid="page-home">

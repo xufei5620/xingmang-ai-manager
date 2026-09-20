@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto'
 import { describe, it } from 'vitest'
 import { createSub2ApiAccountClient, createSub2ApiSessionExecutor, provisionSub2ApiManagedCliKeys, type Sub2ApiAccountClientOptions } from './sub2api-account-client'
 import { parseRealmSavedAccount, RealmAccountError, type RealmSavedAccount } from './realm-account'
+import { networkFailureMessages } from './network-failure'
 
 const secret = 'private-access-token'
 const user = { id: 7, username: 'api-user', email: 'user@example.test', balance: 12.5, status: 'active' }
@@ -277,6 +278,18 @@ describe('sub2api user-account adapter', () => {
     assert.equal(restored.credential.kind === 'sub2api' && restored.credential.accessToken, 'rotated-access')
     assert.deepEqual(example.calls.map((call) => new URL(call.url).pathname), ['/api/v1/auth/me', '/api/v1/auth/refresh', '/api/v1/auth/me'])
     assert.deepEqual(JSON.parse(String(example.calls[1].init.body)), { refresh_token: 'private-refresh-token' })
+  })
+  // 老账号这一侧的传输失败一律收敛成 NETWORK，文案只有一句「请重试」。归得出
+  // 具体网络原因时，错误文案要跟着换成用户能照做的那句。
+  it('says what a restricted network did instead of a bare retry prompt', async () => {
+    const example = fixture([new Error('net::ERR_NAME_NOT_RESOLVED')])
+    await assert.rejects(example.client.authenticate(input, signal()), (error: unknown) =>
+      hasCode('NETWORK')(error) && (error as Error).message === networkFailureMessages.dns)
+  })
+  it('keeps the generic message for a server failure that is not the network', async () => {
+    const example = fixture([new Response('', { status: 503 })])
+    await assert.rejects(example.client.authenticate(input, signal()), (error: unknown) =>
+      hasCode('NETWORK')(error) && (error as Error).message === '账号服务请求失败，请重试')
   })
   it('does not refresh on a temporary server failure', async () => {
     const example = fixture([new Response('', { status: 503 })])

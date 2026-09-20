@@ -3,7 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { classifyAccelerationStartFailure, createAccelerationDevelopmentBackend } from './acceleration-development-backend'
-import { accelerationBonusCode, accelerationBonusSeconds, accelerationTrialSeconds } from './acceleration-contract'
+import { accelerationBonusCode, accelerationBonusSeconds, accelerationConflictNotice, accelerationTrialSeconds, type AccelerationConflictKind } from './acceleration-contract'
 import * as safe from './safe-local-data'
 
 const scope = 'xm-account:1'
@@ -19,7 +19,12 @@ function deferred<T>() {
   return { promise, resolve, reject }
 }
 
-async function setup(existingPath?: string, pingLine?: (lineId: string) => Promise<typeof line>, entitlementSource?: 'local-device' | 'local-development') {
+async function setup(
+  existingPath?: string,
+  pingLine?: (lineId: string) => Promise<typeof line>,
+  entitlementSource?: 'local-device' | 'local-development',
+  detectConflicts?: () => Promise<AccelerationConflictKind[]>,
+) {
   const directory = existingPath ? path.dirname(existingPath) : await fs.mkdtemp(path.join(os.tmpdir(), 'xm-dev-acceleration-test-'))
   if (!existingPath) cleanup.push(async () => {
     expect(path.dirname(directory)).toBe(path.resolve(os.tmpdir()))
@@ -34,6 +39,7 @@ async function setup(existingPath?: string, pingLine?: (lineId: string) => Promi
   const scheduled = new Set<{ at: number; callback: () => void }>()
   const onDiagnostic = vi.fn()
   const onStartDiagnostic = vi.fn()
+  const onConflictDiagnostic = vi.fn()
   const runtime = {
     start: vi.fn(async () => { events.push('runtime:start'); running = true; return { line, proxyPort: 19001 } }),
     stop: vi.fn(async () => { events.push('runtime:stop'); running = false }),
@@ -45,7 +51,8 @@ async function setup(existingPath?: string, pingLine?: (lineId: string) => Promi
   }
   const backend = createAccelerationDevelopmentBackend({
     runtime, proxy, ledgerPath, now: () => wall, monotonicNow: () => monotonic,
-    listLines: async () => [line], pingLine, entitlementSource, onDiagnostic, onStartDiagnostic,
+    listLines: async () => [line], pingLine, entitlementSource, onDiagnostic, onStartDiagnostic, onConflictDiagnostic,
+    ...(detectConflicts ? { detectConflicts } : {}),
     schedule(callback, milliseconds) {
       const timer = { at: monotonic + milliseconds, callback }
       scheduled.add(timer)
@@ -58,7 +65,7 @@ async function setup(existingPath?: string, pingLine?: (lineId: string) => Promi
     await backend.dispose().catch(() => undefined)
   })
   return {
-    backend, runtime, proxy, events, ledgerPath, scheduled, onDiagnostic, onStartDiagnostic,
+    backend, runtime, proxy, events, ledgerPath, scheduled, onDiagnostic, onStartDiagnostic, onConflictDiagnostic,
     setRunning: (value: boolean) => { running = value },
     setWall: (value: number) => { wall = value },
     elapse(milliseconds: number) { wall += milliseconds; monotonic += milliseconds },
@@ -826,5 +833,55 @@ describe('acceleration start failure reporting', () => {
     const test = await setup()
     expect(await test.backend.startAcceleration(scope, 'system-proxy')).toMatchObject({ phase: 'active' })
     expect(test.onStartDiagnostic).not.toHaveBeenCalled()
+  })
+  it('refuses a connect while another program holds the system proxy, and charges nothing for it', async () => {
+    const detect = vi.fn(async (): Promise<AccelerationConflictKind[]> => ['system-proxy', 'virtual-adapter'])
+    const test = await setup(undefined, undefined, undefined, detect)
+    const state = await test.backend.startAcceleration(scope, 'system-proxy')
+    expect(state).toMatchObject({ phase: 'error', error: accelerationConflictNotice, conflicts: ['system-proxy', 'virtual-adapter'] })
+    expect(state.remainingSeconds).toBe(accelerationTrialSeconds)
+    // Only the startup lease recovery ran: nothing was started and nothing enabled.
+    expect(test.events).toEqual(['proxy:restore'])
+    expect(test.runtime.start).not.toHaveBeenCalled()
+    expect(test.onConflictDiagnostic.mock.calls).toEqual([['system-proxy', false], ['virtual-adapter', false]])
+    expect(test.onStartDiagnostic).not.toHaveBeenCalled()
+    // The refusal survives a plain read, so the warning does not vanish on the next poll.
+    expect(await test.backend.getAccelerationState(scope)).toMatchObject({ conflicts: ['system-proxy', 'virtual-adapter'] })
+  })
+
+  it('connects anyway once the user overrides the warning, and records that decision', async () => {
+    const detect = vi.fn(async (): Promise<AccelerationConflictKind[]> => ['system-proxy'])
+    const test = await setup(undefined, undefined, undefined, detect)
+    await test.backend.startAcceleration(scope, 'system-proxy')
+    const state = await test.backend.startAcceleration(scope, 'system-proxy', undefined, true)
+    expect(state).toMatchObject({ phase: 'active', error: null })
+    expect(state.conflicts).toBeUndefined()
+    expect(test.events).toEqual(['proxy:restore', 'runtime:start', 'proxy:enable'])
+    expect(test.onConflictDiagnostic.mock.calls).toEqual([['system-proxy', false], ['system-proxy', true]])
+  })
+
+  it('clears the warning once nothing else holds the proxy any more', async () => {
+    let conflicts: AccelerationConflictKind[] = ['proxy-auto-config']
+    const test = await setup(undefined, undefined, undefined, async () => conflicts)
+    expect((await test.backend.startAcceleration(scope, 'system-proxy')).conflicts).toEqual(['proxy-auto-config'])
+    conflicts = []
+    const state = await test.backend.startAcceleration(scope, 'system-proxy')
+    expect(state).toMatchObject({ phase: 'active', error: null })
+    expect(state.conflicts).toBeUndefined()
+  })
+
+  it('connects as before when the conflict check itself cannot run', async () => {
+    const test = await setup(undefined, undefined, undefined, async () => { throw new Error('inspect failed') })
+    const state = await test.backend.startAcceleration(scope, 'system-proxy')
+    expect(state).toMatchObject({ phase: 'active' })
+    expect(state.conflicts).toBeUndefined()
+    expect(test.onConflictDiagnostic).not.toHaveBeenCalled()
+  })
+
+  it('rejects a non-boolean override before touching the ledger', async () => {
+    const detect = vi.fn(async (): Promise<AccelerationConflictKind[]> => ['system-proxy'])
+    const test = await setup(undefined, undefined, undefined, detect)
+    expect(() => test.backend.startAcceleration(scope, 'system-proxy', undefined, 'yes' as unknown as boolean)).toThrow('加速冲突确认参数无效。')
+    expect(detect).not.toHaveBeenCalled()
   })
 })

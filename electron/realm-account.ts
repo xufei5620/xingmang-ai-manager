@@ -1,4 +1,6 @@
 /** Backend-neutral account contracts. No Node imports; credential types stay main-only. */
+import { classifyNetworkFailure, networkFailureMessages } from './network-failure'
+
 export type AccountRealmId = 'xm-account' | 'api-account'
 export type AccountBackendKind = 'new-api' | 'sub2api'
 
@@ -54,11 +56,23 @@ const messages: Record<RealmErrorCode, string> = {
   TWO_FACTOR_REQUIRED: '此账号需要双重验证，请先在官方网站完成验证', PROTOCOL: '账号服务响应格式不兼容',
 }
 
+/**
+ * 受限网络（校园网、公司网）下的失败以前一律收敛成「账号服务请求失败，请重试」，
+ * 用户看不出该换网络还是改密码。传入 cause 时，只要能把底层错误归到一个具体的
+ * 网络原因上，就改用那句已经写好的中文；归不出来仍用本来的兜底文案。
+ */
 export class RealmAccountError extends Error {
-  constructor(readonly code: RealmErrorCode) {
-    super(messages[code])
+  constructor(readonly code: RealmErrorCode, cause?: unknown) {
+    super(networkFailureMessageFor(cause) ?? messages[code])
     this.name = 'RealmAccountError'
+    if (cause !== undefined) this.cause = cause
   }
+}
+
+function networkFailureMessageFor(cause: unknown): string | null {
+  if (cause === undefined) return null
+  const reason = classifyNetworkFailure(cause)
+  return reason ? networkFailureMessages[reason] : null
 }
 
 export function isRealmRecord(value: unknown): value is Record<string, unknown> {

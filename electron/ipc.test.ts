@@ -399,6 +399,10 @@ describe('registerIpcHandlers', () => {
     await stop(trustedEvent(), 'xm-account:7')
     expect(acceleration.startAcceleration).toHaveBeenCalledWith('xm-account:7', 'tun')
     expect(acceleration.stopAcceleration).toHaveBeenCalledWith('xm-account:7')
+    // 「仍然连接」只能是布尔：这条参数代表用户对冲突提示做了决定。
+    expect(() => start(trustedEvent(), 'xm-account:7', 'tun', undefined, 'yes')).toThrow('加速冲突确认参数无效')
+    await start(trustedEvent(), 'xm-account:7', 'system-proxy', 'jp-01', true)
+    expect(acceleration.startAcceleration).toHaveBeenLastCalledWith('xm-account:7', 'system-proxy', 'jp-01', true)
   })
 
   it('routes a fixed acceleration redemption through trusted IPC without logging the hidden code', async () => {
@@ -1302,6 +1306,27 @@ describe('registerIpcHandlers', () => {
     expect(login).toHaveBeenCalledWith(expect.objectContaining({ username: 'user@example.test', siteId: undefined }))
     await handler(trustedEvent(), { username: 'registered-user', password: 'fixture-password', siteId: 'solov' })
     expect(login).toHaveBeenLastCalledWith(expect.objectContaining({ siteId: 'solov' }))
+  })
+
+  // 受限网络的排查成本几乎全在日志上：只写一句「登录失败」，客服看不出是 DNS、
+  // 证书还是门户认证。归得出原因就单列一个字段，归不出来不要硬塞。
+  it('records why a login failed on a restricted network in the runtime log', async () => {
+    const login = vi.fn(async () => { throw new Error('net::ERR_NAME_NOT_RESOLVED') })
+    const { runtimeLog } = register(undefined, undefined, undefined, undefined, undefined, undefined, { realmAccounts: { login } as never })
+    const handler = electronMocks.handlers.get('account:login')!
+    await expect(handler(trustedEvent(), { username: 'user@example.test', password: 'fixture-password' })).rejects.toThrow()
+    expect(runtimeLog.log).toHaveBeenCalledWith('error', 'ipc', 'account:login', expect.stringContaining('失败'),
+      expect.objectContaining({ networkFailure: 'dns' }))
+    expect(JSON.stringify(runtimeLog.log.mock.calls)).not.toContain('fixture-password')
+  })
+
+  it('does not label a failure it cannot attribute to the network', async () => {
+    const login = vi.fn(async () => { throw new Error('账号或密码错误，请检查后重试') })
+    const { runtimeLog } = register(undefined, undefined, undefined, undefined, undefined, undefined, { realmAccounts: { login } as never })
+    const handler = electronMocks.handlers.get('account:login')!
+    await expect(handler(trustedEvent(), { username: 'user@example.test', password: 'fixture-password' })).rejects.toThrow()
+    const failure = runtimeLog.log.mock.calls.find((call) => call[0] === 'error' && call[2] === 'account:login')
+    expect(failure?.[4]).not.toHaveProperty('networkFailure')
   })
 
   it('reads remembered credentials only from the last successful identity without exposing its backend', async () => {

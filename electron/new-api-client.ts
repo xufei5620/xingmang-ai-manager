@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { readBoundedResponseText } from './bounded-response'
 import { redactCommandText } from './command-runner'
+import { classifyNetworkFailure, networkFailureMessages, type NetworkFailureReason } from './network-failure'
 import type { RelayBackendCapabilities, RelayBackendClient } from './relay-backend'
 import { relaySites } from './relay-sites'
 import { parseNewApiUsagePricing } from './usage-pricing-parser'
@@ -893,6 +894,17 @@ export class NewApiLoginRejectedError extends NewApiAuthenticationError {
   }
 }
 
+/**
+ * 受限网络（校园网常见）下的失败不再统一冒一句「请求失败」：reason 是排查用的
+ * 分类，message 已经是能直接上屏的中文，detail 只是给日志留一句现场。
+ */
+export class NewApiNetworkError extends Error {
+  constructor(readonly reason: NetworkFailureReason, detail?: string) {
+    super(detail ? `${networkFailureMessages[reason]}（${detail}）` : networkFailureMessages[reason])
+    this.name = 'NewApiNetworkError'
+  }
+}
+
 export class NewApiSessionChangedError extends Error {
   constructor() {
     super('账号已切换，本次请求结果已丢弃，请重试')
@@ -1042,11 +1054,15 @@ async function performRequest(
     if (response.url) {
       const responseOrigin = safeOrigin(response.url)
       if (responseOrigin !== ctx.origin) {
-        throw new Error(`${label}请求被重定向到不受信任的地址`)
+        throw new NewApiNetworkError('intercepted', `${label}请求被重定向到不受信任的地址`)
       }
     }
-    if (redirectStatuses.has(response.status)) {
-      throw new Error(`${label}请求被重定向，已拒绝`)
+    // redirect:'manual' 下，真实的 3xx 按 fetch 规范会被过滤成 opaqueredirect：
+    // status 0、body 为空、url 也是空串，所以上面按状态码和按 url 的两道检查都
+    // 看不见它。漏掉这一条，校园网门户的那次 302 最后会变成一句「服务返回
+    // HTTP 0」——既说不清原因，也谈不上拒绝重定向。
+    if (response.type === 'opaqueredirect' || redirectStatuses.has(response.status)) {
+      throw new NewApiNetworkError('intercepted', `${label}请求被重定向，已拒绝`)
     }
     const bodyText = await readBoundedResponseText(
       response,
@@ -1063,9 +1079,13 @@ async function performRequest(
     }
     return { status: response.status, ok: response.ok, payload, headers: response.headers }
   } catch (error) {
+    if (error instanceof NewApiNetworkError) throw error
     if (error instanceof Error && error.name === 'AbortError') {
-      throw new Error(`${label}请求超时，请检查网络后重试`)
+      throw new NewApiNetworkError('timeout', `${label}请求超时`)
     }
+    // 认不出来的失败按原样抛：上游自己写的中文错误比一句猜出来的「网络问题」有用。
+    const reason = classifyNetworkFailure(error)
+    if (reason) throw new NewApiNetworkError(reason, `${label}请求失败`)
     throw error
   } finally {
     clearTimeout(timeout)
@@ -1080,7 +1100,10 @@ function unwrapEnvelope(raw: NewApiRawResponse, label: string, secrets: readonly
     throw new NewApiAuthenticationError(detail || '登录状态已失效，请重新登录')
   }
   if (!envelope) {
-    throw new Error(raw.ok ? `${label}返回的不是有效 JSON` : (detail || `${label}失败，服务返回 HTTP ${raw.status}`))
+    // HTTP 成功却不是 JSON，最常见的来源是门户认证页把响应换掉了；真的服务出错
+    // 时状态码不会是 2xx，走的是下面那条带 HTTP 码的分支。
+    if (raw.ok) throw new NewApiNetworkError('intercepted', `${label}返回的不是有效 JSON`)
+    throw new Error(detail || `${label}失败，服务返回 HTTP ${raw.status}`)
   }
   if (!raw.ok || envelope.success !== true) {
     throw new Error(detail || `${label}失败，服务返回 HTTP ${raw.status}`)
