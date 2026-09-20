@@ -309,8 +309,10 @@ function deleteKeychainIfPresent(runSecurity, keychainPath) {
   try {
     runSecurity(['delete-keychain', keychainPath])
   } catch (error) {
+    // 只放过「这个 keychain 不存在」这一种。别的 delete-keychain 失败同样带着
+    // SecKeychainDelete 这个前缀，按前缀放过会把权限不足之类的真失败一起咽掉。
     const message = error instanceof Error ? error.message : String(error)
-    if (!/could not be found|SecKeychainDelete/i.test(message)) throw error
+    if (!/could not be found|errSecNoSuchKeychain|-25294/i.test(message)) throw error
   }
 }
 
@@ -327,8 +329,8 @@ function releaseSigningKeychain(options = {}) {
       failures.push(error instanceof Error ? error.message : String(error))
     }
   }
-  // 顺序要紧：先撤信任，再还原搜索列表，最后才删 keychain。反过来的话
-  // remove-trusted-cert 会对着一个已经不存在的 keychain 报错。
+  // 顺序要紧：先撤信任，再还原搜索列表，最后才删 keychain。信任设置认的是证书
+  // 本身，删掉 keychain 并不会带走它，所以它必须在这台机器还认得这张证书的时候撤。
   if (state.trusted && state.certificatePath) {
     attempt(() => runSecurity(['remove-trusted-cert', '-d', state.certificatePath], { privileged: true }))
   }

@@ -357,10 +357,13 @@ test('the teardown still reports a delete failure that is not a missing keychain
   assert.throws(() => releaseSigningKeychain({
     statePath,
     runSecurity: (args) => {
-      if (args[0] === 'delete-keychain') throw new Error('security delete-keychain失败：权限不足')
+      // 真实的失败同样带着 SecKeychainDelete 前缀，按前缀放过会把这一类一起咽掉。
+      if (args[0] === 'delete-keychain') {
+        throw new Error('security delete-keychain失败：security: SecKeychainDelete: A required authorization was denied.')
+      }
       return ''
     },
-  }), /权限不足/)
+  }), /authorization was denied/)
 })
 
 test('the teardown keeps going after one step fails and reports every failure', (t) => {
