@@ -18,3 +18,6 @@
   四种缩放偏好下两个入口结果逐一相等、最小宽窗口恰好缩放到 1280 设计宽。
   `electron/window-preferences.test.ts` 里 960 宽的两条过期期望（0.8 / 0.8）改为实际生效的
   0.75 / 0.7。
+- 合入 #260 后同步两处现在已过期的注释：`e2e/renderer-v2-native.mjs` 里「main.ts 另有一份
+  下限 0.8」那段，和 `scripts/ci-workflow-config.test.cjs` 里「window-preferences.ts 的
+  下限是 0.8」那句。两处都改成「当时两份、现已合成一份」的口径，断言与门禁逻辑不动。
