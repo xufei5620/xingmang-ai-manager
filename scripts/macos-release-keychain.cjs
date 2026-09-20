@@ -20,7 +20,6 @@ const { spawnSync } = require('node:child_process')
 const { resolveMacosSecurityCommand } = require('./run-macos-free-build.cjs')
 
 const SUDO_PATH = '/usr/bin/sudo'
-const SYSTEM_KEYCHAIN_PATH = '/Library/Keychains/System.keychain'
 const SECURITY_COMMAND_TIMEOUT_MS = 30_000
 // 6 小时：一次带加速线路的双架构构建要跑两遍 electron-builder，锁上就签不动了。
 const KEYCHAIN_TIMEOUT_SECONDS = '21600'
@@ -41,7 +40,7 @@ function redactSecrets(text, secrets) {
 function defaultSecurityRunner(environment) {
   return (args, options = {}) => {
     const command = resolveMacosSecurityCommand(args, options)
-    // 提权只用在信任设置那两步，它们没有机密参数。真有机密时 argv 会换成
+    // 提权只用在写信任设置那一步，它没有机密参数。真有机密时 argv 会换成
     // `security -i` 的 stdin 形式，套上 sudo 就不再是同一条命令了，所以直接拒绝。
     if (options.privileged && command.stdin) fail('提权执行的 security 子命令不能携带机密参数')
     const executable = options.privileged ? SUDO_PATH : command.executable
@@ -52,7 +51,7 @@ function defaultSecurityRunner(environment) {
       env: environment,
       input: command.stdin,
       shell: false,
-      // 信任设置这两步要是还需要有人确认，runner 上没有会话可确认，就会一直挂着。
+      // 写信任设置要是还需要有人确认，runner 上没有会话可确认，就会一直挂着。
       // 宁可超时失败也不要把作业挂死到上限。
       timeout: SECURITY_COMMAND_TIMEOUT_MS,
       windowsHide: true,
@@ -166,13 +165,25 @@ function resolveTrustSettingResult(certificatePem) {
   }
 }
 
-function trustCertificateForCodeSigning(runSecurity, certificatePath, certificatePem) {
+/**
+ * `-k` 必须指向那个一次性 keychain，不能指向 System.keychain。
+ *
+ * `-k` 的语义是「证书不在的话就装进这个 keychain」。指向 System.keychain 会让同一张
+ * 证书在机器上存在两份，`find-identity` 于是把同一个身份列两次，而签名预检要求
+ * 「名字匹配的身份恰好一个」——2026-09-20 第四次正式发布就红在这句「存在选择歧义」
+ * 上，而不是红在信任本身。指向一次性 keychain 时证书本来就在里面，不会多出一份。
+ *
+ * 实测（mac-trust-probe，runner 上的对照实验）：`-k` 指一次性 keychain 时这条命令
+ * 立刻返回 0，`find-identity -v -p codesigning` 恰好列出一个身份，
+ * `verify-cert -p codeSign` 通过；不带 `-k` 则挂死。
+ */
+function trustCertificateForCodeSigning(runSecurity, keychainPath, certificatePath, certificatePem) {
   runSecurity([
     'add-trusted-cert',
     '-d',
     '-r', resolveTrustSettingResult(certificatePem),
     '-p', 'codeSign',
-    '-k', SYSTEM_KEYCHAIN_PATH,
+    '-k', keychainPath,
     certificatePath,
   ], { privileged: true })
 }
@@ -207,7 +218,6 @@ function importReleaseSigningIdentity(options = {}) {
   fs.writeFileSync(p12Path, p12Bytes, { mode: 0o600 })
   let keychainCreated = false
   let restoreSearchList = null
-  let trustApplied = false
   try {
     runSecurity(['create-keychain', '-p', keychainPassword, keychainPath], { secrets: [keychainPassword] })
     keychainCreated = true
@@ -253,19 +263,24 @@ function importReleaseSigningIdentity(options = {}) {
     // 发布签名预检和 electron-builder 都要求 `find-identity -v -p codesigning` 能
     // 列出这个身份，而 -v 只保留通过代码签名策略评估的证书。发布 Mac 上这条成立是
     // 因为发布者手工把证书标成了代码签名可信（MACOS_FREE_DISTRIBUTION.md 第 1 步）；
-    // runner 上没有那份信任设置，所以这里补一条，只针对 codeSign 策略，撤销时删掉。
+    // runner 上没有那份信任设置，所以这里补一条，只针对 codeSign 策略。
     //
-    // 2026-09-20 第三次正式发布尝试红在这一步：写**用户域**的信任设置要过
-    // com.apple.trust-settings.user 这条授权，规则是「本会话用户或管理员认证」，
-    // runner 上没有图形会话可以弹框确认，security 就一直挂着，直到撞上 30 秒超时。
-    // 管理员域走的是另一条授权，以 root 执行即通过，所以改成 sudo + 管理员域。
-    // runner 是一次性托管机（上面 assertHostedRunner 已经拦死了别的情况），构建完
-    // 随即销毁，私钥本来就落在它的磁盘上，这一条信任设置不扩大任何已有风险。
+    // 写**用户域**的信任设置要过 com.apple.trust-settings.user 这条授权，规则是
+    // 「本会话用户或管理员认证」，runner 上没有图形会话可以弹框确认，security 就
+    // 一直挂着——2026-09-20 第三次正式发布红在这里。管理员域走的是另一条授权，
+    // 以 root 执行即通过。runner 是一次性托管机（上面 assertHostedRunner 已经拦死了
+    // 别的情况），构建完随即销毁，私钥本来就落在它的磁盘上，这一条信任设置不扩大
+    // 任何已有风险。
+    //
+    // ⚠️ 轮换证书那天这条路要重做：实测 CA:FALSE 的自签叶证书两种 -r 都不成立，
+    // trustRoot 挂死、trustAsRoot 报参数无效，身份仍然是 0 个。届时的替代方案是
+    // 改走 electron-builder 的自定义 sign 钩子（identity 传 '-'，自己
+    // `codesign --sign <SHA-1> --keychain`），那条路不依赖任何信任设置，
+    // scripts/macos-ephemeral-signing.cjs 已经这么做了。
     const certificatePem = runSecurity(['find-certificate', '-c', identityName, '-p', keychainPath])
     if (!certificatePem.includes('BEGIN CERTIFICATE')) fail('导入后在 keychain 里找不到 CSC_NAME 对应的证书')
     fs.writeFileSync(certificatePath, certificatePem, { mode: 0o600 })
-    trustCertificateForCodeSigning(runSecurity, certificatePath, certificatePem)
-    trustApplied = true
+    trustCertificateForCodeSigning(runSecurity, keychainPath, certificatePath, certificatePem)
     writeState(statePath, {
       version: STATE_VERSION,
       keychainPath,
@@ -286,9 +301,6 @@ function importReleaseSigningIdentity(options = {}) {
         // 原始失败更重要，收尾失败不覆盖它。
       }
     }
-    // 证书的公开部分留在系统 keychain 里不算残留（runner 随即销毁，里面本来就没有
-    // 秘密），要撤掉的是那条信任设置。
-    if (trustApplied) undo(() => runSecurity(['remove-trusted-cert', '-d', certificatePath], { privileged: true }))
     if (restoreSearchList) undo(() => runSecurity(['list-keychains', '-d', 'user', '-s', ...restoreSearchList]))
     if (keychainCreated) undo(() => deleteKeychainIfPresent(runSecurity, keychainPath))
     undo(() => fs.rmSync(certificatePath, { force: true }))
@@ -329,11 +341,11 @@ function releaseSigningKeychain(options = {}) {
       failures.push(error instanceof Error ? error.message : String(error))
     }
   }
-  // 顺序要紧：先撤信任，再还原搜索列表，最后才删 keychain。信任设置认的是证书
-  // 本身，删掉 keychain 并不会带走它，所以它必须在这台机器还认得这张证书的时候撤。
-  if (state.trusted && state.certificatePath) {
-    attempt(() => runSecurity(['remove-trusted-cert', '-d', state.certificatePath], { privileged: true }))
-  }
+  // 这里**故意不调 remove-trusted-cert**。实测（mac-trust-probe）它在 runner 上
+  // 根本回不来：给 60 秒也一样挂着，2026-09-20 第四次正式发布的第二条 exit code 1
+  // 就是它。而删掉一次性 keychain 之后，同一次实验里 `dump-trust-settings -d` 与
+  // `find-identity -v -p codesigning` 都已经是空的——证书随 keychain 一起没了，
+  // 信任设置也就没有了作用对象。删 keychain 本身就是撤销。
   attempt(() => runSecurity(['list-keychains', '-d', 'user', '-s', ...state.originalSearchList]))
   attempt(() => deleteKeychainIfPresent(runSecurity, state.keychainPath))
   if (state.certificatePath) attempt(() => fs.rmSync(state.certificatePath, { force: true }))

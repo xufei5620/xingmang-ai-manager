@@ -373,6 +373,10 @@ test('the supported macOS runner runs the real isolated free-distribution build 
   // Every check around it reads the artifact, and the artifact was perfect on
   // 2026-09-19 while the app it described could not start. This one runs it.
   assert.ok(commands.includes('node e2e/macos-launch-smoke.mjs'))
+  // publish-release.yml 的 macos-build 挂 environment: release，PR 上从来不跑，
+  // 所以发布签名 keychain 那条链路只能在这里排练。2026-09-20 正式发布连红四次，
+  // 其中两次都该在这一步就红。
+  assert.ok(commands.includes('npm run test:mac:release-keychain'))
   assert.equal(commands.some((command) => /build:mac:ci|--dir/.test(command)), false)
   assert.equal(macJob.steps.some((step) => String(step.uses || '').includes('upload-artifact')), false)
 })

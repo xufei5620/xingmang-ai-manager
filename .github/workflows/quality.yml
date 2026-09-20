@@ -293,6 +293,12 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run test:mac:free-signing
+      - name: Rehearse the release signing keychain on a throwaway certificate
+        # publish-release.yml 的 macos-build 挂 environment: release，PR 上从来不跑，
+        # 于是那条链路唯一的验证机会就是真的发一次版。2026-09-20 连红四次，其中两次
+        # 都该在这里就红。脚本不读任何 secret，用现场生成的一次性证书。
+        timeout-minutes: 5
+        run: npm run test:mac:release-keychain
       - name: Verify macOS native network component with isolated preferences
         run: npm run test:mac:proxy
       - run: npm run test:mac:dev-origin
