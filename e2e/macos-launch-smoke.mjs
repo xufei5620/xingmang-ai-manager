@@ -102,14 +102,49 @@ async function waitForReadyOrExit(child, runtimeLogPath, output) {
   return { ready: false, exited: child.exitCode !== null || child.signalCode !== null, output: output.text }
 }
 
+// Electron's helpers (renderer, GPU, utility, the Crashpad handler) are
+// separate processes that keep writing into the user-data directory after the
+// main process is gone. Signalling only the main process leaves them running,
+// and the cleanup below then races them. The launch is spawned into its own
+// process group so one signal reaches the whole tree.
+function signalProcessTree(child, signal) {
+  if (child.pid === undefined) return
+  try { process.kill(-child.pid, signal) }
+  catch (error) {
+    // ESRCH means the group is already gone, which is the outcome we wanted.
+    if (error?.code !== 'ESRCH') throw error
+  }
+}
+
 async function stopApplication(child) {
   if (child.exitCode !== null || child.signalCode !== null) return
-  child.kill('SIGTERM')
+  signalProcessTree(child, 'SIGTERM')
   for (let attempt = 0; attempt < 20; attempt += 1) {
     if (child.exitCode !== null || child.signalCode !== null) return
     await delay(250)
   }
-  child.kill('SIGKILL')
+  signalProcessTree(child, 'SIGKILL')
+}
+
+// A helper that outlives its own SIGKILL by a few milliseconds can recreate a
+// file inside a directory rm has already walked, and rm then fails the whole
+// removal with ENOTEMPTY. That says nothing about the verdict this script
+// exists to reach, so it is retried and, at worst, reported: the directory sits
+// under the OS temp root, which the runner discards anyway.
+async function removeTemporaryRoot(temporaryRoot) {
+  for (let attempt = 1; attempt <= 5; attempt += 1) {
+    try {
+      await fs.rm(temporaryRoot, { recursive: true, force: true })
+      return
+    } catch (error) {
+      if (error?.code !== 'ENOTEMPTY' && error?.code !== 'EBUSY') throw error
+      if (attempt === 5) {
+        process.stdout.write(`应用的子进程仍在写入，未能清理临时目录 ${temporaryRoot}（不影响本次判定）\n`)
+        return
+      }
+      await delay(attempt * 500)
+    }
+  }
 }
 
 async function main() {
@@ -133,6 +168,10 @@ async function main() {
   const child = spawn(executablePath, [`--user-data-dir=${userDataDirectory}`], {
     env: { ...process.env, HOME: isolatedHome },
     stdio: ['ignore', 'pipe', 'pipe'],
+    // Its own process group, so stopApplication can reach every helper the app
+    // starts. The group is always signalled explicitly below, so nothing is
+    // left behind when this script exits.
+    detached: true,
   })
   const capture = (chunk) => {
     if (output.text.length < maximumCapturedOutput) output.text += String(chunk)
@@ -154,7 +193,7 @@ async function main() {
       : `打包后的 macOS 应用启动后存活超过 ${Math.round(aliveWithoutReadinessMs / 1000)} 秒（未等到首屏事件）\n`)
   } finally {
     await stopApplication(child)
-    await fs.rm(temporaryRoot, { recursive: true, force: true })
+    await removeTemporaryRoot(temporaryRoot)
   }
 }
 
