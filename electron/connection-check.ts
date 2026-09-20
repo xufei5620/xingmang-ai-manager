@@ -61,7 +61,7 @@ export const connectionCheckLayerLabels: Readonly<Record<ConnectionCheckLayer, s
  * questions, whereas guessing at `/v1beta/models` risks a 404 that would be
  * reported to the user as 「服务上没有这个接口」 when the endpoint simply
  * is not implemented. Do not switch it over on the strength of the upstream
- * Google API alone (CLAUDE.md T12: endpoint facts come from measurement).
+ * Google API alone (AGENTS.md T12: endpoint facts come from measurement).
  */
 export type ConnectionProbeProtocol = 'anthropic-messages' | 'openai-models'
 
@@ -184,7 +184,7 @@ function modelCatalogShape(path: string): ProbeShape {
 
 /**
  * 每个 CLI 的探测形态。**无 default 分支 + 非 void 返回类型 = 穷尽性保障**
- * （CLAUDE.md T2）：加第五个 CLI 时漏在这里是编译错，不是运行期静默套用别
+ * （AGENTS.md T2）：加第五个 CLI 时漏在这里是编译错，不是运行期静默套用别
  * 家的请求形状去撞一个错的结论。
  */
 function probeShape(provider: ProviderId): ProbeShape {

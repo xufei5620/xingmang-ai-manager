@@ -90,7 +90,7 @@ function rememberVerification(
  * can be two different files; a native `claude` resolves to one regular file, and the
  * realpath answered here is the exact path handed to spawn. What is left is a race a
  * process running as the current user could win, and macOS puts that principal outside
- * this program's threat model (CLAUDE.md T5) — while the copy would cost a 200+ MB read
+ * this program's threat model (AGENTS.md T5) — while the copy would cost a 200+ MB read
  * and fsync on a check whose purpose is supply-chain provenance, not privilege.
  *
  * Trust is decided by codesign's exit status against a designated requirement, never by

@@ -589,7 +589,7 @@ function parseRememberedAccountLogin(value: unknown): RememberedAccountLogin | n
 // actually make without rejecting a valid-but-unusual address. Mirrors
 // src/components/account/validation.ts's EMAIL_PATTERN, kept as a separate
 // literal rather than a shared import -- electron/ never imports from src/
-// (renderer code may depend on Node-free bundling; see CLAUDE.md I6/I7) --
+// (renderer code may depend on Node-free bundling; see AGENTS.md I6/I7) --
 // and this is the one account:* input parser that actually needs a format
 // check rather than requiredString()'s bare non-empty test, since a
 // malformed address here would silently fail server-side with no useful
@@ -987,7 +987,7 @@ function parseAccountKeyCliConfigurationInput(value: unknown): AccountKeyCliConf
 // MAX_PASSWORD_LENGTH (confirmed against QuantumNous/new-api's model.User
 // struct tag validate:"min=8,max=20") -- kept as separate literals rather
 // than a shared import, same reasoning as accountEmailPattern above:
-// electron/ never imports from src/ (CLAUDE.md I6/I7). originalPassword is
+// electron/ never imports from src/ (AGENTS.md I6/I7). originalPassword is
 // only checked for presence (not length-bounded): the server is the actual
 // authority on whether it matches the account's current password, and
 // rejecting it here on a length technicality before the server even gets to

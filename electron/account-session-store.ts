@@ -9,7 +9,7 @@ import {
 } from './safe-local-data'
 
 // Persists the 星芒 app's own login session -- NOT the relay API Key
-// CLAUDE.md's "不给 API Key 加密" rule targets (that rule is about the key
+// AGENTS.md's "不给 API Key 加密" rule targets (that rule is about the key
 // that must live in plaintext inside a CLI's own config file; this file
 // never touches a CLI config, see docs/ACCOUNT-PLAN.md decision 1). The
 // access token is short-lived and deliberately excluded (see

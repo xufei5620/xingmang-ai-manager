@@ -286,4 +286,4 @@ const roughRoomSix: CanvasTemplate = {
 }
 ```
 
-> ⚠️ 转写提醒:`builtin-templates.ts` 现有三套全部是纯字面量写法。如果团队希望保持「模板文件零逻辑、肉眼可 diff」,把上面 flatMap/Array.from 展开成 6 组字面量即可(多 60 行,换全字面量可审计性)——这与 CLAUDE.md「主进程信任链不上 bundler、preload 有意重复」的可审计取向一致,推荐展开。
+> ⚠️ 转写提醒:`builtin-templates.ts` 现有三套全部是纯字面量写法。如果团队希望保持「模板文件零逻辑、肉眼可 diff」,把上面 flatMap/Array.from 展开成 6 组字面量即可(多 60 行,换全字面量可审计性)——这与 AGENTS.md「主进程信任链不上 bundler、preload 有意重复」的可审计取向一致,推荐展开。

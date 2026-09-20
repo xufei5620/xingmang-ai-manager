@@ -18,7 +18,7 @@
 //
 // 用 node 直接驱动 typescript 的入口而不是 node_modules/.bin/tsc：后者在
 // Windows 上是 .cmd shim，spawn 它需要 shell，而本仓库的约定是永不 shell
-// （CLAUDE.md I1）。
+// （AGENTS.md I1）。
 import { spawnSync } from 'node:child_process'
 import path from 'node:path'
 

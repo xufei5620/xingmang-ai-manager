@@ -3,7 +3,7 @@
 > 账号注册/登录/验证码/写Key已验证跑通（真机）。以下为后续波次。自主：Sonnet实现→Opus审查→本地commit→重编译，0 push。铁律：自动化测试绝不触生产 xm.solov.cc；加 IPC 通道 T1 串行；明文密钥不入日志（I13）。
 
 ## 用户已定决策
-1. **登录持久化**：用 Electron `safeStorage`（Windows 底层 DPAPI）加密持久化 session token，免每次重启重登。⚠️ 注意：这是 app 自身 session token，**不是** CLI 的 relay API Key——CLAUDE.md「不给 API Key 加密」那条针对的是必须明文写进 CLI 配置的 relay Key，session token 加密存储不受该条约束、且是正确做法。
+1. **登录持久化**：用 Electron `safeStorage`（Windows 底层 DPAPI）加密持久化 session token，免每次重启重登。⚠️ 注意：这是 app 自身 session token，**不是** CLI 的 relay API Key——AGENTS.md「不给 API Key 加密」那条针对的是必须明文写进 CLI 配置的 relay Key，session token 加密存储不受该条约束、且是正确做法。
 2. **邀请**：new-api 底层是 aff_code（邀请链接把码带 URL 参数）。桌面适配=注册弹窗加**选填「邀请码」字段**（映射 aff_code）+ 个人中心展示**我的邀请链接+码**。深链（xingmang:// 拉起预填）后排。
 3. **充值**：在线支付**外链**跳 xm.solov.cc 充值页（查证 new-api 标准充值页路由，加外链白名单 I12 全等）。
 4. **个人中心**（登录后账号中心页，点账号区头像进）：个人资料 / 余额与用量明细 / 我的API Key管理(查看撤销含孤儿token) / 邀请返佣(链接+码+记录) / 充值(外链) / 修改密码 / 登出。

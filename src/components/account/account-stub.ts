@@ -54,7 +54,7 @@ const STUB_SNAPSHOTS: Record<'active' | 'low-balance', AccountSnapshot> = {
 /**
  * quota -> USD. Mirrors `computeBalanceDisplay` in electron/new-api-client.ts
  * (kept as an independent copy: src/ cannot import electron/ code, see
- * CLAUDE.md I6/I7) so swapping the stub snapshot for a real
+ * AGENTS.md I6/I7) so swapping the stub snapshot for a real
  * account:get-balance response later requires no formatting changes here.
  */
 export function computeBalanceUsd(quota: number, quotaPerUnit: number): number {

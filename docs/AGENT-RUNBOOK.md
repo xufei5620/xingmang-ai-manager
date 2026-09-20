@@ -58,7 +58,7 @@ git fetch origin
 规范文档已在 `main` 上，clone 下来直接就有：
 
 ```bash
-ls CLAUDE.md docs/ROADMAP.md docs/COLLABORATION.md
+ls AGENTS.md docs/ROADMAP.md docs/COLLABORATION.md
 ```
 
 三个文件都在就继续。如果缺失，说明你不在 `main`（或 fork 落后），先 `git checkout main && git pull`。
@@ -112,7 +112,7 @@ node -e "console.log(process.platform)"   # win32 → win，darwin → mac
 按顺序：
 
 1. **`docs/ROADMAP.md`** —— 整个项目在做什么、为什么。**这是背景，理解它再动手。**
-2. **`CLAUDE.md`** —— 代码架构、15 条关键不变量（I1-I15，破坏后不报错、只会静默变漏洞）、13 条改动陷阱（T1-T13）。**这是保命的，必须读完。**
+2. **`AGENTS.md`** —— 代码架构、15 条关键不变量（I1-I15，破坏后不报错、只会静默变漏洞）、13 条改动陷阱（T1-T13）。**这是保命的，必须读完。**
 3. **`docs/COLLABORATION.md`** —— 分支/PR 格式、冲突规避、验证门槛。
 
 读完再往下。
@@ -148,7 +148,7 @@ gh issue list --label "env:any" --state open      # 任意平台都行
 - [ ] 它的**前置依赖已经合并**（issue 正文会写「依赖 #X」，去确认 #X 已 closed）
 - [ ] 如果它标了 `serial-only`：**确认此刻没有别人正在改同一批文件**（见下方「serial-only 铁律」）
 - [ ] 如果它标了 `needs-decision`：**停下，这条需要人来拍板，不要自己决定**。在 issue 上留言说明卡在哪个决策点，然后去领别的
-- [ ] 如果它要改的是 **legacy 回滚版**（`src/` 下除 `src/renderer-v2/` 以外的源码、`tooling/legacy-renderer/`）：**只有安全修复能领**，legacy 已于 2026-09-19 冻结，新功能与一般缺陷要改在 `src/renderer-v2/`。口径见 `CLAUDE.md` T14
+- [ ] 如果它要改的是 **legacy 回滚版**（`src/` 下除 `src/renderer-v2/` 以外的源码、`tooling/legacy-renderer/`）：**只有安全修复能领**，legacy 已于 2026-09-19 冻结，新功能与一般缺陷要改在 `src/renderer-v2/`。口径见 `AGENTS.md` T14
 
 ### 3. 认领（防止两个 agent 撞同一个任务）
 
@@ -274,6 +274,6 @@ gh pr create \
 
 ## 记住三件事
 
-1. **`CLAUDE.md` 的 15 条不变量是红线**——破坏它们不会报错，只会让用户的电脑变成漏洞。
+1. **`AGENTS.md` 的 15 条不变量是红线**——破坏它们不会报错，只会让用户的电脑变成漏洞。
 2. **纯搬运的重构（#30 #32）不能夹带逻辑改动**——见 `COLLABORATION.md` 的规范。
 3. **不确定就问，不要猜**——留言在 issue 上，去做别的，等人回答。

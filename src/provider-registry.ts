@@ -3,7 +3,7 @@ import { providerIds } from './types'
 
 // Builds a display-order array from a rank table instead of a hand-written
 // literal array. This buys two independent guards against silently dropping
-// a newly added provider (see CLAUDE.md section 5, trap T2):
+// a newly added provider (see AGENTS.md section 5, trap T2):
 //   1. `rank` is typed `Record<ProviderId, number>`, so the object literals
 //      passed in below are checked for missing/excess keys at the call site.
 //      Forgetting a provider is a `npm run typecheck` error, not a silent gap.

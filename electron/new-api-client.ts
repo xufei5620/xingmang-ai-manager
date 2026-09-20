@@ -2173,7 +2173,7 @@ export function parseCliKeySecret(payload: unknown): string | null {
   return trimmed.startsWith('sk-') ? trimmed : `sk-${trimmed}`
 }
 
-// new-api (this module) is the first relay backend and, per CLAUDE.md's
+// new-api (this module) is the first relay backend and, per AGENTS.md's
 // multi-backend plan, currently the only one -- so every flag is true. See
 // relay-backend.ts's RelayBackendCapabilities for what a future backend
 // flipping one of these to false would mean for the renderer.

@@ -4,7 +4,7 @@
 
 > 🤖 **如果你是 AI agent 且要立刻开始干活，直接看 [`docs/AGENT-RUNBOOK.md`](./AGENT-RUNBOOK.md)** —— 那是可执行的操作手册（领任务 → 干活 → 提 PR 的完整流程）。本文档是规范细则，供查阅。
 >
-> 动手前必读 `CLAUDE.md`（架构地图、关键不变量、改动陷阱）。
+> 动手前必读 `AGENTS.md`（架构地图、关键不变量、改动陷阱）。
 
 ---
 
@@ -136,7 +136,7 @@ gh pr create --title "[<用户名>·<ai>·<端>] <类型>: <描述>" --body "...
 
 **④ legacy 渲染层已冻结**
 
-`src/` 下除 `src/renderer-v2/` 以外的源码与 `tooling/legacy-renderer/` 自 2026-09-19 起**只接受安全修复**（审查总表 `R-S12`，yoyo 拍板）。`src/styles.css` 与 `src/App.tsx` 因此基本不再是并行冲突点——它们的结构性重构不做了。口径见 `CLAUDE.md` T14 与 `.claude/rules/legacy-renderer.md`。
+`src/` 下除 `src/renderer-v2/` 以外的源码与 `tooling/legacy-renderer/` 自 2026-09-19 起**只接受安全修复**（审查总表 `R-S12`，yoyo 拍板）。`src/styles.css` 与 `src/App.tsx` 因此基本不再是并行冲突点——它们的结构性重构不做了。口径见 `AGENTS.md` T14 与 `.claude/rules/legacy-renderer.md`。
 
 ### 4.2 热点文件警示
 
@@ -217,7 +217,7 @@ npm test            # Windows 因 Defender 实时扫描明显慢于 Linux，不�
 
 安全边界相关的改动（`command-runner.ts` / `windows-elevation.ts` / `trusted-*.ts` / `config-files.ts` / `safe-local-data.ts`），**优先由更熟悉现有代码库的人主导或 review**。
 
-理由：这个项目的复杂度集中在 Windows 提权 / 可信路径 / 原子写入这套不变量上（见 `CLAUDE.md` 第 4 节），**破坏它们不会报错，只会静默变成漏洞**。上下文成本很高，不适合边学边改。
+理由：这个项目的复杂度集中在 Windows 提权 / 可信路径 / 原子写入这套不变量上（见 `AGENTS.md` 第 4 节），**破坏它们不会报错，只会静默变成漏洞**。上下文成本很高，不适合边学边改。
 
 ### 6.4 云端 Claude 的定位
 
@@ -235,7 +235,7 @@ npm test            # Windows 因 Defender 实时扫描明显慢于 Linux，不�
 云端负责：
 - 架构决策与技术选型
 - 创建、拆分、分发 Issue
-- 维护 `CLAUDE.md` / `docs/*.md` 等规范文档
+- 维护 `AGENTS.md` / `docs/*.md` 等规范文档
 - Review PR 的架构合理性
 
 ---

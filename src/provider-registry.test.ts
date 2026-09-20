@@ -6,7 +6,7 @@ function expectExhaustiveCoverage(order: readonly string[]) {
   // A dropped provider (e.g. forgotten in provider-registry.ts's rank tables
   // after a 5th CLI is added to catalog.ts) shrinks `order` below
   // providerIds.length instead of failing silently — this is the test-time
-  // half of the T2 guard described in CLAUDE.md, independent of typecheck.
+  // half of the T2 guard described in AGENTS.md, independent of typecheck.
   expect(order).toHaveLength(providerIds.length)
   expect(new Set(order).size).toBe(providerIds.length)
   expect([...order].sort()).toEqual([...providerIds].sort())

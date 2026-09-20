@@ -16,7 +16,7 @@
 // Two NewApiClientService methods are intentionally excluded because
 // nothing outside new-api-client.ts (and its own tests) calls them today:
 // isAuthenticated(), refreshAccessToken(). Add a
-// method here only once a real consumer needs it, per CLAUDE.md's own
+// method here only once a real consumer needs it, per AGENTS.md's own
 // guidance against speculative surface.
 //
 // DTO types are imported from new-api-client.ts rather than duplicated or
@@ -139,7 +139,7 @@ export interface RelayBackendCapabilities {
  * The subset of a relay backend's account client that today's real callers
  * use: ipc.ts's account:* handlers, chat-credential-coordinator.ts (the
  * canvas's key resolution, which happens in the main process -- the canvas
- * renderer never holds a key, see CLAUDE.md's I15), and main.ts's startup
+ * renderer never holds a key, see AGENTS.md's I15), and main.ts's startup
  * flow (restoreAccountSessionOnStartup in account-session-store.ts). Each
  * method below notes its consumer(s); see
  * new-api-client.ts's NewApiClientService for the full per-method
