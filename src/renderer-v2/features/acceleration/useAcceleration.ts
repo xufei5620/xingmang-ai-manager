@@ -47,7 +47,7 @@ export function useAcceleration(api: AccelerationApi, scope: string | null, acti
       busy: snapshot.busy || (lineSnapshot.scope === scope && lineSnapshot.busy && !['active', 'stopping'].includes(snapshot.state?.phase ?? '')),
     },
     refresh: controller.refresh,
-    start: (lineId?: string) => linesController.getSnapshot().busy ? Promise.resolve() : controller.start(lineId),
+    start: (lineId?: string, ignoreConflicts?: boolean) => linesController.getSnapshot().busy ? Promise.resolve() : controller.start(lineId, ignoreConflicts),
     stop: controller.stop,
     redeem: controller.redeem,
     setMode: controller.setMode,

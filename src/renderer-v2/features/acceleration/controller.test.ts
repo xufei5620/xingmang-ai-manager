@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { accelerationBonusCode, accelerationBonusSeconds, accelerationTrialSeconds } from '../../../../electron/acceleration-contract'
+import { accelerationBonusCode, accelerationBonusSeconds, accelerationConflictNotice, accelerationTrialSeconds } from '../../../../electron/acceleration-contract'
 import type { AccelerationApi, AccelerationMode, AccelerationRedemptionResult, AccelerationState } from './api'
 import { createAccelerationApi } from './api'
 import { createAccelerationController, type AccelerationController } from './controller'
@@ -403,6 +403,22 @@ describe('acceleration controller', () => {
     expect(api.stopAcceleration).not.toHaveBeenCalled()
   })
 
+  it('keeps the conflict refusal on screen and retries once the user overrides it', async () => {
+    const { controller, api } = create()
+    const refusal = state({ scope: 'new-api:1', phase: 'error', error: accelerationConflictNotice, conflicts: ['system-proxy'] })
+    api.startAcceleration.mockResolvedValueOnce(refusal)
+    controller.setScope('new-api:1')
+    await controller.refresh()
+    await controller.start()
+    expect(controller.getSnapshot()).toMatchObject({ busy: false, error: accelerationConflictNotice, state: { conflicts: ['system-proxy'] } })
+    expect(api.startAcceleration).toHaveBeenLastCalledWith('new-api:1', 'system-proxy')
+
+    await controller.start(undefined, true)
+    expect(api.startAcceleration).toHaveBeenLastCalledWith('new-api:1', 'system-proxy', undefined, true)
+    expect(controller.getSnapshot().state).toMatchObject({ phase: 'active' })
+    expect(controller.getSnapshot().state?.conflicts).toBeUndefined()
+  })
+
   it('reports missing bridge methods instead of simulating a free allowance', async () => {
     const api = createAccelerationApi(null)
     await expect(api.getAccelerationState('new-api:1')).rejects.toThrow('加速服务暂未就绪')
@@ -420,6 +436,8 @@ describe('acceleration controller', () => {
     await api.redeemAccelerationCode!('new-api:1', accelerationBonusCode)
     expect(bridge.getAccelerationState).toHaveBeenCalledWith('new-api:1')
     expect(bridge.startAcceleration).toHaveBeenCalledWith('new-api:1', 'tun')
+    await api.startAcceleration('new-api:1', 'system-proxy', undefined, true)
+    expect(bridge.startAcceleration).toHaveBeenLastCalledWith('new-api:1', 'system-proxy', undefined, true)
     expect(bridge.stopAcceleration).toHaveBeenCalledWith('new-api:1')
     expect(bridge.redeemAccelerationCode).toHaveBeenCalledWith('new-api:1', accelerationBonusCode)
   })

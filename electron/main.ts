@@ -20,6 +20,7 @@ import { autoUpdater } from 'electron-updater'
 import { AccountCredentialStore } from './account-credential-store'
 import { AnnouncementReadStore } from './announcement-read-store'
 import { createAccelerationService } from './acceleration-service'
+import { accelerationConflictDescriptions } from './acceleration-contract'
 import { accelerationStartFailureDescriptions, createAccelerationDevelopmentHost, readAccelerationDevelopmentConfig } from './acceleration-development-host'
 import { readBundledAccelerationConfig } from './acceleration-bundled-config'
 import { AiAssetStore, resolveAiOutputRoot } from './ai-asset-store'
@@ -1421,6 +1422,12 @@ if (!hasSingleInstanceLock) {
         // screen that means the same thing for every possible cause.
         onStartDiagnostic: (stage) => runtimeLog.log('error', 'network', 'acceleration.start.failed',
           `加速连接失败：${accelerationStartFailureDescriptions[stage]}`, { stage }),
+        // yoyo 2026-09-20 真机反馈：本地 VPN 与加速互抢系统代理时，下载到底走了哪条线
+        // 事后完全看不出来。记录检测到什么，以及用户是否选择了「仍然连接」。
+        onConflictDiagnostic: (kind, ignored) => runtimeLog.log('warn', 'network',
+          ignored ? 'acceleration.conflict.ignored' : 'acceleration.conflict.detected',
+          `${ignored ? '用户选择忽略网络冲突继续连接' : '开始加速前检测到网络冲突'}：${accelerationConflictDescriptions[kind]}`,
+          { kind, ignored }),
         ...(app.isPackaged ? { entitlementSource: 'local-device' as const } : {}),
       })
     } catch {

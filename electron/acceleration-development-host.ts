@@ -1,7 +1,8 @@
 import path from 'node:path'
 import { stat } from 'node:fs/promises'
 import { fork, spawn, type ChildProcess, type ForkOptions } from 'node:child_process'
-import type { AccelerationApi, AccelerationState } from './acceleration-contract'
+import type { AccelerationApi, AccelerationConflictKind, AccelerationState } from './acceleration-contract'
+import { isAccelerationConflictKind } from './acceleration-contract'
 import { trustedCommandEnvironment } from './command-runner'
 import { readSafeUtf8File } from './safe-local-data'
 import { accelerationWorkerArgument } from './acceleration-worker-entry'
@@ -93,6 +94,7 @@ export function createAccelerationDevelopmentHost(options: {
   entitlementSource?: 'local-device'
   onDiagnostic?(stage: AccelerationStopFailureStage): void
   onStartDiagnostic?(stage: AccelerationStartFailureStage): void
+  onConflictDiagnostic?(kind: AccelerationConflictKind, ignored: boolean): void
 }): AccelerationDevelopmentHost {
   const config = parseAccelerationDevelopmentConfig(options.config)
   const entitlementSource = parseAccelerationEntitlementSource(options.entitlementSource)
@@ -189,7 +191,7 @@ export function createAccelerationDevelopmentHost(options: {
       if (!message || typeof message !== 'object' || Array.isArray(message)) return
       const response = message as Record<string, unknown>
       if (response.type === 'acceleration-diagnostic') {
-        if (child !== worker || Object.keys(response).some((key) => !['type', 'event', 'stage'].includes(key))) return
+        if (child !== worker || Object.keys(response).some((key) => !['type', 'event', 'stage', 'ignored'].includes(key))) return
         // The worker is the one process allowed to see the underlying error.
         // Only a member of the stage set it is allowed to report crosses here,
         // so a compromised or confused worker cannot turn this into a channel
@@ -200,6 +202,10 @@ export function createAccelerationDevelopmentHost(options: {
         }
         if (response.event === 'start.failed' && startFailureStages.includes(response.stage as string)) {
           try { options.onStartDiagnostic?.(response.stage as AccelerationStartFailureStage) } catch { /* Diagnostics must not interrupt recovery. */ }
+          return
+        }
+        if (response.event === 'start.conflict' && isAccelerationConflictKind(response.stage) && typeof response.ignored === 'boolean') {
+          try { options.onConflictDiagnostic?.(response.stage, response.ignored) } catch { /* Diagnostics must not interrupt recovery. */ }
         }
         return
       }
@@ -241,10 +247,12 @@ export function createAccelerationDevelopmentHost(options: {
     }
   }
 
-  async function request(operation: string, scope: string, mode?: string, lineId?: string): Promise<AccelerationState> {
+  async function request(operation: string, scope: string, mode?: string, lineId?: string, ignoreConflicts?: boolean): Promise<AccelerationState> {
     await ensureReady()
     // The service above this adapter validates and projects every returned field.
-    return await rpc(operation, { scope, ...(mode ? { mode } : {}), ...(lineId ? { lineId } : {}) }) as AccelerationState
+    return await rpc(operation, {
+      scope, ...(mode ? { mode } : {}), ...(lineId ? { lineId } : {}), ...(ignoreConflicts ? { ignoreConflicts: true } : {}),
+    }) as AccelerationState
   }
 
   return {
@@ -257,7 +265,7 @@ export function createAccelerationDevelopmentHost(options: {
       await ensureReady()
     },
     getAccelerationState: (scope) => request('get', scope),
-    startAcceleration: (scope, mode, lineId) => request('start', scope, mode, lineId),
+    startAcceleration: (scope, mode, lineId, ignoreConflicts) => request('start', scope, mode, lineId, ignoreConflicts),
     stopAcceleration: (scope) => request('stop', scope),
     redeemAccelerationCode: async (scope, code) => {
       await ensureReady()

@@ -1999,10 +1999,14 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     accelerationService().pingAccelerationLine?.(requiredString(scope, '加速账号', 64), requiredString(lineId, '加速线路', 80))
       ?? Promise.reject(new Error('线路检测服务暂未准备好，请稍后重试。'))
   ))
-  registerTrustedHandler('acceleration:start', (_event, scope: unknown, mode: unknown, lineId: unknown) => {
+  registerTrustedHandler('acceleration:start', (_event, scope: unknown, mode: unknown, lineId: unknown, ignoreConflicts: unknown) => {
     if (mode !== 'system-proxy' && mode !== 'tun') throw new Error('加速模式无效。')
     if (lineId !== undefined && typeof lineId !== 'string') throw new Error('加速线路参数无效。')
+    // The renderer only sets this after the user answered the conflict warning
+    // with 仍然连接; it is a decision, never a default.
+    if (ignoreConflicts !== undefined && typeof ignoreConflicts !== 'boolean') throw new Error('加速冲突确认参数无效。')
     const accountScope = requiredString(scope, '加速账号', 64)
+    if (ignoreConflicts !== undefined) return accelerationService().startAcceleration(accountScope, mode, lineId, ignoreConflicts)
     return lineId === undefined
       ? accelerationService().startAcceleration(accountScope, mode)
       : accelerationService().startAcceleration(accountScope, mode, lineId)

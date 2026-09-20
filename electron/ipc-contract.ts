@@ -670,7 +670,7 @@ export interface XingmangInvokeContract {
   getAccelerationState: IpcInvokeDefinition<'acceleration:get-state', [scope: string], import('./acceleration-contract').AccelerationState>
   listAccelerationLines: IpcInvokeDefinition<'acceleration:list-lines', [scope: string], import('./acceleration-contract').AccelerationLine[]>
   pingAccelerationLine: IpcInvokeDefinition<'acceleration:ping-line', [scope: string, lineId: string], import('./acceleration-contract').AccelerationLine>
-  startAcceleration: IpcInvokeDefinition<'acceleration:start', [scope: string, mode: import('./acceleration-contract').AccelerationMode, lineId?: string], import('./acceleration-contract').AccelerationState>
+  startAcceleration: IpcInvokeDefinition<'acceleration:start', [scope: string, mode: import('./acceleration-contract').AccelerationMode, lineId?: string, ignoreConflicts?: boolean], import('./acceleration-contract').AccelerationState>
   stopAcceleration: IpcInvokeDefinition<'acceleration:stop', [scope: string], import('./acceleration-contract').AccelerationState>
   redeemAccelerationCode: IpcInvokeDefinition<'acceleration:redeem-code', [scope: string, code: string], import('./acceleration-contract').AccelerationRedemptionResult>
   getLegalDocument: IpcInvokeDefinition<'account:get-legal-document', [kind: LegalDocumentKind, siteId?: AccountSiteId], LegalDocument>
