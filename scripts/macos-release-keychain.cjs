@@ -126,6 +126,25 @@ function readState(statePath) {
   return parsed
 }
 
+/**
+ * `security` reports a wrong passphrase, a .p12 that was exported without one,
+ * and a base64 blob that lost bytes in transit with the same one-line message,
+ * and nobody on the runner can tell them apart without the secrets themselves.
+ * Naming what to check turns that line into something the release operator can
+ * act on — 2026-09-20 it cost a whole approval round to work out by hand.
+ */
+function describeImportFailure(message) {
+  const text = String(message)
+  if (!/passphrase|password/i.test(text)) return text
+  return [
+    text,
+    '这一句几乎总是「.p12 与 XINGMANG_MAC_SIGNING_P12_PASSWORD 对不上」，而不是 .p12 本身坏了。按顺序查三件事：',
+    '1. 填 secret 时是不是把密码连引号一起粘进去了，或者末尾多了空格；',
+    '2. 导出 .p12 时设的密码与填进 secret 的是不是同一个（导出时密码留空，同样会报这一句）；',
+    '3. 在发布 Mac 上跑 `openssl pkcs12 -in <你的.p12> -nokeys -noout`，它会提示输密码；能过就说明密码没错，问题出在 secret 存的值上。',
+  ].join('\n')
+}
+
 function importReleaseSigningIdentity(options = {}) {
   const environment = options.env || process.env
   const platform = options.platform || process.platform
@@ -163,13 +182,17 @@ function importReleaseSigningIdentity(options = {}) {
     if (!fs.existsSync(keychainPath)) fail('创建发布签名 keychain 失败')
     runSecurity(['set-keychain-settings', '-lut', KEYCHAIN_TIMEOUT_SECONDS, keychainPath])
     runSecurity(['unlock-keychain', '-p', keychainPassword, keychainPath], { secrets: [keychainPassword] })
-    runSecurity([
-      'import', p12Path,
-      '-k', keychainPath,
-      '-f', 'pkcs12',
-      '-P', p12Password,
-      '-T', '/usr/bin/codesign',
-    ], { secrets: [p12Password] })
+    try {
+      runSecurity([
+        'import', p12Path,
+        '-k', keychainPath,
+        '-f', 'pkcs12',
+        '-P', p12Password,
+        '-T', '/usr/bin/codesign',
+      ], { secrets: [p12Password] })
+    } catch (error) {
+      fail(describeImportFailure(error instanceof Error ? error.message : error))
+    }
     runSecurity([
       'set-key-partition-list',
       '-S', 'apple-tool:,apple:,codesign:',
@@ -294,6 +317,7 @@ if (require.main === module) {
 }
 
 module.exports = {
+  describeImportFailure,
   importReleaseSigningIdentity,
   parseArguments,
   parseKeychainSearchList,
