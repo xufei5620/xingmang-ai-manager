@@ -139,8 +139,11 @@ test('the release signing import trusts the certificate for code signing only', 
   assert.equal(trust.length, 1)
   assert.deepEqual(trust[0].args, [
     'add-trusted-cert', '-d', '-r', 'trustRoot', '-p', 'codeSign',
-    '-k', '/Library/Keychains/System.keychain', result.certificatePath,
+    '-k', result.keychainPath, result.certificatePath,
   ])
+  // -k 指向 System.keychain 会把证书再装一份，同一个身份于是被 find-identity 列
+  // 两次，预检那句「恰好一个」就判成歧义——2026-09-20 第四次正式发布红在这里。
+  assert.equal(trust[0].args.includes('/Library/Keychains/System.keychain'), false)
   // 用户域那条授权在没有图形会话的 runner 上无人可确认，security 会一直挂着；
   // 管理员域以 root 执行即通过。这一条走 sudo 是这一步能跑完的前提。
   assert.equal(trust[0].options.privileged, true)
@@ -237,6 +240,7 @@ test('a failure after the search list was changed puts the search list back and 
   }), /trust boom/)
   const searchListWrites = calls.filter((args) => args[0] === 'list-keychains' && args.includes('-s'))
   assert.equal(searchListWrites.length, 2)
+  assert.equal(calls.some((args) => args[0] === 'remove-trusted-cert'), false)
   assert.deepEqual(searchListWrites[1], [
     'list-keychains', '-d', 'user', '-s', '/Users/runner/Library/Keychains/login.keychain-db',
   ])
@@ -315,7 +319,7 @@ test('the release signing import names the secret that is missing', (t) => {
   }), /base64/)
 })
 
-test('the teardown undoes trust, search list and keychain in that order', (t) => {
+test('the teardown restores the search list and deletes the keychain, and never waits on remove-trusted-cert', (t) => {
   const { result, statePath } = runImport(t)
   const calls = []
   releaseSigningKeychain({
@@ -325,14 +329,13 @@ test('the teardown undoes trust, search list and keychain in that order', (t) =>
       return ''
     },
   })
-  assert.deepEqual(calls.map((call) => call.args[0]), ['remove-trusted-cert', 'list-keychains', 'delete-keychain'])
-  // 加信任设置那一步走的是管理员域，撤的时候必须走同一个域，否则撤不掉。
-  assert.deepEqual(calls[0].args, ['remove-trusted-cert', '-d', result.certificatePath])
-  assert.equal(calls[0].options.privileged, true)
-  assert.deepEqual(calls[1].args, [
+  // remove-trusted-cert 在 runner 上根本回不来（实测给 60 秒也挂着），而删掉
+  // keychain 之后信任设置就没有作用对象了。删 keychain 本身就是撤销。
+  assert.deepEqual(calls.map((call) => call.args[0]), ['list-keychains', 'delete-keychain'])
+  assert.deepEqual(calls[0].args, [
     'list-keychains', '-d', 'user', '-s', '/Users/runner/Library/Keychains/login.keychain-db',
   ])
-  assert.deepEqual(calls[2].args, ['delete-keychain', result.keychainPath])
+  assert.deepEqual(calls[1].args, ['delete-keychain', result.keychainPath])
   assert.equal(fs.existsSync(statePath), false)
 })
 
@@ -371,11 +374,11 @@ test('the teardown keeps going after one step fails and reports every failure', 
   assert.throws(() => releaseSigningKeychain({
     statePath,
     runSecurity: (args) => {
-      if (args[0] === 'remove-trusted-cert') throw new Error('trust boom')
+      if (args[0] === 'list-keychains') throw new Error('list boom')
       if (args[0] === 'delete-keychain') throw new Error('delete boom')
       return ''
     },
-  }), /trust boom.*delete boom/s)
+  }), /list boom.*delete boom/s)
   // 搜索列表那一步仍然跑过了：它是三步里唯一会影响后续构建的全局状态。
   assert.equal(fs.existsSync(statePath), false)
 })

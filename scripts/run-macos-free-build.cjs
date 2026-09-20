@@ -15,6 +15,7 @@ const { verifyEphemeralMacSigningIdentity } = require('./macos-ephemeral-signing
 const { validateManifest } = require('./stage-acceleration-bundle.cjs')
 const { mergeMacosFreeArchitectureOutputs } = require('./merge-macos-free-artifacts.cjs')
 const { renameMacosChipArtifacts } = require('./rename-macos-chip-artifacts.cjs')
+const { createRehearsalSigningLedger } = require('./macos-published-signing-identity.cjs')
 
 const SECURITY_PATH = '/usr/bin/security'
 const SECURITY_COMMAND_TIMEOUT_MS = 30_000
@@ -28,6 +29,7 @@ const BUILD_MODE_ENVIRONMENT_NAMES = new Set([
   'XINGMANG_LOCAL_BUILD',
   'XINGMANG_OUTPUT_DIR',
   'XINGMANG_MAC_CI_EPHEMERAL_SIGNING',
+  'XINGMANG_MAC_RELEASE_REHEARSAL',
   'XINGMANG_MAC_SIGNING_SHA1',
   'XINGMANG_MAC_SIGNING_P12_PASSWORD',
   'XINGMANG_UPDATE_DEV',
@@ -158,6 +160,7 @@ function parseFreeMacBuildArguments(argv = []) {
   const tokens = [...argv]
   let ciTemporarySigning = false
   let keepPackage = false
+  let rehearsalIdentity
   const requested = {}
   for (let index = 0; index < tokens.length; index += 1) {
     const token = tokens[index]
@@ -167,6 +170,16 @@ function parseFreeMacBuildArguments(argv = []) {
     }
     if (token === '--ci-keep-package') {
       keepPackage = true
+      continue
+    }
+    if (token === '--rehearsal-identity') {
+      if (rehearsalIdentity !== undefined) throw new Error('--rehearsal-identity 只能出现一次')
+      const fingerprint = tokens[index + 1]
+      if (!fingerprint || fingerprint.startsWith('--')) {
+        throw new Error('--rehearsal-identity 需要一个 SHA-256 指纹')
+      }
+      rehearsalIdentity = fingerprint
+      index += 1
       continue
     }
     const architecture = ACCELERATION_ARCHITECTURES.find((value) => ACCELERATION_FLAGS[value] === token)
@@ -183,14 +196,26 @@ function parseFreeMacBuildArguments(argv = []) {
   if (keepPackage && !ciTemporarySigning) {
     throw new Error('--ci-keep-package 只能与 --ci-temporary-signing 一起使用')
   }
+  // 两条路径的签名方式正相反：一次性签名走自定义 sign 钩子，排练走的正是发布那条
+  // 「electron-builder 自己按名字在 keychain 里找身份」。同时给就说不清在验哪一条。
+  if (rehearsalIdentity !== undefined && ciTemporarySigning) {
+    throw new Error('--rehearsal-identity 与 --ci-temporary-signing 不能同时使用')
+  }
   const selected = ACCELERATION_ARCHITECTURES.filter((architecture) => requested[architecture] !== undefined)
-  if (selected.length === 0) return { ciTemporarySigning, keepPackage, accelerationBundles: undefined }
+  if (selected.length === 0) {
+    return { ciTemporarySigning, keepPackage, rehearsalIdentity, accelerationBundles: undefined }
+  }
   // 一次发布必须同时出两个架构：更新清单要精确引用两份 ZIP，只带一个架构的线路
   // 会做出一个「一半用户有加速、一半没有」的版本，而且产物校验本来就过不了。
   if (selected.length !== ACCELERATION_ARCHITECTURES.length) {
     throw new Error('携带私有加速线路必须同时提供 --acceleration-arm64 与 --acceleration-x64')
   }
-  return { ciTemporarySigning, keepPackage, accelerationBundles: { arm64: requested.arm64, x64: requested.x64 } }
+  return {
+    ciTemporarySigning,
+    keepPackage,
+    rehearsalIdentity,
+    accelerationBundles: { arm64: requested.arm64, x64: requested.x64 },
+  }
 }
 
 /**
@@ -322,6 +347,14 @@ function resolveFreeMacBuildOptions(options = {}) {
     XINGMANG_OUTPUT_DIR: outputDirectory,
     XINGMANG_UPDATE_URL: expectedUpdateUrl,
     CSC_IDENTITY_AUTO_DISCOVERY: 'false',
+    // 排练跑在 pull_request 事件上，而 electron-builder 在 PR 上默认整段跳过 macOS
+    // 签名，跳得还很安静：包照样出，只是没签。不打开这一条，排练就会"通过"一个
+    // 根本没签名的包，正好把它要验的东西验丢。发布走 workflow_dispatch，两个变量
+    // 都不设，electron-builder.config.cjs 那边也拒绝单独出现的 CSC_FOR_PULL_REQUEST。
+    ...(options.releaseRehearsal ? {
+      XINGMANG_MAC_RELEASE_REHEARSAL: '1',
+      CSC_FOR_PULL_REQUEST: 'true',
+    } : {}),
     ...(ephemeralSigning ? {
       XINGMANG_MAC_CI_EPHEMERAL_SIGNING: '1',
       XINGMANG_MAC_SIGNING_SHA1: ephemeralSigning.identitySha1,
@@ -710,6 +743,27 @@ async function main() {
       } else {
         process.stdout.write('macOS 免费分发真实构建已通过临时签名验证，临时产物和签名材料已清理\n')
       }
+    } else if (args.rehearsalIdentity) {
+      // 排练：与正式发布同一条代码路径（electron-builder 按 CSC_NAME 在 keychain
+      // 里找身份、publishedIdentity 口径的签名预检与产物校验、按架构分两次构建再
+      // 合并），只把台账对账的对象换成现场生成的一次性证书。
+      const ledger = createRehearsalSigningLedger(args.rehearsalIdentity)
+      const result = await runFreeMacBuild({
+        accelerationBundles: args.accelerationBundles,
+        // typecheck、npm test 与 compile 由调用方在它前面跑过了；再跑一遍只是把
+        // 作业拖长半小时，不会多验出任何东西。
+        skipChecks: true,
+        releaseRehearsal: true,
+        verifySigning: (verifyOptions) => verifyFreeMacSigningIdentity({ ...verifyOptions, ...ledger }),
+        verifyArtifacts: (verifyOptions) => verifyMacosFreeArtifacts({
+          ...verifyOptions,
+          assertPublishedIdentity: ledger.assertPublishedIdentity,
+        }),
+      })
+      process.stdout.write(
+        `macOS 发布路径排练通过：${result.outputDirectory}\n`
+        + '注意：这份包由排练用的一次性证书签名，不能发给任何人\n',
+      )
     } else {
       const result = await runFreeMacBuild({ accelerationBundles: args.accelerationBundles })
       const carried = args.accelerationBundles ? '（已携带私有加速线路）' : ''

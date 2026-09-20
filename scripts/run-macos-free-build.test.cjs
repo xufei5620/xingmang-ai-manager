@@ -1118,11 +1118,13 @@ test('carrying the private acceleration nodes is opt-in through the command line
   assert.deepEqual(parseFreeMacBuildArguments([]), {
     ciTemporarySigning: false,
     keepPackage: false,
+    rehearsalIdentity: undefined,
     accelerationBundles: undefined,
   })
   assert.deepEqual(parseFreeMacBuildArguments(['--ci-temporary-signing']), {
     ciTemporarySigning: true,
     keepPackage: false,
+    rehearsalIdentity: undefined,
     accelerationBundles: undefined,
   })
   assert.deepEqual(
@@ -1130,6 +1132,7 @@ test('carrying the private acceleration nodes is opt-in through the command line
     {
       ciTemporarySigning: false,
       keepPackage: false,
+      rehearsalIdentity: undefined,
       accelerationBundles: { arm64: '/private/arm64', x64: '/private/x64' },
     },
   )
@@ -1153,6 +1156,7 @@ test('carrying the private acceleration nodes is opt-in through the command line
   ]), {
     ciTemporarySigning: true,
     keepPackage: false,
+    rehearsalIdentity: undefined,
     accelerationBundles: { arm64: '/private/arm64', x64: '/private/x64' },
   })
   assert.throws(() => parseFreeMacBuildArguments(['--acceleration']), /无法识别的参数/)
@@ -1162,6 +1166,7 @@ test('keeping the built package is opt-in and only meaningful for the CI signing
   assert.deepEqual(parseFreeMacBuildArguments(['--ci-temporary-signing', '--ci-keep-package']), {
     ciTemporarySigning: true,
     keepPackage: true,
+    rehearsalIdentity: undefined,
     accelerationBundles: undefined,
   })
 
@@ -1173,6 +1178,66 @@ test('keeping the built package is opt-in and only meaningful for the CI signing
     '--acceleration-arm64', '/private/arm64',
     '--acceleration-x64', '/private/x64',
   ]), /只能与 --ci-temporary-signing/)
+})
+
+test('the release-path rehearsal is its own mode and cannot be mixed with temporary signing', () => {
+  const rehearsal = 'A'.repeat(64)
+  assert.deepEqual(parseFreeMacBuildArguments([
+    '--rehearsal-identity', rehearsal,
+    '--acceleration-arm64', '/private/arm64',
+    '--acceleration-x64', '/private/x64',
+  ]), {
+    ciTemporarySigning: false,
+    keepPackage: false,
+    rehearsalIdentity: rehearsal,
+    accelerationBundles: { arm64: '/private/arm64', x64: '/private/x64' },
+  })
+
+  // 一次性签名走自定义 sign 钩子，排练走的正是发布那条「electron-builder 自己按
+  // 名字找身份」。同时给就说不清在验哪一条。
+  assert.throws(
+    () => parseFreeMacBuildArguments(['--ci-temporary-signing', '--rehearsal-identity', rehearsal]),
+    /不能同时使用/,
+  )
+  assert.throws(() => parseFreeMacBuildArguments(['--rehearsal-identity']), /需要一个 SHA-256 指纹/)
+  assert.throws(
+    () => parseFreeMacBuildArguments(['--rehearsal-identity', '--acceleration-arm64']),
+    /需要一个 SHA-256 指纹/,
+  )
+  assert.throws(
+    () => parseFreeMacBuildArguments(['--rehearsal-identity', rehearsal, '--rehearsal-identity', rehearsal]),
+    /只能出现一次/,
+  )
+})
+
+test('a pull request build has to ask for signing explicitly or electron-builder skips it', (t) => {
+  // electron-builder 在 pull_request 上默认整段跳过 macOS 签名，而且跳得很安静：
+  // 包照样出，只是没签。排练不打开这一条，就会"通过"一个根本没签名的包，正好把
+  // 它要验的东西验丢。发布走 workflow_dispatch，两个变量都不设。
+  const release = resolveFreeMacBuildOptions(validOptions(t)).builderEnvironment
+  assert.equal(release.CSC_FOR_PULL_REQUEST, undefined)
+  assert.equal(release.XINGMANG_MAC_RELEASE_REHEARSAL, undefined)
+
+  const rehearsal = resolveFreeMacBuildOptions(validOptions(t, { releaseRehearsal: true })).builderEnvironment
+  assert.equal(rehearsal.CSC_FOR_PULL_REQUEST, 'true')
+  // 光给 CSC_FOR_PULL_REQUEST 会被 electron-builder.config.cjs 拒掉：那个变量只是
+  // 「PR 上也要真的签」的许可，还得有一个标记说明这是哪条路径。
+  assert.equal(rehearsal.XINGMANG_MAC_RELEASE_REHEARSAL, '1')
+  assert.equal(rehearsal.XINGMANG_MAC_CI_EPHEMERAL_SIGNING, undefined)
+})
+
+test('a stray rehearsal marker cannot decide how a release build signs', (t) => {
+  // 这张清洗表存在的理由就是这个：继承来的同名变量绝不能决定出包方式。
+  const inherited = resolveFreeMacBuildOptions(validOptions(t, {
+    env: {
+      PATH: '/usr/bin:/bin',
+      CSC_NAME: 'XingMang Free Update Identity',
+      XINGMANG_MAC_SIGNING_SHA256: fingerprint,
+      XINGMANG_MAC_RELEASE_REHEARSAL: '1',
+    },
+  }))
+  assert.equal(inherited.baseEnvironment.XINGMANG_MAC_RELEASE_REHEARSAL, undefined)
+  assert.equal(inherited.builderEnvironment.XINGMANG_MAC_RELEASE_REHEARSAL, undefined)
 })
 
 test('a kept CI package lands in a directory the workflow can name in advance', async (t) => {

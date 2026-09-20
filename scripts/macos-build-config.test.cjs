@@ -339,7 +339,42 @@ test('persistent signing rejects every electron-builder-truthy PR override', () 
       },
     })
     assert.notEqual(result.status, 0, `CSC_FOR_PULL_REQUEST=${JSON.stringify(pullRequestValue)} must fail closed`)
-    assert.match(result.stderr, /CSC_FOR_PULL_REQUEST|PR|ephemeral/i)
+    assert.match(result.stderr, /CSC_FOR_PULL_REQUEST|PR|ephemeral|排练/i)
+  }
+})
+
+test('the release-path rehearsal is its own permission and stays inside the free release mode', () => {
+  const rehearse = (overrides) => spawnSync(process.execPath, ['-e', `require(${JSON.stringify(configPath)})`], {
+    cwd: root,
+    encoding: 'utf8',
+    env: {
+      ...cleanBuildEnvironment(),
+      XINGMANG_RELEASE: '0',
+      XINGMANG_MAC_FREE_RELEASE: '1',
+      XINGMANG_LOCAL_BUILD: '0',
+      XINGMANG_MAC_RELEASE_REHEARSAL: '1',
+      CSC_NAME: 'XingMang Release Rehearsal Identity',
+      CSC_FOR_PULL_REQUEST: 'true',
+      ...overrides,
+    },
+  })
+
+  assert.equal(rehearse({}).status, 0)
+
+  // 排练与一次性签名是两条不同的签名路径，同时打开就说不清在验哪一条。
+  assert.notEqual(rehearse({
+    XINGMANG_MAC_CI_EPHEMERAL_SIGNING: '1',
+    XINGMANG_MAC_SIGNING_SHA1: 'CD'.repeat(20),
+    CSC_KEYCHAIN: '/private/tmp/xingmang-ci-signing.keychain-db',
+  }).status, 0)
+  // 排练只存在于免费分发这条路上，别处出现就是标记漏出来了。
+  assert.notEqual(rehearse({ XINGMANG_MAC_FREE_RELEASE: '0', XINGMANG_RELEASE: '1' }).status, 0)
+  // 打开了排练却没打开 PR 签名，出来的会是一个没签名的包——比红更坏。
+  assert.notEqual(rehearse({ CSC_FOR_PULL_REQUEST: undefined }).status, 0)
+  for (const marker of ['true', '01', ' 1']) {
+    const result = rehearse({ XINGMANG_MAC_RELEASE_REHEARSAL: marker })
+    assert.notEqual(result.status, 0, `marker ${JSON.stringify(marker)} must fail closed`)
+    assert.match(result.stderr, /XINGMANG_MAC_RELEASE_REHEARSAL/)
   }
 })
 

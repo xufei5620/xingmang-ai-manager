@@ -373,8 +373,43 @@ test('the supported macOS runner runs the real isolated free-distribution build 
   // Every check around it reads the artifact, and the artifact was perfect on
   // 2026-09-19 while the app it described could not start. This one runs it.
   assert.ok(commands.includes('node e2e/macos-launch-smoke.mjs'))
+  // publish-release.yml 的 macos-build 挂 environment: release，PR 上从来不跑，
+  // 所以发布签名 keychain 那条链路只能在这里排练。2026-09-20 正式发布连红四次，
+  // 其中两次都该在这一步就红。
+  assert.ok(commands.includes('npm run test:mac:release-keychain'))
   assert.equal(commands.some((command) => /build:mac:ci|--dir/.test(command)), false)
   assert.equal(macJob.steps.some((step) => String(step.uses || '').includes('upload-artifact')), false)
+})
+
+test('the release path itself is rehearsed on every pull request, not only when a release is cut', () => {
+  const job = workflow.jobs['macos-release-rehearsal']
+  const commands = runSteps('macos-release-rehearsal')
+
+  assert.equal(job['runs-on'], 'macos-15')
+  // 排练跳过 typecheck 与 npm test（别的作业已经跑过），但 electron-builder 打的
+  // 是编译产物，所以 compile 不能省。
+  assert.ok(commands.includes('npm run compile'))
+  assert.ok(commands.some((command) => command.includes('prepare-acceleration-bundle.cjs --target darwin-arm64')))
+  assert.ok(commands.some((command) => command.includes('prepare-acceleration-bundle.cjs --target darwin-x64')))
+  // 暂存工具读的是主进程产物，所以它必须排在一次 tsc 之后、且在 compile 之前——
+  // compile 会先清空 dist-electron，顺序反了就等于没编译过。这与
+  // publish-release.yml 的 macos-build 是同一条先后。
+  const tscIndex = commands.findIndex((command) => command.includes('tsc -p tsconfig.electron.json'))
+  const prepareIndex = commands.findIndex((command) => command.includes('prepare-acceleration-bundle.cjs'))
+  assert.ok(tscIndex >= 0 && tscIndex < prepareIndex)
+  assert.ok(prepareIndex < commands.indexOf('npm run compile'))
+  assert.ok(commands.includes('npm run test:mac:release-path'))
+  assert.match(packageJson.scripts['test:mac:release-path'], /macos-release-keychain-rehearsal\.sh --with-release-build/)
+  // 一次性签名那条路是另一回事（自定义 sign 钩子），它由 macos-test 覆盖。这里
+  // 要验的恰恰是发布路径独有的那一段，两者不能互相顶替。
+  assert.equal(commands.some((command) => command.includes('--ci-temporary-signing')), false)
+  // 十几分钟的打包如果没有步骤级上界，一处 codesign 卡住只会在作业上限才失败，
+  // 而且说不出卡在哪一步。
+  const rehearsal = job.steps.find((step) => String(step.run || '').includes('test:mac:release-path'))
+  assert.ok(Number.isInteger(rehearsal['timeout-minutes']))
+  assert.ok(rehearsal['timeout-minutes'] < job['timeout-minutes'])
+  // 不读任何 secret 是这个作业能挂在 PR 上的前提。
+  assert.equal(/secrets\./.test(JSON.stringify(job)), false)
 })
 
 // T-G5: each of these was committed, documented and then reachable only by
@@ -447,7 +482,7 @@ test('documentation-only changes do not build and package the app', () => {
   for (const event of ['push', 'pull_request']) {
     assert.equal(triggers[event]?.['paths-ignore'], undefined, 'required checks must trigger on documentation PRs')
   }
-  for (const job of ['windows-test', 'windows-package', 'macos-test', 'linux-test', 'audit']) {
+  for (const job of ['windows-test', 'windows-package', 'macos-test', 'macos-release-rehearsal', 'linux-test', 'audit']) {
     assert.equal(workflow.jobs[job].needs, 'changes')
     assert.equal(workflow.jobs[job].if, "needs.changes.outputs.code == 'true'")
   }
@@ -489,7 +524,7 @@ test('the required aggregate fails for incomplete checks and accepts documentati
   const vm = require('node:vm')
   const gate = workflow.jobs['quality-gate']
   assert.equal(gate.if, 'always()')
-  assert.deepEqual(gate.needs, ['changes', 'test', 'macos-test', 'linux-test', 'audit'])
+  assert.deepEqual(gate.needs, ['changes', 'test', 'macos-test', 'macos-release-rehearsal', 'linux-test', 'audit'])
   const source = gate.steps[0].run.split("node <<'NODE'\n")[1].split('\nNODE')[0]
   const run = (source, jobs) => {
     assert.doesNotThrow(() => JSON.stringify(jobs))
@@ -499,7 +534,9 @@ test('the required aggregate fails for incomplete checks and accepts documentati
   }
   const verify = (code, changeResult, results) => {
     const jobs = { changes: { outputs: { code }, result: changeResult } }
-    for (const name of ['macos-test', 'linux-test', 'audit']) jobs[name] = { result: results[name] || 'success' }
+    for (const name of ['macos-test', 'macos-release-rehearsal', 'linux-test', 'audit']) {
+      jobs[name] = { result: results[name] || 'success' }
+    }
     jobs.test = { result: results.test || 'success' }
     return run(source, jobs)
   }
@@ -512,7 +549,10 @@ test('the required aggregate fails for incomplete checks and accepts documentati
   assert.equal(verify('true', 'success', { audit: 'skipped' }), false)
   assert.equal(verify('false', 'failure', {}), false)
   assert.equal(verify('', 'success', {}), false)
-  assert.equal(verify('false', 'success', Object.fromEntries(['macos-test', 'linux-test', 'audit'].map(name => [name, 'skipped']))), true)
+  assert.equal(verify('true', 'success', { 'macos-release-rehearsal': 'failure' }), false)
+  assert.equal(verify('false', 'success', Object.fromEntries(
+    ['macos-test', 'macos-release-rehearsal', 'linux-test', 'audit'].map(name => [name, 'skipped']),
+  )), true)
 
   // The fold-in job itself: it is what keeps a single `test` check meaning
   // "Windows is green" after the matrix replaced the job that used to be it.
