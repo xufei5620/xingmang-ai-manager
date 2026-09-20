@@ -9,9 +9,11 @@ and never inspect process globals or guess platform support.
 auto/90/100/110 preference) for this layer, but delegates to `calculateUiZoom`
 in `window-preferences.ts`, which is the product's only zoom formula. Two
 appliers write the window zoom on the same events, so a second copy of the
-clamp here would silently decide the result by listener registration order. `registry.ts` contains platform-only display
-facts used by the adapter. Native capabilities default to false until a real
-probe confirms them, so unavailable tray, notification, secure storage, deep
-link, or startup support remains visible as an application fallback.
+clamp here would silently decide the result by listener registration order.
+
+`registry.ts` contains platform-only display facts used by the adapter.
+Native capabilities default to false until a real probe confirms them, so
+unavailable tray, notification, secure storage, deep link, or startup support
+remains visible as an application fallback.
 
 This facade does not add signing, certificate, publisher, or release behavior.
