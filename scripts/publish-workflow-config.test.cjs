@@ -172,6 +172,19 @@ test('the build goes through the same release gate as a local release, with the 
   assert.match(String(macosPrepare.run), /--target darwin-x64/)
 })
 
+test('both jobs compile the main process before staging the acceleration bundles', () => {
+  // prepare-acceleration-bundle.cjs 用的是主进程里那套安全读写与内核校验，没有
+  // dist-electron 就在第一秒报「请先编译主进程」。2026-09-20 的首次正式发布就红在
+  // 这里：Windows 那半条有这一步，照抄到 macOS 时漏了，而两个出包作业的步骤不一样，
+  // 光看一边看不出来。
+  for (const job of buildJobs) {
+    const compile = stepIndex(job, /tsconfig\.electron\.json|npm run compile/)
+    const prepare = stepIndex(job, /prepare-acceleration-bundle\.cjs/)
+    assert.ok(compile >= 0, `${job.steps[0].uses}：缺少编译主进程这一步`)
+    assert.ok(compile < prepare, '编译主进程必须排在准备加速资源之前')
+  }
+})
+
 test('the requested version must match package.json before anything is built', () => {
   // 误发一个版本号的代价是线上 latest.yml 指向一个不存在或不该发的产物。
   for (const job of buildJobs) {
