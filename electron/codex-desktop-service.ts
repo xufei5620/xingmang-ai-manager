@@ -411,6 +411,28 @@ export function buildCodexDesktopPackageSources(
   ]
 }
 
+const codexDesktopPrimaryMirrorLabels = new Set(['国内镜像', '国内镜像上一版本'])
+
+/**
+ * 主源清单查询失败时，候选排序会安静地把备用源提到第一位，界面上只剩一句
+ * 「正在从镜像备用源下载」。用户据此以为产品本来就不走主源，既看不出主源出了
+ * 什么事，也无从判断该不该重试——把探测阶段记下的失败原因带到下载提示里。
+ */
+export function describeCodexDesktopPrimaryMirrorSkip(
+  packageSource: CodexDesktopPackageSource,
+  probeErrors: readonly string[],
+): string | null {
+  if (codexDesktopPrimaryMirrorLabels.has(packageSource.label)) return null
+  for (const error of probeErrors) {
+    const separator = error.indexOf('：')
+    if (separator < 0) continue
+    if (!codexDesktopPrimaryMirrorLabels.has(error.slice(0, separator))) continue
+    const detail = error.slice(separator + 1).trim()
+    return detail ? `国内镜像本次不可用（${detail}）` : '国内镜像本次不可用'
+  }
+  return null
+}
+
 export function buildCodexDesktopManifestSources(
 ): CodexDesktopManifestSource[] {
   return [
@@ -593,7 +615,7 @@ export async function fetchCodexDesktopManifestCandidate(
 
 async function probeCodexDesktopManifests(
   architecture: 'x64' | 'arm64',
-  fetchImplementation: typeof fetch = fetch,
+  fetchImplementation: typeof fetch,
   sources: CodexDesktopManifestSource[] = buildCodexDesktopManifestSources(),
 ): Promise<CodexDesktopManifestProbeResult> {
   const candidates: CodexDesktopManifestCandidate[] = []
@@ -652,7 +674,7 @@ async function probeCodexDesktopManifests(
 
 export async function fetchCodexDesktopMirrorRelease(
   architecture: 'x64' | 'arm64',
-  fetchImplementation: typeof fetch = fetch,
+  fetchImplementation: typeof fetch,
 ): Promise<CodexDesktopMirrorRelease> {
   const sources = buildCodexDesktopManifestSources().filter((source) => source.kind === 'mirror')
   const result = await probeCodexDesktopManifests(architecture, fetchImplementation, sources)
@@ -670,7 +692,7 @@ export async function fetchCodexDesktopMirrorRelease(
  */
 export async function fetchCodexDesktopPreviousManifestCandidates(
   architecture: 'x64' | 'arm64',
-  fetchImplementation: typeof fetch = fetch,
+  fetchImplementation: typeof fetch,
 ): Promise<CodexDesktopManifestProbeResult> {
   return probeCodexDesktopManifests(
     architecture,
@@ -683,7 +705,7 @@ export async function downloadCodexDesktopPackage(
   source: CodexDesktopPackageSource,
   destination: string,
   onProgress: (progress: CodexDesktopDownloadProgress) => void,
-  fetchImplementation: typeof fetch = fetch,
+  fetchImplementation: typeof fetch,
 ): Promise<CodexDesktopDownloadResult> {
   const controller = new AbortController()
   const responseTimeout = setTimeout(() => controller.abort(), 20_000)
@@ -781,7 +803,12 @@ export interface CodexDesktopCandidateDownloadResult {
 }
 
 export interface CodexDesktopCandidateDownloadOptions {
-  fetchImplementation?: typeof fetch
+  /**
+   * 必填：主进程全局 fetch 是 Node 的 undici，不读系统代理，而加速只接管系统
+   * 代理。默认成全局 fetch 会让镜像下载在开着加速时照样直连，这里留成必填项，
+   * 让漏传变成编译错误而不是一条安静走直连的下载。
+   */
+  fetchImplementation: typeof fetch
   onAttempt?: (
     candidate: CodexDesktopManifestCandidate,
     attemptIndex: number,
@@ -800,7 +827,7 @@ export interface CodexDesktopCandidateDownloadOptions {
 export async function downloadCodexDesktopPackageFromCandidates(
   candidates: CodexDesktopManifestCandidate[],
   destination: string,
-  options: CodexDesktopCandidateDownloadOptions = {},
+  options: CodexDesktopCandidateDownloadOptions,
 ): Promise<CodexDesktopCandidateDownloadResult> {
   const ranked = rankCodexDesktopMirrorCandidates(candidates)
   if (!ranked.length) throw new Error('国内镜像暂时没有可安装的 Codex Desktop 版本')
@@ -1190,6 +1217,8 @@ interface DesktopManifestProbeBundle {
   mirror: DesktopMirrorVersionProbe
   mirrorCandidate: CodexDesktopManifestCandidate | null
   mirrorCandidates: CodexDesktopManifestCandidate[]
+  /** 逐个镜像源的探测失败原因；一路镜像可用时 `mirror.error` 会是 null，但下载提示仍要说明主源怎么了。 */
+  mirrorErrors: string[]
 }
 
 export type CodexDesktopInstallPhase =
@@ -1383,6 +1412,18 @@ export interface CodexDesktopServiceOptions {
     args: string[],
     options: { cwd: string; env: NodeJS.ProcessEnv; windowsHide?: boolean },
   ) => Promise<void>
+  /**
+   * 镜像清单探测与安装包下载用的 fetch。加速只接管系统代理，而主进程的全局
+   * fetch 是 Node 的 undici，根本不读系统代理——Codex 桌面端的下载因此一直
+   * 直连，开不开加速都一样。生产环境注入 Electron 的 `net.fetch`（走 Chromium
+   * 网络栈，读系统代理），必填以保证这条路不会再退回直连。
+   */
+  downloadFetch: typeof fetch
+  /**
+   * 重新读取 Chromium 缓存的代理配置。刚打开加速就点更新时，Chromium 可能还
+   * 拿着接管前的那份配置，于是第一次下载仍然直连。
+   */
+  reloadDownloadProxyConfig?: () => Promise<void>
   /** Optional seams used by tests; production uses the constrained CDP module. */
   activateCodexDesktop?: typeof activateCodexDesktopDefault
   activateCodexDesktopWithCdp?: typeof activateCodexDesktopWithCdpDefault
@@ -1431,6 +1472,8 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
     store,
     inspectNativeProviderConfig,
     spawnDetached,
+    downloadFetch,
+    reloadDownloadProxyConfig,
     activateCodexDesktop = activateCodexDesktopDefault,
     activateCodexDesktopWithCdp = activateCodexDesktopWithCdpDefault,
     getAvailableLoopbackPort = getAvailableLoopbackPortDefault,
@@ -1472,6 +1515,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
           mirror: { version: null, checkedAt, error },
           mirrorCandidate: null,
           mirrorCandidates: [],
+          mirrorErrors: [],
         }
         if (generation === codexDesktopManifestGeneration) {
           codexDesktopManifestCache = {
@@ -1482,7 +1526,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
         return value
       }
 
-      const result = await probeCodexDesktopManifests(process.arch)
+      const result = await probeCodexDesktopManifests(process.arch, downloadFetch)
       const latestCandidate = selectLatestCodexDesktopManifestCandidate(result.candidates)
       const mirrorCandidates = rankCodexDesktopMirrorCandidates(result.candidates)
       const mirrorCandidate = mirrorCandidates[0] ?? null
@@ -1512,6 +1556,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
         },
         mirrorCandidate,
         mirrorCandidates,
+        mirrorErrors,
       }
       if (generation === codexDesktopManifestGeneration) {
         const ttl = result.errors.length === 0
@@ -1683,6 +1728,11 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
       throw new Error('已检测到 Codex Desktop，但无法读取已安装版本，请先重新检测环境')
     }
     const previousVersion = currentPackage?.version ?? null
+    // 刚打开加速就点更新时，Chromium 可能还拿着接管前的代理配置。刷新失败不
+    // 影响安装本身，下载至多回到刷新前那条路。
+    if (reloadDownloadProxyConfig) {
+      await reloadDownloadProxyConfig().catch(() => undefined)
+    }
     invalidateCodexDesktopManifestCache()
     const manifestBundle = await inspectCodexDesktopManifestBundle()
     const mirrorCandidates = manifestBundle.mirrorCandidates
@@ -1690,12 +1740,14 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
     const newestRelease = mirrorCandidate?.release ?? null
     let previousCandidatesLoaded = false
     let installCandidates: CodexDesktopManifestCandidate[]
+    let installProbeErrors: string[] = manifestBundle.mirrorErrors
     if (!newestRelease) {
       if (!firstInstall) {
         throw new Error(manifestBundle.mirror.error ?? '国内镜像暂时没有可安装的 Codex Desktop 版本')
       }
-      const previousProbe = await fetchCodexDesktopPreviousManifestCandidates(architecture)
+      const previousProbe = await fetchCodexDesktopPreviousManifestCandidates(architecture, downloadFetch)
       installCandidates = previousProbe.candidates
+      installProbeErrors = previousProbe.errors
       previousCandidatesLoaded = true
       if (!installCandidates.length) {
         const detail = previousProbe.errors.join('；') || '没有可验证的上一版本清单'
@@ -1754,14 +1806,21 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
     try {
       const downloadWithProgress = (
         candidates: CodexDesktopManifestCandidate[],
+        probeErrors: readonly string[],
       ): Promise<CodexDesktopCandidateDownloadResult> => downloadCodexDesktopPackageFromCandidates(candidates, packagePath, {
+        fetchImplementation: downloadFetch,
         onAttempt: (candidate, attemptIndex, previousFailure) => {
           const release = candidate.release
           const source = candidate.packageSource
           if (!release || !source) return
+          const primaryMirrorSkip = attemptIndex === 0
+            ? describeCodexDesktopPrimaryMirrorSkip(source, probeErrors)
+            : null
           const fallbackNotice = attemptIndex > 0 && previousFailure
             ? `前一路镜像未通过校验，正在切换${source.label}`
-            : `正在从${source.label}下载`
+            : primaryMirrorSkip
+              ? `${primaryMirrorSkip}，正在从${source.label}下载`
+              : `正在从${source.label}下载`
           sendCodexDesktopInstallProgress(target, {
             phase: 'downloading',
             percent: 0,
@@ -1803,7 +1862,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
       })
       let selected: CodexDesktopCandidateDownloadResult
       try {
-        selected = await downloadWithProgress(installCandidates)
+        selected = await downloadWithProgress(installCandidates, installProbeErrors)
       } catch (error) {
         if (!firstInstall) throw error
         if (previousCandidatesLoaded) {
@@ -1815,14 +1874,14 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
           percent: 0,
           message: '当前版本镜像下载失败，正在尝试 Codex Desktop 上一版本（0%）',
         })
-        const previousProbe = await fetchCodexDesktopPreviousManifestCandidates(architecture)
+        const previousProbe = await fetchCodexDesktopPreviousManifestCandidates(architecture, downloadFetch)
         if (!previousProbe.candidates.length) {
           const detail = previousProbe.errors.join('；') || '没有可验证的上一版本清单'
           const currentDetail = error instanceof Error ? error.message : String(error)
           throw new Error(`当前版本和上一版本均无法获取（当前版本：${currentDetail}；上一版本：${detail}），请使用微软商店完成首次安装`)
         }
         try {
-          selected = await downloadWithProgress(previousProbe.candidates)
+          selected = await downloadWithProgress(previousProbe.candidates, previousProbe.errors)
         } catch (previousError) {
           const currentDetail = error instanceof Error ? error.message : String(error)
           const previousDetail = previousError instanceof Error ? previousError.message : String(previousError)

@@ -3232,6 +3232,8 @@ export function createSystemService(
     store,
     inspectNativeProviderConfig,
     spawnDetached,
+    downloadFetch,
+    reloadDownloadProxyConfig: serviceOptions.reloadNetworkProxyConfig,
   })
 
   async function installCodexDesktop(target: RendererMessageTarget): Promise<CodexDesktopInstallResult> {
