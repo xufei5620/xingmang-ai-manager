@@ -12,7 +12,48 @@ const {
 } = require('./macos-release-keychain.cjs')
 
 const P12_BASE64 = Buffer.from('not-a-real-p12-just-bytes').toString('base64')
-const CERTIFICATE_PEM = '-----BEGIN CERTIFICATE-----\nfixture\n-----END CERTIFICATE-----\n'
+// 真证书，不是占位串：信任设置该写 trustRoot 还是 trustAsRoot 是从 basicConstraints
+// 读出来的，占位串测不出那个分支。两张都是一次性生成的自签证书，与发布身份无关。
+const CERTIFICATE_PEM = `-----BEGIN CERTIFICATE-----
+MIIDEjCCAfqgAwIBAgIUVQxKi1sb1YiEqWnfEDXjZim3ZnAwDQYJKoZIhvcNAQEL
+BQAwFzEVMBMGA1UEAwwMRml4dHVyZSBSb290MB4XDTI2MDkyMDE4MzkzOVoXDTI3
+MDkyMDE4MzkzOVowFzEVMBMGA1UEAwwMRml4dHVyZSBSb290MIIBIjANBgkqhkiG
+9w0BAQEFAAOCAQ8AMIIBCgKCAQEA2dcnxhgJtBxZBfByZpPdkGe8eXUV5/+0vRDR
+vPv8YLUny+/XW15Vy9Xf1SteEWYEtvbVzCCw07+3r6+uQA4udsDOA6HN811t3MRC
+YGJE3iHtaB7BP1AwRAqjDen8FVywQKRPikq/ldRiN1s1/2YfHG8OThDaI/30Wdxr
+xgekycqBDCTG9XaqSUBg/5C59Ybe+flU68+v6qUFr3GWqu7qdZLmkn6SFefAcdrf
+dc6pm84csJTT2nhD76i8LGVCYcBYEbHpaMZtLdobc4djxJy3ZZclH614cymX0UMf
+zSNPBQ8vd7HMRDT4y1ycVMcenKf8F4PtlZtLT0aTzFq3mrmdRQIDAQABo1YwVDAd
+BgNVHQ4EFgQUvu/5r1FjLB1dEtA1oX1VK0E66wgwHwYDVR0jBBgwFoAUvu/5r1Fj
+LB1dEtA1oX1VK0E66wgwEgYDVR0TAQH/BAgwBgEB/wIBADANBgkqhkiG9w0BAQsF
+AAOCAQEARf3d21RLpWqrYjOmt+kh8mVsi4ukd2IeG3RUMqodEdnOnEiF5jDT1HMI
+Dyj+0kAzyIHP36B6IAgrViFaXnlKQALcZri1AUJh1e+Tkzr1uAJKsHN+Q0IVwnM3
+KFZ2rV+xnIjm9C3RpU6JaeNqYQpy1ZtIkmOlB8kjT8j59irreHBPhho+Bt4dc1ap
+FsGcAOEmsgKyc+gOMVH1mgwL4RAm2fZoyFqaeKYBTtcfwfDN4wd0EpwsOkSqVt6W
+YrL0xJLvU4x3VdlacPFnLSaoIP9Ufn1u4snppFhmCKJF9zoBYhygCA+7HdsMJ8sG
+5sDDrlx+YC2COnooEYa+vAM/PaSWzA==
+-----END CERTIFICATE-----
+`
+const LEAF_CERTIFICATE_PEM = `-----BEGIN CERTIFICATE-----
+MIIDDDCCAfSgAwIBAgIUNrFXEVOepaYIvb1kx4cKYiGurwowDQYJKoZIhvcNAQEL
+BQAwFzEVMBMGA1UEAwwMRml4dHVyZSBMZWFmMB4XDTI2MDkyMDE4MzkzOVoXDTI3
+MDkyMDE4MzkzOVowFzEVMBMGA1UEAwwMRml4dHVyZSBMZWFmMIIBIjANBgkqhkiG
+9w0BAQEFAAOCAQ8AMIIBCgKCAQEAl0aKycKtgFu36upHIUAorkMactWcej59ROqD
+MNrWwVzmF6lu616oT43m5SSrp+IxHHQ/+cd9NaJaKTBUPQGM1IzWd1a9rpQbF7SC
+mA3rtSSSu0wQQwEGjNrlukbt38V6CzReux5KbJvxOaD+Iqabtesp2o4HkqshF49q
+CfJ/gI5XfmiiZhqJwA1yFOumP59lAeAP5gZowPXum5jIQWucdH2jDxP7pUvlrMh2
+YJ6hDbcSnSMPfSUPzz1FOA4e197xREwjzCDhNvqRcOJVbH1ZbFGMqPwgjQVorn9m
+pak2rn57yZMXsA42YQDsQ5jCgq7S6P8k2KEvOVlsd5iJhrul+QIDAQABo1AwTjAd
+BgNVHQ4EFgQU8yOYDb3qsjRp6pgrBKDQiGp2eQ0wHwYDVR0jBBgwFoAU8yOYDb3q
+sjRp6pgrBKDQiGp2eQ0wDAYDVR0TAQH/BAIwADANBgkqhkiG9w0BAQsFAAOCAQEA
+RYuBlpo81rOANcQ7qmihjDiUVRRiHGzr1ihAtc6UTJBRMy4ti9HkDWekXGqlXLyn
+D1Wx0xgEqDC/aqFe/k4Zc4Hnv10PJgDprf1zGLwNVEq9JXhCSdvL+fANSvVY3vVu
+ofVgeTSnHtiAKXDIhK9iaN21gZdr/6637LFw1/qraSjV2FJvTBecyS3kFzz+VFWD
+N4DwueXfZa1sSMCB7tIztx9WrcEN/JmwKFuT89QLejc6ShqgoIQY2b7BBc1NwqEw
+EfSBsl3S3ZrmZx7Xrl1yVh+x9nM2Tym/gdnYXM/yXfUZVSQjySMfzvrzGjMASMwL
+qM9MnuJfKQFAmzsTFDPUaA==
+-----END CERTIFICATE-----
+`
 const ORIGINAL_SEARCH_LIST = '    "/Users/runner/Library/Keychains/login.keychain-db"\n'
 
 function temporaryDirectory(t) {
@@ -92,15 +133,48 @@ test('the release signing import prepends the throwaway keychain and records the
   assert.equal(state.keychainPath, result.keychainPath)
 })
 
-test('the release signing import trusts the certificate for code signing only, in the user domain', (t) => {
+test('the release signing import trusts the certificate for code signing only', (t) => {
   const { calls, result } = runImport(t)
   const trust = calls.filter((call) => call.args[0] === 'add-trusted-cert')
   assert.equal(trust.length, 1)
   assert.deepEqual(trust[0].args, [
-    'add-trusted-cert', '-r', 'trustRoot', '-p', 'codeSign', '-k', result.keychainPath, result.certificatePath,
+    'add-trusted-cert', '-d', '-r', 'trustRoot', '-p', 'codeSign',
+    '-k', '/Library/Keychains/System.keychain', result.certificatePath,
   ])
-  // -d 会写进管理员域，那需要 sudo，也会留在 runner 之外的地方。
-  assert.equal(trust[0].args.includes('-d'), false)
+  // 用户域那条授权在没有图形会话的 runner 上无人可确认，security 会一直挂着；
+  // 管理员域以 root 执行即通过。这一条走 sudo 是这一步能跑完的前提。
+  assert.equal(trust[0].options.privileged, true)
+  // codeSign 以外的策略一概不碰。
+  assert.equal(trust[0].args.includes('-p'), true)
+  assert.equal(trust[0].args[trust[0].args.indexOf('-p') + 1], 'codeSign')
+})
+
+test('a certificate that is not a CA is trusted as a leaf, not as a root', (t) => {
+  const { calls } = runImport(t, {
+    overrides: { 'find-certificate': () => LEAF_CERTIFICATE_PEM },
+  })
+  const trust = calls.find((call) => call.args[0] === 'add-trusted-cert')
+  // trustRoot 只能用在自签根上，对 CA:FALSE 的证书 security 会直接拒绝。轮换到
+  // P-22 的新 profile（CA:FALSE）之后走的就是这一支。
+  assert.equal(trust.args[trust.args.indexOf('-r') + 1], 'trustAsRoot')
+})
+
+test('an unparseable certificate stops before any trust setting is written', (t) => {
+  const directory = temporaryDirectory(t)
+  const calls = []
+  assert.throws(() => importReleaseSigningIdentity({
+    env: healthyEnvironment(),
+    platform: 'darwin',
+    statePath: path.join(directory, 'state.json'),
+    runSecurity: (args) => {
+      calls.push(args[0])
+      if (args[0] === 'create-keychain') fs.writeFileSync(path.join(directory, 'release-signing.keychain-db'), '')
+      if (args[0] === 'list-keychains' && args.length === 3) return ORIGINAL_SEARCH_LIST
+      if (args[0] === 'find-certificate') return '-----BEGIN CERTIFICATE-----\nnope\n-----END CERTIFICATE-----\n'
+      return ''
+    },
+  }), /无法解析导出的签名证书/)
+  assert.equal(calls.includes('add-trusted-cert'), false)
 })
 
 test('the release signing import shreds the P12 whether it succeeds or fails', (t) => {
@@ -140,6 +214,35 @@ test('a failed import deletes the keychain it created', (t) => {
   assert.ok(calls.includes('delete-keychain'))
   // 搜索列表还没被动过，就不能去「还原」它。
   assert.equal(calls.includes('find-certificate'), false)
+})
+
+test('a failure after the search list was changed puts the search list back and drops the state file', (t) => {
+  // 搜索列表停在一个已被删掉的 keychain 上，这台机器后面每一次 codesign 和
+  // find-identity 都会解析到不存在的东西；状态文件留着，收尾步骤还会再失败一次。
+  const directory = temporaryDirectory(t)
+  const statePath = path.join(directory, 'state.json')
+  const calls = []
+  assert.throws(() => importReleaseSigningIdentity({
+    env: healthyEnvironment(),
+    platform: 'darwin',
+    statePath,
+    runSecurity: (args) => {
+      calls.push(args)
+      if (args[0] === 'add-trusted-cert') throw new Error('trust boom')
+      if (args[0] === 'create-keychain') fs.writeFileSync(path.join(directory, 'release-signing.keychain-db'), '')
+      if (args[0] === 'list-keychains' && args.length === 3) return ORIGINAL_SEARCH_LIST
+      if (args[0] === 'find-certificate') return CERTIFICATE_PEM
+      return ''
+    },
+  }), /trust boom/)
+  const searchListWrites = calls.filter((args) => args[0] === 'list-keychains' && args.includes('-s'))
+  assert.equal(searchListWrites.length, 2)
+  assert.deepEqual(searchListWrites[1], [
+    'list-keychains', '-d', 'user', '-s', '/Users/runner/Library/Keychains/login.keychain-db',
+  ])
+  assert.ok(calls.some((args) => args[0] === 'delete-keychain'))
+  assert.equal(fs.existsSync(statePath), false)
+  assert.equal(fs.existsSync(path.join(directory, 'release-signing.pem')), false)
 })
 
 test('a rejected passphrase is reported with the three things worth checking', (t) => {
@@ -217,17 +320,50 @@ test('the teardown undoes trust, search list and keychain in that order', (t) =>
   const calls = []
   releaseSigningKeychain({
     statePath,
-    runSecurity: (args) => {
-      calls.push(args)
+    runSecurity: (args, options = {}) => {
+      calls.push({ args, options })
       return ''
     },
   })
-  assert.deepEqual(calls.map((args) => args[0]), ['remove-trusted-cert', 'list-keychains', 'delete-keychain'])
-  assert.deepEqual(calls[1], [
+  assert.deepEqual(calls.map((call) => call.args[0]), ['remove-trusted-cert', 'list-keychains', 'delete-keychain'])
+  // 加信任设置那一步走的是管理员域，撤的时候必须走同一个域，否则撤不掉。
+  assert.deepEqual(calls[0].args, ['remove-trusted-cert', '-d', result.certificatePath])
+  assert.equal(calls[0].options.privileged, true)
+  assert.deepEqual(calls[1].args, [
     'list-keychains', '-d', 'user', '-s', '/Users/runner/Library/Keychains/login.keychain-db',
   ])
-  assert.deepEqual(calls[2], ['delete-keychain', result.keychainPath])
+  assert.deepEqual(calls[2].args, ['delete-keychain', result.keychainPath])
   assert.equal(fs.existsSync(statePath), false)
+})
+
+test('the teardown treats an already-deleted keychain as done, not as a failure', (t) => {
+  // 导入失败时自己就把 keychain 删了，而工作流里的收尾步骤是 if: always()。
+  // 2026-09-20 第三次发布尝试就是这样让收尾也红了一条，把真正的失败原因盖住。
+  const { statePath } = runImport(t)
+  releaseSigningKeychain({
+    statePath,
+    runSecurity: (args) => {
+      if (args[0] === 'delete-keychain') {
+        throw new Error('security delete-keychain失败：security: SecKeychainDelete: The specified keychain could not be found.')
+      }
+      return ''
+    },
+  })
+  assert.equal(fs.existsSync(statePath), false)
+})
+
+test('the teardown still reports a delete failure that is not a missing keychain', (t) => {
+  const { statePath } = runImport(t)
+  assert.throws(() => releaseSigningKeychain({
+    statePath,
+    runSecurity: (args) => {
+      // 真实的失败同样带着 SecKeychainDelete 前缀，按前缀放过会把这一类一起咽掉。
+      if (args[0] === 'delete-keychain') {
+        throw new Error('security delete-keychain失败：security: SecKeychainDelete: A required authorization was denied.')
+      }
+      return ''
+    },
+  }), /authorization was denied/)
 })
 
 test('the teardown keeps going after one step fails and reports every failure', (t) => {
