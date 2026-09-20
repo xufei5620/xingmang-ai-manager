@@ -18,3 +18,9 @@
 - 顺带补上 `CSC_FOR_PULL_REQUEST`：electron-builder 在 pull_request 事件上默认整段
   跳过 macOS 签名，而且跳得很安静——包照样出，只是没签。不显式打开，这条排练会
   「通过」一个根本没签名的包，正好把它要验的东西验丢。
+- 这条许可由新的 `XINGMANG_MAC_RELEASE_REHEARSAL=1` 带出来，而不是借用一次性签名
+  那个标记：两者是不同的签名路径（一次性签名走自定义 `sign` 钩子，排练走
+  electron-builder 自己按 `CSC_NAME` 找身份），借用会让 `electron-builder.config.cjs`
+  分不清在验哪一条。新标记只接受精确的 0 或 1，与一次性签名互斥，只在免费分发模式
+  下成立，且必须与 `CSC_FOR_PULL_REQUEST=true` 同时出现；它也进了构建模式变量清洗表，
+  继承来的残留值决定不了出包方式。

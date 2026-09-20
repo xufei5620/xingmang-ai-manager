@@ -43,11 +43,34 @@ if (ephemeralMacSigningMarker !== undefined
   throw new Error('XINGMANG_MAC_CI_EPHEMERAL_SIGNING 只接受精确的 0 或 1')
 }
 const ephemeralMacSigningMode = ephemeralMacSigningMarker === '1'
+// PR 上排练整条发布路径（quality.yml 的 macos-release-rehearsal）。它与一次性签名
+// 是两条不同的路：一次性签名走自定义 sign 钩子，排练走的正是发布那条
+// 「electron-builder 自己按 CSC_NAME 在 keychain 里找身份」，所以它不能借用上面
+// 那个标记，只能自己有一个。两者都只是"PR 上也要真的签"的许可，不放松任何检查。
+const releaseRehearsalMarker = process.env.XINGMANG_MAC_RELEASE_REHEARSAL
+if (releaseRehearsalMarker !== undefined
+  && releaseRehearsalMarker !== ''
+  && releaseRehearsalMarker !== '0'
+  && releaseRehearsalMarker !== '1') {
+  throw new Error('XINGMANG_MAC_RELEASE_REHEARSAL 只接受精确的 0 或 1')
+}
+const releaseRehearsalMode = releaseRehearsalMarker === '1'
+if (releaseRehearsalMode && ephemeralMacSigningMode) {
+  throw new Error('发布路径排练与 CI ephemeral macOS signing 不能同时启用')
+}
+if (releaseRehearsalMode && !freeMacReleaseMode) {
+  throw new Error('发布路径排练需要 XINGMANG_MAC_FREE_RELEASE=1')
+}
 const pullRequestSigningMarker = process.env.CSC_FOR_PULL_REQUEST
 const pullRequestSigningEnabled = pullRequestSigningMarker !== undefined
   && ['true', '1', ''].includes(pullRequestSigningMarker.trim())
-if (pullRequestSigningEnabled && !ephemeralMacSigningMode) {
-  throw new Error('CSC_FOR_PULL_REQUEST 只能由 CI ephemeral macOS signing 启用')
+if (pullRequestSigningEnabled && !ephemeralMacSigningMode && !releaseRehearsalMode) {
+  throw new Error('CSC_FOR_PULL_REQUEST 只能由 CI ephemeral macOS signing 或发布路径排练启用')
+}
+if (releaseRehearsalMode && process.env.CSC_FOR_PULL_REQUEST !== 'true') {
+  // electron-builder 在 pull_request 事件上默认整段跳过签名，而且跳得很安静：包
+  // 照样出，只是没签。排练如果没打开这一条，验的就是一个没签名的包。
+  throw new Error('发布路径排练需要 CSC_FOR_PULL_REQUEST=true')
 }
 if (ephemeralMacSigningMode && !freeMacReleaseMode) {
   throw new Error('CI ephemeral macOS signing requires XINGMANG_MAC_FREE_RELEASE=1')

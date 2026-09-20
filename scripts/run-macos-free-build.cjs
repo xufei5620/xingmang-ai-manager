@@ -29,6 +29,7 @@ const BUILD_MODE_ENVIRONMENT_NAMES = new Set([
   'XINGMANG_LOCAL_BUILD',
   'XINGMANG_OUTPUT_DIR',
   'XINGMANG_MAC_CI_EPHEMERAL_SIGNING',
+  'XINGMANG_MAC_RELEASE_REHEARSAL',
   'XINGMANG_MAC_SIGNING_SHA1',
   'XINGMANG_MAC_SIGNING_P12_PASSWORD',
   'XINGMANG_UPDATE_DEV',
@@ -346,10 +347,14 @@ function resolveFreeMacBuildOptions(options = {}) {
     XINGMANG_OUTPUT_DIR: outputDirectory,
     XINGMANG_UPDATE_URL: expectedUpdateUrl,
     CSC_IDENTITY_AUTO_DISCOVERY: 'false',
-    // electron-builder 在 pull_request 事件上默认整段跳过 macOS 签名，而且跳得很
-    // 安静：包照样出，只是没签。PR 上的排练不打开这一条，就会"通过"一个根本没
-    // 签名的包，正好把它要验的东西验丢。发布走 workflow_dispatch，不需要它。
-    ...(options.pullRequestSigning ? { CSC_FOR_PULL_REQUEST: 'true' } : {}),
+    // 排练跑在 pull_request 事件上，而 electron-builder 在 PR 上默认整段跳过 macOS
+    // 签名，跳得还很安静：包照样出，只是没签。不打开这一条，排练就会"通过"一个
+    // 根本没签名的包，正好把它要验的东西验丢。发布走 workflow_dispatch，两个变量
+    // 都不设，electron-builder.config.cjs 那边也拒绝单独出现的 CSC_FOR_PULL_REQUEST。
+    ...(options.releaseRehearsal ? {
+      XINGMANG_MAC_RELEASE_REHEARSAL: '1',
+      CSC_FOR_PULL_REQUEST: 'true',
+    } : {}),
     ...(ephemeralSigning ? {
       XINGMANG_MAC_CI_EPHEMERAL_SIGNING: '1',
       XINGMANG_MAC_SIGNING_SHA1: ephemeralSigning.identitySha1,
@@ -748,7 +753,7 @@ async function main() {
         // typecheck、npm test 与 compile 由调用方在它前面跑过了；再跑一遍只是把
         // 作业拖长半小时，不会多验出任何东西。
         skipChecks: true,
-        pullRequestSigning: true,
+        releaseRehearsal: true,
         verifySigning: (verifyOptions) => verifyFreeMacSigningIdentity({ ...verifyOptions, ...ledger }),
         verifyArtifacts: (verifyOptions) => verifyMacosFreeArtifacts({
           ...verifyOptions,
