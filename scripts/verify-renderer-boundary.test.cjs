@@ -25,6 +25,7 @@ const valueImportable = [
   'electron/catalog',
   'electron/cli-model-defaults',
   'electron/ipc-contract',
+  'electron/network-failure',
   'electron/relay-sites',
   'electron/usage-date-range',
   'electron/versions',

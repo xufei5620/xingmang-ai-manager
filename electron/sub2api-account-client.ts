@@ -403,7 +403,7 @@ export function createSub2ApiAccountClient(options: Sub2ApiAccountClientOptions)
       return await Promise.race([load, stopped])
     } catch (error) {
       if (stopCode) throw new RealmAccountError(stopCode)
-      throw error instanceof RealmAccountError ? error : new RealmAccountError('NETWORK')
+      throw error instanceof RealmAccountError ? error : new RealmAccountError('NETWORK', error)
     } finally {
       clearTimeout(timer)
       signal.removeEventListener('abort', onAbort)

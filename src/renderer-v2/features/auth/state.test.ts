@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { networkFailureMessages } from '../../../../electron/network-failure'
 import { authErrorMessage, parseInviteCode, parseRecoveryCode, remainingCooldown, validateRegistration, type RegistrationDraft } from './state'
 import { guideOfficialLoginRequired, resolveGuideReadiness } from './StartGuide'
 
@@ -84,6 +85,18 @@ describe('v2 auth recovery boundaries', () => {
     expect(authErrorMessage(new Error('ETIMEDOUT'), '登录')).toContain('网络')
     expect(authErrorMessage(new Error('TWO_FACTOR_REQUIRED'), '登录')).toContain('双重验证')
     expect(authErrorMessage(new Error('此账号需要双重验证，请先完成验证'), '登录')).toContain('所选账号官网')
+  })
+  // 校园网那位用户看到的就是这句兜底文案：真实原因是域名解析不了 / 证书被替换 /
+  // 门户认证没做，界面却只说「请稍后重试」，于是他一遍遍重输密码。
+  it('keeps the reason the main process worked out for a restricted network', () => {
+    for (const reason of Object.keys(networkFailureMessages) as (keyof typeof networkFailureMessages)[]) {
+      const wrapped = `Error invoking remote method 'account:login': Error: ${networkFailureMessages[reason]}（账号登录请求失败）`
+      expect(authErrorMessage(new Error(wrapped), '登录')).toBe(networkFailureMessages[reason])
+    }
+  })
+  it('does not let the broad network heuristics call a replaced certificate a timeout', () => {
+    expect(authErrorMessage(new Error(networkFailureMessages.tls), '登录')).toBe(networkFailureMessages.tls)
+    expect(authErrorMessage(new Error(networkFailureMessages.intercepted), '登录')).not.toContain('超时')
   })
   it('identifies local account storage failures without exposing details or blaming the password', () => {
     const expected = '本地账号安全存储暂不可用，原有数据已保留。请完全退出软件后重试；若仍失败，请联系支持并提供诊断日志。'

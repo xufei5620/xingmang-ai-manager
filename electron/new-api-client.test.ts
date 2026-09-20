@@ -7,6 +7,7 @@ import {
   findCliKeyIdByName,
   NewApiAuthenticationError,
   NewApiLoginRejectedError,
+  NewApiNetworkError,
   parseAccountKey,
   parseAccountKeysPage,
   parseAccountProfile,
@@ -35,6 +36,7 @@ import {
   type NewApiFetch,
 } from './new-api-client'
 import { managedCliKeyProfiles } from './catalog'
+import { networkFailureMessages } from './network-failure'
 import { buildManagedCliKeyLimitUpdate, resolveManagedCliKeyLimits } from './account-key-quota'
 
 function registerAckResponse(): Response {
@@ -50,6 +52,20 @@ function jsonResponse(body: unknown, init: ResponseInit = {}, setCookies: string
   const headers = { 'Content-Type': 'application/json', ...(init.headers as Record<string, string> ?? {}) }
   const response = new Response(JSON.stringify(body), { status: 200, ...init, headers })
   for (const cookie of setCookies) response.headers.append('set-cookie', cookie)
+  return response
+}
+
+/**
+ * redirect:'manual' 下 fetch 交回来的不是那个 302，而是一个被过滤过的响应：
+ * status 0、type 'opaqueredirect'、url 空串。门户认证页的重定向在真实运行时
+ * 长的就是这个样子，手写的 302 fixture 反而测不到它。
+ */
+function opaqueRedirectResponse(): Response {
+  const response = new Response(null, { status: 200 })
+  Object.defineProperty(response, 'type', { value: 'opaqueredirect' })
+  Object.defineProperty(response, 'status', { value: 0 })
+  Object.defineProperty(response, 'ok', { value: false })
+  Object.defineProperty(response, 'url', { value: '' })
   return response
 }
 
@@ -681,6 +697,55 @@ describe('login', () => {
     const error = await client.login({ username: 'tester', password: 'private-password' }).catch((reason: unknown) => reason)
     expect(error).toBeInstanceOf(Error)
     expect(error).not.toBeInstanceOf(NewApiLoginRejectedError)
+  })
+
+  // 校园网、酒店 Wi-Fi 的四种典型失败。以前它们全都掉进渲染层同一句兜底
+  // 「登录没有成功，输入已保留，请稍后重试」，用户只会反复重输密码。
+  it.each([
+    ['域名解析不了', new Error('net::ERR_NAME_NOT_RESOLVED'), 'dns'],
+    ['证书被替换', new Error('net::ERR_CERT_AUTHORITY_INVALID'), 'tls'],
+    ['连接被切断', new Error('net::ERR_CONNECTION_RESET'), 'refused'],
+    ['系统代理连不上', new Error('net::ERR_PROXY_CONNECTION_FAILED'), 'proxy'],
+  ] as const)('tells the user what a restricted network actually did: %s', async (_label, failure, reason) => {
+    const fetchImpl = vi.fn<NewApiFetch>().mockRejectedValue(failure)
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl })
+    const error = await client.login({ username: 'tester', password: 'private-password' }).catch((cause: unknown) => cause)
+    expect(error).toBeInstanceOf(NewApiNetworkError)
+    expect(error).toMatchObject({ reason })
+    expect((error as Error).message).toContain(networkFailureMessages[reason])
+    expect(String(error)).not.toContain('private-password')
+    expect(client.isAuthenticated()).toBe(false)
+  })
+
+  it('names the timeout rather than leaving an aborted login unexplained', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>().mockRejectedValue(new DOMException('aborted', 'AbortError'))
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl })
+    const error = await client.login({ username: 'tester', password: 'x' }).catch((cause: unknown) => cause)
+    expect(error).toMatchObject({ reason: 'timeout' })
+    expect((error as Error).message).toContain('账号登录请求超时')
+  })
+
+  it.each([
+    ['a portal redirect', withUrl(jsonResponse({ success: true, data: {} }), 'https://portal.campus.test/login')],
+    ['a 302 to the portal', new Response('', { status: 302, headers: { location: 'https://portal.campus.test/login' } })],
+    ['the opaque redirect fetch actually hands back', opaqueRedirectResponse()],
+    ['a portal page served as HTTP 200', new Response('<html>请先完成上网认证</html>', { status: 200, headers: { 'Content-Type': 'text/html' } })],
+  ])('reports %s as an interception instead of a login failure', async (_label, response) => {
+    const fetchImpl = vi.fn<NewApiFetch>().mockResolvedValue(response)
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl })
+    const error = await client.login({ username: 'tester', password: 'private-password' }).catch((cause: unknown) => cause)
+    expect(error).toBeInstanceOf(NewApiNetworkError)
+    expect(error).toMatchObject({ reason: 'intercepted' })
+    expect((error as Error).message).toContain(networkFailureMessages.intercepted)
+    expect(client.isAuthenticated()).toBe(false)
+  })
+
+  it('leaves a failure it cannot attribute to the network untouched', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>().mockRejectedValue(new Error('本地安全存储不可用'))
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl })
+    const error = await client.login({ username: 'tester', password: 'x' }).catch((cause: unknown) => cause)
+    expect(error).not.toBeInstanceOf(NewApiNetworkError)
+    expect((error as Error).message).toBe('本地安全存储不可用')
   })
 
   it('rejects a response with no access_token', async () => {
