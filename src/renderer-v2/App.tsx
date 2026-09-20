@@ -15,7 +15,7 @@ import { cliRuntimeBlockMessage, nodeRuntimeReady } from './features/tools/runti
 import { isToolId, presentTools, providerFor, type ToolId } from './features/tools/model'
 import { installedToolSyncLabel, useToolbox } from './features/tools/useToolbox'
 import { ManualUninstallDialog, type ManualUninstallState } from './features/tools/ManualUninstall'
-import { presentOperationError, type OperationActionId } from './operation-error'
+import type { OperationActionId } from './operation-error'
 import { accountTabs } from './registry/business'
 import { tools } from './registry/tools'
 import type { PageId } from './registry/pages'
@@ -30,6 +30,7 @@ import { useNetworkLocation } from './features/shell/useNetworkLocation'
 import { latestNetworkLocation } from './features/shell/network'
 import { bindPlatformAppearance, platformApi } from './platform-api'
 import { FailureBoundary } from './features/app/FailureBoundary'
+import { OperationErrorDialog, type OperationFailure } from './features/app/OperationErrorDialog'
 import { readLocalPreference, writeLocalPreference } from './features/app/preferences'
 import { onboardingPreviewEnabled } from './features/app/dev-preview'
 import { deepLinkReadErrorText, supportQrFallbackText } from './features/app/fallback-messages'
@@ -46,8 +47,6 @@ const pageLoading = <div className="v2-business-loading" role="status" data-test
 
 type AccountTab = typeof accountTabs[number]['value']
 interface PendingConfirmation { title: string; body: string; label: string; danger?: boolean; work(): Promise<void> }
-/** retry is present only where the failed work is still re-runnable, so the dialog never offers a button that leads nowhere. */
-interface OperationFailure { message: string; retry?: () => void }
 interface AccountBootstrapView extends AccountBootstrapProgress {
   scope: string
   result?: AccountBootstrapResult
@@ -217,9 +216,6 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       (cause) => setOperationError({ message: errorMessage(cause, '系统外观没有同步') }))
   }, [boot, native])
   const os = platform?.platform === 'macos' ? 'mac' : platform?.platform === 'linux' ? 'linux' : 'win'
-  const operationHint = operationError ? presentOperationError(operationError.message) : null
-  const operationActions = (operationHint?.actions ?? (operationError?.retry ? [{ id: 'retry' as OperationActionId, label: '重试' }] : []))
-    .filter((action) => action.id !== 'retry' || Boolean(operationError?.retry))
   useEffect(() => { document.documentElement.dataset.os = os }, [os])
   useEffect(() => {
     let current = true
@@ -580,13 +576,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       <div className="v2-support">{qr && <img src={qr} alt="微信客服二维码" />}<h3>微信扫码找客服</h3><p>装不上、付了没到账，都可以问。</p>
         {qrFallback && <p role="alert" data-testid="support-qr-fallback">{qrFallback}</p>}<Button onClick={() => void perform('打开帮助', () => app.openExternal(supportUrl))}>在浏览器打开</Button><Button onClick={() => { setHelp(false); navigate('feedback') }}>复制反馈报告</Button></div>
     </Dialog>}
-    {operationError && <Dialog open title={operationHint?.title ?? '操作没有完成'} onClose={() => setOperationError(null)} testId="operation-error" footer={<>
-      <Button onClick={() => setOperationError(null)}>返回</Button>
-      {operationActions.map((action) => <Button key={action.id} variant={action.id === 'retry' ? 'primary' : 'secondary'} testId={`operation-error-${action.id}`} onClick={() => runOperationAction(action.id)}>{action.label}</Button>)}
-    </>}>
-      {operationHint && <p data-testid="operation-error-body">{operationHint.body}</p>}
-      <p role="alert" className={operationHint ? 'v2-operation-detail' : undefined} data-testid="operation-error-detail">{operationError.message}</p>
-    </Dialog>}
+    {operationError && <OperationErrorDialog failure={operationError} onClose={() => setOperationError(null)} onAction={runOperationAction} />}
     {manualUninstall && <ManualUninstallDialog state={manualUninstall} platform={platform?.platform} onClose={() => setManualUninstall(null)} />}
     {!operationError && session.authenticated && accountReadError?.scope === scope && <Dialog open title="操作没有完成" onClose={() => setAccountReadError(null)} footer={<Button onClick={() => setAccountReadError(null)}>返回</Button>}><p role="alert">{accountReadError.message}</p></Dialog>}
     {restartDialog && <Dialog open title="Codex 已在运行" onClose={() => setRestartDialog(false)} busy={Boolean(toolbox.jobs['launch:codexDesktop'])} footer={<>
