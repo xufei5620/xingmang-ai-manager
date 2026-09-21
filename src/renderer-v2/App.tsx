@@ -13,6 +13,7 @@ import { createToolsApi } from './features/tools/api'
 import { chineseRuntimePatchAnswerMissing, shouldAskForChineseRuntimePatch } from './features/tools/chinese-runtime-choice'
 import { cliRuntimeBlockMessage, nodeRuntimeReady } from './features/tools/runtime-readiness'
 import { isToolId, presentTools, providerFor, type ToolId } from './features/tools/model'
+import { pendingToolUpdates, readAnnouncedToolUpdates, rememberAnnouncedToolUpdates, unannouncedToolUpdates, updateNoticeKey } from './features/tools/update-notice'
 import { installedToolSyncLabel, useToolbox } from './features/tools/useToolbox'
 import { ManualUninstallDialog, type ManualUninstallState } from './features/tools/ManualUninstall'
 import type { OperationActionId } from './operation-error'
@@ -483,6 +484,20 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     installMode: tool.id === 'codexDesktop' ? platform?.codexDesktop.install : platform?.cliInstall[tool.id], workspace: toolbox.snapshot!.config.workspace,
   })) : []
   const balanceAmount = balance && balance.quotaPerUnit > 0 ? balance.quota / balance.quotaPerUnit : null
+  const toolUpdates = toolbox.snapshot ? pendingToolUpdates(presentTools(toolbox.snapshot)) : []
+  // 启动扫描完成后把「有新版本」汇总成一条系统通知。同一个工具同一个目标版本
+  // 只说一次，抑制状态留在本机，所以下次启动不会再念一遍；工具更完或者上游又
+  // 出了新版本，记录随之变化，才会再提醒。
+  const toolUpdateKey = updateNoticeKey(toolUpdates)
+  useEffect(() => {
+    if (!toolbox.snapshot) return
+    if (unannouncedToolUpdates(toolUpdates, readAnnouncedToolUpdates()).length > 0) {
+      void platformApi()?.notifyActivity('cliUpdate', toolUpdateKey).catch(() => undefined)
+    }
+    rememberAnnouncedToolUpdates(toolUpdates)
+    // toolUpdateKey 已经把这一轮的工具与目标版本压成一个字符串，
+    // 快照里别的字段变化（余额、运行环境）不该重新触发这段。
+  }, [toolUpdateKey, Boolean(toolbox.snapshot)])
   useEffect(() => {
     if (balanceAmount === null) return
     const previous = previousBalance.current
@@ -512,6 +527,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
           tourOpen={tourOpen} onTourClose={() => setTourOpen(false)}
           environment={toolbox.snapshot?.system.runtime.node.version ? `Node ${toolbox.snapshot.system.runtime.node.version}` : '命令行环境可选'} version={update?.currentVersion}
           unread={unread} installedCount={toolbox.snapshot ? presentTools(toolbox.snapshot).filter((tool) => tool.status.installed).length + toolbox.externalClients.filter((tool) => tool.installed).length : undefined}
+          updatableCount={toolUpdates.length}
           network={latestNetworkLocation(toolbox.snapshot?.system.network, networkLocation.snapshot.network)}
           networkRefreshing={networkLocation.snapshot.busy}
           banner={session.authenticated && <AnnouncementCenter key={scope} scope={scope} read={app.announcement} markRemoteRead={app.markAnnouncementRead} syncLocalReads={app.syncLocalNoticeReads} open={announcementOpen} onClose={() => setAnnouncementOpen(false)} onOpen={() => setAnnouncementOpen(true)} onUnread={setUnread} openExternal={app.openExternal} noticeUrl={relaySite.websiteUrl} />}

@@ -14,12 +14,15 @@ button, input, select, textarea { font: inherit; }
 .v2-sidebar-nav { display: flex; flex-direction: column; gap: 1px; overflow: auto; min-height: 0; flex: 1; }
 .v2-nav-group { padding-bottom: 8px; margin-bottom: 8px; border-bottom: 1px solid var(--line); }
 .v2-nav-group:last-of-type { padding-bottom: 0; margin-bottom: 0; border: 0; }
-.v2-nav-item { width: 100%; min-height: 36px; flex-shrink: 0; display: flex; align-items: center; gap: 10px; border: 0; border-radius: 7px; padding: 8px 10px; color: var(--text-2); background: transparent; font-size: var(--font-body); line-height: 20px; cursor: pointer; }
+.v2-nav-item { position: relative; width: 100%; min-height: 36px; flex-shrink: 0; display: flex; align-items: center; gap: 10px; border: 0; border-radius: 7px; padding: 8px 10px; color: var(--text-2); background: transparent; font-size: var(--font-body); line-height: 20px; cursor: pointer; }
 .v2-nav-item > span { flex: 1; text-align: left; }
 .v2-nav-item > svg { flex: none; }
 .v2-nav-item:hover { background: var(--panel-2); color: var(--text); }
 .v2-nav-item.is-active { color: var(--accent); background: var(--accent-soft); box-shadow: var(--tile-ring); }
 .v2-more-navigation { padding-left: 12px; }
+.v2-nav-badge { flex: none; min-width: 18px; height: 18px; padding: 0 5px; display: grid; place-items: center; border-radius: 9px; background: var(--accent-soft); color: var(--accent); font-size: var(--font-micro); line-height: 1; }
+.sidebar-collapsed .v2-nav-badge { position: absolute; top: 1px; right: 2px; min-width: 16px; height: 16px; padding: 0 4px; border: 2px solid var(--rail); background: var(--accent); color: var(--accent-fg); }
+
 .v2-account-entry { margin-top: 4px; padding: 10px; flex: none; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); box-shadow: var(--tile-ring); }
 .v2-account-top, .v2-account-top > button { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .v2-account-top > button:first-child { flex: 1; border: 0; background: transparent; padding: 0; color: var(--text); text-align: left; cursor: pointer; }

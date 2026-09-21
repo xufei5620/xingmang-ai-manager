@@ -41,7 +41,12 @@ const platformReadChannels: ReadonlySet<string> = new Set([
 ])
 
 function isNotificationKind(value: unknown): value is PlatformNotificationKind {
-  return value === 'install' || value === 'balance' || value === 'task'
+  return (
+    value === 'install' ||
+    value === 'balance' ||
+    value === 'task' ||
+    value === 'cliUpdate'
+  )
 }
 
 function isPrivacyPreference(

@@ -171,7 +171,14 @@ describe('platform system preferences', () => {
     await h.service.setNotificationPreference('balance', false)
     await h.service.setPrivacyPreference('anonymousUsage', true)
     expect(h.service.getState().preferences).toMatchObject({
-      notifications: { install: true, balance: false, task: true },
+      // 关掉一项不该顺手关掉别的：没被点过的开关一律保持默认开着，
+      // 其中 cliUpdate 是 0.2.9 才加的，老文件里根本没有这一项。
+      notifications: {
+        install: true,
+        balance: false,
+        task: true,
+        cliUpdate: true,
+      },
       privacy: { anonymousUsage: true },
     })
     expect(h.dependencies.resolveProxy).not.toHaveBeenCalled()
