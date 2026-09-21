@@ -3,18 +3,16 @@ import path from 'node:path'
 import { after, before, test } from 'node:test'
 import { chromium } from '@playwright/test'
 import react from '@vitejs/plugin-react'
-import { createServer } from 'vite'
+import { createFixtureServer } from '../../../../e2e/harness.mjs'
 import { waitForFixtureMount } from '../../../../e2e/fixture-readiness.mjs'
 
 let server, browser, page
 const externalRequests = []
 before(async () => {
-  server = await createServer({
+  let origin
+  ;({ server, origin } = await createFixtureServer({
     root: path.resolve('.'), configFile: false, plugins: [react()], logLevel: 'error',
-    server: { host: '127.0.0.1', port: 0 },
-  })
-  await server.listen()
-  const origin = `http://127.0.0.1:${server.httpServer.address().port}`
+  }))
   browser = await chromium.launch({ executablePath: process.env.XINGMANG_E2E_CHROMIUM || undefined })
   page = await browser.newPage()
   await page.route('**/*', (route) => {

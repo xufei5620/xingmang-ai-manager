@@ -5,10 +5,10 @@ import path from 'node:path'
 import { after, before, test } from 'node:test'
 import { chromium } from '@playwright/test'
 import react from '@vitejs/plugin-react'
-import { createServer } from 'vite'
+import { createFixtureServer } from '../../../../e2e/harness.mjs'
 import { waitForFixtureMount } from '../../../../e2e/fixture-readiness.mjs'
 
-let server, alternateServer, storeClass, root
+let server, alternateServer, origins, storeClass, root
 const browsers = new Set()
 before(async () => {
   root = await fs.mkdtemp(path.join(os.tmpdir(), 'xingmang-notice-persistence-'))
@@ -17,12 +17,13 @@ before(async () => {
     root: path.resolve('.'), configFile: false, plugins: [react()], logLevel: 'error',
     cacheDir: path.join(root, name),
     optimizeDeps: { entries: ['src/renderer-v2/testing/app.html'] },
-    server: { host: '127.0.0.1', port: 0, fs: { allow: [path.resolve('.'), root] } },
+    server: { fs: { allow: [path.resolve('.'), root] } },
   })
-  server = await createServer(configuration('primary-vite-cache'))
-  await server.listen()
-  alternateServer = await createServer(configuration('alternate-vite-cache'))
-  await alternateServer.listen()
+  const primary = await createFixtureServer(configuration('primary-vite-cache'))
+  const alternate = await createFixtureServer(configuration('alternate-vite-cache'))
+  server = primary.server
+  alternateServer = alternate.server
+  origins = { primary: primary.origin, alternate: alternate.origin }
   storeClass = (await server.ssrLoadModule('/electron/announcement-read-store.ts')).AnnouncementReadStore
 })
 after(async () => {
@@ -37,7 +38,7 @@ async function open(store, { alternate = false, query = 'noticeCollection=1', be
   const browser = await chromium.launch({ executablePath: process.env.XINGMANG_E2E_CHROMIUM || undefined })
   browsers.add(browser)
   const page = await browser.newPage({ viewport: { width: 1280, height: 820 } })
-  const origin = `http://127.0.0.1:${(alternate ? alternateServer : server).httpServer.address().port}`
+  const origin = alternate ? origins.alternate : origins.primary
   const loadErrors = []
   const recordError = (message) => { if (loadErrors.length < 20) loadErrors.push(message) }
   page.on('pageerror', (error) => recordError(error.message))

@@ -3,15 +3,13 @@ import path from 'node:path';
 import fs from 'node:fs/promises';
 import { before, after, test } from 'node:test';
 import { chromium } from '@playwright/test';
-import { createServer } from 'vite';
 import react from '@vitejs/plugin-react';
+import { createFixtureServer } from '../../../e2e/harness.mjs';
 import { openFixturePage, waitForFixtureMount } from '../../../e2e/fixture-readiness.mjs';
 
 let browser, server, origin;
 before(async () => {
-  server = await createServer({ configFile: false, plugins: [react()], root: path.resolve('.'), logLevel: 'error', server: { host: '127.0.0.1', port: 0, strictPort: false } });
-  await server.listen();
-  origin = 'http://127.0.0.1:' + server.httpServer.address().port;
+  ({ server, origin } = await createFixtureServer({ configFile: false, plugins: [react()], root: path.resolve('.'), logLevel: 'error' }));
   browser = await chromium.launch({ headless: true, executablePath: process.env.XINGMANG_E2E_CHROMIUM || undefined });
 });
 after(async () => { await browser?.close(); await server?.close(); });
