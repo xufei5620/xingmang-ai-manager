@@ -33,6 +33,7 @@ import { bindPlatformAppearance, platformApi } from './platform-api'
 import { FailureBoundary } from './features/app/FailureBoundary'
 import { OperationErrorDialog, type OperationFailure } from './features/app/OperationErrorDialog'
 import { readLocalPreference, writeLocalPreference } from './features/app/preferences'
+import { rememberTourPending, rememberTourSeen, tourReplayPending } from './features/shell/tour-state'
 import { onboardingPreviewEnabled } from './features/app/dev-preview'
 import { deepLinkReadErrorText, supportQrFallbackText } from './features/app/fallback-messages'
 import { bootstrapAccountTools, type AccountBootstrapMode, type AccountBootstrapProgress, type AccountBootstrapResult } from './features/tools/account-bootstrap'
@@ -268,6 +269,13 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     if (target !== 'home' && target !== 'chat') setVisitedPages((current) => ({ ...current, [target]: scope }))
     setGuide(false); setPage(target)
   }, [app, perform, session.authenticated, scope])
+  // 设置页的「重看界面导览」：回到首页立刻重播一遍，同时把「还没看完」记进本机，
+  // 这样中途关掉软件下次还能接着看。
+  const replayTour = useCallback(() => {
+    rememberTourPending(scope)
+    navigate('home')
+    setTourOpen(true)
+  }, [navigate, scope])
   const runOperationAction = useCallback((action: OperationActionId) => {
     const failure = operationError
     setOperationError(null)
@@ -506,6 +514,12 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     }
     previousBalance.current = { scope, value: balanceAmount }
   }, [balanceAmount, scope, session.account?.userId])
+  // 导览看完或被关掉才记成「已看」，所以上次没看完的用户一回到首页就接着播。
+  // 从没有过记录的老用户不在此列：他们不会凭空多出一段导览。
+  const workspaceVisible = boot === 'ready' && !guide && (session.authenticated || workspaceEntered)
+  useEffect(() => {
+    if (workspaceVisible && page === 'home' && tourReplayPending(scope)) setTourOpen(true)
+  }, [workspaceVisible, page, scope])
   const updateKey = update ? `${update.phase}:${update.availableVersion}:${update.error?.code ?? ''}` : ''
   const showUpdate = update && (update.error || ['available', 'downloading', 'downloaded'].includes(update.phase)) && dismissedUpdate !== updateKey
   const accountBootstrapBusy = Boolean(accountBootstrap?.scope === scope && !accountBootstrap.result && !accountBootstrap.error)
@@ -520,11 +534,11 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     {guide ? <StartGuide platform={os} tools={guideTools} signedIn={session.authenticated} busy={Object.keys(toolbox.jobs).length > 0 || accountBootstrapBusy} progress={accountBootstrapBusy && accountBootstrap ? { label: accountBootstrap.label, percent: accountBootstrap.percent } : undefined} resumeKey={scope}
       onDetect={() => toolbox.refresh(true)} onInstall={install} onInstallRuntime={() => installRuntime('node')} onInstallPython={() => installRuntime('python')} onConfigure={async (id) => { openToolConfig(id) }} onLogin={() => setAuth('login')}
       onLaunch={async (id) => id === 'chat' ? true : launch(id)}
-      onComplete={(id) => { if (!writeLocalPreference(`xingmang-v2-guide:${scope}`, id)) toast.show('工具已准备好，但引导偏好没有保存在本机。', 'warn'); setWorkspaceEntered(true); setTourOpen(true); navigate(id === 'chat' ? 'chat' : 'home') }} onBack={() => setGuide(false)} onHelp={() => setHelp(true)} />
+      onComplete={(id) => { if (!writeLocalPreference(`xingmang-v2-guide:${scope}`, id)) toast.show('工具已准备好，但引导偏好没有保存在本机。', 'warn'); setWorkspaceEntered(true); rememberTourPending(scope); setTourOpen(true); navigate(id === 'chat' ? 'chat' : 'home') }} onBack={() => setGuide(false)} onHelp={() => setHelp(true)} />
       : !session.authenticated && !workspaceEntered ? <Welcome onLogin={() => setAuth('login')} onRegister={() => setAuth('register')} onSteps={() => setGuide(true)} onHelp={() => setHelp(true)} onLegal={setLegal}
         reducedMotion={settings?.reducedMotion} supportQrUrl={qr} onReducedMotionChange={(reducedMotion) => void perform('保存外观', async () => setSettings(await app.savePreferences({ version: 2, reducedMotion })))} />
         : <AppFrame key={scope} activePage={page} account={{ signedIn: session.authenticated, supportsBilling: accountSupports(session, 'supportsBilling'), supportsAnnouncements: session.authenticated, identity: avatarIdentity, displayName: session.account?.username, balance: balanceAmount === null ? undefined : `$${balanceAmount.toFixed(2)}`, balanceLoading: balanceState.loading, balanceUpdatedAt: balanceState.updatedAt, balanceError: balanceState.error }} platform={os}
-          tourOpen={tourOpen} onTourClose={() => setTourOpen(false)}
+          tourOpen={tourOpen} onTourClose={() => { rememberTourSeen(scope); setTourOpen(false) }}
           environment={toolbox.snapshot?.system.runtime.node.version ? `Node ${toolbox.snapshot.system.runtime.node.version}` : '命令行环境可选'} version={update?.currentVersion}
           unread={unread} installedCount={toolbox.snapshot ? presentTools(toolbox.snapshot).filter((tool) => tool.status.installed).length + toolbox.externalClients.filter((tool) => tool.installed).length : undefined}
           updatableCount={toolUpdates.length}
@@ -562,6 +576,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
               <Suspense fallback={pageLoading}>
                 <BusinessPage api={native} page={id} accountTab={accountTab} paymentReturn={paymentReturn} navigate={navigate} openLogin={() => setAuth('login')} openHelp={() => setHelp(true)}
                   onAccountChanged={() => void perform('刷新账号', reloadAccount)} onSettingsChanged={setSettings} openConfig={openToolConfig}
+                  openGuide={() => setGuide(true)} replayTour={replayTour}
                   onToolsChanged={(tool) => syncAfterToolInstalled(tool).catch((cause) => {
                     if (mounted.current) toast.show(errorMessage(cause, '工具已安装，但最新状态没有读到。请回到首页重新检测。'), 'warn')
                   })} />
