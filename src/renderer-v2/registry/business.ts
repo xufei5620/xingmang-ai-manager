@@ -142,4 +142,9 @@ export const notificationOptions = [
     label: '异步任务完成',
     description: '已关注的任务完成后提醒你查看结果',
   },
+  {
+    value: 'cliUpdate',
+    label: '工具有新版本',
+    description: '你装的命令行工具出新版本时提醒一次',
+  },
 ] as const

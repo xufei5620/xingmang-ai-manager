@@ -45,6 +45,8 @@ interface ShellProps {
   /** Kept for fixture compatibility; the status bar no longer presents it as a download source. */
   sourceLabel?: string
   installedCount?: number
+  /** 已安装工具里有多少个可以更新；0 或缺省时首页入口不挂角标。 */
+  updatableCount?: number
   unread?: boolean
   banner?: ReactNode
   notification?: ReactNode
@@ -53,7 +55,7 @@ interface ShellProps {
   children: ReactNode
 }
 
-export function Shell({ activePage, account, platform, adapter, environment, balance, version, network, networkRefreshing = false, installedCount, unread, banner, notification, tourOpen, onTourClose, children }: ShellProps) {
+export function Shell({ activePage, account, platform, adapter, environment, balance, version, network, networkRefreshing = false, installedCount, updatableCount = 0, unread, banner, notification, tourOpen, onTourClose, children }: ShellProps) {
   const [tourStep, setTourStep] = useState(0)
   useEffect(() => { if (tourOpen) setTourStep(0) }, [tourOpen])
   const [collapsed, setCollapsed] = useState(() => readLocalPreference('xingmang-v2-sidebar') === 'collapsed')
@@ -161,11 +163,16 @@ export function Shell({ activePage, account, platform, adapter, environment, bal
   function navButton(id: PageId) {
     const definition = pageRegistry.find((page) => page.id === id)!
     const Icon = definition.icon
+    // 首页那张「你的工具」卡片上写着同一个数字，这里只是把它提到侧栏，
+    // 让没打开首页的人也知道有几个工具能更新了。
+    const badge = id === 'home' && updatableCount > 0 ? updatableCount : 0
+    const label = badge ? `${definition.label}，${badge} 个工具可更新` : definition.label
     const button = <button type="button" className={`v2-nav-item${activePage === id ? ' is-active' : ''}`} key={id}
-      aria-label={definition.label} aria-current={activePage === id ? 'page' : undefined} data-testid={`nav-${id}`} data-navigation-id={id} onClick={() => adapter.navigate?.(id)}>
+      aria-label={label} aria-current={activePage === id ? 'page' : undefined} data-testid={`nav-${id}`} data-navigation-id={id} onClick={() => adapter.navigate?.(id)}>
       <Icon size={20} strokeWidth={1.75} aria-hidden="true" /><span>{definition.label}</span>{definition.external && <ArrowUpRight size={14} aria-hidden="true" />}
+      {badge > 0 && <small className="v2-nav-badge" data-testid="nav-home-updates">{badge}</small>}
     </button>
-    return collapsed ? <Tooltip key={id} text={definition.label}>{button}</Tooltip> : button
+    return collapsed ? <Tooltip key={id} text={label}>{button}</Tooltip> : button
   }
   return <div className="v2-root" data-os={platform} data-testid="app-frame">
     <header className="v2-titlebar" data-testid="window-titlebar"><Logo kind="micro" height={20} /><span>星芒AI管理工具</span></header>

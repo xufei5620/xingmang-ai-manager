@@ -102,6 +102,7 @@ export function installPlatformSystemApi(
               install: true,
               balance: true,
               task: true,
+              cliUpdate: true,
               ...store.read().notifications,
             }),
             focusMainWindow: () => {

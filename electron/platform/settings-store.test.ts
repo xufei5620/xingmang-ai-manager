@@ -40,6 +40,42 @@ describe('isolated platform-settings.json', () => {
       Buffer.from([239, 187, 191]),
     )
   })
+  it('fills in switches a previous build never wrote instead of failing the whole read', async () => {
+    const file = target()
+    fs.writeFileSync(
+      file,
+      JSON.stringify({
+        version: 1,
+        themePreference: 'dark',
+        highContrast: false,
+        notifications: { install: true, balance: false, task: true },
+      }),
+      'utf8',
+    )
+    const store = new PlatformSettingsStore(file)
+    expect(store.read().notifications).toEqual({
+      install: true,
+      balance: false,
+      task: true,
+      cliUpdate: true,
+    })
+  })
+  it('still rejects a switch whose value is not a boolean', () => {
+    const file = target()
+    fs.writeFileSync(
+      file,
+      JSON.stringify({
+        version: 1,
+        themePreference: 'dark',
+        highContrast: false,
+        notifications: { install: 'yes' },
+      }),
+      'utf8',
+    )
+    expect(() => new PlatformSettingsStore(file).read()).toThrow(
+      '系统偏好开关值无法识别。',
+    )
+  })
   it('preserves malformed and future-version files instead of overwriting them', async () => {
     for (const content of [
       '{not json',

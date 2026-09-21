@@ -193,6 +193,7 @@ export class PlatformSystemService {
           install: true,
           balance: true,
           task: true,
+          cliUpdate: true,
           ...current.notifications,
           [kind]: enabled,
         },
