@@ -14,6 +14,7 @@ import { chineseRuntimePatchAnswerMissing, shouldAskForChineseRuntimePatch } fro
 import { cliRuntimeBlockMessage, nodeRuntimeReady } from './features/tools/runtime-readiness'
 import { isToolId, presentTools, providerFor, type ToolId } from './features/tools/model'
 import { pendingToolUpdates, readAnnouncedToolUpdates, rememberAnnouncedToolUpdates, unannouncedToolUpdates, updateNoticeKey } from './features/tools/update-notice'
+import { isMissingWorkspace } from './features/tools/recent-workspaces'
 import { installedToolSyncLabel, useToolbox } from './features/tools/useToolbox'
 import { ManualUninstallDialog, type ManualUninstallState } from './features/tools/ManualUninstall'
 import type { OperationActionId } from './operation-error'
@@ -340,7 +341,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       if (mounted.current && epoch === accountEpoch.current) toast.show('配置已保存，客户端状态尚未读到，请重新检测。', 'warn')
     })
   }
-  async function launch(id: ToolId, mode: 'open' | 'restart' = 'open'): Promise<boolean> {
+  async function launch(id: ToolId, mode: 'open' | 'restart' = 'open', remembered?: string): Promise<boolean> {
     const current = toolbox.snapshot
     if (!current) throw new Error('请先完成工具检测')
     const config = await toolsApi.readConfig()
@@ -351,7 +352,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     if (!tool.configured) { openToolConfig(id); throw new Error('请先确认账号连接，再打开工具。') }
     let workspace = config.workspace
     if (id !== 'codexDesktop') {
-      const selectedWorkspace = await toolsApi.chooseWorkspace()
+      const selectedWorkspace = remembered ?? await toolsApi.chooseWorkspace()
       if (!selectedWorkspace) return false
       workspace = selectedWorkspace
     }
@@ -385,14 +386,27 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     setChineseDialog(false)
     await launch('codexDesktop')
   }
-  function requestLaunch(id: ToolId) {
+  function requestLaunch(id: ToolId, remembered?: string) {
     if (launchRequest.current) return
     launchRequest.current = true
     void perform('打开工具', async () => {
       if (id === 'codexDesktop' && (await native.getCodexDesktopStatus()).running) setRestartDialog(true)
       else if (id === 'codexDesktop' && await askForChineseRuntimePatch()) return
+      else if (remembered) await launchRemembered(id, remembered)
       else await launch(id)
     }).finally(() => { launchRequest.current = false })
+  }
+  /**
+   * 记住的目录随时可能被删掉或改名。那种情况下退回目录选择器，用户点一次
+   * 「打开」仍然能走到底，而不是只收到一条错误（N7）。
+   */
+  async function launchRemembered(id: ToolId, remembered: string): Promise<boolean> {
+    try { return await launch(id, 'open', remembered) }
+    catch (cause) {
+      if (!isMissingWorkspace(cause)) throw cause
+      toast.show('上次用的目录已经找不到了，请重新选择。', 'warn')
+      return launch(id)
+    }
   }
   function finishConfigSave(warning?: string) {
     const epoch = accountEpoch.current

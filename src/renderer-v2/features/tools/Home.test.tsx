@@ -200,3 +200,20 @@ describe('renderer-v2 home first-run suggestion', () => {
     expect(markup).toContain('>codex<')
   })
 })
+
+// 打开过的目录来自会话记录，只有读到记录之后才有下拉（N7）。静态渲染里
+// 那次读取还没发生，正好是「这个工具从来没打开过」应该走的那条路。
+describe('renderer-v2 home launch button without a remembered directory (N7)', () => {
+  it('keeps the plain 打开 button so the directory picker still opens', () => {
+    const markup = render({})
+    expect(markup).toContain('data-testid="tool-claude-primary"')
+    expect(markup).toContain('>打开<')
+  })
+
+  it('offers no directory dropdown at all', () => {
+    const markup = render({})
+    expect(markup).not.toContain('data-testid="tool-claude-workspaces"')
+    expect(markup).not.toContain('data-testid="tool-claude-launch"')
+    expect(markup).not.toContain('选择其他目录')
+  })
+})
