@@ -5,7 +5,7 @@ import { before, after, test } from 'node:test';
 import { chromium } from '@playwright/test';
 import { createServer } from 'vite';
 import react from '@vitejs/plugin-react';
-import { waitForFixtureMount } from '../../../e2e/fixture-readiness.mjs';
+import { openFixturePage, waitForFixtureMount } from '../../../e2e/fixture-readiness.mjs';
 
 let browser, server, origin;
 before(async () => {
@@ -18,12 +18,16 @@ after(async () => { await browser?.close(); await server?.close(); });
 async function gallery(query = '') {
   const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
   await page.route('**/*', (route) => new URL(route.request().url()).origin === origin ? route.continue() : route.abort());
-  await page.goto(origin + '/src/renderer-v2/gallery.html' + query);
   // The heading was doubling as the mount wait on Playwright's 30s action
   // default, so a cold open of the gallery would be reported as a missing
   // heading. Bound the mount with the shared budget and leave the heading - and
-  // every assertion after it - on the default.
-  await waitForFixtureMount(page, { what: 'the component gallery fixture' });
+  // every assertion after it - on the default. One of the fourteen Windows
+  // browser-shard failures between 2026-09-19 and 2026-09-21 was this open, and
+  // it was not slow: the page never came back, so the budget goes on up to
+  // three navigations rather than one stare at a dead page.
+  await openFixturePage(page, origin + '/src/renderer-v2/gallery.html' + query,
+    (timeout) => waitForFixtureMount(page, { timeout, what: 'the component gallery fixture' }),
+    { label: 'the component gallery fixture' });
   await page.getByRole('heading', { name: '星芒 AI / 组件检阅' }).waitFor();
   return page;
 }

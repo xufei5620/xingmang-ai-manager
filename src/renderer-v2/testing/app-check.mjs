@@ -5,7 +5,7 @@ import path from 'node:path'
 import { createServer } from 'vite'
 import react from '@vitejs/plugin-react'
 import { chromium, expect } from '@playwright/test'
-import { fixtureReadyTimeoutMs, waitForFixtureMount } from '../../../e2e/fixture-readiness.mjs'
+import { fixtureMountSliceMs, openFixturePage, waitForFixtureMount } from '../../../e2e/fixture-readiness.mjs'
 
 let server, browser, origin
 const artifacts = path.resolve('artifacts/renderer-v2-app')
@@ -14,7 +14,11 @@ const artifacts = path.resolve('artifacts/renderer-v2-app')
 // there saw `window.fixtureSupportQrCode is not a function` rather than a slow
 // mount. The waiting itself - and the budget it runs on - is shared with the
 // other fixtures.
-async function waitForFixtureReady(page, timeout = fixtureReadyTimeoutMs) {
+//
+// The budget this spends now belongs to one navigation rather than to the
+// whole open: openFixturePage navigates again when a mount is lost, and the
+// slices still add up to what a single wait used to get.
+async function waitForFixtureReady(page, timeout = fixtureMountSliceMs()) {
   await waitForFixtureMount(page, {
     timeout,
     what: 'the renderer-v2 fixture',
@@ -90,8 +94,8 @@ async function open(query = '', clock = false) {
     await page.clock.pauseAt(new Date('2026-09-12T04:00:01Z'))
   }
   await page.route('**/*', (route) => route.request().url().startsWith(origin + '/') ? route.continue() : route.abort())
-  await page.goto(`${origin}/src/renderer-v2/testing/app.html?${query}`)
-  await waitForFixtureReady(page)
+  await openFixturePage(page, `${origin}/src/renderer-v2/testing/app.html?${query}`,
+    (timeout) => waitForFixtureReady(page, timeout), { label: 'renderer-v2 fixture' })
   return page
 }
 async function clean(page) {
