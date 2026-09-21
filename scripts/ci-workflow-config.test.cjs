@@ -1108,12 +1108,106 @@ test('no browser suite can go green while its fixture threw', () => {
   assert.match(harness, /from '\.\/page-errors\.mjs'/, 'the harness must collect pageerror for every page it opens')
   assert.match(harness, /pageErrors\.watch\(/, 'every page the harness hands out must be watched')
   assert.match(harness, /pageErrors\.assertNone\(\)/, 'the harness must expose the assertion its suites call')
-  // T-B2: a fixed preferred port is only ever a silent renumber under
-  // strictPort:false, so the harness must not reintroduce one.
-  assert.match(harness, /port: 0/, 'the shared fixture server must let the kernel pick the port')
-  assert.doesNotMatch(harness, /port: [1-9]/, 'the shared fixture server must not prefer a fixed port')
   // T-S5: the container fallback lives in exactly one place now.
   assert.match(harness, /XINGMANG_E2E_CHROMIUM/, 'the harness must honour the container browser override')
+})
+
+// Scans for the call that starts a Vite dev server, so a suite cannot drop out
+// of the gate below by being renamed.
+function viteServerSuitesUnder(directory, found = []) {
+  for (const entry of fs.readdirSync(path.join(root, directory), { withFileTypes: true })) {
+    const relative = `${directory}/${entry.name}`
+    if (entry.isDirectory()) {
+      viteServerSuitesUnder(relative, found)
+      continue
+    }
+    if (!entry.name.endsWith('.mjs')) continue
+    const source = fs.readFileSync(path.join(root, relative), 'utf8')
+    if (/from 'vite'/.test(source) && /createServer\(/.test(source)) found.push(relative)
+  }
+  return found
+}
+
+// Every fixture dev server the test scripts start, and the one file that is
+// still allowed to start its own.
+const fixtureServerSuites = [
+  'e2e/harness.mjs',
+  'e2e/macos-dev-origin.test.mjs',
+  'src/renderer-v2/testing/app-check.mjs',
+  'src/renderer-v2/ui/browser-check.mjs',
+  'src/renderer-v2/features/auth/browser-check.mjs',
+  'src/renderer-v2/features/chat/browser-check.mjs',
+  'src/renderer-v2/features/acceleration/browser-check.mjs',
+  'src/renderer-v2/features/shell/newapi-announcements.browser-check.mjs',
+  'src/renderer-v2/features/shell/announcement-persistence.browser-check.mjs',
+]
+
+// The canvas is frozen to its owner's own rework, so it keeps its own
+// createServer call rather than being touched for this.
+const fixtureServerExempt = ['e2e/canvas-group-refresh.mjs']
+
+// macos-dev-origin also asserts that the *public* dev server refuses an
+// occupied port, which only the repository's own vite.config can answer, so it
+// keeps a bare createServer for that case alongside the shared fixture server.
+const fixtureServerOwnVite = new Set(['e2e/harness.mjs', 'e2e/macos-dev-origin.test.mjs'])
+
+// T-B2 started as two suites with a hardcoded preferred port (5191 / 5196) and
+// was "fixed" by passing `port: 0`, on the belief that Vite would then let the
+// kernel choose. It does not: `startServer` reads
+// `(!configPort || …) ? server._currentServerPort : configPort) ?? 5173`, so a
+// configured 0 is indistinguishable from no port at all and falls through to
+// 5173, which strictPort:false then walks upward from. Measured on vite 8.1.5,
+// three servers started in one process took 5173, 5174 and 5175 - the same
+// well-known port every other fixture server, and every `npm run dev` on the
+// machine, starts from. A free port has to be reserved before Vite is asked to
+// bind it, and pinned with strictPort so Vite cannot walk away from it.
+test('every fixture dev server binds a port that was free when it asked for it', () => {
+  const harness = fs.readFileSync(path.join(root, 'e2e', 'harness.mjs'), 'utf8')
+
+  assert.match(harness, /export function reserveFreePort\(/, 'the harness must reserve the port itself')
+  assert.match(harness, /probe\.listen\(0, '127\.0\.0\.1'/, 'the reservation is what asks the kernel for a port')
+  assert.match(harness, /strictPort: true/, 'the reserved port must be pinned rather than used as a starting guess')
+  assert.doesNotMatch(harness, /port: 0/, 'vite reads a configured 0 as "no port" and falls back to 5173')
+  assert.doesNotMatch(harness, /port: [1-9]/, 'the shared fixture server must not prefer a fixed port')
+
+  for (const suite of fixtureServerSuites) {
+    const source = fs.readFileSync(path.join(root, suite), 'utf8')
+    if (suite !== 'e2e/harness.mjs') {
+      assert.match(source, /createFixtureServer\(/, `${suite} must take its dev server from e2e/harness.mjs`)
+    }
+    if (!fixtureServerOwnVite.has(suite)) {
+      assert.doesNotMatch(source, /createServer\(/, `${suite} must not start a Vite server of its own`)
+    }
+    assert.doesNotMatch(source, /port: \d/, `${suite} must not name a port for its fixture server`)
+  }
+
+  // A new suite that starts its own server lands in neither list and fails
+  // here rather than quietly reintroducing the 5173 race.
+  const accounted = new Set([...fixtureServerSuites, ...fixtureServerExempt])
+  for (const directory of fixtureReadinessScanRoots) {
+    for (const suite of viteServerSuitesUnder(directory)) {
+      assert.ok(accounted.has(suite),
+        `${suite} starts a Vite dev server: take it from e2e/harness.mjs, or record it as exempt`)
+    }
+  }
+  for (const suite of fixtureServerExempt) {
+    assert.ok(fs.existsSync(path.join(root, suite)), `${suite} is gone: drop it from the exempt list`)
+  }
+})
+
+// Two fixture servers started back to back must not be handed the same port,
+// which is exactly what the 5173 walk could do across processes: both probe
+// 5173 as free, both try to bind, and only one of them keeps it.
+test('two fixture servers started together land on different ports', async () => {
+  const harness = await import(require('node:url').pathToFileURL(path.join(root, 'e2e', 'harness.mjs')).href)
+
+  const ports = await Promise.all(Array.from({ length: 8 }, () => harness.reserveFreePort()))
+
+  assert.equal(new Set(ports).size, ports.length, `reserved ports collided: ${ports.join(', ')}`)
+  // 5173 is not forbidden - the kernel may hand it out - but a run that took
+  // the default eight times over would mean nothing was reserved at all.
+  assert.ok(ports.some((port) => port !== 5173), 'the reservation must ask the kernel rather than restate the default')
+  assert.ok(harness.fixtureServerPortAttempts >= 2, 'losing a reserved port to another process must not end the run')
 })
 
 // T-B1: the boilerplate the harness replaced must not grow back one suite at a

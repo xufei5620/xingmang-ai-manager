@@ -7,6 +7,7 @@ import test from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { _electron as electron } from '@playwright/test'
 import { createServer, resolveConfig } from 'vite'
+import { createFixtureServer } from './harness.mjs'
 import { createPageErrorCollector } from './page-errors.mjs'
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
@@ -68,17 +69,11 @@ test('the configured macOS development origin renders the real Electron app', {
   let application
   let server
   try {
-    server = await createServer({
-      root: projectRoot,
-      logLevel: 'silent',
-      server: { host: '127.0.0.1', port: 5173, strictPort: false },
-    })
-    await server.listen()
-    const address = server.httpServer?.address()
-    assert.ok(address && typeof address !== 'string')
+    let port
+    ;({ server, port } = await createFixtureServer({ root: projectRoot, logLevel: 'silent' }))
 
     const devUrl = new URL(configuredOrigin)
-    devUrl.port = String(address.port)
+    devUrl.port = String(port)
     application = await electron.launch({
       args: ['.', `--user-data-dir=${userDataDirectory}`],
       cwd: projectRoot,

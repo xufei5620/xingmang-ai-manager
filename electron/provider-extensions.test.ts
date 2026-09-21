@@ -1297,3 +1297,47 @@ describe('Claude Code official marketplace', () => {
     expect(runCalls.find((call) => call.argv[2] === 'list')?.env.HTTPS_PROXY).toBeUndefined()
   })
 })
+
+describe('official marketplace as a standalone action', () => {
+  it('adds the marketplace on request and returns the refreshed catalog', async () => {
+    const calls: string[][] = []
+    const invoke: ProviderCliInvoker = vi.fn(async (_provider, argv) => {
+      calls.push([...argv])
+      if (argv[1] === 'marketplace' && argv[2] === 'list') {
+        return calls.some((entry) => entry[2] === 'add') ? registeredMarketplaceList : '[]'
+      }
+      return '[]'
+    })
+    const service = new ProviderExtensionService({
+      homeDirectory: temporaryDirectory(),
+      invoke,
+      findExecutable: async () => '/usr/bin/git',
+    })
+
+    const snapshot = await service.ensureMarketplace('claude')
+
+    expect(calls[1]).toEqual(claudeOfficialMarketplaceAddArgv())
+    expect(snapshot.marketplace).toMatchObject({ registered: true })
+  })
+
+  it('refuses a provider that has no official marketplace', async () => {
+    const service = new ProviderExtensionService({
+      homeDirectory: temporaryDirectory(),
+      invoke: async () => '[]',
+      findExecutable: async () => '/usr/bin/git',
+    })
+
+    await expect(service.ensureMarketplace('grok')).rejects.toThrow('没有官方插件市场')
+  })
+
+  it('reports the missing Git rather than adding the marketplace', async () => {
+    const service = new ProviderExtensionService({
+      homeDirectory: temporaryDirectory(),
+      invoke: async () => '[]',
+      findExecutable: async () => null,
+    })
+
+    await expect(service.ensureMarketplace('claude'))
+      .rejects.toThrow(claudeMarketplaceGitMissingMessage())
+  })
+})
