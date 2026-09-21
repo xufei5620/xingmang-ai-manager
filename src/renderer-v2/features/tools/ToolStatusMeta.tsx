@@ -2,7 +2,7 @@ import type { CliStatus, ToolStatus } from '../../../../electron/ipc-contract'
 import { Pill } from '../../ui'
 import { toolAvailability, updateCheckFailure } from './model'
 
-/** 「安装卸载」页一行需要读的那几个字段，CLI 与桌面端共用。 */
+/** 「安装卸载」页一行需要读的那几个字段，CLI、桌面端与运行环境共用。 */
 export type ToolRowStatus =
   & Pick<ToolStatus, 'installed' | 'detectionFailed' | 'detectionError'>
   & Pick<CliStatus, 'updateCheck' | 'updateError'>
@@ -27,11 +27,12 @@ export function ToolStatusMeta({ version, status, statusUnknown = false, testId 
 }
 
 /**
- * 行副标题：厂商，外加这次没能得出结论的原因。探测失败的原因优先，因为探测没成
- * 的时候更新检查必然也没成，两句一起说只是把真正的那句挤出屏幕。
+ * 行副标题：这一行本来就有的那句话（工具行是厂商，运行环境行是它派什么用场），
+ * 外加这次没能得出结论的原因。探测失败的原因优先，因为探测没成的时候更新检查
+ * 必然也没成，两句一起说只是把真正的那句挤出屏幕。
  */
-export function ToolStatusReason({ vendor, status, statusUnknown = false, testId }: ToolStatusProps & { vendor: string }) {
+export function ToolStatusReason({ lead, status, statusUnknown = false, testId }: ToolStatusProps & { lead: string }) {
   const reason = toolAvailability(status, statusUnknown).reason ?? updateCheckFailure(status)
-  if (!reason) return <>{vendor}</>
-  return <>{vendor} · <span data-testid={testId}>{reason}</span></>
+  if (!reason) return <>{lead}</>
+  return <>{lead} · <span data-testid={testId}>{reason}</span></>
 }
