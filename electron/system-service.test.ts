@@ -21,7 +21,7 @@ import {
   resolveCliCommand as resolveVerifiedToolCommand,
   resolveCliInstallation as resolveCliInstallationForTest,
 } from './tool-installation'
-import { buildCliVersionAdvice } from './cli-verified-versions'
+import { buildCliVersionAdvice, cliVerifiedVersions } from './cli-verified-versions'
 import {
   assertNpmPackageLocksEquivalent,
   assertNpmReleaseIntegrityMatches,
@@ -2881,6 +2881,22 @@ describe('npm install network routing', () => {
   })
 })
 
+// N1 的名单每周都可能往前抬一格,而抬版本的 PR 只该改
+// electron/cli-verified-versions.ts。下面两个取值器让这一节的断言跟着名单走。
+function recommendedClaudeVersion(): string {
+  const recommended = cliVerifiedVersions.claude.recommended
+  // Claude Code is the one provider the list has always pinned; if it ever
+  // goes back to `null` these two assertions stop testing the pinned-install
+  // behaviour entirely, so fail loudly rather than silently assert nothing.
+  if (!recommended) throw new Error('cliVerifiedVersions.claude 必须有推荐版本')
+  return recommended.version
+}
+
+/** 一个必定比推荐版本新的版本号,用来扮演「npm 上有更新版」。 */
+function versionAboveRecommended(version: string): string {
+  return `${Number.parseInt(version, 10) + 1}.0.0`
+}
+
 describe('CLI latest version state', () => {
   const latest = (version: string): LatestVersionProbe => ({
     status: 'checked',
@@ -2954,14 +2970,18 @@ describe('CLI latest version state', () => {
   })
 
   it('carries the verified-version advice through to the renderer status', () => {
+    // 已装的 2.1.276 是历史事实(它落在名单里那条 2.1.275-2.1.277 的不兼容
+    // 区间里),推荐版本则每次巡检都会往前走 —— 所以它读名单,不写死。
+    // 写死的后果不是断言变弱,是每条抬版本的 PR 都被迫顺手改测试,而改测试
+    // 迁就代码正是这份名单最不该出现的事。
     expect(buildCliStatus({
       installed: true,
       version: '2.1.276 (Claude Code)',
       path: 'claude.cmd',
       installDirectory: null,
-    }, latest('2.1.277'), buildCliVersionAdvice('claude', '2.1.276 (Claude Code)'))).toMatchObject({
+    }, latest(recommendedClaudeVersion()), buildCliVersionAdvice('claude', '2.1.276 (Claude Code)'))).toMatchObject({
       versionAdvice: {
-        recommendedVersion: '2.1.277',
+        recommendedVersion: recommendedClaudeVersion(),
         blockedReason: expect.stringContaining('400'),
         onRecommended: false,
         rollbackAvailable: true,
@@ -2970,18 +2990,20 @@ describe('CLI latest version state', () => {
   })
 
   it('does not advertise an update the pinned list would not install', () => {
+    const recommended = recommendedClaudeVersion()
+    const beyondRecommended = versionAboveRecommended(recommended)
     const installed = {
       installed: true,
-      version: '2.1.277 (Claude Code)',
+      version: `${recommended} (Claude Code)`,
       path: 'claude.cmd',
       installDirectory: null,
     }
-    expect(buildCliStatus(installed, latest('2.1.280'), buildCliVersionAdvice('claude', installed.version))).toMatchObject({
-      latestVersion: '2.1.280',
+    expect(buildCliStatus(installed, latest(beyondRecommended), buildCliVersionAdvice('claude', installed.version))).toMatchObject({
+      latestVersion: beyondRecommended,
       updateAvailable: false,
       updateState: 'latest',
     })
-    expect(buildCliStatus(installed, latest('2.1.280'), buildCliVersionAdvice('claude', installed.version, { alwaysLatest: true }))).toMatchObject({
+    expect(buildCliStatus(installed, latest(beyondRecommended), buildCliVersionAdvice('claude', installed.version, { alwaysLatest: true }))).toMatchObject({
       updateAvailable: true,
       updateState: 'available',
     })
