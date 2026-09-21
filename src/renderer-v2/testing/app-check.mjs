@@ -5,31 +5,23 @@ import path from 'node:path'
 import { createServer } from 'vite'
 import react from '@vitejs/plugin-react'
 import { chromium, expect } from '@playwright/test'
-import { fixtureReadyTimeoutMs } from '../../../e2e/fixture-readiness.mjs'
+import { fixtureReadyTimeoutMs, waitForFixtureMount } from '../../../e2e/fixture-readiness.mjs'
 
 let server, browser, origin
 const artifacts = path.resolve('artifacts/renderer-v2-app')
-// page.goto resolves on `load`, which says nothing about this fixture: Vite
-// transforms the module graph on demand and reloads the page outright once it
-// discovers a dependency it has to pre-bundle. Tests that started work at that
-// point saw either a half-installed fixture (`window.fixtureSupportQrCode is
-// not a function`) or an empty document, and the next locator absorbed the
-// whole cold start inside its own 30s budget. Poll from Node rather than with
-// Playwright's in-page polling, because a page opened with an installed clock
-// has its timers and requestAnimationFrame paused.
+// A first commit into #root is not enough here: this fixture also installs
+// host globals the cases reach for, and a test that started before they were
+// there saw `window.fixtureSupportQrCode is not a function` rather than a slow
+// mount. The waiting itself - and the budget it runs on - is shared with the
+// other fixtures.
 async function waitForFixtureReady(page, timeout = fixtureReadyTimeoutMs) {
-  const deadline = Date.now() + timeout
-  for (;;) {
-    const ready = await page.evaluate(() => typeof window.fixtureSupportQrCode === 'function'
+  await waitForFixtureMount(page, {
+    timeout,
+    what: 'the renderer-v2 fixture',
+    ready: () => typeof window.fixtureSupportQrCode === 'function'
       && Boolean(window.v2Test) && Boolean(window.xingmang)
-      && (document.getElementById('root')?.childElementCount ?? 0) > 0)
-      // A reload mid-evaluation destroys the execution context; the next poll
-      // runs against the page the reload produced.
-      .catch(() => false)
-    if (ready) return
-    if (Date.now() >= deadline) throw new Error(`renderer-v2 fixture did not finish installing within ${timeout}ms`)
-    await new Promise((resolve) => setTimeout(resolve, 50))
-  }
+      && (document.getElementById('root')?.childElementCount ?? 0) > 0,
+  })
 }
 
 // Toasts delete themselves 2400ms after they appear (src/renderer-v2/ui/

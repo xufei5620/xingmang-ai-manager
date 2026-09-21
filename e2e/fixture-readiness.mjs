@@ -35,3 +35,32 @@ export const collectedPromiseBackoffCapMs = Number(process.env.XINGMANG_COLLECTE
 export function collectedPromiseBackoffFor(attempt) {
   return Math.min(collectedPromiseBackoffCapMs, collectedPromiseBackoffMs * 2 ** (attempt - 1))
 }
+
+// page.goto resolves on `load`, which says nothing about a Vite fixture: the
+// module graph is transformed on demand and the page is reloaded outright once
+// a dependency has to be pre-bundled. A suite that starts asserting there finds
+// an empty document, and whichever locator it starts with absorbs the whole
+// cold start inside its own 30s budget - then reports the element it was
+// waiting for rather than the mount that never happened. Every fixture mounts
+// into #root, so a first commit there is the one signal they all share.
+//
+// Poll from Node rather than with Playwright's in-page polling, because a page
+// opened with an installed clock has its timers and requestAnimationFrame
+// paused (src/renderer-v2/features/acceleration/browser-check.mjs freezes both
+// before it navigates).
+export async function waitForFixtureMount(page, { ready = firstCommit, timeout = fixtureReadyTimeoutMs, what = 'the browser fixture' } = {}) {
+  const deadline = Date.now() + timeout
+  for (;;) {
+    // A reload mid-evaluation destroys the execution context; the next poll
+    // runs against the page the reload produced.
+    const mounted = await page.evaluate(ready).catch(() => false)
+    if (mounted) return
+    if (Date.now() >= deadline) throw new Error(`${what} did not finish installing within ${timeout}ms`)
+    await new Promise((resolve) => setTimeout(resolve, 50))
+  }
+}
+
+// Evaluated in the page, so it may not close over anything here.
+function firstCommit() {
+  return (document.getElementById('root')?.childElementCount ?? 0) > 0
+}

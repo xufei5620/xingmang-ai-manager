@@ -6,6 +6,7 @@ import { after, before, test } from 'node:test'
 import { chromium } from '@playwright/test'
 import react from '@vitejs/plugin-react'
 import { createServer } from 'vite'
+import { waitForFixtureMount } from '../../../../e2e/fixture-readiness.mjs'
 
 let server, alternateServer, storeClass, root
 const browsers = new Set()
@@ -46,6 +47,10 @@ async function open(store, { alternate = false, query = 'noticeCollection=1', be
   await page.exposeFunction('fixtureNoticeStore', sync ?? ((scope, ids) => store.sync(scope, ids)))
   if (beforeNavigate) await beforeNavigate(page)
   await page.goto(`${origin}/src/renderer-v2/testing/app.html?${query}`)
+  // Each case launches a browser of its own, so every open here is a cold one.
+  // Without this the click below spends its 30s action default on the mount and
+  // then blames the fixture for not loading, which is the wrong report.
+  await waitForFixtureMount(page, { what: 'the announcement fixture' })
   try { await page.getByTestId('announcement-open').click() }
   catch (error) { throw new Error(`Announcement fixture did not load: ${JSON.stringify(loadErrors)}`, { cause: error }) }
   const dialog = page.getByRole('dialog', { name: '公告', exact: true })
