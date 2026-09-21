@@ -9,17 +9,21 @@
 
 ## 本批代码
 
-> 2026-09-18 更新（D-01）：`realm-switch-coordinator.ts`、`new-api-realm-backend.ts`、`realm-capabilities.ts` 三个模块始终没有被 `main.ts` 装配，已连同其专属测试一并删除。真实的切换/登录/恢复路径是 `realm-account-service.ts`，其守卫断言在 `realm-account-service.test.ts`。下表保留当时的交付记录，读的时候请以代码为准。
+> 2026-09-18 更新（D-01）：`realm-switch-coordinator.ts`、`new-api-realm-backend.ts`、`realm-capabilities.ts` 三个模块始终没有被 `main.ts` 装配，已连同其专属测试一并删除。下表保留当时的交付记录，读的时候请以代码为准；三个模块现在对应的位置是：
+>
+> - 切换/登录/恢复路径（原 `realm-switch-coordinator.ts`）：`electron/realm-account-service.ts`，守卫断言在 `realm-account-service.test.ts`。
+> - 候选客户端桥接（原 `new-api-realm-backend.ts`）：`electron/main.ts` 里传给 `createRealmAccountService` 的 `createClient` 工厂（`main.ts:912-939`）——`solov-api` 走 `electron/sub2api-relay-backend.ts` 的 `createSub2ApiRelayBackend`，`solov` 走 `electron/new-api-client.ts` 的 `createNewApiClient`，两边各自给出 `RealmAccountClientHandle`。
+> - 能力投影（原 `realm-capabilities.ts`）：没有单独模块了。能力清单由各后台客户端自报（历史账号是 `electron/sub2api-relay-backend.ts` 的 `sub2ApiRelayCapabilities`），随登录态快照跨 IPC，渲染层用 `src/renderer-v2/account-context.ts` 的 `accountSupports` / `visibleAccountTab` 决定显示什么。
 
 | 模块 | 实际实现 | 边界 |
 |---|---|---|
 | `electron/realm-account.ts` | 中立身份、固定账号域、凭据判别联合、严格解析、无凭据摘要 | 新类型不直接跨 IPC 导出；`sub2api` 旧 ID 仍为 xm |
 | `electron/realm-account-vault.ts` | 串行化的加密文档、账号/活动指针一起原子写入、同 ID 分域、限额、迁移、退出与忘记分离 | 不自动扫描/迁移旧文件；旧文件保留 |
 | `electron/realm-account-vault-file.ts` | 用既有 safe-local-data 原语和系统加密接口绑定新的 `realm-accounts-v2.dat` | 尚未在 main 装配；拒绝 basic_text；本地未验证真实文件系统或 safeStorage |
-| `electron/realm-switch-coordinator.ts` | prepare/commit 切换、失败保留旧账号、互斥、恢复、epoch、取消、过期值/错误丢弃 | 必须接入真实 quiesce；取消不等于服务端撤销计费 |
-| `electron/new-api-realm-backend.ts` | 隔离候选客户端桥接，不调用当前活动客户端的登出或持久化回调 | 只桥接身份；不是所有 new-api 业务方法的替代 |
+| `electron/realm-switch-coordinator.ts`（已删除） | prepare/commit 切换、失败保留旧账号、互斥、恢复、epoch、取消、过期值/错误丢弃 | 必须接入真实 quiesce；取消不等于服务端撤销计费 |
+| `electron/new-api-realm-backend.ts`（已删除） | 隔离候选客户端桥接，不调用当前活动客户端的登出或持久化回调 | 只桥接身份；不是所有 new-api 业务方法的替代 |
 | `electron/sub2api-account-client.ts` | 普通用户登录、恢复/一次刷新、余额、Key 列表/显式读取/创建/撤销；固定 origin、超时、字节上限、重定向拒绝、无 cookie | 依据上游固定提交，不代表 api.solov.cc 部署已验证；2FA 返回明确不可用而非绕过 |
-| `electron/realm-capabilities.ts` | 已核实能力与产品政策取交集；api 注册始终禁止；账号页显示模型 | 目前只是 UI 投影函数；并非已经挂载的界面或主进程授权边界 |
+| `electron/realm-capabilities.ts`（已删除） | 已核实能力与产品政策取交集；api 注册始终禁止；账号页显示模型 | 目前只是 UI 投影函数；并非已经挂载的界面或主进程授权边界 |
 
 ## 本批验收证据
 
