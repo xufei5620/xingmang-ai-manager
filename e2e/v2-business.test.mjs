@@ -462,6 +462,71 @@ test('extension toggle preserves original state and reports mutation failure', a
   }
 })
 
+test('curated MCP install confirms the exact command before writing any configuration', async () => {
+  const page = await fixture('page=mcp')
+  try {
+    const shelf = page.getByTestId('curated-shelf')
+    await shelf.waitFor()
+    await shelf.getByTestId('curated-install-browser').click()
+    const confirm = page.getByTestId('curated-confirm')
+    await confirm.waitFor()
+    // 确认框必须原样给出将要执行的命令和那句免责说明，用户才知道自己在同意什么。
+    await confirm.getByText('npx -y @playwright/mcp@0.0.82', { exact: true }).waitFor()
+    await confirm.getByText(/第三方软件/).first().waitFor()
+    assert.equal(
+      (await calls(page)).some((call) => call.name === 'extension'),
+      false,
+    )
+    await confirm.getByTestId('curated-confirm-submit').click()
+    await confirm.getByText('扩展操作失败，已有配置保留').waitFor()
+    assert.deepEqual(
+      (await calls(page)).find((call) => call.name === 'extension').args,
+      {
+        provider: 'claude',
+        kind: 'mcp',
+        action: 'install',
+        id: 'browser',
+        scope: 'user',
+        mcp: {
+          type: 'stdio',
+          command: 'npx',
+          args: ['-y', '@playwright/mcp@0.0.82'],
+          env: {},
+        },
+      },
+    )
+  } finally {
+    await page.close()
+  }
+})
+
+test('a curated entry that needs a folder prefills the form instead of installing a broken connection', async () => {
+  const page = await fixture('page=mcp')
+  try {
+    await page.getByTestId('curated-install-files').click()
+    await page.getByTestId('curated-confirm-submit').click()
+    const notice = page.getByTestId('curated-input-directory')
+    await notice.waitFor()
+    await notice.getByText(/「参数」里的 \{\{directory\}\}/).waitFor()
+    assert.equal(
+      (await calls(page)).some((call) => call.name === 'extension'),
+      false,
+    )
+    // 占位符没换就提交要当场拦住，而不是写进一条起不来的连接。
+    await page.getByTestId('mcp-form-submit').click()
+    await page
+      .getByText('{{directory}} 还没换成真实内容，请先填好再添加。')
+      .first()
+      .waitFor()
+    assert.equal(
+      (await calls(page)).some((call) => call.name === 'extension'),
+      false,
+    )
+  } finally {
+    await page.close()
+  }
+})
+
 test('backup restore requires preview and confirmation before touching files', async () => {
   const page = await fixture('page=backups')
   try {
