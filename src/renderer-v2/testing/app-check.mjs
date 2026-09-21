@@ -2502,3 +2502,44 @@ test('a self-check failure is attributed per tool and never takes the other tool
     await clean(page)
   } finally { await page.close() }
 })
+
+async function openAboutSettings(page) {
+  await page.getByTestId('nav-settings').click()
+  const settings = page.getByTestId('page-settings')
+  await settings.waitFor()
+  await settings.getByRole('tab', { name: '关于', exact: true }).click()
+  return settings
+}
+
+test('settings reopens the onboarding guide, and the interface tour replays until it is actually finished (A8)', async () => {
+  const page = await open()
+  try {
+    await page.getByTestId('tool-row-claude').waitFor()
+    // 没有记录的账号不该凭空多出一段导览。
+    assert.equal(await page.getByTestId('shell-guide-tip').count(), 0)
+    await openAboutSettings(page)
+    await page.getByTestId('settings-replay-tour').click()
+    await page.getByTestId('shell-guide-tip').waitFor()
+    // 重看导览会回到首页放，设置页不再是当前页面。
+    await expect(page.getByTestId('page-settings')).toBeHidden()
+    // 导览没看完就关掉软件，下次回到首页接着播（A8 要解决的就是这一条）。
+    await page.reload()
+    await waitForFixtureReady(page)
+    const tour = page.getByTestId('shell-guide-tip')
+    await tour.waitFor()
+    for (const label of ['下一步', '下一步', '开始使用'])
+      await tour.getByRole('button', { name: label, exact: true }).click()
+    assert.equal(await tour.count(), 0)
+    await page.reload()
+    await waitForFixtureReady(page)
+    await page.getByTestId('tool-row-claude').waitFor()
+    // 看完之后就不再追着播了。
+    assert.equal(await page.getByTestId('shell-guide-tip').count(), 0)
+    // 「再看一遍」打开的是四步新手引导，不是静态教程页。
+    await openAboutSettings(page)
+    await page.getByTestId('settings-start-guide').click()
+    await page.getByTestId('start-guide').waitFor()
+    assert.equal(await page.getByTestId('page-tutorial').count(), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
