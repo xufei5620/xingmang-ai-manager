@@ -5,31 +5,23 @@ import path from 'node:path'
 import { createServer } from 'vite'
 import react from '@vitejs/plugin-react'
 import { chromium, expect } from '@playwright/test'
-import { fixtureReadyTimeoutMs } from '../../../e2e/fixture-readiness.mjs'
+import { fixtureReadyTimeoutMs, waitForFixtureMount } from '../../../e2e/fixture-readiness.mjs'
 
 let server, browser, origin
 const artifacts = path.resolve('artifacts/renderer-v2-app')
-// page.goto resolves on `load`, which says nothing about this fixture: Vite
-// transforms the module graph on demand and reloads the page outright once it
-// discovers a dependency it has to pre-bundle. Tests that started work at that
-// point saw either a half-installed fixture (`window.fixtureSupportQrCode is
-// not a function`) or an empty document, and the next locator absorbed the
-// whole cold start inside its own 30s budget. Poll from Node rather than with
-// Playwright's in-page polling, because a page opened with an installed clock
-// has its timers and requestAnimationFrame paused.
+// A first commit into #root is not enough here: this fixture also installs
+// host globals the cases reach for, and a test that started before they were
+// there saw `window.fixtureSupportQrCode is not a function` rather than a slow
+// mount. The waiting itself - and the budget it runs on - is shared with the
+// other fixtures.
 async function waitForFixtureReady(page, timeout = fixtureReadyTimeoutMs) {
-  const deadline = Date.now() + timeout
-  for (;;) {
-    const ready = await page.evaluate(() => typeof window.fixtureSupportQrCode === 'function'
+  await waitForFixtureMount(page, {
+    timeout,
+    what: 'the renderer-v2 fixture',
+    ready: () => typeof window.fixtureSupportQrCode === 'function'
       && Boolean(window.v2Test) && Boolean(window.xingmang)
-      && (document.getElementById('root')?.childElementCount ?? 0) > 0)
-      // A reload mid-evaluation destroys the execution context; the next poll
-      // runs against the page the reload produced.
-      .catch(() => false)
-    if (ready) return
-    if (Date.now() >= deadline) throw new Error(`renderer-v2 fixture did not finish installing within ${timeout}ms`)
-    await new Promise((resolve) => setTimeout(resolve, 50))
-  }
+      && (document.getElementById('root')?.childElementCount ?? 0) > 0,
+  })
 }
 
 // Toasts delete themselves 2400ms after they appear (src/renderer-v2/ui/
@@ -2488,6 +2480,47 @@ test('a self-check failure is attributed per tool and never takes the other tool
     await page.getByTestId('health-connection-run').click()
     await page.getByTestId('health-connection-error-codex').waitFor()
     await page.getByTestId('health-connection-result-gemini').waitFor()
+    await clean(page)
+  } finally { await page.close() }
+})
+
+async function openAboutSettings(page) {
+  await page.getByTestId('nav-settings').click()
+  const settings = page.getByTestId('page-settings')
+  await settings.waitFor()
+  await settings.getByRole('tab', { name: '关于', exact: true }).click()
+  return settings
+}
+
+test('settings reopens the onboarding guide, and the interface tour replays until it is actually finished (A8)', async () => {
+  const page = await open()
+  try {
+    await page.getByTestId('tool-row-claude').waitFor()
+    // 没有记录的账号不该凭空多出一段导览。
+    assert.equal(await page.getByTestId('shell-guide-tip').count(), 0)
+    await openAboutSettings(page)
+    await page.getByTestId('settings-replay-tour').click()
+    await page.getByTestId('shell-guide-tip').waitFor()
+    // 重看导览会回到首页放，设置页不再是当前页面。
+    await expect(page.getByTestId('page-settings')).toBeHidden()
+    // 导览没看完就关掉软件，下次回到首页接着播（A8 要解决的就是这一条）。
+    await page.reload()
+    await waitForFixtureReady(page)
+    const tour = page.getByTestId('shell-guide-tip')
+    await tour.waitFor()
+    for (const label of ['下一步', '下一步', '开始使用'])
+      await tour.getByRole('button', { name: label, exact: true }).click()
+    assert.equal(await tour.count(), 0)
+    await page.reload()
+    await waitForFixtureReady(page)
+    await page.getByTestId('tool-row-claude').waitFor()
+    // 看完之后就不再追着播了。
+    assert.equal(await page.getByTestId('shell-guide-tip').count(), 0)
+    // 「再看一遍」打开的是四步新手引导，不是静态教程页。
+    await openAboutSettings(page)
+    await page.getByTestId('settings-start-guide').click()
+    await page.getByTestId('start-guide').waitFor()
+    assert.equal(await page.getByTestId('page-tutorial').count(), 0)
     await clean(page)
   } finally { await page.close() }
 })
