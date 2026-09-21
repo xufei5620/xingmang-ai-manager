@@ -762,6 +762,12 @@ if (!hasSingleInstanceLock) {
       ...rootedOptions.providerExtensions,
       repositoryRoot: storedSettings.workspace,
       windowsExecutionMode: windowsCliExecutionMode,
+      // 装插件和加官方市场都要出网（市场是一次 git clone），而 CLI 子进程不读
+      // 系统代理，所以跟 CLI 安装一样把当前线路以环境变量带下去。
+      resolveSubprocessProxyEnvironment: async () => subprocessDownloadProxyEnvironment(
+        // PAC 脚本可以按主机给出不同答案，扩展这条链路真正要到的是 GitHub。
+        parseChromiumProxyResult(await session.defaultSession.resolveProxy('https://github.com/')),
+      ),
     })
     let latestDiagnostics: DiagnosticsReport | null = null
     const diagnosticsService = {
