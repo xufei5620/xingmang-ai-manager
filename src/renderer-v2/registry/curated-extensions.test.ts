@@ -26,6 +26,13 @@ describe('curated extension catalog', () => {
     expect(curatedExtensions.map(item => item.id)).toEqual(rawItems.map(item => item.id));
   });
 
+  // 顶层那两个字段是给复核的人看的：version 在字段结构变化时 +1，updatedAt 每次改清单都更新。
+  it('stamps the catalog with a version and a date', () => {
+    const header = raw as { version: unknown; updatedAt: unknown };
+    expect(typeof header.version).toBe('number');
+    expect(header.updatedAt).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+  });
+
   it('gives every entry a unique id', () => {
     expect(new Set(curatedExtensions.map(item => item.id)).size).toBe(curatedExtensions.length);
   });

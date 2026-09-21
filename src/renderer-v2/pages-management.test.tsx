@@ -44,6 +44,7 @@ describe('curated extension shelf', () => {
     expect(markup).toContain('Model Context Protocol 官方')
     expect(markup).toContain('会改你的文件')
     expect(markup).toContain('改动不进回收站')
+    expect(markup).toContain('装到哪里')
     expect(markup).toContain(curatedDisclaimer)
   })
 

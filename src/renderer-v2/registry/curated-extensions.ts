@@ -131,16 +131,22 @@ export function parseCuratedExtensions(raw: unknown): CuratedExtension[] {
     const riskNote = text(entry.riskNote);
     const verifiedAt = text(entry.verifiedAt);
     const install = parseInstall(entry.install);
-    const providers = Array.isArray(entry.providers) ? entry.providers.filter(isProviderId) : null;
-    const risks = Array.isArray(entry.risks)
-      ? entry.risks.map(risk => oneOf(curatedRisks, risk)).filter((risk): risk is CuratedRisk => risk !== null)
-      : null;
-    const inputs = Array.isArray(entry.inputs) ? entry.inputs.map(parseInput) : null;
+    const rawProviders = Array.isArray(entry.providers) ? entry.providers : null;
+    const rawRisks = Array.isArray(entry.risks) ? entry.risks : null;
+    const rawInputs = Array.isArray(entry.inputs) ? entry.inputs : null;
+    // 未知的 provider / risk 会被过滤掉，所以长度不等就说明清单里写了这一层认不出的值。
+    // 那不该被静静吞掉成「少一个工具」，整条丢弃、由测试报出来。
+    const providers = rawProviders?.filter(isProviderId) ?? null;
+    const risks = rawRisks
+      ?.map(risk => oneOf(curatedRisks, risk))
+      .filter((risk): risk is CuratedRisk => risk !== null) ?? null;
+    const inputs = rawInputs?.map(parseInput) ?? null;
     if (
       !id || !kind || !name || !summary || !publisher || !homepage || !runtime || !network || !riskNote
       || !verifiedAt || !install || !providers || providers.length === 0 || !risks || !inputs
-      || inputs.some(input => input === null) || risks.length !== (entry.risks as unknown[]).length
-      || providers.length !== (entry.providers as unknown[]).length
+      || !rawProviders || !rawRisks
+      || inputs.some(input => input === null) || risks.length !== rawRisks.length
+      || providers.length !== rawProviders.length
       || typeof entry.requiresAccount !== 'boolean'
       || !(entry.pinnedVersion === null || typeof entry.pinnedVersion === 'string')
       || !(entry.note === null || typeof entry.note === 'string')
@@ -156,8 +162,6 @@ export function parseCuratedExtensions(raw: unknown): CuratedExtension[] {
 }
 
 export const curatedExtensions = parseCuratedExtensions(catalog);
-export const curatedCatalogVersion = typeof catalog.version === 'number' ? catalog.version : 0;
-export const curatedCatalogUpdatedAt = typeof catalog.updatedAt === 'string' ? catalog.updatedAt : '';
 
 /** 页面只展示当前 tab 的类别、且当前工具支持的那几条。 */
 export function curatedItemsFor(kind: CuratedKind, provider: ProviderId): CuratedExtension[] {

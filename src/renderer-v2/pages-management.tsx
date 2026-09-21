@@ -286,6 +286,8 @@ export function CuratedDetails({ item }: { item: CuratedExtension }) {
             : '将写进配置、由工具启动时执行的命令'}
         </dt>
         <dd className="v2-business-path">{curatedCommandText(item)}</dd>
+        <dt>装到哪里</dt>
+        <dd>我的（全局），当前这个工具在任何文件夹里打开都能用</dd>
       </dl>
       <p>{item.riskNote}</p>
       {item.note && <p>{item.note}</p>}
