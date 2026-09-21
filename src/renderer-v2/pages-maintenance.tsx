@@ -10,6 +10,7 @@ import {
   Archive,
   BookOpen,
   Check,
+  Compass,
   Copy,
   Download,
   ExternalLink,
@@ -107,6 +108,10 @@ export type BusinessActions = {
   onAccountChanged?: () => void
   onSettingsChanged?: (settings: AppSettings) => void
   openConfig?: (provider: Provider) => void
+  /** 设置页的「新手引导」：真的重开四步引导，而不是跳去静态教程页（A8）。 */
+  openGuide?: () => void
+  /** 设置页的「重看界面导览」：回到首页重播首页上那几条操作提示（A8）。 */
+  replayTour?: () => void
   /**
    * 装完一个工具后由 App 负责的收尾：写账号 Key + 刷新首页的检测结果。页面自己
    * 只刷新自己那一份数据，回到首页仍会看到「未安装」（R-G3）。
@@ -1258,12 +1263,58 @@ function UnsupportedControl({ label }: { label: string }) {
   )
 }
 
+/**
+ * 设置页「关于」里的两个重来入口。两件事名字很像、做的事不一样：上面一行重走
+ * 安装配置的四步引导，下面一行只是把首页上那几条操作提示再放一遍。
+ */
+export function OnboardingSettingRows({
+  openGuide,
+  replayTour,
+}: { openGuide: () => void; replayTour?: () => void }) {
+  return (
+    <>
+      <SettingRow
+        title="新手引导"
+        description="重新走一遍安装和配置的步骤，已经填好的账号和密钥不会被清空"
+        control={
+          <Button
+            size="sm"
+            icon={BookOpen}
+            onClick={openGuide}
+            testId="settings-start-guide"
+          >
+            再看一遍
+          </Button>
+        }
+      />
+      {replayTour ? (
+        <SettingRow
+          title="界面导览"
+          description="再看一遍首页上指着按钮讲的那几条提示"
+          control={
+            <Button
+              size="sm"
+              icon={Compass}
+              onClick={replayTour}
+              testId="settings-replay-tour"
+            >
+              重看导览
+            </Button>
+          }
+        />
+      ) : null}
+    </>
+  )
+}
+
 export function SettingsPage({
   api,
   navigate,
   openLogin,
   onAccountChanged,
   onSettingsChanged,
+  openGuide,
+  replayTour,
 }: { api: V2Bridge } & BusinessActions) {
   const load = useCallback(async () => {
     const [settings, capabilities, session] = await Promise.all([
@@ -1936,17 +1987,10 @@ export function SettingsPage({
               查看快捷键
             </Button>,
           )}
-          {row(
-            '新手引导',
-            '重新查看使用步骤',
-            <Button
-              size="sm"
-              icon={BookOpen}
-              onClick={() => navigate?.('tutorial')}
-            >
-              再看一遍
-            </Button>,
-          )}
+          <OnboardingSettingRows
+            openGuide={openGuide ?? (() => navigate?.('tutorial'))}
+            replayTour={replayTour}
+          />
           {row(
             '用户协议与隐私政策',
             '查看协议和数据处理说明',

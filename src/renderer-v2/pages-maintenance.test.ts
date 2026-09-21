@@ -1,5 +1,7 @@
+import { createElement } from 'react'
+import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
-import { tutorialTopics } from './pages-maintenance'
+import { OnboardingSettingRows, tutorialTopics } from './pages-maintenance'
 import { pages } from './registry/pages'
 
 const pageIds = new Set<string>(pages.map((page) => page.id))
@@ -33,5 +35,29 @@ describe('tutorial topics', () => {
   it('keeps every topic id unique so the chapter list stays selectable', () => {
     const ids = tutorialTopics.map((topic) => topic.id)
     expect(new Set(ids).size).toBe(ids.length)
+  })
+})
+
+describe('settings onboarding entries', () => {
+  it('offers both 「再看一遍」 and 「重看导览」 when the app can drive them', () => {
+    const markup = renderToStaticMarkup(
+      createElement(OnboardingSettingRows, { openGuide: () => undefined, replayTour: () => undefined }),
+    )
+    expect(markup).toContain('data-testid="settings-start-guide"')
+    expect(markup).toContain('新手引导')
+    expect(markup).toContain('再看一遍')
+    expect(markup).toContain('data-testid="settings-replay-tour"')
+    expect(markup).toContain('界面导览')
+    expect(markup).toContain('重看导览')
+    // 两行名字很像，说明必须把它们区分开，否则这一条改回了 A8 修的那个毛病。
+    expect(markup).toContain('已经填好的账号和密钥不会被清空')
+  })
+
+  it('hides the tour entry when the host cannot replay it', () => {
+    const markup = renderToStaticMarkup(
+      createElement(OnboardingSettingRows, { openGuide: () => undefined }),
+    )
+    expect(markup).toContain('data-testid="settings-start-guide"')
+    expect(markup).not.toContain('data-testid="settings-replay-tour"')
   })
 })
