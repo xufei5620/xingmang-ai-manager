@@ -4,6 +4,7 @@ import { before, after, test } from 'node:test'
 import { createServer } from 'vite'
 import react from '@vitejs/plugin-react'
 import { chromium } from '@playwright/test'
+import { waitForFixtureMount } from '../../../../e2e/fixture-readiness.mjs'
 
 let server, browser, origin
 before(async () => {
@@ -20,6 +21,12 @@ async function open(query = 'accelerationPreview=1') {
   await page.clock.pauseAt(new Date('2026-09-14T00:00:01Z'))
   await page.route('**/*', route => route.request().url().startsWith(origin + '/') ? route.continue() : route.abort())
   await page.goto(`${origin}/src/renderer-v2/testing/app.html?${query}`)
+  // Mounting and asserting are two different waits: the click below retries on
+  // Playwright's 30s action default, which a cold Windows open of this fixture
+  // can outlast, and it would be reported as the acceleration nav never
+  // appearing. Take the shared mount budget first; everything after it keeps
+  // the default so a real regression still fails in 30s.
+  await waitForFixtureMount(page, { what: 'the acceleration fixture' })
   await openLazyAcceleration(page)
   return page
 }

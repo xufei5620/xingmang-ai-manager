@@ -30,8 +30,8 @@
 多久、为什么。**不要调大 `XINGMANG_FIXTURE_READY_TIMEOUT_MS` 来回避这条**，绿跑用不到它的
 四分之一，调大只会让真坏掉的夹具更晚红。
 
-还没接 `openFixturePage` 的套件（`src/renderer-v2/ui/browser-check.mjs`、
-`features/acceleration`、`features/shell` 等）遇到上表第二行的形状，仍然按原样重跑一次。
+还没接 `openFixturePage` 的套件（`features/acceleration`、`features/shell` 等，它们接了挂载
+预算但没接重试）遇到上表第二行的形状，仍然按原样重跑一次；连着两轮同一处才当真。
 
 ### 顺带纠正一条流传已久的说法：CI 上的 Defender 与此无关
 

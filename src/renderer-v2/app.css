@@ -104,3 +104,9 @@
 .v2-announcement-error { display: grid; gap: 12px; color: var(--text-2); line-height: 1.6; }
 .v2-announcement-error p { margin: 0; }
 .v2-client-config-path { overflow-wrap: anywhere; }
+.v2-first-run { display: grid; gap: 8px; }
+.v2-first-run p { margin: 0; color: var(--text-2); font-size: var(--font-small); line-height: var(--line-body); }
+.v2-first-run-line { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--radius-input); background: var(--panel-2); }
+.v2-first-run-line > code { flex: 1; min-width: 0; max-height: none; color: var(--text); }
+.v2-first-run-line > .xm-btn { flex: none; }
+.v2-first-run-note { color: var(--ok); }
