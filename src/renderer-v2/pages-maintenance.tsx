@@ -996,7 +996,7 @@ export function MaintenancePage({
               }
               desc={
                 <ToolStatusReason
-                  vendor={tool.vendor}
+                  lead={tool.vendor}
                   status={status}
                   statusUnknown={statusUnknown}
                   testId={'maintenance-reason-' + id}
@@ -1092,14 +1092,29 @@ export function MaintenancePage({
           return (
             <ListRow
               key={id}
+              testId={'maintenance-runtime-' + id}
               icon={Wrench}
               title={id === 'node' ? 'Node.js' : 'Python'}
               desc={
-                id === 'node'
-                  ? '命令行工具需要的运行环境'
-                  : '部分工具需要的可选运行环境'
+                <ToolStatusReason
+                  lead={
+                    id === 'node'
+                      ? '命令行工具需要的运行环境'
+                      : '部分工具需要的可选运行环境'
+                  }
+                  status={status}
+                  statusUnknown={statusUnknown}
+                  testId={'maintenance-runtime-reason-' + id}
+                />
               }
-              meta={status?.version || (statusUnknown ? '状态未读到' : '尚未安装')}
+              meta={
+                <ToolStatusMeta
+                  version={status?.version}
+                  status={status}
+                  statusUnknown={statusUnknown}
+                  testId={'maintenance-runtime-state-' + id}
+                />
+              }
               actions={
                 <Button
                   size="sm"

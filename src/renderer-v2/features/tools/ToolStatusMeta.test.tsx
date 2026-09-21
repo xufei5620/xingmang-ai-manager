@@ -12,7 +12,15 @@ function meta(status: ToolRowStatus | null | undefined, version: string | null =
 }
 
 function reason(status: ToolRowStatus | null | undefined, statusUnknown = false): string {
-  return renderToStaticMarkup(<ToolStatusReason vendor="Anthropic" status={status} statusUnknown={statusUnknown} testId="reason" />)
+  return renderToStaticMarkup(<ToolStatusReason lead="Anthropic" status={status} statusUnknown={statusUnknown} testId="reason" />)
+}
+
+/** 「运行环境」那两行：同样的两个插槽，副标题的前半句换成这个运行环境派什么用场。 */
+function runtimeRow(status: ToolRowStatus | null | undefined, version: string | null = null, statusUnknown = false): string {
+  return renderToStaticMarkup(<>
+    <ToolStatusReason lead="命令行工具需要的运行环境" status={status} statusUnknown={statusUnknown} testId="runtime-reason" />
+    <ToolStatusMeta version={version} status={status} statusUnknown={statusUnknown} testId="runtime-state" />
+  </>)
 }
 
 describe('renderer-v2 maintenance tool status pill', () => {
@@ -76,5 +84,45 @@ describe('renderer-v2 maintenance tool status reason', () => {
     const markup = reason({ ...installed, updateCheck: 'checked', updateError: null })
     expect(markup).toContain('Anthropic')
     expect(markup).not.toContain('·')
+  })
+})
+
+// 运行环境那两行此前把版本号缺失一律写成「尚未安装」,探针自己抛错时也照写,
+// 与工具行修掉的是同一类误导(A4)。
+describe('renderer-v2 maintenance runtime rows', () => {
+  it('never writes a failed probe as 尚未安装 and says why instead', () => {
+    const markup = runtimeRow({ installed: false, detectionFailed: true, detectionError: 'where.exe 没有返回' })
+    expect(markup).toContain('检测失败')
+    expect(markup).toContain('where.exe 没有返回')
+    expect(markup).not.toContain('尚未安装')
+    expect(markup).not.toContain('未安装')
+  })
+
+  it('still refuses 尚未安装 when the failed probe sent no reason', () => {
+    const markup = runtimeRow({ installed: false, detectionFailed: true, detectionError: null })
+    expect(markup).toContain('检测失败')
+    expect(markup).toContain('检测没有完成，装没装无法确认')
+    expect(markup).not.toContain('尚未安装')
+  })
+
+  it('keeps the probed version and the row description when the runtime is there', () => {
+    const markup = runtimeRow({ installed: true, detectionFailed: false, detectionError: null }, 'v24.0.0')
+    expect(markup).toContain('命令行工具需要的运行环境')
+    expect(markup).toContain('v24.0.0')
+    expect(markup).toContain('已安装')
+    expect(markup).not.toContain('data-testid="runtime-reason"')
+  })
+
+  it('still says 未安装 when the probe concluded the runtime is absent', () => {
+    const markup = runtimeRow({ installed: false, detectionFailed: false, detectionError: null })
+    expect(markup).toContain('未安装')
+    expect(markup).toContain('未找到版本')
+    expect(markup).not.toContain('检测失败')
+  })
+
+  it('reports an unread system partition as 状态未读到 rather than as a conclusion', () => {
+    const markup = runtimeRow(undefined, null, true)
+    expect(markup).toContain('状态未读到')
+    expect(markup).not.toContain('尚未安装')
   })
 })

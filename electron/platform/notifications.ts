@@ -35,6 +35,12 @@ const messages = {
     title: '异步任务已完成',
     body: '任务结果已经更新，可以回到星芒工具箱查看。',
   },
+  // 具体是哪几个工具、更到哪个版本，界面上的「你的工具」已经逐行写着；
+  // 通知只负责把人叫回来，不重复那份清单，也不带版本号。
+  cliUpdate: {
+    title: '命令行工具有新版本',
+    body: '你装的工具出了新版本，回到星芒的「你的工具」就能逐个更新。',
+  },
 } as const
 
 export function createPlatformNotifications(

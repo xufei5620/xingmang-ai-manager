@@ -22,29 +22,37 @@ export function parsePlatformPreferences(value: unknown): PlatformPreferences {
     typeof record.highContrast !== 'boolean'
   )
     throw new Error('系统界面设置版本或字段无法识别，请先保留文件。')
+  // 缺的开关按默认值补齐，不当成坏文件：0.2.8 及更早版本写下的文件里没有
+  // cliUpdate 这一项，若按「每个键都必须在」来判，老用户升级后连主题都读不出来。
+  // 值不是布尔仍然拒绝——那才是真被改坏了。
   const booleanRecord = <K extends string>(
     candidate: unknown,
-    keys: readonly K[],
+    defaults: Record<K, boolean>,
   ): Record<K, boolean> | undefined => {
     if (candidate === undefined) return undefined
     if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate))
       throw new Error('系统偏好设置格式无效。')
     const fields = candidate as Record<string, unknown>
-    if (!keys.every((key) => typeof fields[key] === 'boolean'))
+    const keys = Object.keys(defaults) as K[]
+    if (
+      !keys.every(
+        (key) => fields[key] === undefined || typeof fields[key] === 'boolean',
+      )
+    )
       throw new Error('系统偏好开关值无法识别。')
-    return Object.fromEntries(keys.map((key) => [key, fields[key]])) as Record<
-      K,
-      boolean
-    >
+    return Object.fromEntries(
+      keys.map((key) => [key, fields[key] ?? defaults[key]]),
+    ) as Record<K, boolean>
   }
-  const notifications = booleanRecord(record.notifications, [
-    'install',
-    'balance',
-    'task',
-  ])
+  const notifications = booleanRecord(record.notifications, {
+    install: true,
+    balance: true,
+    task: true,
+    cliUpdate: true,
+  })
   // 老文件里的 crashReports 会在这里被丢掉：键不在清单里就不会被读出，
   // 下一次写入自然不再落盘，不需要单独的迁移步骤。
-  const privacy = booleanRecord(record.privacy, ['anonymousUsage'])
+  const privacy = booleanRecord(record.privacy, { anonymousUsage: false })
   return {
     version: 1,
     themePreference: record.themePreference,

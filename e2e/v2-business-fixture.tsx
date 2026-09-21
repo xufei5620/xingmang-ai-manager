@@ -884,6 +884,7 @@ if (query.has('system')) {
             install: true,
             balance: true,
             task: true,
+            cliUpdate: true,
             ...systemState.preferences.notifications,
             [kind]: enabled,
           },

@@ -678,6 +678,22 @@ test('a failed probe offers a rescan on the maintenance page instead of an insta
     await clean(page)
   } finally { await page.close() }
 })
+// 运行环境那两行原来只要没有版本号就写「尚未安装」，探针自己抛错时也照写。
+test('a failed runtime probe on the maintenance page says so instead of 尚未安装', async () => {
+  const page = await open('runtimeDetectionFailed=1')
+  try {
+    await page.getByTestId('nav-more').click()
+    await page.getByTestId('nav-maintenance').click()
+    const row = page.getByTestId('maintenance-runtime-node')
+    await row.getByText('检测失败', { exact: true }).waitFor()
+    assert.equal(await page.getByTestId('maintenance-runtime-reason-node').innerText(), '读取 Node.js 安装位置时被拒绝')
+    assert.match(await row.innerText(), /版本未读到/)
+    assert.equal(await row.getByText('尚未安装', { exact: true }).count(), 0)
+    // Python 这一行探到了，照常显示版本。
+    assert.match(await page.getByTestId('maintenance-runtime-python').innerText(), /3\.12\.0/)
+    await clean(page)
+  } finally { await page.close() }
+})
 // A4：`buildCliStatus` 早就写好了这两条原因，渲染层一直没人读它们。
 test('a failed update comparison says why on the maintenance page instead of going quiet', async () => {
   const page = await open('cliUpdateFailed=1')

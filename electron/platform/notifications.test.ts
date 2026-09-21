@@ -7,7 +7,7 @@ import {
 
 function setup() {
   let enabled = true
-  const preferences = { install: true, balance: true, task: true }
+  const preferences = { install: true, balance: true, task: true, cliUpdate: true }
   const notifications: Array<
     EventEmitter & {
       show: ReturnType<typeof vi.fn>
@@ -82,5 +82,30 @@ describe('bounded native activity notifications', () => {
     h.notifications[0].emit('failed', {}, 'OS error')
     expect(h.onError).toHaveBeenCalledOnce()
     expect(h.controller.notify('install', '1')).toBe('requested')
+  })
+})
+
+describe('CLI update reminders', () => {
+  it('announces one pending set at a time and stays silent once its switch is off', () => {
+    const h = setup()
+    expect(h.controller.notify('cliUpdate', 'cli-update:claude.2.0.0')).toBe(
+      'requested',
+    )
+    expect(h.runtime.create).toHaveBeenCalledWith({
+      title: '命令行工具有新版本',
+      body: '你装的工具出了新版本，回到星芒的「你的工具」就能逐个更新。',
+      silent: true,
+    })
+    expect(h.controller.notify('cliUpdate', 'cli-update:claude.2.0.0')).toBe(
+      'duplicate',
+    )
+    expect(h.controller.notify('cliUpdate', 'cli-update:claude.2.1.0')).toBe(
+      'requested',
+    )
+    h.preferences.cliUpdate = false
+    expect(h.controller.notify('cliUpdate', 'cli-update:codex.1.5.0')).toBe(
+      'disabled',
+    )
+    expect(h.runtime.create).toHaveBeenCalledTimes(2)
   })
 })

@@ -809,7 +809,71 @@ const fixtureReadinessConsumers = [
   // D-12: the dual-site account smoke waits on the same cold Electron start
   // the Windows runner takes ~16s over, three times per run.
   'e2e/realm-account-smoke.mjs',
+  // The chat fixture was left off this list when #164 built it, because nothing
+  // checked the list against the suites that exist. Its open() waited on the
+  // element under test with the 30s default, so a cold Windows start was
+  // reported as "chat-composer-input" never becoming visible, 30.1s in, while
+  // the same case finished in 12.6s on Linux.
+  'src/renderer-v2/features/chat/browser-check.mjs',
 ]
+
+// A hand-kept list only covers what someone remembered to add. These are the
+// suites that open a page of their own and still borrow Playwright's default
+// for the mount: naming them here is what lets the scan below insist that every
+// other suite is budgeted, so the next one added lands in neither list and
+// fails rather than waiting for a Windows runner to report it as a broken
+// feature.
+const fixtureReadinessUnbudgeted = [
+  'e2e/canvas-group-refresh.mjs',
+  'src/renderer-v2/features/acceleration/browser-check.mjs',
+  'src/renderer-v2/features/shell/announcement-persistence.browser-check.mjs',
+  'src/renderer-v2/features/shell/newapi-announcements.browser-check.mjs',
+  'src/renderer-v2/ui/browser-check.mjs',
+]
+
+// The roots whose .mjs suites run under `npm test` / `npm run test:v2`, which is
+// where a cold mount can take a job down.
+const fixtureReadinessScanRoots = ['e2e', 'src/renderer-v2']
+
+function browserSuitesUnder(directory) {
+  const found = []
+  for (const entry of fs.readdirSync(path.join(root, directory), { withFileTypes: true })) {
+    const relative = `${directory}/${entry.name}`
+    if (entry.isDirectory()) {
+      found.push(...browserSuitesUnder(relative))
+      continue
+    }
+    if (!entry.name.endsWith('.mjs')) continue
+    // The budget module itself only mentions newPage() in the comment that
+    // explains why the budget exists.
+    if (relative === fixtureReadinessModule) continue
+    const source = fs.readFileSync(path.join(root, relative), 'utf8')
+    // openFixturePage counts as navigating: a suite that hands its navigation
+    // to the shared retry has no page.goto of its own left to match on, and
+    // dropping out of this scan is exactly how a budgeted suite would slip
+    // back out of the gate that guards it.
+    if (/browser\.newPage\(/.test(source) && /\.goto\(|openFixturePage\(/.test(source)) found.push(relative)
+  }
+  return found
+}
+
+// Expressed once so the gate and its own test measure the same thing.
+function fixtureMountBudgetProblems(consumer, source) {
+  const problems = []
+  // The budget itself, or the shared open that spends it as several
+  // navigations; what must not appear is a number of the suite's own.
+  if (!/fixtureReadyTimeoutMs|fixtureMountSliceMs|openFixturePage/.test(source)) {
+    problems.push(`${consumer} must bound its fixture mount with the shared budget`)
+  }
+  if (!/from '[./]*(?:e2e\/)?fixture-readiness\.mjs'/.test(source)) {
+    problems.push(`${consumer} must import the shared budget rather than restate it`)
+  }
+  const restated = source.match(/timeout:\s*\d[\d_]*/)
+  if (restated) {
+    problems.push(`${consumer} must not restate a wait of its own (${restated[0]})`)
+  }
+  return problems
+}
 
 test('a cold fixture open cannot be reported as a failed assertion again', () => {
   const budget = fs.readFileSync(path.join(root, fixtureReadinessModule), 'utf8')
@@ -826,11 +890,7 @@ test('a cold fixture open cannot be reported as a failed assertion again', () =>
   for (const consumer of fixtureReadinessConsumers) {
     const source = fs.readFileSync(path.join(root, consumer), 'utf8')
 
-    // Either the budget itself or the shared open that spends it; what must
-    // not appear anywhere is a number of the suite's own.
-    assert.match(source, /fixtureReadyTimeoutMs|fixtureMountSliceMs|openFixturePage/,
-      `${consumer} must bound its fixture mount with the shared budget`)
-    assert.match(source, /from '[./]*(?:e2e\/)?fixture-readiness\.mjs'/, `${consumer} must import the shared budget rather than restate it`)
+    assert.deepEqual(fixtureMountBudgetProblems(consumer, source), [])
   }
 
   // page.goto resolves on `load`, which happens before the fixture module has
@@ -861,7 +921,8 @@ test('a lost fixture navigation is retried inside the budget rather than waited 
   // fixture that is merely slow still mounts on its first navigation.
   assert.ok(slice > 22_400, 'a single navigation must still outlast the slowest observed green mount')
 
-  for (const consumer of ['src/renderer-v2/testing/app-check.mjs', 'e2e/v2-business.test.mjs', 'e2e/maintenance-layout.test.mjs']) {
+  for (const consumer of ['src/renderer-v2/testing/app-check.mjs', 'e2e/v2-business.test.mjs',
+    'e2e/maintenance-layout.test.mjs', 'src/renderer-v2/features/chat/browser-check.mjs']) {
     const source = fs.readFileSync(path.join(root, consumer), 'utf8')
     assert.match(source, /openFixturePage\(/, `${consumer} must open its fixture through the shared retry`)
   }
@@ -879,6 +940,53 @@ test('a lost fixture navigation is retried inside the budget rather than waited 
 
   assert.equal(navigations, readiness.fixtureMountAttempts, 'every attempt must be a fresh navigation')
   assert.ok(Date.now() - started < 600, 'the attempts must share one deadline rather than each taking the whole budget')
+})
+
+// The list above was right about every suite on it and blind to every suite
+// that was not: nothing tied it to the suites that actually exist, so the chat
+// fixture under src/renderer-v2/ was never noticed. Discovering the suites
+// instead of trusting the list is what makes the next omission fail here.
+test('every browser suite is accounted for by the fixture mount gate', () => {
+  const discovered = fixtureReadinessScanRoots.flatMap((directory) => browserSuitesUnder(directory)).sort()
+  const accounted = new Set([...fixtureReadinessConsumers, ...fixtureReadinessUnbudgeted])
+
+  assert.ok(discovered.includes('src/renderer-v2/features/chat/browser-check.mjs'),
+    'the scan must reach the renderer tree the chat fixture lives in, not only e2e/')
+
+  for (const suite of discovered) {
+    assert.ok(accounted.has(suite),
+      `${suite} opens pages of its own: budget its mount and list it, or record it as unbudgeted`)
+  }
+  // A suite that has since been budgeted or deleted must leave the debt list
+  // rather than sit there granting an exemption nobody needs.
+  for (const suite of fixtureReadinessUnbudgeted) {
+    assert.ok(discovered.includes(suite), `${suite} no longer opens pages: drop it from the unbudgeted list`)
+    const source = fs.readFileSync(path.join(root, suite), 'utf8')
+    assert.doesNotMatch(source, /fixtureReadyTimeoutMs/, `${suite} now takes the shared budget: move it to the consumers`)
+  }
+})
+
+// The gate is only worth the scan if it rejects the two ways a covered suite
+// can end up back on a wait of its own.
+test('the fixture mount gate rejects a suite that waits on a number of its own', () => {
+  const budgeted = [
+    "import { fixtureReadyTimeoutMs } from '../../../../e2e/fixture-readiness.mjs'",
+    "await page.locator('#root > *').first().waitFor({ timeout: fixtureReadyTimeoutMs })",
+  ].join('\n')
+
+  assert.deepEqual(fixtureMountBudgetProblems('fake/browser-check.mjs', budgeted), [])
+
+  const restated = budgeted.replace('fixtureReadyTimeoutMs })', '60_000 })')
+  assert.deepEqual(fixtureMountBudgetProblems('fake/browser-check.mjs', restated),
+    ['fake/browser-check.mjs must not restate a wait of its own (timeout: 60_000)'])
+
+  // What the chat fixture looked like: no import, no budget, the element under
+  // test doubling as the mount wait on Playwright's default.
+  const unbudgeted = "await page.getByTestId('chat-composer-input').waitFor()"
+  assert.deepEqual(fixtureMountBudgetProblems('fake/browser-check.mjs', unbudgeted), [
+    'fake/browser-check.mjs must bound its fixture mount with the shared budget',
+    'fake/browser-check.mjs must import the shared budget rather than restate it',
+  ])
 })
 
 // The inspector replay used to wait a flat 500ms three times, so on a Windows
