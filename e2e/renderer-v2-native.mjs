@@ -35,6 +35,18 @@ const { stepBudgetMs, progress, withDeadline, trackProcessIds, attachEvidence, r
   totalBudgetMs: Number(process.env.XINGMANG_SMOKE_TOTAL_TIMEOUT_MS ?? 240_000),
 })
 
+// 启动时应用自己跑的后台检查（更新检查、环境检查、系统外观同步）不许弹模态框：
+// 弹了就把欢迎页整个挡住，用户什么都没点却什么都点不到。这里只断言「没有」，
+// 并把对话框正文抄进失败信息与 result.json——否则下一个看 CI 日志的人只知道
+// 有个框挡着，不知道是哪一步弹的。
+async function assertNoStartupDialog(page, evidence, when) {
+  const dialog = page.getByTestId('operation-error')
+  if (!(await dialog.count())) return
+  const detail = await page.getByTestId('operation-error-detail').innerText().catch(() => '(unreadable)')
+  evidence.startupDialog = { when, detail }
+  assert.fail(`A startup check opened a blocking dialog ${when}: ${detail}`)
+}
+
 function expectedZoom(contentWidthDip) {
   const automatic = Math.min(UI_MAX_ZOOM, Math.max(UI_MIN_ZOOM, contentWidthDip / UI_DESIGN_WIDTH_DIP))
   return Math.round(automatic * 10_000) / 10_000
@@ -145,6 +157,7 @@ async function main() {
     const platform = await withDeadline('platform preload', stepBudgetMs, () => page.evaluate(() => window.xingmangPlatform?.getState()))
     assert.ok(platform, 'The isolated native platform preload must be available')
     passedAssertions.push('isolated-platform-preload-available')
+    await assertNoStartupDialog(page, evidence, 'on the welcome page')
 
     for (const width of widths) {
       progress(`measuring the ${width}px viewport`)
@@ -169,6 +182,8 @@ async function main() {
     passedAssertions.push('zoom-follows-the-platform-formula-at-every-width')
 
     progress('checking the star canvas')
+    await assertNoStartupDialog(page, evidence, 'after resizing the window')
+    passedAssertions.push('no-blocking-startup-dialog')
     await page.getByTestId('welcome-motion').click()
     await withDeadline('reduced motion', stepBudgetMs, () => page.waitForFunction(() => document.documentElement.dataset.reducedMotion === 'true'))
     evidence.pixels = await withDeadline('canvas pixels', stepBudgetMs, () => page.getByTestId('welcome-starfield').evaluate((canvas) => {

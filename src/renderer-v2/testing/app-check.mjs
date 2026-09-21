@@ -1181,12 +1181,73 @@ test('unavailable local preferences cannot prevent the toolbox shell from openin
   } finally { await page.close() }
 })
 
-test('startup update errors leave the toolbox available and startup diagnostics run once', async () => {
+// 启动时自己跑的检查失败了，用户什么都没点，所以不许拿模态框把界面挡住——CI 的
+// 原生冒烟正是这样在欢迎页上被挡了 30 秒。提示改成角落里一条能关掉的通知，失败本身
+// 仍然上报进运行日志。
+test('a failed startup update check shows a dismissible notice instead of a blocking dialog', async () => {
   const page = await open('startupUpdate=1&diagnostics=1')
   try {
     await page.getByTestId('page-home').waitFor()
-    await page.getByRole('alert').filter({ hasText: '本地更新源暂时不可用' }).waitFor()
+    const notice = page.getByTestId('startup-notice-update')
+    await notice.waitFor()
+    await notice.getByText('本地更新源暂时不可用', { exact: true }).waitFor()
+    assert.equal(await page.getByTestId('operation-error').count(), 0)
     assert.equal(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'runDiagnostics').length), 1)
+    const reported = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'reportRendererError').map((entry) => entry.args[0]))
+    assert.equal(reported.length, 1)
+    assert.equal(reported[0].context, 'renderer-v2 startup check: update')
+    assert.match(reported[0].message, /本地更新源暂时不可用/)
+    await notice.getByRole('button', { name: '关闭', exact: true }).click()
+    await expect.poll(() => page.getByTestId('startup-notice-update').count()).toBe(0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('startup environment findings are a notice with a way in, not an error and not a dialog', async () => {
+  const page = await open('diagnostics=1&diagnosticIssues=2')
+  try {
+    const notice = page.getByTestId('startup-notice-diagnostics')
+    await notice.waitFor()
+    await notice.getByText('环境检查发现 2 项需要处理', { exact: true }).waitFor()
+    assert.equal(await page.getByTestId('operation-error').count(), 0)
+    // 检查跑完了、只是结论要看一眼，这不是失败，不该占一条错误日志。
+    assert.equal(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'reportRendererError').length), 0)
+    await notice.getByRole('button', { name: '去看看', exact: true }).click()
+    await page.getByTestId('page-health').waitFor()
+    await expect.poll(() => page.getByTestId('startup-notice-diagnostics').count()).toBe(0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('a failed startup environment check stays out of the way while the manual one still reports', async () => {
+  const page = await open('diagnostics=1&diagnosticsFail=1')
+  try {
+    const notice = page.getByTestId('startup-notice-diagnostics')
+    await notice.waitFor()
+    await notice.getByText('本机环境检查没有跑完', { exact: true }).waitFor()
+    assert.equal(await page.getByTestId('operation-error').count(), 0)
+    const reported = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'reportRendererError').map((entry) => entry.args[0].context))
+    assert.deepEqual(reported, ['renderer-v2 startup check: diagnostics'])
+    // 用户自己走到「检查」页点按钮，同一个失败要照常摆在页面上说清楚。
+    await page.getByTestId('nav-health').click()
+    const health = page.getByTestId('page-health')
+    await health.waitFor()
+    await health.getByRole('button', { name: '重新检查', exact: true }).click()
+    await health.getByText('本机环境检查没有跑完', { exact: true }).waitFor()
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('a failed manual update check still reports on the updates page', async () => {
+  const page = await open('updateCheckFail=1')
+  try {
+    await page.getByTestId('nav-more').click()
+    await page.getByTestId('nav-updates').click()
+    const updates = page.getByTestId('page-updates')
+    await updates.waitFor()
+    await updates.getByRole('button', { name: '检查更新', exact: true }).click()
+    await updates.getByText('更新服务器暂时连不上', { exact: true }).waitFor()
+    assert.equal(await page.getByTestId('startup-notices').count(), 0)
     await clean(page)
   } finally { await page.close() }
 })

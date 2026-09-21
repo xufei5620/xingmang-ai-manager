@@ -35,6 +35,22 @@ const PROVIDER_VERSION_TIMEOUT_MS = 12_000
 const MAX_GIT_POINTER_BYTES = 4 * 1024
 const MAX_GIT_CONFIG_BYTES = 2 * 1024 * 1024
 const MAX_GIT_PACKED_REFS_BYTES = 8 * 1024 * 1024
+/**
+ * Claude Code registers its official marketplace only while its own first
+ * interactive start runs. This application always spawns the CLI
+ * non-interactively against the same `~/.claude`, so a customer who never
+ * opened a terminal has no marketplace at all and every plugin install fails
+ * with "not found in marketplace". Registering it takes a git clone, which is
+ * why the missing-git path below has to say something a customer can act on.
+ */
+const CLAUDE_OFFICIAL_MARKETPLACE_NAME = 'claude-plugins-official'
+const CLAUDE_OFFICIAL_MARKETPLACE_SOURCE = 'anthropics/claude-plugins-official'
+/**
+ * The CLI gives its own cache refresh and its own clone 120 seconds each, in
+ * sequence. A shorter budget here would kill it mid-clone and replace its
+ * explanation with a generic timeout.
+ */
+const MARKETPLACE_ADD_TIMEOUT_MS = 240_000
 const OFFICIAL_NPM_REGISTRY = 'https://registry.npmjs.org/'
 const OFFICIAL_PYPI_ORIGIN = 'https://pypi.org'
 const OFFICIAL_GITHUB_ORIGIN = 'https://github.com'
@@ -98,12 +114,22 @@ export interface ProviderExtensionCategoryCapability {
   reason: string | null
 }
 
+export interface ProviderExtensionMarketplaceState {
+  /** 官方市场名，未注册时界面要按它提示「添加官方市场」。 */
+  name: string
+  registered: boolean
+  /** 读取市场清单失败的原因；成功时为 null。 */
+  reason: string | null
+}
+
 export interface ProviderExtensionsSnapshot {
   provider: ProviderId
   checkedAt: string
   capabilities: Record<ProviderExtensionKind, ProviderExtensionCategoryCapability>
   items: ProviderExtensionItem[]
   warnings: string[]
+  /** 仅 Claude Code 有官方市场这一层，其余 Provider 缺省即旧行为。 */
+  marketplace?: ProviderExtensionMarketplaceState
 }
 
 export type ProviderMcpInstallConfiguration =
@@ -133,6 +159,12 @@ export interface ProviderCliInvocationOptions {
   timeoutMs?: number
   maxOutputBytes?: number
   sensitiveValues?: readonly string[]
+  /**
+   * Extra variables merged on top of the provider environment, for the
+   * invocations that actually reach the network. Acceleration only takes over
+   * the system proxy, which a CLI subprocess does not read on its own.
+   */
+  extraEnvironment?: NodeJS.ProcessEnv
 }
 
 export type ProviderCliInvoker = (
@@ -173,6 +205,9 @@ export interface ProviderExtensionServiceOptions {
   invoke?: ProviderCliInvoker
   resolveCommand?: typeof resolveProviderCommand
   runCommand?: typeof runCommand
+  findExecutable?: typeof findExecutable
+  /** 出网的扩展操作跟当前加速线路走，缺省不带任何代理变量。 */
+  resolveSubprocessProxyEnvironment?: () => Promise<NodeJS.ProcessEnv>
   inspectSource?: SourceUpdateInspector
   sourceUpdateDependencies?: ProviderSourceUpdateDependencies
   now?: () => Date
@@ -925,6 +960,62 @@ function pluginListArgv(provider: ProviderId): string[] {
   return ['plugin', 'list', '--available', '--json']
 }
 
+export function claudeMarketplaceListArgv(): string[] {
+  return ['plugin', 'marketplace', 'list', '--json']
+}
+
+export function claudeOfficialMarketplaceAddArgv(): string[] {
+  return ['plugin', 'marketplace', 'add', CLAUDE_OFFICIAL_MARKETPLACE_SOURCE]
+}
+
+export function parseClaudeMarketplaceNames(output: string): string[] {
+  const parsed = parseJson(output, 'Claude Code 插件市场列表')
+  const entries = Array.isArray(parsed)
+    ? parsed
+    : isRecord(parsed) && Array.isArray(parsed.marketplaces) ? parsed.marketplaces : null
+  if (!entries) throw new Error('Claude Code 插件市场列表格式不受支持')
+  return entries
+    .map((entry) => (isRecord(entry) ? text(entry.name).trim() : ''))
+    .filter((name) => name.length > 0)
+}
+
+/**
+ * Fallback for a CLI old enough to reject `--json` on the marketplace list:
+ * the same registration the CLI itself writes, read from its user settings.
+ */
+export function readClaudeSettingsMarketplaceNames(homeDirectory: string): string[] {
+  try {
+    const parsed = parseJson(
+      readBoundedUtf8FileSync(
+        path.join(homeDirectory, '.claude', 'settings.json'),
+        MAX_CLAUDE_ROOT_CONFIG_BYTES,
+        'Claude Code 用户设置',
+      ),
+      'Claude Code 用户设置',
+    )
+    if (!isRecord(parsed) || !isRecord(parsed.extraKnownMarketplaces)) return []
+    return Object.keys(parsed.extraKnownMarketplaces)
+  } catch {
+    return []
+  }
+}
+
+export function claudeMarketplaceGitMissingMessage(
+  platform: NodeJS.Platform = process.platform,
+): string {
+  const guidance = platform === 'win32'
+    ? '请到 https://git-scm.com/download/win 下载 Git 安装包装上'
+    : platform === 'darwin'
+      ? '请在「终端」里运行 xcode-select --install，或者用 Homebrew 执行 brew install git'
+      : '请用系统的包管理器装上 Git'
+  return `第一次安装 Claude Code 插件要先把官方插件市场下载到本机，这一步需要 Git，但这台电脑上没有找到它。${guidance}，装好后重新打开本软件再试。`
+}
+
+/** 只有真要出网的操作才需要代理：MCP 增删改的都是本地配置文件。 */
+export function isNetworkBoundExtensionMutation(input: ProviderExtensionMutation): boolean {
+  return input.kind !== 'mcp' && (input.action === 'install' || input.action === 'update')
+}
+
 function mcpListArgv(provider: ProviderId): string[] | null {
   if (provider === 'codex' || provider === 'grok') return ['mcp', 'list', '--json']
   return null
@@ -969,8 +1060,13 @@ function defaultProviderInvoker(
   const env = commandEnvironment(envInput)
   const codexEnv = commandEnvironment(codexEnvInput)
   return async (provider, argv, options = {}) => {
-    const providerEnv = provider === 'codex' ? codexEnv : env
-    const base = await resolveCommand(provider, providerEnv, windowsExecutionMode)
+    const baseEnv = provider === 'codex' ? codexEnv : env
+    // 解析命令用的是不带代理变量的基底：代理只影响子进程怎么出网，不该参与
+    // 「这个可执行文件在哪」的判断。
+    const base = await resolveCommand(provider, baseEnv, windowsExecutionMode)
+    const providerEnv = options.extraEnvironment
+      ? { ...baseEnv, ...options.extraEnvironment }
+      : baseEnv
     const command = {
       executable: base.executable,
       argv: [...base.argv, ...argv],
@@ -1354,6 +1450,10 @@ export class ProviderExtensionService {
   private readonly invoke: ProviderCliInvoker
   private readonly inspectSource: SourceUpdateInspector
   private readonly now: () => Date
+  private readonly env: NodeJS.ProcessEnv
+  private readonly trustedOnly: boolean
+  private readonly findExecutable: typeof findExecutable
+  private readonly resolveSubprocessProxyEnvironment: () => Promise<NodeJS.ProcessEnv>
 
   constructor(options: ProviderExtensionServiceOptions = {}) {
     this.homeDirectory = path.resolve(options.homeDirectory ?? os.homedir())
@@ -1375,6 +1475,53 @@ export class ProviderExtensionService {
       options.sourceUpdateDependencies,
     )
     this.now = options.now ?? (() => new Date())
+    this.env = env
+    this.trustedOnly = process.platform === 'win32' && windowsExecutionMode === 'trusted-only'
+    this.findExecutable = options.findExecutable ?? findExecutable
+    this.resolveSubprocessProxyEnvironment = options.resolveSubprocessProxyEnvironment
+      ?? (async () => ({}))
+  }
+
+  /**
+   * 加速只接管系统代理，而 CLI 子进程不读系统代理，所以出网的扩展操作要把
+   * 当前线路以环境变量的形式带下去。解析失败按直连走，与加速关掉时一致。
+   */
+  private async networkEnvironment(): Promise<NodeJS.ProcessEnv> {
+    try {
+      return await this.resolveSubprocessProxyEnvironment()
+    } catch {
+      return {}
+    }
+  }
+
+  private async inspectClaudeMarketplaces(): Promise<{ names: string[]; reason: string | null }> {
+    try {
+      const output = await this.invoke('claude', claudeMarketplaceListArgv(), {
+        maxOutputBytes: MAX_OUTPUT_BYTES,
+      })
+      return { names: parseClaudeMarketplaceNames(output), reason: null }
+    } catch (error) {
+      return {
+        names: readClaudeSettingsMarketplaceNames(this.homeDirectory),
+        reason: `Claude Code 插件市场列表读取失败：${errorDetail(error)}`,
+      }
+    }
+  }
+
+  /**
+   * 装插件前保证官方市场在册。市场已在册时什么都不做——`marketplace add`
+   * 自己是幂等的，但它要 Git，而已经在册的机器本来不需要 Git 就能装。
+   */
+  private async ensureClaudeOfficialMarketplace(): Promise<void> {
+    const { names } = await this.inspectClaudeMarketplaces()
+    if (names.includes(CLAUDE_OFFICIAL_MARKETPLACE_NAME)) return
+    const git = await this.findExecutable('git', { env: this.env, trustedOnly: this.trustedOnly })
+    if (!git) throw new Error(claudeMarketplaceGitMissingMessage())
+    await this.invoke('claude', claudeOfficialMarketplaceAddArgv(), {
+      timeoutMs: MARKETPLACE_ADD_TIMEOUT_MS,
+      maxOutputBytes: MAX_OUTPUT_BYTES,
+      extraEnvironment: await this.networkEnvironment(),
+    })
   }
 
   setRepositoryRoot(repositoryRoot: string | null): void {
@@ -1485,6 +1632,18 @@ export class ProviderExtensionService {
       warnings.push(reason)
     }
 
+    // 没有官方市场时 `plugin list --available` 只会返回空清单，界面必须能分辨
+    // 「这里没有可装的」和「市场还没加进来」。
+    let marketplace: ProviderExtensionMarketplaceState | undefined
+    if (provider === 'claude') {
+      const inspection = await this.inspectClaudeMarketplaces()
+      marketplace = {
+        name: CLAUDE_OFFICIAL_MARKETPLACE_NAME,
+        registered: inspection.names.includes(CLAUDE_OFFICIAL_MARKETPLACE_NAME),
+        reason: inspection.reason,
+      }
+    }
+
     await this.enrichUpdates(items, checkedAt)
     return {
       provider,
@@ -1492,6 +1651,7 @@ export class ProviderExtensionService {
       capabilities,
       items: items.map(publicItem),
       warnings,
+      ...(marketplace ? { marketplace } : {}),
     }
   }
 
@@ -1580,11 +1740,17 @@ export class ProviderExtensionService {
   async mutate(input: ProviderExtensionMutation): Promise<ProviderExtensionsSnapshot> {
     if (!providerIds.includes(input.provider)) throw new Error('未知的 Provider')
     const { argv, secrets } = this.mutationArgv(input)
+    if (input.provider === 'claude' && input.kind === 'plugin' && input.action === 'install') {
+      await this.ensureClaudeOfficialMarketplace()
+    }
     await this.invoke(input.provider, argv, {
       cwd: input.provider === 'gemini' ? this.repositoryRoot ?? undefined : undefined,
       timeoutMs: MUTATION_TIMEOUT_MS,
       maxOutputBytes: MAX_OUTPUT_BYTES,
       sensitiveValues: secrets,
+      ...(isNetworkBoundExtensionMutation(input)
+        ? { extraEnvironment: await this.networkEnvironment() }
+        : {}),
     })
     return this.list(input.provider)
   }

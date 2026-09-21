@@ -6,15 +6,20 @@ import { type runCommand as productionRunCommand } from './command-runner'
 import { providerIds } from './catalog'
 import type { ProviderId } from './catalog'
 import {
+  claudeMarketplaceGitMissingMessage,
+  claudeOfficialMarketplaceAddArgv,
   createProviderSourceUpdateInspector,
   detectMcpPackageSource,
+  isNetworkBoundExtensionMutation,
   normalizeGitHubRemoteUrl,
   packageCommandExecutionMode,
   parseGitRemoteHead,
+  parseClaudeMarketplaceNames,
   parseGeminiSkillList,
   parseProviderPluginList,
   providerCommandResolutionOrder,
   ProviderExtensionService,
+  readClaudeSettingsMarketplaceNames,
   readLocalGitMetadata,
   resolveProviderCommand,
   selectProviderCommandOutput,
@@ -35,6 +40,10 @@ function write(filePath: string, content: string): void {
   fs.writeFileSync(filePath, content, 'utf8')
   if (process.platform !== 'win32') fs.chmodSync(filePath, 0o700)
 }
+
+const registeredMarketplaceList = JSON.stringify([
+  { name: 'claude-plugins-official', source: 'github', repo: 'anthropics/claude-plugins-official' },
+])
 
 afterEach(() => {
   for (const directory of temporaryDirectories.splice(0)) {
@@ -1057,9 +1066,14 @@ describe('ProviderExtensionService native mutations', () => {
       const calls: string[][] = []
       const invoke: ProviderCliInvoker = vi.fn(async (_provider, argv) => {
         calls.push([...argv])
-        return '[]'
+        return argv[1] === 'marketplace' ? registeredMarketplaceList : '[]'
       })
-      const service = new ProviderExtensionService({ homeDirectory: temporaryDirectory(), invoke })
+      const service = new ProviderExtensionService({
+        homeDirectory: temporaryDirectory(),
+        invoke,
+        // 市场已在册就不该碰 Git；返回 null 让「碰了」当场失败。
+        findExecutable: async () => null,
+      })
 
       const snapshot = await service.mutate({
         provider,
@@ -1069,8 +1083,217 @@ describe('ProviderExtensionService native mutations', () => {
         source: 'official',
       })
 
-      expect(calls[0]).toEqual(['plugin', 'install', 'sample@official'])
+      expect(calls).toContainEqual(['plugin', 'install', 'sample@official'])
       expect(snapshot.provider).toBe(provider)
     },
   )
+})
+
+describe('Claude Code official marketplace', () => {
+  it('reads marketplace names from the CLI list and rejects an unsupported shape', () => {
+    expect(parseClaudeMarketplaceNames(registeredMarketplaceList)).toEqual(['claude-plugins-official'])
+    expect(parseClaudeMarketplaceNames('[]')).toEqual([])
+    expect(parseClaudeMarketplaceNames(JSON.stringify({
+      marketplaces: [{ name: 'claude-plugins-official' }, { name: '  ' }, 'ignored'],
+    }))).toEqual(['claude-plugins-official'])
+    expect(() => parseClaudeMarketplaceNames('not json')).toThrow('未返回有效 JSON')
+    expect(() => parseClaudeMarketplaceNames('"text"')).toThrow('格式不受支持')
+  })
+
+  it('falls back to the marketplaces the CLI itself declared in user settings', () => {
+    const home = temporaryDirectory()
+    expect(readClaudeSettingsMarketplaceNames(home)).toEqual([])
+    write(path.join(home, '.claude', 'settings.json'), JSON.stringify({
+      extraKnownMarketplaces: { 'claude-plugins-official': { source: { source: 'github' } } },
+    }))
+    expect(readClaudeSettingsMarketplaceNames(home)).toEqual(['claude-plugins-official'])
+    write(path.join(home, '.claude', 'settings.json'), '{ broken')
+    expect(readClaudeSettingsMarketplaceNames(home)).toEqual([])
+  })
+
+  it('names a platform-appropriate way to install Git', () => {
+    expect(claudeMarketplaceGitMissingMessage('win32')).toContain('git-scm.com')
+    expect(claudeMarketplaceGitMissingMessage('darwin')).toContain('xcode-select --install')
+    expect(claudeMarketplaceGitMissingMessage('linux')).toContain('包管理器')
+    for (const platform of ['win32', 'darwin', 'linux'] as const) {
+      expect(claudeMarketplaceGitMissingMessage(platform)).toContain('Git')
+    }
+  })
+
+  it('only marks network-bound mutations as needing the current route', () => {
+    const base = { provider: 'claude', kind: 'plugin' } as const
+    expect(isNetworkBoundExtensionMutation({ ...base, action: 'install' })).toBe(true)
+    expect(isNetworkBoundExtensionMutation({ ...base, action: 'update' })).toBe(true)
+    expect(isNetworkBoundExtensionMutation({ ...base, action: 'uninstall' })).toBe(false)
+    expect(isNetworkBoundExtensionMutation({
+      provider: 'claude', kind: 'mcp', action: 'install',
+    })).toBe(false)
+  })
+
+  it('adds the official marketplace before the first plugin install', async () => {
+    const calls: string[][] = []
+    const invoke: ProviderCliInvoker = vi.fn(async (_provider, argv) => {
+      calls.push([...argv])
+      // 加之前市场为空，加过之后才有；install 本身返回空清单。
+      if (argv[1] === 'marketplace' && argv[2] === 'list') {
+        return calls.some((entry) => entry[2] === 'add') ? registeredMarketplaceList : '[]'
+      }
+      return '[]'
+    })
+    const service = new ProviderExtensionService({
+      homeDirectory: temporaryDirectory(),
+      invoke,
+      findExecutable: async () => '/usr/bin/git',
+    })
+
+    await service.mutate({
+      provider: 'claude',
+      kind: 'plugin',
+      action: 'install',
+      id: 'code-review@claude-plugins-official',
+    })
+
+    expect(calls[0]).toEqual(['plugin', 'marketplace', 'list', '--json'])
+    expect(calls[1]).toEqual(claudeOfficialMarketplaceAddArgv())
+    expect(calls[2]).toEqual(['plugin', 'install', 'code-review@claude-plugins-official'])
+  })
+
+  it('does not add the marketplace again once it is registered', async () => {
+    const calls: string[][] = []
+    const invoke: ProviderCliInvoker = vi.fn(async (_provider, argv) => {
+      calls.push([...argv])
+      return argv[1] === 'marketplace' ? registeredMarketplaceList : '[]'
+    })
+    const service = new ProviderExtensionService({
+      homeDirectory: temporaryDirectory(),
+      invoke,
+      findExecutable: async () => '/usr/bin/git',
+    })
+
+    await service.mutate({
+      provider: 'claude',
+      kind: 'plugin',
+      action: 'install',
+      id: 'code-review@claude-plugins-official',
+    })
+
+    expect(calls.filter((argv) => argv[2] === 'add')).toEqual([])
+    expect(calls).toContainEqual(['plugin', 'install', 'code-review@claude-plugins-official'])
+  })
+
+  it('tells the customer to install Git instead of running a command that cannot work', async () => {
+    const calls: string[][] = []
+    const invoke: ProviderCliInvoker = vi.fn(async (_provider, argv) => {
+      calls.push([...argv])
+      return '[]'
+    })
+    const service = new ProviderExtensionService({
+      homeDirectory: temporaryDirectory(),
+      invoke,
+      findExecutable: async () => null,
+    })
+
+    await expect(service.mutate({
+      provider: 'claude',
+      kind: 'plugin',
+      action: 'install',
+      id: 'code-review@claude-plugins-official',
+    })).rejects.toThrow(claudeMarketplaceGitMissingMessage())
+    expect(calls.some((argv) => argv[2] === 'add' || argv[1] === 'install')).toBe(false)
+  })
+
+  it('trusts the CLI-declared marketplace when its list command fails', async () => {
+    const home = temporaryDirectory()
+    write(path.join(home, '.claude', 'settings.json'), JSON.stringify({
+      extraKnownMarketplaces: { 'claude-plugins-official': { source: { source: 'github' } } },
+    }))
+    const calls: string[][] = []
+    const invoke: ProviderCliInvoker = vi.fn(async (_provider, argv) => {
+      calls.push([...argv])
+      if (argv[1] === 'marketplace') throw new Error('unknown option --json')
+      return '[]'
+    })
+    const service = new ProviderExtensionService({
+      homeDirectory: home,
+      invoke,
+      findExecutable: async () => null,
+    })
+
+    await service.mutate({
+      provider: 'claude',
+      kind: 'plugin',
+      action: 'install',
+      id: 'code-review@claude-plugins-official',
+    })
+
+    expect(calls.some((argv) => argv[2] === 'add')).toBe(false)
+    expect(calls).toContainEqual(['plugin', 'install', 'code-review@claude-plugins-official'])
+  })
+
+  it('reports the marketplace state on the Claude snapshot only', async () => {
+    const service = new ProviderExtensionService({
+      homeDirectory: temporaryDirectory(),
+      invoke: async (_provider, argv) => (argv[1] === 'marketplace' ? '[]' : '[]'),
+      findExecutable: async () => null,
+    })
+
+    const claude = await service.list('claude')
+    expect(claude.marketplace).toEqual({
+      name: 'claude-plugins-official',
+      registered: false,
+      reason: null,
+    })
+    expect((await service.list('grok')).marketplace).toBeUndefined()
+
+    const registered = new ProviderExtensionService({
+      homeDirectory: temporaryDirectory(),
+      invoke: async (_provider, argv) => (argv[1] === 'marketplace' ? registeredMarketplaceList : '[]'),
+      findExecutable: async () => null,
+    })
+    expect((await registered.list('claude')).marketplace).toMatchObject({ registered: true })
+  })
+
+  it('hands the current route to the marketplace and install commands, and to nothing else', async () => {
+    const runCalls: Array<{ argv: string[]; env: NodeJS.ProcessEnv }> = []
+    const service = new ProviderExtensionService({
+      homeDirectory: temporaryDirectory(),
+      windowsExecutionMode: 'same-user',
+      env: { PATH: '/usr/bin' },
+      resolveCommand: async () => ({ executable: '/trusted/claude', argv: [] }),
+      runCommand: async (command, options) => {
+        runCalls.push({ argv: [...command.argv], env: options?.env ?? {} })
+        return {
+          executable: command.executable,
+          argv: [...command.argv],
+          exitCode: 0,
+          signal: null,
+          stdout: '[]',
+          stderr: '',
+          outputBytes: 2,
+          durationMs: 1,
+        }
+      },
+      findExecutable: async () => '/usr/bin/git',
+      resolveSubprocessProxyEnvironment: async () => ({ HTTPS_PROXY: 'http://127.0.0.1:7890' }),
+      inspectSource: async (input) => ({
+        currentVersion: input.currentVersion,
+        latestVersion: input.currentVersion,
+      }),
+    })
+
+    await service.mutate({
+      provider: 'claude',
+      kind: 'plugin',
+      action: 'install',
+      id: 'code-review@claude-plugins-official',
+    })
+
+    const proxied = runCalls.filter((call) => call.env.HTTPS_PROXY === 'http://127.0.0.1:7890')
+    expect(proxied.map((call) => call.argv)).toEqual([
+      claudeOfficialMarketplaceAddArgv(),
+      ['plugin', 'install', 'code-review@claude-plugins-official'],
+    ])
+    // 读清单不出网，不该带上线路。
+    expect(runCalls.find((call) => call.argv[2] === 'list')?.env.HTTPS_PROXY).toBeUndefined()
+  })
 })

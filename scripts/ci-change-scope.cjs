@@ -10,6 +10,16 @@ function requiresCodeChecks(files) {
   })
 }
 
+// The relay probe answers one question: does the version this list pins still
+// work against our own relay? Only a change to the list (or to the document
+// that explains how to move it) can change that answer, so nothing else is
+// worth a real request against production.
+const cliVersionListFiles = new Set(['electron/cli-verified-versions.ts', 'docs/CLI-VERIFIED-VERSIONS.md'])
+
+function touchesCliVersionList(files) {
+  return files.some((file) => cliVersionListFiles.has(file))
+}
+
 function changedFiles(event, eventName, git = execFileSync) {
   const base = eventName === 'pull_request' ? event.pull_request?.base?.sha : event.before
   const head = eventName === 'pull_request' ? event.pull_request?.head?.sha : event.after
@@ -21,8 +31,12 @@ if (require.main === module) {
   const event = JSON.parse(fs.readFileSync(process.env.GITHUB_EVENT_PATH, 'utf8'))
   const files = changedFiles(event, process.env.GITHUB_EVENT_NAME)
   const code = files === null || requiresCodeChecks(files)
-  fs.appendFileSync(process.env.GITHUB_OUTPUT, `code=${code}\n`, 'utf8')
+  // Both default to true when the revision range is unknown: a check that
+  // cannot tell what changed has to assume the worst, not skip itself.
+  const cliVersions = files === null || touchesCliVersionList(files)
+  fs.appendFileSync(process.env.GITHUB_OUTPUT, `code=${code}\ncliVersions=${cliVersions}\n`, 'utf8')
   console.log(code ? 'Code checks required' : 'Documentation-only change; build jobs will report skipped')
+  console.log(cliVersions ? 'Verified-version list touched; the relay probe will run' : 'Verified-version list untouched; the relay probe will report skipped')
 }
 
-module.exports = { requiresCodeChecks, changedFiles }
+module.exports = { requiresCodeChecks, touchesCliVersionList, changedFiles }

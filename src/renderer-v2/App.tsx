@@ -33,6 +33,8 @@ import { latestNetworkLocation } from './features/shell/network'
 import { bindPlatformAppearance, platformApi } from './platform-api'
 import { FailureBoundary } from './features/app/FailureBoundary'
 import { OperationErrorDialog, type OperationFailure } from './features/app/OperationErrorDialog'
+import { StartupNotices } from './features/app/StartupNotices'
+import { startupCheckFailure, startupCheckLogContext, startupDiagnosticsIssues, withStartupNotice, withoutStartupNotice, type StartupCheckId, type StartupNotice } from './features/app/startup-notice'
 import { readLocalPreference, writeLocalPreference } from './features/app/preferences'
 import { rememberTourPending, rememberTourSeen, tourReplayPending } from './features/shell/tour-state'
 import { onboardingPreviewEnabled } from './features/app/dev-preview'
@@ -97,6 +99,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   const [chineseDialog, setChineseDialog] = useState(false)
   const [dismissedUpdate, setDismissedUpdate] = useState('')
   const [operationError, setOperationError] = useState<OperationFailure | null>(null)
+  const [startupNotices, setStartupNotices] = useState<readonly StartupNotice[]>([])
   const [manualUninstall, setManualUninstall] = useState<ManualUninstallState | null>(null)
   const [accountReadError, setAccountReadError] = useState<{ scope: string; message: string } | null>(null)
   const [supportQr, setSupportQr] = useState<{ url: string; data: string | null }>()
@@ -126,6 +129,18 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   const qrFallback = supportQrFallbackText(supportQr, supportUrl)
   const avatarIdentity = session.account ? { origin: accountOrigin(session), userId: session.account.userId } : undefined
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; accountEpoch.current++ } }, [])
+  // 启动时自动跑的检查不许弹模态框：用户什么都没点，却会被挡在欢迎页上点不动
+  // 任何东西。坏消息改挂在角落、随手能关，检查本身照跑、失败照样进运行日志
+  // ——主进程按通道记一条，这里再记一条写明是哪一次启动检查。
+  const noteStartupCheck = useCallback((notice: StartupNotice) => {
+    if (!mounted.current) return
+    setStartupNotices((current) => withStartupNotice(current, notice))
+    if (!notice.failure) return
+    void native.reportRendererError({ message: `${notice.title}：${notice.body}`, context: startupCheckLogContext(notice.id) }).catch(() => undefined)
+  }, [native])
+  const dismissStartupNotice = useCallback((id: StartupCheckId) => {
+    setStartupNotices((current) => withoutStartupNotice(current, id))
+  }, [])
   useEffect(() => {
     let current = true
     setBoot('loading'); setBootError('')
@@ -139,14 +154,14 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       setBoot('ready')
       if (result.settings.checkUpdatesOnStartup && result.update.phase !== 'disabled') {
         void app.startupUpdate().then((checked) => { if (current) setUpdate(checked) }).catch((cause) => {
-          if (current) setOperationError({ message: errorMessage(cause, '更新检查没有完成') })
+          if (current) noteStartupCheck(startupCheckFailure('update', errorMessage(cause, '更新检查没有完成')))
         })
       }
     }).catch((cause) => {
       if (current) { setBootError(errorMessage(cause, '启动检查没有完成')); setBoot('failed') }
     })
     return () => { current = false }
-  }, [app, bootAttempt])
+  }, [app, bootAttempt, noteStartupCheck])
   const runAccountBootstrap = useCallback(async (userId: number, mode: AccountBootstrapMode = 'restore', force = false, onlyProviders?: readonly ProviderId[], accountSite: AccountSiteId = siteId) => {
     if (!settings || !Number.isSafeInteger(userId) || userId < 1) return
     const bootstrapScope = accountScope({ siteId: accountSite, account: { userId } as AccountSessionState['account'] })
@@ -202,9 +217,10 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     void native.runDiagnostics().then((report) => {
       if (!mounted.current) return
       const issues = report.counts.warn + report.counts.fail + report.counts.error
-      if (issues) setOperationError({ message: `环境检查发现 ${issues} 项需要处理，请在“检查”页查看。` })
-    }).catch((cause) => { if (mounted.current) setOperationError({ message: errorMessage(cause, '启动环境检查没有完成') }) })
-  }, [boot, native, session.authenticated, settings?.runDiagnosticsOnStartup])
+      const notice = startupDiagnosticsIssues(issues)
+      if (notice) noteStartupCheck(notice)
+    }).catch((cause) => { if (mounted.current) noteStartupCheck(startupCheckFailure('diagnostics', errorMessage(cause, '启动环境检查没有完成'))) })
+  }, [boot, native, noteStartupCheck, session.authenticated, settings?.runDiagnosticsOnStartup])
   useLayoutEffect(() => {
     if (!settings) return
     document.documentElement.dataset.theme = settings.theme
@@ -216,8 +232,8 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     const system = platformApi()
     if (!system || boot !== 'ready') return
     return bindPlatformAppearance(system, native, (theme) => setSettings((current) => current ? { ...current, theme } : current),
-      (cause) => setOperationError({ message: errorMessage(cause, '系统外观没有同步') }))
-  }, [boot, native])
+      (cause) => noteStartupCheck(startupCheckFailure('appearance', errorMessage(cause, '系统外观没有同步'))))
+  }, [boot, native, noteStartupCheck])
   const os = platform?.platform === 'macos' ? 'mac' : platform?.platform === 'linux' ? 'linux' : 'win'
   useEffect(() => { document.documentElement.dataset.os = os }, [os])
   useEffect(() => {
@@ -621,6 +637,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       <div className="v2-support">{qr && <img src={qr} alt="微信客服二维码" />}<h3>微信扫码找客服</h3><p>装不上、付了没到账，都可以问。</p>
         {qrFallback && <p role="alert" data-testid="support-qr-fallback">{qrFallback}</p>}<Button onClick={() => void perform('打开帮助', () => app.openExternal(supportUrl))}>在浏览器打开</Button><Button onClick={() => { setHelp(false); navigate('feedback') }}>复制反馈报告</Button></div>
     </Dialog>}
+    <StartupNotices notices={startupNotices} onDismiss={dismissStartupNotice} onOpen={(id, page) => { dismissStartupNotice(id); navigate(page) }} />
     {operationError && <OperationErrorDialog failure={operationError} onClose={() => setOperationError(null)} onAction={runOperationAction} />}
     {manualUninstall && <ManualUninstallDialog state={manualUninstall} platform={platform?.platform} onClose={() => setManualUninstall(null)} />}
     {!operationError && session.authenticated && accountReadError?.scope === scope && <Dialog open title="操作没有完成" onClose={() => setAccountReadError(null)} footer={<Button onClick={() => setAccountReadError(null)}>返回</Button>}><p role="alert">{accountReadError.message}</p></Dialog>}

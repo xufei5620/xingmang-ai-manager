@@ -1,0 +1,135 @@
+{
+  "version": 1,
+  "updatedAt": "2026-09-21",
+  "items": [
+    {
+      "id": "files",
+      "kind": "mcp",
+      "name": "本地文件",
+      "summary": "让 AI 直接读写你指定的那个文件夹：打开文件看内容、改文件、新建和整理文件，不用你来回复制粘贴。",
+      "publisher": "Model Context Protocol 官方",
+      "homepage": "https://github.com/modelcontextprotocol/servers/tree/main/src/filesystem",
+      "providers": ["claude", "codex", "gemini", "grok"],
+      "install": {
+        "type": "stdio",
+        "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-filesystem@2026.8.31", "{{directory}}"],
+        "env": {}
+      },
+      "inputs": [
+        {
+          "key": "directory",
+          "label": "允许 AI 读写的文件夹",
+          "placeholder": "把这一项换成文件夹的完整路径",
+          "hint": "只填你愿意让 AI 动的那个文件夹。它读不到、也改不了这个文件夹之外的文件。"
+        }
+      ],
+      "runtime": "node",
+      "network": "npm-first-run",
+      "requiresAccount": false,
+      "risks": ["local-fs-write"],
+      "riskNote": "它能删改你填的这个文件夹里的任何文件，改动不进回收站。建议先填一个具体的项目文件夹，不要填整个 C 盘或整个用户目录。",
+      "pinnedVersion": "2026.8.31",
+      "verifiedAt": "2026-09-21",
+      "note": "不填文件夹就起不来，所以这一条会先把表单填好，让你补上路径。"
+    },
+    {
+      "id": "browser",
+      "kind": "mcp",
+      "name": "浏览器",
+      "summary": "让 AI 自己打开网页去看、去点：查资料、翻文档、填表单、核对页面上显示的内容。",
+      "publisher": "微软（Playwright 团队）",
+      "homepage": "https://github.com/microsoft/playwright-mcp",
+      "providers": ["claude", "codex", "gemini", "grok"],
+      "install": {
+        "type": "stdio",
+        "command": "npx",
+        "args": ["-y", "@playwright/mcp@0.0.82"],
+        "env": {}
+      },
+      "inputs": [],
+      "runtime": "node",
+      "network": "npm-first-run",
+      "requiresAccount": false,
+      "risks": ["browser"],
+      "riskNote": "AI 会按网页上读到的内容决定下一步，所以别让它去操作网银、后台这类一步就能造成损失的页面。第一次使用时它还要下载一份自带的浏览器，可能要等几分钟。",
+      "pinnedVersion": "0.0.82",
+      "verifiedAt": "2026-09-21",
+      "note": null
+    },
+    {
+      "id": "memory",
+      "kind": "mcp",
+      "name": "记忆",
+      "summary": "让 AI 把你交代过的事情记在本机的一个文件里，换一次对话也还记得，不用每次重新讲一遍背景。",
+      "publisher": "Model Context Protocol 官方",
+      "homepage": "https://github.com/modelcontextprotocol/servers/tree/main/src/memory",
+      "providers": ["claude", "codex", "gemini", "grok"],
+      "install": {
+        "type": "stdio",
+        "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-memory@2026.8.31"],
+        "env": { "MEMORY_FILE_PATH": "{{directory}}/ai-memory.jsonl" }
+      },
+      "inputs": [
+        {
+          "key": "directory",
+          "label": "记忆文件存放的文件夹",
+          "placeholder": "把这一项换成文件夹的完整路径",
+          "hint": "记下来的内容会存成这个文件夹里的 ai-memory.jsonl，你随时能打开看，也能直接删掉。"
+        }
+      ],
+      "runtime": "node",
+      "network": "npm-first-run",
+      "requiresAccount": false,
+      "risks": ["local-fs-write"],
+      "riskNote": "它只写自己那一个记忆文件，不动别的东西。但记下来的都是明文，别让它记账号密码。",
+      "pinnedVersion": "2026.8.31",
+      "verifiedAt": "2026-09-21",
+      "note": "不指定文件夹的话记忆会存在临时目录里，换个版本就没了，所以这一条会先把表单填好，让你补上路径。"
+    },
+    {
+      "id": "sequential-thinking",
+      "kind": "mcp",
+      "name": "逐步思考",
+      "summary": "遇到复杂问题时，让 AI 先一步步把思路拆开、可以回头改，再给结论。排查问题和做方案时更靠得住。",
+      "publisher": "Model Context Protocol 官方",
+      "homepage": "https://github.com/modelcontextprotocol/servers/tree/main/src/sequentialthinking",
+      "providers": ["claude", "codex", "gemini", "grok"],
+      "install": {
+        "type": "stdio",
+        "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-sequential-thinking@2026.8.31"],
+        "env": {}
+      },
+      "inputs": [],
+      "runtime": "node",
+      "network": "npm-first-run",
+      "requiresAccount": false,
+      "risks": [],
+      "riskNote": "不碰你的文件，也不联网办事。代价是同一个问题会多绕几步，用掉的额度比平时多。",
+      "pinnedVersion": "2026.8.31",
+      "verifiedAt": "2026-09-21",
+      "note": null
+    },
+    {
+      "id": "github",
+      "kind": "mcp",
+      "name": "GitHub",
+      "summary": "让 AI 直接看你 GitHub 上的仓库、问题和合并请求，也能按你的要求在上面提交改动。",
+      "publisher": "GitHub 官方",
+      "homepage": "https://github.com/github/github-mcp-server",
+      "providers": ["claude", "codex", "gemini", "grok"],
+      "install": { "type": "http", "url": "https://api.githubcopilot.com/mcp/" },
+      "inputs": [],
+      "runtime": "none",
+      "network": "always",
+      "requiresAccount": true,
+      "risks": ["remote-exec"],
+      "riskNote": "要一个 GitHub 账号，装好之后还得在工具里登录一次授权。授权之后 AI 能改你这个账号有权限的仓库，所以别用公司的管理员账号来授权。",
+      "pinnedVersion": null,
+      "verifiedAt": "2026-09-21",
+      "note": "这一条是 GitHub 自己在线提供的服务，不在你电脑上装东西。"
+    }
+  ]
+}

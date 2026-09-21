@@ -228,9 +228,20 @@ const methods = {
   },
   getAccountUsage: async () => ({ page: 1, pageSize: 1, total: 0, records: [], stats: { quota: 1_000_000, rpm: 0, tpm: 0 } }),
   getWindowCapabilities: async () => ({ tray: true, notifications: true }),
-  getUpdateState: async () => ({ phase: query.has('startupUpdate') ? 'idle' : 'disabled', currentVersion: '0.1.31', availableVersion: null, releaseName: null, releaseNotesText: null, checkedAt: null, progress: null, error: null, development: true }),
+  getUpdateState: async () => ({ phase: query.has('startupUpdate') || query.has('updateCheckFail') ? 'idle' : 'disabled', currentVersion: '0.1.31', availableVersion: null, releaseName: null, releaseNotesText: null, checkedAt: null, progress: null, error: null, development: true }),
   runStartupUpdate: async () => { throw new Error('本地更新源暂时不可用') },
-  runDiagnostics: async () => ({ version: 1, generatedAt: new Date().toISOString(), durationMs: 1, counts: { pass: 1, warn: 0, fail: 0, error: 0 }, items: [] }),
+  // 用户自己点「检查更新」时失败的那一条，与启动时自动跑的那一条分开：前者仍要
+  // 在更新页上报错，后者只挂一条可关掉的提示。
+  checkForUpdates: async () => {
+    if (query.has('updateCheckFail')) throw new Error('更新服务器暂时连不上')
+    return { phase: 'idle' as const, currentVersion: '0.1.31', availableVersion: null, releaseName: null, releaseNotesText: null, checkedAt: new Date().toISOString(), progress: null, error: null, development: true }
+  },
+  runDiagnostics: async () => {
+    if (query.has('diagnosticsFail')) throw new Error('本机环境检查没有跑完')
+    const warn = Number(query.get('diagnosticIssues') ?? 0)
+    return { version: 1, generatedAt: new Date().toISOString(), durationMs: 1, counts: { pass: 1, warn: Number.isFinite(warn) ? warn : 0, fail: 0, error: 0 }, items: [] }
+  },
+  reportRendererError: async () => undefined,
   // 四个工具各跑一遍：真实用户多半只配了一两个，所以夹具默认给出「两个能用、
   // 两个还没配」的混合态，而不是四条一样的结论。
   checkProviderConnection: async (provider) => {

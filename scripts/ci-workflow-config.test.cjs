@@ -560,7 +560,7 @@ test('the required aggregate fails for incomplete checks and accepts documentati
   const vm = require('node:vm')
   const gate = workflow.jobs['quality-gate']
   assert.equal(gate.if, 'always()')
-  assert.deepEqual(gate.needs, ['changes', 'test', 'macos-test', 'macos-release-rehearsal', 'linux-test', 'audit'])
+  assert.deepEqual(gate.needs, ['changes', 'test', 'macos-test', 'macos-release-rehearsal', 'linux-test', 'audit', 'cli-relay-probe'])
   const source = gate.steps[0].run.split("node <<'NODE'\n")[1].split('\nNODE')[0]
   const run = (source, jobs) => {
     assert.doesNotThrow(() => JSON.stringify(jobs))
@@ -574,6 +574,9 @@ test('the required aggregate fails for incomplete checks and accepts documentati
       jobs[name] = { result: results[name] || 'success' }
     }
     jobs.test = { result: results.test || 'success' }
+    // The probe has its own trigger, so "skipped" is its normal state on a
+    // pull request that leaves the verified-version list alone.
+    jobs['cli-relay-probe'] = { result: results['cli-relay-probe'] || 'skipped' }
     return run(source, jobs)
   }
   assert.equal(verify('true', 'success', {}), true)
@@ -589,6 +592,11 @@ test('the required aggregate fails for incomplete checks and accepts documentati
   assert.equal(verify('false', 'success', Object.fromEntries(
     ['macos-test', 'macos-release-rehearsal', 'linux-test', 'audit'].map(name => [name, 'skipped']),
   )), true)
+  // The relay probe runs only when the verified-version list moves, so its
+  // skip is a pass; a red one is the whole reason it exists and must block.
+  assert.equal(verify('true', 'success', { 'cli-relay-probe': 'success' }), true)
+  assert.equal(verify('true', 'success', { 'cli-relay-probe': 'failure' }), false)
+  assert.equal(verify('true', 'success', { 'cli-relay-probe': 'cancelled' }), false)
 
   // The fold-in job itself: it is what keeps a single `test` check meaning
   // "Windows is green" after the matrix replaced the job that used to be it.
@@ -625,6 +633,35 @@ test('change classification does not skip code, workflow, or unknown revisions',
   assert.equal(changedFiles({ before: 'unsafe;command', after: 'a'.repeat(40) }, 'push'), null)
   const values = changedFiles({ pull_request: { base: { sha: 'a'.repeat(40) }, head: { sha: 'b'.repeat(40) } } }, 'pull_request', (_cmd, argv) => { assert.equal(argv.at(-1), '--'); return 'docs/guide.md\0src/app.ts\0' })
   assert.deepEqual(values, ['docs/guide.md', 'src/app.ts'])
+})
+
+test('the relay probe runs exactly when the verified-version list moves', () => {
+  const { touchesCliVersionList } = require('./ci-change-scope.cjs')
+  assert.equal(touchesCliVersionList(['electron/cli-verified-versions.ts']), true)
+  assert.equal(touchesCliVersionList(['docs/CLI-VERIFIED-VERSIONS.md']), true)
+  assert.equal(touchesCliVersionList(['electron/system-service.ts', 'README.md']), false)
+  // A near-miss filename must not arm a real request against the production
+  // relay, and must not disarm one either.
+  assert.equal(touchesCliVersionList(['electron/cli-verified-versions.test.ts']), false)
+
+  const scopeSource = fs.readFileSync(path.join(root, 'scripts', 'ci-change-scope.cjs'), 'utf8')
+  assert.match(scopeSource, /cliVersions=\$\{cliVersions\}/, 'the scope script must publish the probe output')
+  assert.equal(workflow.jobs.changes.outputs.cliVersions, '${{ steps.scope.outputs.cliVersions }}')
+
+  const probe = workflow.jobs['cli-relay-probe']
+  assert.equal(probe.if, "needs.changes.outputs.cliVersions == 'true'")
+  assert.deepEqual(probe.needs, 'changes')
+  assert.equal(probe['runs-on'], 'ubuntu-latest')
+  assert.ok(probe['timeout-minutes'] > 0, 'a job that makes network requests needs a bound')
+
+  const probeStep = probe.steps.find((step) => String(step.run || '').includes('probe-cli-relay.cjs'))
+  assert.ok(probeStep, 'the probe job must still run the probe script')
+  // The key reaches the CLI through the environment only. An argv-borne
+  // credential is world-readable on the runner and lands in the process list.
+  assert.deepEqual(Object.keys(probeStep.env), ['XINGMANG_CLI_PATROL_KEY'])
+  assert.equal(probeStep.env.XINGMANG_CLI_PATROL_KEY, '${{ secrets.XINGMANG_CLI_PATROL_KEY }}')
+  assert.equal(probeStep.run.includes('secrets.'), false, 'the key must never be interpolated into a command line')
+  assert.equal(runSteps('cli-relay-probe').some((command) => command.startsWith('npm ci')), true)
 })
 
 test('packaged Markdown and validation data always require code checks', () => {
