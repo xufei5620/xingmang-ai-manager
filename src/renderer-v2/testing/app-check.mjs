@@ -2,9 +2,9 @@ import assert from 'node:assert/strict'
 import { before, after, test } from 'node:test'
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { createServer } from 'vite'
 import react from '@vitejs/plugin-react'
 import { chromium, expect } from '@playwright/test'
+import { createFixtureServer } from '../../../e2e/harness.mjs'
 import { fixtureMountSliceMs, openFixturePage, waitForFixtureMount } from '../../../e2e/fixture-readiness.mjs'
 
 let server, browser, origin
@@ -70,9 +70,7 @@ async function assertNoToast(page, text) {
 
 before(async () => {
   await fs.mkdir(artifacts, { recursive: true })
-  server = await createServer({ root: path.resolve('.'), configFile: false, plugins: [react()], logLevel: 'error', server: { host: '127.0.0.1', port: 0 } })
-  await server.listen()
-  origin = `http://127.0.0.1:${server.httpServer.address().port}`
+  ;({ server, origin } = await createFixtureServer({ root: path.resolve('.'), configFile: false, plugins: [react()], logLevel: 'error' }))
   browser = await chromium.launch({ executablePath: process.env.XINGMANG_E2E_CHROMIUM || undefined })
   // Pay the transform and dependency-optimisation cost once, here, instead of
   // charging it to whichever test happens to run first.

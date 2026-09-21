@@ -3,8 +3,8 @@ import { after, before, test } from 'node:test'
 import path from 'node:path'
 import fs from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
-import { createServer } from 'vite'
 import { chromium } from '@playwright/test'
+import { createFixtureServer } from '../../../../e2e/harness.mjs'
 import { openFixturePage } from '../../../../e2e/fixture-readiness.mjs'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..')
@@ -12,9 +12,7 @@ const output = path.join(root, '.project-surgeon/audits/20260907-chat-v2')
 let server, browser, base
 before(async () => {
   await fs.mkdir(output, { recursive: true })
-  server = await createServer({ root, configFile: false, server: { host: '127.0.0.1', port: 0 }, esbuild: { jsx: 'automatic' } })
-  await server.listen()
-  base = `http://127.0.0.1:${server.httpServer.address().port}`
+  ;({ server, origin: base } = await createFixtureServer({ root, configFile: false, esbuild: { jsx: 'automatic' } }))
   browser = await chromium.launch({ headless: true, executablePath: process.env.XINGMANG_E2E_CHROMIUM || undefined })
 })
 after(async () => { await browser?.close(); await server?.close() })
