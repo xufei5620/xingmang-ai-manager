@@ -11,6 +11,9 @@ import type { ToolFirstRun } from '../../registry/tools'
  *
  * 剪贴板失败也要有回音：打包版里 navigator.clipboard 仍可能被系统拒绝，
  * 按了没反应会让用户以为是工具坏了。
+ *
+ * 调用方要给它一个随工具变化的 key：换了工具就得重置这句回音，否则关掉
+ * Claude Code 那张卡之后，接上来的 Codex 卡上会挂着一句「已复制」。
  */
 export function FirstRunSteps({ name, firstRun, testId }: { name: string; firstRun: ToolFirstRun; testId: string }) {
   const [copied, setCopied] = useState<'' | 'command' | 'prompt'>('')
