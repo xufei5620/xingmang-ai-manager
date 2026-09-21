@@ -674,6 +674,11 @@ export interface XingmangInvokeContract {
     [input: ProviderExtensionMutation],
     ProviderExtensionsSnapshot
   >
+  ensureProviderMarketplace: IpcInvokeDefinition<
+    'extensions:ensure-marketplace',
+    [provider: ProviderId],
+    ProviderExtensionsSnapshot
+  >
   getAccountStatus: IpcInvokeDefinition<'account:get-status', [siteId?: AccountSiteId], AccountStatus>
   getAccountNotice: IpcInvokeDefinition<'account:get-notice', [], import('./relay-backend').RelayNotice | null>
   markAccountNoticeRead: IpcInvokeDefinition<'account:mark-notice-read', [id: string, entryId: string], void>
@@ -972,6 +977,7 @@ export const ipcInvokeChannels = {
   listProviderExtensions: 'extensions:list',
   listAllProviderExtensions: 'extensions:list-all',
   mutateProviderExtension: 'extensions:mutate',
+  ensureProviderMarketplace: 'extensions:ensure-marketplace',
   getAccountStatus: 'account:get-status',
   getAccountNotice: 'account:get-notice',
   markAccountNoticeRead: 'account:mark-notice-read',

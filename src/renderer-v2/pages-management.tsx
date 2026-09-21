@@ -98,6 +98,33 @@ export function extensionItemsForView(
   )
 }
 
+/**
+ * Claude Code 只在自己首次交互式启动时注册官方市场，而本软件一律非交互调用
+ * 它，所以没在终端用过的机器上可装清单永远是空的。界面必须能分辨「这里没有
+ * 可装的」和「市场还没加进来」，否则用户看到空列表也无从下手。
+ */
+export function officialMarketplaceNotice(
+  marketplace: ExtensionSnapshot['marketplace'],
+): { tone: 'neutral' | 'warn'; title: string; body: string; needsAction: boolean } | null {
+  if (!marketplace) return null
+  if (marketplace.registered) {
+    return {
+      tone: 'neutral',
+      title: '官方插件市场已添加',
+      body: '下面是可以安装的插件，安装前确认插件来源。',
+      needsAction: false,
+    }
+  }
+  return {
+    tone: 'warn',
+    title: '还没有添加官方插件市场',
+    body:
+      marketplace.reason ||
+      '添加之后这里才会出现可以安装的插件。添加需要这台电脑上装有 Git。',
+    needsAction: true,
+  }
+}
+
 export function filterExtensionMarkets(
   markets: readonly ExtensionMarket[],
   query: string,
@@ -757,6 +784,30 @@ export function ExtensionsPage({
       {kind === 'mcp' ? '添加连接' : kind === 'skill' ? '导入技能' : '添加插件'}
     </Button>
   )
+  const marketplace = officialMarketplaceNotice(snapshot?.marketplace)
+  const officialMarketplacePage =
+    kind === 'plugin' && view === 'market' && provider === 'claude'
+  const addOfficialMarketplace = () =>
+    void operation.execute(
+      'marketplace-ensure',
+      async () => {
+        await api.ensureProviderMarketplace(provider)
+        await resource.reload()
+      },
+      '官方插件市场已添加，下面就是可以安装的插件。',
+    )
+  const officialMarketplaceButton = (
+    <Button
+      variant="primary"
+      icon={Plus}
+      loading={operation.busy === 'marketplace-ensure'}
+      disabled={Boolean(operation.busy)}
+      onClick={addOfficialMarketplace}
+      testId="plugins-official-marketplace-add"
+    >
+      添加官方市场
+    </Button>
+  )
   const headerAction =
     kind === 'plugin' && view === 'market' && provider === 'codex' ? (
       <Button
@@ -771,6 +822,8 @@ export function ExtensionsPage({
       >
         添加市场
       </Button>
+    ) : officialMarketplacePage && marketplace?.needsAction ? (
+      officialMarketplaceButton
     ) : addButton
   const markets = resource.data?.codex?.plugins.marketplaces ?? []
   const filteredMarkets = filterExtensionMarkets(markets, query)
@@ -828,7 +881,7 @@ export function ExtensionsPage({
         }
         right={
           <span>
-            {kind === 'plugin' && view === 'market'
+            {kind === 'plugin' && view === 'market' && !officialMarketplacePage
               ? filteredMarkets.length
               : list.length}{' '}
             {kind === 'mcp' ? '个连接' : '项'}
@@ -874,7 +927,16 @@ export function ExtensionsPage({
           onPick={setCurated}
         />
       )}
-      {view === 'market' && kind === 'plugin' ? (
+      {officialMarketplacePage && marketplace && (
+        <Notice
+          tone={marketplace.tone}
+          title={marketplace.title}
+          body={marketplace.body}
+          actions={marketplace.needsAction ? officialMarketplaceButton : undefined}
+          testId="plugins-official-marketplace"
+        />
+      )}
+      {view === 'market' && kind === 'plugin' && !officialMarketplacePage ? (
         <>
           <Card padding="none">
             {provider !== 'codex' ? (
@@ -1037,11 +1099,23 @@ export function ExtensionsPage({
                     </>
                   }
                   meta={item.currentVersion || undefined}
-                  off={!item.enabled}
+                  // 市场里没装的那些本来就谈不上启用与否，别把它们画成停用的。
+                  off={item.installed && !item.enabled}
                   testId={`${page}-row-${item.id}`}
                   actions={
                     <>
-                      {togglable ? (
+                      {!item.installed && item.operations.install ? (
+                        <Button
+                          size="sm"
+                          icon={Download}
+                          loading={operation.busy === 'install'}
+                          disabled={Boolean(operation.busy)}
+                          onClick={() => act(item, 'install')}
+                          testId={`${page}-install-${item.id}`}
+                        >
+                          安装
+                        </Button>
+                      ) : togglable ? (
                         <Switch
                           label={item.enabled ? '已启用' : '已停用'}
                           checked={item.enabled}

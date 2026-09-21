@@ -4,6 +4,7 @@ import {
   CuratedDetails,
   CuratedShelf,
   curatedPlaceholderField,
+  officialMarketplaceNotice,
   submitMcpInstall,
   unresolvedInstallPlaceholders,
 } from './pages-management'
@@ -118,5 +119,37 @@ describe('MCP install submission', () => {
       bearerTokenEnvVar: 'TOKEN',
     })
     expect(addMcpServer).toHaveBeenLastCalledWith({ name: 'files', ...item('files').install })
+  })
+})
+
+describe('official plugin marketplace notice', () => {
+  it('says nothing for a tool that has no official marketplace', () => {
+    expect(officialMarketplaceNotice(undefined)).toBeNull()
+  })
+
+  it('asks the user to add the marketplace when it is missing, and explains the Git requirement', () => {
+    const notice = officialMarketplaceNotice({
+      name: 'claude-plugins-official',
+      registered: false,
+      reason: null,
+    })
+    expect(notice).toMatchObject({ tone: 'warn', needsAction: true })
+    expect(notice?.body).toContain('Git')
+  })
+
+  it('prefers the reason the main process reported over the generic explanation', () => {
+    expect(officialMarketplaceNotice({
+      name: 'claude-plugins-official',
+      registered: false,
+      reason: 'Claude Code 插件市场列表读取失败：命令超时',
+    })?.body).toBe('Claude Code 插件市场列表读取失败：命令超时')
+  })
+
+  it('stops asking once the marketplace is registered', () => {
+    expect(officialMarketplaceNotice({
+      name: 'claude-plugins-official',
+      registered: true,
+      reason: null,
+    })).toMatchObject({ tone: 'neutral', needsAction: false })
   })
 })

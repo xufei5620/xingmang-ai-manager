@@ -1154,6 +1154,7 @@ const ipcOperationLabels: Readonly<Record<string, string>> = {
   'extensions:list': 'AI 工具扩展列表读取',
   'extensions:list-all': '全部 AI 工具扩展读取',
   'extensions:mutate': 'AI 工具扩展操作',
+  'extensions:ensure-marketplace': '官方插件市场添加',
   'account:get-status': '星芒账号服务状态读取',
   'account:get-legal-document': '星芒账号法律文档读取',
   'account:login': '星芒账号登录',
@@ -1982,6 +1983,10 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   registerTrustedHandler('extensions:mutate', (_event, input: unknown) => (
     options.providerExtensionService.mutate(parseProviderExtensionMutation(input))
   ))
+  registerTrustedHandler('extensions:ensure-marketplace', async (_event, provider: unknown) => {
+    if (!isProviderId(provider)) throw new Error('未知的 AI 工具')
+    return recordExtensionWarnings(await options.providerExtensionService.ensureMarketplace(provider))
+  })
   registerTrustedHandler('account:get-status', (_event, siteId: unknown) => (
     options.realmAccounts && siteId !== undefined
       ? options.realmAccounts.getPublicClient(parseAccountSiteId(siteId)).getStatus()
