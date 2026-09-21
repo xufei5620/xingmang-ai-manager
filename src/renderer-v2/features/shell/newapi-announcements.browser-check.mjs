@@ -4,6 +4,7 @@ import { after, before, test } from 'node:test'
 import { chromium } from '@playwright/test'
 import react from '@vitejs/plugin-react'
 import { createServer } from 'vite'
+import { waitForFixtureMount } from '../../../../e2e/fixture-readiness.mjs'
 
 let server, browser, page
 const externalRequests = []
@@ -23,6 +24,10 @@ before(async () => {
     return route.abort()
   })
   await page.goto(`${origin}/src/renderer-v2/testing/app.html?noticeEmpty=1`)
+  // The import below is the first thing Vite has to transform on demand, and it
+  // runs inside a before() hook, so a cold open takes the whole suite down with
+  // a message about the parser rather than about the mount.
+  await waitForFixtureMount(page, { what: 'the announcement parser fixture' })
   await page.evaluate(async () => {
     window.parseNewApiNoticeFixture = (await import('/src/renderer-v2/features/shell/newapi-announcements.ts'))
       .parseNewApiAnnouncementCollection

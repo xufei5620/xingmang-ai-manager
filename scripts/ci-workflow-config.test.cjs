@@ -787,6 +787,15 @@ const fixtureReadinessConsumers = [
   // reported as "chat-composer-input" never becoming visible, 30.1s in, while
   // the same case finished in 12.6s on Linux.
   'src/renderer-v2/features/chat/browser-check.mjs',
+  // Found by the scan below rather than by anyone reading the list, and
+  // budgeted once the scan made them visible. All four waited on an element of
+  // the page under test - the acceleration nav, the announcement button, the
+  // parser import, the gallery heading - so a cold open was reported as that
+  // element being missing.
+  'src/renderer-v2/features/acceleration/browser-check.mjs',
+  'src/renderer-v2/features/shell/announcement-persistence.browser-check.mjs',
+  'src/renderer-v2/features/shell/newapi-announcements.browser-check.mjs',
+  'src/renderer-v2/ui/browser-check.mjs',
 ]
 
 // A hand-kept list only covers what someone remembered to add. These are the
@@ -796,11 +805,10 @@ const fixtureReadinessConsumers = [
 // fails rather than waiting for a Windows runner to report it as a broken
 // feature.
 const fixtureReadinessUnbudgeted = [
+  // The canvas is frozen to its owner's own rework, so this one is left where
+  // the scan can still see it rather than touched. Everything else the scan
+  // found has since been budgeted.
   'e2e/canvas-group-refresh.mjs',
-  'src/renderer-v2/features/acceleration/browser-check.mjs',
-  'src/renderer-v2/features/shell/announcement-persistence.browser-check.mjs',
-  'src/renderer-v2/features/shell/newapi-announcements.browser-check.mjs',
-  'src/renderer-v2/ui/browser-check.mjs',
 ]
 
 // The roots whose .mjs suites run under `npm test` / `npm run test:v2`, which is
@@ -825,18 +833,24 @@ function browserSuitesUnder(directory) {
   return found
 }
 
+// Playwright's action default. A mount wait exists because it has to outlast
+// this; anything shorter is an assertion that something happens quickly, which
+// is the opposite thing and stays as written.
+const playwrightActionDefaultMs = 30_000
+
 // Expressed once so the gate and its own test measure the same thing.
 function fixtureMountBudgetProblems(consumer, source) {
   const problems = []
-  if (!/fixtureReadyTimeoutMs/.test(source)) {
+  // Either the budget itself, or the shared wait that spends it.
+  if (!/fixtureReadyTimeoutMs|waitForFixtureMount/.test(source)) {
     problems.push(`${consumer} must bound its fixture mount with the shared budget`)
   }
   if (!/from '[./]*(?:e2e\/)?fixture-readiness\.mjs'/.test(source)) {
     problems.push(`${consumer} must import the shared budget rather than restate it`)
   }
-  const restated = source.match(/timeout:\s*\d[\d_]*/)
-  if (restated) {
-    problems.push(`${consumer} must not restate a wait of its own (${restated[0]})`)
+  for (const restated of source.matchAll(/timeout:\s*(\d[\d_]*)/g)) {
+    if (Number(restated[1].replaceAll('_', '')) < playwrightActionDefaultMs) continue
+    problems.push(`${consumer} must not restate a mount wait of its own (${restated[0]})`)
   }
   return problems
 }
@@ -885,7 +899,7 @@ test('every browser suite is accounted for by the fixture mount gate', () => {
   for (const suite of fixtureReadinessUnbudgeted) {
     assert.ok(discovered.includes(suite), `${suite} no longer opens pages: drop it from the unbudgeted list`)
     const source = fs.readFileSync(path.join(root, suite), 'utf8')
-    assert.doesNotMatch(source, /fixtureReadyTimeoutMs/, `${suite} now takes the shared budget: move it to the consumers`)
+    assert.doesNotMatch(source, /fixtureReadyTimeoutMs|waitForFixtureMount/, `${suite} now takes the shared budget: move it to the consumers`)
   }
 })
 
@@ -899,9 +913,22 @@ test('the fixture mount gate rejects a suite that waits on a number of its own',
 
   assert.deepEqual(fixtureMountBudgetProblems('fake/browser-check.mjs', budgeted), [])
 
+  // Spending the budget through the shared wait counts as taking it.
+  const shared = [
+    "import { waitForFixtureMount } from '../../../../e2e/fixture-readiness.mjs'",
+    "await waitForFixtureMount(page, { what: 'the fake fixture' })",
+  ].join('\n')
+  assert.deepEqual(fixtureMountBudgetProblems('fake/browser-check.mjs', shared), [])
+
   const restated = budgeted.replace('fixtureReadyTimeoutMs })', '60_000 })')
   assert.deepEqual(fixtureMountBudgetProblems('fake/browser-check.mjs', restated),
-    ['fake/browser-check.mjs must not restate a wait of its own (timeout: 60_000)'])
+    ['fake/browser-check.mjs must not restate a mount wait of its own (timeout: 60_000)'])
+
+  // An assertion that something happens faster than the default is the opposite
+  // of a mount wait - src/renderer-v2/ui/browser-check.mjs asserts a toast is
+  // gone within 4s - and must survive the suite being budgeted.
+  const shorterThanDefault = `${shared}\nawait toast.waitFor({ state: 'detached', timeout: 4000 })`
+  assert.deepEqual(fixtureMountBudgetProblems('fake/browser-check.mjs', shorterThanDefault), [])
 
   // What the chat fixture looked like: no import, no budget, the element under
   // test doubling as the mount wait on Playwright's default.
