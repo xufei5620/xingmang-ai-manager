@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { after, before, test } from 'node:test'
-import { fixtureReadyTimeoutMs } from './fixture-readiness.mjs'
+import { openFixturePage } from './fixture-readiness.mjs'
 import { createBrowserFixture } from './harness.mjs'
 
 // 此前这个文件开 page 时不传 viewport，拿的是 Playwright 的 1280x720 默认值。
@@ -16,9 +16,9 @@ before(async () => {
   // Windows runner 上好几个 e2e 文件并行跑时，第二次冷开连 90 秒都不够（quality
   // run 35423428733 实测：同一文件第一个用例 4.1 秒通过，第二个卡满 90 秒超时）。
   page = await fixture.newPage()
-  await page.goto(`${fixture.baseUrl}/e2e/maintenance-layout-fixture.html`)
   row = page.locator('.maintenance-cli-section .maintenance-row').first()
-  await row.waitFor({ timeout: fixtureReadyTimeoutMs })
+  await openFixturePage(page, `${fixture.baseUrl}/e2e/maintenance-layout-fixture.html`,
+    (timeout) => row.waitFor({ timeout }), { label: 'maintenance-layout fixture' })
 })
 after(async () => { await fixture.stop(); fixture.assertNoPageErrors() })
 

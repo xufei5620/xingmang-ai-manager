@@ -43,7 +43,17 @@ import {
   useOperation,
   useResource,
 } from './business-common'
-import { mcpQuickLinks, scopeOptions } from './registry/business'
+import { scopeOptions } from './registry/business'
+import {
+  curatedCommandText,
+  curatedDisclaimer,
+  curatedItemsFor,
+  curatedNeedsInput,
+  curatedNetworkLabels,
+  curatedRiskLabels,
+  curatedRuntimeLabels,
+  type CuratedExtension,
+} from './registry/curated-extensions'
 import { tools } from './registry/tools'
 import type { V2Bridge } from './types'
 type Provider = Parameters<V2Bridge['listProviderExtensions']>[0]
@@ -51,6 +61,7 @@ type ExtensionSnapshot = Awaited<ReturnType<V2Bridge['listProviderExtensions']>>
 type ExtensionItem = ExtensionSnapshot['items'][number]
 type ExtensionKind = ExtensionItem['kind']
 type Mutation = Parameters<V2Bridge['mutateProviderExtension']>[0]
+type McpConfig = NonNullable<Mutation['mcp']>
 type CodexExtensionApi = Pick<
   V2Bridge,
   'listMcpServers' | 'listSkills' | 'listPlugins'
@@ -179,6 +190,165 @@ export function parseEnvironmentVariables(
   )
     throw new Error('环境变量需填写为名称和值均有效的 JSON 对象。')
   return result as Record<string, string>
+}
+
+/**
+ * 手填表单与「星芒精选」共用同一条提交路径：精选不另开一条通道，命令与参数照样过主进程
+ * 的 safeIdentifier / argv 校验（I1、I5）。Codex 的 MCP 走它自己的原生接口，其余三家走
+ * mutateProviderExtension，这个分叉本来就在表单里，这里只是把它抽出来让两个入口共用。
+ */
+export async function submitMcpInstall(
+  api: Pick<V2Bridge, 'addMcpServer' | 'mutateProviderExtension'>,
+  provider: Provider,
+  name: string,
+  mcp: McpConfig,
+  scope: 'user' | 'project',
+  advanced: {
+    bearerTokenEnvVar?: string
+    oauthClientId?: string
+    oauthResource?: string
+  } = {},
+) {
+  if (provider === 'codex') {
+    if (mcp.type === 'http') await api.addMcpServer({ name, ...mcp, ...advanced })
+    else await api.addMcpServer({ name, ...mcp })
+    return
+  }
+  await api.mutateProviderExtension({
+    provider,
+    kind: 'mcp',
+    action: 'install',
+    id: name,
+    scope,
+    mcp,
+  })
+}
+
+/**
+ * 精选里需要用户自己指定路径的条目（本地文件的允许目录、记忆的存放位置）会把 `{{名字}}`
+ * 原样填进表单，等用户替换。没替换就提交等于写进一条起不来的连接，而 CLI 只会在下次启动
+ * 时静默失败，所以提交前当场拦住并说清该换哪一项。
+ */
+export function unresolvedInstallPlaceholders(
+  args: readonly string[],
+  env: Record<string, string>,
+): string[] {
+  const found = new Set<string>()
+  for (const value of [...args, ...Object.values(env)])
+    for (const match of value.matchAll(/\{\{[A-Za-z][A-Za-z0-9_]*\}\}/g))
+      found.add(match[0])
+  return [...found]
+}
+
+/** 占位符可能落在参数里（本地文件的目录），也可能落在环境变量里（记忆的存放位置）。 */
+export function curatedPlaceholderField(
+  item: CuratedExtension,
+  key: string,
+): '参数' | '环境变量' {
+  if (
+    item.install.type === 'stdio' &&
+    Object.values(item.install.env).some((value) =>
+      value.includes(`{{${key}}}`),
+    )
+  )
+    return '环境变量'
+  return '参数'
+}
+
+export function CuratedDetails({ item }: { item: CuratedExtension }) {
+  const network = curatedNetworkLabels[item.network]
+  return (
+    <div data-testid={`curated-details-${item.id}`}>
+      <p>{item.summary}</p>
+      <div className="v2-curated-tags">
+        {item.requiresAccount && <Pill tone="accent">需要先登录</Pill>}
+        {item.risks.length === 0 ? (
+          <Pill tone="ok">没有特别的风险</Pill>
+        ) : (
+          item.risks.map((risk) => (
+            <Pill key={risk} tone="warn">
+              {curatedRiskLabels[risk].label}
+            </Pill>
+          ))
+        )}
+      </div>
+      <dl className="v2-business-kv">
+        <dt>维护者</dt>
+        <dd>{item.publisher}</dd>
+        <dt>怎么运行</dt>
+        <dd>
+          {curatedRuntimeLabels[item.runtime]}
+          {network ? `，${network}` : ''}
+        </dd>
+        <dt>
+          {item.install.type === 'http'
+            ? '将写进配置的服务地址'
+            : '将写进配置、由工具启动时执行的命令'}
+        </dt>
+        <dd className="v2-business-path">{curatedCommandText(item)}</dd>
+        <dt>装到哪里</dt>
+        <dd>我的（全局），当前这个工具在任何文件夹里打开都能用</dd>
+      </dl>
+      <p>{item.riskNote}</p>
+      {item.note && <p>{item.note}</p>}
+      <p>{curatedDisclaimer}</p>
+    </div>
+  )
+}
+
+export function CuratedShelf({
+  items,
+  disabled,
+  onPick,
+}: {
+  items: readonly CuratedExtension[]
+  disabled?: boolean
+  onPick: (item: CuratedExtension) => void
+}) {
+  if (items.length === 0) return null
+  return (
+    <Card
+      title="星芒精选"
+      meta={`${items.length} 项`}
+      padding="none"
+      testId="curated-shelf"
+    >
+      <p className="v2-curated-lead">
+        这几项是我们挑过的，都写清了它能让 AI 多做什么、要拿到什么权限。点「安装」会先让你确认一次。
+      </p>
+      {items.map((item) => (
+        <ListRow
+          key={item.id}
+          icon={item.install.type === 'http' ? Globe : Server}
+          title={item.name}
+          badge={
+            <>
+              {item.requiresAccount && <Pill tone="accent">需要先登录</Pill>}
+              {item.risks.map((risk) => (
+                <Pill key={risk} tone="warn">
+                  {curatedRiskLabels[risk].label}
+                </Pill>
+              ))}
+            </>
+          }
+          desc={item.summary}
+          meta={curatedNetworkLabels[item.network] ?? undefined}
+          actions={
+            <Button
+              size="sm"
+              icon={Plus}
+              disabled={disabled}
+              onClick={() => onPick(item)}
+              testId={`curated-install-${item.id}`}
+            >
+              安装
+            </Button>
+          }
+          testId={`curated-row-${item.id}`}
+        />
+      ))}
+    </Card>
+  )
 }
 export function SessionsPage({ api }: { api: V2Bridge }) {
   const [provider, setProvider] = useState<Provider | 'all'>('all')
@@ -451,6 +621,10 @@ export function ExtensionsPage({
   const [formScope, setFormScope] = useState<'user' | 'project'>('user')
   const [deletion, setDeletion] = useState<ExtensionItem | null>(null)
   const [selected, setSelected] = useState<ExtensionItem | null>(null)
+  // 待确认的精选条目，以及已经把表单填好、等用户补上路径的那一条。
+  const [curated, setCurated] = useState<CuratedExtension | null>(null)
+  const [curatedForm, setCuratedForm] = useState<CuratedExtension | null>(null)
+  const curatedItems = useMemo(() => curatedItemsFor(kind, provider), [kind, provider])
   const snapshot = resource.data?.snapshot
   const all = extensionItemsForView(
     snapshot?.items ?? [],
@@ -483,9 +657,42 @@ export function ExtensionsPage({
     setBearerEnv('')
     setOauthClient('')
     setOauthResource('')
+    setCuratedForm(null)
     setForm('add')
     operation.clear()
   }
+  // 需要用户自己指定路径的精选条目不直接装，先把表单填好，把该替换的那一项留在参数里。
+  const prefillCurated = (item: CuratedExtension) => {
+    showForm()
+    setFormName(item.id)
+    setTransport(item.install.type === 'http' ? 'http' : 'stdio')
+    setSource(
+      item.install.type === 'http' ? item.install.url : item.install.command,
+    )
+    if (item.install.type === 'stdio') {
+      setArgs(JSON.stringify(item.install.args))
+      setEnvironment(JSON.stringify(item.install.env))
+    }
+    setCuratedForm(item)
+  }
+  // 空列表里的「看看精选」把焦点交给精选卡的第一个「安装」，键盘用户不用自己找上去。
+  const focusCuratedShelf = () => {
+    const target = document.querySelector<HTMLElement>(
+      '[data-testid="curated-shelf"] [data-testid^="curated-install-"]',
+    )
+    target?.scrollIntoView({ block: 'center' })
+    target?.focus()
+  }
+  const installCurated = (item: CuratedExtension) =>
+    void operation.execute(
+      'curated',
+      async () => {
+        await submitMcpInstall(api, provider, item.id, item.install, 'user')
+        setCurated(null)
+        await resource.reload()
+      },
+      `${item.name} 已添加，可以在下面的列表里看到`,
+    )
   const add = () =>
     void operation.execute(
       'add',
@@ -507,27 +714,18 @@ export function ExtensionsPage({
                   args: parseCommandArguments(args),
                   env: parseEnvironmentVariables(environment),
                 }
-          if (provider === 'codex') {
-            if (mcp.type === 'http')
-              await api.addMcpServer({
-                name: formName.trim(),
-                ...mcp,
-                ...(bearerEnv ? { bearerTokenEnvVar: bearerEnv.trim() } : {}),
-                ...(oauthClient ? { oauthClientId: oauthClient.trim() } : {}),
-                ...(oauthResource
-                  ? { oauthResource: oauthResource.trim() }
-                  : {}),
-              })
-            else await api.addMcpServer({ name: formName.trim(), ...mcp })
-          } else
-            await api.mutateProviderExtension({
-              provider,
-              kind,
-              action: 'install',
-              id: formName.trim(),
-              scope: formScope,
-              mcp,
-            })
+          if (mcp.type === 'stdio') {
+            const pending = unresolvedInstallPlaceholders(mcp.args, mcp.env)
+            if (pending.length)
+              throw new Error(
+                `${pending.join('、')} 还没换成真实内容，请先填好再添加。`,
+              )
+          }
+          await submitMcpInstall(api, provider, formName.trim(), mcp, formScope, {
+            ...(bearerEnv ? { bearerTokenEnvVar: bearerEnv.trim() } : {}),
+            ...(oauthClient ? { oauthClientId: oauthClient.trim() } : {}),
+            ...(oauthResource ? { oauthResource: oauthResource.trim() } : {}),
+          })
         } else if (kind === 'skill' && provider === 'codex')
           await api.importSkill({
             sourcePath: source.trim(),
@@ -670,27 +868,11 @@ export function ExtensionsPage({
         />
       )}
       {kind === 'mcp' && (
-        <div className="v2-business-suggestions">
-          <span>常用连接：</span>
-          {mcpQuickLinks.map((quick) => (
-            <Button
-              size="sm"
-              icon={Plus}
-              key={quick.id}
-              disabled={capability?.list === false}
-              onClick={() => {
-                showForm()
-                setFormName(quick.id)
-                setTransport('url' in quick ? 'http' : 'stdio')
-                setSource(('url' in quick ? quick.url : quick.command) ?? '')
-                setArgs(('args' in quick ? quick.args : '[]') ?? '[]')
-              }}
-              testId={`mcp-quick-${quick.id}`}
-            >
-              {quick.name}
-            </Button>
-          ))}
-        </div>
+        <CuratedShelf
+          items={curatedItems}
+          disabled={capability?.list === false || Boolean(operation.busy)}
+          onPick={setCurated}
+        />
       )}
       {view === 'market' && kind === 'plugin' ? (
         <>
@@ -778,7 +960,23 @@ export function ExtensionsPage({
               setQuery('')
               setScope('all')
             }}
-            action={addButton}
+            action={
+              curatedItems.length > 0 ? (
+                <>
+                  {addButton}
+                  <Button
+                    size="sm"
+                    icon={Sparkles}
+                    onClick={focusCuratedShelf}
+                    testId={`${page}-see-curated`}
+                  >
+                    看看精选
+                  </Button>
+                </>
+              ) : (
+                addButton
+              )
+            }
           >
             {list.map((item) => {
               const nativeMcp = resource.data?.codex?.mcp.find(
@@ -961,6 +1159,15 @@ export function ExtensionsPage({
         }
       >
         <ResultNotice error={operation.error} />
+        {curatedForm?.inputs.map((input) => (
+          <Notice
+            key={input.key}
+            tone="warn"
+            title={`还缺一样：${input.label}`}
+            body={`请把下面「${curatedPlaceholderField(curatedForm, input.key)}」里的 {{${input.key}}} 换成${input.label}的完整路径。${input.hint}`}
+            testId={`curated-input-${input.key}`}
+          />
+        ))}
         {kind === 'mcp' && (
           <>
             <Input
@@ -1051,6 +1258,43 @@ export function ExtensionsPage({
             }
           />
         )}
+      </Dialog>
+      <Dialog
+        open={Boolean(curated)}
+        title={`装上「${curated?.name ?? ''}」？`}
+        icon={Sparkles}
+        testId="curated-confirm"
+        busy={operation.busy === 'curated'}
+        onClose={() => setCurated(null)}
+        footer={
+          <>
+            <Button
+              onClick={() => setCurated(null)}
+              disabled={operation.busy === 'curated'}
+            >
+              取消
+            </Button>
+            <Button
+              variant="primary"
+              icon={Plus}
+              loading={operation.busy === 'curated'}
+              onClick={() => {
+                if (!curated) return
+                if (curatedNeedsInput(curated)) {
+                  const item = curated
+                  setCurated(null)
+                  prefillCurated(item)
+                } else installCurated(curated)
+              }}
+              testId="curated-confirm-submit"
+            >
+              {curated && curatedNeedsInput(curated) ? '继续填写' : '确认安装'}
+            </Button>
+          </>
+        }
+      >
+        {curated && <CuratedDetails item={curated} />}
+        <ResultNotice error={operation.error} />
       </Dialog>
       <Dialog
         open={Boolean(deletion)}

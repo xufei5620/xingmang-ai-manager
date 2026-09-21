@@ -173,6 +173,20 @@ const balance = { quota: 6_200_000, usedQuota: 0, quotaPerUnit: 500_000, quotaDi
 function sessionCapability(provider: ProviderId): MultiProviderSessionPage['capabilities'][ProviderId] {
   return { provider, available: true, readable: true, readonly: true, source: 'jsonl', reason: '', operations: { list: true, detail: true, exportMarkdown: true, archive: false, restore: false } }
 }
+// 首页「打开」的最近目录是从会话记录里的 cwd 推出来的（N7），所以这里要有带目录的记录。
+// 同一个目录两条记录，用来盯住去重。
+function recentWorkspaceSession(id: string, provider: ProviderId, cwd: string, updatedAt: number): MultiProviderSessionPage['items'][number] {
+  return { id: `${provider}:${id}`, provider, nativeId: id, title: `会话 ${id}`, cwd, model: 'fixture-model',
+    archived: false, readonly: true, createdAt: updatedAt, updatedAt, messageCount: 2,
+    sourcePath: `C:\\Fixture\\${id}.jsonl`, detailAvailable: true }
+}
+const recentWorkspaceSessions = [
+  recentWorkspaceSession('1', 'claude', 'C:\\work\\my-app', 400),
+  recentWorkspaceSession('2', 'claude', 'C:\\work\\older-app', 300),
+  recentWorkspaceSession('3', 'claude', 'C:\\work\\my-app', 200),
+  recentWorkspaceSession('4', 'codex', 'C:\\work\\codex-app', 100),
+  recentWorkspaceSession('5', 'gemini', 'C:\\work\\a-very-long-project-name', 50),
+]
 const methods = {
   listAccelerationLines: async () => query.has('accelerationPreview') ? accelerationDemo.listAccelerationLines?.('xm-account:17') ?? [] : [],
   pingAccelerationLine: async (_scope: string, lineId: string) => {
@@ -310,7 +324,7 @@ const methods = {
   loginAccount: async (input) => { const resolvedSite = input.siteId ?? (query.has('sub2api') ? 'solov-api' : 'solov'); session = { authenticated: true, account, ...(resolvedSite === 'solov-api' ? sub2ApiMetadata : { siteId: 'solov' as const }) }; return { ...session, account, accessExpiresAt: null } },
   registerAccount: async () => {},
   logoutAccount: async () => { session = { ...session, authenticated: false, account: null } },
-  listProviderSessions: async () => ({ items: [], page: 1, pageSize: 3, total: 0, pages: 1, stats: { total: 0, byProvider: { claude: 0, codex: 0, gemini: 0, grok: 0 } }, capabilities: { claude: sessionCapability('claude'), codex: sessionCapability('codex'), gemini: sessionCapability('gemini'), grok: sessionCapability('grok') } }),
+  listProviderSessions: async () => ({ items: query.has('recentWorkspaces') ? recentWorkspaceSessions : [], page: 1, pageSize: 60, total: query.has('recentWorkspaces') ? recentWorkspaceSessions.length : 0, pages: 1, stats: { total: query.has('recentWorkspaces') ? recentWorkspaceSessions.length : 0, byProvider: { claude: query.has('recentWorkspaces') ? 3 : 0, codex: query.has('recentWorkspaces') ? 1 : 0, gemini: query.has('recentWorkspaces') ? 1 : 0, grok: 0 } }, capabilities: { claude: sessionCapability('claude'), codex: sessionCapability('codex'), gemini: sessionCapability('gemini'), grok: sessionCapability('grok') } }),
   launchCli: async () => query.has('launchPending') ? new Promise<void>((resolve) => { releaseLaunch = resolve }) : undefined,
   launchCodexDesktop: async () => ({ restarted: false, status: system.desktopApps.codex, ...(query.has('localeLaunchWarning') ? { chineseLocale: { status: 'failed' as const, message: 'Codex 已打开，但未确认中文界面生效，请在配置中再次启用。' } } : {}) }),
   inspectCodexDesktopLocale: async () => ({ installed: true, version: 'fixture', running: true, configPath: 'C:\\Fixture\\config.toml', configuredLocale: 'zh-CN', effectiveLocale: 'zh-CN', chineseResources: { available: true, frontendChunk: true, menuLocale: true, pakLocale: true, resourceRoot: 'C:\\Fixture' }, needsRestart: true, error: null }),

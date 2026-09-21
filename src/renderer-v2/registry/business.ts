@@ -56,21 +56,6 @@ export const billingOptions = [
   { value: 'subscription_only', label: '只用订阅' },
   { value: 'wallet_only', label: '只用余额' },
 ]
-export const mcpQuickLinks = [
-  {
-    name: '浏览器',
-    id: 'browser',
-    command: 'npx',
-    args: '["-y", "@playwright/mcp@latest"]',
-  },
-  { name: 'GitHub', id: 'github', url: 'https://api.githubcopilot.com/mcp/' },
-  {
-    name: '本地文件',
-    id: 'files',
-    command: 'npx',
-    args: '["-y", "@modelcontextprotocol/server-filesystem"]',
-  },
-]
 export const taskStates: Record<
   string,
   { label: string; tone: 'neutral' | 'accent' | 'ok' | 'bad' }
