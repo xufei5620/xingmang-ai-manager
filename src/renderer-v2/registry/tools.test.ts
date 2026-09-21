@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { cliCatalog, isProviderId, providerConfigDirectoryNames, providerIds } from '../../../electron/catalog';
-import { officialAccountNames, tools } from './tools';
+import { firstRunHints, officialAccountNames, tools } from './tools';
 
 describe('renderer-v2 tool registry', () => {
   it('only carries ids the main process knows, plus the Codex desktop entry', () => {
@@ -35,6 +35,33 @@ describe('renderer-v2 tool registry', () => {
       const directory = providerConfigDirectoryNames[provider];
       expect(tool.configPath).toEqual({ win: `%USERPROFILE%\\${directory}`, mac: `~/${directory}`, linux: `~/${directory}` });
     }
+  });
+
+  // A6:装完只剩一个闪烁的光标是用户流失最集中的一屏,这两条文案是引导完成步与首页
+  // 建议卡唯一的内容来源。少一条不会报错,只会让那张卡悄悄消失,所以在这里钉住。
+  it('gives every managed CLI a first command and a prompt to paste', () => {
+    expect(Object.keys(firstRunHints).sort()).toEqual([...providerIds].sort());
+    for (const provider of providerIds) {
+      const hint = firstRunHints[provider];
+      expect(hint.command.trim()).not.toBe('');
+      expect(hint.prompt.trim()).not.toBe('');
+    }
+    for (const tool of tools) {
+      if (tool.kind !== 'cli' || !isProviderId(tool.id)) continue;
+      expect(tool.firstRun).toEqual(firstRunHints[tool.id]);
+    }
+  });
+
+  // 启动命令就是主进程「打开」按钮真正执行的那条(resolveCliCommand 的 argv 始终为空),
+  // 抄错一个字用户敲下去就是 command not found。
+  it('keeps the first command equal to the CLI the main process launches', () => {
+    for (const provider of providerIds) {
+      expect(firstRunHints[provider].command).toBe(cliCatalog[provider].command);
+    }
+  });
+
+  it('leaves the Codex desktop entry without a command, because it has no terminal', () => {
+    expect(tools.find(tool => tool.id === 'codexDesktop')?.firstRun).toBeUndefined();
   });
 
   it('names an official account for every tool that offers that source', () => {

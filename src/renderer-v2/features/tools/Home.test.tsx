@@ -1,5 +1,5 @@
 import { renderToStaticMarkup } from 'react-dom/server'
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Home, type HomeProps } from './Home'
 import type { ToolboxSnapshot } from './model'
 import type { ToolboxPartitionFailure, ToolsApi } from './api'
@@ -151,5 +151,52 @@ describe('renderer-v2 home install cancellation', () => {
   it('keeps 取消 off the launch job, which is not an install', () => {
     const markup = render({ 'launch:claude': { label: '正在打开工具', log: [], cancellable: true } })
     expect(markup).not.toContain('data-testid="tool-claude-cancel"')
+  })
+})
+
+describe('renderer-v2 home first-run suggestion', () => {
+  afterEach(() => { vi.unstubAllGlobals() })
+
+  function dismissedStorage(value: string) {
+    return { localStorage: { getItem: () => value, setItem: () => undefined, removeItem: () => undefined } }
+  }
+
+  it('offers the first command and prompt once a tool is installed and connected', () => {
+    const markup = render({})
+    expect(markup).toContain('data-testid="home-first-run"')
+    expect(markup).toContain('试试第一条命令')
+    expect(markup).toContain('data-testid="home-first-run-steps-command"')
+    expect(markup).toContain('>claude<')
+    expect(markup).toContain('data-testid="home-first-run-steps-copy-command"')
+    expect(markup).toContain('data-testid="home-first-run-steps-copy-prompt"')
+    expect(markup).toContain('data-testid="home-first-run-dismiss"')
+  })
+
+  it('moves on to the next tool once its card has been closed', () => {
+    vi.stubGlobal('window', dismissedStorage('["claude"]'))
+    const markup = render({})
+    expect(markup).toContain('data-testid="home-first-run"')
+    expect(markup).toContain('Codex CLI')
+    expect(markup).toContain('>codex<')
+    expect(markup).not.toContain('>claude<')
+  })
+
+  it('stays gone once every tool has been closed', () => {
+    vi.stubGlobal('window', dismissedStorage('["claude","codex","gemini","grok"]'))
+    expect(render({})).not.toContain('data-testid="home-first-run"')
+  })
+
+  // 还没配 Key 时第一条命令敲下去只会报错，那不是「可以试试」。
+  it('waits until the tool is actually connected', () => {
+    const markup = render({}, { claude: cliStatus, codex: cliStatus, grok: cliStatus, gemini: cliStatus },
+      { snapshot: unreadableConfig(), failures: configFailure })
+    expect(markup).not.toContain('data-testid="home-first-run"')
+  })
+
+  it('keeps the card off a tool that is still installing', () => {
+    const markup = render({ claude: { label: '正在安装', log: [] } })
+    expect(markup).toContain('data-testid="home-first-run"')
+    expect(markup).not.toContain('>claude<')
+    expect(markup).toContain('>codex<')
   })
 })
