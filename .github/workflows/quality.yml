@@ -27,6 +27,7 @@ jobs:
     timeout-minutes: 5
     outputs:
       code: ${{ steps.scope.outputs.code }}
+      cliVersions: ${{ steps.scope.outputs.cliVersions }}
     steps:
       - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
         with:
@@ -464,6 +465,36 @@ jobs:
             exit 1
           fi
 
+  # N1 的已验证版本名单说「这个版本在我们的中转上能用」，而在这个作业存在之前
+  # 那句话只有上游 changelog 作背书 —— 名单挡住的两次回归都是 CLI 发出的请求被
+  # 第三方端点拒掉，只有真的跑一次 `claude -p` 才答得了。所以改名单的 PR 要自己
+  # 证明这一句，而不是留给客户去发现。
+  #
+  # 只在名单（或它的说明文档）被改动时跑：别的 PR 改不动这个答案，不值得对生产
+  # 中转发真实请求。没有配探测密钥时作业照常通过，但 job summary 会写明「未在
+  # 中转实测」—— 一句诚实的「没验证」比一个看着绿的空作业有用。
+  #
+  # 密钥只从同仓分支的 PR 拿得到（GitHub 不把仓库密钥给 fork 的 pull_request），
+  # 这正好是本项目的工作方式；fork 上这个作业会走进「没有密钥」那条分支。
+  cli-relay-probe:
+    needs: changes
+    if: needs.changes.outputs.cliVersions == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --registry=https://registry.npmjs.org/
+      - name: Probe the pinned CLI version against every relay site
+        env:
+          XINGMANG_CLI_PATROL_KEY: ${{ secrets.XINGMANG_CLI_PATROL_KEY }}
+        run: node scripts/probe-cli-relay.cjs
+
   audit:
     needs: changes
     if: needs.changes.outputs.code == 'true'
@@ -486,7 +517,7 @@ jobs:
 
   quality-gate:
     if: always()
-    needs: [changes, test, macos-test, macos-release-rehearsal, linux-test, audit]
+    needs: [changes, test, macos-test, macos-release-rehearsal, linux-test, audit, cli-relay-probe]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -504,4 +535,9 @@ jobs:
           // expectation itself, so it reports success — never "skipped" — for a
           // documentation-only change.
           if (jobs.test.result !== 'success') process.exit(1)
+          // The relay probe has its own trigger (the verified-version list), so
+          // it is skipped on almost every pull request. A red one still has to
+          // block: catching a bad pin before it reaches a customer is the only
+          // reason the job exists.
+          if (!['success', 'skipped'].includes(jobs['cli-relay-probe'].result)) process.exit(1)
           NODE
