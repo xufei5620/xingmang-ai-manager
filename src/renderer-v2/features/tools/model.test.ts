@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { ProviderConfigSummary, ProviderId } from '../../../../electron/ipc-contract'
-import { canUninstallTool, codexDesktopUpdateKind, connectionReady, presentTools, providerFor, rollbackVersion, sourceFor, toolAvailability, updateCheckFailure, versionSubtitle, type ToolboxSnapshot, type ToolPresentation } from './model'
+import { canUninstallTool, codexDesktopUpdateKind, connectionReady, presentTools, providerFor, recommendedVersionVerb, rollbackVersion, sourceFor, toolAvailability, updateCheckFailure, versionSubtitle, type ToolboxSnapshot, type ToolPresentation } from './model'
 import {
   writeManualSourceMarker,
   type SourceMarkerStorage,
@@ -227,9 +227,20 @@ describe('renderer CLI version advice', () => {
       .toBe('2.1.276')
   })
 
-  it('says the installed version is incompatible when the list blocks it', () => {
+  it('says the installed version has a known problem when the list blocks it', () => {
     expect(versionSubtitle(row({ recommendedVersion: '2.1.277', blockedReason: '每次请求都 400', onRecommended: false, pinned: false, rollbackAvailable: true })))
-      .toBe('2.1.276（不兼容，建议回到 2.1.277）')
+      .toBe('2.1.276（已知问题，建议回到 2.1.277）')
+  })
+
+  it('points forward when the recommended version is the newer one', () => {
+    // Codex 0.155.0 is the case this exists for: the fix shipped as the next
+    // patch release, so telling the customer to go "back" points them the
+    // wrong way while the button installs the newer build.
+    const advice = { recommendedVersion: '0.155.1', blockedReason: '这个版本每次都向中转索要推理摘要', onRecommended: false, pinned: true, rollbackAvailable: true, recommendedIsNewer: true }
+    expect(versionSubtitle(row(advice, '0.155.0'))).toBe('0.155.0（已知问题，建议更新到 0.155.1）')
+    expect(recommendedVersionVerb(row(advice, '0.155.0'))).toBe('更新到')
+    expect(recommendedVersionVerb(row({ ...advice, recommendedIsNewer: undefined }, '0.155.0'))).toBe('回到')
+    expect(recommendedVersionVerb(row(null))).toBe('回到')
   })
 
   it('offers a rollback target only for an installed tool the list can move', () => {

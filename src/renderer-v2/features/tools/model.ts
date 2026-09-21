@@ -178,6 +178,16 @@ export function presentTools(
 }
 
 /**
+ * 名单要把用户往哪个方向挪。撞上已知问题的用户往往要往前走到修复版
+ * (Codex 0.155.0 → 0.155.1),跟着 npm latest 跑到推荐版本前面的用户才是
+ * 真的退回来——同一个按钮,两个方向,一律写「回到」会把前一种指反。方向由
+ * 主进程比过版本号后给出(recommendedIsNewer),渲染层不自己比。
+ */
+export function recommendedVersionVerb(tool: Pick<ToolPresentation, 'versionAdvice'>): string {
+  return tool.versionAdvice?.recommendedIsNewer ? '更新到' : '回到'
+}
+
+/**
  * 工具行副标题里的版本文案。推荐版本与当前版本一致时不出现,避免每一行都
  * 挂一句用户不需要读的话。站点信息永远不出现在这里(双站点对用户无感)。
  */
@@ -185,8 +195,8 @@ export function versionSubtitle(tool: Pick<ToolPresentation, 'currentVersion' | 
   if (!tool.currentVersion) return undefined
   const advice = tool.versionAdvice
   if (!advice || !advice.recommendedVersion || advice.onRecommended) return tool.currentVersion
-  if (advice.blockedReason) return `${tool.currentVersion}（不兼容，建议回到 ${advice.recommendedVersion}）`
-  // 用户选了跟随最新版就别再劝他;不兼容那一条上面已经先返回了。
+  if (advice.blockedReason) return `${tool.currentVersion}（已知问题，建议${recommendedVersionVerb(tool)} ${advice.recommendedVersion}）`
+  // 用户选了跟随最新版就别再劝他;有已知问题那一条上面已经先返回了。
   return advice.pinned ? `${tool.currentVersion}（推荐 ${advice.recommendedVersion}）` : tool.currentVersion
 }
 
