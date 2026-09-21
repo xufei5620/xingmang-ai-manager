@@ -127,31 +127,19 @@ test('the Windows job enables unprivileged symlink creation before security test
   assert.match(String(enableStep.run), /AllowDevelopmentWithoutDevLicense/)
 })
 
-// Real-time scanning of the workspace is the one stall source on these runners
-// that the workflow can actually switch off, and both Windows jobs pay for it:
-// the browser shard loses a page load to it, the packaging job loses an
-// inspector replay (#236). Ordering matters — an exclusion added after npm ci
-// has already let Defender walk every installed file.
-test('both Windows jobs exclude their workspace from Defender before installing', () => {
+// windows-latest images already ship `C:\` and `D:\` in Defender's exclusion
+// list — quality run 35548878416 printed `Get-MpPreference` and found both
+// whole drives there before this workflow touched anything. Real-time scanning
+// therefore explains nothing about these runners, whatever the comments around
+// this repository say, and a step that adds the workspace to that list is
+// ceremony. Do not add one: measure first, and if a stall source is ever found,
+// pin the measurement here rather than the folklore.
+test('the Windows jobs do not re-exclude paths the runner image already excludes', () => {
   for (const jobName of ['windows-test', 'windows-package']) {
-    const steps = workflow.jobs[jobName].steps
-    const excludeIndex = steps.findIndex((step) => step.name === 'Keep Defender out of the workspace')
-    const installIndex = steps.findIndex((step) => String(step.run || '').startsWith('npm ci'))
-
-    assert.notEqual(excludeIndex, -1, `${jobName} must exclude its workspace from Defender`)
-    assert.notEqual(installIndex, -1, `${jobName} must install dependencies`)
-    assert.ok(excludeIndex < installIndex, `${jobName} must exclude before it installs`)
-
-    const exclude = steps[excludeIndex]
-    assert.equal(exclude.shell, 'pwsh')
-    assert.match(String(exclude.run), /Add-MpPreference -ExclusionPath/)
-    assert.match(String(exclude.run), /Add-MpPreference -ExclusionProcess/)
-    assert.match(String(exclude.run), /GITHUB_WORKSPACE/)
-    // A runner image that refuses exclusions must warn, not red every Windows
-    // job in the matrix.
-    assert.match(String(exclude.run), /catch \{ Write-Warning/)
-    assert.equal(exclude['continue-on-error'], undefined,
-      'the step handles its own refusals, so it must not be allowed to fail silently')
+    for (const step of workflow.jobs[jobName].steps) {
+      assert.doesNotMatch(String(step.run || ''), /Add-MpPreference/,
+        `${jobName} must not spend a step on Defender exclusions the image already has`)
+    }
   }
 })
 
