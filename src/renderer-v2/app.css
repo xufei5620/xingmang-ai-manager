@@ -5,6 +5,14 @@
 .v2-home-grid { display: grid; grid-template-columns: minmax(0, 1fr) 292px; gap: 18px; align-items: start; }
 .v2-home > .xm-page-head .xm-btn { font-size: var(--font-small-compact); }
 .v2-home-main, .v2-home-aside { display: grid; gap: 18px; min-width: 0; }
+/* 「打开」记住上次目录后，按钮上多了一个目录名和一个下拉箭头（N7）。
+   只有带下拉的那些行把按钮列放宽，其余工具行保持原来的 92px；每一行的总宽一样，
+   按钮和「…」仍然贴着行尾对齐，看不出错位。 */
+.xm-tool-row:has(.v2-tool-launch) { grid-template-columns: 40px minmax(120px, 200px) minmax(var(--tool-status-min), 1fr) 72px 176px 32px; }
+.v2-tool-launch { display: flex; align-items: center; gap: 4px; }
+.v2-tool-launch > .xm-btn { flex: 1; min-width: 0; }
+.v2-tool-launch > .xm-btn > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.v2-tool-launch .xm-menu .xm-btn { flex: none; width: auto; padding: 0 5px; }
 .v2-runtime-list { padding: 8px 16px; }
 .v2-runtime-row { display: flex; align-items: center; gap: 9px; padding: 9px 0; font-size: var(--font-small); }
 .v2-runtime-row strong { font-weight: 400; }

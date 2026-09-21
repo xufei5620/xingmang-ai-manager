@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { before, after, test } from 'node:test'
-import { fixtureReadyTimeoutMs } from './fixture-readiness.mjs'
+import { openFixturePage } from './fixture-readiness.mjs'
 import { actionTimeoutMs, createBrowserFixture, navigationTimeoutMs } from './harness.mjs'
 
 const business = createBrowserFixture({
@@ -22,13 +22,15 @@ after(async () => {
 })
 const fixture = async (route) => {
   const page = await business.newPage()
-  await page.goto(`${business.baseUrl}/e2e/v2-business-fixture.html?${route}`)
   // First paint waits on Vite transforming the module graph on demand, which on a
   // cold Windows runner under Defender routinely takes longer than the 5s default
   // the assertions below rely on. Waiting for the mount separately keeps that
-  // default tight enough to catch a real regression.
-  await page.locator('#root > *').first().waitFor({ timeout: fixtureReadyTimeoutMs })
-  return page
+  // default tight enough to catch a real regression, and openFixturePage spends
+  // that wait as three navigations rather than one — two of this suite's mounts
+  // died outright on the Windows shard (quality runs #525 and #561) with the
+  // tests either side of them finishing in a second.
+  return await openFixturePage(page, `${business.baseUrl}/e2e/v2-business-fixture.html?${route}`,
+    (timeout) => page.locator('#root > *').first().waitFor({ timeout }), { label: 'v2-business fixture' })
 }
 const calls = (page) =>
   page.evaluate(() =>

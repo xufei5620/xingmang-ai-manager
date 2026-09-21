@@ -5,7 +5,7 @@ import fs from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 import { createServer } from 'vite'
 import { chromium } from '@playwright/test'
-import { fixtureReadyTimeoutMs } from '../../../../e2e/fixture-readiness.mjs'
+import { openFixturePage } from '../../../../e2e/fixture-readiness.mjs'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..')
 const output = path.join(root, '.project-surgeon/audits/20260907-chat-v2')
@@ -27,7 +27,6 @@ async function open(query = '', stored = {}) {
   }, stored)
   await page.addInitScript(() => { Object.defineProperty(navigator, 'clipboard', { value: { writeText: async (text) => { if (location.search.includes('copyFail')) throw new Error('denied'); window.__copied = text } }, configurable: true }) })
   await page.route('**/*', async (route) => { if (new URL(route.request().url()).hostname !== '127.0.0.1') return route.abort(); await route.continue() })
-  await page.goto(`${base}/src/renderer-v2/features/chat/browser-fixture.html?${query}`)
   // Mounting and asserting are two different waits. Vite transforms the module
   // graph on demand, so a cold open on a Windows runner can spend far longer
   // than Playwright's 30s action default before React commits anything - and
@@ -35,7 +34,13 @@ async function open(query = '', stored = {}) {
   // chat surface rather than a slow start. Wait for the first commit on the
   // shared mount budget, then let the composer keep the default so a real
   // regression still fails in 30s.
-  await page.locator('#root > *').first().waitFor({ timeout: fixtureReadyTimeoutMs })
+  //
+  // Five of the fourteen Windows browser-shard failures between 2026-09-19 and
+  // 2026-09-21 were this open, and none of them was slow: the page never came
+  // back at all. openFixturePage spends the same budget as up to three
+  // navigations rather than one stare at a dead page.
+  await openFixturePage(page, `${base}/src/renderer-v2/features/chat/browser-fixture.html?${query}`,
+    (timeout) => page.locator('#root > *').first().waitFor({ timeout }), { label: 'chat fixture' })
   await page.getByTestId('chat-composer-input').waitFor()
   return page
 }

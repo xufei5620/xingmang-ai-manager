@@ -127,6 +127,22 @@ test('the Windows job enables unprivileged symlink creation before security test
   assert.match(String(enableStep.run), /AllowDevelopmentWithoutDevLicense/)
 })
 
+// windows-latest images already ship `C:\` and `D:\` in Defender's exclusion
+// list — quality run 35548878416 printed `Get-MpPreference` and found both
+// whole drives there before this workflow touched anything. Real-time scanning
+// therefore explains nothing about these runners, whatever the comments around
+// this repository say, and a step that adds the workspace to that list is
+// ceremony. Do not add one: measure first, and if a stall source is ever found,
+// pin the measurement here rather than the folklore.
+test('the Windows jobs do not re-exclude paths the runner image already excludes', () => {
+  for (const jobName of ['windows-test', 'windows-package']) {
+    for (const step of workflow.jobs[jobName].steps) {
+      assert.doesNotMatch(String(step.run || ''), /Add-MpPreference/,
+        `${jobName} must not spend a step on Defender exclusions the image already has`)
+    }
+  }
+})
+
 test('the Windows required job tests and compiles the default renderer v2', () => {
   const shardCommands = windowsShardCommands()
   const shardSteps = workflow.jobs['windows-test'].steps
@@ -828,7 +844,11 @@ function browserSuitesUnder(directory) {
     // explains why the budget exists.
     if (relative === fixtureReadinessModule) continue
     const source = fs.readFileSync(path.join(root, relative), 'utf8')
-    if (/browser\.newPage\(/.test(source) && /\.goto\(/.test(source)) found.push(relative)
+    // openFixturePage counts as navigating: a suite that hands its navigation
+    // to the shared retry has no page.goto of its own left to match on, and
+    // dropping out of this scan is exactly how a budgeted suite would slip
+    // back out of the gate that guards it.
+    if (/browser\.newPage\(/.test(source) && /\.goto\(|openFixturePage\(/.test(source)) found.push(relative)
   }
   return found
 }
@@ -841,8 +861,9 @@ const playwrightActionDefaultMs = 30_000
 // Expressed once so the gate and its own test measure the same thing.
 function fixtureMountBudgetProblems(consumer, source) {
   const problems = []
-  // Either the budget itself, or the shared wait that spends it.
-  if (!/fixtureReadyTimeoutMs|waitForFixtureMount/.test(source)) {
+  // Either the budget itself, the shared wait that spends it, or the shared
+  // open that spends it as several navigations.
+  if (!/fixtureReadyTimeoutMs|waitForFixtureMount|fixtureMountSliceMs|openFixturePage/.test(source)) {
     problems.push(`${consumer} must bound its fixture mount with the shared budget`)
   }
   if (!/from '[./]*(?:e2e\/)?fixture-readiness\.mjs'/.test(source)) {
@@ -876,7 +897,51 @@ test('a cold fixture open cannot be reported as a failed assertion again', () =>
   // page.goto resolves on `load`, which happens before the fixture module has
   // installed its globals and can be followed by a Vite dependency reload.
   const appCheck = fs.readFileSync(path.join(root, 'src/renderer-v2/testing/app-check.mjs'), 'utf8')
-  assert.match(appCheck, /await waitForFixtureReady\(page\)/, 'every app-check page must wait for the fixture to install')
+  assert.match(appCheck, /openFixturePage\(page, `\$\{origin\}\/src\/renderer-v2\/testing\/app\.html/,
+    'every app-check page must open through the shared fixture navigation')
+  assert.match(appCheck, /waitForFixtureReady\(page, timeout\)/, 'every app-check page must wait for the fixture to install')
+  assert.doesNotMatch(appCheck, /await page\.goto\(`\$\{origin\}\/src\/renderer-v2\/testing\/app\.html\?\$\{query\}/,
+    'app-check must not navigate its fixture without the retry that owns the budget')
+})
+
+// The Windows browser shard failed 14 of its 141 completed quality runs between
+// 2026-09-19 and 2026-09-21, and every one of those was a single page that died
+// on its own: a mount wait that spent the whole 90s, a locator that spent 30s on
+// an empty document, or net::ERR_NO_BUFFER_SPACE thrown 69ms into page.goto.
+// Ten green runs of the same shard hold no test slower than 22.4s, so the budget
+// was never the problem — a lost navigation was. The budget therefore has to
+// stay where it is and be spent as more than one navigation.
+test('a lost fixture navigation is retried inside the budget rather than waited out', async () => {
+  const readiness = await import(require('node:url').pathToFileURL(path.join(root, fixtureReadinessModule)).href)
+
+  assert.ok(readiness.fixtureMountAttempts >= 2, 'one navigation that dies must not end the run')
+  const slice = readiness.fixtureMountSliceMs()
+  assert.ok(slice * readiness.fixtureMountAttempts <= readiness.fixtureReadyTimeoutMs,
+    'the navigations together must not widen the budget they spend from')
+  // Comfortably above the 22.4s ceiling the ten green runs measured, so a
+  // fixture that is merely slow still mounts on its first navigation.
+  assert.ok(slice > 22_400, 'a single navigation must still outlast the slowest observed green mount')
+
+  for (const consumer of ['src/renderer-v2/testing/app-check.mjs', 'e2e/v2-business.test.mjs',
+    'e2e/maintenance-layout.test.mjs', 'src/renderer-v2/features/chat/browser-check.mjs',
+    'src/renderer-v2/ui/browser-check.mjs']) {
+    const source = fs.readFileSync(path.join(root, consumer), 'utf8')
+    assert.match(source, /openFixturePage\(/, `${consumer} must open its fixture through the shared retry`)
+  }
+
+  // Structure is not enough: retrying is only free while every attempt shares
+  // one deadline. An attempt budget multiplied by an attempt count is how a
+  // 90s wait quietly becomes a 180s one.
+  let navigations = 0
+  const started = Date.now()
+  const fixtureIsDead = () => { throw new Error('lost') }
+  await assert.rejects(
+    readiness.openFixturePage({ goto: async () => { navigations += 1 } }, 'about:blank', fixtureIsDead,
+      { label: 'probe', timeout: 600 }),
+    /probe did not finish installing within 600ms after 3 navigations/)
+
+  assert.equal(navigations, readiness.fixtureMountAttempts, 'every attempt must be a fresh navigation')
+  assert.ok(Date.now() - started < 600, 'the attempts must share one deadline rather than each taking the whole budget')
 })
 
 // The list above was right about every suite on it and blind to every suite
