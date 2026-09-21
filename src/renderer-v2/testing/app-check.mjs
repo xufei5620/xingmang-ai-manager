@@ -612,6 +612,48 @@ test('macOS opens an installed desktop app when Codex CLI and Node are missing',
   } finally { await page.close() }
 })
 
+test('the launch button reuses the directory the tool was last opened in (N7)', async () => {
+  const page = await open('allInstalled=1&recentWorkspaces=1')
+  try {
+    const button = page.getByTestId('tool-claude-primary')
+    await button.waitFor()
+    // 最近用过的目录直接写在按钮上，用户点下去之前就知道会在哪里打开。
+    assert.equal(await button.innerText(), '打开 my-app')
+    assert.equal(await button.getAttribute('title'), '在 C:\\work\\my-app 打开')
+    // 带下拉的那些行把按钮列放宽（app.css 的 :has 规则）。宽度不够时目录名会被
+    // 省略号吃掉，按钮上就只剩「打开 my…」，那比不写目录还糟。
+    const labels = await page.evaluate(() => ['claude', 'codex', 'gemini'].map((id) => {
+      const label = document.querySelector(`[data-testid="tool-${id}-primary"] span`)
+      return { id, text: label.textContent, clipped: label.scrollWidth - label.clientWidth }
+    }))
+    assert.deepEqual(labels, [
+      { id: 'claude', text: '打开 my-app', clipped: 0 },
+      { id: 'codex', text: '打开 codex-app', clipped: 0 },
+      { id: 'gemini', text: '打开 a-very-lon…', clipped: 0 },
+    ])
+    await button.click()
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'launchCli'))
+    const direct = await page.evaluate(() => window.v2Test.calls)
+    assert.deepEqual(direct.filter((entry) => entry.method === 'launchCli').map((entry) => entry.args), [['claude', 'C:\\work\\my-app']])
+    // 没记过目录的工具保持原来的行为：主按钮就是「打开」，旁边没有下拉。
+    assert.equal(await page.getByTestId('tool-grok-primary').innerText(), '打开')
+    assert.equal(await page.getByTestId('tool-grok-workspaces').count(), 0)
+    assert.equal(direct.some((entry) => entry.method === 'chooseWorkspace'), false)
+
+    await page.waitForFunction(() => !document.querySelector('[data-testid="tool-claude-primary"]')?.disabled)
+    await page.getByTestId('tool-claude-workspaces').getByRole('button', { name: '换一个目录' }).click()
+    const items = await page.getByRole('menuitem').allInnerTexts()
+    // 同一个目录的两条记录只占一格,顺序按最近用过排,最后永远留着原来的选择器。
+    assert.deepEqual(items, ['C:\\work\\my-app', 'C:\\work\\older-app', '选择其他目录…'])
+    await page.getByTestId('tool-claude-choose-workspace').click()
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'chooseWorkspace'))
+    const picked = await page.evaluate(() => window.v2Test.calls)
+    assert.deepEqual(picked.filter((entry) => entry.method === 'launchCli').map((entry) => entry.args),
+      [['claude', 'C:\\work\\my-app'], ['claude', 'C:\\Selected Project']])
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('canceling the CLI workspace picker keeps the tool closed without an error dialog', async () => {
   const page = await open('workspaceCancel=1')
   try {

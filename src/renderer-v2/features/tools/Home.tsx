@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { ArrowRight, ArrowUpRight, BookOpen, Download, FolderOpen, History, MessageSquare, Plug, RefreshCw, RotateCcw, X, Zap } from 'lucide-react'
+import { ArrowRight, ArrowUpRight, BookOpen, ChevronDown, Download, FolderOpen, History, MessageSquare, Plug, RefreshCw, RotateCcw, X, Zap } from 'lucide-react'
 import type { AccountBalance, AccountProfile, ExternalClientStatus, ExternalToolId, MultiProviderSessionPage, OfficialChatGptAccount } from '../../../../electron/ipc-contract'
 import { presentExternalClients } from './external-model'
 import { useSharedAccountBalance } from '../app/balance-context'
 import { balanceStatusText } from '../shell/balance-status'
-import { BrandIcon, Button, Card, Dialog, Empty, ListRow, PageHead, Pill, Progress, ToolRow } from '../../ui'
+import { BrandIcon, Button, Card, Dialog, Empty, ListRow, Menu, PageHead, Pill, Progress, ToolRow } from '../../ui'
 import { balanceTier, canUninstallTool, greeting, presentTools, rollbackVersion, versionSubtitle, type ToolboxSnapshot, type ToolId, type ToolPresentation } from './model'
 import type { ToolboxPartitionFailure, ToolsApi } from './api'
 import type { ToolJob } from './useToolbox'
@@ -13,6 +13,7 @@ import type { PageId } from '../../registry/pages'
 import { tools as toolRegistry } from '../../registry/tools'
 import { FirstRunSteps } from './FirstRun'
 import { dismissFirstRun, getFirstRunStorage, readFirstRunDismissals } from './first-run-dismissal'
+import { recentWorkspaces, workspaceButtonLabel, workspaceChoices } from './recent-workspaces'
 import { errorMessage } from '../../business-common'
 
 export interface HomeProps {
@@ -35,7 +36,8 @@ export interface HomeProps {
   onInstall(tool: ToolId, version?: string): void
   /** 中止正在进行的安装或更新。 */
   onCancelInstall(tool: ToolId): void
-  onLaunch(tool: ToolId): void
+  /** workspace 省略 = 弹目录选择器(旧行为);点名 = 直接用记住的目录打开(N7)。 */
+  onLaunch(tool: ToolId, workspace?: string): void
   onConfigure(tool: ToolId): void
   onConfigureExternal(tool: ExternalToolId): void
   onInstallExternal(tool: ExternalToolId): void
@@ -126,13 +128,27 @@ export function Home(props: HomeProps) {
       : tool.source === 'unknown' ? 'unknownSource' : tool.source === 'official' ? 'official'
         : bootstrapBusy && !tool.configured ? 'configuring'
         : tool.configured ? 'ready' : 'unconfigured'
+    // 「打开」以前每次都要重新选一遍目录。会话记录里本来就存着用过的目录，
+    // 拿它当主按钮的默认值，旁边的下拉再给最近几个和原来的选择器（N7）。
+    // Codex 桌面端自己管工作区，不走这条路。
+    const opensWorkspace = !configUnavailable && !tool.error && tool.status.installed
+      && tool.configured && tool.id !== 'codexDesktop'
+    const workspaces = opensWorkspace ? recentWorkspaces(recent?.items ?? [], tool.provider) : []
+    // 正在跑的那一行按钮写的是「打开中」「安装中」，这时不给下拉，但外面那层还在，
+    // 按钮列的宽度就不会跟着一起跳。
+    const lastWorkspace = job ? null : workspaces[0] ?? null
     const primaryLabel = launchJob ? '打开中' : installJob ? '安装中' : configUnavailable ? '重新配置'
       : bootstrapBusy && !tool.configured ? '配置中' : tool.error ? '重新检测' : !tool.status.installed ? '安装'
-      : tool.configured ? '打开' : '连接账号'
+      : tool.configured ? lastWorkspace ? `打开 ${workspaceButtonLabel(lastWorkspace.name)}` : '打开' : '连接账号'
     const primary = () => configUnavailable ? props.onConfigure(tool.id) : tool.error ? props.onScan() : !tool.status.installed ? props.onInstall(tool.id)
-      : tool.configured ? props.onLaunch(tool.id) : props.onConfigure(tool.id)
+      : tool.configured ? props.onLaunch(tool.id, lastWorkspace?.path) : props.onConfigure(tool.id)
     const rollback = job ? null : rollbackVersion(tool)
     const blocked = tool.versionAdvice?.blockedReason ?? null
+    const primaryButton = <Button size="sm" variant={tool.status.installed ? 'primary' : 'secondary'} loading={Boolean(job)}
+      disabled={loading || launchBusy || bootstrapBusy && !tool.configured && !configUnavailable}
+      title={lastWorkspace ? `在 ${lastWorkspace.path} 打开` : undefined}
+      icon={lastWorkspace ? undefined : tool.status.installed && !bootstrapBusy ? ArrowUpRight : undefined}
+      onClick={primary} testId={`tool-${tool.id}-primary`}>{primaryLabel}</Button>
     return <ToolRow key={tool.id} tool={tool.id} status={status}
       detail={job?.label ?? tool.error ?? undefined}
       version={tool.status.installed ? versionSubtitle(tool) ?? '版本暂未识别' : undefined}
@@ -143,8 +159,16 @@ export function Home(props: HomeProps) {
         : rollback && blocked
           ? <Button variant="ghost" size="sm" icon={RotateCcw} title={blocked} onClick={() => props.onInstall(tool.id, rollback)} testId={`tool-${tool.id}-rollback`}>回到推荐版本</Button>
           : tool.updateAvailable && !job ? <Button variant="ghost" size="sm" icon={Download} onClick={() => props.onInstall(tool.id)}>更新</Button> : undefined}
-      primaryAction={<Button size="sm" variant={tool.status.installed ? 'primary' : 'secondary'} loading={Boolean(job)}
-        disabled={loading || launchBusy || bootstrapBusy && !tool.configured && !configUnavailable} icon={tool.status.installed && !bootstrapBusy ? ArrowUpRight : undefined} onClick={primary} testId={`tool-${tool.id}-primary`}>{primaryLabel}</Button>}
+      primaryAction={workspaces.length ? <span className="v2-tool-launch" data-testid={`tool-${tool.id}-launch`}>
+        {primaryButton}
+        {lastWorkspace && <Menu label="换一个目录" testId={`tool-${tool.id}-workspaces`}
+          anchor={<Button size="sm" variant="primary" icon={ChevronDown} disabled={loading || launchBusy} aria-label="换一个目录" />}
+          items={workspaceChoices(workspaces).map((choice) => ({
+            label: choice.label,
+            testId: choice.path === null ? `tool-${tool.id}-choose-workspace` : undefined,
+            onSelect: () => props.onLaunch(tool.id, choice.path ?? undefined),
+          }))} />}
+      </span> : primaryButton}
       menu={tool.status.installed && !job ? [
         { label: '配置', onSelect: () => props.onConfigure(tool.id) },
         ...(rollback && !blocked ? [{ label: `回到推荐版本 ${rollback}`, testId: `tool-${tool.id}-rollback-menu`, onSelect: () => props.onInstall(tool.id, rollback) }] : []),
@@ -158,7 +182,7 @@ export function Home(props: HomeProps) {
           ? [{ label: '卸载', danger: true, onSelect: () => props.onUninstall(tool.id) }]
           : []),
       ] : undefined} testId={`tool-row-${tool.id}`} />
-  }, [bootstrapBusy, jobs, launchBusy, loading, props])
+  }, [bootstrapBusy, jobs, launchBusy, loading, props, recent])
   const renderExternal = (tool: ReturnType<typeof presentExternalClients>[number]) => {
     const installJob = jobs[tool.id], launchJob = jobs[`launch:${tool.id}`], job = launchJob ?? installJob
     const status = installJob ? 'installing' : tool.status.detectionError ? 'detectionFailed' : !tool.status.installed ? 'missing'

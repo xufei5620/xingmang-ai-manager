@@ -86,7 +86,9 @@ export function createToolsApi(bridge: XingmangApi) {
       ? bridge.launchCodexDesktop(mode) : bridge.launchCli(id, workspace),
     prepareRuntime: (runtime: 'node' | 'python') => runtime === 'node' ? bridge.installNodeRuntime() : bridge.installPythonRuntime(),
     chooseWorkspace: () => bridge.chooseWorkspace(),
-    recent: () => bridge.listProviderSessions({ page: 1, pageSize: 3 }),
+    // 首页「最近」卡只显示 3 条,但同一份记录还要推出每个工具最近用过的目录(N7),
+    // 一页 3 条不够铺开四个工具。主进程本来就把全部会话读出来再切片,页大一点不多花钱。
+    recent: () => bridge.listProviderSessions({ page: 1, pageSize: 60 }),
     readConfig: () => bridge.getConfig(),
     readKeys: () => readAllAccountKeys((query) => bridge.getAccountKeys(query)),
     readKeyOptions: (tool: ToolId) => bridge.getAccountKeyOptions(providerFor(tool)),
