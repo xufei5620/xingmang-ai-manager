@@ -5,7 +5,7 @@ import path from 'node:path'
 import { createServer } from 'vite'
 import react from '@vitejs/plugin-react'
 import { chromium, expect } from '@playwright/test'
-import { fixtureReadyTimeoutMs } from '../../../e2e/fixture-readiness.mjs'
+import { fixtureMountSliceMs, openFixturePage } from '../../../e2e/fixture-readiness.mjs'
 
 let server, browser, origin
 const artifacts = path.resolve('artifacts/renderer-v2-app')
@@ -17,7 +17,11 @@ const artifacts = path.resolve('artifacts/renderer-v2-app')
 // whole cold start inside its own 30s budget. Poll from Node rather than with
 // Playwright's in-page polling, because a page opened with an installed clock
 // has its timers and requestAnimationFrame paused.
-async function waitForFixtureReady(page, timeout = fixtureReadyTimeoutMs) {
+//
+// The budget this spends now belongs to one navigation rather than to the
+// whole open: openFixturePage navigates again when a mount is lost, and the
+// three slices still add up to what a single wait used to get.
+async function waitForFixtureReady(page, timeout = fixtureMountSliceMs()) {
   const deadline = Date.now() + timeout
   for (;;) {
     const ready = await page.evaluate(() => typeof window.fixtureSupportQrCode === 'function'
@@ -98,8 +102,8 @@ async function open(query = '', clock = false) {
     await page.clock.pauseAt(new Date('2026-09-12T04:00:01Z'))
   }
   await page.route('**/*', (route) => route.request().url().startsWith(origin + '/') ? route.continue() : route.abort())
-  await page.goto(`${origin}/src/renderer-v2/testing/app.html?${query}`)
-  await waitForFixtureReady(page)
+  await openFixturePage(page, `${origin}/src/renderer-v2/testing/app.html?${query}`,
+    (timeout) => waitForFixtureReady(page, timeout), { label: 'renderer-v2 fixture' })
   return page
 }
 async function clean(page) {

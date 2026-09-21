@@ -127,6 +127,34 @@ test('the Windows job enables unprivileged symlink creation before security test
   assert.match(String(enableStep.run), /AllowDevelopmentWithoutDevLicense/)
 })
 
+// Real-time scanning of the workspace is the one stall source on these runners
+// that the workflow can actually switch off, and both Windows jobs pay for it:
+// the browser shard loses a page load to it, the packaging job loses an
+// inspector replay (#236). Ordering matters — an exclusion added after npm ci
+// has already let Defender walk every installed file.
+test('both Windows jobs exclude their workspace from Defender before installing', () => {
+  for (const jobName of ['windows-test', 'windows-package']) {
+    const steps = workflow.jobs[jobName].steps
+    const excludeIndex = steps.findIndex((step) => step.name === 'Keep Defender out of the workspace')
+    const installIndex = steps.findIndex((step) => String(step.run || '').startsWith('npm ci'))
+
+    assert.notEqual(excludeIndex, -1, `${jobName} must exclude its workspace from Defender`)
+    assert.notEqual(installIndex, -1, `${jobName} must install dependencies`)
+    assert.ok(excludeIndex < installIndex, `${jobName} must exclude before it installs`)
+
+    const exclude = steps[excludeIndex]
+    assert.equal(exclude.shell, 'pwsh')
+    assert.match(String(exclude.run), /Add-MpPreference -ExclusionPath/)
+    assert.match(String(exclude.run), /Add-MpPreference -ExclusionProcess/)
+    assert.match(String(exclude.run), /GITHUB_WORKSPACE/)
+    // A runner image that refuses exclusions must warn, not red every Windows
+    // job in the matrix.
+    assert.match(String(exclude.run), /catch \{ Write-Warning/)
+    assert.equal(exclude['continue-on-error'], undefined,
+      'the step handles its own refusals, so it must not be allowed to fail silently')
+  }
+})
+
 test('the Windows required job tests and compiles the default renderer v2', () => {
   const shardCommands = windowsShardCommands()
   const shardSteps = workflow.jobs['windows-test'].steps
@@ -798,14 +826,59 @@ test('a cold fixture open cannot be reported as a failed assertion again', () =>
   for (const consumer of fixtureReadinessConsumers) {
     const source = fs.readFileSync(path.join(root, consumer), 'utf8')
 
-    assert.match(source, /fixtureReadyTimeoutMs/, `${consumer} must bound its fixture mount with the shared budget`)
+    // Either the budget itself or the shared open that spends it; what must
+    // not appear anywhere is a number of the suite's own.
+    assert.match(source, /fixtureReadyTimeoutMs|fixtureMountSliceMs|openFixturePage/,
+      `${consumer} must bound its fixture mount with the shared budget`)
     assert.match(source, /from '[./]*(?:e2e\/)?fixture-readiness\.mjs'/, `${consumer} must import the shared budget rather than restate it`)
   }
 
   // page.goto resolves on `load`, which happens before the fixture module has
   // installed its globals and can be followed by a Vite dependency reload.
   const appCheck = fs.readFileSync(path.join(root, 'src/renderer-v2/testing/app-check.mjs'), 'utf8')
-  assert.match(appCheck, /await waitForFixtureReady\(page\)/, 'every app-check page must wait for the fixture to install')
+  assert.match(appCheck, /openFixturePage\(page, `\$\{origin\}\/src\/renderer-v2\/testing\/app\.html/,
+    'every app-check page must open through the shared fixture navigation')
+  assert.match(appCheck, /waitForFixtureReady\(page, timeout\)/, 'every app-check page must wait for the fixture to install')
+  assert.doesNotMatch(appCheck, /await page\.goto\(`\$\{origin\}\/src\/renderer-v2\/testing\/app\.html\?\$\{query\}/,
+    'app-check must not navigate its fixture without the retry that owns the budget')
+})
+
+// The Windows browser shard failed 14 of its 141 completed quality runs between
+// 2026-09-19 and 2026-09-21, and every one of those was a single page that died
+// on its own: a mount wait that spent the whole 90s, a locator that spent 30s on
+// an empty document, or net::ERR_NO_BUFFER_SPACE thrown 69ms into page.goto.
+// Ten green runs of the same shard hold no test slower than 22.4s, so the budget
+// was never the problem — a lost navigation was. The budget therefore has to
+// stay where it is and be spent as more than one navigation.
+test('a lost fixture navigation is retried inside the budget rather than waited out', async () => {
+  const readiness = await import(require('node:url').pathToFileURL(path.join(root, fixtureReadinessModule)).href)
+
+  assert.ok(readiness.fixtureMountAttempts >= 2, 'one navigation that dies must not end the run')
+  const slice = readiness.fixtureMountSliceMs()
+  assert.ok(slice * readiness.fixtureMountAttempts <= readiness.fixtureReadyTimeoutMs,
+    'the navigations together must not widen the budget they spend from')
+  // Comfortably above the 22.4s ceiling the ten green runs measured, so a
+  // fixture that is merely slow still mounts on its first navigation.
+  assert.ok(slice > 22_400, 'a single navigation must still outlast the slowest observed green mount')
+
+  for (const consumer of ['src/renderer-v2/testing/app-check.mjs', 'e2e/v2-business.test.mjs', 'e2e/maintenance-layout.test.mjs']) {
+    const source = fs.readFileSync(path.join(root, consumer), 'utf8')
+    assert.match(source, /openFixturePage\(/, `${consumer} must open its fixture through the shared retry`)
+  }
+
+  // Structure is not enough: retrying is only free while every attempt shares
+  // one deadline. An attempt budget multiplied by an attempt count is how a
+  // 90s wait quietly becomes a 180s one.
+  let navigations = 0
+  const started = Date.now()
+  const fixtureIsDead = () => { throw new Error('lost') }
+  await assert.rejects(
+    readiness.openFixturePage({ goto: async () => { navigations += 1 } }, 'about:blank', fixtureIsDead,
+      { label: 'probe', timeout: 600 }),
+    /probe did not finish installing within 600ms after 3 navigations/)
+
+  assert.equal(navigations, readiness.fixtureMountAttempts, 'every attempt must be a fresh navigation')
+  assert.ok(Date.now() - started < 600, 'the attempts must share one deadline rather than each taking the whole budget')
 })
 
 // The inspector replay used to wait a flat 500ms three times, so on a Windows

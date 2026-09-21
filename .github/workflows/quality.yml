@@ -123,6 +123,32 @@ jobs:
         with:
           node-version: 22
           cache: npm
+      - name: Keep Defender out of the workspace
+        shell: pwsh
+        # The Windows browser shard failed 14 of its 141 completed runs between
+        # 2026-09-19 and 2026-09-21, always the same way: one page load dies on
+        # its own while the tests either side of it finish in a second. Ten green
+        # runs of the same shard hold no test slower than 22.4s and no error
+        # marker at all, so what fails is not slow work, it is work that stops —
+        # and the one stall source this runner hands us a switch for is
+        # Defender scanning every file Vite reads and every byte Chromium and
+        # npm write. Excluding the tree the job owns is the only part of that we
+        # control; the suites cover the retry for the part we do not.
+        #
+        # Best effort on purpose. A runner image that locks exclusions behind
+        # tamper protection must warn, not turn every Windows job red.
+        run: |
+          foreach ($path in @($env:GITHUB_WORKSPACE, $env:RUNNER_TEMP, (Join-Path $env:APPDATA 'npm-cache'))) {
+            if (-not $path) { continue }
+            try { Add-MpPreference -ExclusionPath $path -ErrorAction Stop }
+            catch { Write-Warning "Defender path exclusion refused for ${path}: $($_.Exception.Message)" }
+          }
+          foreach ($process in @('node.exe', 'npm.exe', 'chrome.exe', 'electron.exe')) {
+            try { Add-MpPreference -ExclusionProcess $process -ErrorAction Stop }
+            catch { Write-Warning "Defender process exclusion refused for ${process}: $($_.Exception.Message)" }
+          }
+          try { Write-Host "excluded paths: $((Get-MpPreference).ExclusionPath -join ', ')" }
+          catch { Write-Warning "Defender preferences are unreadable: $($_.Exception.Message)" }
       - run: npm ci --registry=https://registry.npmjs.org/
       - run: npx --no-install playwright install chromium
       - name: Enable Windows Developer Mode for symlink security tests
@@ -163,6 +189,32 @@ jobs:
         with:
           node-version: 22
           cache: npm
+      - name: Keep Defender out of the workspace
+        shell: pwsh
+        # The Windows browser shard failed 14 of its 141 completed runs between
+        # 2026-09-19 and 2026-09-21, always the same way: one page load dies on
+        # its own while the tests either side of it finish in a second. Ten green
+        # runs of the same shard hold no test slower than 22.4s and no error
+        # marker at all, so what fails is not slow work, it is work that stops —
+        # and the one stall source this runner hands us a switch for is
+        # Defender scanning every file Vite reads and every byte Chromium and
+        # npm write. Excluding the tree the job owns is the only part of that we
+        # control; the suites cover the retry for the part we do not.
+        #
+        # Best effort on purpose. A runner image that locks exclusions behind
+        # tamper protection must warn, not turn every Windows job red.
+        run: |
+          foreach ($path in @($env:GITHUB_WORKSPACE, $env:RUNNER_TEMP, (Join-Path $env:APPDATA 'npm-cache'))) {
+            if (-not $path) { continue }
+            try { Add-MpPreference -ExclusionPath $path -ErrorAction Stop }
+            catch { Write-Warning "Defender path exclusion refused for ${path}: $($_.Exception.Message)" }
+          }
+          foreach ($process in @('node.exe', 'npm.exe', 'chrome.exe', 'electron.exe')) {
+            try { Add-MpPreference -ExclusionProcess $process -ErrorAction Stop }
+            catch { Write-Warning "Defender process exclusion refused for ${process}: $($_.Exception.Message)" }
+          }
+          try { Write-Host "excluded paths: $((Get-MpPreference).ExclusionPath -join ', ')" }
+          catch { Write-Warning "Defender preferences are unreadable: $($_.Exception.Message)" }
       - run: npm ci --registry=https://registry.npmjs.org/
       # No `npx playwright install chromium` here on purpose: every smoke below
       # drives the application through _electron.launch, which uses the
