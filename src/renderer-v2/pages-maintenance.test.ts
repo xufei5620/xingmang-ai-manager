@@ -27,6 +27,15 @@ describe('tutorial topics', () => {
     }
   })
 
+  it('names every tool that actually has a plugin marketplace', () => {
+    // 教程一度写着市场仅 Codex，Claude Code 的官方市场接上之后这句就错了。
+    const plugins = tutorialTopics.find((entry) => entry.id === 'plugins')
+    const text = plugins?.steps.map((step) => step.detail).join('\n') ?? ''
+    expect(text).toContain('Claude Code')
+    expect(text).toContain('添加官方市场')
+    expect(text).toContain('Codex CLI')
+  })
+
   it('only links steps at pages the shell can actually navigate to', () => {
     for (const topic of tutorialTopics)
       for (const step of topic.steps) expect(pageIds.has(step.page)).toBe(true)

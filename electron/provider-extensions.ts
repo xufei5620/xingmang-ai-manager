@@ -1659,6 +1659,16 @@ export class ProviderExtensionService {
     return Promise.all(providerIds.map((provider) => this.list(provider)))
   }
 
+  /**
+   * 手动把官方市场加进来。没有市场时可装清单是空的，用户也就无从触发那次
+   * 安装时的自动注册，界面必须给一条自己能走通的路。
+   */
+  async ensureMarketplace(provider: ProviderId): Promise<ProviderExtensionsSnapshot> {
+    if (provider !== 'claude') throw new Error('当前工具没有官方插件市场')
+    await this.ensureClaudeOfficialMarketplace()
+    return this.list(provider)
+  }
+
   private mcpInstallArgv(input: ProviderExtensionMutation, id: string): { argv: string[]; secrets: string[] } {
     const config = input.mcp
     if (!config) throw new Error('安装 MCP 需要结构化配置')
