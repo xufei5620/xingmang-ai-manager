@@ -2045,6 +2045,27 @@ for (const existing of [false, true]) for (const { tool, provider, model } of de
   })
 }
 
+// Google 从 2026-06-18 起不再服务个人账号（含 AI Pro / Ultra 订阅），Gemini CLI
+// 的官方来源只剩企业版 Code Assist。选项留着给企业客户，但限制要跟选项一起出现，
+// 而不是等用户选完、保存完、在 Google 登录页上失败几次之后才知道。
+test('Gemini marks the official source enterprise-only and still defaults to the relay key', async () => {
+  const page = await open('allInstalled=1')
+  try {
+    await openToolConfiguration(page, 'gemini')
+    const dialog = page.getByTestId('config-dialog')
+    assert.equal(await dialog.getByRole('button', { name: 'Google 企业版账号', exact: true }).count(), 1)
+    assert.equal(await dialog.getByRole('button', { name: '使用星芒账号', exact: true }).getAttribute('aria-pressed'), 'true')
+    const note = await page.getByTestId('tool-source-note').innerText()
+    assert.match(note, /个人 Google 账号/)
+    assert.match(note, /企业版 Code Assist/)
+    await dialog.getByRole('tab', { name: 'Claude Code', exact: true }).click()
+    await page.waitForFunction(() => !document.querySelector('[data-testid="tool-source-note"]'))
+    await dialog.getByRole('button', { name: '取消', exact: true }).click()
+    await dialog.waitFor({ state: 'hidden' })
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('configuration keeps the current local key by default and saves through the reuse sentinel', async () => {
   const page = await open('keyOptions=1')
   try {
