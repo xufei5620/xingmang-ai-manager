@@ -2,6 +2,8 @@
 
 ## 基线
 
+> 本文记录的是这一轮可靠性改造的基线、计划与验收过程。改造落地后**当前**的登录与账号归属行为，见 `docs/DUAL-REALM-DESKTOP-INTEGRATION.md` 的「登录与账号归属」一节。
+
 普通登录与“增加账号”均复用 renderer-v2 `AuthFlow`。服务层已支持显式 `siteId`，但表单从不提供来源选择；自动发现首次优先星芒账号，因此同邮箱、同密码的历史账号无法主动登录。找回 IPC 不携带来源，realm 代理把全部公开方法固定发送至星芒账号。双重验证目前不支持客户端完成，错误提示也没有明确说明。
 
 定向基线：`npx vitest run electron/realm-account-service.test.ts src/renderer-v2/features/auth/api.test.ts src/renderer-v2/features/auth/state.test.ts --no-file-parallelism`，3 个文件、51 个测试通过。
