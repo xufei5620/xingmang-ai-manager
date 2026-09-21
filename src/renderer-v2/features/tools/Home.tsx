@@ -10,6 +10,9 @@ import type { ToolboxPartitionFailure, ToolsApi } from './api'
 import type { ToolJob } from './useToolbox'
 import type { AccountBootstrapProgress, AccountBootstrapResult } from './account-bootstrap'
 import type { PageId } from '../../registry/pages'
+import { tools as toolRegistry } from '../../registry/tools'
+import { FirstRunSteps } from './FirstRun'
+import { dismissFirstRun, getFirstRunStorage, readFirstRunDismissals } from './first-run-dismissal'
 import { errorMessage } from '../../business-common'
 
 export interface HomeProps {
@@ -46,6 +49,10 @@ export interface HomeProps {
   onBootstrapRetry?(): void
 }
 
+function firstRunOf(tool: ToolId) {
+  return toolRegistry.find((item) => item.id === tool)?.firstRun
+}
+
 export function Home(props: HomeProps) {
   const { snapshot, account, balance, jobs, loading, error } = props
   const { store: balanceStore, snapshot: balanceState } = useSharedAccountBalance()
@@ -60,6 +67,7 @@ export function Home(props: HomeProps) {
   const [officialBusy, setOfficialBusy] = useState(false)
   const [officialError, setOfficialError] = useState('')
   const officialLock = useRef(false)
+  const [firstRunDismissed, setFirstRunDismissed] = useState<ToolId[]>(() => readFirstRunDismissals(getFirstRunStorage()))
   const active = useRef(true)
   useEffect(() => { active.current = true; return () => { active.current = false } }, [])
   useEffect(() => {
@@ -100,6 +108,11 @@ export function Home(props: HomeProps) {
   const connectedCount = installed.filter((tool) => tool.configured).length + installedExternal.filter((tool) => tool.status.configured && tool.status.configurationSource === 'xingmang').length
   const bootstrapBusy = Boolean(props.bootstrap && !props.bootstrap.result && !props.bootstrap.error)
   const launchBusy = Object.keys(jobs).some((key) => key.startsWith('launch:'))
+  // 装好又连上之后才给这张卡：还没配 Key 时第一条命令敲下去只会报错，那不是「可以试试」。
+  // 一次只显示一个工具，关掉它下一个才轮上，免得首页被四张一样的卡片占满。
+  const firstRunTool = installed.find((tool) => tool.status.installed && !jobs[tool.id] && tool.configured && !tool.error
+    && !firstRunDismissed.includes(tool.id) && firstRunOf(tool.id) !== undefined)
+  const firstRun = firstRunTool ? firstRunOf(firstRunTool.id) : undefined
   const renderTool = useCallback((tool: ToolPresentation) => {
     const installJob = jobs[tool.id]
     const launchJob = jobs[`launch:${tool.id}`]
@@ -192,6 +205,11 @@ export function Home(props: HomeProps) {
           {availableCount > 0 && <Card title="还可以装" meta={`${availableCount} 个`} collapsible padding="none">{available.map(renderTool)}{availableExternal.map(renderExternal)}</Card>}
           {props.externalLoading && !external.length && <div className="v2-loading-inline" role="status">正在检测 WorkBuddy、Claude Desktop 和 OpenCode</div>}
         </>}
+        {firstRunTool && firstRun && <Card title="试试第一条命令" meta={firstRunTool.name} testId="home-first-run"
+          actions={<Button variant="ghost" size="xs" icon={X} aria-label="不再显示这条提示" title="不再显示这条提示" testId="home-first-run-dismiss"
+            onClick={() => setFirstRunDismissed((current) => dismissFirstRun(getFirstRunStorage(), current, firstRunTool.id))} />}>
+          <FirstRunSteps key={firstRunTool.id} name={firstRunTool.name} firstRun={firstRun} testId="home-first-run-steps" />
+        </Card>}
         <Card title="最近" meta="从上次停下的地方继续" padding="none" actions={<Button variant="ghost" size="xs" onClick={() => props.onNavigate('sessions')}>全部记录</Button>}>
           {recentError ? <Empty icon={History} title="记录暂时没有读到" description={recentError} action={<Button onClick={() => setRecentAttempt((value) => value + 1)}>重新加载</Button>} />
             : !recent ? <div className="v2-loading-inline" role="status">正在读取最近记录</div>

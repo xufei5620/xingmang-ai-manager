@@ -1,6 +1,7 @@
 import { cliCatalog, providerConfigDirectoryNames, type ProviderId } from '../../../electron/catalog';
 
-export type ToolDef = { id: ProviderId | 'codexDesktop'; name: string; vendor: string; brandIcon: string; kind: 'cli' | 'desktop'; install: { type: 'npm'; pkg: string } | { type: 'installer'; win?: 'managed' | 'store'; mac?: 'external'; linux?: 'unavailable' }; requires: Array<'node' | 'python'>; configPath: Record<'win' | 'mac' | 'linux', string>; sources: Array<'account' | 'official' | 'manual'>; models?: string[] | { endpoint: string }; shortcutIndex: number; hidden?: (os: 'win' | 'mac' | 'linux') => boolean };
+export type ToolFirstRun = { command: string; prompt: string };
+export type ToolDef = { id: ProviderId | 'codexDesktop'; name: string; vendor: string; brandIcon: string; kind: 'cli' | 'desktop'; install: { type: 'npm'; pkg: string } | { type: 'installer'; win?: 'managed' | 'store'; mac?: 'external'; linux?: 'unavailable' }; requires: Array<'node' | 'python'>; configPath: Record<'win' | 'mac' | 'linux', string>; sources: Array<'account' | 'official' | 'manual'>; models?: string[] | { endpoint: string }; shortcutIndex: number; firstRun?: ToolFirstRun; hidden?: (os: 'win' | 'mac' | 'linux') => boolean };
 
 // npm 包名与配置目录名都从主进程的单一真相源派生,而不是在这里再抄一份:
 // 抄过的字段会漂移——`keyWrite` 就漂过(grok 标成 'env',实际写的是
@@ -26,10 +27,24 @@ export const officialAccountNames: Record<ProviderId, string | null> = {
   grok: null,
 };
 
+// 装好之后在终端里敲的第一条命令,外加一句可以直接粘进去的中文提示词(功能清单 A6)。
+// 四个 CLI 装完都只剩一个闪烁的光标,这两行是用户能不能走完第一分钟的全部依据。
+// 写成 Record<ProviderId, …> 而不是逐条挂在 tools 上:加第五个 CLI 时漏掉它是编译错
+// (TS2741),而不是界面上少一张卡片——少一张卡片没有任何东西会报错。
+// 命令就是各 CLI 官方的裸命令,与主进程「打开」按钮真正启动的那条一致
+// (resolveCliCommand 的 argv 始终为空),用户自己开终端敲的和点按钮得到的是同一个东西。
+// Codex 桌面端是图形界面,没有要敲的命令,所以这张表只覆盖四个 CLI。
+export const firstRunHints: Record<ProviderId, ToolFirstRun> = {
+  claude: { command: 'claude', prompt: '用中文介绍一下这个项目是做什么的,再指出最值得先读的三个文件。' },
+  codex: { command: 'codex', prompt: '用中文说明把这个项目跑起来需要哪些步骤,越具体越好。' },
+  gemini: { command: 'gemini', prompt: '用中文总结这个文件夹里的代码,再列出你觉得可以改进的地方。' },
+  grok: { command: 'grok', prompt: '用中文讲讲这个项目的主要功能,并给我一条改进建议。' },
+};
+
 export const tools: ToolDef[] = [
-  { id: 'claude', name: 'Claude Code', vendor: 'Anthropic', brandIcon: 'Claude', kind: 'cli', install: npmInstall('claude'), requires: ['node'], configPath: configPathsFor('claude'), sources: ['account', 'official', 'manual'], shortcutIndex: 1 },
-  { id: 'codex', name: 'Codex CLI', vendor: 'OpenAI', brandIcon: 'OpenAI', kind: 'cli', install: npmInstall('codex'), requires: ['node'], configPath: configPathsFor('codex'), sources: ['account', 'official', 'manual'], shortcutIndex: 2 },
+  { id: 'claude', name: 'Claude Code', vendor: 'Anthropic', brandIcon: 'Claude', kind: 'cli', install: npmInstall('claude'), requires: ['node'], configPath: configPathsFor('claude'), sources: ['account', 'official', 'manual'], shortcutIndex: 1, firstRun: firstRunHints.claude },
+  { id: 'codex', name: 'Codex CLI', vendor: 'OpenAI', brandIcon: 'OpenAI', kind: 'cli', install: npmInstall('codex'), requires: ['node'], configPath: configPathsFor('codex'), sources: ['account', 'official', 'manual'], shortcutIndex: 2, firstRun: firstRunHints.codex },
   { id: 'codexDesktop', name: 'Codex 桌面端', vendor: 'OpenAI', brandIcon: 'OpenAI', kind: 'desktop', install: { type: 'installer', win: 'managed', mac: 'external', linux: 'unavailable' }, requires: [], configPath: configPathsFor('codex'), sources: ['account', 'official', 'manual'], shortcutIndex: 3, hidden: os => os === 'linux' },
-  { id: 'gemini', name: 'Gemini CLI', vendor: 'Google', brandIcon: 'Gemini', kind: 'cli', install: npmInstall('gemini'), requires: ['node', 'python'], configPath: configPathsFor('gemini'), sources: ['account', 'official', 'manual'], shortcutIndex: 4 },
-  { id: 'grok', name: 'Grok CLI', vendor: 'xAI', brandIcon: 'Grok', kind: 'cli', install: npmInstall('grok'), requires: ['node'], configPath: configPathsFor('grok'), sources: ['account', 'manual'], shortcutIndex: 5 },
+  { id: 'gemini', name: 'Gemini CLI', vendor: 'Google', brandIcon: 'Gemini', kind: 'cli', install: npmInstall('gemini'), requires: ['node', 'python'], configPath: configPathsFor('gemini'), sources: ['account', 'official', 'manual'], shortcutIndex: 4, firstRun: firstRunHints.gemini },
+  { id: 'grok', name: 'Grok CLI', vendor: 'xAI', brandIcon: 'Grok', kind: 'cli', install: npmInstall('grok'), requires: ['node'], configPath: configPathsFor('grok'), sources: ['account', 'manual'], shortcutIndex: 5, firstRun: firstRunHints.grok },
 ];
