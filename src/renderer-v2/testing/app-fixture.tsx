@@ -123,6 +123,11 @@ if (query.has('detectionFailed')) {
   system.clis.claude = { ...system.clis.claude, installed: false, version: null, path: null,
     detectionFailed: true, detectionError: '本地探针暂时不可用' }
 }
+// 运行环境自己的探针抛错：整块系统状态是读到的，只有 Node.js 这一行没有结论。
+if (query.has('runtimeDetectionFailed')) {
+  system.runtime.node = { ...system.runtime.node, installed: false, version: null, path: null,
+    detectionFailed: true, detectionError: '读取 Node.js 安装位置时被拒绝' }
+}
 // 更新检查失败的 CLI：装是装上了，但这次没能比出有没有新版本，页面要说清原因。
 if (query.has('cliUpdateFailed')) {
   system.clis.claude = { ...system.clis.claude, updateAvailable: false, updateCheck: 'failed',
