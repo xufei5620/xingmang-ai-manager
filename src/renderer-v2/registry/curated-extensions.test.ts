@@ -2,8 +2,11 @@ import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { providerIds } from '../../../electron/catalog';
 import {
+  curatedCommandLines,
   curatedCommandText,
   curatedExtensions,
+  curatedInstallTarget,
+  curatedMarketplaceSources,
   curatedItemsFor,
   curatedNeedsInput,
   curatedNetworkLabels,
@@ -95,7 +98,9 @@ describe('curated extension catalog', () => {
     for (const item of curatedExtensions) {
       const values = item.install.type === 'stdio'
         ? [...item.install.args, ...Object.values(item.install.env)]
-        : [item.install.url];
+        : item.install.type === 'http'
+          ? [item.install.url]
+          : [];
       const placeholders = new Set(
         values.flatMap(value => [...value.matchAll(/\{\{([A-Za-z][A-Za-z0-9_]*)\}\}/g)].map(match => match[1])),
       );
@@ -118,16 +123,54 @@ describe('curated extension catalog', () => {
   });
 
   it('filters by page and by the tool the user is looking at', () => {
-    for (const provider of providerIds) {
-      for (const item of curatedItemsFor('mcp', provider)) {
-        expect(item.kind).toBe('mcp');
-        expect(item.providers).toContain(provider);
-      }
-    }
+    for (const kind of ['mcp', 'plugin'] as const)
+      for (const provider of providerIds)
+        for (const item of curatedItemsFor(kind, provider)) {
+          expect(item.kind).toBe(kind);
+          expect(item.providers).toContain(provider);
+        }
     expect(curatedItemsFor('mcp', 'claude').map(item => item.id)).toContain('files');
-    // 第一步只做外接工具页，技能与插件还没有精选，两页应当什么也不渲染。
+    expect(curatedItemsFor('plugin', 'claude').map(item => item.id)).toContain('code-review');
+    // 技能的分发形态各家都不一样，那一页还没有精选，整块不渲染。
     expect(curatedItemsFor('skill', 'claude')).toEqual([]);
-    expect(curatedItemsFor('plugin', 'claude')).toEqual([]);
+    // 插件精选只给 Claude Code：另外三家没有这个市场，列出来就是列了装不上的东西。
+    for (const provider of ['codex', 'gemini', 'grok'] as const)
+      expect(curatedItemsFor('plugin', provider)).toEqual([]);
+  });
+
+  // 官方市场的 `plugin install` 没有钉版本的开关，装到的就是市场当下那一份。改不了，
+  // 那就必须留下复核时的坐标，否则界面上没有任何东西能告诉用户他装的是哪一版。
+  it('records the marketplace commit it reviewed for every plugin entry', () => {
+    const plugins = curatedExtensions.filter(item => item.install.type === 'plugin');
+    expect(plugins.length).toBeGreaterThan(0);
+    for (const item of plugins) {
+      expect(item.marketplaceCommit ?? item.pinnedVersion).toBeTruthy();
+      if (item.marketplaceCommit) expect(item.marketplaceCommit).toMatch(/^[0-9a-f]{40}$/);
+      expect(item.providers).toEqual(['claude']);
+      expect(item.inputs).toEqual([]);
+      // 插件只往工具里加提示词和命令，说成「要装 Node」或「每次都要联网」都是假的。
+      expect(item.runtime).toBe('prompt');
+      expect(item.network).toBe('install-only');
+      expect(item.requiresAccount).toBe(false);
+      // 装完怎么用必须写一句，否则用户装上了也不知道它在哪。
+      expect(item.note?.length ?? 0).toBeGreaterThan(8);
+    }
+  });
+
+  // 随包清单只能指向应用真的会去注册的那一个市场，别的市场名一律解析不出来。
+  it('only names a marketplace the application itself registers', () => {
+    for (const item of curatedExtensions) {
+      if (item.install.type !== 'plugin') continue;
+      expect(curatedMarketplaceSources[item.install.marketplace]).toBeTruthy();
+      expect(curatedInstallTarget(item)).toBe(`${item.install.plugin}@${item.install.marketplace}`);
+    }
+    const plugin = rawItems.find(item => item.id === 'code-review')!;
+    const install = plugin.install as Record<string, unknown>;
+    expect(parseCuratedExtensions({ items: [{ ...plugin, install: { ...install, marketplace: 'someone-elses' } }] })).toEqual([]);
+    expect(parseCuratedExtensions({ items: [{ ...plugin, install: { ...install, plugin: '--scope' } }] })).toEqual([]);
+    expect(parseCuratedExtensions({ items: [{ ...plugin, install: { ...install, plugin: 'a@b' } }] })).toEqual([]);
+    expect(parseCuratedExtensions({ items: [{ ...plugin, marketplaceCommit: 'c447c32' }] })).toEqual([]);
+    expect(parseCuratedExtensions({ items: [{ ...plugin, marketplaceCommit: null, pinnedVersion: null }] })).toEqual([]);
   });
 
   it('shows the exact command that will be written into the tool configuration', () => {
@@ -140,6 +183,17 @@ describe('curated extension catalog', () => {
     expect(curatedCommandText(memory!)).toContain('MEMORY_FILE_PATH={{directory}}/ai-memory.jsonl');
     const github = curatedExtensions.find(item => item.id === 'github');
     expect(curatedCommandText(github!)).toBe('https://api.githubcopilot.com/mcp/');
+  });
+
+  // 装插件要先保证官方市场在册，所以确认框里是两条命令。少列一条就是没说全。
+  it('shows both commands a plugin install actually runs', () => {
+    const review = curatedExtensions.find(item => item.id === 'code-review');
+    expect(curatedCommandLines(review!)).toEqual([
+      'claude plugin marketplace add anthropics/claude-plugins-official',
+      'claude plugin install code-review@claude-plugins-official',
+    ]);
+    const files = curatedExtensions.find(item => item.id === 'files');
+    expect(curatedCommandLines(files!)).toEqual([curatedCommandText(files!)]);
   });
 
   it('drops entries it cannot fully validate instead of rendering half of one', () => {
