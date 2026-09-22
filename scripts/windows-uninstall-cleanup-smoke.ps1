@@ -104,8 +104,9 @@ try {
   # from the uninstaller never reaching it.
   Set-AccelerationLeftOn $exe.FullName
   $cleanupErrors = Join-Path $installRoot 'cleanup-stderr.txt'
+  $clock = [Diagnostics.Stopwatch]::StartNew()
   $direct = Start-Process -FilePath $exe.FullName -ArgumentList '--xingmang-uninstall-cleanup' -RedirectStandardError $cleanupErrors -Wait -PassThru
-  Show-Diagnostics "direct cleanup exit code $($direct.ExitCode)"
+  Show-Diagnostics "direct cleanup exit code $($direct.ExitCode) after $([int]$clock.Elapsed.TotalSeconds)s"
   if (Test-Path -LiteralPath $cleanupErrors) { Get-Content -LiteralPath $cleanupErrors -Encoding utf8 | ForEach-Object { Write-Output "cleanup stderr: $_" } }
   Check ($direct.ExitCode -eq 0) "direct cleanup exits 0 (got $($direct.ExitCode))"
   Assert-Cleaned 'direct cleanup'
@@ -113,7 +114,9 @@ try {
   # Stage 2: the real uninstaller.
   Set-AccelerationLeftOn $exe.FullName
   # _?= keeps the uninstaller in place so -Wait covers the whole uninstall.
+  $clock.Restart()
   $uninstall = Start-Process -FilePath $uninstaller.FullName -ArgumentList '/S', "_?=$installDir" -Wait -PassThru
+  Write-Output "uninstall took $([int]$clock.Elapsed.TotalSeconds)s"
   Check ($uninstall.ExitCode -eq 0) "silent uninstall exits 0 (got $($uninstall.ExitCode))"
 
   Show-Diagnostics 'after uninstall'

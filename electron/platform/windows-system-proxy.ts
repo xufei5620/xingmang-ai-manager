@@ -48,6 +48,9 @@ export interface WindowsSystemProxyOptions {
   powerShellExecutable?: () => string
   commandEnvironment?: () => NodeJS.ProcessEnv
   withOperationLock?: <T>(operation: () => Promise<T>) => Promise<T>
+  // 卸载清理在刚被强行结束一批进程的机器上冷启动 PowerShell，首次编译 WinInet
+  // 互操作代码可能超过 15 秒；辅助进程沿用缺省值。
+  commandTimeoutMs?: number
 }
 
 const label = '系统代理恢复记录'
@@ -359,7 +362,7 @@ export function createWindowsSystemProxy(options: WindowsSystemProxyOptions): {
       const encoded = Buffer.from(JSON.stringify(request), 'utf8').toString('base64')
       const result = await execute({ executable: executable(), argv: ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(proxyScript, 'utf16le').toString('base64')] }, {
         env: { ...environment(), [requestEnvironmentKey]: encoded }, trustedOnly: true,
-        windowsHide: true, timeoutMs: 15_000, maxOutputBytes: maximumJournalBytes, sensitiveValues: [encoded],
+        windowsHide: true, timeoutMs: options.commandTimeoutMs ?? 15_000, maxOutputBytes: maximumJournalBytes, sensitiveValues: [encoded],
       })
       const value: unknown = JSON.parse(result.stdout)
       if (!isRecord(value)) throw new Error('invalid response')

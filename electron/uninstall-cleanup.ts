@@ -18,9 +18,12 @@ export const uninstallCleanupExitCodes = {
   unsupported: 8,
 } as const
 
-// 真正的还原最多是：等系统代理锁 12 秒，再加三次各 15 秒的 PowerShell。
-// 正常几秒就完；这个上限只防卸载界面一直停在「正在清理」。
-const defaultTimeoutMs = 45_000
+// 单次 PowerShell 放宽到 45 秒：卸载时 PowerShell 往往是冷启动，第一次编译
+// WinInet 互操作代码在 CI runner 上实测超过辅助进程用的 15 秒。
+const proxyCommandTimeoutMs = 45_000
+// 还原最多是：等系统代理锁 12 秒，再加三次 PowerShell。正常几秒就完；
+// 这个上限只防卸载界面一直停在「正在清理」。
+const defaultTimeoutMs = 150_000
 
 // 没有记录就说明这台电脑上本程序从没接管过系统代理（或者已经还原干净），
 // 不必再起 PowerShell 去拿锁。lstat 不跟随链接：记录位置被换成链接时照样交给
@@ -107,7 +110,7 @@ export function startUninstallCleanup(
     // The same default the desktop process reads (main.ts managerDataDirectory);
     // neither process renames the app or passes a profile switch.
     dataDirectory: app.getPath('userData'),
-    recoverProxy: (journalPath) => createWindowsSystemProxy({ journalPath }).recover(),
+    recoverProxy: (journalPath) => createWindowsSystemProxy({ journalPath, commandTimeoutMs: proxyCommandTimeoutMs }).recover(),
     removeLoginItem: () => removeWindowsLoginItem({ app, executablePath: process.execPath }),
     report,
   }).then(exit, () => exit(uninstallCleanupExitCodes.proxyNotRestored))
