@@ -536,7 +536,7 @@ describe('diagnostics', () => {
       input.env = {
         ANTHROPIC_BASE_URL: 'https://gateway.example.com',
         ANTHROPIC_AUTH_TOKEN: 'sk-must-not-leak-token',
-        anthropic_api_key: 'sk-must-not-leak-key',
+        openai_api_key: 'sk-must-not-leak-key',
         GEMINI_MODEL: 'gemini-must-not-leak',
       }
 
@@ -551,11 +551,89 @@ describe('diagnostics', () => {
         count: 4,
         variable1: 'ANTHROPIC_BASE_URL（Claude Code）',
         variable2: 'ANTHROPIC_AUTH_TOKEN（Claude Code）',
-        // 大小写不敏感：Windows 上 `anthropic_api_key` 与大写是同一个变量。
-        variable3: 'ANTHROPIC_API_KEY（Claude Code）',
+        // 大小写不敏感：Windows 上 `openai_api_key` 与大写是同一个变量。
+        variable3: 'OPENAI_API_KEY（Codex CLI）',
         variable4: 'GEMINI_MODEL（Gemini CLI）',
       })
       expect(JSON.stringify(item)).not.toMatch(/must-not-leak|gateway\.example\.com/)
+    })
+
+    // 这四个在沙箱里实测会让 CLI 绕开写入的配置（diagnostics.ts 的 breaksAccount），
+    // 用户在终端里跑就连不上当前账号，所以是待处理，开机提示也会数它。
+    it.each([
+      ['ANTHROPIC_API_KEY', 'sk-must-not-leak', 'Claude Code'],
+      ['CLAUDE_CONFIG_DIR', '/must-not-leak/claude', 'Claude Code'],
+      ['GOOGLE_GEMINI_BASE_URL', 'https://must-not-leak.example.com', 'Gemini CLI'],
+      ['GEMINI_API_KEY', 'sk-must-not-leak', 'Gemini CLI'],
+    ])('treats %s as a finding to handle because it takes the CLI off the current account', async (name, value, tool) => {
+      const home = temporaryHome()
+      const input = dependencies(home)
+      input.env = { [name]: value }
+
+      const item = overrideItem(await runDiagnostics(input))
+
+      expect(item).toMatchObject({
+        state: 'fail',
+        summary: `系统环境变量里设置了 ${name}，会让 ${tool} 不用当前账号写入的配置，删掉后重新打开终端即可`,
+        details: { count: 1, variable1: `${name}（${tool}，会绕开当前账号）` },
+      })
+      expect(JSON.stringify(item)).not.toContain('must-not-leak')
+    })
+
+    // 这些实测盖不过写入的配置，或只换模型、不换账号：留在需留意，不在开机时打扰。
+    it.each([
+      ['ANTHROPIC_BASE_URL', 'https://gateway.example.com'],
+      ['ANTHROPIC_AUTH_TOKEN', 'sk-shell'],
+      ['OPENAI_BASE_URL', 'https://gateway.example.com/v1'],
+      ['OPENAI_API_KEY', 'sk-shell'],
+      ['GOOGLE_GEMINI_API_KEY', 'sk-shell'],
+      ['GEMINI_MODEL', 'gemini-other'],
+      ['GOOGLE_GENAI_API_VERSION', 'v1'],
+    ])('keeps %s as only worth a look because the written configuration still wins', async (name, value) => {
+      const home = temporaryHome()
+      const input = dependencies(home)
+      input.env = { [name]: value }
+
+      expect(overrideItem(await runDiagnostics(input))).toMatchObject({
+        state: 'warn',
+        summary: `系统环境变量里设置了 ${name}，可能会盖过当前账号写入的配置`,
+      })
+    })
+
+    it('does not escalate a Gemini base URL that already points at the current account', async () => {
+      const home = temporaryHome()
+      const input = dependencies(home)
+      input.env = { GOOGLE_GEMINI_BASE_URL: 'https://xm.solov.cc' }
+
+      expect(overrideItem(await runDiagnostics(input))).toMatchObject({
+        state: 'pass',
+        details: { count: 1, variable1: 'GOOGLE_GEMINI_BASE_URL（Gemini CLI，已指向当前账号）' },
+      })
+    })
+
+    it('ignores a CLAUDE_CONFIG_DIR that points at the default directory', async () => {
+      const home = temporaryHome()
+      const input = dependencies(home)
+      input.env = { CLAUDE_CONFIG_DIR: path.join(home, '.claude') }
+
+      expect(overrideItem(await runDiagnostics(input))).toMatchObject({ state: 'pass', details: { count: 0 } })
+    })
+
+    it('names only the variables that break the account when both kinds are set', async () => {
+      const home = temporaryHome()
+      const input = dependencies(home)
+      input.env = { ANTHROPIC_BASE_URL: 'https://gateway.example.com', GEMINI_API_KEY: 'sk-shell', ANTHROPIC_API_KEY: 'sk-shell' }
+
+      expect(overrideItem(await runDiagnostics(input))).toMatchObject({
+        state: 'fail',
+        summary: '系统环境变量里设置了 ANTHROPIC_API_KEY、GEMINI_API_KEY，会让 Claude Code、Gemini CLI 不用当前账号写入的配置，删掉后重新打开终端即可',
+        details: {
+          count: 3,
+          variable1: 'ANTHROPIC_BASE_URL（Claude Code）',
+          variable2: 'ANTHROPIC_API_KEY（Claude Code，会绕开当前账号）',
+          variable3: 'GEMINI_API_KEY（Gemini CLI，会绕开当前账号）',
+        },
+      })
     })
 
     it('does not scold a base URL that already points at the current account', async () => {
@@ -594,6 +672,75 @@ describe('diagnostics', () => {
         state: 'warn',
         details: { count: 1, variable1: 'CODEX_HOME（Codex CLI）' },
       })
+    })
+
+    function ignoredCodexHomeInput(home: string, value: string, reason: 'relative' | 'nul' = 'relative') {
+      const input = dependencies(home)
+      // The host has already replaced CODEX_HOME with the default it resolved.
+      input.env = { CODEX_HOME: path.join(home, '.codex') }
+      input.providerRoots = { userHome: home, codexHome: path.join(home, '.codex') }
+      input.ignoredCodexHome = { value, reason }
+      return input
+    }
+
+    it('flags an ignored CODEX_HOME as blocking when Codex outside the app would miss the account', async () => {
+      const home = temporaryHome()
+      const input = ignoredCodexHomeInput(home, '%USERPROFILE%/must-not-leak-user/.codex')
+
+      const item = overrideItem(await runDiagnostics(input))
+
+      expect(item).toMatchObject({
+        state: 'fail',
+        summary: '电脑里有一个 Codex 的设置写得不对，软件已经忽略它，但在软件外面打开 Codex 会连不上当前账号',
+        details: { count: 1, variable1: 'CODEX_HOME（Codex CLI，写得不对，已忽略）' },
+      })
+      expect(JSON.stringify(item)).not.toMatch(/must-not-leak|USERPROFILE/)
+    })
+
+    it('treats an unexpanded home shortcut and a NUL value as unreachable', async () => {
+      const home = temporaryHome()
+
+      expect(overrideItem(await runDiagnostics(ignoredCodexHomeInput(home, '~/.codex')))?.state).toBe('fail')
+      expect(overrideItem(await runDiagnostics(ignoredCodexHomeInput(home, `${home}\0x`, 'nul')))?.state).toBe('fail')
+    })
+
+    it('only warns when the relative value still resolves to the managed Codex directory from the user home', async () => {
+      const home = temporaryHome()
+
+      expect(overrideItem(await runDiagnostics(ignoredCodexHomeInput(home, '.codex')))).toMatchObject({
+        state: 'warn',
+        summary: '电脑里有一个 Codex 的设置写得不对，软件已经忽略它',
+      })
+    })
+
+    it('only warns when Codex is not connected to the current account anyway', async () => {
+      const home = temporaryHome()
+      const input = ignoredCodexHomeInput(home, '~/.codex')
+      input.inspectProvider = (provider) => ({
+        ...inspection(provider, home, 'sk-super-secret-value'),
+        ...(provider === 'codex' ? { exists: false, hasApiKey: false, matchesRelay: false, apiKey: '' } : {}),
+      })
+
+      expect(overrideItem(await runDiagnostics(input))?.state).toBe('warn')
+    })
+
+    it('mentions other overriding variables after the ignored CODEX_HOME', async () => {
+      const home = temporaryHome()
+      const input = ignoredCodexHomeInput(home, '.codex')
+      input.env = { ...input.env, OPENAI_API_KEY: 'sk-must-not-leak' }
+
+      const item = overrideItem(await runDiagnostics(input))
+
+      expect(item).toMatchObject({
+        state: 'warn',
+        summary: '电脑里有一个 Codex 的设置写得不对，软件已经忽略它；另外系统环境变量里设置了 OPENAI_API_KEY，可能会盖过当前账号写入的配置',
+        details: {
+          count: 2,
+          variable1: 'CODEX_HOME（Codex CLI，写得不对，已忽略）',
+          variable2: 'OPENAI_API_KEY（Codex CLI）',
+        },
+      })
+      expect(JSON.stringify(item)).not.toContain('must-not-leak')
     })
   })
 

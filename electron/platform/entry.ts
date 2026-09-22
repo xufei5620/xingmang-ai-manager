@@ -1,9 +1,23 @@
 import { accelerationEntryMode } from '../acceleration-worker-entry'
+import { uninstallCleanupEntryMode } from '../uninstall-cleanup-entry'
 
 // This branch must run before importing desktop modules: helpers do not own
 // windows, renderer IPC, the single-instance lock, or the normal quit handlers.
+const cleanupMode = uninstallCleanupEntryMode(process.argv, process.platform)
 const mode = accelerationEntryMode(process.argv, typeof process.send === 'function' && process.connected, process.platform)
-if (mode === 'worker') {
+if (cleanupMode === 'cleanup') {
+  // The uninstaller waits on this process and deletes the files right after,
+  // so it never takes the single-instance lock or opens the desktop.
+  const { app } = require('electron') as typeof import('electron')
+  const { startUninstallCleanup } = require('../uninstall-cleanup') as typeof import('../uninstall-cleanup')
+  // The uninstaller attaches no stderr; the CI smoke does, and reads why.
+  process.stderr.on('error', () => undefined)
+  startUninstallCleanup(app, (code) => process.exit(code), (line) => {
+    try { process.stderr.write(`${line}\n`) } catch { /* no live diagnostic pipe */ }
+  })
+} else if (cleanupMode === 'invalid') {
+  process.exit(1)
+} else if (mode === 'worker') {
   const { app } = require('electron') as typeof import('electron')
   const { isolateAccelerationElectronProfile } = require('../acceleration-electron-profile') as typeof import('../acceleration-electron-profile')
   // The launch switch isolates Chromium before JavaScript starts; these paths

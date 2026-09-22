@@ -4,6 +4,7 @@ import vm from 'node:vm'
 import { transpileModule, ModuleKind } from 'typescript'
 import { describe, expect, it, vi } from 'vitest'
 import { accelerationEntryMode, accelerationWorkerArgument } from './acceleration-worker-entry'
+import { uninstallCleanupArgument, uninstallCleanupEntryMode } from './uninstall-cleanup-entry'
 
 function runEntry(argv: string[], connected: boolean, platform = 'win32') {
   const loaded: string[] = []
@@ -11,6 +12,10 @@ function runEntry(argv: string[], connected: boolean, platform = 'win32') {
   const setActivationPolicy = vi.fn((policy: string) => events.push(`activation:${policy}`))
   const isolateAccelerationElectronProfile = vi.fn(() => events.push('profile:isolate'))
   const exit = vi.fn()
+  const startUninstallCleanup = vi.fn((_app: unknown, done: (code: number) => void) => {
+    events.push('cleanup:start')
+    done(0)
+  })
   const source = fs.readFileSync(path.join(__dirname, 'platform', 'entry.ts'), 'utf8')
   const compiled = transpileModule(source, { compilerOptions: { module: ModuleKind.CommonJS } }).outputText
   vm.runInNewContext(compiled, {
@@ -18,6 +23,8 @@ function runEntry(argv: string[], connected: boolean, platform = 'win32') {
     process: { argv, connected, platform, send: connected ? () => undefined : undefined, exit, stderr: { on: () => undefined, write: () => { throw new Error('EPIPE') } } },
     require(name: string) {
       if (name === '../acceleration-worker-entry') return { accelerationEntryMode }
+      if (name === '../uninstall-cleanup-entry') return { uninstallCleanupEntryMode }
+      if (name === '../uninstall-cleanup') return { startUninstallCleanup }
       if (name === 'electron') return { app: { setActivationPolicy } }
       if (name === '../acceleration-electron-profile') return { isolateAccelerationElectronProfile }
       events.push(`load:${name}`)
@@ -25,7 +32,7 @@ function runEntry(argv: string[], connected: boolean, platform = 'win32') {
       return {}
     },
   })
-  return { loaded, exit, setActivationPolicy, isolateAccelerationElectronProfile, events }
+  return { loaded, exit, setActivationPolicy, isolateAccelerationElectronProfile, startUninstallCleanup, events }
 }
 
 describe('packaged acceleration worker entry', () => {
@@ -57,5 +64,20 @@ describe('packaged acceleration worker entry', () => {
     expect(result.exit).not.toHaveBeenCalled()
     expect(result.setActivationPolicy).not.toHaveBeenCalled()
     expect(result.isolateAccelerationElectronProfile).not.toHaveBeenCalled()
+  })
+
+  it('hands the uninstall switch to the cleanup and exits with its code without loading the desktop', () => {
+    const result = runEntry(['app.exe', uninstallCleanupArgument], false, 'win32')
+    expect(result.loaded).toEqual([])
+    expect(result.events).toEqual(['cleanup:start'])
+    expect(result.exit).toHaveBeenCalledExactlyOnceWith(0)
+    expect(result.isolateAccelerationElectronProfile).not.toHaveBeenCalled()
+  })
+
+  it.each(['darwin', 'linux'])('never opens the desktop for the uninstall switch on %s', (platform) => {
+    const result = runEntry(['app', uninstallCleanupArgument], false, platform)
+    expect(result.loaded).toEqual([])
+    expect(result.startUninstallCleanup).not.toHaveBeenCalled()
+    expect(result.exit).toHaveBeenCalledWith(1)
   })
 })

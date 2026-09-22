@@ -12,7 +12,7 @@ import {
   runCommand,
   trustedCommandEnvironment,
 } from './command-runner'
-import { defaultProviderConfigRoots, type ProviderConfigRoots } from './codex-home'
+import { defaultProviderConfigRoots, type IgnoredCodexHome, type ProviderConfigRoots } from './codex-home'
 import { inspectProviderConfig, type NativeConfigInspection } from './config-files'
 import {
   formatFreeSpace,
@@ -115,6 +115,12 @@ export interface DiagnosticsDependencies {
   /** 剩余空间的读取口，测试用它造「够 / 不够 / 读不到」三种盘。 */
   readDiskSpace?: typeof readDiskSpace
   inspectProxyVariables?: (signal: AbortSignal) => Promise<ProxyVariableSummary[]>
+  /**
+   * 启动时发现用户环境里的 CODEX_HOME 不可用、已按没设处理（codex-home.ts）。
+   * 传进来的 env 里 CODEX_HOME 已被换成本程序算出的位置，诊断自己看不到原值，
+   * 只能由宿主告诉它。原值只用来判断会不会连不上，从不进报告。
+   */
+  ignoredCodexHome?: IgnoredCodexHome
   /**
    * 诊断报告是要上屏、也要能导出给客服的，所以它只装中文结论。认出一个失败靠的
    * 那段上游原文（`net::ERR_CERT_AUTHORITY_INVALID` 这类）留在 runtime.jsonl 里：
@@ -608,6 +614,12 @@ interface EnvironmentOverrideVariable {
   name: string
   provider: ProviderId
   kind: EnvironmentOverrideKind
+  /**
+   * true = 设了（且不指向当前账号）就一定让这个 CLI 绕开本程序写入的配置，请求
+   * 发去别处或带着别的 Key——检查结论升为「待处理」，开机提示也会数它。
+   * false = 盖不过写入的配置，或只影响模型之类不决定能不能连上的东西，仍是「需留意」。
+   */
+  breaksAccount: boolean
 }
 
 interface EnvironmentOverrideMatch {
@@ -615,6 +627,8 @@ interface EnvironmentOverrideMatch {
   provider: ProviderId
   /** false = 用户确实设了它，但它指的就是当前账号，不会把请求带去别处。 */
   overriding: boolean
+  /** overriding 且这个变量会让 CLI 连不上当前账号（见 breaksAccount）。 */
+  breaking: boolean
 }
 
 /**
@@ -626,20 +640,35 @@ interface EnvironmentOverrideMatch {
  * 只读、只提醒：代删别人设的变量等于改用户的机器，而且本进程也删不掉别的 shell
  * 的环境。Grok 的同类变量没有在本仓实测过（`GROK_DISABLE_AUTOUPDATER` 是唯一
  * 核实过的一个，与中转地址无关），按 T12 的口径宁缺勿猜，等实测再补。
+ *
+ * breaksAccount 的取值是 2026-09-22 在沙箱里实测的（Claude Code 2.1.277、Codex
+ * 0.155.1、Gemini CLI 0.60.0；配置按 config-files.ts 的模板写，base URL 指本地假
+ * 接口，逐个设变量看请求去了哪、带的是哪把 Key），不是照文档推的：
+ * - Claude：settings.json 的 env 段压过进程环境，ANTHROPIC_BASE_URL /
+ *   ANTHROPIC_AUTH_TOKEN 设了请求照样发往写入的地址、带写入的 Key。但
+ *   ANTHROPIC_API_KEY 会多带一个 `x-api-key` 头，而 new-api 在 /v1/messages 上拿
+ *   它顶掉 Authorization（middleware/auth.go），等于换了一把 Key。
+ *   CLAUDE_CONFIG_DIR 让 Claude 去别的目录找配置，本程序写的 ~/.claude 整个不读。
+ * - Codex：自定义 model provider 不认 OPENAI_BASE_URL / OPENAI_API_KEY（设了照旧打
+ *   config.toml 里的地址、带 auth.json 的 Key）。CODEX_HOME 本程序自己也认
+ *   （codex-home.ts），配置就写在它指的地方，所以也不算。
+ * - Gemini：~/.gemini/.env 不覆盖已有的进程环境，GOOGLE_GEMINI_BASE_URL 与
+ *   GEMINI_API_KEY 都是进程环境说了算。GOOGLE_GEMINI_API_KEY 实测不生效；
+ *   GEMINI_MODEL、GOOGLE_GENAI_API_VERSION 只换模型和路径版本，不换账号。
  */
 const ENVIRONMENT_OVERRIDE_VARIABLES: readonly EnvironmentOverrideVariable[] = [
-  { name: 'ANTHROPIC_BASE_URL', provider: 'claude', kind: 'baseUrl' },
-  { name: 'ANTHROPIC_AUTH_TOKEN', provider: 'claude', kind: 'secret' },
-  { name: 'ANTHROPIC_API_KEY', provider: 'claude', kind: 'secret' },
-  { name: 'CLAUDE_CONFIG_DIR', provider: 'claude', kind: 'directory' },
-  { name: 'OPENAI_BASE_URL', provider: 'codex', kind: 'baseUrl' },
-  { name: 'OPENAI_API_KEY', provider: 'codex', kind: 'secret' },
-  { name: 'CODEX_HOME', provider: 'codex', kind: 'directory' },
-  { name: 'GOOGLE_GEMINI_BASE_URL', provider: 'gemini', kind: 'baseUrl' },
-  { name: 'GEMINI_API_KEY', provider: 'gemini', kind: 'secret' },
-  { name: 'GOOGLE_GEMINI_API_KEY', provider: 'gemini', kind: 'secret' },
-  { name: 'GEMINI_MODEL', provider: 'gemini', kind: 'model' },
-  { name: 'GOOGLE_GENAI_API_VERSION', provider: 'gemini', kind: 'other' },
+  { name: 'ANTHROPIC_BASE_URL', provider: 'claude', kind: 'baseUrl', breaksAccount: false },
+  { name: 'ANTHROPIC_AUTH_TOKEN', provider: 'claude', kind: 'secret', breaksAccount: false },
+  { name: 'ANTHROPIC_API_KEY', provider: 'claude', kind: 'secret', breaksAccount: true },
+  { name: 'CLAUDE_CONFIG_DIR', provider: 'claude', kind: 'directory', breaksAccount: true },
+  { name: 'OPENAI_BASE_URL', provider: 'codex', kind: 'baseUrl', breaksAccount: false },
+  { name: 'OPENAI_API_KEY', provider: 'codex', kind: 'secret', breaksAccount: false },
+  { name: 'CODEX_HOME', provider: 'codex', kind: 'directory', breaksAccount: false },
+  { name: 'GOOGLE_GEMINI_BASE_URL', provider: 'gemini', kind: 'baseUrl', breaksAccount: true },
+  { name: 'GEMINI_API_KEY', provider: 'gemini', kind: 'secret', breaksAccount: true },
+  { name: 'GOOGLE_GEMINI_API_KEY', provider: 'gemini', kind: 'secret', breaksAccount: false },
+  { name: 'GEMINI_MODEL', provider: 'gemini', kind: 'model', breaksAccount: false },
+  { name: 'GOOGLE_GENAI_API_VERSION', provider: 'gemini', kind: 'other', breaksAccount: false },
 ]
 
 /** 与 defaultProxyVariables 同法：Windows 的环境变量名大小写不敏感。 */
@@ -674,15 +703,22 @@ function collectEnvironmentOverrides(
       const fallback = path.join(userHome, providerConfigDirectoryNames[variable.provider])
       if (normalizedPathKey(value) === normalizedPathKey(fallback)) continue
     }
+    // 指向当前站点的 BASE_URL 不会把请求带去别处，报它只会教用户删一个本来
+    // 没问题的变量。Key 和模型不在此列：它们盖掉的是账号和分组本身。
+    const overriding = !(variable.kind === 'baseUrl' && sameHostAs(value, providerBaseUrls[variable.provider]))
     matches.push({
       name: variable.name,
       provider: variable.provider,
-      // 指向当前站点的 BASE_URL 不会把请求带去别处，报它只会教用户删一个本来
-      // 没问题的变量。Key 和模型不在此列：它们盖掉的是账号和分组本身。
-      overriding: !(variable.kind === 'baseUrl' && sameHostAs(value, providerBaseUrls[variable.provider])),
+      overriding,
+      breaking: overriding && variable.breaksAccount,
     })
   }
   return matches
+}
+
+function namesOf(matches: readonly EnvironmentOverrideMatch[]): string {
+  const listed = matches.slice(0, 3).map((match) => match.name).join('、')
+  return matches.length > 3 ? `${listed}等 ${matches.length} 项` : listed
 }
 
 function environmentOverrideOutcome(matches: readonly EnvironmentOverrideMatch[]): CheckOutcome {
@@ -690,7 +726,7 @@ function environmentOverrideOutcome(matches: readonly EnvironmentOverrideMatch[]
   matches.forEach((match, index) => {
     // 只有变量名进报告。ANTHROPIC_AUTH_TOKEN 的值本身就是一把 Key，而诊断导出是
     // 要发到客服群里的（I3、I13）——所以这里永远不读也不写它的值。
-    const note = match.overriding ? '' : '，已指向当前账号'
+    const note = !match.overriding ? '，已指向当前账号' : match.breaking ? '，会绕开当前账号' : ''
     details[`variable${index + 1}`] = `${match.name}（${cliCatalog[match.provider].name}${note}）`
   })
   const overriding = matches.filter((match) => match.overriding)
@@ -703,14 +739,23 @@ function environmentOverrideOutcome(matches: readonly EnvironmentOverrideMatch[]
       details,
     }
   }
-  const listed = overriding.slice(0, 3).map((match) => match.name).join('、')
-  const rest = overriding.length > 3 ? `等 ${overriding.length} 项` : ''
+  const breaking = overriding.filter((match) => match.breaking)
+  if (breaking.length) {
+    const tools = [...new Set(breaking.map((match) => cliCatalog[match.provider].name))].join('、')
+    return {
+      // 这几个变量实测会让 CLI 绕开写入的配置（见 breaksAccount），用户在终端里
+      // 跑就连不上当前账号，所以是「待处理」。本程序仍然不替他删。
+      state: 'fail',
+      summary: `系统环境变量里设置了 ${namesOf(breaking)}，会让 ${tools} 不用当前账号写入的配置，删掉后重新打开终端即可`,
+      details,
+    }
+  }
   return {
-    // 用「需留意」不是「待处理」：变量可能是用户自己有意设的，而本程序既不该也
-    // 不能替他删。文案用「可能」——进程环境与 Claude settings.env 的优先级本仓
-    // 没实测过，不做断言（T12）。
+    // 用「需留意」不是「待处理」：剩下这些实测盖不过写入的配置，或只换模型、不换
+    // 账号（见 breaksAccount）。仍提一句，是因为用户换个方式跑（项目里的配置、别的
+    // 启动器）时它们可能生效；文案因此用「可能」。
     state: 'warn',
-    summary: `系统环境变量里设置了 ${listed}${rest}，可能会盖过当前账号写入的配置`,
+    summary: `系统环境变量里设置了 ${namesOf(overriding)}，可能会盖过当前账号写入的配置`,
     details,
   }
 }
@@ -789,6 +834,59 @@ function errorChainText(error: unknown): string {
     current = record.cause
   }
   return parts.filter(Boolean).join(' <- ').slice(0, 500)
+}
+
+interface IgnoredCodexHomeFinding {
+  /** true = 在软件外面打开的 Codex 读不到本程序替当前账号写好的配置。 */
+  blocking: boolean
+}
+
+/**
+ * 软件自己启动的 Codex 拿到的是注入过的 CODEX_HOME，不受影响；受影响的是用户
+ * 从开始菜单、终端这些软件外面打开的 Codex，它读的仍是那个写错的值。Codex 不展开
+ * `~` 和 `%USERPROFILE%`，相对路径按当前目录解析，而这类进程的当前目录通常就是
+ * 用户目录，所以按用户目录解析一次：落回本程序写配置的那个目录（比如只写了
+ * `.codex`）就还连得上，否则就连不上。Codex 根本没接当前账号时，连不连得上
+ * 无从谈起，只提醒不算待处理。
+ */
+function inspectIgnoredCodexHome(
+  ignored: IgnoredCodexHome | undefined,
+  roots: ProviderConfigRoots,
+  codexInspection: NativeConfigInspection | undefined,
+): IgnoredCodexHomeFinding | null {
+  if (!ignored) return null
+  const configured = Boolean(codexInspection?.matchesRelay && codexInspection.hasApiKey)
+  const landsOnCodexHome = ignored.reason === 'relative'
+    && normalizedPathKey(path.resolve(roots.userHome, ignored.value)) === normalizedPathKey(roots.codexHome)
+  return { blocking: configured && !landsOnCodexHome }
+}
+
+/**
+ * 叠在 environmentOverrideOutcome 之后而不是改它：写错的 CODEX_HOME 不是「盖过
+ * 配置」，是「本来要盖、被本程序忽略了」，结论要单独说，其余变量的判定原样保留。
+ */
+function withIgnoredCodexHome(outcome: CheckOutcome, finding: IgnoredCodexHomeFinding | null): CheckOutcome {
+  if (!finding) return outcome
+  const previous = outcome.details ?? {}
+  const labels = Object.keys(previous)
+    .filter((key) => /^variable\d+$/.test(key))
+    .sort((left, right) => Number(left.slice(8)) - Number(right.slice(8)))
+    .map((key) => previous[key])
+  const details: Record<string, boolean | number | string | null> = {
+    ...Object.fromEntries(Object.entries(previous).filter(([key]) => !/^variable\d+$/.test(key))),
+    count: labels.length + 1,
+  }
+  // 写错的原值可能带着用户名，和其它变量一样只有名字进报告。
+  const ordered = [`CODEX_HOME（${cliCatalog.codex.name}，写得不对，已忽略）`, ...labels]
+  ordered.forEach((label, index) => {
+    details[`variable${index + 1}`] = label
+  })
+  const effect = finding.blocking ? '，但在软件外面打开 Codex 会连不上当前账号' : ''
+  const others = outcome.state === 'pass' ? '' : `；另外${outcome.summary}`
+  // 连不上当前账号才算「待处理」（开机横幅只数这一档）；软件里打开的 Codex 本来
+  // 就不受影响，其余情况只是提醒。其它变量已经判出更重的一档时不往下拉。
+  const state = finding.blocking || outcome.state === 'fail' ? 'fail' : 'warn'
+  return { state, summary: `电脑里有一个 Codex 的设置写得不对，软件已经忽略它${effect}${others}`, details }
 }
 
 function providerOutcome(provider: ProviderId, inspection: NativeConfigInspection, roots: ProviderConfigRoots): CheckOutcome {
@@ -1300,8 +1398,9 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
     {
       code: 'PROVIDER_ENVIRONMENT_OVERRIDE',
       title: '环境变量覆盖',
-      run: () => environmentOverrideOutcome(
-        collectEnvironmentOverrides(env, relaySite.providerBaseUrls, userHome),
+      run: () => withIgnoredCodexHome(
+        environmentOverrideOutcome(collectEnvironmentOverrides(env, relaySite.providerBaseUrls, userHome)),
+        inspectIgnoredCodexHome(dependencies.ignoredCodexHome, providerRoots, providerInspections.get('codex')),
       ),
     },
     {
