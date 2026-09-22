@@ -1129,6 +1129,28 @@
 - `ipc-contract.ts` 的 `AccountKey` / `AccountKeysPage` 由别名改为在 `NewApiAccountKey` 之上扩展的接口，后端 DTO 不变。不新增 IPC 通道，`account:revoke-key` 不变。
 - 渲染层：`AccountPage` / `AccountKeys` 新增可选 `onRewriteKey`，由 `BusinessPage` 转交 App 里已有的 `rewriteAccountKeys([provider])`（点名工具的 rewrite 档，与首页「重新写入 Key」同一条路）。撤销成功后对在用的 Key 自动调用；失败时记下工具，显示一条带「再换一次」按钮的提示。没传 `onRewriteKey` 时确认框不承诺自动换新。
 - `e2e/v2-business.test.mjs` 三条浏览器用例：在用 Key 的提醒与自动换新、换新失败后按钮重试、无人在用的 Key 保持旧文案且不改写任何工具。
+- `RendererErrorPayload` 新增可选 `level?: 'info' | 'warn' | 'error'`（缺省 error，老行为不变）；`ipc.ts` 的 `runtime-logs:renderer-error` 只认这三个值，按级别写 `renderer.<level>`，只有 error 级才调 `onRendererError` 走崩溃上报。没有新增通道，`preload.ts` 不用动。
+- `account-bootstrap.ts` 新增纯函数 `describeAccountBootstrapResult` / `describeAccountBootstrapFailure`：一行写明写好 / 没写成（带主进程的失败文案）/ 跳过（带原因），有失败或被网络拦住时是 warn，否则 info；`App.tsx` 在每轮 Key 自动配置结束或中断时以 context `account-bootstrap` 记一条。
+- 启动检查失败与联网补跑失败两处原本借错误通道记的提示改成 warn，不再触发崩溃上报。`e2e/app-v3-fixture.tsx` 的错误收集只收 error 级。
+- `App.tsx` 的 Codex 中文界面询问框：标题、正文改写，按钮改为「先不用」「显示中文」（新增 `codex-chinese-decline` / `codex-chinese-enable` testid）。**默认不开、仍问一次**：显示中文要在本机开调试端口（早先审查标过的安全点），所以两个按钮同等样式、都不是主按钮，初始焦点落在「先不用」，随手一按回车不会开端口。
+- `ConfigDialog.tsx` 的「界面语言与文件夹权限」说明、`locale-status.ts` 切回系统语言后的提示同步改写，不再出现「调试端口」。主进程的中文补丁逻辑与存储的答案没动。
+- `app-check.mjs`：钉住标题、初始焦点、两个按钮都不是 primary、正文不含「调试端口」。
+- 盲点清单第 12 条。`codex-home.ts` 新增 `inspectCodexHomeVariable`：`CODEX_HOME` 含 NUL 或不是绝对路径时不再抛错，按没设处理，`resolveCodexHomeContext` 在返回值里带上可选的 `ignoredCodexHome: { value, reason: 'relative' | 'nul' }`；注入给子进程的 `codexEnv.CODEX_HOME` 仍是解析出的绝对路径，所以软件自己拉起的 Codex 读的是默认目录。`defaultProviderConfigRoots` 走同一条规则。开发用的 `XINGMANG_CODEX_HOME_OVERRIDE` 仍然严格抛错，其它路径校验没有放宽。
+- `main.ts` 在 `RuntimeLogStore` 建好后记一条 `warn` 事件 `codex-home.ignored`，原值先过 `redactHomeDirectory`（I13）。
+- `rootedMainServiceOptions` 把 `ignoredCodexHome` 只交给诊断；`DiagnosticsDependencies` 增加同名可选字段（诊断拿到的 env 已被替换，看不到原值）。
+- `PROVIDER_ENVIRONMENT_OVERRIDE` 报出这一项，报告里只写变量名、不写原值。定级：Codex 配置已接当前站点，且原值按用户目录解析后落不回本程序写配置的目录（比如 `~/.codex`、没展开的 `%USERPROFILE%\.codex`、含 NUL）时为 `fail`（「待处理」，#345 的开机横幅只数这一档），否则为 `warn`。按用户目录解析的理由：Codex 不展开 `~` 与 `%USERPROFILE%`，相对路径按当前目录解析，而从开始菜单或终端打开时当前目录通常就是用户目录。
+- `feedback-environment.ts` 新增纯函数 `buildFeedbackRuntimeLines` 与 `pickFeedbackRuntimeSnapshot`：只读上一次扫描的 `SystemSnapshot`（`latestTraySystem`），不为报告另起探测；网络位置在挑字段那一步就只剩 `region`，公网 IP 与国家代码进不了报告构造器（I13）。
+- `runtime-log.ts` 加第三个段落读取器 `attachHostDescriber`，「运行环境:」排在「工具与配置:」之前，同样有 2 秒预算、同样过 `redactHomeDirectory`；头部 `Node.js:` 改名 `软件内置 Node:`。
+- Windows 的「运行权限」按 `windowsCliExecutionMode` 写：`trusted-only` 也是令牌探测失败时的保守回退，所以写成「以管理员身份运行（或无法确认，按管理员处理）」；非 Windows 不出这行。npm 全局目录不在快照里，没有为它加探测。
+- 「可能没想到的问题」第 11 条：`build/installer.nsh` 新增 `customInit`，
+  `${IfNot} ${AtLeastWin10}` 时中文提示后 `Quit`；另拦原生 ARM64 且 build < 22000
+  （Windows 10 ARM64 仿真不了 x64，我们只出 x64 包）。两处都带 `/SD IDOK`，静默
+  安装不挂住。customInit 排在模板的 check64BitAndSetRegView / initMultiUser
+  之后，这几步都不写盘，因此被拦时不留任何文件或注册表。
+- 32 位 Windows 不动：模板的 check64BitAndSetRegView 本来就带中文提示拒装。
+- 新增 `scripts/windows-installer-os-version.test.cjs` 钉住上述两条守卫、
+  `/SD IDOK` 与 x64-only 前提，并入 `test:scripts`。
+- `electron/provider-extensions.ts` 接上 #346 的 `macos-command-line-tools.ts` 守卫：`inspectExtensionRuntimes` 的 Python 判断、`ensureClaudeOfficialMarketplace` 的 Git 判断（空壳时用 `claudeMarketplaceGitMissingMessage(platform, { commandLineToolsShim: true })` 的专门文案）、`createProviderSourceUpdateInspector` 的 Git 更新检查。服务与更新检查器新增可选注入 `platform` / `isCommandLineToolsShimBacked`，与 `runCommand` 分开，免得测试里假的 git 输出被当成 xcode-select 的回答。
 
 ## 0.2.8 - 2026-09-20
 
