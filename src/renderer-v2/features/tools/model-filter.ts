@@ -33,11 +33,11 @@ export function codexModelFilterSaveIssue(input: {
   officialSource?: boolean
 }): string | null {
   if (input.filter !== 'non-gpt') return null
-  if (input.officialSource) return '非 GPT 模型需使用星芒账号或自行填写密钥。请切换账号来源后检测模型。'
-  if (input.automaticKey) return '非 GPT 模式请先选择已有密钥或自行填写密钥，再检测模型。'
-  if (!input.detected) return '请先检测当前密钥的可用模型，再选择非 GPT 模型。'
+  if (input.officialSource) return '别家模型要用星芒账号或自己填写的密钥。请换一个账号来源后再检测模型。'
+  if (input.automaticKey) return '看别家模型时，请先选择已有密钥或自己填写密钥，再检测模型。'
+  if (!input.detected) return '请先检测当前密钥的可用模型，再选择别家模型。'
   const { candidates } = codexModelChoices(input.models, input.filter, input.selectedModel)
-  if (!candidates.length) return '当前密钥未返回非 GPT 模型。请更换有相应模型权限的密钥后重新检测。'
-  if (!candidates.includes(input.selectedModel)) return '请选择本次检测到的非 GPT 模型后再保存。'
+  if (!candidates.length) return '当前密钥没有别家模型可用。请更换有相应模型权限的密钥后重新检测。'
+  if (!candidates.includes(input.selectedModel)) return '请选择本次检测到的别家模型后再保存。'
   return null
 }

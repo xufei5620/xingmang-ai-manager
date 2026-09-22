@@ -42,7 +42,7 @@ import { readLocalPreference, writeLocalPreference } from './features/app/prefer
 import { rememberTourPending, rememberTourSeen, tourReplayPending } from './features/shell/tour-state'
 import { onboardingPreviewEnabled } from './features/app/dev-preview'
 import { deepLinkReadErrorText, supportQrFallbackText } from './features/app/fallback-messages'
-import { bootstrapAccountTools, type AccountBootstrapMode, type AccountBootstrapProgress, type AccountBootstrapResult } from './features/tools/account-bootstrap'
+import { bootstrapAccountTools, describeAccountBootstrapFailure, describeAccountBootstrapResult, type AccountBootstrapLogLine, type AccountBootstrapMode, type AccountBootstrapProgress, type AccountBootstrapResult } from './features/tools/account-bootstrap'
 import { rewritableKeyProviders } from './features/tools/connection-check'
 import { applyManualSourceMarker, getSourceMarkerStorage } from './features/tools/source-marker'
 import { idleOnlineResync, noteBootstrapOutcome, planOnlineResync } from './features/tools/online-resync'
@@ -124,6 +124,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   const [confirmBusy, setConfirmBusy] = useState(false)
   const [restartDialog, setRestartDialog] = useState(false)
   const [chineseDialog, setChineseDialog] = useState(false)
+  const chineseDecline = useRef<HTMLButtonElement>(null)
   const [dismissedUpdate, setDismissedUpdate] = useState('')
   const [operationError, setOperationError] = useState<OperationFailure | null>(null)
   const [startupNotices, setStartupNotices] = useState<readonly StartupNotice[]>([])
@@ -166,7 +167,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     if (!mounted.current) return
     setStartupNotices((current) => withStartupNotice(current, notice))
     if (!notice.failure) return
-    void native.reportRendererError({ message: `${notice.title}：${notice.body}`, context: startupCheckLogContext(notice.id) }).catch(() => undefined)
+    void native.reportRendererError({ message: `${notice.title}：${notice.body}`, context: startupCheckLogContext(notice.id), level: 'warn' }).catch(() => undefined)
   }, [native])
   const dismissStartupNotice = useCallback((id: StartupCheckId) => {
     setStartupNotices((current) => withoutStartupNotice(current, id))
@@ -177,6 +178,8 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     void app.bootstrap().then((result) => {
       if (!current) return
       setSettings(result.settings); setPlatform(result.platform); setSession(result.session); setUpdate(result.update)
+      // 低配电脑只由主进程判断一次；这里只把结论挂到根节点上，星空背景据此只画静态一帧。
+      document.documentElement.dataset.lowEnd = String(result.capabilities.lowEndDevice === true)
       // 预览开关要等主进程说清这是不是打包版才生效，所以放在 bootstrap 里而不是
       // 初始 state；`boot !== 'ready'` 期间只渲染 Splash，用户看不到中间态。
       if (onboardingPreviewEnabled(window.location.search, result.update.development)) setGuide(true)
@@ -210,10 +213,16 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     // 的人正站在「检查」页上，横幅在他看不见的地方。用对象而不是 let，是因为赋值
     // 发生在闭包里，TypeScript 会把 let 的类型收窄成初始值。
     const outcome: { result?: AccountBootstrapResult; error?: string } = {}
+    // 这一轮给哪几家写了、跳过了谁、为什么，只进本机运行日志（info / warn 不上报），
+    // 客服拿到报告才看得出「登录成功」和「打开工具」之间发生了什么。
+    function logAccountBootstrap(line: AccountBootstrapLogLine) {
+      void native.reportRendererError({ message: line.message, context: 'account-bootstrap', level: line.level }).catch(() => undefined)
+    }
     const promise = (async () => {
       try {
         const result = await bootstrapAccountTools(native, userId, updateProgress, mode, onlyProviders)
         outcome.result = result
+        logAccountBootstrap(describeAccountBootstrapResult(mode, result))
         if (!mounted.current || epoch !== bootstrapEpoch.current) return
         setAccountBootstrap((current) => current && current.scope === bootstrapScope
           ? { ...current, phase: 'verifying', label: result.failed.length ? 'Key 同步完成，部分工具待处理' : 'Key 已写入，正在刷新工具状态', percent: 100, result }
@@ -224,6 +233,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
         await toolbox.refreshConfig().catch(() => undefined)
       } catch (cause) {
         outcome.error = errorMessage(cause, '账号 Key 初始化没有完成')
+        logAccountBootstrap(describeAccountBootstrapFailure(mode, outcome.error))
         if (!mounted.current || epoch !== bootstrapEpoch.current) return
         setWorkspaceEntered(true)
         setAccountBootstrap((current) => ({
@@ -309,7 +319,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
         // 「明明联网了 Key 还是没写上」时才有据可查。
         const reason = outcome?.error || outcome?.result?.failed.map((entry) => entry.message).join('；') || ''
         if (!reason) return
-        void native.reportRendererError({ message: `联网后自动补跑 Key 同步仍未完成：${reason}`, context: 'account-bootstrap-online-resync' }).catch(() => undefined)
+        void native.reportRendererError({ message: `联网后自动补跑 Key 同步仍未完成：${reason}`, context: 'account-bootstrap-online-resync', level: 'warn' }).catch(() => undefined)
       })
     }
     window.addEventListener('online', resume)
@@ -496,7 +506,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
    * mode 走的是 toolsApi.launch 那套「两侧各取自己认得的那个」:codexDesktop 认
    * 'open' | 'restart',四家 CLI 认 'new' | 'resumeLast'(#292)。
    */
-  async function launch(id: ToolId, mode: 'open' | 'restart' | CliLaunchMode = 'open', remembered?: string): Promise<boolean> {
+  async function launch(id: ToolId, mode: 'open' | 'restart' | CliLaunchMode = 'open', remembered?: string, newFolder = false): Promise<boolean> {
     const current = toolbox.snapshot
     if (!current) throw new Error('请先完成工具检测')
     const config = await toolsApi.readConfig()
@@ -507,7 +517,8 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     if (!tool.configured) { openToolConfig(id); throw new Error('请先确认账号连接，再打开工具。') }
     let workspace = config.workspace
     if (id !== 'codexDesktop') {
-      const selectedWorkspace = remembered ?? await toolsApi.chooseWorkspace()
+      // newFolder：不弹选择器，主进程在「文档」下替用户建一个空的项目文件夹。
+      const selectedWorkspace = remembered ?? await toolsApi.chooseWorkspace(newFolder ? { createStarter: true } : undefined)
       if (!selectedWorkspace) return false
       workspace = selectedWorkspace
     }
@@ -541,14 +552,14 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     setChineseDialog(false)
     await launch('codexDesktop')
   }
-  function requestLaunch(id: ToolId, remembered?: string, mode: CliLaunchMode = 'new') {
+  function requestLaunch(id: ToolId, remembered?: string, mode: CliLaunchMode = 'new', newFolder = false) {
     if (launchRequest.current) return
     launchRequest.current = true
     void perform('打开工具', async () => {
       if (id === 'codexDesktop' && (await native.getCodexDesktopStatus()).running) setRestartDialog(true)
       else if (id === 'codexDesktop' && await askForChineseRuntimePatch()) return
       else if (remembered) await launchRemembered(id, remembered, mode)
-      else await launch(id, mode)
+      else await launch(id, mode, undefined, newFolder)
     }).finally(() => { launchRequest.current = false })
   }
   /**
@@ -695,7 +706,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   return <AccountBalanceContext.Provider value={balanceStore}><BalanceTierProvider value={balanceAmount === null ? 'neutral' : balanceAmount <= 0 ? 'zero' : balanceAmount < 5 ? 'bad' : balanceAmount < 20 ? 'warn' : 'ok'}>
     {guide ? <StartGuide platform={os} tools={guideTools} signedIn={session.authenticated} busy={Object.keys(toolbox.jobs).length > 0 || accountBootstrapBusy} progress={accountBootstrapBusy && accountBootstrap ? { label: accountBootstrap.label, percent: accountBootstrap.percent } : undefined} resumeKey={scope}
       onDetect={() => toolbox.refresh(true)} onInstall={install} onInstallRuntime={() => installRuntime('node')} onInstallPython={() => installRuntime('python')} onConfigure={async (id) => { openToolConfig(id) }} onLogin={() => setAuth('login')}
-      onLaunch={async (id) => id === 'chat' ? true : launch(id)}
+      onLaunch={async (id, newFolder) => id === 'chat' ? true : launch(id, 'open', undefined, newFolder)}
       onComplete={(id) => { if (!writeLocalPreference(`xingmang-v2-guide:${scope}`, id)) toast.show('工具已准备好，但引导偏好没有保存在本机。', 'warn'); setWorkspaceEntered(true); rememberTourPending(scope); setTourOpen(true); navigate(id === 'chat' ? 'chat' : 'home') }} onBack={() => setGuide(false)} onHelp={() => setHelp(true)} />
       : !session.authenticated && !workspaceEntered ? <Welcome onLogin={() => setAuth('login')} onRegister={() => setAuth('register')} onSteps={() => setGuide(true)} onHelp={() => setHelp(true)} onLegal={setLegal}
         reducedMotion={settings?.reducedMotion} supportQrUrl={qr} onReducedMotionChange={(reducedMotion) => void perform('保存外观', async () => setSettings(await app.savePreferences({ version: 2, reducedMotion })))} />
@@ -729,7 +740,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
             </div>}
             {page === 'home' ? <Home api={toolsApi} supportsUsage={accountSupports(session, 'supportsUsage')} supportsBilling={accountSupports(session, 'supportsBilling')} snapshot={toolbox.snapshot} loading={toolbox.loading} error={toolbox.error} failures={toolbox.failures} account={session.account} balance={balance} jobs={toolbox.jobs} bootstrap={accountBootstrap?.scope === scope ? accountBootstrap : null}
               externalClients={toolbox.externalClients} externalLoading={toolbox.externalLoading} externalError={toolbox.externalError} recentRevision={recentRevision}
-              onScan={() => { refreshRecent(); void toolbox.refresh(true).catch(() => undefined); void toolbox.refreshExternal().catch(() => undefined) }} onInstall={(id, version) => void perform('安装工具', () => install(id, version), id)} onCancelInstall={(id) => void perform('取消安装', () => cancelInstall(id))} onLaunch={requestLaunch} onConfigure={openToolConfig} onUninstall={requestUninstall}
+              onScan={() => { refreshRecent(); void toolbox.refresh(true).catch(() => undefined); void toolbox.refreshExternal().catch(() => undefined) }} onInstall={(id, version) => void perform('安装工具', () => install(id, version), id)} onCancelInstall={(id) => void perform('取消安装', () => cancelInstall(id))} onLaunch={requestLaunch} onLaunchInNewFolder={(id) => requestLaunch(id, undefined, 'new', true)} onConfigure={openToolConfig} onUninstall={requestUninstall}
               onRewriteKey={(id) => void perform('重新写入 Key', () => rewriteAccountKeys([providerFor(id)]), id)} onKeepConfig={(id) => void perform('保留当前配置', () => keepCurrentToolConfig(id))}
               onOpenConfigDirectory={(id) => void perform('打开配置文件夹', () => toolsApi.openConfigDirectory(id))}
               onInstallExternal={(id) => void perform('安装客户端', () => installExternal(id))} onLaunchExternal={(id) => void perform('打开客户端', () => launchExternal(id))}
@@ -784,11 +795,13 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       <Button onClick={() => void perform('重启 Codex', async () => { await launch('codexDesktop', 'restart'); setRestartDialog(false) })}>重启 Codex</Button>
       <Button variant="primary" onClick={() => void perform('打开 Codex', async () => { await launch('codexDesktop'); setRestartDialog(false) })}>打开窗口</Button>
     </>}><p>可以直接打开现有窗口；需要重新加载配置时，选择重启 Codex。</p></Dialog>}
-    {chineseDialog && <Dialog open title="启用 Codex 中文界面？" onClose={() => setChineseDialog(false)} busy={Boolean(toolbox.jobs['launch:codexDesktop'])} footer={<>
-      <Button variant="ghost" onClick={() => void perform('打开 Codex', () => answerChineseRuntimePatch('disabled'))}>保持当前语言</Button>
-      <Button variant="primary" onClick={() => void perform('启用中文界面', () => answerChineseRuntimePatch('enabled'))}>启用中文界面</Button>
-    </>}><p>Codex 自带中文语言包，但要让它的界面真正显示中文，星芒需要在每次打开 Codex 时附带一个仅限本机的调试端口，Codex 关闭后端口随之关闭。</p>
-      <p>只问这一次。之后可以在 Codex 桌面端的配置里随时改。</p></Dialog>}
+    {/* 显示中文要在本机开一个调试端口（早先审查标过的安全点），所以仍然问一次、不替用户默认开。
+        两个按钮同等样式，键盘焦点落在「先不用」：随手一按回车不会开端口，想要中文的人点一下就行。 */}
+    {chineseDialog && <Dialog open title="要让 Codex 的界面显示中文吗？" onClose={() => setChineseDialog(false)} busy={Boolean(toolbox.jobs['launch:codexDesktop'])} initialFocus={chineseDecline} footer={<>
+      <Button ref={chineseDecline} testId="codex-chinese-decline" onClick={() => void perform('打开 Codex', () => answerChineseRuntimePatch('disabled'))}>先不用</Button>
+      <Button testId="codex-chinese-enable" onClick={() => void perform('启用中文界面', () => answerChineseRuntimePatch('enabled'))}>显示中文</Button>
+    </>}><p>选「显示中文」后，星芒每次打开 Codex 时会顺带开一个只有这台电脑自己能连的通道，用来把界面换成中文；关掉 Codex，通道也跟着关上。</p>
+      <p>不用也没关系，Codex 照样能用，只是界面是英文。只问这一次，以后想改，随时可以在 Codex 桌面端的配置里打开或关掉。</p></Dialog>}
     {runtimeRestart && <RuntimeRestartDialog onClose={() => setRuntimeRestart(false)} restart={toolsApi.restartWindows} />}
     {confirmation && <Confirm title={confirmation.title} body={confirmation.body} danger={confirmation.danger} okLabel={confirmation.label} loading={confirmBusy} onClose={() => setConfirmation(null)} onOk={() => {
       if (confirmationLock.current) return
