@@ -8,6 +8,7 @@ import { readSafeUtf8File } from './safe-local-data'
 import { accelerationWorkerArgument } from './acceleration-worker-entry'
 import { createAccelerationElectronProfile } from './acceleration-electron-profile'
 import type { AccelerationStartFailureStage, AccelerationStopFailureStage } from './acceleration-development-backend'
+import type { AccelerationDownloadRouteResult } from './download-acceleration'
 
 export interface AccelerationDevelopmentConfig {
   version: 1
@@ -20,6 +21,12 @@ export interface AccelerationDevelopmentConfig {
 export interface AccelerationDevelopmentHost extends AccelerationApi {
   /** Replays a system-proxy lease left behind by a crash, without an account. */
   recover(): Promise<void>
+  /**
+   * 下载专用线路。刻意不放进 AccelerationApi：它不改系统代理、不上界面，
+   * 渲染层也不需要知道它存在，所以 IPC 契约一行未动。
+   */
+  startDownloadRoute(scope: string): Promise<AccelerationDownloadRouteResult>
+  stopDownloadRoute(scope: string): Promise<void>
   dispose(): Promise<void>
 }
 
@@ -278,6 +285,14 @@ export function createAccelerationDevelopmentHost(options: {
     pingAccelerationLine: async (scope, lineId) => {
       await ensureReady()
       return await rpc('ping-line', { scope, lineId }) as Awaited<ReturnType<NonNullable<AccelerationApi['pingAccelerationLine']>>>
+    },
+    startDownloadRoute: async (scope) => {
+      await ensureReady()
+      return await rpc('download-start', { scope }) as AccelerationDownloadRouteResult
+    },
+    stopDownloadRoute: async (scope) => {
+      await ensureReady()
+      await rpc('download-stop', { scope })
     },
     dispose() {
       if (disposal) return disposal

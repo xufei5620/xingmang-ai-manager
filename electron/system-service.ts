@@ -103,6 +103,7 @@ import {
   type PythonRuntimeInstallResult,
 } from './python-runtime'
 import { InstallationQueue } from './installation-queue'
+import type { DownloadAccelerationLease } from './download-acceleration'
 import {
   InstallCancellationRegistry,
   InstallCancelledError,
@@ -1910,6 +1911,12 @@ export interface SystemServiceOptions {
   downloadFetch?: typeof fetch
   /** Loopback-only proxy variables handed to package-manager subprocesses. */
   resolveSubprocessProxyEnvironment?: () => Promise<NodeJS.ProcessEnv>
+  /**
+   * 下载期间临时拉起加速（只开本机回环端口，不动系统代理）。缺省 = 不做，
+   * 行为与从前一致。真正的路由由宿主实现，这里只需要知道它有没有生效——
+   * 生效了就把安装源顺序切成官方优先。见 download-acceleration.ts。
+   */
+  acquireDownloadAcceleration?: () => Promise<DownloadAccelerationLease>
   /** runtime.jsonl sink for steps that are allowed to fail without blocking. */
   runtimeLog?: RuntimeLogLike
   /** 随包的中文 AGENTS.md 模板路径；缺省则打开目录时不生成项目说明。 */
@@ -1983,6 +1990,10 @@ export function createSystemService(
   const downloadFetch = serviceOptions.downloadFetch ?? fetch
   const resolveSubprocessProxyEnvironment = serviceOptions.resolveSubprocessProxyEnvironment
     ?? (async (): Promise<NodeJS.ProcessEnv> => ({}))
+  const acquireDownloadAcceleration = serviceOptions.acquireDownloadAcceleration
+  // 有多少次下载正跑在加速线路上。只用来决定安装源顺序，所以是个计数而不是
+  // 布尔：两个工具同时装时，先装完的那个不能把后一个的官方优先撤掉。
+  let acceleratedDownloads = 0
   const resolveWindowsMachinePathsForService = serviceOptions.resolveWindowsMachinePaths ?? resolveWindowsMachinePaths
   const installing = new Set<ProviderId>()
   const installationQueue = new InstallationQueue()
@@ -2036,12 +2047,43 @@ export function createSystemService(
     return inspectNetworkLocation(true)
   }
 
+  /**
+   * 把一次下载包在临时加速里：开始前把线路拉起来，结束（无论成败）再还回去。
+   * 拿不到线路就原样执行——加速是加分项，绝不能变成安装的前置条件。
+   */
+  async function withDownloadAcceleration<T>(
+    note: ((message: string) => void) | null,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    if (!acquireDownloadAcceleration) return operation()
+    note?.('正在准备下载加速')
+    let lease: DownloadAccelerationLease
+    try { lease = await acquireDownloadAcceleration() }
+    catch { return operation() }
+    // 拿到手就一定要还回去，哪怕这一次并没有线路：租约的归属在协调者那边，
+    // 不还回去等于让下一次下载去猜还有没有人在用。
+    if (lease.accelerated) {
+      note?.('已为本次下载启用加速线路（未改动系统代理）')
+      acceleratedDownloads += 1
+    } else {
+      note?.('未启用下载加速，按现有下载源顺序继续')
+    }
+    try { return await operation() }
+    finally {
+      if (lease.accelerated) acceleratedDownloads -= 1
+      await lease.release().catch(() => undefined)
+    }
+  }
+
   async function inspectNetworkRegion(): Promise<NetworkRegion> {
     // 2.4：镜像策略被用户钉死时不再探测——直接归约到产生所需源顺序的
     // region。scanSystem 的网络状态卡片仍走真实探测（inspectNetworkLocation），
     // 展示保持诚实，这里只决定安装/版本检查的源顺序。
     const policy = store.read().mirrorPolicy
     if (policy) return effectiveNetworkRegion(policy, 'unknown')
+    // 加速已经为这次下载起来了：线路本来就是为直连官方源准备的，再绕镜像
+    // 没有意义。顺带省掉一次区域探测——网络受限时那一步本身最不可靠。
+    if (acceleratedDownloads > 0) return effectiveNetworkRegion('official-first', 'unknown')
     return (await inspectNetworkLocation()).region
   }
 
@@ -2632,7 +2674,8 @@ export function createSystemService(
   }
 
   function installNodeRuntime(target: RendererMessageTarget): Promise<NodeRuntimeInstallResult> {
-    return installationQueue.enqueue('runtime:node', () => installNodeRuntimeOperation(target))
+    return installationQueue.enqueue('runtime:node',
+      () => withDownloadAcceleration(null, () => installNodeRuntimeOperation(target)))
   }
 
   async function restartWindows(): Promise<void> {
@@ -2792,7 +2835,26 @@ export function createSystemService(
     return message
   }
 
+  /**
+   * 安装整段都包在临时加速里：Grok 二进制、Node.js LTS 与 npm 下载共用同一条
+   * 线路，中途不换代理（换代理会让已建立的连接和重试落到两条线路上）。
+   */
   async function installCliOperation(
+    provider: ProviderId,
+    target: RendererMessageTarget,
+    requestedVersion?: string,
+    cancellation?: InstallCancellationHandle,
+  ): Promise<void> {
+    // 已经在装、或排队期间被取消的，一条线路都不要起。
+    if (installing.has(provider)) throw new Error(`${cliCatalog[provider].name} 正在安装中`)
+    cancellation?.throwIfCancelled()
+    await withDownloadAcceleration(
+      (message) => sendInstallProgress(target, provider, 'output', message),
+      () => runCliInstall(provider, target, requestedVersion, cancellation),
+    )
+  }
+
+  async function runCliInstall(
     provider: ProviderId,
     target: RendererMessageTarget,
     requestedVersion?: string,
@@ -2970,6 +3032,8 @@ export function createSystemService(
       // 策略钉死时 networkRegion 是归约值而非探测结果，"检测到"的措辞会撒谎。
       const regionLabel = store.read().mirrorPolicy
         ? '已按设置固定安装源顺序'
+        : acceleratedDownloads > 0
+        ? '已启用下载加速，优先使用官方源'
         : networkRegion === 'mainland-china'
           ? '检测到中国大陆网络'
           : networkRegion === 'outside-mainland-china'
