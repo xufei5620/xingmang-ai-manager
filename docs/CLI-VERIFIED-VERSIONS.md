@@ -131,6 +131,7 @@ Codex 那时 `recommended` 是 `null`，也就是那两天点过「更新」的�
 | Claude 的状态行 | `statusLine` | 未设（终端里没有状态行） | 指向随包脚本的一条命令 | 用户按 token 付费，却看不到在用哪个模型、上下文吃到几成 |
 | Gemini 后台功能用的型号 | `modelConfigs.customOverrides` | 联网搜索、读网页、压缩、子代理、会话摘要、Auto 各自写死 Google 官方型号名 | 这批官方型号名统一改写成当前配的中转型号（只在星芒来源下写，切回官方删掉） | 中转没有这些型号时，这些功能默默重试几分钟后失败 |
 | Grok 画图与视频工具的地址 | `~/.grok/config.toml` 的 `[endpoints] xai_api_base_url` | `https://api.x.ai/v1` | 与对话同一个中转地址 | 这几个工具带的是同一把 `api_key`，不改就把中转 Key 发给 xAI 官方，国内还要卡 120 秒 |
+| Codex 的使用统计 | `~/.codex/config.toml` 的 `[analytics] enabled` | 开（发往 `ab.chatgpt.com`） | `false`（用户写过就不动；切回 ChatGPT 且没有官方快照时收回） | 国内连不上，`codex exec` 每次退出前要等约 10 秒 |
 | Gemini 的记录保留期 | `general.sessionRetention.maxAge` | `"30d"` | `"365d"` | 同上 |
 | Gemini 的 IDE 模式 | `ide.enabled` | 关 | 开 | 装在 IDE 里的客户少一步 |
 | 目录信任 | 见 `docs/WORKSPACE-TRUST.md` | 每次问 | 本软件打开的目录替用户信任 | 同上 |
@@ -209,6 +210,12 @@ Codex 那时 `recommended` 是 `null`，也就是那两天点过「更新」的�
   `Authorization: Bearer <中转 Key>`、型号 `grok-imagine-image-quality` 去连 `api.x.ai`，
   官方主机被丢包时 `-p` 卡满 120 秒；写上 `[endpoints] xai_api_base_url = "<中转>/v1"` 后
   请求变成打到中转的 `POST /v1/images/generations`，整次 0.5 秒，没有任何去 `api.x.ai` 的连接。
+- **Codex 0.155.1 的使用统计 —— 跑起来看到了**。出网代理把官方主机静默丢包，跑
+  `codex exec --skip-git-repo-check "hi"`：整次 10.28 秒，时间都花在退出前往
+  `https://ab.chatgpt.com/otlp/v1/metrics` 发指标；`[analytics] enabled = false` 后 0.24 秒，也不再
+  连 `ab.chatgpt.com`。TUI 退出从约 1.3 秒降到约 0.9 秒。app-server 默认不开统计，只有桌面端这类
+  第一方客户端用 `--analytics-default-enabled` 拉起时才开，而 `enabled = false` 能压过这个参数。
+  请求体不受影响。
 - **Gemini CLI 0.60.0 — 读 bundle 得出**。settings schema 里 `general.sessionRetention` 的
   `enabled` 默认 `true`、`maxAge` 默认 `"30d"`、`minRetention` 默认 `"1d"`；`maxAge` 的解析是
   `/^(\d+)([dhwm])$/`，`"365d"` 合法。要紧的是 `getDefaultsFromSchema` **会递归补齐嵌套默认
