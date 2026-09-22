@@ -564,6 +564,13 @@ function applyCodexRelayConfig(
   // Never override an explicit user policy such as `never`.
   if (parsed.approval_policy === undefined) parsed.approval_policy = 'on-request'
   if (parsed.sandbox_mode === undefined) parsed.sandbox_mode = 'workspace-write'
+  // With `keyring` or `auto`, Codex reads the OS credential store before
+  // auth.json (login/src/auth/storage.rs), so a ChatGPT login kept there would
+  // keep winning over the relay key written below and reach the relay as a
+  // bearer token. The official profile keeps its own value in its snapshot.
+  if (parsed.cli_auth_credentials_store !== undefined && parsed.cli_auth_credentials_store !== 'file') {
+    parsed.cli_auth_credentials_store = 'file'
+  }
 }
 
 function buildCodexRelayConfigTemplate(
@@ -792,7 +799,10 @@ function readCodexAuthMode(paths: string[]): 'apikey' | 'chatgpt' | null {
   if (kind !== 'mixed') return null
   const mode = nestedString(parsed, ['auth_mode']).trim().toLowerCase()
   if (mode === 'apikey' || mode === 'chatgpt') return mode
-  return 'chatgpt'
+  // Codex 0.155.1 `resolved_mode()`（login/src/auth/manager.rs）：没写 auth_mode 时
+  // 有 OPENAI_API_KEY 就按 Key 用，令牌被忽略。这里跟着它判，否则首页会把一份
+  // 实际走 Key 的配置显示成「官方账号」。
+  return 'apikey'
 }
 
 export function readCodexAuthTokens(
@@ -2068,7 +2078,13 @@ export function switchProviderToOfficialAccount(
   const configuredPaths = providerConfigPaths(provider, roots)
   for (const filePath of configuredPaths) assertSafeConfigPath(filePath, providerRoot, 'file')
 
-  const mode = providerAccountMode(inspectProviderConfig(provider, roots, siteBaseUrlsInput))
+  const inspection = inspectProviderConfig(provider, roots, siteBaseUrlsInput)
+  // Codex 自己的 ChatGPT 登录会把 auth.json 换成令牌、Key 置空，却不动 config.toml：
+  // 看上去已是官方，实际每次请求都把令牌发给当前账号的服务。这正是最需要切回
+  // 官方的半截状态，按「还在中转」处理，config.toml 才会一起换回官方那份。
+  const halfSwitchedCodex = provider === 'codex' && Boolean(inspection.actualBaseUrl)
+    && normalizeUrl(inspection.actualBaseUrl) === normalizeUrl(siteBaseUrlsInput.codex)
+  const mode = halfSwitchedCodex ? 'relay' : providerAccountMode(inspection)
   if (mode === 'official' && saveMode !== 'reset') throw new Error('当前已经在使用你自己的官方订阅账号，无需切换')
   if (mode === 'unknown') {
     throw new Error('当前配置不是星芒中转（可能是你自己填的第三方地址），为避免改坏配置已取消切换')
@@ -2080,4 +2096,142 @@ export function switchProviderToOfficialAccount(
   assertNoReparseComponents(path.dirname(providerRoot), 'Provider 配置根目录')
   ensureSafeDataDirectory(providerRoot, 'Provider 配置根目录')
   return executeFilePlans(plans, hooks, providerRoot)
+}
+
+// ---------------------------------------------------------------------------
+// 切换时把会抢道的官方凭据挪到一边
+//
+// Claude Code 2.1.277 在 `ANTHROPIC_AUTH_TOKEN` 之外，还会把 `~/.claude.json` 的
+// `primaryApiKey`（Anthropic Console 登录留下的 Key）以 `x-api-key` 同时发出去；
+// new-api rc.24 在 `/v1/messages` 上用 `x-api-key` 覆盖 `Authorization`
+// （middleware/auth.go），中转拿到的就是那把 Console Key，回 401。
+// 切到当前账号时把它挪进旁边的快照文件，切回官方时放回原处。claude.ai 订阅
+// 登录（.credentials.json / 钥匙串）不用挪：令牌一出现它就被整个忽略。
+// ---------------------------------------------------------------------------
+
+export const claudeConsoleKeySnapshotName = 'xingmang-claude-console-key.json'
+
+export interface ClaudeConsoleKeyTexts {
+  /** 改后的 ~/.claude.json；null = 不用改。 */
+  rootConfig: string | null
+  /** 改后的快照文件；null = 不用改。 */
+  snapshot: string | null
+}
+
+function claudeRootConfigJson(content: string | null): Record<string, unknown> {
+  return requireWorkspaceTrustJson(content, '现有 Claude Code ~/.claude.json')
+}
+
+function storedClaudeConsoleKey(content: string | null): string {
+  if (!content?.trim()) return ''
+  try {
+    const parsed = JSON.parse(content) as unknown
+    return isJsonRecord(parsed) && typeof parsed.primaryApiKey === 'string' ? parsed.primaryApiKey.trim() : ''
+  } catch {
+    return ''
+  }
+}
+
+/** 纯函数：把 primaryApiKey 从根配置移进快照。没有可挪的就两边都不动。 */
+export function moveClaudeConsoleKeyAsideTexts(rootContent: string | null): ClaudeConsoleKeyTexts {
+  const parsed = claudeRootConfigJson(rootContent)
+  const key = typeof parsed.primaryApiKey === 'string' ? parsed.primaryApiKey.trim() : ''
+  if (!key) return { rootConfig: null, snapshot: null }
+  delete parsed.primaryApiKey
+  return { rootConfig: jsonContent(parsed), snapshot: jsonContent({ primaryApiKey: key }) }
+}
+
+/**
+ * 纯函数：把快照里的 primaryApiKey 放回根配置并清空快照。根配置里已经有一把
+ * （用户在这期间又登录了 Console）就以那把为准，只清快照。
+ */
+export function restoreClaudeConsoleKeyTexts(rootContent: string | null, snapshotContent: string | null): ClaudeConsoleKeyTexts {
+  const stored = storedClaudeConsoleKey(snapshotContent)
+  if (!stored) return { rootConfig: null, snapshot: null }
+  const parsed = claudeRootConfigJson(rootContent)
+  const current = typeof parsed.primaryApiKey === 'string' ? parsed.primaryApiKey.trim() : ''
+  if (current) return { rootConfig: null, snapshot: '' }
+  parsed.primaryApiKey = stored
+  return { rootConfig: jsonContent(parsed), snapshot: '' }
+}
+
+function writeClaudeConsoleKeyTexts(
+  rootsInput: ProviderConfigRoots,
+  build: (rootContent: string | null, snapshotContent: string | null) => ClaudeConsoleKeyTexts,
+): boolean {
+  const roots = normalizeProviderConfigRoots(rootsInput)
+  // ~/.claude.json 与 ~/.claude/ 并列，事务根是主目录本身（同 trustClaudeWorkspace）。
+  const root = roots.userHome
+  const rootConfigPath = path.join(root, '.claude.json')
+  const snapshotPath = path.join(providerConfigRoot('claude', roots), claudeConsoleKeySnapshotName)
+  assertSafeConfigPath(rootConfigPath, root, 'file')
+  assertSafeConfigPath(snapshotPath, root, 'file')
+  const rootContent = requireConfigText(rootConfigPath, '现有 Claude Code ~/.claude.json', MAX_CLAUDE_ROOT_CONFIG_BYTES)
+  const snapshotContent = requireConfigText(snapshotPath, '已保存的 Claude 官方 Key')
+  const next = build(rootContent, snapshotContent)
+  const plans: FilePlan[] = []
+  if (next.snapshot !== null && (next.snapshot !== '' || snapshotContent !== null)) plans.push({ path: snapshotPath, content: next.snapshot })
+  if (next.rootConfig !== null) plans.push({ path: rootConfigPath, content: next.rootConfig })
+  if (plans.length === 0) return false
+  assertNoReparseComponents(path.dirname(root), '用户主目录')
+  ensureSafeDataDirectory(root, '用户主目录')
+  ensureSafeDataDirectory(providerConfigRoot('claude', roots), 'Provider 配置根目录')
+  // 快照先写：两阶段提交里任何一步失败都会整体回滚，Key 不会两边都没有。
+  executeFilePlans(plans, {}, root)
+  return true
+}
+
+/** 返回是否真的挪了一把 Key。 */
+export function moveClaudeConsoleKeyAside(rootsInput: ProviderConfigRoots = defaultProviderConfigRoots()): boolean {
+  return writeClaudeConsoleKeyTexts(rootsInput, (rootContent) => moveClaudeConsoleKeyAsideTexts(rootContent))
+}
+
+/** 返回是否改动了文件。 */
+export function restoreClaudeConsoleKey(rootsInput: ProviderConfigRoots = defaultProviderConfigRoots()): boolean {
+  return writeClaudeConsoleKeyTexts(rootsInput, restoreClaudeConsoleKeyTexts)
+}
+
+/**
+ * 这台电脑上是否已经有这个 CLI 的官方登录。只看文件是否在、字段是否在，不读、
+ * 不解码任何令牌。`null` = 看不出来（Codex 把登录放进系统凭据库时文件里没有）。
+ * 用途只有一个：切回官方后告诉用户要不要自己再登录一次。
+ */
+export function inspectOfficialLogin(
+  provider: ProviderId,
+  rootsInput: ProviderConfigRoots = defaultProviderConfigRoots(),
+): boolean | null {
+  const roots = normalizeProviderConfigRoots(rootsInput)
+  const providerRoot = providerConfigRoot(provider, roots)
+  switch (provider) {
+    case 'claude': {
+      // macOS 把令牌放在钥匙串，但登录时同样会写 ~/.claude.json 的 oauthAccount；
+      // /logout 会把它清掉，所以它是两个平台都靠得住的信号。
+      const credentials = path.join(providerRoot, '.credentials.json')
+      const rootConfig = path.join(roots.userHome, '.claude.json')
+      assertSafeConfigPath(credentials, providerRoot, 'file')
+      assertSafeConfigPath(rootConfig, roots.userHome, 'file')
+      let parsed: Record<string, unknown> | null = null
+      try {
+        parsed = claudeRootConfigJson(requireConfigText(rootConfig, '现有 Claude Code ~/.claude.json', MAX_CLAUDE_ROOT_CONFIG_BYTES))
+      } catch {
+        parsed = null
+      }
+      if (parsed && (isJsonRecord(parsed.oauthAccount) || (typeof parsed.primaryApiKey === 'string' && parsed.primaryApiKey.trim()))) return true
+      return Boolean(readText(credentials)?.trim())
+    }
+    case 'codex': {
+      const auth = readJson(providerConfigPaths('codex', roots)[1])
+      const kind = classifyCodexAuthProfile(auth)
+      if (kind === 'chatgpt' || kind === 'mixed') return true
+      const store = nestedString(readToml(providerConfigPaths('codex', roots)[0]), ['cli_auth_credentials_store']).trim().toLowerCase()
+      return store === 'keyring' || store === 'auto' ? null : false
+    }
+    case 'gemini': {
+      const credentials = path.join(providerRoot, 'oauth_creds.json')
+      assertSafeConfigPath(credentials, providerRoot, 'file')
+      return Boolean(readText(credentials)?.trim())
+    }
+    case 'grok':
+      return false
+  }
 }

@@ -1,5 +1,6 @@
 import {
   providerIds,
+  type AccountSourceTarget,
   type AppConfigSummary,
   type CliLaunchMode,
   type CodexDesktopLaunchMode,
@@ -180,6 +181,8 @@ export function createToolsApi(bridge: XingmangApi) {
       providers: [providerFor(tool)], preferredModels: model ? { [providerFor(tool)]: model } : {}, mode, intent: 'explicit',
     }),
     official: (tool: ToolId, mode: 'merge' | 'reset' = 'merge') => bridge.switchToOfficialAccount(providerFor(tool), mode),
+    // 首页的一键切换：备份、写入、自检、失败回滚都在主进程一次做完。
+    switchSource: (tool: ToolId, target: AccountSourceTarget) => bridge.switchAccountSource(providerFor(tool), target),
     getLocale: () => bridge.inspectCodexDesktopLocale(),
     setLocale: (locale: 'zh-CN' | 'system' = 'zh-CN') => bridge.setCodexDesktopLocale(locale),
     getPermissions: () => bridge.inspectCodexWorkspacePermissions(),

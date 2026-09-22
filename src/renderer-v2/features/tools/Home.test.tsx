@@ -495,3 +495,20 @@ describe('renderer-v2 home manual desktop install on macOS', () => {
     expect(markup).not.toContain('安装指南')
   })
 })
+
+describe('renderer-v2 home account source line', () => {
+  it('says which account each connected tool is using', () => {
+    const html = render({})
+    expect(html).toContain('正在用当前账号')
+    expect(html).not.toContain('正在用官方账号')
+  })
+
+  it('says 正在用官方账号 on a tool signed in with its own subscription', () => {
+    const official = { ...providerConfig, hasApiKey: false, matchesRelay: false, actualBaseUrl: '', configurationOwnership: 'unknown', codexAuthMode: 'chatgpt' }
+    const base = snapshot({ claude: cliStatus, codex: cliStatus, grok: cliStatus, gemini: cliStatus })
+    const html = render({}, undefined, {
+      snapshot: { ...base, config: { ...base.config, providers: { ...base.config.providers, codex: official } } } as unknown as ToolboxSnapshot,
+    })
+    expect(html).toContain('正在用官方账号')
+  })
+})

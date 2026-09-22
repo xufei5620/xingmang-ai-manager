@@ -49,7 +49,9 @@ import {
   providerSessionProviders,
   type ProviderSessionListQuery,
 } from './provider-sessions'
-import type { NativeConfigSaveMode } from './config-files'
+import { providerSupportsOfficialAccount, type NativeConfigSaveMode } from './config-files'
+import { switchAccountSource } from './account-source-switch'
+import { redactHomeDirectory } from './startup-log'
 import { isExternalToolId, parseExternalClientConfigRequest } from './external-client-contract'
 import type { ExternalToolId } from './external-tool-config'
 import type { ExternalClientCheckResult } from './external-client-connection'
@@ -1644,6 +1646,34 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     if (!isProviderId(provider)) throw new Error('未知的 CLI 类型')
     if (mode !== undefined && mode !== 'merge' && mode !== 'reset') throw new Error('未知的配置写入模式')
     return mode === undefined ? service.switchToOfficialAccount(provider) : service.switchToOfficialAccount(provider, mode)
+  })
+  registerTrustedHandler('config:switch-account-source', async (_event, provider: unknown, target: unknown) => {
+    if (!isProviderId(provider)) throw new Error('未知的 CLI 类型')
+    if (target !== 'account' && target !== 'official') throw new Error('未知的账号来源')
+    if (target === 'official' && !providerSupportsOfficialAccount(provider)) throw new Error(`${cliCatalog[provider].name} 没有可切回的官方账号`)
+    if (target === 'account' && !accountService.getSessionState().account?.userId) throw new Error('请先登录账号，再切到当前账号')
+    return switchAccountSource({
+      wasOfficial: (id) => (service.readStoredConfig().officialProviders ?? []).includes(id),
+      createBackup: (id) => options.backupStore.create(id, 'pre-save'),
+      restoreBackup: (id) => { options.backupStore.restore(id) },
+      writeAccountConfig: async (id) => {
+        // 用户亲手点的切换：intent 'explicit' 才穿得过「来源未确认不自动改写」那道闸。
+        const outcome = await configureManagedClis(
+          accountService, service, [id], {}, options.previewOnboarding, options.managedCliKeys, 'merge', 'explicit',
+        )
+        if (outcome.failed.length) throw new Error(outcome.failed.map((item) => item.message).join('；'))
+        if (!outcome.configured.includes(id)) throw new Error('工具没有返回配置写入结果')
+      },
+      writeOfficialConfig: async (id) => { await service.switchToOfficialAccount(id, 'merge') },
+      setOfficialPreference: async (id, official) => { await service.setOfficialSourcePreference?.(id, official) },
+      restoreOfficialCredentials: async (id) => { await service.restoreOfficialCredentials?.(id) },
+      checkConnection: (id) => options.diagnosticsService.checkConnection(id),
+      officialLoginPresent: (id) => service.inspectOfficialLogin?.(id) ?? null,
+      // 失败原因可能带着配置文件的绝对路径（I13）：进日志前把主目录换掉。
+      log: (level, event, message, detail) => options.runtimeLog.log(level, 'config', event, message, detail
+        ? JSON.parse(redactHomeDirectory(JSON.stringify(detail), options.providerRoots?.userHome ?? os.homedir())) as Record<string, unknown>
+        : undefined),
+    }, provider, target)
   })
   registerTrustedHandler('workspace:choose', async (event) => {
     const parentWindow = BrowserWindow.fromWebContents(event.sender) ?? undefined
