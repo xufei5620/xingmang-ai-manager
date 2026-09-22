@@ -903,7 +903,7 @@ if (query.has('system')) {
       requested: false,
       enabled: false,
       approvalRequired: false,
-      note: '不会随电脑登录自动启动。',
+      note: '打开后，开机时会在托盘里待命，不弹窗口。',
     },
   }
   const listeners = new Set<(value: PlatformSystemState) => void>()
