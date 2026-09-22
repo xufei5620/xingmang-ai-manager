@@ -99,7 +99,7 @@ if (query.has('readOnlyAccountMatch')) {
 }
 const system: SystemSnapshot = { checkedAt: '2026-09-07T01:00:00Z',
   network: { region: 'unknown', publicIp: null, countryCode: null, checkedAt: '2026-09-07T01:00:00Z', error: null },
-  runtime: { node: { ...status, version: 'v24.0.0' }, npm: { ...status, version: '11.0.0' }, python: { ...status, version: '3.12.0' } },
+  runtime: { node: { ...status, version: 'v24.0.0' }, npm: { ...status, version: '11.0.0' }, python: { ...status, version: '3.12.0' }, git: { ...status, version: '2.43.0' } },
   clis: { claude: { ...status }, codex: { ...status }, gemini: { ...status, installed: query.has('allInstalled') }, grok: { ...status, installed: query.has('allInstalled') } },
   desktopApps: { codex: { ...status, appVersion: '1.2.3', mirrorVersion: null, mirrorUpdateAvailable: false, mirrorError: null, running: query.has('running') } },
 }
@@ -122,6 +122,11 @@ if (query.has('cliUpdate')) {
 if (query.has('detectionFailed')) {
   system.clis.claude = { ...system.clis.claude, installed: false, version: null, path: null,
     detectionFailed: true, detectionError: '本地探针暂时不可用' }
+}
+// 缺 Git（可选环境）：首页运行环境行给中文提示 + Windows 下载入口，装完 Claude Code
+// 的第一条命令卡下面也补一句。
+if (query.has('gitMissing')) {
+  system.runtime.git = { ...status, installed: false, version: null, path: null }
 }
 // 运行环境自己的探针抛错：整块系统状态是读到的，只有 Node.js 这一行没有结论。
 if (query.has('runtimeDetectionFailed')) {

@@ -77,6 +77,7 @@ import { parseModelIds } from './models'
 import { describeProbeFailure } from './probe-failure'
 import {
   classifyCliInstallDisplaySource,
+  cliLaunchArgv,
   cliUninstallCapability,
   findNpmExecutable,
   resolveCliCommand,
@@ -84,8 +85,10 @@ import {
   resolveNpmGlobalRoot,
   type CliInstallation,
   type CliInstallDisplaySource,
+  type CliLaunchMode,
   type CliUninstallCapability,
 } from './tool-installation'
+export type { CliLaunchMode } from './tool-installation'
 import { isNewerVersion, nodeVersionStatus, type NodeVersionStatus } from './versions'
 import {
   inspectWindowsRestartRequired,
@@ -330,6 +333,12 @@ export interface SystemSnapshot {
     node: ToolStatus
     npm: ToolStatus
     python: ToolStatus
+    /**
+     * Git 不是必装项，缺了也不该把「运行环境」整体判成不通过：它只决定
+     * Claude Code 的 Bash 工具能不能用、官方插件市场能不能拉下来
+     * （见 git-runtime.ts）。所以这一行和 Python 一样是「可选环境」。
+     */
+    git: ToolStatus
   }
   clis: Record<ProviderId, CliStatus>
   desktopApps: {
@@ -725,7 +734,7 @@ export interface SystemService {
   cancelCodexDesktopInstall(): InstallCancellationOutcome
   uninstallCodexDesktop(): Promise<ToolUninstallResult>
   inspectCodexDesktopUpdate(forceRefresh?: boolean): Promise<DesktopAppStatus>
-  launchProvider(provider: ProviderId, workspace: string): Promise<void>
+  launchProvider(provider: ProviderId, workspace: string, mode?: CliLaunchMode): Promise<void>
   inspectCodexDesktop(): Promise<DesktopAppStatus>
   inspectCodexDesktopLocale(): Promise<CodexDesktopLocaleStatus>
   inspectCodexWorkspacePermissions(): CodexWorkspacePermissionStatus
@@ -2183,6 +2192,18 @@ export function createSystemService(
     return { installed: false, version: null, path: null, installDirectory: null }
   }
 
+  /**
+   * `git --version` 打印的是「git version 2.43.0.windows.1」，整行放进运行环境行里
+   * 会把「Git」重复一遍，所以只留版本号；解析不出来时按其余运行环境的老规矩留空，
+   * 由渲染层退回中性的「已安装」。探测本身抛错时不在这里吞掉，交给 scanSystem 的
+   * allSettled 归成「检测失败」——缺 Git 与探不到 Git 对用户是两件事（A4）。
+   */
+  async function inspectGit(): Promise<ToolStatus> {
+    const status = await inspectTool('git')
+    if (!status.installed) return status
+    return { ...status, version: normalizeRuntimeVersion('git', status.version) }
+  }
+
   async function inspectLatestNpmVersion(
     packageName: string,
     networkRegion: NetworkRegion,
@@ -2389,10 +2410,11 @@ export function createSystemService(
       grokLatestInFlight.clear()
       officialChatGptCache = null
     }
-    const [nodeResult, npmResult, pythonResult, codexDesktopResult, networkResult, officialChatGptResult] = await Promise.allSettled([
+    const [nodeResult, npmResult, pythonResult, gitResult, codexDesktopResult, networkResult, officialChatGptResult] = await Promise.allSettled([
       inspectNode(),
       inspectTool('npm'),
       inspectPython(),
+      inspectGit(),
       inspectCodexDesktopUpdate(forceRefresh),
       inspectNetworkLocation(forceRefresh),
       inspectOfficialChatGptAccount(forceRefresh),
@@ -2401,6 +2423,7 @@ export function createSystemService(
     const node = buildToolStatusFromSettled(nodeResult)
     const npm = buildToolStatusFromSettled(npmResult)
     const python = buildToolStatusFromSettled(pythonResult)
+    const git = buildToolStatusFromSettled(gitResult)
     const codexDesktop = buildDesktopAppStatusFromSettled(codexDesktopResult)
     const network = buildNetworkLocationStatusFromSettled(networkResult)
     const npmGlobalRoot = await resolveNpmGlobalRoot(npm.path, commandEnvironment())
@@ -2448,7 +2471,7 @@ export function createSystemService(
     return {
       checkedAt: new Date().toISOString(),
       network,
-      runtime: { node, npm, python },
+      runtime: { node, npm, python, git },
       clis,
       desktopApps: { codex: codexDesktop },
       officialChatGpt: officialChatGptResult.status === 'fulfilled' ? officialChatGptResult.value : null,
@@ -3572,7 +3595,11 @@ export function createSystemService(
     })
   }
 
-  async function launchProviderOperation(provider: ProviderId, workspace: string): Promise<void> {
+  async function launchProviderOperation(
+    provider: ProviderId,
+    workspace: string,
+    mode: CliLaunchMode,
+  ): Promise<void> {
     const nativeConfig = inspectNativeProviderConfig(provider)
     if (!canLaunchManagedProvider(nativeConfig, provider)) {
       throw new Error(managedProviderLaunchBlockedMessage(provider))
@@ -3667,7 +3694,7 @@ export function createSystemService(
         }
         await launchCliPowerShell({
           executable: command.executable,
-          argv: command.argv,
+          argv: cliLaunchArgv(provider, command.argv, mode),
           workspace,
           title: `${definition.name} · 星芒AI`,
           // The broker starts this terminal with Start-Process, so it inherits
@@ -3692,7 +3719,11 @@ export function createSystemService(
         const command = await resolveVerifiedCliCommand(provider, providerEnv, windowsExecutionMode, {
           darwinStagingRetention: 'retained',
         })
-        await launchMacosTerminal(buildDarwinCliLaunchPlan(command, workspace, providerEnv))
+        await launchMacosTerminal(buildDarwinCliLaunchPlan(
+          { ...command, argv: cliLaunchArgv(provider, command.argv, mode) },
+          workspace,
+          providerEnv,
+        ))
       } catch (error) {
         const detail = error instanceof Error ? error.message : String(error)
         throw new Error(`未能打开 ${definition.name}：${detail || '请查看反馈与诊断日志'}`)
@@ -3702,10 +3733,11 @@ export function createSystemService(
 
     const environment = interactiveTerminalEnvironment(providerEnv)
     const command = await resolveVerifiedCliCommand(provider, providerEnv, windowsExecutionMode)
+    const argv = cliLaunchArgv(provider, command.argv, mode)
     const terminals = [
-      { command: 'x-terminal-emulator', args: ['-e', command.executable, ...command.argv] },
-      { command: 'gnome-terminal', args: ['--', command.executable, ...command.argv] },
-      { command: 'konsole', args: ['-e', command.executable, ...command.argv] },
+      { command: 'x-terminal-emulator', args: ['-e', command.executable, ...argv] },
+      { command: 'gnome-terminal', args: ['--', command.executable, ...argv] },
+      { command: 'konsole', args: ['-e', command.executable, ...argv] },
     ]
     let terminal = terminals[0]
     for (const candidate of terminals) {
@@ -3717,10 +3749,14 @@ export function createSystemService(
     await spawnDetached(terminal.command, terminal.args, { cwd: workspace, env: environment })
   }
 
-  function launchProvider(provider: ProviderId, workspace: string): Promise<void> {
+  function launchProvider(
+    provider: ProviderId,
+    workspace: string,
+    mode: CliLaunchMode = 'new',
+  ): Promise<void> {
     return installationQueue.enqueue(
       `cli:launch:${provider}`,
-      () => launchProviderOperation(provider, workspace),
+      () => launchProviderOperation(provider, workspace, mode),
     )
   }
 

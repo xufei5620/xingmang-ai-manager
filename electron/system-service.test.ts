@@ -703,6 +703,67 @@ describe('createSystemService', () => {
     expect(snapshot.clis.gemini.installSource).toBeUndefined()
   })
 
+  it('reports Git with only its version number when it is installed', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-git-present-'))
+    temporaryDirectories.push(directory)
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('offline') }))
+    const service = createSystemService(
+      new AppSettingsStore(path.join(directory, 'settings.json'), directory),
+      {
+        platform: 'linux',
+        findExecutable: async (command) => command === 'git' ? '/usr/bin/git' : null,
+        runCommand: async (spec) => ({
+          executable: spec.executable, argv: [...spec.argv], exitCode: 0, signal: null,
+          // 真实的 git 会打「git version 2.43.0.windows.1」，运行环境行里只留版本号。
+          stdout: 'git version 2.43.0.windows.1\n', stderr: '', outputBytes: 28, durationMs: 1,
+        }),
+        resolveCliInstallation: async () => null,
+      },
+    )
+
+    const snapshot = await service.scanSystem(false)
+
+    expect(snapshot.runtime.git).toMatchObject({ installed: true, version: '2.43.0', path: '/usr/bin/git' })
+    expect(snapshot.runtime.git.detectionFailed).not.toBe(true)
+  })
+
+  it('reports Git as not installed when the probe finds nothing', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-git-missing-'))
+    temporaryDirectories.push(directory)
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('offline') }))
+    const service = createSystemService(
+      new AppSettingsStore(path.join(directory, 'settings.json'), directory),
+      { platform: 'linux', findExecutable: async () => null, resolveCliInstallation: async () => null },
+    )
+
+    const snapshot = await service.scanSystem(false)
+
+    expect(snapshot.runtime.git).toMatchObject({ installed: false, version: null })
+    // 缺 Git 与探不到 Git 是两件事：没装不能被伪装成检测失败。
+    expect(snapshot.runtime.git.detectionFailed).not.toBe(true)
+  })
+
+  it('keeps a Git probe failure distinguishable from "not installed"', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-git-failure-'))
+    temporaryDirectories.push(directory)
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('offline') }))
+    const service = createSystemService(
+      new AppSettingsStore(path.join(directory, 'settings.json'), directory),
+      {
+        platform: 'linux',
+        findExecutable: async (command) => { if (command === 'git') throw new Error('Git 探测失败'); return null },
+        resolveCliInstallation: async () => null,
+      },
+    )
+
+    const snapshot = await service.scanSystem(false)
+
+    expect(snapshot.runtime.git).toMatchObject({ installed: false, detectionFailed: true, detectionError: 'Git 探测失败' })
+    // A CLI/Git probe failure must not bleed into the independent runtime probes.
+    expect(snapshot.runtime.node.detectionFailed).not.toBe(true)
+    expect(snapshot.runtime.npm.detectionFailed).not.toBe(true)
+  })
+
   it('validates an API key by returning model ids from the relay response', async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
       data: [{ id: 'gpt-5.6-sol' }, { id: 'gpt-5.6-terra' }],

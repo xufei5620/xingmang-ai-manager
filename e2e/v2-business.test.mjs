@@ -430,6 +430,36 @@ test('session detail shows transcript and archives the native id after a user ac
   }
 })
 
+// 记录页的 lead 一直写着「继续之前的对话」,但页面只有导出和归档。这条钉住
+// 兑现之后的行为:按钮把记录里的工作目录和固定的 resumeLast 一起交给主进程,
+// 续接参数本身永远不从渲染层来。
+test('records page resumes the most recent conversation in the folder on the row', async () => {
+  const page = await fixture('page=sessions')
+  try {
+    await page.getByTestId('sessions-resume-codex:session-1').click()
+    await page.getByText('已打开Codex CLI，接着 C:/test-project 里最近的一条对话').waitFor()
+    assert.deepEqual(
+      (await calls(page)).find((call) => call.name === 'launch-cli').args,
+      { provider: 'codex', workspace: 'C:/test-project', mode: 'resumeLast' },
+    )
+  } finally {
+    await page.close()
+  }
+})
+
+// 续接参数是 CLI 自己按目录找最近一条,所以同一个工具、同一个目录只有最近的
+// 那条能给按钮:否则用户点第三条、接上的却是第一条。
+test('only the most recent record of a folder offers to resume it', async () => {
+  const page = await fixture('page=sessions&sameFolder=1')
+  try {
+    await page.getByTestId('sessions-row-codex:session-0').waitFor()
+    assert.equal(await page.getByTestId('sessions-resume-codex:session-1').count(), 1)
+    assert.equal(await page.getByTestId('sessions-resume-codex:session-0').count(), 0)
+  } finally {
+    await page.close()
+  }
+})
+
 test('session detail exposes a retry action after a temporary read failure', async () => {
   const page = await fixture('page=sessions&detailFailure=1')
   try {
