@@ -4,6 +4,7 @@ import {
   accountKeyExpiredTime,
   accountKeyQuota,
   buildManagedCliKeyLimitUpdate,
+  isKeyQuotaExhaustedMessage,
   loadManagedCliKeys,
   parseManagedCliKeyLimitAmount,
   resolveManagedCliKeyLimits,
@@ -89,6 +90,18 @@ describe('managed CLI key limits', () => {
     expect(limits[0].group).toBe('Claude-MAX(不限客户端)')
   })
 
+  it('prefers the key the main process marked as in use over an older same-named key', () => {
+    const keys = [
+      key({ id: 11, name: 'xingmang-desktop-claude' }),
+      key({ id: 30, name: 'xingmang-desktop-claude', unlimitedQuota: false, remainQuota: 5, managedProvider: 'claude' }),
+      key({ id: 31, name: 'renamed-by-user', group: 'Codex_pro', managedProvider: 'codex' }),
+    ]
+    const limits = resolveManagedCliKeyLimits(keys, 500_000, 'solov')
+    expect(limits[0].key?.id).toBe(30)
+    expect(limits[0].unlimited).toBe(false)
+    expect(limits[1].key?.id).toBe(31)
+  })
+
   it('prefers the key this program provisions when a hand-made key shares its name', () => {
     const duplicates = [
       key({ id: 11, name: 'xingmang-desktop-claude', group: '另一个分组' }),
@@ -132,7 +145,7 @@ describe('managed CLI key limits', () => {
 describe('loadManagedCliKeys', () => {
   it('pages until the list is exhausted and keeps only the managed keys', async () => {
     const pages = [
-      { total: 150, keys: [key({ id: 1, name: 'other' }), key({ id: 2, name: 'xingmang-desktop-claude' })] },
+      { total: 150, keys: [key({ id: 1, name: 'other' }), key({ id: 2, name: 'xingmang-desktop-claude' }), key({ id: 4, name: 'renamed', managedProvider: 'gemini' })] },
       { total: 150, keys: [key({ id: 3, name: 'xingmang-desktop-grok', group: 'Grok-中转/订阅' })] },
     ]
     const requested: Array<[number, number]> = []
@@ -141,7 +154,7 @@ describe('loadManagedCliKeys', () => {
       return pages[page - 1] ?? { total: 150, keys: [] }
     }, 'solov')
     expect(requested).toEqual([[1, 100], [2, 100]])
-    expect(found.map((entry) => entry.id)).toEqual([2, 3])
+    expect(found.map((entry) => entry.id)).toEqual([2, 4, 3])
   })
 
   it('stops after the first page once it already covers the whole list', async () => {
@@ -160,5 +173,20 @@ describe('loadManagedCliKeys', () => {
       return { total: 100_000, keys: [key({ id: calls, name: 'other' })] }
     }, 'solov')
     expect(calls).toBe(5)
+  })
+})
+
+describe('isKeyQuotaExhaustedMessage', () => {
+  it('recognizes a used-up per-key cap but not an empty account balance', () => {
+    for (const message of [
+      '模型查询失败，服务返回 401：该令牌额度已用尽 TokenStatusExhausted[sk-***]',
+      'API Error: 401 该令牌额度已用尽',
+      'token quota is not enough, token remain quota: $0.00',
+      'The token quota has been used up',
+      'API key 额度已用完',
+    ]) expect(isKeyQuotaExhaustedMessage(message)).toBe(true)
+    for (const message of ['用户额度不足', 'user quota is not enough', '无效的令牌', '模型查询失败，服务返回 401']) {
+      expect(isKeyQuotaExhaustedMessage(message)).toBe(false)
+    }
   })
 })

@@ -11,6 +11,7 @@ import {
   clockSkewMs,
   clockSyncGuidance,
   createDiagnosticsExport,
+  findRelocatedFolders,
   parseClashTunConfig,
   redactDiagnosticText,
   relayStatusProbeUrl,
@@ -182,6 +183,51 @@ describe('diagnostics', () => {
       .toBe('[CODEX_HOME]/.codex/config.toml')
     expect(report.items.find((item) => item.code === 'PROVIDER_CLAUDE')?.details?.file1)
       .toBe('~/.claude/config.json')
+  })
+
+  it('flags project folder settings that override the current account, without values', async () => {
+    // macOS 的临时目录经过 /var → /private/var 这条符号链接，bounded 读法会拒读。
+    const home = fs.realpathSync.native(temporaryHome())
+    const workspace = path.join(home, 'work', 'app')
+    fs.mkdirSync(path.join(workspace, '.claude'), { recursive: true })
+    fs.writeFileSync(path.join(workspace, '.claude', 'settings.local.json'), JSON.stringify({
+      env: { ANTHROPIC_BASE_URL: 'https://elsewhere.example', ANTHROPIC_AUTH_TOKEN: 'sk-project-secret' },
+    }))
+    const input = dependencies(home)
+    input.platform = process.platform
+    input.workspace = workspace
+    input.claudeManagedDirectory = path.join(home, 'managed')
+
+    const item = (await runDiagnostics(input)).items.find((entry) => entry.code === 'WORKSPACE_CONFIG_OVERRIDE')
+
+    expect(item).toMatchObject({
+      title: '项目文件夹里的设置',
+      state: 'fail',
+      details: {
+        workspace: '~/work/app',
+        count: 1,
+        file1: 'Claude Code · .claude/settings.local.json：ANTHROPIC_BASE_URL、ANTHROPIC_AUTH_TOKEN',
+      },
+    })
+    expect(item?.summary).toContain('会让 Claude Code 不用当前账号')
+    expect(JSON.stringify(item)).not.toContain('elsewhere.example')
+    expect(JSON.stringify(item)).not.toContain('sk-project-secret')
+  })
+
+  it('still checks managed settings before any project folder was chosen', async () => {
+    const home = fs.realpathSync.native(temporaryHome())
+    const managed = path.join(home, 'managed')
+    fs.mkdirSync(managed, { recursive: true })
+    fs.writeFileSync(path.join(managed, 'managed-settings.json'), JSON.stringify({ apiKeyHelper: 'company-helper' }))
+    const input = dependencies(home)
+    input.platform = process.platform
+    input.claudeManagedDirectory = managed
+
+    const item = (await runDiagnostics(input)).items.find((entry) => entry.code === 'WORKSPACE_CONFIG_OVERRIDE')
+
+    expect(item?.state).toBe('warn')
+    expect(item?.summary).toBe('这台电脑上有统一下发的设置，可能会让 Claude Code 不用当前账号，需要找电脑管理员处理')
+    expect(item?.details?.workspace).toBeUndefined()
   })
 
   it('rejects failed relay responses and refuses automatic redirects', async () => {
@@ -536,7 +582,7 @@ describe('diagnostics', () => {
       input.env = {
         ANTHROPIC_BASE_URL: 'https://gateway.example.com',
         ANTHROPIC_AUTH_TOKEN: 'sk-must-not-leak-token',
-        anthropic_api_key: 'sk-must-not-leak-key',
+        openai_api_key: 'sk-must-not-leak-key',
         GEMINI_MODEL: 'gemini-must-not-leak',
       }
 
@@ -551,11 +597,89 @@ describe('diagnostics', () => {
         count: 4,
         variable1: 'ANTHROPIC_BASE_URL（Claude Code）',
         variable2: 'ANTHROPIC_AUTH_TOKEN（Claude Code）',
-        // 大小写不敏感：Windows 上 `anthropic_api_key` 与大写是同一个变量。
-        variable3: 'ANTHROPIC_API_KEY（Claude Code）',
+        // 大小写不敏感：Windows 上 `openai_api_key` 与大写是同一个变量。
+        variable3: 'OPENAI_API_KEY（Codex CLI）',
         variable4: 'GEMINI_MODEL（Gemini CLI）',
       })
       expect(JSON.stringify(item)).not.toMatch(/must-not-leak|gateway\.example\.com/)
+    })
+
+    // 这四个在沙箱里实测会让 CLI 绕开写入的配置（diagnostics.ts 的 breaksAccount），
+    // 用户在终端里跑就连不上当前账号，所以是待处理，开机提示也会数它。
+    it.each([
+      ['ANTHROPIC_API_KEY', 'sk-must-not-leak', 'Claude Code'],
+      ['CLAUDE_CONFIG_DIR', '/must-not-leak/claude', 'Claude Code'],
+      ['GOOGLE_GEMINI_BASE_URL', 'https://must-not-leak.example.com', 'Gemini CLI'],
+      ['GEMINI_API_KEY', 'sk-must-not-leak', 'Gemini CLI'],
+    ])('treats %s as a finding to handle because it takes the CLI off the current account', async (name, value, tool) => {
+      const home = temporaryHome()
+      const input = dependencies(home)
+      input.env = { [name]: value }
+
+      const item = overrideItem(await runDiagnostics(input))
+
+      expect(item).toMatchObject({
+        state: 'fail',
+        summary: `系统环境变量里设置了 ${name}，会让 ${tool} 不用当前账号写入的配置，删掉后重新打开终端即可`,
+        details: { count: 1, variable1: `${name}（${tool}，会绕开当前账号）` },
+      })
+      expect(JSON.stringify(item)).not.toContain('must-not-leak')
+    })
+
+    // 这些实测盖不过写入的配置，或只换模型、不换账号：留在需留意，不在开机时打扰。
+    it.each([
+      ['ANTHROPIC_BASE_URL', 'https://gateway.example.com'],
+      ['ANTHROPIC_AUTH_TOKEN', 'sk-shell'],
+      ['OPENAI_BASE_URL', 'https://gateway.example.com/v1'],
+      ['OPENAI_API_KEY', 'sk-shell'],
+      ['GOOGLE_GEMINI_API_KEY', 'sk-shell'],
+      ['GEMINI_MODEL', 'gemini-other'],
+      ['GOOGLE_GENAI_API_VERSION', 'v1'],
+    ])('keeps %s as only worth a look because the written configuration still wins', async (name, value) => {
+      const home = temporaryHome()
+      const input = dependencies(home)
+      input.env = { [name]: value }
+
+      expect(overrideItem(await runDiagnostics(input))).toMatchObject({
+        state: 'warn',
+        summary: `系统环境变量里设置了 ${name}，可能会盖过当前账号写入的配置`,
+      })
+    })
+
+    it('does not escalate a Gemini base URL that already points at the current account', async () => {
+      const home = temporaryHome()
+      const input = dependencies(home)
+      input.env = { GOOGLE_GEMINI_BASE_URL: 'https://xm.solov.cc' }
+
+      expect(overrideItem(await runDiagnostics(input))).toMatchObject({
+        state: 'pass',
+        details: { count: 1, variable1: 'GOOGLE_GEMINI_BASE_URL（Gemini CLI，已指向当前账号）' },
+      })
+    })
+
+    it('ignores a CLAUDE_CONFIG_DIR that points at the default directory', async () => {
+      const home = temporaryHome()
+      const input = dependencies(home)
+      input.env = { CLAUDE_CONFIG_DIR: path.join(home, '.claude') }
+
+      expect(overrideItem(await runDiagnostics(input))).toMatchObject({ state: 'pass', details: { count: 0 } })
+    })
+
+    it('names only the variables that break the account when both kinds are set', async () => {
+      const home = temporaryHome()
+      const input = dependencies(home)
+      input.env = { ANTHROPIC_BASE_URL: 'https://gateway.example.com', GEMINI_API_KEY: 'sk-shell', ANTHROPIC_API_KEY: 'sk-shell' }
+
+      expect(overrideItem(await runDiagnostics(input))).toMatchObject({
+        state: 'fail',
+        summary: '系统环境变量里设置了 ANTHROPIC_API_KEY、GEMINI_API_KEY，会让 Claude Code、Gemini CLI 不用当前账号写入的配置，删掉后重新打开终端即可',
+        details: {
+          count: 3,
+          variable1: 'ANTHROPIC_BASE_URL（Claude Code）',
+          variable2: 'ANTHROPIC_API_KEY（Claude Code，会绕开当前账号）',
+          variable3: 'GEMINI_API_KEY（Gemini CLI，会绕开当前账号）',
+        },
+      })
     })
 
     it('does not scold a base URL that already points at the current account', async () => {
@@ -804,6 +928,144 @@ describe('diagnostics', () => {
       state: 'pass',
       summary: '当前以普通用户权限运行',
     })
+  })
+
+  it('explains that a failed startup probe was treated as administrator, instead of reporting a plain user', async () => {
+    const home = temporaryHome()
+    const input = dependencies(home)
+    input.windowsExecution = {
+      mode: 'trusted-only',
+      elapsedMs: 15_020,
+      probeFailure: { reason: 'blocked', detail: 'Add-Type : Cannot add type. Compilation errors occurred.' },
+    }
+    // The failure answer must not depend on a second probe of the same kind.
+    input.inspectElevationCapability = async () => {
+      throw new Error('must not probe capability once the startup probe failed')
+    }
+
+    const report = await runDiagnostics(input)
+    const item = report.items.find((entry) => entry.code === 'ADMINISTRATOR')
+
+    expect(item).toMatchObject({
+      state: 'warn',
+      details: { elevated: false, executionMode: 'trusted-only', probeFailure: 'blocked', probeElapsedMs: 15_020 },
+    })
+    expect(item?.summary).toContain('已按管理员方式处理')
+    expect(item?.summary).toContain('被安全软件或电脑的管控策略拦下了')
+    // 上游英文原文只进运行日志，不上屏；文案不出现技术词。
+    expect(item?.summary).not.toMatch(/Add-Type|Compilation|PowerShell|管理员组|SID/)
+    // 不能教用户「以管理员身份运行」来绕过去。
+    expect(item?.summary).not.toContain('以管理员身份运行本')
+  })
+
+  it('still explains the failed startup probe when the self-check probe fails as well', async () => {
+    const home = temporaryHome()
+    const input = dependencies(home)
+    input.windowsExecution = {
+      mode: 'trusted-only',
+      elapsedMs: 15_000,
+      probeFailure: { reason: 'timeout', detail: 'signal=SIGTERM' },
+    }
+    input.inspectAdministrator = async () => {
+      throw new Error('powershell timed out again')
+    }
+
+    const item = (await runDiagnostics(input)).items.find((entry) => entry.code === 'ADMINISTRATOR')
+
+    expect(item).toMatchObject({ state: 'warn', details: { elevated: null, probeFailure: 'timeout' } })
+    expect(item?.summary).toContain('超过 15 秒没做完')
+  })
+
+  it('keeps the old answers when the startup probe succeeded or on macOS', async () => {
+    const home = temporaryHome()
+    const succeeded = dependencies(home)
+    succeeded.windowsExecution = { mode: 'same-user', elapsedMs: 900 }
+    expect((await runDiagnostics(succeeded)).items.find((item) => item.code === 'ADMINISTRATOR')).toMatchObject({
+      state: 'pass',
+      summary: '当前以普通用户权限运行',
+    })
+
+    const mac = dependencies(home)
+    mac.platform = 'darwin'
+    mac.windowsExecution = { mode: 'trusted-only', elapsedMs: 1, probeFailure: { reason: 'failed', detail: 'x' } }
+    expect((await runDiagnostics(mac)).items.find((item) => item.code === 'ADMINISTRATOR')).toMatchObject({
+      state: 'pass',
+    })
+  })
+
+  it('passes the folder check when nothing on the way to the data folders is redirected', async () => {
+    const home = temporaryHome()
+    const input = dependencies(home)
+    input.userDataDirectory = path.join(home, 'AppData', 'Roaming', 'xingmang')
+    input.findReparseComponent = () => null
+
+    const item = (await runDiagnostics(input)).items.find((entry) => entry.code === 'FOLDER_RELOCATED')
+
+    expect(item).toMatchObject({ state: 'pass', title: '文件夹位置', details: { relocated: 0 } })
+  })
+
+  it('names a relocated user folder once, in plain words, and says why saving fails', async () => {
+    const home = temporaryHome()
+    const input = dependencies(home)
+    input.userDataDirectory = path.join(home, 'AppData', 'Roaming', 'xingmang')
+    const checked: string[] = []
+    // 整个用户文件夹被「C 盘搬家」挪到了 D 盘：下面每个文件夹都经过同一级。
+    input.findReparseComponent = (target) => {
+      checked.push(target)
+      return { component: home, target: 'D:\\Users\\peaker' }
+    }
+
+    const item = (await runDiagnostics(input)).items.find((entry) => entry.code === 'FOLDER_RELOCATED')
+
+    expect(checked).toEqual(expect.arrayContaining([
+      home,
+      input.userDataDirectory,
+      path.join(home, '.claude'),
+      path.join(home, '.codex'),
+    ]))
+    expect(item?.state).toBe('fail')
+    expect(item?.summary).toContain('用户文件夹、软件数据文件夹、Claude Code 配置文件夹')
+    expect(item?.summary).toContain('被搬到了 D:\\Users\\peaker')
+    expect(item?.summary).toContain('C 盘搬家')
+    expect(item?.summary).toContain('写入 Key、保存设置、记录日志都可能失败')
+    expect(item?.summary).not.toMatch(/AppData|junction|联接|符号链接/)
+    expect(item?.details).toMatchObject({ relocated: 1, to1: 'D:\\Users\\peaker' })
+  })
+
+  it('leaves the Windows-only hint out on macOS', async () => {
+    const home = temporaryHome()
+    const input = dependencies(home)
+    input.platform = 'darwin'
+    input.findReparseComponent = (target) => (target === path.join(home, '.codex')
+      ? { component: path.join(home, '.codex'), target: null }
+      : null)
+
+    const item = (await runDiagnostics(input)).items.find((entry) => entry.code === 'FOLDER_RELOCATED')
+
+    expect(item?.state).toBe('fail')
+    expect(item?.summary).toContain('Codex CLI 配置文件夹被搬走了，但读不出它现在在哪里')
+    expect(item?.summary).not.toContain('C 盘搬家')
+  })
+
+  it('groups relocated folders by the redirected component and skips probes that throw', () => {
+    const findings = findRelocatedFolders(
+      [
+        { label: '甲', path: '/a/one' },
+        { label: '乙', path: '/a/two' },
+        { label: '丙', path: '/b' },
+        { label: '丁', path: '/c' },
+      ],
+      (target) => {
+        if (target === '/c') throw new Error('unexpected')
+        if (target.startsWith('/a')) return { component: '/a', target: '/mnt/a' }
+        if (target === '/b') return { component: '/b', target: null }
+        return null
+      },
+    )
+    expect(findings).toEqual([
+      { component: '/a', target: '/mnt/a', labels: ['甲', '乙'] },
+      { component: '/b', target: null, labels: ['丙'] },
+    ])
   })
 
   it('redacts bearer tokens, sk keys, known keys, proxy credentials, queries and home paths', () => {

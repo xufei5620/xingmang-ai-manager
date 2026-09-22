@@ -11,6 +11,7 @@ import { ConfigDialog } from './features/tools/ConfigDialog'
 import { ExternalClientDialog } from './features/tools/ExternalClientDialog'
 import { Home } from './features/tools/Home'
 import { createToolsApi } from './features/tools/api'
+import { launchWarning } from './features/tools/launch-notice'
 import { chineseRuntimePatchAnswerMissing, shouldAskForChineseRuntimePatch } from './features/tools/chinese-runtime-choice'
 import { cliInstallStageLabel, nodeRuntimeReady, planCliInstall, pythonRuntimeReady, runtimeStageFailureMessage, type InstallRuntimeId } from './features/tools/runtime-readiness'
 import { isToolId, presentTools, providerFor, toolInstallDirectory, type ToolId, type ToolSource } from './features/tools/model'
@@ -46,7 +47,7 @@ import { bootstrapAccountTools, describeAccountBootstrapFailure, describeAccount
 import { rewritableKeyProviders } from './features/tools/connection-check'
 import { applyManualSourceMarker, getSourceMarkerStorage } from './features/tools/source-marker'
 import { idleOnlineResync, noteBootstrapOutcome, planOnlineResync } from './features/tools/online-resync'
-import { accountOrigin, accountScope, accountSiteId, accountSupports, siteIdForOrigin, type AccountSiteId } from './account-context'
+import { accountOrigin, accountScope, accountSiteId, accountSupports, siteIdForOrigin, visibleAccountTab, type AccountSiteId } from './account-context'
 import { formatAccountReadError } from './features/app/account-read-error'
 import { AccountBalanceContext, useAccountBalanceStore } from './features/app/balance-context'
 import './business.css'
@@ -565,10 +566,8 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       workspace = selectedWorkspace
     }
     return toolbox.run(`launch:${id}`, '正在打开工具', async () => {
-      const result = await toolsApi.launch(id, workspace, mode)
-      if (mounted.current && result?.chineseLocale && result.chineseLocale.status !== 'verified') {
-        toast.show(result.chineseLocale.message || 'Codex 已打开，中文界面尚未确认生效，请在配置中再次启用。', 'warn')
-      }
+      const warning = launchWarning(await toolsApi.launch(id, workspace, mode))
+      if (mounted.current && warning) toast.show(warning, 'warn')
     })
   }
   /**
@@ -774,7 +773,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
             logout: () => setConfirmation({ title: '退出星芒账号？', body: '已写入工具的配置会保留。', label: '退出登录', work: async () => { await app.logout(); await reloadAccount() } }),
           }}>
           <div key={scope} className="v2-page-host">
-            {renderedChatScope === scope && <div className="v2-chat-host" hidden={page !== 'chat'}><Suspense fallback={pageLoading}><ChatPage bridge={native} accountScope={scope} active={page === 'chat'} /></Suspense></div>}
+            {renderedChatScope === scope && <div className="v2-chat-host" hidden={page !== 'chat'}><Suspense fallback={pageLoading}><ChatPage bridge={native} accountScope={scope} active={page === 'chat'} onOpenAccount={(tab) => navigate('account', visibleAccountTab(tab, session) ? tab : 'overview')} /></Suspense></div>}
             {visitedPages.acceleration === scope && <div data-testid="page-acceleration" hidden={page !== 'acceleration'} inert={page !== 'acceleration'}>
               <Suspense fallback={pageLoading}>
                 <AccelerationPage connection={acceleration} scope={session.authenticated ? scope : null}

@@ -12,6 +12,7 @@ import {
 import type { ChatCredentialCoordinator } from './chat-credential-coordinator'
 import type { AiOperationProgressObserver } from './ai-operation-progress'
 import { observeAiOperation, type AiOperationStartedObserver } from './ai-operation-lifecycle'
+import { classifyRelayQuotaFailure, extractRelayErrorDetail, relayQuotaFailureMessages } from './relay-quota-failure'
 
 const DEFAULT_TIMEOUT_MS = 320_000
 const DEFAULT_MAX_ACTIVE = 2
@@ -105,7 +106,9 @@ function safeUpstreamMessage(value: unknown): string {
   return redacted.slice(0, MAXIMUM_ERROR_MESSAGE)
 }
 
-function imageRequestFailure(status: number, detail: string): Error {
+// `evidence` carries the error code next to the message; it is only matched,
+// never shown, because `detail` alone is what may reach the screen below.
+function imageRequestFailure(status: number, detail: string, evidence = detail): Error {
   const normalized = detail.toLowerCase()
   if (status === 400 && normalized.includes('size')) {
     return new Error('当前模型不支持这个图片尺寸，请更换尺寸后重试')
@@ -113,10 +116,8 @@ function imageRequestFailure(status: number, detail: string): Error {
   if (status === 400 && normalized.includes('quality')) {
     return new Error('当前模型不支持这个画质档位，请更换画质后重试')
   }
-  if (status === 401) return new Error('生图 API Key 已失效，请重新创建或更换密钥')
-  if (status === 403 && /insufficient|quota|额度不足/.test(normalized)) {
-    return new Error('账号余额或 API Key 额度不足，请充值后重试')
-  }
+  const quota = classifyRelayQuotaFailure(status, `${detail} ${evidence}`)
+  if (quota) return new Error(relayQuotaFailureMessages[quota])
   if (status === 403 && /access to model|permission|forbidden|无权限/.test(normalized)) {
     return new Error('当前账号暂无该生图模型权限，请切换其他模型')
   }
@@ -298,7 +299,7 @@ export function createAiImageService(options: {
             : {}
           const detail = safeUpstreamMessage(error.error?.message ?? error.message)
           if (response.status >= 500) throw ambiguousImageSubmission()
-          throw imageRequestFailure(response.status, detail)
+          throw imageRequestFailure(response.status, detail, extractRelayErrorDetail(payload))
         }
         let entries: ReturnType<typeof responseEntries>
         try {

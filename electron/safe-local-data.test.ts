@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   appendSafeUtf8File,
   assertNoReparseComponents,
+  findReparseComponent,
   readSafeUtf8File,
   readSafeUtf8FileSync,
   writeAtomicSafeUtf8File,
@@ -28,6 +29,32 @@ afterEach(() => {
 describe('safe local data files', () => {
   it.runIf(process.platform === 'darwin')('accepts the Darwin system temporary directory alias', () => {
     expect(() => assertNoReparseComponents(os.tmpdir(), '临时目录')).not.toThrow()
+  })
+
+  it('reports the same first redirected component that the assertion rejects', () => {
+    const directory = temporaryDirectory()
+    const target = path.join(directory, 'moved-home')
+    const symbolicLink = path.join(directory, 'home')
+    fs.mkdirSync(path.join(target, '.codex'), { recursive: true })
+    fs.symlinkSync(target, symbolicLink)
+    const nested = path.join(symbolicLink, '.codex', 'config.toml')
+
+    expect(() => assertNoReparseComponents(nested, '配置目录')).toThrow('符号链接')
+    expect(findReparseComponent(nested)).toEqual({ component: symbolicLink, target: fs.realpathSync(target) })
+  })
+
+  it('finds nothing on a plain path, including one that does not exist yet', () => {
+    const directory = temporaryDirectory()
+    expect(findReparseComponent(directory)).toBeNull()
+    expect(findReparseComponent(path.join(directory, 'not-yet', 'created'))).toBeNull()
+  })
+
+  it('reports a dangling link without a target instead of throwing', () => {
+    const directory = temporaryDirectory()
+    const symbolicLink = path.join(directory, 'gone')
+    fs.symlinkSync(path.join(directory, 'missing-target'), symbolicLink)
+
+    expect(findReparseComponent(path.join(symbolicLink, 'child'))).toEqual({ component: symbolicLink, target: null })
   })
 
   it('rejects an arbitrary directory symbolic link', () => {
