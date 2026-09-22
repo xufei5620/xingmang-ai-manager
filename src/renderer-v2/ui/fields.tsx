@@ -1,4 +1,4 @@
-import { useId, useState, type InputHTMLAttributes, type ReactNode, type Ref, type SelectHTMLAttributes, type TextareaHTMLAttributes } from 'react';
+import { useId, useState, type FocusEvent, type InputHTMLAttributes, type KeyboardEvent, type ReactNode, type Ref, type SelectHTMLAttributes, type TextareaHTMLAttributes } from 'react';
 import { Eye, EyeOff, Search } from 'lucide-react';
 import { cx, useUiText, type BaseProps } from './shared';
 
@@ -8,8 +8,17 @@ function FieldFeedback({ id, error, hint }: { id: string; error?: string; hint?:
 }
 type FieldProps = BaseProps & Omit<InputHTMLAttributes<HTMLInputElement>, 'className' | 'style'> & Feedback & { mono?: boolean; password?: boolean; ref?: Ref<HTMLInputElement> };
 export function Input({ error, hint, mono, password, label, testId, id: inputId, 'aria-describedby': describedBy, ...props }: FieldProps) {
-  const [show, setShow] = useState(false); const generated = useId(); const id = inputId ?? generated; const helpId = id + '-help'; const t = useUiText();
-  return <div className="xm-field">{label && <label htmlFor={id}>{label}</label>}<div className="xm-field-control"><input {...props} id={id} className={cx(mono && 'xm-mono', error && 'has-error', password && 'xm-input-password')} data-testid={testId} type={password ? show ? 'text' : 'password' : props.type} aria-invalid={Boolean(error)} aria-describedby={[describedBy, error || hint ? helpId : undefined].filter(Boolean).join(' ') || undefined} />{password && <button aria-label={show ? t('hide') : t('show')} aria-pressed={show} className="xm-field-eye" onClick={() => setShow(!show)} disabled={props.disabled} type="button">{show ? <EyeOff size={16} aria-hidden="true" /> : <Eye size={16} aria-hidden="true" />}</button>}</div><FieldFeedback id={helpId} error={error} hint={hint} /></div>;
+  const [show, setShow] = useState(false); const [capsLock, setCapsLock] = useState(false); const generated = useId(); const id = inputId ?? generated; const helpId = id + '-help'; const capsId = id + '-caps'; const t = useUiText();
+  // Only keyboard events expose getModifierState, so the lock is read from the
+  // keys the user presses in the field: no polling, no state kept after blur.
+  // Windows reports the post-toggle state on the CapsLock key's own keyup, so
+  // both edges are tracked rather than keydown alone.
+  const trackCapsLock = (event: KeyboardEvent<HTMLInputElement>) => setCapsLock(event.getModifierState('CapsLock'));
+  const onKeyDown = password ? (event: KeyboardEvent<HTMLInputElement>) => { props.onKeyDown?.(event); trackCapsLock(event); } : props.onKeyDown;
+  const onKeyUp = password ? (event: KeyboardEvent<HTMLInputElement>) => { props.onKeyUp?.(event); trackCapsLock(event); } : props.onKeyUp;
+  const onBlur = password ? (event: FocusEvent<HTMLInputElement>) => { props.onBlur?.(event); setCapsLock(false); } : props.onBlur;
+  const capsVisible = Boolean(password && capsLock && !props.disabled && !props.readOnly);
+  return <div className="xm-field">{label && <label htmlFor={id}>{label}</label>}<div className="xm-field-control"><input {...props} id={id} className={cx(mono && 'xm-mono', error && 'has-error', password && 'xm-input-password')} data-testid={testId} type={password ? show ? 'text' : 'password' : props.type} onKeyDown={onKeyDown} onKeyUp={onKeyUp} onBlur={onBlur} aria-invalid={Boolean(error)} aria-describedby={[describedBy, error || hint ? helpId : undefined, capsVisible ? capsId : undefined].filter(Boolean).join(' ') || undefined} />{password && <button aria-label={show ? t('hide') : t('show')} aria-pressed={show} className="xm-field-eye" onClick={() => setShow(!show)} disabled={props.disabled} type="button">{show ? <EyeOff size={16} aria-hidden="true" /> : <Eye size={16} aria-hidden="true" />}</button>}</div><FieldFeedback id={helpId} error={error} hint={hint} />{capsVisible && <small className="xm-field-caps" id={capsId} role="status" data-testid={testId ? testId + '-caps' : undefined}>{t('capsLock')}</small>}</div>;
 }
 export function Select({ options, error, hint, label, mono, testId, id: selectId, 'aria-describedby': describedBy, ...props }: BaseProps & Omit<SelectHTMLAttributes<HTMLSelectElement>, 'className' | 'style'> & Feedback & { options: Array<{ value: string; label: string; disabled?: boolean }>; mono?: boolean }) {
   const generated = useId(); const id = selectId ?? generated; const helpId = id + '-help';
