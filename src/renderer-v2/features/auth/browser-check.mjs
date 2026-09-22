@@ -213,6 +213,30 @@ test('Gemini preparation unlocks Node then Python then CLI from confirmed snapsh
   } finally { await page.close() }
 })
 
+// 第十一批 2：能代装运行环境的平台上，「准备工具」这一步只剩一颗「安装」，
+// Node.js 和 Python 两行只报状态；失败时说清是哪一段没装上，并给一颗「再试一次」。
+test('Gemini installs with one button when the runtimes can be prepared automatically', async () => {
+  const page = await open('scenario=guide&auto=1&installFail=1')
+  try {
+    await page.getByTestId('guide-route-gemini').check()
+    await page.getByTestId('guide-next').click()
+    assert.deepEqual(await page.locator('.auth-guide-check-row strong').allTextContents(), ['Node.js 与 npm', 'Python', 'Gemini CLI'])
+    assert.equal(await page.getByTestId('guide-node').count(), 0)
+    assert.equal(await page.getByTestId('guide-python').count(), 0)
+    assert.equal(await page.getByTestId('guide-install').isEnabled(), true)
+    await page.getByTestId('guide-install').click()
+    await page.getByTestId('guide-error').filter({ hasText: '运行环境没装上（下载超时），Gemini CLI 还没开始装' }).waitFor()
+    await page.getByTestId('guide-retry').click()
+    await page.getByTestId('guide-next').waitFor({ state: 'visible' })
+    await page.waitForFunction(() => !document.querySelector('[data-testid="guide-next"]').disabled)
+    assert.equal(await page.getByTestId('guide-error').count(), 0)
+    assert.equal(await page.getByTestId('guide-retry').count(), 0)
+    await page.getByTestId('guide-next').click()
+    assert.equal(await page.getByTestId('start-guide').getAttribute('data-guide-step'), 'connect')
+    assert.deepEqual((await calls(page)).map((item) => item.method), ['detect', 'install', 'install'])
+  } finally { await page.close() }
+})
+
 test('guide pause resumes the chosen route and step without choosing for a fresh account', async () => {
   const page = await open('scenario=guide&resume=1&runtime=1&python=1&installed=1&connected=1&strict=1')
   try {

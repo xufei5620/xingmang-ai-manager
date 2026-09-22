@@ -598,7 +598,9 @@ describe('getStatus', () => {
   it('surfaces a clear error when the envelope reports failure', async () => {
     const fetchImpl = vi.fn<NewApiFetch>().mockResolvedValue(failureResponse('维护中', 503))
     const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl })
-    await expect(client.getStatus()).rejects.toThrow('维护中')
+    const error = await client.getStatus().catch((cause: unknown) => cause)
+    expect((error as Error).message).toContain('维护中')
+    expect(error).toMatchObject({ reason: 'serviceUnavailable' })
   })
 })
 
@@ -739,6 +741,30 @@ describe('login', () => {
     expect(error).toMatchObject({ reason: 'intercepted' })
     expect((error as Error).message).toContain(networkFailureMessages.intercepted)
     expect(client.isAuthenticated()).toBe(false)
+  })
+
+  it.each([
+    ['a maintenance page', new Response('<html><title>502 Bad Gateway</title></html>', { status: 502, headers: { 'Content-Type': 'text/html' } })],
+    ['an edge origin timeout', new Response('<html>error code: 522</html>', { status: 522, headers: { 'Content-Type': 'text/html' } })],
+    ['a managed challenge', new Response('<!DOCTYPE html><title>Just a moment...</title>', { status: 403, headers: { 'Content-Type': 'text/html', 'cf-mitigated': 'challenge' } })],
+    ['a JSON 503 from the gateway', jsonResponse({ success: false, message: 'service unavailable' }, { status: 503 })],
+  ])('reports %s as the service being unavailable, not as a bad password or a portal', async (_label, response) => {
+    const fetchImpl = vi.fn<NewApiFetch>().mockResolvedValue(response)
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl })
+    const error = await client.login({ username: 'tester', password: 'private-password' }).catch((cause: unknown) => cause)
+    expect(error).toBeInstanceOf(NewApiNetworkError)
+    expect(error).toMatchObject({ reason: 'serviceUnavailable' })
+    expect((error as Error).message).toContain(networkFailureMessages.serviceUnavailable)
+    // 渲染层有几处按「登录」二字兜底，detail 里不许带 label。
+    expect((error as Error).message).not.toMatch(/登录/)
+  })
+
+  it('keeps new-api\'s own JSON 403 meaning what it says', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>().mockResolvedValue(jsonResponse({ success: false, message: '用户已被封禁' }, { status: 403, headers: { server: 'cloudflare' } }))
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl })
+    const error = await client.login({ username: 'tester', password: 'x' }).catch((cause: unknown) => cause)
+    expect(error).not.toBeInstanceOf(NewApiNetworkError)
+    expect((error as Error).message).toContain('用户已被封禁')
   })
 
   it('leaves a failure it cannot attribute to the network untouched', async () => {
@@ -2997,6 +3023,16 @@ describe('restoreSession', () => {
     await expect(client.restoreSession({ userId: 0, cookies: ['x=y'] })).resolves.toBe(false)
     await expect(client.restoreSession({ userId: 1, cookies: [] })).resolves.toBe(false)
     expect(fetchImpl).not.toHaveBeenCalled()
+  })
+
+  it('throws the service-unavailable failure instead of calling the credential dead during maintenance', async () => {
+    // 盲点 1：只有 401 才说明凭据死了；维护期间把它当成失效，会把用户登出。
+    const fetchImpl = vi.fn<NewApiFetch>().mockResolvedValue(new Response('<html>维护中</html>', { status: 503, headers: { 'Content-Type': 'text/html' } }))
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl })
+
+    const error = await client.restoreSession({ userId: 42, cookies: ['refresh_token=persisted'] }).catch((cause: unknown) => cause)
+    expect(error).toMatchObject({ reason: 'serviceUnavailable' })
+    expect(client.isAuthenticated()).toBe(false)
   })
 
   it('resolves false (does not throw) when the refresh cookie is already dead', async () => {
