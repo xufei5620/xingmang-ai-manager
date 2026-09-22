@@ -13,7 +13,7 @@ import { Home } from './features/tools/Home'
 import { createToolsApi } from './features/tools/api'
 import { chineseRuntimePatchAnswerMissing, shouldAskForChineseRuntimePatch } from './features/tools/chinese-runtime-choice'
 import { cliRuntimeBlockMessage, nodeRuntimeReady } from './features/tools/runtime-readiness'
-import { isToolId, presentTools, providerFor, toolInstallDirectory, type ToolId } from './features/tools/model'
+import { isToolId, presentTools, providerFor, toolInstallDirectory, type ToolId, type ToolSource } from './features/tools/model'
 import { pendingToolUpdates, readAnnouncedToolUpdates, rememberAnnouncedToolUpdates, unannouncedToolUpdates, updateNoticeKey } from './features/tools/update-notice'
 import { isMissingWorkspace } from './features/tools/recent-workspaces'
 import { installedToolSyncLabel, useToolbox } from './features/tools/useToolbox'
@@ -42,6 +42,7 @@ import { onboardingPreviewEnabled } from './features/app/dev-preview'
 import { deepLinkReadErrorText, supportQrFallbackText } from './features/app/fallback-messages'
 import { bootstrapAccountTools, type AccountBootstrapMode, type AccountBootstrapProgress, type AccountBootstrapResult } from './features/tools/account-bootstrap'
 import { rewritableKeyProviders } from './features/tools/connection-check'
+import { applyManualSourceMarker, getSourceMarkerStorage } from './features/tools/source-marker'
 import { idleOnlineResync, noteBootstrapOutcome, planOnlineResync } from './features/tools/online-resync'
 import { accountOrigin, accountScope, accountSiteId, accountSupports, siteIdForOrigin, type AccountSiteId } from './account-context'
 import { formatAccountReadError } from './features/app/account-read-error'
@@ -59,6 +60,16 @@ interface AccountBootstrapView extends AccountBootstrapProgress {
   scope: string
   result?: AccountBootstrapResult
   error?: string
+}
+
+/**
+ * 新手引导只认四种来源，没有「被改过」这一档：引导讲的是怎么第一次连上，
+ * 而被改过的前提是已经连过一次。这里按它原来对「来源未确认」的讲法折过去，
+ * 引导的文案和按钮都不变。
+ */
+function guideSource(source: ToolSource): GuideToolState['source'] {
+  if (source === 'missing') return 'none'
+  return source === 'changed' ? 'unknown' : source
 }
 
 function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangApi; accelerationPreview?: boolean }) {
@@ -232,13 +243,29 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     // 登录已经掉了就没有「当前账号」可写，这时该做的是把登录框打开，而不是报一句
     // 成功。返回值说的就是这次到底写没写。
     if (!session.authenticated || !session.account) { setAuth('login'); return false }
-    const outcome = await runAccountBootstrap(session.account.userId, 'login', true, providers)
+    // 点名某个工具 = 用户明确要求覆盖它，这一档才会去改写一份「被改动过」的配置；
+    // 不点名的整轮修复照旧只碰来源确认过的那些，免得顺手改掉别的工具。
+    const outcome = await runAccountBootstrap(session.account.userId, providers ? 'rewrite' : 'login', true, providers)
     if (outcome?.error) throw new Error(outcome.error)
     const failed = outcome?.result?.failed ?? []
     const relevant = providers ? failed.filter((entry) => providers.includes(entry.provider)) : failed
     if (relevant.length) throw new Error(relevant.map((entry) => entry.message).join('；'))
     return true
   }, [runAccountBootstrap, session.account, session.authenticated])
+  /**
+   * 首页「就用现在这份」：用户自己改过配置又不想被提醒时，把这个工具记成手动来源。
+   * 写的是配置对话框里「自己填写密钥」同一个本机标记，所以以后在配置里改回星芒
+   * 账号时会被自动清掉，不需要另开一条通道来撤销。
+   */
+  const keepCurrentToolConfig = useCallback(async (tool: ToolId) => {
+    const provider = providerFor(tool)
+    const current = toolbox.snapshot?.config.providers[provider]
+    if (!current) throw new Error('请先完成工具检测')
+    const warning = applyManualSourceMarker(getSourceMarkerStorage(), current.baseUrl, provider, true)
+    if (warning) toast.show(warning, 'warn')
+    else toast.show('已按现在这份配置处理，以后不再提示。', 'ok')
+    await toolbox.refreshConfig().catch(() => undefined)
+  }, [toast, toolbox.refreshConfig, toolbox.snapshot])
   // 官方账号与手填密钥重写不动（重写流程本身会跳过它们），所以按钮按当前配置的
   // 来源决定给不给，而不是见到密钥层失败就画一颗出来。
   const rewritableKeys = useMemo(
@@ -603,12 +630,12 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     return () => document.removeEventListener('keydown', onShortcut)
   }, [navigate, os, toolbox.snapshot, session.authenticated])
   const guideTools: GuideToolState[] = toolbox.snapshot ? presentTools(toolbox.snapshot).map((tool) => ({
-    id: tool.id, installed: tool.status.installed, configured: tool.configured, source: tool.source === 'missing' ? 'none' : tool.source,
+    id: tool.id, installed: tool.status.installed, configured: tool.configured, source: guideSource(tool.source),
     version: tool.currentVersion ?? undefined, model: tool.model, detectionError: Boolean(tool.error),
     runtimeReady: nodeRuntimeReady(toolbox.snapshot!.system.runtime),
     pythonReady: toolbox.snapshot!.system.runtime.python.installed && !toolbox.snapshot!.system.runtime.python.detectionFailed,
     supported: tool.id !== 'codexDesktop' || platform?.codexDesktop.launch,
-    officialLoginRequired: guideOfficialLoginRequired(tool.provider, tool.source === 'missing' ? 'none' : tool.source, toolbox.snapshot!.config.providers[tool.provider]),
+    officialLoginRequired: guideOfficialLoginRequired(tool.provider, guideSource(tool.source), toolbox.snapshot!.config.providers[tool.provider]),
     installMode: tool.id === 'codexDesktop' ? platform?.codexDesktop.install : platform?.cliInstall[tool.id], workspace: toolbox.snapshot!.config.workspace,
   })) : []
   const balanceAmount = balance && balance.quotaPerUnit > 0 ? balance.quota / balance.quotaPerUnit : null
@@ -688,6 +715,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
             {page === 'home' ? <Home api={toolsApi} supportsUsage={accountSupports(session, 'supportsUsage')} supportsBilling={accountSupports(session, 'supportsBilling')} snapshot={toolbox.snapshot} loading={toolbox.loading} error={toolbox.error} failures={toolbox.failures} account={session.account} balance={balance} jobs={toolbox.jobs} bootstrap={accountBootstrap?.scope === scope ? accountBootstrap : null}
               externalClients={toolbox.externalClients} externalLoading={toolbox.externalLoading} externalError={toolbox.externalError} recentRevision={recentRevision}
               onScan={() => { refreshRecent(); void toolbox.refresh(true).catch(() => undefined); void toolbox.refreshExternal().catch(() => undefined) }} onInstall={(id, version) => void perform('安装工具', () => install(id, version), id)} onCancelInstall={(id) => void perform('取消安装', () => cancelInstall(id))} onLaunch={requestLaunch} onConfigure={openToolConfig} onUninstall={requestUninstall}
+              onRewriteKey={(id) => void perform('重新写入 Key', () => rewriteAccountKeys([providerFor(id)]), id)} onKeepConfig={(id) => void perform('保留当前配置', () => keepCurrentToolConfig(id))}
               onInstallExternal={(id) => void perform('安装客户端', () => installExternal(id))} onLaunchExternal={(id) => void perform('打开客户端', () => launchExternal(id))}
               onConfigureExternal={setExternalClient} onCodexModels={() => { setCodexModelFilter('non-gpt'); setConfigTool(platform?.codexDesktop.launch ? 'codexDesktop' : 'codex') }}
               onRuntime={(runtime) => void perform('准备环境', () => installRuntime(runtime))} onNavigate={navigate} onGuide={() => setGuide(true)} onBootstrapRetry={() => { if (session.account) void runAccountBootstrap(session.account.userId, 'login', true) }} />

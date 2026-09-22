@@ -1098,6 +1098,38 @@ for (const scenario of ['manualClaude=1&lostManualMarker=1', 'unownedClaude=1'])
   } finally { await page.close() }
 })
 
+test('an edited configuration says so on the row and can be written back on request', async () => {
+  const page = await open('allInstalled=1&changedClaude=1')
+  try {
+    const row = page.getByTestId('tool-row-claude')
+    await row.getByText('配置被改过').waitFor()
+    await row.getByText('配置在软件之外被改动过', { exact: false }).waitFor()
+    // 开机那轮自动同步不许碰它：提示归提示，改写要等用户点。
+    const before = await page.evaluate(() => window.v2Test.calls.filter(entry => entry.method === 'configureManagedCliKeys').map(entry => entry.args[0]))
+    assert.ok(before.every(input => !input.providers.includes('claude')))
+    await page.getByTestId('tool-claude-rewrite-key').click()
+    await page.waitForFunction(() => window.v2Test.calls.some(entry => entry.method === 'configureManagedCliKeys'
+      && entry.args[0].providers.includes('claude') && entry.args[0].intent === 'explicit'))
+    await row.getByText('已配好').waitFor()
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('an edited configuration can be kept as it is and stops asking', async () => {
+  const page = await open('allInstalled=1&changedClaude=1')
+  try {
+    const row = page.getByTestId('tool-row-claude')
+    await row.getByText('配置被改过').waitFor()
+    await row.getByRole('button', { name: '更多操作' }).click()
+    await page.getByRole('menuitem', { name: '就用现在这份', exact: true }).click()
+    await row.getByText('已配好').waitFor()
+    assert.equal(await page.getByTestId('tool-claude-rewrite-key').count(), 0)
+    const requests = await page.evaluate(() => window.v2Test.calls.filter(entry => entry.method === 'configureManagedCliKeys').map(entry => entry.args[0]))
+    assert.ok(requests.every(input => !input.providers.includes('claude')))
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('partial Key configuration keeps successful tools and retries recoverably', async () => {
   const page = await open('guest=1&allInstalled=1&bootstrapPartial=1')
   try {
