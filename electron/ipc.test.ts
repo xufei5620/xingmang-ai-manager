@@ -97,6 +97,7 @@ function serviceStub(): SystemService {
     fetchAvailableModels: vi.fn() as never,
     configureExternalTool: vi.fn() as never,
     scanExternalClients: vi.fn(async () => []),
+    inspectInstallationQueue: vi.fn(() => ({ activeKey: null, pendingKeys: [] })),
     installExternalClient: vi.fn() as never,
     launchExternalClient: vi.fn(async () => undefined),
   }

@@ -43,6 +43,7 @@ import { SavedAccountsStore } from './saved-accounts'
 import { AppSettingsStore, readAppSettings, type AppTheme } from './app-settings'
 import { calculateUiZoom, resolveWindowPlacement } from './window-preferences'
 import { createWindowLifecycle } from './window-lifecycle'
+import { resolveInterruptibleInstallTask } from './quit-blocking-tasks'
 import { createWindowResponsivenessGuard } from './window-responsiveness'
 import { createApplicationTray, type ApplicationTrayController } from './application-tray'
 import { createTrayAccelerationCoordinator, type TrayAccelerationCoordinator } from './tray-acceleration'
@@ -1801,6 +1802,23 @@ if (!hasSingleInstanceLock) {
           defaultId: trayReady ? 0 : 1, cancelId: trayReady ? 2 : 1,
         })
         return trayReady ? result.response === 0 ? 'hide' : result.response === 1 ? 'quit' : 'cancel' : result.response === 0 ? 'quit' : 'cancel'
+      },
+      confirmQuitWhileBusy: async () => {
+        // 没有安装在跑时这里不做任何 IO，也不弹窗：关窗冒烟测试的预算就那几秒。
+        const task = resolveInterruptibleInstallTask(systemService.inspectInstallationQueue())
+        if (!task || mainWindow.isDestroyed()) return 'quit'
+        runtimeLog.log('info', 'window', 'quit.install-in-progress', `退出前确认：${task.key}`)
+        // 托盘「退出」时主窗口通常是隐藏的，挂在隐藏窗口上的模态框用户看不见。
+        if (!mainWindow.isVisible()) showMainWindow()
+        const result = await dialog.showMessageBox(mainWindow, {
+          type: 'question', title: '关闭星芒AI管理工具', message: '还在安装，现在退出会中断，确定退出？',
+          detail: task.count > 1
+            ? `${task.description}，另外还有 ${task.count - 1} 项安装排在后面。现在退出会中断它们，已经下载的部分下次要重新来过。`
+            : `${task.description}。现在退出会中断它，已经下载的部分下次要重新来过。`,
+          buttons: ['继续安装', '仍然退出'],
+          defaultId: 0, cancelId: 0,
+        })
+        return result.response === 1 ? 'quit' : 'cancel'
       },
       prepareToQuit: async () => {
         await acceleration?.stopAll()
