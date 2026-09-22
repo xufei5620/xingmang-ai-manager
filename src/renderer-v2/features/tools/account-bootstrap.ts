@@ -22,7 +22,12 @@ export type AccountBootstrapPhase =
   | 'inspecting'
   | 'configuring'
   | 'verifying'
-export type AccountBootstrapMode = 'login' | 'restore'
+/**
+ * `rewrite` 是用户点名某个工具按「重新写入 Key」时走的那一档：只有它会去覆盖
+ * 一份「我们写过、之后被改动」的配置，登录和恢复这两档一律绕开，免得用户手改
+ * 过的配置在下次开机时被悄悄改回去。
+ */
+export type AccountBootstrapMode = 'login' | 'restore' | 'rewrite'
 
 export interface AccountBootstrapProgress {
   phase: AccountBootstrapPhase
@@ -32,7 +37,7 @@ export interface AccountBootstrapProgress {
 
 export interface AccountBootstrapSkip {
   provider: ProviderId
-  reason: 'not-installed' | 'detection-failed' | 'configured' | 'official' | 'manual' | 'unknown'
+  reason: 'not-installed' | 'detection-failed' | 'configured' | 'official' | 'manual' | 'unknown' | 'changed'
   message: string
 }
 
@@ -150,6 +155,21 @@ export function accountBootstrapPlan(
         reason: 'unknown',
         message: `${nameOf(provider)} 保留来源尚未确认的已有配置`,
       })
+      continue
+    }
+    // 配置被改动过的工具照旧不自动改写，只有用户在首页点名重写时才覆盖。
+    if (source === 'changed') {
+      if (mode !== 'rewrite') {
+        skipped.push({
+          provider,
+          reason: 'changed',
+          message: `${nameOf(provider)} 的配置被改动过，已保留现状`,
+        })
+        continue
+      }
+      targets.push(provider)
+      const changedModel = current.model.trim()
+      if (changedModel) preferredModels[provider] = changedModel
       continue
     }
     if (source === 'account' && current.configurationOwnership !== 'account') {
@@ -276,6 +296,9 @@ export async function bootstrapAccountTools(
     outcome = await api.configureManagedCliKeys({
       providers: plan.targets,
       preferredModels: plan.preferredModels,
+      // 被改动过的配置在主进程那一侧也受「来源未确认就不自动改写」拦着，
+      // 用户点名的这一次要说清楚是他自己要求的，才能穿过那道闸。
+      ...(mode === 'rewrite' ? { intent: 'explicit' as const } : {}),
     })
   }
 

@@ -87,6 +87,50 @@ describe('account managed Key bootstrap', () => {
     })
   })
 
+  it('leaves an edited configuration alone until the user asks for a rewrite', () => {
+    const current = config()
+    const storage = memoryStorage()
+    current.providers.claude = {
+      ...current.providers.claude, exists: true, hasApiKey: true, matchesRelay: true,
+      actualBaseUrl: current.providers.claude.baseUrl, model: 'edited-model',
+      configurationOwnership: 'changed',
+    }
+    for (const mode of ['login', 'restore'] as const) {
+      const plan = accountBootstrapPlan(system(['claude']), current, settings, mode, storage)
+      expect(plan.targets).toEqual([])
+      expect(plan.skipped).toContainEqual(expect.objectContaining({ provider: 'claude', reason: 'changed' }))
+    }
+    const rewrite = accountBootstrapPlan(system(['claude']), current, settings, 'rewrite', storage)
+    expect(rewrite.targets).toEqual(['claude'])
+    // 模型照旧沿用配置里那个，重写只换 Key，不顺手把模型改回默认。
+    expect(rewrite.preferredModels).toMatchObject({ claude: 'edited-model' })
+  })
+
+  it('tells the host a rewrite is the user asking, so it may take an edited configuration back', async () => {
+    const current = config()
+    const storage = memoryStorage()
+    current.providers.claude = {
+      ...current.providers.claude, exists: true, hasApiKey: true, matchesRelay: true,
+      actualBaseUrl: current.providers.claude.baseUrl, model: 'edited-model',
+      configurationOwnership: 'changed',
+    }
+    const configure = vi.fn(async (input: Parameters<AccountBootstrapBridge['configureManagedCliKeys']>[0]) => {
+      for (const provider of input.providers) current.providers[provider] = { ...current.providers[provider], configurationOwnership: 'account' as const, model: 'edited-model' }
+      return { configured: [...input.providers], failed: [] }
+    })
+    const api: AccountBootstrapBridge = {
+      getAccountSession: vi.fn(async () => ({ authenticated: true, account: { userId: 17, username: 'member', quota: 0, usedQuota: 0, group: 'default', role: 1 } })),
+      syncManagedCliKeys: vi.fn(async () => ({ ready: [{ provider: 'claude' as ProviderId, group: 'group', name: 'claude' }], failed: [] })),
+      scanSystem: vi.fn(async () => system(['claude'])),
+      getSettings: vi.fn(async () => settings),
+      getConfig: vi.fn(async () => structuredClone(current)),
+      configureManagedCliKeys: configure,
+    }
+    const result = await bootstrapAccountTools(api, 17, () => undefined, 'rewrite', ['claude'], storage)
+    expect(result.configured).toEqual(['claude'])
+    expect(configure).toHaveBeenCalledWith(expect.objectContaining({ providers: ['claude'], intent: 'explicit' }))
+  })
+
   it('syncs first, writes every installed missing provider, and verifies the readback', async () => {
     const current = config()
     const storage = memoryStorage()

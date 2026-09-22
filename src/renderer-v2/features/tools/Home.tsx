@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { ArrowRight, ArrowUpRight, BookOpen, ChevronDown, Download, FolderOpen, History, MessageSquare, Plug, RefreshCw, RotateCcw, X, Zap } from 'lucide-react'
+import { ArrowRight, ArrowUpRight, BookOpen, ChevronDown, Download, FolderOpen, History, KeyRound, MessageSquare, Plug, RefreshCw, RotateCcw, X, Zap } from 'lucide-react'
 import type { AccountBalance, AccountProfile, CliLaunchMode, ExternalClientStatus, ExternalToolId, MultiProviderSessionPage, OfficialChatGptAccount } from '../../../../electron/ipc-contract'
 import { presentExternalClients } from './external-model'
 import { useSharedAccountBalance } from '../app/balance-context'
@@ -46,6 +46,10 @@ export interface HomeProps {
    */
   onLaunch(tool: ToolId, workspace?: string, mode?: CliLaunchMode): void
   onConfigure(tool: ToolId): void
+  /** 配置被改动过时按当前账号重写这一个工具的 Key；缺省 = 不给这颗按钮（旧行为）。 */
+  onRewriteKey?(tool: ToolId): void
+  /** 配置被改动过时认下现在这份配置，以后不再提；缺省 = 不给这个菜单项（旧行为）。 */
+  onKeepConfig?(tool: ToolId): void
   onConfigureExternal(tool: ExternalToolId): void
   onInstallExternal(tool: ExternalToolId): void
   onLaunchExternal(tool: ExternalToolId): void
@@ -68,6 +72,13 @@ function firstRunOf(tool: ToolId) {
  * 之后客户端自己会补写，用户什么都不用做。「重新同步」按钮保留，想立刻试的照点。
  */
 const offlineBootstrapNotice = '当前网络不可用，已装好的工具照常能用；联网后会自动补写 Key。'
+
+/**
+ * 「配置被改过」这一档必须自己解释一句：角标只说了发生什么，没说会怎样。
+ * 用户真正要知道的是这个工具现在可能连不上，以及有一颗按钮能一键修回来。
+ * 文案以「当前账号」为主语，不提站点。
+ */
+const configChangedDetail = '配置在软件之外被改动过，当前账号的 Key 可能已经不在里面了'
 
 function bootstrapErrorText(error: string) {
   return isNetworkFailureText(error) ? offlineBootstrapNotice : `账号 Key 初始化没有完成：${error}`
@@ -159,6 +170,7 @@ export function Home(props: HomeProps) {
       && props.failures?.some((failure) => failure.partition === 'config') === true
     const status = installJob ? 'installing' : tool.error ? 'detectionFailed' : !tool.status.installed ? 'missing'
       : configUnavailable ? 'configUnavailable'
+      : tool.source === 'changed' ? 'configChanged'
       : tool.source === 'unknown' ? 'unknownSource' : tool.source === 'official' ? 'official'
         : bootstrapBusy && !tool.configured ? 'configuring'
         : tool.configured ? 'ready' : 'unconfigured'
@@ -191,12 +203,14 @@ export function Home(props: HomeProps) {
       icon={lastWorkspace ? undefined : tool.status.installed && !bootstrapBusy ? ArrowUpRight : undefined}
       onClick={primary} testId={`tool-${tool.id}-primary`}>{primaryLabel}</Button>
     return <ToolRow key={tool.id} tool={tool.id} status={status}
-      detail={job?.label ?? tool.error ?? undefined}
+      detail={job?.label ?? tool.error ?? (status === 'configChanged' ? configChangedDetail : undefined)}
       version={tool.status.installed ? versionSubtitle(tool) ?? '版本暂未识别' : undefined}
       model={tool.status.installed ? tool.source === 'official' ? '官方账号' : tool.model || undefined : undefined}
       progress={job?.percent}
       extraAction={installJob?.cancellable
         ? <Button variant="ghost" size="sm" icon={X} loading={installJob.cancelling} onClick={() => props.onCancelInstall(tool.id)} testId={`tool-${tool.id}-cancel`}>{installJob.cancelling ? '取消中' : '取消'}</Button>
+        : status === 'configChanged' && props.onRewriteKey
+          ? <Button variant="ghost" size="sm" icon={KeyRound} onClick={() => props.onRewriteKey?.(tool.id)} testId={`tool-${tool.id}-rewrite-key`}>重新写入 Key</Button>
         : externalManaged
           ? externalHint && (tool.updateAvailable || (rollback && blocked))
             ? <span className="v2-tool-external-note" title={externalHint} data-testid={`tool-${tool.id}-external-managed`}>{externalHint}</span>
@@ -216,6 +230,9 @@ export function Home(props: HomeProps) {
       </span> : primaryButton}
       menu={tool.status.installed && !job ? [
         { label: '配置', onSelect: () => props.onConfigure(tool.id) },
+        // 故意改过配置的人也要有出路，否则那颗黄角标会一直挂着。认下之后这个工具
+        // 就按「自己填写的密钥」处理，下次在配置里改回星芒账号时标记自动清掉。
+        ...(status === 'configChanged' && props.onKeepConfig ? [{ label: '就用现在这份', testId: `tool-${tool.id}-keep-config`, onSelect: () => props.onKeepConfig?.(tool.id) }] : []),
         ...(rollback && !blocked ? [{ label: `${rollbackVerb}推荐版本 ${rollback}`, testId: `tool-${tool.id}-rollback-menu`, onSelect: () => props.onInstall(tool.id, rollback) }] : []),
         ...(tool.provider === 'codex' ? [{ label: '非 GPT 模型', testId: tool.id === 'codex' ? 'home-codex-models' : 'home-codexDesktop-models', onSelect: props.onCodexModels }] : []),
         { label: '查看记录', onSelect: () => props.onNavigate('sessions') },

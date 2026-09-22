@@ -53,7 +53,8 @@ export interface NativeConfigInspection {
 /** Renderer-safe projection. The raw key never crosses the IPC boundary. */
 export interface NativeConfigSummary extends Omit<NativeConfigInspection, 'apiKey'> {
   apiKeyPreview: string | null
-  configurationOwnership?: 'account' | 'manual' | 'unknown' | 'missing'
+  /** `changed` = 本程序替当前账号写过，之后被改动；判不准的仍是 `unknown`。 */
+  configurationOwnership?: 'account' | 'manual' | 'unknown' | 'missing' | 'changed'
   /** Exact current-account cache match for display; never grants automatic write consent. */
   configurationAccountMatched?: boolean
 }

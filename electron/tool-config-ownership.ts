@@ -4,7 +4,13 @@ import type { ProviderId } from './catalog'
 import type { NativeConfigInspection } from './config-files'
 import { ensureSafeDataDirectory, readSafeUtf8FileSync, writeAtomicSafeUtf8File } from './safe-local-data'
 
-export type ToolConfigOwnership = 'account' | 'manual' | 'unknown' | 'missing'
+/**
+ * `changed` 只收窄 `unknown` 的一角：这份配置确实是本程序替当前账号写下的，
+ * 之后指纹又对不上了（用户手改、CLI 自己的登录流程改写、另一个管理工具覆盖）。
+ * 分出来是为了能在首页说一句「配置被改过」并给出修复入口；判不准的一律照旧
+ * 落回 `unknown`，因为那一侧的每条路径都受「来源未确认就不自动改写」保护。
+ */
+export type ToolConfigOwnership = 'account' | 'manual' | 'unknown' | 'missing' | 'changed'
 interface OwnershipRecord {
   version: 1 | 2
   provider: ProviderId
@@ -42,12 +48,12 @@ export class ToolConfigOwnershipStore {
       const raw = readSafeUtf8FileSync(this.file(provider, config), '工具配置来源', 4096)
       if (raw === null) return 'unknown'
       const value = JSON.parse(raw) as OwnershipRecord
-      if ((value.version !== 1 && value.version !== 2) || value.provider !== provider
-        || value.identity !== toolConfigIdentity(config)) return 'unknown'
-      if (value.source === 'manual') return 'manual'
+      if ((value.version !== 1 && value.version !== 2) || value.provider !== provider) return 'unknown'
       // Legacy account records prove a write happened, but do not identify who consented.
-      return value.source === 'account' && value.version === 2 && Boolean(owner)
-        && value.owner === owner ? 'account' : 'unknown'
+      const ours = value.source === 'account' && value.version === 2 && Boolean(owner) && value.owner === owner
+      if (value.identity !== toolConfigIdentity(config)) return ours ? 'changed' : 'unknown'
+      if (value.source === 'manual') return 'manual'
+      return ours ? 'account' : 'unknown'
     } catch { return 'unknown' }
   }
 
