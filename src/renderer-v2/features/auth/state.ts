@@ -44,6 +44,16 @@ const maxPasswordLength = 20
 // model.User.AffCode 是 varchar(32)，默认生成 4 位，列宽才是真正的上限。
 const maxInviteCodeLength = 32
 
+/**
+ * 注册时替用户想好的用户名：邮箱 @ 前面那段。服务端对用户名只限长度（上面的注释），
+ * 所以合规只需要按字符截到 20 位；按码点截，免得把一个表情或生僻字劈成半个。
+ * 还没打到 @ 时整段都算前缀，用户边敲邮箱边能看到用户名跟着变。
+ */
+export function usernameFromEmail(email: string): string {
+  const local = email.trim().split('@')[0] ?? ''
+  return Array.from(local).slice(0, maxUsernameLength).join('')
+}
+
 function looksLikeInviteLink(value: string): boolean {
   return /^https?:\/\//i.test(value) || value.includes('aff=') || /\/(sign-up|register)\b/i.test(value)
 }
@@ -63,7 +73,7 @@ export function validateRegistration(draft: RegistrationDraft, verificationRequi
   const invite = draft.invite.trim()
   if (!isEmail(draft.email)) errors.email = '请填写正确的邮箱'
   if (!username) errors.username = '请填写用户名'
-  else if (username.length > maxUsernameLength) errors.username = `用户名不能超过 ${maxUsernameLength} 位`
+  else if (Array.from(username).length > maxUsernameLength) errors.username = `用户名不能超过 ${maxUsernameLength} 位`
   if (draft.password.length < minPasswordLength) errors.password = `密码至少 ${minPasswordLength} 位`
   else if (draft.password.length > maxPasswordLength) errors.password = `密码不能超过 ${maxPasswordLength} 位`
   if (!draft.confirm) errors.confirm = '请再次输入密码'

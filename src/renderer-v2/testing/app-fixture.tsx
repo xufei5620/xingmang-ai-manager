@@ -171,7 +171,7 @@ let holdExternalScan = false
 let releaseExternalScan: () => void = () => undefined
 let holdConfigRead = false
 let releaseConfigRead: () => void = () => undefined
-let holdScan = false
+let holdScan = query.has('holdFirstScan')
 let releaseScan: () => void = () => undefined
 let releaseBalance: (error?: string) => void = () => undefined
 let balanceReads = 0
@@ -384,7 +384,7 @@ const methods = {
   openProviderSessionDirectory: async () => true,
   exportDiagnostics: async () => ({ outputPath: 'C:\\Fixture\\xingmang-diagnostics.txt' }),
   revealExportedFile: async () => true,
-  launchCli: async () => query.has('launchPending') ? new Promise<void>((resolve) => { releaseLaunch = resolve }) : undefined,
+  launchCli: async () => query.has('launchPending') ? new Promise<{}>((resolve) => { releaseLaunch = () => resolve({}) }) : query.has('launchOverride') ? { configOverrideNotice: '这个项目文件夹里有自己的设置，会让 Claude Code 不用当前账号，余额和用量会对不上。不是你有意这样设的话，换一个文件夹打开就好。' } : {},
   launchCodexDesktop: async () => ({ restarted: false, status: system.desktopApps.codex, ...(query.has('localeLaunchWarning') ? { chineseLocale: { status: 'failed' as const, message: 'Codex 已打开，但未确认中文界面生效，请在配置中再次启用。' } } : {}) }),
   inspectCodexDesktopLocale: async () => ({ installed: true, version: 'fixture', running: true, configPath: 'C:\\Fixture\\config.toml', configuredLocale: 'zh-CN', effectiveLocale: 'zh-CN', chineseResources: { available: true, frontendChunk: true, menuLocale: true, pakLocale: true, resourceRoot: 'C:\\Fixture' }, needsRestart: true, error: null }),
   setCodexDesktopLocale: async (locale) => {

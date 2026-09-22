@@ -42,6 +42,11 @@ import {
   type WindowsCliExecutionModeResolution,
   type WindowsElevationCapability,
 } from './windows-elevation'
+import {
+  describeOverride,
+  inspectWorkspaceConfigOverrides,
+  summarizeWorkspaceOverrides,
+} from './workspace-config-overrides'
 
 export type DiagnosticState = 'pass' | 'warn' | 'fail' | 'error'
 
@@ -106,6 +111,13 @@ export interface DiagnosticsDependencies {
    * 不给就按「不是我们写的」处理。
    */
   readClaudeConfigOwnership?: () => ToolConfigOwnership | null | undefined
+  /**
+   * 用户最近一次在本软件里选的项目文件夹。「项目文件夹里的设置」一项看它里面有没有
+   * 会盖过当前账号的设置；不给就只看这台电脑上统一下发的那几份。
+   */
+  workspace?: string
+  /** 只给测试用：Claude Code 管理策略所在目录。 */
+  claudeManagedDirectory?: string
   /** Which relay site's connectivity to probe (XINGMANG_NETWORK). Defaults to the default site. */
   relaySite?: RelaySite
   fetch?: typeof globalThis.fetch
@@ -1117,6 +1129,41 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
       // The isolated provider check will surface its own error.
     }
   }
+  // 只看配过的工具：没配过的工具谈不上「盖过当前账号」。管理策略不看工作目录，
+  // 所以没选过文件夹时 Claude 那一份照查。
+  const workspaceOverrideOutcome = (): CheckOutcome => {
+    const workspace = typeof dependencies.workspace === 'string' ? dependencies.workspace.trim() : ''
+    const workspaceChecked = workspace !== '' && path.isAbsolute(workspace) && fs.existsSync(workspace)
+    const overrides = providerIds.flatMap((provider) => {
+      const inspection = providerInspections.get(provider)
+      if (!inspection?.exists) return []
+      const found = inspectWorkspaceConfigOverrides(provider, workspaceChecked ? workspace : userHome, {
+        platform,
+        home: userHome,
+        codexHome,
+        current: {
+          baseUrl: inspection.baseUrl,
+          apiKey: inspection.apiKey,
+          authType: inspection.authType,
+          codexAuthMode: inspection.codexAuthMode,
+        },
+        ...(dependencies.claudeManagedDirectory ? { claudeManagedDirectory: dependencies.claudeManagedDirectory } : {}),
+      })
+      return workspaceChecked ? found : found.filter((entry) => entry.scope === 'managed')
+    })
+    const summary = summarizeWorkspaceOverrides(overrides, {
+      toolName: (provider) => cliCatalog[provider].name,
+      describe: (override) => describeOverride(override, workspaceChecked ? workspace : userHome, userHome, platform),
+      workspaceChecked,
+    })
+    return {
+      ...summary,
+      details: {
+        ...(workspaceChecked ? { workspace: pathForDisplay(workspace, displayRoots) } : {}),
+        ...summary.details,
+      },
+    }
+  }
   const sanitize = (value: string) => redactDiagnosticText(value, {
     userHome,
     codexHome,
@@ -1528,6 +1575,11 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
         environmentOverrideOutcome(collectEnvironmentOverrides(env, relaySite.providerBaseUrls, userHome)),
         inspectIgnoredCodexHome(dependencies.ignoredCodexHome, providerRoots, providerInspections.get('codex')),
       ),
+    },
+    {
+      code: 'WORKSPACE_CONFIG_OVERRIDE',
+      title: '项目文件夹里的设置',
+      run: () => workspaceOverrideOutcome(),
     },
     {
       code: 'CODEX_DOTENV',

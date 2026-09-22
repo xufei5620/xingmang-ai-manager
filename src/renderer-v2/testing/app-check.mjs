@@ -375,6 +375,22 @@ test('external client platform and detection failures remain distinct from missi
   } finally { await page.close() }
 })
 
+test('external client inventory waits for the first tool scan, and the home rescan forces a fresh one', async () => {
+  const page = await open('holdFirstScan=1')
+  try {
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'scanSystem'))
+    await page.waitForTimeout(300)
+    assert.equal(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'scanExternalClients').length), 0, '首屏扫描没回来之前不盘点外部客户端')
+    await page.evaluate(() => window.v2Test.releaseScan())
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'scanExternalClients'))
+    assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'scanExternalClients').map((entry) => entry.args)), [[false]])
+    await page.getByTestId('home-rescan').click()
+    await page.waitForFunction(() => window.v2Test.calls.filter((entry) => entry.method === 'scanExternalClients').length > 1)
+    assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'scanExternalClients').at(-1).args), [true])
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('external client scans from the previous account cannot overwrite the current account', async () => {
   const page = await open('externalInstalled=1')
   try {
@@ -2378,7 +2394,7 @@ test('explicit historical login uses returned account ownership with customer ac
   const page = await open('guest=1&sub2api=1')
   try {
     await page.getByTestId('welcome-login').click()
-    await page.getByTestId('auth-source').getByRole('button', { name: '历史账号', exact: true }).click()
+    await page.getByTestId('auth-source-expand').click()
     await page.getByTestId('login-account').fill('same@example.test')
     await page.getByTestId('login-password').fill('fixture-password')
     await page.getByTestId('auth-agree').check()
@@ -2693,6 +2709,17 @@ test('turns the Chinese runtime patch on through the locale path when the one-ti
     assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((call) => call.method === 'setCodexDesktopLocale').map((call) => call.args)), [['zh-CN']])
     assert.equal(await page.evaluate(() => window.v2Test.calls
       .some((call) => call.method === 'saveSettings' && call.args[0]?.codexDesktopChineseRuntimePatch !== undefined)), false)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('a CLI launch still opens but warns when the project folder overrides the current account', async () => {
+  const page = await open('allInstalled=1&recentWorkspaces=1&launchOverride=1')
+  try {
+    await page.getByTestId('tool-claude-primary').click()
+    await page.getByText('这个项目文件夹里有自己的设置，会让 Claude Code 不用当前账号，余额和用量会对不上。不是你有意这样设的话，换一个文件夹打开就好。', { exact: true }).waitFor()
+    assert.equal(await page.getByRole('dialog', { name: '操作没有完成' }).count(), 0)
+    assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((call) => call.method === 'launchCli').map((call) => call.args)), [['claude', 'C:\\work\\my-app']])
     await clean(page)
   } finally { await page.close() }
 })
