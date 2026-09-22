@@ -1,4 +1,5 @@
 import type { ProgressInfo, UpdateFileInfo, UpdateInfo } from 'builder-util-runtime'
+import { classifyNetworkFailure, updateNetworkFailureMessages } from './network-failure'
 
 export type UpdatePhase =
   | 'disabled'
@@ -10,6 +11,14 @@ export type UpdatePhase =
   | 'downloaded'
   | 'cancelled'
   | 'error'
+
+/**
+ * 哪一步失败了。`phase` 回答不了这个问题：检查失败、下载失败都落在 `error`，而
+ * 安装失败为了留住已校验的安装包，刻意停在 `downloaded`。界面只看 `error` 就只能
+ * 说一句「更新没有装上」，于是断网点一次「检查更新」也会被告知更新装不上——更新
+ * 其实根本没开始下。这个字段让界面按步骤说话，并给出这一步对应的重试动作。
+ */
+export type UpdateFailedStep = 'check' | 'download' | 'install'
 
 export interface UpdateSnapshot {
   phase: UpdatePhase
@@ -25,6 +34,12 @@ export interface UpdateSnapshot {
     total: number
   } | null
   error: { code: string; message: string } | null
+  /**
+   * 与 `error` 同生共死：有错才有步骤，错误被清掉时一并回到 null。可选是为了
+   * 向后兼容（AGENTS.md §6「缺省 = 旧行为」）——旧快照没有这个字段，界面照旧
+   * 走那句不分步骤的兜底文案。
+   */
+  failedStep?: UpdateFailedStep | null
   development: boolean
   /**
    * True when this build ships through the unsigned release channel, where
@@ -211,6 +226,11 @@ function safeError(error: unknown, platform: NodeJS.Platform): { code: string; m
     description?: unknown
   }
   const code = typeof candidate?.code === 'string' ? candidate.code.slice(0, 80) : 'UPDATE_ERROR'
+  // 网络先判：`net::ERR_INTERNET_DISCONNECTED` 这类原文对用户毫无意义，而它恰恰是
+  // 更新失败里最常见的一类。原始 code 仍然原样留在 error.code 里，runtime.jsonl
+  // 因此不丢线索，界面上只留中文。
+  const networkFailure = classifyNetworkFailure(error)
+  if (networkFailure) return { code, message: updateNetworkFailureMessages[networkFailure] }
   const channelFile = platform === 'darwin' ? 'latest-mac.yml' : 'latest.yml'
   const source = typeof candidate?.message === 'string' ? candidate.message : String(error)
   const description = typeof candidate?.description === 'string' ? candidate.description : source
@@ -282,6 +302,7 @@ export function createUpdaterService(
     checkedAt: null,
     progress: null,
     error: null,
+    failedStep: null,
     development,
     unsignedChannel,
   }
@@ -296,7 +317,13 @@ export function createUpdaterService(
   client.logger = null
 
   const emit = (patch: Partial<UpdateSnapshot>) => {
-    snapshot = { ...snapshot, ...patch }
+    // 失败步骤在这里统一跟着 error 走：清错误的地方有七八处（applyInfo、进度、
+    // 请求安装……），逐处补一句 failedStep: null 早晚会漏一处，漏掉的那处会让界面
+    // 在一次成功的检查之后还挂着上一次的失败按钮。
+    const failedStep = patch.failedStep !== undefined
+      ? patch.failedStep
+      : patch.error === null ? null : snapshot.failedStep
+    snapshot = { ...snapshot, ...patch, failedStep }
     const value = cloneSnapshot(snapshot)
     for (const listener of listeners) listener(value)
   }
@@ -332,6 +359,7 @@ export function createUpdaterService(
       phase: 'downloaded',
       progress: null,
       error: safeError(error, platform),
+      failedStep: 'install',
     })
   }
 
@@ -389,6 +417,7 @@ export function createUpdaterService(
     autoInstallTimer.unref?.()
   }
 
+  // 安装包校验不过时要重来的是下载，不是安装：本地这一份已经不可信了。
   const rejectDownloadedUpdate = (code: string, message: string) => {
     clearInstallWatchdog()
     installRequested = false
@@ -397,6 +426,7 @@ export function createUpdaterService(
       checkedAt: now().toISOString(),
       progress: null,
       error: { code, message },
+      failedStep: 'download',
     })
   }
 
@@ -494,7 +524,18 @@ export function createUpdaterService(
       }
       clearInstallWatchdog()
       installRequested = false
-      emit({ phase: 'error', error: safeError(error, platform), progress: null })
+      // electron-updater 的 error 事件不说自己来自哪一步，只能按当前阶段倒推。
+      // 这里永远不标 'install'：这条分支会把阶段推到 error，安装包不再可用，界面
+      // 给出的「重新安装」会当场被主进程以「更新尚未下载并校验完成」顶回来。真正
+      // 的安装失败走 reportInstallFailure，那条路把阶段留在 downloaded。
+      emit({
+        phase: 'error',
+        error: safeError(error, platform),
+        failedStep: snapshot.phase === 'downloading' || snapshot.phase === 'downloaded'
+          ? 'download'
+          : 'check',
+        progress: null,
+      })
     },
   }
 
@@ -543,10 +584,10 @@ export function createUpdaterService(
             await client.checkForUpdates()
           })
         } catch (retryError) {
-          emit({ phase: 'error', error: safeError(retryError, platform), progress: null })
+          emit({ phase: 'error', error: safeError(retryError, platform), failedStep: 'check', progress: null })
         }
       } else {
-        emit({ phase: 'error', error: safeError(error, platform), progress: null })
+        emit({ phase: 'error', error: safeError(error, platform), failedStep: 'check', progress: null })
       }
     }
     return cloneSnapshot(snapshot)
@@ -567,10 +608,10 @@ export function createUpdaterService(
             await client.downloadUpdate()
           })
         } catch (retryError) {
-          emit({ phase: 'error', error: safeError(retryError, platform), progress: null })
+          emit({ phase: 'error', error: safeError(retryError, platform), failedStep: 'download', progress: null })
         }
       } else {
-        emit({ phase: 'error', error: safeError(error, platform), progress: null })
+        emit({ phase: 'error', error: safeError(error, platform), failedStep: 'download', progress: null })
       }
     }
     return cloneSnapshot(snapshot)
@@ -622,6 +663,7 @@ export function createUpdaterService(
               code: 'STARTUP_UPDATE_TIMEOUT',
               message: '启动更新检查超时，已继续打开主程序',
             },
+            failedStep: 'check',
           })
           return cloneSnapshot(snapshot)
         }

@@ -29,6 +29,22 @@ export const networkFailureMessages: Readonly<Record<NetworkFailureReason, strin
 }
 
 /**
+ * 同一批原因，换成「更新」这件事的说法。更新器连的是静态更新目录，不是账号服务，
+ * 也不涉及输密码，照搬上面那张表会让用户以为是账号出了问题；反过来把两件事合成
+ * 一句「网络不通」，又说不清该换网络还是该等发布者。所以按主语分两张表，分类逻辑
+ * 仍然只有一份。
+ */
+export const updateNetworkFailureMessages: Readonly<Record<NetworkFailureReason, string>> = {
+  offline: '设备当前没有连上网络，请先连接网络再试。',
+  dns: '当前网络解析不出更新服务器的地址，校园网、公司网常见。换一个网络（例如手机热点）通常就能用。',
+  tls: '当前网络替换了这次连接的安全证书，为保证安装包来源可信已经中止本次更新。请换一个网络再试。',
+  proxy: '系统里设置的代理连不上，请检查代理或加速设置后再试。',
+  refused: '与更新服务器的连接被当前网络切断了，校园网、公司网常见。换一个网络（例如手机热点）再试一次。',
+  timeout: '连接更新服务器超时，请检查网络后再试。',
+  intercepted: '当前网络把这次请求拦到了别的页面，多半是校园网或公共 Wi-Fi 要求先在浏览器完成上网认证。认证之后再试，或者改用手机热点。',
+}
+
+/**
  * Chromium (net.fetch) reports `net::ERR_*`; Node and undici report errno
  * strings. Both spellings appear here because the account layer is fed
  * net.fetch in production and a plain fetch in tests.

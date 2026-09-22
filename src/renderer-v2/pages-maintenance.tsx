@@ -67,6 +67,7 @@ import {
   notificationOptions,
   settingsGroups,
   skinOptions,
+  updateFailureLabel,
   updateLabels,
 } from './registry/business'
 import { tools } from './registry/tools'
@@ -734,6 +735,14 @@ export function UpdatesPage({
       },
       '',
     )
+  // 失败在哪一步，重试就从哪一步接着走：检查失败重新检查，安装失败直接回到那个
+  // 重启确认框（安装包已经下好并校验过，不必再下一遍）。
+  const failure = updateFailureLabel(update?.failedStep)
+  const retryFailedStep = () => {
+    if (update?.failedStep === 'check') { check(); return }
+    if (update?.failedStep === 'install') { setConfirm(true); return }
+    redownload()
+  }
   const action =
     update?.phase === 'available' || update?.phase === 'cancelled' ? (
       <Button variant="primary" icon={Download} onClick={download}>
@@ -812,12 +821,17 @@ export function UpdatesPage({
           {update?.error && (
             <Notice
               tone="warn"
-              title="更新没有装上"
+              title={failure.title}
               body={userFacingErrorMessage(update.error)}
+              testId={`updates-failure-${update.failedStep ?? 'unknown'}`}
               actions={
                 <>
-                  <Button size="sm" icon={Download} onClick={redownload}>
-                    重新下载
+                  <Button
+                    size="sm"
+                    icon={!update.failedStep || update.failedStep === 'download' ? Download : RefreshCw}
+                    onClick={retryFailedStep}
+                  >
+                    {failure.retry}
                   </Button>
                   <Button
                     size="sm"

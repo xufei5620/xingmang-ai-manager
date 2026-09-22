@@ -1309,6 +1309,42 @@ test('a failed manual update check still reports on the updates page', async () 
   } finally { await page.close() }
 })
 
+// 更新失败原来只有一句「更新没有装上」加一个「重新下载」，断网点一次「检查更新」
+// 也是这句——更新根本还没开始下。三步各自的标题和按钮在这里一次看全。
+test('the updates page names the step that failed and offers that step again', async () => {
+  const page = await open('updateCheckFail=1')
+  try {
+    await page.getByTestId('nav-more').click()
+    await page.getByTestId('nav-updates').click()
+    const updates = page.getByTestId('page-updates')
+    await updates.waitFor()
+    const stages = [
+      { step: 'check', phase: 'error', title: '检查更新失败', retry: '重试', reason: '设备当前没有连上网络，请先连接网络再试。' },
+      { step: 'download', phase: 'error', title: '下载更新失败', retry: '重新下载', reason: '连接更新服务器超时，请检查网络后再试。' },
+      { step: 'install', phase: 'downloaded', title: '安装更新失败', retry: '重新安装', reason: '更新程序未能启动，已继续打开主程序；可在“检查更新”页重试安装' },
+    ]
+    for (const stage of stages) {
+      await page.evaluate((value) => window.v2Test.emit('onUpdateState', {
+        phase: value.phase, currentVersion: '0.1.31', availableVersion: '0.1.32', releaseName: null, releaseNotesText: null,
+        checkedAt: new Date().toISOString(), progress: null, failedStep: value.step,
+        error: { code: 'UPDATE_ERROR', message: value.reason }, development: true,
+      }), stage)
+      const notice = updates.getByTestId(`updates-failure-${stage.step}`)
+      await notice.waitFor()
+      await notice.getByText(stage.title, { exact: true }).waitFor()
+      await notice.getByText(stage.reason, { exact: true }).waitFor()
+      await notice.getByRole('button', { name: stage.retry, exact: true }).waitFor()
+      await notice.getByRole('button', { name: '查看日志', exact: true }).waitFor()
+      // 首页那条浮动气泡读的是同一份文案，不许和页面说两套话。
+      await page.getByRole('alert').getByText(stage.title, { exact: true }).waitFor()
+    }
+    // 检查失败时的「重试」重新走检查，而不是去下载一个还没开始下的包。
+    await updates.getByTestId('updates-failure-install').getByRole('button', { name: '重新安装', exact: true }).click()
+    await page.getByRole('dialog', { name: '重启并安装更新？' }).waitFor()
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('oversized announcements stay in a safe failure state and offer the allowlisted site', async () => {
   const page = await open('noticeOversized=1')
   try {

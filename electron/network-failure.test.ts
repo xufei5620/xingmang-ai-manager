@@ -4,6 +4,7 @@ import {
   matchNetworkFailureMessage,
   networkFailureMessages,
   networkFailureReasonForMessage,
+  updateNetworkFailureMessages,
   type NetworkFailureReason,
 } from './network-failure'
 
@@ -81,6 +82,17 @@ describe('restricted network failure copy', () => {
 
   it('never names a site, a domain or an internal code in copy the user reads', () => {
     for (const message of Object.values(networkFailureMessages)) {
+      expect(message).not.toMatch(/solov|sub2api|new-api|http|ERR_|E[A-Z]{5,}/i)
+      expect(message.endsWith('。')).toBe(true)
+    }
+  })
+
+  it('keeps the update wording off the account subject it does not apply to', () => {
+    for (const reason of Object.keys(networkFailureMessages) as NetworkFailureReason[]) {
+      const message = updateNetworkFailureMessages[reason]
+      // 更新器连的是静态更新目录，既不是账号服务也不涉及输密码；照抄登录那张表
+      // 会让一次更新失败读起来像账号出了问题。
+      expect(message).not.toMatch(/账号|密码/)
       expect(message).not.toMatch(/solov|sub2api|new-api|http|ERR_|E[A-Z]{5,}/i)
       expect(message.endsWith('。')).toBe(true)
     }

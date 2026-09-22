@@ -1,3 +1,4 @@
+import type { UpdateFailedStep } from '../../../electron/ipc-contract'
 export const accountTabs = [
   { value: 'overview', label: '我的账号' },
   { value: 'dashboard', label: '用量看板' },
@@ -37,6 +38,21 @@ export const updateLabels = {
   cancelled: '下载已取消',
   error: '更新没有完成',
 } as const
+/**
+ * 更新失败分三步说。只报一句「更新没有完成」时，断网点一次「检查更新」也会被
+ * 告知更新装不上、按钮还写着「重新下载」——更新其实根本没开始下。标题和按钮都
+ * 只在这里定义一次，首页气泡和更新页读同一份。
+ */
+export const updateFailureLabels = {
+  check: { title: '检查更新失败', retry: '重试' },
+  download: { title: '下载更新失败', retry: '重新下载' },
+  install: { title: '安装更新失败', retry: '重新安装' },
+} as const
+// 旧版本的快照没有 failedStep。说不清是哪一步，就别编一个步骤名出来。
+export const updateFailureFallback = { title: '更新没有完成', retry: '重新下载' } as const
+export function updateFailureLabel(step: UpdateFailedStep | null | undefined) {
+  return step ? updateFailureLabels[step] : updateFailureFallback
+}
 export const keyStates = {
   1: { label: '有效', tone: 'ok' },
   2: { label: '已停用', tone: 'neutral' },
