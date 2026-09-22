@@ -1730,7 +1730,7 @@ export function SettingsPage({
         <>
           {row(
             '开机自动启动',
-            systemState?.startup.note ?? '登录电脑后自动打开工具箱',
+            systemState?.startup.note ?? '开机后在托盘里待命，不弹窗口',
             systemApi && systemState?.startup.supported ? (
               <Switch
                 aria-label="开机自动启动"
