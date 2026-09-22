@@ -4,6 +4,10 @@ import {
   accountKeyExpiredTime,
   accountKeyQuota,
   buildManagedCliKeyLimitUpdate,
+  findAccountKeyById,
+  inheritedKeyExpiredMessage,
+  inheritedKeySettings,
+  isUsedUpKeyLimit,
   isKeyQuotaExhaustedMessage,
   loadManagedCliKeys,
   parseManagedCliKeyLimitAmount,
@@ -188,5 +192,45 @@ describe('isKeyQuotaExhaustedMessage', () => {
     for (const message of ['用户额度不足', 'user quota is not enough', '无效的令牌', '模型查询失败，服务返回 401']) {
       expect(isKeyQuotaExhaustedMessage(message)).toBe(false)
     }
+  })
+})
+
+describe('inheritedKeySettings', () => {
+  const now = Date.parse('2026-09-22T00:00:00.000Z')
+
+  it('carries the remaining cap and the expiry over to a replacement', () => {
+    expect(inheritedKeySettings(key({ id: 1, name: 'a', unlimitedQuota: false, remainQuota: 2.5, expiredAt: '2027-01-01T00:00:00.000Z' }), 0.01, now))
+      .toEqual({ remainQuota: 2.5, unlimitedQuota: false, expiredTime: Date.parse('2027-01-01T00:00:00.000Z') / 1000 })
+    expect(inheritedKeySettings(key({ id: 1, name: 'a', expiredAt: '2027-01-01T00:00:00.000Z' }), 1, now))
+      .toEqual({ remainQuota: 0, unlimitedQuota: true, expiredTime: Date.parse('2027-01-01T00:00:00.000Z') / 1000 })
+  })
+
+  it('has nothing to carry over for an unlimited key that never expires', () => {
+    expect(inheritedKeySettings(key({ id: 1, name: 'a' }), 1, now)).toBeNull()
+  })
+
+  it('gives a used-up cap the smallest allowed quota instead of lifting it', () => {
+    const usedUp = key({ id: 1, name: 'a', unlimitedQuota: false, remainQuota: 0 })
+    expect(inheritedKeySettings(usedUp, 1, now)).toEqual({ remainQuota: 1, unlimitedQuota: false, expiredTime: -1 })
+    expect(isUsedUpKeyLimit(usedUp)).toBe(true)
+    expect(isUsedUpKeyLimit(key({ id: 1, name: 'a', unlimitedQuota: false, remainQuota: 3 }))).toBe(false)
+    expect(isUsedUpKeyLimit(key({ id: 1, name: 'a' }))).toBe(false)
+  })
+
+  it('refuses to issue a replacement for an expired key', () => {
+    expect(() => inheritedKeySettings(key({ id: 1, name: 'a', expiredAt: '2026-01-01T00:00:00.000Z' }), 1, now))
+      .toThrow(inheritedKeyExpiredMessage)
+  })
+})
+
+describe('findAccountKeyById', () => {
+  it('pages through the key list and stops at the last page', async () => {
+    const pages = [
+      { total: 150, keys: Array.from({ length: 100 }, (_, index) => key({ id: index + 1, name: `k${index}` })) },
+      { total: 150, keys: [key({ id: 140, name: 'target' })] },
+    ]
+    const listKeys = async ({ page }: { page: number }) => pages[page - 1]
+    await expect(findAccountKeyById(listKeys, 140)).resolves.toMatchObject({ name: 'target' })
+    await expect(findAccountKeyById(listKeys, 999)).resolves.toBeNull()
   })
 })

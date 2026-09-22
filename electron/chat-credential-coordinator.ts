@@ -1,4 +1,6 @@
 import { buildCliKeyName } from './new-api-client'
+import { chatKeyQuotaExhaustedMessage, findAccountKeyById, isKeyQuotaExhaustedMessage } from './account-key-quota'
+import { isCappedKeyUsedUp } from './connection-check'
 import { selectAiChatModelsForGroup } from './ai-chat-protocol'
 import type { RelayBackendClient } from './relay-backend'
 import type { StoredChatKey } from './chat-key-store'
@@ -80,11 +82,18 @@ function isCredentialFailure(error: unknown): boolean {
   return new RegExp(`${credential}.{0,24}${invalid}|${invalid}.{0,24}${credential}`, 'i').test(message)
 }
 
+export class ChatKeyQuotaExhaustedError extends Error {
+  constructor() {
+    super(chatKeyQuotaExhaustedMessage)
+    this.name = 'ChatKeyQuotaExhaustedError'
+  }
+}
+
 const inFlightByService = new WeakMap<object, Map<string, Promise<ResolvedChatCredential>>>()
 
 export function createChatCredentialCoordinator(options: {
   accountService: Pick<RelayBackendClient,
-    'getSessionState' | 'listUsableGroups' | 'provisionCliKey' | 'getSessionRevision' | 'getActiveSiteId'>
+    'getSessionState' | 'listUsableGroups' | 'provisionCliKey' | 'getSessionRevision' | 'getActiveSiteId' | 'listKeys'>
   modelService: ChatModelServiceLike
   keyStore: ChatKeyStoreLike
 }): ChatCredentialCoordinator {
@@ -123,7 +132,16 @@ export function createChatCredentialCoordinator(options: {
           keyName: cached.keyName,
         }
       } catch (error) {
+        // 这把聊天 Key 自己设的上限用完了：换一把新的会悄悄绕过它，所以停在这里。
+        if (isKeyQuotaExhaustedMessage(error instanceof Error ? error.message : String(error))) {
+          throw new ChatKeyQuotaExhaustedError()
+        }
         if (!isCredentialFailure(error)) throw error
+        // new-api 用到 0 之后回的 401 和 Key 被删一样，只能去密钥列表里认一下。
+        const capUsedUp = await findAccountKeyById((query) => accountService.listKeys(query), cached.keyId)
+          .then((key) => key !== null && isCappedKeyUsedUp(key), () => false)
+        assertSameSession(accountService, userId, revision)
+        if (capUsedUp) throw new ChatKeyQuotaExhaustedError()
         // A revoked/expired server key must not poison the local cache. The
         // normal provision flow below reuses another usable key or creates a
         // replacement, and the new secret is encrypted back into the store.

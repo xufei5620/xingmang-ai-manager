@@ -294,6 +294,8 @@ export interface AccountContextMetadata {
  */
 export interface AccountRestoringState {
   account: { siteId: AccountSiteId; userId: number } | null
+  /** 开机恢复联不上（不是登录失效）：登录还在本机，主进程隔一会儿自己重试。缺省 = 恢复还在进行。 */
+  retrying?: boolean
 }
 export type AccountSessionState = NewApiSessionState & AccountContextMetadata & { restoring?: AccountRestoringState }
 export type AccountBalance = NewApiBalance

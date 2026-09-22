@@ -10,4 +10,3 @@
 - new-api 用到 0 之后回的是和 Key 被删一样的 401「无效的令牌」，文本分不出：`diagnostics:check-connection` 在结论是「密钥被拒绝」、且被拒的正是本软件为这个工具签发并仍写在配置里的那把时，按缓存里的 Key id 去账号密钥列表查一次（最多 5 页），封顶且用完就改说「额度用完了」。查不到、不确定一律保留原结论。
 - `account-cli-provisioner.ts`：模型查询因 Key 额度用尽失败时不删缓存、不重签，直接报上面那句话。
 - `new-api-client.ts` 的 `provisionCliKey` 与 `sub2api-relay-backend.ts` 的同名方法：同名同组只剩一把封顶且用完的 Key 时拒绝新建（新建默认不限额），新增纯函数 `hasExhaustedCappedCliKey`；同名 Key 还有可用的仍照旧复用。
-- AI 工作区聊天 Key 的轮换（`chat-credential-coordinator.ts`）不在「按工具分账」里，这次没动。

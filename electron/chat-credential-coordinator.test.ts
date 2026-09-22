@@ -5,11 +5,14 @@ import {
 } from './chat-credential-coordinator'
 import type { StoredChatKey } from './chat-key-store'
 import type { RelayBackendClient } from './relay-backend'
+import type { NewApiAccountKey } from './new-api-client'
+import { chatKeyQuotaExhaustedMessage } from './account-key-quota'
 
 function setup(overrides: {
   userId?: number
   cached?: StoredChatKey[]
   storeFailure?: Error
+  keys?: NewApiAccountKey[]
 } = {}) {
   let userId = overrides.userId ?? 7
   let sessionRevision = 0
@@ -27,7 +30,8 @@ function setup(overrides: {
       name: input.name ?? 'generated',
       key: `sk-${userId}-${input.group}`,
     })),
-  } as unknown as Pick<RelayBackendClient, 'getSessionState' | 'listUsableGroups' | 'provisionCliKey'>
+    listKeys: vi.fn(async () => ({ page: 1, pageSize: 100, total: overrides.keys?.length ?? 0, keys: overrides.keys ?? [] })),
+  } as unknown as Pick<RelayBackendClient, 'getSessionState' | 'listUsableGroups' | 'provisionCliKey' | 'listKeys'>
   const store: ChatKeyStoreLike = {
     read: vi.fn(async (targetUserId) => cached.filter((entry) => entry.userId === targetUserId)),
     captureRevision: vi.fn(() => revision),
@@ -181,6 +185,31 @@ describe('chat credential coordinator', () => {
     expect(context.store.remove).toHaveBeenCalledWith(7, 'codex-pro')
     expect(context.accountService.provisionCliKey).toHaveBeenCalledTimes(1)
     expect(context.store.upsert).toHaveBeenCalledTimes(1)
+  })
+
+  it('stops instead of replacing a cached key whose own cap is used up (401 like a deleted key)', async () => {
+    const cached: StoredChatKey = { userId: 7, group: 'codex-pro', keyId: 3, keyName: 'xingmang-chat-1', key: 'sk-capped-secret' }
+    const context = setup({
+      cached: [cached],
+      keys: [{
+        id: 3, name: 'xingmang-chat-1', maskedKey: '', group: 'codex-pro', status: 4, remainQuota: 0,
+        unlimitedQuota: false, usedQuota: 500, createdAt: '', expiredAt: null, accessedAt: null,
+      }],
+    })
+    vi.mocked(context.modelService.fetchAvailableModels).mockRejectedValueOnce(new Error('模型查询失败，服务返回 401'))
+
+    await expect(context.coordinator.resolveCredential('codex-pro')).rejects.toThrow(chatKeyQuotaExhaustedMessage)
+    expect(context.store.remove).not.toHaveBeenCalled()
+    expect(context.accountService.provisionCliKey).not.toHaveBeenCalled()
+  })
+
+  it('stops when the upstream names the key quota itself', async () => {
+    const cached: StoredChatKey = { userId: 7, group: 'codex-pro', keyId: 3, keyName: 'xingmang-chat', key: 'sk-capped-secret' }
+    const context = setup({ cached: [cached] })
+    vi.mocked(context.modelService.fetchAvailableModels).mockRejectedValueOnce(new Error('服务返回 429：API key 额度已用完'))
+
+    await expect(context.coordinator.resolveCredential('codex-pro')).rejects.toThrow(chatKeyQuotaExhaustedMessage)
+    expect(context.accountService.provisionCliKey).not.toHaveBeenCalled()
   })
 
   it('keeps a cached key when model loading fails for an ordinary network error', async () => {
