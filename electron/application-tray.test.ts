@@ -26,6 +26,7 @@ function fixture(overrides: Partial<ApplicationTrayOptions> = {}, runtimeOverrid
     templateIconPath: '/assets/trayTemplate-16.png', templateIcon2xPath: '/assets/trayTemplate-32.png',
     platform: 'win32', getSnapshot: () => ({ installedTools: [] }),
     onOpen: vi.fn(), onLaunchTool: vi.fn(), onNavigate: vi.fn(), onQuit: vi.fn(), onError: vi.fn(), onAvailabilityChange: vi.fn(),
+    onAccelerationToggle: vi.fn(), onMenuOpen: vi.fn(),
     ...overrides,
   }
   const runtime: ApplicationTrayRuntime = {
@@ -85,6 +86,37 @@ describe('tray summary and native menu', () => {
     await vi.waitFor(() => expect(order).toEqual(['open', 'settings']))
   })
 
+  it('puts the acceleration status row and its action directly above the top-up entry', () => {
+    const actions = { onOpen: vi.fn(), onNavigate: vi.fn(), onLaunchTool: vi.fn(), onQuit: vi.fn(), onAccelerationToggle: vi.fn() }
+    const menu = buildApplicationTrayMenu({
+      installedTools: [],
+      acceleration: { statusLabel: '加速：已连接 · 剩余 12 分钟', actionLabel: '断开加速', actionEnabled: true, action: 'stop' },
+    }, actions, (action) => { void action() })
+    const labels = menu.map((entry) => entry.label)
+    expect(labels.slice(labels.indexOf('加速：已连接 · 剩余 12 分钟'), labels.indexOf('充值') + 1))
+      .toEqual(['加速：已连接 · 剩余 12 分钟', '断开加速', '充值'])
+    expect(menu.find((entry) => entry.label === '加速：已连接 · 剩余 12 分钟')!.enabled).toBe(false)
+    click(menu, '断开加速')
+    expect(actions.onAccelerationToggle).toHaveBeenCalledOnce()
+  })
+
+  it('keeps a greyed-out acceleration action inert and leaves the rows out entirely without it', () => {
+    const toggle = vi.fn()
+    const disabled = buildApplicationTrayMenu({
+      installedTools: [],
+      acceleration: { statusLabel: '加速：当前账号的免费时长已用完', actionLabel: '连接加速', actionEnabled: false, action: 'start' },
+    }, { onOpen: vi.fn(), onNavigate: vi.fn(), onLaunchTool: vi.fn(), onQuit: vi.fn(), onAccelerationToggle: toggle }, (action) => { void action() })
+    const action = disabled.find((entry) => entry.label === '连接加速')!
+    expect(action.enabled).toBe(false)
+    const unwired = buildApplicationTrayMenu({
+      installedTools: [],
+      acceleration: { statusLabel: '加速：未连接', actionLabel: '连接加速', actionEnabled: true, action: 'start' },
+    }, { onOpen: vi.fn(), onNavigate: vi.fn(), onLaunchTool: vi.fn(), onQuit: vi.fn() }, (action) => { void action() })
+    expect(unwired.find((entry) => entry.label === '连接加速')!.enabled).toBe(false)
+    const { runtime } = fixture()
+    expect(vi.mocked(runtime.buildMenu).mock.calls[0][0].some((entry) => entry.label?.startsWith('加速：'))).toBe(false)
+  })
+
   it('removes control characters and bounds external text used in native menus', () => {
     const { runtime } = fixture({ getSnapshot: () => ({ installedTools: [], accountLabel: `user\n${'x'.repeat(200)}` }) })
     const account = vi.mocked(runtime.buildMenu).mock.calls[0][0][2].label!
@@ -140,6 +172,16 @@ describe('native tray lifecycle', () => {
     const copy = controller.getSnapshot()
     copy.installedTools[0].label = 'changed'
     expect(controller.getSnapshot().installedTools[0].label).toBe('Grok CLI')
+  })
+
+  it('reads state that can go stale each time the menu is about to open', () => {
+    const windows = fixture()
+    windows.handle.emit('right-click')
+    expect(windows.options.onMenuOpen).toHaveBeenCalledOnce()
+    const mac = fixture({ platform: 'darwin' })
+    mac.handle.emit('click')
+    expect(mac.options.onMenuOpen).toHaveBeenCalledOnce()
+    expect(mac.options.onOpen).not.toHaveBeenCalled()
   })
 
   it('shows the window if a previously created native tray disappears', () => {

@@ -1,4 +1,5 @@
 import { Menu, Tray, nativeImage, type MenuItemConstructorOptions, type NativeImage } from 'electron'
+import type { TrayAccelerationEntry } from './tray-acceleration'
 
 export interface ApplicationTraySnapshot {
   accountLabel?: string | null
@@ -6,6 +7,8 @@ export interface ApplicationTraySnapshot {
   installedTools: readonly { id: string; label: string; enabled?: boolean }[]
   updateAvailable?: boolean
   updateVersion?: string | null
+  /** 缺省表示这个构建没有接加速，菜单里就不出现这两行。 */
+  acceleration?: TrayAccelerationEntry | null
 }
 
 export type TrayNavigationTarget = 'topup' | 'updates' | 'settings'
@@ -22,6 +25,10 @@ export interface ApplicationTrayOptions {
   onOpen: TrayAction
   onLaunchTool(id: string): unknown | Promise<unknown>
   onNavigate(target: TrayNavigationTarget): unknown | Promise<unknown>
+  /** 菜单里那一项加速动作；缺省时那一项永远置灰。 */
+  onAccelerationToggle?: TrayAction
+  /** 用户刚打开托盘菜单：用来现读一次会过期的状态，不是定时轮询。 */
+  onMenuOpen?: TrayAction
   onQuit: TrayAction
   onError(error: unknown): void
   onAvailabilityChange?(available: boolean): void
@@ -68,12 +75,37 @@ export function trayBalanceLabel(balance: number | null | undefined): string {
 }
 
 function copySnapshot(snapshot: ApplicationTraySnapshot): ApplicationTraySnapshot {
-  return { ...snapshot, installedTools: snapshot.installedTools.map((tool) => ({ ...tool })) }
+  return {
+    ...snapshot,
+    installedTools: snapshot.installedTools.map((tool) => ({ ...tool })),
+    ...(snapshot.acceleration ? { acceleration: { ...snapshot.acceleration } } : {}),
+  }
+}
+
+/**
+ * 加速那两行：一行只读状态，一行动作。分开是因为托盘菜单项没有副标题，而状态
+ * （剩余时长、为什么用不了）与动作（连接 / 断开）必须同时看得见——把原因塞进
+ * 一个置灰的动作项里，用户只会以为菜单坏了。
+ */
+function accelerationItems(
+  entry: TrayAccelerationEntry | null | undefined,
+  toggle: TrayAction | undefined,
+  run: (action: TrayAction) => void,
+): MenuItemConstructorOptions[] {
+  if (!entry) return []
+  return [
+    { label: menuLabel(entry.statusLabel, '加速：状态未知'), enabled: false },
+    {
+      label: menuLabel(entry.actionLabel, '连接加速'),
+      enabled: entry.actionEnabled && Boolean(toggle),
+      click: () => { if (toggle) run(toggle) },
+    },
+  ]
 }
 
 export function buildApplicationTrayMenu(
   snapshot: ApplicationTraySnapshot,
-  actions: Pick<ApplicationTrayOptions, 'onOpen' | 'onLaunchTool' | 'onNavigate' | 'onQuit'>,
+  actions: Pick<ApplicationTrayOptions, 'onOpen' | 'onLaunchTool' | 'onNavigate' | 'onQuit' | 'onAccelerationToggle'>,
   run: (action: TrayAction) => void,
   appName = '星芒AI管理工具',
 ): MenuItemConstructorOptions[] {
@@ -94,6 +126,7 @@ export function buildApplicationTrayMenu(
         }))
         : [{ label: '尚未安装工具', enabled: false }],
     },
+    ...accelerationItems(snapshot.acceleration, actions.onAccelerationToggle, run),
     { label: '充值', click: () => navigate('topup') },
     {
       label: snapshot.updateAvailable
@@ -178,9 +211,15 @@ export function createApplicationTray(
     tray = runtime.createTray(image)
     if (tray.isDestroyed()) throw new Error('系统未能创建托盘入口')
     setAvailable(true)
+    // 菜单要弹出来的那一刻是唯一能现读状态的时机（macOS 左键、其他平台右键都
+    // 会弹出已设好的菜单）。读到的新状态赶不上这一次弹出，但下一次就是新的。
+    const menuOpened = () => {
+      if (options.onMenuOpen) run(options.onMenuOpen)
+      updateSnapshot()
+    }
     tray.on('double-click', () => run(options.onOpen))
-    tray.on('click', () => { if (platform !== 'darwin') run(options.onOpen) })
-    tray.on('right-click', () => updateSnapshot())
+    tray.on('click', () => { if (platform === 'darwin') menuOpened(); else run(options.onOpen) })
+    tray.on('right-click', () => menuOpened())
     updateSnapshot()
   } catch (error) { unavailable(error) }
 

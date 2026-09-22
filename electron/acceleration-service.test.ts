@@ -52,6 +52,28 @@ describe('acceleration-service', () => {
     expect(backend.redeemAccelerationCode).toHaveBeenCalledWith(scope, accelerationBonusCode)
   })
 
+  it('publishes every projected state to a listener without letting it break the request', async () => {
+    const backend = createBackend()
+    const seen: AccelerationState[] = []
+    const service = createAccelerationService({
+      getAccountScope: () => scope, backend,
+      onState: (published) => { seen.push(published); throw new Error('listener failed') },
+    })
+    await service.getAccelerationState(scope)
+    await service.startAcceleration(scope, 'system-proxy')
+    await service.stopAcceleration(scope)
+    expect(seen.map((published) => published.phase)).toEqual(['idle', 'active', 'idle'])
+    // 明文凭据不会因为多了一个监听者就流出去：拿到的是 projectState 的产物。
+    expect(seen.every((published) => published.scope === scope)).toBe(true)
+  })
+
+  it('tells a listener that a build without a backend has no lines at all', async () => {
+    const seen: AccelerationState[] = []
+    const service = createAccelerationService({ getAccountScope: () => scope, onState: (published) => { seen.push(published) } })
+    await service.getAccelerationState(scope)
+    expect(seen.map((published) => published.phase)).toEqual(['unavailable'])
+  })
+
   it('does not invent bonus time when the configured backend does not support redemption', async () => {
     const service = createAccelerationService({ getAccountScope: () => scope, backend: createBackend() })
     await expect(service.redeemAccelerationCode(scope, accelerationBonusCode)).rejects.toThrow('加速线路暂未开通')
