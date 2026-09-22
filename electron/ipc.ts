@@ -96,6 +96,7 @@ import {
 } from './new-api-client'
 import type { RelayBackendClient } from './relay-backend'
 import { normalizeRealmLoginIdentifier } from './realm-account-vault'
+import { realmForExplicitSite } from './realm-account'
 import { resolveAccountKeyOptions } from './account-key-options'
 import { loadManagedCliGroups } from './managed-cli-groups'
 import type { AiAssetStore } from './ai-asset-store'
@@ -2505,8 +2506,11 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   registerTrustedHandler('account:send-verification-code', (_event, email: unknown) => (
     accountService.sendEmailVerification(parseAccountEmailInput(email))
   ))
+  const passwordResetSiteId = (siteInput: unknown) => (
+    siteInput === undefined ? options.realmAccounts?.getSiteId() ?? 'solov' : parseAccountSiteId(siteInput)
+  )
   const passwordResetClient = (siteInput: unknown) => {
-    const siteId = siteInput === undefined ? options.realmAccounts?.getSiteId() ?? 'solov' : parseAccountSiteId(siteInput)
+    const siteId = passwordResetSiteId(siteInput)
     if (!options.realmAccounts && siteId !== 'solov') throw new Error('当前账号服务不支持该账号来源')
     const client = options.realmAccounts?.getPublicClient(siteId) ?? accountService
     if (client.capabilities?.supportsPasswordReset === false) throw new Error('所选账号暂不支持在客户端找回密码，请前往对应账号官网')
@@ -2515,9 +2519,62 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   registerTrustedHandler('account:send-reset-code', (_event, email: unknown, siteId: unknown) => (
     passwordResetClient(siteId).sendPasswordResetEmail(parseAccountEmailInput(email))
   ))
-  registerTrustedHandler('account:reset-password', (_event, input: unknown, siteId: unknown) => (
-    passwordResetClient(siteId).resetPassword(parseAccountPasswordResetInput(input))
-  ))
+  const rememberedLoginStore = (siteId: 'solov' | 'solov-api') => (
+    options.accountCredentialsForSite?.(siteId) ?? (siteId === 'solov' ? options.accountCredentials : undefined)
+  )
+  // Whether the identifier kept by 记住密码 names this account. The typed
+  // identifier may be the username or the email (new-api accepts either), so
+  // the username alone cannot tell; the vault's login hints record which
+  // account each identifier actually signed in. Anything unprovable is "no":
+  // rewriting or clearing another account's remembered login is worse than
+  // leaving a stale one.
+  const rememberedLoginNamesAccount = async (
+    siteId: 'solov' | 'solov-api',
+    identifier: string,
+    account: { userId: number | string, username?: string },
+  ): Promise<boolean> => {
+    const normalized = normalizeRealmLoginIdentifier(identifier)
+    if (account.username && normalizeRealmLoginIdentifier(account.username) === normalized) return true
+    const owner = await options.realmAccounts?.loginHintOwner(normalized)
+    return Boolean(owner && owner.realmId === realmForExplicitSite(siteId) && owner.userId === String(account.userId))
+  }
+  // The password change / reset already succeeded by the time these run, so
+  // they never throw: a failure here must not turn a successful change into an
+  // error toast. Neither logs anything -- the stored value is a password (I3).
+  const replaceRememberedPassword = async (
+    siteId: 'solov' | 'solov-api',
+    account: { userId: number, username: string },
+    password: string,
+  ): Promise<void> => {
+    const store = rememberedLoginStore(siteId)
+    const remembered = await store?.read().catch(() => null)
+    if (!store || !remembered) return
+    const matches = await rememberedLoginNamesAccount(siteId, remembered.identifier, account).catch(() => false)
+    if (!matches) return
+    await store.save(remembered.identifier, password).catch(() => store.clear().catch(() => undefined))
+  }
+  const forgetRememberedPassword = async (siteId: 'solov' | 'solov-api', email: string): Promise<void> => {
+    const store = rememberedLoginStore(siteId)
+    const remembered = await store?.read().catch(() => null)
+    if (!store || !remembered) return
+    const matches = await (async () => {
+      if (normalizeRealmLoginIdentifier(remembered.identifier) === normalizeRealmLoginIdentifier(email)) return true
+      const owner = await options.realmAccounts?.loginHintOwner(email)
+      return Boolean(owner && owner.realmId === realmForExplicitSite(siteId)
+        && await rememberedLoginNamesAccount(siteId, remembered.identifier, { userId: owner.userId }))
+    })().catch(() => false)
+    if (matches) await store.clear().catch(() => undefined)
+  }
+  registerTrustedHandler('account:reset-password', (_event, input: unknown, siteInput: unknown) => {
+    const parsed = parseAccountPasswordResetInput(input)
+    const siteId = passwordResetSiteId(siteInput)
+    // The reset hands back a one-time server-generated password the user is
+    // about to replace, so it is not worth remembering; the old one is wrong.
+    return passwordResetClient(siteInput).resetPassword(parsed).then(async (result) => {
+      await forgetRememberedPassword(siteId, parsed.email)
+      return result
+    })
+  })
   registerTrustedHandler('account:get-profile', () => accountService.getProfile())
   registerTrustedHandler('account:update-display-name', (_event, input: unknown) => (
     accountService.updateDisplayName(parseAccountDisplayNameUpdateInput(input))
@@ -2602,9 +2659,18 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     assertAccountSessionUser(userId)
     return result
   })
-  registerTrustedHandler('account:change-password', (_event, input: unknown) => (
-    accountService.changePassword(parseAccountChangePasswordInput(input, accountService.getActiveSiteId?.() === 'solov-api'))
-  ))
+  registerTrustedHandler('account:change-password', (_event, input: unknown) => {
+    const parsed = parseAccountChangePasswordInput(input, accountService.getActiveSiteId?.() === 'solov-api')
+    // Captured before the call: a successful change can end the session, and
+    // the remembered login must follow the account that changed, not whatever
+    // is signed in afterwards.
+    const siteId = options.realmAccounts?.getSiteId() ?? 'solov'
+    const account = accountService.getSessionState().account
+    return accountService.changePassword(parsed).then(async (result) => {
+      if (account) await replaceRememberedPassword(siteId, account, parsed.newPassword)
+      return result
+    })
+  })
   registerTrustedHandler('account:list-login-sessions', () => accountService.listLoginSessions())
   registerTrustedHandler('account:revoke-login-session', async (_event, sid: unknown) => {
     const result = await accountService.revokeLoginSession(
@@ -2627,7 +2693,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     const hint = !explicitSite && options.realmAccounts ? await options.realmAccounts.latestLoginHint() : null
     const siteId = explicitSite ?? (hint ? (hint.realmId === 'api-account' ? 'solov-api' : 'solov')
       : options.realmAccounts?.getSiteId() ?? 'solov')
-    const store = options.accountCredentialsForSite?.(siteId) ?? (siteId === 'solov' ? options.accountCredentials : undefined)
+    const store = rememberedLoginStore(siteId)
     const remembered = await store?.read() ?? null
     if (remembered && hint && normalizeRealmLoginIdentifier(remembered.identifier) !== hint.identifier) return null
     // Re-shape to exactly the contract DTO -- the persisted record carries a
@@ -2637,7 +2703,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   registerTrustedHandler('account:set-remembered-login', async (_event, input: unknown, siteInput: unknown) => {
     const siteId = siteInput === undefined ? options.realmAccounts?.getSiteId() ?? 'solov' : parseAccountSiteId(siteInput)
     const parsed = parseRememberedAccountLogin(input)
-    const store = options.accountCredentialsForSite?.(siteId) ?? (siteId === 'solov' ? options.accountCredentials : undefined)
+    const store = rememberedLoginStore(siteId)
     if (!store) return
     if (parsed) {
       await store.save(parsed.identifier, parsed.password)
