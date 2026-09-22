@@ -24,6 +24,7 @@ import {
 import { gitMissingNotice } from './git-runtime'
 import { managedCliRoot } from './managed-cli-paths'
 import { classifyNetworkFailure, networkFailureMessages } from './network-failure'
+import { redactSecretPatterns } from './redaction-patterns'
 import { relayApiProbeBaseUrl, resolveRelaySite, type RelaySite } from './relay-sites'
 import { resolveCliCommand, resolveCliInstallation } from './tool-installation'
 import type { ToolConfigOwnership } from './tool-config-ownership'
@@ -319,18 +320,7 @@ export function redactDiagnosticText(
     .sort((left, right) => right.length - left.length)
   for (const secret of secrets) result = result.split(secret).join('[REDACTED]')
 
-  result = result
-    .replace(/(\bBearer\s+)[A-Za-z0-9._~+/=-]{6,}/gi, '$1[REDACTED]')
-    .replace(/\bsk-[A-Za-z0-9_-]{6,}\b/gi, '[REDACTED]')
-    // The quoted spellings need their own rules: in `{"access_token":"…"}` the
-    // rule below can never match, because `\s*` does not cross the quote that
-    // closes the key name, so any CLI writing JSON to stderr leaked its secrets
-    // verbatim into the runtime log and the feedback export. Redacting between
-    // the existing quotes also keeps a JSON body parseable.
-    .replace(/((?:api[_-]?key|authorization|token|secret|password)"\s*[:=]\s*)"[^"]*"/gi, '$1"[REDACTED]"')
-    .replace(/((?:api[_-]?key|authorization|token|secret|password)'\s*[:=]\s*)'[^']*'/gi, "$1'[REDACTED]'")
-    .replace(/((?:api[_-]?key|authorization|token|secret|password)\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi, '$1[REDACTED]')
-  result = redactUrls(result)
+  result = redactUrls(redactSecretPatterns(result))
 
   return redactRootPaths(result, {
     userHome: options.userHome ?? options.homeDirectory,

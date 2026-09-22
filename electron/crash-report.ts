@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { redactSecretShapes } from './redaction-patterns'
 import { redactHomeDirectory } from './startup-log'
 
 /**
@@ -73,15 +74,14 @@ const MAX_FRAMES = 60
  * Everything leaving this process goes through here first. The three classes
  * of payload we must never ship are credentials (a relay key in an error
  * message is a paid key someone else can spend), the account's own identity,
- * and the local account name that every absolute path carries. The patterns
- * intentionally duplicate `redactCommandText` rather than importing it:
- * `command-runner` drags the whole Windows path-resolution graph in, and a
- * crash reporter must keep working when that graph is what crashed.
+ * and the local account name that every absolute path carries. The key shapes
+ * come from the import-free `redaction-patterns` table rather than
+ * `redactCommandText`: `command-runner` drags the whole Windows path-resolution
+ * graph in, and a crash reporter must keep working when that graph is what
+ * crashed.
  */
 export function redactCrashText(value: string, homeDirectory: string): string {
-  return redactHomeDirectory(value, homeDirectory)
-    .replace(/(\bBearer\s+)[A-Za-z0-9._~+/=-]{6,}/gi, '$1[REDACTED]')
-    .replace(/\bsk-[A-Za-z0-9_-]{6,}\b/g, '[REDACTED]')
+  return redactSecretShapes(redactHomeDirectory(value, homeDirectory))
     // The optional quote after the key name is what `redactCommandText` lacks:
     // a stack trace carrying a serialized payload spells it `"api_key":"..."`.
     .replace(/((?:api[_-]?key|authorization|token|secret|password|cookie|credential)["']?\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;)\]}]+)/gi, '$1[REDACTED]')
