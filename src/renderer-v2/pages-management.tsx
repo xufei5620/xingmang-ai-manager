@@ -57,6 +57,7 @@ import {
   type CuratedExtension,
 } from './registry/curated-extensions'
 import { tools } from './registry/tools'
+import { latestSessionIdsByWorkspace } from './features/tools/recent-workspaces'
 import type { V2Bridge } from './types'
 type Provider = Parameters<V2Bridge['listProviderExtensions']>[0]
 type ExtensionSnapshot = Awaited<ReturnType<V2Bridge['listProviderExtensions']>>
@@ -426,6 +427,18 @@ export function SessionsPage({ api }: { api: V2Bridge }) {
     [api, provider, query, page],
   )
   const resource = useResource(load)
+  // 「接着聊」只能出现在每个(工具 × 目录)组合最近的那一条上,而当前这一页是
+  // 过滤加分页之后的切片,判断不出全局最近。所以另取一份不带过滤的最新记录来
+  // 定这件事,上限就是主进程允许的一页最大条数;更老的组合不给按钮(宁可少给)。
+  const latestLoad = useCallback(
+    () => api.listProviderSessions({ provider: 'all', page: 1, pageSize: 100 }),
+    [api],
+  )
+  const latestResource = useResource(latestLoad)
+  const resumable = useMemo(
+    () => latestSessionIdsByWorkspace(latestResource.data?.items ?? []),
+    [latestResource.data],
+  )
   const operation = useOperation()
   const [selected, setSelected] = useState<Session | null>(null)
   const detailLoad = useCallback(
@@ -461,13 +474,13 @@ export function SessionsPage({ api }: { api: V2Bridge }) {
     )
   }
   /**
-   * 四家 CLI 的续接参数都是「按当前工作目录找最近一条」,不是按会话 id 挑,
-   * 所以这里接上的是这条记录所在文件夹里最近的一条对话,不一定就是点中的
-   * 这一条。按会话 id 挑选另算一步。归档过的记录已经被移出 CLI 自己的目录,
-   * 它找不到,所以对归档记录置灰。
+   * 四家 CLI 的续接参数都是「按当前工作目录找最近一条」,不是按会话 id 挑。
+   * 所以按钮只长在每个(工具 × 目录)组合最近的那一条上(resumable),点到的
+   * 就是接上的。按会话 id 精确挑选另算一步。归档过的记录已经被移出 CLI
+   * 自己的目录,它找不到,所以对归档记录置灰。
    */
   const resume = (session: Session) => {
-    if (!session.cwd || session.archived) return
+    if (!resumable.has(session.id) || session.archived) return
     void operation.execute(
       'resume',
       () => api.launchCli(session.provider, session.cwd, 'resumeLast'),
@@ -550,19 +563,18 @@ export function SessionsPage({ api }: { api: V2Bridge }) {
               }
               actions={
                 <>
-                  <Button
-                    size="sm"
-                    icon={Play}
-                    disabled={
-                      !session.cwd ||
-                      session.archived ||
-                      Boolean(operation.busy)
-                    }
-                    onClick={() => resume(session)}
-                    testId={`sessions-resume-${session.id}`}
-                  >
-                    接着聊
-                  </Button>
+                  {resumable.has(session.id) && !session.archived && (
+                    <Button
+                      size="sm"
+                      icon={Play}
+                      disabled={Boolean(operation.busy)}
+                      onClick={() => resume(session)}
+                      title="接着这个文件夹里最近一次对话"
+                      testId={`sessions-resume-${session.id}`}
+                    >
+                      接着聊
+                    </Button>
+                  )}
                   <Button
                     size="sm"
                     icon={History}
@@ -613,18 +625,17 @@ export function SessionsPage({ api }: { api: V2Bridge }) {
             >
               导出 Markdown
             </Button>
-            <Button
-              icon={Play}
-              disabled={
-                !selected?.cwd ||
-                Boolean(selected?.archived) ||
-                Boolean(operation.busy)
-              }
-              onClick={() => selected && resume(selected)}
-              testId="session-detail-resume"
-            >
-              接着上次对话
-            </Button>
+            {selected && resumable.has(selected.id) && !selected.archived && (
+              <Button
+                icon={Play}
+                disabled={Boolean(operation.busy)}
+                onClick={() => resume(selected)}
+                title="接着这个文件夹里最近一次对话"
+                testId="session-detail-resume"
+              >
+                接着上次对话
+              </Button>
+            )}
             {capability?.operations[
               selected?.archived ? 'restore' : 'archive'
             ] && (

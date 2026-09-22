@@ -4,7 +4,7 @@ import { toolAvailability, updateCheckFailure } from './model'
 
 /** 「安装卸载」页一行需要读的那几个字段，CLI、桌面端与运行环境共用。 */
 export type ToolRowStatus =
-  & Pick<ToolStatus, 'installed' | 'detectionFailed' | 'detectionError'>
+  & Pick<ToolStatus, 'installed' | 'detectionFailed' | 'detectionError' | 'installSource'>
   & Pick<CliStatus, 'updateCheck' | 'updateError'>
 
 export interface ToolStatusProps {

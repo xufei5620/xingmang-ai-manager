@@ -15,6 +15,8 @@ import {
   codexConfigSnapshotPaths,
   defaultCodexRelayProvider,
   ensureCodexPermissionDefaultsInConfigText,
+  ensureGeminiContextFilenamesInSettingsText,
+  ensureGeminiProjectContextFiles,
   inspectProviderConfig,
   inspectCodexWorkspacePermissionsText,
   managedProviderLaunchBlockedMessage,
@@ -1544,5 +1546,62 @@ describe('workspace trust for the directory the user picked', () => {
         .toEqual({ backups: [], files: [], changed: false })
     }
     expect(fs.readdirSync(home)).toEqual([])
+  })
+})
+
+describe('teaching Gemini CLI to read the shared AGENTS.md', () => {
+  it('adds both context files when settings.json has none', () => {
+    const result = ensureGeminiContextFilenamesInSettingsText('{}')
+    expect(result.changed).toBe(true)
+    const context = asRecord((JSON.parse(result.content) as Record<string, unknown>).context)
+    expect(context?.fileName).toEqual(['GEMINI.md', 'AGENTS.md'])
+  })
+
+  it('appends only what is missing and keeps the user list and order', () => {
+    const existing = JSON.stringify({ context: { fileName: ['docs/RULES.md', 'GEMINI.md'] } })
+    const result = ensureGeminiContextFilenamesInSettingsText(existing)
+    expect(result.changed).toBe(true)
+    const context = asRecord((JSON.parse(result.content) as Record<string, unknown>).context)
+    // GEMINI.md 已在，不重复；用户自己的条目原样保留，AGENTS.md 补在末尾。
+    expect(context?.fileName).toEqual(['docs/RULES.md', 'GEMINI.md', 'AGENTS.md'])
+  })
+
+  it('upgrades a single string value to a list without losing it', () => {
+    const result = ensureGeminiContextFilenamesInSettingsText(JSON.stringify({ context: { fileName: 'GEMINI.md' } }))
+    expect(result.changed).toBe(true)
+    const context = asRecord((JSON.parse(result.content) as Record<string, unknown>).context)
+    expect(context?.fileName).toEqual(['GEMINI.md', 'AGENTS.md'])
+  })
+
+  it('does nothing when both context files are already listed', () => {
+    const existing = JSON.stringify({ context: { fileName: ['AGENTS.md', 'GEMINI.md', 'CLAUDE.md'] } })
+    const result = ensureGeminiContextFilenamesInSettingsText(existing)
+    expect(result.changed).toBe(false)
+  })
+
+  it('leaves an unreadable context.fileName shape untouched', () => {
+    const result = ensureGeminiContextFilenamesInSettingsText(JSON.stringify({ context: { fileName: { a: 1 } } }))
+    expect(result.changed).toBe(false)
+    const context = asRecord((JSON.parse(result.content) as Record<string, unknown>).context)
+    expect(context?.fileName).toEqual({ a: 1 })
+  })
+
+  it('writes the settings.json transaction only once and keeps other settings', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const settingsPath = path.join(home, '.gemini', 'settings.json')
+    fs.mkdirSync(path.dirname(settingsPath), { recursive: true })
+    fs.writeFileSync(settingsPath, JSON.stringify({ theme: 'Dark', security: { auth: { selectedType: 'gemini-api-key' } } }), 'utf8')
+
+    const result = ensureGeminiProjectContextFiles(roots)
+    expect(result.changed).toBe(true)
+    const written = JSON.parse(fs.readFileSync(settingsPath, 'utf8')) as Record<string, unknown>
+    expect(written.theme).toBe('Dark')
+    expect(asRecord(asRecord(written.security)?.auth)?.selectedType).toBe('gemini-api-key')
+    expect(asRecord(written.context)?.fileName).toEqual(['GEMINI.md', 'AGENTS.md'])
+
+    const again = ensureGeminiProjectContextFiles(roots)
+    expect(again.changed).toBe(false)
+    expect(again.backups).toEqual([])
   })
 })

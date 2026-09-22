@@ -29,6 +29,7 @@
 .v2-balance-body > div:first-child { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; }
 .v2-balance-body > div:first-child > .xm-btn { margin-left: auto; }
 .v2-balance-error { color: var(--warn); font-size: var(--font-small); }
+.v2-tool-external-note { color: var(--text-3); font-size: var(--font-small); text-align: right; overflow: hidden; text-overflow: ellipsis; }
 .v2-balance-body.tone-ok strong { color: var(--ok); }
 .v2-balance-body.tone-warn strong { color: var(--warn); }
 .v2-balance-body.tone-bad strong { color: var(--bad); }

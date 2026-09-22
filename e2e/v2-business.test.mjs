@@ -447,6 +447,19 @@ test('records page resumes the most recent conversation in the folder on the row
   }
 })
 
+// 续接参数是 CLI 自己按目录找最近一条,所以同一个工具、同一个目录只有最近的
+// 那条能给按钮:否则用户点第三条、接上的却是第一条。
+test('only the most recent record of a folder offers to resume it', async () => {
+  const page = await fixture('page=sessions&sameFolder=1')
+  try {
+    await page.getByTestId('sessions-row-codex:session-0').waitFor()
+    assert.equal(await page.getByTestId('sessions-resume-codex:session-1').count(), 1)
+    assert.equal(await page.getByTestId('sessions-resume-codex:session-0').count(), 0)
+  } finally {
+    await page.close()
+  }
+})
+
 test('session detail exposes a retry action after a temporary read failure', async () => {
   const page = await fixture('page=sessions&detailFailure=1')
   try {

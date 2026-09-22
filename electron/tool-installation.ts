@@ -29,6 +29,15 @@ import type { WindowsCliExecutionMode } from './windows-elevation'
 
 export type CliInstallSource = 'npm' | 'native'
 
+/**
+ * How the install should be described to the user. Both `native` and `path`
+ * map onto the internal `source: 'native'` (anything found without an npm
+ * package root); they are split apart by whether the executable sits in an
+ * official native-installer directory, so the home page can say "官方安装器"
+ * for one and "其他来源" for the other.
+ */
+export type CliInstallDisplaySource = 'npm' | 'native' | 'path'
+
 export interface CliUninstallCapability {
   available: boolean
   reason: string | null
@@ -295,17 +304,50 @@ function verifiedPackageFile(packageRoot: string, relativePath: string): string 
   }
 }
 
+/**
+ * Bin directories where the official native installers drop their launcher,
+ * probed on top of PATH so a native install is still recognized when its
+ * directory never made it onto PATH.
+ *
+ * - Claude Code's native installer puts the launcher at `~/.local/bin/claude`
+ *   (`%USERPROFILE%\.local\bin\claude.exe` on Windows). The Windows installer
+ *   has repeatedly shipped without adding that folder to the user PATH
+ *   (anthropics/claude-code #21365, #86144), so PATH alone misses it.
+ * - Codex's standalone installer puts the wrapper at `~/.local/bin/codex`; the
+ *   real binary lives under `~/.codex/packages/standalone/current`
+ *   (openai/codex #17022, #24035). The wrapper is the user-facing entry point,
+ *   so probing the bin directory is enough.
+ *
+ * Only the launcher directory is listed; resolveCliInstallation still classifies
+ * whatever it finds there. Paths sourced from the official install scripts, which
+ * are unreachable from CI — see docs/CLI-NATIVE-INSTALLS.md.
+ */
+export function nativeInstallBinDirectories(
+  env: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform,
+): string[] {
+  const home = (platform === 'win32' ? env.USERPROFILE : env.HOME)?.trim()
+    || os.homedir()
+  if (!home) return []
+  return uniquePaths([path.join(home, '.local', 'bin')], platform)
+}
+
 function commandCandidates(
   command: string,
   env: NodeJS.ProcessEnv,
   platform: NodeJS.Platform,
   explicitPath?: string | null,
+  extraDirectories: readonly string[] = [],
 ): string[] {
   const extensions = platform === 'win32'
     ? ['.cmd', '.exe', '.com', '']
     : ['']
   const candidates = [explicitPath]
-  for (const directory of (env.PATH ?? '').split(path.delimiter).filter(Boolean)) {
+  const directories = [
+    ...(env.PATH ?? '').split(path.delimiter).filter(Boolean),
+    ...extraDirectories,
+  ]
+  for (const directory of directories) {
     for (const extension of extensions) {
       const candidate = path.join(directory, `${command}${extension}`)
       if (isFile(candidate)) candidates.push(candidate)
@@ -460,6 +502,7 @@ export async function resolveCliInstallation(
     env,
     platform,
     options.executablePath,
+    nativeInstallBinDirectories(env, platform),
   )
   if (!commands.length) return null
 
@@ -505,6 +548,25 @@ export async function resolveCliInstallation(
     packageVersion: null,
     source: 'native',
   }
+}
+
+/**
+ * Classify a resolved installation for display. `npm` passes through; a non-npm
+ * install is `native` when its launcher lives in an official native-installer
+ * directory and `path` otherwise (some other executable found on PATH).
+ */
+export function classifyCliInstallDisplaySource(
+  installation: CliInstallation,
+  options: { env?: NodeJS.ProcessEnv; platform?: NodeJS.Platform } = {},
+): CliInstallDisplaySource {
+  if (installation.source === 'npm') return 'npm'
+  const platform = options.platform ?? process.platform
+  const env = commandEnvironment(options.env ?? process.env)
+  const commandDirectory = path.dirname(installation.commandPath)
+  const inNativeDirectory = nativeInstallBinDirectories(env, platform).some(
+    (directory) => equivalentPath(directory, commandDirectory, platform),
+  )
+  return inNativeDirectory ? 'native' : 'path'
 }
 
 function packageBinPath(packageRoot: string, provider: ProviderId): string | null {

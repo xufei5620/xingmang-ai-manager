@@ -40,6 +40,7 @@ import {
   canLaunchManagedProvider,
   geminiCliCompatibleModel,
   ensureCodexPermissionDefaults,
+  ensureGeminiProjectContextFiles,
   inspectCodexWorkspacePermissions,
   inspectProviderConfig,
   managedProviderLaunchBlockedMessage,
@@ -55,6 +56,10 @@ import {
   type NativeConfigSummary,
 } from './config-files'
 import {
+  ensureProjectInstructions,
+  readProjectInstructionsTemplate,
+} from './project-instructions'
+import {
   fetchOfficialChatGptUsage,
   type OfficialChatGptAccount,
   type OfficialChatGptWindow,
@@ -62,6 +67,7 @@ import {
 import { parseModelIds } from './models'
 import { describeProbeFailure } from './probe-failure'
 import {
+  classifyCliInstallDisplaySource,
   cliLaunchArgv,
   cliUninstallCapability,
   findNpmExecutable,
@@ -69,6 +75,7 @@ import {
   resolveCliInstallation,
   resolveNpmGlobalRoot,
   type CliInstallation,
+  type CliInstallDisplaySource,
   type CliLaunchMode,
   type CliUninstallCapability,
 } from './tool-installation'
@@ -216,6 +223,12 @@ export interface ToolStatus {
    */
   detectionFailed?: boolean
   detectionError?: string | null
+  /**
+   * 这次安装是怎么装上的：npm 全局包（npm）、官方原生安装器（native）、或 PATH
+   * 上的其他来源（path）。未装、探测失败、或非 CLI 工具（运行环境、桌面端）时为
+   * undefined，渲染层此时退回中性的「已安装」。
+   */
+  installSource?: CliInstallDisplaySource
 }
 
 export interface CliStatus extends ToolStatus {
@@ -1782,6 +1795,8 @@ export interface SystemServiceOptions {
   resolveSubprocessProxyEnvironment?: () => Promise<NodeJS.ProcessEnv>
   /** runtime.jsonl sink for steps that are allowed to fail without blocking. */
   runtimeLog?: RuntimeLogLike
+  /** 随包的中文 AGENTS.md 模板路径；缺省则打开目录时不生成项目说明。 */
+  projectInstructionsTemplatePath?: string
 }
 
 export function providerCommandEnvironment(
@@ -2030,6 +2045,15 @@ export function createSystemService(
         // Reading an npm package manifest avoids unnecessary CLI execution and
         // remains safe even when the app was manually started as administrator.
         version,
+        // Grok 的安装/更新走原生通道（非 npm），首页对它保留朴素的「已安装」与既有
+        // 更新按钮，不做来源标注；其余三个 CLI 的安装通道是 npm，标注来源后原生/其他
+        // 来源装的那份才好挡住 npm 重装。
+        installSource: provider === 'grok'
+          ? undefined
+          : classifyCliInstallDisplaySource(installation, {
+              env: cliEnvironment,
+              platform,
+            }),
         path: installation.source === 'native'
           ? provider === 'grok'
             ? installation.commandPath
@@ -3423,6 +3447,44 @@ export function createSystemService(
         provider,
         reason: redactHomeDirectory(reason, providerRoots.userHome),
       })
+    }
+    // 目录里三种项目说明文件（CLAUDE.md / AGENTS.md / GEMINI.md）一个都没有时，
+    // 放一份中文 AGENTS.md，三个工具打开这个目录都会读它。绝不覆盖已有文件；
+    // 写不进去（磁盘满、只读、目录被重定向）绝不能挡住打开。
+    if (serviceOptions.projectInstructionsTemplatePath) {
+      try {
+        const template = readProjectInstructionsTemplate(serviceOptions.projectInstructionsTemplatePath)
+        const result = await ensureProjectInstructions({ workspace, template })
+        if (result.created) {
+          runtimeLog?.log('info', 'config', 'project-instructions.created', `${definition.name} 已为工作目录生成 AGENTS.md`, {
+            provider,
+          })
+        }
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error)
+        runtimeLog?.log('warn', 'config', 'project-instructions.failed', `${definition.name} 未能生成项目说明，将不影响打开`, {
+          provider,
+          reason: redactHomeDirectory(reason, providerRoots.userHome),
+        })
+      }
+    }
+    // Gemini CLI 默认只把 GEMINI.md 当项目说明，得在用户级 settings.json 里把
+    // AGENTS.md 一起加进 context.fileName，它才会读到上面生成的那份。只补不删。
+    if (provider === 'gemini') {
+      try {
+        const written = ensureGeminiProjectContextFiles(providerRoots)
+        if (written.changed) {
+          runtimeLog?.log('info', 'config', 'gemini.context-files.written', 'Gemini CLI 已配置为读取 AGENTS.md', {
+            provider,
+          })
+        }
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error)
+        runtimeLog?.log('warn', 'config', 'gemini.context-files.failed', 'Gemini CLI 项目说明配置未写入，将不影响打开', {
+          provider,
+          reason: redactHomeDirectory(reason, providerRoots.userHome),
+        })
+      }
     }
     const providerEnv = providerEnvironment(provider)
     if (provider === 'gemini') {
