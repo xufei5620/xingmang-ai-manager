@@ -1,4 +1,4 @@
-import { providerIds, type AppConfigSummary, type ConnectionCheckLayer, type ConnectionCheckResult, type ProviderId } from '../../../../electron/ipc-contract'
+import { providerIds, type AppConfigSummary, type ConnectionCheckLayer, type ConnectionProbeReport, type ProviderId } from '../../../../electron/ipc-contract'
 import type { PageId } from '../../registry/pages'
 import { sourceFor } from './model'
 import { getSourceMarkerStorage, type SourceMarkerStorage } from './source-marker'
@@ -76,8 +76,13 @@ export interface ConnectionCheckView {
   action: 'rewrite-key' | null
 }
 
+/**
+ * 结果条的渲染只认结论，不认身份：四个 CLI 与三个外部客户端的结论是同一种
+ * 形状（electron/connection-check.ts 的 ConnectionProbeReport），所以这里收
+ * ConnectionProbeReport 而不是 ConnectionCheckResult，两条路永远长一个样。
+ */
 export function connectionCheckView(
-  result: ConnectionCheckResult,
+  result: ConnectionProbeReport,
   options: { canRewriteKey?: boolean } = {},
 ): ConnectionCheckView {
   if (result.ok) {

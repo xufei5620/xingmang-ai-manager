@@ -177,7 +177,8 @@ import {
 } from './external-tool-config'
 import type { ExternalClientConfigResult, ExternalClientStatus, ExternalClientRuntimeStatus } from './external-client-contract'
 import { createExternalClientRuntime } from './external-client-runtime'
-import { inspectExternalToolConnection } from './external-tool-config'
+import { inspectExternalToolConnection, resolveExternalToolProbeCredential, type ExternalToolProbeCredential } from './external-tool-config'
+import { runExternalClientCheck, type ExternalClientCheckResult } from './external-client-connection'
 import { createClaudeDesktopConfigService } from './claude-desktop-config'
 import { resolveClaudeDesktopPaths } from './claude-desktop-paths'
 import { inspectClaudeDesktopStoreVirtualization } from './claude-desktop-manifest'
@@ -759,6 +760,16 @@ export interface SystemService {
   fetchAvailableModels(apiKey: string, options?: { bypassCache?: boolean }): Promise<string[]>
   configureExternalTool(tool: ExternalToolId, options: ExternalToolConfigOptions, assertBeforeWrite?: () => void): Promise<ExternalClientConfigResult>
   scanExternalClients(): Promise<ExternalClientStatus[]>
+  /** 上一次客户端检测留下的快照；反馈报告只读它，不为了生成报告再探测一轮。 */
+  getLastExternalClients(): ExternalClientStatus[] | null
+  /**
+   * 外部客户端的连接自检：用它自己配置里那把密钥核对一次当前账号。
+   * knownStatus 是调用方手里已有的那份运行时检测结果，省掉一次机器盘点。
+   */
+  checkExternalClientConnection(
+    tool: ExternalToolId,
+    knownStatus?: ExternalClientRuntimeStatus | null,
+  ): Promise<ExternalClientCheckResult>
   installExternalClient(tool: ExternalToolId, target: RendererMessageTarget): Promise<ExternalClientStatus>
   launchExternalClient(tool: ExternalToolId): Promise<void>
   /** 安装队列当前的状态，退出前判断有没有安装正在跑时用。 */
@@ -4168,6 +4179,7 @@ export function createSystemService(
   }
 
   let externalConfigQueue: Promise<unknown> = Promise.resolve()
+  let latestExternalClients: ExternalClientStatus[] | null = null
   async function claudeDesktopConfig(status: ExternalClientRuntimeStatus, assertBeforeWrite?: () => void) {
     if (status.detectionError) throw new Error('Claude Desktop 安装位置无法确认，请重新检测')
     const env = serviceOptions.claudeDesktopEnv ?? (providerRoots.userHome === os.homedir() ? process.env : {})
@@ -4183,14 +4195,23 @@ export function createSystemService(
       assertUnmanaged: serviceOptions.assertClaudeDesktopUnmanaged ?? (() => assertClaudeDesktopUnmanaged({ platform, userHome: providerRoots.userHome })),
     })
   }
-  async function describeExternalClient(status: ExternalClientRuntimeStatus): Promise<ExternalClientStatus> {
+  /**
+   * 「这个客户端该对哪个地址、用谁的账号对账」只算一次：检测、连接自检与保存
+   * 后的复测读的必须是同一份，否则换过站点或换过账号的用户会在三处拿到三种
+   * 说法。
+   */
+  function externalClientContext(tool: ExternalToolId) {
     const activeSite = resolveRelaySite(serviceOptions.getRelaySiteId?.() ?? store.read().relaySiteId)
     const owner = serviceOptions.getExternalClientAccountId?.() ?? null
-    const baseUrl = status.tool === 'claudeDesktop' ? activeSite.providerBaseUrls.claude : activeSite.providerBaseUrls.codex
+    const baseUrl = tool === 'claudeDesktop' ? activeSite.providerBaseUrls.claude : activeSite.providerBaseUrls.codex
     const belongsToCurrentAccount = (apiKey: string) => owner !== null
       && serviceOptions.getExternalClientAccountId?.() === owner
       && resolveRelaySite(serviceOptions.getRelaySiteId?.() ?? store.read().relaySiteId).id === activeSite.id
-      && externalOwnership.matches(status.tool, owner, baseUrl, apiKey)
+      && externalOwnership.matches(tool, owner, baseUrl, apiKey)
+    return { activeSite, baseUrl, belongsToCurrentAccount }
+  }
+  async function describeExternalClient(status: ExternalClientRuntimeStatus): Promise<ExternalClientStatus> {
+    const { baseUrl, belongsToCurrentAccount } = externalClientContext(status.tool)
     if (status.tool === 'claudeDesktop') {
       try {
         return { ...status, ...await (await claudeDesktopConfig(status)).inspectConnection(baseUrl, belongsToCurrentAccount) }
@@ -4207,8 +4228,69 @@ export function createSystemService(
       userHome: providerRoots.userHome, configHome: xdgConfig || path.join(providerRoots.userHome, '.config'),
     }, baseUrl, belongsToCurrentAccount) }
   }
+  /**
+   * 客户端配置里那把密钥。**只在主进程内部用**：它要被拿去发一次真实请求，
+   * 永远不跨 IPC（I3）。取不出来（没配、不是当前账号写的、文件读不了）一律
+   * 回 null，由调用方按「未配置 / 本地配置」去说。
+   */
+  async function externalClientProbeCredential(
+    status: ExternalClientRuntimeStatus,
+    baseUrl: string,
+    belongsToCurrentAccount: (apiKey: string) => boolean,
+  ): Promise<ExternalToolProbeCredential | null> {
+    try {
+      if (status.tool === 'claudeDesktop') {
+        return await (await claudeDesktopConfig(status)).inspectGatewayCredential(baseUrl, belongsToCurrentAccount)
+      }
+      const xdgConfig = providerRoots.userHome === os.homedir() ? process.env.XDG_CONFIG_HOME : undefined
+      if (xdgConfig && !path.isAbsolute(xdgConfig)) return null
+      const externalPlatform = platform === 'win32' || platform === 'darwin' ? platform : 'linux'
+      return resolveExternalToolProbeCredential(status.tool, externalPlatform, {
+        userHome: providerRoots.userHome, configHome: xdgConfig || path.join(providerRoots.userHome, '.config'),
+      }, baseUrl, belongsToCurrentAccount)
+    } catch {
+      // 读不出来不是自检失败，是「本地配置」层的结论，由 describeExternalClient
+      // 那一份已经算出来的 configurationSource 去说。
+      return null
+    }
+  }
+  /**
+   * 外部客户端的连接自检。「检查」页与保存后的复测走同一条路，所以两处永远
+   * 给同一句结论。
+   */
+  async function checkExternalClientConnection(
+    tool: ExternalToolId,
+    knownStatus?: ExternalClientRuntimeStatus | null,
+  ): Promise<ExternalClientCheckResult> {
+    const { activeSite, baseUrl, belongsToCurrentAccount } = externalClientContext(tool)
+    // 装没装这件事只在 Windows 上要跑一轮 PowerShell 盘点。调用方手里已经有一份
+    // 时就用那份：保存配置之后顺手自检不该为此再盘点一次机器。
+    const status = knownStatus ?? (await externalClientRuntime.scan()).find((entry) => entry.tool === tool) ?? null
+    const described = status ? await describeExternalClient(status) : null
+    const credential = status && described?.configurationSource === 'xingmang'
+      ? await externalClientProbeCredential(status, baseUrl, belongsToCurrentAccount)
+      : null
+    return runExternalClientCheck({
+      tool,
+      installed: status?.installed === true,
+      baseUrl,
+      configurationSource: described?.configurationSource ?? 'unknown',
+      configurationError: described?.configurationError ?? null,
+      model: credential?.model ?? described?.model ?? null,
+      apiKey: credential?.apiKey ?? null,
+    }, activeSite.id, { fetch: serviceOptions.relayFetch })
+  }
   async function scanExternalClients(): Promise<ExternalClientStatus[]> {
-    return Promise.all((await externalClientRuntime.scan()).map(describeExternalClient))
+    const clients = await Promise.all((await externalClientRuntime.scan()).map(describeExternalClient))
+    // 反馈报告要答「客户端装没装、什么版本、配置指没指向当前账号」，而生成报告
+    // 时不该再发一轮探测（同 latestTraySystem 的取舍）。这份快照就是那一段的
+    // 数据源：只在用户自己点检测时更新。
+    latestExternalClients = clients
+    return clients
+  }
+  /** 反馈报告用的上一份客户端快照；还没检测过时为 null，那一段写「未能读取」。 */
+  function getLastExternalClients(): ExternalClientStatus[] | null {
+    return latestExternalClients
   }
   async function installExternalClient(tool: ExternalToolId, target: RendererMessageTarget): Promise<ExternalClientStatus> {
     const status = await externalClientRuntime.install(tool, (event) => {
@@ -4216,9 +4298,30 @@ export function createSystemService(
         try { target.send('external-clients:install-progress', event) } catch { /* Installation continues if the renderer exits. */ }
       }
     })
-    return describeExternalClient(status)
+    const described = await describeExternalClient(status)
+    // 就地替换而不是追加：这份快照的顺序就是反馈报告与界面读到的顺序。
+    latestExternalClients = latestExternalClients?.some((entry) => entry.tool === tool)
+      ? latestExternalClients.map((entry) => entry.tool === tool ? described : entry)
+      : [...(latestExternalClients ?? []), described]
+    return described
   }
   const launchExternalClient = (tool: ExternalToolId) => externalClientRuntime.launch(tool)
+  /**
+   * 保存之后立刻回读一遍并自检。这一步问出来的比保存时那次模型清单校验多两件
+   * 事：写下去的配置本机能不能原样读回来、读回来的那把密钥在客户端真正会打的
+   * 那个地址上还认不认。自检本身出岔子不该把「已经写成功了」变成失败，所以整
+   * 段吞掉异常，只是结果变成 null（界面照实说「这次没测成」）。
+   */
+  async function verifySavedExternalClient(
+    tool: ExternalToolId,
+    knownStatus?: ExternalClientRuntimeStatus | null,
+  ): Promise<ExternalClientCheckResult | null> {
+    try {
+      return await checkExternalClientConnection(tool, knownStatus)
+    } catch {
+      return null
+    }
+  }
   function configureExternalTool(
     tool: ExternalToolId,
     requested: ExternalToolConfigOptions,
@@ -4248,9 +4351,11 @@ export function createSystemService(
         const result = await gateway.saveGateway(input)
         assertContext()
         if (owner) await externalOwnership.write(tool, owner, activeSite.providerBaseUrls.claude, apiKey)
+        const connection = await verifySavedExternalClient(tool, status)
         return { tool, model, path: result.path, files: result.files, backups: result.backups,
           outcome: 'configured', message: result.warnings.join(' '),
-          restartRequired: result.restartRequired, connectionVerified: false }
+          restartRequired: result.restartRequired,
+          connectionVerified: connection?.ok === true, connection }
       }
       const externalPlatform = platform === 'win32' || platform === 'darwin' || platform === 'linux' ? platform : 'linux'
       const xdgConfig = providerRoots.userHome === os.homedir() ? process.env.XDG_CONFIG_HOME : undefined
@@ -4262,10 +4367,12 @@ export function createSystemService(
       }, { beforeReplace: assertContext })
       assertContext()
       if (owner) await externalOwnership.write(tool, owner, activeSite.providerBaseUrls.codex, apiKey)
+      const connection = await verifySavedExternalClient(tool, latestExternalClients?.find((entry) => entry.tool === tool))
       return { tool, model, path: result.path, files: result.files, backups: result.backups, outcome: 'configured',
-        message: tool === 'workbuddy' ? '配置已写入 WorkBuddy 桌面端。重新进入“设置 → 模型”选择此模型；列表未刷新时请重启 WorkBuddy。未验证实际模型调用。'
-          : '全局配置与默认模型已保存。重新打开 OpenCode 后使用；项目配置或环境变量可能覆盖全局设置，未验证实际模型调用。',
-        restartRequired: tool === 'opencode', connectionVerified: false }
+        message: tool === 'workbuddy' ? '配置已写入 WorkBuddy 桌面端。重新进入“设置 → 模型”选择此模型；列表未刷新时请重启 WorkBuddy。'
+          : '全局配置与默认模型已保存。重新打开 OpenCode 后使用；项目配置或环境变量可能覆盖全局设置。',
+        restartRequired: tool === 'opencode',
+        connectionVerified: connection?.ok === true, connection }
     }
     const task = externalConfigQueue.then(work, work)
     externalConfigQueue = task.catch(() => undefined)
@@ -4455,6 +4562,8 @@ export function createSystemService(
     fetchAvailableModels,
     configureExternalTool,
     scanExternalClients,
+    getLastExternalClients,
+    checkExternalClientConnection,
     installExternalClient,
     launchExternalClient,
     inspectInstallationQueue: () => installationQueue.snapshot(),

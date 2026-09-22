@@ -70,13 +70,7 @@ export type ConnectionProbeProtocol = 'anthropic-messages' | 'openai-models'
  * upstream body: `detail` is redacted, control-stripped and truncated the
  * same way new-api-client.ts treats upstream copy (I3/I13).
  */
-export interface ConnectionCheckResult {
-  provider: ProviderId
-  /**
-   * 当前 realm 的站点 id。**只给日志和客服排查用**：站点切换对用户是无感的
-   * (老板拍板)，所以界面文案里永远不出现站点名。
-   */
-  siteId: string
+export interface ConnectionProbeReport {
   ok: boolean
   layer: ConnectionCheckLayer
   /** 一句话结论，直接上屏。 */
@@ -99,10 +93,23 @@ export interface ConnectionCheckResult {
   checkedAt: string
 }
 
+/**
+ * 四个 CLI 的自检结果。身份是 provider；外部客户端走同一份结论形状，只是把
+ * 身份换成客户端 id（external-client-connection.ts），所以结论字段只定义一次。
+ */
+export interface ConnectionCheckResult extends ConnectionProbeReport {
+  provider: ProviderId
+  /**
+   * 当前 realm 的站点 id。**只给日志和客服排查用**：站点切换对用户是无感的
+   * (老板拍板)，所以界面文案里永远不出现站点名。
+   */
+  siteId: string
+}
+
 /** 主进程内部的探测计划。含 Key，永不跨 IPC。 */
 export interface ConnectionProbePlan {
-  provider: ProviderId
-  siteId: string
+  /** 工具显示名，只用来拼中文结论。CLI 与外部客户端的名字来源不同，所以由调用方给。 */
+  name: string
   protocol: ConnectionProbeProtocol
   method: 'GET' | 'POST'
   url: string
@@ -116,7 +123,7 @@ export interface ConnectionProbePlan {
 }
 
 /** classifyConnectionResponse 需要知道的探测身份，不含 Key。 */
-export type ConnectionProbeIdentity = Pick<ConnectionProbePlan, 'provider' | 'protocol' | 'model'>
+export type ConnectionProbeIdentity = Pick<ConnectionProbePlan, 'name' | 'protocol' | 'model'>
 
 interface LayerOutcome {
   layer: ConnectionCheckLayer
@@ -308,10 +315,23 @@ export function buildConnectionProbe(
     })
   }
   const model = wireModel(provider, inspection.model || defaultCliModels[provider])
-  const shape = probeShape(provider)
+  return planProbe(name, inspection.actualBaseUrl, probeShape(provider), model, inspection.apiKey)
+}
+
+/**
+ * 把「地址 + 形状 + Key」算成一次可发的请求。地址来自磁盘上的配置文件，本机的
+ * 攻击者改得动，所以每次都重新校验而不是相信它（validateProbeUrl）。
+ */
+function planProbe(
+  name: string,
+  baseUrl: string,
+  shape: ProbeShape,
+  model: string,
+  apiKey: string,
+): ConnectionProbeBuild {
   let url: URL
   try {
-    url = validateProbeUrl(joinRelayPath(inspection.actualBaseUrl, shape.path))
+    url = validateProbeUrl(joinRelayPath(baseUrl, shape.path))
   } catch (error) {
     return blocked({
       layer: 'config',
@@ -322,18 +342,31 @@ export function buildConnectionProbe(
   return {
     kind: 'probe',
     plan: {
-      provider,
-      siteId: site.id,
+      name,
       protocol: shape.protocol,
       method: shape.method,
       url: url.href,
       origin: url.origin,
-      headers: shape.headers(inspection.apiKey),
+      headers: shape.headers(apiKey),
       body: shape.body(model),
       model,
-      apiKey: inspection.apiKey,
+      apiKey,
     },
   }
+}
+
+/**
+ * 只读模型清单的探测计划，给外部客户端用（external-client-connection.ts）。
+ * 四个 CLI 与三个客户端共用同一段收发与归因，URL 拼法与校验也只有这一份。
+ */
+export function buildModelCatalogProbe(
+  name: string,
+  baseUrl: string,
+  relativePath: string,
+  model: string,
+  apiKey: string,
+): ConnectionProbeBuild {
+  return planProbe(name, baseUrl, modelCatalogShape(relativePath), model, apiKey)
 }
 
 export function sanitizeUpstreamDetail(value: string, secrets: readonly string[]): string {
@@ -386,7 +419,7 @@ export function classifyConnectionResponse(
   message: string,
   payload: unknown,
 ): LayerOutcome & { ok: boolean } {
-  const name = cliCatalog[probe.provider].name
+  const name = probe.name
   const model = probe.model
   const lowered = message.toLowerCase()
   const hasQuotaHint = includesAny(lowered, quotaHints)
@@ -586,25 +619,37 @@ export function classifyConnectionFailure(error: unknown): LayerOutcome & { ok: 
   }
 }
 
+/** runConnectionProbe 需要的注入点，与身份无关的那一半。 */
+export interface ConnectionProbeDependencies {
+  fetch?: typeof globalThis.fetch
+  timeoutMs?: number
+  maxResponseBytes?: number
+  now?: () => Date
+  /** Monotonic clock for durationMs; injectable so tests do not depend on wall time. */
+  elapsed?: () => number
+}
+
 /**
- * Sends one minimal real request with the key the CLI actually uses and
+ * Sends one minimal real request with the key the tool actually uses and
  * reports which layer answered. I10: timeout, response byte cap, manual
  * redirect handling with an outright rejection, and an https/origin check --
  * this request carries a paid API key, so a redirect must never be followed.
+ *
+ * 身份（provider 还是外部客户端）不在这里：CLI 与外部客户端的差别只在「Key、
+ * 地址、模型从哪来」，一旦算成 ConnectionProbeBuild，后面这段收发与归因就该
+ * 只有一份，否则两条路会慢慢长出两套结论。
  */
-export async function runConnectionCheck(
-  dependencies: ConnectionCheckDependencies,
-): Promise<ConnectionCheckResult> {
-  const { provider, site, inspection } = dependencies
+export async function runConnectionProbe(
+  build: ConnectionProbeBuild,
+  dependencies: ConnectionProbeDependencies = {},
+): Promise<ConnectionProbeReport> {
   const now = dependencies.now ?? (() => new Date())
   const elapsed = dependencies.elapsed ?? (() => Date.now())
   const startedAt = elapsed()
   const finish = (
     outcome: LayerOutcome & { ok?: boolean },
     extras: { endpoint?: string | null; model?: string | null; detail?: string | null; status?: number | null },
-  ): ConnectionCheckResult => ({
-    provider,
-    siteId: site.id,
+  ): ConnectionProbeReport => ({
     ok: outcome.ok ?? false,
     layer: outcome.layer,
     summary: outcome.summary,
@@ -618,7 +663,6 @@ export async function runConnectionCheck(
     checkedAt: now().toISOString(),
   })
 
-  const build = buildConnectionProbe(provider, site, inspection)
   if (build.kind === 'blocked') return finish(build.outcome, { model: build.model })
 
   const plan = build.plan
@@ -722,4 +766,16 @@ export async function runConnectionCheck(
   } finally {
     clearTimeout(timeout)
   }
+}
+
+/**
+ * 四个 CLI 的自检入口：算出探测计划、收发、再贴上身份。站点与 provider 只在
+ * 这一层出现，探测本身不认识它们。
+ */
+export async function runConnectionCheck(
+  dependencies: ConnectionCheckDependencies,
+): Promise<ConnectionCheckResult> {
+  const { provider, site, inspection } = dependencies
+  const report = await runConnectionProbe(buildConnectionProbe(provider, site, inspection), dependencies)
+  return { provider, siteId: site.id, ...report }
 }

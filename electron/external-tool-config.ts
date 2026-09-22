@@ -250,6 +250,21 @@ function mergeObjects(base: JsonObject, override: JsonObject): JsonObject {
   return merged
 }
 
+/**
+ * 连接自检要用客户端自己配置里那把密钥发一次请求，而对外的结论里永远不带它。
+ * 所以内部多算一层：inspectExternalTool 连密钥一起给出来，
+ * inspectExternalToolConnection 把它剥掉再跨 IPC（I3，同 toNativeConfigSummary）。
+ * 只有确认归属当前账号（configured）的那一条才给密钥。
+ */
+interface ExternalToolInspection extends ExternalClientConnectionStatus {
+  apiKey: string | null
+}
+
+export interface ExternalToolProbeCredential {
+  apiKey: string
+  model: string
+}
+
 /** Read only the effective global configuration; never return its key or URL. */
 export function inspectExternalToolConnection(
   tool: 'workbuddy' | 'opencode',
@@ -258,7 +273,33 @@ export function inspectExternalToolConnection(
   expectedBaseUrl: string,
   belongsToCurrentAccount?: (apiKey: string) => boolean,
 ): ExternalClientConnectionStatus {
-  const missing: ExternalClientConnectionStatus = { configured: false, model: null, configurationSource: 'missing', configurationError: null }
+  const { apiKey: _apiKey, ...status } = inspectExternalTool(tool, platform, rootsInput, expectedBaseUrl, belongsToCurrentAccount)
+  return status
+}
+
+/**
+ * 主进程内部专用：把已经确认属于当前账号的那条配置连同密钥交出来，供连接自检
+ * 发一次最小请求。**永不跨 IPC**。
+ */
+export function resolveExternalToolProbeCredential(
+  tool: 'workbuddy' | 'opencode',
+  platform: ExternalToolPlatform,
+  rootsInput: ExternalToolPathRoots,
+  expectedBaseUrl: string,
+  belongsToCurrentAccount?: (apiKey: string) => boolean,
+): ExternalToolProbeCredential | null {
+  const result = inspectExternalTool(tool, platform, rootsInput, expectedBaseUrl, belongsToCurrentAccount)
+  return result.configured && result.apiKey && result.model ? { apiKey: result.apiKey, model: result.model } : null
+}
+
+function inspectExternalTool(
+  tool: 'workbuddy' | 'opencode',
+  platform: ExternalToolPlatform,
+  rootsInput: ExternalToolPathRoots,
+  expectedBaseUrl: string,
+  belongsToCurrentAccount?: (apiKey: string) => boolean,
+): ExternalToolInspection {
+  const missing: ExternalToolInspection = { configured: false, model: null, configurationSource: 'missing', configurationError: null, apiKey: null }
   try {
     const defaultPath = externalToolConfigPath(tool, platform, rootsInput)
     const endpoint = expectedBaseUrl.replace(/\/+$/, '')
@@ -272,7 +313,7 @@ export function inspectExternalToolConnection(
       const selected = models.find((entry) => (!allowed?.length || allowed.includes(String(entry.id))) && isKey(entry.apiKey)
         && typeof entry.url === 'string' && entry.url.replace(/\/+$/, '') === `${endpoint}/chat/completions`
         && (!belongsToCurrentAccount || belongsToCurrentAccount(entry.apiKey as string)))
-      return selected ? { ...missing, configured: true, model: String(selected.id), configurationSource: 'xingmang' }
+      return selected ? { ...missing, configured: true, model: String(selected.id), configurationSource: 'xingmang', apiKey: String(selected.apiKey) }
         : { ...missing, model: models.length ? String(models[0].id) : null, configurationSource: models.length ? 'other' : 'missing' }
     }
     const files = ['config.json', 'opencode.json', 'opencode.jsonc'].map((name) => path.join(path.dirname(defaultPath), name))
@@ -299,7 +340,8 @@ export function inspectExternalToolConnection(
       && (!whitelist || whitelist.includes(model)) && !blacklist?.includes(model)
     const ready = allowed && isKey(options.apiKey) && typeof options.baseURL === 'string' && options.baseURL.replace(/\/+$/, '') === endpoint
       && (!belongsToCurrentAccount || belongsToCurrentAccount(options.apiKey as string))
-    return { ...missing, configured: ready, model, configurationSource: ready ? 'xingmang' : 'other' }
+    return { ...missing, configured: ready, model, configurationSource: ready ? 'xingmang' : 'other',
+      ...(ready ? { apiKey: String(options.apiKey) } : {}) }
   } catch {
     return { ...missing, configurationSource: 'unknown', configurationError: '客户端配置无法安全读取，请检查文件格式或权限后重新检测。' }
   }

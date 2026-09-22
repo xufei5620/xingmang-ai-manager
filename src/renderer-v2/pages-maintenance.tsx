@@ -73,6 +73,7 @@ import {
   updateLabels,
 } from './registry/business'
 import { tools } from './registry/tools'
+import { clientConnections } from './registry/clients'
 import { canUninstallTool } from './features/tools/model'
 import { ToolStatusMeta, ToolStatusReason } from './features/tools/ToolStatusMeta'
 import { connectionCheckView } from './features/tools/connection-check'
@@ -104,13 +105,21 @@ type RuntimeLog = Awaited<
 type Provider = Parameters<V2Bridge['installCli']>[0]
 type ConnectionCheck = Awaited<ReturnType<V2Bridge['checkProviderConnection']>>
 interface ConnectionRow {
-  provider: Provider
+  /** React key 与 testId 后缀：CLI 是 provider，外部客户端是它自己的 id。 */
+  id: string
   name: string
-  result: ConnectionCheck | null
+  /**
+   * 只有 CLI 能就地「重新写入 Key」。外部客户端的密钥是用户在配置对话框里自己
+   * 选的，本软件不替他重签，所以这一列对客户端是 null（见 docs/EXTERNAL-CLIENT-CONFIG.md）。
+   */
+  provider: Provider | null
+  result: ConnectionCheck | ExternalClientCheck | null
   error: string | null
 }
-// 展示顺序只有一套，以 registry/tools.ts 的数组次序为准（R-S11）。桌面端没有
-// 自己的 CLI 配置文件，自检无从下手，所以只取 CLI。
+type ExternalClientCheck = Awaited<ReturnType<V2Bridge['checkExternalClientConnection']>>
+// 展示顺序只有一套，以 registry/tools.ts 的数组次序为准（R-S11）。Codex 桌面端
+// 没有自己的配置文件，自检无从下手，所以这里只取 CLI；三个外部客户端各有自己的
+// 配置文件，跟在 CLI 后面（registry/clients.ts 的次序）。
 const connectionTools = tools.filter((tool): tool is typeof tool & { id: Provider } => tool.kind === 'cli')
 export type BusinessActions = {
   navigate?: (page: V2Page) => void
@@ -178,12 +187,13 @@ function ConnectionRowNotice({
         tone="bad"
         title={`${row.name} · 没测成`}
         body={row.error ?? '自检没能完成'}
-        testId={`health-connection-error-${row.provider}`}
+        testId={`health-connection-error-${row.id}`}
       />
     )
   }
   const view = connectionCheckView(row.result, { canRewriteKey: canRewriteKey === true && Boolean(onRewriteKey) })
   const target = view.target
+  const rewritable = view.action === 'rewrite-key' ? row.provider : null
   return (
     <Notice
       tone={view.tone}
@@ -201,12 +211,12 @@ function ConnectionRowNotice({
         </>
       }
       actions={
-        view.action === 'rewrite-key' ? (
+        rewritable ? (
           <Button
             size="sm"
             icon={KeyRound}
-            onClick={() => onRewriteKey?.(row.provider)}
-            testId={`health-connection-rewrite-${row.provider}`}
+            onClick={() => onRewriteKey?.(rewritable)}
+            testId={`health-connection-rewrite-${row.id}`}
           >
             重新写入 Key
           </Button>
@@ -216,14 +226,14 @@ function ConnectionRowNotice({
               size="sm"
               icon={Wrench}
               onClick={() => navigate?.(target)}
-              testId={`health-connection-fix-${row.provider}`}
+              testId={`health-connection-fix-${row.id}`}
             >
               去处理
             </Button>
           )
         )
       }
-      testId={`health-connection-result-${row.provider}`}
+      testId={`health-connection-result-${row.id}`}
     />
   )
 }
@@ -242,14 +252,27 @@ export function HealthPage({
   const [connections, setConnections] = useState<ConnectionRow[] | null>(null)
   const [connectionBusy, setConnectionBusy] = useState(false)
   const loadConnections = async () => {
-    // 一个工具失败不该把另外三个的结论吞掉，所以每个工具各自收口。
-    setConnections(await Promise.all(connectionTools.map(async (tool) => {
-      try {
-        return { provider: tool.id, name: tool.name, result: await api.checkProviderConnection(tool.id), error: null }
-      } catch (error) {
-        return { provider: tool.id, name: tool.name, result: null, error: errorMessage(error) }
-      }
-    })))
+    // 一个工具失败不该把别人的结论吞掉，所以每一条各自收口。
+    const [cliRows, clientRows] = await Promise.all([
+      Promise.all(connectionTools.map(async (tool): Promise<ConnectionRow> => {
+        try {
+          return { id: tool.id, provider: tool.id, name: tool.name, result: await api.checkProviderConnection(tool.id), error: null }
+        } catch (error) {
+          return { id: tool.id, provider: tool.id, name: tool.name, result: null, error: errorMessage(error) }
+        }
+      })),
+      Promise.all(clientConnections.map(async (client): Promise<ConnectionRow | null> => {
+        try {
+          const result = await api.checkExternalClientConnection(client.id)
+          // 没装这个客户端的用户不该在这一页上多看三行：那不是结论，是噪音。
+          // 装了但没配的仍然列出来，显示成中性的「未配置」。
+          return result.installed ? { id: client.id, provider: null, name: client.name, result, error: null } : null
+        } catch (error) {
+          return { id: client.id, provider: null, name: client.name, result: null, error: errorMessage(error) }
+        }
+      })),
+    ])
+    setConnections([...cliRows, ...clientRows.filter((row): row is ConnectionRow => row !== null)])
   }
   // Claude Code 的自检要花账上的几个 token，所以整组只在用户点按钮时跑一次，
   // 不跟着 diagnostics:run 走；其余三个工具走只读的模型清单，不产生花费。
@@ -306,7 +329,7 @@ export function HealthPage({
       <ResultNotice {...operation} />
       <Card
         title="连接自检"
-        meta="用每个工具配置里真正写着的密钥和模型各测一次；上面的检查只证明网络通，这一条证明你现在能用。"
+        meta="用每个工具配置里真正写着的密钥和模型各测一次；装好的外部客户端也一起测。上面的检查只证明网络通，这一条证明你现在能用。"
         actions={
           <Button
             icon={PlugZap}
@@ -321,16 +344,16 @@ export function HealthPage({
       >
         {connections?.map((row) => (
           <ConnectionRowNotice
-            key={row.provider}
+            key={row.id}
             row={row}
             navigate={navigate}
-            canRewriteKey={rewritableKeys?.includes(row.provider)}
+            canRewriteKey={row.provider !== null && rewritableKeys?.includes(row.provider)}
             onRewriteKey={onRewriteKey ? (provider) => void rewriteKey(provider) : undefined}
           />
         ))}
         {!connections && (
           <p className="v2-connection-note" data-testid="health-connection-idle">
-            还没有测过。点「测试连接」，会按工具分别给结论；失败时会直接说是网络、密钥、额度、分组还是模型的问题。
+            还没有测过。点「测试连接」，会按工具分别给结论；失败时会直接说是网络、密钥、额度、分组还是模型的问题。装好的 WorkBuddy、Claude Desktop、OpenCode 也会各测一条。
           </p>
         )}
       </Card>
