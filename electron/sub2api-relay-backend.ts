@@ -9,6 +9,7 @@ import type {
 } from './new-api-client'
 import { usageDateRange } from './usage-date-range'
 import { sub2ApiManagedCliKeyProfiles } from './catalog'
+import { managedKeyQuotaExhaustedMessage } from './account-key-quota'
 import { summarizeKeySecret } from './key-secret-summary'
 import { sub2ApiAnnouncementNotice } from './sub2api-announcements'
 import { parseRealmSavedAccount, RealmAccountError, type RealmSavedAccount } from './realm-account'
@@ -309,6 +310,9 @@ export function createSub2ApiRelayBackend(options: Sub2ApiRelayBackendOptions): 
     return key.status === 'active' && (!key.expiresAt || Date.parse(key.expiresAt) > now())
       && (!key.quota || key.quota > (key.quotaUsed ?? 0))
   }
+  function exhaustedCap(key: Sub2ApiKeySummary): boolean {
+    return key.quota > 0 && (key.status === 'quota_exhausted' || (key.quotaUsed ?? 0) >= key.quota)
+  }
   async function reveal(scope: Scope, key: Sub2ApiKeySummary): Promise<NewApiCliKeyResult> {
     return { id: Number(key.id), name: key.name, key: await call(scope, (saved, abort) => native.revealKey(saved, key.id, abort)) }
   }
@@ -473,8 +477,11 @@ export function createSub2ApiRelayBackend(options: Sub2ApiRelayBackendOptions): 
         const groupName = captured.group ?? sub2ApiManagedCliKeyProfiles.codex.group
         const name = keyName(captured.name ?? sub2ApiManagedCliKeyProfiles.codex.keyName)
         const group = await resolveGroup(scope, groupName)
-        const existing = (await allKeys(scope)).filter((key) => key.name === name && key.groupId === group.id && usable(key))
-          .sort((a, b) => Number(b.id) - Number(a.id))[0]
+        const sameName = (await allKeys(scope)).filter((key) => key.name === name && key.groupId === group.id)
+        const existing = sameName.filter(usable).sort((a, b) => Number(b.id) - Number(a.id))[0]
+        // A used-up per-key cap is a deliberate limit: a fresh unlimited key
+        // under the same name would silently lift it.
+        if (!existing && sameName.some(exhaustedCap)) throw new Error(managedKeyQuotaExhaustedMessage)
         const key = existing ?? await create(scope, { name, group: groupName, remainQuota: captured.remainQuota ?? 0,
           unlimitedQuota: captured.unlimitedQuota ?? true, expiredTime: captured.expiredTime ?? -1 }, group)
         return reveal(scope, key)
