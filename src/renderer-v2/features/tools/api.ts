@@ -172,6 +172,8 @@ export function createToolsApi(bridge: XingmangApi) {
     // 只打开工具自己的配置目录，不打开里面任何文件；Codex 桌面端与 Codex CLI
     // 共用一份配置，所以两行打开的是同一个文件夹。
     openConfigDirectory: (tool: ToolId) => bridge.openProviderConfigDirectory(providerFor(tool)),
+    // 只传会话 id：工作目录由主进程从记录里取并校验，渲染层不传任意路径。
+    openSessionDirectory: (sessionId: string) => bridge.openProviderSessionDirectory(sessionId),
     saveManual: (input: Parameters<XingmangApi['saveConfig']>[0]) => bridge.saveConfig(input),
     saveAccountKey: (input: Parameters<XingmangApi['saveConfigWithAccountKey']>[0]) => bridge.saveConfigWithAccountKey(input),
     configureManaged: (tool: ToolId, model?: string, mode: 'merge' | 'reset' = 'merge') => bridge.configureManagedCliKeys({

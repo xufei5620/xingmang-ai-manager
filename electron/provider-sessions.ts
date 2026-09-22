@@ -941,6 +941,21 @@ export class ProviderSessionsService {
     }
   }
 
+  /**
+   * 这条记录当时在哪个文件夹里跑的。「打开文件夹」只需要这一行路径，所以刻意
+   * 不走 detail()——那会把整份对话读出来。渲染层也刻意只传会话 id：路径由主进程
+   * 从记录里取，界面就没有办法让资源管理器去打开任意目录。
+   */
+  async resolveWorkspace(id: string): Promise<string> {
+    const provider = providerFromId(id)
+    if (provider === 'codex') {
+      const session = this.listCodexSessions().find((item) => item.id === id)
+      if (!session) throw new Error('未找到这条记录')
+      return session.cwd
+    }
+    return (await this.resolveExternalSummary(provider, id)).cwd
+  }
+
   async exportMarkdown(id: string, destinationPath: string): Promise<ProviderSessionExportResult> {
     const provider = providerFromId(id)
     if (provider === 'codex') {

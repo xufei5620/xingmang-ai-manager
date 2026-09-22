@@ -68,6 +68,7 @@ import type {
 } from './system-service'
 import { ensureSafeDataDirectory, writeAtomicSafeUtf8File } from './safe-local-data'
 import { assertOpenableConfigDirectory } from './config-directory'
+import { resolveOpenableSessionWorkspace } from './session-workspace'
 import { defaultProviderConfigRoots, providerConfigRoot, type ProviderConfigRoots } from './codex-home'
 import type { UpdateSnapshot, UpdaterService } from './updater'
 import {
@@ -1141,6 +1142,7 @@ const ipcOperationLabels: Readonly<Record<string, string>> = {
   'provider-sessions:list': 'AI 工具会话列表读取',
   'provider-sessions:detail': 'AI 工具会话详情读取',
   'provider-sessions:export': 'AI 工具会话导出',
+  'provider-sessions:open-directory': 'AI 工具会话工作目录打开',
   'settings:get': '应用设置读取',
   'settings:save': '应用设置保存',
   'diagnostics:run': '系统诊断',
@@ -1896,6 +1898,12 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     })
     if (result.canceled || !result.filePath) return null
     return options.providerSessionsService.exportMarkdown(id, result.filePath)
+  })
+  registerTrustedHandler('provider-sessions:open-directory', async (_event, sessionId: unknown) => {
+    const id = requiredString(sessionId, '会话 ID', 256)
+    const workspace = await options.providerSessionsService.resolveWorkspace(id)
+    await externalShell.openPath(await resolveOpenableSessionWorkspace(workspace))
+    return true
   })
   registerTrustedHandler('settings:get', () => service.readStoredConfig())
   registerTrustedHandler('settings:save', async (event, settings: unknown) => {

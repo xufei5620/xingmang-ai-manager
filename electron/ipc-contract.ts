@@ -633,6 +633,12 @@ export interface XingmangInvokeContract {
     [sessionId: string],
     MultiProviderSessionExportResult | null
   >
+  /** 入参只有会话 id：工作目录由主进程从记录里取，渲染层不传任意路径。 */
+  openProviderSessionDirectory: IpcInvokeDefinition<
+    'provider-sessions:open-directory',
+    [sessionId: string],
+    boolean
+  >
   getSettings: IpcInvokeDefinition<'settings:get', [], AppSettingsV2>
   saveSettings: IpcInvokeDefinition<'settings:save', [settings: AppSettingsV2Update], AppSettingsV2>
   runDiagnostics: IpcInvokeDefinition<'diagnostics:run', [], DiagnosticsReport>
@@ -982,6 +988,7 @@ export const ipcInvokeChannels = {
   listProviderSessions: 'provider-sessions:list',
   getProviderSessionDetail: 'provider-sessions:detail',
   exportProviderSession: 'provider-sessions:export',
+  openProviderSessionDirectory: 'provider-sessions:open-directory',
   getSettings: 'settings:get',
   saveSettings: 'settings:save',
   runDiagnostics: 'diagnostics:run',

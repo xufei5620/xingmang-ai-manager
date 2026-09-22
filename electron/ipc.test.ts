@@ -272,6 +272,7 @@ function register(
     list: vi.fn(),
     detail: vi.fn(),
     exportMarkdown: vi.fn(),
+    resolveWorkspace: vi.fn(),
   }
   const runtimeLog = {
     directory: runtimeLogDirectory,
@@ -4889,6 +4890,67 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       expect(service.fetchAvailableModels).not.toHaveBeenCalled()
       expect(service.saveConfig).not.toHaveBeenCalled()
     })
+  })
+})
+
+describe('provider-sessions:open-directory', () => {
+  const temporary: string[] = []
+
+  function workspace(): string {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-ipc-session-dir-'))
+    temporary.push(directory)
+    return directory
+  }
+
+  afterEach(() => {
+    while (temporary.length) fs.rmSync(temporary.pop()!, { recursive: true, force: true })
+  })
+
+  it('opens the folder the record was made in', async () => {
+    const directory = workspace()
+    const { providerSessionsService } = register()
+    providerSessionsService.resolveWorkspace.mockResolvedValue(directory)
+
+    await expect(electronMocks.handlers.get('provider-sessions:open-directory')!(trustedEvent(), 'claude:1'))
+      .resolves.toBe(true)
+
+    expect(providerSessionsService.resolveWorkspace.mock.calls).toEqual([['claude:1']])
+    expect(electronMocks.openPath.mock.calls).toEqual([[path.resolve(directory)]])
+  })
+
+  it('never hands the shell a path that is not a folder', async () => {
+    const directory = workspace()
+    const file = path.join(directory, 'payload.exe')
+    fs.writeFileSync(file, '')
+    const { providerSessionsService } = register()
+    providerSessionsService.resolveWorkspace.mockResolvedValue(file)
+
+    await expect(electronMocks.handlers.get('provider-sessions:open-directory')!(trustedEvent(), 'claude:1'))
+      .rejects.toThrow('不是文件夹')
+
+    expect(electronMocks.openPath).not.toHaveBeenCalled()
+  })
+
+  it('says the folder is gone instead of surfacing a raw error', async () => {
+    const directory = workspace()
+    const { providerSessionsService } = register()
+    providerSessionsService.resolveWorkspace.mockResolvedValue(path.join(directory, 'moved-away'))
+
+    await expect(electronMocks.handlers.get('provider-sessions:open-directory')!(trustedEvent(), 'claude:1'))
+      .rejects.toThrow('已经不在了')
+
+    expect(electronMocks.openPath).not.toHaveBeenCalled()
+  })
+
+  it('refuses a malformed session id before touching the disk', async () => {
+    const { providerSessionsService } = register()
+
+    for (const value of ['', 42, null]) {
+      await expect(electronMocks.handlers.get('provider-sessions:open-directory')!(trustedEvent(), value))
+        .rejects.toThrow('会话 ID')
+    }
+    expect(providerSessionsService.resolveWorkspace).not.toHaveBeenCalled()
+    expect(electronMocks.openPath).not.toHaveBeenCalled()
   })
 })
 
