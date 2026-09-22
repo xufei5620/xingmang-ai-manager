@@ -361,7 +361,7 @@ describe('native CLI configuration files', () => {
             ANTHROPIC_AUTH_TOKEN: 'sk-user-key',
             ANTHROPIC_BASE_URL: 'https://xm.solov.cc',
           },
-          permissions: { defaultMode: 'bypassPermissions' },
+          permissions: { defaultMode: 'bypassPermissions', deny: ['Artifact'] },
           model,
           effortLevel: 'medium',
           skipDangerousModePermissionPrompt: true,
@@ -451,6 +451,36 @@ describe('native CLI configuration files', () => {
     expect(merged.model).toBe('claude-sonnet-4-6')
     expect(merged.env.CUSTOM_TOKEN).toBe('preserved')
     expect(merged.customSetting).toEqual({ enabled: true })
+    expect(merged.permissions).toEqual({ defaultMode: 'bypassPermissions', deny: ['Artifact'] })
+  })
+
+  it('appends Artifact to an existing Claude deny list without touching the entries the user wrote', () => {
+    const home = temporaryHome()
+    const [settingsPath] = providerConfigPaths('claude', providerRoots(home))
+    fs.mkdirSync(path.dirname(settingsPath), { recursive: true })
+    fs.writeFileSync(settingsPath, `${JSON.stringify({
+      permissions: { defaultMode: 'acceptEdits', deny: ['Bash(rm:*)'], allow: ['Read'] },
+    }, null, 2)}\n`, 'utf8')
+
+    saveProviderConfig('claude', 'new-key', testModels.claude, 'merge', providerRoots(home), {}, providerBaseUrls)
+
+    const merged = JSON.parse(fs.readFileSync(settingsPath, 'utf8')) as Record<string, unknown>
+    expect(merged.permissions).toEqual({
+      defaultMode: 'acceptEdits',
+      deny: ['Bash(rm:*)', 'Artifact'],
+      allow: ['Read'],
+    })
+  })
+
+  it('does not duplicate Artifact when merging twice over a Claude config', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    saveProviderConfig('claude', 'old-key', testModels.claude, 'reset', roots, {}, providerBaseUrls)
+    saveProviderConfig('claude', 'new-key', testModels.claude, 'merge', roots, {}, providerBaseUrls)
+
+    const [settingsPath] = providerConfigPaths('claude', roots)
+    const merged = JSON.parse(fs.readFileSync(settingsPath, 'utf8')) as Record<string, unknown>
+    expect(asRecord(merged.permissions)?.deny).toEqual(['Artifact'])
   })
 
   it('restores Gemini API-key auth mode when merging over an OAuth config', () => {
@@ -1281,6 +1311,29 @@ describe('switching a provider back to the official subscription account', () =>
     expect(afterEnv.MY_OWN_VARIABLE).toBe('keep-me')
     // Claude 的订阅凭据在 .credentials.json / 钥匙串里,本模块从不触碰。
     expect(after.permissions).toBeDefined()
+    // Artifact 对 claude.ai 账号用户是有用的,切回官方来源要把这条 deny 撤掉。
+    expect(asRecord(after.permissions)?.deny).toBeUndefined()
+    expect(asRecord(after.permissions)?.defaultMode).toBe('bypassPermissions')
+  })
+
+  it('removes only Artifact from the Claude deny list when switching to the official account', () => {
+    const home = temporaryHome()
+    saveProviderConfig('claude', 'sk-relay', testModels.claude, 'reset', providerRoots(home), {}, providerBaseUrls)
+    const [configPath] = providerConfigPaths('claude', providerRoots(home))
+    const seeded = JSON.parse(fs.readFileSync(configPath, 'utf8')) as Record<string, unknown>
+    const permissions = seeded.permissions as Record<string, unknown>
+    permissions.deny = ['Bash(curl:*)', 'Artifact', 'WebFetch']
+    permissions.allow = ['Read']
+    fs.writeFileSync(configPath, JSON.stringify(seeded, null, 2))
+
+    switchProviderToOfficialAccount('claude', providerRoots(home), {}, providerBaseUrls)
+
+    const after = JSON.parse(fs.readFileSync(configPath, 'utf8')) as Record<string, unknown>
+    expect(asRecord(after.permissions)).toEqual({
+      defaultMode: 'bypassPermissions',
+      deny: ['Bash(curl:*)', 'WebFetch'],
+      allow: ['Read'],
+    })
   })
 
   it('switches Gemini back to Google OAuth and strips its three relay env entries, keeping the rest of .env', () => {

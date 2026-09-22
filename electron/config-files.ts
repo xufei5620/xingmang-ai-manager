@@ -231,6 +231,41 @@ function ensureRecord(parent: Record<string, unknown>, key: string): Record<stri
   return created
 }
 
+// Claude Code 的 Artifact 工具只对 claude.ai 账号有用：它把结果发布成 claude.ai 上的
+// 链接，走中转 API Key 的客户点开是空的。更要紧的是，2.1.265~2.1.268 那次「每轮请求
+// 400」的载体正是这个工具——上游 2.1.268 的修复原文说，是它输入 schema 里的一段正则
+// 被第三方 Anthropic 兼容端点拒绝。沙箱实测（2.1.277）确认 permissions.deny 是把工具
+// 定义整条从请求体的 tools 里摘掉，而不是只拦执行，所以这条 deny 能挡住同一类 schema
+// 故障，是版本名单之外的第二道保险。
+const claudeDeniedRelayTool = 'Artifact'
+
+/**
+ * 把 Artifact 追加进 permissions.deny（已有就不重复）。用户自己写的其他 deny 项与
+ * permissions 下的其他键原样保留；deny 不是数组时按「缺省」处理，重建成数组。
+ */
+function denyClaudeRelayTool(permissions: Record<string, unknown>): void {
+  const current = permissions.deny
+  const existing = Array.isArray(current) ? current : []
+  if (existing.includes(claudeDeniedRelayTool)) return
+  permissions.deny = [...existing, claudeDeniedRelayTool]
+}
+
+/**
+ * 切回官方 Claude 账号时只摘掉 Artifact 这一项：Artifact 对 claude.ai 账号用户是有用
+ * 的。其他 deny 项保留，deny 变空则连键一起删掉，避免留下空数组。
+ */
+function allowClaudeRelayTool(parsed: Record<string, unknown>): void {
+  const permissions = parsed.permissions
+  if (!permissions || typeof permissions !== 'object' || Array.isArray(permissions)) return
+  const record = permissions as Record<string, unknown>
+  const current = record.deny
+  if (!Array.isArray(current)) return
+  const kept = current.filter((entry) => entry !== claudeDeniedRelayTool)
+  if (kept.length === current.length) return
+  if (kept.length === 0) delete record.deny
+  else record.deny = kept
+}
+
 function nestedString(source: Record<string, unknown> | null, keys: string[]): string {
   let current: unknown = source
   for (const key of keys) {
@@ -1134,7 +1169,7 @@ function createPlans(
             ANTHROPIC_AUTH_TOKEN: apiKey,
             ANTHROPIC_BASE_URL: siteBaseUrls.claude,
           },
-          permissions: { defaultMode: 'bypassPermissions' },
+          permissions: { defaultMode: 'bypassPermissions', deny: [claudeDeniedRelayTool] },
           model,
           effortLevel: 'medium',
           skipDangerousModePermissionPrompt: true,
@@ -1210,6 +1245,7 @@ function createMergePlans(
       const env = ensureRecord(parsed, 'env')
       env.ANTHROPIC_AUTH_TOKEN = apiKey
       env.ANTHROPIC_BASE_URL = siteBaseUrls.claude
+      denyClaudeRelayTool(ensureRecord(parsed, 'permissions'))
       parsed.model = model
       return [{ path: paths[0], content: jsonContent(parsed) }]
     }
@@ -1776,6 +1812,7 @@ function createOfficialAccountPlans(
         delete envRecord.ANTHROPIC_BASE_URL
         if (Object.keys(envRecord).length === 0) delete parsed.env
       }
+      allowClaudeRelayTool(parsed)
       delete parsed.model
       return [{ path: paths[0], content: jsonContent(parsed) }]
     }
