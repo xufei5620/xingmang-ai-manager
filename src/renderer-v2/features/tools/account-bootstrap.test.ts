@@ -12,6 +12,7 @@ import {
   configurationFailureMessages,
   type AccountBootstrapBridge,
 } from './account-bootstrap'
+import { networkFailureMessages } from '../../../../electron/network-failure'
 import {
   readManualSourceMarker,
   sourceMarkerWriteWarning,
@@ -121,6 +122,71 @@ describe('account managed Key bootstrap', () => {
         ),
       ).toBe(false)
     }
+  })
+
+  it.each([
+    // 断网时 syncManagedCliKeys 本身不抛：每个工具各记一条签发失败，所以「这次是不是
+    // 被网络拦住」只能从这些逐条消息里读出来。
+    ['every key provisioning failed on the network', networkFailureMessages.offline, true],
+    ['the key was rejected by the account service', '当前账号的密钥已失效（401）', false],
+  ] as const)('reports networkBlocked when %s', async (_name, failureMessage, expected) => {
+    const current = config()
+    const api: AccountBootstrapBridge = {
+      getAccountSession: vi.fn(async () => ({ authenticated: true, account: { userId: 17, username: 'member', quota: 0, usedQuota: 0, group: 'default', role: 1 } })),
+      syncManagedCliKeys: vi.fn(async () => ({ ready: [], failed: [{ provider: 'claude' as ProviderId, group: 'group', message: `CLI Key 初始化失败：${failureMessage}` }] })),
+      scanSystem: vi.fn(async () => system(['claude'])),
+      getSettings: vi.fn(async () => settings),
+      getConfig: vi.fn(async () => structuredClone(current)),
+      configureManagedCliKeys: vi.fn(async () => ({ configured: [], failed: [{ provider: 'claude' as ProviderId, message: failureMessage }] })),
+    }
+
+    const result = await bootstrapAccountTools(api, 17, undefined, 'restore', undefined, memoryStorage())
+
+    expect(result.configured).toEqual([])
+    expect(result.networkBlocked).toBe(expected)
+  })
+
+  it('does not report networkBlocked when a non-network warning rides along with a network failure', async () => {
+    const current = config()
+    const api: AccountBootstrapBridge = {
+      getAccountSession: vi.fn(async () => ({ authenticated: true, account: { userId: 17, username: 'member', quota: 0, usedQuota: 0, group: 'default', role: 1 } })),
+      syncManagedCliKeys: vi.fn(async () => ({
+        ready: [],
+        failed: [
+          { provider: 'claude' as ProviderId, group: 'group', message: networkFailureMessages.dns },
+          { provider: 'codex' as ProviderId, group: 'group', message: '当前分组未返回可用模型' },
+        ],
+      })),
+      scanSystem: vi.fn(async () => system(['claude'])),
+      getSettings: vi.fn(async () => settings),
+      getConfig: vi.fn(async () => structuredClone(current)),
+      configureManagedCliKeys: vi.fn(async () => ({ configured: [], failed: [{ provider: 'claude' as ProviderId, message: networkFailureMessages.dns }] })),
+    }
+
+    await expect(
+      bootstrapAccountTools(api, 17, undefined, 'restore', undefined, memoryStorage()),
+    ).resolves.toMatchObject({ networkBlocked: false })
+  })
+
+  it('reports no network block when everything is written', async () => {
+    const current = config()
+    const storage = memoryStorage()
+    const api: AccountBootstrapBridge = {
+      getAccountSession: vi.fn(async () => ({ authenticated: true, account: { userId: 17, username: 'member', quota: 0, usedQuota: 0, group: 'default', role: 1 } })),
+      syncManagedCliKeys: vi.fn(async () => ({ ready: [{ provider: 'claude' as ProviderId, group: 'group', name: 'claude' }], failed: [] })),
+      scanSystem: vi.fn(async () => system(['claude'])),
+      getSettings: vi.fn(async () => settings),
+      getConfig: vi.fn(async () => structuredClone(current)),
+      configureManagedCliKeys: vi.fn(async () => {
+        current.providers.claude = { ...current.providers.claude, exists: true, hasApiKey: true, matchesRelay: true,
+          actualBaseUrl: current.providers.claude.baseUrl, model: 'model', configurationOwnership: 'account' }
+        return { configured: ['claude' as ProviderId], failed: [] }
+      }),
+    }
+
+    await expect(
+      bootstrapAccountTools(api, 17, undefined, 'login', undefined, storage),
+    ).resolves.toMatchObject({ configured: ['claude'], networkBlocked: false })
   })
 
   it('protects marked manual relay keys during login and restore bootstrap', () => {

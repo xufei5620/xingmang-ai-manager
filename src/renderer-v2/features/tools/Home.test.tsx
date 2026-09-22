@@ -4,6 +4,8 @@ import { Home, type HomeProps } from './Home'
 import type { ToolboxSnapshot } from './model'
 import type { ToolboxPartitionFailure, ToolsApi } from './api'
 import type { ToolJob } from './useToolbox'
+import { networkFailureMessages } from '../../../../electron/network-failure'
+import type { AccountBootstrapResult } from './account-bootstrap'
 
 const cliStatus: Record<string, unknown> = {
   installed: true, version: '1.2.3', path: 'C:\\fixture\\bin', installDirectory: 'C:\\fixture',
@@ -235,5 +237,57 @@ describe('renderer-v2 home native install source', () => {
     const markup = render({}, { claude: npmClaude, codex: cliStatus, grok: cliStatus, gemini: cliStatus })
     expect(markup).toContain('>更新<')
     expect(markup).not.toContain('data-testid="tool-claude-external-managed"')
+  })
+})
+
+
+describe('renderer-v2 home account key bootstrap notice', () => {
+  function bootstrapResult(overrides: Partial<AccountBootstrapResult> = {}): AccountBootstrapResult {
+    return { readyKeys: [], configured: [], failed: [], skipped: [], warnings: [], networkBlocked: false, ...overrides }
+  }
+  const offline = '当前网络不可用，已装好的工具照常能用；联网后会自动补写 Key。'
+
+  it('tells the user the client will write the keys itself once the network returns', () => {
+    const markup = render({}, undefined, {
+      bootstrap: {
+        phase: 'verifying', label: 'Key 同步完成，部分工具待处理', percent: 100, scope: 'scope',
+        result: bootstrapResult({ networkBlocked: true, failed: [{ provider: 'claude', message: networkFailureMessages.offline }] }),
+      },
+      onBootstrapRetry: () => undefined,
+    })
+    expect(markup).toContain(offline)
+    // 「账号 Key 已同步」与一串网络失败原文同时出现过，自相矛盾，这里钉住它不再回来。
+    expect(markup).not.toContain('账号 Key 已同步')
+    expect(markup).toContain('>重新同步<')
+  })
+
+  it('keeps the original wording when the failure is not a network one', () => {
+    const markup = render({}, undefined, {
+      bootstrap: {
+        phase: 'verifying', label: 'Key 同步完成，部分工具待处理', percent: 100, scope: 'scope',
+        result: bootstrapResult({ failed: [{ provider: 'claude', message: '当前分组未返回可用模型' }] }),
+      },
+      onBootstrapRetry: () => undefined,
+    })
+    expect(markup).toContain('当前分组未返回可用模型')
+    expect(markup).not.toContain(offline)
+  })
+
+  it('uses the same wording when the whole bootstrap threw a network failure', () => {
+    const markup = render({}, undefined, {
+      bootstrap: { phase: 'syncing', label: 'Key 初始化没有完成', percent: 100, scope: 'scope', error: `账号 Key 初始化没有完成：${networkFailureMessages.dns}` },
+      onBootstrapRetry: () => undefined,
+    })
+    expect(markup).toContain(offline)
+    expect(markup).not.toContain('账号 Key 初始化没有完成：')
+  })
+
+  it('still names a non-network bootstrap failure', () => {
+    const markup = render({}, undefined, {
+      bootstrap: { phase: 'syncing', label: 'Key 初始化没有完成', percent: 100, scope: 'scope', error: '星芒账号已变化，已停止本次 Key 配置' },
+      onBootstrapRetry: () => undefined,
+    })
+    expect(markup).toContain('账号 Key 初始化没有完成：星芒账号已变化，已停止本次 Key 配置')
+    expect(markup).not.toContain(offline)
   })
 })
