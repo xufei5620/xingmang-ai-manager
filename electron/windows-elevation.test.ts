@@ -10,7 +10,10 @@ import {
   parseWindowsTokenElevationType,
   parseStartedWindowsProcessId,
   powerShellLiteral,
+  classifyWindowsExecutionProbeFailure,
+  describeWindowsExecutionProbeFailure,
   resolveWindowsCliExecutionMode,
+  resolveWindowsCliExecutionModeDetailed,
   resolveWindowsPowerShellExecutable,
   windowsElevationCancelledMessage,
   windowsElevationCapabilityScript,
@@ -61,6 +64,89 @@ describe('Windows CLI launch', () => {
       platform: 'win32',
       probeAdministrator: async () => { throw new Error('probe failed') },
     })).resolves.toBe('trusted-only')
+  })
+
+  it('keeps the restrictive fallback but reports why the probe failed and how long it took', async () => {
+    let clock = 1_000
+    const blocked = Object.assign(new Error('Command failed: powershell.exe -Command Add-Type ...'), {
+      code: 1,
+      stderr: "Add-Type : Cannot add type. Compilation errors occurred.\r\nAt line:2 char:1",
+    })
+    await expect(resolveWindowsCliExecutionModeDetailed({
+      isPackaged: true,
+      platform: 'win32',
+      now: () => clock,
+      probeElevationType: async () => {
+        clock += 2_500
+        throw blocked
+      },
+    })).resolves.toEqual({
+      mode: 'trusted-only',
+      elapsedMs: 2_500,
+      probeFailure: {
+        reason: 'blocked',
+        detail: 'Add-Type : Cannot add type. Compilation errors occurred. At line:2 char:1',
+      },
+    })
+
+    await expect(resolveWindowsCliExecutionModeDetailed({
+      isPackaged: true,
+      platform: 'win32',
+      probeElevationType: async () => 'limited',
+    })).resolves.toMatchObject({ mode: 'same-user' })
+    const succeeded = await resolveWindowsCliExecutionModeDetailed({
+      isPackaged: true,
+      platform: 'win32',
+      probeElevationType: async () => 'full',
+    })
+    expect(succeeded).toMatchObject({ mode: 'trusted-only' })
+    expect(succeeded.probeFailure).toBeUndefined()
+  })
+
+  it('classifies probe failures without reading the echoed command line', () => {
+    // execFile's message repeats the whole script, which itself mentions Add-Type.
+    const echoOnly = Object.assign(new Error('Command failed: powershell.exe Add-Type TokenElevationType'), { code: 3 })
+    expect(classifyWindowsExecutionProbeFailure(echoOnly)).toEqual({ reason: 'failed', detail: 'code=3' })
+
+    const timedOut = Object.assign(new Error('Command failed: powershell.exe Add-Type'), {
+      killed: true,
+      signal: 'SIGTERM',
+      stderr: '',
+    })
+    expect(classifyWindowsExecutionProbeFailure(timedOut)).toEqual({ reason: 'timeout', detail: 'signal=SIGTERM' })
+
+    const missing = Object.assign(new Error('spawn powershell.exe ENOENT'), { code: 'ENOENT' })
+    expect(classifyWindowsExecutionProbeFailure(missing).reason).toBe('powershell-unavailable')
+    expect(classifyWindowsExecutionProbeFailure(
+      new Error('未找到可用的系统 PowerShell；请启用 Windows PowerShell'),
+    ).reason).toBe('powershell-unavailable')
+
+    const constrained = Object.assign(new Error('Command failed'), {
+      stderr: 'Cannot invoke method. Method invocation is supported only on core types in this language mode.',
+    })
+    expect(classifyWindowsExecutionProbeFailure(constrained).reason).toBe('blocked')
+    expect(classifyWindowsExecutionProbeFailure(Object.assign(new Error('spawn EPERM'), { code: 'EPERM' })).reason)
+      .toBe('blocked')
+
+    expect(classifyWindowsExecutionProbeFailure(new Error('无法确认当前 Windows 进程的令牌提升类型')).reason)
+      .toBe('unexpected-output')
+    expect(classifyWindowsExecutionProbeFailure(Object.assign(new Error('Command failed'), {
+      stderr: 'GetTokenInformation(TokenElevationType) failed: 5',
+    })).reason).toBe('failed')
+    expect(classifyWindowsExecutionProbeFailure('boom')).toEqual({ reason: 'failed', detail: 'boom' })
+  })
+
+  it('bounds the logged detail', () => {
+    const noisy = Object.assign(new Error('Command failed'), { stderr: 'x'.repeat(5_000) })
+    expect(classifyWindowsExecutionProbeFailure(noisy).detail).toHaveLength(300)
+  })
+
+  it('describes every failure reason in plain words without technical terms', () => {
+    for (const reason of ['timeout', 'powershell-unavailable', 'blocked', 'unexpected-output', 'failed'] as const) {
+      const text = describeWindowsExecutionProbeFailure(reason)
+      expect(text.length).toBeGreaterThan(0)
+      expect(text).not.toMatch(/PowerShell|Add-Type|SID|管理员组|AppData|令牌/)
+    }
   })
 
   it('distinguishes explicit UAC elevation from built-in Administrator default tokens', async () => {

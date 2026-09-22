@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { createSettingsQueue, diagnosticTarget } from './pages-maintenance'
+import { createSettingsQueue, diagnosticHasFix, diagnosticTarget } from './pages-maintenance'
 import {
   buildAccountInviteLink,
   buildSubscriptionPaymentInput,
@@ -213,6 +213,13 @@ describe('v2 business boundaries', () => {
     // 环境变量那条虽然叫 PROVIDER_*，要去的也是设置页而不是首页。
     expect(diagnosticTarget('PROVIDER_ENVIRONMENT_OVERRIDE')).toBe('settings')
     expect(diagnosticTarget('RUNTIME_NODE')).toBe('maintenance')
+    // 文件夹被搬过没有软件里能一键修的地方，下一步是导出报告。
+    expect(diagnosticTarget('FOLDER_RELOCATED')).toBe('feedback')
+  })
+  it('offers no fix button for workspace settings the app must not edit', () => {
+    expect(diagnosticHasFix('WORKSPACE_CONFIG_OVERRIDE')).toBe(false)
+    expect(diagnosticHasFix('CODEX_DOTENV')).toBe(true)
+    expect(diagnosticHasFix('PROVIDER_ENVIRONMENT_OVERRIDE')).toBe(true)
   })
   it('tells the account page why the server refused instead of asking for a retry', () => {
     expect(errorMessage(new Error('Original password is incorrect'))).toBe(

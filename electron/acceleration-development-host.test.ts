@@ -379,6 +379,31 @@ describe('development acceleration worker host', () => {
     expect(onHelperExited).not.toHaveBeenCalled()
   })
 
+  it('forwards sleep and wake only to a helper that is already running', async () => {
+    const worker = new FakeWorker()
+    mocks.fork.mockReturnValue(worker)
+    const host = createAccelerationDevelopmentHost({ config, dataDirectory })
+    // 没在跑就不为一次睡眠把辅助进程拉起来。
+    await host.suspend()
+    await host.resume()
+    expect(mocks.fork).not.toHaveBeenCalled()
+    const read = host.getAccelerationState('xm-account:1')
+    await flush()
+    worker.respond(2, true, { phase: 'active' })
+    await read
+    const suspend = host.suspend()
+    await flush()
+    worker.respond(3, true)
+    await suspend
+    const resume = host.resume()
+    await flush()
+    worker.respond(4, true)
+    await resume
+    expect(worker.sent.map((message) => message.operation)).toEqual(['init', 'get', 'suspend', 'resume'])
+    expect(worker.sent[2]).toEqual({ id: 3, operation: 'suspend' })
+    await host.dispose()
+  })
+
   it('lazily forks a hidden Node worker with a trusted environment and sends paths without YAML content', async () => {
     const { worker, host } = setup(undefined, { yaml: 'private-secret', nodes: [{ password: 'private-secret' }] })
     expect(mocks.fork).not.toHaveBeenCalled()

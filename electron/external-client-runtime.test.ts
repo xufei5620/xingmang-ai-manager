@@ -90,6 +90,22 @@ function Get-AppxPackage {
     expect(f.execute.mock.calls.some(([spec]) => spec.executable === winget)).toBe(false)
   })
 
+  it.runIf(process.platform === 'win32')('decodes every remembered signature in Windows PowerShell', async () => {
+    const prelude = String.raw`
+function Test-Path { param([string]$LiteralPath) return $false }
+function Get-Process { @() }
+function Get-AppxPackage { @() }
+`
+    const known = [
+      { path: 'C:\\Users\\Tester\\AppData\\Local\\WorkBuddy\\WorkBuddy.exe', stamp: '1:2:3', status: 'Valid', subject: subjects.workbuddy },
+      { path: "C:\\Users\\Tester\\AppData\\Local\\Open'Code\\OpenCode.exe", stamp: '4:5:6', status: 'Valid', subject: subjects.opencode },
+    ]
+    const script = prelude + windowsExternalClientInventoryScript(known) + "\n'KNOWN:' + (@($knownSignatures.Keys | Sort-Object) -join '|')"
+    const result = await runCommand({ executable: resolveWindowsPowerShellExecutable(), argv: ['-NoProfile', '-NonInteractive', '-EncodedCommand', encodeWindowsPowerShellCommand(script)] }, { timeoutMs: 15000, windowsHide: true })
+    const line = result.stdout.split(/\r?\n/).find((entry) => entry.startsWith('KNOWN:'))
+    expect(line).toBe(`KNOWN:${known.map((entry) => entry.path).sort().join('|')}`)
+  })
+
   it('detects signed installed desktop applications and current-user Claude Store without executing their binaries', async () => {
     const f = fixture()
     f.setInventory([candidate('workbuddy'), appx(), candidate('opencode')])
@@ -187,8 +203,78 @@ function Get-AppxPackage {
     gate.resolve(commandResult({ executable: powershell, argv: [] }, '{"clients":[],"errors":{}}'))
     await first
     f.setInventory([candidate('opencode')])
-    expect((await f.runtime.scan())[2].installed).toBe(true)
+    expect((await f.runtime.scan({ force: true }))[2].installed).toBe(true)
     expect(f.execute).toHaveBeenCalledTimes(2)
+  })
+
+  it('reuses one inventory for five minutes unless the user forces a rescan', async () => {
+    let clock = 1_000
+    const f = fixture({ now: () => clock })
+    f.setInventory([candidate('opencode')])
+    expect((await f.runtime.scan())[2].installed).toBe(true)
+    f.setInventory([])
+    clock += 4 * 60_000
+    expect((await f.runtime.scan())[2].installed).toBe(true)
+    expect(f.execute).toHaveBeenCalledTimes(1)
+    expect((await f.runtime.scan({ force: true }))[2].installed).toBe(false)
+    expect(f.execute).toHaveBeenCalledTimes(2)
+    f.setInventory([candidate('workbuddy')])
+    clock += 5 * 60_000
+    expect((await f.runtime.scan())[0].installed).toBe(true)
+    expect(f.execute).toHaveBeenCalledTimes(3)
+  })
+
+  it('does not cache a scan that could not tell whether a client is installed', async () => {
+    const f = fixture()
+    f.execute.mockRejectedValueOnce(new Error('PowerShell probe timed out'))
+    expect((await f.runtime.scan()).every((status) => status.detectionError)).toBe(true)
+    f.setInventory([candidate('opencode')])
+    expect((await f.runtime.scan())[2]).toMatchObject({ installed: true, detectionError: null })
+    expect(f.execute).toHaveBeenCalledTimes(2)
+  })
+
+  it('forgets the cached inventory after installing or launching a client, even when the scan was in flight', async () => {
+    const f = fixture()
+    f.setInventory([candidate('opencode')])
+    await f.runtime.scan()
+    await f.runtime.launch('opencode')
+    f.setInventory([candidate('opencode', { running: true })])
+    expect((await f.runtime.scan())[2].running).toBe(true)
+
+    const gate = deferred<ReturnType<typeof commandResult>>()
+    f.execute.mockImplementationOnce(() => gate.promise)
+    const stale = f.runtime.scan({ force: true })
+    f.setInventory([candidate('opencode'), candidate('workbuddy')])
+    await f.runtime.install('workbuddy')
+    gate.resolve(commandResult({ executable: powershell, argv: [] }, JSON.stringify({ clients: [candidate('opencode')], errors: {} })))
+    expect((await stale)[0].installed).toBe(false)
+    expect((await f.runtime.scan())[0].installed).toBe(true)
+  })
+
+  it('offers remembered signatures to display scans only, never to install or launch', async () => {
+    const f = fixture()
+    f.setInventory([candidate('opencode', { signatureStamp: '123:456:789' })])
+    await f.runtime.scan()
+    await f.runtime.scan({ force: true })
+    await f.runtime.launch('opencode')
+    const scripts = f.execute.mock.calls
+      .filter(([spec]) => spec.executable === powershell)
+      .map(([spec]) => Buffer.from(spec.argv.at(-1)!, 'base64').toString('utf16le'))
+    const known = (script: string) => JSON.parse(Buffer.from(/FromBase64String\('([A-Za-z0-9+/=]*)'\)/.exec(script)![1], 'base64').toString('utf8'))
+    expect(known(scripts[0])).toEqual([])
+    expect(known(scripts[1])).toEqual([{ path: candidate('opencode').path, stamp: '123:456:789', status: 'Valid', subject: subjects.opencode }])
+    // launch() inspects before it opens anything; that inspection verifies the signature anew.
+    expect(known(scripts[2])).toEqual([])
+  })
+
+  it('embeds remembered signatures as base64 so registry text never becomes PowerShell source', () => {
+    const hostile = { path: "C:\\Evil'; Start-Process calc; '\\WorkBuddy.exe", stamp: '1:2:3', status: "Valid'$(calc)", subject: '`"; calc' }
+    const script = windowsExternalClientInventoryScript([hostile])
+    expect(script).not.toContain('Start-Process')
+    expect(script).not.toContain('calc')
+    const encoded = /FromBase64String\('([A-Za-z0-9+/=]*)'\)/.exec(script)![1]
+    expect(JSON.parse(Buffer.from(encoded, 'base64').toString('utf8'))).toEqual([hostile])
+    expect(script).toContain('Get-AuthenticodeSignature -LiteralPath $exe')
   })
 
   it('reports probe failure separately from absence and refuses installation while status is uncertain', async () => {

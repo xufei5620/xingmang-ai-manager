@@ -44,7 +44,7 @@ Claude Code 的主题写在 `~/.claude/settings.json` 的 `theme`，**本软件�
 
 ## 哪些目录一律不写
 
-判定在 `electron/workspace-guard.ts` 的纯函数 `classifyWorkspace` 里，五类：
+判定在 `electron/workspace-guard.ts` 的纯函数 `classifyWorkspace` 里，十类：
 
 | 类别 | Windows | macOS |
 |---|---|---|
@@ -53,6 +53,11 @@ Claude Code 的主题写在 `~/.claude/settings.json` 的 `theme`，**本软件�
 | 桌面 | `…\Desktop`、OneDrive 重定向后的 `…\OneDrive\桌面` | `…/Desktop` |
 | 下载 | `…\Downloads`、`…\OneDrive\下载` | `…/Downloads` |
 | 文档 | `…\Documents`、`…\OneDrive\文档` | `…/Documents` |
+| 所有用户的上一级 | `C:\Users`（及主目录的上一级） | `/Users` |
+| OneDrive 根 | `…\OneDrive`、`…\OneDrive - 公司名` | — |
+| 软件数据根 | `…\AppData` 及其 `Roaming` / `Local` / `LocalLow` | `~/Library` |
+| 系统目录（每次都问） | 任一盘根下的 `Windows`、`Program Files`、`Program Files (x86)`、`ProgramData` | `/System`、`/Library`、`/Applications`、`/usr`、`/bin`、`/sbin`、`/etc`、`/private`、`/var`、`/opt` |
+| 四家工具的配置目录（每次都问） | 主目录下的 `.claude` / `.codex` / `.gemini` / `.grok`（取自 `catalog.ts`） | 同左 |
 
 原因是这两件事都「配一次管整棵目录树」：Claude Code 读工作目录**及其上层**的每一份
 AGENTS.md，所以主目录里的一份会对这台电脑上的所有项目生效，而用户在任何子目录里都看不见
@@ -70,7 +75,11 @@ AGENTS.md，所以主目录里的一份会对这台电脑上的所有项目生�
   上层目录不存在时也不替用户建。名字用 ASCII、不带空格括号，是为了不给下游工具添非 ASCII 路径的
   兼容风险。
 - **记住的目录走同一段**：判定在 `launchProviderOperation` 里，所以老用户早就记住的主目录
-  再打开也不会补写。只有选择器那一步会提示。
+  再打开也不会补写。前八类只有选择器那一步会提示。
+- **系统目录与配置目录每次都问、不记住**（`sensitiveWorkspacePolicy` 为 `every-time`）：选择器里
+  「仍然打开」后不写进配置；`cli:launch` 对这两类再问一次，因为最近记录、记录页续接对话、老版本
+  记住的目录都不经过选择器。刚在选择器里确认过的同一路径两分钟内只放行一次，免得连问两遍。续接
+  对话时提示只给「先不打开 / 仍然打开」，换目录或新建都接不上那条对话。
 - **判不准就放行**：这个判定不读磁盘也不查注册表（Windows 的已知文件夹重定向只能按路径形状
   认），拿不准时一律当普通目录——误判会让正常项目莫名其妙丢掉信任写入，代价比少拦一次大。
 - **已经写进去的不回收**：主目录里已有的 `AGENTS.md`、已写下的信任条目都不删，那是用户目录

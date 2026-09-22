@@ -27,6 +27,12 @@ export interface AccelerationDevelopmentHost extends AccelerationApi {
    */
   startDownloadRoute(scope: string): Promise<AccelerationDownloadRouteResult>
   stopDownloadRoute(scope: string): Promise<void>
+  /**
+   * 电脑睡眠 / 醒来。辅助进程没在跑就什么都不做——没有辅助进程就没有会话，
+   * 为了一次睡眠把它拉起来反而多占一份内存。
+   */
+  suspend(): Promise<void>
+  resume(): Promise<void>
   dispose(): Promise<void>
 }
 
@@ -35,6 +41,14 @@ export interface AccelerationDevelopmentHost extends AccelerationApi {
  *  the startup recovery check cannot drift away from where the worker writes. */
 export function accelerationDevelopmentDirectory(dataDirectory: string): string {
   return path.join(dataDirectory, 'acceleration-development')
+}
+
+/** The recovery journal inside that directory; its lease sits beside it with a
+ *  `.lock` suffix. The uninstall cleanup reads the same pair after the worker
+ *  has been killed, and scripts/windows-acceleration-recovery.ps1 spells the
+ *  same name out for support. */
+export function accelerationProxyJournalPath(dataDirectory: string): string {
+  return path.join(accelerationDevelopmentDirectory(dataDirectory), 'proxy-lease.json')
 }
 
 export function parseAccelerationDevelopmentConfig(value: unknown): AccelerationDevelopmentConfig {
@@ -350,6 +364,16 @@ export function createAccelerationDevelopmentHost(options: {
     stopDownloadRoute: async (scope) => {
       await ensureReady()
       await rpc('download-stop', { scope })
+    },
+    suspend: async () => {
+      if (disposed || !child?.connected || !ready) return
+      await ready
+      await rpc('suspend')
+    },
+    resume: async () => {
+      if (disposed || !child?.connected || !ready) return
+      await ready
+      await rpc('resume')
     },
     dispose() {
       if (disposal) return disposal

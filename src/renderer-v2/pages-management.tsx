@@ -59,6 +59,7 @@ import {
 } from './registry/curated-extensions'
 import { tools } from './registry/tools'
 import { isMissingWorkspace, latestSessionIdsByWorkspace } from './features/tools/recent-workspaces'
+import { launchWarning } from './features/tools/launch-notice'
 import { runtimeHomebrewCommand } from './features/tools/runtime-install-guide'
 import { backupKeyView } from './features/tools/backup-key'
 import { connectionCheckView } from './features/tools/connection-check'
@@ -611,7 +612,12 @@ export function SessionsPage({
           throw new Error('这条记录的文件夹已经不在了，接不上上次的对话。')
         }
       },
-      `已打开${providerName(session.provider)}，接着 ${session.cwd} 里最近的一条对话`,
+      // 项目文件夹里的设置会盖过当前账号时，那句提醒跟在成功提示后面，不另弹一条。
+      (result) => {
+        const opened = `已打开${providerName(session.provider)}，接着 ${session.cwd} 里最近的一条对话`
+        const warning = launchWarning(result)
+        return warning ? `${opened}。${warning}` : opened
+      },
     )
   }
   /**

@@ -37,6 +37,25 @@ export function accountKeyExpiredTime(expiredAt: string | null): number {
   return Math.floor(milliseconds / 1000)
 }
 
+// 「按工具分账」设的上限不够这一次时 new-api 回 403「token quota is not enough」，
+// Sub2API 用完回 429「API key 额度已用完」；与账号余额不足（用户额度不足 / user
+// quota）是两回事：后者该去充值，前者是有人特意设的上限。只认「令牌 / token /
+// key」这一级的额度字样。new-api 用到 0 之后回的是和 Key 被删一样的 401「无效的
+// 令牌」，文本分不出，那一种由调用方去查 Key 列表（见 connection-check 的
+// isCappedKeyUsedUp）。
+const keyQuotaExhaustedPattern = /令牌额度|密钥额度|key\s*额度|token\s*quota|key\s*quota|tokenstatusexhausted/i
+
+/** 上游报错说的是「这把 Key 自己的额度用完了」，不是 Key 失效，也不是账号没钱。 */
+export function isKeyQuotaExhaustedMessage(message: string): boolean {
+  return keyQuotaExhaustedPattern.test(message)
+}
+
+/**
+ * 上限到了就停：签一把新 Key 会悄悄绕过这个上限，所以重签、自动换新都在这里止步，
+ * 把话说给用户听。
+ */
+export const managedKeyQuotaExhaustedMessage = '这个工具的额度用完了，软件不会自动放开。到「账号」页「密钥」里调高这个工具的额度后再试。'
+
 export interface ManagedCliKeyLimit {
   provider: ProviderId
   /** 托管 Key 的固定名称,用来在账号的密钥列表里认出这把 Key。 */
@@ -51,11 +70,16 @@ export interface ManagedCliKeyLimit {
   used: number | null
 }
 
-// A user can also create a key by hand with the same name, or move the
-// managed one to another group. Prefer the one whose group matches what this
-// program provisions; otherwise take the oldest id, so two refreshes of the
-// same list never resolve to two different keys.
-function pickManagedKey(keys: readonly AccountKey[], keyName: string, group: string): AccountKey | null {
+// The key the main process marked as the one this tool is using right now
+// (managedProvider: issued by this app AND still in the tool's config) wins:
+// a same-named older key would otherwise show, and take, the wrong limit.
+// Without that mark, a user can also create a key by hand with the same name,
+// or move the managed one to another group. Prefer the one whose group matches
+// what this program provisions; otherwise take the oldest id, so two refreshes
+// of the same list never resolve to two different keys.
+function pickManagedKey(keys: readonly AccountKey[], provider: ProviderId, keyName: string, group: string): AccountKey | null {
+  const inUse = keys.find((key) => key.managedProvider === provider)
+  if (inUse) return inUse
   const matches = keys.filter((key) => key.name === keyName).sort((left, right) => left.id - right.id)
   return matches.find((key) => key.group === group) ?? matches[0] ?? null
 }
@@ -68,7 +92,7 @@ export function resolveManagedCliKeyLimits(
   const profiles = resolveManagedCliKeyProfiles(siteId)
   return providerIds.map((provider) => {
     const profile = profiles[provider]
-    const key = pickManagedKey(keys, profile.keyName, profile.group)
+    const key = pickManagedKey(keys, provider, profile.keyName, profile.group)
     return {
       provider,
       keyName: profile.keyName,
@@ -130,7 +154,7 @@ export async function loadManagedCliKeys(
   for (let page = 1; page <= managedKeyPageLimit; page++) {
     const batch = await load(page, managedKeyPageSize)
     for (const key of batch.keys) {
-      if (names.has(key.name)) found.push(key)
+      if (names.has(key.name) || key.managedProvider) found.push(key)
     }
     if (!batch.keys.length || page * managedKeyPageSize >= batch.total) break
   }

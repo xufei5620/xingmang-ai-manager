@@ -9,6 +9,7 @@ import {
   Menu,
   nativeImage,
   net,
+  powerMonitor,
   protocol,
   safeStorage,
   screen,
@@ -21,6 +22,7 @@ import { AccountCredentialStore } from './account-credential-store'
 import { AnnouncementReadStore } from './announcement-read-store'
 import { createAccelerationExpiryNotice, type AccelerationExpiryNotice } from './acceleration-expiry-notice'
 import { createAccelerationInterruptionNotice, type AccelerationInterruptionNotice } from './acceleration-interruption-notice'
+import { createAccelerationPower } from './acceleration-power'
 import { createAccelerationService } from './acceleration-service'
 import { accelerationConflictDescriptions, accelerationFailureMessages, type AccelerationMode, type AccelerationState } from './acceleration-contract'
 import { accelerationStartRequest, createAccelerationPreferenceStore, defaultAccelerationPreference } from './acceleration-preference-store'
@@ -45,8 +47,9 @@ import { AccountSessionStore } from './account-session-store'
 import { SavedAccountsStore } from './saved-accounts'
 import { AppSettingsStore, readAppSettings, type AppTheme } from './app-settings'
 import { calculateUiZoom, resolveWindowPlacement } from './window-preferences'
+import { recoverOffscreenWindow } from './window-recovery'
 import { createWindowLifecycle } from './window-lifecycle'
-import { hasLoginLaunchArgument, resolveLoginLaunch, shouldRevealInitialWindow } from './login-launch'
+import { hasLoginLaunchArgument, resolveLoginLaunch, shouldRevealInitialWindow, windowsAppUserModelId } from './login-launch'
 import { resolveInstallableUpdateOnQuit, resolveInterruptibleInstallTask } from './quit-blocking-tasks'
 import { createWindowResponsivenessGuard } from './window-responsiveness'
 import { createApplicationTray, type ApplicationTrayController } from './application-tray'
@@ -145,7 +148,7 @@ import {
 import { verifyUpdatePackageDigest } from './update-package-digest'
 import { installStrictUpdateCodeSignatureVerifier } from './update-signature'
 import { createUpdaterService } from './updater'
-import { resolveWindowsCliExecutionMode } from './windows-elevation'
+import { resolveWindowsCliExecutionModeDetailed } from './windows-elevation'
 import {
   applyWindowTheme,
   buildMacApplicationMenuTemplate,
@@ -338,6 +341,15 @@ function setWindowTheme(contents: WebContents, theme: AppTheme): void {
   windowPreferenceAppliers.get(contents)?.()
 }
 
+function recoverWindowPlacement(window: BrowserWindow, runtimeLog: RuntimeLogStore): void {
+  try {
+    const moved = recoverOffscreenWindow(window, screen)
+    if (moved) runtimeLog.log('info', 'window', 'window.recovered-offscreen', '窗口不在任何一块屏幕上，已挪回主屏', { bounds: moved })
+  } catch (error) {
+    runtimeLog.exception('window', 'window.recover.failed', error)
+  }
+}
+
 function createWindow(
   systemService: SystemService,
   urlPolicy: ApplicationUrlPolicy,
@@ -382,6 +394,12 @@ function createWindow(
     if (placement.maximized) window.maximize()
     window.show()
   })
+  // 上面的 placement 只在创建时算一次，之后显示器还会变。托盘、第二个实例、
+  // 通知、任务栏还原，所有把窗口带出来的入口最后都走到 show 或 restore，挂在这里
+  // 一条都漏不掉。等这一轮事件走完再看，那时窗口的状态和位置才是最终的。
+  const recoverOnReveal = () => { setImmediate(() => recoverWindowPlacement(window, runtimeLog)) }
+  window.on('show', recoverOnReveal)
+  window.on('restore', recoverOnReveal)
   const applyPreferences = () => {
     if (window.isDestroyed() || window.webContents.isDestroyed()) return
     const current = systemService.readStoredConfig()
@@ -631,7 +649,7 @@ if (!hasSingleInstanceLock) {
     // Installers register the scheme; development must not take over installed links.
     if (app.isPackaged) app.setAsDefaultProtocolClient('xingmang')
     if (process.platform === 'win32') {
-      app.setAppUserModelId('com.xingmang.ai.manager')
+      app.setAppUserModelId(windowsAppUserModelId)
       Menu.setApplicationMenu(null)
       try {
         loginItemMigration = migrateLegacyWindowsLoginItem({
@@ -769,7 +787,7 @@ if (!hasSingleInstanceLock) {
     // Overlap the migration's asynchronous marker write with the Windows probe.
     // Both operations still complete before services and the window are created.
     const migrationPromise = runCodexContextLimitsMigration(managerDataDirectory, rootedOptions.system.providerRoots)
-    const windowsCliExecutionModePromise = resolveWindowsCliExecutionMode({
+    const windowsCliExecutionModePromise = resolveWindowsCliExecutionModeDetailed({
       isPackaged: app.isPackaged,
     })
     try {
@@ -798,10 +816,22 @@ if (!hasSingleInstanceLock) {
     )
     // Resolved before the service is built because it also decides whether an
     // unmanaged npm uninstall can run in-app.
-    const windowsCliExecutionMode = await windowsCliExecutionModePromise
+    const windowsCliExecution = await windowsCliExecutionModePromise
+    const windowsCliExecutionMode = windowsCliExecution.mode
     runtimeLog.log('info', 'security', 'cli.execution-mode', 'CLI 扩展执行边界已确定', {
       mode: windowsCliExecutionMode,
+      elapsedMs: windowsCliExecution.elapsedMs,
+      ...(windowsCliExecution.probeFailure ? { probeFailed: windowsCliExecution.probeFailure.reason } : {}),
     })
+    if (windowsCliExecution.probeFailure) {
+      // 这次探测失败时从严按管理员处理：普通用户会因此装不了、打不开工具。原因
+      // 以前被 catch 吞掉，客服只看得到一个 trusted-only，分不出是真管理员还是没问出来。
+      runtimeLog.log('warn', 'security', 'cli.execution-mode.probe-failed', '没能确认当前是否以管理员身份运行，已按管理员处理', {
+        reason: windowsCliExecution.probeFailure.reason,
+        detail: windowsCliExecution.probeFailure.detail,
+        elapsedMs: windowsCliExecution.elapsedMs,
+      })
+    }
     let readAccountSiteId: () => string = () => 'solov'
     let readExternalClientAccountId: () => string | null = () => null
     // 下载专用的网络分区：它的代理只在装 CLI / 下 Node 的那几分钟里被设成加速
@@ -959,6 +989,7 @@ if (!hasSingleInstanceLock) {
           // 「磁盘空间」那一项要看软件数据目录所在的盘，而 userData 在哪只有宿主
           // 知道；CLI 落点由诊断自己算。
           userDataDirectory: app.getPath('userData'),
+          windowsExecution: windowsCliExecution,
           // 报告只装中文结论（它会被导出发给客服），认出失败靠的那段上游原文
           // 留在 runtime.jsonl 里。
           log: (level, event, message, detail) => runtimeLog.log(level, 'diagnostics', event, message, detail),
@@ -968,6 +999,8 @@ if (!hasSingleInstanceLock) {
           // 「Claude 命令确认方式」要分清 bypassPermissions 是我们写的还是别人写的。
           // 来源的判定要比对当前登录账号，只有 system-service 那边算得出来。
           readClaudeConfigOwnership: () => systemService.getConfig(false).providers.claude.configurationOwnership ?? null,
+          // 「项目文件夹里的设置」看的是用户最近一次选的项目文件夹，每次检查现读。
+          workspace: systemService.readStoredConfig().workspace,
         })
         return latestDiagnostics
       },
@@ -1096,6 +1129,7 @@ if (!hasSingleInstanceLock) {
         snapshot: pickFeedbackRuntimeSnapshot(latestTraySystem),
         platform: process.platform,
         executionMode: process.platform === 'win32' ? windowsCliExecutionMode : null,
+        executionProbeFailure: windowsCliExecution.probeFailure?.reason ?? null,
         appDirectory: path.dirname(app.getPath('exe')),
         dataDirectory: managerDataDirectory,
         managedDirectory,
@@ -1816,6 +1850,27 @@ if (!hasSingleInstanceLock) {
       onChanged: () => applicationTray?.updateSnapshot(),
       log: (level, event, message, detail) => runtimeLog.log(level, 'network', event, message, detail),
     })
+    // 睡着的那段不计免费时长；醒来看加速还在不在，不在了先恢复网络再提醒。
+    if (developmentAcceleration) {
+      const accelerationHost = developmentAcceleration
+      const accelerationPower = createAccelerationPower({
+        suspend: () => accelerationHost.suspend(),
+        resume: () => accelerationHost.resume(),
+        getAccountScope: () => readAccelerationAccountScope(),
+        readState: (scope) => acceleration
+          ? acceleration.getAccelerationState(scope)
+          : Promise.reject(new Error('加速服务尚未就绪。')),
+        log: (level, event, message, detail) => runtimeLog.log(level, 'network', event, message, detail),
+      })
+      const onSuspend = () => accelerationPower.suspended()
+      const onResume = () => accelerationPower.resumed()
+      powerMonitor.on('suspend', onSuspend)
+      powerMonitor.on('resume', onResume)
+      app.once('will-quit', () => {
+        powerMonitor.off('suspend', onSuspend)
+        powerMonitor.off('resume', onResume)
+      })
+    }
     const unregisterIpcHandlers = registerIpcHandlers({
       acceleration,
       realmAccounts: accounts,
@@ -1925,6 +1980,25 @@ if (!hasSingleInstanceLock) {
       trayAvailable: applicationTray?.available ?? false,
     }))
     managedMainWindow = mainWindow
+    // 拔掉外接显示器时正开着的窗口也挪回来；缩在托盘里的等下次显示时再挪。
+    // 稍等一下再看：Windows 自己也会挪一部分窗口，别跟系统抢。
+    let displayChangeTimer: ReturnType<typeof setTimeout> | undefined
+    const onDisplaysChanged = () => {
+      if (displayChangeTimer) clearTimeout(displayChangeTimer)
+      displayChangeTimer = setTimeout(() => {
+        displayChangeTimer = undefined
+        for (const window of BrowserWindow.getAllWindows()) {
+          if (!window.isDestroyed() && window.isVisible()) recoverWindowPlacement(window, runtimeLog)
+        }
+      }, 500)
+    }
+    screen.on('display-removed', onDisplaysChanged)
+    screen.on('display-metrics-changed', onDisplaysChanged)
+    app.once('will-quit', () => {
+      if (displayChangeTimer) clearTimeout(displayChangeTimer)
+      screen.removeListener('display-removed', onDisplaysChanged)
+      screen.removeListener('display-metrics-changed', onDisplaysChanged)
+    })
     const showMainWindow = () => {
       if (mainWindow.isDestroyed()) return
       if (mainWindow.isMinimized()) mainWindow.restore()
