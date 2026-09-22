@@ -27,6 +27,15 @@ function initialReading() {
   } catch { return fallback }
 }
 
+/**
+ * 外面点进来时指定的那一章。清空搜索词是有意的：留着上次的词会把目标章节过滤掉，
+ * 左边导航看起来像没有这一章。认不出的 id 返回 null，交回给 sessionStorage 那套。
+ */
+function requestedReading(topic: { sequence: number; id: string } | undefined) {
+  if (!topic || !tutorialTopics.some(entry => entry.id === topic.id)) return null
+  return { selected: topic.id, query: '' }
+}
+
 function matchesSearch(topic: TutorialTopic, query: string) {
   const text = [topic.title, topic.lead, ...topic.keywords, ...(topic.reminders ?? []), ...topic.steps.flatMap(step => [
     step.title, step.detail, step.where ?? '', step.expected ?? '', step.tip ?? '', step.example ?? '', ...(step.bullets ?? []),
@@ -60,8 +69,18 @@ function TutorialExample({ text, firstMessage, testId }: { text: string; firstMe
   </div>
 }
 
-export function TutorialPage({ navigate, openGuide, openHelp }: BusinessActions) {
-  const [reading, setReading] = useState(initialReading)
+/**
+ * topic 是外面点进来时要停在哪一章（首页那几行的「安装指南」）。教程页挂上之后只是
+ * hidden，不会重新挂载，而且上次读到哪一章还记在 sessionStorage 里，所以光传 id 接不住
+ * 第二次跳转：sequence 每跳一次加一，effect 才会再跑一遍，并顺手清掉上次的搜索词，
+ * 免得目标章节被过滤掉。
+ */
+export function TutorialPage({ navigate, openGuide, openHelp, topic }: BusinessActions & { topic?: { sequence: number; id: string } }) {
+  const [reading, setReading] = useState(() => (requestedReading(topic) ?? initialReading()))
+  useEffect(() => {
+    const requested = requestedReading(topic)
+    if (requested) setReading(requested)
+  }, [topic])
   // Native details can be closed manually; a new search must reveal its matches again.
   const searchKey = reading.query.trim().toLocaleLowerCase()
   const article = useRef<HTMLElement>(null)

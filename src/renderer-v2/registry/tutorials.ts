@@ -1,5 +1,6 @@
 import type { PageId } from './pages';
 import { accelerationExpiryWarningSeconds, accelerationTrialSeconds } from '../../../electron/acceleration-contract';
+import { macDesktopTutorialTopic } from './business';
 import { errors } from './errors';
 import { statuses } from './status';
 import { firstRunHints } from './tools';
@@ -782,6 +783,61 @@ export const tutorialTopics: readonly TutorialTopic[] = [
         extra: [{ title: '重开后仍找不到？', detail: '进入「检查」查看具体环境结果，把错误和已安装版本提供给客服。' }],
         action: '打开检查',
         page: 'health',
+      },
+    ],
+  },
+  {
+    id: macDesktopTutorialTopic,
+    title: 'Mac 上装桌面端',
+    lead: 'Mac 上这四个桌面端要你自己下载安装；装完回来重新检测，再用同一行的「配置」连上当前账号。',
+    category: 'advanced',
+    minutes: 5,
+    keywords: ['Mac', 'macOS', '苹果', '桌面端', 'Codex', 'WorkBuddy', 'Claude Desktop', 'OpenCode', '安装', '下载', '应用程序', 'Applications', 'dmg', 'pkg', '安装指南'],
+    steps: [
+      {
+        title: '先知道为什么要自己装',
+        where: '工具箱首页 → 你的工具 / 还可以装',
+        detail: 'Windows 上这四个桌面端工具箱可以替你装，Mac 上没有这条路：这几家官方在 Mac 上只提供自己下载的安装包。',
+        bullets: ['所以这几行的按钮在 Mac 上写的是「安装指南」，点了就到这一章。', '不是它们在 Mac 上用不了，装好之后照常连账号、照常打开。'],
+        expected: '明白这一章讲的是自己下载安装，不是工具箱出了问题。',
+        extra: [{ title: '会不会要管理员密码？', detail: '工具箱自己从不要管理员权限。装 .pkg 安装包时 macOS 可能问一次你的开机密码，那是系统在问；自己装也不会动已经装好的命令行工具。' }],
+        action: '返回首页',
+        page: 'home',
+      },
+      {
+        title: '去各自的官网下载 Mac 版',
+        where: '浏览器 → 各客户端官网的下载页',
+        detail: '四个各下各的，都要认准 macOS 版；Apple 芯片的 Mac 选 Apple Silicon（arm64）那一个。',
+        bullets: [
+          'Codex 桌面端：OpenAI 的 ChatGPT 下载页（Mac 上装出来可能叫 Codex 也可能叫 ChatGPT，两种工具箱都认）。',
+          'WorkBuddy：腾讯 WorkBuddy 官网。',
+          'Claude Desktop：Claude 官网的下载页。',
+          'OpenCode：OpenCode 官网，别下成同名的命令行版本，要的是桌面端。',
+        ],
+        expected: '拿到一个 .dmg 或 .pkg 安装包。',
+        action: '返回首页',
+        page: 'home',
+      },
+      {
+        title: '装进「应用程序」文件夹',
+        where: 'Mac 访达 → 应用程序',
+        detail: '.dmg 双击打开后把应用图标拖进「应用程序」文件夹；.pkg 双击一路下一步。',
+        bullets: ['留在「下载」文件夹里直接打开的，工具箱检测不到。', '它只认「应用程序」文件夹（系统那个和你个人目录下那个都行），而且按官方的应用名认，别改名。'],
+        expected: '应用出现在「应用程序」里，能正常打开。',
+        extra: [{ title: '第一次打开提示「来自互联网」？', detail: '这是 macOS 对下载来的应用的例行确认，按提示选打开即可。' }],
+        action: '返回首页',
+        page: 'home',
+      },
+      {
+        title: '回来重新检测，再连当前账号',
+        where: '工具箱首页 → 重新检测 → 这一行的「配置」',
+        detail: '先让工具箱看到它，再在同一行点「配置」把当前账号连上。',
+        bullets: ['点右上角「重新检测」，那一行从「未安装」变成版本号。', '点「配置」：选密钥来源 → 点「检测模型」 → 挑一个模型 → 保存。'],
+        expected: '这一行显示版本号，并且标着已配好。',
+        tip: 'Claude Desktop 保存后要把它完全退出再重新打开才生效；Codex 桌面端和 Codex CLI 共用一份配置，配好其中一个另一个跟着生效。',
+        extra: [{ title: '重新检测后还是「未安装」？', detail: '十有八九是应用没真的放进「应用程序」文件夹，或者被改过名字。把它移回去、改回原名再检测一次。' }],
+        action: '返回首页',
+        page: 'home',
       },
     ],
   },
