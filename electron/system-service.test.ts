@@ -3163,12 +3163,21 @@ describe('CLI latest version state', () => {
       managedNativeRoot: null,
     })).toBe(managedCliPackageDirectory('C:\\ProgramData\\XingMangAI\\Cli\\npm', '@anthropic-ai/claude-code', 'win32'))
     // macOS 的托管布局把包放在 lib/node_modules 下，不是 prefix 根下。
-    expect(cliInstallTargetDirectory('gemini', {
+    // 分隔符不写死：拼接用的是运行平台的 path，Windows 分片上同一个落点是
+    // 反斜杠，这里钉的是「走托管 lib/node_modules，而不是用户的 npm 全局根」。
+    const darwinManaged = cliInstallTargetDirectory('gemini', {
       platform: 'darwin',
       npmGlobalRoot: '/usr/local/lib/node_modules',
       managedNpmPrefix: '/Users/alex/Library/Application Support/XingMangAI/Cli/npm',
       managedNativeRoot: null,
-    })).toContain('/lib/node_modules/@google/gemini-cli')
+    })
+    expect(darwinManaged).toBe(managedCliPackageDirectory(
+      '/Users/alex/Library/Application Support/XingMangAI/Cli/npm',
+      '@google/gemini-cli',
+      'darwin',
+    ))
+    expect(darwinManaged).toContain('lib')
+    expect(darwinManaged).not.toContain('usr')
   })
 
   it('points Windows Grok at its native directory, since npm never writes that install', () => {
