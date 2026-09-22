@@ -12,6 +12,7 @@ import {
 import { identityFromCodexAuthTokens } from './official-account-identity'
 import { removeCodexContextLimits } from './codex-context-limits'
 import { applyClaudeStatusLine, claudeStatusLineSetting } from './claude-status-line'
+import { applyClaudeRelayModelPicker, removeClaudeRelayModelPicker } from './claude-model-picker'
 import { assertNoReparseComponents, ensureSafeDataDirectory, readSafeUtf8FileSync } from './safe-local-data'
 
 const MAX_NATIVE_CONFIG_BYTES = 2 * 1024 * 1024
@@ -1453,6 +1454,7 @@ function createPlans(
   roots: ProviderConfigRoots,
   siteBaseUrls: Record<ProviderId, string>,
   claudeStatusLineCommand?: string,
+  availableModels?: readonly string[],
 ): FilePlan[] {
   const paths = providerConfigPaths(provider, roots)
   switch (provider) {
@@ -1461,25 +1463,26 @@ function createPlans(
         ...createCodexRelayConfigPlans(model, roots, siteBaseUrls, 'reset'),
         ...createCodexRelayAuthPlans(apiKey, roots),
       ]
-    case 'claude':
-      return [{
-        path: paths[0],
-        content: jsonContent({
-          env: {
-            ANTHROPIC_AUTH_TOKEN: apiKey,
-            ANTHROPIC_BASE_URL: siteBaseUrls.claude,
-            DISABLE_AUTOUPDATER: '1',
-          },
-          permissions: { defaultMode: 'bypassPermissions', deny: [claudeDeniedRelayTool] },
-          model,
-          effortLevel: 'medium',
-          skipDangerousModePermissionPrompt: true,
-          skipWebFetchPreflight: true,
-          language: MANAGED_CLAUDE_RESPONSE_LANGUAGE,
-          cleanupPeriodDays: MANAGED_CLAUDE_RETENTION_DAYS,
-          ...(claudeStatusLineCommand ? { statusLine: claudeStatusLineSetting(claudeStatusLineCommand) } : {}),
-        }),
-      }]
+    case 'claude': {
+      const env: Record<string, unknown> = {
+        ANTHROPIC_AUTH_TOKEN: apiKey,
+        ANTHROPIC_BASE_URL: siteBaseUrls.claude,
+        DISABLE_AUTOUPDATER: '1',
+      }
+      const settings: Record<string, unknown> = {
+        env,
+        permissions: { defaultMode: 'bypassPermissions', deny: [claudeDeniedRelayTool] },
+        model,
+        effortLevel: 'medium',
+        skipDangerousModePermissionPrompt: true,
+        skipWebFetchPreflight: true,
+        language: MANAGED_CLAUDE_RESPONSE_LANGUAGE,
+        cleanupPeriodDays: MANAGED_CLAUDE_RETENTION_DAYS,
+        ...(claudeStatusLineCommand ? { statusLine: claudeStatusLineSetting(claudeStatusLineCommand) } : {}),
+      }
+      if (availableModels) applyClaudeRelayModelPicker(settings, env, availableModels, model)
+      return [{ path: paths[0], content: jsonContent(settings) }]
+    }
     case 'gemini':
       return [
         {
@@ -1543,10 +1546,12 @@ function createMergePlans(
   roots: ProviderConfigRoots,
   siteBaseUrls: Record<ProviderId, string>,
   claudeStatusLineCommand?: string,
+  availableModels?: readonly string[],
 ): FilePlan[] {
   const paths = providerConfigPaths(provider, roots)
   const initialPlans = new Map(
-    createPlans(provider, apiKey, model, roots, siteBaseUrls, claudeStatusLineCommand).map((plan) => [plan.path, plan]),
+    createPlans(provider, apiKey, model, roots, siteBaseUrls, claudeStatusLineCommand, availableModels)
+      .map((plan) => [plan.path, plan]),
   )
   const initial = (filePath: string): FilePlan => {
     const plan = initialPlans.get(filePath)
@@ -1572,6 +1577,7 @@ function createMergePlans(
       ensureClaudeResponseLanguage(parsed)
       extendClaudeSessionRetention(parsed)
       if (claudeStatusLineCommand) applyClaudeStatusLine(parsed, claudeStatusLineCommand)
+      if (availableModels) applyClaudeRelayModelPicker(parsed, env, availableModels, model)
       parsed.model = model
       return [{ path: paths[0], content: jsonContent(parsed) }]
     }
@@ -1951,6 +1957,9 @@ export function saveProviderConfig(
   // 与从前一致：解析不到托管 Node、脚本没随包拷进来、路径里有 shell 元字符，
   // 调用方都只是不传，配置的其余部分照写。见 claude-status-line.ts。
   claudeStatusLineCommand?: string,
+  // 当前 Key 可用的模型清单。Claude Code 用它把 /model 菜单换成账号实际能用的型号
+  // （见 claude-model-picker.ts）；缺省 = 不动菜单。
+  availableModels?: readonly string[],
 ): NativeConfigSaveResult {
   const apiKey = apiKeyInput.trim()
   const model = modelInput.trim()
@@ -1967,8 +1976,8 @@ export function saveProviderConfig(
   const statusLineCommand = claudeStatusLineCommand?.trim() || undefined
   if (statusLineCommand && /\r|\n/.test(statusLineCommand)) throw new Error('状态行命令不能包含换行符')
   const plans = mode === 'merge'
-    ? createMergePlans(provider, apiKey, model, roots, siteBaseUrlsInput, statusLineCommand)
-    : createPlans(provider, apiKey, model, roots, siteBaseUrlsInput, statusLineCommand)
+    ? createMergePlans(provider, apiKey, model, roots, siteBaseUrlsInput, statusLineCommand, availableModels)
+    : createPlans(provider, apiKey, model, roots, siteBaseUrlsInput, statusLineCommand, availableModels)
 
   assertNoReparseComponents(path.dirname(providerRoot), 'Provider 配置根目录')
   ensureSafeDataDirectory(providerRoot, 'Provider 配置根目录')
@@ -2160,7 +2169,10 @@ function createOfficialAccountPlans(
         const envRecord = env as Record<string, unknown>
         delete envRecord.ANTHROPIC_AUTH_TOKEN
         delete envRecord.ANTHROPIC_BASE_URL
+        removeClaudeRelayModelPicker(parsed, envRecord)
         if (Object.keys(envRecord).length === 0) delete parsed.env
+      } else {
+        removeClaudeRelayModelPicker(parsed, null)
       }
       allowClaudeRelayTool(parsed)
       delete parsed.skipWebFetchPreflight

@@ -38,6 +38,7 @@
 **配置与数据**
 - `config-files.ts` (1673) — 四个 CLI 的配置读写，**两阶段提交 + .bak 备份 + 失败回滚**；打开目录时替用户写下的工作区信任也在这里，字段实测记录见 `docs/WORKSPACE-TRUST.md`
 - `claude-status-line.ts` — Claude Code 状态行：随包脚本的定位、命令拼装（两段路径都加引号，带 shell 元字符就不写）、「用户自己设过就不动」的判定
+- `claude-model-picker.ts` — Claude Code 的 `/model` 菜单：接当前账号时按 Key 实际可用的模型生成 `modelPicker` 与 `ANTHROPIC_DEFAULT_MODEL`、认出本软件写的菜单、切回官方时收回
 - `app-settings.ts` (453) / `backups.ts` (891)
 - `codex-sessions.ts` (1427) — Codex 会话权威源是 `~/.codex/state_5.sqlite` 的 `threads` 表；未知 schema 自动降级只读
 - `provider-sessions.ts` (1199) — 四工具统一会话视图

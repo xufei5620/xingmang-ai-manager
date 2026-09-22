@@ -1763,6 +1763,45 @@ describe('switching a provider back to the official subscription account', () =>
     expect(official.theme).toBe('dark')
   })
 
+  it('replaces the Claude model menu with the models the key can use and takes it back for the official account', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const [configPath] = providerConfigPaths('claude', roots)
+    saveProviderConfig('claude', 'sk-relay', 'claude-sonnet-5', 'reset', roots, {}, providerBaseUrls, undefined, [
+      'claude-opus-5',
+      'claude-sonnet-5',
+    ])
+    const relay = JSON.parse(fs.readFileSync(configPath, 'utf8')) as Record<string, unknown>
+    expect(asRecord(relay.env)?.ANTHROPIC_DEFAULT_MODEL).toBe('claude-sonnet-5')
+    expect(relay.modelPicker).toEqual({
+      replaceBuiltInOptions: true,
+      options: [
+        { model: 'claude-opus-5', label: 'Opus 5', description: 'claude-opus-5' },
+        { model: 'claude-sonnet-5', label: 'Sonnet 5', description: 'claude-sonnet-5' },
+      ],
+    })
+
+    saveProviderConfig('claude', 'sk-relay', 'claude-opus-5', 'merge', roots, {}, providerBaseUrls, undefined, ['claude-opus-5'])
+    const merged = JSON.parse(fs.readFileSync(configPath, 'utf8')) as Record<string, unknown>
+    expect(asRecord(merged.env)?.ANTHROPIC_DEFAULT_MODEL).toBe('claude-opus-5')
+    expect(asRecord(merged.modelPicker)?.options).toHaveLength(1)
+
+    switchProviderToOfficialAccount('claude', roots, {}, providerBaseUrls)
+    const official = JSON.parse(fs.readFileSync(configPath, 'utf8')) as Record<string, unknown>
+    expect(official).not.toHaveProperty('modelPicker')
+    expect(asRecord(official.env)).not.toHaveProperty('ANTHROPIC_DEFAULT_MODEL')
+  })
+
+  it('leaves the Claude model menu untouched when no model list is supplied', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    saveProviderConfig('claude', 'sk-relay', testModels.claude, 'reset', roots, {}, providerBaseUrls)
+    const [configPath] = providerConfigPaths('claude', roots)
+    const settings = JSON.parse(fs.readFileSync(configPath, 'utf8')) as Record<string, unknown>
+    expect(settings).not.toHaveProperty('modelPicker')
+    expect(asRecord(settings.env)).not.toHaveProperty('ANTHROPIC_DEFAULT_MODEL')
+  })
+
   it('removes only Artifact from the Claude deny list when switching to the official account', () => {
     const home = temporaryHome()
     saveProviderConfig('claude', 'sk-relay', testModels.claude, 'reset', providerRoots(home), {}, providerBaseUrls)
