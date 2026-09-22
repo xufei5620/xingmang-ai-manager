@@ -113,8 +113,10 @@ import { createPaymentOrderStatusReader } from './payment-status-reader'
 import {
   createDiagnosticsExport,
   redactDiagnosticText,
+  diagnosticsScanReuseMs,
   runDiagnostics,
   type DiagnosticsReport,
+  type DiagnosticsRunOptions,
 } from './diagnostics'
 import { runConnectionCheck } from './connection-check'
 import type { ExternalToolId } from './external-tool-config'
@@ -980,8 +982,14 @@ if (!hasSingleInstanceLock) {
       .map((provider) => inspectProviderConfig(provider, rootedOptions.system.providerRoots).apiKey)
       .filter(Boolean)
     const diagnosticsService = {
-      run: async () => {
+      run: async (options: DiagnosticsRunOptions = {}) => {
+        // 开机自动检查紧跟着首页扫描：扫描正在跑就等它，一分钟内刚跑完就直接用，
+        // 不再把各工具的版本探测、PowerShell、Codex 桌面端检测重跑一遍。没有现成的
+        // 就照旧自己探，不为此专门起一轮扫描。
+        const recent = options.reuseRecentScan ? systemService.recentScan(diagnosticsScanReuseMs) : null
+        const recentScan = recent ? await recent.catch(() => null) : null
         latestDiagnostics = await runDiagnostics({
+          recentScan,
           ...rootedOptions.diagnostics,
           app: {
             name: '星芒AI管理工具',
@@ -1755,8 +1763,8 @@ if (!hasSingleInstanceLock) {
     // 首页那遍扫描不必等窗口和启动画面：和账号恢复一起现在就跑起来，渲染层随后那次读取
     // 直接接上它（scanSystem 同一时刻只跑一轮）。结果由那次读取照常交给托盘与日志。
     // 只在有账号要恢复时预热：没有账号的新用户先落在欢迎页，那里本来不检测工具；而
-    // Windows 上一轮检测要起好几段 PowerShell（Program Files 权限检查还是同步的），
-    // 白跑一轮只会让欢迎页上的点击和关窗跟着变慢（#372 之后关窗冒烟超过 5 秒）。
+    // Windows 上一轮检测要起好几段 PowerShell，白跑一轮只是给欢迎页添负担。这几段
+    // 权限检查已经先异步探测再读缓存（primeTrustedWindowsMachinePath），不占主线程。
     void vault.active().then((saved) => {
       if (saved) void systemService.scanSystem().catch(() => undefined)
     }).catch(() => undefined)

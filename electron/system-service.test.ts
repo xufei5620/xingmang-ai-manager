@@ -3953,13 +3953,13 @@ describe('scan coalescing', () => {
     let revision = 0
     let clock = 0
     const runs: { force: boolean; finish: (value: string) => void; fail: (error: Error) => void }[] = []
-    const scan = createScanCoalescer({
+    const coalescer = createScanCoalescer({
       run: (force) => new Promise<string>((resolve, reject) => { runs.push({ force, finish: resolve, fail: reject }) }),
       revision: () => revision,
       reuseMs: 15_000,
       now: () => clock,
     })
-    return { scan, runs, bump: () => { revision++ }, advance: (ms: number) => { clock += ms } }
+    return { scan: coalescer.scan, recent: coalescer.recent, runs, bump: () => { revision++ }, advance: (ms: number) => { clock += ms } }
   }
 
   it('lets a later non-forced scan join the one already running instead of probing twice', async () => {
@@ -4012,6 +4012,23 @@ describe('scan coalescing', () => {
     h.bump()
     void h.scan(false)
     expect(h.runs).toHaveLength(3)
+  })
+
+  it('hands out what it already has without ever starting a scan of its own', async () => {
+    const h = harness()
+    expect(h.recent(60_000)).toBeNull()
+    const running = h.scan(false)
+    expect(h.recent(60_000)).toBe(running)
+    h.runs[0].finish('fresh')
+    await running
+    h.advance(60_000)
+    await expect(h.recent(60_000)).resolves.toBe('fresh')
+    h.advance(1)
+    expect(h.recent(60_000)).toBeNull()
+    h.advance(-1)
+    h.bump()
+    expect(h.recent(60_000)).toBeNull()
+    expect(h.runs).toHaveLength(1)
   })
 
   it('forgets a failed scan so the next read tries again', async () => {

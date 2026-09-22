@@ -1,7 +1,8 @@
-import { execFileSync, spawn } from 'node:child_process'
+import { execFile, spawn } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 import { StringDecoder } from 'node:string_decoder'
+import { promisify } from 'node:util'
 import { isDarwinForeignWritablePath } from './darwin-path-trust'
 import { darwinCommandPathCandidates } from './macos-platform'
 import { managedNativeProviderRoot, managedNpmBinDirectory } from './managed-cli-paths'
@@ -10,11 +11,13 @@ import { redactSecretPatterns } from './redaction-patterns'
 import {
   isTrustedWindowsMachinePath,
   pathWithinWindowsRoot,
+  primeTrustedWindowsMachinePath,
   resolveWindowsMachinePaths,
   type WindowsMachinePaths,
 } from './windows-machine-paths'
 
 const ANSI_PATTERN = /[\u001B\u009B](?:\][^\u0007]*(?:\u0007|\u001B\\)|[[\]()#;?]*(?:(?:(?:[a-zA-Z\d]*(?:;[-a-zA-Z\d\/#&.:=?%@~_]+)*)?\u0007)|(?:(?:\d{1,4}(?:[;:]\d{0,4})*)?[\dA-PR-TZcf-nq-uy=><~])))/g
+const execFileAsync = promisify(execFile)
 const DEFAULT_TIMEOUT_MS = 30_000
 const DEFAULT_MAX_OUTPUT_BYTES = 1024 * 1024
 const DEFAULT_KILL_GRACE_MS = 500
@@ -570,14 +573,14 @@ export function parseWindowsNodeInstallPath(output: string): string | null {
   return value
 }
 
-function registeredWindowsNodeInstallPaths(machinePaths?: WindowsMachinePaths): string[] {
+async function registeredWindowsNodeInstallPaths(machinePaths?: WindowsMachinePaths): Promise<string[]> {
   if (process.platform !== 'win32') return []
   const roots = machinePaths ?? resolveWindowsMachinePaths()
   const regExecutable = path.win32.join(roots.system32, 'reg.exe')
   const values: string[] = []
   for (const view of ['64', '32'] as const) {
     try {
-      const output = execFileSync(regExecutable, [
+      const { stdout: output } = await execFileAsync(regExecutable, [
         'query',
         'HKLM\\SOFTWARE\\Node.js',
         '/v',
@@ -593,7 +596,6 @@ function registeredWindowsNodeInstallPaths(machinePaths?: WindowsMachinePaths): 
         windowsHide: true,
         timeout: 5_000,
         maxBuffer: 64 * 1024,
-        stdio: ['ignore', 'pipe', 'ignore'],
       })
       const installPath = parseWindowsNodeInstallPath(output)
       if (installPath) values.push(installPath)
@@ -602,6 +604,46 @@ function registeredWindowsNodeInstallPaths(machinePaths?: WindowsMachinePaths): 
     }
   }
   return [...new Map(values.map((value) => [path.win32.normalize(value).toLowerCase(), value])).values()]
+}
+
+/**
+ * The Windows trust checks below are synchronous and, for a path under
+ * Program Files, start PowerShell to read its ACL. Called from async code
+ * first, this runs those probes off the main thread and leaves the verdicts
+ * in the shared cache, so the synchronous check that follows only reads it.
+ * It decides nothing: whatever it cannot prime, the synchronous check still
+ * probes itself.
+ */
+async function primeTrustedWindowsPaths(
+  candidates: readonly string[],
+  machinePaths?: WindowsMachinePaths,
+): Promise<void> {
+  if (process.platform !== 'win32' || candidates.length === 0) return
+  let roots: WindowsMachinePaths
+  try {
+    roots = machinePaths ?? resolveWindowsMachinePaths()
+  } catch {
+    return
+  }
+  await Promise.all(candidates.map((candidate) => primeTrustedWindowsMachinePath(candidate, roots)))
+}
+
+/**
+ * Async companion of isTrustedHighIntegrityExecutable: call it right before
+ * that check from async code so its Program Files probe does not block.
+ */
+export async function primeTrustedHighIntegrityExecutable(
+  filePath: string,
+  platform: NodeJS.Platform = process.platform,
+  machinePaths?: WindowsMachinePaths,
+): Promise<void> {
+  if (platform !== 'win32' || !path.win32.isAbsolute(filePath)) return
+  await primeTrustedWindowsPaths([filePath], machinePaths)
+  try {
+    await primeTrustedWindowsPaths([await fs.promises.realpath(filePath)], machinePaths)
+  } catch {
+    // The synchronous check reports an unreadable target itself.
+  }
 }
 
 /**
@@ -614,9 +656,11 @@ async function isUserWritableResolvedPath(
   env: NodeJS.ProcessEnv,
   machinePaths?: WindowsMachinePaths,
 ): Promise<boolean> {
+  await primeTrustedWindowsPaths([filePath], machinePaths)
   if (isUserWritablePath(filePath, env, machinePaths)) return true
   try {
     const realPath = await fs.promises.realpath(filePath)
+    await primeTrustedWindowsPaths([realPath], machinePaths)
     return isUserWritablePath(realPath, env, machinePaths)
   } catch {
     // The regular executable check will report a missing target. Do not turn
@@ -676,16 +720,16 @@ export async function findExecutable(
   const managers = options.windowsPackageManagers ?? []
   const hasPathSeparator = command.includes('/') || command.includes('\\')
   const windowsCommandName = path.win32.basename(command, path.win32.extname(command)).toLowerCase()
-  const registeredNodePaths = process.platform === 'win32'
+  const registeredCandidates = process.platform === 'win32'
     && !path.isAbsolute(command)
     && !hasPathSeparator
     && (windowsCommandName === 'node' || windowsCommandName === 'npm' || windowsCommandName === 'npx')
-      ? (options.windowsNodeInstallPaths ?? registeredWindowsNodeInstallPaths(options.machinePaths))
-        .filter((directory) => {
-          if (!directory || directory.includes('\0') || !path.win32.isAbsolute(directory)) return false
-          return !options.trustedOnly || isTrustedWindowsMachinePath(directory, options.machinePaths)
-        })
+      ? (options.windowsNodeInstallPaths ?? await registeredWindowsNodeInstallPaths(options.machinePaths))
+        .filter((directory) => Boolean(directory) && !directory.includes('\0') && path.win32.isAbsolute(directory))
       : []
+  if (options.trustedOnly) await primeTrustedWindowsPaths(registeredCandidates, options.machinePaths)
+  const registeredNodePaths = registeredCandidates.filter((directory) =>
+    !options.trustedOnly || isTrustedWindowsMachinePath(directory, options.machinePaths))
   const searchDirectories = path.isAbsolute(command) || hasPathSeparator
     ? ['']
     : [...(env.PATH ?? '').split(path.delimiter).filter(Boolean), ...registeredNodePaths]

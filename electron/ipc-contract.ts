@@ -71,6 +71,7 @@ import type {
 import type {
   DiagnosticState as MainDiagnosticState,
   DiagnosticsReport as MainDiagnosticsReport,
+  DiagnosticsRunOptions as MainDiagnosticsRunOptions,
 } from './diagnostics'
 import type { CliVersionAdvice as MainCliVersionAdvice } from './cli-verified-versions'
 import type { AccountSourceSwitchResult, AccountSourceTarget } from './account-source-switch'
@@ -232,6 +233,7 @@ export interface ChooseWorkspaceOptions {
 }
 export type DiagnosticState = MainDiagnosticState
 export type DiagnosticsReport = MainDiagnosticsReport
+export type DiagnosticsRunOptions = MainDiagnosticsRunOptions
 export type ConnectionCheckLayer = MainConnectionCheckLayer
 export type ConnectionCheckResult = MainConnectionCheckResult
 /** 自检结论本身，不含身份。CLI 与外部客户端的结果条共用同一套渲染（R-S11 同理）。 */
@@ -690,7 +692,7 @@ export interface XingmangInvokeContract {
   >
   getSettings: IpcInvokeDefinition<'settings:get', [], AppSettingsV2>
   saveSettings: IpcInvokeDefinition<'settings:save', [settings: AppSettingsV2Update], AppSettingsV2>
-  runDiagnostics: IpcInvokeDefinition<'diagnostics:run', [], DiagnosticsReport>
+  runDiagnostics: IpcInvokeDefinition<'diagnostics:run', [options?: DiagnosticsRunOptions], DiagnosticsReport>
   exportDiagnostics: IpcInvokeDefinition<'diagnostics:export', [], { outputPath: string } | null>
   getRuntimeLogs: IpcInvokeDefinition<'runtime-logs:list', [limit?: number], RuntimeLogSnapshot>
   getFeedbackReport: IpcInvokeDefinition<'runtime-logs:preview-feedback', [], FeedbackReportPreview>
