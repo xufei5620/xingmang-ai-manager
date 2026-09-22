@@ -1,7 +1,9 @@
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
-import { OnboardingSettingRows, tutorialTopics } from './pages-maintenance'
+import { OnboardingSettingRows, TutorialPage, tutorialTopics } from './pages-maintenance'
+import { macDesktopTutorialTopic, macRuntimeTutorialTopic } from './registry/business'
+import { clientConnections } from './registry/clients'
 import { pages } from './registry/pages'
 import { errors } from './registry/errors'
 import { statuses } from './registry/status'
@@ -124,7 +126,7 @@ describe('tutorial topics', () => {
 
   it('tells a Mac customer how to install Node.js and Python by hand', () => {
     // 候选 10：macOS 上这两样应用不代装，首页给摘要、教程给完整步骤。
-    const topic = tutorialTopics.find((entry) => entry.id === 'runtime-mac')
+    const topic = tutorialTopics.find((entry) => entry.id === macRuntimeTutorialTopic)
     expect(topic, '缺少 macOS 运行环境教程章节').toBeDefined()
     const text = topic?.steps.map((step) => `${step.title}\n${step.detail}`).join('\n') ?? ''
     // 两条命令与首页那段提示必须是同一个字符串，否则两处文案会各走各的。
@@ -135,6 +137,42 @@ describe('tutorial topics', () => {
     // 不代装、不提权这条口径要写在教程里，和运行环境卡一致。
     expect(text).toContain('星芒不会替你跑这条命令')
     expect(text).toContain('重新检测')
+  })
+
+  it('tells a Mac customer how to install the four desktop clients by hand', () => {
+    // 第七批 3：macOS 上这四个桌面端点「安装」只能被带到教程，可教程里一度没有这一章。
+    const topic = tutorialTopics.find((entry) => entry.id === macDesktopTutorialTopic)
+    expect(topic, '缺少 macOS 桌面端教程章节').toBeDefined()
+    const text = topic?.steps.map((step) => `${step.title}\n${step.detail}`).join('\n') ?? ''
+    // 四个客户端的名字都要出现，名字从注册表取，改了名字这里会红。
+    expect(text).toContain('Codex 桌面端')
+    for (const client of clientConnections) expect(text, `教程里没写 ${client.name}`).toContain(client.name)
+    // 检测只认「应用程序」文件夹里的官方应用名，这两条不写清楚客户就卡在「装了但检测不到」。
+    expect(text).toContain('应用程序')
+    expect(text).toContain('重新检测')
+    // 装完怎么连当前账号是这一章的另一半；口径与外部客户端配置弹窗一致。
+    expect(text).toContain('检测模型')
+    expect(text).toContain('当前账号')
+    // 这两条各自的坑：Claude Desktop 要完全退出重开，Codex 两端共用一份配置。
+    expect(text).toContain('完全退出')
+    expect(text).toContain('共用一份配置')
+  })
+
+  it('opens at the chapter the caller asked for instead of the first one', () => {
+    // 首页那几行「安装指南」跳过来时要直接停在 macOS 那一章（第七批 3）。
+    const topic = tutorialTopics.find((entry) => entry.id === macDesktopTutorialTopic)
+    const markup = renderToStaticMarkup(
+      createElement(TutorialPage, { topic: { sequence: 1, id: macDesktopTutorialTopic } }),
+    )
+    expect(markup).toContain(`<h2>${topic?.title}</h2>`)
+    expect(markup).toContain(topic?.steps[0]?.title ?? '')
+  })
+
+  it('falls back to the first chapter when the requested one does not exist', () => {
+    const markup = renderToStaticMarkup(
+      createElement(TutorialPage, { topic: { sequence: 1, id: 'no-such-chapter' } }),
+    )
+    expect(markup).toContain(`<h2>${tutorialTopics[0].title}</h2>`)
   })
 
   it('only links steps at pages the shell can actually navigate to', () => {

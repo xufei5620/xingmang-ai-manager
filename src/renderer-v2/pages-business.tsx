@@ -18,6 +18,8 @@ export type BusinessPageProps = BusinessActions & {
   state?: V2SystemState
   refresh?: () => void
   accountTab?: Parameters<typeof AccountPage>[0]['initialTab']
+  /** 教程页要停在哪一章；缺省 = 从第一章开始（旧行为）。 */
+  tutorialTopic?: Parameters<typeof TutorialPage>[0]['topic']
   paymentReturn?: { sequence: number; order: string | null }
   /** 记录页「接着聊」成功后回调，用来作废首页那份「最近」缓存。 */
   onSessionResumed?: () => void
@@ -27,6 +29,7 @@ export function BusinessPage({
   api,
   page,
   accountTab,
+  tutorialTopic,
   paymentReturn,
   onSessionResumed,
   ...actions
@@ -53,7 +56,7 @@ export function BusinessPage({
   if (page === 'updates') return <UpdatesPage api={api} {...actions} />
   if (page === 'maintenance') return <MaintenancePage api={api} {...actions} />
   if (page === 'settings') return <SettingsPage api={api} {...actions} />
-  if (page === 'tutorial') return <TutorialPage {...actions} />
+  if (page === 'tutorial') return <TutorialPage {...actions} topic={tutorialTopic} />
   return null
 }
 
