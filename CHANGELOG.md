@@ -1049,6 +1049,7 @@
 - `requireConfigText` 多一个可选的字节上限参数：`~/.claude.json` 会随会话历史长，2MB 会误伤，
   这条路径用 16MB，与 `provider-extensions.ts` 读同一份文件时的上限一致。
 - 私有函数 `normalizeCodexWorkspaceKey` 改名为 `normalizeWorkspacePathKey`，现在三家共用。
+- `startupDiagnosticsIssues` 改收 `report.counts`，只把 `fail + error` 计入标题；只有 `warn` 时返回 null，同时有 `warn` 时正文补一句。`diagnostics.ts` 的级别判定没动。浏览器夹具新增 `diagnosticWarnings`，`diagnosticIssues` 改为计入 `fail`（第八批候选 2）。
 
 ## 0.2.8 - 2026-09-20
 
