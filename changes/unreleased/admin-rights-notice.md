@@ -26,9 +26,11 @@
 - `diagnostics.ts` 的 `ADMINISTRATOR` 项加可注入的 `inspectElevationCapability`，
   只在 `platform === 'win32'` 且当前不是管理员时问；`details` 多一个 `canElevate`
   （`true` / `false` / 探不出来时 `null`）。macOS 走原路径，输出一个字没变。
-- 渲染层新增 `src/renderer-v2/features/tools/elevation-notice.ts` 的
-  `elevatedInstallNotice(subject, platform, management)`，是首页运行环境卡、
-  「安装卸载」页与首页 Codex 桌面端那一行共用的唯一文案来源。Python 按当前用户装
-  （`InstallAllUsers=0`）、四个 CLI 走 npm，都不提权，所以都没有这句。
+- 渲染层新增 `src/renderer-v2/features/tools/elevation-notice.ts`：
+  `elevatedInstallNotice` 是完整一句，`elevatedInstallShortNotice` 是首页工具行
+  那一行小字放得下的短版，两者是所有出口的唯一文案来源。挂在四处：首页运行环境卡
+  （Node.js）、首页 Codex 桌面端那一行、「安装卸载」页的运行环境行与工具行。
+  Python 按当前用户装（`InstallAllUsers=0`）、四个 CLI 走 npm，都不提权，所以
+  都没有这句；探测失败的行也不出这句（那时并不知道它装没装，同 A4）。
 - 不做「以管理员身份重试」（已定不做），也不做免管理员的用户级 Node——那会撞
   `node-runtime.ts` 的受保护路径校验。第七批候选 4。

@@ -1,7 +1,7 @@
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
-import { OnboardingSettingRows, TutorialPage, tutorialTopics } from './pages-maintenance'
+import { OnboardingSettingRows, TutorialPage, tutorialTopics, withElevationNotice } from './pages-maintenance'
 import { macDesktopTutorialTopic, macRuntimeTutorialTopic } from './registry/business'
 import { clientConnections } from './registry/clients'
 import { pages } from './registry/pages'
@@ -207,5 +207,16 @@ describe('settings onboarding entries', () => {
     )
     expect(markup).toContain('data-testid="settings-start-guide"')
     expect(markup).not.toContain('data-testid="settings-replay-tour"')
+  })
+})
+
+describe('withElevationNotice', () => {
+  it('hangs the notice off the line the row already shows, with the same separator', () => {
+    // ToolStatusReason 把后面的原因也用 ' · ' 接上，这里换个分隔符会让一行里出现两种。
+    expect(withElevationNotice('OpenAI', '这一步需要管理员授权')).toBe('OpenAI · 这一步需要管理员授权')
+  })
+
+  it('leaves the row untouched where nothing elevates', () => {
+    expect(withElevationNotice('命令行工具需要的运行环境', null)).toBe('命令行工具需要的运行环境')
   })
 })
