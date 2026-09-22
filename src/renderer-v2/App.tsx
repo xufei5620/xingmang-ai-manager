@@ -43,7 +43,7 @@ import { readLocalPreference, writeLocalPreference } from './features/app/prefer
 import { rememberTourPending, rememberTourSeen, tourReplayPending } from './features/shell/tour-state'
 import { onboardingPreviewEnabled } from './features/app/dev-preview'
 import { deepLinkReadErrorText, supportQrFallbackText } from './features/app/fallback-messages'
-import { bootstrapAccountTools, type AccountBootstrapMode, type AccountBootstrapProgress, type AccountBootstrapResult } from './features/tools/account-bootstrap'
+import { bootstrapAccountTools, describeAccountBootstrapFailure, describeAccountBootstrapResult, type AccountBootstrapLogLine, type AccountBootstrapMode, type AccountBootstrapProgress, type AccountBootstrapResult } from './features/tools/account-bootstrap'
 import { rewritableKeyProviders } from './features/tools/connection-check'
 import { applyManualSourceMarker, getSourceMarkerStorage } from './features/tools/source-marker'
 import { idleOnlineResync, noteBootstrapOutcome, planOnlineResync } from './features/tools/online-resync'
@@ -167,7 +167,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     if (!mounted.current) return
     setStartupNotices((current) => withStartupNotice(current, notice))
     if (!notice.failure) return
-    void native.reportRendererError({ message: `${notice.title}：${notice.body}`, context: startupCheckLogContext(notice.id) }).catch(() => undefined)
+    void native.reportRendererError({ message: `${notice.title}：${notice.body}`, context: startupCheckLogContext(notice.id), level: 'warn' }).catch(() => undefined)
   }, [native])
   const dismissStartupNotice = useCallback((id: StartupCheckId) => {
     setStartupNotices((current) => withoutStartupNotice(current, id))
@@ -178,6 +178,8 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     void app.bootstrap().then((result) => {
       if (!current) return
       setSettings(result.settings); setPlatform(result.platform); setSession(result.session); setUpdate(result.update)
+      // 低配电脑只由主进程判断一次；这里只把结论挂到根节点上，星空背景据此只画静态一帧。
+      document.documentElement.dataset.lowEnd = String(result.capabilities.lowEndDevice === true)
       // 预览开关要等主进程说清这是不是打包版才生效，所以放在 bootstrap 里而不是
       // 初始 state；`boot !== 'ready'` 期间只渲染 Splash，用户看不到中间态。
       if (onboardingPreviewEnabled(window.location.search, result.update.development)) setGuide(true)
@@ -211,10 +213,16 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     // 的人正站在「检查」页上，横幅在他看不见的地方。用对象而不是 let，是因为赋值
     // 发生在闭包里，TypeScript 会把 let 的类型收窄成初始值。
     const outcome: { result?: AccountBootstrapResult; error?: string } = {}
+    // 这一轮给哪几家写了、跳过了谁、为什么，只进本机运行日志（info / warn 不上报），
+    // 客服拿到报告才看得出「登录成功」和「打开工具」之间发生了什么。
+    function logAccountBootstrap(line: AccountBootstrapLogLine) {
+      void native.reportRendererError({ message: line.message, context: 'account-bootstrap', level: line.level }).catch(() => undefined)
+    }
     const promise = (async () => {
       try {
         const result = await bootstrapAccountTools(native, userId, updateProgress, mode, onlyProviders)
         outcome.result = result
+        logAccountBootstrap(describeAccountBootstrapResult(mode, result))
         if (!mounted.current || epoch !== bootstrapEpoch.current) return
         setAccountBootstrap((current) => current && current.scope === bootstrapScope
           ? { ...current, phase: 'verifying', label: result.failed.length ? 'Key 同步完成，部分工具待处理' : 'Key 已写入，正在刷新工具状态', percent: 100, result }
@@ -225,6 +233,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
         await toolbox.refreshConfig().catch(() => undefined)
       } catch (cause) {
         outcome.error = errorMessage(cause, '账号 Key 初始化没有完成')
+        logAccountBootstrap(describeAccountBootstrapFailure(mode, outcome.error))
         if (!mounted.current || epoch !== bootstrapEpoch.current) return
         setWorkspaceEntered(true)
         setAccountBootstrap((current) => ({
@@ -310,7 +319,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
         // 「明明联网了 Key 还是没写上」时才有据可查。
         const reason = outcome?.error || outcome?.result?.failed.map((entry) => entry.message).join('；') || ''
         if (!reason) return
-        void native.reportRendererError({ message: `联网后自动补跑 Key 同步仍未完成：${reason}`, context: 'account-bootstrap-online-resync' }).catch(() => undefined)
+        void native.reportRendererError({ message: `联网后自动补跑 Key 同步仍未完成：${reason}`, context: 'account-bootstrap-online-resync', level: 'warn' }).catch(() => undefined)
       })
     }
     window.addEventListener('online', resume)

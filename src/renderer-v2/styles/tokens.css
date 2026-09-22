@@ -99,3 +99,31 @@
   --line:rgba(20,26,40,.35); --line-2:rgba(20,26,40,.55); --line-3:rgba(20,26,40,.65);
   --text-2:#23324A; --text-3:#3E4D65;
 }
+/* The two rules above are the prototype's high contrast, kept verbatim
+   (provenance.test.ts pins them). On their own they only darken lines and
+   secondary text, which is barely visible. The rules below extend them into one
+   complete palette per theme that replaces every skin: each skin's accent was
+   tuned for looks, not for 4.5:1 text or 3:1 control boundaries, and translucent
+   panels/lines inherit whatever sits beneath them. Every value is opaque (or
+   composited over an opaque token) so contrast-tokens.test.ts can check the
+   ratios without a DOM. :root keeps them ahead of the prototype rules. */
+:root[data-theme="dark"].hc[data-skin] {
+  --win:#02060D; --rail:#03080F; --bg:#050B16;
+  --panel:#0B1424; --panel-solid:#0B1424; --panel-hover:#18253C; --panel-2:#101C30;
+  --line:#7F8FA8; --line-2:#A6B4C9; --line-3:#D0DAE8;
+  --text:#FFFFFF; --text-2:#E3EAF4; --text-3:#C9D4E4; --kbd-bg:#18253C;
+  --accent:#FFD27A; --accent-2:#FFE0A3; --accent-fg:#000000; --accent-glow:transparent; --accent-soft:rgba(255,210,122,.2); --info:#9FD3FF;
+  --ok:#5EF0A8; --ok-soft:rgba(94,240,168,.16); --warn:#FFB066; --warn-soft:rgba(255,176,102,.16); --bad:#FF9E9E; --bad-soft:rgba(255,158,158,.16);
+  --overlay:rgba(0,0,0,.8); --btn-2-bg:#101C30; --btn-2-hover:#1C2A44; --bubble-user:rgba(255,210,122,.2);
+  --glow-top:none; --tile-ring:inset 0 0 0 1px #A6B4C9; --card-grad:#0B1424;
+}
+:root[data-theme="light"].hc[data-skin] {
+  --win:#FFFFFF; --rail:#F3F5F9; --bg:#FFFFFF;
+  --panel:#FFFFFF; --panel-solid:#FFFFFF; --panel-hover:#E8EDF4; --panel-2:#F0F3F8;
+  --line:#6B7890; --line-2:#4B5970; --line-3:#1F2C42;
+  --text:#020A18; --text-2:#17243A; --text-3:#2E3D56; --kbd-bg:#E8EDF4;
+  --accent:#0B1F3B; --accent-2:#1B3560; --accent-fg:#FFFFFF; --accent-glow:transparent; --accent-soft:rgba(11,31,59,.12); --info:#0B4FB3;
+  --ok:#0A6636; --ok-soft:rgba(10,102,54,.1); --warn:#8A3A06; --warn-soft:rgba(138,58,6,.1); --bad:#A01C1C; --bad-soft:rgba(160,28,28,.1);
+  --overlay:rgba(2,10,24,.6); --btn-2-bg:#FFFFFF; --btn-2-hover:#E8EDF4; --bubble-user:rgba(11,31,59,.1);
+  --glow-top:none; --tile-ring:inset 0 0 0 1px #4B5970; --card-grad:#FFFFFF;
+}

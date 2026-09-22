@@ -19,6 +19,7 @@ import { parseWindowState } from './window-preferences'
 import { parseWindowCloseReport, type WindowCloseReport } from './window-close-query'
 import { classifyNetworkFailure } from './network-failure'
 import type { ExternalDeepLink } from './external-deep-links'
+import { ExternalUrlBlockedError } from './external-url-blocked'
 import { savedAccountId, type SavedAccountsStore } from './saved-accounts'
 import { apiKeyDigest, type ConfigBackupAccountContext, type ConfigBackupStore } from './backups'
 import { parseLocalNoticeReadSync, type AnnouncementReadStore } from './announcement-read-store'
@@ -109,12 +110,14 @@ import type {
   AccountSessionState,
   AccountKeyCreateInput,
   AccountKeyUpdateInput,
+  AccountKeysPage,
   AiChatStartInput,
   AiImageGenerateInput,
   AccountManagedCliConfigurationInput,
   LegalDocumentKind,
   RememberedAccountLogin,
   RendererErrorPayload,
+  RendererLogLevel,
 } from './ipc-contract'
 import type { DiagnosticsReport } from './diagnostics'
 import type { ConnectionCheckResult } from './connection-check'
@@ -576,12 +579,19 @@ function parseProviderSessionListQuery(value: unknown): ProviderSessionListQuery
   }
 }
 
-function parseRendererError(value: unknown): { message: string; stack?: string; context?: string } {
+function parseRendererLogLevel(value: unknown): RendererLogLevel {
+  if (value === undefined) return 'error'
+  if (value === 'info' || value === 'warn' || value === 'error') return value
+  throw new Error('日志级别无效')
+}
+
+function parseRendererError(value: unknown): { message: string; stack?: string; context?: string; level: RendererLogLevel } {
   if (!isRecord(value)) throw new Error('渲染进程错误格式无效')
   return {
     message: requiredString(value.message, '错误消息', 4_096),
     stack: optionalString(value.stack, '错误堆栈', 16_384),
     context: optionalString(value.context, '错误上下文', 256),
+    level: parseRendererLogLevel(value.level),
   }
 }
 
@@ -1911,7 +1921,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
       typeof url !== 'string'
       || !isAllowedExternalUrl(url, options.externalUrlAllowlist)
     ) {
-      throw new Error('不允许打开该链接')
+      throw new ExternalUrlBlockedError()
     }
     await externalShell.openExternal(url)
     return true
@@ -2065,12 +2075,14 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   })
   registerTrustedHandler('runtime-logs:clear', () => options.runtimeLog.clear())
   registerTrustedHandler('runtime-logs:renderer-error', (_event, payload: unknown) => {
-    const error = parseRendererError(payload)
-    options.runtimeLog.log('error', 'renderer', 'renderer.error', error.message, {
+    const { level, ...error } = parseRendererError(payload)
+    options.runtimeLog.log(level, 'renderer', `renderer.${level}`, error.message, {
       context: error.context ?? null,
       stack: error.stack ?? null,
     })
-    options.onRendererError?.(error)
+    // 只有真正的渲染层错误才上报崩溃：info / warn 是渲染层留给排障的决策记录，
+    // 一并上报会把真正的异常淹没，也会把本该只留在本机的线索发出去。
+    if (level === 'error') options.onRendererError?.(error)
   })
   /**
    * 备份列表要标出每份备份里的 Key 是不是当前账号的。只读已有的 Key 缓存，从不
@@ -2588,9 +2600,36 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   registerTrustedHandler('account:get-tasks', (_event, input: unknown) => (
     accountService.getTasks(parseAccountTaskQuery(input))
   ))
-  registerTrustedHandler('account:list-keys', (_event, input: unknown) => (
-    accountService.listKeys(parseAccountKeysQuery(input))
-  ))
+  // Marks the keys a tool on this machine is using right now, so the keys page
+  // can warn before revoking one and put a fresh key back afterwards. "Using"
+  // means the key this app issued for that tool AND the tool's config still
+  // holds exactly it: a cached key the user has since replaced is not in use.
+  // Only the provider id crosses IPC, never the secret (I3). A display hint:
+  // any failure degrades to the unmarked list, the pre-existing behavior.
+  const markKeysInUse = async (page: AccountKeysPage, userId: number | undefined): Promise<AccountKeysPage> => {
+    if (!userId || !options.managedCliKeys || options.previewOnboarding) return page
+    const cached = await options.managedCliKeys.read(userId).catch(() => [])
+    if (accountService.getSessionState().account?.userId !== userId) return page
+    const inUse = new Map<number, ProviderId>()
+    for (const entry of cached) {
+      let configured = ''
+      try { configured = service.revealApiKey(entry.provider, options.previewOnboarding) } catch { continue }
+      if (configured && configured === entry.key) inUse.set(entry.id, entry.provider)
+    }
+    if (!inUse.size) return page
+    return {
+      ...page,
+      keys: page.keys.map((key) => {
+        const managedProvider = inUse.get(key.id)
+        return managedProvider ? { ...key, managedProvider } : key
+      }),
+    }
+  }
+  registerTrustedHandler('account:list-keys', (_event, input: unknown) => {
+    const query = parseAccountKeysQuery(input)
+    const userId = accountService.getSessionState().account?.userId
+    return accountService.listKeys(query).then((page) => markKeysInUse(page, userId))
+  })
   registerTrustedHandler('account:list-groups', () => accountService.listUsableGroups())
   registerTrustedHandler('account:revoke-key', async (_event, id: unknown) => {
     const keyId = parseAccountRevokeKeyId(id)
