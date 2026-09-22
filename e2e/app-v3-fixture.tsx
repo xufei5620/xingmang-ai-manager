@@ -82,7 +82,7 @@ const api = {
   openExternal: async () => true,
   replyWindowClose: async (requestId, report) => { window.appHarness.closeReports.push({ requestId, ...report }); return true },
   reportRendererError: async (input) => { window.appHarness.errors.push(input.message) },
-  launchCli: async () => {},
+  launchCli: async () => ({}),
   launchCodexDesktop: async () => ({ status: { ...snapshot.desktopApps.codex, running: true }, restarted: false }),
 } satisfies Partial<XingmangApi>
 

@@ -927,6 +927,8 @@ if (!hasSingleInstanceLock) {
           // 「Claude 命令确认方式」要分清 bypassPermissions 是我们写的还是别人写的。
           // 来源的判定要比对当前登录账号，只有 system-service 那边算得出来。
           readClaudeConfigOwnership: () => systemService.getConfig(false).providers.claude.configurationOwnership ?? null,
+          // 「项目文件夹里的设置」看的是用户最近一次选的项目文件夹，每次检查现读。
+          workspace: systemService.readStoredConfig().workspace,
         })
         return latestDiagnostics
       },

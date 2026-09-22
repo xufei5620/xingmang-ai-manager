@@ -3743,9 +3743,10 @@ describe('scan probe degradation', () => {
 })
 
 describe('trusting the workspace the user picked before opening a CLI', () => {
-  function launchService(userHome: string, provider: ProviderId) {
+  function launchService(userHome: string, provider: ProviderId, runtimeLog?: SystemServiceOptions['runtimeLog']) {
     return createService({
       platform: 'linux',
+      ...(runtimeLog ? { runtimeLog } : {}),
       providerRoots: { userHome, codexHome: path.join(userHome, '.codex') },
       inspectProviderConfig: vi.fn(() => ({
         baseUrl: 'https://xm.solov.cc',
@@ -3782,6 +3783,31 @@ describe('trusting the workspace the user picked before opening a CLI', () => {
     expect(claudeConfig.hasCompletedOnboarding).toBe(true)
     const trustedFolders = path.join(userHome, '.gemini', 'trustedFolders.json')
     expect(JSON.parse(fs.readFileSync(trustedFolders, 'utf8'))).toEqual({ [workspace]: 'TRUST_FOLDER' })
+  })
+
+  it('logs project settings that override the current account with key names only', async () => {
+    const userHome = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-launch-override-')))
+    temporaryDirectories.push(userHome)
+    const workspace = path.join(userHome, 'project')
+    fs.mkdirSync(path.join(workspace, '.claude'), { recursive: true })
+    fs.writeFileSync(path.join(workspace, '.claude', 'settings.local.json'), JSON.stringify({
+      env: { ANTHROPIC_BASE_URL: 'https://elsewhere.example', ANTHROPIC_AUTH_TOKEN: 'sk-project-secret' },
+    }))
+    const log = vi.fn()
+
+    // CLI 检测稳定答「没装」，打开必然失败；检查发生在它之前，日志照样记下。
+    await expect(launchService(userHome, 'claude', { log }).launchProvider('claude', workspace)).rejects.toThrow('未检测到 Claude Code')
+
+    const entry = log.mock.calls.find((call) => call[2] === 'workspace.config-override')
+    expect(entry?.slice(0, 3)).toEqual(['warn', 'config', 'workspace.config-override'])
+    expect(entry?.[4]).toEqual({
+      provider: 'claude',
+      severity: 'blocking',
+      scopes: ['project'],
+      files: ['.claude/settings.local.json：ANTHROPIC_BASE_URL、ANTHROPIC_AUTH_TOKEN'],
+    })
+    expect(JSON.stringify(log.mock.calls)).not.toContain('sk-project-secret')
+    expect(JSON.stringify(log.mock.calls)).not.toContain('elsewhere.example')
   })
 
   it('opens the tool anyway when the trust file cannot be written', async () => {
