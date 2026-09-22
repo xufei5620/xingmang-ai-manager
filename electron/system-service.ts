@@ -1922,6 +1922,12 @@ export interface SystemServiceOptions {
    * 生效了就把安装源顺序切成官方优先。见 download-acceleration.ts。
    */
   acquireDownloadAcceleration?: () => Promise<DownloadAccelerationLease>
+  /**
+   * 拉起 Codex 桌面端之前先把加速连上（完整连接，不是下载专用线路——桌面端
+   * 是独立进程，只认系统代理）。缺省 = 不做，行为与从前一致；实现永不抛错，
+   * 见 codex-desktop-acceleration.ts。
+   */
+  prepareCodexDesktopAcceleration?: () => Promise<void>
   /** runtime.jsonl sink for steps that are allowed to fail without blocking. */
   runtimeLog?: RuntimeLogLike
   /** 随包的中文 AGENTS.md 模板路径；缺省则打开目录时不生成项目说明。 */
@@ -3672,6 +3678,7 @@ export function createSystemService(
     spawnDetached,
     downloadFetch,
     reloadDownloadProxyConfig,
+    prepareAcceleration: serviceOptions.prepareCodexDesktopAcceleration,
     assertInstallDiskSpace,
   })
 
