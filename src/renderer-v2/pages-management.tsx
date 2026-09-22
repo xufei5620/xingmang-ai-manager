@@ -509,7 +509,7 @@ export function SessionsPage({
           // 列表重读一遍让这一行跟着置灰。
           if (!isMissingWorkspace(cause)) throw cause
           void Promise.all([resource.reload(), latestResource.reload()])
-          throw new Error('这条记录的文件夹已经不在了,接不上上次的对话。')
+          throw new Error('这条记录的文件夹已经不在了，接不上上次的对话。')
         }
       },
       `已打开${providerName(session.provider)}，接着 ${session.cwd} 里最近的一条对话`,
@@ -576,63 +576,63 @@ export function SessionsPage({
             // 「昨天还有的按钮今天没了」。
             const missingWorkspace = session.cwdExists === false
             return (
-            <ListRow
-              key={session.id}
-              title={
-                <>
-                  <BrandIcon tool={session.provider} size={24} />
-                  {session.title || '未命名会话'}
-                </>
-              }
-              badge={
-                <>
-                  {session.archived && <Pill>已归档</Pill>}
-                  {missingWorkspace && (
-                    <Pill tone="warn" testId={`sessions-missing-${session.id}`}>
-                      文件夹已不存在
-                    </Pill>
-                  )}
-                </>
-              }
-              desc={session.cwd || '未记录文件夹'}
-              descMono
-              meta={
-                <span>
-                  {session.model || '未记录模型'} ·{' '}
-                  {session.messageCount ?? '未知'} 条 ·{' '}
-                  {displayDate(session.updatedAt)}
-                </span>
-              }
-              actions={
-                <>
-                  {resumable.has(session.id) && !session.archived && (
+              <ListRow
+                key={session.id}
+                title={
+                  <>
+                    <BrandIcon tool={session.provider} size={24} />
+                    {session.title || '未命名会话'}
+                  </>
+                }
+                badge={
+                  <>
+                    {session.archived && <Pill>已归档</Pill>}
+                    {missingWorkspace && (
+                      <Pill tone="warn" testId={`sessions-missing-${session.id}`}>
+                        文件夹已不存在
+                      </Pill>
+                    )}
+                  </>
+                }
+                desc={session.cwd || '未记录文件夹'}
+                descMono
+                meta={
+                  <span>
+                    {session.model || '未记录模型'} ·{' '}
+                    {session.messageCount ?? '未知'} 条 ·{' '}
+                    {displayDate(session.updatedAt)}
+                  </span>
+                }
+                actions={
+                  <>
+                    {resumable.has(session.id) && !session.archived && (
+                      <Button
+                        size="sm"
+                        icon={Play}
+                        disabled={Boolean(operation.busy) || missingWorkspace}
+                        onClick={() => resume(session)}
+                        title={
+                          missingWorkspace
+                            ? '这条记录的文件夹已经不在了，接不上上次的对话'
+                            : '接着这个文件夹里最近一次对话'
+                        }
+                        testId={`sessions-resume-${session.id}`}
+                      >
+                        接着聊
+                      </Button>
+                    )}
                     <Button
                       size="sm"
-                      icon={Play}
-                      disabled={Boolean(operation.busy) || missingWorkspace}
-                      onClick={() => resume(session)}
-                      title={
-                        missingWorkspace
-                          ? '这条记录的文件夹已经不在了，接不上上次的对话'
-                          : '接着这个文件夹里最近一次对话'
-                      }
-                      testId={`sessions-resume-${session.id}`}
+                      icon={History}
+                      disabled={!session.detailAvailable}
+                      onClick={() => view(session)}
                     >
-                      接着聊
+                      查看记录
                     </Button>
-                  )}
-                  <Button
-                    size="sm"
-                    icon={History}
-                    disabled={!session.detailAvailable}
-                    onClick={() => view(session)}
-                  >
-                    查看记录
-                  </Button>
-                </>
-              }
-              testId={`sessions-row-${session.id}`}
-            />
+                  </>
+                }
+                testId={`sessions-row-${session.id}`}
+              />
             )
           })}
         </ListState>
