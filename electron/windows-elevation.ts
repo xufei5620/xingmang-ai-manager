@@ -44,6 +44,8 @@ export interface TrustedElevatedCliCommandOptions {
 
 export type WindowsCliExecutionMode = 'trusted-only' | 'same-user'
 export type WindowsTokenElevationType = 'default' | 'full' | 'limited'
+/** 这个账号能不能自己提权：administrator = 在管理员组，standard = 不在，unknown = 没问出来。 */
+export type WindowsElevationCapability = 'administrator' | 'standard' | 'unknown'
 
 export interface ResolveWindowsCliExecutionModeOptions {
   isPackaged: boolean
@@ -147,6 +149,97 @@ export async function inspectCurrentWindowsProcessAdministrator(
   if (value === 'true') return true
   if (value === 'false') return false
   throw new Error('无法确认当前 Windows 进程是否具有管理员权限')
+}
+
+/** S-1-5-32-544 is BUILTIN\Administrators on every Windows install and in every language. */
+export const windowsElevationCapabilityScript = [
+  '$identity=[Security.Principal.WindowsIdentity]::GetCurrent()',
+  '$sids=@($identity.Groups | ForEach-Object { $_.Value })',
+  "if ($sids -contains 'S-1-5-32-544') { 'administrator' } else { 'standard' }",
+].join(';')
+
+export function parseWindowsElevationCapability(value: string): WindowsElevationCapability {
+  const normalized = value.trim().toLowerCase()
+  if (normalized === 'administrator' || normalized === 'standard') return normalized
+  return 'unknown'
+}
+
+/**
+ * Whether this Windows account can raise itself to administrator at all. This is a
+ * different question from `inspectCurrentWindowsProcessAdministrator`, which only
+ * reports the *current* token: under UAC an administrator normally runs filtered,
+ * so that probe answers "no" for an account that can elevate with one click, and
+ * also "no" for a standard account that cannot elevate without someone else's
+ * password. Node.js and the Codex desktop package both need a real elevation, so
+ * the two cases have to be told apart before the UAC prompt appears.
+ *
+ * A UAC-filtered token still carries BUILTIN\Administrators in its group list
+ * (as deny-only), which is why group membership survives the filtering and can be
+ * read from the ordinary, unelevated process. The SID is compared numerically so
+ * the answer does not depend on the Windows display language.
+ */
+export async function inspectWindowsElevationCapability(
+  options: WindowsAdministratorProbeOptions & { signal?: AbortSignal } = {},
+): Promise<WindowsElevationCapability> {
+  if (process.platform !== 'win32') return 'unknown'
+  const env = options.env ?? process.env
+  const machinePaths = options.machinePaths ?? resolveWindowsMachinePaths()
+  try {
+    const { stdout } = await execFileAsync(
+      resolveWindowsPowerShellExecutable({ env, machinePaths }),
+      [
+        '-NoLogo',
+        '-NoProfile',
+        '-NonInteractive',
+        '-Command',
+        windowsElevationCapabilityScript,
+      ],
+      {
+        env: trustedCommandEnvironment(env, machinePaths),
+        windowsHide: true,
+        timeout: options.timeoutMs ?? 8_000,
+        maxBuffer: 64 * 1024,
+        signal: options.signal,
+      },
+    )
+    return parseWindowsElevationCapability(stdout)
+  } catch {
+    // Never let this probe break an install or a self-check: an unknown answer
+    // only means the extra sentence is left out.
+    return 'unknown'
+  }
+}
+
+/**
+ * The sentence appended when the account provably cannot elevate on its own.
+ * Deliberately not an instruction to re-run the app as administrator: running
+ * elevated bypasses the problem instead of fixing it, and this app is built to
+ * run unelevated (I2 keeps the elevation boundary narrow on purpose).
+ */
+export function windowsStandardAccountAdvice(): string {
+  return '这个 Windows 账号不在管理员组，需要在授权窗口里输入一个管理员账号的密码才能继续；公司或学校的电脑请联系 IT 协助。'
+}
+
+/** 用户在授权窗口点了「否」或直接关掉。 */
+export function windowsElevationCancelledMessage(
+  subject: string,
+  capability: WindowsElevationCapability = 'unknown',
+): string {
+  const head = `已取消管理员授权，${subject}安装未开始。`
+  return capability === 'standard'
+    ? `${head}${windowsStandardAccountAdvice()}`
+    : `${head}重新点击安装即可再次授权。`
+}
+
+/** 授权窗口出现过，但没拿到管理员权限（多半是账号本身没有）。 */
+export function windowsElevationDeniedMessage(
+  subject: string,
+  capability: WindowsElevationCapability = 'unknown',
+): string {
+  const head = `未获得管理员权限，${subject}安装已停止。`
+  return capability === 'standard'
+    ? `${head}${windowsStandardAccountAdvice()}`
+    : `${head}请在弹出的授权窗口点击「是」；如果这台电脑用的是普通账号，需要输入一个管理员账号的密码。`
 }
 
 export function parseWindowsTokenElevationType(value: string): WindowsTokenElevationType | null {

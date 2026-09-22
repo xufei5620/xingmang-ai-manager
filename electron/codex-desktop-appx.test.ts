@@ -8,6 +8,7 @@ import {
   addCodexDesktopPackage,
   buildCodexAppxElevationScript,
   buildCodexAppxUacBrokerScript,
+  codexDesktopElevationFailureMessage,
   requiresCodexAppxElevation,
 } from './codex-desktop-appx'
 import { resolveWindowsPowerShellExecutable } from './windows-elevation'
@@ -22,8 +23,10 @@ function fixture() {
   const run = vi.fn<(executable: string, argv: string[]) => Promise<void>>().mockResolvedValue(undefined)
   const resolvePowerShell = vi.fn(() => powershell)
   const onElevationRequired = vi.fn()
-  const install = (file = packagePath, hash = sha256Base64) => addCodexDesktopPackage(file, { sha256Base64: hash, onElevationRequired }, { run, resolvePowerShell })
-  return { run, resolvePowerShell, onElevationRequired, install }
+  // 提权探测在单测里一律注入：真跑它会在 Windows 分片上多起一次 PowerShell。
+  const inspectElevationCapability = vi.fn(async () => 'unknown' as const)
+  const install = (file = packagePath, hash = sha256Base64) => addCodexDesktopPackage(file, { sha256Base64: hash, onElevationRequired }, { run, resolvePowerShell, inspectElevationCapability })
+  return { run, resolvePowerShell, onElevationRequired, inspectElevationCapability, install }
 }
 
 function decodeScript(argv: string[]): string {
@@ -180,7 +183,7 @@ describe('Codex Desktop Appx installation flow', () => {
   it('supports a buffered HRESULT diagnostic and an omitted progress callback', async () => {
     const f = fixture()
     f.run.mockRejectedValueOnce({ stderr: Buffer.from('安装失败 (0x80073D28)', 'utf8') })
-    await expect(addCodexDesktopPackage(packagePath, { sha256Base64 }, { run: f.run, resolvePowerShell: f.resolvePowerShell })).resolves.toBeUndefined()
+    await expect(addCodexDesktopPackage(packagePath, { sha256Base64 }, { run: f.run, resolvePowerShell: f.resolvePowerShell, inspectElevationCapability: f.inspectElevationCapability })).resolves.toBeUndefined()
     expect(f.run).toHaveBeenCalledTimes(2)
   })
 
@@ -333,5 +336,24 @@ describe('Codex Desktop Appx script boundaries', () => {
     expect(commandLineLength(executable, argv)).toBeLessThan(8191)
     const failure = await runPowerShellScript(executable, argv).catch((error: unknown) => error)
     expect(failure).toMatchObject({ code: 2225, stdout: '' })
+  })
+})
+
+describe('codexDesktopElevationFailureMessage', () => {
+  it('keeps telling the codes apart', () => {
+    expect(codexDesktopElevationFailureMessage(1223)).toContain('已取消管理员授权')
+    expect(codexDesktopElevationFailureMessage(740)).toContain('未获得管理员权限')
+    expect(codexDesktopElevationFailureMessage(2225)).toContain('不同的 Windows 账号')
+    expect(codexDesktopElevationFailureMessage(13)).toContain('重新下载')
+    // 归不了类的退出码要落回带退出码和事件日志的那一句，别被这里吃掉。
+    expect(codexDesktopElevationFailureMessage(1603)).toBeNull()
+    expect(codexDesktopElevationFailureMessage(Number.NaN)).toBeNull()
+  })
+
+  it('points a standard account at an administrator password instead of a retry', () => {
+    expect(codexDesktopElevationFailureMessage(1223, 'standard')).toContain('不在管理员组')
+    expect(codexDesktopElevationFailureMessage(740, 'standard')).toContain('管理员账号的密码')
+    expect(codexDesktopElevationFailureMessage(1223, 'administrator')).toContain('重新点击安装')
+    expect(codexDesktopElevationFailureMessage(1223)).not.toContain('不在管理员组')
   })
 })
