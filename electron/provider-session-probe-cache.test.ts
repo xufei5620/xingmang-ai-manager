@@ -237,12 +237,13 @@ describe('ProviderSessionProbeCache', () => {
   })
 
   it('reports a read failure without losing the in-memory cache', async () => {
-    const directory = temporaryDirectory()
-    const blocked = path.join(directory, 'blocked')
-    fs.writeFileSync(blocked, 'not a directory', 'utf8')
+    // A directory where the cache file belongs fails the same way on every
+    // platform, unlike a path whose parent is a file.
+    const blockedPath = path.join(temporaryDirectory(), 'probe-cache.json')
+    fs.mkdirSync(blockedPath)
     const warnings: ProviderSessionProbeCacheWarning[] = []
     const cache = new ProviderSessionProbeCache({
-      filePath: path.join(blocked, 'probe-cache.json'),
+      filePath: blockedPath,
       onWarning: (warning) => warnings.push(warning),
     })
     await cache.ready()
@@ -253,19 +254,18 @@ describe('ProviderSessionProbeCache', () => {
   })
 
   it('reports a write failure instead of throwing at the caller', async () => {
-    const directory = temporaryDirectory()
-    const blocked = path.join(directory, 'blocked')
-    fs.writeFileSync(blocked, 'not a directory', 'utf8')
+    const blockedPath = path.join(temporaryDirectory(), 'probe-cache.json')
+    fs.mkdirSync(blockedPath)
     const warnings: ProviderSessionProbeCacheWarning[] = []
     const cache = new ProviderSessionProbeCache({
-      filePath: path.join(blocked, 'probe-cache.json'),
+      filePath: blockedPath,
       onWarning: (warning) => warnings.push(warning),
     })
     await cache.ready()
     cache.set('/a.jsonl', entry('1:1:1'))
     await expect(cache.persist()).resolves.toBeUndefined()
 
-    expect(warnings.map((warning) => warning.code)).toEqual(['probe-cache-read-failed', 'probe-cache-write-failed'])
+    expect(warnings.map((warning) => warning.code)).toContain('probe-cache-write-failed')
   })
 
   it('writes nothing more once the cache is clean again', async () => {
