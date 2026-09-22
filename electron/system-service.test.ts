@@ -1785,14 +1785,17 @@ describe.runIf(process.platform === 'darwin')('Darwin managed npm update integra
     const npmExecutable = path.join(runtimeBin, 'npm')
     fs.writeFileSync(npmExecutable, '#!/bin/sh\nexit 0\n')
     fs.chmodSync(npmExecutable, 0o700)
-    const expectedVersion = '0.146.0'
+    // Codex 现在有推荐版本(cli-verified-versions.ts),所以托管安装钉版本、走
+    // 按版本号的 npm 元数据端点,而不是 latest。断言跟着名单走,抬版本的 PR
+    // 只改名单即可,不必回来改这个夹具。
+    const expectedVersion = recommendedCodexVersion()
     const integrity = `sha512-${Buffer.alloc(64, 0x31).toString('base64')}`
     vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request) => {
       const url = String(input)
       if (url.includes('cloudflare.com/cdn-cgi/trace')) {
         return new Response('ip=203.0.113.8\nloc=US\n', { status: 200 })
       }
-      if (url === npmPackageLatestUrl('https://registry.npmjs.org', '@openai/codex')) {
+      if (url === npmPackageVersionUrl('https://registry.npmjs.org', '@openai/codex', expectedVersion)) {
         return new Response(JSON.stringify({
           name: '@openai/codex',
           version: expectedVersion,
@@ -2889,6 +2892,16 @@ function recommendedClaudeVersion(): string {
   // goes back to `null` these two assertions stop testing the pinned-install
   // behaviour entirely, so fail loudly rather than silently assert nothing.
   if (!recommended) throw new Error('cliVerifiedVersions.claude 必须有推荐版本')
+  return recommended.version
+}
+
+function recommendedCodexVersion(): string {
+  const recommended = cliVerifiedVersions.codex.recommended
+  // Codex was pinned on 2026-09-21 to escape the 0.155.0 reasoning-summary
+  // regression. If it ever goes back to `null` the managed install falls back
+  // to the latest endpoint and this fixture's version-URL mock stops matching,
+  // so fail loudly rather than mock a request the code no longer makes.
+  if (!recommended) throw new Error('cliVerifiedVersions.codex 必须有推荐版本')
   return recommended.version
 }
 
