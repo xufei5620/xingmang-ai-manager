@@ -756,14 +756,15 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   // 出了新版本，记录随之变化，才会再提醒。
   const toolUpdateKey = updateNoticeKey(toolUpdates)
   useEffect(() => {
-    if (!toolbox.snapshot) return
+    // 开机先画出来的上次结果不算：那时说的「有新版本」可能早就更新过了。
+    if (!toolbox.snapshot || toolbox.snapshot.system.cachedAt) return
     if (unannouncedToolUpdates(toolUpdates, readAnnouncedToolUpdates()).length > 0) {
       void platformApi()?.notifyActivity('cliUpdate', toolUpdateKey).catch(() => undefined)
     }
     rememberAnnouncedToolUpdates(toolUpdates)
     // toolUpdateKey 已经把这一轮的工具与目标版本压成一个字符串，
     // 快照里别的字段变化（余额、运行环境）不该重新触发这段。
-  }, [toolUpdateKey, Boolean(toolbox.snapshot)])
+  }, [toolUpdateKey, Boolean(toolbox.snapshot), Boolean(toolbox.snapshot?.system.cachedAt)])
   useEffect(() => {
     if (balanceAmount === null) return
     const previous = previousBalance.current

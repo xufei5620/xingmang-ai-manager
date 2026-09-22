@@ -205,7 +205,9 @@ export function Home(props: HomeProps) {
     // 否则用户会以为自己的配置丢了。工具本身的安装、卸载不受影响。
     const configUnavailable = !tool.error && tool.status.installed
       && props.failures?.some((failure) => failure.partition === 'config') === true
-    const ownershipPending = snapshot !== null && ownershipAwaitingAccount(snapshot.config, tool)
+    // 开机先画出来的是上次的检测结果（cachedAt），装没装、配置归谁都可能已经变了，
+    // 这时不下「被改过」「第三方配置」的结论，真结果回来再说。
+    const ownershipPending = snapshot !== null && (Boolean(snapshot.system.cachedAt) || ownershipAwaitingAccount(snapshot.config, tool))
     const status = installJob ? 'installing' : tool.error ? 'detectionFailed' : !tool.status.installed ? 'missing'
       : configUnavailable ? 'configUnavailable'
       : tool.source === 'changed' && !ownershipPending ? 'configChanged'
@@ -347,6 +349,7 @@ export function Home(props: HomeProps) {
     {props.externalError && <div role="alert" className="v2-callout is-bad"><span>客户端状态暂未读到：{props.externalError}</span><Button size="xs" onClick={props.onScan}>重新检测</Button></div>}
     {snapshot && configFailure && <div role="alert" className="v2-callout is-bad" data-testid="home-config-failure"><span>工具配置暂未读到：{configFailure.message}工具列表、安装和卸载照常可用；点工具行的“重新配置”可以重新写入。</span><Button size="xs" onClick={props.onScan}>重新检测</Button></div>}
     {props.supportsBilling !== false && dollars !== null && dollars < 5 && <div role="status" className="v2-callout is-bad"><Zap size={18} /><span>余额只剩 ${dollars.toFixed(2)}，充值后可继续使用。</span><Button size="sm" variant="balance" onClick={() => props.onNavigate('account', 'recharge')}>马上充值</Button></div>}
+    {loading && snapshot?.system.cachedAt && <div className="v2-loading-inline" role="status" data-testid="home-cached-scan">正在检查本机工具，先显示上次的结果。</div>}
     <div className="v2-home-grid">
       <div className="v2-home-main">
         {!ready && !loading && !configFailure && <Card title="开始使用" meta="第 1 步，共 4 步" padding="none" testId="home-setup">

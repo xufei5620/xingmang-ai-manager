@@ -893,6 +893,8 @@ if (!hasSingleInstanceLock) {
     })
     const systemService = createSystemService(settingsStore, {
       managerDataDirectory,
+      systemSnapshotCacheFile: path.join(managerDataDirectory, 'system-snapshot.json'),
+      appVersion: app.getVersion(),
       getRelaySiteId: () => readAccountSiteId(),
       getExternalClientAccountId: () => readExternalClientAccountId(),
       windowsExecutionMode: windowsCliExecutionMode,
