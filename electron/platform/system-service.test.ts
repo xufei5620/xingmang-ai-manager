@@ -5,6 +5,7 @@ import { loginLaunchArgument } from '../login-launch'
 import {
   migrateLegacyWindowsLoginItem,
   PlatformSystemService,
+  removeWindowsLoginItem,
   summarizeSessionProxy,
   type PlatformSystemDependencies,
 } from './system-service'
@@ -192,6 +193,25 @@ describe('platform system preferences', () => {
       requested: true,
       enabled: false,
     })
+  })
+  it('removes both the current and the pre-0.2.9 Windows login item on uninstall', () => {
+    for (const args of [[loginLaunchArgument], []]) {
+      const state = setup()
+      state.registerWindowsLoginItem(args)
+      expect(removeWindowsLoginItem(state.dependencies)).toBe(true)
+      expect(state.app.setLoginItemSettings).toHaveBeenCalledWith({
+        openAtLogin: false,
+        path: 'C:/Test App/xingmang.exe',
+        args: [loginLaunchArgument],
+      })
+      expect(state.registeredWindowsLoginArgs()).toBeNull()
+    }
+  })
+  it('reports a Windows login item that is still registered after removal', () => {
+    const state = setup()
+    state.registerWindowsLoginItem([loginLaunchArgument])
+    state.app.setLoginItemSettings.mockImplementation(() => undefined)
+    expect(removeWindowsLoginItem(state.dependencies)).toBe(false)
   })
   it('does not touch login items that were never registered or outside packaged Windows', () => {
     for (const state of [setup(), setup('win32', false), setup('darwin')]) {

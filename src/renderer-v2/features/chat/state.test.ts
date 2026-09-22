@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest'
-import { activeConversation, applyStreamEvent, chatErrorMessage, createConversation, createWorkspace, DEFAULT_CHAT_GROUP, DEFAULT_CHAT_MODEL, DEFAULT_IMAGE_MODEL, defaultChatSettings, filterConversations, isChatKeyQuotaError, planTurn, resolveChatGroup, resolveChatModel, saveConversation, shouldSendOnEnter, type ChatMessage, type ChatWorkspace } from './state'
+import { relayQuotaFailureMessages } from '../../../../electron/relay-quota-failure'
+import { activeConversation, applyStreamEvent, chatErrorAction, chatErrorMessage, createConversation, createWorkspace, DEFAULT_CHAT_GROUP, DEFAULT_CHAT_MODEL, DEFAULT_IMAGE_MODEL, defaultChatSettings, filterConversations, planTurn, resolveChatGroup, resolveChatModel, saveConversation, shouldSendOnEnter, type ChatMessage, type ChatWorkspace } from './state'
 import { createParameterDraft, parseParameters } from './parameters'
 import { historyKey, importLegacyHistory, readWorkspace, writeWorkspace } from './storage'
 import { inspectModel, validateImageRequest } from './api'
-import { chatKeyQuotaExhaustedMessage } from '../../../../electron/account-key-quota'
 
 function readyConversation() { const conversation = createConversation(undefined, 'conversation-1'); conversation.settings.group = 'group-a'; conversation.settings.model = 'gpt-test'; return conversation }
 function turn(conversation = readyConversation()) { return planTurn(conversation, { prompt: 'first question', requestId: 'request-1', assistantId: 'assistant-1', userMessageId: 'user-1' }) }
@@ -59,12 +59,15 @@ describe('v2 chat request transitions', () => {
     expect(chatErrorMessage('当前模型不可用', 'model-unavailable')).toBe('当前模型不在所选分组的可用列表中，请刷新后重新选择')
     expect(chatErrorMessage('无法连接 AI 服务，请检查网络后重试', 'network-error')).toBe('无法连接 AI 服务，请检查网络后重试')
   })
-  it('names a used-up chat key cap plainly so the page can offer the quota button', () => {
-    const quota = chatKeyQuotaExhaustedMessage
-    expect(chatErrorMessage(quota, 'key-quota-exhausted')).toBe(quota)
-    expect(chatErrorMessage(new Error(`Error invoking remote method 'chat:generate-image': Error: ${quota}`))).toBe(quota)
-    expect(isChatKeyQuotaError(chatErrorMessage(quota, 'key-quota-exhausted'))).toBe(true)
-    expect(isChatKeyQuotaError(chatErrorMessage('服务返回 401'))).toBe(false)
+
+  it('keeps the main process quota sentences and offers the matching account page', () => {
+    const wrapped = `Error invoking remote method 'ai-image:generate': Error: ${relayQuotaFailureMessages.keyLimit}`
+    expect(chatErrorMessage(new Error(wrapped))).toBe(relayQuotaFailureMessages.keyLimit)
+    expect(chatErrorMessage(relayQuotaFailureMessages.balance, 'upstream-http-error')).toBe(relayQuotaFailureMessages.balance)
+    expect(chatErrorAction(relayQuotaFailureMessages.balance)).toBe('recharge')
+    expect(chatErrorAction(relayQuotaFailureMessages.keyLimit)).toBe('keys')
+    expect(chatErrorAction(relayQuotaFailureMessages.keyInvalid)).toBeNull()
+    expect(chatErrorAction(undefined)).toBeNull()
   })
   it('edits one user turn and removes dependent later replies before resubmitting', () => {
     const first = turn(); const original = first.conversation

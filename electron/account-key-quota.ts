@@ -1,4 +1,5 @@
 import { providerIds, resolveManagedCliKeyProfiles, type ProviderId } from './catalog'
+import { relayQuotaFailureMessages } from './relay-quota-failure'
 import type { AccountKey, AccountKeyUpdateInput } from './ipc-contract'
 
 // The two account backends record a single key's allowance in different
@@ -56,8 +57,11 @@ export function isKeyQuotaExhaustedMessage(message: string): boolean {
  */
 export const managedKeyQuotaExhaustedMessage = '这个工具的额度用完了，软件不会自动放开。到「账号」页「密钥」里调高这个工具的额度后再试。'
 
-/** AI 工作台聊天自己那把 Key 的上限用完了：同样停下，不去换一把不限额的。 */
-export const chatKeyQuotaExhaustedMessage = '聊天用的密钥额度用完了，软件不会自动放开。到「账号」页「密钥」里调高它的额度后再试。'
+/**
+ * AI 工作台聊天自己那把 Key 的上限用完了：同样停下，不去换一把不限额的。用的是
+ * relay-quota-failure 里那句现成的话，聊天页认得它，会在旁边给「去调额度」。
+ */
+export const chatKeyQuotaExhaustedMessage = relayQuotaFailureMessages.keyLimit
 
 /** 按 id 在账号的密钥列表里找一把 Key；最多翻 5 页（500 把），找不到返回 null。 */
 export async function findAccountKeyById<T extends { id: number }>(

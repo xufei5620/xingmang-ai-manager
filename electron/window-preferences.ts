@@ -120,6 +120,56 @@ export function resolveWindowPlacement(
   }
 }
 
+// 标题栏是用户唯一能抓住窗口拖回来的地方。它在任何一块屏幕上还露出一截抓得住
+// 的，就当是用户自己拖到边上的，不去动它；只有整条标题栏都够不着才挪。
+const TITLE_BAND_HEIGHT = 36
+const REACHABLE_TITLE_WIDTH = 100
+const REACHABLE_TITLE_HEIGHT = 20
+
+function overlapSize(bounds: WindowBounds, workArea: WindowBounds): { width: number; height: number } {
+  return {
+    width: Math.max(0, Math.min(bounds.x + bounds.width, workArea.x + workArea.width) - Math.max(bounds.x, workArea.x)),
+    height: Math.max(0, Math.min(bounds.y + bounds.height, workArea.y + workArea.height) - Math.max(bounds.y, workArea.y)),
+  }
+}
+
+export function isWindowTitleReachable(bounds: WindowBounds, displays: readonly WindowDisplay[]): boolean {
+  const band = { x: bounds.x, y: bounds.y, width: bounds.width, height: Math.min(TITLE_BAND_HEIGHT, bounds.height) }
+  const minimumWidth = Math.min(REACHABLE_TITLE_WIDTH, band.width)
+  const minimumHeight = Math.min(REACHABLE_TITLE_HEIGHT, band.height)
+  return displays.some((display) => {
+    if (!parseBounds(display.workArea)) return false
+    const overlap = overlapSize(band, display.workArea)
+    return overlap.width >= minimumWidth && overlap.height >= minimumHeight
+  })
+}
+
+/**
+ * 窗口创建之后显示器还会变：白天拖到外接屏上、缩到托盘，晚上拔线回家再从托盘
+ * 唤出，窗口就停在一块已经不存在的屏幕坐标上。`visible` 是窗口此刻的实际位置
+ * （最大化时就是最大化后的位置），`restore` 是还原尺寸；够不着时按还原尺寸挪回
+ * 主屏居中。返回 null 表示不用动，或者根本没有能用的屏幕可挪。
+ */
+export function resolveRecoveredWindowBounds(
+  visible: WindowBounds,
+  restore: WindowBounds,
+  displays: readonly WindowDisplay[],
+  primaryId: WindowDisplay['id'],
+): WindowBounds | null {
+  const available = displays.filter((display) => parseBounds(display.workArea))
+  const primary = available.find((display) => display.id === primaryId) ?? available[0]
+  if (!primary || isWindowTitleReachable(visible, available)) return null
+  const area = primary.workArea
+  const width = clamp(restore.width, Math.min(960, area.width), area.width)
+  const height = clamp(restore.height, Math.min(560, area.height), area.height)
+  return {
+    x: area.x + Math.round((area.width - width) / 2),
+    y: area.y + Math.round((area.height - height) / 2),
+    width,
+    height,
+  }
+}
+
 /**
  * Uses the complete WebContents width in DIP, before browser zoom.
  *

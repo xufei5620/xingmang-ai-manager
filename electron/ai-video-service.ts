@@ -13,6 +13,7 @@ import type { AiStoredVideoAsset } from './ai-video-asset-store'
 import { AI_VIDEO_TASK_VERSION, normalizeAiVideoTaskPrompt } from './ai-video-task-store'
 import type { AiVideoTaskStore, StoredAiVideoTask } from './ai-video-task-store'
 import type { AiOperationProgressObserver, AiOperationProgressUpdate } from './ai-operation-progress'
+import { classifyRelayQuotaFailure, relayQuotaFailureMessages } from './relay-quota-failure'
 
 const DEFAULT_POLL_INTERVAL_MS = 2_000
 const DEFAULT_MAXIMUM_POLL_INTERVAL_MS = 10_000
@@ -126,8 +127,8 @@ function videoRequestFailure(
   if (provider === 'minimax-h3' && /invalid\s+url\s*\(\s*post\b.*(?:video_generation|\[本地路径\])/i.test(detail)) {
     return new Error('MiniMax 视频渠道协议配置错误：当前渠道仍在使用旧 Hailuo 接口，请管理员改为 Sora/OpenAI Video 透传后重试；本次未创建任务')
   }
-  if (status === 401) return new Error('视频 API Key 已失效，请重新创建或更换密钥')
-  if (status === 403 && /insufficient|quota|额度不足/i.test(detail)) return new Error('账号余额或 API Key 额度不足，请充值后重试')
+  const quota = classifyRelayQuotaFailure(status, detail)
+  if (quota) return new Error(relayQuotaFailureMessages[quota])
   if (status === 403) return new Error('当前账号暂无该视频模型权限，请切换其他模型')
   if (status === 413) return new Error('视频参考素材超过接口大小限制，请压缩或减少素材后重试')
   if (status === 422) return new Error(detail ? `视频参数或参考素材不合法：${detail}` : '视频参数或参考素材不合法，请检查生成模式和素材数量')

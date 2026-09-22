@@ -6,6 +6,7 @@ import {
   isCurrentBootEntry,
   readEntryProcessId,
   runtimeLogSourceOptions,
+  runtimeLogWriteNotice,
   type RuntimeLogEntry,
   type RuntimeLogFilter,
 } from './runtime-log-filter'
@@ -141,5 +142,26 @@ describe('formatRuntimeLogEntry', () => {
   it('appends the detail as JSON when there is one', () => {
     const detailed = entry({ id: '2026-09-22T06:00:02.000Z:4242:3', detail: { code: 'ENOENT' } })
     expect(formatRuntimeLogEntry(detailed)).toBe('[2026-09-22T06:00:02.000Z] [INFO] [main/test] 消息 {"code":"ENOENT"}')
+  })
+})
+
+describe('runtimeLogWriteNotice', () => {
+  it('stays silent while every entry reached the log file', () => {
+    expect(runtimeLogWriteNotice(undefined)).toBeNull()
+    expect(runtimeLogWriteNotice({ reason: '磁盘满了', lostEntries: 0, firstFailedAt: '2026-09-22T00:00:00.000Z' })).toBeNull()
+  })
+
+  it('says how many entries were lost, why, and that they are still shown here', () => {
+    const notice = runtimeLogWriteNotice({
+      reason: '日志所在的文件夹被搬到了别的位置',
+      lostEntries: 12,
+      firstFailedAt: '2026-09-22T00:00:00.000Z',
+    })
+    expect(notice?.title).toBe('日志没能保存下来')
+    expect(notice?.body).toContain('12 条')
+    expect(notice?.body).toContain('日志所在的文件夹被搬到了别的位置')
+    expect(notice?.body).toContain('导出反馈报告时也会带上')
+    // 面向小白：不出现路径里的技术名词。
+    expect(notice?.body).not.toMatch(/AppData|junction|联接|符号链接/)
   })
 })

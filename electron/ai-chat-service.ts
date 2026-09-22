@@ -8,6 +8,7 @@ import {
 import { chatKeyQuotaExhaustedMessage } from './account-key-quota'
 import { ChatKeyQuotaExhaustedError, type ChatCredentialCoordinator } from './chat-credential-coordinator'
 import { observeAiOperation, type AiOperationStartedObserver } from './ai-operation-lifecycle'
+import { classifyRelayQuotaFailure, extractRelayErrorDetail, relayQuotaFailureMessages } from './relay-quota-failure'
 
 export const AI_CHAT_STREAM_LIMITS = {
   requestIdLength: 160,
@@ -274,30 +275,45 @@ function responseOriginIsTrusted(response: Response, expectedOrigin: string): bo
   }
 }
 
-async function discardBoundedErrorBody(
+/**
+ * The error body is read (bounded) only so the three quota cases can be told
+ * apart; its text never leaves this function's caller as-is. An oversized or
+ * undecodable body degrades to '', which keeps the old status-only wording.
+ */
+async function readBoundedErrorDetail(
   response: Response,
   maximumBytes: number,
-): Promise<void> {
+): Promise<string> {
   const declaredLength = Number(response.headers.get('content-length'))
   if (Number.isFinite(declaredLength) && declaredLength > maximumBytes) {
     await response.body?.cancel().catch(() => undefined)
-    return
+    return ''
   }
-  if (!response.body) return
+  if (!response.body) return ''
   const reader = response.body.getReader()
+  const chunks: Uint8Array[] = []
   let received = 0
   try {
     for (;;) {
       const chunk = await reader.read()
       if (chunk.done) break
-      received += chunk.value?.byteLength ?? 0
+      if (!chunk.value) continue
+      received += chunk.value.byteLength
       if (received > maximumBytes) {
         await reader.cancel().catch(() => undefined)
-        break
+        return ''
       }
+      chunks.push(chunk.value)
     }
+  } catch {
+    return ''
   } finally {
     reader.releaseLock()
+  }
+  try {
+    return extractRelayErrorDetail(JSON.parse(Buffer.concat(chunks, received).toString('utf8')) as unknown)
+  } catch {
+    return ''
   }
 }
 
@@ -309,12 +325,14 @@ function credentialFailure(error: unknown): StreamFailure {
   return new StreamFailure('credential-error', SAFE_ERROR_MESSAGES['credential-error'])
 }
 
-function safeHttpFailure(status: number): StreamFailure {
+function safeHttpFailure(status: number, detail = ''): StreamFailure {
+  const quota = classifyRelayQuotaFailure(status, detail)
+  if (quota) return new StreamFailure('upstream-http-error', relayQuotaFailureMessages[quota])
   if (status === 401 || status === 403) {
     return new StreamFailure('upstream-http-error', '当前 API Key 无权使用所选模型或分组')
   }
   if (status === 429) {
-    return new StreamFailure('upstream-http-error', '请求过于频繁或账户额度不足，请稍后重试')
+    return new StreamFailure('upstream-http-error', '请求过于频繁，请稍后重试')
   }
   return new StreamFailure('upstream-http-error', SAFE_ERROR_MESSAGES['upstream-http-error'])
 }
@@ -663,8 +681,7 @@ export function createAiChatService(options: AiChatServiceOptions): AiChatServic
         throw new StreamFailure('network-error', SAFE_ERROR_MESSAGES['network-error'])
       }
       if (!response.ok) {
-        await discardBoundedErrorBody(response, limits.errorBytes)
-        throw safeHttpFailure(response.status)
+        throw safeHttpFailure(response.status, await readBoundedErrorDetail(response, limits.errorBytes))
       }
       const contentType = response.headers.get('content-type')?.toLowerCase() ?? ''
       if (!contentType.includes('text/event-stream') || !response.body) {
@@ -768,8 +785,7 @@ export function createAiChatService(options: AiChatServiceOptions): AiChatServic
         throw new StreamFailure('network-error', SAFE_ERROR_MESSAGES['network-error'])
       }
       if (!response.ok) {
-        await discardBoundedErrorBody(response, limits.errorBytes)
-        throw safeHttpFailure(response.status)
+        throw safeHttpFailure(response.status, await readBoundedErrorDetail(response, limits.errorBytes))
       }
       const contentType = response.headers.get('content-type')?.toLowerCase() ?? ''
       if (!contentType.includes('text/event-stream') || !response.body) {
