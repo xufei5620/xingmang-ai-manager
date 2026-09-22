@@ -5,6 +5,7 @@ import {
   createNewApiClient,
   extractSessionCookies,
   findCliKeyIdByName,
+  hasExhaustedCappedCliKey,
   NewApiAuthenticationError,
   NewApiLoginRejectedError,
   NewApiNetworkError,
@@ -2658,6 +2659,45 @@ describe('changePassword', () => {
     await expect(client.changePassword({ originalPassword: 'old-password-1', newPassword: 'new-password-2' }))
       .rejects.toBeInstanceOf(NewApiAuthenticationError)
     expect(client.isAuthenticated()).toBe(false)
+  })
+})
+
+describe('provisionCliKey with a used-up per-key cap', () => {
+  const name = managedCliKeyProfiles.claude.keyName
+  const capped = { id: 7, name, group: 'codex-pro', status: 4, remain_quota: 0, unlimited_quota: false, expired_time: -1 }
+
+  it('recognizes only a capped, used-up key under this exact name and group', () => {
+    expect(hasExhaustedCappedCliKey([capped], name, 'codex-pro')).toBe(true)
+    expect(hasExhaustedCappedCliKey([{ ...capped, status: 1 }], name, 'codex-pro')).toBe(true)
+    expect(hasExhaustedCappedCliKey([{ ...capped, unlimited_quota: true }], name, 'codex-pro')).toBe(false)
+    expect(hasExhaustedCappedCliKey([{ ...capped, status: 2 }], name, 'codex-pro')).toBe(false)
+    expect(hasExhaustedCappedCliKey([{ ...capped, status: 1, remain_quota: 10 }], name, 'codex-pro')).toBe(false)
+    expect(hasExhaustedCappedCliKey([capped], 'someone-else', 'codex-pro')).toBe(false)
+    expect(hasExhaustedCappedCliKey([capped], name, 'vip')).toBe(false)
+  })
+
+  it('refuses to create a fresh unlimited key and never sends POST /api/token/', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    const other = { id: 9, name: 'hand-made', group: 'codex-pro', status: 1, remain_quota: 0, unlimited_quota: true, expired_time: -1 }
+    fetchImpl
+      .mockResolvedValueOnce(usableGroupsResponse())
+      .mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: { total: 2, items: [capped, other] } }))
+
+    await expect(client.provisionCliKey({ name, group: 'codex-pro' })).rejects.toThrow('这个工具的额度用完了')
+    expect(fetchImpl.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false)
+  })
+
+  it('still reuses a usable key under the same name', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    const raised = { ...capped, id: 8, status: 1, remain_quota: 500 }
+    fetchImpl
+      .mockResolvedValueOnce(usableGroupsResponse())
+      .mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: { total: 2, items: [capped, raised] } }))
+      .mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: { key: 'sk-raised-cap-value' } }))
+
+    await expect(client.provisionCliKey({ name, group: 'codex-pro' })).resolves.toEqual({ id: 8, name, key: 'sk-raised-cap-value' })
   })
 })
 

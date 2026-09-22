@@ -124,6 +124,7 @@ Codex 那时 `recommended` 是 `null`，也就是那两天点过「更新」的�
 |---|---|---|---|---|
 | 四家的自更新 | 见上一节 | 都开着 | 关掉 | 不关名单等于白钉 |
 | Claude 的 Artifact 工具 | `~/.claude/settings.json` 的 `permissions.deny` | 不禁 | 禁掉 | 中转 Key 用不了它，且它的 schema 曾整轮 400 |
+| Claude 的读网页预检 | `skipWebFetchPreflight` | 每抓一个域名先问 `api.anthropic.com` | 跳过（只在星芒来源下写，切回官方删掉） | 国内连不上那台主机，WebFetch 要么立即失败、要么等 30 秒后失败 |
 | Claude 的命令确认 | `permissions.defaultMode` | `default`（逐条问） | `bypassPermissions` | 本产品的卖点就是不用自己配、也不用自己按确认 |
 | Claude 的回复语言 | `language` | 未设（跟着对话语言走） | `简体中文` | 只靠 AGENTS.md 撑不住：克隆来的项目大多已有说明文件，模板不会生成 |
 | Claude 的记录保留期 | `cleanupPeriodDays` | 30 天 | 365 天 | 记录页、「接着聊」、导出都建立在文件还在的前提上 |
@@ -171,6 +172,13 @@ Codex 那时 `recommended` 是 `null`，也就是那两天点过「更新」的�
   都是 `spawn(命令, [], { shell: true })`，Node 在 Windows 上会补 `cmd.exe /d /s /c` 与外层
   引号，所以 `"<node>" "<脚本>"` 这种写法是稳的。**真机没演过，出包后要看一眼。**
 
+- **Claude Code 2.1.277 的读网页预检 —— 跑起来看到了**。本机假接口当中转、出网代理把官方主机
+  全部拒掉或静默丢包，让模型调一次 WebFetch 抓本机的 https 页面：拒掉时工具立刻报
+  `Unable to verify if domain … is safe to fetch. This may be due to network restrictions or
+  enterprise security policies blocking claude.ai.`；丢包时 debug 日志是
+  `WebFetch tool error (30006ms) … EDEADLINE_PREFLIGHT`，干等 30 秒。settings.json 顶层写
+  `"skipWebFetchPreflight": true` 后同样条件 1.2 秒抓到，且不再请求 `/api/web/domain_info`。
+  另外确认了 `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` **不会**跳过这一步。2.1.278 表现相同。
 - **Claude Code 2.1.277 — 跑起来看到了**。`~/.claude/settings.json` 写
   `{"language":"简体中文"}`，把 `ANTHROPIC_BASE_URL` 指到本机假接口（原样落盘请求体、一律回
   500）后跑 `claude -p "hi"`，请求体的系统提示里出现

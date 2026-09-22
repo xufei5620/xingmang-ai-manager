@@ -2,7 +2,12 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { redactHomeDirectory, RuntimeLogStore, summarizeRuntimeLogFile } from './runtime-log'
+import {
+  describeRuntimeLogWriteFailure,
+  redactHomeDirectory,
+  RuntimeLogStore,
+  summarizeRuntimeLogFile,
+} from './runtime-log'
 import { recordStartupFailure } from './startup-log'
 
 const temporaryDirectories: string[] = []
@@ -529,5 +534,73 @@ describe('RuntimeLogStore', () => {
     expect(snapshot.entries).toHaveLength(1)
     expect(snapshot.entries[0].detail).toEqual({ truncated: '[TRUNCATED: detail too large]' })
     expect(snapshot.sizeBytes).toBeLessThan(256 * 1024)
+  })
+
+  it('keeps entries it could not write, says why, and puts them in the feedback report', async () => {
+    // 软件数据文件夹被「搬家」：日志目录经过一级链接，写入校验（I8）拒绝它。
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-runtime-log-moved-'))
+    temporaryDirectories.push(root)
+    const moved = path.join(root, 'moved')
+    fs.mkdirSync(moved)
+    const linked = path.join(root, 'linked')
+    fs.symlinkSync(moved, linked)
+    const store = new RuntimeLogStore({ directory: path.join(linked, 'logs'), appName: '星芒AI管理工具', appVersion: '1.0.0', packaged: false })
+
+    store.log('info', 'main', 'first', '第一条')
+    store.log('error', 'main', 'second', '第二条')
+    const snapshot = await store.snapshot()
+
+    expect(snapshot.entries.map((entry) => entry.message)).toEqual(['第二条', '第一条'])
+    expect(snapshot.total).toBe(2)
+    expect(snapshot.counts).toMatchObject({ info: 1, error: 1 })
+    expect(snapshot.writeFailure).toMatchObject({ reason: '日志所在的文件夹被搬到了别的位置', lostEntries: 2 })
+    // 链接背后的真实目录里一个字节都没写。
+    expect(fs.readdirSync(moved)).toEqual([])
+
+    const report = await store.feedbackReport()
+    expect(report).toContain('日志写入失败: 本次启动有 2 条没写进日志文件（日志所在的文件夹被搬到了别的位置')
+    expect(report).toContain('第一条')
+    expect(report).toContain('第二条')
+
+    await store.clear().catch(() => undefined)
+    const cleared = await store.snapshot()
+    expect(cleared.writeFailure).toBeUndefined()
+    expect(cleared.total).toBe(0)
+  })
+
+  it('bounds the entries it keeps in memory but still counts every lost one', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-runtime-log-moved-'))
+    temporaryDirectories.push(root)
+    fs.mkdirSync(path.join(root, 'moved'))
+    fs.symlinkSync(path.join(root, 'moved'), path.join(root, 'linked'))
+    const store = new RuntimeLogStore({ directory: path.join(root, 'linked', 'logs'), appName: '星芒AI管理工具', appVersion: '1.0.0', packaged: false })
+
+    for (let index = 0; index < 250; index += 1) store.log('info', 'main', 'entry', `entry-${index}`)
+    const snapshot = await store.snapshot()
+
+    expect(snapshot.writeFailure?.lostEntries).toBe(250)
+    expect(snapshot.total).toBe(200)
+    expect(snapshot.entries[0].message).toBe('entry-249')
+    expect(snapshot.entries.at(-1)?.message).toBe('entry-50')
+  })
+
+  it('leaves the snapshot without a write failure while writes succeed', async () => {
+    const store = createStore()
+    store.log('info', 'main', 'ok', '正常')
+    const snapshot = await store.snapshot()
+    expect(snapshot.writeFailure).toBeUndefined()
+    expect(await store.feedbackReport()).not.toContain('日志写入失败')
+  })
+
+  it('names the common write failures in plain words', () => {
+    expect(describeRuntimeLogWriteFailure(new Error('运行日志目录不能经过符号链接或目录联接')))
+      .toBe('日志所在的文件夹被搬到了别的位置')
+    expect(describeRuntimeLogWriteFailure(Object.assign(new Error('ENOSPC: no space left on device'), { code: 'ENOSPC' })))
+      .toBe('磁盘满了')
+    expect(describeRuntimeLogWriteFailure(Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' })))
+      .toBe('没有权限写入日志文件夹')
+    expect(describeRuntimeLogWriteFailure(Object.assign(new Error('EBUSY: resource busy or locked'), { code: 'EBUSY' })))
+      .toBe('日志文件被别的程序占用了')
+    expect(describeRuntimeLogWriteFailure(new Error('something else'))).toBe('写入日志文件时出错了')
   })
 })

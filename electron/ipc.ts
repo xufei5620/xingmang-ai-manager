@@ -121,7 +121,7 @@ import type {
   RendererLogLevel,
 } from './ipc-contract'
 import type { DiagnosticsReport } from './diagnostics'
-import type { ConnectionCheckResult } from './connection-check'
+import { isCappedKeyUsedUp, withKeyQuotaExhausted, type ConnectionCheckResult } from './connection-check'
 import type { RuntimeLogStore } from './runtime-log'
 import { createExternalShellLauncher, type ExternalShellLauncher } from './system-shell'
 import { platformCapabilitiesFor } from './platform-capabilities'
@@ -2877,9 +2877,38 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     )
   })
 
+  // A used-up per-tool cap reaches the self-check as the same 401 a revoked
+  // key does, and the 401 advice (rewrite the key) would sign a fresh
+  // unlimited key around the cap. So a rejected key that is the one this app
+  // issued for the tool is looked up in the account's key list: if it is a
+  // capped key with nothing left, say so instead. Any doubt keeps the original
+  // verdict -- this only ever narrows "密钥被拒绝" to its quota case.
+  const findAccountKeyById = async (keyId: number) => {
+    for (let page = 1; page <= 5; page++) {
+      const batch = await accountService.listKeys({ page, pageSize: 100 })
+      const found = batch.keys.find((key) => key.id === keyId)
+      if (found) return found
+      if (!batch.keys.length || page * 100 >= batch.total) return null
+    }
+    return null
+  }
+  const explainRejectedManagedKey = async (provider: ProviderId, result: ConnectionCheckResult): Promise<ConnectionCheckResult> => {
+    if (result.ok || result.layer !== 'credential' || !options.managedCliKeys || options.previewOnboarding) return result
+    const userId = accountService.getSessionState().account?.userId
+    if (!userId) return result
+    try {
+      const cached = (await options.managedCliKeys.read(userId)).find((entry) => entry.provider === provider)
+      if (!cached || service.revealApiKey(provider, options.previewOnboarding) !== cached.key) return result
+      const key = await findAccountKeyById(cached.id)
+      if (accountService.getSessionState().account?.userId !== userId) return result
+      return key && isCappedKeyUsedUp(key) ? withKeyQuotaExhausted(result, cliCatalog[provider].name) : result
+    } catch {
+      return result
+    }
+  }
   registerTrustedHandler('diagnostics:check-connection', (_event, provider: unknown) => {
     if (!isProviderId(provider)) throw new Error('未知的 CLI 类型')
-    return options.diagnosticsService.checkConnection(provider)
+    return options.diagnosticsService.checkConnection(provider).then((result) => explainRejectedManagedKey(provider, result))
   })
 
   registerTrustedHandler('diagnostics:check-external-connection', (_event, tool: unknown) => {
