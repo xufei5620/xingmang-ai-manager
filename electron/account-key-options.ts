@@ -1,5 +1,6 @@
 import { isProviderId, resolveManagedCliKeyProfiles, type ProviderId } from './catalog'
 import type { StoredChatKey } from './chat-key-store'
+import type { ResolvedManagedCliGroup } from './managed-cli-groups'
 import type { StoredManagedCliKey } from './managed-cli-key-store'
 import type { RelayBackendClient } from './relay-backend'
 import { RealmAccountError } from './realm-account'
@@ -16,6 +17,11 @@ export interface AccountKeyOptionsDependencies {
   /** Supply the cache belonging to the active realm; records are indexed by user ID within it. */
   managedCliKeys?: { read(userId: number): Promise<StoredManagedCliKey[]> }
   chatKeyStore?: { read(userId: number): Promise<StoredChatKey[]> }
+  /** 服务端当前实际可用的分组解析结果。调用方在进入这里之前读好，是为了让
+   *  本函数从捕获账号与本地配置快照到第一次落盘读取之间保持同步——中间插一次
+   *  网络等待会把「账号被切换 / 本地配置被改动」的判定窗口整个拉宽。
+   *  缺省（拿不到分组列表）时退回写死名单，也就是加入动态识别之前的行为。 */
+  managedCliGroups?: Record<ProviderId, ResolvedManagedCliGroup> | null
   previewOnboarding: boolean
 }
 interface KeyMetadata { id: number; name: string; group: string }
@@ -34,10 +40,13 @@ export async function resolveAccountKeyOptions(options: AccountKeyOptionsDepende
   const service = options.accountService
   const siteId = service.getActiveSiteId?.() ?? 'solov'
   const profile = resolveManagedCliKeyProfiles(siteId)[options.provider]
+  const groupFor = (provider: ProviderId): string => (
+    options.managedCliGroups?.[provider].group ?? resolveManagedCliKeyProfiles(siteId)[provider].group
+  )
   const configured = options.systemService.getConfig(options.previewOnboarding).providers[options.provider]
   const result: AccountKeyOptionsResult = {
     current: { preview: configured.apiKeyPreview, keyId: null, name: null, group: null },
-    automatic: { name: profile.keyName, group: profile.group },
+    automatic: { name: profile.keyName, group: groupFor(options.provider) },
   }
   const session = service.getSessionState()
   if (!configured.hasApiKey || !configured.matchesRelay || !session.authenticated || !session.account) return result
@@ -79,7 +88,7 @@ export async function resolveAccountKeyOptions(options: AccountKeyOptionsDepende
     const cached = await owned(() => options.managedCliKeys!.read(userId))
     for (const entry of cached) {
       if (entry.key !== secret || !isProviderId(entry.provider)
-        || entry.group !== resolveManagedCliKeyProfiles(siteId)[entry.provider].group) continue
+        || entry.group !== groupFor(entry.provider)) continue
       const candidate = { id: entry.id, name: entry.name, group: entry.group }
       if (validMetadata(candidate, secret)) matches.push(candidate)
     }

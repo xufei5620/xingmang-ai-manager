@@ -15,7 +15,7 @@ import type { StoredManagedCliKey } from './managed-cli-key-store'
 import type { RelayBackendClient } from './relay-backend'
 import type { SystemService } from './system-service'
 
-type AccountService = Pick<RelayBackendClient, 'getSessionState' | 'provisionCliKey'>
+type AccountService = Pick<RelayBackendClient, 'getSessionState' | 'provisionCliKey' | 'listUsableGroups'>
 type ConfigurationService = Pick<SystemService, 'fetchAvailableModels' | 'saveConfig'>
 
 function managedKey(provider: ProviderId): StoredManagedCliKey {
@@ -713,6 +713,135 @@ describe('relay-site-specific managed CLI key groups', () => {
       apiKey: siteManagedKey('solov-api', 'codex').key,
       model: 'codex-model',
       mode: 'merge',
+    })
+  })
+})
+
+describe('managed CLI groups resolved from the account backend', () => {
+  const renamedGroups: Record<ProviderId, string> = {
+    claude: 'Claude 高级订阅',
+    codex: 'Codex 专用通道',
+    gemini: 'Gemini 专用通道',
+    grok: 'Grok 专用通道',
+  }
+
+  function memoryStore(initial: StoredManagedCliKey[] = []): ManagedCliKeyStoreLike & { cached: StoredManagedCliKey[] } {
+    const state = { cached: initial.map((entry) => ({ ...entry })) }
+    return {
+      get cached() { return state.cached },
+      read: vi.fn(async () => state.cached.map((entry) => ({ ...entry }))),
+      save: vi.fn(async (_userId: number, keys: readonly StoredManagedCliKey[]) => {
+        state.cached = keys.map((entry) => ({ ...entry }))
+      }),
+      remove: vi.fn(async () => undefined),
+    } as ManagedCliKeyStoreLike & { cached: StoredManagedCliKey[] }
+  }
+
+  function groupAwareAccountService(listUsableGroups: ReturnType<typeof vi.fn>) {
+    const provisionCliKey = vi.fn(async (input: { name?: string; group?: string } = {}) => ({
+      id: 100 + providerIds.findIndex((provider) => renamedGroups[provider] === input.group),
+      name: input.name ?? 'xingmang-desktop',
+      key: `sk-${input.group}-plaintext-secret-123456`,
+    }))
+    const accountService = {
+      getSessionState: vi.fn(() => ({ authenticated: true, account: { userId: 73 } })),
+      provisionCliKey,
+      listUsableGroups,
+    } as unknown as AccountService
+    return { accountService, provisionCliKey }
+  }
+
+  it('signs keys into the renamed groups the backend actually offers', async () => {
+    const listUsableGroups = vi.fn(async () => (
+      ['default', ...providerIds.map((provider) => renamedGroups[provider])].map((name) => ({ name }))
+    ))
+    const { accountService, provisionCliKey } = groupAwareAccountService(listUsableGroups)
+
+    const summary = await syncManagedCliKeySummary(accountService, memoryStore())
+
+    expect(summary.failed).toEqual([])
+    expect(summary.ready.map((entry) => entry.group).sort())
+      .toEqual(providerIds.map((provider) => renamedGroups[provider]).sort())
+    for (const provider of providerIds) {
+      expect(provisionCliKey).toHaveBeenCalledWith({
+        name: managedCliKeyProfiles[provider].keyName,
+        group: renamedGroups[provider],
+      })
+    }
+    expect(listUsableGroups).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps the shipped names when the backend still offers them', async () => {
+    const listUsableGroups = vi.fn(async () => (
+      providerIds.map((provider) => ({ name: managedCliKeyProfiles[provider].group }))
+    ))
+    const provisionCliKey = vi.fn(async (input: { name?: string; group?: string } = {}) => {
+      const entry = keyForGroup(input.group ?? '')
+      return { id: providerIds.indexOf(entry.provider) + 1, name: input.name ?? entry.name, key: entry.key }
+    })
+    const accountService = {
+      getSessionState: vi.fn(() => ({ authenticated: true, account: { userId: 73 } })),
+      provisionCliKey,
+      listUsableGroups,
+    } as unknown as AccountService
+
+    const summary = await syncManagedCliKeySummary(accountService, memoryStore())
+
+    expect(summary.ready.map((entry) => entry.group).sort())
+      .toEqual(providerIds.map((provider) => managedCliKeyProfiles[provider].group).sort())
+  })
+
+  it('falls back to the shipped names when the group list cannot be read', async () => {
+    const listUsableGroups = vi.fn(async () => { throw new Error('连接服务器失败') })
+    const provisionCliKey = vi.fn(async (input: { name?: string; group?: string } = {}) => {
+      const entry = keyForGroup(input.group ?? '')
+      return { id: providerIds.indexOf(entry.provider) + 1, name: input.name ?? entry.name, key: entry.key }
+    })
+    const accountService = {
+      getSessionState: vi.fn(() => ({ authenticated: true, account: { userId: 73 } })),
+      provisionCliKey,
+      listUsableGroups,
+    } as unknown as AccountService
+
+    const summary = await syncManagedCliKeySummary(accountService, memoryStore())
+
+    expect(summary.failed).toEqual([])
+    expect(summary.ready.map((entry) => entry.group).sort())
+      .toEqual(providerIds.map((provider) => managedCliKeyProfiles[provider].group).sort())
+  })
+
+  it('asks the backend for nothing when every key is already cached', async () => {
+    const listUsableGroups = vi.fn(async () => [])
+    const provisionCliKey = vi.fn()
+    const accountService = {
+      getSessionState: vi.fn(() => ({ authenticated: true, account: { userId: 73 } })),
+      provisionCliKey,
+      listUsableGroups,
+    } as unknown as AccountService
+    const store = memoryStore(providerIds.map((provider) => managedKey(provider)))
+
+    const summary = await syncManagedCliKeySummary(accountService, store)
+
+    expect(summary.failed).toEqual([])
+    expect(listUsableGroups).not.toHaveBeenCalled()
+    expect(provisionCliKey).not.toHaveBeenCalled()
+  })
+
+  it('discards a cached key whose group the backend no longer offers', async () => {
+    const listUsableGroups = vi.fn(async () => (
+      ['default', ...providerIds.map((provider) => renamedGroups[provider])].map((name) => ({ name }))
+    ))
+    const { accountService, provisionCliKey } = groupAwareAccountService(listUsableGroups)
+    // 缓存里三把还在，claude 那把是改名前签的：它必须被丢掉重签，否则请求会继续
+    // 打到一个服务端已经不认的分组上。
+    const store = memoryStore([managedKey('claude')])
+
+    const summary = await syncManagedCliKeySummary(accountService, store)
+
+    expect(summary.ready.find((entry) => entry.provider === 'claude')?.group).toBe(renamedGroups.claude)
+    expect(provisionCliKey).toHaveBeenCalledWith({
+      name: managedCliKeyProfiles.claude.keyName,
+      group: renamedGroups.claude,
     })
   })
 })
