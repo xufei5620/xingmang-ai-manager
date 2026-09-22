@@ -362,6 +362,7 @@ async function start() {
 const restoredCloseBudgetMs = 5_000
 async function closeWhileRestoring() {
   progress('launching an instance that is closed while it restores the saved account')
+  const runtimeLogLinesBefore = (await fs.readFile(path.join(userData, 'logs/runtime.jsonl'), 'utf8').catch(() => '')).split(/\r?\n/).filter(Boolean).length
   const instance = await withDeadline('Electron launch', stepBudgetMs, () => electron.launch({
     cwd: projectRoot, args: [bootstrap, `--user-data-dir=${userData}`], env, timeout: stepBudgetMs }))
   const child = instance.process()
@@ -376,6 +377,11 @@ async function closeWhileRestoring() {
     await expect.poll(() => withDeadline('restored session', stepBudgetMs,
       () => page.evaluate(() => window.xingmang.getAccountSession())).then((state) => state.authenticated === true),
     { timeout: fixtureReadyTimeoutMs }).toBe(true)
+    // How long a trivial main-process round trip takes right before the close:
+    // a main thread stuck in synchronous work shows up here, not in the close.
+    const pingStartedAt = Date.now()
+    await withDeadline('main-process ping', stepBudgetMs, () => instance.evaluate(() => 1))
+    const mainPingMs = Date.now() - pingStartedAt
     let closeRequestedAt = 0
     const exited = new Promise((resolve) => child.once('exit', (code) => resolve({ code, closeLatency: Date.now() - closeRequestedAt })))
     closeRequestedAt = Date.now()
@@ -386,9 +392,28 @@ async function closeWhileRestoring() {
       if (!/garbage collected|closed|Target|destroyed/i.test(error instanceof Error ? error.message : String(error))) throw error
     })
     const result = await Promise.race([exited, new Promise((resolve) => setTimeout(() => resolve(null), restoredCloseBudgetMs))])
+    if (!result) {
+      // Without this the failure only says "too slow"; whether the main thread
+      // is wedged, the window is still up, or quit is waiting on something is
+      // what decides the fix.
+      const state = await withDeadline('main-process state after the close budget', 3_000, () => instance.evaluate(({ BrowserWindow }) =>
+        BrowserWindow.getAllWindows().map((window) => ({ destroyed: window.isDestroyed(), visible: !window.isDestroyed() && window.isVisible() }))))
+        .then((windows) => JSON.stringify(windows), (error) => `main process did not answer: ${error instanceof Error ? error.message : String(error)}`)
+      const runtimeLog = await fs.readFile(path.join(userData, 'logs/runtime.jsonl'), 'utf8').catch(() => '')
+      const recent = runtimeLog.split(/\r?\n/).slice(runtimeLogLinesBefore).filter(Boolean).map((line) => {
+        try {
+          const entry = JSON.parse(line)
+          return `${entry.timestamp} ${entry.level} ${entry.source}/${entry.event}${entry.detail?.durationMs !== undefined ? ` ${entry.detail.durationMs}ms` : ''}${entry.event === 'cli.execution-mode' ? ` ${JSON.stringify(entry.detail)}` : ''}`
+        } catch {
+          return line.slice(0, 200)
+        }
+      })
+      progress(`close request at ${new Date(closeRequestedAt).toISOString()}, main-process ping before it ${mainPingMs}ms, windows now ${state}`)
+      progress(`runtime log since this launch:\n${recent.slice(-120).join('\n')}`)
+    }
     assert.ok(result, 'closing the window while the saved account restores must not wait on the start-up scan')
     assert.equal(result.code, 0)
-    progress(`closed ${result.closeLatency}ms after the request`)
+    progress(`closed ${result.closeLatency}ms after the request (main-process ping before it ${mainPingMs}ms)`)
   } finally {
     await withDeadline('main process exit', 20_000, () => instance.evaluate(({ app }) => app.exit(0))).catch(() => undefined)
     await withDeadline('close', 20_000, () => instance.close()).catch(() => undefined)
