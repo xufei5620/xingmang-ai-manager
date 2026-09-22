@@ -124,6 +124,50 @@ async function checkSupportDialog(page, url) {
   return dialog
 }
 
+// Count repaints of the workspace starfield only. Each repaint starts with a
+// clearRect, so wrapping it on the page's own prototype counts frames without
+// touching the component.
+async function countStarfieldPaints(page, milliseconds) {
+  await page.evaluate(() => {
+    const proto = CanvasRenderingContext2D.prototype
+    if (!window.__starfieldClear) window.__starfieldClear = proto.clearRect
+    window.__starfieldPaints = 0
+    proto.clearRect = function (...args) {
+      if (this.canvas?.dataset.testid === 'shell-starfield') window.__starfieldPaints++
+      return window.__starfieldClear.apply(this, args)
+    }
+  })
+  await page.waitForTimeout(milliseconds)
+  return page.evaluate(() => window.__starfieldPaints)
+}
+
+test('the workspace starfield stays still on low-end machines, runs at most 30 frames a second elsewhere, and stops while the window is in the background', async () => {
+  const low = await open('lowEnd=1')
+  try {
+    await low.getByTestId('shell-starfield').waitFor()
+    assert.equal(await low.evaluate(() => document.documentElement.dataset.lowEnd), 'true')
+    // Let the fixture finish laying out: a resize legitimately repaints once.
+    await low.waitForTimeout(1500)
+    assert.equal(await countStarfieldPaints(low, 1000), 0, '低配电脑上工作台星空只画静态一帧')
+    await clean(low)
+  } finally { await low.close() }
+  const page = await open()
+  try {
+    await page.getByTestId('shell-starfield').waitFor()
+    assert.equal(await page.evaluate(() => document.documentElement.dataset.lowEnd), 'false')
+    await page.waitForTimeout(1500)
+    const moving = await countStarfieldPaints(page, 1000)
+    assert.ok(moving >= 3, `其它电脑上星空照旧在动：${moving}`)
+    assert.ok(moving <= 40, `星空每秒最多约 30 帧：${moving}`)
+    await page.evaluate(() => window.dispatchEvent(new Event('blur')))
+    await page.waitForTimeout(200)
+    assert.equal(await countStarfieldPaints(page, 800), 0, '窗口不在前台时星空停下')
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')))
+    assert.ok(await countStarfieldPaints(page, 800) >= 2, '回到前台后星空接着动')
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('customer support uses the default QR and browser destination for signed-out sessions, including retained historical metadata', async () => {
   for (const query of ['guest=1', 'guest=1&sub2api=1']) {
     const page = await open(query)
@@ -367,7 +411,7 @@ test('WorkBuddy loses current-account readiness when switching saved accounts on
     await page.waitForFunction((count) => window.v2Test.calls.filter((entry) => entry.method === 'scanExternalClients').length > count, before)
     assert.equal(await row.getByText('已配好', { exact: true }).count(), 0)
     await page.evaluate(() => window.v2Test.releaseExternalScan())
-    await row.getByText('已有第三方配置', { exact: true }).waitFor()
+    await row.getByText('用的是别处的配置', { exact: true }).waitFor()
     await row.getByText('v1.2.3 · fixture-model', { exact: true }).waitFor()
     assert.equal(await row.getByText('已配好', { exact: true }).count(), 0)
     await balancePanel.getByText('等待连接', { exact: true }).waitFor()
@@ -388,13 +432,13 @@ test('a delayed ready WorkBuddy scan cannot restore the previous account badge a
     await page.getByTestId('home-rescan').click()
     await page.waitForFunction(() => document.querySelector('[data-testid="home-rescan"]')?.getAttribute('aria-busy') === 'true')
     await page.evaluate(() => window.v2Test.emit('onAccountSessionChanged', { authenticated: true, siteId: 'solov', account: { userId: 18, username: 'next-user', group: 'default', role: 1, quota: 1_000_000, usedQuota: 0 } }))
-    await row.getByText('已有第三方配置', { exact: true }).waitFor()
+    await row.getByText('用的是别处的配置', { exact: true }).waitFor()
     await page.evaluate(async () => {
       window.v2Test.releaseExternalScan()
       await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))
     })
     assert.equal(await row.getByText('已配好', { exact: true }).count(), 0)
-    assert.equal(await row.getByText('已有第三方配置', { exact: true }).count(), 1)
+    assert.equal(await row.getByText('用的是别处的配置', { exact: true }).count(), 1)
     await page.getByRole('heading', { name: '账户余额', exact: true }).locator('xpath=ancestor::section[1]').getByText('3 个工具已连接', { exact: true }).waitFor()
     await clean(page)
   } finally { await page.close() }
@@ -417,13 +461,13 @@ test('logout retains WorkBuddy local configuration without retaining the signed-
     await page.getByTestId('guide-route-codexDesktop').check()
     for (let step = 0; step < 3; step++) await page.getByTestId('guide-next').click()
     await page.getByTestId('guide-home').click()
-    await row.getByText('已有第三方配置', { exact: true }).waitFor()
+    await row.getByText('用的是别处的配置', { exact: true }).waitFor()
     await page.evaluate(async () => {
       window.v2Test.releaseExternalScan()
       await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))
     })
     assert.equal(await row.getByText('已配好', { exact: true }).count(), 0)
-    assert.equal(await row.getByText('已有第三方配置', { exact: true }).count(), 1)
+    assert.equal(await row.getByText('用的是别处的配置', { exact: true }).count(), 1)
     assert.equal(await row.getByText('v1.2.3 · fixture-model', { exact: true }).count(), 1)
     const session = await page.evaluate(() => window.xingmang.getAccountSession())
     assert.equal(session.authenticated, false)
@@ -477,7 +521,7 @@ test('Codex non-GPT menu requires a detected non-GPT model before saving', async
   try {
     const row = page.getByTestId('tool-row-codex')
     await row.waitFor()
-    assert.equal(await row.getByRole('button', { name: '非 GPT 模型', exact: true }).count(), 0)
+    assert.equal(await row.getByRole('button', { name: '换用别家模型', exact: true }).count(), 0)
     await row.getByRole('button', { name: '更多操作', exact: true }).click()
     await page.getByTestId('home-codex-models').click()
     const dialog = page.getByTestId('config-dialog')
@@ -488,7 +532,6 @@ test('Codex non-GPT menu requires a detected non-GPT model before saving', async
     const choices = await page.getByTestId('tool-default-model').locator('option').allTextContents()
     assert.equal(choices.some((label) => label === 'gpt-fixture'), false)
     await page.getByTestId('tool-save-config').click()
-    await page.getByTestId('tool-save-merge').click()
     await dialog.waitFor({ state: 'hidden' })
     const call = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'saveConfig').at(-1))
     assert.equal(call.args[0].model, 'deepseek-fixture')
@@ -642,7 +685,7 @@ test('the launch button reuses the directory the tool was last opened in (N7)', 
     await page.getByTestId('tool-claude-workspaces').getByRole('button', { name: '换一个目录' }).click()
     const items = await page.getByRole('menuitem').allInnerTexts()
     // 同一个目录的两条记录只占一格,顺序按最近用过排,最后永远留着原来的选择器。
-    assert.deepEqual(items, ['C:\\work\\my-app', 'C:\\work\\older-app', '选择其他目录…'])
+    assert.deepEqual(items, ['C:\\work\\my-app', 'C:\\work\\older-app', '选择其他目录…', '新建项目文件夹并打开'])
     await page.getByTestId('tool-claude-choose-workspace').click()
     await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'chooseWorkspace'))
     const picked = await page.evaluate(() => window.v2Test.calls)
@@ -805,6 +848,28 @@ test('home reuses the recent list instead of rescanning session folders on every
     await page.getByTestId('home-rescan').click()
     await page.waitForFunction(() => window.v2Test.calls
       .filter((entry) => entry.method === 'listProviderSessions' && entry.args[0]?.pageSize === 60).length === 2)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('a new user can open a CLI in a folder the app creates, without the directory picker', async () => {
+  const page = await open('allInstalled=1')
+  try {
+    await page.getByTestId('tool-row-codex').waitFor()
+    // 没有最近目录时「打开」旁边没有下拉，入口在「更多操作」里。
+    assert.equal(await page.getByTestId('tool-codex-workspaces').count(), 0)
+    await page.getByTestId('tool-row-codex').getByRole('button', { name: '更多操作' }).click()
+    await page.getByTestId('tool-codex-new-workspace').click()
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'launchCli'))
+    const calls = await page.evaluate(() => window.v2Test.calls)
+    assert.deepEqual(calls.filter((entry) => entry.method === 'chooseWorkspace').map((entry) => entry.args), [[{ createStarter: true }]])
+    assert.deepEqual(calls.filter((entry) => entry.method === 'launchCli').map((entry) => entry.args),
+      [['codex', 'C:\\Users\\fixture\\Documents\\XingmangProjects\\my-project']])
+    // Codex 桌面端自己管工作区，不给这个入口。
+    await page.keyboard.press('Escape')
+    await page.getByTestId('tool-row-codexDesktop').getByRole('button', { name: '更多操作' }).click()
+    assert.equal(await page.getByTestId('tool-codexDesktop-new-workspace').count(), 0)
+    await page.keyboard.press('Escape')
     await clean(page)
   } finally { await page.close() }
 })
@@ -1005,7 +1070,7 @@ test('restored login repairs missing tool configs without overwriting official o
     await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'configureManagedCliKeys'))
     const input = await page.evaluate(() => window.v2Test.calls.find((entry) => entry.method === 'configureManagedCliKeys').args[0])
     assert.deepEqual(input.providers, ['grok', 'gemini'])
-    await page.getByTestId('tool-row-claude').getByText('已有第三方配置').waitFor()
+    await page.getByTestId('tool-row-claude').getByText('用的是别处的配置').waitFor()
     await page.getByTestId('tool-row-codex').getByText('官方账号', { exact: true }).waitFor()
     await page.getByTestId('tool-row-grok').getByText('已配好').waitFor()
     await page.getByTestId('tool-row-gemini').getByText('已配好').waitFor()
@@ -1086,7 +1151,7 @@ test('read-only account matches respect local manual markers and preserve incomp
 test('read-only account matches remain third-party when the host cannot match an account', async () => {
   const page = await open('readOnlyAccountMatch=1&allInstalled=1&matchedUnavailable=1')
   try {
-    await matchedToolBadges(page, '已有第三方配置')
+    await matchedToolBadges(page, '用的是别处的配置')
     await settleMatchedBootstrap(page)
     await assertNoMatchedKeyOperations(page)
     await clean(page)
@@ -1096,7 +1161,7 @@ test('read-only account matches remain third-party when the host cannot match an
 test('read-only account matches restore on fresh login without treating the match as configuration consent', async () => {
   const page = await open('readOnlyAccountMatch=1&allInstalled=1&guest=1&existing=1')
   try {
-    await matchedToolBadges(page, '已有第三方配置')
+    await matchedToolBadges(page, '用的是别处的配置')
     await page.getByTestId('nav-chat').click()
     await page.getByTestId('login-account').fill('fixture-user')
     await page.getByTestId('login-password').fill('fixture-password')
@@ -1124,12 +1189,12 @@ for (const transition of ['same-site', 'cross-site']) test(`read-only account ma
       siteId: kind === 'cross-site' ? 'solov-api' : 'solov', realmId: kind === 'cross-site' ? 'api-account' : 'xm-account',
       account: { userId: kind === 'cross-site' ? 17 : 18, username: 'next-user', group: 'default', role: 1, quota: 1_000_000, usedQuota: 0 },
     }), transition)
-    await matchedToolBadges(page, '已有第三方配置')
+    await matchedToolBadges(page, '用的是别处的配置')
     await page.evaluate(async () => {
       window.v2Test.releaseConfigRead()
       await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))
     })
-    await matchedToolBadges(page, '已有第三方配置')
+    await matchedToolBadges(page, '用的是别处的配置')
     for (const id of matchedToolIds) assert.equal(await page.getByTestId(`tool-row-${id}`).getByText('已配好', { exact: true }).count(), 0)
     await assertNoMatchedKeyOperations(page)
     await clean(page)
@@ -1151,7 +1216,7 @@ test('read-only account matches do not survive logout or a late config read when
     await page.getByTestId('welcome-steps').click()
     await page.getByTestId('guide-route-codexDesktop').check()
     for (let step = 0; step < 2; step++) await page.getByTestId('guide-next').click()
-    await page.getByText('已保留现有第三方配置。请先查看处理步骤，确认哪些设置需要保留后再决定如何连接。', { exact: true }).waitFor()
+    await page.getByText('你原来的配置已经原样留着。先看看处理步骤，确认哪些设置要留下，再决定怎么连接。', { exact: true }).waitFor()
     await page.evaluate(async () => {
       window.v2Test.releaseConfigRead()
       await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))
@@ -1162,7 +1227,7 @@ test('read-only account matches do not survive logout or a late config read when
     await assertNoMatchedKeyOperations(page)
     await clean(page)
     await page.goto(`${origin}/src/renderer-v2/testing/app.html?readOnlyAccountMatch=1&allInstalled=1&guest=1&existing=1`)
-    await matchedToolBadges(page, '已有第三方配置')
+    await matchedToolBadges(page, '用的是别处的配置')
     await assertNoMatchedKeyOperations(page)
     await clean(page)
   } finally { await page.close() }
@@ -1320,7 +1385,7 @@ test('read-only account matches switch only explicitly selected CLI providers on
       { providers: ['codex'], preferredModels: { codex: 'fixture-model' }, intent: 'explicit' },
     ])
     for (const tool of ['claude', 'codex', 'codexDesktop']) await page.getByTestId(`tool-row-${tool}`).getByText('已配好', { exact: true }).waitFor()
-    for (const tool of ['gemini', 'grok']) await page.getByTestId(`tool-row-${tool}`).getByText('已有第三方配置', { exact: true }).waitFor()
+    for (const tool of ['gemini', 'grok']) await page.getByTestId(`tool-row-${tool}`).getByText('用的是别处的配置', { exact: true }).waitFor()
     assert.equal(await page.evaluate(() => window.v2Test.calls.some(entry => ['saveConfig', 'saveConfigWithAccountKey', 'revealApiKey', 'revealAccountKey'].includes(entry.method))), false)
     await clean(page)
   } finally { await page.close() }
@@ -1405,9 +1470,13 @@ test('a failed startup update check shows a dismissible notice instead of a bloc
     await notice.getByText('本地更新源暂时不可用', { exact: true }).waitFor()
     assert.equal(await page.getByTestId('operation-error').count(), 0)
     assert.equal(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'runDiagnostics').length), 1)
-    const reported = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'reportRendererError').map((entry) => entry.args[0]))
+    // 登录后的 Key 自动配置也会经同一通道记一条 info / warn（context account-bootstrap），
+    // 这几条断言只关心启动检查自己上报了什么。
+    const reported = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'reportRendererError' && entry.args[0]?.context !== 'account-bootstrap').map((entry) => entry.args[0]))
     assert.equal(reported.length, 1)
     assert.equal(reported[0].context, 'renderer-v2 startup check: update')
+    // 启动检查没完成是要留痕的提示，不是崩溃：warn 级只进本机日志，不走崩溃上报。
+    assert.equal(reported[0].level, 'warn')
     assert.match(reported[0].message, /本地更新源暂时不可用/)
     await notice.getByRole('button', { name: '关闭', exact: true }).click()
     await expect.poll(() => page.getByTestId('startup-notice-update').count()).toBe(0)
@@ -1424,7 +1493,7 @@ test('startup environment findings are a notice with a way in, not an error and 
     await notice.getByText('另有 3 项可留意', { exact: false }).waitFor()
     assert.equal(await page.getByTestId('operation-error').count(), 0)
     // 检查跑完了、只是结论要看一眼，这不是失败，不该占一条错误日志。
-    assert.equal(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'reportRendererError').length), 0)
+    assert.equal(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'reportRendererError' && entry.args[0]?.context !== 'account-bootstrap').length), 0)
     await notice.getByRole('button', { name: '去看看', exact: true }).click()
     await page.getByTestId('page-health').waitFor()
     await expect.poll(() => page.getByTestId('startup-notice-diagnostics').count()).toBe(0)
@@ -1452,7 +1521,7 @@ test('a failed startup environment check stays out of the way while the manual o
     await notice.waitFor()
     await notice.getByText('本机环境检查没有跑完', { exact: true }).waitFor()
     assert.equal(await page.getByTestId('operation-error').count(), 0)
-    const reported = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'reportRendererError').map((entry) => entry.args[0].context))
+    const reported = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'reportRendererError' && entry.args[0]?.context !== 'account-bootstrap').map((entry) => entry.args[0].context))
     assert.deepEqual(reported, ['renderer-v2 startup check: diagnostics'])
     // 用户自己走到「检查」页点按钮，同一个失败要照常摆在页面上说清楚。
     await page.getByTestId('nav-health').click()
@@ -1476,7 +1545,7 @@ test('a rebuilt account store explains itself and opens the login form', async (
     await notice.getByText('本机保存的登录信息已重置，请重新登录', { exact: true }).waitFor()
     assert.equal(await page.getByTestId('operation-error').count(), 0)
     // 主进程已经记过一条 vault.recovered，界面不再重复上报一条错误日志。
-    assert.equal(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'reportRendererError').length), 0)
+    assert.equal(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'reportRendererError' && entry.args[0]?.context !== 'account-bootstrap').length), 0)
     await notice.getByRole('button', { name: '去登录', exact: true }).click()
     await page.getByTestId('login-account').waitFor()
     await expect.poll(() => page.getByTestId('startup-notice-vault-recovered').count()).toBe(0)
@@ -1715,12 +1784,9 @@ test('configuration migration shares Codex drafts and failed saves retain the se
     await page.waitForFunction(() => !document.querySelector('.v2-config-controls').disabled)
     await page.evaluate(() => { window.v2Test.fail = 'saveConfig' })
     await page.getByTestId('tool-save-config').click()
-    const confirmation = page.getByRole('dialog', { name: '保存这份配置？' })
-    await confirmation.getByTestId('tool-save-merge').click()
-    await confirmation.getByRole('alert').filter({ hasText: '本地测试操作失败' }).waitFor()
+    await page.getByTestId('config-dialog').getByRole('alert').filter({ hasText: '本地测试操作失败' }).waitFor()
     assert.equal(await page.getByTestId('config-dialog').isVisible(), true)
     await assertNoToast(page, '配置保存成功')
-    await confirmation.getByRole('button', { name: '取消', exact: true }).click()
     assert.equal(await page.getByLabel('星芒访问密钥').inputValue(), 'local-fixture-secret')
     await clean(page)
   } finally { await page.close() }
@@ -1736,7 +1802,6 @@ test('a manual relay key saved over a third-party config survives the next login
     await page.getByRole('button', { name: '检测模型', exact: true }).click()
     await page.waitForFunction(() => !document.querySelector('.v2-config-controls').disabled)
     await page.getByTestId('tool-save-config').click()
-    await page.getByTestId('tool-save-merge').click()
     await waitForSavedConfiguration(page)
 
     const marker = await page.evaluate(() => localStorage.getItem(
@@ -2338,7 +2403,12 @@ async function openToolConfiguration(page, provider = 'codex') {
 async function waitForSavedConfiguration(page) {
   await page.getByTestId('config-dialog').waitFor({ state: 'hidden' })
   await waitForToast(page, '配置保存成功')
-  assert.equal(await page.getByRole('dialog', { name: /保存这份配置|重置为初始状态|放弃未保存/ }).count(), 0)
+  assert.equal(await page.getByRole('dialog', { name: /重置为初始状态|放弃未保存/ }).count(), 0)
+}
+
+async function openConfigAdvanced(page) {
+  const advanced = page.getByTestId('tool-config-advanced')
+  if (!(await advanced.evaluate((element) => element.open))) await advanced.locator('summary').click()
 }
 
 const defaultModelCases = [
@@ -2360,7 +2430,6 @@ for (const existing of [false, true]) for (const { tool, provider, model } of de
       assert.equal(await page.getByLabel('默认模型').inputValue(), expected)
       assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'listConfiguredModels').map((entry) => entry.args)), [[provider]])
       await page.getByTestId('tool-save-config').click()
-      await page.getByTestId('tool-save-merge').click()
       await waitForSavedConfiguration(page)
       assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'saveConfig').map((entry) => entry.args[0])), [
         { provider, apiKey: '', model: expected, mode: 'merge' },
@@ -2398,17 +2467,16 @@ test('configuration keeps the current local key by default and saves through the
   try {
     await openToolConfiguration(page)
     const select = page.getByTestId('tool-key-select')
-    await page.waitForFunction(() => document.querySelector('[data-testid="tool-key-select"] option[value="automatic"]')?.textContent.includes('GPT-中转/订阅'))
+    await page.waitForFunction(() => document.querySelector('[data-testid="tool-key-select"] option[value="automatic"]')?.disabled === false)
     assert.equal(await select.inputValue(), 'current')
     assert.match(await select.locator('option:checked').innerText(), /保持当前.*sk-co••••1234/)
-    assert.match(await page.getByTestId('tool-key-summary').innerText(), /分组未确认/)
-    assert.doesNotMatch(await page.getByTestId('tool-key-summary').innerText(), /Custom group/)
+    assert.match(await page.getByTestId('tool-key-summary').innerText(), /继续用现在这把密钥：名称未确认 · sk-co••••1234/)
+    assert.doesNotMatch(await page.getByTestId('tool-key-summary').innerText(), /分组|Custom group/)
     await page.getByTestId('tool-detect-models').click()
     await page.waitForFunction(() => !document.querySelector('.v2-config-controls').disabled)
-    await page.getByTestId('tool-save-config').click()
-    const confirmation = page.getByRole('dialog', { name: '保存这份配置？' })
+    await openConfigAdvanced(page)
     assert.match(await page.getByTestId('tool-save-summary').innerText(), /密钥：名称未确认[\s\S]*分组：分组未确认[\s\S]*sk-co••••1234[\s\S]*fixture-model/)
-    await confirmation.getByTestId('tool-save-merge').click()
+    await page.getByTestId('tool-save-config').click()
     await waitForSavedConfiguration(page)
     const actions = await page.evaluate(() => window.v2Test.calls)
     assert.deepEqual(actions.find((entry) => entry.method === 'saveConfig').args[0], { provider: 'codex', apiKey: '', model: 'fixture-model', mode: 'merge' })
@@ -2434,7 +2502,6 @@ for (const tool of matchedToolIds) test(`read-only account matches retain accoun
     await page.waitForFunction(() => !document.querySelector('.v2-config-controls').disabled)
     await page.getByLabel('默认模型').selectOption(selectedModel)
     await page.getByTestId('tool-save-config').click()
-    await page.getByTestId('tool-save-merge').click()
     await waitForSavedConfiguration(page)
     await matchedToolBadges(page, '已配好')
     await page.getByTestId(`tool-row-${tool}`).getByText(`v1.2.3 · ${selectedModel}`, { exact: true }).waitFor()
@@ -2471,9 +2538,9 @@ test('selected account key shows its group and survives delayed metadata plus to
     assert.equal(await select.inputValue(), '202')
     await page.getByTestId('tool-detect-models').click()
     await page.getByLabel('默认模型').selectOption('fixture-other')
-    await page.getByTestId('tool-save-config').click()
+    await openConfigAdvanced(page)
     assert.match(await page.getByTestId('tool-save-summary').innerText(), /custom-key[\s\S]*Custom group[\s\S]*sk-ot••••1234[\s\S]*fixture-other/)
-    await page.getByTestId('tool-save-merge').click()
+    await page.getByTestId('tool-save-config').click()
     await waitForSavedConfiguration(page)
     await openToolConfiguration(page)
     await page.waitForFunction(() => document.querySelector('[data-testid="tool-key-summary"]')?.textContent.includes('custom-key'))
@@ -2491,22 +2558,48 @@ test('explicit automatic key configuration shows the right group and adopts the 
   try {
     await openToolConfiguration(page)
     const select = page.getByTestId('tool-key-select')
-    await page.waitForFunction(() => document.querySelector('[data-testid="tool-key-select"] option[value="automatic"]')?.textContent.includes('Codex_pro'))
+    await page.waitForFunction(() => document.querySelector('[data-testid="tool-key-select"] option[value="automatic"]')?.disabled === false)
     assert.equal(await select.inputValue(), 'current')
-    assert.match(await select.locator('option[value="automatic"]').innerText(), /自动准备\/复用.*Codex_pro.*xingmang-desktop-codex/)
+    assert.equal(await select.locator('option[value="automatic"]').innerText(), '自动准备（推荐）')
     await select.selectOption('automatic')
-    assert.equal(await page.getByTestId('tool-detect-models').isDisabled(), true)
+    assert.equal(await page.getByTestId('tool-detect-models').count(), 0)
+    assert.equal(await page.getByTestId('tool-key-summary').innerText(), '保存时自动准备好密钥，不用自己创建')
     const before = await page.evaluate(() => window.v2Test.calls.map((entry) => entry.method))
     assert.equal(before.includes('listConfiguredModels') || before.includes('configureManagedCliKeys'), false)
-    await page.getByTestId('tool-save-config').click()
+    await openConfigAdvanced(page)
     assert.match(await page.getByTestId('tool-save-summary').innerText(), /xingmang-desktop-codex[\s\S]*Codex_pro[\s\S]*保存时准备或复用/)
-    await page.getByTestId('tool-save-merge').click()
+    await page.getByTestId('tool-save-config').click()
     await waitForSavedConfiguration(page)
     await openToolConfiguration(page)
     await page.waitForFunction(() => document.querySelector('[data-testid="tool-key-select"]')?.value === 'current' && document.querySelector('[data-testid="tool-key-summary"]')?.textContent.includes('coding-key'))
     assert.equal(await page.getByLabel('默认模型').inputValue(), 'gpt-5.6-sol')
-    assert.match(await page.getByTestId('tool-key-summary').innerText(), /coding-key.*Codex_pro.*sk-se••••9012/)
+    assert.match(await page.getByTestId('tool-key-summary').innerText(), /coding-key · sk-se••••9012/)
     assert.equal(await page.getByTestId('tool-detect-models').isDisabled(), false)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// 第十一批候选 6：自动准备的密钥以前要「保存 → 关窗 → 重开 → 检测」才能换模型，
+// 现在一颗按钮保存并检测，留在对话框里。
+test('save and detect prepares the automatic key once, keeps the dialog open and adopts the saved model', async () => {
+  const page = await open('keyOptions=1&sub2api=1&autoFallback=1')
+  try {
+    await openToolConfiguration(page)
+    await page.waitForFunction(() => document.querySelector('[data-testid="tool-key-select"] option[value="automatic"]')?.disabled === false)
+    await page.getByTestId('tool-key-select').selectOption('automatic')
+    await page.getByTestId('tool-save-detect-models').click()
+    await page.getByTestId('tool-save-detect-notice').waitFor()
+    assert.equal(await page.getByTestId('config-dialog').isVisible(), true)
+    await assertNoToast(page, '配置保存成功')
+    const actions = await page.evaluate(() => window.v2Test.calls)
+    assert.deepEqual(actions.filter((entry) => entry.method === 'configureManagedCliKeys').map((entry) => entry.args[0]), [
+      { providers: ['codex'], preferredModels: { codex: 'fixture-model' }, mode: 'merge', intent: 'explicit' },
+    ])
+    assert.deepEqual(actions.find((entry) => entry.method === 'listConfiguredModels').args, ['codex'])
+    assert.equal(await page.getByLabel('默认模型').inputValue(), 'gpt-5.6-sol')
+    // 刚保存过、模型也没改：直接关掉不该再问「放弃未保存的修改」。
+    await page.getByTestId('config-dialog').getByRole('button', { name: '取消', exact: true }).click()
+    await page.getByTestId('config-dialog').waitFor({ state: 'hidden' })
     await clean(page)
   } finally { await page.close() }
 })
@@ -2531,9 +2624,9 @@ test('official source saving does not prepare or replace an account key', async 
   try {
     await openToolConfiguration(page)
     await page.getByRole('button', { name: 'ChatGPT 账号', exact: true }).click()
-    await page.getByTestId('tool-save-config').click()
+    await openConfigAdvanced(page)
     assert.match(await page.getByTestId('tool-save-summary').innerText(), /来源：ChatGPT 账号/)
-    await page.getByTestId('tool-save-merge').click()
+    await page.getByTestId('tool-save-config').click()
     await waitForSavedConfiguration(page)
     const actions = await page.evaluate(() => window.v2Test.calls)
     assert.deepEqual(actions.find((entry) => entry.method === 'switchToOfficialAccount').args, ['codex', 'merge'])
@@ -2565,19 +2658,28 @@ test('asks once before opening Codex with the Chinese runtime patch and remember
   const page = await open('chineseAsk=1')
   try {
     await page.getByTestId('tool-codexDesktop-primary').click()
-    await page.getByRole('heading', { name: '启用 Codex 中文界面？' }).waitFor()
+    await page.getByRole('heading', { name: '要让 Codex 的界面显示中文吗？' }).waitFor()
     assert.equal(await page.evaluate(() => window.v2Test.calls.filter((call) => call.method === 'launchCodexDesktop').length), 0)
+    // 开端口是安全取舍：焦点落在「先不用」，两个按钮都不是主按钮。
+    const decline = page.getByTestId('codex-chinese-decline')
+    await page.waitForFunction(() => document.activeElement?.getAttribute('data-testid') === 'codex-chinese-decline')
+    assert.equal(await decline.innerText(), '先不用')
+    assert.equal(await page.getByTestId('codex-chinese-enable').innerText(), '显示中文')
+    for (const button of [decline, page.getByTestId('codex-chinese-enable')]) {
+      assert.equal(await button.evaluate((element) => element.classList.contains('xm-btn-primary')), false)
+    }
+    assert.doesNotMatch(await page.getByRole('dialog', { name: '要让 Codex 的界面显示中文吗？' }).innerText(), /调试端口/)
 
-    await page.getByRole('button', { name: '保持当前语言', exact: true }).click()
+    await decline.click()
     await page.waitForFunction(() => window.v2Test.calls.some((call) => call.method === 'launchCodexDesktop'))
     assert.deepEqual(await page.evaluate(() => window.v2Test.calls
       .filter((call) => call.method === 'saveSettings' && call.args[0]?.codexDesktopChineseRuntimePatch !== undefined)
       .map((call) => call.args[0].codexDesktopChineseRuntimePatch)), ['disabled'])
-    await page.getByRole('heading', { name: '启用 Codex 中文界面？' }).waitFor({ state: 'hidden' })
+    await page.getByRole('heading', { name: '要让 Codex 的界面显示中文吗？' }).waitFor({ state: 'hidden' })
 
     await page.getByTestId('tool-codexDesktop-primary').click()
     await page.waitForFunction(() => window.v2Test.calls.filter((call) => call.method === 'launchCodexDesktop').length === 2)
-    assert.equal(await page.getByRole('heading', { name: '启用 Codex 中文界面？' }).count(), 0)
+    assert.equal(await page.getByRole('heading', { name: '要让 Codex 的界面显示中文吗？' }).count(), 0)
     await clean(page)
   } finally { await page.close() }
 })
@@ -2586,7 +2688,7 @@ test('turns the Chinese runtime patch on through the locale path when the one-ti
   const page = await open('chineseAsk=1')
   try {
     await page.getByTestId('tool-codexDesktop-primary').click()
-    await page.getByRole('button', { name: '启用中文界面', exact: true }).click()
+    await page.getByRole('button', { name: '显示中文', exact: true }).click()
     await page.waitForFunction(() => window.v2Test.calls.some((call) => call.method === 'launchCodexDesktop'))
     assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((call) => call.method === 'setCodexDesktopLocale').map((call) => call.args)), [['zh-CN']])
     assert.equal(await page.evaluate(() => window.v2Test.calls
@@ -2606,7 +2708,8 @@ test('ordinary desktop launch preserves the opened app and exposes a Chinese-loc
   } finally { await page.close() }
 })
 
-test('save choices show both actions without writing and preserve focus and drafts when canceled', async () => {
+// 第十一批候选 6：保存不再二选一，「重置」收进「高级」，仍要二次确认。
+test('reset lives under advanced, needs a confirmation and cancelling it keeps the draft without writing', async () => {
   for (const theme of ['light', 'dark']) {
     const page = await open(`keyOptions=1&theme=${theme}`)
     try {
@@ -2616,26 +2719,24 @@ test('save choices show both actions without writing and preserve focus and draf
       assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => entry.method === 'switchToOfficialAccount')), false)
       await page.getByRole('button', { name: '使用星芒账号', exact: true }).click()
       await page.getByTestId('tool-key-select').selectOption('202')
-      await page.getByTestId('tool-save-config').click()
-      const dialog = page.getByRole('dialog', { name: '保存这份配置？' })
-      assert.match(await page.getByTestId('tool-save-merge').innerText(), /仅更新账号来源、密钥和模型\s*其他自定义设置会保留/)
+      assert.equal(await page.getByTestId('tool-save-reset').isVisible(), false)
+      await openConfigAdvanced(page)
+      const advanced = page.getByTestId('tool-config-advanced')
+      assert.match(await advanced.innerText(), /只改账号、密钥和模型/)
       assert.match(await page.getByTestId('tool-save-reset').innerText(), /重置为初始状态/)
-      assert.equal(await dialog.getByRole('button', { name: '取消', exact: true }).evaluate((element) => element === document.activeElement), true)
-      assert.equal(await dialog.evaluate((element) => {
+      assert.equal(await advanced.evaluate((element) => {
         const bounds = element.getBoundingClientRect()
-        return element.scrollWidth > element.clientWidth || [...element.querySelectorAll('.v2-save-options button')].some((button) => {
+        return [...element.querySelectorAll('.v2-save-options button')].some((button) => {
           const rect = button.getBoundingClientRect()
           return button.scrollWidth > button.clientWidth || rect.left < bounds.left || rect.right > bounds.right || rect.height < 44
         })
       }), false)
-      await dialog.screenshot({ path: path.join(artifacts, `config-save-choices-${theme}.png`) })
+      await advanced.screenshot({ path: path.join(artifacts, `config-advanced-${theme}.png`) })
       await page.getByTestId('tool-save-reset').click()
       const reset = page.getByRole('dialog', { name: '重置为初始状态？' })
-      await reset.getByRole('button', { name: '返回选择' }).click()
-      await dialog.waitFor()
-      await page.keyboard.press('Escape')
-      await dialog.waitFor({ state: 'hidden' })
-      assert.equal(await page.getByTestId('tool-save-config').evaluate((element) => element === document.activeElement), true)
+      await reset.getByRole('button', { name: '取消', exact: true }).click()
+      await reset.waitFor({ state: 'hidden' })
+      assert.equal(await page.getByTestId('config-dialog').isVisible(), true)
       assert.equal(await page.getByTestId('tool-key-select').inputValue(), '202')
       assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => ['saveConfig', 'saveConfigWithAccountKey', 'configureManagedCliKeys', 'switchToOfficialAccount'].includes(entry.method))), false)
       await clean(page)
@@ -2643,21 +2744,46 @@ test('save choices show both actions without writing and preserve focus and draf
   }
 })
 
-for (const mode of ['merge', 'reset']) test(`pending ${mode} configuration cannot close or write twice, then closes with a success toast`, async () => {
+test('pending merge configuration cannot close or write twice, then closes with a success toast', async () => {
   const page = await open('keyOptions=1')
   try {
     await openToolConfiguration(page)
     await page.getByTestId('tool-key-select').selectOption('202')
     await page.evaluate(() => window.v2Test.holdNextConfigSave())
-    await page.getByTestId('tool-save-config').click()
-    if (mode === 'reset') await page.getByTestId('tool-save-reset').click()
-    const confirmation = page.getByRole('dialog', { name: mode === 'merge' ? '保存这份配置？' : '重置为初始状态？' })
-    const commit = mode === 'merge' ? confirmation.getByTestId('tool-save-merge') : confirmation.getByRole('button', { name: '备份并重置', exact: true })
+    const save = page.getByTestId('tool-save-config')
+    await save.click()
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'saveConfigWithAccountKey'))
+    assert.equal(await page.getByRole('dialog', { name: '重置为初始状态？' }).count(), 0)
+    assert.equal(await save.isDisabled(), true)
+    assert.equal(await page.getByTestId('config-dialog').locator('[data-modal-close]').isDisabled(), true)
+    assert.equal(await page.getByTestId('config-dialog').getByRole('button', { name: '取消', exact: true }).isDisabled(), true)
+    await page.keyboard.press('Escape')
+    assert.equal(await page.getByTestId('config-dialog').isVisible(), true)
+    await assertNoToast(page, '配置保存成功')
+    await page.evaluate(() => window.v2Test.releaseConfigSave())
+    await waitForSavedConfiguration(page)
+    assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'saveConfigWithAccountKey').map((entry) => entry.args[0])), [
+      { provider: 'codex', keyId: 202, model: 'fixture-model', mode: 'merge' },
+    ])
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('pending reset configuration cannot close or write twice, then closes with a success toast', async () => {
+  const page = await open('keyOptions=1')
+  try {
+    await openToolConfiguration(page)
+    await page.getByTestId('tool-key-select').selectOption('202')
+    await page.evaluate(() => window.v2Test.holdNextConfigSave())
+    await openConfigAdvanced(page)
+    await page.getByTestId('tool-save-reset').click()
+    const confirmation = page.getByRole('dialog', { name: '重置为初始状态？' })
+    const commit = confirmation.getByRole('button', { name: '备份并重置', exact: true })
     await commit.click()
     await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'saveConfigWithAccountKey'))
     assert.equal(await commit.isDisabled(), true)
     assert.equal(await confirmation.locator('[data-modal-close]').isDisabled(), true)
-    assert.equal(await confirmation.getByRole('button', { name: mode === 'merge' ? '取消' : '返回选择', exact: true }).isDisabled(), true)
+    assert.equal(await confirmation.getByRole('button', { name: '取消', exact: true }).isDisabled(), true)
     assert.equal(await page.getByTestId('config-dialog').locator('[data-modal-close]').isDisabled(), true)
     assert.equal(await page.getByTestId('tool-save-config').isDisabled(), true)
     await page.keyboard.press('Escape')
@@ -2667,7 +2793,7 @@ for (const mode of ['merge', 'reset']) test(`pending ${mode} configuration canno
     await page.evaluate(() => window.v2Test.releaseConfigSave())
     await waitForSavedConfiguration(page)
     assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'saveConfigWithAccountKey').map((entry) => entry.args[0])), [
-      { provider: 'codex', keyId: 202, model: 'fixture-model', mode },
+      { provider: 'codex', keyId: 202, model: 'fixture-model', mode: 'reset' },
     ])
     await clean(page)
   } finally { await page.close() }
@@ -2680,7 +2806,6 @@ test('configuration still closes after a saved write when the system scan refres
     await page.getByTestId('tool-key-select').selectOption('202')
     await page.evaluate(() => { window.v2Test.fail = 'scanSystem' })
     await page.getByTestId('tool-save-config').click()
-    await page.getByTestId('tool-save-merge').click()
     await waitForSavedConfiguration(page)
     await waitForToast(page, '配置已保存，但最新状态没有读到。请重新检测，无需重复保存。')
     assert.equal(await page.getByRole('dialog', { name: '操作没有完成' }).count(), 0)
@@ -2699,7 +2824,6 @@ test('a failed configuration re-read leaves the tool list standing and says whic
     await page.getByTestId('tool-key-select').selectOption('202')
     await page.evaluate(() => { window.v2Test.fail = 'getConfig' })
     await page.getByTestId('tool-save-config').click()
-    await page.getByTestId('tool-save-merge').click()
     await waitForSavedConfiguration(page)
     await page.getByTestId('home-config-failure').waitFor()
     for (const tool of ['claude', 'codex', 'grok', 'gemini']) {
@@ -2731,7 +2855,7 @@ for (const source of ['current', 'selected', 'automatic', 'manual', 'official', 
     await openToolConfiguration(page)
     if (source === 'selected') await page.getByTestId('tool-key-select').selectOption('202')
     if (source === 'automatic') {
-      await page.waitForFunction(() => document.querySelector('[data-testid="tool-key-select"] option[value="automatic"]')?.textContent.includes('Codex_pro'))
+      await page.waitForFunction(() => document.querySelector('[data-testid="tool-key-select"] option[value="automatic"]')?.disabled === false)
       await page.getByTestId('tool-key-select').selectOption('automatic')
     }
     if (source === 'official') await page.getByRole('button', { name: 'ChatGPT 账号', exact: true }).click()
@@ -2741,7 +2865,7 @@ for (const source of ['current', 'selected', 'automatic', 'manual', 'official', 
       await page.getByTestId('tool-detect-models').click()
       await page.waitForFunction(() => !document.querySelector('.v2-config-controls').disabled)
     }
-    await page.getByTestId('tool-save-config').click()
+    await openConfigAdvanced(page)
     await page.getByTestId('tool-save-reset').click()
     const reset = page.getByRole('dialog', { name: '重置为初始状态？' })
     await reset.waitFor()
@@ -2769,7 +2893,7 @@ test('failed reset retains the selected key and retries reset without silently m
   try {
     await openToolConfiguration(page)
     await page.getByTestId('tool-key-select').selectOption('202')
-    await page.getByTestId('tool-save-config').click()
+    await openConfigAdvanced(page)
     await page.getByTestId('tool-save-reset').click()
     const reset = page.getByRole('dialog', { name: '重置为初始状态？' })
     await page.evaluate(() => { window.v2Test.fail = 'saveConfigWithAccountKey' })

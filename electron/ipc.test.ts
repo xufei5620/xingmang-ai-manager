@@ -7,7 +7,7 @@ import type { UpdaterService } from './updater'
 import { mergeAppSettings, type AppSettings, type AppSettingsUpdate } from './app-settings'
 import type { NativeConfigSaveResult } from './config-files'
 import type { NewApiClientService } from './new-api-client'
-import { ipcInvokeChannels } from './ipc-contract'
+import { ipcInvokeChannels, type AccountKeysPage } from './ipc-contract'
 import { providerSessionProviders } from './provider-sessions'
 import { resolveRelaySite, sub2ApiSupportServiceUrl, supportServiceUrl } from './relay-sites'
 import { savedAccountId } from './saved-accounts'
@@ -1017,6 +1017,57 @@ describe('registerIpcHandlers', () => {
       fs.rmSync(documents, { recursive: true, force: true })
       fs.rmSync(elsewhere, { recursive: true, force: true })
     }
+  })
+
+  it('creates a starter project folder directly when the renderer asks for one', async () => {
+    const documents = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-ipc-documents-')))
+    try {
+      const { service, providerExtensionService } = register(undefined, undefined, undefined, undefined, undefined, undefined, {}, {
+        documentsDirectory: () => documents,
+      })
+      const expected = path.join(documents, 'XingmangProjects', 'my-project')
+
+      await expect(electronMocks.handlers.get('workspace:choose')!(trustedEvent(), { createStarter: true })).resolves.toBe(expected)
+      expect(electronMocks.showOpenDialog).not.toHaveBeenCalled()
+      expect(electronMocks.showMessageBox).not.toHaveBeenCalled()
+      expect(fs.statSync(expected).isDirectory()).toBe(true)
+      expect(service.updateStoredConfig).toHaveBeenCalledWith({ version: 2, workspace: expected })
+      expect(providerExtensionService.setRepositoryRoot).toHaveBeenCalledWith(expected)
+    } finally {
+      fs.rmSync(documents, { recursive: true, force: true })
+    }
+  })
+
+  it.runIf(process.platform !== 'win32')('explains a direct starter folder failure and stores nothing', async () => {
+    const documents = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-ipc-documents-')))
+    const elsewhere = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-ipc-elsewhere-')))
+    fs.symlinkSync(elsewhere, path.join(documents, 'XingmangProjects'), 'dir')
+    try {
+      const { service } = register(undefined, undefined, undefined, undefined, undefined, undefined, {}, {
+        documentsDirectory: () => documents,
+      })
+
+      await expect(electronMocks.handlers.get('workspace:choose')!(trustedEvent(), { createStarter: true })).resolves.toBeNull()
+      expect(electronMocks.showMessageBox).toHaveBeenCalledWith(expect.objectContaining({
+        type: 'error',
+        detail: expect.stringContaining('自己选一个文件夹'),
+      }))
+      expect(electronMocks.showOpenDialog).not.toHaveBeenCalled()
+      expect(service.updateStoredConfig).not.toHaveBeenCalled()
+    } finally {
+      fs.rmSync(documents, { recursive: true, force: true })
+      fs.rmSync(elsewhere, { recursive: true, force: true })
+    }
+  })
+
+  it('rejects workspace options it does not know, including a renderer-supplied path', async () => {
+    register()
+    const handler = electronMocks.handlers.get('workspace:choose')!
+
+    await expect(handler(trustedEvent(), { createStarter: 'yes' })).rejects.toThrow('选择工作目录的参数无效')
+    await expect(handler(trustedEvent(), { createStarter: true, path: 'C:\\Windows' })).rejects.toThrow('选择工作目录的参数无效')
+    await expect(handler(trustedEvent(), 'create')).rejects.toThrow('选择工作目录的参数无效')
+    expect(electronMocks.showOpenDialog).not.toHaveBeenCalled()
   })
 
   it('keeps a cancelled picker from storing anything after a warning', async () => {
@@ -3442,6 +3493,45 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       expect(onRendererError).toHaveBeenCalledWith({ message: 'Boom', stack: 'at foo()', context: 'v2' })
     })
 
+    it('records info and warn entries at their own level without reporting a crash', () => {
+      const onRendererError = vi.fn()
+      const { runtimeLog } = register(undefined, undefined, undefined, undefined, undefined, undefined, { onRendererError })
+      const handler = electronMocks.handlers.get('runtime-logs:renderer-error')!
+
+      handler(trustedEvent(), { message: 'Key 自动配置结果', context: 'account-bootstrap', level: 'info' })
+      handler(trustedEvent(), { message: '启动检查未完成', context: 'startup-check', level: 'warn' })
+
+      expect(runtimeLog.log).toHaveBeenCalledWith('info', 'renderer', 'renderer.info', 'Key 自动配置结果', {
+        context: 'account-bootstrap',
+        stack: null,
+      })
+      expect(runtimeLog.log).toHaveBeenCalledWith('warn', 'renderer', 'renderer.warn', '启动检查未完成', {
+        context: 'startup-check',
+        stack: null,
+      })
+      expect(onRendererError).not.toHaveBeenCalled()
+    })
+
+    it('still reports a crash when the level is spelled out as error', () => {
+      const onRendererError = vi.fn()
+      register(undefined, undefined, undefined, undefined, undefined, undefined, { onRendererError })
+      const handler = electronMocks.handlers.get('runtime-logs:renderer-error')!
+
+      handler(trustedEvent(), { message: 'Boom', level: 'error' })
+      expect(onRendererError).toHaveBeenCalledWith({ message: 'Boom', stack: undefined, context: undefined })
+    })
+
+    it('rejects a level outside the three known values', () => {
+      const onRendererError = vi.fn()
+      register(undefined, undefined, undefined, undefined, undefined, undefined, { onRendererError })
+      const handler = electronMocks.handlers.get('runtime-logs:renderer-error')!
+
+      expect(() => handler(trustedEvent(), { message: 'Boom', level: 'debug' })).toThrow('日志级别无效')
+      expect(() => handler(trustedEvent(), { message: 'Boom', level: 'ERROR' })).toThrow('日志级别无效')
+      expect(() => handler(trustedEvent(), { message: 'Boom', level: 1 })).toThrow('日志级别无效')
+      expect(onRendererError).not.toHaveBeenCalled()
+    })
+
     it('does not call the host when the payload was rejected', () => {
       const onRendererError = vi.fn()
       register(undefined, undefined, undefined, undefined, undefined, undefined, { onRendererError })
@@ -4001,6 +4091,72 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
 
       expect(() => handler(trustedEvent(), { pageSize: 999 })).toThrow()
       expect(accountService.listKeys).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('account:list-keys in-use marking', () => {
+    const row = (id: number) => ({
+      id, name: `key-${id}`, maskedKey: 'sk-****abcd', group: 'default', status: 1, remainQuota: 0,
+      unlimitedQuota: true, usedQuota: 0, createdAt: '2026-09-01T00:00:00.000Z', expiredAt: null, accessedAt: null,
+    })
+    const cached = [
+      { id: 11, provider: 'claude' as const, group: 'g', name: 'xingmang-desktop-claude', key: 'sk-claude-in-use-000' },
+      { id: 12, provider: 'codex' as const, group: 'g', name: 'xingmang-desktop-codex', key: 'sk-codex-replaced-000' },
+    ]
+    function signedIn(userId = 7) {
+      const accountService = accountServiceStub()
+      vi.mocked(accountService.getSessionState).mockReturnValue({
+        authenticated: true,
+        account: { userId, username: 'alice', group: null, role: null, quota: null, usedQuota: null },
+      })
+      vi.mocked(accountService.listKeys).mockResolvedValue({ page: 1, pageSize: 20, total: 3, keys: [row(11), row(12), row(13)] })
+      return accountService
+    }
+    function configured(service: ReturnType<typeof serviceStub>, keys: Partial<Record<string, string>>) {
+      vi.mocked(service.revealApiKey).mockImplementation((provider) => keys[provider] ?? '')
+    }
+
+    it('marks only keys this app issued for a tool whose config still holds exactly that key', async () => {
+      const service = serviceStub()
+      configured(service, { claude: 'sk-claude-in-use-000', codex: 'sk-user-picked-other' })
+      const managedCliKeys = { read: vi.fn(async () => cached), save: vi.fn(), remove: vi.fn() }
+      register(service, undefined, undefined, signedIn(), undefined, managedCliKeys)
+      const result = await electronMocks.handlers.get('account:list-keys')!(trustedEvent(), {}) as AccountKeysPage
+      expect(managedCliKeys.read).toHaveBeenCalledWith(7)
+      expect(result.keys.map((key) => key.managedProvider)).toEqual(['claude', undefined, undefined])
+      expect(result.keys[1]).not.toHaveProperty('managedProvider')
+      // Only the provider id crosses IPC; neither the cached nor the configured secret does (I3).
+      expect(JSON.stringify(result)).not.toMatch(/sk-claude-in-use|sk-codex-replaced|sk-user-picked/)
+    })
+
+    it('returns the unmarked list when the cache, a config, or the session cannot be trusted', async () => {
+      const service = serviceStub()
+      vi.mocked(service.revealApiKey).mockImplementation(() => { throw new Error('config unreadable') })
+      const managedCliKeys = { read: vi.fn(async () => cached), save: vi.fn(), remove: vi.fn() }
+      const accountService = signedIn()
+      register(service, undefined, undefined, accountService, undefined, managedCliKeys)
+      const handler = electronMocks.handlers.get('account:list-keys')!
+      const plain = { page: 1, pageSize: 20, total: 3, keys: [row(11), row(12), row(13)] }
+      await expect(handler(trustedEvent(), {})).resolves.toEqual(plain)
+      configured(service, { claude: 'sk-claude-in-use-000' })
+      managedCliKeys.read.mockRejectedValueOnce(new Error('cache corrupt'))
+      await expect(handler(trustedEvent(), {})).resolves.toEqual(plain)
+      managedCliKeys.read.mockImplementationOnce(async () => {
+        vi.mocked(accountService.getSessionState).mockReturnValue({
+          authenticated: true,
+          account: { userId: 8, username: 'bob', group: null, role: null, quota: null, usedQuota: null },
+        })
+        return cached
+      })
+      await expect(handler(trustedEvent(), {})).resolves.toEqual(plain)
+    })
+
+    it('does not read the key cache when signed out', async () => {
+      const managedCliKeys = { read: vi.fn(async () => cached), save: vi.fn(), remove: vi.fn() }
+      const { accountService } = register(undefined, undefined, undefined, undefined, undefined, managedCliKeys)
+      vi.mocked(accountService.listKeys).mockResolvedValue({ page: 1, pageSize: 20, total: 0, keys: [] })
+      await electronMocks.handlers.get('account:list-keys')!(trustedEvent(), {})
+      expect(managedCliKeys.read).not.toHaveBeenCalled()
     })
   })
 

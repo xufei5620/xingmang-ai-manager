@@ -46,6 +46,7 @@ export function BusinessPage({
         onLogin={actions.openLogin}
         onAccountChanged={actions.onAccountChanged ?? actions.refresh}
         onBack={actions.navigate ? () => actions.navigate?.('home') : undefined}
+        onRewriteKey={actions.onRewriteKey}
       />
     )
   if (page === 'sessions')
