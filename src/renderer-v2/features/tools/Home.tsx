@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { ArrowRight, ArrowUpRight, BookOpen, ChevronDown, Download, FolderOpen, History, MessageSquare, Plug, RefreshCw, RotateCcw, X, Zap } from 'lucide-react'
-import type { AccountBalance, AccountProfile, ExternalClientStatus, ExternalToolId, MultiProviderSessionPage, OfficialChatGptAccount } from '../../../../electron/ipc-contract'
+import type { AccountBalance, AccountProfile, CliLaunchMode, ExternalClientStatus, ExternalToolId, MultiProviderSessionPage, OfficialChatGptAccount } from '../../../../electron/ipc-contract'
 import { presentExternalClients } from './external-model'
 import { useSharedAccountBalance } from '../app/balance-context'
 import { balanceStatusText } from '../shell/balance-status'
@@ -13,7 +13,7 @@ import type { PageId } from '../../registry/pages'
 import { tools as toolRegistry } from '../../registry/tools'
 import { FirstRunSteps } from './FirstRun'
 import { dismissFirstRun, getFirstRunStorage, readFirstRunDismissals } from './first-run-dismissal'
-import { recentWorkspaces, workspaceButtonLabel, workspaceChoices } from './recent-workspaces'
+import { latestSessionIdsByWorkspace, recentWorkspaces, workspaceButtonLabel, workspaceChoices } from './recent-workspaces'
 import { errorMessage } from '../../business-common'
 import { isNetworkFailureText } from './online-resync'
 import { gitHostPlatform, gitMissingFirstRunHint, gitMissingNotice } from '../../../../electron/git-runtime'
@@ -40,8 +40,11 @@ export interface HomeProps {
   onInstall(tool: ToolId, version?: string): void
   /** 中止正在进行的安装或更新。 */
   onCancelInstall(tool: ToolId): void
-  /** workspace 省略 = 弹目录选择器(旧行为);点名 = 直接用记住的目录打开(N7)。 */
-  onLaunch(tool: ToolId, workspace?: string): void
+  /**
+   * workspace 省略 = 弹目录选择器(旧行为);点名 = 直接用记住的目录打开(N7)。
+   * mode 省略 = 开新对话;'resumeLast' = 接着这个目录里最近的一条对话(#292)。
+   */
+  onLaunch(tool: ToolId, workspace?: string, mode?: CliLaunchMode): void
   onConfigure(tool: ToolId): void
   onConfigureExternal(tool: ExternalToolId): void
   onInstallExternal(tool: ExternalToolId): void
@@ -136,6 +139,11 @@ export function Home(props: HomeProps) {
   const pythonGuide = pythonMissing ? runtimeInstallGuide('python', snapshot?.platform.platform, snapshot?.platform.pythonRuntimeInstall) : null
   const bootstrapBusy = Boolean(props.bootstrap && !props.bootstrap.result && !props.bootstrap.error)
   const launchBusy = Object.keys(jobs).some((key) => key.startsWith('launch:'))
+  // 「接着聊」与记录页同一条规则(#292):续接参数是 CLI 按工作目录找最近一条,
+  // 不按会话 id 挑,所以按钮只能长在每个(工具 × 目录)组合最近的那条上,否则
+  // 用户点第三条、接上的却是第一条。判断用的是整份最近记录(api.recent 一次取
+  // 60 条),不是卡片上显示的那 3 条。
+  const resumable = latestSessionIdsByWorkspace(recent?.items ?? [])
   // 装好又连上之后才给这张卡：还没配 Key 时第一条命令敲下去只会报错，那不是「可以试试」。
   // 一次只显示一个工具，关掉它下一个才轮上，免得首页被四张一样的卡片占满。
   const firstRunTool = installed.find((tool) => tool.status.installed && !jobs[tool.id] && tool.configured && !tool.error
@@ -272,12 +280,17 @@ export function Home(props: HomeProps) {
           <FirstRunSteps key={firstRunTool.id} name={firstRunTool.name} firstRun={firstRun} testId="home-first-run-steps"
             gitHint={firstRunTool.id === 'claude' && gitMissing ? gitMissingFirstRunHint(gitHost) : undefined} />
         </Card>}
-        <Card title="最近" meta="从上次停下的地方继续" padding="none" actions={<Button variant="ghost" size="xs" onClick={() => props.onNavigate('sessions')}>全部记录</Button>}>
+        <Card title="最近" meta="从上次停下的地方继续" padding="none" testId="home-recent-card" actions={<Button variant="ghost" size="xs" onClick={() => props.onNavigate('sessions')}>全部记录</Button>}>
           {recentError ? <Empty icon={History} title="记录暂时没有读到" description={recentError} action={<Button onClick={() => setRecentAttempt((value) => value + 1)}>重新加载</Button>} />
             : !recent ? <div className="v2-loading-inline" role="status">正在读取最近记录</div>
               : recent.items.length ? recent.items.slice(0, 3).map((session) => <ListRow key={session.id} icon={History}
                 title={session.title} desc={session.cwd ?? undefined} meta={session.updatedAt === null ? '时间未记录' : new Date(session.updatedAt * 1000).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}
-                actions={<Button size="xs" variant="ghost" onClick={() => props.onNavigate('sessions')}>查看</Button>} />)
+                actions={<>
+                  {resumable.has(session.id) && !session.archived && <Button size="xs" disabled={loading || launchBusy}
+                    onClick={() => props.onLaunch(session.provider, session.cwd, 'resumeLast')}
+                    title={`接着 ${session.cwd} 里最近的一条对话`} testId={`home-recent-resume-${session.id}`}>接着聊</Button>}
+                  <Button size="xs" variant="ghost" onClick={() => props.onNavigate('sessions')}>查看</Button>
+                </>} />)
                 : <Empty icon={History} title="还没有对话记录" description="打开工具聊过之后，这里会出现最近的会话。" />}
         </Card>
       </div>

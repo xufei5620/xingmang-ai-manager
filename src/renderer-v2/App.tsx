@@ -1,7 +1,7 @@
 import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { RefreshCw } from 'lucide-react'
 import QRCode from 'qrcode'
-import type { AccountSessionState, AppSettingsV2, ExternalDeepLink, ExternalToolId, LegalDocumentKind, PlatformCapabilities, ProviderId, UpdateSnapshot, XingmangApi } from '../../electron/ipc-contract'
+import type { AccountSessionState, AppSettingsV2, CliLaunchMode, ExternalDeepLink, ExternalToolId, LegalDocumentKind, PlatformCapabilities, ProviderId, UpdateSnapshot, XingmangApi } from '../../electron/ipc-contract'
 import { resolveRelaySite, resolveSupportServiceUrl } from '../../electron/relay-sites'
 import { gitWindowsDownloadUrl } from '../../electron/git-runtime'
 import { Shell as AppFrame } from './features/shell/Shell'
@@ -438,7 +438,11 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       if (mounted.current && epoch === accountEpoch.current) toast.show('配置已保存，客户端状态尚未读到，请重新检测。', 'warn')
     })
   }
-  async function launch(id: ToolId, mode: 'open' | 'restart' = 'open', remembered?: string): Promise<boolean> {
+  /**
+   * mode 走的是 toolsApi.launch 那套「两侧各取自己认得的那个」:codexDesktop 认
+   * 'open' | 'restart',四家 CLI 认 'new' | 'resumeLast'(#292)。
+   */
+  async function launch(id: ToolId, mode: 'open' | 'restart' | CliLaunchMode = 'open', remembered?: string): Promise<boolean> {
     const current = toolbox.snapshot
     if (!current) throw new Error('请先完成工具检测')
     const config = await toolsApi.readConfig()
@@ -483,24 +487,25 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     setChineseDialog(false)
     await launch('codexDesktop')
   }
-  function requestLaunch(id: ToolId, remembered?: string) {
+  function requestLaunch(id: ToolId, remembered?: string, mode: CliLaunchMode = 'new') {
     if (launchRequest.current) return
     launchRequest.current = true
     void perform('打开工具', async () => {
       if (id === 'codexDesktop' && (await native.getCodexDesktopStatus()).running) setRestartDialog(true)
       else if (id === 'codexDesktop' && await askForChineseRuntimePatch()) return
-      else if (remembered) await launchRemembered(id, remembered)
-      else await launch(id)
+      else if (remembered) await launchRemembered(id, remembered, mode)
+      else await launch(id, mode)
     }).finally(() => { launchRequest.current = false })
   }
   /**
    * 记住的目录随时可能被删掉或改名。那种情况下退回目录选择器，用户点一次
    * 「打开」仍然能走到底，而不是只收到一条错误（N7）。
    */
-  async function launchRemembered(id: ToolId, remembered: string): Promise<boolean> {
-    try { return await launch(id, 'open', remembered) }
+  async function launchRemembered(id: ToolId, remembered: string, mode: CliLaunchMode = 'new'): Promise<boolean> {
+    try { return await launch(id, mode, remembered) }
     catch (cause) {
       if (!isMissingWorkspace(cause)) throw cause
+      // 目录没了就没有「上次那条对话」可接,退回选择器开新的,总比只甩一条错误强。
       toast.show('上次用的目录已经找不到了，请重新选择。', 'warn')
       return launch(id)
     }

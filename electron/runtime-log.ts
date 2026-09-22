@@ -49,8 +49,18 @@ export interface RuntimeLogStoreOptions {
   maxFileBytes?: number
   archiveCount?: number
   now?: () => Date
+  /** 反馈报告头部那段「工具与配置」的读取预算，缺省 2 秒（测试用）。 */
+  environmentTimeoutMs?: number
 }
 
+/**
+ * 反馈报告头部要带的「工具与配置」几行。由 main.ts 在服务起来之后接上，
+ * 本模块不认识 CLI 也不认识配置文件，只负责限时取用与脱敏。
+ */
+export type RuntimeEnvironmentDescriber = () => Promise<readonly string[]>
+
+const ENVIRONMENT_TIMEOUT_MS = 2_000
+const ENVIRONMENT_UNREADABLE = '未能读取'
 const SENSITIVE_KEY = /(?:api[_-]?key|authorization|bearer|token|secret|password|credential|cookie)/i
 const MAX_TEXT_LENGTH = 8_192
 const MAX_DETAIL_DEPTH = 5
@@ -141,6 +151,8 @@ export class RuntimeLogStore {
   private readonly maxFileBytes: number
   private readonly archiveCount: number
   private readonly now: () => Date
+  private readonly environmentTimeoutMs: number
+  private describeEnvironment: RuntimeEnvironmentDescriber | null = null
   private writeQueue: Promise<void> = Promise.resolve()
   private sequence = 0
 
@@ -153,8 +165,17 @@ export class RuntimeLogStore {
     this.maxFileBytes = options.maxFileBytes ?? 2 * 1024 * 1024
     this.archiveCount = options.archiveCount ?? 3
     this.now = options.now ?? (() => new Date())
+    this.environmentTimeoutMs = options.environmentTimeoutMs ?? ENVIRONMENT_TIMEOUT_MS
     this.startedAt = this.now().toISOString()
     this.adoptStartupFailures()
+  }
+
+  /**
+   * 接上「工具与配置」那段的读取。报告随时可能被生成，而这段数据要等系统服务
+   * 起来才有，所以不放构造参数里。
+   */
+  attachEnvironmentDescriber(describe: RuntimeEnvironmentDescriber): void {
+    this.describeEnvironment = describe
   }
 
   /**
@@ -344,9 +365,10 @@ export class RuntimeLogStore {
       `Node.js: ${process.versions.node}`,
       `日志条数: ${snapshot.total}${snapshot.truncated ? `（附最近 ${snapshot.entries.length} 条）` : ''}`,
       `日志目录: ${scrubHome(snapshot.directory)}`,
-      '',
-      '运行日志:',
     ]
+    const environment = await this.describeEnvironmentLines()
+    if (environment.length) lines.push('', '工具与配置:', ...environment.map(scrubHome))
+    lines.push('', '运行日志:')
     for (const entry of [...snapshot.entries].reverse()) {
       const detail = entry.detail ? ` ${JSON.stringify(entry.detail)}` : ''
       lines.push(scrubHome(
@@ -354,6 +376,31 @@ export class RuntimeLogStore {
       ))
     }
     return { text: `${lines.join('\n')}\n`, entries: snapshot.total }
+  }
+
+  /**
+   * 取不到就算了：反馈报告本身（尤其是运行日志）比这几行重要得多，所以给一个
+   * 总预算，超时或抛错都退回一行说明，报告照常生成。
+   */
+  private async describeEnvironmentLines(): Promise<string[]> {
+    const describe = this.describeEnvironment
+    if (!describe) return []
+    let timer: NodeJS.Timeout | undefined
+    try {
+      const timedOut = Symbol('timeout')
+      const lines = await Promise.race([
+        Promise.resolve().then(describe),
+        new Promise<typeof timedOut>((resolve) => {
+          timer = setTimeout(() => resolve(timedOut), this.environmentTimeoutMs)
+        }),
+      ])
+      if (lines === timedOut) return [`${ENVIRONMENT_UNREADABLE}（读取超时）`]
+      return lines.map((line) => safeText(line)).filter((line) => line.length > 0)
+    } catch {
+      return [ENVIRONMENT_UNREADABLE]
+    } finally {
+      if (timer) clearTimeout(timer)
+    }
   }
 
   async feedbackReport(limit = 600): Promise<string> {

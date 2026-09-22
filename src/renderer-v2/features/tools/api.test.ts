@@ -206,3 +206,37 @@ describe('config-only refresh after the account Key is written', () => {
     expect(withConfigFailure([system, first], null)).toEqual([system])
   })
 })
+
+describe('CLI launch mode passthrough', () => {
+  it('sends resumeLast down to the main process instead of dropping it', async () => {
+    const launchCli = vi.fn(async () => undefined)
+    const api = createToolsApi({ launchCli } as unknown as XingmangApi)
+
+    await api.launch('claude', 'C:\\work\\my-app', 'resumeLast')
+    expect(launchCli).toHaveBeenCalledWith('claude', 'C:\\work\\my-app', 'resumeLast')
+  })
+
+  it('keeps the old two-argument call when no CLI mode is named', async () => {
+    const launchCli = vi.fn(async () => undefined)
+    const api = createToolsApi({ launchCli } as unknown as XingmangApi)
+
+    await api.launch('codex', 'C:\\work\\my-app')
+    expect(launchCli).toHaveBeenCalledWith('codex', 'C:\\work\\my-app')
+
+    // 'open' 是 codexDesktop 那一侧的取值，CLI 这边不认，落回开新对话。
+    await api.launch('codex', 'C:\\work\\my-app', 'open')
+    expect(launchCli).toHaveBeenLastCalledWith('codex', 'C:\\work\\my-app')
+  })
+
+  it('keeps the desktop client on its own two launch modes', async () => {
+    const launchCodexDesktop = vi.fn(async () => undefined)
+    const api = createToolsApi({ launchCodexDesktop } as unknown as XingmangApi)
+
+    await api.launch('codexDesktop', '', 'restart')
+    expect(launchCodexDesktop).toHaveBeenCalledWith('restart')
+
+    // CLI 那一侧的取值落到桌面端就是普通的「打开」，不该把 restart 之外的东西传下去。
+    await api.launch('codexDesktop', '', 'resumeLast')
+    expect(launchCodexDesktop).toHaveBeenLastCalledWith('open')
+  })
+})
