@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawn } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 
@@ -106,6 +106,18 @@ export interface WindowsMachinePathTrustOptions {
     root: string,
     machinePaths: WindowsMachinePaths,
   ) => unknown
+  /** Tests only: the verdict cache to consult and fill. Defaults to the process-wide one. */
+  aclCache?: ProgramFilesAclCache
+}
+
+export interface WindowsMachinePathPrimeOptions {
+  realpath?: (candidate: string) => string
+  inspectProgramFilesAcl?: (
+    candidate: string,
+    root: string,
+    machinePaths: WindowsMachinePaths,
+  ) => Promise<unknown>
+  aclCache?: ProgramFilesAclCache
 }
 
 function absoluteDirectory(value: string | null | undefined, label: string): string {
@@ -373,13 +385,17 @@ export function validateWindowsMachineAclSnapshot(value: unknown): value is Wind
   })
 }
 
-/** Shared owner/reparse probe: trusted-temp.ts reuses it for ProgramData managed
- * roots so the PowerShell inspection logic exists exactly once. */
-export function inspectProgramFilesAcl(
+interface ProgramFilesAclProbe {
+  file: string
+  args: string[]
+  env: NodeJS.ProcessEnv
+}
+
+function programFilesAclProbe(
   candidate: string,
   root: string,
   machinePaths: WindowsMachinePaths,
-): unknown {
+): ProgramFilesAclProbe {
   const powershell = path.win32.join(
     machinePaths.system32,
     'WindowsPowerShell',
@@ -413,14 +429,15 @@ export function inspectProgramFilesAcl(
     '}',
     '[pscustomobject]@{ tokenSids = @($tokenSids); entries = @($entries) } | ConvertTo-Json -Compress -Depth 5',
   ].join('\n')
-  const output = execFileSync(powershell, [
-    '-NoLogo',
-    '-NoProfile',
-    '-NonInteractive',
-    '-EncodedCommand',
-    Buffer.from(script, 'utf16le').toString('base64'),
-  ], {
-    encoding: 'utf8',
+  return {
+    file: powershell,
+    args: [
+      '-NoLogo',
+      '-NoProfile',
+      '-NonInteractive',
+      '-EncodedCommand',
+      Buffer.from(script, 'utf16le').toString('base64'),
+    ],
     env: {
       SystemRoot: machinePaths.systemRoot,
       WINDIR: machinePaths.systemRoot,
@@ -434,12 +451,82 @@ export function inspectProgramFilesAcl(
       XINGMANG_TRUST_TARGET: candidate,
       XINGMANG_TRUST_ROOT: root,
     },
+  }
+}
+
+const programFilesAclTimeoutMs = 8_000
+const programFilesAclMaxBytes = 512 * 1024
+
+/** Shared owner/reparse probe: trusted-temp.ts reuses it for ProgramData managed
+ * roots so the PowerShell inspection logic exists exactly once. */
+export function inspectProgramFilesAcl(
+  candidate: string,
+  root: string,
+  machinePaths: WindowsMachinePaths,
+): unknown {
+  const probe = programFilesAclProbe(candidate, root, machinePaths)
+  const output = execFileSync(probe.file, probe.args, {
+    encoding: 'utf8',
+    env: probe.env,
     windowsHide: true,
-    timeout: 8_000,
-    maxBuffer: 512 * 1024,
+    timeout: programFilesAclTimeoutMs,
+    maxBuffer: programFilesAclMaxBytes,
     stdio: ['ignore', 'pipe', 'ignore'],
   })
   return JSON.parse(output.trim()) as unknown
+}
+
+/**
+ * The same probe as inspectProgramFilesAcl, run without holding the main
+ * thread. A cold PowerShell start costs seconds on a busy machine, and the
+ * synchronous probe used to run inside the home-page scan whenever the app
+ * held an elevated token, freezing window close and input for that long.
+ * Same executable, script, environment, timeout and output bound; only the
+ * wait differs, so a verdict primed through here is the verdict the
+ * synchronous path would have reached.
+ */
+export function inspectProgramFilesAclAsync(
+  candidate: string,
+  root: string,
+  machinePaths: WindowsMachinePaths,
+): Promise<unknown> {
+  const probe = programFilesAclProbe(candidate, root, machinePaths)
+  return new Promise((resolve, reject) => {
+    const child = spawn(probe.file, probe.args, {
+      env: probe.env,
+      windowsHide: true,
+      shell: false,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    })
+    const chunks: Buffer[] = []
+    let bytes = 0
+    let settled = false
+    function finish(error: Error | null, output?: string) {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      if (error) {
+        child.kill()
+        reject(error)
+        return
+      }
+      try { resolve(JSON.parse((output ?? '').trim()) as unknown) } catch (cause) { reject(cause) }
+    }
+    const timer = setTimeout(() => finish(new Error('Program Files ACL probe timed out')), programFilesAclTimeoutMs)
+    child.stdout?.on('data', (chunk: Buffer) => {
+      bytes += chunk.length
+      if (bytes > programFilesAclMaxBytes) {
+        finish(new Error('Program Files ACL probe output exceeded its bound'))
+        return
+      }
+      chunks.push(chunk)
+    })
+    child.once('error', (error) => finish(error))
+    child.once('close', (code) => {
+      if (code !== 0) finish(new Error(`Program Files ACL probe exited with ${code}`))
+      else finish(null, Buffer.concat(chunks).toString('utf8'))
+    })
+  })
 }
 
 /** Owner/ACL probe for preexisting ProgramData managed roots.
@@ -514,40 +601,105 @@ export function inspectWindowsDirectoryTreeAcl(
   return JSON.parse(output.trim()) as unknown
 }
 
-function trustedProgramFilesPath(
+interface ProgramFilesAclTarget {
+  realCandidate: string
+  realRoot: string
+  key: string
+}
+
+function programFilesAclTarget(
   candidate: string,
   root: string,
-  machinePaths: WindowsMachinePaths,
-  options: WindowsMachinePathTrustOptions,
-): boolean {
-  const realpath = options.realpath ?? fs.realpathSync.native
+  realpath: (candidate: string) => string,
+): ProgramFilesAclTarget | null {
   let realCandidate: string
   let realRoot: string
   try {
     realCandidate = realpath(candidate)
     realRoot = realpath(root)
   } catch {
-    return false
+    return null
   }
-  if (!pathWithinWindowsRoot(realCandidate, realRoot)) return false
+  if (!pathWithinWindowsRoot(realCandidate, realRoot)) return null
   const key = `${path.win32.normalize(realRoot).toLowerCase()}\0${path.win32.normalize(realCandidate).toLowerCase()}`
-  if (!options.inspectProgramFilesAcl) {
-    const cached = programFilesAclCache.read(key, Date.now())
-    if (cached !== null) return cached
-  }
+  return { realCandidate, realRoot, key }
+}
+
+function trustedProgramFilesPath(
+  candidate: string,
+  root: string,
+  machinePaths: WindowsMachinePaths,
+  options: WindowsMachinePathTrustOptions,
+): boolean {
+  const target = programFilesAclTarget(candidate, root, options.realpath ?? fs.realpathSync.native)
+  if (!target) return false
+  // An injected probe is a test seam; it bypasses the process-wide cache
+  // unless the test hands in its own.
+  const cache = options.aclCache ?? (options.inspectProgramFilesAcl ? null : programFilesAclCache)
+  const cached = cache?.read(target.key, Date.now()) ?? null
+  if (cached !== null) return cached
   let trusted = false
   try {
     const snapshot = (options.inspectProgramFilesAcl ?? inspectProgramFilesAcl)(
-      realCandidate,
-      realRoot,
+      target.realCandidate,
+      target.realRoot,
       machinePaths,
     )
     trusted = validateWindowsMachineAclSnapshot(snapshot)
   } catch {
     trusted = false
   }
-  if (!options.inspectProgramFilesAcl) programFilesAclCache.write(key, trusted, Date.now())
+  cache?.write(target.key, trusted, Date.now())
   return trusted
+}
+
+function programFilesRootFor(candidate: string, machinePaths: WindowsMachinePaths): string | null {
+  if (pathWithinWindowsRoot(candidate, machinePaths.system32)) return null
+  if (pathWithinWindowsRoot(candidate, machinePaths.programFiles)) return machinePaths.programFiles
+  if (machinePaths.programFilesX86 && pathWithinWindowsRoot(candidate, machinePaths.programFilesX86)) {
+    return machinePaths.programFilesX86
+  }
+  return null
+}
+
+const primesInFlight = new Map<string, Promise<void>>()
+
+/**
+ * Fills the Program Files verdict cache off the main thread, so the next
+ * isTrustedWindowsMachinePath for the same path answers from the cache
+ * instead of blocking on a synchronous PowerShell start. It never decides
+ * anything itself: the verdict is the same validateWindowsMachineAclSnapshot
+ * over the same probe, stored under the same key, and a failed probe is
+ * cached as untrusted exactly as the synchronous path would cache it. When
+ * the entry has expired again by the time the synchronous check runs, that
+ * check simply probes on its own, as before. Never rejects.
+ */
+export async function primeTrustedWindowsMachinePath(
+  candidate: string,
+  machinePaths: WindowsMachinePaths,
+  options: WindowsMachinePathPrimeOptions = {},
+): Promise<void> {
+  if (!path.win32.isAbsolute(candidate) || candidate.includes('\0')) return
+  const root = programFilesRootFor(candidate, machinePaths)
+  if (!root) return
+  const target = programFilesAclTarget(candidate, root, options.realpath ?? fs.realpathSync.native)
+  if (!target) return
+  const cache = options.aclCache ?? programFilesAclCache
+  if (cache.read(target.key, Date.now()) !== null) return
+  const running = primesInFlight.get(target.key)
+  if (running) return running
+  const probe = options.inspectProgramFilesAcl ?? inspectProgramFilesAclAsync
+  const priming = (async () => {
+    let trusted = false
+    try {
+      trusted = validateWindowsMachineAclSnapshot(await probe(target.realCandidate, target.realRoot, machinePaths))
+    } catch {
+      trusted = false
+    }
+    cache.write(target.key, trusted, Date.now())
+  })().finally(() => primesInFlight.delete(target.key))
+  primesInFlight.set(target.key, priming)
+  return priming
 }
 
 export function isTrustedWindowsMachinePath(

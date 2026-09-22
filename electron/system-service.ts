@@ -23,6 +23,7 @@ import {
   commandEnvironment,
   findExecutable,
   isTrustedHighIntegrityExecutable,
+  primeTrustedHighIntegrityExecutable,
   isUserWritablePath,
   redactCommandText,
   runCommand,
@@ -2280,6 +2281,7 @@ export function createSystemService(
   ): Promise<string | null> {
     try {
       const trustedOnly = platform === 'win32' && windowsExecutionMode === 'trusted-only'
+      if (trustedOnly) await primeTrustedHighIntegrityExecutable(executable, platform)
       if (trustedOnly && !isTrustedHighIntegrityExecutable(executable)) return null
       const result = await executeCommand({ executable, argv: args, windowsPackageManager }, {
         env: trustedOnly ? trustedCommandEnvironment(baseEnv) : commandEnvironment(baseEnv),
@@ -2978,6 +2980,7 @@ export function createSystemService(
 
     const detectedNpm = await findInstalledExecutable('npm')
     if (detectedNpm) {
+      if (trustedOnly) await primeTrustedHighIntegrityExecutable(detectedNpm, platform)
       if (!trustedOnly || isTrustedHighIntegrityExecutable(detectedNpm)) return detectedNpm
       throw new Error(
         `已检测到 npm（${detectedNpm}），但当前会话经过了显式提权或权限状态无法确认，不能安全执行该路径。请以普通权限启动本程序，或将 Node.js 安装到受保护的系统目录后重试`,

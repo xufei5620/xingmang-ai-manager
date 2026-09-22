@@ -249,7 +249,9 @@ async function prepareSandbox() {
   await fs.mkdir(userHome)
   await fs.mkdir(userData)
   await fs.mkdir(reviewDirectory, { recursive: true })
-  await fs.writeFile(path.join(userData, 'settings.json'), JSON.stringify({ version: 2, theme: 'dark',
+  // closeBehavior: 'quit' only matters to the restored-start close check below; every
+  // other stop drives app.exit directly and never closes the window.
+  await fs.writeFile(path.join(userData, 'settings.json'), JSON.stringify({ version: 2, theme: 'dark', closeBehavior: 'quit',
     checkUpdatesOnStartup: false, runDiagnosticsOnStartup: false, officialProviders: ['claude', 'codex', 'gemini', 'grok'] }), 'utf8')
   await fs.writeFile(bootstrap, `(${bootFixture.toString()})(${JSON.stringify({ userHome, userData, projectRoot,
     entry: path.join(projectRoot, 'dist-electron/platform/entry.js'), catalog: path.join(projectRoot, 'dist-electron/catalog.js') })})\n`, 'utf8')
@@ -348,6 +350,50 @@ async function start() {
   isolationChecks++
   await evaluateInRenderer(page, 'initial account session', () => window.xingmang.getAccountSession())
   return page
+}
+
+// A start with a saved account is the one that restores the session and warms
+// the home-page scan at the same time (#372). On an elevated Windows token that scan
+// used to hold the main thread on synchronous Program Files ACL probes, so a
+// window closed in those first seconds took longer than the close-race smoke's
+// budget to exit. This start is deliberately not counted in applicationStarts:
+// it closes before the isolation probes could run, and it never reaches a step
+// that talks to the fixture beyond what start-up does on its own.
+const restoredCloseBudgetMs = 5_000
+async function closeWhileRestoring() {
+  progress('launching an instance that is closed while it restores the saved account')
+  const instance = await withDeadline('Electron launch', stepBudgetMs, () => electron.launch({
+    cwd: projectRoot, args: [bootstrap, `--user-data-dir=${userData}`], env, timeout: stepBudgetMs }))
+  const child = instance.process()
+  if (child.pid) trackProcessIds([child.pid])
+  try {
+    const page = await withDeadline('first window', stepBudgetMs, () => instance.firstWindow({ timeout: stepBudgetMs }))
+    await withDeadline('preload bridge', fixtureReadyTimeoutMs,
+      () => page.waitForFunction(() => Boolean(window.xingmang), { timeout: fixtureReadyTimeoutMs }))
+    // Wait for the restore itself to land so the forced exit cannot interrupt a
+    // credential rotation the next start depends on. The scan warmed alongside
+    // it is still running at this point on a Windows runner.
+    await expect.poll(() => withDeadline('restored session', stepBudgetMs,
+      () => page.evaluate(() => window.xingmang.getAccountSession())).then((state) => state.authenticated === true),
+    { timeout: fixtureReadyTimeoutMs }).toBe(true)
+    let closeRequestedAt = 0
+    const exited = new Promise((resolve) => child.once('exit', (code) => resolve({ code, closeLatency: Date.now() - closeRequestedAt })))
+    closeRequestedAt = Date.now()
+    // Closing starts app.quit(), which may tear the inspector down before the
+    // evaluation returns; only the process exit below is the result.
+    await withDeadline('close request', stepBudgetMs,
+      () => instance.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].close())).catch((error) => {
+      if (!/garbage collected|closed|Target|destroyed/i.test(error instanceof Error ? error.message : String(error))) throw error
+    })
+    const result = await Promise.race([exited, new Promise((resolve) => setTimeout(() => resolve(null), restoredCloseBudgetMs))])
+    assert.ok(result, 'closing the window while the saved account restores must not wait on the start-up scan')
+    assert.equal(result.code, 0)
+    progress(`closed ${result.closeLatency}ms after the request`)
+  } finally {
+    await withDeadline('main process exit', 20_000, () => instance.evaluate(({ app }) => app.exit(0))).catch(() => undefined)
+    await withDeadline('close', 20_000, () => instance.close()).catch(() => undefined)
+    if (child.pid) releaseProcessIds([child.pid])
+  }
 }
 
 async function stop() {
@@ -543,8 +589,10 @@ async function main() {
     await fs.access(path.join(userData, 'managed-cli-keys.dat'))
     await fs.access(path.join(userData, 'realms/api-account/managed-cli-keys.dat'))
     recordPass('key-stores-separated')
-    beginStage('restart with sub2api active')
+    beginStage('close while the saved account restores')
     await stop()
+    await closeWhileRestoring()
+    beginStage('restart with sub2api active')
     page = await start()
     assert.equal((await evaluateInRenderer(page, 'restored session', () => window.xingmang.getAccountSession())).siteId, 'solov-api')
     assert.equal((await evaluateInRenderer(page, 'restored saved accounts', () => window.xingmang.listSavedAccounts())).length, 2)
