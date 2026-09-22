@@ -1174,6 +1174,7 @@ const ipcOperationLabels: Readonly<Record<string, string>> = {
   'extensions:list-all': '全部 AI 工具扩展读取',
   'extensions:mutate': 'AI 工具扩展操作',
   'extensions:ensure-marketplace': '官方插件市场添加',
+  'extensions:check-mcp-health': 'MCP 连接状态检测',
   'account:get-status': '星芒账号服务状态读取',
   'account:get-legal-document': '星芒账号法律文档读取',
   'account:login': '星芒账号登录',
@@ -1352,6 +1353,14 @@ function ipcLogDetail(channel: string, args: unknown[], result: unknown, duratio
     detail.kind = first.kind
     detail.action = first.action
     detail.id = first.id
+  }
+  // 「装上了但连不上」是这一页最常见的工单。日志里只留条数，原因文本来自 CLI
+  // 输出，不进日志（I13）。
+  if (channel === 'extensions:check-mcp-health' && isRecord(result) && Array.isArray(result.entries)) {
+    detail.supported = result.supported
+    detail.failed = result.entries.filter(
+      (entry) => isRecord(entry) && entry.state === 'failed',
+    ).length
   }
   const count = collectionSize(result)
   if (count !== null) detail.itemCount = count
@@ -2052,6 +2061,10 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   registerTrustedHandler('extensions:ensure-marketplace', async (_event, provider: unknown) => {
     if (!isProviderId(provider)) throw new Error('未知的 AI 工具')
     return recordExtensionWarnings(await options.providerExtensionService.ensureMarketplace(provider))
+  })
+  registerTrustedHandler('extensions:check-mcp-health', (_event, provider: unknown) => {
+    if (!isProviderId(provider)) throw new Error('未知的 AI 工具')
+    return options.providerExtensionService.checkMcpHealth(provider)
   })
   registerTrustedHandler('account:get-status', (_event, siteId: unknown) => (
     options.realmAccounts && siteId !== undefined

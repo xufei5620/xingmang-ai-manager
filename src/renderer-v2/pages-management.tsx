@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Archive,
   Download,
@@ -58,11 +58,17 @@ import {
 } from './registry/curated-extensions'
 import { tools } from './registry/tools'
 import { isMissingWorkspace, latestSessionIdsByWorkspace } from './features/tools/recent-workspaces'
+import { runtimeHomebrewCommand } from './features/tools/runtime-install-guide'
 import type { V2Bridge } from './types'
 type Provider = Parameters<V2Bridge['listProviderExtensions']>[0]
 type ExtensionSnapshot = Awaited<ReturnType<V2Bridge['listProviderExtensions']>>
 type ExtensionItem = ExtensionSnapshot['items'][number]
 type ExtensionKind = ExtensionItem['kind']
+type ExtensionRuntimes = NonNullable<ExtensionSnapshot['runtimes']>
+type McpHealthReport = Awaited<ReturnType<V2Bridge['checkProviderMcpHealth']>>
+type RuntimeInstallManagement = Awaited<
+  ReturnType<V2Bridge['getPlatformCapabilities']>
+>['pythonRuntimeInstall']
 type Mutation = Parameters<V2Bridge['mutateProviderExtension']>[0]
 type McpConfig = NonNullable<Mutation['mcp']>
 type CodexExtensionApi = Pick<
@@ -172,6 +178,91 @@ function providerName(id: string) {
 }
 function mcpAuthorized(status: string) {
   return ['authenticated', 'logged_in'].includes(status.toLowerCase())
+}
+/**
+ * 「能连上 / 连不上 / 未检测」这一行小标。没有报告 = 这一轮还没检测过，
+ * 这时一颗小标都不画，免得旧结果看起来像刚测的。
+ */
+export function mcpHealthView(
+  report: McpHealthReport | null,
+  id: string,
+  checking = false,
+): { tone: 'ok' | 'warn' | 'neutral'; label: string; detail: string | null } | null {
+  if (checking) return { tone: 'neutral', label: '检测中', detail: null }
+  if (!report) return null
+  const entry = report.entries.find((candidate) => candidate.id === id)
+  if (entry?.state === 'connected') return { tone: 'ok', label: '能连上', detail: entry.detail }
+  if (entry?.state === 'failed') return { tone: 'warn', label: '连不上', detail: entry.detail }
+  // 报告里没有这一条时，原因用整份报告那一句（工具不支持、或这次没测完），
+  // 而不是留空让用户猜。工具给不出原因就什么都不写，不替它编。
+  return { tone: 'neutral', label: '未检测', detail: entry?.detail ?? report.reason }
+}
+
+/** 会用到 Python 生态的启动命令。带路径、带 Windows 后缀的写法也要认出来。 */
+const pythonCommandNames = ['uvx', 'uv', 'pipx', 'python', 'python3', 'py']
+
+export function mcpCommandRuntime(command: string): 'uv' | 'python' | null {
+  const executable = (command.trim().split(/[\\/]/).pop() ?? '')
+    .replace(/\.(?:exe|cmd|bat|ps1)$/i, '')
+    .toLowerCase()
+  if (!pythonCommandNames.includes(executable)) return null
+  return executable === 'uvx' || executable === 'uv' ? 'uv' : 'python'
+}
+
+/**
+ * 精选条目要检查的那条命令。远程服务没有本地命令，但清单里把它标成 python 型时
+ * 一样要提示，所以那种情况退回一个代表性的命令名。
+ */
+export function curatedRuntimeCommand(item: CuratedExtension): string {
+  if (item.install.type === 'stdio') return item.install.command
+  return item.runtime === 'python' ? 'python' : ''
+}
+
+export interface McpRuntimeNotice {
+  title: string
+  body: string
+  /** 只有真的缺 Python 才给按钮：装 Python 解决不了缺 uv。 */
+  installPython: boolean
+}
+
+/**
+ * 社区里一半的 MCP 是 `uvx` 起的，而本应用把 Python 定义成可选环境，多数机器上
+ * 没有。装完才发现跑不起来是这一页最常见的投诉，所以添加之前先说一句。
+ * 说完仍然可以照常添加——用户可能自己装了 conda 一类探不到的 Python。
+ */
+export function mcpRuntimeNotice(
+  command: string,
+  runtimes: ExtensionRuntimes | undefined,
+  management: RuntimeInstallManagement,
+): McpRuntimeNotice | null {
+  // 主进程没给这一块（旧版本）时什么都不提示，保持旧行为。
+  if (!runtimes) return null
+  const needs = mcpCommandRuntime(command)
+  if (!needs) return null
+  if (needs === 'uv' && runtimes.uv) return null
+  if (needs === 'python' && runtimes.python) return null
+  const sentences = [
+    needs === 'uv'
+      ? `这条连接要用 uv 启动，这台电脑上没有找到 uv${runtimes.python ? '' : '，也没有找到 Python'}。`
+      : '这条连接要靠 Python 运行，这台电脑上还没有装。',
+  ]
+  if (!runtimes.python) {
+    sentences.push(management === 'managed'
+      ? '可以先装好 Python 再回来添加。'
+      : `可以在终端里执行 ${runtimeHomebrewCommand('python')} 装好 Python，再回来添加。`)
+  }
+  // uv 不是本应用装得了的，所以缺它的时候只能把办法说清楚，不给按钮。
+  if (needs === 'uv') {
+    sentences.push(runtimes.python
+      ? 'uv 要自己装：在命令行里执行 pip install uv。'
+      : 'uv 也要自己装：Python 装好之后在命令行里执行 pip install uv。')
+  }
+  sentences.push('仍然可以直接添加，但工具用到它的时候会连不上。')
+  return {
+    title: '这条连接还差一样东西',
+    body: sentences.join(''),
+    installPython: !runtimes.python && management === 'managed',
+  }
 }
 function ProviderFilter({
   value,
@@ -752,6 +843,51 @@ export function SessionsPage({
     </section>
   )
 }
+/**
+ * 连接状态只在进入外接工具页、换工具或用户点「重新检测」时读一次，不后台轮询：
+ * 这条命令会把每个本地 MCP 真的拉起来一次。换工具时旧结果必须立刻作废，
+ * 否则慢响应会盖到新工具的列表上（T6）。
+ */
+function useMcpHealth(api: V2Bridge, provider: Provider, enabled: boolean) {
+  const [report, setReport] = useState<McpHealthReport | null>(null)
+  const [checking, setChecking] = useState(false)
+  const sequence = useRef(0)
+  const check = useCallback(async () => {
+    const id = ++sequence.current
+    setReport(null)
+    setChecking(true)
+    try {
+      const result = await api.checkProviderMcpHealth(provider)
+      if (id === sequence.current) setReport(result)
+    } catch (cause) {
+      if (id === sequence.current) {
+        setReport({
+          provider,
+          checkedAt: new Date().toISOString(),
+          supported: true,
+          reason: errorMessage(cause),
+          entries: [],
+        })
+      }
+    } finally {
+      if (id === sequence.current) setChecking(false)
+    }
+  }, [api, provider])
+  useEffect(() => {
+    if (!enabled) {
+      sequence.current += 1
+      setReport(null)
+      setChecking(false)
+      return
+    }
+    void check()
+    return () => {
+      sequence.current += 1
+    }
+  }, [check, enabled])
+  return { report, checking, check }
+}
+
 export function ExtensionsPage({
   api,
   kind,
@@ -768,17 +904,23 @@ export function ExtensionsPage({
   const [view, setView] = useState('installed')
   const load = useCallback(
     async () => {
-      const snapshot = await api.listProviderExtensions(provider)
-      if (provider !== 'codex') return { snapshot, codex: null }
+      // 平台能力决定缺 Python 时那颗按钮给不给：只有 Windows 由本应用代装。
+      const [snapshot, platform] = await Promise.all([
+        api.listProviderExtensions(provider),
+        kind === 'mcp' ? api.getPlatformCapabilities() : Promise.resolve(null),
+      ])
+      if (provider !== 'codex') return { snapshot, platform, codex: null }
 
       return {
         snapshot,
+        platform,
         codex: await readCodexExtensionMetadata(api),
       }
     },
-    [api, provider],
+    [api, kind, provider],
   )
   const resource = useResource(load)
+  const health = useMcpHealth(api, provider, kind === 'mcp')
   const operation = useOperation()
   const [form, setForm] = useState<'add' | 'market' | null>(null)
   const [formName, setFormName] = useState('')
@@ -814,6 +956,22 @@ export function ExtensionsPage({
     .filter((item) => item.kind === kind && item.installed)
     .map((item) => item.id)
   const capability = snapshot?.capabilities[kind]
+  const pythonInstall = resource.data?.platform?.pythonRuntimeInstall ?? 'external'
+  const addFormRuntimeNotice = kind === 'mcp' && transport === 'stdio'
+    ? mcpRuntimeNotice(source, snapshot?.runtimes, pythonInstall)
+    : null
+  const curatedRuntimeNotice = curated
+    ? mcpRuntimeNotice(curatedRuntimeCommand(curated), snapshot?.runtimes, pythonInstall)
+    : null
+  const installPython = () =>
+    void operation.execute(
+      'python',
+      async () => {
+        await api.installPythonRuntime()
+        await resource.reload()
+      },
+      'Python 已经装好了，可以继续添加这条连接',
+    )
   const supportsInstall =
     kind !== 'skill' || provider === 'codex' || provider === 'gemini'
   const act = (item: ExtensionItem, action: Mutation['action']) => {
@@ -1039,12 +1197,31 @@ export function ExtensionsPage({
           />
         }
         right={
-          <span>
-            {kind === 'plugin' && view === 'market' && !officialMarketplacePage
-              ? filteredMarkets.length
-              : list.length}{' '}
-            {kind === 'mcp' ? '个连接' : '项'}
-          </span>
+          <>
+            <span>
+              {kind === 'plugin' && view === 'market' && !officialMarketplacePage
+                ? filteredMarkets.length
+                : list.length}{' '}
+              {kind === 'mcp' ? '个连接' : '项'}
+            </span>
+            {kind === 'mcp' && (
+              <>
+                {health.report?.checkedAt && !health.checking && (
+                  <span>上次检测 {displayDate(health.report.checkedAt)}</span>
+                )}
+                <Button
+                  size="sm"
+                  icon={RefreshCw}
+                  loading={health.checking}
+                  disabled={health.checking}
+                  onClick={() => void health.check()}
+                  testId="mcp-health-recheck"
+                >
+                  重新检测
+                </Button>
+              </>
+            )}
+          </>
         }
       />
       {kind !== 'mcp' && !(kind === 'plugin' && view === 'market') && (
@@ -1210,6 +1387,9 @@ export function ExtensionsPage({
               )
               const readonly =
                 item.scope === 'builtin' || nativeSkill?.managed === true
+              const mcpHealth = kind === 'mcp'
+                ? mcpHealthView(health.report, item.id, health.checking)
+                : null
               const togglable =
                 !readonly &&
                 item.operations[item.enabled ? 'disable' : 'enable']
@@ -1244,6 +1424,14 @@ export function ExtensionsPage({
                               : '尚未登录'}
                         </Pill>
                       )}
+                      {mcpHealth && (
+                        <Pill
+                          tone={mcpHealth.tone}
+                          testId={`mcp-health-${item.id}`}
+                        >
+                          {mcpHealth.label}
+                        </Pill>
+                      )}
                       {item.update.state === 'update-available' && (
                         <Pill tone="warn">可更新</Pill>
                       )}
@@ -1257,6 +1445,11 @@ export function ExtensionsPage({
                           item.currentVersion ||
                           '来源未提供'}
                       </span>
+                      {mcpHealth?.detail && (
+                        <span className="v2-business-note">
+                          {mcpHealth.detail}
+                        </span>
+                      )}
                     </>
                   }
                   meta={item.currentVersion || undefined}
@@ -1403,6 +1596,26 @@ export function ExtensionsPage({
             testId={`curated-input-${input.key}`}
           />
         ))}
+        {addFormRuntimeNotice && (
+          <Notice
+            tone="warn"
+            title={addFormRuntimeNotice.title}
+            body={addFormRuntimeNotice.body}
+            testId="mcp-runtime-notice"
+            actions={addFormRuntimeNotice.installPython ? (
+              <Button
+                size="sm"
+                icon={Download}
+                loading={operation.busy === 'python'}
+                disabled={Boolean(operation.busy)}
+                onClick={installPython}
+                testId="mcp-install-python"
+              >
+                自动安装 Python
+              </Button>
+            ) : undefined}
+          />
+        )}
         {kind === 'mcp' && (
           <>
             <Input
@@ -1529,6 +1742,26 @@ export function ExtensionsPage({
         }
       >
         {curated && <CuratedDetails item={curated} />}
+        {curatedRuntimeNotice && (
+          <Notice
+            tone="warn"
+            title={curatedRuntimeNotice.title}
+            body={curatedRuntimeNotice.body}
+            testId="curated-runtime-notice"
+            actions={curatedRuntimeNotice.installPython ? (
+              <Button
+                size="sm"
+                icon={Download}
+                loading={operation.busy === 'python'}
+                disabled={Boolean(operation.busy)}
+                onClick={installPython}
+                testId="mcp-install-python"
+              >
+                自动安装 Python
+              </Button>
+            ) : undefined}
+          />
+        )}
         <ResultNotice error={operation.error} />
       </Dialog>
       <Dialog

@@ -35,6 +35,7 @@ import type {
 import type {
   ProviderExtensionMutation,
   ProviderExtensionsSnapshot,
+  ProviderMcpHealthReport,
 } from './provider-extensions'
 import type {
   CodexSessionDetail,
@@ -227,6 +228,7 @@ export type MarketplaceItem = MarketplaceDto
 export type PluginCatalog = PluginCatalogDto
 export type ExtensionMutation = ProviderExtensionMutation
 export type ExtensionSnapshot = ProviderExtensionsSnapshot
+export type McpHealthReport = ProviderMcpHealthReport
 export type CodexSetupStatus = MainCodexSetupStatus
 export type CodexReadinessStatus = MainCodexReadinessStatus
 export type ProviderConfigSummary = NativeConfigSummary
@@ -694,6 +696,11 @@ export interface XingmangInvokeContract {
     [provider: ProviderId],
     ProviderExtensionsSnapshot
   >
+  checkProviderMcpHealth: IpcInvokeDefinition<
+    'extensions:check-mcp-health',
+    [provider: ProviderId],
+    ProviderMcpHealthReport
+  >
   getAccountStatus: IpcInvokeDefinition<'account:get-status', [siteId?: AccountSiteId], AccountStatus>
   getAccountNotice: IpcInvokeDefinition<'account:get-notice', [], import('./relay-backend').RelayNotice | null>
   markAccountNoticeRead: IpcInvokeDefinition<'account:mark-notice-read', [id: string, entryId: string], void>
@@ -996,6 +1003,7 @@ export const ipcInvokeChannels = {
   listAllProviderExtensions: 'extensions:list-all',
   mutateProviderExtension: 'extensions:mutate',
   ensureProviderMarketplace: 'extensions:ensure-marketplace',
+  checkProviderMcpHealth: 'extensions:check-mcp-health',
   getAccountStatus: 'account:get-status',
   getAccountNotice: 'account:get-notice',
   markAccountNoticeRead: 'account:mark-notice-read',
