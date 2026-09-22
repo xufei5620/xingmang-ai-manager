@@ -3854,7 +3854,7 @@ export function createSystemService(
     }
 
     const definition = cliCatalog[provider]
-    // 主目录 / 盘根 / 桌面 / 下载 / 文档这几类目录不写信任、也不生成 AGENTS.md：
+    // 主目录、盘根、桌面、系统目录、四家工具的配置目录等敏感目录不写信任、也不生成 AGENTS.md：
     // 两者都是「配一次管整棵目录树」的动作，放在这种目录上等于把整台电脑标成
     // 可信、给所有项目加一份看不见的说明（workspace-guard.ts）。打开本身照常，
     // 信任那一问由 CLI 自己去问 —— 在这种目录上那一问是有意义的。
