@@ -162,12 +162,20 @@ module.exports = {
     // Default-installed 星芒AI skill template. Contains no API keys; the
     // main process copies it to the user skill roots and writes config.json.
     'bundled-skills/xingmang-ai/**/*',
+    // Shared 中文 AGENTS.md template the main process copies into a project
+    // directory that has no instruction file yet. Contains no secrets.
+    'bundled-catalog/project-instructions/**/*',
     'package.json',
   ],
   extraResources: [
     {
       from: 'bundled-skills/xingmang-ai',
       to: 'bundled-skills/xingmang-ai',
+      filter: ['**/*'],
+    },
+    {
+      from: 'bundled-catalog/project-instructions',
+      to: 'bundled-catalog/project-instructions',
       filter: ['**/*'],
     },
     ...accelerationBundle.resources,

@@ -1067,6 +1067,54 @@ export function trustGeminiWorkspace(
   }
 }
 
+// Gemini CLI 的项目说明文件名由 settings.json 的 context.fileName 决定，默认只有
+// "GEMINI.md"。要让它也读共用的 AGENTS.md，就得把这两个名字都放进去。
+export const GEMINI_PROJECT_CONTEXT_FILENAMES = ['GEMINI.md', 'AGENTS.md'] as const
+
+export function ensureGeminiContextFilenamesInSettingsText(
+  content: string | null,
+): { content: string; changed: boolean } {
+  const parsed = requireWorkspaceTrustJson(content, '现有 Gemini CLI settings.json')
+  const context = ensureRecord(parsed, 'context')
+  const raw = context.fileName
+  // 结构读不懂时（既不是字符串也不是数组）一律不动，宁可让 Gemini 自己用默认值，
+  // 也不能拿一份看不懂的配置换取读到 AGENTS.md。
+  if (raw !== undefined && typeof raw !== 'string' && !Array.isArray(raw)) {
+    return { content: jsonContent(parsed), changed: false }
+  }
+  const existing = typeof raw === 'string'
+    ? (raw.trim() ? [raw.trim()] : [])
+    : Array.isArray(raw) ? raw : []
+  const present = new Set(existing.filter((entry): entry is string => typeof entry === 'string'))
+  const missing = GEMINI_PROJECT_CONTEXT_FILENAMES.filter((name) => !present.has(name))
+  // 已有值一个不删，只把缺的补在后面（含用户自己写的其它文件名），已经齐了就不动。
+  if (missing.length === 0) return { content: jsonContent(parsed), changed: false }
+  context.fileName = [...existing, ...missing]
+  return { content: jsonContent(parsed), changed: true }
+}
+
+/**
+ * 让 Gemini CLI 的用户级 settings.json 把 GEMINI.md 与 AGENTS.md 都算作项目说明。
+ * 只补不删，已配好就不写。写入走两阶段提交 + .bak + 回滚（I9）。
+ */
+export function ensureGeminiProjectContextFiles(
+  rootsInput: ProviderConfigRoots = defaultProviderConfigRoots(),
+): WorkspaceTrustWriteResult {
+  const roots = normalizeProviderConfigRoots(rootsInput)
+  const providerRoot = providerConfigRoot('gemini', roots)
+  const configPath = path.join(providerRoot, 'settings.json')
+  assertSafeConfigPath(configPath, providerRoot, 'file')
+  const current = requireConfigText(configPath, '现有 Gemini CLI settings.json')
+  const next = ensureGeminiContextFilenamesInSettingsText(current)
+  if (!next.changed) return { backups: [], files: [], changed: false }
+  assertNoReparseComponents(path.dirname(providerRoot), 'Provider 配置根目录')
+  ensureSafeDataDirectory(providerRoot, 'Provider 配置根目录')
+  return {
+    ...executeFilePlans([{ path: configPath, content: next.content }], {}, providerRoot),
+    changed: true,
+  }
+}
+
 /**
  * 本软件「打开」某个目录时替用户写下的信任。Codex 的信任连带 approval_policy
  * 与 sandbox_mode 两项默认值，是配置对话框里一个单独的按钮（trustCodexWorkspace），
