@@ -149,6 +149,16 @@ const session = {
   sourcePath: 'C:/test-session',
   detailAvailable: true,
 }
+// 同一个工具、同一个目录的第二条(更旧的)记录:「接着聊」是按目录接最近一条,
+// 所以只有最近那条该有按钮。默认不出现,免得改动现有用例看到的行数。
+const olderSameFolderSession = {
+  ...session,
+  id: 'codex:session-0',
+  nativeId: 'session-0',
+  title: '同一目录里更早的会话',
+  createdAt: 1788739200,
+  updatedAt: 1788739200,
+}
 const backup = {
   id: 'backup-1',
   provider: 'codex' as const,
@@ -564,8 +574,8 @@ const apiMethods = {
     throw new Error('配置写入失败，原配置已保留')
   },
   listProviderSessions: async () => ({
-    items: empty ? [] : [session],
-    total: empty ? 0 : 1,
+    items: empty ? [] : query.has('sameFolder') ? [session, olderSameFolderSession] : [session],
+    total: empty ? 0 : query.has('sameFolder') ? 2 : 1,
     page: 1,
     pageSize: 20,
     pages: 1,
@@ -606,6 +616,13 @@ const apiMethods = {
   exportProviderSession: async (id: string) => {
     record('export-session', id)
     return null
+  },
+  launchCli: async (
+    provider: Parameters<V2Bridge['launchCli']>[0],
+    workspace: string,
+    mode?: Parameters<V2Bridge['launchCli']>[2],
+  ) => {
+    record('launch-cli', { provider, workspace, mode })
   },
   listProviderExtensions: async (
     provider: Parameters<V2Bridge['listProviderExtensions']>[0],

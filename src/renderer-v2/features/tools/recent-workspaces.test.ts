@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { MultiProviderSessionPage } from '../../../../electron/ipc-contract'
 import {
   isMissingWorkspace,
+  latestSessionIdsByWorkspace,
   recentWorkspaces,
   workspaceButtonLabel,
   workspaceChoices,
@@ -132,5 +133,35 @@ describe('isMissingWorkspace', () => {
   it('leaves every other failure to the normal error path', () => {
     expect(isMissingWorkspace(new Error('请先确认账号连接，再打开工具。'))).toBe(false)
     expect(isMissingWorkspace(null)).toBe(false)
+  })
+})
+
+describe('latestSessionIdsByWorkspace', () => {
+  // 列表是全局按时间倒序给出来的，所以「第一次出现」就是「最近一条」。
+  it('keeps only the first record of each tool and folder pair', () => {
+    const ids = latestSessionIdsByWorkspace([
+      session({ id: 'claude:new', provider: 'claude', cwd: 'C:\\work\\alpha' }),
+      session({ id: 'codex:new', provider: 'codex', cwd: 'C:\\work\\alpha' }),
+      session({ id: 'claude:old', provider: 'claude', cwd: 'C:\\work\\alpha' }),
+      session({ id: 'claude:beta', provider: 'claude', cwd: 'C:\\work\\beta' }),
+    ])
+
+    expect([...ids].sort()).toEqual(['claude:beta', 'claude:new', 'codex:new'])
+  })
+
+  // 同一个目录的两种写法在 Windows 上是同一个目录，CLI 也只会找到一条。
+  it('treats two spellings of one Windows path as the same folder', () => {
+    const ids = latestSessionIdsByWorkspace([
+      session({ id: 'claude:new', cwd: 'C:\\Work\\Alpha' }),
+      session({ id: 'claude:old', cwd: 'c:\\work\\alpha' }),
+    ])
+
+    expect([...ids]).toEqual(['claude:new'])
+  })
+
+  // 没记下目录的记录没法接：CLI 要按目录才找得到会话。
+  it('offers nothing for a record with no folder', () => {
+    expect([...latestSessionIdsByWorkspace([session({ id: 'claude:blank', cwd: '   ' })])])
+      .toEqual([])
   })
 })

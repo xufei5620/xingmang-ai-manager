@@ -2821,7 +2821,7 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       const handler = electronMocks.handlers.get('cli:launch')!
 
       expect(() => handler(trustedEvent(), 'claude', '  D:\\projects\\demo  ')).not.toThrow()
-      expect(service.launchProvider).toHaveBeenCalledWith('claude', 'D:\\projects\\demo')
+      expect(service.launchProvider).toHaveBeenCalledWith('claude', 'D:\\projects\\demo', 'new')
     })
 
     it('falls back to the stored workspace when omitted', () => {
@@ -2829,7 +2829,7 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       const handler = electronMocks.handlers.get('cli:launch')!
 
       expect(() => handler(trustedEvent(), 'claude', undefined)).not.toThrow()
-      expect(service.launchProvider).toHaveBeenCalledWith('claude', 'C:\\workspace')
+      expect(service.launchProvider).toHaveBeenCalledWith('claude', 'C:\\workspace', 'new')
     })
 
     it('falls back to the stored workspace for a blank or whitespace-only value', () => {
@@ -2837,7 +2837,7 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       const handler = electronMocks.handlers.get('cli:launch')!
 
       expect(() => handler(trustedEvent(), 'claude', '   ')).not.toThrow()
-      expect(service.launchProvider).toHaveBeenCalledWith('claude', 'C:\\workspace')
+      expect(service.launchProvider).toHaveBeenCalledWith('claude', 'C:\\workspace', 'new')
     })
 
     it('falls back to the stored workspace for a non-string value instead of throwing', () => {
@@ -2845,7 +2845,7 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       const handler = electronMocks.handlers.get('cli:launch')!
 
       expect(() => handler(trustedEvent(), 'claude', 12345)).not.toThrow()
-      expect(service.launchProvider).toHaveBeenCalledWith('claude', 'C:\\workspace')
+      expect(service.launchProvider).toHaveBeenCalledWith('claude', 'C:\\workspace', 'new')
     })
 
     it('rejects a workspace string exceeding the maximum length', () => {
@@ -2853,6 +2853,28 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       const handler = electronMocks.handlers.get('cli:launch')!
 
       expect(() => handler(trustedEvent(), 'claude', 'x'.repeat(32_768))).toThrow('工作目录格式错误')
+    })
+  })
+
+  describe('parseCliLaunchMode (cli:launch third argument)', () => {
+    it('passes resumeLast through so the main process can map it to fixed arguments', () => {
+      const { service } = register()
+      const handler = electronMocks.handlers.get('cli:launch')!
+
+      expect(() => handler(trustedEvent(), 'codex', 'C:\\projects\\demo', 'resumeLast')).not.toThrow()
+      expect(service.launchProvider).toHaveBeenCalledWith('codex', 'C:\\projects\\demo', 'resumeLast')
+    })
+
+    // 渲染层永远不许自己拼续接参数:任何不在这两个值里的输入都必须当场拒绝,
+    // 而不是被当成模式名透传下去(I5)。
+    it('rejects anything other than the two known modes', () => {
+      register()
+      const handler = electronMocks.handlers.get('cli:launch')!
+
+      expect(() => handler(trustedEvent(), 'claude', 'C:\\workspace', '--dangerously-skip-permissions'))
+        .toThrow('CLI 启动方式错误')
+      expect(() => handler(trustedEvent(), 'claude', 'C:\\workspace', ['--continue']))
+        .toThrow('CLI 启动方式错误')
     })
   })
 

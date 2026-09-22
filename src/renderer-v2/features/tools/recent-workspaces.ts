@@ -79,3 +79,30 @@ export function workspaceButtonLabel(name: string, limit = NAME_LIMIT): string {
 export function isMissingWorkspace(cause: unknown): boolean {
   return rawErrorMessage(cause).includes('工作目录不存在')
 }
+
+/**
+ * 「接着上次对话」用的续接参数（claude --continue 一类）是 CLI 自己按工作目录
+ * 找最近一条,不按会话 id 挑。所以这颗按钮只能长在每个(工具 × 目录)组合里最近
+ * 的那一条记录上,否则用户点第三条、接上的却是第一条。
+ *
+ * 会话列表是全局按时间倒序排的(provider-sessions.ts 的 list),所以在一份按这个
+ * 顺序给出的记录里,某个组合第一次出现的那条就是它最近的一条。传进来的记录不全
+ * 时(分页、条数超过一次能取的上限),没被覆盖到的组合一个按钮都不给——宁可少给,
+ * 也不能给一颗点下去接到别处的按钮。
+ */
+export function latestSessionIdsByWorkspace(
+  sessions: readonly SessionSummary[],
+): Set<string> {
+  const seen = new Set<string>()
+  const latest = new Set<string>()
+  for (const session of sessions) {
+    const path = session.cwd.trim()
+    if (path === '') continue
+    // 与 recentWorkspaces 同一条理由:Windows 路径大小写不敏感。
+    const key = `${session.provider}\u0000${path.toLocaleLowerCase()}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    latest.add(session.id)
+  }
+  return latest
+}
