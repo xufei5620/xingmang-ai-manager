@@ -117,6 +117,7 @@ import type {
   LegalDocumentKind,
   RememberedAccountLogin,
   RendererErrorPayload,
+  RendererLogLevel,
 } from './ipc-contract'
 import type { DiagnosticsReport } from './diagnostics'
 import type { ConnectionCheckResult } from './connection-check'
@@ -578,12 +579,19 @@ function parseProviderSessionListQuery(value: unknown): ProviderSessionListQuery
   }
 }
 
-function parseRendererError(value: unknown): { message: string; stack?: string; context?: string } {
+function parseRendererLogLevel(value: unknown): RendererLogLevel {
+  if (value === undefined) return 'error'
+  if (value === 'info' || value === 'warn' || value === 'error') return value
+  throw new Error('日志级别无效')
+}
+
+function parseRendererError(value: unknown): { message: string; stack?: string; context?: string; level: RendererLogLevel } {
   if (!isRecord(value)) throw new Error('渲染进程错误格式无效')
   return {
     message: requiredString(value.message, '错误消息', 4_096),
     stack: optionalString(value.stack, '错误堆栈', 16_384),
     context: optionalString(value.context, '错误上下文', 256),
+    level: parseRendererLogLevel(value.level),
   }
 }
 
@@ -2067,12 +2075,14 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   })
   registerTrustedHandler('runtime-logs:clear', () => options.runtimeLog.clear())
   registerTrustedHandler('runtime-logs:renderer-error', (_event, payload: unknown) => {
-    const error = parseRendererError(payload)
-    options.runtimeLog.log('error', 'renderer', 'renderer.error', error.message, {
+    const { level, ...error } = parseRendererError(payload)
+    options.runtimeLog.log(level, 'renderer', `renderer.${level}`, error.message, {
       context: error.context ?? null,
       stack: error.stack ?? null,
     })
-    options.onRendererError?.(error)
+    // 只有真正的渲染层错误才上报崩溃：info / warn 是渲染层留给排障的决策记录，
+    // 一并上报会把真正的异常淹没，也会把本该只留在本机的线索发出去。
+    if (level === 'error') options.onRendererError?.(error)
   })
   /**
    * 备份列表要标出每份备份里的 Key 是不是当前账号的。只读已有的 Key 缓存，从不
