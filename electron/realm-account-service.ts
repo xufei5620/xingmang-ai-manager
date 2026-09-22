@@ -1,6 +1,6 @@
 import {
   accountRealms, captureRealmLogin, parseRealmSavedAccount, realmForExplicitSite, realmOwnerKey,
-  RealmAccountError, type AccountRealmId, type RealmSavedAccount,
+  RealmAccountError, type AccountRealmId, type RealmAccountOwner, type RealmSavedAccount,
 } from './realm-account'
 import type { RealmAccountVault, RealmLoginHintSummary } from './realm-account-vault'
 import type { RelayBackendCapabilities, RelayBackendClient } from './relay-backend'
@@ -49,6 +49,7 @@ export interface RealmAccountService {
   restoreActive(): Promise<boolean>
   migrateLegacy(): Promise<void>
   latestLoginHint(): Promise<RealmLoginHintSummary | null>
+  loginHintOwner(identifier: string): Promise<RealmAccountOwner | null>
 }
 interface RuntimeHandle extends RealmAccountClientHandle {
   siteId: RealmAccountSiteId
@@ -350,5 +351,6 @@ export function createRealmAccountService(options: RealmAccountServiceOptions): 
   })
   return Object.freeze({ client, getSiteId: () => active.siteId, assertReady, getPublicClient, login, logout, listSavedAccounts,
     switchSavedAccount, removeSavedAccount, restoreActive, migrateLegacy,
-    latestLoginHint: async () => { await migrateLegacy(); return options.vault.latestLoginHint() } })
+    latestLoginHint: async () => { await migrateLegacy(); return options.vault.latestLoginHint() },
+    loginHintOwner: async (identifier: string) => { await migrateLegacy(); return options.vault.loginHintOwner(identifier) } })
 }
