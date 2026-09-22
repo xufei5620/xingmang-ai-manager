@@ -121,6 +121,7 @@ describe('secure command runner', () => {
     await expect(execution).rejects.toMatchObject({
       name: 'CommandRunnerError',
       code: 'TIMED_OUT',
+      message: expect.stringContaining('命令执行时间过长，已中止：'),
     })
   })
 
@@ -150,7 +151,11 @@ describe('secure command runner', () => {
       throw new Error('Expected output limit failure')
     } catch (error) {
       expect(error).toBeInstanceOf(CommandRunnerError)
-      expect(error).toMatchObject({ code: 'OUTPUT_LIMIT', maxOutputBytes: 128 })
+      expect(error).toMatchObject({
+        code: 'OUTPUT_LIMIT',
+        maxOutputBytes: 128,
+        message: expect.stringContaining('命令输出过多，已中止：'),
+      })
       expect((error as CommandRunnerError).stdout).toHaveLength(128)
       expect((error as CommandRunnerError).outputBytes).toBeGreaterThan(128)
     }
@@ -165,7 +170,10 @@ describe('secure command runner', () => {
     })
     setTimeout(() => controller.abort(), 30)
 
-    await expect(execution).rejects.toMatchObject({ code: 'ABORTED' })
+    await expect(execution).rejects.toMatchObject({
+      code: 'ABORTED',
+      message: expect.stringContaining('命令已取消：'),
+    })
   })
 
   it('falls back to direct child termination when taskkill exits nonzero', async () => {
@@ -239,6 +247,7 @@ describe('secure command runner', () => {
       expect(error).toBeInstanceOf(CommandRunnerError)
       const structured = (error as CommandRunnerError).toJSON()
       expect(structured.code).toBe('EXIT_NON_ZERO')
+      expect(structured.message).toContain('命令执行失败（退出码 7）：')
       expect(structured.stderr).not.toContain(apiKey)
       expect(structured.stderr).not.toContain('bearer-secret-token')
       expect(structured.stderr).not.toContain('\u001b')
@@ -718,5 +727,16 @@ describe('secure command runner', () => {
     } finally {
       fs.rmSync(directory, { recursive: true, force: true })
     }
+  })
+})
+
+describe('default command failure wording', () => {
+  it('keeps every default failure message in Chinese', () => {
+    const source = fs.readFileSync(path.join(__dirname, 'command-runner.ts'), 'utf8')
+    const body = /\nfunction errorMessage\([\s\S]*?\n}/.exec(source)?.[0] ?? ''
+    expect(body).toContain("case 'EXIT_NON_ZERO'")
+    const messages = [...body.matchAll(/return `([^`]*)`/g)].map((match) => match[1])
+    expect(messages).toHaveLength(7)
+    for (const message of messages) expect(message).toMatch(/[一-龥]/)
   })
 })

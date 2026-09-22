@@ -734,16 +734,21 @@ function validateSpec(spec: CommandSpec): void {
   }
 }
 
+// 这七句是跑任何外部命令失败时的默认文案。没自己翻译过的调用方会把它
+// 原样拼上屏（外接工具页 / 插件页顶部那块黄色提示就是这么来的），所以这里直接写中文。
+// 「超时」两个字刻意不用：渲染层的失败归类（src/renderer-v2/operation-error.ts 的
+// networkFailure）见到它就当网络问题处理，而本地 CLI 卡住跟网络无关，
+// 套上去等于请用户反复检查一个本来就通的网络。
 function errorMessage(code: CommandErrorCode, executable: string, detail?: number | null): string {
   const command = path.basename(executable) || executable
   switch (code) {
-    case 'INVALID_COMMAND': return `Invalid command: ${command}`
-    case 'UNSAFE_COMMAND': return `Unsafe command was blocked: ${command}`
-    case 'SPAWN_FAILED': return `Failed to start command: ${command}`
-    case 'TIMED_OUT': return `Command timed out: ${command}`
-    case 'ABORTED': return `Command was cancelled: ${command}`
-    case 'OUTPUT_LIMIT': return `Command exceeded its output limit: ${command}`
-    case 'EXIT_NON_ZERO': return `Command exited with code ${detail ?? 'unknown'}: ${command}`
+    case 'INVALID_COMMAND': return `命令无效：${command}`
+    case 'UNSAFE_COMMAND': return `出于安全考虑，已阻止运行这条命令：${command}`
+    case 'SPAWN_FAILED': return `无法启动命令：${command}`
+    case 'TIMED_OUT': return `命令执行时间过长，已中止：${command}`
+    case 'ABORTED': return `命令已取消：${command}`
+    case 'OUTPUT_LIMIT': return `命令输出过多，已中止：${command}`
+    case 'EXIT_NON_ZERO': return `命令执行失败（退出码 ${detail ?? '未知'}）：${command}`
   }
 }
 

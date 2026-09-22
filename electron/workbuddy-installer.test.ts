@@ -334,7 +334,7 @@ describe('WorkBuddy official installer fallback', () => {
 
   it('reports an installer timeout distinctly and keeps its diagnostic cause', async () => {
     const f = await fixture()
-    const timeout = new CommandRunnerError('Command timed out', {
+    const timeout = new CommandRunnerError('命令执行时间过长，已中止：winget.exe', {
       code: 'TIMED_OUT', executable: f.filePath, argv: [], exitCode: null, signal: 'SIGTERM',
       stdout: '', stderr: '', outputBytes: 0, maxOutputBytes: 1024, durationMs: 900000,
     })

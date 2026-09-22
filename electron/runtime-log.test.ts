@@ -314,7 +314,7 @@ describe('RuntimeLogStore', () => {
 
   it('keeps structured command metadata needed to diagnose process failures', async () => {
     const store = createStore()
-    const error = Object.assign(new Error('Failed to start command: npm'), {
+    const error = Object.assign(new Error('无法启动命令：npm'), {
       code: 'SPAWN_FAILED',
       executable: 'D:\\nodejs\\npm',
       argv: ['install', '--global', '@google/gemini-cli@latest'],
