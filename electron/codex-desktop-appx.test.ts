@@ -8,6 +8,7 @@ import {
   addCodexDesktopPackage,
   buildCodexAppxElevationScript,
   buildCodexAppxUacBrokerScript,
+  codexDesktopElevationFailureMessage,
   requiresCodexAppxElevation,
 } from './codex-desktop-appx'
 import { resolveWindowsPowerShellExecutable } from './windows-elevation'
@@ -333,5 +334,24 @@ describe('Codex Desktop Appx script boundaries', () => {
     expect(commandLineLength(executable, argv)).toBeLessThan(8191)
     const failure = await runPowerShellScript(executable, argv).catch((error: unknown) => error)
     expect(failure).toMatchObject({ code: 2225, stdout: '' })
+  })
+})
+
+describe('codexDesktopElevationFailureMessage', () => {
+  it('keeps telling the codes apart', () => {
+    expect(codexDesktopElevationFailureMessage(1223)).toContain('已取消管理员授权')
+    expect(codexDesktopElevationFailureMessage(740)).toContain('未获得管理员权限')
+    expect(codexDesktopElevationFailureMessage(2225)).toContain('不同的 Windows 账号')
+    expect(codexDesktopElevationFailureMessage(13)).toContain('重新下载')
+    // 归不了类的退出码要落回带退出码和事件日志的那一句，别被这里吃掉。
+    expect(codexDesktopElevationFailureMessage(1603)).toBeNull()
+    expect(codexDesktopElevationFailureMessage(Number.NaN)).toBeNull()
+  })
+
+  it('points a standard account at an administrator password instead of a retry', () => {
+    expect(codexDesktopElevationFailureMessage(1223, 'standard')).toContain('不在管理员组')
+    expect(codexDesktopElevationFailureMessage(740, 'standard')).toContain('管理员账号的密码')
+    expect(codexDesktopElevationFailureMessage(1223, 'administrator')).toContain('重新点击安装')
+    expect(codexDesktopElevationFailureMessage(1223)).not.toContain('不在管理员组')
   })
 })

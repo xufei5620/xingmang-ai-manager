@@ -2,7 +2,15 @@ import { execFile } from 'node:child_process'
 import path from 'node:path'
 import { promisify } from 'node:util'
 import { trustedCommandEnvironment } from './command-runner'
-import { encodeWindowsPowerShellCommand, powerShellLiteral, resolveWindowsPowerShellExecutable } from './windows-elevation'
+import {
+  encodeWindowsPowerShellCommand,
+  inspectWindowsElevationCapability,
+  powerShellLiteral,
+  resolveWindowsPowerShellExecutable,
+  windowsElevationCancelledMessage,
+  windowsElevationDeniedMessage,
+  type WindowsElevationCapability,
+} from './windows-elevation'
 
 const execFileAsync = promisify(execFile)
 
@@ -158,11 +166,37 @@ export async function addCodexDesktopPackage(
     await dependencies.run(powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', encodeWindowsPowerShellCommand(broker)])
   } catch (error) {
     const code = error && typeof error === 'object' ? Number((error as { code?: unknown }).code) : NaN
-    if (code === 1223 || /\b0x800704c7\b/i.test(errorDetail(error))) throw new Error('已取消管理员授权，Codex 桌面端安装已停止；再次点击安装可重试。')
-    if (code === 2225) throw new Error('授权使用了不同的 Windows 账号，已停止安装以免注册到其他用户。请由当前 Windows 账号的管理员会话完成安装。')
-    if (code === 13) throw new Error('授权期间 Codex 安装包发生变化，已停止安装，请重新下载。')
-    if (code === 740) throw new Error('尚未获得管理员权限，Codex 桌面端安装已停止。')
+    const cancelled = code === 1223 || /\b0x800704c7\b/i.test(errorDetail(error))
+    // 「取消了授权」和「这个账号没有权限」在普通账号上会是同一个退出码，先问一次
+    // 当前账号在不在管理员组，再决定说哪一句。
+    const capability = cancelled || code === 740
+      ? await inspectWindowsElevationCapability()
+      : 'unknown'
+    const message = codexDesktopElevationFailureMessage(cancelled ? 1223 : code, capability)
+    if (message) throw new Error(message)
     const detail = errorDetail(error).trim().slice(0, 1200)
     throw new Error(`Codex 桌面端管理员安装失败${Number.isFinite(code) ? `（退出码 ${code}）` : ''}，请检查 Windows 应用部署事件日志后重试。${detail ? ` ${detail}` : ''}`)
+  }
+}
+
+/**
+ * 提权安装失败后要说的那一句。1223 是用户自己取消，740 是没拿到管理员权限——
+ * 普通账号两种都会遇到，所以拿到 'standard' 时改说要管理员账号的密码。
+ */
+export function codexDesktopElevationFailureMessage(
+  exitCode: number,
+  capability: WindowsElevationCapability = 'unknown',
+): string | null {
+  switch (exitCode) {
+    case 1223:
+      return windowsElevationCancelledMessage('Codex 桌面端', capability)
+    case 2225:
+      return '授权使用了不同的 Windows 账号，已停止安装以免注册到其他用户。请由当前 Windows 账号的管理员会话完成安装。'
+    case 13:
+      return '授权期间 Codex 安装包发生变化，已停止安装，请重新下载。'
+    case 740:
+      return windowsElevationDeniedMessage('Codex 桌面端', capability)
+    default:
+      return null
   }
 }
