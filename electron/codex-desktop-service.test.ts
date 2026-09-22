@@ -1412,6 +1412,43 @@ function queuedCodexDesktopFixture(installationQueue = new InstallationQueue()) 
   return { service, installationQueue, inspectNativeProviderConfig, target: { isDestroyed: () => false, send: vi.fn() } }
 }
 
+describe('Codex Desktop install disk space precheck', () => {
+  function diskSpaceFixture(assertInstallDiskSpace: (subject: string) => Promise<void>) {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-codex-disk-'))
+    temporaryDirectories.push(directory)
+    const service = createCodexDesktopService({
+      // 预检跑在平台门之前，所以 linux 上「仅支持 Windows」那句正好当作
+      // 「预检放行了」的证据。
+      platform: 'linux',
+      installationQueue: new InstallationQueue(),
+      createInstallTemporaryDirectory: async () => { throw new Error('未使用') },
+      detectMacosCodexApp: async () => { throw new Error('未使用') },
+      executeCommand: async () => { throw new Error('未使用') },
+      codexEnv: {},
+      store: new AppSettingsStore(path.join(directory, 'settings.json'), directory),
+      inspectNativeProviderConfig: vi.fn(() => relayCodexConfig(directory)),
+      spawnDetached: async () => { throw new Error('未使用') },
+      downloadFetch: async () => { throw new Error('未使用') },
+      assertInstallDiskSpace: vi.fn(assertInstallDiskSpace),
+    })
+    return { service, target: { isDestroyed: () => false, send: vi.fn() } }
+  }
+
+  it('stops before downloading anything when the install disk is nearly full', async () => {
+    const fixture = diskSpaceFixture(async (subject) => {
+      throw new Error(`${subject}：安装目录所在磁盘空间不足，只剩 300 MB，至少需要 1.0 GB，请先清理磁盘再试`)
+    })
+
+    await expect(fixture.service.installCodexDesktop(fixture.target)).rejects.toThrow('磁盘空间不足')
+  })
+
+  it('goes on with the install when the precheck lets it through', async () => {
+    const fixture = diskSpaceFixture(async () => undefined)
+
+    await expect(fixture.service.installCodexDesktop(fixture.target)).rejects.toThrow('仅支持 Windows')
+  })
+})
+
 describe('Codex Desktop launch queueing', () => {
   it('starts no launch while an install is still waiting in the shared queue', async () => {
     const queue = new InstallationQueue()
