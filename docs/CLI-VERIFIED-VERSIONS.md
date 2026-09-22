@@ -35,6 +35,36 @@ Codex 那时 `recommended` 是 `null`，也就是那两天点过「更新」的�
 
 `blocked` 区间是左闭右开的 `[introduced, fixed)`；`fixed: null` 表示上游还没修，区间一直开着。
 
+## 名单之外的第二道保险：关掉 Claude Code 的 Artifact 工具
+
+名单是「事后」的：上游出了回归，我们才知道该钉住哪一版。有一类回归可以从根上去掉——
+**请求里那些本产品用不上的工具，它们的输入 schema 也要过中转的校验。**
+2.1.265~2.1.268 那次「第三方 Anthropic 兼容端点每轮请求 400」就是这样：上游 2.1.268 的
+修复原文说，载体是 **Artifact 工具输入 schema 里的一段正则**被那些端点拒绝。这个工具的作用
+是把结果发布成 claude.ai 上的链接，走中转 API Key 的客户点开是空的——对他们毫无用处，却能
+让每一轮请求都失败。
+
+所以 `electron/config-files.ts` 的 claude 分支在写给 Claude Code 的 `settings.json` 里加了
+`permissions.deny: ['Artifact']`：**只在星芒账号来源下写**，切回官方 Claude 账号时删掉
+（Artifact 对 claude.ai 账号用户是有用的），用户自己写的其他 `deny` 项原样保留。
+
+**验证依据**（沙箱、`@anthropic-ai/claude-code@2.1.277`、空 HOME、本地 HTTP 假接口原样落盘请求体）：
+
+- `permissions.deny` 写一个裸工具名时，**不是只拦执行，而是把该工具的定义整条从请求体的
+  `tools` 数组里摘掉**——这正是防住 schema 类 400 所需要的那一种。基线 25 个工具；
+  改成 `deny: ['Artifact', 'WebFetch', 'NotebookEdit']` 后剩 23 个，`WebFetch` 与
+  `NotebookEdit` 都不在 `tools` 里了。
+- 在 `permissions.defaultMode: 'bypassPermissions'`（就是本产品模板写的那个）下同样生效；
+  设置放 `~/.claude/settings.json` 这个位置有效。
+- 工具在请求里的真实名字就是 `Artifact`。
+- 同一次抓包里，**2.1.277 指向第三方端点时本来就没有发 `Artifact`**（上游已按凭据来源把它
+  挡在外面）。也就是说这条 deny 今天是零作用的保险，它挡的是「上游哪天又把它发出来」，
+  以及顺带让 Claude Code 不再提议发布用户点不开的链接。
+
+复核办法与上面抓包一致：空 HOME 装名单里的推荐版本，起一个把请求体落盘的本地 HTTP 接口，
+把 `ANTHROPIC_BASE_URL` 指过去、`ANTHROPIC_AUTH_TOKEN` 随便填，跑 `claude -p "hi"`，
+看请求体的 `tools[].name`。**不要对生产中转发这类探测请求。**
+
 ## 站点维度
 
 `VerifiedCliRelease.verifiedSites` 与 `BlockedCliVersionRange.sites` 记录条目对应哪些中转站点（`relay-sites.ts` 的 `RelaySite.id`）。
