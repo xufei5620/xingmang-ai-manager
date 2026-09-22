@@ -640,6 +640,75 @@ describe('diagnostics', () => {
         details: { count: 1, variable1: 'CODEX_HOME（Codex CLI）' },
       })
     })
+
+    function ignoredCodexHomeInput(home: string, value: string, reason: 'relative' | 'nul' = 'relative') {
+      const input = dependencies(home)
+      // The host has already replaced CODEX_HOME with the default it resolved.
+      input.env = { CODEX_HOME: path.join(home, '.codex') }
+      input.providerRoots = { userHome: home, codexHome: path.join(home, '.codex') }
+      input.ignoredCodexHome = { value, reason }
+      return input
+    }
+
+    it('flags an ignored CODEX_HOME as blocking when Codex outside the app would miss the account', async () => {
+      const home = temporaryHome()
+      const input = ignoredCodexHomeInput(home, '%USERPROFILE%/must-not-leak-user/.codex')
+
+      const item = overrideItem(await runDiagnostics(input))
+
+      expect(item).toMatchObject({
+        state: 'fail',
+        summary: '电脑里有一个 Codex 的设置写得不对，软件已经忽略它，但在软件外面打开 Codex 会连不上当前账号',
+        details: { count: 1, variable1: 'CODEX_HOME（Codex CLI，写得不对，已忽略）' },
+      })
+      expect(JSON.stringify(item)).not.toMatch(/must-not-leak|USERPROFILE/)
+    })
+
+    it('treats an unexpanded home shortcut and a NUL value as unreachable', async () => {
+      const home = temporaryHome()
+
+      expect(overrideItem(await runDiagnostics(ignoredCodexHomeInput(home, '~/.codex')))?.state).toBe('fail')
+      expect(overrideItem(await runDiagnostics(ignoredCodexHomeInput(home, `${home}\0x`, 'nul')))?.state).toBe('fail')
+    })
+
+    it('only warns when the relative value still resolves to the managed Codex directory from the user home', async () => {
+      const home = temporaryHome()
+
+      expect(overrideItem(await runDiagnostics(ignoredCodexHomeInput(home, '.codex')))).toMatchObject({
+        state: 'warn',
+        summary: '电脑里有一个 Codex 的设置写得不对，软件已经忽略它',
+      })
+    })
+
+    it('only warns when Codex is not connected to the current account anyway', async () => {
+      const home = temporaryHome()
+      const input = ignoredCodexHomeInput(home, '~/.codex')
+      input.inspectProvider = (provider) => ({
+        ...inspection(provider, home, 'sk-super-secret-value'),
+        ...(provider === 'codex' ? { exists: false, hasApiKey: false, matchesRelay: false, apiKey: '' } : {}),
+      })
+
+      expect(overrideItem(await runDiagnostics(input))?.state).toBe('warn')
+    })
+
+    it('mentions other overriding variables after the ignored CODEX_HOME', async () => {
+      const home = temporaryHome()
+      const input = ignoredCodexHomeInput(home, '.codex')
+      input.env = { ...input.env, OPENAI_API_KEY: 'sk-must-not-leak' }
+
+      const item = overrideItem(await runDiagnostics(input))
+
+      expect(item).toMatchObject({
+        state: 'warn',
+        summary: '电脑里有一个 Codex 的设置写得不对，软件已经忽略它；另外系统环境变量里设置了 OPENAI_API_KEY，可能会盖过当前账号写入的配置',
+        details: {
+          count: 2,
+          variable1: 'CODEX_HOME（Codex CLI，写得不对，已忽略）',
+          variable2: 'OPENAI_API_KEY（Codex CLI）',
+        },
+      })
+      expect(JSON.stringify(item)).not.toContain('must-not-leak')
+    })
   })
 
   it('contains a timed out item while the other checks still complete', async () => {
