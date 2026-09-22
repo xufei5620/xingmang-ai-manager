@@ -1,5 +1,5 @@
 import type { AccelerationApi, AccelerationConflictKind, AccelerationLine, AccelerationMode, AccelerationPhase, AccelerationRedemptionResult, AccelerationState } from './acceleration-contract'
-import { accelerationBonusSeconds, accelerationConflictKinds, accelerationTrialSeconds, isAccelerationConflictKind } from './acceleration-contract'
+import { accelerationBonusSeconds, accelerationConflictKinds, accelerationFailure, accelerationFailureMessages, accelerationFailureReason, accelerationTrialSeconds, isAccelerationConflictKind } from './acceleration-contract'
 
 export interface AccelerationService extends AccelerationApi {
   redeemAccelerationCode(scope: string, code: string): Promise<AccelerationRedemptionResult>
@@ -16,7 +16,7 @@ interface AccelerationServiceOptions {
 
 const SERVICE_UNAVAILABLE = '加速线路暂未开通，请稍后再试。'
 const INVALID_RESPONSE = '加速服务返回的数据无效，请稍后重试。'
-const BACKEND_FAILURE = '加速服务暂不可用，请稍后重试。'
+const BACKEND_FAILURE = accelerationFailureMessages.unknown
 const ACCOUNT_CHANGED = '账号已变更，请重新打开游戏加速。'
 const phases: readonly AccelerationPhase[] = ['unavailable', 'idle', 'connecting', 'active', 'stopping', 'exhausted', 'error']
 
@@ -37,6 +37,17 @@ function assertIgnoreConflicts(value: unknown): asserts value is boolean | undef
 
 function assertLineId(lineId: unknown): asserts lineId is string {
   if (typeof lineId !== 'string' || !/^[a-z\d_.-]{1,80}$/i.test(lineId)) throw new Error('加速线路参数无效。')
+}
+
+/**
+ * 这一层原来把每一种后端失败都收成 BACKEND_FAILURE 那一句话，界面和日志里都
+ * 只剩它。2026-09-22 一台客户机因此花了整半天：辅助进程根本建不出临时目录，
+ * 而日志里能看到的只有「加速服务暂不可用，请稍后重试。」，最后靠反编译压缩
+ * 产物数字节才找到是哪一行。现在归类由下层给出（封闭集合，不是错误原文），
+ * 这里只负责挑出对应的那句中文；认不出的仍旧是原来那句话。
+ */
+function backendFailure(error: unknown): Error {
+  return accelerationFailure(accelerationFailureReason(error) ?? 'unknown')
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -216,11 +227,11 @@ export function createAccelerationService(options: AccelerationServiceOptions): 
         state = projectState(raw, scope)
         if (operation === 'start' && state.mode !== mode) throw new Error(INVALID_RESPONSE)
         track(state)
-      } catch {
+      } catch (error) {
         if (operation === 'start' || options.getAccountScope() !== scope || expectedRevision !== revision || disposed) {
           if (possibleSessions.has(scope)) await stopSession(scope)
         }
-        throw new Error(BACKEND_FAILURE)
+        throw backendFailure(error)
       }
       if (options.getAccountScope() !== scope || expectedRevision !== revision || disposed) {
         if (possibleSessions.has(scope)) await stopSession(scope)
@@ -271,7 +282,7 @@ export function createAccelerationService(options: AccelerationServiceOptions): 
           const lines = projectLines(await backend.listAccelerationLines(scope))
           assertCurrent(scope, expectedRevision)
           return lines
-        } catch { throw new Error(BACKEND_FAILURE) }
+        } catch (error) { throw backendFailure(error) }
       })
     },
     pingAccelerationLine(scope, lineId) {
@@ -285,7 +296,7 @@ export function createAccelerationService(options: AccelerationServiceOptions): 
           if (line.id !== lineId) throw new Error(INVALID_RESPONSE)
           assertCurrent(scope, expectedRevision)
           return line
-        } catch { throw new Error(BACKEND_FAILURE) }
+        } catch (error) { throw backendFailure(error) }
       })
     },
     stopAll() {

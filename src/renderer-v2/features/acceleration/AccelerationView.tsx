@@ -1,7 +1,10 @@
 import { useEffect, useState } from 'react'
-import { ArrowUpRight, Check, CircleHelp, Clock3, Globe2, Laptop, Pause, Power, RefreshCw, Route, ShieldAlert, ShieldCheck, Timer, Zap } from 'lucide-react'
+import { ArrowUpRight, Check, CircleHelp, Clock3, Globe2, Laptop, Pause, Power, RefreshCw, Route, ScrollText, ShieldAlert, ShieldCheck, Timer, Zap } from 'lucide-react'
 import { accelerationConflictDescriptions, accelerationConflictNotice, accelerationTrialSeconds, type AccelerationMode, type AccelerationPhase, type AccelerationState } from '../../../../electron/acceleration-contract'
 import { Button, Switch } from '../../ui'
+// 落点规则只有 operationLogPage 一份：加速这条线没有 tool，按它的口径永远落
+// 「反馈」页的运行日志，而不是「安装卸载」页那张只装当次安装进度的卡。
+import { operationLogPage } from '../../operation-error'
 import { Globe } from './Globe'
 import './acceleration.css'
 
@@ -20,6 +23,8 @@ interface AccelerationViewProps {
   onRefresh(): void
   onLogin(): void
   onHelp(): void
+  /** 「查看日志」的出口。红条上那句话现在会说出原因，但真正的现场在运行日志里。 */
+  onViewLog?(): void
   lines: import('../../../../electron/acceleration-contract').AccelerationLine[]
   selectedLineId: string | null
   linesBusy: boolean
@@ -49,7 +54,7 @@ function describePhase(phase: AccelerationPhase | undefined, signedIn: boolean) 
   }
 }
 
-export function AccelerationView({ state, mode, busy, signedIn, error, preview, onModeChange, onStart, onStartAnyway, onStop, onRefresh, onLogin, onHelp, lines, selectedLineId, linesBusy, linesError, onSelectLine, onPingLine, onRefreshLines }: AccelerationViewProps) {
+export function AccelerationView({ state, mode, busy, signedIn, error, preview, onModeChange, onStart, onStartAnyway, onStop, onRefresh, onLogin, onHelp, onViewLog, lines, selectedLineId, linesBusy, linesError, onSelectLine, onPingLine, onRefreshLines }: AccelerationViewProps) {
   const [visible, setVisible] = useState(() => typeof document === 'undefined' || !document.hidden)
   const [linePickerOpen, setLinePickerOpen] = useState(false)
   useEffect(() => {
@@ -133,7 +138,7 @@ export function AccelerationView({ state, mode, busy, signedIn, error, preview, 
       <Button variant="secondary" size="sm" icon={Power} onClick={onStartAnyway} disabled={actionDisabled} testId="acceleration-conflict-force">仍然连接</Button>
     </div>}
 
-    {notice && <div className="acceleration-error" role="alert"><CircleHelp size={16} aria-hidden="true" /><span>{notice}</span><Button variant="ghost" size="sm" icon={RefreshCw} onClick={onRefresh} disabled={busy}>重新检查</Button></div>}
+    {notice && <div className="acceleration-error" role="alert"><CircleHelp size={16} aria-hidden="true" /><span>{notice}</span>{onViewLog && operationLogPage({ message: notice }) === 'feedback' && <Button variant="ghost" size="sm" icon={ScrollText} onClick={onViewLog} testId="acceleration-error-log">查看日志</Button>}<Button variant="ghost" size="sm" icon={RefreshCw} onClick={onRefresh} disabled={busy}>重新检查</Button></div>}
 
     <div className="acceleration-details" aria-label="加速使用信息">
       <div><span className="acceleration-detail-icon"><Timer size={19} aria-hidden="true" /></span><div><span>本次连接</span><strong data-testid="acceleration-session-duration">{formatDuration(signedIn && state ? state.sessionSeconds : null)}</strong></div><small>{active ? '已连接时长' : '连接后开始计时'}</small></div>
