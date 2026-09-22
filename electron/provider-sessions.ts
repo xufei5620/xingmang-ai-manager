@@ -50,6 +50,12 @@ export interface ProviderSessionSummary {
   messageCount: number | null
   sourcePath: string
   detailAvailable: boolean
+  /**
+   * 这条记录的工作目录现在还在不在。只有 `list()` 会填，而且只填当前这一页；
+   * 缺省（未记录文件夹的老记录、或别的入口拿到的摘要）表示没查过，界面按
+   * 「不知道」处理，不因此置灰任何按钮。
+   */
+  cwdExists?: boolean
 }
 
 export interface ProviderSessionMessage {
@@ -291,6 +297,46 @@ async function existingDirectory(root: string): Promise<boolean> {
   } catch {
     return false
   }
+}
+
+/**
+ * 「接着聊」要用的那个工作目录还在不在。判断条件和主进程真正打开工具时的
+ * 那一处（system-service.ts 的 launchProviderOperation）逐字对齐：跟随符号
+ * 链接、只认目录。对不齐的话界面要么把一颗其实按得动的按钮置灰，要么反过来
+ * 留一颗按下去必报错的按钮。
+ */
+async function workspaceDirectoryExists(target: string): Promise<boolean> {
+  try {
+    const info = await fsPromises.stat(target)
+    return info.isDirectory()
+  } catch {
+    // 权限不足、路径被占、盘符掉了——用户的处境都是「这条接不上」，
+    // 和目录真被删掉没有区别，所以一律当作不存在。
+    return false
+  }
+}
+
+/**
+ * 给一页记录补上工作目录的存在性。**只在分页切片之后调用**：一页最多 100 条，
+ * 一条一次 stat，重复目录只查一次。结果也**不进探测缓存**——缓存的指纹认的是
+ * 会话文件本身，目录却可能下一秒就被删掉或恢复，缓存住就会一直显示旧状态。
+ */
+export async function annotateWorkspaceExistence(
+  items: readonly ProviderSessionSummary[],
+  exists: (target: string) => Promise<boolean> = workspaceDirectoryExists,
+): Promise<ProviderSessionSummary[]> {
+  const checked = new Map<string, Promise<boolean>>()
+  return Promise.all(items.map(async (item) => {
+    const target = item.cwd.trim()
+    // 没记录过文件夹的老记录本来就没有「接着聊」，不值得为它做一次 stat。
+    if (target === '') return item
+    let pending = checked.get(target)
+    if (!pending) {
+      pending = exists(target)
+      checked.set(target, pending)
+    }
+    return { ...item, cwdExists: await pending }
+  }))
 }
 
 function existingDirectorySync(root: string): boolean {
@@ -852,8 +898,11 @@ export class ProviderSessionsService {
     // Deliberately not awaited: the page is already complete, and the user
     // should not wait on a cache write to see the list.
     void this.probeCache.persist()
+    const pageItems = await annotateWorkspaceExistence(
+      filtered.slice((page - 1) * pageSize, page * pageSize),
+    )
     return {
-      items: filtered.slice((page - 1) * pageSize, page * pageSize),
+      items: pageItems,
       total: filtered.length,
       page,
       pageSize,

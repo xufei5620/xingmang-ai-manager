@@ -190,14 +190,15 @@ function sessionCapability(provider: ProviderId): MultiProviderSessionPage['capa
 }
 // 首页「打开」的最近目录是从会话记录里的 cwd 推出来的（N7），所以这里要有带目录的记录。
 // 同一个目录两条记录，用来盯住去重。
-function recentWorkspaceSession(id: string, provider: ProviderId, cwd: string, updatedAt: number): MultiProviderSessionPage['items'][number] {
+function recentWorkspaceSession(id: string, provider: ProviderId, cwd: string, updatedAt: number, cwdExists = true): MultiProviderSessionPage['items'][number] {
   return { id: `${provider}:${id}`, provider, nativeId: id, title: `会话 ${id}`, cwd, model: 'fixture-model',
     archived: false, readonly: true, createdAt: updatedAt, updatedAt, messageCount: 2,
-    sourcePath: `C:\\Fixture\\${id}.jsonl`, detailAvailable: true }
+    sourcePath: `C:\\Fixture\\${id}.jsonl`, detailAvailable: true, cwdExists }
 }
 const recentWorkspaceSessions = [
   recentWorkspaceSession('1', 'claude', 'C:\\work\\my-app', 400),
-  recentWorkspaceSession('2', 'claude', 'C:\\work\\older-app', 300),
+  // older-app 的目录已经被删掉了:卡片上这一行的「接着聊」该按不动（候选 7）。
+  recentWorkspaceSession('2', 'claude', 'C:\\work\\older-app', 300, false),
   recentWorkspaceSession('3', 'claude', 'C:\\work\\my-app', 200),
   recentWorkspaceSession('4', 'codex', 'C:\\work\\codex-app', 100),
   recentWorkspaceSession('5', 'gemini', 'C:\\work\\a-very-long-project-name', 50),

@@ -57,7 +57,7 @@ import {
   type CuratedExtension,
 } from './registry/curated-extensions'
 import { tools } from './registry/tools'
-import { latestSessionIdsByWorkspace } from './features/tools/recent-workspaces'
+import { isMissingWorkspace, latestSessionIdsByWorkspace } from './features/tools/recent-workspaces'
 import type { V2Bridge } from './types'
 type Provider = Parameters<V2Bridge['listProviderExtensions']>[0]
 type ExtensionSnapshot = Awaited<ReturnType<V2Bridge['listProviderExtensions']>>
@@ -489,17 +489,28 @@ export function SessionsPage({
    * 自己的目录,它找不到,所以对归档记录置灰。
    */
   const resume = (session: Session) => {
-    if (!resumable.has(session.id) || session.archived) return
+    if (!resumable.has(session.id) || session.archived || session.cwdExists === false)
+      return
     void operation.execute(
       'resume',
       async () => {
-        const result = await api.launchCli(
-          session.provider,
-          session.cwd,
-          'resumeLast',
-        )
-        onResumed?.()
-        return result
+        try {
+          const result = await api.launchCli(
+            session.provider,
+            session.cwd,
+            'resumeLast',
+          )
+          onResumed?.()
+          return result
+        } catch (cause) {
+          // 列表出来之后目录才被删掉的那一瞬间:按钮还亮着,但已经接不上了。
+          // 主进程那句「工作目录不存在,请重新选择」是给目录选择器写的,这里
+          // 没有选择器可退(换个目录就接不上这条对话),所以换一句实话,并把
+          // 列表重读一遍让这一行跟着置灰。
+          if (!isMissingWorkspace(cause)) throw cause
+          void Promise.all([resource.reload(), latestResource.reload()])
+          throw new Error('这条记录的文件夹已经不在了，接不上上次的对话。')
+        }
       },
       `已打开${providerName(session.provider)}，接着 ${session.cwd} 里最近的一条对话`,
     )
@@ -559,52 +570,71 @@ export function SessionsPage({
           retry={() => void resource.reload()}
           clear={() => setQuery('')}
         >
-          {resource.data?.items.map((session) => (
-            <ListRow
-              key={session.id}
-              title={
-                <>
-                  <BrandIcon tool={session.provider} size={24} />
-                  {session.title || '未命名会话'}
-                </>
-              }
-              badge={session.archived ? <Pill>已归档</Pill> : undefined}
-              desc={session.cwd || '未记录文件夹'}
-              descMono
-              meta={
-                <span>
-                  {session.model || '未记录模型'} ·{' '}
-                  {session.messageCount ?? '未知'} 条 ·{' '}
-                  {displayDate(session.updatedAt)}
-                </span>
-              }
-              actions={
-                <>
-                  {resumable.has(session.id) && !session.archived && (
+          {resource.data?.items.map((session) => {
+            // 文件夹被删掉或搬走之后,CLI 按目录找回对话这条路就断了。按钮留在
+            // 原位但按不动,旁边说一句为什么——把它藏起来的话,用户只会觉得
+            // 「昨天还有的按钮今天没了」。
+            const missingWorkspace = session.cwdExists === false
+            return (
+              <ListRow
+                key={session.id}
+                title={
+                  <>
+                    <BrandIcon tool={session.provider} size={24} />
+                    {session.title || '未命名会话'}
+                  </>
+                }
+                badge={
+                  <>
+                    {session.archived && <Pill>已归档</Pill>}
+                    {missingWorkspace && (
+                      <Pill tone="warn" testId={`sessions-missing-${session.id}`}>
+                        文件夹已不存在
+                      </Pill>
+                    )}
+                  </>
+                }
+                desc={session.cwd || '未记录文件夹'}
+                descMono
+                meta={
+                  <span>
+                    {session.model || '未记录模型'} ·{' '}
+                    {session.messageCount ?? '未知'} 条 ·{' '}
+                    {displayDate(session.updatedAt)}
+                  </span>
+                }
+                actions={
+                  <>
+                    {resumable.has(session.id) && !session.archived && (
+                      <Button
+                        size="sm"
+                        icon={Play}
+                        disabled={Boolean(operation.busy) || missingWorkspace}
+                        onClick={() => resume(session)}
+                        title={
+                          missingWorkspace
+                            ? '这条记录的文件夹已经不在了，接不上上次的对话'
+                            : '接着这个文件夹里最近一次对话'
+                        }
+                        testId={`sessions-resume-${session.id}`}
+                      >
+                        接着聊
+                      </Button>
+                    )}
                     <Button
                       size="sm"
-                      icon={Play}
-                      disabled={Boolean(operation.busy)}
-                      onClick={() => resume(session)}
-                      title="接着这个文件夹里最近一次对话"
-                      testId={`sessions-resume-${session.id}`}
+                      icon={History}
+                      disabled={!session.detailAvailable}
+                      onClick={() => view(session)}
                     >
-                      接着聊
+                      查看记录
                     </Button>
-                  )}
-                  <Button
-                    size="sm"
-                    icon={History}
-                    disabled={!session.detailAvailable}
-                    onClick={() => view(session)}
-                  >
-                    查看记录
-                  </Button>
-                </>
-              }
-              testId={`sessions-row-${session.id}`}
-            />
-          ))}
+                  </>
+                }
+                testId={`sessions-row-${session.id}`}
+              />
+            )
+          })}
         </ListState>
       </Card>
       <Pagination
@@ -645,9 +675,15 @@ export function SessionsPage({
             {selected && resumable.has(selected.id) && !selected.archived && (
               <Button
                 icon={Play}
-                disabled={Boolean(operation.busy)}
+                disabled={
+                  Boolean(operation.busy) || selected.cwdExists === false
+                }
                 onClick={() => resume(selected)}
-                title="接着这个文件夹里最近一次对话"
+                title={
+                  selected.cwdExists === false
+                    ? '这条记录的文件夹已经不在了，接不上上次的对话'
+                    : '接着这个文件夹里最近一次对话'
+                }
                 testId="session-detail-resume"
               >
                 接着上次对话

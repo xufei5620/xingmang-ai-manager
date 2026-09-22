@@ -9,7 +9,26 @@ import type {
   CodexSessionReader,
   ProviderSessionSummary,
 } from './provider-sessions'
-import { ProviderSessionsService } from './provider-sessions'
+import { annotateWorkspaceExistence, ProviderSessionsService } from './provider-sessions'
+
+function summary(overrides: Partial<ProviderSessionSummary> = {}): ProviderSessionSummary {
+  return {
+    id: 'claude:one',
+    provider: 'claude',
+    nativeId: 'one',
+    title: '一条记录',
+    cwd: 'C:/work/app',
+    model: 'claude-sonnet',
+    archived: false,
+    readonly: true,
+    createdAt: 100,
+    updatedAt: 200,
+    messageCount: 2,
+    sourcePath: 'C:/work/app/session.jsonl',
+    detailAvailable: true,
+    ...overrides,
+  }
+}
 
 const temporaryDirectories: string[] = []
 
@@ -236,6 +255,46 @@ afterEach(() => {
   for (const directory of temporaryDirectories.splice(0)) {
     fs.rmSync(directory, { recursive: true, force: true })
   }
+})
+
+describe('annotateWorkspaceExistence', () => {
+  it('marks a session whose working directory is still there', async () => {
+    const data = fixture()
+    const [item] = await annotateWorkspaceExistence([summary({ cwd: data.root })])
+    expect(item.cwdExists).toBe(true)
+  })
+
+  it('marks a session whose working directory was deleted', async () => {
+    const data = fixture()
+    const [item] = await annotateWorkspaceExistence([
+      summary({ cwd: path.join(data.root, '已经删掉的项目') }),
+    ])
+    expect(item.cwdExists).toBe(false)
+  })
+
+  it('treats a failing stat as a missing directory', async () => {
+    const data = fixture()
+    // 父级是个文件，所以 stat 不是「不存在」而是直接失败：Linux 报 ENOTDIR、
+    // Windows 报 ENOENT。两边都得落到「接不上」，不能把异常抛给列表。
+    const filePath = path.join(data.root, 'not-a-directory')
+    fs.writeFileSync(filePath, 'x', 'utf8')
+    const items = await annotateWorkspaceExistence([
+      summary({ id: 'claude:file', cwd: filePath }),
+      summary({ id: 'claude:under-file', cwd: path.join(filePath, 'child') }),
+    ])
+    expect(items.map((item) => item.cwdExists)).toEqual([false, false])
+  })
+
+  it('leaves sessions without a recorded directory untouched and stats each path once', async () => {
+    const exists = vi.fn(async () => true)
+    const items = await annotateWorkspaceExistence([
+      summary({ id: 'claude:a', cwd: 'C:/work/app' }),
+      summary({ id: 'claude:b', cwd: 'C:/work/app' }),
+      summary({ id: 'claude:c', cwd: '   ' }),
+    ], exists)
+    expect(items.map((item) => item.cwdExists)).toEqual([true, true, undefined])
+    expect(exists).toHaveBeenCalledTimes(1)
+  })
 })
 
 describe('ProviderSessionsService', () => {
@@ -582,6 +641,34 @@ describe('ProviderSessionsService', () => {
     expect(page.items[0].title).toBe('Claude 自定义标题')
     expect(warnings).toEqual(['probe-cache-discarded'])
     await vi.waitFor(() => expect(fs.readFileSync(cacheFile, 'utf8')).toContain('Claude 自定义标题'))
+  })
+
+  it('reports whether each listed session still has its working directory, without caching it', async () => {
+    const data = fixture()
+    const alive = path.join(data.root, '还在的项目')
+    fs.mkdirSync(alive, { recursive: true })
+    writeJsonLines(path.join(data.claude, 'alive', 'session.jsonl'), [
+      { type: 'user', sessionId: 'alive', cwd: alive, timestamp: '2026-07-24T01:00:00.000Z', message: { role: 'user', content: '还在' } },
+    ])
+    writeJsonLines(path.join(data.claude, 'gone', 'session.jsonl'), [
+      { type: 'user', sessionId: 'gone', cwd: path.join(data.root, '已经删了'), timestamp: '2026-07-24T01:00:01.000Z', message: { role: 'user', content: '没了' } },
+    ])
+    const cacheFile = path.join(data.root, 'sessions', 'probe-cache.json')
+    const sessions = service(data, codexReader([]), { probeCacheFile: cacheFile })
+
+    const page = await sessions.list({ provider: 'claude', pageSize: 100 })
+    const byNativeId = new Map(page.items.map((item) => [item.nativeId, item.cwdExists]))
+    expect(byNativeId.get('alive')).toBe(true)
+    expect(byNativeId.get('gone')).toBe(false)
+
+    // 目录随时会被删掉或恢复，所以这个判断不进探测缓存：缓存住就会一直显示
+    // 上一次的状态，用户删了文件夹还看见一颗亮着的「接着聊」。
+    await vi.waitFor(() => expect(fs.readFileSync(cacheFile, 'utf8')).toContain('还在'))
+    expect(fs.readFileSync(cacheFile, 'utf8')).not.toContain('cwdExists')
+
+    fs.rmSync(alive, { recursive: true, force: true })
+    const second = await sessions.list({ provider: 'claude', pageSize: 100 })
+    expect(second.items.find((item) => item.nativeId === 'alive')?.cwdExists).toBe(false)
   })
 
   it('keeps Codex summaries readonly when its SQLite schema disables mutations', async () => {

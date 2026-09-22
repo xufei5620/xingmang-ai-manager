@@ -460,6 +460,32 @@ test('only the most recent record of a folder offers to resume it', async () => 
   }
 })
 
+// 目录被删掉或搬走之后,CLI 按目录找回对话这条路就断了。按钮不藏起来,
+// 而是留在原位按不动,旁边说一句为什么——藏起来的话用户只会觉得
+// 「昨天还有的按钮今天没了」。
+test('a record whose folder is gone keeps the resume button in place but disabled', async () => {
+  const page = await fixture('page=sessions&missingFolder=1')
+  try {
+    const resume = page.getByTestId('sessions-resume-codex:session-1')
+    await resume.waitFor()
+    assert.equal(await resume.isDisabled(), true)
+    assert.equal(
+      await resume.getAttribute('title'),
+      '这条记录的文件夹已经不在了，接不上上次的对话',
+    )
+    await page.getByTestId('sessions-missing-codex:session-1').waitFor()
+    assert.equal(
+      await page.getByTestId('sessions-missing-codex:session-1').innerText(),
+      '文件夹已不存在',
+    )
+    // 按不动就不该有任何一次启动请求发出去。
+    await resume.click({ force: true }).catch(() => {})
+    assert.equal((await calls(page)).some((call) => call.name === 'launch-cli'), false)
+  } finally {
+    await page.close()
+  }
+})
+
 test('session detail exposes a retry action after a temporary read failure', async () => {
   const page = await fixture('page=sessions&detailFailure=1')
   try {

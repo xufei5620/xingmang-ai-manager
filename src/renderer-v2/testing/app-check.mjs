@@ -678,6 +678,26 @@ test('the home recent card resumes the last conversation of that folder (#292)',
   } finally { await page.close() }
 })
 
+// 目录被删掉或搬走之后接不上上次的对话,点了只会得到一条报错。按钮留在原位
+// 但按不动,旁边说一句为什么。
+test('the home recent card greys out a row whose folder is gone', async () => {
+  const page = await open('allInstalled=1&recentWorkspaces=1')
+  try {
+    const missing = page.getByTestId('home-recent-resume-claude:2')
+    await missing.waitFor()
+    assert.equal(await missing.isDisabled(), true)
+    assert.equal(await missing.getAttribute('title'), '这个文件夹已经不在了，接不上上次的对话')
+    assert.equal(await page.getByTestId('home-recent-missing-claude:2').innerText(), '文件夹已不存在')
+    // 目录还在的那一行不受影响,也不该多出这句说明。
+    assert.equal(await page.getByTestId('home-recent-resume-claude:1').isDisabled(), false)
+    assert.equal(await page.getByTestId('home-recent-missing-claude:1').count(), 0)
+
+    await missing.click({ force: true }).catch(() => {})
+    assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => entry.method === 'launchCli')), false)
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('home reuses the recent list instead of rescanning session folders on every visit', async () => {
   const page = await open('allInstalled=1&recentWorkspaces=1')
   // 首页读的是 pageSize 60 那一份;记录页自己读的是 20 / 100,不能混进来数。
