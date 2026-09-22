@@ -8,8 +8,9 @@
 
 ## 开发
 
-- `styles/tokens.css` 的 `.hc` 覆盖从 6 个变量扩成每个主题一整套不透明色值，覆盖皮肤会设置的
-  全部颜色变量（开启时皮肤配色让位）。新增 `styles/contrast-tokens.test.ts`：纯计算校验三级文字
+- `styles/tokens.css` 在原型那两条 `.hc` 规则（原样保留，`provenance.test.ts` 钉着）之后，追加
+  `:root[data-theme].hc[data-skin]` 两条，把高对比从 6 个变量扩成每个主题一整套不透明色值，覆盖
+  皮肤会设置的全部颜色变量（开启时皮肤配色让位）。新增 `styles/contrast-tokens.test.ts`：纯计算校验三级文字
   4.5:1、主按钮/强调色/选中行 4.5:1、状态色含淡底 4.5:1、边框与焦点环 3:1，并检查每套皮肤的
   颜色变量都被覆盖。
 - 新增 `styles/contrast.css`（`main.tsx` 最后一个样式导入，每条规则带 `:root` 以压过懒加载页面

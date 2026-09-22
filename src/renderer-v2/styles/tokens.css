@@ -91,12 +91,23 @@
   --tile-ring:inset 0 0 0 1px rgba(48,36,110,.06), 0 1px 2px rgba(48,36,110,.06);
   --card-grad:#FFFFFF;
 }
-/* High contrast replaces every skin with one palette per theme: each skin's
-   accent was tuned for looks, not for 4.5:1 text or 3:1 control boundaries, and
-   translucent panels/lines inherit whatever sits beneath them. Every value here
-   is opaque (or composited over an opaque token) so contrast-tokens.test.ts can
-   check the ratios without a DOM. */
 [data-theme="dark"].hc[data-skin] {
+  --line:rgba(220,228,240,.35); --line-2:rgba(220,228,240,.55); --line-3:rgba(220,228,240,.65);
+  --text-2:#C7D3E6; --text-3:#B0BFD4;
+}
+[data-theme="light"].hc[data-skin] {
+  --line:rgba(20,26,40,.35); --line-2:rgba(20,26,40,.55); --line-3:rgba(20,26,40,.65);
+  --text-2:#23324A; --text-3:#3E4D65;
+}
+/* The two rules above are the prototype's high contrast, kept verbatim
+   (provenance.test.ts pins them). On their own they only darken lines and
+   secondary text, which is barely visible. The rules below extend them into one
+   complete palette per theme that replaces every skin: each skin's accent was
+   tuned for looks, not for 4.5:1 text or 3:1 control boundaries, and translucent
+   panels/lines inherit whatever sits beneath them. Every value is opaque (or
+   composited over an opaque token) so contrast-tokens.test.ts can check the
+   ratios without a DOM. :root keeps them ahead of the prototype rules. */
+:root[data-theme="dark"].hc[data-skin] {
   --win:#02060D; --rail:#03080F; --bg:#050B16;
   --panel:#0B1424; --panel-solid:#0B1424; --panel-hover:#18253C; --panel-2:#101C30;
   --line:#7F8FA8; --line-2:#A6B4C9; --line-3:#D0DAE8;
@@ -106,7 +117,7 @@
   --overlay:rgba(0,0,0,.8); --btn-2-bg:#101C30; --btn-2-hover:#1C2A44; --bubble-user:rgba(255,210,122,.2);
   --glow-top:none; --tile-ring:inset 0 0 0 1px #A6B4C9; --card-grad:#0B1424;
 }
-[data-theme="light"].hc[data-skin] {
+:root[data-theme="light"].hc[data-skin] {
   --win:#FFFFFF; --rail:#F3F5F9; --bg:#FFFFFF;
   --panel:#FFFFFF; --panel-solid:#FFFFFF; --panel-hover:#E8EDF4; --panel-2:#F0F3F8;
   --line:#6B7890; --line-2:#4B5970; --line-3:#1F2C42;

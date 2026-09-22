@@ -126,7 +126,7 @@
 
 ## 规范差异与未完成能力
 
-- 2026-09-22 高对比度（第十批候选 6）：原型 `.hc` 只加深 `--line*` 与 `--text-2/3`，实测开关后几乎看不出变化，且 Windows 系统高对比（forced-colors）下开关、进度条、选中态会整块消失。实现侧在 `src/renderer-v2/styles/tokens.css` 把 `.hc` 扩成每个主题一整套不透明色值（开启时皮肤配色让位于高对比配色），并新增 `styles/contrast.css` 补组件状态与 forced-colors 重画；`ui-spec/` 原稿未改。对比度由 `styles/contrast-tokens.test.ts` 按 WCAG AA 计算钉住，forced-colors 由 `styles/contrast.browser-check.mjs` 在 Chromium 模拟下核对；Windows 真机各系统主题的截图对照尚未完成。
+- 2026-09-22 高对比度（第十批候选 6）：原型 `.hc` 只加深 `--line*` 与 `--text-2/3`，实测开关后几乎看不出变化，且 Windows 系统高对比（forced-colors）下开关、进度条、选中态会整块消失。实现侧在 `src/renderer-v2/styles/tokens.css` 保留原型 `.hc` 规则原文，其后追加 `:root[data-theme].hc[data-skin]` 扩成每个主题一整套不透明色值（开启时皮肤配色让位于高对比配色），并新增 `styles/contrast.css` 补组件状态与 forced-colors 重画；`ui-spec/` 原稿未改。对比度由 `styles/contrast-tokens.test.ts` 按 WCAG AA 计算钉住，forced-colors 由 `styles/contrast.browser-check.mjs` 在 Chromium 模拟下核对；Windows 真机各系统主题的截图对照尚未完成。
 
 - 2026-09-14：新增「游戏加速」侧栏入口、精细工作台界面、可选 TUN 模式、累计 20 分钟的启停/暂停/续用交互（原 1 小时已按用户最新要求调整）与可信主进程接入契约。实际节点、TUN 驱动和服务端额度尚未提供；生产默认不可用，不伪造连接或免费余额，交互预览明确标注演示。设计/状态/验证见 [GLOBAL-ACCELERATION.md](GLOBAL-ACCELERATION.md)。
 

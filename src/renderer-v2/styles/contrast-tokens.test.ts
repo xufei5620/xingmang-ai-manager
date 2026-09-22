@@ -77,7 +77,7 @@ const surfaces = ['--win', '--rail', '--bg', '--panel-solid', '--panel-2', '--pa
 const skins = ['obsidian', 'mist', 'aurora']
 
 describe.each(['dark', 'light'])('high contrast tokens (%s)', (theme) => {
-  const values = block(`[data-theme="${theme}"].hc[data-skin]`)
+  const values = block(`:root[data-theme="${theme}"].hc[data-skin]`)
   const { solid, layered } = palette(values)
 
   function failures(pairs: Array<[string, Rgb, Rgb]>, minimum: number) {
