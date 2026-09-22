@@ -4,6 +4,7 @@ import {
   CuratedDetails,
   CuratedShelf,
   curatedPlaceholderField,
+  curatedVersionText,
   officialMarketplaceNotice,
   submitMcpInstall,
   unresolvedInstallPlaceholders,
@@ -18,6 +19,13 @@ function item(id: string) {
   const found = curatedExtensions.find((entry) => entry.id === id)
   if (!found) throw new Error(`精选清单里没有 ${id}`)
   return found
+}
+
+// submitMcpInstall 只收 MCP 那两种形态，精选里还有插件：这个夹具替编译器把类型收窄掉。
+function mcpInstall(id: string) {
+  const install = item(id).install
+  if (install.type === 'plugin') throw new Error(`${id} 不是 MCP 条目`)
+  return install
 }
 
 describe('curated extension shelf', () => {
@@ -63,6 +71,50 @@ describe('curated extension shelf', () => {
     expect(markup).toContain('用掉的额度比平时多')
   })
 
+  // 插件精选与 MCP 精选是同一张卡：形态一致，只是图标、命令与版本那一行不同。
+  it('lists the curated plugins with what each one costs the user', () => {
+    const markup = renderToStaticMarkup(
+      <CuratedShelf items={curatedItemsFor('plugin', 'claude')} onPick={() => {}} />,
+    )
+    expect(markup).toContain('data-testid="curated-row-code-review"')
+    expect(markup).toContain('data-testid="curated-install-commit-commands"')
+    expect(markup).toContain('会多用额度')
+    expect(markup).toContain('会动 Git 仓库')
+    expect(markup).toContain('安装时需要联网下载一次')
+  })
+
+  // 装插件要先保证官方市场在册，所以确认框里是两条命令；钉不住版本这件事也必须写出来。
+  it('lists both plugin commands and says which version will land', () => {
+    const markup = renderToStaticMarkup(<CuratedDetails item={item('code-review')} />)
+    expect(markup).toContain('将要执行的命令')
+    expect(markup).toContain('claude plugin marketplace add anthropics/claude-plugins-official')
+    expect(markup).toContain('claude plugin install code-review@claude-plugins-official')
+    expect(markup).toContain('安装的是官方市场当前的版本')
+    expect(markup).toContain('c447c3207a42')
+    expect(markup).toContain('只给工具本身加命令和技能')
+    expect(markup).toContain(curatedDisclaimer)
+  })
+
+  it('says which version a plugin declares for itself when it declares one', () => {
+    expect(curatedVersionText(item('claude-md-management'))).toContain('插件自己声明的版本是 1.0.0')
+    expect(curatedVersionText(item('browser'))).toBe('固定在 0.0.82')
+    expect(curatedVersionText(item('github'))).toBe('由对方在线提供，没有本地版本')
+  })
+
+  // 已经装上的还给一个「安装」按钮，点下去只会换来一句 CLI 的英文报错。
+  it('marks an entry that is already installed instead of offering it again', () => {
+    const markup = renderToStaticMarkup(
+      <CuratedShelf
+        items={curatedItemsFor('plugin', 'claude')}
+        installedIds={['code-review@claude-plugins-official']}
+        onPick={() => {}}
+      />,
+    )
+    expect(markup).toContain('已安装')
+    expect(markup).not.toContain('data-testid="curated-install-code-review"')
+    expect(markup).toContain('data-testid="curated-install-feature-dev"')
+  })
+
   it('points the form at the field that actually holds the placeholder', () => {
     expect(curatedPlaceholderField(item('files'), 'directory')).toBe('参数')
     expect(curatedPlaceholderField(item('memory'), 'directory')).toBe('环境变量')
@@ -86,7 +138,7 @@ describe('MCP install submission', () => {
     const api = { addMcpServer, mutateProviderExtension } as unknown as Parameters<
       typeof submitMcpInstall
     >[0]
-    const install = item('files').install
+    const install = mcpInstall('files')
     await submitMcpInstall(api, 'claude', 'files', install, 'user')
     expect(mutateProviderExtension).toHaveBeenCalledWith({
       provider: 'claude',
@@ -106,7 +158,7 @@ describe('MCP install submission', () => {
     const api = { addMcpServer, mutateProviderExtension: vi.fn() } as unknown as Parameters<
       typeof submitMcpInstall
     >[0]
-    await submitMcpInstall(api, 'codex', 'github', item('github').install, 'user', {
+    await submitMcpInstall(api, 'codex', 'github', mcpInstall('github'), 'user', {
       bearerTokenEnvVar: 'TOKEN',
     })
     expect(addMcpServer).toHaveBeenCalledWith({
@@ -115,10 +167,10 @@ describe('MCP install submission', () => {
       url: 'https://api.githubcopilot.com/mcp/',
       bearerTokenEnvVar: 'TOKEN',
     })
-    await submitMcpInstall(api, 'codex', 'files', item('files').install, 'user', {
+    await submitMcpInstall(api, 'codex', 'files', mcpInstall('files'), 'user', {
       bearerTokenEnvVar: 'TOKEN',
     })
-    expect(addMcpServer).toHaveBeenLastCalledWith({ name: 'files', ...item('files').install })
+    expect(addMcpServer).toHaveBeenLastCalledWith({ name: 'files', ...mcpInstall('files') })
   })
 })
 

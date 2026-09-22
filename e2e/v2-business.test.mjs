@@ -502,6 +502,45 @@ test('curated MCP install confirms the exact command before writing any configur
   }
 })
 
+test('the curated plugin shelf shows both commands and installs through the existing plugin path', async () => {
+  const page = await fixture('page=plugins')
+  try {
+    const shelf = page.getByTestId('curated-shelf')
+    await shelf.waitFor()
+    await shelf.getByTestId('curated-install-code-review').click()
+    const confirm = page.getByTestId('curated-confirm')
+    await confirm.waitFor()
+    // 装插件要先保证官方市场在册，所以确认框里必须是两条命令，少列一条就是没说全。
+    await confirm
+      .getByText('claude plugin marketplace add anthropics/claude-plugins-official', { exact: true })
+      .waitFor()
+    await confirm
+      .getByText('claude plugin install code-review@claude-plugins-official', { exact: true })
+      .waitFor()
+    // 官方市场装到的是它当下那一份，钉不住版本这件事要在点确认之前说出来。
+    await confirm.getByText(/安装的是官方市场当前的版本/).waitFor()
+    await confirm.getByText(/第三方软件/).first().waitFor()
+    assert.equal(
+      (await calls(page)).some((call) => call.name === 'extension'),
+      false,
+    )
+    await confirm.getByTestId('curated-confirm-submit').click()
+    await confirm.getByText('扩展操作失败，已有配置保留').waitFor()
+    // 精选不另开通道：走的还是页面上「添加插件」那一条出口。
+    assert.deepEqual(
+      (await calls(page)).find((call) => call.name === 'extension').args,
+      {
+        provider: 'claude',
+        kind: 'plugin',
+        action: 'install',
+        source: 'code-review@claude-plugins-official',
+      },
+    )
+  } finally {
+    await page.close()
+  }
+})
+
 test('a curated entry that needs a folder prefills the form instead of installing a broken connection', async () => {
   const page = await fixture('page=mcp')
   try {

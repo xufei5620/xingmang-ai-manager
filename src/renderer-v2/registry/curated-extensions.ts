@@ -11,11 +11,11 @@ import catalog from '../../../bundled-catalog/curated-extensions.json';
  * addMcpServer），精选不另开一条，免得绕过主进程对命令与参数的校验。
  */
 
-export const curatedRisks = ['local-fs-write', 'browser', 'remote-exec', 'network', 'third-party'] as const;
+export const curatedRisks = ['local-fs-write', 'browser', 'remote-exec', 'network', 'third-party', 'git-write', 'extra-usage'] as const;
 export type CuratedRisk = (typeof curatedRisks)[number];
-export const curatedRuntimes = ['node', 'python', 'none'] as const;
+export const curatedRuntimes = ['node', 'python', 'none', 'prompt'] as const;
 export type CuratedRuntime = (typeof curatedRuntimes)[number];
-export const curatedNetworkNeeds = ['none', 'npm-first-run', 'always'] as const;
+export const curatedNetworkNeeds = ['none', 'npm-first-run', 'always', 'install-only'] as const;
 export type CuratedNetworkNeed = (typeof curatedNetworkNeeds)[number];
 export const curatedKinds = ['mcp', 'skill', 'plugin'] as const;
 export type CuratedKind = (typeof curatedKinds)[number];
@@ -28,7 +28,19 @@ export interface CuratedInput {
 }
 export type CuratedInstall =
   | { type: 'stdio'; command: string; args: string[]; env: Record<string, string> }
-  | { type: 'http'; url: string };
+  | { type: 'http'; url: string }
+  | { type: 'plugin'; marketplace: CuratedMarketplace; plugin: string };
+
+/**
+ * 插件市场的注册来源由主进程固定（provider-extensions.ts 的
+ * CLAUDE_OFFICIAL_MARKETPLACE_SOURCE），这里这张表只有两个用途：把随包清单能指向的
+ * 市场限定在应用真的会去注册的那一个，以及在确认框里把那条注册命令原样写出来。
+ * 它不参与执行——清单里写一个别的市场名，条目会在解析时整条丢掉。
+ */
+export const curatedMarketplaceSources = {
+  'claude-plugins-official': 'anthropics/claude-plugins-official',
+} as const;
+export type CuratedMarketplace = keyof typeof curatedMarketplaceSources;
 export interface CuratedExtension {
   id: string;
   kind: CuratedKind;
@@ -45,6 +57,7 @@ export interface CuratedExtension {
   risks: CuratedRisk[];
   riskNote: string;
   pinnedVersion: string | null;
+  marketplaceCommit: string | null;
   verifiedAt: string;
   note: string | null;
 }
@@ -56,16 +69,20 @@ export const curatedRiskLabels: Record<CuratedRisk, { label: string; detail: str
   'remote-exec': { label: '内容会发到对方服务器', detail: '请求由提供方在他们的服务器上处理，不在你电脑上。' },
   network: { label: '需要联网', detail: '断网时这一项用不了。' },
   'third-party': { label: '第三方维护', detail: '由该软件的作者维护，不随本应用一起更新。' },
+  'git-write': { label: '会动 Git 仓库', detail: '会执行提交、推送这类 Git 命令，推出去的改动要你自己到远端撤回。' },
+  'extra-usage': { label: '会多用额度', detail: '会让 AI 多跑几轮，同一件事用掉的额度比平时多。' },
 };
 export const curatedNetworkLabels: Record<CuratedNetworkNeed, string | null> = {
   none: null,
   'npm-first-run': '第一次使用时需要联网下载，之后就不用了',
   always: '每次使用都需要联网',
+  'install-only': '安装时需要联网下载一次，用起来不需要',
 };
 export const curatedRuntimeLabels: Record<CuratedRuntime, string> = {
   node: '在你电脑上运行，用的是本应用装好的 Node.js',
   python: '在你电脑上运行，需要 Python',
   none: '不在你电脑上装东西',
+  prompt: '只给工具本身加命令和技能，不在你电脑上跑额外的程序',
 };
 // 预置第三方扩展等于替它们背书，所以确认框里这句免责说明是固定文案，不按条目变。
 export const curatedDisclaimer = '这些都是第三方软件，由它们各自的作者维护和更新，不随本应用一起发布。装之前请先看清它要哪些权限。';
@@ -85,8 +102,18 @@ function isProviderId(value: unknown): value is ProviderId {
 function oneOf<T extends string>(allowed: readonly T[], value: unknown): T | null {
   return typeof value === 'string' && (allowed as readonly string[]).includes(value) ? (value as T) : null;
 }
+function isCuratedMarketplace(value: unknown): value is CuratedMarketplace {
+  return typeof value === 'string' && Object.hasOwn(curatedMarketplaceSources, value);
+}
 function parseInstall(value: unknown): CuratedInstall | null {
   if (!isRecord(value)) return null;
+  // 插件名会原样拼进 `plugin install <名字>@<市场>`，收窄到这一个字符集就没有开关、
+  // 没有路径、也没有第二个 @ 能挤进去。市场必须是应用真的会注册的那一个。
+  if (value.type === 'plugin') {
+    const plugin = text(value.plugin);
+    if (!plugin || !/^[a-z0-9][a-z0-9-]*$/.test(plugin) || !isCuratedMarketplace(value.marketplace)) return null;
+    return { type: 'plugin', marketplace: value.marketplace, plugin };
+  }
   if (value.type === 'http') {
     const url = text(value.url);
     return url && url.startsWith('https://') ? { type: 'http', url } : null;
@@ -101,6 +128,11 @@ function parseInstall(value: unknown): CuratedInstall | null {
     env[name] = entry;
   }
   return { type: 'stdio', command, args, env };
+}
+/** 复核时的市场 commit：要么没有，要么是一个完整的 40 位 sha，写半截等于记了个查不回去的东西。 */
+function parseMarketplaceCommit(value: unknown): string | null | undefined {
+  if (value === null) return null;
+  return typeof value === 'string' && /^[0-9a-f]{40}$/.test(value) ? value : undefined;
 }
 function parseInput(value: unknown): CuratedInput | null {
   if (!isRecord(value)) return null;
@@ -131,6 +163,7 @@ export function parseCuratedExtensions(raw: unknown): CuratedExtension[] {
     const riskNote = text(entry.riskNote);
     const verifiedAt = text(entry.verifiedAt);
     const install = parseInstall(entry.install);
+    const marketplaceCommit = parseMarketplaceCommit(entry.marketplaceCommit);
     const rawProviders = Array.isArray(entry.providers) ? entry.providers : null;
     const rawRisks = Array.isArray(entry.risks) ? entry.risks : null;
     const rawInputs = Array.isArray(entry.inputs) ? entry.inputs : null;
@@ -149,13 +182,17 @@ export function parseCuratedExtensions(raw: unknown): CuratedExtension[] {
       || providers.length !== rawProviders.length
       || typeof entry.requiresAccount !== 'boolean'
       || !(entry.pinnedVersion === null || typeof entry.pinnedVersion === 'string')
+      || marketplaceCommit === undefined
       || !(entry.note === null || typeof entry.note === 'string')
+      // 插件装的是市场当时那一份，所以要么条目自己声明了版本，要么必须记下复核时的
+      // 市场 commit，否则界面上就没有任何东西能告诉用户他装到的是哪一版。
+      || (install.type === 'plugin' && !entry.pinnedVersion && !marketplaceCommit)
     ) continue;
     parsed.push({
       id, kind, name, summary, publisher, homepage, providers, install,
       inputs: inputs as CuratedInput[],
       runtime, network, requiresAccount: entry.requiresAccount, risks, riskNote,
-      pinnedVersion: entry.pinnedVersion, verifiedAt, note: entry.note,
+      pinnedVersion: entry.pinnedVersion, marketplaceCommit, verifiedAt, note: entry.note,
     });
   }
   return parsed;
@@ -173,9 +210,30 @@ export function curatedItemsFor(kind: CuratedKind, provider: ProviderId): Curate
  * 交给 shell——真正的执行仍是主进程的 execFile + argv 数组（I1）。
  */
 export function curatedCommandText(item: CuratedExtension): string {
+  if (item.install.type === 'plugin') return `claude plugin install ${curatedInstallTarget(item)}`;
   if (item.install.type === 'http') return item.install.url;
   const environment = Object.entries(item.install.env).map(([name, value]) => `${name}=${value}`);
   return [...environment, item.install.command, ...item.install.args].join(' ');
+}
+
+/**
+ * 安装目标：MCP 用 id 当连接名，插件用 `<插件名>@<市场名>`——后者同时也是它在已安装
+ * 列表里的 id，所以精选卡拿它去判断「这条是不是已经装上了」。
+ */
+export function curatedInstallTarget(item: CuratedExtension): string {
+  return item.install.type === 'plugin' ? `${item.install.plugin}@${item.install.marketplace}` : item.id;
+}
+
+/**
+ * 装插件要先保证官方市场在册（主进程会自己判断是否需要），所以确认框里列的是两条命令，
+ * 不是一条。MCP 那边写进配置的就只有一条。
+ */
+export function curatedCommandLines(item: CuratedExtension): string[] {
+  if (item.install.type !== 'plugin') return [curatedCommandText(item)];
+  return [
+    `claude plugin marketplace add ${curatedMarketplaceSources[item.install.marketplace]}`,
+    curatedCommandText(item),
+  ];
 }
 
 /** 带占位符的条目走「预填表单让用户补路径」那条路，不直接安装。 */
