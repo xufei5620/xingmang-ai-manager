@@ -1151,6 +1151,8 @@
 - 新增 `scripts/windows-installer-os-version.test.cjs` 钉住上述两条守卫、
   `/SD IDOK` 与 x64-only 前提，并入 `test:scripts`。
 - `electron/provider-extensions.ts` 接上 #346 的 `macos-command-line-tools.ts` 守卫：`inspectExtensionRuntimes` 的 Python 判断、`ensureClaudeOfficialMarketplace` 的 Git 判断（空壳时用 `claudeMarketplaceGitMissingMessage(platform, { commandLineToolsShim: true })` 的专门文案）、`createProviderSourceUpdateInspector` 的 Git 更新检查。服务与更新检查器新增可选注入 `platform` / `isCommandLineToolsShimBacked`，与 `runCommand` 分开，免得测试里假的 git 输出被当成 xcode-select 的回答。
+- `workspace:choose` 多一个可选参数 `{ createStarter: true }`（`ChooseWorkspaceOptions`，`electron/ipc-contract.ts`）：不弹选择器，直接走 #347 那套 `createStarterWorkspace`，建好照常写进设置并返回路径。参数按白名单校验，只认这一个布尔键，渲染层给不出路径（I5）；没加新通道，`ipcInvokeChannels` 顺序不变（T1）。
+- 渲染层：`workspaceChoices` 末尾多一项 `create: true`；`Home.tsx` 的下拉与（没有最近目录时的）「更多操作」菜单接 `onLaunchInNewFolder`；`App.tsx` 的 `launch` / `requestLaunch` 多一个 `newFolder` 参数；`StartGuide.tsx` 完成步给四家 CLI 加一行说明和「新建并打开」按钮，Codex 桌面端与聊天不给。
 
 ## 0.2.8 - 2026-09-20
 
