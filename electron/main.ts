@@ -20,6 +20,7 @@ import { autoUpdater } from 'electron-updater'
 import { AccountCredentialStore } from './account-credential-store'
 import { AnnouncementReadStore } from './announcement-read-store'
 import { createAccelerationExpiryNotice, type AccelerationExpiryNotice } from './acceleration-expiry-notice'
+import { createAccelerationInterruptionNotice, type AccelerationInterruptionNotice } from './acceleration-interruption-notice'
 import { createAccelerationService } from './acceleration-service'
 import { accelerationConflictDescriptions, accelerationFailureMessages, type AccelerationMode, type AccelerationState } from './acceleration-contract'
 import { accelerationStartRequest, createAccelerationPreferenceStore, defaultAccelerationPreference } from './acceleration-preference-store'
@@ -52,6 +53,7 @@ import { createApplicationTray, type ApplicationTrayController } from './applica
 import { createTrayAccelerationCoordinator, type TrayAccelerationCoordinator } from './tray-acceleration'
 import { createExternalDeepLinkInbox } from './external-deep-links'
 import { createDesktopNotificationController } from './desktop-notifications'
+import { inspectDeviceHardware, isLowEndDevice } from './device-profile'
 import { ConfigBackupStore } from './backups'
 import { crashReportDsn, crashReportSelfTestEnvironmentKey, shouldReportCrashes } from './crash-report'
 import { createCrashReporter } from './crash-reporter'
@@ -94,7 +96,8 @@ import { attachPlatformAuditLog } from './platform/runtime-log-bridge'
 import { migrateLegacyWindowsLoginItem } from './platform/system-service'
 import { recordStartupFailure } from './startup-log'
 import { inspectProviderConfig } from './config-files'
-import { buildFeedbackEnvironmentLines } from './feedback-environment'
+import { buildFeedbackEnvironmentLines, buildFeedbackRuntimeLines, pickFeedbackRuntimeSnapshot } from './feedback-environment'
+import { managedCliRoot } from './managed-cli-paths'
 import { buildFeedbackSelfCheckLines, type FeedbackConnectionRecord } from './feedback-self-check'
 import { rootedMainServiceOptions } from './main-service-options'
 import { buildMacosInstallLocationNotice, inspectMacosInstallLocation } from './macos-install-location'
@@ -196,6 +199,8 @@ const windowPreferenceAppliers = new WeakMap<WebContents, () => void>()
 const windowPreferenceFlushers = new WeakMap<WebContents, () => Promise<void>>()
 
 const updateCheckIntervalMs = 3 * 60 * 60 * 1_000
+// 启动时看一眼本机配置就够了：内存和核数不会在运行中变化。
+const lowEndDevice = isLowEndDevice(inspectDeviceHardware())
 const packagedApplicationBaseUrl = 'xingmang://app/'
 
 protocol.registerSchemesAsPrivileged([{
@@ -1046,6 +1051,7 @@ if (!hasSingleInstanceLock) {
     let applicationTray: ApplicationTrayController | null = null
     let trayAcceleration: TrayAccelerationCoordinator | null = null
     let accelerationExpiry: AccelerationExpiryNotice | null = null
+    let accelerationInterruption: AccelerationInterruptionNotice | null = null
     let latestTraySystem: SystemSnapshot | null = null
     let latestTrayBalance: AccountBalance | null = null
     let managedMainWindow: BrowserWindow | null = null
@@ -1065,6 +1071,27 @@ if (!hasSingleInstanceLock) {
         // 三个外部客户端同样只读上一次检测留下的快照：生成一份报告不该再去跑
         // 一轮 PowerShell 盘点。没检测过时那三行写「未能读取」。
         externalClients: systemService.getLastExternalClients(),
+      })
+    })
+    // 「运行环境」段：系统里的 Node / npm / Python / Git、Codex 桌面端、网络位置
+    // 同样只读上一次扫描的快照；其余几行是进程本来就知道的路径与区域设置，
+    // 不起任何探测。
+    runtimeLog.attachHostDescriber(async () => {
+      let managedDirectory: string | null = null
+      try {
+        managedDirectory = managedCliRoot(process.env, process.platform)
+      } catch {
+        // ProgramData 解析不出来时这一行不出，报告照常生成。
+      }
+      return buildFeedbackRuntimeLines({
+        snapshot: pickFeedbackRuntimeSnapshot(latestTraySystem),
+        platform: process.platform,
+        executionMode: process.platform === 'win32' ? windowsCliExecutionMode : null,
+        appDirectory: path.dirname(app.getPath('exe')),
+        dataDirectory: managerDataDirectory,
+        managedDirectory,
+        locale: app.getLocale(),
+        timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
       })
     })
     // 客服的第二个问题是「到底能不能用」——这答案用户在「检查」页点过一次就有
@@ -1192,6 +1219,7 @@ if (!hasSingleInstanceLock) {
         latestTrayBalance = null
         trayAcceleration?.reset()
         accelerationExpiry?.reset()
+        accelerationInterruption?.reset()
         applicationTray?.updateSnapshot()
         canvasController.setAccountUser(null)
         canvasController.setAccountUser(state.account?.userId ?? null)
@@ -1699,6 +1727,10 @@ if (!hasSingleInstanceLock) {
           ...(typeof (error as NodeJS.ErrnoException | null)?.code === 'string' ? { code: (error as NodeJS.ErrnoException).code } : {}),
           detail: accelerationFailureMessages[reason],
         }),
+        // 加速中内核或辅助进程自己没了：网络设置由辅助进程（或宿主重拉的那一个）
+        // 先改回去，这里负责读一次状态让各处跟上，并告诉用户网络现在是什么样。
+        onRuntimeExited: () => accelerationInterruption?.runtimeExited(),
+        onHelperExited: (recovered) => accelerationInterruption?.helperExited(recovered),
         ...(app.isPackaged ? { entitlementSource: 'local-device' as const } : {}),
       })
     } catch {
@@ -1718,21 +1750,34 @@ if (!hasSingleInstanceLock) {
       return `${accounts.getSiteId() === 'solov-api' ? 'api-account' : 'xm-account'}:${state.account.userId}`
     }
     accelerationDownloadRoutes = developmentAcceleration ?? null
+    function showAccelerationPage() {
+      if (managedMainWindow && !managedMainWindow.isDestroyed()) {
+        managedMainWindow.webContents.send(ipcEventChannels.onNavigate, 'acceleration')
+      }
+    }
     // 时长快用完、以及用完自动断开的那一刻各发一条系统通知。放在主进程是因为
     // 窗口缩到托盘之后渲染层的计时与轮询都停着，而那正是用户在打游戏的时候。
     accelerationExpiry = createAccelerationExpiryNotice({
       notify: (stage, eventKey) => hostNotifier()({
         event: stage === 'expiring' ? 'accelerationExpiring' : 'accelerationExhausted',
         eventKey,
-        onClick: () => {
-          if (managedMainWindow && !managedMainWindow.isDestroyed()) {
-            managedMainWindow.webContents.send(ipcEventChannels.onNavigate, 'acceleration')
-          }
-        },
+        onClick: showAccelerationPage,
       }),
       readState: (scope) => acceleration
         ? acceleration.getAccelerationState(scope)
         : Promise.reject(new Error('加速服务尚未就绪。')),
+      log: (level, event, message, detail) => runtimeLog.log(level, 'network', event, message, detail),
+    })
+    accelerationInterruption = createAccelerationInterruptionNotice({
+      notify: (outcome, eventKey) => hostNotifier()({
+        event: outcome === 'restored' ? 'accelerationInterrupted' : 'accelerationInterruptedUnrestored',
+        eventKey,
+        onClick: showAccelerationPage,
+      }),
+      readState: (scope) => acceleration
+        ? acceleration.getAccelerationState(scope)
+        : Promise.reject(new Error('加速服务尚未就绪。')),
+      getAccountScope: () => readAccelerationAccountScope(),
       log: (level, event, message, detail) => runtimeLog.log(level, 'network', event, message, detail),
     })
     acceleration = createAccelerationService({
@@ -1742,6 +1787,7 @@ if (!hasSingleInstanceLock) {
       onState: (state) => {
         trayAcceleration?.observe(state)
         accelerationExpiry?.observe(state)
+        accelerationInterruption?.observe(state)
       },
     })
     // 托盘上的连接与断开走的就是加速页那条路，线路与模式也用他在加速页上选过并
@@ -1804,7 +1850,7 @@ if (!hasSingleInstanceLock) {
         }
         applicationTray?.updateSnapshot()
       },
-      getWindowCapabilities: () => ({ tray: applicationTray?.available ?? false, notifications: desktopNotifications.getCapability().supported }),
+      getWindowCapabilities: () => ({ tray: applicationTray?.available ?? false, notifications: desktopNotifications.getCapability().supported, lowEndDevice }),
       onSettingsChanged: () => { desktopNotifications.refresh() },
       onRendererError: (error) => {
         crashReporter.report({
@@ -1838,6 +1884,7 @@ if (!hasSingleInstanceLock) {
     })
     app.once('will-quit', () => {
       accelerationExpiry?.dispose()
+      accelerationInterruption?.dispose()
       void acceleration?.dispose().catch((error) => runtimeLog.exception('network', 'acceleration.shutdown.failed', error))
       void developmentAcceleration?.dispose().catch(() => undefined)
       runtimeLog.log('info', 'main', 'app.stopping', '应用主进程即将退出')

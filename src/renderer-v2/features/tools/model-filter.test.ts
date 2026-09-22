@@ -50,11 +50,11 @@ describe('Codex non-GPT save guard', () => {
   })
 
   it('blocks automatic provisioning so it cannot silently save its GPT default', () => {
-    expect(codexModelFilterSaveIssue({ ...ready, automaticKey: true })).toContain('选择已有密钥或自行填写密钥')
+    expect(codexModelFilterSaveIssue({ ...ready, automaticKey: true })).toContain('选择已有密钥或自己填写密钥')
   })
 
   it('requires an explicit source choice when the non-GPT entry opens a ChatGPT configuration', () => {
-    expect(codexModelFilterSaveIssue({ ...ready, officialSource: true })).toContain('请切换账号来源后检测模型')
+    expect(codexModelFilterSaveIssue({ ...ready, officialSource: true })).toContain('请换一个账号来源后再检测模型')
     expect(codexModelFilterSaveIssue({ ...ready, officialSource: true, filter: 'all' })).toBeNull()
   })
 

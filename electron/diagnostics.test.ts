@@ -6,12 +6,14 @@ import type { ProviderId } from './catalog'
 import type { ProviderConfigRoots } from './codex-home'
 import type { NativeConfigInspection } from './config-files'
 import { networkFailureMessages, type NetworkFailureReason } from './network-failure'
+import { relaySites } from './relay-sites'
 import {
   clockSkewMs,
   clockSyncGuidance,
   createDiagnosticsExport,
   parseClashTunConfig,
   redactDiagnosticText,
+  relayStatusProbeUrl,
   runDiagnostics,
   type DiagnosticToolId,
   type DiagnosticsDependencies,
@@ -53,6 +55,15 @@ function inspection(provider: ProviderId, home: string, apiKey: string): NativeC
   }
 }
 
+// 两个站的状态接口正常时回的就是一小段 JSON（new-api 的 /api/status 形如
+// { success, data }），测试只关心「是不是 JSON」，不关心字段。
+function statusJson(headers: Record<string, string> = {}): Response {
+  return new Response(JSON.stringify({ success: true, message: '', data: {} }), {
+    status: 200,
+    headers: { 'content-type': 'application/json; charset=utf-8', ...headers },
+  })
+}
+
 function dependencies(home: string, apiKey = 'sk-super-secret-value'): DiagnosticsDependencies {
   return {
     app: { name: '星芒AI管理工具', version: '1.0.0', packaged: false },
@@ -84,7 +95,7 @@ function dependencies(home: string, apiKey = 'sk-super-secret-value'): Diagnosti
       if (provider === 'codex') result.model = apiKey
       return result
     },
-    fetch: async () => new Response(null, { status: 204 }),
+    fetch: async () => statusJson(),
     clashConfigPaths: [],
     env: {},
     inspectProxyVariables: async () => [],
@@ -181,9 +192,10 @@ describe('diagnostics', () => {
 
     const report = await runDiagnostics(input)
 
-    expect(fetchImpl).toHaveBeenCalledWith('https://xm.solov.cc/', expect.objectContaining({
-      method: 'HEAD',
+    expect(fetchImpl).toHaveBeenCalledWith('https://xm.solov.cc/api/status', expect.objectContaining({
+      method: 'GET',
       redirect: 'error',
+      credentials: 'omit',
     }))
     const network = report.items.find((item) => item.code === 'XINGMANG_NETWORK')
     expect(network).toMatchObject({ state: 'fail', details: { status: 503 } })
@@ -239,7 +251,7 @@ describe('diagnostics', () => {
       expect(network).toMatchObject({
         state: 'fail',
         summary: networkFailureMessages[reason],
-        details: { endpoint: 'https://xm.solov.cc/', reason },
+        details: { endpoint: 'https://xm.solov.cc/api/status', reason },
       })
       // 英文原文只进 runtime.jsonl，不进上屏（也会被导出）的报告。
       expect(JSON.stringify(network)).not.toMatch(/fetch failed|ENOTFOUND|ECONNREFUSED|ETIMEDOUT|ERR_CERT|unexpected redirect/)
@@ -252,10 +264,35 @@ describe('diagnostics', () => {
       expect(log.mock.calls[0][3].raw).not.toBe('')
     })
 
-    it('treats an HTML answer to a HEAD probe as a login portal', async () => {
+    // #302 的误报：站点根路径本来就是网页前端，正常时也回 text/html。探测改打
+    // 本来就回 JSON 的状态接口后，根路径长什么样不再影响结论。
+    it('passes a healthy site whose home page is a web page but whose status endpoint answers JSON', async () => {
       const home = temporaryHome()
       const input = dependencies(home)
-      input.fetch = vi.fn(async () => new Response(null, {
+      const fetchImpl = vi.fn(async (url: string | URL | Request) => String(url) === 'https://xm.solov.cc/api/status'
+        ? statusJson()
+        : new Response('<!doctype html><title>星芒AI</title>', {
+          status: 200,
+          headers: { 'content-type': 'text/html; charset=utf-8' },
+        }))
+      input.fetch = fetchImpl
+
+      const report = await runDiagnostics(input)
+
+      expect(report.items.find((item) => item.code === 'XINGMANG_NETWORK')).toMatchObject({
+        state: 'pass',
+        summary: '已连通（HTTP 200）',
+      })
+      expect(fetchImpl).toHaveBeenCalledTimes(1)
+      expect(fetchImpl.mock.calls[0][0]).toBe('https://xm.solov.cc/api/status')
+    })
+
+    it('treats a login page served in place of the status endpoint as interception', async () => {
+      const home = temporaryHome()
+      const input = dependencies(home)
+      const log = vi.fn()
+      input.log = log
+      input.fetch = vi.fn(async () => new Response('<html><body>请先登录校园网</body></html>', {
         status: 200,
         headers: { 'content-type': 'text/html; charset=utf-8' },
       }))
@@ -265,8 +302,87 @@ describe('diagnostics', () => {
       expect(report.items.find((item) => item.code === 'XINGMANG_NETWORK')).toMatchObject({
         state: 'fail',
         summary: networkFailureMessages.intercepted,
-        details: { reason: 'intercepted', status: 200 },
+        details: { endpoint: 'https://xm.solov.cc/api/status', reason: 'intercepted', status: 200 },
       })
+      expect(log).toHaveBeenCalledWith(
+        'warn',
+        'diagnostics.network.failed',
+        expect.stringContaining('intercepted'),
+        expect.objectContaining({ contentType: 'text/html; charset=utf-8' }),
+      )
+    })
+
+    // 有的门户页不写 content-type，或者写成 JSON 骗过浏览器；判断看的是内容本身。
+    it('judges by the body rather than the declared content type', async () => {
+      const home = temporaryHome()
+      const input = dependencies(home)
+      input.fetch = vi.fn(async () => new Response('<html>portal</html>', {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }))
+
+      const report = await runDiagnostics(input)
+
+      expect(report.items.find((item) => item.code === 'XINGMANG_NETWORK')).toMatchObject({
+        state: 'fail',
+        details: { reason: 'intercepted' },
+      })
+    })
+
+    it('does not read an error page body and still reports the HTTP status', async () => {
+      const home = temporaryHome()
+      const input = dependencies(home)
+      input.fetch = vi.fn(async () => new Response('<html>502 Bad Gateway</html>', {
+        status: 502,
+        headers: { 'content-type': 'text/html' },
+      }))
+
+      const report = await runDiagnostics(input)
+
+      const network = report.items.find((item) => item.code === 'XINGMANG_NETWORK')
+      expect(network).toMatchObject({ state: 'fail', details: { status: 502 } })
+      expect(network?.summary).toContain('HTTP 502')
+      expect(network?.details).not.toHaveProperty('reason')
+    })
+
+    it('classifies a connection cut while the answer is still arriving', async () => {
+      const home = temporaryHome()
+      const input = dependencies(home)
+      const cut = new TypeError('terminated', {
+        cause: Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' }),
+      })
+      input.fetch = vi.fn(async () => new Response(new ReadableStream({
+        pull(controller) {
+          controller.error(cut)
+        },
+      }), { status: 200, headers: { 'content-type': 'application/json' } }))
+
+      const report = await runDiagnostics(input)
+
+      const network = report.items.find((item) => item.code === 'XINGMANG_NETWORK')
+      expect(network?.state).toBe('fail')
+      expect(network?.details).toHaveProperty('reason')
+    })
+
+    it('probes the historical account site through its own public settings endpoint', async () => {
+      const home = temporaryHome()
+      const input = dependencies(home)
+      const historical = relaySites.find((site) => site.accountBackend === 'sub2api')
+      expect(historical).toBeDefined()
+      input.relaySite = historical
+      const fetchImpl = vi.fn(async (_url: string | URL | Request) => new Response(JSON.stringify({ code: 0, message: 'success', data: {} }), {
+        status: 200,
+        headers: { 'content-type': 'application/json; charset=utf-8' },
+      }))
+      input.fetch = fetchImpl
+
+      const report = await runDiagnostics(input)
+
+      expect(fetchImpl.mock.calls[0][0]).toBe('https://api.solov.cc/api/v1/settings/public')
+      const network = report.items.find((item) => item.code === 'XINGMANG_NETWORK')
+      expect(network).toMatchObject({ state: 'pass' })
+      // 结论文案不出现站点名。
+      expect(network?.summary).not.toMatch(/solov|星芒AI（/)
     })
 
     it('still falls back to the generic error for a failure that is not about the network', async () => {
@@ -286,8 +402,25 @@ describe('diagnostics', () => {
     })
   })
 
+  describe('relayStatusProbeUrl', () => {
+    it('points every site at a JSON endpoint on the origin its CLIs call, never at the home page', () => {
+      for (const site of relaySites) {
+        const url = new URL(relayStatusProbeUrl(site))
+        expect(url.origin).toBe(new URL(site.providerBaseUrls.claude).origin)
+        expect(url.protocol).toBe('https:')
+        expect(url.pathname.startsWith('/api/')).toBe(true)
+      }
+      expect(relayStatusProbeUrl(relaySites[0])).toBe('https://xm.solov.cc/api/status')
+    })
+
+    it('refuses to probe a site that is not served over https', () => {
+      const site = { ...relaySites[0], providerBaseUrls: { ...relaySites[0].providerBaseUrls, claude: 'http://xm.solov.cc' } }
+      expect(() => relayStatusProbeUrl(site)).toThrow('https')
+    })
+  })
+
   // 候选 4：证书过没过期是拿本机时钟比出来的，所以「证书日期对不上」的真正源头
-  // 往往是这台电脑的时间。这一次 HEAD 的响应头里就有服务器时间，顺手比一次。
+  // 往往是这台电脑的时间。这一次探测的响应头里就有服务器时间，顺手比一次。
   describe('clock skew from a response header', () => {
     it('reads the server time out of the Date header', () => {
       const now = new Date('2026-09-22T08:10:00.000Z')
@@ -312,7 +445,7 @@ describe('diagnostics', () => {
 
   describe('system clock comparison on the network probe', () => {
     function probe(input: DiagnosticsDependencies, headers: Record<string, string>) {
-      const fetchImpl = vi.fn(async () => new Response(null, { status: 200, headers }))
+      const fetchImpl = vi.fn(async () => statusJson(headers))
       input.fetch = fetchImpl
       return fetchImpl
     }
@@ -329,7 +462,7 @@ describe('diagnostics', () => {
       const report = await runDiagnostics(input)
 
       expect(networkItem(report)).toMatchObject({ state: 'pass', summary: '已连通（HTTP 200）' })
-      // 不新增请求：这一项本来就要发的那一次 HEAD 就是全部。
+      // 不新增请求：这一项本来就要发的那一次请求就是全部。
       expect(fetchImpl).toHaveBeenCalledTimes(1)
     })
 
@@ -495,6 +628,28 @@ describe('diagnostics', () => {
     // Windows 依赖是这份夹具的平台；提示要说清楚缺了会怎样，而不只是「未安装」。
     expect(git?.summary).toContain('PowerShell')
     expect(git?.summary).toContain('git-scm.com')
+  })
+
+  it('explains the macOS git/python3 shims instead of a bare "not installed"', async () => {
+    const home = temporaryHome()
+    const input = { ...dependencies(home), platform: 'darwin' as const }
+    const previous = input.inspectTool!
+    input.inspectTool = async (tool, signal) =>
+      tool === 'git' || tool === 'python'
+        ? { installed: false, version: null, path: null, commandLineToolsShim: true }
+        : previous(tool, signal)
+
+    const report = await runDiagnostics(input)
+
+    const git = report.items.find((item) => item.code === 'RUNTIME_GIT')
+    const python = report.items.find((item) => item.code === 'RUNTIME_PYTHON')
+    expect(git).toMatchObject({ state: 'warn', details: { installed: false } })
+    expect(git?.summary).toContain('macOS 自带的 git 只是个空壳')
+    expect(git?.summary).toContain('xcode-select --install')
+    // PowerShell 那句只在 Windows 成立。
+    expect(git?.summary).not.toContain('PowerShell')
+    expect(python).toMatchObject({ state: 'warn' })
+    expect(python?.summary).toContain('macOS 自带的 python3 只是个空壳')
   })
 
   it('passes the Git check when Git is present', async () => {

@@ -70,6 +70,16 @@ describe('summarizeRuntimeLogFile', () => {
     expect(summary.entries[0].detail).toEqual({ apiKey: '[REDACTED]' })
   })
 
+  it('redacts a field named exactly key but not names that merely contain it', () => {
+    const line = JSON.stringify({
+      id: 'id-1', timestamp: '2026-09-22T00:00:00.000Z', level: 'info', source: 'main',
+      event: 'entry', message: 'mcp env', detail: { key: 'plain-fake-value', keyboard: 'us', cacheKey: 'abc' },
+    })
+
+    expect(summarizeRuntimeLogFile(line).entries[0].detail)
+      .toEqual({ key: '[REDACTED]', keyboard: 'us', cacheKey: 'abc' })
+  })
+
   it('keeps only the tail a snapshot could ever return, without losing the counts', () => {
     const content = Array.from({ length: 4_100 }, (_, index) => JSON.stringify({
       id: `id-${index}`, timestamp: '2026-09-22T00:00:00.000Z', level: 'info',
@@ -291,6 +301,27 @@ describe('RuntimeLogStore', () => {
 
     expect(report.text).toContain('最近一次自检:')
     expect(report.text).not.toContain(os.homedir())
+  })
+
+  it('puts the runtime environment before tools and self-check, with home paths redacted', async () => {
+    const store = createStore()
+    store.attachHostDescriber(async () => [`系统 Node.js: 已安装 v22.12.0，位置 ${path.join(os.homedir(), 'node', 'node.exe')}`])
+    store.attachEnvironmentDescriber(async () => ['Claude Code: 已安装 2.1.277（应用托管）；配置：指向当前账号'])
+    store.attachSelfCheckDescriber(async () => ['还没做过自检'])
+    const report = await store.captureFeedbackReport()
+
+    expect(report.text).toContain('运行环境:')
+    expect(report.text).not.toContain(os.homedir())
+    expect(report.text.indexOf('运行环境:')).toBeLessThan(report.text.indexOf('工具与配置:'))
+    expect(report.text.indexOf('工具与配置:')).toBeLessThan(report.text.indexOf('最近一次自检:'))
+  })
+
+  it('labels the bundled Node so it is not mistaken for the system one', async () => {
+    const report = await createStore().captureFeedbackReport()
+
+    expect(report.text).toContain(`软件内置 Node: ${process.versions.node}`)
+    expect(report.text).not.toMatch(/^Node\.js:/m)
+    expect(report.text).not.toContain('运行环境:')
   })
 
   it('omits the self-check summary entirely when nothing is attached', async () => {

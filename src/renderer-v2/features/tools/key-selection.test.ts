@@ -8,8 +8,9 @@ describe('configuration key selection', () => {
   it('preserves an existing local key and never infers its group from a matching suffix', () => {
     expect(initialKeyChoice({ hasApiKey: true } as AppConfigSummary['providers']['codex'])).toBe('current')
     expect(initialKeyChoice({ hasApiKey: false } as AppConfigSummary['providers']['codex'])).toBe('automatic')
-    expect(currentKeyLabel(null, 'sk-••••1234')).toBe('保持当前 · 名称未确认 · 分组未确认 · sk-••••1234')
+    expect(currentKeyLabel(null, 'sk-••••1234')).toBe('保持当前 · 名称未确认 · sk-••••1234')
     expect(accountKeyLabel(key(1))).toBe('key-1 · Group A · sk-••••1234')
+    expect(accountKeyLabel({ ...key(2), group: '' })).toBe('key-2 · sk-••••1234')
   })
   it('reads every page so a key beyond the first 100 is selectable', async () => {
     const read = vi.fn(async ({ page = 1 }: { page?: number }) => ({ page, pageSize: 100, total: 101,

@@ -7,7 +7,7 @@ import type { UpdaterService } from './updater'
 import { mergeAppSettings, type AppSettings, type AppSettingsUpdate } from './app-settings'
 import type { NativeConfigSaveResult } from './config-files'
 import type { NewApiClientService } from './new-api-client'
-import { ipcInvokeChannels } from './ipc-contract'
+import { ipcInvokeChannels, type AccountKeysPage } from './ipc-contract'
 import { providerSessionProviders } from './provider-sessions'
 import { resolveRelaySite, sub2ApiSupportServiceUrl, supportServiceUrl } from './relay-sites'
 import { savedAccountId } from './saved-accounts'
@@ -15,6 +15,7 @@ import { createWindowCloseQuery } from './window-close-query'
 import { createAccountWorkGate } from './account-work-gate'
 import { accelerationBonusCode } from './acceleration-contract'
 import { managedCliKeyProfiles, providerIds } from './catalog'
+import { externalUrlBlockedErrorName, isExternalUrlBlockedError } from './external-url-blocked'
 import { resolveXingmangAiBundledSkillRoot } from './xingmang-ai-skill'
 
 const electronMocks = vi.hoisted(() => ({
@@ -1196,6 +1197,19 @@ describe('registerIpcHandlers', () => {
     ]) {
       await expect(handler(trustedEvent(), hostileUrl)).rejects.toThrow('不允许打开该链接')
     }
+    expect(electronMocks.openExternal).not.toHaveBeenCalled()
+  })
+
+  it('rejects a blocked link with the stable error name the renderer copies on', async () => {
+    register()
+    const handler = electronMocks.handlers.get(ipcInvokeChannels.openExternal)!
+    const rejection = await Promise.resolve(handler(trustedEvent(), 'https://xm.solov.cc/some-campaign')).catch((error: unknown) => error)
+
+    expect(rejection).toBeInstanceOf(Error)
+    // Electron forwards only error.toString() across the bridge, so the name
+    // has to survive in exactly that form for the renderer to recognise it.
+    expect(String(rejection)).toBe(`${externalUrlBlockedErrorName}: 不允许打开该链接`)
+    expect(isExternalUrlBlockedError(new Error(`Error invoking remote method 'external:open': ${String(rejection)}`))).toBe(true)
     expect(electronMocks.openExternal).not.toHaveBeenCalled()
   })
 
@@ -3391,6 +3405,45 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       expect(onRendererError).toHaveBeenCalledWith({ message: 'Boom', stack: 'at foo()', context: 'v2' })
     })
 
+    it('records info and warn entries at their own level without reporting a crash', () => {
+      const onRendererError = vi.fn()
+      const { runtimeLog } = register(undefined, undefined, undefined, undefined, undefined, undefined, { onRendererError })
+      const handler = electronMocks.handlers.get('runtime-logs:renderer-error')!
+
+      handler(trustedEvent(), { message: 'Key 自动配置结果', context: 'account-bootstrap', level: 'info' })
+      handler(trustedEvent(), { message: '启动检查未完成', context: 'startup-check', level: 'warn' })
+
+      expect(runtimeLog.log).toHaveBeenCalledWith('info', 'renderer', 'renderer.info', 'Key 自动配置结果', {
+        context: 'account-bootstrap',
+        stack: null,
+      })
+      expect(runtimeLog.log).toHaveBeenCalledWith('warn', 'renderer', 'renderer.warn', '启动检查未完成', {
+        context: 'startup-check',
+        stack: null,
+      })
+      expect(onRendererError).not.toHaveBeenCalled()
+    })
+
+    it('still reports a crash when the level is spelled out as error', () => {
+      const onRendererError = vi.fn()
+      register(undefined, undefined, undefined, undefined, undefined, undefined, { onRendererError })
+      const handler = electronMocks.handlers.get('runtime-logs:renderer-error')!
+
+      handler(trustedEvent(), { message: 'Boom', level: 'error' })
+      expect(onRendererError).toHaveBeenCalledWith({ message: 'Boom', stack: undefined, context: undefined })
+    })
+
+    it('rejects a level outside the three known values', () => {
+      const onRendererError = vi.fn()
+      register(undefined, undefined, undefined, undefined, undefined, undefined, { onRendererError })
+      const handler = electronMocks.handlers.get('runtime-logs:renderer-error')!
+
+      expect(() => handler(trustedEvent(), { message: 'Boom', level: 'debug' })).toThrow('日志级别无效')
+      expect(() => handler(trustedEvent(), { message: 'Boom', level: 'ERROR' })).toThrow('日志级别无效')
+      expect(() => handler(trustedEvent(), { message: 'Boom', level: 1 })).toThrow('日志级别无效')
+      expect(onRendererError).not.toHaveBeenCalled()
+    })
+
     it('does not call the host when the payload was rejected', () => {
       const onRendererError = vi.fn()
       register(undefined, undefined, undefined, undefined, undefined, undefined, { onRendererError })
@@ -3655,6 +3708,56 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       expect(() => handler(trustedEvent(), { email: 'not-an-email', token: 'abc' })).toThrow()
       expect(accountService.resetPassword).not.toHaveBeenCalled()
     })
+
+    it('forgets the remembered password of the account that was just reset', async () => {
+      const store = {
+        read: vi.fn(async () => ({ version: 1 as const, identifier: 'New-User@Example.com', password: 'forgotten-1' })),
+        save: vi.fn(async () => undefined),
+        clear: vi.fn(async () => undefined),
+      }
+      register(undefined, undefined, undefined, undefined, store)
+      const handler = electronMocks.handlers.get('account:reset-password')!
+      await expect(handler(trustedEvent(), { email: 'new-user@example.com', token: 'abc123token' }))
+        .resolves.toEqual({ newPassword: 'stub-generated-password' })
+      expect(store.clear).toHaveBeenCalledTimes(1)
+      expect(store.save).not.toHaveBeenCalled()
+    })
+
+    it('forgets a username-keyed remembered login only when the hints say it is the same account', async () => {
+      const store = {
+        read: vi.fn(async () => ({ version: 1 as const, identifier: 'alice', password: 'forgotten-1' })),
+        save: vi.fn(async () => undefined),
+        clear: vi.fn(async () => undefined),
+      }
+      const owners: Record<string, { realmId: string, userId: string }> = {
+        'alice@example.com': { realmId: 'xm-account', userId: '7' },
+        alice: { realmId: 'xm-account', userId: '7' },
+        bob: { realmId: 'xm-account', userId: '8' },
+      }
+      const primary = { resetPassword: vi.fn(async () => ({ newPassword: 'test-generated' })) }
+      register(undefined, undefined, undefined, undefined, undefined, undefined, {
+        realmAccounts: { getSiteId: () => 'solov', getPublicClient: () => primary, loginHintOwner: async (id: string) => owners[id] ?? null } as never,
+        accountCredentialsForSite: () => store,
+      })
+      const handler = electronMocks.handlers.get('account:reset-password')!
+      await handler(trustedEvent(), { email: 'alice@example.com', token: 'abc' }, 'solov')
+      expect(store.clear).toHaveBeenCalledTimes(1)
+      store.read.mockResolvedValue({ version: 1, identifier: 'bob', password: 'still-good' })
+      await handler(trustedEvent(), { email: 'alice@example.com', token: 'abc' }, 'solov')
+      await handler(trustedEvent(), { email: 'carol@example.com', token: 'abc' }, 'solov')
+      expect(store.clear).toHaveBeenCalledTimes(1)
+    })
+
+    it('keeps the remembered login when the reset fails', async () => {
+      const { accountService } = register(undefined, undefined, undefined, undefined, {
+        read: async () => ({ version: 1, identifier: 'a@b.com', password: 'x' }),
+        save: vi.fn(async () => undefined),
+        clear: vi.fn(async () => undefined),
+      })
+      vi.mocked(accountService.resetPassword).mockRejectedValue(new Error('重置链接已失效'))
+      await expect(electronMocks.handlers.get('account:reset-password')!(trustedEvent(), { email: 'a@b.com', token: 'abc' }))
+        .rejects.toThrow('重置链接已失效')
+    })
   })
 
   describe('account:get-profile', () => {
@@ -3900,6 +4003,72 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
 
       expect(() => handler(trustedEvent(), { pageSize: 999 })).toThrow()
       expect(accountService.listKeys).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('account:list-keys in-use marking', () => {
+    const row = (id: number) => ({
+      id, name: `key-${id}`, maskedKey: 'sk-****abcd', group: 'default', status: 1, remainQuota: 0,
+      unlimitedQuota: true, usedQuota: 0, createdAt: '2026-09-01T00:00:00.000Z', expiredAt: null, accessedAt: null,
+    })
+    const cached = [
+      { id: 11, provider: 'claude' as const, group: 'g', name: 'xingmang-desktop-claude', key: 'sk-claude-in-use-000' },
+      { id: 12, provider: 'codex' as const, group: 'g', name: 'xingmang-desktop-codex', key: 'sk-codex-replaced-000' },
+    ]
+    function signedIn(userId = 7) {
+      const accountService = accountServiceStub()
+      vi.mocked(accountService.getSessionState).mockReturnValue({
+        authenticated: true,
+        account: { userId, username: 'alice', group: null, role: null, quota: null, usedQuota: null },
+      })
+      vi.mocked(accountService.listKeys).mockResolvedValue({ page: 1, pageSize: 20, total: 3, keys: [row(11), row(12), row(13)] })
+      return accountService
+    }
+    function configured(service: ReturnType<typeof serviceStub>, keys: Partial<Record<string, string>>) {
+      vi.mocked(service.revealApiKey).mockImplementation((provider) => keys[provider] ?? '')
+    }
+
+    it('marks only keys this app issued for a tool whose config still holds exactly that key', async () => {
+      const service = serviceStub()
+      configured(service, { claude: 'sk-claude-in-use-000', codex: 'sk-user-picked-other' })
+      const managedCliKeys = { read: vi.fn(async () => cached), save: vi.fn(), remove: vi.fn() }
+      register(service, undefined, undefined, signedIn(), undefined, managedCliKeys)
+      const result = await electronMocks.handlers.get('account:list-keys')!(trustedEvent(), {}) as AccountKeysPage
+      expect(managedCliKeys.read).toHaveBeenCalledWith(7)
+      expect(result.keys.map((key) => key.managedProvider)).toEqual(['claude', undefined, undefined])
+      expect(result.keys[1]).not.toHaveProperty('managedProvider')
+      // Only the provider id crosses IPC; neither the cached nor the configured secret does (I3).
+      expect(JSON.stringify(result)).not.toMatch(/sk-claude-in-use|sk-codex-replaced|sk-user-picked/)
+    })
+
+    it('returns the unmarked list when the cache, a config, or the session cannot be trusted', async () => {
+      const service = serviceStub()
+      vi.mocked(service.revealApiKey).mockImplementation(() => { throw new Error('config unreadable') })
+      const managedCliKeys = { read: vi.fn(async () => cached), save: vi.fn(), remove: vi.fn() }
+      const accountService = signedIn()
+      register(service, undefined, undefined, accountService, undefined, managedCliKeys)
+      const handler = electronMocks.handlers.get('account:list-keys')!
+      const plain = { page: 1, pageSize: 20, total: 3, keys: [row(11), row(12), row(13)] }
+      await expect(handler(trustedEvent(), {})).resolves.toEqual(plain)
+      configured(service, { claude: 'sk-claude-in-use-000' })
+      managedCliKeys.read.mockRejectedValueOnce(new Error('cache corrupt'))
+      await expect(handler(trustedEvent(), {})).resolves.toEqual(plain)
+      managedCliKeys.read.mockImplementationOnce(async () => {
+        vi.mocked(accountService.getSessionState).mockReturnValue({
+          authenticated: true,
+          account: { userId: 8, username: 'bob', group: null, role: null, quota: null, usedQuota: null },
+        })
+        return cached
+      })
+      await expect(handler(trustedEvent(), {})).resolves.toEqual(plain)
+    })
+
+    it('does not read the key cache when signed out', async () => {
+      const managedCliKeys = { read: vi.fn(async () => cached), save: vi.fn(), remove: vi.fn() }
+      const { accountService } = register(undefined, undefined, undefined, undefined, undefined, managedCliKeys)
+      vi.mocked(accountService.listKeys).mockResolvedValue({ page: 1, pageSize: 20, total: 0, keys: [] })
+      await electronMocks.handlers.get('account:list-keys')!(trustedEvent(), {})
+      expect(managedCliKeys.read).not.toHaveBeenCalled()
     })
   })
 
@@ -4526,6 +4695,95 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
 
       expect(() => handler(trustedEvent(), { originalPassword: 'old-password-1', newPassword: 'short' })).toThrow()
       expect(accountService.changePassword).not.toHaveBeenCalled()
+    })
+
+    function rememberedStore(identifier: string, password = 'old-password-1') {
+      return {
+        read: vi.fn(async () => ({ version: 1 as const, identifier, password })),
+        save: vi.fn(async () => undefined),
+        clear: vi.fn(async () => undefined),
+      }
+    }
+    function signedInAs(accountService: ReturnType<typeof accountServiceStub>, username: string, userId = 7) {
+      vi.mocked(accountService.getSessionState).mockReturnValue({
+        authenticated: true,
+        account: { userId, username, group: null, role: null, quota: null, usedQuota: null },
+      })
+      vi.mocked(accountService.changePassword).mockResolvedValue({ changed: true })
+    }
+    const change = { originalPassword: 'old-password-1', newPassword: 'new-password-2' }
+
+    it('replaces the remembered password when it was remembered under this account\'s username', async () => {
+      const accountService = accountServiceStub()
+      signedInAs(accountService, 'Alice')
+      const store = rememberedStore('Alice')
+      register(undefined, undefined, undefined, accountService, store)
+      await expect(electronMocks.handlers.get('account:change-password')!(trustedEvent(), change)).resolves.toEqual({ changed: true })
+      expect(store.save).toHaveBeenCalledExactlyOnceWith('Alice', 'new-password-2')
+      expect(store.clear).not.toHaveBeenCalled()
+    })
+
+    it('replaces it for an email identifier only when the login hints tie that email to this account', async () => {
+      const accountService = accountServiceStub()
+      signedInAs(accountService, 'alice', 7)
+      const store = rememberedStore('Alice@Example.TEST')
+      const loginHintOwner = vi.fn(async (identifier: string) => (
+        identifier === 'alice@example.test' ? { realmId: 'xm-account', userId: '7' } : null
+      ))
+      register(undefined, undefined, undefined, accountService, undefined, undefined, {
+        realmAccounts: { getSiteId: () => 'solov', loginHintOwner } as never,
+        accountCredentialsForSite: () => store,
+      })
+      await electronMocks.handlers.get('account:change-password')!(trustedEvent(), change)
+      expect(loginHintOwner).toHaveBeenCalledWith('alice@example.test')
+      expect(store.save).toHaveBeenCalledExactlyOnceWith('Alice@Example.TEST', 'new-password-2')
+    })
+
+    it('leaves another account\'s remembered login untouched', async () => {
+      const accountService = accountServiceStub()
+      signedInAs(accountService, 'alice', 7)
+      const other = rememberedStore('bob@example.test')
+      const sameUserOtherRealm = rememberedStore('alice@example.test')
+      register(undefined, undefined, undefined, accountService, undefined, undefined, {
+        realmAccounts: {
+          getSiteId: () => 'solov',
+          loginHintOwner: async (identifier: string) => (
+            identifier === 'bob@example.test' ? { realmId: 'xm-account', userId: '8' } : { realmId: 'api-account', userId: '7' }
+          ),
+        } as never,
+        accountCredentialsForSite: () => other,
+      })
+      const handler = electronMocks.handlers.get('account:change-password')!
+      await handler(trustedEvent(), change)
+      other.read.mockImplementation(sameUserOtherRealm.read)
+      await handler(trustedEvent(), change)
+      expect(other.save).not.toHaveBeenCalled()
+      expect(other.clear).not.toHaveBeenCalled()
+    })
+
+    it('never turns a successful change into an error when the remembered login cannot be updated', async () => {
+      const accountService = accountServiceStub()
+      signedInAs(accountService, 'Alice')
+      const store = rememberedStore('Alice')
+      store.save.mockRejectedValue(new Error('disk busy'))
+      const { runtimeLog } = register(undefined, undefined, undefined, accountService, store)
+      await expect(electronMocks.handlers.get('account:change-password')!(trustedEvent(), change)).resolves.toEqual({ changed: true })
+      // A remembered password that could not be refreshed is dropped rather
+      // than left to prefill a password that no longer works.
+      expect(store.clear).toHaveBeenCalledTimes(1)
+      expect(JSON.stringify(runtimeLog.log.mock.calls)).not.toContain('new-password-2')
+      expect(JSON.stringify(runtimeLog.log.mock.calls)).not.toContain('old-password-1')
+    })
+
+    it('does not touch the remembered login when the change fails', async () => {
+      const accountService = accountServiceStub()
+      signedInAs(accountService, 'Alice')
+      vi.mocked(accountService.changePassword).mockRejectedValue(new Error('原密码错误'))
+      const store = rememberedStore('Alice')
+      register(undefined, undefined, undefined, accountService, store)
+      await expect(electronMocks.handlers.get('account:change-password')!(trustedEvent(), change)).rejects.toThrow('原密码错误')
+      expect(store.read).not.toHaveBeenCalled()
+      expect(store.save).not.toHaveBeenCalled()
     })
   })
 

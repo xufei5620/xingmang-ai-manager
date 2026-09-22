@@ -115,6 +115,14 @@ export function createAccelerationDevelopmentHost(options: {
    *  original error: the log redacts paths (I13) and nothing crosses a process
    *  boundary here. Without it a failed launch left no cause anywhere. */
   onHelperFailure?(reason: AccelerationFailureReason, error: unknown): void
+  /** 加速中内核自己退出了，辅助进程已经先把网络设置改回去（结果看之后读到的状态）。 */
+  onRuntimeExited?(): void
+  /**
+   * 辅助进程自己退出了（被杀毒软件、清理工具结束，或者崩了），不是本软件让它
+   * 走的。系统代理可能还指着它的端口，所以这里已经自动重拉过一次，只为让新的
+   * 那个在初始化时把网络设置改回去；`recovered` 就是这一次有没有成功。
+   */
+  onHelperExited?(recovered: boolean): void
 }): AccelerationDevelopmentHost {
   const config = parseAccelerationDevelopmentConfig(options.config)
   const entitlementSource = parseAccelerationEntitlementSource(options.entitlementSource)
@@ -128,6 +136,11 @@ export function createAccelerationDevelopmentHost(options: {
   let disposed = false
   let disposal: Promise<void> | null = null
   let nextId = 0
+  // 只有收到过「连接」请求的辅助进程才可能改过系统代理；它不是本软件让它走
+  // 的却退出了，才需要替它还原。重拉出来的那个没连过加速，它再退出也不会被
+  // 接着重拉，所以这里不会变成死循环。
+  const leaseWorkers = new WeakSet<ChildProcess>()
+  const releasedWorkers = new WeakSet<ChildProcess>()
   const pending = new Map<number, { resolve(value: unknown): void; reject(error: Error): void; timer: ReturnType<typeof setTimeout> }>()
 
   function failPending() {
@@ -139,6 +152,8 @@ export function createAccelerationDevelopmentHost(options: {
   }
 
   function disconnectWorker(worker: ChildProcess) {
+    // Once asked to leave, the worker restores the proxy itself before exiting.
+    releasedWorkers.add(worker)
     try { if (worker.connected) worker.disconnect() } catch { /* The worker may already be closing its IPC channel. */ }
     if (child === worker) failPending()
   }
@@ -235,6 +250,10 @@ export function createAccelerationDevelopmentHost(options: {
         }
         if (response.event === 'start.conflict' && isAccelerationConflictKind(response.stage) && typeof response.ignored === 'boolean') {
           try { options.onConflictDiagnostic?.(response.stage, response.ignored) } catch { /* Diagnostics must not interrupt recovery. */ }
+          return
+        }
+        if (response.event === 'runtime.exited' && response.stage === undefined && response.ignored === undefined) {
+          try { options.onRuntimeExited?.() } catch { /* Diagnostics must not interrupt recovery. */ }
         }
         return
       }
@@ -260,6 +279,8 @@ export function createAccelerationDevelopmentHost(options: {
       failPending()
       child = null
       ready = null
+      if (disposed || releasedWorkers.has(worker) || !leaseWorkers.has(worker)) return
+      recoverAfterCrash()
     }
     child.on('exit', exited)
     child.on('close', exited)
@@ -275,6 +296,19 @@ export function createAccelerationDevelopmentHost(options: {
     return ready
   }
 
+  /**
+   * 辅助进程被硬杀时来不及还原系统代理，内核也跟着没了：浏览器、微信这些
+   * 走系统代理的程序会全部连不上，直到下次打开软件。这里当场补上开机时的
+   * 那一步——拉起一个新的辅助进程，它初始化时就会按记录把网络设置改回去。
+   * 只重拉，不重连加速。
+   */
+  function recoverAfterCrash() {
+    void ensureReady().then(() => true, () => false).then((recovered) => {
+      if (disposed) return
+      try { options.onHelperExited?.(recovered) } catch { /* Reporting must not change recovery. */ }
+    })
+  }
+
   async function hasProxyRecoveryRecords(): Promise<boolean> {
     try { return (await stat(accelerationDevelopmentDirectory(options.dataDirectory))).isDirectory() }
     catch (error) {
@@ -286,6 +320,7 @@ export function createAccelerationDevelopmentHost(options: {
 
   async function request(operation: string, scope: string, mode?: string, lineId?: string, ignoreConflicts?: boolean): Promise<AccelerationState> {
     await ensureReady()
+    if (operation === 'start' && child) leaseWorkers.add(child)
     // The service above this adapter validates and projects every returned field.
     return await rpc(operation, {
       scope, ...(mode ? { mode } : {}), ...(lineId ? { lineId } : {}), ...(ignoreConflicts ? { ignoreConflicts: true } : {}),

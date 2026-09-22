@@ -287,6 +287,98 @@ describe('development acceleration worker host', () => {
     await host.dispose()
   })
 
+  it('reports an unexpected core exit only as the closed event name', async () => {
+    const worker = new FakeWorker()
+    mocks.fork.mockReturnValue(worker)
+    const onRuntimeExited = vi.fn()
+    const host = createAccelerationDevelopmentHost({ config, dataDirectory, onRuntimeExited })
+    const request = host.getAccelerationState('xm-account:1')
+    await flush()
+    worker.emit('message', { type: 'acceleration-diagnostic', event: 'runtime.exited', stage: 'private-path' })
+    worker.emit('message', { type: 'acceleration-diagnostic', event: 'runtime.exited', detail: 'private-path' })
+    expect(onRuntimeExited).not.toHaveBeenCalled()
+    worker.emit('message', { type: 'acceleration-diagnostic', event: 'runtime.exited' })
+    expect(onRuntimeExited).toHaveBeenCalledOnce()
+    worker.respond(2, true, { phase: 'idle' })
+    await request
+    await host.dispose()
+  })
+
+  it('relaunches a helper that was killed after a connect so the new one restores the network', async () => {
+    const first = new FakeWorker()
+    const second = new FakeWorker()
+    mocks.fork.mockReturnValueOnce(first).mockReturnValueOnce(second)
+    const onHelperExited = vi.fn()
+    const host = createAccelerationDevelopmentHost({ config, dataDirectory, onHelperExited })
+    const start = host.startAcceleration('xm-account:1', 'system-proxy')
+    await flush()
+    first.respond(2, true, { phase: 'active' })
+    await start
+    first.connected = false
+    first.emit('exit', null)
+    first.emit('close', null)
+    await flush()
+    // 新拉起的那一个只做初始化，初始化就是它还原网络设置的那一步；不重连加速。
+    expect(mocks.fork).toHaveBeenCalledTimes(2)
+    expect(second.sent.map((message) => message.operation)).toEqual(['init'])
+    await flush()
+    expect(onHelperExited.mock.calls).toEqual([[true]])
+    await host.dispose()
+  })
+
+  it('reports a relaunch that could not restore and never chains another relaunch', async () => {
+    const first = new FakeWorker()
+    const second = new FakeWorker()
+    second.autoInit = false
+    mocks.fork.mockReturnValueOnce(first).mockReturnValueOnce(second)
+    const onHelperExited = vi.fn()
+    const host = createAccelerationDevelopmentHost({ config, dataDirectory, onHelperExited })
+    const start = host.startAcceleration('xm-account:1', 'system-proxy')
+    await flush()
+    first.respond(2, true, { phase: 'active' })
+    await start
+    first.connected = false
+    first.emit('exit', null)
+    await flush()
+    second.respond(3, false)
+    await flush()
+    await flush()
+    expect(onHelperExited.mock.calls).toEqual([[false]])
+    // 失败的那一个被要求退出（它自己会再试着还原），它的退出不再触发重拉。
+    expect(second.disconnect).toHaveBeenCalledOnce()
+    second.emit('exit', 0)
+    await flush()
+    expect(mocks.fork).toHaveBeenCalledTimes(2)
+    await host.dispose()
+  })
+
+  it('does not relaunch a helper that never connected, was asked to leave, or exited during shutdown', async () => {
+    const onHelperExited = vi.fn()
+    const idle = new FakeWorker()
+    mocks.fork.mockReturnValueOnce(idle)
+    const host = createAccelerationDevelopmentHost({ config, dataDirectory, onHelperExited })
+    const read = host.getAccelerationState('xm-account:1')
+    await flush()
+    idle.respond(2, true, { phase: 'idle' })
+    await read
+    idle.connected = false
+    idle.emit('exit', null)
+    await flush()
+    expect(mocks.fork).toHaveBeenCalledTimes(1)
+
+    const active = new FakeWorker()
+    mocks.fork.mockReturnValueOnce(active)
+    const start = host.startAcceleration('xm-account:1', 'system-proxy')
+    await flush()
+    active.respond(4, true, { phase: 'active' })
+    await start
+    await host.dispose()
+    active.emit('exit', 0)
+    await flush()
+    expect(mocks.fork).toHaveBeenCalledTimes(2)
+    expect(onHelperExited).not.toHaveBeenCalled()
+  })
+
   it('lazily forks a hidden Node worker with a trusted environment and sends paths without YAML content', async () => {
     const { worker, host } = setup(undefined, { yaml: 'private-secret', nodes: [{ password: 'private-secret' }] })
     expect(mocks.fork).not.toHaveBeenCalled()

@@ -3,6 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { parseDocument } from 'yaml'
 import { readBoundedUtf8FileSync } from './bounded-file'
+import { readBoundedResponseText } from './bounded-response'
 import { cliCatalog, providerConfigDirectoryNames, providerIds, type ProviderId } from './catalog'
 import {
   commandEnvironment,
@@ -21,9 +22,15 @@ import {
   readDiskSpace,
   type DiskSpaceReading,
 } from './disk-space'
-import { gitMissingNotice } from './git-runtime'
+import { gitMissingImpact, gitMissingNotice } from './git-runtime'
+import {
+  commandLineToolsShimNotice,
+  isCommandLineToolsShimBacked,
+  isMacOsCommandLineToolsShim,
+} from './macos-command-line-tools'
 import { managedCliRoot } from './managed-cli-paths'
 import { classifyNetworkFailure, networkFailureMessages } from './network-failure'
+import { redactSecretPatterns } from './redaction-patterns'
 import { relayApiProbeBaseUrl, resolveRelaySite, type RelaySite } from './relay-sites'
 import { resolveCliCommand, resolveCliInstallation } from './tool-installation'
 import type { ToolConfigOwnership } from './tool-config-ownership'
@@ -57,6 +64,8 @@ export interface DiagnosticToolStatus {
   version: string | null
   path: string | null
   running?: boolean
+  /** macOS：PATH 上只找到了命令行开发者工具的空壳，没去执行它（见 macos-command-line-tools.ts）。 */
+  commandLineToolsShim?: boolean
 }
 
 export interface DiagnosticAppInfo {
@@ -149,6 +158,8 @@ const DEFAULT_CHECK_TIMEOUT_MS = 8_000
 const MAX_CLOCK_SKEW_MS = 5 * 60 * 1000
 const MAX_CLASH_CONFIG_BYTES = 2 * 1024 * 1024
 const MAX_CLAUDE_SETTINGS_BYTES = 256 * 1024
+/** 两个站的状态接口都只回几 KB 的 JSON；门户页再大也用不着读完才认出来。 */
+const MAX_NETWORK_PROBE_BYTES = 256 * 1024
 const MAX_YAML_ALIAS_COUNT = 20
 const PROXY_NAMES = ['HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY', 'FTP_PROXY'] as const
 
@@ -319,18 +330,7 @@ export function redactDiagnosticText(
     .sort((left, right) => right.length - left.length)
   for (const secret of secrets) result = result.split(secret).join('[REDACTED]')
 
-  result = result
-    .replace(/(\bBearer\s+)[A-Za-z0-9._~+/=-]{6,}/gi, '$1[REDACTED]')
-    .replace(/\bsk-[A-Za-z0-9_-]{6,}\b/gi, '[REDACTED]')
-    // The quoted spellings need their own rules: in `{"access_token":"…"}` the
-    // rule below can never match, because `\s*` does not cross the quote that
-    // closes the key name, so any CLI writing JSON to stderr leaked its secrets
-    // verbatim into the runtime log and the feedback export. Redacting between
-    // the existing quotes also keeps a JSON body parseable.
-    .replace(/((?:api[_-]?key|authorization|token|secret|password)"\s*[:=]\s*)"[^"]*"/gi, '$1"[REDACTED]"')
-    .replace(/((?:api[_-]?key|authorization|token|secret|password)'\s*[:=]\s*)'[^']*'/gi, "$1'[REDACTED]'")
-    .replace(/((?:api[_-]?key|authorization|token|secret|password)\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi, '$1[REDACTED]')
-  result = redactUrls(result)
+  result = redactUrls(redactSecretPatterns(result))
 
   return redactRootPaths(result, {
     userHome: options.userHome ?? options.homeDirectory,
@@ -481,12 +481,20 @@ async function defaultInspectTool(
     }
   }
   const commands = tool === 'python' ? ['python', 'python3', 'py'] : [tool]
+  let commandLineToolsShim = false
   for (const command of commands) {
     const executable = await findExecutable(command, {
       env: commandEnvironment(env),
       windowsPackageManagers: command === 'npm' ? ['npm'] : [],
     }) ?? findWindowsShim(command, env)
     if (!executable) continue
+    if (
+      isMacOsCommandLineToolsShim(executable)
+      && !await isCommandLineToolsShimBacked(executable, { env, signal })
+    ) {
+      commandLineToolsShim = true
+      continue
+    }
     let version: string | null = null
     try {
       version = await versionForExecutable(executable, tool, signal, env)
@@ -495,6 +503,7 @@ async function defaultInspectTool(
     }
     return { installed: true, version, path: executable }
   }
+  if (commandLineToolsShim) return { installed: false, version: null, path: null, commandLineToolsShim }
   return { installed: false, version: null, path: null }
 }
 
@@ -703,6 +712,41 @@ function environmentOverrideOutcome(matches: readonly EnvironmentOverrideMatch[]
     state: 'warn',
     summary: `系统环境变量里设置了 ${listed}${rest}，可能会盖过当前账号写入的配置`,
     details,
+  }
+}
+
+/**
+ * 网络那一项探测的地址：当前站点上一个不用登录、本来就回 JSON 的公开接口。
+ *
+ * 站点根路径不能用来判断「被拦截」：两个站的根路径都是网页前端，正常时也回
+ * text/html，#302 就是因此对所有人误报。换成本来就回 JSON 的接口后，「拿到的
+ * 是网页而不是 JSON」才真正说明中间有东西替服务器答了话。两个接口都已按上游
+ * 源码核实：new-api 的 `GET /api/status`（docs/RECON-new-api.md 的「状态」行，
+ * 公开）与 sub2api 的 `GET /api/v1/settings/public`（登录页自己读的公开设置）。
+ * 都在 /api 下，是账号客户端本来就要走的路径，不会被只放行 /api 与 /v1 的反代
+ * 挡在外面。两者都只认 GET：gin 不会把 HEAD 路由到 GET 处理器，HEAD 拿不到这份
+ * JSON。
+ *
+ * 地址跟着 CLI 实际调用的域走（relayApiProbeBaseUrl），今天两个站的中转域与
+ * 账号域恰好同域，所以接口按 accountBackend 选。
+ */
+export function relayStatusProbeUrl(site: RelaySite): string {
+  const origin = new URL(relayApiProbeBaseUrl(site))
+  if (origin.protocol !== 'https:') throw new Error('星芒 AI 地址不是 https，已拒绝检查')
+  switch (site.accountBackend) {
+    case 'new-api':
+      return new URL('/api/status', origin).href
+    case 'sub2api':
+      return new URL('/api/v1/settings/public', origin).href
+  }
+}
+
+function parsesAsJson(body: string): boolean {
+  try {
+    const parsed: unknown = JSON.parse(body)
+    return typeof parsed === 'object' && parsed !== null
+  } catch {
+    return false
   }
 }
 
@@ -1012,7 +1056,9 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
         const required = tool !== 'python'
         return {
           state: status.installed ? 'pass' : required ? 'fail' : 'warn',
-          summary: status.installed ? (status.version || '已安装') : '未安装',
+          summary: status.installed
+            ? (status.version || '已安装')
+            : status.commandLineToolsShim ? `未安装。${commandLineToolsShimNotice('python3')}。` : '未安装',
           details: { installed: status.installed, path: pathForDisplay(status.path, displayRoots) },
         }
       },
@@ -1029,7 +1075,9 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
           state: status.installed ? 'pass' : 'warn',
           summary: status.installed
             ? (status.version || '已安装')
-            : gitMissingNotice(platform),
+            : status.commandLineToolsShim
+              ? `${commandLineToolsShimNotice('git')}。${gitMissingImpact(platform)}。`
+              : gitMissingNotice(platform),
           details: {
             required: false,
             installed: status.installed,
@@ -1083,15 +1131,20 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
       title: '星芒 AI 网络',
       run: async (signal): Promise<CheckOutcome> => {
         if (!fetchImpl) throw new Error('当前运行时不支持 fetch')
-        const endpoint = `${relayApiProbeBaseUrl(relaySite)}/`
+        const endpoint = relayStatusProbeUrl(relaySite)
         let response: Response
+        let body = ''
         try {
           response = await fetchImpl(endpoint, {
-            method: 'HEAD',
+            method: 'GET',
+            credentials: 'omit',
             redirect: 'error',
             signal,
-            headers: { Accept: 'application/json,text/plain,*/*' },
+            headers: { Accept: 'application/json' },
           })
+          // 只有 2xx 才看内容；非 2xx 的错误页不读，免得一张大错误页顶掉下面那句 HTTP 状态。
+          if (response.ok) body = await readBoundedResponseText(response, MAX_NETWORK_PROBE_BYTES, '星芒 AI 状态接口')
+          else await response.body?.cancel().catch(() => undefined)
         } catch (error) {
           const reason = classifyNetworkFailure(error)
           // 认不出来就照旧抛给兜底。把一个跟网络无关的故障说成「换个网络再试」，
@@ -1104,10 +1157,11 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
           })
           return { state: 'fail', summary: networkFailureMessages[reason], details: { endpoint, reason } }
         }
-        // 门户认证页的另一种形态：HEAD 明明成功，回来的却是一张 HTML 登录页。
-        // 这时没有异常可归类，只能从 content-type 认出来。
-        const contentType = response.headers.get('content-type') ?? ''
-        if (response.ok && /^\s*text\/html\b/i.test(contentType)) {
+        // 门户认证页的另一种形态：请求明明成功，回来的却是一张 HTML 登录页。
+        // 这时没有异常可归类，只能从内容认出来：这个接口正常时一定回 JSON，
+        // 拿到别的（网页、空白）就是中间有东西替服务器答了话。
+        if (response.ok && !parsesAsJson(body)) {
+          const contentType = response.headers.get('content-type') ?? ''
           log?.('warn', 'diagnostics.network.failed', '星芒 AI 网络检查被拦截（intercepted）', {
             endpoint,
             reason: 'intercepted',
@@ -1132,7 +1186,7 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
             details: { endpoint, status: response.status },
           }
         }
-        // 这一次 HEAD 已经拿到了响应头，Date 就在里面：顺手和本机时间比一次，
+        // 这一次请求已经拿到了响应头，Date 就在里面：顺手和本机时间比一次，
         // 把「证书日期对不上」的真正源头提前抓出来，不新增任何请求。
         const skewMs = clockSkewMs(response.headers.get('date'), now())
         if (skewMs !== null && Math.abs(skewMs) > MAX_CLOCK_SKEW_MS) {

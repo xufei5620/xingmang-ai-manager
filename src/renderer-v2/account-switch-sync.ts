@@ -136,7 +136,7 @@ export function accountSyncCandidates(
             : !config.hasApiKey
               ? '还没有配置密钥'
               : !config.matchesRelay
-                ? '已有第三方配置'
+                ? '用的是别处的配置'
                 : '星芒密钥'
       return [
         {
