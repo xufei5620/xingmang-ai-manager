@@ -6,6 +6,8 @@ import os from 'node:os'
 import path from 'node:path'
 import { promisify } from 'node:util'
 import { type AppSettings, type AppSettingsUpdate, AppSettingsStore, type MirrorPolicy } from './app-settings'
+import type { RuntimeLogLike } from './account-session-store'
+import { redactHomeDirectory } from './startup-log'
 import { cliCatalog, providerIds, type ProviderId } from './catalog'
 import {
   buildCliVersionAdvice,
@@ -45,6 +47,7 @@ import {
   saveProviderConfig,
   switchProviderToOfficialAccount,
   trustCodexWorkspace,
+  trustManagedWorkspace,
   toNativeConfigSummary,
   type CodexWorkspacePermissionStatus,
   type CodexWorkspacePermissionWriteResult,
@@ -1774,6 +1777,8 @@ export interface SystemServiceOptions {
   downloadFetch?: typeof fetch
   /** Loopback-only proxy variables handed to package-manager subprocesses. */
   resolveSubprocessProxyEnvironment?: () => Promise<NodeJS.ProcessEnv>
+  /** runtime.jsonl sink for steps that are allowed to fail without blocking. */
+  runtimeLog?: RuntimeLogLike
 }
 
 export function providerCommandEnvironment(
@@ -1805,6 +1810,7 @@ export function createSystemService(
   const windowsExecutionMode = serviceOptions.windowsExecutionMode ?? 'trusted-only'
   const platform = serviceOptions.platform ?? process.platform
   const providerRoots = serviceOptions.providerRoots ?? defaultProviderConfigRoots()
+  const runtimeLog = serviceOptions.runtimeLog
   const configOwnership = new ToolConfigOwnershipStore(path.join(serviceOptions.managerDataDirectory ?? store.dataDirectory, 'tool-config-ownership'))
   const externalOwnership = new ExternalClientOwnershipStore(path.join(serviceOptions.managerDataDirectory ?? store.dataDirectory, 'external-client-ownership'))
   let configWriteQueue: Promise<unknown> = Promise.resolve()
@@ -3394,6 +3400,23 @@ export function createSystemService(
     }
 
     const definition = cliCatalog[provider]
+    // 目录是用户刚在本软件的对话框里亲自选的，再让他去读一遍 CLI 自己的英文
+    // 信任问答没有意义，所以打开之前先把这一项写进 CLI 的配置。写不进去
+    // （文件损坏、只读、主目录被重定向）绝不能挡住打开：CLI 自己还会问一次。
+    try {
+      const trust = trustManagedWorkspace(provider, providerRoots, workspace)
+      if (trust.changed) {
+        runtimeLog?.log('info', 'config', 'workspace.trust.written', `${definition.name} 已信任所选工作目录`, {
+          provider,
+        })
+      }
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error)
+      runtimeLog?.log('warn', 'config', 'workspace.trust.failed', `${definition.name} 未能记录工作目录信任，将由工具自己询问`, {
+        provider,
+        reason: redactHomeDirectory(reason, providerRoots.userHome),
+      })
+    }
     const providerEnv = providerEnvironment(provider)
     if (provider === 'gemini') {
       // Gemini CLI 0.59 may skip ~/.gemini/.env for an untrusted workspace,

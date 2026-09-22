@@ -36,7 +36,7 @@
 - `managed-cli.ts` / `managed-cli-paths.ts` / `native-cli-uninstall.ts` / `trusted-native-cli.ts`
 
 **配置与数据**
-- `config-files.ts` (1673) — 四个 CLI 的配置读写，**两阶段提交 + .bak 备份 + 失败回滚**
+- `config-files.ts` (1673) — 四个 CLI 的配置读写，**两阶段提交 + .bak 备份 + 失败回滚**；打开目录时替用户写下的工作区信任也在这里，字段实测记录见 `docs/WORKSPACE-TRUST.md`
 - `app-settings.ts` (453) / `backups.ts` (891)
 - `codex-sessions.ts` (1427) — Codex 会话权威源是 `~/.codex/state_5.sqlite` 的 `threads` 表；未知 schema 自动降级只读
 - `provider-sessions.ts` (1199) — 四工具统一会话视图
