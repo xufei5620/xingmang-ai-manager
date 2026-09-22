@@ -1050,6 +1050,56 @@
   这条路径用 16MB，与 `provider-extensions.ts` 读同一份文件时的上限一致。
 - 私有函数 `normalizeCodexWorkspaceKey` 改名为 `normalizeWorkspacePathKey`，现在三家共用。
 - `startupDiagnosticsIssues` 改收 `report.counts`，只把 `fail + error` 计入标题；只有 `warn` 时返回 null，同时有 `warn` 时正文补一句。`diagnostics.ts` 的级别判定没动。浏览器夹具新增 `diagnosticWarnings`，`diagnosticIssues` 改为计入 `fail`（第八批候选 2）。
+- 第十批候选 2。内核退出：backend 新增 `onRuntimeInterrupted`（`notifyRuntimeExit` 与 `inspect` 两条路径都会报，停止失败也报），worker 转成只有事件名的 `runtime.exited` 诊断事件，host 新增 `onRuntimeExited`。
+- 辅助进程被硬杀：host 记住收到过 `start` 的 worker，它不是本软件让它走的却退出了，就当场 `ensureReady()` 重拉一个（初始化即还原系统代理，不重连加速），结果经 `onHelperExited(recovered)` 报给主进程；重拉出来的 worker 没连过加速，再退出不会接着重拉。
+- 新模块 `electron/acceleration-interruption-notice.ts`：收到上面两种报告后读一次状态（经服务 `onState` 推给托盘），读到会话确实停了才发「网络已恢复正常」，读不到或停不下来有限次重读后发「网络可能暂时连不上」；只提醒本次运行里看着连上的会话，同一次连接只提醒一次。通知沿用 `acceleration` 偏好键，新增 `accelerationInterrupted` / `accelerationInterruptedUnrestored` 两条主进程通知。
+- 加速页上意外断开的那句改为「加速意外断开了，网络已恢复正常，可以重新连接。」。未新增 IPC 通道。
+- 第八批候选 4。`electron/backups.ts`：v2 清单新增可选 `key`（Key 的 SHA-256 与当时签发它的账号 id / 用户名，旧版本读到直接忽略），摘要新增 `keyOwnership` / `keyAccountName`，从不带 Key 或摘要跨 IPC（I3）；`ConfigRestoreResult` 新增 `provider`。
+- `electron/ipc.ts`：`backups:*` 按当前登录态只读已有的 Key 缓存，算出账号上下文传给备份库；`backups:restore` 成功后调用新的 `systemService.adoptRestoredConfig`，把恢复出来的配置登记为账号来源（Key 正是当前账号签发的那把）或手动来源（其余），首页不再误报 `changed`，自动写 Key 也不会覆盖它。登记失败只记日志，不影响恢复结果。
+- 渲染层：`BackupsPage` 新增 `onRestored`（App 接到 `toolbox.refreshConfig()`）与恢复后的 `checkProviderConnection` 结果条；归属文案收口在 `features/tools/backup-key.ts`。没有新增 IPC 通道。
+- 第十批候选 8。外链名单的逐字全等规则（I12）不动，也不做「同站放行」；只补拦下之后的出路。
+- 新增零依赖模块 `electron/external-url-blocked.ts`：`external:open` 拒绝时改抛 `ExternalUrlBlockedError`，文案仍是「不允许打开该链接」。Electron 只把 `error.toString()`（`${name}: ${message}`）送过 IPC，其它属性全丢，所以错误名就是那个稳定的错误码；`isExternalUrlBlockedError` 同时认进程内的实例和过桥后带通道前缀的形状，不比对中文文案。不新增 IPC 通道、不改契约。
+- 渲染层 `src/renderer-v2/external-link-fallback.tsx` 的 `openExternalOrCopy`：只有认出这个错误码、且链接是不带账号密码段的 http / https 时才复制（写剪贴板沿用 `navigator.clipboard.writeText`）并返回提示；其它协议照旧拦下、不复制，其它失败原样抛给调用方。剪贴板被拒时仍把地址摆出来。
+- 接入两处：`features/shell/Announcement.tsx`（`AnnouncementCenter` 把包装后的 `openLink` 传给正文，Markdown、富文本与原生公告框三种渲染都走它）与 `features/auth/LegalDocument.tsx`（提示显示在正文上方，不再把整篇协议换成错误）。
+- 测试：`external-url-blocked.test.ts`、`external-link-fallback.test.tsx`、`ipc.test.ts` 钉住过桥后的形状；`testing/app-check.mjs` 在浏览器里点公告链接，验证复制成功与剪贴板被拒两种提示。
+- legacy 树未改，但主进程共用同一条通道：legacy 界面里被拦的链接报错前缀会从 `Error:` 变成 `ExternalUrlBlockedError:`，句子本身不变。
+- 第八批候选 5、6。新通道 `exports:reveal-file` / `revealExportedFile`（三份表同步，T1，排在 `runtime-logs:export-feedback` 之后），经 `registerTrustedHandler`（I4）。入参是路径字符串，但**只认本进程最近 16 次导出写出的路径**：`diagnostics:export`、`runtime-logs:export-feedback`、`provider-sessions:export`、`sessions:export` 成功后把返回的 `outputPath` 记进 `ipc.ts` 闭包里的名单，取消的导出不记。渲染层给名单以外的路径一律拒绝，不会让资源管理器指向任意位置。
+- 新模块 `electron/exported-file.ts` 的 `resolveRevealableExportedFile`：绝对路径、`lstat`（不跟随链接）后必须是普通文件，否则报「已经不在原来的位置了」/「不是导出的那个文件」。`showItemInFolder` 只选中不运行，所以不照搬 `config-directory.ts` 的 reparse 全路径拒绝。`registerIpcHandlers` 多一个可选注入 `revealInFolder`，缺省 `shell.showItemInFolder`。
+- `RuntimeLogStore.captureFeedbackReport(limit, maxLength?)`：超过 `maxLength` 时按条从最旧的日志开始丢，头部加一行「日志已截断: …只保留最近 N 条」，并把「日志条数」行改成附最近 N 条；只有日志以外的部分就超限时才抛错，文案指向「打开日志目录」。`runtime-logs:preview-feedback` 传 `FEEDBACK_REPORT_MAX_LENGTH`（2,000,000，与原判断同一口径：UTF-16 长度）。
+- 渲染层：`useOperation` 的成功回调可以返回 `{ text, revealPath }`，hook 多暴露 `revealPath`；`ResultNotice` 收可选的 `revealPath` + `onReveal`，两者都在且是成功态才出按钮，定位失败只在按钮旁边写一句、不顶掉成功提示。记录页「查看记录」在 `detailAvailable === false` 时带 `title` 说明，并加 `testId`。
+- 第十批候选 4。新模块 `electron/login-launch.ts`：Windows 开机项带 `--launched-at-login` 参数，macOS 13 起登录项走 SMAppService 不能带参数，改读 `getLoginItemSettings().wasOpenedAtLogin`；读失败按普通启动处理。`shouldRevealInitialWindow` 只有「开机启动且托盘可用」才不弹首个窗口，托盘建不起来照旧弹（`application-tray.ts` 托盘中途失效时也会走 `onOpen` 兜底）。
+- `main.ts` 的 `ready-to-show` 不弹时把最大化延到第一次 `show`（对隐藏窗口调 `maximize()` 会直接把它显示出来），并记一条 `window/launch.login-hidden` 便于排查「怎么没窗口」；`second-instance` 带着这个参数时不抢焦点。
+- Windows 开机项按「路径 + 参数」整条比对：`platform/system-service.ts` 查询时把旧版不带参数的那条也认成已开启；新增 `migrateLegacyWindowsLoginItem` 在 `setAppUserModelId` 之后同名覆盖成带参数的一条，保留任务管理器里的禁用状态（`enabled` 取旧条目的 `executableWillLaunchAtLogin`），结果记 `main/login-item.migrated` 或 `login-item.migrate.failed`。
+- 设置页「开机自动启动」的说明改成「开机后在托盘里待命，不弹窗口」。
+- 新增 `electron/macos-command-line-tools.ts`：macOS 上 PATH 命中 `/usr/bin/git` 或 `/usr/bin/python3` 时，先以 argv 调 `/usr/bin/xcode-select -p`，并确认「开发者目录/usr/bin/同名命令」确实是文件，才去跑 `--version`；否则按未安装返回，不执行空壳。`system-service.ts` 的 `inspectTool` 与 `diagnostics.ts` 的 `defaultInspectTool` 都接上了这道判断，检查页 Git / Python 两行在这种情况下给出空壳说明（第八批候选 1）。Windows 与其他路径（Homebrew、python.org）不受影响。
+- 第七批 5：渲染层接上 `installNodeRuntime` / `installPythonRuntime` 返回的 `systemRestartRequired`（MSI 3010）。文案在 `features/tools/runtime-install-outcome.ts`，首页（`App.tsx` 的 `installRuntime`）与「安装卸载」页共用；重启框 `features/tools/RuntimeRestartDialog.tsx` 只有一颗按钮、打开时焦点不在按钮上，发之前查渲染层未完成的业务操作。
+- 主进程 `restartWindows` 在安装队列忙时拒绝发 `shutdown /r`，避免倒计时结束把正在原子替换的安装打断（I11）。`runtime:restart-windows` 通道此前注册了但没有调用方。
+- `pathRefreshRequired` 不再提示用户重开：`command-runner.ts` 的 `commandEnvironment` 在继承 PATH 之后补上代装 Python 3.12 的目录与 `Scripts`（排最后，不顶掉用户自己的 Python）；Node.js 的固定目录本来就在 `defaultCommandPaths` 里。只影响同用户模式，`trustedCommandEnvironment` 不变。
+- 新增零依赖的 `electron/redaction-patterns.ts`，`command-runner.ts`、`startup-log.ts`、`diagnostics.ts` 三份几乎相同的打码规则收口到这一张表；`crash-report.ts` 与 `updater.ts` 也改用同一套形状规则。只加不删：补上 `AIza…`（Google）、`xai-…`（Grok，20 位起步，避开 `@xai-official/grok` 包名）、查询参数 `key=`，`x-api-key` / `x-goog-api-key` 请求头由原有 `api[_-]?key` 规则覆盖并加测试钉住；`sk-` 在各处统一为大小写不敏感（原先只有诊断是）。
+- `runtime-log.ts` 按字段名打码新增「名字恰好是 `key`」一项，`keyboard`、`cacheKey` 这类不受影响。
+- 第十批候选 9（B）。
+- `account:change-password` 在调用前记下当前站点与账号，成功后读「记住密码」：记住的登录名等于这个账号的用户名，或 vault 的登录提示把这个登录名指向同一账号（同一 realm、同一 userId），就用新密码覆盖；覆盖失败就清掉，不留一个必错的密码。
+- `account:reset-password` 成功后，记住的登录名就是重置的邮箱，或两者的登录提示指向同一账号，就清掉那条记住的凭据。
+- 认不出来的一律不动：改写或清掉另一个账号记住的密码比留一条旧的更糟。两处都在改密码 / 重置成功之后运行，自身失败一律吞掉，不把一次成功的修改变成报错；不写日志（I3 / I13）。
+- `RealmAccountVault` / `RealmAccountService` 新增 `loginHintOwner(identifier)`，只返回 `{ realmId, userId }`，不含任何凭据。不新增 IPC 通道，记住的密码仍由 `account-credential-store.ts` 以 safeStorage 加密落盘。
+- 新增 `electron/starter-workspace.ts`。`resolveStarterWorkspaceParent` 选上层目录：优先
+  `app.getPath('documents')`；Windows 上文档路径带 `OneDrive` / `OneDrive - 公司名` 一段、或落在
+  `OneDrive` / `OneDriveConsumer` / `OneDriveCommercial` 环境变量指的目录里，macOS 上 iCloud 云盘
+  容器里有 `Documents`（「桌面与文稿」已打开），以及文档不存在、不是绝对路径时，一律退到用户主目录。
+- `createStarterWorkspace` 在上层目录的 `XingmangProjects/` 里建 `my-project`、`my-project-2`……
+  名字刻意用 ASCII、不带空格和括号（中文 Windows 上下游工具对非 ASCII / 括号路径的兼容没法逐个
+  真机验证）。容器走 `ensureSafeDataDirectory`，候选名用不带 `recursive` 的 `mkdir` 抢（撞名即
+  EEXIST 顺延，不先查后建），建成后 `assertNoReparseComponents` 复核整条路径（I8）；已有同名一律
+  不复用，最多顺延到 99；上层目录不存在时不替用户建；新目录先过 `classifyWorkspace`，落进敏感
+  名单就拒绝；系统错误的英文原文换成中文。
+- `buildSensitiveWorkspacePrompt`（`electron/workspace-guard.ts`）多一个按钮与 `createIndex`，
+  按钮顺序变为「新建一个项目文件夹 / 换一个文件夹 / 仍然打开」，「新建」是默认按钮（新手少做决定），
+  直接关掉对话框（`cancelId`）仍等于「换一个文件夹」。`isOneDriveContainer` 改为导出。
+- `workspace:choose`（`electron/ipc.ts`）处理新按钮：建好直接当作这次的工作目录返回，信任写入与
+  AGENTS.md 生成照常；建不成弹一句中文说明再回到选择器。日志 `workspace.starter.created` /
+  `workspace.starter.failed` 不记路径（I13）。「文档」位置由新的可选项
+  `IpcRegistrationOptions.documentsDirectory` 注入，`main.ts` 传 `app.getPath('documents')`。
+  通道形状没变，`preload.ts`、`ipc-contract.ts` 与渲染层都没动。
 
 ## 0.2.8 - 2026-09-20
 
