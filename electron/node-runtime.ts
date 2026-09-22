@@ -20,9 +20,13 @@ import {
 } from './windows-machine-paths'
 import {
   encodeWindowsPowerShellCommand,
+  inspectWindowsElevationCapability,
   powerShellLiteral,
   resolveWindowsPowerShellExecutable,
+  windowsElevationCancelledMessage,
+  windowsElevationDeniedMessage,
   windowsPowerShellExecutable,
+  type WindowsElevationCapability,
 } from './windows-elevation'
 import { minimumSupportedNodeVersion, nodeVersionStatus } from './versions'
 
@@ -857,15 +861,22 @@ export function buildNodeRuntimeUacBrokerScript(
 /**
  * Translates the broker's own exit codes into user-facing Chinese. The values stay
  * outside Windows Installer's 1601-1699 range so msiexec's real codes still pass through.
+ *
+ * 1223 和 740 说的是两件不同的事：一个是用户在授权窗口点了「否」，一个是没拿到
+ * 管理员权限。普通账号上两条都会出现，而「重新点一次」对它没用，所以探到账号不在
+ * 管理员组时换成另一句（见 windows-elevation.ts）。
  */
-export function nodeRuntimeElevationFailureMessage(exitCode: number | null): string | null {
+export function nodeRuntimeElevationFailureMessage(
+  exitCode: number | null,
+  capability: WindowsElevationCapability = 'unknown',
+): string | null {
   switch (exitCode) {
     case 1223:
-      return '已取消管理员授权，Node.js 安装未开始；重新点击安装即可再次授权。'
+      return windowsElevationCancelledMessage('Node.js', capability)
     case 2225:
       return '管理员授权用的是另一个 Windows 账号，已停止安装以免装到别的账号名下。请用当前 Windows 账号的管理员身份重试。'
     case 740:
-      return '未获得管理员权限，Node.js 安装已停止。请在弹出的授权窗口点击「是」。'
+      return windowsElevationDeniedMessage('Node.js', capability)
     case 13:
       return 'Node.js 安装包在授权期间发生变化或签名校验失败，已停止安装。请重新点击安装，程序会重新下载并校验。'
     default:
@@ -925,9 +936,12 @@ async function runUacProcess(plan: NodeRuntimeProcessPlan, signal?: AbortSignal)
       signal,
     })
   } catch (error) {
-    const message = error instanceof CommandRunnerError
-      ? nodeRuntimeElevationFailureMessage(error.exitCode)
-      : null
+    if (!(error instanceof CommandRunnerError)) throw error
+    // 只有会提到「授权」的那两条才值得多花一次探测。
+    const capability = error.exitCode === 1223 || error.exitCode === 740
+      ? await inspectWindowsElevationCapability({ env: plan.env ?? process.env, machinePaths })
+      : 'unknown'
+    const message = nodeRuntimeElevationFailureMessage(error.exitCode, capability)
     if (!message) throw error
     throw new Error(message)
   }

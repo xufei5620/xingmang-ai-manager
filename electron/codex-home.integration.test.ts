@@ -181,6 +181,7 @@ it('routes every Codex-owned surface to one custom root and leaves all sentinels
     inspectTool: async () => ({ installed: false, version: null, path: null }),
     inspectPowerShell: async () => ({ installed: false, version: null, path: null }),
     inspectAdministrator: async () => false,
+    inspectElevationCapability: async () => 'unknown' as const,
     inspectCodexDesktop: async () => ({ installed: false, version: null, path: null }),
     inspectProvider: (provider, roots) => inspectProviderConfig(provider, roots),
     clashConfigPaths: [],

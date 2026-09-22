@@ -348,6 +348,35 @@ describe('renderer-v2 home missing runtime guidance on macOS', () => {
     expect(markup).toContain('装 Python（可选环境）')
   })
 
+  it('says the UAC prompt is coming before the Windows user presses install', () => {
+    const markup = render({}, undefined, { snapshot: runtimeSnapshot('windows', { node: true, python: true }) })
+    expect(markup).toContain('data-testid="home-runtime-node-elevation"')
+    expect(markup).toContain('这一步需要管理员授权')
+    // Python 按当前用户装，不提权，所以这句只出现一次。
+    expect(markup.match(/这一步需要管理员授权/g)).toHaveLength(1)
+    expect(markup).not.toContain('Python 才装得上')
+  })
+
+  it('warns on the Codex desktop row too, because its Appx install elevates as well', () => {
+    const base = runtimeSnapshot('windows', {})
+    const windowsDesktopMissing = {
+      ...base,
+      platform: { ...base.platform, codexDesktop: { ...base.platform.codexDesktop, launch: true, install: 'managed' } },
+      system: {
+        ...base.system,
+        desktopApps: { codex: { installed: false, detectionFailed: false, appVersion: null } },
+      },
+    } as unknown as ToolboxSnapshot
+    const markup = render({}, undefined, { snapshot: windowsDesktopMissing })
+    expect(markup).toContain('安装时需要管理员授权')
+  })
+
+  it('keeps the elevation notice off macOS, where nothing here elevates', () => {
+    const markup = render({}, undefined, { snapshot: runtimeSnapshot('macos', { node: true }) })
+    expect(markup).not.toContain('data-testid="home-runtime-node-elevation"')
+    expect(markup).not.toContain('这一步需要管理员授权')
+  })
+
   it('stays quiet when the probe failed, because then nobody knows whether it is installed', () => {
     const base = runtimeSnapshot('macos', { node: true })
     const failed = {

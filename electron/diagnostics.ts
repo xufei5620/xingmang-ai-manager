@@ -27,7 +27,11 @@ import { classifyNetworkFailure, networkFailureMessages } from './network-failur
 import { relayApiProbeBaseUrl, resolveRelaySite, type RelaySite } from './relay-sites'
 import { resolveCliCommand, resolveCliInstallation } from './tool-installation'
 import type { ToolConfigOwnership } from './tool-config-ownership'
-import { resolveWindowsPowerShellExecutable } from './windows-elevation'
+import {
+  inspectWindowsElevationCapability,
+  resolveWindowsPowerShellExecutable,
+  type WindowsElevationCapability,
+} from './windows-elevation'
 
 export type DiagnosticState = 'pass' | 'warn' | 'fail' | 'error'
 
@@ -77,6 +81,8 @@ export interface DiagnosticsDependencies {
   timeoutMs?: number
   now?: () => Date
   inspectAdministrator?: (signal: AbortSignal) => Promise<boolean>
+  /** 当前 Windows 账号能不能自己提权（不是「现在是不是管理员」，见 windows-elevation.ts）。 */
+  inspectElevationCapability?: (signal: AbortSignal) => Promise<WindowsElevationCapability>
   inspectPowerShell?: (signal: AbortSignal) => Promise<DiagnosticToolStatus>
   inspectTool?: (tool: DiagnosticToolId, signal: AbortSignal) => Promise<DiagnosticToolStatus>
   inspectCodexDesktop?: (signal: AbortSignal) => Promise<DiagnosticToolStatus>
@@ -912,6 +918,8 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
     ?? ((signal) => defaultInspectPowerShell(signal, env))
   const inspectDesktop = dependencies.inspectCodexDesktop ?? defaultInspectCodexDesktop
   const inspectAdmin = dependencies.inspectAdministrator ?? defaultInspectAdministrator
+  const inspectElevation = dependencies.inspectElevationCapability
+    ?? ((signal) => inspectWindowsElevationCapability({ timeoutMs: 8_000, signal }))
   const fetchImpl = dependencies.fetch ?? globalThis.fetch
   const paths = dependencies.clashConfigPaths ?? clashCandidates(userHome, env)
   const inspectProxy = dependencies.inspectProxyVariables ?? ((signal) => defaultProxyVariables(env))
@@ -941,14 +949,33 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
       }),
     },
     {
+      // 这一项问两件事。一是「现在是不是管理员在跑」——是的话仍然建议普通启动。
+      // 二是「这个账号需要时能不能提权」：Node.js 是机器级 MSI、Codex 桌面端是
+      // Appx，两处都会弹 UAC，普通账号走到那一步才失败，太晚了。macOS 上本程序
+      // 从不提权，所以第二问只在 Windows 上做。
       code: 'ADMINISTRATOR',
       title: '运行权限',
       run: async (signal) => {
         const elevated = await inspectAdmin(signal)
+        if (elevated) {
+          return {
+            state: 'warn',
+            summary: '当前以管理员权限运行，建议普通启动',
+            details: { elevated, required: false, canElevate: true },
+          }
+        }
+        const capability = platform === 'win32' ? await inspectElevation(signal) : 'unknown'
+        if (capability === 'standard') {
+          return {
+            state: 'warn',
+            summary: '当前以普通用户权限运行。这个 Windows 账号不在管理员组，自动安装 Node.js、Codex 桌面端时会要求输入一个管理员账号的密码；公司或学校的电脑请联系 IT 协助，也可以请 IT 先装好 Node.js LTS 再回来点「重新检测」',
+            details: { elevated, required: false, canElevate: false },
+          }
+        }
         return {
-          state: elevated ? 'warn' : 'pass',
-          summary: elevated ? '当前以管理员权限运行，建议普通启动' : '当前以普通用户权限运行',
-          details: { elevated, required: false },
+          state: 'pass',
+          summary: '当前以普通用户权限运行',
+          details: { elevated, required: false, canElevate: capability === 'administrator' ? true : null },
         }
       },
     },
