@@ -1024,7 +1024,12 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
       code: 'ADMINISTRATOR',
       title: '运行权限',
       run: async (signal): Promise<CheckOutcome> => {
-        const elevated = await inspectAdmin(signal)
+        const probeFailure = platform === 'win32' ? dependencies.windowsExecution?.probeFailure : undefined
+        // 启动时那次探测失败的机器上，这次探测多半也会失败（同样要起 PowerShell）。
+        // 那时这一项要说的正是「没问出来」，不能让它自己的失败把原因盖掉。
+        const elevated = probeFailure
+          ? await Promise.resolve(inspectAdmin(signal)).catch(() => null)
+          : await inspectAdmin(signal)
         if (elevated) {
           return {
             state: 'warn',
@@ -1032,7 +1037,6 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
             details: { elevated, required: false, canElevate: true },
           }
         }
-        const probeFailure = platform === 'win32' ? dependencies.windowsExecution?.probeFailure : undefined
         if (probeFailure) {
           // 启动时那次探测没问出结果，软件已按管理员方式处理（从严）。这时再说
           // 「当前以普通用户权限运行」就和实际行为对不上，客服会被带偏。

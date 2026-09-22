@@ -611,6 +611,24 @@ describe('diagnostics', () => {
     expect(item?.summary).not.toContain('以管理员身份运行本')
   })
 
+  it('still explains the failed startup probe when the self-check probe fails as well', async () => {
+    const home = temporaryHome()
+    const input = dependencies(home)
+    input.windowsExecution = {
+      mode: 'trusted-only',
+      elapsedMs: 15_000,
+      probeFailure: { reason: 'timeout', detail: 'signal=SIGTERM' },
+    }
+    input.inspectAdministrator = async () => {
+      throw new Error('powershell timed out again')
+    }
+
+    const item = (await runDiagnostics(input)).items.find((entry) => entry.code === 'ADMINISTRATOR')
+
+    expect(item).toMatchObject({ state: 'warn', details: { elevated: null, probeFailure: 'timeout' } })
+    expect(item?.summary).toContain('超过 15 秒没做完')
+  })
+
   it('keeps the old answers when the startup probe succeeded or on macOS', async () => {
     const home = temporaryHome()
     const succeeded = dependencies(home)
