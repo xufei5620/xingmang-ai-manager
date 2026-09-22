@@ -19,6 +19,7 @@ interface QueueEntry<T> {
 export class InstallationQueue {
   private active: QueueEntry<unknown> | null = null
   private readonly pending: QueueEntry<unknown>[] = []
+  private changes = 0
 
   enqueue<T>(key: string, task: () => Promise<T> | T): Promise<T> {
     if (!key.trim()) throw new TypeError('安装队列操作名不能为空')
@@ -44,6 +45,14 @@ export class InstallationQueue {
     }
   }
 
+  /**
+   * 每有一项开始或结束就加一。拿它判断「这段时间里机器上的安装状态有没有可能
+   * 变过」：两次读数相同，中间就没有任何安装、卸载开始或结束。
+   */
+  get revision(): number {
+    return this.changes
+  }
+
   get busy(): boolean {
     return this.active !== null || this.pending.length > 0
   }
@@ -59,11 +68,13 @@ export class InstallationQueue {
     this.active = this.pending.shift() ?? null
     const entry = this.active
     if (!entry) return
+    this.changes++
     try {
       entry.resolve(await entry.task())
     } catch (error) {
       entry.reject(error)
     } finally {
+      this.changes++
       this.active = null
       void this.pump()
     }

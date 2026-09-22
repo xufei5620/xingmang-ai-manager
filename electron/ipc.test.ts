@@ -53,7 +53,7 @@ vi.mock('electron', () => ({
   clipboard: { writeText: electronMocks.writeText },
 }))
 
-import { registerIpcHandlers } from './ipc'
+import { accelerationStateLogKey, registerIpcHandlers } from './ipc'
 
 const stubStoredConfig: AppSettings = {
   version: 2,
@@ -415,6 +415,40 @@ describe('registerIpcHandlers', () => {
     expect(() => start(trustedEvent(), 'xm-account:7', 'tun', undefined, 'yes')).toThrow('加速冲突确认参数无效')
     await start(trustedEvent(), 'xm-account:7', 'system-proxy', 'jp-01', true)
     expect(acceleration.startAcceleration).toHaveBeenLastCalledWith('xm-account:7', 'system-proxy', 'jp-01', true)
+  })
+
+  it('logs an acceleration state read only when the state actually changed', async () => {
+    const base = { scope: 'xm-account:7', phase: 'active' as const, mode: 'system-proxy' as const,
+      totalSeconds: 3600, remainingSeconds: 1200, sessionSeconds: 60, measuredAt: new Date().toISOString(),
+      connectedAt: '2026-09-22T10:00:00.000Z', line: null, error: null }
+    const states = [
+      base,
+      { ...base, remainingSeconds: 1185, sessionSeconds: 75 },
+      { ...base, remainingSeconds: 1170, sessionSeconds: 90 },
+      { ...base, phase: 'idle' as const, connectedAt: null, remainingSeconds: 1170 },
+      { ...base, phase: 'idle' as const, connectedAt: null, remainingSeconds: 1170 },
+    ]
+    const acceleration = {
+      getAccelerationState: vi.fn(async () => states.shift()!),
+      startAcceleration: vi.fn(), stopAcceleration: vi.fn(),
+    }
+    const { runtimeLog } = register(serviceStub(), 'C:\\app-data\\logs', undefined, accountServiceStub(), undefined, undefined, { acceleration })
+    const read = electronMocks.handlers.get('acceleration:get-state')!
+    for (let index = 0; index < 5; index += 1) await read(trustedEvent(), 'xm-account:7')
+
+    const logged = vi.mocked(runtimeLog.log).mock.calls.filter(([, , event]) => event === 'acceleration:get-state')
+    expect(logged).toHaveLength(2)
+    expect(acceleration.getAccelerationState).toHaveBeenCalledTimes(5)
+  })
+
+  it('builds the acceleration change key from state fields only, ignoring the ticking remaining time', () => {
+    const state = { scope: 'a', phase: 'active', mode: 'system-proxy', line: { id: 'jp-01' }, connectedAt: 'x', error: null }
+    expect(accelerationStateLogKey({ ...state, remainingSeconds: 10 })).toBe(accelerationStateLogKey({ ...state, remainingSeconds: 9 }))
+    expect(accelerationStateLogKey(state)).not.toBe(accelerationStateLogKey({ ...state, line: { id: 'hk-01' } }))
+    expect(accelerationStateLogKey(state)).not.toBe(accelerationStateLogKey({ ...state, error: '线路断开' }))
+    expect(accelerationStateLogKey(state)).not.toBe(accelerationStateLogKey({ ...state, scope: 'b' }))
+    expect(accelerationStateLogKey(null)).toBeNull()
+    expect(accelerationStateLogKey({ phase: 'active' })).toBeNull()
   })
 
   it('routes a fixed acceleration redemption through trusted IPC without logging the hidden code', async () => {
@@ -1594,6 +1628,72 @@ describe('registerIpcHandlers', () => {
     busy = false
     ready()
     await expect(result).resolves.toMatchObject({ providers: {} })
+  })
+
+  describe('bootstrap reads under the startup account gate', () => {
+    function startupFixture() {
+      let finishRestore!: () => void
+      const restored = new Promise<void>((resolve) => { finishRestore = resolve })
+      let releaseSplash!: () => void
+      const released = new Promise<void>((resolve) => { releaseSplash = resolve })
+      let settled = false
+      void restored.then(() => { settled = true })
+      const accountStartupGate = {
+        released: Promise.race([released, restored]),
+        pending: () => !settled,
+        releasedEarly: () => true,
+        restoringAccount: () => settled ? null : { siteId: 'solov-api' as const, userId: 42 },
+      }
+      let busy = true
+      const accountWork = createAccountWorkGate({ revision: () => 0, assertReady: () => { if (busy) throw new Error('switching') } })
+      const service = serviceStub()
+      const accountService = accountServiceStub()
+      vi.mocked(accountService.getSessionState).mockReturnValue({ authenticated: false, account: null })
+      register(service, undefined, undefined, accountService, undefined, undefined,
+        { realmAccounts: {} as never, accountWork, accountSessionReady: restored }, { accountStartupGate })
+      return {
+        service, accountService, releaseSplash,
+        finishRestore: () => { busy = false; finishRestore() },
+      }
+    }
+
+    it('answers the session as restoring once the splash budget runs out, naming the account being restored', async () => {
+      const f = startupFixture()
+      const pending = electronMocks.handlers.get('account:get-session')!(trustedEvent())
+      await Promise.resolve()
+      f.releaseSplash()
+      await expect(pending).resolves.toEqual({ authenticated: false, account: null, restoring: { account: { siteId: 'solov-api', userId: 42 } } })
+    })
+
+    it('reads config outside the busy account gate and marks its ownership as pending instead of judging it', async () => {
+      const f = startupFixture()
+      const pending = electronMocks.handlers.get('config:get')!(trustedEvent())
+      await Promise.resolve()
+      expect(f.service.getConfig).not.toHaveBeenCalled()
+      f.releaseSplash()
+      await expect(pending).resolves.toMatchObject({ ownershipPending: true })
+      // 没有账号可比：不带缓存 Key 读，来源判定只可能落到 unknown，不会是「被改过」。
+      expect(f.service.getConfig).toHaveBeenCalledWith(false)
+    })
+
+    it('keeps waiting for the restore when it settles before the budget, with no pending mark', async () => {
+      const f = startupFixture()
+      const session = electronMocks.handlers.get('account:get-session')!(trustedEvent())
+      const config = electronMocks.handlers.get('config:get')!(trustedEvent())
+      f.finishRestore()
+      await expect(session).resolves.toEqual({ authenticated: false, account: null })
+      const read = await config
+      expect(read).not.toHaveProperty('ownershipPending')
+    })
+
+    it('reads the settled state normally after the restore finishes', async () => {
+      const f = startupFixture()
+      f.releaseSplash()
+      f.finishRestore()
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      await expect(electronMocks.handlers.get('account:get-session')!(trustedEvent())).resolves.toEqual({ authenticated: false, account: null })
+      await expect(electronMocks.handlers.get('config:get')!(trustedEvent())).resolves.not.toHaveProperty('ownershipPending')
+    })
   })
 
   it('leaves a platform-free login undecided for main-process automatic discovery', async () => {

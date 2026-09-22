@@ -130,6 +130,10 @@ export function chatErrorMessage(error: unknown, code?: AiChatErrorCode): string
   // 再被 /登录|密钥/ 之类撞上，就会变回「请重新登录」。
   if (code === 'service-unavailable' || networkFailureReasonForMessage(message) === 'serviceUnavailable') return networkFailureMessages.serviceUnavailable
   if (code) return message || '本次请求没有完成，已保留内容，请稍后重试'
+  // 主进程在发付费请求之前试写保存位置，写不进就停下。原话里有「这次没有扣费」和
+  // 下一步怎么办，归进下面任何一类都会把这两句丢掉。
+  const unwritable = message.indexOf('保存位置写不进去')
+  if (unwritable >= 0) return message.slice(unwritable)
   // 主进程已经把余额不足、Key 额度上限、Key 失效分开说好了，这里原样放行；否则下面那条
   // 宽泛的「余额」正则会把「额度上限用完」又改回「请充值」。
   const quota = matchRelayQuotaFailureMessage(message)
