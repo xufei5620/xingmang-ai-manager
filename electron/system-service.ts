@@ -235,6 +235,12 @@ export interface ToolStatus {
    * undefined，渲染层此时退回中性的「已安装」。
    */
   installSource?: CliInstallDisplaySource
+  /**
+   * 这个工具装上去会落在哪个目录。未装时 installDirectory 为 null，而用户要
+   * 查写入权限或加杀毒白名单需要的正是这个路径；已装时两者指同一处。算不出
+   * 落点（非 CLI 工具、探测不到 npm 全局根）时缺省，界面据此不出「复制路径」。
+   */
+  installTarget?: string | null
 }
 
 export interface CliStatus extends ToolStatus {
@@ -1497,6 +1503,38 @@ export function grokInstallStrategyFor(platform: NodeJS.Platform): GrokInstallSt
   return 'external'
 }
 
+export interface CliInstallTargetOptions {
+  platform: NodeJS.Platform
+  /** 当前 npm 全局根；探测不到时为 null。 */
+  npmGlobalRoot: string | null
+  /** 这一次安装会不会落进托管 npm 布局，落则给出它的 prefix，否则 null。 */
+  managedNpmPrefix: string | null
+  /** Grok 在 Windows 上走原生通道，装进这个目录，而不是 node_modules。 */
+  managedNativeRoot: string | null
+}
+
+/**
+ * 还没装上的工具没有安装目录——目录要等安装那一步写完才存在。错误面板上的
+ * 「复制路径」要回答的却是「它会装到哪」，用户拿这个路径去查写入权限或加进
+ * 杀毒白名单。所以这里按 installCli 自己的选路重算一遍落点：托管布局优先，
+ * Grok 的 Windows 原生通道单列，其余落在当前 npm 全局根下。
+ *
+ * 算不出来时返回 null，界面据此不出那颗按钮——一个猜出来的路径比没有更糟。
+ */
+export function cliInstallTargetDirectory(
+  provider: ProviderId,
+  options: CliInstallTargetOptions,
+): string | null {
+  if (provider === 'grok' && grokInstallStrategyFor(options.platform) === 'windows-native') {
+    return options.managedNativeRoot
+  }
+  const packageName = cliCatalog[provider].packageName
+  if (options.managedNpmPrefix) {
+    return managedCliPackageDirectory(options.managedNpmPrefix, packageName, options.platform)
+  }
+  return options.npmGlobalRoot ? cliPackageDirectoryFromNpmRoot(options.npmGlobalRoot, packageName) : null
+}
+
 export interface CliInstallReleaseOptions {
   /** 要安装的版本,'latest' 表示不钉版本。Grok 的官方稳定版路径不受它影响。 */
   version?: string
@@ -1999,6 +2037,28 @@ export function createSystemService(
     return { ...status, tooOld: versionStatus === 'too-old', versionStatus }
   }
 
+  /**
+   * 安装那一步的落点选择（installCli）在这里重放一遍，只为把「会装到哪」交给
+   * 界面。ProgramData / ~/Library 这两条托管路径在个别机器上算不出来（缺少可信
+   * 的 ProgramData、HOME 为空），那属于正常情况，吞掉后退回 null 即可——探测
+   * 不该因为一个附带字段失败。
+   */
+  function resolveCliInstallTarget(provider: ProviderId, npmGlobalRoot: string | null): string | null {
+    try {
+      const managed = platform === 'win32'
+        ? windowsExecutionMode === 'trusted-only' ? managedNpmPrefix() : null
+        : platform === 'darwin' && provider !== 'grok' ? managedNpmPrefix(commandEnvironment(), 'darwin') : null
+      return cliInstallTargetDirectory(provider, {
+        platform,
+        npmGlobalRoot,
+        managedNpmPrefix: managed,
+        managedNativeRoot: platform === 'win32' && provider === 'grok' ? managedNativeProviderRoot('grok') : null,
+      })
+    } catch {
+      return null
+    }
+  }
+
   async function inspectCliTool(
     provider: ProviderId,
     npmExecutable?: string | null,
@@ -2013,13 +2073,14 @@ export function createSystemService(
       npmGlobalRoot,
       platform,
     })
+    const installTarget = resolveCliInstallTarget(provider, npmGlobalRoot ?? null)
     if (
       !installation
       || (provider === 'codex' && installation.source === 'native'
         && isCodexDesktopExecutable(installation.commandPath))
     ) {
       return {
-        status: { installed: false, version: null, path: null, installDirectory: null },
+        status: { installed: false, version: null, path: null, installDirectory: null, installTarget },
         installation: null,
       }
     }
@@ -2069,6 +2130,7 @@ export function createSystemService(
               : safeNativeCommand?.executable ?? null
           : installation.commandPath,
         installDirectory: installation.installDirectory,
+        installTarget,
         uninstall: cliUninstallCapability(provider, installation, {
           managedNpmPrefix: (() => {
             try {

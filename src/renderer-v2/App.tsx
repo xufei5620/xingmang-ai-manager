@@ -12,7 +12,7 @@ import { Home } from './features/tools/Home'
 import { createToolsApi } from './features/tools/api'
 import { chineseRuntimePatchAnswerMissing, shouldAskForChineseRuntimePatch } from './features/tools/chinese-runtime-choice'
 import { cliRuntimeBlockMessage, nodeRuntimeReady } from './features/tools/runtime-readiness'
-import { isToolId, presentTools, providerFor, type ToolId } from './features/tools/model'
+import { isToolId, presentTools, providerFor, toolInstallDirectory, type ToolId } from './features/tools/model'
 import { pendingToolUpdates, readAnnouncedToolUpdates, rememberAnnouncedToolUpdates, unannouncedToolUpdates, updateNoticeKey } from './features/tools/update-notice'
 import { isMissingWorkspace } from './features/tools/recent-workspaces'
 import { installedToolSyncLabel, useToolbox } from './features/tools/useToolbox'
@@ -51,7 +51,7 @@ const AccelerationPage = lazy(() => import('./features/acceleration/Acceleration
 const pageLoading = <div className="v2-business-loading" role="status" data-testid="route-loading"><RefreshCw size={24} className="xm-spin" aria-hidden="true" /><strong>正在加载页面...</strong></div>
 
 type AccountTab = typeof accountTabs[number]['value']
-interface PendingConfirmation { title: string; body: string; label: string; danger?: boolean; work(): Promise<void> }
+interface PendingConfirmation { title: string; body: string; label: string; danger?: boolean; /** 失败时「复制路径」要复制哪个工具的安装目录；与工具无关的确认不填。 */ tool?: ToolId; work(): Promise<void> }
 interface AccountBootstrapView extends AccountBootstrapProgress {
   scope: string
   result?: AccountBootstrapResult
@@ -271,11 +271,13 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     }
     else void balanceStore.refresh('foreground')
   }), [native, balanceStore, session.authenticated, toast])
-  const perform = useCallback(async function run(label: string, work: () => Promise<unknown>): Promise<void> {
+  // tool 只是把「这次失败关系到哪个工具」记下来；具体目录在渲染那一刻从当时的
+  // 快照里取，装完又失败的第二次点击才不会拿到上一次的旧路径。
+  const perform = useCallback(async function run(label: string, work: () => Promise<unknown>, tool?: ToolId): Promise<void> {
     setOperationError(null)
     try { await work() }
     catch (cause) {
-      setOperationError({ message: errorMessage(cause, `${label}没有完成`), retry: () => void run(label, work) })
+      setOperationError({ message: errorMessage(cause, `${label}没有完成`), retry: () => void run(label, work, tool), ...(tool ? { tool } : {}) })
     }
   }, [])
   const navigate = useCallback((target: PageId, section?: string) => {
@@ -445,7 +447,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   }
   function requestUninstall(id: ToolId) {
     const definition = tools.find((tool) => tool.id === id)!
-    setConfirmation({ title: `卸载 ${definition.name}？`, body: '工具配置、账户数据和历史记录会保留。', label: '卸载工具', danger: true, work: async () => {
+    setConfirmation({ title: `卸载 ${definition.name}？`, body: '工具配置、账户数据和历史记录会保留。', label: '卸载工具', danger: true, tool: id, work: async () => {
       await toolbox.run(id, '正在卸载', async () => {
         const result = await toolsApi.uninstall(id)
         if (result.outcome === 'manual-required') {
@@ -597,7 +599,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
             </div>}
             {page === 'home' ? <Home api={toolsApi} supportsUsage={accountSupports(session, 'supportsUsage')} supportsBilling={accountSupports(session, 'supportsBilling')} snapshot={toolbox.snapshot} loading={toolbox.loading} error={toolbox.error} failures={toolbox.failures} account={session.account} balance={balance} jobs={toolbox.jobs} bootstrap={accountBootstrap?.scope === scope ? accountBootstrap : null}
               externalClients={toolbox.externalClients} externalLoading={toolbox.externalLoading} externalError={toolbox.externalError}
-              onScan={() => { void toolbox.refresh(true).catch(() => undefined); void toolbox.refreshExternal().catch(() => undefined) }} onInstall={(id, version) => void perform('安装工具', () => install(id, version))} onCancelInstall={(id) => void perform('取消安装', () => cancelInstall(id))} onLaunch={requestLaunch} onConfigure={openToolConfig} onUninstall={requestUninstall}
+              onScan={() => { void toolbox.refresh(true).catch(() => undefined); void toolbox.refreshExternal().catch(() => undefined) }} onInstall={(id, version) => void perform('安装工具', () => install(id, version), id)} onCancelInstall={(id) => void perform('取消安装', () => cancelInstall(id))} onLaunch={requestLaunch} onConfigure={openToolConfig} onUninstall={requestUninstall}
               onInstallExternal={(id) => void perform('安装客户端', () => installExternal(id))} onLaunchExternal={(id) => void perform('打开客户端', () => launchExternal(id))}
               onConfigureExternal={setExternalClient} onCodexModels={() => { setCodexModelFilter('non-gpt'); setConfigTool(platform?.codexDesktop.launch ? 'codexDesktop' : 'codex') }}
               onRuntime={(runtime) => void perform('准备环境', () => installRuntime(runtime))} onNavigate={navigate} onGuide={() => setGuide(true)} onBootstrapRetry={() => { if (session.account) void runAccountBootstrap(session.account.userId, 'login', true) }} />
@@ -638,7 +640,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
         {qrFallback && <p role="alert" data-testid="support-qr-fallback">{qrFallback}</p>}<Button onClick={() => void perform('打开帮助', () => app.openExternal(supportUrl))}>在浏览器打开</Button><Button onClick={() => { setHelp(false); navigate('feedback') }}>复制反馈报告</Button></div>
     </Dialog>}
     <StartupNotices notices={startupNotices} onDismiss={dismissStartupNotice} onOpen={(id, page) => { dismissStartupNotice(id); navigate(page) }} />
-    {operationError && <OperationErrorDialog failure={operationError} onClose={() => setOperationError(null)} onAction={runOperationAction} />}
+    {operationError && <OperationErrorDialog failure={operationError} installDirectory={toolInstallDirectory(toolbox.snapshot, operationError.tool)} onClose={() => setOperationError(null)} onAction={runOperationAction} />}
     {manualUninstall && <ManualUninstallDialog state={manualUninstall} platform={platform?.platform} onClose={() => setManualUninstall(null)} />}
     {!operationError && session.authenticated && accountReadError?.scope === scope && <Dialog open title="操作没有完成" onClose={() => setAccountReadError(null)} footer={<Button onClick={() => setAccountReadError(null)}>返回</Button>}><p role="alert">{accountReadError.message}</p></Dialog>}
     {restartDialog && <Dialog open title="Codex 已在运行" onClose={() => setRestartDialog(false)} busy={Boolean(toolbox.jobs['launch:codexDesktop'])} footer={<>
@@ -654,7 +656,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     {confirmation && <Confirm title={confirmation.title} body={confirmation.body} danger={confirmation.danger} okLabel={confirmation.label} loading={confirmBusy} onClose={() => setConfirmation(null)} onOk={() => {
       if (confirmationLock.current) return
       confirmationLock.current = true; setConfirmBusy(true)
-      void confirmation.work().then(() => setConfirmation(null)).catch((cause) => setOperationError({ message: errorMessage(cause, '操作没有完成') })).finally(() => { confirmationLock.current = false; setConfirmBusy(false) })
+      void confirmation.work().then(() => setConfirmation(null)).catch((cause) => setOperationError({ message: errorMessage(cause, '操作没有完成'), ...(confirmation.tool ? { tool: confirmation.tool } : {}) })).finally(() => { confirmationLock.current = false; setConfirmBusy(false) })
     }} />}
   </BalanceTierProvider></AccountBalanceContext.Provider>
 }

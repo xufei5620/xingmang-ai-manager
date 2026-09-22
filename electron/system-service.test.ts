@@ -16,6 +16,7 @@ import {
 import type { WindowsMachinePaths } from './windows-machine-paths'
 import { codexAuthSnapshotPaths, codexConfigSnapshotPaths, inspectProviderConfig, providerConfigPaths, saveProviderConfig } from './config-files'
 import type { MacosCodexAppInspection } from './macos-codex-app'
+import { managedCliPackageDirectory } from './cli-process-probe'
 import { managedNpmCacheRoot, managedNpmPrefix } from './managed-cli-paths'
 import {
   resolveCliCommand as resolveVerifiedToolCommand,
@@ -45,6 +46,7 @@ import {
   detectNetworkRegion,
   fetchNpmPackageReleaseMetadata,
   formatMebibytes,
+  cliInstallTargetDirectory,
   grokInstallStrategyFor,
   grokManualUninstallResult,
   formatElapsedDuration,
@@ -3142,6 +3144,62 @@ describe('CLI latest version state', () => {
     expect(grokInstallStrategyFor('win32')).toBe('windows-native')
     expect(grokInstallStrategyFor('darwin')).toBe('darwin-official-npm')
     expect(grokInstallStrategyFor('linux')).toBe('external')
+  })
+
+  it('names where a first install would land, mirroring the choices installCli makes', () => {
+    // 未装的工具没有 installDirectory，而错误面板上的「复制路径」恰恰要在那一刻
+    // 回答「它会装到哪」。这几条钉住的是这个映射与 installCli 的选路一致。
+    expect(cliInstallTargetDirectory('claude', {
+      platform: 'win32',
+      npmGlobalRoot: 'C:\\Users\\tester\\AppData\\Roaming\\npm\\node_modules',
+      managedNpmPrefix: null,
+      managedNativeRoot: null,
+    })).toBe(path.join('C:\\Users\\tester\\AppData\\Roaming\\npm\\node_modules', '@anthropic-ai', 'claude-code'))
+    // trusted-only 下装的是托管布局，落点根本不在用户的 npm 目录里。
+    expect(cliInstallTargetDirectory('claude', {
+      platform: 'win32',
+      npmGlobalRoot: 'C:\\Users\\tester\\AppData\\Roaming\\npm\\node_modules',
+      managedNpmPrefix: 'C:\\ProgramData\\XingMangAI\\Cli\\npm',
+      managedNativeRoot: null,
+    })).toBe(managedCliPackageDirectory('C:\\ProgramData\\XingMangAI\\Cli\\npm', '@anthropic-ai/claude-code', 'win32'))
+    // macOS 的托管布局把包放在 lib/node_modules 下，不是 prefix 根下。
+    expect(cliInstallTargetDirectory('gemini', {
+      platform: 'darwin',
+      npmGlobalRoot: '/usr/local/lib/node_modules',
+      managedNpmPrefix: '/Users/alex/Library/Application Support/XingMangAI/Cli/npm',
+      managedNativeRoot: null,
+    })).toContain('/lib/node_modules/@google/gemini-cli')
+  })
+
+  it('points Windows Grok at its native directory, since npm never writes that install', () => {
+    expect(cliInstallTargetDirectory('grok', {
+      platform: 'win32',
+      npmGlobalRoot: 'C:\\Users\\tester\\AppData\\Roaming\\npm\\node_modules',
+      managedNpmPrefix: 'C:\\ProgramData\\XingMangAI\\Cli\\npm',
+      managedNativeRoot: 'C:\\ProgramData\\XingMangAI\\Cli\\native\\grok',
+    })).toBe('C:\\ProgramData\\XingMangAI\\Cli\\native\\grok')
+    // Grok 在 macOS 上走官方 npm，且不用托管布局——调用方传的就是 null。
+    expect(cliInstallTargetDirectory('grok', {
+      platform: 'darwin',
+      npmGlobalRoot: '/usr/local/lib/node_modules',
+      managedNpmPrefix: null,
+      managedNativeRoot: null,
+    })).toBe(path.join('/usr/local/lib/node_modules', '@xai-official', 'grok'))
+  })
+
+  it('returns null rather than a guessed path when nothing resolves', () => {
+    expect(cliInstallTargetDirectory('codex', {
+      platform: 'linux',
+      npmGlobalRoot: null,
+      managedNpmPrefix: null,
+      managedNativeRoot: null,
+    })).toBeNull()
+    expect(cliInstallTargetDirectory('grok', {
+      platform: 'win32',
+      npmGlobalRoot: 'C:\\npm',
+      managedNpmPrefix: 'C:\\ProgramData\\XingMangAI\\Cli\\npm',
+      managedNativeRoot: null,
+    })).toBeNull()
   })
 
   it('allows Grok npm maintenance only after Darwin integrity verification', () => {

@@ -8,7 +8,7 @@ export const errors = {
   toolRunning: { title: '工具正在运行', body: '文件被占用。先关掉正在使用这个工具的窗口，再重试。', actions: ['重试', '查看日志'] },
   installBlocked: { title: '安装被杀毒软件拦住了', body: '请检查隔离记录，并把安装目录加入信任。', actions: ['复制路径', '重试'] },
   downloadTimeout: { title: '下载超时', body: '下载没有完成，已安装的工具不受影响。', actions: ['换官方源重试'] },
-  permission: { title: '需要管理员权限', body: '当前账户不能写入安装目录。', actions: ['以管理员身份重试'] },
+  permission: { title: '写不进安装目录', body: '本工具按普通权限运行，不会提权。请检查下面这个目录的写入权限，或杀毒软件是否拦了它。', actions: ['复制路径', '查看日志'] },
   updateIntegrity: { title: '更新没有装上', body: '当前版本不受影响。', actions: ['重新下载', '看日志'] },
   paymentClosed: { title: '支付窗口已手动关闭', body: '订单没有取消。', actions: ['看订单'] },
   paymentTimeout: { title: '订单已超时', body: '查询订单状态后可重新支付。', actions: ['重新支付'] },
