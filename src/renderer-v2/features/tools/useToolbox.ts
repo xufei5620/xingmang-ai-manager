@@ -35,6 +35,19 @@ export function planConfigRefresh(input: { hasSnapshot: boolean; scansInFlight: 
   return input.hasSnapshot || input.scansInFlight ? 'config-only' : 'rescan'
 }
 
+/**
+ * 引导页只有一条进度条。「安装」把运行环境和工具串成一次任务后，第几步由工具
+ * 那个任务的那句话说（先开的任务排在前面），下载进度只有运行环境那个任务报得出，
+ * 所以文案取第一个任务、百分比取第一个报了数的。一个数都没有时不画进度条，
+ * 引导页那句「正在安装工具，请稍候」照旧在。
+ */
+export function guideJobProgress(jobs: Record<string, ToolJob>): { label: string; percent: number } | undefined {
+  const running = Object.values(jobs)
+  const percent = running.find((job) => typeof job.percent === 'number')?.percent
+  if (running.length === 0 || percent === undefined) return undefined
+  return { label: running[0].label, percent }
+}
+
 export function useToolbox(bridge: XingmangApi | null, enabled: boolean, scope: string) {
   const [snapshot, setSnapshot] = useState<ToolboxSnapshot | null>(null)
   const [loading, setLoading] = useState(false)

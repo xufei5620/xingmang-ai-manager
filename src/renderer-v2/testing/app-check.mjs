@@ -2714,8 +2714,35 @@ test('failed reset retains the selected key and retries reset without silently m
   } finally { await page.close() }
 })
 
-test('an unreadable Node version blocks the CLI install and says which step is blocking (R-G6)', async () => {
+// 第十一批 2：能代装的平台上，认不出版本的 Node 不再拦住安装，而是在同一次「安装」
+// 里先重新准备运行环境，再装工具；两段各记一次调用，顺序固定。
+test('an unreadable Node version is prepared again inside the same install (R-G6)', async () => {
   const page = await open('nodeVersionUnknown=1')
+  try {
+    await page.getByTestId('tool-row-gemini').getByText('未安装').waitFor()
+    await page.getByTestId('tool-gemini-primary').click()
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'installCli'))
+    const methods = await page.evaluate(() => window.v2Test.calls.map((entry) => entry.method).filter((method) => method === 'installNodeRuntime' || method === 'installCli'))
+    assert.deepEqual(methods, ['installNodeRuntime', 'installCli'])
+    await page.getByTestId('tool-row-gemini').getByText('未安装').waitFor({ state: 'detached' })
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('a failed runtime stage says the tool never started and does not run the CLI install', async () => {
+  const page = await open('nodeVersionUnknown=1&nodeInstallFail=1')
+  try {
+    await page.getByTestId('tool-row-gemini').getByText('未安装').waitFor()
+    await page.getByTestId('tool-gemini-primary').click()
+    await page.getByTestId('operation-error-detail').filter({ hasText: 'Node.js 运行环境没装上，Gemini CLI 还没开始安装' }).waitFor()
+    assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => entry.method === 'installCli')), false)
+    await page.getByRole('button', { name: '返回', exact: true }).click()
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('an unreadable Node version still blocks the CLI install where the app cannot install Node (R-G6)', async () => {
+  const page = await open('nodeVersionUnknown=1&runtimeExternal=1')
   try {
     await page.getByTestId('tool-row-gemini').getByText('未安装').waitFor()
     await page.getByTestId('tool-gemini-primary').click()
@@ -2757,8 +2784,23 @@ test('a permission failure hands over the install directory instead of offering 
   } finally { await page.close() }
 })
 
-test('an unreadable Node version leaves the guide runtime step unfinished (R-G6)', async () => {
+test('an unreadable Node version leaves the guide runtime step to the one install button (R-G6)', async () => {
   const page = await open('nodeVersionUnknown=1&guest=1&missingConfig=1')
+  try {
+    await page.getByTestId('welcome-steps').click()
+    await page.getByTestId('guide-route-gemini').check()
+    await page.getByTestId('guide-next').click()
+    const guide = page.getByTestId('start-guide')
+    await guide.getByText('点「安装」就行，缺的运行环境会一并装好。', { exact: true }).waitFor()
+    assert.equal(await page.getByTestId('guide-node').count(), 0)
+    await expect(page.getByTestId('guide-install')).toBeEnabled()
+    await expect(page.getByTestId('guide-next')).toBeDisabled()
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('an unreadable Node version leaves the guide runtime step unfinished where the app cannot install Node (R-G6)', async () => {
+  const page = await open('nodeVersionUnknown=1&guest=1&missingConfig=1&runtimeExternal=1')
   try {
     await page.getByTestId('welcome-steps').click()
     await page.getByTestId('guide-route-gemini').check()
