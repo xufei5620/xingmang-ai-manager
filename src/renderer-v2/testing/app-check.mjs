@@ -722,6 +722,48 @@ test('the records page opens the folder a record was made in (第七批 8)', asy
   } finally { await page.close() }
 })
 
+test('a summary-only record explains why its view button is greyed out (第八批 5)', async () => {
+  const page = await open('allInstalled=1&recentWorkspaces=1')
+  try {
+    await page.getByTestId('nav-sessions').click()
+    const summaryOnly = page.getByTestId('sessions-view-codex:4')
+    await summaryOnly.waitFor()
+    assert.equal(await summaryOnly.isDisabled(), true)
+    assert.equal(await summaryOnly.getAttribute('title'), '这条记录只有摘要，对话原文已经不在这台电脑上了，看不了全文')
+    // 能看的那一行不挂说明，免得鼠标一扫全是提示。
+    assert.equal(await page.getByTestId('sessions-view-claude:1').getAttribute('title'), null)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('an exported report can be revealed in its folder and says so when it moved (第八批 5)', async () => {
+  const page = await open('allInstalled=1')
+  try {
+    await page.getByTestId('nav-health').click()
+    const health = page.getByTestId('page-health')
+    await health.waitFor()
+    await health.getByRole('button', { name: '导出检查报告', exact: true }).click()
+    await health.getByText('诊断报告已导出：C:\\Fixture\\xingmang-diagnostics.txt', { exact: true }).waitFor()
+    const reveal = health.getByTestId('result-notice-reveal')
+    assert.equal(await reveal.innerText(), '打开所在位置')
+    await reveal.click()
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'revealExportedFile'))
+    // 交回主进程的就是导出返回的那条路径，界面不拼任何别的位置。
+    assert.deepEqual(
+      (await page.evaluate(() => window.v2Test.calls)).filter((entry) => entry.method === 'revealExportedFile').map((entry) => entry.args),
+      [['C:\\Fixture\\xingmang-diagnostics.txt']],
+    )
+
+    // 文件被挪走了：按钮旁边说一句，上面那句「已导出」和路径留着，用户还能照着找。
+    await page.evaluate(() => { window.v2Test.fail = 'revealExportedFile'; window.v2Test.failMessage = '导出的文件已经不在原来的位置了，可能被移动或删除。' })
+    await reveal.click()
+    await health.getByText('导出的文件已经不在原来的位置了，可能被移动或删除。').waitFor()
+    await health.getByText('诊断报告已导出：C:\\Fixture\\xingmang-diagnostics.txt', { exact: true }).waitFor()
+    await page.evaluate(() => { window.v2Test.fail = '' })
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('the home recent card opens a record folder and says so when it cannot', async () => {
   const page = await open('allInstalled=1&recentWorkspaces=1')
   try {
@@ -1532,6 +1574,39 @@ test('Markdown announcements render headings, lists, emphasis and links', async 
     assert.deepEqual(await dialog.locator('li').allInnerTexts(), ['第一项', '第二项'])
     assert.equal(await dialog.locator('strong').innerText(), '重点提醒')
     assert.equal(await dialog.getByRole('link', { name: '官方说明' }).getAttribute('href'), 'https://xm.solov.cc/help')
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('a blocked announcement link is copied for the browser instead of failing', async () => {
+  const page = await open('noticeMarkdown=1&externalBlocked=1')
+  try {
+    await page.evaluate(() => {
+      window.__blockedLinkClipboard = { values: [], reject: false }
+      Object.defineProperty(navigator, 'clipboard', {
+        configurable: true,
+        value: { writeText: async (text) => {
+          if (window.__blockedLinkClipboard.reject) throw new Error('Clipboard access denied')
+          window.__blockedLinkClipboard.values.push(text)
+        } },
+      })
+    })
+    await page.getByTestId('page-home').waitFor()
+    await page.getByRole('button', { name: /^公告/ }).click()
+    const dialog = page.getByRole('dialog', { name: '公告' })
+    const link = dialog.getByRole('link', { name: '官方说明' })
+    await link.click()
+    const hint = dialog.getByTestId('announcement-blocked-link')
+    await expect(hint).toContainText('已经帮你复制好了')
+    await expect(hint.locator('code')).toHaveText('https://xm.solov.cc/help')
+    assert.deepEqual(await page.evaluate(() => window.__blockedLinkClipboard.values), ['https://xm.solov.cc/help'])
+    await expect(dialog.getByRole('alert')).toHaveCount(0)
+    await expect(dialog.getByText('不允许打开该链接')).toHaveCount(0)
+
+    await page.evaluate(() => { window.__blockedLinkClipboard.reject = true })
+    await link.click()
+    await expect(hint).toContainText('请选中下面的地址复制')
+    await expect(hint.locator('code')).toHaveText('https://xm.solov.cc/help')
     await clean(page)
   } finally { await page.close() }
 })
