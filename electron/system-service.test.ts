@@ -3894,7 +3894,9 @@ describe('trusting the workspace the user picked before opening a CLI', () => {
     expect(JSON.parse(fs.readFileSync(trustedFolders, 'utf8'))).toEqual({ [workspace]: 'TRUST_FOLDER' })
   })
 
-  it('logs project settings that override the current account with key names only', async () => {
+  // 这组用例的服务按 linux 平台构造，而判定按平台选路径语义：Windows 主机上的临时目录
+  // 是 D:\ 开头，按 posix 看不是绝对路径，会被当成无效工作目录直接跳过。
+  it.runIf(process.platform !== 'win32')('logs project settings that override the current account with key names only', async () => {
     const userHome = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-launch-override-')))
     temporaryDirectories.push(userHome)
     const workspace = path.join(userHome, 'project')
