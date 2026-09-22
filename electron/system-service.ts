@@ -1679,6 +1679,70 @@ function containsComparableVersion(value: string | null): boolean {
     && /\bv?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?\b/.test(value)
 }
 
+/** 离线时给四家 CLI 最新版探测的总预算：到点先出画面，不让首屏干等各自的超时。 */
+export const offlineLatestVersionBudgetMs = 3_000
+
+/** 预算到点仍未返回时，版本列上显示的那句话。 */
+export const latestVersionUncheckedMessage = '当前可能没有网络，这次没有检查最新版本'
+
+/**
+ * 网络位置探测没能给出结果 = 这会儿八成没网。离线时每家 CLI 的最新版探测都会各自
+ * 耗满自己的超时（npm 8 秒、Grok 清单 10 秒），首屏就卡在这上面十几秒，而本地已装
+ * 版本其实一瞬间就读出来了。探测接口自己挂了却仍能上网时会误判，代价只是这一次不
+ * 显示「有新版本」，下次扫描或手动刷新会补上。
+ */
+export function networkProbeSuggestsOffline(
+  network: Pick<NetworkLocationStatus, 'region' | 'error'>,
+): boolean {
+  return network.region === 'unknown' && network.error !== null
+}
+
+/** 没检查最新版时的占位结果：未安装的照旧算 skipped，已装的算 failed 并带上原因。 */
+export function buildUncheckedLatestVersion(
+  provider: ProviderId,
+  installed: boolean,
+  checkedAt: string = new Date().toISOString(),
+): LatestVersionProbe {
+  const source = provider === 'grok' ? 'official-manifest' : 'npm'
+  return installed
+    ? { status: 'failed', version: null, source, checkedAt, error: latestVersionUncheckedMessage }
+    : { status: 'skipped', version: null, source, checkedAt, error: null }
+}
+
+/**
+ * 给一批最新版探测套一个总预算。`budgetMs` 为 null 时等齐（联网时的老行为）；到点
+ * 还没回来的项用占位结果顶上，那几个 Promise 仍会在后台自己走完并把结果写进缓存，
+ * 这里不再等、也不重新发起——联网后靠下一次扫描或用户点刷新补上，不加定时器。
+ */
+export async function settleLatestVersionProbes(
+  probes: readonly Promise<LatestVersionProbe>[],
+  unchecked: readonly LatestVersionProbe[],
+  budgetMs: number | null,
+): Promise<LatestVersionProbe[]> {
+  const settled = probes.map((probe, index) => probe.then(
+    (value) => value,
+    (reason): LatestVersionProbe => ({
+      ...unchecked[index],
+      status: 'failed',
+      error: reason instanceof Error ? reason.message : String(reason),
+    }),
+  ))
+  if (budgetMs === null) return Promise.all(settled)
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const deadline = new Promise<'timeout'>((resolve) => {
+    timer = setTimeout(() => resolve('timeout'), budgetMs)
+    timer.unref?.()
+  })
+  try {
+    return await Promise.all(settled.map(async (probe, index) => {
+      const outcome = await Promise.race([probe, deadline])
+      return outcome === 'timeout' ? unchecked[index] : outcome
+    }))
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
+}
+
 export function buildCliStatus(
   installed: ToolStatus,
   latest: LatestVersionProbe,
@@ -2434,24 +2498,16 @@ export function createSystemService(
     const cliResults: ToolStatus[] = cliProbes.map(buildCliToolStatusFromSettled)
     const networkRegion = network.region
 
-    const latestProbes = await Promise.allSettled(
-      providerIds.map((id, index) => inspectCliLatestVersion(
-        id,
-        cliResults[index],
-        networkRegion,
-      )),
+    // 离线时四家探测会一个个耗满超时，首屏本地信息早就齐了却还在等；
+    // 给整批一个总预算，到点先出画面（见 settleLatestVersionProbes）。
+    const uncheckedLatest = providerIds.map(
+      (id, index) => buildUncheckedLatestVersion(id, cliResults[index].installed),
     )
-    const latestVersions: LatestVersionProbe[] = latestProbes.map((probe, index) => (
-      probe.status === 'fulfilled'
-        ? probe.value
-        : {
-            status: 'failed',
-            version: null,
-            source: providerIds[index] === 'grok' ? 'official-manifest' : 'npm',
-            checkedAt: new Date().toISOString(),
-            error: probe.reason instanceof Error ? probe.reason.message : String(probe.reason),
-          }
-    ))
+    const latestVersions = await settleLatestVersionProbes(
+      providerIds.map((id, index) => inspectCliLatestVersion(id, cliResults[index], networkRegion)),
+      uncheckedLatest,
+      networkProbeSuggestsOffline(network) ? offlineLatestVersionBudgetMs : null,
+    )
     const scanSettings = store.read()
     const clis = Object.fromEntries(providerIds.map((id, index) => {
       const status = cliResults[index]
