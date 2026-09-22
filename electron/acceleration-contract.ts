@@ -1,6 +1,11 @@
 /** Renderer-safe acceleration state; node credentials and tunnel configuration stay in the host. */
 export const accelerationTrialSeconds = 20 * 60
 export const accelerationBonusSeconds = 10 * 60
+/**
+ * 剩这么多时长时提醒一次。总共只有 20 分钟，提太早没意义；提示语里的「5 分钟」
+ * 与这个数字是同一处来源，改这里那句话跟着变。
+ */
+export const accelerationExpiryWarningSeconds = 5 * 60
 /** Hidden command-palette promotion; validated again by the host before crediting. */
 export const accelerationBonusCode = 'XM-NEBULA-10M-7Q9K'
 export function isAccelerationBonusCode(value: unknown): value is string {

@@ -148,4 +148,9 @@ export const notificationOptions = [
     label: '工具有新版本',
     description: '你装的命令行工具出新版本时提醒一次',
   },
+  {
+    value: 'acceleration',
+    label: '加速时长提醒',
+    description: '免费加速还剩 5 分钟、以及用完自动断开时各提醒一次',
+  },
 ] as const

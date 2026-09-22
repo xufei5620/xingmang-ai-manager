@@ -7,7 +7,7 @@ import {
 
 function setup() {
   let enabled = true
-  const preferences = { install: true, balance: true, task: true, cliUpdate: true }
+  const preferences = { install: true, balance: true, task: true, cliUpdate: true, acceleration: true }
   const notifications: Array<
     EventEmitter & {
       show: ReturnType<typeof vi.fn>
@@ -82,6 +82,55 @@ describe('bounded native activity notifications', () => {
     h.notifications[0].emit('failed', {}, 'OS error')
     expect(h.onError).toHaveBeenCalledOnce()
     expect(h.controller.notify('install', '1')).toBe('requested')
+  })
+})
+
+describe('acceleration reminders sent by the main process', () => {
+  it('says how long is left and, on the second one, that acceleration already stopped', () => {
+    const h = setup()
+    expect(h.controller.notifyHost('accelerationExpiring', 'xm-account:1:t0')).toBe('requested')
+    expect(h.runtime.create).toHaveBeenCalledWith({
+      title: '加速还剩 5 分钟',
+      body: '当前账号的免费加速时长快用完了，用完会自动断开。',
+      silent: true,
+    })
+    // 同一次连接只提醒一次，每种各一条。
+    expect(h.controller.notifyHost('accelerationExpiring', 'xm-account:1:t0')).toBe('duplicate')
+    expect(h.controller.notifyHost('accelerationExhausted', 'xm-account:1:t0')).toBe('requested')
+    expect(h.runtime.create).toHaveBeenLastCalledWith({
+      title: '加速已断开',
+      body: '当前账号的免费加速时长已用完，加速已自动断开。',
+      silent: true,
+    })
+    // 下一次连接换一个编号，两条都能再发。
+    expect(h.controller.notifyHost('accelerationExpiring', 'xm-account:1:t1')).toBe('requested')
+  })
+  it('keeps the copy free of the relay site name and of any top-up pitch', () => {
+    const h = setup()
+    h.controller.notifyHost('accelerationExpiring', 'xm-account:1:t0')
+    h.controller.notifyHost('accelerationExhausted', 'xm-account:1:t0')
+    for (const call of (h.runtime.create as ReturnType<typeof vi.fn>).mock.calls) {
+      expect(`${call[0].title} ${call[0].body}`).not.toMatch(/solov|sub2api|new-api|充值|购买|续费/i)
+    }
+  })
+  it('follows the acceleration switch and the master setting like every other category', () => {
+    const h = setup()
+    h.preferences.acceleration = false
+    expect(h.controller.notifyHost('accelerationExhausted', 'xm-account:1:t0')).toBe('disabled')
+    h.preferences.acceleration = true
+    h.enable(false)
+    expect(h.controller.notifyHost('accelerationExhausted', 'xm-account:1:t0')).toBe('disabled')
+    h.enable(true)
+    expect(h.controller.notifyHost('accelerationExhausted', 'xm-account:1:t0')).toBe('requested')
+    expect(h.runtime.create).toHaveBeenCalledOnce()
+  })
+  it('takes the reader to the acceleration page after raising the window', () => {
+    const h = setup()
+    const order: string[] = []
+    h.focusMainWindow.mockImplementation(() => order.push('focus'))
+    h.controller.notifyHost('accelerationExhausted', 'xm-account:1:t0', () => order.push('navigate'))
+    h.notifications[0].emit('click')
+    expect(order).toEqual(['focus', 'navigate'])
   })
 })
 

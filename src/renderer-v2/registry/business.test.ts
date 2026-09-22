@@ -17,9 +17,16 @@ describe('renderer-v2 notification settings registry', () => {
       balance: true,
       task: true,
       cliUpdate: true,
+      acceleration: true,
     };
     expect([...notificationOptions.map(option => option.value)].sort())
       .toEqual(Object.keys(expected).sort());
+  });
+
+  it('describes the acceleration reminder without naming the relay site', () => {
+    const option = notificationOptions.find(entry => entry.value === 'acceleration');
+    expect(option?.label).toBe('加速时长提醒');
+    expect(`${option?.label} ${option?.description}`).not.toMatch(/solov|new-api|relay|sub2api/i);
   });
 
   it('describes the CLI update reminder in the customer’s own words', () => {
