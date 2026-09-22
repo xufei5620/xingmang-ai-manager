@@ -38,6 +38,7 @@ import {
 import { providerBaseUrls, type ProviderId } from './catalog'
 
 const temporaryHomes: string[] = []
+const statusLineCommand = '"/managed/node/bin/node" "/opt/app/resources/bundled-catalog/cli-status-line/xingmang-statusline.cjs"'
 const testModels: Record<ProviderId, string> = {
   claude: 'claude-opus-4-6',
   codex: 'gpt-5.5',
@@ -522,6 +523,75 @@ describe('native CLI configuration files', () => {
     const merged = JSON.parse(fs.readFileSync(settingsPath, 'utf8')) as Record<string, unknown>
     expect(merged.cleanupPeriodDays).toBe(7)
     expect(merged.language).toBe('japanese')
+  })
+
+  it('writes the bundled status line into a fresh Claude config when a command is given', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+
+    saveProviderConfig('claude', 'sk-relay', testModels.claude, 'reset', roots, {}, providerBaseUrls, statusLineCommand)
+
+    const [settingsPath] = providerConfigPaths('claude', roots)
+    const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8')) as Record<string, unknown>
+    expect(settings.statusLine).toEqual({ type: 'command', command: statusLineCommand })
+  })
+
+  it('writes no status line at all when no command is given', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+
+    saveProviderConfig('claude', 'sk-relay', testModels.claude, 'reset', roots, {}, providerBaseUrls)
+
+    const [settingsPath] = providerConfigPaths('claude', roots)
+    const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8')) as Record<string, unknown>
+    expect('statusLine' in settings).toBe(false)
+  })
+
+  it('adds the status line when merging over a config that has none', () => {
+    const home = temporaryHome()
+    const [settingsPath] = providerConfigPaths('claude', providerRoots(home))
+    fs.mkdirSync(path.dirname(settingsPath), { recursive: true })
+    fs.writeFileSync(settingsPath, `${JSON.stringify({ env: { CUSTOM_TOKEN: 'preserved' } }, null, 2)}\n`, 'utf8')
+
+    saveProviderConfig('claude', 'new-key', testModels.claude, 'merge', providerRoots(home), {}, providerBaseUrls, statusLineCommand)
+
+    const merged = JSON.parse(fs.readFileSync(settingsPath, 'utf8')) as Record<string, unknown>
+    expect(merged.statusLine).toEqual({ type: 'command', command: statusLineCommand })
+  })
+
+  it('leaves a status line the user configured himself untouched', () => {
+    const home = temporaryHome()
+    const [settingsPath] = providerConfigPaths('claude', providerRoots(home))
+    const own = { type: 'command', command: 'bun run ~/ccstatusline.ts', padding: 0 }
+    fs.mkdirSync(path.dirname(settingsPath), { recursive: true })
+    fs.writeFileSync(settingsPath, `${JSON.stringify({ statusLine: own }, null, 2)}\n`, 'utf8')
+
+    saveProviderConfig('claude', 'new-key', testModels.claude, 'merge', providerRoots(home), {}, providerBaseUrls, statusLineCommand)
+
+    const merged = JSON.parse(fs.readFileSync(settingsPath, 'utf8')) as Record<string, unknown>
+    expect(merged.statusLine).toEqual(own)
+  })
+
+  it('points our own status line at the new location after the app moved', () => {
+    const home = temporaryHome()
+    const [settingsPath] = providerConfigPaths('claude', providerRoots(home))
+    fs.mkdirSync(path.dirname(settingsPath), { recursive: true })
+    fs.writeFileSync(settingsPath, `${JSON.stringify({
+      statusLine: { type: 'command', command: '"C:\\Old\\node.exe" "C:\\Old\\xingmang-statusline.cjs"' },
+    }, null, 2)}\n`, 'utf8')
+
+    saveProviderConfig('claude', 'new-key', testModels.claude, 'merge', providerRoots(home), {}, providerBaseUrls, statusLineCommand)
+
+    const merged = JSON.parse(fs.readFileSync(settingsPath, 'utf8')) as Record<string, unknown>
+    expect(merged.statusLine).toEqual({ type: 'command', command: statusLineCommand })
+  })
+
+  it('rejects a status line command with a line break', () => {
+    const home = temporaryHome()
+    expect(() => saveProviderConfig(
+      'claude', 'sk-relay', testModels.claude, 'reset', providerRoots(home), {}, providerBaseUrls,
+      `${statusLineCommand}\nrm -rf /`,
+    )).toThrow('状态行命令不能包含换行符')
   })
 
   it('keeps the Claude retention period and language after switching back to the official account', () => {
