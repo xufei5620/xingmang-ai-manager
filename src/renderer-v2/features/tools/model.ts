@@ -82,6 +82,19 @@ export function installedLabel(installSource: ToolStatus['installSource']): stri
 }
 
 /**
+ * 失败对话框上的「复制路径」要复制的那个目录。已经装上的用探测到的安装目录；
+ * 还没装上的（首次安装失败）用主进程算出的落点，那正是用户要去查写入权限、
+ * 或加进杀毒白名单的地方。两者都没有就返回 null，界面据此不出这颗按钮。
+ *
+ * 路径带着用户名，只上屏与进剪贴板，不进日志、不进诊断导出（I13）。
+ */
+export function toolInstallDirectory(snapshot: ToolboxSnapshot | null, tool: ToolId | undefined): string | null {
+  if (!snapshot || !tool) return null
+  const status = tool === 'codexDesktop' ? snapshot.system.desktopApps.codex : snapshot.system.clis[tool]
+  return status?.installDirectory ?? status?.installTarget ?? null
+}
+
+/**
  * 原生安装器或 PATH 上其他来源装的 CLI，本工具的 npm 安装/回滚通道不该碰它：跑一次
  * npm install 会在 npm 全局目录另装一份，与用户在用的那份并存。对这类安装隐藏
  * 「更新」「回到推荐版本」按钮，改用一句被动提示。

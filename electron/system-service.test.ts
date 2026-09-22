@@ -16,6 +16,7 @@ import {
 import type { WindowsMachinePaths } from './windows-machine-paths'
 import { codexAuthSnapshotPaths, codexConfigSnapshotPaths, inspectProviderConfig, providerConfigPaths, saveProviderConfig } from './config-files'
 import type { MacosCodexAppInspection } from './macos-codex-app'
+import { managedCliPackageDirectory } from './cli-process-probe'
 import { managedNpmCacheRoot, managedNpmPrefix } from './managed-cli-paths'
 import {
   resolveCliCommand as resolveVerifiedToolCommand,
@@ -35,6 +36,11 @@ import {
   buildDesktopAppStatusFromSettled,
   buildNetworkLocationStatusFromSettled,
   buildToolStatusFromSettled,
+  buildUncheckedLatestVersion,
+  latestVersionUncheckedMessage,
+  networkProbeSuggestsOffline,
+  offlineLatestVersionBudgetMs,
+  settleLatestVersionProbes,
   createSystemService,
   DarwinGrokRetainedPathsError,
   inspectVerifiedDarwinGrokPostInstall,
@@ -45,6 +51,7 @@ import {
   detectNetworkRegion,
   fetchNpmPackageReleaseMetadata,
   formatMebibytes,
+  cliInstallTargetDirectory,
   grokInstallStrategyFor,
   grokManualUninstallResult,
   formatElapsedDuration,
@@ -700,6 +707,100 @@ describe('createSystemService', () => {
     expect(snapshot.clis.gemini).toMatchObject({ installed: false })
     expect(snapshot.clis.gemini.installSource).toBeUndefined()
   })
+
+  // 断网开应用时，四家 CLI 的最新版探测会一个个耗满自己的超时（npm 8 秒、Grok
+  // 清单 10 秒），首屏要十几秒才出来，而已装版本其实一瞬间就从本地读到了。
+  it('stops waiting on the npm latest probes when the network location probe says the machine is offline', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-offline-latest-budget-'))
+    temporaryDirectories.push(directory)
+    // 网络位置探测立刻失败（离线），最新版探测永不返回（半开网络里就是这样）。
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (!url.includes('registry') && !url.includes('npmmirror') && !url.includes('x.ai')) {
+        return Promise.reject(new Error('offline'))
+      }
+      return new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(new Error('aborted')))
+      })
+    }))
+    const service = createSystemService(
+      new AppSettingsStore(path.join(directory, 'settings.json'), directory),
+      {
+        platform: 'linux',
+        findExecutable: async () => null,
+        resolveCliInstallation: async (provider) => ({
+          commandPath: path.join(directory, 'npm', 'bin', provider),
+          installDirectory: path.join(directory, 'npm', 'lib'),
+          packageRoot: path.join(directory, 'npm', 'lib'),
+          npmPrefix: path.join(directory, 'npm'),
+          packageVersion: '1.2.3',
+          source: 'npm',
+        }),
+      },
+    )
+
+    const startedAt = Date.now()
+    const snapshot = await service.scanSystem(false)
+    const elapsed = Date.now() - startedAt
+
+    expect(elapsed).toBeLessThan(offlineLatestVersionBudgetMs + 4_000)
+    for (const provider of ['claude', 'codex', 'gemini', 'grok'] as const) {
+      // 只有「最新版」这一格说没检查成：已装状态照常，也不谎报有新版本。
+      expect(snapshot.clis[provider]).toMatchObject({
+        installed: true,
+        updateCheck: 'failed',
+        updateAvailable: false,
+        latestVersion: null,
+      })
+      expect(snapshot.clis[provider].updateError).toBe(latestVersionUncheckedMessage)
+    }
+    // 已装版本来自本地包清单，不受最新版探测影响（grok 的版本读本地二进制，
+    // 这个夹具里没有真文件，所以只看那三个走 npm 包清单的）。
+    for (const provider of ['claude', 'codex', 'gemini'] as const) {
+      expect(snapshot.clis[provider].version).toBe('1.2.3')
+    }
+  }, 20_000)
+
+  // 联网时不许有预算：网络位置探测拿到了结果，就照旧等最新版探测出结果，
+  // 否则慢一点的网络会平白丢掉「有新版本」。
+  it('still waits past the offline budget for the npm latest probes when the network location probe succeeds', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-online-latest-wait-'))
+    temporaryDirectories.push(directory)
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.includes('cdn-cgi/trace')) return new Response('ip=203.0.113.9\nloc=US\n', { status: 200 })
+      if (url.includes('registry.npmjs.org') || url.includes('registry.npmmirror.com')) {
+        await new Promise((resolve) => setTimeout(resolve, offlineLatestVersionBudgetMs + 500))
+        return new Response(JSON.stringify({ version: '9.9.9' }), { status: 200 })
+      }
+      throw new Error('offline')
+    }))
+    const service = createSystemService(
+      new AppSettingsStore(path.join(directory, 'settings.json'), directory),
+      {
+        platform: 'linux',
+        findExecutable: async () => null,
+        resolveCliInstallation: async (provider) => provider === 'grok' ? null : ({
+          commandPath: path.join(directory, 'npm', 'bin', provider),
+          installDirectory: path.join(directory, 'npm', 'lib'),
+          packageRoot: path.join(directory, 'npm', 'lib'),
+          npmPrefix: path.join(directory, 'npm'),
+          packageVersion: '1.2.3',
+          source: 'npm',
+        }),
+      },
+    )
+
+    const snapshot = await service.scanSystem(false)
+
+    for (const provider of ['claude', 'codex', 'gemini'] as const) {
+      expect(snapshot.clis[provider]).toMatchObject({
+        installed: true,
+        updateCheck: 'checked',
+        latestVersion: '9.9.9',
+      })
+    }
+  }, 20_000)
 
   it('reports Git with only its version number when it is installed', async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-git-present-'))
@@ -3205,6 +3306,71 @@ describe('CLI latest version state', () => {
     expect(grokInstallStrategyFor('linux')).toBe('external')
   })
 
+  it('names where a first install would land, mirroring the choices installCli makes', () => {
+    // 未装的工具没有 installDirectory，而错误面板上的「复制路径」恰恰要在那一刻
+    // 回答「它会装到哪」。这几条钉住的是这个映射与 installCli 的选路一致。
+    expect(cliInstallTargetDirectory('claude', {
+      platform: 'win32',
+      npmGlobalRoot: 'C:\\Users\\tester\\AppData\\Roaming\\npm\\node_modules',
+      managedNpmPrefix: null,
+      managedNativeRoot: null,
+    })).toBe(path.join('C:\\Users\\tester\\AppData\\Roaming\\npm\\node_modules', '@anthropic-ai', 'claude-code'))
+    // trusted-only 下装的是托管布局，落点根本不在用户的 npm 目录里。
+    expect(cliInstallTargetDirectory('claude', {
+      platform: 'win32',
+      npmGlobalRoot: 'C:\\Users\\tester\\AppData\\Roaming\\npm\\node_modules',
+      managedNpmPrefix: 'C:\\ProgramData\\XingMangAI\\Cli\\npm',
+      managedNativeRoot: null,
+    })).toBe(managedCliPackageDirectory('C:\\ProgramData\\XingMangAI\\Cli\\npm', '@anthropic-ai/claude-code', 'win32'))
+    // macOS 的托管布局把包放在 lib/node_modules 下，不是 prefix 根下。
+    // 分隔符不写死：拼接用的是运行平台的 path，Windows 分片上同一个落点是
+    // 反斜杠，这里钉的是「走托管 lib/node_modules，而不是用户的 npm 全局根」。
+    const darwinManaged = cliInstallTargetDirectory('gemini', {
+      platform: 'darwin',
+      npmGlobalRoot: '/usr/local/lib/node_modules',
+      managedNpmPrefix: '/Users/alex/Library/Application Support/XingMangAI/Cli/npm',
+      managedNativeRoot: null,
+    })
+    expect(darwinManaged).toBe(managedCliPackageDirectory(
+      '/Users/alex/Library/Application Support/XingMangAI/Cli/npm',
+      '@google/gemini-cli',
+      'darwin',
+    ))
+    expect(darwinManaged).toContain('lib')
+    expect(darwinManaged).not.toContain('usr')
+  })
+
+  it('points Windows Grok at its native directory, since npm never writes that install', () => {
+    expect(cliInstallTargetDirectory('grok', {
+      platform: 'win32',
+      npmGlobalRoot: 'C:\\Users\\tester\\AppData\\Roaming\\npm\\node_modules',
+      managedNpmPrefix: 'C:\\ProgramData\\XingMangAI\\Cli\\npm',
+      managedNativeRoot: 'C:\\ProgramData\\XingMangAI\\Cli\\native\\grok',
+    })).toBe('C:\\ProgramData\\XingMangAI\\Cli\\native\\grok')
+    // Grok 在 macOS 上走官方 npm，且不用托管布局——调用方传的就是 null。
+    expect(cliInstallTargetDirectory('grok', {
+      platform: 'darwin',
+      npmGlobalRoot: '/usr/local/lib/node_modules',
+      managedNpmPrefix: null,
+      managedNativeRoot: null,
+    })).toBe(path.join('/usr/local/lib/node_modules', '@xai-official', 'grok'))
+  })
+
+  it('returns null rather than a guessed path when nothing resolves', () => {
+    expect(cliInstallTargetDirectory('codex', {
+      platform: 'linux',
+      npmGlobalRoot: null,
+      managedNpmPrefix: null,
+      managedNativeRoot: null,
+    })).toBeNull()
+    expect(cliInstallTargetDirectory('grok', {
+      platform: 'win32',
+      npmGlobalRoot: 'C:\\npm',
+      managedNpmPrefix: 'C:\\ProgramData\\XingMangAI\\Cli\\npm',
+      managedNativeRoot: null,
+    })).toBeNull()
+  })
+
   it('allows Grok npm maintenance only after Darwin integrity verification', () => {
     expect(buildCliMaintenancePlan(
       'grok',
@@ -3337,6 +3503,96 @@ describe('CLI latest version state', () => {
       npmPrefix: null,
       source: 'native',
     }, null)).toEqual({ kind: 'claude-native' })
+  })
+})
+
+describe('latest version probe budget when the machine looks offline', () => {
+  function hangingProbe(): Promise<LatestVersionProbe> {
+    return new Promise<LatestVersionProbe>(() => {})
+  }
+
+  function checkedProbe(version: string): LatestVersionProbe {
+    return { status: 'checked', version, source: 'npm', checkedAt: '2026-09-22T00:00:00.000Z', error: null }
+  }
+
+  it('treats a network location probe with no region and an error as "probably offline"', () => {
+    expect(networkProbeSuggestsOffline({ region: 'unknown', error: '无法连接网络位置服务' })).toBe(true)
+    expect(networkProbeSuggestsOffline({ region: 'unknown', error: null })).toBe(false)
+    expect(networkProbeSuggestsOffline({ region: 'mainland-china', error: null })).toBe(false)
+    // 探测拿到了 IP 却没拿到国家代码时 region 也是 unknown，但那台机器分明能上网。
+    expect(networkProbeSuggestsOffline({ region: 'outside-mainland-china', error: '备用源失败' })).toBe(false)
+  })
+
+  it('marks installed CLIs as unchecked and leaves missing ones skipped', () => {
+    expect(buildUncheckedLatestVersion('claude', true, '2026-09-22T00:00:00.000Z')).toEqual({
+      status: 'failed',
+      version: null,
+      source: 'npm',
+      checkedAt: '2026-09-22T00:00:00.000Z',
+      error: latestVersionUncheckedMessage,
+    })
+    expect(buildUncheckedLatestVersion('grok', true, '2026-09-22T00:00:00.000Z').source).toBe('official-manifest')
+    expect(buildUncheckedLatestVersion('gemini', false, '2026-09-22T00:00:00.000Z')).toEqual({
+      status: 'skipped',
+      version: null,
+      source: 'npm',
+      checkedAt: '2026-09-22T00:00:00.000Z',
+      error: null,
+    })
+  })
+
+  it('waits for every probe when no budget is given', async () => {
+    const unchecked = [buildUncheckedLatestVersion('claude', true), buildUncheckedLatestVersion('codex', true)]
+    const results = await settleLatestVersionProbes(
+      [Promise.resolve(checkedProbe('2.1.277')), Promise.resolve(checkedProbe('0.155.1'))],
+      unchecked,
+      null,
+    )
+
+    expect(results.map((probe) => probe.version)).toEqual(['2.1.277', '0.155.1'])
+  })
+
+  it('returns the placeholder for probes that miss the budget and the real result for those that made it', async () => {
+    const unchecked = [buildUncheckedLatestVersion('claude', true), buildUncheckedLatestVersion('codex', true)]
+    const startedAt = Date.now()
+
+    const results = await settleLatestVersionProbes(
+      [Promise.resolve(checkedProbe('2.1.277')), hangingProbe()],
+      unchecked,
+      40,
+    )
+
+    expect(Date.now() - startedAt).toBeLessThan(2_000)
+    expect(results[0]).toMatchObject({ status: 'checked', version: '2.1.277' })
+    expect(results[1]).toEqual(unchecked[1])
+    expect(results[1].error).toBe(latestVersionUncheckedMessage)
+  })
+
+  it('does not retry a probe that missed the budget', async () => {
+    let started = 0
+    const probe = (): Promise<LatestVersionProbe> => {
+      started += 1
+      return hangingProbe()
+    }
+    const unchecked = [buildUncheckedLatestVersion('claude', true)]
+
+    await settleLatestVersionProbes([probe()], unchecked, 30)
+    await new Promise((resolve) => setTimeout(resolve, 60))
+
+    // 预算到点只是不再等：那个 Promise 留在后台自己走完，这里不重新发起。
+    expect(started).toBe(1)
+  })
+
+  it('keeps a rejected probe readable instead of losing the reason', async () => {
+    const unchecked = [buildUncheckedLatestVersion('claude', true)]
+
+    const results = await settleLatestVersionProbes(
+      [Promise.reject(new Error('npm 官方源 查询失败'))],
+      unchecked,
+      1_000,
+    )
+
+    expect(results[0]).toMatchObject({ status: 'failed', source: 'npm', error: 'npm 官方源 查询失败' })
   })
 })
 

@@ -32,6 +32,12 @@ export interface RuntimeLogSnapshot {
   truncated: boolean
   counts: Record<RuntimeLogLevel, number>
   sources: string[]
+  // The log file survives restarts, so the feedback page cannot tell this run's
+  // entries from the previous one's without knowing which process wrote them.
+  // Entry ids carry the writing pid; a pid the OS has since reused is ruled out
+  // by also requiring the entry to be no older than this run.
+  currentProcessId: number
+  startedAt: string
   entries: RuntimeLogEntry[]
 }
 
@@ -128,6 +134,7 @@ async function renameIfPresent(source: string, destination: string): Promise<voi
 export class RuntimeLogStore {
   readonly directory: string
   readonly filePath: string
+  readonly startedAt: string
   private readonly appName: string
   private readonly appVersion: string
   private readonly packaged: boolean
@@ -146,6 +153,7 @@ export class RuntimeLogStore {
     this.maxFileBytes = options.maxFileBytes ?? 2 * 1024 * 1024
     this.archiveCount = options.archiveCount ?? 3
     this.now = options.now ?? (() => new Date())
+    this.startedAt = this.now().toISOString()
     this.adoptStartupFailures()
   }
 
@@ -307,6 +315,8 @@ export class RuntimeLogStore {
       truncated: entries.length > selected.length,
       counts,
       sources: [...sources].sort((left, right) => left.localeCompare(right)),
+      currentProcessId: process.pid,
+      startedAt: this.startedAt,
       entries: selected,
     }
   }

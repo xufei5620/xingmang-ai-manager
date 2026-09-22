@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { ProviderConfigSummary, ProviderId } from '../../../../electron/ipc-contract'
-import { canUninstallTool, codexDesktopUpdateKind, connectionReady, externalInstallHint, isExternallyManagedInstall, presentTools, providerFor, recommendedVersionVerb, rollbackVersion, sourceFor, toolAvailability, updateCheckFailure, versionSubtitle, type ToolboxSnapshot, type ToolPresentation } from './model'
+import { canUninstallTool, codexDesktopUpdateKind, connectionReady, externalInstallHint, isExternallyManagedInstall, presentTools, providerFor, recommendedVersionVerb, rollbackVersion, sourceFor, toolAvailability, toolInstallDirectory, updateCheckFailure, versionSubtitle, type ToolboxSnapshot, type ToolPresentation } from './model'
 import {
   writeManualSourceMarker,
   type SourceMarkerStorage,
@@ -319,6 +319,46 @@ describe('renderer install source labelling', () => {
     expect(externalInstallHint('path')).toBe('该版本不是通过本工具安装的，更新请用它原本的安装方式')
     expect(externalInstallHint('npm')).toBeNull()
     expect(externalInstallHint(undefined)).toBeNull()
+  })
+})
+
+describe('renderer copyable install directory', () => {
+  function snapshotWith(claude: Record<string, unknown>): ToolboxSnapshot {
+    const other = { installed: false, version: null, path: null, installDirectory: null }
+    return {
+      config: {},
+      platform: {},
+      system: {
+        clis: { claude, codex: other, gemini: other, grok: other },
+        desktopApps: { codex: { ...other, appVersion: null, installDirectory: '/Applications/ChatGPT.app' } },
+      },
+    } as unknown as ToolboxSnapshot
+  }
+
+  it('prefers the directory the probe actually found', () => {
+    expect(toolInstallDirectory(snapshotWith({
+      installed: true,
+      installDirectory: '/usr/local/lib/node_modules/@anthropic-ai/claude-code',
+      installTarget: '/Users/alex/Library/Application Support/XingMangAI/Cli/npm/lib/node_modules/@anthropic-ai/claude-code',
+    }), 'claude')).toBe('/usr/local/lib/node_modules/@anthropic-ai/claude-code')
+  })
+
+  it('falls back to where a first install would land, which is the whole point on a fresh machine', () => {
+    const target = '/Users/alex/Library/Application Support/XingMangAI/Cli/npm/lib/node_modules/@anthropic-ai/claude-code'
+    expect(toolInstallDirectory(snapshotWith({ installed: false, installDirectory: null, installTarget: target }), 'claude'))
+      .toBe(target)
+  })
+
+  it('returns null when neither is known, and when there is no snapshot or no tool', () => {
+    expect(toolInstallDirectory(snapshotWith({ installed: false, installDirectory: null }), 'claude')).toBeNull()
+    expect(toolInstallDirectory(snapshotWith({ installed: false, installDirectory: null, installTarget: null }), 'claude')).toBeNull()
+    expect(toolInstallDirectory(null, 'claude')).toBeNull()
+    expect(toolInstallDirectory(snapshotWith({ installed: true, installDirectory: '/x' }), undefined)).toBeNull()
+  })
+
+  it('reads the desktop app from its own partition, not from the CLI table', () => {
+    expect(toolInstallDirectory(snapshotWith({ installed: true, installDirectory: '/x' }), 'codexDesktop'))
+      .toBe('/Applications/ChatGPT.app')
   })
 })
 
