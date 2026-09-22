@@ -28,7 +28,7 @@
     "check:legacy": "cross-env XINGMANG_RENDERER=legacy vite build --outDir dist-legacy",
     "test:v2": "npm run test:v2:vitest && npm run test:v2:browser",
     "test:v2:vitest": "cross-env XINGMANG_RENDERER=v2 vitest run src/renderer-v2 electron/platform --no-file-parallelism --testTimeout=30000",
-    "test:v2:browser": "node --test --test-concurrency=1 src/renderer-v2/ui/browser-check.mjs src/renderer-v2/features/auth/browser-check.mjs src/renderer-v2/features/chat/browser-check.mjs src/renderer-v2/features/shell/newapi-announcements.browser-check.mjs src/renderer-v2/features/shell/announcement-persistence.browser-check.mjs src/renderer-v2/features/acceleration/browser-check.mjs src/renderer-v2/styles/contrast.browser-check.mjs e2e/v2-business.test.mjs e2e/v2-local-avatar.test.mjs src/renderer-v2/testing/app-check.mjs",
+    "test:v2:browser": "node --test --test-concurrency=1 src/renderer-v2/ui/browser-check.mjs src/renderer-v2/features/auth/browser-check.mjs src/renderer-v2/features/chat/browser-check.mjs src/renderer-v2/features/shell/newapi-announcements.browser-check.mjs src/renderer-v2/features/shell/announcement-persistence.browser-check.mjs src/renderer-v2/features/shell/keyboard.browser-check.mjs src/renderer-v2/features/acceleration/browser-check.mjs src/renderer-v2/styles/contrast.browser-check.mjs e2e/v2-business.test.mjs e2e/v2-local-avatar.test.mjs src/renderer-v2/testing/app-check.mjs",
     "canvas:prepare": "tsc -p canvas-v2/tsconfig.json --noEmit && vite build canvas-v2 --config canvas-v2/vite.config.ts && node scripts/copy-canvas-assets.mjs",
     "test:canvas": "vitest run canvas-v2/src",
     "test:canvas:visual": "node e2e/canvas-editor-smoke.mjs",

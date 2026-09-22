@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import { accelerationConflictNotice, accelerationFailureMessages, accelerationTrialSeconds, type AccelerationLine, type AccelerationState } from '../../../../electron/acceleration-contract'
-import { AccelerationView } from './AccelerationView'
+import { AccelerationView, lineOptionTarget } from './AccelerationView'
 
 function state(overrides: Partial<AccelerationState> = {}): AccelerationState {
   return {
@@ -105,5 +105,24 @@ describe('acceleration error strip', () => {
       const message = accelerationFailureMessages[reason]
       expect([reason, render(null, { error: message }).includes(message)]).toEqual([reason, true])
     }
+  })
+})
+
+describe('acceleration line list keys', () => {
+  it('moves one row at a time and stops at both ends instead of wrapping', () => {
+    expect(lineOptionTarget('ArrowDown', 0, 4)).toBe(1)
+    expect(lineOptionTarget('ArrowDown', 3, 4)).toBe(3)
+    expect(lineOptionTarget('ArrowUp', 2, 4)).toBe(1)
+    expect(lineOptionTarget('ArrowUp', 0, 4)).toBe(0)
+  })
+
+  it('jumps to the first and last rows with Home and End', () => {
+    expect(lineOptionTarget('Home', 2, 4)).toBe(0)
+    expect(lineOptionTarget('End', 0, 4)).toBe(3)
+  })
+
+  it('leaves every other key to the row and its buttons', () => {
+    for (const key of ['Enter', ' ', 'Tab', 'ArrowLeft', 'a']) expect(lineOptionTarget(key, 1, 4)).toBeNull()
+    expect(lineOptionTarget('ArrowDown', 0, 0)).toBeNull()
   })
 })
