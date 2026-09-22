@@ -71,8 +71,10 @@ describe('ensureProjectInstructions', () => {
 
 describe('resolveProjectInstructionsTemplatePath', () => {
   it('prefers the unpacked resources copy when packaged', () => {
-    const resourcesPath = '/opt/app/resources'
-    const resolved = resolveProjectInstructionsTemplatePath('/opt/app/resources/app.asar', {
+    // 两边都过 path.resolve：解析器自己就是这么归一化的，而 Windows 会给一个
+    // 裸的 POSIX 绝对路径补上当前盘符（/opt/... → D:\opt\...）。
+    const resourcesPath = path.resolve('/opt/app/resources')
+    const resolved = resolveProjectInstructionsTemplatePath(path.join(resourcesPath, 'app.asar'), {
       packaged: true,
       resourcesPath,
     })
