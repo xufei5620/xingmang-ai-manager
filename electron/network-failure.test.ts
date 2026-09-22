@@ -18,6 +18,8 @@ const chromiumFailures: [string, NetworkFailureReason][] = [
   ['net::ERR_INTERNET_DISCONNECTED', 'offline'],
   ['net::ERR_PROXY_CONNECTION_FAILED', 'proxy'],
   ['net::ERR_TUNNEL_CONNECTION_FAILED', 'proxy'],
+  ['net::ERR_UNSAFE_REDIRECT', 'intercepted'],
+  ['net::ERR_TOO_MANY_REDIRECTS', 'intercepted'],
 ]
 
 const nodeFailures: [string, NetworkFailureReason][] = [
@@ -43,6 +45,14 @@ describe('restricted network failure classification', () => {
     const cause = Object.assign(new Error('getaddrinfo ENOTFOUND'), { code: 'ENOTFOUND' })
     expect(classifyNetworkFailure(new TypeError('fetch failed', { cause }))).toBe('dns')
     expect(classifyNetworkFailure({ cause: { cause: new Error('net::ERR_CERT_DATE_INVALID') } })).toBe('tls')
+  })
+
+  // 门户劫持是受限网络里唯一一类「请求成功地到了别的地方」的失败。要求
+  // redirect:'error' 的调用方看不到那个 3xx：undici 把它变成 fetch failed，真正
+  // 的原因只在 cause 的 'unexpected redirect' 这句里。
+  it('reads the redirect undici refuses under redirect:error as a captive portal', () => {
+    expect(classifyNetworkFailure(new TypeError('fetch failed', { cause: new Error('unexpected redirect') })))
+      .toBe('intercepted')
   })
 
   it('stops walking causes instead of following a cycle', () => {

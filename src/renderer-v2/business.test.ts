@@ -210,6 +210,8 @@ describe('v2 business boundaries', () => {
   it('routes actionable diagnostic categories to their owning page', () => {
     expect(diagnosticTarget('PROVIDER_CODEX')).toBe('home')
     expect(diagnosticTarget('XINGMANG_NETWORK')).toBe('settings')
+    // 环境变量那条虽然叫 PROVIDER_*，要去的也是设置页而不是首页。
+    expect(diagnosticTarget('PROVIDER_ENVIRONMENT_OVERRIDE')).toBe('settings')
     expect(diagnosticTarget('RUNTIME_NODE')).toBe('maintenance')
   })
   it('tells the account page why the server refused instead of asking for a retry', () => {
