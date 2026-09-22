@@ -38,6 +38,7 @@ import {
   managedCliPackageDirectory,
   probeRunningCliProcesses,
 } from './cli-process-probe'
+import { buildClaudeStatusLineCommand } from './claude-status-line'
 import { isCodexDesktopExecutable } from './codex-desktop'
 import {
   createCodexDesktopService,
@@ -1943,6 +1944,8 @@ export interface SystemServiceOptions {
   runtimeLog?: RuntimeLogLike
   /** 随包的中文 AGENTS.md 模板路径；缺省则打开目录时不生成项目说明。 */
   projectInstructionsTemplatePath?: string
+  /** 随包的 Claude Code 状态行脚本路径；缺省则不给 Claude Code 写 statusLine。 */
+  claudeStatusLineScriptPath?: string
   /** 安装前那次磁盘剩余空间预检的读取口，测试用它造「够 / 不够 / 读不到」三种盘。 */
   readDiskSpace?: typeof readDiskSpace
 }
@@ -4318,6 +4321,24 @@ export function createSystemService(
     return inspectNativeProviderConfig(provider).apiKey
   }
 
+  /**
+   * Claude Code 的状态行命令。解析不到托管 Node、脚本没随包拷进来、路径里带 shell
+   * 元字符，一律返回 undefined——状态行是锦上添花，任何一环不成立都只是「这次不写
+   * 状态行」，不能让整条配置写入失败。
+   */
+  async function resolveClaudeStatusLineCommand(provider: ProviderId): Promise<string | undefined> {
+    if (provider !== 'claude') return undefined
+    const scriptPath = serviceOptions.claudeStatusLineScriptPath
+    if (!scriptPath) return undefined
+    try {
+      const nodeExecutable = await findInstalledExecutable('node')
+      if (!nodeExecutable) return undefined
+      return buildClaudeStatusLineCommand(nodeExecutable, scriptPath) ?? undefined
+    } catch {
+      return undefined
+    }
+  }
+
   async function saveConfig(
     payload: ConfigSavePayload,
     previewOnboarding: boolean,
@@ -4359,6 +4380,8 @@ export function createSystemService(
       if (!apiKey) throw new Error('请先填写 API Key')
       const availableModels = await fetchAvailableModels(apiKey)
       if (!availableModels.includes(model)) throw new Error(`当前 API Key 不支持模型 ${model}，请重新检测并选择可用模型`)
+      // 在 assertUnchanged 之前解析：找 node 要读 PATH，不该夹在「校验没变」和写入之间。
+      const statusLineCommand = await resolveClaudeStatusLineCommand(payload.provider)
       if (previewOnboarding && payload.provider === 'codex') return { backups: [], files: [] }
       assertUnchanged()
       // Invalidate previous consent before a write, including same-key manual
@@ -4367,7 +4390,7 @@ export function createSystemService(
         : previousOwnership === 'account' || previousOwnership === 'manual' ? previousOwnership : 'unknown')
       await configOwnership.write(payload.provider, before, 'manual', owner)
       assertUnchanged()
-      const result = saveProviderConfig(payload.provider, apiKey, payload.model, payload.mode, providerRoots, {}, activeSite.providerBaseUrls)
+      const result = saveProviderConfig(payload.provider, apiKey, payload.model, payload.mode, providerRoots, {}, activeSite.providerBaseUrls, statusLineCommand)
       await configOwnership.write(payload.provider, inspectNativeProviderConfig(payload.provider), source, owner)
       assertOwner()
       await store.setOfficialProvider(payload.provider, false)

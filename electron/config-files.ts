@@ -11,6 +11,7 @@ import {
 } from './codex-home'
 import { identityFromCodexAuthTokens } from './official-account-identity'
 import { removeCodexContextLimits } from './codex-context-limits'
+import { applyClaudeStatusLine, claudeStatusLineSetting } from './claude-status-line'
 import { assertNoReparseComponents, ensureSafeDataDirectory, readSafeUtf8FileSync } from './safe-local-data'
 
 const MAX_NATIVE_CONFIG_BYTES = 2 * 1024 * 1024
@@ -1307,6 +1308,7 @@ function createPlans(
   model: string,
   roots: ProviderConfigRoots,
   siteBaseUrls: Record<ProviderId, string>,
+  claudeStatusLineCommand?: string,
 ): FilePlan[] {
   const paths = providerConfigPaths(provider, roots)
   switch (provider) {
@@ -1330,6 +1332,7 @@ function createPlans(
           skipDangerousModePermissionPrompt: true,
           language: MANAGED_CLAUDE_RESPONSE_LANGUAGE,
           cleanupPeriodDays: MANAGED_CLAUDE_RETENTION_DAYS,
+          ...(claudeStatusLineCommand ? { statusLine: claudeStatusLineSetting(claudeStatusLineCommand) } : {}),
         }),
       }]
     case 'gemini':
@@ -1387,10 +1390,11 @@ function createMergePlans(
   model: string,
   roots: ProviderConfigRoots,
   siteBaseUrls: Record<ProviderId, string>,
+  claudeStatusLineCommand?: string,
 ): FilePlan[] {
   const paths = providerConfigPaths(provider, roots)
   const initialPlans = new Map(
-    createPlans(provider, apiKey, model, roots, siteBaseUrls).map((plan) => [plan.path, plan]),
+    createPlans(provider, apiKey, model, roots, siteBaseUrls, claudeStatusLineCommand).map((plan) => [plan.path, plan]),
   )
   const initial = (filePath: string): FilePlan => {
     const plan = initialPlans.get(filePath)
@@ -1414,6 +1418,7 @@ function createMergePlans(
       denyClaudeRelayTool(ensureRecord(parsed, 'permissions'))
       ensureClaudeResponseLanguage(parsed)
       extendClaudeSessionRetention(parsed)
+      if (claudeStatusLineCommand) applyClaudeStatusLine(parsed, claudeStatusLineCommand)
       parsed.model = model
       return [{ path: paths[0], content: jsonContent(parsed) }]
     }
@@ -1786,6 +1791,10 @@ export function saveProviderConfig(
   // explicitly only where "today's only site" is genuinely the right answer
   // (tests fixed to a single site).
   siteBaseUrlsInput: Record<ProviderId, string>,
+  // Claude Code 状态行那条命令（`"<node>" "<随包脚本>"`）。缺省 = 不写状态行，
+  // 与从前一致：解析不到托管 Node、脚本没随包拷进来、路径里有 shell 元字符，
+  // 调用方都只是不传，配置的其余部分照写。见 claude-status-line.ts。
+  claudeStatusLineCommand?: string,
 ): NativeConfigSaveResult {
   const apiKey = apiKeyInput.trim()
   const model = modelInput.trim()
@@ -1799,9 +1808,11 @@ export function saveProviderConfig(
   const configuredPaths = providerConfigPaths(provider, roots)
   for (const filePath of configuredPaths) assertSafeConfigPath(filePath, providerRoot, 'file')
 
+  const statusLineCommand = claudeStatusLineCommand?.trim() || undefined
+  if (statusLineCommand && /\r|\n/.test(statusLineCommand)) throw new Error('状态行命令不能包含换行符')
   const plans = mode === 'merge'
-    ? createMergePlans(provider, apiKey, model, roots, siteBaseUrlsInput)
-    : createPlans(provider, apiKey, model, roots, siteBaseUrlsInput)
+    ? createMergePlans(provider, apiKey, model, roots, siteBaseUrlsInput, statusLineCommand)
+    : createPlans(provider, apiKey, model, roots, siteBaseUrlsInput, statusLineCommand)
 
   assertNoReparseComponents(path.dirname(providerRoot), 'Provider 配置根目录')
   ensureSafeDataDirectory(providerRoot, 'Provider 配置根目录')

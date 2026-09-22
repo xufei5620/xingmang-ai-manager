@@ -110,6 +110,7 @@ import {
   installXingmangAiSkillFiles,
   resolveXingmangAiBundledSkillRoot,
 } from './xingmang-ai-skill'
+import { resolveClaudeStatusLineScriptPath } from './claude-status-line'
 import { resolveProjectInstructionsTemplatePath } from './project-instructions'
 import { ipcEventChannels, type AccountBalance } from './ipc-contract'
 import {
@@ -807,6 +808,10 @@ if (!hasSingleInstanceLock) {
         packaged: app.isPackaged,
         resourcesPath: process.resourcesPath,
       }),
+      claudeStatusLineScriptPath: resolveClaudeStatusLineScriptPath(app.getAppPath(), {
+        packaged: app.isPackaged,
+        resourcesPath: process.resourcesPath,
+      }) ?? undefined,
       ...rootedOptions.system,
       relayFetch,
       networkLocationFetch: (input, init) => net.fetch(input instanceof URL ? input.href : input, init),

@@ -127,12 +127,13 @@ Codex 那时 `recommended` 是 `null`，也就是那两天点过「更新」的�
 | Claude 的命令确认 | `permissions.defaultMode` | `default`（逐条问） | `bypassPermissions` | 本产品的卖点就是不用自己配、也不用自己按确认 |
 | Claude 的回复语言 | `language` | 未设（跟着对话语言走） | `简体中文` | 只靠 AGENTS.md 撑不住：克隆来的项目大多已有说明文件，模板不会生成 |
 | Claude 的记录保留期 | `cleanupPeriodDays` | 30 天 | 365 天 | 记录页、「接着聊」、导出都建立在文件还在的前提上 |
+| Claude 的状态行 | `statusLine` | 未设（终端里没有状态行） | 指向随包脚本的一条命令 | 用户按 token 付费，却看不到在用哪个模型、上下文吃到几成 |
 | Gemini 的记录保留期 | `general.sessionRetention.maxAge` | `"30d"` | `"365d"` | 同上 |
 | Gemini 的 IDE 模式 | `ide.enabled` | 关 | 开 | 装在 IDE 里的客户少一步 |
 | 目录信任 | 见 `docs/WORKSPACE-TRUST.md` | 每次问 | 本软件打开的目录替用户信任 | 同上 |
 | Gemini 的说明文件名 | `context.fileName` | `GEMINI.md` | 加上 `AGENTS.md` | 四家共用一份说明文件 |
 
-后三项之外，**语言与两个保留期是用户偏好而不是中转配置**：用户自己设过就一字不动（`merge`
+状态行与后三项之外，**语言与两个保留期是用户偏好而不是中转配置**：用户自己设过就一字不动（`merge`
 路径只在键缺省时补），切回官方账号时也不收回（`reset` 重建官方模板时一并写回，否则换回官方
 账号的用户会悄悄回到 30 天自动删）。
 
@@ -141,6 +142,34 @@ Codex 那时 `recommended` 是 `null`，也就是那两天点过「更新」的�
 用户都会被我们自己造成的配置警告一次。
 
 **验证依据**（沙箱，2026-09-22）：
+
+- **Claude Code 2.1.278 的 `statusLine` 入参 —— 跑起来抓到了**。给 `~/.claude/settings.json`
+  写一条把 stdin 落盘的 `statusLine` 命令，在伪终端里跑一次 `claude`，抓到的就是下面这些键
+  （随包脚本 `bundled-catalog/cli-status-line/xingmang-statusline.cjs` 只认这三处）：
+
+  ```jsonc
+  {
+    "model": { "id": "claude-sonnet-5", "display_name": "Sonnet 5" },
+    "workspace": { "current_dir": "…", "project_dir": "…", "added_dirs": [] },
+    "context_window": {
+      "total_input_tokens": 0, "total_output_tokens": 0,
+      "context_window_size": 1000000,
+      "current_usage": null, "used_percentage": null, "remaining_percentage": null
+    },
+    "cost": { "total_cost_usd": 0, … }, "exceeds_200k_tokens": false, "version": "2.1.278"
+  }
+  ```
+
+  要紧的两点：**一次请求都没发过时 `used_percentage` 是 `null` 而不是 0**（脚本这时按
+  `total_input_tokens / context_window_size` 自己算，`Number(null)` 是 0，照着写会显示成假的
+  0%）；`context_window_size` 跟着模型走，1M 上下文的模型回的就是 1000000。二进制里这条命令
+  的刷新间隔是 300 毫秒，所以脚本必须只读 stdin、不出网、不读配置文件。
+  `cost.total_cost_usd` 是 Claude Code 按官方价自己算的，**与中转计费对不上，刻意不显示**。
+  同一次运行里还确认了：**命令是交给 shell 执行的**，两段路径各自加引号后，装在带空格的
+  目录里照样跑得起来（Linux 实测）。Windows 那侧只有间接证据——包里给插件命令写的是
+  「平台 shell（macOS/Linux 用 `sh`，Windows 用 `cmd.exe`）」，而 CLI 里跑用户命令的地方
+  都是 `spawn(命令, [], { shell: true })`，Node 在 Windows 上会补 `cmd.exe /d /s /c` 与外层
+  引号，所以 `"<node>" "<脚本>"` 这种写法是稳的。**真机没演过，出包后要看一眼。**
 
 - **Claude Code 2.1.277 — 跑起来看到了**。`~/.claude/settings.json` 写
   `{"language":"简体中文"}`，把 `ANTHROPIC_BASE_URL` 指到本机假接口（原样落盘请求体、一律回
