@@ -7,17 +7,16 @@
 
 ## 开发
 
-- 新增 `electron/starter-workspace.ts`：
-  - `resolveStarterWorkspaceParent` 选上层目录：优先 `app.getPath('documents')`；Windows 上文档路径
-    带 `OneDrive` / `OneDrive - 公司名` 一段、或落在 `OneDrive` / `OneDriveConsumer` /
-    `OneDriveCommercial` 环境变量指的目录里，macOS 上 iCloud 云盘容器里有 `Documents`（「桌面与文稿」
-    已打开），以及文档不存在、不是绝对路径时，一律退到用户主目录。
-  - `createStarterWorkspace` 在上层目录的 `XingmangProjects/` 里建 `my-project`、`my-project-2`……
-    名字刻意用 ASCII、不带空格和括号（中文 Windows 上下游工具对非 ASCII / 括号路径的兼容没法逐个
-    真机验证）。容器走 `ensureSafeDataDirectory`，候选名用不带 `recursive` 的 `mkdir` 抢（撞名即
-    EEXIST 顺延，不先查后建），建成后 `assertNoReparseComponents` 复核整条路径（I8）；已有同名一律
-    不复用，最多顺延到 99；上层目录不存在时不替用户建；新目录先过 `classifyWorkspace`，落进敏感
-    名单就拒绝；系统错误的英文原文换成中文。
+- 新增 `electron/starter-workspace.ts`。`resolveStarterWorkspaceParent` 选上层目录：优先
+  `app.getPath('documents')`；Windows 上文档路径带 `OneDrive` / `OneDrive - 公司名` 一段、或落在
+  `OneDrive` / `OneDriveConsumer` / `OneDriveCommercial` 环境变量指的目录里，macOS 上 iCloud 云盘
+  容器里有 `Documents`（「桌面与文稿」已打开），以及文档不存在、不是绝对路径时，一律退到用户主目录。
+- `createStarterWorkspace` 在上层目录的 `XingmangProjects/` 里建 `my-project`、`my-project-2`……
+  名字刻意用 ASCII、不带空格和括号（中文 Windows 上下游工具对非 ASCII / 括号路径的兼容没法逐个
+  真机验证）。容器走 `ensureSafeDataDirectory`，候选名用不带 `recursive` 的 `mkdir` 抢（撞名即
+  EEXIST 顺延，不先查后建），建成后 `assertNoReparseComponents` 复核整条路径（I8）；已有同名一律
+  不复用，最多顺延到 99；上层目录不存在时不替用户建；新目录先过 `classifyWorkspace`，落进敏感
+  名单就拒绝；系统错误的英文原文换成中文。
 - `buildSensitiveWorkspacePrompt`（`electron/workspace-guard.ts`）多一个按钮与 `createIndex`，
   按钮顺序变为「新建一个项目文件夹 / 换一个文件夹 / 仍然打开」，「新建」是默认按钮（新手少做决定），
   直接关掉对话框（`cancelId`）仍等于「换一个文件夹」。`isOneDriveContainer` 改为导出。
