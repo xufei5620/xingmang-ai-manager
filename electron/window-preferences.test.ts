@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import {
   calculateUiZoom,
+  isWindowTitleReachable,
   parseWindowState,
   resolveCloseAction,
+  resolveRecoveredWindowBounds,
   resolveWindowPlacement,
   type AppWindowState,
   type WindowDisplay,
@@ -86,6 +88,61 @@ describe('window placement', () => {
     const broken = { id: 0, workArea: { x: 0, y: 0, width: 0, height: 0 } }
     expect(resolveWindowPlacement(undefined, [broken, secondary], primary.id).bounds.x).toBe(-1680)
     expect(() => resolveWindowPlacement(undefined, [broken], 0)).toThrow('No usable display work area')
+  })
+})
+
+describe('recovering a window after displays change', () => {
+  const onSecondary = { x: -1820, y: -50, width: 1280, height: 820 }
+
+  it('leaves a window alone while its display is still connected', () => {
+    expect(resolveRecoveredWindowBounds(onSecondary, onSecondary, [primary, secondary], primary.id)).toBeNull()
+  })
+
+  it('centers a window left on an unplugged display on the primary display at its restored size', () => {
+    expect(resolveRecoveredWindowBounds(onSecondary, onSecondary, [primary], primary.id)).toEqual({
+      x: 320, y: 110, width: 1280, height: 820,
+    })
+  })
+
+  it('sizes a maximized window by its restored bounds, not the vanished display', () => {
+    const maximized = secondary.workArea
+    const restore = { x: -1700, y: 0, width: 1100, height: 700 }
+    expect(resolveRecoveredWindowBounds(maximized, restore, [primary], primary.id)).toEqual({
+      x: 410, y: 170, width: 1100, height: 700,
+    })
+  })
+
+  it('shrinks a window that no longer fits onto a smaller primary display', () => {
+    const laptop: WindowDisplay = { id: 5, workArea: { x: 0, y: 0, width: 1366, height: 728 } }
+    const big = { x: 2000, y: 0, width: 1800, height: 1000 }
+    expect(resolveRecoveredWindowBounds(big, big, [laptop], laptop.id)).toEqual({
+      x: 0, y: 0, width: 1366, height: 728,
+    })
+  })
+
+  it('does not move a window the user parked partly off screen while its title bar is still grabbable', () => {
+    const parked = { x: 1700, y: 900, width: 1280, height: 820 }
+    expect(isWindowTitleReachable(parked, [primary])).toBe(true)
+    expect(resolveRecoveredWindowBounds(parked, parked, [primary], primary.id)).toBeNull()
+  })
+
+  it('moves a window whose title bar is above every work area even when its body is still visible', () => {
+    const titleHidden = { x: 100, y: -200, width: 1280, height: 820 }
+    expect(isWindowTitleReachable(titleHidden, [primary])).toBe(false)
+    expect(resolveRecoveredWindowBounds(titleHidden, titleHidden, [primary], primary.id)).toEqual({
+      x: 320, y: 110, width: 1280, height: 820,
+    })
+  })
+
+  it('treats a thin sliver of title bar as unreachable', () => {
+    const sliver = { x: 1880, y: 100, width: 1280, height: 820 }
+    expect(isWindowTitleReachable(sliver, [primary])).toBe(false)
+  })
+
+  it('does nothing when no usable display is reported', () => {
+    const broken = { id: 0, workArea: { x: 0, y: 0, width: 0, height: 0 } }
+    expect(resolveRecoveredWindowBounds(onSecondary, onSecondary, [broken], 0)).toBeNull()
+    expect(resolveRecoveredWindowBounds(onSecondary, onSecondary, [], 0)).toBeNull()
   })
 })
 
