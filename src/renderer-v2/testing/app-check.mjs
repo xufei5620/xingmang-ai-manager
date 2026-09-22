@@ -1251,7 +1251,7 @@ test('a slow startup restore opens the home page first and settles ownership aft
     await row.getByText('已配好').waitFor()
     await page.getByText('正在恢复登录').first().waitFor()
     assert.equal(await page.getByText('配置被改过').count(), 0)
-    assert.equal(await page.getByText('已有第三方配置').count(), 0)
+    assert.equal(await page.getByText('用的是别处的配置').count(), 0)
     assert.equal(await page.getByTestId('tool-claude-rewrite-key').count(), 0)
     assert.equal(await page.getByTestId('welcome-login').count(), 0)
     // 工具列表整块重读（useToolbox.read）才会连带读平台能力；Key 同步那一步自己的
