@@ -84,8 +84,9 @@ function directorySegment(payload) {
 }
 
 /**
- * used_percentage 在一次请求都没发过时是 null，这时按 total_input_tokens 自己算一遍；
- * 两个都没有就当 0——「刚开始，没用多少」比不显示更贴近用户的直觉。
+ * used_percentage 在一次请求都没发过时是 null，这时按 total_input_tokens 自己算一遍
+ * （刚开机那次两个都是 0，于是显示 0%）；连 context_window 这一段都没有的老版本
+ * 就不显示这一段，不瞎猜。
  */
 function contextPercent(payload) {
   const context = record(payload.context_window)
