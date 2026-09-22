@@ -18,7 +18,7 @@ import { pendingToolUpdates, readAnnouncedToolUpdates, rememberAnnouncedToolUpda
 import { isMissingWorkspace } from './features/tools/recent-workspaces'
 import { installedToolSyncLabel, useToolbox } from './features/tools/useToolbox'
 import { ManualUninstallDialog, type ManualUninstallState } from './features/tools/ManualUninstall'
-import type { OperationActionId } from './operation-error'
+import { operationLogPage, type OperationActionId } from './operation-error'
 import { accountTabs } from './registry/business'
 import { tools } from './registry/tools'
 import type { PageId } from './registry/pages'
@@ -362,7 +362,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     const failure = operationError
     setOperationError(null)
     if (action === 'retry') failure?.retry?.()
-    else if (action === 'log') navigate('maintenance')
+    else if (action === 'log') navigate(failure ? operationLogPage(failure) : 'feedback')
     else if (action === 'network') navigate('health')
     else if (action === 'recharge') navigate('account', 'recharge')
     else if (action === 'relogin') setAuth('login')

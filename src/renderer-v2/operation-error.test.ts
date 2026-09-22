@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { classifyOperationError, operationFallbackActions, presentOperationError, type OperationErrorKey } from './operation-error'
+import { classifyOperationError, operationFallbackActions, operationLogPage, presentOperationError, type OperationErrorKey } from './operation-error'
+import { networkFailureMessages } from '../../electron/network-failure'
 import { errors } from './registry/errors'
 
 /**
@@ -19,6 +20,8 @@ const catalogCoverage: Record<OperationErrorKey, { sample: string } | { unreacha
   installBlocked: { sample: 'Grok CLI 安装失败：安装文件已被隔离，请检查杀毒软件的隔离记录' },
   downloadTimeout: { sample: 'Codex CLI 安装失败：npm 官方源：request to registry 失败，reason: ETIMEDOUT' },
   permission: { sample: 'Claude Code 安装失败：npm 官方源：EPERM: operation not permitted, rename' },
+  diskFull: { sample: 'Claude Code 安装失败：npm 官方源：ENOSPC: no space left on device, write' },
+  tlsIntercepted: { sample: 'Codex CLI 安装失败：npm 官方源：request to https://registry.npmjs.org failed, reason: self signed certificate in certificate chain' },
   updateIntegrity: { sample: 'Claude Code 更新失败：SHA-512 完整性校验不一致' },
   backupIntegrity: { sample: '备份文件已损坏或被篡改' },
   unsafeStorage: { sample: '当前系统没有可用的密钥环，安全存储只能以明文保存，已拒绝写入托管 API Key。' },
@@ -158,6 +161,71 @@ describe('renderer-v2 operation error classification', () => {
     expect(presentOperationError('托管 npm 更新失败，且旧版本回滚失败：EPERM: operation not permitted')).toBeNull()
     // 「恢复备份失败」不是撤回没做成，照常归类。
     expect(presentOperationError('恢复备份失败：备份文件已损坏或被篡改')).not.toBeNull()
+  })
+
+  // 候选 4：这两句以前一句落 unknown「操作没有成功」，一句被 timeout 的「网络」
+  // 一词吞掉成「连不上星芒服务器」，用户于是去检查一个本来就通的网络。
+  it('names a full disk instead of sending the user to customer support', () => {
+    for (const full of [
+      'Claude Code 安装失败：npm 官方源：ENOSPC: no space left on device, write',
+      'Grok CLI 更新失败：ENOSPC',
+      '写入配置失败：磁盘空间不足',
+      'Codex CLI 安装失败：There is not enough space on the disk.',
+    ]) expect([full, classifyOperationError(full)]).toEqual([full, 'diskFull'])
+    const hint = presentOperationError('Claude Code 安装失败：npm 官方源：ENOSPC: no space left on device, write')
+    expect(hint?.title).toBe('磁盘空间不够')
+    expect(hint?.actions).toEqual([{ id: 'copyPath', label: '复制路径' }, { id: 'retry', label: '重试' }, { id: 'log', label: '查看日志' }])
+  })
+
+  it('names a replaced certificate instead of blaming the network', () => {
+    for (const intercepted of [
+      'Codex CLI 安装失败：npm 官方源：request to https://registry.npmjs.org failed, reason: self signed certificate in certificate chain',
+      'Gemini CLI 安装失败：unable to get local issuer certificate',
+      '账号接口请求失败：UNABLE_TO_VERIFY_LEAF_SIGNATURE',
+      '检查网络时出错：net::ERR_CERT_AUTHORITY_INVALID',
+      'DEPTH_ZERO_SELF_SIGNED_CERT',
+      // 主进程自己写好的那句中文同样归这一类：两边口径是同一份表，不是各写各的。
+      `重新写入 Key 没有完成：${networkFailureMessages.tls}`,
+    ]) expect([intercepted, classifyOperationError(intercepted)]).toEqual([intercepted, 'tlsIntercepted'])
+    const hint = presentOperationError('Gemini CLI 安装失败：unable to get local issuer certificate')
+    expect(hint?.title).toBe('连接被证书拦截')
+    expect(hint?.actions).toEqual([{ id: 'retry', label: '重试' }, { id: 'log', label: '查看日志' }])
+  })
+
+  it('leaves the neighbouring classes exactly where they were', () => {
+    // 两条新规则都排在 permission 之前，所以这两句是「有没有顺手改掉别的分类」的哨兵。
+    expect(classifyOperationError('Claude Code 安装失败：npm 官方源：EPERM: operation not permitted, rename')).toBe('permission')
+    expect(classifyOperationError('Grok CLI 安装失败：EBUSY: resource busy or locked')).toBe('toolRunning')
+    expect(classifyOperationError('Codex CLI 安装失败：npm 官方源：request to registry 失败，reason: ETIMEDOUT')).toBe('downloadTimeout')
+  })
+
+  // 候选 8：以前一律跳「安装卸载」页，连接检查失败的用户点开的是一张空的安装日志卡。
+  describe('where 「查看日志」 lands', () => {
+    it('sends a failure that never touched an install to the runtime log', () => {
+      for (const message of [
+        '连接检查失败：net::ERR_CERT_AUTHORITY_INVALID',
+        '重新写入 Key 没有完成：账号接口返回 401 Unauthorized',
+        '打开工具没有完成：找不到可用的终端',
+      ]) expect([message, operationLogPage({ message })]).toEqual([message, 'feedback'])
+    })
+
+    it('keeps the environment failures on the runtime log even when they happened during an install', () => {
+      for (const message of [
+        'Claude Code 安装失败：npm 官方源：EPERM: operation not permitted, rename',
+        'Claude Code 安装失败：npm 官方源：ENOSPC: no space left on device, write',
+        'Codex CLI 安装失败：self signed certificate in certificate chain',
+        'Claude Code 更新失败：文件被占用，检测到 Claude Code 正在运行（2 个进程），请关掉它的窗口再试。',
+        'Codex CLI 安装失败：npm 官方源：request to registry 失败，reason: ETIMEDOUT',
+      ]) expect([message, operationLogPage({ message, tool: 'claude' })]).toEqual([message, 'feedback'])
+    })
+
+    it('sends the failures only the install side writes down to the install log', () => {
+      for (const message of [
+        'Grok CLI 安装失败：安装文件已被隔离，请检查杀毒软件的隔离记录',
+        'Claude Code 更新失败：SHA-512 完整性校验不一致',
+        'Claude Code 安装失败：npm exited with code 1',
+      ]) expect([message, operationLogPage({ message, tool: 'claude' })]).toEqual([message, 'maintenance'])
+    })
   })
 
   it('keeps an exit for a failure it cannot name', () => {

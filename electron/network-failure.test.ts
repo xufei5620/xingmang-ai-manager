@@ -39,6 +39,17 @@ describe('restricted network failure classification', () => {
     expect(classifyNetworkFailure(Object.assign(new Error('request failed'), { code }))).toBe(reason)
   })
 
+  // npm 走 OpenSSL，说的是散句不是 errno：公司网关换掉证书时，装 CLI 这条路上
+  // 拿到的原文长这样。只认 errno 会让同一个网关在账号那侧认得出、安装那侧认不出。
+  it.each([
+    'request to https://registry.npmjs.org/@anthropic-ai%2fclaude-code failed, reason: self signed certificate in certificate chain',
+    'unable to get local issuer certificate',
+    'unable to verify the first certificate',
+    'certificate has expired',
+  ])('reads the OpenSSL wording npm prints as a replaced certificate: %s', (message) => {
+    expect(classifyNetworkFailure(new Error(message))).toBe('tls')
+  })
+
   it('reaches the real reason through the cause chain fetch wraps it in', () => {
     const cause = Object.assign(new Error('getaddrinfo ENOTFOUND'), { code: 'ENOTFOUND' })
     expect(classifyNetworkFailure(new TypeError('fetch failed', { cause }))).toBe('dns')

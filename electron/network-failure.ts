@@ -39,7 +39,10 @@ export const networkFailureMessages: Readonly<Record<NetworkFailureReason, strin
  */
 const failurePatterns: readonly { reason: NetworkFailureReason; test: RegExp }[] = [
   { reason: 'timeout', test: /ERR_TIMED_OUT|ERR_CONNECTION_TIMED_OUT|ETIMEDOUT|ESOCKETTIMEDOUT/i },
-  { reason: 'tls', test: /ERR_CERT|ERR_SSL|ERR_BAD_SSL|ERR_TLS|CERT_HAS_EXPIRED|SELF_SIGNED_CERT|UNABLE_TO_VERIFY_LEAF_SIGNATURE|HOSTNAME_MISMATCH|ERR_QUIC_HANDSHAKE_FAILED/i },
+  // npm / OpenSSL 说的是同一件事，但用的是另一套词：走 npm 的那条路（装 CLI、查
+  // 最新版）只会吐出 `self signed certificate in certificate chain` 这类英文散句，
+  // 只认 errno 风格的写法会让同一个公司网关在账号那侧认得出、在安装那侧认不出。
+  { reason: 'tls', test: /ERR_CERT|ERR_SSL|ERR_BAD_SSL|ERR_TLS|CERT_HAS_EXPIRED|SELF_SIGNED_CERT|UNABLE_TO_VERIFY_LEAF_SIGNATURE|UNABLE_TO_GET_ISSUER_CERT|CERT_UNTRUSTED|HOSTNAME_MISMATCH|ERR_QUIC_HANDSHAKE_FAILED|self[- ]signed certificate|unable to verify the first certificate|unable to get local issuer certificate|certificate has expired/i },
   { reason: 'proxy', test: /ERR_PROXY|ERR_TUNNEL_CONNECTION_FAILED|ERR_MANDATORY_PROXY_CONFIGURATION_FAILED|ERR_UNEXPECTED_PROXY_AUTH/i },
   { reason: 'dns', test: /ERR_NAME_NOT_RESOLVED|ERR_NAME_RESOLUTION_FAILED|ERR_DNS|ENOTFOUND|EAI_AGAIN/i },
   { reason: 'offline', test: /ERR_INTERNET_DISCONNECTED|ERR_NETWORK_CHANGED|ENETDOWN|ENETUNREACH|EHOSTUNREACH/i },
