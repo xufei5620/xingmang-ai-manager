@@ -266,6 +266,38 @@ function allowClaudeRelayTool(parsed: Record<string, unknown>): void {
   else record.deny = kept
 }
 
+// 四个 CLI 各自带着更新机制，会绕过 cli-verified-versions.ts 钉住的推荐版本：Claude Code
+// 在后台自更新，Gemini CLI 的 general.enableAutoUpdate 默认 true、启动就 npm install -g
+// 最新版，Codex 与 Grok 启动时催更并给出 npm 命令。装到的版本一旦被 CLI 自己换掉，名单
+// 就完全落空，客户可能第二天就跑在我们标了已知问题的版本上。安装与更新本来就归本软件
+// （走 npm 官方源并对 SHA-512，首页有新版本时提醒），所以写配置时一并关掉各家自己的更新。
+// 键名与沙箱实测结果记在 docs/CLI-VERIFIED-VERSIONS.md 的「CLI 自己的更新机制」一节。
+
+/**
+ * Claude Code 只认环境变量 DISABLE_AUTOUPDATER，settings.json 的 env 段就是上游给出的
+ * 写法（2.1.277 实测：claude doctor 显示 "disabled (set by env: DISABLE_AUTOUPDATER)"）。
+ * 刻意不用 DISABLE_UPDATES：那个连 `claude update` 也一起禁掉，而本软件的更新按钮之外，
+ * 用户手动跑一次也应当照常。
+ */
+function disableClaudeSelfUpdate(env: Record<string, unknown>): void {
+  env.DISABLE_AUTOUPDATER = '1'
+}
+
+/**
+ * Gemini CLI 两个开关各管一半：enableAutoUpdate 关掉「启动即静默升级」，
+ * enableAutoUpdateNotification 关掉那条英文催更提示。两个默认都是 true。
+ */
+function disableGeminiSelfUpdate(parsed: Record<string, unknown>): void {
+  const general = ensureRecord(parsed, 'general')
+  general.enableAutoUpdate = false
+  general.enableAutoUpdateNotification = false
+}
+
+/** Grok 的开关在 config.toml 的 [cli] 表里，等价环境变量是 GROK_DISABLE_AUTOUPDATER。 */
+function disableGrokSelfUpdate(parsed: Record<string, unknown>): void {
+  ensureRecord(parsed, 'cli').auto_update = false
+}
+
 function nestedString(source: Record<string, unknown> | null, keys: string[]): string {
   let current: unknown = source
   for (const key of keys) {
@@ -442,6 +474,7 @@ function applyCodexRelayConfig(
   parsed.model = model
   parsed.review_model = model
   parsed.model_provider = providerName
+  parsed.check_for_update_on_startup = false
   const providerEntry = ensureRecord(ensureRecord(parsed, 'model_providers'), providerName)
   providerEntry.name = typeof providerEntry.name === 'string' && providerEntry.name.trim()
     ? providerEntry.name
@@ -472,6 +505,7 @@ function buildCodexRelayConfigTemplate(
     'sandbox_mode = "workspace-write"',
     'disable_response_storage = true',
     'network_access = "enabled"',
+    'check_for_update_on_startup = false',
     'windows_wsl_setup_acknowledged = true',
     '',
     `[model_providers.${providerKey}]`,
@@ -579,7 +613,7 @@ function createCodexOfficialConfigPlans(
   if (mode === 'reset') {
     // Reset only the selected account source. Replacing its snapshot too keeps
     // an old official customization from returning after a relay round trip.
-    const initial = 'approval_policy = "on-request"\nsandbox_mode = "workspace-write"\n'
+    const initial = 'approval_policy = "on-request"\nsandbox_mode = "workspace-write"\ncheck_for_update_on_startup = false\n'
     plans.push({ path: paths.chatgpt, content: initial })
     plans.push({ path: paths.active, content: initial })
     return plans
@@ -1216,6 +1250,7 @@ function createPlans(
           env: {
             ANTHROPIC_AUTH_TOKEN: apiKey,
             ANTHROPIC_BASE_URL: siteBaseUrls.claude,
+            DISABLE_AUTOUPDATER: '1',
           },
           permissions: { defaultMode: 'bypassPermissions', deny: [claudeDeniedRelayTool] },
           model,
@@ -1228,6 +1263,7 @@ function createPlans(
         {
           path: paths[0],
           content: jsonContent({
+            general: { enableAutoUpdate: false, enableAutoUpdateNotification: false },
             ide: { enabled: true },
             security: { auth: { selectedType: 'gemini-api-key' } },
           }),
@@ -1246,6 +1282,9 @@ function createPlans(
       return [{
         path: paths[0],
         content: [
+          '[cli]',
+          'auto_update = false',
+          '',
           '[models]',
           'default = "grok"',
           'web_search = "grok"',
@@ -1293,6 +1332,7 @@ function createMergePlans(
       const env = ensureRecord(parsed, 'env')
       env.ANTHROPIC_AUTH_TOKEN = apiKey
       env.ANTHROPIC_BASE_URL = siteBaseUrls.claude
+      disableClaudeSelfUpdate(env)
       denyClaudeRelayTool(ensureRecord(parsed, 'permissions'))
       parsed.model = model
       return [{ path: paths[0], content: jsonContent(parsed) }]
@@ -1308,6 +1348,7 @@ function createMergePlans(
         // the CLI continues to authenticate with Google, so merge must restore
         // the API-key selector just like reset does.
         ensureRecord(ensureRecord(parsed, 'security'), 'auth').selectedType = 'gemini-api-key'
+        disableGeminiSelfUpdate(parsed)
         plans.push({ path: paths[0], content: jsonContent(parsed) })
       }
       // 读取失败必须中止保存，静默当空文件会把用户已有环境变量覆盖掉。
@@ -1342,6 +1383,7 @@ function createMergePlans(
       targetModel.api_key = apiKey
       targetModel.model = model
       targetModel.base_url = siteBaseUrls.grok
+      disableGrokSelfUpdate(parsed)
       return [{ path: paths[0], content: tomlContent(parsed) }]
     }
   }
@@ -1850,7 +1892,8 @@ function createOfficialAccountPlans(
         ...createCodexOfficialAuthPlans(roots),
       ]
     case 'claude': {
-      if (mode === 'reset') return [{ path: paths[0], content: jsonContent({}) }]
+      // 切回官方账号不收回自动更新开关：CLI 仍由本软件装、也由本软件更新。
+      if (mode === 'reset') return [{ path: paths[0], content: jsonContent({ env: { DISABLE_AUTOUPDATER: '1' } }) }]
       if (!fs.existsSync(paths[0])) return []
       const parsed = requireJson(paths[0], '现有 Claude settings.json')
       const env = parsed.env
@@ -1867,7 +1910,13 @@ function createOfficialAccountPlans(
     case 'gemini': {
       if (mode === 'reset') {
         return [
-          { path: paths[0], content: jsonContent({ security: { auth: { selectedType: 'oauth-personal' } } }) },
+          {
+            path: paths[0],
+            content: jsonContent({
+              general: { enableAutoUpdate: false, enableAutoUpdateNotification: false },
+              security: { auth: { selectedType: 'oauth-personal' } },
+            }),
+          },
           ...(fs.existsSync(paths[1]) ? [{ path: paths[1], content: '' }] : []),
         ]
       }
