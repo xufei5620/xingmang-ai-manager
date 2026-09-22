@@ -707,40 +707,15 @@ function inspectIgnoredCodexHome(
   return { blocking: configured && !landsOnCodexHome }
 }
 
-function environmentOverrideOutcome(
-  matches: readonly EnvironmentOverrideMatch[],
-  ignoredCodexHome: IgnoredCodexHomeFinding | null = null,
-): CheckOutcome {
-  const details: Record<string, boolean | number | string | null> = {
-    count: matches.length + (ignoredCodexHome ? 1 : 0),
-  }
-  const labels = [
-    // 写错的原值可能带着用户名，和其它变量一样只有名字进报告。
-    ...(ignoredCodexHome ? [`CODEX_HOME（${cliCatalog.codex.name}，写得不对，已忽略）`] : []),
-    ...matches.map((match) => {
-      // 只有变量名进报告。ANTHROPIC_AUTH_TOKEN 的值本身就是一把 Key，而诊断导出是
-      // 要发到客服群里的（I3、I13）——所以这里永远不读也不写它的值。
-      const note = match.overriding ? '' : '，已指向当前账号'
-      return `${match.name}（${cliCatalog[match.provider].name}${note}）`
-    }),
-  ]
-  labels.forEach((label, index) => {
-    details[`variable${index + 1}`] = label
+function environmentOverrideOutcome(matches: readonly EnvironmentOverrideMatch[]): CheckOutcome {
+  const details: Record<string, boolean | number | string | null> = { count: matches.length }
+  matches.forEach((match, index) => {
+    // 只有变量名进报告。ANTHROPIC_AUTH_TOKEN 的值本身就是一把 Key，而诊断导出是
+    // 要发到客服群里的（I3、I13）——所以这里永远不读也不写它的值。
+    const note = match.overriding ? '' : '，已指向当前账号'
+    details[`variable${index + 1}`] = `${match.name}（${cliCatalog[match.provider].name}${note}）`
   })
   const overriding = matches.filter((match) => match.overriding)
-  const listed = overriding.slice(0, 3).map((match) => match.name).join('、')
-  const rest = overriding.length > 3 ? `等 ${overriding.length} 项` : ''
-  if (ignoredCodexHome) {
-    const effect = ignoredCodexHome.blocking ? '，但在软件外面打开 Codex 会连不上当前账号' : ''
-    const others = overriding.length ? `；另外系统环境变量里还设置了 ${listed}${rest}，可能会盖过当前账号写入的配置` : ''
-    return {
-      // 连不上当前账号才算「待处理」（开机横幅只数这一档）；软件里打开的 Codex
-      // 本来就不受影响，其余情况只是提醒。
-      state: ignoredCodexHome.blocking ? 'fail' : 'warn',
-      summary: `电脑里有一个 Codex 的设置写得不对，软件已经忽略它${effect}${others}`,
-      details,
-    }
-  }
   if (!overriding.length) {
     return {
       state: 'pass',
@@ -750,6 +725,8 @@ function environmentOverrideOutcome(
       details,
     }
   }
+  const listed = overriding.slice(0, 3).map((match) => match.name).join('、')
+  const rest = overriding.length > 3 ? `等 ${overriding.length} 项` : ''
   return {
     // 用「需留意」不是「待处理」：变量可能是用户自己有意设的，而本程序既不该也
     // 不能替他删。文案用「可能」——进程环境与 Claude settings.env 的优先级本仓
@@ -758,6 +735,34 @@ function environmentOverrideOutcome(
     summary: `系统环境变量里设置了 ${listed}${rest}，可能会盖过当前账号写入的配置`,
     details,
   }
+}
+
+/**
+ * 叠在 environmentOverrideOutcome 之后而不是改它：写错的 CODEX_HOME 不是「盖过
+ * 配置」，是「本来要盖、被本程序忽略了」，结论要单独说，其余变量的判定原样保留。
+ */
+function withIgnoredCodexHome(outcome: CheckOutcome, finding: IgnoredCodexHomeFinding | null): CheckOutcome {
+  if (!finding) return outcome
+  const previous = outcome.details ?? {}
+  const labels = Object.keys(previous)
+    .filter((key) => /^variable\d+$/.test(key))
+    .sort((left, right) => Number(left.slice(8)) - Number(right.slice(8)))
+    .map((key) => previous[key])
+  const details: Record<string, boolean | number | string | null> = {
+    ...Object.fromEntries(Object.entries(previous).filter(([key]) => !/^variable\d+$/.test(key))),
+    count: labels.length + 1,
+  }
+  // 写错的原值可能带着用户名，和其它变量一样只有名字进报告。
+  const ordered = [`CODEX_HOME（${cliCatalog.codex.name}，写得不对，已忽略）`, ...labels]
+  ordered.forEach((label, index) => {
+    details[`variable${index + 1}`] = label
+  })
+  const effect = finding.blocking ? '，但在软件外面打开 Codex 会连不上当前账号' : ''
+  const others = outcome.state === 'pass' ? '' : `；另外${outcome.summary}`
+  // 连不上当前账号才算「待处理」（开机横幅只数这一档）；软件里打开的 Codex 本来
+  // 就不受影响，其余情况只是提醒。其它变量已经判出更重的一档时不往下拉。
+  const state = finding.blocking || outcome.state === 'fail' ? 'fail' : 'warn'
+  return { state, summary: `电脑里有一个 Codex 的设置写得不对，软件已经忽略它${effect}${others}`, details }
 }
 
 /**
@@ -1300,8 +1305,8 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
     {
       code: 'PROVIDER_ENVIRONMENT_OVERRIDE',
       title: '环境变量覆盖',
-      run: () => environmentOverrideOutcome(
-        collectEnvironmentOverrides(env, relaySite.providerBaseUrls, userHome),
+      run: () => withIgnoredCodexHome(
+        environmentOverrideOutcome(collectEnvironmentOverrides(env, relaySite.providerBaseUrls, userHome)),
         inspectIgnoredCodexHome(dependencies.ignoredCodexHome, providerRoots, providerInspections.get('codex')),
       ),
     },

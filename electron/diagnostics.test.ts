@@ -522,7 +522,7 @@ describe('diagnostics', () => {
 
       expect(item).toMatchObject({
         state: 'warn',
-        summary: '电脑里有一个 Codex 的设置写得不对，软件已经忽略它；另外系统环境变量里还设置了 OPENAI_API_KEY，可能会盖过当前账号写入的配置',
+        summary: '电脑里有一个 Codex 的设置写得不对，软件已经忽略它；另外系统环境变量里设置了 OPENAI_API_KEY，可能会盖过当前账号写入的配置',
         details: {
           count: 2,
           variable1: 'CODEX_HOME（Codex CLI，写得不对，已忽略）',
