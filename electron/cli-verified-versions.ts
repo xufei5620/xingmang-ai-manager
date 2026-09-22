@@ -47,9 +47,10 @@ export interface CliVersionCompatibility {
 }
 
 /**
- * 维护说明见 docs/CLI-VERIFIED-VERSIONS.md。首版只维护 Claude Code:
- * 它是这批客户最想要的那个,也是回归最频繁的那个。其余三个留空,行为与
- * 今天完全一致(装 latest),扩展点已经在这里。
+ * 维护说明见 docs/CLI-VERIFIED-VERSIONS.md。首版只维护 Claude Code,
+ * 2026-09-21 扩到 Codex 与 Gemini —— 扩它们的直接原因是 Codex 0.155.0
+ * 那次回归:那两天点过「更新」的客户装到的就是它,而名单管不到 Codex。
+ * Grok 仍然留空,行为与今天完全一致(装 latest)。
  */
 export const cliVerifiedVersions: Record<ProviderId, CliVersionCompatibility> = {
   claude: {
@@ -72,9 +73,31 @@ export const cliVerifiedVersions: Record<ProviderId, CliVersionCompatibility> = 
       },
     ],
   },
-  codex: { recommended: null, blocked: [] },
+  codex: {
+    recommended: {
+      version: '0.155.1',
+      verifiedAt: '2026-09-21',
+      verifiedSites: [],
+      note: '当前 npm latest,且把 0.155.0 那次「默认索要推理摘要」改了回去',
+    },
+    blocked: [
+      {
+        introduced: '0.155.0',
+        fixed: '0.155.1',
+        reason: '这个版本每次都向中转索要推理摘要，不支持的中转会直接拒绝请求（上游已在 0.155.1 修复）',
+      },
+    ],
+  },
   grok: { recommended: null, blocked: [] },
-  gemini: { recommended: null, blocked: [] },
+  gemini: {
+    recommended: {
+      version: '0.60.0',
+      verifiedAt: '2026-09-21',
+      verifiedSites: [],
+      note: '当前 npm latest;0.57~0.60 四个正式版全是安全加固,未发现与第三方 base URL 相关的回归',
+    },
+    blocked: [],
+  },
 }
 
 // 已装版本可能是 "2.1.277 (Claude Code)" 这样的整行输出,也可能是一句
@@ -160,6 +183,14 @@ export interface CliVersionAdvice {
   pinned: boolean
   /** 可以一键切到推荐版本。 */
   rollbackAvailable: boolean
+  /**
+   * 推荐版本比已装版本新——界面据此说「更新到」还是「回到」。两种情形都
+   * 真实存在:撞上 blocked 区间的用户要往前走到修复版(Codex 0.155.0 →
+   * 0.155.1),而跟着 npm latest 跑到推荐版本前面的用户才是真的退回来。
+   * 界面原先一律写「回到」,前一种情形就把用户指反了方向。缺省(未安装、
+   * 没名单、版本号读不出来)保持旧文案。
+   */
+  recommendedIsNewer?: boolean
 }
 
 export function buildCliVersionAdvice(
@@ -190,5 +221,8 @@ export function buildCliVersionAdvice(
     // 跟随最新版的用户只在真的撞上不兼容版本时才被拉回推荐版本;否则这是
     // 他自己选的策略,不该在每一行挂一个回滚按钮。
     rollbackAvailable: Boolean(recommended && comparable && !onRecommended && (pinned || blocked)),
+    ...(recommended && comparable && isNewerVersion(installedVersion, recommended)
+      ? { recommendedIsNewer: true }
+      : {}),
   }
 }
