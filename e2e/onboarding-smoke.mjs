@@ -21,6 +21,22 @@ const application = await electron.launch({
     XINGMANG_ONBOARDING_PREVIEW: '1',
   },
 })
+// Same Windows-runner failure as electron-ci-smoke.mjs: V8 can collect the
+// inspector's promise wrapper while the main process is busy. The only call
+// routed through here reads window geometry, so replaying it changes nothing.
+async function readMainProcess(body) {
+  let collected
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    try { return await application.evaluate(body) }
+    catch (error) {
+      if (!/Resulting promise was garbage collected/.test(String(error?.message))) throw error
+      collected = error
+      await new Promise((resolve) => setTimeout(resolve, 500))
+    }
+  }
+  throw collected
+}
+
 const page = await application.firstWindow()
 const pageErrors = []
 page.on('pageerror', (error) => pageErrors.push(error.message))
@@ -42,12 +58,15 @@ async function screenshot(name) {
 
 try {
   await page.getByRole('heading', { name: '选一种开始方式' }).waitFor()
-  assert.equal(await page.locator('[data-testid="start-guide"]').getAttribute('data-guide-route'), '')
-  assert.equal(await page.getByRole('radio', { checked: true }).count(), 0)
+  // 第十一批 1：新来的用户第一步默认选中推荐的 Codex 桌面端，一路「下一步」就能走；
+  // Linux 上没有桌面端，不替他选。
+  const recommended = process.platform === 'linux' ? '' : 'codexDesktop'
+  assert.equal(await page.locator('[data-testid="start-guide"]').getAttribute('data-guide-route'), recommended)
+  assert.equal(await page.getByRole('radio', { checked: true }).count(), recommended ? 1 : 0)
   assert.equal(await page.getByRole('radio').count(), process.platform === 'linux' ? 5 : 6)
-  assert.equal(await page.getByRole('button', { name: '下一步', exact: true }).isDisabled(), true)
+  assert.equal(await page.getByRole('button', { name: '下一步', exact: true }).isDisabled(), !recommended)
   assert.equal(await page.locator('.start-guide-steps > li').count(), 4)
-  recordPass('guide-requires-explicit-selection')
+  recordPass('guide-preselects-recommended-route')
   await screenshot('onboarding-dark.png')
 
   await page.getByRole('radio', { name: /先在星芒里聊天/ }).check()
@@ -76,7 +95,7 @@ try {
   await page.waitForFunction(() => document.documentElement.dataset.theme === 'light')
   recordPass('light-theme-survives-reload')
   await screenshot('onboarding.png')
-  const result = await application.evaluate(({ BrowserWindow, screen }) => {
+  const result = await readMainProcess(({ BrowserWindow, screen }) => {
     const window = BrowserWindow.getAllWindows()[0]
     return { bounds: window.getBounds(), workArea: screen.getDisplayMatching(window.getBounds()).workArea, zoom: window.webContents.getZoomFactor() }
   })

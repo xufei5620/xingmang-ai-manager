@@ -3,6 +3,7 @@ import { createSub2ApiRelayBackend } from './sub2api-relay-backend'
 import { parseRealmSavedAccount, RealmAccountError, type RealmSavedAccount } from './realm-account'
 import { sub2ApiManagedCliKeyProfiles } from './catalog'
 import { buildManagedCliKeyLimitUpdate, resolveManagedCliKeyLimits } from './account-key-quota'
+import { networkFailureMessages } from './network-failure'
 
 const now = Date.parse('2026-09-09T00:00:00Z')
 const user = (id = 7) => ({ id, username: `user-${id}`, email: 'same@example.test', balance: 100.25, status: 'active', role: 'user' })
@@ -585,7 +586,7 @@ describe('Sub2API RelayBackend adapter', () => {
     f.state.override = ({ url }) => url.pathname.endsWith('/payment/orders/verify')
       ? unavailable ? new Response('', { status: 503 }) : json({ id: 31, user_id: 7, out_trade_no: 'sub2_trade-31', status: 'COMPLETED' }) : undefined
     await f.client.login(loginInput)
-    await expect(f.client.getTopupOrderStatus!('sub2_trade-31')).rejects.toMatchObject({ code: 'NETWORK' })
+    await expect(f.client.getTopupOrderStatus!('sub2_trade-31')).rejects.toMatchObject({ code: 'UNAVAILABLE' })
     expect(f.client.getSessionState().authenticated).toBe(true)
     unavailable = false
     await expect(f.client.getTopupOrderStatus!('sub2_trade-31')).resolves.toBe('success')
@@ -738,7 +739,7 @@ describe('Sub2API RelayBackend adapter', () => {
     f.state.expired = true
     f.state.override = ({ url, token }) => url.pathname.endsWith('/auth/me') && token.startsWith('rotated-')
       ? new Response('', { status: 503 }) : undefined
-    await expect(f.client.getProfile()).rejects.toThrow('请求失败')
+    await expect(f.client.getProfile()).rejects.toThrow(networkFailureMessages.serviceUnavailable)
     expect(f.getSavedAccount()?.credential).toMatchObject({ refreshToken: 'rotated-refresh-7' })
     expect(f.client.getSessionState().authenticated).toBe(true)
   })
@@ -764,7 +765,7 @@ describe('Sub2API RelayBackend adapter', () => {
     f.state.expired = true
     f.state.override = ({ url, token }) => url.pathname.endsWith('/auth/me') && token === 'rotated-8'
       ? new Response('', { status: 503 }) : undefined
-    await expect(f.restore(saved(8))).rejects.toThrow('请求失败')
+    await expect(f.restore(saved(8))).rejects.toThrow(networkFailureMessages.serviceUnavailable)
     expect(f.client.getSessionState().account?.userId).toBe(7)
     expect(f.onCredentialRotation).toHaveBeenCalledWith(expect.objectContaining({ userId: '8',
       credential: expect.objectContaining({ refreshToken: 'rotated-refresh-8' }) }))
@@ -874,6 +875,16 @@ describe('Sub2API RelayBackend adapter', () => {
       expect(f.calls.some((call) => call.init.method === 'POST' && call.url.pathname.endsWith('/keys'))).toBe(false)
       expect(f.state.keys).toHaveLength(1)
     }
+  })
+
+  it('creates a capped replacement instead of reusing an unlimited same-named key when asked for a fresh key', async () => {
+    const profile = sub2ApiManagedCliKeyProfiles.codex
+    const f = fixture()
+    await f.client.login(loginInput)
+    f.state.keys = [keyRecord(31, { name: profile.keyName, status: 'quota_exhausted', quota: 5, quota_used: 5 }), keyRecord(32, { name: profile.keyName })]
+    const result = await f.client.provisionCliKey({ name: profile.keyName, group: profile.group, fresh: true, unlimitedQuota: false, remainQuota: 3, expiredTime: -1 })
+    expect(result.id).toBe(33)
+    expect(f.state.keys.find((key) => key.id === 33)).toMatchObject({ name: profile.keyName, quota: 3 })
   })
 
   it('creates the four requested groups once even with concurrent provisioning', async () => {
@@ -1027,7 +1038,7 @@ describe('Sub2API RelayBackend adapter', () => {
     const codex = resolveManagedCliKeyLimits((await f.client.listKeys()).keys, 1, 'solov-api').find((limit) => limit.provider === 'codex')!
     f.state.override = ({ url, init }) => url.pathname.endsWith('/keys/1') && init.method === 'PUT'
       ? new Response('', { status: 503 }) : undefined
-    await expect(f.client.updateKey(buildManagedCliKeyLimitUpdate(codex, 10, 1, 'solov-api'))).rejects.toThrow('请求失败')
+    await expect(f.client.updateKey(buildManagedCliKeyLimitUpdate(codex, 10, 1, 'solov-api'))).rejects.toThrow(networkFailureMessages.serviceUnavailable)
     expect(f.state.keys[0].quota).toBe(0)
   })
 
