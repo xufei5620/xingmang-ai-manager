@@ -23,8 +23,10 @@ function fixture() {
   const run = vi.fn<(executable: string, argv: string[]) => Promise<void>>().mockResolvedValue(undefined)
   const resolvePowerShell = vi.fn(() => powershell)
   const onElevationRequired = vi.fn()
-  const install = (file = packagePath, hash = sha256Base64) => addCodexDesktopPackage(file, { sha256Base64: hash, onElevationRequired }, { run, resolvePowerShell })
-  return { run, resolvePowerShell, onElevationRequired, install }
+  // 提权探测在单测里一律注入：真跑它会在 Windows 分片上多起一次 PowerShell。
+  const inspectElevationCapability = vi.fn(async () => 'unknown' as const)
+  const install = (file = packagePath, hash = sha256Base64) => addCodexDesktopPackage(file, { sha256Base64: hash, onElevationRequired }, { run, resolvePowerShell, inspectElevationCapability })
+  return { run, resolvePowerShell, onElevationRequired, inspectElevationCapability, install }
 }
 
 function decodeScript(argv: string[]): string {
@@ -181,7 +183,7 @@ describe('Codex Desktop Appx installation flow', () => {
   it('supports a buffered HRESULT diagnostic and an omitted progress callback', async () => {
     const f = fixture()
     f.run.mockRejectedValueOnce({ stderr: Buffer.from('安装失败 (0x80073D28)', 'utf8') })
-    await expect(addCodexDesktopPackage(packagePath, { sha256Base64 }, { run: f.run, resolvePowerShell: f.resolvePowerShell })).resolves.toBeUndefined()
+    await expect(addCodexDesktopPackage(packagePath, { sha256Base64 }, { run: f.run, resolvePowerShell: f.resolvePowerShell, inspectElevationCapability: f.inspectElevationCapability })).resolves.toBeUndefined()
     expect(f.run).toHaveBeenCalledTimes(2)
   })
 

@@ -22,7 +22,8 @@
   `windowsStandardAccountAdvice` 三个纯函数，`node-runtime.ts` 的
   `nodeRuntimeElevationFailureMessage` 与 `codex-desktop-appx.ts` 新抽出的
   `codexDesktopElevationFailureMessage` 共用它们，退出码 1223（取消）与 740（没拿到权限）
-  在拿到 `'standard'` 时换文案。两处只在这两个码上多花一次探测。
+  在拿到 `'standard'` 时换文案。两处只在这两个码上多花一次探测，探测在
+  `CodexAppxInstallDependencies` 上可注入——单测不为一句文案真起一次 PowerShell。
 - `diagnostics.ts` 的 `ADMINISTRATOR` 项加可注入的 `inspectElevationCapability`，
   只在 `platform === 'win32'` 且当前不是管理员时问；`details` 多一个 `canElevate`
   （`true` / `false` / 探不出来时 `null`）。macOS 走原路径，输出一个字没变。

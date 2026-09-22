@@ -129,6 +129,8 @@ interface CodexAppxInstallOptions { sha256Base64: string; contentLength?: number
 interface CodexAppxInstallDependencies {
   resolvePowerShell: () => string
   run: (executable: string, argv: string[]) => Promise<void>
+  /** 提权失败后问一次「这个账号在不在管理员组」。单测注入，免得为一句文案真起 PowerShell。 */
+  inspectElevationCapability?: () => Promise<WindowsElevationCapability>
 }
 
 const defaultDependencies: CodexAppxInstallDependencies = {
@@ -170,7 +172,7 @@ export async function addCodexDesktopPackage(
     // 「取消了授权」和「这个账号没有权限」在普通账号上会是同一个退出码，先问一次
     // 当前账号在不在管理员组，再决定说哪一句。
     const capability = cancelled || code === 740
-      ? await inspectWindowsElevationCapability()
+      ? await (dependencies.inspectElevationCapability ?? inspectWindowsElevationCapability)()
       : 'unknown'
     const message = codexDesktopElevationFailureMessage(cancelled ? 1223 : code, capability)
     if (message) throw new Error(message)
