@@ -2613,14 +2613,77 @@ test('a self-check failure is attributed per tool and never takes the other tool
     await page.getByTestId('health-connection-run').click()
     const claude = page.getByTestId('health-connection-result-claude')
     await claude.getByText('Claude Code · 分组与渠道', { exact: true }).waitFor()
-    await claude.getByRole('button', { name: '去处理', exact: true }).click()
-    await page.getByTestId('page-account').waitFor()
+    // 分组层的下一步是重签一把 Key，所以这一条给的是「重新写入 Key」；仍旧跳页的
+    // 那几层（这里是未配置的 Gemini）继续给「去处理」。
+    await claude.getByRole('button', { name: '重新写入 Key', exact: true }).waitFor()
+    await page.getByTestId('health-connection-result-gemini').getByRole('button', { name: '去处理', exact: true }).click()
+    await page.getByTestId('page-home').waitFor()
     await page.getByTestId('nav-more').click()
     await page.getByTestId('nav-health').click()
     // 一个工具的 IPC 抛错只影响它自己那一条。
     await page.getByTestId('health-connection-run').click()
     await page.getByTestId('health-connection-error-codex').waitFor()
     await page.getByTestId('health-connection-result-gemini').waitFor()
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// 候选 1：密钥 / 分组层报错时，按钮要就地把 Key 重写一遍，而不是把用户丢到账号页。
+test('the self-check key layer rewrites the current account Key in place and re-runs itself', async () => {
+  const page = await open('connectionCredential=1')
+  try {
+    await page.getByTestId('nav-more').click()
+    await page.getByTestId('nav-health').click()
+    await page.getByTestId('health-connection-run').click()
+    const claude = page.getByTestId('health-connection-result-claude')
+    await claude.getByText('Claude Code · 密钥', { exact: true }).waitFor()
+    // 账号页上并没有「写入 Key」这颗按钮，所以这一层不再给「去处理」。
+    assert.equal(await page.getByTestId('health-connection-fix-claude').count(), 0)
+    const before = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'configureManagedCliKeys').length)
+    await page.getByTestId('health-connection-rewrite-claude').click()
+    await page.waitForFunction((count) => window.v2Test.calls.filter((entry) => entry.method === 'configureManagedCliKeys').length > count, before)
+    const calls = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'configureManagedCliKeys'))
+    assert.deepEqual(calls.at(-1).args[0].providers, ['claude'])
+    // 写完自己再测一遍：用户不用回到页头再点一次「测试连接」。
+    await claude.getByText('Claude Code · 正常', { exact: true }).waitFor()
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('a failed rewrite says what the backend said instead of claiming it was fixed', async () => {
+  const page = await open('connectionCredential=1')
+  try {
+    await page.getByTestId('nav-more').click()
+    await page.getByTestId('nav-health').click()
+    await page.getByTestId('health-connection-run').click()
+    await page.getByTestId('health-connection-rewrite-claude').waitFor()
+    await page.evaluate(() => { window.v2Test.fail = 'configureManagedCliKeys'; window.v2Test.failMessage = '当前账号的分组暂时不可用' })
+    await page.getByTestId('health-connection-rewrite-claude').click()
+    await page.getByText('当前账号的分组暂时不可用', { exact: false }).waitFor()
+    // 没写成就不该把结论刷成正常。
+    await page.getByTestId('health-connection-result-claude').getByText('Claude Code · 密钥', { exact: true }).waitFor()
+    await page.evaluate(() => { window.v2Test.fail = ''; window.v2Test.failMessage = '' })
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// 目录里 keyInvalid 的「一键修复」以前没接线，落到「找客服」。
+test('the one-click repair on an invalid key runs the same rewrite', async () => {
+  const page = await open()
+  try {
+    await page.getByTestId('tool-row-gemini').getByText('未安装').waitFor()
+    await page.evaluate(() => { window.v2Test.fail = 'installCli'; window.v2Test.failMessage = '安装失败：当前分组下无可用渠道' })
+    await page.getByTestId('tool-gemini-primary').click()
+    await page.getByTestId('operation-error').waitFor()
+    await page.getByTestId('operation-error-body').getByText('工具打不开对话，需要换一把 Key', { exact: true }).waitFor()
+    const before = await page.evaluate(() => {
+      window.v2Test.fail = ''
+      window.v2Test.failMessage = ''
+      return window.v2Test.calls.filter((entry) => entry.method === 'configureManagedCliKeys').length
+    })
+    await page.getByTestId('operation-error-repair').click()
+    await page.waitForFunction((count) => window.v2Test.calls.filter((entry) => entry.method === 'configureManagedCliKeys').length > count, before)
+    assert.equal(await page.getByTestId('operation-error').count(), 0)
     await clean(page)
   } finally { await page.close() }
 })

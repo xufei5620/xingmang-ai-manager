@@ -1,6 +1,39 @@
 import { describe, expect, it } from 'vitest'
-import { connectionCheckView, connectionLayerLabels } from './connection-check'
-import type { ConnectionCheckLayer, ConnectionCheckResult } from '../../../../electron/ipc-contract'
+import { connectionCheckView, connectionLayerLabels, rewritableKeyProviders } from './connection-check'
+import { providerIds, type AppConfigSummary, type ConnectionCheckLayer, type ConnectionCheckResult, type ProviderConfigSummary, type ProviderId } from '../../../../electron/ipc-contract'
+import { writeManualSourceMarker, type SourceMarkerStorage } from './source-marker'
+
+function memoryStorage(): SourceMarkerStorage {
+  const values = new Map<string, string>()
+  return {
+    getItem: (key) => values.get(key) ?? null,
+    setItem: (key, value) => { values.set(key, value) },
+    removeItem: (key) => { values.delete(key) },
+  }
+}
+
+function accountProviderConfig(): ProviderConfigSummary {
+  return {
+    exists: true,
+    hasApiKey: true,
+    matchesRelay: true,
+    configurationOwnership: 'account',
+    baseUrl: 'https://xm.solov.cc/v1',
+    actualBaseUrl: 'https://xm.solov.cc/v1',
+    model: 'fixture-model',
+    apiKeyPreview: 'sk-***',
+    dataDirectory: 'C:\\fixture',
+    dataDirectoryExists: true,
+    files: [],
+    updatedAt: null,
+  }
+}
+
+function config(overrides: Partial<Record<ProviderId, Partial<ProviderConfigSummary>>> = {}): AppConfigSummary {
+  const providers = {} as AppConfigSummary['providers']
+  for (const provider of providerIds) providers[provider] = { ...accountProviderConfig(), ...overrides[provider] }
+  return { workspace: 'C:\\fixture', providers }
+}
 
 function result(overrides: Partial<ConnectionCheckResult> = {}): ConnectionCheckResult {
   return {
@@ -99,5 +132,69 @@ describe('connectionCheckView', () => {
       const view = connectionCheckView(result({ layer, siteId: 'solov-api' }))
       expect(`${view.title} ${view.body} ${view.statusLabel}`).not.toContain('solov')
     }
+  })
+})
+
+describe('rewritableKeyProviders', () => {
+  it('names the tools whose configuration came from the current account', () => {
+    expect(rewritableKeyProviders(config(), memoryStorage())).toEqual([...providerIds])
+  })
+
+  // 覆盖用户自己填的密钥就是把他的配置弄丢了，而重写流程本来也会跳过这些工具，
+  // 所以按钮不该出现在它们身上。
+  it('leaves out an official account and a hand-written key', () => {
+    const storage = memoryStorage()
+    const marked = config({ gemini: { configurationOwnership: 'manual' } })
+    writeManualSourceMarker(storage, marked.providers.grok.baseUrl, 'grok', true)
+    const rewritable = rewritableKeyProviders(
+      config({
+        gemini: { configurationOwnership: 'manual' },
+        codex: { codexAuthMode: 'chatgpt' },
+      }),
+      storage,
+    )
+    expect(rewritable).toContain('claude')
+    expect(rewritable).not.toContain('gemini')
+    expect(rewritable).not.toContain('codex')
+  })
+
+  it('gives nothing while the configuration has not been read yet', () => {
+    expect(rewritableKeyProviders(null, memoryStorage())).toEqual([])
+  })
+})
+
+describe('connectionCheckView rewrite action', () => {
+  // 密钥和分组这两层的下一步就是重签一把 Key 写回去，所以按钮就地做这件事，
+  // 不再把用户送到账号页（账号页上并没有「写入 Key」这颗按钮）。
+  it('offers the rewrite in place of a jump for the key and group layers', () => {
+    for (const layer of ['credential', 'group'] as ConnectionCheckLayer[]) {
+      const view = connectionCheckView(result({ layer }), { canRewriteKey: true })
+      expect(view.action).toBe('rewrite-key')
+      expect(view.target).toBeNull()
+      expect(view.body).toContain('重新写入 Key')
+      // 文案以「当前账号」为主语，但不再让用户先跑一趟账号页。
+      expect(view.body).toContain('当前账号')
+      expect(view.body).not.toContain('「账号」页')
+    }
+  })
+
+  it('keeps the jump for every other layer, rewritable or not', () => {
+    for (const layer of layers.filter((entry) => entry !== 'credential' && entry !== 'group')) {
+      const view = connectionCheckView(result({ layer }), { canRewriteKey: true })
+      expect(view.action).toBeNull()
+      expect(view.target).not.toBeNull()
+    }
+  })
+
+  it('keeps the jump when this tool is not the current account\u2019s to rewrite', () => {
+    const view = connectionCheckView(result({ layer: 'credential' }))
+    expect(view.action).toBeNull()
+    expect(view.target).toBe('account')
+    expect(view.body).toBe('到「账号」页重新登录')
+  })
+
+  it('never surfaces the site id in the rewrite wording', () => {
+    const view = connectionCheckView(result({ layer: 'group', siteId: 'solov-api' }), { canRewriteKey: true })
+    expect(`${view.title} ${view.body}`).not.toContain('solov')
   })
 })

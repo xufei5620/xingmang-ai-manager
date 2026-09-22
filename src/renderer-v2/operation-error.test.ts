@@ -102,6 +102,14 @@ describe('renderer-v2 operation error classification', () => {
     expect(hint?.actions).toEqual([{ id: 'retry', label: '换官方源重试' }])
   })
 
+  // 「Key 失效」的「一键修复」以前落到「找客服」：目录里写好了这颗按钮，表里没有
+  // 它，用户读完「需要换一把 Key」只剩加客服微信这一条路。
+  it('honours the one-click repair on an invalid key', () => {
+    const hint = presentOperationError('当前分组下无可用渠道')
+    expect(hint?.title).toBe('Key 失效')
+    expect(hint?.actions).toEqual([{ id: 'repair', label: '一键修复' }])
+  })
+
   it('falls back to support when every catalog action is one this app cannot run', () => {
     // permission only offers 以管理员身份重试, and there is no elevated retry channel.
     const hint = presentOperationError('安装失败：EACCES permission denied')
