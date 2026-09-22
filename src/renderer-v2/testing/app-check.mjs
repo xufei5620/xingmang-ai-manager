@@ -652,6 +652,32 @@ test('the launch button reuses the directory the tool was last opened in (N7)', 
   } finally { await page.close() }
 })
 
+test('the home recent card resumes the last conversation of that folder (#292)', async () => {
+  const page = await open('allInstalled=1&recentWorkspaces=1')
+  try {
+    // 卡片按时间倒序取前三条:claude:1(my-app)、claude:2(older-app)、claude:3(my-app)。
+    // 续接是按目录找最近一条,所以 my-app 这个目录只有 claude:1 该有按钮,
+    // 同目录更老的 claude:3 点下去会接到 claude:1,那比不给按钮还糟。
+    const resume = page.getByTestId('home-recent-resume-claude:1')
+    await resume.waitFor()
+    assert.equal(await resume.innerText(), '接着聊')
+    assert.equal(await resume.getAttribute('title'), '接着 C:\\work\\my-app 里最近的一条对话')
+    assert.equal(await page.getByTestId('home-recent-resume-claude:2').count(), 1)
+    assert.equal(await page.getByTestId('home-recent-resume-claude:3').count(), 0)
+    // 没有按钮的那一行仍然能跳去记录页,和以前一样。
+    assert.equal(await page.getByTestId('home-recent-card').getByRole('button', { name: '查看', exact: true }).count(), 3)
+
+    await resume.click()
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'launchCli'))
+    const calls = await page.evaluate(() => window.v2Test.calls)
+    assert.deepEqual(calls.filter((entry) => entry.method === 'launchCli').map((entry) => entry.args),
+      [['claude', 'C:\\work\\my-app', 'resumeLast']])
+    // 目录是记录里现成的,不该再弹一次目录选择器。
+    assert.equal(calls.some((entry) => entry.method === 'chooseWorkspace'), false)
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('canceling the CLI workspace picker keeps the tool closed without an error dialog', async () => {
   const page = await open('workspaceCancel=1')
   try {
