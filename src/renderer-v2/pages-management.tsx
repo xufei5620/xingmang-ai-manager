@@ -417,7 +417,14 @@ export function CuratedShelf({
     </Card>
   )
 }
-export function SessionsPage({ api }: { api: V2Bridge }) {
+export function SessionsPage({
+  api,
+  onResumed,
+}: {
+  api: V2Bridge
+  /** 接着聊成功后通知外层：首页那份「最近」缓存要作废。省略 = 不通知（旧行为）。 */
+  onResumed?: () => void
+}) {
   const [provider, setProvider] = useState<Provider | 'all'>('all')
   const [query, setQuery] = useState('')
   const [page, setPage] = useState(1)
@@ -485,7 +492,15 @@ export function SessionsPage({ api }: { api: V2Bridge }) {
     if (!resumable.has(session.id) || session.archived) return
     void operation.execute(
       'resume',
-      () => api.launchCli(session.provider, session.cwd, 'resumeLast'),
+      async () => {
+        const result = await api.launchCli(
+          session.provider,
+          session.cwd,
+          'resumeLast',
+        )
+        onResumed?.()
+        return result
+      },
       `已打开${providerName(session.provider)}，接着 ${session.cwd} 里最近的一条对话`,
     )
   }

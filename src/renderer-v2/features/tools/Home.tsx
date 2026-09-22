@@ -35,6 +35,12 @@ export interface HomeProps {
   externalClients: ExternalClientStatus[]
   externalLoading: boolean
   externalError: string
+  /**
+   * 「最近」这份列表在 toolsApi 里缓存 60 秒。外层作废缓存时把这个数字加一，
+   * 首页就重读一遍（装卸工具、打开工具、换账号、主动重新检测都会走到）。
+   * 省略 = 不主动重读（旧行为）。
+   */
+  recentRevision?: number
   onScan(): void
   /** version 省略 = 让主进程按已验证版本名单决定;点名 = 回到推荐版本(N1)。 */
   onInstall(tool: ToolId, version?: string): void
@@ -121,7 +127,7 @@ export function Home(props: HomeProps) {
       if (current) setRecentError(errorMessage(cause, '记录暂时没有读到'))
     })
     return () => { current = false }
-  }, [props.api, recentAttempt])
+  }, [props.api, recentAttempt, props.recentRevision])
   const tools = snapshot ? presentTools(snapshot) : []
   const installed = tools.filter((tool) => tool.status.installed || jobs[tool.id])
   const available = tools.filter((tool) => !tool.status.installed && !jobs[tool.id])

@@ -780,6 +780,10 @@ if (!hasSingleInstanceLock) {
     })
     const providerSessionsService = new ProviderSessionsService({
       codexService: sessionsService,
+      probeCacheFile: path.join(managerDataDirectory, 'sessions', 'probe-cache.json'),
+      onProbeCacheWarning: (warning) => {
+        runtimeLog.log('warn', 'sessions', warning.code, warning.message, warning.detail)
+      },
     })
     const backupStore = new ConfigBackupStore({
       ...rootedOptions.backups,

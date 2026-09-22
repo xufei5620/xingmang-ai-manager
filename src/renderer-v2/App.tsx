@@ -77,6 +77,13 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   const app = useMemo(() => createAppApi(native), [native])
   const authApi = useMemo(() => createAuthApi(native), [native])
   const toolsApi = useMemo(() => createToolsApi(native), [native])
+  // 「最近」这份列表由 toolsApi 缓存 60 秒（首页切来切去不再反复读盘）。作废缓存
+  // 只是让下一次读真去读，首页当时可能正开着，所以同时递增一个版本号把它拉起来重读。
+  const [recentRevision, setRecentRevision] = useState(0)
+  const refreshRecent = useCallback(() => {
+    toolsApi.invalidateRecent()
+    setRecentRevision((value) => value + 1)
+  }, [toolsApi])
   const toast = useToast()
   const [boot, setBoot] = useState<'loading' | 'ready' | 'failed'>('loading')
   const [bootError, setBootError] = useState('')
@@ -136,7 +143,9 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   const networkLocation = useNetworkLocation(native, acceleration.snapshot.state)
   const { store: balanceStore, snapshot: balanceState } = useAccountBalanceStore(native, session.authenticated ? scope : null)
   const balance = balanceState.balance
-  useLayoutEffect(() => { accountEpoch.current++; setAccountReadError(null) }, [scope, session.authenticated])
+  // 换账号等于换了一整套上下文：首页那份「最近」缓存（60 秒）必须当场作废，
+  // 否则切过去的头一眼看到的还是上一个账号在的时候读到的列表。
+  useLayoutEffect(() => { accountEpoch.current++; setAccountReadError(null); refreshRecent() }, [scope, session.authenticated, refreshRecent])
   const siteId = accountSiteId(session)
   const relaySite = resolveRelaySite(siteId)
   const supportUrl = resolveSupportServiceUrl(session)
@@ -432,6 +441,9 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     if (session.authenticated && session.account) {
       await runAccountBootstrap(session.account.userId, 'login', true, [providerFor(id)])
     }
+    // 「安装卸载」页装完走的是它自己的 bridge 调用，绕开了 toolsApi 那侧的作废，
+    // 所以收尾这一步补一刀，两个入口装完都能立刻看到新的「最近」。
+    refreshRecent()
     await toolbox.refresh(true)
   }
   async function installRuntime(runtime: 'node' | 'python' | 'git') {
@@ -701,8 +713,8 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
               </Suspense>
             </div>}
             {page === 'home' ? <Home api={toolsApi} supportsUsage={accountSupports(session, 'supportsUsage')} supportsBilling={accountSupports(session, 'supportsBilling')} snapshot={toolbox.snapshot} loading={toolbox.loading} error={toolbox.error} failures={toolbox.failures} account={session.account} balance={balance} jobs={toolbox.jobs} bootstrap={accountBootstrap?.scope === scope ? accountBootstrap : null}
-              externalClients={toolbox.externalClients} externalLoading={toolbox.externalLoading} externalError={toolbox.externalError}
-              onScan={() => { void toolbox.refresh(true).catch(() => undefined); void toolbox.refreshExternal().catch(() => undefined) }} onInstall={(id, version) => void perform('安装工具', () => install(id, version), id)} onCancelInstall={(id) => void perform('取消安装', () => cancelInstall(id))} onLaunch={requestLaunch} onConfigure={openToolConfig} onUninstall={requestUninstall}
+              externalClients={toolbox.externalClients} externalLoading={toolbox.externalLoading} externalError={toolbox.externalError} recentRevision={recentRevision}
+              onScan={() => { refreshRecent(); void toolbox.refresh(true).catch(() => undefined); void toolbox.refreshExternal().catch(() => undefined) }} onInstall={(id, version) => void perform('安装工具', () => install(id, version), id)} onCancelInstall={(id) => void perform('取消安装', () => cancelInstall(id))} onLaunch={requestLaunch} onConfigure={openToolConfig} onUninstall={requestUninstall}
               onRewriteKey={(id) => void perform('重新写入 Key', () => rewriteAccountKeys([providerFor(id)]), id)} onKeepConfig={(id) => void perform('保留当前配置', () => keepCurrentToolConfig(id))}
               onInstallExternal={(id) => void perform('安装客户端', () => installExternal(id))} onLaunchExternal={(id) => void perform('打开客户端', () => launchExternal(id))}
               onConfigureExternal={setExternalClient} onCodexModels={() => { setCodexModelFilter('non-gpt'); setConfigTool(platform?.codexDesktop.launch ? 'codexDesktop' : 'codex') }}
@@ -711,6 +723,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
             {(Object.keys(visitedPages) as PageId[]).filter((id) => id !== 'acceleration' && (visitedPages[id] === scope || id === page)).map((id) => <div key={id} hidden={page !== id} inert={page !== id}>
               <Suspense fallback={pageLoading}>
                 <BusinessPage api={native} page={id} accountTab={accountTab} paymentReturn={paymentReturn} navigate={navigate} openLogin={() => setAuth('login')} openHelp={() => setHelp(true)}
+                  onSessionResumed={refreshRecent}
                   onAccountChanged={() => void perform('刷新账号', reloadAccount)} onSettingsChanged={setSettings} openConfig={openToolConfig}
                   openGuide={() => setGuide(true)} replayTour={replayTour}
                   onToolsChanged={(tool) => syncAfterToolInstalled(tool).catch((cause) => {
