@@ -21,6 +21,22 @@ const application = await electron.launch({
     XINGMANG_ONBOARDING_PREVIEW: '1',
   },
 })
+// Same Windows-runner failure as electron-ci-smoke.mjs: V8 can collect the
+// inspector's promise wrapper while the main process is busy. The only call
+// routed through here reads window geometry, so replaying it changes nothing.
+async function readMainProcess(body) {
+  let collected
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    try { return await application.evaluate(body) }
+    catch (error) {
+      if (!/Resulting promise was garbage collected/.test(String(error?.message))) throw error
+      collected = error
+      await new Promise((resolve) => setTimeout(resolve, 500))
+    }
+  }
+  throw collected
+}
+
 const page = await application.firstWindow()
 const pageErrors = []
 page.on('pageerror', (error) => pageErrors.push(error.message))
@@ -76,7 +92,7 @@ try {
   await page.waitForFunction(() => document.documentElement.dataset.theme === 'light')
   recordPass('light-theme-survives-reload')
   await screenshot('onboarding.png')
-  const result = await application.evaluate(({ BrowserWindow, screen }) => {
+  const result = await readMainProcess(({ BrowserWindow, screen }) => {
     const window = BrowserWindow.getAllWindows()[0]
     return { bounds: window.getBounds(), workArea: screen.getDisplayMatching(window.getBounds()).workArea, zoom: window.webContents.getZoomFactor() }
   })
