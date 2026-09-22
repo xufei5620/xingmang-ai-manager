@@ -216,6 +216,11 @@ export type AppSettingsV2 = AppSettings
 export type AppSettingsV2Update = AppSettingsUpdate
 export type SavedAccount = SavedAccountSummary
 export type RepositoryContext = CodexRepositoryContext
+
+/** `workspace:choose` 的可选参数。渲染层只能说「要新建」，路径永远由主进程决定。 */
+export interface ChooseWorkspaceOptions {
+  createStarter?: boolean
+}
 export type DiagnosticState = MainDiagnosticState
 export type DiagnosticsReport = MainDiagnosticsReport
 export type ConnectionCheckLayer = MainConnectionCheckLayer
@@ -541,7 +546,8 @@ export interface XingmangInvokeContract {
   >
   listModels: IpcInvokeDefinition<'models:list', [apiKey: string], string[]>
   listConfiguredModels: IpcInvokeDefinition<'models:list-configured', [provider: ProviderId], string[]>
-  chooseWorkspace: IpcInvokeDefinition<'workspace:choose', [], string | null>
+  /** options 省略 = 弹目录选择器；createStarter = 不弹选择器，直接替用户新建一个项目文件夹。 */
+  chooseWorkspace: IpcInvokeDefinition<'workspace:choose', [options?: ChooseWorkspaceOptions], string | null>
   getRepositoryContext: IpcInvokeDefinition<'repository:get-context', [], RepositoryContext>
   installNodeRuntime: IpcInvokeDefinition<'runtime:install-node', [], NodeRuntimeInstallResult>
   restartWindows: IpcInvokeDefinition<'runtime:restart-windows', [], void>
