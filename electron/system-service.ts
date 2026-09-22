@@ -56,6 +56,7 @@ import {
   type NativeConfigSummary,
 } from './config-files'
 import {
+  ProjectInstructionsStateStore,
   ensureProjectInstructions,
   readProjectInstructionsTemplate,
 } from './project-instructions'
@@ -1828,6 +1829,7 @@ export function createSystemService(
   const runtimeLog = serviceOptions.runtimeLog
   const configOwnership = new ToolConfigOwnershipStore(path.join(serviceOptions.managerDataDirectory ?? store.dataDirectory, 'tool-config-ownership'))
   const externalOwnership = new ExternalClientOwnershipStore(path.join(serviceOptions.managerDataDirectory ?? store.dataDirectory, 'external-client-ownership'))
+  const projectInstructionsState = new ProjectInstructionsStateStore(path.join(serviceOptions.managerDataDirectory ?? store.dataDirectory, 'project-instructions'))
   let configWriteQueue: Promise<unknown> = Promise.resolve()
   function serializeConfigWrite<T>(operation: () => Promise<T>): Promise<T> {
     const next = configWriteQueue.then(operation, operation)
@@ -3441,13 +3443,19 @@ export function createSystemService(
         reason: redactHomeDirectory(reason, providerRoots.userHome),
       })
     }
-    // 目录里三种项目说明文件（CLAUDE.md / AGENTS.md / GEMINI.md）一个都没有时，
-    // 放一份中文 AGENTS.md，三个工具打开这个目录都会读它。绝不覆盖已有文件；
-    // 写不进去（磁盘满、只读、目录被重定向）绝不能挡住打开。
+    // 目录里三种项目说明文件（CLAUDE.md / AGENTS.md / GEMINI.md）一个都没有、
+    // 且本应用没给这个目录生成过时，放一份中文 AGENTS.md，三个工具打开这个目录
+    // 都会读它。绝不覆盖已有文件；客户删掉生成的那份就不再生成（记录在
+    // projectInstructionsState 里，不往客户目录写标记）；写不进去（磁盘满、只读、
+    // 目录被重定向）绝不能挡住打开。
     if (serviceOptions.projectInstructionsTemplatePath) {
       try {
         const template = readProjectInstructionsTemplate(serviceOptions.projectInstructionsTemplatePath)
-        const result = await ensureProjectInstructions({ workspace, template })
+        const result = await ensureProjectInstructions({
+          workspace,
+          template,
+          state: projectInstructionsState,
+        })
         if (result.created) {
           runtimeLog?.log('info', 'config', 'project-instructions.created', `${definition.name} 已为工作目录生成 AGENTS.md`, {
             provider,
