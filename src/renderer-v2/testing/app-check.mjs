@@ -685,7 +685,7 @@ test('the launch button reuses the directory the tool was last opened in (N7)', 
     await page.getByTestId('tool-claude-workspaces').getByRole('button', { name: '换一个目录' }).click()
     const items = await page.getByRole('menuitem').allInnerTexts()
     // 同一个目录的两条记录只占一格,顺序按最近用过排,最后永远留着原来的选择器。
-    assert.deepEqual(items, ['C:\\work\\my-app', 'C:\\work\\older-app', '选择其他目录…'])
+    assert.deepEqual(items, ['C:\\work\\my-app', 'C:\\work\\older-app', '选择其他目录…', '新建项目文件夹并打开'])
     await page.getByTestId('tool-claude-choose-workspace').click()
     await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'chooseWorkspace'))
     const picked = await page.evaluate(() => window.v2Test.calls)
@@ -848,6 +848,28 @@ test('home reuses the recent list instead of rescanning session folders on every
     await page.getByTestId('home-rescan').click()
     await page.waitForFunction(() => window.v2Test.calls
       .filter((entry) => entry.method === 'listProviderSessions' && entry.args[0]?.pageSize === 60).length === 2)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('a new user can open a CLI in a folder the app creates, without the directory picker', async () => {
+  const page = await open('allInstalled=1')
+  try {
+    await page.getByTestId('tool-row-codex').waitFor()
+    // 没有最近目录时「打开」旁边没有下拉，入口在「更多操作」里。
+    assert.equal(await page.getByTestId('tool-codex-workspaces').count(), 0)
+    await page.getByTestId('tool-row-codex').getByRole('button', { name: '更多操作' }).click()
+    await page.getByTestId('tool-codex-new-workspace').click()
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'launchCli'))
+    const calls = await page.evaluate(() => window.v2Test.calls)
+    assert.deepEqual(calls.filter((entry) => entry.method === 'chooseWorkspace').map((entry) => entry.args), [[{ createStarter: true }]])
+    assert.deepEqual(calls.filter((entry) => entry.method === 'launchCli').map((entry) => entry.args),
+      [['codex', 'C:\\Users\\fixture\\Documents\\XingmangProjects\\my-project']])
+    // Codex 桌面端自己管工作区，不给这个入口。
+    await page.keyboard.press('Escape')
+    await page.getByTestId('tool-row-codexDesktop').getByRole('button', { name: '更多操作' }).click()
+    assert.equal(await page.getByTestId('tool-codexDesktop-new-workspace').count(), 0)
+    await page.keyboard.press('Escape')
     await clean(page)
   } finally { await page.close() }
 })
