@@ -111,8 +111,10 @@ import { createPaymentOrderStatusReader } from './payment-status-reader'
 import {
   createDiagnosticsExport,
   redactDiagnosticText,
+  diagnosticsScanReuseMs,
   runDiagnostics,
   type DiagnosticsReport,
+  type DiagnosticsRunOptions,
 } from './diagnostics'
 import { runConnectionCheck } from './connection-check'
 import type { ExternalToolId } from './external-tool-config'
@@ -978,8 +980,14 @@ if (!hasSingleInstanceLock) {
       .map((provider) => inspectProviderConfig(provider, rootedOptions.system.providerRoots).apiKey)
       .filter(Boolean)
     const diagnosticsService = {
-      run: async () => {
+      run: async (options: DiagnosticsRunOptions = {}) => {
+        // 开机自动检查紧跟着首页扫描：扫描正在跑就等它，一分钟内刚跑完就直接用，
+        // 不再把各工具的版本探测、PowerShell、Codex 桌面端检测重跑一遍。没有现成的
+        // 就照旧自己探，不为此专门起一轮扫描。
+        const recent = options.reuseRecentScan ? systemService.recentScan(diagnosticsScanReuseMs) : null
+        const recentScan = recent ? await recent.catch(() => null) : null
         latestDiagnostics = await runDiagnostics({
+          recentScan,
           ...rootedOptions.diagnostics,
           app: {
             name: '星芒AI管理工具',

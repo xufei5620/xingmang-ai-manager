@@ -35,6 +35,7 @@ import { relayApiProbeBaseUrl, resolveRelaySite, type RelaySite } from './relay-
 import { findReparseComponent, type ReparseComponent } from './safe-local-data'
 import { resolveCliCommand, resolveCliInstallation } from './tool-installation'
 import type { ToolConfigOwnership } from './tool-config-ownership'
+import type { SystemSnapshot } from './system-service'
 import {
   describeWindowsExecutionProbeFailure,
   inspectWindowsElevationCapability,
@@ -118,6 +119,14 @@ export interface DiagnosticsDependencies {
   workspace?: string
   /** 只给测试用：Claude Code 管理策略所在目录。 */
   claudeManagedDirectory?: string
+  /**
+   * 首页扫描刚探过的结果。给了就直接拿它回答运行环境、四个 CLI、Codex 桌面端与
+   * PowerShell 这几项，不再各起一遍子进程；扫描里探测失败的那几项仍然自己探。
+   * 缺省 = 全部自己探（旧行为），检查页手动点「重新检测」走的就是这条。
+   */
+  recentScan?: DiagnosticsScanSnapshot | null
+  /** 复用扫描结果时 PowerShell 那一项只取可信路径、不起进程；测试用它造出 Windows 的路径解析。 */
+  resolvePowerShellExecutable?: () => string
   /** Which relay site's connectivity to probe (XINGMANG_NETWORK). Defaults to the default site. */
   relaySite?: RelaySite
   fetch?: typeof globalThis.fetch
@@ -166,6 +175,34 @@ export interface DiagnosticRedactionOptions {
 }
 
 export type DiagnosticToolId = 'node' | 'npm' | 'python' | 'git' | ProviderId
+
+export type DiagnosticsScanSnapshot = Pick<SystemSnapshot, 'runtime' | 'clis' | 'desktopApps'>
+
+export interface DiagnosticsRunOptions {
+  /**
+   * 手上有现成的首页扫描结果就用它（见 DiagnosticsDependencies.recentScan）。只有开机
+   * 那次自动检查传；检查页手动检测不传，照旧全部重探。缺省 = 不复用（旧行为）。
+   */
+  reuseRecentScan?: boolean
+}
+
+/** 多久以内跑完的扫描算「现成的」：开机自动检查紧跟着首页扫描，一分钟足够。 */
+export const diagnosticsScanReuseMs = 60_000
+
+/** 扫描里这一项的结论；扫描自己没探成（detectionFailed）就是 null，交回诊断自己探。 */
+export function scannedToolStatus(snapshot: DiagnosticsScanSnapshot, tool: DiagnosticToolId): DiagnosticToolStatus | null {
+  const status = (providerIds as readonly string[]).includes(tool) ? snapshot.clis[tool as ProviderId] : snapshot.runtime[tool as 'node' | 'npm' | 'python' | 'git']
+  if (!status || status.detectionFailed) return null
+  return status.installed ? { installed: true, version: status.version, path: status.path } : { installed: false, version: null, path: null }
+}
+
+export function scannedCodexDesktopStatus(snapshot: DiagnosticsScanSnapshot): DiagnosticToolStatus | null {
+  const status = snapshot.desktopApps.codex
+  if (status.detectionFailed) return null
+  return status.installed
+    ? { installed: true, version: status.version, path: status.path, running: status.running }
+    : { installed: false, version: null, path: null, running: false }
+}
 
 interface CheckOutcome {
   state: DiagnosticState
@@ -1169,11 +1206,32 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
     codexHome,
     sensitiveValues: knownSecrets,
   })
-  const inspectTool = dependencies.inspectTool
+  const scanned = dependencies.recentScan ?? null
+  const probeTool = dependencies.inspectTool
     ?? ((tool, signal) => defaultInspectTool(tool, signal, env))
-  const inspectPowerShell = dependencies.inspectPowerShell
+  const inspectTool: typeof probeTool = (tool, signal) => {
+    const known = scanned ? scannedToolStatus(scanned, tool) : null
+    return known ? Promise.resolve(known) : probeTool(tool, signal)
+  }
+  const probePowerShell = dependencies.inspectPowerShell
     ?? ((signal) => defaultInspectPowerShell(signal, env))
-  const inspectDesktop = dependencies.inspectCodexDesktop ?? defaultInspectCodexDesktop
+  // Windows 上 Codex 桌面端那次探测本身就是经 resolveWindowsPowerShellExecutable 选出的
+  // PowerShell 跑的：它没失败，就说明这个 PowerShell 找得到、起得来，不必为读一个版本号
+  // 再起一次。只有这一种能省；桌面端探测失败或没有扫描结果时照旧自己探。
+  const inspectPowerShell = (signal: AbortSignal): Promise<DiagnosticToolStatus> => {
+    if (scanned && platform === 'win32' && !scanned.desktopApps.codex.detectionFailed) {
+      try {
+        const executable = dependencies.resolvePowerShellExecutable?.() ?? resolveWindowsPowerShellExecutable({ env })
+        return Promise.resolve({ installed: true, version: null, path: executable })
+      } catch { /* 找不到可信路径时交给自己探，让它给出同样的结论。 */ }
+    }
+    return probePowerShell(signal)
+  }
+  const probeDesktop = dependencies.inspectCodexDesktop ?? defaultInspectCodexDesktop
+  const inspectDesktop = (signal: AbortSignal): Promise<DiagnosticToolStatus> => {
+    const known = scanned ? scannedCodexDesktopStatus(scanned) : null
+    return known ? Promise.resolve(known) : probeDesktop(signal)
+  }
   const inspectAdmin = dependencies.inspectAdministrator ?? defaultInspectAdministrator
   const inspectElevation = dependencies.inspectElevationCapability
     ?? ((signal) => inspectWindowsElevationCapability({ timeoutMs: 8_000, signal }))

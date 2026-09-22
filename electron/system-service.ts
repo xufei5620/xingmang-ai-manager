@@ -761,6 +761,8 @@ export interface SystemService {
   /** 备份恢复成功之后调用；`isAccountKey` 判断一把 Key 是不是当前账号由本软件签发的。 */
   adoptRestoredConfig(provider: ProviderId, isAccountKey: (apiKey: string) => boolean): Promise<void>
   scanSystem(forceRefresh?: boolean): Promise<SystemSnapshot>
+  /** 手上现成的扫描结果（正在跑的，或 `maxAgeMs` 以内跑完且之后没装卸过东西的）；没有就是 null，不会新起一轮。 */
+  recentScan(maxAgeMs: number): Promise<SystemSnapshot> | null
   refreshNetworkLocation(): Promise<SystemSnapshot['network']>
   refreshOfficialChatGptUsage(): Promise<OfficialChatGptAccount | null>
   inspectCodexSetupStatus(): Promise<CodexSetupStatus>
@@ -2033,10 +2035,17 @@ export function createScanCoalescer<T>(options: { run(force: boolean): Promise<T
   let sequence = 0
   let inFlight: { promise: Promise<T>; revision: number } | null = null
   let latest: { value: T; revision: number; sequence: number; at: number } | null = null
-  return function scan(force: boolean): Promise<T> {
+  /** 手上现成的一轮：正在跑的，或 `maxAgeMs` 以内跑完的；安装队列动过就都不算。没有就是 null，不会新起一轮。 */
+  function recent(maxAgeMs: number): Promise<T> | null {
     const revision = options.revision()
-    if (!force && inFlight && inFlight.revision === revision) return inFlight.promise
-    if (!force && latest && latest.revision === revision && now() - latest.at <= options.reuseMs) return Promise.resolve(latest.value)
+    if (inFlight && inFlight.revision === revision) return inFlight.promise
+    if (latest && latest.revision === revision && now() - latest.at <= maxAgeMs) return Promise.resolve(latest.value)
+    return null
+  }
+  function scan(force: boolean): Promise<T> {
+    const current = force ? null : recent(options.reuseMs)
+    if (current) return current
+    const revision = options.revision()
     const started = ++sequence
     const promise = options.run(force)
     const entry = { promise, revision }
@@ -2048,6 +2057,7 @@ export function createScanCoalescer<T>(options: { run(force: boolean): Promise<T
     }, release)
     return promise
   }
+  return { scan, recent }
 }
 
 /**
@@ -2691,7 +2701,7 @@ export function createSystemService(
 
   const coalescedScan = createScanCoalescer({ run: runScan, revision: () => installationQueue.revision, reuseMs: scanReuseMs })
   function scanSystem(forceRefresh = false): Promise<SystemSnapshot> {
-    return coalescedScan(forceRefresh)
+    return coalescedScan.scan(forceRefresh)
   }
 
   async function runScan(forceRefresh: boolean): Promise<SystemSnapshot> {
@@ -4758,6 +4768,7 @@ export function createSystemService(
     inspectOfficialLogin: (provider) => inspectOfficialLogin(provider, providerRoots),
     adoptRestoredConfig,
     scanSystem,
+    recentScan: (maxAgeMs: number) => coalescedScan.recent(maxAgeMs),
     refreshNetworkLocation,
     refreshOfficialChatGptUsage,
     inspectCodexSetupStatus,

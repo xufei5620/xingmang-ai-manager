@@ -358,7 +358,8 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   useEffect(() => {
     if (boot !== 'ready' || !session.authenticated || !settings?.runDiagnosticsOnStartup || diagnosticsStarted.current) return
     diagnosticsStarted.current = true
-    void native.runDiagnostics().then((report) => {
+    // 开机这次紧跟着首页扫描，让主进程直接用那轮的探测结果，不再重跑一遍子进程。
+    void native.runDiagnostics({ reuseRecentScan: true }).then((report) => {
       if (!mounted.current) return
       const notice = startupDiagnosticsIssues(report.counts)
       if (notice) noteStartupCheck(notice)

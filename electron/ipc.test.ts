@@ -51,7 +51,7 @@ vi.mock('electron', () => ({
   clipboard: { writeText: electronMocks.writeText },
 }))
 
-import { registerIpcHandlers } from './ipc'
+import { parseDiagnosticsRunOptions, registerIpcHandlers } from './ipc'
 
 const stubStoredConfig: AppSettings = {
   version: 2,
@@ -75,6 +75,7 @@ function serviceStub(): SystemService {
     switchToOfficialAccount: vi.fn((): NativeConfigSaveResult => ({ backups: [], files: [] })),
     adoptRestoredConfig: vi.fn(async () => undefined),
     scanSystem: vi.fn() as never,
+    recentScan: vi.fn(() => null),
     refreshNetworkLocation: vi.fn() as never,
     refreshOfficialChatGptUsage: vi.fn() as never,
     inspectCodexSetupStatus: vi.fn() as never,
@@ -1592,6 +1593,22 @@ describe('registerIpcHandlers', () => {
     busy = false
     ready()
     await expect(result).resolves.toMatchObject({ providers: {} })
+  })
+
+  it('passes the startup check\'s scan-reuse request through to diagnostics and rejects anything else', async () => {
+    const run = vi.fn(async () => ({}) as never)
+    register(undefined, undefined, undefined, undefined, undefined, undefined, {}, {
+      diagnosticsService: { run, checkConnection: vi.fn(), checkExternalConnection: vi.fn(), exportLatest: vi.fn() },
+    })
+    const handler = electronMocks.handlers.get('diagnostics:run')!
+    await handler(trustedEvent(), { reuseRecentScan: true })
+    await handler(trustedEvent())
+    expect(run.mock.calls).toEqual([[{ reuseRecentScan: true }], [{}]])
+    expect(() => handler(trustedEvent(), { reuseRecentScan: 'yes' })).toThrow('诊断参数格式错误')
+    expect(() => handler(trustedEvent(), { reuseRecentScan: true, force: true })).toThrow('诊断参数格式错误')
+    expect(() => handler(trustedEvent(), 'reuse')).toThrow('诊断参数格式错误')
+    expect(parseDiagnosticsRunOptions({ reuseRecentScan: false })).toEqual({})
+    expect(run).toHaveBeenCalledTimes(2)
   })
 
   describe('bootstrap reads under the startup account gate', () => {
