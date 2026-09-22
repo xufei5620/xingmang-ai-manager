@@ -324,9 +324,17 @@ export type AccountDashboardData = NewApiAccountDashboardData
 export type AccountTaskQuery = NewApiAccountTaskQuery
 export type AccountTaskRecord = NewApiAccountTaskRecord
 export type AccountTaskPage = NewApiAccountTaskPage
-export type AccountKey = NewApiAccountKey
+export interface AccountKey extends NewApiAccountKey {
+  /**
+   * 本软件替这个工具签发、且这个工具的配置此刻用的就是这把 Key。只由主进程按托管
+   * Key 缓存与本机配置比对后补上；缺省 = 没有工具在用（旧行为）。
+   */
+  managedProvider?: ProviderId
+}
 export type AccountKeysQuery = NewApiAccountKeysQuery
-export type AccountKeysPage = NewApiAccountKeysPage
+export interface AccountKeysPage extends Omit<NewApiAccountKeysPage, 'keys'> {
+  keys: AccountKey[]
+}
 export type AccountKeyCreateInput = NewApiAccountKeyCreateInput
 export type AccountKeyUpdateInput = NewApiAccountKeyUpdateInput
 
