@@ -826,6 +826,10 @@ const apiMethods = {
     record('export-report', id)
     return { outputPath: 'C:\test-report.txt' }
   },
+  revealExportedFile: async (filePath: string) => {
+    record('reveal-file', filePath)
+    return true
+  },
   getUpdateState: async () => ({
     phase: 'available' as const,
     currentVersion: '0.1.31',
