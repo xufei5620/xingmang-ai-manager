@@ -1427,6 +1427,46 @@ describe('the disk space check', () => {
   })
 })
 
+describe('runDiagnostics AI output location', () => {
+  it('only checks the AI output location when the host provides a probe', async () => {
+    const report = await runDiagnostics(dependencies(temporaryHome()))
+    expect(report.items.some((entry) => entry.code === 'AI_OUTPUT')).toBe(false)
+  })
+
+  it('passes when the probe can write', async () => {
+    const probeAiOutput = vi.fn(async () => undefined)
+    const report = await runDiagnostics({ ...dependencies(temporaryHome()), probeAiOutput })
+
+    expect(probeAiOutput).toHaveBeenCalledTimes(1)
+    expect(report.items.find((entry) => entry.code === 'AI_OUTPUT')).toMatchObject({
+      state: 'pass',
+      title: 'AI 作品保存位置',
+    })
+  })
+
+  it('shows an unwritable location as worth watching, in plain words, and logs the raw reason', async () => {
+    const home = temporaryHome()
+    const log = vi.fn()
+    const cause = Object.assign(new Error(`EACCES: permission denied, open '${path.join(home, 'output', '.write-check.tmp')}'`), { code: 'EACCES' })
+    const report = await runDiagnostics({
+      ...dependencies(home),
+      log,
+      probeAiOutput: async () => { throw new Error('保存位置写不进去，这次没有扣费。', { cause }) },
+    })
+
+    const item = report.items.find((entry) => entry.code === 'AI_OUTPUT')
+    // warn, not fail: the paid request is already stopped before charging, and
+    // a fail would put a startup notice in front of people who never generate.
+    expect(item?.state).toBe('warn')
+    expect(item?.summary).toContain('扣费前先拦下来')
+    expect(item?.summary).not.toMatch(/权限|Program Files|EACCES|output/)
+    expect(log).toHaveBeenCalledWith('warn', 'diagnostics.ai-output.unwritable', expect.any(String), expect.objectContaining({
+      raw: expect.stringContaining('EACCES'),
+    }))
+    expect(JSON.stringify(log.mock.calls)).not.toContain(home)
+  })
+})
+
 describe('parseClashTunConfig', () => {
   it('reads supported top-level and nested TUN switches', () => {
     expect(parseClashTunConfig('enable_tun_mode: true\n')).toBe(true)

@@ -59,6 +59,11 @@ export interface GeneratedAiVideoAsset extends AiStoredVideoAsset {
 
 export interface AiVideoAssetWriter {
   prepareProject?(userId: number, projectId?: string): Promise<void>
+  /**
+   * 新提交视频前试写一次保存位置，写不进就在扣费之前停下。续查已付费的旧任务不走
+   * 这里：那笔钱已经花了，拦下来只会让视频更拿不回来。
+   */
+  assertWritable?(userId: number, projectId?: string): Promise<void>
   storeMp4(userId: number, bytes: Buffer, metadata: { taskId: string; projectId?: string; prompt?: string }): Promise<AiStoredVideoAsset>
   readImageDataUri(userId: number, assetId: string, projectId?: string): Promise<string>
   readOwned?(
@@ -549,6 +554,7 @@ export function createAiVideoService(options: {
       operation.apiKey = credential.apiKey
       operation.provider = capability.provider
       await options.assets.prepareProject?.(credential.userId, input.projectId)
+      await options.assets.assertWritable?.(credential.userId, input.projectId)
       const imageAssetIds = [
         ...(input.imageAssetId ? [input.imageAssetId] : []),
         ...(input.imageAssetIds ?? []),
