@@ -204,6 +204,29 @@ describe('Windows CLI launch', () => {
     expect(`${plan.executable} ${terminalScript}`.toLowerCase()).not.toContain('wt.exe')
   })
 
+  it('switches the visible terminal to UTF-8 before the CLI starts', () => {
+    const plan = buildCliLaunchPlan({
+      executable: 'C:\\Program Files\\nodejs\\node.exe',
+      argv: ['C:\\ProgramData\\XingMangAI\\Cli\\node_modules\\tool\\cli.js'],
+      workspace: 'C:\\Work',
+      title: 'Claude Code',
+    }, testPowerShell)
+
+    const brokerScript = decodeWindowsPowerShellCommand(plan.argv.at(-1)!)
+    const innerCommand = brokerScript.match(/'-EncodedCommand', '([^']+)'/)?.[1]
+    const terminalScript = decodeWindowsPowerShellCommand(innerCommand!)
+
+    expect(terminalScript).toContain('$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)')
+    expect(terminalScript).toContain('[Console]::InputEncoding = [System.Text.UTF8Encoding]::new($false)')
+    // A console that refuses the code page must not keep the CLI from starting.
+    expect(terminalScript).toMatch(/try \{[^}]*\} catch \{ \}/)
+    // chcp would be a PATH lookup for a system executable inside a window that
+    // can carry an elevated token; the .NET setters already switch the code page.
+    expect(terminalScript).not.toMatch(/\bchcp\b/i)
+    expect(terminalScript.indexOf('UTF8Encoding')).toBeLessThan(terminalScript.indexOf('Set-Location'))
+    expect(terminalScript.indexOf('UTF8Encoding')).toBeLessThan(terminalScript.indexOf('node.exe'))
+  })
+
   it('uses the resolved absolute PowerShell 7 path directly', () => {
     const powershell = 'C:\\Program Files\\PowerShell\\7\\pwsh.exe'
     const plan = buildCliLaunchPlan({

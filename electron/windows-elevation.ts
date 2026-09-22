@@ -294,6 +294,14 @@ export function buildCliLaunchPlan(
   }
 
   const terminalScript = [
+    // 这个窗口是交给用户的，-NoProfile 让用户自己在 profile 里设的编码也不生效：
+    // 简体中文 Windows 默认代码页是 936，CLI 让子进程跑 `dir`、`git log` 时读回的
+    // 中文会按 GBK 解码，AI 看到的就是乱码。主进程自己起的探测脚本都写了同一句。
+    // .NET 的 OutputEncoding / InputEncoding 赋值本身就会调 SetConsoleOutputCP /
+    // SetConsoleCP，等价于 chcp 65001，所以不额外跑 chcp——那会在可能提权的窗口里
+    // 引入一次 PATH 查找系统可执行文件（I14）。设不上只是继续乱码，不能因此让
+    // 用户点「打开」后 CLI 根本起不来，所以整句吞掉异常。
+    'try { $OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); [Console]::InputEncoding = [System.Text.UTF8Encoding]::new($false) } catch { }',
     `$Host.UI.RawUI.WindowTitle = ${powerShellLiteral(title)}`,
     `$env:TERM = 'xterm-256color'`,
     `$env:COLORTERM = 'truecolor'`,
