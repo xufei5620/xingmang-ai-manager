@@ -3,6 +3,7 @@ import {
   clipboard,
   dialog,
   ipcMain,
+  shell,
   type IpcMainInvokeEvent,
   type OpenDialogOptions,
   type WebContents,
@@ -69,6 +70,7 @@ import type {
 import { ensureSafeDataDirectory, writeAtomicSafeUtf8File } from './safe-local-data'
 import { assertOpenableConfigDirectory } from './config-directory'
 import { resolveOpenableSessionWorkspace } from './session-workspace'
+import { resolveRevealableExportedFile } from './exported-file'
 import { defaultProviderConfigRoots, providerConfigRoot, type ProviderConfigRoots } from './codex-home'
 import type { UpdateSnapshot, UpdaterService } from './updater'
 import {
@@ -166,6 +168,8 @@ export interface IpcRegistrationOptions {
   previewOnboarding: boolean
   externalUrlAllowlist: readonly string[]
   externalShell?: ExternalShellLauncher
+  /** Defaults to Electron's `shell.showItemInFolder`; injectable for tests. */
+  revealInFolder?(filePath: string): void | Promise<void>
   updaterService: UpdaterService
   broadcastUpdate(snapshot: UpdateSnapshot): void
   setWindowMode(target: WebContents, mode: AppWindowMode): void
@@ -1019,6 +1023,10 @@ function parseAccountKeyCliConfigurationInput(value: unknown): AccountKeyCliConf
 const MIN_ACCOUNT_PASSWORD_LENGTH = 8
 const MAX_ACCOUNT_PASSWORD_LENGTH = 20
 
+// The preview travels whole to the renderer and into a read-only textarea.
+const FEEDBACK_REPORT_MAX_LENGTH = 2_000_000
+const MAX_REMEMBERED_EXPORTS = 16
+
 function parseAccountChangePasswordInput(value: unknown, sub2Api = false): NewApiChangePasswordInput {
   const minimum = sub2Api ? 6 : MIN_ACCOUNT_PASSWORD_LENGTH
   const maximum = sub2Api ? 256 : MAX_ACCOUNT_PASSWORD_LENGTH
@@ -1152,6 +1160,7 @@ const ipcOperationLabels: Readonly<Record<string, string>> = {
   'runtime-logs:list': '运行日志读取',
   'runtime-logs:copy-feedback': '脱敏反馈文本复制',
   'runtime-logs:export-feedback': '反馈报告导出',
+  'exports:reveal-file': '导出文件定位',
   'runtime-logs:open-directory': '日志目录打开',
   'runtime-logs:clear': '运行日志清空',
   'runtime-logs:renderer-error': '渲染进程异常上报',
@@ -1403,6 +1412,15 @@ function ipcSuccessLevel(channel: string): 'debug' | 'info' {
 export function registerIpcHandlers(options: IpcRegistrationOptions): () => void {
   const registeredChannels: string[] = []
   const externalShell = options.externalShell ?? createExternalShellLauncher()
+  const revealInFolder = options.revealInFolder ?? ((filePath: string) => shell.showItemInFolder(filePath))
+  // 最近几次导出写出来的文件：「打开所在位置」只认这里面的路径。
+  const exportedFiles: string[] = []
+  const rememberExportedFile = (filePath: string) => {
+    const existing = exportedFiles.indexOf(filePath)
+    if (existing >= 0) exportedFiles.splice(existing, 1)
+    exportedFiles.push(filePath)
+    if (exportedFiles.length > MAX_REMEMBERED_EXPORTS) exportedFiles.shift()
+  }
   const registerTrustedHandler = (channel: string, handler: TrustedIpcHandler): void => {
     registeredChannels.push(channel)
     ipcMain.handle(channel, (event, ...args) => {
@@ -1874,7 +1892,9 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
       filters: [{ name: 'Markdown', extensions: ['md'] }],
     })
     if (result.canceled || !result.filePath) return null
-    return options.sessionsService.exportMarkdown(id, result.filePath)
+    const exported = await options.sessionsService.exportMarkdown(id, result.filePath)
+    rememberExportedFile(exported.outputPath)
+    return exported
   })
   registerTrustedHandler('sessions:archive', (_event, sessionId: unknown) => (
     options.sessionsService.archive(parseSessionId(sessionId))
@@ -1897,7 +1917,9 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
       filters: [{ name: 'Markdown', extensions: ['md'] }],
     })
     if (result.canceled || !result.filePath) return null
-    return options.providerSessionsService.exportMarkdown(id, result.filePath)
+    const exported = await options.providerSessionsService.exportMarkdown(id, result.filePath)
+    rememberExportedFile(exported.outputPath)
+    return exported
   })
   registerTrustedHandler('provider-sessions:open-directory', async (_event, sessionId: unknown) => {
     const id = requiredString(sessionId, '会话 ID', 256)
@@ -1929,6 +1951,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
       options.diagnosticsService.exportLatest(),
       '诊断报告导出文件',
     )
+    rememberExportedFile(result.filePath)
     return { outputPath: result.filePath }
   })
   registerTrustedHandler('runtime-logs:list', (_event, limit: unknown) => {
@@ -1945,8 +1968,10 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     return preview
   }
   registerTrustedHandler('runtime-logs:preview-feedback', async (event) => {
-    const report = await options.runtimeLog.captureFeedbackReport()
-    if (report.text.length > 2_000_000) throw new Error('反馈报告过大，请减少日志后重试')
+    const report = await options.runtimeLog.captureFeedbackReport(600, FEEDBACK_REPORT_MAX_LENGTH)
+    // captureFeedbackReport already trims the oldest log lines to fit; this
+    // only guards a runtime log implementation that ignored the budget.
+    if (report.text.length > FEEDBACK_REPORT_MAX_LENGTH) throw new Error('反馈报告超过大小上限，请在反馈页点「打开日志目录」，把日志文件直接发给客服')
     const preview = { id: randomUUID(), ...report, expiresAt: Date.now() + 30 * 60 * 1_000 }
     feedbackPreviews.set(event.sender.id, preview)
     if (feedbackPreviews.size > 8) feedbackPreviews.delete(feedbackPreviews.keys().next().value!)
@@ -1978,7 +2003,17 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
       captured ?? await options.runtimeLog.feedbackReport(),
       '反馈报告导出文件',
     )
+    rememberExportedFile(result.filePath)
     return { outputPath: result.filePath }
+  })
+  registerTrustedHandler('exports:reveal-file', async (_event, filePath: unknown) => {
+    const target = requiredString(filePath, '导出文件路径', 4_096)
+    // The renderer only echoes back a path this process itself just wrote
+    // through a save dialog; anything else is refused, so a compromised
+    // renderer cannot point Explorer at an arbitrary location.
+    if (!exportedFiles.includes(target)) throw new Error('只能定位本次打开软件后导出的文件，请重新导出一次')
+    await revealInFolder(await resolveRevealableExportedFile(target))
+    return true
   })
   registerTrustedHandler('runtime-logs:open-directory', async () => {
     ensureSafeDataDirectory(options.runtimeLog.directory, '运行日志目录')
