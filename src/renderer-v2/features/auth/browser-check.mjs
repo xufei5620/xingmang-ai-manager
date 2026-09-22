@@ -633,6 +633,9 @@ test('the historical account source and the registration passwords carry the sam
   const page = await open()
   try {
     await chooseAccountSource(page, '历史账号')
+    // Switching the source refocuses the empty account field on the next frame;
+    // focusing the password before that lands would lose the warning to the blur.
+    await page.waitForFunction(() => document.activeElement?.getAttribute('data-testid') === 'login-account')
     await page.getByTestId('login-password').focus()
     await typeWithCapsLock(page, 'login-password', true)
     await page.getByTestId('login-password-caps').waitFor()
