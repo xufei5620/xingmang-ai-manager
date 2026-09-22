@@ -1100,6 +1100,7 @@ if (!hasSingleInstanceLock) {
         snapshot: pickFeedbackRuntimeSnapshot(latestTraySystem),
         platform: process.platform,
         executionMode: process.platform === 'win32' ? windowsCliExecutionMode : null,
+        executionProbeFailure: windowsCliExecution.probeFailure?.reason ?? null,
         appDirectory: path.dirname(app.getPath('exe')),
         dataDirectory: managerDataDirectory,
         managedDirectory,
