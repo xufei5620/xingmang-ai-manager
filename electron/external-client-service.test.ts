@@ -95,7 +95,12 @@ describe('external client system-service integration', () => {
     expect(JSON.stringify(result)).not.toContain(selectedKey)
     expect(targetFiles(f.directory)).toEqual([...snapshots.keys()])
     for (const [file, content] of snapshots) expect(fs.readFileSync(file, 'utf8')).toBe(content)
-    expect(f.relayFetch).toHaveBeenCalledOnce()
+    // The model check during the write, then the post-save self-check reading
+    // the key back off disk -- and only where the client is actually installed
+    // (the fixture installs Claude Desktop alone), because the check stops at
+    // 「还没有检测到」 before it would send anything. Every status read after
+    // that is local.
+    expect(f.relayFetch).toHaveBeenCalledTimes(tool === 'claudeDesktop' ? 2 : 1)
   })
 
   it.each(['workbuddy', 'opencode', 'claudeDesktop'] as const)('does not claim unowned or externally replaced %s credentials for the current account', async (tool) => {
@@ -151,7 +156,9 @@ describe('external client system-service integration', () => {
     const f = fixture()
     await f.service.configureExternalTool('opencode', { apiKey: selectedKey, model: selectedModel })
     const statuses = await f.service.scanExternalClients()
-    expect(f.runtime.scan).toHaveBeenCalledOnce()
+    // Twice: the post-save self-check has no cached runtime snapshot to reuse
+    // here (nothing scanned before the save), so it takes one of its own.
+    expect(f.runtime.scan).toHaveBeenCalledTimes(2)
     expect(statuses.find((status) => status.tool === 'opencode')).toMatchObject({ installed: false, configured: true, model: selectedModel, configurationSource: 'xingmang' })
     expect(statuses.find((status) => status.tool === 'workbuddy')).toMatchObject({ configured: false, configurationSource: 'missing' })
     expect(JSON.stringify(statuses)).not.toContain(selectedKey)
@@ -159,6 +166,63 @@ describe('external client system-service integration', () => {
     expect((await f.service.scanExternalClients()).find((status) => status.tool === 'opencode')).toMatchObject({ configured: false, configurationSource: 'other' })
     // Status reads never call the remote model endpoint.
     expect(f.relayFetch).toHaveBeenCalledOnce()
+  })
+
+  it('self-checks an installed client with the key read back off its own config file', async () => {
+    const f = fixture()
+    await f.service.configureExternalTool('claudeDesktop', { apiKey: selectedKey, model: selectedModel })
+    f.relayFetch.mockClear()
+    const result = await f.service.checkExternalClientConnection('claudeDesktop')
+
+    expect(result).toMatchObject({ tool: 'claudeDesktop', siteId: 'solov', installed: true, ok: true, model: selectedModel })
+    expect(f.relayFetch).toHaveBeenCalledExactlyOnceWith('https://xm.solov.cc/v1/models', expect.any(Object))
+    // 报告与界面都会拿到这份结论，里面不许出现那把密钥（I3）。
+    expect(JSON.stringify(result)).not.toContain(selectedKey)
+  })
+
+  it('does not send a key the current account did not write, and says so', async () => {
+    const f = fixture()
+    await f.service.configureExternalTool('claudeDesktop', { apiKey: selectedKey, model: selectedModel })
+    f.setUser(18)
+    f.relayFetch.mockClear()
+    const result = await f.service.checkExternalClientConnection('claudeDesktop')
+
+    expect(result).toMatchObject({ ok: false, layer: 'config', installed: true, endpoint: null })
+    expect(f.relayFetch).not.toHaveBeenCalled()
+  })
+
+  it('calls a client nobody installed 未配置 instead of a failure, and sends nothing', async () => {
+    const f = fixture()
+    await f.service.configureExternalTool('opencode', { apiKey: selectedKey, model: selectedModel })
+    f.relayFetch.mockClear()
+    const result = await f.service.checkExternalClientConnection('opencode')
+
+    expect(result).toMatchObject({ tool: 'opencode', installed: false, ok: false, layer: 'unconfigured' })
+    expect(f.relayFetch).not.toHaveBeenCalled()
+  })
+
+  it('reuses a runtime snapshot the caller already has instead of scanning again', async () => {
+    const f = fixture()
+    const known = (await f.service.scanExternalClients()).find((status) => status.tool === 'claudeDesktop')!
+    vi.mocked(f.runtime.scan).mockClear()
+    await f.service.checkExternalClientConnection('claudeDesktop', known)
+
+    expect(f.runtime.scan).not.toHaveBeenCalled()
+  })
+
+  it('feeds the feedback report from the last detection rather than probing again', async () => {
+    const f = fixture()
+    expect(f.service.getLastExternalClients()).toBeNull()
+    await f.service.scanExternalClients()
+    vi.mocked(f.runtime.scan).mockClear()
+
+    expect(f.service.getLastExternalClients()).toMatchObject([
+      { tool: 'workbuddy', installed: false },
+      { tool: 'claudeDesktop', installed: true },
+      { tool: 'opencode', installed: false },
+    ])
+    expect(f.runtime.scan).not.toHaveBeenCalled()
+    expect(JSON.stringify(f.service.getLastExternalClients())).not.toContain(selectedKey)
   })
 
   it('keeps a failed management check separate from an installed runtime', async () => {
@@ -391,7 +455,8 @@ describe('external client system-service integration', () => {
     })
     expect(JSON.parse(fs.readFileSync(desktopPath, 'utf8'))).toEqual({ preferences: { theme: 'dark' }, deploymentMode: '3p' })
     expect(JSON.parse(fs.readFileSync(path.join(f.claudeProfileDirectory, 'developer_settings.json'), 'utf8'))).toEqual({ allowDevTools: true })
-    expect(result).toMatchObject({ tool: 'claudeDesktop', model: selectedModel, outcome: 'configured', restartRequired: true, connectionVerified: false })
+    expect(result).toMatchObject({ tool: 'claudeDesktop', model: selectedModel, outcome: 'configured', restartRequired: true, connectionVerified: true })
+    expect(result.connection).toMatchObject({ tool: 'claudeDesktop', ok: true, installed: true, model: selectedModel })
     expect(result.backups).toHaveLength(1)
     expect(fs.readFileSync(result.backups[0], 'utf8')).toBe(original)
     expect(JSON.stringify(result)).not.toContain(selectedKey)
@@ -440,7 +505,7 @@ describe('external client system-service integration', () => {
       const developerDirectory = platform === 'win32' ? path.join(f.userHome, 'AppData', 'Roaming', 'Claude')
         : path.join(path.dirname(profileDirectory), 'Claude')
       const result = await f.service.configureExternalTool('claudeDesktop', { apiKey: selectedKey, model: selectedModel })
-      expect(result).toMatchObject({ tool: 'claudeDesktop', outcome: 'configured', restartRequired: true, connectionVerified: false })
+      expect(result).toMatchObject({ tool: 'claudeDesktop', outcome: 'configured', restartRequired: true, connectionVerified: true })
       expect(path.dirname(result.path)).toBe(path.join(profileDirectory, 'configLibrary'))
       expect(JSON.parse(fs.readFileSync(result.path, 'utf8'))).toMatchObject({
         inferenceGatewayApiKey: selectedKey, inferenceGatewayBaseUrl: 'https://xm.solov.cc', inferenceModels: [selectedModel],

@@ -51,6 +51,8 @@ import {
 } from './provider-sessions'
 import type { NativeConfigSaveMode } from './config-files'
 import { isExternalToolId, parseExternalClientConfigRequest } from './external-client-contract'
+import type { ExternalToolId } from './external-tool-config'
+import type { ExternalClientCheckResult } from './external-client-connection'
 import type { CodexDesktopLocale } from './codex-desktop-locale'
 import {
   isAllowedExternalUrl,
@@ -131,6 +133,7 @@ export interface IpcRegistrationOptions {
   diagnosticsService: {
     run(): Promise<DiagnosticsReport>
     checkConnection(provider: ProviderId): Promise<ConnectionCheckResult>
+    checkExternalConnection(tool: ExternalToolId): Promise<ExternalClientCheckResult>
     exportLatest(): string
   }
   runtimeLog: RuntimeLogStore
@@ -1142,6 +1145,7 @@ const ipcOperationLabels: Readonly<Record<string, string>> = {
   'settings:save': '应用设置保存',
   'diagnostics:run': '系统诊断',
   'diagnostics:check-connection': '连接自检',
+  'diagnostics:check-external-connection': '客户端连接自检',
   'diagnostics:export': '诊断报告导出',
   'runtime-logs:list': '运行日志读取',
   'runtime-logs:copy-feedback': '脱敏反馈文本复制',
@@ -1374,6 +1378,16 @@ function ipcLogDetail(channel: string, args: unknown[], result: unknown, duratio
     detail.provider = result.provider
     detail.layer = result.layer
     detail.ok = result.ok
+    detail.siteId = result.siteId
+    detail.status = result.status
+  }
+  // 外部客户端同理，分辨它们的那一列是 tool。归因层与站点都留，客户端的
+  // 密钥与地址一概不留（I13）。
+  if (channel === 'diagnostics:check-external-connection' && isRecord(result)) {
+    detail.tool = result.tool
+    detail.layer = result.layer
+    detail.ok = result.ok
+    detail.installed = result.installed
     detail.siteId = result.siteId
     detail.status = result.status
   }
@@ -2564,6 +2578,11 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   registerTrustedHandler('diagnostics:check-connection', (_event, provider: unknown) => {
     if (!isProviderId(provider)) throw new Error('未知的 CLI 类型')
     return options.diagnosticsService.checkConnection(provider)
+  })
+
+  registerTrustedHandler('diagnostics:check-external-connection', (_event, tool: unknown) => {
+    if (!isExternalToolId(tool)) throw new Error('未知的外部客户端类型')
+    return options.diagnosticsService.checkExternalConnection(tool)
   })
 
   registerTrustedHandler('account:get-key-options', (_event, provider: unknown) => {

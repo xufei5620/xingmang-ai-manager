@@ -260,6 +260,24 @@ const methods = {
   reportRendererError: async () => undefined,
   // 四个工具各跑一遍：真实用户多半只配了一两个，所以夹具默认给出「两个能用、
   // 两个还没配」的混合态，而不是四条一样的结论。
+  // 外部客户端：装好的那两个各给一条结论，没装的那条 installed 为 false，检查页
+  // 据此不列它（同真实主进程的取舍）。
+  checkExternalClientConnection: async (tool) => {
+    const installed = externalStatuses.find((entry) => entry.tool === tool)?.installed === true
+    const base = { tool, siteId: 'solov', installed, endpoint: null as string | null, model: null as string | null,
+      detail: null as string | null, status: null as number | null, durationMs: 11, checkedAt: new Date().toISOString() }
+    if (!installed) {
+      return { ...base, ok: false, layer: 'unconfigured' as const, summary: `还没有检测到 ${tool}`,
+        nextStep: '先在首页安装这个客户端或点一次「重新检测」，装好之后再回来自检' }
+    }
+    if (externalStatuses.find((entry) => entry.tool === tool)?.configurationSource !== 'xingmang') {
+      return { ...base, ok: false, layer: 'unconfigured' as const, summary: `还没有给 ${tool} 写入星芒配置`,
+        nextStep: '在首页点这个客户端的「配置」，选好密钥和模型保存一次，再回来自检' }
+    }
+    return { ...base, ok: true, layer: 'network' as const, status: 200, endpoint: 'https://fixture.invalid/v1/models',
+      model: 'fixture-model', summary: '当前账号的密钥和模型 fixture-model 都可用', nextStep: '无需处理',
+      evidence: '已用配置里的密钥核对当前账号的可用模型清单，fixture-model 在其中；客户端里实际发起的对话由客户端自己发出，本机测不到' }
+  },
   checkProviderConnection: async (provider) => {
     const base = { provider, siteId: 'solov', detail: null as string | null, status: 200 as number | null, durationMs: 12, checkedAt: new Date().toISOString() }
     if (provider === 'gemini' || provider === 'grok') {
@@ -413,7 +431,13 @@ const methods = {
     Object.assign(externalStatuses.find((entry) => entry.tool === tool)!, { configured: true, ...(tool === 'claudeDesktop' ? { configurationReady: true } : {}), model: input.model, configurationSource: 'xingmang', configurationError: null })
     return { tool, model: input.model, path: tool === 'claudeDesktop' ? 'C:\\Fixture\\Claude-3p\\configLibrary\\fixture.json' : `C:\\Fixture\\${tool}\\config.json`,
       files: [], backups: ['C:\\Fixture\\config.bak'], outcome: 'configured' as const,
-      message: '配置已保存，请重新打开客户端。', restartRequired: true, connectionVerified: false as const }
+      message: '配置已保存，请重新打开客户端。', restartRequired: true,
+      connectionVerified: true,
+      connection: { tool, siteId: 'solov', installed: true, ok: true, layer: 'network' as const,
+        summary: `当前账号的密钥和模型 ${input.model} 都可用`, nextStep: '无需处理',
+        evidence: `已用配置里的密钥核对当前账号的可用模型清单，${input.model} 在其中；客户端里实际发起的对话由客户端自己发出，本机测不到`,
+        endpoint: 'https://fixture.invalid/v1/models', model: input.model, detail: null, status: 200, durationMs: 9,
+        checkedAt: new Date().toISOString() } }
   },
   listModels: async () => detectedModels,
   syncManagedCliKeys: async () => {

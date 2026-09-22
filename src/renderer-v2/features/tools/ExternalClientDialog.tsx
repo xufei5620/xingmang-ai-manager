@@ -3,6 +3,7 @@ import { RefreshCw, Save, Settings } from 'lucide-react'
 import type { AccountKey, AppConfigSummary, ExternalClientConfigResult, ExternalClientCredential, ExternalToolId, ProviderId, XingmangApi } from '../../../../electron/ipc-contract'
 import { Button, Confirm, Dialog, Input, Notice, Select } from '../../ui'
 import { clientConnections, clientKeySources } from '../../registry/clients'
+import { connectionCheckView } from './connection-check'
 import { accountKeyLabel, readAllAccountKeys } from './key-selection'
 import { beginBusinessOperation, errorMessage } from '../../business-common'
 
@@ -90,6 +91,9 @@ export function ExternalClientDialog({ api, tool, signedIn, onClose, onSaved }: 
     finally { finish(); lock.current = false; if (alive.current) setBusy('') }
   }
   const currentSources = clientKeySources.filter((item) => config?.providers[item.id].hasApiKey && config.providers[item.id].matchesRelay)
+  // 保存完主进程会把刚写下去的配置回读一遍再核对一次当前账号，结论跟在同一张
+  // Notice 里：0.2.8 之前这里只能说一句「未验证实际模型调用」。
+  const connectionView = result?.connection ? connectionCheckView(result.connection) : null
   return <><Dialog open title={`${definition.name} 配置`} subtitle={definition.description} icon={Settings} width={640}
     onClose={onClose} busy={Boolean(busy)} dirty={dirty} testId="external-client-dialog"
     footer={<><Button onClick={() => dirty ? setDiscard(true) : onClose()} disabled={Boolean(busy)}>{result ? '完成' : '取消'}</Button><Button variant="primary" icon={Save} loading={busy === 'save'} disabled={Boolean(busy) || !model || !models.includes(model)} onClick={() => void save()} testId="external-client-save">保存配置</Button></>}>
@@ -111,6 +115,10 @@ export function ExternalClientDialog({ api, tool, signedIn, onClose, onSaved }: 
       <p>保存前会重新校验模型权限并备份已有配置。密钥只写入对应客户端的本地配置，现有配置内容不会返回界面。</p>
     </fieldset>
     {error && <p className="v2-callout is-bad" role="alert">{error}</p>}
-    {result && <Notice tone="ok" title="配置已保存" body={<><p>{result.message}</p><p className="v2-client-config-path">{result.path}</p>{result.backups.length > 0 && <p>已保留 {result.backups.length} 份备份。</p>}</>} testId="external-client-result" />}
+    {result && <Notice tone="ok" title="配置已保存" body={<><p>{result.message}</p>
+      {connectionView
+        ? <><p data-testid="external-client-connection">连接自检：{connectionView.statusLabel} · {connectionView.title}</p><p>{connectionView.body}</p></>
+        : <p data-testid="external-client-connection">连接自检：这次没测成。配置已经写好了，可以到「检查」页点一次「测试连接」。</p>}
+      <p className="v2-client-config-path">{result.path}</p>{result.backups.length > 0 && <p>已保留 {result.backups.length} 份备份。</p>}</>} testId="external-client-result" />}
   </Dialog>{discard && <Confirm title="放弃未保存的修改？" body="本次选择的密钥与模型还没有保存。" okLabel="放弃修改" cancelLabel="继续编辑" danger onClose={() => setDiscard(false)} onOk={onClose} />}</>
 }

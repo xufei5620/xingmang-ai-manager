@@ -103,6 +103,7 @@ import {
   type DiagnosticsReport,
 } from './diagnostics'
 import { runConnectionCheck } from './connection-check'
+import type { ExternalToolId } from './external-tool-config'
 import { registerIpcHandlers, type AppWindowMode } from './ipc'
 import {
   installXingmangAiSkillFiles,
@@ -925,6 +926,9 @@ if (!hasSingleInstanceLock) {
         })
         return result
       },
+      // 外部客户端的自检由 system-service 出面：Key、地址与归属都只有它算得出
+      // 来，主进程这一层只负责把它接到通道上。
+      checkExternalConnection: (tool: ExternalToolId) => systemService.checkExternalClientConnection(tool),
       exportLatest: () => {
         if (!latestDiagnostics) throw new Error('请先运行一次健康诊断')
         return createDiagnosticsExport(latestDiagnostics, {
@@ -1007,6 +1011,9 @@ if (!hasSingleInstanceLock) {
           rootedOptions.system.providerRoots,
           site.providerBaseUrls,
         ),
+        // 三个外部客户端同样只读上一次检测留下的快照：生成一份报告不该再去跑
+        // 一轮 PowerShell 盘点。没检测过时那三行写「未能读取」。
+        externalClients: systemService.getLastExternalClients(),
       })
     })
     // 客服的第二个问题是「到底能不能用」——这答案用户在「检查」页点过一次就有

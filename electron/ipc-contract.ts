@@ -16,6 +16,8 @@ import type {
 } from './external-tool-config'
 export type { ExternalToolConfigOptions, ExternalToolConfigSaveResult, ExternalToolId } from './external-tool-config'
 import type { ExternalClientConfigRequest, ExternalClientConfigResult, ExternalClientStatus, ExternalClientInstallProgress } from './external-client-contract'
+import type { ExternalClientCheckResult } from './external-client-connection'
+export type { ExternalClientCheckResult } from './external-client-connection'
 export type { ExternalClientConfigRequest, ExternalClientConfigResult, ExternalClientCredential, ExternalClientStatus, ExternalClientRuntimeStatus, ExternalClientConnectionStatus, ExternalClientInstallProgress } from './external-client-contract'
 import type {
   ManagedCliConfigurationOutcome,
@@ -74,6 +76,7 @@ import type { CliVersionAdvice as MainCliVersionAdvice } from './cli-verified-ve
 import type {
   ConnectionCheckLayer as MainConnectionCheckLayer,
   ConnectionCheckResult as MainConnectionCheckResult,
+  ConnectionProbeReport as MainConnectionProbeReport,
 } from './connection-check'
 import type {
   AppConfigSummary as MainAppConfigSummary,
@@ -217,6 +220,8 @@ export type DiagnosticState = MainDiagnosticState
 export type DiagnosticsReport = MainDiagnosticsReport
 export type ConnectionCheckLayer = MainConnectionCheckLayer
 export type ConnectionCheckResult = MainConnectionCheckResult
+/** 自检结论本身，不含身份。CLI 与外部客户端的结果条共用同一套渲染（R-S11 同理）。 */
+export type ConnectionProbeReport = MainConnectionProbeReport
 export type BackupReason = ConfigBackupReason
 export type ConfigBackupSummary = StoredConfigBackupSummary
 export type ConfigBackupPreview = StoredConfigBackupPreview
@@ -862,6 +867,16 @@ export interface XingmangInvokeContract {
     [provider: ProviderId],
     ConnectionCheckResult
   >
+  /**
+   * 外部客户端（WorkBuddy / Claude Desktop / OpenCode）的连接自检。与上面那条
+   * 分成两条通道而不是合成一个联合入参：这一条的密钥来自客户端自己的配置文件、
+   * 由主进程读出，渲染层既给不了也不该给（I3）；结论形状相同，身份换成客户端 id。
+   */
+  checkExternalClientConnection: IpcInvokeDefinition<
+    'diagnostics:check-external-connection',
+    [tool: ExternalToolId],
+    ExternalClientCheckResult
+  >
   getAccountKeyOptions: IpcInvokeDefinition<'account:get-key-options', [provider: ProviderId], AccountKeyOptions>
 }
 
@@ -1070,6 +1085,7 @@ export const ipcInvokeChannels = {
   saveAiChatAsset: 'chat:save-asset',
   showAiChatAssetMenu: 'chat:asset-menu',
   checkProviderConnection: 'diagnostics:check-connection',
+  checkExternalClientConnection: 'diagnostics:check-external-connection',
   getAccountKeyOptions: 'account:get-key-options',
 } as const satisfies {
   [Method in keyof XingmangInvokeContract]: XingmangInvokeContract[Method]['channel']

@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import { providerIds } from './catalog'
+import { externalToolIds } from './external-client-contract'
 import {
   buildFeedbackEnvironmentLines,
   type FeedbackCliConfig,
   type FeedbackCliStatus,
+  type FeedbackExternalClient,
 } from './feedback-environment'
 
 const installed: FeedbackCliStatus = {
@@ -32,7 +34,7 @@ describe('buildFeedbackEnvironmentLines', () => {
       readConfig: () => pointingAtAccount,
     })
 
-    expect(lines).toHaveLength(providerIds.length)
+    expect(lines).toHaveLength(providerIds.length + externalToolIds.length)
     expect(lines[0]).toBe('Claude Code: 已安装 2.1.277（应用托管）；配置：指向当前账号，模型 claude-opus-5')
   })
 
@@ -107,7 +109,7 @@ describe('buildFeedbackEnvironmentLines', () => {
   it('writes 未能读取 for every CLI when no scan has been cached yet', () => {
     const lines = buildFeedbackEnvironmentLines({ clis: null, readConfig: () => pointingAtAccount })
 
-    expect(lines).toEqual(providerIds.map((provider) => expect.stringContaining('未能读取')))
+    expect(lines).toEqual([...providerIds, ...externalToolIds].map(() => expect.stringContaining('未能读取')))
     expect(lines.join('\n')).not.toContain('配置：')
   })
 
@@ -122,6 +124,37 @@ describe('buildFeedbackEnvironmentLines', () => {
 
     expect(lines[0]).toContain('配置：未能读取')
     expect(lines[1]).toContain('指向当前账号')
+  })
+
+  it('answers the same three questions for the external desktop clients', () => {
+    const clients: FeedbackExternalClient[] = [
+      { tool: 'workbuddy', installed: true, version: '1.4.2', model: 'gpt-5.4', configurationSource: 'xingmang', detectionError: null },
+      { tool: 'claudeDesktop', installed: true, version: null, model: 'claude-opus-5', configurationSource: 'other', detectionError: null },
+      { tool: 'opencode', installed: false, version: null, model: null, configurationSource: 'missing', detectionError: null },
+    ]
+    const text = buildFeedbackEnvironmentLines({
+      clis: statusesWith(), readConfig: () => pointingAtAccount, externalClients: clients,
+    }).join('\n')
+
+    expect(text).toContain('WorkBuddy: 已安装 1.4.2；配置：指向当前账号，模型 gpt-5.4')
+    expect(text).toContain('Claude Desktop: 已安装（版本未知）；配置：未指向当前账号，模型 claude-opus-5')
+    expect(text).toContain('OpenCode: 未安装；配置：未配置')
+  })
+
+  it('separates a client detection failure from a config that cannot be read', () => {
+    const text = buildFeedbackEnvironmentLines({
+      clis: statusesWith(),
+      readConfig: () => pointingAtAccount,
+      externalClients: [
+        { tool: 'workbuddy', installed: false, version: null, model: null, configurationSource: 'missing', detectionError: '无法读取安装记录' },
+        { tool: 'claudeDesktop', installed: true, version: '2.2553.1.0', model: null, configurationSource: 'unknown', detectionError: null },
+      ],
+    }).join('\n')
+
+    expect(text).toContain('WorkBuddy: 检测失败；')
+    expect(text).toContain('Claude Desktop: 已安装 2.2553.1.0；配置：未能读取')
+    // 这一轮没检测到的客户端仍旧各占一行，不会从报告里消失。
+    expect(text).toContain('OpenCode: 未能读取')
   })
 
   it('never carries an API key, a relay address or the site name', () => {
