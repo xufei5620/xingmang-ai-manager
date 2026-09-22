@@ -62,6 +62,25 @@
 
 插件同理：点「确认安装」走的是页面上「添加插件」那一条出口（`mutateProviderExtension`，`kind: 'plugin'`、`action: 'install'`、`source` 是 `<插件名>@<市场名>`）。主进程在执行前会自己保证官方市场在册（#277 的 `ensureClaudeOfficialMarketplace`，市场已在册时什么都不做），所以精选不需要知道市场是怎么注册的，也不需要自己去调那一步。`install.marketplace` 只能是 `curated-extensions.ts` 里 `curatedMarketplaceSources` 那张表上的名字——写一个别的市场名，条目会在解析时整条丢掉，因为应用本来也只会去注册官方那一个。插件名收窄到 `[a-z0-9-]`，开关、路径和第二个 `@` 都挤不进去。
 
+## Windows 上的 `npx`：为什么清单里不写 `cmd /c`
+
+精选里所有 stdio 条目的 `command` 都是裸的 `npx`，Windows 上也一样。这是**核实过的结论，不是漏写**——四家 CLI 都在自己那一侧把 `.cmd` 垫片解析掉了，我们再包一层 `cmd /c` 只会多起一个进程、多一层引号转义，并且让写进用户配置里的命令跟四家官方文档给的写法对不上。
+
+Windows 上 npm 装出来的 `npx` / `npm` / `pnpm` / `yarn` 是 `.cmd` 批处理垫片（没有 `npx.exe`），直接 `CreateProcess` 起不来，所以这件事值得写下来。四家各自的做法（2026-09-22 逐个核实）：
+
+| CLI | 版本 | 怎么解析 | 依据 |
+|---|---|---|---|
+| Claude Code | 2.1.277 | MCP 的 `StdioClientTransport` 用 `cross-spawn` 起子进程；`cross-spawn` 先按 `PATHEXT` 把 `npx` 解析成 `npx.cmd`，凡是解析结果不以 `.exe` / `.com` 结尾的一律自动转成 `cmd.exe /d /s /c "…"` 并打开 `windowsVerbatimArguments` | 把 `@anthropic-ai/claude-code-win32-x64@2.1.277` 的 `claude.exe` 拆开，`StdioClientTransport.start()` 里 `spawn` 的实现就是打包进去的 `cross-spawn`（`node_modules[\\/].bin[\\/][^\\/]+\.cmd$` 那个 `enoent` 修正正则是它的指纹） |
+| Codex CLI | 0.155.1 | Rust 侧 `codex-rs/rmcp-client/src/program_resolver.rs`：Windows 分支用 `which` crate 按 `PATHEXT` 把 `npx` 解析成绝对路径再 spawn；模块注释原话是「enables tools like `npx`, `pnpm`, and `yarn` to work correctly on Windows」 | 该文件（`rust-v0.155.1` tag） |
+| Gemini CLI | 0.60.0 | 打包进去的 MCP SDK 同样是 `cross-spawn`（`import_cross_spawn.default(...)`，`shell: false`） | `bundle/chunk-*.js` 里的 `StdioClientTransport.start()` |
+| Grok CLI | 1.0.40 | 自己解析：「Grok resolves a bare `command` such as `npx` to its real launcher path on `PATH` (honoring `PATHEXT`) before spawning, so these work without manually wrapping them in `cmd /c`」 | `grok.exe` 内置文档原文 |
+
+**复核办法**（不需要 Windows 机器，拆包看就行）：`npm pack @anthropic-ai/claude-code-win32-x64@<版本>` 后在 `claude.exe` 里搜 `StdioClientTransport already started`，看它前后那段 `spawn` 调用；Gemini 直接 `npm pack @google/gemini-cli@<版本>` 搜同一句；Grok 的 `bin/grok.exe.br` 用 `zlib.brotliDecompressSync` 解开后搜 `cmd /c`；Codex 读 `codex-rs/rmcp-client/src/program_resolver.rs`。
+
+**真正会让 Windows 用户「装上了但连不上」的不是包裹，是 `npx` 不在 CLI 进程的 `PATH` 上**——四家都只按 `PATH` 找。本应用起 CLI 时用的 `commandEnvironment` 已经把 `%ProgramFiles%\nodejs`、`%APPDATA%\npm` 等常见位置补进 `PATH`（`electron/command-runner.ts` 的 `defaultCommandPaths`），Node 的 MSI 自己也会写系统 `PATH`。排查这一类问题先看 `PATH`，不要改成 `cmd /c`。
+
+**哪一天可以推翻这一条**：某家 CLI 换掉上面那套解析（比如 Claude Code 不再走 `cross-spawn`），并且 Windows 真机上确实起不来。那时候也应该先去上游提问题，而不是在清单里写死平台差异——清单是跨平台共用的一份数据。
+
 ## 插件精选（Claude Code，2026-09-21 复核）
 
 只给 Claude Code。另外三家没有这个市场：Codex 的插件是它自己那一套，Gemini 与 Grok 根本没有插件页的市场接口，列出来就是列了装不上的东西。
@@ -123,6 +142,7 @@ git -C $HOME/.claude/plugins/marketplaces/claude-plugins-official rev-parse HEAD
    插件这边没有「跟不跟进」可选（装到的永远是市场当下那一份），要做的是按上面那段重新取一遍市场 commit 与插件构成：`marketplaceCommit` 更新成新的 HEAD，`verifiedAt` 跟着改；构成里长出了 `hooks/` 或 `.mcp.json` 就把条目删掉。
 4. 上游换了维护者、仓库归档、或者风险描述不再准确 → 把条目从清单里删掉，而不是留着改文案。
 5. 顶层的 `version` 在字段结构变化时 +1，`updatedAt` 每次改清单都更新。
+6. 四家 CLI 抬了大版本时，顺手按上面「Windows 上的 `npx`」那一节的办法再确认一次它们还在自己解析 `.cmd` 垫片。
 
 ## 还没做的
 
