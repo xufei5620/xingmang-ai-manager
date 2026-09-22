@@ -61,6 +61,10 @@ Codex 那时 `recommended` 是 `null`，也就是那两天点过「更新」的�
   挡在外面）。也就是说这条 deny 今天是零作用的保险，它挡的是「上游哪天又把它发出来」，
   以及顺带让 Claude Code 不再提议发布用户点不开的链接。
 
+- **DesignSync（2.1.277）同样每次都发**：`claude -p` 的请求里 21 个工具，其中有它；把它加进
+  `permissions.deny` 后剩 20 个。它把设计稿同步到 claude.ai 的 Claude Design，中转 Key 用不了，
+  所以与 Artifact 一样只在星芒来源下禁、切回官方撤掉。
+
 复核办法与上面抓包一致：空 HOME 装名单里的推荐版本，起一个把请求体落盘的本地 HTTP 接口，
 把 `ANTHROPIC_BASE_URL` 指过去、`ANTHROPIC_AUTH_TOKEN` 随便填，跑 `claude -p "hi"`，
 看请求体的 `tools[].name`。**不要对生产中转发这类探测请求。**
@@ -126,6 +130,7 @@ Codex 那时 `recommended` 是 `null`，也就是那两天点过「更新」的�
 | Claude 的 Artifact 工具 | `~/.claude/settings.json` 的 `permissions.deny` | 不禁 | 禁掉 | 中转 Key 用不了它，且它的 schema 曾整轮 400 |
 | Claude 的读网页预检 | `skipWebFetchPreflight` | 每抓一个域名先问 `api.anthropic.com` | 跳过（只在星芒来源下写，切回官方删掉） | 国内连不上那台主机，WebFetch 要么立即失败、要么等 30 秒后失败 |
 | Claude 的选模型菜单 | `modelPicker` 与 `env.ANTHROPIC_DEFAULT_MODEL` | 官方阵容（Default = Opus 5 · 1M）并标官方美元价 | 当前 Key 可用的 Claude 型号，Default 指向选定的型号（用户自己写过菜单就不动；切回官方收回） | 选到分组里没有的型号只会报「无可用渠道」，价格也不是当前账号的计费 |
+| Claude 的 DesignSync 工具 | 同上 | 不禁 | 禁掉（只在星芒来源下写，切回官方删掉） | 要 claude.ai 登录才能用，2.1.277 在中转上却每次都把它发给模型 |
 | Claude 的命令确认 | `permissions.defaultMode` | `default`（逐条问） | `bypassPermissions` | 本产品的卖点就是不用自己配、也不用自己按确认 |
 | Claude 的回复语言 | `language` | 未设（跟着对话语言走） | `简体中文` | 只靠 AGENTS.md 撑不住：克隆来的项目大多已有说明文件，模板不会生成 |
 | Claude 的记录保留期 | `cleanupPeriodDays` | 30 天 | 365 天 | 记录页、「接着聊」、导出都建立在文件还在的前提上 |

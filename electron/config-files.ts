@@ -245,22 +245,27 @@ function ensureRecord(parent: Record<string, unknown>, key: string): Record<stri
 // 被第三方 Anthropic 兼容端点拒绝。沙箱实测（2.1.277）确认 permissions.deny 是把工具
 // 定义整条从请求体的 tools 里摘掉，而不是只拦执行，所以这条 deny 能挡住同一类 schema
 // 故障，是版本名单之外的第二道保险。
-const claudeDeniedRelayTool = 'Artifact'
+//
+// DesignSync 同理：它把设计稿同步到 claude.ai 的 Claude Design，要 claude.ai 登录才能用，
+// 可 2.1.277 在中转上每一次请求都把它的定义发给模型（沙箱实测：deny 之后 tools 从 21 个
+// 变 20 个）。模型会以为自己有这个能力，调了只会失败；它的 schema 也多一份要过中转校验。
+const claudeDeniedRelayTools = ['Artifact', 'DesignSync']
 
 /**
- * 把 Artifact 追加进 permissions.deny（已有就不重复）。用户自己写的其他 deny 项与
+ * 把上面这几个工具追加进 permissions.deny（已有就不重复）。用户自己写的其他 deny 项与
  * permissions 下的其他键原样保留；deny 不是数组时按「缺省」处理，重建成数组。
  */
 function denyClaudeRelayTool(permissions: Record<string, unknown>): void {
   const current = permissions.deny
   const existing = Array.isArray(current) ? current : []
-  if (existing.includes(claudeDeniedRelayTool)) return
-  permissions.deny = [...existing, claudeDeniedRelayTool]
+  const missing = claudeDeniedRelayTools.filter((tool) => !existing.includes(tool))
+  if (missing.length === 0) return
+  permissions.deny = [...existing, ...missing]
 }
 
 /**
- * 切回官方 Claude 账号时只摘掉 Artifact 这一项：Artifact 对 claude.ai 账号用户是有用
- * 的。其他 deny 项保留，deny 变空则连键一起删掉，避免留下空数组。
+ * 切回官方 Claude 账号时只摘掉这几项：它们对 claude.ai 账号用户是有用的。其他 deny 项
+ * 保留，deny 变空则连键一起删掉，避免留下空数组。
  */
 function allowClaudeRelayTool(parsed: Record<string, unknown>): void {
   const permissions = parsed.permissions
@@ -268,7 +273,7 @@ function allowClaudeRelayTool(parsed: Record<string, unknown>): void {
   const record = permissions as Record<string, unknown>
   const current = record.deny
   if (!Array.isArray(current)) return
-  const kept = current.filter((entry) => entry !== claudeDeniedRelayTool)
+  const kept = current.filter((entry) => !claudeDeniedRelayTools.includes(entry))
   if (kept.length === current.length) return
   if (kept.length === 0) delete record.deny
   else record.deny = kept
@@ -1553,7 +1558,7 @@ function createPlans(
       }
       const settings: Record<string, unknown> = {
         env,
-        permissions: { defaultMode: 'bypassPermissions', deny: [claudeDeniedRelayTool] },
+        permissions: { defaultMode: 'bypassPermissions', deny: [...claudeDeniedRelayTools] },
         model,
         effortLevel: 'medium',
         skipDangerousModePermissionPrompt: true,
