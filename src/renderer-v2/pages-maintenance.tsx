@@ -2451,6 +2451,41 @@ export const tutorialTopics = [
     ],
   },
   {
+    id: 'runtime-mac',
+    title: 'Mac 上装 Node.js 和 Python',
+    lead: 'Windows 上这两样星芒替你装；macOS 上要你自己装一次，装完回来重新检测就行（Homebrew / 官网安装包二选一）。',
+    steps: [
+      {
+        title: '先看首页缺哪一个',
+        detail:
+          '首页右边「运行环境」卡列着 Node.js、npm、Python、Git 四行。Node.js 是四个命令行工具的地基，缺了装不上也起不来；Python 只有 Gemini CLI 用得上，不用 Gemini 可以先不管。',
+        action: '返回首页',
+        page: 'home',
+      },
+      {
+        title: '装过 Homebrew 的走这条',
+        detail:
+          '打开「终端」，粘一条回车，等它跑完：装 Node.js 是 brew install node，装 Python 是 brew install python。首页那段提示里有「复制命令」按钮，复制过去粘贴即可。星芒不会替你跑这条命令，也不会要你输管理员密码。',
+        action: '返回首页',
+        page: 'home',
+      },
+      {
+        title: '没装过 Homebrew 的走这条',
+        detail:
+          '在首页点「去官网下载 Node.js」（或 Python），网页上选 macOS 的安装包（.pkg）下载，双击一路下一步。Node.js 选标着 LTS 的那个版本，别选 Current。',
+        action: '返回首页',
+        page: 'home',
+      },
+      {
+        title: '装完回来重新检测',
+        detail:
+          '回到首页点右上角「重新检测」，「运行环境」那一行显示出版本号就算好了。还是显示未安装的，先把「终端」整个关掉再开一次（新装的命令要重开终端才认），仍然不行就去检查页看一次结果。',
+        action: '打开检查',
+        page: 'health',
+      },
+    ],
+  },
+  {
     id: 'trouble',
     title: '出问题怎么办',
     lead: '从检查结果进入对应修复页面，再回来验证。',

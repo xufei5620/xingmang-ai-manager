@@ -291,3 +291,81 @@ describe('renderer-v2 home account key bootstrap notice', () => {
     expect(markup).not.toContain(offline)
   })
 })
+
+/**
+ * 第三批候选 10：macOS 上 Node / Python 归客户自己装，原来那颗按钮直接把人丢到
+ * 英文官网。Darwin-only 的分支在 Linux 沙箱里只能靠注入平台能力来演，这里演的是
+ * 渲染层拿到 external 能力后的表现，不是真机行为。
+ */
+describe('renderer-v2 home missing runtime guidance on macOS', () => {
+  function runtimeSnapshot(platform: 'windows' | 'macos', missing: { node?: boolean; python?: boolean }): ToolboxSnapshot {
+    const base = snapshot({ claude: cliStatus, codex: cliStatus, grok: cliStatus, gemini: cliStatus })
+    const external = platform === 'macos' ? 'external' : 'managed'
+    return {
+      ...base,
+      platform: { ...base.platform, platform, nodeRuntimeInstall: external, pythonRuntimeInstall: external },
+      system: {
+        ...base.system,
+        runtime: {
+          ...base.system.runtime,
+          node: missing.node ? { installed: false, version: null, detectionFailed: false } : runtime,
+          python: missing.python ? { installed: false, version: null, detectionFailed: false } : runtime,
+        },
+      },
+    } as unknown as ToolboxSnapshot
+  }
+
+  it('walks a Mac customer through both install routes instead of only opening nodejs.org', () => {
+    const markup = render({}, undefined, { snapshot: runtimeSnapshot('macos', { node: true }) })
+    expect(markup).toContain('data-testid="home-runtime-guide-node"')
+    expect(markup).toContain('这台 Mac 上没有找到 Node.js')
+    expect(markup).toContain('brew install node')
+    expect(markup).toContain('data-testid="home-runtime-copy-node"')
+    // 装完回哪儿点一下，必须写在步骤里。
+    expect(markup).toContain('重新检测')
+    // 官网那条路保留成按钮，只是文案说清它是开网页。
+    expect(markup).toContain('去官网下载 Node.js')
+    expect(markup).not.toContain('准备 Node.js')
+    expect(markup).toContain('data-testid="home-runtime-tutorial"')
+  })
+
+  it('gives Python its own block, including why the bundled one is not enough', () => {
+    const markup = render({}, undefined, { snapshot: runtimeSnapshot('macos', { python: true }) })
+    expect(markup).toContain('data-testid="home-runtime-guide-python"')
+    expect(markup).toContain('brew install python')
+    expect(markup).toContain('Gemini CLI')
+    expect(markup).toContain('去官网下载 Python（可选环境）')
+    // Node 没缺就不该多出一段 Node 的步骤。
+    expect(markup).not.toContain('data-testid="home-runtime-guide-node"')
+  })
+
+  it('leaves Windows exactly as it was: the app installs both, so no extra steps', () => {
+    const markup = render({}, undefined, { snapshot: runtimeSnapshot('windows', { node: true, python: true }) })
+    expect(markup).not.toContain('data-testid="home-runtime-guide-node"')
+    expect(markup).not.toContain('data-testid="home-runtime-guide-python"')
+    expect(markup).not.toContain('data-testid="home-runtime-tutorial"')
+    expect(markup).toContain('准备 Node.js')
+    expect(markup).toContain('装 Python（可选环境）')
+  })
+
+  it('stays quiet when the probe failed, because then nobody knows whether it is installed', () => {
+    const base = runtimeSnapshot('macos', { node: true })
+    const failed = {
+      ...base,
+      system: { ...base.system, runtime: { ...base.system.runtime, node: { installed: false, version: null, detectionFailed: true } } },
+    } as unknown as ToolboxSnapshot
+    const markup = render({}, undefined, { snapshot: failed })
+    expect(markup).not.toContain('data-testid="home-runtime-guide-node"')
+    expect(markup).not.toContain('这台 Mac 上没有找到 Node.js')
+    // 按钮照旧在，用户想自己去官网还是能去。
+    expect(markup).toContain('去官网下载 Node.js')
+  })
+
+  it('says nothing about installing runtimes once both are present', () => {
+    const markup = render({}, undefined, { snapshot: runtimeSnapshot('macos', {}) })
+    expect(markup).not.toContain('data-testid="home-runtime-guide-node"')
+    expect(markup).not.toContain('data-testid="home-runtime-guide-python"')
+    expect(markup).not.toContain('data-testid="home-runtime-tutorial"')
+    expect(markup).not.toContain('brew install')
+  })
+})
