@@ -750,6 +750,85 @@ describe('diagnostics', () => {
   })
 })
 
+describe('the disk space check', () => {
+  const gigabyte = 1024 ** 3
+
+  function diskDependencies(
+    home: string,
+    readDiskSpace: DiagnosticsDependencies['readDiskSpace'],
+  ): DiagnosticsDependencies {
+    const input = dependencies(home)
+    // 托管目录这一处要算得出来才有两块盘可比。win32 要真实的 ProgramData，
+    // macOS 只要一个 posix 绝对路径的 HOME——所以这里钉成 darwin 并给一个不落地
+    // 的 HOME（磁盘读取是注入的，路径不会真的被访问），三个平台的结果才一致。
+    input.platform = 'darwin'
+    input.env = { HOME: '/Users/fixture' }
+    input.userDataDirectory = '/Users/fixture/Library/Application Support/XingMangAI'
+    input.readDiskSpace = readDiskSpace
+    return input
+  }
+
+  function reading(availableBytes: number, measuredPath: string, deviceId: number) {
+    return { availableBytes, totalBytes: 256 * gigabyte, measuredPath, deviceId }
+  }
+
+  it('passes and writes out how much is left', async () => {
+    const home = temporaryHome()
+    const report = await runDiagnostics(diskDependencies(
+      home,
+      async (target) => reading(40 * gigabyte, target, 1),
+    ))
+
+    const item = report.items.find((entry) => entry.code === 'DISK_SPACE')
+    expect(item).toMatchObject({ state: 'pass' })
+    expect(item?.summary).toContain('40.0 GB')
+    // 两处目录同在一块盘上（同一个设备号）时只说一遍。
+    expect(item?.details?.measured).toBe(1)
+  })
+
+  it('flags a tight disk as worth watching and a nearly full one as blocking', async () => {
+    const home = temporaryHome()
+    const tight = await runDiagnostics(diskDependencies(
+      home,
+      async (target) => reading(Math.floor(1.5 * gigabyte), target, 1),
+    ))
+    const full = await runDiagnostics(diskDependencies(
+      home,
+      async (target) => reading(300 * 1024 ** 2, target, 1),
+    ))
+
+    expect(tight.items.find((entry) => entry.code === 'DISK_SPACE')).toMatchObject({ state: 'warn' })
+    const blocked = full.items.find((entry) => entry.code === 'DISK_SPACE')
+    expect(blocked?.state).toBe('fail')
+    expect(blocked?.summary).toContain('300 MB')
+    expect(blocked?.summary).toContain('装不下')
+  })
+
+  it('reports two disks separately and judges by the tighter one', async () => {
+    const home = temporaryHome()
+    let device = 0
+    const report = await runDiagnostics(diskDependencies(home, async (target) => {
+      device += 1
+      return reading(device === 1 ? 40 * gigabyte : 500 * 1024 ** 2, target, device)
+    }))
+
+    const item = report.items.find((entry) => entry.code === 'DISK_SPACE')
+    expect(item?.details?.measured).toBe(2)
+    expect(item?.state).toBe('fail')
+  })
+
+  it('does not turn an unreadable filesystem into a problem to fix', async () => {
+    const home = temporaryHome()
+    const report = await runDiagnostics(diskDependencies(home, async () => null))
+
+    expect(report.items.find((entry) => entry.code === 'DISK_SPACE')).toMatchObject({
+      state: 'warn',
+      summary: expect.stringContaining('未能读取'),
+      details: { measured: 0 },
+    })
+  })
+})
+
 describe('parseClashTunConfig', () => {
   it('reads supported top-level and nested TUN switches', () => {
     expect(parseClashTunConfig('enable_tun_mode: true\n')).toBe(true)

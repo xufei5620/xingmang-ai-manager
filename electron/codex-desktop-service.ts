@@ -1600,6 +1600,11 @@ export interface CodexDesktopServiceOptions {
     options: { cwd: string; env: NodeJS.ProcessEnv; windowsHide?: boolean },
   ) => Promise<void>
   /**
+   * 装之前先看一眼安装盘还剩多少。缺省不检查（测试与旧调用方照旧），生产由
+   * system-service 注入同一个预检，好让 CLI 与桌面端用同一条门槛和同一句话。
+   */
+  assertInstallDiskSpace?: (subject: string) => Promise<void>
+  /**
    * 镜像清单探测与安装包下载用的 fetch。加速只接管系统代理，而主进程的全局
    * fetch 是 Node 的 undici，根本不读系统代理——Codex 桌面端的下载因此一直
    * 直连，开不开加速都一样。生产环境注入 Electron 的 `net.fetch`（走 Chromium
@@ -1663,6 +1668,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
     spawnDetached,
     downloadFetch,
     reloadDownloadProxyConfig,
+    assertInstallDiskSpace,
     activateCodexDesktop = activateCodexDesktopDefault,
     activateCodexDesktopWithCdp = activateCodexDesktopWithCdpDefault,
     getAvailableLoopbackPort = getAvailableLoopbackPortDefault,
@@ -1903,6 +1909,8 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
   ): Promise<CodexDesktopInstallResult> {
     // 排队等待期间点的取消在这里生效：一个字节都不用下。
     cancellation?.throwIfCancelled()
+    // 安装包有几百兆，磁盘快满时下到一半才失败最难受；读不到空间照常放行。
+    await assertInstallDiskSpace?.('Codex 桌面端安装失败')
     if (platform === 'darwin') {
       throw new Error('macOS 上 Codex App 的安装由 Codex App 管理，请使用“打开”操作由已验证的 Codex CLI 完成安装或启动')
     }
