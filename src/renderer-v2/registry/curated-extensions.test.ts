@@ -73,6 +73,18 @@ describe('curated extension catalog', () => {
     }
   });
 
+  // Windows 上 npx 是 .cmd 垫片，于是「给清单里的条目包一层 cmd /c」会被反复提起。四家 CLI
+  // 都自己按 PATHEXT 解析（依据逐条写在 docs/CURATED-EXTENSIONS.md），包了反而多一层引号
+  // 转义；而且清单是跨平台共用的同一份数据，写死平台差异会让 macOS 用户装到一条起不来的命令。
+  it('keeps the stdio command platform-neutral instead of wrapping it in a shell', () => {
+    for (const item of curatedExtensions) {
+      if (item.install.type !== 'stdio') continue;
+      for (const token of [item.install.command, ...item.install.args]) {
+        expect(token.toLowerCase()).not.toMatch(/^(?:cmd|cmd\.exe|powershell|powershell\.exe|sh|bash|\/c|\/k)$/);
+      }
+    }
+  });
+
   it('only reaches remote servers over https', () => {
     for (const item of curatedExtensions) {
       if (item.install.type === 'http') expect(item.install.url.startsWith('https://')).toBe(true);

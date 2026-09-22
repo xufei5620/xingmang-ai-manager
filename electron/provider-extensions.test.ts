@@ -979,6 +979,42 @@ describe('ProviderExtensionService native mutations', () => {
     }
   })
 
+  // Windows 上 npm 装出来的 npx / npm / pnpm / yarn 是 .cmd 垫片，没有 npx.exe，所以
+  // 「要不要替用户包一层 cmd /c」会被反复提起。答案是不包，四家 CLI 都在自己那一侧解析：
+  // Claude Code 与 Gemini CLI 的 MCP stdio 传输走 cross-spawn（按 PATHEXT 解析后，非
+  // .exe/.com 的结果一律自动转成 cmd.exe /d /s /c），Codex 的 rmcp-client 用 which crate
+  // 解析成绝对路径，Grok 自己文档里写明了它解析后再 spawn。我们再包一层只会多一层引号
+  // 转义，还让写进用户配置的命令跟四家官方写法对不上。逐条依据在 docs/CURATED-EXTENSIONS.md。
+  it('writes the stdio command into every CLI configuration without a shell wrapper', async () => {
+    for (const provider of providerIds) {
+      const calls: string[][] = []
+      const invoke: ProviderCliInvoker = vi.fn(async (_provider, argv) => {
+        calls.push([...argv])
+        if (argv[0] === 'extensions') return '[]'
+        return ''
+      })
+      const service = new ProviderExtensionService({
+        homeDirectory: temporaryDirectory(),
+        invoke,
+      })
+
+      await service.mutate({
+        provider,
+        kind: 'mcp',
+        action: 'install',
+        id: 'safe_server',
+        scope: 'user',
+        mcp: { type: 'stdio', command: 'npx', args: ['-y', '@acme/server@1.2.3'] },
+      })
+
+      const argv = calls[0]!
+      expect(argv.filter((entry) => entry === 'npx')).toHaveLength(1)
+      for (const entry of argv) {
+        expect(entry.toLowerCase()).not.toMatch(/^(?:cmd|cmd\.exe|powershell|powershell\.exe|\/c|\/k)$/)
+      }
+    }
+  })
+
   it('uses native Gemini skill operations and rejects unsupported Codex updates', async () => {
     const repository = path.join(temporaryDirectory(), 'workspace')
     const calls: Array<{ argv: string[]; cwd?: string }> = []
