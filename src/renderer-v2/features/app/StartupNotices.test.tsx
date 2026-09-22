@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { StartupNotices } from './StartupNotices'
-import { startupCheckFailure, startupDiagnosticsIssues } from './startup-notice'
+import { startupCheckFailure, startupDiagnosticsIssues, vaultRecoveredNotice } from './startup-notice'
 
 function render(notices: Parameters<typeof StartupNotices>[0]['notices']) {
   return renderToStaticMarkup(<StartupNotices notices={notices} onDismiss={() => undefined} onOpen={() => undefined} />)
@@ -24,6 +24,15 @@ describe('StartupNotices', () => {
 
   it('omits the action button for a check with no useful destination', () => {
     expect(render([startupCheckFailure('appearance', '系统外观没有同步')])).not.toContain('xm-notice-actions')
+  })
+
+  it('offers a way straight back to signing in when the account store was rebuilt', () => {
+    const markup = render([vaultRecoveredNotice()])
+    expect(markup).toContain('startup-notice-vault-recovered')
+    expect(markup).toContain('本机保存的登录信息已重置，请重新登录')
+    expect(markup).toContain('去登录')
+    expect(markup).toContain('aria-label="关闭"')
+    expect(markup).not.toContain('aria-modal')
   })
 
   it('stacks one notice per check', () => {

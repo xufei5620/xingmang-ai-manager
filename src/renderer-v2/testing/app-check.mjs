@@ -726,6 +726,29 @@ test('a failed runtime probe on the maintenance page says so instead of 尚未�
     await clean(page)
   } finally { await page.close() }
 })
+// 候选 4：Windows 上缺 Git 时首页运行环境行给中文提示和下载入口，不替客户装。
+test('the home runtime card warns about a missing Git and offers the download on Windows', async () => {
+  const page = await open('gitMissing=1')
+  try {
+    await page.getByTestId('page-home').waitFor()
+    const hint = page.getByTestId('home-runtime-git-hint')
+    await hint.waitFor()
+    assert.match(await hint.innerText(), /没有找到 Git/)
+    assert.match(await hint.innerText(), /PowerShell/)
+    assert.match(await hint.innerText(), /git-scm\.com/)
+    await page.getByTestId('home-runtime-git').waitFor()
+    await clean(page)
+  } finally { await page.close() }
+})
+test('the home runtime card shows the Git version and no warning when Git is present', async () => {
+  const page = await open('')
+  try {
+    await page.getByTestId('page-home').waitFor()
+    assert.equal(await page.getByTestId('home-runtime-git-hint').count(), 0)
+    assert.equal(await page.getByTestId('home-runtime-git').count(), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
 // A4：`buildCliStatus` 早就写好了这两条原因，渲染层一直没人读它们。
 test('a failed update comparison says why on the maintenance page instead of going quiet', async () => {
   const page = await open('cliUpdateFailed=1')
@@ -1234,6 +1257,40 @@ test('a failed startup environment check stays out of the way while the manual o
     await health.waitFor()
     await health.getByRole('button', { name: '重新检查', exact: true }).click()
     await health.getByText('本机环境检查没有跑完', { exact: true }).waitFor()
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// 本机账号存储被重建时，用户看到的只是「记住的账号没了」。提示照后台检查那套挂在
+// 角落，不挡操作，并且给一颗按钮直接把登录开出来，而不是让他自己去找。
+test('a rebuilt account store explains itself and opens the login form', async () => {
+  const page = await open()
+  try {
+    await page.getByTestId('page-home').waitFor()
+    await page.evaluate(() => window.v2Test.emit('onAccountVaultRecovered', undefined))
+    const notice = page.getByTestId('startup-notice-vault-recovered')
+    await notice.waitFor()
+    await notice.getByText('本机保存的登录信息已重置，请重新登录', { exact: true }).waitFor()
+    assert.equal(await page.getByTestId('operation-error').count(), 0)
+    // 主进程已经记过一条 vault.recovered，界面不再重复上报一条错误日志。
+    assert.equal(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'reportRendererError').length), 0)
+    await notice.getByRole('button', { name: '去登录', exact: true }).click()
+    await page.getByTestId('login-account').waitFor()
+    await expect.poll(() => page.getByTestId('startup-notice-vault-recovered').count()).toBe(0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('the account-store notice can be dismissed and leaves nothing behind', async () => {
+  const page = await open()
+  try {
+    await page.getByTestId('page-home').waitFor()
+    await page.evaluate(() => window.v2Test.emit('onAccountVaultRecovered', undefined))
+    const notice = page.getByTestId('startup-notice-vault-recovered')
+    await notice.waitFor()
+    await notice.getByRole('button', { name: '关闭', exact: true }).click()
+    await expect.poll(() => page.getByTestId('startup-notice-vault-recovered').count()).toBe(0)
+    assert.equal(await page.getByTestId('startup-notices').count(), 0)
     await clean(page)
   } finally { await page.close() }
 })

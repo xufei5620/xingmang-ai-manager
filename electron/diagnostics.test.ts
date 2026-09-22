@@ -205,6 +205,32 @@ describe('diagnostics', () => {
     expect(report.durationMs).toBeLessThan(500)
   })
 
+  it('treats a missing Git as optional (warn) and spells out the impact', async () => {
+    const home = temporaryHome()
+    const input = dependencies(home)
+    const previous = input.inspectTool!
+    input.inspectTool = async (tool, signal) =>
+      tool === 'git' ? { installed: false, version: null, path: null } : previous(tool, signal)
+
+    const report = await runDiagnostics(input)
+
+    const git = report.items.find((item) => item.code === 'RUNTIME_GIT')
+    expect(git).toMatchObject({ state: 'warn', details: { required: false, installed: false } })
+    // Windows 依赖是这份夹具的平台；提示要说清楚缺了会怎样，而不只是「未安装」。
+    expect(git?.summary).toContain('PowerShell')
+    expect(git?.summary).toContain('git-scm.com')
+  })
+
+  it('passes the Git check when Git is present', async () => {
+    const home = temporaryHome()
+    const report = await runDiagnostics(dependencies(home))
+
+    expect(report.items.find((item) => item.code === 'RUNTIME_GIT')).toMatchObject({
+      state: 'pass',
+      details: { required: false, installed: true },
+    })
+  })
+
   it('reports a missing system PowerShell as a launch-blocking failure', async () => {
     const home = temporaryHome()
     const input = dependencies(home)

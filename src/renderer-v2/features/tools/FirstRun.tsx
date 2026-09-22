@@ -15,7 +15,7 @@ import type { ToolFirstRun } from '../../registry/tools'
  * 调用方要给它一个随工具变化的 key：换了工具就得重置这句回音，否则关掉
  * Claude Code 那张卡之后，接上来的 Codex 卡上会挂着一句「已复制」。
  */
-export function FirstRunSteps({ name, firstRun, testId }: { name: string; firstRun: ToolFirstRun; testId: string }) {
+export function FirstRunSteps({ name, firstRun, testId, gitHint }: { name: string; firstRun: ToolFirstRun; testId: string; gitHint?: string }) {
   const [copied, setCopied] = useState<'' | 'command' | 'prompt'>('')
   const [failed, setFailed] = useState(false)
   const copy = (part: 'command' | 'prompt', value: string) => {
@@ -36,5 +36,6 @@ export function FirstRunSteps({ name, firstRun, testId }: { name: string; firstR
     </div>
     {copied && <p className="v2-first-run-note" role="status">{copied === 'command' ? '命令已复制，粘到终端里回车即可' : '这句话已复制，粘到工具里回车即可'}</p>}
     {failed && <p className="v2-first-run-note" role="status">没能写进剪贴板，手动选中上面的文字复制就行</p>}
+    {gitHint && <p className="v2-first-run-note is-warn" role="status" data-testid={`${testId}-git-hint`}>{gitHint}</p>}
   </div>
 }

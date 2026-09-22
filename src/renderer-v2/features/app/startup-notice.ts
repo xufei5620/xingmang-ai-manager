@@ -7,7 +7,12 @@ import type { Tone } from '../../ui'
  * （CI 的原生冒烟正是这样被挡住的）。用户自己点「检查更新」「运行检查」时
  * 走的是各页面自己的失败提示，不经过这里，照常报错。
  */
-export type StartupCheckId = 'update' | 'diagnostics' | 'appearance'
+export type StartupCheckId = 'update' | 'diagnostics' | 'appearance' | 'vault-recovered'
+/** `vault-recovered` 不是应用跑出来的检查，是主进程报上来的一次性事实，没有「失败」这一面。 */
+export type StartupCheckFailureId = Exclude<StartupCheckId, 'vault-recovered'>
+
+/** 有的提示要把人带到某一页，有的要直接把登录弹出来（账号页在未登录时才等价于登录）。 */
+export type StartupNoticeAction = { label: string; page: PageId } | { label: string; login: true }
 
 export interface StartupNotice {
   id: StartupCheckId
@@ -19,17 +24,17 @@ export interface StartupNotice {
   tone: Tone
   title: string
   body: string
-  action?: { label: string; page: PageId }
+  action?: StartupNoticeAction
 }
 
-const failureTitles: Record<StartupCheckId, string> = {
+const failureTitles: Record<StartupCheckFailureId, string> = {
   update: '更新检查没有完成',
   diagnostics: '环境检查没有完成',
   appearance: '系统外观没有同步',
 }
 
 /** 后端原话留在正文里：客服排查时要的是它，不是被归类后的标题（同失败对话框）。 */
-export function startupCheckFailure(id: StartupCheckId, detail: string): StartupNotice {
+export function startupCheckFailure(id: StartupCheckFailureId, detail: string): StartupNotice {
   return {
     id,
     failure: true,
@@ -50,6 +55,22 @@ export function startupDiagnosticsIssues(issues: number): StartupNotice | null {
     title: `环境检查发现 ${issues} 项需要处理`,
     body: '不影响继续使用，有空时到「检查」页看一下就行。',
     action: { label: '去看看', page: 'health' },
+  }
+}
+
+/**
+ * 本机的账号存储解密不了、被重建时说清楚为什么：用户看到的症状是「记住的账号
+ * 没了」，不解释他只会以为账号被删了。备份文件名不上屏（I13），也不提站点名
+ * （#148），主语是「本机」。主进程一次启动只发一条，所以这里也只会出现一次。
+ */
+export function vaultRecoveredNotice(): StartupNotice {
+  return {
+    id: 'vault-recovered',
+    failure: false,
+    tone: 'warn',
+    title: '本机保存的登录信息已重置，请重新登录',
+    body: '这台电脑上保存的登录信息已经读不出来，应用已重新建立它。之前记住的账号需要各自重新登录一次，已经写进各个工具的配置不受影响。',
+    action: { label: '去登录', login: true },
   }
 }
 
