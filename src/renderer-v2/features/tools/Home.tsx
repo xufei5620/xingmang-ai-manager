@@ -362,7 +362,7 @@ export function Home(props: HomeProps) {
         </Card>
         <Card title="可以试试" padding="none" testId="home-suggestions"><ListRow icon={Plug} title="给 AI 连上浏览器和数据库" actions={<Button variant="ghost" size="xs" icon={ArrowRight} aria-label="查看外接工具" title="查看外接工具" onClick={() => props.onNavigate('mcp')} />} />
           <ListRow icon={MessageSquare} title="不开终端，直接在这里聊" actions={<Button variant="ghost" size="xs" icon={ArrowRight} aria-label="打开聊天" title="打开聊天" onClick={() => props.onNavigate('chat')} />} />
-          <ListRow icon={BookOpen} title="5 分钟教程：第一次用 Claude Code" actions={<Button variant="ghost" size="xs" icon={ArrowRight} aria-label="查看教程" title="查看教程" onClick={() => props.onNavigate('tutorial')} />} /></Card>
+          <ListRow icon={BookOpen} title="第一次用 Codex？跟着 4 步开始" actions={<Button variant="ghost" size="xs" icon={ArrowRight} aria-label="查看教程" title="查看教程" onClick={() => props.onNavigate('tutorial')} />} /></Card>
       </aside>
     </div>
     {officialOpen && <Dialog open title="ChatGPT 官方账户额度" width={480} onClose={() => setOfficialOpen(false)} busy={officialBusy}

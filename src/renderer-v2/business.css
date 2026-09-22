@@ -377,47 +377,6 @@
   margin-bottom: 20px;
   line-height: 1.75;
 }
-.v2-business-tutorial-grid {
-  display: grid;
-  grid-template-columns: 220px 756px;
-  align-items: start;
-  gap: 24px;
-}
-.v2-business-tutorial-grid h2 {
-  margin-top: 0;
-  font-size: 20px;
-}
-.v2-business-tutorial-steps {
-  display: grid;
-  gap: 24px;
-  list-style: none;
-  margin: 24px 0 0;
-  padding: 0;
-}
-.v2-business-tutorial-steps li {
-  display: grid;
-  grid-template-columns: 28px 1fr;
-  gap: 12px;
-}
-.v2-business-tutorial-steps li > span {
-  display: grid;
-  place-items: center;
-  width: 28px;
-  height: 28px;
-  border-radius: 50%;
-  background: var(--accent-soft);
-  color: var(--accent);
-  font: 600 13px var(--mono);
-}
-.v2-business-tutorial-steps h3 {
-  margin: 4px 0 8px;
-  font-size: 16px;
-}
-.v2-business-tutorial-steps p {
-  margin: 0 0 12px;
-  color: var(--text-2);
-  line-height: 1.65;
-}
 .v2-business-table-head {
   display: grid;
   grid-template-columns: 1fr 240px 200px;
