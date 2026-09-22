@@ -97,6 +97,8 @@ function serviceStub(): SystemService {
     fetchAvailableModels: vi.fn() as never,
     configureExternalTool: vi.fn() as never,
     scanExternalClients: vi.fn(async () => []),
+    getLastExternalClients: vi.fn(() => null),
+    checkExternalClientConnection: vi.fn() as never,
     inspectInstallationQueue: vi.fn(() => ({ activeKey: null, pendingKeys: [] })),
     installExternalClient: vi.fn() as never,
     launchExternalClient: vi.fn(async () => undefined),
@@ -309,6 +311,7 @@ function register(
     diagnosticsService: {
       run: vi.fn(),
       checkConnection: vi.fn(),
+      checkExternalConnection: vi.fn(),
       exportLatest: vi.fn(),
     },
     runtimeLog: runtimeLog as never,
@@ -1460,7 +1463,7 @@ describe('registerIpcHandlers', () => {
 
   it('resolves external-client keys in the main process and never accepts a renderer URL', async () => {
     const service = serviceStub()
-    const safeResult = { tool: 'opencode' as const, model: 'fixture-model', path: 'fixture-config', files: ['fixture-config'], backups: [], outcome: 'configured' as const, message: 'saved', restartRequired: true, connectionVerified: false as const }
+    const safeResult = { tool: 'opencode' as const, model: 'fixture-model', path: 'fixture-config', files: ['fixture-config'], backups: [], outcome: 'configured' as const, message: 'saved', restartRequired: true, connectionVerified: false, connection: null }
     vi.mocked(service.getConfig).mockReturnValue({ providers: { codex: { hasApiKey: true, matchesRelay: true } } } as never)
     vi.mocked(service.configureExternalTool).mockResolvedValue(safeResult)
     const { runtimeLog } = register(service)
@@ -1710,7 +1713,7 @@ describe('registerIpcHandlers', () => {
       sessionsService: { list: vi.fn(), detail: vi.fn(), exportMarkdown: vi.fn(), archive: vi.fn(), restore: vi.fn() } as never,
       providerSessionsService: { list: vi.fn(), detail: vi.fn(), exportMarkdown: vi.fn() } as never,
       backupStore: { list: vi.fn(), create: vi.fn(), inspect: vi.fn(), restore: vi.fn() } as never,
-      diagnosticsService: { run: vi.fn(), checkConnection: vi.fn(), exportLatest: vi.fn() },
+      diagnosticsService: { run: vi.fn(), checkConnection: vi.fn(), checkExternalConnection: vi.fn(), exportLatest: vi.fn() },
       runtimeLog: { log: vi.fn(), exception: vi.fn(), snapshot: vi.fn(), feedbackReport: vi.fn(), clear: vi.fn(), directory: 'C:\\app-data\\logs' } as never,
       extensionService: {} as never,
       providerExtensionService: {} as never,
@@ -1800,7 +1803,7 @@ describe('registerIpcHandlers', () => {
       sessionsService: { list: vi.fn(), detail: vi.fn(), exportMarkdown: vi.fn(), archive: vi.fn(), restore: vi.fn() } as never,
       providerSessionsService: { list: vi.fn(), detail: vi.fn(), exportMarkdown: vi.fn() } as never,
       backupStore: { list: vi.fn(), create: vi.fn(), inspect: vi.fn(), restore: vi.fn() } as never,
-      diagnosticsService: { run: vi.fn(), checkConnection: vi.fn(), exportLatest: vi.fn() },
+      diagnosticsService: { run: vi.fn(), checkConnection: vi.fn(), checkExternalConnection: vi.fn(), exportLatest: vi.fn() },
       runtimeLog: { log: vi.fn(), exception: vi.fn(), snapshot: vi.fn(), feedbackReport: vi.fn(), clear: vi.fn(), directory: 'C:\\app-data\\logs' } as never,
       extensionService: {} as never,
       providerExtensionService: {} as never,
@@ -1837,7 +1840,7 @@ describe('registerIpcHandlers', () => {
       sessionsService: { list: vi.fn(), detail: vi.fn(), exportMarkdown: vi.fn(), archive: vi.fn(), restore: vi.fn() } as never,
       providerSessionsService: { list: vi.fn(), detail: vi.fn(), exportMarkdown: vi.fn() } as never,
       backupStore: { list: vi.fn(), create: vi.fn(), inspect: vi.fn(), restore: vi.fn() } as never,
-      diagnosticsService: { run: vi.fn(), checkConnection: vi.fn(), exportLatest: vi.fn() },
+      diagnosticsService: { run: vi.fn(), checkConnection: vi.fn(), checkExternalConnection: vi.fn(), exportLatest: vi.fn() },
       runtimeLog: { log: vi.fn(), exception: vi.fn(), snapshot: vi.fn(), feedbackReport: vi.fn(), clear: vi.fn(), directory: 'C:\\app-data\\logs' } as never,
       extensionService: {} as never,
       providerExtensionService: {} as never,

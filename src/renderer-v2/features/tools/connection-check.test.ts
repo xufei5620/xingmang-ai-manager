@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { connectionCheckView, connectionLayerLabels, rewritableKeyProviders } from './connection-check'
-import { providerIds, type AppConfigSummary, type ConnectionCheckLayer, type ConnectionCheckResult, type ProviderConfigSummary, type ProviderId } from '../../../../electron/ipc-contract'
+import { providerIds, type AppConfigSummary, type ConnectionCheckLayer, type ConnectionCheckResult, type ExternalClientCheckResult, type ProviderConfigSummary, type ProviderId } from '../../../../electron/ipc-contract'
 import { writeManualSourceMarker, type SourceMarkerStorage } from './source-marker'
 
 function memoryStorage(): SourceMarkerStorage {
@@ -132,6 +132,23 @@ describe('connectionCheckView', () => {
       const view = connectionCheckView(result({ layer, siteId: 'solov-api' }))
       expect(`${view.title} ${view.body} ${view.statusLabel}`).not.toContain('solov')
     }
+  })
+
+  it('renders an external client result the same way, minus the rewrite button', () => {
+    // 外部客户端的结论少了 provider、多了 tool 与 installed；结果条只认结论本身
+    // （ConnectionProbeReport），所以两条路共用这一段渲染。
+    const external: ExternalClientCheckResult = {
+      tool: 'workbuddy', siteId: 'solov', installed: true,
+      ok: false, layer: 'credential', summary: '密钥被拒绝（HTTP 401）',
+      nextStep: '到「账号」页重新登录', endpoint: 'https://xm.solov.cc/v1/models',
+      model: 'gpt-5.4', detail: null, status: 401, durationMs: 9,
+      checkedAt: '2026-09-22T12:00:00.000Z',
+    }
+
+    // 客户端的密钥是用户自己选的，本软件不替他重签，所以这颗按钮给不出来。
+    const view = connectionCheckView(external, { canRewriteKey: false })
+    expect(view).toMatchObject({ tone: 'bad', statusLabel: connectionLayerLabels.credential, action: null, target: 'account' })
+    expect(view.body).toBe('到「账号」页重新登录')
   })
 })
 

@@ -15,6 +15,26 @@ const pageLabels = new Map<string, string>(
   pages.map((page) => [page.id, page.label.replace(' ↗', '')]),
 )
 
+function tutorialText(id: string): string {
+  const topic = tutorialTopics.find((entry) => entry.id === id)
+  if (!topic) return ''
+  return [
+    topic.title,
+    topic.lead,
+    ...(topic.reminders ?? []),
+    ...topic.steps.flatMap((step) => [
+      step.title,
+      step.detail,
+      step.where,
+      ...(step.bullets ?? []),
+      step.expected,
+      step.tip,
+      step.example,
+      ...(step.extra ?? []).flatMap((item) => [item.title, item.detail]),
+    ]),
+  ].filter(Boolean).join('\n')
+}
+
 describe('tutorial topics', () => {
   it('covers the three extension pages with a chapter each', () => {
     for (const id of ['mcp', 'skills', 'plugins']) {
@@ -52,8 +72,7 @@ describe('tutorial topics', () => {
   it('states the three rules that decide whether 「接着聊」 is available', () => {
     // 这三条都是命令行工具本身的限制（只能按文件夹找回最近一条），用户看不出来，
     // 写错了会让人以为按钮坏了。
-    const topic = tutorialTopics.find((entry) => entry.id === 'sessions')
-    const text = topic?.steps.map((step) => step.detail).join('\n') ?? ''
+    const text = tutorialText('sessions')
     expect(text).toContain('最近的一次对话')
     expect(text).toContain('已归档')
     expect(text).toContain('文件夹已不存在')
@@ -64,8 +83,7 @@ describe('tutorial topics', () => {
 
   it('quotes the free allowance from the contract and leaves the bonus code out', () => {
     // 免费时长由 acceleration-contract 定，教程里写死另一个数就会对不上。
-    const topic = tutorialTopics.find((entry) => entry.id === 'acceleration')
-    const text = topic?.steps.map((step) => step.detail).join('\n') ?? ''
+    const text = tutorialText('acceleration')
     expect(text).toContain(`${accelerationTrialSeconds / 60} 分钟`)
     // 口令入口是彩蛋，教程不写；写进来这条会红。
     expect(text).not.toContain('口令')
@@ -82,7 +100,7 @@ describe('tutorial topics', () => {
     // 改文案时这条会直接红。
     const topic = tutorialTopics.find((entry) => entry.id === 'messages')
     expect(topic, '缺少报错对照章节').toBeDefined()
-    const text = topic?.steps.map((step) => step.detail).join('\n') ?? ''
+    const text = tutorialText('messages')
     for (const key of [
       'diskFull',
       'permission',
@@ -117,7 +135,7 @@ describe('tutorial topics', () => {
   it('keeps the two safety notes the skipped Claude Code welcome page used to carry', () => {
     // #284 替用户跳过了 Claude Code 首启那页英文安全须知，这两句由本教程用中文承担，不能再掉。
     const start = tutorialTopics.find((entry) => entry.id === 'start')
-    const text = start?.steps.map((step) => step.detail).join('\n') ?? ''
+    const text = [...(start?.steps.map((step) => step.detail) ?? []), ...(start?.reminders ?? [])].join('\n')
     expect(text).toContain('都可能出错')
     expect(text).toContain('合并或执行之前自己再过一遍')
     expect(text).toContain('来路不明')
@@ -128,7 +146,7 @@ describe('tutorial topics', () => {
     // 候选 10：macOS 上这两样应用不代装，首页给摘要、教程给完整步骤。
     const topic = tutorialTopics.find((entry) => entry.id === macRuntimeTutorialTopic)
     expect(topic, '缺少 macOS 运行环境教程章节').toBeDefined()
-    const text = topic?.steps.map((step) => `${step.title}\n${step.detail}`).join('\n') ?? ''
+    const text = tutorialText(macRuntimeTutorialTopic)
     // 两条命令与首页那段提示必须是同一个字符串，否则两处文案会各走各的。
     expect(text).toContain(runtimeHomebrewCommand('node'))
     expect(text).toContain(runtimeHomebrewCommand('python'))
@@ -143,7 +161,7 @@ describe('tutorial topics', () => {
     // 第七批 3：macOS 上这四个桌面端点「安装」只能被带到教程，可教程里一度没有这一章。
     const topic = tutorialTopics.find((entry) => entry.id === macDesktopTutorialTopic)
     expect(topic, '缺少 macOS 桌面端教程章节').toBeDefined()
-    const text = topic?.steps.map((step) => `${step.title}\n${step.detail}`).join('\n') ?? ''
+    const text = tutorialText(macDesktopTutorialTopic)
     // 四个客户端的名字都要出现，名字从注册表取，改了名字这里会红。
     expect(text).toContain('Codex 桌面端')
     for (const client of clientConnections) expect(text, `教程里没写 ${client.name}`).toContain(client.name)
@@ -164,7 +182,7 @@ describe('tutorial topics', () => {
     const markup = renderToStaticMarkup(
       createElement(TutorialPage, { topic: { sequence: 1, id: macDesktopTutorialTopic } }),
     )
-    expect(markup).toContain(`<h2>${topic?.title}</h2>`)
+    expect(markup).toContain(`<h2 id="tutorial-article-title">${topic?.title}</h2>`)
     expect(markup).toContain(topic?.steps[0]?.title ?? '')
   })
 
@@ -172,7 +190,7 @@ describe('tutorial topics', () => {
     const markup = renderToStaticMarkup(
       createElement(TutorialPage, { topic: { sequence: 1, id: 'no-such-chapter' } }),
     )
-    expect(markup).toContain(`<h2>${tutorialTopics[0].title}</h2>`)
+    expect(markup).toContain(`<h2 id="tutorial-article-title">${tutorialTopics[0].title}</h2>`)
   })
 
   it('only links steps at pages the shell can actually navigate to', () => {

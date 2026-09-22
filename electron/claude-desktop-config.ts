@@ -188,32 +188,54 @@ export function createClaudeDesktopConfigService(options: ClaudeDesktopConfigOpt
     try { options.assertBeforeWrite?.() } catch { throw new Error(`${label}期间账号已切换，请重新保存`) }
   }
 
+  /**
+   * 比 inspectConnection 多一把明文网关密钥，给连接自检发一次最小请求用。
+   * **永不跨 IPC**：对外的 inspectConnection 会把它剥掉（I3）。只有确认归属
+   * 当前账号的那一份才给密钥。
+   */
+  async function inspectGateway(
+    expectedBaseUrl: string,
+    belongsToCurrentAccount?: (apiKey: string) => boolean,
+  ): Promise<ExternalClientConnectionStatus & { apiKey: string | null }> {
+    try {
+      await options.assertUnmanaged?.()
+      const desktop = parseObject(read(configPath))
+      const metadata = parseMetadata(read(metadataPath))
+      const owner = parseOwner(read(markerPath), profileDirectory)
+      if (!metadata.appliedId) return { configured: false, configurationReady: false, model: null, configurationSource: 'missing', configurationError: null, apiKey: null }
+      const config = parseObject(read(path.join(libraryDirectory, `${metadata.appliedId}.json`)))
+      if (!Object.keys(config).length && !metadata.hybridPointer) {
+        return { configured: false, configurationReady: false, model: null, configurationSource: 'missing', configurationError: null, apiKey: null }
+      }
+      const model = firstModel(config.inferenceModels)
+      const apiKey = config.inferenceGatewayApiKey
+      const baseUrl = config.inferenceGatewayBaseUrl
+      const configurationReady = (desktop.deploymentMode === undefined || desktop.deploymentMode === '3p')
+        && !metadata.hybridPointer && gatewayConfigurationReady(config)
+      const configured = configurationReady
+        && typeof baseUrl === 'string' && baseUrl.replace(/\/+$/, '') === expectedBaseUrl.replace(/\/+$/, '')
+        && typeof apiKey === 'string' && Boolean(apiKey.trim())
+        && (owner?.id === metadata.appliedId || Boolean(belongsToCurrentAccount))
+        && (!belongsToCurrentAccount || belongsToCurrentAccount(apiKey))
+      return { configured, configurationReady, model, configurationSource: configured ? 'xingmang' : 'other', configurationError: null,
+        apiKey: configured && typeof apiKey === 'string' ? apiKey : null }
+    } catch {
+      return { configured: false, configurationReady: false, model: null, configurationSource: 'unknown', configurationError: 'Claude Desktop 本地配置无法确认，可能存在管理策略或配置文件异常，请重新检测。', apiKey: null }
+    }
+  }
+
   return {
     inspectConnection: async (expectedBaseUrl: string, belongsToCurrentAccount?: (apiKey: string) => boolean): Promise<ExternalClientConnectionStatus> => {
-      try {
-        await options.assertUnmanaged?.()
-        const desktop = parseObject(read(configPath))
-        const metadata = parseMetadata(read(metadataPath))
-        const owner = parseOwner(read(markerPath), profileDirectory)
-        if (!metadata.appliedId) return { configured: false, configurationReady: false, model: null, configurationSource: 'missing', configurationError: null }
-        const config = parseObject(read(path.join(libraryDirectory, `${metadata.appliedId}.json`)))
-        if (!Object.keys(config).length && !metadata.hybridPointer) {
-          return { configured: false, configurationReady: false, model: null, configurationSource: 'missing', configurationError: null }
-        }
-        const model = firstModel(config.inferenceModels)
-        const apiKey = config.inferenceGatewayApiKey
-        const baseUrl = config.inferenceGatewayBaseUrl
-        const configurationReady = (desktop.deploymentMode === undefined || desktop.deploymentMode === '3p')
-          && !metadata.hybridPointer && gatewayConfigurationReady(config)
-        const configured = configurationReady
-          && typeof baseUrl === 'string' && baseUrl.replace(/\/+$/, '') === expectedBaseUrl.replace(/\/+$/, '')
-          && typeof apiKey === 'string' && Boolean(apiKey.trim())
-          && (owner?.id === metadata.appliedId || Boolean(belongsToCurrentAccount))
-          && (!belongsToCurrentAccount || belongsToCurrentAccount(apiKey))
-        return { configured, configurationReady, model, configurationSource: configured ? 'xingmang' : 'other', configurationError: null }
-      } catch {
-        return { configured: false, configurationReady: false, model: null, configurationSource: 'unknown', configurationError: 'Claude Desktop 本地配置无法确认，可能存在管理策略或配置文件异常，请重新检测。' }
-      }
+      const { apiKey: _apiKey, ...status } = await inspectGateway(expectedBaseUrl, belongsToCurrentAccount)
+      return status
+    },
+    /** 主进程内部专用：连接自检要用的网关密钥与模型；不属于当前账号时为 null。 */
+    inspectGatewayCredential: async (
+      expectedBaseUrl: string,
+      belongsToCurrentAccount?: (apiKey: string) => boolean,
+    ): Promise<{ apiKey: string; model: string } | null> => {
+      const result = await inspectGateway(expectedBaseUrl, belongsToCurrentAccount)
+      return result.configured && result.apiKey && result.model ? { apiKey: result.apiKey, model: result.model } : null
     },
     saveGateway: (input: ClaudeDesktopGatewayInput): Promise<ClaudeDesktopConfigResult> => serial(async () => {
       const gateway = buildClaudeDesktopGatewayConfig(input)

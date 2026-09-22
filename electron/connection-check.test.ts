@@ -73,11 +73,11 @@ async function check(
 }
 
 function messagesProbe(model: string): ConnectionProbeIdentity {
-  return { provider: 'claude', protocol: 'anthropic-messages', model }
+  return { name: 'Claude Code', protocol: 'anthropic-messages', model }
 }
 
 function catalogProbe(model: string, provider: ProviderId = 'codex'): ConnectionProbeIdentity {
-  return { provider, protocol: 'openai-models', model }
+  return { name: cliCatalog[provider].name, protocol: 'openai-models', model }
 }
 
 describe('buildConnectionProbe', () => {
@@ -94,7 +94,7 @@ describe('buildConnectionProbe', () => {
       max_tokens: 1,
       messages: [{ role: 'user', content: 'ping' }],
     })
-    expect(build.plan.siteId).toBe('solov')
+    expect(build.plan.name).toBe('Claude Code')
   })
 
   it('probes the second site with the same protocol and its own origin', () => {
@@ -102,7 +102,7 @@ describe('buildConnectionProbe', () => {
     expect(build.kind).toBe('probe')
     if (build.kind !== 'probe') return
     expect(build.plan.url).toBe('https://api.solov.cc/v1/messages')
-    expect(build.plan.siteId).toBe('solov-api')
+    expect(build.plan.origin).toBe('https://api.solov.cc')
   })
 
   it('tolerates a trailing slash in the configured base URL', () => {
