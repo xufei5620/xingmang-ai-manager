@@ -299,24 +299,123 @@ export async function inspectCurrentWindowsTokenElevationType(
   return elevationType
 }
 
+/**
+ * 探测失败的几种可以分辨的原因。只用来让客服和用户看懂「为什么被按管理员
+ * 处理了」，**不参与判定**：无论哪一种，执行模式都是 trusted-only。
+ */
+export type WindowsExecutionProbeFailureReason =
+  | 'timeout'
+  | 'powershell-unavailable'
+  | 'blocked'
+  | 'unexpected-output'
+  | 'failed'
+
+export interface WindowsExecutionProbeFailure {
+  reason: WindowsExecutionProbeFailureReason
+  /** 上游原文的第一段，只进运行日志，不上屏、不进检查页。 */
+  detail: string
+}
+
+export interface WindowsCliExecutionModeResolution {
+  mode: WindowsCliExecutionMode
+  /** 探测花了多久。主窗口要等它，慢机器上这一项本身就是线索。 */
+  elapsedMs: number
+  /** 只有探测失败、按从严处理时才有。 */
+  probeFailure?: WindowsExecutionProbeFailure
+}
+
+const PROBE_FAILURE_DETAIL_LIMIT = 300
+
+function probeFailureText(error: unknown): string {
+  if (!(error instanceof Error)) return String(error)
+  const stderr = (error as { stderr?: unknown }).stderr
+  const stderrText = typeof stderr === 'string' ? stderr : Buffer.isBuffer(stderr) ? stderr.toString('utf8') : ''
+  if (stderrText.trim()) return stderrText
+  // execFile 的 message 是「Command failed: <整条命令行>」，命令行里就是探测脚本本身
+  // （Add-Type、TokenElevationType 都在里面），拿它归类每次都会归成同一类。
+  return error.message.startsWith('Command failed:') ? '' : error.message
+}
+
+/**
+ * Classifies why the token probe failed without changing what the failure
+ * means: the caller still falls back to trusted-only. The distinctions exist
+ * because the fallback is invisible otherwise — a standard user on a machine
+ * whose security software blocks PowerShell's `Add-Type` compilation silently
+ * loses every same-user install path and ends up "fixing" it by running the
+ * whole app elevated.
+ */
+export function classifyWindowsExecutionProbeFailure(error: unknown): WindowsExecutionProbeFailure {
+  const text = probeFailureText(error)
+  // execFile 的 code 在进程非零退出时是退出码（数字），spawn 失败时才是 ENOENT 这类字符串。
+  const code = error instanceof Error ? (error as { code?: unknown }).code : undefined
+  const killed = error instanceof Error && (error as { killed?: unknown }).killed === true
+  const signal = error instanceof Error ? (error as { signal?: unknown }).signal : undefined
+  const fallbackDetail = [typeof code === 'string' || typeof code === 'number' ? `code=${code}` : '', typeof signal === 'string' ? `signal=${signal}` : '']
+    .filter(Boolean)
+    .join(' ')
+  const detail = (text.replace(/\s+/g, ' ').trim() || fallbackDetail || 'unknown').slice(0, PROBE_FAILURE_DETAIL_LIMIT)
+  let reason: WindowsExecutionProbeFailureReason = 'failed'
+  // execFile 超时时先 kill 子进程，再以 killed=true、signal=SIGTERM 报错。
+  if (killed || code === 'ETIMEDOUT' || /timed? ?out|超时/i.test(text)) reason = 'timeout'
+  else if (code === 'ENOENT' || /未找到可用的系统 PowerShell/.test(text)) reason = 'powershell-unavailable'
+  else if (
+    code === 'EPERM'
+    || code === 'EACCES'
+    || /Add-Type|language mode|语言模式|Cannot add type|无法添加类型|csc\.exe|compil|编译|blocked|拦截|access is denied|拒绝访问|group policy|组策略/i.test(text)
+  ) reason = 'blocked'
+  else if (/无法确认当前 Windows 进程的令牌提升类型|Unexpected TokenElevationType/.test(text)) reason = 'unexpected-output'
+  return { reason, detail }
+}
+
+const probeFailureDescriptions: Readonly<Record<WindowsExecutionProbeFailureReason, string>> = {
+  timeout: '确认权限这一步超过 15 秒没做完，常见于电脑较慢或刚开机',
+  'powershell-unavailable': '系统自带的命令行组件找不到或打不开',
+  blocked: '确认权限这一步被安全软件或电脑的管控策略拦下了',
+  'unexpected-output': '确认权限时系统给出的结果看不懂',
+  failed: '确认权限这一步出错了',
+}
+
+/** 检查页与反馈报告共用的那半句原因，面向用户，不带任何上游原文。 */
+export function describeWindowsExecutionProbeFailure(reason: WindowsExecutionProbeFailureReason): string {
+  return probeFailureDescriptions[reason]
+}
+
 /** Packaged and development builds normally run as the current user. If a user
  * explicitly starts the app as administrator, retain the restrictive boundary
  * so user-writable commands are never inherited by the elevated process. */
 export async function resolveWindowsCliExecutionMode(
   options: ResolveWindowsCliExecutionModeOptions,
 ): Promise<WindowsCliExecutionMode> {
+  return (await resolveWindowsCliExecutionModeDetailed(options)).mode
+}
+
+/**
+ * Same decision as `resolveWindowsCliExecutionMode`, plus why a failed probe
+ * fell back to trusted-only. The fallback itself is unchanged: a probe that
+ * cannot prove the token is not elevated keeps the restrictive boundary.
+ */
+export async function resolveWindowsCliExecutionModeDetailed(
+  options: ResolveWindowsCliExecutionModeOptions & { now?: () => number },
+): Promise<WindowsCliExecutionModeResolution> {
   const platform = options.platform ?? process.platform
-  if (platform !== 'win32') return 'same-user'
+  const now = options.now ?? Date.now
+  const startedAt = now()
+  const settle = (mode: WindowsCliExecutionMode, probeFailure?: WindowsExecutionProbeFailure) => ({
+    mode,
+    elapsedMs: Math.max(0, now() - startedAt),
+    ...(probeFailure ? { probeFailure } : {}),
+  })
+  if (platform !== 'win32') return settle('same-user')
   try {
     if (options.probeElevationType) {
-      return await options.probeElevationType() === 'full' ? 'trusted-only' : 'same-user'
+      return settle(await options.probeElevationType() === 'full' ? 'trusted-only' : 'same-user')
     }
     if (options.probeAdministrator) {
-      return await options.probeAdministrator() ? 'trusted-only' : 'same-user'
+      return settle(await options.probeAdministrator() ? 'trusted-only' : 'same-user')
     }
-    return await inspectCurrentWindowsTokenElevationType() === 'full' ? 'trusted-only' : 'same-user'
-  } catch {
-    return 'trusted-only'
+    return settle(await inspectCurrentWindowsTokenElevationType() === 'full' ? 'trusted-only' : 'same-user')
+  } catch (error) {
+    return settle('trusted-only', classifyWindowsExecutionProbeFailure(error))
   }
 }
 

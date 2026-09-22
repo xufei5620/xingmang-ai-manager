@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { networkFailureMessages } from '../../../../electron/network-failure'
-import { activeConversation, applyStreamEvent, chatErrorMessage, createConversation, createWorkspace, DEFAULT_CHAT_GROUP, DEFAULT_CHAT_MODEL, DEFAULT_IMAGE_MODEL, defaultChatSettings, filterConversations, planTurn, resolveChatGroup, resolveChatModel, saveConversation, shouldSendOnEnter, type ChatMessage, type ChatWorkspace } from './state'
+import { relayQuotaFailureMessages } from '../../../../electron/relay-quota-failure'
+import { activeConversation, applyStreamEvent, chatErrorAction, chatErrorMessage, createConversation, createWorkspace, DEFAULT_CHAT_GROUP, DEFAULT_CHAT_MODEL, DEFAULT_IMAGE_MODEL, defaultChatSettings, filterConversations, planTurn, resolveChatGroup, resolveChatModel, saveConversation, shouldSendOnEnter, type ChatMessage, type ChatWorkspace } from './state'
 import { createParameterDraft, parseParameters } from './parameters'
 import { historyKey, importLegacyHistory, readWorkspace, writeWorkspace } from './storage'
 import { inspectModel, validateImageRequest } from './api'
@@ -64,6 +65,16 @@ describe('v2 chat request transitions', () => {
     expect(chatErrorMessage(outage, 'service-unavailable')).toBe(outage)
     // 准备分组时没有错误码，原话里带着 HTTP 码；以前 /登录|密钥/ 那条会先撞上。
     expect(chatErrorMessage(new Error(`${outage}（HTTP 503：登录服务维护中）`))).toBe(outage)
+  })
+
+  it('keeps the main process quota sentences and offers the matching account page', () => {
+    const wrapped = `Error invoking remote method 'ai-image:generate': Error: ${relayQuotaFailureMessages.keyLimit}`
+    expect(chatErrorMessage(new Error(wrapped))).toBe(relayQuotaFailureMessages.keyLimit)
+    expect(chatErrorMessage(relayQuotaFailureMessages.balance, 'upstream-http-error')).toBe(relayQuotaFailureMessages.balance)
+    expect(chatErrorAction(relayQuotaFailureMessages.balance)).toBe('recharge')
+    expect(chatErrorAction(relayQuotaFailureMessages.keyLimit)).toBe('keys')
+    expect(chatErrorAction(relayQuotaFailureMessages.keyInvalid)).toBeNull()
+    expect(chatErrorAction(undefined)).toBeNull()
   })
   it('edits one user turn and removes dependent later replies before resubmitting', () => {
     const first = turn(); const original = first.conversation

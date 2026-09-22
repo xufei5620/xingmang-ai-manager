@@ -7,6 +7,7 @@ import {
 } from './ai-chat-service'
 import type { ChatCredentialCoordinator } from './chat-credential-coordinator'
 import { networkFailureMessages } from './network-failure'
+import { relayQuotaFailureMessages } from './relay-quota-failure'
 
 const encoder = new TextEncoder()
 type TestFetch = (input: string | URL, init?: RequestInit) => Promise<Response>
@@ -326,6 +327,41 @@ describe('AI chat streaming service', () => {
       outputBytes: 0,
     }))
     expect(fetchImpl.mock.calls[0][1]?.headers).toMatchObject({ Authorization: `Bearer ${secret}` })
+  })
+
+  it.each([
+    [403, { error: { message: '用户额度不足, 剩余额度: ＄0.000000 (request id: r1)', type: 'new_api_error', code: 'insufficient_user_quota' } }, relayQuotaFailureMessages.balance],
+    [403, { error: { message: 'token quota is not enough, token remain quota: ＄0.001000, need quota: ＄0.050000', code: 'pre_consume_token_quota_failed' } }, relayQuotaFailureMessages.keyLimit],
+    [401, { error: { message: '无效的令牌 (request id: r2)', type: 'new_api_error', code: '' } }, relayQuotaFailureMessages.keyInvalid],
+    [403, { code: 'INSUFFICIENT_BALANCE', message: 'Insufficient account balance' }, relayQuotaFailureMessages.balance],
+    [429, { error: { message: 'API key 额度已用完', type: 'insufficient_quota', code: 'insufficient_quota' } }, relayQuotaFailureMessages.keyLimit],
+    [429, { error: { message: 'You exceeded your current quota', code: 'insufficient_quota' } }, '请求过于频繁，请稍后重试'],
+  ])('tells balance, key limit and dead key apart on HTTP %s', async (status, payload, expected) => {
+    const events: AiChatStreamEvent[] = []
+    const service = createAiChatService({
+      credentialCoordinator: credentialCoordinator(),
+      fetchImpl: vi.fn<TestFetch>(async () => new Response(JSON.stringify(payload), {
+        status,
+        headers: { 'content-type': 'application/json' },
+      })),
+      emit: (_senderId, event) => events.push(event),
+    })
+    service.start(startInput())
+    await service.whenIdle()
+    expect(events).toEqual([expect.objectContaining({ type: 'error', code: 'upstream-http-error', message: expected })])
+  })
+
+  it('falls back to the status-only wording when the error body is oversized', async () => {
+    const events: AiChatStreamEvent[] = []
+    const body = JSON.stringify({ error: { message: `用户额度不足${'x'.repeat(20 * 1024)}` } })
+    const service = createAiChatService({
+      credentialCoordinator: credentialCoordinator(),
+      fetchImpl: vi.fn<TestFetch>(async () => new Response(body, { status: 403 })),
+      emit: (_senderId, event) => events.push(event),
+    })
+    service.start(startInput())
+    await service.whenIdle()
+    expect(events).toEqual([expect.objectContaining({ message: '当前 API Key 无权使用所选模型或分组' })])
   })
 
   it.each([

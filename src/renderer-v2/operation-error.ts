@@ -58,6 +58,10 @@ const rules: Array<{ key: OperationErrorHint['key']; match: (message: string) =>
   // 这两条都必须排在 timeout 之前：那条的 network / 连接失败 会把证书失败吞成
   //「检查网络」，用户于是反复检查一个本来就通的网络。
   { key: 'tlsIntercepted', match: (message) => classifyNetworkFailure(message) === 'tls' },
+  // safe-local-data 的写入校验（I8）拒绝经过目录联接的路径：「C 盘搬家」工具把
+  // 用户文件夹或软件数据文件夹挪走之后，写 Key、存设置都会撞上这句。它看起来像
+  // 权限问题，其实改权限、关杀毒都没用，所以排在 permission 之前单独认。
+  { key: 'folderRelocated', match: (message) => /不能经过符号链接或目录联接/.test(message) },
   { key: 'permission', match: (message) => /EPERM|EACCES|operation not permitted|permission denied|拒绝访问|访问被拒绝|权限不足|需要管理员/i.test(message) },
   // 「杀毒」这条只留真的在说杀毒软件的说法。EBUSY 与「文件被占用」已经上移到
   // toolRunning：两条都留着的话，先匹配到的那条就决定用户去关哪个东西。
@@ -113,6 +117,8 @@ const actionIds: Record<string, OperationActionId | undefined> = {
   重新登录: 'relogin',
   马上充值: 'recharge',
   检查网络: 'network',
+  // 与「检查网络」落到同一页（App 里 network → health），只是这里说的不是网络。
+  打开检查页: 'network',
   一键修复: 'repair',
   复制路径: 'copyPath',
 }

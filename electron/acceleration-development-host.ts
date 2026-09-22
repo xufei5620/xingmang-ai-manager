@@ -37,6 +37,14 @@ export function accelerationDevelopmentDirectory(dataDirectory: string): string 
   return path.join(dataDirectory, 'acceleration-development')
 }
 
+/** The recovery journal inside that directory; its lease sits beside it with a
+ *  `.lock` suffix. The uninstall cleanup reads the same pair after the worker
+ *  has been killed, and scripts/windows-acceleration-recovery.ps1 spells the
+ *  same name out for support. */
+export function accelerationProxyJournalPath(dataDirectory: string): string {
+  return path.join(accelerationDevelopmentDirectory(dataDirectory), 'proxy-lease.json')
+}
+
 export function parseAccelerationDevelopmentConfig(value: unknown): AccelerationDevelopmentConfig {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('本机加速配置无效。')
   const config = value as Record<string, unknown>
