@@ -30,3 +30,12 @@ describe('renderer-v2 sidebar update badge', () => {
     }
   })
 })
+
+describe('renderer-v2 shell keyboard landmarks', () => {
+  it('offers a skip link to a focusable main region and a polite page announcement', () => {
+    const markup = render()
+    expect(markup).toMatch(/<aside[^>]*data-testid="sidebar"[^>]*><a class="v2-skip-link" href="#v2-main"[^>]*>跳到正文<\/a>/)
+    expect(markup).toMatch(/<main[^>]*id="v2-main"[^>]*tabindex="-1"/)
+    expect(markup).toMatch(/<p class="v2-visually-hidden" role="status" aria-live="polite"[^>]*><\/p>/)
+  })
+})
