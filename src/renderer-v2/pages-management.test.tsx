@@ -4,7 +4,11 @@ import {
   CuratedDetails,
   CuratedShelf,
   curatedPlaceholderField,
+  curatedRuntimeCommand,
   curatedVersionText,
+  mcpCommandRuntime,
+  mcpHealthView,
+  mcpRuntimeNotice,
   officialMarketplaceNotice,
   submitMcpInstall,
   unresolvedInstallPlaceholders,
@@ -203,5 +207,111 @@ describe('official plugin marketplace notice', () => {
       registered: true,
       reason: null,
     })).toMatchObject({ tone: 'neutral', needsAction: false })
+  })
+})
+
+function healthReport(
+  entries: Array<{ id: string; state: 'connected' | 'failed' | 'unknown'; detail: string | null }>,
+  reason: string | null = null,
+) {
+  return { provider: 'claude' as const, checkedAt: '2026-09-22T00:00:00.000Z', supported: true, reason, entries }
+}
+
+describe('MCP connection health pill', () => {
+  it('draws nothing before the first check, so an old result never looks fresh', () => {
+    expect(mcpHealthView(null, 'files')).toBeNull()
+  })
+
+  it('says it is checking while the probe runs, rather than showing the previous answer', () => {
+    const stale = healthReport([{ id: 'files', state: 'connected', detail: null }])
+    expect(mcpHealthView(stale, 'files', true)).toEqual({
+      tone: 'neutral',
+      label: '检测中',
+      detail: null,
+    })
+  })
+
+  it('maps the three answers onto the three tones', () => {
+    const report = healthReport([
+      { id: 'files', state: 'connected', detail: null },
+      { id: 'browser', state: 'failed', detail: '启动失败' },
+      { id: 'memory', state: 'unknown', detail: '这条连接已在工具里停用，本次没有检测' },
+    ])
+    expect(mcpHealthView(report, 'files')).toEqual({ tone: 'ok', label: '能连上', detail: null })
+    expect(mcpHealthView(report, 'browser')).toEqual({ tone: 'warn', label: '连不上', detail: '启动失败' })
+    expect(mcpHealthView(report, 'memory')).toEqual({
+      tone: 'neutral',
+      label: '未检测',
+      detail: '这条连接已在工具里停用，本次没有检测',
+    })
+  })
+
+  // 工具压根没回这一条时，原因只能用整份报告那一句；工具什么都没说就什么都不写。
+  it('falls back to the report reason for a connection the tool did not answer for', () => {
+    expect(mcpHealthView(healthReport([], '当前工具没有提供连接状态'), 'files')).toEqual({
+      tone: 'neutral',
+      label: '未检测',
+      detail: '当前工具没有提供连接状态',
+    })
+    expect(mcpHealthView(healthReport([]), 'files')).toEqual({
+      tone: 'neutral',
+      label: '未检测',
+      detail: null,
+    })
+  })
+})
+
+describe('Python runtime notice before adding a connection', () => {
+  const managed = 'managed' as const
+  const external = 'external' as const
+
+  it('recognizes the Python-family launchers, including a full path and a Windows suffix', () => {
+    expect(mcpCommandRuntime('uvx')).toBe('uv')
+    expect(mcpCommandRuntime('C:\\Users\\me\\.local\\bin\\uv.exe')).toBe('uv')
+    expect(mcpCommandRuntime('/usr/bin/python3')).toBe('python')
+    expect(mcpCommandRuntime('pipx')).toBe('python')
+    expect(mcpCommandRuntime('npx')).toBeNull()
+  })
+
+  it('says nothing when the machine already has what the command needs', () => {
+    expect(mcpRuntimeNotice('uvx', { python: false, uv: true }, managed)).toBeNull()
+    expect(mcpRuntimeNotice('python3', { python: true, uv: false }, managed)).toBeNull()
+    expect(mcpRuntimeNotice('npx', { python: false, uv: false }, managed)).toBeNull()
+  })
+
+  // 主进程还没给这一块时（旧版本）保持旧行为：不提示。
+  it('says nothing when the main process did not report the runtimes', () => {
+    expect(mcpRuntimeNotice('uvx', undefined, managed)).toBeNull()
+  })
+
+  it('offers the Python installer on the platform that installs it, and says it can still be added', () => {
+    const notice = mcpRuntimeNotice('python3', { python: false, uv: false }, managed)
+    expect(notice?.installPython).toBe(true)
+    expect(notice?.body).toContain('要靠 Python 运行')
+    expect(notice?.body).toContain('仍然可以直接添加')
+  })
+
+  it('gives the command instead of a button where the application does not install Python', () => {
+    const notice = mcpRuntimeNotice('python3', { python: false, uv: false }, external)
+    expect(notice?.installPython).toBe(false)
+    expect(notice?.body).toContain('brew install python')
+  })
+
+  // 装 Python 装不出 uv，所以缺 uv 时那颗按钮只在同时缺 Python 才有意义。
+  it('does not pretend the Python installer fixes a missing uv', () => {
+    const missingBoth = mcpRuntimeNotice('uvx', { python: false, uv: false }, managed)
+    expect(missingBoth?.body).toContain('没有找到 uv')
+    expect(missingBoth?.body).toContain('也没有找到 Python')
+    expect(missingBoth?.installPython).toBe(true)
+    const pythonOnly = mcpRuntimeNotice('uvx', { python: true, uv: false }, managed)
+    expect(pythonOnly?.installPython).toBe(false)
+    expect(pythonOnly?.body).toContain('pip install uv')
+    // Python 已经在了，就不该再说「Python 装好之后」。
+    expect(pythonOnly?.body).not.toContain('Python 装好之后')
+  })
+
+  it('checks a curated entry by its own launch command', () => {
+    expect(curatedRuntimeCommand(item('files'))).toBe('npx')
+    expect(curatedRuntimeCommand(item('github'))).toBe('')
   })
 })

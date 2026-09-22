@@ -8,6 +8,7 @@ import { DirectoryEntryLimitError, readDirectoryEntriesSync } from './bounded-di
 import { readBoundedResponseText } from './bounded-response'
 import { cliCatalog, providerIds, type ProviderId } from './catalog'
 import {
+  cleanCommandOutput,
   commandEnvironment,
   findExecutable,
   runCommand,
@@ -52,6 +53,13 @@ const CLAUDE_OFFICIAL_MARKETPLACE_SOURCE = 'anthropics/claude-plugins-official'
  * explanation with a generic timeout.
  */
 const MARKETPLACE_ADD_TIMEOUT_MS = 240_000
+/**
+ * `claude mcp list` really starts every stdio server, and the CLI itself waits
+ * 30 seconds per server before calling one dead. A budget at our usual 30s
+ * would therefore report "未检测" for the whole batch exactly when one entry is
+ * broken — the case this check exists for.
+ */
+const MCP_HEALTH_TIMEOUT_MS = 120_000
 const OFFICIAL_NPM_REGISTRY = 'https://registry.npmjs.org/'
 const OFFICIAL_PYPI_ORIGIN = 'https://pypi.org'
 const OFFICIAL_GITHUB_ORIGIN = 'https://github.com'
@@ -123,6 +131,39 @@ export interface ProviderExtensionMarketplaceState {
   reason: string | null
 }
 
+/**
+ * 连接能不能用，只有三种回答。`unknown` 是「这次没有检测」，不是「有问题」——
+ * 没有检测能力的工具和检测超时都落在这里，界面不许把它画成红色。
+ */
+export type ProviderMcpHealthState = 'connected' | 'failed' | 'unknown'
+
+export interface ProviderMcpHealthEntry {
+  /** 与 ProviderExtensionItem.id 对齐，也就是 CLI 打印出来的连接名。 */
+  id: string
+  state: ProviderMcpHealthState
+  /** 一句中文原因；工具没给出原因时为 null，不替它编一个。 */
+  detail: string | null
+}
+
+export interface ProviderMcpHealthReport {
+  provider: ProviderId
+  checkedAt: string
+  /** false = 这个工具没有可读的连接状态，整页一律「未检测」。 */
+  supported: boolean
+  /** 不支持或整批失败时的一句说明；成功时为 null。 */
+  reason: string | null
+  entries: ProviderMcpHealthEntry[]
+}
+
+/**
+ * 本机跑不跑得起某一类 MCP。只看「有没有这个可执行文件」，不做版本判断：
+ * 用户自己装的 conda / pyenv 也算数（见添加连接时的提示）。
+ */
+export interface ProviderExtensionRuntimeAvailability {
+  python: boolean
+  uv: boolean
+}
+
 export interface ProviderExtensionsSnapshot {
   provider: ProviderId
   checkedAt: string
@@ -131,6 +172,8 @@ export interface ProviderExtensionsSnapshot {
   warnings: string[]
   /** 仅 Claude Code 有官方市场这一层，其余 Provider 缺省即旧行为。 */
   marketplace?: ProviderExtensionMarketplaceState
+  /** 添加 uvx / python 型连接前要用它提示缺环境；缺省即旧行为（不提示）。 */
+  runtimes?: ProviderExtensionRuntimeAvailability
 }
 
 export type ProviderMcpInstallConfiguration =
@@ -1019,6 +1062,119 @@ function mcpListArgv(provider: ProviderId): string[] | null {
   return null
 }
 
+/**
+ * 连接状态只有 Claude Code 与 Gemini CLI 自己回答得了：两家的 `mcp list` 会
+ * 逐条真的把服务拉起来一次再打印结论。Codex / Grok 的 `mcp list --json` 只回
+ * 配置内容，所以那两家一律「未检测」，不拿配置去猜。
+ */
+function mcpHealthArgv(provider: ProviderId): string[] | null {
+  return provider === 'claude' || provider === 'gemini' ? ['mcp', 'list'] : null
+}
+
+interface McpHealthLabel {
+  label: string
+  state: ProviderMcpHealthState
+  /** 状态本身译成中文；CLI 另给的原因会接在它后面。 */
+  reason: string | null
+}
+
+/**
+ * Claude Code 2.1.278 的状态字面量，逐条取自它自己的 `mcp list` 实现。
+ * 顺序有意义：复合状态必须排在它的前缀之前，否则
+ * `Connected · tools fetch failed` 会被先当成 `Connected`。
+ */
+const CLAUDE_MCP_HEALTH_LABELS: readonly McpHealthLabel[] = [
+  { label: 'Connected · tools fetch failed', state: 'failed', reason: '连上了，但读不到它提供的工具' },
+  { label: 'Connected', state: 'connected', reason: null },
+  { label: 'Needs authentication', state: 'failed', reason: '还没登录这个服务' },
+  { label: 'Not configured', state: 'failed', reason: '这条连接没有填地址' },
+  { label: 'Failed to connect', state: 'failed', reason: '启动失败' },
+  { label: 'Connection error', state: 'failed', reason: '连接时出错' },
+  { label: 'Pending approval', state: 'unknown', reason: '这条连接还没在工具里确认过，本次没有检测' },
+  { label: 'Rejected', state: 'failed', reason: '这条连接已被拒绝' },
+  { label: 'Disabled for this project', state: 'unknown', reason: '这条连接在当前目录下已停用，本次没有检测' },
+]
+
+/** Gemini CLI 0.60.0 把这五个词原样打在行尾。 */
+const GEMINI_MCP_HEALTH_LABELS: readonly McpHealthLabel[] = [
+  { label: 'Connected', state: 'connected', reason: null },
+  { label: 'Connecting', state: 'unknown', reason: '还在连接中，稍后再检测一次' },
+  { label: 'Blocked', state: 'failed', reason: '被当前工具的策略拦下了' },
+  { label: 'Disabled', state: 'unknown', reason: '这条连接已在工具里停用，本次没有检测' },
+  { label: 'Disconnected', state: 'failed', reason: '连不上' },
+]
+
+/** 目录未被信任时 Gemini 会把用户级连接一并停用，那时的 Disabled 不是用户关的。 */
+const GEMINI_UNTRUSTED_MARKER = 'because this folder is untrusted'
+const GEMINI_UNTRUSTED_REASON = '当前工具把这个目录当作不受信任的目录，连接被一并停用，本次没有检测'
+
+/** 两家在非终端下都不上色，但输出被别的壳层接过一手时仍可能带上色彩序列。 */
+function healthLines(output: string): string[] {
+  return cleanCommandOutput(output).replace(/\r\n?/g, '\n').split('\n').map((line) => line.trimEnd())
+}
+
+function cleanHealthDetail(value: string): string | null {
+  const result = value.replace(/^[\s—–·:-]+/, '').trim()
+  return result ? result.slice(0, MAX_TEXT_LENGTH) : null
+}
+
+function healthEntry(id: string, label: McpHealthLabel, issue: string | null): ProviderMcpHealthEntry {
+  const detail = issue && label.reason ? `${label.reason}：${issue}` : issue ?? label.reason
+  return { id, state: label.state, detail }
+}
+
+/**
+ * Claude 的行是 `<名字>: <目标> - <符号> <状态>[ — <原因>]`，而目标里本来就可能
+ * 出现 ` - `（`npx -y pkg - foo`），所以状态不能靠「最后一个 ` - `」去切，
+ * 只能按已知状态词回头核对它前面确实是那个分隔符。
+ */
+function claudeHealthLabelAt(line: string, label: string): number {
+  let index = line.indexOf(label)
+  while (index >= 0) {
+    if (/\s-\s(?:\S+\s)?$/.test(line.slice(0, index))) return index
+    index = line.indexOf(label, index + 1)
+  }
+  return -1
+}
+
+export function parseClaudeMcpHealth(output: string): ProviderMcpHealthEntry[] {
+  const entries: ProviderMcpHealthEntry[] = []
+  for (const line of healthLines(output)) {
+    const name = line.match(/^(.+?):\s/)
+    if (!name) continue
+    for (const label of CLAUDE_MCP_HEALTH_LABELS) {
+      const index = claudeHealthLabelAt(line, label.label)
+      if (index < 0) continue
+      const rest = line.slice(index + label.label.length)
+      const issue = rest.match(/\s—\s(.+)$/)
+      entries.push(healthEntry(name[1].trim(), label, issue ? cleanHealthDetail(issue[1]) : null))
+      break
+    }
+  }
+  return entries
+}
+
+export function parseGeminiMcpHealth(output: string): ProviderMcpHealthEntry[] {
+  const untrusted = output.includes(GEMINI_UNTRUSTED_MARKER)
+  const entries: ProviderMcpHealthEntry[] = []
+  for (const line of healthLines(output)) {
+    // 行尾那个词就是状态，`(from 某扩展)` 是名字自带的后缀，不属于连接名。
+    const parsed = line.match(
+      /^(?:\S+\s+)?(.+?)(?:\s\(from\s[^)]*\))?:\s.*\s-\s(Connected|Connecting|Blocked|Disabled|Disconnected)$/,
+    )
+    if (!parsed) continue
+    const label = GEMINI_MCP_HEALTH_LABELS.find((entry) => entry.label === parsed[2])
+    if (!label) continue
+    const untrustedDisable = untrusted && label.label === 'Disabled'
+    entries.push(healthEntry(
+      parsed[1].trim(),
+      untrustedDisable ? { ...label, reason: GEMINI_UNTRUSTED_REASON } : label,
+      null,
+    ))
+  }
+  return entries
+}
+
 export function providerCommandResolutionOrder(
   provider: ProviderId,
   platform: NodeJS.Platform = process.platform,
@@ -1492,6 +1648,22 @@ export class ProviderExtensionService {
     }
   }
 
+  /**
+   * 社区里一半的 MCP 是 `uvx` 起的，而本应用把 Python 定义成可选环境，多数机器上
+   * 没有。添加这类连接之前要能先说一句，所以每份快照都带上这两样在不在。
+   */
+  private async inspectExtensionRuntimes(): Promise<ProviderExtensionRuntimeAvailability> {
+    const options = { env: this.env, trustedOnly: this.trustedOnly }
+    const [python, uv] = await Promise.all([
+      Promise.all(['python3', 'python', 'py'].map((name) => this.findExecutable(name, options))),
+      Promise.all(['uvx', 'uv'].map((name) => this.findExecutable(name, options))),
+    ])
+    return {
+      python: python.some((entry) => entry !== null),
+      uv: uv.some((entry) => entry !== null),
+    }
+  }
+
   private async inspectClaudeMarketplaces(): Promise<{ names: string[]; reason: string | null }> {
     try {
       const output = await this.invoke('claude', claudeMarketplaceListArgv(), {
@@ -1650,6 +1822,50 @@ export class ProviderExtensionService {
       items: items.map(publicItem),
       warnings,
       ...(marketplace ? { marketplace } : {}),
+      runtimes: await this.inspectExtensionRuntimes(),
+    }
+  }
+
+  /**
+   * 用户点「重新检测」或进入外接工具页时读一次。不放进 list()：这条命令会把每个
+   * 本地 MCP 真的拉起来一次，而 list() 在每次安装、卸载、开关之后都会重跑。
+   */
+  async checkMcpHealth(provider: ProviderId): Promise<ProviderMcpHealthReport> {
+    if (!providerIds.includes(provider)) throw new Error('未知的 Provider')
+    const checkedAt = this.now().toISOString()
+    const argv = mcpHealthArgv(provider)
+    if (!argv) {
+      return {
+        provider,
+        checkedAt,
+        supported: false,
+        reason: `${cliCatalog[provider].name} 没有提供连接状态，这里只显示配置里有哪些连接。`,
+        entries: [],
+      }
+    }
+    try {
+      const output = await this.invoke(provider, argv, {
+        cwd: this.repositoryRoot ?? undefined,
+        timeoutMs: MCP_HEALTH_TIMEOUT_MS,
+        maxOutputBytes: MAX_OUTPUT_BYTES,
+      })
+      return {
+        provider,
+        checkedAt,
+        supported: true,
+        reason: null,
+        entries: provider === 'claude'
+          ? parseClaudeMcpHealth(output)
+          : parseGeminiMcpHealth(output),
+      }
+    } catch (error) {
+      return {
+        provider,
+        checkedAt,
+        supported: true,
+        reason: `连接状态检测没有完成：${errorDetail(error)}`,
+        entries: [],
+      }
     }
   }
 

@@ -9,6 +9,7 @@ import type {
 } from '../electron/platform/contract'
 import type { AccountPaymentWindowTerminalEvent } from '../electron/ipc-contract'
 import { usageDetailFixture } from '../src/renderer-v2/testing/usage-fixture'
+import { platformCapabilitiesFor } from '../electron/platform-capabilities'
 
 declare global {
   interface Window {
@@ -643,6 +644,8 @@ const apiMethods = {
       plugin: { list: true, reason: null },
     },
     warnings: [],
+    // 缺 Python 的机器是多数：添加 uvx 型连接前那条提示就是靠它出的。
+    runtimes: { python: false, uv: false },
     items: empty
       ? []
       : [
@@ -681,6 +684,26 @@ const apiMethods = {
           },
         ],
   }),
+  // Windows 是唯一由本应用代装 Python 的平台，那颗按钮只在这里出得来。
+  getPlatformCapabilities: async () => platformCapabilitiesFor('win32', 'x64'),
+  checkProviderMcpHealth: async (
+    provider: Parameters<V2Bridge['checkProviderMcpHealth']>[0],
+  ) => {
+    record('mcp-health', provider)
+    return {
+      provider,
+      checkedAt: time,
+      supported: true,
+      reason: null,
+      entries: [
+        { id: 'test-extension', state: 'failed' as const, detail: '启动失败：找不到 uvx' },
+      ],
+    }
+  },
+  installPythonRuntime: async () => {
+    record('install-python')
+    throw new Error('测试环境不装 Python')
+  },
   mutateProviderExtension: async (
     input: Parameters<V2Bridge['mutateProviderExtension']>[0],
   ) => {

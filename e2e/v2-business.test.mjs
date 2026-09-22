@@ -520,6 +520,50 @@ test('extension toggle preserves original state and reports mutation failure', a
   }
 })
 
+test('each MCP connection carries its own checked answer and the reason behind it', async () => {
+  const page = await fixture('page=mcp')
+  try {
+    const pill = page.getByTestId('mcp-health-test-extension')
+    await pill.getByText('连不上', { exact: true }).waitFor()
+    // 「连不上」本身不够用，工具给出的那句原因必须一起上屏。
+    await page.getByText('启动失败：找不到 uvx', { exact: true }).waitFor()
+    assert.equal(
+      (await calls(page)).filter((call) => call.name === 'mcp-health').length,
+      1,
+    )
+    // 不后台轮询：再有结果只能是用户自己点出来的。
+    await page.getByTestId('mcp-health-recheck').click()
+    await pill.getByText('连不上', { exact: true }).waitFor()
+    assert.equal(
+      (await calls(page)).filter((call) => call.name === 'mcp-health').length,
+      2,
+    )
+  } finally {
+    await page.close()
+  }
+})
+
+test('adding a uvx connection without Python says so first and still lets it through', async () => {
+  const page = await fixture('page=mcp')
+  try {
+    await page.getByTestId('mcp-add').click()
+    await page.getByRole('button', { name: '本地程序', exact: true }).click()
+    await page.getByTestId('mcp-source').fill('uvx')
+    const notice = page.getByTestId('mcp-runtime-notice')
+    await notice.waitFor()
+    await notice.getByText(/没有找到 uv/).waitFor()
+    // 提示只是提示：它不该把「添加」按下去的路堵死。
+    await notice.getByText(/仍然可以直接添加/).waitFor()
+    await notice.getByTestId('mcp-install-python').click()
+    await page.getByText('测试环境不装 Python').first().waitFor()
+    // npx 型的命令不该被这条提示牵连。
+    await page.getByTestId('mcp-source').fill('npx')
+    await notice.waitFor({ state: 'detached' })
+  } finally {
+    await page.close()
+  }
+})
+
 test('curated MCP install confirms the exact command before writing any configuration', async () => {
   const page = await fixture('page=mcp')
   try {

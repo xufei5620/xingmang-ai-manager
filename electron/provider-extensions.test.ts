@@ -15,6 +15,8 @@ import {
   packageCommandExecutionMode,
   parseGitRemoteHead,
   parseClaudeMarketplaceNames,
+  parseClaudeMcpHealth,
+  parseGeminiMcpHealth,
   parseGeminiSkillList,
   parseProviderPluginList,
   providerCommandResolutionOrder,
@@ -1375,5 +1377,153 @@ describe('official marketplace as a standalone action', () => {
 
     await expect(service.ensureMarketplace('claude'))
       .rejects.toThrow(claudeMarketplaceGitMissingMessage())
+  })
+})
+
+/**
+ * 两段样例都是 2026-09-22 在沙箱里跑真实 CLI 抄下来的：
+ * Claude Code 2.1.278 的 `claude mcp list` 与 Gemini CLI 0.60.0 的 `gemini mcp list`。
+ * 状态词按两家源码里的字面量逐条覆盖，不是照着文档猜的。
+ */
+const claudeMcpListOutput = [
+  'Checking MCP server health…',
+  '',
+  'good: node -e setInterval(()=>{},1000) - ✓ Connected',
+  'broken: uvx mcp-server-fetch - ✗ Failed to connect — MCP server "broken" connection timed out after 30000ms',
+  'remote: https://api.githubcopilot.com/mcp/ (HTTP) - ! Needs authentication',
+  'partial: npx -y demo - ! Connected · tools fetch failed — listTools failed',
+  'waiting: npx -y pending - ⏸ Pending approval (run `claude` to approve)',
+  'paused: npx -y paused - ⊘ Disabled for this project (re-enable via /mcp)',
+  'empty: https://example.test - - Not configured',
+].join('\n')
+
+const geminiMcpListOutput = [
+  'Configured MCP servers:',
+  '',
+  '✓ good: node -e setInterval(()=>{},1000) (stdio) - Connected',
+  '✗ missing: definitely-not-a-real-binary  (stdio) - Disconnected',
+  '⛔ walled: npx -y blocked  (stdio) - Blocked',
+  '○ off: npx -y paused  (stdio) - Disabled',
+  '… slow (from demo-extension): https://example.test (http) - Connecting',
+].join('\n')
+
+describe('MCP connection health', () => {
+  it('reads every Claude Code status word and keeps the CLI issue text', () => {
+    expect(parseClaudeMcpHealth(claudeMcpListOutput)).toEqual([
+      { id: 'good', state: 'connected', detail: null },
+      {
+        id: 'broken',
+        state: 'failed',
+        detail: '启动失败：MCP server "broken" connection timed out after 30000ms',
+      },
+      { id: 'remote', state: 'failed', detail: '还没登录这个服务' },
+      { id: 'partial', state: 'failed', detail: '连上了，但读不到它提供的工具：listTools failed' },
+      { id: 'waiting', state: 'unknown', detail: '这条连接还没在工具里确认过，本次没有检测' },
+      { id: 'paused', state: 'unknown', detail: '这条连接在当前目录下已停用，本次没有检测' },
+      { id: 'empty', state: 'failed', detail: '这条连接没有填地址' },
+    ])
+  })
+
+  it('does not mistake a dash inside the launch command for the status separator', () => {
+    expect(parseClaudeMcpHealth('demo: npx -y pkg - extra - ✓ Connected')).toEqual([
+      { id: 'demo', state: 'connected', detail: null },
+    ])
+  })
+
+  it('reads every Gemini CLI status word and drops the extension suffix from the name', () => {
+    expect(parseGeminiMcpHealth(geminiMcpListOutput)).toEqual([
+      { id: 'good', state: 'connected', detail: null },
+      { id: 'missing', state: 'failed', detail: '连不上' },
+      { id: 'walled', state: 'failed', detail: '被当前工具的策略拦下了' },
+      { id: 'off', state: 'unknown', detail: '这条连接已在工具里停用，本次没有检测' },
+      { id: 'slow', state: 'unknown', detail: '还在连接中，稍后再检测一次' },
+    ])
+  })
+
+  it('explains that an untrusted folder, not the user, disabled every Gemini connection', () => {
+    const untrusted = [
+      'Warning: MCP servers are configured but disabled because this folder is untrusted.',
+      '',
+      'Configured MCP servers:',
+      '',
+      '○ good: node demo (stdio) - Disabled',
+    ].join('\n')
+    expect(parseGeminiMcpHealth(untrusted)).toEqual([
+      {
+        id: 'good',
+        state: 'unknown',
+        detail: '当前工具把这个目录当作不受信任的目录，连接被一并停用，本次没有检测',
+      },
+    ])
+  })
+
+  it('reports Codex and Grok as unchecked instead of guessing from their configuration', async () => {
+    const service = new ProviderExtensionService({
+      homeDirectory: temporaryDirectory(),
+      invoke: async () => {
+        throw new Error('未检测的工具不该调用 CLI')
+      },
+    })
+    for (const provider of ['codex', 'grok'] as const) {
+      const report = await service.checkMcpHealth(provider)
+      expect(report).toMatchObject({ provider, supported: false, entries: [] })
+      expect(report.reason).toContain('没有提供连接状态')
+    }
+  })
+
+  it('asks the CLI itself and gives it a budget longer than its own per-server wait', async () => {
+    const calls: Array<{ argv: string[]; timeoutMs: number | undefined }> = []
+    const service = new ProviderExtensionService({
+      homeDirectory: temporaryDirectory(),
+      invoke: async (_provider, argv, options) => {
+        calls.push({ argv: [...argv], timeoutMs: options?.timeoutMs })
+        return claudeMcpListOutput
+      },
+    })
+    const report = await service.checkMcpHealth('claude')
+    expect(calls).toEqual([{ argv: ['mcp', 'list'], timeoutMs: 120_000 }])
+    expect(report.supported).toBe(true)
+    expect(report.reason).toBeNull()
+    expect(report.entries[0]).toEqual({ id: 'good', state: 'connected', detail: null })
+  })
+
+  it('turns a failed probe into one explained reason instead of calling every connection broken', async () => {
+    const service = new ProviderExtensionService({
+      homeDirectory: temporaryDirectory(),
+      invoke: async () => {
+        throw new Error('命令执行超时')
+      },
+    })
+    const report = await service.checkMcpHealth('gemini')
+    expect(report.entries).toEqual([])
+    expect(report.supported).toBe(true)
+    expect(report.reason).toContain('命令执行超时')
+  })
+})
+
+describe('extension runtime availability', () => {
+  it('reports Python and uv separately so a uvx connection is not blamed on a missing Python', async () => {
+    const home = temporaryDirectory()
+    const asked: string[] = []
+    const service = new ProviderExtensionService({
+      homeDirectory: home,
+      invoke: async () => '[]',
+      findExecutable: async (command) => {
+        asked.push(command)
+        return command === 'uvx' ? '/usr/bin/uvx' : null
+      },
+    })
+    const snapshot = await service.list('claude')
+    expect(snapshot.runtimes).toEqual({ python: false, uv: true })
+    expect(asked).toEqual(expect.arrayContaining(['python3', 'python', 'py', 'uvx', 'uv']))
+  })
+
+  it('counts any Python spelling as installed', async () => {
+    const service = new ProviderExtensionService({
+      homeDirectory: temporaryDirectory(),
+      invoke: async () => '[]',
+      findExecutable: async (command) => (command === 'py' ? 'C:/Windows/py.exe' : null),
+    })
+    expect((await service.list('claude')).runtimes).toEqual({ python: true, uv: false })
   })
 })
