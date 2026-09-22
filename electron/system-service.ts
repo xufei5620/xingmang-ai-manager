@@ -426,6 +426,11 @@ export interface ConfigSavePayload {
 export interface AppConfigSummary {
   workspace: string
   providers: Record<ProviderId, NativeConfigSummary>
+  /**
+   * 账号还在恢复时读到的配置：「是不是当前账号写的」这一问还答不上来，
+   * configurationOwnership 只会是 unknown，不代表真的来源不明。缺省 = 已判定。
+   */
+  ownershipPending?: boolean
 }
 
 export interface CodexReadinessStatus {
@@ -2011,6 +2016,41 @@ export function providerCommandEnvironment(
   return environment
 }
 
+/** 刚跑完的一轮扫描在这么久以内可以直接复用（见 createScanCoalescer）。 */
+export const scanReuseMs = 15_000
+
+/**
+ * 非强制的扫描先看手上有没有现成的：正在跑的那一轮直接接上，刚跑完不久（`reuseMs`
+ * 以内）的那一轮直接拿来用，而不是再起一整套探测子进程。主进程开窗前先起一轮预热，
+ * 首页随后那次读取、账号恢复后 Key 同步那次检查就都用它；低配机器上两轮探测抢同一
+ * 时刻的 CPU 与磁盘，比串着跑还慢。
+ *
+ * 两种情况不复用：调用方要求强制重扫（「重新检测」、装完工具、保存配置之后），以及
+ * 那一轮开始之后安装队列动过——它可能是在工具装好之前探的，拿它回答「装完了吗」
+ * 会答错。`revision` 就是安装队列的读数。失败的那一轮不留。
+ */
+export function createScanCoalescer<T>(options: { run(force: boolean): Promise<T>; revision(): number; reuseMs: number; now?(): number }) {
+  const now = options.now ?? Date.now
+  let sequence = 0
+  let inFlight: { promise: Promise<T>; revision: number } | null = null
+  let latest: { value: T; revision: number; sequence: number; at: number } | null = null
+  return function scan(force: boolean): Promise<T> {
+    const revision = options.revision()
+    if (!force && inFlight && inFlight.revision === revision) return inFlight.promise
+    if (!force && latest && latest.revision === revision && now() - latest.at <= options.reuseMs) return Promise.resolve(latest.value)
+    const started = ++sequence
+    const promise = options.run(force)
+    const entry = { promise, revision }
+    inFlight = entry
+    function release() { if (inFlight === entry) inFlight = null }
+    void promise.then((value) => {
+      if (!latest || latest.sequence < started) latest = { value, revision, sequence: started, at: now() }
+      release()
+    }, release)
+    return promise
+  }
+}
+
 /**
  * 恢复备份是用户点名的动作：恢复出来的配置不该在下一次扫描时被当成「被人改过」，
  * 也不该被自动写 Key 的流程悄悄覆盖。所以恢复后按恢复出来的那份重新登记来源：
@@ -2650,7 +2690,12 @@ export function createSystemService(
     return inspectOfficialChatGptAccount(true)
   }
 
-  async function scanSystem(forceRefresh = false): Promise<SystemSnapshot> {
+  const coalescedScan = createScanCoalescer({ run: runScan, revision: () => installationQueue.revision, reuseMs: scanReuseMs })
+  function scanSystem(forceRefresh = false): Promise<SystemSnapshot> {
+    return coalescedScan(forceRefresh)
+  }
+
+  async function runScan(forceRefresh: boolean): Promise<SystemSnapshot> {
     if (forceRefresh) {
       npmLatestCacheGeneration += 1
       npmLatestCache.clear()

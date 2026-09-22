@@ -1,4 +1,5 @@
 import { providerIds, resolveManagedCliKeyProfiles, type ProviderId } from './catalog'
+import { relayQuotaFailureMessages } from './relay-quota-failure'
 import type { AccountKey, AccountKeyUpdateInput } from './ipc-contract'
 
 // The two account backends record a single key's allowance in different
@@ -55,6 +56,63 @@ export function isKeyQuotaExhaustedMessage(message: string): boolean {
  * 把话说给用户听。
  */
 export const managedKeyQuotaExhaustedMessage = '这个工具的额度用完了，软件不会自动放开。到「账号」页「密钥」里调高这个工具的额度后再试。'
+
+/**
+ * AI 工作台聊天自己那把 Key 的上限用完了：同样停下，不去换一把不限额的。用的是
+ * relay-quota-failure 里那句现成的话，聊天页认得它，会在旁边给「去调额度」。
+ */
+export const chatKeyQuotaExhaustedMessage = relayQuotaFailureMessages.keyLimit
+
+/** 按 id 在账号的密钥列表里找一把 Key；最多翻 5 页（500 把），找不到返回 null。 */
+export async function findAccountKeyById<T extends { id: number }>(
+  listKeys: (query: { page: number; pageSize: number }) => Promise<{ total: number; keys: readonly T[] }>,
+  keyId: number,
+): Promise<T | null> {
+  for (let page = 1; page <= 5; page++) {
+    const batch = await listKeys({ page, pageSize: 100 })
+    const found = batch.keys.find((key) => key.id === keyId)
+    if (found) return found
+    if (!batch.keys.length || page * 100 >= batch.total) return null
+  }
+  return null
+}
+
+export interface InheritedKeySettings {
+  remainQuota: number
+  unlimitedQuota: boolean
+  expiredTime: number
+}
+
+/**
+ * 撤销一把工具正在用的 Key 后，换上的新 Key 照抄它的限制：设了上限就沿用剩下的额度，
+ * 设了到期时间就沿用到期时间。什么都没设（不限额、永不过期）时返回 null，照旧签。
+ *
+ * 上限已经用完的也照签一把，额度只给后端允许的最小值（minimumQuota），等于照样停着；
+ * 不签的话这个工具在「按工具分账」里就没有 Key 可调，会一直卡住。已经到期的不签，
+ * 没法签一把「已经过期」的新 Key。
+ */
+export function inheritedKeySettings(
+  key: { remainQuota: number; unlimitedQuota: boolean; expiredAt: string | null },
+  minimumQuota: number,
+  nowMs = Date.now(),
+): InheritedKeySettings | null {
+  const expiredTime = accountKeyExpiredTime(key.expiredAt)
+  if (key.unlimitedQuota && expiredTime === -1) return null
+  if (expiredTime !== -1 && expiredTime * 1000 <= nowMs) throw new Error(inheritedKeyExpiredMessage)
+  return {
+    // 原样照抄：new-api 回的本就是整数额度单位，Sub2API 的是可带小数的金额。
+    remainQuota: key.unlimitedQuota ? 0 : Math.max(Number.isFinite(key.remainQuota) ? key.remainQuota : 0, minimumQuota),
+    unlimitedQuota: key.unlimitedQuota,
+    expiredTime,
+  }
+}
+
+/** 这把 Key 设了上限、而且一点不剩了。 */
+export function isUsedUpKeyLimit(key: { remainQuota: number; unlimitedQuota: boolean }): boolean {
+  return !key.unlimitedQuota && !(key.remainQuota > 0)
+}
+
+export const inheritedKeyExpiredMessage = '原来那把密钥已经到期了，这次没有自动换新的。确认还要继续用，再点一次就会换上一把新的。'
 
 export interface ManagedCliKeyLimit {
   provider: ProviderId

@@ -228,6 +228,19 @@ export function connectionReady(
   return provider !== 'gemini' || config.authType === 'gemini-api-key'
 }
 
+/**
+ * 账号还在恢复时读到的配置，没有账号可比，来源只可能判成 unknown——不是真的来源
+ * 不明，更不是被改过。这一段时间里「用的是别处的配置」「配置被改过」都先不说，按
+ * 连接本身能不能用显示，等恢复结束补读一次配置再下结论。只放过 sourceFor 里要看
+ * 账号才判得了的那一支（Key 在、地址对得上当前中转）：地址指向别处的配置与账号
+ * 无关，照常显示。
+ */
+export function ownershipAwaitingAccount(config: AppConfigSummary, tool: Pick<ToolPresentation, 'provider' | 'source'>): boolean {
+  const provider = config.providers[tool.provider]
+  return config.ownershipPending === true && (tool.source === 'unknown' || tool.source === 'changed')
+    && provider.hasApiKey && provider.matchesRelay
+}
+
 export type CodexDesktopUpdateKind = 'latest' | 'installable' | 'store-current' | 'unknown'
 
 /**

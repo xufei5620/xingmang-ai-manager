@@ -74,6 +74,7 @@ import {
   parseGrokLocalVersion,
   parseLatestNpmVersion,
   providerCommandEnvironment,
+  createScanCoalescer,
   readGrokLocalVersionForExecutable,
   resolveCliInstallRelease,
   replaceManagedNpmPrefixAtomically,
@@ -3944,5 +3945,81 @@ describe('trusting the workspace the user picked before opening a CLI', () => {
     await expect(launchService(userHome, 'claude').launchProvider('claude', workspace))
       .rejects.toThrow('未检测到 Claude Code')
     expect(fs.readFileSync(path.join(userHome, '.claude.json'), 'utf8')).toBe('{"projects":')
+  })
+})
+
+describe('scan coalescing', () => {
+  function harness() {
+    let revision = 0
+    let clock = 0
+    const runs: { force: boolean; finish: (value: string) => void; fail: (error: Error) => void }[] = []
+    const scan = createScanCoalescer({
+      run: (force) => new Promise<string>((resolve, reject) => { runs.push({ force, finish: resolve, fail: reject }) }),
+      revision: () => revision,
+      reuseMs: 15_000,
+      now: () => clock,
+    })
+    return { scan, runs, bump: () => { revision++ }, advance: (ms: number) => { clock += ms } }
+  }
+
+  it('lets a later non-forced scan join the one already running instead of probing twice', async () => {
+    const h = harness()
+    const warmup = h.scan(false)
+    const renderer = h.scan(false)
+    expect(renderer).toBe(warmup)
+    expect(h.runs).toHaveLength(1)
+    h.runs[0].finish('snapshot')
+    await expect(renderer).resolves.toBe('snapshot')
+  })
+
+  it('reuses a scan that finished moments ago, and scans again once it is older than the reuse window', async () => {
+    const h = harness()
+    const warmup = h.scan(false)
+    h.runs[0].finish('warmup')
+    await warmup
+    h.advance(15_000)
+    await expect(h.scan(false)).resolves.toBe('warmup')
+    expect(h.runs).toHaveLength(1)
+    h.advance(1)
+    void h.scan(false)
+    expect(h.runs).toHaveLength(2)
+  })
+
+  it('never lets a forced rescan reuse anything, and lets later plain reads use the forced result', async () => {
+    const h = harness()
+    const plain = h.scan(false)
+    const forced = h.scan(true)
+    expect(forced).not.toBe(plain)
+    expect(h.runs.map((run) => run.force)).toEqual([false, true])
+    expect(h.scan(false)).toBe(forced)
+    h.runs[1].finish('forced')
+    h.runs[0].finish('stale plain')
+    await Promise.all([plain, forced])
+    await expect(h.scan(false)).resolves.toBe('forced')
+    await expect(h.scan(true)).not.toBe(forced)
+    expect(h.runs).toHaveLength(3)
+  })
+
+  it('does not reuse a scan that started before an installation began or finished', async () => {
+    const h = harness()
+    const beforeInstall = h.scan(false)
+    h.bump()
+    const whileInstalling = h.scan(false)
+    expect(whileInstalling).not.toBe(beforeInstall)
+    h.runs[0].finish('before')
+    h.runs[1].finish('during')
+    await Promise.all([beforeInstall, whileInstalling])
+    h.bump()
+    void h.scan(false)
+    expect(h.runs).toHaveLength(3)
+  })
+
+  it('forgets a failed scan so the next read tries again', async () => {
+    const h = harness()
+    const failed = h.scan(false)
+    h.runs[0].fail(new Error('probe crashed'))
+    await expect(failed).rejects.toThrow('probe crashed')
+    void h.scan(false)
+    expect(h.runs).toHaveLength(2)
   })
 })

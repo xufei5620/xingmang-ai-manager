@@ -79,6 +79,24 @@ describe('CanvasProjectAssetManager', () => {
     await expect(manager.resolveOwnedFilePath(7, 'z'.repeat(43), 'image')).rejects.toThrow('不存在或无权访问')
   })
 
+  it('probes the project context before a paid request without touching the probe for resumed work', async () => {
+    const assertWritable = vi.fn(async () => undefined)
+    const ensureOutputDirectory = vi.fn()
+    const global = { images: { ensureOutputDirectory, assertWritable }, videos: {}, audios: {}, metadata: {}, media: {} }
+    const manager = new CanvasProjectAssetManager({
+      projects: { list: vi.fn(async () => []), getUsableWorkspaceDirectory: vi.fn(async () => null) },
+      global: global as never,
+      create: vi.fn(),
+    })
+    const projectId = '11111111-1111-1111-1111-111111111111'
+
+    await manager.prepareProject(7, projectId)
+    expect(assertWritable).not.toHaveBeenCalled()
+    await manager.assertWritable(7, projectId)
+    expect(assertWritable).toHaveBeenCalledWith(7)
+    await expect(manager.assertWritable(7)).rejects.toThrow('画布项目尚未选择')
+  })
+
   it('keeps a saved generated asset usable when only source metadata persistence fails', async () => {
     const asset = { assetId: 'a'.repeat(43), localUrl: `xingmang-asset://image/${'a'.repeat(43)}`, mimeType: 'image/png', fileName: 'generated.png' }
     const metadataError = new Error('metadata disk full')

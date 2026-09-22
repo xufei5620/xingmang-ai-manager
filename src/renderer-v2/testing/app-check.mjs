@@ -490,7 +490,9 @@ test('logout retains WorkBuddy local configuration without retaining the signed-
     assert.equal(await row.count(), 0)
     await page.getByTestId('welcome-steps').click()
     await page.getByTestId('guide-route-codexDesktop').check()
-    for (let step = 0; step < 3; step++) await page.getByTestId('guide-next').click()
+    // 退出登录后本机 Key 还在、仍是当前账号来源，「确认连接」会被跳过（第十一批 3）。
+    for (let step = 0; step < 2; step++) await page.getByTestId('guide-next').click()
+    await page.locator('[data-guide-step="ready"]').waitFor()
     await page.getByTestId('guide-home').click()
     await row.getByText('用的是别处的配置', { exact: true }).waitFor()
     await page.evaluate(async () => {
@@ -1082,11 +1084,12 @@ test('login synchronizes account Keys, configures installed tools, and route sel
     const bootstrapCalls = await page.evaluate(() => window.v2Test.calls.map((entry) => entry.method))
     assert.ok(bootstrapCalls.indexOf('syncManagedCliKeys') > bootstrapCalls.indexOf('loginAccount'))
     assert.ok(bootstrapCalls.indexOf('configureManagedCliKeys') > bootstrapCalls.indexOf('syncManagedCliKeys'))
-    assert.equal(await page.getByRole('radio', { checked: true }).count(), 0)
+    // 推荐项是默认选中的（第十一批 1），但只是选中，不会触发任何安装。
+    assert.equal(await page.getByTestId('start-guide').getAttribute('data-guide-route'), 'codexDesktop')
     const configurationCount = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'configureManagedCliKeys').length)
     await page.getByTestId('guide-route-chat').check()
     const methods = await page.evaluate(() => window.v2Test.calls.map((entry) => entry.method))
-    assert.equal(methods.includes('installCli') || methods.includes('installNodeRuntime'), false)
+    assert.equal(methods.includes('installCli') || methods.includes('installNodeRuntime') || methods.includes('installCodexDesktop'), false)
     assert.equal(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'configureManagedCliKeys').length), configurationCount)
     await page.getByTestId('guide-pause').click()
     await page.getByTestId('tool-row-claude').getByText('已配好').waitFor()
@@ -1291,6 +1294,29 @@ test('an edited configuration says so on the row and can be written back on requ
     await page.waitForFunction(() => window.v2Test.calls.some(entry => entry.method === 'configureManagedCliKeys'
       && entry.args[0].providers.includes('claude') && entry.args[0].intent === 'explicit'))
     await row.getByText('已配好').waitFor()
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// 开机账号恢复超过启动画面的等待上限：先进首页，这期间一行都不许说「配置被改过」；
+// 恢复成功只补读一次配置，不整页重来、不再扫描一遍。
+test('a slow startup restore opens the home page first and settles ownership after one config re-read', async () => {
+  const page = await open('allInstalled=1&changedClaude=1&restoring=1')
+  try {
+    const row = page.getByTestId('tool-row-claude')
+    await row.getByText('已配好').waitFor()
+    await page.getByText('正在恢复登录').first().waitFor()
+    assert.equal(await page.getByText('配置被改过').count(), 0)
+    assert.equal(await page.getByText('用的是别处的配置').count(), 0)
+    assert.equal(await page.getByTestId('tool-claude-rewrite-key').count(), 0)
+    assert.equal(await page.getByTestId('welcome-login').count(), 0)
+    // 工具列表整块重读（useToolbox.read）才会连带读平台能力；Key 同步那一步自己的
+    // 安装检查不读它，所以用它来数「首页有没有整页重来」。
+    const readsBefore = await page.evaluate(() => window.v2Test.calls.filter(entry => entry.method === 'getPlatformCapabilities').length)
+    await page.evaluate(() => window.v2Test.emit('onAccountSessionChanged', { authenticated: true, account: { userId: 17, username: 'fixture-user', group: 'default', role: 1, quota: 6_200_000, usedQuota: 0 } }))
+    await row.getByText('配置被改过').waitFor()
+    const readsAfter = await page.evaluate(() => window.v2Test.calls.filter(entry => entry.method === 'getPlatformCapabilities').length)
+    assert.equal(readsAfter, readsBefore, '恢复成功后首页不应整页重新检测')
     await clean(page)
   } finally { await page.close() }
 })

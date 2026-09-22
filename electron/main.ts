@@ -41,6 +41,7 @@ import { assetThumbnailMaxEdge, assetThumbnailSize } from './asset-thumbnail'
 import { AssetThumbnailStore } from './asset-thumbnail-store'
 import { createAssetThumbnailService, type AssetThumbnailRenderer } from './asset-thumbnail-service'
 import { createChatCredentialCoordinator } from './chat-credential-coordinator'
+import { createManagedKeyReplacementStore } from './managed-key-replacement-store'
 import { ChatKeyStore } from './chat-key-store'
 import { ManagedCliKeyStore } from './managed-cli-key-store'
 import { AccountSessionStore } from './account-session-store'
@@ -88,6 +89,7 @@ import { createActiveIdentityReader } from './active-identity'
 import { resolveRealmDataRoots } from './realm-data-roots'
 import { createRealmServiceDispatch } from './realm-service-dispatch'
 import { createAccountWorkGate } from './account-work-gate'
+import { createAccountStartupGate } from './account-startup-gate'
 import { createAccountUsageTracker } from './account-usage-tracker'
 import type { RelayBackendClient } from './relay-backend'
 import { ProviderExtensionService } from './provider-extensions'
@@ -989,6 +991,8 @@ if (!hasSingleInstanceLock) {
           // 「磁盘空间」那一项要看软件数据目录所在的盘，而 userData 在哪只有宿主
           // 知道；CLI 落点由诊断自己算。
           userDataDirectory: app.getPath('userData'),
+          // 跟着当前账号所在的那一套 output 走（历史账号多一层 realms/api-account）。
+          probeAiOutput: () => assetStore.assertWritable(),
           windowsExecution: windowsCliExecution,
           // 报告只装中文结论（它会被导出发给客服），认出失败靠的那段上游原文
           // 留在 runtime.jsonl 里。
@@ -1314,6 +1318,9 @@ if (!hasSingleInstanceLock) {
       }))
       const assetStore = new AiAssetStore({
         outputRoot: aiOutputRoot,
+        // 全局 output 在安装目录旁边，用户自己动不了它；能绕开的是画布项目，新项目的
+        // 作品存在用户自己选的文件夹里。改默认位置另走一个 PR（盲点 2 的后半）。
+        unwritableGuidance: '可以先在画布里新建一个项目、给它选一个自己的文件夹，在那里生成就能存下来；也可以联系客服。',
         trustedProxyFetchImpl: (input, init) => net.fetch(input, init),
         nativeOperations: {
           copyImage: (bytes) => {
@@ -1347,15 +1354,17 @@ if (!hasSingleInstanceLock) {
           },
         },
       })
-      // Keep the image output location visible from the moment the app starts.
-      // The write path is checked again by AiAssetStore for every asset.
-      try {
-        assetStore.ensureOutputDirectory()
-      } catch (error) {
-        runtimeLog.log('warn', 'ai-chat', 'asset.output-directory.unavailable', 'AI 图片 output 目录初始化失败', {
-          reason: error instanceof Error ? error.message : String(error),
+      // Create the output location at startup and prove it accepts a file, so a
+      // location that cannot be written shows up in the log and on the check page
+      // (AI_OUTPUT) before anyone pays for a generation. Every paid request probes
+      // again, and the write path is still checked by AiAssetStore for each asset.
+      void assetStore.assertWritable().catch((error) => {
+        runtimeLog.log('warn', 'ai-chat', 'asset.output-directory.unavailable', 'AI 作品保存位置写不进去', {
+          // The user-facing message only says "写不进去"; the log keeps the OS
+          // reason (EACCES, EROFS, ENOSPC …) that support needs.
+          reason: error instanceof Error && error.cause instanceof Error ? error.cause.message : String(error),
         })
-      }
+      })
       const videoAssets = new AiVideoAssetStore({
         outputRoot: aiOutputRoot,
         nativeOperations: {
@@ -1398,6 +1407,7 @@ if (!hasSingleInstanceLock) {
       const createProjectAssetContext = (outputRoot: string) => {
         const images = new AiAssetStore({
           outputRoot,
+          unwritableGuidance: '这个项目的文件夹可能被移走了，或者放不进新文件。请新建一个项目、换个文件夹再试。',
           trustedProxyFetchImpl: (input, init) => net.fetch(input, init),
           nativeOperations: {
             copyImage: (bytes) => {
@@ -1550,6 +1560,7 @@ if (!hasSingleInstanceLock) {
         credentials: chatCredentials,
         assets: {
           prepareProject: (userId, projectId) => canvasProjectAssets.prepareProject(userId, projectId),
+          assertWritable: (userId, projectId) => canvasProjectAssets.assertWritable(userId, projectId),
           storeBase64: (userId, value, metadata) => canvasProjectAssets.storeBase64(userId, value, metadata),
           storeRemoteUrl: (userId, url, metadata) => canvasProjectAssets.storeRemoteUrl(userId, url, metadata),
           readOwned: (userId, assetId, projectId) => canvasProjectAssets.readImageOwned(userId, assetId, projectId),
@@ -1565,6 +1576,7 @@ if (!hasSingleInstanceLock) {
         tasks: videoTasks,
         assets: {
           prepareProject: (userId, projectId) => canvasProjectAssets.prepareProject(userId, projectId),
+          assertWritable: (userId, projectId) => canvasProjectAssets.assertWritable(userId, projectId),
           storeMp4: (userId, bytes, metadata) => canvasProjectAssets.storeMp4(userId, bytes, metadata),
           readImageDataUri: (userId, assetId, projectId) => canvasProjectAssets.readImageDataUri(userId, assetId, projectId),
           readOwned: (userId, assetId, kind, projectId) => canvasProjectAssets.readMediaOwned(userId, assetId, kind, projectId),
@@ -1735,8 +1747,34 @@ if (!hasSingleInstanceLock) {
         error instanceof Error ? error.message : '星芒AI Skill 默认安装失败',
       )
     })
-    const accountSessionReady = accounts.restoreActive().then(() => undefined).catch((error) => {
+    const accountRestore = accounts.restoreActive()
+    const accountSessionReady = accountRestore.then(() => undefined).catch((error) => {
       runtimeLog.exception('account', 'session.restore.failed', error)
+    })
+    // 首页那遍扫描不必等窗口和启动画面：和账号恢复一起现在就跑起来，渲染层随后那次读取
+    // 直接接上它（scanSystem 同一时刻只跑一轮）。结果由那次读取照常交给托盘与日志。
+    // 只在有账号要恢复时预热：没有账号的新用户先落在欢迎页，那里本来不检测工具；而
+    // Windows 上一轮检测要起好几段 PowerShell（Program Files 权限检查还是同步的），
+    // 白跑一轮只会让欢迎页上的点击和关窗跟着变慢（#372 之后关窗冒烟超过 5 秒）。
+    void vault.active().then((saved) => {
+      if (saved) void systemService.scanSystem().catch(() => undefined)
+    }).catch(() => undefined)
+    // 启动画面最多为账号恢复等 3 秒，明确断网就不等（yoyo 2026-09-22 拍板）。
+    const accountStartupGate = createAccountStartupGate({
+      settled: accountSessionReady,
+      budgetMs: 3000,
+      offline: !net.isOnline(),
+      restoringAccount: () => accounts.restoringAccount(),
+    })
+    // 预算先到时界面拿到的是「正在恢复」。恢复成功会照常发一次会话变化；没恢复
+    // 成（没有保存的账号、登录已失效、联不上）时账号并没有变化，没人会发，界面
+    // 就会一直停在「正在恢复」——这里补发一次。
+    void accountRestore.catch(() => false).then((restored) => {
+      if (restored || !accountStartupGate.releasedEarly()) return
+      const state = accounts.client.getSessionState()
+      for (const window of BrowserWindow.getAllWindows()) {
+        if (!window.isDestroyed()) window.webContents.send(ipcEventChannels.onAccountSessionChanged, state)
+      }
     })
     let developmentAcceleration: ReturnType<typeof createAccelerationDevelopmentHost> | undefined
     try {
@@ -1883,9 +1921,11 @@ if (!hasSingleInstanceLock) {
       accountService,
       paymentWindow,
       accountSessionReady,
+      accountStartupGate,
       announcementReads: new AnnouncementReadStore(path.join(managerDataDirectory, 'announcement-reads')),
       accountCredentials: accountCredentialStore,
       managedCliKeys: managedCliKeyStore,
+      keyReplacements: createManagedKeyReplacementStore({ filePath: path.join(managerDataDirectory, 'managed-key-replacements.json') }),
       chatKeyStore,
       chatCredentials,
       chatService,
