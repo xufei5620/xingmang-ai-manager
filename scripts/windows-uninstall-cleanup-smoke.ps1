@@ -45,6 +45,9 @@ function Set-AccelerationLeftOn([string]$exePath) {
   [IO.File]::WriteAllText($journalPath, (([ordered]@{ version = 1; id = $id; owner = $owner; before = $before; applied = $applied }) | ConvertTo-Json -Depth 8 -Compress), $utf8)
   Write-State $applied
   Check (Same-State (Read-State) $applied) 'system proxy points at the dead acceleration port'
+  # Fresh runner profiles may have no Run key yet; never recreate an existing one
+  # (New-Item -Force on a registry key would drop its values).
+  if (-not (Test-Path -LiteralPath $runKeyPath)) { New-Item -Path $runKeyPath | Out-Null }
   New-ItemProperty -Path $runKeyPath -Name $loginItemName -Value "`"$exePath`" --launched-at-login" -PropertyType String -Force | Out-Null
   Check ($null -ne (Get-LoginItem)) 'login item registered'
 }
