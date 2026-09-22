@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { networkFailureMessages } from '../../../../electron/network-failure'
 import { activeConversation, applyStreamEvent, chatErrorMessage, createConversation, createWorkspace, DEFAULT_CHAT_GROUP, DEFAULT_CHAT_MODEL, DEFAULT_IMAGE_MODEL, defaultChatSettings, filterConversations, planTurn, resolveChatGroup, resolveChatModel, saveConversation, shouldSendOnEnter, type ChatMessage, type ChatWorkspace } from './state'
 import { createParameterDraft, parseParameters } from './parameters'
 import { historyKey, importLegacyHistory, readWorkspace, writeWorkspace } from './storage'
@@ -57,6 +58,12 @@ describe('v2 chat request transitions', () => {
     expect(chatErrorMessage('AI 服务连接提前关闭，请重试', 'stream-closed')).toBe('AI 服务提前结束了本次响应，请重试')
     expect(chatErrorMessage('当前模型不可用', 'model-unavailable')).toBe('当前模型不在所选分组的可用列表中，请刷新后重新选择')
     expect(chatErrorMessage('无法连接 AI 服务，请检查网络后重试', 'network-error')).toBe('无法连接 AI 服务，请检查网络后重试')
+  })
+  it('never turns a service outage back into an expired login or a broken key', () => {
+    const outage = networkFailureMessages.serviceUnavailable
+    expect(chatErrorMessage(outage, 'service-unavailable')).toBe(outage)
+    // 准备分组时没有错误码，原话里带着 HTTP 码；以前 /登录|密钥/ 那条会先撞上。
+    expect(chatErrorMessage(new Error(`${outage}（HTTP 503：登录服务维护中）`))).toBe(outage)
   })
   it('edits one user turn and removes dependent later replies before resubmitting', () => {
     const first = turn(); const original = first.conversation

@@ -9,10 +9,11 @@ import { errors } from './registry/errors'
  */
 const catalogCoverage: Record<OperationErrorKey, { sample: string } | { unreachable: string }> = {
   sessionExpired: { sample: '账号接口返回 401 Unauthorized' },
-  keyInvalid: { sample: '当前分组下无可用渠道' },
+  keyInvalid: { sample: '模型查询失败，服务返回 403：令牌已失效' },
   noBalance: { sample: '账号余额或 API Key 额度不足，请充值后重试' },
   tooManyRequests: { sample: '星芒服务返回 429 Too Many Requests' },
-  server: { sample: '星芒服务返回 502 Bad Gateway' },
+  server: { sample: '星芒服务返回 500 Internal Server Error' },
+  serviceUnavailable: { sample: '星芒服务返回 502 Bad Gateway' },
   timeout: { sample: '模型查询超时，请检查网络后重试' },
   // 更新替换正在跑的 CLI 时文件被锁，主进程（cli-process-probe.ts）把话说清楚；
   // npm 自己吐的 EBUSY 原文也走这条。
@@ -70,7 +71,29 @@ describe('renderer-v2 operation error classification', () => {
   it('keeps a relay failure apart from a download failure', () => {
     expect(classifyOperationError('模型查询超时，请检查网络后重试')).toBe('timeout')
     expect(classifyOperationError('账号接口返回 401 Unauthorized')).toBe('sessionExpired')
-    expect(classifyOperationError('当前分组下无可用渠道')).toBe('keyInvalid')
+    expect(classifyOperationError('模型查询失败，服务返回 403：令牌已失效')).toBe('keyInvalid')
+  })
+
+  it('tells a service outage apart from a broken key or an expired login', () => {
+    // 盲点 1：维护、网关错误、CDN 的 52x 与上游渠道被自动禁用，以前分别落进
+    // 「操作没有成功」「Key 失效 → 一键修复」，用户于是去重写 Key、找客服。
+    for (const outage of [
+      '当前分组 default 下对于模型 gpt-5 无可用渠道',
+      '账号信息读取失败，服务返回 HTTP 503',
+      '模型查询失败，服务返回 522',
+      '星芒服务返回 526',
+      'upstream answered 504 Gateway Timeout',
+      'Service Unavailable',
+    ]) expect([outage, classifyOperationError(outage)]).toEqual([outage, 'serviceUnavailable'])
+    expect(classifyOperationError('服务返回 500 Internal Server Error')).toBe('server')
+    // 主进程那句本身写着「服务暂时不可用」，不再另加标题；后面带的状态码原文
+    // 不许把它猜成别的类别。
+    const sentence = `${networkFailureMessages.serviceUnavailable}（HTTP 503）`
+    expect(classifyOperationError(sentence)).toBe('serviceUnavailable')
+    expect(presentOperationError(sentence)).toBeNull()
+    const hint = presentOperationError('当前分组下无可用渠道')
+    expect(hint?.title).toBe('服务暂时不可用')
+    expect(hint?.actions).toEqual([{ id: 'retry', label: '重试' }])
   })
 
   it('only promises the previous version is safe when the failure came from an update', () => {
@@ -109,7 +132,7 @@ describe('renderer-v2 operation error classification', () => {
   // 「Key 失效」的「一键修复」以前落到「找客服」：目录里写好了这颗按钮，表里没有
   // 它，用户读完「需要换一把 Key」只剩加客服微信这一条路。
   it('honours the one-click repair on an invalid key', () => {
-    const hint = presentOperationError('当前分组下无可用渠道')
+    const hint = presentOperationError('模型查询失败，服务返回 403：令牌已失效')
     expect(hint?.title).toBe('Key 失效')
     expect(hint?.actions).toEqual([{ id: 'repair', label: '一键修复' }])
   })

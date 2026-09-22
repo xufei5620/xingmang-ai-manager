@@ -1,3 +1,4 @@
+import { networkFailureMessages, networkFailureReasonForMessage } from '../../../../electron/network-failure'
 import type { AiChatAsset, AiChatErrorCode, AiChatGroupSummary, AiChatMessageInput, AiChatParametersInput, AiChatStreamEvent } from '../../../../electron/ipc-contract'
 import { chatLimits } from './api'
 
@@ -124,6 +125,9 @@ export function chatErrorMessage(error: unknown, code?: AiChatErrorCode): string
   if (code === 'network-error') return '无法连接 AI 服务，请检查网络后重试'
   if (code === 'stream-closed') return 'AI 服务提前结束了本次响应，请重试'
   if (code === 'model-unavailable') return '当前模型不在所选分组的可用列表中，请刷新后重新选择'
+  // 必须排在下面那几条按字面猜的正则之前：服务在维护时主进程给的话已经说清楚了，
+  // 再被 /登录|密钥/ 之类撞上，就会变回「请重新登录」。
+  if (code === 'service-unavailable' || networkFailureReasonForMessage(message) === 'serviceUnavailable') return networkFailureMessages.serviceUnavailable
   if (code) return message || '本次请求没有完成，已保留内容，请稍后重试'
   if (/余额|额度不足|insufficient|quota|402/i.test(message)) return '账号余额或密钥额度不足，请充值或更换可用分组后重试'
   if (/401|credential|未登录|登录|密钥|key.*失效/i.test(message)) return '当前登录或密钥已失效，请重新登录后准备分组'

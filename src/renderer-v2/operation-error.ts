@@ -1,4 +1,4 @@
-import { classifyNetworkFailure } from '../../electron/network-failure'
+import { classifyNetworkFailure, networkFailureReasonForMessage } from '../../electron/network-failure'
 import { errors } from './registry/errors'
 
 export type OperationErrorKey = keyof typeof errors
@@ -19,10 +19,13 @@ export interface OperationErrorHint {
  * rule that matches wins, so the narrow, unambiguous tokens come first.
  */
 const rules: Array<{ key: OperationErrorHint['key']; match: (message: string) => boolean }> = [
+  // 主进程已经认定是服务那一侧（维护、网关错误、防护层验证页）的，排在最前：
+  // 它后面带着的「HTTP 503」之类原文不能再被下面按字面猜成别的事。
+  { key: 'serviceUnavailable', match: (message) => networkFailureReasonForMessage(message) === 'serviceUnavailable' },
   { key: 'sessionExpired', match: (message) => /(^|\D)401(\D|$)|unauthorized|登录已过期|登录状态已失效|请重新登录/i.test(message) },
   { key: 'tooManyRequests', match: (message) => /(^|\D)429(\D|$)|too many requests|rate limit|请求(太|过于)频繁/i.test(message) },
   { key: 'noBalance', match: (message) => /余额不足|额度不足|insufficient[_ ]quota|余额已用完/i.test(message) },
-  { key: 'keyInvalid', match: (message) => /invalid[_ ]api[_ ]key|令牌(无效|已失效|不存在)|密钥(无效|已失效)|无可用渠道/i.test(message) },
+  { key: 'keyInvalid', match: (message) => /invalid[_ ]api[_ ]key|令牌(无效|已失效|不存在)|密钥(无效|已失效)/i.test(message) },
   // backups.ts 抛的是「备份文件已损坏或被篡改」，不是「校验失败」——只认后者时
   // 这条目录文案对用户真正会遇到的那句话是死的。两种说法都收。
   { key: 'backupIntegrity', match: (message) => /备份[^。；]{0,12}(校验|完整性)[^。；]{0,8}(失败|不一致|无效)|备份[^。；]{0,12}(已损坏|被篡改)/.test(message) },
@@ -59,10 +62,12 @@ const rules: Array<{ key: OperationErrorHint['key']; match: (message: string) =>
   // 「杀毒」这条只留真的在说杀毒软件的说法。EBUSY 与「文件被占用」已经上移到
   // toolRunning：两条都留着的话，先匹配到的那条就决定用户去关哪个东西。
   { key: 'installBlocked', match: (message) => /杀毒|防病毒|病毒|Defender|已被隔离/i.test(message) },
-  // 「服务暂时不可用」is deliberately absent: features/auth/account-errors.ts
-  // already turns that server error into a finished sentence, and re-wrapping a
-  // finished sentence in a second heading reads as a bug.
-  { key: 'server', match: (message) => /(^|\D)(500|502|503|504)(\D|$)|internal server error|bad gateway|服务器(内部)?错误/i.test(message) },
+  // 网关类状态码（含 CDN 的 520-526）与「无可用渠道」说的都是服务那一侧此刻答不了
+  // 话。「无可用渠道」以前归 keyInvalid，可上游渠道被自动禁用时 new-api 报的恰好是
+  // 这句，那时换 Key 毫无用处。已经写好整句的（features/auth/account-errors.ts 的
+  // 「服务暂时不可用，请稍后重试」、主进程那句）由 presentOperationError 按标题原样放行。
+  { key: 'serviceUnavailable', match: (message) => /(^|\D)(502|503|504|52[0-6])(\D|$)|bad gateway|service unavailable|gateway time-?out|无可用(的)?渠道/i.test(message) },
+  { key: 'server', match: (message) => /(^|\D)500(\D|$)|internal server error|服务器(内部)?错误/i.test(message) },
   { key: 'downloadTimeout', match: (message) => downloadContext(message) && networkFailure(message) },
   { key: 'timeout', match: (message) => networkFailure(message) },
 ]

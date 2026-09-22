@@ -183,6 +183,7 @@ import { createClaudeDesktopConfigService } from './claude-desktop-config'
 import { resolveClaudeDesktopPaths } from './claude-desktop-paths'
 import { inspectClaudeDesktopStoreVirtualization } from './claude-desktop-manifest'
 import { assertClaudeDesktopUnmanaged } from './claude-desktop-policy'
+import { isServiceUnavailableResponse, networkFailureMessages, parsesAsJsonObject } from './network-failure'
 
 const execFileAsync = promisify(execFile)
 const npmLatestCacheTtlMs = 10 * 60_000
@@ -4163,6 +4164,11 @@ export function createSystemService(
       })
       const body = await readBoundedResponseText(response, maximumModelResponseBytes, '模型接口')
       if (!response.ok) {
+        // 维护、网关错误、防护层验证页：写入 Key 与 AI 对话都经过这一步，按「服务
+        // 暂时不可用」说，免得渲染层把「服务返回 503」猜成 Key 或分组出了问题。
+        if (isServiceUnavailableResponse({ status: response.status, json: parsesAsJsonObject(body), headers: response.headers, bodyText: body })) {
+          throw new Error(`${networkFailureMessages.serviceUnavailable}（模型查询 HTTP ${response.status}）`)
+        }
         let detail = ''
         try {
           const parsed = JSON.parse(body) as { error?: { message?: unknown }; message?: unknown }

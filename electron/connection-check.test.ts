@@ -288,8 +288,52 @@ describe('classifyConnectionResponse', () => {
     expect(classifyConnectionResponse(messagesProbe('m'), 404, '', {}).layer).toBe('protocol')
   })
 
-  it('maps 5xx to the unknown layer rather than blaming the user', () => {
-    expect(classifyConnectionResponse(messagesProbe('m'), 502, '', {}).layer).toBe('unknown')
+  it('maps a JSON 500 to the unknown layer rather than blaming the user', () => {
+    expect(classifyConnectionResponse(messagesProbe('m'), 500, 'internal error', { error: { message: 'internal error' } }).layer).toBe('unknown')
+  })
+
+  it('puts maintenance, gateway errors and edge challenges on the service layer, never on the key', () => {
+    // 盲点 1：以前 503 一律是「分组没有可用渠道 → 重新写入 Key」，403 验证页是
+    // 「密钥被拒绝」，都把一次维护说成了用户这边的事。
+    const html = '<!DOCTYPE html><html><head><title>Just a moment...</title></head></html>'
+    const cases: Array<[number, unknown, { headers?: Headers; bodyText?: string }]> = [
+      [502, null, { bodyText: '<html>502 Bad Gateway</html>' }],
+      [503, null, { bodyText: '<html>系统维护中</html>' }],
+      [503, { error: { message: 'Service temporarily unavailable' } }, {}],
+      [504, null, {}],
+      [520, null, {}],
+      [522, null, { bodyText: 'error code: 522' }],
+      [526, null, {}],
+      [500, null, { bodyText: '<html>nginx</html>' }],
+      [403, null, { headers: new Headers({ 'cf-mitigated': 'challenge' }), bodyText: html }],
+      [403, null, { headers: new Headers({ server: 'cloudflare', 'content-type': 'text/html' }), bodyText: '<html>Attention Required!</html>' }],
+      [403, null, { bodyText: html }],
+    ]
+    for (const [status, payload, response] of cases) {
+      const outcome = classifyConnectionResponse(messagesProbe('m'), status, '', payload, response)
+      expect([status, outcome.layer]).toEqual([status, 'service'])
+      expect(outcome.summary).toContain('服务暂时不可用')
+      expect(outcome.nextStep).not.toMatch(/写入|重新登录|重装/)
+    }
+  })
+
+  it('still reads new-api\'s JSON 503 that names the group as the group layer', () => {
+    // 带「分组 / 渠道」的 JSON 503 是这个账号分组的事，模型名同时出现也一样。
+    const message = '当前分组 default 下对于模型 claude-opus 无可用渠道'
+    expect(classifyConnectionResponse(messagesProbe('m'), 503, message, { error: { message } }).layer).toBe('group')
+  })
+
+  it('keeps a JSON 403 without challenge markers on the credential layer', () => {
+    const outcome = classifyConnectionResponse(messagesProbe('m'), 403, '该令牌已被禁用', { error: { message: '该令牌已被禁用' } }, { headers: new Headers({ server: 'cloudflare' }) })
+    expect(outcome.layer).toBe('credential')
+  })
+
+  it('reads a web page answered with 200 as an interception, not as a wrong address', () => {
+    const outcome = classifyConnectionResponse(messagesProbe('m'), 200, '', null, { bodyText: '<html><body>请先登录校园网</body></html>' })
+    expect(outcome.layer).toBe('network')
+    expect(outcome.nextStep).not.toMatch(/重新写入/)
+    // 不是网页的非 JSON 仍然是协议层：那不是有人替服务器答了话。
+    expect(classifyConnectionResponse(messagesProbe('m'), 200, '', null, { bodyText: 'ok' }).layer).toBe('protocol')
   })
 
   it('always supplies a Chinese next step', () => {
@@ -414,14 +458,15 @@ describe('runConnectionCheck', () => {
     expect(result.layer).toBe('model')
   })
 
-  it('attributes an HTML答复 to the protocol layer', async () => {
+  it('attributes a web page answered with 200 to an interception, not to the protocol layer', async () => {
     const fetchImpl = (async () => {
       const response = new Response('<html>hi</html>', { status: 200 })
       Object.defineProperty(response, 'url', { value: 'https://xm.solov.cc/v1/messages' })
       return response
     }) as unknown as typeof globalThis.fetch
     const result = await check(fetchImpl)
-    expect(result.layer).toBe('protocol')
+    // 地址已经核对过就是当前账号的标准地址，2xx 回网页是中间有东西替服务器答了话。
+    expect(result.layer).toBe('network')
   })
 
   it('refuses a redirect instead of following it with the key attached', async () => {
