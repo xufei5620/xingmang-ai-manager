@@ -113,7 +113,7 @@ import {
   type InstallCancellationHandle,
   type InstallCancellationOutcome,
 } from './install-cancellation'
-import { ToolConfigOwnershipStore, toolConfigIdentity } from './tool-config-ownership'
+import { ToolConfigOwnershipStore, toolConfigIdentity, type ToolConfigOwnership } from './tool-config-ownership'
 import type { StoredManagedCliKey } from './managed-cli-key-store'
 import { ExternalClientOwnershipStore } from './external-client-ownership'
 import {
@@ -728,6 +728,8 @@ export interface SystemService {
     ownership?: { source: 'account'; automatic: boolean },
   ): Promise<ReturnType<typeof saveProviderConfig>>
   switchToOfficialAccount(provider: ProviderId, mode?: ConfigSavePayload['mode']): ReturnType<typeof switchProviderToOfficialAccount> | Promise<ReturnType<typeof switchProviderToOfficialAccount>>
+  /** 备份恢复成功之后调用；`isAccountKey` 判断一把 Key 是不是当前账号由本软件签发的。 */
+  adoptRestoredConfig(provider: ProviderId, isAccountKey: (apiKey: string) => boolean): Promise<void>
   scanSystem(forceRefresh?: boolean): Promise<SystemSnapshot>
   refreshNetworkLocation(): Promise<SystemSnapshot['network']>
   refreshOfficialChatGptUsage(): Promise<OfficialChatGptAccount | null>
@@ -1983,6 +1985,26 @@ export function providerCommandEnvironment(
   return environment
 }
 
+/**
+ * 恢复备份是用户点名的动作：恢复出来的配置不该在下一次扫描时被当成「被人改过」，
+ * 也不该被自动写 Key 的流程悄悄覆盖。所以恢复后按恢复出来的那份重新登记来源：
+ * Key 正是当前账号由本软件签发的那把，记成账号来源（和本软件自己写的一样）；
+ * 其余一律记成手动来源（和「就用现在这份」同一个意思，以后不提示、不自动改写）。
+ * 返回 null = 不用登记：没有 Key 时来源本来就读成未配置 / 未知，已经对得上的记录
+ * 也不必重写。
+ */
+export function planRestoredConfigOwnership(input: {
+  current: ToolConfigOwnership
+  hasApiKey: boolean
+  matchesRelay: boolean
+  owner: string | null
+  isAccountKey: boolean
+}): 'account' | 'manual' | null {
+  if (!input.hasApiKey) return null
+  if (input.current === 'account' || input.current === 'manual') return null
+  return input.owner && input.matchesRelay && input.isAccountKey ? 'account' : 'manual'
+}
+
 export function createSystemService(
   store: AppSettingsStore,
   serviceOptions: SystemServiceOptions = {},
@@ -2775,6 +2797,9 @@ export function createSystemService(
 
   async function restartWindows(): Promise<void> {
     if (platform !== 'win32') throw new Error('系统重启仅支持 Windows')
+    // shutdown /r 会在倒计时结束后强行结束本程序，队列里的安装会停在原子替换的
+    // 半截（I11 保护的正是这种中间态），所以有任务在跑就不发重启。
+    if (installationQueue.busy) throw new Error('还有安装、卸载或打开工具的任务在进行，等它做完再重启电脑')
     const machinePaths = resolveWindowsMachinePathsForService()
     await executeCommand({
       executable: windowsSystemExecutable('shutdown.exe', process.env, 'win32', machinePaths),
@@ -4506,6 +4531,21 @@ export function createSystemService(
     })
   }
 
+  async function adoptRestoredConfig(provider: ProviderId, isAccountKey: (apiKey: string) => boolean): Promise<void> {
+    await serializeConfigWrite(async () => {
+      const owner = serviceOptions.getExternalClientAccountId?.() ?? null
+      const restored = inspectNativeProviderConfig(provider)
+      const source = planRestoredConfigOwnership({
+        current: configOwnership.read(provider, restored, owner),
+        hasApiKey: restored.hasApiKey,
+        matchesRelay: restored.matchesRelay,
+        owner,
+        isAccountKey: restored.hasApiKey && isAccountKey(restored.apiKey),
+      })
+      if (source) await configOwnership.write(provider, restored, source, owner)
+    })
+  }
+
   async function switchToOfficialAccount(provider: ProviderId, mode: ConfigSavePayload['mode'] = 'merge') {
     return serializeConfigWrite(async () => {
       const activeSite = resolveRelaySite(serviceOptions.getRelaySiteId?.() ?? store.read().relaySiteId)
@@ -4537,6 +4577,7 @@ export function createSystemService(
     revealApiKey,
     saveConfig,
     switchToOfficialAccount,
+    adoptRestoredConfig,
     scanSystem,
     refreshNetworkLocation,
     refreshOfficialChatGptUsage,

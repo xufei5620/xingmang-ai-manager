@@ -1418,17 +1418,31 @@ test('a failed startup update check shows a dismissible notice instead of a bloc
 })
 
 test('startup environment findings are a notice with a way in, not an error and not a dialog', async () => {
-  const page = await open('diagnostics=1&diagnosticIssues=2')
+  const page = await open('diagnostics=1&diagnosticIssues=2&diagnosticWarnings=3')
   try {
     const notice = page.getByTestId('startup-notice-diagnostics')
     await notice.waitFor()
     await notice.getByText('环境检查发现 2 项需要处理', { exact: true }).waitFor()
+    await notice.getByText('另有 3 项可留意', { exact: false }).waitFor()
     assert.equal(await page.getByTestId('operation-error').count(), 0)
     // 检查跑完了、只是结论要看一眼，这不是失败，不该占一条错误日志。
     assert.equal(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'reportRendererError').length), 0)
     await notice.getByRole('button', { name: '去看看', exact: true }).click()
     await page.getByTestId('page-health').waitFor()
     await expect.poll(() => page.getByTestId('startup-notice-diagnostics').count()).toBe(0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('startup environment check says nothing when every finding is only worth a look', async () => {
+  // 只装了一家工具的客户：其余 CLI、Python、Git 没装都是「需留意」，不该每次开机都提。
+  const page = await open('diagnostics=1&diagnosticWarnings=5')
+  try {
+    await expect.poll(() => page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'runDiagnostics').length)).toBe(1)
+    await page.getByTestId('page-home').waitFor()
+    // 结论是异步落地的：给它一拍，免得在提示出现之前就断言「没有」。
+    await page.waitForTimeout(100)
+    assert.equal(await page.getByTestId('startup-notice-diagnostics').count(), 0)
     await clean(page)
   } finally { await page.close() }
 })

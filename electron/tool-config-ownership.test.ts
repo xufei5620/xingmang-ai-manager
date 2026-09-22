@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AppSettingsStore } from './app-settings'
 import { providerBaseUrls, providerIds } from './catalog'
 import { inspectProviderConfig, providerConfigPaths, saveProviderConfig } from './config-files'
-import { createSystemService } from './system-service'
+import { createSystemService, planRestoredConfigOwnership } from './system-service'
 import { ToolConfigOwnershipStore } from './tool-config-ownership'
 
 const directories: string[] = []
@@ -311,5 +311,64 @@ describe('durable tool configuration ownership', () => {
     const original = fs.readFileSync(authPath, 'utf8')
     await expect(f.makeService().saveConfig({ ...f.payload, apiKey: 'sk-replacement' }, false)).rejects.toThrow()
     expect(fs.readFileSync(authPath, 'utf8')).toBe(original)
+  })
+
+  it('stops a restored backup from reading as changed and keeps it away from automatic writes', async () => {
+    const f = fixture()
+    const service = f.makeService()
+    await service.saveConfig(f.payload, false, undefined, { source: 'account', automatic: false })
+    // A restore copies back a config holding a key the account never issued.
+    saveProviderConfig('codex', 'sk-restored-from-backup', f.payload.model, 'merge', f.roots, {}, providerBaseUrls)
+    expect(service.getConfig(false).providers.codex.configurationOwnership).toBe('changed')
+
+    await service.adoptRestoredConfig('codex', () => false)
+    expect(service.getConfig(false).providers.codex.configurationOwnership).toBe('manual')
+    f.fetch.mockClear()
+    await expect(service.saveConfig({ ...f.payload, apiKey: 'sk-automatic' }, false, undefined, { source: 'account', automatic: true })).rejects.toThrow('来源未经确认')
+    expect(f.current().apiKey).toBe('sk-restored-from-backup')
+    expect(f.fetch).not.toHaveBeenCalled()
+  })
+
+  it('records a restored current-account key as account-owned for that account only', async () => {
+    const f = fixture()
+    const service = f.makeService()
+    saveProviderConfig('codex', 'sk-current-account-key', f.payload.model, 'merge', f.roots, {}, providerBaseUrls)
+    const seen: string[] = []
+    await service.adoptRestoredConfig('codex', (key) => { seen.push(key); return key === 'sk-current-account-key' })
+    expect(seen).toEqual(['sk-current-account-key'])
+    expect(service.getConfig(false).providers.codex.configurationOwnership).toBe('account')
+    expect(fs.readFileSync(f.ownerFile(), 'utf8')).not.toContain('sk-current-account-key')
+    f.setOwner(JSON.stringify(['solov', 37]))
+    expect(service.getConfig(false).providers.codex.configurationOwnership).toBe('unknown')
+  })
+
+  it('leaves no record behind when the restored config has no key', async () => {
+    const f = fixture()
+    await f.makeService().adoptRestoredConfig('codex', () => true)
+    expect(fs.existsSync(path.join(f.data, 'tool-config-ownership'))).toBe(false)
+  })
+})
+
+describe('planRestoredConfigOwnership', () => {
+  const base = { current: 'changed' as const, hasApiKey: true, matchesRelay: true, owner: '["solov",36]', isAccountKey: true }
+
+  it('adopts a current-account key as account-owned', () => {
+    expect(planRestoredConfigOwnership(base)).toBe('account')
+  })
+
+  it.each([
+    ['a key the account did not issue', { isAccountKey: false }],
+    ['a signed-out session', { owner: null }],
+    ['a key pointing at another endpoint', { matchesRelay: false }],
+  ] as const)('falls back to manual for %s', (_label, patch) => {
+    expect(planRestoredConfigOwnership({ ...base, ...patch })).toBe('manual')
+  })
+
+  it.each(['account', 'manual'] as const)('keeps an already matching %s record', (current) => {
+    expect(planRestoredConfigOwnership({ ...base, current })).toBeNull()
+  })
+
+  it('writes nothing when the restored config holds no key', () => {
+    expect(planRestoredConfigOwnership({ ...base, hasApiKey: false })).toBeNull()
   })
 })
