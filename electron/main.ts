@@ -45,6 +45,7 @@ import { SavedAccountsStore } from './saved-accounts'
 import { AppSettingsStore, readAppSettings, type AppTheme } from './app-settings'
 import { calculateUiZoom, resolveWindowPlacement } from './window-preferences'
 import { createWindowLifecycle } from './window-lifecycle'
+import { hasLoginLaunchArgument, resolveLoginLaunch, shouldRevealInitialWindow } from './login-launch'
 import { resolveInstallableUpdateOnQuit, resolveInterruptibleInstallTask } from './quit-blocking-tasks'
 import { createWindowResponsivenessGuard } from './window-responsiveness'
 import { createApplicationTray, type ApplicationTrayController } from './application-tray'
@@ -90,6 +91,7 @@ import { guardProcessOutputStreams } from './process-stream-errors'
 import { RuntimeLogStore } from './runtime-log'
 import { hostNotifier } from './platform/host-notification-bridge'
 import { attachPlatformAuditLog } from './platform/runtime-log-bridge'
+import { migrateLegacyWindowsLoginItem } from './platform/system-service'
 import { recordStartupFailure } from './startup-log'
 import { inspectProviderConfig } from './config-files'
 import { buildFeedbackEnvironmentLines } from './feedback-environment'
@@ -335,6 +337,7 @@ function createWindow(
   systemService: SystemService,
   urlPolicy: ApplicationUrlPolicy,
   runtimeLog: RuntimeLogStore,
+  revealOnReady: () => boolean,
 ): BrowserWindow {
   const stored = systemService.readStoredConfig()
   const previewOnboarding = !app.isPackaged && process.env.XINGMANG_ONBOARDING_PREVIEW === '1'
@@ -364,6 +367,13 @@ function createWindow(
   })
 
   window.once('ready-to-show', () => {
+    if (!revealOnReady()) {
+      // 对隐藏的窗口调 maximize() 会把它直接显示出来，所以最大化留到第一次
+      // 从托盘唤出时再做。
+      if (placement.maximized) window.once('show', () => { window.maximize() })
+      runtimeLog.log('info', 'window', 'launch.login-hidden', '开机自动启动，窗口留在托盘')
+      return
+    }
     if (placement.maximized) window.maximize()
     window.show()
   })
@@ -604,16 +614,28 @@ if (!hasSingleInstanceLock) {
   if (!singleInstanceDisabledForDevelopment) {
     app.on('second-instance', (_event, argv) => {
       for (const argument of argv) receiveDeepLink(argument)
+      // 已经开着的时候开机项又拉起一次（比如注销再登录没关进程），那不是用户
+      // 要看窗口，别把它顶到最前面。
+      if (hasLoginLaunchArgument(argv)) return
       if (!focusExistingWindow()) focusWhenWindowIsReady = true
     })
   }
 
   void app.whenReady().then(async () => {
+    let loginItemMigration: unknown = false
     // Installers register the scheme; development must not take over installed links.
     if (app.isPackaged) app.setAsDefaultProtocolClient('xingmang')
     if (process.platform === 'win32') {
       app.setAppUserModelId('com.xingmang.ai.manager')
       Menu.setApplicationMenu(null)
+      try {
+        loginItemMigration = migrateLegacyWindowsLoginItem({
+          app, platform: process.platform, packaged: app.isPackaged, executablePath: process.execPath,
+        })
+      } catch (error) {
+        // 迁移不成最多是开机照旧弹一次窗口，不值得挡住启动。
+        loginItemMigration = error
+      }
     } else if (process.platform === 'darwin') {
       // BrowserWindow.icon does not control the Dock, especially under electron . in development.
       app.dock?.setIcon(path.join(app.getAppPath(), 'assets', 'brand', 'v3', 'app-icon.png'))
@@ -664,6 +686,11 @@ if (!hasSingleInstanceLock) {
     attachPlatformAuditLog((level, source, event, message, detail) => {
       runtimeLog.log(level, source, event, message, detail)
     })
+    if (loginItemMigration === true) {
+      runtimeLog.log('info', 'main', 'login-item.migrated', '旧版开机启动项已改成开机后留在托盘')
+    } else if (loginItemMigration !== false) {
+      runtimeLog.exception('main', 'login-item.migrate.failed', loginItemMigration)
+    }
     runtimeLog.log('info', 'main', 'app.started', '应用主进程已启动', {
       version: app.getVersion(),
       packaged: app.isPackaged,
@@ -1832,7 +1859,15 @@ if (!hasSingleInstanceLock) {
       canvasController.dispose()
       updaterService.dispose()
     })
-    const mainWindow = createWindow(systemService, urlPolicy, runtimeLog)
+    const launchedAtLogin = resolveLoginLaunch({
+      platform: process.platform,
+      argv: process.argv,
+      wasOpenedAtLogin: () => app.getLoginItemSettings().wasOpenedAtLogin,
+    })
+    const mainWindow = createWindow(systemService, urlPolicy, runtimeLog, () => shouldRevealInitialWindow({
+      launchedAtLogin,
+      trayAvailable: applicationTray?.available ?? false,
+    }))
     managedMainWindow = mainWindow
     const showMainWindow = () => {
       if (mainWindow.isDestroyed()) return
