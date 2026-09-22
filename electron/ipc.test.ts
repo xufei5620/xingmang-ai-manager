@@ -932,7 +932,7 @@ describe('registerIpcHandlers', () => {
   it('warns before accepting a workspace that would cover the whole machine', async () => {
     const desktop = path.join(os.homedir(), 'Desktop')
     electronMocks.showOpenDialog.mockResolvedValueOnce({ canceled: false, filePaths: [desktop] })
-    electronMocks.showMessageBox.mockResolvedValueOnce({ response: 1 })
+    electronMocks.showMessageBox.mockResolvedValueOnce({ response: 2 })
     const { service } = register()
 
     await expect(electronMocks.handlers.get('workspace:choose')!(trustedEvent())).resolves.toBe(desktop)
@@ -949,7 +949,7 @@ describe('registerIpcHandlers', () => {
     electronMocks.showOpenDialog
       .mockResolvedValueOnce({ canceled: false, filePaths: [home] })
       .mockResolvedValueOnce({ canceled: false, filePaths: [path.join(home, 'project')] })
-    electronMocks.showMessageBox.mockResolvedValueOnce({ response: 0 })
+    electronMocks.showMessageBox.mockResolvedValueOnce({ response: 1 })
     const { service } = register()
 
     await expect(electronMocks.handlers.get('workspace:choose')!(trustedEvent()))
@@ -958,11 +958,71 @@ describe('registerIpcHandlers', () => {
     expect(service.updateStoredConfig).toHaveBeenCalledTimes(1)
   })
 
+  it('creates a starter project folder under documents when the warning offers one', async () => {
+    const documents = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-ipc-documents-')))
+    try {
+      electronMocks.showOpenDialog.mockResolvedValueOnce({ canceled: false, filePaths: [path.join(os.homedir(), 'Desktop')] })
+      electronMocks.showMessageBox.mockResolvedValueOnce({ response: 0 })
+      const { service, runtimeLog, extensionService } = register(undefined, undefined, undefined, undefined, undefined, undefined, {}, {
+        documentsDirectory: () => documents,
+      })
+      const expected = path.join(documents, 'XingmangProjects', 'my-project')
+
+      await expect(electronMocks.handlers.get('workspace:choose')!(trustedEvent())).resolves.toBe(expected)
+      expect(electronMocks.showMessageBox).toHaveBeenCalledWith(expect.objectContaining({
+        buttons: ['新建一个项目文件夹', '换一个文件夹', '仍然打开'],
+        defaultId: 0,
+        cancelId: 1,
+      }))
+      expect(fs.statSync(expected).isDirectory()).toBe(true)
+      expect(electronMocks.showOpenDialog).toHaveBeenCalledTimes(1)
+      expect(service.updateStoredConfig).toHaveBeenCalledWith({ version: 2, workspace: expected })
+      expect(extensionService.setRepositoryContext).toHaveBeenCalledWith(expected)
+      expect(runtimeLog.log).toHaveBeenCalledWith('info', 'config', 'workspace.starter.created', expect.any(String))
+      expect(JSON.stringify(runtimeLog.log.mock.calls)).not.toContain(documents)
+    } finally {
+      fs.rmSync(documents, { recursive: true, force: true })
+    }
+  })
+
+  it.runIf(process.platform !== 'win32')('explains a starter folder that cannot be created and goes back to the picker', async () => {
+    const documents = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-ipc-documents-')))
+    const elsewhere = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-ipc-elsewhere-')))
+    fs.symlinkSync(elsewhere, path.join(documents, 'XingmangProjects'), 'dir')
+    try {
+      const project = path.join(os.homedir(), 'project')
+      electronMocks.showOpenDialog
+        .mockResolvedValueOnce({ canceled: false, filePaths: [os.homedir()] })
+        .mockResolvedValueOnce({ canceled: false, filePaths: [project] })
+      electronMocks.showMessageBox
+        .mockResolvedValueOnce({ response: 0 })
+        .mockResolvedValueOnce({ response: 0 })
+      const { service, runtimeLog } = register(undefined, undefined, undefined, undefined, undefined, undefined, {}, {
+        documentsDirectory: () => documents,
+      })
+
+      await expect(electronMocks.handlers.get('workspace:choose')!(trustedEvent())).resolves.toBe(project)
+      expect(electronMocks.showMessageBox).toHaveBeenNthCalledWith(2, expect.objectContaining({
+        type: 'error',
+        title: '没能新建项目文件夹',
+        detail: expect.stringContaining('符号链接或目录联接'),
+      }))
+      expect(fs.readdirSync(elsewhere)).toEqual([])
+      expect(electronMocks.showOpenDialog).toHaveBeenCalledTimes(2)
+      expect(runtimeLog.exception).toHaveBeenCalledWith('config', 'workspace.starter.failed', expect.any(Error))
+      expect(service.updateStoredConfig).toHaveBeenCalledTimes(1)
+      expect(service.updateStoredConfig).toHaveBeenCalledWith({ version: 2, workspace: project })
+    } finally {
+      fs.rmSync(documents, { recursive: true, force: true })
+      fs.rmSync(elsewhere, { recursive: true, force: true })
+    }
+  })
+
   it('keeps a cancelled picker from storing anything after a warning', async () => {
     electronMocks.showOpenDialog
       .mockResolvedValueOnce({ canceled: false, filePaths: [os.homedir()] })
       .mockResolvedValueOnce({ canceled: true, filePaths: [] })
-    electronMocks.showMessageBox.mockResolvedValueOnce({ response: 0 })
+    electronMocks.showMessageBox.mockResolvedValueOnce({ response: 1 })
     const { service } = register()
 
     await expect(electronMocks.handlers.get('workspace:choose')!(trustedEvent())).resolves.toBeNull()
