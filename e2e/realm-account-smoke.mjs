@@ -249,9 +249,7 @@ async function prepareSandbox() {
   await fs.mkdir(userHome)
   await fs.mkdir(userData)
   await fs.mkdir(reviewDirectory, { recursive: true })
-  // closeBehavior: 'quit' only matters to the restored-start close check below; every
-  // other stop drives app.exit directly and never closes the window.
-  await fs.writeFile(path.join(userData, 'settings.json'), JSON.stringify({ version: 2, theme: 'dark', closeBehavior: 'quit',
+  await fs.writeFile(path.join(userData, 'settings.json'), JSON.stringify({ version: 2, theme: 'dark',
     checkUpdatesOnStartup: false, runDiagnosticsOnStartup: false, officialProviders: ['claude', 'codex', 'gemini', 'grok'] }), 'utf8')
   await fs.writeFile(bootstrap, `(${bootFixture.toString()})(${JSON.stringify({ userHome, userData, projectRoot,
     entry: path.join(projectRoot, 'dist-electron/platform/entry.js'), catalog: path.join(projectRoot, 'dist-electron/catalog.js') })})\n`, 'utf8')
@@ -362,6 +360,13 @@ async function start() {
 const restoredCloseBudgetMs = 5_000
 async function closeWhileRestoring() {
   progress('launching an instance that is closed while it restores the saved account')
+  // The settings file seeded above has no workspace, so the first start already
+  // replaced it with valid defaults, and those ask on close: a modal dialog, not
+  // an exit. Only this start needs to quit on close, so only it gets the
+  // preference, written onto whatever the earlier starts left behind.
+  const settingsPath = path.join(userData, 'settings.json')
+  const settings = JSON.parse(await fs.readFile(settingsPath, 'utf8'))
+  await fs.writeFile(settingsPath, JSON.stringify({ ...settings, closeBehavior: 'quit' }), 'utf8')
   const runtimeLogLinesBefore = (await fs.readFile(path.join(userData, 'logs/runtime.jsonl'), 'utf8').catch(() => '')).split(/\r?\n/).filter(Boolean).length
   const instance = await withDeadline('Electron launch', stepBudgetMs, () => electron.launch({
     cwd: projectRoot, args: [bootstrap, `--user-data-dir=${userData}`], env, timeout: stepBudgetMs }))
