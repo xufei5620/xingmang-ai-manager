@@ -62,14 +62,17 @@ import {
 import { parseModelIds } from './models'
 import { describeProbeFailure } from './probe-failure'
 import {
+  cliLaunchArgv,
   cliUninstallCapability,
   findNpmExecutable,
   resolveCliCommand,
   resolveCliInstallation,
   resolveNpmGlobalRoot,
   type CliInstallation,
+  type CliLaunchMode,
   type CliUninstallCapability,
 } from './tool-installation'
+export type { CliLaunchMode } from './tool-installation'
 import { isNewerVersion, nodeVersionStatus, type NodeVersionStatus } from './versions'
 import {
   inspectWindowsRestartRequired,
@@ -697,7 +700,7 @@ export interface SystemService {
   cancelCodexDesktopInstall(): InstallCancellationOutcome
   uninstallCodexDesktop(): Promise<ToolUninstallResult>
   inspectCodexDesktopUpdate(forceRefresh?: boolean): Promise<DesktopAppStatus>
-  launchProvider(provider: ProviderId, workspace: string): Promise<void>
+  launchProvider(provider: ProviderId, workspace: string, mode?: CliLaunchMode): Promise<void>
   inspectCodexDesktop(): Promise<DesktopAppStatus>
   inspectCodexDesktopLocale(): Promise<CodexDesktopLocaleStatus>
   inspectCodexWorkspacePermissions(): CodexWorkspacePermissionStatus
@@ -3390,7 +3393,11 @@ export function createSystemService(
     })
   }
 
-  async function launchProviderOperation(provider: ProviderId, workspace: string): Promise<void> {
+  async function launchProviderOperation(
+    provider: ProviderId,
+    workspace: string,
+    mode: CliLaunchMode,
+  ): Promise<void> {
     const nativeConfig = inspectNativeProviderConfig(provider)
     if (!canLaunchManagedProvider(nativeConfig, provider)) {
       throw new Error(managedProviderLaunchBlockedMessage(provider))
@@ -3441,7 +3448,7 @@ export function createSystemService(
         }
         await launchCliPowerShell({
           executable: command.executable,
-          argv: command.argv,
+          argv: cliLaunchArgv(provider, command.argv, mode),
           workspace,
           title: `${definition.name} · 星芒AI`,
           // The broker starts this terminal with Start-Process, so it inherits
@@ -3466,7 +3473,11 @@ export function createSystemService(
         const command = await resolveVerifiedCliCommand(provider, providerEnv, windowsExecutionMode, {
           darwinStagingRetention: 'retained',
         })
-        await launchMacosTerminal(buildDarwinCliLaunchPlan(command, workspace, providerEnv))
+        await launchMacosTerminal(buildDarwinCliLaunchPlan(
+          { ...command, argv: cliLaunchArgv(provider, command.argv, mode) },
+          workspace,
+          providerEnv,
+        ))
       } catch (error) {
         const detail = error instanceof Error ? error.message : String(error)
         throw new Error(`未能打开 ${definition.name}：${detail || '请查看反馈与诊断日志'}`)
@@ -3476,10 +3487,11 @@ export function createSystemService(
 
     const environment = interactiveTerminalEnvironment(providerEnv)
     const command = await resolveVerifiedCliCommand(provider, providerEnv, windowsExecutionMode)
+    const argv = cliLaunchArgv(provider, command.argv, mode)
     const terminals = [
-      { command: 'x-terminal-emulator', args: ['-e', command.executable, ...command.argv] },
-      { command: 'gnome-terminal', args: ['--', command.executable, ...command.argv] },
-      { command: 'konsole', args: ['-e', command.executable, ...command.argv] },
+      { command: 'x-terminal-emulator', args: ['-e', command.executable, ...argv] },
+      { command: 'gnome-terminal', args: ['--', command.executable, ...argv] },
+      { command: 'konsole', args: ['-e', command.executable, ...argv] },
     ]
     let terminal = terminals[0]
     for (const candidate of terminals) {
@@ -3491,10 +3503,14 @@ export function createSystemService(
     await spawnDetached(terminal.command, terminal.args, { cwd: workspace, env: environment })
   }
 
-  function launchProvider(provider: ProviderId, workspace: string): Promise<void> {
+  function launchProvider(
+    provider: ProviderId,
+    workspace: string,
+    mode: CliLaunchMode = 'new',
+  ): Promise<void> {
     return installationQueue.enqueue(
       `cli:launch:${provider}`,
-      () => launchProviderOperation(provider, workspace),
+      () => launchProviderOperation(provider, workspace, mode),
     )
   }
 

@@ -7,6 +7,7 @@ import {
   History,
   MoreHorizontal,
   Package,
+  Play,
   Plug,
   Plus,
   RefreshCw,
@@ -459,6 +460,20 @@ export function SessionsPage({ api }: { api: V2Bridge }) {
       selected.archived ? '会话已恢复' : '会话已归档',
     )
   }
+  /**
+   * 四家 CLI 的续接参数都是「按当前工作目录找最近一条」,不是按会话 id 挑,
+   * 所以这里接上的是这条记录所在文件夹里最近的一条对话,不一定就是点中的
+   * 这一条。按会话 id 挑选另算一步。归档过的记录已经被移出 CLI 自己的目录,
+   * 它找不到,所以对归档记录置灰。
+   */
+  const resume = (session: Session) => {
+    if (!session.cwd || session.archived) return
+    void operation.execute(
+      'resume',
+      () => api.launchCli(session.provider, session.cwd, 'resumeLast'),
+      `已打开${providerName(session.provider)}，接着 ${session.cwd} 里最近的一条对话`,
+    )
+  }
   return (
     <section
       className="v2-page"
@@ -467,7 +482,7 @@ export function SessionsPage({ api }: { api: V2Bridge }) {
     >
       <PageHead
         title="记录"
-        lead="继续之前的对话，也可以导出或整理本机记录。"
+        lead="接着记录所在文件夹里最近的对话继续聊，也可以导出或整理本机记录。"
         actions={
           <Button
             icon={RefreshCw}
@@ -534,14 +549,29 @@ export function SessionsPage({ api }: { api: V2Bridge }) {
                 </span>
               }
               actions={
-                <Button
-                  size="sm"
-                  icon={History}
-                  disabled={!session.detailAvailable}
-                  onClick={() => view(session)}
-                >
-                  查看记录
-                </Button>
+                <>
+                  <Button
+                    size="sm"
+                    icon={Play}
+                    disabled={
+                      !session.cwd ||
+                      session.archived ||
+                      Boolean(operation.busy)
+                    }
+                    onClick={() => resume(session)}
+                    testId={`sessions-resume-${session.id}`}
+                  >
+                    接着聊
+                  </Button>
+                  <Button
+                    size="sm"
+                    icon={History}
+                    disabled={!session.detailAvailable}
+                    onClick={() => view(session)}
+                  >
+                    查看记录
+                  </Button>
+                </>
               }
               testId={`sessions-row-${session.id}`}
             />
@@ -582,6 +612,18 @@ export function SessionsPage({ api }: { api: V2Bridge }) {
               }
             >
               导出 Markdown
+            </Button>
+            <Button
+              icon={Play}
+              disabled={
+                !selected?.cwd ||
+                Boolean(selected?.archived) ||
+                Boolean(operation.busy)
+              }
+              onClick={() => selected && resume(selected)}
+              testId="session-detail-resume"
+            >
+              接着上次对话
             </Button>
             {capability?.operations[
               selected?.archived ? 'restore' : 'archive'

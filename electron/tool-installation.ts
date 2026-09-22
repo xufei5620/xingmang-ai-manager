@@ -577,6 +577,45 @@ export async function runDarwinNativeVerificationCommand(
   return { stdout: result.stdout, stderr: result.stderr }
 }
 
+/**
+ * 打开工具时是开新对话还是接着这个目录里最近的一条。渲染层只能在这两个
+ * 值之间选,argv 由下面的 cliResumeLastArgv 在主进程按工具固定生成 ——
+ * 参数本身永远不从渲染层来(I5)。
+ */
+export type CliLaunchMode = 'new' | 'resumeLast'
+
+/**
+ * 四家 CLI 都能按「当前工作目录」找回最近一次会话,参数各不相同(2026-09-22
+ * 在沙箱里按名单推荐版本用 --help 逐个核实:claude 2.1.277、codex 0.155.1、
+ * gemini 0.60.0、grok 1.0.40):
+ *   claude --continue           "Continue the most recent conversation in the current directory"
+ *   codex resume --last         "Continue the most recent session without showing the picker"
+ *   gemini --resume latest      "Use \"latest\" for most recent"
+ *   grok --continue             "Continue the most recent session for the current working directory"
+ * 无 default 分支 = 加第五个 CLI 漏在这里是编译错(T2)。
+ */
+export function cliResumeLastArgv(provider: ProviderId): string[] {
+  switch (provider) {
+    case 'claude':
+      return ['--continue']
+    case 'codex':
+      return ['resume', '--last']
+    case 'gemini':
+      return ['--resume', 'latest']
+    case 'grok':
+      return ['--continue']
+  }
+}
+
+/** 按启动方式把固定的续接参数接在 CLI 自身入口参数之后,mode 为 new 时原样返回。 */
+export function cliLaunchArgv(
+  provider: ProviderId,
+  argv: readonly string[],
+  mode: CliLaunchMode,
+): string[] {
+  return mode === 'resumeLast' ? [...argv, ...cliResumeLastArgv(provider)] : [...argv]
+}
+
 export async function resolveCliCommand(
   provider: ProviderId,
   envInput: NodeJS.ProcessEnv = process.env,

@@ -606,6 +606,13 @@ const apiMethods = {
     record('export-session', id)
     return null
   },
+  launchCli: async (
+    provider: Parameters<V2Bridge['launchCli']>[0],
+    workspace: string,
+    mode?: Parameters<V2Bridge['launchCli']>[2],
+  ) => {
+    record('launch-cli', { provider, workspace, mode })
+  },
   listProviderExtensions: async (
     provider: Parameters<V2Bridge['listProviderExtensions']>[0],
   ) => ({
