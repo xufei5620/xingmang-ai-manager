@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { networkFailureMessages } from '../../../../electron/network-failure'
-import { authErrorMessage, parseInviteCode, parseRecoveryCode, remainingCooldown, validateRegistration, type RegistrationDraft } from './state'
+import { authErrorMessage, parseInviteCode, parseRecoveryCode, remainingCooldown, usernameFromEmail, validateRegistration, type RegistrationDraft } from './state'
 import { guideOfficialLoginRequired, resolveGuideReadiness } from './StartGuide'
 
 describe('v2 auth recovery boundaries', () => {
@@ -37,6 +37,19 @@ describe('v2 auth recovery boundaries', () => {
     expect(validateRegistration({ ...draft, username: 'a'.repeat(20) }, false)).toEqual({})
     expect(validateRegistration({ ...draft, username: 'a'.repeat(21) }, false)).toEqual({ username: '用户名不能超过 20 位' })
     expect(validateRegistration({ ...draft, username: '   ' }, false)).toEqual({ username: '请填写用户名' })
+  })
+  it('derives a username the account server accepts from the mailbox name', () => {
+    expect(usernameFromEmail('12345678@qq.com')).toBe('12345678')
+    expect(usernameFromEmail('  Person.Name+tag@example.test ')).toBe('Person.Name+tag')
+    expect(usernameFromEmail('still-typing')).toBe('still-typing')
+    expect(usernameFromEmail('')).toBe('')
+    expect(usernameFromEmail('@example.test')).toBe('')
+    expect(usernameFromEmail(`${'a'.repeat(30)}@example.test`)).toBe('a'.repeat(20))
+    // Cut by character, not UTF-16 unit, so an emoji is never split in half.
+    const derived = usernameFromEmail(`${'a'.repeat(19)}😀😀@example.test`)
+    expect(derived).toBe(`${'a'.repeat(19)}😀`)
+    const draft: RegistrationDraft = { username: derived, email: 'a@example.test', password: 'long-password', confirm: 'long-password', code: '', invite: '', agreed: true }
+    expect(validateRegistration(draft, false)).toEqual({})
   })
   it('tells an empty confirmation apart from a mismatched one', () => {
     const draft: RegistrationDraft = { username: 'test-user', email: 'a@example.test', password: 'long-password', confirm: '', code: '', invite: '', agreed: true }

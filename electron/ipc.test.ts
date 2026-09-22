@@ -1081,6 +1081,91 @@ describe('registerIpcHandlers', () => {
     expect(service.updateStoredConfig).not.toHaveBeenCalled()
   })
 
+  it('does not remember a CLI configuration folder even after the user insists', async () => {
+    const configFolder = path.join(os.homedir(), '.claude')
+    electronMocks.showOpenDialog.mockResolvedValueOnce({ canceled: false, filePaths: [configFolder] })
+    electronMocks.showMessageBox.mockResolvedValueOnce({ response: 2 })
+    const { service } = register()
+
+    await expect(electronMocks.handlers.get('workspace:choose')!(trustedEvent())).resolves.toBe(configFolder)
+    expect(service.updateStoredConfig).not.toHaveBeenCalled()
+    expect(electronMocks.showMessageBox).toHaveBeenCalledWith(expect.objectContaining({
+      title: '不建议在这个文件夹里打开',
+      detail: expect.stringContaining('密钥'),
+    }))
+  })
+
+  it('does not ask twice when a just-confirmed configuration folder is opened right away', async () => {
+    const configFolder = path.join(os.homedir(), '.codex')
+    electronMocks.showOpenDialog.mockResolvedValueOnce({ canceled: false, filePaths: [configFolder] })
+    electronMocks.showMessageBox.mockResolvedValue({ response: 2 })
+    const { service } = register()
+
+    await electronMocks.handlers.get('workspace:choose')!(trustedEvent())
+    await electronMocks.handlers.get('cli:launch')!(trustedEvent(), 'codex', configFolder)
+    expect(electronMocks.showMessageBox).toHaveBeenCalledTimes(1)
+    expect(service.launchProvider).toHaveBeenCalledWith('codex', configFolder, 'new')
+
+    // 下一次打开（比如从最近记录）照样要问。
+    await electronMocks.handlers.get('cli:launch')!(trustedEvent(), 'codex', configFolder)
+    expect(electronMocks.showMessageBox).toHaveBeenCalledTimes(2)
+  })
+
+  it('asks again on every launch into a configuration folder that skipped the picker', async () => {
+    const configFolder = path.join(os.homedir(), '.gemini')
+    electronMocks.showMessageBox.mockResolvedValueOnce({ response: 2 })
+    const { service } = register()
+
+    await electronMocks.handlers.get('cli:launch')!(trustedEvent(), 'gemini', configFolder)
+    expect(electronMocks.showMessageBox).toHaveBeenCalledTimes(1)
+    expect(service.launchProvider).toHaveBeenCalledWith('gemini', configFolder, 'new')
+  })
+
+  it('lets the user pick another folder instead of launching into a configuration folder', async () => {
+    const configFolder = path.join(os.homedir(), '.claude')
+    const project = path.join(os.homedir(), 'project')
+    electronMocks.showMessageBox.mockResolvedValueOnce({ response: 1 })
+    electronMocks.showOpenDialog.mockResolvedValueOnce({ canceled: false, filePaths: [project] })
+    const { service } = register()
+
+    await electronMocks.handlers.get('cli:launch')!(trustedEvent(), 'claude', configFolder)
+    expect(service.launchProvider).toHaveBeenCalledTimes(1)
+    expect(service.launchProvider).toHaveBeenCalledWith('claude', project, 'new')
+    expect(service.updateStoredConfig).toHaveBeenCalledWith({ version: 2, workspace: project })
+  })
+
+  it('creates a starter folder and launches there when asked at launch time', async () => {
+    const documents = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-ipc-documents-')))
+    try {
+      electronMocks.showMessageBox.mockResolvedValueOnce({ response: 0 })
+      const { service } = register(undefined, undefined, undefined, undefined, undefined, undefined, {}, {
+        documentsDirectory: () => documents,
+      })
+      const expected = path.join(documents, 'XingmangProjects', 'my-project')
+
+      await electronMocks.handlers.get('cli:launch')!(trustedEvent(), 'claude', path.join(os.homedir(), '.claude'))
+      expect(service.launchProvider).toHaveBeenCalledWith('claude', expected, 'new')
+      expect(service.updateStoredConfig).toHaveBeenCalledWith({ version: 2, workspace: expected })
+      expect(electronMocks.showOpenDialog).not.toHaveBeenCalled()
+    } finally {
+      fs.rmSync(documents, { recursive: true, force: true })
+    }
+  })
+
+  it('only offers 先不打开 when resuming a conversation in a configuration folder', async () => {
+    const configFolder = path.join(os.homedir(), '.claude')
+    electronMocks.showMessageBox.mockResolvedValueOnce({ response: 0 })
+    const { service } = register()
+
+    await expect(electronMocks.handlers.get('cli:launch')!(trustedEvent(), 'claude', configFolder, 'resumeLast'))
+      .resolves.toBeUndefined()
+    expect(service.launchProvider).not.toHaveBeenCalled()
+    expect(electronMocks.showOpenDialog).not.toHaveBeenCalled()
+    expect(electronMocks.showMessageBox).toHaveBeenCalledWith(expect.objectContaining({
+      buttons: ['先不打开', '仍然打开'],
+    }))
+  })
+
   it('rejects calls from a sender outside the application URL policy', () => {
     const { service } = register()
     const handler = electronMocks.handlers.get('system:scan')!

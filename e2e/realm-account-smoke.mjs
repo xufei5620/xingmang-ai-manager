@@ -370,6 +370,17 @@ async function assertCustomerUi(page) {
   customerUiScans++
   recordPass('platform-details-hidden')
 }
+// 「账号来源」默认收起：星芒账号不用点，历史账号先点底部那行（它会顺手选中历史账号）。
+async function chooseAccountSource(page, label) {
+  const segment = page.getByTestId('auth-source')
+  if (!await segment.count()) {
+    if (label === '星芒账号') return
+    await page.getByTestId('auth-source-expand').click()
+    await segment.waitFor()
+    return
+  }
+  await segment.getByRole('button', { name: label, exact: true }).click()
+}
 async function openLoginWithUi(page) {
   await page.getByRole('button', { name: '登录', exact: true }).click({ timeout: fixtureReadyTimeoutMs })
   const dialog = page.getByTestId('login-dialog')
@@ -378,7 +389,7 @@ async function openLoginWithUi(page) {
   if (!await dialog.isVisible()) await accountLogin.click()
 }
 async function loginWithUi(page, siteId) {
-  await page.getByTestId('auth-source').getByRole('button', { name: siteId === 'solov' ? '星芒账号' : '历史账号', exact: true }).click()
+  await chooseAccountSource(page, siteId === 'solov' ? '星芒账号' : '历史账号')
   await page.getByTestId('login-account').fill('same@example.test')
   await page.getByTestId('login-password').fill('fixture-shared-password-123')
   await page.getByTestId('login-remember').check()
@@ -449,7 +460,7 @@ async function main() {
     await page.getByRole('button', { name: '切换账号', exact: true }).click()
     await page.getByTestId('account-add').click()
     const originalSession = await evaluateInRenderer(page, 'session before the historical login', () => window.xingmang.getAccountSession())
-    await page.getByTestId('auth-source').getByRole('button', { name: '历史账号', exact: true }).click()
+    await chooseAccountSource(page, '历史账号')
     await page.getByTestId('login-account').fill('same@example.test')
     await page.getByTestId('login-password').fill('fixture-shared-password-123')
     await page.getByTestId('auth-agree').check()
@@ -549,7 +560,7 @@ async function main() {
     recordPass('restore-and-logout')
     beginStage('preferred backend after logout and restart')
     await openLoginWithUi(page)
-    await page.getByTestId('auth-source').getByRole('button', { name: '历史账号', exact: true }).click()
+    await chooseAccountSource(page, '历史账号')
     await expect.poll(() => page.getByTestId('login-password').inputValue().then((value) => value === 'fixture-shared-password-123'),
       { timeout: fixtureReadyTimeoutMs }).toBe(true)
     await expect(page.getByTestId('login-remember')).toBeChecked()

@@ -648,6 +648,7 @@ const apiMethods = {
     mode?: Parameters<V2Bridge['launchCli']>[2],
   ) => {
     record('launch-cli', { provider, workspace, mode })
+    return {}
   },
   listProviderExtensions: async (
     provider: Parameters<V2Bridge['listProviderExtensions']>[0],

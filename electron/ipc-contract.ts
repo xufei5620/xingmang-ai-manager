@@ -80,6 +80,7 @@ import type {
 } from './connection-check'
 import type {
   AppConfigSummary as MainAppConfigSummary,
+  CliLaunchResult as MainCliLaunchResult,
   CliStatus as MainCliStatus,
   CodexDesktopLaunchMode as MainCodexDesktopLaunchMode,
   CodexDesktopLaunchResult as MainCodexDesktopLaunchResult,
@@ -216,6 +217,7 @@ export type SystemSnapshot = MainSystemSnapshot
 export type OfficialChatGptAccount = MainOfficialChatGptAccount
 export type OfficialChatGptWindow = MainOfficialChatGptWindow
 export type CodexDesktopLaunchResult = MainCodexDesktopLaunchResult
+export type CliLaunchResult = MainCliLaunchResult
 export type ToolUninstallResult = MainToolUninstallResult
 export type AppSettingsV2 = AppSettings
 export type AppSettingsV2Update = AppSettingsUpdate
@@ -559,7 +561,7 @@ export interface XingmangInvokeContract {
     [tool: ExternalToolId, options: ExternalClientConfigRequest],
     ExternalClientConfigResult
   >
-  scanExternalClients: IpcInvokeDefinition<'external-clients:scan', [], ExternalClientStatus[]>
+  scanExternalClients: IpcInvokeDefinition<'external-clients:scan', [force?: boolean], ExternalClientStatus[]>
   installExternalClient: IpcInvokeDefinition<'external-clients:install', [tool: ExternalToolId], ExternalClientStatus>
   launchExternalClient: IpcInvokeDefinition<'external-clients:launch', [tool: ExternalToolId], void>
   /**
@@ -596,7 +598,7 @@ export interface XingmangInvokeContract {
   launchCli: IpcInvokeDefinition<
     'cli:launch',
     [provider: ProviderId, workspace: string, mode?: CliLaunchMode],
-    void
+    CliLaunchResult
   >
   getCodexDesktopStatus: IpcInvokeDefinition<'desktop:codex-status', [], DesktopAppStatus>
   inspectCodexDesktopLocale: IpcInvokeDefinition<

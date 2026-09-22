@@ -70,12 +70,12 @@ export function useToolbox(bridge: XingmangApi | null, enabled: boolean, scope: 
     externalRequest.current++
     setExternalClients([]); setExternalError(''); setExternalLoading(false)
   }, [scope])
-  const refreshExternal = useCallback(async () => {
+  const refreshExternal = useCallback(async (force = false) => {
     if (!bridge || currentScope.current !== scope) return
     const id = ++externalRequest.current
     setExternalLoading(true); setExternalError('')
     try {
-      const statuses = await createToolsApi(bridge).readExternal()
+      const statuses = await createToolsApi(bridge).readExternal(force)
       if (active.current && currentScope.current === scope && id === externalRequest.current) setExternalClients(statuses)
     } catch (cause) {
       if (active.current && currentScope.current === scope && id === externalRequest.current) setExternalError(errorMessage(cause, '客户端检测没有完成，请重试。'))
@@ -135,8 +135,11 @@ export function useToolbox(bridge: XingmangApi | null, enabled: boolean, scope: 
   useEffect(() => { snapshotRef.current = snapshot }, [snapshot])
   useEffect(() => {
     active.current = true
-    if (enabled) { void refresh().catch(() => undefined); void refreshExternal().catch(() => undefined) }
-    return () => { active.current = false; request.current++; externalRequest.current++ }
+    let current = true
+    // 外部客户端那轮盘点（Windows 上是一整段 PowerShell）排在首屏扫描之后：
+    // 老电脑上两边的子进程同时冷启动，首页那几张工具卡反而出得更慢。
+    if (enabled) void refresh().catch(() => undefined).finally(() => { if (current) void refreshExternal().catch(() => undefined) })
+    return () => { current = false; active.current = false; request.current++; externalRequest.current++ }
   }, [enabled, refresh, refreshExternal])
   useEffect(() => {
     if (!bridge) return

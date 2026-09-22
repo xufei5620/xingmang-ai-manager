@@ -11,6 +11,7 @@ import { ConfigDialog } from './features/tools/ConfigDialog'
 import { ExternalClientDialog } from './features/tools/ExternalClientDialog'
 import { Home } from './features/tools/Home'
 import { createToolsApi } from './features/tools/api'
+import { launchWarning } from './features/tools/launch-notice'
 import { chineseRuntimePatchAnswerMissing, shouldAskForChineseRuntimePatch } from './features/tools/chinese-runtime-choice'
 import { cliRuntimeBlockMessage, nodeRuntimeReady } from './features/tools/runtime-readiness'
 import { isToolId, presentTools, providerFor, toolInstallDirectory, type ToolId, type ToolSource } from './features/tools/model'
@@ -540,10 +541,8 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       workspace = selectedWorkspace
     }
     return toolbox.run(`launch:${id}`, '正在打开工具', async () => {
-      const result = await toolsApi.launch(id, workspace, mode)
-      if (mounted.current && result?.chineseLocale && result.chineseLocale.status !== 'verified') {
-        toast.show(result.chineseLocale.message || 'Codex 已打开，中文界面尚未确认生效，请在配置中再次启用。', 'warn')
-      }
+      const warning = launchWarning(await toolsApi.launch(id, workspace, mode))
+      if (mounted.current && warning) toast.show(warning, 'warn')
     })
   }
   /**
@@ -757,7 +756,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
             </div>}
             {page === 'home' ? <Home api={toolsApi} supportsUsage={accountSupports(session, 'supportsUsage')} supportsBilling={accountSupports(session, 'supportsBilling')} snapshot={toolbox.snapshot} loading={toolbox.loading} error={toolbox.error} failures={toolbox.failures} account={session.account} balance={balance} jobs={toolbox.jobs} bootstrap={accountBootstrap?.scope === scope ? accountBootstrap : null}
               externalClients={toolbox.externalClients} externalLoading={toolbox.externalLoading} externalError={toolbox.externalError} recentRevision={recentRevision}
-              onScan={() => { refreshRecent(); void toolbox.refresh(true).catch(() => undefined); void toolbox.refreshExternal().catch(() => undefined) }} onInstall={(id, version) => void perform('安装工具', () => install(id, version), id)} onCancelInstall={(id) => void perform('取消安装', () => cancelInstall(id))} onLaunch={requestLaunch} onLaunchInNewFolder={(id) => requestLaunch(id, undefined, 'new', true)} onConfigure={openToolConfig} onUninstall={requestUninstall}
+              onScan={() => { refreshRecent(); void toolbox.refresh(true).catch(() => undefined); void toolbox.refreshExternal(true).catch(() => undefined) }} onInstall={(id, version) => void perform('安装工具', () => install(id, version), id)} onCancelInstall={(id) => void perform('取消安装', () => cancelInstall(id))} onLaunch={requestLaunch} onLaunchInNewFolder={(id) => requestLaunch(id, undefined, 'new', true)} onConfigure={openToolConfig} onUninstall={requestUninstall}
               onRewriteKey={(id) => void perform('重新写入 Key', () => rewriteAccountKeys([providerFor(id)]), id)} onKeepConfig={(id) => void perform('保留当前配置', () => keepCurrentToolConfig(id))}
               onOpenConfigDirectory={(id) => void perform('打开配置文件夹', () => toolsApi.openConfigDirectory(id))}
               onInstallExternal={(id) => void perform('安装客户端', () => installExternal(id))} onLaunchExternal={(id) => void perform('打开客户端', () => launchExternal(id))}

@@ -61,6 +61,7 @@ import {
   toNativeConfigSummary,
   type CodexWorkspacePermissionStatus,
   type CodexWorkspacePermissionWriteResult,
+  type NativeConfigInspection,
   type NativeConfigSaveMode,
   type NativeConfigSummary,
 } from './config-files'
@@ -70,6 +71,11 @@ import {
   readProjectInstructionsTemplate,
 } from './project-instructions'
 import { classifyWorkspace, sensitiveWorkspaceLabel } from './workspace-guard'
+import {
+  describeOverride,
+  inspectWorkspaceConfigOverrides,
+  launchOverrideNotice,
+} from './workspace-config-overrides'
 import {
   fetchOfficialChatGptUsage,
   type OfficialChatGptAccount,
@@ -362,6 +368,14 @@ export interface CodexDesktopLaunchResult {
   status: DesktopAppStatus
   /** Runtime confirmation is separate from successfully opening the app. */
   chineseLocale?: { status: 'verified' | 'failed' | 'restart-required'; message?: string }
+}
+
+export interface CliLaunchResult {
+  /**
+   * 项目文件夹里（或这台电脑上公司统一下发）的设置会盖过当前账号时，给用户的一句
+   * 提醒。只提醒不改：那些文件是用户或公司的，本软件不动它们。缺省 = 没发现。
+   */
+  configOverrideNotice?: string
 }
 
 export type ToolUninstallResult =
@@ -751,7 +765,7 @@ export interface SystemService {
   cancelCodexDesktopInstall(): InstallCancellationOutcome
   uninstallCodexDesktop(): Promise<ToolUninstallResult>
   inspectCodexDesktopUpdate(forceRefresh?: boolean): Promise<DesktopAppStatus>
-  launchProvider(provider: ProviderId, workspace: string, mode?: CliLaunchMode): Promise<void>
+  launchProvider(provider: ProviderId, workspace: string, mode?: CliLaunchMode): Promise<CliLaunchResult>
   inspectCodexDesktop(): Promise<DesktopAppStatus>
   inspectCodexDesktopLocale(): Promise<CodexDesktopLocaleStatus>
   inspectCodexWorkspacePermissions(): CodexWorkspacePermissionStatus
@@ -767,7 +781,7 @@ export interface SystemService {
   ): Promise<CodexDesktopLaunchResult>
   fetchAvailableModels(apiKey: string, options?: { bypassCache?: boolean }): Promise<string[]>
   configureExternalTool(tool: ExternalToolId, options: ExternalToolConfigOptions, assertBeforeWrite?: () => void): Promise<ExternalClientConfigResult>
-  scanExternalClients(): Promise<ExternalClientStatus[]>
+  scanExternalClients(force?: boolean): Promise<ExternalClientStatus[]>
   /** 上一次客户端检测留下的快照；反馈报告只读它，不为了生成报告再探测一轮。 */
   getLastExternalClients(): ExternalClientStatus[] | null
   /**
@@ -3898,7 +3912,7 @@ export function createSystemService(
     provider: ProviderId,
     workspace: string,
     mode: CliLaunchMode,
-  ): Promise<void> {
+  ): Promise<CliLaunchResult> {
     const nativeConfig = inspectNativeProviderConfig(provider)
     if (!canLaunchManagedProvider(nativeConfig, provider)) {
       throw new Error(managedProviderLaunchBlockedMessage(provider))
@@ -3908,7 +3922,7 @@ export function createSystemService(
     }
 
     const definition = cliCatalog[provider]
-    // 主目录 / 盘根 / 桌面 / 下载 / 文档这几类目录不写信任、也不生成 AGENTS.md：
+    // 主目录、盘根、桌面、系统目录、四家工具的配置目录等敏感目录不写信任、也不生成 AGENTS.md：
     // 两者都是「配一次管整棵目录树」的动作，放在这种目录上等于把整台电脑标成
     // 可信、给所有项目加一份看不见的说明（workspace-guard.ts）。打开本身照常，
     // 信任那一问由 CLI 自己去问 —— 在这种目录上那一问是有意义的。
@@ -3985,6 +3999,7 @@ export function createSystemService(
         })
       }
     }
+    const launchResult = inspectLaunchConfigOverrides(provider, workspace, nativeConfig)
     const providerEnv = providerEnvironment(provider)
     if (provider === 'gemini') {
       // Gemini CLI 0.59 may skip ~/.gemini/.env for an untrusted workspace,
@@ -4026,7 +4041,7 @@ export function createSystemService(
         const detail = error instanceof Error ? error.message : String(error)
         throw new Error(`未能打开 ${definition.name}：${detail || '请查看反馈与诊断日志'}`)
       }
-      return
+      return launchResult
     }
 
     if (platform === 'darwin') {
@@ -4043,7 +4058,7 @@ export function createSystemService(
         const detail = error instanceof Error ? error.message : String(error)
         throw new Error(`未能打开 ${definition.name}：${detail || '请查看反馈与诊断日志'}`)
       }
-      return
+      return launchResult
     }
 
     const environment = interactiveTerminalEnvironment(providerEnv)
@@ -4062,13 +4077,58 @@ export function createSystemService(
       }
     }
     await spawnDetached(terminal.command, terminal.args, { cwd: workspace, env: environment })
+    return launchResult
+  }
+
+  /**
+   * 项目文件夹里（或公司统一下发）的设置会盖过当前账号时，打开照常，只带回一句
+   * 提醒并记一条日志。只读，不动那些文件；查的过程出任何错都不能挡住打开。
+   */
+  function inspectLaunchConfigOverrides(
+    provider: ProviderId,
+    workspace: string,
+    nativeConfig: NativeConfigInspection,
+  ): CliLaunchResult {
+    const definition = cliCatalog[provider]
+    try {
+      const overrides = inspectWorkspaceConfigOverrides(provider, workspace, {
+        platform,
+        home: providerRoots.userHome,
+        codexHome: providerRoots.codexHome,
+        current: {
+          baseUrl: nativeConfig.baseUrl,
+          apiKey: nativeConfig.apiKey,
+          authType: nativeConfig.authType,
+          codexAuthMode: nativeConfig.codexAuthMode,
+        },
+      })
+      if (!overrides.length) return {}
+      runtimeLog?.log('warn', 'config', 'workspace.config-override', `${definition.name} 的项目文件夹或这台电脑上有会盖过当前账号的设置`, {
+        provider,
+        severity: overrides.some((entry) => entry.severity === 'blocking' && !entry.launchUnaffected) ? 'blocking' : 'possible',
+        scopes: [...new Set(overrides.map((entry) => entry.scope))],
+        files: overrides.map((entry) => redactHomeDirectory(
+          describeOverride(entry, workspace, providerRoots.userHome, platform),
+          providerRoots.userHome,
+        )),
+      })
+      const notice = launchOverrideNotice(definition.name, overrides)
+      return notice ? { configOverrideNotice: notice } : {}
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error)
+      runtimeLog?.log('warn', 'config', 'workspace.config-override.failed', `${definition.name} 未能检查项目文件夹里的设置，将不影响打开`, {
+        provider,
+        reason: redactHomeDirectory(reason, providerRoots.userHome),
+      })
+      return {}
+    }
   }
 
   function launchProvider(
     provider: ProviderId,
     workspace: string,
     mode: CliLaunchMode = 'new',
-  ): Promise<void> {
+  ): Promise<CliLaunchResult> {
     return installationQueue.enqueue(
       `cli:launch:${provider}`,
       () => launchProviderOperation(provider, workspace, mode),
@@ -4359,8 +4419,10 @@ export function createSystemService(
       apiKey: credential?.apiKey ?? null,
     }, activeSite.id, { fetch: serviceOptions.relayFetch })
   }
-  async function scanExternalClients(): Promise<ExternalClientStatus[]> {
-    const clients = await Promise.all((await externalClientRuntime.scan()).map(describeExternalClient))
+  async function scanExternalClients(force = false): Promise<ExternalClientStatus[]> {
+    // 本机盘点几分钟内复用（见 external-client-runtime 的缓存），配置每次都重读：
+    // 保存配置之后那次刷新要看到的正是刚写下去的那份。
+    const clients = await Promise.all((await externalClientRuntime.scan({ force })).map(describeExternalClient))
     // 反馈报告要答「客户端装没装、什么版本、配置指没指向当前账号」，而生成报告
     // 时不该再发一轮探测（同 latestTraySystem 的取舍）。这份快照就是那一段的
     // 数据源：只在用户自己点检测时更新。
