@@ -678,6 +678,33 @@ test('the home recent card resumes the last conversation of that folder (#292)',
   } finally { await page.close() }
 })
 
+test('home reuses the recent list instead of rescanning session folders on every visit', async () => {
+  const page = await open('allInstalled=1&recentWorkspaces=1')
+  // 首页读的是 pageSize 60 那一份;记录页自己读的是 20 / 100,不能混进来数。
+  const homeReads = () => page.evaluate(() => window.v2Test.calls
+    .filter((entry) => entry.method === 'listProviderSessions' && entry.args[0]?.pageSize === 60).length)
+  try {
+    await page.getByTestId('home-recent-card').waitFor()
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'listProviderSessions'))
+    assert.equal(await homeReads(), 1)
+
+    // 离开首页组件就卸载,回来又挂载一次。以前每回来一次就把三家 CLI 的会话
+    // 目录整个走一遍,现在一分钟内直接复用上一次的结果。
+    await page.getByTestId('nav-sessions').click()
+    await page.getByTestId('nav-home').click()
+    await page.getByTestId('home-recent-card').waitFor()
+    assert.equal(await homeReads(), 1)
+    // 复用不等于空白:卡片上还是那三条。
+    assert.equal(await page.getByTestId('home-recent-resume-claude:1').count(), 1)
+
+    // 用户主动「重新检测」是在说「我要最新的」,这一下必须真去读。
+    await page.getByTestId('home-rescan').click()
+    await page.waitForFunction(() => window.v2Test.calls
+      .filter((entry) => entry.method === 'listProviderSessions' && entry.args[0]?.pageSize === 60).length === 2)
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('canceling the CLI workspace picker keeps the tool closed without an error dialog', async () => {
   const page = await open('workspaceCancel=1')
   try {
