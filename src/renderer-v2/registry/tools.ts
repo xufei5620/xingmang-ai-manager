@@ -23,7 +23,20 @@ function configPathsFor(provider: ProviderId): Record<'win' | 'mac' | 'linux', s
 export const officialAccountNames: Record<ProviderId, string | null> = {
   claude: 'Claude 账号',
   codex: 'ChatGPT 账号',
-  gemini: 'Google 账号',
+  gemini: 'Google 企业版账号',
+  grok: null,
+};
+
+// 官方来源选项旁边的一句补充。Google 自 2026-06-18 起不再让个人 Google 账号
+// (含 AI Pro / Ultra 订阅)登录 Gemini CLI,只剩企业版 Code Assist 与 API Key
+// 两条路(google-gemini/gemini-cli discussion #27274)。选项本身留着给企业客户,
+// 但个人用户必须在点下去之前就看到这句——否则他们会在 Google 登录页上反复失败,
+// 最后来找客服。同样写成 Record<ProviderId, …>:加第五个 CLI 时漏掉它是编译错,
+// 没有这类限制的工具取 null。
+export const officialAccountNotes: Record<ProviderId, string | null> = {
+  claude: null,
+  codex: null,
+  gemini: '个人 Google 账号（含 AI Pro / Ultra 订阅）自 2026 年 6 月起不能用于 Gemini CLI，只有企业版 Code Assist 账号可用。个人用户请用星芒账号或自己填写密钥。',
   grok: null,
 };
 

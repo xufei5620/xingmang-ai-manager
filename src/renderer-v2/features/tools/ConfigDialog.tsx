@@ -3,7 +3,7 @@ import { Eye, FolderOpen, KeyRound, RefreshCw, Save, Settings } from 'lucide-rea
 import type { AccountKey, AppConfigSummary, ProviderId } from '../../../../electron/ipc-contract'
 import { defaultCliModels, resolveDefaultCliModel } from '../../../../electron/cli-model-defaults'
 import { BrandIcon, Button, Confirm, Dialog, Input, Pill, Segment, Select, Tabs } from '../../ui'
-import { officialAccountNames, tools } from '../../registry/tools'
+import { officialAccountNames, officialAccountNotes, tools } from '../../registry/tools'
 import { isToolId, providerFor, sourceFor, type ToolId } from './model'
 import { applyManualSourceMarker, getSourceMarkerStorage } from './source-marker'
 import type { ToolsApi } from './api'
@@ -211,6 +211,8 @@ export function ConfigDialog({ api, tool, config, signedIn, initialModelFilter =
     })
   }
   const officialName = officialAccountNames[provider] ?? '官方账号'
+  // 官方来源仍然可选,但它的限制要跟选项一起出现,而不是等用户选完再弹窗。
+  const officialNote = definition.sources.includes('official') ? officialAccountNotes[provider] : null
   const sourceOptions = [
     { value: 'account', label: '使用星芒账号' },
     ...(definition.sources.includes('official') ? [{ value: 'official', label: officialName }] : []),
@@ -238,7 +240,7 @@ export function ConfigDialog({ api, tool, config, signedIn, initialModelFilter =
       {draft.source === 'unknown' ? <><p className="v2-callout is-warn">{native.matchesRelay ? '这份配置的密钥来源尚未确认，已保留原配置。' : '这份配置连接了其他服务。'}保存新来源前会备份当前配置，历史会话会保留。</p><div className="v2-inline-actions"><Button onClick={() => change({ source: 'account' })}>切换为星芒账号</Button><Button onClick={() => change({ source: 'manual' })}>填写星芒密钥</Button><Button variant="ghost" onClick={onHelp}>查看处理步骤</Button></div></> : <>
         <div className="v2-config-field"><strong>用哪个账号使用 AI</strong><Segment options={sourceOptions} value={draft.source} onChange={(value) => {
           if (value === 'account' || value === 'manual' || value === 'official') change({ source: value })
-        }} /></div>
+        }} />{officialNote && <p data-testid="tool-source-note">{officialNote}</p>}</div>
         {draft.source === 'official' ? <><div className="v2-official-summary"><BrandIcon tool={tab} /><div><strong>{native.officialAccountEmail || `使用 ${officialName}`}</strong><p>{native.officialAccountPlan ?? '保存来源后，在工具中完成官方登录。'}</p></div><Pill tone={native.officialAccountEmail ? 'ok' : 'warn'}>{native.officialAccountEmail ? '已登录' : '待登录'}</Pill></div>
           {nonGptSaveIssue && <div className="v2-config-field"><p id={modelFilterStatusId} role="status" data-testid="tool-model-filter-status">{nonGptSaveIssue}</p><Button size="sm" variant="ghost" onClick={() => setModelFilter('all')}>继续配置官方模型</Button></div>}</> : <>
           {draft.source === 'account' ? <div className="v2-config-field"><Select label="访问密钥（Key）" testId="tool-key-select" value={draft.keyId} onFocus={() => refreshKeyOptions()} onPointerDown={() => refreshKeyOptions()} onKeyDown={(event) => { if (['ArrowDown', 'ArrowUp', ' ', 'Enter', 'F4'].includes(event.key)) refreshKeyOptions() }} onChange={(event) => change({ keyId: event.target.value })}

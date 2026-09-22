@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { cliCatalog, isProviderId, providerConfigDirectoryNames, providerIds } from '../../../electron/catalog';
-import { firstRunHints, officialAccountNames, tools } from './tools';
+import { firstRunHints, officialAccountNames, officialAccountNotes, tools } from './tools';
 
 describe('renderer-v2 tool registry', () => {
   it('only carries ids the main process knows, plus the Codex desktop entry', () => {
@@ -70,5 +70,27 @@ describe('renderer-v2 tool registry', () => {
       if (tool.sources.includes('official')) expect(officialAccountNames[provider]).toBeTruthy();
     }
     expect(Object.keys(officialAccountNames).sort()).toEqual([...providerIds].sort());
+  });
+
+  // Google stopped serving personal accounts (AI Pro / Ultra included) on
+  // 2026-06-18, so the option is now enterprise-only. Anyone who still reads
+  // it as "sign in with your Google account" burns an afternoon on a login
+  // page that will never work, then calls support.
+  it('warns next to the Gemini official option that personal Google accounts are out', () => {
+    expect(officialAccountNames.gemini).toContain('企业版');
+    const note = officialAccountNotes.gemini ?? '';
+    expect(note).toContain('个人 Google 账号');
+    expect(note).toContain('2026 年 6 月');
+    expect(note).toContain('企业版 Code Assist');
+    expect(note).toContain('星芒账号');
+  });
+
+  it('covers every provider in the official note table and leaves the unrestricted ones empty', () => {
+    expect(Object.keys(officialAccountNotes).sort()).toEqual([...providerIds].sort());
+    expect(officialAccountNotes.claude).toBeNull();
+    expect(officialAccountNotes.codex).toBeNull();
+    for (const provider of providerIds)
+      if (!tools.some(tool => (tool.id === 'codexDesktop' ? 'codex' : tool.id) === provider && tool.sources.includes('official')))
+        expect(officialAccountNotes[provider]).toBeNull();
   });
 });
