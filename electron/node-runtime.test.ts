@@ -586,4 +586,14 @@ describe('Node.js MSI fallback without administrator rights (E-S7)', () => {
     expect(nodeRuntimeElevationFailureMessage(3010)).toBeNull()
     expect(nodeRuntimeElevationFailureMessage(null)).toBeNull()
   })
+
+  it('says the account needs an administrator password when it is not in the group', () => {
+    // 普通账号取消授权和管理员取消授权是同一个退出码，「再点一次」对前者没用。
+    expect(nodeRuntimeElevationFailureMessage(1223, 'standard')).toContain('不在管理员组')
+    expect(nodeRuntimeElevationFailureMessage(740, 'standard')).toContain('管理员账号的密码')
+    expect(nodeRuntimeElevationFailureMessage(1223, 'administrator')).toContain('重新点击安装')
+    // 探测不出来时保持原来的说法，不吓唬本来就有权限的用户。
+    expect(nodeRuntimeElevationFailureMessage(1223)).not.toContain('不在管理员组')
+    expect(nodeRuntimeElevationFailureMessage(13, 'standard')).toContain('签名校验失败')
+  })
 })
