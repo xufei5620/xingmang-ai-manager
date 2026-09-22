@@ -213,6 +213,8 @@ describe('v2 business boundaries', () => {
     // 环境变量那条虽然叫 PROVIDER_*，要去的也是设置页而不是首页。
     expect(diagnosticTarget('PROVIDER_ENVIRONMENT_OVERRIDE')).toBe('settings')
     expect(diagnosticTarget('RUNTIME_NODE')).toBe('maintenance')
+    // 文件夹被搬过没有软件里能一键修的地方，下一步是导出报告。
+    expect(diagnosticTarget('FOLDER_RELOCATED')).toBe('feedback')
   })
   it('tells the account page why the server refused instead of asking for a retry', () => {
     expect(errorMessage(new Error('Original password is incorrect'))).toBe(

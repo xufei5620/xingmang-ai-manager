@@ -123,6 +123,15 @@ describe('tutorial topics', () => {
     expect(text).toContain('这个文件夹范围太大')
   })
 
+  it('quotes what the command-line tools really print when the balance or key quota runs out', () => {
+    // 原文取自四家推荐版本对本地假接口的实测（服务端返回按 new-api rc.24 源码构造）。
+    // 小白最容易踩的是 Claude Code 在余额不足时也说「Please run /login」，照做会走官方登录。
+    const text = tutorialText('messages')
+    for (const phrase of ['Please run /login', '用户额度不足', 'token quota is not enough', 'API key 额度已用完', 'Quota exceeded', '无效的令牌', '不要照做'])
+      expect(text, `对照表缺少「${phrase}」`).toContain(phrase)
+    expect(text).not.toMatch(/星芒余额|solov|Sub2API/)
+  })
+
   it('names every tool that actually has a plugin marketplace', () => {
     // 教程一度写着市场仅 Codex，Claude Code 的官方市场接上之后这句就错了。
     const plugins = tutorialTopics.find((entry) => entry.id === 'plugins')

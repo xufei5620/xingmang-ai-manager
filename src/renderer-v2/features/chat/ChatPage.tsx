@@ -5,20 +5,20 @@ import remarkGfm from 'remark-gfm'
 import type { AiChatAsset, XingmangApi } from '../../../../electron/ipc-contract'
 import { BrandIcon, Button, Confirm, Dialog, Empty, Input, Menu, Pill, Popover, SearchInput, Segment, Select, Textarea } from '../../ui'
 import { createChatApi, inspectModel, type ChatApi } from './api'
-import { chatErrorMessage, filterConversations, isGenerating, shouldSendOnEnter, type ChatMessage, type ChatMode } from './state'
+import { chatErrorAction, chatErrorMessage, filterConversations, isGenerating, shouldSendOnEnter, type ChatMessage, type ChatMode } from './state'
 import { ParametersPanel } from './ParametersPanel'
 import { useChatController } from './useChatController'
 import './chat.css'
 
-export interface ChatPageProps { bridge: XingmangApi; accountScope: string; active?: boolean }
+export interface ChatPageProps { bridge: XingmangApi; accountScope: string; active?: boolean; onOpenAccount?: (tab: 'recharge' | 'keys') => void }
 type Confirmation = { kind: 'retry' | 'delete-message' | 'delete-conversation' | 'clear' | 'stop'; id?: string; mayStillComplete?: boolean } | null
 
-export function ChatPage({ bridge, accountScope, active = true }: ChatPageProps) {
+export function ChatPage({ bridge, accountScope, active = true, onOpenAccount }: ChatPageProps) {
   const api = useMemo(() => createChatApi(bridge), [bridge])
-  return <ChatScope key={accountScope} api={api} scope={accountScope} active={active} />
+  return <ChatScope key={accountScope} api={api} scope={accountScope} active={active} onOpenAccount={onOpenAccount} />
 }
 
-function ChatScope({ api, scope, active }: { api: ChatApi; scope: string; active: boolean }) {
+function ChatScope({ api, scope, active, onOpenAccount }: { api: ChatApi; scope: string; active: boolean; onOpenAccount?: ChatPageProps['onOpenAccount'] }) {
   const chat = useChatController(api, scope, active)
   const { conversation, preparations } = chat
   const [search, setSearch] = useState('')
@@ -119,7 +119,7 @@ function ChatScope({ api, scope, active }: { api: ChatApi; scope: string; active
             <div className="chat-bubble">{message.content ? <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ a: ({ href, children }) => <span className="chat-blocked-link" title={href ? `链接不可直接打开：${href}` : undefined}>{children}</span>, img: ({ alt }) => <span>{alt ?? '图片链接'}</span> }}>{message.content}</ReactMarkdown> : (message.status === 'pending' || message.status === 'streaming') && <span className="chat-generating" role="status"><RefreshCw size={15} aria-hidden="true" />{message.settings?.mode === 'image' ? '正在生成图片' : message.reasoning ? '正在思考' : '正在生成'}</span>}
               {message.assets?.map((asset) => <div className="chat-asset" key={asset.assetId}><button type="button" className="chat-asset-preview" aria-label="查看生成图片" onClick={() => setPreview(asset)} onContextMenu={(event) => { event.preventDefault(); void task(() => api.assetMenu(asset.assetId), '') }}><img src={asset.localUrl} alt={asset.revisedPrompt || '生成的图片'} onError={(event) => { event.currentTarget.dataset.failed = 'true'; event.currentTarget.alt = '预览暂不可用，仍可尝试复制或另存图片' }} /></button><div className="chat-asset-actions"><Button size="xs" icon={Copy} variant="ghost" aria-label="复制图片" title="复制图片" onClick={() => void task(() => api.copyAsset(asset.assetId), '图片已复制')} testId="chat-asset-copy" /><Button size="xs" icon={Download} variant="ghost" aria-label="另存图片" title="另存图片" onClick={() => void saveAsset(asset.assetId)} testId="chat-asset-save" /><Button size="xs" icon={MoreHorizontal} variant="ghost" aria-label="图片更多操作" title="图片更多操作" onClick={() => void task(() => api.assetMenu(asset.assetId), '')} testId="chat-asset-menu" />{asset.width && asset.height && <small>{asset.width} × {asset.height}</small>}</div></div>)}
             </div>
-            {message.status === 'error' && <p className="chat-message-error" role="alert">{message.error}</p>}{message.status === 'canceled' && <p className="chat-message-note">{message.mayStillComplete ? '已停止等待，服务端仍可能处理并计费' : '已停止生成，保留已返回的内容'}</p>}
+            {message.status === 'error' && <ErrorLine message={message.error} onOpenAccount={onOpenAccount} />}{message.status === 'canceled' && <p className="chat-message-note">{message.mayStillComplete ? '已停止等待，服务端仍可能处理并计费' : '已停止生成，保留已返回的内容'}</p>}
             <div className="chat-message-tools">{message.content && <Button size="xs" icon={Copy} variant="ghost" aria-label="复制内容" title="复制内容" onClick={() => void copyText(message.content)} />}{message.role === 'assistant' ? <Button size="xs" icon={RefreshCw} variant="ghost" aria-label="重新生成" title="重新生成" disabled={pending || !chat.groups.some((group) => group.name === (message.settings?.group ?? conversation.settings.group))} onClick={() => setConfirmation({ kind: 'retry', id: message.id, mayStillComplete: message.mayStillComplete })} testId={`chat-message-retry-${message.id}`} /> : <Button size="xs" icon={Pencil} variant="ghost" aria-label="编辑消息" title="编辑消息" disabled={pending} onClick={() => setEditing({ id: message.id, text: message.content })} testId={`chat-message-edit-${message.id}`} />}<Button size="xs" icon={Trash2} variant="ghost" aria-label="删除消息" title="删除消息" disabled={pending} onClick={() => setConfirmation({ kind: 'delete-message', id: message.id })} testId={`chat-message-delete-${message.id}`} /></div>
           </div>
         </div>)}
@@ -137,4 +137,9 @@ function ChatScope({ api, scope, active }: { api: ChatApi; scope: string; active
     {active && copyFallback !== null && <Dialog open title="手动复制内容" subtitle="无法访问剪贴板，选中文字后使用系统复制操作。" width={640} onClose={() => setCopyFallback(null)} footer={<Button variant="primary" onClick={() => setCopyFallback(null)}>关闭</Button>} testId="chat-copy-fallback"><Textarea label="待复制内容" value={copyFallback} readOnly rows={12} onFocus={(event) => event.currentTarget.select()} /></Dialog>}
     {active && preview && <Dialog open title="生成的图片" width={640} onClose={() => setPreview(null)} footer={<><Button icon={Copy} onClick={() => void task(() => api.copyAsset(preview.assetId), '图片已复制')}>复制图片</Button><Button icon={Download} onClick={() => void saveAsset(preview.assetId)}>另存图片</Button><Button icon={ArrowUpRight} onClick={() => void task(() => api.assetMenu(preview.assetId), '')}>更多操作</Button></>} testId="chat-image-preview"><img className="chat-preview-image" src={preview.localUrl} alt={preview.revisedPrompt || '生成的图片'} /></Dialog>}
   </section>
+}
+
+function ErrorLine({ message, onOpenAccount }: { message?: string; onOpenAccount?: ChatPageProps['onOpenAccount'] }) {
+  const action = onOpenAccount ? chatErrorAction(message) : null
+  return <p className="chat-message-error" role="alert">{message}{action && <Button size="xs" variant="ghost" onClick={() => onOpenAccount?.(action)} testId={`chat-error-${action}`}>{action === 'recharge' ? '去充值' : '去调额度'}</Button>}</p>
 }

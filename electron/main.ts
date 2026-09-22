@@ -46,7 +46,7 @@ import { SavedAccountsStore } from './saved-accounts'
 import { AppSettingsStore, readAppSettings, type AppTheme } from './app-settings'
 import { calculateUiZoom, resolveWindowPlacement } from './window-preferences'
 import { createWindowLifecycle } from './window-lifecycle'
-import { hasLoginLaunchArgument, resolveLoginLaunch, shouldRevealInitialWindow } from './login-launch'
+import { hasLoginLaunchArgument, resolveLoginLaunch, shouldRevealInitialWindow, windowsAppUserModelId } from './login-launch'
 import { resolveInstallableUpdateOnQuit, resolveInterruptibleInstallTask } from './quit-blocking-tasks'
 import { createWindowResponsivenessGuard } from './window-responsiveness'
 import { createApplicationTray, type ApplicationTrayController } from './application-tray'
@@ -146,7 +146,7 @@ import {
 import { verifyUpdatePackageDigest } from './update-package-digest'
 import { installStrictUpdateCodeSignatureVerifier } from './update-signature'
 import { createUpdaterService } from './updater'
-import { resolveWindowsCliExecutionMode } from './windows-elevation'
+import { resolveWindowsCliExecutionModeDetailed } from './windows-elevation'
 import {
   applyWindowTheme,
   buildMacApplicationMenuTemplate,
@@ -632,7 +632,7 @@ if (!hasSingleInstanceLock) {
     // Installers register the scheme; development must not take over installed links.
     if (app.isPackaged) app.setAsDefaultProtocolClient('xingmang')
     if (process.platform === 'win32') {
-      app.setAppUserModelId('com.xingmang.ai.manager')
+      app.setAppUserModelId(windowsAppUserModelId)
       Menu.setApplicationMenu(null)
       try {
         loginItemMigration = migrateLegacyWindowsLoginItem({
@@ -770,7 +770,7 @@ if (!hasSingleInstanceLock) {
     // Overlap the migration's asynchronous marker write with the Windows probe.
     // Both operations still complete before services and the window are created.
     const migrationPromise = runCodexContextLimitsMigration(managerDataDirectory, rootedOptions.system.providerRoots)
-    const windowsCliExecutionModePromise = resolveWindowsCliExecutionMode({
+    const windowsCliExecutionModePromise = resolveWindowsCliExecutionModeDetailed({
       isPackaged: app.isPackaged,
     })
     try {
@@ -799,10 +799,22 @@ if (!hasSingleInstanceLock) {
     )
     // Resolved before the service is built because it also decides whether an
     // unmanaged npm uninstall can run in-app.
-    const windowsCliExecutionMode = await windowsCliExecutionModePromise
+    const windowsCliExecution = await windowsCliExecutionModePromise
+    const windowsCliExecutionMode = windowsCliExecution.mode
     runtimeLog.log('info', 'security', 'cli.execution-mode', 'CLI 扩展执行边界已确定', {
       mode: windowsCliExecutionMode,
+      elapsedMs: windowsCliExecution.elapsedMs,
+      ...(windowsCliExecution.probeFailure ? { probeFailed: windowsCliExecution.probeFailure.reason } : {}),
     })
+    if (windowsCliExecution.probeFailure) {
+      // 这次探测失败时从严按管理员处理：普通用户会因此装不了、打不开工具。原因
+      // 以前被 catch 吞掉，客服只看得到一个 trusted-only，分不出是真管理员还是没问出来。
+      runtimeLog.log('warn', 'security', 'cli.execution-mode.probe-failed', '没能确认当前是否以管理员身份运行，已按管理员处理', {
+        reason: windowsCliExecution.probeFailure.reason,
+        detail: windowsCliExecution.probeFailure.detail,
+        elapsedMs: windowsCliExecution.elapsedMs,
+      })
+    }
     let readAccountSiteId: () => string = () => 'solov'
     let readExternalClientAccountId: () => string | null = () => null
     // 下载专用的网络分区：它的代理只在装 CLI / 下 Node 的那几分钟里被设成加速
@@ -960,6 +972,7 @@ if (!hasSingleInstanceLock) {
           // 「磁盘空间」那一项要看软件数据目录所在的盘，而 userData 在哪只有宿主
           // 知道；CLI 落点由诊断自己算。
           userDataDirectory: app.getPath('userData'),
+          windowsExecution: windowsCliExecution,
           // 报告只装中文结论（它会被导出发给客服），认出失败靠的那段上游原文
           // 留在 runtime.jsonl 里。
           log: (level, event, message, detail) => runtimeLog.log(level, 'diagnostics', event, message, detail),
@@ -1097,6 +1110,7 @@ if (!hasSingleInstanceLock) {
         snapshot: pickFeedbackRuntimeSnapshot(latestTraySystem),
         platform: process.platform,
         executionMode: process.platform === 'win32' ? windowsCliExecutionMode : null,
+        executionProbeFailure: windowsCliExecution.probeFailure?.reason ?? null,
         appDirectory: path.dirname(app.getPath('exe')),
         dataDirectory: managerDataDirectory,
         managedDirectory,

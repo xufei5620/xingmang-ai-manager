@@ -369,6 +369,7 @@ describe('native CLI configuration files', () => {
           model,
           effortLevel: 'medium',
           skipDangerousModePermissionPrompt: true,
+          skipWebFetchPreflight: true,
           language: '简体中文',
           cleanupPeriodDays: 365,
         })
@@ -465,6 +466,7 @@ describe('native CLI configuration files', () => {
     expect(merged.env.CUSTOM_TOKEN).toBe('preserved')
     expect(merged.customSetting).toEqual({ enabled: true })
     expect(merged.permissions).toEqual({ defaultMode: 'bypassPermissions', deny: ['Artifact'] })
+    expect(merged.skipWebFetchPreflight).toBe(true)
   })
 
   it('appends Artifact to an existing Claude deny list without touching the entries the user wrote', () => {
@@ -1647,6 +1649,25 @@ describe('switching a provider back to the official subscription account', () =>
     // Artifact 对 claude.ai 账号用户是有用的,切回官方来源要把这条 deny 撤掉。
     expect(asRecord(after.permissions)?.deny).toBeUndefined()
     expect(asRecord(after.permissions)?.defaultMode).toBe('bypassPermissions')
+  })
+
+  it('skips the WebFetch domain preflight on the relay and restores it for the official account', () => {
+    // The preflight asks api.anthropic.com about every domain; from mainland
+    // China that host is unreachable, so relay users could not fetch any page.
+    const home = temporaryHome()
+    const [configPath] = providerConfigPaths('claude', providerRoots(home))
+    fs.mkdirSync(path.dirname(configPath), { recursive: true })
+    fs.writeFileSync(configPath, JSON.stringify({ skipWebFetchPreflight: false, theme: 'dark' }, null, 2))
+
+    saveProviderConfig('claude', 'sk-relay', testModels.claude, 'merge', providerRoots(home), {}, providerBaseUrls)
+    const relay = JSON.parse(fs.readFileSync(configPath, 'utf8')) as Record<string, unknown>
+    expect(relay.skipWebFetchPreflight).toBe(true)
+    expect(relay.theme).toBe('dark')
+
+    switchProviderToOfficialAccount('claude', providerRoots(home), {}, providerBaseUrls)
+    const official = JSON.parse(fs.readFileSync(configPath, 'utf8')) as Record<string, unknown>
+    expect(official).not.toHaveProperty('skipWebFetchPreflight')
+    expect(official.theme).toBe('dark')
   })
 
   it('removes only Artifact from the Claude deny list when switching to the official account', () => {
