@@ -11,6 +11,7 @@ import {
 const chromiumFailures: [string, NetworkFailureReason][] = [
   ['net::ERR_NAME_NOT_RESOLVED', 'dns'],
   ['net::ERR_CERT_AUTHORITY_INVALID', 'tls'],
+  ['net::ERR_CERT_DATE_INVALID', 'certDate'],
   ['net::ERR_SSL_PROTOCOL_ERROR', 'tls'],
   ['net::ERR_CONNECTION_REFUSED', 'refused'],
   ['net::ERR_CONNECTION_RESET', 'refused'],
@@ -30,6 +31,7 @@ const nodeFailures: [string, NetworkFailureReason][] = [
   ['ECONNRESET', 'refused'],
   ['ETIMEDOUT', 'timeout'],
   ['UNABLE_TO_VERIFY_LEAF_SIGNATURE', 'tls'],
+  ['CERT_HAS_EXPIRED', 'certDate'],
   ['ENETUNREACH', 'offline'],
 ]
 
@@ -48,15 +50,38 @@ describe('restricted network failure classification', () => {
     'request to https://registry.npmjs.org/@anthropic-ai%2fclaude-code failed, reason: self signed certificate in certificate chain',
     'unable to get local issuer certificate',
     'unable to verify the first certificate',
-    'certificate has expired',
   ])('reads the OpenSSL wording npm prints as a replaced certificate: %s', (message) => {
+    expect(classifyNetworkFailure(new Error(message))).toBe('tls')
+  })
+
+  // 日期类是同一批错误码里唯一「跟网络无关」的一类：证书过没过期是拿本机时钟比出来
+  // 的，所以它要在 tls 之前被截走，否则用户拿到的是一句「换一个网络再试」。
+  it.each([
+    'net::ERR_CERT_DATE_INVALID',
+    'request to https://registry.npmjs.org/@anthropic-ai%2fclaude-code failed, reason: certificate has expired',
+    'certificate is not yet valid',
+    'CERT_HAS_EXPIRED',
+    'CERT_NOT_YET_VALID',
+  ])('reads a certificate whose dates do not line up as a clock problem: %s', (message) => {
+    expect(classifyNetworkFailure(new Error(message))).toBe('certDate')
+  })
+
+  // 新增一类只许截走日期那几句，别的证书失败必须还在 tls。
+  it.each([
+    'net::ERR_CERT_AUTHORITY_INVALID',
+    'net::ERR_CERT_COMMON_NAME_INVALID',
+    'net::ERR_SSL_PROTOCOL_ERROR',
+    'DEPTH_ZERO_SELF_SIGNED_CERT',
+    'self signed certificate in certificate chain',
+    'unable to get local issuer certificate',
+  ])('leaves every other certificate failure on the replaced-certificate answer: %s', (message) => {
     expect(classifyNetworkFailure(new Error(message))).toBe('tls')
   })
 
   it('reaches the real reason through the cause chain fetch wraps it in', () => {
     const cause = Object.assign(new Error('getaddrinfo ENOTFOUND'), { code: 'ENOTFOUND' })
     expect(classifyNetworkFailure(new TypeError('fetch failed', { cause }))).toBe('dns')
-    expect(classifyNetworkFailure({ cause: { cause: new Error('net::ERR_CERT_DATE_INVALID') } })).toBe('tls')
+    expect(classifyNetworkFailure({ cause: { cause: new Error('net::ERR_CERT_DATE_INVALID') } })).toBe('certDate')
   })
 
   // 门户劫持是受限网络里唯一一类「请求成功地到了别的地方」的失败。要求
@@ -116,6 +141,14 @@ describe('restricted network failure copy', () => {
       expect(message).not.toMatch(/账号|密码/)
       expect(message).not.toMatch(/solov|sub2api|new-api|http|ERR_|E[A-Z]{5,}/i)
       expect(message.endsWith('。')).toBe(true)
+    }
+  })
+
+  it('sends the date failure to the system clock before it mentions the network', () => {
+    for (const message of [networkFailureMessages.certDate, updateNetworkFailureMessages.certDate]) {
+      expect(message).toContain('系统时间')
+      // 「换个网络」只能排在对时后面：先换网络就是用户白折腾的那一轮。
+      expect(message.indexOf('系统时间')).toBeLessThan(message.indexOf('网络'))
     }
   })
 

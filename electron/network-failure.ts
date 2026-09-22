@@ -11,7 +11,17 @@
  * 与 catalog.ts 同理：这个模块进渲染包，所以永远不许依赖 node 或 electron
  * （I6，门禁见 scripts/verify-renderer-boundary.test.cjs 的 valueImportable）。
  */
-export type NetworkFailureReason = 'offline' | 'dns' | 'tls' | 'proxy' | 'refused' | 'timeout' | 'intercepted'
+export type NetworkFailureReason = 'offline' | 'dns' | 'tls' | 'certDate' | 'proxy' | 'refused' | 'timeout' | 'intercepted'
+
+/**
+ * 「证书过期 / 还没生效」和「证书被换掉」在错误码上是邻居，在现实里却是两件事：
+ * 一张证书有没有过期，是拿本机的时钟去比出来的，所以主板电池没电、装完系统没对
+ * 时、时区手动改错，都会让每一张正常的证书当场变成「已过期」。把它归进 tls 那句
+ * 「换一个网络再试」，用户换到手机热点还是同样的错，最后只能进客服群。
+ *
+ * 两张表共用这一句：这句话说的是这台电脑，跟连的是账号服务还是更新目录无关。
+ */
+const certificateDateMessage = '这次连接的安全证书日期对不上，多半是这台电脑的系统时间不准。请先把系统时间设为自动同步并确认时区，再重试；确认时间没问题，再换一个网络试试。'
 
 /**
  * 文案约定：主语是「当前网络」或「账号服务」，不出现站点名、域名和内部代号
@@ -22,6 +32,7 @@ export const networkFailureMessages: Readonly<Record<NetworkFailureReason, strin
   offline: '设备当前没有连上网络，请先连接网络再试。',
   dns: '当前网络解析不出账号服务的地址，校园网、公司网常见。换一个网络（例如手机热点）通常就能用。',
   tls: '当前网络替换了这次连接的安全证书，为保护账号信息已经中止本次请求。请换一个网络再试，不要在这个网络上继续输入密码。',
+  certDate: certificateDateMessage,
   proxy: '系统里设置的代理连不上，请检查代理或加速设置后再试。',
   refused: '与账号服务的连接被当前网络切断了，校园网、公司网常见。换一个网络（例如手机热点）再试一次。',
   timeout: '连接账号服务超时，请检查网络后再试。',
@@ -38,6 +49,7 @@ export const updateNetworkFailureMessages: Readonly<Record<NetworkFailureReason,
   offline: '设备当前没有连上网络，请先连接网络再试。',
   dns: '当前网络解析不出更新服务器的地址，校园网、公司网常见。换一个网络（例如手机热点）通常就能用。',
   tls: '当前网络替换了这次连接的安全证书，为保证安装包来源可信已经中止本次更新。请换一个网络再试。',
+  certDate: certificateDateMessage,
   proxy: '系统里设置的代理连不上，请检查代理或加速设置后再试。',
   refused: '与更新服务器的连接被当前网络切断了，校园网、公司网常见。换一个网络（例如手机热点）再试一次。',
   timeout: '连接更新服务器超时，请检查网络后再试。',
@@ -55,10 +67,14 @@ export const updateNetworkFailureMessages: Readonly<Record<NetworkFailureReason,
  */
 const failurePatterns: readonly { reason: NetworkFailureReason; test: RegExp }[] = [
   { reason: 'timeout', test: /ERR_TIMED_OUT|ERR_CONNECTION_TIMED_OUT|ETIMEDOUT|ESOCKETTIMEDOUT/i },
+  // 必须排在 tls 之前：下面那条的 ERR_CERT 前缀会把 ERR_CERT_DATE_INVALID 一起吞掉。
+  // 日期类的原文同样有两套写法——Chromium 的 ERR_CERT_DATE_INVALID，以及 Node /
+  // OpenSSL（npm 走的那条路）的 CERT_HAS_EXPIRED 与散句 certificate has expired。
+  { reason: 'certDate', test: /ERR_CERT_DATE_INVALID|CERT_HAS_EXPIRED|CERT_NOT_YET_VALID|certificate has expired|certificate is not yet valid/i },
   // npm / OpenSSL 说的是同一件事，但用的是另一套词：走 npm 的那条路（装 CLI、查
   // 最新版）只会吐出 `self signed certificate in certificate chain` 这类英文散句，
   // 只认 errno 风格的写法会让同一个公司网关在账号那侧认得出、在安装那侧认不出。
-  { reason: 'tls', test: /ERR_CERT|ERR_SSL|ERR_BAD_SSL|ERR_TLS|CERT_HAS_EXPIRED|SELF_SIGNED_CERT|UNABLE_TO_VERIFY_LEAF_SIGNATURE|UNABLE_TO_GET_ISSUER_CERT|CERT_UNTRUSTED|HOSTNAME_MISMATCH|ERR_QUIC_HANDSHAKE_FAILED|self[- ]signed certificate|unable to verify the first certificate|unable to get local issuer certificate|certificate has expired/i },
+  { reason: 'tls', test: /ERR_CERT|ERR_SSL|ERR_BAD_SSL|ERR_TLS|SELF_SIGNED_CERT|UNABLE_TO_VERIFY_LEAF_SIGNATURE|UNABLE_TO_GET_ISSUER_CERT|CERT_UNTRUSTED|HOSTNAME_MISMATCH|ERR_QUIC_HANDSHAKE_FAILED|self[- ]signed certificate|unable to verify the first certificate|unable to get local issuer certificate/i },
   { reason: 'proxy', test: /ERR_PROXY|ERR_TUNNEL_CONNECTION_FAILED|ERR_MANDATORY_PROXY_CONFIGURATION_FAILED|ERR_UNEXPECTED_PROXY_AUTH/i },
   { reason: 'dns', test: /ERR_NAME_NOT_RESOLVED|ERR_NAME_RESOLUTION_FAILED|ERR_DNS|ENOTFOUND|EAI_AGAIN/i },
   // A captive portal answers with a redirect to its own login page. Callers

@@ -112,6 +112,11 @@ interface CheckDefinition {
 }
 
 const DEFAULT_CHECK_TIMEOUT_MS = 8_000
+/**
+ * 差多少才值得说。证书校验本身有容差，本机时钟与服务器差几十秒也是常态，
+ * 阈值定低了就是每次检查都亮一条没人能处理的黄灯。
+ */
+const MAX_CLOCK_SKEW_MS = 5 * 60 * 1000
 const MAX_CLASH_CONFIG_BYTES = 2 * 1024 * 1024
 const MAX_CLAUDE_SETTINGS_BYTES = 256 * 1024
 const MAX_YAML_ALIAS_COUNT = 20
@@ -671,6 +676,29 @@ function environmentOverrideOutcome(matches: readonly EnvironmentOverrideMatch[]
   }
 }
 
+/**
+ * 一张证书有没有过期，是拿本机时钟去比出来的：系统时间差得多，每一张正常的证书
+ * 都会当场变成「已过期」，于是登录、装 CLI、检查更新一起卡在证书校验这一步，而
+ * 用户看到的只是「换个网络」。HTTP 的 Date 头里就带着服务器那一侧的时间，顺手比
+ * 一次不用新发任何请求。
+ *
+ * 没有 Date 头、或者这个头不是一个能解析的时间，就返回 null——宁可不说，也不要
+ * 拿一个解析不出来的值去吓用户。
+ */
+export function clockSkewMs(dateHeader: string | null | undefined, now: Date): number | null {
+  if (!dateHeader) return null
+  const serverTime = Date.parse(dateHeader)
+  if (!Number.isFinite(serverTime)) return null
+  return now.getTime() - serverTime
+}
+
+/** 对时入口每个系统都不一样，说不清具体在哪一页的提示等于没说。 */
+export function clockSyncGuidance(platform: NodeJS.Platform): string {
+  if (platform === 'win32') return '请在「设置 → 时间和语言 → 日期和时间」里打开「自动设置时间」，并确认时区正确。'
+  if (platform === 'darwin') return '请在「系统设置 → 通用 → 日期与时间」里打开「自动设置时间和日期」，并确认时区正确。'
+  return '请把系统时间设为自动同步，并确认时区正确。'
+}
+
 /** 日志里要看得见真正的原因，而 fetch 把它塞在 cause 里，外层只剩 fetch failed。 */
 function errorChainText(error: unknown): string {
   const parts: string[] = []
@@ -826,6 +854,7 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
   const paths = dependencies.clashConfigPaths ?? clashCandidates(userHome, env)
   const inspectProxy = dependencies.inspectProxyVariables ?? ((signal) => defaultProxyVariables(env))
   const log = dependencies.log
+  const now = dependencies.now ?? (() => new Date())
   const supportedPlatform = platform === 'win32' || platform === 'darwin'
 
   const checks: CheckDefinition[] = [
@@ -1012,6 +1041,18 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
             details: { endpoint, status: response.status },
           }
         }
+        // 这一次 HEAD 已经拿到了响应头，Date 就在里面：顺手和本机时间比一次，
+        // 把「证书日期对不上」的真正源头提前抓出来，不新增任何请求。
+        const skewMs = clockSkewMs(response.headers.get('date'), now())
+        if (skewMs !== null && Math.abs(skewMs) > MAX_CLOCK_SKEW_MS) {
+          const minutes = Math.round(Math.abs(skewMs) / 60_000)
+          return {
+            state: 'warn',
+            summary: `已连通（HTTP ${response.status}），但这台电脑的系统时间与服务器相差约 ${minutes} 分钟，`
+              + `可能让登录、安装、更新卡在证书校验这一步。${clockSyncGuidance(platform)}`,
+            details: { endpoint, status: response.status, clockSkewMinutes: Math.round(skewMs / 60_000) },
+          }
+        }
         return {
           state: 'pass',
           summary: `已连通（HTTP ${response.status}）`,
@@ -1091,7 +1132,7 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
   const items = await Promise.all(checks.map((check) => runIsolatedCheck(check, timeoutMs, sanitize)))
   return {
     version: 1,
-    generatedAt: (dependencies.now?.() ?? new Date()).toISOString(),
+    generatedAt: now().toISOString(),
     durationMs: Date.now() - startedAt,
     counts: countStates(items),
     items,

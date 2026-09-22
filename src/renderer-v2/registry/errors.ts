@@ -9,6 +9,7 @@ export const errors = {
   installBlocked: { title: '安装被杀毒软件拦住了', body: '请检查隔离记录，并把安装目录加入信任。', actions: ['复制路径', '重试'] },
   downloadTimeout: { title: '下载超时', body: '下载没有完成，已安装的工具不受影响。', actions: ['换官方源重试'] },
   diskFull: { title: '磁盘空间不够', body: '安装目录所在的磁盘没有空间了。请清理后再试。', actions: ['复制路径', '重试', '查看日志'] },
+  certDate: { title: '证书日期对不上', body: '多半是这台电脑的系统时间不准——证书有没有过期是拿本机时钟比出来的。请把系统时间设为自动同步并确认时区，再重试；确认时间没问题，再换个网络。', actions: ['重试', '查看日志'] },
   tlsIntercepted: { title: '连接被证书拦截', body: '网络里有设备替换了证书（常见于公司网络或安全软件）。请换个网络或关闭拦截后重试。', actions: ['重试', '查看日志'] },
   permission: { title: '写不进安装目录', body: '本工具按普通权限运行，不会提权。请检查安装目录的写入权限，或杀毒软件是否拦了它。', actions: ['复制路径', '查看日志'] },
   updateIntegrity: { title: '更新没有装上', body: '当前版本不受影响。', actions: ['重新下载', '看日志'] },

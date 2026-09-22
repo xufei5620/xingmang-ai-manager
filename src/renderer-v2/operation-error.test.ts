@@ -21,6 +21,7 @@ const catalogCoverage: Record<OperationErrorKey, { sample: string } | { unreacha
   downloadTimeout: { sample: 'Codex CLI 安装失败：npm 官方源：request to registry 失败，reason: ETIMEDOUT' },
   permission: { sample: 'Claude Code 安装失败：npm 官方源：EPERM: operation not permitted, rename' },
   diskFull: { sample: 'Claude Code 安装失败：npm 官方源：ENOSPC: no space left on device, write' },
+  certDate: { sample: '账号接口请求失败：net::ERR_CERT_DATE_INVALID' },
   tlsIntercepted: { sample: 'Codex CLI 安装失败：npm 官方源：request to https://registry.npmjs.org failed, reason: self signed certificate in certificate chain' },
   updateIntegrity: { sample: 'Claude Code 更新失败：SHA-512 完整性校验不一致' },
   backupIntegrity: { sample: '备份文件已损坏或被篡改' },
@@ -189,6 +190,20 @@ describe('renderer-v2 operation error classification', () => {
     ]) expect([intercepted, classifyOperationError(intercepted)]).toEqual([intercepted, 'tlsIntercepted'])
     const hint = presentOperationError('Gemini CLI 安装失败：unable to get local issuer certificate')
     expect(hint?.title).toBe('连接被证书拦截')
+    expect(hint?.actions).toEqual([{ id: 'retry', label: '重试' }, { id: 'log', label: '查看日志' }])
+  })
+
+  it('blames the system clock when the certificate dates do not line up', () => {
+    for (const dated of [
+      '账号接口请求失败：net::ERR_CERT_DATE_INVALID',
+      'Claude Code 安装失败：npm 官方源：request to https://registry.npmjs.org failed, reason: certificate has expired',
+      'CERT_NOT_YET_VALID',
+      // 主进程自己写好的那句中文同样归这一类（同 tlsIntercepted，口径只有一份）。
+      `重新写入 Key 没有完成：${networkFailureMessages.certDate}`,
+    ]) expect([dated, classifyOperationError(dated)]).toEqual([dated, 'certDate'])
+    const hint = presentOperationError('账号接口请求失败：net::ERR_CERT_DATE_INVALID')
+    expect(hint?.title).toBe('证书日期对不上')
+    expect(hint?.body).toContain('系统时间')
     expect(hint?.actions).toEqual([{ id: 'retry', label: '重试' }, { id: 'log', label: '查看日志' }])
   })
 

@@ -44,12 +44,16 @@ const rules: Array<{ key: OperationErrorHint['key']; match: (message: string) =>
   // 放在 permission 之前：npm 在写不下去时同时报过 EPERM 与 ENOSPC 的情况下，
   // 「清一清磁盘」才是用户真做得到的那一步。
   { key: 'diskFull', match: (message) => /ENOSPC|no space left|not enough space|磁盘空间不足|磁盘已满|disk full/i.test(message) },
+  // 证书「已过期 / 还没生效」必须和「被换掉」分开：前者几乎都是这台电脑的时钟不对
+  // （主板电池没电、装完系统没对时、时区改错），照「连接被证书拦截」那句去换网络，
+  // 换几个热点都是同一个错。
+  { key: 'certDate', match: (message) => classifyNetworkFailure(message) === 'certDate' },
   // 公司网关和安全软件会替换证书，npm 与账号接口因此拿到一张签不过的证书。归类
   // 口径直接用 electron/network-failure.ts 那一份（它已经同时认得 Chromium 的
   // ERR_CERT_* 和 OpenSSL 的 SELF_SIGNED_CERT_IN_CHAIN 这类写法），两边各写一套
   // 正则的话，迟早一边认得出、另一边认不出同一句话。
-  // 必须排在 timeout 之前：那条的 network / 连接失败 会把证书失败吞成「检查网络」，
-  // 用户于是反复检查一个本来就通的网络。
+  // 这两条都必须排在 timeout 之前：那条的 network / 连接失败 会把证书失败吞成
+  //「检查网络」，用户于是反复检查一个本来就通的网络。
   { key: 'tlsIntercepted', match: (message) => classifyNetworkFailure(message) === 'tls' },
   { key: 'permission', match: (message) => /EPERM|EACCES|operation not permitted|permission denied|拒绝访问|访问被拒绝|权限不足|需要管理员/i.test(message) },
   // 「杀毒」这条只留真的在说杀毒软件的说法。EBUSY 与「文件被占用」已经上移到
