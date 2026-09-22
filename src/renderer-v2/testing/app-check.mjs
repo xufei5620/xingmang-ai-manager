@@ -1578,6 +1578,39 @@ test('Markdown announcements render headings, lists, emphasis and links', async 
   } finally { await page.close() }
 })
 
+test('a blocked announcement link is copied for the browser instead of failing', async () => {
+  const page = await open('noticeMarkdown=1&externalBlocked=1')
+  try {
+    await page.evaluate(() => {
+      window.__blockedLinkClipboard = { values: [], reject: false }
+      Object.defineProperty(navigator, 'clipboard', {
+        configurable: true,
+        value: { writeText: async (text) => {
+          if (window.__blockedLinkClipboard.reject) throw new Error('Clipboard access denied')
+          window.__blockedLinkClipboard.values.push(text)
+        } },
+      })
+    })
+    await page.getByTestId('page-home').waitFor()
+    await page.getByRole('button', { name: /^公告/ }).click()
+    const dialog = page.getByRole('dialog', { name: '公告' })
+    const link = dialog.getByRole('link', { name: '官方说明' })
+    await link.click()
+    const hint = dialog.getByTestId('announcement-blocked-link')
+    await expect(hint).toContainText('已经帮你复制好了')
+    await expect(hint.locator('code')).toHaveText('https://xm.solov.cc/help')
+    assert.deepEqual(await page.evaluate(() => window.__blockedLinkClipboard.values), ['https://xm.solov.cc/help'])
+    await expect(dialog.getByRole('alert')).toHaveCount(0)
+    await expect(dialog.getByText('不允许打开该链接')).toHaveCount(0)
+
+    await page.evaluate(() => { window.__blockedLinkClipboard.reject = true })
+    await link.click()
+    await expect(hint).toContainText('请选中下面的地址复制')
+    await expect(hint.locator('code')).toHaveText('https://xm.solov.cc/help')
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('native announcement envelope stays styled and inert inside its sandbox', async () => {
   const page = await open('noticeNative=1')
   const externalRequests = []
