@@ -442,10 +442,17 @@ export class RuntimeLogStore {
     })
   }
 
-  async snapshot(limit = 1_000): Promise<RuntimeLogSnapshot> {
+  /**
+   * `excludeDebug` 只影响附带的条目：总数与分级计数照旧按全部日志算，文件里
+   * 的调试级记录也照旧留着。
+   */
+  async snapshot(limit = 1_000, options: { excludeDebug?: boolean } = {}): Promise<RuntimeLogSnapshot> {
     const safeLimit = Number.isInteger(limit) ? Math.min(Math.max(limit, 1), MAX_SNAPSHOT_LIMIT) : 1_000
     const summary = await this.readSummary()
-    const selected = summary.entries.slice(-safeLimit).reverse()
+    const candidates = options.excludeDebug
+      ? summary.entries.filter((entry) => entry.level !== 'debug')
+      : summary.entries
+    const selected = candidates.slice(-safeLimit).reverse()
     return {
       generatedAt: this.now().toISOString(),
       directory: this.directory,
@@ -472,7 +479,11 @@ export class RuntimeLogStore {
   }
 
   async captureFeedbackReport(limit = 600): Promise<{ text: string; entries: number }> {
-    const snapshot = await this.snapshot(limit)
+    // 调试级主要是每次 IPC 读取的耗时记录，开着加速页一个下午就能有上千条，
+    // 按条数取最近 600 条时会把登录、写 Key、拉起工具这些真正有用的记录挤出去。
+    // 报告里默认不附，本机日志文件照留，客服要查「为什么慢」时仍可以要文件。
+    const snapshot = await this.snapshot(limit, { excludeDebug: true })
+    const debugOmitted = snapshot.counts.debug > 0
     const home = os.homedir()
     const scrubHome = (value: string) => redactHomeDirectory(value, home)
     const lines = [
@@ -483,7 +494,9 @@ export class RuntimeLogStore {
       `系统: ${process.platform} ${os.release()} ${process.arch}`,
       `Electron: ${process.versions.electron ?? 'unknown'}`,
       `Node.js: ${process.versions.node}`,
-      `日志条数: ${snapshot.total}${snapshot.truncated ? `（附最近 ${snapshot.entries.length} 条）` : ''}`,
+      `日志条数: ${snapshot.total}${snapshot.truncated
+        ? `（附最近 ${snapshot.entries.length} 条${debugOmitted ? `，调试级 ${snapshot.counts.debug} 条未附` : ''}）`
+        : ''}`,
       `日志目录: ${scrubHome(snapshot.directory)}`,
     ]
     const environment = await this.describeSectionLines(this.describeEnvironment)
