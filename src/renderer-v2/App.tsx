@@ -174,6 +174,8 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     void app.bootstrap().then((result) => {
       if (!current) return
       setSettings(result.settings); setPlatform(result.platform); setSession(result.session); setUpdate(result.update)
+      // 低配电脑只由主进程判断一次；这里只把结论挂到根节点上，星空背景据此只画静态一帧。
+      document.documentElement.dataset.lowEnd = String(result.capabilities.lowEndDevice === true)
       // 预览开关要等主进程说清这是不是打包版才生效，所以放在 bootstrap 里而不是
       // 初始 state；`boot !== 'ready'` 期间只渲染 Splash，用户看不到中间态。
       if (onboardingPreviewEnabled(window.location.search, result.update.development)) setGuide(true)

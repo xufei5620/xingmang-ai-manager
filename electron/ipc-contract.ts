@@ -181,7 +181,12 @@ export type CodexDesktopLaunchMode = MainCodexDesktopLaunchMode
 export type CliLaunchMode = MainCliLaunchMode
 export type AppWindowMode = 'onboarding' | 'dashboard'
 export type AppTheme = StoredAppTheme
-export interface WindowCapabilities { tray: boolean; notifications: boolean }
+export interface WindowCapabilities {
+  tray: boolean
+  notifications: boolean
+  // 主进程按本机内存与 CPU 判断，只用来让界面背景少画一点；缺省 = 旧行为（照常动画）。
+  lowEndDevice?: boolean
+}
 export type { ExternalDeepLink } from './external-deep-links'
 export interface FeedbackReportPreview { id: string; text: string; entries: number }
 export type UpdatePhase = MainUpdatePhase
