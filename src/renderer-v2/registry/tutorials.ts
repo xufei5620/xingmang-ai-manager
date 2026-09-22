@@ -1,5 +1,6 @@
 import type { PageId } from './pages';
 import { accelerationExpiryWarningSeconds, accelerationTrialSeconds } from '../../../electron/acceleration-contract';
+import { macDesktopTutorialTopic, macRuntimeTutorialTopic } from './business';
 import { errors } from './errors';
 import { statuses } from './status';
 import { firstRunHints } from './tools';
@@ -735,7 +736,7 @@ export const tutorialTopics: readonly TutorialTopic[] = [
     ],
   },
   {
-    id: 'runtime-mac',
+    id: macRuntimeTutorialTopic,
     title: 'Mac 上装 Node.js 和 Python',
     lead: '只用 Codex 桌面端可以跳过。要用 CLI 时，下面两种安装方式选一种。',
     category: 'advanced',
@@ -782,6 +783,68 @@ export const tutorialTopics: readonly TutorialTopic[] = [
         extra: [{ title: '重开后仍找不到？', detail: '进入「检查」查看具体环境结果，把错误和已安装版本提供给客服。' }],
         action: '打开检查',
         page: 'health',
+      },
+    ],
+  },
+  {
+    id: macDesktopTutorialTopic,
+    title: 'Mac 上装桌面端',
+    lead: 'Mac 用户从官网下载需要的桌面端，装好后回工具箱检测、配置。不用把四个都装一遍。',
+    category: 'advanced',
+    minutes: 4,
+    keywords: ['Mac', 'macOS', '苹果', 'Codex', 'ChatGPT', 'WorkBuddy', 'Claude Desktop', 'OpenCode', '桌面端', '安装指南', 'dmg', 'pkg', '应用程序', 'arm64', '检测不到'],
+    steps: [
+      {
+        title: '先选你要用的桌面端',
+        where: '工具箱首页 → 对应桌面端 → 安装指南',
+        detail: 'Mac 上的「安装指南」会打开本教程，下载安装要你自己完成。',
+        bullets: ['选择 Codex 桌面端、WorkBuddy、Claude Desktop 或 OpenCode。', '已显示版本号的不用重装，直接看第 4 步。'],
+        expected: '知道这次要安装哪个应用。',
+        extra: [{ title: '为什么这里不能一键安装？', detail: 'Windows 支持工具箱代装这四个桌面端，macOS 目前采用官网下载、手动安装。它们在 Mac 上也能使用，安装桌面端不会改动已经装好的命令行工具。' }],
+        action: '回首页选择桌面端',
+        page: 'home',
+      },
+      {
+        title: '去对应官网下载 Mac 版',
+        where: '浏览器 → 对应应用的官方下载页',
+        detail: '展开下方应用名称，找到对应官网来源。',
+        bullets: ['下载 macOS 的桌面端安装包，别选成命令行版本。', 'Apple 芯片的 Mac 选择 Apple Silicon（arm64）版本。'],
+        expected: '得到所选应用的 Mac 安装包。',
+        extra: [
+          { title: 'Codex 桌面端', detail: '在 OpenAI 的 ChatGPT 下载页查找 Mac 安装包；安装后可能叫 Codex，也可能叫 ChatGPT，工具箱会识别对应的官方应用。' },
+          { title: 'WorkBuddy', detail: '到腾讯 WorkBuddy 官网下载 macOS 版。' },
+          { title: 'Claude Desktop', detail: '到 Claude 官网的下载页选择 macOS 版桌面应用。' },
+          { title: 'OpenCode', detail: '到 OpenCode 官网下载 macOS 桌面端，注意与同名命令行版本区分。' },
+        ],
+        action: '回首页核对应用名称',
+        page: 'home',
+      },
+      {
+        title: '装进「应用程序」文件夹',
+        where: '下载好的安装包 → 应用程序',
+        detail: '只下载或直接打开安装包，还不算完成安装。',
+        bullets: ['.dmg：双击打开，把应用图标拖入「应用程序」。', '.pkg：双击，按系统安装器提示完成。', '保留官方应用名，不要改名；首次打开按 macOS 的提示操作。'],
+        expected: '能在「应用程序」里找到并打开这个应用。',
+        extra: [
+          { title: '放在下载文件夹为什么找不到？', detail: '这些桌面端的检测使用系统或当前用户的「应用程序」目录。不要只留在「下载」文件夹或安装镜像里运行，也不要改掉官方应用名。' },
+          { title: '为什么安装时问密码？', detail: '安装 .pkg 时 macOS 可能要求一次系统登录密码，这是系统安装器的提示；工具箱本身不要求管理员权限。' },
+        ],
+        action: '回首页准备重新检测',
+        page: 'home',
+      },
+      {
+        title: '重新检测，确认已配好',
+        where: '工具箱首页 → 重新检测 → 对应桌面端 → 配置',
+        detail: '先确认显示版本号。当前账号已配好且能用的，直接打开即可。',
+        bullets: ['点「重新检测」，核对对应桌面端的版本和配置状态。', '未配好时点「配置」，选择密钥来源，再点「检测模型」并选择模型、保存。', '打开应用，发一个简单问题确认能回复。'],
+        expected: '桌面端使用当前账号配置，并能正常回复。',
+        extra: [
+          { title: 'Claude Desktop 保存后没生效？', detail: '先保存当前工作，把 Claude Desktop 完全退出，再重新打开，让它读取新配置。' },
+          { title: 'Codex 桌面端和 CLI 为什么一起变了？', detail: 'Codex 桌面端与 Codex CLI 共用一份配置。配好其中一个，另一个也会使用这份设置。' },
+          { title: '重新检测后还是未安装？', detail: '先确认应用真的放在「应用程序」目录里、仍使用官方名称，并且能从那里打开。仍失败时到「检查」查看具体原因。' },
+        ],
+        action: '回首页检测并配置',
+        page: 'home',
       },
     ],
   },

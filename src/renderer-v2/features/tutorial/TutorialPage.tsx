@@ -13,8 +13,9 @@ const groups = [
   { id: 'advanced', label: '更多用法与问题处理' },
 ] as const
 
-function initialReading() {
+function initialReading(topic?: { id: string }) {
   const fallback = { selected: 'start', query: '' }
+  if (topic) return { selected: tutorialTopics.some(entry => entry.id === topic.id) ? topic.id : 'start', query: '' }
   try {
     const raw = typeof window === 'undefined' ? null : window.sessionStorage.getItem(readingKey)
     if (!raw || raw.length > 2_000) return fallback
@@ -60,8 +61,8 @@ function TutorialExample({ text, firstMessage, testId }: { text: string; firstMe
   </div>
 }
 
-export function TutorialPage({ navigate, openGuide, openHelp }: BusinessActions) {
-  const [reading, setReading] = useState(initialReading)
+export function TutorialPage({ navigate, openGuide, openHelp, topic }: BusinessActions & { topic?: { sequence: number; id: string } }) {
+  const [reading, setReading] = useState(() => initialReading(topic))
   // Native details can be closed manually; a new search must reveal its matches again.
   const searchKey = reading.query.trim().toLocaleLowerCase()
   const article = useRef<HTMLElement>(null)
@@ -69,6 +70,13 @@ export function TutorialPage({ navigate, openGuide, openHelp }: BusinessActions)
   const current = topics.find(topic => topic.id === reading.selected) ?? topics[0]
   const currentIndex = current ? topics.indexOf(current) : -1
   const previousTopic = useRef(current?.id)
+
+  useEffect(() => {
+    if (!topic) return
+    // The shell keeps this page mounted; each guide request must clear the old search.
+    setReading(initialReading(topic))
+    article.current?.scrollIntoView({ block: 'start', behavior: 'instant' })
+  }, [topic])
 
   useEffect(() => {
     if (previousTopic.current !== current?.id) {

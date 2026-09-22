@@ -2964,6 +2964,9 @@ test('tutorial actions navigate to their tool and retain the selected chapter an
         provider, checkedAt: '2026-09-22T00:00:00Z', items: [], warnings: [],
         capabilities: { mcp: { list: true, reason: null }, skill: { list: true, reason: null }, plugin: { list: true, reason: null } },
       })
+      window.xingmang.checkProviderMcpHealth = async (provider) => ({
+        provider, checkedAt: '2026-09-22T00:00:00Z', supported: true, reason: null, entries: [],
+      })
     })
     await page.getByTestId('nav-tutorial').click()
     const tutorial = page.getByTestId('page-tutorial')
@@ -3050,6 +3053,29 @@ test('tutorial copies the first Codex message and offers manual copying when cli
     await expect(step.getByText('已复制，粘贴到 Codex 的输入框里即可。', { exact: true })).toHaveCount(0)
     await expect(step.locator('pre')).toHaveText(example)
     assert.deepEqual(await page.evaluate(() => window.__tutorialClipboard.values), [example])
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('tutorial installation guides open the Mac desktop chapter and clear previous searches on every visit', async () => {
+  const page = await open('os=mac&externalUnsupported=opencode')
+  try {
+    await page.getByTestId('nav-tutorial').click()
+    const tutorial = page.getByTestId('page-tutorial')
+    const search = tutorial.getByRole('searchbox', { name: '搜索教程', exact: true })
+    for (const query of ['MCP', '充值']) {
+      await tutorial.getByTestId('tutorial-topic-start').click()
+      await search.fill(query)
+      await expect(tutorial.getByTestId('tutorial-article')).toBeVisible()
+      await page.getByTestId('nav-home').click()
+      const guide = page.getByTestId('tool-opencode-primary')
+      await expect(guide).toHaveText('安装指南')
+      await guide.click()
+      await expect(tutorial.getByTestId('tutorial-article').getByRole('heading', { level: 2 })).toHaveText('Mac 上装桌面端')
+      await expect(tutorial.getByTestId('tutorial-topic-mac-desktop-apps')).toHaveAttribute('aria-current', 'page')
+      await expect(search).toHaveValue('')
+    }
+    assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => entry.method === 'installExternalClient')), false)
     await clean(page)
   } finally { await page.close() }
 })
