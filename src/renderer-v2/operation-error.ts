@@ -1,3 +1,4 @@
+import { classifyNetworkFailure } from '../../electron/network-failure'
 import { errors } from './registry/errors'
 
 export type OperationErrorKey = keyof typeof errors
@@ -39,6 +40,17 @@ const rules: Array<{ key: OperationErrorHint['key']; match: (message: string) =>
   // 必须排在 permission 之前：EPERM 的原文与文件占用长得一样，主进程确认到占用才会
   // 写上「文件被占用」，写了就以它为准。
   { key: 'toolRunning', match: (message) => /EBUSY|ETXTBSY|resource busy or locked|text file busy|文件被占用|正(在)?被[^。；]{0,10}占用|正在被使用/i.test(message) },
+  // 磁盘满以前落进「操作没有成功」，用户只看到一句 ENOSPC 英文原文，被指去找客服。
+  // 放在 permission 之前：npm 在写不下去时同时报过 EPERM 与 ENOSPC 的情况下，
+  // 「清一清磁盘」才是用户真做得到的那一步。
+  { key: 'diskFull', match: (message) => /ENOSPC|no space left|not enough space|磁盘空间不足|磁盘已满|disk full/i.test(message) },
+  // 公司网关和安全软件会替换证书，npm 与账号接口因此拿到一张签不过的证书。归类
+  // 口径直接用 electron/network-failure.ts 那一份（它已经同时认得 Chromium 的
+  // ERR_CERT_* 和 OpenSSL 的 SELF_SIGNED_CERT_IN_CHAIN 这类写法），两边各写一套
+  // 正则的话，迟早一边认得出、另一边认不出同一句话。
+  // 必须排在 timeout 之前：那条的 network / 连接失败 会把证书失败吞成「检查网络」，
+  // 用户于是反复检查一个本来就通的网络。
+  { key: 'tlsIntercepted', match: (message) => classifyNetworkFailure(message) === 'tls' },
   { key: 'permission', match: (message) => /EPERM|EACCES|operation not permitted|permission denied|拒绝访问|访问被拒绝|权限不足|需要管理员/i.test(message) },
   // 「杀毒」这条只留真的在说杀毒软件的说法。EBUSY 与「文件被占用」已经上移到
   // toolRunning：两条都留着的话，先匹配到的那条就决定用户去关哪个东西。
@@ -124,6 +136,26 @@ function honourableActions(labels: readonly string[]): OperationAction[] {
  */
 export function operationFallbackActions(): OperationAction[] {
   return honourableActions(errors.unknown.actions)
+}
+
+/**
+ * 「查看日志」该落到哪一页。以前一律跳「安装卸载」页，于是连接检查、写 Key、
+ * 拉起终端这些失败的用户点开的是一张空的「安装日志」卡（候选 8）。
+ *
+ * 判断分两步，因为两条线索缺一不可：
+ * 1. 没有 tool 的失败根本不来自安装 / 卸载 / 更新（只有这三条路会把工具记下来），
+ *    它们的痕迹只在 runtime.jsonl 里，要到「反馈」页看。
+ * 2. 来自安装的失败再看类别：网络、证书、磁盘、权限、文件被占用、账号这些是
+ *    环境问题，运行日志记得全；真正只有安装那一侧才写得出的（杀毒拦截、更新包
+ *    校验、认不出的安装失败）才值得跳到「安装日志」卡。
+ */
+export type OperationLogPage = 'maintenance' | 'feedback'
+
+const installLogKeys: ReadonlySet<OperationErrorKey> = new Set<OperationErrorKey>(['installBlocked', 'updateIntegrity', 'unknown'])
+
+export function operationLogPage(failure: { message: string; tool?: string | undefined }): OperationLogPage {
+  if (!failure.tool) return 'feedback'
+  return installLogKeys.has(classifyOperationError(failure.message)) ? 'maintenance' : 'feedback'
 }
 
 export function presentOperationError(message: string): OperationErrorHint | null {
