@@ -3,10 +3,15 @@ import type { ProviderId } from './catalog'
 import type { ConnectionCheckLayer, ConnectionCheckResult } from './connection-check'
 import { shouldRollBackAfterCheck, switchAccountSource, type AccountSourceSwitchDependencies } from './account-source-switch'
 
-function check(ok: boolean, layer: ConnectionCheckLayer, summary = '密钥被拒绝（HTTP 401），可能已被吊销或属于别的账号'): ConnectionCheckResult {
+function check(
+  ok: boolean,
+  layer: ConnectionCheckLayer,
+  summary = '密钥被拒绝（HTTP 401），可能已被吊销或属于别的账号',
+  extras: { status?: number, detail?: string } = {},
+): ConnectionCheckResult {
   return {
     provider: 'claude', siteId: 'solov', ok, layer, summary, nextStep: '到「账号」页重新登录，然后在首页重新写入一次 Key',
-    endpoint: null, model: null, detail: null, status: ok ? 200 : 401, durationMs: 1, checkedAt: '2026-09-22T00:00:00.000Z',
+    endpoint: null, model: null, detail: extras.detail ?? null, status: extras.status ?? (ok ? 200 : 401), durationMs: 1, checkedAt: '2026-09-22T00:00:00.000Z',
   }
 }
 
@@ -49,12 +54,47 @@ describe('switchAccountSource', () => {
     expect(steps).toContain('preference:false')
   })
 
-  it.each(['network', 'quota', 'unknown'] as const)('keeps the switch when the %s layer fails, but says it is unverified', async (layer) => {
-    const { deps, steps } = dependencies({ checkConnection: async () => check(false, layer, '网络暂时连不上') })
+  it.each(['network', 'unknown'] as const)('keeps the switch when the %s layer fails, but says it is unverified', async (layer) => {
+    const { deps, steps } = dependencies({ checkConnection: async () => check(false, layer, '网络暂时连不上', { status: 500 }) })
     const result = await switchAccountSource(deps, 'codex', 'account')
     expect(steps).not.toContain('restore:backup-1')
     expect(result.verified).toBe(false)
     expect(result.message).toContain('这次没能确认能用：网络暂时连不上')
+  })
+
+  it.each([
+    ['a Cloudflare origin error', 522, ''],
+    ['a gateway timeout', 504, ''],
+    ['a maintenance 503', 503, 'Service Temporarily Unavailable'],
+    ['a web page instead of JSON', 200, '<!DOCTYPE html><html><head><title>维护中</title>'],
+    ['a Cloudflare block page', 403, 'Attention Required! | Cloudflare'],
+  ])('does not blame the key or roll back on %s', async (_label, status, detail) => {
+    const { deps, steps } = dependencies({ checkConnection: async () => check(false, status === 200 ? 'protocol' : 'credential', '密钥被拒绝', { status, detail }) })
+    const result = await switchAccountSource(deps, 'claude', 'account')
+    expect(steps).not.toContain('restore:backup-1')
+    expect(result.verified).toBe(false)
+    expect(result.message).toContain('服务暂时不可用')
+    expect(result.message).not.toContain('密钥')
+  })
+
+  it('still rolls back a 503 that says the group has no channel', async () => {
+    const { deps, steps } = dependencies({ checkConnection: async () => check(false, 'group', '当前账号分组下没有可用渠道', { status: 503, detail: '当前分组 default 下对于模型 x 无可用渠道' }) })
+    await expect(switchAccountSource(deps, 'claude', 'account')).rejects.toThrow('已恢复到切换前的配置')
+    expect(steps).toContain('restore:backup-1')
+  })
+
+  it('says the quota ran out instead of blaming the key on a quota 401', async () => {
+    const { deps, steps } = dependencies({ checkConnection: async () => check(false, 'credential', '密钥被拒绝（HTTP 401）', { status: 401, detail: '该令牌额度已用尽' }) })
+    const result = await switchAccountSource(deps, 'codex', 'account')
+    expect(steps).not.toContain('restore:backup-1')
+    expect(result.message).toContain('额度已经用完')
+    expect(result.message).not.toContain('密钥')
+  })
+
+  it('does not call a rate limit an exhausted quota', async () => {
+    const { deps } = dependencies({ checkConnection: async () => check(false, 'quota', '请求过于频繁或已达用量上限（HTTP 429）', { status: 429 }) })
+    const result = await switchAccountSource(deps, 'codex', 'account')
+    expect(result.message).toContain('这次没能确认能用：请求过于频繁')
   })
 
   it('keeps the switch when the check itself could not run', async () => {
@@ -108,8 +148,9 @@ describe('switchAccountSource', () => {
 
 describe('shouldRollBackAfterCheck', () => {
   it('rolls back only on layers that mean the written config is wrong', () => {
-    for (const layer of ['unconfigured', 'config', 'credential', 'group', 'model', 'protocol'] as const) expect(shouldRollBackAfterCheck({ ok: false, layer })).toBe(true)
-    for (const layer of ['network', 'quota', 'unknown'] as const) expect(shouldRollBackAfterCheck({ ok: false, layer })).toBe(false)
-    expect(shouldRollBackAfterCheck({ ok: true, layer: 'credential' })).toBe(false)
+    const base = { status: 400, detail: null }
+    for (const layer of ['unconfigured', 'config', 'credential', 'group', 'model', 'protocol'] as const) expect(shouldRollBackAfterCheck({ ...base, ok: false, layer })).toBe(true)
+    for (const layer of ['network', 'quota', 'unknown'] as const) expect(shouldRollBackAfterCheck({ ...base, ok: false, layer })).toBe(false)
+    expect(shouldRollBackAfterCheck({ ...base, ok: true, layer: 'credential' })).toBe(false)
   })
 })

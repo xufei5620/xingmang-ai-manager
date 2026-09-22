@@ -79,7 +79,7 @@ const selectedKeyIds = new Map<ProviderId, number>()
 const keyMetadataReads = new Map<ProviderId, number>()
 const pendingKeyMetadata = new Map<ProviderId, () => void>()
 if ((query.get('guest') === '1' && !query.has('existing')) || query.has('missingConfig')) for (const provider of Object.values(config.providers)) { provider.exists = false; provider.hasApiKey = false; provider.matchesRelay = false; provider.actualBaseUrl = ''; provider.model = '' }
-if (query.has('official')) { config.providers.codex.hasApiKey = false; config.providers.codex.codexAuthMode = 'chatgpt' }
+if (query.has('official')) { config.providers.codex.hasApiKey = false; config.providers.codex.codexAuthMode = 'chatgpt'; config.providers.codex.actualBaseUrl = '' }
 if (query.has('unknown')) { config.providers.codex.matchesRelay = false; config.providers.codex.actualBaseUrl = 'https://other.example.test/v1' }
 if (query.has('unknownClaude')) { config.providers.claude.exists = true; config.providers.claude.hasApiKey = true; config.providers.claude.matchesRelay = false; config.providers.claude.actualBaseUrl = 'https://other.example.test' }
 if (query.has('manualClaude')) {
@@ -418,8 +418,9 @@ const methods = {
     return { backups: [], files: [] }
   },
   switchToOfficialAccount: async (provider: ProviderId) => {
+    // 真实的 Codex 切回官方后 config.toml 不再指向中转，actualBaseUrl 为空。
     config.providers[provider] = { ...config.providers[provider], hasApiKey: false,
-      ...(provider === 'codex' ? { codexAuthMode: 'chatgpt' as const } : {}) }
+      ...(provider === 'codex' ? { codexAuthMode: 'chatgpt' as const, actualBaseUrl: '', matchesRelay: false } : {}) }
     return { backups: [], files: [] }
   },
   switchAccountSource: async (provider: ProviderId, target: 'account' | 'official') => {

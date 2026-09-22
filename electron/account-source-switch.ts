@@ -53,8 +53,39 @@ const rollbackLayers: ReadonlySet<ConnectionCheckLayer> = new Set<ConnectionChec
   'unconfigured', 'config', 'credential', 'group', 'model', 'protocol',
 ])
 
-export function shouldRollBackAfterCheck(check: Pick<ConnectionCheckResult, 'ok' | 'layer'>): boolean {
-  return !check.ok && rollbackLayers.has(check.layer)
+/**
+ * 自检把 502/504、Cloudflare 的 520-526 和拦截页、返回网页而不是 JSON 都落进
+ * credential / protocol 层，但那时服务本身在维护或被拦，写进去的配置是对的：
+ * 回滚并告诉用户「Key 有问题」两样都错。503 单独看：new-api 用它表示分组下
+ * 没有可用渠道，带着分组字样时仍是分组问题。
+ */
+const serviceUnavailableStatuses: ReadonlySet<number> = new Set([502, 504, 520, 521, 522, 523, 524, 525, 526])
+const groupHints = ['无可用渠道', '无可用的渠道', '当前分组', '分组', '渠道', 'no available channel', 'no channel', 'group']
+// new-api 的令牌额度用完回的是 401「该令牌额度已用尽」，自检按状态码归成了密钥被拒。
+const quotaHints = ['额度', '余额', '配额', '欠费', 'quota', 'insufficient', 'balance', 'credit']
+
+export type SwitchCheckVerdict = 'passed' | 'rollback' | 'serviceUnavailable' | 'quota' | 'unverified'
+
+function looksLikeServiceOutage(status: number | null, detail: string): boolean {
+  if (status !== null && serviceUnavailableStatuses.has(status)) return true
+  const lowered = detail.toLowerCase()
+  if (status === 503 && !groupHints.some((hint) => lowered.includes(hint))) return true
+  if (/^\s*<(!doctype|html|head|body)/.test(lowered) || lowered.includes('<html')) return true
+  return lowered.includes('cloudflare') || lowered.includes('cf-ray') || lowered.includes('attention required')
+}
+
+export function judgeSwitchCheck(check: Pick<ConnectionCheckResult, 'ok' | 'layer' | 'status' | 'detail'>): SwitchCheckVerdict {
+  if (check.ok) return 'passed'
+  const detail = check.detail ?? ''
+  if (looksLikeServiceOutage(check.status, detail)) return 'serviceUnavailable'
+  // 429 也落在额度层，但多半只是请求太频繁，不能说成额度用完。
+  if (check.layer === 'quota' && check.status !== 429) return 'quota'
+  if ((check.status === 401 || check.status === 403) && quotaHints.some((hint) => detail.toLowerCase().includes(hint))) return 'quota'
+  return rollbackLayers.has(check.layer) ? 'rollback' : 'unverified'
+}
+
+export function shouldRollBackAfterCheck(check: Pick<ConnectionCheckResult, 'ok' | 'layer' | 'status' | 'detail'>): boolean {
+  return judgeSwitchCheck(check) === 'rollback'
 }
 
 function toolName(provider: ProviderId): string {
@@ -143,15 +174,18 @@ export async function switchAccountSource(
   } catch (error) {
     deps.log?.('warn', 'account-source.check-failed', `${toolName(provider)} 切换后的连接自检没有完成`, { provider, reason: errorText(error) })
   }
-  if (check && shouldRollBackAfterCheck(check)) {
+  const verdict = check ? judgeSwitchCheck(check) : null
+  if (check && verdict === 'rollback') {
     deps.log?.('warn', 'account-source.rolled-back', `${toolName(provider)} 切到当前账号后自检没通过，已回滚`, { provider, layer: check.layer, backupId })
     throw failure(`当前账号在 ${toolName(provider)} 上没有连通：${check.summary}。${check.nextStep ? `${check.nextStep}。` : ''}`, await rollBack())
   }
-  const verified = check?.ok === true
-  deps.log?.('info', 'account-source.switched', `${toolName(provider)} 已切到当前账号`, { provider, target, backupId, verified, layer: check?.layer ?? null })
+  const verified = verdict === 'passed'
+  deps.log?.('info', 'account-source.switched', `${toolName(provider)} 已切到当前账号`, { provider, target, backupId, verified, verdict, layer: check?.layer ?? null })
   const status = verified ? '连接自检通过。'
-    : check ? `这次没能确认能用：${check.summary}。`
-      : '连接自检没有完成，稍后可以在检查页再测一次。'
+    : verdict === 'serviceUnavailable' ? '不过服务暂时不可用，这次没能确认能用，稍后再试。'
+      : verdict === 'quota' ? '不过当前账号的额度已经用完，到「账号」页充值后就能用。'
+        : check ? `这次没能确认能用：${check.summary}。`
+          : '连接自检没有完成，稍后可以在检查页再测一次。'
   return {
     provider, target, backupId, verified, loginRequired: false,
     message: `已切到当前账号，${status}${restartHint(provider)}`,
