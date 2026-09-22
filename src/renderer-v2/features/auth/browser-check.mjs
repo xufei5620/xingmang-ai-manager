@@ -502,3 +502,63 @@ test('a slow status read from the previous source cannot overwrite the selected 
     assert.equal(await page.getByTestId('auth-verification-help').count(), 0)
   } finally { await page.close() }
 })
+
+// Playwright's keyboard only tracks Shift/Control/Alt/Meta, so the lock has to be
+// stated on the event itself. Chromium fills getModifierState from these flags,
+// which is exactly what the field reads.
+async function typeWithCapsLock(page, testId, on) {
+  await page.getByTestId(testId).evaluate((node, locked) => {
+    for (const type of ['keydown', 'keyup']) node.dispatchEvent(new KeyboardEvent(type, { key: 'a', bubbles: true, modifierCapsLock: locked }))
+  }, on)
+}
+
+test('password fields warn while Caps Lock is on and stop warning once it is off or the field is left', async () => {
+  const page = await open()
+  try {
+    await page.getByTestId('login-password').fill('fixture-password')
+    assert.equal(await page.getByTestId('login-password-caps').count(), 0)
+    await page.getByTestId('login-password').focus()
+    await typeWithCapsLock(page, 'login-password', true)
+    await page.getByTestId('login-password-caps').waitFor()
+    assert.equal((await page.getByTestId('login-password-caps').textContent()).trim(), '大写锁定已开启')
+    // The warning has to reach the field itself, or a screen reader user hears nothing.
+    assert.match(String(await page.getByTestId('login-password').getAttribute('aria-describedby')), /-caps(\s|$)/)
+    assert.doesNotMatch(await page.getByTestId('login-dialog').innerText(), /Sub2API|NewAPI|new-api|api\.solov|xm\.solov|站点/i)
+    await typeWithCapsLock(page, 'login-password', false)
+    await page.waitForFunction(() => document.querySelector('[data-testid="login-password-caps"]') === null)
+    await typeWithCapsLock(page, 'login-password', true)
+    await page.getByTestId('login-password-caps').waitFor()
+    await page.getByTestId('login-account').click()
+    await page.waitForFunction(() => document.querySelector('[data-testid="login-password-caps"]') === null)
+    // The account field is not a password field, so the lock stays its own business there.
+    await typeWithCapsLock(page, 'login-account', true)
+    assert.equal(await page.getByTestId('login-account-caps').count(), 0)
+    // The login draft survives the warning appearing and disappearing.
+    assert.equal(await page.getByTestId('login-password').inputValue(), 'fixture-password')
+  } finally { await page.close() }
+})
+
+test('the historical account source and the registration passwords carry the same Caps Lock warning', async () => {
+  const page = await open()
+  try {
+    await page.getByTestId('auth-source').getByRole('button', { name: '历史账号' }).click()
+    await page.getByTestId('login-password').focus()
+    await typeWithCapsLock(page, 'login-password', true)
+    await page.getByTestId('login-password-caps').waitFor()
+  } finally { await page.close() }
+  const registration = await open('scenario=register')
+  try {
+    await registration.getByTestId('register-password').focus()
+    await typeWithCapsLock(registration, 'register-password', true)
+    await registration.getByTestId('register-password-caps').waitFor()
+    await registration.getByTestId('register-password-confirm').focus()
+    await typeWithCapsLock(registration, 'register-password-confirm', true)
+    await registration.getByTestId('register-password-confirm-caps').waitFor()
+    // Each field answers for itself: the one being left stops warning, and the
+    // one taking focus warns again from its own first key.
+    await registration.getByTestId('register-password').focus()
+    await registration.waitForFunction(() => document.querySelector('[data-testid="register-password-confirm-caps"]') === null)
+    await typeWithCapsLock(registration, 'register-password', true)
+    await registration.getByTestId('register-password-caps').waitFor()
+  } finally { await registration.close() }
+})

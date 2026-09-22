@@ -15,6 +15,12 @@ describe('renderer-v2 component contract', () => {
     expect(html).toContain('role="switch"');
     expect(html).toContain('role="tablist"');
   });
+  it('keeps the Caps Lock warning out of a password field until a key reports the lock', () => {
+    const html = renderToStaticMarkup(<Input testId="login-password" password aria-label="密码" />);
+    expect(html).toContain('data-testid="login-password"');
+    expect(html).not.toContain('大写锁定已开启');
+    expect(html).not.toContain('login-password-caps');
+  });
   it('renders status and bounded progress', () => {
     const html = renderToStaticMarkup(<><Pill tone="ok" dot>已配好</Pill><Progress testId="progress" value={160} /></>);
     expect(html).toContain('已配好');
