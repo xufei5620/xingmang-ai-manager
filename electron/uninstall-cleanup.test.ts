@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { accelerationProxyJournalPath } from './acceleration-development-host'
 import { windowsAppUserModelId } from './login-launch'
 import {
+  describeCleanupFailure,
   hasProxyRecoveryRecords,
   runUninstallCleanup,
   startUninstallCleanup,
@@ -59,7 +60,9 @@ describe('uninstall cleanup', () => {
 
   it('removes the login item even when proxy recovery fails', async () => {
     const order: string[] = []
+    const report = vi.fn()
     const code = await runUninstallCleanup({
+      report,
       dataDirectory: temporaryDataDirectory(),
       proxyRecordsExist: () => true,
       removeLoginItem: () => { order.push('login'); return true },
@@ -67,6 +70,14 @@ describe('uninstall cleanup', () => {
     })
     expect(code).toBe(codes.proxyNotRestored)
     expect(order).toEqual(['login', 'proxy'])
+    expect(report).toHaveBeenCalledWith('proxy: 系统代理恢复未确认，恢复记录已保留。')
+  })
+
+  it('reports the cause chain without stacks so a hidden command failure can be told apart', () => {
+    const cause = new Error('命令超时')
+    expect(describeCleanupFailure(new Error('Windows 系统代理操作未完成，请重试。', { cause })))
+      .toBe('Windows 系统代理操作未完成，请重试。 <- 命令超时')
+    expect(describeCleanupFailure('boom')).toBe('未知错误')
   })
 
   it('still attempts proxy recovery when the login item cannot be removed', async () => {

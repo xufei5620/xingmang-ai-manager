@@ -10,7 +10,11 @@ if (cleanupMode === 'cleanup') {
   // so it never takes the single-instance lock or opens the desktop.
   const { app } = require('electron') as typeof import('electron')
   const { startUninstallCleanup } = require('../uninstall-cleanup') as typeof import('../uninstall-cleanup')
-  startUninstallCleanup(app, (code) => process.exit(code))
+  // The uninstaller attaches no stderr; the CI smoke does, and reads why.
+  process.stderr.on('error', () => undefined)
+  startUninstallCleanup(app, (code) => process.exit(code), (line) => {
+    try { process.stderr.write(`${line}\n`) } catch { /* no live diagnostic pipe */ }
+  })
 } else if (cleanupMode === 'invalid') {
   process.exit(1)
 } else if (mode === 'worker') {

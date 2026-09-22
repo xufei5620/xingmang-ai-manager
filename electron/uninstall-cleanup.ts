@@ -42,6 +42,20 @@ export interface UninstallCleanupDependencies {
   removeLoginItem(): boolean
   proxyRecordsExist?: (journalPath: string) => boolean
   timeoutMs?: number
+  // 卸载程序不接 stderr，客户机上这里没人看；接上它的只有 CI 冒烟和客服手工排查。
+  report?: (line: string) => void
+}
+
+// 只带错误链上的消息，不带堆栈：消息是本仓自己写的固定中文或 runCommand 已脱敏的
+// 输出（I13），堆栈里是安装路径。
+export function describeCleanupFailure(error: unknown): string {
+  const messages: string[] = []
+  let current: unknown = error
+  while (current instanceof Error && messages.length < 4) {
+    messages.push(current.message.slice(0, 300))
+    current = current.cause
+  }
+  return messages.length ? messages.join(' <- ') : '未知错误'
 }
 
 export async function runUninstallCleanup(dependencies: UninstallCleanupDependencies): Promise<number> {
@@ -50,8 +64,9 @@ export async function runUninstallCleanup(dependencies: UninstallCleanupDependen
   // 开机项在前：它是一次同步的注册表删除，不能因为后面的代理还原超时而被跳过。
   try {
     if (!dependencies.removeLoginItem()) code |= codes.loginItemRemains
-  } catch {
+  } catch (error) {
     code |= codes.loginItemRemains
+    try { dependencies.report?.(`login item: ${describeCleanupFailure(error)}`) } catch { /* Reporting must not change the result. */ }
   }
   const journalPath = accelerationProxyJournalPath(dependencies.dataDirectory)
   if (!(dependencies.proxyRecordsExist ?? hasProxyRecoveryRecords)(journalPath)) return code
@@ -61,7 +76,10 @@ export async function runUninstallCleanup(dependencies: UninstallCleanupDependen
   // since then is left alone and only our lease is given up.
   let timer: ReturnType<typeof setTimeout> | undefined
   const outcome = await Promise.race([
-    Promise.resolve().then(() => dependencies.recoverProxy(journalPath)).then(() => 0, () => codes.proxyNotRestored),
+    Promise.resolve().then(() => dependencies.recoverProxy(journalPath)).then(() => 0, (error: unknown) => {
+      try { dependencies.report?.(`proxy: ${describeCleanupFailure(error)}`) } catch { /* Reporting must not change the result. */ }
+      return codes.proxyNotRestored
+    }),
     new Promise<number>((resolve) => {
       timer = setTimeout(() => resolve(codes.proxyNotRestored | codes.timedOut), dependencies.timeoutMs ?? defaultTimeoutMs)
     }),
@@ -76,6 +94,7 @@ export async function runUninstallCleanup(dependencies: UninstallCleanupDependen
 export function startUninstallCleanup(
   app: Pick<App, 'isPackaged' | 'getPath' | 'setAppUserModelId' | 'getLoginItemSettings' | 'setLoginItemSettings'>,
   exit: (code: number) => void,
+  report?: (line: string) => void,
 ): void {
   // A development build shares the login item's name with the installed app,
   // so running this from a checkout would switch off the real one's autostart.
@@ -90,5 +109,6 @@ export function startUninstallCleanup(
     dataDirectory: app.getPath('userData'),
     recoverProxy: (journalPath) => createWindowsSystemProxy({ journalPath }).recover(),
     removeLoginItem: () => removeWindowsLoginItem({ app, executablePath: process.execPath }),
+    report,
   }).then(exit, () => exit(uninstallCleanupExitCodes.proxyNotRestored))
 }

@@ -364,8 +364,10 @@ export function createWindowsSystemProxy(options: WindowsSystemProxyOptions): {
       const value: unknown = JSON.parse(result.stdout)
       if (!isRecord(value)) throw new Error('invalid response')
       return value
-    } catch {
-      throw new Error('Windows 系统代理操作未完成，请重试。')
+    } catch (error) {
+      // The message stays generic for the UI; the cause is for the uninstall
+      // cleanup, whose only reader is whoever launched it with stderr attached.
+      throw new Error('Windows 系统代理操作未完成，请重试。', { cause: error })
     }
   }
 

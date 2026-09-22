@@ -103,8 +103,10 @@ try {
   # Stage 1: the cleanup entry on its own, so a failure below can be told apart
   # from the uninstaller never reaching it.
   Set-AccelerationLeftOn $exe.FullName
-  $direct = Start-Process -FilePath $exe.FullName -ArgumentList '--xingmang-uninstall-cleanup' -Wait -PassThru
+  $cleanupErrors = Join-Path $installRoot 'cleanup-stderr.txt'
+  $direct = Start-Process -FilePath $exe.FullName -ArgumentList '--xingmang-uninstall-cleanup' -RedirectStandardError $cleanupErrors -Wait -PassThru
   Show-Diagnostics "direct cleanup exit code $($direct.ExitCode)"
+  if (Test-Path -LiteralPath $cleanupErrors) { Get-Content -LiteralPath $cleanupErrors -Encoding utf8 | ForEach-Object { Write-Output "cleanup stderr: $_" } }
   Check ($direct.ExitCode -eq 0) "direct cleanup exits 0 (got $($direct.ExitCode))"
   Assert-Cleaned 'direct cleanup'
 
