@@ -891,7 +891,8 @@ describe('createSystemService', () => {
     expect(snapshot.runtime.python).toMatchObject({ installed: false, version: null, path: null })
   })
 
-  it('probes the macOS git shim normally once the developer tools behind it exist', async () => {
+  // xcode-select 只会打印 POSIX 路径；Windows runner 上临时目录是盘符路径，造不出这份夹具。
+  it.skipIf(process.platform === 'win32')('probes the macOS git shim normally once the developer tools behind it exist', async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-clt-present-'))
     temporaryDirectories.push(directory)
     const developerDirectory = path.join(directory, 'CommandLineTools')
