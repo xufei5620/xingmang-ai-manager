@@ -110,11 +110,25 @@ describe('renderer-v2 operation error classification', () => {
     expect(hint?.actions).toEqual([{ id: 'repair', label: '一键修复' }])
   })
 
-  it('falls back to support when every catalog action is one this app cannot run', () => {
-    // permission only offers 以管理员身份重试, and there is no elevated retry channel.
+  it('sends a permission failure to the directory and the log, never to an elevated retry', () => {
+    // A2 余项：这一类以前只有「以管理员身份重试」这一颗按钮，没有提权通道
+    // 接得住它，于是整条落回「找客服」。现在两颗按钮都是这个应用真做得到的事。
     const hint = presentOperationError('安装失败：EACCES permission denied')
-    expect(hint?.title).toBe('需要管理员权限')
-    expect(hint?.actions).toEqual([{ id: 'support', label: '找客服' }])
+    expect(hint?.title).toBe('写不进安装目录')
+    expect(hint?.actions).toEqual([{ id: 'copyPath', label: '复制路径' }, { id: 'log', label: '查看日志' }])
+  })
+
+  it('keeps 以管理员身份重试 out of the catalog and out of the honoured labels', () => {
+    // 本程序按普通权限运行（0.1.12 起），提权重试等于换一套安装事务。目录里
+    // 不该再出现它，表里也不该认它——这条钉住的是那个决定，不是当下的文案。
+    expect(JSON.stringify(errors)).not.toContain('以管理员身份重试')
+    expect(presentOperationError('安装失败：EACCES permission denied')?.actions
+      .some((action) => action.label.includes('管理员'))).toBe(false)
+  })
+
+  it('offers 复制路径 on the antivirus block, where the catalog has asked for it all along', () => {
+    const hint = presentOperationError('Grok CLI 安装失败：安装文件已被隔离，请检查杀毒软件的隔离记录')
+    expect(hint?.actions).toEqual([{ id: 'copyPath', label: '复制路径' }, { id: 'retry', label: '重试' }])
   })
 
   it('accounts for every catalog entry, either with a real message or a reason it cannot be reached', () => {

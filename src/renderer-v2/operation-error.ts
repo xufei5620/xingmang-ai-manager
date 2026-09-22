@@ -1,7 +1,7 @@
 import { errors } from './registry/errors'
 
 export type OperationErrorKey = keyof typeof errors
-export type OperationActionId = 'retry' | 'log' | 'support' | 'relogin' | 'recharge' | 'network' | 'repair'
+export type OperationActionId = 'retry' | 'log' | 'support' | 'relogin' | 'recharge' | 'network' | 'repair' | 'copyPath'
 export interface OperationAction { id: OperationActionId; label: string }
 export interface OperationErrorHint {
   key: Exclude<OperationErrorKey, 'unknown'>
@@ -65,13 +65,22 @@ export function classifyOperationError(message: string): OperationErrorKey {
 
 /**
  * Catalog entries name their buttons in prose. Only the ones this app can
- * honour from a failure dialog are handed back; a label such as 「复制路径」
- * has no path to copy at that point, and 「以管理员身份重试」 has no elevated
- * retry channel, so offering either would be a button that does nothing.
+ * honour from a failure dialog are handed back; offering a label the app
+ * cannot act on would be a button that does nothing.
  *
  * 「一键修复」在这里的意思只有一个：对当前账号把已配置的工具重新签发一次 Key
  * 再写回配置，也就是装完工具后跑的那条同样的流程。它能进这张表，是因为那条
  * 流程本来就在（App 的 syncAfterToolInstalled），不需要为这颗按钮新做什么。
+ *
+ * 「复制路径」自 A2 余项起接上：失败对话框知道是哪个工具失败的，安装目录
+ * （已装）或主进程算出的首装落点（未装）都在快照里，拿得到就出这颗按钮，
+ * 拿不到就不出（operationErrorActions 过滤）。
+ *
+ * 「以管理员身份重试」刻意留在表外，而且目录里也不再有它。本程序自 0.1.12
+ * 起按普通权限运行，诊断页还把「以管理员身份运行」标成风险；Windows 上提权
+ * 重试等于换一套安装事务（落点从用户 npm 目录变成 ProgramData），而 npm 会
+ * 执行 registry 上的包脚本，把它交给提权令牌正是可信路径那套规矩拒绝的事；
+ * macOS 从不提权。permission 这一类的下一步是看目录、看日志，不是提权。
  */
 const actionIds: Record<string, OperationActionId | undefined> = {
   重试: 'retry',
@@ -84,6 +93,7 @@ const actionIds: Record<string, OperationActionId | undefined> = {
   马上充值: 'recharge',
   检查网络: 'network',
   一键修复: 'repair',
+  复制路径: 'copyPath',
 }
 
 /**
@@ -133,7 +143,7 @@ export function presentOperationError(message: string): OperationErrorHint | nul
     title: entry.title,
     body: entry.body,
     // Every catalog action for this entry may be one this app cannot perform
-    // (permission only offers an elevated retry). Falling back to 找客服 keeps
+    // （「看状态」「换一份」这些还没有对应页面）。Falling back to 找客服 keeps
     // the dialog from ending on a dead end.
     actions: actions.length ? actions : [{ id: 'support', label: '找客服' }],
   }

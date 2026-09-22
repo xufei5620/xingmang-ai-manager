@@ -142,6 +142,13 @@ if (query.has('desktopDetectionFailed')) {
   system.desktopApps.codex = { ...system.desktopApps.codex, installed: false, version: null, path: null, appVersion: null,
     detectionFailed: true, detectionError: '已找到 Codex 应用，但签名验证未完成，请重新检测' }
 }
+// 首次安装失败时快照里还没有 installDirectory——目录要等 npm 写完才存在。
+// 主进程另外给出「会装到哪」，错误面板上的「复制路径」复制的正是它（A2 余项）。
+if (query.has('installPermissionDenied')) {
+  // 未装那一侧的形状要与主进程一致：installDirectory 为 null，落点单独给。
+  system.clis.gemini = { ...system.clis.gemini, installed: false, version: null, path: null, installDirectory: null,
+    installTarget: '/home/fixture/.npm-global/lib/node_modules/@google/gemini-cli' }
+}
 if (query.has('uninstallUnavailable')) {
   system.clis.claude = {
     ...system.clis.claude,
@@ -358,7 +365,10 @@ const methods = {
       ...(failed ? { warning: '中文设置已保存，但本次未确认中文界面生效。请再次启用中文界面以重试。' } : {}) }
   },
   getCodexDesktopStatus: async () => structuredClone(system.desktopApps.codex),
-  installCli: async (provider) => { system.clis[provider] = { ...system.clis[provider], installed: true, version: '2.0.0', latestVersion: '2.0.0', updateAvailable: false } },
+  installCli: async (provider) => {
+    if (query.has('installPermissionDenied')) throw new Error(`Gemini CLI 安装失败：npm 官方源：EPERM: operation not permitted, mkdir`)
+    system.clis[provider] = { ...system.clis[provider], installed: true, version: '2.0.0', latestVersion: '2.0.0', updateAvailable: false }
+  },
   installCodexDesktop: async () => ({ action: 'unchanged', previousVersion: '1.2.3', installedVersion: '1.2.3' }),
   getAccountKeys: async () => ({ keys: query.has('keyOptions') ? [
     { id: 201, name: 'coding-key', group: 'Codex_pro', maskedKey: 'sk-se••••9012', status: 1, remainQuota: 10, usedQuota: 0, unlimitedQuota: true, createdAt: '', accessedAt: null, expiredAt: null },
