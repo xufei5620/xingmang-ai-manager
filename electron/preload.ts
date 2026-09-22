@@ -325,7 +325,13 @@ const xingmangApi: XingmangApi = {
   getAccelerationState: (scope) => invoke('getAccelerationState', scope),
   listAccelerationLines: (scope) => invoke('listAccelerationLines', scope),
   pingAccelerationLine: (scope, lineId) => invoke('pingAccelerationLine', scope, lineId),
-  startAcceleration: (scope, mode, lineId) => invoke('startAcceleration', scope, mode, lineId),
+  // 四个参数都要过桥。第四个是用户看过冲突提示后按下的「仍然连接」，少转一个
+  // 它就永远是 undefined，主进程那边照样按「没确认过」再拒一次（I5 的校验没错，
+  // 错在请求根本没带上那次确认）。末尾的可选参数按实际传入的个数转发，空位不
+  // 补 undefined。
+  startAcceleration: (scope, mode, lineId, ignoreConflicts) => ignoreConflicts === undefined
+    ? lineId === undefined ? invoke('startAcceleration', scope, mode) : invoke('startAcceleration', scope, mode, lineId)
+    : invoke('startAcceleration', scope, mode, lineId, ignoreConflicts),
   stopAcceleration: (scope) => invoke('stopAcceleration', scope),
   redeemAccelerationCode: (scope, code) => invoke('redeemAccelerationCode', scope, code),
   getAccelerationPreference: (scope) => invoke('getAccelerationPreference', scope),

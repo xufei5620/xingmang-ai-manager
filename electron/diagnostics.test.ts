@@ -62,6 +62,7 @@ function dependencies(home: string, apiKey = 'sk-super-secret-value'): Diagnosti
     release: '11.0.0',
     timeoutMs: 100,
     inspectAdministrator: async () => false,
+    inspectElevationCapability: async () => 'unknown' as const,
     inspectPowerShell: async () => ({
       installed: true,
       version: '5.1.26100.1',
@@ -532,6 +533,52 @@ describe('diagnostics', () => {
       title: '运行权限',
       summary: '当前以管理员权限运行，建议普通启动',
       details: { elevated: true, required: false },
+    })
+  })
+
+  it('tells a standard Windows account that installing Node.js will ask for a password', async () => {
+    const home = temporaryHome()
+    const input = dependencies(home)
+    input.inspectElevationCapability = async () => 'standard'
+
+    const report = await runDiagnostics(input)
+
+    expect(report.items.find((item) => item.code === 'ADMINISTRATOR')).toMatchObject({
+      state: 'warn',
+      summary: expect.stringContaining('不在管理员组'),
+      details: { elevated: false, canElevate: false },
+    })
+  })
+
+  it('stays a plain pass when the account can elevate, and when the probe cannot answer', async () => {
+    const home = temporaryHome()
+    for (const [capability, canElevate] of [['administrator', true], ['unknown', null]] as const) {
+      const input = dependencies(home)
+      input.inspectElevationCapability = async () => capability
+
+      const report = await runDiagnostics(input)
+
+      expect(report.items.find((item) => item.code === 'ADMINISTRATOR')).toMatchObject({
+        state: 'pass',
+        summary: '当前以普通用户权限运行',
+        details: { elevated: false, canElevate },
+      })
+    }
+  })
+
+  it('does not ask the elevation question on macOS, where this app never elevates', async () => {
+    const home = temporaryHome()
+    const input = dependencies(home)
+    input.platform = 'darwin'
+    input.inspectElevationCapability = async () => {
+      throw new Error('must not probe on macOS')
+    }
+
+    const report = await runDiagnostics(input)
+
+    expect(report.items.find((item) => item.code === 'ADMINISTRATOR')).toMatchObject({
+      state: 'pass',
+      summary: '当前以普通用户权限运行',
     })
   })
 
