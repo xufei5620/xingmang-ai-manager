@@ -1,6 +1,7 @@
 import type { App } from 'electron'
 import { resolveRelaySite } from '../relay-sites'
 import type {
+  PlatformActivityKind,
   PlatformNotificationKind,
   PlatformNotificationResult,
   PlatformPrivacyPreference,
@@ -27,7 +28,7 @@ export interface PlatformSystemDependencies {
   relaySiteId?: () => string | undefined
   onError?: (error: unknown) => void
   notify?: (
-    kind: PlatformNotificationKind | 'test',
+    kind: PlatformActivityKind | 'test',
     eventKey: string,
   ) => PlatformNotificationResult
 }
@@ -194,6 +195,7 @@ export class PlatformSystemService {
           balance: true,
           task: true,
           cliUpdate: true,
+          acceleration: true,
           ...current.notifications,
           [kind]: enabled,
         },
@@ -215,7 +217,7 @@ export class PlatformSystemService {
   testNotification() {
     return this.dependencies.notify?.('test', 'test') ?? 'unsupported'
   }
-  notifyActivity(kind: PlatformNotificationKind, eventKey: string) {
+  notifyActivity(kind: PlatformActivityKind, eventKey: string) {
     return this.dependencies.notify?.(kind, eventKey) ?? 'unsupported'
   }
 

@@ -1,4 +1,12 @@
 import type { UpdateFailedStep } from '../../../electron/ipc-contract'
+/**
+ * 教程里讲「Mac 上怎么自己装桌面端」的那一章。首页那几行点不动的「安装」要直接跳到
+ * 这一章而不是教程首页，所以 id 放在注册表里由两边共用：教程页写章节、App 写跳转，
+ * 谁改了名字另一边编译不会报错，只会静悄悄跳回第一章，因此不许再写成字面量。
+ */
+export const macDesktopTutorialTopic = 'mac-desktop-apps'
+/** 同理：教程里讲「Mac 上怎么自己装 Node.js 和 Python」的那一章。 */
+export const macRuntimeTutorialTopic = 'runtime-mac'
 export const accountTabs = [
   { value: 'overview', label: '我的账号' },
   { value: 'dashboard', label: '用量看板' },
@@ -147,5 +155,10 @@ export const notificationOptions = [
     value: 'cliUpdate',
     label: '工具有新版本',
     description: '你装的命令行工具出新版本时提醒一次',
+  },
+  {
+    value: 'acceleration',
+    label: '加速时长提醒',
+    description: '免费加速还剩 5 分钟、以及用完自动断开时各提醒一次',
   },
 ] as const

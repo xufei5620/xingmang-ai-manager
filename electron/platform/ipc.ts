@@ -2,6 +2,7 @@ import type { IpcMain, IpcMainInvokeEvent, WebContents } from 'electron'
 import { isTrustedIpcSenderUrl, type ApplicationUrlPolicy } from '../security'
 import { platformChannels } from './contract'
 import type {
+  PlatformActivityKind,
   PlatformNotificationKind,
   PlatformNotificationResult,
   PlatformPrivacyPreference,
@@ -40,13 +41,18 @@ const platformReadChannels: ReadonlySet<string> = new Set([
   platformChannels.getProxyStatus,
 ])
 
-function isNotificationKind(value: unknown): value is PlatformNotificationKind {
+function isActivityKind(value: unknown): value is PlatformActivityKind {
   return (
     value === 'install' ||
     value === 'balance' ||
     value === 'task' ||
     value === 'cliUpdate'
   )
+}
+
+// 偏好开关比活动通知多一类：加速那两条由主进程发出，用户仍然要能关掉它。
+function isNotificationKind(value: unknown): value is PlatformNotificationKind {
+  return isActivityKind(value) || value === 'acceleration'
 }
 
 function isPrivacyPreference(
@@ -112,7 +118,7 @@ export function summarizePlatformInvocation(
     if (typeof args[1] === 'boolean') detail.enabled = args[1]
   }
   if (channel === platformChannels.notifyActivity) {
-    if (isNotificationKind(args[0])) detail.kind = args[0]
+    if (isActivityKind(args[0])) detail.kind = args[0]
     if (isActivityKey(args[1])) detail.eventKey = args[1]
   }
   if (isNotificationResult(result)) detail.result = result
@@ -239,9 +245,11 @@ export function registerPlatformHandlers(options: {
     options.service().testNotification(),
   )
   handle(platformChannels.notifyActivity, 2, (kind, key) => {
-    const category = notificationKind(kind)
+    // 加速那两条只能由主进程发：渲染层拿到这条通道也只会被拒，免得它绕过
+    // 「亲眼看着连上」那层判断去弹一条「加速已断开」。
+    if (!isActivityKind(kind)) throw new Error('未知的通知类型。')
     if (!isActivityKey(key)) throw new Error('通知事件编号无效。')
-    return options.service().notifyActivity(category, key)
+    return options.service().notifyActivity(kind, key)
   })
   return () => {
     for (const channel of registered) options.ipcMain.removeHandler(channel)

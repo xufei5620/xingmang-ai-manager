@@ -49,6 +49,7 @@ export function parsePlatformPreferences(value: unknown): PlatformPreferences {
     balance: true,
     task: true,
     cliUpdate: true,
+    acceleration: true,
   })
   // 老文件里的 crashReports 会在这里被丢掉：键不在清单里就不会被读出，
   // 下一次写入自然不再落盘，不需要单独的迁移步骤。

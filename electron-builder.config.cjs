@@ -165,6 +165,8 @@ module.exports = {
     // Shared 中文 AGENTS.md template the main process copies into a project
     // directory that has no instruction file yet. Contains no secrets.
     'bundled-catalog/project-instructions/**/*',
+    // Claude Code 状态行脚本。只读 CLI 从 stdin 递来的会话信息，不出网、不读 Key。
+    'bundled-catalog/cli-status-line/**/*',
     'package.json',
   ],
   extraResources: [
@@ -176,6 +178,13 @@ module.exports = {
     {
       from: 'bundled-catalog/project-instructions',
       to: 'bundled-catalog/project-instructions',
+      filter: ['**/*'],
+    },
+    // 必须走 extraResources：写进 Claude settings.json 的那条命令由外部 node 执行，
+    // 它读不了 asar 里的路径。
+    {
+      from: 'bundled-catalog/cli-status-line',
+      to: 'bundled-catalog/cli-status-line',
       filter: ['**/*'],
     },
     ...accelerationBundle.resources,

@@ -1,4 +1,6 @@
+import { accelerationExpiryWarningSeconds } from '../acceleration-contract'
 import type {
+  PlatformActivityKind,
   PlatformNotificationKind,
   PlatformNotificationPreferences,
   PlatformNotificationResult,
@@ -21,6 +23,16 @@ export interface PlatformNotificationRuntime {
     silent: boolean
   }): PlatformNotificationHandle
 }
+/** 主进程自己发的通知；渲染层没有通道能请求它们。 */
+export type PlatformHostNotification =
+  | 'accelerationExpiring'
+  | 'accelerationExhausted'
+
+interface NotificationMessage {
+  title: string
+  body: string
+}
+
 const messages = {
   test: { title: '星芒测试通知', body: '这是一条测试通知，可在设置中关闭。' },
   install: {
@@ -41,7 +53,26 @@ const messages = {
     title: '命令行工具有新版本',
     body: '你装的工具出了新版本，回到星芒的「你的工具」就能逐个更新。',
   },
-} as const
+} as const satisfies Record<PlatformActivityKind | 'test', NotificationMessage>
+
+// 一条只说「还剩多久」，一条只说「已经断开了」：用户在游戏里看到的就这一行，
+// 多一个字的引导都会把它变成广告。免费时长怎么卖不是这里的事，所以不写价格、
+// 不写充值入口。主语是「当前账号」，不出现站点名。
+const hostMessages: Record<
+  PlatformHostNotification,
+  NotificationMessage & { kind: PlatformNotificationKind }
+> = {
+  accelerationExpiring: {
+    kind: 'acceleration',
+    title: `加速还剩 ${accelerationExpiryWarningSeconds / 60} 分钟`,
+    body: '当前账号的免费加速时长快用完了，用完会自动断开。',
+  },
+  accelerationExhausted: {
+    kind: 'acceleration',
+    title: '加速已断开',
+    body: '当前账号的免费加速时长已用完，加速已自动断开。',
+  },
+}
 
 export function createPlatformNotifications(
   options: {
@@ -61,9 +92,11 @@ export function createPlatformNotifications(
       /* Native events must not throw. */
     }
   }
-  const notify = (
+  const present = (
     kind: PlatformNotificationKind | 'test',
-    eventKey: string,
+    key: string,
+    message: NotificationMessage,
+    onClick?: () => void,
   ): PlatformNotificationResult => {
     if (
       !options.readEnabled() ||
@@ -71,9 +104,8 @@ export function createPlatformNotifications(
     )
       return 'disabled'
     if (!runtime.supported()) return 'unsupported'
-    const key = `${kind}:${eventKey}`
     if (kind !== 'test' && seen.has(key)) return 'duplicate'
-    const notification = runtime.create({ ...messages[kind], silent: true })
+    const notification = runtime.create({ ...message, silent: true })
     while (active.size >= 4) {
       const oldest = active.values().next().value!
       active.delete(oldest)
@@ -87,6 +119,7 @@ export function createPlatformNotifications(
     notification.on('click', () => {
       try {
         options.focusMainWindow()
+        onClick?.()
       } catch (error) {
         report(error)
       }
@@ -118,7 +151,17 @@ export function createPlatformNotifications(
     return 'requested'
   }
   return {
-    notify,
+    notify: (kind: PlatformActivityKind | 'test', eventKey: string) =>
+      present(kind, `${kind}:${eventKey}`, messages[kind]),
+    notifyHost: (
+      event: PlatformHostNotification,
+      eventKey: string,
+      onClick?: () => void,
+    ) => {
+      // 只把标题与正文交给系统通知：kind 是偏好开关的键，不该出现在通知参数里。
+      const { kind, title, body } = hostMessages[event]
+      return present(kind, `${event}:${eventKey}`, { title, body }, onClick)
+    },
     dispose: () => {
       for (const notification of active) {
         notification.removeAllListeners()

@@ -404,3 +404,65 @@ describe('renderer-v2 home missing runtime guidance on macOS', () => {
     })
   })
 })
+
+describe('renderer-v2 home manual desktop install on macOS', () => {
+  const missingStatus = { installed: false, version: null, detectionFailed: false, uninstall: { available: false, reason: null, manualCommand: null } }
+  function macSnapshot(): ToolboxSnapshot {
+    const base = snapshot({ claude: cliStatus, codex: cliStatus, grok: cliStatus, gemini: cliStatus })
+    return {
+      ...base,
+      platform: {
+        platform: 'macos', isMac: true, nodeRuntimeInstall: 'external', pythonRuntimeInstall: 'external',
+        cliInstall: { claude: 'managed', codex: 'managed', gemini: 'managed', grok: 'managed' },
+        codexDesktop: { install: 'external', launch: true, uninstall: false, windowsStore: false },
+      },
+      system: { ...base.system, desktopApps: { codex: missingStatus } },
+    } as unknown as ToolboxSnapshot
+  }
+  /** 只截某一行的主按钮：整页搜文案会被别的行顶掉，分不清改的是哪一颗。 */
+  function rowButton(markup: string, tool: string): string {
+    const index = markup.indexOf(`data-testid="tool-${tool}-primary"`)
+    expect(index, `没有渲染出 ${tool} 那一行的主按钮`).toBeGreaterThan(-1)
+    return markup.slice(markup.lastIndexOf('<button', index), markup.indexOf('</button>', index))
+  }
+  function clientButton(markup: string): string {
+    return rowButton(markup, 'workbuddy')
+  }
+  const macClient = {
+    tool: 'workbuddy', installed: false, version: null, path: null, installDirectory: null, running: false,
+    installSupported: false, launchSupported: false, detectionError: null,
+    installHint: 'macOS 请先从客户端官网下载并将应用移入 Applications，然后重新检测',
+  } as unknown as HomeProps['externalClients'][number]
+
+  it('labels the Codex desktop button as a guide instead of promising an install', () => {
+    // macOS 上这颗按钮点下去只能把人带到教程，写「安装」是假的（第七批 3）。
+    const markup = render({}, undefined, { snapshot: macSnapshot() })
+    expect(rowButton(markup, 'codexDesktop')).toContain('安装指南')
+  })
+
+  it('turns the dead 「暂不支持」 client button into a working guide link', () => {
+    const markup = render({}, undefined, { snapshot: macSnapshot(), externalClients: [macClient] })
+    const button = clientButton(markup)
+    expect(button).toContain('安装指南')
+    expect(button).not.toContain('disabled')
+    expect(markup).not.toContain('暂不支持')
+  })
+
+  it('keeps 「暂不支持」 where no guide can help, such as Windows arm64', () => {
+    const base = snapshot({ claude: cliStatus, codex: cliStatus, grok: cliStatus, gemini: cliStatus })
+    const windows = {
+      ...base,
+      platform: {
+        platform: 'windows', isMac: false, nodeRuntimeInstall: 'managed', pythonRuntimeInstall: 'managed',
+        cliInstall: { claude: 'managed', codex: 'managed', gemini: 'managed', grok: 'managed' },
+        codexDesktop: { install: 'managed', launch: true, uninstall: true, windowsStore: true },
+      },
+    } as unknown as ToolboxSnapshot
+    const markup = render({}, undefined, {
+      snapshot: windows,
+      externalClients: [{ ...macClient, installHint: '当前处理器架构没有可用的官方 Windows 安装包' } as typeof macClient],
+    })
+    expect(clientButton(markup)).toContain('暂不支持')
+    expect(markup).not.toContain('安装指南')
+  })
+})
