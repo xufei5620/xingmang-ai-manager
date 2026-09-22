@@ -54,7 +54,7 @@ function result(overrides: Partial<ConnectionCheckResult> = {}): ConnectionCheck
 }
 
 const layers: ConnectionCheckLayer[] = [
-  'unconfigured', 'config', 'network', 'credential', 'quota', 'group', 'model', 'protocol', 'unknown',
+  'unconfigured', 'config', 'network', 'credential', 'quota', 'group', 'model', 'protocol', 'service', 'unknown',
 ]
 
 describe('connectionCheckView', () => {
@@ -93,6 +93,16 @@ describe('connectionCheckView', () => {
     expect(connectionCheckView(result({ layer: 'network' })).target).toBe('settings')
     expect(connectionCheckView(result({ layer: 'protocol' })).target).toBe('feedback')
     expect(connectionCheckView(result({ layer: 'unknown' })).target).toBe('feedback')
+  })
+
+  it('offers nothing to fix when the service itself is down', () => {
+    // 盲点 1：维护期间用户这边没有能做的事，「去处理」与「重新写入 Key」都只会
+    // 把人送去改没坏的东西。
+    const view = connectionCheckView(result({ layer: 'service', summary: '服务暂时不可用（HTTP 503），多半在维护或线路繁忙', nextStep: '你这边不用做任何改动，Key 和配置都不用动，稍后再自检一次就行', status: 503 }), { canRewriteKey: true })
+    expect(view.target).toBeNull()
+    expect(view.action).toBeNull()
+    expect(view.tone).toBe('warn')
+    expect(view.statusLabel).toBe('服务端')
   })
 
   // 一个只装了 Claude Code 的用户按下「测试连接」，另外三个工具必须读成
@@ -196,7 +206,8 @@ describe('connectionCheckView rewrite action', () => {
   })
 
   it('keeps the jump for every other layer, rewritable or not', () => {
-    for (const layer of layers.filter((entry) => entry !== 'credential' && entry !== 'group')) {
+    // service 除外：服务在维护时没有可以跳去处理的页面（见上面那条）。
+    for (const layer of layers.filter((entry) => entry !== 'credential' && entry !== 'group' && entry !== 'service')) {
       const view = connectionCheckView(result({ layer }), { canRewriteKey: true })
       expect(view.action).toBeNull()
       expect(view.target).not.toBeNull()

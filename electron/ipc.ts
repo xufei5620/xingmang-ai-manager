@@ -134,6 +134,7 @@ import type { RuntimeLogStore } from './runtime-log'
 import { createExternalShellLauncher, type ExternalShellLauncher } from './system-shell'
 import { platformCapabilitiesFor } from './platform-capabilities'
 import { validatePaymentForm, validatePaymentQrCode, validatePaymentUrl, type PaymentWindowController } from './payment-window'
+import type { AccountStartupGate } from './account-startup-gate'
 
 export type AppWindowMode = 'onboarding' | 'dashboard'
 
@@ -181,6 +182,11 @@ export interface IpcRegistrationOptions {
   // any host that never attempts a restore see the pre-existing synchronous
   // behavior unchanged.
   accountSessionReady?: Promise<void>
+  /**
+   * 启动画面那两条读取（account:get-session、config:get）等账号恢复的上限。不传
+   * = 照旧等 accountSessionReady 结束。见 account-startup-gate.ts。
+   */
+  accountStartupGate?: AccountStartupGate
   savedAccounts?: Pick<SavedAccountsStore, 'list' | 'getSession' | 'remove'>
   urlPolicy: ApplicationUrlPolicy
   previewOnboarding: boolean
@@ -1439,13 +1445,36 @@ function ipcLogDetail(channel: string, args: unknown[], result: unknown, duratio
   return detail
 }
 
+/**
+ * 加速页可见时每 15 秒读一次状态，每次成功都记一条的话，开一下午加速页就是上千
+ * 条一模一样的记录。这里给出「状态有没有变」的比较键：剩余时长每秒都在走，不算
+ * 变化；阶段、模式、线路、连上的时间点、错误与冲突任何一项变了才算。读不出形状
+ * 时返回 null，照常记录。
+ */
+export function accelerationStateLogKey(result: unknown): string | null {
+  if (!isRecord(result) || typeof result.scope !== 'string' || typeof result.phase !== 'string') return null
+  const line = isRecord(result.line) && typeof result.line.id === 'string' ? result.line.id : null
+  return JSON.stringify([
+    result.scope,
+    result.phase,
+    result.mode ?? null,
+    result.entitlementSource ?? null,
+    line,
+    result.connectedAt ?? null,
+    result.error ?? null,
+    Array.isArray(result.conflicts) ? result.conflicts : null,
+  ])
+}
+
 function ipcSuccessLevel(channel: string): 'debug' | 'info' {
   return /:(?:get|get-state|list|list-all|detail|status|inspect)$/.test(channel) ? 'debug' : 'info'
 }
 
 export function registerIpcHandlers(options: IpcRegistrationOptions): () => void {
   const registeredChannels: string[] = []
+  const startupGate = options.accountStartupGate
   const externalShell = options.externalShell ?? createExternalShellLauncher()
+  let lastAccelerationStateLogKey: string | null = null
   const revealInFolder = options.revealInFolder ?? ((filePath: string) => shell.showItemInFolder(filePath))
   // 最近几次导出写出来的文件：「打开所在位置」只认这里面的路径。
   const exportedFiles: string[] = []
@@ -1461,6 +1490,11 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
       const startedAt = Date.now()
       const recordSuccess = (result: unknown) => {
         if (quietIpcSuccessChannels.has(channel)) return
+        if (channel === 'acceleration:get-state') {
+          const key = accelerationStateLogKey(result)
+          if (key !== null && key === lastAccelerationStateLogKey) return
+          lastAccelerationStateLogKey = key
+        }
         if (channel === 'acceleration:stop' && isRecord(result) && typeof result.phase === 'string'
           && ['connecting', 'active', 'stopping', 'error'].includes(result.phase)) {
           options.runtimeLog.log('warn', 'ipc', channel, '停止加速尚未完成，已保留恢复状态', {
@@ -1510,7 +1544,14 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
           ? options.accountWork.run(() => handler(event, ...args), { checkRevision: channel !== 'account:change-password' && channel !== 'account:revoke-login-session' }) : handler(event, ...args)
         // Bootstrap requests config and session concurrently. The first
         // config read must not turn an in-progress restore into a failed boot.
-        const result = scoped && options.realmAccounts ? accountSessionReady.then(invoke) : invoke()
+        // Only the bootstrap config read may stop waiting at the startup
+        // budget; it then runs outside the account work gate (which refuses
+        // work mid-restore) and reports ownership as pending.
+        const result = scoped && options.realmAccounts
+          ? channel === 'config:get' && startupGate
+            ? startupGate.released.then(() => startupGate.pending() ? handler(event, ...args) : accountSessionReady.then(invoke))
+            : accountSessionReady.then(invoke)
+          : invoke()
         if (isPromiseLike(result)) {
           return Promise.resolve(result).then((value) => {
             recordSuccess(value)
@@ -1620,6 +1661,9 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     service.inspectCodexReadiness(options.previewOnboarding)
   ))
   registerTrustedHandler('config:get', () => {
+    // 账号还在恢复：此时读到的会话是未登录，来源判定没有账号可比，一律只会是
+    // unknown。标出来让界面知道这是「待定」而不是「来源不明」，恢复完再补读。
+    if (startupGate?.pending()) return { ...service.getConfig(options.previewOnboarding), ownershipPending: true }
     const session = accountService.getSessionState()
     const userId = session.account?.userId
     if (options.previewOnboarding || !session.authenticated || !userId || !options.managedCliKeys) {
@@ -2476,8 +2520,10 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     // Guaranteed not to reject (see the option's own doc comment), but a
     // stray .catch() here costs nothing and means a future regression there
     // degrades to "restore didn't happen" instead of an unhandled rejection.
-    await accountSessionReady.catch(() => undefined)
-    return accountService.getSessionState()
+    await (startupGate?.released ?? accountSessionReady).catch(() => undefined)
+    const state = accountService.getSessionState()
+    if (!startupGate?.pending()) return state
+    return { ...state, restoring: { account: startupGate.restoringAccount() } }
   })
   const accountOrigin = () => new URL(resolveRelaySite(service.readStoredConfig().relaySiteId).accountBaseUrl!).origin
   registerTrustedHandler('account:list-saved', async () => {

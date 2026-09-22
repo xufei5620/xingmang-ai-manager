@@ -39,4 +39,20 @@ describe('InstallationQueue', () => {
     expect(queue.busy).toBe(false)
   })
 
+
+  it('moves its revision whenever an entry starts or finishes, including a failed one', async () => {
+    const queue = new InstallationQueue()
+    const idle = queue.revision
+    let release!: () => void
+    const running = queue.enqueue('cli:codex', () => new Promise<void>((resolve) => { release = resolve }))
+    await Promise.resolve()
+    const started = queue.revision
+    expect(started).toBeGreaterThan(idle)
+    release()
+    await running
+    expect(queue.revision).toBeGreaterThan(started)
+    const beforeFailure = queue.revision
+    await expect(queue.enqueue('cli:claude', async () => { throw new Error('install failed') })).rejects.toThrow('install failed')
+    expect(queue.revision).toBe(beforeFailure + 2)
+  })
 })

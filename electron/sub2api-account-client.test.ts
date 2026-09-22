@@ -286,14 +286,26 @@ describe('sub2api user-account adapter', () => {
     await assert.rejects(example.client.authenticate(input, signal()), (error: unknown) =>
       hasCode('NETWORK')(error) && (error as Error).message === networkFailureMessages.dns)
   })
-  it('keeps the generic message for a server failure that is not the network', async () => {
-    const example = fixture([new Response('', { status: 503 })])
+  it('keeps the generic message for a server failure that is neither the network nor an outage', async () => {
+    const example = fixture([Response.json({ code: 404, message: 'not found' }, { status: 404 })])
     await assert.rejects(example.client.authenticate(input, signal()), (error: unknown) =>
       hasCode('NETWORK')(error) && (error as Error).message === '账号服务请求失败，请重试')
   })
+  // 盲点 1：维护、网关错误、防护层验证页是服务那一侧的事，不能说成「请求失败，请重试」
+  // 让用户去反复输密码。
+  it('says the service is unavailable for a gateway error or an edge challenge', async () => {
+    for (const reply of [
+      new Response('', { status: 503 }),
+      new Response('<html>error code: 522</html>', { status: 522, headers: { 'content-type': 'text/html' } }),
+      new Response('<html>Just a moment...</html>', { status: 403, headers: { 'content-type': 'text/html', 'cf-mitigated': 'challenge' } }),
+    ]) {
+      await assert.rejects(fixture([reply]).client.authenticate(input, signal()), (error: unknown) =>
+        hasCode('UNAVAILABLE')(error) && (error as Error).message === networkFailureMessages.serviceUnavailable)
+    }
+  })
   it('does not refresh on a temporary server failure', async () => {
     const example = fixture([new Response('', { status: 503 })])
-    await assert.rejects(example.client.restore(saved(), signal()), hasCode('NETWORK'))
+    await assert.rejects(example.client.restore(saved(), signal()), hasCode('UNAVAILABLE'))
     assert.equal(example.calls.length, 1)
   })
   it('does not refresh indefinitely after repeated unauthorized responses', async () => {
