@@ -1753,7 +1753,12 @@ if (!hasSingleInstanceLock) {
     })
     // 首页那遍扫描不必等窗口和启动画面：和账号恢复一起现在就跑起来，渲染层随后那次读取
     // 直接接上它（scanSystem 同一时刻只跑一轮）。结果由那次读取照常交给托盘与日志。
-    void systemService.scanSystem().catch(() => undefined)
+    // 只在有账号要恢复时预热：没有账号的新用户先落在欢迎页，那里本来不检测工具；而
+    // Windows 上一轮检测要起好几段 PowerShell（Program Files 权限检查还是同步的），
+    // 白跑一轮只会让欢迎页上的点击和关窗跟着变慢（#372 之后关窗冒烟超过 5 秒）。
+    void vault.active().then((saved) => {
+      if (saved) void systemService.scanSystem().catch(() => undefined)
+    }).catch(() => undefined)
     // 启动画面最多为账号恢复等 3 秒，明确断网就不等（yoyo 2026-09-22 拍板）。
     const accountStartupGate = createAccountStartupGate({
       settled: accountSessionReady,
