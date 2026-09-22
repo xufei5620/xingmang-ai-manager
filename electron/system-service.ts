@@ -103,7 +103,7 @@ import {
   isPython312RuntimeVersion,
   type PythonRuntimeInstallResult,
 } from './python-runtime'
-import { InstallationQueue } from './installation-queue'
+import { InstallationQueue, type InstallationQueueSnapshot } from './installation-queue'
 import type { DownloadAccelerationLease } from './download-acceleration'
 import {
   InstallCancellationRegistry,
@@ -760,6 +760,8 @@ export interface SystemService {
   scanExternalClients(): Promise<ExternalClientStatus[]>
   installExternalClient(tool: ExternalToolId, target: RendererMessageTarget): Promise<ExternalClientStatus>
   launchExternalClient(tool: ExternalToolId): Promise<void>
+  /** 安装队列当前的状态，退出前判断有没有安装正在跑时用。 */
+  inspectInstallationQueue(): InstallationQueueSnapshot
 }
 
 function firstOutputLine(stdout: string, stderr: string): string | null {
@@ -4404,5 +4406,6 @@ export function createSystemService(
     scanExternalClients,
     installExternalClient,
     launchExternalClient,
+    inspectInstallationQueue: () => installationQueue.snapshot(),
   }
 }

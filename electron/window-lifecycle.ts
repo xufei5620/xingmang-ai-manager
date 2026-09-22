@@ -1,12 +1,19 @@
 import type { AppCloseBehavior } from './window-preferences'
 
 export type WindowCloseDecision = 'hide' | 'quit' | 'cancel'
+export type QuitConfirmation = 'quit' | 'cancel'
 export type WindowCloseResult = 'hidden' | 'quit-requested' | 'cancelled' | 'kept-visible' | 'failed'
 
 export interface WindowLifecycleOptions {
   readPreference(): AppCloseBehavior
   trayAvailable(): boolean
   requestCloseDecision(): Promise<WindowCloseDecision>
+  /**
+   * 「直接退出」偏好和托盘 / 菜单「退出」放行前的最后一次确认，用来在有安装
+   * 正在跑时拦一下。缺省 = 旧行为，不确认。「每次询问」那条路径不走这里：
+   * 它自己的对话框已经写了「强制退出不等待任务完成」，再弹一次是重复。
+   */
+  confirmQuitWhileBusy?(): QuitConfirmation | Promise<QuitConfirmation>
   prepareToQuit(): Promise<void>
   flushWindowState(): Promise<void>
   show(): void
@@ -22,8 +29,8 @@ interface WindowCloseSource {
   removeListener(event: 'close', listener: LifecycleListener): unknown
 }
 interface ApplicationQuitSource {
-  on(event: 'before-quit', listener: LifecycleListener): unknown
-  removeListener(event: 'before-quit', listener: LifecycleListener): unknown
+  on(event: 'before-quit' | 'session-end', listener: LifecycleListener): unknown
+  removeListener(event: 'before-quit' | 'session-end', listener: LifecycleListener): unknown
 }
 
 export interface WindowLifecycle {
@@ -38,6 +45,7 @@ export function createWindowLifecycle(options: WindowLifecycleOptions): WindowLi
   let quitting = false
   let disposed = false
   let explicitQuit = false
+  let systemShutdown = false
   let inFlight: Promise<WindowCloseResult> | null = null
   const detachListeners = new Set<() => void>()
 
@@ -76,10 +84,26 @@ export function createWindowLifecycle(options: WindowLifecycleOptions): WindowLi
     options.quit()
     return 'quit-requested'
   }
+  const confirmedQuit = async (): Promise<WindowCloseResult> => {
+    // Windows 关机 / 注销只给几秒钟，拦住它只会让系统强杀这个进程。
+    if (systemShutdown || !options.confirmQuitWhileBusy) return performQuit()
+    let confirmation: QuitConfirmation
+    try {
+      confirmation = await options.confirmQuitWhileBusy()
+    } catch (error) {
+      // 确认框自己坏了不能否决用户已经做出的退出选择。
+      reportError(error)
+      return performQuit()
+    }
+    if (disposed) return 'cancelled'
+    if (systemShutdown) return performQuit()
+    return confirmation === 'cancel' ? cancelled() : performQuit()
+  }
   const performClose = async (): Promise<WindowCloseResult> => {
-    if (explicitQuit) return performQuit()
+    if (explicitQuit) return confirmedQuit()
     const preference = options.readPreference()
-    const decision = preference === 'ask' ? await options.requestCloseDecision() : preference === 'tray' ? 'hide' : 'quit'
+    if (preference === 'quit') return confirmedQuit()
+    const decision = preference === 'ask' ? await options.requestCloseDecision() : 'hide'
     if (disposed) return 'cancelled'
     if (explicitQuit || decision === 'quit') return performQuit()
     if (decision === 'cancel') return cancelled()
@@ -122,11 +146,17 @@ export function createWindowLifecycle(options: WindowLifecycleOptions): WindowLi
         event.preventDefault()
         void lifecycle.requestQuit()
       }
+      // Windows 关机 / 注销先发 session-end 再走退出流程，记下来让后面的
+      // 确认框直接放行。macOS 注销没有对应事件，那边由系统自己的「有程序
+      // 阻止注销」界面兜底。
+      const onSessionEnd: LifecycleListener = () => { systemShutdown = true }
       window.on('close', onClose)
       application.on('before-quit', onBeforeQuit)
+      application.on('session-end', onSessionEnd)
       const detach = () => {
         window.removeListener('close', onClose)
         application.removeListener('before-quit', onBeforeQuit)
+        application.removeListener('session-end', onSessionEnd)
         detachListeners.delete(detach)
       }
       detachListeners.add(detach)

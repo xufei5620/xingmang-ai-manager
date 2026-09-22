@@ -1,6 +1,6 @@
 import { EventEmitter } from 'node:events'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { createWindowLifecycle, type WindowLifecycleOptions } from './window-lifecycle'
+import { createWindowLifecycle, type QuitConfirmation, type WindowLifecycleOptions } from './window-lifecycle'
 
 function deferred<T>() {
   let resolve!: (value: T) => void
@@ -243,6 +243,84 @@ describe('window close coordination', () => {
     lifecycle.dispose()
     expect(window.listenerCount('close')).toBe(0)
     expect(application.listenerCount('before-quit')).toBe(0)
+    expect(application.listenerCount('session-end')).toBe(0)
+  })
+
+  it('confirms before a direct quit and keeps the window when the user stays', async () => {
+    const confirmQuitWhileBusy = vi.fn<NonNullable<WindowLifecycleOptions['confirmQuitWhileBusy']>>(async (): Promise<QuitConfirmation> => 'cancel')
+    const { options, lifecycle } = fixture({ readPreference: () => 'quit', confirmQuitWhileBusy })
+    expect(await lifecycle.requestClose()).toBe('cancelled')
+    expect(confirmQuitWhileBusy).toHaveBeenCalledOnce()
+    expect(options.show).toHaveBeenCalledOnce()
+    expect(options.prepareToQuit).not.toHaveBeenCalled()
+    expect(options.quit).not.toHaveBeenCalled()
+    expect(lifecycle.isQuitting).toBe(false)
+  })
+
+  it('confirms the tray quit too, and proceeds once the user accepts', async () => {
+    const confirmQuitWhileBusy = vi.fn<NonNullable<WindowLifecycleOptions['confirmQuitWhileBusy']>>(async (): Promise<QuitConfirmation> => 'quit')
+    const { options, lifecycle } = fixture({ readPreference: () => 'tray', confirmQuitWhileBusy })
+    expect(await lifecycle.requestQuit()).toBe('quit-requested')
+    expect(confirmQuitWhileBusy).toHaveBeenCalledOnce()
+    expect(options.hide).not.toHaveBeenCalled()
+    expect(options.quit).toHaveBeenCalledOnce()
+  })
+
+  it('does not confirm twice on the prompt path, whose own dialog already warns about running tasks', async () => {
+    const confirmQuitWhileBusy = vi.fn<NonNullable<WindowLifecycleOptions['confirmQuitWhileBusy']>>(async (): Promise<QuitConfirmation> => 'cancel')
+    const { options, lifecycle } = fixture({
+      requestCloseDecision: vi.fn<WindowLifecycleOptions['requestCloseDecision']>(async () => 'quit'),
+      confirmQuitWhileBusy,
+    })
+    expect(await lifecycle.requestClose()).toBe('quit-requested')
+    expect(confirmQuitWhileBusy).not.toHaveBeenCalled()
+    expect(options.quit).toHaveBeenCalledOnce()
+  })
+
+  it('keeps hiding to the tray without asking, since nothing is interrupted', async () => {
+    const confirmQuitWhileBusy = vi.fn<NonNullable<WindowLifecycleOptions['confirmQuitWhileBusy']>>(async (): Promise<QuitConfirmation> => 'cancel')
+    const { options, lifecycle } = fixture({ readPreference: () => 'tray', confirmQuitWhileBusy })
+    expect(await lifecycle.requestClose()).toBe('hidden')
+    expect(confirmQuitWhileBusy).not.toHaveBeenCalled()
+    expect(options.hide).toHaveBeenCalledOnce()
+  })
+
+  it('never lets a broken confirmation veto a quit the user already chose', async () => {
+    const failure = new Error('dialog failed')
+    const { options, lifecycle } = fixture({
+      readPreference: () => 'quit',
+      confirmQuitWhileBusy: () => { throw failure },
+    })
+    expect(await lifecycle.requestClose()).toBe('quit-requested')
+    expect(options.onError).toHaveBeenCalledExactlyOnceWith(failure)
+    expect(options.quit).toHaveBeenCalledOnce()
+  })
+
+  it('skips the confirmation once Windows reports the session is ending', async () => {
+    const window = new EventEmitter()
+    const application = new EventEmitter()
+    const confirmQuitWhileBusy = vi.fn<NonNullable<WindowLifecycleOptions['confirmQuitWhileBusy']>>(async (): Promise<QuitConfirmation> => 'cancel')
+    const { options, lifecycle } = fixture({ readPreference: () => 'quit', confirmQuitWhileBusy })
+    lifecycle.attach(window, application)
+    application.emit('session-end', { preventDefault: vi.fn() })
+    expect(await lifecycle.requestClose()).toBe('quit-requested')
+    expect(confirmQuitWhileBusy).not.toHaveBeenCalled()
+    expect(options.quit).toHaveBeenCalledOnce()
+  })
+
+  it('quits anyway when the session ends while the confirmation is still open', async () => {
+    const window = new EventEmitter()
+    const application = new EventEmitter()
+    const answer = deferred<QuitConfirmation>()
+    const { options, lifecycle } = fixture({ readPreference: () => 'quit', confirmQuitWhileBusy: () => answer.promise })
+    lifecycle.attach(window, application)
+    const result = lifecycle.requestClose()
+    await vi.advanceTimersByTimeAsync(0)
+    application.emit('session-end', { preventDefault: vi.fn() })
+    answer.resolve('cancel')
+    expect(await result).toBe('quit-requested')
+    expect(options.show).not.toHaveBeenCalled()
+    expect(options.quit).toHaveBeenCalledOnce()
   })
 
   it('detaches and stops a pending close from changing a disposed host', async () => {
