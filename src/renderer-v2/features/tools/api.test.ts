@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { providerIds, type XingmangApi } from '../../../../electron/ipc-contract'
-import { createToolsApi, withConfigFailure, withToolboxConfig } from './api'
+import { createToolsApi, recentSessionsTtlMs, withConfigFailure, withToolboxConfig } from './api'
 
 describe('home balance usage queries', () => {
   it.each(['solov', 'solov-api'] as const)('keeps the %s date contract when loading month/week usage', async (siteId) => {
@@ -238,5 +238,77 @@ describe('CLI launch mode passthrough', () => {
     // CLI 那一侧的取值落到桌面端就是普通的「打开」，不该把 restart 之外的东西传下去。
     await api.launch('codexDesktop', '', 'resumeLast')
     expect(launchCodexDesktop).toHaveBeenLastCalledWith('open')
+  })
+})
+
+describe('recent sessions cache', () => {
+  function recentBridge() {
+    const listProviderSessions = vi.fn(async () => ({ items: [], total: 0, page: 1, pageSize: 60 }))
+    const bridge = {
+      listProviderSessions,
+      installCli: vi.fn(async () => undefined),
+      installCodexDesktop: vi.fn(async () => undefined),
+      uninstallCli: vi.fn(async () => ({ outcome: 'uninstalled' })),
+      uninstallCodexDesktop: vi.fn(async () => ({ outcome: 'uninstalled' })),
+      launchCli: vi.fn(async () => undefined),
+      launchCodexDesktop: vi.fn(async () => undefined),
+    } as unknown as XingmangApi
+    return { bridge, listProviderSessions }
+  }
+
+  it('keeps asking the main process for the same page it always did', async () => {
+    const { bridge, listProviderSessions } = recentBridge()
+    await createToolsApi(bridge).recent()
+    expect(listProviderSessions).toHaveBeenCalledWith({ page: 1, pageSize: 60 })
+  })
+
+  it('reuses the previous result instead of rescanning on every home visit', async () => {
+    const { bridge, listProviderSessions } = recentBridge()
+    const api = createToolsApi(bridge)
+    await api.recent()
+    await api.recent()
+    await api.recent()
+    expect(listProviderSessions).toHaveBeenCalledTimes(1)
+  })
+
+  it('rescans once the cache has aged past the ttl', async () => {
+    vi.useFakeTimers()
+    try {
+      const { bridge, listProviderSessions } = recentBridge()
+      const api = createToolsApi(bridge)
+      await api.recent()
+      vi.advanceTimersByTime(recentSessionsTtlMs - 1)
+      await api.recent()
+      expect(listProviderSessions).toHaveBeenCalledTimes(1)
+      vi.advanceTimersByTime(1)
+      await api.recent()
+      expect(listProviderSessions).toHaveBeenCalledTimes(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('drops the cache when the caller says the world changed', async () => {
+    const { bridge, listProviderSessions } = recentBridge()
+    const api = createToolsApi(bridge)
+    await api.recent()
+    api.invalidateRecent()
+    await api.recent()
+    expect(listProviderSessions).toHaveBeenCalledTimes(2)
+  })
+
+  it.each([
+    ['install', (api: ReturnType<typeof createToolsApi>) => api.install('claude')],
+    ['uninstall', (api: ReturnType<typeof createToolsApi>) => api.uninstall('claude')],
+    ['launch', (api: ReturnType<typeof createToolsApi>) => api.launch('claude', 'C:\\work', 'resumeLast')],
+    ['codex desktop install', (api: ReturnType<typeof createToolsApi>) => api.install('codexDesktop')],
+    ['codex desktop launch', (api: ReturnType<typeof createToolsApi>) => api.launch('codexDesktop', '', 'restart')],
+  ])('drops the cache after %s', async (_name, act) => {
+    const { bridge, listProviderSessions } = recentBridge()
+    const api = createToolsApi(bridge)
+    await api.recent()
+    await act(api)
+    await api.recent()
+    expect(listProviderSessions).toHaveBeenCalledTimes(2)
   })
 })

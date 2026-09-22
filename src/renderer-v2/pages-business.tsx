@@ -19,6 +19,8 @@ export type BusinessPageProps = BusinessActions & {
   refresh?: () => void
   accountTab?: Parameters<typeof AccountPage>[0]['initialTab']
   paymentReturn?: { sequence: number; order: string | null }
+  /** 记录页「接着聊」成功后回调，用来作废首页那份「最近」缓存。 */
+  onSessionResumed?: () => void
 }
 
 export function BusinessPage({
@@ -26,6 +28,7 @@ export function BusinessPage({
   page,
   accountTab,
   paymentReturn,
+  onSessionResumed,
   ...actions
 }: BusinessPageProps) {
   if (page === 'account')
@@ -39,7 +42,8 @@ export function BusinessPage({
         onBack={actions.navigate ? () => actions.navigate?.('home') : undefined}
       />
     )
-  if (page === 'sessions') return <SessionsPage api={api} />
+  if (page === 'sessions')
+    return <SessionsPage api={api} onResumed={onSessionResumed} />
   if (page === 'mcp') return <ExtensionsPage api={api} kind="mcp" />
   if (page === 'skills') return <ExtensionsPage api={api} kind="skill" />
   if (page === 'plugins') return <ExtensionsPage api={api} kind="plugin" />
