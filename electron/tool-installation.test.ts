@@ -6,7 +6,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { disposeStagedDarwinCliRecords } from './darwin-cli-staging'
 import type { DarwinCodexStandaloneSelection } from './macos-codex'
 import {
+  classifyCliInstallDisplaySource,
   cliUninstallCapability,
+  nativeInstallBinDirectories,
   resolveCliCommand,
   resolveCliInstallation,
   resolveNpmGlobalRoot,
@@ -1049,5 +1051,71 @@ describe('CLI installation resolution', () => {
     write(path.join(packageRoot, 'package.json'), ' '.repeat(256 * 1024 + 1))
 
     expect(verifiedPackageRoot(packageRoot, '@openai/codex')).toBeNull()
+  })
+})
+
+describe('native CLI install discovery', () => {
+  it('anchors the native bin directory under the home each platform reports', () => {
+    // Path separators follow the host's path module, so gate the exact-string
+    // check to POSIX and assert only the branch selection cross-platform.
+    if (process.platform !== 'win32') {
+      expect(nativeInstallBinDirectories({ HOME: '/home/tester' }, 'linux'))
+        .toEqual([path.resolve('/home/tester/.local/bin')])
+    }
+    // Windows reads USERPROFILE; the other platforms read HOME.
+    expect(nativeInstallBinDirectories({ USERPROFILE: '/win-home', HOME: '/posix-home' }, 'win32')[0])
+      .toContain('win-home')
+    expect(nativeInstallBinDirectories({ USERPROFILE: '/win-home', HOME: '/posix-home' }, 'linux')[0])
+      .toContain('posix-home')
+  })
+
+  it('classifies an install by where its launcher lives', () => {
+    const home = temporaryDirectory()
+    // Windows reads USERPROFILE and the others read HOME; set both so the
+    // fixture home wins on whichever platform runs the suite.
+    const env = { HOME: home, USERPROFILE: home }
+    const npm = {
+      commandPath: path.join(home, 'node', 'bin', 'claude'),
+      installDirectory: path.join(home, 'node', 'lib', 'node_modules', '@anthropic-ai', 'claude-code'),
+      packageRoot: path.join(home, 'node', 'lib', 'node_modules', '@anthropic-ai', 'claude-code'),
+      npmPrefix: path.join(home, 'node'),
+      source: 'npm' as const,
+    }
+    const native = {
+      commandPath: path.join(home, '.local', 'bin', 'claude'),
+      installDirectory: path.join(home, '.local', 'bin'),
+      packageRoot: null,
+      npmPrefix: null,
+      source: 'native' as const,
+    }
+    const other = { ...native, commandPath: '/opt/tools/claude', installDirectory: '/opt/tools' }
+
+    expect(classifyCliInstallDisplaySource(npm, { env, platform: process.platform })).toBe('npm')
+    expect(classifyCliInstallDisplaySource(native, { env, platform: process.platform })).toBe('native')
+    expect(classifyCliInstallDisplaySource(other, { env, platform: process.platform })).toBe('path')
+  })
+
+  it('discovers a native install in ~/.local/bin even when it is off PATH', async () => {
+    const home = temporaryDirectory()
+    const emptyBin = path.join(home, 'empty-bin')
+    fs.mkdirSync(emptyBin, { recursive: true })
+    const command = write(path.join(home, '.local', 'bin', 'claude'))
+    // Both home variables, for the same reason as the classification test above.
+    const env = { HOME: home, USERPROFILE: home, PATH: emptyBin }
+
+    const installation = await resolveCliInstallation('claude', {
+      env,
+      npmExecutable: '',
+      npmGlobalRoot: path.join(home, 'missing-node-modules'),
+      platform: process.platform,
+    })
+
+    expect(installation).toMatchObject({
+      commandPath: path.resolve(command),
+      packageRoot: null,
+      source: 'native',
+    })
+    expect(classifyCliInstallDisplaySource(installation!, { env, platform: process.platform }))
+      .toBe('native')
   })
 })

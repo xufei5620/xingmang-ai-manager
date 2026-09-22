@@ -217,3 +217,23 @@ describe('renderer-v2 home launch button without a remembered directory (N7)', (
     expect(markup).not.toContain('选择其他目录')
   })
 })
+
+// 官方安装器/其他来源装的 CLI：如实标源，且不给 npm 更新按钮，改用被动提示。
+describe('renderer-v2 home native install source', () => {
+  const nativeClaude = { ...cliStatus, installSource: 'native', updateAvailable: true, latestVersion: '9.9.9' }
+  const npmClaude = { ...cliStatus, installSource: 'npm', updateAvailable: true, latestVersion: '9.9.9' }
+
+  it('replaces the npm 更新 button with a passive hint for a native install', () => {
+    const markup = render({}, { claude: nativeClaude, codex: cliStatus, grok: cliStatus, gemini: cliStatus })
+    expect(markup).toContain('data-testid="tool-claude-external-managed"')
+    expect(markup).toContain('该版本由官方安装器管理，请用它自己的方式更新')
+    // 那条 external-managed 提示顶掉了 npm 更新按钮。
+    expect(markup).not.toContain('>更新<')
+  })
+
+  it('still offers the npm 更新 button for an npm install', () => {
+    const markup = render({}, { claude: npmClaude, codex: cliStatus, grok: cliStatus, gemini: cliStatus })
+    expect(markup).toContain('>更新<')
+    expect(markup).not.toContain('data-testid="tool-claude-external-managed"')
+  })
+})

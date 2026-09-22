@@ -654,6 +654,53 @@ describe('createSystemService', () => {
     }
   })
 
+  it('records the install source per CLI and leaves Grok unlabelled', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-install-source-scan-'))
+    temporaryDirectories.push(directory)
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('offline') }))
+    const service = createSystemService(
+      new AppSettingsStore(path.join(directory, 'settings.json'), directory),
+      {
+        platform: 'linux',
+        findExecutable: async () => null,
+        resolveCliInstallation: async (provider) => {
+          if (provider === 'claude') {
+            const packageRoot = path.join(directory, 'npm', 'lib', 'node_modules', '@anthropic-ai', 'claude-code')
+            return {
+              commandPath: path.join(directory, 'npm', 'bin', 'claude'),
+              installDirectory: packageRoot,
+              packageRoot,
+              npmPrefix: path.join(directory, 'npm'),
+              packageVersion: '2.1.300',
+              source: 'npm',
+            }
+          }
+          if (provider === 'gemini') return null
+          // codex + grok: 非 npm，装在 ~/.local/bin 之外 → 归类 path。
+          return {
+            commandPath: `/opt/tools/${provider}`,
+            installDirectory: '/opt/tools',
+            packageRoot: null,
+            npmPrefix: null,
+            packageVersion: null,
+            source: 'native',
+          }
+        },
+      },
+    )
+
+    const snapshot = await service.scanSystem(false)
+
+    expect(snapshot.clis.claude).toMatchObject({ installed: true, installSource: 'npm' })
+    expect(snapshot.clis.codex).toMatchObject({ installed: true, installSource: 'path' })
+    // Grok 的安装/更新走原生通道，首页对它不做来源标注，保留既有形态。
+    expect(snapshot.clis.grok.installed).toBe(true)
+    expect(snapshot.clis.grok.installSource).toBeUndefined()
+    // 没装的工具不带来源。
+    expect(snapshot.clis.gemini).toMatchObject({ installed: false })
+    expect(snapshot.clis.gemini.installSource).toBeUndefined()
+  })
+
   it('validates an API key by returning model ids from the relay response', async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
       data: [{ id: 'gpt-5.6-sol' }, { id: 'gpt-5.6-terra' }],

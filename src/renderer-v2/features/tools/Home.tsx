@@ -5,7 +5,7 @@ import { presentExternalClients } from './external-model'
 import { useSharedAccountBalance } from '../app/balance-context'
 import { balanceStatusText } from '../shell/balance-status'
 import { BrandIcon, Button, Card, Dialog, Empty, ListRow, Menu, PageHead, Pill, Progress, ToolRow } from '../../ui'
-import { balanceTier, canUninstallTool, greeting, presentTools, recommendedVersionVerb, rollbackVersion, versionSubtitle, type ToolboxSnapshot, type ToolId, type ToolPresentation } from './model'
+import { balanceTier, canUninstallTool, externalInstallHint, greeting, isExternallyManagedInstall, presentTools, recommendedVersionVerb, rollbackVersion, versionSubtitle, type ToolboxSnapshot, type ToolId, type ToolPresentation } from './model'
 import type { ToolboxPartitionFailure, ToolsApi } from './api'
 import type { ToolJob } from './useToolbox'
 import type { AccountBootstrapProgress, AccountBootstrapResult } from './account-bootstrap'
@@ -144,6 +144,10 @@ export function Home(props: HomeProps) {
       : tool.configured ? props.onLaunch(tool.id, lastWorkspace?.path) : props.onConfigure(tool.id)
     const rollback = job ? null : rollbackVersion(tool)
     const blocked = tool.versionAdvice?.blockedReason ?? null
+    // 原生/其他来源装的 CLI 不走本工具的 npm 通道，不给 npm 更新/回滚按钮，
+    // 该更新时改用一句被动提示，避免在 npm 全局目录另装一份并存。
+    const externalManaged = isExternallyManagedInstall(tool.status)
+    const externalHint = externalManaged ? externalInstallHint(tool.status.installSource) : null
     // 推荐版本比已装的新时这是一次「更新」，图标和文案都不能写成回退。
     const rollbackVerb = recommendedVersionVerb(tool)
     const rollbackIcon = tool.versionAdvice?.recommendedIsNewer ? Download : RotateCcw
@@ -159,9 +163,13 @@ export function Home(props: HomeProps) {
       progress={job?.percent}
       extraAction={installJob?.cancellable
         ? <Button variant="ghost" size="sm" icon={X} loading={installJob.cancelling} onClick={() => props.onCancelInstall(tool.id)} testId={`tool-${tool.id}-cancel`}>{installJob.cancelling ? '取消中' : '取消'}</Button>
-        : rollback && blocked
-          ? <Button variant="ghost" size="sm" icon={rollbackIcon} title={blocked} onClick={() => props.onInstall(tool.id, rollback)} testId={`tool-${tool.id}-rollback`}>{`${rollbackVerb}推荐版本`}</Button>
-          : tool.updateAvailable && !job ? <Button variant="ghost" size="sm" icon={Download} onClick={() => props.onInstall(tool.id)}>更新</Button> : undefined}
+        : externalManaged
+          ? externalHint && (tool.updateAvailable || (rollback && blocked))
+            ? <span className="v2-tool-external-note" title={externalHint} data-testid={`tool-${tool.id}-external-managed`}>{externalHint}</span>
+            : undefined
+          : rollback && blocked
+            ? <Button variant="ghost" size="sm" icon={rollbackIcon} title={blocked} onClick={() => props.onInstall(tool.id, rollback)} testId={`tool-${tool.id}-rollback`}>{`${rollbackVerb}推荐版本`}</Button>
+            : tool.updateAvailable && !job ? <Button variant="ghost" size="sm" icon={Download} onClick={() => props.onInstall(tool.id)}>更新</Button> : undefined}
       primaryAction={workspaces.length ? <span className="v2-tool-launch" data-testid={`tool-${tool.id}-launch`}>
         {primaryButton}
         {lastWorkspace && <Menu label="换一个目录" testId={`tool-${tool.id}-workspaces`}

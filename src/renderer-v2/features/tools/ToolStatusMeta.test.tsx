@@ -43,6 +43,14 @@ describe('renderer-v2 maintenance tool status pill', () => {
     expect(markup).toContain('xm-tone-ok')
   })
 
+  it('names the install source so a native or other-source install reads honestly', () => {
+    expect(meta({ ...installed, installSource: 'native' }, '2.1.277')).toContain('已安装（官方安装器）')
+    expect(meta({ ...installed, installSource: 'path' }, '2.1.277')).toContain('已安装（其他来源）')
+    // npm 装的与来源未知的仍是朴素的「已安装」。
+    expect(meta({ ...installed, installSource: 'npm' }, '2.1.277')).toContain('>已安装<')
+    expect(meta(installed, '2.1.277')).toContain('>已安装<')
+  })
+
   it('draws a tool that is genuinely absent as 未安装', () => {
     const markup = meta(missing)
     expect(markup).toContain('未安装')
