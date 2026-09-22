@@ -1,7 +1,7 @@
-import type { AccelerationApi, AccelerationConflictKind, AccelerationLine, AccelerationMode, AccelerationPhase, AccelerationRedemptionResult, AccelerationState } from './acceleration-contract'
-import { accelerationBonusSeconds, accelerationConflictKinds, accelerationFailure, accelerationFailureMessages, accelerationFailureReason, accelerationTrialSeconds, isAccelerationConflictKind } from './acceleration-contract'
+import type { AccelerationApi, AccelerationConflictKind, AccelerationLine, AccelerationMode, AccelerationPhase, AccelerationPreference, AccelerationPreferenceApi, AccelerationPreferenceUpdate, AccelerationRedemptionResult, AccelerationState } from './acceleration-contract'
+import { accelerationBonusSeconds, accelerationConflictKinds, accelerationFailure, accelerationFailureMessages, accelerationFailureReason, accelerationTrialSeconds, isAccelerationConflictKind, isAccelerationLineId } from './acceleration-contract'
 
-export interface AccelerationService extends AccelerationApi {
+export interface AccelerationService extends AccelerationApi, AccelerationPreferenceApi {
   redeemAccelerationCode(scope: string, code: string): Promise<AccelerationRedemptionResult>
   /** Host lifecycle barrier; also drains sessions whose account has already expired. */
   stopAll(): Promise<void>
@@ -17,6 +17,11 @@ interface AccelerationServiceOptions {
    * 上的连接与断开，不必另起一套轮询；回调抛错不许影响本次请求的结果。
    */
   onState?: (state: AccelerationState) => void
+  /**
+   * 落盘的线路与模式偏好。刻意不走下面那条串行队列：它与连接无关，而队列里
+   * 排着的可能是一次十几秒的连接，界面上点一下线路不该等它。
+   */
+  preferences?: AccelerationPreferenceApi
 }
 
 const SERVICE_UNAVAILABLE = '加速线路暂未开通，请稍后再试。'
@@ -41,7 +46,18 @@ function assertIgnoreConflicts(value: unknown): asserts value is boolean | undef
 }
 
 function assertLineId(lineId: unknown): asserts lineId is string {
-  if (typeof lineId !== 'string' || !/^[a-z\d_.-]{1,80}$/i.test(lineId)) throw new Error('加速线路参数无效。')
+  if (!isAccelerationLineId(lineId)) throw new Error('加速线路参数无效。')
+}
+
+/** 渲染层来的偏好同样是敌意输入：只放行认识的字段与取值（I5）。 */
+function parsePreferenceUpdate(value: unknown): AccelerationPreferenceUpdate {
+  if (!isRecord(value)) throw new Error('加速线路偏好参数无效。')
+  if (value.lineId !== undefined && value.lineId !== null) assertLineId(value.lineId)
+  if (value.mode !== undefined) assertMode(value.mode)
+  return {
+    ...(value.lineId !== undefined ? { lineId: value.lineId as string | null } : {}),
+    ...(value.mode !== undefined ? { mode: value.mode as AccelerationMode } : {}),
+  }
 }
 
 /**
@@ -137,6 +153,10 @@ function projectState(value: unknown, scope: string): AccelerationState {
     scope, phase, mode: value.mode, totalSeconds: value.totalSeconds, remainingSeconds: value.remainingSeconds,
     sessionSeconds: value.sessionSeconds, measuredAt: value.measuredAt, connectedAt: value.connectedAt, line, error: value.error,
   }
+}
+
+function defaultPreference(): AccelerationPreference {
+  return { lineId: null, mode: 'system-proxy' }
 }
 
 function unavailableState(scope: string): AccelerationState {
@@ -310,6 +330,17 @@ export function createAccelerationService(options: AccelerationServiceOptions): 
           return line
         } catch (error) { throw backendFailure(error) }
       })
+    },
+    getAccelerationPreference(scope) {
+      try { assertScope(scope) } catch (error) { return Promise.reject(error) }
+      // 没有偏好存储时按「从没选过」回答：加速页照旧从智能分配 + 标准模式开始。
+      return options.preferences?.getAccelerationPreference(scope) ?? Promise.resolve(defaultPreference())
+    },
+    saveAccelerationPreference(scope, update) {
+      let parsed: AccelerationPreferenceUpdate
+      try { assertScope(scope); parsed = parsePreferenceUpdate(update) } catch (error) { return Promise.reject(error) }
+      if (!options.preferences) return Promise.reject(new Error('加速线路偏好暂不可用，请稍后重试。'))
+      return options.preferences.saveAccelerationPreference(scope, parsed)
     },
     stopAll() {
       revision += 1

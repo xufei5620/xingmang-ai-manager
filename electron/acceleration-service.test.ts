@@ -496,3 +496,59 @@ describe('acceleration failure reasons', () => {
     expect((rejection as { accelerationReason?: string }).accelerationReason).toBe('unknown')
   })
 })
+
+describe('acceleration preference', () => {
+  function preferenceService(overrides: Partial<Parameters<typeof createAccelerationService>[0]> = {}) {
+    const saveAccelerationPreference = vi.fn(async () => ({ lineId: 'jp-01', mode: 'system-proxy' as const }))
+    const getAccelerationPreference = vi.fn(async () => ({ lineId: 'jp-01', mode: 'tun' as const }))
+    const service = createAccelerationService({
+      backend: createBackend(),
+      getAccountScope: () => scope,
+      preferences: { getAccelerationPreference, saveAccelerationPreference },
+      ...overrides,
+    })
+    return { service, getAccelerationPreference, saveAccelerationPreference }
+  }
+
+  it('reads and writes through the injected store', async () => {
+    const { service, saveAccelerationPreference } = preferenceService()
+    await expect(service.getAccelerationPreference(scope)).resolves.toEqual({ lineId: 'jp-01', mode: 'tun' })
+    await service.saveAccelerationPreference(scope, { lineId: 'jp-01' })
+    expect(saveAccelerationPreference).toHaveBeenCalledWith(scope, { lineId: 'jp-01' })
+  })
+
+  it('refuses an account scope or a field the renderer made up', async () => {
+    const { service, saveAccelerationPreference } = preferenceService()
+    await expect(service.getAccelerationPreference('../etc')).rejects.toThrow('加速账号参数无效。')
+    await expect(service.saveAccelerationPreference(scope, { lineId: '../../secrets' })).rejects.toThrow('加速线路参数无效。')
+    await expect(service.saveAccelerationPreference(scope, { mode: 'router' as never })).rejects.toThrow('加速模式无效。')
+    expect(saveAccelerationPreference).not.toHaveBeenCalled()
+  })
+
+  it('drops the fields the caller did not send instead of writing them as undefined', async () => {
+    const { service, saveAccelerationPreference } = preferenceService()
+    await service.saveAccelerationPreference(scope, { mode: 'tun' })
+    expect(saveAccelerationPreference).toHaveBeenCalledWith(scope, { mode: 'tun' })
+    await service.saveAccelerationPreference(scope, { lineId: null })
+    expect(saveAccelerationPreference).toHaveBeenLastCalledWith(scope, { lineId: null })
+  })
+
+  // 没有偏好存储的宿主（早于这一版、或本机联调）照旧每次从智能分配 + 标准模式开始。
+  it('answers "never chose anything" when no store was injected', async () => {
+    const service = createAccelerationService({ backend: createBackend(), getAccountScope: () => scope })
+    await expect(service.getAccelerationPreference(scope)).resolves.toEqual({ lineId: null, mode: 'system-proxy' })
+    await expect(service.saveAccelerationPreference(scope, { lineId: null })).rejects.toThrow('加速线路偏好暂不可用，请稍后重试。')
+  })
+
+  // 连接会在队列里排十几秒，界面上点一下线路不该等它。
+  it('does not queue behind a connection in flight', async () => {
+    const pending = deferred<AccelerationState>()
+    const backend = createBackend()
+    vi.mocked(backend.startAcceleration).mockReturnValueOnce(pending.promise)
+    const { service } = preferenceService({ backend })
+    const connecting = service.startAcceleration(scope, 'system-proxy')
+    await expect(service.getAccelerationPreference(scope)).resolves.toEqual({ lineId: 'jp-01', mode: 'tun' })
+    pending.resolve(active())
+    await connecting
+  })
+})

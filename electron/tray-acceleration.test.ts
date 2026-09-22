@@ -119,7 +119,8 @@ describe('tray acceleration coordinator', () => {
     const { options, controller } = coordinator()
     controller.observe(state())
     await controller.toggle()
-    expect(options.connect).toHaveBeenCalledExactlyOnceWith(scope)
+    // 第二个参数是托盘手上那份状态：宿主据此判断记住的模式当前支不支持。
+    expect(options.connect).toHaveBeenCalledExactlyOnceWith(scope, state())
     expect(controller.entry()).toMatchObject({ actionLabel: '断开加速', action: 'stop' })
     await controller.toggle()
     expect(options.disconnect).toHaveBeenCalledExactlyOnceWith(scope)

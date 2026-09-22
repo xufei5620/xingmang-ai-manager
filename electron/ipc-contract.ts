@@ -711,6 +711,8 @@ export interface XingmangInvokeContract {
   startAcceleration: IpcInvokeDefinition<'acceleration:start', [scope: string, mode: import('./acceleration-contract').AccelerationMode, lineId?: string, ignoreConflicts?: boolean], import('./acceleration-contract').AccelerationState>
   stopAcceleration: IpcInvokeDefinition<'acceleration:stop', [scope: string], import('./acceleration-contract').AccelerationState>
   redeemAccelerationCode: IpcInvokeDefinition<'acceleration:redeem-code', [scope: string, code: string], import('./acceleration-contract').AccelerationRedemptionResult>
+  getAccelerationPreference: IpcInvokeDefinition<'acceleration:get-preference', [scope: string], import('./acceleration-contract').AccelerationPreference>
+  saveAccelerationPreference: IpcInvokeDefinition<'acceleration:save-preference', [scope: string, update: import('./acceleration-contract').AccelerationPreferenceUpdate], import('./acceleration-contract').AccelerationPreference>
   getLegalDocument: IpcInvokeDefinition<'account:get-legal-document', [kind: LegalDocumentKind, siteId?: AccountSiteId], LegalDocument>
   loginAccount: IpcInvokeDefinition<'account:login', [input: AccountLoginInput], AccountLoginResult>
   logoutAccount: IpcInvokeDefinition<'account:logout', [], void>
@@ -1014,6 +1016,8 @@ export const ipcInvokeChannels = {
   startAcceleration: 'acceleration:start',
   stopAcceleration: 'acceleration:stop',
   redeemAccelerationCode: 'acceleration:redeem-code',
+  getAccelerationPreference: 'acceleration:get-preference',
+  saveAccelerationPreference: 'acceleration:save-preference',
   getLegalDocument: 'account:get-legal-document',
   loginAccount: 'account:login',
   logoutAccount: 'account:logout',

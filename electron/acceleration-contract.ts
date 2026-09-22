@@ -110,6 +110,34 @@ export function accelerationFailureReason(error: unknown): AccelerationFailureRe
   return isAccelerationFailureReason(reason) ? reason : null
 }
 
+/**
+ * 线路 id 的取值范围与 acceleration-service.ts 的 assertLineId 同一条：后端给的
+ * id 会原样进入落盘的偏好文件，所以偏好这一侧必须用同一把尺子量一次（I5）。
+ */
+export function isAccelerationLineId(value: unknown): value is string {
+  return typeof value === 'string' && /^[a-z\d_.-]{1,80}$/i.test(value)
+}
+
+/**
+ * 用户在加速页上亲手选过的线路与模式。`lineId: null` 是「选了智能分配」，与
+ * 「从没选过」对连接来说等价，落盘由 acceleration-preference-store.ts 负责。
+ */
+export interface AccelerationPreference {
+  lineId: string | null
+  mode: AccelerationMode
+}
+
+/** 按字段更新：线路与模式分别由两处界面写入，缺省字段保留已存的那一半。 */
+export interface AccelerationPreferenceUpdate {
+  lineId?: string | null
+  mode?: AccelerationMode
+}
+
+export interface AccelerationPreferenceApi {
+  getAccelerationPreference(scope: string): Promise<AccelerationPreference>
+  saveAccelerationPreference(scope: string, update: AccelerationPreferenceUpdate): Promise<AccelerationPreference>
+}
+
 export interface AccelerationLine {
   id: string
   name: string

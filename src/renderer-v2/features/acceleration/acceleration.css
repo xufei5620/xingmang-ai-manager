@@ -35,6 +35,7 @@
 .acceleration-route-latency strong { font: 500 var(--font-h2) var(--mono); }
 .acceleration-route-latency small { font-size: var(--font-small-compact); font-weight: 400; }
 .acceleration-line-picker { position: relative; margin-top: var(--space-2); }
+.acceleration-line-remembered { margin-left: var(--space-2); color: var(--text-3); font-size: var(--font-small-compact); }
 .acceleration-line-list { display: grid; gap: 2px; position: absolute; z-index: 3; left: 0; right: 0; bottom: calc(100% + 4px); max-height: 220px; overflow: auto; padding: 8px; border: 1px solid var(--line-2); border-radius: var(--radius-input); background: var(--panel-solid); box-shadow: var(--shadow-float); }
 .acceleration-line-list-head { display: flex; align-items: center; justify-content: space-between; padding: 0 6px 5px; color: var(--text-3); font-size: var(--font-small-compact); }
 .acceleration-line-option { display: flex; align-items: center; gap: 8px; min-height: 32px; padding: 2px 5px; border-radius: var(--radius-input); }

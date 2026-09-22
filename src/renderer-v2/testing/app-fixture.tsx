@@ -222,6 +222,8 @@ const methods = {
   getAccelerationState: async (scope: string) => query.has('accelerationPreview')
     ? accelerationDemo.getAccelerationState(scope)
     : { scope, phase: 'unavailable' as const, mode: 'system-proxy' as const, totalSeconds: accelerationTrialSeconds, remainingSeconds: null, sessionSeconds: 0, measuredAt: new Date().toISOString(), connectedAt: null, line: null, error: null },
+  getAccelerationPreference: accelerationDemo.getAccelerationPreference,
+  saveAccelerationPreference: accelerationDemo.saveAccelerationPreference,
   startAcceleration: accelerationDemo.startAcceleration,
   stopAcceleration: accelerationDemo.stopAcceleration,
   redeemAccelerationCode: async (scope: string, code: string) => {

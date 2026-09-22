@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
-import { accelerationConflictNotice, accelerationFailureMessages, accelerationTrialSeconds, type AccelerationState } from '../../../../electron/acceleration-contract'
+import { accelerationConflictNotice, accelerationFailureMessages, accelerationTrialSeconds, type AccelerationLine, type AccelerationState } from '../../../../electron/acceleration-contract'
 import { AccelerationView } from './AccelerationView'
 
 function state(overrides: Partial<AccelerationState> = {}): AccelerationState {
@@ -11,15 +11,39 @@ function state(overrides: Partial<AccelerationState> = {}): AccelerationState {
   }
 }
 
-function render(current: AccelerationState | null, extra: { error?: string; onViewLog?(): void } = {}) {
+function render(current: AccelerationState | null, extra: { error?: string; onViewLog?(): void; rememberedLine?: boolean; lines?: AccelerationLine[]; selectedLineId?: string } = {}) {
   return renderToStaticMarkup(<AccelerationView
     state={current} mode="system-proxy" busy={false} signedIn error={extra.error ?? null}
     onModeChange={() => undefined} onStart={() => undefined} onStartAnyway={() => undefined}
     onStop={() => undefined} onRefresh={() => undefined} onLogin={() => undefined} onHelp={() => undefined}
-    onViewLog={extra.onViewLog} lines={[]} selectedLineId={null} linesBusy={false} linesError={null}
+    onViewLog={extra.onViewLog} lines={extra.lines ?? []} selectedLineId={extra.selectedLineId ?? null}
+    rememberedLine={extra.rememberedLine} linesBusy={false} linesError={null}
     onSelectLine={() => undefined} onPingLine={() => undefined} onRefreshLines={() => undefined}
   />)
 }
+
+const rememberedLine: AccelerationLine = { id: 'hk-02', name: '香港线路', region: 'HK', latencyMs: 31 }
+
+describe('acceleration remembered line', () => {
+  it('says the selected line is the one from last time', () => {
+    const markup = render(state(), { rememberedLine: true, lines: [rememberedLine], selectedLineId: rememberedLine.id })
+    expect(markup).toContain('data-testid="acceleration-line-remembered"')
+    expect(markup).toContain('已选中你上次用的线路')
+    expect(markup).toContain('香港线路')
+  })
+
+  it('stays silent when the user picked the line in this session', () => {
+    const markup = render(state(), { lines: [rememberedLine], selectedLineId: rememberedLine.id })
+    expect(markup).not.toContain('acceleration-line-remembered')
+  })
+
+  // 连上之后线路由状态说了算，这句提示没有位置也没有意义。
+  it('stays silent once the session is connected', () => {
+    const markup = render(state({ phase: 'active', connectedAt: '2026-09-22T00:00:00Z', line: rememberedLine }),
+      { rememberedLine: true, lines: [rememberedLine], selectedLineId: rememberedLine.id })
+    expect(markup).not.toContain('acceleration-line-remembered')
+  })
+})
 
 describe('acceleration conflict notice', () => {
   const conflicted = state({

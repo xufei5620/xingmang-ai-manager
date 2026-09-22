@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { accelerationBonusCode, accelerationBonusSeconds, accelerationConflictNotice, accelerationTrialSeconds } from '../../../../electron/acceleration-contract'
-import type { AccelerationApi, AccelerationMode, AccelerationRedemptionResult, AccelerationState } from './api'
+import type { AccelerationApi, AccelerationClient, AccelerationMode, AccelerationPreference, AccelerationPreferenceUpdate, AccelerationRedemptionResult, AccelerationState } from './api'
 import { createAccelerationApi } from './api'
 import { createAccelerationController, type AccelerationController } from './controller'
 
@@ -440,5 +440,77 @@ describe('acceleration controller', () => {
     expect(bridge.startAcceleration).toHaveBeenLastCalledWith('new-api:1', 'system-proxy', undefined, true)
     expect(bridge.stopAcceleration).toHaveBeenCalledWith('new-api:1')
     expect(bridge.redeemAccelerationCode).toHaveBeenCalledWith('new-api:1', accelerationBonusCode)
+  })
+})
+
+describe('acceleration mode memory', () => {
+  const controllers: AccelerationController[] = []
+  function create(stored: AccelerationPreference, initial = state()) {
+    const saved: AccelerationPreferenceUpdate[] = []
+    const api: AccelerationClient = {
+      getAccelerationState: vi.fn(async () => initial),
+      startAcceleration: vi.fn(async () => ({ ...initial, phase: 'active' as const })),
+      stopAcceleration: vi.fn(async () => initial),
+      getAccelerationPreference: vi.fn(async () => stored),
+      saveAccelerationPreference: vi.fn(async (_scope: string, update: AccelerationPreferenceUpdate) => {
+        saved.push(update)
+        return { ...stored, ...update }
+      }),
+    }
+    const controller = createAccelerationController(api)
+    controllers.push(controller)
+    return { controller, api, saved }
+  }
+  afterEach(() => { controllers.splice(0).forEach((controller) => controller.dispose()) })
+
+  it('restores a remembered mode the host says it supports', async () => {
+    const { controller } = create({ lineId: null, mode: 'tun' }, state({ supportedModes: ['system-proxy', 'tun'] }))
+    controller.setScope('new-api:1')
+    await controller.refresh()
+    await Promise.resolve()
+    expect(controller.getSnapshot().mode).toBe('tun')
+  })
+
+  // TUN 会改系统网络设置：后端没说支持，界面就不许因为一份旧记录显示成开着。
+  it('ignores a remembered mode the host does not offer', async () => {
+    const { controller } = create({ lineId: null, mode: 'tun' }, state({ supportedModes: ['system-proxy'] }))
+    controller.setScope('new-api:1')
+    await controller.refresh()
+    await Promise.resolve()
+    expect(controller.getSnapshot().mode).toBe('system-proxy')
+  })
+
+  it('stores the switch the user just flipped', async () => {
+    const { controller, saved } = create({ lineId: null, mode: 'system-proxy' }, state({ supportedModes: ['system-proxy', 'tun'] }))
+    controller.setScope('new-api:1')
+    await controller.refresh()
+    controller.setMode('tun')
+    await Promise.resolve()
+    expect(controller.getSnapshot().mode).toBe('tun')
+    expect(saved).toEqual([{ mode: 'tun' }])
+  })
+
+  it('never lets a late preference read override the switch the user just flipped', async () => {
+    const pending = deferred<AccelerationPreference>()
+    const { controller, api } = create({ lineId: null, mode: 'tun' }, state({ supportedModes: ['system-proxy', 'tun'] }))
+    vi.mocked(api.getAccelerationPreference!).mockReturnValueOnce(pending.promise)
+    controller.setScope('new-api:1')
+    await controller.refresh()
+    controller.setMode('system-proxy')
+    pending.resolve({ lineId: null, mode: 'tun' })
+    await pending.promise
+    await Promise.resolve()
+    expect(controller.getSnapshot().mode).toBe('system-proxy')
+  })
+
+  it('never lets a preference failure surface on the page', async () => {
+    const { controller, api } = create({ lineId: null, mode: 'tun' }, state({ supportedModes: ['system-proxy', 'tun'] }))
+    vi.mocked(api.getAccelerationPreference!).mockRejectedValueOnce(new Error('读偏好失败'))
+    vi.mocked(api.saveAccelerationPreference!).mockRejectedValueOnce(new Error('写偏好失败'))
+    controller.setScope('new-api:1')
+    await controller.refresh()
+    controller.setMode('tun')
+    await Promise.resolve()
+    expect(controller.getSnapshot()).toMatchObject({ mode: 'tun', error: null })
   })
 })

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import type { AccelerationApi, AccelerationLine } from './api'
+import type { AccelerationClient, AccelerationLine, AccelerationPreference, AccelerationPreferenceUpdate } from './api'
 import { createAccelerationLinesController } from './lines-controller'
 
 const firstScope = 'xm-account:1'
@@ -15,7 +15,7 @@ function deferred<T>() {
 
 function setup() {
   let selectable = true
-  const api: AccelerationApi = {
+  const api: AccelerationClient = {
     getAccelerationState: vi.fn(), startAcceleration: vi.fn(), stopAcceleration: vi.fn(),
     listAccelerationLines: vi.fn(async () => [line]),
     pingAccelerationLine: vi.fn(async () => ({ ...line, latencyMs: 32 })),
@@ -107,5 +107,86 @@ describe('acceleration line selection lifecycle', () => {
     await request
     expect(listener).not.toHaveBeenCalled()
     expect(controller.getSnapshot().error).toBeNull()
+  })
+})
+
+function withPreferences(stored: AccelerationPreference, lines: AccelerationLine[] = [line]) {
+  let selectable = true
+  const saved: AccelerationPreferenceUpdate[] = []
+  const api: AccelerationClient = {
+    getAccelerationState: vi.fn(), startAcceleration: vi.fn(), stopAcceleration: vi.fn(),
+    listAccelerationLines: vi.fn(async () => lines),
+    pingAccelerationLine: vi.fn(async () => ({ ...line, latencyMs: 32 })),
+    getAccelerationPreference: vi.fn(async () => stored),
+    saveAccelerationPreference: vi.fn(async (_scope: string, update: AccelerationPreferenceUpdate) => {
+      saved.push(update)
+      return { ...stored, ...update } as AccelerationPreference
+    }),
+  }
+  return { api, saved, controller: createAccelerationLinesController(api, () => selectable), lock: () => { selectable = false } }
+}
+
+/** 等一拍，好让「选完就写回去」那个不被等待的写入跑完。 */
+function settle() {
+  return new Promise(resolve => { setTimeout(resolve, 0) })
+}
+
+describe('acceleration line memory', () => {
+  it('selects the remembered line as soon as the list arrives', async () => {
+    const { controller } = withPreferences({ lineId: line.id, mode: 'system-proxy' })
+    controller.setScope(firstScope)
+    await controller.refresh()
+    expect(controller.getSnapshot()).toMatchObject({ selectedLineId: line.id, remembered: true })
+  })
+
+  it('falls back to automatic and forgets a remembered line that is no longer offered', async () => {
+    const { controller, saved } = withPreferences({ lineId: 'line-gone', mode: 'system-proxy' })
+    controller.setScope(firstScope)
+    await controller.refresh()
+    await settle()
+    expect(controller.getSnapshot()).toMatchObject({ selectedLineId: null, remembered: false })
+    expect(saved).toEqual([{ lineId: null }])
+  })
+
+  it('stores every pick, 智能分配 included', async () => {
+    const { controller, saved } = withPreferences({ lineId: null, mode: 'system-proxy' })
+    controller.setScope(firstScope)
+    await controller.refresh()
+    controller.select(line.id)
+    controller.select(null)
+    await settle()
+    expect(saved).toEqual([{ lineId: line.id }, { lineId: null }])
+    expect(controller.getSnapshot().remembered).toBe(false)
+  })
+
+  // 写回是异步的：刷新时再读一次偏好，会把刚选的那条弹回上一次的值。
+  it('keeps the just-picked line across a refresh instead of re-reading the stored one', async () => {
+    const other: AccelerationLine = { id: 'line-2', name: '香港线路', region: 'HK', latencyMs: null }
+    const { api, controller } = withPreferences({ lineId: line.id, mode: 'system-proxy' }, [line, other])
+    controller.setScope(firstScope)
+    await controller.refresh()
+    controller.select(other.id)
+    await controller.refresh()
+    expect(controller.getSnapshot()).toMatchObject({ selectedLineId: other.id, remembered: false })
+    expect(api.getAccelerationPreference).toHaveBeenCalledTimes(1)
+  })
+
+  it('never lets a preference failure break the line list', async () => {
+    const { api, controller } = withPreferences({ lineId: line.id, mode: 'system-proxy' })
+    vi.mocked(api.getAccelerationPreference!).mockRejectedValueOnce(new Error('读偏好失败'))
+    vi.mocked(api.saveAccelerationPreference!).mockRejectedValueOnce(new Error('写偏好失败'))
+    controller.setScope(firstScope)
+    await controller.refresh()
+    controller.select(line.id)
+    await settle()
+    expect(controller.getSnapshot()).toMatchObject({ lines: [line], selectedLineId: line.id, error: null, busy: false })
+  })
+
+  it('drops a remembered line that belongs to the account the user just left', async () => {
+    const { controller } = withPreferences({ lineId: line.id, mode: 'system-proxy' })
+    controller.setScope(firstScope)
+    await controller.refresh()
+    controller.setScope(secondScope)
+    expect(controller.getSnapshot()).toMatchObject({ selectedLineId: null, remembered: false })
   })
 })

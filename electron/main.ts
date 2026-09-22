@@ -21,7 +21,8 @@ import { AccountCredentialStore } from './account-credential-store'
 import { AnnouncementReadStore } from './announcement-read-store'
 import { createAccelerationExpiryNotice, type AccelerationExpiryNotice } from './acceleration-expiry-notice'
 import { createAccelerationService } from './acceleration-service'
-import { accelerationConflictDescriptions, accelerationFailureMessages } from './acceleration-contract'
+import { accelerationConflictDescriptions, accelerationFailureMessages, type AccelerationMode, type AccelerationState } from './acceleration-contract'
+import { accelerationStartRequest, createAccelerationPreferenceStore, defaultAccelerationPreference } from './acceleration-preference-store'
 import { accelerationStartFailureDescriptions, createAccelerationDevelopmentHost, readAccelerationDevelopmentConfig, type AccelerationDevelopmentHost } from './acceleration-development-host'
 import { readBundledAccelerationConfig } from './acceleration-bundled-config'
 import { AiAssetStore, resolveAiOutputRoot } from './ai-asset-store'
@@ -742,6 +743,12 @@ if (!hasSingleInstanceLock) {
     }
 
     const settingsStore = new AppSettingsStore(path.join(managerDataDirectory, 'settings.json'))
+    // 加速页上选过的线路与模式单独落一份，不进 settings.json：它是按账号分的
+    // 记录，而 settings.json 会整份交给渲染层，没必要把机器上每个账号的记录都
+    // 送过去。
+    const accelerationPreferences = createAccelerationPreferenceStore({
+      filePath: path.join(managerDataDirectory, 'acceleration-preferences.json'),
+    })
     const relayFetch: typeof fetch = (input, init) => net.fetch(
       input instanceof URL ? input.href : input,
       init,
@@ -782,6 +789,16 @@ if (!hasSingleInstanceLock) {
       onRouteChanged: applyAcceleratedDownloadProxy,
       log: (level, event, message, detail) => runtimeLog.log(level, 'network', event, message, detail),
     })
+    // 托盘与自动连接共用这一条：把用户在加速页上选过并落了盘的线路与模式，落到
+    // 一次真正的连接上。没选过就是「智能分配 + 标准模式」，与落盘之前的行为一致；
+    // 读不到偏好也按没选过继续，绝不因此连不上。
+    async function accelerationStartArguments(scope: string, state: AccelerationState | null): Promise<[AccelerationMode, string?]> {
+      let preference = defaultAccelerationPreference
+      try { preference = await accelerationPreferences.getAccelerationPreference(scope) }
+      catch (error) { runtimeLog.exception('network', 'acceleration.preference.read.failed', error) }
+      const request = accelerationStartRequest(preference, state?.supportedModes)
+      return request.lineId === undefined ? [request.mode] : [request.mode, request.lineId]
+    }
     // Codex 桌面端是独立进程，只跟着系统代理走，所以这里要的是完整的「连接」
     // （和用户在加速页点的那一下同一条路），不是下载专用线路。加速服务同样
     // 建得比 systemService 晚，空着的时候一律按没加速打开。
@@ -790,11 +807,10 @@ if (!hasSingleInstanceLock) {
       readState: (scope) => acceleration
         ? acceleration.getAccelerationState(scope)
         : Promise.reject(new Error('加速服务尚未就绪。')),
-      // 模式固定 system-proxy：本机加速从不开 TUN，后端的 supportedModes 也
-      // 只有这一项。线路交给后端按默认挑，不替用户改他选过的那条。
-      connect: (scope) => acceleration
-        ? acceleration.startAcceleration(scope, 'system-proxy')
-        : Promise.reject(new Error('加速服务尚未就绪。')),
+      connect: async (scope, state) => {
+        if (!acceleration) throw new Error('加速服务尚未就绪。')
+        return acceleration.startAcceleration(scope, ...await accelerationStartArguments(scope, state))
+      },
       log: (level, event, message, detail) => runtimeLog.log(level, 'network', event, message, detail),
     })
     const systemService = createSystemService(settingsStore, {
@@ -1682,23 +1698,24 @@ if (!hasSingleInstanceLock) {
     })
     acceleration = createAccelerationService({
       backend: developmentAcceleration,
+      preferences: accelerationPreferences,
       getAccountScope: () => readAccelerationAccountScope(),
       onState: (state) => {
         trayAcceleration?.observe(state)
         accelerationExpiry?.observe(state)
       },
     })
-    // 托盘上的连接与断开走的就是加速页那条路：线路交给「智能分配」、模式用标准
-    // 模式（两者都是加速页上的当次选择，没有落盘，托盘读不到也不替用户猜），与
-    // 打开 Codex 桌面端时自动连接同一口径。
+    // 托盘上的连接与断开走的就是加速页那条路，线路与模式也用他在加速页上选过并
+    // 落了盘的那一套，与打开 Codex 桌面端时自动连接同一口径。
     trayAcceleration = createTrayAccelerationCoordinator({
       getAccountScope: () => readAccelerationAccountScope(),
       readState: (scope) => acceleration
         ? acceleration.getAccelerationState(scope)
         : Promise.reject(new Error('加速服务尚未就绪。')),
-      connect: (scope) => acceleration
-        ? acceleration.startAcceleration(scope, 'system-proxy')
-        : Promise.reject(new Error('加速服务尚未就绪。')),
+      connect: async (scope, state) => {
+        if (!acceleration) throw new Error('加速服务尚未就绪。')
+        return acceleration.startAcceleration(scope, ...await accelerationStartArguments(scope, state))
+      },
       disconnect: (scope) => acceleration
         ? acceleration.stopAcceleration(scope)
         : Promise.reject(new Error('加速服务尚未就绪。')),

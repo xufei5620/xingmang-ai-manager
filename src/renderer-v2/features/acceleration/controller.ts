@@ -1,4 +1,4 @@
-import type { AccelerationApi, AccelerationMode, AccelerationRedemptionResult, AccelerationState } from './api'
+import type { AccelerationClient, AccelerationMode, AccelerationRedemptionResult, AccelerationState } from './api'
 import { errorMessage as sharedErrorMessage } from '../../business-common'
 
 export interface AccelerationSnapshot {
@@ -47,7 +47,7 @@ function errorMessage(cause: unknown) {
 }
 
 /** Display projection only: balances and actual connection lifetime belong to the host. */
-export function createAccelerationController(api: AccelerationApi, { now = () => performance.now(), schedule = scheduleTimeout }: ControllerOptions = {}): AccelerationController {
+export function createAccelerationController(api: AccelerationClient, { now = () => performance.now(), schedule = scheduleTimeout }: ControllerOptions = {}): AccelerationController {
   let snapshot: AccelerationSnapshot = { state: null, busy: false, error: null, mode: 'system-proxy' }
   let scope: string | null = null
   let source: AccelerationState | null = null
@@ -57,6 +57,9 @@ export function createAccelerationController(api: AccelerationApi, { now = () =>
   let epoch = 0
   let revision = 0
   let expiryRequested = false
+  // 上次落盘的模式，读到之前是 null；用户这次动过开关就不再套用它。
+  let preferredMode: AccelerationMode | null = null
+  let modeChosen = false
   let readFlight: { promise: Promise<void> } | null = null
   let mutation: MutationFlight | null = null
   let cancelTick: (() => void) | undefined
@@ -131,8 +134,38 @@ export function createAccelerationController(api: AccelerationApi, { now = () =>
       mode: firstRead || connected(state) || state.phase === 'connecting' ? state.mode : snapshot.mode,
       error: state.error,
     })
+    applyPreferredMode()
     scheduleTick()
     scheduleExpiry()
+  }
+
+  /**
+   * 记住的模式只在「还没连上、用户这次也没动过开关」时套用，而且要当前状态说
+   * 支持才算数：TUN 会改系统网络设置，不能因为一份旧记录就在界面上显示成开着。
+   */
+  function applyPreferredMode() {
+    // 只看连接状态，不看 busy：首次读状态期间 busy 就是 true，卡在这里会让记住
+    // 的模式永远套用不上。真正不能动的是已经连上或正在连的那一段。
+    if (disposed || !preferredMode || modeChosen) return
+    if (connected(source) || source?.phase === 'connecting') return
+    if (preferredMode !== 'system-proxy' && !source?.supportedModes?.includes(preferredMode)) return
+    if (snapshot.mode !== preferredMode) publish({ mode: preferredMode })
+  }
+
+  function loadPreferredMode(requestScope: string) {
+    const requestEpoch = epoch
+    void Promise.resolve().then(() => api.getAccelerationPreference?.(requestScope) ?? null).then(preference => {
+      if (disposed || epoch !== requestEpoch || scope !== requestScope || !preference) return
+      preferredMode = preference.mode
+      applyPreferredMode()
+    }, () => undefined)
+  }
+
+  /** 记不住不该影响这一次切换，所以失败只丢掉，界面照常。 */
+  function rememberMode(mode: AccelerationMode) {
+    const requestScope = scope
+    if (!requestScope) return
+    void Promise.resolve().then(() => api.saveAccelerationPreference?.(requestScope, { mode })).catch(() => undefined)
   }
 
   function refresh(): Promise<void> {
@@ -283,11 +316,13 @@ export function createAccelerationController(api: AccelerationApi, { now = () =>
       readFlight = null
       mutation = null
       expiryRequested = false
+      preferredMode = null
+      modeChosen = false
       cancelTick?.()
       cancelPoll?.()
       cancelExpiry?.()
       publish({ state: null, busy: false, error: null, mode: 'system-proxy' })
-      if (scope) void refresh()
+      if (scope) { loadPreferredMode(scope); void refresh() }
     },
     setVisible(next) {
       if (disposed || visible === next) return
@@ -300,7 +335,9 @@ export function createAccelerationController(api: AccelerationApi, { now = () =>
     refresh, start, stop, redeem, tick,
     setMode(mode) {
       if (disposed || snapshot.busy || connected(source) || source?.phase === 'connecting' || (mode !== 'system-proxy' && mode !== 'tun')) return
+      modeChosen = true
       publish({ mode })
+      rememberMode(mode)
     },
     dispose() {
       disposed = true

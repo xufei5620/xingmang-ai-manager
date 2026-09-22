@@ -19,7 +19,7 @@ import type { ExternalDeepLink } from './external-deep-links'
 import { savedAccountId, type SavedAccountsStore } from './saved-accounts'
 import type { ConfigBackupStore } from './backups'
 import { parseLocalNoticeReadSync, type AnnouncementReadStore } from './announcement-read-store'
-import type { AccelerationApi } from './acceleration-contract'
+import type { AccelerationApi, AccelerationMode, AccelerationPreferenceApi } from './acceleration-contract'
 import { accelerationFailureReason } from './acceleration-contract'
 import { cliCatalog, isProviderId, type ProviderId } from './catalog'
 import { isInstallCancelledError } from './install-cancellation'
@@ -143,7 +143,7 @@ export interface IpcRegistrationOptions {
   // type -- this module never needs to know which relay backend is active.
   accountService?: RelayBackendClient
   announcementReads?: Pick<AnnouncementReadStore, 'sync'>
-  acceleration?: AccelerationApi
+  acceleration?: AccelerationApi & Partial<AccelerationPreferenceApi>
   // The server-owned payment form stays in the main process. IPC receives
   // only the user's amount/method choice and delegates the returned form to
   // this isolated window controller without serializing its signed fields.
@@ -2133,6 +2133,25 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     const acceleration = accelerationService()
     if (!acceleration.redeemAccelerationCode) throw new Error('加速口令兑换暂不可用，请稍后再试。')
     return acceleration.redeemAccelerationCode(accountScope, promotionCode)
+  })
+  registerTrustedHandler('acceleration:get-preference', (_event, scope: unknown) => (
+    // 没有偏好存储时按「从没选过」回答，加速页照旧从智能分配 + 标准模式开始。
+    accelerationService().getAccelerationPreference?.(requiredString(scope, '加速账号', 64))
+      ?? Promise.resolve({ lineId: null, mode: 'system-proxy' as const })
+  ))
+  // 线路与模式是两处界面分别写的，所以收的是按字段的更新而不是整条记录：缺省
+  // 的那一半保留已存的值，界面点线路不会顺手把模式也改了。
+  registerTrustedHandler('acceleration:save-preference', (_event, scope: unknown, update: unknown) => {
+    if (!isRecord(update)) throw new Error('加速线路偏好格式错误。')
+    // null 是「智能分配」，与「这次不改线路」（缺省）是两回事，所以分开判。
+    if (update.lineId !== undefined && update.lineId !== null && typeof update.lineId !== 'string') throw new Error('加速线路参数无效。')
+    if (update.mode !== undefined && update.mode !== 'system-proxy' && update.mode !== 'tun') throw new Error('加速模式无效。')
+    const service = accelerationService()
+    if (!service.saveAccelerationPreference) throw new Error('加速线路偏好暂不可用，请稍后重试。')
+    return service.saveAccelerationPreference(requiredString(scope, '加速账号', 64), {
+      ...(update.lineId !== undefined ? { lineId: update.lineId as string | null } : {}),
+      ...(update.mode !== undefined ? { mode: update.mode as AccelerationMode } : {}),
+    })
   })
   registerTrustedHandler('account:get-legal-document', (_event, kind: unknown, siteId: unknown) => (
     (options.realmAccounts ? options.realmAccounts.getPublicClient(siteId === undefined

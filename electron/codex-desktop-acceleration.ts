@@ -5,7 +5,8 @@
  * 代理**——下载专用线路（download-acceleration.ts）那种「只开本机回环端口、
  * 不动系统代理」的用法对它一点作用都没有。这里走的因此是与用户亲手点「连接」
  * 完全相同的那条路：acceleration-service 的 startAcceleration，会话、免费时长
- * 计时、加速页上的状态一并照旧。
+ * 计时、加速页上的状态一并照旧，线路与模式也用他在加速页上选过并落了盘的那一套
+ * （acceleration-preference-store.ts），没选过才是「智能分配 + 标准模式」。
  *
  * 三条硬约束：
  * - 已经连着、正在连、正在停的，一律不动。那条线路归用户，不许替他重连或改线。
@@ -38,7 +39,8 @@ export type CodexDesktopAccelerationDecision = 'connect' | 'already-connected' |
 export interface CodexDesktopAccelerationOptions {
   getAccountScope(): string | null
   readState(scope: string): Promise<AccelerationState>
-  connect(scope: string): Promise<AccelerationState>
+  /** 第二个参数是刚读到的那一份状态：宿主据此判断记住的模式当前支不支持。 */
+  connect(scope: string, state: AccelerationState): Promise<AccelerationState>
   /**
    * 连线路要校验随包资源、拉起内核、再探一次节点，实测几秒。预算给 15 秒：
    * 比正常值宽出一截，又不至于让一台连不上的机器把「打开」拖成半分钟没反应。
@@ -121,7 +123,7 @@ export function createCodexDesktopAccelerationCoordinator(
       return skip('exhausted', '当前账号的免费加速时长已用完，Codex 桌面端按未加速打开')
     }
     let connected: AccelerationState
-    try { connected = await withTimeout(options.connect(scope), timeoutMs) }
+    try { connected = await withTimeout(options.connect(scope, state), timeoutMs) }
     catch (error) {
       const timedOut = error instanceof Error && error.message === '加速连接超时。'
       return skip(timedOut ? 'timeout' : 'connect-failed',
