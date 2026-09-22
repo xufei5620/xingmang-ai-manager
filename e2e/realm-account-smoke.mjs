@@ -380,17 +380,44 @@ async function closeWhileRestoring() {
     // How long a trivial main-process round trip takes right before the close:
     // a main thread stuck in synchronous work shows up here, not in the close.
     const pingStartedAt = Date.now()
-    await withDeadline('main-process ping', stepBudgetMs, () => instance.evaluate(() => 1))
-    const mainPingMs = Date.now() - pingStartedAt
+    const mainPingMs = await withDeadline('main-process ping', stepBudgetMs, () => instance.evaluate(() => 1))
+      .then(() => `${Date.now() - pingStartedAt}ms`, (error) => {
+        // Evidence only: a collected answer says nothing about the main thread.
+        if (!/Resulting promise was garbage collected/.test(String(error?.message))) throw error
+        return 'unknown (answer collected)'
+      })
     let closeRequestedAt = 0
-    const exited = new Promise((resolve) => child.once('exit', (code) => resolve({ code, closeLatency: Date.now() - closeRequestedAt })))
-    closeRequestedAt = Date.now()
-    // Closing starts app.quit(), which may tear the inspector down before the
-    // evaluation returns; only the process exit below is the result.
-    await withDeadline('close request', stepBudgetMs,
-      () => instance.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].close())).catch((error) => {
-      if (!/garbage collected|closed|Target|destroyed/i.test(error instanceof Error ? error.message : String(error))) throw error
-    })
+    let exitedAlready = false
+    const exited = new Promise((resolve) => child.once('exit', (code) => {
+      exitedAlready = true
+      resolve({ code, closeLatency: Date.now() - closeRequestedAt })
+    }))
+    // The close is scheduled rather than run inside the evaluation, so the
+    // evaluation answers before app.quit() can tear the inspector down. An
+    // answer that never comes back ("Resulting promise was garbage collected",
+    // which this fixture hits routinely) does not prove the close ran: the first
+    // CI run of this check swallowed exactly that and then waited on a window
+    // nobody had asked to close. So it is retried, and a second close on a
+    // window that is already quitting is a no-op in the lifecycle.
+    let closeScheduled = false
+    for (let attempt = 1; attempt <= collectedPromiseAttempts && !closeScheduled && !exitedAlready; attempt += 1) {
+      closeRequestedAt = Date.now()
+      try {
+        closeScheduled = await withDeadline(`close request (attempt ${attempt}/${collectedPromiseAttempts})`, stepBudgetMs,
+          () => instance.evaluate(({ BrowserWindow }) => {
+            const window = BrowserWindow.getAllWindows()[0]
+            if (!window || window.isDestroyed()) return false
+            setTimeout(() => { if (!window.isDestroyed()) window.close() }, 0)
+            return true
+          }))
+        if (!closeScheduled) throw new Error('the main window was gone before the close request')
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        if (/Target|closed|destroyed/i.test(message) && !/garbage collected/.test(message)) break
+        if (!/Resulting promise was garbage collected/.test(message) || attempt === collectedPromiseAttempts) throw error
+        progress(`close request: the inspector promise was collected on attempt ${attempt}/${collectedPromiseAttempts}, asking again`)
+      }
+    }
     const result = await Promise.race([exited, new Promise((resolve) => setTimeout(() => resolve(null), restoredCloseBudgetMs))])
     if (!result) {
       // Without this the failure only says "too slow"; whether the main thread
@@ -408,12 +435,12 @@ async function closeWhileRestoring() {
           return line.slice(0, 200)
         }
       })
-      progress(`close request at ${new Date(closeRequestedAt).toISOString()}, main-process ping before it ${mainPingMs}ms, windows now ${state}`)
+      progress(`close request at ${new Date(closeRequestedAt).toISOString()}, main-process ping before it ${mainPingMs}, windows now ${state}`)
       progress(`runtime log since this launch:\n${recent.slice(-120).join('\n')}`)
     }
     assert.ok(result, 'closing the window while the saved account restores must not wait on the start-up scan')
     assert.equal(result.code, 0)
-    progress(`closed ${result.closeLatency}ms after the request (main-process ping before it ${mainPingMs}ms)`)
+    progress(`closed ${result.closeLatency}ms after the request (main-process ping before it ${mainPingMs})`)
   } finally {
     await withDeadline('main process exit', 20_000, () => instance.evaluate(({ app }) => app.exit(0))).catch(() => undefined)
     await withDeadline('close', 20_000, () => instance.close()).catch(() => undefined)
