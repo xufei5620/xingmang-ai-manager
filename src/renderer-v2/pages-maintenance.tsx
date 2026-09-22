@@ -177,6 +177,14 @@ export function diagnosticTarget(code: string): V2Page {
 }
 
 /**
+ * 有些项只能提醒、没有本软件能替用户做的一步：「项目文件夹里的设置」那些文件是
+ * 用户或公司的，本软件不去改，结论里已经说了怎么办，再给「去处理」只会原地跳转。
+ */
+export function diagnosticHasFix(code: string): boolean {
+  return code !== 'WORKSPACE_CONFIG_OVERRIDE'
+}
+
+/**
  * 每个工具一条结论。未配置的工具是灰的、不是红的：一个只用 Claude Code 的
  * 用户不该在这一页上看到三条失败。
  */
@@ -419,7 +427,7 @@ export function HealthPage({
               desc={item.summary}
               actions={
                 <>
-                  {item.state !== 'pass' && (
+                  {item.state !== 'pass' && diagnosticHasFix(item.code) && (
                     <Button
                       size="sm"
                       icon={Wrench}

@@ -2697,6 +2697,17 @@ test('turns the Chinese runtime patch on through the locale path when the one-ti
   } finally { await page.close() }
 })
 
+test('a CLI launch still opens but warns when the project folder overrides the current account', async () => {
+  const page = await open('allInstalled=1&recentWorkspaces=1&launchOverride=1')
+  try {
+    await page.getByTestId('tool-claude-primary').click()
+    await page.getByText('这个项目文件夹里有自己的设置，会让 Claude Code 不用当前账号，余额和用量会对不上。不是你有意这样设的话，换一个文件夹打开就好。', { exact: true }).waitFor()
+    assert.equal(await page.getByRole('dialog', { name: '操作没有完成' }).count(), 0)
+    assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((call) => call.method === 'launchCli').map((call) => call.args)), [['claude', 'C:\\work\\my-app']])
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('ordinary desktop launch preserves the opened app and exposes a Chinese-locale warning', async () => {
   const page = await open('localeLaunchWarning=1')
   try {

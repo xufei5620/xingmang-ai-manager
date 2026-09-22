@@ -11,6 +11,7 @@ import { ConfigDialog } from './features/tools/ConfigDialog'
 import { ExternalClientDialog } from './features/tools/ExternalClientDialog'
 import { Home } from './features/tools/Home'
 import { createToolsApi } from './features/tools/api'
+import { launchWarning } from './features/tools/launch-notice'
 import { chineseRuntimePatchAnswerMissing, shouldAskForChineseRuntimePatch } from './features/tools/chinese-runtime-choice'
 import { cliRuntimeBlockMessage, nodeRuntimeReady } from './features/tools/runtime-readiness'
 import { isToolId, presentTools, providerFor, toolInstallDirectory, type ToolId, type ToolSource } from './features/tools/model'
@@ -523,10 +524,8 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       workspace = selectedWorkspace
     }
     return toolbox.run(`launch:${id}`, '正在打开工具', async () => {
-      const result = await toolsApi.launch(id, workspace, mode)
-      if (mounted.current && result?.chineseLocale && result.chineseLocale.status !== 'verified') {
-        toast.show(result.chineseLocale.message || 'Codex 已打开，中文界面尚未确认生效，请在配置中再次启用。', 'warn')
-      }
+      const warning = launchWarning(await toolsApi.launch(id, workspace, mode))
+      if (mounted.current && warning) toast.show(warning, 'warn')
     })
   }
   /**
