@@ -115,6 +115,53 @@ Codex 那时 `recommended` 是 `null`，也就是那两天点过「更新」的�
 `claude doctor` / `codex doctor` 看对应那一行。**不要对生产中转发这类探测请求**，上面几条都
 不需要联网到中转。
 
+## 本软件替用户改了哪些 CLI 默认值
+
+除了 Key 与 base URL 这些中转必需项，`electron/config-files.ts` 还替用户动了几个上游默认值。
+集中列在这里，便于客服回答「我是不是被改了什么」：
+
+| 改的是什么 | 写在哪 | 上游默认 | 我们写成 | 为什么 |
+|---|---|---|---|---|
+| 四家的自更新 | 见上一节 | 都开着 | 关掉 | 不关名单等于白钉 |
+| Claude 的 Artifact 工具 | `~/.claude/settings.json` 的 `permissions.deny` | 不禁 | 禁掉 | 中转 Key 用不了它，且它的 schema 曾整轮 400 |
+| Claude 的命令确认 | `permissions.defaultMode` | `default`（逐条问） | `bypassPermissions` | 本产品的卖点就是不用自己配、也不用自己按确认 |
+| Claude 的回复语言 | `language` | 未设（跟着对话语言走） | `简体中文` | 只靠 AGENTS.md 撑不住：克隆来的项目大多已有说明文件，模板不会生成 |
+| Claude 的记录保留期 | `cleanupPeriodDays` | 30 天 | 365 天 | 记录页、「接着聊」、导出都建立在文件还在的前提上 |
+| Gemini 的记录保留期 | `general.sessionRetention.maxAge` | `"30d"` | `"365d"` | 同上 |
+| Gemini 的 IDE 模式 | `ide.enabled` | 关 | 开 | 装在 IDE 里的客户少一步 |
+| 目录信任 | 见 `docs/WORKSPACE-TRUST.md` | 每次问 | 本软件打开的目录替用户信任 | 同上 |
+| Gemini 的说明文件名 | `context.fileName` | `GEMINI.md` | 加上 `AGENTS.md` | 四家共用一份说明文件 |
+
+后三项之外，**语言与两个保留期是用户偏好而不是中转配置**：用户自己设过就一字不动（`merge`
+路径只在键缺省时补），切回官方账号时也不收回（`reset` 重建官方模板时一并写回，否则换回官方
+账号的用户会悄悄回到 30 天自动删）。
+
+检查页的「Claude 命令确认方式」那一项因此要分来源：确认是本软件替当前账号写的
+（`tool-config-ownership` 读出 `account`）就是正常状态，判不准时才提醒——否则每个配置正常的
+用户都会被我们自己造成的配置警告一次。
+
+**验证依据**（沙箱，2026-09-22）：
+
+- **Claude Code 2.1.277 — 跑起来看到了**。`~/.claude/settings.json` 写
+  `{"language":"简体中文"}`，把 `ANTHROPIC_BASE_URL` 指到本机假接口（原样落盘请求体、一律回
+  500）后跑 `claude -p "hi"`，请求体的系统提示里出现
+  `# Language\nAlways respond in 简体中文. Use 简体中文 for all explanations, comments, and
+  communications with the user.`——值是被原样插进那段英文提示的，所以写中文名字就行。
+  二进制里这个键的 schema 是 `string().optional()`，描述原文
+  `Preferred language for Claude responses and voice dictation (e.g., "japanese", "spanish")`，
+  没有格式限制。
+- **Claude Code 2.1.277 的 `cleanupPeriodDays` — 读二进制得出**。schema 是
+  `int().positive().optional()`，描述原文
+  `Number of days to retain chat transcripts before automatic cleanup (default: 30). Minimum 1.
+  Use a large value for long retention`，校验失败时的提示原文是
+  `cleanupPeriodDays must be at least 1. To keep transcripts for a long time, set a large number
+  (e.g. 3650 for ~10 years).`——**所以「不删」只能靠写一个大数，写 0 会被拒**。
+- **Gemini CLI 0.60.0 — 读 bundle 得出**。settings schema 里 `general.sessionRetention` 的
+  `enabled` 默认 `true`、`maxAge` 默认 `"30d"`、`minRetention` 默认 `"1d"`；`maxAge` 的解析是
+  `/^(\d+)([dhwm])$/`，`"365d"` 合法。要紧的是 `getDefaultsFromSchema` **会递归补齐嵌套默认
+  值**，所以用户的 `settings.json` 里没有这一段时清理照样按 30 天跑，不是「没配就不清」。
+  被清的目录是 `getProjectTempDir()/chats`，正是记录页读的那一处。
+
 ## 站点维度
 
 `VerifiedCliRelease.verifiedSites` 与 `BlockedCliVersionRange.sites` 记录条目对应哪些中转站点（`relay-sites.ts` 的 `RelaySite.id`）。

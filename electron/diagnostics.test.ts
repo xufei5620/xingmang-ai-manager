@@ -727,6 +727,71 @@ describe('diagnostics', () => {
       : '[ABSOLUTE_PATH]/node')
   })
 
+  it('does not call the bypass mode a risk when this app wrote it for the signed-in account', async () => {
+    const home = temporaryHome()
+    const claudeSettings = path.join(home, '.claude', 'settings.json')
+    fs.mkdirSync(path.dirname(claudeSettings), { recursive: true })
+    fs.writeFileSync(claudeSettings, JSON.stringify({ permissions: { defaultMode: 'bypassPermissions' } }))
+    const input = dependencies(home)
+    input.readClaudeConfigOwnership = () => 'account'
+
+    const report = await runDiagnostics(input)
+
+    expect(report.items.find((item) => item.code === 'CLAUDE_BYPASS_PERMISSIONS')).toMatchObject({
+      state: 'pass',
+      details: { bypass: true, managed: true },
+    })
+  })
+
+  it.each(['manual', 'unknown', 'changed'] as const)(
+    'still warns about the bypass mode when the config source reads %s',
+    async (ownership) => {
+      const home = temporaryHome()
+      const claudeSettings = path.join(home, '.claude', 'settings.json')
+      fs.mkdirSync(path.dirname(claudeSettings), { recursive: true })
+      fs.writeFileSync(claudeSettings, JSON.stringify({ permissions: { defaultMode: 'bypassPermissions' } }))
+      const input = dependencies(home)
+      input.readClaudeConfigOwnership = () => ownership
+
+      const report = await runDiagnostics(input)
+
+      expect(report.items.find((item) => item.code === 'CLAUDE_BYPASS_PERMISSIONS')).toMatchObject({
+        state: 'warn',
+        details: { bypass: true, managed: false },
+      })
+    },
+  )
+
+  it('warns about the bypass mode when the host cannot tell who wrote the config', async () => {
+    const home = temporaryHome()
+    const claudeSettings = path.join(home, '.claude', 'settings.json')
+    fs.mkdirSync(path.dirname(claudeSettings), { recursive: true })
+    fs.writeFileSync(claudeSettings, JSON.stringify({ permissions: { defaultMode: 'bypassPermissions' } }))
+
+    const report = await runDiagnostics(dependencies(home))
+
+    expect(report.items.find((item) => item.code === 'CLAUDE_BYPASS_PERMISSIONS')).toMatchObject({
+      state: 'warn',
+      details: { bypass: true, managed: false },
+    })
+  })
+
+  it('passes without a managed note when Claude asks before running commands', async () => {
+    const home = temporaryHome()
+    const claudeSettings = path.join(home, '.claude', 'settings.json')
+    fs.mkdirSync(path.dirname(claudeSettings), { recursive: true })
+    fs.writeFileSync(claudeSettings, JSON.stringify({ permissions: { defaultMode: 'default' } }))
+    const input = dependencies(home)
+    input.readClaudeConfigOwnership = () => 'account'
+
+    const report = await runDiagnostics(input)
+
+    expect(report.items.find((item) => item.code === 'CLAUDE_BYPASS_PERMISSIONS')).toMatchObject({
+      state: 'pass',
+      details: { bypass: false, managed: false },
+    })
+  })
+
   it('rejects oversized Claude and Clash configuration files before parsing', async () => {
     const home = temporaryHome()
     const claudeSettings = path.join(home, '.claude', 'settings.json')

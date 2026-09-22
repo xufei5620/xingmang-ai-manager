@@ -26,6 +26,7 @@ import { managedCliRoot } from './managed-cli-paths'
 import { classifyNetworkFailure, networkFailureMessages } from './network-failure'
 import { relayApiProbeBaseUrl, resolveRelaySite, type RelaySite } from './relay-sites'
 import { resolveCliCommand, resolveCliInstallation } from './tool-installation'
+import type { ToolConfigOwnership } from './tool-config-ownership'
 import { resolveWindowsPowerShellExecutable } from './windows-elevation'
 
 export type DiagnosticState = 'pass' | 'warn' | 'fail' | 'error'
@@ -80,6 +81,13 @@ export interface DiagnosticsDependencies {
   inspectTool?: (tool: DiagnosticToolId, signal: AbortSignal) => Promise<DiagnosticToolStatus>
   inspectCodexDesktop?: (signal: AbortSignal) => Promise<DiagnosticToolStatus>
   inspectProvider?: (provider: ProviderId, roots: ProviderConfigRoots) => NativeConfigInspection
+  /**
+   * 「Claude 命令确认方式」那一项要先知道这份 settings.json 是不是本软件替当前账号写
+   * 的（`account`），否则每个配置正常的用户都会被自己造成的配置警告一次。诊断自己算
+   * 不出来源（判定要读 userData 下的所有权记录并比对当前登录账号），宿主给了才分流，
+   * 不给就按「不是我们写的」处理。
+   */
+  readClaudeConfigOwnership?: () => ToolConfigOwnership | null | undefined
   /** Which relay site's connectivity to probe (XINGMANG_NETWORK). Defaults to the default site. */
   relaySite?: RelaySite
   fetch?: typeof globalThis.fetch
@@ -813,7 +821,15 @@ async function runIsolatedCheck(
   }
 }
 
-function readClaudeBypass(homeDirectory: string): CheckOutcome {
+/**
+ * 本软件写 Claude 配置时本来就会带上 permissions.defaultMode = 'bypassPermissions'
+ * （不这么写，用户每跑一条命令都要按一次确认，而这是本产品替客户省掉的门槛之一）。
+ * 所以「文件里是 bypass」单独看不说明任何问题：它多半就是我们自己刚写的。只有确认
+ * 这份配置是本软件替当前账号写下的（所有权 `account`）才当成正常状态；来源判不准
+ * （用户手改过、别的工具写的、没登录、指纹对不上的 `changed`）时照旧提醒，因为那种
+ * 情况下用户确实可能不知道自己的 AI 正在不打招呼地执行命令。
+ */
+function readClaudeBypass(homeDirectory: string, ownership: ToolConfigOwnership | null): CheckOutcome {
   const configPath = path.join(homeDirectory, '.claude', 'settings.json')
   if (!fs.existsSync(configPath)) return { state: 'pass', summary: '未检测到 Claude 权限绕过配置' }
   const parsed = JSON.parse(readBoundedUtf8FileSync(
@@ -823,9 +839,19 @@ function readClaudeBypass(homeDirectory: string): CheckOutcome {
   )) as unknown
   const permissions = isRecord(parsed) && isRecord(parsed.permissions) ? parsed.permissions : null
   const bypass = permissions?.defaultMode === 'bypassPermissions'
-  return bypass
-    ? { state: 'warn', summary: 'Claude 已开启 bypassPermissions，命令执行将跳过确认' }
-    : { state: 'pass', summary: 'Claude 权限模式未设为 bypassPermissions' }
+  if (!bypass) return { state: 'pass', summary: 'Claude 未跳过命令执行确认', details: { bypass, managed: false } }
+  if (ownership === 'account') {
+    return {
+      state: 'pass',
+      summary: '按当前账号的配置，Claude 执行命令时不再逐条确认',
+      details: { bypass, managed: true },
+    }
+  }
+  return {
+    state: 'warn',
+    summary: 'Claude 已开启 bypassPermissions，命令执行将跳过确认',
+    details: { bypass, managed: false },
+  }
 }
 
 /**
@@ -1212,8 +1238,8 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
     },
     {
       code: 'CLAUDE_BYPASS_PERMISSIONS',
-      title: 'Claude 权限风险',
-      run: () => readClaudeBypass(userHome),
+      title: 'Claude 命令确认方式',
+      run: () => readClaudeBypass(userHome, dependencies.readClaudeConfigOwnership?.() ?? null),
     },
   ]
 

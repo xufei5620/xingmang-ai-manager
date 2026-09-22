@@ -368,11 +368,17 @@ describe('native CLI configuration files', () => {
           model,
           effortLevel: 'medium',
           skipDangerousModePermissionPrompt: true,
+          language: '简体中文',
+          cleanupPeriodDays: 365,
         })
       }
       if (provider === 'gemini') {
         expect(JSON.parse(fs.readFileSync(paths[0], 'utf8'))).toEqual({
-          general: { enableAutoUpdate: false, enableAutoUpdateNotification: false },
+          general: {
+            enableAutoUpdate: false,
+            enableAutoUpdateNotification: false,
+            sessionRetention: { maxAge: '365d' },
+          },
           ide: { enabled: true },
           security: { auth: { selectedType: 'gemini-api-key' } },
         })
@@ -489,6 +495,77 @@ describe('native CLI configuration files', () => {
     expect(asRecord(merged.permissions)?.deny).toEqual(['Artifact'])
   })
 
+  it('extends Claude transcript retention and pins the response language when merging over a bare config', () => {
+    const home = temporaryHome()
+    const [settingsPath] = providerConfigPaths('claude', providerRoots(home))
+    fs.mkdirSync(path.dirname(settingsPath), { recursive: true })
+    fs.writeFileSync(settingsPath, `${JSON.stringify({ env: { CUSTOM_TOKEN: 'preserved' } }, null, 2)}\n`, 'utf8')
+
+    saveProviderConfig('claude', 'new-key', testModels.claude, 'merge', providerRoots(home), {}, providerBaseUrls)
+
+    const merged = JSON.parse(fs.readFileSync(settingsPath, 'utf8')) as Record<string, unknown>
+    expect(merged.cleanupPeriodDays).toBe(365)
+    expect(merged.language).toBe('简体中文')
+  })
+
+  it('leaves the Claude retention period and language alone when the user already chose them', () => {
+    const home = temporaryHome()
+    const [settingsPath] = providerConfigPaths('claude', providerRoots(home))
+    fs.mkdirSync(path.dirname(settingsPath), { recursive: true })
+    fs.writeFileSync(settingsPath, `${JSON.stringify({
+      cleanupPeriodDays: 7,
+      language: 'japanese',
+    }, null, 2)}\n`, 'utf8')
+
+    saveProviderConfig('claude', 'new-key', testModels.claude, 'merge', providerRoots(home), {}, providerBaseUrls)
+
+    const merged = JSON.parse(fs.readFileSync(settingsPath, 'utf8')) as Record<string, unknown>
+    expect(merged.cleanupPeriodDays).toBe(7)
+    expect(merged.language).toBe('japanese')
+  })
+
+  it('keeps the Claude retention period and language after switching back to the official account', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    saveProviderConfig('claude', 'sk-relay', testModels.claude, 'reset', roots, {}, providerBaseUrls)
+
+    switchProviderToOfficialAccount('claude', roots, {}, providerBaseUrls)
+
+    const [settingsPath] = providerConfigPaths('claude', roots)
+    const after = JSON.parse(fs.readFileSync(settingsPath, 'utf8')) as Record<string, unknown>
+    expect(after.cleanupPeriodDays).toBe(365)
+    expect(after.language).toBe('简体中文')
+  })
+
+  it('extends Gemini session retention when merging over settings without that section', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const [settingsPath] = providerConfigPaths('gemini', roots)
+    fs.mkdirSync(path.dirname(settingsPath), { recursive: true })
+    fs.writeFileSync(settingsPath, `${JSON.stringify({ general: { vimMode: true } }, null, 2)}\n`, 'utf8')
+
+    saveProviderConfig('gemini', 'new-key', testModels.gemini, 'merge', roots, {}, providerBaseUrls)
+
+    const merged = JSON.parse(fs.readFileSync(settingsPath, 'utf8')) as Record<string, unknown>
+    expect(asRecord(merged.general)?.sessionRetention).toEqual({ maxAge: '365d' })
+    expect(asRecord(merged.general)?.vimMode).toBe(true)
+  })
+
+  it('leaves an existing Gemini sessionRetention section exactly as the user wrote it', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const [settingsPath] = providerConfigPaths('gemini', roots)
+    fs.mkdirSync(path.dirname(settingsPath), { recursive: true })
+    fs.writeFileSync(settingsPath, `${JSON.stringify({
+      general: { sessionRetention: { enabled: false } },
+    }, null, 2)}\n`, 'utf8')
+
+    saveProviderConfig('gemini', 'new-key', testModels.gemini, 'merge', roots, {}, providerBaseUrls)
+
+    const merged = JSON.parse(fs.readFileSync(settingsPath, 'utf8')) as Record<string, unknown>
+    expect(asRecord(merged.general)?.sessionRetention).toEqual({ enabled: false })
+  })
+
   it('turns off the Claude self-updater when merging over settings the user already wrote', () => {
     const home = temporaryHome()
     const [settingsPath] = providerConfigPaths('claude', providerRoots(home))
@@ -535,6 +612,7 @@ describe('native CLI configuration files', () => {
       vimMode: true,
       enableAutoUpdate: false,
       enableAutoUpdateNotification: false,
+      sessionRetention: { maxAge: '365d' },
     })
   })
 
@@ -1371,11 +1449,16 @@ describe('switching a provider back to the official subscription account', () =>
 
     const result = switchProviderToOfficialAccount(provider, roots, {}, providerBaseUrls, 'reset')
 
-    // 切回官方账号只收回中转的那几项，关自动更新留着：CLI 仍由本软件装和更新。
+    // 切回官方账号只收回中转的那几项，关自动更新、语言与记录保留期留着：CLI 仍由本软件
+    // 装和更新，后两项是用户偏好，跟用哪个账号无关。
     expect(JSON.parse(fs.readFileSync(paths[0], 'utf8'))).toEqual(provider === 'claude'
-      ? { env: { DISABLE_AUTOUPDATER: '1' } }
+      ? { env: { DISABLE_AUTOUPDATER: '1' }, language: '简体中文', cleanupPeriodDays: 365 }
       : {
-        general: { enableAutoUpdate: false, enableAutoUpdateNotification: false },
+        general: {
+          enableAutoUpdate: false,
+          enableAutoUpdateNotification: false,
+          sessionRetention: { maxAge: '365d' },
+        },
         security: { auth: { selectedType: 'oauth-personal' } },
       })
     if (provider === 'gemini') expect(fs.readFileSync(paths[1], 'utf8')).toBe('')

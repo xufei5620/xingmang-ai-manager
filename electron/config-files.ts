@@ -299,6 +299,54 @@ function disableGrokSelfUpdate(parsed: Record<string, unknown>): void {
   ensureRecord(parsed, 'cli').auto_update = false
 }
 
+// Claude Code 与 Gemini CLI 都会自己删本机会话记录，默认都是 30 天，而记录页、首页
+// 「最近」卡、「接着聊」、导出记录全都建立在那些文件还在的前提上——用户只会看到
+// 「上个月那条对话不见了」。本软件替用户把保留期放长到一年。
+//
+// 沙箱实测（Claude Code 2.1.277 的 settings schema）：cleanupPeriodDays 是正整数、
+// 最小 1、默认 30，描述原文「Number of days to retain chat transcripts before
+// automatic cleanup (default: 30)… Use a large value for long retention」，所以
+// 放长就是写一个大数，不能写 0。Gemini CLI 0.60.0 的 bundle 里 general.sessionRetention
+// 的 enabled 默认 true、maxAge 默认 "30d"，且 getDefaultsFromSchema 会递归补齐嵌套
+// 默认值——用户的 settings.json 里没有这一段，清理照样按 30 天跑。maxAge 的格式是
+// /^(\d+)([dhwm])$/，"365d" 合法。
+//
+// 这两项是用户偏好，不是中转配置：用户自己设过就一字不动，切回官方账号也不收回。
+const MANAGED_CLAUDE_RETENTION_DAYS = 365
+const MANAGED_GEMINI_SESSION_MAX_AGE = '365d'
+
+/** 只在用户没写过 cleanupPeriodDays 时补上，写过什么值都原样保留。 */
+function extendClaudeSessionRetention(parsed: Record<string, unknown>): void {
+  if (parsed.cleanupPeriodDays !== undefined) return
+  parsed.cleanupPeriodDays = MANAGED_CLAUDE_RETENTION_DAYS
+}
+
+/**
+ * 只在用户完全没碰过 general.sessionRetention 时补 maxAge。已经有这一段（哪怕只写了
+ * enabled: false 或 maxCount）就整段不动：那是用户对保留策略的明确表达，往里塞一个
+ * maxAge 会改掉他算好的行为。
+ */
+function extendGeminiSessionRetention(parsed: Record<string, unknown>): void {
+  const general = ensureRecord(parsed, 'general')
+  if (general.sessionRetention !== undefined) return
+  general.sessionRetention = { maxAge: MANAGED_GEMINI_SESSION_MAX_AGE }
+}
+
+// Claude Code 的 language 设置会被原样插进系统提示（2.1.277 实测：settings.json 写
+// {"language":"简体中文"} 之后，请求体里出现「# Language\nAlways respond in 简体中文.」），
+// 回复和会话标题都跟着变中文。本软件今天让 Claude 说中文靠的是 AGENTS.md 模板，而那份
+// 模板只在目录里没有任何说明文件时才生成——从 GitHub 克隆来的项目基本都带 README，于是
+// 还是英文。language 是用户级的，一次写好处处生效。
+//
+// 同样只在用户没设过时补，切回官方账号也不收回：这是语言偏好，与用哪个账号无关。
+const MANAGED_CLAUDE_RESPONSE_LANGUAGE = '简体中文'
+
+/** 只在用户没写过 language 时补上。 */
+function ensureClaudeResponseLanguage(parsed: Record<string, unknown>): void {
+  if (parsed.language !== undefined) return
+  parsed.language = MANAGED_CLAUDE_RESPONSE_LANGUAGE
+}
+
 function nestedString(source: Record<string, unknown> | null, keys: string[]): string {
   let current: unknown = source
   for (const key of keys) {
@@ -1280,6 +1328,8 @@ function createPlans(
           model,
           effortLevel: 'medium',
           skipDangerousModePermissionPrompt: true,
+          language: MANAGED_CLAUDE_RESPONSE_LANGUAGE,
+          cleanupPeriodDays: MANAGED_CLAUDE_RETENTION_DAYS,
         }),
       }]
     case 'gemini':
@@ -1287,7 +1337,11 @@ function createPlans(
         {
           path: paths[0],
           content: jsonContent({
-            general: { enableAutoUpdate: false, enableAutoUpdateNotification: false },
+            general: {
+              enableAutoUpdate: false,
+              enableAutoUpdateNotification: false,
+              sessionRetention: { maxAge: MANAGED_GEMINI_SESSION_MAX_AGE },
+            },
             ide: { enabled: true },
             security: { auth: { selectedType: 'gemini-api-key' } },
           }),
@@ -1358,6 +1412,8 @@ function createMergePlans(
       env.ANTHROPIC_BASE_URL = siteBaseUrls.claude
       disableClaudeSelfUpdate(env)
       denyClaudeRelayTool(ensureRecord(parsed, 'permissions'))
+      ensureClaudeResponseLanguage(parsed)
+      extendClaudeSessionRetention(parsed)
       parsed.model = model
       return [{ path: paths[0], content: jsonContent(parsed) }]
     }
@@ -1373,6 +1429,7 @@ function createMergePlans(
         // the API-key selector just like reset does.
         ensureRecord(ensureRecord(parsed, 'security'), 'auth').selectedType = 'gemini-api-key'
         disableGeminiSelfUpdate(parsed)
+        extendGeminiSessionRetention(parsed)
         plans.push({ path: paths[0], content: jsonContent(parsed) })
       }
       // 读取失败必须中止保存，静默当空文件会把用户已有环境变量覆盖掉。
@@ -1916,8 +1973,19 @@ function createOfficialAccountPlans(
         ...createCodexOfficialAuthPlans(roots),
       ]
     case 'claude': {
-      // 切回官方账号不收回自动更新开关：CLI 仍由本软件装、也由本软件更新。
-      if (mode === 'reset') return [{ path: paths[0], content: jsonContent({ env: { DISABLE_AUTOUPDATER: '1' } }) }]
+      // 切回官方账号不收回自动更新开关：CLI 仍由本软件装、也由本软件更新。语言与记录
+      // 保留期同理——它们是用户偏好，跟用哪个账号无关，reset 重建时一并写回，否则换回
+      // 官方账号的用户会悄悄回到 30 天自动删。
+      if (mode === 'reset') {
+        return [{
+          path: paths[0],
+          content: jsonContent({
+            env: { DISABLE_AUTOUPDATER: '1' },
+            language: MANAGED_CLAUDE_RESPONSE_LANGUAGE,
+            cleanupPeriodDays: MANAGED_CLAUDE_RETENTION_DAYS,
+          }),
+        }]
+      }
       if (!fs.existsSync(paths[0])) return []
       const parsed = requireJson(paths[0], '现有 Claude settings.json')
       const env = parsed.env
@@ -1937,7 +2005,11 @@ function createOfficialAccountPlans(
           {
             path: paths[0],
             content: jsonContent({
-              general: { enableAutoUpdate: false, enableAutoUpdateNotification: false },
+              general: {
+                enableAutoUpdate: false,
+                enableAutoUpdateNotification: false,
+                sessionRetention: { maxAge: MANAGED_GEMINI_SESSION_MAX_AGE },
+              },
               security: { auth: { selectedType: 'oauth-personal' } },
             }),
           },

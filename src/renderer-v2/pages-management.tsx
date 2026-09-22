@@ -523,7 +523,7 @@ export function SessionsPage({
     >
       <PageHead
         title="记录"
-        lead="接着记录所在文件夹里最近的对话继续聊，也可以导出或整理本机记录。"
+        lead="接着记录所在文件夹里最近的对话继续聊，也可以导出或整理本机记录。记录只存在这台电脑上，本软件已把保留期放长到一年。"
         actions={
           <Button
             icon={RefreshCw}
