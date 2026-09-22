@@ -359,6 +359,21 @@ test('external client incomplete Claude configuration requires setup before prim
   } finally { await page.close() }
 })
 
+test('acceleration state is read once when idle, and again on entering the acceleration page', async () => {
+  const page = await open()
+  try {
+    const reads = () => page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'getAccelerationState').length)
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'getAccelerationState'))
+    const initial = await reads()
+    await page.clock.install()
+    await page.clock.runFor(60_000)
+    assert.equal(await reads(), initial, '没在加速时不定时读状态')
+    await page.getByTestId('nav-acceleration').click()
+    await page.waitForFunction((count) => window.v2Test.calls.filter((entry) => entry.method === 'getAccelerationState').length > count, initial)
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('external client platform and detection failures remain distinct from missing installation', async () => {
   const page = await open('externalUnsupported=opencode&externalDetectionError=workbuddy')
   try {
