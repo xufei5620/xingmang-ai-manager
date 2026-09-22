@@ -71,6 +71,7 @@ import {
 import { tools } from './registry/tools'
 import { clientConnections } from './registry/clients'
 import { canUninstallTool } from './features/tools/model'
+import { elevatedInstallNotice } from './features/tools/elevation-notice'
 import { ToolStatusMeta, ToolStatusReason } from './features/tools/ToolStatusMeta'
 import { connectionCheckView } from './features/tools/connection-check'
 import { maintenanceFailureNotice, readMaintenanceStatus } from './features/tools/maintenance-status'
@@ -145,6 +146,14 @@ export type BusinessActions = {
 }
 function isProvider(id: string): id is Provider {
   return ['claude', 'codex', 'gemini', 'grok'].includes(id)
+}
+
+/**
+ * 「这一步要管理员授权」这句要挂在安装按钮旁边、点之前看得到的位置，也就是行里
+ * 那句本来就有的说明后面。文案唯一来源是 features/tools/elevation-notice.ts。
+ */
+export function withElevationNotice(lead: string, notice: string | null): string {
+  return notice ? `${lead} · ${notice}` : lead
 }
 
 export function diagnosticTarget(code: string): V2Page {
@@ -1141,7 +1150,12 @@ export function MaintenancePage({
               }
               desc={
                 <ToolStatusReason
-                  lead={tool.vendor}
+                  lead={withElevationNotice(
+                    tool.vendor,
+                    id === 'codexDesktop' && !status?.installed && !rescan
+                      ? elevatedInstallNotice('codexDesktop', capability?.platform, capability?.codexDesktop.install)
+                      : null,
+                  )}
                   status={status}
                   statusUnknown={statusUnknown}
                   testId={'maintenance-reason-' + id}
@@ -1242,11 +1256,14 @@ export function MaintenancePage({
               title={id === 'node' ? 'Node.js' : 'Python'}
               desc={
                 <ToolStatusReason
-                  lead={
+                  lead={withElevationNotice(
                     id === 'node'
                       ? '命令行工具需要的运行环境'
-                      : '部分工具需要的可选运行环境'
-                  }
+                      : '部分工具需要的可选运行环境',
+                    id === 'node' && !status?.installed && !statusUnknown && !status?.detectionFailed
+                      ? elevatedInstallNotice('node', capability?.platform, capability?.nodeRuntimeInstall)
+                      : null,
+                  )}
                   status={status}
                   statusUnknown={statusUnknown}
                   testId={'maintenance-runtime-reason-' + id}

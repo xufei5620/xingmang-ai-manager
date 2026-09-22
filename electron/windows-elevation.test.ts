@@ -6,13 +6,18 @@ import {
   describeWindowsCliLaunchError,
   encodeWindowsPowerShellCommand,
   inspectCurrentWindowsTokenElevationType,
+  parseWindowsElevationCapability,
   parseWindowsTokenElevationType,
   parseStartedWindowsProcessId,
   powerShellLiteral,
   resolveWindowsCliExecutionMode,
   resolveWindowsPowerShellExecutable,
+  windowsElevationCancelledMessage,
+  windowsElevationCapabilityScript,
+  windowsElevationDeniedMessage,
   windowsPowerShellCandidates,
   windowsPowerShellExecutable,
+  windowsStandardAccountAdvice,
 } from './windows-elevation'
 import type { WindowsMachinePaths } from './windows-machine-paths'
 
@@ -269,5 +274,46 @@ describe('Windows CLI launch', () => {
       workspace: 'C:\\Work',
       title: 'Codex',
     }, 'powershell.exe')).toThrow('系统 PowerShell 路径必须是绝对路径')
+  })
+})
+
+describe('windows elevation capability', () => {
+  it('asks for the administrators group by SID, not by its localized name', () => {
+    // BUILTIN\Administrators renders differently per Windows display language;
+    // the SID does not.
+    expect(windowsElevationCapabilityScript).toContain('S-1-5-32-544')
+    expect(windowsElevationCapabilityScript).toContain('GetCurrent()')
+    expect(windowsElevationCapabilityScript).not.toMatch(/Administrators'/)
+  })
+
+  it('reads the probe answer and refuses to guess', () => {
+    expect(parseWindowsElevationCapability('administrator\r\n')).toBe('administrator')
+    expect(parseWindowsElevationCapability(' Standard ')).toBe('standard')
+    expect(parseWindowsElevationCapability('')).toBe('unknown')
+    expect(parseWindowsElevationCapability('True')).toBe('unknown')
+  })
+
+  it('tells a cancelled prompt apart from an account that cannot elevate', () => {
+    const cancelled = windowsElevationCancelledMessage('Node.js', 'administrator')
+    expect(cancelled).toContain('已取消管理员授权')
+    expect(cancelled).toContain('重新点击安装')
+    expect(cancelled).not.toContain('不在管理员组')
+
+    const blocked = windowsElevationCancelledMessage('Node.js', 'standard')
+    expect(blocked).toContain('已取消管理员授权')
+    expect(blocked).toContain(windowsStandardAccountAdvice())
+    expect(blocked).not.toContain('重新点击安装')
+  })
+
+  it('keeps the old advice when the probe could not answer', () => {
+    expect(windowsElevationDeniedMessage('Codex 桌面端')).toContain('点击「是」')
+    expect(windowsElevationDeniedMessage('Codex 桌面端', 'standard')).toContain('管理员账号的密码')
+  })
+
+  it('never proposes running this app elevated as the fix', () => {
+    for (const capability of ['administrator', 'standard', 'unknown'] as const) {
+      expect(windowsElevationCancelledMessage('Node.js', capability)).not.toContain('以管理员身份运行')
+      expect(windowsElevationDeniedMessage('Node.js', capability)).not.toContain('以管理员身份运行')
+    }
   })
 })
