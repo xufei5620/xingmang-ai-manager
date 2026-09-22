@@ -1071,7 +1071,9 @@ describe('native CLI install discovery', () => {
 
   it('classifies an install by where its launcher lives', () => {
     const home = temporaryDirectory()
-    const env = { HOME: home }
+    // Windows reads USERPROFILE and the others read HOME; set both so the
+    // fixture home wins on whichever platform runs the suite.
+    const env = { HOME: home, USERPROFILE: home }
     const npm = {
       commandPath: path.join(home, 'node', 'bin', 'claude'),
       installDirectory: path.join(home, 'node', 'lib', 'node_modules', '@anthropic-ai', 'claude-code'),
@@ -1098,9 +1100,11 @@ describe('native CLI install discovery', () => {
     const emptyBin = path.join(home, 'empty-bin')
     fs.mkdirSync(emptyBin, { recursive: true })
     const command = write(path.join(home, '.local', 'bin', 'claude'))
+    // Both home variables, for the same reason as the classification test above.
+    const env = { HOME: home, USERPROFILE: home, PATH: emptyBin }
 
     const installation = await resolveCliInstallation('claude', {
-      env: { HOME: home, PATH: emptyBin },
+      env,
       npmExecutable: '',
       npmGlobalRoot: path.join(home, 'missing-node-modules'),
       platform: process.platform,
@@ -1111,7 +1115,7 @@ describe('native CLI install discovery', () => {
       packageRoot: null,
       source: 'native',
     })
-    expect(classifyCliInstallDisplaySource(installation!, { env: { HOME: home }, platform: process.platform }))
+    expect(classifyCliInstallDisplaySource(installation!, { env, platform: process.platform }))
       .toBe('native')
   })
 })
