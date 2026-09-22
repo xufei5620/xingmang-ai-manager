@@ -13,7 +13,10 @@ const catalogCoverage: Record<OperationErrorKey, { sample: string } | { unreacha
   tooManyRequests: { sample: '星芒服务返回 429 Too Many Requests' },
   server: { sample: '星芒服务返回 502 Bad Gateway' },
   timeout: { sample: '模型查询超时，请检查网络后重试' },
-  installBlocked: { sample: 'Grok CLI 安装失败：EBUSY: resource busy or locked' },
+  // 更新替换正在跑的 CLI 时文件被锁，主进程（cli-process-probe.ts）把话说清楚；
+  // npm 自己吐的 EBUSY 原文也走这条。
+  toolRunning: { sample: 'Claude Code 更新失败：文件被占用，检测到 Claude Code 正在运行（2 个进程），请关掉它的窗口再试。' },
+  installBlocked: { sample: 'Grok CLI 安装失败：安装文件已被隔离，请检查杀毒软件的隔离记录' },
   downloadTimeout: { sample: 'Codex CLI 安装失败：npm 官方源：request to registry 失败，reason: ETIMEDOUT' },
   permission: { sample: 'Claude Code 安装失败：npm 官方源：EPERM: operation not permitted, rename' },
   updateIntegrity: { sample: 'Claude Code 更新失败：SHA-512 完整性校验不一致' },
@@ -31,8 +34,33 @@ const catalogCoverage: Record<OperationErrorKey, { sample: string } | { unreacha
 describe('renderer-v2 operation error classification', () => {
   it('names the npm failures a user actually hits during a CLI install', () => {
     expect(classifyOperationError('Claude Code 安装失败：npm 官方源：EPERM: operation not permitted, rename')).toBe('permission')
-    expect(classifyOperationError('Grok CLI 安装失败：EBUSY: resource busy or locked')).toBe('installBlocked')
+    expect(classifyOperationError('Grok CLI 安装失败：EBUSY: resource busy or locked')).toBe('toolRunning')
     expect(classifyOperationError('Codex CLI 安装失败：npm 官方源：request to https://registry.npmjs.org failed, reason: ETIMEDOUT')).toBe('downloadTimeout')
+  })
+
+  it('sends a locked file to the running tool, not to the antivirus settings', () => {
+    // 候选 5：更新/回滚要替换正在运行的 CLI 的文件，Windows 上那是文件锁。
+    // 以前这几句都落在 installBlocked，标题是「安装被杀毒软件拦住了」。
+    for (const locked of [
+      'Claude Code 安装失败：npm 官方源：EBUSY: resource busy or locked, rename',
+      'Claude Code 更新失败：文件被占用，检测到 Claude Code 正在运行（2 个进程），请关掉它的窗口再试。',
+      'Codex CLI 更新失败：文件被占用，Codex CLI 可能正在运行，请关掉正在使用它的窗口再试。',
+      '会话操作失败，会话文件正被其他程序占用；请关闭占用它的程序（如杀毒或备份软件）后重启本工具',
+    ]) expect([locked, classifyOperationError(locked)]).toEqual([locked, 'toolRunning'])
+    const hint = presentOperationError('Claude Code 更新失败：文件被占用，检测到 Claude Code 正在运行（2 个进程），请关掉它的窗口再试。')
+    expect(hint?.title).toBe('工具正在运行')
+    expect(hint?.actions).toEqual([{ id: 'retry', label: '重试' }, { id: 'log', label: '查看日志' }])
+  })
+
+  it('still names a real antivirus quarantine', () => {
+    expect(classifyOperationError('Grok CLI 安装失败：安装文件已被隔离，请检查杀毒软件的隔离记录')).toBe('installBlocked')
+    expect(classifyOperationError('Windows Defender 拦住了安装包')).toBe('installBlocked')
+  })
+
+  it('leaves a bare EPERM as a permission failure, since the raw text cannot tell the two apart', () => {
+    // 主进程只有数到这个工具的进程才会写「文件被占用」（cli-process-probe.ts 的
+    // describeOccupiedUpdateFailure）。没有那句话时不许替用户猜。
+    expect(classifyOperationError('Claude Code 安装失败：npm 官方源：EPERM: operation not permitted, rename')).toBe('permission')
   })
 
   it('keeps a relay failure apart from a download failure', () => {

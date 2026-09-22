@@ -30,6 +30,14 @@ import {
   windowsSystemExecutable,
   type WindowsPackageManager,
 } from './command-runner'
+import {
+  cliPackageDirectory as cliPackageDirectoryFromNpmRoot,
+  describeOccupiedUpdateFailure,
+  describeRunningCliProcessWarning,
+  fileLockErrorCode,
+  managedCliPackageDirectory,
+  probeRunningCliProcesses,
+} from './cli-process-probe'
 import { isCodexDesktopExecutable } from './codex-desktop'
 import {
   createCodexDesktopService,
@@ -2611,6 +2619,38 @@ export function createSystemService(
     return npmExecutable
   }
 
+  /**
+   * 把「文件被占用」这句话补到失败原文上,前提是真的撞上了占用:EBUSY / ETXTBSY
+   * 自己就够,EPERM / EACCES 必须数到这个工具的进程才算(见 cli-process-probe.ts
+   * 的 describeOccupiedUpdateFailure)。数不到就返回 null,原来的失败原样出去。
+   */
+  async function describeOccupiedCliFailure(
+    provider: ProviderId,
+    errorLike: unknown,
+    detail: string,
+    probeRoot: string | null,
+    updating: boolean,
+  ): Promise<string | null> {
+    if (!fileLockErrorCode(errorLike)) return null
+    const probe = probeRoot
+      ? await probeRunningCliProcesses(probeRoot)
+      : { status: 'unsupported' as const, processes: [] }
+    const message = describeOccupiedUpdateFailure({
+      toolName: cliCatalog[provider].name,
+      action: updating ? '更新' : '安装',
+      error: errorLike,
+      probe,
+      detail,
+    })
+    if (!message) return null
+    runtimeLog?.log('warn', 'install', 'cli.file-locked', `${cliCatalog[provider].name} 更新时文件被占用`, {
+      provider,
+      probeStatus: probe.status,
+      processes: probe.processes.length,
+    })
+    return message
+  }
+
   async function installCliOperation(
     provider: ProviderId,
     target: RendererMessageTarget,
@@ -2628,6 +2668,8 @@ export function createSystemService(
     let managedNpmLayout: ManagedNpmLayout | null = null
     let managedNpmTransaction: string | null = null
     let preserveManagedNpmTransaction = false
+    let occupancyProbeRoot: string | null = null
+    let updatingExistingInstall = false
     try {
       if (provider === 'grok') {
         if (grokInstallStrategy === 'external') {
@@ -2725,6 +2767,37 @@ export function createSystemService(
       managedNpmTransaction = await createInstallTemporaryDirectory('npm-transaction', {
         ...(managedNpmLayout ? { baseDirectory: managedNpmLayout.cacheRoot } : {}),
       })
+      // 更新和回滚都要替换这个工具已经装好的文件。工具还开着的时候,Windows 会
+      // 锁住它自己的可执行文件,替换必然失败;检测只是为了把话说对,所以它既不
+      // 拦更新,失败也不影响流程(候选 5 第 2 层)。
+      if (provider !== 'grok') {
+        if (managedNpmLayout) {
+          occupancyProbeRoot = managedCliPackageDirectory(managedNpmLayout.prefix, definition.packageName, platform)
+        } else {
+          const npmGlobalRoot = await resolveNpmGlobalRoot(npmExecutable, commandEnvironment())
+          occupancyProbeRoot = npmGlobalRoot
+            ? cliPackageDirectoryFromNpmRoot(npmGlobalRoot, definition.packageName)
+            : null
+        }
+        if (occupancyProbeRoot && fs.existsSync(occupancyProbeRoot)) {
+          updatingExistingInstall = true
+          const probe = await probeRunningCliProcesses(occupancyProbeRoot)
+          runtimeLog?.log(
+            probe.status === 'checked' ? 'info' : 'warn',
+            'install',
+            'cli.running-processes.probe',
+            `${definition.name} 更新前进程检测：${probe.status}（${probe.processes.length} 个）`,
+            {
+              provider,
+              status: probe.status,
+              processes: probe.processes.length,
+              ...(probe.detail ? { detail: redactHomeDirectory(probe.detail, providerRoots.userHome) } : {}),
+            },
+          )
+          const warning = describeRunningCliProcessWarning(definition.name, probe)
+          if (warning) sendInstallProgress(target, provider, 'output', warning)
+        }
+      }
       // 装哪个版本由主进程决定:调用方点名(回滚)优先,其次看设置里的
       // 「总是安装最新版」,再次才是名单里的推荐版本。名单为空的工具落回
       // latest,行为与从前一致。
@@ -2983,7 +3056,11 @@ export function createSystemService(
         }
       }
       if (!installed) {
-        throw new Error(`${definition.name} 安装失败：${installErrors.join('；') || '所有 npm 源均不可用'}`)
+        const detail = installErrors.join('；') || '所有 npm 源均不可用'
+        // npm 替换正在运行的工具时报的是 EBUSY / EPERM,两者的原文都读不出「谁
+        // 占着这个文件」。这里重新数一遍进程,数到了才改写成「文件被占用」。
+        const occupied = await describeOccupiedCliFailure(provider, detail, detail, occupancyProbeRoot, updatingExistingInstall)
+        throw new Error(occupied ?? `${definition.name} 安装失败：${detail}`)
       }
       invalidateCliUpdateCache(provider)
       const stagedManifest = installPrefix
@@ -3006,30 +3083,47 @@ export function createSystemService(
 
       if (managedNpmLayout && managedNpmTransaction && installPrefix) {
         cancellation?.seal(managedPrefixSwapSealReason)
-        await replaceManagedNpmPrefixAtomically(
-          managedNpmLayout.prefix,
-          installPrefix,
-          managedNpmTransaction,
-          async () => {
-            invalidateCliUpdateCache(provider)
-            const promoted = await inspectCliTool(
-              provider,
-              npmExecutable,
-              path.join(
-                managedNpmLayout!.prefix,
-                ...(platform === 'darwin' ? ['lib', 'node_modules'] : ['node_modules']),
-              ),
-            )
-            if (
-              !promoted.installation
-              || promoted.status.version !== trustedRelease.version
-              || !isManagedNpmInstallation(promoted.installation)
-            ) {
-              throw new Error(`${definition.name} 提交后验证失败，已恢复更新前版本`)
-            }
-            verification = promoted
-          },
-        )
+        try {
+          await replaceManagedNpmPrefixAtomically(
+            managedNpmLayout.prefix,
+            installPrefix,
+            managedNpmTransaction,
+            async () => {
+              invalidateCliUpdateCache(provider)
+              const promoted = await inspectCliTool(
+                provider,
+                npmExecutable,
+                path.join(
+                  managedNpmLayout!.prefix,
+                  ...(platform === 'darwin' ? ['lib', 'node_modules'] : ['node_modules']),
+                ),
+              )
+              if (
+                !promoted.installation
+                || promoted.status.version !== trustedRelease.version
+                || !isManagedNpmInstallation(promoted.installation)
+              ) {
+                throw new Error(`${definition.name} 提交后验证失败，已恢复更新前版本`)
+              }
+              verification = promoted
+            },
+          )
+        } catch (error) {
+          // 回滚也没成的那一种不碰：ManagedNpmRollbackError 要原样传到外层（它的
+          // preserveTransaction 决定事务目录留不留），它的原话也是渲染层不套
+          // 安抚文案的依据。
+          if (error instanceof ManagedNpmRollbackError) throw error
+          const detail = error instanceof Error ? error.message : String(error)
+          const occupied = await describeOccupiedCliFailure(
+            provider,
+            error,
+            redactCommandText(detail).replace(/\s+/g, ' ').trim().slice(0, 300),
+            occupancyProbeRoot,
+            updatingExistingInstall,
+          )
+          if (!occupied) throw error
+          throw new Error(occupied, { cause: error })
+        }
       } else if (provider !== 'grok' || grokInstallStrategy !== 'darwin-official-npm') {
         const npmGlobalRoot = await resolveNpmGlobalRoot(npmExecutable, commandEnvironment())
         verification = await inspectCliTool(provider, npmExecutable, npmGlobalRoot)

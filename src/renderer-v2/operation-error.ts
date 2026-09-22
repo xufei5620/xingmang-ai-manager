@@ -32,8 +32,17 @@ const rules: Array<{ key: OperationErrorHint['key']; match: (message: string) =>
   // safe-storage-backend.ts 的「当前系统没有可用的密钥环，安全存储只能以明文保存」。
   // 这不是权限问题：目录写得进去，是这台机器没有可用的凭据服务。
   { key: 'unsafeStorage', match: (message) => /密钥环|安全存储[^。；]{0,12}明文|只能以明文保存/.test(message) },
+  // 更新和回滚要替换整个托管目录。Windows 上正在跑的 CLI 把自己的文件锁住，那是
+  // 文件占用，不是杀毒拦截也不是权限不够——归到 installBlocked 会把用户送去关杀毒，
+  // 方向全错。主进程在那一步会把话说成「文件被占用，……正在运行」
+  // （electron/cli-process-probe.ts），npm 自己吐的 EBUSY 原文也归这里。
+  // 必须排在 permission 之前：EPERM 的原文与文件占用长得一样，主进程确认到占用才会
+  // 写上「文件被占用」，写了就以它为准。
+  { key: 'toolRunning', match: (message) => /EBUSY|ETXTBSY|resource busy or locked|text file busy|文件被占用|正(在)?被[^。；]{0,10}占用|正在被使用/i.test(message) },
   { key: 'permission', match: (message) => /EPERM|EACCES|operation not permitted|permission denied|拒绝访问|访问被拒绝|权限不足|需要管理员/i.test(message) },
-  { key: 'installBlocked', match: (message) => /EBUSY|resource busy or locked|杀毒|防病毒|病毒|Defender|已被隔离|文件被占用|正在被使用/i.test(message) },
+  // 「杀毒」这条只留真的在说杀毒软件的说法。EBUSY 与「文件被占用」已经上移到
+  // toolRunning：两条都留着的话，先匹配到的那条就决定用户去关哪个东西。
+  { key: 'installBlocked', match: (message) => /杀毒|防病毒|病毒|Defender|已被隔离/i.test(message) },
   // 「服务暂时不可用」is deliberately absent: features/auth/account-errors.ts
   // already turns that server error into a finished sentence, and re-wrapping a
   // finished sentence in a second heading reads as a bug.
