@@ -12,6 +12,8 @@ import {
   type ManagedCliKeyStoreLike,
 } from './account-cli-provisioner'
 import type { StoredManagedCliKey } from './managed-cli-key-store'
+import { NewApiNetworkError } from './new-api-client'
+import { RealmAccountError } from './realm-account'
 import type { RelayBackendClient } from './relay-backend'
 import type { SystemService } from './system-service'
 
@@ -113,6 +115,33 @@ describe('syncManagedCliKeySummary', () => {
       73,
       ['claude', 'codex', 'gemini'].map((provider) => managedKey(provider as ProviderId)),
     )
+  })
+
+  it('marks provisioning failures caused by an unavailable service so a switch does not roll back or blame the key', async () => {
+    const store: ManagedCliKeyStoreLike = {
+      read: vi.fn(async () => []),
+      save: vi.fn(async () => undefined),
+      remove: vi.fn(async () => undefined),
+    }
+    const provisionCliKey = vi.fn(async (input: { name?: string; group?: string } = {}) => {
+      const entry = keyForGroup(input.group ?? '')
+      if (entry.provider === 'codex') throw new NewApiNetworkError('serviceUnavailable', 'HTTP 522')
+      if (entry.provider === 'grok') throw new RealmAccountError('UNAVAILABLE')
+      if (entry.provider === 'gemini') throw new Error('gemini 分组暂不可用')
+      return { id: providerIds.indexOf(entry.provider) + 1, name: entry.name, key: entry.key }
+    })
+    const saveConfig = vi.fn(async () => ({ backups: [], files: [] }))
+    const outcome = await configureManagedClis(
+      loggedInAccountService(provisionCliKey),
+      { fetchAvailableModels: vi.fn(async () => ['fixture-model']), saveConfig } as unknown as ConfigurationService,
+      ['codex', 'grok', 'gemini'], {}, false, store,
+    )
+    expect(outcome.failed).toEqual([
+      { provider: 'codex', message: '服务暂时不可用（维护或线路繁忙），你这边不用做任何改动，稍后再试就行。（HTTP 522）', serviceUnavailable: true },
+      { provider: 'grok', message: '服务暂时不可用（维护或线路繁忙），你这边不用做任何改动，稍后再试就行。', serviceUnavailable: true },
+      { provider: 'gemini', message: 'gemini 分组暂不可用' },
+    ])
+    expect(saveConfig).not.toHaveBeenCalled()
   })
 
   it('continues after a damaged local cache and rebuilds it without a false warning', async () => {

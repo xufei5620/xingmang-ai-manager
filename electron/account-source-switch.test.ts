@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { ProviderId } from './catalog'
 import type { ConnectionCheckLayer, ConnectionCheckResult } from './connection-check'
-import { shouldRollBackAfterCheck, switchAccountSource, type AccountSourceSwitchDependencies } from './account-source-switch'
+import { AccountSourceServiceUnavailableError, shouldRollBackAfterCheck, switchAccountSource, type AccountSourceSwitchDependencies } from './account-source-switch'
 
 function check(
   ok: boolean,
@@ -62,19 +62,21 @@ describe('switchAccountSource', () => {
     expect(result.message).toContain('这次没能确认能用：网络暂时连不上')
   })
 
-  it.each([
-    ['a Cloudflare origin error', 522, ''],
-    ['a gateway timeout', 504, ''],
-    ['a maintenance 503', 503, 'Service Temporarily Unavailable'],
-    ['a web page instead of JSON', 200, '<!DOCTYPE html><html><head><title>维护中</title>'],
-    ['a Cloudflare block page', 403, 'Attention Required! | Cloudflare'],
-  ])('does not blame the key or roll back on %s', async (_label, status, detail) => {
-    const { deps, steps } = dependencies({ checkConnection: async () => check(false, status === 200 ? 'protocol' : 'credential', '密钥被拒绝', { status, detail }) })
+  it('does not blame the key or roll back when the check says the service is unavailable', async () => {
+    const { deps, steps } = dependencies({ checkConnection: async () => check(false, 'service', '服务暂时不可用（HTTP 522），多半在维护或线路繁忙', { status: 522 }) })
     const result = await switchAccountSource(deps, 'claude', 'account')
-    expect(steps).not.toContain('restore:backup-1')
+    expect(steps).toEqual(['backup:claude', 'write:account'])
     expect(result.verified).toBe(false)
-    expect(result.message).toContain('服务暂时不可用')
+    expect(result.message).toContain('服务暂时不可用（维护或线路繁忙），你这边不用做任何改动，稍后再试就行。')
     expect(result.message).not.toContain('密钥')
+  })
+
+  it('leaves the config alone when the service is unavailable while the key is being issued', async () => {
+    const { deps, steps } = dependencies({ writeAccountConfig: async () => { throw new AccountSourceServiceUnavailableError() } })
+    await expect(switchAccountSource(deps, 'codex', 'account')).rejects.toThrow(
+      '切到当前账号没有完成：服务暂时不可用（维护或线路繁忙），你这边不用做任何改动，稍后再试就行。原来的配置没有改动。',
+    )
+    expect(steps).toEqual(['backup:codex'])
   })
 
   it('still rolls back a 503 that says the group has no channel', async () => {
@@ -151,9 +153,9 @@ describe('switchAccountSource', () => {
 
 describe('shouldRollBackAfterCheck', () => {
   it('rolls back only on layers that mean the written config is wrong', () => {
-    const base = { status: 400, detail: null }
+    const base = { status: 400 }
     for (const layer of ['unconfigured', 'config', 'credential', 'group', 'model', 'protocol'] as const) expect(shouldRollBackAfterCheck({ ...base, ok: false, layer })).toBe(true)
-    for (const layer of ['network', 'quota', 'unknown'] as const) expect(shouldRollBackAfterCheck({ ...base, ok: false, layer })).toBe(false)
+    for (const layer of ['network', 'service', 'quota', 'unknown'] as const) expect(shouldRollBackAfterCheck({ ...base, ok: false, layer })).toBe(false)
     expect(shouldRollBackAfterCheck({ ...base, ok: true, layer: 'credential' })).toBe(false)
   })
 })
