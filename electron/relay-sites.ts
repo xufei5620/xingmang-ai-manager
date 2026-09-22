@@ -103,7 +103,7 @@ export function resolveSupportServiceUrl(session?: { authenticated: boolean; sit
 
 /**
  * The relay's own API origin, for connectivity probes (the models-list fetch
- * in system-service.ts and diagnostics' HEAD check). websiteUrl doubled as
+ * in system-service.ts and diagnostics' status-endpoint check). websiteUrl doubled as
  * this until the marketing pages moved to the account domain (2026-08-10) --
  * probes must keep hitting the relay domain the CLIs actually call, so they
  * derive from providerBaseUrls instead of the user-facing URL. claude's base

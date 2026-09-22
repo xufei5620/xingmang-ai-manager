@@ -2,7 +2,8 @@ import { cliCatalog, providerIds, type ProviderId } from './catalog'
 import type { NativeConfigInspection } from './config-files'
 import { externalClientNames, externalToolIds, type ExternalClientStatus } from './external-client-contract'
 import type { ExternalToolId } from './external-tool-config'
-import type { CliStatus } from './system-service'
+import type { CliStatus, DesktopAppStatus, NetworkRegion, SystemSnapshot, ToolStatus } from './system-service'
+import type { WindowsCliExecutionMode } from './windows-elevation'
 
 /**
  * 反馈报告头部那段「工具与配置」的纯函数构造器。客服收到报告的第一句总是
@@ -136,4 +137,109 @@ export function buildFeedbackEnvironmentLines(input: FeedbackEnvironmentInput): 
     return `${name}: ${installation}；${configText(readConfigQuietly(provider, input.readConfig))}`
   })
   return [...clis, ...externalToolIds.map((tool) => externalClientLine(tool, input.externalClients))]
+}
+
+export type FeedbackRuntimeTool = Pick<ToolStatus, 'installed' | 'version' | 'path' | 'tooOld' | 'detectionFailed'>
+
+export type FeedbackCodexDesktop = FeedbackRuntimeTool & Pick<DesktopAppStatus, 'appVersion' | 'running'>
+
+export interface FeedbackRuntimeSnapshot {
+  checkedAt: SystemSnapshot['checkedAt']
+  runtime: Readonly<Record<keyof SystemSnapshot['runtime'], FeedbackRuntimeTool>>
+  codexDesktop: FeedbackCodexDesktop
+  region: NetworkRegion
+}
+
+export interface FeedbackRuntimeInput {
+  /** 上一次扫描的快照；还没扫过时传 null，工具与网络几行都写「未能读取」。 */
+  snapshot: FeedbackRuntimeSnapshot | null
+  platform: NodeJS.Platform
+  /** 只有 Windows 有意义；其他平台传 null，这一行不出。 */
+  executionMode: WindowsCliExecutionMode | null
+  /** 软件主程序所在目录。 */
+  appDirectory: string | null
+  dataDirectory: string | null
+  /** 本软件替用户装 CLI 的托管目录；算不出来传 null。 */
+  managedDirectory: string | null
+  locale: string | null
+  timeZone: string | null
+}
+
+const runtimeToolNames: Readonly<Record<keyof SystemSnapshot['runtime'], string>> = {
+  node: '系统 Node.js',
+  npm: 'npm',
+  python: 'Python',
+  git: 'Git',
+}
+
+// 网络位置只写粗粒度的地区，公网 IP 和国家代码刻意不进报告：这份报告要发到
+// 客服群里，而客服排障只需要知道该走国内还是海外的下载源。
+const regionLabels: Readonly<Record<NetworkRegion, string>> = {
+  'mainland-china': '中国大陆',
+  'outside-mainland-china': '中国大陆以外',
+  unknown: '未知',
+}
+
+function runtimeToolText(status: FeedbackRuntimeTool): string {
+  if (status.detectionFailed === true) return '检测失败'
+  if (!status.installed) return '未安装'
+  const version = status.version?.trim()
+  const head = version ? `已安装 ${version}` : '已安装（版本未知）'
+  const tooOld = status.tooOld === true ? '，版本过低' : ''
+  const location = status.path?.trim() ? `，位置 ${status.path.trim()}` : ''
+  return `${head}${tooOld}${location}`
+}
+
+function codexDesktopText(status: FeedbackCodexDesktop): string {
+  if (status.detectionFailed === true) return '检测失败'
+  if (!status.installed) return '未安装'
+  // 渲染层展示的也是 appVersion 优先（features/tools/model.ts），两边说同一个号。
+  const version = status.appVersion?.trim() || status.version?.trim()
+  const head = version ? `已安装 ${version}` : '已安装（版本未知）'
+  return status.running ? `${head}，正在运行` : head
+}
+
+/**
+ * 从扫描快照里只挑报告要用的字段。网络位置在这一步就只剩 region：公网 IP 与
+ * 国家代码不进入报告构造器，后面怎么改排版都漏不出去。
+ */
+export function pickFeedbackRuntimeSnapshot(snapshot: SystemSnapshot | null): FeedbackRuntimeSnapshot | null {
+  if (!snapshot) return null
+  return {
+    checkedAt: snapshot.checkedAt,
+    runtime: snapshot.runtime,
+    codexDesktop: snapshot.desktopApps.codex,
+    region: snapshot.network.region,
+  }
+}
+
+/**
+ * 客服排障最先问的是「你 Node 几、装在哪」「是不是管理员模式」「国内还是海外
+ * 网络」。这些主进程早就知道，这里只把上一次扫描的快照排成几行，不为生成报告
+ * 再发任何探测。路径原样给出，家目录由 runtime-log 统一换成占位符（I13）。
+ */
+export function buildFeedbackRuntimeLines(input: FeedbackRuntimeInput): string[] {
+  const lines: string[] = []
+  const snapshot = input.snapshot
+  for (const key of Object.keys(runtimeToolNames) as Array<keyof SystemSnapshot['runtime']>) {
+    const status = snapshot?.runtime[key]
+    lines.push(`${runtimeToolNames[key]}: ${status ? runtimeToolText(status) : unreadable}`)
+  }
+  lines.push(`Codex 桌面端: ${snapshot ? codexDesktopText(snapshot.codexDesktop) : unreadable}`)
+  lines.push(`网络位置: ${snapshot ? regionLabels[snapshot.region] : unreadable}`)
+  if (input.platform === 'win32' && input.executionMode) {
+    // trusted-only 也是令牌探测失败时的保守回退（resolveWindowsCliExecutionMode），
+    // 所以这里把「或无法确认」一并写上，免得客服据此断定用户右键了管理员运行。
+    lines.push(`运行权限: ${input.executionMode === 'same-user'
+      ? '普通用户'
+      : '以管理员身份运行（或无法确认，按管理员处理）'}`)
+  }
+  lines.push(`软件位置: ${input.appDirectory?.trim() || unreadable}`)
+  lines.push(`数据目录: ${input.dataDirectory?.trim() || unreadable}`)
+  if (input.managedDirectory?.trim()) lines.push(`托管目录: ${input.managedDirectory.trim()}`)
+  const locale = input.locale?.trim()
+  const timeZone = input.timeZone?.trim()
+  if (locale || timeZone) lines.push(`系统语言与时区: ${locale || '未知'}，${timeZone || '未知'}`)
+  if (snapshot?.checkedAt) lines.push(`以上来自 ${snapshot.checkedAt} 的扫描`)
+  return lines
 }

@@ -114,9 +114,11 @@ import type {
   AiChatStartInput,
   AiImageGenerateInput,
   AccountManagedCliConfigurationInput,
+  ChooseWorkspaceOptions,
   LegalDocumentKind,
   RememberedAccountLogin,
   RendererErrorPayload,
+  RendererLogLevel,
 } from './ipc-contract'
 import type { DiagnosticsReport } from './diagnostics'
 import type { ConnectionCheckResult } from './connection-check'
@@ -476,6 +478,15 @@ function parseConfigSavePayload(payload: unknown): ConfigSavePayload {
   }
 }
 
+function parseChooseWorkspaceOptions(value: unknown): ChooseWorkspaceOptions {
+  if (value === undefined) return {}
+  if (!isRecord(value)) throw new Error('选择工作目录的参数无效')
+  const keys = Object.keys(value)
+  if (keys.some((key) => key !== 'createStarter')) throw new Error('选择工作目录的参数无效')
+  if (value.createStarter !== undefined && typeof value.createStarter !== 'boolean') throw new Error('选择工作目录的参数无效')
+  return value.createStarter === undefined ? {} : { createStarter: value.createStarter }
+}
+
 function parseWorkspace(workspace: unknown, fallback: string): string {
   if (typeof workspace === 'string' && workspace.length > 32_767) {
     throw new Error('工作目录格式错误')
@@ -578,12 +589,19 @@ function parseProviderSessionListQuery(value: unknown): ProviderSessionListQuery
   }
 }
 
-function parseRendererError(value: unknown): { message: string; stack?: string; context?: string } {
+function parseRendererLogLevel(value: unknown): RendererLogLevel {
+  if (value === undefined) return 'error'
+  if (value === 'info' || value === 'warn' || value === 'error') return value
+  throw new Error('日志级别无效')
+}
+
+function parseRendererError(value: unknown): { message: string; stack?: string; context?: string; level: RendererLogLevel } {
   if (!isRecord(value)) throw new Error('渲染进程错误格式无效')
   return {
     message: requiredString(value.message, '错误消息', 4_096),
     stack: optionalString(value.stack, '错误堆栈', 16_384),
     context: optionalString(value.context, '错误上下文', 256),
+    level: parseRendererLogLevel(value.level),
   }
 }
 
@@ -1681,7 +1699,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     }
   }
   // 建不成就说一句、回到选择器，由用户自己选；返回 null 让外层循环再开一次选择器。
-  async function createStarterWorkspaceOrExplain(parentWindow: BrowserWindow | undefined): Promise<string | null> {
+  async function createStarterWorkspaceOrExplain(parentWindow: BrowserWindow | undefined, nextStep: string): Promise<string | null> {
     try {
       const context = { platform: process.platform, home: os.homedir(), env: process.env }
       const created = createStarterWorkspace(resolveStarterWorkspaceParent(documentsDirectory(), context), context)
@@ -1694,7 +1712,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
         type: 'error' as const,
         title: '没能新建项目文件夹',
         message: '没能替你新建项目文件夹。',
-        detail: `${error instanceof Error ? error.message : '未知错误'}\n\n接下来会重新打开文件夹选择窗口，可以在里面自己新建一个文件夹再选它。`,
+        detail: `${error instanceof Error ? error.message : '未知错误'}\n\n${nextStep}`,
         buttons: ['知道了'],
         noLink: true,
       }
@@ -1703,8 +1721,20 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
       return null
     }
   }
-  registerTrustedHandler('workspace:choose', async (event) => {
+  async function commitWorkspace(workspace: string): Promise<string> {
+    await service.updateStoredConfig({ version: 2, workspace })
+    options.extensionService.setRepositoryContext(workspace)
+    options.providerExtensionService.setRepositoryRoot(workspace)
+    return workspace
+  }
+  registerTrustedHandler('workspace:choose', async (event, rawOptions: unknown) => {
     const parentWindow = BrowserWindow.fromWebContents(event.sender) ?? undefined
+    // 首页「新建项目文件夹」与引导里那颗按钮：不弹选择器，直接走提示框里「新建」
+    // 那一支。路径由主进程决定，渲染层只能说「要新建」，给不出任何路径（I5）。
+    if (parseChooseWorkspaceOptions(rawOptions).createStarter) {
+      const created = await createStarterWorkspaceOrExplain(parentWindow, '可以再点一次「打开」，自己选一个文件夹。')
+      return created === null ? null : commitWorkspace(created)
+    }
     const dialogOptions: OpenDialogOptions = {
       title: '选择 CLI 工作目录',
       properties: ['openDirectory', 'createDirectory'],
@@ -1740,7 +1770,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
         ? await dialog.showMessageBox(parentWindow, messageBoxOptions)
         : await dialog.showMessageBox(messageBoxOptions)
       if (answer.response === prompt.createIndex) {
-        workspace = await createStarterWorkspaceOrExplain(parentWindow)
+        workspace = await createStarterWorkspaceOrExplain(parentWindow, '接下来会重新打开文件夹选择窗口，可以在里面自己新建一个文件夹再选它。')
         continue
       }
       if (answer.response === prompt.continueIndex) {
@@ -1751,10 +1781,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
         })
       }
     }
-    await service.updateStoredConfig({ version: 2, workspace })
-    options.extensionService.setRepositoryContext(workspace)
-    options.providerExtensionService.setRepositoryRoot(workspace)
-    return workspace
+    return commitWorkspace(workspace)
   })
   registerTrustedHandler('repository:get-context', () => options.extensionService.getRepositoryContext())
   registerTrustedHandler('runtime:install-node', async (event) => {
@@ -2067,12 +2094,14 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   })
   registerTrustedHandler('runtime-logs:clear', () => options.runtimeLog.clear())
   registerTrustedHandler('runtime-logs:renderer-error', (_event, payload: unknown) => {
-    const error = parseRendererError(payload)
-    options.runtimeLog.log('error', 'renderer', 'renderer.error', error.message, {
+    const { level, ...error } = parseRendererError(payload)
+    options.runtimeLog.log(level, 'renderer', `renderer.${level}`, error.message, {
       context: error.context ?? null,
       stack: error.stack ?? null,
     })
-    options.onRendererError?.(error)
+    // 只有真正的渲染层错误才上报崩溃：info / warn 是渲染层留给排障的决策记录，
+    // 一并上报会把真正的异常淹没，也会把本该只留在本机的线索发出去。
+    if (level === 'error') options.onRendererError?.(error)
   })
   /**
    * 备份列表要标出每份备份里的 Key 是不是当前账号的。只读已有的 Key 缓存，从不

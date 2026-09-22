@@ -46,12 +46,38 @@ describe('resolveCodexHomeContext', () => {
     }).codexHome).toBe(path.join(userHome, '.codex'))
   })
 
-  it('rejects invalid packaged CODEX_HOME even when the development override is valid', () => {
-    expect(() => resolveCodexHomeContext({
+  it('ignores an invalid packaged CODEX_HOME instead of aborting startup', () => {
+    const result = resolveCodexHomeContext({
       isPackaged: true,
       env: { CODEX_HOME: '../invalid', XINGMANG_CODEX_HOME_OVERRIDE: override },
       userHome,
-    })).toThrow(/CODEX_HOME/)
+    })
+
+    expect(result.codexHome).toBe(path.join(userHome, '.codex'))
+    expect(result.codexEnv.CODEX_HOME).toBe(path.join(userHome, '.codex'))
+    expect(result.ignoredCodexHome).toEqual({ value: '../invalid', reason: 'relative' })
+  })
+
+  it.each([
+    { value: '%USERPROFILE%\\.codex', reason: 'relative' },
+    { value: '~/.codex', reason: 'relative' },
+    { value: ' .codex ', reason: 'relative' },
+    { value: `${environmentHome}\0suffix`, reason: 'nul' },
+  ])('treats CODEX_HOME=$value as unset and reports why', ({ value, reason }) => {
+    for (const isPackaged of [true, false]) {
+      const result = resolveCodexHomeContext({ isPackaged, env: { CODEX_HOME: value }, userHome })
+
+      expect(result.codexHome).toBe(path.join(userHome, '.codex'))
+      expect(result.codexEnv.CODEX_HOME).toBe(path.join(userHome, '.codex'))
+      expect(result.ignoredCodexHome).toEqual({ value: value.trim(), reason })
+    }
+  })
+
+  it('reports nothing when CODEX_HOME is a usable absolute path or unset', () => {
+    expect(resolveCodexHomeContext({ isPackaged: true, env: { CODEX_HOME: environmentHome }, userHome }))
+      .not.toHaveProperty('ignoredCodexHome')
+    expect(resolveCodexHomeContext({ isPackaged: true, env: {}, userHome }))
+      .not.toHaveProperty('ignoredCodexHome')
   })
 
   it('uses the default only when every applicable environment value is empty', () => {
@@ -63,11 +89,10 @@ describe('resolveCodexHomeContext', () => {
   })
 
   it.each([
-    { env: { XINGMANG_CODEX_HOME_OVERRIDE: '../escape', CODEX_HOME: environmentHome }, name: 'override' },
-    { env: { CODEX_HOME: 'relative/codex' }, name: 'CODEX_HOME' },
-    { env: { CODEX_HOME: `${environmentHome}\0suffix` }, name: 'NUL' },
-  ])('rejects invalid selected $name instead of falling through', ({ env }) => {
-    expect(() => resolveCodexHomeContext({ isPackaged: false, env, userHome })).toThrow()
+    { env: { XINGMANG_CODEX_HOME_OVERRIDE: '../escape', CODEX_HOME: environmentHome }, name: 'relative' },
+    { env: { XINGMANG_CODEX_HOME_OVERRIDE: `${override}\0suffix` }, name: 'NUL' },
+  ])('keeps rejecting a $name development override instead of falling through', ({ env }) => {
+    expect(() => resolveCodexHomeContext({ isPackaged: false, env, userHome })).toThrow(/XINGMANG_CODEX_HOME_OVERRIDE/)
   })
 
   it('maps only Codex to the independent root', () => {
@@ -80,6 +105,10 @@ describe('resolveCodexHomeContext', () => {
     expect(defaultProviderConfigRoots(userHome, { CODEX_HOME: environmentHome })).toEqual({
       userHome,
       codexHome: environmentHome,
+    })
+    expect(defaultProviderConfigRoots(userHome, { CODEX_HOME: '.codex' })).toEqual({
+      userHome,
+      codexHome: path.join(userHome, '.codex'),
     })
   })
 })
