@@ -41,7 +41,39 @@ describe('renderer-v2 operation error dialog', () => {
     )
     expect(markup).toContain(raw)
     expect(markup).not.toContain('当前版本不受影响')
-    expect(markup).not.toContain('需要管理员权限')
+    expect(markup).not.toContain('写不进安装目录')
     expect(markup).toContain('找客服')
+  })
+
+  it('shows the directory and offers 复制路径 once the caller knows one', () => {
+    const raw = 'Claude Code 安装失败：npm 官方源：EPERM: operation not permitted, rename'
+    const directory = 'C:\\Users\\peaker\\AppData\\Roaming\\npm\\node_modules\\@anthropic-ai\\claude-code'
+    const markup = renderToStaticMarkup(
+      <OperationErrorDialog failure={{ message: raw, tool: 'claude' }} installDirectory={directory}
+        onClose={() => undefined} onAction={() => undefined} />,
+    )
+    expect(markup).toContain('写不进安装目录')
+    expect(markup).toContain('operation-error-copyPath')
+    // 剪贴板写不进去时用户还要能自己选中它，所以路径必须上屏，不只是躺在按钮后面。
+    expect(markup).toContain('operation-error-path')
+    expect(markup).toContain(directory)
+  })
+
+  it('hides 复制路径 when no directory is known, rather than copying an empty string', () => {
+    const raw = 'Claude Code 安装失败：npm 官方源：EPERM: operation not permitted, rename'
+    const markup = renderToStaticMarkup(
+      <OperationErrorDialog failure={{ message: raw, tool: 'claude' }} onClose={() => undefined} onAction={() => undefined} />,
+    )
+    expect(markup).not.toContain('operation-error-copyPath')
+    expect(markup).not.toContain('operation-error-path')
+    // 按钮被过滤光了也不能只剩「返回」：目录的另一颗按钮仍在。
+    expect(markup).toContain('operation-error-log')
+  })
+
+  it('filters 复制路径 the same way it filters 重试', () => {
+    const permission = 'Claude Code 安装失败：npm 官方源：EPERM: operation not permitted, rename'
+    expect(operationErrorActions({ message: permission }).map((action) => action.id)).toEqual(['log'])
+    expect(operationErrorActions({ message: permission }, '/tmp/npm/@anthropic-ai/claude-code').map((action) => action.id))
+      .toEqual(['copyPath', 'log'])
   })
 })

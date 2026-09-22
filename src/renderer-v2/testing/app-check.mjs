@@ -2565,6 +2565,37 @@ test('an unreadable Node version blocks the CLI install and says which step is b
   } finally { await page.close() }
 })
 
+test('a permission failure hands over the install directory instead of offering to elevate (A2)', async () => {
+  const page = await open('installPermissionDenied=1')
+  try {
+    // 打包版里 navigator.clipboard 仍可能被系统拒绝，无头 Chromium 也没有授权，
+    // 所以这里把它换成一个记录器：要验的是「复制了哪个路径」，不是浏览器权限。
+    await page.evaluate(() => {
+      window.__copied = []
+      Object.defineProperty(navigator, 'clipboard', {
+        configurable: true,
+        value: { writeText: (text) => { window.__copied.push(text); return Promise.resolve() } },
+      })
+    })
+    await page.getByTestId('tool-row-gemini').getByText('未安装').waitFor()
+    await page.getByTestId('tool-gemini-primary').click()
+    const dialog = page.getByTestId('operation-error')
+    await dialog.waitFor()
+    assert.match(await dialog.innerText(), /写不进安装目录/)
+    // 这颗按钮已经没有了：本程序按普通权限运行，提权重试等于换一套安装事务。
+    assert.equal(await page.getByRole('button', { name: /管理员/ }).count(), 0)
+    const target = '/home/fixture/.npm-global/lib/node_modules/@google/gemini-cli'
+    assert.equal(await page.getByTestId('operation-error-path').innerText(), target)
+    await page.getByTestId('operation-error-copyPath').click()
+    await page.getByTestId('operation-error-copied').waitFor()
+    assert.deepEqual(await page.evaluate(() => window.__copied), [target])
+    // 复制不关对话框：后端原话和「查看日志」都还在。
+    assert.equal(await dialog.count(), 1)
+    await page.getByRole('button', { name: '返回', exact: true }).click()
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('an unreadable Node version leaves the guide runtime step unfinished (R-G6)', async () => {
   const page = await open('nodeVersionUnknown=1&guest=1&missingConfig=1')
   try {

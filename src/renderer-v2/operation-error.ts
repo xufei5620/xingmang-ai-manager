@@ -1,7 +1,8 @@
+import { classifyNetworkFailure } from '../../electron/network-failure'
 import { errors } from './registry/errors'
 
 export type OperationErrorKey = keyof typeof errors
-export type OperationActionId = 'retry' | 'log' | 'support' | 'relogin' | 'recharge' | 'network' | 'repair'
+export type OperationActionId = 'retry' | 'log' | 'support' | 'relogin' | 'recharge' | 'network' | 'repair' | 'copyPath'
 export interface OperationAction { id: OperationActionId; label: string }
 export interface OperationErrorHint {
   key: Exclude<OperationErrorKey, 'unknown'>
@@ -39,6 +40,17 @@ const rules: Array<{ key: OperationErrorHint['key']; match: (message: string) =>
   // 必须排在 permission 之前：EPERM 的原文与文件占用长得一样，主进程确认到占用才会
   // 写上「文件被占用」，写了就以它为准。
   { key: 'toolRunning', match: (message) => /EBUSY|ETXTBSY|resource busy or locked|text file busy|文件被占用|正(在)?被[^。；]{0,10}占用|正在被使用/i.test(message) },
+  // 磁盘满以前落进「操作没有成功」，用户只看到一句 ENOSPC 英文原文，被指去找客服。
+  // 放在 permission 之前：npm 在写不下去时同时报过 EPERM 与 ENOSPC 的情况下，
+  // 「清一清磁盘」才是用户真做得到的那一步。
+  { key: 'diskFull', match: (message) => /ENOSPC|no space left|not enough space|磁盘空间不足|磁盘已满|disk full/i.test(message) },
+  // 公司网关和安全软件会替换证书，npm 与账号接口因此拿到一张签不过的证书。归类
+  // 口径直接用 electron/network-failure.ts 那一份（它已经同时认得 Chromium 的
+  // ERR_CERT_* 和 OpenSSL 的 SELF_SIGNED_CERT_IN_CHAIN 这类写法），两边各写一套
+  // 正则的话，迟早一边认得出、另一边认不出同一句话。
+  // 必须排在 timeout 之前：那条的 network / 连接失败 会把证书失败吞成「检查网络」，
+  // 用户于是反复检查一个本来就通的网络。
+  { key: 'tlsIntercepted', match: (message) => classifyNetworkFailure(message) === 'tls' },
   { key: 'permission', match: (message) => /EPERM|EACCES|operation not permitted|permission denied|拒绝访问|访问被拒绝|权限不足|需要管理员/i.test(message) },
   // 「杀毒」这条只留真的在说杀毒软件的说法。EBUSY 与「文件被占用」已经上移到
   // toolRunning：两条都留着的话，先匹配到的那条就决定用户去关哪个东西。
@@ -65,13 +77,22 @@ export function classifyOperationError(message: string): OperationErrorKey {
 
 /**
  * Catalog entries name their buttons in prose. Only the ones this app can
- * honour from a failure dialog are handed back; a label such as 「复制路径」
- * has no path to copy at that point, and 「以管理员身份重试」 has no elevated
- * retry channel, so offering either would be a button that does nothing.
+ * honour from a failure dialog are handed back; offering a label the app
+ * cannot act on would be a button that does nothing.
  *
  * 「一键修复」在这里的意思只有一个：对当前账号把已配置的工具重新签发一次 Key
  * 再写回配置，也就是装完工具后跑的那条同样的流程。它能进这张表，是因为那条
  * 流程本来就在（App 的 syncAfterToolInstalled），不需要为这颗按钮新做什么。
+ *
+ * 「复制路径」自 A2 余项起接上：失败对话框知道是哪个工具失败的，安装目录
+ * （已装）或主进程算出的首装落点（未装）都在快照里，拿得到就出这颗按钮，
+ * 拿不到就不出（operationErrorActions 过滤）。
+ *
+ * 「以管理员身份重试」刻意留在表外，而且目录里也不再有它。本程序自 0.1.12
+ * 起按普通权限运行，诊断页还把「以管理员身份运行」标成风险；Windows 上提权
+ * 重试等于换一套安装事务（落点从用户 npm 目录变成 ProgramData），而 npm 会
+ * 执行 registry 上的包脚本，把它交给提权令牌正是可信路径那套规矩拒绝的事；
+ * macOS 从不提权。permission 这一类的下一步是看目录、看日志，不是提权。
  */
 const actionIds: Record<string, OperationActionId | undefined> = {
   重试: 'retry',
@@ -84,6 +105,7 @@ const actionIds: Record<string, OperationActionId | undefined> = {
   马上充值: 'recharge',
   检查网络: 'network',
   一键修复: 'repair',
+  复制路径: 'copyPath',
 }
 
 /**
@@ -116,6 +138,26 @@ export function operationFallbackActions(): OperationAction[] {
   return honourableActions(errors.unknown.actions)
 }
 
+/**
+ * 「查看日志」该落到哪一页。以前一律跳「安装卸载」页，于是连接检查、写 Key、
+ * 拉起终端这些失败的用户点开的是一张空的「安装日志」卡（候选 8）。
+ *
+ * 判断分两步，因为两条线索缺一不可：
+ * 1. 没有 tool 的失败根本不来自安装 / 卸载 / 更新（只有这三条路会把工具记下来），
+ *    它们的痕迹只在 runtime.jsonl 里，要到「反馈」页看。
+ * 2. 来自安装的失败再看类别：网络、证书、磁盘、权限、文件被占用、账号这些是
+ *    环境问题，运行日志记得全；真正只有安装那一侧才写得出的（杀毒拦截、更新包
+ *    校验、认不出的安装失败）才值得跳到「安装日志」卡。
+ */
+export type OperationLogPage = 'maintenance' | 'feedback'
+
+const installLogKeys: ReadonlySet<OperationErrorKey> = new Set<OperationErrorKey>(['installBlocked', 'updateIntegrity', 'unknown'])
+
+export function operationLogPage(failure: { message: string; tool?: string | undefined }): OperationLogPage {
+  if (!failure.tool) return 'feedback'
+  return installLogKeys.has(classifyOperationError(failure.message)) ? 'maintenance' : 'feedback'
+}
+
 export function presentOperationError(message: string): OperationErrorHint | null {
   const text = message.trim()
   if (!text) return null
@@ -133,7 +175,7 @@ export function presentOperationError(message: string): OperationErrorHint | nul
     title: entry.title,
     body: entry.body,
     // Every catalog action for this entry may be one this app cannot perform
-    // (permission only offers an elevated retry). Falling back to 找客服 keeps
+    // （「看状态」「换一份」这些还没有对应页面）。Falling back to 找客服 keeps
     // the dialog from ending on a dead end.
     actions: actions.length ? actions : [{ id: 'support', label: '找客服' }],
   }

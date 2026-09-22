@@ -76,6 +76,13 @@ import { ToolStatusMeta, ToolStatusReason } from './features/tools/ToolStatusMet
 import { connectionCheckView } from './features/tools/connection-check'
 import { maintenanceFailureNotice, readMaintenanceStatus } from './features/tools/maintenance-status'
 import { ManualUninstallDialog, type ManualUninstallState } from './features/tools/ManualUninstall'
+import {
+  anyRuntimeLogValue,
+  filterRuntimeLogs,
+  formatRuntimeLogEntry,
+  hasRuntimeLogFilter,
+  runtimeLogSourceOptions,
+} from './features/app/runtime-log-filter'
 import type { V2Bridge, V2Page } from './types'
 import type {
   PlatformProxyStatus,
@@ -446,20 +453,29 @@ export function FeedbackPage({
   const resource = useResource(load)
   const operation = useOperation()
   const [query, setQuery] = useState('')
-  const [level, setLevel] = useState('all')
+  const [level, setLevel] = useState(anyRuntimeLogValue)
+  const [source, setSource] = useState(anyRuntimeLogValue)
+  const [onlyCurrentBoot, setOnlyCurrentBoot] = useState(false)
   const [report, setReport] = useState<Awaited<
     ReturnType<V2Bridge['getFeedbackReport']>
   > | null>(null)
   const [selected, setSelected] = useState<RuntimeLog | null>(null)
   const [clearOpen, setClearOpen] = useState(false)
-  const list =
-    resource.data?.entries.filter(
-      (entry) =>
-        (level === 'all' || entry.level === level) &&
-        `${entry.message} ${entry.source} ${entry.event}`
-          .toLowerCase()
-          .includes(query.toLowerCase()),
-    ) ?? []
+  const filter = {
+    level,
+    source,
+    query,
+    onlyCurrentBoot,
+    currentProcessId: resource.data?.currentProcessId ?? -1,
+    startedAt: resource.data?.startedAt ?? '',
+  }
+  const list = filterRuntimeLogs(resource.data?.entries ?? [], filter)
+  const resetFilters = () => {
+    setQuery('')
+    setLevel(anyRuntimeLogValue)
+    setSource(anyRuntimeLogValue)
+    setOnlyCurrentBoot(false)
+  }
   const preview = () =>
     void operation.execute(
       'preview',
@@ -498,16 +514,31 @@ export function FeedbackPage({
       />
       <Toolbar
         left={
-          <Segment
-            options={[
-              { value: 'all', label: '全部' },
-              { value: 'error', label: '错误' },
-              { value: 'warn', label: '提醒' },
-              { value: 'info', label: '信息' },
-            ]}
-            value={level}
-            onChange={setLevel}
-          />
+          <>
+            <Segment
+              options={[
+                { value: anyRuntimeLogValue, label: '全部' },
+                { value: 'error', label: '错误' },
+                { value: 'warn', label: '提醒' },
+                { value: 'info', label: '信息' },
+              ]}
+              value={level}
+              onChange={setLevel}
+            />
+            <Select
+              aria-label="按来源筛选"
+              options={runtimeLogSourceOptions(resource.data?.sources, source)}
+              value={source}
+              onChange={(event) => setSource(event.target.value)}
+              testId="feedback-source"
+            />
+            <Switch
+              checked={onlyCurrentBoot}
+              onChange={setOnlyCurrentBoot}
+              label="只看本次启动"
+              testId="feedback-current-boot"
+            />
+          </>
         }
         search={
           <SearchInput
@@ -535,12 +566,9 @@ export function FeedbackPage({
           loading={resource.loading}
           error={resource.error}
           count={list.length}
-          filtered={Boolean(query || level !== 'all')}
+          filtered={hasRuntimeLogFilter(filter)}
           retry={() => void resource.reload()}
-          clear={() => {
-            setQuery('')
-            setLevel('all')
-          }}
+          clear={resetFilters}
         >
           {list.map((entry) => (
             <ListRow
@@ -652,6 +680,25 @@ export function FeedbackPage({
         open={Boolean(selected)}
         title="日志详情"
         onClose={() => setSelected(null)}
+        footer={
+          <Button
+            icon={Copy}
+            loading={operation.busy === 'copy-entry'}
+            onClick={() =>
+              selected &&
+              void operation.execute(
+                'copy-entry',
+                () =>
+                  navigator.clipboard.writeText(
+                    formatRuntimeLogEntry(selected),
+                  ),
+                '这一条已复制',
+              )
+            }
+          >
+            复制这一条
+          </Button>
+        }
       >
         <dl className="v2-business-kv">
           <dt>时间</dt>
@@ -666,6 +713,7 @@ export function FeedbackPage({
         <pre className="v2-business-code">
           {JSON.stringify(selected?.detail, null, 2)}
         </pre>
+        <ResultNotice {...operation} />
       </Drawer>
       <Dialog
         open={clearOpen}

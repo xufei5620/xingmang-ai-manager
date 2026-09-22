@@ -238,6 +238,12 @@ export interface ToolStatus {
    * undefined，渲染层此时退回中性的「已安装」。
    */
   installSource?: CliInstallDisplaySource
+  /**
+   * 这个工具装上去会落在哪个目录。未装时 installDirectory 为 null，而用户要
+   * 查写入权限或加杀毒白名单需要的正是这个路径；已装时两者指同一处。算不出
+   * 落点（非 CLI 工具、探测不到 npm 全局根）时缺省，界面据此不出「复制路径」。
+   */
+  installTarget?: string | null
 }
 
 export interface CliStatus extends ToolStatus {
@@ -1506,6 +1512,38 @@ export function grokInstallStrategyFor(platform: NodeJS.Platform): GrokInstallSt
   return 'external'
 }
 
+export interface CliInstallTargetOptions {
+  platform: NodeJS.Platform
+  /** 当前 npm 全局根；探测不到时为 null。 */
+  npmGlobalRoot: string | null
+  /** 这一次安装会不会落进托管 npm 布局，落则给出它的 prefix，否则 null。 */
+  managedNpmPrefix: string | null
+  /** Grok 在 Windows 上走原生通道，装进这个目录，而不是 node_modules。 */
+  managedNativeRoot: string | null
+}
+
+/**
+ * 还没装上的工具没有安装目录——目录要等安装那一步写完才存在。错误面板上的
+ * 「复制路径」要回答的却是「它会装到哪」，用户拿这个路径去查写入权限或加进
+ * 杀毒白名单。所以这里按 installCli 自己的选路重算一遍落点：托管布局优先，
+ * Grok 的 Windows 原生通道单列，其余落在当前 npm 全局根下。
+ *
+ * 算不出来时返回 null，界面据此不出那颗按钮——一个猜出来的路径比没有更糟。
+ */
+export function cliInstallTargetDirectory(
+  provider: ProviderId,
+  options: CliInstallTargetOptions,
+): string | null {
+  if (provider === 'grok' && grokInstallStrategyFor(options.platform) === 'windows-native') {
+    return options.managedNativeRoot
+  }
+  const packageName = cliCatalog[provider].packageName
+  if (options.managedNpmPrefix) {
+    return managedCliPackageDirectory(options.managedNpmPrefix, packageName, options.platform)
+  }
+  return options.npmGlobalRoot ? cliPackageDirectoryFromNpmRoot(options.npmGlobalRoot, packageName) : null
+}
+
 export interface CliInstallReleaseOptions {
   /** 要安装的版本,'latest' 表示不钉版本。Grok 的官方稳定版路径不受它影响。 */
   version?: string
@@ -1639,6 +1677,70 @@ export function buildCliUninstallPlan(
 function containsComparableVersion(value: string | null): boolean {
   return typeof value === 'string'
     && /\bv?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?\b/.test(value)
+}
+
+/** 离线时给四家 CLI 最新版探测的总预算：到点先出画面，不让首屏干等各自的超时。 */
+export const offlineLatestVersionBudgetMs = 3_000
+
+/** 预算到点仍未返回时，版本列上显示的那句话。 */
+export const latestVersionUncheckedMessage = '当前可能没有网络，这次没有检查最新版本'
+
+/**
+ * 网络位置探测没能给出结果 = 这会儿八成没网。离线时每家 CLI 的最新版探测都会各自
+ * 耗满自己的超时（npm 8 秒、Grok 清单 10 秒），首屏就卡在这上面十几秒，而本地已装
+ * 版本其实一瞬间就读出来了。探测接口自己挂了却仍能上网时会误判，代价只是这一次不
+ * 显示「有新版本」，下次扫描或手动刷新会补上。
+ */
+export function networkProbeSuggestsOffline(
+  network: Pick<NetworkLocationStatus, 'region' | 'error'>,
+): boolean {
+  return network.region === 'unknown' && network.error !== null
+}
+
+/** 没检查最新版时的占位结果：未安装的照旧算 skipped，已装的算 failed 并带上原因。 */
+export function buildUncheckedLatestVersion(
+  provider: ProviderId,
+  installed: boolean,
+  checkedAt: string = new Date().toISOString(),
+): LatestVersionProbe {
+  const source = provider === 'grok' ? 'official-manifest' : 'npm'
+  return installed
+    ? { status: 'failed', version: null, source, checkedAt, error: latestVersionUncheckedMessage }
+    : { status: 'skipped', version: null, source, checkedAt, error: null }
+}
+
+/**
+ * 给一批最新版探测套一个总预算。`budgetMs` 为 null 时等齐（联网时的老行为）；到点
+ * 还没回来的项用占位结果顶上，那几个 Promise 仍会在后台自己走完并把结果写进缓存，
+ * 这里不再等、也不重新发起——联网后靠下一次扫描或用户点刷新补上，不加定时器。
+ */
+export async function settleLatestVersionProbes(
+  probes: readonly Promise<LatestVersionProbe>[],
+  unchecked: readonly LatestVersionProbe[],
+  budgetMs: number | null,
+): Promise<LatestVersionProbe[]> {
+  const settled = probes.map((probe, index) => probe.then(
+    (value) => value,
+    (reason): LatestVersionProbe => ({
+      ...unchecked[index],
+      status: 'failed',
+      error: reason instanceof Error ? reason.message : String(reason),
+    }),
+  ))
+  if (budgetMs === null) return Promise.all(settled)
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const deadline = new Promise<'timeout'>((resolve) => {
+    timer = setTimeout(() => resolve('timeout'), budgetMs)
+    timer.unref?.()
+  })
+  try {
+    return await Promise.all(settled.map(async (probe, index) => {
+      const outcome = await Promise.race([probe, deadline])
+      return outcome === 'timeout' ? unchecked[index] : outcome
+    }))
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
 }
 
 export function buildCliStatus(
@@ -2008,6 +2110,28 @@ export function createSystemService(
     return { ...status, tooOld: versionStatus === 'too-old', versionStatus }
   }
 
+  /**
+   * 安装那一步的落点选择（installCli）在这里重放一遍，只为把「会装到哪」交给
+   * 界面。ProgramData / ~/Library 这两条托管路径在个别机器上算不出来（缺少可信
+   * 的 ProgramData、HOME 为空），那属于正常情况，吞掉后退回 null 即可——探测
+   * 不该因为一个附带字段失败。
+   */
+  function resolveCliInstallTarget(provider: ProviderId, npmGlobalRoot: string | null): string | null {
+    try {
+      const managed = platform === 'win32'
+        ? windowsExecutionMode === 'trusted-only' ? managedNpmPrefix() : null
+        : platform === 'darwin' && provider !== 'grok' ? managedNpmPrefix(commandEnvironment(), 'darwin') : null
+      return cliInstallTargetDirectory(provider, {
+        platform,
+        npmGlobalRoot,
+        managedNpmPrefix: managed,
+        managedNativeRoot: platform === 'win32' && provider === 'grok' ? managedNativeProviderRoot('grok') : null,
+      })
+    } catch {
+      return null
+    }
+  }
+
   async function inspectCliTool(
     provider: ProviderId,
     npmExecutable?: string | null,
@@ -2022,13 +2146,14 @@ export function createSystemService(
       npmGlobalRoot,
       platform,
     })
+    const installTarget = resolveCliInstallTarget(provider, npmGlobalRoot ?? null)
     if (
       !installation
       || (provider === 'codex' && installation.source === 'native'
         && isCodexDesktopExecutable(installation.commandPath))
     ) {
       return {
-        status: { installed: false, version: null, path: null, installDirectory: null },
+        status: { installed: false, version: null, path: null, installDirectory: null, installTarget },
         installation: null,
       }
     }
@@ -2078,6 +2203,7 @@ export function createSystemService(
               : safeNativeCommand?.executable ?? null
           : installation.commandPath,
         installDirectory: installation.installDirectory,
+        installTarget,
         uninstall: cliUninstallCapability(provider, installation, {
           managedNpmPrefix: (() => {
             try {
@@ -2372,24 +2498,16 @@ export function createSystemService(
     const cliResults: ToolStatus[] = cliProbes.map(buildCliToolStatusFromSettled)
     const networkRegion = network.region
 
-    const latestProbes = await Promise.allSettled(
-      providerIds.map((id, index) => inspectCliLatestVersion(
-        id,
-        cliResults[index],
-        networkRegion,
-      )),
+    // 离线时四家探测会一个个耗满超时，首屏本地信息早就齐了却还在等；
+    // 给整批一个总预算，到点先出画面（见 settleLatestVersionProbes）。
+    const uncheckedLatest = providerIds.map(
+      (id, index) => buildUncheckedLatestVersion(id, cliResults[index].installed),
     )
-    const latestVersions: LatestVersionProbe[] = latestProbes.map((probe, index) => (
-      probe.status === 'fulfilled'
-        ? probe.value
-        : {
-            status: 'failed',
-            version: null,
-            source: providerIds[index] === 'grok' ? 'official-manifest' : 'npm',
-            checkedAt: new Date().toISOString(),
-            error: probe.reason instanceof Error ? probe.reason.message : String(probe.reason),
-          }
-    ))
+    const latestVersions = await settleLatestVersionProbes(
+      providerIds.map((id, index) => inspectCliLatestVersion(id, cliResults[index], networkRegion)),
+      uncheckedLatest,
+      networkProbeSuggestsOffline(network) ? offlineLatestVersionBudgetMs : null,
+    )
     const scanSettings = store.read()
     const clis = Object.fromEntries(providerIds.map((id, index) => {
       const status = cliResults[index]
