@@ -5,7 +5,7 @@ import { OnboardingSettingRows, tutorialTopics } from './pages-maintenance'
 import { pages } from './registry/pages'
 import { errors } from './registry/errors'
 import { statuses } from './registry/status'
-import { accelerationBonusSeconds, accelerationTrialSeconds } from '../../electron/acceleration-contract'
+import { accelerationTrialSeconds } from '../../electron/acceleration-contract'
 import { runtimeButtonLabel, runtimeHomebrewCommand } from './features/tools/runtime-install-guide'
 
 const pageIds = new Set<string>(pages.map((page) => page.id))
@@ -60,12 +60,15 @@ describe('tutorial topics', () => {
     expect(text).toContain('一年')
   })
 
-  it('quotes the acceleration allowance from the contract instead of a typed-in number', () => {
-    // 免费时长与口令时长都由 acceleration-contract 定，教程里写死另一个数就会对不上。
+  it('quotes the free allowance from the contract and leaves the bonus code out', () => {
+    // 免费时长由 acceleration-contract 定，教程里写死另一个数就会对不上。
     const topic = tutorialTopics.find((entry) => entry.id === 'acceleration')
     const text = topic?.steps.map((step) => step.detail).join('\n') ?? ''
     expect(text).toContain(`${accelerationTrialSeconds / 60} 分钟`)
-    expect(text).toContain(`${accelerationBonusSeconds / 60} 分钟`)
+    // 口令入口是彩蛋，教程不写；写进来这条会红。
+    expect(text).not.toContain('口令')
+    // 托盘菜单（#326）是主窗口缩起来时唯一的开关入口。
+    expect(text).toContain('托盘')
     // 两处「自己连」的口径相反：下载那条不计时，Codex 桌面端那条计时且不自动断。
     expect(text).toContain('不计入免费时长')
     expect(text).toContain('不会自动断开')
