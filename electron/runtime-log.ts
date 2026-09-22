@@ -65,9 +65,18 @@ export type RuntimeEnvironmentDescriber = () => Promise<readonly string[]>
  */
 export type RuntimeSelfCheckDescriber = () => Promise<readonly string[]>
 
+/**
+ * 「运行环境」那几行（系统里的 Node / npm / Python / Git、Codex 桌面端、网络
+ * 位置、运行权限、安装与数据位置），同样由 main.ts 接上，只读上一次扫描的快照。
+ */
+export type RuntimeHostDescriber = () => Promise<readonly string[]>
+
 const ENVIRONMENT_TIMEOUT_MS = 2_000
 const ENVIRONMENT_UNREADABLE = '未能读取'
-const SENSITIVE_KEY = /(?:api[_-]?key|authorization|bearer|token|secret|password|credential|cookie)/i
+// A field named exactly `key` (Gemini's `?key=` parameter parsed into an object,
+// MCP env entries) is a credential; `key` as a substring is not (`keyboard`,
+// `monkey`, `cacheKey`), hence the anchors on that one alternative only.
+const SENSITIVE_KEY = /(?:api[_-]?key|authorization|bearer|token|secret|password|credential|cookie)|^key$/i
 const MAX_TEXT_LENGTH = 8_192
 const MAX_DETAIL_DEPTH = 5
 const MAX_DETAIL_ITEMS = 128
@@ -258,6 +267,7 @@ export class RuntimeLogStore {
   private readonly environmentTimeoutMs: number
   private describeEnvironment: RuntimeEnvironmentDescriber | null = null
   private describeSelfCheck: RuntimeSelfCheckDescriber | null = null
+  private describeHost: RuntimeHostDescriber | null = null
   private writeQueue: Promise<void> = Promise.resolve()
   // 每个日志文件一份解析结果，键是文件路径，所以最多 archiveCount + 1 份，天然有界。
   private readonly parsedFiles = new Map<string, { fingerprint: string; summary: RuntimeLogFileSummary }>()
@@ -288,6 +298,11 @@ export class RuntimeLogStore {
   /** 同上，接上「最近一次自检」那段。 */
   attachSelfCheckDescriber(describe: RuntimeSelfCheckDescriber): void {
     this.describeSelfCheck = describe
+  }
+
+  /** 同上，接上「运行环境」那段。 */
+  attachHostDescriber(describe: RuntimeHostDescriber): void {
+    this.describeHost = describe
   }
 
   /**
@@ -471,33 +486,63 @@ export class RuntimeLogStore {
     })
   }
 
-  async captureFeedbackReport(limit = 600): Promise<{ text: string; entries: number }> {
+  /**
+   * `maxLength` 是整份报告的字符上限（预览要整段送进渲染层）。超了不报错：从最旧
+   * 的日志开始丢，直到装得下，并在开头写明只附了最近几条——报告最需要的时候往往
+   * 正是日志最多的时候，用户手里也没有「减少日志」这个动作。只有日志以外的部分
+   * 就已经超限时才报错。
+   */
+  async captureFeedbackReport(limit = 600, maxLength = Number.POSITIVE_INFINITY): Promise<{ text: string; entries: number }> {
     const snapshot = await this.snapshot(limit)
     const home = os.homedir()
     const scrubHome = (value: string) => redactHomeDirectory(value, home)
-    const lines = [
+    const headLines = (attached: number, sizeTrimmed: boolean) => [
       `${this.appName} 反馈与诊断`,
       `生成时间: ${snapshot.generatedAt}`,
       `应用版本: ${this.appVersion}`,
       `运行模式: ${this.packaged ? 'packaged' : 'development'}`,
       `系统: ${process.platform} ${os.release()} ${process.arch}`,
       `Electron: ${process.versions.electron ?? 'unknown'}`,
-      `Node.js: ${process.versions.node}`,
-      `日志条数: ${snapshot.total}${snapshot.truncated ? `（附最近 ${snapshot.entries.length} 条）` : ''}`,
+      // 这是 Electron 自带的那份 Node，不是用户装的；原来叫「Node.js」，客服
+      // 和用户都会把它当成系统里的 Node 版本。系统 Node 在下面「运行环境」段。
+      `软件内置 Node: ${process.versions.node}`,
+      `日志条数: ${snapshot.total}${snapshot.truncated || sizeTrimmed ? `（附最近 ${attached} 条）` : ''}`,
+      ...(sizeTrimmed ? [`日志已截断: 报告超过大小上限，只保留最近 ${attached} 条；完整日志在下面的日志目录里`] : []),
       `日志目录: ${scrubHome(snapshot.directory)}`,
     ]
+    const sections: string[] = []
+    const host = await this.describeSectionLines(this.describeHost)
+    if (host.length) sections.push('', '运行环境:', ...host.map(scrubHome))
     const environment = await this.describeSectionLines(this.describeEnvironment)
-    if (environment.length) lines.push('', '工具与配置:', ...environment.map(scrubHome))
+    if (environment.length) sections.push('', '工具与配置:', ...environment.map(scrubHome))
     const selfCheck = await this.describeSectionLines(this.describeSelfCheck)
-    if (selfCheck.length) lines.push('', '最近一次自检:', ...selfCheck.map(scrubHome))
-    lines.push('', '运行日志:')
-    for (const entry of [...snapshot.entries].reverse()) {
+    if (selfCheck.length) sections.push('', '最近一次自检:', ...selfCheck.map(scrubHome))
+    sections.push('', '运行日志:')
+    // Newest first, so trimming keeps a prefix; printed oldest first below.
+    const logLines = snapshot.entries.map((entry) => {
       const detail = entry.detail ? ` ${JSON.stringify(entry.detail)}` : ''
-      lines.push(scrubHome(
+      return scrubHome(
         `[${entry.timestamp}] [${entry.level.toUpperCase()}] [${entry.source}/${entry.event}] ${entry.message}${detail}`,
-      ))
+      )
+    })
+    const render = (head: string[], kept: string[]) => `${[...head, ...sections, ...[...kept].reverse()].join('\n')}\n`
+    const full = render(headLines(logLines.length, false), logLines)
+    if (full.length <= maxLength) return { text: full, entries: snapshot.total }
+    // The notice's own digit count only shrinks as entries are dropped, so
+    // sizing it with the untrimmed count keeps the budget conservative.
+    const fixedLength = render(headLines(logLines.length, true), []).length
+    if (fixedLength > maxLength) {
+      throw new Error('反馈报告里日志以外的部分就已经超过大小上限，没法生成；请在反馈页点「打开日志目录」，把里面的日志文件直接发给客服')
     }
-    return { text: `${lines.join('\n')}\n`, entries: snapshot.total }
+    let budget = maxLength - fixedLength
+    let kept = 0
+    for (const line of logLines) {
+      // Each kept line adds itself plus one joining newline.
+      if (line.length + 1 > budget) break
+      budget -= line.length + 1
+      kept += 1
+    }
+    return { text: render(headLines(kept, true), logLines.slice(0, kept)), entries: snapshot.total }
   }
 
   /**

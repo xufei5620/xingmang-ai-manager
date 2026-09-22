@@ -181,7 +181,12 @@ export type CodexDesktopLaunchMode = MainCodexDesktopLaunchMode
 export type CliLaunchMode = MainCliLaunchMode
 export type AppWindowMode = 'onboarding' | 'dashboard'
 export type AppTheme = StoredAppTheme
-export interface WindowCapabilities { tray: boolean; notifications: boolean }
+export interface WindowCapabilities {
+  tray: boolean
+  notifications: boolean
+  // 主进程按本机内存与 CPU 判断，只用来让界面背景少画一点；缺省 = 旧行为（照常动画）。
+  lowEndDevice?: boolean
+}
 export type { ExternalDeepLink } from './external-deep-links'
 export interface FeedbackReportPreview { id: string; text: string; entries: number }
 export type UpdatePhase = MainUpdatePhase
@@ -216,6 +221,11 @@ export type AppSettingsV2 = AppSettings
 export type AppSettingsV2Update = AppSettingsUpdate
 export type SavedAccount = SavedAccountSummary
 export type RepositoryContext = CodexRepositoryContext
+
+/** `workspace:choose` 的可选参数。渲染层只能说「要新建」，路径永远由主进程决定。 */
+export interface ChooseWorkspaceOptions {
+  createStarter?: boolean
+}
 export type DiagnosticState = MainDiagnosticState
 export type DiagnosticsReport = MainDiagnosticsReport
 export type ConnectionCheckLayer = MainConnectionCheckLayer
@@ -324,9 +334,17 @@ export type AccountDashboardData = NewApiAccountDashboardData
 export type AccountTaskQuery = NewApiAccountTaskQuery
 export type AccountTaskRecord = NewApiAccountTaskRecord
 export type AccountTaskPage = NewApiAccountTaskPage
-export type AccountKey = NewApiAccountKey
+export interface AccountKey extends NewApiAccountKey {
+  /**
+   * 本软件替这个工具签发、且这个工具的配置此刻用的就是这把 Key。只由主进程按托管
+   * Key 缓存与本机配置比对后补上；缺省 = 没有工具在用（旧行为）。
+   */
+  managedProvider?: ProviderId
+}
 export type AccountKeysQuery = NewApiAccountKeysQuery
-export type AccountKeysPage = NewApiAccountKeysPage
+export interface AccountKeysPage extends Omit<NewApiAccountKeysPage, 'keys'> {
+  keys: AccountKey[]
+}
 export type AccountKeyCreateInput = NewApiAccountKeyCreateInput
 export type AccountKeyUpdateInput = NewApiAccountKeyUpdateInput
 
@@ -353,10 +371,17 @@ export interface AccountManagedCliConfigurationInput {
   intent?: 'automatic' | 'explicit'
 }
 
+export type RendererLogLevel = 'info' | 'warn' | 'error'
+
 export interface RendererErrorPayload {
   message: string
   stack?: string
   context?: string
+  /**
+   * 缺省 = error，即这条通道原本的含义：写一条 error 日志并走崩溃上报。info /
+   * warn 只进本机运行日志，给「渲染层做了什么决定」这类排障线索用，不上报。
+   */
+  level?: RendererLogLevel
 }
 
 export interface AiChatGroupSummary {
@@ -541,7 +566,8 @@ export interface XingmangInvokeContract {
   >
   listModels: IpcInvokeDefinition<'models:list', [apiKey: string], string[]>
   listConfiguredModels: IpcInvokeDefinition<'models:list-configured', [provider: ProviderId], string[]>
-  chooseWorkspace: IpcInvokeDefinition<'workspace:choose', [], string | null>
+  /** options 省略 = 弹目录选择器；createStarter = 不弹选择器，直接替用户新建一个项目文件夹。 */
+  chooseWorkspace: IpcInvokeDefinition<'workspace:choose', [options?: ChooseWorkspaceOptions], string | null>
   getRepositoryContext: IpcInvokeDefinition<'repository:get-context', [], RepositoryContext>
   installNodeRuntime: IpcInvokeDefinition<'runtime:install-node', [], NodeRuntimeInstallResult>
   restartWindows: IpcInvokeDefinition<'runtime:restart-windows', [], void>
@@ -647,6 +673,8 @@ export interface XingmangInvokeContract {
   getFeedbackReport: IpcInvokeDefinition<'runtime-logs:preview-feedback', [], FeedbackReportPreview>
   copyFeedbackReport: IpcInvokeDefinition<'runtime-logs:copy-feedback', [reportId?: string], { entries: number }>
   exportFeedbackReport: IpcInvokeDefinition<'runtime-logs:export-feedback', [reportId?: string], { outputPath: string } | null>
+  /** 只认本次运行里导出过的文件路径（主进程记着），渲染层给别的路径会被拒。 */
+  revealExportedFile: IpcInvokeDefinition<'exports:reveal-file', [filePath: string], boolean>
   openRuntimeLogDirectory: IpcInvokeDefinition<'runtime-logs:open-directory', [], boolean>
   clearRuntimeLogs: IpcInvokeDefinition<'runtime-logs:clear', [], void>
   reportRendererError: IpcInvokeDefinition<'runtime-logs:renderer-error', [payload: RendererErrorPayload], void>
@@ -867,7 +895,7 @@ export interface XingmangInvokeContract {
    * 连接自检：用该工具配置文件里真正写着的 Key、服务地址和模型，向星芒服务
    * 发一次最小请求，把失败归到网络 / 密钥 / 额度 / 分组 / 模型 / 协议中的
    * 一层；没配过的工具归到「未配置」，不算失败。diagnostics:run 的
-   * XINGMANG_NETWORK 只发 HEAD，证明网络通不证明能用，所以这条单独成通道、
+   * XINGMANG_NETWORK 只读一次不用登录的状态接口，证明网络通不证明能用，所以这条单独成通道、
    * 只在用户点按钮时才跑。一次调用只测一个工具，结果页按工具各调一次。
    */
   checkProviderConnection: IpcInvokeDefinition<
@@ -999,6 +1027,7 @@ export const ipcInvokeChannels = {
   getFeedbackReport: 'runtime-logs:preview-feedback',
   copyFeedbackReport: 'runtime-logs:copy-feedback',
   exportFeedbackReport: 'runtime-logs:export-feedback',
+  revealExportedFile: 'exports:reveal-file',
   openRuntimeLogDirectory: 'runtime-logs:open-directory',
   clearRuntimeLogs: 'runtime-logs:clear',
   reportRendererError: 'runtime-logs:renderer-error',
