@@ -10,6 +10,7 @@ import {
 import { tools } from '../../registry/tools'
 import { connectionReady, sourceFor } from './model'
 import { userFacingErrorMessage } from '../../business-common'
+import { networkBlockedFailures } from './online-resync'
 import {
   applyManualSourceMarker,
   getSourceMarkerStorage,
@@ -47,6 +48,13 @@ export interface AccountBootstrapResult {
   failed: Array<{ provider: ProviderId; message: string }>
   skipped: AccountBootstrapSkip[]
   warnings: string[]
+  /**
+   * 这一轮没写完，且拦住它的全是网络。断网启动时首页横幅要换一句话，联网之后
+   * 还要据此补跑一次（online-resync.ts）。判定放在这里，是因为 Key 同步那一侧的
+   * 失败（synchronized.failed）出了这个函数就被拼成 warnings 文本，调用方再想
+   * 分辨哪条是网络问题就只能猜。
+   */
+  networkBlocked: boolean
 }
 
 export type AccountBootstrapBridge = Pick<
@@ -318,5 +326,21 @@ export async function bootstrapAccountTools(
       .map((entry) => `${nameOf(entry.provider)}：${entry.message}`),
   ]
 
-  return { readyKeys, configured, failed, skipped: plan.skipped, warnings }
+  // 只看「这次为什么没写成」的那几条：syncError（整次同步都没发出去）、逐个工具的
+  // Key 签发失败、逐个工具的配置失败。加密缓存警告、来源标记警告和图片技能提示
+  // 不在其列——它们换个网络也一样，拿来当断网证据会让补跑白跑。
+  const failureSignals = [
+    ...(syncError ? [syncError] : []),
+    ...(synchronized?.failed ?? []).map((entry) => entry.message),
+    ...failed.map((entry) => entry.message),
+  ]
+
+  return {
+    readyKeys,
+    configured,
+    failed,
+    skipped: plan.skipped,
+    warnings,
+    networkBlocked: networkBlockedFailures(failureSignals),
+  }
 }

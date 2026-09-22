@@ -42,6 +42,7 @@ import { onboardingPreviewEnabled } from './features/app/dev-preview'
 import { deepLinkReadErrorText, supportQrFallbackText } from './features/app/fallback-messages'
 import { bootstrapAccountTools, type AccountBootstrapMode, type AccountBootstrapProgress, type AccountBootstrapResult } from './features/tools/account-bootstrap'
 import { rewritableKeyProviders } from './features/tools/connection-check'
+import { idleOnlineResync, noteBootstrapOutcome, planOnlineResync } from './features/tools/online-resync'
 import { accountOrigin, accountScope, accountSiteId, accountSupports, siteIdForOrigin, type AccountSiteId } from './account-context'
 import { formatAccountReadError } from './features/app/account-read-error'
 import { AccountBalanceContext, useAccountBalanceStore } from './features/app/balance-context'
@@ -115,6 +116,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   const bootstrapInFlight = useRef<{ scope: string; promise: Promise<void> } | null>(null)
   const bootstrapAttempts = useRef(new Set<string>())
   const suppressRestoredBootstrap = useRef(new Set<string>())
+  const onlineResync = useRef(idleOnlineResync())
   const [accountBootstrap, setAccountBootstrap] = useState<AccountBootstrapView | null>(null)
   const scope = accountScope(session)
   const toolbox = useToolbox(native, boot === 'ready' && (session.authenticated || guide || workspaceEntered), scope)
@@ -207,6 +209,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     try { await promise } finally {
       if (bootstrapInFlight.current?.promise === promise) bootstrapInFlight.current = null
     }
+    onlineResync.current = noteBootstrapOutcome(onlineResync.current, bootstrapScope, outcome)
     return outcome
   }, [native, settings, toolbox.refresh, siteId])
   /**
@@ -239,9 +242,35 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     if (!session.authenticated) {
       bootstrapEpoch.current++
       bootstrapInFlight.current = null
+      onlineResync.current = idleOnlineResync()
       setAccountBootstrap(null)
     }
   }, [boot, runAccountBootstrap, session.account?.userId, session.authenticated, siteId, auth])
+  /**
+   * 断网时打开软件，Key 同步这一步必然失败，而引导段每次启动只跑一次，网络回来
+   * 之后不会有人再去补。这里挂一次自动补跑：只在上一轮确实是被网络拦住时补，
+   * 每次离线→在线最多一次，补跑本身不弹任何对话框（结果照旧写进首页那条横幅）。
+   *
+   * 补跑仍走 restore 模式：已经连好的工具照旧跳过，不会覆盖任何现成配置。
+   */
+  useEffect(() => {
+    if (boot !== 'ready' || !session.authenticated || !session.account) return
+    const userId = session.account.userId
+    function resume() {
+      const plan = planOnlineResync(onlineResync.current, scope)
+      onlineResync.current = plan.state
+      if (!plan.scope) return
+      void runAccountBootstrap(userId, 'restore', true).then((outcome) => {
+        // 补跑再失败不打扰用户——他并没有点任何东西。留一行给运行日志，客服排查
+        // 「明明联网了 Key 还是没写上」时才有据可查。
+        const reason = outcome?.error || outcome?.result?.failed.map((entry) => entry.message).join('；') || ''
+        if (!reason) return
+        void native.reportRendererError({ message: `联网后自动补跑 Key 同步仍未完成：${reason}`, context: 'account-bootstrap-online-resync' }).catch(() => undefined)
+      })
+    }
+    window.addEventListener('online', resume)
+    return () => window.removeEventListener('online', resume)
+  }, [boot, native, runAccountBootstrap, scope, session.account?.userId, session.authenticated])
   useEffect(() => {
     if (boot !== 'ready' || !session.authenticated || !settings?.runDiagnosticsOnStartup || diagnosticsStarted.current) return
     diagnosticsStarted.current = true
