@@ -31,4 +31,17 @@ describe('rootedMainServiceOptions', () => {
       diagnosticExport: { userHome: context.userHome, codexHome: context.codexHome },
     })
   })
+
+  it('hands an ignored CODEX_HOME to diagnostics only', () => {
+    const ignoredCodexHome = { value: '.codex', reason: 'relative' as const }
+    const options = rootedMainServiceOptions({
+      userHome: '/Users/alex',
+      codexHome: '/Users/alex/.codex',
+      codexEnv: { CODEX_HOME: '/Users/alex/.codex' },
+      ignoredCodexHome,
+    })
+
+    expect(options.diagnostics.ignoredCodexHome).toBe(ignoredCodexHome)
+    expect(options.diagnostics.env.CODEX_HOME).toBe('/Users/alex/.codex')
+  })
 })

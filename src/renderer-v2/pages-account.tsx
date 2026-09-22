@@ -97,6 +97,11 @@ type SubscriptionPaymentInput = Parameters<
 >[0]
 type AccountTab = (typeof accountTabs)[number]['value']
 type Provider = Parameters<V2Bridge['saveConfigWithAccountKey']>[0]['provider']
+// Codex CLI 与 Codex 桌面端共用一份配置，在用的是同一把 Key，所以只说「Codex」。
+function keyToolName(provider: Provider): string {
+  if (provider === 'codex') return 'Codex'
+  return tools.find((tool) => tool.id === provider)?.name ?? provider
+}
 function isProvider(id: string): id is Provider {
   return ['claude', 'codex', 'gemini', 'grok'].includes(id)
 }
@@ -314,6 +319,7 @@ export function AccountPage({
   onLogin,
   onAccountChanged,
   onBack,
+  onRewriteKey,
 }: {
   api: V2Bridge
   initialTab?: AccountTab
@@ -321,6 +327,8 @@ export function AccountPage({
   onLogin?: () => void
   onAccountChanged?: () => void
   onBack?: () => void
+  /** 撤销了工具正在用的 Key 之后，给那个工具换一把新的；缺省 = 不自动换（旧行为）。 */
+  onRewriteKey?: (provider: Provider) => Promise<boolean>
 }) {
   const [tab, setTab] = useState<AccountTab>(initialTab ?? 'overview')
   const { store: balanceStore, snapshot: balanceState } = useSharedAccountBalance()
@@ -495,6 +503,7 @@ export function AccountPage({
                       balance={account.balance}
                       providerBaseUrls={account.providerBaseUrls}
                       siteId={accountSiteId(account.session)}
+                      onRewriteKey={onRewriteKey}
                     />
                   )}
                   {panel === 'usage' && (
@@ -853,11 +862,13 @@ function AccountKeys({
   balance,
   providerBaseUrls,
   siteId,
+  onRewriteKey,
 }: {
   api: V2Bridge
   balance: Balance
   providerBaseUrls: Record<Provider, string>
   siteId: AccountSiteId
+  onRewriteKey?: (provider: Provider) => Promise<boolean>
 }) {
   const [page, setPage] = useState(1)
   const [query, setQuery] = useState('')
@@ -882,6 +893,8 @@ function AccountKeys({
   const [unlimited, setUnlimited] = useState(false)
   const [expires, setExpires] = useState('')
   const [removing, setRemoving] = useState<AccountKey | null>(null)
+  // 撤销了工具在用的 Key、自动换新却没成：记下是哪个工具，好给一颗「再换一次」。
+  const [replaceFailed, setReplaceFailed] = useState<Provider | null>(null)
   const [revealed, setRevealed] = useState('')
   const [selected, setSelected] = useState<AccountKey | null>(null)
   const [models, setModels] = useState<string[]>([])
@@ -991,6 +1004,21 @@ function AccountKeys({
       },
       '密钥已保存',
     )
+  // 失败只记下工具，不把主进程的原话摆出来：这里要告诉用户的只有「点哪里」。
+  const replaceKey = async (provider: Provider): Promise<boolean> => {
+    const replaced = await onRewriteKey?.(provider).catch(() => false) ?? false
+    setReplaceFailed(replaced ? null : provider)
+    return replaced
+  }
+  const retryReplaceKey = (provider: Provider) =>
+    operation.execute(
+      'replace',
+      async () => {
+        if (!(await replaceKey(provider))) throw new Error(`${keyToolName(provider)} 还是没换上新密钥，请检查网络后再点一次。`)
+        await resource.reload()
+      },
+      `${keyToolName(provider)} 已换上新密钥`,
+    )
   const list =
     resource.data?.page.keys.filter((key) =>
       `${key.name} ${key.group}`.toLowerCase().includes(query.toLowerCase()),
@@ -1019,6 +1047,26 @@ function AccountKeys({
         }
       />
       <ResultNotice {...operation} />
+      {replaceFailed && onRewriteKey && (
+        <Notice
+          tone="warn"
+          title={`${keyToolName(replaceFailed)} 暂时用不了`}
+          body={`刚撤销的是 ${keyToolName(replaceFailed)} 正在用的密钥，新密钥没有换上。点「再换一次」就好。`}
+          testId="account-key-replace-failed"
+          actions={
+            <Button
+              size="sm"
+              icon={KeyRound}
+              loading={operation.busy === 'replace'}
+              disabled={Boolean(operation.busy)}
+              testId="account-key-replace-retry"
+              onClick={() => void retryReplaceKey(replaceFailed)}
+            >
+              再换一次
+            </Button>
+          }
+        />
+      )}
       <Card padding="none">
         <ListState
           page="keys"
@@ -1045,7 +1093,16 @@ function AccountKeys({
                 key={key.id}
                 icon={KeyRound}
                 title={key.name}
-                badge={<Pill tone={status.tone}>{status.label}</Pill>}
+                badge={
+                  <>
+                    <Pill tone={status.tone}>{status.label}</Pill>
+                    {key.managedProvider && (
+                      <Pill tone="accent" testId={`account-key-in-use-${key.id}`}>
+                        {keyToolName(key.managedProvider)} 在用
+                      </Pill>
+                    )}
+                  </>
+                }
                 desc={
                   <>
                     <code>{key.maskedKey}</code> · {key.group || '默认分组'}
@@ -1232,10 +1289,16 @@ function AccountKeys({
                     'revoke',
                     async () => {
                       await api.revokeAccountKey(removing.id)
+                      // 换新也算在这一下里：确认按钮一直转着，直到新 Key 写进工具。
+                      const provider = onRewriteKey ? removing.managedProvider : undefined
+                      const replaced = provider ? await replaceKey(provider) : false
                       setRemoving(null)
                       await resource.reload()
+                      return provider && replaced ? provider : null
                     },
-                    '密钥已撤销',
+                    (provider) => provider
+                      ? `密钥已撤销，${keyToolName(provider)} 已自动换上新密钥`
+                      : '密钥已撤销',
                   )
               }}
             >
@@ -1244,7 +1307,13 @@ function AccountKeys({
           </>
         }
       >
-        <p>使用这把密钥的工具会停止请求，需要重新配置有效密钥。</p>
+        <p>
+          {removing?.managedProvider
+            ? onRewriteKey
+              ? `${keyToolName(removing.managedProvider)} 正在用这把密钥。撤销后会马上自动换一把新的写进 ${keyToolName(removing.managedProvider)}，不用你再设置。`
+              : `${keyToolName(removing.managedProvider)} 正在用这把密钥，撤销后它会停止工作。`
+            : '使用这把密钥的工具会停止请求，需要重新配置有效密钥。'}
+        </p>
         <ResultNotice error={operation.error} />
       </Dialog>
       <Dialog

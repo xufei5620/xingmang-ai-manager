@@ -241,7 +241,7 @@ const xingmangApi: XingmangApi = {
     : invoke('switchToOfficialAccount', provider, mode),
   listModels: (apiKey) => invoke('listModels', apiKey),
   listConfiguredModels: (provider) => invoke('listConfiguredModels', provider),
-  chooseWorkspace: () => invoke('chooseWorkspace'),
+  chooseWorkspace: (options) => options === undefined ? invoke('chooseWorkspace') : invoke('chooseWorkspace', options),
   getRepositoryContext: () => invoke('getRepositoryContext'),
   installNodeRuntime: () => invoke('installNodeRuntime'),
   restartWindows: () => invoke('restartWindows'),
