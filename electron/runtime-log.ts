@@ -39,6 +39,19 @@ export interface RuntimeLogSnapshot {
   currentProcessId: number
   startedAt: string
   entries: RuntimeLogEntry[]
+  /**
+   * 本次启动有日志没写进文件时才有。缺省 = 一切正常（旧行为）。只给中文原因，
+   * 上游原文（带路径）只进反馈报告。
+   */
+  writeFailure?: RuntimeLogWriteFailure
+}
+
+export interface RuntimeLogWriteFailure {
+  /** 给用户看的半句原因。 */
+  reason: string
+  /** 本次启动没写进文件的条数。 */
+  lostEntries: number
+  firstFailedAt: string
 }
 
 export interface RuntimeLogStoreOptions {
@@ -73,6 +86,9 @@ const MAX_DETAIL_DEPTH = 5
 const MAX_DETAIL_ITEMS = 128
 const MAX_LINE_BYTES = 256 * 1024
 const MAX_SNAPSHOT_LIMIT = 2_000
+// 写不进文件的日志先留在内存里，好让反馈页和报告照样看得到；只留最近这么多条，
+// 写入一直失败的机器上内存也是有界的。
+const MAX_UNSAVED_ENTRIES = 200
 
 // Lives in startup-log because that module must redact without importing
 // anything that could itself be the failure it is recording. Re-exported here
@@ -245,6 +261,23 @@ async function renameIfPresent(source: string, destination: string): Promise<voi
   await fs.promises.rename(source, destination)
 }
 
+/**
+ * 日志写不进文件的原因，说成用户看得懂的半句。最常见的一种是软件数据文件夹被
+ * 「搬家」到了别的盘：safe-local-data 的校验（I8）会拒绝经过目录联接的路径，
+ * 那句原文是「……不能经过符号链接或目录联接」。
+ */
+export function describeRuntimeLogWriteFailure(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error)
+  const code = error instanceof Error ? (error as NodeJS.ErrnoException).code : undefined
+  if (/不能经过符号链接或目录联接/.test(message)) return '日志所在的文件夹被搬到了别的位置'
+  if (code === 'ENOSPC' || /ENOSPC|no space left/i.test(message)) return '磁盘满了'
+  if (code === 'EACCES' || code === 'EPERM' || /EACCES|EPERM|permission denied|operation not permitted/i.test(message)) {
+    return '没有权限写入日志文件夹'
+  }
+  if (code === 'EBUSY' || /EBUSY|resource busy or locked/i.test(message)) return '日志文件被别的程序占用了'
+  return '写入日志文件时出错了'
+}
+
 export class RuntimeLogStore {
   readonly directory: string
   readonly filePath: string
@@ -262,6 +295,8 @@ export class RuntimeLogStore {
   // 每个日志文件一份解析结果，键是文件路径，所以最多 archiveCount + 1 份，天然有界。
   private readonly parsedFiles = new Map<string, { fingerprint: string; summary: RuntimeLogFileSummary }>()
   private sequence = 0
+  private readonly unsavedEntries: RuntimeLogEntry[] = []
+  private writeFailure: (RuntimeLogWriteFailure & { detail: string }) | null = null
 
   constructor(options: RuntimeLogStoreOptions) {
     this.directory = path.resolve(options.directory)
@@ -323,14 +358,52 @@ export class RuntimeLogStore {
       message: safeText(message),
       detail: sanitizeDetail(detail),
     }
+    let stored = entry
     let line = `${JSON.stringify(entry)}\n`
     if (Buffer.byteLength(line, 'utf8') > MAX_LINE_BYTES) {
       // A single oversized entry would instantly rotate the whole file away.
-      line = `${JSON.stringify({ ...entry, detail: { truncated: '[TRUNCATED: detail too large]' } })}\n`
+      stored = { ...entry, detail: { truncated: '[TRUNCATED: detail too large]' } }
+      line = `${JSON.stringify(stored)}\n`
     }
     this.writeQueue = this.writeQueue
       .then(() => this.append(line))
-      .catch(() => undefined)
+      .catch((error: unknown) => this.recordWriteFailure(stored, error))
+  }
+
+  /**
+   * 以前这里直接吞掉：日志文件夹被搬走、没权限、磁盘满时一行都写不进去，界面上
+   * 什么也看不出来，客服拿到的报告也是空的。现在记下原因，并把这条留在内存里。
+   */
+  private recordWriteFailure(entry: RuntimeLogEntry, error: unknown): void {
+    this.unsavedEntries.push(entry)
+    if (this.unsavedEntries.length > MAX_UNSAVED_ENTRIES) {
+      this.unsavedEntries.splice(0, this.unsavedEntries.length - MAX_UNSAVED_ENTRIES)
+    }
+    const message = error instanceof Error ? error.message : String(error)
+    if (this.writeFailure) {
+      this.writeFailure.lostEntries += 1
+      return
+    }
+    this.writeFailure = {
+      reason: describeRuntimeLogWriteFailure(error),
+      lostEntries: 1,
+      firstFailedAt: this.now().toISOString(),
+      detail: safeText(message).slice(0, 300),
+    }
+  }
+
+  private unsavedSummary(): RuntimeLogFileSummary | null {
+    if (!this.unsavedEntries.length) return null
+    const summary = emptySummary()
+    const sources = new Set<string>()
+    for (const entry of this.unsavedEntries) {
+      summary.counts[entry.level] += 1
+      sources.add(entry.source)
+    }
+    summary.entries = [...this.unsavedEntries]
+    summary.total = this.unsavedEntries.length
+    summary.sources = [...sources]
+    return summary
   }
 
   exception(source: string, event: string, error: unknown, detail?: Record<string, unknown>): void {
@@ -438,7 +511,12 @@ export class RuntimeLogStore {
           })
         }
       }
-      return mergeSummaries(parts)
+      const unsaved = this.unsavedSummary()
+      if (!unsaved) return mergeSummaries(parts)
+      const merged = mergeSummaries([...parts, unsaved])
+      // 写失败可能时好时坏，内存里这几条要按时间插回去，不能一律排在最后。
+      merged.entries.sort((left, right) => left.timestamp.localeCompare(right.timestamp))
+      return merged
     })
   }
 
@@ -458,12 +536,21 @@ export class RuntimeLogStore {
       currentProcessId: process.pid,
       startedAt: this.startedAt,
       entries: selected,
+      ...(this.writeFailure ? {
+        writeFailure: {
+          reason: this.writeFailure.reason,
+          lostEntries: this.writeFailure.lostEntries,
+          firstFailedAt: this.writeFailure.firstFailedAt,
+        },
+      } : {}),
     }
   }
 
   clear(): Promise<void> {
     return this.runExclusive(async () => {
       this.parsedFiles.clear()
+      this.unsavedEntries.length = 0
+      this.writeFailure = null
       await Promise.all([
         removeIfPresent(this.filePath),
         ...Array.from({ length: this.archiveCount }, (_, index) => removeIfPresent(this.archivePath(index + 1))),
@@ -479,6 +566,7 @@ export class RuntimeLogStore {
    */
   async captureFeedbackReport(limit = 600, maxLength = Number.POSITIVE_INFINITY): Promise<{ text: string; entries: number }> {
     const snapshot = await this.snapshot(limit)
+    const writeFailure = this.writeFailure
     const home = os.homedir()
     const scrubHome = (value: string) => redactHomeDirectory(value, home)
     const headLines = (attached: number, sizeTrimmed: boolean) => [
@@ -492,6 +580,10 @@ export class RuntimeLogStore {
       `日志条数: ${snapshot.total}${snapshot.truncated || sizeTrimmed ? `（附最近 ${attached} 条）` : ''}`,
       ...(sizeTrimmed ? [`日志已截断: 报告超过大小上限，只保留最近 ${attached} 条；完整日志在下面的日志目录里`] : []),
       `日志目录: ${scrubHome(snapshot.directory)}`,
+      ...(writeFailure ? [
+        `日志写入失败: 本次启动有 ${writeFailure.lostEntries} 条没写进日志文件（${writeFailure.reason}，`
+          + `${scrubHome(writeFailure.detail)}），下面附的是软件内存里留下的`,
+      ] : []),
     ]
     const sections: string[] = []
     const environment = await this.describeSectionLines(this.describeEnvironment)

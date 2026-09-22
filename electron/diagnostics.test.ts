@@ -10,6 +10,7 @@ import {
   clockSkewMs,
   clockSyncGuidance,
   createDiagnosticsExport,
+  findRelocatedFolders,
   parseClashTunConfig,
   redactDiagnosticText,
   runDiagnostics,
@@ -580,6 +581,126 @@ describe('diagnostics', () => {
       state: 'pass',
       summary: '当前以普通用户权限运行',
     })
+  })
+
+  it('explains that a failed startup probe was treated as administrator, instead of reporting a plain user', async () => {
+    const home = temporaryHome()
+    const input = dependencies(home)
+    input.windowsExecution = {
+      mode: 'trusted-only',
+      elapsedMs: 15_020,
+      probeFailure: { reason: 'blocked', detail: 'Add-Type : Cannot add type. Compilation errors occurred.' },
+    }
+    // The failure answer must not depend on a second probe of the same kind.
+    input.inspectElevationCapability = async () => {
+      throw new Error('must not probe capability once the startup probe failed')
+    }
+
+    const report = await runDiagnostics(input)
+    const item = report.items.find((entry) => entry.code === 'ADMINISTRATOR')
+
+    expect(item).toMatchObject({
+      state: 'warn',
+      details: { elevated: false, executionMode: 'trusted-only', probeFailure: 'blocked', probeElapsedMs: 15_020 },
+    })
+    expect(item?.summary).toContain('已按管理员方式处理')
+    expect(item?.summary).toContain('被安全软件或电脑的管控策略拦下了')
+    // 上游英文原文只进运行日志，不上屏；文案不出现技术词。
+    expect(item?.summary).not.toMatch(/Add-Type|Compilation|PowerShell|管理员组|SID/)
+    // 不能教用户「以管理员身份运行」来绕过去。
+    expect(item?.summary).not.toContain('以管理员身份运行本')
+  })
+
+  it('keeps the old answers when the startup probe succeeded or on macOS', async () => {
+    const home = temporaryHome()
+    const succeeded = dependencies(home)
+    succeeded.windowsExecution = { mode: 'same-user', elapsedMs: 900 }
+    expect((await runDiagnostics(succeeded)).items.find((item) => item.code === 'ADMINISTRATOR')).toMatchObject({
+      state: 'pass',
+      summary: '当前以普通用户权限运行',
+    })
+
+    const mac = dependencies(home)
+    mac.platform = 'darwin'
+    mac.windowsExecution = { mode: 'trusted-only', elapsedMs: 1, probeFailure: { reason: 'failed', detail: 'x' } }
+    expect((await runDiagnostics(mac)).items.find((item) => item.code === 'ADMINISTRATOR')).toMatchObject({
+      state: 'pass',
+    })
+  })
+
+  it('passes the folder check when nothing on the way to the data folders is redirected', async () => {
+    const home = temporaryHome()
+    const input = dependencies(home)
+    input.userDataDirectory = path.join(home, 'AppData', 'Roaming', 'xingmang')
+    input.findReparseComponent = () => null
+
+    const item = (await runDiagnostics(input)).items.find((entry) => entry.code === 'FOLDER_RELOCATED')
+
+    expect(item).toMatchObject({ state: 'pass', title: '文件夹位置', details: { relocated: 0 } })
+  })
+
+  it('names a relocated user folder once, in plain words, and says why saving fails', async () => {
+    const home = temporaryHome()
+    const input = dependencies(home)
+    input.userDataDirectory = path.join(home, 'AppData', 'Roaming', 'xingmang')
+    const checked: string[] = []
+    // 整个用户文件夹被「C 盘搬家」挪到了 D 盘：下面每个文件夹都经过同一级。
+    input.findReparseComponent = (target) => {
+      checked.push(target)
+      return { component: home, target: 'D:\\Users\\peaker' }
+    }
+
+    const item = (await runDiagnostics(input)).items.find((entry) => entry.code === 'FOLDER_RELOCATED')
+
+    expect(checked).toEqual(expect.arrayContaining([
+      home,
+      input.userDataDirectory,
+      path.join(home, '.claude'),
+      path.join(home, '.codex'),
+    ]))
+    expect(item?.state).toBe('fail')
+    expect(item?.summary).toContain('用户文件夹、软件数据文件夹、Claude Code 配置文件夹')
+    expect(item?.summary).toContain('被搬到了 D:\\Users\\peaker')
+    expect(item?.summary).toContain('C 盘搬家')
+    expect(item?.summary).toContain('写入 Key、保存设置、记录日志都可能失败')
+    expect(item?.summary).not.toMatch(/AppData|junction|联接|符号链接/)
+    expect(item?.details).toMatchObject({ relocated: 1, to1: 'D:\\Users\\peaker' })
+  })
+
+  it('leaves the Windows-only hint out on macOS', async () => {
+    const home = temporaryHome()
+    const input = dependencies(home)
+    input.platform = 'darwin'
+    input.findReparseComponent = (target) => (target === path.join(home, '.codex')
+      ? { component: path.join(home, '.codex'), target: null }
+      : null)
+
+    const item = (await runDiagnostics(input)).items.find((entry) => entry.code === 'FOLDER_RELOCATED')
+
+    expect(item?.state).toBe('fail')
+    expect(item?.summary).toContain('Codex CLI 配置文件夹被搬走了，但读不出它现在在哪里')
+    expect(item?.summary).not.toContain('C 盘搬家')
+  })
+
+  it('groups relocated folders by the redirected component and skips probes that throw', () => {
+    const findings = findRelocatedFolders(
+      [
+        { label: '甲', path: '/a/one' },
+        { label: '乙', path: '/a/two' },
+        { label: '丙', path: '/b' },
+        { label: '丁', path: '/c' },
+      ],
+      (target) => {
+        if (target === '/c') throw new Error('unexpected')
+        if (target.startsWith('/a')) return { component: '/a', target: '/mnt/a' }
+        if (target === '/b') return { component: '/b', target: null }
+        return null
+      },
+    )
+    expect(findings).toEqual([
+      { component: '/a', target: '/mnt/a', labels: ['甲', '乙'] },
+      { component: '/b', target: null, labels: ['丙'] },
+    ])
   })
 
   it('redacts bearer tokens, sk keys, known keys, proxy credentials, queries and home paths', () => {

@@ -25,11 +25,14 @@ import { gitMissingNotice } from './git-runtime'
 import { managedCliRoot } from './managed-cli-paths'
 import { classifyNetworkFailure, networkFailureMessages } from './network-failure'
 import { relayApiProbeBaseUrl, resolveRelaySite, type RelaySite } from './relay-sites'
+import { findReparseComponent, type ReparseComponent } from './safe-local-data'
 import { resolveCliCommand, resolveCliInstallation } from './tool-installation'
 import type { ToolConfigOwnership } from './tool-config-ownership'
 import {
+  describeWindowsExecutionProbeFailure,
   inspectWindowsElevationCapability,
   resolveWindowsPowerShellExecutable,
+  type WindowsCliExecutionModeResolution,
   type WindowsElevationCapability,
 } from './windows-elevation'
 
@@ -106,6 +109,14 @@ export interface DiagnosticsDependencies {
   /** 剩余空间的读取口，测试用它造「够 / 不够 / 读不到」三种盘。 */
   readDiskSpace?: typeof readDiskSpace
   inspectProxyVariables?: (signal: AbortSignal) => Promise<ProxyVariableSummary[]>
+  /**
+   * 启动时那次「是不是管理员」探测的结果（`resolveWindowsCliExecutionModeDetailed`）。
+   * 只读、不重跑：执行模式在启动时就定死了，检查页要说的是「这次启动被怎么处理了」。
+   * 缺省按探测成功处理，只看当前令牌。
+   */
+  windowsExecution?: WindowsCliExecutionModeResolution | null
+  /** 「文件夹位置」一项逐级找被重定向的那一级；测试用它造「搬过家」的目录。 */
+  findReparseComponent?: (target: string) => ReparseComponent | null
   /**
    * 诊断报告是要上屏、也要能导出给客服的，所以它只装中文结论。认出一个失败靠的
    * 那段上游原文（`net::ERR_CERT_AUTHORITY_INVALID` 这类）留在 runtime.jsonl 里：
@@ -880,6 +891,63 @@ function resolveDiskSpaceTargets(
   return targets
 }
 
+export interface RelocatedFolderTarget {
+  label: string
+  path: string
+}
+
+export interface RelocatedFolderFinding {
+  /** 被重定向的那一级，已按原样给出。 */
+  component: string
+  /** 它实际指向哪里；读不出来时为 null。 */
+  target: string | null
+  /** 受影响的文件夹（去重后按出现顺序）。 */
+  labels: string[]
+}
+
+/**
+ * 同一级被重定向时（最常见的是整个用户文件夹被搬走），下面几个文件夹全受牵连，
+ * 按那一级合并成一条，免得用户读到四遍同一件事。
+ */
+export function findRelocatedFolders(
+  targets: readonly RelocatedFolderTarget[],
+  find: (target: string) => ReparseComponent | null,
+): RelocatedFolderFinding[] {
+  const findings: RelocatedFolderFinding[] = []
+  for (const entry of targets) {
+    let found: ReparseComponent | null
+    try {
+      found = find(entry.path)
+    } catch {
+      continue
+    }
+    if (!found) continue
+    const existing = findings.find((finding) => finding.component === found.component)
+    if (existing) {
+      if (!existing.labels.includes(entry.label)) existing.labels.push(entry.label)
+      continue
+    }
+    findings.push({ component: found.component, target: found.target, labels: [entry.label] })
+  }
+  return findings
+}
+
+function relocatedFolderTargets(
+  userHome: string,
+  codexHome: string,
+  userDataDirectory: string | undefined,
+): RelocatedFolderTarget[] {
+  const targets: RelocatedFolderTarget[] = [{ label: '用户文件夹', path: userHome }]
+  if (userDataDirectory?.trim()) targets.push({ label: '软件数据文件夹', path: userDataDirectory })
+  for (const provider of providerIds) {
+    targets.push({
+      label: `${cliCatalog[provider].name} 配置文件夹`,
+      path: provider === 'codex' ? codexHome : path.join(userHome, providerConfigDirectoryNames[provider]),
+    })
+  }
+  return targets
+}
+
 export async function runDiagnostics(dependencies: DiagnosticsDependencies): Promise<DiagnosticsReport> {
   const startedAt = Date.now()
   const env = dependencies.env ?? process.env
@@ -955,13 +1023,29 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
       // 从不提权，所以第二问只在 Windows 上做。
       code: 'ADMINISTRATOR',
       title: '运行权限',
-      run: async (signal) => {
+      run: async (signal): Promise<CheckOutcome> => {
         const elevated = await inspectAdmin(signal)
         if (elevated) {
           return {
             state: 'warn',
             summary: '当前以管理员权限运行，建议普通启动',
             details: { elevated, required: false, canElevate: true },
+          }
+        }
+        const probeFailure = platform === 'win32' ? dependencies.windowsExecution?.probeFailure : undefined
+        if (probeFailure) {
+          // 启动时那次探测没问出结果，软件已按管理员方式处理（从严）。这时再说
+          // 「当前以普通用户权限运行」就和实际行为对不上，客服会被带偏。
+          return {
+            state: 'warn',
+            summary: `没能确认软件是不是以管理员身份在运行，已按管理员方式处理，所以安装和打开工具可能会失败。原因：${describeWindowsExecutionProbeFailure(probeFailure.reason)}。重新打开软件会再确认一次；还不行请在「反馈」页导出报告发给客服`,
+            details: {
+              elevated,
+              required: false,
+              executionMode: dependencies.windowsExecution?.mode ?? null,
+              probeFailure: probeFailure.reason,
+              probeElapsedMs: dependencies.windowsExecution?.elapsedMs ?? null,
+            },
           }
         }
         const capability = platform === 'win32' ? await inspectElevation(signal) : 'unknown'
@@ -1197,6 +1281,44 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
             : state === 'warn'
               ? `${summary}，空间偏紧，安装或更新工具前建议先清理一些`
               : summary,
+          details,
+        }
+      },
+    },
+    {
+      // 「C 盘搬家」工具或 mklink /J 把用户文件夹、软件数据文件夹挪到别的盘之后，
+      // 路径上多出一级目录联接。safe-local-data 的写入校验（I8）会拒绝这种路径，
+      // 于是写 Key、存设置、写日志全部失败，而用户只看到一句「不能经过符号链接或
+      // 目录联接」。这一项只负责把它认出来，校验本身一点不放宽。
+      code: 'FOLDER_RELOCATED',
+      title: '文件夹位置',
+      run: () => {
+        const findings = findRelocatedFolders(
+          relocatedFolderTargets(userHome, codexHome, dependencies.userDataDirectory),
+          dependencies.findReparseComponent ?? findReparseComponent,
+        )
+        if (!findings.length) {
+          return {
+            state: 'pass',
+            summary: '软件要用到的文件夹都在原来的位置',
+            details: { relocated: 0 },
+          }
+        }
+        const described = findings.map((finding) => `${finding.labels.join('、')}${finding.target
+          ? `被搬到了 ${finding.target}`
+          : '被搬走了，但读不出它现在在哪里'}`)
+        const hint = platform === 'win32' ? '（常见于用过「C 盘搬家」一类的工具）' : ''
+        const details: Record<string, boolean | number | string | null> = { relocated: findings.length }
+        for (const [index, finding] of findings.entries()) {
+          details[`folder${index + 1}`] = finding.labels.join('、')
+          details[`from${index + 1}`] = finding.component
+          details[`to${index + 1}`] = finding.target
+        }
+        return {
+          state: 'fail',
+          summary: `${described.join('；')}${hint}。为了安全，软件不往被搬过的文件夹里写东西，`
+            + '所以写入 Key、保存设置、记录日志都可能失败。把文件夹搬回原来的位置就能恢复；'
+            + '搬不回来请在「反馈」页导出报告发给客服',
           details,
         }
       },
