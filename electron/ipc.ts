@@ -55,6 +55,7 @@ import {
   type ApplicationUrlPolicy,
 } from './security'
 import type {
+  CliLaunchMode,
   CodexDesktopLaunchMode,
   ConfigSavePayload,
   SystemSnapshot,
@@ -459,6 +460,14 @@ function parseWorkspace(workspace: unknown, fallback: string): string {
 
 function parseDesktopLaunchMode(mode: unknown): CodexDesktopLaunchMode {
   if (mode !== 'open' && mode !== 'restart') throw new Error('Codex 桌面端启动方式错误')
+  return mode
+}
+
+// 渲染层只能在这两个值之间选,续接参数由主进程按工具固定生成,任何字符串都
+// 不会透传进 argv(I5)。省略 = 开新对话,与加这个参数之前完全一致。
+function parseCliLaunchMode(mode: unknown): CliLaunchMode {
+  if (mode === undefined || mode === null) return 'new'
+  if (mode !== 'new' && mode !== 'resumeLast') throw new Error('CLI 启动方式错误')
   return mode
 }
 
@@ -1708,10 +1717,14 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   })
   registerTrustedHandler('desktop:uninstall-codex', () => service.uninstallCodexDesktop())
   registerTrustedHandler('desktop:check-update-codex', () => service.inspectCodexDesktopUpdate(true))
-  registerTrustedHandler('cli:launch', (_event, provider: unknown, workspace: unknown) => {
+  registerTrustedHandler('cli:launch', (_event, provider: unknown, workspace: unknown, mode: unknown) => {
     if (!isProviderId(provider)) throw new Error('未知的 CLI 类型')
     const stored = service.readStoredConfig()
-    return service.launchProvider(provider, parseWorkspace(workspace, stored.workspace))
+    return service.launchProvider(
+      provider,
+      parseWorkspace(workspace, stored.workspace),
+      parseCliLaunchMode(mode),
+    )
   })
   registerTrustedHandler('desktop:codex-status', () => service.inspectCodexDesktop())
   registerTrustedHandler('desktop:codex-locale-status', () => service.inspectCodexDesktopLocale())

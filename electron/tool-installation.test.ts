@@ -7,6 +7,8 @@ import { disposeStagedDarwinCliRecords } from './darwin-cli-staging'
 import type { DarwinCodexStandaloneSelection } from './macos-codex'
 import {
   classifyCliInstallDisplaySource,
+  cliLaunchArgv,
+  cliResumeLastArgv,
   cliUninstallCapability,
   nativeInstallBinDirectories,
   resolveCliCommand,
@@ -1051,6 +1053,34 @@ describe('CLI installation resolution', () => {
     write(path.join(packageRoot, 'package.json'), ' '.repeat(256 * 1024 + 1))
 
     expect(verifiedPackageRoot(packageRoot, '@openai/codex')).toBeNull()
+  })
+})
+
+describe('resume-last launch arguments', () => {
+  // 2026-09-22 在沙箱空 HOME 里按名单推荐版本用 --help 核实过每一条:
+  // claude 2.1.277 / codex 0.155.1 / gemini 0.60.0 / grok 1.0.40。
+  it('maps every provider to the flag that continues the current directory', () => {
+    expect(cliResumeLastArgv('claude')).toEqual(['--continue'])
+    expect(cliResumeLastArgv('codex')).toEqual(['resume', '--last'])
+    expect(cliResumeLastArgv('gemini')).toEqual(['--resume', 'latest'])
+    expect(cliResumeLastArgv('grok')).toEqual(['--continue'])
+  })
+
+  // npm 安装的 CLI 由 node 加载入口脚本,所以续接参数必须接在入口之后,
+  // Codex 的子命令也要排在它自己的入口后面。
+  it('appends the flag after the entry argv the resolver produced', () => {
+    expect(cliLaunchArgv('codex', ['/managed/codex/bin/codex.js'], 'resumeLast'))
+      .toEqual(['/managed/codex/bin/codex.js', 'resume', '--last'])
+    expect(cliLaunchArgv('claude', [], 'resumeLast')).toEqual(['--continue'])
+  })
+
+  it('leaves the entry argv untouched for a new conversation', () => {
+    const argv = ['/managed/claude/cli-wrapper.cjs']
+
+    const launched = cliLaunchArgv('claude', argv, 'new')
+
+    expect(launched).toEqual(argv)
+    expect(launched).not.toBe(argv)
   })
 })
 

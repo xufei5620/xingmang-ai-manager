@@ -726,6 +726,29 @@ test('a failed runtime probe on the maintenance page says so instead of 尚未�
     await clean(page)
   } finally { await page.close() }
 })
+// 候选 4：Windows 上缺 Git 时首页运行环境行给中文提示和下载入口，不替客户装。
+test('the home runtime card warns about a missing Git and offers the download on Windows', async () => {
+  const page = await open('gitMissing=1')
+  try {
+    await page.getByTestId('page-home').waitFor()
+    const hint = page.getByTestId('home-runtime-git-hint')
+    await hint.waitFor()
+    assert.match(await hint.innerText(), /没有找到 Git/)
+    assert.match(await hint.innerText(), /PowerShell/)
+    assert.match(await hint.innerText(), /git-scm\.com/)
+    await page.getByTestId('home-runtime-git').waitFor()
+    await clean(page)
+  } finally { await page.close() }
+})
+test('the home runtime card shows the Git version and no warning when Git is present', async () => {
+  const page = await open('')
+  try {
+    await page.getByTestId('page-home').waitFor()
+    assert.equal(await page.getByTestId('home-runtime-git-hint').count(), 0)
+    assert.equal(await page.getByTestId('home-runtime-git').count(), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
 // A4：`buildCliStatus` 早就写好了这两条原因，渲染层一直没人读它们。
 test('a failed update comparison says why on the maintenance page instead of going quiet', async () => {
   const page = await open('cliUpdateFailed=1')

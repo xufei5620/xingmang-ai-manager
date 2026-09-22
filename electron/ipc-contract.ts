@@ -10,6 +10,7 @@ import type {
   ConfigRestoreResult,
 } from './backups'
 import type { ProviderId as CatalogProviderId } from './catalog'
+import type { CliLaunchMode as MainCliLaunchMode } from './tool-installation'
 import type {
   ExternalToolId,
 } from './external-tool-config'
@@ -172,6 +173,7 @@ export type ProviderId = CatalogProviderId
 export type { RelaySite } from './relay-sites'
 export type ConfigSaveMode = NativeConfigSaveMode
 export type CodexDesktopLaunchMode = MainCodexDesktopLaunchMode
+export type CliLaunchMode = MainCliLaunchMode
 export type AppWindowMode = 'onboarding' | 'dashboard'
 export type AppTheme = StoredAppTheme
 export interface WindowCapabilities { tray: boolean; notifications: boolean }
@@ -541,7 +543,12 @@ export interface XingmangInvokeContract {
   cancelCodexDesktopInstall: IpcInvokeDefinition<'desktop:cancel-install-codex', [], InstallCancelResult>
   uninstallCodexDesktop: IpcInvokeDefinition<'desktop:uninstall-codex', [], ToolUninstallResult>
   checkCodexDesktopUpdate: IpcInvokeDefinition<'desktop:check-update-codex', [], DesktopAppStatus>
-  launchCli: IpcInvokeDefinition<'cli:launch', [provider: ProviderId, workspace: string], void>
+  /** mode 省略 = 开新对话(旧行为);resumeLast 由主进程按工具映射成固定参数。 */
+  launchCli: IpcInvokeDefinition<
+    'cli:launch',
+    [provider: ProviderId, workspace: string, mode?: CliLaunchMode],
+    void
+  >
   getCodexDesktopStatus: IpcInvokeDefinition<'desktop:codex-status', [], DesktopAppStatus>
   inspectCodexDesktopLocale: IpcInvokeDefinition<
     'desktop:codex-locale-status',

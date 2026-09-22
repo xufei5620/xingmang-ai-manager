@@ -13,6 +13,7 @@ import {
 } from './command-runner'
 import { defaultProviderConfigRoots, type ProviderConfigRoots } from './codex-home'
 import { inspectProviderConfig, type NativeConfigInspection } from './config-files'
+import { gitMissingNotice } from './git-runtime'
 import { relayApiProbeBaseUrl, resolveRelaySite, type RelaySite } from './relay-sites'
 import { resolveCliCommand, resolveCliInstallation } from './tool-installation'
 import { resolveWindowsPowerShellExecutable } from './windows-elevation'
@@ -84,7 +85,7 @@ export interface DiagnosticRedactionOptions {
   sensitiveValues?: readonly string[]
 }
 
-export type DiagnosticToolId = 'node' | 'npm' | 'python' | ProviderId
+export type DiagnosticToolId = 'node' | 'npm' | 'python' | 'git' | ProviderId
 
 interface CheckOutcome {
   state: DiagnosticState
@@ -752,6 +753,27 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
         }
       },
     })),
+    {
+      // 官方文档明说 Git for Windows 是 optional，所以缺了最重也只是「需留意」：
+      // 把它判成待处理会让一个用不到 bash 的客户以为软件装坏了。要说的是
+      // 「缺了会怎样」，文案在 git-runtime.ts（与插件市场那条共用）。
+      code: 'RUNTIME_GIT',
+      title: 'Git 环境',
+      run: async (signal) => {
+        const status = await inspectTool('git', signal)
+        return {
+          state: status.installed ? 'pass' : 'warn',
+          summary: status.installed
+            ? (status.version || '已安装')
+            : gitMissingNotice(platform),
+          details: {
+            required: false,
+            installed: status.installed,
+            path: pathForDisplay(status.path, displayRoots),
+          },
+        }
+      },
+    },
     ...providerIds.map<CheckDefinition>((provider) => ({
       code: `CLI_${provider.toUpperCase()}`,
       title: `${cliCatalog[provider].name} 环境`,
