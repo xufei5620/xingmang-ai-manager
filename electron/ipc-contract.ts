@@ -337,9 +337,17 @@ export type AccountDashboardData = NewApiAccountDashboardData
 export type AccountTaskQuery = NewApiAccountTaskQuery
 export type AccountTaskRecord = NewApiAccountTaskRecord
 export type AccountTaskPage = NewApiAccountTaskPage
-export type AccountKey = NewApiAccountKey
+export interface AccountKey extends NewApiAccountKey {
+  /**
+   * 本软件替这个工具签发、且这个工具的配置此刻用的就是这把 Key。只由主进程按托管
+   * Key 缓存与本机配置比对后补上；缺省 = 没有工具在用（旧行为）。
+   */
+  managedProvider?: ProviderId
+}
 export type AccountKeysQuery = NewApiAccountKeysQuery
-export type AccountKeysPage = NewApiAccountKeysPage
+export interface AccountKeysPage extends Omit<NewApiAccountKeysPage, 'keys'> {
+  keys: AccountKey[]
+}
 export type AccountKeyCreateInput = NewApiAccountKeyCreateInput
 export type AccountKeyUpdateInput = NewApiAccountKeyUpdateInput
 
@@ -366,10 +374,17 @@ export interface AccountManagedCliConfigurationInput {
   intent?: 'automatic' | 'explicit'
 }
 
+export type RendererLogLevel = 'info' | 'warn' | 'error'
+
 export interface RendererErrorPayload {
   message: string
   stack?: string
   context?: string
+  /**
+   * 缺省 = error，即这条通道原本的含义：写一条 error 日志并走崩溃上报。info /
+   * warn 只进本机运行日志，给「渲染层做了什么决定」这类排障线索用，不上报。
+   */
+  level?: RendererLogLevel
 }
 
 export interface AiChatGroupSummary {
@@ -882,7 +897,7 @@ export interface XingmangInvokeContract {
    * 连接自检：用该工具配置文件里真正写着的 Key、服务地址和模型，向星芒服务
    * 发一次最小请求，把失败归到网络 / 密钥 / 额度 / 分组 / 模型 / 协议中的
    * 一层；没配过的工具归到「未配置」，不算失败。diagnostics:run 的
-   * XINGMANG_NETWORK 只发 HEAD，证明网络通不证明能用，所以这条单独成通道、
+   * XINGMANG_NETWORK 只读一次不用登录的状态接口，证明网络通不证明能用，所以这条单独成通道、
    * 只在用户点按钮时才跑。一次调用只测一个工具，结果页按工具各调一次。
    */
   checkProviderConnection: IpcInvokeDefinition<
