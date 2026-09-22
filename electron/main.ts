@@ -100,6 +100,7 @@ import {
   installXingmangAiSkillFiles,
   resolveXingmangAiBundledSkillRoot,
 } from './xingmang-ai-skill'
+import { resolveProjectInstructionsTemplatePath } from './project-instructions'
 import { ipcEventChannels, type AccountBalance } from './ipc-contract'
 import {
   shouldUseManualUninstallVisualFixture,
@@ -723,6 +724,10 @@ if (!hasSingleInstanceLock) {
       getExternalClientAccountId: () => readExternalClientAccountId(),
       windowsExecutionMode: windowsCliExecutionMode,
       runtimeLog,
+      projectInstructionsTemplatePath: resolveProjectInstructionsTemplatePath(app.getAppPath(), {
+        packaged: app.isPackaged,
+        resourcesPath: process.resourcesPath,
+      }),
       ...rootedOptions.system,
       relayFetch,
       networkLocationFetch: (input, init) => net.fetch(input instanceof URL ? input.href : input, init),
