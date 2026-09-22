@@ -171,7 +171,7 @@ let holdExternalScan = false
 let releaseExternalScan: () => void = () => undefined
 let holdConfigRead = false
 let releaseConfigRead: () => void = () => undefined
-let holdScan = false
+let holdScan = query.has('holdFirstScan')
 let releaseScan: () => void = () => undefined
 let releaseBalance: (error?: string) => void = () => undefined
 let balanceReads = 0

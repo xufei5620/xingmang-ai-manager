@@ -1681,7 +1681,10 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     assertCurrent()
     return service.configureExternalTool(tool, { apiKey, model: parsed.model, protocol: parsed.protocol }, assertCurrent)
   })
-  registerTrustedHandler('external-clients:scan', () => service.scanExternalClients())
+  registerTrustedHandler('external-clients:scan', (_event, force: unknown) => {
+    if (force !== undefined && typeof force !== 'boolean') throw new Error('客户端检测参数格式错误')
+    return service.scanExternalClients(force === true)
+  })
   registerTrustedHandler('external-clients:install', (_event, tool: unknown) => {
     if (!isExternalToolId(tool)) throw new Error('未知的外部客户端类型')
     return service.installExternalClient(tool, _event.sender)

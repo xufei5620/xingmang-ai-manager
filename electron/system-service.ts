@@ -776,7 +776,7 @@ export interface SystemService {
   ): Promise<CodexDesktopLaunchResult>
   fetchAvailableModels(apiKey: string, options?: { bypassCache?: boolean }): Promise<string[]>
   configureExternalTool(tool: ExternalToolId, options: ExternalToolConfigOptions, assertBeforeWrite?: () => void): Promise<ExternalClientConfigResult>
-  scanExternalClients(): Promise<ExternalClientStatus[]>
+  scanExternalClients(force?: boolean): Promise<ExternalClientStatus[]>
   /** 上一次客户端检测留下的快照；反馈报告只读它，不为了生成报告再探测一轮。 */
   getLastExternalClients(): ExternalClientStatus[] | null
   /**
@@ -4374,8 +4374,10 @@ export function createSystemService(
       apiKey: credential?.apiKey ?? null,
     }, activeSite.id, { fetch: serviceOptions.relayFetch })
   }
-  async function scanExternalClients(): Promise<ExternalClientStatus[]> {
-    const clients = await Promise.all((await externalClientRuntime.scan()).map(describeExternalClient))
+  async function scanExternalClients(force = false): Promise<ExternalClientStatus[]> {
+    // 本机盘点几分钟内复用（见 external-client-runtime 的缓存），配置每次都重读：
+    // 保存配置之后那次刷新要看到的正是刚写下去的那份。
+    const clients = await Promise.all((await externalClientRuntime.scan({ force })).map(describeExternalClient))
     // 反馈报告要答「客户端装没装、什么版本、配置指没指向当前账号」，而生成报告
     // 时不该再发一轮探测（同 latestTraySystem 的取舍）。这份快照就是那一段的
     // 数据源：只在用户自己点检测时更新。
