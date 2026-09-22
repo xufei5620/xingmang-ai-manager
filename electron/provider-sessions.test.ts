@@ -297,6 +297,32 @@ describe('annotateWorkspaceExistence', () => {
   })
 })
 
+describe('ProviderSessionsService.resolveWorkspace', () => {
+  it('gives each provider the folder its record was made in, without reading the transcript', async () => {
+    const data = fixture()
+    seedExternalSessions(data)
+    const codex = codexReader([codexSummary('codex-native')])
+    const sessions = service(data, codex)
+
+    const page = await sessions.list({ pageSize: 100 })
+    const byProvider = Object.fromEntries(page.items.map((item) => [item.provider, item.id]))
+
+    await expect(sessions.resolveWorkspace(byProvider.claude!)).resolves.toBe('C:/claude')
+    await expect(sessions.resolveWorkspace(byProvider.codex!)).resolves.toBe('C:/codex')
+    expect(codex.detail).not.toHaveBeenCalled()
+  })
+
+  it('refuses an id that belongs to no record', async () => {
+    const data = fixture()
+    seedExternalSessions(data)
+    const sessions = service(data, codexReader([codexSummary('codex-native')]))
+
+    await expect(sessions.resolveWorkspace('codex:missing')).rejects.toThrow('未找到这条记录')
+    await expect(sessions.resolveWorkspace('claude:missing')).rejects.toThrow('未找到 claude 会话')
+    await expect(sessions.resolveWorkspace('nothing')).rejects.toThrow('会话 ID 缺少有效 Provider 前缀')
+  })
+})
+
 describe('ProviderSessionsService', () => {
   it('unifies Codex SQLite and Claude/Gemini/Grok local sessions with explicit capabilities', async () => {
     const data = fixture()

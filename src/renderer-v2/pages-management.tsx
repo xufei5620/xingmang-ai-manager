@@ -3,6 +3,7 @@ import {
   Archive,
   Download,
   FileText,
+  FolderOpen,
   Globe,
   History,
   MoreHorizontal,
@@ -606,6 +607,28 @@ export function SessionsPage({
       `已打开${providerName(session.provider)}，接着 ${session.cwd} 里最近的一条对话`,
     )
   }
+  /**
+   * 只传会话 id,不传路径:工作目录由主进程从记录里取并校验(必须是真实存在的
+   * 文件夹),界面没有办法让资源管理器去打开别的位置。目录已经不在的那一行按钮
+   * 是灰的,这里再挡一道,免得列表出来之后目录才被删掉。
+   */
+  const openDirectory = (session: Session) => {
+    if (!session.cwd || session.cwdExists === false) return
+    void operation.execute(
+      'open-directory',
+      async () => {
+        try {
+          return await api.openProviderSessionDirectory(session.id)
+        } catch (cause) {
+          // 目录刚被删掉的那一瞬间:按钮还亮着,主进程已经打不开了。顺手把列表
+          // 重读一遍,让这一行跟着置灰。
+          void Promise.all([resource.reload(), latestResource.reload()])
+          throw cause
+        }
+      },
+      `已打开 ${session.cwd}`,
+    )
+  }
   return (
     <section
       className="v2-page"
@@ -710,6 +733,23 @@ export function SessionsPage({
                         testId={`sessions-resume-${session.id}`}
                       >
                         接着聊
+                      </Button>
+                    )}
+                    {Boolean(session.cwd) && (
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        icon={FolderOpen}
+                        disabled={Boolean(operation.busy) || missingWorkspace}
+                        onClick={() => openDirectory(session)}
+                        title={
+                          missingWorkspace
+                            ? '这条记录的文件夹已经不在了，打不开'
+                            : `在文件管理器里打开 ${session.cwd}`
+                        }
+                        testId={`sessions-open-directory-${session.id}`}
+                      >
+                        打开文件夹
                       </Button>
                     )}
                     <Button

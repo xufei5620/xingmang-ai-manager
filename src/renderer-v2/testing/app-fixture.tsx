@@ -357,6 +357,7 @@ const methods = {
   registerAccount: async () => {},
   logoutAccount: async () => { session = { ...session, authenticated: false, account: null } },
   listProviderSessions: async () => ({ items: query.has('recentWorkspaces') ? recentWorkspaceSessions : [], page: 1, pageSize: 60, total: query.has('recentWorkspaces') ? recentWorkspaceSessions.length : 0, pages: 1, stats: { total: query.has('recentWorkspaces') ? recentWorkspaceSessions.length : 0, byProvider: { claude: query.has('recentWorkspaces') ? 3 : 0, codex: query.has('recentWorkspaces') ? 1 : 0, gemini: query.has('recentWorkspaces') ? 1 : 0, grok: 0 } }, capabilities: { claude: sessionCapability('claude'), codex: sessionCapability('codex'), gemini: sessionCapability('gemini'), grok: sessionCapability('grok') } }),
+  openProviderSessionDirectory: async () => true,
   launchCli: async () => query.has('launchPending') ? new Promise<void>((resolve) => { releaseLaunch = resolve }) : undefined,
   launchCodexDesktop: async () => ({ restarted: false, status: system.desktopApps.codex, ...(query.has('localeLaunchWarning') ? { chineseLocale: { status: 'failed' as const, message: 'Codex 已打开，但未确认中文界面生效，请在配置中再次启用。' } } : {}) }),
   inspectCodexDesktopLocale: async () => ({ installed: true, version: 'fixture', running: true, configPath: 'C:\\Fixture\\config.toml', configuredLocale: 'zh-CN', effectiveLocale: 'zh-CN', chineseResources: { available: true, frontendChunk: true, menuLocale: true, pakLocale: true, resourceRoot: 'C:\\Fixture' }, needsRestart: true, error: null }),

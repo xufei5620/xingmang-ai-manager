@@ -698,6 +698,48 @@ test('the home recent card greys out a row whose folder is gone', async () => {
   } finally { await page.close() }
 })
 
+test('the records page opens the folder a record was made in (第七批 8)', async () => {
+  const page = await open('allInstalled=1&recentWorkspaces=1')
+  try {
+    await page.getByTestId('nav-sessions').click()
+    const open1 = page.getByTestId('sessions-open-directory-claude:1')
+    await open1.waitFor()
+    assert.equal(await open1.innerText(), '打开文件夹')
+    assert.equal(await open1.getAttribute('title'), '在文件管理器里打开 C:\\work\\my-app')
+
+    // 目录已经没了的那一行按钮留在原位但按不动,和旁边的「接着聊」同一个口径。
+    const gone = page.getByTestId('sessions-open-directory-claude:2')
+    assert.equal(await gone.isDisabled(), true)
+    assert.equal(await gone.getAttribute('title'), '这条记录的文件夹已经不在了，打不开')
+
+    await open1.click()
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'openProviderSessionDirectory'))
+    const calls = await page.evaluate(() => window.v2Test.calls)
+    // 只发会话 id:路径由主进程从记录里取,渲染层没有办法点名要打开哪个目录。
+    assert.deepEqual(calls.filter((entry) => entry.method === 'openProviderSessionDirectory').map((entry) => entry.args),
+      [['claude:1']])
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('the home recent card opens a record folder and says so when it cannot', async () => {
+  const page = await open('allInstalled=1&recentWorkspaces=1')
+  try {
+    const button = page.getByTestId('home-recent-open-directory-claude:1')
+    await button.waitFor()
+    assert.equal(await button.getAttribute('title'), '在文件管理器里打开 C:\\work\\my-app')
+    assert.equal(await page.getByTestId('home-recent-open-directory-claude:2').isDisabled(), true)
+
+    // 打不开时只提示一句,不把整张卡打回「记录暂时没有读到」。
+    await page.evaluate(() => { window.v2Test.fail = 'openProviderSessionDirectory'; window.v2Test.failMessage = '这条记录的文件夹已经不在了。' })
+    await button.click()
+    await page.getByText('这条记录的文件夹已经不在了。').waitFor()
+    assert.equal(await page.getByTestId('home-recent-card').count(), 1)
+    await page.evaluate(() => { window.v2Test.fail = '' })
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('home reuses the recent list instead of rescanning session folders on every visit', async () => {
   const page = await open('allInstalled=1&recentWorkspaces=1')
   // 首页读的是 pageSize 60 那一份;记录页自己读的是 20 / 100,不能混进来数。

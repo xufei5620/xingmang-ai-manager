@@ -312,3 +312,13 @@ describe('recent sessions cache', () => {
     expect(listProviderSessions).toHaveBeenCalledTimes(2)
   })
 })
+
+describe('open the folder a record was made in', () => {
+  it('sends only the session id, never a path', async () => {
+    const openProviderSessionDirectory = vi.fn(async () => true)
+    const api = createToolsApi({ openProviderSessionDirectory } as unknown as XingmangApi)
+
+    await expect(api.openSessionDirectory('claude:1')).resolves.toBe(true)
+    expect(openProviderSessionDirectory).toHaveBeenCalledWith('claude:1')
+  })
+})

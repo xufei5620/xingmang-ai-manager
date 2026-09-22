@@ -4,7 +4,7 @@ import type { AccountBalance, AccountProfile, CliLaunchMode, ExternalClientStatu
 import { presentExternalClients } from './external-model'
 import { useSharedAccountBalance } from '../app/balance-context'
 import { balanceStatusText } from '../shell/balance-status'
-import { BrandIcon, Button, Card, Dialog, Empty, ListRow, Menu, PageHead, Pill, Progress, ToolRow } from '../../ui'
+import { BrandIcon, Button, Card, Dialog, Empty, ListRow, Menu, PageHead, Pill, Progress, ToolRow, useToast } from '../../ui'
 import { balanceTier, canUninstallTool, configDirectoryMenuItem, externalInstallHint, greeting, isExternallyManagedInstall, presentTools, recommendedVersionVerb, rollbackVersion, versionSubtitle, type ToolboxSnapshot, type ToolId, type ToolPresentation } from './model'
 import type { ToolboxPartitionFailure, ToolsApi } from './api'
 import type { ToolJob } from './useToolbox'
@@ -96,6 +96,7 @@ export function Home(props: HomeProps) {
   const { snapshot, account, balance, jobs, loading, error } = props
   const { store: balanceStore, snapshot: balanceState } = useSharedAccountBalance()
   const balanceHint = balanceStatusText({ balanceLoading: balanceState.loading, balanceUpdatedAt: balanceState.updatedAt, balanceError: balanceState.error })
+  const toast = useToast()
   const [recent, setRecent] = useState<MultiProviderSessionPage | null>(null)
   const [recentError, setRecentError] = useState('')
   const [recentAttempt, setRecentAttempt] = useState(0)
@@ -115,6 +116,15 @@ export function Home(props: HomeProps) {
     if (account && props.supportsUsage !== false) void props.api.balanceUsage().then((value) => { if (current) setUsage(value) }).catch(() => { if (current) setUsageError('用量暂未读到') })
     return () => { current = false }
   }, [account?.userId, props.api, props.supportsUsage])
+  /**
+   * 「最近」那三行的「打开文件夹」。只传会话 id，路径由主进程从记录里取并校验。
+   * 失败（文件夹刚被删掉、盘符掉了）只提示一句，不动这份列表：它 60 秒后自己
+   * 会重读，而这一下点击不值得让整张卡重来一遍。
+   */
+  async function openRecentDirectory(sessionId: string) {
+    try { await props.api.openSessionDirectory(sessionId) }
+    catch (cause) { if (active.current) toast.show(errorMessage(cause, '这条记录的文件夹没有打开。'), 'warn') }
+  }
   async function refreshOfficial() {
     if (officialLock.current) return
     officialLock.current = true; setOfficialBusy(true); setOfficialError('')
@@ -322,6 +332,9 @@ export function Home(props: HomeProps) {
                   {resumable.has(session.id) && !session.archived && <Button size="xs" disabled={loading || launchBusy || session.cwdExists === false}
                     onClick={() => props.onLaunch(session.provider, session.cwd, 'resumeLast')}
                     title={session.cwdExists === false ? '这个文件夹已经不在了，接不上上次的对话' : `接着 ${session.cwd} 里最近的一条对话`} testId={`home-recent-resume-${session.id}`}>接着聊</Button>}
+                  {Boolean(session.cwd) && <Button size="xs" variant="ghost" icon={FolderOpen} disabled={session.cwdExists === false}
+                    aria-label="打开文件夹" title={session.cwdExists === false ? '这个文件夹已经不在了，打不开' : `在文件管理器里打开 ${session.cwd}`}
+                    onClick={() => void openRecentDirectory(session.id)} testId={`home-recent-open-directory-${session.id}`} />}
                   <Button size="xs" variant="ghost" onClick={() => props.onNavigate('sessions')}>查看</Button>
                 </>} />)
                 : <Empty icon={History} title="还没有对话记录" description="打开工具聊过之后，这里会出现最近的会话。" />}
