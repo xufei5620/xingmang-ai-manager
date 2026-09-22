@@ -865,6 +865,18 @@ describe('Sub2API RelayBackend adapter', () => {
     expect(f.calls.some((call) => call.init.method === 'POST' && call.url.pathname.endsWith('/keys'))).toBe(false)
   })
 
+  it('stops instead of creating an unlimited key when the same-named key used up its cap', async () => {
+    const profile = sub2ApiManagedCliKeyProfiles.codex
+    for (const capped of [{ status: 'quota_exhausted', quota: 5, quota_used: 5 }, { status: 'active', quota: 5, quota_used: 5 }]) {
+      const f = fixture()
+      await f.client.login(loginInput)
+      f.state.keys = [keyRecord(31, { name: profile.keyName, ...capped })]
+      await expect(f.client.provisionCliKey({ name: profile.keyName, group: profile.group })).rejects.toThrow('这个工具的额度用完了')
+      expect(f.calls.some((call) => call.init.method === 'POST' && call.url.pathname.endsWith('/keys'))).toBe(false)
+      expect(f.state.keys).toHaveLength(1)
+    }
+  })
+
   it('creates the four requested groups once even with concurrent provisioning', async () => {
     const f = fixture()
     await f.client.login(loginInput)

@@ -254,6 +254,19 @@ describe('classifyConnectionResponse', () => {
     expect(outcome.layer).toBe('protocol')
   })
 
+  it('maps a used-up per-key cap to quota instead of a broken key, so no rewrite is offered', () => {
+    for (const status of [401, 403]) {
+      const outcome = classifyConnectionResponse(messagesProbe('m'), status, '该令牌额度已用尽 TokenStatusExhausted[sk-***]', {})
+      expect(outcome.layer).toBe('quota')
+      expect(outcome.summary).toContain('额度用完了')
+      expect(outcome.nextStep).toContain('调高这个工具的额度')
+      expect(outcome.nextStep).not.toContain('重新写入')
+    }
+    expect(classifyConnectionResponse(messagesProbe('m'), 429, 'API key 额度已用完', {}).layer).toBe('quota')
+    expect(classifyConnectionResponse(messagesProbe('m'), 429, 'API key 额度已用完', {}).summary).toContain('额度用完了')
+    expect(classifyConnectionResponse(messagesProbe('m'), 403, '用户额度不足', {}).summary).toContain('账号额度不足')
+  })
+
   it('maps 401 to the credential layer', () => {
     expect(classifyConnectionResponse(messagesProbe('m'), 401, '无效的令牌', {}).layer).toBe('credential')
   })

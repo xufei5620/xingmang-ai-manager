@@ -1,6 +1,7 @@
 import { cliCatalog, type ProviderId } from './catalog'
 import { defaultCliModels } from './cli-model-defaults'
 import { redactCommandText } from './command-runner'
+import { isKeyQuotaExhaustedMessage } from './account-key-quota'
 import { readBoundedResponseText } from './bounded-response'
 import { geminiCliCompatibleModel, type NativeConfigInspection } from './config-files'
 import { parseModelIds } from './models'
@@ -442,6 +443,11 @@ export function classifyConnectionResponse(
       ? classifyGenerationSuccess(name, status, payload, model)
       : classifyModelCatalogSuccess(name, status, payload, model)
   }
+  // 「按工具分账」的上限用完也回 401，但它不是 Key 坏了：照 401 的老话去重新写入，
+  // 会签出一把不限额的新 Key，把有人特意设的上限悄悄绕过去。
+  if ((status === 401 || status === 403 || status === 429) && isKeyQuotaExhaustedMessage(message)) {
+    return keyQuotaExhausted(name, status)
+  }
   if (status === 401) {
     return {
       ok: false,
@@ -609,6 +615,29 @@ function webPageInsteadOfApi(): LayerOutcome & { ok: boolean } {
     layer: 'network',
     summary: networkFailureMessages.intercepted,
     nextStep: '在浏览器里完成上网认证，或改用手机热点后再自检一次；Key 和配置都不用动',
+  }
+}
+
+/**
+ * new-api 对「上限用完」和「Key 被删 / 过期」回的是同一句 401「无效的令牌」，
+ * 光看返回体分不出来；这把 Key 在账号列表里的状态分得出。
+ */
+export function isCappedKeyUsedUp(key: { status: number; unlimitedQuota: boolean; remainQuota: number }): boolean {
+  return !key.unlimitedQuota && (key.status === 4 || key.remainQuota <= 0)
+}
+
+/** 把一条已经判成「密钥被拒绝」的结论改说成「这个工具的额度用完了」，其余字段不动。 */
+export function withKeyQuotaExhausted<T extends ConnectionProbeReport>(result: T, name: string): T {
+  const outcome = keyQuotaExhausted(name, 401)
+  return { ...result, ok: false, layer: outcome.layer, summary: outcome.summary, nextStep: outcome.nextStep }
+}
+
+function keyQuotaExhausted(name: string, status: number): LayerOutcome & { ok: boolean } {
+  return {
+    ok: false,
+    layer: 'quota',
+    summary: `${name} 的额度用完了（HTTP ${status}），这是给这个工具设的上限`,
+    nextStep: '到「账号」页「密钥」里调高这个工具的额度，调好后再自检一次',
   }
 }
 
