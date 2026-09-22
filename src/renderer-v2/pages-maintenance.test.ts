@@ -36,6 +36,16 @@ describe('tutorial topics', () => {
     expect(text).toContain('Codex CLI')
   })
 
+  it('keeps the two safety notes the skipped Claude Code welcome page used to carry', () => {
+    // #284 替用户跳过了 Claude Code 首启那页英文安全须知，这两句由本教程用中文承担，不能再掉。
+    const start = tutorialTopics.find((entry) => entry.id === 'start')
+    const text = start?.steps.map((step) => step.detail).join('\n') ?? ''
+    expect(text).toContain('都可能出错')
+    expect(text).toContain('合并或执行之前自己再过一遍')
+    expect(text).toContain('来路不明')
+    expect(text).toContain('藏着让 AI 去做别的事的指令')
+  })
+
   it('only links steps at pages the shell can actually navigate to', () => {
     for (const topic of tutorialTopics)
       for (const step of topic.steps) expect(pageIds.has(step.page)).toBe(true)

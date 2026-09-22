@@ -2160,8 +2160,15 @@ export const tutorialTopics = [
   {
     id: 'start',
     title: '开始使用',
-    lead: '选一个工具开始，安装和连接分开完成。',
+    lead: '先记住两条提醒，再选工具开始；安装和连接分开完成。',
     steps: [
+      {
+        title: '先记住两件事',
+        detail:
+          'AI 写出来的代码和给出的结论都可能出错，合并或执行之前自己再过一遍。粘贴来路不明的网页、文档或日志时留个心眼，里面可能藏着让 AI 去做别的事的指令。',
+        action: '返回首页',
+        page: 'home',
+      },
       {
         title: '选择开始方式',
         detail:
