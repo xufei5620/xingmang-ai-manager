@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
-import { accelerationConflictNotice, accelerationTrialSeconds, type AccelerationState } from '../../../../electron/acceleration-contract'
+import { accelerationConflictNotice, accelerationFailureMessages, accelerationTrialSeconds, type AccelerationState } from '../../../../electron/acceleration-contract'
 import { AccelerationView } from './AccelerationView'
 
 function state(overrides: Partial<AccelerationState> = {}): AccelerationState {
@@ -11,12 +11,12 @@ function state(overrides: Partial<AccelerationState> = {}): AccelerationState {
   }
 }
 
-function render(current: AccelerationState | null) {
+function render(current: AccelerationState | null, extra: { error?: string; onViewLog?(): void } = {}) {
   return renderToStaticMarkup(<AccelerationView
-    state={current} mode="system-proxy" busy={false} signedIn error={null}
+    state={current} mode="system-proxy" busy={false} signedIn error={extra.error ?? null}
     onModeChange={() => undefined} onStart={() => undefined} onStartAnyway={() => undefined}
     onStop={() => undefined} onRefresh={() => undefined} onLogin={() => undefined} onHelp={() => undefined}
-    lines={[]} selectedLineId={null} linesBusy={false} linesError={null}
+    onViewLog={extra.onViewLog} lines={[]} selectedLineId={null} linesBusy={false} linesError={null}
     onSelectLine={() => undefined} onPingLine={() => undefined} onRefreshLines={() => undefined}
   />)
 }
@@ -53,5 +53,33 @@ describe('acceleration conflict notice', () => {
     const markup = render(state())
     expect(markup).not.toContain('acceleration-conflict')
     expect(markup).not.toContain('acceleration-error')
+  })
+})
+
+describe('acceleration error strip', () => {
+  // 读状态失败时状态是 null，主按钮因此停在「正在读取状态…」并且点不动——这条
+  // 红条是用户唯一的出口，所以它必须同时说出原因并给到日志（2026-09-22 客户机）。
+  const unavailable = accelerationFailureMessages['helper-temp']
+
+  it('offers the log beside 重新检查 when the page can navigate there', () => {
+    const markup = render(null, { error: unavailable, onViewLog: () => undefined })
+    expect(markup).toContain('data-testid="acceleration-error-log"')
+    expect(markup).toContain('查看日志')
+    expect(markup).toContain('重新检查')
+    expect(markup).toContain('正在读取状态')
+  })
+
+  it('leaves the strip as it was when no navigation is wired in', () => {
+    const markup = render(null, { error: unavailable })
+    expect(markup).toContain('acceleration-error')
+    expect(markup).not.toContain('data-testid="acceleration-error-log"')
+  })
+
+  it('names the cause rather than one sentence for every failure', () => {
+    for (const reason of ['helper-temp', 'proxy-owned', 'proxy-locked', 'local-data'] as const) {
+      // 这几句里都没有「代理」二字，所以不会被红条那两条替换规则改写。
+      const message = accelerationFailureMessages[reason]
+      expect([reason, render(null, { error: message }).includes(message)]).toEqual([reason, true])
+    }
   })
 })

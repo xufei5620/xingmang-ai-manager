@@ -18,6 +18,7 @@ import { savedAccountId, type SavedAccountsStore } from './saved-accounts'
 import type { ConfigBackupStore } from './backups'
 import { parseLocalNoticeReadSync, type AnnouncementReadStore } from './announcement-read-store'
 import type { AccelerationApi } from './acceleration-contract'
+import { accelerationFailureReason } from './acceleration-contract'
 import { cliCatalog, isProviderId, type ProviderId } from './catalog'
 import { isInstallCancelledError } from './install-cancellation'
 import {
@@ -1397,10 +1398,14 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
         // 受限网络下最贵的排查成本是「日志里只写了一句请求失败」。归得出原因就
         // 单列一个字段，客服和诊断导出不用再从错误文本里猜 DNS 还是证书。
         const networkFailure = classifyNetworkFailure(error)
+        // 同理：加速那条线把失败收成一句话，日志里看不出是临时目录、辅助进程
+        // 还是本机账本。归类由主进程自己给出，单列一个字段便于按原因检索。
+        const accelerationReason = accelerationFailureReason(error)
         options.runtimeLog.log('error', 'ipc', channel, `${label}失败：${reason || '未知错误'}`, {
           durationMs: Date.now() - startedAt,
           error,
           ...(networkFailure ? { networkFailure } : {}),
+          ...(accelerationReason ? { accelerationReason } : {}),
         })
       }
       const senderUrl = event.senderFrame?.url ?? event.sender.getURL()
