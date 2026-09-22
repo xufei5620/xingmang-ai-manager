@@ -114,6 +114,7 @@ import type {
   AiChatStartInput,
   AiImageGenerateInput,
   AccountManagedCliConfigurationInput,
+  ChooseWorkspaceOptions,
   LegalDocumentKind,
   RememberedAccountLogin,
   RendererErrorPayload,
@@ -481,6 +482,15 @@ function parseConfigSavePayload(payload: unknown): ConfigSavePayload {
     model: input.model,
     mode: input.mode as NativeConfigSaveMode,
   }
+}
+
+function parseChooseWorkspaceOptions(value: unknown): ChooseWorkspaceOptions {
+  if (value === undefined) return {}
+  if (!isRecord(value)) throw new Error('选择工作目录的参数无效')
+  const keys = Object.keys(value)
+  if (keys.some((key) => key !== 'createStarter')) throw new Error('选择工作目录的参数无效')
+  if (value.createStarter !== undefined && typeof value.createStarter !== 'boolean') throw new Error('选择工作目录的参数无效')
+  return value.createStarter === undefined ? {} : { createStarter: value.createStarter }
 }
 
 function parseWorkspace(workspace: unknown, fallback: string): string {
@@ -1706,7 +1716,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     }
   }
   // 建不成就说一句、回到选择器，由用户自己选；返回 null 让外层循环再开一次选择器。
-  async function createStarterWorkspaceOrExplain(parentWindow: BrowserWindow | undefined): Promise<string | null> {
+  async function createStarterWorkspaceOrExplain(parentWindow: BrowserWindow | undefined, nextStep: string): Promise<string | null> {
     try {
       const context = { platform: process.platform, home: os.homedir(), env: process.env }
       const created = createStarterWorkspace(resolveStarterWorkspaceParent(documentsDirectory(), context), context)
@@ -1719,7 +1729,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
         type: 'error' as const,
         title: '没能新建项目文件夹',
         message: '没能替你新建项目文件夹。',
-        detail: `${error instanceof Error ? error.message : '未知错误'}\n\n接下来会重新打开文件夹选择窗口，可以在里面自己新建一个文件夹再选它。`,
+        detail: `${error instanceof Error ? error.message : '未知错误'}\n\n${nextStep}`,
         buttons: ['知道了'],
         noLink: true,
       }
@@ -1728,8 +1738,20 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
       return null
     }
   }
-  registerTrustedHandler('workspace:choose', async (event) => {
+  async function commitWorkspace(workspace: string): Promise<string> {
+    await service.updateStoredConfig({ version: 2, workspace })
+    options.extensionService.setRepositoryContext(workspace)
+    options.providerExtensionService.setRepositoryRoot(workspace)
+    return workspace
+  }
+  registerTrustedHandler('workspace:choose', async (event, rawOptions: unknown) => {
     const parentWindow = BrowserWindow.fromWebContents(event.sender) ?? undefined
+    // 首页「新建项目文件夹」与引导里那颗按钮：不弹选择器，直接走提示框里「新建」
+    // 那一支。路径由主进程决定，渲染层只能说「要新建」，给不出任何路径（I5）。
+    if (parseChooseWorkspaceOptions(rawOptions).createStarter) {
+      const created = await createStarterWorkspaceOrExplain(parentWindow, '可以再点一次「打开」，自己选一个文件夹。')
+      return created === null ? null : commitWorkspace(created)
+    }
     const dialogOptions: OpenDialogOptions = {
       title: '选择 CLI 工作目录',
       properties: ['openDirectory', 'createDirectory'],
@@ -1765,7 +1787,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
         ? await dialog.showMessageBox(parentWindow, messageBoxOptions)
         : await dialog.showMessageBox(messageBoxOptions)
       if (answer.response === prompt.createIndex) {
-        workspace = await createStarterWorkspaceOrExplain(parentWindow)
+        workspace = await createStarterWorkspaceOrExplain(parentWindow, '接下来会重新打开文件夹选择窗口，可以在里面自己新建一个文件夹再选它。')
         continue
       }
       if (answer.response === prompt.continueIndex) {
@@ -1776,10 +1798,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
         })
       }
     }
-    await service.updateStoredConfig({ version: 2, workspace })
-    options.extensionService.setRepositoryContext(workspace)
-    options.providerExtensionService.setRepositoryRoot(workspace)
-    return workspace
+    return commitWorkspace(workspace)
   })
   registerTrustedHandler('repository:get-context', () => options.extensionService.getRepositoryContext())
   registerTrustedHandler('runtime:install-node', async (event) => {

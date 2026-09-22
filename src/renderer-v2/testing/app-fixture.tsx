@@ -346,9 +346,9 @@ const methods = {
     if (query.has('externalLaunchPending')) await new Promise<void>((resolve) => { releaseLaunch = resolve })
     externalStatuses.find((entry) => entry.tool === tool)!.running = true
   },
-  chooseWorkspace: async () => {
+  chooseWorkspace: async (options) => {
     if (query.has('workspaceCancel')) return null
-    const workspace = 'C:\\Selected Project'
+    const workspace = options?.createStarter ? 'C:\\Users\\fixture\\Documents\\XingmangProjects\\my-project' : 'C:\\Selected Project'
     settings = { ...settings, workspace }
     config.workspace = workspace
     return workspace
