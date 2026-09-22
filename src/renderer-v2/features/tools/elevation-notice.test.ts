@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { elevatedInstallNotice } from './elevation-notice'
+import { elevatedInstallNotice, elevatedInstallShortNotice } from './elevation-notice'
 
 describe('elevatedInstallNotice', () => {
   it('warns before the UAC prompt on Windows', () => {
@@ -25,5 +25,12 @@ describe('elevatedInstallNotice', () => {
     // macOS 上 Codex 桌面端是 external，Windows 上才 managed；平台与安装方式都要对。
     expect(elevatedInstallNotice('node', 'windows', 'external')).toBeNull()
     expect(elevatedInstallNotice('node', undefined, undefined)).toBeNull()
+  })
+})
+
+describe('elevatedInstallShortNotice', () => {
+  it('follows the long notice, one line shorter', () => {
+    expect(elevatedInstallShortNotice('codexDesktop', 'windows', 'managed')).toContain('管理员授权')
+    expect(elevatedInstallShortNotice('node', 'macos', 'external')).toBeNull()
   })
 })

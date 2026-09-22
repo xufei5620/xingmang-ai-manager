@@ -29,3 +29,16 @@ export function elevatedInstallNotice(
   const name = subject === 'node' ? 'Node.js' : 'Codex 桌面端'
   return `这一步需要管理员授权：点「安装」后 Windows 会弹一次授权窗口，请选「是」，${name} 才装得上；如果这台电脑登录的是普通账号，还要输入一个管理员账号的密码。`
 }
+
+/**
+ * 首页工具行只有一行小字的位置，塞不下上面那整句。短版只说「会弹授权窗口」，
+ * 完整说明留给运行环境卡和「安装卸载」页。
+ */
+export function elevatedInstallShortNotice(
+  subject: ElevatedInstallSubject,
+  platform: PlatformFamily | undefined,
+  management: InstallManagement | undefined,
+): string | null {
+  if (!elevatedInstallNotice(subject, platform, management)) return null
+  return '安装时需要管理员授权，Windows 会弹一次授权窗口'
+}
