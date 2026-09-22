@@ -2,7 +2,7 @@ import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { classifyAccelerationStartFailure, createAccelerationDevelopmentBackend } from './acceleration-development-backend'
+import { classifyAccelerationStartFailure, classifyAccelerationWorkerFailure, createAccelerationDevelopmentBackend } from './acceleration-development-backend'
 import { accelerationBonusCode, accelerationBonusSeconds, accelerationConflictNotice, accelerationTrialSeconds, type AccelerationConflictKind } from './acceleration-contract'
 import * as safe from './safe-local-data'
 
@@ -883,5 +883,38 @@ describe('acceleration start failure reporting', () => {
     const test = await setup(undefined, undefined, undefined, detect)
     expect(() => test.backend.startAcceleration(scope, 'system-proxy', undefined, 'yes' as unknown as boolean)).toThrow('加速冲突确认参数无效。')
     expect(detect).not.toHaveBeenCalled()
+  })
+})
+
+describe('classifyAccelerationWorkerFailure', () => {
+  it('separates a live owner from a lock it could not even take', () => {
+    // 两句都以「系统代理」开头，但下一步完全不同：前者退掉旧软件就好，后者是
+    // 这台机器的策略不让加速动网络设置，重试多少次都一样。
+    expect(classifyAccelerationWorkerFailure(new Error('另一实例正在使用系统代理，请先停止该实例的加速。'))).toBe('proxy-owned')
+    for (const message of [
+      '无法创建系统代理操作锁。',
+      '系统代理操作锁提前结束。',
+      '系统代理操作锁返回异常。',
+      '系统代理操作锁异常中断，请重试恢复。',
+      '系统代理正在由另一实例操作，请稍后重试。',
+    ]) expect([message, classifyAccelerationWorkerFailure(new Error(message))]).toEqual([message, 'proxy-locked'])
+  })
+
+  it('maps the remaining authored failures onto their own reason', () => {
+    for (const [message, reason] of [
+      ['本机测试时长无法读取或保存，请检查本地数据目录后重试。', 'local-data'],
+      ['加速尚未完全停止，正在保留恢复状态，请再次点击停止。', 'proxy-restore'],
+      ['系统代理恢复未确认，恢复记录已保留。', 'proxy-restore'],
+      ['Windows 系统代理操作未完成，请重试。', 'proxy-restore'],
+      ['当前系统暂不支持此系统代理模式。', 'proxy-restore'],
+      ['本机加速数据必须是普通目录', 'helper-data'],
+      ['开发加速进程未就绪。', 'helper-launch'],
+      ['开发数据目录无效。', 'helper-launch'],
+    ] as const) expect([message, classifyAccelerationWorkerFailure(new Error(message))]).toEqual([message, reason])
+  })
+
+  it('reports an unrecognised message as unknown rather than guessing at it', () => {
+    expect(classifyAccelerationWorkerFailure(new Error('something else entirely'))).toBe('unknown')
+    expect(classifyAccelerationWorkerFailure(null)).toBe('unknown')
   })
 })

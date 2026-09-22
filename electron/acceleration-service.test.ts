@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { AccelerationApi, AccelerationMode, AccelerationRedemptionResult, AccelerationState } from './acceleration-contract'
-import { accelerationBonusCode, accelerationBonusSeconds, accelerationConflictNotice, accelerationTrialSeconds } from './acceleration-contract'
+import { accelerationBonusCode, accelerationBonusSeconds, accelerationConflictNotice, accelerationFailureMessages, accelerationTrialSeconds, withAccelerationReason } from './acceleration-contract'
 import { createAccelerationService } from './acceleration-service'
 
 const scope = 'xm-account:42'
@@ -445,5 +445,32 @@ describe('acceleration-service', () => {
     await disposed
     expect(backend.startAcceleration).toHaveBeenCalledTimes(1)
     expect(backend.stopAcceleration).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('acceleration failure reasons', () => {
+  it('speaks the reason the backend classified instead of one sentence for everything', async () => {
+    // 读状态失败以前只有「加速服务暂不可用，请稍后重试。」一句话，临时目录、
+    // 被别的实例占着、本机账本损坏在界面和日志里长得一模一样（2026-09-22）。
+    for (const reason of ['helper-temp', 'proxy-owned', 'proxy-locked', 'local-data'] as const) {
+      const backend = createBackend()
+      backend.getAccelerationState = vi.fn(async () => {
+        throw withAccelerationReason(new Error('本机加速进程启动失败。'), reason)
+      })
+      const service = createAccelerationService({ backend, getAccountScope: () => scope })
+      const rejection: unknown = await service.getAccelerationState(scope).catch((error: unknown) => error)
+      expect([reason, (rejection as Error).message]).toEqual([reason, accelerationFailureMessages[reason]])
+      // 归类跟着错误走，日志那边才能按原因检索，而不是再去认一遍中文。
+      expect([reason, (rejection as { accelerationReason?: string }).accelerationReason]).toEqual([reason, reason])
+    }
+  })
+
+  it('keeps the original sentence for a failure nothing classified', async () => {
+    const backend = createBackend()
+    backend.getAccelerationState = vi.fn(async () => { throw new Error('private-node-password leaked') })
+    const service = createAccelerationService({ backend, getAccountScope: () => scope })
+    const rejection: unknown = await service.getAccelerationState(scope).catch((error: unknown) => error)
+    expect((rejection as Error).message).toBe('加速服务暂不可用，请稍后重试。')
+    expect((rejection as { accelerationReason?: string }).accelerationReason).toBe('unknown')
   })
 })
