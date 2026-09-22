@@ -1742,6 +1742,7 @@ if (!hasSingleInstanceLock) {
       savedAccounts,
       systemService,
       providerRoots: rootedOptions.system.providerRoots,
+      documentsDirectory: () => app.getPath('documents'),
       accountService,
       paymentWindow,
       accountSessionReady,
