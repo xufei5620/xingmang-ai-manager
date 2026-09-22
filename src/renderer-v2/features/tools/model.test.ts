@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { ProviderConfigSummary, ProviderId } from '../../../../electron/ipc-contract'
-import { canUninstallTool, codexDesktopUpdateKind, connectionReady, presentTools, providerFor, rollbackVersion, sourceFor, toolAvailability, updateCheckFailure, versionSubtitle, type ToolboxSnapshot, type ToolPresentation } from './model'
+import { canUninstallTool, codexDesktopUpdateKind, connectionReady, externalInstallHint, isExternallyManagedInstall, presentTools, providerFor, rollbackVersion, sourceFor, toolAvailability, updateCheckFailure, versionSubtitle, type ToolboxSnapshot, type ToolPresentation } from './model'
 import {
   writeManualSourceMarker,
   type SourceMarkerStorage,
@@ -276,6 +276,38 @@ describe('renderer tool availability', () => {
       detectionError: 'C:\\Users\\peaker\\AppData\\npm 目录不可读',
     })
     expect(availability.reason).not.toContain('peaker')
+  })
+})
+
+describe('renderer install source labelling', () => {
+  it('names the official native installer in the status label', () => {
+    expect(toolAvailability({ installed: true, installSource: 'native' }).label)
+      .toBe('已安装（官方安装器）')
+  })
+
+  it('names an other-source install so the user knows npm did not put it there', () => {
+    expect(toolAvailability({ installed: true, installSource: 'path' }).label)
+      .toBe('已安装（其他来源）')
+  })
+
+  it('keeps a plain "已安装" for an npm install and when the source is unknown', () => {
+    expect(toolAvailability({ installed: true, installSource: 'npm' }).label).toBe('已安装')
+    expect(toolAvailability({ installed: true }).label).toBe('已安装')
+  })
+
+  it('treats non-npm sources as externally managed and npm/unknown/missing as not', () => {
+    expect(isExternallyManagedInstall({ installed: true, installSource: 'native' })).toBe(true)
+    expect(isExternallyManagedInstall({ installed: true, installSource: 'path' })).toBe(true)
+    expect(isExternallyManagedInstall({ installed: true, installSource: 'npm' })).toBe(false)
+    expect(isExternallyManagedInstall({ installed: true })).toBe(false)
+    expect(isExternallyManagedInstall({ installed: false, installSource: 'native' })).toBe(false)
+  })
+
+  it('gives a source-specific passive hint instead of an npm update', () => {
+    expect(externalInstallHint('native')).toBe('该版本由官方安装器管理，请用它自己的方式更新')
+    expect(externalInstallHint('path')).toBe('该版本不是通过本工具安装的，更新请用它原本的安装方式')
+    expect(externalInstallHint('npm')).toBeNull()
+    expect(externalInstallHint(undefined)).toBeNull()
   })
 })
 

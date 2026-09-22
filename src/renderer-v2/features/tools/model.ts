@@ -53,7 +53,7 @@ export interface ToolAvailability {
  * 分类,值得单开一条。
  */
 export function toolAvailability(
-  status: Pick<ToolStatus, 'installed' | 'detectionFailed' | 'detectionError'> | null | undefined,
+  status: Pick<ToolStatus, 'installed' | 'detectionFailed' | 'detectionError' | 'installSource'> | null | undefined,
   statusUnknown = false,
 ): ToolAvailability {
   if (status?.detectionFailed === true) {
@@ -66,8 +66,39 @@ export function toolAvailability(
     return { state: 'unknown', label: '状态未读到', tone: 'warn', versionFallback: '版本未读到', reason: null }
   }
   return status?.installed === true
-    ? { state: 'installed', label: '已安装', tone: 'ok', versionFallback: '未找到版本', reason: null }
+    ? { state: 'installed', label: installedLabel(status.installSource), tone: 'ok', versionFallback: '未找到版本', reason: null }
     : { state: 'missing', label: '未安装', tone: 'neutral', versionFallback: '未找到版本', reason: null }
+}
+
+/**
+ * 已装工具的状态标签如实带上安装来源：官方原生安装器与 PATH 上的其他来源都不是
+ * 本工具的 npm 通道装的，用户得知道这一点，否则会对着一个装好了的工具再点一次
+ * npm 安装。npm 装的与来源未知的仍是朴素的「已安装」。
+ */
+export function installedLabel(installSource: ToolStatus['installSource']): string {
+  if (installSource === 'native') return '已安装（官方安装器）'
+  if (installSource === 'path') return '已安装（其他来源）'
+  return '已安装'
+}
+
+/**
+ * 原生安装器或 PATH 上其他来源装的 CLI，本工具的 npm 安装/回滚通道不该碰它：跑一次
+ * npm install 会在 npm 全局目录另装一份，与用户在用的那份并存。对这类安装隐藏
+ * 「更新」「回到推荐版本」按钮，改用一句被动提示。
+ */
+export function isExternallyManagedInstall(
+  status: Pick<ToolStatus, 'installed' | 'installSource'> | null | undefined,
+): boolean {
+  return status?.installed === true
+    && status.installSource != null
+    && status.installSource !== 'npm'
+}
+
+/** 外部来源安装时那句被动提示；npm 装的或来源未知的返回 null。 */
+export function externalInstallHint(installSource: ToolStatus['installSource']): string | null {
+  if (installSource === 'native') return '该版本由官方安装器管理，请用它自己的方式更新'
+  if (installSource === 'path') return '该版本不是通过本工具安装的，更新请用它原本的安装方式'
+  return null
 }
 
 /**

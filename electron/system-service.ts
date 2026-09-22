@@ -62,12 +62,14 @@ import {
 import { parseModelIds } from './models'
 import { describeProbeFailure } from './probe-failure'
 import {
+  classifyCliInstallDisplaySource,
   cliUninstallCapability,
   findNpmExecutable,
   resolveCliCommand,
   resolveCliInstallation,
   resolveNpmGlobalRoot,
   type CliInstallation,
+  type CliInstallDisplaySource,
   type CliUninstallCapability,
 } from './tool-installation'
 import { isNewerVersion, nodeVersionStatus, type NodeVersionStatus } from './versions'
@@ -213,6 +215,12 @@ export interface ToolStatus {
    */
   detectionFailed?: boolean
   detectionError?: string | null
+  /**
+   * 这次安装是怎么装上的：npm 全局包（npm）、官方原生安装器（native）、或 PATH
+   * 上的其他来源（path）。未装、探测失败、或非 CLI 工具（运行环境、桌面端）时为
+   * undefined，渲染层此时退回中性的「已安装」。
+   */
+  installSource?: CliInstallDisplaySource
 }
 
 export interface CliStatus extends ToolStatus {
@@ -2027,6 +2035,15 @@ export function createSystemService(
         // Reading an npm package manifest avoids unnecessary CLI execution and
         // remains safe even when the app was manually started as administrator.
         version,
+        // Grok 的安装/更新走原生通道（非 npm），首页对它保留朴素的「已安装」与既有
+        // 更新按钮，不做来源标注；其余三个 CLI 的安装通道是 npm，标注来源后原生/其他
+        // 来源装的那份才好挡住 npm 重装。
+        installSource: provider === 'grok'
+          ? undefined
+          : classifyCliInstallDisplaySource(installation, {
+              env: cliEnvironment,
+              platform,
+            }),
         path: installation.source === 'native'
           ? provider === 'grok'
             ? installation.commandPath
