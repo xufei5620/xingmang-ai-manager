@@ -932,7 +932,7 @@ describe('registerIpcHandlers', () => {
   it('warns before accepting a workspace that would cover the whole machine', async () => {
     const desktop = path.join(os.homedir(), 'Desktop')
     electronMocks.showOpenDialog.mockResolvedValueOnce({ canceled: false, filePaths: [desktop] })
-    electronMocks.showMessageBox.mockResolvedValueOnce({ response: 1 })
+    electronMocks.showMessageBox.mockResolvedValueOnce({ response: 2 })
     const { service } = register()
 
     await expect(electronMocks.handlers.get('workspace:choose')!(trustedEvent())).resolves.toBe(desktop)
@@ -949,7 +949,7 @@ describe('registerIpcHandlers', () => {
     electronMocks.showOpenDialog
       .mockResolvedValueOnce({ canceled: false, filePaths: [home] })
       .mockResolvedValueOnce({ canceled: false, filePaths: [path.join(home, 'project')] })
-    electronMocks.showMessageBox.mockResolvedValueOnce({ response: 0 })
+    electronMocks.showMessageBox.mockResolvedValueOnce({ response: 1 })
     const { service } = register()
 
     await expect(electronMocks.handlers.get('workspace:choose')!(trustedEvent()))
@@ -958,11 +958,71 @@ describe('registerIpcHandlers', () => {
     expect(service.updateStoredConfig).toHaveBeenCalledTimes(1)
   })
 
+  it('creates a starter project folder under documents when the warning offers one', async () => {
+    const documents = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-ipc-documents-')))
+    try {
+      electronMocks.showOpenDialog.mockResolvedValueOnce({ canceled: false, filePaths: [path.join(os.homedir(), 'Desktop')] })
+      electronMocks.showMessageBox.mockResolvedValueOnce({ response: 0 })
+      const { service, runtimeLog, extensionService } = register(undefined, undefined, undefined, undefined, undefined, undefined, {}, {
+        documentsDirectory: () => documents,
+      })
+      const expected = path.join(documents, 'XingmangProjects', 'my-project')
+
+      await expect(electronMocks.handlers.get('workspace:choose')!(trustedEvent())).resolves.toBe(expected)
+      expect(electronMocks.showMessageBox).toHaveBeenCalledWith(expect.objectContaining({
+        buttons: ['新建一个项目文件夹', '换一个文件夹', '仍然打开'],
+        defaultId: 0,
+        cancelId: 1,
+      }))
+      expect(fs.statSync(expected).isDirectory()).toBe(true)
+      expect(electronMocks.showOpenDialog).toHaveBeenCalledTimes(1)
+      expect(service.updateStoredConfig).toHaveBeenCalledWith({ version: 2, workspace: expected })
+      expect(extensionService.setRepositoryContext).toHaveBeenCalledWith(expected)
+      expect(runtimeLog.log).toHaveBeenCalledWith('info', 'config', 'workspace.starter.created', expect.any(String))
+      expect(JSON.stringify(runtimeLog.log.mock.calls)).not.toContain(documents)
+    } finally {
+      fs.rmSync(documents, { recursive: true, force: true })
+    }
+  })
+
+  it.runIf(process.platform !== 'win32')('explains a starter folder that cannot be created and goes back to the picker', async () => {
+    const documents = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-ipc-documents-')))
+    const elsewhere = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-ipc-elsewhere-')))
+    fs.symlinkSync(elsewhere, path.join(documents, 'XingmangProjects'), 'dir')
+    try {
+      const project = path.join(os.homedir(), 'project')
+      electronMocks.showOpenDialog
+        .mockResolvedValueOnce({ canceled: false, filePaths: [os.homedir()] })
+        .mockResolvedValueOnce({ canceled: false, filePaths: [project] })
+      electronMocks.showMessageBox
+        .mockResolvedValueOnce({ response: 0 })
+        .mockResolvedValueOnce({ response: 0 })
+      const { service, runtimeLog } = register(undefined, undefined, undefined, undefined, undefined, undefined, {}, {
+        documentsDirectory: () => documents,
+      })
+
+      await expect(electronMocks.handlers.get('workspace:choose')!(trustedEvent())).resolves.toBe(project)
+      expect(electronMocks.showMessageBox).toHaveBeenNthCalledWith(2, expect.objectContaining({
+        type: 'error',
+        title: '没能新建项目文件夹',
+        detail: expect.stringContaining('符号链接或目录联接'),
+      }))
+      expect(fs.readdirSync(elsewhere)).toEqual([])
+      expect(electronMocks.showOpenDialog).toHaveBeenCalledTimes(2)
+      expect(runtimeLog.exception).toHaveBeenCalledWith('config', 'workspace.starter.failed', expect.any(Error))
+      expect(service.updateStoredConfig).toHaveBeenCalledTimes(1)
+      expect(service.updateStoredConfig).toHaveBeenCalledWith({ version: 2, workspace: project })
+    } finally {
+      fs.rmSync(documents, { recursive: true, force: true })
+      fs.rmSync(elsewhere, { recursive: true, force: true })
+    }
+  })
+
   it('keeps a cancelled picker from storing anything after a warning', async () => {
     electronMocks.showOpenDialog
       .mockResolvedValueOnce({ canceled: false, filePaths: [os.homedir()] })
       .mockResolvedValueOnce({ canceled: true, filePaths: [] })
-    electronMocks.showMessageBox.mockResolvedValueOnce({ response: 0 })
+    electronMocks.showMessageBox.mockResolvedValueOnce({ response: 1 })
     const { service } = register()
 
     await expect(electronMocks.handlers.get('workspace:choose')!(trustedEvent())).resolves.toBeNull()
@@ -4952,6 +5012,115 @@ describe('provider-sessions:open-directory', () => {
     }
     expect(providerSessionsService.resolveWorkspace).not.toHaveBeenCalled()
     expect(electronMocks.openPath).not.toHaveBeenCalled()
+  })
+})
+
+describe('exports:reveal-file', () => {
+  const temporary: string[] = []
+
+  function exportedFile(name = 'session.md'): string {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-ipc-reveal-'))
+    temporary.push(directory)
+    const file = path.join(directory, name)
+    fs.writeFileSync(file, '# exported\n')
+    return file
+  }
+
+  async function exportSession(providerSessionsService: ReturnType<typeof register>['providerSessionsService'], outputPath: string) {
+    electronMocks.showSaveDialog.mockResolvedValueOnce({ canceled: false, filePath: path.dirname(outputPath) })
+    providerSessionsService.exportMarkdown.mockResolvedValueOnce({ id: 'claude:1', provider: 'claude', outputPath, messages: 2, truncated: false })
+    await electronMocks.handlers.get('provider-sessions:export')!(trustedEvent(), 'claude:1')
+  }
+
+  afterEach(() => {
+    while (temporary.length) fs.rmSync(temporary.pop()!, { recursive: true, force: true })
+  })
+
+  it('selects the file an export just wrote, as the export reported it', async () => {
+    const file = exportedFile()
+    const revealInFolder = vi.fn()
+    const { providerSessionsService } = register(serviceStub(), undefined, undefined, undefined, undefined, undefined, {}, { revealInFolder })
+    // The dialog picked a folder; the service chose the file name inside it.
+    await exportSession(providerSessionsService, file)
+
+    await expect(electronMocks.handlers.get('exports:reveal-file')!(trustedEvent(), file)).resolves.toBe(true)
+    expect(revealInFolder.mock.calls).toEqual([[path.resolve(file)]])
+  })
+
+  it('remembers diagnostics and feedback exports too', async () => {
+    const revealInFolder = vi.fn()
+    register(serviceStub(), undefined, undefined, undefined, undefined, undefined, {}, { revealInFolder })
+    const feedback = path.join(path.dirname(exportedFile()), 'feedback.txt')
+    electronMocks.showSaveDialog.mockResolvedValueOnce({ canceled: false, filePath: feedback })
+    await electronMocks.handlers.get('runtime-logs:export-feedback')!(trustedEvent())
+
+    await expect(electronMocks.handlers.get('exports:reveal-file')!(trustedEvent(), feedback)).resolves.toBe(true)
+    expect(revealInFolder.mock.calls).toEqual([[path.resolve(feedback)]])
+  })
+
+  it('refuses any path this process did not just export, even one that exists', async () => {
+    const stranger = exportedFile('payload.exe')
+    const revealInFolder = vi.fn()
+    register(serviceStub(), undefined, undefined, undefined, undefined, undefined, {}, { revealInFolder })
+
+    await expect(electronMocks.handlers.get('exports:reveal-file')!(trustedEvent(), stranger))
+      .rejects.toThrow('只能定位本次打开软件后导出的文件')
+    expect(revealInFolder).not.toHaveBeenCalled()
+  })
+
+  it('says the file moved instead of revealing whatever is there now', async () => {
+    const file = exportedFile()
+    const revealInFolder = vi.fn()
+    const { providerSessionsService } = register(serviceStub(), undefined, undefined, undefined, undefined, undefined, {}, { revealInFolder })
+    await exportSession(providerSessionsService, file)
+    fs.rmSync(file)
+
+    await expect(electronMocks.handlers.get('exports:reveal-file')!(trustedEvent(), file))
+      .rejects.toThrow('已经不在原来的位置了')
+    // Replaced by a folder of the same name: not the file we wrote.
+    fs.mkdirSync(file)
+    await expect(electronMocks.handlers.get('exports:reveal-file')!(trustedEvent(), file))
+      .rejects.toThrow('不是导出的那个文件')
+    expect(revealInFolder).not.toHaveBeenCalled()
+  })
+
+  it('does not remember a cancelled export', async () => {
+    const file = exportedFile()
+    const revealInFolder = vi.fn()
+    register(serviceStub(), undefined, undefined, undefined, undefined, undefined, {}, { revealInFolder })
+    electronMocks.showSaveDialog.mockResolvedValueOnce({ canceled: true })
+    await expect(electronMocks.handlers.get('runtime-logs:export-feedback')!(trustedEvent())).resolves.toBeNull()
+
+    await expect(electronMocks.handlers.get('exports:reveal-file')!(trustedEvent(), file))
+      .rejects.toThrow('只能定位本次打开软件后导出的文件')
+    expect(revealInFolder).not.toHaveBeenCalled()
+  })
+
+  it('refuses a malformed path before touching the disk', async () => {
+    const revealInFolder = vi.fn()
+    register(serviceStub(), undefined, undefined, undefined, undefined, undefined, {}, { revealInFolder })
+
+    for (const value of ['', 42, null, 'x'.repeat(4_097)]) {
+      await expect(electronMocks.handlers.get('exports:reveal-file')!(trustedEvent(), value))
+        .rejects.toThrow('导出文件路径')
+    }
+    expect(revealInFolder).not.toHaveBeenCalled()
+  })
+})
+
+describe('runtime-logs:preview-feedback size budget', () => {
+  it('asks the log store to fit the report instead of failing on size', async () => {
+    const { runtimeLog } = register()
+    await electronMocks.handlers.get('runtime-logs:preview-feedback')!(trustedEvent())
+    expect(runtimeLog.captureFeedbackReport.mock.calls).toEqual([[600, 2_000_000]])
+  })
+
+  it('still refuses an oversized report and points at the log folder instead of a missing action', async () => {
+    const { runtimeLog } = register()
+    runtimeLog.captureFeedbackReport.mockResolvedValueOnce({ text: 'x'.repeat(2_000_001), entries: 1 })
+    const failure = electronMocks.handlers.get('runtime-logs:preview-feedback')!(trustedEvent())
+    await expect(failure).rejects.toThrow('打开日志目录')
+    await expect(failure).rejects.not.toThrow('减少日志')
   })
 })
 

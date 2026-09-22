@@ -762,12 +762,22 @@ test('feedback copy and export retain the preview snapshot id', async () => {
     await page.getByTestId('feedback-report-text').waitFor()
     await page.getByRole('button', { name: '复制报告', exact: true }).click()
     await page.getByRole('button', { name: '导出文件', exact: true }).click()
-    await page.getByText('诊断报告已导出：').first().waitFor()
+    await page.getByText('反馈报告已导出：').first().waitFor()
+    // 提示条上那颗按钮把刚写出的那个文件交回主进程去定位，不是别的路径。
+    await page
+      .getByRole('dialog')
+      .getByRole('button', { name: '打开所在位置', exact: true })
+      .click()
+    await page.waitForFunction(() =>
+      JSON.parse(document.documentElement.dataset.calls || '[]').some(
+        (call) => call.name === 'reveal-file',
+      ),
+    )
     assert.deepEqual(
       (await calls(page))
-        .filter((call) => ['copy-report', 'export-report'].includes(call.name))
+        .filter((call) => ['copy-report', 'export-report', 'reveal-file'].includes(call.name))
         .map((call) => call.args),
-      ['report-snapshot-7', 'report-snapshot-7'],
+      ['report-snapshot-7', 'report-snapshot-7', 'C:\test-report.txt'],
     )
   } finally {
     await page.close()
