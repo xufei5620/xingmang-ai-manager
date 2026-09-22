@@ -61,8 +61,6 @@ const rollbackLayers: ReadonlySet<ConnectionCheckLayer> = new Set<ConnectionChec
  */
 const serviceUnavailableStatuses: ReadonlySet<number> = new Set([502, 504, 520, 521, 522, 523, 524, 525, 526])
 const groupHints = ['无可用渠道', '无可用的渠道', '当前分组', '分组', '渠道', 'no available channel', 'no channel', 'group']
-// new-api 的令牌额度用完回的是 401「该令牌额度已用尽」，自检按状态码归成了密钥被拒。
-const quotaHints = ['额度', '余额', '配额', '欠费', 'quota', 'insufficient', 'balance', 'credit']
 
 export type SwitchCheckVerdict = 'passed' | 'rollback' | 'serviceUnavailable' | 'quota' | 'unverified'
 
@@ -78,9 +76,9 @@ export function judgeSwitchCheck(check: Pick<ConnectionCheckResult, 'ok' | 'laye
   if (check.ok) return 'passed'
   const detail = check.detail ?? ''
   if (looksLikeServiceOutage(check.status, detail)) return 'serviceUnavailable'
+  // 额度层自带说法（账号余额不够，或这个工具的额度上限用完，见 connection-check.ts）。
   // 429 也落在额度层，但多半只是请求太频繁，不能说成额度用完。
   if (check.layer === 'quota' && check.status !== 429) return 'quota'
-  if ((check.status === 401 || check.status === 403) && quotaHints.some((hint) => detail.toLowerCase().includes(hint))) return 'quota'
   return rollbackLayers.has(check.layer) ? 'rollback' : 'unverified'
 }
 
@@ -183,7 +181,7 @@ export async function switchAccountSource(
   deps.log?.('info', 'account-source.switched', `${toolName(provider)} 已切到当前账号`, { provider, target, backupId, verified, verdict, layer: check?.layer ?? null })
   const status = verified ? '连接自检通过。'
     : verdict === 'serviceUnavailable' ? '不过服务暂时不可用，这次没能确认能用，稍后再试。'
-      : verdict === 'quota' ? '不过当前账号的额度已经用完，到「账号」页充值后就能用。'
+      : verdict === 'quota' && check ? `不过${check.summary}。${check.nextStep ? `${check.nextStep}。` : ''}`
         : check ? `这次没能确认能用：${check.summary}。`
           : '连接自检没有完成，稍后可以在检查页再测一次。'
   return {

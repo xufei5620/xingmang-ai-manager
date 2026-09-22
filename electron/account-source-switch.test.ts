@@ -83,12 +83,15 @@ describe('switchAccountSource', () => {
     expect(steps).toContain('restore:backup-1')
   })
 
-  it('says the quota ran out instead of blaming the key on a quota 401', async () => {
-    const { deps, steps } = dependencies({ checkConnection: async () => check(false, 'credential', '密钥被拒绝（HTTP 401）', { status: 401, detail: '该令牌额度已用尽' }) })
+  it('keeps the switch and passes on the quota advice when the quota ran out', async () => {
+    const { deps, steps } = dependencies({ checkConnection: async () => ({
+      ...check(false, 'quota', 'Codex 的额度用完了（HTTP 401），这是给这个工具设的上限', { status: 401, detail: '该令牌额度已用尽' }),
+      nextStep: '到「账号」页「密钥」里调高这个工具的额度，调好后再自检一次',
+    }) })
     const result = await switchAccountSource(deps, 'codex', 'account')
     expect(steps).not.toContain('restore:backup-1')
-    expect(result.message).toContain('额度已经用完')
-    expect(result.message).not.toContain('密钥')
+    expect(result.message).toContain('不过Codex 的额度用完了（HTTP 401），这是给这个工具设的上限。到「账号」页「密钥」里调高这个工具的额度')
+    expect(result.message).not.toContain('密钥被拒绝')
   })
 
   it('does not call a rate limit an exhausted quota', async () => {
