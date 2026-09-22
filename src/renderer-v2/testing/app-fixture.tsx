@@ -256,8 +256,9 @@ const methods = {
   },
   runDiagnostics: async () => {
     if (query.has('diagnosticsFail')) throw new Error('本机环境检查没有跑完')
-    const warn = Number(query.get('diagnosticIssues') ?? 0)
-    return { version: 1, generatedAt: new Date().toISOString(), durationMs: 1, counts: { pass: 1, warn: Number.isFinite(warn) ? warn : 0, fail: 0, error: 0 }, items: [] }
+    const fail = Number(query.get('diagnosticIssues') ?? 0)
+    const warn = Number(query.get('diagnosticWarnings') ?? 0)
+    return { version: 1, generatedAt: new Date().toISOString(), durationMs: 1, counts: { pass: 1, warn: Number.isFinite(warn) ? warn : 0, fail: Number.isFinite(fail) ? fail : 0, error: 0 }, items: [] }
   },
   reportRendererError: async () => undefined,
   // 四个工具各跑一遍：真实用户多半只配了一两个，所以夹具默认给出「两个能用、

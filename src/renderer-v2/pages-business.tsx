@@ -23,6 +23,8 @@ export type BusinessPageProps = BusinessActions & {
   paymentReturn?: { sequence: number; order: string | null }
   /** 记录页「接着聊」成功后回调，用来作废首页那份「最近」缓存。 */
   onSessionResumed?: () => void
+  /** 备份页恢复成功后回调，用来让首页重读这份配置。 */
+  onBackupRestored?: Parameters<typeof BackupsPage>[0]['onRestored']
 }
 
 export function BusinessPage({
@@ -32,6 +34,7 @@ export function BusinessPage({
   tutorialTopic,
   paymentReturn,
   onSessionResumed,
+  onBackupRestored,
   ...actions
 }: BusinessPageProps) {
   if (page === 'account')
@@ -50,7 +53,14 @@ export function BusinessPage({
   if (page === 'mcp') return <ExtensionsPage api={api} kind="mcp" />
   if (page === 'skills') return <ExtensionsPage api={api} kind="skill" />
   if (page === 'plugins') return <ExtensionsPage api={api} kind="plugin" />
-  if (page === 'backups') return <BackupsPage api={api} />
+  if (page === 'backups')
+    return (
+      <BackupsPage
+        api={api}
+        onRestored={onBackupRestored}
+        navigate={actions.navigate}
+      />
+    )
   if (page === 'health') return <HealthPage api={api} {...actions} />
   if (page === 'feedback') return <FeedbackPage api={api} {...actions} />
   if (page === 'updates') return <UpdatesPage api={api} {...actions} />

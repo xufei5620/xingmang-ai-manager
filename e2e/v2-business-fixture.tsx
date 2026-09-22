@@ -177,6 +177,9 @@ const backup = {
   totalSize: 128,
   valid: true,
   error: null,
+  ...(query.has('backupOtherKey')
+    ? { keyOwnership: 'other' as const, keyAccountName: 'old-user' }
+    : { keyOwnership: 'current' as const, keyAccountName: null }),
 }
 const key = {
   id: 1,
@@ -727,10 +730,20 @@ const apiMethods = {
   restoreBackup: async (id: string) => {
     record('restore-backup', id)
     return {
+      provider: 'codex' as const,
       restoredBackupId: id,
       preRestoreBackupId: 'before-restore',
       restoredFiles: ['config.toml'],
       removedFiles: [],
+    }
+  },
+  checkProviderConnection: async (provider: Parameters<V2Bridge['checkProviderConnection']>[0]) => {
+    record('check-connection', provider)
+    return {
+      provider, siteId: 'solov', ok: true, layer: 'network' as const, status: 200, durationMs: 12,
+      checkedAt: new Date().toISOString(), detail: null, endpoint: null, model: 'gpt-6-astra',
+      summary: '连接正常，gpt-6-astra 可以直接使用', nextStep: '无需处理',
+      evidence: '已核对当前账号的可用模型清单，gpt-6-astra 在其中',
     }
   },
   getSettings: async () => settings,
