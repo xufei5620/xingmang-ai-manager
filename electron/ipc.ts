@@ -16,6 +16,7 @@ import { parseWindowState } from './window-preferences'
 import { parseWindowCloseReport, type WindowCloseReport } from './window-close-query'
 import { classifyNetworkFailure } from './network-failure'
 import type { ExternalDeepLink } from './external-deep-links'
+import { ExternalUrlBlockedError } from './external-url-blocked'
 import { savedAccountId, type SavedAccountsStore } from './saved-accounts'
 import type { ConfigBackupStore } from './backups'
 import { parseLocalNoticeReadSync, type AnnouncementReadStore } from './announcement-read-store'
@@ -1850,7 +1851,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
       typeof url !== 'string'
       || !isAllowedExternalUrl(url, options.externalUrlAllowlist)
     ) {
-      throw new Error('不允许打开该链接')
+      throw new ExternalUrlBlockedError()
     }
     await externalShell.openExternal(url)
     return true
