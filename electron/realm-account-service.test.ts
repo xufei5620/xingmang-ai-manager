@@ -381,6 +381,67 @@ describe('realm account service', () => {
       expect(restarted.client.getSessionState().authenticated).toBe(false)
     }
   })
+  it('keeps an unreachable login as retrying and settles it on the next restore', async () => {
+    for (const outcome of ['restored', 'expired'] as const) {
+      const f = fixture()
+      await f.vault.activate(saved('solov-api', '42'))
+      const onChanged = vi.fn()
+      let restoreError: Error | null = new RealmAccountError('UNAVAILABLE')
+      let restoreValid = true
+      const restarted = createRealmAccountService({ ...f.options, onChanged, createClient: (siteId, callback) => {
+        const result = f.options.createClient(siteId, callback)
+        Object.assign(f.clients[f.clients.length - 1], { restoreError, restoreValid })
+        return result
+      } })
+      await expect(restarted.restoreActive()).rejects.toMatchObject({ code: 'UNAVAILABLE' })
+      expect(restarted.stalledAccount()).toEqual({ siteId: 'solov-api', userId: 42 })
+      expect(restarted.client.getSessionState()).toMatchObject({
+        authenticated: false, restoring: { account: { siteId: 'solov-api', userId: 42 }, retrying: true },
+      })
+      expect(onChanged).toHaveBeenCalledTimes(1)
+      expect((await f.vault.active())?.realmId).toBe('api-account')
+      // A second unreachable attempt changes nothing the interface shows.
+      await expect(restarted.restoreActive()).rejects.toMatchObject({ code: 'UNAVAILABLE' })
+      expect(onChanged).toHaveBeenCalledTimes(1)
+      restoreError = null
+      restoreValid = outcome === 'restored'
+      await expect(restarted.restoreActive()).resolves.toBe(outcome === 'restored')
+      expect(restarted.stalledAccount()).toBeNull()
+      expect(restarted.client.getSessionState()).not.toHaveProperty('restoring')
+      expect(onChanged).toHaveBeenCalledTimes(2)
+      expect(onChanged.mock.lastCall?.[1]).toMatchObject({ authenticated: outcome === 'restored' })
+      if (outcome === 'expired') expect(await f.vault.active()).toBeNull()
+    }
+  })
+  it('does not promise a retry when the saved record itself cannot be used', async () => {
+    const f = fixture()
+    await f.vault.activate(saved('solov-api', '42'))
+    const restarted = createRealmAccountService({ ...f.options, createClient: (siteId, callback) => {
+      const result = f.options.createClient(siteId, callback)
+      f.clients[f.clients.length - 1].restoreError = new RealmAccountError('PROTOCOL')
+      return result
+    } })
+    await expect(restarted.restoreActive()).rejects.toMatchObject({ code: 'PROTOCOL' })
+    expect(restarted.stalledAccount()).toBeNull()
+    expect((await f.vault.active())?.realmId).toBe('api-account')
+  })
+  it('drops the retrying mark when the user signs in or out on their own', async () => {
+    for (const action of ['login', 'logout'] as const) {
+      const f = fixture()
+      await f.vault.activate(saved('solov-api', '42'))
+      const restarted = createRealmAccountService({ ...f.options, createClient: (siteId, callback) => {
+        const result = f.options.createClient(siteId, callback)
+        f.clients[f.clients.length - 1].restoreError = new RealmAccountError('NETWORK')
+        return result
+      } })
+      await expect(restarted.restoreActive()).rejects.toMatchObject({ code: 'NETWORK' })
+      expect(restarted.stalledAccount()).not.toBeNull()
+      if (action === 'login') await restarted.login(login)
+      else await restarted.logout()
+      expect(restarted.stalledAccount()).toBeNull()
+      expect(restarted.client.getSessionState()).not.toHaveProperty('restoring')
+    }
+  })
   it('returns success for a password change that intentionally expires its own session', async () => {
     const f = fixture()
     await f.service.login({ ...login, siteId: 'solov-api' })

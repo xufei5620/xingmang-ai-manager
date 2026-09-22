@@ -1741,7 +1741,10 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   registerTrustedHandler('config:get', () => {
     // 账号还在恢复：此时读到的会话是未登录，来源判定没有账号可比，一律只会是
     // unknown。标出来让界面知道这是「待定」而不是「来源不明」，恢复完再补读。
-    if (startupGate?.pending()) return { ...service.getConfig(options.previewOnboarding), ownershipPending: true }
+    // 恢复联不上、登录留着等重试的那段时间同理。
+    if (startupGate?.pending() || options.realmAccounts?.stalledAccount()) {
+      return { ...service.getConfig(options.previewOnboarding), ownershipPending: true }
+    }
     const session = accountService.getSessionState()
     const userId = session.account?.userId
     if (options.previewOnboarding || !session.authenticated || !userId || !options.managedCliKeys) {

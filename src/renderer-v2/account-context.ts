@@ -41,6 +41,10 @@ export function sessionScope(session: Pick<AccountSessionState, 'authenticated' 
 export function sessionRestoring(session: Pick<AccountSessionState, 'authenticated' | 'restoring'>): boolean {
   return !session.authenticated && session.restoring !== undefined
 }
+/** 开机恢复联不上而搁着：登录还在，主进程稍后自己重试（仍算在 sessionRestoring 里）。 */
+export function sessionRestoreRetrying(session: Pick<AccountSessionState, 'authenticated' | 'restoring'>): boolean {
+  return !session.authenticated && session.restoring?.retrying === true
+}
 export function accountSupports(session: Pick<AccountContext, 'siteId' | 'realmId' | 'capabilities'>, feature: keyof RelayBackendCapabilities): boolean {
   return session.capabilities?.[feature] ?? accountSiteId(session) === 'solov'
 }
