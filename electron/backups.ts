@@ -34,6 +34,18 @@ export interface ConfigBackupFileV2 extends ConfigBackupFile {
   targetRoot: ConfigBackupRootKind
 }
 
+/**
+ * 备份那一刻配置里那把 Key 的归属。`digest` 是 Key 的 SHA-256：同目录的备份文件
+ * 本来就存着 Key 明文，多存一份摘要不增加暴露面，却让列表不必逐个解析四家 CLI
+ * 的配置格式。`accountId` / `accountName` 只在那把 Key 正是当时登录账号由本软件
+ * 签发的那把时才记，缺省 = 不知道是谁的。旧版本读到这个字段会直接忽略。
+ */
+export interface ConfigBackupKeyRecord {
+  digest: string | null
+  accountId?: string
+  accountName?: string
+}
+
 export interface ConfigBackupManifestV2 {
   version: 2
   id: string
@@ -41,9 +53,17 @@ export interface ConfigBackupManifestV2 {
   reason: ConfigBackupReason
   createdAt: string
   files: ConfigBackupFileV2[]
+  key?: ConfigBackupKeyRecord
 }
 
 export type ConfigBackupManifest = ConfigBackupManifestV1 | ConfigBackupManifestV2
+
+/**
+ * `current` = 当前账号由本软件签发的那把；`other` = 别的 Key（记得是哪个账号时
+ * 带上 `keyAccountName`）；`none` = 备份里没有 Key；`unknown` = 旧备份没记，或者
+ * 没登录又说不出是谁的。
+ */
+export type ConfigBackupKeyOwnership = 'current' | 'other' | 'none' | 'unknown'
 
 export interface ConfigBackupSummary {
   id: string
@@ -55,6 +75,19 @@ export interface ConfigBackupSummary {
   totalSize: number
   valid: boolean
   error: string | null
+  /** 缺省 = 旧行为（不标归属）。只有账号名，从不带 Key 或摘要（I3）。 */
+  keyOwnership?: ConfigBackupKeyOwnership
+  keyAccountName?: string | null
+}
+
+/**
+ * 列表 / 预览 / 创建时由调用方（ipc.ts）按当前登录态读好传进来。`keyDigests`
+ * 是本软件替这个账号签发过的 Key 的摘要；备份库本身不碰账号与 Key 缓存。
+ */
+export interface ConfigBackupAccountContext {
+  accountId: string
+  accountName: string
+  keyDigests: ReadonlySet<string>
 }
 
 export interface ConfigBackupPreview extends ConfigBackupSummary {
@@ -62,6 +95,7 @@ export interface ConfigBackupPreview extends ConfigBackupSummary {
 }
 
 export interface ConfigRestoreResult {
+  provider: ProviderId
   restoredBackupId: string
   preRestoreBackupId: string
   restoredFiles: string[]
@@ -120,6 +154,60 @@ const MAX_BACKUP_ENTRIES = 2_000
 const MAX_RETAINED_BACKUPS = 200
 const STALE_TEMPORARY_PATTERN = /^\..*\.tmp$/
 const BACKUP_REASONS: readonly ConfigBackupReason[] = ['manual', 'pre-save', 'pre-restore']
+const MAX_ACCOUNT_ID_LENGTH = 256
+const MAX_ACCOUNT_NAME_LENGTH = 128
+
+export function apiKeyDigest(apiKey: string): string {
+  return createHash('sha256').update(apiKey, 'utf8').digest('hex')
+}
+
+/** 备份那一刻的归属只看 Key 本身：同一把 Key 在当时账号的签发名单里，才记账号。 */
+export function buildBackupKeyRecord(
+  apiKey: string,
+  context: ConfigBackupAccountContext | null | undefined,
+): ConfigBackupKeyRecord {
+  if (!apiKey) return { digest: null }
+  const digest = apiKeyDigest(apiKey)
+  if (!context || !context.keyDigests.has(digest)) return { digest }
+  return {
+    digest,
+    accountId: context.accountId.slice(0, MAX_ACCOUNT_ID_LENGTH),
+    accountName: context.accountName.slice(0, MAX_ACCOUNT_NAME_LENGTH),
+  }
+}
+
+export function classifyBackupKey(
+  record: ConfigBackupKeyRecord | undefined,
+  context: ConfigBackupAccountContext | null | undefined,
+): { keyOwnership: ConfigBackupKeyOwnership, keyAccountName: string | null } {
+  if (!record) return { keyOwnership: 'unknown', keyAccountName: null }
+  if (record.digest === null) return { keyOwnership: 'none', keyAccountName: null }
+  if (context?.keyDigests.has(record.digest)) return { keyOwnership: 'current', keyAccountName: null }
+  // 记下来的是同一个账号、但名单里已经没有这把 Key（被删掉或换过）：说它是
+  // 「当前账号的」会让用户恢复出一把已经作废的 Key，所以不带账号名。
+  if (record.accountName && record.accountId !== context?.accountId) {
+    return { keyOwnership: 'other', keyAccountName: record.accountName }
+  }
+  return { keyOwnership: context ? 'other' : 'unknown', keyAccountName: null }
+}
+
+function parseKeyRecord(value: unknown): ConfigBackupKeyRecord | undefined {
+  // 这个字段只用来显示，坏了就当旧备份没记，不能让整份备份变成「校验失败」。
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
+  const input = value as Record<string, unknown>
+  if (input.digest === null) return { digest: null }
+  if (typeof input.digest !== 'string' || !SHA256_PATTERN.test(input.digest)) return undefined
+  const record: ConfigBackupKeyRecord = { digest: input.digest }
+  if (
+    typeof input.accountId === 'string' && input.accountId && input.accountId.length <= MAX_ACCOUNT_ID_LENGTH
+    && typeof input.accountName === 'string' && input.accountName.trim()
+    && input.accountName.length <= MAX_ACCOUNT_NAME_LENGTH
+  ) {
+    record.accountId = input.accountId
+    record.accountName = input.accountName.trim()
+  }
+  return record
+}
 
 function normalizedPathKey(value: string): string {
   const resolved = path.resolve(value)
@@ -423,9 +511,9 @@ function parseManifestValue(value: unknown): ConfigBackupManifest {
     reason: input.reason as ConfigBackupReason,
     createdAt: new Date(input.createdAt).toISOString(),
   }
-  return version === 1
-    ? { version, ...common, files: files as ConfigBackupFile[] }
-    : { version, ...common, files: files as ConfigBackupFileV2[] }
+  if (version === 1) return { version, ...common, files: files as ConfigBackupFile[] }
+  const key = parseKeyRecord(input.key)
+  return { version, ...common, files: files as ConfigBackupFileV2[], ...(key ? { key } : {}) }
 }
 
 function readManifest(directory: string): ConfigBackupManifest {
@@ -509,8 +597,12 @@ function validateBackup(
   return validated
 }
 
-function summaryFromManifest(manifest: ConfigBackupManifest): ConfigBackupSummary {
+function summaryFromManifest(
+  manifest: ConfigBackupManifest,
+  context?: ConfigBackupAccountContext | null,
+): ConfigBackupSummary {
   return {
+    ...classifyBackupKey(manifest.version === 2 ? manifest.key : undefined, context),
     id: manifest.id,
     provider: manifest.provider,
     reason: manifest.reason,
@@ -547,7 +639,7 @@ export class ConfigBackupStore {
     this.hooks = options.hooks ?? {}
   }
 
-  list(): ConfigBackupSummary[] {
+  list(context?: ConfigBackupAccountContext | null): ConfigBackupSummary[] {
     const root = backupRoot(this.userDataDirectory)
     if (!fs.existsSync(root)) return []
     ensureSafeDataDirectory(root, '配置备份目录')
@@ -557,7 +649,7 @@ export class ConfigBackupStore {
       .map((entry): ConfigBackupSummary => {
         try {
           const validated = validateBackupManifest(this.userDataDirectory, this.providerRoots, entry.name)
-          return summaryFromManifest(validated.manifest)
+          return summaryFromManifest(validated.manifest, context)
         } catch (error) {
           return {
             id: entry.name,
@@ -575,7 +667,7 @@ export class ConfigBackupStore {
       .sort((left, right) => (right.createdAt ?? '').localeCompare(left.createdAt ?? '') || right.id.localeCompare(left.id))
   }
 
-  inspect(id: string): ConfigBackupPreview {
+  inspect(id: string, context?: ConfigBackupAccountContext | null): ConfigBackupPreview {
     const validated = validateBackup(this.userDataDirectory, this.providerRoots, id)
     const files = validated.manifest.files.map((file): ConfigBackupFile => ({
       targetRelativePath: file.targetRelativePath,
@@ -584,10 +676,15 @@ export class ConfigBackupStore {
       size: file.size,
       sha256: file.sha256,
     }))
-    return { ...summaryFromManifest(validated.manifest), files }
+    return { ...summaryFromManifest(validated.manifest, context), files }
   }
 
-  create(provider: ProviderId, reason: ConfigBackupReason = 'manual', protectId?: string): ConfigBackupSummary {
+  create(
+    provider: ProviderId,
+    reason: ConfigBackupReason = 'manual',
+    protectId?: string,
+    context?: ConfigBackupAccountContext | null,
+  ): ConfigBackupSummary {
     if (!isProviderId(provider)) throw new Error('未知的配置类型')
     if (!BACKUP_REASONS.includes(reason)) throw new Error('未知的备份原因')
     const createdAt = this.now()
@@ -638,6 +735,9 @@ export class ConfigBackupStore {
           sha256: sha256File(targetPath),
         }
       })
+      // 复制完再读一次：备份期间配置被改写，复制到的与开头读到的就可能不是同一把
+      // Key。对不上宁可不记，列表显示成「未记录」，也不标一个错的账号。
+      const copiedKey = inspectProviderConfig(provider, this.providerRoots).apiKey
       const manifest: ConfigBackupManifestV2 = {
         version: 2,
         id,
@@ -645,12 +745,13 @@ export class ConfigBackupStore {
         reason,
         createdAt: createdAt.toISOString(),
         files,
+        ...(copiedKey === inspection.apiKey ? { key: buildBackupKeyRecord(inspection.apiKey, context) } : {}),
       }
       writeDurableJson(path.join(temporaryDirectory, 'manifest.json'), manifest)
       fs.mkdirSync(root, { recursive: true, mode: 0o700 })
       fs.renameSync(temporaryDirectory, finalDirectory)
       this.prune(root, protectId)
-      return summaryFromManifest(manifest)
+      return summaryFromManifest(manifest, context)
     } catch (error) {
       removeIfPresent(temporaryDirectory, true)
       throw error
@@ -693,10 +794,10 @@ export class ConfigBackupStore {
     }
   }
 
-  restore(id: string): ConfigRestoreResult {
+  restore(id: string, context?: ConfigBackupAccountContext | null): ConfigRestoreResult {
     let validated = validateBackup(this.userDataDirectory, this.providerRoots, id)
     const restoreProvider = validated.manifest.provider
-    const preRestore = this.create(restoreProvider, 'pre-restore', id)
+    const preRestore = this.create(restoreProvider, 'pre-restore', id, context)
     validated = validateBackup(this.userDataDirectory, this.providerRoots, id)
     if (validated.manifest.provider !== restoreProvider) {
       throw new Error('备份清单在恢复期间发生变化')
@@ -823,6 +924,7 @@ export class ConfigBackupStore {
         }
       }
       return {
+        provider: restoreProvider,
         restoredBackupId: id,
         preRestoreBackupId: preRestore.id,
         restoredFiles: plans.filter((plan) => plan.desiredExisted).map((plan) => plan.targetPath),

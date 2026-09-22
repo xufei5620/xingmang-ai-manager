@@ -692,6 +692,34 @@ test('backup restore requires preview and confirmation before touching files', a
       (await calls(page)).find((call) => call.name === 'restore-backup').args,
       'backup-1',
     )
+    // 恢复完当场测一次连接，结论留在备份页上。
+    await page
+      .getByTestId('backups-restore-check')
+      .getByText('连接正常，gpt-6-astra 可以直接使用')
+      .waitFor()
+    assert.equal(
+      (await calls(page)).find((call) => call.name === 'check-connection').args,
+      'codex',
+    )
+  } finally {
+    await page.close()
+  }
+})
+
+test('backup list names whose key a backup holds and warns before restoring another account key', async () => {
+  const page = await fixture('page=backups&backupOtherKey')
+  try {
+    await page.getByTestId('backups-key-backup-1').getByText('账号 old-user 的 Key').waitFor()
+    await page.getByRole('button', { name: '预览', exact: true }).click()
+    await page.getByTestId('backup-preview-key').getByText('账号 old-user 的 Key').waitFor()
+    await page
+      .getByRole('button', { name: '恢复这份配置', exact: true })
+      .click()
+    await page.getByTestId('backups-restore-key-warning').waitFor()
+    assert.match(
+      await page.getByTestId('backups-restore-key-warning').innerText(),
+      /用量不会记在当前账号上/,
+    )
   } finally {
     await page.close()
   }
