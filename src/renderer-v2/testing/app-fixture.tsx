@@ -249,7 +249,7 @@ const methods = {
     return value
   },
   getAccountUsage: async () => ({ page: 1, pageSize: 1, total: 0, records: [], stats: { quota: 1_000_000, rpm: 0, tpm: 0 } }),
-  getWindowCapabilities: async () => ({ tray: true, notifications: true }),
+  getWindowCapabilities: async () => ({ tray: true, notifications: true, ...(query.has('lowEnd') ? { lowEndDevice: true } : {}) }),
   getUpdateState: async () => ({ phase: query.has('startupUpdate') || query.has('updateCheckFail') ? 'idle' : 'disabled', currentVersion: '0.1.31', availableVersion: null, releaseName: null, releaseNotesText: null, checkedAt: null, progress: null, error: null, development: true }),
   runStartupUpdate: async () => { throw new Error('本地更新源暂时不可用') },
   // 用户自己点「检查更新」时失败的那一条，与启动时自动跑的那一条分开：前者仍要
