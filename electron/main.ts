@@ -82,6 +82,7 @@ import { createActiveIdentityReader } from './active-identity'
 import { resolveRealmDataRoots } from './realm-data-roots'
 import { createRealmServiceDispatch } from './realm-service-dispatch'
 import { createAccountWorkGate } from './account-work-gate'
+import { createAccountStartupGate } from './account-startup-gate'
 import { createAccountUsageTracker } from './account-usage-tracker'
 import type { RelayBackendClient } from './relay-backend'
 import { ProviderExtensionService } from './provider-extensions'
@@ -1637,8 +1638,29 @@ if (!hasSingleInstanceLock) {
         error instanceof Error ? error.message : '星芒AI Skill 默认安装失败',
       )
     })
-    const accountSessionReady = accounts.restoreActive().then(() => undefined).catch((error) => {
+    const accountRestore = accounts.restoreActive()
+    const accountSessionReady = accountRestore.then(() => undefined).catch((error) => {
       runtimeLog.exception('account', 'session.restore.failed', error)
+    })
+    // 首页那遍扫描不必等窗口和启动画面：和账号恢复一起现在就跑起来，渲染层随后那次读取
+    // 直接接上它（scanSystem 同一时刻只跑一轮）。结果由那次读取照常交给托盘与日志。
+    void systemService.scanSystem().catch(() => undefined)
+    // 启动画面最多为账号恢复等 3 秒，明确断网就不等（yoyo 2026-09-22 拍板）。
+    const accountStartupGate = createAccountStartupGate({
+      settled: accountSessionReady,
+      budgetMs: 3000,
+      offline: !net.isOnline(),
+      restoringAccount: () => accounts.restoringAccount(),
+    })
+    // 预算先到时界面拿到的是「正在恢复」。恢复成功会照常发一次会话变化；没恢复
+    // 成（没有保存的账号、登录已失效、联不上）时账号并没有变化，没人会发，界面
+    // 就会一直停在「正在恢复」——这里补发一次。
+    void accountRestore.catch(() => false).then((restored) => {
+      if (restored || !accountStartupGate.releasedEarly()) return
+      const state = accounts.client.getSessionState()
+      for (const window of BrowserWindow.getAllWindows()) {
+        if (!window.isDestroyed()) window.webContents.send(ipcEventChannels.onAccountSessionChanged, state)
+      }
     })
     let developmentAcceleration: ReturnType<typeof createAccelerationDevelopmentHost> | undefined
     try {
@@ -1745,6 +1767,7 @@ if (!hasSingleInstanceLock) {
       accountService,
       paymentWindow,
       accountSessionReady,
+      accountStartupGate,
       announcementReads: new AnnouncementReadStore(path.join(managerDataDirectory, 'announcement-reads')),
       accountCredentials: accountCredentialStore,
       managedCliKeys: managedCliKeyStore,

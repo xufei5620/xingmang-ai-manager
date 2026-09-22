@@ -44,7 +44,7 @@ import { bootstrapAccountTools, type AccountBootstrapMode, type AccountBootstrap
 import { rewritableKeyProviders } from './features/tools/connection-check'
 import { applyManualSourceMarker, getSourceMarkerStorage } from './features/tools/source-marker'
 import { idleOnlineResync, noteBootstrapOutcome, planOnlineResync } from './features/tools/online-resync'
-import { accountOrigin, accountScope, accountSiteId, accountSupports, siteIdForOrigin, type AccountSiteId } from './account-context'
+import { accountOrigin, accountScope, accountSiteId, accountSupports, sessionRestoring, sessionScope, siteIdForOrigin, type AccountSiteId } from './account-context'
 import { formatAccountReadError } from './features/app/account-read-error'
 import { AccountBalanceContext, useAccountBalanceStore } from './features/app/balance-context'
 import './business.css'
@@ -139,8 +139,14 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   const suppressRestoredBootstrap = useRef(new Set<string>())
   const onlineResync = useRef(idleOnlineResync())
   const [accountBootstrap, setAccountBootstrap] = useState<AccountBootstrapView | null>(null)
-  const scope = accountScope(session)
-  const toolbox = useToolbox(native, boot === 'ready' && (session.authenticated || guide || workspaceEntered), scope)
+  // 会话变化事件来过几次。启动那次读取可能在事件之后才落地（账号恢复超时先放行
+  // 时两者会赛跑），那时手上的会话已经比它新，不能再拿它盖回去。
+  const sessionEvents = useRef(0)
+  const scope = sessionScope(session)
+  // 开机账号恢复超过了启动画面的等待上限：先进首页，按正在恢复的账号显示，
+  // 恢复结束再补读一次配置（见 onAccountSessionChanged）。
+  const restoring = sessionRestoring(session)
+  const toolbox = useToolbox(native, boot === 'ready' && (session.authenticated || restoring || guide || workspaceEntered), scope)
   const accelerationApi = useMemo(() => createAccelerationApi(native), [native])
   const acceleration = useAcceleration(accelerationApi, session.authenticated ? scope : null)
   const networkLocation = useNetworkLocation(native, acceleration.snapshot.state)
@@ -170,10 +176,12 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   }, [])
   useEffect(() => {
     let current = true
+    const eventsAtStart = sessionEvents.current
     setBoot('loading'); setBootError('')
     void app.bootstrap().then((result) => {
       if (!current) return
-      setSettings(result.settings); setPlatform(result.platform); setSession(result.session); setUpdate(result.update)
+      setSettings(result.settings); setPlatform(result.platform); setUpdate(result.update)
+      if (sessionEvents.current === eventsAtStart) setSession(result.session)
       // 预览开关要等主进程说清这是不是打包版才生效，所以放在 bootstrap 里而不是
       // 初始 state；`boot !== 'ready'` 期间只渲染 Splash，用户看不到中间态。
       if (onboardingPreviewEnabled(window.location.search, result.update.development)) setGuide(true)
@@ -361,17 +369,25 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     else { setGuide(false); setPage('home'); setWorkspaceEntered(false) }
   }, [app, balanceStore, scope])
   useEffect(() => native.onAccountSessionChanged?.((next) => {
+    sessionEvents.current++
     accountEpoch.current++
     bootstrapEpoch.current++
     bootstrapInFlight.current = null
     setSession(next); setAccountReadError(null); setUnread(false); setConfigTool(null); setExternalClient(null); setPaymentReturn(undefined)
     balanceStore.setScope(next.authenticated ? accountScope(next) : null)
+    if (restoring) {
+      // 开机恢复结束。先进首页时读到的配置没有账号可比，来源是「待定」：恢复成功
+      // 就当场补读一次（作用域没变，首页不重来）；没恢复成就只是落回未登录，
+      // 首页或欢迎页照配置决定，不按「登录被结束」处理。
+      if (next.authenticated) { void toolbox.refreshConfig().catch(() => undefined); void balanceStore.refresh('foreground') }
+      return
+    }
     if (!next.authenticated) {
       setGuide(false); setPage('home'); setWorkspaceEntered(false)
       if (session.authenticated) toast.show('当前登录已结束，请重新登录。', 'warn')
     }
     else void balanceStore.refresh('foreground')
-  }), [native, balanceStore, session.authenticated, toast])
+  }), [native, balanceStore, restoring, session.authenticated, toast, toolbox.refreshConfig])
   // 本机账号存储被重建：主进程一次启动只发一条，界面照后台检查那套挂在角落，
   // 用户关掉就不再出现。事件不带任何账号内容，这里也不去读它。
   useEffect(() => native.onAccountVaultRecovered?.(() => noteStartupCheck(vaultRecoveredNotice())), [native, noteStartupCheck])
@@ -386,13 +402,14 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   }, [])
   const navigate = useCallback((target: PageId, section?: string) => {
     if (target === 'canvas') { void perform('打开画布', app.openCanvas); return }
+    if ((target === 'account' || target === 'chat') && restoring) { toast.show('正在恢复上次的登录，稍等一下再试。'); return }
     if ((target === 'account' || target === 'chat') && !session.authenticated) { setAuth('login'); return }
     if (target === 'account') setAccountTab(accountTabs.find((entry) => entry.value === section)?.value ?? 'overview')
     if (target === 'tutorial' && section) setTutorialTopic((current) => ({ sequence: (current?.sequence ?? 0) + 1, id: section }))
     if (target === 'chat') setChatScope(scope)
     if (target !== 'home' && target !== 'chat') setVisitedPages((current) => ({ ...current, [target]: scope }))
     setGuide(false); setPage(target)
-  }, [app, perform, session.authenticated, scope])
+  }, [app, perform, restoring, session.authenticated, scope, toast])
   // 设置页的「重看界面导览」：回到首页立刻重播一遍，同时把「还没看完」记进本机，
   // 这样中途关掉软件下次还能接着看。
   const replayTour = useCallback(() => {
@@ -669,7 +686,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   }, [balanceAmount, scope, session.account?.userId])
   // 导览看完或被关掉才记成「已看」，所以上次没看完的用户一回到首页就接着播。
   // 从没有过记录的老用户不在此列：他们不会凭空多出一段导览。
-  const workspaceVisible = boot === 'ready' && !guide && (session.authenticated || workspaceEntered)
+  const workspaceVisible = boot === 'ready' && !guide && (session.authenticated || restoring || workspaceEntered)
   useEffect(() => {
     if (workspaceVisible && page === 'home' && tourReplayPending(scope)) setTourOpen(true)
   }, [workspaceVisible, page, scope])
@@ -688,9 +705,9 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       onDetect={() => toolbox.refresh(true)} onInstall={install} onInstallRuntime={() => installRuntime('node')} onInstallPython={() => installRuntime('python')} onConfigure={async (id) => { openToolConfig(id) }} onLogin={() => setAuth('login')}
       onLaunch={async (id) => id === 'chat' ? true : launch(id)}
       onComplete={(id) => { if (!writeLocalPreference(`xingmang-v2-guide:${scope}`, id)) toast.show('工具已准备好，但引导偏好没有保存在本机。', 'warn'); setWorkspaceEntered(true); rememberTourPending(scope); setTourOpen(true); navigate(id === 'chat' ? 'chat' : 'home') }} onBack={() => setGuide(false)} onHelp={() => setHelp(true)} />
-      : !session.authenticated && !workspaceEntered ? <Welcome onLogin={() => setAuth('login')} onRegister={() => setAuth('register')} onSteps={() => setGuide(true)} onHelp={() => setHelp(true)} onLegal={setLegal}
+      : !session.authenticated && !restoring && !workspaceEntered ? <Welcome onLogin={() => setAuth('login')} onRegister={() => setAuth('register')} onSteps={() => setGuide(true)} onHelp={() => setHelp(true)} onLegal={setLegal}
         reducedMotion={settings?.reducedMotion} supportQrUrl={qr} onReducedMotionChange={(reducedMotion) => void perform('保存外观', async () => setSettings(await app.savePreferences({ version: 2, reducedMotion })))} />
-        : <AppFrame key={scope} activePage={page} account={{ signedIn: session.authenticated, supportsBilling: accountSupports(session, 'supportsBilling'), supportsAnnouncements: session.authenticated, identity: avatarIdentity, displayName: session.account?.username, balance: balanceAmount === null ? undefined : `$${balanceAmount.toFixed(2)}`, balanceLoading: balanceState.loading, balanceUpdatedAt: balanceState.updatedAt, balanceError: balanceState.error }} platform={os}
+        : <AppFrame key={scope} activePage={page} account={{ signedIn: session.authenticated, supportsBilling: accountSupports(session, 'supportsBilling'), supportsAnnouncements: session.authenticated, identity: avatarIdentity, displayName: restoring ? '正在恢复登录' : session.account?.username, email: restoring ? '网络慢时要多等一会儿' : undefined, balance: balanceAmount === null ? undefined : `$${balanceAmount.toFixed(2)}`, balanceLoading: balanceState.loading, balanceUpdatedAt: balanceState.updatedAt, balanceError: balanceState.error }} platform={os}
           tourOpen={tourOpen} onTourClose={() => { rememberTourSeen(scope); setTourOpen(false) }}
           environment={toolbox.snapshot?.system.runtime.node.version ? `Node ${toolbox.snapshot.system.runtime.node.version}` : '命令行环境可选'} version={update?.currentVersion}
           unread={unread} installedCount={toolbox.snapshot ? presentTools(toolbox.snapshot).filter((tool) => tool.status.installed).length + toolbox.externalClients.filter((tool) => tool.installed).length : undefined}

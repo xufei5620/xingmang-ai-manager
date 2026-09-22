@@ -271,7 +271,15 @@ export interface AccountContextMetadata {
   realmId?: 'xm-account' | 'api-account'
   capabilities?: import('./relay-backend').RelayBackendCapabilities
 }
-export type AccountSessionState = NewApiSessionState & AccountContextMetadata
+/**
+ * 开机账号恢复超过启动画面的等待上限时，会话先按「未登录、正在恢复」作答。
+ * `account` 是正在恢复的那个账号（本机账号库读出来之前为 null），界面据此把
+ * 首页先画在它名下，恢复结束后不用整页重来。恢复结束后的会话不带这个字段。
+ */
+export interface AccountRestoringState {
+  account: { siteId: AccountSiteId; userId: number } | null
+}
+export type AccountSessionState = NewApiSessionState & AccountContextMetadata & { restoring?: AccountRestoringState }
 export type AccountBalance = NewApiBalance
 export interface AccountUsageChangedEvent {
   scope: string

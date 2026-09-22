@@ -432,6 +432,38 @@ describe('renderer-v2 home missing runtime guidance on macOS', () => {
       expect(markup).not.toContain('data-testid="tool-claude-rewrite-key"')
     })
   })
+
+  // 开机账号恢复超过启动画面的等待上限时先进首页，这时读到的配置没有账号可比。
+  // 恢复完补读之前，一行都不许说「配置被改过」或「已有第三方配置」。
+  describe('while the account is still being restored at startup', () => {
+    function pendingSnapshot(ownership: 'unknown' | 'changed', extra: Record<string, unknown> = {}): ToolboxSnapshot {
+      const base = snapshot({ claude: cliStatus, codex: cliStatus, grok: cliStatus, gemini: cliStatus })
+      const pending = { ...providerConfig, configurationOwnership: ownership, ...extra }
+      return {
+        ...base,
+        config: { ownershipPending: true, providers: { claude: pending, codex: pending, grok: pending, gemini: { ...pending, authType: 'gemini-api-key' } } },
+      } as unknown as ToolboxSnapshot
+    }
+
+    it.each(['unknown', 'changed'] as const)('shows a relay-matching %s configuration as ready, not as edited or third-party', (ownership) => {
+      const markup = render({}, undefined, { snapshot: pendingSnapshot(ownership), onRewriteKey: () => undefined, onKeepConfig: () => undefined })
+      expect(markup).not.toContain('配置被改过')
+      expect(markup).not.toContain('已有第三方配置')
+      expect(markup).not.toContain('rewrite-key')
+      expect(markup).toContain('已配好')
+    })
+
+    it('still reports a configuration pointing somewhere else, which no account could claim', () => {
+      const markup = render({}, undefined, { snapshot: pendingSnapshot('unknown', { matchesRelay: false, actualBaseUrl: 'https://elsewhere.example/v1' }) })
+      expect(markup).toContain('已有第三方配置')
+    })
+
+    it('goes back to the real verdict once the re-read config no longer carries the pending mark', () => {
+      const base = pendingSnapshot('changed')
+      const settled = { ...base, config: { ...base.config, ownershipPending: undefined } } as ToolboxSnapshot
+      expect(render({}, undefined, { snapshot: settled })).toContain('配置被改过')
+    })
+  })
 })
 
 describe('renderer-v2 home manual desktop install on macOS', () => {

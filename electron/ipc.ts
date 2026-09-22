@@ -117,6 +117,7 @@ import type { RuntimeLogStore } from './runtime-log'
 import { createExternalShellLauncher, type ExternalShellLauncher } from './system-shell'
 import { platformCapabilitiesFor } from './platform-capabilities'
 import { validatePaymentForm, validatePaymentQrCode, validatePaymentUrl, type PaymentWindowController } from './payment-window'
+import type { AccountStartupGate } from './account-startup-gate'
 
 export type AppWindowMode = 'onboarding' | 'dashboard'
 
@@ -161,6 +162,11 @@ export interface IpcRegistrationOptions {
   // any host that never attempts a restore see the pre-existing synchronous
   // behavior unchanged.
   accountSessionReady?: Promise<void>
+  /**
+   * 启动画面那两条读取（account:get-session、config:get）等账号恢复的上限。不传
+   * = 照旧等 accountSessionReady 结束。见 account-startup-gate.ts。
+   */
+  accountStartupGate?: AccountStartupGate
   savedAccounts?: Pick<SavedAccountsStore, 'list' | 'getSession' | 'remove'>
   urlPolicy: ApplicationUrlPolicy
   previewOnboarding: boolean
@@ -1402,6 +1408,7 @@ function ipcSuccessLevel(channel: string): 'debug' | 'info' {
 
 export function registerIpcHandlers(options: IpcRegistrationOptions): () => void {
   const registeredChannels: string[] = []
+  const startupGate = options.accountStartupGate
   const externalShell = options.externalShell ?? createExternalShellLauncher()
   const registerTrustedHandler = (channel: string, handler: TrustedIpcHandler): void => {
     registeredChannels.push(channel)
@@ -1458,7 +1465,14 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
           ? options.accountWork.run(() => handler(event, ...args), { checkRevision: channel !== 'account:change-password' && channel !== 'account:revoke-login-session' }) : handler(event, ...args)
         // Bootstrap requests config and session concurrently. The first
         // config read must not turn an in-progress restore into a failed boot.
-        const result = scoped && options.realmAccounts ? accountSessionReady.then(invoke) : invoke()
+        // Only the bootstrap config read may stop waiting at the startup
+        // budget; it then runs outside the account work gate (which refuses
+        // work mid-restore) and reports ownership as pending.
+        const result = scoped && options.realmAccounts
+          ? channel === 'config:get' && startupGate
+            ? startupGate.released.then(() => startupGate.pending() ? handler(event, ...args) : accountSessionReady.then(invoke))
+            : accountSessionReady.then(invoke)
+          : invoke()
         if (isPromiseLike(result)) {
           return Promise.resolve(result).then((value) => {
             recordSuccess(value)
@@ -1568,6 +1582,9 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     service.inspectCodexReadiness(options.previewOnboarding)
   ))
   registerTrustedHandler('config:get', () => {
+    // 账号还在恢复：此时读到的会话是未登录，来源判定没有账号可比，一律只会是
+    // unknown。标出来让界面知道这是「待定」而不是「来源不明」，恢复完再补读。
+    if (startupGate?.pending()) return { ...service.getConfig(options.previewOnboarding), ownershipPending: true }
     const session = accountService.getSessionState()
     const userId = session.account?.userId
     if (options.previewOnboarding || !session.authenticated || !userId || !options.managedCliKeys) {
@@ -2211,8 +2228,10 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     // Guaranteed not to reject (see the option's own doc comment), but a
     // stray .catch() here costs nothing and means a future regression there
     // degrades to "restore didn't happen" instead of an unhandled rejection.
-    await accountSessionReady.catch(() => undefined)
-    return accountService.getSessionState()
+    await (startupGate?.released ?? accountSessionReady).catch(() => undefined)
+    const state = accountService.getSessionState()
+    if (!startupGate?.pending()) return state
+    return { ...state, restoring: { account: startupGate.restoringAccount() } }
   })
   const accountOrigin = () => new URL(resolveRelaySite(service.readStoredConfig().relaySiteId).accountBaseUrl!).origin
   registerTrustedHandler('account:list-saved', async () => {

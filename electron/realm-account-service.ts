@@ -47,6 +47,8 @@ export interface RealmAccountService {
   switchSavedAccount(id: string): Promise<RealmAccountSessionState>
   removeSavedAccount(id: string): Promise<void>
   restoreActive(): Promise<boolean>
+  /** 开机恢复进行中时，正在恢复的那个账号；本机账号库读出来之前与恢复结束之后都是 null。 */
+  restoringAccount(): { siteId: RealmAccountSiteId; userId: number } | null
   migrateLegacy(): Promise<void>
   latestLoginHint(): Promise<RealmLoginHintSummary | null>
 }
@@ -66,6 +68,7 @@ export function createRealmAccountService(options: RealmAccountServiceOptions): 
   let notifyPending = false
   let prepareDeadline = 0
   let migration: Promise<void> | undefined
+  let restoring: { siteId: RealmAccountSiteId; userId: number } | null = null
   const prepareTimeoutMs = options.prepareTimeoutMs ?? 30000
   if (!Number.isSafeInteger(prepareTimeoutMs) || prepareTimeoutMs < 1 || prepareTimeoutMs > 120000) throw new RealmAccountError('INVALID')
   const publicClients = new Map<RealmAccountSiteId, RelayBackendClient>()
@@ -273,11 +276,15 @@ export function createRealmAccountService(options: RealmAccountServiceOptions): 
     return transition(async () => {
       const saved = await options.vault.active()
       if (!saved) return false
-      try { if (await restore(saved)) return true } catch (error) {
-        if (!(error instanceof RealmAccountError) || error.code !== 'UNAUTHORIZED') throw error
-      }
-      await options.vault.signOut(saved)
-      return false
+      const userId = Number(saved.userId)
+      restoring = Number.isSafeInteger(userId) && userId > 0 ? { siteId: site(accountRealms[saved.realmId].siteId), userId } : null
+      try {
+        try { if (await restore(saved)) return true } catch (error) {
+          if (!(error instanceof RealmAccountError) || error.code !== 'UNAUTHORIZED') throw error
+        }
+        await options.vault.signOut(saved)
+        return false
+      } finally { restoring = null }
     })
   }
   async function switchSavedAccount(id: string): Promise<RealmAccountSessionState> {
@@ -350,5 +357,6 @@ export function createRealmAccountService(options: RealmAccountServiceOptions): 
   })
   return Object.freeze({ client, getSiteId: () => active.siteId, assertReady, getPublicClient, login, logout, listSavedAccounts,
     switchSavedAccount, removeSavedAccount, restoreActive, migrateLegacy,
+    restoringAccount: () => restoring ? { ...restoring } : null,
     latestLoginHint: async () => { await migrateLegacy(); return options.vault.latestLoginHint() } })
 }

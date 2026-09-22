@@ -1346,6 +1346,72 @@ describe('registerIpcHandlers', () => {
     await expect(result).resolves.toMatchObject({ providers: {} })
   })
 
+  describe('bootstrap reads under the startup account gate', () => {
+    function startupFixture() {
+      let finishRestore!: () => void
+      const restored = new Promise<void>((resolve) => { finishRestore = resolve })
+      let releaseSplash!: () => void
+      const released = new Promise<void>((resolve) => { releaseSplash = resolve })
+      let settled = false
+      void restored.then(() => { settled = true })
+      const accountStartupGate = {
+        released: Promise.race([released, restored]),
+        pending: () => !settled,
+        releasedEarly: () => true,
+        restoringAccount: () => settled ? null : { siteId: 'solov-api' as const, userId: 42 },
+      }
+      let busy = true
+      const accountWork = createAccountWorkGate({ revision: () => 0, assertReady: () => { if (busy) throw new Error('switching') } })
+      const service = serviceStub()
+      const accountService = accountServiceStub()
+      vi.mocked(accountService.getSessionState).mockReturnValue({ authenticated: false, account: null })
+      register(service, undefined, undefined, accountService, undefined, undefined,
+        { realmAccounts: {} as never, accountWork, accountSessionReady: restored }, { accountStartupGate })
+      return {
+        service, accountService, releaseSplash,
+        finishRestore: () => { busy = false; finishRestore() },
+      }
+    }
+
+    it('answers the session as restoring once the splash budget runs out, naming the account being restored', async () => {
+      const f = startupFixture()
+      const pending = electronMocks.handlers.get('account:get-session')!(trustedEvent())
+      await Promise.resolve()
+      f.releaseSplash()
+      await expect(pending).resolves.toEqual({ authenticated: false, account: null, restoring: { account: { siteId: 'solov-api', userId: 42 } } })
+    })
+
+    it('reads config outside the busy account gate and marks its ownership as pending instead of judging it', async () => {
+      const f = startupFixture()
+      const pending = electronMocks.handlers.get('config:get')!(trustedEvent())
+      await Promise.resolve()
+      expect(f.service.getConfig).not.toHaveBeenCalled()
+      f.releaseSplash()
+      await expect(pending).resolves.toMatchObject({ ownershipPending: true })
+      // 没有账号可比：不带缓存 Key 读，来源判定只可能落到 unknown，不会是「被改过」。
+      expect(f.service.getConfig).toHaveBeenCalledWith(false)
+    })
+
+    it('keeps waiting for the restore when it settles before the budget, with no pending mark', async () => {
+      const f = startupFixture()
+      const session = electronMocks.handlers.get('account:get-session')!(trustedEvent())
+      const config = electronMocks.handlers.get('config:get')!(trustedEvent())
+      f.finishRestore()
+      await expect(session).resolves.toEqual({ authenticated: false, account: null })
+      const read = await config
+      expect(read).not.toHaveProperty('ownershipPending')
+    })
+
+    it('reads the settled state normally after the restore finishes', async () => {
+      const f = startupFixture()
+      f.releaseSplash()
+      f.finishRestore()
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      await expect(electronMocks.handlers.get('account:get-session')!(trustedEvent())).resolves.toEqual({ authenticated: false, account: null })
+      await expect(electronMocks.handlers.get('config:get')!(trustedEvent())).resolves.not.toHaveProperty('ownershipPending')
+    })
+  })
+
   it('leaves a platform-free login undecided for main-process automatic discovery', async () => {
     const login = vi.fn(async () => ({ account: { userId: 7 }, siteId: 'solov-api' }))
     register(undefined, undefined, undefined, undefined, undefined, undefined, { realmAccounts: { login } as never })
