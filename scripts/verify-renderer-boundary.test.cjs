@@ -24,6 +24,7 @@ const valueImportable = [
   'electron/ai-chat-protocol',
   'electron/catalog',
   'electron/cli-model-defaults',
+  'electron/git-runtime',
   'electron/ipc-contract',
   'electron/network-failure',
   'electron/relay-sites',

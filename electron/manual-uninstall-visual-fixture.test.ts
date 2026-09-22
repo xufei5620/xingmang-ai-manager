@@ -38,6 +38,7 @@ const snapshot = {
     node: missingTool(),
     npm: missingTool(),
     python: missingTool(),
+    git: missingTool(),
   },
   clis: {
     codex: missingCli(),

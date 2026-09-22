@@ -2179,7 +2179,7 @@ export const tutorialTopics = [
       {
         title: '准备工具',
         detail:
-          '只安装所选工具需要的运行环境。桌面端和聊天不需要先安装所有命令行工具。',
+          '只安装所选工具需要的运行环境。桌面端和聊天不需要先安装所有命令行工具。Windows 上用 Claude Code 时建议再装一个 Git：没有它，Claude Code 会退回 PowerShell，技能和插件里写的命令可能失败，第一次装官方插件市场也需要它。检查页会单独列出 Git，缺了会给下载地址。',
         action: '查看安装状态',
         page: 'maintenance',
       },

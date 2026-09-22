@@ -271,7 +271,7 @@ export function EmptyStatus(): SystemSnapshot {
       checkedAt: '',
       error: null,
     },
-    runtime: { node: missing, npm: missing, python: missing },
+    runtime: { node: missing, npm: missing, python: missing, git: missing },
     clis: { claude: missingCli, codex: missingCli, grok: missingCli, gemini: missingCli },
     desktopApps: {
       codex: {

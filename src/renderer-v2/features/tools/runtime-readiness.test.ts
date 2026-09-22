@@ -9,6 +9,7 @@ function runtime(node: Partial<SystemSnapshot['runtime']['node']>, npm: Partial<
     node: { ...base, version: 'v22.0.0', tooOld: false, versionStatus: 'supported', ...node },
     npm: { ...base, version: '10.0.0', ...npm },
     python: { ...base, version: '3.12.0' },
+    git: { ...base, version: '2.43.0' },
   }
 }
 
