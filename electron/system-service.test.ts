@@ -714,15 +714,22 @@ describe('createSystemService', () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-offline-latest-budget-'))
     temporaryDirectories.push(directory)
     // 网络位置探测立刻失败（离线），最新版探测永不返回（半开网络里就是这样）。
-    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+    // 挂住的那几次请求留着句柄，断言跑完后由测试自己打掉，好让探测在本用例内走完。
+    const hangingProbeRequests: Array<() => void> = []
+    const probeFetch = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input)
       if (!url.includes('registry') && !url.includes('npmmirror') && !url.includes('x.ai')) {
         return Promise.reject(new Error('offline'))
       }
       return new Promise((_resolve, reject) => {
-        init?.signal?.addEventListener('abort', () => reject(new Error('aborted')))
+        function failRequest(): void {
+          reject(new Error('aborted'))
+        }
+        hangingProbeRequests.push(failRequest)
+        init?.signal?.addEventListener('abort', failRequest)
       })
-    }))
+    })
+    vi.stubGlobal('fetch', probeFetch)
     const service = createSystemService(
       new AppSettingsStore(path.join(directory, 'settings.json'), directory),
       {
@@ -759,6 +766,15 @@ describe('createSystemService', () => {
     for (const provider of ['claude', 'codex', 'gemini'] as const) {
       expect(snapshot.clis[provider].version).toBe('1.2.3')
     }
+
+    // 预算到点后这批探测的结果已经没人要了，它们不许再往备用源发请求：那次请求
+    // 会在本用例结束之后才出网，落进后面用例的 fetch 桩里（#326 的 Windows 分片
+    // 就中过一次，三条 `/latest` 串进了一条断言「不该发请求」的安装用例）。
+    const requestsBeforeUnblocking = probeFetch.mock.calls.length
+    for (const failRequest of hangingProbeRequests.splice(0)) failRequest()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(probeFetch.mock.calls.length).toBe(requestsBeforeUnblocking)
   }, 20_000)
 
   // 联网时不许有预算：网络位置探测拿到了结果，就照旧等最新版探测出结果，
@@ -3581,6 +3597,22 @@ describe('latest version probe budget when the machine looks offline', () => {
 
     // 预算到点只是不再等：那个 Promise 留在后台自己走完，这里不重新发起。
     expect(started).toBe(1)
+  })
+
+  it('aborts the batch controller when the budget runs out and leaves it alone otherwise', async () => {
+    const unchecked = [buildUncheckedLatestVersion('claude', true)]
+    const missed = new AbortController()
+
+    await settleLatestVersionProbes([hangingProbe()], unchecked, 30, missed)
+
+    expect(missed.signal.aborted).toBe(true)
+
+    const madeIt = new AbortController()
+    await settleLatestVersionProbes([Promise.resolve(checkedProbe('2.1.277'))], unchecked, 1_000, madeIt)
+    await new Promise((resolve) => setTimeout(resolve, 60))
+
+    // 整批在预算内回齐时定时器已被清掉，探测那侧不该收到「别再发了」的信号。
+    expect(madeIt.signal.aborted).toBe(false)
   })
 
   it('keeps a rejected probe readable instead of losing the reason', async () => {
