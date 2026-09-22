@@ -552,6 +552,68 @@ describe('native CLI configuration files', () => {
     expect(merged.custom_official).toEqual({ enabled: true })
   })
 
+  it('writes no Codex settings that the recommended version no longer recognizes', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const configPath = codexConfigSnapshotPaths(roots).active
+
+    saveProviderConfig('codex', 'sk-relay', testModels.codex, 'reset', roots, {}, providerBaseUrls)
+
+    const written = TOML.parse(fs.readFileSync(configPath, 'utf8'))
+    expect(written.disable_response_storage).toBeUndefined()
+    expect(written.network_access).toBeUndefined()
+    expect(written.windows_wsl_setup_acknowledged).toBeUndefined()
+  })
+
+  it('clears the Codex settings it used to write once they stop being recognized', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const configPath = codexConfigSnapshotPaths(roots).active
+    fs.mkdirSync(path.dirname(configPath), { recursive: true })
+    fs.writeFileSync(configPath, [
+      'disable_response_storage = true',
+      'network_access = "enabled"',
+      'windows_wsl_setup_acknowledged = true',
+      '',
+      '[custom_official]',
+      'enabled = true',
+      '',
+    ].join('\n'), 'utf8')
+
+    saveProviderConfig('codex', 'sk-relay', testModels.codex, 'merge', roots, {}, providerBaseUrls)
+
+    const merged = TOML.parse(fs.readFileSync(configPath, 'utf8'))
+    expect(merged.disable_response_storage).toBeUndefined()
+    expect(merged.network_access).toBeUndefined()
+    expect(merged.windows_wsl_setup_acknowledged).toBeUndefined()
+    expect(merged.custom_official).toEqual({ enabled: true })
+  })
+
+  it('keeps values a user changed away from the ones it used to write', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const configPath = codexConfigSnapshotPaths(roots).active
+    fs.mkdirSync(path.dirname(configPath), { recursive: true })
+    fs.writeFileSync(configPath, [
+      'disable_response_storage = false',
+      'network_access = "disabled"',
+      'windows_wsl_setup_acknowledged = false',
+      '',
+      // 新版真正认的那一份在嵌套表里,不能跟着顶层旧键一起清掉。
+      '[sandbox_workspace_write]',
+      'network_access = true',
+      '',
+    ].join('\n'), 'utf8')
+
+    saveProviderConfig('codex', 'sk-relay', testModels.codex, 'merge', roots, {}, providerBaseUrls)
+
+    const merged = TOML.parse(fs.readFileSync(configPath, 'utf8'))
+    expect(merged.disable_response_storage).toBe(false)
+    expect(merged.network_access).toBe('disabled')
+    expect(merged.windows_wsl_setup_acknowledged).toBe(false)
+    expect(asRecord(merged.sandbox_workspace_write)?.network_access).toBe(true)
+  })
+
   it('turns off the Grok launch update check when merging over an existing config', () => {
     const home = temporaryHome()
     const roots = providerRoots(home)
@@ -1197,6 +1259,8 @@ describe('switching a provider back to the official subscription account', () =>
     expect(fs.readFileSync(configs.chatgpt, 'utf8')).toContain('gpt-5.3-codex-spark')
     expect(fs.readFileSync(configs.chatgpt, 'utf8')).toContain('E:\\\\work\\\\demo')
     expect(fs.readFileSync(configs.chatgpt, 'utf8')).toContain('https://api.openai.com/v1')
+    // 用户自己写的键留在他自己的官方配置快照里,切回去还在。
+    expect(fs.readFileSync(configs.chatgpt, 'utf8')).toContain('windows_wsl_setup_acknowledged')
     expect(classifyCodexConfigProfile(liveAfterRelay, providerBaseUrls.codex)).toBe('relay')
 
     switchProviderToOfficialAccount('codex', roots, {}, providerBaseUrls)
@@ -1369,7 +1433,28 @@ describe('switching a provider back to the official subscription account', () =>
     expect(parsed?.model).toBeUndefined()
     expect(parsed?.review_model).toBeUndefined()
     // 与中转无关的设置原样保留。
-    expect(parsed?.disable_response_storage).toBe(true)
+    expect(parsed?.approval_policy).toBe('on-request')
+    expect(parsed?.sandbox_mode).toBe('workspace-write')
+  })
+
+  it('clears the settings it used to write when switching back to the official account', () => {
+    const home = temporaryHome()
+    seedCodexRelayConfigWithChatGptLogin(home)
+    const [configPath] = providerConfigPaths('codex', providerRoots(home))
+    // 老版本装出来的中转配置里还留着这三个键。
+    fs.appendFileSync(configPath, [
+      'disable_response_storage = true',
+      'network_access = "enabled"',
+      'windows_wsl_setup_acknowledged = true',
+      '',
+    ].join('\n'), 'utf8')
+
+    switchProviderToOfficialAccount('codex', providerRoots(home), {}, providerBaseUrls)
+
+    const parsed = asRecord(TOML.parse(fs.readFileSync(configPath, 'utf8')))
+    expect(parsed?.disable_response_storage).toBeUndefined()
+    expect(parsed?.network_access).toBeUndefined()
+    expect(parsed?.windows_wsl_setup_acknowledged).toBeUndefined()
   })
 
   it('leaves a user-authored provider table alone while removing only the relay one', () => {

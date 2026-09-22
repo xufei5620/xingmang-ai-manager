@@ -86,6 +86,7 @@ import {
 import type { RelayBackendClient } from './relay-backend'
 import { normalizeRealmLoginIdentifier } from './realm-account-vault'
 import { resolveAccountKeyOptions } from './account-key-options'
+import { loadManagedCliGroups } from './managed-cli-groups'
 import type { AiAssetStore } from './ai-asset-store'
 import type { AiChatService } from './ai-chat-service'
 import type { AiImageService } from './ai-image-service'
@@ -2506,11 +2507,20 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   })
 
   registerTrustedHandler('account:get-key-options', (_event, provider: unknown) => {
+    // 入参校验必须同步抛出，所以这里不把整个 handler 改成 async。
     if (!isProviderId(provider)) throw new Error('未知的 CLI 类型')
-    return resolveAccountKeyOptions({ provider, systemService: service, accountService,
-      managedCliKeys: options.managedCliKeys,
-      chatKeyStore: options.chatKeyStore?.read ? { read: (userId) => options.chatKeyStore!.read!(userId) } : undefined,
-      previewOnboarding: options.previewOnboarding })
+    // 分组在进入 resolveAccountKeyOptions 之前读好：那里从捕获账号快照到第一次
+    // 落盘读取必须保持同步，中间插一次网络等待会把账号切换的判定窗口拉宽。
+    return (async () => {
+      const managedCliGroups = accountService.getSessionState().authenticated
+        ? await loadManagedCliGroups(accountService)
+        : null
+      return resolveAccountKeyOptions({ provider, systemService: service, accountService,
+        managedCliKeys: options.managedCliKeys,
+        chatKeyStore: options.chatKeyStore?.read ? { read: (userId) => options.chatKeyStore!.read!(userId) } : undefined,
+        managedCliGroups,
+        previewOnboarding: options.previewOnboarding })
+    })()
   })
 
   return () => {

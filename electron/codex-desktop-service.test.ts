@@ -16,6 +16,8 @@ import {
   buildCodexDesktopManifestSources,
   buildCodexDesktopPreviousManifestSources,
   buildCodexDesktopPackageSources,
+  buildCodexDesktopCombinedProbeFailure,
+  buildCodexDesktopCombinedProbeScript,
   buildCodexDesktopPackageProbeScript,
   buildCodexDesktopProcessProbeScript,
   buildCodexDesktopWorkspaceLaunchPlan,
@@ -32,12 +34,17 @@ import {
   fetchCodexDesktopMirrorRelease,
   fetchCodexDesktopPreviousManifestCandidates,
   inspectCodexDesktopPackageFile,
+  parseCodexDesktopCombinedProbeJson,
   parseCodexDesktopWindowsLaunchContext,
   validateCodexDesktopResourceUrl,
   type CodexDesktopManifestCandidate,
   type CodexDesktopServiceOptions,
   type CodexDesktopWindowsProbes,
 } from './codex-desktop-service'
+
+// Windows CI 上六个作业共用一台机器，Defender 在场时 PowerShell 冷启一次可以
+// 超过一分钟；起作用的是 execFile 这一层的预算，不是 vitest 的用例超时。
+const powerShellStartupTimeoutMs = Number(process.env.XINGMANG_POWERSHELL_TEST_TIMEOUT_MS ?? 90_000)
 
 const temporaryDirectories: string[] = []
 
@@ -1070,6 +1077,21 @@ describe('Codex Desktop Appx probe script', () => {
     expect(script).toContain('ExecutablePath = $path')
   })
 
+  it('keeps the three merged segments byte-identical to the standalone probe scripts', () => {
+    const combined = buildCodexDesktopCombinedProbeScript()
+
+    expect(combined).toContain("Get-StartApps | Where-Object { $_.AppID -like 'OpenAI.Codex*!App' }")
+    expect(combined).toContain('Get-CimInstance Win32_Process')
+    expect(combined).toContain("Get-AppxPackage -Name 'OpenAI.Codex*' -ErrorAction Stop")
+    expect(combined).not.toContain("Get-AppxPackage -AllUsers")
+    // 每段各自 try/catch，任一段失败只写自己的 error 字段
+    expect(combined).toContain('catch { $startAppsError = $_.Exception.Message }')
+    expect(combined).toContain('catch { $processesError = $_.Exception.Message }')
+    expect(combined).toContain('catch { $packageError = $_.Exception.Message }')
+    // 嵌套一层后默认的 Depth 2 会把包条目压成字符串
+    expect(combined).toContain('ConvertTo-Json -Compress -Depth 6')
+  })
+
   it.runIf(process.platform === 'win32')('executes the process probe on Windows and emits bounded JSON', () => {
     const output = execFileSync(windowsPowerShellExecutable(), [
       '-NoLogo',
@@ -1079,6 +1101,184 @@ describe('Codex Desktop Appx probe script', () => {
       buildCodexDesktopProcessProbeScript(),
     ], { encoding: 'utf8', windowsHide: true, maxBuffer: 1024 * 1024 })
     if (output.trim()) expect(() => JSON.parse(output)).not.toThrow()
+  })
+
+  it.runIf(process.platform === 'win32')('executes the merged probe on Windows and emits the three segments', () => {
+    const output = execFileSync(windowsPowerShellExecutable(), [
+      '-NoLogo',
+      '-NoProfile',
+      '-NonInteractive',
+      '-Command',
+      buildCodexDesktopCombinedProbeScript(),
+    ], {
+      encoding: 'utf8',
+      windowsHide: true,
+      maxBuffer: 1024 * 1024,
+      timeout: powerShellStartupTimeoutMs,
+    })
+
+    const parsed = JSON.parse(output.trim()) as Record<string, unknown>
+    expect(Object.prototype.hasOwnProperty.call(parsed, 'startApps')).toBe(true)
+    expect(Object.prototype.hasOwnProperty.call(parsed, 'processes')).toBe(true)
+    expect(parsed.package).toBeTruthy()
+    // Appx 段在任何账户下都必须给出结论：要么有包、要么确认没有、要么报错
+    const probe = parseCodexDesktopCombinedProbeJson(output)
+    expect(
+      probe.packageProbe.value !== null
+      || probe.packageProbe.confirmedAbsent === true
+      || probe.packageProbe.error !== null,
+    ).toBe(true)
+  }, 180_000)
+})
+
+describe('parseCodexDesktopCombinedProbeJson', () => {
+  const startApp = { Name: 'ChatGPT', AppID: 'OpenAI.Codex_stable!App' }
+  const packageEntry = {
+    Name: 'OpenAI.Codex',
+    Version: '26.721.4979.0',
+    PackageFullName: 'OpenAI.Codex_26.721.4979.0_x64__abc123',
+    PackageFamilyName: 'OpenAI.Codex_abc123',
+    InstallLocation: 'C:\\Program Files\\WindowsApps\\OpenAI.Codex_26.721.4979.0_x64__abc123',
+  }
+  const processEntry = {
+    ProcessId: 4242,
+    ParentProcessId: 1,
+    Name: 'ChatGPT.exe',
+    ExecutablePath: 'C:\\Program Files\\WindowsApps\\OpenAI.Codex_26.721.4979.0_x64__abc123\\ChatGPT.exe',
+  }
+
+  function combinedOutput(overrides: Record<string, unknown> = {}): string {
+    return JSON.stringify({
+      startApps: [startApp],
+      startAppsError: null,
+      processes: [processEntry],
+      processesError: null,
+      package: {
+        packages: [packageEntry],
+        source: 'current-user',
+        confirmedAbsent: false,
+        error: null,
+      },
+      packageError: null,
+      ...overrides,
+    })
+  }
+
+  it('splits a complete result back into the three original shapes', () => {
+    const probe = parseCodexDesktopCombinedProbeJson(combinedOutput())
+
+    expect(probe.match).toEqual({ name: 'ChatGPT', appId: 'OpenAI.Codex_stable!App' })
+    expect(probe.processes).toEqual([{
+      processId: 4242,
+      parentProcessId: 1,
+      name: 'ChatGPT.exe',
+      executablePath: processEntry.ExecutablePath,
+    }])
+    expect(probe.packageProbe).toMatchObject({
+      value: { name: 'OpenAI.Codex', version: '26.721.4979.0' },
+      error: null,
+      source: 'current-user',
+      confirmedAbsent: false,
+    })
+  })
+
+  it('reads a confirmed absence as a conclusive, error-free package probe', () => {
+    const probe = parseCodexDesktopCombinedProbeJson(combinedOutput({
+      startApps: [],
+      processes: [],
+      package: { packages: [], source: null, confirmedAbsent: true, error: null },
+    }))
+
+    expect(probe.match).toBeNull()
+    expect(probe.processes).toEqual([])
+    expect(probe.packageProbe).toMatchObject({ value: null, error: null, confirmedAbsent: true })
+  })
+
+  it('isolates a failed process segment without losing the other two', () => {
+    const probe = parseCodexDesktopCombinedProbeJson(combinedOutput({
+      processes: null,
+      processesError: 'WMI 查询失败',
+    }))
+
+    expect(probe.processes).toEqual([])
+    expect(probe.match).toEqual({ name: 'ChatGPT', appId: 'OpenAI.Codex_stable!App' })
+    expect(probe.packageProbe.value?.version).toBe('26.721.4979.0')
+  })
+
+  it('isolates a failed Appx segment and keeps its message on the package probe', () => {
+    const probe = parseCodexDesktopCombinedProbeJson(combinedOutput({
+      package: null,
+      packageError: 'Get-AppxPackage 被拒绝',
+    }))
+
+    expect(probe.packageProbe).toEqual({
+      value: null,
+      error: 'Get-AppxPackage 被拒绝',
+      source: null,
+      confirmedAbsent: false,
+    })
+    expect(probe.match).toEqual({ name: 'ChatGPT', appId: 'OpenAI.Codex_stable!App' })
+    expect(probe.processes).toHaveLength(1)
+  })
+
+  it('isolates a failed start-menu segment', () => {
+    const probe = parseCodexDesktopCombinedProbeJson(combinedOutput({
+      startApps: null,
+      startAppsError: 'Get-StartApps 不可用',
+    }))
+
+    expect(probe.match).toBeNull()
+    expect(probe.processes).toHaveLength(1)
+    expect(probe.packageProbe.value?.version).toBe('26.721.4979.0')
+  })
+
+  it('never reports a confirmed absence from output it could not parse', () => {
+    const invalid = parseCodexDesktopCombinedProbeJson('not-json')
+    expect(invalid).toEqual({
+      match: null,
+      processes: [],
+      packageProbe: {
+        value: null,
+        error: 'Windows Appx 探测返回数据格式无效',
+        source: null,
+        confirmedAbsent: false,
+      },
+    })
+
+    const empty = parseCodexDesktopCombinedProbeJson('   ')
+    expect(empty.packageProbe).toEqual({
+      value: null,
+      error: 'Windows Appx 探测没有返回结果',
+      source: null,
+      confirmedAbsent: false,
+    })
+    expect(empty.processes).toEqual([])
+  })
+
+  it('treats a whole-script failure as inconclusive, not as "not installed"', () => {
+    const timedOut = buildCodexDesktopCombinedProbeFailure(new Error('spawn powershell.exe ETIMEDOUT'))
+
+    expect(timedOut).toEqual({
+      match: null,
+      processes: [],
+      packageProbe: {
+        value: null,
+        error: 'spawn powershell.exe ETIMEDOUT',
+        source: null,
+        confirmedAbsent: false,
+      },
+    })
+    expect(buildCodexDesktopCombinedProbeFailure(null).packageProbe.error)
+      .toBe('无法读取 Windows Appx 包信息')
+    // detectionFailed 必须亮起来，界面才不会把「没看成」显示成「没装」
+    const probes = buildCodexDesktopWindowsProbes(
+      { status: 'fulfilled', value: timedOut.match },
+      { status: 'fulfilled', value: timedOut.processes },
+      { status: 'fulfilled', value: timedOut.packageProbe },
+      { status: 'fulfilled', value: { version: null, checkedAt: '2026-09-22T00:00:00.000Z', error: null } },
+    )
+    expect(probes.detectionFailed).toBe(true)
+    expect(probes.detectionError).toContain('ETIMEDOUT')
   })
 })
 
@@ -1211,6 +1411,43 @@ function queuedCodexDesktopFixture(installationQueue = new InstallationQueue()) 
   })
   return { service, installationQueue, inspectNativeProviderConfig, target: { isDestroyed: () => false, send: vi.fn() } }
 }
+
+describe('Codex Desktop install disk space precheck', () => {
+  function diskSpaceFixture(assertInstallDiskSpace: (subject: string) => Promise<void>) {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-codex-disk-'))
+    temporaryDirectories.push(directory)
+    const service = createCodexDesktopService({
+      // 预检跑在平台门之前，所以 linux 上「仅支持 Windows」那句正好当作
+      // 「预检放行了」的证据。
+      platform: 'linux',
+      installationQueue: new InstallationQueue(),
+      createInstallTemporaryDirectory: async () => { throw new Error('未使用') },
+      detectMacosCodexApp: async () => { throw new Error('未使用') },
+      executeCommand: async () => { throw new Error('未使用') },
+      codexEnv: {},
+      store: new AppSettingsStore(path.join(directory, 'settings.json'), directory),
+      inspectNativeProviderConfig: vi.fn(() => relayCodexConfig(directory)),
+      spawnDetached: async () => { throw new Error('未使用') },
+      downloadFetch: async () => { throw new Error('未使用') },
+      assertInstallDiskSpace: vi.fn(assertInstallDiskSpace),
+    })
+    return { service, target: { isDestroyed: () => false, send: vi.fn() } }
+  }
+
+  it('stops before downloading anything when the install disk is nearly full', async () => {
+    const fixture = diskSpaceFixture(async (subject) => {
+      throw new Error(`${subject}：安装目录所在磁盘空间不足，只剩 300 MB，至少需要 1.0 GB，请先清理磁盘再试`)
+    })
+
+    await expect(fixture.service.installCodexDesktop(fixture.target)).rejects.toThrow('磁盘空间不足')
+  })
+
+  it('goes on with the install when the precheck lets it through', async () => {
+    const fixture = diskSpaceFixture(async () => undefined)
+
+    await expect(fixture.service.installCodexDesktop(fixture.target)).rejects.toThrow('仅支持 Windows')
+  })
+})
 
 describe('Codex Desktop launch queueing', () => {
   it('starts no launch while an install is still waiting in the shared queue', async () => {

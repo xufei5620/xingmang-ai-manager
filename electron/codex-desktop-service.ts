@@ -974,10 +974,16 @@ export function desktopMirrorUpdateAvailable(
   return comparison === null ? null : comparison < 0
 }
 
+const codexDesktopProbeScriptHeader = '$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)'
+
+function codexDesktopStartAppsQuery(): string {
+  return "@(Get-StartApps | Where-Object { $_.AppID -like 'OpenAI.Codex*!App' } | Select-Object Name, AppID)"
+}
+
 export async function findCodexDesktopStartApp(): Promise<StartAppEntry | null> {
   const script = [
-    '$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)',
-    "$apps = @(Get-StartApps | Where-Object { $_.AppID -like 'OpenAI.Codex*!App' } | Select-Object Name, AppID)",
+    codexDesktopProbeScriptHeader,
+    `$apps = ${codexDesktopStartAppsQuery()}`,
     '$apps | ConvertTo-Json -Compress',
   ].join('\n')
 
@@ -1000,10 +1006,8 @@ export async function findCodexDesktopStartApp(): Promise<StartAppEntry | null> 
   }
 }
 
-export function buildCodexDesktopProcessProbeScript(): string {
-  return [
-    '$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)',
-    String.raw`$items = @(Get-CimInstance Win32_Process | ForEach-Object {
+function codexDesktopProcessQuery(): string {
+  return String.raw`@(Get-CimInstance Win32_Process | ForEach-Object {
       $path = [string]$_.ExecutablePath
       # WMI can omit ExecutablePath for a normal user. The packaged app's
       # command line still carries the immutable WindowsApps path, so recover
@@ -1016,7 +1020,13 @@ export function buildCodexDesktopProcessProbeScript(): string {
       if ($path -match '(?i)\\WindowsApps\\OpenAI.Codex(?:Beta)?_\d+(?:\.\d+){3}_(?:x64|arm64|neutral)__[A-Za-z0-9.]+\\') {
         [pscustomobject]@{ ProcessId = $_.ProcessId; ParentProcessId = $_.ParentProcessId; Name = $_.Name; ExecutablePath = $path }
       }
-    })`,
+    })`
+}
+
+export function buildCodexDesktopProcessProbeScript(): string {
+  return [
+    codexDesktopProbeScriptHeader,
+    `$items = ${codexDesktopProcessQuery()}`,
     '$items | ConvertTo-Json -Compress',
   ].join('; ')
 }
@@ -1045,10 +1055,8 @@ export async function listCodexDesktopProcesses(): Promise<WindowsProcessEntry[]
   }
 }
 
-export function buildCodexDesktopPackageProbeScript(): string {
+function codexDesktopPackageProbeStatements(): string[] {
   return [
-    '$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)',
-    '$ErrorActionPreference = "Stop"',
     '$currentPackages = @()',
     '$currentError = $null',
     'try { $currentPackages = @(Get-AppxPackage -Name \'OpenAI.Codex*\' -ErrorAction Stop | Select-Object Name, Version, PackageFullName, PackageFamilyName, InstallLocation) } catch { $currentError = $_.Exception.Message }',
@@ -1065,8 +1073,159 @@ export function buildCodexDesktopPackageProbeScript(): string {
     'if ($null -ne $currentError) {',
     '  $errorMessage = \'无法读取 Codex Desktop 的 Windows Appx 安装信息，请使用安装该应用的 Windows 账户启动星芒 AI 管理工具后重试。\'',
     '}',
-    '[pscustomobject]@{ packages = $packages; source = $source; confirmedAbsent = $confirmedAbsent; error = $errorMessage } | ConvertTo-Json -Compress',
+    '$packageProbe = [pscustomobject]@{ packages = $packages; source = $source; confirmedAbsent = $confirmedAbsent; error = $errorMessage }',
+  ]
+}
+
+export function buildCodexDesktopPackageProbeScript(): string {
+  return [
+    codexDesktopProbeScriptHeader,
+    '$ErrorActionPreference = "Stop"',
+    ...codexDesktopPackageProbeStatements(),
+    '$packageProbe | ConvertTo-Json -Compress',
   ].join('; ')
+}
+
+/**
+ * 开机扫描时这三段查询原本各起一个 powershell.exe。查询本身没变，只是串进
+ * 同一条脚本里跑一次，省掉两次进程冷启动（低配机上每次 1~2 秒、常驻几十 MB）。
+ *
+ * Each segment carries its own try/catch so a single failure reports itself
+ * instead of blanking the other two - that is what the three separate
+ * processes used to give for free, and the install-state logic downstream
+ * depends on telling "no package" apart from "could not look".
+ */
+export function buildCodexDesktopCombinedProbeScript(): string {
+  return [
+    codexDesktopProbeScriptHeader,
+    '$startApps = $null',
+    '$startAppsError = $null',
+    `try { $startApps = ${codexDesktopStartAppsQuery()} } catch { $startAppsError = $_.Exception.Message }`,
+    '$processes = $null',
+    '$processesError = $null',
+    `try { $processes = ${codexDesktopProcessQuery()} } catch { $processesError = $_.Exception.Message }`,
+    '$packageProbe = $null',
+    '$packageError = $null',
+    'try {',
+    // 只有 Appx 这一段按原脚本在 Stop 下跑，放在最后一段，不影响前两段沿用
+    // 默认的 Continue —— 那两段今天就是靠「出错只写 stderr、照常输出剩下的」
+    // 拿到部分结果的。
+    '$ErrorActionPreference = "Stop"',
+    ...codexDesktopPackageProbeStatements(),
+    '} catch { $packageError = $_.Exception.Message }',
+    '[pscustomobject]@{ startApps = $startApps; startAppsError = $startAppsError; processes = $processes; processesError = $processesError; package = $packageProbe; packageError = $packageError } | ConvertTo-Json -Compress -Depth 6',
+  ].join('\n')
+}
+
+export interface CodexDesktopCombinedProbe {
+  match: StartAppEntry | null
+  processes: WindowsProcessEntry[]
+  packageProbe: CodexDesktopPackageProbe
+}
+
+function codexDesktopProbeSegmentError(value: unknown): string | null {
+  if (typeof value !== 'string') return null
+  const trimmed = value.trim()
+  return trimmed ? trimmed.slice(0, 240) : null
+}
+
+function codexDesktopProbeSegmentJson(value: unknown): string {
+  if (value === null || value === undefined) return ''
+  try {
+    return JSON.stringify(value) ?? ''
+  } catch {
+    return ''
+  }
+}
+
+function failedCodexDesktopPackageProbe(error: string | null): CodexDesktopPackageProbe {
+  return {
+    value: null,
+    error: error || '无法读取 Windows Appx 包信息',
+    source: null,
+    confirmedAbsent: false,
+  }
+}
+
+/**
+ * 把合并脚本的一份 JSON 拆回原来的三个结果结构。每段都交给合并前那个解析
+ * 函数处理，所以同样的机器状态解析出来的结果与三条脚本时完全一致。
+ */
+export function parseCodexDesktopCombinedProbeJson(output: string): CodexDesktopCombinedProbe {
+  const trimmed = output.trim().replace(/^\uFEFF/, '')
+  let record: Record<string, unknown> | null = null
+  if (trimmed) {
+    try {
+      const parsed = JSON.parse(trimmed) as unknown
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        record = parsed as Record<string, unknown>
+      }
+    } catch {
+      record = null
+    }
+  }
+  if (!record) {
+    // 整条脚本没给出可解析的 JSON：三段都回到各自原有的失败取值（开始菜单
+    // 为 null、进程为空、Appx 报格式或空输出），与合并前一条脚本失败时看到
+    // 的结果一致。
+    return {
+      match: null,
+      processes: [],
+      packageProbe: parseCodexDesktopPackageProbeJson(trimmed),
+    }
+  }
+  const startAppsError = codexDesktopProbeSegmentError(record.startAppsError)
+  const processesError = codexDesktopProbeSegmentError(record.processesError)
+  const packageError = codexDesktopProbeSegmentError(record.packageError)
+  return {
+    match: startAppsError
+      ? null
+      : selectCodexDesktopApp(parseStartAppsJson(codexDesktopProbeSegmentJson(record.startApps))),
+    processes: processesError
+      ? []
+      : parseWindowsProcessesJson(codexDesktopProbeSegmentJson(record.processes)),
+    packageProbe: packageError
+      ? failedCodexDesktopPackageProbe(packageError)
+      : parseCodexDesktopPackageProbeJson(codexDesktopProbeSegmentJson(record.package)),
+  }
+}
+
+/** 合并脚本整体失败（超时、起不来进程）时三段共用的回退。 */
+export function buildCodexDesktopCombinedProbeFailure(reason: unknown): CodexDesktopCombinedProbe {
+  const message = reason instanceof Error ? reason.message.trim().slice(0, 240) : ''
+  return {
+    match: null,
+    processes: [],
+    packageProbe: failedCodexDesktopPackageProbe(message || null),
+  }
+}
+
+/**
+ * 三段串在一条脚本里跑，总预算不能再按单段的 8 秒算：一次冷启动加
+ * Get-StartApps、Win32_Process 全枚举、Get-AppxPackage 三段串起来，低配机上
+ * 比任何单段都慢。取三段旧预算之和，谁都不比合并前更紧 —— 宁可极端情况下多
+ * 等，也不要把装好的 Codex 桌面端误判成没装。
+ */
+const codexDesktopCombinedProbeTimeoutMs = 24_000
+
+async function runCodexDesktopCombinedProbe(): Promise<CodexDesktopCombinedProbe> {
+  try {
+    const { stdout } = await execFileAsync(resolveWindowsPowerShellExecutable(), [
+      '-NoLogo',
+      '-NoProfile',
+      '-NonInteractive',
+      '-Command',
+      buildCodexDesktopCombinedProbeScript(),
+    ], {
+      env: trustedCommandEnvironment(),
+      windowsHide: true,
+      timeout: codexDesktopCombinedProbeTimeoutMs,
+      maxBuffer: 1024 * 1024,
+    })
+    return parseCodexDesktopCombinedProbeJson(stdout)
+  } catch (error) {
+    return buildCodexDesktopCombinedProbeFailure(error)
+  }
 }
 
 export async function inspectCodexDesktopPackage(): Promise<CodexDesktopPackageProbe> {
@@ -1441,6 +1600,11 @@ export interface CodexDesktopServiceOptions {
     options: { cwd: string; env: NodeJS.ProcessEnv; windowsHide?: boolean },
   ) => Promise<void>
   /**
+   * 装之前先看一眼安装盘还剩多少。缺省不检查（测试与旧调用方照旧），生产由
+   * system-service 注入同一个预检，好让 CLI 与桌面端用同一条门槛和同一句话。
+   */
+  assertInstallDiskSpace?: (subject: string) => Promise<void>
+  /**
    * 镜像清单探测与安装包下载用的 fetch。加速只接管系统代理，而主进程的全局
    * fetch 是 Node 的 undici，根本不读系统代理——Codex 桌面端的下载因此一直
    * 直连，开不开加速都一样。生产环境注入 Electron 的 `net.fetch`（走 Chromium
@@ -1504,6 +1668,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
     spawnDetached,
     downloadFetch,
     reloadDownloadProxyConfig,
+    assertInstallDiskSpace,
     activateCodexDesktop = activateCodexDesktopDefault,
     activateCodexDesktopWithCdp = activateCodexDesktopWithCdpDefault,
     getAvailableLoopbackPort = getAvailableLoopbackPortDefault,
@@ -1639,13 +1804,16 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
         ),
       }
     }
-    const [matchResult, processesResult, packageResult, mirrorResult] = await Promise.allSettled([
-      findCodexDesktopStartApp(),
-      listCodexDesktopProcesses(),
-      inspectCodexDesktopPackage(),
+    const [probeResult, mirrorResult] = await Promise.allSettled([
+      runCodexDesktopCombinedProbe(),
       inspectCodexDesktopMirrorVersion(),
     ])
-    // 四个子探测彼此独立；任一异常都不应连累其余三个已知结果
+    // 开始菜单、进程、Appx 三段现在由一条 PowerShell 脚本一次跑完，段内失败
+    // 已经在脚本里各自隔离，所以到这里三段都是「有结果」的；镜像版本仍是
+    // 独立的一条，任一异常都不应连累其余已知结果。
+    const combinedProbe = probeResult.status === 'fulfilled'
+      ? probeResult.value
+      : buildCodexDesktopCombinedProbeFailure(probeResult.reason)
     const {
       match,
       processes,
@@ -1653,7 +1821,12 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
       mirrorProbe,
       detectionFailed,
       detectionError,
-    } = buildCodexDesktopWindowsProbes(matchResult, processesResult, packageResult, mirrorResult)
+    } = buildCodexDesktopWindowsProbes(
+      { status: 'fulfilled', value: combinedProbe.match },
+      { status: 'fulfilled', value: combinedProbe.processes },
+      { status: 'fulfilled', value: combinedProbe.packageProbe },
+      mirrorResult,
+    )
     const processPackage = processes
       .map((entry) => parseCodexDesktopPackagePath(entry.executablePath))
       .find((entry): entry is CodexDesktopPackageEntry => entry !== null) ?? null
@@ -1736,6 +1909,8 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
   ): Promise<CodexDesktopInstallResult> {
     // 排队等待期间点的取消在这里生效：一个字节都不用下。
     cancellation?.throwIfCancelled()
+    // 安装包有几百兆，磁盘快满时下到一半才失败最难受；读不到空间照常放行。
+    await assertInstallDiskSpace?.('Codex 桌面端安装失败')
     if (platform === 'darwin') {
       throw new Error('macOS 上 Codex App 的安装由 Codex App 管理，请使用“打开”操作由已验证的 Codex CLI 完成安装或启动')
     }

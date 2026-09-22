@@ -7,6 +7,8 @@ import type { ProviderConfigRoots } from './codex-home'
 import type { NativeConfigInspection } from './config-files'
 import { networkFailureMessages, type NetworkFailureReason } from './network-failure'
 import {
+  clockSkewMs,
+  clockSyncGuidance,
   createDiagnosticsExport,
   parseClashTunConfig,
   redactDiagnosticText,
@@ -212,6 +214,11 @@ describe('diagnostics', () => {
         reason: 'tls',
       },
       {
+        label: 'a certificate whose dates do not line up',
+        error: new Error('net::ERR_CERT_DATE_INVALID'),
+        reason: 'certDate',
+      },
+      {
         label: 'a captive portal redirect refused by redirect:error',
         error: new TypeError('fetch failed', { cause: new Error('unexpected redirect') }),
         reason: 'intercepted',
@@ -275,6 +282,100 @@ describe('diagnostics', () => {
         summary: '检查时发生错误',
       })
       expect(log).not.toHaveBeenCalled()
+    })
+  })
+
+  // 候选 4：证书过没过期是拿本机时钟比出来的，所以「证书日期对不上」的真正源头
+  // 往往是这台电脑的时间。这一次 HEAD 的响应头里就有服务器时间，顺手比一次。
+  describe('clock skew from a response header', () => {
+    it('reads the server time out of the Date header', () => {
+      const now = new Date('2026-09-22T08:10:00.000Z')
+      expect(clockSkewMs('Tue, 22 Sep 2026 08:00:00 GMT', now)).toBe(10 * 60 * 1000)
+      expect(clockSkewMs('Tue, 22 Sep 2026 08:20:00 GMT', now)).toBe(-10 * 60 * 1000)
+    })
+
+    it('answers null rather than guessing when there is nothing to compare against', () => {
+      const now = new Date('2026-09-22T08:10:00.000Z')
+      expect(clockSkewMs(null, now)).toBeNull()
+      expect(clockSkewMs(undefined, now)).toBeNull()
+      expect(clockSkewMs('', now)).toBeNull()
+      expect(clockSkewMs('不是一个时间', now)).toBeNull()
+    })
+
+    it('names a real settings page on each supported system', () => {
+      expect(clockSyncGuidance('win32')).toContain('时间和语言')
+      expect(clockSyncGuidance('darwin')).toContain('日期与时间')
+      expect(clockSyncGuidance('linux')).toContain('自动同步')
+    })
+  })
+
+  describe('system clock comparison on the network probe', () => {
+    function probe(input: DiagnosticsDependencies, headers: Record<string, string>) {
+      const fetchImpl = vi.fn(async () => new Response(null, { status: 200, headers }))
+      input.fetch = fetchImpl
+      return fetchImpl
+    }
+
+    function networkItem(report: Awaited<ReturnType<typeof runDiagnostics>>) {
+      return report.items.find((item) => item.code === 'XINGMANG_NETWORK')
+    }
+
+    it('stays quiet while the clock is within five minutes of the server', async () => {
+      const input = dependencies(temporaryHome())
+      const fetchImpl = probe(input, { date: 'Tue, 22 Sep 2026 08:00:00 GMT' })
+      input.now = () => new Date('2026-09-22T08:04:30.000Z')
+
+      const report = await runDiagnostics(input)
+
+      expect(networkItem(report)).toMatchObject({ state: 'pass', summary: '已连通（HTTP 200）' })
+      // 不新增请求：这一项本来就要发的那一次 HEAD 就是全部。
+      expect(fetchImpl).toHaveBeenCalledTimes(1)
+    })
+
+    it.each([
+      ['ahead of the server', '2026-09-22T08:20:00.000Z', 20],
+      ['behind the server', '2026-09-22T07:11:00.000Z', -49],
+    ])('marks a clock %s as something to look at', async (_label, localTime, minutes) => {
+      const input = dependencies(temporaryHome())
+      const fetchImpl = probe(input, { date: 'Tue, 22 Sep 2026 08:00:00 GMT' })
+      input.now = () => new Date(localTime)
+
+      const report = await runDiagnostics(input)
+
+      const network = networkItem(report)
+      expect(network).toMatchObject({
+        state: 'warn',
+        details: { status: 200, clockSkewMinutes: minutes },
+      })
+      expect(network?.summary).toContain(`相差约 ${Math.abs(minutes)} 分钟`)
+      expect(network?.summary).toContain('自动设置时间')
+      expect(fetchImpl).toHaveBeenCalledTimes(1)
+    })
+
+    it('names the entry point of whichever system the user is on', async () => {
+      const input = dependencies(temporaryHome())
+      probe(input, { date: 'Tue, 22 Sep 2026 08:00:00 GMT' })
+      input.platform = 'darwin'
+      input.now = () => new Date('2026-09-22T09:00:00.000Z')
+
+      const report = await runDiagnostics(input)
+
+      expect(networkItem(report)?.summary).toContain('系统设置 → 通用 → 日期与时间')
+    })
+
+    it.each([
+      ['no Date header at all', {}],
+      ['a Date header nothing can parse', { date: 'not-a-date' }],
+    ])('says nothing about the clock when the answer carries %s', async (_label, headers) => {
+      const input = dependencies(temporaryHome())
+      probe(input, headers)
+      input.now = () => new Date('2031-01-01T00:00:00.000Z')
+
+      const report = await runDiagnostics(input)
+
+      const network = networkItem(report)
+      expect(network).toMatchObject({ state: 'pass', summary: '已连通（HTTP 200）' })
+      expect(network?.details).not.toHaveProperty('clockSkewMinutes')
     })
   })
 
@@ -645,6 +746,85 @@ describe('diagnostics', () => {
     expect(report.items.find((item) => item.code === 'CLASH_VERGE_TUN')).toMatchObject({
       state: 'error',
       details: { reason: expect.stringContaining('安全上限') },
+    })
+  })
+})
+
+describe('the disk space check', () => {
+  const gigabyte = 1024 ** 3
+
+  function diskDependencies(
+    home: string,
+    readDiskSpace: DiagnosticsDependencies['readDiskSpace'],
+  ): DiagnosticsDependencies {
+    const input = dependencies(home)
+    // 托管目录这一处要算得出来才有两块盘可比。win32 要真实的 ProgramData，
+    // macOS 只要一个 posix 绝对路径的 HOME——所以这里钉成 darwin 并给一个不落地
+    // 的 HOME（磁盘读取是注入的，路径不会真的被访问），三个平台的结果才一致。
+    input.platform = 'darwin'
+    input.env = { HOME: '/Users/fixture' }
+    input.userDataDirectory = '/Users/fixture/Library/Application Support/XingMangAI'
+    input.readDiskSpace = readDiskSpace
+    return input
+  }
+
+  function reading(availableBytes: number, measuredPath: string, deviceId: number) {
+    return { availableBytes, totalBytes: 256 * gigabyte, measuredPath, deviceId }
+  }
+
+  it('passes and writes out how much is left', async () => {
+    const home = temporaryHome()
+    const report = await runDiagnostics(diskDependencies(
+      home,
+      async (target) => reading(40 * gigabyte, target, 1),
+    ))
+
+    const item = report.items.find((entry) => entry.code === 'DISK_SPACE')
+    expect(item).toMatchObject({ state: 'pass' })
+    expect(item?.summary).toContain('40.0 GB')
+    // 两处目录同在一块盘上（同一个设备号）时只说一遍。
+    expect(item?.details?.measured).toBe(1)
+  })
+
+  it('flags a tight disk as worth watching and a nearly full one as blocking', async () => {
+    const home = temporaryHome()
+    const tight = await runDiagnostics(diskDependencies(
+      home,
+      async (target) => reading(Math.floor(1.5 * gigabyte), target, 1),
+    ))
+    const full = await runDiagnostics(diskDependencies(
+      home,
+      async (target) => reading(300 * 1024 ** 2, target, 1),
+    ))
+
+    expect(tight.items.find((entry) => entry.code === 'DISK_SPACE')).toMatchObject({ state: 'warn' })
+    const blocked = full.items.find((entry) => entry.code === 'DISK_SPACE')
+    expect(blocked?.state).toBe('fail')
+    expect(blocked?.summary).toContain('300 MB')
+    expect(blocked?.summary).toContain('装不下')
+  })
+
+  it('reports two disks separately and judges by the tighter one', async () => {
+    const home = temporaryHome()
+    let device = 0
+    const report = await runDiagnostics(diskDependencies(home, async (target) => {
+      device += 1
+      return reading(device === 1 ? 40 * gigabyte : 500 * 1024 ** 2, target, device)
+    }))
+
+    const item = report.items.find((entry) => entry.code === 'DISK_SPACE')
+    expect(item?.details?.measured).toBe(2)
+    expect(item?.state).toBe('fail')
+  })
+
+  it('does not turn an unreadable filesystem into a problem to fix', async () => {
+    const home = temporaryHome()
+    const report = await runDiagnostics(diskDependencies(home, async () => null))
+
+    expect(report.items.find((entry) => entry.code === 'DISK_SPACE')).toMatchObject({
+      state: 'warn',
+      summary: expect.stringContaining('未能读取'),
+      details: { measured: 0 },
     })
   })
 })

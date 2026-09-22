@@ -66,6 +66,7 @@ const MAX_TEXT_LENGTH = 8_192
 const MAX_DETAIL_DEPTH = 5
 const MAX_DETAIL_ITEMS = 128
 const MAX_LINE_BYTES = 256 * 1024
+const MAX_SNAPSHOT_LIMIT = 2_000
 
 // Lives in startup-log because that module must redact without importing
 // anything that could itself be the failure it is recording. Re-exported here
@@ -131,6 +132,103 @@ function validEntry(value: unknown): value is RuntimeLogEntry {
     && (entry.detail === null || (typeof entry.detail === 'object' && !Array.isArray(entry.detail)))
 }
 
+/**
+ * 单个日志文件解析后的样子。归档文件轮转完就不会再变，所以这份摘要可以按
+ * 「大小 + 修改时间 + inode」缓存起来复用，反馈页第二次打开就不必再读一遍。
+ * 只留尾部若干条：snapshot 最多回 MAX_SNAPSHOT_LIMIT 条，更早的永远进不了结果，
+ * 留着只会让主进程白白多占一份内存。
+ */
+export interface RuntimeLogFileSummary {
+  entries: RuntimeLogEntry[]
+  total: number
+  counts: Record<RuntimeLogLevel, number>
+  sources: string[]
+  sizeBytes: number
+}
+
+function emptySummary(): RuntimeLogFileSummary {
+  return { entries: [], total: 0, counts: emptyCounts(), sources: [], sizeBytes: 0 }
+}
+
+function normalizeEntry(value: RuntimeLogEntry): RuntimeLogEntry {
+  return {
+    level: value.level,
+    id: safeText(value.id),
+    timestamp: safeText(value.timestamp),
+    source: safeText(value.source).slice(0, 80),
+    event: safeText(value.event).slice(0, 120),
+    message: safeText(value.message),
+    detail: sanitizeDetail(value.detail),
+  }
+}
+
+/**
+ * 逐行解析一个日志文件。计数与来源要全量统计，但只有尾部那些条目会被展示，
+ * 所以先按原样滚动留一小段，最后才对这一段做脱敏——8 MB 日志里绝大多数条目
+ * 的 sanitizeDetail 就此省掉了。
+ */
+export function summarizeRuntimeLogFile(content: string): RuntimeLogFileSummary {
+  const counts = emptyCounts()
+  const sources = new Set<string>()
+  const recent: RuntimeLogEntry[] = []
+  let total = 0
+  for (const line of content.split(/\r?\n/)) {
+    if (!line.trim()) continue
+    let value: unknown
+    try {
+      value = JSON.parse(line) as unknown
+    } catch {
+      // A partial final line must not make the rest of the log unreadable.
+      continue
+    }
+    if (!validEntry(value)) continue
+    total += 1
+    counts[value.level] += 1
+    sources.add(safeText(value.source).slice(0, 80))
+    recent.push(value)
+    if (recent.length >= MAX_SNAPSHOT_LIMIT * 2) recent.splice(0, recent.length - MAX_SNAPSHOT_LIMIT)
+  }
+  return {
+    entries: recent.slice(-MAX_SNAPSHOT_LIMIT).map(normalizeEntry),
+    total,
+    counts,
+    sources: [...sources],
+    sizeBytes: Buffer.byteLength(content, 'utf8'),
+  }
+}
+
+function mergeSummaries(parts: readonly RuntimeLogFileSummary[]): RuntimeLogFileSummary {
+  const merged = emptySummary()
+  const sources = new Set<string>()
+  const entries: RuntimeLogEntry[] = []
+  for (const part of parts) {
+    entries.push(...part.entries)
+    merged.total += part.total
+    merged.sizeBytes += part.sizeBytes
+    for (const level of Object.keys(merged.counts) as RuntimeLogLevel[]) {
+      merged.counts[level] += part.counts[level]
+    }
+    for (const source of part.sources) sources.add(source)
+  }
+  merged.entries = entries.slice(-MAX_SNAPSHOT_LIMIT)
+  merged.sources = [...sources]
+  return merged
+}
+
+/**
+ * 缓存键。大小与修改时间挡住「同一个文件被追加了」，inode 再挡住「轮转后换成了
+ * 另一个恰好同样大小、同样时间的文件」——重命名会把 mtime 一起带过去。
+ */
+async function fingerprintLogFile(filePath: string): Promise<string | null> {
+  try {
+    const stats = await fs.promises.lstat(filePath)
+    return `${stats.size}:${stats.mtimeMs}:${stats.ino}`
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
+    throw error
+  }
+}
+
 async function removeIfPresent(filePath: string): Promise<void> {
   await removeSafeDataFile(filePath, '运行日志文件')
 }
@@ -154,6 +252,8 @@ export class RuntimeLogStore {
   private readonly environmentTimeoutMs: number
   private describeEnvironment: RuntimeEnvironmentDescriber | null = null
   private writeQueue: Promise<void> = Promise.resolve()
+  // 每个日志文件一份解析结果，键是文件路径，所以最多 archiveCount + 1 份，天然有界。
+  private readonly parsedFiles = new Map<string, { fingerprint: string; summary: RuntimeLogFileSummary }>()
   private sequence = 0
 
   constructor(options: RuntimeLogStoreOptions) {
@@ -241,6 +341,9 @@ export class RuntimeLogStore {
       currentBytes = (await fs.promises.stat(this.filePath)).size
     }
     if (currentBytes > 0 && currentBytes + lineBytes > this.maxFileBytes) {
+      // 轮转后每个路径指向的都是另一个文件，指纹本来也会失配；这里顺手清掉，
+      // 免得被挤掉的那一份归档白占内存。
+      this.parsedFiles.clear()
       if (this.archiveCount > 0) {
         await removeIfPresent(this.archivePath(this.archiveCount))
         for (let index = this.archiveCount - 1; index >= 1; index -= 1) {
@@ -262,45 +365,48 @@ export class RuntimeLogStore {
     return result
   }
 
-  private readEntries(): Promise<{ entries: RuntimeLogEntry[]; sizeBytes: number }> {
+  private readSummary(): Promise<RuntimeLogFileSummary> {
     return this.runExclusive(async () => {
-      const entries: RuntimeLogEntry[] = []
-      let sizeBytes = 0
+      const parts: RuntimeLogFileSummary[] = []
       const files = [
         ...Array.from({ length: this.archiveCount }, (_, index) => this.archivePath(this.archiveCount - index)),
         this.filePath,
       ]
       for (const filePath of files) {
         try {
+          const fingerprint = await fingerprintLogFile(filePath)
+          if (fingerprint === null) {
+            this.parsedFiles.delete(filePath)
+            continue
+          }
+          const cached = this.parsedFiles.get(filePath)
+          if (cached && cached.fingerprint === fingerprint) {
+            parts.push(cached.summary)
+            continue
+          }
           const content = await readSafeUtf8File(
             filePath,
             '运行日志文件',
             this.maxFileBytes + MAX_TEXT_LENGTH * 4,
           )
-          if (content === null) continue
-          sizeBytes += Buffer.byteLength(content, 'utf8')
-          for (const line of content.split(/\r?\n/)) {
-            if (!line.trim()) continue
-            try {
-              const value = JSON.parse(line) as unknown
-              if (validEntry(value)) entries.push({
-                level: value.level,
-                id: safeText(value.id),
-                timestamp: safeText(value.timestamp),
-                source: safeText(value.source).slice(0, 80),
-                event: safeText(value.event).slice(0, 120),
-                message: safeText(value.message),
-                detail: sanitizeDetail(value.detail),
-              })
-            } catch {
-              // A partial final line must not make the rest of the log unreadable.
-            }
+          if (content === null) {
+            this.parsedFiles.delete(filePath)
+            continue
           }
+          const summary = summarizeRuntimeLogFile(content)
+          // 读完再对一次指纹：只有确实没变过的那一份才值得留下来复用。
+          if (await fingerprintLogFile(filePath) === fingerprint) {
+            this.parsedFiles.set(filePath, { fingerprint, summary })
+          } else {
+            this.parsedFiles.delete(filePath)
+          }
+          parts.push(summary)
         } catch (error) {
+          this.parsedFiles.delete(filePath)
           if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue
           // One unreadable file must not take down the whole log page.
           const timestamp = this.now().toISOString()
-          entries.push({
+          const entry: RuntimeLogEntry = {
             id: `${timestamp}:${process.pid}:${this.sequence += 1}`,
             timestamp,
             level: 'warn',
@@ -310,32 +416,33 @@ export class RuntimeLogStore {
               error instanceof Error ? error.message : String(error)
             }`),
             detail: null,
+          }
+          parts.push({
+            entries: [entry],
+            total: 1,
+            counts: { ...emptyCounts(), warn: 1 },
+            sources: [entry.source],
+            sizeBytes: 0,
           })
         }
       }
-      return { entries, sizeBytes }
+      return mergeSummaries(parts)
     })
   }
 
   async snapshot(limit = 1_000): Promise<RuntimeLogSnapshot> {
-    const safeLimit = Number.isInteger(limit) ? Math.min(Math.max(limit, 1), 2_000) : 1_000
-    const { entries, sizeBytes } = await this.readEntries()
-    const counts = emptyCounts()
-    const sources = new Set<string>()
-    for (const entry of entries) {
-      counts[entry.level] += 1
-      sources.add(entry.source)
-    }
-    const selected = entries.slice(-safeLimit).reverse()
+    const safeLimit = Number.isInteger(limit) ? Math.min(Math.max(limit, 1), MAX_SNAPSHOT_LIMIT) : 1_000
+    const summary = await this.readSummary()
+    const selected = summary.entries.slice(-safeLimit).reverse()
     return {
       generatedAt: this.now().toISOString(),
       directory: this.directory,
       filePath: this.filePath,
-      sizeBytes,
-      total: entries.length,
-      truncated: entries.length > selected.length,
-      counts,
-      sources: [...sources].sort((left, right) => left.localeCompare(right)),
+      sizeBytes: summary.sizeBytes,
+      total: summary.total,
+      truncated: summary.total > selected.length,
+      counts: summary.counts,
+      sources: [...summary.sources].sort((left, right) => left.localeCompare(right)),
       currentProcessId: process.pid,
       startedAt: this.startedAt,
       entries: selected,
@@ -344,6 +451,7 @@ export class RuntimeLogStore {
 
   clear(): Promise<void> {
     return this.runExclusive(async () => {
+      this.parsedFiles.clear()
       await Promise.all([
         removeIfPresent(this.filePath),
         ...Array.from({ length: this.archiveCount }, (_, index) => removeIfPresent(this.archivePath(index + 1))),

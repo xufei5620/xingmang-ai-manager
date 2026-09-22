@@ -12,6 +12,7 @@ import {
 import { providerFor, type ToolboxSnapshot, type ToolId } from './model'
 import { readAllAccountKeys } from './key-selection'
 import { errorMessage } from '../../business-common'
+import { createTtlCache } from './ttl-cache'
 import { usageCalendarDate, usageDateRange } from '../../../../electron/usage-date-range'
 
 /** 工具页一次读取里互相独立的三块。 */
@@ -74,7 +75,19 @@ function placeholderConfig(): AppConfigSummary {
   return { workspace: '', providers }
 }
 
+/**
+ * 最近记录的缓存有效期。首页是切来切去最频繁的一页，离开就卸载、回来又读一遍，
+ * 而主进程那一侧要把三家 CLI 的会话目录整个走一遍才能给出这份列表。一分钟内
+ * 复用上一次的结果，真正变了的时刻（装卸工具、打开工具、换账号、主动重新检测）
+ * 都有对应的作废点，不靠把时间调短来兜底。
+ */
+export const recentSessionsTtlMs = 60_000
+
 export function createToolsApi(bridge: XingmangApi) {
+  const recentSessions = createTtlCache({
+    ttlMs: recentSessionsTtlMs,
+    load: () => bridge.listProviderSessions({ page: 1, pageSize: 60 }),
+  })
   return {
     /**
      * 三块分开结算（对照 legacy 的 runCoordinatedScan）。一份损坏的
@@ -116,24 +129,39 @@ export function createToolsApi(bridge: XingmangApi) {
     launchExternal: (id: ExternalToolId) => bridge.launchExternalClient(id),
     // version 省略时由主进程按已验证版本名单与设置决定装哪个版本(N1);
     // 只有「回到推荐版本」会点名版本。
-    install: (id: ToolId, version?: string) => id === 'codexDesktop' ? bridge.installCodexDesktop() : bridge.installCli(id, version),
+    install: async (id: ToolId, version?: string) => {
+      const result = await (id === 'codexDesktop' ? bridge.installCodexDesktop() : bridge.installCli(id, version))
+      recentSessions.invalidate()
+      return result
+    },
     cancelInstall: (id: ToolId): Promise<InstallCancelResult> => id === 'codexDesktop'
       ? bridge.cancelCodexDesktopInstall()
       : bridge.cancelCliInstall(id),
-    uninstall: (id: ToolId) => id === 'codexDesktop' ? bridge.uninstallCodexDesktop() : bridge.uninstallCli(id),
+    uninstall: async (id: ToolId) => {
+      const result = await (id === 'codexDesktop' ? bridge.uninstallCodexDesktop() : bridge.uninstallCli(id))
+      recentSessions.invalidate()
+      return result
+    },
     checkUpdate: (id: ToolId) => id === 'codexDesktop' ? bridge.checkCodexDesktopUpdate() : bridge.checkCliUpdate(id),
     // mode 是两套互不相干的取值:codexDesktop 认 'open' | 'restart',四家 CLI 认
     // 'new' | 'resumeLast'(#292)。各自只取自己认得的那一个,另一套的值落回本侧
     // 默认,也就是旧行为。以前这里的 CLI 分支根本没把 mode 传下去,首页和记录页
     // 都发不出「接着上次对话」。
-    launch: (id: ToolId, workspace: string, mode: CodexDesktopLaunchMode | CliLaunchMode = 'open') => id === 'codexDesktop'
-      ? bridge.launchCodexDesktop(mode === 'restart' ? 'restart' : 'open')
-      : mode === 'resumeLast' ? bridge.launchCli(id, workspace, 'resumeLast') : bridge.launchCli(id, workspace),
+    launch: async (id: ToolId, workspace: string, mode: CodexDesktopLaunchMode | CliLaunchMode = 'open') => {
+      const result = await (id === 'codexDesktop'
+        ? bridge.launchCodexDesktop(mode === 'restart' ? 'restart' : 'open')
+        : mode === 'resumeLast' ? bridge.launchCli(id, workspace, 'resumeLast') : bridge.launchCli(id, workspace))
+      // 打开工具就是在开一条新对话（或接上一条），首页那份「最近」立刻就旧了。
+      recentSessions.invalidate()
+      return result
+    },
     prepareRuntime: (runtime: 'node' | 'python') => runtime === 'node' ? bridge.installNodeRuntime() : bridge.installPythonRuntime(),
     chooseWorkspace: () => bridge.chooseWorkspace(),
     // 首页「最近」卡只显示 3 条,但同一份记录还要推出每个工具最近用过的目录(N7),
     // 一页 3 条不够铺开四个工具。主进程本来就把全部会话读出来再切片,页大一点不多花钱。
-    recent: () => bridge.listProviderSessions({ page: 1, pageSize: 60 }),
+    recent: () => recentSessions.read(),
+    /** 让首页那份「最近」立刻作废：用户主动重新检测、切换账号时调。 */
+    invalidateRecent: () => recentSessions.invalidate(),
     readConfig: () => bridge.getConfig(),
     readKeys: () => readAllAccountKeys((query) => bridge.getAccountKeys(query)),
     readKeyOptions: (tool: ToolId) => bridge.getAccountKeyOptions(providerFor(tool)),

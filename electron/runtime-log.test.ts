@@ -1,8 +1,8 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
-import { redactHomeDirectory, RuntimeLogStore } from './runtime-log'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { redactHomeDirectory, RuntimeLogStore, summarizeRuntimeLogFile } from './runtime-log'
 import { recordStartupFailure } from './startup-log'
 
 const temporaryDirectories: string[] = []
@@ -20,9 +20,70 @@ function createStore(options: { maxFileBytes?: number; archiveCount?: number; en
 }
 
 afterEach(() => {
+  vi.restoreAllMocks()
   for (const directory of temporaryDirectories.splice(0)) {
     fs.rmSync(directory, { recursive: true, force: true })
   }
+})
+
+/** 记录接下来每一次以只读方式打开的日志文件，用来断言哪些文件被真的读了盘。 */
+function trackLogFileReads(): string[] {
+  const opened: string[] = []
+  const open = fs.promises.open
+  vi.spyOn(fs.promises, 'open').mockImplementation((file, flags, mode) => {
+    if (flags === 'r') opened.push(path.basename(String(file)))
+    return open(file, flags as never, mode as never)
+  })
+  return opened
+}
+
+async function fillRotatedLog(store: RuntimeLogStore, entries: number): Promise<void> {
+  for (let index = 0; index < entries; index += 1) {
+    store.log('info', `source-${index % 3}`, 'rotation', `entry-${index}-${'x'.repeat(70)}`)
+  }
+  await store.snapshot()
+}
+
+function writeArchive(store: RuntimeLogStore, index: number, message: string): void {
+  fs.writeFileSync(`${store.filePath}.${index}`, `${JSON.stringify({
+    id: `archive-${index}`, timestamp: '2026-09-21T00:00:00.000Z', level: 'info',
+    source: `archive-${index}`, event: 'rotated', message, detail: null,
+  })}\n`, 'utf8')
+}
+
+describe('summarizeRuntimeLogFile', () => {
+  it('counts every line but only sanitizes the ones a snapshot can show', () => {
+    const line = (index: number) => JSON.stringify({
+      id: `id-${index}`, timestamp: '2026-09-22T00:00:00.000Z',
+      level: index % 2 === 0 ? 'info' : 'warn',
+      source: index % 2 === 0 ? 'main' : 'ipc', event: 'entry',
+      message: `第 ${index} 条`, detail: { apiKey: 'private-key' },
+    })
+    const summary = summarizeRuntimeLogFile([
+      line(1), 'not json at all', JSON.stringify({ level: 'info' }), line(2), '', line(3),
+    ].join('\n'))
+
+    expect(summary.total).toBe(3)
+    expect(summary.counts).toEqual({ debug: 0, info: 1, warn: 2, error: 0 })
+    expect([...summary.sources].sort()).toEqual(['ipc', 'main'])
+    expect(summary.entries.map((entry) => entry.message)).toEqual(['第 1 条', '第 2 条', '第 3 条'])
+    expect(summary.entries[0].detail).toEqual({ apiKey: '[REDACTED]' })
+  })
+
+  it('keeps only the tail a snapshot could ever return, without losing the counts', () => {
+    const content = Array.from({ length: 4_100 }, (_, index) => JSON.stringify({
+      id: `id-${index}`, timestamp: '2026-09-22T00:00:00.000Z', level: 'info',
+      source: 'main', event: 'entry', message: `第 ${index} 条`, detail: null,
+    })).join('\n')
+    const summary = summarizeRuntimeLogFile(content)
+
+    expect(summary.total).toBe(4_100)
+    expect(summary.counts.info).toBe(4_100)
+    // snapshot 最多回 2000 条，更早的留着也没人看。
+    expect(summary.entries).toHaveLength(2_000)
+    expect(summary.entries[0].message).toBe('第 2100 条')
+    expect(summary.entries[1_999].message).toBe('第 4099 条')
+  })
 })
 
 describe('RuntimeLogStore', () => {
@@ -245,6 +306,83 @@ describe('RuntimeLogStore', () => {
     expect(snapshot.entries.some((entry) => entry.level === 'warn' && entry.event === 'read-failed')).toBe(true)
     expect(JSON.stringify(snapshot)).not.toContain('do-not-change')
     expect(fs.readFileSync(victim, 'utf8')).toBe('do-not-change')
+  })
+
+  it('parses each rotated archive once and only re-reads the file that grew', async () => {
+    // 文件上限放大，免得这条用例里的追加又触发一次轮转。
+    const store = createStore({ maxFileBytes: 64 * 1024, archiveCount: 2 })
+    writeArchive(store, 1, '较新的归档')
+    writeArchive(store, 2, '最早的归档')
+    store.log('info', 'test', 'active', '当前文件的一条')
+    const first = await store.snapshot()
+    expect(first.total).toBe(3)
+
+    const opened = trackLogFileReads()
+    await store.snapshot()
+    // 三个文件都没变，全部命中缓存。
+    expect(opened).toEqual([])
+
+    store.log('info', 'test', 'appended', '新的一条')
+    const grown = await store.snapshot()
+    // 只有正在追加的那个文件变了，归档仍然不读。
+    expect(opened).toEqual(['runtime.jsonl'])
+    expect(grown.total).toBe(4)
+    expect(grown.entries[0].message).toBe('新的一条')
+  })
+
+  it('re-reads an archive once its size and mtime change', async () => {
+    const store = createStore({ maxFileBytes: 520, archiveCount: 2 })
+    await fillRotatedLog(store, 12)
+
+    const archive = `${store.filePath}.1`
+    fs.writeFileSync(archive, `${JSON.stringify({
+      id: 'replaced-archive', timestamp: '2026-09-22T00:00:00.000Z', level: 'error',
+      source: 'replaced', event: 'swapped', message: '换过的归档', detail: null,
+    })}\n`, 'utf8')
+
+    const opened = trackLogFileReads()
+    const snapshot = await store.snapshot()
+
+    expect(opened).toContain('runtime.jsonl.1')
+    expect(snapshot.entries.some((entry) => entry.message === '换过的归档')).toBe(true)
+    expect(snapshot.sources).toContain('replaced')
+  })
+
+  it('returns exactly what an unwarmed store would return', async () => {
+    const store = createStore({ maxFileBytes: 520, archiveCount: 2 })
+    await fillRotatedLog(store, 24)
+    const warmed = await store.snapshot()
+
+    const cold = new RuntimeLogStore({
+      directory: store.directory,
+      appName: '星芒AI管理工具',
+      appVersion: '1.0.0',
+      packaged: false,
+      maxFileBytes: 520,
+      archiveCount: 2,
+    })
+    const fresh = await cold.snapshot()
+
+    expect(warmed.entries).toEqual(fresh.entries)
+    expect(warmed.total).toBe(fresh.total)
+    expect(warmed.counts).toEqual(fresh.counts)
+    expect(warmed.sources).toEqual(fresh.sources)
+    expect(warmed.sizeBytes).toBe(fresh.sizeBytes)
+    expect(warmed.truncated).toBe(fresh.truncated)
+  })
+
+  it('drops the cache when the log is cleared so a rebuilt file is read again', async () => {
+    const store = createStore({ maxFileBytes: 520, archiveCount: 2 })
+    await fillRotatedLog(store, 12)
+    await store.clear()
+    expect((await store.snapshot()).total).toBe(0)
+
+    store.log('info', 'after-clear', 'entry', '清空之后的一条')
+    const snapshot = await store.snapshot()
+
+    expect(snapshot.total).toBe(1)
+    expect(snapshot.entries[0].message).toBe('清空之后的一条')
+    expect(snapshot.counts.info).toBe(1)
   })
 
   it('truncates an oversized detail instead of instantly rotating the file', async () => {
