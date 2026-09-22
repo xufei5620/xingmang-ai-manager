@@ -3,6 +3,9 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import { OnboardingSettingRows, tutorialTopics } from './pages-maintenance'
 import { pages } from './registry/pages'
+import { errors } from './registry/errors'
+import { statuses } from './registry/status'
+import { accelerationTrialSeconds } from '../../electron/acceleration-contract'
 import { runtimeButtonLabel, runtimeHomebrewCommand } from './features/tools/runtime-install-guide'
 
 const pageIds = new Set<string>(pages.map((page) => page.id))
@@ -26,6 +29,78 @@ describe('tutorial topics', () => {
         expect(step.action.length).toBeGreaterThan(0)
       }
     }
+  })
+
+  it('covers the two daily pages that had no chapter at all', () => {
+    // 记录页与加速页是 0.2.7~0.2.8 才成型的两块功能，教程里一度一个字都没有。
+    for (const id of ['sessions', 'acceleration']) {
+      const topic = tutorialTopics.find((entry) => entry.id === id)
+      expect(topic, `缺少 ${id} 教程章节`).toBeDefined()
+      expect(topic?.title).toBe(pageLabels.get(id))
+      expect(topic?.lead.length).toBeGreaterThan(0)
+      expect(topic?.steps.length).toBe(4)
+      for (const step of topic?.steps ?? []) {
+        expect(step.title.length).toBeGreaterThan(0)
+        expect(step.detail.length).toBeGreaterThan(0)
+        expect(step.action.length).toBeGreaterThan(0)
+      }
+    }
+  })
+
+  it('states the three rules that decide whether 「接着聊」 is available', () => {
+    // 这三条都是命令行工具本身的限制（只能按文件夹找回最近一条），用户看不出来，
+    // 写错了会让人以为按钮坏了。
+    const topic = tutorialTopics.find((entry) => entry.id === 'sessions')
+    const text = topic?.steps.map((step) => step.detail).join('\n') ?? ''
+    expect(text).toContain('最近的一次对话')
+    expect(text).toContain('已归档')
+    expect(text).toContain('文件夹已不存在')
+    // 记录只在本机、保留期放长到一年，与记录页页头同一口径。
+    expect(text).toContain('只存在这台电脑上')
+    expect(text).toContain('一年')
+  })
+
+  it('quotes the free allowance from the contract and leaves the bonus code out', () => {
+    // 免费时长由 acceleration-contract 定，教程里写死另一个数就会对不上。
+    const topic = tutorialTopics.find((entry) => entry.id === 'acceleration')
+    const text = topic?.steps.map((step) => step.detail).join('\n') ?? ''
+    expect(text).toContain(`${accelerationTrialSeconds / 60} 分钟`)
+    // 口令入口是彩蛋，教程不写；写进来这条会红。
+    expect(text).not.toContain('口令')
+    // 托盘菜单（#326）是主窗口缩起来时唯一的开关入口。
+    expect(text).toContain('托盘')
+    // 两处「自己连」的口径相反：下载那条不计时，Codex 桌面端那条计时且不自动断。
+    expect(text).toContain('不计入免费时长')
+    expect(text).toContain('不会自动断开')
+    expect(text).toContain('加速服务暂不可用')
+  })
+
+  it('spells the error banners exactly as the error registry does', () => {
+    // 对照表的价值全在「用户看到的那句话」能对上号，所以标题从 registry 取，
+    // 改文案时这条会直接红。
+    const topic = tutorialTopics.find((entry) => entry.id === 'messages')
+    expect(topic, '缺少报错对照章节').toBeDefined()
+    const text = topic?.steps.map((step) => step.detail).join('\n') ?? ''
+    for (const key of [
+      'diskFull',
+      'permission',
+      'installBlocked',
+      'toolRunning',
+      'downloadTimeout',
+      'tlsIntercepted',
+      'certDate',
+      'timeout',
+      'tooManyRequests',
+      'sessionExpired',
+      'keyInvalid',
+      'noBalance',
+    ] as const)
+      expect(text, `对照表缺少「${errors[key].title}」`).toContain(errors[key].title)
+    // 首页工具行上的两个标记同理，取自状态注册表。
+    expect(text).toContain(statuses.tool.configChanged[0])
+    expect(text).toContain(statuses.tool.detectionFailed[0])
+    // 敏感目录提示的标题在 electron/workspace-guard.ts，那侧是主进程模块，这里只钉字面。
+    expect(text).toContain('这个文件夹范围太大')
   })
 
   it('names every tool that actually has a plugin marketplace', () => {
