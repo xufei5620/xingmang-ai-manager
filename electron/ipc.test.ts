@@ -72,6 +72,7 @@ function serviceStub(): SystemService {
     revealApiKey: vi.fn(() => 'sk-known-secret-value'),
     saveConfig: vi.fn(async (): Promise<NativeConfigSaveResult> => ({ backups: [], files: [] })),
     switchToOfficialAccount: vi.fn((): NativeConfigSaveResult => ({ backups: [], files: [] })),
+    adoptRestoredConfig: vi.fn(async () => undefined),
     scanSystem: vi.fn() as never,
     refreshNetworkLocation: vi.fn() as never,
     refreshOfficialChatGptUsage: vi.fn() as never,
@@ -1227,10 +1228,23 @@ describe('registerIpcHandlers', () => {
     })
     const handler = electronMocks.handlers.get('config:switch-account-source')!
     const result = await handler(trustedEvent(), 'codex', 'official')
-    expect(create).toHaveBeenCalledWith('codex', 'pre-save')
+    expect(create).toHaveBeenCalledWith('codex', 'pre-save', undefined, null)
     expect(service.switchToOfficialAccount).toHaveBeenCalledWith('codex', 'merge')
     expect(create.mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(service.switchToOfficialAccount).mock.invocationCallOrder[0])
     expect(result).toMatchObject({ provider: 'codex', target: 'official', backupId: 'backup-1', verified: false })
+  })
+
+  it('registers the restored config source when a failed switch rolls back', async () => {
+    const service = serviceStub()
+    vi.mocked(service.switchToOfficialAccount).mockRejectedValue(new Error('配置文件被占用'))
+    const restore = vi.fn(() => ({ provider: 'codex', restoredBackupId: 'backup-1', preRestoreBackupId: 'backup-2' }))
+    register(service, undefined, undefined, undefined, undefined, undefined, {}, {
+      backupStore: { list: vi.fn(), create: vi.fn(() => ({ id: 'backup-1' })), inspect: vi.fn(), restore } as never,
+    })
+    const handler = electronMocks.handlers.get('config:switch-account-source')!
+    await expect(handler(trustedEvent(), 'codex', 'official')).rejects.toThrow('已恢复到切换前的配置')
+    expect(restore).toHaveBeenCalledWith('backup-1', null)
+    expect(service.adoptRestoredConfig).toHaveBeenCalledWith('codex', expect.any(Function))
   })
 
   it('returns only an API key preview through config:get', () => {
@@ -5031,5 +5045,90 @@ describe('config:open-directory', () => {
 
     expect(electronMocks.openPath).not.toHaveBeenCalled()
     expect(fs.existsSync(path.join(providerRoots.userHome, '.gemini'))).toBe(false)
+  })
+})
+
+describe('backup handlers and account key ownership', () => {
+  const account = { userId: 101, username: 'account-a', group: 'default', role: 1, quota: 1_000, usedQuota: 0 }
+  function backupStoreStub() {
+    return {
+      list: vi.fn((_context: unknown) => []),
+      create: vi.fn(),
+      inspect: vi.fn(),
+      restore: vi.fn(() => ({ provider: 'codex' as const, restoredBackupId: 'b1', preRestoreBackupId: 'b0', restoredFiles: [], removedFiles: [] })),
+      delete: vi.fn(),
+    }
+  }
+  function signedIn(keys: string[]) {
+    const accountService = accountServiceStub()
+    let current: typeof account | null = account
+    vi.mocked(accountService.getSessionState).mockImplementation(() => ({ authenticated: current !== null, account: current }))
+    const managedCliKeys: NonNullable<Parameters<typeof registerIpcHandlers>[0]['managedCliKeys']> = {
+      read: vi.fn(async () => keys.map((key, index) => ({ id: index + 1, provider: 'codex' as const, group: 'codex', name: 'Codex', key }))),
+      save: vi.fn(async () => undefined),
+      remove: vi.fn(async () => undefined),
+    }
+    return { accountService, managedCliKeys, switchTo: (next: typeof account | null) => { current = next } }
+  }
+
+  it('lists backups without account context when signed out', async () => {
+    const backupStore = backupStoreStub()
+    register(serviceStub(), undefined, undefined, undefined, undefined, undefined, {}, { backupStore: backupStore as never })
+    await electronMocks.handlers.get('backups:list')!(trustedEvent())
+    expect(backupStore.list).toHaveBeenCalledWith(null)
+  })
+
+  it('passes the account name and key digests, never the key, to the backup store', async () => {
+    const backupStore = backupStoreStub()
+    const { accountService, managedCliKeys } = signedIn(['sk-managed-codex'])
+    register(serviceStub(), undefined, undefined, accountService, undefined, managedCliKeys, {}, { backupStore: backupStore as never })
+    await electronMocks.handlers.get('backups:list')!(trustedEvent())
+    const context = backupStore.list.mock.calls[0][0] as { accountName: string, keyDigests: Set<string> }
+    expect(context.accountName).toBe('account-a')
+    expect(context.keyDigests.size).toBe(1)
+    expect(JSON.stringify([...context.keyDigests])).not.toContain('sk-managed-codex')
+  })
+
+  it('adopts the restored config and recognizes only the current account keys', async () => {
+    const backupStore = backupStoreStub()
+    const service = serviceStub()
+    const { accountService, managedCliKeys } = signedIn(['sk-managed-codex'])
+    register(service, undefined, undefined, accountService, undefined, managedCliKeys, {}, { backupStore: backupStore as never })
+    await expect(electronMocks.handlers.get('backups:restore')!(trustedEvent(), 'b1')).resolves.toMatchObject({ provider: 'codex' })
+    expect(backupStore.restore).toHaveBeenCalledWith('b1', expect.objectContaining({ accountName: 'account-a' }))
+    const [provider, isAccountKey] = vi.mocked(service.adoptRestoredConfig).mock.calls[0]
+    expect(provider).toBe('codex')
+    expect(isAccountKey('sk-managed-codex')).toBe(true)
+    expect(isAccountKey('sk-someone-else')).toBe(false)
+  })
+
+  it('stops trusting the key cache when the account changes during a restore', async () => {
+    const backupStore = backupStoreStub()
+    const service = serviceStub()
+    const { accountService, managedCliKeys, switchTo } = signedIn(['sk-managed-codex'])
+    backupStore.restore.mockImplementation(() => {
+      switchTo({ ...account, userId: 202, username: 'account-b' })
+      return { provider: 'codex', restoredBackupId: 'b1', preRestoreBackupId: 'b0', restoredFiles: [], removedFiles: [] }
+    })
+    register(service, undefined, undefined, accountService, undefined, managedCliKeys, {}, { backupStore: backupStore as never })
+    await electronMocks.handlers.get('backups:restore')!(trustedEvent(), 'b1')
+    const [, isAccountKey] = vi.mocked(service.adoptRestoredConfig).mock.calls[0]
+    expect(isAccountKey('sk-managed-codex')).toBe(false)
+  })
+
+  it('still reports a completed restore when recording its source fails', async () => {
+    const backupStore = backupStoreStub()
+    const service = serviceStub()
+    vi.mocked(service.adoptRestoredConfig).mockRejectedValue(new Error('disk full'))
+    const { runtimeLog } = register(service, undefined, undefined, undefined, undefined, undefined, {}, { backupStore: backupStore as never })
+    await expect(electronMocks.handlers.get('backups:restore')!(trustedEvent(), 'b1')).resolves.toMatchObject({ restoredBackupId: 'b1' })
+    expect(runtimeLog.log).toHaveBeenCalledWith('warn', 'ipc', 'backups:restore', expect.stringContaining('没能登记'), expect.objectContaining({ provider: 'codex' }))
+  })
+
+  it('rejects a malformed restore id before touching any file', () => {
+    const backupStore = backupStoreStub()
+    register(serviceStub(), undefined, undefined, undefined, undefined, undefined, {}, { backupStore: backupStore as never })
+    expect(() => electronMocks.handlers.get('backups:restore')!(trustedEvent(), '')).toThrow('备份 ID格式错误')
+    expect(backupStore.restore).not.toHaveBeenCalled()
   })
 })

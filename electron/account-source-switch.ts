@@ -30,7 +30,8 @@ export interface AccountSourceSwitchDependencies {
   /** 切换前 CLI 是否选的是官方账号（决定回滚时把记号恢复成什么）。 */
   wasOfficial(provider: ProviderId): boolean
   createBackup(provider: ProviderId): { id: string }
-  restoreBackup(id: string): void
+  /** 恢复切换前那份备份，并把恢复出来的配置登记好来源。 */
+  restoreBackup(id: string): void | Promise<void>
   /** 用当前账号的专属 Key 写配置；失败抛错。挪开官方凭据在写入里一并完成。 */
   writeAccountConfig(provider: ProviderId): Promise<void>
   writeOfficialConfig(provider: ProviderId): Promise<void>
@@ -99,7 +100,7 @@ export async function switchAccountSource(
 
   async function rollBack(): Promise<string | null> {
     const failures: string[] = []
-    try { deps.restoreBackup(backupId) } catch (error) { failures.push(errorText(error)) }
+    try { await deps.restoreBackup(backupId) } catch (error) { failures.push(errorText(error)) }
     if (target === 'account') {
       try { await deps.restoreOfficialCredentials(provider) } catch (error) { failures.push(errorText(error)) }
     }

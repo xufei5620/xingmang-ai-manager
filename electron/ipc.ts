@@ -17,7 +17,7 @@ import { parseWindowCloseReport, type WindowCloseReport } from './window-close-q
 import { classifyNetworkFailure } from './network-failure'
 import type { ExternalDeepLink } from './external-deep-links'
 import { savedAccountId, type SavedAccountsStore } from './saved-accounts'
-import type { ConfigBackupStore } from './backups'
+import { apiKeyDigest, type ConfigBackupAccountContext, type ConfigBackupStore } from './backups'
 import { parseLocalNoticeReadSync, type AnnouncementReadStore } from './announcement-read-store'
 import type { AccelerationApi, AccelerationMode, AccelerationPreferenceApi } from './acceleration-contract'
 import { accelerationFailureReason } from './acceleration-contract'
@@ -1652,10 +1652,28 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     if (target !== 'account' && target !== 'official') throw new Error('未知的账号来源')
     if (target === 'official' && !providerSupportsOfficialAccount(provider)) throw new Error(`${cliCatalog[provider].name} 没有可切回的官方账号`)
     if (target === 'account' && !accountService.getSessionState().account?.userId) throw new Error('请先登录账号，再切到当前账号')
+    // 与备份页同一套账号上下文：备份里记下哪些 Key 是当前账号签发的，回滚后
+    // 恢复出来的配置照样按来源登记，首页不会因此冒出「配置被改过」。
+    const identity = currentBackupAccountId()
+    const context = await readBackupAccountContext()
     return switchAccountSource({
       wasOfficial: (id) => (service.readStoredConfig().officialProviders ?? []).includes(id),
-      createBackup: (id) => options.backupStore.create(id, 'pre-save'),
-      restoreBackup: (id) => { options.backupStore.restore(id) },
+      createBackup: (id) => options.backupStore.create(id, 'pre-save', undefined, context),
+      restoreBackup: async (id) => {
+        const result = options.backupStore.restore(id, context)
+        const stillCurrent = context !== null && currentBackupAccountId() === identity
+        // 同 backups:restore：配置已经恢复，登记来源失败只记日志，不算回滚失败。
+        try {
+          await service.adoptRestoredConfig(result.provider, (apiKey) => (
+            stillCurrent && context.keyDigests.has(apiKeyDigest(apiKey))
+          ))
+        } catch (error) {
+          options.runtimeLog.log('warn', 'config', 'account-source.adopt-failed', '切换回滚已恢复配置，但没能登记这份配置的来源', {
+            provider: result.provider,
+            reason: error instanceof Error ? error.message : String(error),
+          })
+        }
+      },
       writeAccountConfig: async (id) => {
         // 用户亲手点的切换：intent 'explicit' 才穿得过「来源未确认不自动改写」那道闸。
         const outcome = await configureManagedClis(
@@ -2024,17 +2042,64 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     })
     options.onRendererError?.(error)
   })
-  registerTrustedHandler('backups:list', () => options.backupStore.list())
+  /**
+   * 备份列表要标出每份备份里的 Key 是不是当前账号的。只读已有的 Key 缓存，从不
+   * 签发、不联网；读不到（没登录 / 缓存打不开 / 读的期间换了账号）一律返回 null，
+   * 列表退回「不标归属」的旧行为，而不是把所有备份都标成别人的。
+   */
+  function currentBackupAccountId(): string | null {
+    const session = accountService.getSessionState()
+    if (options.previewOnboarding || !session.authenticated || !session.account) return null
+    const siteId = accountService.getActiveSiteId?.() ?? options.realmAccounts?.getSiteId() ?? 'solov'
+    return JSON.stringify([siteId, session.account.userId, accountService.getSessionRevision?.() ?? null])
+  }
+  async function readBackupAccountContext(): Promise<ConfigBackupAccountContext | null> {
+    const session = accountService.getSessionState()
+    const account = session.account
+    const identity = currentBackupAccountId()
+    if (!identity || !account || !options.managedCliKeys) return null
+    let keys: Awaited<ReturnType<ManagedCliKeyStoreLike['read']>>
+    try { keys = await options.managedCliKeys.read(account.userId) } catch { return null }
+    if (currentBackupAccountId() !== identity) return null
+    const siteId = accountService.getActiveSiteId?.() ?? options.realmAccounts?.getSiteId() ?? 'solov'
+    return {
+      // 会话版本不进备份清单：重新登录同一个账号，旧备份仍认得是这个账号的。
+      accountId: JSON.stringify([siteId, account.userId]),
+      accountName: account.username,
+      keyDigests: new Set(keys.map((entry) => apiKeyDigest(entry.key))),
+    }
+  }
+  registerTrustedHandler('backups:list', async () => options.backupStore.list(await readBackupAccountContext()))
   registerTrustedHandler('backups:create', (_event, provider: unknown) => {
     if (!isProviderId(provider)) throw new Error('未知的配置类型')
-    return options.backupStore.create(provider, 'manual')
+    return (async () => options.backupStore.create(provider, 'manual', undefined, await readBackupAccountContext()))()
   })
-  registerTrustedHandler('backups:inspect', (_event, id: unknown) => (
-    options.backupStore.inspect(requiredString(id, '备份 ID', 128))
-  ))
-  registerTrustedHandler('backups:restore', (_event, id: unknown) => (
-    options.backupStore.restore(requiredString(id, '备份 ID', 128))
-  ))
+  registerTrustedHandler('backups:inspect', (_event, id: unknown) => {
+    const backupId = requiredString(id, '备份 ID', 128)
+    return (async () => options.backupStore.inspect(backupId, await readBackupAccountContext()))()
+  })
+  registerTrustedHandler('backups:restore', (_event, id: unknown) => {
+    const backupId = requiredString(id, '备份 ID', 128)
+    return (async () => {
+      const identity = currentBackupAccountId()
+      const context = await readBackupAccountContext()
+      const result = options.backupStore.restore(backupId, context)
+      // 恢复已经落盘，登记来源失败不能反过来让用户以为恢复失败了；最坏情况是
+      // 首页照旧提示一次「配置被改过」，所以只记日志。换过账号就不再认这批 Key。
+      const stillCurrent = context !== null && currentBackupAccountId() === identity
+      try {
+        await service.adoptRestoredConfig(result.provider, (apiKey) => (
+          stillCurrent && context.keyDigests.has(apiKeyDigest(apiKey))
+        ))
+      } catch (error) {
+        options.runtimeLog.log('warn', 'ipc', 'backups:restore', '配置已恢复，但没能登记这份配置的来源', {
+          provider: result.provider,
+          reason: error instanceof Error ? error.message : String(error),
+        })
+      }
+      return result
+    })()
+  })
   registerTrustedHandler('backups:delete', (_event, id: unknown) => (
     options.backupStore.delete(requiredString(id, '备份 ID', 128))
   ))
