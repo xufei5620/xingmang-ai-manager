@@ -11,7 +11,13 @@ import {
 import { randomUUID } from 'node:crypto'
 import os from 'node:os'
 import path from 'node:path'
-import { buildSensitiveWorkspacePrompt, classifyWorkspace, sensitiveWorkspaceLabel } from './workspace-guard'
+import {
+  buildSensitiveWorkspacePrompt,
+  classifyWorkspace,
+  sensitiveWorkspaceLabel,
+  sensitiveWorkspacePolicy,
+  type SensitiveWorkspaceKind,
+} from './workspace-guard'
 import { createStarterWorkspace, resolveStarterWorkspaceParent } from './starter-workspace'
 import { usageDateRange } from './usage-date-range'
 import type { AppSettingsUpdate, AppTheme } from './app-settings'
@@ -1721,67 +1727,95 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
       return null
     }
   }
-  async function commitWorkspace(workspace: string): Promise<string> {
-    await service.updateStoredConfig({ version: 2, workspace })
-    options.extensionService.setRepositoryContext(workspace)
-    options.providerExtensionService.setRepositoryRoot(workspace)
-    return workspace
+  // 选到「每次都提醒」的目录（系统目录、四家工具存密钥的目录）时，选择器里已经
+  // 问过一次；紧接着的那次打开不再重复问。只认同一个路径、只用一次、两分钟内有效，
+  // 之后从最近记录等别的入口再打开，照样会问。
+  let confirmedEveryTimeWorkspace: { workspace: string; expiresAt: number } | null = null
+  function consumeConfirmedEveryTimeWorkspace(workspace: string): boolean {
+    const confirmed = confirmedEveryTimeWorkspace
+    confirmedEveryTimeWorkspace = null
+    return confirmed !== null && confirmed.workspace === workspace && Date.now() <= confirmed.expiresAt
   }
-  registerTrustedHandler('workspace:choose', async (event, rawOptions: unknown) => {
-    const parentWindow = BrowserWindow.fromWebContents(event.sender) ?? undefined
-    // 首页「新建项目文件夹」与引导里那颗按钮：不弹选择器，直接走提示框里「新建」
-    // 那一支。路径由主进程决定，渲染层只能说「要新建」，给不出任何路径（I5）。
-    if (parseChooseWorkspaceOptions(rawOptions).createStarter) {
-      const created = await createStarterWorkspaceOrExplain(parentWindow, '可以再点一次「打开」，自己选一个文件夹。')
-      return created === null ? null : commitWorkspace(created)
+  function classifyLocalWorkspace(workspace: string): SensitiveWorkspaceKind | null {
+    return classifyWorkspace(workspace, { platform: process.platform, home: os.homedir() })
+  }
+  // 「新建一个项目文件夹」是默认按钮（#347）；续接对话时没有它，默认落在取消键上。
+  async function askAboutSensitiveWorkspace(
+    parentWindow: BrowserWindow | undefined,
+    sensitivity: SensitiveWorkspaceKind,
+    allowChooseAnother: boolean,
+  ): Promise<'continue' | 'create' | 'cancel'> {
+    const prompt = buildSensitiveWorkspacePrompt(sensitivity, { allowChooseAnother })
+    const messageBoxOptions = {
+      type: 'warning' as const,
+      title: prompt.title,
+      message: prompt.message,
+      detail: prompt.detail,
+      buttons: [...prompt.buttons],
+      defaultId: prompt.createIndex ?? prompt.cancelIndex,
+      cancelId: prompt.cancelIndex,
+      noLink: true,
     }
+    const answer = parentWindow
+      ? await dialog.showMessageBox(parentWindow, messageBoxOptions)
+      : await dialog.showMessageBox(messageBoxOptions)
+    if (prompt.createIndex !== null && answer.response === prompt.createIndex) return 'create'
+    if (answer.response !== prompt.continueIndex) return 'cancel'
+    // 只记类别不记路径（I13）；这条是客服排查「为什么工具又问了一次信任」的落点。
+    options.runtimeLog.log('warn', 'config', 'workspace.guard.accepted', `用户确认在${sensitiveWorkspaceLabel(sensitivity)}里打开工具`, {
+      kind: sensitivity,
+      policy: sensitiveWorkspacePolicy(sensitivity),
+    })
+    return 'continue'
+  }
+  // 选到敏感目录时先说清楚风险。「换一个文件夹」直接把选择器再打开一次，用户点
+  // 一次「打开」仍然能走到底；「新建一个项目文件夹」（默认）替用户建好一个普通目录
+  // 直接返回，信任写入与 AGENTS.md 都照常，建不成就回到选择器；「仍然打开」照常
+  // 返回，打开时会跳过信任写入与 AGENTS.md 生成（workspace-guard.ts）。
+  async function pickWorkspace(parentWindow: BrowserWindow | undefined): Promise<string | null> {
     const dialogOptions: OpenDialogOptions = {
       title: '选择 CLI 工作目录',
       properties: ['openDirectory', 'createDirectory'],
     }
-    let workspace: string | null = null
-    // 选到主目录 / 盘根 / 桌面 / 下载 / 文档时先说清楚风险。「换一个文件夹」直接
-    // 把选择器再打开一次，用户点一次「打开」仍然能走到底；「新建一个项目文件夹」（默认）
-    // 替用户建好一个普通目录直接返回，信任写入与 AGENTS.md 都照常；「仍然打开」
-    // 照常返回，打开时会跳过信任写入与 AGENTS.md 生成（workspace-guard.ts）。
-    while (workspace === null) {
+    for (;;) {
       const result = parentWindow
         ? await dialog.showOpenDialog(parentWindow, dialogOptions)
         : await dialog.showOpenDialog(dialogOptions)
       if (result.canceled || !result.filePaths[0]) return null
       const selected = result.filePaths[0]
-      const sensitivity = classifyWorkspace(selected, { platform: process.platform, home: os.homedir() })
-      if (!sensitivity) {
-        workspace = selected
-        break
+      const sensitivity = classifyLocalWorkspace(selected)
+      if (!sensitivity) return selected
+      const decision = await askAboutSensitiveWorkspace(parentWindow, sensitivity, true)
+      if (decision === 'continue') {
+        if (sensitiveWorkspacePolicy(sensitivity) === 'every-time') {
+          confirmedEveryTimeWorkspace = { workspace: selected, expiresAt: Date.now() + 120_000 }
+        }
+        return selected
       }
-      const prompt = buildSensitiveWorkspacePrompt(sensitivity)
-      const messageBoxOptions = {
-        type: 'warning' as const,
-        title: prompt.title,
-        message: prompt.message,
-        detail: prompt.detail,
-        buttons: [...prompt.buttons],
-        defaultId: prompt.createIndex,
-        cancelId: prompt.cancelIndex,
-        noLink: true,
-      }
-      const answer = parentWindow
-        ? await dialog.showMessageBox(parentWindow, messageBoxOptions)
-        : await dialog.showMessageBox(messageBoxOptions)
-      if (answer.response === prompt.createIndex) {
-        workspace = await createStarterWorkspaceOrExplain(parentWindow, '接下来会重新打开文件夹选择窗口，可以在里面自己新建一个文件夹再选它。')
-        continue
-      }
-      if (answer.response === prompt.continueIndex) {
-        workspace = selected
-        // 只记类别不记路径（I13）；这条是客服排查「为什么工具又问了一次信任」的落点。
-        options.runtimeLog.log('warn', 'config', 'workspace.guard.accepted', `用户确认在${sensitiveWorkspaceLabel(sensitivity)}里打开工具`, {
-          kind: sensitivity,
-        })
+      if (decision === 'create') {
+        const created = await createStarterWorkspaceOrExplain(parentWindow, '接下来会重新打开文件夹选择窗口，可以在里面自己新建一个文件夹再选它。')
+        if (created !== null) return created
       }
     }
-    return commitWorkspace(workspace)
+  }
+  // 「每次都提醒」的目录不记住：不写进配置，下次还得重新选或在打开时再确认。
+  async function rememberWorkspace(workspace: string): Promise<void> {
+    const sensitivity = classifyLocalWorkspace(workspace)
+    if (sensitivity && sensitiveWorkspacePolicy(sensitivity) === 'every-time') return
+    await service.updateStoredConfig({ version: 2, workspace })
+    options.extensionService.setRepositoryContext(workspace)
+    options.providerExtensionService.setRepositoryRoot(workspace)
+  }
+  registerTrustedHandler('workspace:choose', async (event, rawOptions: unknown) => {
+    const parentWindow = BrowserWindow.fromWebContents(event.sender) ?? undefined
+    // 首页「新建项目文件夹」与引导里那颗按钮：不弹选择器，直接走提示框里「新建」
+    // 那一支。路径由主进程决定，渲染层只能说「要新建」，给不出任何路径（I5）。
+    const workspace = parseChooseWorkspaceOptions(rawOptions).createStarter
+      ? await createStarterWorkspaceOrExplain(parentWindow, '可以再点一次「打开」，自己选一个文件夹。')
+      : await pickWorkspace(parentWindow)
+    if (workspace === null) return null
+    await rememberWorkspace(workspace)
+    return workspace
   })
   registerTrustedHandler('repository:get-context', () => options.extensionService.getRepositoryContext())
   registerTrustedHandler('runtime:install-node', async (event) => {
@@ -1885,14 +1919,38 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   })
   registerTrustedHandler('desktop:uninstall-codex', () => service.uninstallCodexDesktop())
   registerTrustedHandler('desktop:check-update-codex', () => service.inspectCodexDesktopUpdate(true))
-  registerTrustedHandler('cli:launch', (_event, provider: unknown, workspace: unknown, mode: unknown) => {
+  registerTrustedHandler('cli:launch', (event, provider: unknown, workspace: unknown, mode: unknown) => {
     if (!isProviderId(provider)) throw new Error('未知的 CLI 类型')
     const stored = service.readStoredConfig()
-    return service.launchProvider(
-      provider,
-      parseWorkspace(workspace, stored.workspace),
-      parseCliLaunchMode(mode),
-    )
+    const target = parseWorkspace(workspace, stored.workspace)
+    const launchMode = parseCliLaunchMode(mode)
+    const sensitivity = classifyLocalWorkspace(target)
+    if (!sensitivity || sensitiveWorkspacePolicy(sensitivity) !== 'every-time' || consumeConfirmedEveryTimeWorkspace(target)) {
+      return service.launchProvider(provider, target, launchMode)
+    }
+    // 最近记录、记录页「接着上次对话」、老版本记住的目录都不经过选择器，
+    // 所以「每次都提醒」的目录在这里再问一次。续接对话换了目录就接不上，
+    // 那一问只给「先不打开」，不给「新建」和「换一个文件夹」。
+    return (async () => {
+      const parentWindow = BrowserWindow.fromWebContents(event.sender) ?? undefined
+      const allowChooseAnother = launchMode === 'new'
+      const decision = await askAboutSensitiveWorkspace(parentWindow, sensitivity, allowChooseAnother)
+      if (decision === 'continue') return service.launchProvider(provider, target, launchMode)
+      let replacement: string | null = null
+      if (decision === 'create') {
+        replacement = await createStarterWorkspaceOrExplain(parentWindow, '接下来会重新打开文件夹选择窗口，可以在里面自己新建一个文件夹再选它。')
+      }
+      if (replacement === null && allowChooseAnother) replacement = await pickWorkspace(parentWindow)
+      if (replacement === null) {
+        options.runtimeLog.log('info', 'config', 'workspace.guard.declined', `用户没有在${sensitiveWorkspaceLabel(sensitivity)}里打开工具`, {
+          kind: sensitivity,
+        })
+        return undefined
+      }
+      consumeConfirmedEveryTimeWorkspace(replacement)
+      await rememberWorkspace(replacement)
+      return service.launchProvider(provider, replacement, launchMode)
+    })()
   })
   registerTrustedHandler('desktop:codex-status', () => service.inspectCodexDesktop())
   registerTrustedHandler('desktop:codex-locale-status', () => service.inspectCodexDesktopLocale())
