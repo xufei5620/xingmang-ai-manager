@@ -15,6 +15,7 @@ import { FirstRunSteps } from './FirstRun'
 import { dismissFirstRun, getFirstRunStorage, readFirstRunDismissals } from './first-run-dismissal'
 import { recentWorkspaces, workspaceButtonLabel, workspaceChoices } from './recent-workspaces'
 import { errorMessage } from '../../business-common'
+import { isNetworkFailureText } from './online-resync'
 import { gitHostPlatform, gitMissingFirstRunHint, gitMissingNotice } from '../../../../electron/git-runtime'
 
 export interface HomeProps {
@@ -54,6 +55,17 @@ export interface HomeProps {
 
 function firstRunOf(tool: ToolId) {
   return toolRegistry.find((item) => item.id === tool)?.firstRun
+}
+
+/**
+ * 断网启动时这条横幅原来会先说一句「账号 Key 已同步」，再跟上一串网络失败原文，
+ * 自相矛盾且没交代下一步。网络类失败改说这一句：已装好的工具照常能用，网络回来
+ * 之后客户端自己会补写，用户什么都不用做。「重新同步」按钮保留，想立刻试的照点。
+ */
+const offlineBootstrapNotice = '当前网络不可用，已装好的工具照常能用；联网后会自动补写 Key。'
+
+function bootstrapErrorText(error: string) {
+  return isNetworkFailureText(error) ? offlineBootstrapNotice : `账号 Key 初始化没有完成：${error}`
 }
 
 export function Home(props: HomeProps) {
@@ -223,11 +235,11 @@ export function Home(props: HomeProps) {
       </>} />
     {props.bootstrap && !props.bootstrap.result && <div className="v2-bootstrap-notice" role={props.bootstrap.error ? 'alert' : 'status'} data-busy={props.bootstrap.error ? undefined : 'true'}>
       <span className={`v2-dot ${props.bootstrap.error ? 'is-warn' : ''}`} />
-      <span>{props.bootstrap.error ? `账号 Key 初始化没有完成：${props.bootstrap.error}` : `${props.bootstrap.label}（${props.bootstrap.percent}%）`}</span>
+      <span>{props.bootstrap.error ? bootstrapErrorText(props.bootstrap.error) : `${props.bootstrap.label}（${props.bootstrap.percent}%）`}</span>
       {props.bootstrap.error && props.onBootstrapRetry && <Button size="xs" onClick={props.onBootstrapRetry}>重新同步</Button>}
     </div>}
     {props.bootstrap?.result && (props.bootstrap.result.configured.length || props.bootstrap.result.failed.length || props.bootstrap.result.warnings.length) > 0 && <div className={`v2-bootstrap-notice ${props.bootstrap.result.failed.length || props.bootstrap.result.warnings.length ? 'is-warn' : ''}`} role="status">
-      <span className={`v2-dot ${props.bootstrap.result.failed.length || props.bootstrap.result.warnings.length ? 'is-warn' : 'is-ok'}`} /><span>{props.bootstrap.result.configured.length ? `已完成 ${props.bootstrap.result.configured.length} 组工具的 Key 配置。` : '账号 Key 已同步。'}{props.bootstrap.result.failed.length ? ` ${props.bootstrap.result.failed.map((entry) => entry.message).join('；')}` : ''}{props.bootstrap.result.warnings.length ? ` ${props.bootstrap.result.warnings.join('；')}` : ''}</span>
+      <span className={`v2-dot ${props.bootstrap.result.failed.length || props.bootstrap.result.warnings.length ? 'is-warn' : 'is-ok'}`} /><span>{props.bootstrap.result.networkBlocked ? offlineBootstrapNotice : `${props.bootstrap.result.configured.length ? `已完成 ${props.bootstrap.result.configured.length} 组工具的 Key 配置。` : '账号 Key 已同步。'}${props.bootstrap.result.failed.length ? ` ${props.bootstrap.result.failed.map((entry) => entry.message).join('；')}` : ''}${props.bootstrap.result.warnings.length ? ` ${props.bootstrap.result.warnings.join('；')}` : ''}`}</span>
       {(props.bootstrap.result.failed.length > 0 || props.bootstrap.result.warnings.length > 0) && props.onBootstrapRetry && <Button size="xs" onClick={props.onBootstrapRetry}>重新同步</Button>}
     </div>}
     {error && <div role="alert" className="v2-callout is-bad"><span>{error}</span><Button size="xs" onClick={props.onScan}>重新检测</Button></div>}
