@@ -19,6 +19,8 @@ const catalogCoverage: Record<OperationErrorKey, { sample: string } | { unreacha
   toolRunning: { sample: 'Claude Code 更新失败：文件被占用，检测到 Claude Code 正在运行（2 个进程），请关掉它的窗口再试。' },
   installBlocked: { sample: 'Grok CLI 安装失败：安装文件已被隔离，请检查杀毒软件的隔离记录' },
   downloadTimeout: { sample: 'Codex CLI 安装失败：npm 官方源：request to registry 失败，reason: ETIMEDOUT' },
+  // config-files 写 Key 前的校验（safe-local-data）原话。
+  folderRelocated: { sample: 'Provider 配置根目录不能经过符号链接或目录联接' },
   permission: { sample: 'Claude Code 安装失败：npm 官方源：EPERM: operation not permitted, rename' },
   diskFull: { sample: 'Claude Code 安装失败：npm 官方源：ENOSPC: no space left on device, write' },
   certDate: { sample: '账号接口请求失败：net::ERR_CERT_DATE_INVALID' },
@@ -128,6 +130,13 @@ describe('renderer-v2 operation error classification', () => {
     expect(JSON.stringify(errors)).not.toContain('以管理员身份重试')
     expect(presentOperationError('安装失败：EACCES permission denied')?.actions
       .some((action) => action.label.includes('管理员'))).toBe(false)
+  })
+
+  it('sends a relocated folder to the check page instead of blaming permissions', () => {
+    // 同一句里带着 EPERM 也不能被 permission 抢走：改权限、关杀毒都修不好它。
+    const hint = presentOperationError('写入失败：应用设置目录不能经过符号链接或目录联接（EPERM）')
+    expect(hint?.key).toBe('folderRelocated')
+    expect(hint?.actions).toEqual([{ id: 'network', label: '打开检查页' }, { id: 'support', label: '找客服' }])
   })
 
   it('offers 复制路径 on the antivirus block, where the catalog has asked for it all along', () => {

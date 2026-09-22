@@ -83,6 +83,27 @@ export function migrateLegacyWindowsLoginItem(
   return app.getLoginItemSettings(current).openAtLogin
 }
 
+// 卸载时调用。程序文件删掉后，Run 键里那一条每次开机都指着一个不存在的 exe，
+// 系统也不会替我们清。和关掉开关走同一个写法：Windows 按名字删，带参数的与
+// 0.2.9 之前不带参数的同名，一次删干净。同样必须先 setAppUserModelId。
+// 返回删完后两种写法是否都查不到了。
+export function removeWindowsLoginItem(
+  dependencies: Pick<PlatformSystemDependencies, 'app' | 'executablePath'>,
+): boolean {
+  const { app, executablePath } = dependencies
+  app.setLoginItemSettings({
+    openAtLogin: false,
+    ...windowsLoginItem(executablePath),
+  })
+  return (
+    !app.getLoginItemSettings(windowsLoginItem(executablePath)).openAtLogin &&
+    !app.getLoginItemSettings({
+      path: executablePath,
+      args: legacyWindowsLoginArgs,
+    }).openAtLogin
+  )
+}
+
 export class PlatformSystemService {
   private readonly listeners = new Set<(state: PlatformSystemState) => void>()
   private queue: Promise<unknown> = Promise.resolve()

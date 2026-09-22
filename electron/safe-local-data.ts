@@ -31,6 +31,47 @@ export function assertNoReparseComponents(targetPath: string, label: string): vo
   }
 }
 
+export interface ReparseComponent {
+  /** 路径上第一个被重定向的那一级（原样，未解析）。 */
+  component: string
+  /** 它实际指向的位置；解析不出来（链接已失效）时为 null。 */
+  target: string | null
+}
+
+/**
+ * Read-only twin of `assertNoReparseComponents` for diagnostics: walks the same
+ * components with the same test and reports the first one that would make the
+ * assertion throw. It never relaxes or replaces the assertion — every writer
+ * still goes through `assertNoReparseComponents`. A component that cannot be
+ * inspected (other than a missing one) is reported with a null target, because
+ * the assertion rejects that case too.
+ */
+export function findReparseComponent(targetPath: string): ReparseComponent | null {
+  const resolved = path.resolve(targetPath)
+  const parsed = path.parse(resolved)
+  const relative = resolved.slice(parsed.root.length)
+  let current = parsed.root
+  for (const segment of relative.split(path.sep).filter(Boolean)) {
+    current = path.join(current, segment)
+    try {
+      fs.lstatSync(current)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
+      return { component: current, target: null }
+    }
+    if (existingPathIsReparsePoint(current)) {
+      let target: string | null = null
+      try {
+        target = fs.realpathSync(current)
+      } catch {
+        // A dangling link: the assertion rejects it all the same.
+      }
+      return { component: current, target }
+    }
+  }
+  return null
+}
+
 export function ensureSafeDataDirectory(directory: string, label: string): void {
   assertNoReparseComponents(path.dirname(path.resolve(directory)), label)
   fs.mkdirSync(directory, { recursive: true })
