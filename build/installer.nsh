@@ -1,11 +1,12 @@
 # electron-builder 的 NSIS 自定义脚本。本文件被插在生成脚本的最前面，
 # 所以这里只能定义宏和 !define，真正的代码都在宏里，由模板在合适的位置插入。
 #
-# 这里一共做三件事，每一件都对应一个客户机上真实发生过的问题：
+# 这里一共做四件事，每一件都对应一个客户机上会真实发生的问题：
 #
 #   1. customInstall：安装收尾时补齐缺失的快捷方式（见下面那段长注释）。
 #   2. customHeader 里的目录页守卫：不许把程序装进别人的非空目录。
 #   3. customRemoveFiles：卸载时只删本程序自己装进去的东西。
+#   4. customInit：系统太旧（Windows 10 以下）时一开始就说明并退出。
 #
 # 2 和 3 是一对。老版本允许用户把安装目录选成任意已有目录（比如 D:\下载），
 # 而卸载时执行的是 electron-builder 默认的 `RMDir /r $INSTDIR`——整个目录连
@@ -203,6 +204,41 @@
       RMDir "$INSTDIR"
     FunctionEnd
   !endif
+!macroend
+
+# ---------------------------------------------------------------------------
+# 系统版本守卫。
+#
+# electron-builder 模板自己的 check64BitAndSetRegView 只拦 Vista 及更早的系统
+# 和 32 位 Windows（后者有模板自带的中文提示），而 Electron 从 23 起就不再支持
+# Windows 7 / 8 / 8.1。不拦的话，这些机器能把程序完整装上，双击却打不开，也没有
+# 任何提示——付费用户只会以为软件坏了。
+#
+# Windows 10 ARM64 同理：它只能仿真 32 位 x86，仿真不了 x64，而我们只出 x64 包。
+# 32 位的 NSIS 安装程序在那上面照样跑得起来，模板的 RunningX64 也会放行
+# （IsWow64Process 在 ARM64 上同样返回真）。x64 仿真从 Windows 11（build 22000）
+# 才有。
+#
+# customInit 在模板的 .onInit 里排在 check64BitAndSetRegView、单实例检查和
+# initMultiUser 之后；这三步只读注册表、建互斥量，什么都不写。这里 Quit 之后
+# 安装界面不会出现，不会写任何文件或注册表。perMachine 安装的清单要求管理员
+# 权限，所以 UAC 弹窗会在这句提示之前出现，这是清单层面的事，脚本管不到。
+#
+# AtLeastWin10 靠 GetVersionEx，未在清单里声明支持 Windows 10 时会被系统谎报成
+# 8.x；makensis 默认的 ManifestSupportedOS 是 all，包含 Windows 10 的 GUID，
+# electron-builder 也没有覆盖它，所以这里拿到的是真实版本。
+#
+# /SD IDOK：静默安装（/S）时不弹框、直接按"确定"走，免得挂住。
+!macro customInit
+  ${IfNot} ${AtLeastWin10}
+    MessageBox MB_OK|MB_ICONSTOP "星芒AI管理工具需要 Windows 10 或更新的系统。$\r$\n$\r$\n这台电脑的系统版本太旧，装上也打不开，所以这次没有安装任何东西。" /SD IDOK
+    Quit
+  ${EndIf}
+  ${If} ${IsNativeARM64}
+  ${AndIfNot} ${AtLeastBuild} 22000
+    MessageBox MB_OK|MB_ICONSTOP "星芒AI管理工具在这台电脑上需要 Windows 11 才能运行（ARM 处理器的 Windows 10 不支持）。$\r$\n$\r$\n这次没有安装任何东西。" /SD IDOK
+    Quit
+  ${EndIf}
 !macroend
 
 # electron-builder 默认的"删除已安装文件"这一步是 `RMDir /r $INSTDIR`。

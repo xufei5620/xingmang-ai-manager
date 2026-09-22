@@ -14,7 +14,7 @@ export function describeChineseLocaleResult(result: CodexDesktopLocaleResult): s
   // of reusing the "设置已保存" wording written for the Chinese direction.
   if (result.configuredLocale !== 'zh-CN') {
     return result.restarted
-      ? '已改为跟随系统语言，Codex 已重新打开，本机调试端口不再开启。'
+      ? '已改为跟随系统语言，Codex 已重新打开，那条本机通道也不再开启。'
       : '已改为跟随系统语言，下次从星芒打开 Codex 时生效。'
   }
   if (result.runtimeVerified) return result.restarted ? '中文界面已启用，Codex 已重新打开。' : '中文界面已启用。'
