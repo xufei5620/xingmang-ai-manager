@@ -758,11 +758,12 @@ describe('the disk space check', () => {
     readDiskSpace: DiagnosticsDependencies['readDiskSpace'],
   ): DiagnosticsDependencies {
     const input = dependencies(home)
-    // macOS 上托管目录由 HOME 算出来，Linux 的 CI 机器上也算得出——win32 要真实的
-    // ProgramData，在这里拿不到，两处目录就只剩一处了。
+    // 托管目录这一处要算得出来才有两块盘可比。win32 要真实的 ProgramData，
+    // macOS 只要一个 posix 绝对路径的 HOME——所以这里钉成 darwin 并给一个不落地
+    // 的 HOME（磁盘读取是注入的，路径不会真的被访问），三个平台的结果才一致。
     input.platform = 'darwin'
-    input.env = { HOME: home }
-    input.userDataDirectory = path.join(home, 'Library', 'Application Support', 'XingMangAI')
+    input.env = { HOME: '/Users/fixture' }
+    input.userDataDirectory = '/Users/fixture/Library/Application Support/XingMangAI'
     input.readDiskSpace = readDiskSpace
     return input
   }

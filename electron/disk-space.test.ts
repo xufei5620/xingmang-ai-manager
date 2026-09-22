@@ -1,3 +1,4 @@
+import path from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import {
   describeInsufficientDiskSpace,
@@ -29,25 +30,28 @@ describe('reading free disk space', () => {
   it('reports the space an unprivileged user can actually take', async () => {
     const statfs = vi.fn(async () => ({ bavail: 3_000_000, bsize: 1024, blocks: 100_000_000 }))
     const stat = vi.fn(async () => ({ dev: 42 }))
+    // 路径先 resolve 再比：Windows 上 '/data' 会被补成 'D:\\data'，写死的字面量
+    // 在那边永远对不上。
+    const target = path.resolve(path.join('/data', 'xingmang'))
 
-    const result = await readDiskSpace('/data/xingmang', { statfs, stat })
+    const result = await readDiskSpace(target, { statfs, stat })
 
     expect(result).toMatchObject({
       availableBytes: 3_000_000 * 1024,
       totalBytes: 100_000_000 * 1024,
-      measuredPath: '/data/xingmang',
+      measuredPath: target,
       deviceId: 42,
     })
   })
 
   it('walks up to the nearest existing directory, because a first install has no target yet', async () => {
-    const existing = '/data'
+    const existing = path.resolve('/data')
     const statfs = vi.fn(async (target: string) => {
       if (target !== existing) throw missingPathError()
       return { bavail: 1_000, bsize: 4096, blocks: 10_000 }
     })
 
-    const result = await readDiskSpace('/data/xingmang/Cli/npm', {
+    const result = await readDiskSpace(path.join(existing, 'xingmang', 'Cli', 'npm'), {
       statfs,
       stat: async () => ({ dev: 7 }),
     })
@@ -61,11 +65,14 @@ describe('reading free disk space', () => {
       throw Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' })
     })
 
-    expect(await readDiskSpace('/data', { statfs, stat: async () => ({ dev: 1 }) })).toBeNull()
+    expect(await readDiskSpace(path.resolve('/data'), {
+      statfs,
+      stat: async () => ({ dev: 1 }),
+    })).toBeNull()
   })
 
   it('keeps the reading when only the device id is unavailable', async () => {
-    const result = await readDiskSpace('/data', {
+    const result = await readDiskSpace(path.resolve('/data'), {
       statfs: async () => ({ bavail: 10, bsize: 4096, blocks: 100 }),
       stat: async () => { throw missingPathError() },
     })

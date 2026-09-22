@@ -55,7 +55,11 @@ describe('checking free space before a CLI install starts', () => {
     expect(fixture.target.send).not.toHaveBeenCalled()
   })
 
-  it('starts the install when the disk has room', async () => {
+  // 放行之后这个夹具会一路走到「找 npm」：Windows 上找不到 npm 就会去真的装一份
+  // Node.js LTS（要出网，30 秒超时根本打不住），其他平台直接以「未检测到 npm」收
+  // 场。放行本身是平台无关的纯逻辑，disk-space.test.ts 里三档都钉过，所以这两条
+  // 只在停得住的平台上跑。
+  it.runIf(process.platform !== 'win32')('starts the install when the disk has room', async () => {
     const fixture = createInstallFixture(async () => diskWith(40 * gigabyte))
 
     const error = await fixture.service.installCli('claude', fixture.target).catch((reason: unknown) => reason)
@@ -64,11 +68,15 @@ describe('checking free space before a CLI install starts', () => {
     expect(String(error)).toContain('未检测到 npm')
   })
 
-  it('starts the install when the free space cannot be read, rather than blocking over a missing number', async () => {
-    const fixture = createInstallFixture(async () => null)
+  it.runIf(process.platform !== 'win32')(
+    'starts the install when the free space cannot be read, rather than blocking over a missing number',
+    async () => {
+      const fixture = createInstallFixture(async () => null)
 
-    const error = await fixture.service.installCli('claude', fixture.target).catch((reason: unknown) => reason)
+      const error = await fixture.service.installCli('claude', fixture.target)
+        .catch((reason: unknown) => reason)
 
-    expect(String(error)).toContain('未检测到 npm')
-  })
+      expect(String(error)).toContain('未检测到 npm')
+    },
+  )
 })
