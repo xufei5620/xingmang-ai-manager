@@ -45,8 +45,9 @@ import {
 } from './business-common'
 import { scopeOptions } from './registry/business'
 import {
-  curatedCommandText,
+  curatedCommandLines,
   curatedDisclaimer,
+  curatedInstallTarget,
   curatedItemsFor,
   curatedNeedsInput,
   curatedNetworkLabels,
@@ -282,6 +283,18 @@ export function curatedPlaceholderField(
   return '参数'
 }
 
+/**
+ * 插件市场的 `plugin install` 没有钉版本的开关，装到的就是市场当下那一份。既然改不了，
+ * 那至少要在用户点确认之前说清楚，并把复核时的市场 commit 摆出来当参照。
+ */
+export function curatedVersionText(item: CuratedExtension): string {
+  if (item.install.type !== 'plugin')
+    return item.pinnedVersion ? `固定在 ${item.pinnedVersion}` : '由对方在线提供，没有本地版本'
+  const commit = item.marketplaceCommit ? `，我们复核过的是 ${item.marketplaceCommit.slice(0, 12)} 那一版` : ''
+  const declared = item.pinnedVersion ? `插件自己声明的版本是 ${item.pinnedVersion}。` : ''
+  return `${declared}安装的是官方市场当前的版本${commit}。`
+}
+
 export function CuratedDetails({ item }: { item: CuratedExtension }) {
   const network = curatedNetworkLabels[item.network]
   return (
@@ -310,9 +323,17 @@ export function CuratedDetails({ item }: { item: CuratedExtension }) {
         <dt>
           {item.install.type === 'http'
             ? '将写进配置的服务地址'
-            : '将写进配置、由工具启动时执行的命令'}
+            : item.install.type === 'plugin'
+              ? '将要执行的命令'
+              : '将写进配置、由工具启动时执行的命令'}
         </dt>
-        <dd className="v2-business-path">{curatedCommandText(item)}</dd>
+        <dd className="v2-business-path">
+          {curatedCommandLines(item).map((line) => (
+            <div key={line}>{line}</div>
+          ))}
+        </dd>
+        <dt>装的是哪一版</dt>
+        <dd>{curatedVersionText(item)}</dd>
         <dt>装到哪里</dt>
         <dd>我的（全局），当前这个工具在任何文件夹里打开都能用</dd>
       </dl>
@@ -326,10 +347,12 @@ export function CuratedDetails({ item }: { item: CuratedExtension }) {
 export function CuratedShelf({
   items,
   disabled,
+  installedIds,
   onPick,
 }: {
   items: readonly CuratedExtension[]
   disabled?: boolean
+  installedIds?: readonly string[]
   onPick: (item: CuratedExtension) => void
 }) {
   if (items.length === 0) return null
@@ -343,37 +366,52 @@ export function CuratedShelf({
       <p className="v2-curated-lead">
         这几项是我们挑过的，都写清了它能让 AI 多做什么、要拿到什么权限。点「安装」会先让你确认一次。
       </p>
-      {items.map((item) => (
-        <ListRow
-          key={item.id}
-          icon={item.install.type === 'http' ? Globe : Server}
-          title={item.name}
-          badge={
-            <>
-              {item.requiresAccount && <Pill tone="accent">需要先登录</Pill>}
-              {item.risks.map((risk) => (
-                <Pill key={risk} tone="warn">
-                  {curatedRiskLabels[risk].label}
-                </Pill>
-              ))}
-            </>
-          }
-          desc={item.summary}
-          meta={curatedNetworkLabels[item.network] ?? undefined}
-          actions={
-            <Button
-              size="sm"
-              icon={Plus}
-              disabled={disabled}
-              onClick={() => onPick(item)}
-              testId={`curated-install-${item.id}`}
-            >
-              安装
-            </Button>
-          }
-          testId={`curated-row-${item.id}`}
-        />
-      ))}
+      {items.map((item) => {
+        // 已经装上的还给一个「安装」按钮，点下去只会换来一句 CLI 的英文报错。
+        const installed = (installedIds ?? []).includes(curatedInstallTarget(item))
+        return (
+          <ListRow
+            key={item.id}
+            icon={
+              item.install.type === 'plugin'
+                ? Package
+                : item.install.type === 'http'
+                  ? Globe
+                  : Server
+            }
+            title={item.name}
+            badge={
+              <>
+                {installed && <Pill tone="ok">已安装</Pill>}
+                {item.requiresAccount && <Pill tone="accent">需要先登录</Pill>}
+                {item.risks.map((risk) => (
+                  <Pill key={risk} tone="warn">
+                    {curatedRiskLabels[risk].label}
+                  </Pill>
+                ))}
+              </>
+            }
+            desc={item.summary}
+            meta={curatedNetworkLabels[item.network] ?? undefined}
+            actions={
+              installed ? (
+                <Pill>已在列表里</Pill>
+              ) : (
+                <Button
+                  size="sm"
+                  icon={Plus}
+                  disabled={disabled}
+                  onClick={() => onPick(item)}
+                  testId={`curated-install-${item.id}`}
+                >
+                  安装
+                </Button>
+              )
+            }
+            testId={`curated-row-${item.id}`}
+          />
+        )
+      })}
     </Card>
   )
 }
@@ -665,6 +703,10 @@ export function ExtensionsPage({
         .toLowerCase()
         .includes(query.trim().toLowerCase()),
   )
+  // 精选卡用它判断「这条已经装上了」，所以看的是整份快照，而不是被搜索框过滤过的 list。
+  const installedIds = (snapshot?.items ?? [])
+    .filter((item) => item.kind === kind && item.installed)
+    .map((item) => item.id)
   const capability = snapshot?.capabilities[kind]
   const supportsInstall =
     kind !== 'skill' || provider === 'codex' || provider === 'gemini'
@@ -690,6 +732,8 @@ export function ExtensionsPage({
   }
   // 需要用户自己指定路径的精选条目不直接装，先把表单填好，把该替换的那一项留在参数里。
   const prefillCurated = (item: CuratedExtension) => {
+    // 插件条目没有占位符，永远走不到这条路；写在最前面是为了让类型收窄到 MCP 那两种。
+    if (item.install.type === 'plugin') return
     showForm()
     setFormName(item.id)
     setTransport(item.install.type === 'http' ? 'http' : 'stdio')
@@ -710,11 +754,20 @@ export function ExtensionsPage({
     target?.scrollIntoView({ block: 'center' })
     target?.focus()
   }
+  // 插件精选走的是页面上「添加插件」那条出口：主进程会先保证官方市场在册，再执行
+  // `plugin install <插件名>@<市场名>`。精选不另开通道，校验与手填来源完全同一套。
   const installCurated = (item: CuratedExtension) =>
     void operation.execute(
       'curated',
       async () => {
-        await submitMcpInstall(api, provider, item.id, item.install, 'user')
+        if (item.install.type === 'plugin')
+          await api.mutateProviderExtension({
+            provider,
+            kind: 'plugin',
+            action: 'install',
+            source: curatedInstallTarget(item),
+          })
+        else await submitMcpInstall(api, provider, item.id, item.install, 'user')
         setCurated(null)
         await resource.reload()
       },
@@ -920,10 +973,12 @@ export function ExtensionsPage({
           body="请在该工具中管理技能，或切换到 Codex CLI / Gemini CLI。"
         />
       )}
-      {kind === 'mcp' && (
+      {/* 插件页的「市场」页签本身就是一整份可装清单，精选只放在「已安装」那一侧。 */}
+      {(kind === 'mcp' || (kind === 'plugin' && view === 'installed')) && (
         <CuratedShelf
           items={curatedItems}
           disabled={capability?.list === false || Boolean(operation.busy)}
+          installedIds={installedIds}
           onPick={setCurated}
         />
       )}
