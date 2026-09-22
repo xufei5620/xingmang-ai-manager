@@ -990,6 +990,8 @@ if (!hasSingleInstanceLock) {
           // 「磁盘空间」那一项要看软件数据目录所在的盘，而 userData 在哪只有宿主
           // 知道；CLI 落点由诊断自己算。
           userDataDirectory: app.getPath('userData'),
+          // 跟着当前账号所在的那一套 output 走（历史账号多一层 realms/api-account）。
+          probeAiOutput: () => assetStore.assertWritable(),
           windowsExecution: windowsCliExecution,
           // 报告只装中文结论（它会被导出发给客服），认出失败靠的那段上游原文
           // 留在 runtime.jsonl 里。
@@ -1315,6 +1317,9 @@ if (!hasSingleInstanceLock) {
       }))
       const assetStore = new AiAssetStore({
         outputRoot: aiOutputRoot,
+        // 全局 output 在安装目录旁边，用户自己动不了它；能绕开的是画布项目，新项目的
+        // 作品存在用户自己选的文件夹里。改默认位置另走一个 PR（盲点 2 的后半）。
+        unwritableGuidance: '可以先在画布里新建一个项目、给它选一个自己的文件夹，在那里生成就能存下来；也可以联系客服。',
         trustedProxyFetchImpl: (input, init) => net.fetch(input, init),
         nativeOperations: {
           copyImage: (bytes) => {
@@ -1348,15 +1353,17 @@ if (!hasSingleInstanceLock) {
           },
         },
       })
-      // Keep the image output location visible from the moment the app starts.
-      // The write path is checked again by AiAssetStore for every asset.
-      try {
-        assetStore.ensureOutputDirectory()
-      } catch (error) {
-        runtimeLog.log('warn', 'ai-chat', 'asset.output-directory.unavailable', 'AI 图片 output 目录初始化失败', {
-          reason: error instanceof Error ? error.message : String(error),
+      // Create the output location at startup and prove it accepts a file, so a
+      // location that cannot be written shows up in the log and on the check page
+      // (AI_OUTPUT) before anyone pays for a generation. Every paid request probes
+      // again, and the write path is still checked by AiAssetStore for each asset.
+      void assetStore.assertWritable().catch((error) => {
+        runtimeLog.log('warn', 'ai-chat', 'asset.output-directory.unavailable', 'AI 作品保存位置写不进去', {
+          // The user-facing message only says "写不进去"; the log keeps the OS
+          // reason (EACCES, EROFS, ENOSPC …) that support needs.
+          reason: error instanceof Error && error.cause instanceof Error ? error.cause.message : String(error),
         })
-      }
+      })
       const videoAssets = new AiVideoAssetStore({
         outputRoot: aiOutputRoot,
         nativeOperations: {
@@ -1399,6 +1406,7 @@ if (!hasSingleInstanceLock) {
       const createProjectAssetContext = (outputRoot: string) => {
         const images = new AiAssetStore({
           outputRoot,
+          unwritableGuidance: '这个项目的文件夹可能被移走了，或者放不进新文件。请新建一个项目、换个文件夹再试。',
           trustedProxyFetchImpl: (input, init) => net.fetch(input, init),
           nativeOperations: {
             copyImage: (bytes) => {
@@ -1551,6 +1559,7 @@ if (!hasSingleInstanceLock) {
         credentials: chatCredentials,
         assets: {
           prepareProject: (userId, projectId) => canvasProjectAssets.prepareProject(userId, projectId),
+          assertWritable: (userId, projectId) => canvasProjectAssets.assertWritable(userId, projectId),
           storeBase64: (userId, value, metadata) => canvasProjectAssets.storeBase64(userId, value, metadata),
           storeRemoteUrl: (userId, url, metadata) => canvasProjectAssets.storeRemoteUrl(userId, url, metadata),
           readOwned: (userId, assetId, projectId) => canvasProjectAssets.readImageOwned(userId, assetId, projectId),
@@ -1566,6 +1575,7 @@ if (!hasSingleInstanceLock) {
         tasks: videoTasks,
         assets: {
           prepareProject: (userId, projectId) => canvasProjectAssets.prepareProject(userId, projectId),
+          assertWritable: (userId, projectId) => canvasProjectAssets.assertWritable(userId, projectId),
           storeMp4: (userId, bytes, metadata) => canvasProjectAssets.storeMp4(userId, bytes, metadata),
           readImageDataUri: (userId, assetId, projectId) => canvasProjectAssets.readImageDataUri(userId, assetId, projectId),
           readOwned: (userId, assetId, kind, projectId) => canvasProjectAssets.readMediaOwned(userId, assetId, kind, projectId),
