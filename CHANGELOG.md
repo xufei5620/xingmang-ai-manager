@@ -1100,6 +1100,35 @@
   `workspace.starter.failed` 不记路径（I13）。「文档」位置由新的可选项
   `IpcRegistrationOptions.documentsDirectory` 注入，`main.ts` 传 `app.getPath('documents')`。
   通道形状没变，`preload.ts`、`ipc-contract.ts` 与渲染层都没动。
+- `features/tools/ConfigDialog.tsx`：删掉保存前的「保存这份配置？」对话框，`保存配置` 直接走 `save('merge')`；重置按钮（`tool-save-reset`）移进新的 `<details data-testid="tool-config-advanced">`，仍经 `Confirm` 二次确认，取消直接回到配置窗口。保存与重置共用 `readyToSave()` 前置检查。两条路都仍由主进程先备份再两阶段写入（I9），IPC 与写入参数不变。`tool-save-merge` 随对话框一起消失。
+- 新增「保存并检测模型」（`tool-save-detect-models`）：自动准备密钥时 `configureManaged(tab, model, 'merge')` → `onRefresh()` → `readConfig()` 取主进程实际写入的模型 → `configuredModels(tab)`，留在对话框里；草稿标为未改动，关窗不再问「放弃修改」。
+- 下拉框与摘要不再写「分组未确认」（`key-selection.ts` 只在认得出时带分组名），分组只在「高级」的保存摘要里出现。配置来源判定顺序（`sourceFor` / `tool-config-ownership.ts`）没动。
+- 文案：`model-filter.ts` 的五条提示、首页工具菜单「换用别家模型」、`registry/status.ts` 的 `unknownSource`、`StartGuide.tsx`、`account-switch-sync.ts`，以及教程里提到「仅更新账号来源、密钥和模型」的章节与插图。外部客户端（Claude Desktop 第三方推理）那条「已有第三方配置」是另一回事，没改。
+- 浏览器回归：`app-check.mjs` 把「选保存方式」相关用例改成「高级里重置、取消不写入」，merge / reset 的并发保护拆成两条，新增「保存并检测」一条（钉住只调一次 `configureManagedCliKeys`、采用实际保存的模型、关窗不追问）。
+- `styles/tokens.css` 在原型那两条 `.hc` 规则（原样保留，`provenance.test.ts` 钉着）之后，追加
+  `:root[data-theme].hc[data-skin]` 两条，把高对比从 6 个变量扩成每个主题一整套不透明色值，覆盖
+  皮肤会设置的全部颜色变量（开启时皮肤配色让位）。新增 `styles/contrast-tokens.test.ts`：纯计算校验三级文字
+  4.5:1、主按钮/强调色/选中行 4.5:1、状态色含淡底 4.5:1、边框与焦点环 3:1，并检查每套皮肤的
+  颜色变量都被覆盖。
+- 新增 `styles/contrast.css`（`main.tsx` 最后一个样式导入，每条规则带 `:root` 以压过懒加载页面
+  的样式）：一段 `@media not (forced-colors: active)` 管应用内高对比（主按钮去渐变、禁用态
+  改 60% + 虚线边、开关描边、选中态加实线标记、焦点环 3px、链接下划线、去掉星空与侧栏渐变），
+  一段 `@media (forced-colors: active)` 管 Windows 系统高对比（弹窗/提示/品牌图块补真实边框，
+  选中态用 `Highlight`/`HighlightText` 并 `forced-color-adjust: none` 避开文字背板，开关、
+  进度条、状态圆点、下拉箭头改用系统色重画）。原 `components.css` 末尾两条 `.hc` 规则并入该文件。
+- 新增浏览器用例 `styles/contrast.browser-check.mjs`（进 `test:v2:browser`），用 Chromium 的
+  forced-colors 模拟核对计算样式；Windows 真机各主题下的样子仍需人工截图对照。
+- 与原型差异已记入 `docs/UI-V3.1.1-V2-REBUILD.md`「规范差异」；`ui-spec/` 未改。
+- 第十一批候选 8。新模块 `electron/device-profile.ts`：`isLowEndDevice` 按 `os.totalmem() < 7GB`（标称 8GB 的电脑系统常报 7.2~7.9GB，门槛取 7GB 才不误伤）或逻辑核数 `<= 2` 判断，读不到的值不算低配；`main.ts` 启动时算一次，经已有的 `window:get-capabilities` 以可选字段 `WindowCapabilities.lowEndDevice` 交给渲染层（缺省 = 旧行为），不新增 IPC 通道。判断结果不写日志、不进诊断导出和反馈报告。
+- 渲染层 `App.tsx` 在 bootstrap 时把结论挂到 `<html data-low-end>`；`Starfield.tsx` 与 `data-reduced-motion` 同样监听它，命中就只画静态一帧。用户开过「减少动画」或系统开了减少动态效果的照旧优先。
+- `Starfield.tsx` 其余改动都只省资源、不改画面（改前改后静止帧在 1x/2x、工作台/欢迎页四种组合下逐像素相同）：动画限 30 帧；窗口失焦或页面不可见时停在当前帧；星星间的连线只在尺寸或主题变化时算一次（原来每帧 70 颗星 2415 对、170 颗星 14365 对距离重算）；地平线渐变同样缓存；高分屏画布物理像素封顶 2880×1800（默认窗口大小不受影响，只在把大窗口铺满 4K 屏时生效）。纯函数在 `features/auth/starfield-plan.ts`，单测 `starfield-plan.test.ts`，浏览器用例在 `testing/app-check.mjs`。
+- Linux 沙箱（无 GPU、软件渲染，1280×800 窗口）量的整套 Chromium CPU 占用：1 倍屏欢迎页 46% → 27%、工作台 43% → 24%；2 倍屏欢迎页 125% → 81%、工作台 128% → 74%；低配判定命中时工作台 128% → 0.1%。
+- `diagnostics.ts` 的 `XINGMANG_NETWORK` 不再对站点根路径发 HEAD：两个站的根路径都是网页前端，正常时就回 `text/html`，#302 的「200 + text/html = 被拦截」因此对所有人误报。改为 GET 当前账号所在站点一个不用登录、本来就回 JSON 的公开接口（新增 `relayStatusProbeUrl`：new-api 走 `/api/status`，sub2api 走 `/api/v1/settings/public`，均按上游源码核实；gin 不把 HEAD 路由到 GET 处理器，所以必须 GET），2xx 但正文解析不出 JSON 才判 `intercepted`。
+- 请求仍只有一次：`redirect:'error'`、`credentials:'omit'`、超时沿用单项检查的 8 秒，2xx 正文走 `readBoundedResponseText` 限 256 KB，非 2xx 不读正文直接报 HTTP 状态；读正文中途断开同样按 `classifyNetworkFailure` 归类。
+- `account:list-keys` 给结果行补可选字段 `managedProvider`：托管 Key 缓存里这把 Key 属于哪个工具，且这个工具的本机配置此刻的 Key 与缓存里的完全一致，才算「在用」。只有工具 id 跨 IPC，Key 明文不出主进程（I3）；缓存读不出、配置读不出、中途换了账号，一律退回不带标记的列表（旧行为）。
+- `ipc-contract.ts` 的 `AccountKey` / `AccountKeysPage` 由别名改为在 `NewApiAccountKey` 之上扩展的接口，后端 DTO 不变。不新增 IPC 通道，`account:revoke-key` 不变。
+- 渲染层：`AccountPage` / `AccountKeys` 新增可选 `onRewriteKey`，由 `BusinessPage` 转交 App 里已有的 `rewriteAccountKeys([provider])`（点名工具的 rewrite 档，与首页「重新写入 Key」同一条路）。撤销成功后对在用的 Key 自动调用；失败时记下工具，显示一条带「再换一次」按钮的提示。没传 `onRewriteKey` 时确认框不承诺自动换新。
+- `e2e/v2-business.test.mjs` 三条浏览器用例：在用 Key 的提醒与自动换新、换新失败后按钮重试、无人在用的 Key 保持旧文案且不改写任何工具。
 
 ## 0.2.8 - 2026-09-20
 
