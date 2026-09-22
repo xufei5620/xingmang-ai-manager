@@ -80,7 +80,10 @@ export type RuntimeSelfCheckDescriber = () => Promise<readonly string[]>
 
 const ENVIRONMENT_TIMEOUT_MS = 2_000
 const ENVIRONMENT_UNREADABLE = '未能读取'
-const SENSITIVE_KEY = /(?:api[_-]?key|authorization|bearer|token|secret|password|credential|cookie)/i
+// A field named exactly `key` (Gemini's `?key=` parameter parsed into an object,
+// MCP env entries) is a credential; `key` as a substring is not (`keyboard`,
+// `monkey`, `cacheKey`), hence the anchors on that one alternative only.
+const SENSITIVE_KEY = /(?:api[_-]?key|authorization|bearer|token|secret|password|credential|cookie)|^key$/i
 const MAX_TEXT_LENGTH = 8_192
 const MAX_DETAIL_DEPTH = 5
 const MAX_DETAIL_ITEMS = 128

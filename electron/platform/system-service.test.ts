@@ -1,7 +1,9 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { App } from 'electron'
 import type { PlatformPreferences } from './contract'
+import { loginLaunchArgument } from '../login-launch'
 import {
+  migrateLegacyWindowsLoginItem,
   PlatformSystemService,
   summarizeSessionProxy,
   type PlatformSystemDependencies,
@@ -23,6 +25,13 @@ function setup(platform = 'win32', packaged = true) {
     executableWillLaunchAtLogin: false,
     launchItems: [],
   }
+  // Windows 按「路径 + 参数」整条比对开机项；null 表示没登记。
+  let registeredArgs: string[] | null = null
+  let registeredEnabled = true
+  function sameArgs(left: readonly string[] | undefined, right: readonly string[]) {
+    const actual = left ?? []
+    return actual.length === right.length && actual.every((value, index) => value === right[index])
+  }
   let themeListener: () => void = () => undefined
   const nativeTheme = {
     themeSource: 'light' as PlatformPreferences['themePreference'],
@@ -41,13 +50,25 @@ function setup(platform = 'win32', packaged = true) {
     }),
   }
   const app = {
-    getLoginItemSettings: vi.fn(() => ({ ...login })),
+    getLoginItemSettings: vi.fn(
+      (options?: Parameters<App['getLoginItemSettings']>[0]) => {
+        if (platform !== 'win32' || registeredArgs === null) return { ...login }
+        const registered = registeredArgs
+        return {
+          ...login,
+          openAtLogin: sameArgs(options?.args, registered),
+          executableWillLaunchAtLogin: registeredEnabled,
+        }
+      },
+    ),
     setLoginItemSettings: vi.fn(
       (value: Parameters<App['setLoginItemSettings']>[0]) => {
+        registeredArgs = value.openAtLogin === true ? [...(value.args ?? [])] : null
+        registeredEnabled = value.openAtLogin === true && value.enabled !== false
         login = {
           ...login,
           openAtLogin: value.openAtLogin === true,
-          executableWillLaunchAtLogin: value.openAtLogin === true,
+          executableWillLaunchAtLogin: registeredEnabled,
         }
       },
     ),
@@ -72,6 +93,11 @@ function setup(platform = 'win32', packaged = true) {
     setLogin: (patch: Partial<typeof login>) => {
       login = { ...login, ...patch }
     },
+    registerWindowsLoginItem: (args: string[], enabled = true) => {
+      registeredArgs = args
+      registeredEnabled = enabled
+    },
+    registeredWindowsLoginArgs: () => registeredArgs,
   }
 }
 
@@ -119,13 +145,59 @@ describe('platform system preferences', () => {
     expect(state.app.setLoginItemSettings).toHaveBeenCalledWith({
       openAtLogin: true,
       path: 'C:/Test App/xingmang.exe',
-      args: [],
+      args: [loginLaunchArgument],
     })
+    expect(state.service.getState().startup.note).toContain('托盘')
     expect(state.store.update).not.toHaveBeenCalled()
     state.app.setLoginItemSettings.mockImplementationOnce(() => undefined)
     await expect(state.service.setStartup(false)).rejects.toThrow(
       '系统没有保存',
     )
+  })
+  it('still reports a login item registered by an older version without the login argument', async () => {
+    const state = setup()
+    state.registerWindowsLoginItem([])
+    expect(state.service.getState().startup).toMatchObject({
+      requested: true,
+      enabled: true,
+    })
+    await expect(state.service.setStartup(false)).resolves.toMatchObject({
+      startup: { requested: false, enabled: false },
+    })
+    expect(state.registeredWindowsLoginArgs()).toBeNull()
+  })
+  it('rewrites an older Windows login item so login starts stay in the tray', () => {
+    const state = setup()
+    state.registerWindowsLoginItem([])
+    expect(migrateLegacyWindowsLoginItem(state.dependencies)).toBe(true)
+    expect(state.app.setLoginItemSettings).toHaveBeenCalledWith({
+      openAtLogin: true,
+      path: 'C:/Test App/xingmang.exe',
+      args: [loginLaunchArgument],
+      enabled: true,
+    })
+    expect(state.registeredWindowsLoginArgs()).toEqual([loginLaunchArgument])
+    state.app.setLoginItemSettings.mockClear()
+    expect(migrateLegacyWindowsLoginItem(state.dependencies)).toBe(false)
+    expect(state.app.setLoginItemSettings).not.toHaveBeenCalled()
+  })
+  it('keeps a login item the user disabled in Task Manager disabled while migrating it', () => {
+    const state = setup()
+    state.registerWindowsLoginItem([], false)
+    expect(migrateLegacyWindowsLoginItem(state.dependencies)).toBe(true)
+    expect(state.app.setLoginItemSettings).toHaveBeenCalledWith(
+      expect.objectContaining({ enabled: false }),
+    )
+    expect(state.service.getState().startup).toMatchObject({
+      requested: true,
+      enabled: false,
+    })
+  })
+  it('does not touch login items that were never registered or outside packaged Windows', () => {
+    for (const state of [setup(), setup('win32', false), setup('darwin')]) {
+      expect(migrateLegacyWindowsLoginItem(state.dependencies)).toBe(false)
+      expect(state.app.setLoginItemSettings).not.toHaveBeenCalled()
+    }
   })
   it('keeps macOS approval requirements distinct from enabled startup', async () => {
     const state = setup('darwin')

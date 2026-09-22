@@ -75,6 +75,16 @@ describe('summarizeRuntimeLogFile', () => {
     expect(summary.entries[0].detail).toEqual({ apiKey: '[REDACTED]' })
   })
 
+  it('redacts a field named exactly key but not names that merely contain it', () => {
+    const line = JSON.stringify({
+      id: 'id-1', timestamp: '2026-09-22T00:00:00.000Z', level: 'info', source: 'main',
+      event: 'entry', message: 'mcp env', detail: { key: 'plain-fake-value', keyboard: 'us', cacheKey: 'abc' },
+    })
+
+    expect(summarizeRuntimeLogFile(line).entries[0].detail)
+      .toEqual({ key: '[REDACTED]', keyboard: 'us', cacheKey: 'abc' })
+  })
+
   it('keeps only the tail a snapshot could ever return, without losing the counts', () => {
     const content = Array.from({ length: 4_100 }, (_, index) => JSON.stringify({
       id: `id-${index}`, timestamp: '2026-09-22T00:00:00.000Z', level: 'info',

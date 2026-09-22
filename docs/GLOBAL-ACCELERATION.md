@@ -38,7 +38,7 @@ Windows 开发版主进程在未打包时读取 userData 下的 `acceleration-de
 
 `acceleration-development-backend.ts` 连接成功后才按单调时钟扣除本机测试额度，独立任务负责耗尽停止，窗口隐藏不影响计时。已用时长持久化，旧 1 小时账本按历史消耗迁移到 20 分钟，不重新赠送；异常中断按本机记录保守结算。
 
-worker 在 Windows 使用 `detached: true`、隐藏窗口和独立 IPC 通道，使父主进程退出后仍能恢复代理，再停止内核和自身。普通 fork 在 Windows 下会随父进程 Job 一起结束，已通过无网络回归和真实代理断连实验覆盖。worker 自身也被强制终止时仍需要下次启动利用恢复记录处理，不能把本机联调视作完整后台服务。
+worker 在 Windows 使用 `detached: true`、隐藏窗口和独立 IPC 通道，使父主进程退出后仍能恢复代理，再停止内核和自身。普通 fork 在 Windows 下会随父进程 Job 一起结束，已通过无网络回归和真实代理断连实验覆盖。worker 自身也被强制终止时，只要主进程还在，宿主会当场重拉一个 worker（只为让它初始化时按恢复记录还原代理，不重连加速，重拉出来的那个再退出不会接着重拉），并发一条「加速意外断开了」的系统通知；主进程也一起没了时仍需要下次启动利用恢复记录处理，不能把本机联调视作完整后台服务。内核自己退出时由 worker 先还原代理再结算会话，并向主进程报一个只有事件名的 `runtime.exited`，主进程据此读一次状态让托盘跟上并提醒（`electron/acceleration-interruption-notice.ts`）。
 
 本轮真实联调结果位于本地 `artifacts/acceleration/development-smoke-result.jsonl` 和 `development-crash-result.jsonl`：
 
