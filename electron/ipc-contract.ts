@@ -73,6 +73,8 @@ import type {
   DiagnosticsReport as MainDiagnosticsReport,
 } from './diagnostics'
 import type { CliVersionAdvice as MainCliVersionAdvice } from './cli-verified-versions'
+import type { AccountSourceSwitchResult, AccountSourceTarget } from './account-source-switch'
+export type { AccountSourceSwitchResult, AccountSourceTarget } from './account-source-switch'
 import type {
   ConnectionCheckLayer as MainConnectionCheckLayer,
   ConnectionCheckResult as MainConnectionCheckResult,
@@ -566,6 +568,15 @@ export interface XingmangInvokeContract {
     [provider: ProviderId, mode?: ConfigSavePayload['mode']],
     ConfigSaveResult
   >
+  /**
+   * 首页工具行的一键切换：自动备份 → 写配置（切到当前账号时挪开抢道的官方凭据）
+   * → 连接自检 → 配置本身用不了就整体恢复。失败时抛出的中文原因直接上屏。
+   */
+  switchAccountSource: IpcInvokeDefinition<
+    'config:switch-account-source',
+    [provider: ProviderId, target: AccountSourceTarget],
+    AccountSourceSwitchResult
+  >
   listModels: IpcInvokeDefinition<'models:list', [apiKey: string], string[]>
   listConfiguredModels: IpcInvokeDefinition<'models:list-configured', [provider: ProviderId], string[]>
   /** options 省略 = 弹目录选择器；createStarter = 不弹选择器，直接替用户新建一个项目文件夹。 */
@@ -978,6 +989,7 @@ export const ipcInvokeChannels = {
   installExternalClient: 'external-clients:install',
   launchExternalClient: 'external-clients:launch',
   switchToOfficialAccount: 'config:switch-to-official-account',
+  switchAccountSource: 'config:switch-account-source',
   chooseWorkspace: 'workspace:choose',
   getRepositoryContext: 'repository:get-context',
   installNodeRuntime: 'runtime:install-node',

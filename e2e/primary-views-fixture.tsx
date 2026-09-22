@@ -34,7 +34,7 @@ if (scenario !== 'missing') {
   snapshot.runtime.npm = { ...snapshot.runtime.npm, installed: true, version: '11.0.0', path: 'C:\\npm' }
 }
 if (scenario === 'official') {
-  config.providers.codex = { ...configured, hasApiKey: false, matchesRelay: false, codexAuthMode: 'chatgpt', officialAccountEmail: 'official@example.com', officialAccountPlan: 'Pro', model: '' }
+  config.providers.codex = { ...configured, hasApiKey: false, matchesRelay: false, actualBaseUrl: '', codexAuthMode: 'chatgpt', officialAccountEmail: 'official@example.com', officialAccountPlan: 'Pro', model: '' }
   config.providers.claude = { ...configured, hasApiKey: false, matchesRelay: false }
 }
 if (scenario === 'third-party') config.providers.claude = { ...configured, matchesRelay: false, actualBaseUrl: 'https://custom.example.com' }

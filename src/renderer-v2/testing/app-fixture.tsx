@@ -81,7 +81,7 @@ const selectedKeyIds = new Map<ProviderId, number>()
 const keyMetadataReads = new Map<ProviderId, number>()
 const pendingKeyMetadata = new Map<ProviderId, () => void>()
 if ((query.get('guest') === '1' && !query.has('existing')) || query.has('missingConfig')) for (const provider of Object.values(config.providers)) { provider.exists = false; provider.hasApiKey = false; provider.matchesRelay = false; provider.actualBaseUrl = ''; provider.model = '' }
-if (query.has('official')) { config.providers.codex.hasApiKey = false; config.providers.codex.codexAuthMode = 'chatgpt' }
+if (query.has('official')) { config.providers.codex.hasApiKey = false; config.providers.codex.codexAuthMode = 'chatgpt'; config.providers.codex.actualBaseUrl = '' }
 if (query.has('unknown')) { config.providers.codex.matchesRelay = false; config.providers.codex.actualBaseUrl = 'https://other.example.test/v1' }
 if (query.has('unknownClaude')) { config.providers.claude.exists = true; config.providers.claude.hasApiKey = true; config.providers.claude.matchesRelay = false; config.providers.claude.actualBaseUrl = 'https://other.example.test' }
 if (query.has('manualClaude')) {
@@ -181,7 +181,7 @@ let balanceOverride: number | null = null
 const keyRewritten = new Set<ProviderId>()
 let nextConfigSaveHeld = false
 let releaseConfigSave: (error?: string) => void = () => undefined
-const configSaveMethods = new Set(['saveConfig', 'saveConfigWithAccountKey', 'configureManagedCliKeys', 'switchToOfficialAccount'])
+const configSaveMethods = new Set(['saveConfig', 'saveConfigWithAccountKey', 'configureManagedCliKeys', 'switchToOfficialAccount', 'switchAccountSource'])
 window.v2Test = { calls: [], unexpected: [], errors: [], fail: '', failMessage: '', emit(name, payload) { if (name === 'onAccountSessionChanged') session = payload as AccountSessionState; listeners.get(name)?.forEach((listener) => listener(payload)) }, releaseBootstrap() { releaseBootstrap() }, releaseLaunch() { releaseLaunch() }, holdNextExternalScan() { holdExternalScan = true }, releaseExternalScan() { releaseExternalScan() }, holdNextConfigRead() { holdConfigRead = true }, releaseConfigRead() { releaseConfigRead() }, holdNextScan() { holdScan = true }, releaseScan() { releaseScan() }, setExternalStatus(tool, patch) { Object.assign(externalStatuses.find((entry) => entry.tool === tool)!, patch) }, releaseBalance(error) { releaseBalance(error) }, holdNextBalance() { nextBalanceHeld = true }, setBalance(amount) { balanceOverride = amount }, releaseKeyMetadata(provider) { pendingKeyMetadata.get(provider)?.(); pendingKeyMetadata.delete(provider) }, releaseNoticeMark(id) { pendingNoticeMarks.get(id)?.(); pendingNoticeMarks.delete(id) }, setNotice(value) { noticeOverride = value }, holdNextConfigSave() { nextConfigSaveHeld = true }, releaseConfigSave(error) { releaseConfigSave(error) } }
 window.addEventListener('error', (event) => window.v2Test.errors.push(event.message))
 window.addEventListener('unhandledrejection', (event) => window.v2Test.errors.push(String(event.reason)))
@@ -423,9 +423,20 @@ const methods = {
     return { backups: [], files: [] }
   },
   switchToOfficialAccount: async (provider: ProviderId) => {
+    // 真实的 Codex 切回官方后 config.toml 不再指向中转，actualBaseUrl 为空。
     config.providers[provider] = { ...config.providers[provider], hasApiKey: false,
-      ...(provider === 'codex' ? { codexAuthMode: 'chatgpt' as const } : {}) }
+      ...(provider === 'codex' ? { codexAuthMode: 'chatgpt' as const, actualBaseUrl: '', matchesRelay: false } : {}) }
     return { backups: [], files: [] }
+  },
+  switchAccountSource: async (provider: ProviderId, target: 'account' | 'official') => {
+    if (target === 'official') {
+      config.providers[provider] = { ...config.providers[provider], hasApiKey: false, matchesRelay: false, actualBaseUrl: '',
+        ...(provider === 'codex' ? { codexAuthMode: 'chatgpt' as const } : {}) }
+      return { provider, target, backupId: 'fixture-backup', verified: false, loginRequired: false, message: '已切回官方账号，原来的配置已备份。' }
+    }
+    config.providers[provider] = { ...config.providers[provider], hasApiKey: true, matchesRelay: true, actualBaseUrl: config.providers[provider].baseUrl,
+      configurationOwnership: 'account', ...(provider === 'codex' ? { codexAuthMode: 'apikey' as const } : {}) }
+    return { provider, target, backupId: 'fixture-backup', verified: true, loginRequired: false, message: '已切到当前账号，连接自检通过。' }
   },
   getAccountUsableGroups: async () => [{ name: session.siteId === 'solov-api' ? 'Codex_pro' : 'GPT-中转/订阅', description: 'Codex', ratio: 1 }],
   createAccountKey: async () => undefined,

@@ -1420,6 +1420,43 @@ describe('registerIpcHandlers', () => {
     expect(service.switchToOfficialAccount).toHaveBeenCalledTimes(3)
   })
 
+  it('validates the one-click account switch before touching any config', async () => {
+    const { service } = register()
+    const handler = electronMocks.handlers.get('config:switch-account-source')!
+    await expect(handler(trustedEvent(), 'unknown', 'official')).rejects.toThrow('未知的 CLI 类型')
+    await expect(handler(trustedEvent(), 'codex', 'erase-all')).rejects.toThrow('未知的账号来源')
+    await expect(handler(trustedEvent(), 'grok', 'official')).rejects.toThrow('Grok CLI 没有可切回的官方账号')
+    await expect(handler(trustedEvent(), 'claude', 'account')).rejects.toThrow('请先登录账号，再切到当前账号')
+    expect(service.switchToOfficialAccount).not.toHaveBeenCalled()
+  })
+
+  it('backs up before switching back to the official account and says what happened', async () => {
+    const service = serviceStub()
+    const create = vi.fn(() => ({ id: 'backup-1' }))
+    register(service, undefined, undefined, undefined, undefined, undefined, {}, {
+      backupStore: { list: vi.fn(), create, inspect: vi.fn(), restore: vi.fn() } as never,
+    })
+    const handler = electronMocks.handlers.get('config:switch-account-source')!
+    const result = await handler(trustedEvent(), 'codex', 'official')
+    expect(create).toHaveBeenCalledWith('codex', 'pre-save', undefined, null)
+    expect(service.switchToOfficialAccount).toHaveBeenCalledWith('codex', 'merge')
+    expect(create.mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(service.switchToOfficialAccount).mock.invocationCallOrder[0])
+    expect(result).toMatchObject({ provider: 'codex', target: 'official', backupId: 'backup-1', verified: false })
+  })
+
+  it('registers the restored config source when a failed switch rolls back', async () => {
+    const service = serviceStub()
+    vi.mocked(service.switchToOfficialAccount).mockRejectedValue(new Error('配置文件被占用'))
+    const restore = vi.fn(() => ({ provider: 'codex', restoredBackupId: 'backup-1', preRestoreBackupId: 'backup-2' }))
+    register(service, undefined, undefined, undefined, undefined, undefined, {}, {
+      backupStore: { list: vi.fn(), create: vi.fn(() => ({ id: 'backup-1' })), inspect: vi.fn(), restore } as never,
+    })
+    const handler = electronMocks.handlers.get('config:switch-account-source')!
+    await expect(handler(trustedEvent(), 'codex', 'official')).rejects.toThrow('已恢复到切换前的配置')
+    expect(restore).toHaveBeenCalledWith('backup-1', null)
+    expect(service.adoptRestoredConfig).toHaveBeenCalledWith('codex', expect.any(Function))
+  })
+
   it('returns only an API key preview through config:get', () => {
     const service = serviceStub()
     vi.mocked(service.getConfig).mockReturnValue({

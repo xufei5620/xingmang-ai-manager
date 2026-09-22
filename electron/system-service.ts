@@ -51,9 +51,12 @@ import {
   ensureCodexPermissionDefaults,
   ensureGeminiProjectContextFiles,
   inspectCodexWorkspacePermissions,
+  inspectOfficialLogin,
   inspectProviderConfig,
   managedProviderLaunchBlockedMessage,
+  moveClaudeConsoleKeyAside,
   readCodexAuthTokens,
+  restoreClaudeConsoleKey,
   saveProviderConfig,
   switchProviderToOfficialAccount,
   trustCodexWorkspace,
@@ -743,6 +746,12 @@ export interface SystemService {
     ownership?: { source: 'account'; automatic: boolean },
   ): Promise<ReturnType<typeof saveProviderConfig>>
   switchToOfficialAccount(provider: ProviderId, mode?: ConfigSavePayload['mode']): ReturnType<typeof switchProviderToOfficialAccount> | Promise<ReturnType<typeof switchProviderToOfficialAccount>>
+  /** 切换失败回滚时把「是否选了官方账号」这个记号恢复成切换前的值；可选 = 旧实现不提供。 */
+  setOfficialSourcePreference?(provider: ProviderId, official: boolean): Promise<void>
+  /** 把切到当前账号时挪开的官方凭据放回原处；可选 = 旧实现不提供。 */
+  restoreOfficialCredentials?(provider: ProviderId): Promise<void>
+  /** 这台电脑上是否已有这个 CLI 的官方登录，null = 看不出来；可选 = 旧实现不提供。 */
+  inspectOfficialLogin?(provider: ProviderId): boolean | null
   /** 备份恢复成功之后调用；`isAccountKey` 判断一把 Key 是不是当前账号由本软件签发的。 */
   adoptRestoredConfig(provider: ProviderId, isAccountKey: (apiKey: string) => boolean): Promise<void>
   scanSystem(forceRefresh?: boolean): Promise<SystemSnapshot>
@@ -4598,7 +4607,51 @@ export function createSystemService(
       assertOwner()
       await store.setOfficialProvider(payload.provider, false)
       if (payload.provider === 'codex') await applyXingmangAiSkillForCodexAccount(false)
+      if (payload.provider === 'claude') moveOfficialCredentialsAside('claude')
       return result
+    })
+  }
+
+  /**
+   * Console 登录留下的 primaryApiKey 会以 x-api-key 跟着每个请求出去，中转拿它
+   * 覆盖掉当前账号的 Key（config-files.ts 顶部那段）。配置已经提交，这一步失败
+   * 只记日志：一键切换后面的连接自检会把这种情况认出来并整体回滚。
+   */
+  function moveOfficialCredentialsAside(provider: 'claude'): void {
+    try {
+      if (moveClaudeConsoleKeyAside(providerRoots)) {
+        runtimeLog?.log('info', 'config', 'official-credentials.moved', 'Claude Code 的官方 Console Key 已挪到一边，切回官方账号时放回', { provider })
+      }
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error)
+      runtimeLog?.log('warn', 'config', 'official-credentials.move-failed', 'Claude Code 的官方 Console Key 没能挪开，可能会和当前账号的 Key 冲突', {
+        provider,
+        reason: redactHomeDirectory(reason, providerRoots.userHome),
+      })
+    }
+  }
+
+  function restoreClaudeCredentialsQuietly(): void {
+    try {
+      restoreClaudeConsoleKey(providerRoots)
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error)
+      runtimeLog?.log('warn', 'config', 'official-credentials.restore-failed', 'Claude Code 的官方 Console Key 没能放回原处', {
+        provider: 'claude',
+        reason: redactHomeDirectory(reason, providerRoots.userHome),
+      })
+    }
+  }
+
+  async function restoreOfficialCredentials(provider: ProviderId): Promise<void> {
+    if (provider !== 'claude') return
+    await serializeConfigWrite(async () => { restoreClaudeCredentialsQuietly() })
+  }
+
+  async function setOfficialSourcePreference(provider: ProviderId, official: boolean): Promise<void> {
+    await serializeConfigWrite(async () => {
+      await store.setOfficialProvider(provider, official)
+      if (provider === 'codex') await applyXingmangAiSkillForCodexAccount(official)
     })
   }
 
@@ -4623,6 +4676,7 @@ export function createSystemService(
       const result = switchProviderToOfficialAccount(provider, providerRoots, {}, activeSite.providerBaseUrls, mode)
       await store.setOfficialProvider(provider, true)
       if (provider === 'codex') await applyXingmangAiSkillForCodexAccount(true)
+      if (provider === 'claude') restoreClaudeCredentialsQuietly()
       return result
     })
   }
@@ -4648,6 +4702,9 @@ export function createSystemService(
     revealApiKey,
     saveConfig,
     switchToOfficialAccount,
+    setOfficialSourcePreference,
+    restoreOfficialCredentials,
+    inspectOfficialLogin: (provider) => inspectOfficialLogin(provider, providerRoots),
     adoptRestoredConfig,
     scanSystem,
     refreshNetworkLocation,
