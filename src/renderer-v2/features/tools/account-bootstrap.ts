@@ -249,7 +249,10 @@ export async function bootstrapAccountTools(
   await assertAccount(api, expectedUserId, expectedSiteId)
   onProgress({ phase: 'inspecting', label: '正在检查已安装工具和连接来源', percent: 40 })
   const [system, config, settings] = await Promise.all([
-    api.scanSystem(true),
+    // 这里只读「装没装、探测有没有失败」，而 scanSystem 从不缓存安装状态——
+    // force 清掉的是 npm 最新版与网络位置那几份缓存，跟这份计划无关，白清一次
+    // 就是开机时多打七八个外网请求、Windows 上多读一遍 Appx 清单。
+    api.scanSystem(),
     api.getConfig(),
     api.getSettings(),
   ])

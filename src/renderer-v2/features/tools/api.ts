@@ -33,6 +33,32 @@ export interface ToolboxReadResult {
 }
 
 /**
+ * 把重读到的配置并回快照，system / platform 两块原样保留——它们是首屏那遍扫描
+ * 刚探完的，不该因为写了一次 Key 就作废。没有快照时保持 null（还没有东西可并）。
+ */
+export function withToolboxConfig(snapshot: ToolboxSnapshot | null, config: AppConfigSummary): ToolboxSnapshot | null {
+  return snapshot ? { ...snapshot, config } : null
+}
+
+/** 只重读配置这一块时的结果：读成功给配置，读失败给一条分区错误。 */
+export interface ToolboxConfigReadResult {
+  config: AppConfigSummary | null
+  failure: ToolboxPartitionFailure | null
+}
+
+/**
+ * 换上新的 config 分区错误：同一时刻 config 只可能有一条，所以先把旧的那条摘掉，
+ * 再按需要补上。读成功时传 null，等于把上一次的失败清掉。
+ */
+export function withConfigFailure(
+  failures: readonly ToolboxPartitionFailure[],
+  failure: ToolboxPartitionFailure | null,
+): ToolboxPartitionFailure[] {
+  const rest = failures.filter((entry) => entry.partition !== 'config')
+  return failure ? [...rest, failure] : rest
+}
+
+/**
  * 配置读不出来时的占位表。每个工具都落到「未配置」，让工具列表、
  * 安装和卸载照常可用；真正的原因由分区错误单独告诉用户，不靠这张表去表达。
  */
@@ -70,6 +96,19 @@ export function createToolsApi(bridge: XingmangApi) {
           platform: platform.value,
         },
         failures,
+      }
+    },
+    /**
+     * 只重读配置这一块，不碰 scanSystem。账号 Key 刚写完时界面要更新的只有
+     * 配置状态，已装/版本/桌面端几秒前刚探完，没必要再起一轮探测子进程，
+     * 也没必要把主进程里的 npm 版本与网络位置缓存清掉重来（开机那十秒最贵的
+     * 就是这一遍）。失败不抛：config 分区本来就按降级处理，见 read 的注释。
+     */
+    async readConfigPartition(): Promise<ToolboxConfigReadResult> {
+      try {
+        return { config: await bridge.getConfig(), failure: null }
+      } catch (cause) {
+        return { config: null, failure: { partition: 'config', message: errorMessage(cause, '工具配置没有读到，请重试。') } }
       }
     },
     readExternal: () => bridge.scanExternalClients(),

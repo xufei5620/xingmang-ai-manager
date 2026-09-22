@@ -193,7 +193,9 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
           ? { ...current, phase: 'verifying', label: result.failed.length ? 'Key 同步完成，部分工具待处理' : 'Key 已写入，正在刷新工具状态', percent: 100, result }
           : current)
         setWorkspaceEntered(true)
-        await toolbox.refresh(true).catch(() => undefined)
+        // 只重读配置，不再把整轮环境探测走第二遍：跟着 Key 变的只有配置状态，
+        // 已装/版本/桌面端是首屏那遍刚探完的（见 useToolbox.refreshConfig）。
+        await toolbox.refreshConfig().catch(() => undefined)
       } catch (cause) {
         outcome.error = errorMessage(cause, '账号 Key 初始化没有完成')
         if (!mounted.current || epoch !== bootstrapEpoch.current) return
@@ -211,7 +213,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     }
     onlineResync.current = noteBootstrapOutcome(onlineResync.current, bootstrapScope, outcome)
     return outcome
-  }, [native, settings, toolbox.refresh, siteId])
+  }, [native, settings, toolbox.refreshConfig, siteId])
   /**
    * 「重新写入 Key」与「Key 失效」的「一键修复」共用的入口：跑的就是装完工具后
    * 那条同样的重写流程（syncAfterToolInstalled 里的这一行），只是限定到指定的工具。

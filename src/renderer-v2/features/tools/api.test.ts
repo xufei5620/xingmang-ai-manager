@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { providerIds, type XingmangApi } from '../../../../electron/ipc-contract'
-import { createToolsApi } from './api'
+import { createToolsApi, withConfigFailure, withToolboxConfig } from './api'
 
 describe('home balance usage queries', () => {
   it.each(['solov', 'solov-api'] as const)('keeps the %s date contract when loading month/week usage', async (siteId) => {
@@ -147,6 +147,63 @@ describe('toolbox read partial failures', () => {
     })).read()
 
     expect(result.failures).toEqual([{ partition: 'config', message: '工具配置没有读到，请重试。' }])
+  })
+})
+
+describe('config-only refresh after the account Key is written', () => {
+  it('reads just the config and never starts another system scan', async () => {
+    const scanSystem = vi.fn(async () => { throw new Error('不该再扫一遍') })
+    const getConfig = vi.fn(async () => ({ workspace: '/w', providers: {} }))
+    const api = createToolsApi({ scanSystem, getConfig, getPlatformCapabilities: vi.fn() } as unknown as XingmangApi)
+
+    await expect(api.readConfigPartition()).resolves.toEqual({ config: { workspace: '/w', providers: {} }, failure: null })
+    expect(getConfig).toHaveBeenCalledTimes(1)
+    expect(scanSystem).not.toHaveBeenCalled()
+  })
+
+  it('turns a failed config read into a config partition failure instead of throwing', async () => {
+    const getConfig = vi.fn(async () => { throw new Error('配置文件读不出来') })
+    const api = createToolsApi({ getConfig } as unknown as XingmangApi)
+
+    await expect(api.readConfigPartition()).resolves.toEqual({
+      config: null,
+      failure: { partition: 'config', message: '配置文件读不出来' },
+    })
+  })
+
+  it('still forces a full scan when the user presses 重新检测', async () => {
+    const scanSystem = vi.fn(async () => ({ clis: {} }))
+    const api = createToolsApi({
+      scanSystem,
+      getConfig: vi.fn(async () => ({ workspace: '', providers: {} })),
+      getPlatformCapabilities: vi.fn(async () => ({})),
+    } as unknown as XingmangApi)
+
+    await api.read(true)
+    expect(scanSystem).toHaveBeenCalledWith(true)
+    await api.read()
+    expect(scanSystem).toHaveBeenLastCalledWith(false)
+  })
+
+  it('swaps in the new config and leaves the freshly scanned system block alone', () => {
+    const system = { checkedAt: '2026-09-22T07:00:00.000Z' }
+    const snapshot = { system, config: { workspace: '/w', providers: { claude: { hasApiKey: false } } }, platform: { id: 'win32' } }
+    const written = { workspace: '/w', providers: { claude: { hasApiKey: true } } }
+
+    const next = withToolboxConfig(snapshot as never, written as never)
+    expect(next?.config).toEqual(written)
+    expect(next?.system).toBe(system)
+    expect(next).not.toBe(snapshot)
+    expect(withToolboxConfig(null, written as never)).toBeNull()
+  })
+
+  it('keeps at most one config failure and drops it once the read succeeds', () => {
+    const system = { partition: 'system' as const, message: '工具检测没有完成，请重试。' }
+    const first = { partition: 'config' as const, message: '第一次没读到' }
+    const second = { partition: 'config' as const, message: '第二次也没读到' }
+
+    expect(withConfigFailure([system, first], second)).toEqual([system, second])
+    expect(withConfigFailure([system, first], null)).toEqual([system])
   })
 })
 

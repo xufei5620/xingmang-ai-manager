@@ -456,6 +456,21 @@ describe('account managed Key bootstrap', () => {
     await expect(bootstrapAccountTools(api, 17)).rejects.toThrow('账号已变化')
     expect(configure).not.toHaveBeenCalled()
   })
+  it('reads the install scan without forcing it, so the boot scan caches survive', async () => {
+    const scanSystem = vi.fn(async () => system(['claude']))
+    const api: AccountBootstrapBridge = {
+      getAccountSession: vi.fn(async () => ({ authenticated: true, account: { userId: 17, username: 'member', quota: 0, usedQuota: 0, group: 'default', role: 1 } })),
+      syncManagedCliKeys: vi.fn(async () => ({ ready: [], failed: [] })),
+      scanSystem,
+      getSettings: vi.fn(async () => settings),
+      getConfig: vi.fn(async () => config()),
+      configureManagedCliKeys: vi.fn(async () => ({ configured: [], failed: [] })),
+    }
+    await bootstrapAccountTools(api, 17, undefined, 'restore')
+    expect(scanSystem).toHaveBeenCalledTimes(1)
+    // 参数为空（而不是 true）才不会清掉主进程的 npm 最新版与网络位置缓存。
+    expect(scanSystem.mock.calls[0]).toEqual([])
+  })
   it('rejects the same numeric user id when its platform changes during Key preparation', async () => {
     let reads = 0
     const configure = vi.fn()

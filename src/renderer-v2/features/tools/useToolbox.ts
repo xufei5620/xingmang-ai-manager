@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
-import type { DesktopAppStatus, ExternalClientStatus, InstallCancelResult, InstallProgress, XingmangApi } from '../../../../electron/ipc-contract'
-import { createToolsApi, type ToolboxPartitionFailure } from './api'
+import type { AppConfigSummary, DesktopAppStatus, ExternalClientStatus, InstallCancelResult, InstallProgress, XingmangApi } from '../../../../electron/ipc-contract'
+import { createToolsApi, withConfigFailure, withToolboxConfig, type ToolboxPartitionFailure } from './api'
 import type { ToolboxSnapshot } from './model'
 import { platformApi } from '../../platform-api'
 import { errorMessage } from '../../business-common'
@@ -26,6 +26,15 @@ export type ToolJobReport = (label: string, percent?: number) => void
 /** 安装命令已经返回、但同步 Key 与重新检测还没跑完时，工具行显示的那句话。 */
 export const installedToolSyncLabel = '安装完成，正在同步账号 Key 并刷新状态'
 
+/**
+ * 账号 Key 写完之后这一次刷新该走哪条路。手上已经有快照，或首屏那遍扫描还在跑
+ * （配置会被它落地时顶替，见 refresh 里的 configAtStart），都只重读配置；只有
+ * 两样都没有——首屏那遍扫失败了、界面上什么都没有——才补一次完整扫描。
+ */
+export function planConfigRefresh(input: { hasSnapshot: boolean; scansInFlight: boolean }): 'config-only' | 'rescan' {
+  return input.hasSnapshot || input.scansInFlight ? 'config-only' : 'rescan'
+}
+
 export function useToolbox(bridge: XingmangApi | null, enabled: boolean, scope: string) {
   const [snapshot, setSnapshot] = useState<ToolboxSnapshot | null>(null)
   const [loading, setLoading] = useState(false)
@@ -43,10 +52,20 @@ export function useToolbox(bridge: XingmangApi | null, enabled: boolean, scope: 
   const cancelRequests = useRef(new Set<string>())
   const desktopRevision = useRef(0)
   const latestDesktop = useRef<DesktopAppStatus | null>(null)
+  // 同 desktopRevision 的套路：只重读配置这条路不打断正在跑的扫描，所以要留下
+  // 记号，让那遍扫描落地时别拿它开跑前读到的旧配置把新配置盖回去。
+  const configRevision = useRef(0)
+  const latestConfig = useRef<AppConfigSummary | null>(null)
+  // refreshConfig 要在 render 之外判断「手上到底有没有快照」，用 ref 跟住 state。
+  const snapshotRef = useRef<ToolboxSnapshot | null>(null)
+  const scansInFlight = useRef(0)
   const currentScope = useRef(scope)
   useLayoutEffect(() => {
     currentScope.current = scope
     request.current++
+    configRevision.current++
+    latestConfig.current = null
+    snapshotRef.current = null
     setSnapshot(null); setError(''); setFailures([]); setLoading(false)
     externalRequest.current++
     setExternalClients([]); setExternalError(''); setExternalLoading(false)
@@ -70,6 +89,8 @@ export function useToolbox(bridge: XingmangApi | null, enabled: boolean, scope: 
     const requestScope = currentScope.current
     const id = ++request.current
     const desktopAtStart = desktopRevision.current
+    const configAtStart = configRevision.current
+    scansInFlight.current++
     setLoading(true)
     setError('')
     const isCurrent = () => active.current && currentScope.current === requestScope && id === request.current
@@ -80,14 +101,38 @@ export function useToolbox(bridge: XingmangApi | null, enabled: boolean, scope: 
       // 靠它提示「最新状态没有读到」。单块降级不算失败。
       if (!next) throw new Error(partitions[0]?.message ?? '检测没有完成，请重试。')
       if (desktopRevision.current !== desktopAtStart && latestDesktop.current) next.system.desktopApps.codex = latestDesktop.current
-      if (isCurrent()) setSnapshot(next)
+      if (configRevision.current !== configAtStart && latestConfig.current) next.config = latestConfig.current
+      if (isCurrent()) { snapshotRef.current = next; setSnapshot(next) }
     } catch (cause) {
       if (isCurrent()) setError(errorMessage(cause, '检测没有完成，请重试。'))
       throw cause
     } finally {
+      scansInFlight.current--
       if (isCurrent()) setLoading(false)
     }
   }, [bridge])
+  /**
+   * 账号 Key 写完之后的刷新入口。只重读配置，不重跑环境探测、不清主进程缓存：
+   * 用户看到的还是那份「已连接当前账号」，但开机不用再把整轮扫描走第二遍。
+   * 手动「重新检测」仍走 refresh(true)，行为不变。
+   */
+  const refreshConfig = useCallback(async () => {
+    if (!bridge) return
+    const requestScope = currentScope.current
+    if (planConfigRefresh({ hasSnapshot: snapshotRef.current !== null, scansInFlight: scansInFlight.current > 0 }) === 'rescan') {
+      await refresh().catch(() => undefined)
+      return
+    }
+    const { config, failure } = await createToolsApi(bridge).readConfigPartition()
+    if (!active.current || currentScope.current !== requestScope) return
+    if (config) {
+      configRevision.current++
+      latestConfig.current = config
+      setSnapshot((current) => withToolboxConfig(current, config))
+    }
+    setFailures((current) => withConfigFailure(current, failure))
+  }, [bridge, refresh])
+  useEffect(() => { snapshotRef.current = snapshot }, [snapshot])
   useEffect(() => {
     active.current = true
     if (enabled) { void refresh().catch(() => undefined); void refreshExternal().catch(() => undefined) }
@@ -172,5 +217,5 @@ export function useToolbox(bridge: XingmangApi | null, enabled: boolean, scope: 
     }
     return outcome
   }, [markCancelling])
-  return { snapshot, loading, error, failures, refresh, externalClients, externalLoading, externalError, refreshExternal, jobs, run, cancel, setSnapshot }
+  return { snapshot, loading, error, failures, refresh, refreshConfig, externalClients, externalLoading, externalError, refreshExternal, jobs, run, cancel, setSnapshot }
 }
