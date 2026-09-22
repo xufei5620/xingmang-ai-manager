@@ -181,7 +181,12 @@ export type CodexDesktopLaunchMode = MainCodexDesktopLaunchMode
 export type CliLaunchMode = MainCliLaunchMode
 export type AppWindowMode = 'onboarding' | 'dashboard'
 export type AppTheme = StoredAppTheme
-export interface WindowCapabilities { tray: boolean; notifications: boolean }
+export interface WindowCapabilities {
+  tray: boolean
+  notifications: boolean
+  // 主进程按本机内存与 CPU 判断，只用来让界面背景少画一点；缺省 = 旧行为（照常动画）。
+  lowEndDevice?: boolean
+}
 export type { ExternalDeepLink } from './external-deep-links'
 export interface FeedbackReportPreview { id: string; text: string; entries: number }
 export type UpdatePhase = MainUpdatePhase
@@ -324,9 +329,17 @@ export type AccountDashboardData = NewApiAccountDashboardData
 export type AccountTaskQuery = NewApiAccountTaskQuery
 export type AccountTaskRecord = NewApiAccountTaskRecord
 export type AccountTaskPage = NewApiAccountTaskPage
-export type AccountKey = NewApiAccountKey
+export interface AccountKey extends NewApiAccountKey {
+  /**
+   * 本软件替这个工具签发、且这个工具的配置此刻用的就是这把 Key。只由主进程按托管
+   * Key 缓存与本机配置比对后补上；缺省 = 没有工具在用（旧行为）。
+   */
+  managedProvider?: ProviderId
+}
 export type AccountKeysQuery = NewApiAccountKeysQuery
-export type AccountKeysPage = NewApiAccountKeysPage
+export interface AccountKeysPage extends Omit<NewApiAccountKeysPage, 'keys'> {
+  keys: AccountKey[]
+}
 export type AccountKeyCreateInput = NewApiAccountKeyCreateInput
 export type AccountKeyUpdateInput = NewApiAccountKeyUpdateInput
 
@@ -647,6 +660,8 @@ export interface XingmangInvokeContract {
   getFeedbackReport: IpcInvokeDefinition<'runtime-logs:preview-feedback', [], FeedbackReportPreview>
   copyFeedbackReport: IpcInvokeDefinition<'runtime-logs:copy-feedback', [reportId?: string], { entries: number }>
   exportFeedbackReport: IpcInvokeDefinition<'runtime-logs:export-feedback', [reportId?: string], { outputPath: string } | null>
+  /** 只认本次运行里导出过的文件路径（主进程记着），渲染层给别的路径会被拒。 */
+  revealExportedFile: IpcInvokeDefinition<'exports:reveal-file', [filePath: string], boolean>
   openRuntimeLogDirectory: IpcInvokeDefinition<'runtime-logs:open-directory', [], boolean>
   clearRuntimeLogs: IpcInvokeDefinition<'runtime-logs:clear', [], void>
   reportRendererError: IpcInvokeDefinition<'runtime-logs:renderer-error', [payload: RendererErrorPayload], void>
@@ -999,6 +1014,7 @@ export const ipcInvokeChannels = {
   getFeedbackReport: 'runtime-logs:preview-feedback',
   copyFeedbackReport: 'runtime-logs:copy-feedback',
   exportFeedbackReport: 'runtime-logs:export-feedback',
+  revealExportedFile: 'exports:reveal-file',
   openRuntimeLogDirectory: 'runtime-logs:open-directory',
   clearRuntimeLogs: 'runtime-logs:clear',
   reportRendererError: 'runtime-logs:renderer-error',

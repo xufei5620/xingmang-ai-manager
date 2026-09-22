@@ -21,9 +21,15 @@ import {
   readDiskSpace,
   type DiskSpaceReading,
 } from './disk-space'
-import { gitMissingNotice } from './git-runtime'
+import { gitMissingImpact, gitMissingNotice } from './git-runtime'
+import {
+  commandLineToolsShimNotice,
+  isCommandLineToolsShimBacked,
+  isMacOsCommandLineToolsShim,
+} from './macos-command-line-tools'
 import { managedCliRoot } from './managed-cli-paths'
 import { classifyNetworkFailure, networkFailureMessages } from './network-failure'
+import { redactSecretPatterns } from './redaction-patterns'
 import { relayApiProbeBaseUrl, resolveRelaySite, type RelaySite } from './relay-sites'
 import { resolveCliCommand, resolveCliInstallation } from './tool-installation'
 import type { ToolConfigOwnership } from './tool-config-ownership'
@@ -57,6 +63,8 @@ export interface DiagnosticToolStatus {
   version: string | null
   path: string | null
   running?: boolean
+  /** macOS：PATH 上只找到了命令行开发者工具的空壳，没去执行它（见 macos-command-line-tools.ts）。 */
+  commandLineToolsShim?: boolean
 }
 
 export interface DiagnosticAppInfo {
@@ -319,18 +327,7 @@ export function redactDiagnosticText(
     .sort((left, right) => right.length - left.length)
   for (const secret of secrets) result = result.split(secret).join('[REDACTED]')
 
-  result = result
-    .replace(/(\bBearer\s+)[A-Za-z0-9._~+/=-]{6,}/gi, '$1[REDACTED]')
-    .replace(/\bsk-[A-Za-z0-9_-]{6,}\b/gi, '[REDACTED]')
-    // The quoted spellings need their own rules: in `{"access_token":"…"}` the
-    // rule below can never match, because `\s*` does not cross the quote that
-    // closes the key name, so any CLI writing JSON to stderr leaked its secrets
-    // verbatim into the runtime log and the feedback export. Redacting between
-    // the existing quotes also keeps a JSON body parseable.
-    .replace(/((?:api[_-]?key|authorization|token|secret|password)"\s*[:=]\s*)"[^"]*"/gi, '$1"[REDACTED]"')
-    .replace(/((?:api[_-]?key|authorization|token|secret|password)'\s*[:=]\s*)'[^']*'/gi, "$1'[REDACTED]'")
-    .replace(/((?:api[_-]?key|authorization|token|secret|password)\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi, '$1[REDACTED]')
-  result = redactUrls(result)
+  result = redactUrls(redactSecretPatterns(result))
 
   return redactRootPaths(result, {
     userHome: options.userHome ?? options.homeDirectory,
@@ -481,12 +478,20 @@ async function defaultInspectTool(
     }
   }
   const commands = tool === 'python' ? ['python', 'python3', 'py'] : [tool]
+  let commandLineToolsShim = false
   for (const command of commands) {
     const executable = await findExecutable(command, {
       env: commandEnvironment(env),
       windowsPackageManagers: command === 'npm' ? ['npm'] : [],
     }) ?? findWindowsShim(command, env)
     if (!executable) continue
+    if (
+      isMacOsCommandLineToolsShim(executable)
+      && !await isCommandLineToolsShimBacked(executable, { env, signal })
+    ) {
+      commandLineToolsShim = true
+      continue
+    }
     let version: string | null = null
     try {
       version = await versionForExecutable(executable, tool, signal, env)
@@ -495,6 +500,7 @@ async function defaultInspectTool(
     }
     return { installed: true, version, path: executable }
   }
+  if (commandLineToolsShim) return { installed: false, version: null, path: null, commandLineToolsShim }
   return { installed: false, version: null, path: null }
 }
 
@@ -1012,7 +1018,9 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
         const required = tool !== 'python'
         return {
           state: status.installed ? 'pass' : required ? 'fail' : 'warn',
-          summary: status.installed ? (status.version || '已安装') : '未安装',
+          summary: status.installed
+            ? (status.version || '已安装')
+            : status.commandLineToolsShim ? `未安装。${commandLineToolsShimNotice('python3')}。` : '未安装',
           details: { installed: status.installed, path: pathForDisplay(status.path, displayRoots) },
         }
       },
@@ -1029,7 +1037,9 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
           state: status.installed ? 'pass' : 'warn',
           summary: status.installed
             ? (status.version || '已安装')
-            : gitMissingNotice(platform),
+            : status.commandLineToolsShim
+              ? `${commandLineToolsShimNotice('git')}。${gitMissingImpact(platform)}。`
+              : gitMissingNotice(platform),
           details: {
             required: false,
             installed: status.installed,

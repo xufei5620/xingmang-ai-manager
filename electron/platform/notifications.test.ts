@@ -105,12 +105,32 @@ describe('acceleration reminders sent by the main process', () => {
     // 下一次连接换一个编号，两条都能再发。
     expect(h.controller.notifyHost('accelerationExpiring', 'xm-account:1:t1')).toBe('requested')
   })
-  it('keeps the copy free of the relay site name and of any top-up pitch', () => {
+  it('tells the user whether the network came back after an unexpected disconnect', () => {
+    const h = setup()
+    expect(h.controller.notifyHost('accelerationInterrupted', 'xm-account:1:t0')).toBe('requested')
+    expect(h.runtime.create).toHaveBeenLastCalledWith({
+      title: '加速意外断开了',
+      body: '网络已恢复正常，可以回到加速页重新连接。',
+      silent: true,
+    })
+    expect(h.controller.notifyHost('accelerationInterruptedUnrestored', 'xm-account:1:t1')).toBe('requested')
+    expect(h.runtime.create).toHaveBeenLastCalledWith({
+      title: '加速意外断开了',
+      body: '网络可能暂时连不上，点这里回到加速页，星芒会再试着恢复。',
+      silent: true,
+    })
+    h.preferences.acceleration = false
+    expect(h.controller.notifyHost('accelerationInterrupted', 'xm-account:1:t2')).toBe('disabled')
+  })
+  it('keeps the copy free of the relay site name, top-up pitch and technical words', () => {
     const h = setup()
     h.controller.notifyHost('accelerationExpiring', 'xm-account:1:t0')
     h.controller.notifyHost('accelerationExhausted', 'xm-account:1:t0')
+    h.controller.notifyHost('accelerationInterrupted', 'xm-account:1:t0')
+    h.controller.notifyHost('accelerationInterruptedUnrestored', 'xm-account:1:t0')
+    expect(h.runtime.create).toHaveBeenCalledTimes(4)
     for (const call of (h.runtime.create as ReturnType<typeof vi.fn>).mock.calls) {
-      expect(`${call[0].title} ${call[0].body}`).not.toMatch(/solov|sub2api|new-api|充值|购买|续费/i)
+      expect(`${call[0].title} ${call[0].body}`).not.toMatch(/solov|sub2api|new-api|充值|购买|续费|内核|进程|代理|mihomo/i)
     }
   })
   it('follows the acceleration switch and the master setting like every other category', () => {

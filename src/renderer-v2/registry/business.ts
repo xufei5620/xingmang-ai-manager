@@ -158,7 +158,7 @@ export const notificationOptions = [
   },
   {
     value: 'acceleration',
-    label: '加速时长提醒',
-    description: '免费加速还剩 5 分钟、以及用完自动断开时各提醒一次',
+    label: '加速提醒',
+    description: '免费加速还剩 5 分钟、用完自动断开，以及加速意外断开时各提醒一次',
   },
 ] as const

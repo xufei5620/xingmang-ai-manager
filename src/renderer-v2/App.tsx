@@ -16,6 +16,8 @@ import { cliRuntimeBlockMessage, nodeRuntimeReady } from './features/tools/runti
 import { isToolId, presentTools, providerFor, toolInstallDirectory, type ToolId, type ToolSource } from './features/tools/model'
 import { pendingToolUpdates, readAnnouncedToolUpdates, rememberAnnouncedToolUpdates, unannouncedToolUpdates, updateNoticeKey } from './features/tools/update-notice'
 import { isMissingWorkspace } from './features/tools/recent-workspaces'
+import { describeRuntimeInstallOutcome, type RuntimeInstallOutcome } from './features/tools/runtime-install-outcome'
+import { RuntimeRestartDialog } from './features/tools/RuntimeRestartDialog'
 import { installedToolSyncLabel, useToolbox } from './features/tools/useToolbox'
 import { ManualUninstallDialog, type ManualUninstallState } from './features/tools/ManualUninstall'
 import { operationLogPage, type OperationActionId } from './operation-error'
@@ -118,6 +120,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   const linkPrompted = useRef(false)
   const [paymentReturn, setPaymentReturn] = useState<{ sequence: number; order: string | null }>()
   const [confirmation, setConfirmation] = useState<PendingConfirmation | null>(null)
+  const [runtimeRestart, setRuntimeRestart] = useState(false)
   const [confirmBusy, setConfirmBusy] = useState(false)
   const [restartDialog, setRestartDialog] = useState(false)
   const [chineseDialog, setChineseDialog] = useState(false)
@@ -174,6 +177,8 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     void app.bootstrap().then((result) => {
       if (!current) return
       setSettings(result.settings); setPlatform(result.platform); setSession(result.session); setUpdate(result.update)
+      // 低配电脑只由主进程判断一次；这里只把结论挂到根节点上，星空背景据此只画静态一帧。
+      document.documentElement.dataset.lowEnd = String(result.capabilities.lowEndDevice === true)
       // 预览开关要等主进程说清这是不是打包版才生效，所以放在 bootstrap 里而不是
       // 初始 state；`boot !== 'ready'` 期间只渲染 Splash，用户看不到中间态。
       if (onboardingPreviewEnabled(window.location.search, result.update.development)) setGuide(true)
@@ -457,8 +462,15 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     if (runtime === 'git') { await app.openExternal(gitWindowsDownloadUrl); return }
     const mode = runtime === 'node' ? platform?.nodeRuntimeInstall : platform?.pythonRuntimeInstall
     if (mode !== 'managed') { await app.openExternal(runtime === 'node' ? 'https://nodejs.org/' : 'https://www.python.org/downloads/'); return }
-    await toolbox.run(runtime, '正在准备运行环境', () => toolsApi.prepareRuntime(runtime))
+    // 主进程装完带回「要重启 / 要刷新 PATH」两个标记，以前这里直接扔掉（第七批 5）。
+    const done: { outcome?: RuntimeInstallOutcome } = {}
+    await toolbox.run(runtime, '正在准备运行环境', async () => {
+      done.outcome = describeRuntimeInstallOutcome(runtime, await toolsApi.prepareRuntime(runtime))
+    })
     await toolbox.refresh(true)
+    if (!done.outcome || !mounted.current) return
+    if (done.outcome.restartRequired) setRuntimeRestart(true)
+    else toast.show(done.outcome.message, done.outcome.tone)
   }
   async function installExternal(id: ExternalToolId) {
     const epoch = accountEpoch.current
@@ -779,6 +791,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       <Button variant="primary" onClick={() => void perform('启用中文界面', () => answerChineseRuntimePatch('enabled'))}>启用中文界面</Button>
     </>}><p>Codex 自带中文语言包，但要让它的界面真正显示中文，星芒需要在每次打开 Codex 时附带一个仅限本机的调试端口，Codex 关闭后端口随之关闭。</p>
       <p>只问这一次。之后可以在 Codex 桌面端的配置里随时改。</p></Dialog>}
+    {runtimeRestart && <RuntimeRestartDialog onClose={() => setRuntimeRestart(false)} restart={toolsApi.restartWindows} />}
     {confirmation && <Confirm title={confirmation.title} body={confirmation.body} danger={confirmation.danger} okLabel={confirmation.label} loading={confirmBusy} onClose={() => setConfirmation(null)} onOk={() => {
       if (confirmationLock.current) return
       confirmationLock.current = true; setConfirmBusy(true)

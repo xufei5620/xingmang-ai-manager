@@ -679,7 +679,10 @@ export function SessionsPage({
         }
         right={<span>{resource.data?.total ?? 0} 条记录</span>}
       />
-      <ResultNotice {...operation} />
+      <ResultNotice
+        {...operation}
+        onReveal={(path) => api.revealExportedFile(path)}
+      />
       <Card padding="none">
         <ListState
           page="sessions"
@@ -764,6 +767,12 @@ export function SessionsPage({
                       icon={History}
                       disabled={!session.detailAvailable}
                       onClick={() => view(session)}
+                      title={
+                        session.detailAvailable
+                          ? undefined
+                          : '这条记录只有摘要，对话原文已经不在这台电脑上了，看不了全文'
+                      }
+                      testId={`sessions-view-${session.id}`}
                     >
                       查看记录
                     </Button>
@@ -803,7 +812,10 @@ export function SessionsPage({
                   () => api.exportProviderSession(selected.id),
                   (result) =>
                     result
-                      ? `已导出 ${result.messages} 条消息：${result.outputPath}${result.truncated ? '；源记录不完整，已在文件中标记' : ''}`
+                      ? {
+                          text: `已导出 ${result.messages} 条消息：${result.outputPath}${result.truncated ? '；源记录不完整，已在文件中标记' : ''}`,
+                          revealPath: result.outputPath,
+                        }
                       : null,
                 )
               }
@@ -841,7 +853,10 @@ export function SessionsPage({
           </>
         }
       >
-        <ResultNotice {...operation} />
+        <ResultNotice
+          {...operation}
+          onReveal={(path) => api.revealExportedFile(path)}
+        />
         {selected && (
           <dl className="v2-business-kv">
             <dt>工具</dt>
