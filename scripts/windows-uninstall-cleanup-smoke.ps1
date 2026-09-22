@@ -45,14 +45,14 @@ function Set-AccelerationLeftOn([string]$exePath) {
   [IO.File]::WriteAllText($journalPath, (([ordered]@{ version = 1; id = $id; owner = $owner; before = $before; applied = $applied }) | ConvertTo-Json -Depth 8 -Compress), $utf8)
   Write-State $applied
   Check (Same-State (Read-State) $applied) 'system proxy points at the dead acceleration port'
-  $runKey = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($runKeyPath, $true)
-  try { $runKey.SetValue($loginItemName, "`"$exePath`" --launched-at-login", [Microsoft.Win32.RegistryValueKind]::String) }
-  finally { $runKey.Dispose() }
+  New-ItemProperty -Path $runKeyPath -Name $loginItemName -Value "`"$exePath`" --launched-at-login" -PropertyType String -Force | Out-Null
+  Check ($null -ne (Get-LoginItem)) 'login item registered'
 }
 
 function Get-LoginItem {
-  $runKey = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($runKeyPath, $false)
-  try { return $runKey.GetValue($loginItemName, $null) } finally { $runKey.Dispose() }
+  $item = Get-ItemProperty -Path $runKeyPath -Name $loginItemName -ErrorAction SilentlyContinue
+  if ($null -eq $item) { return $null }
+  return $item.$loginItemName
 }
 
 function Show-Diagnostics([string]$stage) {
@@ -75,7 +75,7 @@ $installDir = Join-Path $installRoot 'app'
 $dataDirectory = Join-Path $env:APPDATA 'xingmang-ai-manager\acceleration-development'
 $journalPath = Join-Path $dataDirectory 'proxy-lease.json'
 $leasePath = "$journalPath.lock"
-$runKeyPath = 'Software\Microsoft\Windows\CurrentVersion\Run'
+$runKeyPath = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
 $loginItemName = 'com.xingmang.ai.manager'
 $original = Read-State
 
@@ -114,9 +114,11 @@ try {
   Show-Diagnostics 'after uninstall'
   Check (-not (Test-Path -LiteralPath $exe.FullName)) 'uninstall removed the app'
   Assert-Cleaned 'uninstall'
+} catch {
+  Write-Output $_.ScriptStackTrace
+  throw
 } finally {
   try { Write-State $original } catch { Write-Warning 'could not restore the runner proxy' }
-  $runKey = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($runKeyPath, $true)
-  try { $runKey.DeleteValue($loginItemName, $false) } finally { $runKey.Dispose() }
+  Remove-ItemProperty -Path $runKeyPath -Name $loginItemName -ErrorAction SilentlyContinue
   Remove-Item -LiteralPath $journalPath, $leasePath -Force -ErrorAction SilentlyContinue
 }
