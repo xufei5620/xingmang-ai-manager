@@ -1,4 +1,5 @@
 import type { App } from 'electron'
+import { loginLaunchArgument } from '../login-launch'
 import { resolveRelaySite } from '../relay-sites'
 import type {
   PlatformActivityKind,
@@ -47,6 +48,41 @@ export function summarizeSessionProxy(
   return { route: 'unknown', summary: '暂时无法确认应用窗口的连接路径' }
 }
 
+// Windows 的开机项按「程序路径 + 参数」整条比对。0.2.9 之前登记的是不带参数的
+// 那一条，查询时要把它也认下来，否则老用户会看到开关是关着的、开机却照样启动。
+const legacyWindowsLoginArgs: string[] = []
+
+function windowsLoginItem(executablePath: string) {
+  return { path: executablePath, args: [loginLaunchArgument] }
+}
+
+// 老版本登记的开机项开机时不带参数，程序分不出是系统拉起的，还会照旧弹窗。
+// 同名覆盖写成带参数的那一条；关掉开机启动时 Windows 按名字删，两种写法都能删干净。
+// 必须在 setAppUserModelId 之后调用：开机项的名字默认取它，名字不同会留下两条。
+export function migrateLegacyWindowsLoginItem(
+  dependencies: Pick<
+    PlatformSystemDependencies,
+    'app' | 'platform' | 'packaged' | 'executablePath'
+  >,
+): boolean {
+  const { app, platform, packaged, executablePath } = dependencies
+  if (platform !== 'win32' || !packaged) return false
+  const current = windowsLoginItem(executablePath)
+  if (app.getLoginItemSettings(current).openAtLogin) return false
+  const legacy = app.getLoginItemSettings({
+    path: executablePath,
+    args: legacyWindowsLoginArgs,
+  })
+  if (!legacy.openAtLogin) return false
+  // 用户在任务管理器里把它禁用过的，迁移后仍然是禁用；不能借迁移替他重新打开。
+  app.setLoginItemSettings({
+    openAtLogin: true,
+    ...current,
+    enabled: legacy.executableWillLaunchAtLogin,
+  })
+  return app.getLoginItemSettings(current).openAtLogin
+}
+
 export class PlatformSystemService {
   private readonly listeners = new Set<(state: PlatformSystemState) => void>()
   private queue: Promise<unknown> = Promise.resolve()
@@ -85,26 +121,33 @@ export class PlatformSystemService {
           : '当前系统暂不支持设置开机自动启动。',
       }
     const state = app.getLoginItemSettings(
-      platform === 'win32' ? { path: executablePath, args: [] } : undefined,
+      platform === 'win32' ? windowsLoginItem(executablePath) : undefined,
     )
+    const requested =
+      state.openAtLogin ||
+      (platform === 'win32' &&
+        app.getLoginItemSettings({
+          path: executablePath,
+          args: legacyWindowsLoginArgs,
+        }).openAtLogin)
     const approvalRequired =
       platform === 'darwin' && state.status === 'requires-approval'
     const enabled =
-      state.openAtLogin &&
+      requested &&
       !approvalRequired &&
       (platform !== 'win32' || state.executableWillLaunchAtLogin)
     return {
       supported: true,
-      requested: state.openAtLogin,
+      requested,
       enabled,
       approvalRequired,
       note: approvalRequired
         ? '请在系统设置中允许星芒自动启动。'
-        : state.openAtLogin && !enabled
+        : requested && !enabled
           ? '启动项已登记，但系统尚未允许自动运行。'
           : enabled
-            ? '登录电脑后自动启动星芒工具箱。'
-            : '不会随电脑登录自动启动。',
+            ? '开机后在托盘里待命，不弹窗口，要用时点托盘图标。'
+            : '打开后，开机时会在托盘里待命，不弹窗口。',
     }
   }
 
@@ -177,7 +220,7 @@ export class PlatformSystemService {
       const { app, platform, executablePath } = this.dependencies
       app.setLoginItemSettings({
         openAtLogin: enabled,
-        ...(platform === 'win32' ? { path: executablePath, args: [] } : {}),
+        ...(platform === 'win32' ? windowsLoginItem(executablePath) : {}),
       })
       const state = this.getState()
       if (state.startup.requested !== enabled)
