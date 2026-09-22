@@ -627,6 +627,34 @@ test('backup restore requires preview and confirmation before touching files', a
   }
 })
 
+test('feedback narrows the log list by source and to this run, and copies one entry', async () => {
+  const page = await fixture('page=feedback')
+  try {
+    await page.getByText('上次启动的更新记录').waitFor()
+    await page.getByTestId('feedback-source').selectOption('updater')
+    await page.waitForFunction(() => !document.body.innerText.includes('测试日志'))
+    await page.getByText('本次启动的更新失败').waitFor()
+
+    await page.getByTestId('feedback-current-boot').getByRole('switch').click()
+    await page.waitForFunction(() =>
+      !document.body.innerText.includes('上次启动的更新记录'),
+    )
+    await page.getByText('本次启动的更新失败').waitFor()
+
+    await page.getByRole('button', { name: '详情', exact: true }).first().click()
+    await page.getByRole('button', { name: '复制这一条', exact: true }).click()
+    await page.getByText('这一条已复制').first().waitFor()
+    assert.deepEqual(
+      (await calls(page))
+        .filter((call) => call.name === 'copy-clipboard')
+        .map((call) => call.args),
+      ['[2026-09-07T01:00:00Z] [ERROR] [updater/download] 本次启动的更新失败 {"code":"ENOENT"}'],
+    )
+  } finally {
+    await page.close()
+  }
+})
+
 test('feedback copy and export retain the preview snapshot id', async () => {
   const page = await fixture('page=feedback')
   try {

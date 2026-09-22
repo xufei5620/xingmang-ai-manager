@@ -67,6 +67,20 @@ describe('RuntimeLogStore', () => {
     expect(fs.existsSync(startupLog)).toBe(false)
   })
 
+  it('stamps the snapshot with this run so the feedback page can isolate it', async () => {
+    const store = createStore()
+    store.log('info', 'main', 'boot', '本次启动')
+    const snapshot = await store.snapshot()
+
+    expect(snapshot.currentProcessId).toBe(process.pid)
+    expect(Date.parse(snapshot.startedAt)).not.toBeNaN()
+    // The page pairs the pid carried in each entry id with this stamp; an entry
+    // written by this run has to satisfy both halves of that comparison.
+    const written = snapshot.entries.find((entry) => entry.message === '本次启动')
+    expect(written?.id.endsWith(`:${process.pid}:1`)).toBe(true)
+    expect(Date.parse(written?.timestamp ?? '')).toBeGreaterThanOrEqual(Date.parse(snapshot.startedAt))
+  })
+
   it('persists UTF-8 JSONL and redacts secrets recursively', async () => {
     const store = createStore()
     store.log('error', 'ipc', 'config.save', 'Authorization: Bearer private-token sk-private-key', {
