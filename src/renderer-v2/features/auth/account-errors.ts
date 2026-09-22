@@ -21,11 +21,25 @@ interface AccountErrorPattern {
   friendly: string
 }
 
+// i18n key user.exists -- register-time username collision. Shared with
+// isUsernameTakenError so the registration form can point at the field itself.
+const usernameTakenPattern = /username\s+already\s+exists|用户名已存在/i
+
 const accountErrorPatterns: readonly AccountErrorPattern[] = [
   {
-    // i18n key user.exists -- register-time username collision.
-    test: /username\s+already\s+exists|用户名已存在/i,
+    test: usernameTakenPattern,
     friendly: '该用户名已被注册，请更换用户名，或点击“已有账号，登录”',
+  },
+  {
+    // The server's optional email-domain whitelist / alias restriction, hit on
+    // send-verification. Off by default in new-api and not listed in
+    // docs/RECON-new-api.md, so the exact wording is unverified: matched on the
+    // words both languages share, and only next to "email" -- this table also
+    // backs the app-wide errorMessage, where a bare "whitelist" means a blocked
+    // link. Without it a restricted mailbox falls through to the generic "try
+    // again later", which a retry never fixes.
+    test: /(email|邮箱).*(whitelist|白名单|alias|别名)/i,
+    friendly: '这个邮箱暂时不能用来注册，请换一个常用邮箱（如 QQ 邮箱）再试',
   },
   {
     // i18n key user.email_already_taken -- register-time email collision.
@@ -99,4 +113,9 @@ export function matchAccountErrorMessage(message: unknown): string | null {
   const text = typeof message === 'string' ? message.trim() : message instanceof Error ? message.message.trim() : ''
   if (!text) return null
   return accountErrorPatterns.find((pattern) => pattern.test.test(text))?.friendly ?? null
+}
+
+export function isUsernameTakenError(error: unknown): boolean {
+  const text = typeof error === 'string' ? error : error instanceof Error ? error.message : ''
+  return usernameTakenPattern.test(text)
 }

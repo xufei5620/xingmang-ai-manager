@@ -2378,7 +2378,7 @@ test('explicit historical login uses returned account ownership with customer ac
   const page = await open('guest=1&sub2api=1')
   try {
     await page.getByTestId('welcome-login').click()
-    await page.getByTestId('auth-source').getByRole('button', { name: '历史账号', exact: true }).click()
+    await page.getByTestId('auth-source-expand').click()
     await page.getByTestId('login-account').fill('same@example.test')
     await page.getByTestId('login-password').fill('fixture-password')
     await page.getByTestId('auth-agree').check()
