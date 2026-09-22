@@ -505,5 +505,5 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
     void launched.then(invalidateScan, invalidateScan)
     return launched
   }
-  return { scan, install, launch, invalidateScan }
+  return { scan, install, launch }
 }
