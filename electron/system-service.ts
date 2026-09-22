@@ -2775,6 +2775,9 @@ export function createSystemService(
 
   async function restartWindows(): Promise<void> {
     if (platform !== 'win32') throw new Error('系统重启仅支持 Windows')
+    // shutdown /r 会在倒计时结束后强行结束本程序，队列里的安装会停在原子替换的
+    // 半截（I11 保护的正是这种中间态），所以有任务在跑就不发重启。
+    if (installationQueue.busy) throw new Error('还有安装、卸载或打开工具的任务在进行，等它做完再重启电脑')
     const machinePaths = resolveWindowsMachinePathsForService()
     await executeCommand({
       executable: windowsSystemExecutable('shutdown.exe', process.env, 'win32', machinePaths),

@@ -75,6 +75,8 @@ import { ToolStatusMeta, ToolStatusReason } from './features/tools/ToolStatusMet
 import { connectionCheckView } from './features/tools/connection-check'
 import { maintenanceFailureNotice, readMaintenanceStatus } from './features/tools/maintenance-status'
 import { ManualUninstallDialog, type ManualUninstallState } from './features/tools/ManualUninstall'
+import { RuntimeRestartDialog } from './features/tools/RuntimeRestartDialog'
+import { describeRuntimeInstallOutcome } from './features/tools/runtime-install-outcome'
 import {
   anyRuntimeLogValue,
   filterRuntimeLogs,
@@ -983,6 +985,7 @@ export function MaintenancePage({
   const [cancelling, setCancelling] = useState('')
   const cancelRequested = useRef(new Set<string>())
   const [manualUninstall, setManualUninstall] = useState<ManualUninstallState | null>(null)
+  const [runtimeRestart, setRuntimeRestart] = useState(false)
   useEffect(() => {
     const stopCli = api.onInstallProgress((event) =>
       setLogs((previous) => [...previous.slice(-199), event.message]),
@@ -1267,11 +1270,17 @@ export function MaintenancePage({
                       ? void operation.execute(
                           id,
                           async () => {
-                            if (id === 'node') await api.installNodeRuntime()
-                            else await api.installPythonRuntime()
+                            const result = id === 'node'
+                              ? await api.installNodeRuntime()
+                              : await api.installPythonRuntime()
                             await resource.reload()
+                            return describeRuntimeInstallOutcome(id, result)
                           },
-                          '运行环境已准备',
+                          (outcome) => {
+                            // 3010：结果条照样说清楚，另外弹重启确认（第七批 5）。
+                            if (outcome.restartRequired) setRuntimeRestart(true)
+                            return outcome.message
+                          },
                         )
                       : navigate?.('tutorial')
                   }
@@ -1366,6 +1375,12 @@ export function MaintenancePage({
           state={manualUninstall}
           platform={capability?.platform}
           onClose={() => setManualUninstall(null)}
+        />
+      )}
+      {runtimeRestart && (
+        <RuntimeRestartDialog
+          onClose={() => setRuntimeRestart(false)}
+          restart={() => api.restartWindows()}
         />
       )}
     </section>
