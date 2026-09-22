@@ -18,6 +18,7 @@ import {
   FolderOpen,
   HeartPulse,
   HelpCircle,
+  KeyRound,
   MoreHorizontal,
   PlugZap,
   RefreshCw,
@@ -117,6 +118,13 @@ export type BusinessActions = {
    * 只刷新自己那一份数据，回到首页仍会看到「未安装」（R-G3）。
    */
   onToolsChanged?: (tool: Provider | 'codexDesktop') => Promise<void> | void
+  /**
+   * 连接自检的密钥 / 分组层给出的「重新写入 Key」：复用装完工具后那条同样的重写
+   * 流程（App 的 syncAfterToolInstalled），失败时把主进程的原话抛出来，页面照实显示。
+   */
+  onRewriteKey?: (provider: Provider) => Promise<boolean>
+  /** 哪几个工具的配置确实来自当前账号——只有它们重写得动（见 rewritableKeyProviders）。 */
+  rewritableKeys?: readonly Provider[]
 }
 function isProvider(id: string): id is Provider {
   return ['claude', 'codex', 'gemini', 'grok'].includes(id)
@@ -145,7 +153,14 @@ export function diagnosticTarget(code: string): V2Page {
 function ConnectionRowNotice({
   row,
   navigate,
-}: { row: ConnectionRow; navigate?: (page: V2Page) => void }) {
+  canRewriteKey,
+  onRewriteKey,
+}: {
+  row: ConnectionRow
+  navigate?: (page: V2Page) => void
+  canRewriteKey?: boolean
+  onRewriteKey?: (provider: Provider) => void
+}) {
   if (!row.result) {
     return (
       <Notice
@@ -156,7 +171,7 @@ function ConnectionRowNotice({
       />
     )
   }
-  const view = connectionCheckView(row.result)
+  const view = connectionCheckView(row.result, { canRewriteKey: canRewriteKey === true && Boolean(onRewriteKey) })
   const target = view.target
   return (
     <Notice
@@ -175,15 +190,26 @@ function ConnectionRowNotice({
         </>
       }
       actions={
-        target && (
+        view.action === 'rewrite-key' ? (
           <Button
             size="sm"
-            icon={Wrench}
-            onClick={() => navigate?.(target)}
-            testId={`health-connection-fix-${row.provider}`}
+            icon={KeyRound}
+            onClick={() => onRewriteKey?.(row.provider)}
+            testId={`health-connection-rewrite-${row.provider}`}
           >
-            去处理
+            重新写入 Key
           </Button>
+        ) : (
+          target && (
+            <Button
+              size="sm"
+              icon={Wrench}
+              onClick={() => navigate?.(target)}
+              testId={`health-connection-fix-${row.provider}`}
+            >
+              去处理
+            </Button>
+          )
         )
       }
       testId={`health-connection-result-${row.provider}`}
@@ -195,6 +221,8 @@ export function HealthPage({
   api,
   navigate,
   openConfig,
+  onRewriteKey,
+  rewritableKeys,
 }: { api: V2Bridge } & BusinessActions) {
   const load = useCallback(() => api.runDiagnostics(), [api])
   const resource = useResource(load)
@@ -202,19 +230,38 @@ export function HealthPage({
   const [details, setDetails] = useState<Diagnostic | null>(null)
   const [connections, setConnections] = useState<ConnectionRow[] | null>(null)
   const [connectionBusy, setConnectionBusy] = useState(false)
+  const loadConnections = async () => {
+    // 一个工具失败不该把另外三个的结论吞掉，所以每个工具各自收口。
+    setConnections(await Promise.all(connectionTools.map(async (tool) => {
+      try {
+        return { provider: tool.id, name: tool.name, result: await api.checkProviderConnection(tool.id), error: null }
+      } catch (error) {
+        return { provider: tool.id, name: tool.name, result: null, error: errorMessage(error) }
+      }
+    })))
+  }
   // Claude Code 的自检要花账上的几个 token，所以整组只在用户点按钮时跑一次，
   // 不跟着 diagnostics:run 走；其余三个工具走只读的模型清单，不产生花费。
   const runConnectionCheck = async () => {
     setConnectionBusy(true)
     try {
-      // 一个工具失败不该把另外三个的结论吞掉，所以每个工具各自收口。
-      setConnections(await Promise.all(connectionTools.map(async (tool) => {
-        try {
-          return { provider: tool.id, name: tool.name, result: await api.checkProviderConnection(tool.id), error: null }
-        } catch (error) {
-          return { provider: tool.id, name: tool.name, result: null, error: errorMessage(error) }
-        }
-      })))
+      await loadConnections()
+    } finally {
+      setConnectionBusy(false)
+    }
+  }
+  // 重写成功才重测：失败时结果条还停在刚才那条结论上，页头的横幅同时说出主进程
+  // 的原话，用户看到的是「没写成，因为……」，而不是一条被刷掉的旧结论。
+  const rewriteKey = async (provider: Provider) => {
+    if (!onRewriteKey) return
+    setConnectionBusy(true)
+    try {
+      await operation.execute('重新写入 Key', async () => {
+        // 登录掉了的时候 App 打开的是登录框，什么都没写，这里就不该说写好了。
+        const written = await onRewriteKey(provider)
+        if (written) await loadConnections()
+        return written
+      }, (written) => written ? '已按当前账号重新写入 Key，并重新测了一次连接' : null)
     } finally {
       setConnectionBusy(false)
     }
@@ -262,7 +309,13 @@ export function HealthPage({
         testId="health-connection"
       >
         {connections?.map((row) => (
-          <ConnectionRowNotice key={row.provider} row={row} navigate={navigate} />
+          <ConnectionRowNotice
+            key={row.provider}
+            row={row}
+            navigate={navigate}
+            canRewriteKey={rewritableKeys?.includes(row.provider)}
+            onRewriteKey={onRewriteKey ? (provider) => void rewriteKey(provider) : undefined}
+          />
         ))}
         {!connections && (
           <p className="v2-connection-note" data-testid="health-connection-idle">
