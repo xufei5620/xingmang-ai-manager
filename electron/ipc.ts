@@ -8,6 +8,8 @@ import {
   type WebContents,
 } from 'electron'
 import { randomUUID } from 'node:crypto'
+import os from 'node:os'
+import { buildSensitiveWorkspacePrompt, classifyWorkspace, sensitiveWorkspaceLabel } from './workspace-guard'
 import { usageDateRange } from './usage-date-range'
 import type { AppSettingsUpdate, AppTheme } from './app-settings'
 import { parseWindowState } from './window-preferences'
@@ -1611,11 +1613,43 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
       title: '选择 CLI 工作目录',
       properties: ['openDirectory', 'createDirectory'],
     }
-    const result = parentWindow
-      ? await dialog.showOpenDialog(parentWindow, dialogOptions)
-      : await dialog.showOpenDialog(dialogOptions)
-    if (result.canceled || !result.filePaths[0]) return null
-    const workspace = result.filePaths[0]
+    let workspace: string | null = null
+    // 选到主目录 / 盘根 / 桌面 / 下载 / 文档时先说清楚风险。「换一个文件夹」直接
+    // 把选择器再打开一次，用户点一次「打开」仍然能走到底；「仍然打开」照常返回，
+    // 打开时会跳过信任写入与 AGENTS.md 生成（workspace-guard.ts）。
+    while (workspace === null) {
+      const result = parentWindow
+        ? await dialog.showOpenDialog(parentWindow, dialogOptions)
+        : await dialog.showOpenDialog(dialogOptions)
+      if (result.canceled || !result.filePaths[0]) return null
+      const selected = result.filePaths[0]
+      const sensitivity = classifyWorkspace(selected, { platform: process.platform, home: os.homedir() })
+      if (!sensitivity) {
+        workspace = selected
+        break
+      }
+      const prompt = buildSensitiveWorkspacePrompt(sensitivity)
+      const messageBoxOptions = {
+        type: 'warning' as const,
+        title: prompt.title,
+        message: prompt.message,
+        detail: prompt.detail,
+        buttons: [...prompt.buttons],
+        defaultId: prompt.cancelIndex,
+        cancelId: prompt.cancelIndex,
+        noLink: true,
+      }
+      const answer = parentWindow
+        ? await dialog.showMessageBox(parentWindow, messageBoxOptions)
+        : await dialog.showMessageBox(messageBoxOptions)
+      if (answer.response === prompt.continueIndex) {
+        workspace = selected
+        // 只记类别不记路径（I13）；这条是客服排查「为什么工具又问了一次信任」的落点。
+        options.runtimeLog.log('warn', 'config', 'workspace.guard.accepted', `用户确认在${sensitiveWorkspaceLabel(sensitivity)}里打开工具`, {
+          kind: sensitivity,
+        })
+      }
+    }
     await service.updateStoredConfig({ version: 2, workspace })
     options.extensionService.setRepositoryContext(workspace)
     options.providerExtensionService.setRepositoryRoot(workspace)
