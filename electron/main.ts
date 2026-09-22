@@ -45,6 +45,7 @@ import { calculateUiZoom, resolveWindowPlacement } from './window-preferences'
 import { createWindowLifecycle } from './window-lifecycle'
 import { createWindowResponsivenessGuard } from './window-responsiveness'
 import { createApplicationTray, type ApplicationTrayController } from './application-tray'
+import { createTrayAccelerationCoordinator, type TrayAccelerationCoordinator } from './tray-acceleration'
 import { createExternalDeepLinkInbox } from './external-deep-links'
 import { createDesktopNotificationController } from './desktop-notifications'
 import { ConfigBackupStore } from './backups'
@@ -988,6 +989,7 @@ if (!hasSingleInstanceLock) {
     }
     let periodicUpdateTimer: NodeJS.Timeout | null = null
     let applicationTray: ApplicationTrayController | null = null
+    let trayAcceleration: TrayAccelerationCoordinator | null = null
     let latestTraySystem: SystemSnapshot | null = null
     let latestTrayBalance: AccountBalance | null = null
     let managedMainWindow: BrowserWindow | null = null
@@ -1129,6 +1131,7 @@ if (!hasSingleInstanceLock) {
           business.canvasRuns.shutdown()
         }
         latestTrayBalance = null
+        trayAcceleration?.reset()
         applicationTray?.updateSnapshot()
         canvasController.setAccountUser(null)
         canvasController.setAccountUser(state.account?.userId ?? null)
@@ -1658,6 +1661,24 @@ if (!hasSingleInstanceLock) {
     acceleration = createAccelerationService({
       backend: developmentAcceleration,
       getAccountScope: () => readAccelerationAccountScope(),
+      onState: (state) => trayAcceleration?.observe(state),
+    })
+    // 托盘上的连接与断开走的就是加速页那条路：线路交给「智能分配」、模式用标准
+    // 模式（两者都是加速页上的当次选择，没有落盘，托盘读不到也不替用户猜），与
+    // 打开 Codex 桌面端时自动连接同一口径。
+    trayAcceleration = createTrayAccelerationCoordinator({
+      getAccountScope: () => readAccelerationAccountScope(),
+      readState: (scope) => acceleration
+        ? acceleration.getAccelerationState(scope)
+        : Promise.reject(new Error('加速服务尚未就绪。')),
+      connect: (scope) => acceleration
+        ? acceleration.startAcceleration(scope, 'system-proxy')
+        : Promise.reject(new Error('加速服务尚未就绪。')),
+      disconnect: (scope) => acceleration
+        ? acceleration.stopAcceleration(scope)
+        : Promise.reject(new Error('加速服务尚未就绪。')),
+      onChanged: () => applicationTray?.updateSnapshot(),
+      log: (level, event, message, detail) => runtimeLog.log(level, 'network', event, message, detail),
     })
     const unregisterIpcHandlers = registerIpcHandlers({
       acceleration,
@@ -1819,11 +1840,16 @@ if (!hasSingleInstanceLock) {
           ],
           updateAvailable: updaterService.getState().phase === 'available',
           updateVersion: updaterService.getState().availableVersion,
+          acceleration: trayAcceleration?.entry() ?? null,
         }
       },
       onOpen: showMainWindow,
       onNavigate: (target) => mainWindow.webContents.send(ipcEventChannels.onNavigate, target),
       onLaunchTool: (id) => { showMainWindow(); mainWindow.webContents.send(ipcEventChannels.onLaunchTool, id) },
+      onAccelerationToggle: () => trayAcceleration?.toggle(),
+      // 主窗口缩到托盘之后渲染层那边的加速轮询是停的，菜单弹出来这一刻是唯一
+      // 能把剩余时长读新的时机；读一次，不起定时器。
+      onMenuOpen: () => { trayAcceleration?.refresh() },
       onQuit: () => lifecycle.requestQuit(),
       onError: (cause) => runtimeLog.exception('window', 'tray.failed', cause),
     })
