@@ -5,6 +5,7 @@ import { isKeyQuotaExhaustedMessage } from './account-key-quota'
 import { readBoundedResponseText } from './bounded-response'
 import { geminiCliCompatibleModel, type NativeConfigInspection } from './config-files'
 import { parseModelIds } from './models'
+import { isServiceUnavailableResponse, networkFailureMessages, type ServiceResponseSignals } from './network-failure'
 import type { RelaySite } from './relay-sites'
 
 /**
@@ -18,6 +19,11 @@ import type { RelaySite } from './relay-sites'
  * simply not set up yet is not a fault, and showing it as one next to three
  * working tools reads as "三个坏了" (功能 N2 扩展). `config` stays for a
  * config file that exists and is wrong.
+ *
+ * `service` is the relay itself being down (maintenance, a gateway error, an
+ * edge challenge page). It is its own layer so nothing downstream -- the
+ * result strip's 「重新写入 Key」, the account-switch rollback -- mistakes a
+ * maintenance window for a broken key.
  */
 export type ConnectionCheckLayer =
   | 'unconfigured'
@@ -28,6 +34,7 @@ export type ConnectionCheckLayer =
   | 'group'
   | 'model'
   | 'protocol'
+  | 'service'
   | 'unknown'
 
 export const connectionCheckLayerLabels: Readonly<Record<ConnectionCheckLayer, string>> = {
@@ -39,6 +46,7 @@ export const connectionCheckLayerLabels: Readonly<Record<ConnectionCheckLayer, s
   group: '分组与渠道',
   model: '模型',
   protocol: '协议与端点',
+  service: '服务端',
   unknown: '未知',
 }
 
@@ -419,6 +427,7 @@ export function classifyConnectionResponse(
   status: number,
   message: string,
   payload: unknown,
+  response: Pick<ServiceResponseSignals, 'headers' | 'bodyText'> = {},
 ): LayerOutcome & { ok: boolean } {
   const name = probe.name
   const model = probe.model
@@ -429,6 +438,7 @@ export function classifyConnectionResponse(
   const hasCredentialHint = includesAny(lowered, credentialHints)
 
   if (status >= 200 && status < 300 && !message) {
+    if (payload === null && looksLikeWebPage(response.bodyText)) return webPageInsteadOfApi()
     return probe.protocol === 'anthropic-messages'
       ? classifyGenerationSuccess(name, status, payload, model)
       : classifyModelCatalogSuccess(name, status, payload, model)
@@ -445,6 +455,14 @@ export function classifyConnectionResponse(
       summary: '密钥被拒绝（HTTP 401），可能已被吊销或属于别的账号',
       nextStep: '到「账号」页重新登录，然后在首页重新写入一次 Key',
     }
+  }
+  // new-api answers a group with no usable channel as a JSON 503 naming the
+  // group (「当前分组 x 下对于模型 y 无可用渠道」). That one is about this
+  // account's group; every other gateway-class answer is the service itself.
+  const json = payload !== null && typeof payload === 'object'
+  const groupAnswer = status === 503 && json && hasGroupHint
+  if (!groupAnswer && isServiceUnavailableResponse({ status, json, headers: response.headers ?? null, bodyText: response.bodyText })) {
+    return serviceUnavailable(status)
   }
   if (status === 403) {
     if (hasQuotaHint) return outOfQuota(status)
@@ -464,7 +482,7 @@ export function classifyConnectionResponse(
       nextStep: '稍等片刻再试；若一直如此，请到「账号」页查看余额和用量',
     }
   }
-  if (status === 503 || (hasGroupHint && !hasModelHint)) {
+  if (groupAnswer || (hasGroupHint && !hasModelHint)) {
     return noAvailableChannel(status)
   }
   if (hasModelHint) {
@@ -565,6 +583,38 @@ function classifyModelCatalogSuccess(
     summary: `连接正常，${model} 可以直接使用`,
     nextStep: '无需处理',
     evidence: `已核对当前账号的可用模型清单，${model} 在其中`,
+  }
+}
+
+/**
+ * 维护、网关错误、防护层验证页。下一步刻意是「等」：这时去重写 Key、重新登录
+ * 或重装，都改不了服务那一侧，只会把一次维护变成一批客服工单。
+ */
+function serviceUnavailable(status: number): LayerOutcome & { ok: boolean } {
+  return {
+    ok: false,
+    layer: 'service',
+    summary: `服务暂时不可用（HTTP ${status}），多半在维护或线路繁忙`,
+    nextStep: '你这边不用做任何改动，Key 和配置都不用动，稍后再自检一次就行',
+  }
+}
+
+function looksLikeWebPage(bodyText: string | undefined): boolean {
+  return typeof bodyText === 'string' && /<(?:!doctype\s+html|html|head|body|title)\b/i.test(bodyText.slice(0, 4_096))
+}
+
+/**
+ * 自检只打当前账号写进去的中转地址（CLI 由 buildConnectionProbe 核对它就是
+ * 当前站点的标准地址，外部客户端要求配置来源是当前账号），所以 2xx 回一张网页
+ * 不会是「地址指到了网页」——那是中间有东西替服务器答了话，与检查页读状态接口
+ * 时「拿到网页就算被拦截」同一种判法。
+ */
+function webPageInsteadOfApi(): LayerOutcome & { ok: boolean } {
+  return {
+    ok: false,
+    layer: 'network',
+    summary: networkFailureMessages.intercepted,
+    nextStep: '在浏览器里完成上网认证，或改用手机热点后再自检一次；Key 和配置都不用动',
   }
 }
 
@@ -772,7 +822,7 @@ export async function runConnectionProbe(
       }
     }
     const message = extractUpstreamMessage(payload)
-    const outcome = classifyConnectionResponse(plan, response.status, message, payload)
+    const outcome = classifyConnectionResponse(plan, response.status, message, payload, { headers: response.headers, bodyText })
     const detail = sanitizeUpstreamDetail(message || (payload === null ? bodyText : ''), [plan.apiKey])
     return finish(outcome, {
       endpoint: plan.url,

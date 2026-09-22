@@ -11,7 +11,7 @@
  * 与 catalog.ts 同理：这个模块进渲染包，所以永远不许依赖 node 或 electron
  * （I6，门禁见 scripts/verify-renderer-boundary.test.cjs 的 valueImportable）。
  */
-export type NetworkFailureReason = 'offline' | 'dns' | 'tls' | 'certDate' | 'proxy' | 'refused' | 'timeout' | 'intercepted'
+export type NetworkFailureReason = 'offline' | 'dns' | 'tls' | 'certDate' | 'proxy' | 'refused' | 'timeout' | 'intercepted' | 'serviceUnavailable'
 
 /**
  * 「证书过期 / 还没生效」和「证书被换掉」在错误码上是邻居，在现实里却是两件事：
@@ -22,6 +22,16 @@ export type NetworkFailureReason = 'offline' | 'dns' | 'tls' | 'certDate' | 'pro
  * 两张表共用这一句：这句话说的是这台电脑，跟连的是账号服务还是更新目录无关。
  */
 const certificateDateMessage = '这次连接的安全证书日期对不上，多半是这台电脑的系统时间不准。请先把系统时间设为自动同步并确认时区，再重试；确认时间没问题，再换一个网络试试。'
+
+/**
+ * 服务在维护、网关挂了、前面的防护层弹了人机验证：这些都是服务那一侧的事，用户
+ * 换网络、重新登录、重写 Key 都没用，反而会把一次维护变成一批客服工单。
+ *
+ * 这句话刻意不带「登录」「Key」「网络」「连接」这些字：渲染层好几处兜底正则
+ * （聊天、账号读取、操作失败）按这些字把错误归成「登录失效」「检查网络」，
+ * 一旦撞上，安抚就会被翻译回它要否认的那件事。
+ */
+const serviceUnavailableText = '服务暂时不可用（维护或线路繁忙），你这边不用做任何改动，稍后再试就行。'
 
 /**
  * 文案约定：主语是「当前网络」或「账号服务」，不出现站点名、域名和内部代号
@@ -37,6 +47,7 @@ export const networkFailureMessages: Readonly<Record<NetworkFailureReason, strin
   refused: '与账号服务的连接被当前网络切断了，校园网、公司网常见。换一个网络（例如手机热点）再试一次。',
   timeout: '连接账号服务超时，请检查网络后再试。',
   intercepted: '当前网络把这次请求拦到了别的页面，多半是校园网或公共 Wi-Fi 要求先在浏览器完成上网认证。认证之后再试，或者改用手机热点。',
+  serviceUnavailable: serviceUnavailableText,
 }
 
 /**
@@ -54,6 +65,7 @@ export const updateNetworkFailureMessages: Readonly<Record<NetworkFailureReason,
   refused: '与更新服务器的连接被当前网络切断了，校园网、公司网常见。换一个网络（例如手机热点）再试一次。',
   timeout: '连接更新服务器超时，请检查网络后再试。',
   intercepted: '当前网络把这次请求拦到了别的页面，多半是校园网或公共 Wi-Fi 要求先在浏览器完成上网认证。认证之后再试，或者改用手机热点。',
+  serviceUnavailable: '更新服务器暂时不可用（维护或线路繁忙），你这边不用做任何改动，稍后再试就行。',
 }
 
 /**
@@ -137,4 +149,79 @@ export function classifyNetworkFailure(error: unknown): NetworkFailureReason | n
 export function matchNetworkFailureMessage(text: unknown): string | null {
   const reason = networkFailureReasonForMessage(typeof text === 'string' ? text : text instanceof Error ? text.message : '')
   return reason ? networkFailureMessages[reason] : null
+}
+
+/**
+ * 判断一次 HTTP 应答是不是「服务那一侧暂时不可用」要用到的几样东西。只收纯值，
+ * 不收 Response：主进程三条请求路径（账号、连接自检、AI 对话）读响应体的方式
+ * 各不相同，有的读完、有的直接丢掉，能共用的只有状态码、几个响应头和「响应体
+ * 是不是 JSON」这一个结论。
+ */
+export interface ServiceResponseSignals {
+  status: number
+  /** 响应体能解析成 JSON 对象为 true；没读响应体的调用方按 content-type 判断。 */
+  json: boolean
+  /** 响应头读取器；Headers 与测试里的普通对象都满足。 */
+  headers?: { get(name: string): string | null } | null
+  /** 已经读到的响应体开头，用来认出防护层的验证页；没读就不给。 */
+  bodyText?: string
+}
+
+/**
+ * The gateway-class statuses. 502/503/504 are what a reverse proxy answers
+ * while the application behind it is down or restarting; 520-526 are the CDN
+ * edge's own family (origin unreachable, origin timed out, origin TLS
+ * handshake failed). None of them says anything about the caller's key.
+ *
+ * 503 is also what new-api answers, as JSON, when a group has no usable
+ * channel; callers that can tell those apart (the connection check reads the
+ * JSON message) test for that before asking this module.
+ */
+const gatewayStatuses: ReadonlySet<number> = new Set([502, 503, 504, 520, 521, 522, 523, 524, 525, 526])
+
+/**
+ * A CDN challenge is a 403 (managed challenge) or 503 (legacy interstitial)
+ * with an HTML body. The `cf-mitigated` header is the documented marker; the
+ * body markers cover edges that strip it. A 403 without any of these is left
+ * alone: new-api's own "key disabled" 403 is JSON and must keep meaning that.
+ */
+const challengeBodyPattern = /cf-chl|challenge-platform|just a moment\.\.\.|attention required!|cf-browser-verification/i
+
+function edgeChallenge(signals: ServiceResponseSignals): boolean {
+  const mitigated = signals.headers?.get('cf-mitigated')
+  if (mitigated && mitigated.trim()) return true
+  if (signals.json) return false
+  const server = signals.headers?.get('server') ?? ''
+  if (/cloudflare/i.test(server)) return true
+  return typeof signals.bodyText === 'string' && challengeBodyPattern.test(signals.bodyText.slice(0, maxTextLength * 4))
+}
+
+/**
+ * 服务那一侧暂时答不了话：网关类状态码、5xx 却不是 JSON（维护页、网关错误页），
+ * 以及防护层的人机验证页。2xx 永远不算——JSON 接口回了一张网页、状态码却是
+ * 200，那是门户认证替服务器答了话（intercepted），与检查页读状态接口的判法一致。
+ */
+export function isServiceUnavailableResponse(signals: ServiceResponseSignals): boolean {
+  const { status } = signals
+  if (!Number.isInteger(status) || status < 400) return false
+  if (gatewayStatuses.has(status)) return true
+  if (status >= 500 && !signals.json) return true
+  if (status === 403) return edgeChallenge(signals)
+  return false
+}
+
+/** 没读响应体的调用方用：按 content-type 近似「响应体是不是 JSON」。 */
+export function isJsonContentType(value: string | null | undefined): boolean {
+  return typeof value === 'string' && /^\s*application\/(?:[\w.+-]+\+)?json\b/i.test(value)
+}
+
+/** 读完了响应体的调用方用：能解析成 JSON 对象（或数组）才算「是 JSON」。 */
+export function parsesAsJsonObject(text: string): boolean {
+  if (!text) return false
+  try {
+    const parsed: unknown = JSON.parse(text)
+    return typeof parsed === 'object' && parsed !== null
+  } catch {
+    return false
+  }
 }

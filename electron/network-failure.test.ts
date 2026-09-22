@@ -1,9 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import {
   classifyNetworkFailure,
+  isJsonContentType,
+  isServiceUnavailableResponse,
   matchNetworkFailureMessage,
   networkFailureMessages,
   networkFailureReasonForMessage,
+  parsesAsJsonObject,
   updateNetworkFailureMessages,
   type NetworkFailureReason,
 } from './network-failure'
@@ -156,5 +159,52 @@ describe('restricted network failure copy', () => {
     expect(matchNetworkFailureMessage('登录没有成功，输入已保留，请稍后重试')).toBeNull()
     expect(matchNetworkFailureMessage(undefined)).toBeNull()
     expect(matchNetworkFailureMessage(new Error(networkFailureMessages.dns))).toBe(networkFailureMessages.dns)
+  })
+})
+
+describe('service unavailable responses', () => {
+  const html = { get: (name: string) => (name === 'content-type' ? 'text/html' : null) }
+
+  it('recognizes gateway statuses whatever the body says', () => {
+    for (const status of [502, 503, 504, 520, 521, 522, 523, 524, 525, 526]) {
+      expect([status, isServiceUnavailableResponse({ status, json: true })]).toEqual([status, true])
+    }
+  })
+
+  it('recognizes any 5xx that answers with something other than JSON', () => {
+    expect(isServiceUnavailableResponse({ status: 500, json: false, headers: html })).toBe(true)
+    expect(isServiceUnavailableResponse({ status: 500, json: true })).toBe(false)
+  })
+
+  it('recognizes an edge challenge on a 403 and nothing else', () => {
+    expect(isServiceUnavailableResponse({ status: 403, json: false, headers: new Headers({ 'cf-mitigated': 'challenge' }) })).toBe(true)
+    expect(isServiceUnavailableResponse({ status: 403, json: false, headers: new Headers({ server: 'cloudflare' }) })).toBe(true)
+    expect(isServiceUnavailableResponse({ status: 403, json: false, bodyText: '<title>Just a moment...</title>' })).toBe(true)
+    // new-api 自己的 403（Key 被禁用、额度用完）是 JSON，必须保持原意。
+    expect(isServiceUnavailableResponse({ status: 403, json: true, headers: new Headers({ server: 'cloudflare' }) })).toBe(false)
+    expect(isServiceUnavailableResponse({ status: 403, json: false })).toBe(false)
+  })
+
+  it('never calls a 2xx, a 401 or a 429 an outage', () => {
+    // 2xx 回一张网页是门户认证替服务器答了话，与检查页的判法一致。
+    for (const status of [200, 204, 401, 404, 429]) {
+      expect([status, isServiceUnavailableResponse({ status, json: false, headers: html, bodyText: '<title>Just a moment...</title>' })]).toEqual([status, false])
+    }
+  })
+
+  it('stays clear of the words the renderer\'s fallback patterns treat as login or network trouble', () => {
+    for (const message of [networkFailureMessages.serviceUnavailable, updateNetworkFailureMessages.serviceUnavailable]) {
+      expect(message).not.toMatch(/登录|Key|密钥|网络|连接|超时|Cloudflare/i)
+    }
+  })
+
+  it('reads JSON from content-type and from a body the caller already has', () => {
+    expect(isJsonContentType('application/json; charset=utf-8')).toBe(true)
+    expect(isJsonContentType('application/problem+json')).toBe(true)
+    expect(isJsonContentType('text/html')).toBe(false)
+    expect(isJsonContentType(null)).toBe(false)
+    expect(parsesAsJsonObject('{"error":{}}')).toBe(true)
+    expect(parsesAsJsonObject('<html></html>')).toBe(false)
+    expect(parsesAsJsonObject('')).toBe(false)
   })
 })

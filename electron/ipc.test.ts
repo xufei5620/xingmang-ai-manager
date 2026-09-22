@@ -15,6 +15,8 @@ import { createWindowCloseQuery } from './window-close-query'
 import { createAccountWorkGate } from './account-work-gate'
 import { accelerationBonusCode } from './acceleration-contract'
 import { managedCliKeyProfiles, providerIds } from './catalog'
+import { managedKeyQuotaExhaustedMessage } from './account-key-quota'
+import { createManagedKeyReplacementStore, type ManagedKeyReplacementStore } from './managed-key-replacement-store'
 import { externalUrlBlockedErrorName, isExternalUrlBlockedError } from './external-url-blocked'
 import { resolveXingmangAiBundledSkillRoot } from './xingmang-ai-skill'
 
@@ -51,7 +53,7 @@ vi.mock('electron', () => ({
   clipboard: { writeText: electronMocks.writeText },
 }))
 
-import { registerIpcHandlers } from './ipc'
+import { accelerationStateLogKey, registerIpcHandlers } from './ipc'
 
 const stubStoredConfig: AppSettings = {
   version: 2,
@@ -413,6 +415,40 @@ describe('registerIpcHandlers', () => {
     expect(() => start(trustedEvent(), 'xm-account:7', 'tun', undefined, 'yes')).toThrow('加速冲突确认参数无效')
     await start(trustedEvent(), 'xm-account:7', 'system-proxy', 'jp-01', true)
     expect(acceleration.startAcceleration).toHaveBeenLastCalledWith('xm-account:7', 'system-proxy', 'jp-01', true)
+  })
+
+  it('logs an acceleration state read only when the state actually changed', async () => {
+    const base = { scope: 'xm-account:7', phase: 'active' as const, mode: 'system-proxy' as const,
+      totalSeconds: 3600, remainingSeconds: 1200, sessionSeconds: 60, measuredAt: new Date().toISOString(),
+      connectedAt: '2026-09-22T10:00:00.000Z', line: null, error: null }
+    const states = [
+      base,
+      { ...base, remainingSeconds: 1185, sessionSeconds: 75 },
+      { ...base, remainingSeconds: 1170, sessionSeconds: 90 },
+      { ...base, phase: 'idle' as const, connectedAt: null, remainingSeconds: 1170 },
+      { ...base, phase: 'idle' as const, connectedAt: null, remainingSeconds: 1170 },
+    ]
+    const acceleration = {
+      getAccelerationState: vi.fn(async () => states.shift()!),
+      startAcceleration: vi.fn(), stopAcceleration: vi.fn(),
+    }
+    const { runtimeLog } = register(serviceStub(), 'C:\\app-data\\logs', undefined, accountServiceStub(), undefined, undefined, { acceleration })
+    const read = electronMocks.handlers.get('acceleration:get-state')!
+    for (let index = 0; index < 5; index += 1) await read(trustedEvent(), 'xm-account:7')
+
+    const logged = vi.mocked(runtimeLog.log).mock.calls.filter(([, , event]) => event === 'acceleration:get-state')
+    expect(logged).toHaveLength(2)
+    expect(acceleration.getAccelerationState).toHaveBeenCalledTimes(5)
+  })
+
+  it('builds the acceleration change key from state fields only, ignoring the ticking remaining time', () => {
+    const state = { scope: 'a', phase: 'active', mode: 'system-proxy', line: { id: 'jp-01' }, connectedAt: 'x', error: null }
+    expect(accelerationStateLogKey({ ...state, remainingSeconds: 10 })).toBe(accelerationStateLogKey({ ...state, remainingSeconds: 9 }))
+    expect(accelerationStateLogKey(state)).not.toBe(accelerationStateLogKey({ ...state, line: { id: 'hk-01' } }))
+    expect(accelerationStateLogKey(state)).not.toBe(accelerationStateLogKey({ ...state, error: '线路断开' }))
+    expect(accelerationStateLogKey(state)).not.toBe(accelerationStateLogKey({ ...state, scope: 'b' }))
+    expect(accelerationStateLogKey(null)).toBeNull()
+    expect(accelerationStateLogKey({ phase: 'active' })).toBeNull()
   })
 
   it('routes a fixed acceleration redemption through trusted IPC without logging the hidden code', async () => {
@@ -1592,6 +1628,72 @@ describe('registerIpcHandlers', () => {
     busy = false
     ready()
     await expect(result).resolves.toMatchObject({ providers: {} })
+  })
+
+  describe('bootstrap reads under the startup account gate', () => {
+    function startupFixture() {
+      let finishRestore!: () => void
+      const restored = new Promise<void>((resolve) => { finishRestore = resolve })
+      let releaseSplash!: () => void
+      const released = new Promise<void>((resolve) => { releaseSplash = resolve })
+      let settled = false
+      void restored.then(() => { settled = true })
+      const accountStartupGate = {
+        released: Promise.race([released, restored]),
+        pending: () => !settled,
+        releasedEarly: () => true,
+        restoringAccount: () => settled ? null : { siteId: 'solov-api' as const, userId: 42 },
+      }
+      let busy = true
+      const accountWork = createAccountWorkGate({ revision: () => 0, assertReady: () => { if (busy) throw new Error('switching') } })
+      const service = serviceStub()
+      const accountService = accountServiceStub()
+      vi.mocked(accountService.getSessionState).mockReturnValue({ authenticated: false, account: null })
+      register(service, undefined, undefined, accountService, undefined, undefined,
+        { realmAccounts: {} as never, accountWork, accountSessionReady: restored }, { accountStartupGate })
+      return {
+        service, accountService, releaseSplash,
+        finishRestore: () => { busy = false; finishRestore() },
+      }
+    }
+
+    it('answers the session as restoring once the splash budget runs out, naming the account being restored', async () => {
+      const f = startupFixture()
+      const pending = electronMocks.handlers.get('account:get-session')!(trustedEvent())
+      await Promise.resolve()
+      f.releaseSplash()
+      await expect(pending).resolves.toEqual({ authenticated: false, account: null, restoring: { account: { siteId: 'solov-api', userId: 42 } } })
+    })
+
+    it('reads config outside the busy account gate and marks its ownership as pending instead of judging it', async () => {
+      const f = startupFixture()
+      const pending = electronMocks.handlers.get('config:get')!(trustedEvent())
+      await Promise.resolve()
+      expect(f.service.getConfig).not.toHaveBeenCalled()
+      f.releaseSplash()
+      await expect(pending).resolves.toMatchObject({ ownershipPending: true })
+      // 没有账号可比：不带缓存 Key 读，来源判定只可能落到 unknown，不会是「被改过」。
+      expect(f.service.getConfig).toHaveBeenCalledWith(false)
+    })
+
+    it('keeps waiting for the restore when it settles before the budget, with no pending mark', async () => {
+      const f = startupFixture()
+      const session = electronMocks.handlers.get('account:get-session')!(trustedEvent())
+      const config = electronMocks.handlers.get('config:get')!(trustedEvent())
+      f.finishRestore()
+      await expect(session).resolves.toEqual({ authenticated: false, account: null })
+      const read = await config
+      expect(read).not.toHaveProperty('ownershipPending')
+    })
+
+    it('reads the settled state normally after the restore finishes', async () => {
+      const f = startupFixture()
+      f.releaseSplash()
+      f.finishRestore()
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      await expect(electronMocks.handlers.get('account:get-session')!(trustedEvent())).resolves.toEqual({ authenticated: false, account: null })
+      await expect(electronMocks.handlers.get('config:get')!(trustedEvent())).resolves.not.toHaveProperty('ownershipPending')
+    })
   })
 
   it('leaves a platform-free login undecided for main-process automatic discovery', async () => {
@@ -4342,7 +4444,8 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       const handler = electronMocks.handlers.get('account:revoke-key')!
 
       const pending = handler(trustedEvent(), 42)
-      expect(accountService.revokeKey).toHaveBeenCalledWith(42)
+      // The managed-key cache is read first, to learn whether a replacement must inherit limits.
+      await vi.waitFor(() => expect(accountService.revokeKey).toHaveBeenCalledWith(42))
       currentAccount = accountB
       finishRevoke()
       await expect(pending).resolves.toBeUndefined()
@@ -4395,6 +4498,147 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
         expect.any(Error),
         { userId: 42, keyId: 42, cache: 'managed-cli' },
       )
+    })
+
+    describe('replacing a limited key a tool is using', () => {
+      const account = { userId: 42, username: 'tester', group: 'default', role: 1, quota: 1_000, usedQuota: 0 }
+      const codex = managedCliKeyProfiles.codex
+      const accountKey = (overrides: Partial<AccountKeysPage['keys'][number]>): AccountKeysPage['keys'][number] => ({
+        id: 7,
+        name: codex.keyName,
+        maskedKey: 'sk-abcd****wxyz',
+        group: codex.group,
+        status: 1,
+        remainQuota: 5_000,
+        unlimitedQuota: false,
+        usedQuota: 1_000,
+        createdAt: '2026-09-01T00:00:00.000Z',
+        expiredAt: '2099-01-01T00:00:00.000Z',
+        accessedAt: null,
+        ...overrides,
+      })
+      function setup(key: AccountKeysPage['keys'][number] | Error, keyReplacements?: ManagedKeyReplacementStore, cached = true) {
+        const service = serviceStub()
+        const accountService = accountServiceStub()
+        vi.mocked(accountService.getSessionState).mockReturnValue({ authenticated: true, account })
+        vi.mocked(accountService.revokeKey).mockResolvedValue(undefined)
+        if (key instanceof Error) vi.mocked(accountService.listKeys).mockRejectedValue(key)
+        else vi.mocked(accountService.listKeys).mockResolvedValue({ page: 1, pageSize: 100, total: 1, keys: [key] })
+        vi.mocked(accountService.provisionCliKey).mockImplementation(async (input) => ({
+          id: 99,
+          name: input?.name ?? 'managed-key',
+          key: `sk-new-${input?.name}`,
+        }))
+        vi.mocked(service.fetchAvailableModels).mockResolvedValue(['gpt-5.6-sol'])
+        const managedCliKeys: NonNullable<Parameters<typeof registerIpcHandlers>[0]['managedCliKeys']> = {
+          read: vi.fn(async () => []),
+          save: vi.fn(async () => undefined),
+          remove: vi.fn(async () => undefined),
+        }
+        if (cached) {
+          vi.mocked(managedCliKeys.read).mockResolvedValueOnce([
+            { id: 7, provider: 'codex', group: codex.group, name: codex.keyName, key: 'sk-old' },
+          ])
+        }
+        register(service, 'C:\\app-data\\logs', undefined, accountService, undefined, managedCliKeys, {}, keyReplacements ? { keyReplacements } : {})
+        return { accountService, service, managedCliKeys }
+      }
+      const configureCodex = () => electronMocks.handlers.get('account:configure-managed-clis')!(
+        trustedEvent(),
+        { providers: ['codex'], preferredModels: {}, intent: 'explicit', mode: 'merge' },
+      )
+
+      it('gives the replacement the revoked key\'s remaining cap and expiry instead of an unlimited key', async () => {
+        const { accountService } = setup(accountKey({}))
+
+        await expect(electronMocks.handlers.get('account:revoke-key')!(trustedEvent(), 7)).resolves.toBeUndefined()
+        await expect(configureCodex()).resolves.toEqual({ configured: ['codex'], failed: [] })
+
+        expect(accountService.provisionCliKey).toHaveBeenCalledWith(expect.objectContaining({
+          name: codex.keyName,
+          remainQuota: 5_000,
+          unlimitedQuota: false,
+          expiredTime: Math.floor(Date.parse('2099-01-01T00:00:00.000Z') / 1000),
+          fresh: true,
+        }))
+        // Only the one replacement inherits; the next issue for this tool is ordinary again.
+        vi.mocked(accountService.provisionCliKey).mockClear()
+        await configureCodex()
+        expect(accountService.provisionCliKey).toHaveBeenCalledWith(expect.not.objectContaining({ fresh: true }))
+      })
+
+      it('keeps a used-up cap used up: a minimal-cap replacement the user can raise, and says so', async () => {
+        const { accountService } = setup(accountKey({ remainQuota: 0, status: 4 }))
+
+        await electronMocks.handlers.get('account:revoke-key')!(trustedEvent(), 7)
+        const outcome = await configureCodex()
+
+        expect(outcome).toEqual({ configured: [], failed: [{ provider: 'codex', message: managedKeyQuotaExhaustedMessage }] })
+        expect(accountService.provisionCliKey).toHaveBeenCalledWith(expect.objectContaining({
+          name: codex.keyName, remainQuota: 1, unlimitedQuota: false, fresh: true,
+        }))
+        expect(accountService.provisionCliKey).not.toHaveBeenCalledWith(expect.objectContaining({ name: codex.keyName, unlimitedQuota: true }))
+      })
+
+      it('still copies the limits after the app restarts between revoking and replacing', async () => {
+        const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-key-replacements-'))
+        const filePath = path.join(directory, 'managed-key-replacements.json')
+        try {
+          setup(accountKey({}), createManagedKeyReplacementStore({ filePath }))
+          await electronMocks.handlers.get('account:revoke-key')!(trustedEvent(), 7)
+          expect(fs.readFileSync(filePath, 'utf8')).not.toContain('sk-')
+
+          electronMocks.handlers.clear()
+          const { accountService } = setup(accountKey({}), createManagedKeyReplacementStore({ filePath }), false)
+          await expect(configureCodex()).resolves.toEqual({ configured: ['codex'], failed: [] })
+
+          expect(accountService.provisionCliKey).toHaveBeenCalledWith(expect.objectContaining({
+            name: codex.keyName, remainQuota: 5_000, unlimitedQuota: false, fresh: true,
+          }))
+          expect(JSON.parse(fs.readFileSync(filePath, 'utf8'))).toEqual({ version: 1, entries: {} })
+        } finally {
+          fs.rmSync(directory, { recursive: true, force: true })
+        }
+      })
+
+      it('stops automatic issuing when the saved limits cannot be read, until the user asks explicitly', async () => {
+        const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-key-replacements-'))
+        const filePath = path.join(directory, 'managed-key-replacements.json')
+        try {
+          fs.writeFileSync(filePath, '{ not json')
+          const { accountService } = setup(accountKey({}), createManagedKeyReplacementStore({ filePath }), false)
+          const configure = (intent: 'automatic' | 'explicit') => electronMocks.handlers.get('account:configure-managed-clis')!(
+            trustedEvent(),
+            { providers: ['codex'], preferredModels: {}, intent, mode: 'merge' },
+          )
+
+          const automatic = await configure('automatic') as { failed: Array<{ provider: string; message: string }> }
+          expect(automatic.failed).toContainEqual({ provider: 'codex', message: expect.stringContaining('没读到这个工具原来的额度设置') })
+          expect(accountService.provisionCliKey).not.toHaveBeenCalled()
+
+          await expect(configure('explicit')).resolves.toEqual({ configured: ['codex'], failed: [] })
+          expect(accountService.provisionCliKey).toHaveBeenCalledWith(expect.not.objectContaining({ fresh: true }))
+        } finally {
+          fs.rmSync(directory, { recursive: true, force: true })
+        }
+      })
+
+      it('replaces an unlimited, never-expiring key the ordinary way', async () => {
+        const { accountService } = setup(accountKey({ unlimitedQuota: true, remainQuota: 0, expiredAt: null }))
+
+        await electronMocks.handlers.get('account:revoke-key')!(trustedEvent(), 7)
+        await configureCodex()
+
+        expect(accountService.provisionCliKey).toHaveBeenCalledWith({ name: codex.keyName, group: expect.any(String) })
+      })
+
+      it('does not revoke when the key\'s limits cannot be read first', async () => {
+        const { accountService } = setup(new Error('network down'))
+
+        await expect(electronMocks.handlers.get('account:revoke-key')!(trustedEvent(), 7))
+          .rejects.toThrow('没读到这把密钥的额度设置，先没撤销')
+        expect(accountService.revokeKey).not.toHaveBeenCalled()
+      })
     })
 
     it('rejects a non-number, non-integer, zero, or negative id -- id lands directly in a URL path segment (I5)', async () => {

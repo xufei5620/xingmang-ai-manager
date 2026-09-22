@@ -490,7 +490,9 @@ test('logout retains WorkBuddy local configuration without retaining the signed-
     assert.equal(await row.count(), 0)
     await page.getByTestId('welcome-steps').click()
     await page.getByTestId('guide-route-codexDesktop').check()
-    for (let step = 0; step < 3; step++) await page.getByTestId('guide-next').click()
+    // 退出登录后本机 Key 还在、仍是当前账号来源，「确认连接」会被跳过（第十一批 3）。
+    for (let step = 0; step < 2; step++) await page.getByTestId('guide-next').click()
+    await page.locator('[data-guide-step="ready"]').waitFor()
     await page.getByTestId('guide-home').click()
     await row.getByText('用的是别处的配置', { exact: true }).waitFor()
     await page.evaluate(async () => {
@@ -1082,11 +1084,12 @@ test('login synchronizes account Keys, configures installed tools, and route sel
     const bootstrapCalls = await page.evaluate(() => window.v2Test.calls.map((entry) => entry.method))
     assert.ok(bootstrapCalls.indexOf('syncManagedCliKeys') > bootstrapCalls.indexOf('loginAccount'))
     assert.ok(bootstrapCalls.indexOf('configureManagedCliKeys') > bootstrapCalls.indexOf('syncManagedCliKeys'))
-    assert.equal(await page.getByRole('radio', { checked: true }).count(), 0)
+    // 推荐项是默认选中的（第十一批 1），但只是选中，不会触发任何安装。
+    assert.equal(await page.getByTestId('start-guide').getAttribute('data-guide-route'), 'codexDesktop')
     const configurationCount = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'configureManagedCliKeys').length)
     await page.getByTestId('guide-route-chat').check()
     const methods = await page.evaluate(() => window.v2Test.calls.map((entry) => entry.method))
-    assert.equal(methods.includes('installCli') || methods.includes('installNodeRuntime'), false)
+    assert.equal(methods.includes('installCli') || methods.includes('installNodeRuntime') || methods.includes('installCodexDesktop'), false)
     assert.equal(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'configureManagedCliKeys').length), configurationCount)
     await page.getByTestId('guide-pause').click()
     await page.getByTestId('tool-row-claude').getByText('已配好').waitFor()
@@ -1291,6 +1294,29 @@ test('an edited configuration says so on the row and can be written back on requ
     await page.waitForFunction(() => window.v2Test.calls.some(entry => entry.method === 'configureManagedCliKeys'
       && entry.args[0].providers.includes('claude') && entry.args[0].intent === 'explicit'))
     await row.getByText('已配好').waitFor()
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// 开机账号恢复超过启动画面的等待上限：先进首页，这期间一行都不许说「配置被改过」；
+// 恢复成功只补读一次配置，不整页重来、不再扫描一遍。
+test('a slow startup restore opens the home page first and settles ownership after one config re-read', async () => {
+  const page = await open('allInstalled=1&changedClaude=1&restoring=1')
+  try {
+    const row = page.getByTestId('tool-row-claude')
+    await row.getByText('已配好').waitFor()
+    await page.getByText('正在恢复登录').first().waitFor()
+    assert.equal(await page.getByText('配置被改过').count(), 0)
+    assert.equal(await page.getByText('用的是别处的配置').count(), 0)
+    assert.equal(await page.getByTestId('tool-claude-rewrite-key').count(), 0)
+    assert.equal(await page.getByTestId('welcome-login').count(), 0)
+    // 工具列表整块重读（useToolbox.read）才会连带读平台能力；Key 同步那一步自己的
+    // 安装检查不读它，所以用它来数「首页有没有整页重来」。
+    const readsBefore = await page.evaluate(() => window.v2Test.calls.filter(entry => entry.method === 'getPlatformCapabilities').length)
+    await page.evaluate(() => window.v2Test.emit('onAccountSessionChanged', { authenticated: true, account: { userId: 17, username: 'fixture-user', group: 'default', role: 1, quota: 6_200_000, usedQuota: 0 } }))
+    await row.getByText('配置被改过').waitFor()
+    const readsAfter = await page.evaluate(() => window.v2Test.calls.filter(entry => entry.method === 'getPlatformCapabilities').length)
+    assert.equal(readsAfter, readsBefore, '恢复成功后首页不应整页重新检测')
     await clean(page)
   } finally { await page.close() }
 })
@@ -2955,8 +2981,49 @@ test('failed reset retains the selected key and retries reset without silently m
   } finally { await page.close() }
 })
 
-test('an unreadable Node version blocks the CLI install and says which step is blocking (R-G6)', async () => {
+// 第十一批 2：能代装的平台上，认不出版本的 Node 不再拦住安装，而是在同一次「安装」
+// 里先重新准备运行环境，再装工具；两段各记一次调用，顺序固定。
+test('an unreadable Node version is prepared again inside the same install (R-G6)', async () => {
   const page = await open('nodeVersionUnknown=1')
+  try {
+    await page.getByTestId('tool-row-gemini').getByText('未安装').waitFor()
+    await page.getByTestId('tool-gemini-primary').click()
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'installCli'))
+    const methods = await page.evaluate(() => window.v2Test.calls.map((entry) => entry.method).filter((method) => method === 'installNodeRuntime' || method === 'installCli'))
+    assert.deepEqual(methods, ['installNodeRuntime', 'installCli'])
+    await page.getByTestId('tool-row-gemini').getByText('未安装').waitFor({ state: 'detached' })
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('a failed runtime stage says the tool never started and does not run the CLI install', async () => {
+  const page = await open('nodeVersionUnknown=1&nodeInstallFail=1')
+  try {
+    await page.getByTestId('tool-row-gemini').getByText('未安装').waitFor()
+    await page.getByTestId('tool-gemini-primary').click()
+    await page.getByTestId('operation-error-detail').filter({ hasText: 'Node.js 运行环境没装上，Gemini CLI 还没开始安装' }).waitFor()
+    assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => entry.method === 'installCli')), false)
+    await page.getByRole('button', { name: '返回', exact: true }).click()
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// MSI 回 3010：Windows 要重启才算把 Node.js 装完，这时不接着装工具（会失败），
+// 而是停下来弹「现在重启」（第七批 5 的那个框）。
+test('a runtime stage that needs a Windows restart stops before the CLI install and asks to restart', async () => {
+  const page = await open('nodeVersionUnknown=1&nodeRestart=1')
+  try {
+    await page.getByTestId('tool-row-gemini').getByText('未安装').waitFor()
+    await page.getByTestId('tool-gemini-primary').click()
+    await page.getByTestId('runtime-restart-dialog').waitFor()
+    assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => entry.method === 'installCli')), false)
+    assert.equal(await page.getByTestId('operation-error-detail').count(), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('an unreadable Node version still blocks the CLI install where the app cannot install Node (R-G6)', async () => {
+  const page = await open('nodeVersionUnknown=1&runtimeExternal=1')
   try {
     await page.getByTestId('tool-row-gemini').getByText('未安装').waitFor()
     await page.getByTestId('tool-gemini-primary').click()
@@ -2998,8 +3065,23 @@ test('a permission failure hands over the install directory instead of offering 
   } finally { await page.close() }
 })
 
-test('an unreadable Node version leaves the guide runtime step unfinished (R-G6)', async () => {
+test('an unreadable Node version leaves the guide runtime step to the one install button (R-G6)', async () => {
   const page = await open('nodeVersionUnknown=1&guest=1&missingConfig=1')
+  try {
+    await page.getByTestId('welcome-steps').click()
+    await page.getByTestId('guide-route-gemini').check()
+    await page.getByTestId('guide-next').click()
+    const guide = page.getByTestId('start-guide')
+    await guide.getByText('点「安装」就行，缺的运行环境会一并装好。', { exact: true }).waitFor()
+    assert.equal(await page.getByTestId('guide-node').count(), 0)
+    await expect(page.getByTestId('guide-install')).toBeEnabled()
+    await expect(page.getByTestId('guide-next')).toBeDisabled()
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('an unreadable Node version leaves the guide runtime step unfinished where the app cannot install Node (R-G6)', async () => {
+  const page = await open('nodeVersionUnknown=1&guest=1&missingConfig=1&runtimeExternal=1')
   try {
     await page.getByTestId('welcome-steps').click()
     await page.getByTestId('guide-route-gemini').check()
@@ -3141,7 +3223,7 @@ test('the one-click repair on an invalid key runs the same rewrite', async () =>
   const page = await open()
   try {
     await page.getByTestId('tool-row-gemini').getByText('未安装').waitFor()
-    await page.evaluate(() => { window.v2Test.fail = 'installCli'; window.v2Test.failMessage = '安装失败：当前分组下无可用渠道' })
+    await page.evaluate(() => { window.v2Test.fail = 'installCli'; window.v2Test.failMessage = '安装失败：令牌已失效' })
     await page.getByTestId('tool-gemini-primary').click()
     await page.getByTestId('operation-error').waitFor()
     await page.getByTestId('operation-error-body').getByText('工具打不开对话，需要换一把 Key', { exact: true }).waitFor()

@@ -344,6 +344,22 @@ describe('realm account service', () => {
     expect(f.clients[1].client.register).not.toHaveBeenCalled()
     expect(f.service.getSiteId()).toBe('solov-api')
   })
+  it('names the account being restored only while the startup restore is in flight', async () => {
+    const f = fixture()
+    await f.vault.activate(saved('solov-api', '42'))
+    const gate = deferred<void>()
+    const restarted = createRealmAccountService({ ...f.options, createClient: (siteId, callback) => {
+      const result = f.options.createClient(siteId, callback)
+      return { ...result, restore: async (value) => { await gate.promise; return result.restore(value) } }
+    } })
+    expect(restarted.restoringAccount()).toBeNull()
+    const restoring = restarted.restoreActive()
+    await vi.waitFor(() => expect(restarted.restoringAccount()).toEqual({ siteId: 'solov-api', userId: 42 }))
+    expect(restarted.client.getSessionState().authenticated).toBe(false)
+    gate.resolve()
+    await expect(restoring).resolves.toBe(true)
+    expect(restarted.restoringAccount()).toBeNull()
+  })
   it('preserves saved sessions on network restore errors and removes explicit invalid sessions', async () => {
     for (const invalid of [false, true]) {
       const f = fixture()

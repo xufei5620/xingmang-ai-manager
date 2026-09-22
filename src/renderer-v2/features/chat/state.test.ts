@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { networkFailureMessages } from '../../../../electron/network-failure'
 import { relayQuotaFailureMessages } from '../../../../electron/relay-quota-failure'
 import { activeConversation, applyStreamEvent, chatErrorAction, chatErrorMessage, createConversation, createWorkspace, DEFAULT_CHAT_GROUP, DEFAULT_CHAT_MODEL, DEFAULT_IMAGE_MODEL, defaultChatSettings, filterConversations, planTurn, resolveChatGroup, resolveChatModel, saveConversation, shouldSendOnEnter, type ChatMessage, type ChatWorkspace } from './state'
 import { createParameterDraft, parseParameters } from './parameters'
@@ -54,10 +55,18 @@ describe('v2 chat request transitions', () => {
     expect(activeConversation(applyStreamEvent(state, { type: 'complete', requestId: 'another-request' })).messages).toEqual(activeConversation(state).messages)
   })
   it('keeps safe stream failure reasons distinct instead of labeling every disconnect as local network trouble', () => {
+    expect(chatErrorMessage(new Error("Error invoking remote method 'ai:image-generate': Error: 保存位置写不进去，这次没有扣费。请联系客服帮你处理。")))
+      .toBe('保存位置写不进去，这次没有扣费。请联系客服帮你处理。')
     expect(chatErrorMessage('连接 AI 服务超时，请检查网络后重试', 'connection-timeout')).toBe('AI 服务响应较慢，本次等待已超时，请重试')
     expect(chatErrorMessage('AI 服务连接提前关闭，请重试', 'stream-closed')).toBe('AI 服务提前结束了本次响应，请重试')
     expect(chatErrorMessage('当前模型不可用', 'model-unavailable')).toBe('当前模型不在所选分组的可用列表中，请刷新后重新选择')
     expect(chatErrorMessage('无法连接 AI 服务，请检查网络后重试', 'network-error')).toBe('无法连接 AI 服务，请检查网络后重试')
+  })
+  it('never turns a service outage back into an expired login or a broken key', () => {
+    const outage = networkFailureMessages.serviceUnavailable
+    expect(chatErrorMessage(outage, 'service-unavailable')).toBe(outage)
+    // 准备分组时没有错误码，原话里带着 HTTP 码；以前 /登录|密钥/ 那条会先撞上。
+    expect(chatErrorMessage(new Error(`${outage}（HTTP 503：登录服务维护中）`))).toBe(outage)
   })
 
   it('keeps the main process quota sentences and offers the matching account page', () => {

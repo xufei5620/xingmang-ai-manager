@@ -31,7 +31,9 @@ import { apiKeyDigest, type ConfigBackupAccountContext, type ConfigBackupStore }
 import { parseLocalNoticeReadSync, type AnnouncementReadStore } from './announcement-read-store'
 import type { AccelerationApi, AccelerationMode, AccelerationPreferenceApi } from './acceleration-contract'
 import { accelerationFailureReason } from './acceleration-contract'
-import { cliCatalog, isProviderId, type ProviderId } from './catalog'
+import { cliCatalog, isProviderId, providerIds, resolveManagedCliKeyProfiles, type ProviderId } from './catalog'
+import { findAccountKeyById, inheritedKeySettings, inheritedKeyExpiredMessage, isUsedUpKeyLimit, managedKeyQuotaExhaustedMessage } from './account-key-quota'
+import { createMemoryManagedKeyReplacementStore, type ManagedKeyReplacementStore } from './managed-key-replacement-store'
 import { isInstallCancelledError } from './install-cancellation'
 import {
   configureManagedClis,
@@ -118,6 +120,7 @@ import type {
   AccountSessionState,
   AccountKeyCreateInput,
   AccountKeyUpdateInput,
+  AccountKey,
   AccountKeysPage,
   AiChatStartInput,
   AiImageGenerateInput,
@@ -134,6 +137,7 @@ import type { RuntimeLogStore } from './runtime-log'
 import { createExternalShellLauncher, type ExternalShellLauncher } from './system-shell'
 import { platformCapabilitiesFor } from './platform-capabilities'
 import { validatePaymentForm, validatePaymentQrCode, validatePaymentUrl, type PaymentWindowController } from './payment-window'
+import type { AccountStartupGate } from './account-startup-gate'
 
 export type AppWindowMode = 'onboarding' | 'dashboard'
 
@@ -181,6 +185,11 @@ export interface IpcRegistrationOptions {
   // any host that never attempts a restore see the pre-existing synchronous
   // behavior unchanged.
   accountSessionReady?: Promise<void>
+  /**
+   * 启动画面那两条读取（account:get-session、config:get）等账号恢复的上限。不传
+   * = 照旧等 accountSessionReady 结束。见 account-startup-gate.ts。
+   */
+  accountStartupGate?: AccountStartupGate
   savedAccounts?: Pick<SavedAccountsStore, 'list' | 'getSession' | 'remove'>
   urlPolicy: ApplicationUrlPolicy
   previewOnboarding: boolean
@@ -216,6 +225,9 @@ export interface IpcRegistrationOptions {
     clear(): Promise<void>
   }
   managedCliKeys?: ManagedCliKeyStoreLike
+  // 撤销一把设了限制、工具正在用的 Key 时记下的限制（managed-key-replacement-store.ts），
+  // 换新时照抄。缺省用内存版：测试与预览不落盘。
+  keyReplacements?: ManagedKeyReplacementStore
   chatKeyStore?: {
     removeByKeyId(userId: number, keyId: number): Promise<void>
     read?(userId: number): Promise<import('./chat-key-store').StoredChatKey[]>
@@ -1439,13 +1451,36 @@ function ipcLogDetail(channel: string, args: unknown[], result: unknown, duratio
   return detail
 }
 
+/**
+ * 加速页可见时每 15 秒读一次状态，每次成功都记一条的话，开一下午加速页就是上千
+ * 条一模一样的记录。这里给出「状态有没有变」的比较键：剩余时长每秒都在走，不算
+ * 变化；阶段、模式、线路、连上的时间点、错误与冲突任何一项变了才算。读不出形状
+ * 时返回 null，照常记录。
+ */
+export function accelerationStateLogKey(result: unknown): string | null {
+  if (!isRecord(result) || typeof result.scope !== 'string' || typeof result.phase !== 'string') return null
+  const line = isRecord(result.line) && typeof result.line.id === 'string' ? result.line.id : null
+  return JSON.stringify([
+    result.scope,
+    result.phase,
+    result.mode ?? null,
+    result.entitlementSource ?? null,
+    line,
+    result.connectedAt ?? null,
+    result.error ?? null,
+    Array.isArray(result.conflicts) ? result.conflicts : null,
+  ])
+}
+
 function ipcSuccessLevel(channel: string): 'debug' | 'info' {
   return /:(?:get|get-state|list|list-all|detail|status|inspect)$/.test(channel) ? 'debug' : 'info'
 }
 
 export function registerIpcHandlers(options: IpcRegistrationOptions): () => void {
   const registeredChannels: string[] = []
+  const startupGate = options.accountStartupGate
   const externalShell = options.externalShell ?? createExternalShellLauncher()
+  let lastAccelerationStateLogKey: string | null = null
   const revealInFolder = options.revealInFolder ?? ((filePath: string) => shell.showItemInFolder(filePath))
   // 最近几次导出写出来的文件：「打开所在位置」只认这里面的路径。
   const exportedFiles: string[] = []
@@ -1461,6 +1496,11 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
       const startedAt = Date.now()
       const recordSuccess = (result: unknown) => {
         if (quietIpcSuccessChannels.has(channel)) return
+        if (channel === 'acceleration:get-state') {
+          const key = accelerationStateLogKey(result)
+          if (key !== null && key === lastAccelerationStateLogKey) return
+          lastAccelerationStateLogKey = key
+        }
         if (channel === 'acceleration:stop' && isRecord(result) && typeof result.phase === 'string'
           && ['connecting', 'active', 'stopping', 'error'].includes(result.phase)) {
           options.runtimeLog.log('warn', 'ipc', channel, '停止加速尚未完成，已保留恢复状态', {
@@ -1510,7 +1550,14 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
           ? options.accountWork.run(() => handler(event, ...args), { checkRevision: channel !== 'account:change-password' && channel !== 'account:revoke-login-session' }) : handler(event, ...args)
         // Bootstrap requests config and session concurrently. The first
         // config read must not turn an in-progress restore into a failed boot.
-        const result = scoped && options.realmAccounts ? accountSessionReady.then(invoke) : invoke()
+        // Only the bootstrap config read may stop waiting at the startup
+        // budget; it then runs outside the account work gate (which refuses
+        // work mid-restore) and reports ownership as pending.
+        const result = scoped && options.realmAccounts
+          ? channel === 'config:get' && startupGate
+            ? startupGate.released.then(() => startupGate.pending() ? handler(event, ...args) : accountSessionReady.then(invoke))
+            : accountSessionReady.then(invoke)
+          : invoke()
         if (isPromiseLike(result)) {
           return Promise.resolve(result).then((value) => {
             recordSuccess(value)
@@ -1553,6 +1600,78 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
       )
     })
   }
+  // 撤销一把工具正在用、又设了限制的 Key 时把限制落盘，换上的新 Key 照抄（见
+  // inheritedKeySettings）；换新成功再删。读不到这份记录就停下，不签不限额的。
+  const keyReplacements = options.keyReplacements ?? createMemoryManagedKeyReplacementStore()
+  const replacementSlot = (userId: number, provider: ProviderId): string => (
+    `${accountService.getActiveSiteId?.() ?? 'solov'}:${userId}:${provider}`
+  )
+  // explicit：用户亲手点的「重新写入 Key」「再换一次」。只有这一种能越过读坏的记录。
+  const provisioningAccountService = (explicit: boolean): Parameters<typeof configureManagedClis>[0] => ({
+    getSessionState: accountService.getSessionState.bind(accountService),
+    getSessionRevision: accountService.getSessionRevision?.bind(accountService),
+    getActiveSiteId: accountService.getActiveSiteId?.bind(accountService),
+    listUsableGroups: accountService.listUsableGroups.bind(accountService),
+    provisionCliKey: async (input = {}) => {
+      const userId = accountService.getSessionState().account?.userId
+      const siteId = accountService.getActiveSiteId?.()
+      const profiles = resolveManagedCliKeyProfiles(siteId)
+      const provider = providerIds.find((entry) => profiles[entry].keyName === input.name)
+      if (!userId || !provider) return accountService.provisionCliKey(input)
+      const slot = replacementSlot(userId, provider)
+      let pending: Awaited<ReturnType<ManagedKeyReplacementStore['get']>>
+      try {
+        pending = await keyReplacements.get(slot)
+      } catch {
+        // 分不清原来有没有上限：自动签发一律停下说清楚；用户看过密钥页、亲手再点一次，
+        // 才清掉坏记录照常签，免得以后每次都卡在这里。
+        if (!explicit) {
+          throw new Error('没读到这个工具原来的额度设置，这次没有自动签新密钥。到「账号」页「密钥」里确认一下它的额度，再点「重新写入 Key」就会换上。')
+        }
+        await keyReplacements.reset().catch(() => undefined)
+        pending = null
+      }
+      if (!pending) return accountService.provisionCliKey(input)
+      let settings: ReturnType<typeof inheritedKeySettings>
+      try {
+        // Sub2API 的额度是金额、new-api 的是整数额度单位，各取后端允许的最小正数。
+        settings = inheritedKeySettings(pending, siteId === 'solov-api' ? 0.01 : 1)
+      } catch (error) {
+        if (error instanceof Error && error.message === inheritedKeyExpiredMessage) {
+          await keyReplacements.remove(slot).catch(() => undefined)
+        }
+        throw error
+      }
+      if (!settings) {
+        await keyReplacements.remove(slot).catch(() => undefined)
+        return accountService.provisionCliKey(input)
+      }
+      const replacement = await accountService.provisionCliKey({ ...input, ...settings, fresh: true })
+      await keyReplacements.remove(slot).catch(() => undefined)
+      // 上限原本就用完了：新 Key 签了（这样「按工具分账」里有一把可以调高的），但额度
+      // 只有最小值，这里照直说，不当成换好了。
+      if (isUsedUpKeyLimit(pending)) throw new Error(managedKeyQuotaExhaustedMessage)
+      return replacement
+    },
+  })
+  const automaticProvisioning = provisioningAccountService(false)
+  const explicitProvisioning = provisioningAccountService(true)
+  // 撤销前先认出这是不是某个工具在用、又设了上限或到期时间的 Key。读不到就先不撤：
+  // 撤完再想知道新 Key 该照抄什么已经无从查起。
+  const limitedManagedKey = async (userId: number, keyId: number): Promise<{ provider: ProviderId; key: AccountKey } | null> => {
+    if (!options.managedCliKeys || options.previewOnboarding) return null
+    const cached = (await options.managedCliKeys.read(userId).catch(() => [])).find((entry) => entry.id === keyId)
+    if (!cached) return null
+    let key: AccountKey | null
+    try {
+      key = await findAccountKeyById((query) => accountService.listKeys(query), keyId)
+    } catch {
+      throw new Error('没读到这把密钥的额度设置，先没撤销。请稍后再试。')
+    }
+    if (!key || (key.unlimitedQuota && !key.expiredAt)) return null
+    return { provider: cached.provider, key }
+  }
+
   const unsubscribeUpdates = options.updaterService.subscribe(options.broadcastUpdate)
   registerTrustedHandler('platform:get-capabilities', () => platformCapabilitiesFor())
   registerTrustedHandler('system:scan', async (_event, forceRefresh: unknown) => {
@@ -1620,6 +1739,9 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     service.inspectCodexReadiness(options.previewOnboarding)
   ))
   registerTrustedHandler('config:get', () => {
+    // 账号还在恢复：此时读到的会话是未登录，来源判定没有账号可比，一律只会是
+    // unknown。标出来让界面知道这是「待定」而不是「来源不明」，恢复完再补读。
+    if (startupGate?.pending()) return { ...service.getConfig(options.previewOnboarding), ownershipPending: true }
     const session = accountService.getSessionState()
     const userId = session.account?.userId
     if (options.previewOnboarding || !session.authenticated || !userId || !options.managedCliKeys) {
@@ -2476,8 +2598,10 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     // Guaranteed not to reject (see the option's own doc comment), but a
     // stray .catch() here costs nothing and means a future regression there
     // degrades to "restore didn't happen" instead of an unhandled rejection.
-    await accountSessionReady.catch(() => undefined)
-    return accountService.getSessionState()
+    await (startupGate?.released ?? accountSessionReady).catch(() => undefined)
+    const state = accountService.getSessionState()
+    if (!startupGate?.pending()) return state
+    return { ...state, restoring: { account: startupGate.restoringAccount() } }
   })
   const accountOrigin = () => new URL(resolveRelaySite(service.readStoredConfig().relaySiteId).accountBaseUrl!).origin
   registerTrustedHandler('account:list-saved', async () => {
@@ -2605,7 +2729,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     accountService.purchaseSubscriptionWithBalance(parsePositiveSafeInteger(planId, '订阅方案 ID'))
   ))
   registerTrustedHandler('account:sync-managed-cli-keys', async () => {
-    const summary = await syncManagedCliKeySummary(accountService, options.managedCliKeys)
+    const summary = await syncManagedCliKeySummary(automaticProvisioning, options.managedCliKeys)
     if (!options.xingmangAiSkill || accountService.getActiveSiteId?.() === 'solov-api') return summary
     try {
       const skill = await syncXingmangAiSkill({
@@ -2630,7 +2754,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   registerTrustedHandler('account:configure-managed-clis', (_event, input: unknown) => {
     const parsed = parseManagedCliConfigurationInput(input)
     return configureManagedClis(
-      accountService,
+      parsed.intent === 'explicit' ? explicitProvisioning : automaticProvisioning,
       service,
       parsed.providers,
       parsed.preferredModels,
@@ -2762,7 +2886,23 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   registerTrustedHandler('account:revoke-key', async (_event, id: unknown) => {
     const keyId = parseAccountRevokeKeyId(id)
     const userId = accountService.getSessionState().account?.userId
-    await accountService.revokeKey(keyId)
+    const limited = userId ? await limitedManagedKey(userId, keyId) : null
+    // 先落盘再撤销：撤销成功后软件随时可能被关，换新那一步要能在下次打开时照着签。
+    const slot = userId && limited ? replacementSlot(userId, limited.provider) : null
+    if (slot && limited) {
+      const { remainQuota, unlimitedQuota, expiredAt } = limited.key
+      try {
+        await keyReplacements.set(slot, { remainQuota, unlimitedQuota, expiredAt })
+      } catch {
+        throw new Error('没能记下这把密钥的额度设置，先没撤销。请稍后再试。')
+      }
+    }
+    try {
+      await accountService.revokeKey(keyId)
+    } catch (error) {
+      if (slot) await keyReplacements.remove(slot).catch(() => undefined)
+      throw error
+    }
     if (userId) await invalidateAccountKeyCaches(userId, keyId)
   })
   const assertAccountSessionUser = (expectedUserId: number): void => {
@@ -2965,15 +3105,6 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   // issued for the tool is looked up in the account's key list: if it is a
   // capped key with nothing left, say so instead. Any doubt keeps the original
   // verdict -- this only ever narrows "密钥被拒绝" to its quota case.
-  const findAccountKeyById = async (keyId: number) => {
-    for (let page = 1; page <= 5; page++) {
-      const batch = await accountService.listKeys({ page, pageSize: 100 })
-      const found = batch.keys.find((key) => key.id === keyId)
-      if (found) return found
-      if (!batch.keys.length || page * 100 >= batch.total) return null
-    }
-    return null
-  }
   const explainRejectedManagedKey = async (provider: ProviderId, result: ConnectionCheckResult): Promise<ConnectionCheckResult> => {
     if (result.ok || result.layer !== 'credential' || !options.managedCliKeys || options.previewOnboarding) return result
     const userId = accountService.getSessionState().account?.userId
@@ -2981,7 +3112,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     try {
       const cached = (await options.managedCliKeys.read(userId)).find((entry) => entry.provider === provider)
       if (!cached || service.revealApiKey(provider, options.previewOnboarding) !== cached.key) return result
-      const key = await findAccountKeyById(cached.id)
+      const key = await findAccountKeyById((query) => accountService.listKeys(query), cached.id)
       if (accountService.getSessionState().account?.userId !== userId) return result
       return key && isCappedKeyUsedUp(key) ? withKeyQuotaExhausted(result, cliCatalog[provider].name) : result
     } catch {

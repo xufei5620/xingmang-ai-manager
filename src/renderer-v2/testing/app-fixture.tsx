@@ -49,6 +49,8 @@ const account = { userId: 17, username: 'fixture-user', group: 'default', role: 
 let session: AccountSessionState = { authenticated: query.get('guest') !== '1', account: query.get('guest') === '1' ? null : account }
 const sub2ApiMetadata = { siteId: 'solov-api' as const, realmId: 'api-account' as const, capabilities: { supportsRegistration: false, supportsPasswordReset: false, supportsKeyManagement: true, supportsUsage: false, supportsBilling: false, supportsSubscriptions: false, supportsProfileUpdate: true, supportsSessionManagement: false, supportsAutoKeyProvision: true, supportsAccountSession: true } }
 if (query.has('sub2api')) session = { ...session, ...sub2ApiMetadata }
+// 开机账号恢复超过启动画面的等待上限：会话先答「正在恢复 17 号账号」。
+if (query.has('restoring')) session = { authenticated: false, account: null, restoring: { account: { siteId: 'solov', userId: account.userId } } }
 // Settings deliberately retain the historical site: active session owns routing.
 settings.relaySiteId = 'solov'
 const status = { installed: true, version: '1.2.3', path: 'C:\\Fixture\\bin', installDirectory: 'C:\\Fixture', latestVersion: '1.2.3', updateAvailable: false,
@@ -185,7 +187,7 @@ const configSaveMethods = new Set(['saveConfig', 'saveConfigWithAccountKey', 'co
 window.v2Test = { calls: [], unexpected: [], errors: [], fail: '', failMessage: '', emit(name, payload) { if (name === 'onAccountSessionChanged') session = payload as AccountSessionState; listeners.get(name)?.forEach((listener) => listener(payload)) }, releaseBootstrap() { releaseBootstrap() }, releaseLaunch() { releaseLaunch() }, holdNextExternalScan() { holdExternalScan = true }, releaseExternalScan() { releaseExternalScan() }, holdNextConfigRead() { holdConfigRead = true }, releaseConfigRead() { releaseConfigRead() }, holdNextScan() { holdScan = true }, releaseScan() { releaseScan() }, setExternalStatus(tool, patch) { Object.assign(externalStatuses.find((entry) => entry.tool === tool)!, patch) }, releaseBalance(error) { releaseBalance(error) }, holdNextBalance() { nextBalanceHeld = true }, setBalance(amount) { balanceOverride = amount }, releaseKeyMetadata(provider) { pendingKeyMetadata.get(provider)?.(); pendingKeyMetadata.delete(provider) }, releaseNoticeMark(id) { pendingNoticeMarks.get(id)?.(); pendingNoticeMarks.delete(id) }, setNotice(value) { noticeOverride = value }, holdNextConfigSave() { nextConfigSaveHeld = true }, releaseConfigSave(error) { releaseConfigSave(error) } }
 window.addEventListener('error', (event) => window.v2Test.errors.push(event.message))
 window.addEventListener('unhandledrejection', (event) => window.v2Test.errors.push(String(event.reason)))
-const capabilities = { platform: query.get('os') === 'mac' ? 'macos' : 'windows', architecture: 'x64', isMac: query.get('os') === 'mac', nodeRuntimeInstall: 'managed', pythonRuntimeInstall: 'managed', cliInstall: { claude: 'managed', codex: 'managed', gemini: 'managed', grok: 'managed' }, codexDesktop: { install: 'managed', launch: true, uninstall: true, windowsStore: true } } as const
+const capabilities = { platform: query.get('os') === 'mac' ? 'macos' : 'windows', architecture: 'x64', isMac: query.get('os') === 'mac', nodeRuntimeInstall: query.has('runtimeExternal') ? 'external' : 'managed', pythonRuntimeInstall: query.has('runtimeExternal') ? 'external' : 'managed', cliInstall: { claude: 'managed', codex: 'managed', gemini: 'managed', grok: 'managed' }, codexDesktop: { install: 'managed', launch: true, uninstall: true, windowsStore: true } } as const
 const balance = { quota: 6_200_000, usedQuota: 0, quotaPerUnit: 500_000, quotaDisplayType: 'USD', usdExchangeRate: 7.3, displayAmount: 12.4 }
 function sessionCapability(provider: ProviderId): MultiProviderSessionPage['capabilities'][ProviderId] {
   return { provider, available: true, readable: true, readonly: true, source: 'jsonl', reason: '', operations: { list: true, detail: true, exportMarkdown: true, archive: false, restore: false } }
@@ -310,6 +312,11 @@ const methods = {
   },
   getConfig: async () => {
     const result = structuredClone(config)
+    // 同主进程：恢复中没有账号可比，来源只会是 unknown，并带上「待定」标记。
+    if (session.restoring) {
+      result.ownershipPending = true
+      for (const provider of Object.values(result.providers)) if (provider.configurationOwnership === 'account' || provider.configurationOwnership === 'changed') provider.configurationOwnership = 'unknown'
+    }
     if (query.has('readOnlyAccountMatch')) {
       const matched = session.authenticated && session.account?.userId === readOnlyConfigOwner.userId && (session.siteId ?? 'solov') === readOnlyConfigOwner.siteId
       for (const provider of Object.values(result.providers)) provider.configurationAccountMatched = matched && !query.has('matchedUnavailable')
@@ -394,6 +401,13 @@ const methods = {
       ...(failed ? { warning: '中文设置已保存，但本次未确认中文界面生效。请再次启用中文界面以重试。' } : {}) }
   },
   getCodexDesktopStatus: async () => structuredClone(system.desktopApps.codex),
+  // 「安装」遇到缺 / 认不出的 Node 会先走这一步（第十一批 2），装完运行环境即就绪。
+  installNodeRuntime: async () => {
+    if (query.has('nodeInstallFail')) throw new Error('下载 Node.js 时 ETIMEDOUT')
+    system.runtime.node = { ...system.runtime.node, installed: true, version: 'v24.0.0', tooOld: false, versionStatus: 'supported' }
+    system.runtime.npm = { ...system.runtime.npm, installed: true, version: '11.0.0' }
+    return { installed: true as const, action: 'installed' as const, method: 'msi' as const, source: null, version: 'v24.0.0', architecture: 'x64' as const, pathRefreshRequired: true, systemRestartRequired: query.has('nodeRestart') }
+  },
   installCli: async (provider) => {
     if (query.has('installPermissionDenied')) throw new Error(`Gemini CLI 安装失败：npm 官方源：EPERM: operation not permitted, mkdir`)
     system.clis[provider] = { ...system.clis[provider], installed: true, version: '2.0.0', latestVersion: '2.0.0', updateAvailable: false }

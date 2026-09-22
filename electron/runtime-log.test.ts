@@ -308,6 +308,31 @@ describe('RuntimeLogStore', () => {
     expect(report.text).not.toContain(os.homedir())
   })
 
+  it('leaves debug entries out of the feedback report but keeps them on disk', async () => {
+    const store = createStore()
+    store.log('info', 'account', 'login', 'login succeeded')
+    for (let index = 0; index < 5; index += 1) store.log('debug', 'ipc', 'acceleration:get-state', `poll ${index}`)
+    store.log('warn', 'config', 'write', 'config write retried')
+    const report = await store.captureFeedbackReport(10)
+
+    expect(report.text).toContain('login succeeded')
+    expect(report.text).toContain('config write retried')
+    expect(report.text).not.toContain('poll 0')
+    expect(report.text).toContain('日志条数: 7（附最近 2 条，调试级 5 条未附）')
+    expect(report.entries).toBe(7)
+    const snapshot = await store.snapshot()
+    expect(snapshot.entries.filter((entry) => entry.level === 'debug')).toHaveLength(5)
+  })
+
+  it('keeps the most recent non-debug entries even when debug noise came after them', async () => {
+    const store = createStore()
+    store.log('info', 'account', 'login', 'important early entry')
+    for (let index = 0; index < 20; index += 1) store.log('debug', 'ipc', 'acceleration:get-state', `poll ${index}`)
+    const report = await store.captureFeedbackReport(3)
+
+    expect(report.text).toContain('important early entry')
+  })
+
   it('puts the runtime environment before tools and self-check, with home paths redacted', async () => {
     const store = createStore()
     store.attachHostDescriber(async () => [`系统 Node.js: 已安装 v22.12.0，位置 ${path.join(os.homedir(), 'node', 'node.exe')}`])
