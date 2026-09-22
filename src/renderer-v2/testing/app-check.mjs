@@ -2964,6 +2964,11 @@ test('tutorial actions navigate to their tool and retain the selected chapter an
         provider, checkedAt: '2026-09-22T00:00:00Z', items: [], warnings: [],
         capabilities: { mcp: { list: true, reason: null }, skill: { list: true, reason: null }, plugin: { list: true, reason: null } },
       })
+      // 外接工具页进页就读一次 MCP 连接状态，这个桥方法夹具里没有默认实现，
+      // 不一起补上的话它会进 unexpected，clean() 直接判失败。
+      window.xingmang.checkProviderMcpHealth = async (provider) => ({
+        provider, checkedAt: '2026-09-22T00:00:00Z', supported: true, reason: null, entries: [],
+      })
     })
     await page.getByTestId('nav-tutorial').click()
     const tutorial = page.getByTestId('page-tutorial')
