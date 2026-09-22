@@ -20,7 +20,7 @@ import { autoUpdater } from 'electron-updater'
 import { AccountCredentialStore } from './account-credential-store'
 import { AnnouncementReadStore } from './announcement-read-store'
 import { createAccelerationService } from './acceleration-service'
-import { accelerationConflictDescriptions } from './acceleration-contract'
+import { accelerationConflictDescriptions, accelerationFailureMessages } from './acceleration-contract'
 import { accelerationStartFailureDescriptions, createAccelerationDevelopmentHost, readAccelerationDevelopmentConfig } from './acceleration-development-host'
 import { readBundledAccelerationConfig } from './acceleration-bundled-config'
 import { AiAssetStore, resolveAiOutputRoot } from './ai-asset-store'
@@ -1525,6 +1525,16 @@ if (!hasSingleInstanceLock) {
           ignored ? 'acceleration.conflict.ignored' : 'acceleration.conflict.detected',
           `${ignored ? '用户选择忽略网络冲突继续连接' : '开始加速前检测到网络冲突'}：${accelerationConflictDescriptions[kind]}`,
           { kind, ignored }),
+        // 启动辅助进程这一步以前把 errno 和原文一起吞掉，只留一句「本机加速进程
+        // 启动失败。」。2026-09-22 客户机卡在临时目录上，就是因此只能靠反编译
+        // 压缩产物才定位到。原因与底层错误都留在这里（日志会脱敏路径，I13）。
+        onHelperFailure: (reason, error) => runtimeLog.exception('network', 'acceleration.helper.failed', error, {
+          reason,
+          // errno 单列一格：光看 message 分不清「目录建不出来」报的是没空间、
+          // 没权限还是路径不存在，而这恰恰是客服要问用户的下一句话。
+          ...(typeof (error as NodeJS.ErrnoException | null)?.code === 'string' ? { code: (error as NodeJS.ErrnoException).code } : {}),
+          detail: accelerationFailureMessages[reason],
+        }),
         ...(app.isPackaged ? { entitlementSource: 'local-device' as const } : {}),
       })
     } catch {

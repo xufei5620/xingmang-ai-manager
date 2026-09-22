@@ -1,8 +1,8 @@
 import path from 'node:path'
 import { stat } from 'node:fs/promises'
 import { fork, spawn, type ChildProcess, type ForkOptions } from 'node:child_process'
-import type { AccelerationApi, AccelerationConflictKind, AccelerationState } from './acceleration-contract'
-import { isAccelerationConflictKind } from './acceleration-contract'
+import type { AccelerationApi, AccelerationConflictKind, AccelerationFailureReason, AccelerationState } from './acceleration-contract'
+import { accelerationFailureReason, isAccelerationConflictKind, isAccelerationFailureReason, withAccelerationReason } from './acceleration-contract'
 import { trustedCommandEnvironment } from './command-runner'
 import { readSafeUtf8File } from './safe-local-data'
 import { accelerationWorkerArgument } from './acceleration-worker-entry'
@@ -95,6 +95,11 @@ export function createAccelerationDevelopmentHost(options: {
   onDiagnostic?(stage: AccelerationStopFailureStage): void
   onStartDiagnostic?(stage: AccelerationStartFailureStage): void
   onConflictDiagnostic?(kind: AccelerationConflictKind, ignored: boolean): void
+  /** Both the closed reason and the error behind it. Unlike the worker-side
+   *  callbacks above, this one fires in the main process, so it may carry the
+   *  original error: the log redacts paths (I13) and nothing crosses a process
+   *  boundary here. Without it a failed launch left no cause anywhere. */
+  onHelperFailure?(reason: AccelerationFailureReason, error: unknown): void
 }): AccelerationDevelopmentHost {
   const config = parseAccelerationDevelopmentConfig(options.config)
   const entitlementSource = parseAccelerationEntitlementSource(options.entitlementSource)
@@ -113,7 +118,7 @@ export function createAccelerationDevelopmentHost(options: {
   function failPending() {
     for (const request of pending.values()) {
       clearTimeout(request.timer)
-      request.reject(new Error('本机加速进程已断开，请重新打开软件。'))
+      request.reject(withAccelerationReason(new Error('本机加速进程已断开，请重新打开软件。'), 'helper-launch'))
     }
     pending.clear()
   }
@@ -124,7 +129,7 @@ export function createAccelerationDevelopmentHost(options: {
   }
 
   function rpc(operation: string, payload: Record<string, unknown> = {}): Promise<unknown> {
-    if (!child?.connected) return Promise.reject(new Error('本机加速进程未就绪。'))
+    if (!child?.connected) return Promise.reject(withAccelerationReason(new Error('本机加速进程未就绪。'), 'helper-launch'))
     const id = ++nextId
     const worker = child
     return new Promise((resolve, reject) => {
@@ -132,7 +137,7 @@ export function createAccelerationDevelopmentHost(options: {
         pending.delete(id)
         // Disconnect makes the worker unwind and restore its proxy lease. Do
         // not kill it while it may be restoring the user's previous settings.
-        reject(new Error('本机加速操作超时，正在恢复网络。'))
+        reject(withAccelerationReason(new Error('本机加速操作超时，正在恢复网络。'), 'helper-timeout'))
         disconnectWorker(worker)
       }, 90_000)
       timer.unref?.()
@@ -142,7 +147,7 @@ export function createAccelerationDevelopmentHost(options: {
         if (!request) return
         clearTimeout(request.timer)
         pending.delete(id)
-        request.reject(new Error('本机加速进程通信失败。'))
+        request.reject(withAccelerationReason(new Error('本机加速进程通信失败。'), 'helper-launch'))
         disconnectWorker(worker)
       }
       try { worker.send({ id, operation, ...payload }, (error) => { if (error) sendFailed() }) }
@@ -151,7 +156,7 @@ export function createAccelerationDevelopmentHost(options: {
   }
 
   function ensureReady(): Promise<void> {
-    if (disposed) return Promise.reject(new Error('本机加速服务已关闭。'))
+    if (disposed) return Promise.reject(withAccelerationReason(new Error('本机加速服务已关闭。'), 'helper-launch'))
     if (ready) return ready
     const workerOptions: ForkOptions & { windowsHide: boolean } = {
       execPath: process.execPath,
@@ -165,26 +170,35 @@ export function createAccelerationDevelopmentHost(options: {
       env: { ...trustedCommandEnvironment(), ELECTRON_RUN_AS_NODE: '1' },
     }
     let profile: ReturnType<typeof createAccelerationElectronProfile> | undefined
-    try {
-      if (options.packaged) {
-        const environment = trustedCommandEnvironment()
+    // 这两步以前共用一个 catch，于是「临时工作目录建不出来」和「进程拉不起来」
+    // 在日志里长得一模一样：只有「本机加速进程启动失败。」，errno 和原文都没有。
+    // 2026-09-22 一台客户机卡在这里，定位只能靠反编译压缩产物数字节。分开接住，
+    // 归类就不用去猜 errno 到底是谁报的。
+    function launchFailed(reason: AccelerationFailureReason, error: unknown): Promise<void> {
+      profile?.cleanup()
+      try { options.onHelperFailure?.(reason, error) } catch { /* Reporting must not change the launch result. */ }
+      return Promise.reject(withAccelerationReason(new Error('本机加速进程启动失败。'), reason))
+    }
+    if (options.packaged) {
+      let environment: NodeJS.ProcessEnv
+      try {
+        environment = trustedCommandEnvironment()
         for (const key of Object.keys(environment)) {
           if (key.toUpperCase() === 'ELECTRON_RUN_AS_NODE') delete environment[key]
         }
+        profile = createAccelerationElectronProfile()
+      } catch (error) { return launchFailed('helper-temp', error) }
+      try {
         // Run the integrity-protected application entry in a detached Electron
         // main process. Unlike a utility process, it survives parent IPC loss
         // long enough to restore the proxy without enabling the RunAsNode fuse.
-        profile = createAccelerationElectronProfile()
         child = spawn(process.execPath, [accelerationWorkerArgument, profile.argument], {
           detached: true, windowsHide: true, stdio: ['ignore', 'ignore', 'ignore', 'ipc'], env: environment,
         })
-      } else {
-        child = fork(path.join(__dirname, 'acceleration-development-worker.js'), [], workerOptions)
-      }
-    }
-    catch {
-      profile?.cleanup()
-      return Promise.reject(new Error('本机加速进程启动失败。'))
+      } catch (error) { return launchFailed('helper-launch', error) }
+    } else {
+      try { child = fork(path.join(__dirname, 'acceleration-development-worker.js'), [], workerOptions) }
+      catch (error) { return launchFailed('helper-launch', error) }
     }
     const worker = child
     child.on('message', (message: unknown) => {
@@ -216,7 +230,13 @@ export function createAccelerationDevelopmentHost(options: {
       clearTimeout(request.timer)
       pending.delete(response.id)
       if (response.ok === true) request.resolve(response.value)
-      else request.reject(new Error('本机加速操作未完成，请重新检查线路。'))
+      else {
+        // The worker never sends error text (it can carry a private path or
+        // proxy detail, I13). It sends one member of the closed reason set, so
+        // a confused worker cannot turn this into a channel for free text.
+        const reason = isAccelerationFailureReason(response.reason) ? response.reason : 'unknown'
+        request.reject(withAccelerationReason(new Error('本机加速操作未完成，请重新检查线路。'), reason))
+      }
     })
     child.on('error', () => disconnectWorker(worker))
     const exited = () => {
@@ -229,11 +249,13 @@ export function createAccelerationDevelopmentHost(options: {
     child.on('exit', exited)
     child.on('close', exited)
     child.on('disconnect', () => { if (child === worker) failPending() })
-    ready = rpc('init', { config, dataDirectory: options.dataDirectory, ...(entitlementSource ? { entitlementSource } : {}) }).then(() => undefined, () => {
+    ready = rpc('init', { config, dataDirectory: options.dataDirectory, ...(entitlementSource ? { entitlementSource } : {}) }).then(() => undefined, (error: unknown) => {
       // Initialization can fail after acquiring or recovering a proxy lease.
       // Parent IPC loss tells the worker to retry its own cleanup before exit.
       disconnectWorker(worker)
-      throw new Error('本机加速进程初始化未完成。')
+      const reason = accelerationFailureReason(error) ?? 'unknown'
+      try { options.onHelperFailure?.(reason, error) } catch { /* Reporting must not change the launch result. */ }
+      throw withAccelerationReason(new Error('本机加速进程初始化未完成。'), reason)
     })
     return ready
   }

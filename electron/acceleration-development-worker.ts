@@ -1,6 +1,6 @@
 import path from 'node:path'
 import { accelerationDevelopmentDirectory, parseAccelerationDevelopmentConfig, parseAccelerationEntitlementSource } from './acceleration-development-host'
-import { createAccelerationDevelopmentBackend } from './acceleration-development-backend'
+import { classifyAccelerationWorkerFailure, createAccelerationDevelopmentBackend } from './acceleration-development-backend'
 import { createAccelerationConflictDetector } from './acceleration-conflict'
 import { accelerationLinesFromProfile, createMihomoRuntime } from './acceleration-mihomo-runtime'
 import { createWindowsSystemProxy } from './platform/windows-system-proxy'
@@ -178,7 +178,11 @@ if (process.send) {
     if (typeof id !== 'number' || !Number.isSafeInteger(id) || id < 1) return
     void enqueue(() => handle(message)).then(
       (value) => { if (process.connected) process.send?.({ id, ok: true, value }, () => undefined) },
-      () => { if (process.connected) process.send?.({ id, ok: false }, () => undefined) },
+      // The reason, never the message: the host maps it onto a sentence of its
+      // own, and a stray path or proxy detail can never ride along (I13).
+      (error: unknown) => {
+        if (process.connected) process.send?.({ id, ok: false, reason: classifyAccelerationWorkerFailure(error) }, () => undefined)
+      },
     )
   })
   process.on('disconnect', () => { void shutdown() })

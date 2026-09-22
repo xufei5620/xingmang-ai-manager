@@ -1,6 +1,6 @@
 import path from 'node:path'
 import { performance } from 'node:perf_hooks'
-import type { AccelerationApi, AccelerationConflictKind, AccelerationLine, AccelerationRedemptionResult, AccelerationState } from './acceleration-contract'
+import type { AccelerationApi, AccelerationConflictKind, AccelerationFailureReason, AccelerationLine, AccelerationRedemptionResult, AccelerationState } from './acceleration-contract'
 import { accelerationBonusSeconds, accelerationConflictNotice, accelerationTrialSeconds, isAccelerationBonusCode } from './acceleration-contract'
 import { ensureSafeDataDirectory, readSafeUtf8File, writeAtomicSafeUtf8File } from './safe-local-data'
 
@@ -150,6 +150,26 @@ export function classifyAccelerationStartFailure(
   if (/内核启动失败|内核已退出|内核意外退出/.test(message)) return 'core-launch'
   if (/^暂无可用加速线路/.test(message)) return 'line-unavailable'
   if (/^加速(运行目录|内核|连接配置)/.test(message)) return 'core-storage'
+  return 'unknown'
+}
+
+/** Maps the failures the worker can observe onto the closed reason set the host
+ *  is allowed to receive. Same constraint as the start stages above: the worker
+ *  is the only process that may see the underlying text, so what crosses the
+ *  IPC boundary is one of these names and never the message itself (I13).
+ *
+ *  Order matters. The proxy-lock messages all start with 系统代理 too, and they
+ *  mean something completely different from a failed restore: the helper could
+ *  not even take the lock, which on a policy-restricted machine never recovers.
+ */
+export function classifyAccelerationWorkerFailure(error: unknown): AccelerationFailureReason {
+  const message = error instanceof Error ? error.message : ''
+  if (message === '另一实例正在使用系统代理，请先停止该实例的加速。') return 'proxy-owned'
+  if (/系统代理(操作锁|正在由另一实例操作)/.test(message)) return 'proxy-locked'
+  if (message === ledgerFailure) return 'local-data'
+  if (/^(系统代理|Windows 系统代理|当前系统暂不支持此系统代理)/.test(message) || message === stopFailure) return 'proxy-restore'
+  if (/^本机加速数据/.test(message)) return 'helper-data'
+  if (/^(开发加速|开发数据目录)/.test(message)) return 'helper-launch'
   return 'unknown'
 }
 

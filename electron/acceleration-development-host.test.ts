@@ -494,6 +494,41 @@ describe('development acceleration worker host', () => {
     expect(vi.getTimerCount()).toBe(0)
   })
 
+  it('reports the reason and the underlying error of a launch that never produced a worker', async () => {
+    // 直到 2026-09-22 这条 catch 把 errno 和原文一起吞掉：一台永远起不来的机器
+    // 在日志里只留下「本机加速进程启动失败。」，原因得靠反编译压缩产物去数字节。
+    const failures: Array<{ reason: string; message: string }> = []
+    mocks.fork.mockReturnValue(new FakeWorker())
+    const host = createAccelerationDevelopmentHost({
+      config, dataDirectory,
+      onHelperFailure: (reason, error) => failures.push({ reason, message: error instanceof Error ? error.message : '' }),
+    })
+    mocks.fork.mockImplementationOnce(() => { throw Object.assign(new Error('EACCES: permission denied, spawn'), { code: 'EACCES' }) })
+    const rejection: unknown = await host.getAccelerationState('xm-account:1').catch((error: unknown) => error)
+    expect(failures).toEqual([{ reason: 'helper-launch', message: 'EACCES: permission denied, spawn' }])
+    // 上屏的那句话仍旧不带原文；带出去的只有封闭集合里的那个名字。
+    expect((rejection as Error).message).toBe('本机加速进程启动失败。')
+    expect((rejection as { accelerationReason?: string }).accelerationReason).toBe('helper-launch')
+    await host.dispose()
+  })
+
+  it('tells a helper working directory that could not be prepared apart from a launch that failed', async () => {
+    // 同一个 catch 以前接住这两步，日志里于是分不出是哪一步——而这两步的下一步
+    // 完全不同：一个去看临时文件夹，一个去看安全软件。
+    const failures: string[] = []
+    mocks.spawn.mockReturnValue(new FakeWorker())
+    mocks.profile.mockImplementationOnce(() => { throw new Error('加速辅助进程数据目录无效。') })
+    const host = createAccelerationDevelopmentHost({
+      config: { ...config, profileSha256: config.coreSha256 }, dataDirectory, packaged: true,
+      onHelperFailure: (reason) => failures.push(reason),
+    })
+    const rejection: unknown = await host.getAccelerationState('xm-account:1').catch((error: unknown) => error)
+    expect(failures).toEqual(['helper-temp'])
+    expect((rejection as { accelerationReason?: string }).accelerationReason).toBe('helper-temp')
+    expect(mocks.spawn).not.toHaveBeenCalled()
+    await host.dispose()
+  })
+
   it('lets an isolated worker finish cleanup after its Windows parent exits abruptly', async () => {
     vi.useRealTimers()
     const { spawn } = await vi.importActual<typeof import('node:child_process')>('node:child_process')
