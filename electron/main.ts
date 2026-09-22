@@ -67,6 +67,7 @@ import { CodexSessionsService } from './codex-sessions'
 import { createNewApiClient } from './new-api-client'
 import { createRealmAccountService, type RealmAccountClientHandle, type RealmAccountSiteId } from './realm-account-service'
 import { createFileRealmAccountVault } from './realm-account-vault-file'
+import { createVaultRecoveryNotifier } from './vault-recovery-notice'
 import { inspectSafeStorageBackend } from './safe-storage-backend'
 import { parseRealmSavedAccount, type RealmSavedAccount } from './realm-account'
 import { createSub2ApiRelayBackend } from './sub2api-relay-backend'
@@ -910,8 +911,17 @@ if (!hasSingleInstanceLock) {
     const accountSessionStore = new AccountSessionStore(path.join(managerDataDirectory, 'account-session.dat'), safeStorage)
     const savedAccounts = new SavedAccountsStore(path.join(managerDataDirectory, 'saved-accounts.dat'), safeStorage)
     const vault = createFileRealmAccountVault(managerDataDirectory, safeStorage, {
-      onRecovered: (backupFileName) => runtimeLog.log('warn', 'account', 'vault.recovered',
-        '本地登录记录无法解密，已保留原密文备份并重建账号存储', { reason: 'decrypt', backupFileName }),
+      // 重建之后用户看到的是「记住的账号没了」，只记日志等于让他自己猜，所以同时
+      // 给界面发一条（一次启动只发一条，备份文件名不跟着走）。
+      onRecovered: createVaultRecoveryNotifier({
+        log: (backupFileName) => runtimeLog.log('warn', 'account', 'vault.recovered',
+          '本地登录记录无法解密，已保留原密文备份并重建账号存储', { reason: 'decrypt', backupFileName }),
+        emit: () => {
+          if (!managedMainWindow || managedMainWindow.isDestroyed()) return
+          if (managedMainWindow.webContents.isDestroyed()) return
+          managedMainWindow.webContents.send(ipcEventChannels.onAccountVaultRecovered, undefined)
+        },
+      }),
     })
     let publishedAccountIdentity = ''
     let acceleration: ReturnType<typeof createAccelerationService> | undefined
