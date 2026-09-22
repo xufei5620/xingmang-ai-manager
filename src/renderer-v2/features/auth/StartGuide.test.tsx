@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { StartGuide, guideInstallErrorMessage, type GuideToolState, type StartGuideProps } from './StartGuide'
+import { StartGuide, defaultGuideRoute, guideCanSkipConnect, guideInstallErrorMessage, type GuideToolState, type StartGuideProps } from './StartGuide'
 
 const resumeKey = 'fixture-scope'
 
@@ -141,5 +141,49 @@ describe('guide install failure wording', () => {
     expect(message).not.toMatch(/星芒服务器|输入已保留/)
     expect(message).toContain('网络连不上')
     expect(guideInstallErrorMessage(new Error('HTTP 401 unauthorized'), 'Codex')).toBe('Codex 没装上。点「再试一次」，还不行就点「需要帮助」。')
+  })
+})
+
+describe('guide default route', () => {
+  it('keeps where the user left off, otherwise picks the recommended tool when it is shown', () => {
+    expect(defaultGuideRoute('gemini', ['claude', 'codexDesktop'])).toBe('gemini')
+    expect(defaultGuideRoute(null, ['claude', 'codexDesktop'])).toBe('codexDesktop')
+    expect(defaultGuideRoute(undefined, ['claude', 'codex'])).toBeNull()
+  })
+
+  it('opens a fresh guide with the recommended tool selected, first and labelled', () => {
+    for (const platform of ['win', 'mac'] as const) {
+      const markup = render([], { platform })
+      expect(markup).toContain('data-guide-route="codexDesktop"')
+      expect(markup.indexOf('guide-route-codexDesktop')).toBeLessThan(markup.indexOf('guide-route-claude'))
+      expect(markup).toContain('data-testid="guide-recommended"')
+      expect(markup).not.toMatch(/Node\.js|Python/)
+      expect(markup).toMatch(/<button[^>]*data-testid="guide-next"(?![^>]*disabled)/)
+    }
+  })
+})
+
+describe('guide connect step skipping', () => {
+  it('skips only when the account key is already written and the tool is ready', () => {
+    expect(guideCanSkipConnect('claude', guideTool(), true)).toBe(true)
+    expect(guideCanSkipConnect('codexDesktop', guideTool({ id: 'codexDesktop', runtimeReady: false }), true)).toBe(true)
+  })
+
+  it('still stops for third-party config, official accounts, typed keys, a missing key, unfinished preparation and chat', () => {
+    expect(guideCanSkipConnect('claude', guideTool({ source: 'unknown' }), true)).toBe(false)
+    expect(guideCanSkipConnect('claude', guideTool({ source: 'official' }), true)).toBe(false)
+    expect(guideCanSkipConnect('codex', guideTool({ id: 'codex', source: 'official', officialLoginRequired: true }), true)).toBe(false)
+    expect(guideCanSkipConnect('claude', guideTool({ source: 'manual' }), true)).toBe(false)
+    expect(guideCanSkipConnect('claude', guideTool({ configured: false }), true)).toBe(false)
+    expect(guideCanSkipConnect('claude', guideTool({ runtimeReady: false }), true)).toBe(false)
+    expect(guideCanSkipConnect('chat', undefined, true)).toBe(false)
+    expect(guideCanSkipConnect(null, guideTool(), true)).toBe(false)
+  })
+
+  it('tells the user on the last step that the current account is already connected', () => {
+    stubResumedGuide('claude', 'ready')
+    expect(render([guideTool()])).toContain('data-testid="guide-connected-note"')
+    stubResumedGuide('claude', 'ready')
+    expect(render([guideTool({ source: 'official' })])).not.toContain('data-testid="guide-connected-note"')
   })
 })

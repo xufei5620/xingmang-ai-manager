@@ -490,7 +490,9 @@ test('logout retains WorkBuddy local configuration without retaining the signed-
     assert.equal(await row.count(), 0)
     await page.getByTestId('welcome-steps').click()
     await page.getByTestId('guide-route-codexDesktop').check()
-    for (let step = 0; step < 3; step++) await page.getByTestId('guide-next').click()
+    // 退出登录后本机 Key 还在、仍是当前账号来源，「确认连接」会被跳过（第十一批 3）。
+    for (let step = 0; step < 2; step++) await page.getByTestId('guide-next').click()
+    await page.locator('[data-guide-step="ready"]').waitFor()
     await page.getByTestId('guide-home').click()
     await row.getByText('用的是别处的配置', { exact: true }).waitFor()
     await page.evaluate(async () => {
@@ -1082,11 +1084,12 @@ test('login synchronizes account Keys, configures installed tools, and route sel
     const bootstrapCalls = await page.evaluate(() => window.v2Test.calls.map((entry) => entry.method))
     assert.ok(bootstrapCalls.indexOf('syncManagedCliKeys') > bootstrapCalls.indexOf('loginAccount'))
     assert.ok(bootstrapCalls.indexOf('configureManagedCliKeys') > bootstrapCalls.indexOf('syncManagedCliKeys'))
-    assert.equal(await page.getByRole('radio', { checked: true }).count(), 0)
+    // 推荐项是默认选中的（第十一批 1），但只是选中，不会触发任何安装。
+    assert.equal(await page.getByTestId('start-guide').getAttribute('data-guide-route'), 'codexDesktop')
     const configurationCount = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'configureManagedCliKeys').length)
     await page.getByTestId('guide-route-chat').check()
     const methods = await page.evaluate(() => window.v2Test.calls.map((entry) => entry.method))
-    assert.equal(methods.includes('installCli') || methods.includes('installNodeRuntime'), false)
+    assert.equal(methods.includes('installCli') || methods.includes('installNodeRuntime') || methods.includes('installCodexDesktop'), false)
     assert.equal(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'configureManagedCliKeys').length), configurationCount)
     await page.getByTestId('guide-pause').click()
     await page.getByTestId('tool-row-claude').getByText('已配好').waitFor()
