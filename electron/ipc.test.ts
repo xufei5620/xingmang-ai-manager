@@ -4221,7 +4221,8 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       const handler = electronMocks.handlers.get('account:revoke-key')!
 
       const pending = handler(trustedEvent(), 42)
-      expect(accountService.revokeKey).toHaveBeenCalledWith(42)
+      // The managed-key cache is read first, to learn whether a replacement must inherit limits.
+      await vi.waitFor(() => expect(accountService.revokeKey).toHaveBeenCalledWith(42))
       currentAccount = accountB
       finishRevoke()
       await expect(pending).resolves.toBeUndefined()
