@@ -1445,6 +1445,27 @@ function ipcLogDetail(channel: string, args: unknown[], result: unknown, duratio
   return detail
 }
 
+/**
+ * 加速页可见时每 15 秒读一次状态，每次成功都记一条的话，开一下午加速页就是上千
+ * 条一模一样的记录。这里给出「状态有没有变」的比较键：剩余时长每秒都在走，不算
+ * 变化；阶段、模式、线路、连上的时间点、错误与冲突任何一项变了才算。读不出形状
+ * 时返回 null，照常记录。
+ */
+export function accelerationStateLogKey(result: unknown): string | null {
+  if (!isRecord(result) || typeof result.scope !== 'string' || typeof result.phase !== 'string') return null
+  const line = isRecord(result.line) && typeof result.line.id === 'string' ? result.line.id : null
+  return JSON.stringify([
+    result.scope,
+    result.phase,
+    result.mode ?? null,
+    result.entitlementSource ?? null,
+    line,
+    result.connectedAt ?? null,
+    result.error ?? null,
+    Array.isArray(result.conflicts) ? result.conflicts : null,
+  ])
+}
+
 function ipcSuccessLevel(channel: string): 'debug' | 'info' {
   return /:(?:get|get-state|list|list-all|detail|status|inspect)$/.test(channel) ? 'debug' : 'info'
 }
@@ -1453,6 +1474,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   const registeredChannels: string[] = []
   const startupGate = options.accountStartupGate
   const externalShell = options.externalShell ?? createExternalShellLauncher()
+  let lastAccelerationStateLogKey: string | null = null
   const revealInFolder = options.revealInFolder ?? ((filePath: string) => shell.showItemInFolder(filePath))
   // 最近几次导出写出来的文件：「打开所在位置」只认这里面的路径。
   const exportedFiles: string[] = []
@@ -1468,6 +1490,11 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
       const startedAt = Date.now()
       const recordSuccess = (result: unknown) => {
         if (quietIpcSuccessChannels.has(channel)) return
+        if (channel === 'acceleration:get-state') {
+          const key = accelerationStateLogKey(result)
+          if (key !== null && key === lastAccelerationStateLogKey) return
+          lastAccelerationStateLogKey = key
+        }
         if (channel === 'acceleration:stop' && isRecord(result) && typeof result.phase === 'string'
           && ['connecting', 'active', 'stopping', 'error'].includes(result.phase)) {
           options.runtimeLog.log('warn', 'ipc', channel, '停止加速尚未完成，已保留恢复状态', {
