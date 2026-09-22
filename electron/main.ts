@@ -53,6 +53,7 @@ import { createApplicationTray, type ApplicationTrayController } from './applica
 import { createTrayAccelerationCoordinator, type TrayAccelerationCoordinator } from './tray-acceleration'
 import { createExternalDeepLinkInbox } from './external-deep-links'
 import { createDesktopNotificationController } from './desktop-notifications'
+import { inspectDeviceHardware, isLowEndDevice } from './device-profile'
 import { ConfigBackupStore } from './backups'
 import { crashReportDsn, crashReportSelfTestEnvironmentKey, shouldReportCrashes } from './crash-report'
 import { createCrashReporter } from './crash-reporter'
@@ -95,7 +96,8 @@ import { attachPlatformAuditLog } from './platform/runtime-log-bridge'
 import { migrateLegacyWindowsLoginItem } from './platform/system-service'
 import { recordStartupFailure } from './startup-log'
 import { inspectProviderConfig } from './config-files'
-import { buildFeedbackEnvironmentLines } from './feedback-environment'
+import { buildFeedbackEnvironmentLines, buildFeedbackRuntimeLines, pickFeedbackRuntimeSnapshot } from './feedback-environment'
+import { managedCliRoot } from './managed-cli-paths'
 import { buildFeedbackSelfCheckLines, type FeedbackConnectionRecord } from './feedback-self-check'
 import { rootedMainServiceOptions } from './main-service-options'
 import { buildMacosInstallLocationNotice, inspectMacosInstallLocation } from './macos-install-location'
@@ -197,6 +199,8 @@ const windowPreferenceAppliers = new WeakMap<WebContents, () => void>()
 const windowPreferenceFlushers = new WeakMap<WebContents, () => Promise<void>>()
 
 const updateCheckIntervalMs = 3 * 60 * 60 * 1_000
+// 启动时看一眼本机配置就够了：内存和核数不会在运行中变化。
+const lowEndDevice = isLowEndDevice(inspectDeviceHardware())
 const packagedApplicationBaseUrl = 'xingmang://app/'
 
 protocol.registerSchemesAsPrivileged([{
@@ -1069,6 +1073,27 @@ if (!hasSingleInstanceLock) {
         externalClients: systemService.getLastExternalClients(),
       })
     })
+    // 「运行环境」段：系统里的 Node / npm / Python / Git、Codex 桌面端、网络位置
+    // 同样只读上一次扫描的快照；其余几行是进程本来就知道的路径与区域设置，
+    // 不起任何探测。
+    runtimeLog.attachHostDescriber(async () => {
+      let managedDirectory: string | null = null
+      try {
+        managedDirectory = managedCliRoot(process.env, process.platform)
+      } catch {
+        // ProgramData 解析不出来时这一行不出，报告照常生成。
+      }
+      return buildFeedbackRuntimeLines({
+        snapshot: pickFeedbackRuntimeSnapshot(latestTraySystem),
+        platform: process.platform,
+        executionMode: process.platform === 'win32' ? windowsCliExecutionMode : null,
+        appDirectory: path.dirname(app.getPath('exe')),
+        dataDirectory: managerDataDirectory,
+        managedDirectory,
+        locale: app.getLocale(),
+        timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+      })
+    })
     // 客服的第二个问题是「到底能不能用」——这答案用户在「检查」页点过一次就有
     // 了，没必要再让他截图发过来。只读上一次的结果，生成报告不重跑自检、不发
     // 网络请求。
@@ -1825,7 +1850,7 @@ if (!hasSingleInstanceLock) {
         }
         applicationTray?.updateSnapshot()
       },
-      getWindowCapabilities: () => ({ tray: applicationTray?.available ?? false, notifications: desktopNotifications.getCapability().supported }),
+      getWindowCapabilities: () => ({ tray: applicationTray?.available ?? false, notifications: desktopNotifications.getCapability().supported, lowEndDevice }),
       onSettingsChanged: () => { desktopNotifications.refresh() },
       onRendererError: (error) => {
         crashReporter.report({
