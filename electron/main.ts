@@ -140,6 +140,7 @@ import {
 import { verifyUpdatePackageDigest } from './update-package-digest'
 import { installStrictUpdateCodeSignatureVerifier } from './update-signature'
 import { createUpdaterService } from './updater'
+import { createLastRunVersionStore, hasPriorRunRecord, readBundledReleaseNotes, resolveInstalledRelease } from './installed-release'
 import { resolveWindowsCliExecutionMode } from './windows-elevation'
 import {
   applyWindowTheme,
@@ -652,6 +653,8 @@ if (!hasSingleInstanceLock) {
       isPackaged: app.isPackaged,
     })
     const rootedOptions = rootedMainServiceOptions(codexContext)
+    // 必须排在 RuntimeLogStore 写第一条之前：这次启动一写，运行日志就一定在了。
+    const hadPriorRun = hasPriorRunRecord(managerDataDirectory)
     const runtimeLog = new RuntimeLogStore({
       directory: path.join(managerDataDirectory, 'logs'),
       appName: '星芒AI管理工具',
@@ -973,7 +976,31 @@ if (!hasSingleInstanceLock) {
     // above is ever reached. The updater compensates by never downloading or
     // installing without the user and by re-checking the manifest digest itself.
     const unsignedChannel = app.isPackaged && applicationPackage.xingmangUnsignedRelease === true
+    const lastRunVersion = createLastRunVersionStore({ filePath: path.join(managerDataDirectory, 'last-run-version.json') })
+    const recordedVersion = lastRunVersion.read()
+    const installedRelease = resolveInstalledRelease({
+      currentVersion: app.getVersion(),
+      recordedVersion,
+      hadPriorRun,
+      notes: readBundledReleaseNotes(app.getAppPath(), app.getVersion()),
+    })
+    if (installedRelease.justUpdated) {
+      runtimeLog.log('info', 'updater', 'version.updated', '本次启动是更新后的第一次', {
+        from: installedRelease.previousVersion,
+        to: app.getVersion(),
+        bundledNotes: installedRelease.notes?.length ?? 0,
+      })
+    }
+    // 写失败最多下次启动再提示一次，不值得挡住启动。
+    if (recordedVersion !== app.getVersion()) {
+      void lastRunVersion.write(app.getVersion()).catch((error: unknown) => {
+        runtimeLog.log('warn', 'updater', 'version.record-failed', '上次运行版本没有记下来', {
+          error: error instanceof Error ? error.message : String(error),
+        })
+      })
+    }
     const updaterService = createUpdaterService(autoUpdater, {
+      installedRelease,
       currentVersion: app.getVersion(),
       isPackaged: app.isPackaged,
       localBuild,

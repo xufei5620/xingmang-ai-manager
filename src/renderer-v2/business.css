@@ -537,3 +537,10 @@
   gap: 6px;
   margin: 8px 0;
 }
+.v2-business-release-notes-list {
+  white-space: normal;
+  padding-left: 1.2em;
+}
+.v2-business-release-notes-list li + li {
+  margin-top: 6px;
+}

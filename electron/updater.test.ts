@@ -1250,4 +1250,26 @@ describe('downloaded package digest verification', () => {
     })
     service.dispose()
   })
+
+  it('carries the installed release through every snapshot without letting listeners mutate it', async () => {
+    const client = new FakeUpdater()
+    const installedRelease = { justUpdated: true, previousVersion: '0.9.0', notes: ['一条改动。'] }
+    const service = createUpdaterService(client, { currentVersion: '1.0.0', isPackaged: true, installedRelease })
+    const seen: unknown[] = []
+    service.subscribe((snapshot) => {
+      seen.push(structuredClone(snapshot.installedRelease))
+      snapshot.installedRelease?.notes?.push('被改动')
+    })
+
+    const first = service.getState()
+    expect(first.installedRelease).toEqual(installedRelease)
+    first.installedRelease?.notes?.push('被改动')
+    client.emit('update-not-available', updateInfo('1.0.0'))
+
+    expect(seen).toEqual([installedRelease])
+    expect(service.getState().installedRelease).toEqual({ justUpdated: true, previousVersion: '0.9.0', notes: ['一条改动。'] })
+    // 旧调用方不传时快照里是 null，界面照旧只显示待下载版本的说明。
+    expect(createUpdaterService(new FakeUpdater(), { currentVersion: '1.0.0', isPackaged: true }).getState().installedRelease).toBeNull()
+    service.dispose()
+  })
 })

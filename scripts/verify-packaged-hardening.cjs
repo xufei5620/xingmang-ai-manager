@@ -49,6 +49,33 @@ function inspectPackagedLaunchBoundary(asarPath) {
 }
 
 /**
+ * 更新装完第一次启动时显示的「这一版改了什么」来自包内这份文件
+ * （scripts/bundle-release-notes.cjs）。文件缺了、版本对不上，客户端只会安静地
+ * 不显示，没有任何报错，所以要在出包这一步拦住。notes 为 null 是允许的：日常测试包
+ * 的 release-notes.md 顶节不是这一版。
+ */
+function inspectPackagedReleaseNotes(asarPath) {
+  const source = packagedSource(asarPath, 'dist-electron/release-notes.json', '随包更新说明')
+  const packageSource = packagedSource(asarPath, 'package.json', ' package.json')
+  let bundled
+  let version
+  try {
+    bundled = JSON.parse(source)
+    version = JSON.parse(packageSource).version
+  } catch {
+    throw new Error('打包后的随包更新说明或 package.json 不是有效的 JSON')
+  }
+  if (!bundled || typeof bundled !== 'object' || bundled.version !== version) {
+    throw new Error(`打包后的随包更新说明版本与应用版本 ${version} 不一致，请重新编译`)
+  }
+  const notes = bundled.notes
+  if (notes !== null && (!Array.isArray(notes) || notes.length === 0 || notes.some((item) => typeof item !== 'string' || !item))) {
+    throw new Error('打包后的随包更新说明格式无效')
+  }
+  return { version, count: notes === null ? 0 : notes.length }
+}
+
+/**
  * Electron falls back to its bundled welcome page whenever it cannot load the
  * application archive, and that page can create windows and spawn a browser
  * stack of its own. The onlyLoadAppFromAsar fuse is supposed to remove that
@@ -78,10 +105,11 @@ async function main() {
 
   assertNoDefaultAppFallback(resourcesDirectory)
   inspectPackagedLaunchBoundary(asar)
+  const releaseNotes = inspectPackagedReleaseNotes(asar)
 
   const fuseCount = await assertElectronFuseHardening(executable, '打包主程序')
 
-  console.log(`Electron 加固校验通过：${path.basename(executable)}，${fuseCount} 项 fuse、app.asar、无默认应用回落与普通用户 CLI 启动边界均符合要求`)
+  console.log(`Electron 加固校验通过：${path.basename(executable)}，${fuseCount} 项 fuse、app.asar、无默认应用回落与普通用户 CLI 启动边界均符合要求；随包更新说明 ${releaseNotes.version}（${releaseNotes.count} 条）`)
 }
 
 if (require.main === module) {
@@ -91,4 +119,4 @@ if (require.main === module) {
   })
 }
 
-module.exports = { EXPECTED_FUSES, assertNoDefaultAppFallback, inspectPackagedLaunchBoundary, main }
+module.exports = { EXPECTED_FUSES, assertNoDefaultAppFallback, inspectPackagedLaunchBoundary, inspectPackagedReleaseNotes, main }

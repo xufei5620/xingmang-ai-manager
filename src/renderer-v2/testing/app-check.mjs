@@ -1442,6 +1442,42 @@ test('the account-store notice can be dismissed and leaves nothing behind', asyn
   } finally { await page.close() }
 })
 
+// 更新装完重新打开时，软件原来一句话都没有。现在角落里一张轻量卡片说一声已经在新版上、
+// 列前几项改动，只有一颗「知道了」；完整清单在更新页。普通启动什么都不说。
+test('the first launch after an update says which version it is on and lists the bundled changes', async () => {
+  const page = await open('justUpdated=1')
+  try {
+    await page.getByTestId('page-home').waitFor()
+    const notice = page.getByTestId('startup-notice-updated')
+    await notice.waitFor()
+    await notice.getByText('已更新到 0.1.31', { exact: true }).waitFor()
+    await notice.getByText('更新页能看到当前这一版改了什么', { exact: true }).waitFor()
+    assert.equal(await page.getByRole('dialog').count(), 0)
+    // 这是一件事实，不是失败，不该占一条错误日志。
+    assert.equal(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'reportRendererError').length), 0)
+    await notice.getByRole('button', { name: '知道了', exact: true }).click()
+    await expect.poll(() => page.getByTestId('startup-notice-updated').count()).toBe(0)
+    await page.getByTestId('nav-more').click()
+    await page.getByTestId('nav-updates').click()
+    const updates = page.getByTestId('page-updates')
+    await updates.waitFor()
+    await updates.getByText('当前版本 0.1.31 更新内容', { exact: true }).waitFor()
+    const notes = updates.getByTestId('updates-installed-notes')
+    await notes.getByText('更新页能看到当前这一版改了什么。', { exact: true }).waitFor()
+    assert.equal(await notes.locator('li').count(), 2)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('an ordinary launch says nothing about updates', async () => {
+  const page = await open()
+  try {
+    await page.getByTestId('page-home').waitFor()
+    assert.equal(await page.getByTestId('startup-notice-updated').count(), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('a failed manual update check still reports on the updates page', async () => {
   const page = await open('updateCheckFail=1')
   try {

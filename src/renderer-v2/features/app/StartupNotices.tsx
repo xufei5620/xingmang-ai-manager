@@ -14,8 +14,13 @@ export function StartupNotices({ notices, onDismiss, onOpen }: {
   return <div className="v2-startup-notices" data-testid="startup-notices">
     {notices.map((notice) => {
       const action = notice.action
-      return <Notice key={notice.id} tone={notice.tone} title={notice.title} body={notice.body}
-        testId={`startup-notice-${notice.id}`} onDismiss={() => onDismiss(notice.id)}
+      const body = notice.items?.length
+        ? <>{notice.body}<ul className="v2-startup-notice-items">{notice.items.map((item, index) => <li key={index}>{item}</li>)}</ul></>
+        : notice.body
+      return <Notice key={notice.id} tone={notice.tone} title={notice.title} body={body}
+        testId={`startup-notice-${notice.id}`}
+        // 按钮本身就是「知道了」时不再放一个关闭叉：两颗做同一件事的按钮只会让人犹豫点哪个。
+        onDismiss={action && 'dismiss' in action ? undefined : () => onDismiss(notice.id)}
         actions={action ? <Button size="sm" onClick={() => onOpen(notice.id, action)}>{action.label}</Button> : undefined} />
     })}
   </div>

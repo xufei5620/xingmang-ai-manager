@@ -82,6 +82,8 @@ button, input, select, textarea { font: inherit; }
    提示自己才吃，否则这条「不挡路」的提示会挡住它上面那一片界面。 */
 .v2-startup-notices { position: fixed; top: 64px; right: 20px; width: 380px; max-width: calc(100vw - 40px); z-index: 30; display: grid; gap: 8px; pointer-events: none; }
 .v2-startup-notices > * { pointer-events: auto; }
+.v2-startup-notice-items { margin: 6px 0 0; padding-left: 1.2em; }
+.v2-startup-notice-items li + li { margin-top: 2px; }
 .v2-command-results { display: grid; max-height: 340px; overflow: auto; margin-top: 12px; }
 .v2-command-results button { display: flex; align-items: center; gap: 12px; padding: 10px; border: 0; color: var(--text); background: transparent; text-align: left; cursor: pointer; }
 .v2-command-results button span { flex: 1; }

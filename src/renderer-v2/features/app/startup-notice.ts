@@ -1,3 +1,4 @@
+import type { InstalledRelease } from '../../../../electron/ipc-contract'
 import type { PageId } from '../../registry/pages'
 import type { Tone } from '../../ui'
 
@@ -7,12 +8,18 @@ import type { Tone } from '../../ui'
  * （CI 的原生冒烟正是这样被挡住的）。用户自己点「检查更新」「运行检查」时
  * 走的是各页面自己的失败提示，不经过这里，照常报错。
  */
-export type StartupCheckId = 'update' | 'diagnostics' | 'appearance' | 'vault-recovered'
-/** `vault-recovered` 不是应用跑出来的检查，是主进程报上来的一次性事实，没有「失败」这一面。 */
-export type StartupCheckFailureId = Exclude<StartupCheckId, 'vault-recovered'>
+export type StartupCheckId = 'update' | 'diagnostics' | 'appearance' | 'vault-recovered' | 'updated'
+/**
+ * `vault-recovered` 与 `updated` 不是应用跑出来的检查，是主进程报上来的一次性事实，
+ * 没有「失败」这一面。
+ */
+export type StartupCheckFailureId = Exclude<StartupCheckId, 'vault-recovered' | 'updated'>
 
-/** 有的提示要把人带到某一页，有的要直接把登录弹出来（账号页在未登录时才等价于登录）。 */
-export type StartupNoticeAction = { label: string; page: PageId } | { label: string; login: true }
+/**
+ * 有的提示要把人带到某一页，有的要直接把登录弹出来（账号页在未登录时才等价于登录），
+ * 有的只是告知一件事，按钮就是「知道了」。
+ */
+export type StartupNoticeAction = { label: string; page: PageId } | { label: string; login: true } | { label: string; dismiss: true }
 
 export interface StartupNotice {
   id: StartupCheckId
@@ -24,6 +31,8 @@ export interface StartupNotice {
   tone: Tone
   title: string
   body: string
+  /** 正文下面逐条列出的几项，短句。 */
+  items?: readonly string[]
   action?: StartupNoticeAction
 }
 
@@ -71,6 +80,44 @@ export function vaultRecoveredNotice(): StartupNotice {
     title: '本机保存的登录信息已重置，请重新登录',
     body: '这台电脑上保存的登录信息已经读不出来，应用已重新建立它。之前记住的账号需要各自重新登录一次，已经写进各个工具的配置不受影响。',
     action: { label: '去登录', login: true },
+  }
+}
+
+const UPDATED_NOTICE_ITEMS = 3
+const UPDATED_NOTICE_ITEM_LENGTH = 36
+
+/**
+ * 一条改动在角落卡片里只留开头那句：release-notes 的写法是「做了什么：为什么/细节」，
+ * 冒号或句号之前那半句就是用户要的那件事；还太长就截断，完整的在更新页。
+ */
+export function releaseNoteHeadline(note: string): string {
+  const cut = note.search(/[：:。；;]/)
+  const headline = (cut > 0 ? note.slice(0, cut) : note).trim().replace(/[，,、]+$/, '')
+  return headline.length > UPDATED_NOTICE_ITEM_LENGTH ? `${headline.slice(0, UPDATED_NOTICE_ITEM_LENGTH - 1)}…` : headline
+}
+
+/**
+ * 更新装完后的第一次启动：软件消失又出现，界面和之前一模一样，不说一句用户就只能
+ * 再去点一次「检查更新」确认自己在不在新版上。挂在角落、不挡操作，只有一颗「知道了」，
+ * 不让用户做任何选择；列最前面几项改动的开头那句，完整清单在更新页（随包带的，断网
+ * 也在）。不是更新后第一次启动时返回 null。
+ */
+export function updatedNotice(currentVersion: string, release: InstalledRelease | null | undefined): StartupNotice | null {
+  if (!release?.justUpdated || !currentVersion) return null
+  const notes = release.notes ?? []
+  const items = notes.slice(0, UPDATED_NOTICE_ITEMS).map(releaseNoteHeadline).filter(Boolean)
+  const rest = notes.length - items.length
+  const body = items.length === 0
+    ? '已经在用新版本了，可以照常使用。'
+    : rest > 0 ? `这一版的主要改动如下，另外 ${rest} 项在「更新」页可以看到。` : '这一版的改动：'
+  return {
+    id: 'updated',
+    failure: false,
+    tone: 'ok',
+    title: `已更新到 ${currentVersion}`,
+    body,
+    ...(items.length > 0 ? { items } : {}),
+    action: { label: '知道了', dismiss: true },
   }
 }
 
