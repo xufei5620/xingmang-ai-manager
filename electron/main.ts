@@ -43,7 +43,7 @@ import { SavedAccountsStore } from './saved-accounts'
 import { AppSettingsStore, readAppSettings, type AppTheme } from './app-settings'
 import { calculateUiZoom, resolveWindowPlacement } from './window-preferences'
 import { createWindowLifecycle } from './window-lifecycle'
-import { resolveInterruptibleInstallTask } from './quit-blocking-tasks'
+import { resolveInstallableUpdateOnQuit, resolveInterruptibleInstallTask } from './quit-blocking-tasks'
 import { createWindowResponsivenessGuard } from './window-responsiveness'
 import { createApplicationTray, type ApplicationTrayController } from './application-tray'
 import { createTrayAccelerationCoordinator, type TrayAccelerationCoordinator } from './tray-acceleration'
@@ -1803,23 +1803,42 @@ if (!hasSingleInstanceLock) {
         })
         return trayReady ? result.response === 0 ? 'hide' : result.response === 1 ? 'quit' : 'cancel' : result.response === 0 ? 'quit' : 'cancel'
       },
-      confirmQuitWhileBusy: async () => {
-        // 没有安装在跑时这里不做任何 IO，也不弹窗：关窗冒烟测试的预算就那几秒。
+      confirmQuit: async () => {
+        // 没有安装在跑、也没有装好的更新时这里不做任何 IO，也不弹窗：关窗冒烟
+        // 测试的预算就那几秒。两件事按轻重排队，一次退出最多只问一句。
+        if (mainWindow.isDestroyed()) return 'quit'
         const task = resolveInterruptibleInstallTask(systemService.inspectInstallationQueue())
-        if (!task || mainWindow.isDestroyed()) return 'quit'
-        runtimeLog.log('info', 'window', 'quit.install-in-progress', `退出前确认：${task.key}`)
-        // 托盘「退出」时主窗口通常是隐藏的，挂在隐藏窗口上的模态框用户看不见。
+        if (task) {
+          runtimeLog.log('info', 'window', 'quit.install-in-progress', `退出前确认：${task.key}`)
+          // 托盘「退出」时主窗口通常是隐藏的，挂在隐藏窗口上的模态框用户看不见。
+          if (!mainWindow.isVisible()) showMainWindow()
+          const result = await dialog.showMessageBox(mainWindow, {
+            type: 'question', title: '关闭星芒AI管理工具', message: '还在安装，现在退出会中断，确定退出？',
+            detail: task.count > 1
+              ? `${task.description}，另外还有 ${task.count - 1} 项安装排在后面。现在退出会中断它们，已经下载的部分下次要重新来过。`
+              : `${task.description}。现在退出会中断它，已经下载的部分下次要重新来过。`,
+            buttons: ['继续安装', '仍然退出'],
+            defaultId: 0, cancelId: 0,
+          })
+          // 刚劝过一次的人不该紧接着再被问一句更新，这次退出就干净地退出。
+          return result.response === 1 ? 'quit' : 'cancel'
+        }
+        const update = resolveInstallableUpdateOnQuit(updaterService.getState())
+        if (!update) return 'quit'
+        runtimeLog.log('info', 'window', 'quit.update-downloaded', `退出前确认安装更新：${update.version ?? '版本未知'}`)
         if (!mainWindow.isVisible()) showMainWindow()
         const result = await dialog.showMessageBox(mainWindow, {
-          type: 'question', title: '关闭星芒AI管理工具', message: '还在安装，现在退出会中断，确定退出？',
-          detail: task.count > 1
-            ? `${task.description}，另外还有 ${task.count - 1} 项安装排在后面。现在退出会中断它们，已经下载的部分下次要重新来过。`
-            : `${task.description}。现在退出会中断它，已经下载的部分下次要重新来过。`,
-          buttons: ['继续安装', '仍然退出'],
-          defaultId: 0, cancelId: 0,
+          type: 'question', title: '关闭星芒AI管理工具',
+          message: update.version ? `新版本 ${update.version} 已经下载好，顺手装上吗？` : '新版本已经下载好，顺手装上吗？',
+          detail: '安装很快，装完会自动打开新版本。现在不装也行，更新会一直留着，下次退出时再问你。',
+          buttons: ['安装并退出', '先退出，下次再装'],
+          defaultId: 0, cancelId: 1,
         })
-        return result.response === 1 ? 'quit' : 'cancel'
+        return result.response === 0 ? 'install-update' : 'quit'
       },
+      // 更新页那颗「重启并安装」走的是同一条 install()；这里只是把入口挪到了
+      // 用户真正会用的那个动作上（关窗 / 托盘退出）。
+      installDownloadedUpdate: () => { updaterService.install() },
       prepareToQuit: async () => {
         await acceleration?.stopAll()
       },

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { resolveInterruptibleInstallTask } from './quit-blocking-tasks'
+import { resolveInstallableUpdateOnQuit, resolveInterruptibleInstallTask } from './quit-blocking-tasks'
+import type { UpdateSnapshot } from './updater'
 
 function snapshot(activeKey: string | null, pendingKeys: string[] = []) {
   return { activeKey, pendingKeys }
@@ -41,5 +42,47 @@ describe('interruptible install tasks', () => {
   it('still warns when only a queued install is waiting behind a launch', () => {
     const result = resolveInterruptibleInstallTask(snapshot('cli:launch:grok', ['cli:install:gemini']))
     expect(result).toEqual({ key: 'cli:install:gemini', description: '正在安装 Gemini CLI', count: 1 })
+  })
+})
+
+function updateSnapshot(overrides: Partial<UpdateSnapshot> = {}): UpdateSnapshot {
+  return {
+    phase: 'downloaded',
+    currentVersion: '0.2.8',
+    availableVersion: '0.2.9',
+    releaseName: null,
+    releaseNotesText: null,
+    checkedAt: null,
+    progress: null,
+    error: null,
+    failedStep: null,
+    development: false,
+    ...overrides,
+  }
+}
+
+describe('update ready to install on quit', () => {
+  it('offers the verified package waiting on disk', () => {
+    expect(resolveInstallableUpdateOnQuit(updateSnapshot())).toEqual({ version: '0.2.9' })
+  })
+
+  it('stays quiet until the download and its verification are finished', () => {
+    const phases = ['disabled', 'idle', 'checking', 'available', 'not-available', 'downloading', 'cancelled', 'error'] as const
+    for (const phase of phases) {
+      expect(resolveInstallableUpdateOnQuit(updateSnapshot({ phase }))).toBeNull()
+    }
+  })
+
+  it('stays quiet when the installer already failed on this package', () => {
+    const failed = updateSnapshot({ error: { code: 'UPDATE_INSTALL_LAUNCH_TIMEOUT', message: '更新程序未能启动' }, failedStep: 'install' })
+    expect(resolveInstallableUpdateOnQuit(failed)).toBeNull()
+  })
+
+  it('never offers an install in development, where the updater refuses it anyway', () => {
+    expect(resolveInstallableUpdateOnQuit(updateSnapshot({ development: true }))).toBeNull()
+  })
+
+  it('still offers the install when the snapshot carries no version to name', () => {
+    expect(resolveInstallableUpdateOnQuit(updateSnapshot({ availableVersion: null }))).toEqual({ version: null })
   })
 })

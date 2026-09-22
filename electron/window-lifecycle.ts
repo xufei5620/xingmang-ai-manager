@@ -1,7 +1,7 @@
 import type { AppCloseBehavior } from './window-preferences'
 
 export type WindowCloseDecision = 'hide' | 'quit' | 'cancel'
-export type QuitConfirmation = 'quit' | 'cancel'
+export type QuitConfirmation = 'quit' | 'cancel' | 'install-update'
 export type WindowCloseResult = 'hidden' | 'quit-requested' | 'cancelled' | 'kept-visible' | 'failed'
 
 export interface WindowLifecycleOptions {
@@ -9,11 +9,19 @@ export interface WindowLifecycleOptions {
   trayAvailable(): boolean
   requestCloseDecision(): Promise<WindowCloseDecision>
   /**
-   * 「直接退出」偏好和托盘 / 菜单「退出」放行前的最后一次确认，用来在有安装
-   * 正在跑时拦一下。缺省 = 旧行为，不确认。「每次询问」那条路径不走这里：
-   * 它自己的对话框已经写了「强制退出不等待任务完成」，再弹一次是重复。
+   * 「直接退出」偏好和托盘 / 菜单「退出」放行前的最后一次确认：有安装正在跑时
+   * 拦一下，或者问一句要不要顺手装上已经下载好的更新。缺省 = 旧行为，不确认。
+   * 「每次询问」那条路径不走这里：它自己的对话框已经写了「强制退出不等待任务
+   * 完成」，再弹一次是重复。**一次退出最多只问一句**，所以两件事合在同一个
+   * 回调里由调用方排序，不是两个钩子各弹各的框。
    */
-  confirmQuitWhileBusy?(): QuitConfirmation | Promise<QuitConfirmation>
+  confirmQuit?(): QuitConfirmation | Promise<QuitConfirmation>
+  /**
+   * 拉起已经下载好的更新的安装器，只在 confirmQuit 选了 'install-update' 之后
+   * 调用。安装器自己会让程序退出，所以它必须在 quitting 置位之后才跑，否则那次
+   * 退出会被这套流程再拦一遍。抛错也不能否决用户已经做出的退出选择。
+   */
+  installDownloadedUpdate?(): void
   prepareToQuit(): Promise<void>
   flushWindowState(): Promise<void>
   show(): void
@@ -74,30 +82,37 @@ export function createWindowLifecycle(options: WindowLifecycleOptions): WindowLi
       if (timer) clearTimeout(timer)
     }
   }
-  const performQuit = async (): Promise<WindowCloseResult> => {
+  const performQuit = async (installUpdate = false): Promise<WindowCloseResult> => {
     // The user already chose to quit. Saving placement or cleaning up a
     // background task must never veto that choice or wait on a renderer.
     await Promise.all([cleanup(options.prepareToQuit), cleanup(options.flushWindowState)])
     if (disposed) return 'cancelled'
     // Set before app.quit(): Electron emits before-quit synchronously.
     quitting = true
+    // 安装器自己会结束进程，所以它排在 quitting 之后、app.quit() 之前：这一段
+    // 里 close / before-quit 都已经放行，安装器发出的退出不会再被拦一次。
+    if (installUpdate && options.installDownloadedUpdate) {
+      try { options.installDownloadedUpdate() } catch (error) { reportError(error) }
+    }
     options.quit()
     return 'quit-requested'
   }
   const confirmedQuit = async (): Promise<WindowCloseResult> => {
     // Windows 关机 / 注销只给几秒钟，拦住它只会让系统强杀这个进程。
-    if (systemShutdown || !options.confirmQuitWhileBusy) return performQuit()
+    if (systemShutdown || !options.confirmQuit) return performQuit()
     let confirmation: QuitConfirmation
     try {
-      confirmation = await options.confirmQuitWhileBusy()
+      confirmation = await options.confirmQuit()
     } catch (error) {
       // 确认框自己坏了不能否决用户已经做出的退出选择。
       reportError(error)
       return performQuit()
     }
     if (disposed) return 'cancelled'
+    // 关机途中不要再去拉起安装器：系统随时会强杀这个进程，装一半更糟。
     if (systemShutdown) return performQuit()
-    return confirmation === 'cancel' ? cancelled() : performQuit()
+    if (confirmation === 'cancel') return cancelled()
+    return performQuit(confirmation === 'install-update')
   }
   const performClose = async (): Promise<WindowCloseResult> => {
     if (explicitQuit) return confirmedQuit()
