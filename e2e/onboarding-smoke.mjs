@@ -58,12 +58,15 @@ async function screenshot(name) {
 
 try {
   await page.getByRole('heading', { name: '选一种开始方式' }).waitFor()
-  assert.equal(await page.locator('[data-testid="start-guide"]').getAttribute('data-guide-route'), '')
-  assert.equal(await page.getByRole('radio', { checked: true }).count(), 0)
+  // 第十一批 1：新来的用户第一步默认选中推荐的 Codex 桌面端，一路「下一步」就能走；
+  // Linux 上没有桌面端，不替他选。
+  const recommended = process.platform === 'linux' ? '' : 'codexDesktop'
+  assert.equal(await page.locator('[data-testid="start-guide"]').getAttribute('data-guide-route'), recommended)
+  assert.equal(await page.getByRole('radio', { checked: true }).count(), recommended ? 1 : 0)
   assert.equal(await page.getByRole('radio').count(), process.platform === 'linux' ? 5 : 6)
-  assert.equal(await page.getByRole('button', { name: '下一步', exact: true }).isDisabled(), true)
+  assert.equal(await page.getByRole('button', { name: '下一步', exact: true }).isDisabled(), !recommended)
   assert.equal(await page.locator('.start-guide-steps > li').count(), 4)
-  recordPass('guide-requires-explicit-selection')
+  recordPass('guide-preselects-recommended-route')
   await screenshot('onboarding-dark.png')
 
   await page.getByRole('radio', { name: /先在星芒里聊天/ }).check()
