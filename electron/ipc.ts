@@ -61,7 +61,7 @@ import {
   providerSessionProviders,
   type ProviderSessionListQuery,
 } from './provider-sessions'
-import { providerSupportsOfficialAccount, type NativeConfigSaveMode } from './config-files'
+import type { NativeConfigSaveMode } from './config-files'
 import { AccountSourceServiceUnavailableError, switchAccountSource } from './account-source-switch'
 import { redactHomeDirectory } from './startup-log'
 import { isExternalToolId, parseExternalClientConfigRequest } from './external-client-contract'
@@ -1828,7 +1828,6 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   registerTrustedHandler('config:switch-account-source', async (_event, provider: unknown, target: unknown) => {
     if (!isProviderId(provider)) throw new Error('未知的 CLI 类型')
     if (target !== 'account' && target !== 'official') throw new Error('未知的账号来源')
-    if (target === 'official' && !providerSupportsOfficialAccount(provider)) throw new Error(`${cliCatalog[provider].name} 没有可切回的官方账号`)
     if (target === 'account' && !accountService.getSessionState().account?.userId) throw new Error('请先登录账号，再切到当前账号')
     // 与备份页同一套账号上下文：备份里记下哪些 Key 是当前账号签发的，回滚后
     // 恢复出来的配置照样按来源登记，首页不会因此冒出「配置被改过」。

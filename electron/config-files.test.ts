@@ -26,7 +26,6 @@ import {
   moveClaudeConsoleKeyAsideTexts,
   providerAccountMode,
   providerConfigPaths,
-  providerSupportsOfficialAccount,
   restoreClaudeConsoleKey,
   restoreClaudeConsoleKeyTexts,
   saveProviderConfig,
@@ -1840,13 +1839,66 @@ describe('switching a provider back to the official subscription account', () =>
     for (const backup of result.backups) expect(fs.existsSync(backup)).toBe(true)
   })
 
-  it('reports Grok as unswitchable -- xAI CLI has no subscription login to fall back to', () => {
-    expect(providerSupportsOfficialAccount('grok')).toBe(false)
-    expect(providerSupportsOfficialAccount('codex')).toBe(true)
+  it('switches Grok back to its own login by removing every table that points at the relay', () => {
+    // Grok 1.0.40: [model.X].api_key beats the ~/.grok/auth.json login, and a
+    // leftover base_url alone makes Grok send the official session token to it.
     const home = temporaryHome()
-    saveProviderConfig('grok', 'sk-relay', testModels.grok, 'reset', providerRoots(home), {}, providerBaseUrls)
-    expect(() => switchProviderToOfficialAccount('grok', providerRoots(home), {}, providerBaseUrls))
-      .toThrow(/只支持 API Key 登录/)
+    const roots = providerRoots(home)
+    saveProviderConfig('grok', 'sk-relay', testModels.grok, 'reset', roots, {}, providerBaseUrls)
+    const [configPath] = providerConfigPaths('grok', roots)
+    const seeded = TOML.parse(fs.readFileSync(configPath, 'utf8'))
+    asRecord(seeded.model)!.mine = { model: 'grok-4.6', base_url: 'https://my.example.com/v1', api_key: 'sk-mine' }
+    ;(seeded.endpoints as Record<string, unknown>).feedback_base_url = 'https://example.invalid'
+    fs.writeFileSync(configPath, TOML.stringify(seeded as Parameters<typeof TOML.stringify>[0]), 'utf8')
+
+    switchProviderToOfficialAccount('grok', roots, {}, providerBaseUrls)
+
+    const settings = TOML.parse(fs.readFileSync(configPath, 'utf8'))
+    expect(settings.cli).toEqual({ auto_update: false })
+    expect(settings.models).toBeUndefined()
+    expect(settings.model).toEqual({ mine: { model: 'grok-4.6', base_url: 'https://my.example.com/v1', api_key: 'sk-mine' } })
+    expect(settings.endpoints).toEqual({ feedback_base_url: 'https://example.invalid' })
+    expect(fs.readFileSync(configPath, 'utf8')).not.toContain('sk-relay')
+    const inspection = inspectProviderConfig('grok', roots, providerBaseUrls)
+    expect(providerAccountMode(inspection)).toBe('official')
+    expect(canLaunchManagedProvider(inspection)).toBe(true)
+  })
+
+  it('writes the relay model back after Grok was switched to its own login', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    saveProviderConfig('grok', 'sk-relay', testModels.grok, 'reset', roots, {}, providerBaseUrls)
+    switchProviderToOfficialAccount('grok', roots, {}, providerBaseUrls)
+
+    saveProviderConfig('grok', 'sk-relay-2', testModels.grok, 'merge', roots, {}, providerBaseUrls)
+
+    const settings = TOML.parse(fs.readFileSync(providerConfigPaths('grok', roots)[0], 'utf8'))
+    expect(settings.models).toEqual({ default: 'grok', web_search: 'grok' })
+    expect(asRecord(settings.model)?.grok).toMatchObject({
+      model: testModels.grok, base_url: 'https://xm.solov.cc/v1', api_key: 'sk-relay-2',
+      api_backend: 'responses', context_window: 1000000, supports_backend_search: true,
+    })
+    expect(settings.endpoints).toEqual({ xai_api_base_url: 'https://xm.solov.cc/v1' })
+    expect(providerAccountMode(inspectProviderConfig('grok', roots, providerBaseUrls))).toBe('relay')
+  })
+
+  it('reads only the non-secret Grok login fields', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    expect(inspectOfficialLogin('grok', roots)).toBe(false)
+    expect(inspectProviderConfig('grok', roots, providerBaseUrls).grokLoginMode).toBeNull()
+    const grokRoot = path.join(home, '.grok')
+    fs.mkdirSync(grokRoot, { recursive: true })
+    fs.writeFileSync(path.join(grokRoot, 'auth.json'), JSON.stringify({
+      'https://auth.x.ai::b1a00492-073a-47ea-816f-4c329264a828': {
+        key: 'session-secret', refresh_token: 'refresh-secret', auth_mode: 'oidc', email: 'user@example.com',
+      },
+    }), 'utf8')
+    expect(inspectOfficialLogin('grok', roots)).toBe(true)
+    const summary = toNativeConfigSummary(inspectProviderConfig('grok', roots, providerBaseUrls))
+    expect(summary.grokLoginMode).toBe('oidc')
+    expect(summary.officialAccountEmail).toBe('user@example.com')
+    expect(JSON.stringify(summary)).not.toContain('secret')
   })
 
   it('classifies the account mode from an inspection', () => {
@@ -1861,10 +1913,9 @@ describe('switching a provider back to the official subscription account', () =>
   })
 
   it('lets official ChatGPT launch Codex and still refuses a third-party URL', () => {
-    expect(canLaunchManagedProvider({ hasApiKey: false, matchesRelay: false }, 'codex')).toBe(true)
-    expect(canLaunchManagedProvider({ hasApiKey: true, matchesRelay: true }, 'codex')).toBe(true)
-    expect(canLaunchManagedProvider({ hasApiKey: true, matchesRelay: false }, 'codex')).toBe(false)
-    expect(canLaunchManagedProvider({ hasApiKey: false, matchesRelay: false }, 'grok')).toBe(false)
+    expect(canLaunchManagedProvider({ hasApiKey: false, matchesRelay: false })).toBe(true)
+    expect(canLaunchManagedProvider({ hasApiKey: true, matchesRelay: true })).toBe(true)
+    expect(canLaunchManagedProvider({ hasApiKey: true, matchesRelay: false })).toBe(false)
     expect(managedProviderLaunchBlockedMessage('codex')).toContain('ChatGPT 账号')
   })
 })
