@@ -157,6 +157,7 @@ export function createToolsApi(bridge: XingmangApi) {
       return result
     },
     prepareRuntime: (runtime: 'node' | 'python') => runtime === 'node' ? bridge.installNodeRuntime() : bridge.installPythonRuntime(),
+    restartWindows: () => bridge.restartWindows(),
     chooseWorkspace: () => bridge.chooseWorkspace(),
     // 首页「最近」卡只显示 3 条,但同一份记录还要推出每个工具最近用过的目录(N7),
     // 一页 3 条不够铺开四个工具。主进程本来就把全部会话读出来再切片,页大一点不多花钱。

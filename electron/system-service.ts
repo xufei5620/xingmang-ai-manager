@@ -164,6 +164,7 @@ import {
   verifyDarwinGrokUninstallPlan,
 } from './macos-grok'
 import { inspectMacosCodexApp, type MacosCodexAppInfo } from './macos-codex-app'
+import { isCommandLineToolsShimBacked, isMacOsCommandLineToolsShim } from './macos-command-line-tools'
 import { uninstallVerifiedNativeCliFiles } from './native-cli-uninstall'
 import { sameLocalPathIdentity } from './path-identity'
 import { syncXingmangAiSkillCodexAvailability } from './xingmang-ai-skill'
@@ -2231,6 +2232,14 @@ export function createSystemService(
   async function inspectTool(command: string, args = ['--version']): Promise<ToolStatus> {
     const executable = await findInstalledExecutable(command)
     if (!executable) return { installed: false, version: null, path: null, installDirectory: null }
+    // 没装命令行开发者工具的 Mac 上，/usr/bin/git 与 /usr/bin/python3 一跑就弹苹果的
+    // 安装对话框；背后那份不在就当没找到，别每次扫描都把弹窗招出来。
+    if (
+      isMacOsCommandLineToolsShim(executable, platform)
+      && !await isCommandLineToolsShimBacked(executable, { runCommand: executeCommand })
+    ) {
+      return { installed: false, version: null, path: null, installDirectory: null }
+    }
     let version = await executeVersion(
       executable,
       args,
@@ -2806,6 +2815,9 @@ export function createSystemService(
 
   async function restartWindows(): Promise<void> {
     if (platform !== 'win32') throw new Error('系统重启仅支持 Windows')
+    // shutdown /r 会在倒计时结束后强行结束本程序，队列里的安装会停在原子替换的
+    // 半截（I11 保护的正是这种中间态），所以有任务在跑就不发重启。
+    if (installationQueue.busy) throw new Error('还有安装、卸载或打开工具的任务在进行，等它做完再重启电脑')
     const machinePaths = resolveWindowsMachinePathsForService()
     await executeCommand({
       executable: windowsSystemExecutable('shutdown.exe', process.env, 'win32', machinePaths),

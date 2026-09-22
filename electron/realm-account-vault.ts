@@ -56,6 +56,8 @@ export interface RealmAccountVault {
   /** Routing preference only; this must never restore credentials or authenticate. */
   preferredLoginSite(identifier: string): Promise<'solov' | 'solov-api' | null>
   latestLoginHint(): Promise<RealmLoginHintSummary | null>
+  /** The account this identifier last signed in successfully; non-secret, never authenticates. */
+  loginHintOwner(identifier: string): Promise<RealmAccountOwner | null>
   /** Refresh credentials in place. Never create a record or change activeId. */
   updateSession(account: RealmSavedAccount): Promise<void>
   signOut(owner?: RealmAccountOwner): Promise<void>
@@ -237,6 +239,13 @@ export function createRealmAccountVault(storage: RealmVaultStorage): RealmAccoun
       const hint = (await read()).loginHints?.at(-1)
       return hint ? Object.freeze({ identifier: hint.identifier, realmId: hint.realmId }) : null
     }),
+    loginHintOwner: (identifier: string) => {
+      const normalized = normalizeRealmLoginIdentifier(identifier)
+      return enqueue(async () => {
+        const hint = (await read()).loginHints?.find((entry) => entry.identifier === normalized)
+        return hint ? Object.freeze({ realmId: hint.realmId, userId: hint.userId }) : null
+      })
+    },
     list: () => enqueue(async () => (await read()).accounts.map(realmAccountSummary)),
     active: () => enqueue(async () => {
       const data = await read()
