@@ -15,6 +15,7 @@ import { createWindowCloseQuery } from './window-close-query'
 import { createAccountWorkGate } from './account-work-gate'
 import { accelerationBonusCode } from './acceleration-contract'
 import { managedCliKeyProfiles, providerIds } from './catalog'
+import { externalUrlBlockedErrorName, isExternalUrlBlockedError } from './external-url-blocked'
 import { resolveXingmangAiBundledSkillRoot } from './xingmang-ai-skill'
 
 const electronMocks = vi.hoisted(() => ({
@@ -1196,6 +1197,19 @@ describe('registerIpcHandlers', () => {
     ]) {
       await expect(handler(trustedEvent(), hostileUrl)).rejects.toThrow('不允许打开该链接')
     }
+    expect(electronMocks.openExternal).not.toHaveBeenCalled()
+  })
+
+  it('rejects a blocked link with the stable error name the renderer copies on', async () => {
+    register()
+    const handler = electronMocks.handlers.get(ipcInvokeChannels.openExternal)!
+    const rejection = await Promise.resolve(handler(trustedEvent(), 'https://xm.solov.cc/some-campaign')).catch((error: unknown) => error)
+
+    expect(rejection).toBeInstanceOf(Error)
+    // Electron forwards only error.toString() across the bridge, so the name
+    // has to survive in exactly that form for the renderer to recognise it.
+    expect(String(rejection)).toBe(`${externalUrlBlockedErrorName}: 不允许打开该链接`)
+    expect(isExternalUrlBlockedError(new Error(`Error invoking remote method 'external:open': ${String(rejection)}`))).toBe(true)
     expect(electronMocks.openExternal).not.toHaveBeenCalled()
   })
 
