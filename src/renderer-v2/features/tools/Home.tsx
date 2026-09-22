@@ -17,6 +17,8 @@ import { recentWorkspaces, workspaceButtonLabel, workspaceChoices } from './rece
 import { errorMessage } from '../../business-common'
 import { isNetworkFailureText } from './online-resync'
 import { gitHostPlatform, gitMissingFirstRunHint, gitMissingNotice } from '../../../../electron/git-runtime'
+import { runtimeButtonLabel, runtimeInstallGuide } from './runtime-install-guide'
+import { RuntimeInstallHint } from './RuntimeInstallHint'
 
 export interface HomeProps {
   api: ToolsApi
@@ -125,6 +127,13 @@ export function Home(props: HomeProps) {
   const gitHost = gitHostPlatform(snapshot?.platform.platform ?? 'other')
   const gitStatus = snapshot?.system.runtime.git
   const gitMissing = Boolean(gitStatus && !gitStatus.installed && !gitStatus.detectionFailed)
+  // macOS 上 Node / Python 归客户自己装（platform.nodeRuntimeInstall === 'external'）：
+  // 按钮点下去只是开网页，所以这里补一段中文步骤，别让人以为应用正在替他装。
+  // 探测失败时不给这段：那时候并不知道它装没装，「没有找到」是假话（同 Git 那一行 A4）。
+  const nodeMissing = Boolean(snapshot && !snapshot.system.runtime.node.installed && !snapshot.system.runtime.node.detectionFailed)
+  const pythonMissing = Boolean(snapshot && !snapshot.system.runtime.python.installed && !snapshot.system.runtime.python.detectionFailed)
+  const nodeGuide = nodeMissing ? runtimeInstallGuide('node', snapshot?.platform.platform, snapshot?.platform.nodeRuntimeInstall) : null
+  const pythonGuide = pythonMissing ? runtimeInstallGuide('python', snapshot?.platform.platform, snapshot?.platform.pythonRuntimeInstall) : null
   const bootstrapBusy = Boolean(props.bootstrap && !props.bootstrap.result && !props.bootstrap.error)
   const launchBusy = Object.keys(jobs).some((key) => key.startsWith('launch:'))
   // 装好又连上之后才给这张卡：还没配 Key 时第一条命令敲下去只会报错，那不是「可以试试」。
@@ -282,8 +291,11 @@ export function Home(props: HomeProps) {
             </div>
           })}</div>
           {gitMissing && <p className="v2-runtime-hint" data-testid="home-runtime-git-hint">{gitMissingNotice(gitHost)}</p>}
-          <div className="v2-runtime-actions">{!snapshot?.system.runtime.node.installed && <Button variant="ghost" size="sm" icon={Download} onClick={() => props.onRuntime('node')}>准备 Node.js</Button>}
-            {!snapshot?.system.runtime.python.installed && <Button variant="ghost" size="sm" icon={Download} onClick={() => props.onRuntime('python')}>装 Python（可选环境）</Button>}
+          {nodeGuide && <RuntimeInstallHint runtime="node" guide={nodeGuide} />}
+          {pythonGuide && <RuntimeInstallHint runtime="python" guide={pythonGuide} />}
+          <div className="v2-runtime-actions">{!snapshot?.system.runtime.node.installed && <Button variant="ghost" size="sm" icon={Download} onClick={() => props.onRuntime('node')} testId="home-runtime-node">{runtimeButtonLabel('node', snapshot?.platform.nodeRuntimeInstall)}</Button>}
+            {!snapshot?.system.runtime.python.installed && <Button variant="ghost" size="sm" icon={Download} onClick={() => props.onRuntime('python')} testId="home-runtime-python">{runtimeButtonLabel('python', snapshot?.platform.pythonRuntimeInstall)}</Button>}
+            {(nodeGuide || pythonGuide) && <Button variant="ghost" size="sm" icon={BookOpen} onClick={() => props.onNavigate('tutorial')} testId="home-runtime-tutorial">看教程</Button>}
             {gitMissing && gitHost === 'windows' && <Button variant="ghost" size="sm" icon={Download} onClick={() => props.onRuntime('git')} testId="home-runtime-git">下载 Git</Button>}</div>
         </Card>
         <Card title="账户余额" padding="none" actions={<Pill tone={connectedCount ? 'ok' : 'neutral'}>{connectedCount ? `${connectedCount} 个工具已连接` : '等待连接'}</Pill>}>

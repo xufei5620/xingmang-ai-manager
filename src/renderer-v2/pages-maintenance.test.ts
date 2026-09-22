@@ -3,6 +3,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import { OnboardingSettingRows, tutorialTopics } from './pages-maintenance'
 import { pages } from './registry/pages'
+import { runtimeButtonLabel, runtimeHomebrewCommand } from './features/tools/runtime-install-guide'
 
 const pageIds = new Set<string>(pages.map((page) => page.id))
 const pageLabels = new Map<string, string>(
@@ -44,6 +45,21 @@ describe('tutorial topics', () => {
     expect(text).toContain('合并或执行之前自己再过一遍')
     expect(text).toContain('来路不明')
     expect(text).toContain('藏着让 AI 去做别的事的指令')
+  })
+
+  it('tells a Mac customer how to install Node.js and Python by hand', () => {
+    // 候选 10：macOS 上这两样应用不代装，首页给摘要、教程给完整步骤。
+    const topic = tutorialTopics.find((entry) => entry.id === 'runtime-mac')
+    expect(topic, '缺少 macOS 运行环境教程章节').toBeDefined()
+    const text = topic?.steps.map((step) => `${step.title}\n${step.detail}`).join('\n') ?? ''
+    // 两条命令与首页那段提示必须是同一个字符串，否则两处文案会各走各的。
+    expect(text).toContain(runtimeHomebrewCommand('node'))
+    expect(text).toContain(runtimeHomebrewCommand('python'))
+    expect(text).toContain(runtimeButtonLabel('node', 'external'))
+    expect(text).toContain('.pkg')
+    // 不代装、不提权这条口径要写在教程里，和运行环境卡一致。
+    expect(text).toContain('星芒不会替你跑这条命令')
+    expect(text).toContain('重新检测')
   })
 
   it('only links steps at pages the shell can actually navigate to', () => {
