@@ -128,6 +128,8 @@
 
 - 2026-09-22 高对比度（第十批候选 6）：原型 `.hc` 只加深 `--line*` 与 `--text-2/3`，实测开关后几乎看不出变化，且 Windows 系统高对比（forced-colors）下开关、进度条、选中态会整块消失。实现侧在 `src/renderer-v2/styles/tokens.css` 保留原型 `.hc` 规则原文，其后追加 `:root[data-theme].hc[data-skin]` 扩成每个主题一整套不透明色值（开启时皮肤配色让位于高对比配色），并新增 `styles/contrast.css` 补组件状态与 forced-colors 重画；`ui-spec/` 原稿未改。对比度由 `styles/contrast-tokens.test.ts` 按 WCAG AA 计算钉住，forced-colors 由 `styles/contrast.browser-check.mjs` 在 Chromium 模拟下核对；Windows 真机各系统主题的截图对照尚未完成。
 
+- 2026-09-22 键盘切页（第十批候选 7）：原型没有「跳到正文」与切页焦点处理。实现侧在侧栏顶部加一个只在聚焦时显示的「跳到正文」，沿用原型焦点色 `--info` 与面板底色，不另造视觉；换页后焦点落到 `<main>`（不画焦点框）并由隐藏播报区念页面名；加速线路列表补方向键。验证：`features/shell/keyboard.browser-check.mjs` 与加速页浏览器用例；读屏软件（讲述人 / NVDA）实际播报尚未真机试过。
+
 - 2026-09-14：新增「游戏加速」侧栏入口、精细工作台界面、可选 TUN 模式、累计 20 分钟的启停/暂停/续用交互（原 1 小时已按用户最新要求调整）与可信主进程接入契约。实际节点、TUN 驱动和服务端额度尚未提供；生产默认不可用，不伪造连接或免费余额，交互预览明确标注演示。设计/状态/验证见 [GLOBAL-ACCELERATION.md](GLOBAL-ACCELERATION.md)。
 
 - 2026-09-14 新装默认模型：四工具统一从 `electron/cli-model-defaults.ts` 读取：Codex `gpt-6-astra`、Claude `claude-opus-5`、Gemini `gemini-3.8-flash-high`、Grok `grok-4.6`。配置窗口、检测后默认选择及主进程自动配置一致；指定模型在当前分组可用时优先，已有有效用户选择保留，分组缺失时仅从实际可用模型回退。Gemini 配置回读保留 `-high` 后缀。验证：128 项定向单测、10 项 CLI/桌面配置浏览器测试通过，类型检查通过；使用隔离 mock。

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type KeyboardEvent } from 'react'
 import { ArrowUpRight, Check, CircleHelp, Clock3, Globe2, Laptop, Pause, Power, RefreshCw, Route, ScrollText, ShieldAlert, ShieldCheck, Timer, Zap } from 'lucide-react'
 import { accelerationConflictDescriptions, accelerationConflictNotice, accelerationTrialSeconds, type AccelerationMode, type AccelerationPhase, type AccelerationState } from '../../../../electron/acceleration-contract'
 import { Button, Switch } from '../../ui'
@@ -36,6 +36,17 @@ interface AccelerationViewProps {
   onRefreshLines(): void
 }
 
+// 线路列表是 listbox：方向键只移动焦点、不改选择，回车或空格才选中。选中会记进本机
+// （#342），方向键扫一遍不该把「上次用的线路」反复改写。到头不绕回，免得读屏用户迷路。
+export function lineOptionTarget(key: string, index: number, count: number): number | null {
+  if (count <= 0) return null
+  if (key === 'ArrowDown') return Math.min(index + 1, count - 1)
+  if (key === 'ArrowUp') return Math.max(index - 1, 0)
+  if (key === 'Home') return 0
+  if (key === 'End') return count - 1
+  return null
+}
+
 function formatDuration(seconds: number | null, roundUp = false) {
   if (seconds === null || !Number.isFinite(seconds)) return '--:--:--'
   const value = Math.max(0, roundUp ? Math.ceil(seconds) : Math.floor(seconds))
@@ -59,6 +70,7 @@ function describePhase(phase: AccelerationPhase | undefined, signedIn: boolean) 
 export function AccelerationView({ state, mode, busy, signedIn, error, preview, onModeChange, onStart, onStartAnyway, onStop, onRefresh, onLogin, onHelp, onViewLog, lines, selectedLineId, rememberedLine, linesBusy, linesError, onSelectLine, onPingLine, onRefreshLines }: AccelerationViewProps) {
   const [visible, setVisible] = useState(() => typeof document === 'undefined' || !document.hidden)
   const [linePickerOpen, setLinePickerOpen] = useState(false)
+  const [lineFocus, setLineFocus] = useState<string | null | undefined>(undefined)
   useEffect(() => {
     function updateVisibility() { setVisible(!document.hidden) }
     document.addEventListener('visibilitychange', updateVisibility)
@@ -79,6 +91,27 @@ export function AccelerationView({ state, mode, busy, signedIn, error, preview, 
   const exhausted = phase === 'exhausted'
   const modeLocked = active || phase === 'stopping' || transitioning || busy || !tunAvailable
   const lineLocked = active || phase === 'connecting' || phase === 'stopping' || busy
+  const lineOptionIds: Array<string | null> = [null, ...lines.map(line => line.id)]
+  // 只有一行留在 Tab 序列里（roving tabindex）：默认是选中的那行；选中的线路已不在列表里时退回「智能分配」。
+  const lineCandidate = lineFocus === undefined ? selectedLineId : lineFocus
+  const focusableLine = lineOptionIds.includes(lineCandidate) ? lineCandidate : null
+  function lineOptionKeys(event: KeyboardEvent<HTMLDivElement>, lineId: string | null) {
+    // 行里的「Ping」按钮自己处理按键，冒上来的不算选线路。
+    if (event.target !== event.currentTarget) return
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault()
+      if (!lineLocked) onSelectLine(lineId)
+      return
+    }
+    const target = lineOptionTarget(event.key, lineOptionIds.indexOf(lineId), lineOptionIds.length)
+    if (target === null) return
+    event.preventDefault()
+    setLineFocus(lineOptionIds[target])
+    event.currentTarget.parentElement?.querySelectorAll<HTMLElement>('[role="option"]')[target]?.focus()
+  }
+  function lineOptionProps(lineId: string | null) {
+    return { tabIndex: focusableLine === lineId ? 0 : -1, 'aria-disabled': lineLocked || undefined, onKeyDown: (event: KeyboardEvent<HTMLDivElement>) => lineOptionKeys(event, lineId), onFocus: () => setLineFocus(lineId) }
+  }
   const displayLine = active || phase === 'stopping' ? state?.line : lines.find(line => line.id === selectedLineId)
   const effectiveMode = (active || transitioning) && state ? state.mode : mode
   const remaining = signedIn ? state?.remainingSeconds ?? null : null
@@ -109,11 +142,11 @@ export function AccelerationView({ state, mode, busy, signedIn, error, preview, 
         </div>
         {!active && signedIn && <div className="acceleration-line-picker"><Button variant="ghost" size="sm" icon={Route} disabled={lineLocked} onClick={() => setLinePickerOpen(value => !value)} aria-expanded={linePickerOpen} testId="acceleration-line-picker-toggle">{linePickerOpen ? '收起线路' : '选择加速线路'}</Button>{rememberedLine && !linePickerOpen && <span className="acceleration-line-remembered" data-testid="acceleration-line-remembered">已选中你上次用的线路</span>}{linePickerOpen && <div className="acceleration-line-list" role="listbox" aria-label="加速线路选择">
           <div className="acceleration-line-list-head"><span>{linesBusy ? '正在检测线路…' : `${lines.length} 条可用线路`}</span><Button variant="ghost" size="xs" icon={RefreshCw} onClick={onRefreshLines} loading={linesBusy} aria-label="刷新线路列表" /></div>
-          <div className={`acceleration-line-option acceleration-line-auto${selectedLineId === null ? ' is-selected' : ''}`} role="option" aria-selected={selectedLineId === null} data-testid="acceleration-line-auto">
-            <button type="button" disabled={lineLocked} onClick={() => onSelectLine(null)}><strong>智能分配</strong><small>连接时自动测速，选择最快可用线路</small></button>
+          <div className={`acceleration-line-option acceleration-line-auto${selectedLineId === null ? ' is-selected' : ''}`} role="option" aria-selected={selectedLineId === null} data-testid="acceleration-line-auto" {...lineOptionProps(null)}>
+            <button type="button" tabIndex={-1} disabled={lineLocked} onClick={() => onSelectLine(null)}><strong>智能分配</strong><small>连接时自动测速，选择最快可用线路</small></button>
             {selectedLineId === null && <Check size={16} aria-hidden="true" />}
           </div>
-          {lines.map(line => <div className={`acceleration-line-option${selectedLineId === line.id ? ' is-selected' : ''}`} role="option" aria-selected={selectedLineId === line.id} data-testid={`acceleration-line-option-${line.id}`} key={line.id}><button type="button" disabled={lineLocked} onClick={() => onSelectLine(line.id)}><strong>{line.name}</strong><small>{line.region}</small></button><span>{line.latencyMs == null ? '未检测' : `${line.latencyMs} ms`}</span><Button variant="ghost" size="xs" disabled={lineLocked} onClick={() => { void onPingLine(line.id) }} loading={linesBusy} aria-label={`检测${line.name}延迟`}>Ping</Button></div>)}
+          {lines.map(line => <div className={`acceleration-line-option${selectedLineId === line.id ? ' is-selected' : ''}`} role="option" aria-selected={selectedLineId === line.id} data-testid={`acceleration-line-option-${line.id}`} key={line.id} {...lineOptionProps(line.id)}><button type="button" tabIndex={-1} disabled={lineLocked} onClick={() => onSelectLine(line.id)}><strong>{line.name}</strong><small>{line.region}</small></button><span>{line.latencyMs == null ? '未检测' : `${line.latencyMs} ms`}</span><Button variant="ghost" size="xs" disabled={lineLocked} onClick={() => { void onPingLine(line.id) }} loading={linesBusy} aria-label={`检测${line.name}延迟`}>Ping</Button></div>)}
           {linesError && <span className="acceleration-line-error" role="alert">{linesError}</span>}
         </div>}</div>}
         <div className="acceleration-stage-bottom"><span role="status"><span className="acceleration-status-dot" />{phaseLabel}</span>{(unavailable || exhausted) && signedIn ? <Button variant="ghost" size="sm" icon={exhausted ? ArrowUpRight : RefreshCw} loading={busy} onClick={exhausted ? onHelp : onRefresh} testId="acceleration-status-refresh">{exhausted ? '帮助与客服' : '刷新线路状态'}</Button> : <span>{!state?.line ? '线路信息将在连接后显示' : active ? '连接状态由服务实时确认' : '等待建立连接'}</span>}</div>
