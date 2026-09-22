@@ -205,5 +205,3 @@
 .xm-kbd { font-family: var(--mono); font-size: var(--font-micro-compact); color: var(--text-3); border: 1px solid var(--line-2); border-bottom-width: 2px; border-radius: 4px; padding: 1px 5px; background: var(--kbd-bg); }
 [data-system-reduced-motion="true"] .xm-spin, [data-system-reduced-motion="true"] .xm-skeleton i, [data-reduce-motion="1"] .xm-spin, [data-reduce-motion="1"] .xm-skeleton i { animation: none; }
 [data-system-reduced-motion="true"] :is(.xm-btn, .xm-progress-bar, .xm-switch i), [data-reduce-motion="1"] :is(.xm-btn, .xm-progress-bar, .xm-switch i) { transition: none; }
-[data-contrast="high"] .xm-btn-secondary, .hc .xm-btn-secondary { border-color: var(--line-3); }
-[data-contrast="high"] .xm-pill, .hc .xm-pill { border: 1px solid currentColor; }

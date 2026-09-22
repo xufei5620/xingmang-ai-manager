@@ -5,6 +5,7 @@ import './styles/tokens.css'
 import './styles/components.css'
 import './styles/shell.css'
 import './app.css'
+import './styles/contrast.css'
 import { attachRuntimeReporting } from './features/app/error-report'
 
 declare const __XINGMANG_RENDERER__: string

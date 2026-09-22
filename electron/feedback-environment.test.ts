@@ -3,10 +3,14 @@ import { providerIds } from './catalog'
 import { externalToolIds } from './external-client-contract'
 import {
   buildFeedbackEnvironmentLines,
+  buildFeedbackRuntimeLines,
+  pickFeedbackRuntimeSnapshot,
+  type FeedbackRuntimeInput,
   type FeedbackCliConfig,
   type FeedbackCliStatus,
   type FeedbackExternalClient,
 } from './feedback-environment'
+import type { SystemSnapshot } from './system-service'
 
 const installed: FeedbackCliStatus = {
   installed: true,
@@ -174,5 +178,111 @@ describe('buildFeedbackEnvironmentLines', () => {
     for (const secret of ['sk-private-feedback-key', 'solov', 'http', '星芒']) {
       expect(text).not.toContain(secret)
     }
+  })
+})
+
+function runtimeInput(overrides: Partial<FeedbackRuntimeInput> = {}): FeedbackRuntimeInput {
+  return {
+    snapshot: {
+      checkedAt: '2026-09-22T10:00:00.000Z',
+      runtime: {
+        node: { installed: true, version: 'v22.12.0', path: 'C:\\Program Files\\nodejs\\node.exe' },
+        npm: { installed: true, version: '10.9.0', path: 'C:\\Program Files\\nodejs\\npm.cmd' },
+        python: { installed: false, version: null, path: null },
+        git: { installed: false, version: null, path: null, detectionFailed: true },
+      },
+      codexDesktop: { installed: true, version: '1.0.0', appVersion: '26.915.1', path: null, running: true },
+      region: 'mainland-china',
+    },
+    platform: 'win32',
+    executionMode: 'same-user',
+    appDirectory: 'C:\\Program Files\\XingMang',
+    dataDirectory: 'C:\\Users\\alice\\AppData\\Roaming\\xingmang',
+    managedDirectory: 'C:\\ProgramData\\XingMangAI\\Cli',
+    locale: 'zh-CN',
+    timeZone: 'Asia/Shanghai',
+    ...overrides,
+  }
+}
+
+describe('buildFeedbackRuntimeLines', () => {
+  it('lists system runtimes with version and location, separately from the bundled Node', () => {
+    const lines = buildFeedbackRuntimeLines(runtimeInput())
+
+    expect(lines).toEqual([
+      '系统 Node.js: 已安装 v22.12.0，位置 C:\\Program Files\\nodejs\\node.exe',
+      'npm: 已安装 10.9.0，位置 C:\\Program Files\\nodejs\\npm.cmd',
+      'Python: 未安装',
+      'Git: 检测失败',
+      'Codex 桌面端: 已安装 26.915.1，正在运行',
+      '网络位置: 中国大陆',
+      '运行权限: 普通用户',
+      '软件位置: C:\\Program Files\\XingMang',
+      '数据目录: C:\\Users\\alice\\AppData\\Roaming\\xingmang',
+      '托管目录: C:\\ProgramData\\XingMangAI\\Cli',
+      '系统语言与时区: zh-CN，Asia/Shanghai',
+      '以上来自 2026-09-22T10:00:00.000Z 的扫描',
+    ])
+  })
+
+  it('never carries the public IP or country code from the scan into the report', () => {
+    const scanned = {
+      checkedAt: '2026-09-22T10:00:00.000Z',
+      network: { publicIp: '198.51.100.18', countryCode: 'JP', region: 'outside-mainland-china', checkedAt: '2026-09-22T10:00:00.000Z', error: null },
+      runtime: runtimeInput().snapshot?.runtime,
+      clis: {},
+      desktopApps: { codex: runtimeInput().snapshot?.codexDesktop },
+    } as unknown as SystemSnapshot
+    const picked = pickFeedbackRuntimeSnapshot(scanned)
+    const text = buildFeedbackRuntimeLines(runtimeInput({ snapshot: picked })).join('\n')
+
+    expect(JSON.stringify(picked)).not.toContain('198.51.100.18')
+    expect(text).toContain('网络位置: 中国大陆以外')
+    expect(text).not.toContain('198.51.100.18')
+    expect(text).not.toContain('JP')
+  })
+
+  it('treats a missing scan as no snapshot', () => {
+    expect(pickFeedbackRuntimeSnapshot(null)).toBeNull()
+  })
+
+  it('flags an outdated system Node so support does not have to compare versions by hand', () => {
+    const input = runtimeInput()
+    const snapshot = input.snapshot
+    if (!snapshot) throw new Error('fixture must carry a snapshot')
+    const lines = buildFeedbackRuntimeLines({
+      ...input,
+      snapshot: { ...snapshot, runtime: { ...snapshot.runtime, node: { installed: true, version: 'v16.0.0', path: null, tooOld: true } } },
+    })
+
+    expect(lines[0]).toBe('系统 Node.js: 已安装 v16.0.0，版本过低')
+  })
+
+  it('does not claim the user chose to run as administrator when the probe only fell back', () => {
+    const lines = buildFeedbackRuntimeLines(runtimeInput({ executionMode: 'trusted-only' }))
+
+    expect(lines).toContain('运行权限: 以管理员身份运行（或无法确认，按管理员处理）')
+  })
+
+  it('omits the privilege line outside Windows', () => {
+    const lines = buildFeedbackRuntimeLines(runtimeInput({ platform: 'darwin', executionMode: 'same-user' }))
+
+    expect(lines.some((line) => line.startsWith('运行权限'))).toBe(false)
+  })
+
+  it('says unreadable instead of guessing when no scan has finished yet', () => {
+    const lines = buildFeedbackRuntimeLines(runtimeInput({ snapshot: null, managedDirectory: null, locale: null, timeZone: null }))
+
+    expect(lines).toEqual([
+      '系统 Node.js: 未能读取',
+      'npm: 未能读取',
+      'Python: 未能读取',
+      'Git: 未能读取',
+      'Codex 桌面端: 未能读取',
+      '网络位置: 未能读取',
+      '运行权限: 普通用户',
+      '软件位置: C:\\Program Files\\XingMang',
+      '数据目录: C:\\Users\\alice\\AppData\\Roaming\\xingmang',
+    ])
   })
 })

@@ -241,6 +241,59 @@ test('redeeming subscription and concurrency codes reports the committed result 
   }
 })
 
+async function revokeTestKey(page) {
+  await page.getByRole('tab', { name: '密钥', exact: true }).click()
+  await page.getByText('Test key').waitFor()
+  await page.locator('.xm-list-row').filter({ has: page.getByText('Test key') }).locator('button[aria-haspopup="menu"]').click()
+  await page.getByRole('menuitem', { name: '撤销密钥', exact: true }).click()
+  const dialog = page.getByRole('dialog', { name: '撤销这把密钥？', exact: true })
+  await dialog.waitFor()
+  return dialog
+}
+
+test('revoking a key a tool is using warns first and puts a fresh key back without asking again', async () => {
+  const page = await fixture('page=account&keyInUse=1')
+  try {
+    await page.getByRole('tab', { name: '密钥', exact: true }).click()
+    await page.getByTestId('account-key-in-use-1').getByText('Claude Code 在用').waitFor()
+    const dialog = await revokeTestKey(page)
+    assert.match(await dialog.innerText(), /Claude Code 正在用这把密钥。撤销后会马上自动换一把新的写进 Claude Code/)
+    await dialog.getByRole('button', { name: '确认撤销', exact: true }).click()
+    await page.getByText('密钥已撤销，Claude Code 已自动换上新密钥', { exact: true }).waitFor()
+    assert.equal(await page.getByTestId('account-key-replace-failed').count(), 0)
+    const names = (await calls(page)).map((call) => [call.name, call.args])
+    assert.deepEqual(names.filter(([name]) => name === 'revokeAccountKey' || name === 'rewriteKey'),
+      [['revokeAccountKey', 1], ['rewriteKey', 'claude']])
+  } finally { await page.close() }
+})
+
+test('a failed key replacement after revoking says what to press and retries on that button', async () => {
+  const page = await fixture('page=account&keyInUse=1&replaceFails=2')
+  try {
+    const dialog = await revokeTestKey(page)
+    await dialog.getByRole('button', { name: '确认撤销', exact: true }).click()
+    const notice = page.getByTestId('account-key-replace-failed')
+    await notice.getByText('Claude Code 暂时用不了', { exact: true }).waitFor()
+    await page.getByTestId('account-key-replace-retry').click()
+    await page.getByText('Claude Code 还是没换上新密钥，请检查网络后再点一次。', { exact: true }).waitFor()
+    await page.getByTestId('account-key-replace-retry').click()
+    await page.getByText('Claude Code 已换上新密钥', { exact: true }).waitFor()
+    assert.equal(await notice.count(), 0)
+    assert.equal((await calls(page)).filter((call) => call.name === 'rewriteKey').length, 3)
+  } finally { await page.close() }
+})
+
+test('revoking a key no tool is using keeps the old confirmation and never rewrites a tool', async () => {
+  const page = await fixture('page=account')
+  try {
+    const dialog = await revokeTestKey(page)
+    assert.match(await dialog.innerText(), /使用这把密钥的工具会停止请求，需要重新配置有效密钥。/)
+    await dialog.getByRole('button', { name: '确认撤销', exact: true }).click()
+    await page.getByText('密钥已撤销', { exact: true }).waitFor()
+    assert.equal((await calls(page)).some((call) => call.name === 'rewriteKey'), false)
+  } finally { await page.close() }
+})
+
 test('key editor re-reads available groups every time a new or existing key is opened', async () => {
   const page = await fixture('page=account')
   try {

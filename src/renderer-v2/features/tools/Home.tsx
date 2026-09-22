@@ -272,7 +272,7 @@ export function Home(props: HomeProps) {
           onSelect: () => props.onOpenConfigDirectory?.(tool.id),
         }] : []),
         ...(rollback && !blocked ? [{ label: `${rollbackVerb}推荐版本 ${rollback}`, testId: `tool-${tool.id}-rollback-menu`, onSelect: () => props.onInstall(tool.id, rollback) }] : []),
-        ...(tool.provider === 'codex' ? [{ label: '非 GPT 模型', testId: tool.id === 'codex' ? 'home-codex-models' : 'home-codexDesktop-models', onSelect: props.onCodexModels }] : []),
+        ...(tool.provider === 'codex' ? [{ label: '换用别家模型', testId: tool.id === 'codex' ? 'home-codex-models' : 'home-codexDesktop-models', onSelect: props.onCodexModels }] : []),
         { label: '查看记录', onSelect: () => props.onNavigate('sessions') },
         ...(tool.provider === 'codex' && tool.source === 'official' ? [{ label: '官方账户额度', onSelect: () => { setOfficial(snapshot?.system.officialChatGpt ?? null); setOfficialOpen(true) } }] : []),
         ...(canUninstallTool(
