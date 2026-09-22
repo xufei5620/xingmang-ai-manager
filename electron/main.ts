@@ -43,6 +43,7 @@ import { SavedAccountsStore } from './saved-accounts'
 import { AppSettingsStore, readAppSettings, type AppTheme } from './app-settings'
 import { calculateUiZoom, resolveWindowPlacement } from './window-preferences'
 import { createWindowLifecycle } from './window-lifecycle'
+import { createWindowResponsivenessGuard } from './window-responsiveness'
 import { createApplicationTray, type ApplicationTrayController } from './application-tray'
 import { createExternalDeepLinkInbox } from './external-deep-links'
 import { createDesktopNotificationController } from './desktop-notifications'
@@ -411,9 +412,30 @@ function createWindow(
       url: validatedUrl,
     })
   })
+  const responsiveness = createWindowResponsivenessGuard({
+    prompt: async (signal) => {
+      const result = await dialog.showMessageBox(window, {
+        type: 'warning', title: '界面没有响应', message: '星芒AI管理工具的界面暂时没有响应。',
+        detail: '可以再等一会儿，界面通常会自己恢复。重新加载只会重启界面，正在进行的安装、下载和已保存的设置都不受影响，但界面上还没保存的输入会丢失。',
+        buttons: ['继续等待', '重新加载'], defaultId: 0, cancelId: 0, signal,
+      })
+      return result.response === 1 ? 'reload' : 'wait'
+    },
+    reload: () => window.webContents.reload(),
+    log: (event) => {
+      if (event === 'prompt.shown') { runtimeLog.log('warn', 'renderer', 'window.unresponsive.prompted', '已提示用户界面无响应'); return }
+      if (event === 'prompt.reload') { runtimeLog.log('warn', 'renderer', 'window.unresponsive.reload', '用户选择重新加载界面'); return }
+      if (event === 'prompt.wait') { runtimeLog.log('info', 'renderer', 'window.unresponsive.wait', '用户选择继续等待'); return }
+      runtimeLog.log('info', 'renderer', 'window.unresponsive.dismissed', '界面已恢复，提示自动关闭')
+    },
+    onError: (cause) => { runtimeLog.exception('renderer', 'window.unresponsive.failed', cause) },
+  })
   window.on('unresponsive', () => {
     runtimeLog.log('warn', 'renderer', 'window.unresponsive', '应用窗口暂时无响应')
+    responsiveness.handleUnresponsive()
   })
+  window.on('responsive', () => { responsiveness.handleResponsive() })
+  window.once('closed', () => { responsiveness.dispose() })
 
   const devServerUrl = !app.isPackaged ? process.env.VITE_DEV_SERVER_URL : undefined
   if (devServerUrl) {
