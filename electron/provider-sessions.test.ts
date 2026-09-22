@@ -1,4 +1,5 @@
 import fs from 'node:fs'
+import { promises as fsPromises } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
@@ -468,6 +469,91 @@ describe('ProviderSessionsService', () => {
     fs.rmSync(path.join(data.claude, 'project-a', 'claude-session.jsonl'))
 
     await expect(sessions.detail(id)).rejects.toThrow('未找到 claude 会话')
+  })
+
+  it('reuses the persisted probe cache instead of reading the session files again', async () => {
+    const data = fixture()
+    seedExternalSessions(data)
+    const cacheFile = path.join(data.root, 'sessions', 'probe-cache.json')
+    const first = await service(data, codexReader([]), { probeCacheFile: cacheFile })
+      .list({ provider: 'claude', pageSize: 100 })
+    expect(first.items[0].title).toBe('Claude 自定义标题')
+    // The cache write deliberately trails the page, so wait for it here.
+    await vi.waitFor(() => expect(fs.existsSync(cacheFile)).toBe(true))
+
+    const opened = vi.spyOn(fsPromises, 'open')
+    try {
+      const second = await service(data, codexReader([]), { probeCacheFile: cacheFile })
+        .list({ provider: 'claude', pageSize: 100 })
+      expect(second.items[0].title).toBe('Claude 自定义标题')
+      expect(opened.mock.calls.filter(([target]) => String(target).endsWith('claude-session.jsonl'))).toHaveLength(0)
+    } finally {
+      opened.mockRestore()
+    }
+  })
+
+  it('re-reads only the session file whose size or mtime changed', async () => {
+    const data = fixture()
+    seedExternalSessions(data)
+    const cacheFile = path.join(data.root, 'sessions', 'probe-cache.json')
+    const changedPath = path.join(data.claude, 'project-b', 'changed.jsonl')
+    writeJsonLines(changedPath, [
+      { type: 'custom-title', sessionId: 'changed', customTitle: '旧标题' },
+    ])
+    await service(data, codexReader([]), { probeCacheFile: cacheFile }).list({ provider: 'claude', pageSize: 100 })
+    await vi.waitFor(() => expect(fs.readFileSync(cacheFile, 'utf8')).toContain('旧标题'))
+
+    writeJsonLines(changedPath, [
+      { type: 'custom-title', sessionId: 'changed', customTitle: '改过的标题' },
+    ])
+    const later = new Date(Date.now() + 2000)
+    fs.utimesSync(changedPath, later, later)
+
+    const opened = vi.spyOn(fsPromises, 'open')
+    try {
+      const page = await service(data, codexReader([]), { probeCacheFile: cacheFile })
+        .list({ provider: 'claude', pageSize: 100 })
+      expect(page.items.map((item) => item.title)).toContain('改过的标题')
+      const targets = opened.mock.calls.map(([target]) => path.basename(String(target)))
+      expect(targets).toContain('changed.jsonl')
+      expect(targets).not.toContain('claude-session.jsonl')
+    } finally {
+      opened.mockRestore()
+    }
+  })
+
+  it('drops the cached probe of a session file that was deleted', async () => {
+    const data = fixture()
+    seedExternalSessions(data)
+    const cacheFile = path.join(data.root, 'sessions', 'probe-cache.json')
+    const removedPath = path.join(data.claude, 'project-c', 'removed.jsonl')
+    writeJsonLines(removedPath, [{ type: 'custom-title', sessionId: 'removed', customTitle: '待删除' }])
+    const sessions = service(data, codexReader([]), { probeCacheFile: cacheFile })
+    await sessions.list({ provider: 'claude', pageSize: 100 })
+    await vi.waitFor(() => expect(fs.readFileSync(cacheFile, 'utf8')).toContain('待删除'))
+
+    fs.rmSync(removedPath)
+    await sessions.list({ provider: 'claude', pageSize: 100 })
+    await vi.waitFor(() => expect(fs.readFileSync(cacheFile, 'utf8')).not.toContain('待删除'))
+    expect(fs.readFileSync(cacheFile, 'utf8')).toContain('Claude 自定义标题')
+  })
+
+  it('rebuilds a damaged probe cache without failing the list', async () => {
+    const data = fixture()
+    seedExternalSessions(data)
+    const cacheFile = path.join(data.root, 'sessions', 'probe-cache.json')
+    fs.mkdirSync(path.dirname(cacheFile), { recursive: true })
+    fs.writeFileSync(cacheFile, '{"version":1,"entries":[{', 'utf8')
+    const warnings: string[] = []
+
+    const page = await service(data, codexReader([]), {
+      probeCacheFile: cacheFile,
+      onProbeCacheWarning: (warning) => warnings.push(warning.code),
+    }).list({ provider: 'claude', pageSize: 100 })
+
+    expect(page.items[0].title).toBe('Claude 自定义标题')
+    expect(warnings).toEqual(['probe-cache-discarded'])
+    await vi.waitFor(() => expect(fs.readFileSync(cacheFile, 'utf8')).toContain('Claude 自定义标题'))
   })
 
   it('keeps Codex summaries readonly when its SQLite schema disables mutations', async () => {

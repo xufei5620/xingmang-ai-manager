@@ -10,6 +10,11 @@ import {
   type CodexSessionsCapabilities,
 } from './codex-sessions'
 import { DirectoryEntryLimitError, readDirectoryEntries } from './bounded-directory'
+import type {
+  ProviderSessionProbeCacheWarning,
+  ProviderSessionProbeState,
+} from './provider-session-probe-cache'
+import { ProviderSessionProbeCache } from './provider-session-probe-cache'
 
 export const providerSessionProviders = ['codex', 'claude', 'gemini', 'grok'] as const
 
@@ -119,6 +124,9 @@ export interface ProviderSessionsOptions {
   maxTranscriptBytes?: number
   maxJsonLineBytes?: number
   maxFilesPerProvider?: number
+  /** Omitted keeps the probe cache memory-only, as it was before 0.2.9. */
+  probeCacheFile?: string
+  onProbeCacheWarning?: (warning: ProviderSessionProbeCacheWarning) => void
 }
 
 interface ProviderRoots {
@@ -152,21 +160,7 @@ interface MessageReadResult {
   retainedTextTruncated: boolean
 }
 
-interface ProbeState {
-  nativeId: string
-  title: string
-  cwd: string
-  model: string
-  createdAt: number | null
-  updatedAt: number | null
-  messageCount: number | null
-  firstUserText: string
-}
-
-interface ProbeCacheEntry {
-  fingerprint: string
-  state: ProbeState
-}
+type ProbeState = ProviderSessionProbeState
 
 type MessageConsumer = (message: ProviderSessionMessage) => void | Promise<void>
 
@@ -751,7 +745,7 @@ export class ProviderSessionsService {
   private readonly maxTranscriptBytes: number
   private readonly maxJsonLineBytes: number
   private readonly maxFilesPerProvider: number
-  private readonly probeCache = new Map<string, ProbeCacheEntry>()
+  private readonly probeCache: ProviderSessionProbeCache
   private readonly candidateIndex = new Map<string, SourceCandidate>()
 
   constructor(options: ProviderSessionsOptions = {}) {
@@ -774,6 +768,11 @@ export class ProviderSessionsService {
       64 * 1024 * 1024,
     )
     this.maxFilesPerProvider = positiveInteger(options.maxFilesPerProvider, DEFAULT_MAX_FILES, 500_000)
+    this.probeCache = new ProviderSessionProbeCache({
+      filePath: options.probeCacheFile,
+      maxEntries: MAX_PROBE_CACHE_ENTRIES,
+      onWarning: options.onProbeCacheWarning,
+    })
   }
 
   capabilities(): Record<ProviderSessionProvider, ProviderSessionCapability> {
@@ -850,6 +849,9 @@ export class ProviderSessionsService {
     const requestedPage = positiveInteger(query.page, 1, Number.MAX_SAFE_INTEGER)
     const pages = filtered.length === 0 ? 0 : Math.ceil(filtered.length / pageSize)
     const page = pages === 0 ? 1 : Math.min(requestedPage, pages)
+    // Deliberately not awaited: the page is already complete, and the user
+    // should not wait on a cache write to see the list.
+    void this.probeCache.persist()
     return {
       items: filtered.slice((page - 1) * pageSize, page * pageSize),
       total: filtered.length,
@@ -1039,7 +1041,9 @@ export class ProviderSessionsService {
   ): Promise<ProviderSessionSummary[]> {
     const candidates = await this.sourceCandidates(provider)
     const items: ProviderSessionSummary[] = []
+    const seen = new Set<string>()
     for (const candidate of candidates) {
+      seen.add(normalizePath(candidate.sourcePath))
       try {
         items.push(await this.probeExternalSession(candidate))
       } catch {
@@ -1051,7 +1055,24 @@ export class ProviderSessionsService {
         }
       }
     }
+    this.forgetMissingProbes(provider, seen)
     return items
+  }
+
+  /**
+   * A full sweep of one root is the only moment the cache can tell a deleted
+   * session from one that simply was not asked for, so pruning happens here
+   * and never on a single-session probe.
+   */
+  private forgetMissingProbes(
+    provider: Exclude<ProviderSessionProvider, 'codex'>,
+    seen: Set<string>,
+  ): void {
+    const root = this.roots[provider]
+    for (const key of this.probeCache.keys()) {
+      if (seen.has(key) || !isInside(root, key)) continue
+      this.probeCache.delete(key)
+    }
   }
 
   private async probeFingerprint(candidate: SourceCandidate, stat: fs.Stats): Promise<string> {
@@ -1066,13 +1087,12 @@ export class ProviderSessionsService {
   }
 
   private async probeExternalSession(candidate: SourceCandidate): Promise<ProviderSessionSummary> {
+    await this.probeCache.ready()
     const stat = await safeRegularFileStat(candidate.sourcePath)
     const cacheKey = normalizePath(candidate.sourcePath)
     const fingerprint = await this.probeFingerprint(candidate, stat)
     const cached = this.probeCache.get(cacheKey)
     if (cached && cached.fingerprint === fingerprint) {
-      this.probeCache.delete(cacheKey)
-      this.probeCache.set(cacheKey, cached)
       return finalizeExternalSummary(candidate, this.roots[candidate.provider], { ...cached.state })
     }
     const state = newProbeState(stat)
@@ -1113,11 +1133,7 @@ export class ProviderSessionsService {
         if (!scan.sourceTruncated && state.messageCount === null) state.messageCount = count
       }
     }
-    this.probeCache.delete(cacheKey)
     this.probeCache.set(cacheKey, { fingerprint, state: { ...state } })
-    while (this.probeCache.size > MAX_PROBE_CACHE_ENTRIES) {
-      this.probeCache.delete(this.probeCache.keys().next().value as string)
-    }
     return finalizeExternalSummary(candidate, this.roots[candidate.provider], state)
   }
 
