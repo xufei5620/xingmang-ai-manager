@@ -116,12 +116,15 @@ import type {
   AccountSessionState,
   AccountKeyCreateInput,
   AccountKeyUpdateInput,
+  AccountKeysPage,
   AiChatStartInput,
   AiImageGenerateInput,
   AccountManagedCliConfigurationInput,
+  ChooseWorkspaceOptions,
   LegalDocumentKind,
   RememberedAccountLogin,
   RendererErrorPayload,
+  RendererLogLevel,
 } from './ipc-contract'
 import type { DiagnosticsReport } from './diagnostics'
 import type { ConnectionCheckResult } from './connection-check'
@@ -481,6 +484,15 @@ function parseConfigSavePayload(payload: unknown): ConfigSavePayload {
   }
 }
 
+function parseChooseWorkspaceOptions(value: unknown): ChooseWorkspaceOptions {
+  if (value === undefined) return {}
+  if (!isRecord(value)) throw new Error('选择工作目录的参数无效')
+  const keys = Object.keys(value)
+  if (keys.some((key) => key !== 'createStarter')) throw new Error('选择工作目录的参数无效')
+  if (value.createStarter !== undefined && typeof value.createStarter !== 'boolean') throw new Error('选择工作目录的参数无效')
+  return value.createStarter === undefined ? {} : { createStarter: value.createStarter }
+}
+
 function parseWorkspace(workspace: unknown, fallback: string): string {
   if (typeof workspace === 'string' && workspace.length > 32_767) {
     throw new Error('工作目录格式错误')
@@ -583,12 +595,19 @@ function parseProviderSessionListQuery(value: unknown): ProviderSessionListQuery
   }
 }
 
-function parseRendererError(value: unknown): { message: string; stack?: string; context?: string } {
+function parseRendererLogLevel(value: unknown): RendererLogLevel {
+  if (value === undefined) return 'error'
+  if (value === 'info' || value === 'warn' || value === 'error') return value
+  throw new Error('日志级别无效')
+}
+
+function parseRendererError(value: unknown): { message: string; stack?: string; context?: string; level: RendererLogLevel } {
   if (!isRecord(value)) throw new Error('渲染进程错误格式无效')
   return {
     message: requiredString(value.message, '错误消息', 4_096),
     stack: optionalString(value.stack, '错误堆栈', 16_384),
     context: optionalString(value.context, '错误上下文', 256),
+    level: parseRendererLogLevel(value.level),
   }
 }
 
@@ -1686,7 +1705,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     }
   }
   // 建不成就说一句、回到选择器，由用户自己选；返回 null 让外层循环再开一次选择器。
-  async function createStarterWorkspaceOrExplain(parentWindow: BrowserWindow | undefined): Promise<string | null> {
+  async function createStarterWorkspaceOrExplain(parentWindow: BrowserWindow | undefined, nextStep: string): Promise<string | null> {
     try {
       const context = { platform: process.platform, home: os.homedir(), env: process.env }
       const created = createStarterWorkspace(resolveStarterWorkspaceParent(documentsDirectory(), context), context)
@@ -1699,7 +1718,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
         type: 'error' as const,
         title: '没能新建项目文件夹',
         message: '没能替你新建项目文件夹。',
-        detail: `${error instanceof Error ? error.message : '未知错误'}\n\n接下来会重新打开文件夹选择窗口，可以在里面自己新建一个文件夹再选它。`,
+        detail: `${error instanceof Error ? error.message : '未知错误'}\n\n${nextStep}`,
         buttons: ['知道了'],
         noLink: true,
       }
@@ -1774,7 +1793,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
         return selected
       }
       if (decision === 'create') {
-        const created = await createStarterWorkspaceOrExplain(parentWindow)
+        const created = await createStarterWorkspaceOrExplain(parentWindow, '接下来会重新打开文件夹选择窗口，可以在里面自己新建一个文件夹再选它。')
         if (created !== null) return created
       }
     }
@@ -1787,9 +1806,13 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     options.extensionService.setRepositoryContext(workspace)
     options.providerExtensionService.setRepositoryRoot(workspace)
   }
-  registerTrustedHandler('workspace:choose', async (event) => {
+  registerTrustedHandler('workspace:choose', async (event, rawOptions: unknown) => {
     const parentWindow = BrowserWindow.fromWebContents(event.sender) ?? undefined
-    const workspace = await pickWorkspace(parentWindow)
+    // 首页「新建项目文件夹」与引导里那颗按钮：不弹选择器，直接走提示框里「新建」
+    // 那一支。路径由主进程决定，渲染层只能说「要新建」，给不出任何路径（I5）。
+    const workspace = parseChooseWorkspaceOptions(rawOptions).createStarter
+      ? await createStarterWorkspaceOrExplain(parentWindow, '可以再点一次「打开」，自己选一个文件夹。')
+      : await pickWorkspace(parentWindow)
     if (workspace === null) return null
     await rememberWorkspace(workspace)
     return workspace
@@ -1914,7 +1937,9 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
       const decision = await askAboutSensitiveWorkspace(parentWindow, sensitivity, allowChooseAnother)
       if (decision === 'continue') return service.launchProvider(provider, target, launchMode)
       let replacement: string | null = null
-      if (decision === 'create') replacement = await createStarterWorkspaceOrExplain(parentWindow)
+      if (decision === 'create') {
+        replacement = await createStarterWorkspaceOrExplain(parentWindow, '接下来会重新打开文件夹选择窗口，可以在里面自己新建一个文件夹再选它。')
+      }
       if (replacement === null && allowChooseAnother) replacement = await pickWorkspace(parentWindow)
       if (replacement === null) {
         options.runtimeLog.log('info', 'config', 'workspace.guard.declined', `用户没有在${sensitiveWorkspaceLabel(sensitivity)}里打开工具`, {
@@ -2127,12 +2152,14 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   })
   registerTrustedHandler('runtime-logs:clear', () => options.runtimeLog.clear())
   registerTrustedHandler('runtime-logs:renderer-error', (_event, payload: unknown) => {
-    const error = parseRendererError(payload)
-    options.runtimeLog.log('error', 'renderer', 'renderer.error', error.message, {
+    const { level, ...error } = parseRendererError(payload)
+    options.runtimeLog.log(level, 'renderer', `renderer.${level}`, error.message, {
       context: error.context ?? null,
       stack: error.stack ?? null,
     })
-    options.onRendererError?.(error)
+    // 只有真正的渲染层错误才上报崩溃：info / warn 是渲染层留给排障的决策记录，
+    // 一并上报会把真正的异常淹没，也会把本该只留在本机的线索发出去。
+    if (level === 'error') options.onRendererError?.(error)
   })
   /**
    * 备份列表要标出每份备份里的 Key 是不是当前账号的。只读已有的 Key 缓存，从不
@@ -2650,9 +2677,36 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   registerTrustedHandler('account:get-tasks', (_event, input: unknown) => (
     accountService.getTasks(parseAccountTaskQuery(input))
   ))
-  registerTrustedHandler('account:list-keys', (_event, input: unknown) => (
-    accountService.listKeys(parseAccountKeysQuery(input))
-  ))
+  // Marks the keys a tool on this machine is using right now, so the keys page
+  // can warn before revoking one and put a fresh key back afterwards. "Using"
+  // means the key this app issued for that tool AND the tool's config still
+  // holds exactly it: a cached key the user has since replaced is not in use.
+  // Only the provider id crosses IPC, never the secret (I3). A display hint:
+  // any failure degrades to the unmarked list, the pre-existing behavior.
+  const markKeysInUse = async (page: AccountKeysPage, userId: number | undefined): Promise<AccountKeysPage> => {
+    if (!userId || !options.managedCliKeys || options.previewOnboarding) return page
+    const cached = await options.managedCliKeys.read(userId).catch(() => [])
+    if (accountService.getSessionState().account?.userId !== userId) return page
+    const inUse = new Map<number, ProviderId>()
+    for (const entry of cached) {
+      let configured = ''
+      try { configured = service.revealApiKey(entry.provider, options.previewOnboarding) } catch { continue }
+      if (configured && configured === entry.key) inUse.set(entry.id, entry.provider)
+    }
+    if (!inUse.size) return page
+    return {
+      ...page,
+      keys: page.keys.map((key) => {
+        const managedProvider = inUse.get(key.id)
+        return managedProvider ? { ...key, managedProvider } : key
+      }),
+    }
+  }
+  registerTrustedHandler('account:list-keys', (_event, input: unknown) => {
+    const query = parseAccountKeysQuery(input)
+    const userId = accountService.getSessionState().account?.userId
+    return accountService.listKeys(query).then((page) => markKeysInUse(page, userId))
+  })
   registerTrustedHandler('account:list-groups', () => accountService.listUsableGroups())
   registerTrustedHandler('account:revoke-key', async (_event, id: unknown) => {
     const keyId = parseAccountRevokeKeyId(id)

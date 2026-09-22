@@ -1,4 +1,4 @@
-import type { CodexHomeContext, ProviderConfigRoots } from './codex-home'
+import type { CodexHomeContext, IgnoredCodexHome, ProviderConfigRoots } from './codex-home'
 
 export interface RootedMainServiceOptions {
   system: { providerRoots: ProviderConfigRoots; codexEnv: NodeJS.ProcessEnv }
@@ -6,7 +6,7 @@ export interface RootedMainServiceOptions {
   backups: { providerRoots: ProviderConfigRoots }
   codexExtensions: { userHome: string; codexHome: string; env: NodeJS.ProcessEnv }
   providerExtensions: { homeDirectory: string; codexHome: string; codexEnv: NodeJS.ProcessEnv }
-  diagnostics: { providerRoots: ProviderConfigRoots; env: NodeJS.ProcessEnv }
+  diagnostics: { providerRoots: ProviderConfigRoots; env: NodeJS.ProcessEnv; ignoredCodexHome?: IgnoredCodexHome }
   diagnosticExport: { userHome: string; codexHome: string }
 }
 
@@ -26,7 +26,11 @@ export function rootedMainServiceOptions(context: CodexHomeContext): RootedMainS
       codexHome: context.codexHome,
       codexEnv: context.codexEnv,
     },
-    diagnostics: { providerRoots, env: context.codexEnv },
+    diagnostics: {
+      providerRoots,
+      env: context.codexEnv,
+      ...(context.ignoredCodexHome ? { ignoredCodexHome: context.ignoredCodexHome } : {}),
+    },
     diagnosticExport: { userHome: context.userHome, codexHome: context.codexHome },
   }
 }

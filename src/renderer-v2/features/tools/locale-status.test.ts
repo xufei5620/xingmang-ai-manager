@@ -26,7 +26,7 @@ describe('Codex Desktop locale result messages', () => {
 
   it('tells the user the debugging port is gone after switching back to the system language', () => {
     expect(describeChineseLocaleResult(result({ configuredLocale: 'system', restarted: true })))
-      .toContain('本机调试端口不再开启')
+      .toContain('那条本机通道也不再开启')
     expect(describeChineseLocaleResult(result({ configuredLocale: 'system', restarted: false })))
       .toBe('已改为跟随系统语言，下次从星芒打开 Codex 时生效。')
   })
