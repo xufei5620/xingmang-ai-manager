@@ -1,11 +1,12 @@
 # electron-builder 的 NSIS 自定义脚本。本文件被插在生成脚本的最前面，
 # 所以这里只能定义宏和 !define，真正的代码都在宏里，由模板在合适的位置插入。
 #
-# 这里一共做三件事，每一件都对应一个客户机上真实发生过的问题：
+# 这里一共做四件事，每一件都对应一个客户机上真实发生过的问题：
 #
 #   1. customInstall：安装收尾时补齐缺失的快捷方式（见下面那段长注释）。
 #   2. customHeader 里的目录页守卫：不许把程序装进别人的非空目录。
 #   3. customRemoveFiles：卸载时只删本程序自己装进去的东西。
+#   4. customUnInstall：删文件之前先还原加速改过的系统代理、删掉开机项。
 #
 # 2 和 3 是一对。老版本允许用户把安装目录选成任意已有目录（比如 D:\下载），
 # 而卸载时执行的是 electron-builder 默认的 `RMDir /r $INSTDIR`——整个目录连
@@ -15,6 +16,10 @@
 # 安装清单写在注册表里，不写成安装目录下的文件——清单文件自己又会成为
 # "目录里多出来的一样东西"，而且卸载时还得处理它自己的编码和残留。
 !define XINGMANG_INSTALLED_ENTRIES_KEY "${INSTALL_REGISTRY_KEY}\InstalledEntries"
+
+# 与 electron/uninstall-cleanup-entry.ts 的 uninstallCleanupArgument 是同一个值，
+# scripts/windows-installer-uninstall-cleanup.test.cjs 钉住两边一致。
+!define XINGMANG_UNINSTALL_CLEANUP_ARGUMENT "--xingmang-uninstall-cleanup"
 
 !ifndef BUILD_UNINSTALLER
   !ifdef allowToChangeInstallationDirectory
@@ -132,6 +137,33 @@
       Exch $R0
     FunctionEnd
 
+    # 开着加速时卸载：卸载程序会先把本程序连同加速辅助进程一起强行结束
+    # （electron-builder 的 CHECK_APP_RUNNING 对安装目录下的进程 Stop-Process），
+    # 辅助进程来不及把系统代理改回去，系统代理就一直指着本机一个没人监听的端口，
+    # 整台电脑上不了网；开机项也会一直指着一个删掉了的 exe。
+    #
+    # 这两件事都交给程序自己做：它认得自己的恢复记录，只在系统代理仍是加速写进去
+    # 的那一份时才还原，用户或别的软件后来改过的代理原样不动。这里只负责在删文件
+    # 之前把它拉起来、等它结束。exe 在安装目录里，是这次卸载自己装的那一个，不查
+    # PATH；参数是固定字面量，没有任何外部输入拼进命令行。
+    #
+    # 失败只记在详情里，不拦卸载：让用户卡在一个卸不掉的软件上，比留一条开机项更糟。
+    Function un.xingmangUninstallCleanup
+      ${IfNot} ${FileExists} "$INSTDIR\${APP_EXECUTABLE_FILENAME}"
+        Return
+      ${EndIf}
+      Push $R0
+      DetailPrint "Restoring system proxy and removing login item."
+      ClearErrors
+      ExecWait '"$INSTDIR\${APP_EXECUTABLE_FILENAME}" ${XINGMANG_UNINSTALL_CLEANUP_ARGUMENT}' $R0
+      ${If} ${Errors}
+        DetailPrint "Uninstall cleanup could not start."
+      ${ElseIf} $R0 != 0
+        DetailPrint "Uninstall cleanup finished with code $R0."
+      ${EndIf}
+      Pop $R0
+    FunctionEnd
+
     Function un.xingmangRemoveInstalledFiles
       ClearErrors
       ReadRegDWORD $R4 SHELL_CONTEXT "${XINGMANG_INSTALLED_ENTRIES_KEY}" "Count"
@@ -203,6 +235,15 @@
       RMDir "$INSTDIR"
     FunctionEnd
   !endif
+!macroend
+
+# 卸载区段里，这个宏在 CHECK_APP_RUNNING 已经结束掉程序之后、删文件之前执行。
+# 升级安装也会以 --updated 跑一遍旧版的卸载程序：那时不能删开机项（用户的开关
+# 会被悄悄关掉），也不必动代理（新版启动时会自己恢复），所以只在真正卸载时做。
+!macro customUnInstall
+  ${IfNot} ${isUpdated}
+    Call un.xingmangUninstallCleanup
+  ${EndIf}
 !macroend
 
 # electron-builder 默认的"删除已安装文件"这一步是 `RMDir /r $INSTDIR`。

@@ -7,6 +7,10 @@
 // 参数，那边改读系统给的登录启动标记。
 export const loginLaunchArgument = '--launched-at-login'
 
+// Windows 开机项的名字默认取 AppUserModelId。桌面进程和卸载清理进程必须用同一个，
+// 否则清理进程按名字删的是另一条，开机项原样留着。与 electron-builder 的 appId 一致。
+export const windowsAppUserModelId = 'com.xingmang.ai.manager'
+
 export function hasLoginLaunchArgument(argv: readonly unknown[]): boolean {
   return argv.some((argument) => argument === loginLaunchArgument)
 }

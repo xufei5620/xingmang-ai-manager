@@ -45,7 +45,7 @@ import { SavedAccountsStore } from './saved-accounts'
 import { AppSettingsStore, readAppSettings, type AppTheme } from './app-settings'
 import { calculateUiZoom, resolveWindowPlacement } from './window-preferences'
 import { createWindowLifecycle } from './window-lifecycle'
-import { hasLoginLaunchArgument, resolveLoginLaunch, shouldRevealInitialWindow } from './login-launch'
+import { hasLoginLaunchArgument, resolveLoginLaunch, shouldRevealInitialWindow, windowsAppUserModelId } from './login-launch'
 import { resolveInstallableUpdateOnQuit, resolveInterruptibleInstallTask } from './quit-blocking-tasks'
 import { createWindowResponsivenessGuard } from './window-responsiveness'
 import { createApplicationTray, type ApplicationTrayController } from './application-tray'
@@ -626,7 +626,7 @@ if (!hasSingleInstanceLock) {
     // Installers register the scheme; development must not take over installed links.
     if (app.isPackaged) app.setAsDefaultProtocolClient('xingmang')
     if (process.platform === 'win32') {
-      app.setAppUserModelId('com.xingmang.ai.manager')
+      app.setAppUserModelId(windowsAppUserModelId)
       Menu.setApplicationMenu(null)
       try {
         loginItemMigration = migrateLegacyWindowsLoginItem({
