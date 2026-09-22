@@ -7,7 +7,7 @@ import { recordStartupFailure } from './startup-log'
 
 const temporaryDirectories: string[] = []
 
-function createStore(options: { maxFileBytes?: number; archiveCount?: number } = {}) {
+function createStore(options: { maxFileBytes?: number; archiveCount?: number; environmentTimeoutMs?: number } = {}) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-runtime-log-'))
   temporaryDirectories.push(directory)
   return new RuntimeLogStore({
@@ -150,6 +150,51 @@ describe('RuntimeLogStore', () => {
     expect(report.text).toContain('retry failed')
     expect(report.text).toContain('[TRUNCATED]')
     expect(report.text).not.toContain('private-error-credential')
+  })
+
+  it('puts the tool and configuration summary ahead of the log lines', async () => {
+    const store = createStore()
+    store.attachEnvironmentDescriber(async () => [
+      'Claude Code: 已安装 2.1.277（应用托管）；配置：指向当前账号',
+      'Codex CLI: 未安装；配置：未配置',
+    ])
+    store.log('info', 'fixture', 'entry', 'one log line')
+    const report = await store.captureFeedbackReport()
+
+    expect(report.text).toContain('工具与配置:')
+    expect(report.text).toContain('Claude Code: 已安装 2.1.277（应用托管）；配置：指向当前账号')
+    expect(report.text.indexOf('工具与配置:')).toBeLessThan(report.text.indexOf('运行日志:'))
+  })
+
+  it('redacts the home directory inside the tool summary too', async () => {
+    const store = createStore()
+    store.attachEnvironmentDescriber(async () => [`Grok CLI: 已安装，配置目录 ${os.homedir()}`])
+    const report = await store.captureFeedbackReport()
+
+    expect(report.text).not.toContain(os.homedir())
+  })
+
+  it('still produces a report when the environment read times out or throws', async () => {
+    const stalled = createStore({ environmentTimeoutMs: 20 })
+    stalled.attachEnvironmentDescriber(() => new Promise(() => undefined))
+    const timedOut = await stalled.captureFeedbackReport()
+
+    expect(timedOut.text).toContain('未能读取（读取超时）')
+    expect(timedOut.text).toContain('运行日志:')
+
+    const broken = createStore()
+    broken.attachEnvironmentDescriber(async () => { throw new Error('系统服务还没起来') })
+    const failed = await broken.captureFeedbackReport()
+
+    expect(failed.text).toContain('工具与配置:')
+    expect(failed.text).toContain('未能读取')
+    expect(failed.text).not.toContain('系统服务还没起来')
+  })
+
+  it('omits the tool summary entirely when nothing is attached', async () => {
+    const report = await createStore().captureFeedbackReport()
+
+    expect(report.text).not.toContain('工具与配置:')
   })
 
   it('captures report text and its count together, independently of later appends or clears', async () => {

@@ -87,6 +87,7 @@ import { RuntimeLogStore } from './runtime-log'
 import { attachPlatformAuditLog } from './platform/runtime-log-bridge'
 import { recordStartupFailure } from './startup-log'
 import { inspectProviderConfig } from './config-files'
+import { buildFeedbackEnvironmentLines } from './feedback-environment'
 import { rootedMainServiceOptions } from './main-service-options'
 import { buildMacosInstallLocationNotice, inspectMacosInstallLocation } from './macos-install-location'
 import { privacyPolicyUrl, relaySiteExternalUrls, relaySites, resolveRelaySite, sub2ApiSupportServiceUrl, supportServiceUrl, userAgreementUrl } from './relay-sites'
@@ -900,6 +901,21 @@ if (!hasSingleInstanceLock) {
     let latestTraySystem: SystemSnapshot | null = null
     let latestTrayBalance: AccountBalance | null = null
     let managedMainWindow: BrowserWindow | null = null
+    // 客服收到反馈报告的第一句总是「你的工具是什么版本、怎么装的、配置指向哪」。
+    // 这几行就答这三件事：只读上一次扫描留下的快照（latestTraySystem），不为了
+    // 生成一份报告再发一轮探测；配置按用户当前所在的站点对账（同上面的
+    // checkConnection），否则换过站的用户会被告知一份好配置「没指向当前账号」。
+    runtimeLog.attachEnvironmentDescriber(async () => {
+      const site = resolveRelaySite(systemService.readStoredConfig().relaySiteId)
+      return buildFeedbackEnvironmentLines({
+        clis: latestTraySystem?.clis ?? null,
+        readConfig: (provider) => inspectProviderConfig(
+          provider,
+          rootedOptions.system.providerRoots,
+          site.providerBaseUrls,
+        ),
+      })
+    })
     const desktopNotifications = createDesktopNotificationController({
       readEnabled: () => systemService.readStoredConfig().desktopNotifications === true,
       focusMainWindow: () => {
