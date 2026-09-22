@@ -124,7 +124,12 @@ import {
 import { createTrustedTemporaryDirectory } from './trusted-temp'
 import { resolveWindowsMachinePaths } from './windows-machine-paths'
 import { createManagedNpmCache, ensureManagedNpmLayout, type ManagedNpmLayout } from './managed-cli'
-import { managedNativeProviderRoot, managedNpmPrefix } from './managed-cli-paths'
+import { managedCliRoot, managedNativeProviderRoot, managedNpmPrefix } from './managed-cli-paths'
+import {
+  describeInsufficientDiskSpace,
+  readDiskSpace,
+  tightestDiskSpace,
+} from './disk-space'
 import {
   codexDesktopLocaleNeedsChange,
   inspectCodexDesktopLocale as inspectCodexDesktopLocaleStatus,
@@ -1921,6 +1926,8 @@ export interface SystemServiceOptions {
   runtimeLog?: RuntimeLogLike
   /** 随包的中文 AGENTS.md 模板路径；缺省则打开目录时不生成项目说明。 */
   projectInstructionsTemplatePath?: string
+  /** 安装前那次磁盘剩余空间预检的读取口，测试用它造「够 / 不够 / 读不到」三种盘。 */
+  readDiskSpace?: typeof readDiskSpace
 }
 
 export function providerCommandEnvironment(
@@ -2037,6 +2044,43 @@ export function createSystemService(
     }
     const safeLabel = label.replace(/[^a-z0-9-]/gi, '-')
     return fs.promises.mkdtemp(path.join(os.tmpdir(), `xingmang-${safeLabel}-`))
+  }
+
+  const probeDiskSpace = serviceOptions.readDiskSpace ?? readDiskSpace
+
+  /**
+   * 一次安装会同时用到临时事务目录和托管目录，所以两块盘都问一次，按最紧的那
+   * 一块判断。npm 的全局目录要跑一条命令才知道，而事务目录和缓存本来就落在临
+   * 时目录，够覆盖「C 盘只剩几百兆」这个真实场景。
+   */
+  function installDiskSpaceTargets(): string[] {
+    const targets = [os.tmpdir()]
+    try {
+      targets.push(managedCliRoot(commandEnvironment(), platform))
+    } catch {
+      // Windows 上拿不到可信的 ProgramData 时托管目录本来就用不了，这一项跳过。
+    }
+    return targets
+  }
+
+  /**
+   * 装之前先看一眼盘。**读不到空间一律放行**（disk-space.ts 的 fail-open）：为了
+   * 一个查不到的数字拦下安装，是把小毛病变成大故障。拦住时抛的那句话里有
+   * 「磁盘空间不足」，渲染层按已有的「磁盘空间不够」一类呈现，不新立一类。
+   */
+  async function assertInstallDiskSpace(subject: string): Promise<void> {
+    const readings = await Promise.all(
+      installDiskSpaceTargets().map((target) => probeDiskSpace(target)),
+    )
+    const tightest = tightestDiskSpace(readings)
+    const shortfall = describeInsufficientDiskSpace(tightest)
+    if (!shortfall) return
+    runtimeLog?.log('warn', 'install', 'disk-space.insufficient', `${subject}：${shortfall}`, {
+      subject,
+      availableBytes: tightest?.availableBytes ?? null,
+      measuredPath: tightest ? redactHomeDirectory(tightest.measuredPath, providerRoots.userHome) : null,
+    })
+    throw new Error(`${subject}：${shortfall}`)
   }
 
   function inspectNetworkLocation(forceRefresh = false): Promise<NetworkLocationStatus> {
@@ -2865,8 +2909,11 @@ export function createSystemService(
     // 排队等待期间点的取消在这里生效:队列把任务交给我们时才发现已经取消,
     // 直接退出,一条 npm 命令都不要起。
     cancellation?.throwIfCancelled()
-    installing.add(provider)
     const definition = cliCatalog[provider]
+    // 磁盘快满时 npm 会跑到一半才报 ENOSPC：用户白等几分钟，旧版本还可能已经被
+    // 动过。所以一个字节都还没下之前先看一眼盘（读不到空间照常放行）。
+    await assertInstallDiskSpace(`${definition.name} 安装失败`)
+    installing.add(provider)
     let downloadedGrokBinary: DownloadedGrokBinary | null = null
     let managedNpmLayout: ManagedNpmLayout | null = null
     let managedNpmTransaction: string | null = null
@@ -3625,6 +3672,7 @@ export function createSystemService(
     spawnDetached,
     downloadFetch,
     reloadDownloadProxyConfig,
+    assertInstallDiskSpace,
   })
 
   async function installCodexDesktop(target: RendererMessageTarget): Promise<CodexDesktopInstallResult> {
@@ -4232,6 +4280,8 @@ export function createSystemService(
       if (ownership?.source === 'account' && !owner) throw new Error('请先登录账号再配置账号密钥')
       const before = inspectNativeProviderConfig(payload.provider)
       const previousOwnership = configOwnership.read(payload.provider, before, owner)
+      // `changed`（我们写过、之后被改动）同样不在放行之列：自动写入永远不覆盖
+      // 用户或工具自己改出来的配置，首页只会提示，改不改由用户点。
       if (ownership?.automatic && previousOwnership !== 'account' && previousOwnership !== 'missing') {
         throw new Error('已有工具配置的来源未经确认，已保留原配置；请在工具配置中明确选择账号密钥')
       }

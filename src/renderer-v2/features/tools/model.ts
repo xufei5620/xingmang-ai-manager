@@ -8,7 +8,12 @@ import {
 } from './source-marker'
 
 export type ToolId = ProviderId | 'codexDesktop'
-export type ToolSource = 'account' | 'official' | 'manual' | 'unknown' | 'missing'
+/**
+ * `changed` 是 `unknown` 里被单独拎出来的一种：主进程认得出这份配置原本是替
+ * 当前账号写的，之后被改动过。其余判不准的仍旧是 `unknown`，两者在能不能自动
+ * 改写这件事上一模一样，区别只在首页说哪句话、给不给修复入口。
+ */
+export type ToolSource = 'account' | 'official' | 'manual' | 'unknown' | 'changed' | 'missing'
 export interface ToolboxSnapshot {
   system: SystemSnapshot
   config: AppConfigSummary
@@ -154,7 +159,11 @@ export function sourceFor(
   if (config.hasApiKey && config.matchesRelay) {
     if (config.configurationOwnership === 'account' || config.configurationOwnership === 'manual') return config.configurationOwnership
     if (readManualSourceMarker(storage, config.baseUrl, provider)) return 'manual'
-    return config.configurationAccountMatched === true ? 'account' : 'unknown'
+    // 「就用现在这份」写的就是上面那个本机标记，所以它排在这条前面：用户认过一次
+    // 之后不再提。指纹对不上但密钥正好是当前账号缓存里的那把时也不提——那种情况
+    // 连接本来就是通的，报「被改过」是假警。
+    if (config.configurationAccountMatched === true) return 'account'
+    return config.configurationOwnership === 'changed' ? 'changed' : 'unknown'
   }
   if (config.actualBaseUrl && !config.matchesRelay) return 'unknown'
   if (config.exists && !config.hasApiKey && provider !== 'grok') return 'official'
@@ -168,7 +177,7 @@ export function connectionReady(
 ): boolean {
   const source = sourceFor(config, provider, storage)
   if (source === 'official') return true
-  if ((source !== 'account' && source !== 'manual' && !(source === 'unknown' && config.hasApiKey && config.matchesRelay)) || !config.model.trim()) return false
+  if ((source !== 'account' && source !== 'manual' && !((source === 'unknown' || source === 'changed') && config.hasApiKey && config.matchesRelay)) || !config.model.trim()) return false
   return provider !== 'gemini' || config.authType === 'gemini-api-key'
 }
 

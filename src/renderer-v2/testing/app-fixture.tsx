@@ -87,6 +87,7 @@ if (query.has('manualClaude')) {
   writeManualSourceMarker(getSourceMarkerStorage(), configValue.baseUrl, 'claude', true)
 }
 if (query.has('unownedClaude')) config.providers.claude = { ...configValue, configurationOwnership: 'unknown' }
+if (query.has('changedClaude')) config.providers.claude = { ...configValue, configurationOwnership: 'changed' }
 if (query.has('lostManualMarker')) writeManualSourceMarker(getSourceMarkerStorage(), configValue.baseUrl, 'claude', false)
 const readOnlyConfigOwner = { siteId: session.siteId ?? 'solov', userId: account.userId }
 if (query.has('readOnlyAccountMatch')) {
