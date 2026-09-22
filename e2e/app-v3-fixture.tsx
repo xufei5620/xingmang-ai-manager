@@ -81,7 +81,8 @@ const api = {
   chooseWorkspace: async () => settings.workspace,
   openExternal: async () => true,
   replyWindowClose: async (requestId, report) => { window.appHarness.closeReports.push({ requestId, ...report }); return true },
-  reportRendererError: async (input) => { window.appHarness.errors.push(input.message) },
+  // info / warn 是渲染层留给运行日志的排障记录（例如 Key 自动配置的结论），不是故障。
+  reportRendererError: async (input) => { if ((input.level ?? 'error') === 'error') window.appHarness.errors.push(input.message) },
   launchCli: async () => {},
   launchCodexDesktop: async () => ({ status: { ...snapshot.desktopApps.codex, running: true }, restarted: false }),
 } satisfies Partial<XingmangApi>

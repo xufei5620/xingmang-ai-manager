@@ -96,9 +96,10 @@ import { RuntimeLogStore } from './runtime-log'
 import { hostNotifier } from './platform/host-notification-bridge'
 import { attachPlatformAuditLog } from './platform/runtime-log-bridge'
 import { migrateLegacyWindowsLoginItem } from './platform/system-service'
-import { recordStartupFailure } from './startup-log'
+import { recordStartupFailure, redactHomeDirectory } from './startup-log'
 import { inspectProviderConfig } from './config-files'
-import { buildFeedbackEnvironmentLines } from './feedback-environment'
+import { buildFeedbackEnvironmentLines, buildFeedbackRuntimeLines, pickFeedbackRuntimeSnapshot } from './feedback-environment'
+import { managedCliRoot } from './managed-cli-paths'
 import { buildFeedbackSelfCheckLines, type FeedbackConnectionRecord } from './feedback-self-check'
 import { rootedMainServiceOptions } from './main-service-options'
 import { buildMacosInstallLocationNotice, inspectMacosInstallLocation } from './macos-install-location'
@@ -706,6 +707,15 @@ if (!hasSingleInstanceLock) {
     if (manualUninstallVisualFixtureEnabled) {
       runtimeLog.log('warn', 'testing', 'manual-uninstall.fixture', '手动卸载视觉测试状态已启用')
     }
+    if (codexContext.ignoredCodexHome) {
+      // 以前这里直接抛错、整个软件打不开；现在按没设处理，检查页「环境变量覆盖」
+      // 会报出来。值是用户自己写的路径，落盘前先把用户目录换掉（I13）。
+      runtimeLog.log('warn', 'main', 'codex-home.ignored', '环境变量 CODEX_HOME 不是可用的绝对路径，已按未设置处理', {
+        reason: codexContext.ignoredCodexHome.reason,
+        value: redactHomeDirectory(codexContext.ignoredCodexHome.value, codexContext.userHome).replaceAll('\0', '\\0'),
+        codexHome: redactHomeDirectory(codexContext.codexHome, codexContext.userHome),
+      })
+    }
     // 装在「应用程序」之外时加速起不来，但用户只看到「加速连接失败」，会以为
     // 是服务的问题。这一步放在服务与窗口之前：那之后再提示，用户已经开始用了。
     const installLocation = inspectMacosInstallLocation({
@@ -1072,6 +1082,27 @@ if (!hasSingleInstanceLock) {
         // 三个外部客户端同样只读上一次检测留下的快照：生成一份报告不该再去跑
         // 一轮 PowerShell 盘点。没检测过时那三行写「未能读取」。
         externalClients: systemService.getLastExternalClients(),
+      })
+    })
+    // 「运行环境」段：系统里的 Node / npm / Python / Git、Codex 桌面端、网络位置
+    // 同样只读上一次扫描的快照；其余几行是进程本来就知道的路径与区域设置，
+    // 不起任何探测。
+    runtimeLog.attachHostDescriber(async () => {
+      let managedDirectory: string | null = null
+      try {
+        managedDirectory = managedCliRoot(process.env, process.platform)
+      } catch {
+        // ProgramData 解析不出来时这一行不出，报告照常生成。
+      }
+      return buildFeedbackRuntimeLines({
+        snapshot: pickFeedbackRuntimeSnapshot(latestTraySystem),
+        platform: process.platform,
+        executionMode: process.platform === 'win32' ? windowsCliExecutionMode : null,
+        appDirectory: path.dirname(app.getPath('exe')),
+        dataDirectory: managerDataDirectory,
+        managedDirectory,
+        locale: app.getLocale(),
+        timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
       })
     })
     // 客服的第二个问题是「到底能不能用」——这答案用户在「检查」页点过一次就有
