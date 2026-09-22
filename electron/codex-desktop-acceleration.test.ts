@@ -63,7 +63,8 @@ describe('codex desktop acceleration coordinator', () => {
   it('connects before the desktop app is launched', async () => {
     const { coordinator, connect, log } = setup()
     await expect(coordinator.ensureConnected()).resolves.toEqual({ status: 'connected' })
-    expect(connect).toHaveBeenCalledWith(scope)
+    // 第二个参数是刚读到的那份状态：宿主据此判断记住的模式当前支不支持。
+    expect(connect).toHaveBeenCalledWith(scope, stateOf('idle'))
     expect(log).toHaveBeenCalledWith('info', 'acceleration.codex-desktop.connected', expect.any(String), undefined)
   })
 

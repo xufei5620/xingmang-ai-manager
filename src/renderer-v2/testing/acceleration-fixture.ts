@@ -1,4 +1,4 @@
-import { accelerationBonusSeconds, accelerationTrialSeconds, isAccelerationBonusCode, type AccelerationApi, type AccelerationLine, type AccelerationMode, type AccelerationState } from '../../../electron/acceleration-contract'
+import { accelerationBonusSeconds, accelerationTrialSeconds, isAccelerationBonusCode, type AccelerationApi, type AccelerationLine, type AccelerationMode, type AccelerationPreference, type AccelerationPreferenceApi, type AccelerationState } from '../../../electron/acceleration-contract'
 
 const legacyTrialMilliseconds = 60 * 60 * 1000
 
@@ -30,9 +30,12 @@ function readUsedMilliseconds(storage: Storage | undefined, scope: string, initi
 }
 
 /** Isolated interactive demo. It never opens a socket or changes the system network. */
-export function createPreviewAccelerationApi({ remainingSeconds = accelerationTrialSeconds, storage }: { remainingSeconds?: number; storage?: Storage } = {}): AccelerationApi {
+export function createPreviewAccelerationApi({ remainingSeconds = accelerationTrialSeconds, storage }: { remainingSeconds?: number; storage?: Storage } = {}): AccelerationApi & AccelerationPreferenceApi {
   const lines: AccelerationLine[] = [{ id: 'preview-jp', name: '日本线路 1', region: 'JP', latencyMs: 188 }, { id: 'preview-sg', name: '新加坡线路 2', region: 'SG', latencyMs: 242 }, { id: 'preview-us', name: '美国线路 3', region: 'US', latencyMs: 356 }]
   const records = new Map<string, { remaining: number; used: number; bonus: number; startedAt: number | null; session: number; mode: AccelerationMode; lineId: string }>()
+  // 线路与模式的偏好只活在这一次预览里，刻意不进 localStorage：免费时长要跨刷新
+  // 才演得出来，而一条被记住的线路会让下一个用例从别人选过的状态开始。
+  const preferences = new Map<string, AccelerationPreference>()
   function record(scope: string) {
     let current = records.get(scope)
     if (!current) {
@@ -82,6 +85,13 @@ export function createPreviewAccelerationApi({ remainingSeconds = accelerationTr
       return state(scope)
     },
     async listAccelerationLines() { return lines.map(line => ({ ...line })) },
+    async getAccelerationPreference(scope) { return preferences.get(scope) ?? { lineId: null, mode: 'system-proxy' } },
+    async saveAccelerationPreference(scope, update) {
+      const base = preferences.get(scope) ?? { lineId: null, mode: 'system-proxy' as const }
+      const next = { lineId: update.lineId === undefined ? base.lineId : update.lineId, mode: update.mode ?? base.mode }
+      preferences.set(scope, next)
+      return next
+    },
     async pingAccelerationLine(_scope, lineId) {
       const line = lines.find(item => item.id === lineId)
       if (!line) throw new Error('加速线路不存在。')

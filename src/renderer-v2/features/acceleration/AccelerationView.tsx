@@ -27,6 +27,8 @@ interface AccelerationViewProps {
   onViewLog?(): void
   lines: import('../../../../electron/acceleration-contract').AccelerationLine[]
   selectedLineId: string | null
+  /** 这条选中的线路是上次用过的、这次自动恢复的，不是用户刚点的。 */
+  rememberedLine?: boolean
   linesBusy: boolean
   linesError: string | null
   onSelectLine(lineId: string | null): void
@@ -54,7 +56,7 @@ function describePhase(phase: AccelerationPhase | undefined, signedIn: boolean) 
   }
 }
 
-export function AccelerationView({ state, mode, busy, signedIn, error, preview, onModeChange, onStart, onStartAnyway, onStop, onRefresh, onLogin, onHelp, onViewLog, lines, selectedLineId, linesBusy, linesError, onSelectLine, onPingLine, onRefreshLines }: AccelerationViewProps) {
+export function AccelerationView({ state, mode, busy, signedIn, error, preview, onModeChange, onStart, onStartAnyway, onStop, onRefresh, onLogin, onHelp, onViewLog, lines, selectedLineId, rememberedLine, linesBusy, linesError, onSelectLine, onPingLine, onRefreshLines }: AccelerationViewProps) {
   const [visible, setVisible] = useState(() => typeof document === 'undefined' || !document.hidden)
   const [linePickerOpen, setLinePickerOpen] = useState(false)
   useEffect(() => {
@@ -105,7 +107,7 @@ export function AccelerationView({ state, mode, busy, signedIn, error, preview, 
           <div className="acceleration-route-name"><span>加速线路</span><strong data-testid="acceleration-line-current">{displayLine?.name ?? '智能分配'}{displayLine?.region && <small>{displayLine.region}</small>}</strong></div>
           <div className="acceleration-route-latency"><span>连接延迟</span><strong>{displayLine?.latencyMs == null ? '—' : <>{displayLine.latencyMs}<small> ms</small></>}</strong></div>
         </div>
-        {!active && signedIn && <div className="acceleration-line-picker"><Button variant="ghost" size="sm" icon={Route} disabled={lineLocked} onClick={() => setLinePickerOpen(value => !value)} aria-expanded={linePickerOpen} testId="acceleration-line-picker-toggle">{linePickerOpen ? '收起线路' : '选择加速线路'}</Button>{linePickerOpen && <div className="acceleration-line-list" role="listbox" aria-label="加速线路选择">
+        {!active && signedIn && <div className="acceleration-line-picker"><Button variant="ghost" size="sm" icon={Route} disabled={lineLocked} onClick={() => setLinePickerOpen(value => !value)} aria-expanded={linePickerOpen} testId="acceleration-line-picker-toggle">{linePickerOpen ? '收起线路' : '选择加速线路'}</Button>{rememberedLine && !linePickerOpen && <span className="acceleration-line-remembered" data-testid="acceleration-line-remembered">已选中你上次用的线路</span>}{linePickerOpen && <div className="acceleration-line-list" role="listbox" aria-label="加速线路选择">
           <div className="acceleration-line-list-head"><span>{linesBusy ? '正在检测线路…' : `${lines.length} 条可用线路`}</span><Button variant="ghost" size="xs" icon={RefreshCw} onClick={onRefreshLines} loading={linesBusy} aria-label="刷新线路列表" /></div>
           <div className={`acceleration-line-option acceleration-line-auto${selectedLineId === null ? ' is-selected' : ''}`} role="option" aria-selected={selectedLineId === null} data-testid="acceleration-line-auto">
             <button type="button" disabled={lineLocked} onClick={() => onSelectLine(null)}><strong>智能分配</strong><small>连接时自动测速，选择最快可用线路</small></button>

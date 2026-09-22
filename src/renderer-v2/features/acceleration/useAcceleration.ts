@@ -1,12 +1,12 @@
 import { useEffect, useLayoutEffect, useMemo, useSyncExternalStore } from 'react'
-import type { AccelerationApi } from './api'
+import type { AccelerationClient } from './api'
 import { createAccelerationController, type AccelerationSnapshot } from './controller'
 import { createAccelerationLinesController } from './lines-controller'
 
 const emptySnapshot: AccelerationSnapshot = { state: null, busy: false, error: null, mode: 'system-proxy' }
 
 /** Keep this hook in the app shell; leaving the page does not disconnect a session. */
-export function useAcceleration(api: AccelerationApi, scope: string | null, active = true) {
+export function useAcceleration(api: AccelerationClient, scope: string | null, active = true) {
   const controller = useMemo(() => createAccelerationController(api), [api])
   const linesController = useMemo(() => createAccelerationLinesController(api, () => {
     const current = controller.getSnapshot()
@@ -53,6 +53,7 @@ export function useAcceleration(api: AccelerationApi, scope: string | null, acti
     setMode: controller.setMode,
     lines: lineSnapshot.scope === scope ? lineSnapshot.lines : [],
     selectedLineId: lineSnapshot.scope === scope ? lineSnapshot.selectedLineId : null,
+    rememberedLine: lineSnapshot.scope === scope && lineSnapshot.remembered,
     linesBusy: lineSnapshot.scope === scope && lineSnapshot.busy,
     linesError: lineSnapshot.scope === scope ? lineSnapshot.error : null,
     setSelectedLineId: linesController.select, refreshLines: linesController.refresh, pingLine: linesController.ping,

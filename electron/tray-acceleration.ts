@@ -8,9 +8,10 @@
  * 三条硬约束：
  * - **不新增第二条连接逻辑**。连接与断开走的就是加速页按钮那条路
  *   （acceleration-service 的 startAcceleration / stopAcceleration），会话、
- *   免费时长计时、加速页上的状态一并照旧；线路用「智能分配」、模式用标准模式，
- *   与打开 Codex 桌面端时自动连接（codex-desktop-acceleration.ts）同一口径——
- *   线路与 TUN 选择是加速页上的当次选择，没有落盘，托盘读不到也不该替用户猜。
+ *   免费时长计时、加速页上的状态一并照旧；线路与模式用的是用户在加速页上选过
+ *   并落了盘的那一套（acceleration-preference-store.ts），与打开 Codex 桌面端时
+ *   自动连接（codex-desktop-acceleration.ts）同一口径——没选过才是「智能分配 +
+ *   标准模式」，托盘自己不替用户猜，解析交给宿主注入的 connect。
  * - **不新增轮询**。状态只有两个来源：服务每产出一个状态就通知过来
  *   （createAccelerationService 的 onState），以及用户打开托盘菜单时读一次。
  *   主窗口缩起来之后渲染层那边的 15 秒轮询是停的，所以剩余时长按读到的时刻
@@ -146,7 +147,8 @@ export function buildTrayAccelerationEntry(input: TrayAccelerationInput): TrayAc
 export interface TrayAccelerationCoordinatorOptions {
   getAccountScope(): string | null
   readState(scope: string): Promise<AccelerationState>
-  connect(scope: string): Promise<AccelerationState>
+  /** 第二个参数是托盘手上这一份状态：宿主据此判断记住的模式当前支不支持。 */
+  connect(scope: string, state: AccelerationState | null): Promise<AccelerationState>
   disconnect(scope: string): Promise<AccelerationState>
   /** 有任何变化就重建一次菜单，托盘那边照抄余额的做法。 */
   onChanged(): void
@@ -239,7 +241,7 @@ export function createTrayAccelerationCoordinator(options: TrayAccelerationCoord
       reading = null
       changed()
       try {
-        const next = action.action === 'start' ? await options.connect(scope) : await options.disconnect(scope)
+        const next = action.action === 'start' ? await options.connect(scope, state) : await options.disconnect(scope)
         if (next.scope === scope && options.getAccountScope() === scope) { state = next; measuredAt = now() }
         log('info', action.action === 'start' ? 'acceleration.tray.connected' : 'acceleration.tray.disconnected',
           action.action === 'start' ? '从托盘连接加速' : '从托盘断开加速', { phase: next.phase })
