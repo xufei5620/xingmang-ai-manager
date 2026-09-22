@@ -362,6 +362,7 @@ describe('native CLI configuration files', () => {
           env: {
             ANTHROPIC_AUTH_TOKEN: 'sk-user-key',
             ANTHROPIC_BASE_URL: 'https://xm.solov.cc',
+            DISABLE_AUTOUPDATER: '1',
           },
           permissions: { defaultMode: 'bypassPermissions', deny: ['Artifact'] },
           model,
@@ -371,6 +372,7 @@ describe('native CLI configuration files', () => {
       }
       if (provider === 'gemini') {
         expect(JSON.parse(fs.readFileSync(paths[0], 'utf8'))).toEqual({
+          general: { enableAutoUpdate: false, enableAutoUpdateNotification: false },
           ide: { enabled: true },
           security: { auth: { selectedType: 'gemini-api-key' } },
         })
@@ -383,6 +385,7 @@ describe('native CLI configuration files', () => {
       }
       if (provider === 'grok') {
         const settings = TOML.parse(fs.readFileSync(paths[0], 'utf8'))
+        expect(settings.cli).toEqual({ auto_update: false })
         expect(settings.models).toEqual({ default: 'grok', web_search: 'grok' })
         expect(asRecord(settings.model)?.grok).toMatchObject({
           model,
@@ -450,6 +453,7 @@ describe('native CLI configuration files', () => {
     const merged = JSON.parse(fs.readFileSync(settingsPath, 'utf8'))
     expect(merged.env.ANTHROPIC_AUTH_TOKEN).toBe('new-key')
     expect(merged.env.ANTHROPIC_BASE_URL).toBe('https://xm.solov.cc')
+    expect(merged.env.DISABLE_AUTOUPDATER).toBe('1')
     expect(merged.model).toBe('claude-sonnet-4-6')
     expect(merged.env.CUSTOM_TOKEN).toBe('preserved')
     expect(merged.customSetting).toEqual({ enabled: true })
@@ -483,6 +487,86 @@ describe('native CLI configuration files', () => {
     const [settingsPath] = providerConfigPaths('claude', roots)
     const merged = JSON.parse(fs.readFileSync(settingsPath, 'utf8')) as Record<string, unknown>
     expect(asRecord(merged.permissions)?.deny).toEqual(['Artifact'])
+  })
+
+  it('turns off the Claude self-updater when merging over settings the user already wrote', () => {
+    const home = temporaryHome()
+    const [settingsPath] = providerConfigPaths('claude', providerRoots(home))
+    fs.mkdirSync(path.dirname(settingsPath), { recursive: true })
+    fs.writeFileSync(settingsPath, `${JSON.stringify({
+      env: { CUSTOM_TOKEN: 'preserved', DISABLE_AUTOUPDATER: '0' },
+    }, null, 2)}\n`, 'utf8')
+
+    saveProviderConfig('claude', 'new-key', testModels.claude, 'merge', providerRoots(home), {}, providerBaseUrls)
+
+    const merged = JSON.parse(fs.readFileSync(settingsPath, 'utf8')) as Record<string, unknown>
+    expect(asRecord(merged.env)?.DISABLE_AUTOUPDATER).toBe('1')
+    expect(asRecord(merged.env)?.CUSTOM_TOKEN).toBe('preserved')
+  })
+
+  it('keeps the Claude self-updater off after switching back to the official account', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    saveProviderConfig('claude', 'sk-relay', testModels.claude, 'reset', roots, {}, providerBaseUrls)
+
+    switchProviderToOfficialAccount('claude', roots, {}, providerBaseUrls)
+
+    const [settingsPath] = providerConfigPaths('claude', roots)
+    const after = JSON.parse(fs.readFileSync(settingsPath, 'utf8')) as Record<string, unknown>
+    const env = asRecord(after.env)
+    expect(env?.DISABLE_AUTOUPDATER).toBe('1')
+    expect(env?.ANTHROPIC_AUTH_TOKEN).toBeUndefined()
+    expect(env?.ANTHROPIC_BASE_URL).toBeUndefined()
+  })
+
+  it('turns off both Gemini update switches when merging without touching other general settings', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const [settingsPath] = providerConfigPaths('gemini', roots)
+    fs.mkdirSync(path.dirname(settingsPath), { recursive: true })
+    fs.writeFileSync(settingsPath, `${JSON.stringify({
+      general: { vimMode: true, enableAutoUpdate: true, enableAutoUpdateNotification: true },
+    }, null, 2)}\n`, 'utf8')
+
+    saveProviderConfig('gemini', 'new-key', testModels.gemini, 'merge', roots, {}, providerBaseUrls)
+
+    const general = asRecord(JSON.parse(fs.readFileSync(settingsPath, 'utf8')).general)
+    expect(general).toEqual({
+      vimMode: true,
+      enableAutoUpdate: false,
+      enableAutoUpdateNotification: false,
+    })
+  })
+
+  it('turns off the Codex startup update check when merging over an existing config', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const configPath = codexConfigSnapshotPaths(roots).active
+    fs.mkdirSync(path.dirname(configPath), { recursive: true })
+    fs.writeFileSync(configPath, '[custom_official]\nenabled = true\n', 'utf8')
+
+    saveProviderConfig('codex', 'sk-relay', testModels.codex, 'merge', roots, {}, providerBaseUrls)
+
+    const merged = TOML.parse(fs.readFileSync(configPath, 'utf8'))
+    expect(merged.check_for_update_on_startup).toBe(false)
+    expect(merged.custom_official).toEqual({ enabled: true })
+  })
+
+  it('turns off the Grok launch update check when merging over an existing config', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    saveProviderConfig('grok', 'old-key', testModels.grok, 'reset', roots, {}, providerBaseUrls)
+    const [configPath] = providerConfigPaths('grok', roots)
+    const seeded = TOML.parse(fs.readFileSync(configPath, 'utf8'))
+    seeded.cli = { auto_update: true, show_tips: true }
+    fs.writeFileSync(configPath, TOML.stringify(seeded as Parameters<typeof TOML.stringify>[0]), 'utf8')
+
+    saveProviderConfig('grok', 'new-key', testModels.grok, 'merge', roots, {}, providerBaseUrls)
+
+    expect(TOML.parse(fs.readFileSync(configPath, 'utf8')).cli).toEqual({
+      auto_update: false,
+      show_tips: true,
+    })
   })
 
   it('restores Gemini API-key auth mode when merging over an OAuth config', () => {
@@ -1150,7 +1234,11 @@ describe('switching a provider back to the official subscription account', () =>
     const result = switchProviderToOfficialAccount('codex', roots, {}, providerBaseUrls, 'reset')
 
     const initial = TOML.parse(fs.readFileSync(configs.active, 'utf8'))
-    expect(initial).toEqual({ approval_policy: 'on-request', sandbox_mode: 'workspace-write' })
+    expect(initial).toEqual({
+      approval_policy: 'on-request',
+      sandbox_mode: 'workspace-write',
+      check_for_update_on_startup: false,
+    })
     expect(TOML.parse(fs.readFileSync(configs.chatgpt, 'utf8'))).toEqual(initial)
     expect(fs.readFileSync(configs.relay, 'utf8')).toBe(relayBefore)
     expect(JSON.parse(fs.readFileSync(auth.active, 'utf8'))).toEqual(login)
@@ -1219,8 +1307,13 @@ describe('switching a provider back to the official subscription account', () =>
 
     const result = switchProviderToOfficialAccount(provider, roots, {}, providerBaseUrls, 'reset')
 
+    // 切回官方账号只收回中转的那几项，关自动更新留着：CLI 仍由本软件装和更新。
     expect(JSON.parse(fs.readFileSync(paths[0], 'utf8'))).toEqual(provider === 'claude'
-      ? {} : { security: { auth: { selectedType: 'oauth-personal' } } })
+      ? { env: { DISABLE_AUTOUPDATER: '1' } }
+      : {
+        general: { enableAutoUpdate: false, enableAutoUpdateNotification: false },
+        security: { auth: { selectedType: 'oauth-personal' } },
+      })
     if (provider === 'gemini') expect(fs.readFileSync(paths[1], 'utf8')).toBe('')
     expect(fs.readFileSync(credentialPath, 'utf8')).toBe('{"oauth":"keep"}\n')
     expect(fs.readFileSync(historyPath, 'utf8')).toBe('existing history\n')

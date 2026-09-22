@@ -65,6 +65,56 @@ Codex 那时 `recommended` 是 `null`，也就是那两天点过「更新」的�
 把 `ANTHROPIC_BASE_URL` 指过去、`ANTHROPIC_AUTH_TOKEN` 随便填，跑 `claude -p "hi"`，
 看请求体的 `tools[].name`。**不要对生产中转发这类探测请求。**
 
+## CLI 自己的更新机制：不关掉，名单等于白钉
+
+名单只决定**本软件装哪一版**。四个 CLI 装完之后各自还带着一套更新机制，全都绕开名单：
+
+| CLI | 开关 | 写在哪 | 默认 |
+|---|---|---|---|
+| Claude Code | `DISABLE_AUTOUPDATER=1` | `~/.claude/settings.json` 的 `env` 段 | 后台自更新开着 |
+| Gemini CLI | `general.enableAutoUpdate` / `general.enableAutoUpdateNotification` | `~/.gemini/settings.json` | 两个都是 `true` |
+| Codex | `check_for_update_on_startup = false` | `~/.codex/config.toml` 顶层 | `true`（只催更，不自更新） |
+| Grok | `[cli] auto_update = false` | `~/.grok/config.toml` | `true`（等价环境变量 `GROK_DISABLE_AUTOUPDATER`） |
+
+不关的后果很具体：客户今天装到名单推荐的版本，明天 Gemini CLI 启动时自己 `npm install -g
+@google/gemini-cli@latest`，就跑在了我们没验过的版本上；Claude Code 在托管目录可写时同样会
+自己升上去，不可写时（Windows 的 `%ProgramData%` 就是这种）则每次启动弹一条英文提示，客户
+照着做等于在自己的 npm 目录里装第二份；Codex 与 Grok 不自更新，但启动时给出 `npm install -g
+…@latest`，照做的结果一样。
+
+所以 `electron/config-files.ts` 写配置时一并把这四个开关关掉，`reset` 与 `merge` 两条路都写，
+`merge` 只增改这几个键、用户已有的其他设置原样保留。**切回官方账号时不收回**：CLI 仍然是本
+软件装的、也由本软件更新，账号来源换了这一点没变。更新提醒仍走首页的新版本角标与一键更新
+（A5），那条路径走 npm 官方源并对 SHA-512，CLI 自己的 `npm install -g` 没有这一层。
+
+**验证依据**（沙箱，2026-09-22，空 HOME，装的都是名单里的推荐版本）：
+
+- **Claude Code 2.1.277 — 跑起来看到了**。`~/.claude/settings.json` 写
+  `{"env":{"DISABLE_AUTOUPDATER":"1"}}`，`env -i` 清空真实环境变量后跑 `claude doctor`：
+  `Auto-updates: disabled (set by env: DISABLE_AUTOUPDATER)`。同一台机器上不写这个键时是
+  `Auto-updates: enabled` 外加一行 `- Can't auto-update: npm global folder isn't writable`。
+  二进制里那段判定先看 `DISABLE_UPDATES`、再看 `DISABLE_AUTOUPDATER`，与安装方式无关，所以
+  对官方原生安装器装的那一份同样生效（这一条是读二进制得出的，没有真机演过）。
+  刻意**不用** `DISABLE_UPDATES`：那个连手动 `claude update` 也一起禁掉。
+- **Codex 0.155.1 — 跑起来看到了**。`~/.codex/config.toml` 写
+  `check_for_update_on_startup = false` 后跑 `codex doctor`，Updates 一节的
+  `startup update check` 从 `true` 变成 `false`。这个键是 `ConfigToml` 的顶层字段。
+- **Gemini CLI 0.60.0 — 只到「配置被接受」这一步**。键名与默认值出自它自己打包进来的
+  `docs/cli/settings.md`（`general.enableAutoUpdate`，默认 `true`）与 bundle 里的 settings
+  schema（`enableAutoUpdateNotification`，默认 `true`）；bundle 里的更新处理函数先判
+  `enableAutoUpdateNotification`（假则直接 return，一条提示都不出），再判 `enableAutoUpdate`
+  （假则只发提示、不去 spawn 更新命令）。写上这两个键跑 `gemini -p` 能正常启动、无配置告警。
+  **但沙箱里没能让它真的弹出那条催更提示**（版本检查本身没出结果），所以「关掉之后提示消失」
+  这一句是读代码得出的，没有演过。
+- **Grok 1.0.40 — 只到「配置被接受」这一步**。键名出自二进制里内嵌的配置表：
+  `| cli.auto_update | boolean | pin | user | Check for CLI updates on launch. Also
+  GROK_DISABLE_AUTOUPDATER to suppress. |`。写上 `[cli] auto_update = false` 后
+  `grok inspect` 正常读出配置、不报解析错误，但它不打印更新相关的状态，所以同样没有前后对比。
+
+复核办法：`npm install --no-save --prefix <临时目录> <包名>@<名单版本>`，用一次性 HOME 起
+`claude doctor` / `codex doctor` 看对应那一行。**不要对生产中转发这类探测请求**，上面几条都
+不需要联网到中转。
+
 ## 站点维度
 
 `VerifiedCliRelease.verifiedSites` 与 `BlockedCliVersionRange.sites` 记录条目对应哪些中转站点（`relay-sites.ts` 的 `RelaySite.id`）。
