@@ -904,10 +904,13 @@ export function ExtensionsPage({
   const [view, setView] = useState('installed')
   const load = useCallback(
     async () => {
-      // 平台能力决定缺 Python 时那颗按钮给不给：只有 Windows 由本应用代装。
+      // 平台能力只决定缺 Python 时那颗按钮给不给，读不出来不该让整页空着：
+      // 失败就当成「本应用不代装」，提示照出，只是不给按钮。
       const [snapshot, platform] = await Promise.all([
         api.listProviderExtensions(provider),
-        kind === 'mcp' ? api.getPlatformCapabilities() : Promise.resolve(null),
+        kind === 'mcp'
+          ? api.getPlatformCapabilities().catch(() => null)
+          : Promise.resolve(null),
       ])
       if (provider !== 'codex') return { snapshot, platform, codex: null }
 
