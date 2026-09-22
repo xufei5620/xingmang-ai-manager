@@ -61,6 +61,12 @@ const failurePatterns: readonly { reason: NetworkFailureReason; test: RegExp }[]
   { reason: 'tls', test: /ERR_CERT|ERR_SSL|ERR_BAD_SSL|ERR_TLS|CERT_HAS_EXPIRED|SELF_SIGNED_CERT|UNABLE_TO_VERIFY_LEAF_SIGNATURE|UNABLE_TO_GET_ISSUER_CERT|CERT_UNTRUSTED|HOSTNAME_MISMATCH|ERR_QUIC_HANDSHAKE_FAILED|self[- ]signed certificate|unable to verify the first certificate|unable to get local issuer certificate|certificate has expired/i },
   { reason: 'proxy', test: /ERR_PROXY|ERR_TUNNEL_CONNECTION_FAILED|ERR_MANDATORY_PROXY_CONFIGURATION_FAILED|ERR_UNEXPECTED_PROXY_AUTH/i },
   { reason: 'dns', test: /ERR_NAME_NOT_RESOLVED|ERR_NAME_RESOLUTION_FAILED|ERR_DNS|ENOTFOUND|EAI_AGAIN/i },
+  // A captive portal answers with a redirect to its own login page. Callers
+  // that ask for `redirect: 'error'` never see the 3xx itself -- undici turns
+  // it into `TypeError: fetch failed` whose cause reads `unexpected redirect`,
+  // and Chromium spells the same refusal `ERR_UNSAFE_REDIRECT`. Without this
+  // row that is the one restricted-network failure with no answer at all.
+  { reason: 'intercepted', test: /unexpected redirect|ERR_UNSAFE_REDIRECT|ERR_TOO_MANY_REDIRECTS|redirect count exceeded/i },
   { reason: 'offline', test: /ERR_INTERNET_DISCONNECTED|ERR_NETWORK_CHANGED|ENETDOWN|ENETUNREACH|EHOSTUNREACH/i },
   { reason: 'refused', test: /ERR_CONNECTION_REFUSED|ERR_CONNECTION_RESET|ERR_CONNECTION_ABORTED|ERR_CONNECTION_CLOSED|ERR_CONNECTION_FAILED|ERR_EMPTY_RESPONSE|ERR_ADDRESS_UNREACHABLE|ERR_SOCKET_NOT_CONNECTED|ECONNREFUSED|ECONNRESET|ECONNABORTED|EPIPE|socket hang up/i },
 ]

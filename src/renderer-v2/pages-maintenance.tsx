@@ -141,6 +141,7 @@ function isProvider(id: string): id is Provider {
 export function diagnosticTarget(code: string): V2Page {
   if (
     code.includes('PROXY') ||
+    code.includes('ENVIRONMENT') ||
     code === 'XINGMANG_NETWORK' ||
     code === 'CLASH_VERGE_TUN'
   )

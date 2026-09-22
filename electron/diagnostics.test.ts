@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ProviderId } from './catalog'
 import type { ProviderConfigRoots } from './codex-home'
 import type { NativeConfigInspection } from './config-files'
+import { networkFailureMessages, type NetworkFailureReason } from './network-failure'
 import {
   createDiagnosticsExport,
   parseClashTunConfig,
@@ -181,10 +182,183 @@ describe('diagnostics', () => {
       method: 'HEAD',
       redirect: 'error',
     }))
-    expect(report.items.find((item) => item.code === 'XINGMANG_NETWORK')).toMatchObject({
-      state: 'error',
-      summary: '检查时发生错误',
-      details: { reason: '星芒 AI 返回 HTTP 503' },
+    const network = report.items.find((item) => item.code === 'XINGMANG_NETWORK')
+    expect(network).toMatchObject({ state: 'fail', details: { status: 503 } })
+    expect(network?.summary).toContain('HTTP 503')
+    // 网络本身通了，所以这一条不该建议用户换网络。
+    expect(network?.summary).not.toContain('换一个网络')
+  })
+
+  describe('XINGMANG_NETWORK failure reasons', () => {
+    const cases: readonly { label: string; error: unknown; reason: NetworkFailureReason }[] = [
+      {
+        label: 'a name that does not resolve',
+        error: new TypeError('fetch failed', { cause: Object.assign(new Error('getaddrinfo ENOTFOUND xm.solov.cc'), { code: 'ENOTFOUND' }) }),
+        reason: 'dns',
+      },
+      {
+        label: 'a connection the network cut',
+        error: new TypeError('fetch failed', { cause: Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' }) }),
+        reason: 'refused',
+      },
+      {
+        label: 'a request that never answered',
+        error: new TypeError('fetch failed', { cause: Object.assign(new Error('timeout'), { code: 'ETIMEDOUT' }) }),
+        reason: 'timeout',
+      },
+      {
+        label: 'a certificate the gateway replaced',
+        error: new Error('net::ERR_CERT_AUTHORITY_INVALID'),
+        reason: 'tls',
+      },
+      {
+        label: 'a captive portal redirect refused by redirect:error',
+        error: new TypeError('fetch failed', { cause: new Error('unexpected redirect') }),
+        reason: 'intercepted',
+      },
+    ]
+
+    it.each(cases)('reports $label in Chinese and keeps the upstream text out of the report', async ({ error, reason }) => {
+      const home = temporaryHome()
+      const input = dependencies(home)
+      const log = vi.fn()
+      input.fetch = vi.fn(async () => { throw error })
+      input.log = log
+
+      const report = await runDiagnostics(input)
+
+      const network = report.items.find((item) => item.code === 'XINGMANG_NETWORK')
+      expect(network).toMatchObject({
+        state: 'fail',
+        summary: networkFailureMessages[reason],
+        details: { endpoint: 'https://xm.solov.cc/', reason },
+      })
+      // 英文原文只进 runtime.jsonl，不进上屏（也会被导出）的报告。
+      expect(JSON.stringify(network)).not.toMatch(/fetch failed|ENOTFOUND|ECONNREFUSED|ETIMEDOUT|ERR_CERT|unexpected redirect/)
+      expect(log).toHaveBeenCalledWith(
+        'warn',
+        'diagnostics.network.failed',
+        expect.stringContaining(reason),
+        expect.objectContaining({ reason, raw: expect.any(String) }),
+      )
+      expect(log.mock.calls[0][3].raw).not.toBe('')
+    })
+
+    it('treats an HTML answer to a HEAD probe as a login portal', async () => {
+      const home = temporaryHome()
+      const input = dependencies(home)
+      input.fetch = vi.fn(async () => new Response(null, {
+        status: 200,
+        headers: { 'content-type': 'text/html; charset=utf-8' },
+      }))
+
+      const report = await runDiagnostics(input)
+
+      expect(report.items.find((item) => item.code === 'XINGMANG_NETWORK')).toMatchObject({
+        state: 'fail',
+        summary: networkFailureMessages.intercepted,
+        details: { reason: 'intercepted', status: 200 },
+      })
+    })
+
+    it('still falls back to the generic error for a failure that is not about the network', async () => {
+      const home = temporaryHome()
+      const input = dependencies(home)
+      const log = vi.fn()
+      input.fetch = vi.fn(async () => { throw new Error('当前运行时不支持 fetch') })
+      input.log = log
+
+      const report = await runDiagnostics(input)
+
+      expect(report.items.find((item) => item.code === 'XINGMANG_NETWORK')).toMatchObject({
+        state: 'error',
+        summary: '检查时发生错误',
+      })
+      expect(log).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('PROVIDER_ENVIRONMENT_OVERRIDE', () => {
+    function overrideItem(report: Awaited<ReturnType<typeof runDiagnostics>>) {
+      return report.items.find((item) => item.code === 'PROVIDER_ENVIRONMENT_OVERRIDE')
+    }
+
+    it('passes when nothing in the environment can override the account configuration', async () => {
+      const home = temporaryHome()
+
+      const report = await runDiagnostics(dependencies(home))
+
+      expect(overrideItem(report)).toMatchObject({
+        state: 'pass',
+        summary: '没有会盖过当前账号配置的环境变量',
+        details: { count: 0 },
+      })
+    })
+
+    it('names the variables it found without ever reading their values', async () => {
+      const home = temporaryHome()
+      const input = dependencies(home)
+      input.env = {
+        ANTHROPIC_BASE_URL: 'https://gateway.example.com',
+        ANTHROPIC_AUTH_TOKEN: 'sk-must-not-leak-token',
+        anthropic_api_key: 'sk-must-not-leak-key',
+        GEMINI_MODEL: 'gemini-must-not-leak',
+      }
+
+      const report = await runDiagnostics(input)
+      const item = overrideItem(report)
+
+      expect(item?.state).toBe('warn')
+      expect(item?.summary).toContain('ANTHROPIC_BASE_URL')
+      expect(item?.summary).toContain('ANTHROPIC_AUTH_TOKEN')
+      expect(item?.summary).toContain('等 4 项')
+      expect(item?.details).toMatchObject({
+        count: 4,
+        variable1: 'ANTHROPIC_BASE_URL（Claude Code）',
+        variable2: 'ANTHROPIC_AUTH_TOKEN（Claude Code）',
+        // 大小写不敏感：Windows 上 `anthropic_api_key` 与大写是同一个变量。
+        variable3: 'ANTHROPIC_API_KEY（Claude Code）',
+        variable4: 'GEMINI_MODEL（Gemini CLI）',
+      })
+      expect(JSON.stringify(item)).not.toMatch(/must-not-leak|gateway\.example\.com/)
+    })
+
+    it('does not scold a base URL that already points at the current account', async () => {
+      const home = temporaryHome()
+      const input = dependencies(home)
+      input.env = { ANTHROPIC_BASE_URL: 'https://xm.solov.cc/', OPENAI_BASE_URL: 'https://xm.solov.cc/v1' }
+
+      const report = await runDiagnostics(input)
+
+      expect(overrideItem(report)).toMatchObject({
+        state: 'pass',
+        summary: '检测到的环境变量都指向当前账号，不会盖过写入的配置',
+        details: {
+          count: 2,
+          variable1: 'ANTHROPIC_BASE_URL（Claude Code，已指向当前账号）',
+          variable2: 'OPENAI_BASE_URL（Codex CLI，已指向当前账号）',
+        },
+      })
+    })
+
+    it('ignores the CODEX_HOME this app injects itself and reports one pointed elsewhere', async () => {
+      const home = temporaryHome()
+      const managed = dependencies(home)
+      managed.env = { CODEX_HOME: path.join(home, '.codex') }
+
+      expect(overrideItem(await runDiagnostics(managed))).toMatchObject({
+        state: 'pass',
+        details: { count: 0 },
+      })
+
+      const redirected = dependencies(home)
+      redirected.env = { CODEX_HOME: path.join(home, 'elsewhere') }
+      redirected.providerRoots = { userHome: home, codexHome: path.join(home, 'elsewhere') }
+
+      expect(overrideItem(await runDiagnostics(redirected))).toMatchObject({
+        state: 'warn',
+        details: { count: 1, variable1: 'CODEX_HOME（Codex CLI）' },
+      })
     })
   })
 

@@ -812,6 +812,9 @@ if (!hasSingleInstanceLock) {
             packaged: app.isPackaged,
           },
           inspectCodexDesktop: async () => systemService.inspectCodexDesktop(),
+          // 报告只装中文结论（它会被导出发给客服），认出失败靠的那段上游原文
+          // 留在 runtime.jsonl 里。
+          log: (level, event, message, detail) => runtimeLog.log(level, 'diagnostics', event, message, detail),
           // Read fresh on every run rather than captured once at startup, so
           // a settings change is reflected on the very next diagnostics run.
           relaySite: resolveRelaySite(systemService.readStoredConfig().relaySiteId),

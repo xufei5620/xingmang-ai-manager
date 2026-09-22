@@ -3,7 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { parseDocument } from 'yaml'
 import { readBoundedUtf8FileSync } from './bounded-file'
-import { cliCatalog, providerIds, type ProviderId } from './catalog'
+import { cliCatalog, providerConfigDirectoryNames, providerIds, type ProviderId } from './catalog'
 import {
   commandEnvironment,
   findExecutable,
@@ -14,6 +14,7 @@ import {
 import { defaultProviderConfigRoots, type ProviderConfigRoots } from './codex-home'
 import { inspectProviderConfig, type NativeConfigInspection } from './config-files'
 import { gitMissingNotice } from './git-runtime'
+import { classifyNetworkFailure, networkFailureMessages } from './network-failure'
 import { relayApiProbeBaseUrl, resolveRelaySite, type RelaySite } from './relay-sites'
 import { resolveCliCommand, resolveCliInstallation } from './tool-installation'
 import { resolveWindowsPowerShellExecutable } from './windows-elevation'
@@ -75,6 +76,17 @@ export interface DiagnosticsDependencies {
   fetch?: typeof globalThis.fetch
   clashConfigPaths?: readonly string[]
   inspectProxyVariables?: (signal: AbortSignal) => Promise<ProxyVariableSummary[]>
+  /**
+   * 诊断报告是要上屏、也要能导出给客服的，所以它只装中文结论。认出一个失败靠的
+   * 那段上游原文（`net::ERR_CERT_AUTHORITY_INVALID` 这类）留在 runtime.jsonl 里：
+   * 用户看结论，排查的人看原文，两边都不用迁就对方。缺省不记。
+   */
+  log?: (
+    level: 'info' | 'warn' | 'error',
+    event: string,
+    message: string,
+    detail?: Record<string, unknown>,
+  ) => void
 }
 
 export interface DiagnosticRedactionOptions {
@@ -546,6 +558,137 @@ async function defaultProxyVariables(env: NodeJS.ProcessEnv): Promise<ProxyVaria
   return result
 }
 
+type EnvironmentOverrideKind = 'baseUrl' | 'secret' | 'directory' | 'model' | 'other'
+
+interface EnvironmentOverrideVariable {
+  name: string
+  provider: ProviderId
+  kind: EnvironmentOverrideKind
+}
+
+interface EnvironmentOverrideMatch {
+  name: string
+  provider: ProviderId
+  /** false = 用户确实设了它，但它指的就是当前账号，不会把请求带去别处。 */
+  overriding: boolean
+}
+
+/**
+ * 用户自己开终端跑 CLI 时，进程环境里这几个变量的优先级高于配置文件，所以
+ * 「配置文件写对了」并不等于「跑起来用的就是当前账号」。这是「我明明配好了却
+ * 还是走旧地址」最常见的来源，而检查页此前对此一无所知——四个 PROVIDER_* 项只
+ * 看文件。
+ *
+ * 只读、只提醒：代删别人设的变量等于改用户的机器，而且本进程也删不掉别的 shell
+ * 的环境。Grok 的同类变量没有在本仓实测过（`GROK_DISABLE_AUTOUPDATER` 是唯一
+ * 核实过的一个，与中转地址无关），按 T12 的口径宁缺勿猜，等实测再补。
+ */
+const ENVIRONMENT_OVERRIDE_VARIABLES: readonly EnvironmentOverrideVariable[] = [
+  { name: 'ANTHROPIC_BASE_URL', provider: 'claude', kind: 'baseUrl' },
+  { name: 'ANTHROPIC_AUTH_TOKEN', provider: 'claude', kind: 'secret' },
+  { name: 'ANTHROPIC_API_KEY', provider: 'claude', kind: 'secret' },
+  { name: 'CLAUDE_CONFIG_DIR', provider: 'claude', kind: 'directory' },
+  { name: 'OPENAI_BASE_URL', provider: 'codex', kind: 'baseUrl' },
+  { name: 'OPENAI_API_KEY', provider: 'codex', kind: 'secret' },
+  { name: 'CODEX_HOME', provider: 'codex', kind: 'directory' },
+  { name: 'GOOGLE_GEMINI_BASE_URL', provider: 'gemini', kind: 'baseUrl' },
+  { name: 'GEMINI_API_KEY', provider: 'gemini', kind: 'secret' },
+  { name: 'GOOGLE_GEMINI_API_KEY', provider: 'gemini', kind: 'secret' },
+  { name: 'GEMINI_MODEL', provider: 'gemini', kind: 'model' },
+  { name: 'GOOGLE_GENAI_API_VERSION', provider: 'gemini', kind: 'other' },
+]
+
+/** 与 defaultProxyVariables 同法：Windows 的环境变量名大小写不敏感。 */
+function environmentValueFor(env: NodeJS.ProcessEnv, name: string): string {
+  const match = Object.entries(env).find(([candidate]) => candidate.toUpperCase() === name)
+  return typeof match?.[1] === 'string' ? match[1].trim() : ''
+}
+
+function sameHostAs(value: string, expected: string): boolean {
+  try {
+    const left = new URL(value)
+    const right = new URL(expected)
+    return left.protocol === right.protocol && left.host.toLowerCase() === right.host.toLowerCase()
+  } catch {
+    return false
+  }
+}
+
+function collectEnvironmentOverrides(
+  env: NodeJS.ProcessEnv,
+  providerBaseUrls: RelaySite['providerBaseUrls'],
+  userHome: string,
+): EnvironmentOverrideMatch[] {
+  const matches: EnvironmentOverrideMatch[] = []
+  for (const variable of ENVIRONMENT_OVERRIDE_VARIABLES) {
+    const value = environmentValueFor(env, variable.name)
+    if (!value) continue
+    // CODEX_HOME 是本程序自己解析出来再注入进 codexEnv 的（codex-home.ts），所以
+    // 诊断拿到的 env 里它永远有值。指到默认位置就是本程序自己写的那份，报它等于
+    // 每次检查都给一条假警报；只有指到别处才是用户真的改过。
+    if (variable.kind === 'directory') {
+      const fallback = path.join(userHome, providerConfigDirectoryNames[variable.provider])
+      if (normalizedPathKey(value) === normalizedPathKey(fallback)) continue
+    }
+    matches.push({
+      name: variable.name,
+      provider: variable.provider,
+      // 指向当前站点的 BASE_URL 不会把请求带去别处，报它只会教用户删一个本来
+      // 没问题的变量。Key 和模型不在此列：它们盖掉的是账号和分组本身。
+      overriding: !(variable.kind === 'baseUrl' && sameHostAs(value, providerBaseUrls[variable.provider])),
+    })
+  }
+  return matches
+}
+
+function environmentOverrideOutcome(matches: readonly EnvironmentOverrideMatch[]): CheckOutcome {
+  const details: Record<string, boolean | number | string | null> = { count: matches.length }
+  matches.forEach((match, index) => {
+    // 只有变量名进报告。ANTHROPIC_AUTH_TOKEN 的值本身就是一把 Key，而诊断导出是
+    // 要发到客服群里的（I3、I13）——所以这里永远不读也不写它的值。
+    const note = match.overriding ? '' : '，已指向当前账号'
+    details[`variable${index + 1}`] = `${match.name}（${cliCatalog[match.provider].name}${note}）`
+  })
+  const overriding = matches.filter((match) => match.overriding)
+  if (!overriding.length) {
+    return {
+      state: 'pass',
+      summary: matches.length
+        ? '检测到的环境变量都指向当前账号，不会盖过写入的配置'
+        : '没有会盖过当前账号配置的环境变量',
+      details,
+    }
+  }
+  const listed = overriding.slice(0, 3).map((match) => match.name).join('、')
+  const rest = overriding.length > 3 ? `等 ${overriding.length} 项` : ''
+  return {
+    // 用「需留意」不是「待处理」：变量可能是用户自己有意设的，而本程序既不该也
+    // 不能替他删。文案用「可能」——进程环境与 Claude settings.env 的优先级本仓
+    // 没实测过，不做断言（T12）。
+    state: 'warn',
+    summary: `系统环境变量里设置了 ${listed}${rest}，可能会盖过当前账号写入的配置`,
+    details,
+  }
+}
+
+/** 日志里要看得见真正的原因，而 fetch 把它塞在 cause 里，外层只剩 fetch failed。 */
+function errorChainText(error: unknown): string {
+  const parts: string[] = []
+  let current: unknown = error
+  for (let depth = 0; depth < 4 && current !== null && current !== undefined; depth += 1) {
+    if (typeof current !== 'object') {
+      parts.push(String(current))
+      break
+    }
+    const record = current as { name?: unknown; message?: unknown; code?: unknown; cause?: unknown }
+    parts.push([record.name, record.message, record.code]
+      .filter((entry): entry is string => typeof entry === 'string' && entry.length > 0)
+      .join(': '))
+    current = record.cause
+  }
+  return parts.filter(Boolean).join(' <- ').slice(0, 500)
+}
+
 function providerOutcome(provider: ProviderId, inspection: NativeConfigInspection, roots: ProviderConfigRoots): CheckOutcome {
   const details: Record<string, boolean | number | string | null> = {
     exists: inspection.exists,
@@ -682,6 +825,7 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
   const fetchImpl = dependencies.fetch ?? globalThis.fetch
   const paths = dependencies.clashConfigPaths ?? clashCandidates(userHome, env)
   const inspectProxy = dependencies.inspectProxyVariables ?? ((signal) => defaultProxyVariables(env))
+  const log = dependencies.log
   const supportedPlatform = platform === 'win32' || platform === 'darwin'
 
   const checks: CheckDefinition[] = [
@@ -811,18 +955,63 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
       },
     })),
     {
+      // 这一项此前把任何失败都交给 runIsolatedCheck 的兜底，于是 DNS 解析不了、
+      // 公司网关换掉证书、酒店 Wi-Fi 门户劫持在页面上长得一模一样：一句「检查时
+      // 发生错误」，原因还是一行英文，藏在详情抽屉里。归类复用 network-failure.ts
+      // （登录页用的是同一份文案），判断只用这里本来就要发的这一次请求。
       code: 'XINGMANG_NETWORK',
       title: '星芒 AI 网络',
-      run: async (signal) => {
+      run: async (signal): Promise<CheckOutcome> => {
         if (!fetchImpl) throw new Error('当前运行时不支持 fetch')
         const endpoint = `${relayApiProbeBaseUrl(relaySite)}/`
-        const response = await fetchImpl(endpoint, {
-          method: 'HEAD',
-          redirect: 'error',
-          signal,
-          headers: { Accept: 'application/json,text/plain,*/*' },
-        })
-        if (!response.ok) throw new Error(`星芒 AI 返回 HTTP ${response.status}`)
+        let response: Response
+        try {
+          response = await fetchImpl(endpoint, {
+            method: 'HEAD',
+            redirect: 'error',
+            signal,
+            headers: { Accept: 'application/json,text/plain,*/*' },
+          })
+        } catch (error) {
+          const reason = classifyNetworkFailure(error)
+          // 认不出来就照旧抛给兜底。把一个跟网络无关的故障说成「换个网络再试」，
+          // 只会让用户白折腾一轮（同 network-failure.ts 的口径）。
+          if (!reason) throw error
+          log?.('warn', 'diagnostics.network.failed', `星芒 AI 网络检查失败（${reason}）`, {
+            endpoint,
+            reason,
+            raw: sanitize(errorChainText(error)),
+          })
+          return { state: 'fail', summary: networkFailureMessages[reason], details: { endpoint, reason } }
+        }
+        // 门户认证页的另一种形态：HEAD 明明成功，回来的却是一张 HTML 登录页。
+        // 这时没有异常可归类，只能从 content-type 认出来。
+        const contentType = response.headers.get('content-type') ?? ''
+        if (response.ok && /^\s*text\/html\b/i.test(contentType)) {
+          log?.('warn', 'diagnostics.network.failed', '星芒 AI 网络检查被拦截（intercepted）', {
+            endpoint,
+            reason: 'intercepted',
+            status: response.status,
+            contentType,
+          })
+          return {
+            state: 'fail',
+            summary: networkFailureMessages.intercepted,
+            details: { endpoint, reason: 'intercepted', status: response.status },
+          }
+        }
+        if (!response.ok) {
+          log?.('warn', 'diagnostics.network.failed', `星芒 AI 网络检查返回 HTTP ${response.status}`, {
+            endpoint,
+            status: response.status,
+          })
+          // 网络本身是通的，所以不该说「换个网络」：这是服务端那一侧的事。
+          return {
+            state: 'fail',
+            summary: `网络能连通，但星芒 AI 返回 HTTP ${response.status}，多半是服务端暂时的问题，请稍后再试。`,
+            details: { endpoint, status: response.status },
+          }
+        }
         return {
           state: 'pass',
           summary: `已连通（HTTP ${response.status}）`,
@@ -871,6 +1060,13 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
           details: Object.fromEntries(unique.map((item, index) => [`variable${index + 1}`, `${item.name} (${item.source})`])),
         }
       },
+    },
+    {
+      code: 'PROVIDER_ENVIRONMENT_OVERRIDE',
+      title: '环境变量覆盖',
+      run: () => environmentOverrideOutcome(
+        collectEnvironmentOverrides(env, relaySite.providerBaseUrls, userHome),
+      ),
     },
     {
       code: 'CODEX_DOTENV',
