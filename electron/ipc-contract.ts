@@ -90,6 +90,7 @@ import type {
   ToolUninstallResult as MainToolUninstallResult,
 } from './system-service'
 import type {
+  UpdateFailedStep as MainUpdateFailedStep,
   UpdatePhase as MainUpdatePhase,
   UpdateSnapshot as MainUpdateSnapshot,
 } from './updater'
@@ -180,6 +181,7 @@ export interface WindowCapabilities { tray: boolean; notifications: boolean }
 export type { ExternalDeepLink } from './external-deep-links'
 export interface FeedbackReportPreview { id: string; text: string; entries: number }
 export type UpdatePhase = MainUpdatePhase
+export type UpdateFailedStep = MainUpdateFailedStep
 export type UpdateSnapshot = MainUpdateSnapshot
 export type SessionArchiveFilter = CodexSessionArchiveFilter
 export type SessionListQuery = CodexSessionListQuery

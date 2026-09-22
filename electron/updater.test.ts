@@ -1,5 +1,6 @@
 import { EventEmitter } from 'node:events'
 import { describe, expect, it, vi } from 'vitest'
+import { updateNetworkFailureMessages } from './network-failure'
 import { createUpdaterService, type UpdateClient } from './updater'
 
 class FakeUpdater extends EventEmitter implements UpdateClient {
@@ -1119,6 +1120,134 @@ describe('downloaded package digest verification', () => {
 
     client.emit('update-downloaded', downloadedInfo({ files: [] }))
     expect(service.getState().phase).toBe('downloaded')
+    service.dispose()
+  })
+
+  // 断网点一次「检查更新」，原来会被告知「更新没有装上」还给一个「重新下载」按钮——
+  // 更新其实根本没开始下。失败步骤和中文原因一起，是这套文案的唯一来源。
+  it('reports a failed check as the check step with a Chinese network reason', async () => {
+    const client = new FakeUpdater()
+    client.checkForUpdates.mockRejectedValueOnce(
+      Object.assign(new Error('net::ERR_INTERNET_DISCONNECTED'), { code: 'ERR_INTERNET_DISCONNECTED' }),
+    )
+    const service = createUpdaterService(client, { currentVersion: '1.0.0', isPackaged: true })
+
+    const state = await service.check()
+    expect(state).toMatchObject({
+      phase: 'error',
+      failedStep: 'check',
+      // 原始 code 留给 runtime.jsonl，界面上一个英文都不剩。
+      error: { code: 'ERR_INTERNET_DISCONNECTED', message: updateNetworkFailureMessages.offline },
+    })
+    expect(state.error?.message).not.toMatch(/net::/)
+    service.dispose()
+  })
+
+  it('reports a failed download as the download step', async () => {
+    const client = new FakeUpdater()
+    client.downloadUpdate.mockRejectedValueOnce(
+      Object.assign(new Error('read ETIMEDOUT'), { code: 'ETIMEDOUT' }),
+    )
+    const service = createUpdaterService(client, { currentVersion: '1.0.0', isPackaged: true })
+
+    client.emit('update-available', updateInfo())
+    const state = await service.download()
+    expect(state).toMatchObject({
+      phase: 'error',
+      failedStep: 'download',
+      error: { code: 'ETIMEDOUT', message: updateNetworkFailureMessages.timeout },
+    })
+    service.dispose()
+  })
+
+  it('reports a failed install as the install step and keeps the verified package', async () => {
+    vi.useFakeTimers()
+    try {
+      const client = new FakeUpdater()
+      client.quitAndInstall.mockImplementationOnce(() => {
+        throw new Error('installer spawn failed')
+      })
+      const service = createUpdaterService(client, {
+        currentVersion: '1.0.0',
+        isPackaged: true,
+        platform: 'win32',
+      })
+
+      client.emit('update-downloaded', updateInfo())
+      await vi.advanceTimersByTimeAsync(300)
+      expect(service.getState()).toMatchObject({ phase: 'downloaded', failedStep: 'install' })
+      service.dispose()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  // 安装包校验不过时本地那一份已经不可信，要重来的是下载而不是安装。
+  it('sends a rejected package back to the download step', async () => {
+    const client = new FakeUpdater()
+    const service = createUpdaterService(client, {
+      currentVersion: '1.0.0',
+      isPackaged: true,
+      verifyPackageDigest: async () => false,
+    })
+
+    client.emit('update-downloaded', downloadedInfo())
+    await vi.waitFor(() => expect(service.getState().phase).toBe('error'))
+    expect(service.getState().failedStep).toBe('download')
+    service.dispose()
+  })
+
+  // 界面按 failedStep 给按钮，所以「安装失败」这个说法只能出现在安装包还在的时候，
+  // 否则「重新安装」会被主进程以「更新尚未下载并校验完成」当场顶回来。
+  it('never claims an install failure once the package is gone', async () => {
+    vi.useFakeTimers()
+    try {
+      const client = new FakeUpdater()
+      const service = createUpdaterService(client, {
+        currentVersion: '1.0.0',
+        isPackaged: true,
+        platform: 'win32',
+      })
+
+      client.emit('update-downloaded', updateInfo())
+      client.emit('error', new Error('update file was removed'))
+      expect(service.getState()).toMatchObject({ phase: 'error', failedStep: 'download' })
+      service.dispose()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('drops the failed step as soon as a later check succeeds', async () => {
+    const client = new FakeUpdater()
+    client.checkForUpdates.mockRejectedValueOnce(new Error('net::ERR_NAME_NOT_RESOLVED'))
+    const service = createUpdaterService(client, { currentVersion: '1.0.0', isPackaged: true })
+
+    expect(await service.check()).toMatchObject({
+      failedStep: 'check',
+      error: { message: updateNetworkFailureMessages.dns },
+    })
+    client.emit('update-not-available', updateInfo())
+    expect(service.getState()).toMatchObject({ phase: 'not-available', error: null, failedStep: null })
+    service.dispose()
+  })
+
+  // 更新清单缺失、服务器回网页这两条早就有中文说法了，网络归类不许把它们吃掉。
+  it('leaves the manifest diagnoses alone when the failure is not a network one', async () => {
+    const client = new FakeUpdater()
+    const service = createUpdaterService(client, {
+      currentVersion: '1.0.0',
+      isPackaged: true,
+      platform: 'win32',
+    })
+
+    client.emit('error', Object.assign(new Error('not found'), {
+      code: 'ERR_UPDATER_CHANNEL_FILE_NOT_FOUND',
+    }))
+    expect(service.getState()).toMatchObject({
+      failedStep: 'check',
+      error: { message: expect.stringContaining('尚未发布更新清单') },
+    })
     service.dispose()
   })
 })
