@@ -95,18 +95,6 @@ const offlineBootstrapNotice = '当前网络不可用，已装好的工具照常
  */
 const configChangedDetail = '配置在软件之外被改动过，当前账号的 Key 可能已经不在里面了'
 
-/**
- * 工具行上那一句「现在用的是谁的账号」。切换入口在「…」菜单里，这句话让用户不用
- * 打开配置就知道当前状态。第三方配置、被改过、还没配的另有自己的说法，不在这里。
- */
-function accountSourceDetail(tool: ToolPresentation): string | undefined {
-  if (tool.source === 'official') return '正在用官方账号'
-  if (!tool.configured) return undefined
-  if (tool.source === 'account') return '正在用当前账号'
-  if (tool.source === 'manual') return '正在用自己填写的密钥'
-  return undefined
-}
-
 const accountSwitchLabels: Record<AccountSourceTarget, string> = {
   account: '切到当前账号',
   official: '切回官方账号',
@@ -258,7 +246,7 @@ export function Home(props: HomeProps) {
       icon={lastWorkspace ? undefined : tool.status.installed && !bootstrapBusy ? ArrowUpRight : undefined}
       onClick={primary} testId={`tool-${tool.id}-primary`}>{primaryLabel}</Button>
     return <ToolRow key={tool.id} tool={tool.id} status={status}
-      detail={job?.label ?? tool.error ?? (status === 'configChanged' ? configChangedDetail : elevationHint ?? (status === 'official' || status === 'ready' ? accountSourceDetail(tool) : undefined))}
+      detail={job?.label ?? tool.error ?? (status === 'configChanged' ? configChangedDetail : elevationHint ?? undefined)}
       version={tool.status.installed ? versionSubtitle(tool) ?? '版本暂未识别' : undefined}
       model={tool.status.installed ? tool.source === 'official' ? '官方账号' : tool.model || undefined : undefined}
       progress={job?.percent}

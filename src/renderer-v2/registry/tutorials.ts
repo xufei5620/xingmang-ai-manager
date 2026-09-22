@@ -201,8 +201,8 @@ export const tutorialTopics: readonly TutorialTopic[] = [
       {
         title: '看工具行写的是哪个账号',
         where: '工具箱首页 → 工具行',
-        detail: '每个工具行下面有一句话说明现在用的是谁的账号。',
-        bullets: ['「正在用官方账号」：用的是你自己的 Claude 或 ChatGPT 订阅。', '「正在用当前账号」：用的是左下角这个账号的额度。'],
+        detail: '工具行右边的小标签说明现在用的是谁的账号。',
+        bullets: ['「官方账号」：用的是你自己的 Claude 或 ChatGPT 订阅。', '「已配好」：用的是左下角这个账号的额度。'],
         expected: '知道这个工具现在用的是哪个账号。',
         illustration: 'home',
         action: '回首页看工具行',
