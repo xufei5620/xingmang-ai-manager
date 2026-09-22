@@ -258,6 +258,47 @@ describe('RuntimeLogStore', () => {
     expect(report.text).not.toContain('工具与配置:')
   })
 
+  it('puts the self-check summary between the tool summary and the log lines', async () => {
+    const store = createStore()
+    store.attachEnvironmentDescriber(async () => ['Claude Code: 已安装 2.1.277（应用托管）；配置：指向当前账号'])
+    store.attachSelfCheckDescriber(async () => [
+      '检查时间: 2026-09-22T11:31:02.000Z',
+      '磁盘空间: 正常，软件数据盘剩余空间充足',
+    ])
+    store.log('info', 'fixture', 'entry', 'one log line')
+    const report = await store.captureFeedbackReport()
+
+    expect(report.text).toContain('最近一次自检:')
+    expect(report.text).toContain('磁盘空间: 正常，软件数据盘剩余空间充足')
+    expect(report.text.indexOf('工具与配置:')).toBeLessThan(report.text.indexOf('最近一次自检:'))
+    expect(report.text.indexOf('最近一次自检:')).toBeLessThan(report.text.indexOf('运行日志:'))
+  })
+
+  it('keeps the two summaries independent when one of them times out', async () => {
+    const store = createStore({ environmentTimeoutMs: 20 })
+    store.attachEnvironmentDescriber(() => new Promise(() => undefined))
+    store.attachSelfCheckDescriber(async () => ['还没做过自检'])
+    const report = await store.captureFeedbackReport()
+
+    expect(report.text).toContain('未能读取（读取超时）')
+    expect(report.text).toContain('还没做过自检')
+  })
+
+  it('redacts the home directory inside the self-check summary too', async () => {
+    const store = createStore()
+    store.attachSelfCheckDescriber(async () => [`磁盘空间: 正常，${os.homedir()} 所在盘剩余充足`])
+    const report = await store.captureFeedbackReport()
+
+    expect(report.text).toContain('最近一次自检:')
+    expect(report.text).not.toContain(os.homedir())
+  })
+
+  it('omits the self-check summary entirely when nothing is attached', async () => {
+    const report = await createStore().captureFeedbackReport()
+
+    expect(report.text).not.toContain('最近一次自检:')
+  })
+
   it('captures report text and its count together, independently of later appends or clears', async () => {
     const store = createStore()
     store.log('info', 'fixture', 'first', 'first fixed entry')

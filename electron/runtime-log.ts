@@ -59,6 +59,12 @@ export interface RuntimeLogStoreOptions {
  */
 export type RuntimeEnvironmentDescriber = () => Promise<readonly string[]>
 
+/**
+ * 「最近一次自检」那几行，同样由 main.ts 接上。读的是主进程内存里已有的上一份
+ * 结果，本模块不认识诊断项，也不会因为要生成报告而触发一次新的自检。
+ */
+export type RuntimeSelfCheckDescriber = () => Promise<readonly string[]>
+
 const ENVIRONMENT_TIMEOUT_MS = 2_000
 const ENVIRONMENT_UNREADABLE = '未能读取'
 const SENSITIVE_KEY = /(?:api[_-]?key|authorization|bearer|token|secret|password|credential|cookie)/i
@@ -251,6 +257,7 @@ export class RuntimeLogStore {
   private readonly now: () => Date
   private readonly environmentTimeoutMs: number
   private describeEnvironment: RuntimeEnvironmentDescriber | null = null
+  private describeSelfCheck: RuntimeSelfCheckDescriber | null = null
   private writeQueue: Promise<void> = Promise.resolve()
   // 每个日志文件一份解析结果，键是文件路径，所以最多 archiveCount + 1 份，天然有界。
   private readonly parsedFiles = new Map<string, { fingerprint: string; summary: RuntimeLogFileSummary }>()
@@ -276,6 +283,11 @@ export class RuntimeLogStore {
    */
   attachEnvironmentDescriber(describe: RuntimeEnvironmentDescriber): void {
     this.describeEnvironment = describe
+  }
+
+  /** 同上，接上「最近一次自检」那段。 */
+  attachSelfCheckDescriber(describe: RuntimeSelfCheckDescriber): void {
+    this.describeSelfCheck = describe
   }
 
   /**
@@ -474,8 +486,10 @@ export class RuntimeLogStore {
       `日志条数: ${snapshot.total}${snapshot.truncated ? `（附最近 ${snapshot.entries.length} 条）` : ''}`,
       `日志目录: ${scrubHome(snapshot.directory)}`,
     ]
-    const environment = await this.describeEnvironmentLines()
+    const environment = await this.describeSectionLines(this.describeEnvironment)
     if (environment.length) lines.push('', '工具与配置:', ...environment.map(scrubHome))
+    const selfCheck = await this.describeSectionLines(this.describeSelfCheck)
+    if (selfCheck.length) lines.push('', '最近一次自检:', ...selfCheck.map(scrubHome))
     lines.push('', '运行日志:')
     for (const entry of [...snapshot.entries].reverse()) {
       const detail = entry.detail ? ` ${JSON.stringify(entry.detail)}` : ''
@@ -488,10 +502,10 @@ export class RuntimeLogStore {
 
   /**
    * 取不到就算了：反馈报告本身（尤其是运行日志）比这几行重要得多，所以给一个
-   * 总预算，超时或抛错都退回一行说明，报告照常生成。
+   * 总预算，超时或抛错都退回一行说明，报告照常生成。每段各自计时，一段超时不
+   * 影响另一段。
    */
-  private async describeEnvironmentLines(): Promise<string[]> {
-    const describe = this.describeEnvironment
+  private async describeSectionLines(describe: RuntimeEnvironmentDescriber | null): Promise<string[]> {
     if (!describe) return []
     let timer: NodeJS.Timeout | undefined
     try {
