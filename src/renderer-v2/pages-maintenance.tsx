@@ -1723,7 +1723,7 @@ export function SettingsPage({
             '高对比度',
             systemState?.appearance.systemHighContrast
               ? '系统高对比度已开启；手动偏好会单独保留'
-              : '加深边框和次要文字',
+              : '加大文字、边框和按钮的对比度，开启时皮肤配色暂停使用',
             systemApi && systemState ? (
               <Switch
                 aria-label="高对比度"
@@ -1767,7 +1767,7 @@ export function SettingsPage({
         <>
           {row(
             '开机自动启动',
-            systemState?.startup.note ?? '登录电脑后自动打开工具箱',
+            systemState?.startup.note ?? '开机后在托盘里待命，不弹窗口',
             systemApi && systemState?.startup.supported ? (
               <Switch
                 aria-label="开机自动启动"

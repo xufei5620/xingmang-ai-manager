@@ -10,7 +10,10 @@ import {
   bootstrapAccountTools,
   configurationFailure,
   configurationFailureMessages,
+  describeAccountBootstrapFailure,
+  describeAccountBootstrapResult,
   type AccountBootstrapBridge,
+  type AccountBootstrapResult,
 } from './account-bootstrap'
 import { networkFailureMessages } from '../../../../electron/network-failure'
 import {
@@ -525,5 +528,60 @@ describe('account managed Key bootstrap', () => {
     } as unknown as AccountBootstrapBridge
     await expect(bootstrapAccountTools(api, 17)).rejects.toThrow('账号已变化')
     expect(configure).not.toHaveBeenCalled()
+  })
+})
+
+describe('account bootstrap log lines', () => {
+  function result(overrides: Partial<AccountBootstrapResult> = {}): AccountBootstrapResult {
+    return {
+      readyKeys: ['claude', 'codex'],
+      configured: ['claude'],
+      failed: [],
+      skipped: [
+        { provider: 'gemini', reason: 'not-installed', message: 'Gemini CLI 尚未安装，Key 已保留在账号中' },
+        { provider: 'grok', reason: 'manual', message: 'Grok CLI 保留手动填写的密钥' },
+      ],
+      warnings: [],
+      networkBlocked: false,
+      ...overrides,
+    }
+  }
+
+  it('says which tools were written and why the others were skipped, at info level', () => {
+    expect(describeAccountBootstrapResult('login', result())).toEqual({
+      level: 'info',
+      message: 'Key 自动配置（登录后）：写好 Claude Code；跳过 Gemini CLI（未安装）、Grok CLI（手填密钥）',
+    })
+  })
+
+  it('raises to warn and carries the failure reason when a tool was not written', () => {
+    const line = describeAccountBootstrapResult('restore', result({
+      configured: [],
+      failed: [{ provider: 'codex', message: configurationFailureMessages.relayMismatch }],
+      skipped: [],
+    }))
+
+    expect(line.level).toBe('warn')
+    expect(line.message).toBe(`Key 自动配置（开机或联网后恢复）：写好 无；没写成 Codex CLI（${configurationFailureMessages.relayMismatch}）`)
+  })
+
+  it('marks a network-blocked round as warn so it stands out in the report', () => {
+    const line = describeAccountBootstrapResult('restore', result({ configured: [], skipped: [], networkBlocked: true }))
+
+    expect(line.level).toBe('warn')
+    expect(line.message).toContain('被网络拦住，联网后会自动补跑')
+  })
+
+  it('never includes keys, addresses or models even though the plan knows the models', () => {
+    const text = describeAccountBootstrapResult('rewrite', result()).message
+
+    expect(text).not.toMatch(/sk-|https?:\/\/|opus|gpt-/i)
+  })
+
+  it('describes a round that did not finish at warn level', () => {
+    expect(describeAccountBootstrapFailure('login', '星芒账号已变化，已停止本次 Key 配置')).toEqual({
+      level: 'warn',
+      message: 'Key 自动配置（登录后）没有完成：星芒账号已变化，已停止本次 Key 配置',
+    })
   })
 })

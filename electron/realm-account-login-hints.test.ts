@@ -100,6 +100,16 @@ describe('encrypted realm login routing hints', () => {
     await f.vault.activate(account(), 'First@example.test')
     expect(await f.vault.latestLoginHint()).toEqual({ identifier: 'first@example.test', realmId: 'xm-account' })
   })
+  it('names the account an identifier last signed in without guessing from profile names', async () => {
+    const f = fixture()
+    await f.vault.activate(account(true), 'Same@Example.TEST')
+    await f.vault.activate(account(), 'Alice')
+    expect(await f.vault.loginHintOwner('same@example.test')).toEqual({ realmId: 'api-account', userId: '7' })
+    expect(await f.vault.loginHintOwner('Alice')).toEqual({ realmId: 'xm-account', userId: '7' })
+    expect(await f.vault.loginHintOwner('alice')).toBeNull()
+    expect(await f.vault.loginHintOwner('profile-name')).toBeNull()
+    expect(() => f.vault.loginHintOwner('')).toThrow()
+  })
   it('uses a matching legacy active email without guessing inactive profiles or unrelated input', async () => {
     const f = fixture()
     await f.vault.activate({ ...account(), username: 'older@example.test' })
