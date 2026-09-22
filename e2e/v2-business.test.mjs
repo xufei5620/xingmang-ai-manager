@@ -692,6 +692,34 @@ test('backup restore requires preview and confirmation before touching files', a
       (await calls(page)).find((call) => call.name === 'restore-backup').args,
       'backup-1',
     )
+    // 恢复完当场测一次连接，结论留在备份页上。
+    await page
+      .getByTestId('backups-restore-check')
+      .getByText('连接正常，gpt-6-astra 可以直接使用')
+      .waitFor()
+    assert.equal(
+      (await calls(page)).find((call) => call.name === 'check-connection').args,
+      'codex',
+    )
+  } finally {
+    await page.close()
+  }
+})
+
+test('backup list names whose key a backup holds and warns before restoring another account key', async () => {
+  const page = await fixture('page=backups&backupOtherKey')
+  try {
+    await page.getByTestId('backups-key-backup-1').getByText('账号 old-user 的 Key').waitFor()
+    await page.getByRole('button', { name: '预览', exact: true }).click()
+    await page.getByTestId('backup-preview-key').getByText('账号 old-user 的 Key').waitFor()
+    await page
+      .getByRole('button', { name: '恢复这份配置', exact: true })
+      .click()
+    await page.getByTestId('backups-restore-key-warning').waitFor()
+    assert.match(
+      await page.getByTestId('backups-restore-key-warning').innerText(),
+      /用量不会记在当前账号上/,
+    )
   } finally {
     await page.close()
   }
@@ -734,12 +762,22 @@ test('feedback copy and export retain the preview snapshot id', async () => {
     await page.getByTestId('feedback-report-text').waitFor()
     await page.getByRole('button', { name: '复制报告', exact: true }).click()
     await page.getByRole('button', { name: '导出文件', exact: true }).click()
-    await page.getByText('诊断报告已导出：').first().waitFor()
+    await page.getByText('反馈报告已导出：').first().waitFor()
+    // 提示条上那颗按钮把刚写出的那个文件交回主进程去定位，不是别的路径。
+    await page
+      .getByRole('dialog')
+      .getByRole('button', { name: '打开所在位置', exact: true })
+      .click()
+    await page.waitForFunction(() =>
+      JSON.parse(document.documentElement.dataset.calls || '[]').some(
+        (call) => call.name === 'reveal-file',
+      ),
+    )
     assert.deepEqual(
       (await calls(page))
-        .filter((call) => ['copy-report', 'export-report'].includes(call.name))
+        .filter((call) => ['copy-report', 'export-report', 'reveal-file'].includes(call.name))
         .map((call) => call.args),
-      ['report-snapshot-7', 'report-snapshot-7'],
+      ['report-snapshot-7', 'report-snapshot-7', 'C:\test-report.txt'],
     )
   } finally {
     await page.close()
