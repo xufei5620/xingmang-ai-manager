@@ -366,10 +366,17 @@ export interface AccountManagedCliConfigurationInput {
   intent?: 'automatic' | 'explicit'
 }
 
+export type RendererLogLevel = 'info' | 'warn' | 'error'
+
 export interface RendererErrorPayload {
   message: string
   stack?: string
   context?: string
+  /**
+   * 缺省 = error，即这条通道原本的含义：写一条 error 日志并走崩溃上报。info /
+   * warn 只进本机运行日志，给「渲染层做了什么决定」这类排障线索用，不上报。
+   */
+  level?: RendererLogLevel
 }
 
 export interface AiChatGroupSummary {
