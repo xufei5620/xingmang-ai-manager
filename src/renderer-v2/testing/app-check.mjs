@@ -3197,7 +3197,7 @@ test('the one-click repair on an invalid key runs the same rewrite', async () =>
   const page = await open()
   try {
     await page.getByTestId('tool-row-gemini').getByText('未安装').waitFor()
-    await page.evaluate(() => { window.v2Test.fail = 'installCli'; window.v2Test.failMessage = '安装失败：当前分组下无可用渠道' })
+    await page.evaluate(() => { window.v2Test.fail = 'installCli'; window.v2Test.failMessage = '安装失败：令牌已失效' })
     await page.getByTestId('tool-gemini-primary').click()
     await page.getByTestId('operation-error').waitFor()
     await page.getByTestId('operation-error-body').getByText('工具打不开对话，需要换一把 Key', { exact: true }).waitFor()

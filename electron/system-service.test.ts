@@ -3,6 +3,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import * as TOML from '@iarna/toml'
+import { classifyNetworkFailure } from './network-failure'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AppSettingsStore, defaultAppSettings } from './app-settings'
 import { providerBaseUrls, type ProviderId } from './catalog'
@@ -1058,6 +1059,16 @@ describe('createSystemService', () => {
 
     await expect(service.fetchAvailableModels('bad\nkey')).rejects.toThrow('API Key 格式错误')
     expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('says the service is unavailable when the model list answers with a maintenance page', async () => {
+    // 盲点 1：写入 Key 与 AI 对话都经过这一步，「服务返回 503」会被渲染层猜成 Key 或分组的问题。
+    const service = createService()
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('<html>维护中</html>', { status: 503, headers: { 'content-type': 'text/html' } })))
+
+    const error = await service.fetchAvailableModels('sk-maintenance-probe').catch((cause: unknown) => cause)
+    expect(classifyNetworkFailure(error)).toBe('serviceUnavailable')
+    expect((error as Error).message).toContain('HTTP 503')
   })
 
   it('redacts echoed API keys and bounds relay error messages', async () => {

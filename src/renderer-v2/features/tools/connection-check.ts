@@ -18,11 +18,15 @@ export const connectionLayerLabels: Record<ConnectionCheckLayer, string> = {
   group: '分组与渠道',
   model: '模型',
   protocol: '协议与端点',
+  service: '服务端',
   unknown: '未知',
 }
 
-/** 「去处理」该跳到哪一页：把归因直接变成用户的下一次点击。 */
-const layerTargets: Record<ConnectionCheckLayer, PageId> = {
+/**
+ * 「去处理」该跳到哪一页：把归因直接变成用户的下一次点击。服务端那一层是 null：
+ * 维护期间用户这边没有任何可做的事，给一颗「去处理」只会把人送去改没坏的东西。
+ */
+const layerTargets: Record<ConnectionCheckLayer, PageId | null> = {
   unconfigured: 'home',
   config: 'home',
   network: 'settings',
@@ -31,6 +35,7 @@ const layerTargets: Record<ConnectionCheckLayer, PageId> = {
   group: 'account',
   model: 'home',
   protocol: 'feedback',
+  service: null,
   unknown: 'feedback',
 }
 
@@ -115,7 +120,7 @@ export function connectionCheckView(
   }
   const rewrite = rewritableLayers.has(result.layer) && options.canRewriteKey === true
   return {
-    tone: result.layer === 'config' ? 'warn' : 'bad',
+    tone: result.layer === 'config' || result.layer === 'service' ? 'warn' : 'bad',
     statusLabel: connectionLayerLabels[result.layer],
     // 归因层已经由 statusLabel 显示在工具名旁边，标题不再重复一遍。
     title: result.summary,
