@@ -346,6 +346,77 @@ describe('local development acceleration backend', () => {
     expect((await test.backend.startAcceleration(scope, 'system-proxy')).phase).toBe('active')
   })
 
+  it('does not bill the time the computer slept and re-arms expiry from the time left before sleep', async () => {
+    const test = await setup()
+    await test.backend.startAcceleration(scope, 'system-proxy')
+    test.elapse(60_000)
+    test.backend.suspend()
+    expect(test.scheduled.size).toBe(0)
+    // Windows 的单调钟跨睡眠照走：睡了八小时，醒来时它也往前走了八小时。
+    test.elapse(8 * 3_600_000)
+    await test.backend.resume()
+    expect(await test.backend.getAccelerationState(scope)).toMatchObject({ phase: 'active', remainingSeconds: accelerationTrialSeconds - 60 })
+    expect([...test.scheduled].map((timer) => timer.at - 8 * 3_600_000 - 60_000)).toEqual([(accelerationTrialSeconds - 60) * 1000])
+    await test.advance((accelerationTrialSeconds - 60) * 1000)
+    expect(test.runtime.isRunning()).toBe(false)
+    expect((await test.readLedger()).accounts[scope]).toEqual({ usedMs: accelerationTrialSeconds * 1000, startedAt: null })
+    expect(test.onRuntimeInterrupted).not.toHaveBeenCalled()
+  })
+
+  it('also handles a monotonic clock that stopped during sleep, as on macOS', async () => {
+    const test = await setup()
+    await test.backend.startAcceleration(scope, 'system-proxy')
+    test.elapse(30_000)
+    test.backend.suspend()
+    // macOS 的单调钟睡眠时停表：墙钟走了一夜，单调钟没动。
+    test.setWall(epoch + 8 * 3_600_000)
+    await test.backend.resume()
+    await test.backend.stopAcceleration(scope)
+    expect((await test.readLedger()).accounts[scope]).toEqual({ usedMs: 30_000, startedAt: null })
+  })
+
+  it('takes the network-first disconnect path when acceleration did not survive the sleep', async () => {
+    const test = await setup()
+    await test.backend.startAcceleration(scope, 'system-proxy')
+    test.elapse(10_000)
+    test.backend.suspend()
+    test.elapse(3_600_000)
+    test.setRunning(false)
+    test.events.length = 0
+    await test.backend.resume()
+    expect(test.events).toEqual(['proxy:restore', 'runtime:stop'])
+    expect(test.onRuntimeInterrupted).toHaveBeenCalledOnce()
+    expect(await test.backend.getAccelerationState(scope)).toMatchObject({ phase: 'error', error: expect.stringContaining('意外断开') })
+    expect((await test.readLedger()).accounts[scope]).toEqual({ usedMs: 10_000, startedAt: null })
+  })
+
+  it('wakes a paused session on the next state read even if the resume event never arrives', async () => {
+    const test = await setup()
+    await test.backend.startAcceleration(scope, 'system-proxy')
+    test.elapse(20_000)
+    test.backend.suspend()
+    test.elapse(3_600_000)
+    // 一次读状态（托盘、加速页或到期提醒）就把它叫醒，计时不会永远冻着。
+    expect((await test.backend.getAccelerationState(scope)).remainingSeconds).toBe(accelerationTrialSeconds - 20)
+    expect(test.scheduled.size).toBe(1)
+    test.elapse(40_000)
+    expect((await test.backend.getAccelerationState(scope)).remainingSeconds).toBe(accelerationTrialSeconds - 60)
+  })
+
+  it('ignores sleep with no active session and a stop issued while still paused', async () => {
+    const test = await setup()
+    test.backend.suspend()
+    await test.backend.resume()
+    expect(await test.backend.getAccelerationState(scope)).toMatchObject({ phase: 'idle' })
+    await test.backend.startAcceleration(scope, 'system-proxy')
+    test.elapse(5_000)
+    test.backend.suspend()
+    test.backend.suspend()
+    test.elapse(3_600_000)
+    await test.backend.stopAcceleration(scope)
+    expect((await test.readLedger()).accounts[scope]).toEqual({ usedMs: 5_000, startedAt: null })
+  })
+
   it('reports the interruption when a state read notices the dead core before the exit callback', async () => {
     const test = await setup()
     await test.backend.startAcceleration(scope, 'system-proxy')

@@ -77,6 +77,16 @@ export interface AccelerationDevelopmentBackend extends AccelerationApi {
   stopDownloadRoute(): Promise<void>
   recover(): Promise<void>
   notifyRuntimeExit(): Promise<void>
+  /**
+   * 电脑要睡了：冻结正在跑的会话的计时并撤掉到期定时器。刻意同步、不排队——
+   * 系统留给「即将睡眠」的时间只有一两秒，排在一次十几秒的连接后面就赶不上了。
+   */
+  suspend(): void
+  /**
+   * 电脑醒了：把睡着的那段从计时里扣掉，再看加速还在不在。还在就按剩余时长
+   * 重新定到期；不在了就走意外断开那条路（先还原网络设置，再报告）。
+   */
+  resume(): Promise<void>
   dispose(): Promise<void>
 }
 
@@ -95,6 +105,10 @@ interface Session {
   connectedAt: string | null
   startedMono: number | null
   stoppedMono: number | null
+  /** 睡眠开始时的单调时刻；醒来后并进 pausedMs。 */
+  pausedMono: number | null
+  /** 已经扣掉的睡眠时长，不计入免费时长。 */
+  pausedMs: number
   error: string | null
 }
 
@@ -234,7 +248,19 @@ export function createAccelerationDevelopmentBackend(options: AccelerationDevelo
   }
   function usage(scope: string): AccountUsage { return ledger?.accounts[scope] ?? { usedMs: 0, startedAt: null } }
   function elapsed(current: Session): number {
-    return current.startedMono === null ? 0 : Math.max(0, Math.floor((current.stoppedMono ?? monotonicNow()) - current.startedMono))
+    if (current.startedMono === null) return 0
+    const end = current.stoppedMono ?? current.pausedMono ?? monotonicNow()
+    return Math.max(0, Math.floor(end - current.startedMono - current.pausedMs))
+  }
+  /**
+   * 睡眠那段一律不计时，不管单调钟在睡眠里走不走：Windows 的单调钟跨睡眠照走，
+   * macOS 的停表，而「从睡前那一刻到醒来这一刻」按单调钟量出来的差，在两边都
+   * 恰好是需要扣掉的那段（macOS 上差不多是零，因为表本来就停着）。
+   */
+  function foldPause(current: Session) {
+    if (current.pausedMono === null) return
+    current.pausedMs += Math.max(0, monotonicNow() - current.pausedMono)
+    current.pausedMono = null
   }
   function crashElapsed(startedAt: number, totalMs: number): number {
     const difference = Math.floor(now() - startedAt)
@@ -393,6 +419,7 @@ export function createAccelerationDevelopmentBackend(options: AccelerationDevelo
     const current = session
     current.phase = 'stopping'
     try {
+      foldPause(current)
       if (current.stoppedMono === null) {
         // Keep the core alive until proxy restoration succeeds. Otherwise an
         // incomplete restore could leave every proxied app pointing at a dead port.
@@ -413,11 +440,25 @@ export function createAccelerationDevelopmentBackend(options: AccelerationDevelo
       throw new Error(stopFailure)
     }
   }
+  /**
+   * 还挂着「睡眠中」的会话在这里醒过来。不只 resume 会调：万一系统没送来醒来
+   * 事件，任何一次读状态（托盘、加速页轮询、到期提醒）都会把它叫醒，免得一个
+   * 永远冻结的计时变成不限时的免费加速。
+   */
+  function wakeSession() {
+    const current = session
+    if (!current || current.pausedMono === null) return
+    foldPause(current)
+    if (current.phase !== 'active' || !options.runtime.isRunning()) return
+    const entry = usage(current.scope)
+    arm(accountTotalMs(entry) - entry.usedMs - elapsed(current))
+  }
   async function inspect(scope: string) {
     try { await recover() } catch {
       if (!ledger) throw new Error(ledgerFailure)
       return state(scope)
     }
+    wakeSession()
     if (session && (session.phase === 'active' && !options.runtime.isRunning()
       || usage(session.scope).usedMs + elapsed(session) >= accountTotalMs(usage(session.scope)))) {
       const oldScope = session.scope
@@ -487,7 +528,7 @@ export function createAccelerationDevelopmentBackend(options: AccelerationDevelo
         // is conservatively billed; an ordinary failed start clears it unpaid.
         try { await saveAccount(scope, { usedMs: usage(scope).usedMs, startedAt: now() }) }
         catch (error) { reportStartFailure(error, 'ledger'); lastErrors.set(scope, ledgerFailure); return state(scope) }
-        session = { scope, phase: 'connecting', line: null, connectedAt: null, startedMono: null, stoppedMono: null, error: null }
+        session = { scope, phase: 'connecting', line: null, connectedAt: null, startedMono: null, stoppedMono: null, pausedMono: null, pausedMs: 0, error: null }
         // The user-facing text below collapses every cause into one sentence on
         // purpose. `phase` is what survives that collapse for the log.
         let phase: AccelerationStartFailurePhase = 'runtime'
@@ -624,6 +665,20 @@ export function createAccelerationDevelopmentBackend(options: AccelerationDevelo
       try { await stopSession(); lastErrors.set(scope, exitFailure) }
       catch { arm(5000); throw new Error(stopFailure) }
       finally { reportRuntimeInterrupted() }
+    }),
+    suspend() {
+      if (disposed || !session || session.phase !== 'active' || session.pausedMono !== null) return
+      // 睡着时不该有任何到期在走：macOS 上跨睡眠的定时器会晚响整整一觉，
+      // Windows 上则会一醒来就把睡眠算成用掉的时长。醒来后按剩余时长重新定。
+      clearTimer()
+      session.pausedMono = monotonicNow()
+    },
+    // 醒来后的检查就是一次读状态：先把睡眠扣掉、按剩余时长重新定到期，再由
+    // inspect 看内核还在不在——不在了就与内核意外退出同一条路，先还原网络设置
+    // 再报告；时长恰好在睡前用完的也在这里停掉。
+    resume: () => enqueue(async () => {
+      if (disposed || !session) return
+      await inspect(session.scope)
     }),
     dispose() {
       closing = true

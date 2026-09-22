@@ -133,6 +133,7 @@ async function handle(message: unknown): Promise<unknown> {
     await disposeProxy?.()
     return
   }
+  if (request.operation === 'resume') return backend.resume()
   if (typeof request.scope !== 'string' || !/^(xm|api)-account:[1-9]\d{0,15}$/.test(request.scope)) throw new Error('加速账号参数无效。')
   if (request.operation === 'get') return backend.getAccelerationState(request.scope)
   if (request.operation === 'list-lines') return backend.listAccelerationLines?.(request.scope) ?? []
@@ -183,6 +184,12 @@ if (process.send) {
     if (shuttingDown) return
     const id = message && typeof message === 'object' && 'id' in message ? message.id : null
     if (typeof id !== 'number' || !Number.isSafeInteger(id) || id < 1) return
+    // 睡眠前那一两秒排不起队：这一步只冻结计时、撤掉定时器，当场做完就回话。
+    if ((message as Record<string, unknown>).operation === 'suspend') {
+      try { backend?.suspend() } catch { /* 冻结失败只是退回睡眠照常计时。 */ }
+      if (process.connected) process.send?.({ id, ok: true }, () => undefined)
+      return
+    }
     void enqueue(() => handle(message)).then(
       (value) => { if (process.connected) process.send?.({ id, ok: true, value }, () => undefined) },
       // The reason, never the message: the host maps it onto a sentence of its
