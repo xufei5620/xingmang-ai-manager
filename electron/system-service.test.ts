@@ -2261,6 +2261,47 @@ describe('Windows restart handoff', () => {
     )
   })
 
+  it('refuses to restart while an installation is still running', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-windows-restart-busy-'))
+    temporaryDirectories.push(directory)
+    let finishInstall: () => void = () => undefined
+    let installStarted: () => void = () => undefined
+    const started = new Promise<void>((resolve) => { installStarted = resolve })
+    const installPythonRuntime = vi.fn(async () => {
+      installStarted()
+      await new Promise<void>((resolve) => { finishInstall = resolve })
+      return {
+        installed: true as const,
+        action: 'installed' as const,
+        method: 'winget' as const,
+        source: 'winget' as const,
+        version: 'Python 3.12',
+        architecture: 'x64' as const,
+        pathRefreshRequired: true,
+      }
+    })
+    const runCommand = vi.fn<typeof productionRunCommand>()
+    const service = createSystemService(
+      new AppSettingsStore(path.join(directory, 'settings.json'), directory),
+      {
+        platform: 'win32',
+        windowsExecutionMode: 'same-user',
+        runCommand,
+        findExecutable: async () => null,
+        resolveWindowsMachinePaths: () => testMachinePaths,
+        installPythonRuntime,
+        inspectInstalledPythonRuntime: async () => { throw new Error('Python 3.12 fixed install not found') },
+      },
+    )
+
+    const install = service.installPythonRuntime({ isDestroyed: () => false, send: vi.fn() })
+    await started
+    await expect(service.restartWindows()).rejects.toThrow('等它做完再重启电脑')
+    expect(runCommand).not.toHaveBeenCalled()
+    finishInstall()
+    await expect(install).resolves.toMatchObject({ action: 'installed' })
+  })
+
   it('does not expose a restart operation on non-Windows platforms', async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-non-windows-restart-'))
     temporaryDirectories.push(directory)
