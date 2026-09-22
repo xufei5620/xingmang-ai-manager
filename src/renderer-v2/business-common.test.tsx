@@ -6,8 +6,9 @@ describe('renderer-v2 result notice', () => {
   it('leads with the catalog wording and keeps the backend sentence for support', () => {
     const raw = 'Grok CLI 安装失败：EBUSY: resource busy or locked'
     const markup = renderToStaticMarkup(<ResultNotice error={raw} />)
-    expect(markup).toContain('安装被杀毒软件拦住了')
-    expect(markup).toContain('请检查隔离记录')
+    // EBUSY 是文件被占用，不是杀毒拦截：这一句要把用户送去关工具窗口。
+    expect(markup).toContain('工具正在运行')
+    expect(markup).toContain('先关掉正在使用这个工具的窗口')
     expect(markup).toContain(raw)
   })
 
