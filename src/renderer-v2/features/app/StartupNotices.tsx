@@ -1,6 +1,5 @@
 import { Button, Notice } from '../../ui'
-import type { PageId } from '../../registry/pages'
-import type { StartupCheckId, StartupNotice } from './startup-notice'
+import type { StartupCheckId, StartupNotice, StartupNoticeAction } from './startup-notice'
 
 /**
  * 启动期后台检查的坏消息挂在角落，不抢焦点、不吃点击、随手能关掉。容器本身
@@ -9,7 +8,7 @@ import type { StartupCheckId, StartupNotice } from './startup-notice'
 export function StartupNotices({ notices, onDismiss, onOpen }: {
   notices: readonly StartupNotice[]
   onDismiss(id: StartupCheckId): void
-  onOpen(id: StartupCheckId, page: PageId): void
+  onOpen(id: StartupCheckId, action: StartupNoticeAction): void
 }) {
   if (!notices.length) return null
   return <div className="v2-startup-notices" data-testid="startup-notices">
@@ -17,7 +16,7 @@ export function StartupNotices({ notices, onDismiss, onOpen }: {
       const action = notice.action
       return <Notice key={notice.id} tone={notice.tone} title={notice.title} body={notice.body}
         testId={`startup-notice-${notice.id}`} onDismiss={() => onDismiss(notice.id)}
-        actions={action ? <Button size="sm" onClick={() => onOpen(notice.id, action.page)}>{action.label}</Button> : undefined} />
+        actions={action ? <Button size="sm" onClick={() => onOpen(notice.id, action)}>{action.label}</Button> : undefined} />
     })}
   </div>
 }

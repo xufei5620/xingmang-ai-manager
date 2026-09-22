@@ -1261,6 +1261,40 @@ test('a failed startup environment check stays out of the way while the manual o
   } finally { await page.close() }
 })
 
+// 本机账号存储被重建时，用户看到的只是「记住的账号没了」。提示照后台检查那套挂在
+// 角落，不挡操作，并且给一颗按钮直接把登录开出来，而不是让他自己去找。
+test('a rebuilt account store explains itself and opens the login form', async () => {
+  const page = await open()
+  try {
+    await page.getByTestId('page-home').waitFor()
+    await page.evaluate(() => window.v2Test.emit('onAccountVaultRecovered', undefined))
+    const notice = page.getByTestId('startup-notice-vault-recovered')
+    await notice.waitFor()
+    await notice.getByText('本机保存的登录信息已重置，请重新登录', { exact: true }).waitFor()
+    assert.equal(await page.getByTestId('operation-error').count(), 0)
+    // 主进程已经记过一条 vault.recovered，界面不再重复上报一条错误日志。
+    assert.equal(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'reportRendererError').length), 0)
+    await notice.getByRole('button', { name: '去登录', exact: true }).click()
+    await page.getByTestId('login-account').waitFor()
+    await expect.poll(() => page.getByTestId('startup-notice-vault-recovered').count()).toBe(0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('the account-store notice can be dismissed and leaves nothing behind', async () => {
+  const page = await open()
+  try {
+    await page.getByTestId('page-home').waitFor()
+    await page.evaluate(() => window.v2Test.emit('onAccountVaultRecovered', undefined))
+    const notice = page.getByTestId('startup-notice-vault-recovered')
+    await notice.waitFor()
+    await notice.getByRole('button', { name: '关闭', exact: true }).click()
+    await expect.poll(() => page.getByTestId('startup-notice-vault-recovered').count()).toBe(0)
+    assert.equal(await page.getByTestId('startup-notices').count(), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('a failed manual update check still reports on the updates page', async () => {
   const page = await open('updateCheckFail=1')
   try {

@@ -854,6 +854,8 @@ export interface XingmangEventContract {
   onExternalClientInstallProgress: IpcEventDefinition<'external-clients:install-progress', ExternalClientInstallProgress>
   onAccountSessionChanged: IpcEventDefinition<'account:session-changed', AccountSessionState>
   onAccountUsageChanged: IpcEventDefinition<'account:usage-changed', AccountUsageChangedEvent>
+  /** 本机账号存储被重建。载荷为空：备份文件名与账号内容都不跨 IPC。 */
+  onAccountVaultRecovered: IpcEventDefinition<'account:vault-recovered', undefined>
   onNavigate: IpcEventDefinition<'navigation:open-page', RendererNavigationTarget>
   onWindowCloseRequest: IpcEventDefinition<'window:close-request', { requestId: string }>
   onExternalDeepLink: IpcEventDefinition<'navigation:deep-link-pending', undefined>
@@ -1060,6 +1062,7 @@ export const ipcEventChannels = {
   onExternalClientInstallProgress: 'external-clients:install-progress',
   onAccountSessionChanged: 'account:session-changed',
   onAccountUsageChanged: 'account:usage-changed',
+  onAccountVaultRecovered: 'account:vault-recovered',
   onNavigate: 'navigation:open-page',
   onWindowCloseRequest: 'window:close-request',
   onExternalDeepLink: 'navigation:deep-link-pending',

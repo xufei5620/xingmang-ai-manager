@@ -35,7 +35,7 @@ import { bindPlatformAppearance, platformApi } from './platform-api'
 import { FailureBoundary } from './features/app/FailureBoundary'
 import { OperationErrorDialog, type OperationFailure } from './features/app/OperationErrorDialog'
 import { StartupNotices } from './features/app/StartupNotices'
-import { startupCheckFailure, startupCheckLogContext, startupDiagnosticsIssues, withStartupNotice, withoutStartupNotice, type StartupCheckId, type StartupNotice } from './features/app/startup-notice'
+import { startupCheckFailure, startupCheckLogContext, startupDiagnosticsIssues, vaultRecoveredNotice, withStartupNotice, withoutStartupNotice, type StartupCheckId, type StartupNotice } from './features/app/startup-notice'
 import { readLocalPreference, writeLocalPreference } from './features/app/preferences'
 import { rememberTourPending, rememberTourSeen, tourReplayPending } from './features/shell/tour-state'
 import { onboardingPreviewEnabled } from './features/app/dev-preview'
@@ -272,6 +272,9 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     }
     else void balanceStore.refresh('foreground')
   }), [native, balanceStore, session.authenticated, toast])
+  // 本机账号存储被重建：主进程一次启动只发一条，界面照后台检查那套挂在角落，
+  // 用户关掉就不再出现。事件不带任何账号内容，这里也不去读它。
+  useEffect(() => native.onAccountVaultRecovered?.(() => noteStartupCheck(vaultRecoveredNotice())), [native, noteStartupCheck])
   const perform = useCallback(async function run(label: string, work: () => Promise<unknown>): Promise<void> {
     setOperationError(null)
     try { await work() }
@@ -641,7 +644,8 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       <div className="v2-support">{qr && <img src={qr} alt="微信客服二维码" />}<h3>微信扫码找客服</h3><p>装不上、付了没到账，都可以问。</p>
         {qrFallback && <p role="alert" data-testid="support-qr-fallback">{qrFallback}</p>}<Button onClick={() => void perform('打开帮助', () => app.openExternal(supportUrl))}>在浏览器打开</Button><Button onClick={() => { setHelp(false); navigate('feedback') }}>复制反馈报告</Button></div>
     </Dialog>}
-    <StartupNotices notices={startupNotices} onDismiss={dismissStartupNotice} onOpen={(id, page) => { dismissStartupNotice(id); navigate(page) }} />
+    <StartupNotices notices={startupNotices} onDismiss={dismissStartupNotice}
+      onOpen={(id, action) => { dismissStartupNotice(id); if ('login' in action) setAuth('login'); else navigate(action.page) }} />
     {operationError && <OperationErrorDialog failure={operationError} onClose={() => setOperationError(null)} onAction={runOperationAction} />}
     {manualUninstall && <ManualUninstallDialog state={manualUninstall} platform={platform?.platform} onClose={() => setManualUninstall(null)} />}
     {!operationError && session.authenticated && accountReadError?.scope === scope && <Dialog open title="操作没有完成" onClose={() => setAccountReadError(null)} footer={<Button onClick={() => setAccountReadError(null)}>返回</Button>}><p role="alert">{accountReadError.message}</p></Dialog>}
