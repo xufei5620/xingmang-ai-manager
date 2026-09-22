@@ -317,8 +317,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     diagnosticsStarted.current = true
     void native.runDiagnostics().then((report) => {
       if (!mounted.current) return
-      const issues = report.counts.warn + report.counts.fail + report.counts.error
-      const notice = startupDiagnosticsIssues(issues)
+      const notice = startupDiagnosticsIssues(report.counts)
       if (notice) noteStartupCheck(notice)
     }).catch((cause) => { if (mounted.current) noteStartupCheck(startupCheckFailure('diagnostics', errorMessage(cause, '启动环境检查没有完成'))) })
   }, [boot, native, noteStartupCheck, session.authenticated, settings?.runDiagnosticsOnStartup])
