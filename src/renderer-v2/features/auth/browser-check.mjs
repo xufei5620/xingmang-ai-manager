@@ -542,6 +542,11 @@ test('the historical account source and the registration passwords carry the sam
   const page = await open()
   try {
     await page.getByTestId('auth-source').getByRole('button', { name: '历史账号' }).click()
+    // Switching the source re-runs the form's own autofocus one animation frame
+    // later and puts the caret in the empty account field. Focusing the password
+    // before that frame lets the autofocus blur it, which rightly clears the
+    // warning, and the check then waits for a warning that can no longer come.
+    await page.waitForFunction(() => document.activeElement?.id === 'login-account')
     await page.getByTestId('login-password').focus()
     await typeWithCapsLock(page, 'login-password', true)
     await page.getByTestId('login-password-caps').waitFor()
