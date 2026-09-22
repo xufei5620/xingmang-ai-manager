@@ -813,6 +813,9 @@ if (!hasSingleInstanceLock) {
             packaged: app.isPackaged,
           },
           inspectCodexDesktop: async () => systemService.inspectCodexDesktop(),
+          // 「磁盘空间」那一项要看软件数据目录所在的盘，而 userData 在哪只有宿主
+          // 知道；CLI 落点由诊断自己算。
+          userDataDirectory: app.getPath('userData'),
           // 报告只装中文结论（它会被导出发给客服），认出失败靠的那段上游原文
           // 留在 runtime.jsonl 里。
           log: (level, event, message, detail) => runtimeLog.log(level, 'diagnostics', event, message, detail),

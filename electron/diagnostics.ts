@@ -13,7 +13,16 @@ import {
 } from './command-runner'
 import { defaultProviderConfigRoots, type ProviderConfigRoots } from './codex-home'
 import { inspectProviderConfig, type NativeConfigInspection } from './config-files'
+import {
+  formatFreeSpace,
+  installMinimumFreeBytes,
+  lowDiskSpaceBytes,
+  mergeSameDeviceReadings,
+  readDiskSpace,
+  type DiskSpaceReading,
+} from './disk-space'
 import { gitMissingNotice } from './git-runtime'
+import { managedCliRoot } from './managed-cli-paths'
 import { classifyNetworkFailure, networkFailureMessages } from './network-failure'
 import { relayApiProbeBaseUrl, resolveRelaySite, type RelaySite } from './relay-sites'
 import { resolveCliCommand, resolveCliInstallation } from './tool-installation'
@@ -75,6 +84,13 @@ export interface DiagnosticsDependencies {
   relaySite?: RelaySite
   fetch?: typeof globalThis.fetch
   clashConfigPaths?: readonly string[]
+  /**
+   * 软件数据目录（Electron 的 userData）。诊断自己算不出它在哪，宿主给了才把它
+   * 算进「磁盘空间」这一项；不给就只看 CLI 落点。
+   */
+  userDataDirectory?: string
+  /** 剩余空间的读取口，测试用它造「够 / 不够 / 读不到」三种盘。 */
+  readDiskSpace?: typeof readDiskSpace
   inspectProxyVariables?: (signal: AbortSignal) => Promise<ProxyVariableSummary[]>
   /**
    * 诊断报告是要上屏、也要能导出给客服的，所以它只装中文结论。认出一个失败靠的
@@ -812,6 +828,26 @@ function readClaudeBypass(homeDirectory: string): CheckOutcome {
     : { state: 'pass', summary: 'Claude 权限模式未设为 bypassPermissions' }
 }
 
+/**
+ * 「磁盘空间」这一项只看两处：CLI 落点（托管目录）和软件数据目录。托管目录在
+ * Windows 上要有可信的 ProgramData 才算得出来，算不出就不看这一处；软件数据目录
+ * 由宿主给出（诊断自己算不出 Electron 的 userData 在哪）。
+ */
+function resolveDiskSpaceTargets(
+  env: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform,
+  userDataDirectory?: string,
+): readonly { label: string, path: string }[] {
+  const targets: { label: string, path: string }[] = []
+  try {
+    targets.push({ label: '工具安装目录', path: managedCliRoot(env, platform) })
+  } catch {
+    // 托管目录都算不出来的机器上装不了工具，这一项也就无从说起。
+  }
+  if (userDataDirectory?.trim()) targets.push({ label: '软件数据目录', path: userDataDirectory })
+  return targets
+}
+
 export async function runDiagnostics(dependencies: DiagnosticsDependencies): Promise<DiagnosticsReport> {
   const startedAt = Date.now()
   const env = dependencies.env ?? process.env
@@ -853,6 +889,8 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
   const fetchImpl = dependencies.fetch ?? globalThis.fetch
   const paths = dependencies.clashConfigPaths ?? clashCandidates(userHome, env)
   const inspectProxy = dependencies.inspectProxyVariables ?? ((signal) => defaultProxyVariables(env))
+  const probeDiskSpace = dependencies.readDiskSpace ?? readDiskSpace
+  const diskSpaceTargets = resolveDiskSpaceTargets(env, platform, dependencies.userDataDirectory)
   const log = dependencies.log
   const now = dependencies.now ?? (() => new Date())
   const supportedPlatform = platform === 'win32' || platform === 'darwin'
@@ -1057,6 +1095,56 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
           state: 'pass',
           summary: `已连通（HTTP ${response.status}）`,
           details: { endpoint, status: response.status },
+        }
+      },
+    },
+    {
+      // 8G 内存的机器通常也是 128/256G 的小硬盘，C 盘剩几百兆很常见，而装一个
+      // CLI 的峰值要两份空间（临时目录装完整份再原子替换）。装到一半才报
+      // ENOSPC 是最难受的失败方式，所以这一项的用处是「还没出事先说一声」。
+      code: 'DISK_SPACE',
+      title: '磁盘空间',
+      run: async () => {
+        const readings = mergeSameDeviceReadings(
+          (await Promise.all(diskSpaceTargets.map(async (entry) => {
+            const reading = await probeDiskSpace(entry.path)
+            return reading ? { ...entry, reading } : null
+          })))
+            .filter((entry): entry is { label: string, path: string, reading: DiskSpaceReading } => entry !== null)
+            .map((entry) => ({ ...entry.reading, label: entry.label })),
+        )
+        // 读不到不算失败：网络盘、交接点上 statfs 本来就可能不给数字，为此报一
+        // 条待处理只会让人去修一个没坏的东西。
+        if (!readings.length) {
+          return {
+            state: 'warn',
+            summary: '未能读取磁盘剩余空间，这一项这次跳过',
+            details: { measured: 0 },
+          }
+        }
+        const tightest = readings.reduce(
+          (left, right) => (right.availableBytes < left.availableBytes ? right : left),
+        )
+        const state: DiagnosticState = tightest.availableBytes < installMinimumFreeBytes
+          ? 'fail'
+          : tightest.availableBytes < lowDiskSpaceBytes ? 'warn' : 'pass'
+        const summary = readings
+          .map((reading) => `${reading.label}所在磁盘剩余 ${formatFreeSpace(reading.availableBytes)}`)
+          .join('；')
+        const details: Record<string, boolean | number | string | null> = { measured: readings.length }
+        for (const [index, reading] of readings.entries()) {
+          details[`disk${index + 1}`] = `${reading.label}：${formatFreeSpace(reading.availableBytes)} / `
+            + `${formatFreeSpace(reading.totalBytes)}`
+          details[`path${index + 1}`] = pathForDisplay(reading.measuredPath, displayRoots)
+        }
+        return {
+          state,
+          summary: state === 'fail'
+            ? `${summary}，已经装不下新工具了，请清理后再安装或更新`
+            : state === 'warn'
+              ? `${summary}，空间偏紧，安装或更新工具前建议先清理一些`
+              : summary,
+          details,
         }
       },
     },
