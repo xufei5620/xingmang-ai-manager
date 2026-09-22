@@ -530,6 +530,7 @@ export const tutorialTopics: readonly TutorialTopic[] = [
         detail: '文件夹决定 AI 在哪里处理项目。第一次先用练习目录。',
         bullets: ['点「打开」，选择项目文件夹。', '已有最近目录时可用旁边下拉「换一个目录」。', '等终端里工具启动好，再输入中文任务。'],
         expected: 'CLI 已在正确目录启动，不用再敲一次启动命令。',
+        extra: [{ title: '不知道选哪个文件夹？', detail: '点新建就好：在这一行的「…」里选「新建项目文件夹并打开」，已有最近目录时在旁边下拉里选同一项。软件会建好一个空的项目文件夹并直接打开，不用选位置、不用起名。' }],
         illustration: 'launch',
         action: '回首页打开 CLI',
         page: 'home',
@@ -900,7 +901,7 @@ export const tutorialTopics: readonly TutorialTopic[] = [
         extra: [
           { title: statuses.tool.configChanged[0], detail: '其他程序或手工操作改过配置，当前账号的 Key 可能已不在里面。要用星芒配置就重新写入 Key；如果这是你有意做的修改，在「…」中选择「就用现在这份」。' },
           { title: statuses.tool.detectionFailed[0], detail: '检测失败不等于没安装。先查看具体原因，处理后重新检测。' },
-          { title: '这个文件夹范围太大', detail: '用户主目录、磁盘根目录、桌面、下载、文档等范围太大，改选具体项目文件夹。若仍选择这次打开，不会把该目录标为信任，也不会自动生成项目说明。' },
+          { title: '这个文件夹范围太大', detail: '用户主目录、磁盘根目录、桌面、下载、文档等范围太大，改选具体项目文件夹，或者直接点提示里的「新建一个项目文件夹」。若仍选择这次打开，不会把该目录标为信任，也不会自动生成项目说明。' },
         ],
         action: '回首页查看具体提示',
         page: 'home',
