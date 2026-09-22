@@ -73,6 +73,10 @@ async function initialize(message: Record<string, unknown>): Promise<void> {
     onStartDiagnostic: (stage) => {
       if (process.connected) process.send?.({ type: 'acceleration-diagnostic', event: 'start.failed', stage }, () => undefined)
     },
+    // 只有事件名，没有原因或文本：宿主拿到它只会回头读一次状态（I13）。
+    onRuntimeInterrupted: () => {
+      if (process.connected) process.send?.({ type: 'acceleration-diagnostic', event: 'runtime.exited' }, () => undefined)
+    },
     detectConflicts: () => conflicts.read(),
     onConflictDiagnostic: (stage, ignored) => {
       if (process.connected) process.send?.({ type: 'acceleration-diagnostic', event: 'start.conflict', stage, ignored }, () => undefined)

@@ -1,9 +1,10 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ElementType, type ReactNode } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ElementType, type ReactNode } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { ArrowLeft, Bell, Check, ChevronRight, ExternalLink } from 'lucide-react'
 import { Button, Dialog } from '../../ui'
 import { userFacingErrorMessage } from '../../business-common'
+import { BlockedLinkHint, openExternalOrCopy, type BlockedLinkNotice } from '../../external-link-fallback'
 import { writeLocalPreference } from '../app/preferences'
 import type { RelayNotice } from '../../../../electron/relay-backend'
 import { legacyAnnouncementReadId, markLocalAnnouncementRead, parseNewApiAnnouncementCollection, readLegacyAnnouncementId, readLocalAnnouncementIds, rememberLocalAnnouncementIds } from './newapi-announcements'
@@ -850,6 +851,7 @@ export function AnnouncementCenter({ scope, read, markRemoteRead, syncLocalReads
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [readErrors, setReadErrors] = useState<Record<string, string>>({})
   const [markingIds, setMarkingIds] = useState<string[]>([])
+  const [blockedLink, setBlockedLink] = useState<BlockedLinkNotice | null>(null)
   const revision = useRef(0)
   const pendingReads = useRef(new Set<string>())
   const rows = useRef(new Map<string, HTMLButtonElement>())
@@ -858,9 +860,15 @@ export function AnnouncementCenter({ scope, read, markRemoteRead, syncLocalReads
   const [readId, setReadId] = useState(() => readLegacyAnnouncementId(scope))
   useEffect(() => {
     setSelectedId(null)
+    setBlockedLink(null)
     returnToRow.current = null
     if (open) setAttempt((value) => value + 1)
   }, [open])
+  // 公告里的链接多半不在可直接打开的名单里；被拦下时把地址复制给用户，
+  // 其它失败仍走原来的错误提示。
+  const openLink = useCallback(async (url: string) => {
+    setBlockedLink(await openExternalOrCopy(url, openExternal))
+  }, [openExternal])
   useEffect(() => {
     let current = true
     revision.current += 1
@@ -933,11 +941,13 @@ export function AnnouncementCenter({ scope, read, markRemoteRead, syncLocalReads
   }
   function openEntry(entry: NonNullable<Announcement['entries']>[number]) {
     setSelectedId(entry.id)
+    setBlockedLink(null)
     void markEntryRead(entry)
   }
   function backToList() {
     returnToRow.current = selectedId
     setSelectedId(null)
+    setBlockedLink(null)
   }
   async function markLegacyRead(closeAfter = false) {
     if (!announcement || entries) return
@@ -962,7 +972,7 @@ export function AnnouncementCenter({ scope, read, markRemoteRead, syncLocalReads
   }
   const openNoticeSite = () => {
     if (!noticeUrl) return
-    void openExternal(noticeUrl).catch((cause) => setError(formatAnnouncementError(cause)))
+    void openLink(noticeUrl).catch((cause) => setError(formatAnnouncementError(cause)))
   }
   const preview = entries?.find((entry) => !entry.read)?.title ?? announcement?.text ?? ''
   return <>
@@ -976,6 +986,7 @@ export function AnnouncementCenter({ scope, read, markRemoteRead, syncLocalReads
       ? <Button icon={ArrowLeft} onClick={backToList}>返回列表</Button>
       : <><Button onClick={() => setAttempt((value) => value + 1)}>重新读取</Button>{announcement && !entries && <Button variant="primary" onClick={() => markLegacyRead(true)}>标为已读</Button>}</>}>
       {error && <div className="v2-announcement-error" role="alert"><p>{error.message}</p>{error.responseTooLarge && noticeUrl && <Button size="sm" icon={ExternalLink} onClick={openNoticeSite} testId="announcement-open-site">打开官网查看完整公告</Button>}</div>}
+      {blockedLink && <BlockedLinkHint notice={blockedLink} testId="announcement-blocked-link" />}
       {loading ? <p role="status">正在读取公告</p> : announcement ? entries ? selected ? (
         <article className="v2-announcement-entry" data-testid="announcement-detail" key={selected.id}>
           <h2 tabIndex={-1} ref={detailHeading}>{selected.title}</h2>
@@ -984,7 +995,7 @@ export function AnnouncementCenter({ scope, read, markRemoteRead, syncLocalReads
             <p>已读状态保存失败：{readErrors[selected.id]}</p>
             <Button size="sm" onClick={() => void markEntryRead(selected)}>重试保存已读</Button>
           </div>}
-          <AnnouncementContent text={selected.text} noticeUrl={noticeUrl} openExternal={openExternal} onError={(cause) => setError(formatAnnouncementError(cause))} onClose={onClose} />
+          <AnnouncementContent text={selected.text} noticeUrl={noticeUrl} openExternal={openLink} onError={(cause) => setError(formatAnnouncementError(cause))} onClose={onClose} />
         </article>
       ) : (
         <ul className="v2-announcement-list" data-testid="announcement-list" aria-label="公告列表">
@@ -998,7 +1009,7 @@ export function AnnouncementCenter({ scope, read, markRemoteRead, syncLocalReads
             </button>
           </li>)}
         </ul>
-      ) : <AnnouncementContent text={announcement.text} noticeUrl={noticeUrl} openExternal={openExternal} onError={(cause) => setError(formatAnnouncementError(cause))} onClose={onClose} /> : !error && <p>暂无公告</p>}
+      ) : <AnnouncementContent text={announcement.text} noticeUrl={noticeUrl} openExternal={openLink} onError={(cause) => setError(formatAnnouncementError(cause))} onClose={onClose} /> : !error && <p>暂无公告</p>}
     </Dialog>}
   </>
 }

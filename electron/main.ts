@@ -20,6 +20,7 @@ import { autoUpdater } from 'electron-updater'
 import { AccountCredentialStore } from './account-credential-store'
 import { AnnouncementReadStore } from './announcement-read-store'
 import { createAccelerationExpiryNotice, type AccelerationExpiryNotice } from './acceleration-expiry-notice'
+import { createAccelerationInterruptionNotice, type AccelerationInterruptionNotice } from './acceleration-interruption-notice'
 import { createAccelerationService } from './acceleration-service'
 import { accelerationConflictDescriptions, accelerationFailureMessages, type AccelerationMode, type AccelerationState } from './acceleration-contract'
 import { accelerationStartRequest, createAccelerationPreferenceStore, defaultAccelerationPreference } from './acceleration-preference-store'
@@ -1046,6 +1047,7 @@ if (!hasSingleInstanceLock) {
     let applicationTray: ApplicationTrayController | null = null
     let trayAcceleration: TrayAccelerationCoordinator | null = null
     let accelerationExpiry: AccelerationExpiryNotice | null = null
+    let accelerationInterruption: AccelerationInterruptionNotice | null = null
     let latestTraySystem: SystemSnapshot | null = null
     let latestTrayBalance: AccountBalance | null = null
     let managedMainWindow: BrowserWindow | null = null
@@ -1192,6 +1194,7 @@ if (!hasSingleInstanceLock) {
         latestTrayBalance = null
         trayAcceleration?.reset()
         accelerationExpiry?.reset()
+        accelerationInterruption?.reset()
         applicationTray?.updateSnapshot()
         canvasController.setAccountUser(null)
         canvasController.setAccountUser(state.account?.userId ?? null)
@@ -1699,6 +1702,10 @@ if (!hasSingleInstanceLock) {
           ...(typeof (error as NodeJS.ErrnoException | null)?.code === 'string' ? { code: (error as NodeJS.ErrnoException).code } : {}),
           detail: accelerationFailureMessages[reason],
         }),
+        // 加速中内核或辅助进程自己没了：网络设置由辅助进程（或宿主重拉的那一个）
+        // 先改回去，这里负责读一次状态让各处跟上，并告诉用户网络现在是什么样。
+        onRuntimeExited: () => accelerationInterruption?.runtimeExited(),
+        onHelperExited: (recovered) => accelerationInterruption?.helperExited(recovered),
         ...(app.isPackaged ? { entitlementSource: 'local-device' as const } : {}),
       })
     } catch {
@@ -1718,21 +1725,34 @@ if (!hasSingleInstanceLock) {
       return `${accounts.getSiteId() === 'solov-api' ? 'api-account' : 'xm-account'}:${state.account.userId}`
     }
     accelerationDownloadRoutes = developmentAcceleration ?? null
+    function showAccelerationPage() {
+      if (managedMainWindow && !managedMainWindow.isDestroyed()) {
+        managedMainWindow.webContents.send(ipcEventChannels.onNavigate, 'acceleration')
+      }
+    }
     // 时长快用完、以及用完自动断开的那一刻各发一条系统通知。放在主进程是因为
     // 窗口缩到托盘之后渲染层的计时与轮询都停着，而那正是用户在打游戏的时候。
     accelerationExpiry = createAccelerationExpiryNotice({
       notify: (stage, eventKey) => hostNotifier()({
         event: stage === 'expiring' ? 'accelerationExpiring' : 'accelerationExhausted',
         eventKey,
-        onClick: () => {
-          if (managedMainWindow && !managedMainWindow.isDestroyed()) {
-            managedMainWindow.webContents.send(ipcEventChannels.onNavigate, 'acceleration')
-          }
-        },
+        onClick: showAccelerationPage,
       }),
       readState: (scope) => acceleration
         ? acceleration.getAccelerationState(scope)
         : Promise.reject(new Error('加速服务尚未就绪。')),
+      log: (level, event, message, detail) => runtimeLog.log(level, 'network', event, message, detail),
+    })
+    accelerationInterruption = createAccelerationInterruptionNotice({
+      notify: (outcome, eventKey) => hostNotifier()({
+        event: outcome === 'restored' ? 'accelerationInterrupted' : 'accelerationInterruptedUnrestored',
+        eventKey,
+        onClick: showAccelerationPage,
+      }),
+      readState: (scope) => acceleration
+        ? acceleration.getAccelerationState(scope)
+        : Promise.reject(new Error('加速服务尚未就绪。')),
+      getAccountScope: () => readAccelerationAccountScope(),
       log: (level, event, message, detail) => runtimeLog.log(level, 'network', event, message, detail),
     })
     acceleration = createAccelerationService({
@@ -1742,6 +1762,7 @@ if (!hasSingleInstanceLock) {
       onState: (state) => {
         trayAcceleration?.observe(state)
         accelerationExpiry?.observe(state)
+        accelerationInterruption?.observe(state)
       },
     })
     // 托盘上的连接与断开走的就是加速页那条路，线路与模式也用他在加速页上选过并
@@ -1838,6 +1859,7 @@ if (!hasSingleInstanceLock) {
     })
     app.once('will-quit', () => {
       accelerationExpiry?.dispose()
+      accelerationInterruption?.dispose()
       void acceleration?.dispose().catch((error) => runtimeLog.exception('network', 'acceleration.shutdown.failed', error))
       void developmentAcceleration?.dispose().catch(() => undefined)
       runtimeLog.log('info', 'main', 'app.stopping', '应用主进程即将退出')
