@@ -58,6 +58,7 @@ describe('isolated platform-settings.json', () => {
       balance: false,
       task: true,
       cliUpdate: true,
+      acceleration: true,
     })
   })
   it('still rejects a switch whose value is not a boolean', () => {

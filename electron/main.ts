@@ -19,6 +19,7 @@ import {
 import { autoUpdater } from 'electron-updater'
 import { AccountCredentialStore } from './account-credential-store'
 import { AnnouncementReadStore } from './announcement-read-store'
+import { createAccelerationExpiryNotice, type AccelerationExpiryNotice } from './acceleration-expiry-notice'
 import { createAccelerationService } from './acceleration-service'
 import { accelerationConflictDescriptions, accelerationFailureMessages } from './acceleration-contract'
 import { accelerationStartFailureDescriptions, createAccelerationDevelopmentHost, readAccelerationDevelopmentConfig, type AccelerationDevelopmentHost } from './acceleration-development-host'
@@ -86,6 +87,7 @@ import { ProviderExtensionService } from './provider-extensions'
 import { ProviderSessionsService } from './provider-sessions'
 import { guardProcessOutputStreams } from './process-stream-errors'
 import { RuntimeLogStore } from './runtime-log'
+import { hostNotifier } from './platform/host-notification-bridge'
 import { attachPlatformAuditLog } from './platform/runtime-log-bridge'
 import { recordStartupFailure } from './startup-log'
 import { inspectProviderConfig } from './config-files'
@@ -991,6 +993,7 @@ if (!hasSingleInstanceLock) {
     let periodicUpdateTimer: NodeJS.Timeout | null = null
     let applicationTray: ApplicationTrayController | null = null
     let trayAcceleration: TrayAccelerationCoordinator | null = null
+    let accelerationExpiry: AccelerationExpiryNotice | null = null
     let latestTraySystem: SystemSnapshot | null = null
     let latestTrayBalance: AccountBalance | null = null
     let managedMainWindow: BrowserWindow | null = null
@@ -1133,6 +1136,7 @@ if (!hasSingleInstanceLock) {
         }
         latestTrayBalance = null
         trayAcceleration?.reset()
+        accelerationExpiry?.reset()
         applicationTray?.updateSnapshot()
         canvasController.setAccountUser(null)
         canvasController.setAccountUser(state.account?.userId ?? null)
@@ -1659,10 +1663,30 @@ if (!hasSingleInstanceLock) {
       return `${accounts.getSiteId() === 'solov-api' ? 'api-account' : 'xm-account'}:${state.account.userId}`
     }
     accelerationDownloadRoutes = developmentAcceleration ?? null
+    // 时长快用完、以及用完自动断开的那一刻各发一条系统通知。放在主进程是因为
+    // 窗口缩到托盘之后渲染层的计时与轮询都停着，而那正是用户在打游戏的时候。
+    accelerationExpiry = createAccelerationExpiryNotice({
+      notify: (stage, eventKey) => hostNotifier()({
+        event: stage === 'expiring' ? 'accelerationExpiring' : 'accelerationExhausted',
+        eventKey,
+        onClick: () => {
+          if (managedMainWindow && !managedMainWindow.isDestroyed()) {
+            managedMainWindow.webContents.send(ipcEventChannels.onNavigate, 'acceleration')
+          }
+        },
+      }),
+      readState: (scope) => acceleration
+        ? acceleration.getAccelerationState(scope)
+        : Promise.reject(new Error('加速服务尚未就绪。')),
+      log: (level, event, message, detail) => runtimeLog.log(level, 'network', event, message, detail),
+    })
     acceleration = createAccelerationService({
       backend: developmentAcceleration,
       getAccountScope: () => readAccelerationAccountScope(),
-      onState: (state) => trayAcceleration?.observe(state),
+      onState: (state) => {
+        trayAcceleration?.observe(state)
+        accelerationExpiry?.observe(state)
+      },
     })
     // 托盘上的连接与断开走的就是加速页那条路：线路交给「智能分配」、模式用标准
     // 模式（两者都是加速页上的当次选择，没有落盘，托盘读不到也不替用户猜），与
@@ -1756,6 +1780,7 @@ if (!hasSingleInstanceLock) {
         : {}),
     })
     app.once('will-quit', () => {
+      accelerationExpiry?.dispose()
       void acceleration?.dispose().catch((error) => runtimeLog.exception('network', 'acceleration.shutdown.failed', error))
       void developmentAcceleration?.dispose().catch(() => undefined)
       runtimeLog.log('info', 'main', 'app.stopping', '应用主进程即将退出')

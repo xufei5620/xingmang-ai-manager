@@ -14,6 +14,11 @@ import { registerPlatformHandlers, type PlatformIpcLogger } from './ipc'
 import { PlatformSettingsStore } from './settings-store'
 import { PlatformSystemService } from './system-service'
 import {
+  attachHostNotifier,
+  detachHostNotifier,
+  type HostNotifier,
+} from './host-notification-bridge'
+import {
   createPlatformNotifications,
   type PlatformNotificationRuntime,
 } from './notifications'
@@ -39,6 +44,13 @@ export function installPlatformSystemApi(
   let unsubscribe: (() => void) | null = null
   let notifications: ReturnType<typeof createPlatformNotifications> | null =
     null
+  // main.ts 与这里互不 import，加速那两条通知靠这个转接口过来。
+  const hostNotifier: HostNotifier = (request) =>
+    notifications?.notifyHost(
+      request.event,
+      request.eventKey,
+      request.onClick,
+    ) ?? 'unsupported'
   const registrations = new Map<Session, string>()
   const extraPreload = path.resolve(
     options.platformPreloadPath ?? path.join(__dirname, 'preload.js'),
@@ -103,6 +115,7 @@ export function installPlatformSystemApi(
               balance: true,
               task: true,
               cliUpdate: true,
+              acceleration: true,
               ...store.read().notifications,
             }),
             focusMainWindow: () => {
@@ -116,6 +129,7 @@ export function installPlatformSystemApi(
           },
           notificationRuntime,
         )
+        attachHostNotifier(hostNotifier)
         service = new PlatformSystemService({
           app: options.app,
           nativeTheme: options.nativeTheme,
@@ -159,6 +173,7 @@ export function installPlatformSystemApi(
     unregisterHandlers()
     unsubscribe?.()
     service?.dispose()
+    detachHostNotifier(hostNotifier)
     notifications?.dispose()
     for (const [session, id] of registrations) {
       try {

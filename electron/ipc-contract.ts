@@ -339,7 +339,7 @@ export interface AccountKeyCliConfigurationInput {
 }
 export type AccountChangePasswordInput = NewApiChangePasswordInput
 export type AccountChangePasswordResult = NewApiChangePasswordResult
-export type RendererNavigationTarget = 'settings' | 'updates' | 'topup'
+export type RendererNavigationTarget = 'settings' | 'updates' | 'topup' | 'acceleration'
 
 export interface AccountManagedCliConfigurationInput {
   providers: ProviderId[]

@@ -77,6 +77,7 @@ describe('platform IPC main-window boundary', () => {
       setThemePreference: vi.fn(async () => 'theme'),
       setHighContrast: vi.fn(),
       setStartup: vi.fn(),
+      setNotificationPreference: vi.fn(async () => 'notification'),
     } as unknown as PlatformSystemService
     const removeHandler = vi.fn()
     const dispose = registerPlatformHandlers({
@@ -127,6 +128,26 @@ describe('platform IPC main-window boundary', () => {
         true,
       ),
     ).toThrow('隐私偏好')
+    // 加速那两条通知由主进程自己发：偏好开关照常收，发通知这条通道必须拒收，
+    // 否则渲染层能绕过「亲眼看着连上」那层判断弹一条「加速已断开」。
+    expect(() =>
+      callbacks.get(platformChannels.notifyActivity)!(
+        h.event,
+        'acceleration',
+        'expired',
+      ),
+    ).toThrow('通知类型')
+    await expect(
+      callbacks.get(platformChannels.setNotificationPreference)!(
+        h.event,
+        'acceleration',
+        false,
+      ),
+    ).resolves.toBe('notification')
+    expect(service.setNotificationPreference).toHaveBeenCalledWith(
+      'acceleration',
+      false,
+    )
   })
   it('keeps sandbox preload literal channels aligned and emits no sibling require', () => {
     const file = path.join(__dirname, 'preload.ts')
