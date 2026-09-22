@@ -58,6 +58,13 @@ export interface AccelerationDevelopmentBackendOptions {
   detectConflicts?: () => Promise<AccelerationConflictKind[]>
   /** Both the finding and what the user decided about it, one call per kind. */
   onConflictDiagnostic?: (kind: AccelerationConflictKind, ignored: boolean) => void
+  /**
+   * 一个正在加速的会话因为内核自己退出而结束了，已经先试过把网络设置改回去
+   * （改没改成，由之后读到的状态说明）。不带任何原因或文本：宿主只需要知道
+   * 「该去读一次状态、该告诉用户了」。两条路径都会走到这里——内核退出的回调，
+   * 以及恰好先一步读状态时发现内核已经不在——所以宿主不必关心是谁先看到的。
+   */
+  onRuntimeInterrupted?: () => void
 }
 
 export interface AccelerationDevelopmentBackend extends AccelerationApi {
@@ -117,7 +124,7 @@ function connectionFailure(error: unknown): string {
   return startFailure
 }
 const stopFailure = '加速尚未完全停止，正在保留恢复状态，请再次点击停止。'
-const exitFailure = '加速服务意外退出，原网络设置已恢复，请重新开始加速。'
+const exitFailure = '加速意外断开了，网络已恢复正常，可以重新连接。'
 
 function assertScope(scope: string) {
   if (!/^(?:xm-account|api-account):[1-9]\d{0,15}$/.test(scope)
@@ -319,6 +326,10 @@ export function createAccelerationDevelopmentBackend(options: AccelerationDevelo
       throw error
     }
   }
+  function reportRuntimeInterrupted() {
+    try { options.onRuntimeInterrupted?.() }
+    catch { /* Reporting must not change recovery behavior. */ }
+  }
   function reportStartFailure(error: unknown, phase: AccelerationStartFailurePhase) {
     try { options.onStartDiagnostic?.(classifyAccelerationStartFailure(error, phase)) }
     catch { /* Reporting must not change recovery behavior. */ }
@@ -415,6 +426,7 @@ export function createAccelerationDevelopmentBackend(options: AccelerationDevelo
         await stopSession()
         if (exited) lastErrors.set(oldScope, exitFailure)
       } catch { arm(5000) }
+      if (exited) reportRuntimeInterrupted()
     }
     return state(scope)
   }
@@ -611,6 +623,7 @@ export function createAccelerationDevelopmentBackend(options: AccelerationDevelo
       const scope = session.scope
       try { await stopSession(); lastErrors.set(scope, exitFailure) }
       catch { arm(5000); throw new Error(stopFailure) }
+      finally { reportRuntimeInterrupted() }
     }),
     dispose() {
       closing = true
