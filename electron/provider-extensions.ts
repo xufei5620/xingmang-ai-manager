@@ -1005,7 +1005,7 @@ export function claudeMarketplaceGitMissingMessage(
   platform: NodeJS.Platform = process.platform,
 ): string {
   // 分平台的安装指引在 git-runtime.ts 只写一份：首页运行环境行和检查页要说的是
-  // 同一句话，两处各抄一遍早晚会说岔（#290）。
+  // 同一句话，两处各抄一遍早晚会说岔（#294）。
   return `第一次安装 Claude Code 插件要先把官方插件市场下载到本机，这一步需要 Git，但这台电脑上没有找到它。${gitInstallGuidance(platform)}，装好后重新打开本软件再试。`
 }
 
