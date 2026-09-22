@@ -4,7 +4,8 @@ import type { AccountLoginResult, AccountStatus, LegalDocumentKind } from '../..
 import { Button, Dialog, Input, Segment } from '../../ui'
 import { getAuthApi, type AccountSiteId, type AuthApi } from './api'
 import { LegalDocument } from './LegalDocument'
-import { accountSources, authErrorMessage, isEmail, parseInviteCode, parseRecoveryCode, requiresBrowserAuthentication, validateRegistration, type RegistrationDraft, type RegistrationErrors } from './state'
+import { isUsernameTakenError } from './account-errors'
+import { accountSources, authErrorMessage, isEmail, parseInviteCode, parseRecoveryCode, requiresBrowserAuthentication, usernameFromEmail, validateRegistration, type RegistrationDraft, type RegistrationErrors } from './state'
 import { useCooldown } from './useCooldown'
 import './auth.css'
 
@@ -25,6 +26,10 @@ export function AuthFlow({ api: providedApi, initialMode = 'login', initialIdent
   const [mode, setMode] = useState<AuthMode>(initialMode)
   const [siteId, setSiteId] = useState<AccountSiteId>(initialMode === 'register' ? 'solov' : initialSiteId)
   const source = accountSources[siteId]
+  // 2026-08 后端统一之后新注册的都是星芒账号，「历史账号」只剩老用户用得上：默认收起，
+  // 点底部那行才出现来源切换。收起不等于换默认——默认仍是星芒账号，只发选中的那一站。
+  const [sourceOpen, setSourceOpen] = useState(initialSiteId !== 'solov')
+  const sourceVisible = sourceOpen || siteId !== 'solov'
   const [legal, setLegal] = useState<LegalDocumentKind | null>(null)
   const [status, setStatus] = useState<AccountStatus | null>(null)
   const [statusError, setStatusError] = useState('')
@@ -35,6 +40,9 @@ export function AuthFlow({ api: providedApi, initialMode = 'login', initialIdent
   const [agreed, setAgreed] = useState(false)
   const [registration, setRegistration] = useState<RegistrationDraft>({ email: '', username: '', password: '', confirm: '', code: '', invite: initialInviteCode, agreed: false })
   const [fieldErrors, setFieldErrors] = useState<RegistrationErrors>({})
+  const [inviteOpen, setInviteOpen] = useState(Boolean(initialInviteCode.trim()))
+  // 一次性的聚焦请求：撞名时请求发出去那会儿表单还是禁用的，要等 busy 落下再聚焦。
+  const [focusTarget, setFocusTarget] = useState('')
   const [recoveryStep, setRecoveryStep] = useState<1 | 2 | 3>(1)
   const [recoveryEmail, setRecoveryEmail] = useState(isEmail(initialIdentifier) ? initialIdentifier : '')
   const [recoveryText, setRecoveryText] = useState('')
@@ -48,6 +56,8 @@ export function AuthFlow({ api: providedApi, initialMode = 'login', initialIdent
   const locked = useRef(false)
   const epoch = useRef(0)
   const loginTouched = useRef(Boolean(initialIdentifier))
+  // 用户名默认跟着邮箱 @ 前那段走，用户亲手改过就不再覆盖；清空了则重新跟随。
+  const usernameFollowsEmail = useRef(true)
   const focusedStep = useRef('')
   const registerCooldown = useCooldown()
   const resetCooldown = useCooldown()
@@ -64,6 +74,15 @@ export function AuthFlow({ api: providedApi, initialMode = 'login', initialIdent
     })
     return () => window.cancelAnimationFrame(frame)
   }, [siteId, mode, recoveryStep, legal, busy, identifier])
+  useEffect(() => {
+    if (!focusTarget || busy) return
+    const frame = window.requestAnimationFrame(() => {
+      const input = document.getElementById(focusTarget)
+      if (input instanceof HTMLInputElement && !input.disabled) input.focus()
+      setFocusTarget('')
+    })
+    return () => window.cancelAnimationFrame(frame)
+  }, [focusTarget, busy])
   useEffect(() => {
     let active = true
     setStatusError(''); setStatus(null)
@@ -86,6 +105,11 @@ export function AuthFlow({ api: providedApi, initialMode = 'login', initialIdent
     setSiteId(value); setPassword(''); setRemember(false); setError(''); setMessage(''); setBrowserAuthentication(false)
     setRecoveryStep(1); setRecoveryText(''); setNewPassword(''); setReveal(false); setCopyFallback(false)
     loginTouched.current = false
+  }
+
+  const openHistorySource = () => {
+    if (locked.current) return
+    setSourceOpen(true); changeSource('solov-api')
   }
 
   const changeMode = (next: AuthMode, nextIdentifier?: string) => {
@@ -126,6 +150,15 @@ export function AuthFlow({ api: providedApi, initialMode = 'login', initialIdent
     setRegistration((draft) => ({ ...draft, [key]: value }))
     setFieldErrors((errors) => ({ ...errors, [key]: undefined }))
   }
+  const updateEmail = (value: string) => {
+    const follow = usernameFollowsEmail.current
+    setRegistration((draft) => ({ ...draft, email: value, username: follow ? usernameFromEmail(value) : draft.username }))
+    setFieldErrors((errors) => ({ ...errors, email: undefined, ...(follow ? { username: undefined } : {}) }))
+  }
+  const updateUsername = (value: string) => {
+    usernameFollowsEmail.current = !value.trim()
+    updateRegistration('username', value)
+  }
   const sendVerification = () => {
     if (!isEmail(registration.email)) { setFieldErrors((errors) => ({ ...errors, email: '请填写正确的邮箱' })); return }
     if (registerCooldown.seconds) return
@@ -140,7 +173,13 @@ export function AuthFlow({ api: providedApi, initialMode = 'login', initialIdent
     if (Object.keys(errors).length) return
     const draft = registration
     void run('创建账号', async (current) => {
-      await api.register({ email: draft.email.trim(), username: draft.username.trim(), password: draft.password, verificationCode: draft.code.trim(), affCode: parseInviteCode(draft.invite) || undefined })
+      try { await api.register({ email: draft.email.trim(), username: draft.username.trim(), password: draft.password, verificationCode: draft.code.trim(), affCode: parseInviteCode(draft.invite) || undefined }) }
+      catch (reason) {
+        // 用户名是替他从邮箱取的，撞名是这条路上最可能遇到的失败：直接指到那一格。
+        if (!isUsernameTakenError(reason)) throw reason
+        if (current()) { usernameFollowsEmail.current = false; setFieldErrors((errors) => ({ ...errors, username: '这个用户名已经有人用了，换一个试试' })); setFocusTarget('register-user') }
+        return
+      }
       if (!current()) return
       let result: AccountLoginResult
       try { result = await api.login({ username: draft.username.trim(), password: draft.password, siteId: 'solov' }) }
@@ -208,7 +247,7 @@ export function AuthFlow({ api: providedApi, initialMode = 'login', initialIdent
   </>
   return <Dialog open title={mode === 'login' ? `登录${source.label}` : mode === 'register' ? '创建星芒账号' : `找回${source.label}密码`} subtitle={mode === 'login' ? '登录后继续你的工作台' : mode === 'register' ? '注册成功后登录并继续新手引导' : source.supportsPasswordReset ? `第 ${recoveryStep} 步，共 3 步` : '通过历史账号官网恢复访问'} icon={mode === 'login' ? LogIn : mode === 'register' ? UserPlus : KeyRound} width={480} onClose={close} busy={busy} dirty={Boolean(password || registration.password || recoveryText)} testId={`${mode === 'recovery' ? 'forgot-password' : mode}-dialog`} footer={footer}>
     <div className="auth-form" aria-busy={busy} data-busy={busy} onKeyDown={(event) => { if (event.key !== 'Enter' || event.nativeEvent.isComposing || event.target instanceof HTMLButtonElement || event.target instanceof HTMLTextAreaElement || busy) return; event.preventDefault(); if (mode === 'login') submitLogin(); else if (mode === 'register') submitRegistration(); else if (recoveryStep === 1) sendReset(); else if (recoveryStep === 2) submitReset() }}>
-      {mode !== 'register' && <div className="auth-source"><span className="auth-source-label">账号来源</span><Segment label="账号来源" value={siteId} onChange={changeSource} testId="auth-source" options={Object.entries(accountSources).map(([value, entry]) => ({ value, label: entry.label, disabled: busy }))} /></div>}
+      {mode !== 'register' && sourceVisible && <div className="auth-source"><span className="auth-source-label">账号来源</span><Segment label="账号来源" value={siteId} onChange={changeSource} testId="auth-source" options={Object.entries(accountSources).map(([value, entry]) => ({ value, label: entry.label, disabled: busy }))} /></div>}
       {mode === 'login' && <>
         {field(siteId === 'solov-api' ? '注册邮箱' : '用户名或邮箱', 'login-account', identifier, (value) => { loginTouched.current = true; setIdentifier(value) }, { autoComplete: 'username', placeholder: siteId === 'solov-api' ? '输入历史账号的注册邮箱' : '输入用户名或邮箱' })}
         {field('密码', 'login-password', password, (value) => { loginTouched.current = true; setPassword(value) }, { password: true, autoComplete: 'current-password', placeholder: '输入密码' })}
@@ -219,10 +258,11 @@ export function AuthFlow({ api: providedApi, initialMode = 'login', initialIdent
         {statusError && <div role="alert"><p className="auth-error">{statusError}</p><Button icon={RefreshCw} onClick={() => setStatusRevision((value) => value + 1)} testId="register-status-retry">重新读取</Button></div>}
         {!status && !statusError && <p role="status">正在读取注册设置</p>}
         {status && (!status.registerEnabled || !status.passwordRegisterEnabled) && <p className="auth-error" role="alert">目前暂未开放账号注册</p>}
-        <div className="auth-email-row">{field('邮箱', 'register-email', registration.email, (value) => updateRegistration('email', value), { type: 'email', autoComplete: 'email', placeholder: '输入您的qq邮箱', error: fieldErrors.email })}{status?.emailVerificationEnabled && <Button onClick={sendVerification} icon={Mail} disabled={busy || Boolean(registerCooldown.seconds)} testId="register-send-code">{registerCooldown.seconds ? `${registerCooldown.seconds} 秒后重发` : '获取验证码'}</Button>}</div>
-        <div className="auth-two-fields">{status?.emailVerificationEnabled && field('验证码', 'register-code', registration.code, (value) => updateRegistration('code', value), { autoComplete: 'one-time-code', error: fieldErrors.code })}{field('用户名', 'register-user', registration.username, (value) => updateRegistration('username', value), { autoComplete: 'username', placeholder: '不超过 20 个字符', error: fieldErrors.username, maxLength: 20 })}</div>
+        <div className="auth-email-row">{field('邮箱', 'register-email', registration.email, updateEmail, { type: 'email', autoComplete: 'email', placeholder: '常用邮箱（如 QQ 邮箱）', error: fieldErrors.email })}{status?.emailVerificationEnabled && <Button onClick={sendVerification} icon={Mail} disabled={busy || Boolean(registerCooldown.seconds)} testId="register-send-code">{registerCooldown.seconds ? `${registerCooldown.seconds} 秒后重发` : '获取验证码'}</Button>}</div>
+        <div className="auth-two-fields">{status?.emailVerificationEnabled && field('验证码', 'register-code', registration.code, (value) => updateRegistration('code', value), { autoComplete: 'one-time-code', error: fieldErrors.code })}{field('用户名', 'register-user', registration.username, updateUsername, { autoComplete: 'username', placeholder: '自动取邮箱 @ 前面的部分', error: fieldErrors.username, maxLength: 20 })}</div>
         <div className="auth-two-fields">{field('密码', 'register-password', registration.password, (value) => updateRegistration('password', value), { password: true, autoComplete: 'new-password', placeholder: '8 至 20 位', maxLength: 20, error: fieldErrors.password })}{field('确认密码', 'register-password-confirm', registration.confirm, (value) => updateRegistration('confirm', value), { password: true, autoComplete: 'new-password', placeholder: '再次输入密码', maxLength: 20, error: fieldErrors.confirm })}</div>
-        {field('邀请码（选填）', 'register-invite', registration.invite, (value) => updateRegistration('invite', value), { placeholder: '邀请码或邀请链接', error: fieldErrors.invite })}
+        {inviteOpen ? field('邀请码（选填）', 'register-invite', registration.invite, (value) => updateRegistration('invite', value), { placeholder: '邀请码或邀请链接', error: fieldErrors.invite })
+          : <div className="auth-more"><Button size="xs" variant="ghost" disabled={busy} onClick={() => { setInviteOpen(true); setFocusTarget('register-invite') }} testId="register-invite-toggle">有邀请码？</Button></div>}
         {agreement(registration.agreed, (value) => updateRegistration('agreed', value))}{fieldErrors.agreed && <p role="alert" className="auth-field-error">{fieldErrors.agreed}</p>}
       </>}
       {mode === 'recovery' && !source.supportsPasswordReset && <p className="auth-hint" data-testid="forgot-official-help">历史账号暂不支持在客户端重置密码。请前往历史账号官网使用找回入口；若官网未提供入口，请联系官网客服恢复访问。</p>}
@@ -232,6 +272,7 @@ export function AuthFlow({ api: providedApi, initialMode = 'login', initialIdent
         {recoveryStep === 2 && <><p className="auth-hint">邮箱：{recoveryEmail}</p>{field('重置码或邮件链接', 'forgot-token', recoveryText, setRecoveryText, { placeholder: '粘贴重置码或邮件中的完整链接', autoComplete: 'off' })}<div className="auth-form-actions"><Button variant="ghost" icon={ArrowLeft} disabled={busy} onClick={() => { setRecoveryStep(1); setError('') }} testId="forgot-change-email">修改邮箱</Button><Button variant="ghost" icon={RefreshCw} disabled={busy || Boolean(resetCooldown.seconds)} onClick={sendReset} testId="forgot-resend">{resetCooldown.seconds ? `${resetCooldown.seconds} 秒后重发` : '重新发送'}</Button></div></>}
         {recoveryStep === 3 && <><div className="auth-reset-success"><Check size={22} aria-hidden="true" /><strong>密码已重置</strong></div><div className="auth-field"><label htmlFor="forgot-new-password">新密码</label><div className="auth-password-result"><Input id="forgot-new-password" testId="forgot-new-password" readOnly type={reveal ? 'text' : 'password'} value={newPassword} aria-label="新密码" mono /><Button variant="ghost" icon={reveal ? EyeOff : Eye} onClick={() => setReveal(!reveal)} testId="forgot-show-password">{reveal ? '隐藏' : '显示'}</Button><Button icon={Copy} onClick={copyPassword} disabled={busy} testId="forgot-copy-password">复制</Button></div>{copyFallback && <p className="auth-hint">选中新密码后使用系统复制操作，再返回登录。</p>}</div></>}
       </>}
+      {mode !== 'register' && !sourceVisible && (mode === 'login' || recoveryStep === 1) && <div className="auth-more"><Button size="xs" variant="ghost" disabled={busy} onClick={openHistorySource} testId="auth-source-expand">{mode === 'login' ? '用历史账号登录' : '找回历史账号的密码'}</Button></div>}
       {message && <p className="auth-message" role="status" data-testid="auth-message">{message}</p>}
       {error && <p className="auth-error" role="alert" data-testid="auth-error">{error}</p>}
       {browserAuthentication && <Button variant="ghost" icon={ExternalLink} onClick={openAccountWebsite} disabled={busy} testId="auth-open-website">前往{source.label}官网</Button>}
