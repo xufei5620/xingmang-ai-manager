@@ -86,27 +86,33 @@ export interface InheritedKeySettings {
 /**
  * 撤销一把工具正在用的 Key 后，换上的新 Key 照抄它的限制：设了上限就沿用剩下的额度，
  * 设了到期时间就沿用到期时间。什么都没设（不限额、永不过期）时返回 null，照旧签。
- * 上限已经用完或已经过期的，不签一把「看着新、其实用不了」的 Key，直接说清楚。
+ *
+ * 上限已经用完的也照签一把，额度只给后端允许的最小值（minimumQuota），等于照样停着；
+ * 不签的话这个工具在「按工具分账」里就没有 Key 可调，会一直卡住。已经到期的不签，
+ * 没法签一把「已经过期」的新 Key。
  */
 export function inheritedKeySettings(
   key: { remainQuota: number; unlimitedQuota: boolean; expiredAt: string | null },
+  minimumQuota: number,
   nowMs = Date.now(),
 ): InheritedKeySettings | null {
   const expiredTime = accountKeyExpiredTime(key.expiredAt)
   if (key.unlimitedQuota && expiredTime === -1) return null
-  if (!key.unlimitedQuota && (!Number.isFinite(key.remainQuota) || key.remainQuota <= 0)) {
-    throw new Error(managedKeyQuotaExhaustedMessage)
-  }
-  if (expiredTime !== -1 && expiredTime * 1000 <= nowMs) {
-    throw new Error('原来那把密钥已经到期了，软件没有自动换新的。到「账号」页「密钥」里新建一把、设好到期时间就行。')
-  }
+  if (expiredTime !== -1 && expiredTime * 1000 <= nowMs) throw new Error(inheritedKeyExpiredMessage)
   return {
     // 原样照抄：new-api 回的本就是整数额度单位，Sub2API 的是可带小数的金额。
-    remainQuota: key.unlimitedQuota ? 0 : key.remainQuota,
+    remainQuota: key.unlimitedQuota ? 0 : Math.max(Number.isFinite(key.remainQuota) ? key.remainQuota : 0, minimumQuota),
     unlimitedQuota: key.unlimitedQuota,
     expiredTime,
   }
 }
+
+/** 这把 Key 设了上限、而且一点不剩了。 */
+export function isUsedUpKeyLimit(key: { remainQuota: number; unlimitedQuota: boolean }): boolean {
+  return !key.unlimitedQuota && !(key.remainQuota > 0)
+}
+
+export const inheritedKeyExpiredMessage = '原来那把密钥已经到期了，这次没有自动换新的。确认还要继续用，再点一次就会换上一把新的。'
 
 export interface ManagedCliKeyLimit {
   provider: ProviderId

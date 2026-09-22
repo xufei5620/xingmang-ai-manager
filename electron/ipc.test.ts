@@ -16,6 +16,7 @@ import { createAccountWorkGate } from './account-work-gate'
 import { accelerationBonusCode } from './acceleration-contract'
 import { managedCliKeyProfiles, providerIds } from './catalog'
 import { managedKeyQuotaExhaustedMessage } from './account-key-quota'
+import { createManagedKeyReplacementStore, type ManagedKeyReplacementStore } from './managed-key-replacement-store'
 import { externalUrlBlockedErrorName, isExternalUrlBlockedError } from './external-url-blocked'
 import { resolveXingmangAiBundledSkillRoot } from './xingmang-ai-skill'
 
@@ -4379,7 +4380,7 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
         accessedAt: null,
         ...overrides,
       })
-      function setup(key: AccountKeysPage['keys'][number] | Error) {
+      function setup(key: AccountKeysPage['keys'][number] | Error, keyReplacements?: ManagedKeyReplacementStore, cached = true) {
         const service = serviceStub()
         const accountService = accountServiceStub()
         vi.mocked(accountService.getSessionState).mockReturnValue({ authenticated: true, account })
@@ -4397,11 +4398,13 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
           save: vi.fn(async () => undefined),
           remove: vi.fn(async () => undefined),
         }
-        vi.mocked(managedCliKeys.read).mockResolvedValueOnce([
-          { id: 7, provider: 'codex', group: codex.group, name: codex.keyName, key: 'sk-old' },
-        ])
-        register(service, 'C:\\app-data\\logs', undefined, accountService, undefined, managedCliKeys)
-        return { accountService, service }
+        if (cached) {
+          vi.mocked(managedCliKeys.read).mockResolvedValueOnce([
+            { id: 7, provider: 'codex', group: codex.group, name: codex.keyName, key: 'sk-old' },
+          ])
+        }
+        register(service, 'C:\\app-data\\logs', undefined, accountService, undefined, managedCliKeys, {}, keyReplacements ? { keyReplacements } : {})
+        return { accountService, service, managedCliKeys }
       }
       const configureCodex = () => electronMocks.handlers.get('account:configure-managed-clis')!(
         trustedEvent(),
@@ -4427,14 +4430,60 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
         expect(accountService.provisionCliKey).toHaveBeenCalledWith(expect.not.objectContaining({ fresh: true }))
       })
 
-      it('stops instead of issuing a replacement when the revoked key\'s cap was already used up', async () => {
+      it('keeps a used-up cap used up: a minimal-cap replacement the user can raise, and says so', async () => {
         const { accountService } = setup(accountKey({ remainQuota: 0, status: 4 }))
 
         await electronMocks.handlers.get('account:revoke-key')!(trustedEvent(), 7)
         const outcome = await configureCodex()
 
         expect(outcome).toEqual({ configured: [], failed: [{ provider: 'codex', message: managedKeyQuotaExhaustedMessage }] })
-        expect(accountService.provisionCliKey).not.toHaveBeenCalledWith(expect.objectContaining({ name: codex.keyName }))
+        expect(accountService.provisionCliKey).toHaveBeenCalledWith(expect.objectContaining({
+          name: codex.keyName, remainQuota: 1, unlimitedQuota: false, fresh: true,
+        }))
+        expect(accountService.provisionCliKey).not.toHaveBeenCalledWith(expect.objectContaining({ name: codex.keyName, unlimitedQuota: true }))
+      })
+
+      it('still copies the limits after the app restarts between revoking and replacing', async () => {
+        const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-key-replacements-'))
+        const filePath = path.join(directory, 'managed-key-replacements.json')
+        try {
+          setup(accountKey({}), createManagedKeyReplacementStore({ filePath }))
+          await electronMocks.handlers.get('account:revoke-key')!(trustedEvent(), 7)
+          expect(fs.readFileSync(filePath, 'utf8')).not.toContain('sk-')
+
+          electronMocks.handlers.clear()
+          const { accountService } = setup(accountKey({}), createManagedKeyReplacementStore({ filePath }), false)
+          await expect(configureCodex()).resolves.toEqual({ configured: ['codex'], failed: [] })
+
+          expect(accountService.provisionCliKey).toHaveBeenCalledWith(expect.objectContaining({
+            name: codex.keyName, remainQuota: 5_000, unlimitedQuota: false, fresh: true,
+          }))
+          expect(JSON.parse(fs.readFileSync(filePath, 'utf8'))).toEqual({ version: 1, entries: {} })
+        } finally {
+          fs.rmSync(directory, { recursive: true, force: true })
+        }
+      })
+
+      it('stops automatic issuing when the saved limits cannot be read, until the user asks explicitly', async () => {
+        const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-key-replacements-'))
+        const filePath = path.join(directory, 'managed-key-replacements.json')
+        try {
+          fs.writeFileSync(filePath, '{ not json')
+          const { accountService } = setup(accountKey({}), createManagedKeyReplacementStore({ filePath }), false)
+          const configure = (intent: 'automatic' | 'explicit') => electronMocks.handlers.get('account:configure-managed-clis')!(
+            trustedEvent(),
+            { providers: ['codex'], preferredModels: {}, intent, mode: 'merge' },
+          )
+
+          const automatic = await configure('automatic') as { failed: Array<{ provider: string; message: string }> }
+          expect(automatic.failed).toContainEqual({ provider: 'codex', message: expect.stringContaining('没读到这个工具原来的额度设置') })
+          expect(accountService.provisionCliKey).not.toHaveBeenCalled()
+
+          await expect(configure('explicit')).resolves.toEqual({ configured: ['codex'], failed: [] })
+          expect(accountService.provisionCliKey).toHaveBeenCalledWith(expect.not.objectContaining({ fresh: true }))
+        } finally {
+          fs.rmSync(directory, { recursive: true, force: true })
+        }
       })
 
       it('replaces an unlimited, never-expiring key the ordinary way', async () => {

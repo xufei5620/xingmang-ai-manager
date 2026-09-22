@@ -5,10 +5,11 @@ import {
   accountKeyQuota,
   buildManagedCliKeyLimitUpdate,
   findAccountKeyById,
+  inheritedKeyExpiredMessage,
   inheritedKeySettings,
+  isUsedUpKeyLimit,
   isKeyQuotaExhaustedMessage,
   loadManagedCliKeys,
-  managedKeyQuotaExhaustedMessage,
   parseManagedCliKeyLimitAmount,
   resolveManagedCliKeyLimits,
 } from './account-key-quota'
@@ -198,21 +199,27 @@ describe('inheritedKeySettings', () => {
   const now = Date.parse('2026-09-22T00:00:00.000Z')
 
   it('carries the remaining cap and the expiry over to a replacement', () => {
-    expect(inheritedKeySettings(key({ id: 1, name: 'a', unlimitedQuota: false, remainQuota: 2.5, expiredAt: '2027-01-01T00:00:00.000Z' }), now))
+    expect(inheritedKeySettings(key({ id: 1, name: 'a', unlimitedQuota: false, remainQuota: 2.5, expiredAt: '2027-01-01T00:00:00.000Z' }), 0.01, now))
       .toEqual({ remainQuota: 2.5, unlimitedQuota: false, expiredTime: Date.parse('2027-01-01T00:00:00.000Z') / 1000 })
-    expect(inheritedKeySettings(key({ id: 1, name: 'a', expiredAt: '2027-01-01T00:00:00.000Z' }), now))
+    expect(inheritedKeySettings(key({ id: 1, name: 'a', expiredAt: '2027-01-01T00:00:00.000Z' }), 1, now))
       .toEqual({ remainQuota: 0, unlimitedQuota: true, expiredTime: Date.parse('2027-01-01T00:00:00.000Z') / 1000 })
   })
 
   it('has nothing to carry over for an unlimited key that never expires', () => {
-    expect(inheritedKeySettings(key({ id: 1, name: 'a' }), now)).toBeNull()
+    expect(inheritedKeySettings(key({ id: 1, name: 'a' }), 1, now)).toBeNull()
   })
 
-  it('refuses to issue a replacement for a used-up cap or an expired key', () => {
-    expect(() => inheritedKeySettings(key({ id: 1, name: 'a', unlimitedQuota: false, remainQuota: 0 }), now))
-      .toThrow(managedKeyQuotaExhaustedMessage)
-    expect(() => inheritedKeySettings(key({ id: 1, name: 'a', expiredAt: '2026-01-01T00:00:00.000Z' }), now))
-      .toThrow('原来那把密钥已经到期了')
+  it('gives a used-up cap the smallest allowed quota instead of lifting it', () => {
+    const usedUp = key({ id: 1, name: 'a', unlimitedQuota: false, remainQuota: 0 })
+    expect(inheritedKeySettings(usedUp, 1, now)).toEqual({ remainQuota: 1, unlimitedQuota: false, expiredTime: -1 })
+    expect(isUsedUpKeyLimit(usedUp)).toBe(true)
+    expect(isUsedUpKeyLimit(key({ id: 1, name: 'a', unlimitedQuota: false, remainQuota: 3 }))).toBe(false)
+    expect(isUsedUpKeyLimit(key({ id: 1, name: 'a' }))).toBe(false)
+  })
+
+  it('refuses to issue a replacement for an expired key', () => {
+    expect(() => inheritedKeySettings(key({ id: 1, name: 'a', expiredAt: '2026-01-01T00:00:00.000Z' }), 1, now))
+      .toThrow(inheritedKeyExpiredMessage)
   })
 })
 

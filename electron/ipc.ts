@@ -32,7 +32,8 @@ import { parseLocalNoticeReadSync, type AnnouncementReadStore } from './announce
 import type { AccelerationApi, AccelerationMode, AccelerationPreferenceApi } from './acceleration-contract'
 import { accelerationFailureReason } from './acceleration-contract'
 import { cliCatalog, isProviderId, providerIds, resolveManagedCliKeyProfiles, type ProviderId } from './catalog'
-import { findAccountKeyById, inheritedKeySettings } from './account-key-quota'
+import { findAccountKeyById, inheritedKeySettings, inheritedKeyExpiredMessage, isUsedUpKeyLimit, managedKeyQuotaExhaustedMessage } from './account-key-quota'
+import { createMemoryManagedKeyReplacementStore, type ManagedKeyReplacementStore } from './managed-key-replacement-store'
 import { isInstallCancelledError } from './install-cancellation'
 import {
   configureManagedClis,
@@ -216,6 +217,9 @@ export interface IpcRegistrationOptions {
     clear(): Promise<void>
   }
   managedCliKeys?: ManagedCliKeyStoreLike
+  // 撤销一把设了限制、工具正在用的 Key 时记下的限制（managed-key-replacement-store.ts），
+  // 换新时照抄。缺省用内存版：测试与预览不落盘。
+  keyReplacements?: ManagedKeyReplacementStore
   chatKeyStore?: {
     removeByKeyId(userId: number, keyId: number): Promise<void>
     read?(userId: number): Promise<import('./chat-key-store').StoredChatKey[]>
@@ -1553,30 +1557,62 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
       )
     })
   }
-  // 撤销一把工具正在用、又设了限制的 Key 时记下它，换上的新 Key 照抄这些限制（见
-  // inheritedKeySettings）。只放在内存里：撤销和换新是同一次点击里接连发生的。
-  const pendingKeyReplacements = new Map<string, AccountKey>()
+  // 撤销一把工具正在用、又设了限制的 Key 时把限制落盘，换上的新 Key 照抄（见
+  // inheritedKeySettings）；换新成功再删。读不到这份记录就停下，不签不限额的。
+  const keyReplacements = options.keyReplacements ?? createMemoryManagedKeyReplacementStore()
   const replacementSlot = (userId: number, provider: ProviderId): string => (
     `${accountService.getActiveSiteId?.() ?? 'solov'}:${userId}:${provider}`
   )
-  const provisioningAccountService: Parameters<typeof configureManagedClis>[0] = {
+  // explicit：用户亲手点的「重新写入 Key」「再换一次」。只有这一种能越过读坏的记录。
+  const provisioningAccountService = (explicit: boolean): Parameters<typeof configureManagedClis>[0] => ({
     getSessionState: accountService.getSessionState.bind(accountService),
     getSessionRevision: accountService.getSessionRevision?.bind(accountService),
     getActiveSiteId: accountService.getActiveSiteId?.bind(accountService),
     listUsableGroups: accountService.listUsableGroups.bind(accountService),
     provisionCliKey: async (input = {}) => {
       const userId = accountService.getSessionState().account?.userId
-      const profiles = resolveManagedCliKeyProfiles(accountService.getActiveSiteId?.())
+      const siteId = accountService.getActiveSiteId?.()
+      const profiles = resolveManagedCliKeyProfiles(siteId)
       const provider = providerIds.find((entry) => profiles[entry].keyName === input.name)
-      const slot = userId && provider ? replacementSlot(userId, provider) : null
-      const revoked = slot ? pendingKeyReplacements.get(slot) : undefined
-      const settings = revoked ? inheritedKeySettings(revoked) : null
-      if (!settings) return accountService.provisionCliKey(input)
+      if (!userId || !provider) return accountService.provisionCliKey(input)
+      const slot = replacementSlot(userId, provider)
+      let pending: Awaited<ReturnType<ManagedKeyReplacementStore['get']>>
+      try {
+        pending = await keyReplacements.get(slot)
+      } catch {
+        // 分不清原来有没有上限：自动签发一律停下说清楚；用户看过密钥页、亲手再点一次，
+        // 才清掉坏记录照常签，免得以后每次都卡在这里。
+        if (!explicit) {
+          throw new Error('没读到这个工具原来的额度设置，这次没有自动签新密钥。到「账号」页「密钥」里确认一下它的额度，再点「重新写入 Key」就会换上。')
+        }
+        await keyReplacements.reset().catch(() => undefined)
+        pending = null
+      }
+      if (!pending) return accountService.provisionCliKey(input)
+      let settings: ReturnType<typeof inheritedKeySettings>
+      try {
+        // Sub2API 的额度是金额、new-api 的是整数额度单位，各取后端允许的最小正数。
+        settings = inheritedKeySettings(pending, siteId === 'solov-api' ? 0.01 : 1)
+      } catch (error) {
+        if (error instanceof Error && error.message === inheritedKeyExpiredMessage) {
+          await keyReplacements.remove(slot).catch(() => undefined)
+        }
+        throw error
+      }
+      if (!settings) {
+        await keyReplacements.remove(slot).catch(() => undefined)
+        return accountService.provisionCliKey(input)
+      }
       const replacement = await accountService.provisionCliKey({ ...input, ...settings, fresh: true })
-      if (slot && pendingKeyReplacements.get(slot) === revoked) pendingKeyReplacements.delete(slot)
+      await keyReplacements.remove(slot).catch(() => undefined)
+      // 上限原本就用完了：新 Key 签了（这样「按工具分账」里有一把可以调高的），但额度
+      // 只有最小值，这里照直说，不当成换好了。
+      if (isUsedUpKeyLimit(pending)) throw new Error(managedKeyQuotaExhaustedMessage)
       return replacement
     },
-  }
+  })
+  const automaticProvisioning = provisioningAccountService(false)
+  const explicitProvisioning = provisioningAccountService(true)
   // 撤销前先认出这是不是某个工具在用、又设了上限或到期时间的 Key。读不到就先不撤：
   // 撤完再想知道新 Key 该照抄什么已经无从查起。
   const limitedManagedKey = async (userId: number, keyId: number): Promise<{ provider: ProviderId; key: AccountKey } | null> => {
@@ -2596,7 +2632,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     accountService.purchaseSubscriptionWithBalance(parsePositiveSafeInteger(planId, '订阅方案 ID'))
   ))
   registerTrustedHandler('account:sync-managed-cli-keys', async () => {
-    const summary = await syncManagedCliKeySummary(provisioningAccountService, options.managedCliKeys)
+    const summary = await syncManagedCliKeySummary(automaticProvisioning, options.managedCliKeys)
     if (!options.xingmangAiSkill || accountService.getActiveSiteId?.() === 'solov-api') return summary
     try {
       const skill = await syncXingmangAiSkill({
@@ -2621,7 +2657,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   registerTrustedHandler('account:configure-managed-clis', (_event, input: unknown) => {
     const parsed = parseManagedCliConfigurationInput(input)
     return configureManagedClis(
-      provisioningAccountService,
+      parsed.intent === 'explicit' ? explicitProvisioning : automaticProvisioning,
       service,
       parsed.providers,
       parsed.preferredModels,
@@ -2754,11 +2790,23 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     const keyId = parseAccountRevokeKeyId(id)
     const userId = accountService.getSessionState().account?.userId
     const limited = userId ? await limitedManagedKey(userId, keyId) : null
-    await accountService.revokeKey(keyId)
-    if (userId) await invalidateAccountKeyCaches(userId, keyId)
-    if (userId && limited && accountService.getSessionState().account?.userId === userId) {
-      pendingKeyReplacements.set(replacementSlot(userId, limited.provider), limited.key)
+    // 先落盘再撤销：撤销成功后软件随时可能被关，换新那一步要能在下次打开时照着签。
+    const slot = userId && limited ? replacementSlot(userId, limited.provider) : null
+    if (slot && limited) {
+      const { remainQuota, unlimitedQuota, expiredAt } = limited.key
+      try {
+        await keyReplacements.set(slot, { remainQuota, unlimitedQuota, expiredAt })
+      } catch {
+        throw new Error('没能记下这把密钥的额度设置，先没撤销。请稍后再试。')
+      }
     }
+    try {
+      await accountService.revokeKey(keyId)
+    } catch (error) {
+      if (slot) await keyReplacements.remove(slot).catch(() => undefined)
+      throw error
+    }
+    if (userId) await invalidateAccountKeyCaches(userId, keyId)
   })
   const assertAccountSessionUser = (expectedUserId: number): void => {
     const session = accountService.getSessionState()
