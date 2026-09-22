@@ -90,7 +90,7 @@ import { guardProcessOutputStreams } from './process-stream-errors'
 import { RuntimeLogStore } from './runtime-log'
 import { hostNotifier } from './platform/host-notification-bridge'
 import { attachPlatformAuditLog } from './platform/runtime-log-bridge'
-import { recordStartupFailure } from './startup-log'
+import { recordStartupFailure, redactHomeDirectory } from './startup-log'
 import { inspectProviderConfig } from './config-files'
 import { buildFeedbackEnvironmentLines } from './feedback-environment'
 import { buildFeedbackSelfCheckLines, type FeedbackConnectionRecord } from './feedback-self-check'
@@ -672,6 +672,15 @@ if (!hasSingleInstanceLock) {
     })
     if (manualUninstallVisualFixtureEnabled) {
       runtimeLog.log('warn', 'testing', 'manual-uninstall.fixture', '手动卸载视觉测试状态已启用')
+    }
+    if (codexContext.ignoredCodexHome) {
+      // 以前这里直接抛错、整个软件打不开；现在按没设处理，检查页「环境变量覆盖」
+      // 会报出来。值是用户自己写的路径，落盘前先把用户目录换掉（I13）。
+      runtimeLog.log('warn', 'main', 'codex-home.ignored', '环境变量 CODEX_HOME 不是可用的绝对路径，已按未设置处理', {
+        reason: codexContext.ignoredCodexHome.reason,
+        value: redactHomeDirectory(codexContext.ignoredCodexHome.value, codexContext.userHome).replaceAll('\0', '\\0'),
+        codexHome: redactHomeDirectory(codexContext.codexHome, codexContext.userHome),
+      })
     }
     // 装在「应用程序」之外时加速起不来，但用户只看到「加速连接失败」，会以为
     // 是服务的问题。这一步放在服务与窗口之前：那之后再提示，用户已经开始用了。

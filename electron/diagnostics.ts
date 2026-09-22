@@ -11,7 +11,7 @@ import {
   runCommand,
   trustedCommandEnvironment,
 } from './command-runner'
-import { defaultProviderConfigRoots, type ProviderConfigRoots } from './codex-home'
+import { defaultProviderConfigRoots, type IgnoredCodexHome, type ProviderConfigRoots } from './codex-home'
 import { inspectProviderConfig, type NativeConfigInspection } from './config-files'
 import {
   formatFreeSpace,
@@ -106,6 +106,12 @@ export interface DiagnosticsDependencies {
   /** 剩余空间的读取口，测试用它造「够 / 不够 / 读不到」三种盘。 */
   readDiskSpace?: typeof readDiskSpace
   inspectProxyVariables?: (signal: AbortSignal) => Promise<ProxyVariableSummary[]>
+  /**
+   * 启动时发现用户环境里的 CODEX_HOME 不可用、已按没设处理（codex-home.ts）。
+   * 传进来的 env 里 CODEX_HOME 已被换成本程序算出的位置，诊断自己看不到原值，
+   * 只能由宿主告诉它。原值只用来判断会不会连不上，从不进报告。
+   */
+  ignoredCodexHome?: IgnoredCodexHome
   /**
    * 诊断报告是要上屏、也要能导出给客服的，所以它只装中文结论。认出一个失败靠的
    * 那段上游原文（`net::ERR_CERT_AUTHORITY_INVALID` 这类）留在 runtime.jsonl 里：
@@ -676,15 +682,65 @@ function collectEnvironmentOverrides(
   return matches
 }
 
-function environmentOverrideOutcome(matches: readonly EnvironmentOverrideMatch[]): CheckOutcome {
-  const details: Record<string, boolean | number | string | null> = { count: matches.length }
-  matches.forEach((match, index) => {
-    // 只有变量名进报告。ANTHROPIC_AUTH_TOKEN 的值本身就是一把 Key，而诊断导出是
-    // 要发到客服群里的（I3、I13）——所以这里永远不读也不写它的值。
-    const note = match.overriding ? '' : '，已指向当前账号'
-    details[`variable${index + 1}`] = `${match.name}（${cliCatalog[match.provider].name}${note}）`
+interface IgnoredCodexHomeFinding {
+  /** true = 在软件外面打开的 Codex 读不到本程序替当前账号写好的配置。 */
+  blocking: boolean
+}
+
+/**
+ * 软件自己启动的 Codex 拿到的是注入过的 CODEX_HOME，不受影响；受影响的是用户
+ * 从开始菜单、终端这些软件外面打开的 Codex，它读的仍是那个写错的值。Codex 不展开
+ * `~` 和 `%USERPROFILE%`，相对路径按当前目录解析，而这类进程的当前目录通常就是
+ * 用户目录，所以按用户目录解析一次：落回本程序写配置的那个目录（比如只写了
+ * `.codex`）就还连得上，否则就连不上。Codex 根本没接当前账号时，连不连得上
+ * 无从谈起，只提醒不算待处理。
+ */
+function inspectIgnoredCodexHome(
+  ignored: IgnoredCodexHome | undefined,
+  roots: ProviderConfigRoots,
+  codexInspection: NativeConfigInspection | undefined,
+): IgnoredCodexHomeFinding | null {
+  if (!ignored) return null
+  const configured = Boolean(codexInspection?.matchesRelay && codexInspection.hasApiKey)
+  const landsOnCodexHome = ignored.reason === 'relative'
+    && normalizedPathKey(path.resolve(roots.userHome, ignored.value)) === normalizedPathKey(roots.codexHome)
+  return { blocking: configured && !landsOnCodexHome }
+}
+
+function environmentOverrideOutcome(
+  matches: readonly EnvironmentOverrideMatch[],
+  ignoredCodexHome: IgnoredCodexHomeFinding | null = null,
+): CheckOutcome {
+  const details: Record<string, boolean | number | string | null> = {
+    count: matches.length + (ignoredCodexHome ? 1 : 0),
+  }
+  const labels = [
+    // 写错的原值可能带着用户名，和其它变量一样只有名字进报告。
+    ...(ignoredCodexHome ? [`CODEX_HOME（${cliCatalog.codex.name}，写得不对，已忽略）`] : []),
+    ...matches.map((match) => {
+      // 只有变量名进报告。ANTHROPIC_AUTH_TOKEN 的值本身就是一把 Key，而诊断导出是
+      // 要发到客服群里的（I3、I13）——所以这里永远不读也不写它的值。
+      const note = match.overriding ? '' : '，已指向当前账号'
+      return `${match.name}（${cliCatalog[match.provider].name}${note}）`
+    }),
+  ]
+  labels.forEach((label, index) => {
+    details[`variable${index + 1}`] = label
   })
   const overriding = matches.filter((match) => match.overriding)
+  const listed = overriding.slice(0, 3).map((match) => match.name).join('、')
+  const rest = overriding.length > 3 ? `等 ${overriding.length} 项` : ''
+  if (ignoredCodexHome) {
+    const effect = ignoredCodexHome.blocking ? '，但在软件外面打开 Codex 会连不上当前账号' : ''
+    const others = overriding.length ? `；另外系统环境变量里还设置了 ${listed}${rest}，可能会盖过当前账号写入的配置` : ''
+    return {
+      // 连不上当前账号才算「待处理」（开机横幅只数这一档）；软件里打开的 Codex
+      // 本来就不受影响，其余情况只是提醒。
+      state: ignoredCodexHome.blocking ? 'fail' : 'warn',
+      summary: `电脑里有一个 Codex 的设置写得不对，软件已经忽略它${effect}${others}`,
+      details,
+    }
+  }
   if (!overriding.length) {
     return {
       state: 'pass',
@@ -694,8 +750,6 @@ function environmentOverrideOutcome(matches: readonly EnvironmentOverrideMatch[]
       details,
     }
   }
-  const listed = overriding.slice(0, 3).map((match) => match.name).join('、')
-  const rest = overriding.length > 3 ? `等 ${overriding.length} 项` : ''
   return {
     // 用「需留意」不是「待处理」：变量可能是用户自己有意设的，而本程序既不该也
     // 不能替他删。文案用「可能」——进程环境与 Claude settings.env 的优先级本仓
@@ -1248,6 +1302,7 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
       title: '环境变量覆盖',
       run: () => environmentOverrideOutcome(
         collectEnvironmentOverrides(env, relaySite.providerBaseUrls, userHome),
+        inspectIgnoredCodexHome(dependencies.ignoredCodexHome, providerRoots, providerInspections.get('codex')),
       ),
     },
     {
