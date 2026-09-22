@@ -129,6 +129,7 @@ Codex 那时 `recommended` 是 `null`，也就是那两天点过「更新」的�
 | Claude 的回复语言 | `language` | 未设（跟着对话语言走） | `简体中文` | 只靠 AGENTS.md 撑不住：克隆来的项目大多已有说明文件，模板不会生成 |
 | Claude 的记录保留期 | `cleanupPeriodDays` | 30 天 | 365 天 | 记录页、「接着聊」、导出都建立在文件还在的前提上 |
 | Claude 的状态行 | `statusLine` | 未设（终端里没有状态行） | 指向随包脚本的一条命令 | 用户按 token 付费，却看不到在用哪个模型、上下文吃到几成 |
+| Gemini 后台功能用的型号 | `modelConfigs.customOverrides` | 联网搜索、读网页、压缩、子代理、会话摘要、Auto 各自写死 Google 官方型号名 | 这批官方型号名统一改写成当前配的中转型号（只在星芒来源下写，切回官方删掉） | 中转没有这些型号时，这些功能默默重试几分钟后失败 |
 | Gemini 的记录保留期 | `general.sessionRetention.maxAge` | `"30d"` | `"365d"` | 同上 |
 | Gemini 的 IDE 模式 | `ide.enabled` | 关 | 开 | 装在 IDE 里的客户少一步 |
 | 目录信任 | 见 `docs/WORKSPACE-TRUST.md` | 每次问 | 本软件打开的目录替用户信任 | 同上 |
@@ -193,6 +194,14 @@ Codex 那时 `recommended` 是 `null`，也就是那两天点过「更新」的�
   Use a large value for long retention`，校验失败时的提示原文是
   `cleanupPeriodDays must be at least 1. To keep transcripts for a long time, set a large number
   (e.g. 3650 for ~10 years).`——**所以「不删」只能靠写一个大数，写 0 会被拒**。
+- **Gemini CLI 0.60.0 的后台型号 —— 跑起来看到了**。本机假接口只放行中转型号
+  `gemini-3.8-flash-high`、其余型号一律回「无可用渠道」。不做改写时：联网搜索与读网页发的是
+  `gemini-3-flash-preview`，默默重试 2.5 分钟以上；`/compress` 发
+  `gemini-3.1-pro-preview-customtools`，转圈一分多钟；有过上一次会话时，启动就用
+  `gemini-3.1-flash-lite` 写摘要；`-m auto` 先用 flash-lite 分类再用 `gemini-3.1-pro-preview`，
+  77 秒后报错。用 `config-files.ts` 生成的 settings.json 复跑联网搜索，`googleSearch` 那次请求
+  打到 `gemini-3.8-flash-high`，全程 2.2 秒。型号表出自 bundle 的 `DEFAULT_MODEL_CONFIGS`，抬
+  Gemini 推荐版本时要重新核。
 - **Gemini CLI 0.60.0 — 读 bundle 得出**。settings schema 里 `general.sessionRetention` 的
   `enabled` 默认 `true`、`maxAge` 默认 `"30d"`、`minRetention` 默认 `"1d"`；`maxAge` 的解析是
   `/^(\d+)([dhwm])$/`，`"365d"` 合法。要紧的是 `getDefaultsFromSchema` **会递归补齐嵌套默认

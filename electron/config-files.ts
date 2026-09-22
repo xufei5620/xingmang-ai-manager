@@ -346,6 +346,74 @@ function extendGeminiSessionRetention(parsed: Record<string, unknown>): void {
   general.sessionRetention = { maxAge: MANAGED_GEMINI_SESSION_MAX_AGE }
 }
 
+// Gemini CLI 的主对话用 GEMINI_MODEL，但一批后台功能各自写死了 Google 官方的型号名：
+// 联网搜索、读网页与 codebase_investigator 子代理走 gemini-3-flash-preview，/compress
+// 与自动压缩走 gemini-3.1-pro-preview-customtools，每次启动给上次会话写摘要走
+// gemini-3.1-flash-lite，Auto 模式先用 flash-lite 分类再用 3.1-pro。中转只开放自己的
+// 型号时这些请求一律「无可用渠道」，而 CLI 对它们默默重试：搜索和读网页 2.5 分钟以上
+// 才失败，压缩转圈一分多钟，用户只觉得「卡住了」。
+//
+// modelConfigs.customOverrides 按请求里的型号名改写目标型号，把这批官方名统一指到当前
+// 配的中转型号（沙箱实测 0.60.0：上述每一项 2~3 秒完成）。代价是这些后台调用按主型号
+// 计费。当前型号本身若恰好在表里，不给它写改写，免得自己指向自己。
+//
+// 这张表出自 0.60.0 bundle 的 DEFAULT_MODEL_CONFIGS（aliases / modelIdResolutions），
+// 升级 Gemini CLI 推荐版本时要重新核一遍。
+const geminiRelayHelperModels = [
+  'gemini-3-flash-preview',
+  'gemini-3-pro-preview',
+  'gemini-3.1-pro-preview',
+  'gemini-3.1-pro-preview-customtools',
+  'gemini-3.1-flash-lite',
+  'gemini-3.5-flash',
+  'gemini-2.5-pro',
+  'gemini-2.5-flash',
+  'gemini-2.5-flash-lite',
+  'flash-lite',
+  'flash',
+  'pro',
+] as const
+
+function buildGeminiRelayModelOverrides(model: string): Array<Record<string, unknown>> {
+  return geminiRelayHelperModels
+    .filter((helper) => helper !== model)
+    .map((helper) => ({ match: { model: helper }, modelConfig: { model } }))
+}
+
+/**
+ * 认出本软件写的那种改写：match 只有一个官方型号名、modelConfig 只改 model。用户自己写
+ * 的改写（带别的匹配条件或别的参数）不是这个形状，原样保留。
+ */
+function isGeminiRelayModelOverride(entry: unknown): boolean {
+  if (!isJsonRecord(entry) || Object.keys(entry).length !== 2) return false
+  const { match, modelConfig } = entry
+  if (!isJsonRecord(match) || !isJsonRecord(modelConfig)) return false
+  if (Object.keys(match).length !== 1 || Object.keys(modelConfig).length !== 1) return false
+  return typeof modelConfig.model === 'string'
+    && geminiRelayHelperModels.some((helper) => helper === match.model)
+}
+
+function applyGeminiRelayModelOverrides(parsed: Record<string, unknown>, model: string): void {
+  const modelConfigs = ensureRecord(parsed, 'modelConfigs')
+  const current = modelConfigs.customOverrides
+  const kept = Array.isArray(current) ? current.filter((entry) => !isGeminiRelayModelOverride(entry)) : []
+  modelConfigs.customOverrides = [...kept, ...buildGeminiRelayModelOverrides(model)]
+}
+
+/**
+ * 切回 Google 账号时撤掉：官方型号在那边都真实存在，留着改写反而会把后台请求指到一个
+ * 官方不存在的中转型号上。只删本软件写的那种，空了连键一起删。
+ */
+function removeGeminiRelayModelOverrides(parsed: Record<string, unknown>): void {
+  const modelConfigs = parsed.modelConfigs
+  if (!isJsonRecord(modelConfigs) || !Array.isArray(modelConfigs.customOverrides)) return
+  const kept = modelConfigs.customOverrides.filter((entry) => !isGeminiRelayModelOverride(entry))
+  if (kept.length === modelConfigs.customOverrides.length) return
+  if (kept.length > 0) modelConfigs.customOverrides = kept
+  else delete modelConfigs.customOverrides
+  if (Object.keys(modelConfigs).length === 0) delete parsed.modelConfigs
+}
+
 // Claude Code 的 language 设置会被原样插进系统提示（2.1.277 实测：settings.json 写
 // {"language":"简体中文"} 之后，请求体里出现「# Language\nAlways respond in 简体中文.」），
 // 回复和会话标题都跟着变中文。本软件今天让 Claude 说中文靠的是 AGENTS.md 模板，而那份
@@ -1361,6 +1429,7 @@ function createPlans(
             },
             ide: { enabled: true },
             security: { auth: { selectedType: 'gemini-api-key' } },
+            modelConfigs: { customOverrides: buildGeminiRelayModelOverrides(geminiCliCompatibleModel(model)) },
           }),
         },
         {
@@ -1450,6 +1519,7 @@ function createMergePlans(
         ensureRecord(ensureRecord(parsed, 'security'), 'auth').selectedType = 'gemini-api-key'
         disableGeminiSelfUpdate(parsed)
         extendGeminiSessionRetention(parsed)
+        applyGeminiRelayModelOverrides(parsed, geminiCliCompatibleModel(model))
         plans.push({ path: paths[0], content: jsonContent(parsed) })
       }
       // 读取失败必须中止保存，静默当空文件会把用户已有环境变量覆盖掉。
@@ -2048,6 +2118,7 @@ function createOfficialAccountPlans(
         const parsed = requireJson(paths[0], '现有 Gemini settings.json')
         const auth = ensureRecord(ensureRecord(parsed, 'security'), 'auth')
         auth.selectedType = 'oauth-personal'
+        removeGeminiRelayModelOverrides(parsed)
         plans.push({ path: paths[0], content: jsonContent(parsed) })
       }
       const envContent = requireConfigText(paths[1], '现有 Gemini .env')
