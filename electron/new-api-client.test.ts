@@ -526,6 +526,7 @@ describe('buildCliKeyName', () => {
 describe('findCliKeyIdByName / parseCliKeySecret', () => {
   it('finds a matching id from a bare array', () => {
     expect(findCliKeyIdByName([{ id: 1, name: 'a' }, { id: 2, name: 'target' }], 'target')).toBe(2)
+    expect(findCliKeyIdByName([{ id: 5, name: 'target' }, { id: 9, name: 'target' }, { id: 7, name: 'target' }], 'target')).toBe(9)
   })
 
   it('finds a matching id nested under common wrapper keys', () => {
@@ -2724,6 +2725,26 @@ describe('provisionCliKey with a used-up per-key cap', () => {
       .mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: { key: 'sk-raised-cap-value' } }))
 
     await expect(client.provisionCliKey({ name, group: 'codex-pro' })).resolves.toEqual({ id: 8, name, key: 'sk-raised-cap-value' })
+  })
+  it('creates a capped replacement when asked for a fresh key, ignoring the used-up cap and unlimited siblings', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    const other = { id: 9, name: 'hand-made', group: 'codex-pro', status: 1, remain_quota: 0, unlimited_quota: true, expired_time: -1 }
+    const created = { id: 12, name, group: 'codex-pro', status: 1, remain_quota: 500, unlimited_quota: false, expired_time: -1 }
+    fetchImpl
+      .mockResolvedValueOnce(usableGroupsResponse())
+      .mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: { total: 2, items: [capped, other] } }))
+      .mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: true }))
+      .mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: { total: 3, items: [capped, created, other] } }))
+      .mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: { key: 'sk-capped-replacement' } }))
+
+    await expect(client.provisionCliKey({
+      name, group: 'codex-pro', fresh: true, unlimitedQuota: false, remainQuota: 500, expiredTime: -1,
+    })).resolves.toEqual({ id: 12, name, key: 'sk-capped-replacement' })
+    const create = fetchImpl.mock.calls.find(([, init]) => init?.method === 'POST' && !String(init.body).includes('"key"'))
+    expect(JSON.parse(String(create?.[1]?.body))).toEqual({
+      name, group: 'codex-pro', remain_quota: 500, unlimited_quota: false, expired_time: -1,
+    })
   })
 })
 

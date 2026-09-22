@@ -41,6 +41,7 @@ import { assetThumbnailMaxEdge, assetThumbnailSize } from './asset-thumbnail'
 import { AssetThumbnailStore } from './asset-thumbnail-store'
 import { createAssetThumbnailService, type AssetThumbnailRenderer } from './asset-thumbnail-service'
 import { createChatCredentialCoordinator } from './chat-credential-coordinator'
+import { createManagedKeyReplacementStore } from './managed-key-replacement-store'
 import { ChatKeyStore } from './chat-key-store'
 import { ManagedCliKeyStore } from './managed-cli-key-store'
 import { AccountSessionStore } from './account-session-store'
@@ -1924,6 +1925,7 @@ if (!hasSingleInstanceLock) {
       announcementReads: new AnnouncementReadStore(path.join(managerDataDirectory, 'announcement-reads')),
       accountCredentials: accountCredentialStore,
       managedCliKeys: managedCliKeyStore,
+      keyReplacements: createManagedKeyReplacementStore({ filePath: path.join(managerDataDirectory, 'managed-key-replacements.json') }),
       chatKeyStore,
       chatCredentials,
       chatService,

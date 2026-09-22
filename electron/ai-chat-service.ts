@@ -5,7 +5,8 @@ import {
   type AiChatParameters,
   type ChatCompletionsRequestBody,
 } from './ai-chat-protocol'
-import type { ChatCredentialCoordinator } from './chat-credential-coordinator'
+import { chatKeyQuotaExhaustedMessage } from './account-key-quota'
+import { ChatKeyQuotaExhaustedError, type ChatCredentialCoordinator } from './chat-credential-coordinator'
 import { observeAiOperation, type AiOperationStartedObserver } from './ai-operation-lifecycle'
 import { classifyNetworkFailure, isJsonContentType, isServiceUnavailableResponse, networkFailureMessages } from './network-failure'
 import { classifyRelayQuotaFailure, extractRelayErrorDetail, relayQuotaFailureMessages } from './relay-quota-failure'
@@ -34,6 +35,7 @@ export type AiChatStreamLimits = {
 
 export type AiChatStreamErrorCode =
   | 'credential-error'
+  | 'key-quota-exhausted'
   | 'model-unavailable'
   | 'connection-timeout'
   | 'idle-timeout'
@@ -185,6 +187,7 @@ const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308])
 
 const SAFE_ERROR_MESSAGES: Record<AiChatStreamErrorCode, string> = {
   'credential-error': '无法准备所选分组，请检查登录状态和 API Key',
+  'key-quota-exhausted': chatKeyQuotaExhaustedMessage,
   'model-unavailable': '当前模型不在所选分组的可用列表中，请刷新后重新选择',
   'connection-timeout': 'AI 服务响应较慢，本次等待已超时，请重试',
   'idle-timeout': 'AI 服务长时间没有返回内容，已停止等待',
@@ -338,9 +341,13 @@ function safeHttpFailure(status: number, headers: Headers, detail = ''): StreamF
 
 /**
  * 准备分组要向账号服务签发或读取 Key；账号服务在维护时那一步失败，不能说成
- * 「请检查登录状态和 API Key」。其余失败仍按凭据问题报。
+ * 「请检查登录状态和 API Key」。聊天 Key 自己的上限用完了要照直说。其余失败仍按
+ * 凭据问题报，只给一句不带细节的话。
  */
 function credentialFailure(error: unknown): StreamFailure {
+  if (error instanceof ChatKeyQuotaExhaustedError) {
+    return new StreamFailure('key-quota-exhausted', SAFE_ERROR_MESSAGES['key-quota-exhausted'])
+  }
   if (classifyNetworkFailure(error) === 'serviceUnavailable') {
     return new StreamFailure('service-unavailable', SAFE_ERROR_MESSAGES['service-unavailable'])
   }
