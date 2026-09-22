@@ -8,13 +8,14 @@ export function initialKeyChoice(native: AppConfigSummary['providers'][ProviderI
   return native.hasApiKey ? CURRENT_KEY : AUTOMATIC_KEY
 }
 
+// 分组名认得出就带上，方便区分同名密钥；认不出就不写，「分组未确认」对用户只是一句看不懂的话。
 export function accountKeyLabel(key: Pick<AccountKey, 'name' | 'group' | 'maskedKey'>): string {
-  return `${key.name} · ${key.group || '分组未确认'} · ${key.maskedKey || '密钥预览未提供'}`
+  return [key.name, key.group, key.maskedKey || '密钥预览未提供'].filter(Boolean).join(' · ')
 }
 
 /** Names/groups come only from exact main-process matching, never from masked suffixes. */
 export function currentKeyLabel(metadata: ConfigKeyMetadata | null, fallbackPreview: string | null): string {
-  return `保持当前 · ${metadata?.current.name || '名称未确认'} · ${metadata?.current.group || '分组未确认'} · ${metadata?.current.preview || fallbackPreview || '密钥预览未提供'}`
+  return ['保持当前', metadata?.current.name || '名称未确认', metadata?.current.group, metadata?.current.preview || fallbackPreview || '密钥预览未提供'].filter(Boolean).join(' · ')
 }
 
 export function manualKeyPreview(value: string): string {
