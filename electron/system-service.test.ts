@@ -858,6 +858,73 @@ describe('createSystemService', () => {
     expect(snapshot.runtime.git.detectionFailed).not.toBe(true)
   })
 
+  it('never runs the macOS git/python3 shims when the command line developer tools are missing', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-clt-missing-'))
+    temporaryDirectories.push(directory)
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('offline') }))
+    const executed: string[] = []
+    const service = createSystemService(
+      new AppSettingsStore(path.join(directory, 'settings.json'), directory),
+      {
+        platform: 'darwin',
+        findExecutable: async (command) =>
+          command === 'git' ? '/usr/bin/git' : command === 'python3' ? '/usr/bin/python3' : null,
+        runCommand: async (spec) => {
+          executed.push(spec.executable)
+          // 没装命令行开发者工具时 xcode-select -p 以退出码 2 失败。
+          throw Object.assign(new Error('xcode-select: error: unable to get active developer directory'), {
+            stdout: '', stderr: 'xcode-select: error: unable to get active developer directory',
+          })
+        },
+        resolveCliInstallation: async () => null,
+        macosCodexAppDetector: async () => ({ app: null, detectionFailed: false, detectionError: null }),
+      },
+    )
+
+    const snapshot = await service.scanSystem(false)
+
+    expect(executed).not.toContain('/usr/bin/git')
+    expect(executed).not.toContain('/usr/bin/python3')
+    expect(executed).toContain('/usr/bin/xcode-select')
+    expect(snapshot.runtime.git).toMatchObject({ installed: false, version: null, path: null })
+    expect(snapshot.runtime.git.detectionFailed).not.toBe(true)
+    expect(snapshot.runtime.python).toMatchObject({ installed: false, version: null, path: null })
+  })
+
+  it('probes the macOS git shim normally once the developer tools behind it exist', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-clt-present-'))
+    temporaryDirectories.push(directory)
+    const developerDirectory = path.join(directory, 'CommandLineTools')
+    fs.mkdirSync(path.join(developerDirectory, 'usr', 'bin'), { recursive: true })
+    fs.writeFileSync(path.join(developerDirectory, 'usr', 'bin', 'git'), '')
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('offline') }))
+    const executed: string[] = []
+    const service = createSystemService(
+      new AppSettingsStore(path.join(directory, 'settings.json'), directory),
+      {
+        platform: 'darwin',
+        findExecutable: async (command) => command === 'git' ? '/usr/bin/git' : null,
+        runCommand: async (spec) => {
+          executed.push(spec.executable)
+          const stdout = spec.executable === '/usr/bin/xcode-select'
+            ? `${developerDirectory}\n`
+            : 'git version 2.39.5 (Apple Git-154)\n'
+          return {
+            executable: spec.executable, argv: [...spec.argv], exitCode: 0, signal: null,
+            stdout, stderr: '', outputBytes: stdout.length, durationMs: 1,
+          }
+        },
+        resolveCliInstallation: async () => null,
+        macosCodexAppDetector: async () => ({ app: null, detectionFailed: false, detectionError: null }),
+      },
+    )
+
+    const snapshot = await service.scanSystem(false)
+
+    expect(executed).toContain('/usr/bin/git')
+    expect(snapshot.runtime.git).toMatchObject({ installed: true, version: '2.39.5', path: '/usr/bin/git' })
+  })
+
   it('keeps a Git probe failure distinguishable from "not installed"', async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-git-failure-'))
     temporaryDirectories.push(directory)
