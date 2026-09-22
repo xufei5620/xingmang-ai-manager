@@ -5,11 +5,12 @@ import { presentExternalClients } from './external-model'
 import { useSharedAccountBalance } from '../app/balance-context'
 import { balanceStatusText } from '../shell/balance-status'
 import { BrandIcon, Button, Card, Dialog, Empty, ListRow, Menu, PageHead, Pill, Progress, ToolRow } from '../../ui'
-import { balanceTier, canUninstallTool, configDirectoryMenuItem, externalInstallHint, greeting, isExternallyManagedInstall, presentTools, recommendedVersionVerb, rollbackVersion, versionSubtitle, type ToolboxSnapshot, type ToolId, type ToolPresentation } from './model'
+import { balanceTier, canUninstallTool, configDirectoryMenuItem, externalInstallHint, greeting, isExternallyManagedInstall, needsManualInstall, presentTools, recommendedVersionVerb, rollbackVersion, versionSubtitle, type ToolboxSnapshot, type ToolId, type ToolPresentation } from './model'
 import type { ToolboxPartitionFailure, ToolsApi } from './api'
 import type { ToolJob } from './useToolbox'
 import type { AccountBootstrapProgress, AccountBootstrapResult } from './account-bootstrap'
 import type { PageId } from '../../registry/pages'
+import { macDesktopTutorialTopic, macRuntimeTutorialTopic } from '../../registry/business'
 import { tools as toolRegistry } from '../../registry/tools'
 import { FirstRunSteps } from './FirstRun'
 import { dismissFirstRun, getFirstRunStorage, readFirstRunDismissals } from './first-run-dismissal'
@@ -191,8 +192,10 @@ export function Home(props: HomeProps) {
     // 正在跑的那一行按钮写的是「打开中」「安装中」，这时不给下拉，但外面那层还在，
     // 按钮列的宽度就不会跟着一起跳。
     const lastWorkspace = job ? null : workspaces[0] ?? null
+    // macOS 上 Codex 桌面端归客户自己装，这颗按钮只能把人带到教程：写「安装」就是骗人。
+    const manualInstall = !tool.status.installed && needsManualInstall(snapshot, tool.id)
     const primaryLabel = launchJob ? '打开中' : installJob ? '安装中' : configUnavailable ? '重新配置'
-      : bootstrapBusy && !tool.configured ? '配置中' : tool.error ? '重新检测' : !tool.status.installed ? '安装'
+      : bootstrapBusy && !tool.configured ? '配置中' : tool.error ? '重新检测' : !tool.status.installed ? manualInstall ? '安装指南' : '安装'
       : tool.configured ? lastWorkspace ? `打开 ${workspaceButtonLabel(lastWorkspace.name)}` : '打开' : '连接账号'
     const primary = () => configUnavailable ? props.onConfigure(tool.id) : tool.error ? props.onScan() : !tool.status.installed ? props.onInstall(tool.id)
       : tool.configured ? props.onLaunch(tool.id, lastWorkspace?.path) : props.onConfigure(tool.id)
@@ -264,10 +267,15 @@ export function Home(props: HomeProps) {
     const installJob = jobs[tool.id], launchJob = jobs[`launch:${tool.id}`], job = launchJob ?? installJob
     const status = installJob ? 'installing' : tool.status.detectionError ? 'detectionFailed' : !tool.status.installed ? 'missing'
       : tool.configurationStatus
-    const primaryLabel = launchJob ? '打开中' : installJob ? '安装中' : tool.action === 'scan' ? '重新检测' : tool.action === 'install' ? tool.disabled ? '暂不支持' : '安装' : tool.action === 'launch' ? '打开' : '配置'
-    const primary = () => tool.action === 'scan' ? props.onScan() : tool.action === 'install' ? props.onInstallExternal(tool.id) : tool.action === 'launch' ? props.onLaunchExternal(tool.id) : props.onConfigureExternal(tool.id)
+    // macOS 上这三个官方都只给自己下载的安装包（installSupported 为假）。原来按钮写
+    // 「暂不支持」且点不动，客户看到的是死路一条；现在带他去教程里那一章（第七批 3）。
+    // Windows arm64 上 WorkBuddy 同样装不了，但那是没有对应架构的包，教程救不了，
+    // 仍旧保持「暂不支持」。
+    const manualInstall = tool.action === 'install' && tool.disabled && snapshot?.platform.isMac === true
+    const primaryLabel = launchJob ? '打开中' : installJob ? '安装中' : tool.action === 'scan' ? '重新检测' : tool.action === 'install' ? manualInstall ? '安装指南' : tool.disabled ? '暂不支持' : '安装' : tool.action === 'launch' ? '打开' : '配置'
+    const primary = () => manualInstall ? props.onNavigate('tutorial', macDesktopTutorialTopic) : tool.action === 'scan' ? props.onScan() : tool.action === 'install' ? props.onInstallExternal(tool.id) : tool.action === 'launch' ? props.onLaunchExternal(tool.id) : props.onConfigureExternal(tool.id)
     return <ToolRow key={tool.id} tool={tool.id} status={status} detail={job?.label ?? tool.detail} progress={installJob?.percent}
-      primaryAction={<Button size="sm" variant={tool.status.installed ? 'primary' : 'secondary'} loading={Boolean(job)} disabled={props.externalLoading || launchBusy || tool.disabled} title={tool.disabled ? tool.status.installHint ?? '当前平台暂不支持此操作' : undefined}
+      primaryAction={<Button size="sm" variant={tool.status.installed ? 'primary' : 'secondary'} loading={Boolean(job)} disabled={props.externalLoading || launchBusy || (tool.disabled && !manualInstall)} title={tool.disabled && !manualInstall ? tool.status.installHint ?? '当前平台暂不支持此操作' : undefined}
         icon={tool.action === 'launch' ? ArrowUpRight : undefined} onClick={primary} testId={tool.action === 'configure' ? `home-client-${tool.id}` : `tool-${tool.id}-primary`}>{primaryLabel}</Button>}
       menu={tool.status.installed && !job ? [
         // 配置入口只留「…」菜单这一处：行左边不再放独立的「配置」按钮，否则同一行会出现两个配置入口，
@@ -341,7 +349,7 @@ export function Home(props: HomeProps) {
           {pythonGuide && <RuntimeInstallHint runtime="python" guide={pythonGuide} />}
           <div className="v2-runtime-actions">{!snapshot?.system.runtime.node.installed && <Button variant="ghost" size="sm" icon={Download} onClick={() => props.onRuntime('node')} testId="home-runtime-node">{runtimeButtonLabel('node', snapshot?.platform.nodeRuntimeInstall)}</Button>}
             {!snapshot?.system.runtime.python.installed && <Button variant="ghost" size="sm" icon={Download} onClick={() => props.onRuntime('python')} testId="home-runtime-python">{runtimeButtonLabel('python', snapshot?.platform.pythonRuntimeInstall)}</Button>}
-            {(nodeGuide || pythonGuide) && <Button variant="ghost" size="sm" icon={BookOpen} onClick={() => props.onNavigate('tutorial')} testId="home-runtime-tutorial">看教程</Button>}
+            {(nodeGuide || pythonGuide) && <Button variant="ghost" size="sm" icon={BookOpen} onClick={() => props.onNavigate('tutorial', macRuntimeTutorialTopic)} testId="home-runtime-tutorial">看教程</Button>}
             {gitMissing && gitHost === 'windows' && <Button variant="ghost" size="sm" icon={Download} onClick={() => props.onRuntime('git')} testId="home-runtime-git">下载 Git</Button>}</div>
         </Card>
         <Card title="账户余额" padding="none" actions={<Pill tone={connectedCount ? 'ok' : 'neutral'}>{connectedCount ? `${connectedCount} 个工具已连接` : '等待连接'}</Pill>}>

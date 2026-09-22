@@ -64,6 +64,8 @@ import {
   userFacingErrorMessage,
 } from './business-common'
 import {
+  macDesktopTutorialTopic,
+  macRuntimeTutorialTopic,
   notificationOptions,
   settingsGroups,
   skinOptions,
@@ -2536,7 +2538,7 @@ export const tutorialTopics = [
     ],
   },
   {
-    id: 'runtime-mac',
+    id: macRuntimeTutorialTopic,
     title: 'Mac 上装 Node.js 和 Python',
     lead: 'Windows 上这两样星芒替你装；macOS 上要你自己装一次，装完回来重新检测就行（Homebrew / 官网安装包二选一）。',
     steps: [
@@ -2567,6 +2569,41 @@ export const tutorialTopics = [
           '回到首页点右上角「重新检测」，「运行环境」那一行显示出版本号就算好了。还是显示未安装的，先把「终端」整个关掉再开一次（新装的命令要重开终端才认），仍然不行就去检查页看一次结果。',
         action: '打开检查',
         page: 'health',
+      },
+    ],
+  },
+  {
+    id: macDesktopTutorialTopic,
+    title: 'Mac 上装桌面端',
+    lead: 'Codex 桌面端、WorkBuddy、Claude Desktop、OpenCode 这四个在 Mac 上要你自己下载安装；装完回来重新检测，再用同一行的「配置」连上当前账号。',
+    steps: [
+      {
+        title: '先知道为什么要自己装',
+        detail:
+          'Windows 上这四个桌面端星芒可以替你装，macOS 上没有这条路：这几家官方在 Mac 上只提供自己下载的安装包。所以首页上它们那一行的按钮写的是「安装指南」，点了就把你带到这里，不是它们在 Mac 上用不了。自己装不会动你已经装好的命令行工具；装 .pkg 包时 macOS 可能问一次你的开机密码，那是系统在问，星芒自己从不要管理员权限。',
+        action: '返回首页',
+        page: 'home',
+      },
+      {
+        title: '去各自的官网下载 Mac 版',
+        detail:
+          '四个各下各的，都在浏览器里打开对应官网的下载页：Codex 桌面端去 OpenAI 的 ChatGPT 下载页（Mac 上装出来可能叫 Codex 也可能叫 ChatGPT，两种星芒都认）；WorkBuddy 去腾讯 WorkBuddy 官网；Claude Desktop 去 Claude 官网的下载页；OpenCode 去 OpenCode 官网，注意别下成同名的命令行版本，要的是桌面端。下载时认准 macOS 版，Apple 芯片的 Mac 选 Apple Silicon（arm64）那一个。',
+        action: '返回首页',
+        page: 'home',
+      },
+      {
+        title: '装进「应用程序」文件夹',
+        detail:
+          '下载下来是 .dmg 就双击打开，把里面的应用图标拖进「应用程序」文件夹；是 .pkg 就双击一路下一步。留在「下载」文件夹里直接打开的星芒检测不到——它只认「应用程序」文件夹（系统那个和你个人目录下那个都行），而且是按官方的应用名认的，别改名。第一次打开时 macOS 提示这是从互联网下载的，按提示选打开就行。',
+        action: '返回首页',
+        page: 'home',
+      },
+      {
+        title: '回来重新检测，再连当前账号',
+        detail:
+          '回到首页点右上角「重新检测」，那一行会从「未安装」变成版本号。然后点这一行的「配置」：选密钥来源、点「检测模型」、挑一个模型、保存，就连上当前账号了。Claude Desktop 保存后要把它完全退出再重新打开才生效；Codex 桌面端和 Codex CLI 共用一份配置，配好其中一个另一个跟着生效。重新检测后还是「未安装」的，十有八九是应用没真的放进「应用程序」文件夹，或者被改过名字。',
+        action: '返回首页',
+        page: 'home',
       },
     ],
   },
@@ -2633,14 +2670,27 @@ export const tutorialTopics = [
   },
 ] as const
 
-export function TutorialPage({ navigate }: BusinessActions) {
-  const [selected, setSelected] = useState<string>('start')
+/**
+ * topic 是外面点进来时要停在哪一章。首页那几行「安装指南」跳过来时，教程页多半
+ * 已经挂在后面（页面只是 hidden，不会重新挂载），所以只靠 useState 的初始值接不住
+ * 第二次跳转；sequence 每跳一次加一，effect 才会再跑一遍。
+ */
+export function TutorialPage({ navigate, topic }: BusinessActions & { topic?: { sequence: number; id: string } }) {
+  const [selected, setSelected] = useState<string>(() => (
+    topic && tutorialTopics.some((entry) => entry.id === topic.id) ? topic.id : 'start'
+  ))
   const [query, setQuery] = useState('')
-  const topics = tutorialTopics.filter((topic) =>
-    `${topic.title} ${topic.lead}`.includes(query),
+  useEffect(() => {
+    if (!topic || !tutorialTopics.some((entry) => entry.id === topic.id)) return
+    setSelected(topic.id)
+    // 搜索框里留着上次的词时，跳过来的那一章可能被过滤掉，左边导航看着像没这一章。
+    setQuery('')
+  }, [topic])
+  const topics = tutorialTopics.filter((entry) =>
+    `${entry.title} ${entry.lead}`.includes(query),
   )
   const current =
-    tutorialTopics.find((topic) => topic.id === selected) ?? tutorialTopics[0]
+    tutorialTopics.find((entry) => entry.id === selected) ?? tutorialTopics[0]
   return (
     <section
       className="v2-page"

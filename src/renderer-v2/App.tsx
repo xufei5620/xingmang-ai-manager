@@ -19,7 +19,7 @@ import { isMissingWorkspace } from './features/tools/recent-workspaces'
 import { installedToolSyncLabel, useToolbox } from './features/tools/useToolbox'
 import { ManualUninstallDialog, type ManualUninstallState } from './features/tools/ManualUninstall'
 import { operationLogPage, type OperationActionId } from './operation-error'
-import { accountTabs, updateFailureLabel } from './registry/business'
+import { accountTabs, macDesktopTutorialTopic, updateFailureLabel } from './registry/business'
 import { tools } from './registry/tools'
 import type { PageId } from './registry/pages'
 import { BalanceTierProvider, Button, Confirm, Dialog, Notice, ToastProvider, useToast, useReducedMotion } from './ui'
@@ -96,6 +96,9 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   const [chatScope, setChatScope] = useState<string | null>(null)
   const [visitedPages, setVisitedPages] = useState<Partial<Record<PageId, string>>>({})
   const [accountTab, setAccountTab] = useState<AccountTab>('overview')
+  // 教程页停在哪一章。页面挂上之后只是 hidden 不会重新挂载，所以每次跳转都换一个
+  // sequence，教程页才接得住第二次、第三次跳过来。
+  const [tutorialTopic, setTutorialTopic] = useState<{ sequence: number; id: string } | null>(null)
   const [guide, setGuide] = useState(false)
   const [workspaceEntered, setWorkspaceEntered] = useState(false)
   const [tourOpen, setTourOpen] = useState(false)
@@ -385,6 +388,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     if (target === 'canvas') { void perform('打开画布', app.openCanvas); return }
     if ((target === 'account' || target === 'chat') && !session.authenticated) { setAuth('login'); return }
     if (target === 'account') setAccountTab(accountTabs.find((entry) => entry.value === section)?.value ?? 'overview')
+    if (target === 'tutorial' && section) setTutorialTopic((current) => ({ sequence: (current?.sequence ?? 0) + 1, id: section }))
     if (target === 'chat') setChatScope(scope)
     if (target !== 'home' && target !== 'chat') setVisitedPages((current) => ({ ...current, [target]: scope }))
     setGuide(false); setPage(target)
@@ -413,7 +417,9 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     const state = toolbox.snapshot
     if (!state) throw new Error('请先完成工具检测')
     const management = id === 'codexDesktop' ? state.platform.codexDesktop.install : state.platform.cliInstall[id]
-    if (management === 'external') { navigate('tutorial'); throw new Error('此平台需要在应用外安装，完成后回来重新检测。') }
+    // 这不是一次失败：macOS 上这几个桌面端本来就要客户自己下载。以前当错误抛出来，
+    // 用户会同时看到红色错误框和一个跳到教程首页、又没有对应章节的页面（第七批 3）。
+    if (management === 'external') { navigate('tutorial', macDesktopTutorialTopic); toast.show('这个系统要你自己下载安装，教程里是完整步骤。', 'neutral'); return }
     const runtimeBlocked = id === 'codexDesktop' ? null : cliRuntimeBlockMessage(state.system.runtime)
     if (runtimeBlocked) throw new Error(runtimeBlocked)
     if (tools.find((tool) => tool.id === id)?.requires.includes('python') && (!state.system.runtime.python.installed || state.system.runtime.python.detectionFailed)) throw new Error('Gemini 还需要 Python 环境。请先在运行环境卡中准备 Python，再安装工具。')
@@ -723,7 +729,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
               : null}
             {(Object.keys(visitedPages) as PageId[]).filter((id) => id !== 'acceleration' && (visitedPages[id] === scope || id === page)).map((id) => <div key={id} hidden={page !== id} inert={page !== id}>
               <Suspense fallback={pageLoading}>
-                <BusinessPage api={native} page={id} accountTab={accountTab} paymentReturn={paymentReturn} navigate={navigate} openLogin={() => setAuth('login')} openHelp={() => setHelp(true)}
+                <BusinessPage api={native} page={id} accountTab={accountTab} tutorialTopic={tutorialTopic ?? undefined} paymentReturn={paymentReturn} navigate={navigate} openLogin={() => setAuth('login')} openHelp={() => setHelp(true)}
                   onSessionResumed={refreshRecent}
                   onAccountChanged={() => void perform('刷新账号', reloadAccount)} onSettingsChanged={setSettings} openConfig={openToolConfig}
                   openGuide={() => setGuide(true)} replayTour={replayTour}

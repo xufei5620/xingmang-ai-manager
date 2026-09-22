@@ -106,6 +106,19 @@ export function toolInstallDirectory(snapshot: ToolboxSnapshot | null, tool: Too
 }
 
 /**
+ * 这台机器上这个工具的安装归不归本程序管。macOS 上 Codex 桌面端是 'external'：
+ * 官方在 Mac 上只给自己下载的安装包，按钮点下去只能把人带到教程那一章，所以
+ * 按钮不能再写「安装」，点完也不算一次失败（第七批 3）。
+ */
+export function needsManualInstall(snapshot: ToolboxSnapshot | null, tool: ToolId): boolean {
+  if (!snapshot) return false
+  const management = tool === 'codexDesktop'
+    ? snapshot.platform.codexDesktop.install
+    : snapshot.platform.cliInstall[providerFor(tool)]
+  return management === 'external'
+}
+
+/**
  * 原生安装器或 PATH 上其他来源装的 CLI，本工具的 npm 安装/回滚通道不该碰它：跑一次
  * npm install 会在 npm 全局目录另装一份，与用户在用的那份并存。对这类安装隐藏
  * 「更新」「回到推荐版本」按钮，改用一句被动提示。
