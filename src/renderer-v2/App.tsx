@@ -149,6 +149,9 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   const accelerationApi = useMemo(() => createAccelerationApi(native), [native])
   const acceleration = useAcceleration(accelerationApi, session.authenticated ? scope : null)
   const networkLocation = useNetworkLocation(native, acceleration.snapshot.state)
+  // 没在加速时不再定时读状态，所以进加速页时读一次：托盘或 Codex 桌面端可能刚连上过。
+  const refreshAcceleration = acceleration.refresh
+  useEffect(() => { if (page === 'acceleration') void refreshAcceleration() }, [page, refreshAcceleration])
   const { store: balanceStore, snapshot: balanceState } = useAccountBalanceStore(native, session.authenticated ? scope : null)
   const balance = balanceState.balance
   // 换账号等于换了一整套上下文：首页那份「最近」缓存（60 秒）必须当场作废，
