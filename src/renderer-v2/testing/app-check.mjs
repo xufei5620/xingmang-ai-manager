@@ -2588,19 +2588,28 @@ test('asks once before opening Codex with the Chinese runtime patch and remember
   const page = await open('chineseAsk=1')
   try {
     await page.getByTestId('tool-codexDesktop-primary').click()
-    await page.getByRole('heading', { name: '启用 Codex 中文界面？' }).waitFor()
+    await page.getByRole('heading', { name: '要让 Codex 的界面显示中文吗？' }).waitFor()
     assert.equal(await page.evaluate(() => window.v2Test.calls.filter((call) => call.method === 'launchCodexDesktop').length), 0)
+    // 开端口是安全取舍：焦点落在「先不用」，两个按钮都不是主按钮。
+    const decline = page.getByTestId('codex-chinese-decline')
+    await page.waitForFunction(() => document.activeElement?.getAttribute('data-testid') === 'codex-chinese-decline')
+    assert.equal(await decline.innerText(), '先不用')
+    assert.equal(await page.getByTestId('codex-chinese-enable').innerText(), '显示中文')
+    for (const button of [decline, page.getByTestId('codex-chinese-enable')]) {
+      assert.equal(await button.evaluate((element) => element.classList.contains('xm-btn-primary')), false)
+    }
+    assert.doesNotMatch(await page.getByRole('dialog', { name: '要让 Codex 的界面显示中文吗？' }).innerText(), /调试端口/)
 
-    await page.getByRole('button', { name: '保持当前语言', exact: true }).click()
+    await decline.click()
     await page.waitForFunction(() => window.v2Test.calls.some((call) => call.method === 'launchCodexDesktop'))
     assert.deepEqual(await page.evaluate(() => window.v2Test.calls
       .filter((call) => call.method === 'saveSettings' && call.args[0]?.codexDesktopChineseRuntimePatch !== undefined)
       .map((call) => call.args[0].codexDesktopChineseRuntimePatch)), ['disabled'])
-    await page.getByRole('heading', { name: '启用 Codex 中文界面？' }).waitFor({ state: 'hidden' })
+    await page.getByRole('heading', { name: '要让 Codex 的界面显示中文吗？' }).waitFor({ state: 'hidden' })
 
     await page.getByTestId('tool-codexDesktop-primary').click()
     await page.waitForFunction(() => window.v2Test.calls.filter((call) => call.method === 'launchCodexDesktop').length === 2)
-    assert.equal(await page.getByRole('heading', { name: '启用 Codex 中文界面？' }).count(), 0)
+    assert.equal(await page.getByRole('heading', { name: '要让 Codex 的界面显示中文吗？' }).count(), 0)
     await clean(page)
   } finally { await page.close() }
 })
@@ -2609,7 +2618,7 @@ test('turns the Chinese runtime patch on through the locale path when the one-ti
   const page = await open('chineseAsk=1')
   try {
     await page.getByTestId('tool-codexDesktop-primary').click()
-    await page.getByRole('button', { name: '启用中文界面', exact: true }).click()
+    await page.getByRole('button', { name: '显示中文', exact: true }).click()
     await page.waitForFunction(() => window.v2Test.calls.some((call) => call.method === 'launchCodexDesktop'))
     assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((call) => call.method === 'setCodexDesktopLocale').map((call) => call.args)), [['zh-CN']])
     assert.equal(await page.evaluate(() => window.v2Test.calls
