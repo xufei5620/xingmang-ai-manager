@@ -88,6 +88,7 @@ import { attachPlatformAuditLog } from './platform/runtime-log-bridge'
 import { recordStartupFailure } from './startup-log'
 import { inspectProviderConfig } from './config-files'
 import { buildFeedbackEnvironmentLines } from './feedback-environment'
+import { buildFeedbackSelfCheckLines, type FeedbackConnectionRecord } from './feedback-self-check'
 import { rootedMainServiceOptions } from './main-service-options'
 import { buildMacosInstallLocationNotice, inspectMacosInstallLocation } from './macos-install-location'
 import { privacyPolicyUrl, relaySiteExternalUrls, relaySites, resolveRelaySite, sub2ApiSupportServiceUrl, supportServiceUrl, userAgreementUrl } from './relay-sites'
@@ -95,6 +96,7 @@ import { createPaymentWindowController } from './payment-window'
 import { createPaymentOrderStatusReader } from './payment-status-reader'
 import {
   createDiagnosticsExport,
+  redactDiagnosticText,
   runDiagnostics,
   type DiagnosticsReport,
 } from './diagnostics'
@@ -870,6 +872,13 @@ if (!hasSingleInstanceLock) {
       ),
     })
     let latestDiagnostics: DiagnosticsReport | null = null
+    // 最近一次连接自检的结论，只留进报告的那几项（没有 Key、没有地址、没有站
+    // 点名）。键是四个工具，所以天然有界。
+    const latestConnectionChecks = new Map<ProviderId, FeedbackConnectionRecord>()
+    // 诊断导出与反馈报告都要把本机真正写着的那几把 Key 当敏感值剔掉。
+    const sensitiveKeyValues = () => providerIds
+      .map((provider) => inspectProviderConfig(provider, rootedOptions.system.providerRoots).apiKey)
+      .filter(Boolean)
     const diagnosticsService = {
       run: async () => {
         latestDiagnostics = await runDiagnostics({
@@ -898,22 +907,27 @@ if (!hasSingleInstanceLock) {
       // 自检跟着用户当前所在的站点走，探测和对账读同一个 RelaySite ——
       // 与 system-service.ts 的 inspectNativeProviderConfig 同参，否则换过
       // 站点的用户会被告知一份好配置「指错了地方」。站点名只进日志不上屏。
-      checkConnection: (provider: ProviderId) => {
+      checkConnection: async (provider: ProviderId) => {
         const site = resolveRelaySite(systemService.readStoredConfig().relaySiteId)
-        return runConnectionCheck({
+        const result = await runConnectionCheck({
           provider,
           site,
           inspection: inspectProviderConfig(provider, rootedOptions.system.providerRoots, site.providerBaseUrls),
           fetch: relayFetch,
         })
+        latestConnectionChecks.set(provider, {
+          ok: result.ok,
+          layer: result.layer,
+          summary: result.summary,
+          checkedAt: result.checkedAt,
+        })
+        return result
       },
       exportLatest: () => {
         if (!latestDiagnostics) throw new Error('请先运行一次健康诊断')
         return createDiagnosticsExport(latestDiagnostics, {
           ...rootedOptions.diagnosticExport,
-          sensitiveValues: providerIds
-            .map((provider) => inspectProviderConfig(provider, rootedOptions.system.providerRoots).apiKey)
-            .filter(Boolean),
+          sensitiveValues: sensitiveKeyValues(),
         })
       },
     }
@@ -992,6 +1006,20 @@ if (!hasSingleInstanceLock) {
         ),
       })
     })
+    // 客服的第二个问题是「到底能不能用」——这答案用户在「检查」页点过一次就有
+    // 了，没必要再让他截图发过来。只读上一次的结果，生成报告不重跑自检、不发
+    // 网络请求。
+    runtimeLog.attachSelfCheckDescriber(async () => buildFeedbackSelfCheckLines({
+      report: latestDiagnostics,
+      readConnection: (provider) => latestConnectionChecks.get(provider) ?? null,
+      now: new Date(),
+      // 诊断结论本身不该带 Key，但这份报告是要发到客服群里的，所以跟诊断导出
+      // 过同一遍脱敏（I13）。
+      redact: (value) => redactDiagnosticText(value, {
+        ...rootedOptions.diagnosticExport,
+        sensitiveValues: sensitiveKeyValues(),
+      }),
+    }))
     const desktopNotifications = createDesktopNotificationController({
       readEnabled: () => systemService.readStoredConfig().desktopNotifications === true,
       focusMainWindow: () => {
