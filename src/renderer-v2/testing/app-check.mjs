@@ -2900,3 +2900,156 @@ test('settings reopens the onboarding guide, and the interface tour replays unti
     await clean(page)
   } finally { await page.close() }
 })
+
+test('tutorial searches step contents regardless of case and surrounding spaces and recovers from no results', async () => {
+  const page = await open()
+  try {
+    await page.getByTestId('nav-tutorial').click()
+    const tutorial = page.getByTestId('page-tutorial')
+    await expect(tutorial.getByTestId('tutorial-article')).toBeVisible()
+    const search = tutorial.getByRole('searchbox', { name: '搜索教程', exact: true })
+    const viewport = page.getByTestId('page-viewport')
+    await viewport.evaluate((element) => { element.scrollTop = element.scrollHeight })
+    await expect.poll(() => viewport.evaluate((element) => element.scrollTop)).toBeGreaterThan(300)
+    await search.fill('  BREW INSTALL PYTHON  ')
+    await expect(tutorial.getByTestId('tutorial-group-advanced')).toHaveJSProperty('open', true)
+    await expect(tutorial.getByTestId('tutorial-topic-runtime-mac')).toBeVisible()
+    const heading = tutorial.getByTestId('tutorial-article').getByRole('heading', { level: 2 })
+    await expect(heading).toContainText(/Mac|macOS/i)
+    await expect.poll(() => heading.evaluate((element) => {
+      const title = element.getBoundingClientRect()
+      const visible = element.closest('[data-testid="page-viewport"]').getBoundingClientRect()
+      return title.top >= visible.top && title.bottom <= visible.bottom
+    })).toBe(true)
+    await expect(search).toBeFocused()
+    await expect(tutorial.getByTestId('tutorial-article')).toContainText('brew install python')
+    const advanced = tutorial.getByTestId('tutorial-group-advanced')
+    await advanced.locator('summary').click()
+    await expect(advanced).toHaveJSProperty('open', false)
+    await search.fill('Homebrew')
+    await expect(advanced).toHaveJSProperty('open', true)
+
+    await search.fill('no-such-tutorial-8472')
+    await expect(tutorial.getByRole('heading', { name: '没找到相关教程', exact: true })).toBeVisible()
+    assert.equal(await tutorial.getByTestId('tutorial-article').count(), 0)
+    assert.equal(await tutorial.getByRole('navigation', { name: '教程目录', exact: true }).getByRole('button').count(), 0)
+    await tutorial.getByRole('button', { name: '清除搜索', exact: true }).click()
+    await expect(search).toHaveValue('')
+    await expect(tutorial.getByTestId('tutorial-article')).toBeVisible()
+    await expect(tutorial.getByTestId('tutorial-topic-start')).toBeVisible()
+    await search.fill('重新读取时')
+    await expect(tutorial.getByTestId('tutorial-topic-start')).toBeVisible()
+    await expect(tutorial.getByTestId('tutorial-topic-start')).toHaveAttribute('aria-current', 'page')
+    const explanation = tutorial.getByTestId('tutorial-article').locator('details').filter({ hasText: '重新读取时' })
+    await expect(explanation).toHaveCount(1)
+    await expect(explanation).toHaveJSProperty('open', true)
+    await expect(explanation.getByText(/刚改过配置，需要重新读取时/)).toBeVisible()
+    await search.fill('下载完还不算装好')
+    const installationNote = tutorial.getByTestId('tutorial-article').locator('details').filter({ hasText: '下载完还不算装好' })
+    await expect(installationNote).toHaveJSProperty('open', true)
+    await installationNote.locator('summary').click()
+    await expect(installationNote).toHaveJSProperty('open', false)
+    await search.fill('Windows 安装报错')
+    await expect(installationNote).toHaveJSProperty('open', true)
+    await expect(installationNote.getByText(/Windows 安装报错时按提示处理/)).toBeVisible()
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('tutorial actions navigate to their tool and retain the selected chapter and search on return', async () => {
+  const page = await open()
+  try {
+    await page.evaluate(() => {
+      window.xingmang.listProviderExtensions = async (provider) => ({
+        provider, checkedAt: '2026-09-22T00:00:00Z', items: [], warnings: [],
+        capabilities: { mcp: { list: true, reason: null }, skill: { list: true, reason: null }, plugin: { list: true, reason: null } },
+      })
+    })
+    await page.getByTestId('nav-tutorial').click()
+    const tutorial = page.getByTestId('page-tutorial')
+    await tutorial.getByRole('searchbox', { name: '搜索教程', exact: true }).fill('MCP')
+    await tutorial.getByTestId('tutorial-topic-mcp').click()
+    const article = tutorial.getByTestId('tutorial-article')
+    const heading = await article.getByRole('heading', { level: 2 }).innerText()
+    await article.getByRole('button', { name: '打开外接工具', exact: true }).first().click()
+    await expect(page.getByTestId('page-mcp')).toBeVisible()
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'listProviderExtensions'))
+    await page.getByTestId('nav-tutorial').click()
+    await expect(tutorial.getByRole('searchbox', { name: '搜索教程', exact: true })).toHaveValue('MCP')
+    await expect(tutorial.getByTestId('tutorial-article').getByRole('heading', { level: 2 })).toHaveText(heading)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('tutorial illustrations remain accessible and contained in both themes and the guide action opens onboarding', async () => {
+  for (const theme of ['light', 'dark']) {
+    const page = await open(`theme=${theme}`)
+    try {
+      await page.getByTestId('nav-tutorial').click()
+      const tutorial = page.getByTestId('page-tutorial')
+      await expect(tutorial.getByTestId('tutorial-article')).toBeVisible()
+      for (const id of ['everyday', 'advanced']) {
+        const group = tutorial.getByTestId(`tutorial-group-${id}`)
+        await expect(group).toHaveJSProperty('open', false)
+        await group.locator('summary').click()
+      }
+      const chapters = tutorial.getByRole('navigation', { name: '教程目录', exact: true }).locator('[data-testid^="tutorial-topic-"]')
+      await expect(chapters.first()).toBeVisible()
+      let illustratedSteps = 0
+      for (const chapter of await chapters.all()) {
+        const group = chapter.locator('xpath=ancestor::details[1]')
+        if (await group.count() && !await group.evaluate((element) => element.open)) await group.locator('summary').click()
+        await chapter.click()
+        await expect(chapter).toHaveAttribute('aria-current', 'page')
+        const illustrations = tutorial.getByTestId('tutorial-article').locator('[data-tutorial-illustration]')
+        for (const illustration of await illustrations.all()) {
+          illustratedSteps += 1
+          await expect(illustration).toHaveAttribute('aria-label', /\S/)
+          assert.equal(await illustration.locator('button, input, select, textarea, a[href], [role="button"]').count(), 0)
+          assert.equal(await illustration.evaluate((element) => element.scrollWidth <= element.clientWidth + 1), true)
+        }
+        assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true)
+      }
+      assert.ok(illustratedSteps > 0, '教程应包含可访问的操作示意图')
+      await tutorial.getByTestId('tutorial-topic-start').click()
+      await expect(tutorial.getByTestId('tutorial-article').locator('[data-tutorial-illustration]').first()).toBeVisible()
+      await page.screenshot({ path: path.join(artifacts, `tutorial-start-${theme}.png`), fullPage: true })
+      await tutorial.getByRole('button', { name: '打开新手引导', exact: true }).click()
+      await expect(page.getByTestId('start-guide')).toBeVisible()
+      await clean(page)
+    } finally { await page.close() }
+  }
+})
+
+test('tutorial copies the first Codex message and offers manual copying when clipboard access fails', async () => {
+  const page = await open()
+  try {
+    await page.evaluate(() => {
+      window.__tutorialClipboard = { values: [], reject: false }
+      Object.defineProperty(navigator, 'clipboard', {
+        configurable: true,
+        value: { writeText: async (text) => {
+          if (window.__tutorialClipboard.reject) throw new Error('Clipboard access denied')
+          window.__tutorialClipboard.values.push(text)
+        } },
+      })
+    })
+    await page.getByTestId('nav-tutorial').click()
+    const tutorial = page.getByTestId('page-tutorial')
+    const step = tutorial.getByTestId('tutorial-article').locator('#tutorial-start-step-3')
+    const copy = tutorial.getByTestId('tutorial-start-copy-3')
+    await expect(copy).toBeVisible()
+    const example = await step.locator('pre').innerText()
+    await copy.click()
+    await expect(step.getByText('已复制，粘贴到 Codex 的输入框里即可。', { exact: true })).toBeVisible()
+    assert.deepEqual(await page.evaluate(() => window.__tutorialClipboard.values), [example])
+
+    await page.evaluate(() => { window.__tutorialClipboard.reject = true })
+    await copy.click()
+    await expect(step.getByRole('status')).toHaveText('没能自动复制，请选中上面的文字，右键复制。')
+    await expect(step.getByText('已复制，粘贴到 Codex 的输入框里即可。', { exact: true })).toHaveCount(0)
+    await expect(step.locator('pre')).toHaveText(example)
+    assert.deepEqual(await page.evaluate(() => window.__tutorialClipboard.values), [example])
+    await clean(page)
+  } finally { await page.close() }
+})
