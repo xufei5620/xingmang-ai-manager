@@ -79,6 +79,29 @@ describe('versionInBlockedRange', () => {
   })
 })
 
+describe('cliVerifiedVersions coverage', () => {
+  it('pins Codex and blocks the release that asks the relay for reasoning summaries', () => {
+    // 0.155.0 (2026-09-17) turned detailed reasoning summaries on by default and
+    // providers that do not support them reject the request outright; OpenAI
+    // shipped 0.155.1 the next day. Codex had no list at all until then, so a
+    // customer who pressed "更新" in that window installed exactly 0.155.0.
+    expect(cliVerifiedVersions.codex.recommended?.version).toBe('0.155.1')
+    expect(findBlockedCliVersion('codex', '0.155.0')?.fixed).toBe('0.155.1')
+    expect(findBlockedCliVersion('codex', '0.155.1')).toBeNull()
+    expect(findBlockedCliVersion('codex', '0.154.0')).toBeNull()
+  })
+
+  it('pins Gemini without blocking anything', () => {
+    expect(cliVerifiedVersions.gemini.recommended?.version).toBe('0.60.0')
+    expect(cliVerifiedVersions.gemini.blocked).toEqual([])
+  })
+
+  it('leaves Grok on npm latest, which is the behaviour it had before any list existed', () => {
+    expect(cliVerifiedVersions.grok.recommended).toBeNull()
+    expect(resolveCliInstallVersion('grok')).toEqual({ version: 'latest', source: 'latest' })
+  })
+})
+
 describe('findBlockedCliVersion', () => {
   it('reports the matching range for the shipped Claude Code regressions', () => {
     expect(findBlockedCliVersion('claude', '2.1.276')?.fixed).toBe('2.1.277')
@@ -170,6 +193,26 @@ describe('buildCliVersionAdvice', () => {
     const advice = buildCliVersionAdvice('claude', '2.1.276', { list })
     expect(advice.blockedReason).toBe('每次请求都 400')
     expect(advice.rollbackAvailable).toBe(true)
+  })
+
+  it('says which way the recommended version lies so the UI does not point backwards', () => {
+    // Every Claude Code entry so far happened to recommend a newer patch too,
+    // but the field exists because the list may also pin an older release.
+    expect(buildCliVersionAdvice('claude', '2.1.276', { list }).recommendedIsNewer).toBe(true)
+    expect(buildCliVersionAdvice('claude', '2.1.280', { list }).recommendedIsNewer).toBeUndefined()
+    expect(buildCliVersionAdvice('claude', '2.1.277', { list }).recommendedIsNewer).toBeUndefined()
+    // Nothing to compare against: no list, not installed, or an unparsable line.
+    expect(buildCliVersionAdvice('grok', '1.0.0').recommendedIsNewer).toBeUndefined()
+    expect(buildCliVersionAdvice('claude', null, { list }).recommendedIsNewer).toBeUndefined()
+    expect(buildCliVersionAdvice('claude', '版本读取失败', { list }).recommendedIsNewer).toBeUndefined()
+  })
+
+  it('tells a Codex user on the blocked release to move forward, not back', () => {
+    const advice = buildCliVersionAdvice('codex', '0.155.0')
+    expect(advice.recommendedVersion).toBe('0.155.1')
+    expect(advice.blockedReason).toMatch(/推理摘要/)
+    expect(advice.rollbackAvailable).toBe(true)
+    expect(advice.recommendedIsNewer).toBe(true)
   })
 
   it('reads a version out of a full CLI banner line', () => {

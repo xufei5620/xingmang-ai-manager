@@ -5,7 +5,7 @@ import { presentExternalClients } from './external-model'
 import { useSharedAccountBalance } from '../app/balance-context'
 import { balanceStatusText } from '../shell/balance-status'
 import { BrandIcon, Button, Card, Dialog, Empty, ListRow, Menu, PageHead, Pill, Progress, ToolRow } from '../../ui'
-import { balanceTier, canUninstallTool, externalInstallHint, greeting, isExternallyManagedInstall, presentTools, rollbackVersion, versionSubtitle, type ToolboxSnapshot, type ToolId, type ToolPresentation } from './model'
+import { balanceTier, canUninstallTool, externalInstallHint, greeting, isExternallyManagedInstall, presentTools, recommendedVersionVerb, rollbackVersion, versionSubtitle, type ToolboxSnapshot, type ToolId, type ToolPresentation } from './model'
 import type { ToolboxPartitionFailure, ToolsApi } from './api'
 import type { ToolJob } from './useToolbox'
 import type { AccountBootstrapProgress, AccountBootstrapResult } from './account-bootstrap'
@@ -148,6 +148,9 @@ export function Home(props: HomeProps) {
     // 该更新时改用一句被动提示，避免在 npm 全局目录另装一份并存。
     const externalManaged = isExternallyManagedInstall(tool.status)
     const externalHint = externalManaged ? externalInstallHint(tool.status.installSource) : null
+    // 推荐版本比已装的新时这是一次「更新」，图标和文案都不能写成回退。
+    const rollbackVerb = recommendedVersionVerb(tool)
+    const rollbackIcon = tool.versionAdvice?.recommendedIsNewer ? Download : RotateCcw
     const primaryButton = <Button size="sm" variant={tool.status.installed ? 'primary' : 'secondary'} loading={Boolean(job)}
       disabled={loading || launchBusy || bootstrapBusy && !tool.configured && !configUnavailable}
       title={lastWorkspace ? `在 ${lastWorkspace.path} 打开` : undefined}
@@ -165,7 +168,7 @@ export function Home(props: HomeProps) {
             ? <span className="v2-tool-external-note" title={externalHint} data-testid={`tool-${tool.id}-external-managed`}>{externalHint}</span>
             : undefined
           : rollback && blocked
-            ? <Button variant="ghost" size="sm" icon={RotateCcw} title={blocked} onClick={() => props.onInstall(tool.id, rollback)} testId={`tool-${tool.id}-rollback`}>回到推荐版本</Button>
+            ? <Button variant="ghost" size="sm" icon={rollbackIcon} title={blocked} onClick={() => props.onInstall(tool.id, rollback)} testId={`tool-${tool.id}-rollback`}>{`${rollbackVerb}推荐版本`}</Button>
             : tool.updateAvailable && !job ? <Button variant="ghost" size="sm" icon={Download} onClick={() => props.onInstall(tool.id)}>更新</Button> : undefined}
       primaryAction={workspaces.length ? <span className="v2-tool-launch" data-testid={`tool-${tool.id}-launch`}>
         {primaryButton}
@@ -179,7 +182,7 @@ export function Home(props: HomeProps) {
       </span> : primaryButton}
       menu={tool.status.installed && !job ? [
         { label: '配置', onSelect: () => props.onConfigure(tool.id) },
-        ...(rollback && !blocked ? [{ label: `回到推荐版本 ${rollback}`, testId: `tool-${tool.id}-rollback-menu`, onSelect: () => props.onInstall(tool.id, rollback) }] : []),
+        ...(rollback && !blocked ? [{ label: `${rollbackVerb}推荐版本 ${rollback}`, testId: `tool-${tool.id}-rollback-menu`, onSelect: () => props.onInstall(tool.id, rollback) }] : []),
         ...(tool.provider === 'codex' ? [{ label: '非 GPT 模型', testId: tool.id === 'codex' ? 'home-codex-models' : 'home-codexDesktop-models', onSelect: props.onCodexModels }] : []),
         { label: '查看记录', onSelect: () => props.onNavigate('sessions') },
         ...(tool.provider === 'codex' && tool.source === 'official' ? [{ label: '官方账户额度', onSelect: () => { setOfficial(snapshot?.system.officialChatGpt ?? null); setOfficialOpen(true) } }] : []),
