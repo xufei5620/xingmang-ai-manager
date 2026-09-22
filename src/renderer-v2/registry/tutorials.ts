@@ -892,6 +892,20 @@ export const tutorialTopics: readonly TutorialTopic[] = [
         page: 'health',
       },
       {
+        title: '命令行工具里报错',
+        where: 'Claude Code、Codex CLI、Gemini CLI、Grok CLI 的终端窗口',
+        detail: '找到报错里的关键词，按下面的说明处理。',
+        bullets: ['看到让你运行 /login 或重新登录时，先不要照做：那是官方账号的登录，照做会把当前账号的配置弄乱。', '先到个人中心看余额和这把 Key 的额度，处理好后回到工具里再发一次。'],
+        expected: '充值或调高额度后，工具里重发一次就恢复正常，不用重装，也不用重写 Key。',
+        extra: [
+          { title: '「用户额度不足」或「Insufficient account balance」', detail: '当前账号余额用完了。Claude Code 这时会显示「Please run /login · API Error: 403 用户额度不足」，Codex 显示「unexpected status 403 Forbidden: 用户额度不足」，Gemini CLI 和 Grok CLI 也会带上这几个字。不要输入 /login，到个人中心充值，到账后重发。' },
+          { title: '「token quota is not enough」「API key 额度已用完」或「Quota exceeded」', detail: '这把 Key 设置的额度上限用完了，或者剩下的不够这一次。Claude Code 同样会叫你 /login，不要照做。到「账号 → 密钥」调高这把 Key 的上限后重发。' },
+          { title: '「401 无效的令牌」或「Authentication required … Run /login」', detail: 'Key 失效了，或者这把 Key 的额度上限已经用到 0（这两种情况报的是同一句）。Claude Code 会先自己重试约 3 分钟才显示。先在「账号 → 密钥」看这把 Key 的额度，用完了就调高；不是额度的问题，再到首页重新写入 Key。' },
+        ],
+        action: '查看余额与额度',
+        page: 'account',
+      },
+      {
         title: '首页和打开文件夹时',
         where: '工具箱首页 → 工具状态或文件夹提示',
         detail: '状态提醒不一定表示需要重装，先确认它说的是配置还是文件夹。',

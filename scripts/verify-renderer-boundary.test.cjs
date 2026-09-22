@@ -28,6 +28,7 @@ const valueImportable = [
   'electron/git-runtime',
   'electron/ipc-contract',
   'electron/network-failure',
+  'electron/relay-quota-failure',
   'electron/relay-sites',
   'electron/usage-date-range',
   'electron/versions',
