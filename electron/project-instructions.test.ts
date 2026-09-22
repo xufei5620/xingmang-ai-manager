@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import {
   GENERATED_PROJECT_INSTRUCTION_FILENAME,
   PROJECT_INSTRUCTION_FILENAMES,
+  ProjectInstructionsStateStore,
   ensureProjectInstructions,
   hasExistingProjectInstructions,
   readProjectInstructionsTemplate,
@@ -60,6 +61,61 @@ describe('ensureProjectInstructions', () => {
       }
     })
   }
+
+  it('never brings back an AGENTS.md the user deleted', async () => {
+    const workspace = temporaryWorkspace()
+    const state = new ProjectInstructionsStateStore(path.join(temporaryWorkspace(), 'state'))
+    const target = path.join(workspace, GENERATED_PROJECT_INSTRUCTION_FILENAME)
+
+    const first = await ensureProjectInstructions({ workspace, template: BUNDLED_TEMPLATE, state })
+    expect(first).toEqual({ created: true })
+    expect(fs.existsSync(target)).toBe(true)
+
+    // 客户看了一眼决定不要，删掉它。
+    fs.rmSync(target)
+    const second = await ensureProjectInstructions({ workspace, template: BUNDLED_TEMPLATE, state })
+    expect(second).toEqual({ created: false, reason: 'already-generated' })
+    expect(fs.existsSync(target)).toBe(false)
+  })
+
+  it('does not generate a second time while the generated file is still there', async () => {
+    const workspace = temporaryWorkspace()
+    const state = new ProjectInstructionsStateStore(path.join(temporaryWorkspace(), 'state'))
+    await ensureProjectInstructions({ workspace, template: BUNDLED_TEMPLATE, state })
+    const second = await ensureProjectInstructions({ workspace, template: BUNDLED_TEMPLATE, state })
+    expect(second).toEqual({ created: false, reason: 'already-generated' })
+  })
+
+  it('keeps each workspace independent', async () => {
+    const stateRoot = path.join(temporaryWorkspace(), 'state')
+    const state = new ProjectInstructionsStateStore(stateRoot)
+    const first = temporaryWorkspace()
+    const second = temporaryWorkspace()
+    await ensureProjectInstructions({ workspace: first, template: BUNDLED_TEMPLATE, state })
+    // 记住第一个目录不能让第二个目录也被当成生成过。
+    expect(await ensureProjectInstructions({ workspace: second, template: BUNDLED_TEMPLATE, state }))
+      .toEqual({ created: true })
+  })
+
+  it('treats a damaged generation record as already generated', async () => {
+    const workspace = temporaryWorkspace()
+    const stateRoot = path.join(temporaryWorkspace(), 'state')
+    const state = new ProjectInstructionsStateStore(stateRoot)
+    await state.remember(workspace)
+    // 记录坏掉时宁可不生成，也不能把客户删掉的文件又变回来。
+    const [recordName] = fs.readdirSync(stateRoot)
+    fs.writeFileSync(path.join(stateRoot, recordName), '{ not json', 'utf8')
+    expect(state.generated(workspace)).toBe(true)
+    expect(await ensureProjectInstructions({ workspace, template: BUNDLED_TEMPLATE, state }))
+      .toEqual({ created: false, reason: 'already-generated' })
+    expect(fs.existsSync(path.join(workspace, GENERATED_PROJECT_INSTRUCTION_FILENAME))).toBe(false)
+  })
+
+  it('still generates without a state store, and records nothing', async () => {
+    const workspace = temporaryWorkspace()
+    expect(await ensureProjectInstructions({ workspace, template: BUNDLED_TEMPLATE }))
+      .toEqual({ created: true })
+  })
 
   it('does nothing when the template is empty', async () => {
     const workspace = temporaryWorkspace()
