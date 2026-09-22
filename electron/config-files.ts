@@ -446,6 +446,30 @@ function withTrailingNewline(content: string): string {
   return content.endsWith('\n') ? content : `${content}\n`
 }
 
+// 这三个顶层键是本软件早年写进 Codex config.toml 的，当前推荐版本（0.155.1）
+// 已经不认：disable_response_storage 与 windows_wsl_setup_acknowledged 连同
+// 它们背后的功能一起被删掉且没有替代；network_access 挪进了
+// [sandbox_workspace_write] 表、类型从字符串变成布尔，语义也从「声明」变成
+// 「放开沙箱里命令的联网」——顶层那一行从来没生效过，所以这里只删不搬，搬过去
+// 等于替用户放宽沙箱。留着它们的唯一效果就是 Codex 启动时报「忽略了 N 个无法
+// 识别的配置项」。
+const deprecatedCodexConfigKeys: ReadonlyArray<readonly [string, unknown]> = [
+  ['disable_response_storage', true],
+  ['network_access', 'enabled'],
+  ['windows_wsl_setup_acknowledged', true],
+]
+
+/**
+ * 清掉我们自己留下的废弃键。只认「键名和值都与当年模板一致」的那一份，用户把值
+ * 改成别的就当成他自己的设置不动；嵌套表里的同名键（sandbox_workspace_write.
+ * network_access）也不受影响，这里只看顶层。
+ */
+function dropDeprecatedCodexConfigKeys(parsed: Record<string, unknown>): void {
+  for (const [key, writtenValue] of deprecatedCodexConfigKeys) {
+    if (parsed[key] === writtenValue) delete parsed[key]
+  }
+}
+
 function stripCodexRelayFromConfig(
   parsed: Record<string, unknown>,
   siteBaseUrl: string,
@@ -463,6 +487,7 @@ function stripCodexRelayFromConfig(
   delete parsed.model_provider
   delete parsed.model
   delete parsed.review_model
+  dropDeprecatedCodexConfigKeys(parsed)
 }
 
 function applyCodexRelayConfig(
@@ -475,6 +500,7 @@ function applyCodexRelayConfig(
   parsed.review_model = model
   parsed.model_provider = providerName
   parsed.check_for_update_on_startup = false
+  dropDeprecatedCodexConfigKeys(parsed)
   const providerEntry = ensureRecord(ensureRecord(parsed, 'model_providers'), providerName)
   providerEntry.name = typeof providerEntry.name === 'string' && providerEntry.name.trim()
     ? providerEntry.name
@@ -503,10 +529,7 @@ function buildCodexRelayConfigTemplate(
     'model_reasoning_effort = "xhigh"',
     'approval_policy = "on-request"',
     'sandbox_mode = "workspace-write"',
-    'disable_response_storage = true',
-    'network_access = "enabled"',
     'check_for_update_on_startup = false',
-    'windows_wsl_setup_acknowledged = true',
     '',
     `[model_providers.${providerKey}]`,
     `name = ${tomlString(providerName)}`,

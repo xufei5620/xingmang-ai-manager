@@ -131,7 +131,6 @@ function codexProbeConfigText(baseUrl, model) {
     'model_reasoning_effort = "xhigh"',
     'approval_policy = "on-request"',
     'sandbox_mode = "read-only"',
-    'disable_response_storage = true',
     '',
     '[model_providers.xingmang]',
     'name = "xingmang"',
