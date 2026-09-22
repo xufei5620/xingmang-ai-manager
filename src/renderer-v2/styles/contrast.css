@@ -1,0 +1,86 @@
+/* Imported last in main.tsx, and every rule carries :root, because the business,
+   chat and acceleration stylesheets arrive with lazily loaded pages and land after
+   this file; the extra weight keeps these rules ahead of them either way.
+   Two separate situations live here:
+   1. The in-app 「高对比度」 switch (also turned on when the OS reports high
+      contrast): tokens.css swaps the palette, these rules fix components whose
+      states were drawn with tints and glows that the palette alone cannot rescue.
+   2. Windows high-contrast themes (forced-colors): Chromium repaints colors with
+      the system palette, drops box-shadow and gradient backgrounds, and keeps
+      only system-color keywords the author wrote. Anything whose boundary or
+      selected state was a shadow, a gradient or a background fill must be redrawn
+      here with real borders and system colors, or it disappears. */
+
+/* 1. In-app high contrast ------------------------------------------------ */
+/* Skipped under forced colors: there the rules below must win, and these would
+   out-rank them with palette colors the system is about to discard anyway. */
+@media not (forced-colors: active) {
+  :root:is(.hc, [data-contrast="high"]) .xm-btn-secondary { border-color: var(--line-3); }
+  :root:is(.hc, [data-contrast="high"]) .xm-pill { border: 1px solid currentColor; }
+  :root:is(.hc, [data-contrast="high"]) :is(.xm-btn-primary, .xm-btn-accent) { background: var(--accent); border-color: var(--accent); box-shadow: none; }
+  :root:is(.hc, [data-contrast="high"]) :is(.xm-btn-primary, .xm-btn-accent):hover:not(:disabled) { filter: none; background: var(--accent-2); }
+  /* A disabled control at 40% opacity drops below any useful contrast; keep it
+     legible and mark it with a dashed edge instead of fading it out. */
+  :root:is(.hc, [data-contrast="high"]) :is(.xm-btn, .xm-icon-btn):disabled { opacity: .6; border-style: dashed; border-color: currentColor; }
+  :root:is(.hc, [data-contrast="high"]) :is(.xm-segment, .xm-tabs, .xm-menu-pop) button:disabled { opacity: .6; }
+  :root:is(.hc, [data-contrast="high"]) :focus-visible { outline-width: 3px; }
+  :root:is(.hc, [data-contrast="high"]) a[href]:not(.xm-btn) { text-decoration: underline; text-underline-offset: 2px; }
+  :root:is(.hc, [data-contrast="high"]) .xm-switch::before { box-sizing: border-box; border: 2px solid var(--line-3); background: var(--panel-2); }
+  :root:is(.hc, [data-contrast="high"]) .xm-switch i { background: var(--text-2); box-shadow: none; }
+  :root:is(.hc, [data-contrast="high"]) .xm-switch.is-on::before { border-color: var(--accent); background: var(--accent); box-shadow: none; }
+  :root:is(.hc, [data-contrast="high"]) .xm-switch.is-on i { background: var(--accent-fg); }
+  :root:is(.hc, [data-contrast="high"]) .xm-switch:disabled::before { border-style: dashed; }
+  :root:is(.hc, [data-contrast="high"]) .xm-progress-bar.xm-tone-accent { background: var(--accent); box-shadow: none; }
+  /* Selected states that were only a faint tint get a solid marker as well. */
+  :root:is(.hc, [data-contrast="high"]) .v2-nav-item.is-active { box-shadow: inset 3px 0 0 var(--accent), inset 0 0 0 1px var(--accent); }
+  :root:is(.hc, [data-contrast="high"]) .xm-segment button.is-active { box-shadow: inset 0 0 0 2px var(--text); }
+  :root:is(.hc, [data-contrast="high"]) .v2-business-subnav button.is-active { box-shadow: inset 3px 0 0 var(--accent); }
+  :root:is(.hc, [data-contrast="high"]) :is(.v2-command-results [aria-selected='true'], .acceleration-line-option.is-selected) { box-shadow: inset 0 0 0 1px var(--accent); }
+  :root:is(.hc, [data-contrast="high"]) .v2-tutorial-group button[aria-current='page'] { border-color: var(--accent); }
+  /* Decorative layers that sit under text. */
+  :root:is(.hc, [data-contrast="high"]) .v2-sidebar { background: var(--rail); }
+  :root:is(.hc, [data-contrast="high"]) .v2-workspace-starfield { display: none; }
+  :root:is(.hc, [data-contrast="high"]) .acceleration-console { background: var(--panel-solid); }
+}
+
+/* 2. Windows high-contrast themes ------------------------------------------ */
+@media (forced-colors: active) {
+  :root .v2-workspace-starfield { display: none; }
+  /* Edges that were only an inset ring or an outer shadow. */
+  :root :is(.xm-modal, .xm-toast, .xm-brand-tile, .xm-notice, .xm-coachmark) { border: 1px solid CanvasText; }
+  /* Buttons keep a visible edge; the main action gets a heavier one because its
+     gradient fill is gone. */
+  :root :is(.xm-btn, .xm-icon-btn) { border-color: ButtonText; }
+  :root :is(.xm-btn-primary, .xm-btn-accent) { border: 2px solid ButtonText; }
+  :root :is(.xm-btn, .xm-icon-btn, .xm-segment button, .xm-tabs button, .xm-menu-pop button):disabled { opacity: 1; color: GrayText; border-color: GrayText; }
+  :root :focus-visible { outline-color: Highlight; }
+  /* Selected states were background tints; repaint them with the system selection
+     pair. Forced colors also paints a Canvas backplate behind every text run, which
+     would hide HighlightText, so these rows opt out and name every color themselves. */
+  :root :is(.v2-nav-item.is-active, .xm-segment button.is-active, .v2-business-subnav button.is-active, .v2-command-results [aria-selected='true'], .v2-tutorial-group button[aria-current='page']) { forced-color-adjust: none; background: Highlight; color: HighlightText; border-color: Highlight; box-shadow: none; }
+  :root :is(.v2-nav-item.is-active, .xm-segment button.is-active, .v2-business-subnav button.is-active, .v2-command-results [aria-selected='true'], .v2-tutorial-group button[aria-current='page']) * { color: inherit; }
+  :root .v2-nav-badge { forced-color-adjust: auto; border: 1px solid CanvasText; }
+  /* Every tab would otherwise show the same forced bottom border. */
+  :root .xm-tabs button { border-bottom-color: Canvas; }
+  :root .xm-tabs button.is-active { border-image: none; border-bottom-color: Highlight; }
+  /* The option row holds its own buttons, which repaint as ButtonFace and would
+     cover a background fill, so the selection is an outline around the row. */
+  :root .acceleration-line-option.is-selected { outline: 2px solid Highlight; outline-offset: -2px; }
+  :root :is(.v2-business-payment.is-selected, .v2-skin-chip.is-active) { outline: 2px solid Highlight; outline-offset: 1px; }
+  /* Switch track and thumb are background fills on a borderless button. */
+  :root .xm-switch::before { box-sizing: border-box; border: 2px solid ButtonText; background: Canvas; }
+  :root .xm-switch i { background: ButtonText; }
+  :root .xm-switch.is-on::before { border-color: Highlight; background: Highlight; }
+  :root .xm-switch.is-on i { background: HighlightText; }
+  :root .xm-switch:disabled::before { border-color: GrayText; }
+  :root .xm-switch:disabled i { background: GrayText; }
+  /* Progress: the track and bar are both fills. */
+  :root .xm-progress-track { background: Canvas; outline: 1px solid CanvasText; }
+  :root :is(.xm-progress-bar, .xm-progress-bar.xm-tone-accent) { background: Highlight; }
+  :root .acceleration-quota-track { stroke: GrayText; }
+  :root .acceleration-quota-progress { stroke: Highlight; }
+  /* Status dots are currentColor fills. */
+  :root .xm-pill i, :root .xm-pill.xm-tone-neutral i, :root .v2-dot, :root .v2-dot.is-ok, :root .v2-dot.is-warn, :root .acceleration-status-dot, :root .xm-field small.xm-field-caps::before { background: CanvasText; }
+  /* The custom select arrow is a gradient background; let the native one draw. */
+  :root .xm-field select { appearance: auto; background-image: none; }
+}

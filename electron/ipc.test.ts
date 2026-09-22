@@ -7,7 +7,7 @@ import type { UpdaterService } from './updater'
 import { mergeAppSettings, type AppSettings, type AppSettingsUpdate } from './app-settings'
 import type { NativeConfigSaveResult } from './config-files'
 import type { NewApiClientService } from './new-api-client'
-import { ipcInvokeChannels } from './ipc-contract'
+import { ipcInvokeChannels, type AccountKeysPage } from './ipc-contract'
 import { providerSessionProviders } from './provider-sessions'
 import { resolveRelaySite, sub2ApiSupportServiceUrl, supportServiceUrl } from './relay-sites'
 import { savedAccountId } from './saved-accounts'
@@ -3964,6 +3964,72 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
 
       expect(() => handler(trustedEvent(), { pageSize: 999 })).toThrow()
       expect(accountService.listKeys).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('account:list-keys in-use marking', () => {
+    const row = (id: number) => ({
+      id, name: `key-${id}`, maskedKey: 'sk-****abcd', group: 'default', status: 1, remainQuota: 0,
+      unlimitedQuota: true, usedQuota: 0, createdAt: '2026-09-01T00:00:00.000Z', expiredAt: null, accessedAt: null,
+    })
+    const cached = [
+      { id: 11, provider: 'claude' as const, group: 'g', name: 'xingmang-desktop-claude', key: 'sk-claude-in-use-000' },
+      { id: 12, provider: 'codex' as const, group: 'g', name: 'xingmang-desktop-codex', key: 'sk-codex-replaced-000' },
+    ]
+    function signedIn(userId = 7) {
+      const accountService = accountServiceStub()
+      vi.mocked(accountService.getSessionState).mockReturnValue({
+        authenticated: true,
+        account: { userId, username: 'alice', group: null, role: null, quota: null, usedQuota: null },
+      })
+      vi.mocked(accountService.listKeys).mockResolvedValue({ page: 1, pageSize: 20, total: 3, keys: [row(11), row(12), row(13)] })
+      return accountService
+    }
+    function configured(service: ReturnType<typeof serviceStub>, keys: Partial<Record<string, string>>) {
+      vi.mocked(service.revealApiKey).mockImplementation((provider) => keys[provider] ?? '')
+    }
+
+    it('marks only keys this app issued for a tool whose config still holds exactly that key', async () => {
+      const service = serviceStub()
+      configured(service, { claude: 'sk-claude-in-use-000', codex: 'sk-user-picked-other' })
+      const managedCliKeys = { read: vi.fn(async () => cached), save: vi.fn(), remove: vi.fn() }
+      register(service, undefined, undefined, signedIn(), undefined, managedCliKeys)
+      const result = await electronMocks.handlers.get('account:list-keys')!(trustedEvent(), {}) as AccountKeysPage
+      expect(managedCliKeys.read).toHaveBeenCalledWith(7)
+      expect(result.keys.map((key) => key.managedProvider)).toEqual(['claude', undefined, undefined])
+      expect(result.keys[1]).not.toHaveProperty('managedProvider')
+      // Only the provider id crosses IPC; neither the cached nor the configured secret does (I3).
+      expect(JSON.stringify(result)).not.toMatch(/sk-claude-in-use|sk-codex-replaced|sk-user-picked/)
+    })
+
+    it('returns the unmarked list when the cache, a config, or the session cannot be trusted', async () => {
+      const service = serviceStub()
+      vi.mocked(service.revealApiKey).mockImplementation(() => { throw new Error('config unreadable') })
+      const managedCliKeys = { read: vi.fn(async () => cached), save: vi.fn(), remove: vi.fn() }
+      const accountService = signedIn()
+      register(service, undefined, undefined, accountService, undefined, managedCliKeys)
+      const handler = electronMocks.handlers.get('account:list-keys')!
+      const plain = { page: 1, pageSize: 20, total: 3, keys: [row(11), row(12), row(13)] }
+      await expect(handler(trustedEvent(), {})).resolves.toEqual(plain)
+      configured(service, { claude: 'sk-claude-in-use-000' })
+      managedCliKeys.read.mockRejectedValueOnce(new Error('cache corrupt'))
+      await expect(handler(trustedEvent(), {})).resolves.toEqual(plain)
+      managedCliKeys.read.mockImplementationOnce(async () => {
+        vi.mocked(accountService.getSessionState).mockReturnValue({
+          authenticated: true,
+          account: { userId: 8, username: 'bob', group: null, role: null, quota: null, usedQuota: null },
+        })
+        return cached
+      })
+      await expect(handler(trustedEvent(), {})).resolves.toEqual(plain)
+    })
+
+    it('does not read the key cache when signed out', async () => {
+      const managedCliKeys = { read: vi.fn(async () => cached), save: vi.fn(), remove: vi.fn() }
+      const { accountService } = register(undefined, undefined, undefined, undefined, undefined, managedCliKeys)
+      vi.mocked(accountService.listKeys).mockResolvedValue({ page: 1, pageSize: 20, total: 0, keys: [] })
+      await electronMocks.handlers.get('account:list-keys')!(trustedEvent(), {})
+      expect(managedCliKeys.read).not.toHaveBeenCalled()
     })
   })
 

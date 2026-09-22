@@ -110,6 +110,7 @@ import type {
   AccountSessionState,
   AccountKeyCreateInput,
   AccountKeyUpdateInput,
+  AccountKeysPage,
   AiChatStartInput,
   AiImageGenerateInput,
   AccountManagedCliConfigurationInput,
@@ -2589,9 +2590,36 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   registerTrustedHandler('account:get-tasks', (_event, input: unknown) => (
     accountService.getTasks(parseAccountTaskQuery(input))
   ))
-  registerTrustedHandler('account:list-keys', (_event, input: unknown) => (
-    accountService.listKeys(parseAccountKeysQuery(input))
-  ))
+  // Marks the keys a tool on this machine is using right now, so the keys page
+  // can warn before revoking one and put a fresh key back afterwards. "Using"
+  // means the key this app issued for that tool AND the tool's config still
+  // holds exactly it: a cached key the user has since replaced is not in use.
+  // Only the provider id crosses IPC, never the secret (I3). A display hint:
+  // any failure degrades to the unmarked list, the pre-existing behavior.
+  const markKeysInUse = async (page: AccountKeysPage, userId: number | undefined): Promise<AccountKeysPage> => {
+    if (!userId || !options.managedCliKeys || options.previewOnboarding) return page
+    const cached = await options.managedCliKeys.read(userId).catch(() => [])
+    if (accountService.getSessionState().account?.userId !== userId) return page
+    const inUse = new Map<number, ProviderId>()
+    for (const entry of cached) {
+      let configured = ''
+      try { configured = service.revealApiKey(entry.provider, options.previewOnboarding) } catch { continue }
+      if (configured && configured === entry.key) inUse.set(entry.id, entry.provider)
+    }
+    if (!inUse.size) return page
+    return {
+      ...page,
+      keys: page.keys.map((key) => {
+        const managedProvider = inUse.get(key.id)
+        return managedProvider ? { ...key, managedProvider } : key
+      }),
+    }
+  }
+  registerTrustedHandler('account:list-keys', (_event, input: unknown) => {
+    const query = parseAccountKeysQuery(input)
+    const userId = accountService.getSessionState().account?.userId
+    return accountService.listKeys(query).then((page) => markKeysInUse(page, userId))
+  })
   registerTrustedHandler('account:list-groups', () => accountService.listUsableGroups())
   registerTrustedHandler('account:revoke-key', async (_event, id: unknown) => {
     const keyId = parseAccountRevokeKeyId(id)
