@@ -5,6 +5,7 @@ import {
 import { sub2ApiManagedCliKeyProfiles, providerIds, type ProviderId } from './catalog'
 import { summarizeKeySecret } from './key-secret-summary'
 import { parseSub2ApiAnnouncements, type Sub2ApiAnnouncement } from './sub2api-announcements'
+import { isJsonContentType, isServiceUnavailableResponse } from './network-failure'
 
 export interface Sub2ApiAccountClientOptions {
   /** Required injection; no default production fetch and no renderer-provided base URL. */
@@ -370,7 +371,11 @@ export function createSub2ApiAccountClient(options: Sub2ApiAccountClientOptions)
         if (response.redirected || (response.status >= 300 && response.status < 400)
           || (response.url && new URL(response.url).href !== url.href)) protocol()
         if (response.status === 401) throw new RealmAccountError('UNAUTHORIZED')
-        if (!response.ok) throw new RealmAccountError('NETWORK')
+        // 维护、网关错误、防护层验证页：服务那一侧的事，不能说成请求失败让用户去重试密码。
+        if (!response.ok) {
+          throw new RealmAccountError(isServiceUnavailableResponse({ status: response.status,
+            json: isJsonContentType(response.headers.get('content-type')), headers: response.headers }) ? 'UNAVAILABLE' : 'NETWORK')
+        }
         if (!/^application\/json(?:\s*;|$)/i.test(response.headers.get('content-type') ?? '') || !reader) protocol()
         const declaredLength = response.headers.get('content-length')
         if (declaredLength !== null && !/^\d+$/.test(declaredLength)) protocol()

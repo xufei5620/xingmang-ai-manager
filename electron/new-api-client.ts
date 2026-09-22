@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { readBoundedResponseText } from './bounded-response'
 import { redactCommandText } from './command-runner'
 import { managedKeyQuotaExhaustedMessage } from './account-key-quota'
-import { classifyNetworkFailure, networkFailureMessages, type NetworkFailureReason } from './network-failure'
+import { classifyNetworkFailure, isServiceUnavailableResponse, networkFailureMessages, type NetworkFailureReason } from './network-failure'
 import type { RelayBackendCapabilities, RelayBackendClient } from './relay-backend'
 import { relaySites } from './relay-sites'
 import { parseNewApiUsagePricing } from './usage-pricing-parser'
@@ -1099,6 +1099,20 @@ async function performRequest(
   }
 }
 
+/**
+ * 维护、网关挂掉、防护层弹验证页时，服务回的是 5xx 或一张网页。以前这些都落进
+ * 「xx失败，服务返回 HTTP 503」，渲染层再按字面把它猜成别的事；这里直接给出
+ * 「服务暂时不可用」那一类，调用方（启动时恢复登录、登录框、账号页）据此知道
+ * 这不是凭据的问题。detail 只放状态码和服务自己的原话，不放 label：label 里的
+ * 「登录」二字会让渲染层的兜底正则把它认回「登录失效」。
+ */
+function assertServiceAvailable(raw: NewApiRawResponse, detail: string): void {
+  if (isServiceUnavailableResponse({ status: raw.status, json: isRecord(raw.payload), headers: raw.headers })) {
+    // 服务自己在 JSON 里说了原因（「维护中」）就带上，那比状态码更有用。
+    throw new NewApiNetworkError('serviceUnavailable', detail ? `HTTP ${raw.status}：${detail}` : `HTTP ${raw.status}`)
+  }
+}
+
 function unwrapEnvelope(raw: NewApiRawResponse, label: string, secrets: readonly string[]): unknown {
   const envelope = isRecord(raw.payload) ? raw.payload : null
   const serverMessage = envelope && typeof envelope.message === 'string' ? envelope.message : ''
@@ -1106,6 +1120,7 @@ function unwrapEnvelope(raw: NewApiRawResponse, label: string, secrets: readonly
   if (raw.status === 401) {
     throw new NewApiAuthenticationError(detail || '登录状态已失效，请重新登录')
   }
+  assertServiceAvailable(raw, detail)
   if (!envelope) {
     // HTTP 成功却不是 JSON，最常见的来源是门户认证页把响应换掉了；真的服务出错
     // 时状态码不会是 2xx，走的是下面那条带 HTTP 码的分支。
@@ -1151,6 +1166,7 @@ function unwrapPublicNotice(raw: NewApiRawResponse): unknown {
   const serverMessage = envelope && typeof envelope.message === 'string' ? envelope.message : ''
   const detail = sanitizeUpstreamMessage(serverMessage, [])
   if (raw.status === 401) throw new NewApiAuthenticationError(detail || '公告读取未授权')
+  assertServiceAvailable(raw, detail)
   if (!raw.ok) throw new Error(detail || `公告读取失败，服务返回 HTTP ${raw.status}`)
   if (!envelope || !Object.prototype.hasOwnProperty.call(envelope, 'data')) {
     throw new Error('公告读取返回的不是有效数据')
@@ -1188,6 +1204,7 @@ function unwrapLegacyBusinessEnvelope(
   if (raw.status === 401) {
     throw new NewApiAuthenticationError(detail || '登录状态已失效，请重新登录')
   }
+  assertServiceAvailable(raw, detail)
   if (!envelope) {
     throw new Error(raw.ok ? `${label}返回的不是有效 JSON` : (detail || `${label}失败，服务返回 HTTP ${raw.status}`))
   }

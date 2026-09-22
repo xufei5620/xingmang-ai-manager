@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, type MouseEvent, type ReactNode } from 'react'
 import { ArrowRight, ArrowUpRight, Bell, ChevronDown, CircleHelp, Globe, Menu as MenuIcon, PanelLeft, RefreshCw, Search, UserRound, Zap } from 'lucide-react'
 import { Button, Coachmark, Dialog, Input, Logo, Tooltip } from '../../ui'
 import { moreNavigation, shellNavigation, shellTour } from '../../registry/shell'
@@ -72,6 +72,8 @@ export function Shell({ activePage, account, platform, adapter, environment, bal
   const scroll = useRef(new Map<PageId, number>())
   const navigateRef = useRef(adapter.navigate)
   navigateRef.current = adapter.navigate
+  const shownPage = useRef<PageId | null>(null)
+  const [pageAnnouncement, setPageAnnouncement] = useState('')
   const results = pageRegistry.filter((page) => `${page.label} ${page.id}`.toLowerCase().includes(query.toLowerCase().trim()))
   const bonusAction = Boolean(adapter.redeemAccelerationCode && isAccelerationBonusCode(query))
   const resultCount = bonusAction ? 1 : results.length
@@ -123,6 +125,30 @@ export function Shell({ activePage, account, platform, adapter, environment, bal
   useEffect(() => {
     if (moreNavigation.includes(activePage)) setMore(true)
   }, [activePage])
+  // 切页之后焦点原来还停在侧栏按钮上：键盘用户要 Tab 穿过整条侧栏才到正文，读屏用户
+  // 根本不知道页面换了。换页时把焦点交给正文区，并在播报区念一句页面名。首次渲染不动，
+  // 开着弹窗不抢；新页面自己已经把焦点放进正文（比如聊天的输入框）也不抢。
+  useEffect(() => {
+    if (shownPage.current === null || shownPage.current === activePage) {
+      shownPage.current = activePage
+      return
+    }
+    shownPage.current = activePage
+    setPageAnnouncement(`已切换到${pageRegistry.find((page) => page.id === activePage)?.label ?? '新页面'}`)
+    const frame = requestAnimationFrame(() => {
+      const main = viewport.current
+      if (!main || document.querySelector('dialog[open]')) return
+      const current = document.activeElement
+      if (current && current !== main && main.contains(current) && !current.closest('[hidden], [inert]')) return
+      main.focus({ preventScroll: true })
+    })
+    return () => cancelAnimationFrame(frame)
+  }, [activePage])
+  function skipToContent(event: MouseEvent<HTMLAnchorElement>) {
+    // 不改地址栏的 hash：只把焦点交给正文区，和切页时的落点一致。
+    event.preventDefault()
+    viewport.current?.focus({ preventScroll: true })
+  }
   useLayoutEffect(() => {
     const element = viewport.current
     if (!element) return
@@ -178,6 +204,7 @@ export function Shell({ activePage, account, platform, adapter, environment, bal
     <header className="v2-titlebar" data-testid="window-titlebar"><Logo kind="micro" height={20} /><span>星芒AI管理工具</span></header>
     <div className={`v2-shell${collapsed ? ' sidebar-collapsed' : ''}`}>
       <aside className="v2-sidebar" data-testid="sidebar">
+        <a className="v2-skip-link" href="#v2-main" onClick={skipToContent} data-testid="shell-skip-to-content">跳到正文</a>
         <div className="v2-brand"><Logo kind="micro" height={32} />{!collapsed && <Logo kind="wordmark" height={32} />}
           <Button variant="ghost" size="xs" icon={PanelLeft} aria-label={collapsed ? '展开侧栏' : '收起侧栏'} title={collapsed ? '展开侧栏' : '收起侧栏'} onClick={toggleSidebar} testId="sidebar-collapse" /></div>
         <nav className="v2-sidebar-nav" aria-label="主导航">{shellNavigation.map((group, index) => <div className="v2-nav-group" key={index}>{group.map(navButton)}</div>)}
@@ -204,7 +231,8 @@ export function Shell({ activePage, account, platform, adapter, environment, bal
           <div className="v2-topbar-actions">{account.supportsAnnouncements !== false && <Button size="sm" icon={Bell} onClick={adapter.openAnnouncements} testId="announcement-open">公告{unread && <span className="v2-unread" />}</Button>}<Button size="sm" icon={CircleHelp} onClick={adapter.openHelp}>帮助与客服</Button></div>
         </header>
         {banner}
-        <main ref={viewport} className={`v2-content${activePage === 'chat' ? ' v2-content-chat' : ''}`} data-testid="page-viewport">{children}</main>
+        <main ref={viewport} id="v2-main" tabIndex={-1} className={`v2-content${activePage === 'chat' ? ' v2-content-chat' : ''}`} data-testid="page-viewport">{children}</main>
+        <p className="v2-visually-hidden" role="status" aria-live="polite" data-testid="shell-page-announcement">{pageAnnouncement}</p>
         <footer className="v2-statusbar" data-testid="shell-statusbar"><button type="button" onClick={adapter.openHealth}><i className="v2-dot" />{environment ?? '环境待检测'}</button>
           <button type="button" className="v2-network-location network-location" data-testid="shell-network-location"
             aria-label="刷新网络位置" aria-busy={networkRefreshing} disabled={networkRefreshing || !adapter.refreshNetwork}

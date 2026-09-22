@@ -8,6 +8,7 @@ import {
 import { chatKeyQuotaExhaustedMessage } from './account-key-quota'
 import { ChatKeyQuotaExhaustedError, type ChatCredentialCoordinator } from './chat-credential-coordinator'
 import { observeAiOperation, type AiOperationStartedObserver } from './ai-operation-lifecycle'
+import { classifyNetworkFailure, isJsonContentType, isServiceUnavailableResponse, networkFailureMessages } from './network-failure'
 import { classifyRelayQuotaFailure, extractRelayErrorDetail, relayQuotaFailureMessages } from './relay-quota-failure'
 
 export const AI_CHAT_STREAM_LIMITS = {
@@ -41,6 +42,7 @@ export type AiChatStreamErrorCode =
   | 'total-timeout'
   | 'network-error'
   | 'upstream-http-error'
+  | 'service-unavailable'
   | 'invalid-stream-response'
   | 'stream-closed'
   | 'response-limit-exceeded'
@@ -192,6 +194,7 @@ const SAFE_ERROR_MESSAGES: Record<AiChatStreamErrorCode, string> = {
   'total-timeout': '本次对话超过最长处理时间，已停止等待',
   'network-error': '无法连接 AI 服务，请检查网络后重试',
   'upstream-http-error': 'AI 服务暂时无法完成请求',
+  'service-unavailable': networkFailureMessages.serviceUnavailable,
   'invalid-stream-response': 'AI 服务返回了无法识别的数据',
   'stream-closed': 'AI 服务提前结束了本次响应，请重试',
   'response-limit-exceeded': 'AI 服务返回的数据超过安全上限',
@@ -317,15 +320,14 @@ async function readBoundedErrorDetail(
   }
 }
 
-// 聊天 Key 自己的上限用完了要照直说，其余准备失败仍只给一句不带细节的话。
-function credentialFailure(error: unknown): StreamFailure {
-  if (error instanceof ChatKeyQuotaExhaustedError) {
-    return new StreamFailure('key-quota-exhausted', SAFE_ERROR_MESSAGES['key-quota-exhausted'])
+/**
+ * 维护、网关错误和防护层验证页要排在额度与 401/403 之前认：防护层的验证页正是 403，
+ * 照下面那条会被说成「API Key 无权使用」，用户于是去换 Key、换分组。
+ */
+function safeHttpFailure(status: number, headers: Headers, detail = ''): StreamFailure {
+  if (isServiceUnavailableResponse({ status, json: isJsonContentType(headers.get('content-type')), headers })) {
+    return new StreamFailure('service-unavailable', SAFE_ERROR_MESSAGES['service-unavailable'])
   }
-  return new StreamFailure('credential-error', SAFE_ERROR_MESSAGES['credential-error'])
-}
-
-function safeHttpFailure(status: number, detail = ''): StreamFailure {
   const quota = classifyRelayQuotaFailure(status, detail)
   if (quota) return new StreamFailure('upstream-http-error', relayQuotaFailureMessages[quota])
   if (status === 401 || status === 403) {
@@ -335,6 +337,21 @@ function safeHttpFailure(status: number, detail = ''): StreamFailure {
     return new StreamFailure('upstream-http-error', '请求过于频繁，请稍后重试')
   }
   return new StreamFailure('upstream-http-error', SAFE_ERROR_MESSAGES['upstream-http-error'])
+}
+
+/**
+ * 准备分组要向账号服务签发或读取 Key；账号服务在维护时那一步失败，不能说成
+ * 「请检查登录状态和 API Key」。聊天 Key 自己的上限用完了要照直说。其余失败仍按
+ * 凭据问题报，只给一句不带细节的话。
+ */
+function credentialFailure(error: unknown): StreamFailure {
+  if (error instanceof ChatKeyQuotaExhaustedError) {
+    return new StreamFailure('key-quota-exhausted', SAFE_ERROR_MESSAGES['key-quota-exhausted'])
+  }
+  if (classifyNetworkFailure(error) === 'serviceUnavailable') {
+    return new StreamFailure('service-unavailable', SAFE_ERROR_MESSAGES['service-unavailable'])
+  }
+  return new StreamFailure('credential-error', SAFE_ERROR_MESSAGES['credential-error'])
 }
 
 function findFrameDelimiter(value: string): { index: number; length: number } | null {
@@ -681,7 +698,7 @@ export function createAiChatService(options: AiChatServiceOptions): AiChatServic
         throw new StreamFailure('network-error', SAFE_ERROR_MESSAGES['network-error'])
       }
       if (!response.ok) {
-        throw safeHttpFailure(response.status, await readBoundedErrorDetail(response, limits.errorBytes))
+        throw safeHttpFailure(response.status, response.headers, await readBoundedErrorDetail(response, limits.errorBytes))
       }
       const contentType = response.headers.get('content-type')?.toLowerCase() ?? ''
       if (!contentType.includes('text/event-stream') || !response.body) {
@@ -785,7 +802,7 @@ export function createAiChatService(options: AiChatServiceOptions): AiChatServic
         throw new StreamFailure('network-error', SAFE_ERROR_MESSAGES['network-error'])
       }
       if (!response.ok) {
-        throw safeHttpFailure(response.status, await readBoundedErrorDetail(response, limits.errorBytes))
+        throw safeHttpFailure(response.status, response.headers, await readBoundedErrorDetail(response, limits.errorBytes))
       }
       const contentType = response.headers.get('content-type')?.toLowerCase() ?? ''
       if (!contentType.includes('text/event-stream') || !response.body) {

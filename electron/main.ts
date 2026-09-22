@@ -9,6 +9,7 @@ import {
   Menu,
   nativeImage,
   net,
+  powerMonitor,
   protocol,
   safeStorage,
   screen,
@@ -21,6 +22,7 @@ import { AccountCredentialStore } from './account-credential-store'
 import { AnnouncementReadStore } from './announcement-read-store'
 import { createAccelerationExpiryNotice, type AccelerationExpiryNotice } from './acceleration-expiry-notice'
 import { createAccelerationInterruptionNotice, type AccelerationInterruptionNotice } from './acceleration-interruption-notice'
+import { createAccelerationPower } from './acceleration-power'
 import { createAccelerationService } from './acceleration-service'
 import { accelerationConflictDescriptions, accelerationFailureMessages, type AccelerationMode, type AccelerationState } from './acceleration-contract'
 import { accelerationStartRequest, createAccelerationPreferenceStore, defaultAccelerationPreference } from './acceleration-preference-store'
@@ -1849,6 +1851,27 @@ if (!hasSingleInstanceLock) {
       onChanged: () => applicationTray?.updateSnapshot(),
       log: (level, event, message, detail) => runtimeLog.log(level, 'network', event, message, detail),
     })
+    // 睡着的那段不计免费时长；醒来看加速还在不在，不在了先恢复网络再提醒。
+    if (developmentAcceleration) {
+      const accelerationHost = developmentAcceleration
+      const accelerationPower = createAccelerationPower({
+        suspend: () => accelerationHost.suspend(),
+        resume: () => accelerationHost.resume(),
+        getAccountScope: () => readAccelerationAccountScope(),
+        readState: (scope) => acceleration
+          ? acceleration.getAccelerationState(scope)
+          : Promise.reject(new Error('加速服务尚未就绪。')),
+        log: (level, event, message, detail) => runtimeLog.log(level, 'network', event, message, detail),
+      })
+      const onSuspend = () => accelerationPower.suspended()
+      const onResume = () => accelerationPower.resumed()
+      powerMonitor.on('suspend', onSuspend)
+      powerMonitor.on('resume', onResume)
+      app.once('will-quit', () => {
+        powerMonitor.off('suspend', onSuspend)
+        powerMonitor.off('resume', onResume)
+      })
+    }
     const unregisterIpcHandlers = registerIpcHandlers({
       acceleration,
       realmAccounts: accounts,

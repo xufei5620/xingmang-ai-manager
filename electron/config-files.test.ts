@@ -381,7 +381,8 @@ describe('native CLI configuration files', () => {
         })
       }
       if (provider === 'gemini') {
-        expect(JSON.parse(fs.readFileSync(paths[0], 'utf8'))).toEqual({
+        const settings = JSON.parse(fs.readFileSync(paths[0], 'utf8'))
+        expect(settings).toMatchObject({
           general: {
             enableAutoUpdate: false,
             enableAutoUpdateNotification: false,
@@ -390,6 +391,7 @@ describe('native CLI configuration files', () => {
           ide: { enabled: true },
           security: { auth: { selectedType: 'gemini-api-key' } },
         })
+        expect(Object.keys(settings).sort()).toEqual(['general', 'ide', 'modelConfigs', 'security'])
         expect(fs.readFileSync(paths[1], 'utf8')).toBe([
           'GOOGLE_GEMINI_BASE_URL=https://xm.solov.cc',
           'GEMINI_API_KEY=sk-user-key',
@@ -1694,6 +1696,73 @@ describe('switching a provider back to the official subscription account', () =>
       deny: ['Bash(curl:*)', 'WebFetch'],
       allow: ['Read'],
     })
+  })
+
+  it('points every built-in Gemini helper model at the relay model so background features do not hit missing channels', () => {
+    const home = temporaryHome()
+    saveProviderConfig('gemini', 'sk-relay', 'gemini-3.8-flash', 'reset', providerRoots(home), {}, providerBaseUrls)
+    const [settingsPath] = providerConfigPaths('gemini', providerRoots(home))
+    const overrides = asRecord(JSON.parse(fs.readFileSync(settingsPath, 'utf8')).modelConfigs)?.customOverrides
+    expect(overrides).toContainEqual({
+      match: { model: 'gemini-3-flash-preview' },
+      modelConfig: { model: 'gemini-3.8-flash-high' },
+    })
+    expect(overrides).toContainEqual({
+      match: { model: 'gemini-3.1-pro-preview-customtools' },
+      modelConfig: { model: 'gemini-3.8-flash-high' },
+    })
+    expect(overrides).toContainEqual({
+      match: { model: 'gemini-3.1-flash-lite' },
+      modelConfig: { model: 'gemini-3.8-flash-high' },
+    })
+  })
+
+  it('never rewrites the configured Gemini model onto itself', () => {
+    const home = temporaryHome()
+    saveProviderConfig('gemini', 'sk-relay', 'gemini-3.5-flash', 'reset', providerRoots(home), {}, providerBaseUrls)
+    const [settingsPath] = providerConfigPaths('gemini', providerRoots(home))
+    const overrides = asRecord(JSON.parse(fs.readFileSync(settingsPath, 'utf8')).modelConfigs)?.customOverrides
+    expect(Array.isArray(overrides)).toBe(true)
+    const matched = (overrides as Array<{ match: { model: string } }>).map((entry) => entry.match.model)
+    expect(matched).not.toContain('gemini-3.5-flash')
+    expect(matched).toContain('gemini-3-flash-preview')
+  })
+
+  it('replaces its own Gemini helper overrides on merge and keeps the ones the user wrote', () => {
+    const home = temporaryHome()
+    saveProviderConfig('gemini', 'sk-relay', 'gemini-3.8-flash', 'reset', providerRoots(home), {}, providerBaseUrls)
+    const [settingsPath] = providerConfigPaths('gemini', providerRoots(home))
+    const seeded = JSON.parse(fs.readFileSync(settingsPath, 'utf8')) as Record<string, unknown>
+    const userOverride = {
+      match: { model: 'gemini-3-flash-preview', overrideScope: 'web-search' },
+      modelConfig: { generateContentConfig: { temperature: 0.2 } },
+    }
+    const modelConfigs = asRecord(seeded.modelConfigs) as Record<string, unknown>
+    modelConfigs.customOverrides = [userOverride, ...(modelConfigs.customOverrides as unknown[])]
+    modelConfigs.customAliases = { mine: { modelConfig: { model: 'gemini-3.8-pro' } } }
+    fs.writeFileSync(settingsPath, JSON.stringify(seeded, null, 2))
+
+    saveProviderConfig('gemini', 'sk-relay', 'gemini-3.8-pro', 'merge', providerRoots(home), {}, providerBaseUrls)
+
+    const merged = asRecord(JSON.parse(fs.readFileSync(settingsPath, 'utf8')).modelConfigs) as Record<string, unknown>
+    const overrides = merged.customOverrides as Array<Record<string, unknown>>
+    expect(overrides[0]).toEqual(userOverride)
+    const ours = overrides.slice(1)
+    expect(ours.length).toBeGreaterThan(0)
+    expect(ours.every((entry) => asRecord(entry.modelConfig)?.model === 'gemini-3.8-pro')).toBe(true)
+    expect(new Set(ours.map((entry) => asRecord(entry.match)?.model)).size).toBe(ours.length)
+    expect(merged.customAliases).toEqual({ mine: { modelConfig: { model: 'gemini-3.8-pro' } } })
+  })
+
+  it('drops the relay helper overrides when Gemini switches back to the Google account', () => {
+    const home = temporaryHome()
+    saveProviderConfig('gemini', 'sk-relay', 'gemini-3.8-flash', 'reset', providerRoots(home), {}, providerBaseUrls)
+    const [settingsPath] = providerConfigPaths('gemini', providerRoots(home))
+
+    switchProviderToOfficialAccount('gemini', providerRoots(home), {}, providerBaseUrls)
+
+    const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8')) as Record<string, unknown>
+    expect(settings).not.toHaveProperty('modelConfigs')
   })
 
   it('switches Gemini back to Google OAuth and strips its three relay env entries, keeping the rest of .env', () => {
