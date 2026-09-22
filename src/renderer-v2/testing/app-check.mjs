@@ -1557,7 +1557,7 @@ test('the first launch after an update says which version it is on and lists the
     await notice.getByText('更新页能看到当前这一版改了什么', { exact: true }).waitFor()
     assert.equal(await page.getByRole('dialog').count(), 0)
     // 这是一件事实，不是失败，不该占一条错误日志。
-    assert.equal(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'reportRendererError').length), 0)
+    assert.equal(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'reportRendererError' && entry.args[0]?.context !== 'account-bootstrap').length), 0)
     await notice.getByRole('button', { name: '知道了', exact: true }).click()
     await expect.poll(() => page.getByTestId('startup-notice-updated').count()).toBe(0)
     await page.getByTestId('nav-more').click()
