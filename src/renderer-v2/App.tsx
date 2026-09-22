@@ -41,6 +41,7 @@ import { rememberTourPending, rememberTourSeen, tourReplayPending } from './feat
 import { onboardingPreviewEnabled } from './features/app/dev-preview'
 import { deepLinkReadErrorText, supportQrFallbackText } from './features/app/fallback-messages'
 import { bootstrapAccountTools, type AccountBootstrapMode, type AccountBootstrapProgress, type AccountBootstrapResult } from './features/tools/account-bootstrap'
+import { rewritableKeyProviders } from './features/tools/connection-check'
 import { accountOrigin, accountScope, accountSiteId, accountSupports, siteIdForOrigin, type AccountSiteId } from './account-context'
 import { formatAccountReadError } from './features/app/account-read-error'
 import { AccountBalanceContext, useAccountBalanceStore } from './features/app/balance-context'
@@ -177,9 +178,14 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       setAccountBootstrap({ ...progress, scope: bootstrapScope })
     }
     updateProgress({ phase: 'syncing', label: '正在同步账号专属 Key', percent: 5 })
+    // 结论要能被调用方读到：这个函数自己把失败收进首页的横幅，而「重新写入 Key」
+    // 的人正站在「检查」页上，横幅在他看不见的地方。用对象而不是 let，是因为赋值
+    // 发生在闭包里，TypeScript 会把 let 的类型收窄成初始值。
+    const outcome: { result?: AccountBootstrapResult; error?: string } = {}
     const promise = (async () => {
       try {
         const result = await bootstrapAccountTools(native, userId, updateProgress, mode, onlyProviders)
+        outcome.result = result
         if (!mounted.current || epoch !== bootstrapEpoch.current) return
         setAccountBootstrap((current) => current && current.scope === bootstrapScope
           ? { ...current, phase: 'verifying', label: result.failed.length ? 'Key 同步完成，部分工具待处理' : 'Key 已写入，正在刷新工具状态', percent: 100, result }
@@ -187,6 +193,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
         setWorkspaceEntered(true)
         await toolbox.refresh(true).catch(() => undefined)
       } catch (cause) {
+        outcome.error = errorMessage(cause, '账号 Key 初始化没有完成')
         if (!mounted.current || epoch !== bootstrapEpoch.current) return
         setWorkspaceEntered(true)
         setAccountBootstrap((current) => ({
@@ -200,7 +207,30 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     try { await promise } finally {
       if (bootstrapInFlight.current?.promise === promise) bootstrapInFlight.current = null
     }
+    return outcome
   }, [native, settings, toolbox.refresh, siteId])
+  /**
+   * 「重新写入 Key」与「Key 失效」的「一键修复」共用的入口：跑的就是装完工具后
+   * 那条同样的重写流程（syncAfterToolInstalled 里的这一行），只是限定到指定的工具。
+   * 主进程说不成的原因原样抛回给调用方，由它决定显示在哪，不在这里吞掉。
+   */
+  const rewriteAccountKeys = useCallback(async (providers?: readonly ProviderId[]) => {
+    // 登录已经掉了就没有「当前账号」可写，这时该做的是把登录框打开，而不是报一句
+    // 成功。返回值说的就是这次到底写没写。
+    if (!session.authenticated || !session.account) { setAuth('login'); return false }
+    const outcome = await runAccountBootstrap(session.account.userId, 'login', true, providers)
+    if (outcome?.error) throw new Error(outcome.error)
+    const failed = outcome?.result?.failed ?? []
+    const relevant = providers ? failed.filter((entry) => providers.includes(entry.provider)) : failed
+    if (relevant.length) throw new Error(relevant.map((entry) => entry.message).join('；'))
+    return true
+  }, [runAccountBootstrap, session.account, session.authenticated])
+  // 官方账号与手填密钥重写不动（重写流程本身会跳过它们），所以按钮按当前配置的
+  // 来源决定给不给，而不是见到密钥层失败就画一颗出来。
+  const rewritableKeys = useMemo(
+    () => rewritableKeyProviders(session.authenticated ? toolbox.snapshot?.config : null),
+    [session.authenticated, toolbox.snapshot?.config],
+  )
   useEffect(() => {
     if (boot === 'ready' && !auth && session.authenticated && session.account) {
       const restoredScope = accountScope(session)
@@ -307,8 +337,11 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     else if (action === 'network') navigate('health')
     else if (action === 'recharge') navigate('account', 'recharge')
     else if (action === 'relogin') setAuth('login')
+    // 目录里 keyInvalid 的「一键修复」就是这件事：对当前账号把已配置的工具重新
+    // 写一次 Key。一次点击只重写一次，连续失败的出口仍旧是「找客服」。
+    else if (action === 'repair') void perform('重新写入 Key', () => rewriteAccountKeys())
     else setHelp(true)
-  }, [navigate, operationError])
+  }, [navigate, operationError, perform, rewriteAccountKeys])
   async function install(id: ToolId, version?: string) {
     const state = toolbox.snapshot
     if (!state) throw new Error('请先完成工具检测')
@@ -618,7 +651,8 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
                   openGuide={() => setGuide(true)} replayTour={replayTour}
                   onToolsChanged={(tool) => syncAfterToolInstalled(tool).catch((cause) => {
                     if (mounted.current) toast.show(errorMessage(cause, '工具已安装，但最新状态没有读到。请回到首页重新检测。'), 'warn')
-                  })} />
+                  })}
+                  onRewriteKey={(provider) => rewriteAccountKeys([provider])} rewritableKeys={rewritableKeys} />
               </Suspense>
             </div>)}
           </div>

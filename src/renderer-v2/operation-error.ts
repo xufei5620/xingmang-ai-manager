@@ -1,7 +1,7 @@
 import { errors } from './registry/errors'
 
 export type OperationErrorKey = keyof typeof errors
-export type OperationActionId = 'retry' | 'log' | 'support' | 'relogin' | 'recharge' | 'network' | 'copyPath'
+export type OperationActionId = 'retry' | 'log' | 'support' | 'relogin' | 'recharge' | 'network' | 'repair' | 'copyPath'
 export interface OperationAction { id: OperationActionId; label: string }
 export interface OperationErrorHint {
   key: Exclude<OperationErrorKey, 'unknown'>
@@ -68,6 +68,10 @@ export function classifyOperationError(message: string): OperationErrorKey {
  * honour from a failure dialog are handed back; offering a label the app
  * cannot act on would be a button that does nothing.
  *
+ * 「一键修复」在这里的意思只有一个：对当前账号把已配置的工具重新签发一次 Key
+ * 再写回配置，也就是装完工具后跑的那条同样的流程。它能进这张表，是因为那条
+ * 流程本来就在（App 的 syncAfterToolInstalled），不需要为这颗按钮新做什么。
+ *
  * 「复制路径」自 A2 余项起接上：失败对话框知道是哪个工具失败的，安装目录
  * （已装）或主进程算出的首装落点（未装）都在快照里，拿得到就出这颗按钮，
  * 拿不到就不出（operationErrorActions 过滤）。
@@ -88,6 +92,7 @@ const actionIds: Record<string, OperationActionId | undefined> = {
   重新登录: 'relogin',
   马上充值: 'recharge',
   检查网络: 'network',
+  一键修复: 'repair',
   复制路径: 'copyPath',
 }
 
