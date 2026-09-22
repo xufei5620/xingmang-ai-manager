@@ -3,8 +3,11 @@ param([Parameter(Mandatory = $true)][string]$Installer)
 # Installs the freshly built NSIS package, leaves the machine in the state an
 # uninstall meets while acceleration is on (system proxy pointing at a local
 # port nobody listens on any more, recovery journal on disk, login item in the
-# Run key), runs the real uninstaller silently, and checks that the proxy is
-# back to what it was, the journal is gone and the login item is removed.
+# Run key), then clears it twice: once by starting the installed exe with the
+# cleanup switch directly (tells a broken cleanup apart from an uninstaller
+# that never calls it), once through the real silent uninstaller. Each time
+# the proxy must be back to what it was, the journal gone, the login item
+# removed.
 #
 # The acceleration worker itself is not started: the uninstaller kills it
 # before customUnInstall runs, so "journal present, owner dead" is exactly the
@@ -22,6 +25,49 @@ Initialize-WinInet
 function Check([bool]$condition, [string]$message) {
   if (-not $condition) { throw "CHECK FAILED: $message" }
   Write-Output "ok - $message"
+}
+
+function Set-AccelerationLeftOn([string]$exePath) {
+  $port = 57448
+  $endpoint = "http=127.0.0.1:$port;https=127.0.0.1:$port"
+  $bypass = '<local>;localhost;127.0.0.1;[::1]'
+  $applied = [ordered]@{
+    flags = 3; server = $endpoint; bypass = $bypass; autoConfigUrl = ''
+    registry = [ordered]@{ ProxyEnable = 1; ProxyServer = $endpoint; ProxyOverride = $bypass; AutoConfigURL = $null }
+  }
+  # An owner that has already exited, as the killed worker has by now.
+  $gone = Start-Process -FilePath (Join-Path $env:SystemRoot 'System32\whoami.exe') -WindowStyle Hidden -Wait -PassThru
+  $owner = [ordered]@{ pid = $gone.Id; startedAt = $gone.StartTime.ToUniversalTime().ToFileTimeUtc().ToString([Globalization.CultureInfo]::InvariantCulture) }
+  $id = [Guid]::NewGuid().ToString()
+  $utf8 = [Text.UTF8Encoding]::new($false)
+  New-Item -ItemType Directory -Force -Path $dataDirectory | Out-Null
+  [IO.File]::WriteAllText($leasePath, (([ordered]@{ version = 1; id = $id; owner = $owner }) | ConvertTo-Json -Depth 8 -Compress), $utf8)
+  [IO.File]::WriteAllText($journalPath, (([ordered]@{ version = 1; id = $id; owner = $owner; before = $before; applied = $applied }) | ConvertTo-Json -Depth 8 -Compress), $utf8)
+  Write-State $applied
+  Check (Same-State (Read-State) $applied) 'system proxy points at the dead acceleration port'
+  $runKey = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($runKeyPath, $true)
+  try { $runKey.SetValue($loginItemName, "`"$exePath`" --launched-at-login", [Microsoft.Win32.RegistryValueKind]::String) }
+  finally { $runKey.Dispose() }
+}
+
+function Get-LoginItem {
+  $runKey = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($runKeyPath, $false)
+  try { return $runKey.GetValue($loginItemName, $null) } finally { $runKey.Dispose() }
+}
+
+function Show-Diagnostics([string]$stage) {
+  Write-Output "--- $stage"
+  Write-Output ('proxy: ' + ((Read-State) | ConvertTo-Json -Depth 8 -Compress))
+  Write-Output ('journal present: ' + (Test-Path -LiteralPath $journalPath) + '; lease present: ' + (Test-Path -LiteralPath $leasePath))
+  Write-Output ('login item: ' + (Get-LoginItem))
+  Get-ChildItem -LiteralPath $env:APPDATA -Directory | Where-Object { $_.Name -like 'xingmang*' -or $_.Name -like '*AI*' } |
+    ForEach-Object { Write-Output ('appdata dir: ' + $_.Name) }
+}
+
+function Assert-Cleaned([string]$stage) {
+  Check ($null -eq (Get-LoginItem)) "$stage removed the login item"
+  Check (-not (Test-Path -LiteralPath $journalPath) -and -not (Test-Path -LiteralPath $leasePath)) "$stage removed the recovery journal and lease"
+  Check (Same-State (Read-State) $before) "$stage restored the system proxy to the recorded original"
 }
 
 $installRoot = Join-Path ([IO.Path]::GetTempPath()) ('xingmang-uninstall-smoke-' + [Guid]::NewGuid().ToString('N').Substring(0, 8))
@@ -51,38 +97,23 @@ try {
   Write-State $before
   Check (Same-State (Read-State) $before) 'original user proxy installed'
 
-  $port = 57448
-  $endpoint = "http=127.0.0.1:$port;https=127.0.0.1:$port"
-  $bypass = '<local>;localhost;127.0.0.1;[::1]'
-  $applied = [ordered]@{
-    flags = 3; server = $endpoint; bypass = $bypass; autoConfigUrl = ''
-    registry = [ordered]@{ ProxyEnable = 1; ProxyServer = $endpoint; ProxyOverride = $bypass; AutoConfigURL = $null }
-  }
-  # An owner that has already exited, as the killed worker has by now.
-  $gone = Start-Process -FilePath (Join-Path $env:SystemRoot 'System32\whoami.exe') -WindowStyle Hidden -Wait -PassThru
-  $owner = [ordered]@{ pid = $gone.Id; startedAt = $gone.StartTime.ToUniversalTime().ToFileTimeUtc().ToString([Globalization.CultureInfo]::InvariantCulture) }
-  $id = [Guid]::NewGuid().ToString()
-  $utf8 = [Text.UTF8Encoding]::new($false)
-  New-Item -ItemType Directory -Force -Path $dataDirectory | Out-Null
-  [IO.File]::WriteAllText($leasePath, (([ordered]@{ version = 1; id = $id; owner = $owner }) | ConvertTo-Json -Depth 8 -Compress), $utf8)
-  [IO.File]::WriteAllText($journalPath, (([ordered]@{ version = 1; id = $id; owner = $owner; before = $before; applied = $applied }) | ConvertTo-Json -Depth 8 -Compress), $utf8)
-  Write-State $applied
-  Check (Same-State (Read-State) $applied) 'system proxy points at the dead acceleration port'
+  # Stage 1: the cleanup entry on its own, so a failure below can be told apart
+  # from the uninstaller never reaching it.
+  Set-AccelerationLeftOn $exe.FullName
+  $direct = Start-Process -FilePath $exe.FullName -ArgumentList '--xingmang-uninstall-cleanup' -Wait -PassThru
+  Show-Diagnostics "direct cleanup exit code $($direct.ExitCode)"
+  Check ($direct.ExitCode -eq 0) "direct cleanup exits 0 (got $($direct.ExitCode))"
+  Assert-Cleaned 'direct cleanup'
 
-  $runKey = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($runKeyPath, $true)
-  try { $runKey.SetValue($loginItemName, "`"$($exe.FullName)`" --launched-at-login", [Microsoft.Win32.RegistryValueKind]::String) }
-  finally { $runKey.Dispose() }
-
+  # Stage 2: the real uninstaller.
+  Set-AccelerationLeftOn $exe.FullName
   # _?= keeps the uninstaller in place so -Wait covers the whole uninstall.
   $uninstall = Start-Process -FilePath $uninstaller.FullName -ArgumentList '/S', "_?=$installDir" -Wait -PassThru
   Check ($uninstall.ExitCode -eq 0) "silent uninstall exits 0 (got $($uninstall.ExitCode))"
 
+  Show-Diagnostics 'after uninstall'
   Check (-not (Test-Path -LiteralPath $exe.FullName)) 'uninstall removed the app'
-  Check (Same-State (Read-State) $before) 'system proxy restored to the recorded original'
-  Check (-not (Test-Path -LiteralPath $journalPath) -and -not (Test-Path -LiteralPath $leasePath)) 'recovery journal and lease removed'
-  $runKey = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($runKeyPath, $false)
-  try { Check ($null -eq $runKey.GetValue($loginItemName, $null)) 'login item removed' }
-  finally { $runKey.Dispose() }
+  Assert-Cleaned 'uninstall'
 } finally {
   try { Write-State $original } catch { Write-Warning 'could not restore the runner proxy' }
   $runKey = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($runKeyPath, $true)
