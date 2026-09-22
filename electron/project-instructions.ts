@@ -40,7 +40,10 @@ export function resolveProjectInstructionsTemplatePath(
 
 export function readProjectInstructionsTemplate(templatePath: string): string {
   const content = fs.readFileSync(templatePath, 'utf8')
-  if (content.length > MAX_TEMPLATE_BYTES) throw new Error('项目说明模板超出安全上限')
+  // 模板是中文的，一个字三个字节，所以按字节量而不是字符数卡上限。
+  if (Buffer.byteLength(content, 'utf8') > MAX_TEMPLATE_BYTES) {
+    throw new Error('项目说明模板超出安全上限')
+  }
   return content
 }
 
