@@ -155,6 +155,21 @@ describe('tray acceleration coordinator', () => {
     await vi.waitFor(() => expect(readState).toHaveBeenCalledTimes(2))
   })
 
+  it('drops a read that the user overtook by connecting from the menu', async () => {
+    // 打开菜单触发的那次读还没回来，用户就点了「连接加速」：那份「未连接」落回来
+    // 不许把刚连上的状态盖掉。
+    let settleRead: () => void = () => undefined
+    const readState = vi.fn(() => new Promise<AccelerationState>((resolve) => { settleRead = () => resolve(state()) }))
+    const { controller } = coordinator({ readState })
+    controller.observe(state())
+    controller.refresh()
+    await vi.waitFor(() => expect(readState).toHaveBeenCalledOnce())
+    await controller.toggle()
+    settleRead()
+    await vi.waitFor(() => expect(controller.entry()).toMatchObject({ actionLabel: '断开加速', action: 'stop' }))
+    expect(controller.entry().statusLabel).toBe('加速：已连接 · 剩余 20 分钟')
+  })
+
   it('reports a failed read rather than leaving a stale connected row', async () => {
     const { controller } = coordinator({ readState: vi.fn(async () => { throw accelerationFailure('helper-timeout') }) })
     controller.refresh()

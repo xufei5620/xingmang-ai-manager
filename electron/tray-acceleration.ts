@@ -213,10 +213,15 @@ export function createTrayAccelerationCoordinator(options: TrayAccelerationCoord
         return
       }
       if (busy || reading) return
+      // 用户打开菜单、读还没回来就点了连接：那一份读到的是「未连接」，落回来会
+      // 把刚连上的状态又盖成未连接。toggle 与 reset 都会把 reading 清掉，所以
+      // 这里认一次身份就够——不是当前这次读，结果一律丢弃。
       const pending = Promise.resolve().then(async () => {
-        try { accept(await options.readState(scope)) }
-        catch (error) {
-          if (options.getAccountScope() !== scope) return
+        try {
+          const next = await options.readState(scope)
+          if (reading === pending) accept(next)
+        } catch (error) {
+          if (reading !== pending || options.getAccountScope() !== scope) return
           failure = describeTrayAccelerationFailure(error)
           changed()
         }
