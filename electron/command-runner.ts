@@ -6,6 +6,7 @@ import { isDarwinForeignWritablePath } from './darwin-path-trust'
 import { darwinCommandPathCandidates } from './macos-platform'
 import { managedNativeProviderRoot, managedNpmBinDirectory } from './managed-cli-paths'
 import { isRegisteredTrustedManagedWindowsPath } from './managed-path-trust'
+import { redactSecretPatterns } from './redaction-patterns'
 import {
   isTrustedWindowsMachinePath,
   pathWithinWindowsRoot,
@@ -498,6 +499,18 @@ function defaultCommandPaths(env: NodeJS.ProcessEnv): string[] {
   ].filter((entry): entry is string => Boolean(entry))
 }
 
+/**
+ * 排在继承 PATH 之后、只作兜底的目录。本软件代装的 Python 3.12（python-runtime.ts）
+ * 落在当前用户目录下，安装器写进 PATH 的那一段要本进程重开才看得到；补在这里，
+ * 从本软件打开的命令行工具不用用户重开软件就能找到它（第七批 5）。放在最后是为了
+ * 不顶掉用户自己在 PATH 里放的另一版 Python。
+ */
+function fallbackCommandPaths(env: NodeJS.ProcessEnv): string[] {
+  if (!env.LOCALAPPDATA) return []
+  const python = path.join(env.LOCALAPPDATA, 'Programs', 'Python', 'Python312')
+  return [python, path.join(python, 'Scripts')]
+}
+
 /** Builds a deterministic PATH without mutating process.env or duplicating entries. */
 export function commandEnvironment(
   baseEnv: NodeJS.ProcessEnv = process.env,
@@ -515,6 +528,7 @@ export function commandEnvironment(
         ...additionalPaths,
         ...defaultCommandPaths(baseEnv),
         ...existingPath.split(path.delimiter),
+        ...fallbackCommandPaths(baseEnv),
       ]
   const seen = new Set<string>()
   const entries: string[] = []
@@ -711,18 +725,7 @@ export function redactCommandText(value: string, sensitiveValues: readonly strin
     redacted = redacted.split(secret).join('[REDACTED]')
   }
 
-  return redacted
-    .replace(/(\bBearer\s+)[A-Za-z0-9._~+/=-]{6,}/gi, '$1[REDACTED]')
-    .replace(/\bsk-[A-Za-z0-9_-]{6,}\b/g, '[REDACTED]')
-    // The quoted spellings need their own rules: in `{"access_token":"…"}` the
-    // rule below can never match, because `\s*` does not cross the quote that
-    // closes the key name, so any CLI writing JSON to stderr leaked its secrets
-    // verbatim into the runtime log and the feedback export. Redacting between
-    // the existing quotes also keeps a JSON body parseable.
-    .replace(/((?:api[_-]?key|authorization|token|secret|password)"\s*[:=]\s*)"[^"]*"/gi, '$1"[REDACTED]"')
-    .replace(/((?:api[_-]?key|authorization|token|secret|password)'\s*[:=]\s*)'[^']*'/gi, "$1'[REDACTED]'")
-    .replace(/((?:api[_-]?key|authorization|token|secret|password)\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi, '$1[REDACTED]')
-    .replace(/([?&](?:api[_-]?key|token)=)[^&\s]+/gi, '$1[REDACTED]')
+  return redactSecretPatterns(redacted)
 }
 
 function validateSpec(spec: CommandSpec): void {

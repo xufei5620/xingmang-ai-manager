@@ -72,6 +72,7 @@ function serviceStub(): SystemService {
     revealApiKey: vi.fn(() => 'sk-known-secret-value'),
     saveConfig: vi.fn(async (): Promise<NativeConfigSaveResult> => ({ backups: [], files: [] })),
     switchToOfficialAccount: vi.fn((): NativeConfigSaveResult => ({ backups: [], files: [] })),
+    adoptRestoredConfig: vi.fn(async () => undefined),
     scanSystem: vi.fn() as never,
     refreshNetworkLocation: vi.fn() as never,
     refreshOfficialChatGptUsage: vi.fn() as never,
@@ -931,7 +932,7 @@ describe('registerIpcHandlers', () => {
   it('warns before accepting a workspace that would cover the whole machine', async () => {
     const desktop = path.join(os.homedir(), 'Desktop')
     electronMocks.showOpenDialog.mockResolvedValueOnce({ canceled: false, filePaths: [desktop] })
-    electronMocks.showMessageBox.mockResolvedValueOnce({ response: 1 })
+    electronMocks.showMessageBox.mockResolvedValueOnce({ response: 2 })
     const { service } = register()
 
     await expect(electronMocks.handlers.get('workspace:choose')!(trustedEvent())).resolves.toBe(desktop)
@@ -948,7 +949,7 @@ describe('registerIpcHandlers', () => {
     electronMocks.showOpenDialog
       .mockResolvedValueOnce({ canceled: false, filePaths: [home] })
       .mockResolvedValueOnce({ canceled: false, filePaths: [path.join(home, 'project')] })
-    electronMocks.showMessageBox.mockResolvedValueOnce({ response: 0 })
+    electronMocks.showMessageBox.mockResolvedValueOnce({ response: 1 })
     const { service } = register()
 
     await expect(electronMocks.handlers.get('workspace:choose')!(trustedEvent()))
@@ -957,11 +958,71 @@ describe('registerIpcHandlers', () => {
     expect(service.updateStoredConfig).toHaveBeenCalledTimes(1)
   })
 
+  it('creates a starter project folder under documents when the warning offers one', async () => {
+    const documents = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-ipc-documents-')))
+    try {
+      electronMocks.showOpenDialog.mockResolvedValueOnce({ canceled: false, filePaths: [path.join(os.homedir(), 'Desktop')] })
+      electronMocks.showMessageBox.mockResolvedValueOnce({ response: 0 })
+      const { service, runtimeLog, extensionService } = register(undefined, undefined, undefined, undefined, undefined, undefined, {}, {
+        documentsDirectory: () => documents,
+      })
+      const expected = path.join(documents, 'XingmangProjects', 'my-project')
+
+      await expect(electronMocks.handlers.get('workspace:choose')!(trustedEvent())).resolves.toBe(expected)
+      expect(electronMocks.showMessageBox).toHaveBeenCalledWith(expect.objectContaining({
+        buttons: ['新建一个项目文件夹', '换一个文件夹', '仍然打开'],
+        defaultId: 0,
+        cancelId: 1,
+      }))
+      expect(fs.statSync(expected).isDirectory()).toBe(true)
+      expect(electronMocks.showOpenDialog).toHaveBeenCalledTimes(1)
+      expect(service.updateStoredConfig).toHaveBeenCalledWith({ version: 2, workspace: expected })
+      expect(extensionService.setRepositoryContext).toHaveBeenCalledWith(expected)
+      expect(runtimeLog.log).toHaveBeenCalledWith('info', 'config', 'workspace.starter.created', expect.any(String))
+      expect(JSON.stringify(runtimeLog.log.mock.calls)).not.toContain(documents)
+    } finally {
+      fs.rmSync(documents, { recursive: true, force: true })
+    }
+  })
+
+  it.runIf(process.platform !== 'win32')('explains a starter folder that cannot be created and goes back to the picker', async () => {
+    const documents = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-ipc-documents-')))
+    const elsewhere = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-ipc-elsewhere-')))
+    fs.symlinkSync(elsewhere, path.join(documents, 'XingmangProjects'), 'dir')
+    try {
+      const project = path.join(os.homedir(), 'project')
+      electronMocks.showOpenDialog
+        .mockResolvedValueOnce({ canceled: false, filePaths: [os.homedir()] })
+        .mockResolvedValueOnce({ canceled: false, filePaths: [project] })
+      electronMocks.showMessageBox
+        .mockResolvedValueOnce({ response: 0 })
+        .mockResolvedValueOnce({ response: 0 })
+      const { service, runtimeLog } = register(undefined, undefined, undefined, undefined, undefined, undefined, {}, {
+        documentsDirectory: () => documents,
+      })
+
+      await expect(electronMocks.handlers.get('workspace:choose')!(trustedEvent())).resolves.toBe(project)
+      expect(electronMocks.showMessageBox).toHaveBeenNthCalledWith(2, expect.objectContaining({
+        type: 'error',
+        title: '没能新建项目文件夹',
+        detail: expect.stringContaining('符号链接或目录联接'),
+      }))
+      expect(fs.readdirSync(elsewhere)).toEqual([])
+      expect(electronMocks.showOpenDialog).toHaveBeenCalledTimes(2)
+      expect(runtimeLog.exception).toHaveBeenCalledWith('config', 'workspace.starter.failed', expect.any(Error))
+      expect(service.updateStoredConfig).toHaveBeenCalledTimes(1)
+      expect(service.updateStoredConfig).toHaveBeenCalledWith({ version: 2, workspace: project })
+    } finally {
+      fs.rmSync(documents, { recursive: true, force: true })
+      fs.rmSync(elsewhere, { recursive: true, force: true })
+    }
+  })
+
   it('keeps a cancelled picker from storing anything after a warning', async () => {
     electronMocks.showOpenDialog
       .mockResolvedValueOnce({ canceled: false, filePaths: [os.homedir()] })
       .mockResolvedValueOnce({ canceled: true, filePaths: [] })
-    electronMocks.showMessageBox.mockResolvedValueOnce({ response: 0 })
+    electronMocks.showMessageBox.mockResolvedValueOnce({ response: 1 })
     const { service } = register()
 
     await expect(electronMocks.handlers.get('workspace:choose')!(trustedEvent())).resolves.toBeNull()
@@ -3633,6 +3694,56 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       expect(() => handler(trustedEvent(), { email: 'not-an-email', token: 'abc' })).toThrow()
       expect(accountService.resetPassword).not.toHaveBeenCalled()
     })
+
+    it('forgets the remembered password of the account that was just reset', async () => {
+      const store = {
+        read: vi.fn(async () => ({ version: 1 as const, identifier: 'New-User@Example.com', password: 'forgotten-1' })),
+        save: vi.fn(async () => undefined),
+        clear: vi.fn(async () => undefined),
+      }
+      register(undefined, undefined, undefined, undefined, store)
+      const handler = electronMocks.handlers.get('account:reset-password')!
+      await expect(handler(trustedEvent(), { email: 'new-user@example.com', token: 'abc123token' }))
+        .resolves.toEqual({ newPassword: 'stub-generated-password' })
+      expect(store.clear).toHaveBeenCalledTimes(1)
+      expect(store.save).not.toHaveBeenCalled()
+    })
+
+    it('forgets a username-keyed remembered login only when the hints say it is the same account', async () => {
+      const store = {
+        read: vi.fn(async () => ({ version: 1 as const, identifier: 'alice', password: 'forgotten-1' })),
+        save: vi.fn(async () => undefined),
+        clear: vi.fn(async () => undefined),
+      }
+      const owners: Record<string, { realmId: string, userId: string }> = {
+        'alice@example.com': { realmId: 'xm-account', userId: '7' },
+        alice: { realmId: 'xm-account', userId: '7' },
+        bob: { realmId: 'xm-account', userId: '8' },
+      }
+      const primary = { resetPassword: vi.fn(async () => ({ newPassword: 'test-generated' })) }
+      register(undefined, undefined, undefined, undefined, undefined, undefined, {
+        realmAccounts: { getSiteId: () => 'solov', getPublicClient: () => primary, loginHintOwner: async (id: string) => owners[id] ?? null } as never,
+        accountCredentialsForSite: () => store,
+      })
+      const handler = electronMocks.handlers.get('account:reset-password')!
+      await handler(trustedEvent(), { email: 'alice@example.com', token: 'abc' }, 'solov')
+      expect(store.clear).toHaveBeenCalledTimes(1)
+      store.read.mockResolvedValue({ version: 1, identifier: 'bob', password: 'still-good' })
+      await handler(trustedEvent(), { email: 'alice@example.com', token: 'abc' }, 'solov')
+      await handler(trustedEvent(), { email: 'carol@example.com', token: 'abc' }, 'solov')
+      expect(store.clear).toHaveBeenCalledTimes(1)
+    })
+
+    it('keeps the remembered login when the reset fails', async () => {
+      const { accountService } = register(undefined, undefined, undefined, undefined, {
+        read: async () => ({ version: 1, identifier: 'a@b.com', password: 'x' }),
+        save: vi.fn(async () => undefined),
+        clear: vi.fn(async () => undefined),
+      })
+      vi.mocked(accountService.resetPassword).mockRejectedValue(new Error('重置链接已失效'))
+      await expect(electronMocks.handlers.get('account:reset-password')!(trustedEvent(), { email: 'a@b.com', token: 'abc' }))
+        .rejects.toThrow('重置链接已失效')
+    })
   })
 
   describe('account:get-profile', () => {
@@ -4505,6 +4616,95 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       expect(() => handler(trustedEvent(), { originalPassword: 'old-password-1', newPassword: 'short' })).toThrow()
       expect(accountService.changePassword).not.toHaveBeenCalled()
     })
+
+    function rememberedStore(identifier: string, password = 'old-password-1') {
+      return {
+        read: vi.fn(async () => ({ version: 1 as const, identifier, password })),
+        save: vi.fn(async () => undefined),
+        clear: vi.fn(async () => undefined),
+      }
+    }
+    function signedInAs(accountService: ReturnType<typeof accountServiceStub>, username: string, userId = 7) {
+      vi.mocked(accountService.getSessionState).mockReturnValue({
+        authenticated: true,
+        account: { userId, username, group: null, role: null, quota: null, usedQuota: null },
+      })
+      vi.mocked(accountService.changePassword).mockResolvedValue({ changed: true })
+    }
+    const change = { originalPassword: 'old-password-1', newPassword: 'new-password-2' }
+
+    it('replaces the remembered password when it was remembered under this account\'s username', async () => {
+      const accountService = accountServiceStub()
+      signedInAs(accountService, 'Alice')
+      const store = rememberedStore('Alice')
+      register(undefined, undefined, undefined, accountService, store)
+      await expect(electronMocks.handlers.get('account:change-password')!(trustedEvent(), change)).resolves.toEqual({ changed: true })
+      expect(store.save).toHaveBeenCalledExactlyOnceWith('Alice', 'new-password-2')
+      expect(store.clear).not.toHaveBeenCalled()
+    })
+
+    it('replaces it for an email identifier only when the login hints tie that email to this account', async () => {
+      const accountService = accountServiceStub()
+      signedInAs(accountService, 'alice', 7)
+      const store = rememberedStore('Alice@Example.TEST')
+      const loginHintOwner = vi.fn(async (identifier: string) => (
+        identifier === 'alice@example.test' ? { realmId: 'xm-account', userId: '7' } : null
+      ))
+      register(undefined, undefined, undefined, accountService, undefined, undefined, {
+        realmAccounts: { getSiteId: () => 'solov', loginHintOwner } as never,
+        accountCredentialsForSite: () => store,
+      })
+      await electronMocks.handlers.get('account:change-password')!(trustedEvent(), change)
+      expect(loginHintOwner).toHaveBeenCalledWith('alice@example.test')
+      expect(store.save).toHaveBeenCalledExactlyOnceWith('Alice@Example.TEST', 'new-password-2')
+    })
+
+    it('leaves another account\'s remembered login untouched', async () => {
+      const accountService = accountServiceStub()
+      signedInAs(accountService, 'alice', 7)
+      const other = rememberedStore('bob@example.test')
+      const sameUserOtherRealm = rememberedStore('alice@example.test')
+      register(undefined, undefined, undefined, accountService, undefined, undefined, {
+        realmAccounts: {
+          getSiteId: () => 'solov',
+          loginHintOwner: async (identifier: string) => (
+            identifier === 'bob@example.test' ? { realmId: 'xm-account', userId: '8' } : { realmId: 'api-account', userId: '7' }
+          ),
+        } as never,
+        accountCredentialsForSite: () => other,
+      })
+      const handler = electronMocks.handlers.get('account:change-password')!
+      await handler(trustedEvent(), change)
+      other.read.mockImplementation(sameUserOtherRealm.read)
+      await handler(trustedEvent(), change)
+      expect(other.save).not.toHaveBeenCalled()
+      expect(other.clear).not.toHaveBeenCalled()
+    })
+
+    it('never turns a successful change into an error when the remembered login cannot be updated', async () => {
+      const accountService = accountServiceStub()
+      signedInAs(accountService, 'Alice')
+      const store = rememberedStore('Alice')
+      store.save.mockRejectedValue(new Error('disk busy'))
+      const { runtimeLog } = register(undefined, undefined, undefined, accountService, store)
+      await expect(electronMocks.handlers.get('account:change-password')!(trustedEvent(), change)).resolves.toEqual({ changed: true })
+      // A remembered password that could not be refreshed is dropped rather
+      // than left to prefill a password that no longer works.
+      expect(store.clear).toHaveBeenCalledTimes(1)
+      expect(JSON.stringify(runtimeLog.log.mock.calls)).not.toContain('new-password-2')
+      expect(JSON.stringify(runtimeLog.log.mock.calls)).not.toContain('old-password-1')
+    })
+
+    it('does not touch the remembered login when the change fails', async () => {
+      const accountService = accountServiceStub()
+      signedInAs(accountService, 'Alice')
+      vi.mocked(accountService.changePassword).mockRejectedValue(new Error('原密码错误'))
+      const store = rememberedStore('Alice')
+      register(undefined, undefined, undefined, accountService, store)
+      await expect(electronMocks.handlers.get('account:change-password')!(trustedEvent(), change)).rejects.toThrow('原密码错误')
+      expect(store.read).not.toHaveBeenCalled()
+      expect(store.save).not.toHaveBeenCalled()
+    })
   })
 
   describe('parseLegalDocumentKind (account:get-legal-document)', () => {
@@ -4993,6 +5193,115 @@ describe('provider-sessions:open-directory', () => {
   })
 })
 
+describe('exports:reveal-file', () => {
+  const temporary: string[] = []
+
+  function exportedFile(name = 'session.md'): string {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-ipc-reveal-'))
+    temporary.push(directory)
+    const file = path.join(directory, name)
+    fs.writeFileSync(file, '# exported\n')
+    return file
+  }
+
+  async function exportSession(providerSessionsService: ReturnType<typeof register>['providerSessionsService'], outputPath: string) {
+    electronMocks.showSaveDialog.mockResolvedValueOnce({ canceled: false, filePath: path.dirname(outputPath) })
+    providerSessionsService.exportMarkdown.mockResolvedValueOnce({ id: 'claude:1', provider: 'claude', outputPath, messages: 2, truncated: false })
+    await electronMocks.handlers.get('provider-sessions:export')!(trustedEvent(), 'claude:1')
+  }
+
+  afterEach(() => {
+    while (temporary.length) fs.rmSync(temporary.pop()!, { recursive: true, force: true })
+  })
+
+  it('selects the file an export just wrote, as the export reported it', async () => {
+    const file = exportedFile()
+    const revealInFolder = vi.fn()
+    const { providerSessionsService } = register(serviceStub(), undefined, undefined, undefined, undefined, undefined, {}, { revealInFolder })
+    // The dialog picked a folder; the service chose the file name inside it.
+    await exportSession(providerSessionsService, file)
+
+    await expect(electronMocks.handlers.get('exports:reveal-file')!(trustedEvent(), file)).resolves.toBe(true)
+    expect(revealInFolder.mock.calls).toEqual([[path.resolve(file)]])
+  })
+
+  it('remembers diagnostics and feedback exports too', async () => {
+    const revealInFolder = vi.fn()
+    register(serviceStub(), undefined, undefined, undefined, undefined, undefined, {}, { revealInFolder })
+    const feedback = path.join(path.dirname(exportedFile()), 'feedback.txt')
+    electronMocks.showSaveDialog.mockResolvedValueOnce({ canceled: false, filePath: feedback })
+    await electronMocks.handlers.get('runtime-logs:export-feedback')!(trustedEvent())
+
+    await expect(electronMocks.handlers.get('exports:reveal-file')!(trustedEvent(), feedback)).resolves.toBe(true)
+    expect(revealInFolder.mock.calls).toEqual([[path.resolve(feedback)]])
+  })
+
+  it('refuses any path this process did not just export, even one that exists', async () => {
+    const stranger = exportedFile('payload.exe')
+    const revealInFolder = vi.fn()
+    register(serviceStub(), undefined, undefined, undefined, undefined, undefined, {}, { revealInFolder })
+
+    await expect(electronMocks.handlers.get('exports:reveal-file')!(trustedEvent(), stranger))
+      .rejects.toThrow('只能定位本次打开软件后导出的文件')
+    expect(revealInFolder).not.toHaveBeenCalled()
+  })
+
+  it('says the file moved instead of revealing whatever is there now', async () => {
+    const file = exportedFile()
+    const revealInFolder = vi.fn()
+    const { providerSessionsService } = register(serviceStub(), undefined, undefined, undefined, undefined, undefined, {}, { revealInFolder })
+    await exportSession(providerSessionsService, file)
+    fs.rmSync(file)
+
+    await expect(electronMocks.handlers.get('exports:reveal-file')!(trustedEvent(), file))
+      .rejects.toThrow('已经不在原来的位置了')
+    // Replaced by a folder of the same name: not the file we wrote.
+    fs.mkdirSync(file)
+    await expect(electronMocks.handlers.get('exports:reveal-file')!(trustedEvent(), file))
+      .rejects.toThrow('不是导出的那个文件')
+    expect(revealInFolder).not.toHaveBeenCalled()
+  })
+
+  it('does not remember a cancelled export', async () => {
+    const file = exportedFile()
+    const revealInFolder = vi.fn()
+    register(serviceStub(), undefined, undefined, undefined, undefined, undefined, {}, { revealInFolder })
+    electronMocks.showSaveDialog.mockResolvedValueOnce({ canceled: true })
+    await expect(electronMocks.handlers.get('runtime-logs:export-feedback')!(trustedEvent())).resolves.toBeNull()
+
+    await expect(electronMocks.handlers.get('exports:reveal-file')!(trustedEvent(), file))
+      .rejects.toThrow('只能定位本次打开软件后导出的文件')
+    expect(revealInFolder).not.toHaveBeenCalled()
+  })
+
+  it('refuses a malformed path before touching the disk', async () => {
+    const revealInFolder = vi.fn()
+    register(serviceStub(), undefined, undefined, undefined, undefined, undefined, {}, { revealInFolder })
+
+    for (const value of ['', 42, null, 'x'.repeat(4_097)]) {
+      await expect(electronMocks.handlers.get('exports:reveal-file')!(trustedEvent(), value))
+        .rejects.toThrow('导出文件路径')
+    }
+    expect(revealInFolder).not.toHaveBeenCalled()
+  })
+})
+
+describe('runtime-logs:preview-feedback size budget', () => {
+  it('asks the log store to fit the report instead of failing on size', async () => {
+    const { runtimeLog } = register()
+    await electronMocks.handlers.get('runtime-logs:preview-feedback')!(trustedEvent())
+    expect(runtimeLog.captureFeedbackReport.mock.calls).toEqual([[600, 2_000_000]])
+  })
+
+  it('still refuses an oversized report and points at the log folder instead of a missing action', async () => {
+    const { runtimeLog } = register()
+    runtimeLog.captureFeedbackReport.mockResolvedValueOnce({ text: 'x'.repeat(2_000_001), entries: 1 })
+    const failure = electronMocks.handlers.get('runtime-logs:preview-feedback')!(trustedEvent())
+    await expect(failure).rejects.toThrow('打开日志目录')
+    await expect(failure).rejects.not.toThrow('减少日志')
+  })
+})
+
 describe('config:open-directory', () => {
   const temporary: string[] = []
 
@@ -5046,5 +5355,90 @@ describe('config:open-directory', () => {
 
     expect(electronMocks.openPath).not.toHaveBeenCalled()
     expect(fs.existsSync(path.join(providerRoots.userHome, '.gemini'))).toBe(false)
+  })
+})
+
+describe('backup handlers and account key ownership', () => {
+  const account = { userId: 101, username: 'account-a', group: 'default', role: 1, quota: 1_000, usedQuota: 0 }
+  function backupStoreStub() {
+    return {
+      list: vi.fn((_context: unknown) => []),
+      create: vi.fn(),
+      inspect: vi.fn(),
+      restore: vi.fn(() => ({ provider: 'codex' as const, restoredBackupId: 'b1', preRestoreBackupId: 'b0', restoredFiles: [], removedFiles: [] })),
+      delete: vi.fn(),
+    }
+  }
+  function signedIn(keys: string[]) {
+    const accountService = accountServiceStub()
+    let current: typeof account | null = account
+    vi.mocked(accountService.getSessionState).mockImplementation(() => ({ authenticated: current !== null, account: current }))
+    const managedCliKeys: NonNullable<Parameters<typeof registerIpcHandlers>[0]['managedCliKeys']> = {
+      read: vi.fn(async () => keys.map((key, index) => ({ id: index + 1, provider: 'codex' as const, group: 'codex', name: 'Codex', key }))),
+      save: vi.fn(async () => undefined),
+      remove: vi.fn(async () => undefined),
+    }
+    return { accountService, managedCliKeys, switchTo: (next: typeof account | null) => { current = next } }
+  }
+
+  it('lists backups without account context when signed out', async () => {
+    const backupStore = backupStoreStub()
+    register(serviceStub(), undefined, undefined, undefined, undefined, undefined, {}, { backupStore: backupStore as never })
+    await electronMocks.handlers.get('backups:list')!(trustedEvent())
+    expect(backupStore.list).toHaveBeenCalledWith(null)
+  })
+
+  it('passes the account name and key digests, never the key, to the backup store', async () => {
+    const backupStore = backupStoreStub()
+    const { accountService, managedCliKeys } = signedIn(['sk-managed-codex'])
+    register(serviceStub(), undefined, undefined, accountService, undefined, managedCliKeys, {}, { backupStore: backupStore as never })
+    await electronMocks.handlers.get('backups:list')!(trustedEvent())
+    const context = backupStore.list.mock.calls[0][0] as { accountName: string, keyDigests: Set<string> }
+    expect(context.accountName).toBe('account-a')
+    expect(context.keyDigests.size).toBe(1)
+    expect(JSON.stringify([...context.keyDigests])).not.toContain('sk-managed-codex')
+  })
+
+  it('adopts the restored config and recognizes only the current account keys', async () => {
+    const backupStore = backupStoreStub()
+    const service = serviceStub()
+    const { accountService, managedCliKeys } = signedIn(['sk-managed-codex'])
+    register(service, undefined, undefined, accountService, undefined, managedCliKeys, {}, { backupStore: backupStore as never })
+    await expect(electronMocks.handlers.get('backups:restore')!(trustedEvent(), 'b1')).resolves.toMatchObject({ provider: 'codex' })
+    expect(backupStore.restore).toHaveBeenCalledWith('b1', expect.objectContaining({ accountName: 'account-a' }))
+    const [provider, isAccountKey] = vi.mocked(service.adoptRestoredConfig).mock.calls[0]
+    expect(provider).toBe('codex')
+    expect(isAccountKey('sk-managed-codex')).toBe(true)
+    expect(isAccountKey('sk-someone-else')).toBe(false)
+  })
+
+  it('stops trusting the key cache when the account changes during a restore', async () => {
+    const backupStore = backupStoreStub()
+    const service = serviceStub()
+    const { accountService, managedCliKeys, switchTo } = signedIn(['sk-managed-codex'])
+    backupStore.restore.mockImplementation(() => {
+      switchTo({ ...account, userId: 202, username: 'account-b' })
+      return { provider: 'codex', restoredBackupId: 'b1', preRestoreBackupId: 'b0', restoredFiles: [], removedFiles: [] }
+    })
+    register(service, undefined, undefined, accountService, undefined, managedCliKeys, {}, { backupStore: backupStore as never })
+    await electronMocks.handlers.get('backups:restore')!(trustedEvent(), 'b1')
+    const [, isAccountKey] = vi.mocked(service.adoptRestoredConfig).mock.calls[0]
+    expect(isAccountKey('sk-managed-codex')).toBe(false)
+  })
+
+  it('still reports a completed restore when recording its source fails', async () => {
+    const backupStore = backupStoreStub()
+    const service = serviceStub()
+    vi.mocked(service.adoptRestoredConfig).mockRejectedValue(new Error('disk full'))
+    const { runtimeLog } = register(service, undefined, undefined, undefined, undefined, undefined, {}, { backupStore: backupStore as never })
+    await expect(electronMocks.handlers.get('backups:restore')!(trustedEvent(), 'b1')).resolves.toMatchObject({ restoredBackupId: 'b1' })
+    expect(runtimeLog.log).toHaveBeenCalledWith('warn', 'ipc', 'backups:restore', expect.stringContaining('没能登记'), expect.objectContaining({ provider: 'codex' }))
+  })
+
+  it('rejects a malformed restore id before touching any file', () => {
+    const backupStore = backupStoreStub()
+    register(serviceStub(), undefined, undefined, undefined, undefined, undefined, {}, { backupStore: backupStore as never })
+    expect(() => electronMocks.handlers.get('backups:restore')!(trustedEvent(), '')).toThrow('备份 ID格式错误')
+    expect(backupStore.restore).not.toHaveBeenCalled()
   })
 })
