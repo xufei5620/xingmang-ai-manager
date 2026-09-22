@@ -54,6 +54,11 @@ export const firstRunHints: Record<ProviderId, ToolFirstRun> = {
   grok: { command: 'grok', prompt: '用中文讲讲这个项目的主要功能,并给我一条改进建议。' },
 };
 
+// 新手引导第一步默认选中、标「推荐」的那一个（第十一批候选 1，协调者拍板）。
+// Codex 桌面端是六个里唯一不用准备运行环境、不用开终端的，也是教程主线；
+// Windows 与 Mac 用同一个，Mac 上它走「安装指南」。页面里不写这个字面量（T2）。
+export const guideRecommendedTool: ToolDef['id'] = 'codexDesktop';
+
 export const tools: ToolDef[] = [
   { id: 'claude', name: 'Claude Code', vendor: 'Anthropic', brandIcon: 'Claude', kind: 'cli', install: npmInstall('claude'), requires: ['node'], configPath: configPathsFor('claude'), sources: ['account', 'official', 'manual'], shortcutIndex: 1, firstRun: firstRunHints.claude },
   { id: 'codex', name: 'Codex CLI', vendor: 'OpenAI', brandIcon: 'OpenAI', kind: 'cli', install: npmInstall('codex'), requires: ['node'], configPath: configPathsFor('codex'), sources: ['account', 'official', 'manual'], shortcutIndex: 2, firstRun: firstRunHints.codex },
