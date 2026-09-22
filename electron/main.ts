@@ -50,6 +50,7 @@ import { ConfigBackupStore } from './backups'
 import { crashReportDsn, crashReportSelfTestEnvironmentKey, shouldReportCrashes } from './crash-report'
 import { createCrashReporter } from './crash-reporter'
 import { providerIds, type ProviderId } from './catalog'
+import { gitWindowsDownloadUrl } from './git-runtime'
 import { canvasProtocolScheme, canvasSecurityResponseHeaders } from './canvas-protocol'
 import { createCanvasWindowController } from './canvas-window'
 import { CanvasRunStore } from './canvas-run-store'
@@ -144,6 +145,8 @@ const applicationPackage = require('../package.json') as {
 const nonSiteExternalUrlAllowlist = [
   'https://nodejs.org/',
   'https://www.python.org/downloads/',
+  // 首页运行环境行的「下载 Git」按钮只在 Windows 出现，落点就是这一条（I12 全等匹配）。
+  gitWindowsDownloadUrl,
   'https://chatgpt.com/download/',
   'ms-windows-store://pdp/?ProductId=9PLM9XGG6VKS',
 ] as const

@@ -229,6 +229,7 @@ const systemSnapshot: Awaited<ReturnType<V2Bridge['scanSystem']>> = {
     node: { ...cliStatus },
     npm: { ...cliStatus },
     python: { ...cliStatus },
+    git: { ...cliStatus },
   },
   clis: {
     claude: { ...cliStatus },

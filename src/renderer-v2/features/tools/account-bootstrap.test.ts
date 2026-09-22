@@ -40,7 +40,7 @@ const status = (installed: boolean) => ({
 const system = (installed: ProviderId[]): SystemSnapshot => ({
   checkedAt: '2026-09-07T00:00:00Z',
   network: { region: 'unknown', publicIp: null, countryCode: null, checkedAt: '2026-09-07T00:00:00Z', error: null },
-  runtime: { node: status(true), npm: status(true), python: status(true) },
+  runtime: { node: status(true), npm: status(true), python: status(true), git: status(true) },
   clis: {
     claude: status(installed.includes('claude')),
     codex: status(installed.includes('codex')),

@@ -15,6 +15,7 @@ import {
   type CommandSpec,
   type RunCommandOptions,
 } from './command-runner'
+import { gitInstallGuidance } from './git-runtime'
 import { resolveCliCommand, type ResolvedCliCommand } from './tool-installation'
 import { isNewerVersion } from './versions'
 import {
@@ -1003,12 +1004,9 @@ export function readClaudeSettingsMarketplaceNames(homeDirectory: string): strin
 export function claudeMarketplaceGitMissingMessage(
   platform: NodeJS.Platform = process.platform,
 ): string {
-  const guidance = platform === 'win32'
-    ? '请到 https://git-scm.com/download/win 下载 Git 安装包装上'
-    : platform === 'darwin'
-      ? '请在「终端」里运行 xcode-select --install，或者用 Homebrew 执行 brew install git'
-      : '请用系统的包管理器装上 Git'
-  return `第一次安装 Claude Code 插件要先把官方插件市场下载到本机，这一步需要 Git，但这台电脑上没有找到它。${guidance}，装好后重新打开本软件再试。`
+  // 分平台的安装指引在 git-runtime.ts 只写一份：首页运行环境行和检查页要说的是
+  // 同一句话，两处各抄一遍早晚会说岔（#290）。
+  return `第一次安装 Claude Code 插件要先把官方插件市场下载到本机，这一步需要 Git，但这台电脑上没有找到它。${gitInstallGuidance(platform)}，装好后重新打开本软件再试。`
 }
 
 /** 只有真要出网的操作才需要代理：MCP 增删改的都是本地配置文件。 */

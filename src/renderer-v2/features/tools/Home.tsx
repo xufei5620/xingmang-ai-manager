@@ -15,6 +15,7 @@ import { FirstRunSteps } from './FirstRun'
 import { dismissFirstRun, getFirstRunStorage, readFirstRunDismissals } from './first-run-dismissal'
 import { recentWorkspaces, workspaceButtonLabel, workspaceChoices } from './recent-workspaces'
 import { errorMessage } from '../../business-common'
+import { gitHostPlatform, gitMissingFirstRunHint, gitMissingNotice } from '../../../../electron/git-runtime'
 
 export interface HomeProps {
   api: ToolsApi
@@ -44,7 +45,7 @@ export interface HomeProps {
   onLaunchExternal(tool: ExternalToolId): void
   onCodexModels(): void
   onUninstall(tool: ToolId): void
-  onRuntime(runtime: 'node' | 'python'): void
+  onRuntime(runtime: 'node' | 'python' | 'git'): void
   onNavigate(page: PageId, section?: string): void
   onGuide(): void
   bootstrap?: (AccountBootstrapProgress & { scope: string; result?: AccountBootstrapResult; error?: string }) | null
@@ -108,6 +109,10 @@ export function Home(props: HomeProps) {
   const configFailure = props.failures?.find((failure) => failure.partition === 'config') ?? null
   const ready = installed.some((tool) => tool.configured && !tool.error) || installedExternal.some((tool) => tool.ready && !tool.status.detectionError)
   const connectedCount = installed.filter((tool) => tool.configured).length + installedExternal.filter((tool) => tool.status.configured && tool.status.configurationSource === 'xingmang').length
+  // Git 是可选环境：只在探到「确实没装」时提示（探测失败按 A4 显示失败、不当没装）。
+  const gitHost = gitHostPlatform(snapshot?.platform.platform ?? 'other')
+  const gitStatus = snapshot?.system.runtime.git
+  const gitMissing = Boolean(gitStatus && !gitStatus.installed && !gitStatus.detectionFailed)
   const bootstrapBusy = Boolean(props.bootstrap && !props.bootstrap.result && !props.bootstrap.error)
   const launchBusy = Object.keys(jobs).some((key) => key.startsWith('launch:'))
   // 装好又连上之后才给这张卡：还没配 Key 时第一条命令敲下去只会报错，那不是「可以试试」。
@@ -243,7 +248,8 @@ export function Home(props: HomeProps) {
         {firstRunTool && firstRun && <Card title="试试第一条命令" meta={firstRunTool.name} testId="home-first-run"
           actions={<Button variant="ghost" size="xs" icon={X} aria-label="不再显示这条提示" title="不再显示这条提示" testId="home-first-run-dismiss"
             onClick={() => setFirstRunDismissed((current) => dismissFirstRun(getFirstRunStorage(), current, firstRunTool.id))} />}>
-          <FirstRunSteps key={firstRunTool.id} name={firstRunTool.name} firstRun={firstRun} testId="home-first-run-steps" />
+          <FirstRunSteps key={firstRunTool.id} name={firstRunTool.name} firstRun={firstRun} testId="home-first-run-steps"
+            gitHint={firstRunTool.id === 'claude' && gitMissing ? gitMissingFirstRunHint(gitHost) : undefined} />
         </Card>}
         <Card title="最近" meta="从上次停下的地方继续" padding="none" actions={<Button variant="ghost" size="xs" onClick={() => props.onNavigate('sessions')}>全部记录</Button>}>
           {recentError ? <Empty icon={History} title="记录暂时没有读到" description={recentError} action={<Button onClick={() => setRecentAttempt((value) => value + 1)}>重新加载</Button>} />
@@ -256,14 +262,17 @@ export function Home(props: HomeProps) {
       </div>
       <aside className="v2-home-aside">
         <Card title="运行环境" padding="none" meta={snapshot ? new Date(snapshot.system.checkedAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) : '等待检查'}>
-          <div className="v2-runtime-list">{(['node', 'npm', 'python'] as const).map((id) => {
+          <div className="v2-runtime-list">{(['node', 'npm', 'python', 'git'] as const).map((id) => {
             const status = snapshot?.system.runtime[id]
-            return <div key={id} className="v2-runtime-row"><i className={`v2-dot ${status?.installed ? 'is-ok' : id === 'python' ? '' : 'is-warn'}`} /><BrandIcon tool={id} size={16} variant="xs" /><strong>{id === 'node' ? 'Node.js' : id === 'python' ? 'Python' : 'npm'}</strong>
-              <span>{jobs[id]?.label ?? (loading ? '检测中' : status?.detectionFailed ? '检测失败' : status?.version ?? (id === 'python' ? '可选 · 未装' : '未安装'))}</span>
+            const optional = id === 'python' || id === 'git'
+            return <div key={id} className="v2-runtime-row"><i className={`v2-dot ${status?.installed ? 'is-ok' : optional ? '' : 'is-warn'}`} /><BrandIcon tool={id} size={16} variant="xs" /><strong>{id === 'node' ? 'Node.js' : id === 'python' ? 'Python' : id === 'git' ? 'Git' : 'npm'}</strong>
+              <span>{jobs[id]?.label ?? (loading ? '检测中' : status?.detectionFailed ? '检测失败' : status?.version ?? (optional ? '可选 · 未装' : '未安装'))}</span>
             </div>
           })}</div>
+          {gitMissing && <p className="v2-runtime-hint" data-testid="home-runtime-git-hint">{gitMissingNotice(gitHost)}</p>}
           <div className="v2-runtime-actions">{!snapshot?.system.runtime.node.installed && <Button variant="ghost" size="sm" icon={Download} onClick={() => props.onRuntime('node')}>准备 Node.js</Button>}
-            {!snapshot?.system.runtime.python.installed && <Button variant="ghost" size="sm" icon={Download} onClick={() => props.onRuntime('python')}>装 Python（可选环境）</Button>}</div>
+            {!snapshot?.system.runtime.python.installed && <Button variant="ghost" size="sm" icon={Download} onClick={() => props.onRuntime('python')}>装 Python（可选环境）</Button>}
+            {gitMissing && gitHost === 'windows' && <Button variant="ghost" size="sm" icon={Download} onClick={() => props.onRuntime('git')} testId="home-runtime-git">下载 Git</Button>}</div>
         </Card>
         <Card title="账户余额" padding="none" actions={<Pill tone={connectedCount ? 'ok' : 'neutral'}>{connectedCount ? `${connectedCount} 个工具已连接` : '等待连接'}</Pill>}>
           <div className={`v2-balance-body tone-${tier}`}><div title={balanceHint}><strong data-testid="home-balance">{dollars === null ? '暂未读到' : `$${dollars.toFixed(2)}`}</strong><small>可用余额 · 美元</small>{balanceStore && account && <Button variant="ghost" size="xs" icon={RefreshCw} loading={balanceState.loading} aria-label="刷新账户余额" title={balanceHint} onClick={() => void balanceStore.refresh('manual')} testId="home-balance-refresh" />}</div>

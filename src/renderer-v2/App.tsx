@@ -3,6 +3,7 @@ import { RefreshCw } from 'lucide-react'
 import QRCode from 'qrcode'
 import type { AccountSessionState, AppSettingsV2, ExternalDeepLink, ExternalToolId, LegalDocumentKind, PlatformCapabilities, ProviderId, UpdateSnapshot, XingmangApi } from '../../electron/ipc-contract'
 import { resolveRelaySite, resolveSupportServiceUrl } from '../../electron/relay-sites'
+import { gitWindowsDownloadUrl } from '../../electron/git-runtime'
 import { Shell as AppFrame } from './features/shell/Shell'
 import { createAppApi } from './features/app/api'
 import { AuthFlow, LegalDocument, Splash, StartGuide, Welcome, createAuthApi, guideOfficialLoginRequired, type AuthMode, type GuideToolState } from './features/auth'
@@ -337,7 +338,10 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     }
     await toolbox.refresh(true)
   }
-  async function installRuntime(runtime: 'node' | 'python') {
+  async function installRuntime(runtime: 'node' | 'python' | 'git') {
+    // Git 本产品从不代装（候选 4）：按钮只在 Windows 出现，点了就打开官方下载页，
+    // 其余平台的引导（xcode-select / Homebrew）以文案给出，没有可打开的下载页。
+    if (runtime === 'git') { await app.openExternal(gitWindowsDownloadUrl); return }
     const mode = runtime === 'node' ? platform?.nodeRuntimeInstall : platform?.pythonRuntimeInstall
     if (mode !== 'managed') { await app.openExternal(runtime === 'node' ? 'https://nodejs.org/' : 'https://www.python.org/downloads/'); return }
     await toolbox.run(runtime, '正在准备运行环境', () => toolsApi.prepareRuntime(runtime))
