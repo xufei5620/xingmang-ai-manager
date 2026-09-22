@@ -1722,11 +1722,16 @@ export function buildUncheckedLatestVersion(
  * 给一批最新版探测套一个总预算。`budgetMs` 为 null 时等齐（联网时的老行为）；到点
  * 还没回来的项用占位结果顶上，那几个 Promise 仍会在后台自己走完并把结果写进缓存，
  * 这里不再等、也不重新发起——联网后靠下一次扫描或用户点刷新补上，不加定时器。
+ *
+ * 传入 `budgetExpired` 时，预算到点会顺手 abort 它。探测那侧据此知道「这一轮的结果
+ * 已经没人要了」，手里那次请求照旧跑完（它可能给缓存留下有用的结果），但不再往备用
+ * 源发新的请求——否则一批被丢弃的探测会在后台继续出网，在测试里还会串进后面的用例。
  */
 export async function settleLatestVersionProbes(
   probes: readonly Promise<LatestVersionProbe>[],
   unchecked: readonly LatestVersionProbe[],
   budgetMs: number | null,
+  budgetExpired?: AbortController,
 ): Promise<LatestVersionProbe[]> {
   const settled = probes.map((probe, index) => probe.then(
     (value) => value,
@@ -1739,7 +1744,10 @@ export async function settleLatestVersionProbes(
   if (budgetMs === null) return Promise.all(settled)
   let timer: ReturnType<typeof setTimeout> | undefined
   const deadline = new Promise<'timeout'>((resolve) => {
-    timer = setTimeout(() => resolve('timeout'), budgetMs)
+    timer = setTimeout(() => {
+      budgetExpired?.abort()
+      resolve('timeout')
+    }, budgetMs)
     timer.unref?.()
   })
   try {
@@ -2366,6 +2374,7 @@ export function createSystemService(
   async function inspectLatestNpmVersion(
     packageName: string,
     networkRegion: NetworkRegion,
+    budgetSignal?: AbortSignal,
   ): Promise<LatestVersionProbe> {
     const cacheKey = `npm:${networkRegion}:${packageName}`
     const cached = npmLatestCache.get(cacheKey)
@@ -2420,6 +2429,9 @@ export function createSystemService(
         break
       }
       if (result.error) errors.push(result.error)
+      // 预算到点了：这一轮的结果已经被占位顶掉，没人会用。再往备用源发一次请求
+      // 只是在后台空转（离线时它注定也要耗满自己的超时），停在这里等下一次扫描。
+      if (budgetSignal?.aborted) break
     }
     value ??= {
       status: 'failed',
@@ -2428,14 +2440,17 @@ export function createSystemService(
       checkedAt,
       error: errors.join('；') || 'npm 版本查询失败',
     }
-    if (generation === npmLatestCacheGeneration) {
+    // 预算到点后攒出来的失败不写缓存：写了会把这份可能还没试完备用源的结论
+    // 按失败 TTL 钉住，让紧跟着的那次扫描连试都不试。查成了的照写不误。
+    const abandoned = value.status !== 'checked' && budgetSignal?.aborted === true
+    if (!abandoned && generation === npmLatestCacheGeneration) {
       const ttl = value.status === 'checked' ? npmLatestCacheTtlMs : npmLatestFailureCacheTtlMs
       npmLatestCache.set(cacheKey, { expiresAt: Date.now() + ttl, value })
     }
     return value
   }
 
-  async function inspectLatestGrokVersion(): Promise<LatestVersionProbe> {
+  async function inspectLatestGrokVersion(budgetSignal?: AbortSignal): Promise<LatestVersionProbe> {
     const cacheKey = 'official:grok:stable'
     const cached = npmLatestCache.get(cacheKey)
     if (cached && cached.expiresAt > Date.now()) return cached.value
@@ -2445,7 +2460,7 @@ export function createSystemService(
     const probe = (async (): Promise<LatestVersionProbe> => {
       const checkedAt = new Date().toISOString()
       try {
-        const result = await fetchGrokStableVersion()
+        const result = await fetchGrokStableVersion({ abandonedSignal: budgetSignal })
         return {
           status: 'checked',
           version: result.version,
@@ -2463,8 +2478,10 @@ export function createSystemService(
         }
       }
     })().then((value) => {
-      // invalidate 会清空 in-flight 表，比对可拦住失效前发起的过期回写
-      if (grokLatestInFlight.get(cacheKey) === probe) {
+      // invalidate 会清空 in-flight 表，比对可拦住失效前发起的过期回写；
+      // 预算到点后攒出来的失败同样不写，理由与 npm 那边一样。
+      const abandoned = value.status !== 'checked' && budgetSignal?.aborted === true
+      if (!abandoned && grokLatestInFlight.get(cacheKey) === probe) {
         npmLatestCache.set(cacheKey, {
           expiresAt: Date.now() + (value.status === 'checked'
             ? npmLatestCacheTtlMs
@@ -2503,6 +2520,7 @@ export function createSystemService(
     provider: ProviderId,
     installed: ToolStatus,
     networkRegion: NetworkRegion,
+    budgetSignal?: AbortSignal,
   ): Promise<LatestVersionProbe> {
     if (!installed.installed) {
       return {
@@ -2514,9 +2532,9 @@ export function createSystemService(
       }
     }
     if (provider === 'grok') {
-      return inspectLatestGrokVersion()
+      return inspectLatestGrokVersion(budgetSignal)
     }
-    return inspectLatestNpmVersion(cliCatalog[provider].packageName, networkRegion)
+    return inspectLatestNpmVersion(cliCatalog[provider].packageName, networkRegion, budgetSignal)
   }
 
   async function inspectCliUpdate(
@@ -2598,10 +2616,20 @@ export function createSystemService(
     const uncheckedLatest = providerIds.map(
       (id, index) => buildUncheckedLatestVersion(id, cliResults[index].installed),
     )
+    const latestVersionBudgetMs = networkProbeSuggestsOffline(network)
+      ? offlineLatestVersionBudgetMs
+      : null
+    const latestVersionBudget = latestVersionBudgetMs === null ? undefined : new AbortController()
     const latestVersions = await settleLatestVersionProbes(
-      providerIds.map((id, index) => inspectCliLatestVersion(id, cliResults[index], networkRegion)),
+      providerIds.map((id, index) => inspectCliLatestVersion(
+        id,
+        cliResults[index],
+        networkRegion,
+        latestVersionBudget?.signal,
+      )),
       uncheckedLatest,
-      networkProbeSuggestsOffline(network) ? offlineLatestVersionBudgetMs : null,
+      latestVersionBudgetMs,
+      latestVersionBudget,
     )
     const scanSettings = store.read()
     const clis = Object.fromEntries(providerIds.map((id, index) => {

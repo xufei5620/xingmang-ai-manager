@@ -21,6 +21,12 @@ export interface GrokStableVersionResult {
 export interface GrokStableVersionFetchOptions {
   fetchImpl?: GrokVersionFetch
   timeoutMs?: number
+  /**
+   * 置位表示这次查询的结果已经没人要了（例如整批最新版探测的预算到点了）。手里那次
+   * 请求照旧跑完，它还可能给缓存留下有用的结果；但不再往备用源发新的请求——否则一次
+   * 被丢弃的探测会在后台继续出网，在测试里还会串进后面的用例。
+   */
+  abandonedSignal?: AbortSignal
 }
 
 function validateOfficialUrl(value: string): URL {
@@ -156,6 +162,7 @@ export async function fetchGrokStableVersion(
     } catch (error) {
       errors.push(`${new URL(sourceUrl).hostname}：${fetchErrorMessage(error)}`)
     }
+    if (options.abandonedSignal?.aborted) break
   }
   throw new Error(`Grok 官方版本查询失败：${errors.join('；')}`)
 }
