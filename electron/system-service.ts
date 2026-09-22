@@ -2889,9 +2889,12 @@ export function createSystemService(
     requestedVersion?: string,
     cancellation?: InstallCancellationHandle,
   ): Promise<void> {
-    // 已经在装、或排队期间被取消的，一条线路都不要起。
+    // 已经在装、排队期间被取消、或磁盘根本不够的，一条线路都不要起。
     if (installing.has(provider)) throw new Error(`${cliCatalog[provider].name} 正在安装中`)
     cancellation?.throwIfCancelled()
+    // 磁盘快满时 npm 会跑到一半才报 ENOSPC：用户白等几分钟，旧版本还可能已经被
+    // 动过。所以一个字节都还没下之前先看一眼盘（读不到空间照常放行）。
+    await assertInstallDiskSpace(`${cliCatalog[provider].name} 安装失败`)
     await withDownloadAcceleration(
       (message) => sendInstallProgress(target, provider, 'output', message),
       () => runCliInstall(provider, target, requestedVersion, cancellation),
@@ -2910,9 +2913,6 @@ export function createSystemService(
     // 直接退出,一条 npm 命令都不要起。
     cancellation?.throwIfCancelled()
     const definition = cliCatalog[provider]
-    // 磁盘快满时 npm 会跑到一半才报 ENOSPC：用户白等几分钟，旧版本还可能已经被
-    // 动过。所以一个字节都还没下之前先看一眼盘（读不到空间照常放行）。
-    await assertInstallDiskSpace(`${definition.name} 安装失败`)
     installing.add(provider)
     let downloadedGrokBinary: DownloadedGrokBinary | null = null
     let managedNpmLayout: ManagedNpmLayout | null = null
