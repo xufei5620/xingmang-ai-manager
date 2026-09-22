@@ -531,7 +531,7 @@ export interface XingmangInvokeContract {
     [tool: ExternalToolId, options: ExternalClientConfigRequest],
     ExternalClientConfigResult
   >
-  scanExternalClients: IpcInvokeDefinition<'external-clients:scan', [], ExternalClientStatus[]>
+  scanExternalClients: IpcInvokeDefinition<'external-clients:scan', [force?: boolean], ExternalClientStatus[]>
   installExternalClient: IpcInvokeDefinition<'external-clients:install', [tool: ExternalToolId], ExternalClientStatus>
   launchExternalClient: IpcInvokeDefinition<'external-clients:launch', [tool: ExternalToolId], void>
   /**

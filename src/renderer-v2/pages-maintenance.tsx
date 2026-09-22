@@ -268,7 +268,9 @@ export function HealthPage({
           return { id: tool.id, provider: tool.id, name: tool.name, result: null, error: errorMessage(error) }
         }
       })),
-      Promise.all(clientConnections.map(async (client): Promise<ConnectionRow | null> => {
+      // 本机客户端盘点平时会复用几分钟；用户在这里亲手点「测试连接」时先强制重新
+      // 盘点一次，刚装上的客户端才会出现在结果里。盘点失败不拦着自检，各条照常报错。
+      api.scanExternalClients(true).catch(() => undefined).then(() => Promise.all(clientConnections.map(async (client): Promise<ConnectionRow | null> => {
         try {
           const result = await api.checkExternalClientConnection(client.id)
           // 没装这个客户端的用户不该在这一页上多看三行：那不是结论，是噪音。
@@ -277,7 +279,7 @@ export function HealthPage({
         } catch (error) {
           return { id: client.id, provider: null, name: client.name, result: null, error: errorMessage(error) }
         }
-      })),
+      }))),
     ])
     setConnections([...cliRows, ...clientRows.filter((row): row is ConnectionRow => row !== null)])
   }

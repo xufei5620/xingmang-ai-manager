@@ -375,6 +375,22 @@ test('external client platform and detection failures remain distinct from missi
   } finally { await page.close() }
 })
 
+test('external client inventory waits for the first tool scan, and the home rescan forces a fresh one', async () => {
+  const page = await open('holdFirstScan=1')
+  try {
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'scanSystem'))
+    await page.waitForTimeout(300)
+    assert.equal(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'scanExternalClients').length), 0, '首屏扫描没回来之前不盘点外部客户端')
+    await page.evaluate(() => window.v2Test.releaseScan())
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'scanExternalClients'))
+    assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'scanExternalClients').map((entry) => entry.args)), [[false]])
+    await page.getByTestId('home-rescan').click()
+    await page.waitForFunction(() => window.v2Test.calls.filter((entry) => entry.method === 'scanExternalClients').length > 1)
+    assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'scanExternalClients').at(-1).args), [true])
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('external client scans from the previous account cannot overwrite the current account', async () => {
   const page = await open('externalInstalled=1')
   try {
