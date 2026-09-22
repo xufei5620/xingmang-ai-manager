@@ -394,7 +394,7 @@ const methods = {
     if (query.has('nodeInstallFail')) throw new Error('下载 Node.js 时 ETIMEDOUT')
     system.runtime.node = { ...system.runtime.node, installed: true, version: 'v24.0.0', tooOld: false, versionStatus: 'supported' }
     system.runtime.npm = { ...system.runtime.npm, installed: true, version: '11.0.0' }
-    return { installed: true as const, action: 'installed' as const, method: 'msi' as const, source: null, version: 'v24.0.0', architecture: 'x64' as const, pathRefreshRequired: true, systemRestartRequired: false }
+    return { installed: true as const, action: 'installed' as const, method: 'msi' as const, source: null, version: 'v24.0.0', architecture: 'x64' as const, pathRefreshRequired: true, systemRestartRequired: query.has('nodeRestart') }
   },
   installCli: async (provider) => {
     if (query.has('installPermissionDenied')) throw new Error(`Gemini CLI 安装失败：npm 官方源：EPERM: operation not permitted, mkdir`)

@@ -16,6 +16,8 @@ import { cliInstallStageLabel, nodeRuntimeReady, planCliInstall, pythonRuntimeRe
 import { isToolId, presentTools, providerFor, toolInstallDirectory, type ToolId, type ToolSource } from './features/tools/model'
 import { pendingToolUpdates, readAnnouncedToolUpdates, rememberAnnouncedToolUpdates, unannouncedToolUpdates, updateNoticeKey } from './features/tools/update-notice'
 import { isMissingWorkspace } from './features/tools/recent-workspaces'
+import { describeRuntimeInstallOutcome, type RuntimeInstallOutcome } from './features/tools/runtime-install-outcome'
+import { RuntimeRestartDialog } from './features/tools/RuntimeRestartDialog'
 import { guideJobProgress, installedToolSyncLabel, useToolbox } from './features/tools/useToolbox'
 import { ManualUninstallDialog, type ManualUninstallState } from './features/tools/ManualUninstall'
 import { operationLogPage, type OperationActionId } from './operation-error'
@@ -118,6 +120,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   const linkPrompted = useRef(false)
   const [paymentReturn, setPaymentReturn] = useState<{ sequence: number; order: string | null }>()
   const [confirmation, setConfirmation] = useState<PendingConfirmation | null>(null)
+  const [runtimeRestart, setRuntimeRestart] = useState(false)
   const [confirmBusy, setConfirmBusy] = useState(false)
   const [restartDialog, setRestartDialog] = useState(false)
   const [chineseDialog, setChineseDialog] = useState(false)
@@ -436,7 +439,13 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     await toolbox.run(id, version ? `正在安装 ${version}` : preparing ? cliInstallStageLabel(plan.prepare[0], 0, total, toolName) : '正在安装', async (report) => {
       for (const [index, runtime] of plan.prepare.entries()) {
         report(cliInstallStageLabel(runtime, index, total, toolName))
-        await prepareRuntimeForInstall(runtime, toolName)
+        // MSI 回 3010 时 Windows 要重启才算装完，接着装工具多半失败（第七批 5）：
+        // 停在这里弹「现在重启」，重启后再点一次「安装」只剩装工具这一段。
+        if ((await prepareRuntimeForInstall(runtime, toolName)).restartRequired) {
+          await toolbox.refresh(true).catch(() => undefined)
+          if (mounted.current) setRuntimeRestart(true)
+          return
+        }
       }
       preparing = false
       if (plan.prepare.length > 0) report(cliInstallStageLabel('tool', total - 1, total, toolName))
@@ -454,10 +463,14 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
    * 串在「安装」里的运行环境那一段。单独占一个 node / python 任务，运行环境卡上
    * 的进度条照常走；那个任务已经在跑（用户先点过运行环境卡）时不重复发起。
    */
-  async function prepareRuntimeForInstall(runtime: InstallRuntimeId, toolName: string) {
+  async function prepareRuntimeForInstall(runtime: InstallRuntimeId, toolName: string): Promise<RuntimeInstallOutcome> {
     try {
-      const started = await toolbox.run(runtime, '正在准备运行环境', () => toolsApi.prepareRuntime(runtime))
-      if (!started) throw new Error('运行环境正在准备，请等它完成后再点「安装」。')
+      const done: { outcome?: RuntimeInstallOutcome } = {}
+      const started = await toolbox.run(runtime, '正在准备运行环境', async () => {
+        done.outcome = describeRuntimeInstallOutcome(runtime, await toolsApi.prepareRuntime(runtime))
+      })
+      if (!started || !done.outcome) throw new Error('运行环境正在准备，请等它完成后再点「安装」。')
+      return done.outcome
     } catch (cause) {
       // 原话留着不先翻成中文：外层的错误分类要靠 ENOSPC、ETIMEDOUT 这类原词认出
       //「磁盘满」「下载超时」，展示前 errorMessage 会统一脱敏。
@@ -489,8 +502,15 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     if (runtime === 'git') { await app.openExternal(gitWindowsDownloadUrl); return }
     const mode = runtime === 'node' ? platform?.nodeRuntimeInstall : platform?.pythonRuntimeInstall
     if (mode !== 'managed') { await app.openExternal(runtime === 'node' ? 'https://nodejs.org/' : 'https://www.python.org/downloads/'); return }
-    await toolbox.run(runtime, '正在准备运行环境', () => toolsApi.prepareRuntime(runtime))
+    // 主进程装完带回「要重启 / 要刷新 PATH」两个标记，以前这里直接扔掉（第七批 5）。
+    const done: { outcome?: RuntimeInstallOutcome } = {}
+    await toolbox.run(runtime, '正在准备运行环境', async () => {
+      done.outcome = describeRuntimeInstallOutcome(runtime, await toolsApi.prepareRuntime(runtime))
+    })
     await toolbox.refresh(true)
+    if (!done.outcome || !mounted.current) return
+    if (done.outcome.restartRequired) setRuntimeRestart(true)
+    else toast.show(done.outcome.message, done.outcome.tone)
   }
   async function installExternal(id: ExternalToolId) {
     const epoch = accountEpoch.current
@@ -763,6 +783,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
               <Suspense fallback={pageLoading}>
                 <BusinessPage api={native} page={id} accountTab={accountTab} tutorialTopic={tutorialTopic ?? undefined} paymentReturn={paymentReturn} navigate={navigate} openLogin={() => setAuth('login')} openHelp={() => setHelp(true)}
                   onSessionResumed={refreshRecent}
+                  onBackupRestored={() => void toolbox.refreshConfig().catch(() => undefined)}
                   onAccountChanged={() => void perform('刷新账号', reloadAccount)} onSettingsChanged={setSettings} openConfig={openToolConfig}
                   openGuide={() => setGuide(true)} replayTour={replayTour}
                   onToolsChanged={(tool) => syncAfterToolInstalled(tool).catch((cause) => {
@@ -811,6 +832,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       <Button variant="primary" onClick={() => void perform('启用中文界面', () => answerChineseRuntimePatch('enabled'))}>启用中文界面</Button>
     </>}><p>Codex 自带中文语言包，但要让它的界面真正显示中文，星芒需要在每次打开 Codex 时附带一个仅限本机的调试端口，Codex 关闭后端口随之关闭。</p>
       <p>只问这一次。之后可以在 Codex 桌面端的配置里随时改。</p></Dialog>}
+    {runtimeRestart && <RuntimeRestartDialog onClose={() => setRuntimeRestart(false)} restart={toolsApi.restartWindows} />}
     {confirmation && <Confirm title={confirmation.title} body={confirmation.body} danger={confirmation.danger} okLabel={confirmation.label} loading={confirmBusy} onClose={() => setConfirmation(null)} onOk={() => {
       if (confirmationLock.current) return
       confirmationLock.current = true; setConfirmBusy(true)

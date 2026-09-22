@@ -2741,6 +2741,20 @@ test('a failed runtime stage says the tool never started and does not run the CL
   } finally { await page.close() }
 })
 
+// MSI 回 3010：Windows 要重启才算把 Node.js 装完，这时不接着装工具（会失败），
+// 而是停下来弹「现在重启」（第七批 5 的那个框）。
+test('a runtime stage that needs a Windows restart stops before the CLI install and asks to restart', async () => {
+  const page = await open('nodeVersionUnknown=1&nodeRestart=1')
+  try {
+    await page.getByTestId('tool-row-gemini').getByText('未安装').waitFor()
+    await page.getByTestId('tool-gemini-primary').click()
+    await page.getByTestId('runtime-restart-dialog').waitFor()
+    assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => entry.method === 'installCli')), false)
+    assert.equal(await page.getByTestId('operation-error-detail').count(), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('an unreadable Node version still blocks the CLI install where the app cannot install Node (R-G6)', async () => {
   const page = await open('nodeVersionUnknown=1&runtimeExternal=1')
   try {
