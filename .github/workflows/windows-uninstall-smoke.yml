@@ -1,0 +1,60 @@
+# 开着加速时卸载：卸载程序要先把系统代理还原、删掉开机项，再删文件。
+#
+# 这条路径只在真的 NSIS 卸载程序里跑得到，quality.yml 的 windows-package 不打安装包，
+# 沙箱里也跑不了 NSIS。这里在 Windows runner 上现场出一份不签名、不发布的安装包
+# （同 test-build.yml 的 XINGMANG_LOCAL_BUILD=1 + --publish never），静默装上，
+# 把机器摆成「加速辅助进程已被卸载程序强行结束」的样子，再静默卸载，检查系统代理
+# 回到了原样、恢复记录和开机项都没了。步骤见 scripts/windows-uninstall-cleanup-smoke.ps1。
+#
+# 打一次包要几分钟，所以不进必需的 quality 门禁，只在碰到这条路径的改动上跑，
+# 也可以手动触发。
+name: windows-uninstall-smoke
+
+on:
+  pull_request:
+    paths:
+      - build/installer.nsh
+      - electron-builder.config.cjs
+      - electron/platform/entry.ts
+      - electron/uninstall-cleanup*.ts
+      - electron/platform/windows-system-proxy.ts
+      - electron/platform/system-service.ts
+      - electron/login-launch.ts
+      - scripts/windows-acceleration-recovery.ps1
+      - scripts/windows-uninstall-cleanup-smoke.ps1
+      - .github/workflows/windows-uninstall-smoke.yml
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  uninstall-cleanup:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --registry=https://registry.npmjs.org/
+      - run: npm run compile
+      - name: Build unsigned NSIS installer (never publishes)
+        run: npx --no-install electron-builder --config electron-builder.config.cjs --win --x64 --publish never
+        env:
+          XINGMANG_LOCAL_BUILD: '1'
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      - name: Install, uninstall with acceleration left on, and check the network is back
+        timeout-minutes: 10
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem -Path release -Filter '*Setup*.exe' | Select-Object -First 1
+          if ($null -eq $installer) { throw 'no installer was built' }
+          ./scripts/windows-uninstall-cleanup-smoke.ps1 -Installer $installer.FullName

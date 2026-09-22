@@ -32,11 +32,14 @@ import { managedCliRoot } from './managed-cli-paths'
 import { classifyNetworkFailure, networkFailureMessages } from './network-failure'
 import { redactSecretPatterns } from './redaction-patterns'
 import { relayApiProbeBaseUrl, resolveRelaySite, type RelaySite } from './relay-sites'
+import { findReparseComponent, type ReparseComponent } from './safe-local-data'
 import { resolveCliCommand, resolveCliInstallation } from './tool-installation'
 import type { ToolConfigOwnership } from './tool-config-ownership'
 import {
+  describeWindowsExecutionProbeFailure,
   inspectWindowsElevationCapability,
   resolveWindowsPowerShellExecutable,
+  type WindowsCliExecutionModeResolution,
   type WindowsElevationCapability,
 } from './windows-elevation'
 
@@ -120,6 +123,14 @@ export interface DiagnosticsDependencies {
    * 宿主真写一个小文件再删掉，resolve 就是写得进，reject 就是写不进。
    */
   probeAiOutput?: () => Promise<void>
+  /**
+   * 启动时那次「是不是管理员」探测的结果（`resolveWindowsCliExecutionModeDetailed`）。
+   * 只读、不重跑：执行模式在启动时就定死了，检查页要说的是「这次启动被怎么处理了」。
+   * 缺省按探测成功处理，只看当前令牌。
+   */
+  windowsExecution?: WindowsCliExecutionModeResolution | null
+  /** 「文件夹位置」一项逐级找被重定向的那一级；测试用它造「搬过家」的目录。 */
+  findReparseComponent?: (target: string) => ReparseComponent | null
   /**
    * 启动时发现用户环境里的 CODEX_HOME 不可用、已按没设处理（codex-home.ts）。
    * 传进来的 env 里 CODEX_HOME 已被换成本程序算出的位置，诊断自己看不到原值，
@@ -619,6 +630,12 @@ interface EnvironmentOverrideVariable {
   name: string
   provider: ProviderId
   kind: EnvironmentOverrideKind
+  /**
+   * true = 设了（且不指向当前账号）就一定让这个 CLI 绕开本程序写入的配置，请求
+   * 发去别处或带着别的 Key——检查结论升为「待处理」，开机提示也会数它。
+   * false = 盖不过写入的配置，或只影响模型之类不决定能不能连上的东西，仍是「需留意」。
+   */
+  breaksAccount: boolean
 }
 
 interface EnvironmentOverrideMatch {
@@ -626,6 +643,8 @@ interface EnvironmentOverrideMatch {
   provider: ProviderId
   /** false = 用户确实设了它，但它指的就是当前账号，不会把请求带去别处。 */
   overriding: boolean
+  /** overriding 且这个变量会让 CLI 连不上当前账号（见 breaksAccount）。 */
+  breaking: boolean
 }
 
 /**
@@ -637,20 +656,35 @@ interface EnvironmentOverrideMatch {
  * 只读、只提醒：代删别人设的变量等于改用户的机器，而且本进程也删不掉别的 shell
  * 的环境。Grok 的同类变量没有在本仓实测过（`GROK_DISABLE_AUTOUPDATER` 是唯一
  * 核实过的一个，与中转地址无关），按 T12 的口径宁缺勿猜，等实测再补。
+ *
+ * breaksAccount 的取值是 2026-09-22 在沙箱里实测的（Claude Code 2.1.277、Codex
+ * 0.155.1、Gemini CLI 0.60.0；配置按 config-files.ts 的模板写，base URL 指本地假
+ * 接口，逐个设变量看请求去了哪、带的是哪把 Key），不是照文档推的：
+ * - Claude：settings.json 的 env 段压过进程环境，ANTHROPIC_BASE_URL /
+ *   ANTHROPIC_AUTH_TOKEN 设了请求照样发往写入的地址、带写入的 Key。但
+ *   ANTHROPIC_API_KEY 会多带一个 `x-api-key` 头，而 new-api 在 /v1/messages 上拿
+ *   它顶掉 Authorization（middleware/auth.go），等于换了一把 Key。
+ *   CLAUDE_CONFIG_DIR 让 Claude 去别的目录找配置，本程序写的 ~/.claude 整个不读。
+ * - Codex：自定义 model provider 不认 OPENAI_BASE_URL / OPENAI_API_KEY（设了照旧打
+ *   config.toml 里的地址、带 auth.json 的 Key）。CODEX_HOME 本程序自己也认
+ *   （codex-home.ts），配置就写在它指的地方，所以也不算。
+ * - Gemini：~/.gemini/.env 不覆盖已有的进程环境，GOOGLE_GEMINI_BASE_URL 与
+ *   GEMINI_API_KEY 都是进程环境说了算。GOOGLE_GEMINI_API_KEY 实测不生效；
+ *   GEMINI_MODEL、GOOGLE_GENAI_API_VERSION 只换模型和路径版本，不换账号。
  */
 const ENVIRONMENT_OVERRIDE_VARIABLES: readonly EnvironmentOverrideVariable[] = [
-  { name: 'ANTHROPIC_BASE_URL', provider: 'claude', kind: 'baseUrl' },
-  { name: 'ANTHROPIC_AUTH_TOKEN', provider: 'claude', kind: 'secret' },
-  { name: 'ANTHROPIC_API_KEY', provider: 'claude', kind: 'secret' },
-  { name: 'CLAUDE_CONFIG_DIR', provider: 'claude', kind: 'directory' },
-  { name: 'OPENAI_BASE_URL', provider: 'codex', kind: 'baseUrl' },
-  { name: 'OPENAI_API_KEY', provider: 'codex', kind: 'secret' },
-  { name: 'CODEX_HOME', provider: 'codex', kind: 'directory' },
-  { name: 'GOOGLE_GEMINI_BASE_URL', provider: 'gemini', kind: 'baseUrl' },
-  { name: 'GEMINI_API_KEY', provider: 'gemini', kind: 'secret' },
-  { name: 'GOOGLE_GEMINI_API_KEY', provider: 'gemini', kind: 'secret' },
-  { name: 'GEMINI_MODEL', provider: 'gemini', kind: 'model' },
-  { name: 'GOOGLE_GENAI_API_VERSION', provider: 'gemini', kind: 'other' },
+  { name: 'ANTHROPIC_BASE_URL', provider: 'claude', kind: 'baseUrl', breaksAccount: false },
+  { name: 'ANTHROPIC_AUTH_TOKEN', provider: 'claude', kind: 'secret', breaksAccount: false },
+  { name: 'ANTHROPIC_API_KEY', provider: 'claude', kind: 'secret', breaksAccount: true },
+  { name: 'CLAUDE_CONFIG_DIR', provider: 'claude', kind: 'directory', breaksAccount: true },
+  { name: 'OPENAI_BASE_URL', provider: 'codex', kind: 'baseUrl', breaksAccount: false },
+  { name: 'OPENAI_API_KEY', provider: 'codex', kind: 'secret', breaksAccount: false },
+  { name: 'CODEX_HOME', provider: 'codex', kind: 'directory', breaksAccount: false },
+  { name: 'GOOGLE_GEMINI_BASE_URL', provider: 'gemini', kind: 'baseUrl', breaksAccount: true },
+  { name: 'GEMINI_API_KEY', provider: 'gemini', kind: 'secret', breaksAccount: true },
+  { name: 'GOOGLE_GEMINI_API_KEY', provider: 'gemini', kind: 'secret', breaksAccount: false },
+  { name: 'GEMINI_MODEL', provider: 'gemini', kind: 'model', breaksAccount: false },
+  { name: 'GOOGLE_GENAI_API_VERSION', provider: 'gemini', kind: 'other', breaksAccount: false },
 ]
 
 /** 与 defaultProxyVariables 同法：Windows 的环境变量名大小写不敏感。 */
@@ -685,15 +719,22 @@ function collectEnvironmentOverrides(
       const fallback = path.join(userHome, providerConfigDirectoryNames[variable.provider])
       if (normalizedPathKey(value) === normalizedPathKey(fallback)) continue
     }
+    // 指向当前站点的 BASE_URL 不会把请求带去别处，报它只会教用户删一个本来
+    // 没问题的变量。Key 和模型不在此列：它们盖掉的是账号和分组本身。
+    const overriding = !(variable.kind === 'baseUrl' && sameHostAs(value, providerBaseUrls[variable.provider]))
     matches.push({
       name: variable.name,
       provider: variable.provider,
-      // 指向当前站点的 BASE_URL 不会把请求带去别处，报它只会教用户删一个本来
-      // 没问题的变量。Key 和模型不在此列：它们盖掉的是账号和分组本身。
-      overriding: !(variable.kind === 'baseUrl' && sameHostAs(value, providerBaseUrls[variable.provider])),
+      overriding,
+      breaking: overriding && variable.breaksAccount,
     })
   }
   return matches
+}
+
+function namesOf(matches: readonly EnvironmentOverrideMatch[]): string {
+  const listed = matches.slice(0, 3).map((match) => match.name).join('、')
+  return matches.length > 3 ? `${listed}等 ${matches.length} 项` : listed
 }
 
 function environmentOverrideOutcome(matches: readonly EnvironmentOverrideMatch[]): CheckOutcome {
@@ -701,7 +742,7 @@ function environmentOverrideOutcome(matches: readonly EnvironmentOverrideMatch[]
   matches.forEach((match, index) => {
     // 只有变量名进报告。ANTHROPIC_AUTH_TOKEN 的值本身就是一把 Key，而诊断导出是
     // 要发到客服群里的（I3、I13）——所以这里永远不读也不写它的值。
-    const note = match.overriding ? '' : '，已指向当前账号'
+    const note = !match.overriding ? '，已指向当前账号' : match.breaking ? '，会绕开当前账号' : ''
     details[`variable${index + 1}`] = `${match.name}（${cliCatalog[match.provider].name}${note}）`
   })
   const overriding = matches.filter((match) => match.overriding)
@@ -714,14 +755,23 @@ function environmentOverrideOutcome(matches: readonly EnvironmentOverrideMatch[]
       details,
     }
   }
-  const listed = overriding.slice(0, 3).map((match) => match.name).join('、')
-  const rest = overriding.length > 3 ? `等 ${overriding.length} 项` : ''
+  const breaking = overriding.filter((match) => match.breaking)
+  if (breaking.length) {
+    const tools = [...new Set(breaking.map((match) => cliCatalog[match.provider].name))].join('、')
+    return {
+      // 这几个变量实测会让 CLI 绕开写入的配置（见 breaksAccount），用户在终端里
+      // 跑就连不上当前账号，所以是「待处理」。本程序仍然不替他删。
+      state: 'fail',
+      summary: `系统环境变量里设置了 ${namesOf(breaking)}，会让 ${tools} 不用当前账号写入的配置，删掉后重新打开终端即可`,
+      details,
+    }
+  }
   return {
-    // 用「需留意」不是「待处理」：变量可能是用户自己有意设的，而本程序既不该也
-    // 不能替他删。文案用「可能」——进程环境与 Claude settings.env 的优先级本仓
-    // 没实测过，不做断言（T12）。
+    // 用「需留意」不是「待处理」：剩下这些实测盖不过写入的配置，或只换模型、不换
+    // 账号（见 breaksAccount）。仍提一句，是因为用户换个方式跑（项目里的配置、别的
+    // 启动器）时它们可能生效；文案因此用「可能」。
     state: 'warn',
-    summary: `系统环境变量里设置了 ${listed}${rest}，可能会盖过当前账号写入的配置`,
+    summary: `系统环境变量里设置了 ${namesOf(overriding)}，可能会盖过当前账号写入的配置`,
     details,
   }
 }
@@ -988,6 +1038,63 @@ function resolveDiskSpaceTargets(
   return targets
 }
 
+export interface RelocatedFolderTarget {
+  label: string
+  path: string
+}
+
+export interface RelocatedFolderFinding {
+  /** 被重定向的那一级，已按原样给出。 */
+  component: string
+  /** 它实际指向哪里；读不出来时为 null。 */
+  target: string | null
+  /** 受影响的文件夹（去重后按出现顺序）。 */
+  labels: string[]
+}
+
+/**
+ * 同一级被重定向时（最常见的是整个用户文件夹被搬走），下面几个文件夹全受牵连，
+ * 按那一级合并成一条，免得用户读到四遍同一件事。
+ */
+export function findRelocatedFolders(
+  targets: readonly RelocatedFolderTarget[],
+  find: (target: string) => ReparseComponent | null,
+): RelocatedFolderFinding[] {
+  const findings: RelocatedFolderFinding[] = []
+  for (const entry of targets) {
+    let found: ReparseComponent | null
+    try {
+      found = find(entry.path)
+    } catch {
+      continue
+    }
+    if (!found) continue
+    const existing = findings.find((finding) => finding.component === found.component)
+    if (existing) {
+      if (!existing.labels.includes(entry.label)) existing.labels.push(entry.label)
+      continue
+    }
+    findings.push({ component: found.component, target: found.target, labels: [entry.label] })
+  }
+  return findings
+}
+
+function relocatedFolderTargets(
+  userHome: string,
+  codexHome: string,
+  userDataDirectory: string | undefined,
+): RelocatedFolderTarget[] {
+  const targets: RelocatedFolderTarget[] = [{ label: '用户文件夹', path: userHome }]
+  if (userDataDirectory?.trim()) targets.push({ label: '软件数据文件夹', path: userDataDirectory })
+  for (const provider of providerIds) {
+    targets.push({
+      label: `${cliCatalog[provider].name} 配置文件夹`,
+      path: provider === 'codex' ? codexHome : path.join(userHome, providerConfigDirectoryNames[provider]),
+    })
+  }
+  return targets
+}
+
 export async function runDiagnostics(dependencies: DiagnosticsDependencies): Promise<DiagnosticsReport> {
   const startedAt = Date.now()
   const env = dependencies.env ?? process.env
@@ -1064,13 +1171,33 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
       // 从不提权，所以第二问只在 Windows 上做。
       code: 'ADMINISTRATOR',
       title: '运行权限',
-      run: async (signal) => {
-        const elevated = await inspectAdmin(signal)
+      run: async (signal): Promise<CheckOutcome> => {
+        const probeFailure = platform === 'win32' ? dependencies.windowsExecution?.probeFailure : undefined
+        // 启动时那次探测失败的机器上，这次探测多半也会失败（同样要起 PowerShell）。
+        // 那时这一项要说的正是「没问出来」，不能让它自己的失败把原因盖掉。
+        const elevated = probeFailure
+          ? await Promise.resolve(inspectAdmin(signal)).catch(() => null)
+          : await inspectAdmin(signal)
         if (elevated) {
           return {
             state: 'warn',
             summary: '当前以管理员权限运行，建议普通启动',
             details: { elevated, required: false, canElevate: true },
+          }
+        }
+        if (probeFailure) {
+          // 启动时那次探测没问出结果，软件已按管理员方式处理（从严）。这时再说
+          // 「当前以普通用户权限运行」就和实际行为对不上，客服会被带偏。
+          return {
+            state: 'warn',
+            summary: `没能确认软件是不是以管理员身份在运行，已按管理员方式处理，所以安装和打开工具可能会失败。原因：${describeWindowsExecutionProbeFailure(probeFailure.reason)}。重新打开软件会再确认一次；还不行请在「反馈」页导出报告发给客服`,
+            details: {
+              elevated,
+              required: false,
+              executionMode: dependencies.windowsExecution?.mode ?? null,
+              probeFailure: probeFailure.reason,
+              probeElapsedMs: dependencies.windowsExecution?.elapsedMs ?? null,
+            },
           }
         }
         const capability = platform === 'win32' ? await inspectElevation(signal) : 'unknown'
@@ -1341,6 +1468,44 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
         return { state: 'pass', summary: 'AI 生成的图片和视频能正常保存' }
       },
     }] : []),
+    {
+      // 「C 盘搬家」工具或 mklink /J 把用户文件夹、软件数据文件夹挪到别的盘之后，
+      // 路径上多出一级目录联接。safe-local-data 的写入校验（I8）会拒绝这种路径，
+      // 于是写 Key、存设置、写日志全部失败，而用户只看到一句「不能经过符号链接或
+      // 目录联接」。这一项只负责把它认出来，校验本身一点不放宽。
+      code: 'FOLDER_RELOCATED',
+      title: '文件夹位置',
+      run: () => {
+        const findings = findRelocatedFolders(
+          relocatedFolderTargets(userHome, codexHome, dependencies.userDataDirectory),
+          dependencies.findReparseComponent ?? findReparseComponent,
+        )
+        if (!findings.length) {
+          return {
+            state: 'pass',
+            summary: '软件要用到的文件夹都在原来的位置',
+            details: { relocated: 0 },
+          }
+        }
+        const described = findings.map((finding) => `${finding.labels.join('、')}${finding.target
+          ? `被搬到了 ${finding.target}`
+          : '被搬走了，但读不出它现在在哪里'}`)
+        const hint = platform === 'win32' ? '（常见于用过「C 盘搬家」一类的工具）' : ''
+        const details: Record<string, boolean | number | string | null> = { relocated: findings.length }
+        for (const [index, finding] of findings.entries()) {
+          details[`folder${index + 1}`] = finding.labels.join('、')
+          details[`from${index + 1}`] = finding.component
+          details[`to${index + 1}`] = finding.target
+        }
+        return {
+          state: 'fail',
+          summary: `${described.join('；')}${hint}。为了安全，软件不往被搬过的文件夹里写东西，`
+            + '所以写入 Key、保存设置、记录日志都可能失败。把文件夹搬回原来的位置就能恢复；'
+            + '搬不回来请在「反馈」页导出报告发给客服',
+          details,
+        }
+      },
+    },
     {
       code: 'CLASH_VERGE_TUN',
       title: 'Clash Verge Rev TUN 模式',

@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { readBoundedResponseText } from './bounded-response'
 import { redactCommandText } from './command-runner'
+import { managedKeyQuotaExhaustedMessage } from './account-key-quota'
 import { classifyNetworkFailure, networkFailureMessages, type NetworkFailureReason } from './network-failure'
 import type { RelayBackendCapabilities, RelayBackendClient } from './relay-backend'
 import { relaySites } from './relay-sites'
@@ -2163,6 +2164,20 @@ export function findNewestUsableCliKeyByGroup(
   return best
 }
 
+// A key this app issued for a tool whose per-key limit is used up (the
+// 按工具分账 cap). Its existence means someone deliberately capped this tool:
+// creating a fresh unlimited key under the same name would silently lift that
+// cap, so provisioning stops instead. Expired or disabled keys are not this.
+export function hasExhaustedCappedCliKey(payload: unknown, name: string, group: string): boolean {
+  for (const entry of collectionEntries(payload)) {
+    if (!isRecord(entry) || asString(entry.name, '') !== name || asString(entry.group, '') !== group) continue
+    if (entry.unlimited_quota === true) continue
+    const status = asFiniteNumber(entry.status, 0)
+    if (status === 4 || (status === 1 && asFiniteNumber(entry.remain_quota, 0) <= 0)) return true
+  }
+  return false
+}
+
 export function parseCliKeySecret(payload: unknown): string | null {
   const data = isRecord(payload) ? payload : null
   const candidate = data && typeof data.key === 'string'
@@ -3167,7 +3182,12 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
       if (group) {
         if (group.length > 128) throw new Error('CLI Key 分组格式错误')
         await assertUsableGroup(current, group)
-        const existing = findNewestUsableCliKeyByGroup(await listAllTokenRecords(current), group)
+        const records = await listAllTokenRecords(current)
+        const existing = findNewestUsableCliKeyByGroup(records, group)
+        // Only a usable key under this very name outranks a used-up cap on it.
+        if (existing?.name !== name && hasExhaustedCappedCliKey(records, name, group)) {
+          throw new Error(managedKeyQuotaExhaustedMessage)
+        }
         if (existing) return revealCliKeyForSession(current, existing)
       }
       const createBody = {

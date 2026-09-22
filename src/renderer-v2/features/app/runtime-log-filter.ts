@@ -79,3 +79,24 @@ export function formatRuntimeLogEntry(entry: RuntimeLogEntry): string {
   const detail = entry.detail ? ` ${JSON.stringify(entry.detail)}` : ''
   return `[${entry.timestamp}] [${entry.level.toUpperCase()}] [${entry.source}/${entry.event}] ${entry.message}${detail}`
 }
+
+export interface RuntimeLogWriteNotice {
+  title: string
+  body: string
+}
+
+/**
+ * 日志写不进文件时反馈页顶上那一句。以前这件事完全静默：日志页是空的，导出的
+ * 报告也是空的，用户和客服都不知道为什么。没失败时返回 null，页面不出这条。
+ */
+export function runtimeLogWriteNotice(
+  failure: RuntimeLogSnapshot['writeFailure'] | undefined,
+): RuntimeLogWriteNotice | null {
+  if (!failure || failure.lostEntries <= 0) return null
+  return {
+    title: '日志没能保存下来',
+    body: `这次打开软件后有 ${failure.lostEntries} 条日志没写进日志文件（${failure.reason}）。`
+      + '它们暂时留在软件里，下面照样能看，导出反馈报告时也会带上，但关掉软件就没了。'
+      + '可以去「检查」页看看是不是有文件夹被搬到了别的位置。',
+  }
+}

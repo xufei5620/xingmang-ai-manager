@@ -1,5 +1,6 @@
 import { resolveManagedCliKeyProfiles, providerIds, type ProviderId } from './catalog'
 import { resolveDefaultCliModel } from './cli-model-defaults'
+import { isKeyQuotaExhaustedMessage, managedKeyQuotaExhaustedMessage } from './account-key-quota'
 import { loadManagedCliGroups } from './managed-cli-groups'
 import type { StoredManagedCliKey } from './managed-cli-key-store'
 import type { RelayBackendClient } from './relay-backend'
@@ -259,6 +260,10 @@ export async function configureManagedClis(
       try {
         models = await systemService.fetchAvailableModels(managedKey.key, { bypassCache: true })
       } catch (error) {
+        // 额度上限用完的 401 不是凭据失效：重签只会换来一把不限额的新 Key。
+        if (isKeyQuotaExhaustedMessage(error instanceof Error ? error.message : String(error))) {
+          throw new Error(managedKeyQuotaExhaustedMessage)
+        }
         if (!isCredentialFailure(error)) throw error
         if (keyStore) await keyStore.remove(userId, managedKey.id)
         assertSameAuthenticatedUser(accountService, capture)

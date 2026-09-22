@@ -84,6 +84,7 @@ import {
   formatRuntimeLogEntry,
   hasRuntimeLogFilter,
   runtimeLogSourceOptions,
+  runtimeLogWriteNotice,
 } from './features/app/runtime-log-filter'
 import type { V2Bridge, V2Page } from './types'
 import type {
@@ -157,6 +158,8 @@ export function withElevationNotice(lead: string, notice: string | null): string
 }
 
 export function diagnosticTarget(code: string): V2Page {
+  // 文件夹被搬过没有能在软件里一键修的地方，下一步是导出报告找客服。
+  if (code === 'FOLDER_RELOCATED') return 'feedback'
   if (
     code.includes('PROXY') ||
     code.includes('ENVIRONMENT') ||
@@ -489,6 +492,7 @@ export function HealthPage({
 export function FeedbackPage({
   api,
   openHelp,
+  navigate,
 }: { api: V2Bridge } & BusinessActions) {
   const load = useCallback(() => api.getRuntimeLogs(500), [api])
   const resource = useResource(load)
@@ -511,6 +515,7 @@ export function FeedbackPage({
     startedAt: resource.data?.startedAt ?? '',
   }
   const list = filterRuntimeLogs(resource.data?.entries ?? [], filter)
+  const writeNotice = runtimeLogWriteNotice(resource.data?.writeFailure)
   const resetFilters = () => {
     setQuery('')
     setLevel(anyRuntimeLogValue)
@@ -553,6 +558,21 @@ export function FeedbackPage({
           </Button>
         }
       />
+      {writeNotice ? (
+        <Notice
+          tone="warn"
+          title={writeNotice.title}
+          body={writeNotice.body}
+          testId="feedback-log-write-failed"
+          actions={
+            navigate ? (
+              <Button size="sm" icon={HeartPulse} onClick={() => navigate('health')}>
+                去检查页
+              </Button>
+            ) : undefined
+          }
+        />
+      ) : null}
       <Toolbar
         left={
           <>

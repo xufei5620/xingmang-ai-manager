@@ -4057,6 +4057,55 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
     })
   })
 
+  describe('diagnostics:check-connection on a rejected managed key', () => {
+    const rejected = {
+      ok: false, layer: 'credential' as const, provider: 'claude' as const, siteId: 'solov',
+      summary: '密钥被拒绝（HTTP 401），可能已被吊销或属于别的账号', nextStep: '到「账号」页重新登录，然后在首页重新写入一次 Key',
+      endpoint: 'https://example.test/v1/messages', model: 'm', detail: '无效的令牌',
+      status: 401, durationMs: 12, checkedAt: '2026-09-22T00:00:00.000Z',
+    }
+    const cached = [{ id: 21, provider: 'claude' as const, group: 'g', name: 'xingmang-desktop-claude', key: 'sk-claude-capped-0000' }]
+    const accountKey = (overrides: Record<string, unknown>) => ({
+      id: 21, name: 'xingmang-desktop-claude', maskedKey: 'sk-****', group: 'g', status: 1, remainQuota: 100,
+      unlimitedQuota: false, usedQuota: 0, createdAt: '2026-09-01T00:00:00.000Z', expiredAt: null, accessedAt: null, ...overrides,
+    })
+    function setup(key: Record<string, unknown> | null, configuredKey = 'sk-claude-capped-0000') {
+      const service = serviceStub()
+      vi.mocked(service.revealApiKey).mockReturnValue(configuredKey)
+      const accountService = accountServiceStub()
+      vi.mocked(accountService.getSessionState).mockReturnValue({
+        authenticated: true,
+        account: { userId: 7, username: 'alice', group: null, role: null, quota: null, usedQuota: null },
+      })
+      vi.mocked(accountService.listKeys).mockResolvedValue({ page: 1, pageSize: 100, total: key ? 1 : 0, keys: key ? [accountKey(key)] : [] })
+      const managedCliKeys = { read: vi.fn(async () => cached), save: vi.fn(), remove: vi.fn() }
+      const diagnosticsService = { run: vi.fn(), checkConnection: vi.fn(async () => rejected), checkExternalConnection: vi.fn(), exportLatest: vi.fn() }
+      register(service, undefined, undefined, accountService, undefined, managedCliKeys, {}, { diagnosticsService })
+      return electronMocks.handlers.get('diagnostics:check-connection')!
+    }
+
+    it('says the tool\'s cap is used up instead of offering a key rewrite', async () => {
+      for (const key of [{ status: 4, remainQuota: 0 }, { status: 1, remainQuota: 0 }]) {
+        const result = await setup(key)(trustedEvent(), 'claude') as typeof rejected
+        expect(result.layer).toBe('quota')
+        expect(result.summary).toContain('Claude Code 的额度用完了')
+        expect(result.nextStep).not.toContain('重新写入')
+        expect(result.endpoint).toBe(rejected.endpoint)
+      }
+    })
+
+    it('keeps the credential verdict for an unlimited, still-funded, missing, or no-longer-configured key', async () => {
+      for (const handler of [
+        setup({ unlimitedQuota: true, remainQuota: 0 }),
+        setup({ remainQuota: 100 }),
+        setup(null),
+        setup({ status: 4, remainQuota: 0 }, 'sk-user-typed-other-key'),
+      ]) {
+        await expect(handler(trustedEvent(), 'claude')).resolves.toEqual(rejected)
+      }
+    })
+  })
+
   describe('account:list-keys in-use marking', () => {
     const row = (id: number) => ({
       id, name: `key-${id}`, maskedKey: 'sk-****abcd', group: 'default', status: 1, remainQuota: 0,
