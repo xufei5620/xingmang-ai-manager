@@ -1,6 +1,7 @@
 import {
   providerIds,
   type AppConfigSummary,
+  type CliLaunchMode,
   type CodexDesktopLaunchMode,
   type ExternalToolId,
   type InstallCancelResult,
@@ -82,8 +83,13 @@ export function createToolsApi(bridge: XingmangApi) {
       : bridge.cancelCliInstall(id),
     uninstall: (id: ToolId) => id === 'codexDesktop' ? bridge.uninstallCodexDesktop() : bridge.uninstallCli(id),
     checkUpdate: (id: ToolId) => id === 'codexDesktop' ? bridge.checkCodexDesktopUpdate() : bridge.checkCliUpdate(id),
-    launch: (id: ToolId, workspace: string, mode: CodexDesktopLaunchMode = 'open') => id === 'codexDesktop'
-      ? bridge.launchCodexDesktop(mode) : bridge.launchCli(id, workspace),
+    // mode 是两套互不相干的取值:codexDesktop 认 'open' | 'restart',四家 CLI 认
+    // 'new' | 'resumeLast'(#292)。各自只取自己认得的那一个,另一套的值落回本侧
+    // 默认,也就是旧行为。以前这里的 CLI 分支根本没把 mode 传下去,首页和记录页
+    // 都发不出「接着上次对话」。
+    launch: (id: ToolId, workspace: string, mode: CodexDesktopLaunchMode | CliLaunchMode = 'open') => id === 'codexDesktop'
+      ? bridge.launchCodexDesktop(mode === 'restart' ? 'restart' : 'open')
+      : mode === 'resumeLast' ? bridge.launchCli(id, workspace, 'resumeLast') : bridge.launchCli(id, workspace),
     prepareRuntime: (runtime: 'node' | 'python') => runtime === 'node' ? bridge.installNodeRuntime() : bridge.installPythonRuntime(),
     chooseWorkspace: () => bridge.chooseWorkspace(),
     // 首页「最近」卡只显示 3 条,但同一份记录还要推出每个工具最近用过的目录(N7),
