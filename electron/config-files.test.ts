@@ -9,6 +9,7 @@ import {
   geminiCliCompatibleModel,
   classifyCodexAuthProfile,
   classifyCodexConfigProfile,
+  claudeConsoleKeySnapshotName,
   codexApiKeyAuthSnapshotName,
   codexAuthSnapshotPaths,
   codexChatGptAuthSnapshotName,
@@ -17,12 +18,17 @@ import {
   ensureCodexPermissionDefaultsInConfigText,
   ensureGeminiContextFilenamesInSettingsText,
   ensureGeminiProjectContextFiles,
+  inspectOfficialLogin,
   inspectProviderConfig,
   inspectCodexWorkspacePermissionsText,
   managedProviderLaunchBlockedMessage,
+  moveClaudeConsoleKeyAside,
+  moveClaudeConsoleKeyAsideTexts,
   providerAccountMode,
   providerConfigPaths,
   providerSupportsOfficialAccount,
+  restoreClaudeConsoleKey,
+  restoreClaudeConsoleKeyTexts,
   saveProviderConfig,
   snapshotCodexChatGptAuth,
   switchProviderToOfficialAccount,
@@ -369,6 +375,7 @@ describe('native CLI configuration files', () => {
           model,
           effortLevel: 'medium',
           skipDangerousModePermissionPrompt: true,
+          skipWebFetchPreflight: true,
           language: '简体中文',
           cleanupPeriodDays: 365,
         })
@@ -465,6 +472,7 @@ describe('native CLI configuration files', () => {
     expect(merged.env.CUSTOM_TOKEN).toBe('preserved')
     expect(merged.customSetting).toEqual({ enabled: true })
     expect(merged.permissions).toEqual({ defaultMode: 'bypassPermissions', deny: ['Artifact'] })
+    expect(merged.skipWebFetchPreflight).toBe(true)
   })
 
   it('appends Artifact to an existing Claude deny list without touching the entries the user wrote', () => {
@@ -1649,6 +1657,25 @@ describe('switching a provider back to the official subscription account', () =>
     expect(asRecord(after.permissions)?.defaultMode).toBe('bypassPermissions')
   })
 
+  it('skips the WebFetch domain preflight on the relay and restores it for the official account', () => {
+    // The preflight asks api.anthropic.com about every domain; from mainland
+    // China that host is unreachable, so relay users could not fetch any page.
+    const home = temporaryHome()
+    const [configPath] = providerConfigPaths('claude', providerRoots(home))
+    fs.mkdirSync(path.dirname(configPath), { recursive: true })
+    fs.writeFileSync(configPath, JSON.stringify({ skipWebFetchPreflight: false, theme: 'dark' }, null, 2))
+
+    saveProviderConfig('claude', 'sk-relay', testModels.claude, 'merge', providerRoots(home), {}, providerBaseUrls)
+    const relay = JSON.parse(fs.readFileSync(configPath, 'utf8')) as Record<string, unknown>
+    expect(relay.skipWebFetchPreflight).toBe(true)
+    expect(relay.theme).toBe('dark')
+
+    switchProviderToOfficialAccount('claude', providerRoots(home), {}, providerBaseUrls)
+    const official = JSON.parse(fs.readFileSync(configPath, 'utf8')) as Record<string, unknown>
+    expect(official).not.toHaveProperty('skipWebFetchPreflight')
+    expect(official.theme).toBe('dark')
+  })
+
   it('removes only Artifact from the Claude deny list when switching to the official account', () => {
     const home = temporaryHome()
     saveProviderConfig('claude', 'sk-relay', testModels.claude, 'reset', providerRoots(home), {}, providerBaseUrls)
@@ -1934,5 +1961,130 @@ describe('teaching Gemini CLI to read the shared AGENTS.md', () => {
     const again = ensureGeminiProjectContextFiles(roots)
     expect(again.changed).toBe(false)
     expect(again.backups).toEqual([])
+  })
+})
+
+describe('moving competing official credentials aside during an account switch', () => {
+  it('moves the Console key out of ~/.claude.json and keeps every other field', () => {
+    const next = moveClaudeConsoleKeyAsideTexts(JSON.stringify({ primaryApiKey: 'sk-ant-api03-console', projects: { '/work': { hasTrustDialogAccepted: true } } }))
+    expect(JSON.parse(next.rootConfig!)).toEqual({ projects: { '/work': { hasTrustDialogAccepted: true } } })
+    expect(JSON.parse(next.snapshot!)).toEqual({ primaryApiKey: 'sk-ant-api03-console' })
+  })
+
+  it('leaves both files alone when there is no Console key', () => {
+    expect(moveClaudeConsoleKeyAsideTexts(JSON.stringify({ oauthAccount: { emailAddress: 'a@example.com' } }))).toEqual({ rootConfig: null, snapshot: null })
+    expect(moveClaudeConsoleKeyAsideTexts(null)).toEqual({ rootConfig: null, snapshot: null })
+  })
+
+  it('puts the key back and empties the snapshot, but never overwrites a newer login', () => {
+    const snapshot = JSON.stringify({ primaryApiKey: 'sk-ant-api03-console' })
+    const restored = restoreClaudeConsoleKeyTexts(JSON.stringify({ numStartups: 3 }), snapshot)
+    expect(JSON.parse(restored.rootConfig!)).toEqual({ numStartups: 3, primaryApiKey: 'sk-ant-api03-console' })
+    expect(restored.snapshot).toBe('')
+    expect(restoreClaudeConsoleKeyTexts(JSON.stringify({ primaryApiKey: 'sk-ant-newer' }), snapshot)).toEqual({ rootConfig: null, snapshot: '' })
+    expect(restoreClaudeConsoleKeyTexts(JSON.stringify({}), null)).toEqual({ rootConfig: null, snapshot: null })
+  })
+
+  it('round-trips the Console key through the snapshot file on disk', () => {
+    const home = temporaryHome()
+    const rootConfig = path.join(home, '.claude.json')
+    const snapshot = path.join(home, '.claude', claudeConsoleKeySnapshotName)
+    fs.writeFileSync(rootConfig, JSON.stringify({ primaryApiKey: 'sk-ant-api03-console', hasCompletedOnboarding: true }))
+
+    expect(moveClaudeConsoleKeyAside(providerRoots(home))).toBe(true)
+    expect(JSON.parse(fs.readFileSync(rootConfig, 'utf8'))).toEqual({ hasCompletedOnboarding: true })
+    expect(JSON.parse(fs.readFileSync(snapshot, 'utf8'))).toEqual({ primaryApiKey: 'sk-ant-api03-console' })
+    expect(moveClaudeConsoleKeyAside(providerRoots(home))).toBe(false)
+
+    expect(restoreClaudeConsoleKey(providerRoots(home))).toBe(true)
+    expect(JSON.parse(fs.readFileSync(rootConfig, 'utf8'))).toEqual({ hasCompletedOnboarding: true, primaryApiKey: 'sk-ant-api03-console' })
+    expect(fs.readFileSync(snapshot, 'utf8')).toBe('')
+    expect(restoreClaudeConsoleKey(providerRoots(home))).toBe(false)
+  })
+
+  it('does not create files when nothing needs to move', () => {
+    const home = temporaryHome()
+    expect(moveClaudeConsoleKeyAside(providerRoots(home))).toBe(false)
+    expect(restoreClaudeConsoleKey(providerRoots(home))).toBe(false)
+    expect(fs.existsSync(path.join(home, '.claude.json'))).toBe(false)
+    expect(fs.existsSync(path.join(home, '.claude', claudeConsoleKeySnapshotName))).toBe(false)
+  })
+
+  it('pins the relay profile to file-based Codex credentials and keeps the official choice in its snapshot', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const [configPath] = providerConfigPaths('codex', roots)
+    fs.mkdirSync(path.dirname(configPath), { recursive: true })
+    fs.writeFileSync(configPath, 'cli_auth_credentials_store = "keyring"\nmodel = "gpt-5.5"\n')
+
+    saveProviderConfig('codex', 'sk-relay', testModels.codex, 'merge', roots, {}, providerBaseUrls)
+    expect(TOML.parse(fs.readFileSync(configPath, 'utf8')).cli_auth_credentials_store).toBe('file')
+
+    switchProviderToOfficialAccount('codex', roots, {}, providerBaseUrls)
+    expect(TOML.parse(fs.readFileSync(configPath, 'utf8')).cli_auth_credentials_store).toBe('keyring')
+  })
+
+  it('switches a half-switched Codex (ChatGPT login over the relay config.toml) fully back to official', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const [configPath, authPath] = providerConfigPaths('codex', roots)
+    saveProviderConfig('codex', 'sk-relay', testModels.codex, 'reset', roots, {}, providerBaseUrls)
+    // What Codex's own "Sign in with ChatGPT" leaves behind.
+    fs.writeFileSync(authPath, JSON.stringify({ auth_mode: 'chatgpt', OPENAI_API_KEY: null, tokens: { id_token: 'a.b.c', access_token: 'token' } }))
+    expect(inspectProviderConfig('codex', roots, providerBaseUrls).actualBaseUrl).toBe(providerBaseUrls.codex)
+
+    switchProviderToOfficialAccount('codex', roots, {}, providerBaseUrls)
+    const config = TOML.parse(fs.readFileSync(configPath, 'utf8'))
+    expect(config.model_provider).toBeUndefined()
+    expect(JSON.parse(fs.readFileSync(authPath, 'utf8'))).toMatchObject({ auth_mode: 'chatgpt', tokens: { access_token: 'token' } })
+  })
+
+  it('reads a Codex auth file without auth_mode the way Codex does: the key wins', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const [, authPath] = providerConfigPaths('codex', roots)
+    fs.mkdirSync(path.dirname(authPath), { recursive: true })
+    fs.writeFileSync(authPath, JSON.stringify({ OPENAI_API_KEY: 'sk-relay', tokens: { id_token: 'a.b.c', access_token: 'token' } }))
+    expect(inspectProviderConfig('codex', roots, providerBaseUrls).codexAuthMode).toBe('apikey')
+    fs.writeFileSync(authPath, JSON.stringify({ auth_mode: 'chatgpt', OPENAI_API_KEY: 'sk-relay', tokens: { id_token: 'a.b.c', access_token: 'token' } }))
+    expect(inspectProviderConfig('codex', roots, providerBaseUrls).codexAuthMode).toBe('chatgpt')
+  })
+})
+
+describe('telling whether an official login already exists on this computer', () => {
+  it('recognises a Claude login from the account record or the credentials file', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    expect(inspectOfficialLogin('claude', roots)).toBe(false)
+    fs.writeFileSync(path.join(home, '.claude.json'), JSON.stringify({ oauthAccount: { emailAddress: 'a@example.com' } }))
+    expect(inspectOfficialLogin('claude', roots)).toBe(true)
+    fs.writeFileSync(path.join(home, '.claude.json'), JSON.stringify({ hasCompletedOnboarding: true }))
+    expect(inspectOfficialLogin('claude', roots)).toBe(false)
+    fs.mkdirSync(path.join(home, '.claude'), { recursive: true })
+    fs.writeFileSync(path.join(home, '.claude', '.credentials.json'), '{"claudeAiOauth":{}}')
+    expect(inspectOfficialLogin('claude', roots)).toBe(true)
+  })
+
+  it('recognises a ChatGPT login and admits it cannot see the OS credential store', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const [configPath, authPath] = providerConfigPaths('codex', roots)
+    fs.mkdirSync(path.dirname(authPath), { recursive: true })
+    fs.writeFileSync(authPath, JSON.stringify({ OPENAI_API_KEY: 'sk-relay' }))
+    expect(inspectOfficialLogin('codex', roots)).toBe(false)
+    fs.writeFileSync(configPath, 'cli_auth_credentials_store = "auto"\n')
+    expect(inspectOfficialLogin('codex', roots)).toBeNull()
+    fs.writeFileSync(authPath, JSON.stringify({ auth_mode: 'chatgpt', tokens: { id_token: 'a.b.c', access_token: 'token' } }))
+    expect(inspectOfficialLogin('codex', roots)).toBe(true)
+  })
+
+  it('recognises a Google login from the cached OAuth credentials', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    expect(inspectOfficialLogin('gemini', roots)).toBe(false)
+    fs.mkdirSync(path.join(home, '.gemini'), { recursive: true })
+    fs.writeFileSync(path.join(home, '.gemini', 'oauth_creds.json'), '{"refresh_token":"x"}')
+    expect(inspectOfficialLogin('gemini', roots)).toBe(true)
+    expect(inspectOfficialLogin('grok', roots)).toBe(false)
   })
 })

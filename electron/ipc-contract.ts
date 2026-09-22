@@ -73,6 +73,8 @@ import type {
   DiagnosticsReport as MainDiagnosticsReport,
 } from './diagnostics'
 import type { CliVersionAdvice as MainCliVersionAdvice } from './cli-verified-versions'
+import type { AccountSourceSwitchResult, AccountSourceTarget } from './account-source-switch'
+export type { AccountSourceSwitchResult, AccountSourceTarget } from './account-source-switch'
 import type {
   ConnectionCheckLayer as MainConnectionCheckLayer,
   ConnectionCheckResult as MainConnectionCheckResult,
@@ -80,6 +82,7 @@ import type {
 } from './connection-check'
 import type {
   AppConfigSummary as MainAppConfigSummary,
+  CliLaunchResult as MainCliLaunchResult,
   CliStatus as MainCliStatus,
   CodexDesktopLaunchMode as MainCodexDesktopLaunchMode,
   CodexDesktopLaunchResult as MainCodexDesktopLaunchResult,
@@ -218,6 +221,7 @@ export type SystemSnapshot = MainSystemSnapshot
 export type OfficialChatGptAccount = MainOfficialChatGptAccount
 export type OfficialChatGptWindow = MainOfficialChatGptWindow
 export type CodexDesktopLaunchResult = MainCodexDesktopLaunchResult
+export type CliLaunchResult = MainCliLaunchResult
 export type ToolUninstallResult = MainToolUninstallResult
 export type AppSettingsV2 = AppSettings
 export type AppSettingsV2Update = AppSettingsUpdate
@@ -553,7 +557,7 @@ export interface XingmangInvokeContract {
     [tool: ExternalToolId, options: ExternalClientConfigRequest],
     ExternalClientConfigResult
   >
-  scanExternalClients: IpcInvokeDefinition<'external-clients:scan', [], ExternalClientStatus[]>
+  scanExternalClients: IpcInvokeDefinition<'external-clients:scan', [force?: boolean], ExternalClientStatus[]>
   installExternalClient: IpcInvokeDefinition<'external-clients:install', [tool: ExternalToolId], ExternalClientStatus>
   launchExternalClient: IpcInvokeDefinition<'external-clients:launch', [tool: ExternalToolId], void>
   /**
@@ -565,6 +569,15 @@ export interface XingmangInvokeContract {
     'config:switch-to-official-account',
     [provider: ProviderId, mode?: ConfigSavePayload['mode']],
     ConfigSaveResult
+  >
+  /**
+   * 首页工具行的一键切换：自动备份 → 写配置（切到当前账号时挪开抢道的官方凭据）
+   * → 连接自检 → 配置本身用不了就整体恢复。失败时抛出的中文原因直接上屏。
+   */
+  switchAccountSource: IpcInvokeDefinition<
+    'config:switch-account-source',
+    [provider: ProviderId, target: AccountSourceTarget],
+    AccountSourceSwitchResult
   >
   listModels: IpcInvokeDefinition<'models:list', [apiKey: string], string[]>
   listConfiguredModels: IpcInvokeDefinition<'models:list-configured', [provider: ProviderId], string[]>
@@ -590,7 +603,7 @@ export interface XingmangInvokeContract {
   launchCli: IpcInvokeDefinition<
     'cli:launch',
     [provider: ProviderId, workspace: string, mode?: CliLaunchMode],
-    void
+    CliLaunchResult
   >
   getCodexDesktopStatus: IpcInvokeDefinition<'desktop:codex-status', [], DesktopAppStatus>
   inspectCodexDesktopLocale: IpcInvokeDefinition<
@@ -978,6 +991,7 @@ export const ipcInvokeChannels = {
   installExternalClient: 'external-clients:install',
   launchExternalClient: 'external-clients:launch',
   switchToOfficialAccount: 'config:switch-to-official-account',
+  switchAccountSource: 'config:switch-account-source',
   chooseWorkspace: 'workspace:choose',
   getRepositoryContext: 'repository:get-context',
   installNodeRuntime: 'runtime:install-node',

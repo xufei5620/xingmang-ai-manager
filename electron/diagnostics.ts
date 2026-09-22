@@ -32,13 +32,21 @@ import { managedCliRoot } from './managed-cli-paths'
 import { classifyNetworkFailure, networkFailureMessages } from './network-failure'
 import { redactSecretPatterns } from './redaction-patterns'
 import { relayApiProbeBaseUrl, resolveRelaySite, type RelaySite } from './relay-sites'
+import { findReparseComponent, type ReparseComponent } from './safe-local-data'
 import { resolveCliCommand, resolveCliInstallation } from './tool-installation'
 import type { ToolConfigOwnership } from './tool-config-ownership'
 import {
+  describeWindowsExecutionProbeFailure,
   inspectWindowsElevationCapability,
   resolveWindowsPowerShellExecutable,
+  type WindowsCliExecutionModeResolution,
   type WindowsElevationCapability,
 } from './windows-elevation'
+import {
+  describeOverride,
+  inspectWorkspaceConfigOverrides,
+  summarizeWorkspaceOverrides,
+} from './workspace-config-overrides'
 
 export type DiagnosticState = 'pass' | 'warn' | 'fail' | 'error'
 
@@ -103,6 +111,13 @@ export interface DiagnosticsDependencies {
    * 不给就按「不是我们写的」处理。
    */
   readClaudeConfigOwnership?: () => ToolConfigOwnership | null | undefined
+  /**
+   * 用户最近一次在本软件里选的项目文件夹。「项目文件夹里的设置」一项看它里面有没有
+   * 会盖过当前账号的设置；不给就只看这台电脑上统一下发的那几份。
+   */
+  workspace?: string
+  /** 只给测试用：Claude Code 管理策略所在目录。 */
+  claudeManagedDirectory?: string
   /** Which relay site's connectivity to probe (XINGMANG_NETWORK). Defaults to the default site. */
   relaySite?: RelaySite
   fetch?: typeof globalThis.fetch
@@ -115,6 +130,14 @@ export interface DiagnosticsDependencies {
   /** 剩余空间的读取口，测试用它造「够 / 不够 / 读不到」三种盘。 */
   readDiskSpace?: typeof readDiskSpace
   inspectProxyVariables?: (signal: AbortSignal) => Promise<ProxyVariableSummary[]>
+  /**
+   * 启动时那次「是不是管理员」探测的结果（`resolveWindowsCliExecutionModeDetailed`）。
+   * 只读、不重跑：执行模式在启动时就定死了，检查页要说的是「这次启动被怎么处理了」。
+   * 缺省按探测成功处理，只看当前令牌。
+   */
+  windowsExecution?: WindowsCliExecutionModeResolution | null
+  /** 「文件夹位置」一项逐级找被重定向的那一级；测试用它造「搬过家」的目录。 */
+  findReparseComponent?: (target: string) => ReparseComponent | null
   /**
    * 启动时发现用户环境里的 CODEX_HOME 不可用、已按没设处理（codex-home.ts）。
    * 传进来的 env 里 CODEX_HOME 已被换成本程序算出的位置，诊断自己看不到原值，
@@ -1022,6 +1045,63 @@ function resolveDiskSpaceTargets(
   return targets
 }
 
+export interface RelocatedFolderTarget {
+  label: string
+  path: string
+}
+
+export interface RelocatedFolderFinding {
+  /** 被重定向的那一级，已按原样给出。 */
+  component: string
+  /** 它实际指向哪里；读不出来时为 null。 */
+  target: string | null
+  /** 受影响的文件夹（去重后按出现顺序）。 */
+  labels: string[]
+}
+
+/**
+ * 同一级被重定向时（最常见的是整个用户文件夹被搬走），下面几个文件夹全受牵连，
+ * 按那一级合并成一条，免得用户读到四遍同一件事。
+ */
+export function findRelocatedFolders(
+  targets: readonly RelocatedFolderTarget[],
+  find: (target: string) => ReparseComponent | null,
+): RelocatedFolderFinding[] {
+  const findings: RelocatedFolderFinding[] = []
+  for (const entry of targets) {
+    let found: ReparseComponent | null
+    try {
+      found = find(entry.path)
+    } catch {
+      continue
+    }
+    if (!found) continue
+    const existing = findings.find((finding) => finding.component === found.component)
+    if (existing) {
+      if (!existing.labels.includes(entry.label)) existing.labels.push(entry.label)
+      continue
+    }
+    findings.push({ component: found.component, target: found.target, labels: [entry.label] })
+  }
+  return findings
+}
+
+function relocatedFolderTargets(
+  userHome: string,
+  codexHome: string,
+  userDataDirectory: string | undefined,
+): RelocatedFolderTarget[] {
+  const targets: RelocatedFolderTarget[] = [{ label: '用户文件夹', path: userHome }]
+  if (userDataDirectory?.trim()) targets.push({ label: '软件数据文件夹', path: userDataDirectory })
+  for (const provider of providerIds) {
+    targets.push({
+      label: `${cliCatalog[provider].name} 配置文件夹`,
+      path: provider === 'codex' ? codexHome : path.join(userHome, providerConfigDirectoryNames[provider]),
+    })
+  }
+  return targets
+}
+
 export async function runDiagnostics(dependencies: DiagnosticsDependencies): Promise<DiagnosticsReport> {
   const startedAt = Date.now()
   const env = dependencies.env ?? process.env
@@ -1047,6 +1127,41 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
       if (inspection.apiKey) knownSecrets.push(inspection.apiKey)
     } catch {
       // The isolated provider check will surface its own error.
+    }
+  }
+  // 只看配过的工具：没配过的工具谈不上「盖过当前账号」。管理策略不看工作目录，
+  // 所以没选过文件夹时 Claude 那一份照查。
+  const workspaceOverrideOutcome = (): CheckOutcome => {
+    const workspace = typeof dependencies.workspace === 'string' ? dependencies.workspace.trim() : ''
+    const workspaceChecked = workspace !== '' && path.isAbsolute(workspace) && fs.existsSync(workspace)
+    const overrides = providerIds.flatMap((provider) => {
+      const inspection = providerInspections.get(provider)
+      if (!inspection?.exists) return []
+      const found = inspectWorkspaceConfigOverrides(provider, workspaceChecked ? workspace : userHome, {
+        platform,
+        home: userHome,
+        codexHome,
+        current: {
+          baseUrl: inspection.baseUrl,
+          apiKey: inspection.apiKey,
+          authType: inspection.authType,
+          codexAuthMode: inspection.codexAuthMode,
+        },
+        ...(dependencies.claudeManagedDirectory ? { claudeManagedDirectory: dependencies.claudeManagedDirectory } : {}),
+      })
+      return workspaceChecked ? found : found.filter((entry) => entry.scope === 'managed')
+    })
+    const summary = summarizeWorkspaceOverrides(overrides, {
+      toolName: (provider) => cliCatalog[provider].name,
+      describe: (override) => describeOverride(override, workspaceChecked ? workspace : userHome, userHome, platform),
+      workspaceChecked,
+    })
+    return {
+      ...summary,
+      details: {
+        ...(workspaceChecked ? { workspace: pathForDisplay(workspace, displayRoots) } : {}),
+        ...summary.details,
+      },
     }
   }
   const sanitize = (value: string) => redactDiagnosticText(value, {
@@ -1097,13 +1212,33 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
       // 从不提权，所以第二问只在 Windows 上做。
       code: 'ADMINISTRATOR',
       title: '运行权限',
-      run: async (signal) => {
-        const elevated = await inspectAdmin(signal)
+      run: async (signal): Promise<CheckOutcome> => {
+        const probeFailure = platform === 'win32' ? dependencies.windowsExecution?.probeFailure : undefined
+        // 启动时那次探测失败的机器上，这次探测多半也会失败（同样要起 PowerShell）。
+        // 那时这一项要说的正是「没问出来」，不能让它自己的失败把原因盖掉。
+        const elevated = probeFailure
+          ? await Promise.resolve(inspectAdmin(signal)).catch(() => null)
+          : await inspectAdmin(signal)
         if (elevated) {
           return {
             state: 'warn',
             summary: '当前以管理员权限运行，建议普通启动',
             details: { elevated, required: false, canElevate: true },
+          }
+        }
+        if (probeFailure) {
+          // 启动时那次探测没问出结果，软件已按管理员方式处理（从严）。这时再说
+          // 「当前以普通用户权限运行」就和实际行为对不上，客服会被带偏。
+          return {
+            state: 'warn',
+            summary: `没能确认软件是不是以管理员身份在运行，已按管理员方式处理，所以安装和打开工具可能会失败。原因：${describeWindowsExecutionProbeFailure(probeFailure.reason)}。重新打开软件会再确认一次；还不行请在「反馈」页导出报告发给客服`,
+            details: {
+              elevated,
+              required: false,
+              executionMode: dependencies.windowsExecution?.mode ?? null,
+              probeFailure: probeFailure.reason,
+              probeElapsedMs: dependencies.windowsExecution?.elapsedMs ?? null,
+            },
           }
         }
         const capability = platform === 'win32' ? await inspectElevation(signal) : 'unknown'
@@ -1354,6 +1489,44 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
       },
     },
     {
+      // 「C 盘搬家」工具或 mklink /J 把用户文件夹、软件数据文件夹挪到别的盘之后，
+      // 路径上多出一级目录联接。safe-local-data 的写入校验（I8）会拒绝这种路径，
+      // 于是写 Key、存设置、写日志全部失败，而用户只看到一句「不能经过符号链接或
+      // 目录联接」。这一项只负责把它认出来，校验本身一点不放宽。
+      code: 'FOLDER_RELOCATED',
+      title: '文件夹位置',
+      run: () => {
+        const findings = findRelocatedFolders(
+          relocatedFolderTargets(userHome, codexHome, dependencies.userDataDirectory),
+          dependencies.findReparseComponent ?? findReparseComponent,
+        )
+        if (!findings.length) {
+          return {
+            state: 'pass',
+            summary: '软件要用到的文件夹都在原来的位置',
+            details: { relocated: 0 },
+          }
+        }
+        const described = findings.map((finding) => `${finding.labels.join('、')}${finding.target
+          ? `被搬到了 ${finding.target}`
+          : '被搬走了，但读不出它现在在哪里'}`)
+        const hint = platform === 'win32' ? '（常见于用过「C 盘搬家」一类的工具）' : ''
+        const details: Record<string, boolean | number | string | null> = { relocated: findings.length }
+        for (const [index, finding] of findings.entries()) {
+          details[`folder${index + 1}`] = finding.labels.join('、')
+          details[`from${index + 1}`] = finding.component
+          details[`to${index + 1}`] = finding.target
+        }
+        return {
+          state: 'fail',
+          summary: `${described.join('；')}${hint}。为了安全，软件不往被搬过的文件夹里写东西，`
+            + '所以写入 Key、保存设置、记录日志都可能失败。把文件夹搬回原来的位置就能恢复；'
+            + '搬不回来请在「反馈」页导出报告发给客服',
+          details,
+        }
+      },
+    },
+    {
       code: 'CLASH_VERGE_TUN',
       title: 'Clash Verge Rev TUN 模式',
       run: () => {
@@ -1402,6 +1575,11 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
         environmentOverrideOutcome(collectEnvironmentOverrides(env, relaySite.providerBaseUrls, userHome)),
         inspectIgnoredCodexHome(dependencies.ignoredCodexHome, providerRoots, providerInspections.get('codex')),
       ),
+    },
+    {
+      code: 'WORKSPACE_CONFIG_OVERRIDE',
+      title: '项目文件夹里的设置',
+      run: () => workspaceOverrideOutcome(),
     },
     {
       code: 'CODEX_DOTENV',

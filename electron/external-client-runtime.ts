@@ -27,6 +27,10 @@ const definitions = {
 const claudeFamily = 'Claude_pzs8sxrjxfjjc'
 const claudeApplicationId = `${claudeFamily}!Claude`
 const maximumProbeBytes = 256 * 1024
+// 老电脑上这一轮 PowerShell 盘点（注册表、进程、AppX、签名）要好几秒，而装没装
+// 客户端这件事几分钟内几乎不会变；装、卸、打开之后会主动作废。
+const defaultScanCacheTtlMs = 5 * 60_000
+const maximumKnownSignatures = 32
 const publisherPatterns: Record<ExternalToolId, RegExp> = {
   workbuddy: /(?:^|,\s*)(?:CN|O)="?Tencent Technology \(Shenzhen\) Company Limited"?(?:,|$)/i,
   claudeDesktop: /(?:^|,\s*)(?:CN|O)="Anthropic, PBC"(?:,|$)/i,
@@ -60,6 +64,22 @@ export interface ExternalClientRuntimeOptions {
   launchProcess?: (plan: LaunchPlan) => Promise<void>
   installWorkBuddyFromOfficial?: typeof installWorkBuddyFromOfficial
   getuid?: () => number
+  /** 同一份盘点结果复用多久；缺省 5 分钟。测试用假时钟时一并注入 now。 */
+  scanCacheTtlMs?: number
+  now?: () => number
+}
+
+export interface ExternalClientScanOptions {
+  /** 用户亲手点「重新检测」：不用缓存里那份，但仍与正在跑的那次合并。 */
+  force?: boolean
+}
+
+/** A signature verdict the inventory script may reuse while the file stamp is unchanged. */
+export interface KnownExternalClientSignature {
+  path: string
+  stamp: string
+  status: string
+  subject: string
 }
 
 function errorText(error: unknown): string {
@@ -116,10 +136,24 @@ export async function verifyExternalClientPath(candidate: string, kind: 'file' |
 
 // Read registry metadata and current-user AppX registration only. Never execute a
 // discovered application's --version, uninstall string, or registry command line.
-export function windowsExternalClientInventoryScript(): string {
+//
+// `knownSignatures` lets a display-only scan skip Get-AuthenticodeSignature for an
+// executable whose size and timestamps are unchanged since it was last verified.
+// The list is passed as base64 JSON so no path or subject text ever becomes
+// PowerShell source. A same-user attacker can forge those timestamps, so install
+// and launch never pass this list: anything that acts on the file verifies anew.
+export function windowsExternalClientInventoryScript(knownSignatures: readonly KnownExternalClientSignature[] = []): string {
+  const known = Buffer.from(JSON.stringify(knownSignatures.map(({ path: file, stamp, status, subject }) => ({ path: file, stamp, status, subject }))), 'utf8').toString('base64')
   return String.raw`
 $OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 $ErrorActionPreference = 'Stop'
+$knownSignatures = @{}
+# Windows PowerShell 5.1 emits a JSON array as one pipeline object; assigning it
+# first and then iterating enumerates the entries on every PowerShell version.
+$knownList = ConvertFrom-Json ([System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${known}')))
+foreach ($entry in $knownList) {
+  if ($entry -and $entry.path) { $knownSignatures[[string]$entry.path] = $entry }
+}
 $clients = [System.Collections.Generic.List[object]]::new()
 $errors = @{}
 $registry = [System.Collections.Generic.List[object]]::new()
@@ -181,8 +215,18 @@ foreach ($product in $products) {
     foreach ($exe in @($paths | Select-Object -Unique)) {
       if ([System.IO.Path]::GetFileName($exe) -ine $product.exe -or !(Test-LocalExecutablePath $exe)) { continue }
       try {
-        $signature = Get-AuthenticodeSignature -LiteralPath $exe
-        $clients.Add([pscustomobject]@{ tool=$product.tool; path=$exe; version=[string]$entry.DisplayVersion; running=($processes -contains $exe); signatureStatus=[string]$signature.Status; signatureSubject=[string]$signature.SignerCertificate.Subject })
+        $file = Get-Item -LiteralPath $exe -Force
+        $stamp = '{0}:{1}:{2}' -f $file.Length, $file.LastWriteTimeUtc.Ticks, $file.CreationTimeUtc.Ticks
+        $known = $knownSignatures[$exe]
+        if ($known -and [string]$known.stamp -ceq $stamp) {
+          $signatureStatus = [string]$known.status
+          $signatureSubject = [string]$known.subject
+        } else {
+          $signature = Get-AuthenticodeSignature -LiteralPath $exe
+          $signatureStatus = [string]$signature.Status
+          $signatureSubject = [string]$signature.SignerCertificate.Subject
+        }
+        $clients.Add([pscustomobject]@{ tool=$product.tool; path=$exe; version=[string]$entry.DisplayVersion; running=($processes -contains $exe); signatureStatus=$signatureStatus; signatureSubject=$signatureSubject; signatureStamp=$stamp })
       } catch { $errors[$product.tool] = '无法读取客户端数字签名：' + $_.Exception.Message }
     }
   }
@@ -221,6 +265,12 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
   const resolveMachinePaths = options.resolveMachinePaths ?? resolveWindowsMachinePaths
   const jobs = new Map<ExternalToolId, { promise: Promise<ExternalClientRuntimeStatus>; observers: Set<(event: ExternalClientInstallProgress) => void>; last: ExternalClientInstallProgress | null }>()
   let inFlightScan: Promise<ExternalClientRuntimeStatus[]> | null = null
+  const now = options.now ?? Date.now
+  const scanCacheTtlMs = options.scanCacheTtlMs ?? defaultScanCacheTtlMs
+  let cachedScan: { statuses: ExternalClientRuntimeStatus[]; at: number } | null = null
+  // 装、卸、打开都会让在飞的那次盘点过时：它的结果照样交给等它的人，但不落进缓存。
+  let scanGeneration = 0
+  const knownSignatures = new Map<string, KnownExternalClientSignature>()
 
   const environment = () => trustedCommandEnvironment(options.env, platform === 'win32' ? resolveMachinePaths() : undefined, platform)
   const systemOptions = (): RunCommandOptions => ({ env: environment(), trustedOnly: true, timeoutMs: 15_000, maxOutputBytes: maximumProbeBytes, windowsHide: true })
@@ -235,8 +285,17 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
     catch (error) { return { executable: null, reason: errorText(error) } }
   }
 
-  async function inspectWindows(): Promise<Inspection> {
-    const result = await execute({ executable: options.resolvePowerShellExecutable?.() ?? resolveWindowsPowerShellExecutable({ platform, machinePaths: resolveMachinePaths() }), argv: ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', encodeWindowsPowerShellCommand(windowsExternalClientInventoryScript())] }, systemOptions())
+  function rememberSignature(item: Record<string, unknown>) {
+    const file = textValue(item.path)
+    const stamp = textValue(item.signatureStamp)
+    if (!file || !stamp || !/^\d{1,20}:\d{1,20}:\d{1,20}$/.test(stamp)) return
+    if (knownSignatures.size >= maximumKnownSignatures) knownSignatures.clear()
+    knownSignatures.set(file.toLowerCase(), { path: file, stamp, status: textValue(item.signatureStatus) ?? '', subject: textValue(item.signatureSubject) ?? '' })
+  }
+
+  async function inspectWindows(reuseSignatures: boolean): Promise<Inspection> {
+    const script = windowsExternalClientInventoryScript(reuseSignatures ? [...knownSignatures.values()] : [])
+    const result = await execute({ executable: options.resolvePowerShellExecutable?.() ?? resolveWindowsPowerShellExecutable({ platform, machinePaths: resolveMachinePaths() }), argv: ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', encodeWindowsPowerShellCommand(script)] }, systemOptions())
     const data = record(JSON.parse(cleanCommandOutput(result.stdout).trim()) as unknown)
     if (!Array.isArray(data.clients)) throw new Error('客户端安装检测未返回有效列表')
     const errors: Inspection['errors'] = {}
@@ -249,6 +308,7 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
       const item = record(raw)
       if (!isExternalToolId(item.tool)) continue
       const tool = item.tool
+      if (item.family === undefined) rememberSignature(item)
       try {
         const candidate = textValue(item.path)
         if (!candidate || !localWindowsPath(candidate) || path.win32.basename(candidate).toLowerCase() !== definitions[tool].executable.toLowerCase()) throw new Error('客户端可执行文件路径无效')
@@ -312,8 +372,8 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
     return { clients, errors }
   }
 
-  async function inspect(): Promise<Inspection> {
-    try { return platform === 'win32' ? await inspectWindows() : platform === 'darwin' ? await inspectMac() : { clients: [], errors: {} } }
+  async function inspect(reuseSignatures = false): Promise<Inspection> {
+    try { return platform === 'win32' ? await inspectWindows(reuseSignatures) : platform === 'darwin' ? await inspectMac() : { clients: [], errors: {} } }
     catch (error) { return { clients: [], errors: Object.fromEntries(tools.map((tool) => [tool, errorText(error)])) } }
   }
   function status(tool: ExternalToolId, inspection: Inspection, winget: SystemWingetResolution): ExternalClientRuntimeStatus {
@@ -329,9 +389,20 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
       detectionError: inspection.errors[tool] ?? null, installHint: hint,
     }
   }
-  function scan(): Promise<ExternalClientRuntimeStatus[]> {
+  function invalidateScan() {
+    scanGeneration++
+    cachedScan = null
+  }
+  function scan(scanOptions: ExternalClientScanOptions = {}): Promise<ExternalClientRuntimeStatus[]> {
     if (inFlightScan) return inFlightScan
-    const promise = Promise.all([inspect(), resolveWinget()]).then(([inspection, winget]) => tools.map((tool) => status(tool, inspection, winget)))
+    if (!scanOptions.force && cachedScan && now() - cachedScan.at < scanCacheTtlMs) return Promise.resolve(cachedScan.statuses)
+    const generation = scanGeneration
+    const promise = Promise.all([inspect(true), resolveWinget()]).then(([inspection, winget]) => {
+      const statuses = tools.map((tool) => status(tool, inspection, winget))
+      // 检测出错的那次不缓存：老电脑上一次 PowerShell 超时不该让界面连着几分钟报错。
+      if (generation === scanGeneration && statuses.every((entry) => !entry.detectionError)) cachedScan = { statuses, at: now() }
+      return statuses
+    })
     inFlightScan = promise
     void promise.then(() => { if (inFlightScan === promise) inFlightScan = null }, () => { if (inFlightScan === promise) inFlightScan = null })
     return promise
@@ -408,11 +479,13 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
     })
     jobs.set(tool, job)
     void job.promise.then(() => { jobs.delete(tool) }, () => { jobs.delete(tool) })
+    // 装成、装失败都作废：失败的安装器也可能已经留下了一半的文件。
+    void job.promise.then(invalidateScan, invalidateScan)
     return job.promise
   }
   function launch(tool: ExternalToolId): Promise<void> {
     if (!isExternalToolId(tool)) return Promise.reject(new Error('未知客户端'))
-    return queue.enqueue(`external-client:launch:${tool}`, async () => {
+    const launched = queue.enqueue(`external-client:launch:${tool}`, async () => {
       const inspection = await inspect()
       const client = inspection.clients.find((item) => item.tool === tool)
       if (!client) throw new Error(inspection.errors[tool] || '尚未检测到客户端，请先安装并重新检测')
@@ -428,6 +501,9 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
         await execute({ executable: '/usr/bin/open', argv: ['-a', client.path] }, { env: environment(), trustedOnly: false, timeoutMs: 15_000, maxOutputBytes: maximumProbeBytes })
       } else throw new Error('当前系统不支持启动此桌面客户端')
     })
+    // 打开之后「正在运行」就变了，下一次检测得重新盘点。
+    void launched.then(invalidateScan, invalidateScan)
+    return launched
   }
   return { scan, install, launch }
 }

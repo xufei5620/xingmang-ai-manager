@@ -850,6 +850,7 @@ const fixtureReadinessConsumers = [
   'src/renderer-v2/features/shell/newapi-announcements.browser-check.mjs',
   'src/renderer-v2/ui/browser-check.mjs',
   'src/renderer-v2/styles/contrast.browser-check.mjs',
+  'src/renderer-v2/features/shell/keyboard.browser-check.mjs',
 ]
 
 // A hand-kept list only covers what someone remembered to add. These are the

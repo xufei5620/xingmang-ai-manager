@@ -264,6 +264,19 @@ describe('buildFeedbackRuntimeLines', () => {
     expect(lines).toContain('运行权限: 以管理员身份运行（或无法确认，按管理员处理）')
   })
 
+  it('says why the app was treated as administrator when the startup probe failed', () => {
+    const lines = buildFeedbackRuntimeLines(runtimeInput({ executionMode: 'trusted-only', executionProbeFailure: 'blocked' }))
+
+    expect(lines).toContain('运行权限: 按管理员处理（没能确认：确认权限这一步被安全软件或电脑的管控策略拦下了）')
+  })
+
+  it('states a real administrator run plainly once the probe is known to have succeeded', () => {
+    expect(buildFeedbackRuntimeLines(runtimeInput({ executionMode: 'trusted-only', executionProbeFailure: null })))
+      .toContain('运行权限: 以管理员身份运行')
+    expect(buildFeedbackRuntimeLines(runtimeInput({ executionMode: 'same-user', executionProbeFailure: null })))
+      .toContain('运行权限: 普通用户')
+  })
+
   it('omits the privilege line outside Windows', () => {
     const lines = buildFeedbackRuntimeLines(runtimeInput({ platform: 'darwin', executionMode: 'same-user' }))
 
