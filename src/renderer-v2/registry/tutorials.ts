@@ -365,7 +365,6 @@ export const tutorialTopics: readonly TutorialTopic[] = [
         detail: '「接着聊」会在记录的文件夹打开对应工具，接上这个文件夹里最近的一次对话。',
         bullets: ['核对工作文件夹，点击「接着聊」。', '首页「最近」卡里也可以使用这个按钮。'],
         expected: '对应工具打开，并接上该目录最近的对话。',
-        illustration: 'launch',
         extra: [{ title: '为什么这一条没有「接着聊」？', detail: '命令行工具只能按文件夹找回最近一条。同一工具、同一文件夹里更早的记录、已归档的记录、没记下文件夹的记录，都不显示这个按钮。' }],
         action: '打开记录继续任务',
         page: 'sessions',
