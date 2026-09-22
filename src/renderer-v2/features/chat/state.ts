@@ -125,6 +125,10 @@ export function chatErrorMessage(error: unknown, code?: AiChatErrorCode): string
   if (code === 'stream-closed') return 'AI 服务提前结束了本次响应，请重试'
   if (code === 'model-unavailable') return '当前模型不在所选分组的可用列表中，请刷新后重新选择'
   if (code) return message || '本次请求没有完成，已保留内容，请稍后重试'
+  // 主进程在发付费请求之前试写保存位置，写不进就停下。原话里有「这次没有扣费」和
+  // 下一步怎么办，归进下面任何一类都会把这两句丢掉。
+  const unwritable = message.indexOf('保存位置写不进去')
+  if (unwritable >= 0) return message.slice(unwritable)
   if (/余额|额度不足|insufficient|quota|402/i.test(message)) return '账号余额或密钥额度不足，请充值或更换可用分组后重试'
   if (/401|credential|未登录|登录|密钥|key.*失效/i.test(message)) return '当前登录或密钥已失效，请重新登录后准备分组'
   if (/429|rate.limit|限流|频繁/i.test(message)) return '请求太频繁，请稍候再试'

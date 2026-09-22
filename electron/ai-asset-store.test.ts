@@ -4,6 +4,7 @@ import path from 'node:path'
 import { createHash } from 'node:crypto'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
+  AI_OUTPUT_UNWRITABLE_ERROR_CODE,
   AiAssetStore,
   inspectAiImage,
   isPublicAiAssetAddress,
@@ -155,6 +156,68 @@ describe('AiAssetStore base64 and ownership', () => {
     store.ensureOutputDirectory()
 
     expect(fs.statSync(options.outputRoot).isDirectory()).toBe(true)
+  })
+
+  it('proves the account directory accepts a file before a paid request and leaves nothing behind', async () => {
+    const options = storeOptions()
+    const store = new AiAssetStore(options)
+
+    await store.assertWritable(42)
+
+    expect(fs.readdirSync(path.join(options.outputRoot, 'user-42'))).toEqual([])
+  })
+
+  it('probes the output root itself when no account is given', async () => {
+    const options = storeOptions()
+    const store = new AiAssetStore(options)
+
+    await store.assertWritable()
+
+    expect(fs.readdirSync(options.outputRoot)).toEqual([])
+  })
+
+  it('says in plain words that nothing was charged and what to do next when the location cannot be written', async () => {
+    const blocker = path.join(temporaryDirectory(), 'not-a-directory')
+    fs.writeFileSync(blocker, 'file')
+    const store = new AiAssetStore({
+      ...storeOptions(path.join(blocker, 'output')),
+      unwritableGuidance: '请新建一个项目、换个文件夹再试。',
+    })
+
+    const error = await store.assertWritable(42).then(() => null, (reason: unknown) => reason)
+
+    expect(error).toMatchObject({ code: AI_OUTPUT_UNWRITABLE_ERROR_CODE })
+    expect((error as Error).message).toBe('保存位置写不进去，这次没有扣费。请新建一个项目、换个文件夹再试。')
+    // The OS reason stays on the cause for the log; the sentence on screen
+    // carries no path, errno or permission jargon.
+    expect((error as Error).cause).toBeInstanceOf(Error)
+    expect((error as Error).message).not.toMatch(/权限|output|ENOTDIR|EEXIST/)
+    await expect(new AiAssetStore(storeOptions(path.join(blocker, 'output'))).assertWritable(42))
+      .rejects.toThrow('保存位置写不进去，这次没有扣费。请联系客服帮你处理。')
+  })
+
+  it('treats a pre-planted file at the probe name as unwritable instead of overwriting or deleting it', async () => {
+    const options = storeOptions()
+    const accountRoot = path.join(options.outputRoot, 'user-42')
+    fs.mkdirSync(accountRoot, { recursive: true })
+    const planted = path.join(accountRoot, `.write-check-${fixedRandomBytes().toString('hex')}.tmp`)
+    fs.writeFileSync(planted, 'planted')
+    const store = new AiAssetStore(options)
+
+    await expect(store.assertWritable(42)).rejects.toThrow('保存位置写不进去')
+    expect(fs.readFileSync(planted, 'utf8')).toBe('planted')
+  })
+
+  it.runIf(process.platform !== 'win32')('never writes through a symlink planted at the probe name', async () => {
+    const options = storeOptions()
+    const accountRoot = path.join(options.outputRoot, 'user-42')
+    fs.mkdirSync(accountRoot, { recursive: true })
+    const outside = path.join(temporaryDirectory(), 'outside.txt')
+    fs.symlinkSync(outside, path.join(accountRoot, `.write-check-${fixedRandomBytes().toString('hex')}.tmp`))
+    const store = new AiAssetStore(options)
+
+    await expect(store.assertWritable(42)).rejects.toThrow('保存位置写不进去')
+    expect(fs.existsSync(outside)).toBe(false)
   })
 
   it('stores under output/user/date and returns no absolute path', async () => {

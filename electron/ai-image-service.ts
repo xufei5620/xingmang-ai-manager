@@ -35,6 +35,8 @@ export interface GeneratedAiAsset {
 
 export interface AiImageAssetWriter {
   prepareProject?(userId: number, projectId?: string): Promise<void>
+  /** 发请求前试写一次保存位置；写不进就在扣费之前停下（见 AiAssetStore.assertWritable）。 */
+  assertWritable?(userId: number, projectId?: string): Promise<void>
   storeBase64(userId: number, value: string, metadata?: { revisedPrompt?: string; projectId?: string; prompt?: string }): Promise<GeneratedAiAsset>
   storeRemoteUrl(userId: number, url: string, metadata?: { revisedPrompt?: string; projectId?: string; prompt?: string }): Promise<GeneratedAiAsset>
   readOwned(userId: number, assetId: string, projectId?: string): Promise<{ asset: GeneratedAiAsset; bytes: Buffer }>
@@ -265,6 +267,7 @@ export function createAiImageService(options: {
           throw new Error(`当前分组「${input.group}」不提供模型「${input.model}」，请重新选择可用模型`)
         }
         await options.assets.prepareProject?.(credential.userId, input.projectId)
+        await options.assets.assertWritable?.(credential.userId, input.projectId)
         if (signal.aborted) throw signal.reason
         let response: Response
         try {

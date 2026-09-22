@@ -222,6 +222,34 @@ describe('AI image service', () => {
     expect(fetchImpl).not.toHaveBeenCalled()
   })
 
+  it('stops before paid dispatch when the save location cannot be written', async () => {
+    const fetchImpl = vi.fn(async () => response({ data: [{ b64_json: 'aGVsbG8=' }] })) as unknown as typeof fetch
+    const { service, assets } = setup(fetchImpl)
+    const unwritable = new Error('保存位置写不进去，这次没有扣费。请联系客服帮你处理。')
+    Object.assign(unwritable, { code: 'AI_OUTPUT_UNWRITABLE' })
+    assets.assertWritable = vi.fn(async () => { throw unwritable })
+
+    await expect(service.generate(4, {
+      requestId: 'unwritable', group: '生图分组', model: 'gpt-image-2', prompt: '图', projectId: 'project-1',
+    })).rejects.toBe(unwritable)
+    expect(assets.assertWritable).toHaveBeenCalledWith(7, 'project-1')
+    expect(fetchImpl).not.toHaveBeenCalled()
+    expect(assets.storeBase64).not.toHaveBeenCalled()
+  })
+
+  it('probes the save location before image edits read sources or dispatch', async () => {
+    const fetchImpl = vi.fn(async () => response({ data: [{ b64_json: 'aGVsbG8=' }] })) as unknown as typeof fetch
+    const { service, assets } = setup(fetchImpl)
+    assets.assertWritable = vi.fn(async () => { throw new Error('保存位置写不进去，这次没有扣费。') })
+
+    await expect(service.edit(4, {
+      requestId: 'unwritable-edit', group: '生图分组', model: 'gpt-image-2', prompt: '改一下',
+      sourceAssetIds: ['a'.repeat(43)],
+    })).rejects.toThrow('这次没有扣费')
+    expect(assets.readOwned).not.toHaveBeenCalled()
+    expect(fetchImpl).not.toHaveBeenCalled()
+  })
+
   it('rejects a model missing from the selected group before paid dispatch', async () => {
     const fetchImpl = vi.fn(async () => response({ data: [{ b64_json: 'aGVsbG8=' }] })) as unknown as typeof fetch
     const { service, credentials } = setup(fetchImpl)
