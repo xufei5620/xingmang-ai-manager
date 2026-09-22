@@ -27,6 +27,12 @@ export interface AccelerationDevelopmentHost extends AccelerationApi {
    */
   startDownloadRoute(scope: string): Promise<AccelerationDownloadRouteResult>
   stopDownloadRoute(scope: string): Promise<void>
+  /**
+   * 电脑睡眠 / 醒来。辅助进程没在跑就什么都不做——没有辅助进程就没有会话，
+   * 为了一次睡眠把它拉起来反而多占一份内存。
+   */
+  suspend(): Promise<void>
+  resume(): Promise<void>
   dispose(): Promise<void>
 }
 
@@ -350,6 +356,16 @@ export function createAccelerationDevelopmentHost(options: {
     stopDownloadRoute: async (scope) => {
       await ensureReady()
       await rpc('download-stop', { scope })
+    },
+    suspend: async () => {
+      if (disposed || !child?.connected || !ready) return
+      await ready
+      await rpc('suspend')
+    },
+    resume: async () => {
+      if (disposed || !child?.connected || !ready) return
+      await ready
+      await rpc('resume')
     },
     dispose() {
       if (disposal) return disposal
