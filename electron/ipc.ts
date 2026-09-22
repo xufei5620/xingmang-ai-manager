@@ -61,7 +61,9 @@ import {
   providerSessionProviders,
   type ProviderSessionListQuery,
 } from './provider-sessions'
-import type { NativeConfigSaveMode } from './config-files'
+import { providerSupportsOfficialAccount, type NativeConfigSaveMode } from './config-files'
+import { switchAccountSource } from './account-source-switch'
+import { redactHomeDirectory } from './startup-log'
 import { isExternalToolId, parseExternalClientConfigRequest } from './external-client-contract'
 import type { ExternalToolId } from './external-tool-config'
 import type { ExternalClientCheckResult } from './external-client-connection'
@@ -1759,7 +1761,10 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     assertCurrent()
     return service.configureExternalTool(tool, { apiKey, model: parsed.model, protocol: parsed.protocol }, assertCurrent)
   })
-  registerTrustedHandler('external-clients:scan', () => service.scanExternalClients())
+  registerTrustedHandler('external-clients:scan', (_event, force: unknown) => {
+    if (force !== undefined && typeof force !== 'boolean') throw new Error('客户端检测参数格式错误')
+    return service.scanExternalClients(force === true)
+  })
   registerTrustedHandler('external-clients:install', (_event, tool: unknown) => {
     if (!isExternalToolId(tool)) throw new Error('未知的外部客户端类型')
     return service.installExternalClient(tool, _event.sender)
@@ -1772,6 +1777,52 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     if (!isProviderId(provider)) throw new Error('未知的 CLI 类型')
     if (mode !== undefined && mode !== 'merge' && mode !== 'reset') throw new Error('未知的配置写入模式')
     return mode === undefined ? service.switchToOfficialAccount(provider) : service.switchToOfficialAccount(provider, mode)
+  })
+  registerTrustedHandler('config:switch-account-source', async (_event, provider: unknown, target: unknown) => {
+    if (!isProviderId(provider)) throw new Error('未知的 CLI 类型')
+    if (target !== 'account' && target !== 'official') throw new Error('未知的账号来源')
+    if (target === 'official' && !providerSupportsOfficialAccount(provider)) throw new Error(`${cliCatalog[provider].name} 没有可切回的官方账号`)
+    if (target === 'account' && !accountService.getSessionState().account?.userId) throw new Error('请先登录账号，再切到当前账号')
+    // 与备份页同一套账号上下文：备份里记下哪些 Key 是当前账号签发的，回滚后
+    // 恢复出来的配置照样按来源登记，首页不会因此冒出「配置被改过」。
+    const identity = currentBackupAccountId()
+    const context = await readBackupAccountContext()
+    return switchAccountSource({
+      wasOfficial: (id) => (service.readStoredConfig().officialProviders ?? []).includes(id),
+      createBackup: (id) => options.backupStore.create(id, 'pre-save', undefined, context),
+      restoreBackup: async (id) => {
+        const result = options.backupStore.restore(id, context)
+        const stillCurrent = context !== null && currentBackupAccountId() === identity
+        // 同 backups:restore：配置已经恢复，登记来源失败只记日志，不算回滚失败。
+        try {
+          await service.adoptRestoredConfig(result.provider, (apiKey) => (
+            stillCurrent && context.keyDigests.has(apiKeyDigest(apiKey))
+          ))
+        } catch (error) {
+          options.runtimeLog.log('warn', 'config', 'account-source.adopt-failed', '切换回滚已恢复配置，但没能登记这份配置的来源', {
+            provider: result.provider,
+            reason: error instanceof Error ? error.message : String(error),
+          })
+        }
+      },
+      writeAccountConfig: async (id) => {
+        // 用户亲手点的切换：intent 'explicit' 才穿得过「来源未确认不自动改写」那道闸。
+        const outcome = await configureManagedClis(
+          accountService, service, [id], {}, options.previewOnboarding, options.managedCliKeys, 'merge', 'explicit',
+        )
+        if (outcome.failed.length) throw new Error(outcome.failed.map((item) => item.message).join('；'))
+        if (!outcome.configured.includes(id)) throw new Error('工具没有返回配置写入结果')
+      },
+      writeOfficialConfig: async (id) => { await service.switchToOfficialAccount(id, 'merge') },
+      setOfficialPreference: async (id, official) => { await service.setOfficialSourcePreference?.(id, official) },
+      restoreOfficialCredentials: async (id) => { await service.restoreOfficialCredentials?.(id) },
+      checkConnection: (id) => options.diagnosticsService.checkConnection(id),
+      officialLoginPresent: (id) => service.inspectOfficialLogin?.(id) ?? null,
+      // 失败原因可能带着配置文件的绝对路径（I13）：进日志前把主目录换掉。
+      log: (level, event, message, detail) => options.runtimeLog.log(level, 'config', event, message, detail
+        ? JSON.parse(redactHomeDirectory(JSON.stringify(detail), options.providerRoots?.userHome ?? os.homedir())) as Record<string, unknown>
+        : undefined),
+    }, provider, target)
   })
   function documentsDirectory(): string | null {
     if (!options.documentsDirectory) return path.join(os.homedir(), 'Documents')

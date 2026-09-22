@@ -51,9 +51,12 @@ import {
   ensureCodexPermissionDefaults,
   ensureGeminiProjectContextFiles,
   inspectCodexWorkspacePermissions,
+  inspectOfficialLogin,
   inspectProviderConfig,
   managedProviderLaunchBlockedMessage,
+  moveClaudeConsoleKeyAside,
   readCodexAuthTokens,
+  restoreClaudeConsoleKey,
   saveProviderConfig,
   switchProviderToOfficialAccount,
   trustCodexWorkspace,
@@ -61,6 +64,7 @@ import {
   toNativeConfigSummary,
   type CodexWorkspacePermissionStatus,
   type CodexWorkspacePermissionWriteResult,
+  type NativeConfigInspection,
   type NativeConfigSaveMode,
   type NativeConfigSummary,
 } from './config-files'
@@ -70,6 +74,11 @@ import {
   readProjectInstructionsTemplate,
 } from './project-instructions'
 import { classifyWorkspace, sensitiveWorkspaceLabel } from './workspace-guard'
+import {
+  describeOverride,
+  inspectWorkspaceConfigOverrides,
+  launchOverrideNotice,
+} from './workspace-config-overrides'
 import {
   fetchOfficialChatGptUsage,
   type OfficialChatGptAccount,
@@ -362,6 +371,14 @@ export interface CodexDesktopLaunchResult {
   status: DesktopAppStatus
   /** Runtime confirmation is separate from successfully opening the app. */
   chineseLocale?: { status: 'verified' | 'failed' | 'restart-required'; message?: string }
+}
+
+export interface CliLaunchResult {
+  /**
+   * 项目文件夹里（或这台电脑上公司统一下发）的设置会盖过当前账号时，给用户的一句
+   * 提醒。只提醒不改：那些文件是用户或公司的，本软件不动它们。缺省 = 没发现。
+   */
+  configOverrideNotice?: string
 }
 
 export type ToolUninstallResult =
@@ -729,6 +746,12 @@ export interface SystemService {
     ownership?: { source: 'account'; automatic: boolean },
   ): Promise<ReturnType<typeof saveProviderConfig>>
   switchToOfficialAccount(provider: ProviderId, mode?: ConfigSavePayload['mode']): ReturnType<typeof switchProviderToOfficialAccount> | Promise<ReturnType<typeof switchProviderToOfficialAccount>>
+  /** 切换失败回滚时把「是否选了官方账号」这个记号恢复成切换前的值；可选 = 旧实现不提供。 */
+  setOfficialSourcePreference?(provider: ProviderId, official: boolean): Promise<void>
+  /** 把切到当前账号时挪开的官方凭据放回原处；可选 = 旧实现不提供。 */
+  restoreOfficialCredentials?(provider: ProviderId): Promise<void>
+  /** 这台电脑上是否已有这个 CLI 的官方登录，null = 看不出来；可选 = 旧实现不提供。 */
+  inspectOfficialLogin?(provider: ProviderId): boolean | null
   /** 备份恢复成功之后调用；`isAccountKey` 判断一把 Key 是不是当前账号由本软件签发的。 */
   adoptRestoredConfig(provider: ProviderId, isAccountKey: (apiKey: string) => boolean): Promise<void>
   scanSystem(forceRefresh?: boolean): Promise<SystemSnapshot>
@@ -746,7 +769,7 @@ export interface SystemService {
   cancelCodexDesktopInstall(): InstallCancellationOutcome
   uninstallCodexDesktop(): Promise<ToolUninstallResult>
   inspectCodexDesktopUpdate(forceRefresh?: boolean): Promise<DesktopAppStatus>
-  launchProvider(provider: ProviderId, workspace: string, mode?: CliLaunchMode): Promise<void>
+  launchProvider(provider: ProviderId, workspace: string, mode?: CliLaunchMode): Promise<CliLaunchResult>
   inspectCodexDesktop(): Promise<DesktopAppStatus>
   inspectCodexDesktopLocale(): Promise<CodexDesktopLocaleStatus>
   inspectCodexWorkspacePermissions(): CodexWorkspacePermissionStatus
@@ -762,7 +785,7 @@ export interface SystemService {
   ): Promise<CodexDesktopLaunchResult>
   fetchAvailableModels(apiKey: string, options?: { bypassCache?: boolean }): Promise<string[]>
   configureExternalTool(tool: ExternalToolId, options: ExternalToolConfigOptions, assertBeforeWrite?: () => void): Promise<ExternalClientConfigResult>
-  scanExternalClients(): Promise<ExternalClientStatus[]>
+  scanExternalClients(force?: boolean): Promise<ExternalClientStatus[]>
   /** 上一次客户端检测留下的快照；反馈报告只读它，不为了生成报告再探测一轮。 */
   getLastExternalClients(): ExternalClientStatus[] | null
   /**
@@ -3853,7 +3876,7 @@ export function createSystemService(
     provider: ProviderId,
     workspace: string,
     mode: CliLaunchMode,
-  ): Promise<void> {
+  ): Promise<CliLaunchResult> {
     const nativeConfig = inspectNativeProviderConfig(provider)
     if (!canLaunchManagedProvider(nativeConfig, provider)) {
       throw new Error(managedProviderLaunchBlockedMessage(provider))
@@ -3940,6 +3963,7 @@ export function createSystemService(
         })
       }
     }
+    const launchResult = inspectLaunchConfigOverrides(provider, workspace, nativeConfig)
     const providerEnv = providerEnvironment(provider)
     if (provider === 'gemini') {
       // Gemini CLI 0.59 may skip ~/.gemini/.env for an untrusted workspace,
@@ -3981,7 +4005,7 @@ export function createSystemService(
         const detail = error instanceof Error ? error.message : String(error)
         throw new Error(`未能打开 ${definition.name}：${detail || '请查看反馈与诊断日志'}`)
       }
-      return
+      return launchResult
     }
 
     if (platform === 'darwin') {
@@ -3998,7 +4022,7 @@ export function createSystemService(
         const detail = error instanceof Error ? error.message : String(error)
         throw new Error(`未能打开 ${definition.name}：${detail || '请查看反馈与诊断日志'}`)
       }
-      return
+      return launchResult
     }
 
     const environment = interactiveTerminalEnvironment(providerEnv)
@@ -4017,13 +4041,58 @@ export function createSystemService(
       }
     }
     await spawnDetached(terminal.command, terminal.args, { cwd: workspace, env: environment })
+    return launchResult
+  }
+
+  /**
+   * 项目文件夹里（或公司统一下发）的设置会盖过当前账号时，打开照常，只带回一句
+   * 提醒并记一条日志。只读，不动那些文件；查的过程出任何错都不能挡住打开。
+   */
+  function inspectLaunchConfigOverrides(
+    provider: ProviderId,
+    workspace: string,
+    nativeConfig: NativeConfigInspection,
+  ): CliLaunchResult {
+    const definition = cliCatalog[provider]
+    try {
+      const overrides = inspectWorkspaceConfigOverrides(provider, workspace, {
+        platform,
+        home: providerRoots.userHome,
+        codexHome: providerRoots.codexHome,
+        current: {
+          baseUrl: nativeConfig.baseUrl,
+          apiKey: nativeConfig.apiKey,
+          authType: nativeConfig.authType,
+          codexAuthMode: nativeConfig.codexAuthMode,
+        },
+      })
+      if (!overrides.length) return {}
+      runtimeLog?.log('warn', 'config', 'workspace.config-override', `${definition.name} 的项目文件夹或这台电脑上有会盖过当前账号的设置`, {
+        provider,
+        severity: overrides.some((entry) => entry.severity === 'blocking' && !entry.launchUnaffected) ? 'blocking' : 'possible',
+        scopes: [...new Set(overrides.map((entry) => entry.scope))],
+        files: overrides.map((entry) => redactHomeDirectory(
+          describeOverride(entry, workspace, providerRoots.userHome, platform),
+          providerRoots.userHome,
+        )),
+      })
+      const notice = launchOverrideNotice(definition.name, overrides)
+      return notice ? { configOverrideNotice: notice } : {}
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error)
+      runtimeLog?.log('warn', 'config', 'workspace.config-override.failed', `${definition.name} 未能检查项目文件夹里的设置，将不影响打开`, {
+        provider,
+        reason: redactHomeDirectory(reason, providerRoots.userHome),
+      })
+      return {}
+    }
   }
 
   function launchProvider(
     provider: ProviderId,
     workspace: string,
     mode: CliLaunchMode = 'new',
-  ): Promise<void> {
+  ): Promise<CliLaunchResult> {
     return installationQueue.enqueue(
       `cli:launch:${provider}`,
       () => launchProviderOperation(provider, workspace, mode),
@@ -4314,8 +4383,10 @@ export function createSystemService(
       apiKey: credential?.apiKey ?? null,
     }, activeSite.id, { fetch: serviceOptions.relayFetch })
   }
-  async function scanExternalClients(): Promise<ExternalClientStatus[]> {
-    const clients = await Promise.all((await externalClientRuntime.scan()).map(describeExternalClient))
+  async function scanExternalClients(force = false): Promise<ExternalClientStatus[]> {
+    // 本机盘点几分钟内复用（见 external-client-runtime 的缓存），配置每次都重读：
+    // 保存配置之后那次刷新要看到的正是刚写下去的那份。
+    const clients = await Promise.all((await externalClientRuntime.scan({ force })).map(describeExternalClient))
     // 反馈报告要答「客户端装没装、什么版本、配置指没指向当前账号」，而生成报告
     // 时不该再发一轮探测（同 latestTraySystem 的取舍）。这份快照就是那一段的
     // 数据源：只在用户自己点检测时更新。
@@ -4536,7 +4607,51 @@ export function createSystemService(
       assertOwner()
       await store.setOfficialProvider(payload.provider, false)
       if (payload.provider === 'codex') await applyXingmangAiSkillForCodexAccount(false)
+      if (payload.provider === 'claude') moveOfficialCredentialsAside('claude')
       return result
+    })
+  }
+
+  /**
+   * Console 登录留下的 primaryApiKey 会以 x-api-key 跟着每个请求出去，中转拿它
+   * 覆盖掉当前账号的 Key（config-files.ts 顶部那段）。配置已经提交，这一步失败
+   * 只记日志：一键切换后面的连接自检会把这种情况认出来并整体回滚。
+   */
+  function moveOfficialCredentialsAside(provider: 'claude'): void {
+    try {
+      if (moveClaudeConsoleKeyAside(providerRoots)) {
+        runtimeLog?.log('info', 'config', 'official-credentials.moved', 'Claude Code 的官方 Console Key 已挪到一边，切回官方账号时放回', { provider })
+      }
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error)
+      runtimeLog?.log('warn', 'config', 'official-credentials.move-failed', 'Claude Code 的官方 Console Key 没能挪开，可能会和当前账号的 Key 冲突', {
+        provider,
+        reason: redactHomeDirectory(reason, providerRoots.userHome),
+      })
+    }
+  }
+
+  function restoreClaudeCredentialsQuietly(): void {
+    try {
+      restoreClaudeConsoleKey(providerRoots)
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error)
+      runtimeLog?.log('warn', 'config', 'official-credentials.restore-failed', 'Claude Code 的官方 Console Key 没能放回原处', {
+        provider: 'claude',
+        reason: redactHomeDirectory(reason, providerRoots.userHome),
+      })
+    }
+  }
+
+  async function restoreOfficialCredentials(provider: ProviderId): Promise<void> {
+    if (provider !== 'claude') return
+    await serializeConfigWrite(async () => { restoreClaudeCredentialsQuietly() })
+  }
+
+  async function setOfficialSourcePreference(provider: ProviderId, official: boolean): Promise<void> {
+    await serializeConfigWrite(async () => {
+      await store.setOfficialProvider(provider, official)
+      if (provider === 'codex') await applyXingmangAiSkillForCodexAccount(official)
     })
   }
 
@@ -4561,6 +4676,7 @@ export function createSystemService(
       const result = switchProviderToOfficialAccount(provider, providerRoots, {}, activeSite.providerBaseUrls, mode)
       await store.setOfficialProvider(provider, true)
       if (provider === 'codex') await applyXingmangAiSkillForCodexAccount(true)
+      if (provider === 'claude') restoreClaudeCredentialsQuietly()
       return result
     })
   }
@@ -4586,6 +4702,9 @@ export function createSystemService(
     revealApiKey,
     saveConfig,
     switchToOfficialAccount,
+    setOfficialSourcePreference,
+    restoreOfficialCredentials,
+    inspectOfficialLogin: (provider) => inspectOfficialLogin(provider, providerRoots),
     adoptRestoredConfig,
     scanSystem,
     refreshNetworkLocation,

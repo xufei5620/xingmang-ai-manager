@@ -1,5 +1,6 @@
 import {
   providerIds,
+  type AccountSourceTarget,
   type AppConfigSummary,
   type ChooseWorkspaceOptions,
   type CliLaunchMode,
@@ -125,7 +126,7 @@ export function createToolsApi(bridge: XingmangApi) {
         return { config: null, failure: { partition: 'config', message: errorMessage(cause, '工具配置没有读到，请重试。') } }
       }
     },
-    readExternal: () => bridge.scanExternalClients(),
+    readExternal: (force = false) => bridge.scanExternalClients(force),
     installExternal: (id: ExternalToolId) => bridge.installExternalClient(id),
     launchExternal: (id: ExternalToolId) => bridge.launchExternalClient(id),
     // version 省略时由主进程按已验证版本名单与设置决定装哪个版本(N1);
@@ -182,6 +183,8 @@ export function createToolsApi(bridge: XingmangApi) {
       providers: [providerFor(tool)], preferredModels: model ? { [providerFor(tool)]: model } : {}, mode, intent: 'explicit',
     }),
     official: (tool: ToolId, mode: 'merge' | 'reset' = 'merge') => bridge.switchToOfficialAccount(providerFor(tool), mode),
+    // 首页的一键切换：备份、写入、自检、失败回滚都在主进程一次做完。
+    switchSource: (tool: ToolId, target: AccountSourceTarget) => bridge.switchAccountSource(providerFor(tool), target),
     getLocale: () => bridge.inspectCodexDesktopLocale(),
     setLocale: (locale: 'zh-CN' | 'system' = 'zh-CN') => bridge.setCodexDesktopLocale(locale),
     getPermissions: () => bridge.inspectCodexWorkspacePermissions(),
