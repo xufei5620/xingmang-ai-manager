@@ -12,6 +12,11 @@ export interface AccelerationService extends AccelerationApi {
 interface AccelerationServiceOptions {
   getAccountScope: () => string | null
   backend?: AccelerationApi
+  /**
+   * 每产出一个状态就通知一次。托盘那一行（tray-acceleration.ts）靠它跟上加速页
+   * 上的连接与断开，不必另起一套轮询；回调抛错不许影响本次请求的结果。
+   */
+  onState?: (state: AccelerationState) => void
 }
 
 const SERVICE_UNAVAILABLE = '加速线路暂未开通，请稍后再试。'
@@ -172,6 +177,12 @@ export function createAccelerationService(options: AccelerationServiceOptions): 
     if (options.getAccountScope() !== scope || expectedRevision !== revision) throw new Error(ACCOUNT_CHANGED)
   }
 
+  function notify(state: AccelerationState): AccelerationState {
+    try { options.onState?.(state) }
+    catch { /* A listener must not turn a completed request into a failed one. */ }
+    return state
+  }
+
   function track(state: AccelerationState): void {
     if (isRunning(state.phase)) possibleSessions.add(state.scope)
     else possibleSessions.delete(state.scope)
@@ -213,7 +224,7 @@ export function createAccelerationService(options: AccelerationServiceOptions): 
       assertCurrent(scope, expectedRevision)
       if (!backend) {
         if (operation === 'start') throw new Error(SERVICE_UNAVAILABLE)
-        return unavailableState(scope)
+        return notify(unavailableState(scope))
       }
       if (operation === 'start') possibleSessions.add(scope)
       let state: AccelerationState
@@ -237,7 +248,7 @@ export function createAccelerationService(options: AccelerationServiceOptions): 
         if (possibleSessions.has(scope)) await stopSession(scope)
         throw new Error(ACCOUNT_CHANGED)
       }
-      return state
+      return notify(state)
     })
     lastMutation = operation === 'get' ? null : { key, promise }
     void promise.finally(() => {
@@ -269,6 +280,7 @@ export function createAccelerationService(options: AccelerationServiceOptions): 
         }
         assertCurrent(scope, expectedRevision)
         track(result.state)
+        notify(result.state)
         return result
       })
     },
