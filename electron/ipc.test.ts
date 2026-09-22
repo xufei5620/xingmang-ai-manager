@@ -1081,6 +1081,91 @@ describe('registerIpcHandlers', () => {
     expect(service.updateStoredConfig).not.toHaveBeenCalled()
   })
 
+  it('does not remember a CLI configuration folder even after the user insists', async () => {
+    const configFolder = path.join(os.homedir(), '.claude')
+    electronMocks.showOpenDialog.mockResolvedValueOnce({ canceled: false, filePaths: [configFolder] })
+    electronMocks.showMessageBox.mockResolvedValueOnce({ response: 2 })
+    const { service } = register()
+
+    await expect(electronMocks.handlers.get('workspace:choose')!(trustedEvent())).resolves.toBe(configFolder)
+    expect(service.updateStoredConfig).not.toHaveBeenCalled()
+    expect(electronMocks.showMessageBox).toHaveBeenCalledWith(expect.objectContaining({
+      title: '不建议在这个文件夹里打开',
+      detail: expect.stringContaining('密钥'),
+    }))
+  })
+
+  it('does not ask twice when a just-confirmed configuration folder is opened right away', async () => {
+    const configFolder = path.join(os.homedir(), '.codex')
+    electronMocks.showOpenDialog.mockResolvedValueOnce({ canceled: false, filePaths: [configFolder] })
+    electronMocks.showMessageBox.mockResolvedValue({ response: 2 })
+    const { service } = register()
+
+    await electronMocks.handlers.get('workspace:choose')!(trustedEvent())
+    await electronMocks.handlers.get('cli:launch')!(trustedEvent(), 'codex', configFolder)
+    expect(electronMocks.showMessageBox).toHaveBeenCalledTimes(1)
+    expect(service.launchProvider).toHaveBeenCalledWith('codex', configFolder, 'new')
+
+    // 下一次打开（比如从最近记录）照样要问。
+    await electronMocks.handlers.get('cli:launch')!(trustedEvent(), 'codex', configFolder)
+    expect(electronMocks.showMessageBox).toHaveBeenCalledTimes(2)
+  })
+
+  it('asks again on every launch into a configuration folder that skipped the picker', async () => {
+    const configFolder = path.join(os.homedir(), '.gemini')
+    electronMocks.showMessageBox.mockResolvedValueOnce({ response: 2 })
+    const { service } = register()
+
+    await electronMocks.handlers.get('cli:launch')!(trustedEvent(), 'gemini', configFolder)
+    expect(electronMocks.showMessageBox).toHaveBeenCalledTimes(1)
+    expect(service.launchProvider).toHaveBeenCalledWith('gemini', configFolder, 'new')
+  })
+
+  it('lets the user pick another folder instead of launching into a configuration folder', async () => {
+    const configFolder = path.join(os.homedir(), '.claude')
+    const project = path.join(os.homedir(), 'project')
+    electronMocks.showMessageBox.mockResolvedValueOnce({ response: 1 })
+    electronMocks.showOpenDialog.mockResolvedValueOnce({ canceled: false, filePaths: [project] })
+    const { service } = register()
+
+    await electronMocks.handlers.get('cli:launch')!(trustedEvent(), 'claude', configFolder)
+    expect(service.launchProvider).toHaveBeenCalledTimes(1)
+    expect(service.launchProvider).toHaveBeenCalledWith('claude', project, 'new')
+    expect(service.updateStoredConfig).toHaveBeenCalledWith({ version: 2, workspace: project })
+  })
+
+  it('creates a starter folder and launches there when asked at launch time', async () => {
+    const documents = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-ipc-documents-')))
+    try {
+      electronMocks.showMessageBox.mockResolvedValueOnce({ response: 0 })
+      const { service } = register(undefined, undefined, undefined, undefined, undefined, undefined, {}, {
+        documentsDirectory: () => documents,
+      })
+      const expected = path.join(documents, 'XingmangProjects', 'my-project')
+
+      await electronMocks.handlers.get('cli:launch')!(trustedEvent(), 'claude', path.join(os.homedir(), '.claude'))
+      expect(service.launchProvider).toHaveBeenCalledWith('claude', expected, 'new')
+      expect(service.updateStoredConfig).toHaveBeenCalledWith({ version: 2, workspace: expected })
+      expect(electronMocks.showOpenDialog).not.toHaveBeenCalled()
+    } finally {
+      fs.rmSync(documents, { recursive: true, force: true })
+    }
+  })
+
+  it('only offers 先不打开 when resuming a conversation in a configuration folder', async () => {
+    const configFolder = path.join(os.homedir(), '.claude')
+    electronMocks.showMessageBox.mockResolvedValueOnce({ response: 0 })
+    const { service } = register()
+
+    await expect(electronMocks.handlers.get('cli:launch')!(trustedEvent(), 'claude', configFolder, 'resumeLast'))
+      .resolves.toBeUndefined()
+    expect(service.launchProvider).not.toHaveBeenCalled()
+    expect(electronMocks.showOpenDialog).not.toHaveBeenCalled()
+    expect(electronMocks.showMessageBox).toHaveBeenCalledWith(expect.objectContaining({
+      buttons: ['先不打开', '仍然打开'],
+    }))
+  })
+
   it('rejects calls from a sender outside the application URL policy', () => {
     const { service } = register()
     const handler = electronMocks.handlers.get('system:scan')!
@@ -1333,6 +1418,43 @@ describe('registerIpcHandlers', () => {
       expect(() => handler(trustedEvent(), 'codex', mode)).toThrow('未知的配置写入模式')
     }
     expect(service.switchToOfficialAccount).toHaveBeenCalledTimes(3)
+  })
+
+  it('validates the one-click account switch before touching any config', async () => {
+    const { service } = register()
+    const handler = electronMocks.handlers.get('config:switch-account-source')!
+    await expect(handler(trustedEvent(), 'unknown', 'official')).rejects.toThrow('未知的 CLI 类型')
+    await expect(handler(trustedEvent(), 'codex', 'erase-all')).rejects.toThrow('未知的账号来源')
+    await expect(handler(trustedEvent(), 'grok', 'official')).rejects.toThrow('Grok CLI 没有可切回的官方账号')
+    await expect(handler(trustedEvent(), 'claude', 'account')).rejects.toThrow('请先登录账号，再切到当前账号')
+    expect(service.switchToOfficialAccount).not.toHaveBeenCalled()
+  })
+
+  it('backs up before switching back to the official account and says what happened', async () => {
+    const service = serviceStub()
+    const create = vi.fn(() => ({ id: 'backup-1' }))
+    register(service, undefined, undefined, undefined, undefined, undefined, {}, {
+      backupStore: { list: vi.fn(), create, inspect: vi.fn(), restore: vi.fn() } as never,
+    })
+    const handler = electronMocks.handlers.get('config:switch-account-source')!
+    const result = await handler(trustedEvent(), 'codex', 'official')
+    expect(create).toHaveBeenCalledWith('codex', 'pre-save', undefined, null)
+    expect(service.switchToOfficialAccount).toHaveBeenCalledWith('codex', 'merge')
+    expect(create.mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(service.switchToOfficialAccount).mock.invocationCallOrder[0])
+    expect(result).toMatchObject({ provider: 'codex', target: 'official', backupId: 'backup-1', verified: false })
+  })
+
+  it('registers the restored config source when a failed switch rolls back', async () => {
+    const service = serviceStub()
+    vi.mocked(service.switchToOfficialAccount).mockRejectedValue(new Error('配置文件被占用'))
+    const restore = vi.fn(() => ({ provider: 'codex', restoredBackupId: 'backup-1', preRestoreBackupId: 'backup-2' }))
+    register(service, undefined, undefined, undefined, undefined, undefined, {}, {
+      backupStore: { list: vi.fn(), create: vi.fn(() => ({ id: 'backup-1' })), inspect: vi.fn(), restore } as never,
+    })
+    const handler = electronMocks.handlers.get('config:switch-account-source')!
+    await expect(handler(trustedEvent(), 'codex', 'official')).rejects.toThrow('已恢复到切换前的配置')
+    expect(restore).toHaveBeenCalledWith('backup-1', null)
+    expect(service.adoptRestoredConfig).toHaveBeenCalledWith('codex', expect.any(Function))
   })
 
   it('returns only an API key preview through config:get', () => {
@@ -4054,6 +4176,55 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
 
       expect(() => handler(trustedEvent(), { pageSize: 999 })).toThrow()
       expect(accountService.listKeys).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('diagnostics:check-connection on a rejected managed key', () => {
+    const rejected = {
+      ok: false, layer: 'credential' as const, provider: 'claude' as const, siteId: 'solov',
+      summary: '密钥被拒绝（HTTP 401），可能已被吊销或属于别的账号', nextStep: '到「账号」页重新登录，然后在首页重新写入一次 Key',
+      endpoint: 'https://example.test/v1/messages', model: 'm', detail: '无效的令牌',
+      status: 401, durationMs: 12, checkedAt: '2026-09-22T00:00:00.000Z',
+    }
+    const cached = [{ id: 21, provider: 'claude' as const, group: 'g', name: 'xingmang-desktop-claude', key: 'sk-claude-capped-0000' }]
+    const accountKey = (overrides: Record<string, unknown>) => ({
+      id: 21, name: 'xingmang-desktop-claude', maskedKey: 'sk-****', group: 'g', status: 1, remainQuota: 100,
+      unlimitedQuota: false, usedQuota: 0, createdAt: '2026-09-01T00:00:00.000Z', expiredAt: null, accessedAt: null, ...overrides,
+    })
+    function setup(key: Record<string, unknown> | null, configuredKey = 'sk-claude-capped-0000') {
+      const service = serviceStub()
+      vi.mocked(service.revealApiKey).mockReturnValue(configuredKey)
+      const accountService = accountServiceStub()
+      vi.mocked(accountService.getSessionState).mockReturnValue({
+        authenticated: true,
+        account: { userId: 7, username: 'alice', group: null, role: null, quota: null, usedQuota: null },
+      })
+      vi.mocked(accountService.listKeys).mockResolvedValue({ page: 1, pageSize: 100, total: key ? 1 : 0, keys: key ? [accountKey(key)] : [] })
+      const managedCliKeys = { read: vi.fn(async () => cached), save: vi.fn(), remove: vi.fn() }
+      const diagnosticsService = { run: vi.fn(), checkConnection: vi.fn(async () => rejected), checkExternalConnection: vi.fn(), exportLatest: vi.fn() }
+      register(service, undefined, undefined, accountService, undefined, managedCliKeys, {}, { diagnosticsService })
+      return electronMocks.handlers.get('diagnostics:check-connection')!
+    }
+
+    it('says the tool\'s cap is used up instead of offering a key rewrite', async () => {
+      for (const key of [{ status: 4, remainQuota: 0 }, { status: 1, remainQuota: 0 }]) {
+        const result = await setup(key)(trustedEvent(), 'claude') as typeof rejected
+        expect(result.layer).toBe('quota')
+        expect(result.summary).toContain('Claude Code 的额度用完了')
+        expect(result.nextStep).not.toContain('重新写入')
+        expect(result.endpoint).toBe(rejected.endpoint)
+      }
+    })
+
+    it('keeps the credential verdict for an unlimited, still-funded, missing, or no-longer-configured key', async () => {
+      for (const handler of [
+        setup({ unlimitedQuota: true, remainQuota: 0 }),
+        setup({ remainQuota: 100 }),
+        setup(null),
+        setup({ status: 4, remainQuota: 0 }, 'sk-user-typed-other-key'),
+      ]) {
+        await expect(handler(trustedEvent(), 'claude')).resolves.toEqual(rejected)
+      }
     })
   })
 

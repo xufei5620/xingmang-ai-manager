@@ -1,4 +1,4 @@
-import type { AppConfigSummary, CliStatus, CliVersionAdvice, DesktopAppStatus, PlatformCapabilities, ProviderConfigSummary, ProviderId, SystemSnapshot, ToolStatus } from '../../../../electron/ipc-contract'
+import type { AccountSourceTarget, AppConfigSummary, CliStatus, CliVersionAdvice, DesktopAppStatus, PlatformCapabilities, ProviderConfigSummary, ProviderId, SystemSnapshot, ToolStatus } from '../../../../electron/ipc-contract'
 import { snapshotErrorMessage } from '../../business-common'
 import { tools } from '../../registry/tools'
 import {
@@ -173,7 +173,12 @@ export function sourceFor(
   provider: ProviderId,
   storage: SourceMarkerStorage | null = getSourceMarkerStorage(),
 ): ToolSource {
-  if (provider === 'codex' && config.codexAuthMode === 'chatgpt') return 'official'
+  // Codex 自己的「用 ChatGPT 登录」会把 auth.json 改成 ChatGPT 令牌，却不动仍指向
+  // 当前账号服务的 config.toml：令牌被发给服务，每次请求都 401。这不是官方账号，
+  // 是一份被改成半截的配置，按「被改过」提示，首页给出修复与切回官方两条路。
+  if (provider === 'codex' && config.codexAuthMode === 'chatgpt') {
+    return config.actualBaseUrl && sameServiceUrl(config.actualBaseUrl, config.baseUrl) ? 'changed' : 'official'
+  }
   if (provider === 'gemini' && config.authType === 'oauth-personal') return 'official'
   if (config.hasApiKey && config.matchesRelay) {
     if (config.configurationOwnership === 'account' || config.configurationOwnership === 'manual') return config.configurationOwnership
@@ -187,6 +192,29 @@ export function sourceFor(
   if (config.actualBaseUrl && !config.matchesRelay) return 'unknown'
   if (config.exists && !config.hasApiKey && provider !== 'grok') return 'official'
   return 'missing'
+}
+
+function sameServiceUrl(left: string, right: string): boolean {
+  return left.trim().replace(/\/+$/, '').toLowerCase() === right.trim().replace(/\/+$/, '').toLowerCase()
+}
+
+/**
+ * 一键切回官方只给 Claude Code 与 Codex。Gemini 的官方登录自 2026-06 起只剩企业版
+ * Code Assist（registry/tools.ts 的 officialAccountNotes），小白点下去只会在 Google
+ * 登录页反复失败；企业用户仍可在配置里选。Grok 没有做官方来源。
+ */
+const oneClickOfficialProviders: ReadonlySet<ProviderId> = new Set<ProviderId>(['claude', 'codex'])
+
+/**
+ * 首页工具行「…」菜单里那一项切换指向哪边；null = 不给这一项。
+ * 官方 → 当前账号对所有有官方来源的工具都给；当前账号（含手填、被改过）→ 官方
+ * 只给上面两家。第三方配置与还没配置的不给：前者有专门的处理步骤，后者走「连接账号」。
+ */
+export function accountSwitchTarget(tool: Pick<ToolPresentation, 'provider' | 'source' | 'status'>): AccountSourceTarget | null {
+  if (!tool.status.installed) return null
+  if (tool.source === 'official') return 'account'
+  if ((tool.source === 'account' || tool.source === 'manual' || tool.source === 'changed') && oneClickOfficialProviders.has(tool.provider)) return 'official'
+  return null
 }
 
 export function connectionReady(

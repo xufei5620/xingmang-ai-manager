@@ -682,6 +682,36 @@ describe('relay-site-specific managed CLI key groups', () => {
     })))
   })
 
+  it('stops instead of re-provisioning when the key\'s own quota cap is used up', async () => {
+    const capped = { ...siteManagedKey('solov', 'claude'), key: 'sk-solov-claude-capped-1234567' }
+    const store = recordingKeyStore([capped])
+    const provisionCliKey = siteAwareProvisioner('solov')
+    const accountService = siteAwareAccountService(provisionCliKey, () => 'solov')
+    const fetchAvailableModels = vi.fn(async () => {
+      throw new Error('模型查询失败，服务返回 401：该令牌额度已用尽 TokenStatusExhausted[sk-***]')
+    })
+    const saveConfig = vi.fn()
+
+    const result = await configureManagedClis(
+      accountService,
+      { fetchAvailableModels, saveConfig } as unknown as ConfigurationService,
+      ['claude'],
+      {},
+      false,
+      store,
+      'merge',
+      'explicit',
+    )
+
+    expect(result.configured).toEqual([])
+    expect(result.failed).toEqual([{ provider: 'claude', message: expect.stringContaining('这个工具的额度用完了') }])
+    expect(store.remove).not.toHaveBeenCalled()
+    // The other three tools were never cached, so the sync signs those; the
+    // capped one is the only key that must not be re-signed.
+    expect(provisionCliKey).not.toHaveBeenCalledWith(expect.objectContaining({ name: profilesBySite.solov.claude.keyName }))
+    expect(saveConfig).not.toHaveBeenCalled()
+  })
+
   it('re-provisions a rejected sub2api key from the same site group instead of the xm one', async () => {
     const stale = { ...siteManagedKey('solov-api', 'codex'), key: 'sk-solov-api-codex-revoked-123456' }
     const store = recordingKeyStore([stale])

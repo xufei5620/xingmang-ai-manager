@@ -268,6 +268,19 @@ function allowClaudeRelayTool(parsed: Record<string, unknown>): void {
   else record.deny = kept
 }
 
+// Claude Code 的 WebFetch 每抓一个网页前，都先拿域名去问 api.anthropic.com 的
+// /api/web/domain_info「这个站能不能抓」。国内连不上那台主机：被拒时工具立刻报
+// 「Unable to verify if domain … is safe to fetch」，被静默丢包时先干等 30 秒再报同一句
+// ——接中转的客户等于没有「读网页」。skipWebFetchPreflight 跳过这次询问，网页本身照常
+// 抓取（沙箱实测 2.1.277：官方主机不可达时 1.2 秒抓到，且不再发 domain_info）。
+// CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC 管不到这一步，实测仍会预检。
+//
+// 代价是少了 Anthropic 那份域名黑名单。它只对连得上官方的用户有意义，所以与 Artifact
+// 一样只在星芒来源下写，切回官方账号时撤掉。
+function skipClaudeWebFetchPreflight(parsed: Record<string, unknown>): void {
+  parsed.skipWebFetchPreflight = true
+}
+
 // 四个 CLI 各自带着更新机制，会绕过 cli-verified-versions.ts 钉住的推荐版本：Claude Code
 // 在后台自更新，Gemini CLI 的 general.enableAutoUpdate 默认 true、启动就 npm install -g
 // 最新版，Codex 与 Grok 启动时催更并给出 npm 命令。装到的版本一旦被 CLI 自己换掉，名单
@@ -331,6 +344,74 @@ function extendGeminiSessionRetention(parsed: Record<string, unknown>): void {
   const general = ensureRecord(parsed, 'general')
   if (general.sessionRetention !== undefined) return
   general.sessionRetention = { maxAge: MANAGED_GEMINI_SESSION_MAX_AGE }
+}
+
+// Gemini CLI 的主对话用 GEMINI_MODEL，但一批后台功能各自写死了 Google 官方的型号名：
+// 联网搜索、读网页与 codebase_investigator 子代理走 gemini-3-flash-preview，/compress
+// 与自动压缩走 gemini-3.1-pro-preview-customtools，每次启动给上次会话写摘要走
+// gemini-3.1-flash-lite，Auto 模式先用 flash-lite 分类再用 3.1-pro。中转只开放自己的
+// 型号时这些请求一律「无可用渠道」，而 CLI 对它们默默重试：搜索和读网页 2.5 分钟以上
+// 才失败，压缩转圈一分多钟，用户只觉得「卡住了」。
+//
+// modelConfigs.customOverrides 按请求里的型号名改写目标型号，把这批官方名统一指到当前
+// 配的中转型号（沙箱实测 0.60.0：上述每一项 2~3 秒完成）。代价是这些后台调用按主型号
+// 计费。当前型号本身若恰好在表里，不给它写改写，免得自己指向自己。
+//
+// 这张表出自 0.60.0 bundle 的 DEFAULT_MODEL_CONFIGS（aliases / modelIdResolutions），
+// 升级 Gemini CLI 推荐版本时要重新核一遍。
+const geminiRelayHelperModels = [
+  'gemini-3-flash-preview',
+  'gemini-3-pro-preview',
+  'gemini-3.1-pro-preview',
+  'gemini-3.1-pro-preview-customtools',
+  'gemini-3.1-flash-lite',
+  'gemini-3.5-flash',
+  'gemini-2.5-pro',
+  'gemini-2.5-flash',
+  'gemini-2.5-flash-lite',
+  'flash-lite',
+  'flash',
+  'pro',
+] as const
+
+function buildGeminiRelayModelOverrides(model: string): Array<Record<string, unknown>> {
+  return geminiRelayHelperModels
+    .filter((helper) => helper !== model)
+    .map((helper) => ({ match: { model: helper }, modelConfig: { model } }))
+}
+
+/**
+ * 认出本软件写的那种改写：match 只有一个官方型号名、modelConfig 只改 model。用户自己写
+ * 的改写（带别的匹配条件或别的参数）不是这个形状，原样保留。
+ */
+function isGeminiRelayModelOverride(entry: unknown): boolean {
+  if (!isJsonRecord(entry) || Object.keys(entry).length !== 2) return false
+  const { match, modelConfig } = entry
+  if (!isJsonRecord(match) || !isJsonRecord(modelConfig)) return false
+  if (Object.keys(match).length !== 1 || Object.keys(modelConfig).length !== 1) return false
+  return typeof modelConfig.model === 'string'
+    && geminiRelayHelperModels.some((helper) => helper === match.model)
+}
+
+function applyGeminiRelayModelOverrides(parsed: Record<string, unknown>, model: string): void {
+  const modelConfigs = ensureRecord(parsed, 'modelConfigs')
+  const current = modelConfigs.customOverrides
+  const kept = Array.isArray(current) ? current.filter((entry) => !isGeminiRelayModelOverride(entry)) : []
+  modelConfigs.customOverrides = [...kept, ...buildGeminiRelayModelOverrides(model)]
+}
+
+/**
+ * 切回 Google 账号时撤掉：官方型号在那边都真实存在，留着改写反而会把后台请求指到一个
+ * 官方不存在的中转型号上。只删本软件写的那种，空了连键一起删。
+ */
+function removeGeminiRelayModelOverrides(parsed: Record<string, unknown>): void {
+  const modelConfigs = parsed.modelConfigs
+  if (!isJsonRecord(modelConfigs) || !Array.isArray(modelConfigs.customOverrides)) return
+  const kept = modelConfigs.customOverrides.filter((entry) => !isGeminiRelayModelOverride(entry))
+  if (kept.length === modelConfigs.customOverrides.length) return
+  if (kept.length > 0) modelConfigs.customOverrides = kept
+  else delete modelConfigs.customOverrides
+  if (Object.keys(modelConfigs).length === 0) delete parsed.modelConfigs
 }
 
 // Claude Code 的 language 设置会被原样插进系统提示（2.1.277 实测：settings.json 写
@@ -564,6 +645,13 @@ function applyCodexRelayConfig(
   // Never override an explicit user policy such as `never`.
   if (parsed.approval_policy === undefined) parsed.approval_policy = 'on-request'
   if (parsed.sandbox_mode === undefined) parsed.sandbox_mode = 'workspace-write'
+  // With `keyring` or `auto`, Codex reads the OS credential store before
+  // auth.json (login/src/auth/storage.rs), so a ChatGPT login kept there would
+  // keep winning over the relay key written below and reach the relay as a
+  // bearer token. The official profile keeps its own value in its snapshot.
+  if (parsed.cli_auth_credentials_store !== undefined && parsed.cli_auth_credentials_store !== 'file') {
+    parsed.cli_auth_credentials_store = 'file'
+  }
 }
 
 function buildCodexRelayConfigTemplate(
@@ -792,7 +880,10 @@ function readCodexAuthMode(paths: string[]): 'apikey' | 'chatgpt' | null {
   if (kind !== 'mixed') return null
   const mode = nestedString(parsed, ['auth_mode']).trim().toLowerCase()
   if (mode === 'apikey' || mode === 'chatgpt') return mode
-  return 'chatgpt'
+  // Codex 0.155.1 `resolved_mode()`（login/src/auth/manager.rs）：没写 auth_mode 时
+  // 有 OPENAI_API_KEY 就按 Key 用，令牌被忽略。这里跟着它判，否则首页会把一份
+  // 实际走 Key 的配置显示成「官方账号」。
+  return 'apikey'
 }
 
 export function readCodexAuthTokens(
@@ -1330,6 +1421,7 @@ function createPlans(
           model,
           effortLevel: 'medium',
           skipDangerousModePermissionPrompt: true,
+          skipWebFetchPreflight: true,
           language: MANAGED_CLAUDE_RESPONSE_LANGUAGE,
           cleanupPeriodDays: MANAGED_CLAUDE_RETENTION_DAYS,
           ...(claudeStatusLineCommand ? { statusLine: claudeStatusLineSetting(claudeStatusLineCommand) } : {}),
@@ -1347,6 +1439,7 @@ function createPlans(
             },
             ide: { enabled: true },
             security: { auth: { selectedType: 'gemini-api-key' } },
+            modelConfigs: { customOverrides: buildGeminiRelayModelOverrides(geminiCliCompatibleModel(model)) },
           }),
         },
         {
@@ -1416,6 +1509,7 @@ function createMergePlans(
       env.ANTHROPIC_BASE_URL = siteBaseUrls.claude
       disableClaudeSelfUpdate(env)
       denyClaudeRelayTool(ensureRecord(parsed, 'permissions'))
+      skipClaudeWebFetchPreflight(parsed)
       ensureClaudeResponseLanguage(parsed)
       extendClaudeSessionRetention(parsed)
       if (claudeStatusLineCommand) applyClaudeStatusLine(parsed, claudeStatusLineCommand)
@@ -1435,6 +1529,7 @@ function createMergePlans(
         ensureRecord(ensureRecord(parsed, 'security'), 'auth').selectedType = 'gemini-api-key'
         disableGeminiSelfUpdate(parsed)
         extendGeminiSessionRetention(parsed)
+        applyGeminiRelayModelOverrides(parsed, geminiCliCompatibleModel(model))
         plans.push({ path: paths[0], content: jsonContent(parsed) })
       }
       // 读取失败必须中止保存，静默当空文件会把用户已有环境变量覆盖掉。
@@ -2007,6 +2102,7 @@ function createOfficialAccountPlans(
         if (Object.keys(envRecord).length === 0) delete parsed.env
       }
       allowClaudeRelayTool(parsed)
+      delete parsed.skipWebFetchPreflight
       delete parsed.model
       return [{ path: paths[0], content: jsonContent(parsed) }]
     }
@@ -2032,6 +2128,7 @@ function createOfficialAccountPlans(
         const parsed = requireJson(paths[0], '现有 Gemini settings.json')
         const auth = ensureRecord(ensureRecord(parsed, 'security'), 'auth')
         auth.selectedType = 'oauth-personal'
+        removeGeminiRelayModelOverrides(parsed)
         plans.push({ path: paths[0], content: jsonContent(parsed) })
       }
       const envContent = requireConfigText(paths[1], '现有 Gemini .env')
@@ -2068,7 +2165,13 @@ export function switchProviderToOfficialAccount(
   const configuredPaths = providerConfigPaths(provider, roots)
   for (const filePath of configuredPaths) assertSafeConfigPath(filePath, providerRoot, 'file')
 
-  const mode = providerAccountMode(inspectProviderConfig(provider, roots, siteBaseUrlsInput))
+  const inspection = inspectProviderConfig(provider, roots, siteBaseUrlsInput)
+  // Codex 自己的 ChatGPT 登录会把 auth.json 换成令牌、Key 置空，却不动 config.toml：
+  // 看上去已是官方，实际每次请求都把令牌发给当前账号的服务。这正是最需要切回
+  // 官方的半截状态，按「还在中转」处理，config.toml 才会一起换回官方那份。
+  const halfSwitchedCodex = provider === 'codex' && Boolean(inspection.actualBaseUrl)
+    && normalizeUrl(inspection.actualBaseUrl) === normalizeUrl(siteBaseUrlsInput.codex)
+  const mode = halfSwitchedCodex ? 'relay' : providerAccountMode(inspection)
   if (mode === 'official' && saveMode !== 'reset') throw new Error('当前已经在使用你自己的官方订阅账号，无需切换')
   if (mode === 'unknown') {
     throw new Error('当前配置不是星芒中转（可能是你自己填的第三方地址），为避免改坏配置已取消切换')
@@ -2080,4 +2183,142 @@ export function switchProviderToOfficialAccount(
   assertNoReparseComponents(path.dirname(providerRoot), 'Provider 配置根目录')
   ensureSafeDataDirectory(providerRoot, 'Provider 配置根目录')
   return executeFilePlans(plans, hooks, providerRoot)
+}
+
+// ---------------------------------------------------------------------------
+// 切换时把会抢道的官方凭据挪到一边
+//
+// Claude Code 2.1.277 在 `ANTHROPIC_AUTH_TOKEN` 之外，还会把 `~/.claude.json` 的
+// `primaryApiKey`（Anthropic Console 登录留下的 Key）以 `x-api-key` 同时发出去；
+// new-api rc.24 在 `/v1/messages` 上用 `x-api-key` 覆盖 `Authorization`
+// （middleware/auth.go），中转拿到的就是那把 Console Key，回 401。
+// 切到当前账号时把它挪进旁边的快照文件，切回官方时放回原处。claude.ai 订阅
+// 登录（.credentials.json / 钥匙串）不用挪：令牌一出现它就被整个忽略。
+// ---------------------------------------------------------------------------
+
+export const claudeConsoleKeySnapshotName = 'xingmang-claude-console-key.json'
+
+export interface ClaudeConsoleKeyTexts {
+  /** 改后的 ~/.claude.json；null = 不用改。 */
+  rootConfig: string | null
+  /** 改后的快照文件；null = 不用改。 */
+  snapshot: string | null
+}
+
+function claudeRootConfigJson(content: string | null): Record<string, unknown> {
+  return requireWorkspaceTrustJson(content, '现有 Claude Code ~/.claude.json')
+}
+
+function storedClaudeConsoleKey(content: string | null): string {
+  if (!content?.trim()) return ''
+  try {
+    const parsed = JSON.parse(content) as unknown
+    return isJsonRecord(parsed) && typeof parsed.primaryApiKey === 'string' ? parsed.primaryApiKey.trim() : ''
+  } catch {
+    return ''
+  }
+}
+
+/** 纯函数：把 primaryApiKey 从根配置移进快照。没有可挪的就两边都不动。 */
+export function moveClaudeConsoleKeyAsideTexts(rootContent: string | null): ClaudeConsoleKeyTexts {
+  const parsed = claudeRootConfigJson(rootContent)
+  const key = typeof parsed.primaryApiKey === 'string' ? parsed.primaryApiKey.trim() : ''
+  if (!key) return { rootConfig: null, snapshot: null }
+  delete parsed.primaryApiKey
+  return { rootConfig: jsonContent(parsed), snapshot: jsonContent({ primaryApiKey: key }) }
+}
+
+/**
+ * 纯函数：把快照里的 primaryApiKey 放回根配置并清空快照。根配置里已经有一把
+ * （用户在这期间又登录了 Console）就以那把为准，只清快照。
+ */
+export function restoreClaudeConsoleKeyTexts(rootContent: string | null, snapshotContent: string | null): ClaudeConsoleKeyTexts {
+  const stored = storedClaudeConsoleKey(snapshotContent)
+  if (!stored) return { rootConfig: null, snapshot: null }
+  const parsed = claudeRootConfigJson(rootContent)
+  const current = typeof parsed.primaryApiKey === 'string' ? parsed.primaryApiKey.trim() : ''
+  if (current) return { rootConfig: null, snapshot: '' }
+  parsed.primaryApiKey = stored
+  return { rootConfig: jsonContent(parsed), snapshot: '' }
+}
+
+function writeClaudeConsoleKeyTexts(
+  rootsInput: ProviderConfigRoots,
+  build: (rootContent: string | null, snapshotContent: string | null) => ClaudeConsoleKeyTexts,
+): boolean {
+  const roots = normalizeProviderConfigRoots(rootsInput)
+  // ~/.claude.json 与 ~/.claude/ 并列，事务根是主目录本身（同 trustClaudeWorkspace）。
+  const root = roots.userHome
+  const rootConfigPath = path.join(root, '.claude.json')
+  const snapshotPath = path.join(providerConfigRoot('claude', roots), claudeConsoleKeySnapshotName)
+  assertSafeConfigPath(rootConfigPath, root, 'file')
+  assertSafeConfigPath(snapshotPath, root, 'file')
+  const rootContent = requireConfigText(rootConfigPath, '现有 Claude Code ~/.claude.json', MAX_CLAUDE_ROOT_CONFIG_BYTES)
+  const snapshotContent = requireConfigText(snapshotPath, '已保存的 Claude 官方 Key')
+  const next = build(rootContent, snapshotContent)
+  const plans: FilePlan[] = []
+  if (next.snapshot !== null && (next.snapshot !== '' || snapshotContent !== null)) plans.push({ path: snapshotPath, content: next.snapshot })
+  if (next.rootConfig !== null) plans.push({ path: rootConfigPath, content: next.rootConfig })
+  if (plans.length === 0) return false
+  assertNoReparseComponents(path.dirname(root), '用户主目录')
+  ensureSafeDataDirectory(root, '用户主目录')
+  ensureSafeDataDirectory(providerConfigRoot('claude', roots), 'Provider 配置根目录')
+  // 快照先写：两阶段提交里任何一步失败都会整体回滚，Key 不会两边都没有。
+  executeFilePlans(plans, {}, root)
+  return true
+}
+
+/** 返回是否真的挪了一把 Key。 */
+export function moveClaudeConsoleKeyAside(rootsInput: ProviderConfigRoots = defaultProviderConfigRoots()): boolean {
+  return writeClaudeConsoleKeyTexts(rootsInput, (rootContent) => moveClaudeConsoleKeyAsideTexts(rootContent))
+}
+
+/** 返回是否改动了文件。 */
+export function restoreClaudeConsoleKey(rootsInput: ProviderConfigRoots = defaultProviderConfigRoots()): boolean {
+  return writeClaudeConsoleKeyTexts(rootsInput, restoreClaudeConsoleKeyTexts)
+}
+
+/**
+ * 这台电脑上是否已经有这个 CLI 的官方登录。只看文件是否在、字段是否在，不读、
+ * 不解码任何令牌。`null` = 看不出来（Codex 把登录放进系统凭据库时文件里没有）。
+ * 用途只有一个：切回官方后告诉用户要不要自己再登录一次。
+ */
+export function inspectOfficialLogin(
+  provider: ProviderId,
+  rootsInput: ProviderConfigRoots = defaultProviderConfigRoots(),
+): boolean | null {
+  const roots = normalizeProviderConfigRoots(rootsInput)
+  const providerRoot = providerConfigRoot(provider, roots)
+  switch (provider) {
+    case 'claude': {
+      // macOS 把令牌放在钥匙串，但登录时同样会写 ~/.claude.json 的 oauthAccount；
+      // /logout 会把它清掉，所以它是两个平台都靠得住的信号。
+      const credentials = path.join(providerRoot, '.credentials.json')
+      const rootConfig = path.join(roots.userHome, '.claude.json')
+      assertSafeConfigPath(credentials, providerRoot, 'file')
+      assertSafeConfigPath(rootConfig, roots.userHome, 'file')
+      let parsed: Record<string, unknown> | null = null
+      try {
+        parsed = claudeRootConfigJson(requireConfigText(rootConfig, '现有 Claude Code ~/.claude.json', MAX_CLAUDE_ROOT_CONFIG_BYTES))
+      } catch {
+        parsed = null
+      }
+      if (parsed && (isJsonRecord(parsed.oauthAccount) || (typeof parsed.primaryApiKey === 'string' && parsed.primaryApiKey.trim()))) return true
+      return Boolean(readText(credentials)?.trim())
+    }
+    case 'codex': {
+      const auth = readJson(providerConfigPaths('codex', roots)[1])
+      const kind = classifyCodexAuthProfile(auth)
+      if (kind === 'chatgpt' || kind === 'mixed') return true
+      const store = nestedString(readToml(providerConfigPaths('codex', roots)[0]), ['cli_auth_credentials_store']).trim().toLowerCase()
+      return store === 'keyring' || store === 'auto' ? null : false
+    }
+    case 'gemini': {
+      const credentials = path.join(providerRoot, 'oauth_creds.json')
+      assertSafeConfigPath(credentials, providerRoot, 'file')
+      return Boolean(readText(credentials)?.trim())
+    }
+    case 'grok':
+      return false
+  }
 }

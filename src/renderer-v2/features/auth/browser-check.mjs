@@ -33,6 +33,17 @@ async function open(query = '', app = false) {
   await page.locator('#root > *').first().waitFor({ timeout: fixtureReadyTimeoutMs })
   return page
 }
+// 「账号来源」默认收起：星芒账号不用点，历史账号先点底部那行（它会顺手选中历史账号）。
+async function chooseAccountSource(page, label) {
+  const segment = page.getByTestId('auth-source')
+  if (!await segment.count()) {
+    if (label === '星芒账号') return
+    await page.getByTestId('auth-source-expand').click()
+    await segment.waitFor()
+    return
+  }
+  await segment.getByRole('button', { name: label, exact: true }).click()
+}
 async function calls(page) { return page.evaluate(() => JSON.parse(document.documentElement.dataset.calls || '[]')) }
 
 test('login preserves drafts through legal documents and only authenticates after explicit agreement', async () => {
@@ -59,8 +70,9 @@ test('login preserves drafts through legal documents and only authenticates afte
 test('registration preserves its completed result when the following real login attempt fails', async () => {
   const page = await open('scenario=register&fail=1')
   try {
-    assert.equal(await page.getByTestId('register-email').getAttribute('placeholder'), '输入您的qq邮箱')
+    assert.equal(await page.getByTestId('register-email').getAttribute('placeholder'), '常用邮箱（如 QQ 邮箱）')
     await page.getByTestId('register-email').fill('person@163.com')
+    assert.equal(await page.getByTestId('register-user').inputValue(), 'person')
     await page.getByTestId('register-send-code').click()
     await page.getByTestId('register-send-code').filter({ hasText: '秒后重发' }).waitFor()
     assert.equal(await page.getByTestId('register-send-code').isDisabled(), true)
@@ -244,6 +256,85 @@ test('a failed detection from the previous account cannot lock or report an erro
   } finally { await page.close() }
 })
 
+test('the login form hides the historical source until asked and still logs in to the main account only', async () => {
+  const page = await open()
+  try {
+    assert.equal(await page.getByTestId('auth-source').count(), 0)
+    assert.equal(await page.getByTestId('login-remember').isChecked(), false)
+    assert.equal(await page.getByTestId('auth-agree').isChecked(), false)
+    await page.getByTestId('login-account').fill('fixture-member')
+    await page.getByTestId('login-password').fill('fixture-password')
+    await page.getByTestId('auth-agree').check()
+    await page.getByTestId('login-submit').click()
+    await page.waitForFunction(() => document.documentElement.dataset.calls?.includes('authenticated'))
+    assert.deepEqual((await calls(page)).find((item) => item.method === 'login').input, { username: 'fixture-member', password: 'fixture-password', siteId: 'solov' })
+  } finally { await page.close() }
+  const history = await open()
+  try {
+    await history.getByTestId('auth-source-expand').click()
+    assert.equal(await history.getByTestId('auth-source').getByRole('button', { name: '历史账号' }).getAttribute('aria-pressed'), 'true')
+    assert.equal(await history.getByTestId('auth-source-expand').count(), 0)
+    // Switching back keeps the picker open: the user already knows it is there.
+    await history.getByTestId('auth-source').getByRole('button', { name: '星芒账号' }).click()
+    assert.equal(await history.getByTestId('auth-source').count(), 1)
+  } finally { await history.close() }
+})
+
+test('registration fills the username from the email until the user edits it', async () => {
+  const page = await open('scenario=register')
+  try {
+    await page.getByTestId('register-email').fill('12345678@qq.com')
+    assert.equal(await page.getByTestId('register-user').inputValue(), '12345678')
+    await page.getByTestId('register-email').fill('a.very.long.mailbox.name.here@example.test')
+    assert.equal(await page.getByTestId('register-user').inputValue(), 'a.very.long.mailbox.')
+    await page.getByTestId('register-user').fill('picked-name')
+    await page.getByTestId('register-email').fill('other@example.test')
+    assert.equal(await page.getByTestId('register-user').inputValue(), 'picked-name')
+    await page.getByTestId('register-user').fill('')
+    await page.getByTestId('register-email').fill('again@example.test')
+    assert.equal(await page.getByTestId('register-user').inputValue(), 'again')
+    assert.equal(await page.getByTestId('register-invite').count(), 0)
+    await page.getByTestId('register-invite-toggle').click()
+    await page.waitForFunction(() => document.activeElement?.id === 'register-invite')
+    await page.getByTestId('register-invite').fill('6B4j')
+    await page.getByTestId('register-code').fill('123456')
+    await page.getByTestId('register-password').fill('fixture-password')
+    await page.getByTestId('register-password-confirm').fill('fixture-password')
+    await page.getByTestId('auth-agree').check()
+    await page.getByTestId('register-submit').click()
+    await page.waitForFunction(() => document.documentElement.dataset.calls?.includes('authenticated'))
+    assert.deepEqual((await calls(page)).find((item) => item.method === 'register').input, { email: 'again@example.test', username: 'again', password: 'fixture-password', verificationCode: '123456', affCode: '6B4j' })
+  } finally { await page.close() }
+})
+
+test('a taken username points at the username field instead of a generic failure', async () => {
+  const page = await open('scenario=register&usernameTaken=1')
+  try {
+    await page.getByTestId('register-email').fill('common@example.test')
+    await page.getByTestId('register-code').fill('123456')
+    await page.getByTestId('register-password').fill('fixture-password')
+    await page.getByTestId('register-password-confirm').fill('fixture-password')
+    await page.getByTestId('auth-agree').check()
+    await page.getByTestId('register-submit').click()
+    await page.getByText('这个用户名已经有人用了，换一个试试', { exact: true }).waitFor()
+    await page.waitForFunction(() => document.activeElement?.id === 'register-user')
+    assert.equal(await page.getByTestId('auth-error').count(), 0)
+    assert.equal(await page.getByTestId('register-password').inputValue(), 'fixture-password')
+    // The name the user now types is theirs; changing the email must not take it back.
+    await page.getByTestId('register-user').fill('common2')
+    await page.getByTestId('register-email').fill('common@example.org')
+    assert.equal(await page.getByTestId('register-user').inputValue(), 'common2')
+  } finally { await page.close() }
+})
+
+test('an invitation link opens the registration with the invitation field already shown', async () => {
+  const page = await open('scenario=register&invite=6B4j')
+  try {
+    assert.equal(await page.getByTestId('register-invite').inputValue(), '6B4j')
+    assert.equal(await page.getByTestId('register-invite-toggle').count(), 0)
+  } finally { await page.close() }
+})
+
 test('pending registration blocks close and mode changes then focuses the password on return to login', async () => {
   const page = await open('scenario=register&pending=register&fail=1')
   try {
@@ -364,7 +455,7 @@ test('source selection restores only that source credentials and makes login exp
   try {
     await page.waitForFunction(() => document.querySelector('[data-testid="login-password"]')?.value === 'solov-remembered-password')
     assert.equal(await page.getByTestId('login-account').inputValue(), 'same@example.test')
-    await page.getByTestId('auth-source').getByRole('button', { name: '历史账号' }).click()
+    await chooseAccountSource(page, '历史账号')
     await page.waitForFunction(() => document.querySelector('[data-testid="login-password"]')?.value === 'solov-api-remembered-password')
     assert.doesNotMatch(await page.getByTestId('login-dialog').innerText(), /Sub2API|NewAPI|new-api|api\.solov|xm\.solov/i)
     await page.getByTestId('auth-agree').check()
@@ -380,7 +471,7 @@ test('source selection restores only that source credentials and makes login exp
 test('late credentials from another source cannot overwrite a typed password', async () => {
   const page = await open('remembered=1&pending=remembered-solov&pending=remembered-solov-api')
   try {
-    await page.getByTestId('auth-source').getByRole('button', { name: '历史账号' }).click()
+    await chooseAccountSource(page, '历史账号')
     await page.getByTestId('login-account').fill('typed@example.test')
     await page.getByTestId('login-password').fill('typed-password')
     await page.evaluate(() => { window.authHarness.release('remembered-solov'); window.authHarness.release('remembered-solov-api') })
@@ -394,7 +485,7 @@ test('late credentials from another source cannot overwrite a typed password', a
 test('a pending explicit login locks its source and 2FA retains its source without retrying elsewhere', async () => {
   const page = await open('pending=login&twoFactor=1')
   try {
-    await page.getByTestId('auth-source').getByRole('button', { name: '历史账号' }).click()
+    await chooseAccountSource(page, '历史账号')
     await page.getByTestId('login-account').fill('same@example.test')
     await page.getByTestId('login-password').fill('test-password')
     await page.getByTestId('auth-agree').check()
@@ -417,7 +508,7 @@ test('a pending explicit login locks its source and 2FA retains its source witho
 test('historical account recovery opens its official source and never sends a reset to the primary source', async () => {
   const page = await open()
   try {
-    await page.getByTestId('auth-source').getByRole('button', { name: '历史账号' }).click()
+    await chooseAccountSource(page, '历史账号')
     await page.getByTestId('login-account').fill('same@example.test')
     await page.getByTestId('login-forgot').click()
     await page.getByTestId('forgot-official-help').waitFor()
@@ -430,13 +521,13 @@ test('historical account recovery opens its official source and never sends a re
     assert.equal(await page.getByTestId('auth-source').getByRole('button', { name: '历史账号' }).getAttribute('aria-pressed'), 'true')
     assert.equal(await page.getByTestId('login-account').inputValue(), 'same@example.test')
     await page.getByTestId('login-forgot').click()
-    await page.getByTestId('auth-source').getByRole('button', { name: '星芒账号' }).click()
+    await chooseAccountSource(page, '星芒账号')
     await page.getByTestId('forgot-send').click()
     await page.getByTestId('forgot-token').waitFor()
     assert.deepEqual((await calls(page)).at(-1), { method: 'send-reset', input: { email: 'same@example.test', siteId: 'solov' } })
     await page.getByTestId('forgot-token').fill('old-source-token')
-    await page.getByTestId('auth-source').getByRole('button', { name: '历史账号' }).click()
-    await page.getByTestId('auth-source').getByRole('button', { name: '星芒账号' }).click()
+    await chooseAccountSource(page, '历史账号')
+    await chooseAccountSource(page, '星芒账号')
     assert.equal(await page.getByTestId('forgot-token').count(), 0)
     assert.equal(await page.getByTestId('forgot-email').inputValue(), 'same@example.test')
   } finally { await page.close() }
@@ -450,7 +541,7 @@ test('the actual add-account flow preserves the current login on failure and acc
       const previous = await page.evaluate(() => window.xingmang.getAccountSession())
       await page.getByRole('button', { name: '切换账号', exact: true }).click()
       await page.getByTestId('account-add').click()
-      await page.getByTestId('auth-source').getByRole('button', { name: target === 'solov' ? '星芒账号' : '历史账号', exact: true }).click()
+      await chooseAccountSource(page, target === 'solov' ? '星芒账号' : '历史账号')
       await page.getByTestId('login-account').fill('same@example.test')
       await page.getByTestId('login-password').fill('same-test-password')
       await page.getByTestId('auth-agree').check()
@@ -476,13 +567,13 @@ test('account settings follow the selected source so the verification entry matc
     await page.getByTestId('login-dialog').waitFor()
     await page.waitForFunction(() => document.documentElement.dataset.statusSites === 'solov')
     assert.equal(await page.getByTestId('auth-verification-help').count(), 0)
-    await page.getByTestId('auth-source').getByRole('button', { name: '历史账号' }).click()
+    await chooseAccountSource(page, '历史账号')
     await page.getByTestId('auth-verification-help').waitFor()
     assert.equal(await page.evaluate(() => document.documentElement.dataset.statusSites), 'solov,solov-api')
     assert.doesNotMatch(await page.getByTestId('login-dialog').innerText(), /Sub2API|NewAPI|new-api|api\.solov|xm\.solov|站点/i)
     await page.getByTestId('auth-verification-help').click()
     await page.waitForFunction(() => document.documentElement.dataset.calls?.includes('help'))
-    await page.getByTestId('auth-source').getByRole('button', { name: '星芒账号' }).click()
+    await chooseAccountSource(page, '星芒账号')
     await page.waitForFunction(() => document.querySelector('[data-testid="auth-verification-help"]') === null)
   } finally { await page.close() }
 })
@@ -491,7 +582,7 @@ test('a slow status read from the previous source cannot overwrite the selected 
   const page = await open('turnstile=solov&pending=status-solov')
   try {
     await page.getByTestId('login-dialog').waitFor()
-    await page.getByTestId('auth-source').getByRole('button', { name: '历史账号' }).click()
+    await chooseAccountSource(page, '历史账号')
     await page.waitForFunction(() => document.documentElement.dataset.statusSites === 'solov,solov-api')
     await page.evaluate(() => window.authHarness.release('status-solov'))
     // A round trip through the legal document proves the released promise already settled.
@@ -541,7 +632,10 @@ test('password fields warn while Caps Lock is on and stop warning once it is off
 test('the historical account source and the registration passwords carry the same Caps Lock warning', async () => {
   const page = await open()
   try {
-    await page.getByTestId('auth-source').getByRole('button', { name: '历史账号' }).click()
+    await chooseAccountSource(page, '历史账号')
+    // Switching the source refocuses the empty account field on the next frame;
+    // focusing the password before that lands would lose the warning to the blur.
+    await page.waitForFunction(() => document.activeElement?.getAttribute('data-testid') === 'login-account')
     await page.getByTestId('login-password').focus()
     await typeWithCapsLock(page, 'login-password', true)
     await page.getByTestId('login-password-caps').waitFor()

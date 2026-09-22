@@ -22,7 +22,7 @@ const desktopProfile = path.join(root, 'desktop-profile');
 fs.mkdirSync(path.join(application, 'platform'), { recursive: true });
 fs.mkdirSync(desktopProfile);
 fs.writeFileSync(path.join(application, 'package.json'), JSON.stringify({ name: 'xingmang-ai-manager', version: '1.0.0', main: 'platform/entry.js' }));
-for (const relative of ['platform/entry', 'acceleration-worker-entry', 'acceleration-electron-profile', 'path-identity']) {
+for (const relative of ['platform/entry', 'acceleration-worker-entry', 'uninstall-cleanup-entry', 'acceleration-electron-profile', 'path-identity']) {
   const source = fs.readFileSync(path.join(repo, 'electron', relative + '.ts'), 'utf8');
   fs.writeFileSync(path.join(application, relative + '.js'), ts.transpileModule(source, {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true },

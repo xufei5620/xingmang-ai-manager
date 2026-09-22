@@ -276,6 +276,13 @@ describe('Windows system proxy lease', () => {
     await f.service.restore()
   })
 
+  it('lets a caller on a cold PowerShell raise the per-command limit without changing the default', async () => {
+    const f = fixture()
+    await createWindowsSystemProxy({ ...f.options, commandTimeoutMs: 45_000 }).enable(18765)
+    expect(f.execute.mock.calls.length).toBeGreaterThan(0)
+    for (const [, options] of f.execute.mock.calls) expect(options).toMatchObject({ timeoutMs: 45_000 })
+  })
+
   it('validates ports, platform and journal paths before requesting native changes', async () => {
     const f = fixture()
     expect(() => f.service.enable(80)).toThrow('本地代理端口无效')

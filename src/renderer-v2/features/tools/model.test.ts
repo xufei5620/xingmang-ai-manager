@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { ProviderConfigSummary, ProviderId } from '../../../../electron/ipc-contract'
-import { canUninstallTool, codexDesktopUpdateKind, configDirectoryMenuItem, connectionReady, externalInstallHint, isExternallyManagedInstall, presentTools, providerFor, recommendedVersionVerb, rollbackVersion, sourceFor, toolAvailability, toolInstallDirectory, updateCheckFailure, versionSubtitle, type ToolboxSnapshot, type ToolPresentation } from './model'
+import { accountSwitchTarget, canUninstallTool, codexDesktopUpdateKind, configDirectoryMenuItem, connectionReady, externalInstallHint, isExternallyManagedInstall, presentTools, providerFor, recommendedVersionVerb, rollbackVersion, sourceFor, toolAvailability, toolInstallDirectory, updateCheckFailure, versionSubtitle, type ToolboxSnapshot, type ToolPresentation } from './model'
 import {
   writeManualSourceMarker,
   type SourceMarkerStorage,
@@ -71,8 +71,19 @@ describe('renderer tool source', () => {
 
     it('never overrides an official sign-in', () => {
       const storage = memoryStorage()
-      expect(sourceFor({ ...relayConfig(), configurationOwnership: 'changed', codexAuthMode: 'chatgpt' }, 'codex', storage)).toBe('official')
+      expect(sourceFor({ ...relayConfig(), configurationOwnership: 'changed', codexAuthMode: 'chatgpt', actualBaseUrl: '' }, 'codex', storage)).toBe('official')
       expect(sourceFor({ ...relayConfig(), configurationOwnership: 'changed', authType: 'oauth-personal' }, 'gemini', storage)).toBe('official')
+    })
+
+    it('calls a ChatGPT sign-in over a config that still points at the account service changed, not official', () => {
+      // Codex sends the ChatGPT token to whatever config.toml points at: this
+      // half-switched state fails every request with 401 while looking official.
+      const storage = memoryStorage()
+      const halfSwitched = { ...relayConfig(), hasApiKey: false, matchesRelay: false, codexAuthMode: 'chatgpt' as const }
+      expect(sourceFor(halfSwitched, 'codex', storage)).toBe('changed')
+      expect(sourceFor({ ...halfSwitched, actualBaseUrl: 'https://xm.solov.cc/v1/' }, 'codex', storage)).toBe('changed')
+      expect(connectionReady(halfSwitched, 'codex', storage)).toBe(false)
+      expect(sourceFor({ ...halfSwitched, actualBaseUrl: '' }, 'codex', storage)).toBe('official')
     })
 
     it('falls back to the third-party reading once the configuration points elsewhere', () => {
@@ -90,7 +101,7 @@ describe('renderer tool source', () => {
     writeManualSourceMarker(storage, config.baseUrl, 'codex', true)
 
     expect(
-      sourceFor({ ...config, codexAuthMode: 'chatgpt' }, 'codex', storage),
+      sourceFor({ ...config, codexAuthMode: 'chatgpt', actualBaseUrl: '' }, 'codex', storage),
     ).toBe('official')
     expect(
       sourceFor(
@@ -145,7 +156,7 @@ describe('renderer tool source', () => {
     expect(sourceFor(matched, 'codex', storage)).toBe('manual')
     expect(sourceFor({ ...matched, configurationOwnership: 'manual' }, 'codex', null)).toBe('manual')
     expect(sourceFor({ ...matched, configurationOwnership: 'account' }, 'codex', storage)).toBe('account')
-    expect(sourceFor({ ...matched, codexAuthMode: 'chatgpt' }, 'codex', storage)).toBe('official')
+    expect(sourceFor({ ...matched, codexAuthMode: 'chatgpt', actualBaseUrl: '' }, 'codex', storage)).toBe('official')
     expect(sourceFor({ ...matched, authType: 'oauth-personal' }, 'gemini', null)).toBe('official')
     const broken: SourceMarkerStorage = { getItem() { throw new Error('unavailable') }, setItem() {}, removeItem() {} }
     expect(sourceFor(matched, 'codex', broken)).toBe('account')
@@ -462,5 +473,30 @@ describe('renderer config directory menu entry', () => {
       system: { clis: { claude: status, codex: status, grok: status, gemini: status }, desktopApps: { codex: status } },
     } as unknown as ToolboxSnapshot, memoryStorage())
     expect(rows.every((row) => !row.configDirectoryReady)).toBe(true)
+  })
+})
+
+describe('renderer one-click account switch entry', () => {
+  const installed = { installed: true } as ToolPresentation['status']
+  it('offers the current account to any tool on its official account', () => {
+    for (const provider of ['claude', 'codex', 'gemini'] as const) {
+      expect(accountSwitchTarget({ provider, source: 'official', status: installed })).toBe('account')
+    }
+  })
+
+  it('offers the official account back only where a one-click official login works', () => {
+    for (const source of ['account', 'manual', 'changed'] as const) {
+      expect(accountSwitchTarget({ provider: 'claude', source, status: installed })).toBe('official')
+      expect(accountSwitchTarget({ provider: 'codex', source, status: installed })).toBe('official')
+      // 个人 Google 账号已不能用 Gemini CLI；Grok 没有官方来源。
+      expect(accountSwitchTarget({ provider: 'gemini', source, status: installed })).toBeNull()
+      expect(accountSwitchTarget({ provider: 'grok', source, status: installed })).toBeNull()
+    }
+  })
+
+  it('offers nothing for third-party, missing, or uninstalled tools', () => {
+    expect(accountSwitchTarget({ provider: 'claude', source: 'unknown', status: installed })).toBeNull()
+    expect(accountSwitchTarget({ provider: 'claude', source: 'missing', status: installed })).toBeNull()
+    expect(accountSwitchTarget({ provider: 'claude', source: 'official', status: { installed: false } as ToolPresentation['status'] })).toBeNull()
   })
 })

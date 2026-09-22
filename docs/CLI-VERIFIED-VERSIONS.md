@@ -124,10 +124,12 @@ Codex 那时 `recommended` 是 `null`，也就是那两天点过「更新」的�
 |---|---|---|---|---|
 | 四家的自更新 | 见上一节 | 都开着 | 关掉 | 不关名单等于白钉 |
 | Claude 的 Artifact 工具 | `~/.claude/settings.json` 的 `permissions.deny` | 不禁 | 禁掉 | 中转 Key 用不了它，且它的 schema 曾整轮 400 |
+| Claude 的读网页预检 | `skipWebFetchPreflight` | 每抓一个域名先问 `api.anthropic.com` | 跳过（只在星芒来源下写，切回官方删掉） | 国内连不上那台主机，WebFetch 要么立即失败、要么等 30 秒后失败 |
 | Claude 的命令确认 | `permissions.defaultMode` | `default`（逐条问） | `bypassPermissions` | 本产品的卖点就是不用自己配、也不用自己按确认 |
 | Claude 的回复语言 | `language` | 未设（跟着对话语言走） | `简体中文` | 只靠 AGENTS.md 撑不住：克隆来的项目大多已有说明文件，模板不会生成 |
 | Claude 的记录保留期 | `cleanupPeriodDays` | 30 天 | 365 天 | 记录页、「接着聊」、导出都建立在文件还在的前提上 |
 | Claude 的状态行 | `statusLine` | 未设（终端里没有状态行） | 指向随包脚本的一条命令 | 用户按 token 付费，却看不到在用哪个模型、上下文吃到几成 |
+| Gemini 后台功能用的型号 | `modelConfigs.customOverrides` | 联网搜索、读网页、压缩、子代理、会话摘要、Auto 各自写死 Google 官方型号名 | 这批官方型号名统一改写成当前配的中转型号（只在星芒来源下写，切回官方删掉） | 中转没有这些型号时，这些功能默默重试几分钟后失败 |
 | Gemini 的记录保留期 | `general.sessionRetention.maxAge` | `"30d"` | `"365d"` | 同上 |
 | Gemini 的 IDE 模式 | `ide.enabled` | 关 | 开 | 装在 IDE 里的客户少一步 |
 | 目录信任 | 见 `docs/WORKSPACE-TRUST.md` | 每次问 | 本软件打开的目录替用户信任 | 同上 |
@@ -171,6 +173,13 @@ Codex 那时 `recommended` 是 `null`，也就是那两天点过「更新」的�
   都是 `spawn(命令, [], { shell: true })`，Node 在 Windows 上会补 `cmd.exe /d /s /c` 与外层
   引号，所以 `"<node>" "<脚本>"` 这种写法是稳的。**真机没演过，出包后要看一眼。**
 
+- **Claude Code 2.1.277 的读网页预检 —— 跑起来看到了**。本机假接口当中转、出网代理把官方主机
+  全部拒掉或静默丢包，让模型调一次 WebFetch 抓本机的 https 页面：拒掉时工具立刻报
+  `Unable to verify if domain … is safe to fetch. This may be due to network restrictions or
+  enterprise security policies blocking claude.ai.`；丢包时 debug 日志是
+  `WebFetch tool error (30006ms) … EDEADLINE_PREFLIGHT`，干等 30 秒。settings.json 顶层写
+  `"skipWebFetchPreflight": true` 后同样条件 1.2 秒抓到，且不再请求 `/api/web/domain_info`。
+  另外确认了 `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` **不会**跳过这一步。2.1.278 表现相同。
 - **Claude Code 2.1.277 — 跑起来看到了**。`~/.claude/settings.json` 写
   `{"language":"简体中文"}`，把 `ANTHROPIC_BASE_URL` 指到本机假接口（原样落盘请求体、一律回
   500）后跑 `claude -p "hi"`，请求体的系统提示里出现
@@ -185,6 +194,14 @@ Codex 那时 `recommended` 是 `null`，也就是那两天点过「更新」的�
   Use a large value for long retention`，校验失败时的提示原文是
   `cleanupPeriodDays must be at least 1. To keep transcripts for a long time, set a large number
   (e.g. 3650 for ~10 years).`——**所以「不删」只能靠写一个大数，写 0 会被拒**。
+- **Gemini CLI 0.60.0 的后台型号 —— 跑起来看到了**。本机假接口只放行中转型号
+  `gemini-3.8-flash-high`、其余型号一律回「无可用渠道」。不做改写时：联网搜索与读网页发的是
+  `gemini-3-flash-preview`，默默重试 2.5 分钟以上；`/compress` 发
+  `gemini-3.1-pro-preview-customtools`，转圈一分多钟；有过上一次会话时，启动就用
+  `gemini-3.1-flash-lite` 写摘要；`-m auto` 先用 flash-lite 分类再用 `gemini-3.1-pro-preview`，
+  77 秒后报错。用 `config-files.ts` 生成的 settings.json 复跑联网搜索，`googleSearch` 那次请求
+  打到 `gemini-3.8-flash-high`，全程 2.2 秒。型号表出自 bundle 的 `DEFAULT_MODEL_CONFIGS`，抬
+  Gemini 推荐版本时要重新核。
 - **Gemini CLI 0.60.0 — 读 bundle 得出**。settings schema 里 `general.sessionRetention` 的
   `enabled` 默认 `true`、`maxAge` 默认 `"30d"`、`minRetention` 默认 `"1d"`；`maxAge` 的解析是
   `/^(\d+)([dhwm])$/`，`"365d"` 合法。要紧的是 `getDefaultsFromSchema` **会递归补齐嵌套默认
