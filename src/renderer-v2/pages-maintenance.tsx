@@ -341,7 +341,10 @@ export function HealthPage({
           </Button>
         }
       />
-      <ResultNotice {...operation} />
+      <ResultNotice
+        {...operation}
+        onReveal={(path) => api.revealExportedFile(path)}
+      />
       <Card
         title="连接自检"
         meta="用每个工具配置里真正写着的密钥和模型各测一次；装好的外部客户端也一起测。上面的检查只证明网络通，这一条证明你现在能用。"
@@ -459,7 +462,12 @@ export function HealthPage({
                 'export',
                 () => api.exportDiagnostics(),
                 (result) =>
-                  result ? `诊断报告已导出：${result.outputPath}` : null,
+                  result
+                    ? {
+                        text: `诊断报告已导出：${result.outputPath}`,
+                        revealPath: result.outputPath,
+                      }
+                    : null,
               )
             }
           >
@@ -599,7 +607,10 @@ export function FeedbackPage({
           </Button>
         }
       />
-      <ResultNotice {...operation} />
+      <ResultNotice
+        {...operation}
+        onReveal={(path) => api.revealExportedFile(path)}
+      />
       <Card padding="none">
         <ListState
           page="feedback"
@@ -699,7 +710,12 @@ export function FeedbackPage({
                   'export',
                   () => api.exportFeedbackReport(report.id),
                   (result) =>
-                    result ? `诊断报告已导出：${result.outputPath}` : null,
+                    result
+                      ? {
+                          text: `反馈报告已导出：${result.outputPath}`,
+                          revealPath: result.outputPath,
+                        }
+                      : null,
                 )
               }
             >
@@ -708,7 +724,10 @@ export function FeedbackPage({
           </>
         }
       >
-        <ResultNotice {...operation} />
+        <ResultNotice
+          {...operation}
+          onReveal={(path) => api.revealExportedFile(path)}
+        />
         <Textarea
           aria-label="脱敏反馈报告"
           readOnly
@@ -754,7 +773,10 @@ export function FeedbackPage({
         <pre className="v2-business-code">
           {JSON.stringify(selected?.detail, null, 2)}
         </pre>
-        <ResultNotice {...operation} />
+        <ResultNotice
+          {...operation}
+          onReveal={(path) => api.revealExportedFile(path)}
+        />
       </Drawer>
       <Dialog
         open={clearOpen}
@@ -1753,7 +1775,7 @@ export function SettingsPage({
         <>
           {row(
             '开机自动启动',
-            systemState?.startup.note ?? '登录电脑后自动打开工具箱',
+            systemState?.startup.note ?? '开机后在托盘里待命，不弹窗口',
             systemApi && systemState?.startup.supported ? (
               <Switch
                 aria-label="开机自动启动"

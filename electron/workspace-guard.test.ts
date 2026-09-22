@@ -93,6 +93,15 @@ describe('buildSensitiveWorkspacePrompt', () => {
     expect(prompt.continueIndex).not.toBe(prompt.cancelIndex)
   })
 
+  it('offers to create a project folder for users who do not have one yet', () => {
+    const prompt = buildSensitiveWorkspacePrompt('desktop')
+
+    expect(prompt.buttons[prompt.createIndex]).toBe('新建一个项目文件夹')
+    expect(prompt.createIndex).toBe(0)
+    expect(new Set([prompt.createIndex, prompt.continueIndex, prompt.cancelIndex]).size).toBe(3)
+    expect(prompt.detail).toContain('新建一个项目文件夹')
+  })
+
   it('describes every kind in Chinese', () => {
     for (const kind of ['home', 'drive-root', 'desktop', 'downloads', 'documents'] as const) {
       expect(buildSensitiveWorkspacePrompt(kind).message).toContain(sensitiveWorkspaceLabel(kind))

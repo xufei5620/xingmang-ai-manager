@@ -542,6 +542,28 @@ describe('diagnostics', () => {
     expect(git?.summary).toContain('git-scm.com')
   })
 
+  it('explains the macOS git/python3 shims instead of a bare "not installed"', async () => {
+    const home = temporaryHome()
+    const input = { ...dependencies(home), platform: 'darwin' as const }
+    const previous = input.inspectTool!
+    input.inspectTool = async (tool, signal) =>
+      tool === 'git' || tool === 'python'
+        ? { installed: false, version: null, path: null, commandLineToolsShim: true }
+        : previous(tool, signal)
+
+    const report = await runDiagnostics(input)
+
+    const git = report.items.find((item) => item.code === 'RUNTIME_GIT')
+    const python = report.items.find((item) => item.code === 'RUNTIME_PYTHON')
+    expect(git).toMatchObject({ state: 'warn', details: { installed: false } })
+    expect(git?.summary).toContain('macOS 自带的 git 只是个空壳')
+    expect(git?.summary).toContain('xcode-select --install')
+    // PowerShell 那句只在 Windows 成立。
+    expect(git?.summary).not.toContain('PowerShell')
+    expect(python).toMatchObject({ state: 'warn' })
+    expect(python?.summary).toContain('macOS 自带的 python3 只是个空壳')
+  })
+
   it('passes the Git check when Git is present', async () => {
     const home = temporaryHome()
     const report = await runDiagnostics(dependencies(home))

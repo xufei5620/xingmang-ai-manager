@@ -3,6 +3,7 @@ import {
   Archive,
   ChevronLeft,
   ChevronRight,
+  FolderOpen,
   RefreshCw,
   Search,
   XCircle,
@@ -144,15 +145,26 @@ export function useResource<T>(load: () => Promise<T>) {
   }, [reload])
   return { data, setData, loading, error, reload }
 }
+/**
+ * 导出类操作成功后，除了那句话还要带上写出的文件，好让提示条给一颗「打开所在
+ * 位置」。路径只拿来回传给主进程，主进程只认它自己刚写过的文件。
+ */
+export interface OperationNotice {
+  text: string
+  revealPath: string
+}
 export function useOperation() {
   const [busy, setBusy] = useState('')
   const [message, setMessage] = useState('')
+  const [revealPath, setRevealPath] = useState('')
   const [error, setError] = useState('')
   const lock = useRef(false)
   const execute = async <T,>(
     name: string,
     action: () => Promise<T>,
-    success: string | ((result: T) => string | null) = '操作已完成',
+    success:
+      | string
+      | ((result: T) => string | OperationNotice | null) = '操作已完成',
   ) => {
     if (lock.current) return false
     lock.current = true
@@ -160,13 +172,19 @@ export function useOperation() {
     setBusy(name)
     setError('')
     setMessage('')
+    setRevealPath('')
     try {
       const result = await action()
       // A native save dialog the user dismisses resolves with null instead of
       // throwing, so a resolver may decline the success line rather than let the
       // page claim an export that never happened.
       const notice = typeof success === 'function' ? success(result) : success
-      if (notice) setMessage(notice)
+      if (typeof notice === 'string') {
+        if (notice) setMessage(notice)
+      } else if (notice) {
+        setMessage(notice.text)
+        setRevealPath(notice.revealPath)
+      }
       return true
     } catch (cause) {
       setError(errorMessage(cause))
@@ -180,20 +198,69 @@ export function useOperation() {
   return {
     busy,
     message,
+    revealPath,
     error,
     execute,
     clear: () => {
       setMessage('')
+      setRevealPath('')
       setError('')
     },
   }
 }
+/**
+ * 定位失败（文件被挪走、被删）只在按钮旁边说一句，不顶掉上面那句「已导出」：
+ * 用户还要照着那串路径自己去找。
+ */
+function RevealExportedFile({
+  path,
+  onReveal,
+}: {
+  path: string
+  onReveal: (path: string) => Promise<unknown>
+}) {
+  const [busy, setBusy] = useState(false)
+  const [failure, setFailure] = useState('')
+  return (
+    <>
+      <Button
+        size="sm"
+        variant="ghost"
+        icon={FolderOpen}
+        loading={busy}
+        onClick={async () => {
+          setBusy(true)
+          setFailure('')
+          try {
+            await onReveal(path)
+          } catch (cause) {
+            setFailure(errorMessage(cause))
+          } finally {
+            setBusy(false)
+          }
+        }}
+        testId="result-notice-reveal"
+      >
+        打开所在位置
+      </Button>
+      {failure && (
+        <em className="v2-business-notice-detail" role="alert">
+          {failure}
+        </em>
+      )}
+    </>
+  )
+}
 export function ResultNotice({
   error,
   message,
+  revealPath,
+  onReveal,
 }: {
   error?: string
   message?: string
+  revealPath?: string
+  onReveal?: (path: string) => Promise<unknown>
 }) {
   // A raw npm/OS failure reaching this banner is unreadable on its own; when
   // the catalog can name it, its wording leads and the backend sentence stays
@@ -218,6 +285,9 @@ export function ResultNotice({
     <div className="v2-business-notice" role="status">
       <Pill tone="ok">已完成</Pill>
       <span>{message}</span>
+      {revealPath && onReveal && (
+        <RevealExportedFile key={revealPath} path={revealPath} onReveal={onReveal} />
+      )}
     </div>
   ) : null
 }
