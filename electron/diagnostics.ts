@@ -30,7 +30,6 @@ import type { ToolConfigOwnership } from './tool-config-ownership'
 import {
   inspectWindowsElevationCapability,
   resolveWindowsPowerShellExecutable,
-  windowsStandardAccountAdvice,
   type WindowsElevationCapability,
 } from './windows-elevation'
 
@@ -969,7 +968,7 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
         if (capability === 'standard') {
           return {
             state: 'warn',
-            summary: `当前以普通用户权限运行。${windowsStandardAccountAdvice()}自动安装 Node.js、Codex 桌面端时会用到它；也可以请 IT 先装好 Node.js LTS 再回来点「重新检测」`,
+            summary: '当前以普通用户权限运行。这个 Windows 账号不在管理员组，自动安装 Node.js、Codex 桌面端时会要求输入一个管理员账号的密码；公司或学校的电脑请联系 IT 协助，也可以请 IT 先装好 Node.js LTS 再回来点「重新检测」',
             details: { elevated, required: false, canElevate: false },
           }
         }
