@@ -1,5 +1,6 @@
 import { cliCatalog, isProviderId } from './catalog'
 import type { InstallationQueueSnapshot } from './installation-queue'
+import type { UpdateSnapshot } from './updater'
 
 export interface InterruptibleInstallTask {
   /** 队列 key，只用于日志与测试，不面向用户。 */
@@ -41,4 +42,21 @@ export function resolveInterruptibleInstallTask(
     if (!first) first = { key, description, count }
   }
   return first ? { ...first, count } : null
+}
+
+export interface InstallableUpdateOnQuit {
+  /** 已经下载并校验过的版本号；快照里没有时为 null，文案要能少了它也说得通。 */
+  version: string | null
+}
+
+/**
+ * 退出时值得问一句「顺手装上吗」的，只有「下载并校验完成、且这一份还没安装失败过」
+ * 这一种状态。更新器刻意关掉了退出时自动安装（`updater.ts` 的 `autoInstallOnAppQuit
+ * = false`），安装必须由用户点头才发生；而 `downloaded` 带着 `error` 说明安装器上一次
+ * 已经启动过并失败了，`requestInstall` 不会再跑第二遍，再问一次只会得到一个什么都
+ * 不做的「安装并退出」。
+ */
+export function resolveInstallableUpdateOnQuit(snapshot: UpdateSnapshot): InstallableUpdateOnQuit | null {
+  if (snapshot.phase !== 'downloaded' || snapshot.error || snapshot.development) return null
+  return { version: snapshot.availableVersion }
 }

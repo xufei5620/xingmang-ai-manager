@@ -247,10 +247,10 @@ describe('window close coordination', () => {
   })
 
   it('confirms before a direct quit and keeps the window when the user stays', async () => {
-    const confirmQuitWhileBusy = vi.fn<NonNullable<WindowLifecycleOptions['confirmQuitWhileBusy']>>(async (): Promise<QuitConfirmation> => 'cancel')
-    const { options, lifecycle } = fixture({ readPreference: () => 'quit', confirmQuitWhileBusy })
+    const confirmQuit = vi.fn<NonNullable<WindowLifecycleOptions['confirmQuit']>>(async (): Promise<QuitConfirmation> => 'cancel')
+    const { options, lifecycle } = fixture({ readPreference: () => 'quit', confirmQuit })
     expect(await lifecycle.requestClose()).toBe('cancelled')
-    expect(confirmQuitWhileBusy).toHaveBeenCalledOnce()
+    expect(confirmQuit).toHaveBeenCalledOnce()
     expect(options.show).toHaveBeenCalledOnce()
     expect(options.prepareToQuit).not.toHaveBeenCalled()
     expect(options.quit).not.toHaveBeenCalled()
@@ -258,30 +258,89 @@ describe('window close coordination', () => {
   })
 
   it('confirms the tray quit too, and proceeds once the user accepts', async () => {
-    const confirmQuitWhileBusy = vi.fn<NonNullable<WindowLifecycleOptions['confirmQuitWhileBusy']>>(async (): Promise<QuitConfirmation> => 'quit')
-    const { options, lifecycle } = fixture({ readPreference: () => 'tray', confirmQuitWhileBusy })
+    const confirmQuit = vi.fn<NonNullable<WindowLifecycleOptions['confirmQuit']>>(async (): Promise<QuitConfirmation> => 'quit')
+    const { options, lifecycle } = fixture({ readPreference: () => 'tray', confirmQuit })
     expect(await lifecycle.requestQuit()).toBe('quit-requested')
-    expect(confirmQuitWhileBusy).toHaveBeenCalledOnce()
+    expect(confirmQuit).toHaveBeenCalledOnce()
     expect(options.hide).not.toHaveBeenCalled()
     expect(options.quit).toHaveBeenCalledOnce()
   })
 
-  it('does not confirm twice on the prompt path, whose own dialog already warns about running tasks', async () => {
-    const confirmQuitWhileBusy = vi.fn<NonNullable<WindowLifecycleOptions['confirmQuitWhileBusy']>>(async (): Promise<QuitConfirmation> => 'cancel')
+  it('installs the downloaded update before quitting when the user takes the offer', async () => {
+    const installDownloadedUpdate = vi.fn()
     const { options, lifecycle } = fixture({
-      requestCloseDecision: vi.fn<WindowLifecycleOptions['requestCloseDecision']>(async () => 'quit'),
-      confirmQuitWhileBusy,
+      readPreference: () => 'tray',
+      confirmQuit: vi.fn<NonNullable<WindowLifecycleOptions['confirmQuit']>>(async (): Promise<QuitConfirmation> => 'install-update'),
+      installDownloadedUpdate,
+    })
+    expect(await lifecycle.requestQuit()).toBe('quit-requested')
+    expect(options.prepareToQuit).toHaveBeenCalledOnce()
+    expect(installDownloadedUpdate).toHaveBeenCalledOnce()
+    // 安装器自己会让程序退出，所以它必须排在「不再拦截退出」之后。
+    expect(lifecycle.isQuitting).toBe(true)
+    expect(options.quit).toHaveBeenCalledOnce()
+  })
+
+  it('quits without the installer when the user puts the update off', async () => {
+    const installDownloadedUpdate = vi.fn()
+    const { options, lifecycle } = fixture({
+      readPreference: () => 'quit',
+      confirmQuit: vi.fn<NonNullable<WindowLifecycleOptions['confirmQuit']>>(async (): Promise<QuitConfirmation> => 'quit'),
+      installDownloadedUpdate,
     })
     expect(await lifecycle.requestClose()).toBe('quit-requested')
-    expect(confirmQuitWhileBusy).not.toHaveBeenCalled()
+    expect(installDownloadedUpdate).not.toHaveBeenCalled()
+    expect(options.quit).toHaveBeenCalledOnce()
+  })
+
+  it('still quits when the installer cannot be launched', async () => {
+    const failure = new Error('update install failed')
+    const { options, lifecycle } = fixture({
+      readPreference: () => 'quit',
+      confirmQuit: vi.fn<NonNullable<WindowLifecycleOptions['confirmQuit']>>(async (): Promise<QuitConfirmation> => 'install-update'),
+      installDownloadedUpdate: () => { throw failure },
+    })
+    expect(await lifecycle.requestClose()).toBe('quit-requested')
+    expect(options.onError).toHaveBeenCalledExactlyOnceWith(failure)
+    expect(options.quit).toHaveBeenCalledOnce()
+  })
+
+  it('does not start an installer once Windows reports the session is ending', async () => {
+    const window = new EventEmitter()
+    const application = new EventEmitter()
+    const installDownloadedUpdate = vi.fn()
+    const answer = deferred<QuitConfirmation>()
+    const { options, lifecycle } = fixture({
+      readPreference: () => 'quit',
+      confirmQuit: () => answer.promise,
+      installDownloadedUpdate,
+    })
+    lifecycle.attach(window, application)
+    const result = lifecycle.requestClose()
+    await vi.advanceTimersByTimeAsync(0)
+    application.emit('session-end', { preventDefault: vi.fn() })
+    answer.resolve('install-update')
+    expect(await result).toBe('quit-requested')
+    expect(installDownloadedUpdate).not.toHaveBeenCalled()
+    expect(options.quit).toHaveBeenCalledOnce()
+  })
+
+  it('does not confirm twice on the prompt path, whose own dialog already warns about running tasks', async () => {
+    const confirmQuit = vi.fn<NonNullable<WindowLifecycleOptions['confirmQuit']>>(async (): Promise<QuitConfirmation> => 'cancel')
+    const { options, lifecycle } = fixture({
+      requestCloseDecision: vi.fn<WindowLifecycleOptions['requestCloseDecision']>(async () => 'quit'),
+      confirmQuit,
+    })
+    expect(await lifecycle.requestClose()).toBe('quit-requested')
+    expect(confirmQuit).not.toHaveBeenCalled()
     expect(options.quit).toHaveBeenCalledOnce()
   })
 
   it('keeps hiding to the tray without asking, since nothing is interrupted', async () => {
-    const confirmQuitWhileBusy = vi.fn<NonNullable<WindowLifecycleOptions['confirmQuitWhileBusy']>>(async (): Promise<QuitConfirmation> => 'cancel')
-    const { options, lifecycle } = fixture({ readPreference: () => 'tray', confirmQuitWhileBusy })
+    const confirmQuit = vi.fn<NonNullable<WindowLifecycleOptions['confirmQuit']>>(async (): Promise<QuitConfirmation> => 'cancel')
+    const { options, lifecycle } = fixture({ readPreference: () => 'tray', confirmQuit })
     expect(await lifecycle.requestClose()).toBe('hidden')
-    expect(confirmQuitWhileBusy).not.toHaveBeenCalled()
+    expect(confirmQuit).not.toHaveBeenCalled()
     expect(options.hide).toHaveBeenCalledOnce()
   })
 
@@ -289,7 +348,7 @@ describe('window close coordination', () => {
     const failure = new Error('dialog failed')
     const { options, lifecycle } = fixture({
       readPreference: () => 'quit',
-      confirmQuitWhileBusy: () => { throw failure },
+      confirmQuit: () => { throw failure },
     })
     expect(await lifecycle.requestClose()).toBe('quit-requested')
     expect(options.onError).toHaveBeenCalledExactlyOnceWith(failure)
@@ -299,12 +358,12 @@ describe('window close coordination', () => {
   it('skips the confirmation once Windows reports the session is ending', async () => {
     const window = new EventEmitter()
     const application = new EventEmitter()
-    const confirmQuitWhileBusy = vi.fn<NonNullable<WindowLifecycleOptions['confirmQuitWhileBusy']>>(async (): Promise<QuitConfirmation> => 'cancel')
-    const { options, lifecycle } = fixture({ readPreference: () => 'quit', confirmQuitWhileBusy })
+    const confirmQuit = vi.fn<NonNullable<WindowLifecycleOptions['confirmQuit']>>(async (): Promise<QuitConfirmation> => 'cancel')
+    const { options, lifecycle } = fixture({ readPreference: () => 'quit', confirmQuit })
     lifecycle.attach(window, application)
     application.emit('session-end', { preventDefault: vi.fn() })
     expect(await lifecycle.requestClose()).toBe('quit-requested')
-    expect(confirmQuitWhileBusy).not.toHaveBeenCalled()
+    expect(confirmQuit).not.toHaveBeenCalled()
     expect(options.quit).toHaveBeenCalledOnce()
   })
 
@@ -312,7 +371,7 @@ describe('window close coordination', () => {
     const window = new EventEmitter()
     const application = new EventEmitter()
     const answer = deferred<QuitConfirmation>()
-    const { options, lifecycle } = fixture({ readPreference: () => 'quit', confirmQuitWhileBusy: () => answer.promise })
+    const { options, lifecycle } = fixture({ readPreference: () => 'quit', confirmQuit: () => answer.promise })
     lifecycle.attach(window, application)
     const result = lifecycle.requestClose()
     await vi.advanceTimersByTimeAsync(0)
