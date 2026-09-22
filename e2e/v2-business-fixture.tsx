@@ -148,6 +148,13 @@ const session = {
   messageCount: 2,
   sourcePath: 'C:/test-session',
   detailAvailable: true,
+  cwdExists: true,
+}
+// 工作目录已经被删掉或搬走的那条记录。CLI 是按目录找回对话的,目录没了就接不上,
+// 所以按钮留在原位但按不动。默认不出现,免得改动现有用例看到的那一行。
+const missingFolderSession = {
+  ...session,
+  cwdExists: false,
 }
 // 同一个工具、同一个目录的第二条(更旧的)记录:「接着聊」是按目录接最近一条,
 // 所以只有最近那条该有按钮。默认不出现,免得改动现有用例看到的行数。
@@ -574,7 +581,8 @@ const apiMethods = {
     throw new Error('配置写入失败，原配置已保留')
   },
   listProviderSessions: async () => ({
-    items: empty ? [] : query.has('sameFolder') ? [session, olderSameFolderSession] : [session],
+    items: empty ? [] : query.has('sameFolder') ? [session, olderSameFolderSession]
+      : query.has('missingFolder') ? [missingFolderSession] : [session],
     total: empty ? 0 : query.has('sameFolder') ? 2 : 1,
     page: 1,
     pageSize: 20,

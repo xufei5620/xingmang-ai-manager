@@ -291,10 +291,11 @@ export function Home(props: HomeProps) {
             : !recent ? <div className="v2-loading-inline" role="status">正在读取最近记录</div>
               : recent.items.length ? recent.items.slice(0, 3).map((session) => <ListRow key={session.id} icon={History}
                 title={session.title} desc={session.cwd ?? undefined} meta={session.updatedAt === null ? '时间未记录' : new Date(session.updatedAt * 1000).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}
+                badge={session.cwdExists === false ? <Pill tone="warn" testId={`home-recent-missing-${session.id}`}>文件夹已不存在</Pill> : undefined}
                 actions={<>
-                  {resumable.has(session.id) && !session.archived && <Button size="xs" disabled={loading || launchBusy}
+                  {resumable.has(session.id) && !session.archived && <Button size="xs" disabled={loading || launchBusy || session.cwdExists === false}
                     onClick={() => props.onLaunch(session.provider, session.cwd, 'resumeLast')}
-                    title={`接着 ${session.cwd} 里最近的一条对话`} testId={`home-recent-resume-${session.id}`}>接着聊</Button>}
+                    title={session.cwdExists === false ? '这个文件夹已经不在了，接不上上次的对话' : `接着 ${session.cwd} 里最近的一条对话`} testId={`home-recent-resume-${session.id}`}>接着聊</Button>}
                   <Button size="xs" variant="ghost" onClick={() => props.onNavigate('sessions')}>查看</Button>
                 </>} />)
                 : <Empty icon={History} title="还没有对话记录" description="打开工具聊过之后，这里会出现最近的会话。" />}
