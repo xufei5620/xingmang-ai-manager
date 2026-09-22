@@ -13,10 +13,15 @@ export interface RecentWorkspace {
 
 /** 「打开」旁边那个下拉里的一项。 */
 export interface WorkspaceChoice {
-  /** null = 「选择其他目录…」，走原来的目录选择器。 */
+  /** null = 「选择其他目录…」，走原来的目录选择器；带 create 时是「新建项目文件夹」。 */
   path: string | null
   label: string
+  /** 不选目录，由主进程在「文档」下替用户建一个空的项目文件夹再打开。 */
+  create?: true
 }
+
+/** 首页与引导里「新建项目文件夹」入口的统一文案。 */
+export const newWorkspaceLabel = '新建项目文件夹并打开'
 
 /** 下拉里最多放几个目录。再多用户也不会一个个看完。 */
 const RECENT_LIMIT = 5
@@ -58,11 +63,15 @@ export function recentWorkspaces(
   return [...picked.values()]
 }
 
-/** 下拉里的条目：最近用过的目录，最后永远留一项「选择其他目录…」。 */
+/**
+ * 下拉里的条目：最近用过的目录，最后永远留「选择其他目录…」和「新建项目文件夹」。
+ * 后者给不知道该选哪个文件夹的新手，一步到位，不用再起名、再选。
+ */
 export function workspaceChoices(items: readonly RecentWorkspace[]): WorkspaceChoice[] {
   return [
     ...items.map((item) => ({ path: item.path, label: item.path })),
     { path: null, label: '选择其他目录…' },
+    { path: null, label: newWorkspaceLabel, create: true },
   ]
 }
 

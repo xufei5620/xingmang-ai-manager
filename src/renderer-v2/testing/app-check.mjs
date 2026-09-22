@@ -685,7 +685,7 @@ test('the launch button reuses the directory the tool was last opened in (N7)', 
     await page.getByTestId('tool-claude-workspaces').getByRole('button', { name: '换一个目录' }).click()
     const items = await page.getByRole('menuitem').allInnerTexts()
     // 同一个目录的两条记录只占一格,顺序按最近用过排,最后永远留着原来的选择器。
-    assert.deepEqual(items, ['C:\\work\\my-app', 'C:\\work\\older-app', '选择其他目录…'])
+    assert.deepEqual(items, ['C:\\work\\my-app', 'C:\\work\\older-app', '选择其他目录…', '新建项目文件夹并打开'])
     await page.getByTestId('tool-claude-choose-workspace').click()
     await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'chooseWorkspace'))
     const picked = await page.evaluate(() => window.v2Test.calls)
@@ -848,6 +848,28 @@ test('home reuses the recent list instead of rescanning session folders on every
     await page.getByTestId('home-rescan').click()
     await page.waitForFunction(() => window.v2Test.calls
       .filter((entry) => entry.method === 'listProviderSessions' && entry.args[0]?.pageSize === 60).length === 2)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('a new user can open a CLI in a folder the app creates, without the directory picker', async () => {
+  const page = await open('allInstalled=1')
+  try {
+    await page.getByTestId('tool-row-codex').waitFor()
+    // 没有最近目录时「打开」旁边没有下拉，入口在「更多操作」里。
+    assert.equal(await page.getByTestId('tool-codex-workspaces').count(), 0)
+    await page.getByTestId('tool-row-codex').getByRole('button', { name: '更多操作' }).click()
+    await page.getByTestId('tool-codex-new-workspace').click()
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'launchCli'))
+    const calls = await page.evaluate(() => window.v2Test.calls)
+    assert.deepEqual(calls.filter((entry) => entry.method === 'chooseWorkspace').map((entry) => entry.args), [[{ createStarter: true }]])
+    assert.deepEqual(calls.filter((entry) => entry.method === 'launchCli').map((entry) => entry.args),
+      [['codex', 'C:\\Users\\fixture\\Documents\\XingmangProjects\\my-project']])
+    // Codex 桌面端自己管工作区，不给这个入口。
+    await page.keyboard.press('Escape')
+    await page.getByTestId('tool-row-codexDesktop').getByRole('button', { name: '更多操作' }).click()
+    assert.equal(await page.getByTestId('tool-codexDesktop-new-workspace').count(), 0)
+    await page.keyboard.press('Escape')
     await clean(page)
   } finally { await page.close() }
 })
@@ -2636,19 +2658,28 @@ test('asks once before opening Codex with the Chinese runtime patch and remember
   const page = await open('chineseAsk=1')
   try {
     await page.getByTestId('tool-codexDesktop-primary').click()
-    await page.getByRole('heading', { name: '启用 Codex 中文界面？' }).waitFor()
+    await page.getByRole('heading', { name: '要让 Codex 的界面显示中文吗？' }).waitFor()
     assert.equal(await page.evaluate(() => window.v2Test.calls.filter((call) => call.method === 'launchCodexDesktop').length), 0)
+    // 开端口是安全取舍：焦点落在「先不用」，两个按钮都不是主按钮。
+    const decline = page.getByTestId('codex-chinese-decline')
+    await page.waitForFunction(() => document.activeElement?.getAttribute('data-testid') === 'codex-chinese-decline')
+    assert.equal(await decline.innerText(), '先不用')
+    assert.equal(await page.getByTestId('codex-chinese-enable').innerText(), '显示中文')
+    for (const button of [decline, page.getByTestId('codex-chinese-enable')]) {
+      assert.equal(await button.evaluate((element) => element.classList.contains('xm-btn-primary')), false)
+    }
+    assert.doesNotMatch(await page.getByRole('dialog', { name: '要让 Codex 的界面显示中文吗？' }).innerText(), /调试端口/)
 
-    await page.getByRole('button', { name: '保持当前语言', exact: true }).click()
+    await decline.click()
     await page.waitForFunction(() => window.v2Test.calls.some((call) => call.method === 'launchCodexDesktop'))
     assert.deepEqual(await page.evaluate(() => window.v2Test.calls
       .filter((call) => call.method === 'saveSettings' && call.args[0]?.codexDesktopChineseRuntimePatch !== undefined)
       .map((call) => call.args[0].codexDesktopChineseRuntimePatch)), ['disabled'])
-    await page.getByRole('heading', { name: '启用 Codex 中文界面？' }).waitFor({ state: 'hidden' })
+    await page.getByRole('heading', { name: '要让 Codex 的界面显示中文吗？' }).waitFor({ state: 'hidden' })
 
     await page.getByTestId('tool-codexDesktop-primary').click()
     await page.waitForFunction(() => window.v2Test.calls.filter((call) => call.method === 'launchCodexDesktop').length === 2)
-    assert.equal(await page.getByRole('heading', { name: '启用 Codex 中文界面？' }).count(), 0)
+    assert.equal(await page.getByRole('heading', { name: '要让 Codex 的界面显示中文吗？' }).count(), 0)
     await clean(page)
   } finally { await page.close() }
 })
@@ -2657,7 +2688,7 @@ test('turns the Chinese runtime patch on through the locale path when the one-ti
   const page = await open('chineseAsk=1')
   try {
     await page.getByTestId('tool-codexDesktop-primary').click()
-    await page.getByRole('button', { name: '启用中文界面', exact: true }).click()
+    await page.getByRole('button', { name: '显示中文', exact: true }).click()
     await page.waitForFunction(() => window.v2Test.calls.some((call) => call.method === 'launchCodexDesktop'))
     assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((call) => call.method === 'setCodexDesktopLocale').map((call) => call.args)), [['zh-CN']])
     assert.equal(await page.evaluate(() => window.v2Test.calls
