@@ -26,6 +26,9 @@ const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308])
 const FILE_LABEL = 'AI 图片资产'
 const PROXY_AWARE_IMAGE_HOSTS = new Set(['imgen.x.ai'])
 const AI_ASSET_DOWNLOAD_ERROR_CODE = 'AI_IMAGE_DOWNLOAD_FAILED'
+/** 生成前试写失败时挂在错误上的 code，与「已生成但保存失败」那类扣过费的错误区分开。 */
+export const AI_OUTPUT_UNWRITABLE_ERROR_CODE = 'AI_OUTPUT_UNWRITABLE'
+const DEFAULT_UNWRITABLE_GUIDANCE = '请联系客服帮你处理。'
 
 const blockedIpv4Addresses = new BlockList()
 for (const [address, prefix] of [
@@ -127,6 +130,11 @@ export interface AiAssetStoreOptions {
   randomBytes?: (size: number) => Buffer
   maximumImageBytes?: number
   downloadTimeoutMs?: number
+  /**
+   * 保存位置写不进时「下一步怎么办」那半句。安装目录下的全局 output 和画布项目自己的
+   * 文件夹，用户能做的事不一样，只有宿主知道这个 store 落在哪。
+   */
+  unwritableGuidance?: string
 }
 
 interface OwnedAssetRecord {
@@ -147,6 +155,35 @@ export function resolveAiOutputRoot(options: ResolveAiOutputRootOptions): string
     ? path.dirname(path.resolve(options.execPath ?? process.execPath))
     : path.resolve(options.projectRoot ?? process.cwd())
   return path.join(base, 'output')
+}
+
+/**
+ * Prove that a directory accepts a new file right now by creating and removing
+ * one. Permission bits and ACL inspection cannot answer this on their own:
+ * Windows virtualization, inherited deny entries, read-only media and a full
+ * disk all pass a metadata check and still refuse the write. The probe name is
+ * random and opened with O_EXCL, so a pre-planted file or symlink at that name
+ * makes the probe fail instead of being followed (AGENTS.md I8).
+ */
+async function probeDirectoryWritable(
+  directory: string,
+  label: string,
+  randomBytes: (size: number) => Buffer = nodeRandomBytes,
+): Promise<void> {
+  ensureSafeDataDirectory(directory, label)
+  const probePath = path.join(directory, `.write-check-${randomBytes(16).toString('hex')}.tmp`)
+  let created = false
+  try {
+    const handle = await fs.promises.open(probePath, 'wx', 0o600)
+    created = true
+    try {
+      await handle.writeFile('ok')
+    } finally {
+      await handle.close()
+    }
+  } finally {
+    if (created) await fs.promises.rm(probePath, { force: true }).catch(() => undefined)
+  }
 }
 
 function assertUserId(userId: number): void {
@@ -543,6 +580,7 @@ export class AiAssetStore {
   private readonly randomBytes: (size: number) => Buffer
   private readonly maximumImageBytes: number
   private readonly downloadTimeoutMs: number
+  private readonly unwritableGuidance: string
   private readonly records = new Map<string, OwnedAssetRecord>()
 
   constructor(options: AiAssetStoreOptions) {
@@ -555,6 +593,7 @@ export class AiAssetStore {
     this.randomBytes = options.randomBytes ?? nodeRandomBytes
     this.maximumImageBytes = options.maximumImageBytes ?? DEFAULT_MAXIMUM_IMAGE_BYTES
     this.downloadTimeoutMs = options.downloadTimeoutMs ?? DEFAULT_DOWNLOAD_TIMEOUT_MS
+    this.unwritableGuidance = options.unwritableGuidance ?? DEFAULT_UNWRITABLE_GUIDANCE
     if (!Number.isInteger(this.maximumImageBytes) || this.maximumImageBytes < 1 || this.maximumImageBytes > DEFAULT_MAXIMUM_IMAGE_BYTES) {
       throw new Error('AI 图片大小上限配置无效')
     }
@@ -573,6 +612,29 @@ export class AiAssetStore {
       ensureSafeDataDirectory(this.outputRoot, FILE_LABEL)
     } catch {
       throw new Error('无法创建 output 目录，请检查安装目录写入权限')
+    }
+  }
+
+  /**
+   * Called before a paid generation request is sent. Images and videos of an
+   * account land in the same `user-<id>` directory, so one probe there covers
+   * both; without a user id (startup, diagnostics) the output root is probed.
+   * The error is phrased for the person who was about to pay: nothing has been
+   * charged yet, and what to do next depends on where this store lives.
+   */
+  async assertWritable(userId?: number): Promise<void> {
+    let directory = this.outputRoot
+    if (userId !== undefined) {
+      assertUserId(userId)
+      directory = path.join(this.outputRoot, `user-${userId}`)
+    }
+    try {
+      ensureSafeDataDirectory(this.outputRoot, FILE_LABEL)
+      await probeDirectoryWritable(directory, FILE_LABEL, this.randomBytes)
+    } catch (cause) {
+      const error = new Error(`保存位置写不进去，这次没有扣费。${this.unwritableGuidance}`, { cause })
+      Object.assign(error, { code: AI_OUTPUT_UNWRITABLE_ERROR_CODE })
+      throw error
     }
   }
 

@@ -140,6 +140,11 @@ export interface DiagnosticsDependencies {
   readDiskSpace?: typeof readDiskSpace
   inspectProxyVariables?: (signal: AbortSignal) => Promise<ProxyVariableSummary[]>
   /**
+   * AI 生成的图片、视频存在哪只有宿主知道；给了才有「AI 作品保存位置」这一项。
+   * 宿主真写一个小文件再删掉，resolve 就是写得进，reject 就是写不进。
+   */
+  probeAiOutput?: () => Promise<void>
+  /**
    * 启动时那次「是不是管理员」探测的结果（`resolveWindowsCliExecutionModeDetailed`）。
    * 只读、不重跑：执行模式在启动时就定死了，检查页要说的是「这次启动被怎么处理了」。
    * 缺省按探测成功处理，只看当前令牌。
@@ -1239,6 +1244,7 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
   const paths = dependencies.clashConfigPaths ?? clashCandidates(userHome, env)
   const inspectProxy = dependencies.inspectProxyVariables ?? ((signal) => defaultProxyVariables(env))
   const probeDiskSpace = dependencies.readDiskSpace ?? readDiskSpace
+  const probeAiOutput = dependencies.probeAiOutput
   const diskSpaceTargets = resolveDiskSpaceTargets(env, platform, dependencies.userDataDirectory)
   const log = dependencies.log
   const now = dependencies.now ?? (() => new Date())
@@ -1546,6 +1552,27 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
         }
       },
     },
+    // 写不进时生成前就会拦下、不会扣费，而且只影响用 AI 生图、生视频的人，所以这里
+    // 标「需留意」而不是「待处理」：不为它在每次开机时弹提示，检查页照实标黄。
+    ...(probeAiOutput ? [{
+      code: 'AI_OUTPUT',
+      title: 'AI 作品保存位置',
+      run: async (): Promise<CheckOutcome> => {
+        try {
+          await probeAiOutput()
+        } catch (error) {
+          log?.('warn', 'diagnostics.ai-output.unwritable', 'AI 作品保存位置写不进去', {
+            raw: sanitize(errorChainText(error)),
+          })
+          return {
+            state: 'warn',
+            summary: '保存位置写不进去。用 AI 生成图片或视频时，软件会在扣费前先拦下来；'
+              + '可以在画布里新建一个项目、给它选一个自己的文件夹，在那里生成就能存下来。',
+          }
+        }
+        return { state: 'pass', summary: 'AI 生成的图片和视频能正常保存' }
+      },
+    }] : []),
     {
       // 「C 盘搬家」工具或 mklink /J 把用户文件夹、软件数据文件夹挪到别的盘之后，
       // 路径上多出一级目录联接。safe-local-data 的写入校验（I8）会拒绝这种路径，
