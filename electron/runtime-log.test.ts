@@ -70,6 +70,16 @@ describe('summarizeRuntimeLogFile', () => {
     expect(summary.entries[0].detail).toEqual({ apiKey: '[REDACTED]' })
   })
 
+  it('redacts a field named exactly key but not names that merely contain it', () => {
+    const line = JSON.stringify({
+      id: 'id-1', timestamp: '2026-09-22T00:00:00.000Z', level: 'info', source: 'main',
+      event: 'entry', message: 'mcp env', detail: { key: 'plain-fake-value', keyboard: 'us', cacheKey: 'abc' },
+    })
+
+    expect(summarizeRuntimeLogFile(line).entries[0].detail)
+      .toEqual({ key: '[REDACTED]', keyboard: 'us', cacheKey: 'abc' })
+  })
+
   it('keeps only the tail a snapshot could ever return, without losing the counts', () => {
     const content = Array.from({ length: 4_100 }, (_, index) => JSON.stringify({
       id: `id-${index}`, timestamp: '2026-09-22T00:00:00.000Z', level: 'info',
@@ -322,6 +332,43 @@ describe('RuntimeLogStore', () => {
     const report = await createStore().captureFeedbackReport()
 
     expect(report.text).not.toContain('最近一次自检:')
+  })
+
+  it('drops the oldest log lines to fit the size budget and says how many it kept', async () => {
+    const store = createStore()
+    for (let index = 0; index < 40; index += 1) store.log('info', 'fixture', 'entry', `entry-${String(index).padStart(2, '0')} ${'x'.repeat(200)}`)
+    const full = await store.captureFeedbackReport()
+    const budget = full.text.length - 2_000
+    const report = await store.captureFeedbackReport(600, budget)
+
+    expect(report.text.length).toBeLessThanOrEqual(budget)
+    expect(report.entries).toBe(40)
+    const kept = Number(/只保留最近 (\d+) 条/.exec(report.text)?.[1])
+    expect(kept).toBeGreaterThan(0)
+    expect(kept).toBeLessThan(40)
+    expect(report.text).toContain(`日志条数: 40（附最近 ${kept} 条）`)
+    // The newest lines survive, the oldest go, and the survivors stay oldest-first.
+    expect(report.text).toContain('entry-39')
+    expect(report.text).not.toContain('entry-00')
+    const survivors = [...report.text.matchAll(/entry-(\d{2})/g)].map((match) => Number(match[1]))
+    expect(survivors).toHaveLength(kept)
+    expect(survivors).toEqual([...survivors].sort((a, b) => a - b))
+    expect(survivors.at(-1)).toBe(39)
+  })
+
+  it('leaves a report that already fits untouched', async () => {
+    const store = createStore()
+    store.log('info', 'fixture', 'entry', 'small entry')
+    const unbounded = await store.captureFeedbackReport()
+    const bounded = await store.captureFeedbackReport(600, unbounded.text.length)
+    expect(bounded.text.replace(/生成时间: .*/, '')).toBe(unbounded.text.replace(/生成时间: .*/, ''))
+    expect(bounded.text).not.toContain('日志已截断')
+  })
+
+  it('fails only when the part without logs is already over budget, and says what to do instead', async () => {
+    const store = createStore()
+    store.log('info', 'fixture', 'entry', 'small entry')
+    await expect(store.captureFeedbackReport(600, 50)).rejects.toThrow('打开日志目录')
   })
 
   it('captures report text and its count together, independently of later appends or clears', async () => {

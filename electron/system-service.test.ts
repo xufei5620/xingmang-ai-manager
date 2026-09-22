@@ -858,6 +858,74 @@ describe('createSystemService', () => {
     expect(snapshot.runtime.git.detectionFailed).not.toBe(true)
   })
 
+  it('never runs the macOS git/python3 shims when the command line developer tools are missing', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-clt-missing-'))
+    temporaryDirectories.push(directory)
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('offline') }))
+    const executed: string[] = []
+    const service = createSystemService(
+      new AppSettingsStore(path.join(directory, 'settings.json'), directory),
+      {
+        platform: 'darwin',
+        findExecutable: async (command) =>
+          command === 'git' ? '/usr/bin/git' : command === 'python3' ? '/usr/bin/python3' : null,
+        runCommand: async (spec) => {
+          executed.push(spec.executable)
+          // 没装命令行开发者工具时 xcode-select -p 以退出码 2 失败。
+          throw Object.assign(new Error('xcode-select: error: unable to get active developer directory'), {
+            stdout: '', stderr: 'xcode-select: error: unable to get active developer directory',
+          })
+        },
+        resolveCliInstallation: async () => null,
+        macosCodexAppDetector: async () => ({ app: null, detectionFailed: false, detectionError: null }),
+      },
+    )
+
+    const snapshot = await service.scanSystem(false)
+
+    expect(executed).not.toContain('/usr/bin/git')
+    expect(executed).not.toContain('/usr/bin/python3')
+    expect(executed).toContain('/usr/bin/xcode-select')
+    expect(snapshot.runtime.git).toMatchObject({ installed: false, version: null, path: null })
+    expect(snapshot.runtime.git.detectionFailed).not.toBe(true)
+    expect(snapshot.runtime.python).toMatchObject({ installed: false, version: null, path: null })
+  })
+
+  // xcode-select 只会打印 POSIX 路径；Windows runner 上临时目录是盘符路径，造不出这份夹具。
+  it.skipIf(process.platform === 'win32')('probes the macOS git shim normally once the developer tools behind it exist', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-clt-present-'))
+    temporaryDirectories.push(directory)
+    const developerDirectory = path.join(directory, 'CommandLineTools')
+    fs.mkdirSync(path.join(developerDirectory, 'usr', 'bin'), { recursive: true })
+    fs.writeFileSync(path.join(developerDirectory, 'usr', 'bin', 'git'), '')
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('offline') }))
+    const executed: string[] = []
+    const service = createSystemService(
+      new AppSettingsStore(path.join(directory, 'settings.json'), directory),
+      {
+        platform: 'darwin',
+        findExecutable: async (command) => command === 'git' ? '/usr/bin/git' : null,
+        runCommand: async (spec) => {
+          executed.push(spec.executable)
+          const stdout = spec.executable === '/usr/bin/xcode-select'
+            ? `${developerDirectory}\n`
+            : 'git version 2.39.5 (Apple Git-154)\n'
+          return {
+            executable: spec.executable, argv: [...spec.argv], exitCode: 0, signal: null,
+            stdout, stderr: '', outputBytes: stdout.length, durationMs: 1,
+          }
+        },
+        resolveCliInstallation: async () => null,
+        macosCodexAppDetector: async () => ({ app: null, detectionFailed: false, detectionError: null }),
+      },
+    )
+
+    const snapshot = await service.scanSystem(false)
+
+    expect(executed).toContain('/usr/bin/git')
+    expect(snapshot.runtime.git).toMatchObject({ installed: true, version: '2.39.5', path: '/usr/bin/git' })
+  })
+
   it('keeps a Git probe failure distinguishable from "not installed"', async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-git-failure-'))
     temporaryDirectories.push(directory)
@@ -2258,6 +2326,47 @@ describe('Windows restart handoff', () => {
       }),
       expect.objectContaining({ trustedOnly: true, timeoutMs: 10_000 }),
     )
+  })
+
+  it('refuses to restart while an installation is still running', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-windows-restart-busy-'))
+    temporaryDirectories.push(directory)
+    let finishInstall: () => void = () => undefined
+    let installStarted: () => void = () => undefined
+    const started = new Promise<void>((resolve) => { installStarted = resolve })
+    const installPythonRuntime = vi.fn(async () => {
+      installStarted()
+      await new Promise<void>((resolve) => { finishInstall = resolve })
+      return {
+        installed: true as const,
+        action: 'installed' as const,
+        method: 'winget' as const,
+        source: 'winget' as const,
+        version: 'Python 3.12',
+        architecture: 'x64' as const,
+        pathRefreshRequired: true,
+      }
+    })
+    const runCommand = vi.fn<typeof productionRunCommand>()
+    const service = createSystemService(
+      new AppSettingsStore(path.join(directory, 'settings.json'), directory),
+      {
+        platform: 'win32',
+        windowsExecutionMode: 'same-user',
+        runCommand,
+        findExecutable: async () => null,
+        resolveWindowsMachinePaths: () => testMachinePaths,
+        installPythonRuntime,
+        inspectInstalledPythonRuntime: async () => { throw new Error('Python 3.12 fixed install not found') },
+      },
+    )
+
+    const install = service.installPythonRuntime({ isDestroyed: () => false, send: vi.fn() })
+    await started
+    await expect(service.restartWindows()).rejects.toThrow('等它做完再重启电脑')
+    expect(runCommand).not.toHaveBeenCalled()
+    finishInstall()
+    await expect(install).resolves.toMatchObject({ action: 'installed' })
   })
 
   it('does not expose a restart operation on non-Windows platforms', async () => {

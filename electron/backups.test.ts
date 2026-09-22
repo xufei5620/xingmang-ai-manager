@@ -3,7 +3,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { ConfigBackupStore } from './backups'
+import { apiKeyDigest, classifyBackupKey, ConfigBackupStore, type ConfigBackupAccountContext } from './backups'
 import type { ProviderId } from './catalog'
 import { providerConfigPaths } from './config-files'
 
@@ -265,6 +265,103 @@ describe('ConfigBackupStore', () => {
 
     expect(JSON.stringify(store.list())).not.toContain(secret)
     expect(JSON.stringify(store.inspect(backup.id))).not.toContain(secret)
+  })
+
+  it('records whose key a backup holds and classifies it against the signed-in account', () => {
+    const { home, userData } = fixture()
+    const [configPath, authPath] = providerConfigPaths('codex', fixtureProviderRoots(home))
+    const secret = 'sk-account-a-managed'
+    writeConfig(configPath, 'model = "gpt-5.6-sol"\n')
+    writeConfig(authPath, JSON.stringify({ OPENAI_API_KEY: secret }))
+    const store = new ConfigBackupStore({ userDataDirectory: userData, homeDirectory: home })
+    const accountA: ConfigBackupAccountContext = {
+      accountId: '["solov",1]', accountName: 'alice', keyDigests: new Set([apiKeyDigest(secret)]),
+    }
+    const accountB: ConfigBackupAccountContext = {
+      accountId: '["solov",2]', accountName: 'bob', keyDigests: new Set([apiKeyDigest('sk-account-b')]),
+    }
+
+    const created = store.create('codex', 'manual', undefined, accountA)
+    expect(created).toMatchObject({ keyOwnership: 'current', keyAccountName: null })
+    expect(store.list(accountA)[0]).toMatchObject({ keyOwnership: 'current', keyAccountName: null })
+    expect(store.inspect(created.id, accountB)).toMatchObject({ keyOwnership: 'other', keyAccountName: 'alice' })
+    // Signed out: still names the account the key was issued to.
+    expect(store.list(null)[0]).toMatchObject({ keyOwnership: 'other', keyAccountName: 'alice' })
+
+    const manifest = fs.readFileSync(path.join(userData, 'backups', created.id, 'manifest.json'), 'utf8')
+    expect(manifest).not.toContain(secret)
+    expect(JSON.stringify(store.list(accountB))).not.toContain(apiKeyDigest(secret))
+  })
+
+  it('marks a key the signed-in account did not issue without naming an account', () => {
+    const { home, userData } = fixture()
+    const [configPath, authPath] = providerConfigPaths('codex', fixtureProviderRoots(home))
+    writeConfig(configPath, 'model = "gpt-5.6-sol"\n')
+    writeConfig(authPath, JSON.stringify({ OPENAI_API_KEY: 'sk-typed-by-hand' }))
+    const store = new ConfigBackupStore({ userDataDirectory: userData, homeDirectory: home })
+    const account: ConfigBackupAccountContext = {
+      accountId: '["solov",1]', accountName: 'alice', keyDigests: new Set([apiKeyDigest('sk-other')]),
+    }
+
+    const created = store.create('codex', 'manual', undefined, account)
+    expect(created).toMatchObject({ keyOwnership: 'other', keyAccountName: null })
+    expect(store.list(null)[0]).toMatchObject({ keyOwnership: 'unknown', keyAccountName: null })
+  })
+
+  it('reports a backup without a key and leaves legacy manifests unlabelled', () => {
+    const { home, userData } = fixture()
+    const [configPath] = providerConfigPaths('codex', fixtureProviderRoots(home))
+    writeConfig(configPath, 'model = "gpt-5.6-sol"\n')
+    const store = new ConfigBackupStore({ userDataDirectory: userData, homeDirectory: home })
+    const account: ConfigBackupAccountContext = { accountId: '["solov",1]', accountName: 'alice', keyDigests: new Set() }
+
+    const created = store.create('codex', 'manual', undefined, account)
+    const legacy = writeBackupManifestFixture(userData, 'claude', { targetRelativePath: '.claude/settings.json' })
+    const summaries = store.list(account)
+    expect(summaries.find((entry) => entry.id === created.id)).toMatchObject({ keyOwnership: 'none' })
+    expect(summaries.find((entry) => entry.id === legacy)).toMatchObject({ keyOwnership: 'unknown', keyAccountName: null })
+  })
+
+  it('ignores a damaged key record instead of failing the backup', () => {
+    const { home, userData } = fixture()
+    const [configPath, authPath] = providerConfigPaths('codex', fixtureProviderRoots(home))
+    writeConfig(configPath, 'model = "gpt-5.6-sol"\n')
+    writeConfig(authPath, JSON.stringify({ OPENAI_API_KEY: 'sk-damaged' }))
+    const store = new ConfigBackupStore({ userDataDirectory: userData, homeDirectory: home })
+    const created = store.create('codex')
+    const manifestPath = path.join(userData, 'backups', created.id, 'manifest.json')
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'))
+    manifest.key = { digest: 'not-a-digest', accountId: 1, accountName: '<script>' }
+    fs.writeFileSync(manifestPath, JSON.stringify(manifest), 'utf8')
+
+    expect(store.list(null)[0]).toMatchObject({ valid: true, keyOwnership: 'unknown' })
+    expect(store.inspect(created.id).valid).toBe(true)
+  })
+
+  it('returns the restored provider and labels the pre-restore snapshot with the account', () => {
+    const { home, userData } = fixture()
+    const [configPath, authPath] = providerConfigPaths('codex', fixtureProviderRoots(home))
+    writeConfig(configPath, 'model = "gpt-5.6-sol"\n')
+    writeConfig(authPath, JSON.stringify({ OPENAI_API_KEY: 'sk-before' }))
+    const store = new ConfigBackupStore({ userDataDirectory: userData, homeDirectory: home })
+    const backup = store.create('codex')
+    writeConfig(authPath, JSON.stringify({ OPENAI_API_KEY: 'sk-managed-now' }))
+    const account: ConfigBackupAccountContext = {
+      accountId: '["solov",1]', accountName: 'alice', keyDigests: new Set([apiKeyDigest('sk-managed-now')]),
+    }
+
+    const restored = store.restore(backup.id, account)
+    expect(restored.provider).toBe('codex')
+    expect(store.inspect(restored.preRestoreBackupId, account)).toMatchObject({ keyOwnership: 'current' })
+  })
+
+  it('does not attribute a rotated key to the same account that recorded it', () => {
+    const digest = apiKeyDigest('sk-rotated')
+    const record = { digest, accountId: '["solov",1]', accountName: 'alice' }
+    expect(classifyBackupKey(record, { accountId: '["solov",1]', accountName: 'alice', keyDigests: new Set() }))
+      .toEqual({ keyOwnership: 'other', keyAccountName: null })
+    expect(classifyBackupKey(record, { accountId: '["solov",2]', accountName: 'bob', keyDigests: new Set() }))
+      .toEqual({ keyOwnership: 'other', keyAccountName: 'alice' })
   })
 
   it('cleans an incomplete snapshot when a backup operation fails', () => {
