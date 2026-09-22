@@ -27,6 +27,8 @@ export interface PlatformNotificationRuntime {
 export type PlatformHostNotification =
   | 'accelerationExpiring'
   | 'accelerationExhausted'
+  | 'accelerationInterrupted'
+  | 'accelerationInterruptedUnrestored'
 
 interface NotificationMessage {
   title: string
@@ -71,6 +73,18 @@ const hostMessages: Record<
     kind: 'acceleration',
     title: '加速已断开',
     body: '当前账号的免费加速时长已用完，加速已自动断开。',
+  },
+  // 不是用户点的断开。先说网络的现状，因为那是他此刻最关心的：浏览器、微信还
+  // 能不能用。「已恢复正常」只在确实读到会话停了之后才说。
+  accelerationInterrupted: {
+    kind: 'acceleration',
+    title: '加速意外断开了',
+    body: '网络已恢复正常，可以回到加速页重新连接。',
+  },
+  accelerationInterruptedUnrestored: {
+    kind: 'acceleration',
+    title: '加速意外断开了',
+    body: '网络可能暂时连不上，点这里回到加速页，星芒会再试着恢复。',
   },
 }
 
