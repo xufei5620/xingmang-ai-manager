@@ -3330,6 +3330,45 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       expect(onRendererError).toHaveBeenCalledWith({ message: 'Boom', stack: 'at foo()', context: 'v2' })
     })
 
+    it('records info and warn entries at their own level without reporting a crash', () => {
+      const onRendererError = vi.fn()
+      const { runtimeLog } = register(undefined, undefined, undefined, undefined, undefined, undefined, { onRendererError })
+      const handler = electronMocks.handlers.get('runtime-logs:renderer-error')!
+
+      handler(trustedEvent(), { message: 'Key 自动配置结果', context: 'account-bootstrap', level: 'info' })
+      handler(trustedEvent(), { message: '启动检查未完成', context: 'startup-check', level: 'warn' })
+
+      expect(runtimeLog.log).toHaveBeenCalledWith('info', 'renderer', 'renderer.info', 'Key 自动配置结果', {
+        context: 'account-bootstrap',
+        stack: null,
+      })
+      expect(runtimeLog.log).toHaveBeenCalledWith('warn', 'renderer', 'renderer.warn', '启动检查未完成', {
+        context: 'startup-check',
+        stack: null,
+      })
+      expect(onRendererError).not.toHaveBeenCalled()
+    })
+
+    it('still reports a crash when the level is spelled out as error', () => {
+      const onRendererError = vi.fn()
+      register(undefined, undefined, undefined, undefined, undefined, undefined, { onRendererError })
+      const handler = electronMocks.handlers.get('runtime-logs:renderer-error')!
+
+      handler(trustedEvent(), { message: 'Boom', level: 'error' })
+      expect(onRendererError).toHaveBeenCalledWith({ message: 'Boom', stack: undefined, context: undefined })
+    })
+
+    it('rejects a level outside the three known values', () => {
+      const onRendererError = vi.fn()
+      register(undefined, undefined, undefined, undefined, undefined, undefined, { onRendererError })
+      const handler = electronMocks.handlers.get('runtime-logs:renderer-error')!
+
+      expect(() => handler(trustedEvent(), { message: 'Boom', level: 'debug' })).toThrow('日志级别无效')
+      expect(() => handler(trustedEvent(), { message: 'Boom', level: 'ERROR' })).toThrow('日志级别无效')
+      expect(() => handler(trustedEvent(), { message: 'Boom', level: 1 })).toThrow('日志级别无效')
+      expect(onRendererError).not.toHaveBeenCalled()
+    })
+
     it('does not call the host when the payload was rejected', () => {
       const onRendererError = vi.fn()
       register(undefined, undefined, undefined, undefined, undefined, undefined, { onRendererError })

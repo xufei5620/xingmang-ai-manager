@@ -1363,9 +1363,13 @@ test('a failed startup update check shows a dismissible notice instead of a bloc
     await notice.getByText('本地更新源暂时不可用', { exact: true }).waitFor()
     assert.equal(await page.getByTestId('operation-error').count(), 0)
     assert.equal(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'runDiagnostics').length), 1)
-    const reported = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'reportRendererError').map((entry) => entry.args[0]))
+    // 登录后的 Key 自动配置也会经同一通道记一条 info / warn（context account-bootstrap），
+    // 这几条断言只关心启动检查自己上报了什么。
+    const reported = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'reportRendererError' && entry.args[0]?.context !== 'account-bootstrap').map((entry) => entry.args[0]))
     assert.equal(reported.length, 1)
     assert.equal(reported[0].context, 'renderer-v2 startup check: update')
+    // 启动检查没完成是要留痕的提示，不是崩溃：warn 级只进本机日志，不走崩溃上报。
+    assert.equal(reported[0].level, 'warn')
     assert.match(reported[0].message, /本地更新源暂时不可用/)
     await notice.getByRole('button', { name: '关闭', exact: true }).click()
     await expect.poll(() => page.getByTestId('startup-notice-update').count()).toBe(0)
@@ -1381,7 +1385,7 @@ test('startup environment findings are a notice with a way in, not an error and 
     await notice.getByText('环境检查发现 2 项需要处理', { exact: true }).waitFor()
     assert.equal(await page.getByTestId('operation-error').count(), 0)
     // 检查跑完了、只是结论要看一眼，这不是失败，不该占一条错误日志。
-    assert.equal(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'reportRendererError').length), 0)
+    assert.equal(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'reportRendererError' && entry.args[0]?.context !== 'account-bootstrap').length), 0)
     await notice.getByRole('button', { name: '去看看', exact: true }).click()
     await page.getByTestId('page-health').waitFor()
     await expect.poll(() => page.getByTestId('startup-notice-diagnostics').count()).toBe(0)
@@ -1396,7 +1400,7 @@ test('a failed startup environment check stays out of the way while the manual o
     await notice.waitFor()
     await notice.getByText('本机环境检查没有跑完', { exact: true }).waitFor()
     assert.equal(await page.getByTestId('operation-error').count(), 0)
-    const reported = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'reportRendererError').map((entry) => entry.args[0].context))
+    const reported = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'reportRendererError' && entry.args[0]?.context !== 'account-bootstrap').map((entry) => entry.args[0].context))
     assert.deepEqual(reported, ['renderer-v2 startup check: diagnostics'])
     // 用户自己走到「检查」页点按钮，同一个失败要照常摆在页面上说清楚。
     await page.getByTestId('nav-health').click()
@@ -1420,7 +1424,7 @@ test('a rebuilt account store explains itself and opens the login form', async (
     await notice.getByText('本机保存的登录信息已重置，请重新登录', { exact: true }).waitFor()
     assert.equal(await page.getByTestId('operation-error').count(), 0)
     // 主进程已经记过一条 vault.recovered，界面不再重复上报一条错误日志。
-    assert.equal(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'reportRendererError').length), 0)
+    assert.equal(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'reportRendererError' && entry.args[0]?.context !== 'account-bootstrap').length), 0)
     await notice.getByRole('button', { name: '去登录', exact: true }).click()
     await page.getByTestId('login-account').waitFor()
     await expect.poll(() => page.getByTestId('startup-notice-vault-recovered').count()).toBe(0)
