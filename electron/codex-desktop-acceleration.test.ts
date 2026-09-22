@@ -27,6 +27,7 @@ function setup(options: {
   read?: (scope: string) => Promise<AccelerationState>
   connect?: (scope: string) => Promise<AccelerationState>
   timeoutMs?: number
+  onAutoConnected?: (state: AccelerationState) => void
 } = {}) {
   const readState = vi.fn(options.read ?? (async () => stateOf('idle')))
   const connect = vi.fn(options.connect ?? (async () => stateOf('active')))
@@ -36,6 +37,7 @@ function setup(options: {
     readState,
     connect,
     ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
+    ...(options.onAutoConnected ? { onAutoConnected: options.onAutoConnected } : {}),
     log,
   })
   return { coordinator, readState, connect, log }
@@ -66,6 +68,27 @@ describe('codex desktop acceleration coordinator', () => {
     // 第二个参数是刚读到的那份状态：宿主据此判断记住的模式当前支不支持。
     expect(connect).toHaveBeenCalledWith(scope, stateOf('idle'))
     expect(log).toHaveBeenCalledWith('info', 'acceleration.codex-desktop.connected', expect.any(String), undefined)
+  })
+
+  it('tells the host once it actually connected, so the user learns acceleration is on', async () => {
+    const onAutoConnected = vi.fn()
+    const { coordinator } = setup({ onAutoConnected })
+    await coordinator.ensureConnected()
+    expect(onAutoConnected).toHaveBeenCalledExactlyOnceWith(stateOf('active'))
+  })
+
+  it('does not announce a session it did not start or one that is still coming up', async () => {
+    const onAutoConnected = vi.fn()
+    await setup({ onAutoConnected, read: async () => stateOf('active') }).coordinator.ensureConnected()
+    await setup({ onAutoConnected, connect: async () => stateOf('connecting') }).coordinator.ensureConnected()
+    await setup({ onAutoConnected, connect: async () => stateOf('error') }).coordinator.ensureConnected()
+    expect(onAutoConnected).not.toHaveBeenCalled()
+  })
+
+  it('still opens the desktop app when the announcement fails', async () => {
+    const { coordinator, log } = setup({ onAutoConnected: () => { throw new Error('系统通知没有显示。') } })
+    await expect(coordinator.ensureConnected()).resolves.toEqual({ status: 'connected' })
+    expect(log).toHaveBeenCalledWith('warn', 'acceleration.codex-desktop.notify.failed', expect.any(String), expect.any(Object))
   })
 
   it('accepts a connection that is still coming up', async () => {

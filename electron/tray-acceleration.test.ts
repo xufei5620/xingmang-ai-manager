@@ -39,6 +39,10 @@ describe('tray acceleration menu entry', () => {
     expect(entry({ state: active(30) }).statusLabel).toBe('加速：已连接 · 剩余不到 1 分钟')
     expect(entry({ state: active(754), elapsedSeconds: 10_000 }).statusLabel).toBe('加速：已连接 · 剩余不到 1 分钟')
     expect(entry({ state: active(754) })).toMatchObject({ actionLabel: '断开加速', actionEnabled: true, action: 'stop' })
+    // 软件替他连上的（打开 Codex 桌面端时）：关掉桌面端不会跟着断开，托盘上标出来。
+    expect(entry({ state: { ...active(754), autoStartedBy: 'codex-desktop' } })).toMatchObject({
+      statusLabel: '加速：已自动连接 · 剩余 12 分钟', actionLabel: '断开加速', actionEnabled: true,
+    })
   })
 
   it('explains every greyed-out action instead of leaving a dead menu row', () => {
