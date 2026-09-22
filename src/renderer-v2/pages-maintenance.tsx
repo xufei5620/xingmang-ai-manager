@@ -76,6 +76,8 @@ import { ToolStatusMeta, ToolStatusReason } from './features/tools/ToolStatusMet
 import { connectionCheckView } from './features/tools/connection-check'
 import { maintenanceFailureNotice, readMaintenanceStatus } from './features/tools/maintenance-status'
 import { ManualUninstallDialog, type ManualUninstallState } from './features/tools/ManualUninstall'
+import { RuntimeRestartDialog } from './features/tools/RuntimeRestartDialog'
+import { describeRuntimeInstallOutcome } from './features/tools/runtime-install-outcome'
 import {
   anyRuntimeLogValue,
   filterRuntimeLogs,
@@ -332,7 +334,10 @@ export function HealthPage({
           </Button>
         }
       />
-      <ResultNotice {...operation} />
+      <ResultNotice
+        {...operation}
+        onReveal={(path) => api.revealExportedFile(path)}
+      />
       <Card
         title="连接自检"
         meta="用每个工具配置里真正写着的密钥和模型各测一次；装好的外部客户端也一起测。上面的检查只证明网络通，这一条证明你现在能用。"
@@ -450,7 +455,12 @@ export function HealthPage({
                 'export',
                 () => api.exportDiagnostics(),
                 (result) =>
-                  result ? `诊断报告已导出：${result.outputPath}` : null,
+                  result
+                    ? {
+                        text: `诊断报告已导出：${result.outputPath}`,
+                        revealPath: result.outputPath,
+                      }
+                    : null,
               )
             }
           >
@@ -590,7 +600,10 @@ export function FeedbackPage({
           </Button>
         }
       />
-      <ResultNotice {...operation} />
+      <ResultNotice
+        {...operation}
+        onReveal={(path) => api.revealExportedFile(path)}
+      />
       <Card padding="none">
         <ListState
           page="feedback"
@@ -690,7 +703,12 @@ export function FeedbackPage({
                   'export',
                   () => api.exportFeedbackReport(report.id),
                   (result) =>
-                    result ? `诊断报告已导出：${result.outputPath}` : null,
+                    result
+                      ? {
+                          text: `反馈报告已导出：${result.outputPath}`,
+                          revealPath: result.outputPath,
+                        }
+                      : null,
                 )
               }
             >
@@ -699,7 +717,10 @@ export function FeedbackPage({
           </>
         }
       >
-        <ResultNotice {...operation} />
+        <ResultNotice
+          {...operation}
+          onReveal={(path) => api.revealExportedFile(path)}
+        />
         <Textarea
           aria-label="脱敏反馈报告"
           readOnly
@@ -745,7 +766,10 @@ export function FeedbackPage({
         <pre className="v2-business-code">
           {JSON.stringify(selected?.detail, null, 2)}
         </pre>
-        <ResultNotice {...operation} />
+        <ResultNotice
+          {...operation}
+          onReveal={(path) => api.revealExportedFile(path)}
+        />
       </Drawer>
       <Dialog
         open={clearOpen}
@@ -1003,6 +1027,7 @@ export function MaintenancePage({
   const [cancelling, setCancelling] = useState('')
   const cancelRequested = useRef(new Set<string>())
   const [manualUninstall, setManualUninstall] = useState<ManualUninstallState | null>(null)
+  const [runtimeRestart, setRuntimeRestart] = useState(false)
   useEffect(() => {
     const stopCli = api.onInstallProgress((event) =>
       setLogs((previous) => [...previous.slice(-199), event.message]),
@@ -1295,11 +1320,17 @@ export function MaintenancePage({
                       ? void operation.execute(
                           id,
                           async () => {
-                            if (id === 'node') await api.installNodeRuntime()
-                            else await api.installPythonRuntime()
+                            const result = id === 'node'
+                              ? await api.installNodeRuntime()
+                              : await api.installPythonRuntime()
                             await resource.reload()
+                            return describeRuntimeInstallOutcome(id, result)
                           },
-                          '运行环境已准备',
+                          (outcome) => {
+                            // 3010：结果条照样说清楚，另外弹重启确认（第七批 5）。
+                            if (outcome.restartRequired) setRuntimeRestart(true)
+                            return outcome.message
+                          },
                         )
                       : navigate?.('tutorial')
                   }
@@ -1394,6 +1425,12 @@ export function MaintenancePage({
           state={manualUninstall}
           platform={capability?.platform}
           onClose={() => setManualUninstall(null)}
+        />
+      )}
+      {runtimeRestart && (
+        <RuntimeRestartDialog
+          onClose={() => setRuntimeRestart(false)}
+          restart={() => api.restartWindows()}
         />
       )}
     </section>
@@ -1741,7 +1778,7 @@ export function SettingsPage({
         <>
           {row(
             '开机自动启动',
-            systemState?.startup.note ?? '登录电脑后自动打开工具箱',
+            systemState?.startup.note ?? '开机后在托盘里待命，不弹窗口',
             systemApi && systemState?.startup.supported ? (
               <Switch
                 aria-label="开机自动启动"

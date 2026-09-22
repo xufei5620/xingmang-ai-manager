@@ -182,7 +182,12 @@ export type CodexDesktopLaunchMode = MainCodexDesktopLaunchMode
 export type CliLaunchMode = MainCliLaunchMode
 export type AppWindowMode = 'onboarding' | 'dashboard'
 export type AppTheme = StoredAppTheme
-export interface WindowCapabilities { tray: boolean; notifications: boolean }
+export interface WindowCapabilities {
+  tray: boolean
+  notifications: boolean
+  // 主进程按本机内存与 CPU 判断，只用来让界面背景少画一点；缺省 = 旧行为（照常动画）。
+  lowEndDevice?: boolean
+}
 export type { ExternalDeepLink } from './external-deep-links'
 export interface FeedbackReportPreview { id: string; text: string; entries: number }
 export type UpdatePhase = MainUpdatePhase
@@ -649,6 +654,8 @@ export interface XingmangInvokeContract {
   getFeedbackReport: IpcInvokeDefinition<'runtime-logs:preview-feedback', [], FeedbackReportPreview>
   copyFeedbackReport: IpcInvokeDefinition<'runtime-logs:copy-feedback', [reportId?: string], { entries: number }>
   exportFeedbackReport: IpcInvokeDefinition<'runtime-logs:export-feedback', [reportId?: string], { outputPath: string } | null>
+  /** 只认本次运行里导出过的文件路径（主进程记着），渲染层给别的路径会被拒。 */
+  revealExportedFile: IpcInvokeDefinition<'exports:reveal-file', [filePath: string], boolean>
   openRuntimeLogDirectory: IpcInvokeDefinition<'runtime-logs:open-directory', [], boolean>
   clearRuntimeLogs: IpcInvokeDefinition<'runtime-logs:clear', [], void>
   reportRendererError: IpcInvokeDefinition<'runtime-logs:renderer-error', [payload: RendererErrorPayload], void>
@@ -1001,6 +1008,7 @@ export const ipcInvokeChannels = {
   getFeedbackReport: 'runtime-logs:preview-feedback',
   copyFeedbackReport: 'runtime-logs:copy-feedback',
   exportFeedbackReport: 'runtime-logs:export-feedback',
+  revealExportedFile: 'exports:reveal-file',
   openRuntimeLogDirectory: 'runtime-logs:open-directory',
   clearRuntimeLogs: 'runtime-logs:clear',
   reportRendererError: 'runtime-logs:renderer-error',

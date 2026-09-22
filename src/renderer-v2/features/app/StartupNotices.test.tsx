@@ -36,7 +36,7 @@ describe('StartupNotices', () => {
   })
 
   it('stacks one notice per check', () => {
-    const issues = startupDiagnosticsIssues(2)
+    const issues = startupDiagnosticsIssues({ warn: 0, fail: 2, error: 0 })
     expect(issues).not.toBeNull()
     const markup = render([startupCheckFailure('update', 'A'), issues!])
     expect(markup).toContain('startup-notice-update')

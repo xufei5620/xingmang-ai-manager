@@ -3,21 +3,25 @@ import {
   clipboard,
   dialog,
   ipcMain,
+  shell,
   type IpcMainInvokeEvent,
   type OpenDialogOptions,
   type WebContents,
 } from 'electron'
 import { randomUUID } from 'node:crypto'
 import os from 'node:os'
+import path from 'node:path'
 import { buildSensitiveWorkspacePrompt, classifyWorkspace, sensitiveWorkspaceLabel } from './workspace-guard'
+import { createStarterWorkspace, resolveStarterWorkspaceParent } from './starter-workspace'
 import { usageDateRange } from './usage-date-range'
 import type { AppSettingsUpdate, AppTheme } from './app-settings'
 import { parseWindowState } from './window-preferences'
 import { parseWindowCloseReport, type WindowCloseReport } from './window-close-query'
 import { classifyNetworkFailure } from './network-failure'
 import type { ExternalDeepLink } from './external-deep-links'
+import { ExternalUrlBlockedError } from './external-url-blocked'
 import { savedAccountId, type SavedAccountsStore } from './saved-accounts'
-import type { ConfigBackupStore } from './backups'
+import { apiKeyDigest, type ConfigBackupAccountContext, type ConfigBackupStore } from './backups'
 import { parseLocalNoticeReadSync, type AnnouncementReadStore } from './announcement-read-store'
 import type { AccelerationApi, AccelerationMode, AccelerationPreferenceApi } from './acceleration-contract'
 import { accelerationFailureReason } from './acceleration-contract'
@@ -69,6 +73,7 @@ import type {
 import { ensureSafeDataDirectory, writeAtomicSafeUtf8File } from './safe-local-data'
 import { assertOpenableConfigDirectory } from './config-directory'
 import { resolveOpenableSessionWorkspace } from './session-workspace'
+import { resolveRevealableExportedFile } from './exported-file'
 import { defaultProviderConfigRoots, providerConfigRoot, type ProviderConfigRoots } from './codex-home'
 import type { UpdateSnapshot, UpdaterService } from './updater'
 import {
@@ -92,6 +97,7 @@ import {
 } from './new-api-client'
 import type { RelayBackendClient } from './relay-backend'
 import { normalizeRealmLoginIdentifier } from './realm-account-vault'
+import { realmForExplicitSite } from './realm-account'
 import { resolveAccountKeyOptions } from './account-key-options'
 import { loadManagedCliGroups } from './managed-cli-groups'
 import type { AiAssetStore } from './ai-asset-store'
@@ -128,6 +134,9 @@ export interface IpcRegistrationOptions {
   // 解析各 CLI 配置目录用的根路径（Codex 认 CODEX_HOME）。省略 = 按当前进程
   // 环境推一份，和 system-service 默认拿到的那份一致（旧行为）。
   providerRoots?: ProviderConfigRoots
+  // 「新建一个项目文件夹」优先建在它下面（starter-workspace.ts，被云盘同步时退到主目录）；
+  // main.ts 传系统「文档」目录（app.getPath('documents')）。省略 = 主目录下的 Documents。
+  documentsDirectory?: () => string
   sessionsService: CodexSessionsService
   providerSessionsService: ProviderSessionsService
   backupStore: ConfigBackupStore
@@ -166,6 +175,8 @@ export interface IpcRegistrationOptions {
   previewOnboarding: boolean
   externalUrlAllowlist: readonly string[]
   externalShell?: ExternalShellLauncher
+  /** Defaults to Electron's `shell.showItemInFolder`; injectable for tests. */
+  revealInFolder?(filePath: string): void | Promise<void>
   updaterService: UpdaterService
   broadcastUpdate(snapshot: UpdateSnapshot): void
   setWindowMode(target: WebContents, mode: AppWindowMode): void
@@ -1019,6 +1030,10 @@ function parseAccountKeyCliConfigurationInput(value: unknown): AccountKeyCliConf
 const MIN_ACCOUNT_PASSWORD_LENGTH = 8
 const MAX_ACCOUNT_PASSWORD_LENGTH = 20
 
+// The preview travels whole to the renderer and into a read-only textarea.
+const FEEDBACK_REPORT_MAX_LENGTH = 2_000_000
+const MAX_REMEMBERED_EXPORTS = 16
+
 function parseAccountChangePasswordInput(value: unknown, sub2Api = false): NewApiChangePasswordInput {
   const minimum = sub2Api ? 6 : MIN_ACCOUNT_PASSWORD_LENGTH
   const maximum = sub2Api ? 256 : MAX_ACCOUNT_PASSWORD_LENGTH
@@ -1152,6 +1167,7 @@ const ipcOperationLabels: Readonly<Record<string, string>> = {
   'runtime-logs:list': '运行日志读取',
   'runtime-logs:copy-feedback': '脱敏反馈文本复制',
   'runtime-logs:export-feedback': '反馈报告导出',
+  'exports:reveal-file': '导出文件定位',
   'runtime-logs:open-directory': '日志目录打开',
   'runtime-logs:clear': '运行日志清空',
   'runtime-logs:renderer-error': '渲染进程异常上报',
@@ -1403,6 +1419,15 @@ function ipcSuccessLevel(channel: string): 'debug' | 'info' {
 export function registerIpcHandlers(options: IpcRegistrationOptions): () => void {
   const registeredChannels: string[] = []
   const externalShell = options.externalShell ?? createExternalShellLauncher()
+  const revealInFolder = options.revealInFolder ?? ((filePath: string) => shell.showItemInFolder(filePath))
+  // 最近几次导出写出来的文件：「打开所在位置」只认这里面的路径。
+  const exportedFiles: string[] = []
+  const rememberExportedFile = (filePath: string) => {
+    const existing = exportedFiles.indexOf(filePath)
+    if (existing >= 0) exportedFiles.splice(existing, 1)
+    exportedFiles.push(filePath)
+    if (exportedFiles.length > MAX_REMEMBERED_EXPORTS) exportedFiles.shift()
+  }
   const registerTrustedHandler = (channel: string, handler: TrustedIpcHandler): void => {
     registeredChannels.push(channel)
     ipcMain.handle(channel, (event, ...args) => {
@@ -1645,6 +1670,38 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     if (mode !== undefined && mode !== 'merge' && mode !== 'reset') throw new Error('未知的配置写入模式')
     return mode === undefined ? service.switchToOfficialAccount(provider) : service.switchToOfficialAccount(provider, mode)
   })
+  function documentsDirectory(): string | null {
+    if (!options.documentsDirectory) return path.join(os.homedir(), 'Documents')
+    try {
+      return options.documentsDirectory()
+    } catch {
+      // app.getPath 拿不到「文档」时退到主目录（resolveStarterWorkspaceParent）。
+      return null
+    }
+  }
+  // 建不成就说一句、回到选择器，由用户自己选；返回 null 让外层循环再开一次选择器。
+  async function createStarterWorkspaceOrExplain(parentWindow: BrowserWindow | undefined): Promise<string | null> {
+    try {
+      const context = { platform: process.platform, home: os.homedir(), env: process.env }
+      const created = createStarterWorkspace(resolveStarterWorkspaceParent(documentsDirectory(), context), context)
+      // 不记路径（I13）：客服要的只是「这个目录是软件替他建的」。
+      options.runtimeLog.log('info', 'config', 'workspace.starter.created', '已替用户新建项目文件夹')
+      return created
+    } catch (error) {
+      options.runtimeLog.exception('config', 'workspace.starter.failed', error)
+      const errorBoxOptions = {
+        type: 'error' as const,
+        title: '没能新建项目文件夹',
+        message: '没能替你新建项目文件夹。',
+        detail: `${error instanceof Error ? error.message : '未知错误'}\n\n接下来会重新打开文件夹选择窗口，可以在里面自己新建一个文件夹再选它。`,
+        buttons: ['知道了'],
+        noLink: true,
+      }
+      if (parentWindow) await dialog.showMessageBox(parentWindow, errorBoxOptions)
+      else await dialog.showMessageBox(errorBoxOptions)
+      return null
+    }
+  }
   registerTrustedHandler('workspace:choose', async (event) => {
     const parentWindow = BrowserWindow.fromWebContents(event.sender) ?? undefined
     const dialogOptions: OpenDialogOptions = {
@@ -1653,8 +1710,9 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     }
     let workspace: string | null = null
     // 选到主目录 / 盘根 / 桌面 / 下载 / 文档时先说清楚风险。「换一个文件夹」直接
-    // 把选择器再打开一次，用户点一次「打开」仍然能走到底；「仍然打开」照常返回，
-    // 打开时会跳过信任写入与 AGENTS.md 生成（workspace-guard.ts）。
+    // 把选择器再打开一次，用户点一次「打开」仍然能走到底；「新建一个项目文件夹」（默认）
+    // 替用户建好一个普通目录直接返回，信任写入与 AGENTS.md 都照常；「仍然打开」
+    // 照常返回，打开时会跳过信任写入与 AGENTS.md 生成（workspace-guard.ts）。
     while (workspace === null) {
       const result = parentWindow
         ? await dialog.showOpenDialog(parentWindow, dialogOptions)
@@ -1673,13 +1731,17 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
         message: prompt.message,
         detail: prompt.detail,
         buttons: [...prompt.buttons],
-        defaultId: prompt.cancelIndex,
+        defaultId: prompt.createIndex,
         cancelId: prompt.cancelIndex,
         noLink: true,
       }
       const answer = parentWindow
         ? await dialog.showMessageBox(parentWindow, messageBoxOptions)
         : await dialog.showMessageBox(messageBoxOptions)
+      if (answer.response === prompt.createIndex) {
+        workspace = await createStarterWorkspaceOrExplain(parentWindow)
+        continue
+      }
       if (answer.response === prompt.continueIndex) {
         workspace = selected
         // 只记类别不记路径（I13）；这条是客服排查「为什么工具又问了一次信任」的落点。
@@ -1850,7 +1912,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
       typeof url !== 'string'
       || !isAllowedExternalUrl(url, options.externalUrlAllowlist)
     ) {
-      throw new Error('不允许打开该链接')
+      throw new ExternalUrlBlockedError()
     }
     await externalShell.openExternal(url)
     return true
@@ -1874,7 +1936,9 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
       filters: [{ name: 'Markdown', extensions: ['md'] }],
     })
     if (result.canceled || !result.filePath) return null
-    return options.sessionsService.exportMarkdown(id, result.filePath)
+    const exported = await options.sessionsService.exportMarkdown(id, result.filePath)
+    rememberExportedFile(exported.outputPath)
+    return exported
   })
   registerTrustedHandler('sessions:archive', (_event, sessionId: unknown) => (
     options.sessionsService.archive(parseSessionId(sessionId))
@@ -1897,7 +1961,9 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
       filters: [{ name: 'Markdown', extensions: ['md'] }],
     })
     if (result.canceled || !result.filePath) return null
-    return options.providerSessionsService.exportMarkdown(id, result.filePath)
+    const exported = await options.providerSessionsService.exportMarkdown(id, result.filePath)
+    rememberExportedFile(exported.outputPath)
+    return exported
   })
   registerTrustedHandler('provider-sessions:open-directory', async (_event, sessionId: unknown) => {
     const id = requiredString(sessionId, '会话 ID', 256)
@@ -1929,6 +1995,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
       options.diagnosticsService.exportLatest(),
       '诊断报告导出文件',
     )
+    rememberExportedFile(result.filePath)
     return { outputPath: result.filePath }
   })
   registerTrustedHandler('runtime-logs:list', (_event, limit: unknown) => {
@@ -1945,8 +2012,10 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     return preview
   }
   registerTrustedHandler('runtime-logs:preview-feedback', async (event) => {
-    const report = await options.runtimeLog.captureFeedbackReport()
-    if (report.text.length > 2_000_000) throw new Error('反馈报告过大，请减少日志后重试')
+    const report = await options.runtimeLog.captureFeedbackReport(600, FEEDBACK_REPORT_MAX_LENGTH)
+    // captureFeedbackReport already trims the oldest log lines to fit; this
+    // only guards a runtime log implementation that ignored the budget.
+    if (report.text.length > FEEDBACK_REPORT_MAX_LENGTH) throw new Error('反馈报告超过大小上限，请在反馈页点「打开日志目录」，把日志文件直接发给客服')
     const preview = { id: randomUUID(), ...report, expiresAt: Date.now() + 30 * 60 * 1_000 }
     feedbackPreviews.set(event.sender.id, preview)
     if (feedbackPreviews.size > 8) feedbackPreviews.delete(feedbackPreviews.keys().next().value!)
@@ -1978,7 +2047,17 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
       captured ?? await options.runtimeLog.feedbackReport(),
       '反馈报告导出文件',
     )
+    rememberExportedFile(result.filePath)
     return { outputPath: result.filePath }
+  })
+  registerTrustedHandler('exports:reveal-file', async (_event, filePath: unknown) => {
+    const target = requiredString(filePath, '导出文件路径', 4_096)
+    // The renderer only echoes back a path this process itself just wrote
+    // through a save dialog; anything else is refused, so a compromised
+    // renderer cannot point Explorer at an arbitrary location.
+    if (!exportedFiles.includes(target)) throw new Error('只能定位本次打开软件后导出的文件，请重新导出一次')
+    await revealInFolder(await resolveRevealableExportedFile(target))
+    return true
   })
   registerTrustedHandler('runtime-logs:open-directory', async () => {
     ensureSafeDataDirectory(options.runtimeLog.directory, '运行日志目录')
@@ -1994,17 +2073,64 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     })
     options.onRendererError?.(error)
   })
-  registerTrustedHandler('backups:list', () => options.backupStore.list())
+  /**
+   * 备份列表要标出每份备份里的 Key 是不是当前账号的。只读已有的 Key 缓存，从不
+   * 签发、不联网；读不到（没登录 / 缓存打不开 / 读的期间换了账号）一律返回 null，
+   * 列表退回「不标归属」的旧行为，而不是把所有备份都标成别人的。
+   */
+  function currentBackupAccountId(): string | null {
+    const session = accountService.getSessionState()
+    if (options.previewOnboarding || !session.authenticated || !session.account) return null
+    const siteId = accountService.getActiveSiteId?.() ?? options.realmAccounts?.getSiteId() ?? 'solov'
+    return JSON.stringify([siteId, session.account.userId, accountService.getSessionRevision?.() ?? null])
+  }
+  async function readBackupAccountContext(): Promise<ConfigBackupAccountContext | null> {
+    const session = accountService.getSessionState()
+    const account = session.account
+    const identity = currentBackupAccountId()
+    if (!identity || !account || !options.managedCliKeys) return null
+    let keys: Awaited<ReturnType<ManagedCliKeyStoreLike['read']>>
+    try { keys = await options.managedCliKeys.read(account.userId) } catch { return null }
+    if (currentBackupAccountId() !== identity) return null
+    const siteId = accountService.getActiveSiteId?.() ?? options.realmAccounts?.getSiteId() ?? 'solov'
+    return {
+      // 会话版本不进备份清单：重新登录同一个账号，旧备份仍认得是这个账号的。
+      accountId: JSON.stringify([siteId, account.userId]),
+      accountName: account.username,
+      keyDigests: new Set(keys.map((entry) => apiKeyDigest(entry.key))),
+    }
+  }
+  registerTrustedHandler('backups:list', async () => options.backupStore.list(await readBackupAccountContext()))
   registerTrustedHandler('backups:create', (_event, provider: unknown) => {
     if (!isProviderId(provider)) throw new Error('未知的配置类型')
-    return options.backupStore.create(provider, 'manual')
+    return (async () => options.backupStore.create(provider, 'manual', undefined, await readBackupAccountContext()))()
   })
-  registerTrustedHandler('backups:inspect', (_event, id: unknown) => (
-    options.backupStore.inspect(requiredString(id, '备份 ID', 128))
-  ))
-  registerTrustedHandler('backups:restore', (_event, id: unknown) => (
-    options.backupStore.restore(requiredString(id, '备份 ID', 128))
-  ))
+  registerTrustedHandler('backups:inspect', (_event, id: unknown) => {
+    const backupId = requiredString(id, '备份 ID', 128)
+    return (async () => options.backupStore.inspect(backupId, await readBackupAccountContext()))()
+  })
+  registerTrustedHandler('backups:restore', (_event, id: unknown) => {
+    const backupId = requiredString(id, '备份 ID', 128)
+    return (async () => {
+      const identity = currentBackupAccountId()
+      const context = await readBackupAccountContext()
+      const result = options.backupStore.restore(backupId, context)
+      // 恢复已经落盘，登记来源失败不能反过来让用户以为恢复失败了；最坏情况是
+      // 首页照旧提示一次「配置被改过」，所以只记日志。换过账号就不再认这批 Key。
+      const stillCurrent = context !== null && currentBackupAccountId() === identity
+      try {
+        await service.adoptRestoredConfig(result.provider, (apiKey) => (
+          stillCurrent && context.keyDigests.has(apiKeyDigest(apiKey))
+        ))
+      } catch (error) {
+        options.runtimeLog.log('warn', 'ipc', 'backups:restore', '配置已恢复，但没能登记这份配置的来源', {
+          provider: result.provider,
+          reason: error instanceof Error ? error.message : String(error),
+        })
+      }
+      return result
+    })()
+  })
   registerTrustedHandler('backups:delete', (_event, id: unknown) => (
     options.backupStore.delete(requiredString(id, '备份 ID', 128))
   ))
@@ -2381,8 +2507,11 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   registerTrustedHandler('account:send-verification-code', (_event, email: unknown) => (
     accountService.sendEmailVerification(parseAccountEmailInput(email))
   ))
+  const passwordResetSiteId = (siteInput: unknown) => (
+    siteInput === undefined ? options.realmAccounts?.getSiteId() ?? 'solov' : parseAccountSiteId(siteInput)
+  )
   const passwordResetClient = (siteInput: unknown) => {
-    const siteId = siteInput === undefined ? options.realmAccounts?.getSiteId() ?? 'solov' : parseAccountSiteId(siteInput)
+    const siteId = passwordResetSiteId(siteInput)
     if (!options.realmAccounts && siteId !== 'solov') throw new Error('当前账号服务不支持该账号来源')
     const client = options.realmAccounts?.getPublicClient(siteId) ?? accountService
     if (client.capabilities?.supportsPasswordReset === false) throw new Error('所选账号暂不支持在客户端找回密码，请前往对应账号官网')
@@ -2391,9 +2520,62 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   registerTrustedHandler('account:send-reset-code', (_event, email: unknown, siteId: unknown) => (
     passwordResetClient(siteId).sendPasswordResetEmail(parseAccountEmailInput(email))
   ))
-  registerTrustedHandler('account:reset-password', (_event, input: unknown, siteId: unknown) => (
-    passwordResetClient(siteId).resetPassword(parseAccountPasswordResetInput(input))
-  ))
+  const rememberedLoginStore = (siteId: 'solov' | 'solov-api') => (
+    options.accountCredentialsForSite?.(siteId) ?? (siteId === 'solov' ? options.accountCredentials : undefined)
+  )
+  // Whether the identifier kept by 记住密码 names this account. The typed
+  // identifier may be the username or the email (new-api accepts either), so
+  // the username alone cannot tell; the vault's login hints record which
+  // account each identifier actually signed in. Anything unprovable is "no":
+  // rewriting or clearing another account's remembered login is worse than
+  // leaving a stale one.
+  const rememberedLoginNamesAccount = async (
+    siteId: 'solov' | 'solov-api',
+    identifier: string,
+    account: { userId: number | string, username?: string },
+  ): Promise<boolean> => {
+    const normalized = normalizeRealmLoginIdentifier(identifier)
+    if (account.username && normalizeRealmLoginIdentifier(account.username) === normalized) return true
+    const owner = await options.realmAccounts?.loginHintOwner(normalized)
+    return Boolean(owner && owner.realmId === realmForExplicitSite(siteId) && owner.userId === String(account.userId))
+  }
+  // The password change / reset already succeeded by the time these run, so
+  // they never throw: a failure here must not turn a successful change into an
+  // error toast. Neither logs anything -- the stored value is a password (I3).
+  const replaceRememberedPassword = async (
+    siteId: 'solov' | 'solov-api',
+    account: { userId: number, username: string },
+    password: string,
+  ): Promise<void> => {
+    const store = rememberedLoginStore(siteId)
+    const remembered = await store?.read().catch(() => null)
+    if (!store || !remembered) return
+    const matches = await rememberedLoginNamesAccount(siteId, remembered.identifier, account).catch(() => false)
+    if (!matches) return
+    await store.save(remembered.identifier, password).catch(() => store.clear().catch(() => undefined))
+  }
+  const forgetRememberedPassword = async (siteId: 'solov' | 'solov-api', email: string): Promise<void> => {
+    const store = rememberedLoginStore(siteId)
+    const remembered = await store?.read().catch(() => null)
+    if (!store || !remembered) return
+    const matches = await (async () => {
+      if (normalizeRealmLoginIdentifier(remembered.identifier) === normalizeRealmLoginIdentifier(email)) return true
+      const owner = await options.realmAccounts?.loginHintOwner(email)
+      return Boolean(owner && owner.realmId === realmForExplicitSite(siteId)
+        && await rememberedLoginNamesAccount(siteId, remembered.identifier, { userId: owner.userId }))
+    })().catch(() => false)
+    if (matches) await store.clear().catch(() => undefined)
+  }
+  registerTrustedHandler('account:reset-password', (_event, input: unknown, siteInput: unknown) => {
+    const parsed = parseAccountPasswordResetInput(input)
+    const siteId = passwordResetSiteId(siteInput)
+    // The reset hands back a one-time server-generated password the user is
+    // about to replace, so it is not worth remembering; the old one is wrong.
+    return passwordResetClient(siteInput).resetPassword(parsed).then(async (result) => {
+      await forgetRememberedPassword(siteId, parsed.email)
+      return result
+    })
+  })
   registerTrustedHandler('account:get-profile', () => accountService.getProfile())
   registerTrustedHandler('account:update-display-name', (_event, input: unknown) => (
     accountService.updateDisplayName(parseAccountDisplayNameUpdateInput(input))
@@ -2478,9 +2660,18 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     assertAccountSessionUser(userId)
     return result
   })
-  registerTrustedHandler('account:change-password', (_event, input: unknown) => (
-    accountService.changePassword(parseAccountChangePasswordInput(input, accountService.getActiveSiteId?.() === 'solov-api'))
-  ))
+  registerTrustedHandler('account:change-password', (_event, input: unknown) => {
+    const parsed = parseAccountChangePasswordInput(input, accountService.getActiveSiteId?.() === 'solov-api')
+    // Captured before the call: a successful change can end the session, and
+    // the remembered login must follow the account that changed, not whatever
+    // is signed in afterwards.
+    const siteId = options.realmAccounts?.getSiteId() ?? 'solov'
+    const account = accountService.getSessionState().account
+    return accountService.changePassword(parsed).then(async (result) => {
+      if (account) await replaceRememberedPassword(siteId, account, parsed.newPassword)
+      return result
+    })
+  })
   registerTrustedHandler('account:list-login-sessions', () => accountService.listLoginSessions())
   registerTrustedHandler('account:revoke-login-session', async (_event, sid: unknown) => {
     const result = await accountService.revokeLoginSession(
@@ -2503,7 +2694,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     const hint = !explicitSite && options.realmAccounts ? await options.realmAccounts.latestLoginHint() : null
     const siteId = explicitSite ?? (hint ? (hint.realmId === 'api-account' ? 'solov-api' : 'solov')
       : options.realmAccounts?.getSiteId() ?? 'solov')
-    const store = options.accountCredentialsForSite?.(siteId) ?? (siteId === 'solov' ? options.accountCredentials : undefined)
+    const store = rememberedLoginStore(siteId)
     const remembered = await store?.read() ?? null
     if (remembered && hint && normalizeRealmLoginIdentifier(remembered.identifier) !== hint.identifier) return null
     // Re-shape to exactly the contract DTO -- the persisted record carries a
@@ -2513,7 +2704,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   registerTrustedHandler('account:set-remembered-login', async (_event, input: unknown, siteInput: unknown) => {
     const siteId = siteInput === undefined ? options.realmAccounts?.getSiteId() ?? 'solov' : parseAccountSiteId(siteInput)
     const parsed = parseRememberedAccountLogin(input)
-    const store = options.accountCredentialsForSite?.(siteId) ?? (siteId === 'solov' ? options.accountCredentials : undefined)
+    const store = rememberedLoginStore(siteId)
     if (!store) return
     if (parsed) {
       await store.save(parsed.identifier, parsed.password)

@@ -16,16 +16,28 @@ describe('startup check notices', () => {
   })
 
   it('stays silent when the environment check found nothing to handle', () => {
-    expect(startupDiagnosticsIssues(0)).toBeNull()
-    expect(startupDiagnosticsIssues(-1)).toBeNull()
-    expect(startupDiagnosticsIssues(Number.NaN)).toBeNull()
+    expect(startupDiagnosticsIssues({ warn: 0, fail: 0, error: 0 })).toBeNull()
+    expect(startupDiagnosticsIssues({ warn: 0, fail: -1, error: 0 })).toBeNull()
+    expect(startupDiagnosticsIssues({ warn: 0, fail: Number.NaN, error: 0 })).toBeNull()
+  })
+
+  it('stays silent when every finding is only worth a look, such as optional runtimes not installed', () => {
+    // 只装了 Claude Code 的客户：另外几家 CLI、Python、Git 没装都是 warn，不该每次开机都提。
+    expect(startupDiagnosticsIssues({ warn: 5, fail: 0, error: 0 })).toBeNull()
   })
 
   it('reports environment findings as a result rather than a failure', () => {
-    const notice = startupDiagnosticsIssues(3)
+    const notice = startupDiagnosticsIssues({ warn: 0, fail: 2, error: 1 })
     expect(notice?.title).toBe('环境检查发现 3 项需要处理')
+    expect(notice?.body).toBe('不影响继续使用，有空时到「检查」页看一下就行。')
     expect(notice?.failure).toBe(false)
     expect(notice?.action).toEqual({ label: '去看看', page: 'health' })
+  })
+
+  it('leaves warnings out of the count and only mentions them lightly in the body', () => {
+    const notice = startupDiagnosticsIssues({ warn: 4, fail: 1, error: 0 })
+    expect(notice?.title).toBe('环境检查发现 1 项需要处理')
+    expect(notice?.body).toBe('不影响继续使用，有空时到「检查」页看一下就行。另有 4 项可留意。')
   })
 
   it('explains a rebuilt account store as a fact with a way back in, not as a failed check', () => {

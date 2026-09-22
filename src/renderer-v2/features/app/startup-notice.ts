@@ -54,15 +54,36 @@ export function startupCheckFailure(id: StartupCheckFailureId, detail: string): 
   }
 }
 
-/** 0 项时返回 null：没有需要处理的东西就什么都不说。 */
-export function startupDiagnosticsIssues(issues: number): StartupNotice | null {
-  if (!Number.isFinite(issues) || issues < 1) return null
+/** 启动检查只看这三档；`pass` 不用数。 */
+export interface StartupDiagnosticsCounts {
+  warn: number
+  fail: number
+  error: number
+}
+
+function countOf(value: number): number {
+  return Number.isFinite(value) && value > 0 ? Math.floor(value) : 0
+}
+
+/**
+ * 只有「待处理」（fail / error）才值得在开机时说一句。「需留意」（warn）里多半是
+ * 用不到的东西没装：另外几家 CLI、Codex 桌面端、Python、Git。把它们数进去，只用
+ * 一家工具的客户每次开机都会看到「N 项需要处理」，点进去发现没事，久了就不看了，
+ * 真有待处理的时候反而被当成噪音。所以只有 warn 时不说话（检查页照旧标黄），
+ * 和待处理一起出现时只在正文里轻带一句。
+ */
+export function startupDiagnosticsIssues(counts: StartupDiagnosticsCounts): StartupNotice | null {
+  const issues = countOf(counts.fail) + countOf(counts.error)
+  if (issues < 1) return null
+  const warnings = countOf(counts.warn)
   return {
     id: 'diagnostics',
     failure: false,
     tone: 'warn',
     title: `环境检查发现 ${issues} 项需要处理`,
-    body: '不影响继续使用，有空时到「检查」页看一下就行。',
+    body: warnings
+      ? `不影响继续使用，有空时到「检查」页看一下就行。另有 ${warnings} 项可留意。`
+      : '不影响继续使用，有空时到「检查」页看一下就行。',
     action: { label: '去看看', page: 'health' },
   }
 }

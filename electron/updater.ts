@@ -1,5 +1,6 @@
 import type { ProgressInfo, UpdateFileInfo, UpdateInfo } from 'builder-util-runtime'
 import { classifyNetworkFailure, updateNetworkFailureMessages } from './network-failure'
+import { redactSecretQueryParameters, redactSecretShapes } from './redaction-patterns'
 
 export type UpdatePhase =
   | 'disabled'
@@ -255,11 +256,9 @@ function safeError(error: unknown, platform: NodeJS.Platform): { code: string; m
   const source = typeof candidate?.message === 'string' ? candidate.message : String(error)
   const description = typeof candidate?.description === 'string' ? candidate.description : source
   const isNotFound = candidate?.statusCode === 404 || /\b404\b/.test(source)
-  const redacted = source
-    .replace(/(https?:\/\/)[^\s/@]+:[^\s/@]+@/gi, '$1[REDACTED]@')
-    .replace(/([?&](?:token|key|api_key)=)[^&\s]+/gi, '$1[REDACTED]')
-    .replace(/\bsk-[A-Za-z0-9_-]{6,}\b/g, '[REDACTED]')
-    .slice(0, 500)
+  const redacted = redactSecretShapes(redactSecretQueryParameters(
+    source.replace(/(https?:\/\/)[^\s/@]+:[^\s/@]+@/gi, '$1[REDACTED]@'),
+  )).slice(0, 500)
   const missingChannelManifest = code === 'ERR_UPDATER_CHANNEL_FILE_NOT_FOUND'
     || (
       isNotFound
