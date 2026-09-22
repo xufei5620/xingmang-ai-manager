@@ -62,7 +62,7 @@ import {
   type ProviderSessionListQuery,
 } from './provider-sessions'
 import { providerSupportsOfficialAccount, type NativeConfigSaveMode } from './config-files'
-import { switchAccountSource } from './account-source-switch'
+import { AccountSourceServiceUnavailableError, switchAccountSource } from './account-source-switch'
 import { redactHomeDirectory } from './startup-log'
 import { isExternalToolId, parseExternalClientConfigRequest } from './external-client-contract'
 import type { ExternalToolId } from './external-tool-config'
@@ -1864,6 +1864,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
         const outcome = await configureManagedClis(
           accountService, service, [id], {}, options.previewOnboarding, options.managedCliKeys, 'merge', 'explicit',
         )
+        if (outcome.failed.some((item) => item.serviceUnavailable)) throw new AccountSourceServiceUnavailableError()
         if (outcome.failed.length) throw new Error(outcome.failed.map((item) => item.message).join('；'))
         if (!outcome.configured.includes(id)) throw new Error('工具没有返回配置写入结果')
       },

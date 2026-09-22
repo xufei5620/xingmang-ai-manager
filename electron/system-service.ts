@@ -195,6 +195,7 @@ import { resolveClaudeDesktopPaths } from './claude-desktop-paths'
 import { inspectClaudeDesktopStoreVirtualization } from './claude-desktop-manifest'
 import { assertClaudeDesktopUnmanaged } from './claude-desktop-policy'
 import { isServiceUnavailableResponse, networkFailureMessages, parsesAsJsonObject } from './network-failure'
+import { NewApiNetworkError } from './new-api-client'
 
 const execFileAsync = promisify(execFile)
 const npmLatestCacheTtlMs = 10 * 60_000
@@ -4303,7 +4304,8 @@ export function createSystemService(
         // 维护、网关错误、防护层验证页：写入 Key 与 AI 对话都经过这一步，按「服务
         // 暂时不可用」说，免得渲染层把「服务返回 503」猜成 Key 或分组出了问题。
         if (isServiceUnavailableResponse({ status: response.status, json: parsesAsJsonObject(body), headers: response.headers, bodyText: body })) {
-          throw new Error(`${networkFailureMessages.serviceUnavailable}（模型查询 HTTP ${response.status}）`)
+          // 用带分类的错误，一键切换才认得出「服务在维护」而不回滚（account-source-switch.ts）。
+          throw new NewApiNetworkError('serviceUnavailable', `模型查询 HTTP ${response.status}`)
         }
         let detail = ''
         try {
