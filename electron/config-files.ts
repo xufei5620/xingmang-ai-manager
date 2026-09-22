@@ -268,6 +268,19 @@ function allowClaudeRelayTool(parsed: Record<string, unknown>): void {
   else record.deny = kept
 }
 
+// Claude Code 的 WebFetch 每抓一个网页前，都先拿域名去问 api.anthropic.com 的
+// /api/web/domain_info「这个站能不能抓」。国内连不上那台主机：被拒时工具立刻报
+// 「Unable to verify if domain … is safe to fetch」，被静默丢包时先干等 30 秒再报同一句
+// ——接中转的客户等于没有「读网页」。skipWebFetchPreflight 跳过这次询问，网页本身照常
+// 抓取（沙箱实测 2.1.277：官方主机不可达时 1.2 秒抓到，且不再发 domain_info）。
+// CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC 管不到这一步，实测仍会预检。
+//
+// 代价是少了 Anthropic 那份域名黑名单。它只对连得上官方的用户有意义，所以与 Artifact
+// 一样只在星芒来源下写，切回官方账号时撤掉。
+function skipClaudeWebFetchPreflight(parsed: Record<string, unknown>): void {
+  parsed.skipWebFetchPreflight = true
+}
+
 // 四个 CLI 各自带着更新机制，会绕过 cli-verified-versions.ts 钉住的推荐版本：Claude Code
 // 在后台自更新，Gemini CLI 的 general.enableAutoUpdate 默认 true、启动就 npm install -g
 // 最新版，Codex 与 Grok 启动时催更并给出 npm 命令。装到的版本一旦被 CLI 自己换掉，名单
@@ -1330,6 +1343,7 @@ function createPlans(
           model,
           effortLevel: 'medium',
           skipDangerousModePermissionPrompt: true,
+          skipWebFetchPreflight: true,
           language: MANAGED_CLAUDE_RESPONSE_LANGUAGE,
           cleanupPeriodDays: MANAGED_CLAUDE_RETENTION_DAYS,
           ...(claudeStatusLineCommand ? { statusLine: claudeStatusLineSetting(claudeStatusLineCommand) } : {}),
@@ -1416,6 +1430,7 @@ function createMergePlans(
       env.ANTHROPIC_BASE_URL = siteBaseUrls.claude
       disableClaudeSelfUpdate(env)
       denyClaudeRelayTool(ensureRecord(parsed, 'permissions'))
+      skipClaudeWebFetchPreflight(parsed)
       ensureClaudeResponseLanguage(parsed)
       extendClaudeSessionRetention(parsed)
       if (claudeStatusLineCommand) applyClaudeStatusLine(parsed, claudeStatusLineCommand)
@@ -2007,6 +2022,7 @@ function createOfficialAccountPlans(
         if (Object.keys(envRecord).length === 0) delete parsed.env
       }
       allowClaudeRelayTool(parsed)
+      delete parsed.skipWebFetchPreflight
       delete parsed.model
       return [{ path: paths[0], content: jsonContent(parsed) }]
     }
