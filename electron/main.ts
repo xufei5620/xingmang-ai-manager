@@ -1666,6 +1666,7 @@ if (!hasSingleInstanceLock) {
       accountCredentialsForSite: (siteId) => ensureBusiness(siteId).accountCredentialStore,
       savedAccounts,
       systemService,
+      providerRoots: rootedOptions.system.providerRoots,
       accountService,
       paymentWindow,
       accountSessionReady,

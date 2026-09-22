@@ -508,6 +508,12 @@ export interface XingmangInvokeContract {
   getConfig: IpcInvokeDefinition<'config:get', [], AppConfigSummary>
   revealApiKey: IpcInvokeDefinition<'config:reveal-api-key', [provider: ProviderId], string>
   saveConfig: IpcInvokeDefinition<'config:save', [payload: ConfigSavePayload], ConfigSaveResult>
+  /**
+   * 在资源管理器 / 访达里打开这个工具自己的配置目录（Claude 是 ~/.claude，
+   * Codex 以软件注入的 CODEX_HOME 为准）。只打开目录，不碰里面任何文件，
+   * 目录还没生成时报错而不是替用户建一个空目录。
+   */
+  openProviderConfigDirectory: IpcInvokeDefinition<'config:open-directory', [provider: ProviderId], boolean>
   configureExternalTool: IpcInvokeDefinition<
     'config:configure-external-tool',
     [tool: ExternalToolId, options: ExternalClientConfigRequest],
@@ -906,6 +912,7 @@ export const ipcInvokeChannels = {
   getConfig: 'config:get',
   revealApiKey: 'config:reveal-api-key',
   saveConfig: 'config:save',
+  openProviderConfigDirectory: 'config:open-directory',
   configureExternalTool: 'config:configure-external-tool',
   scanExternalClients: 'external-clients:scan',
   installExternalClient: 'external-clients:install',

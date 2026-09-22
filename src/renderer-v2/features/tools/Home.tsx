@@ -5,7 +5,7 @@ import { presentExternalClients } from './external-model'
 import { useSharedAccountBalance } from '../app/balance-context'
 import { balanceStatusText } from '../shell/balance-status'
 import { BrandIcon, Button, Card, Dialog, Empty, ListRow, Menu, PageHead, Pill, Progress, ToolRow } from '../../ui'
-import { balanceTier, canUninstallTool, externalInstallHint, greeting, isExternallyManagedInstall, presentTools, recommendedVersionVerb, rollbackVersion, versionSubtitle, type ToolboxSnapshot, type ToolId, type ToolPresentation } from './model'
+import { balanceTier, canUninstallTool, configDirectoryMenuItem, externalInstallHint, greeting, isExternallyManagedInstall, presentTools, recommendedVersionVerb, rollbackVersion, versionSubtitle, type ToolboxSnapshot, type ToolId, type ToolPresentation } from './model'
 import type { ToolboxPartitionFailure, ToolsApi } from './api'
 import type { ToolJob } from './useToolbox'
 import type { AccountBootstrapProgress, AccountBootstrapResult } from './account-bootstrap'
@@ -56,6 +56,8 @@ export interface HomeProps {
   onRewriteKey?(tool: ToolId): void
   /** 配置被改动过时认下现在这份配置，以后不再提；缺省 = 不给这个菜单项（旧行为）。 */
   onKeepConfig?(tool: ToolId): void
+  /** 在资源管理器 / 访达里打开这个工具的配置文件夹；缺省 = 不给这个菜单项（旧行为）。 */
+  onOpenConfigDirectory?(tool: ToolId): void
   onConfigureExternal(tool: ExternalToolId): void
   onInstallExternal(tool: ExternalToolId): void
   onLaunchExternal(tool: ExternalToolId): void
@@ -239,6 +241,13 @@ export function Home(props: HomeProps) {
         // 故意改过配置的人也要有出路，否则那颗黄角标会一直挂着。认下之后这个工具
         // 就按「自己填写的密钥」处理，下次在配置里改回星芒账号时标记自动清掉。
         ...(status === 'configChanged' && props.onKeepConfig ? [{ label: '就用现在这份', testId: `tool-${tool.id}-keep-config`, onSelect: () => props.onKeepConfig?.(tool.id) }] : []),
+        // 界面上一直只把配置路径写成一行灰字，而 `.` 开头的目录在资源管理器和
+        // 访达里默认都看不见，用户和客服只能手敲路径。
+        ...(props.onOpenConfigDirectory ? [{
+          ...configDirectoryMenuItem(tool, configUnavailable),
+          testId: `tool-${tool.id}-open-config-directory`,
+          onSelect: () => props.onOpenConfigDirectory?.(tool.id),
+        }] : []),
         ...(rollback && !blocked ? [{ label: `${rollbackVerb}推荐版本 ${rollback}`, testId: `tool-${tool.id}-rollback-menu`, onSelect: () => props.onInstall(tool.id, rollback) }] : []),
         ...(tool.provider === 'codex' ? [{ label: '非 GPT 模型', testId: tool.id === 'codex' ? 'home-codex-models' : 'home-codexDesktop-models', onSelect: props.onCodexModels }] : []),
         { label: '查看记录', onSelect: () => props.onNavigate('sessions') },

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -230,6 +230,7 @@ function register(
   },
   managedCliKeys?: NonNullable<Parameters<typeof registerIpcHandlers>[0]['managedCliKeys']>,
   chatOverrides: ChatIpcOverrides = {},
+  extraOptions: Partial<Parameters<typeof registerIpcHandlers>[0]> = {},
 ) {
   const extensionService = {
     getRepositoryContext: vi.fn(() => ({ repositoryRoot: 'C:\\workspace' })),
@@ -336,6 +337,7 @@ function register(
     setWindowTheme: vi.fn(),
     openCanvasWindow: vi.fn(async () => undefined),
     ...({ transformSystemSnapshot } as object),
+    ...extraOptions,
   })
   return {
     dispose,
@@ -4883,5 +4885,61 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       expect(service.fetchAvailableModels).not.toHaveBeenCalled()
       expect(service.saveConfig).not.toHaveBeenCalled()
     })
+  })
+})
+
+describe('config:open-directory', () => {
+  const temporary: string[] = []
+
+  function roots() {
+    const userHome = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-ipc-config-dir-'))
+    temporary.push(userHome)
+    return { userHome, codexHome: path.join(userHome, 'elsewhere-codex') }
+  }
+
+  afterEach(() => {
+    while (temporary.length) fs.rmSync(temporary.pop()!, { recursive: true, force: true })
+  })
+
+  it('opens the folder itself, never a file inside it', async () => {
+    const providerRoots = roots()
+    const directory = path.join(providerRoots.userHome, '.claude')
+    fs.mkdirSync(directory)
+    fs.writeFileSync(path.join(directory, 'settings.json'), '{}')
+    register(serviceStub(), 'C:\\app-data\\logs', undefined, accountServiceStub(), undefined, undefined, {}, { providerRoots })
+
+    await expect(electronMocks.handlers.get('config:open-directory')!(trustedEvent(), 'claude')).resolves.toBe(true)
+
+    expect(electronMocks.openPath.mock.calls).toEqual([[directory]])
+  })
+
+  it('follows CODEX_HOME rather than assuming ~/.codex', async () => {
+    const providerRoots = roots()
+    fs.mkdirSync(providerRoots.codexHome)
+    register(serviceStub(), 'C:\\app-data\\logs', undefined, accountServiceStub(), undefined, undefined, {}, { providerRoots })
+
+    await electronMocks.handlers.get('config:open-directory')!(trustedEvent(), 'codex')
+
+    expect(electronMocks.openPath.mock.calls).toEqual([[providerRoots.codexHome]])
+  })
+
+  it('refuses an unknown provider and opens nothing', async () => {
+    const providerRoots = roots()
+    register(serviceStub(), 'C:\\app-data\\logs', undefined, accountServiceStub(), undefined, undefined, {}, { providerRoots })
+
+    for (const value of ['../../etc', 'claude\0', 42, null]) {
+      await expect(electronMocks.handlers.get('config:open-directory')!(trustedEvent(), value)).rejects.toThrow('未知的 CLI 类型')
+    }
+    expect(electronMocks.openPath).not.toHaveBeenCalled()
+  })
+
+  it('says the folder has not been written yet instead of creating one', async () => {
+    const providerRoots = roots()
+    register(serviceStub(), 'C:\\app-data\\logs', undefined, accountServiceStub(), undefined, undefined, {}, { providerRoots })
+
+    await expect(electronMocks.handlers.get('config:open-directory')!(trustedEvent(), 'gemini')).rejects.toThrow('还没有生成')
+
+    expect(electronMocks.openPath).not.toHaveBeenCalled()
+    expect(fs.existsSync(path.join(providerRoots.userHome, '.gemini'))).toBe(false)
   })
 })
