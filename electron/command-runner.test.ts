@@ -287,6 +287,18 @@ describe('secure command runner', () => {
     expect(environment.PATH?.split(process.platform === 'win32' ? ';' : ':')[0]).toBeTruthy()
   })
 
+  it.runIf(process.platform !== 'darwin')('keeps the app-installed Python behind every inherited PATH entry', () => {
+    const localAppData = path.join(os.tmpdir(), 'xingmang-local-app-data')
+    const environment = commandEnvironment({ PATH: ['/custom/python', '/custom/inherited'].join(path.delimiter), LOCALAPPDATA: localAppData })
+    const entries = environment.PATH?.split(path.delimiter) ?? []
+    const python = path.join(localAppData, 'Programs', 'Python', 'Python312')
+
+    // A Python the user already put on PATH must still win; ours is only found
+    // when the inherited PATH predates the installer's change.
+    expect(entries.slice(-2)).toEqual([python, path.join(python, 'Scripts')])
+    expect(entries.indexOf('/custom/python')).toBeLessThan(entries.indexOf(python))
+  })
+
   it.runIf(process.platform === 'darwin')('orders deterministic macOS command paths before inherited PATH entries', () => {
     const environment = commandEnvironment({
       PATH: '/usr/bin:/custom/inherited:/opt/homebrew/bin',

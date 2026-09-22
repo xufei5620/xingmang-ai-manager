@@ -498,6 +498,18 @@ function defaultCommandPaths(env: NodeJS.ProcessEnv): string[] {
   ].filter((entry): entry is string => Boolean(entry))
 }
 
+/**
+ * 排在继承 PATH 之后、只作兜底的目录。本软件代装的 Python 3.12（python-runtime.ts）
+ * 落在当前用户目录下，安装器写进 PATH 的那一段要本进程重开才看得到；补在这里，
+ * 从本软件打开的命令行工具不用用户重开软件就能找到它（第七批 5）。放在最后是为了
+ * 不顶掉用户自己在 PATH 里放的另一版 Python。
+ */
+function fallbackCommandPaths(env: NodeJS.ProcessEnv): string[] {
+  if (!env.LOCALAPPDATA) return []
+  const python = path.join(env.LOCALAPPDATA, 'Programs', 'Python', 'Python312')
+  return [python, path.join(python, 'Scripts')]
+}
+
 /** Builds a deterministic PATH without mutating process.env or duplicating entries. */
 export function commandEnvironment(
   baseEnv: NodeJS.ProcessEnv = process.env,
@@ -515,6 +527,7 @@ export function commandEnvironment(
         ...additionalPaths,
         ...defaultCommandPaths(baseEnv),
         ...existingPath.split(path.delimiter),
+        ...fallbackCommandPaths(baseEnv),
       ]
   const seen = new Set<string>()
   const entries: string[] = []

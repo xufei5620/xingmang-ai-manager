@@ -17,6 +17,25 @@ describe('renderer-v2 result notice', () => {
     expect(renderToStaticMarkup(<ResultNotice error={raw} />)).toContain(raw)
   })
 
+  it('offers to reveal an exported file only when the page can act on it', () => {
+    const exported = renderToStaticMarkup(
+      <ResultNotice
+        message="诊断报告已导出：C:\\Users\\a\\report.txt"
+        revealPath="C:\\Users\\a\\report.txt"
+        onReveal={async () => true}
+      />,
+    )
+    expect(exported).toContain('打开所在位置')
+    expect(exported).toContain('data-testid="result-notice-reveal"')
+    // Spread from useOperation on a page that never wired onReveal: no dead button.
+    expect(renderToStaticMarkup(
+      <ResultNotice message="已导出" revealPath="C:\\report.txt" />,
+    )).not.toContain('打开所在位置')
+    expect(renderToStaticMarkup(
+      <ResultNotice error="导出失败" revealPath="C:\\report.txt" onReveal={async () => true} />,
+    )).not.toContain('打开所在位置')
+  })
+
   it('still renders success on its own', () => {
     const markup = renderToStaticMarkup(<ResultNotice message="工具已卸载" />)
     expect(markup).toContain('工具已卸载')

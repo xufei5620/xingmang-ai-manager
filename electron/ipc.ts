@@ -3,6 +3,7 @@ import {
   clipboard,
   dialog,
   ipcMain,
+  shell,
   type IpcMainInvokeEvent,
   type OpenDialogOptions,
   type WebContents,
@@ -17,7 +18,7 @@ import { parseWindowCloseReport, type WindowCloseReport } from './window-close-q
 import { classifyNetworkFailure } from './network-failure'
 import type { ExternalDeepLink } from './external-deep-links'
 import { savedAccountId, type SavedAccountsStore } from './saved-accounts'
-import type { ConfigBackupStore } from './backups'
+import { apiKeyDigest, type ConfigBackupAccountContext, type ConfigBackupStore } from './backups'
 import { parseLocalNoticeReadSync, type AnnouncementReadStore } from './announcement-read-store'
 import type { AccelerationApi, AccelerationMode, AccelerationPreferenceApi } from './acceleration-contract'
 import { accelerationFailureReason } from './acceleration-contract'
@@ -69,6 +70,7 @@ import type {
 import { ensureSafeDataDirectory, writeAtomicSafeUtf8File } from './safe-local-data'
 import { assertOpenableConfigDirectory } from './config-directory'
 import { resolveOpenableSessionWorkspace } from './session-workspace'
+import { resolveRevealableExportedFile } from './exported-file'
 import { defaultProviderConfigRoots, providerConfigRoot, type ProviderConfigRoots } from './codex-home'
 import type { UpdateSnapshot, UpdaterService } from './updater'
 import {
@@ -166,6 +168,8 @@ export interface IpcRegistrationOptions {
   previewOnboarding: boolean
   externalUrlAllowlist: readonly string[]
   externalShell?: ExternalShellLauncher
+  /** Defaults to Electron's `shell.showItemInFolder`; injectable for tests. */
+  revealInFolder?(filePath: string): void | Promise<void>
   updaterService: UpdaterService
   broadcastUpdate(snapshot: UpdateSnapshot): void
   setWindowMode(target: WebContents, mode: AppWindowMode): void
@@ -1019,6 +1023,10 @@ function parseAccountKeyCliConfigurationInput(value: unknown): AccountKeyCliConf
 const MIN_ACCOUNT_PASSWORD_LENGTH = 8
 const MAX_ACCOUNT_PASSWORD_LENGTH = 20
 
+// The preview travels whole to the renderer and into a read-only textarea.
+const FEEDBACK_REPORT_MAX_LENGTH = 2_000_000
+const MAX_REMEMBERED_EXPORTS = 16
+
 function parseAccountChangePasswordInput(value: unknown, sub2Api = false): NewApiChangePasswordInput {
   const minimum = sub2Api ? 6 : MIN_ACCOUNT_PASSWORD_LENGTH
   const maximum = sub2Api ? 256 : MAX_ACCOUNT_PASSWORD_LENGTH
@@ -1152,6 +1160,7 @@ const ipcOperationLabels: Readonly<Record<string, string>> = {
   'runtime-logs:list': '运行日志读取',
   'runtime-logs:copy-feedback': '脱敏反馈文本复制',
   'runtime-logs:export-feedback': '反馈报告导出',
+  'exports:reveal-file': '导出文件定位',
   'runtime-logs:open-directory': '日志目录打开',
   'runtime-logs:clear': '运行日志清空',
   'runtime-logs:renderer-error': '渲染进程异常上报',
@@ -1403,6 +1412,15 @@ function ipcSuccessLevel(channel: string): 'debug' | 'info' {
 export function registerIpcHandlers(options: IpcRegistrationOptions): () => void {
   const registeredChannels: string[] = []
   const externalShell = options.externalShell ?? createExternalShellLauncher()
+  const revealInFolder = options.revealInFolder ?? ((filePath: string) => shell.showItemInFolder(filePath))
+  // 最近几次导出写出来的文件：「打开所在位置」只认这里面的路径。
+  const exportedFiles: string[] = []
+  const rememberExportedFile = (filePath: string) => {
+    const existing = exportedFiles.indexOf(filePath)
+    if (existing >= 0) exportedFiles.splice(existing, 1)
+    exportedFiles.push(filePath)
+    if (exportedFiles.length > MAX_REMEMBERED_EXPORTS) exportedFiles.shift()
+  }
   const registerTrustedHandler = (channel: string, handler: TrustedIpcHandler): void => {
     registeredChannels.push(channel)
     ipcMain.handle(channel, (event, ...args) => {
@@ -1874,7 +1892,9 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
       filters: [{ name: 'Markdown', extensions: ['md'] }],
     })
     if (result.canceled || !result.filePath) return null
-    return options.sessionsService.exportMarkdown(id, result.filePath)
+    const exported = await options.sessionsService.exportMarkdown(id, result.filePath)
+    rememberExportedFile(exported.outputPath)
+    return exported
   })
   registerTrustedHandler('sessions:archive', (_event, sessionId: unknown) => (
     options.sessionsService.archive(parseSessionId(sessionId))
@@ -1897,7 +1917,9 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
       filters: [{ name: 'Markdown', extensions: ['md'] }],
     })
     if (result.canceled || !result.filePath) return null
-    return options.providerSessionsService.exportMarkdown(id, result.filePath)
+    const exported = await options.providerSessionsService.exportMarkdown(id, result.filePath)
+    rememberExportedFile(exported.outputPath)
+    return exported
   })
   registerTrustedHandler('provider-sessions:open-directory', async (_event, sessionId: unknown) => {
     const id = requiredString(sessionId, '会话 ID', 256)
@@ -1929,6 +1951,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
       options.diagnosticsService.exportLatest(),
       '诊断报告导出文件',
     )
+    rememberExportedFile(result.filePath)
     return { outputPath: result.filePath }
   })
   registerTrustedHandler('runtime-logs:list', (_event, limit: unknown) => {
@@ -1945,8 +1968,10 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     return preview
   }
   registerTrustedHandler('runtime-logs:preview-feedback', async (event) => {
-    const report = await options.runtimeLog.captureFeedbackReport()
-    if (report.text.length > 2_000_000) throw new Error('反馈报告过大，请减少日志后重试')
+    const report = await options.runtimeLog.captureFeedbackReport(600, FEEDBACK_REPORT_MAX_LENGTH)
+    // captureFeedbackReport already trims the oldest log lines to fit; this
+    // only guards a runtime log implementation that ignored the budget.
+    if (report.text.length > FEEDBACK_REPORT_MAX_LENGTH) throw new Error('反馈报告超过大小上限，请在反馈页点「打开日志目录」，把日志文件直接发给客服')
     const preview = { id: randomUUID(), ...report, expiresAt: Date.now() + 30 * 60 * 1_000 }
     feedbackPreviews.set(event.sender.id, preview)
     if (feedbackPreviews.size > 8) feedbackPreviews.delete(feedbackPreviews.keys().next().value!)
@@ -1978,7 +2003,17 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
       captured ?? await options.runtimeLog.feedbackReport(),
       '反馈报告导出文件',
     )
+    rememberExportedFile(result.filePath)
     return { outputPath: result.filePath }
+  })
+  registerTrustedHandler('exports:reveal-file', async (_event, filePath: unknown) => {
+    const target = requiredString(filePath, '导出文件路径', 4_096)
+    // The renderer only echoes back a path this process itself just wrote
+    // through a save dialog; anything else is refused, so a compromised
+    // renderer cannot point Explorer at an arbitrary location.
+    if (!exportedFiles.includes(target)) throw new Error('只能定位本次打开软件后导出的文件，请重新导出一次')
+    await revealInFolder(await resolveRevealableExportedFile(target))
+    return true
   })
   registerTrustedHandler('runtime-logs:open-directory', async () => {
     ensureSafeDataDirectory(options.runtimeLog.directory, '运行日志目录')
@@ -1994,17 +2029,64 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     })
     options.onRendererError?.(error)
   })
-  registerTrustedHandler('backups:list', () => options.backupStore.list())
+  /**
+   * 备份列表要标出每份备份里的 Key 是不是当前账号的。只读已有的 Key 缓存，从不
+   * 签发、不联网；读不到（没登录 / 缓存打不开 / 读的期间换了账号）一律返回 null，
+   * 列表退回「不标归属」的旧行为，而不是把所有备份都标成别人的。
+   */
+  function currentBackupAccountId(): string | null {
+    const session = accountService.getSessionState()
+    if (options.previewOnboarding || !session.authenticated || !session.account) return null
+    const siteId = accountService.getActiveSiteId?.() ?? options.realmAccounts?.getSiteId() ?? 'solov'
+    return JSON.stringify([siteId, session.account.userId, accountService.getSessionRevision?.() ?? null])
+  }
+  async function readBackupAccountContext(): Promise<ConfigBackupAccountContext | null> {
+    const session = accountService.getSessionState()
+    const account = session.account
+    const identity = currentBackupAccountId()
+    if (!identity || !account || !options.managedCliKeys) return null
+    let keys: Awaited<ReturnType<ManagedCliKeyStoreLike['read']>>
+    try { keys = await options.managedCliKeys.read(account.userId) } catch { return null }
+    if (currentBackupAccountId() !== identity) return null
+    const siteId = accountService.getActiveSiteId?.() ?? options.realmAccounts?.getSiteId() ?? 'solov'
+    return {
+      // 会话版本不进备份清单：重新登录同一个账号，旧备份仍认得是这个账号的。
+      accountId: JSON.stringify([siteId, account.userId]),
+      accountName: account.username,
+      keyDigests: new Set(keys.map((entry) => apiKeyDigest(entry.key))),
+    }
+  }
+  registerTrustedHandler('backups:list', async () => options.backupStore.list(await readBackupAccountContext()))
   registerTrustedHandler('backups:create', (_event, provider: unknown) => {
     if (!isProviderId(provider)) throw new Error('未知的配置类型')
-    return options.backupStore.create(provider, 'manual')
+    return (async () => options.backupStore.create(provider, 'manual', undefined, await readBackupAccountContext()))()
   })
-  registerTrustedHandler('backups:inspect', (_event, id: unknown) => (
-    options.backupStore.inspect(requiredString(id, '备份 ID', 128))
-  ))
-  registerTrustedHandler('backups:restore', (_event, id: unknown) => (
-    options.backupStore.restore(requiredString(id, '备份 ID', 128))
-  ))
+  registerTrustedHandler('backups:inspect', (_event, id: unknown) => {
+    const backupId = requiredString(id, '备份 ID', 128)
+    return (async () => options.backupStore.inspect(backupId, await readBackupAccountContext()))()
+  })
+  registerTrustedHandler('backups:restore', (_event, id: unknown) => {
+    const backupId = requiredString(id, '备份 ID', 128)
+    return (async () => {
+      const identity = currentBackupAccountId()
+      const context = await readBackupAccountContext()
+      const result = options.backupStore.restore(backupId, context)
+      // 恢复已经落盘，登记来源失败不能反过来让用户以为恢复失败了；最坏情况是
+      // 首页照旧提示一次「配置被改过」，所以只记日志。换过账号就不再认这批 Key。
+      const stillCurrent = context !== null && currentBackupAccountId() === identity
+      try {
+        await service.adoptRestoredConfig(result.provider, (apiKey) => (
+          stillCurrent && context.keyDigests.has(apiKeyDigest(apiKey))
+        ))
+      } catch (error) {
+        options.runtimeLog.log('warn', 'ipc', 'backups:restore', '配置已恢复，但没能登记这份配置的来源', {
+          provider: result.provider,
+          reason: error instanceof Error ? error.message : String(error),
+        })
+      }
+      return result
+    })()
+  })
   registerTrustedHandler('backups:delete', (_event, id: unknown) => (
     options.backupStore.delete(requiredString(id, '备份 ID', 128))
   ))

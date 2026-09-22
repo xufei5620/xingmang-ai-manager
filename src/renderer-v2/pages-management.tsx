@@ -60,7 +60,9 @@ import {
 import { tools } from './registry/tools'
 import { isMissingWorkspace, latestSessionIdsByWorkspace } from './features/tools/recent-workspaces'
 import { runtimeHomebrewCommand } from './features/tools/runtime-install-guide'
-import type { V2Bridge } from './types'
+import { backupKeyView } from './features/tools/backup-key'
+import { connectionCheckView } from './features/tools/connection-check'
+import type { V2Bridge, V2Page } from './types'
 type Provider = Parameters<V2Bridge['listProviderExtensions']>[0]
 type ExtensionSnapshot = Awaited<ReturnType<V2Bridge['listProviderExtensions']>>
 type ExtensionItem = ExtensionSnapshot['items'][number]
@@ -90,6 +92,11 @@ type Session = Awaited<
 type SessionDetail = Awaited<ReturnType<V2Bridge['getProviderSessionDetail']>>
 type Backup = Awaited<ReturnType<V2Bridge['listBackups']>>[number]
 type Preview = Awaited<ReturnType<V2Bridge['inspectBackup']>>
+type RestoreCheck = {
+  provider: Provider
+  result: Awaited<ReturnType<V2Bridge['checkProviderConnection']>> | null
+  error: string | null
+}
 type ExtensionView = 'installed' | 'market'
 
 /**
@@ -672,7 +679,10 @@ export function SessionsPage({
         }
         right={<span>{resource.data?.total ?? 0} 条记录</span>}
       />
-      <ResultNotice {...operation} />
+      <ResultNotice
+        {...operation}
+        onReveal={(path) => api.revealExportedFile(path)}
+      />
       <Card padding="none">
         <ListState
           page="sessions"
@@ -757,6 +767,12 @@ export function SessionsPage({
                       icon={History}
                       disabled={!session.detailAvailable}
                       onClick={() => view(session)}
+                      title={
+                        session.detailAvailable
+                          ? undefined
+                          : '这条记录只有摘要，对话原文已经不在这台电脑上了，看不了全文'
+                      }
+                      testId={`sessions-view-${session.id}`}
                     >
                       查看记录
                     </Button>
@@ -796,7 +812,10 @@ export function SessionsPage({
                   () => api.exportProviderSession(selected.id),
                   (result) =>
                     result
-                      ? `已导出 ${result.messages} 条消息：${result.outputPath}${result.truncated ? '；源记录不完整，已在文件中标记' : ''}`
+                      ? {
+                          text: `已导出 ${result.messages} 条消息：${result.outputPath}${result.truncated ? '；源记录不完整，已在文件中标记' : ''}`,
+                          revealPath: result.outputPath,
+                        }
                       : null,
                 )
               }
@@ -834,7 +853,10 @@ export function SessionsPage({
           </>
         }
       >
-        <ResultNotice {...operation} />
+        <ResultNotice
+          {...operation}
+          onReveal={(path) => api.revealExportedFile(path)}
+        />
         {selected && (
           <dl className="v2-business-kv">
             <dt>工具</dt>
@@ -1866,7 +1888,77 @@ export function ExtensionsPage({
     </section>
   )
 }
-export function BackupsPage({ api }: { api: V2Bridge }) {
+/**
+ * 恢复完只在这一页说「已恢复」是不够的：用户接下来是回首页看、或者直接打开工具，
+ * 所以恢复成功后通知外层重读配置（`onRestored`），并当场测一次这个工具的连接，
+ * 把结论留在这一页上。
+ */
+function RestoreCheckNotice({
+  check,
+  navigate,
+}: {
+  check: RestoreCheck
+  navigate?: (page: V2Page) => void
+}) {
+  const name = providerName(check.provider)
+  if (!check.result) {
+    return (
+      <Notice
+        tone={check.error ? 'bad' : 'neutral'}
+        title={check.error ? `${name} · 没测成` : `正在测 ${name} 的连接`}
+        body={check.error ?? '配置已恢复，正在用恢复出来的配置发一次最小请求。'}
+        testId="backups-restore-check"
+      />
+    )
+  }
+  const view = connectionCheckView(check.result)
+  const target = view.target
+  return (
+    <Notice
+      tone={view.tone}
+      title={`${name} · ${view.statusLabel}`}
+      body={
+        <>
+          <div>{view.title}</div>
+          <div>{view.body}</div>
+        </>
+      }
+      actions={
+        target && navigate ? (
+          <Button
+            size="sm"
+            onClick={() => navigate(target)}
+            testId="backups-restore-check-fix"
+          >
+            去处理
+          </Button>
+        ) : undefined
+      }
+      testId="backups-restore-check"
+    />
+  )
+}
+
+function BackupKeyPill({ backup }: { backup: Backup }) {
+  const view = backup.valid ? backupKeyView(backup) : null
+  if (!view) return null
+  return (
+    <Pill tone={view.tone} testId={`backups-key-${backup.id}`}>
+      {view.label}
+    </Pill>
+  )
+}
+
+export function BackupsPage({
+  api,
+  onRestored,
+  navigate,
+}: {
+  api: V2Bridge
+  /** 恢复成功后回调，用来让首页重读配置。 */
+  onRestored?: (provider: Provider) => void
+  navigate?: (page: V2Page) => void
+}) {
   const load = useCallback(() => api.listBackups(), [api])
   const resource = useResource(load)
   const operation = useOperation()
@@ -1876,6 +1968,21 @@ export function BackupsPage({ api }: { api: V2Bridge }) {
   const [preview, setPreview] = useState<Preview | null>(null)
   const [restore, setRestore] = useState(false)
   const [deletion, setDeletion] = useState<Backup | null>(null)
+  const [restoreCheck, setRestoreCheck] = useState<RestoreCheck | null>(null)
+  const checkSequence = useRef(0)
+  const previewKey = preview ? backupKeyView(preview) : null
+  // 连着恢复两份时只认最后一次的结论（T6）。
+  const checkRestored = async (restored: Provider) => {
+    const sequence = ++checkSequence.current
+    setRestoreCheck({ provider: restored, result: null, error: null })
+    let next: RestoreCheck
+    try {
+      next = { provider: restored, result: await api.checkProviderConnection(restored), error: null }
+    } catch (error) {
+      next = { provider: restored, result: null, error: errorMessage(error) }
+    }
+    if (checkSequence.current === sequence) setRestoreCheck(next)
+  }
   const list = useMemo(
     () =>
       resource.data?.filter(
@@ -1936,6 +2043,9 @@ export function BackupsPage({ api }: { api: V2Bridge }) {
         right={<span>{list.length} 份备份</span>}
       />
       <ResultNotice {...operation} />
+      {restoreCheck && (
+        <RestoreCheckNotice check={restoreCheck} navigate={navigate} />
+      )}
       <div className="v2-business-backup-grid">
         <Card padding="none">
           <ListState
@@ -1966,15 +2076,18 @@ export function BackupsPage({ api }: { api: V2Bridge }) {
                 }
                 desc={displayDate(backup.createdAt)}
                 badge={
-                  <Pill tone={backup.valid ? 'neutral' : 'bad'}>
-                    {backup.valid
-                      ? backup.reason === 'manual'
-                        ? '手工备份'
-                        : backup.reason === 'pre-restore'
-                          ? '恢复前备份'
-                          : '配置前备份'
-                      : '校验失败'}
-                  </Pill>
+                  <>
+                    <Pill tone={backup.valid ? 'neutral' : 'bad'}>
+                      {backup.valid
+                        ? backup.reason === 'manual'
+                          ? '手工备份'
+                          : backup.reason === 'pre-restore'
+                            ? '恢复前备份'
+                            : '配置前备份'
+                        : '校验失败'}
+                    </Pill>
+                    <BackupKeyPill backup={backup} />
+                  </>
                 }
                 meta={`${backup.fileCount} 个文件 · ${(backup.totalSize / 1024).toFixed(1)} KB`}
                 actions={
@@ -2055,6 +2168,10 @@ export function BackupsPage({ api }: { api: V2Bridge }) {
               <dd>{displayDate(preview.createdAt)}</dd>
               <dt>校验</dt>
               <dd>{preview.valid ? '已通过' : preview.error}</dd>
+              <dt>Key</dt>
+              <dd data-testid="backup-preview-key">
+                {previewKey?.label ?? '这份备份没有记下 Key 属于哪个账号'}
+              </dd>
             </dl>
             {preview.files.map((file) => (
               <ListRow
@@ -2090,6 +2207,8 @@ export function BackupsPage({ api }: { api: V2Bridge }) {
                       const result = await api.restoreBackup(preview.id)
                       setRestore(false)
                       setPreview(null)
+                      onRestored?.(result.provider)
+                      void checkRestored(result.provider)
                       await resource.reload()
                       if (!result.preRestoreBackupId)
                         throw new Error(
@@ -2106,6 +2225,14 @@ export function BackupsPage({ api }: { api: V2Bridge }) {
         }
       >
         <p>仅恢复预览中列出的工具配置。正在运行的工具需要重新打开后生效。</p>
+        {previewKey?.restoreWarning && (
+          <Notice
+            tone="warn"
+            title="Key 不是当前账号的"
+            body={previewKey.restoreWarning}
+            testId="backups-restore-key-warning"
+          />
+        )}
         <ResultNotice error={operation.error} />
       </Dialog>
       <Dialog
