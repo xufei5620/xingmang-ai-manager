@@ -468,7 +468,9 @@ export function SessionsPage({ api }: { api: V2Bridge }) {
         if (selected.archived) await api.restoreSession(selected.nativeId)
         else await api.archiveSession(selected.nativeId)
         setSelected(null)
-        await resource.reload()
+        // 归档会把记录移出 CLI 自己的目录,那个文件夹的「最近一条」也就变了,
+        // 所以按钮的判断依据要跟着一起重读。
+        await Promise.all([resource.reload(), latestResource.reload()])
       },
       selected.archived ? '会话已恢复' : '会话已归档',
     )
@@ -500,7 +502,7 @@ export function SessionsPage({ api }: { api: V2Bridge }) {
           <Button
             icon={RefreshCw}
             loading={resource.loading}
-            onClick={() => void resource.reload()}
+            onClick={() => void Promise.all([resource.reload(), latestResource.reload()])}
           >
             重新加载
           </Button>
