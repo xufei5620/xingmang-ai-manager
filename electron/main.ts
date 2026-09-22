@@ -122,6 +122,7 @@ import {
   type DownloadProxyEndpoint,
 } from './download-proxy'
 import { createDownloadAccelerationCoordinator } from './download-acceleration'
+import { createCodexDesktopAccelerationCoordinator } from './codex-desktop-acceleration'
 import {
   createSystemService,
   type SystemService,
@@ -775,6 +776,21 @@ if (!hasSingleInstanceLock) {
       onRouteChanged: applyAcceleratedDownloadProxy,
       log: (level, event, message, detail) => runtimeLog.log(level, 'network', event, message, detail),
     })
+    // Codex 桌面端是独立进程，只跟着系统代理走，所以这里要的是完整的「连接」
+    // （和用户在加速页点的那一下同一条路），不是下载专用线路。加速服务同样
+    // 建得比 systemService 晚，空着的时候一律按没加速打开。
+    const codexDesktopAcceleration = createCodexDesktopAccelerationCoordinator({
+      getAccountScope: () => readAccelerationAccountScope(),
+      readState: (scope) => acceleration
+        ? acceleration.getAccelerationState(scope)
+        : Promise.reject(new Error('加速服务尚未就绪。')),
+      // 模式固定 system-proxy：本机加速从不开 TUN，后端的 supportedModes 也
+      // 只有这一项。线路交给后端按默认挑，不替用户改他选过的那条。
+      connect: (scope) => acceleration
+        ? acceleration.startAcceleration(scope, 'system-proxy')
+        : Promise.reject(new Error('加速服务尚未就绪。')),
+      log: (level, event, message, detail) => runtimeLog.log(level, 'network', event, message, detail),
+    })
     const systemService = createSystemService(settingsStore, {
       managerDataDirectory,
       getRelaySiteId: () => readAccountSiteId(),
@@ -815,6 +831,7 @@ if (!hasSingleInstanceLock) {
         )
       },
       acquireDownloadAcceleration: () => downloadAcceleration.acquire(),
+      prepareCodexDesktopAcceleration: async () => { await codexDesktopAcceleration.ensureConnected() },
     })
     const storedSettings = systemService.readStoredConfig()
     const sessionsService = new CodexSessionsService({

@@ -1483,3 +1483,64 @@ describe('Codex Desktop launch queueing', () => {
     expect(fixture.inspectNativeProviderConfig).toHaveBeenCalledTimes(3)
   })
 })
+
+describe('Codex Desktop launch acceleration', () => {
+  function darwinLaunchFixture(prepareAcceleration?: () => Promise<void>) {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-codex-accel-'))
+    temporaryDirectories.push(directory)
+    const order: string[] = []
+    const service = createCodexDesktopService({
+      // 桌面端只认系统代理，macOS 与 Windows 同理；这里用 macOS 那条路，因为
+      // 它不需要 Windows 专用的进程探测就能走到真正的拉起。
+      platform: 'darwin',
+      installationQueue: new InstallationQueue(),
+      createInstallTemporaryDirectory: async () => { throw new Error('未使用') },
+      detectMacosCodexApp: async () => ({
+        app: { path: '/Applications/Codex.app', version: '1.0.0', running: false },
+        detectionFailed: false,
+        detectionError: null,
+      }),
+      executeCommand: async () => {
+        order.push('launch')
+        return {
+          executable: '/usr/bin/open', argv: [], exitCode: 0, signal: null,
+          stdout: '', stderr: '', outputBytes: 0, durationMs: 1,
+        }
+      },
+      codexEnv: {},
+      store: new AppSettingsStore(path.join(directory, 'settings.json'), directory),
+      inspectNativeProviderConfig: vi.fn(() => relayCodexConfig(directory)),
+      spawnDetached: async () => { throw new Error('未使用') },
+      downloadFetch: async () => { throw new Error('未使用') },
+      ...(prepareAcceleration
+        ? { prepareAcceleration: async () => { order.push('accelerate'); await prepareAcceleration() } }
+        : {}),
+    })
+    return { service, order, target: { isDestroyed: () => false, send: vi.fn() } }
+  }
+
+  it('connects acceleration before the desktop app is started', async () => {
+    const fixture = darwinLaunchFixture(async () => undefined)
+
+    await fixture.service.launchCodexDesktop('open', fixture.target)
+
+    expect(fixture.order).toEqual(['accelerate', 'launch'])
+  })
+
+  it('still opens the desktop app when connecting acceleration fails', async () => {
+    // 加速是加分项：连不上只能少一层加速，绝不能变成打不开。
+    const fixture = darwinLaunchFixture(async () => { throw new Error('加速连接失败') })
+
+    await fixture.service.launchCodexDesktop('open', fixture.target)
+
+    expect(fixture.order).toEqual(['accelerate', 'launch'])
+  })
+
+  it('launches unchanged when no acceleration hook is wired', async () => {
+    const fixture = darwinLaunchFixture()
+
+    await fixture.service.launchCodexDesktop('open', fixture.target)
+
+    expect(fixture.order).toEqual(['launch'])
+  })
+})

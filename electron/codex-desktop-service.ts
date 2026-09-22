@@ -1616,6 +1616,12 @@ export interface CodexDesktopServiceOptions {
    * 拿着接管前的那份配置，于是第一次下载仍然直连。
    */
   reloadDownloadProxyConfig?: () => Promise<void>
+  /**
+   * 拉起桌面端之前先把加速连上。桌面端是独立进程，只认系统代理，所以这里要的
+   * 是完整的「连接」而不是下载专用线路。缺省 = 不做（测试与旧调用方照旧）；
+   * 实现永不抛错，连不上也必须照常打开（见 codex-desktop-acceleration.ts）。
+   */
+  prepareAcceleration?: () => Promise<void>
   /** Optional seams used by tests; production uses the constrained CDP module. */
   activateCodexDesktop?: typeof activateCodexDesktopDefault
   activateCodexDesktopWithCdp?: typeof activateCodexDesktopWithCdpDefault
@@ -1668,6 +1674,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
     spawnDetached,
     downloadFetch,
     reloadDownloadProxyConfig,
+    prepareAcceleration,
     assertInstallDiskSpace,
     activateCodexDesktop = activateCodexDesktopDefault,
     activateCodexDesktopWithCdp = activateCodexDesktopWithCdpDefault,
@@ -2264,6 +2271,17 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
     if (!target.isDestroyed()) target.send('desktop:codex-status-changed', { phase, status })
   }
 
+  /**
+   * 桌面端拉起来之前先连加速。它是独立进程，只跟着系统代理走，所以用户不点
+   * 「连接」的时候它就是直连的——那正是界面语言回落成英文的那条路。连不上
+   * 绝不能挡住打开，所以这里把最后一层异常也吃掉。
+   */
+  async function connectAccelerationBeforeLaunch(): Promise<void> {
+    if (!prepareAcceleration) return
+    try { await prepareAcceleration() }
+    catch { /* 加速是加分项，不是「打开」的前置条件。 */ }
+  }
+
   async function launchCodexDesktopOperation(
     mode: CodexDesktopLaunchMode,
     target: RendererMessageTarget,
@@ -2293,6 +2311,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
       } catch {
         throw new Error('工作目录不存在，请重新选择')
       }
+      await connectAccelerationBeforeLaunch()
       await executeCommand(buildMacosCodexAppLaunchPlan(desktopApp.path, workspace, codexEnv.CODEX_HOME), {
         cwd: workspace,
         env: trustedCommandEnvironment(codexEnv),
@@ -2310,6 +2329,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
       throw new Error('未检测到 Codex 桌面端，请先安装后重新检测')
     }
     const desktopAppPath = desktopApp.path
+    await connectAccelerationBeforeLaunch()
     const workspace = store.read().workspace
     let workspaceUrl: string | null = null
     try {
