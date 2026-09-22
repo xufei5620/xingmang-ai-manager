@@ -55,6 +55,7 @@ import { createApplicationTray, type ApplicationTrayController } from './applica
 import { createTrayAccelerationCoordinator, type TrayAccelerationCoordinator } from './tray-acceleration'
 import { createExternalDeepLinkInbox } from './external-deep-links'
 import { createDesktopNotificationController } from './desktop-notifications'
+import { inspectDeviceHardware, isLowEndDevice } from './device-profile'
 import { ConfigBackupStore } from './backups'
 import { crashReportDsn, crashReportSelfTestEnvironmentKey, shouldReportCrashes } from './crash-report'
 import { createCrashReporter } from './crash-reporter'
@@ -199,6 +200,8 @@ const windowPreferenceAppliers = new WeakMap<WebContents, () => void>()
 const windowPreferenceFlushers = new WeakMap<WebContents, () => Promise<void>>()
 
 const updateCheckIntervalMs = 3 * 60 * 60 * 1_000
+// 启动时看一眼本机配置就够了：内存和核数不会在运行中变化。
+const lowEndDevice = isLowEndDevice(inspectDeviceHardware())
 const packagedApplicationBaseUrl = 'xingmang://app/'
 
 protocol.registerSchemesAsPrivileged([{
@@ -1848,7 +1851,7 @@ if (!hasSingleInstanceLock) {
         }
         applicationTray?.updateSnapshot()
       },
-      getWindowCapabilities: () => ({ tray: applicationTray?.available ?? false, notifications: desktopNotifications.getCapability().supported }),
+      getWindowCapabilities: () => ({ tray: applicationTray?.available ?? false, notifications: desktopNotifications.getCapability().supported, lowEndDevice }),
       onSettingsChanged: () => { desktopNotifications.refresh() },
       onRendererError: (error) => {
         crashReporter.report({

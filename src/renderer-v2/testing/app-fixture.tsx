@@ -7,6 +7,7 @@ import { createPreviewAccelerationApi } from './acceleration-fixture'
 import { accelerationTrialSeconds } from '../../../electron/acceleration-contract'
 import { getSourceMarkerStorage, writeManualSourceMarker } from '../features/tools/source-marker'
 import { resolveManagedCliKeyProfiles } from '../../../electron/catalog'
+import { ExternalUrlBlockedError } from '../../../electron/external-url-blocked'
 import '../styles/tokens.css'
 import '../styles/components.css'
 import '../styles/shell.css'
@@ -246,7 +247,7 @@ const methods = {
     return value
   },
   getAccountUsage: async () => ({ page: 1, pageSize: 1, total: 0, records: [], stats: { quota: 1_000_000, rpm: 0, tpm: 0 } }),
-  getWindowCapabilities: async () => ({ tray: true, notifications: true }),
+  getWindowCapabilities: async () => ({ tray: true, notifications: true, ...(query.has('lowEnd') ? { lowEndDevice: true } : {}) }),
   getUpdateState: async () => ({ phase: query.has('startupUpdate') || query.has('updateCheckFail') ? 'idle' : 'disabled', currentVersion: '0.1.31', availableVersion: null, releaseName: null, releaseNotesText: null, checkedAt: null, progress: null, error: null, development: true }),
   runStartupUpdate: async () => { throw new Error('本地更新源暂时不可用') },
   // 用户自己点「检查更新」时失败的那一条，与启动时自动跑的那一条分开：前者仍要
@@ -502,7 +503,11 @@ const methods = {
     return session
   },
   replyWindowClose: async () => true,
-  openExternal: async () => true,
+  openExternal: async () => {
+    // 与主进程 external:open 拒绝时一样：经 IPC 过桥后只剩 toString() 与通道前缀。
+    if (query.has('externalBlocked')) throw new Error(`Error invoking remote method 'external:open': ${new ExternalUrlBlockedError().toString()}`)
+    return true
+  },
 } satisfies Partial<XingmangApi>
 const eventNames = new Set(Object.keys(ipcEventChannels))
 const api = new Proxy(methods, { get(target, name) {
