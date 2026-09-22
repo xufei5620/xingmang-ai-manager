@@ -96,7 +96,8 @@ import { attachPlatformAuditLog } from './platform/runtime-log-bridge'
 import { migrateLegacyWindowsLoginItem } from './platform/system-service'
 import { recordStartupFailure } from './startup-log'
 import { inspectProviderConfig } from './config-files'
-import { buildFeedbackEnvironmentLines } from './feedback-environment'
+import { buildFeedbackEnvironmentLines, buildFeedbackRuntimeLines, pickFeedbackRuntimeSnapshot } from './feedback-environment'
+import { managedCliRoot } from './managed-cli-paths'
 import { buildFeedbackSelfCheckLines, type FeedbackConnectionRecord } from './feedback-self-check'
 import { rootedMainServiceOptions } from './main-service-options'
 import { buildMacosInstallLocationNotice, inspectMacosInstallLocation } from './macos-install-location'
@@ -1070,6 +1071,27 @@ if (!hasSingleInstanceLock) {
         // 三个外部客户端同样只读上一次检测留下的快照：生成一份报告不该再去跑
         // 一轮 PowerShell 盘点。没检测过时那三行写「未能读取」。
         externalClients: systemService.getLastExternalClients(),
+      })
+    })
+    // 「运行环境」段：系统里的 Node / npm / Python / Git、Codex 桌面端、网络位置
+    // 同样只读上一次扫描的快照；其余几行是进程本来就知道的路径与区域设置，
+    // 不起任何探测。
+    runtimeLog.attachHostDescriber(async () => {
+      let managedDirectory: string | null = null
+      try {
+        managedDirectory = managedCliRoot(process.env, process.platform)
+      } catch {
+        // ProgramData 解析不出来时这一行不出，报告照常生成。
+      }
+      return buildFeedbackRuntimeLines({
+        snapshot: pickFeedbackRuntimeSnapshot(latestTraySystem),
+        platform: process.platform,
+        executionMode: process.platform === 'win32' ? windowsCliExecutionMode : null,
+        appDirectory: path.dirname(app.getPath('exe')),
+        dataDirectory: managerDataDirectory,
+        managedDirectory,
+        locale: app.getLocale(),
+        timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
       })
     })
     // 客服的第二个问题是「到底能不能用」——这答案用户在「检查」页点过一次就有
