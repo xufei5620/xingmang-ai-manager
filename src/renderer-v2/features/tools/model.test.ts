@@ -48,6 +48,42 @@ describe('renderer tool source', () => {
     expect(providerFor('codexDesktop')).toBe('codex')
   })
 
+  describe('a configuration this app wrote and someone else edited', () => {
+    it('calls it changed instead of a third-party configuration', () => {
+      const storage = memoryStorage()
+      const config: ProviderConfigSummary = { ...relayConfig(), configurationOwnership: 'changed' }
+      expect(sourceFor(config, 'codex', storage)).toBe('changed')
+      // 连接判断照旧:配置还指着当前账号的服务,只是那把 Key 未必还对。
+      expect(connectionReady(config, 'codex', storage)).toBe(true)
+    })
+
+    it('stays quiet once the user keeps the current configuration', () => {
+      const storage = memoryStorage()
+      const config: ProviderConfigSummary = { ...relayConfig(), configurationOwnership: 'changed' }
+      writeManualSourceMarker(storage, config.baseUrl, 'codex', true)
+      expect(sourceFor(config, 'codex', storage)).toBe('manual')
+    })
+
+    it('stays quiet when the edited key is one this account already has', () => {
+      const storage = memoryStorage()
+      expect(sourceFor({ ...relayConfig(), configurationOwnership: 'changed', configurationAccountMatched: true }, 'codex', storage)).toBe('account')
+    })
+
+    it('never overrides an official sign-in', () => {
+      const storage = memoryStorage()
+      expect(sourceFor({ ...relayConfig(), configurationOwnership: 'changed', codexAuthMode: 'chatgpt' }, 'codex', storage)).toBe('official')
+      expect(sourceFor({ ...relayConfig(), configurationOwnership: 'changed', authType: 'oauth-personal' }, 'gemini', storage)).toBe('official')
+    })
+
+    it('falls back to the third-party reading once the configuration points elsewhere', () => {
+      const storage = memoryStorage()
+      expect(sourceFor({
+        ...relayConfig(), configurationOwnership: 'changed',
+        matchesRelay: false, actualBaseUrl: 'https://other.example/v1',
+      }, 'codex', storage)).toBe('unknown')
+    })
+  })
+
   it('does not let a marker override official, third-party, or missing state', () => {
     const storage = memoryStorage()
     const config = relayConfig()

@@ -4216,6 +4216,8 @@ export function createSystemService(
       if (ownership?.source === 'account' && !owner) throw new Error('请先登录账号再配置账号密钥')
       const before = inspectNativeProviderConfig(payload.provider)
       const previousOwnership = configOwnership.read(payload.provider, before, owner)
+      // `changed`（我们写过、之后被改动）同样不在放行之列：自动写入永远不覆盖
+      // 用户或工具自己改出来的配置，首页只会提示，改不改由用户点。
       if (ownership?.automatic && previousOwnership !== 'account' && previousOwnership !== 'missing') {
         throw new Error('已有工具配置的来源未经确认，已保留原配置；请在工具配置中明确选择账号密钥')
       }

@@ -368,4 +368,39 @@ describe('renderer-v2 home missing runtime guidance on macOS', () => {
     expect(markup).not.toContain('data-testid="home-runtime-tutorial"')
     expect(markup).not.toContain('brew install')
   })
+
+  describe('a tool whose configuration was edited outside the app', () => {
+    function editedSnapshot(): ToolboxSnapshot {
+      const base = snapshot({ claude: cliStatus, codex: cliStatus, grok: cliStatus, gemini: cliStatus })
+      return {
+        ...base,
+        config: {
+          ...base.config,
+          providers: { ...base.config.providers, claude: { ...providerConfig, configurationOwnership: 'changed' } },
+        },
+      } as unknown as ToolboxSnapshot
+    }
+
+    it('says so on the row and offers to write the account Key back', () => {
+      const markup = render({}, undefined, { snapshot: editedSnapshot(), onRewriteKey: () => undefined, onKeepConfig: () => undefined })
+      expect(markup).toContain('配置被改过')
+      expect(markup).toContain('配置在软件之外被改动过')
+      expect(markup).toContain('data-testid="tool-claude-rewrite-key"')
+      expect(markup).toContain('重新写入 Key')
+      // 站点名永远不上屏，文案以「当前账号」为主语。
+      expect(markup).not.toContain('solov')
+    })
+
+    it('leaves the other tools on their usual state', () => {
+      const markup = render({}, undefined, { snapshot: editedSnapshot(), onRewriteKey: () => undefined })
+      expect(markup).not.toContain('data-testid="tool-codex-rewrite-key"')
+      expect(markup).toContain('已配好')
+    })
+
+    it('keeps the old row untouched when the host offers no rewrite action', () => {
+      const markup = render({}, undefined, { snapshot: editedSnapshot() })
+      expect(markup).toContain('配置被改过')
+      expect(markup).not.toContain('data-testid="tool-claude-rewrite-key"')
+    })
+  })
 })

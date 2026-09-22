@@ -60,7 +60,9 @@ export function ConfigDialog({ api, tool, config, signedIn, initialModelFilter =
   const sourceStorage = getSourceMarkerStorage()
   const currentSource = sourceFor(native, provider, sourceStorage)
   const draft: ConfigDraft = drafts[provider] ?? {
-    source: currentSource === 'missing' ? 'account' : currentSource,
+    // 「被改过」在这个对话框里和「来源未确认」走同一条路：都要先让用户挑一个来源，
+    // 挑完保存就把所有权重新写清楚。
+    source: currentSource === 'missing' ? 'account' : currentSource === 'changed' ? 'unknown' : currentSource,
     keyId: initialKeyChoice(native), secret: '', model: native.model || defaultCliModels[provider], validatedSecret: '', dirty: false,
   }
   const selectedKey = keys.find((key) => String(key.id) === draft.keyId && key.status === 1)

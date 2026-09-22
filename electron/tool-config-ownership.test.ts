@@ -162,6 +162,73 @@ describe('durable tool configuration ownership', () => {
     expect(f.fetch).not.toHaveBeenCalled()
   })
 
+  describe('reporting a configuration the app wrote and someone else edited', () => {
+    it('reports an externally replaced key as changed', async () => {
+      const f = fixture()
+      await f.makeService().saveConfig(f.payload, false, undefined, { source: 'account', automatic: false })
+      expect(f.makeService().getConfig(false).providers.codex.configurationOwnership).toBe('account')
+      saveProviderConfig('codex', 'sk-someone-else-edited', f.payload.model, 'merge', f.roots, {}, providerBaseUrls)
+      expect(f.makeService().getConfig(false).providers.codex.configurationOwnership).toBe('changed')
+    })
+
+    it('reports a removed base URL as changed while the key is still present', async () => {
+      const f = fixture()
+      await f.makeService().saveConfig(f.payload, false, undefined, { source: 'account', automatic: false })
+      const configPath = providerConfigPaths('codex', f.roots)[0]
+      fs.writeFileSync(configPath, fs.readFileSync(configPath, 'utf8')
+        .split('\n').filter((line) => !line.includes('base_url')).join('\n'), 'utf8')
+      expect(f.current().hasApiKey).toBe(true)
+      expect(f.makeService().getConfig(false).providers.codex.configurationOwnership).toBe('changed')
+    })
+
+    it('ignores keys the app never writes', async () => {
+      const f = fixture()
+      await f.makeService().saveConfig(f.payload, false, undefined, { source: 'account', automatic: false })
+      const configPath = providerConfigPaths('codex', f.roots)[0]
+      fs.appendFileSync(configPath, '\nhide_agent_reasoning = true\n', 'utf8')
+      expect(f.makeService().getConfig(false).providers.codex.configurationOwnership).toBe('account')
+    })
+
+    it('does not attribute an edited configuration to another account', async () => {
+      const f = fixture()
+      await f.makeService().saveConfig(f.payload, false, undefined, { source: 'account', automatic: false })
+      saveProviderConfig('codex', 'sk-someone-else-edited', f.payload.model, 'merge', f.roots, {}, providerBaseUrls)
+      f.setOwner(JSON.stringify(['solov', 37]))
+      expect(f.makeService().getConfig(false).providers.codex.configurationOwnership).toBe('unknown')
+      f.setOwner(null)
+      expect(f.makeService().getConfig(false).providers.codex.configurationOwnership).toBe('unknown')
+    })
+
+    it('still refuses an automatic takeover of a changed configuration', async () => {
+      const f = fixture()
+      await f.makeService().saveConfig(f.payload, false, undefined, { source: 'account', automatic: false })
+      saveProviderConfig('codex', 'sk-someone-else-edited', f.payload.model, 'merge', f.roots, {}, providerBaseUrls)
+      f.fetch.mockClear()
+      await expect(f.makeService().saveConfig({ ...f.payload, apiKey: 'sk-replacement' }, false, undefined,
+        { source: 'account', automatic: true })).rejects.toThrow('来源未经确认')
+      expect(f.current().apiKey).toBe('sk-someone-else-edited')
+      expect(f.fetch).not.toHaveBeenCalled()
+    })
+
+    it('lets an explicit account write take a changed configuration back', async () => {
+      const f = fixture()
+      await f.makeService().saveConfig(f.payload, false, undefined, { source: 'account', automatic: false })
+      saveProviderConfig('codex', 'sk-someone-else-edited', f.payload.model, 'merge', f.roots, {}, providerBaseUrls)
+      await f.makeService().saveConfig({ ...f.payload, apiKey: 'sk-account-rewritten' }, false, undefined,
+        { source: 'account', automatic: false })
+      expect(f.current().apiKey).toBe('sk-account-rewritten')
+      expect(f.makeService().getConfig(false).providers.codex.configurationOwnership).toBe('account')
+    })
+
+    it('leaves a manual record unattributed after an edit', async () => {
+      const f = fixture()
+      await f.makeService().saveConfig(f.payload, false)
+      expect(f.makeService().getConfig(false).providers.codex.configurationOwnership).toBe('manual')
+      saveProviderConfig('codex', 'sk-someone-else-edited', f.payload.model, 'merge', f.roots, {}, providerBaseUrls)
+      expect(f.makeService().getConfig(false).providers.codex.configurationOwnership).toBe('unknown')
+    })
+  })
+
   it('rejects account consent without an authenticated owner', async () => {
     const f = fixture()
     f.setOwner(null)
