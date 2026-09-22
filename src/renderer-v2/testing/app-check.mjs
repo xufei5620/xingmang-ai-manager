@@ -1295,6 +1295,29 @@ test('an edited configuration says so on the row and can be written back on requ
   } finally { await page.close() }
 })
 
+// 开机账号恢复超过启动画面的等待上限：先进首页，这期间一行都不许说「配置被改过」；
+// 恢复成功只补读一次配置，不整页重来、不再扫描一遍。
+test('a slow startup restore opens the home page first and settles ownership after one config re-read', async () => {
+  const page = await open('allInstalled=1&changedClaude=1&restoring=1')
+  try {
+    const row = page.getByTestId('tool-row-claude')
+    await row.getByText('已配好').waitFor()
+    await page.getByText('正在恢复登录').first().waitFor()
+    assert.equal(await page.getByText('配置被改过').count(), 0)
+    assert.equal(await page.getByText('用的是别处的配置').count(), 0)
+    assert.equal(await page.getByTestId('tool-claude-rewrite-key').count(), 0)
+    assert.equal(await page.getByTestId('welcome-login').count(), 0)
+    // 工具列表整块重读（useToolbox.read）才会连带读平台能力；Key 同步那一步自己的
+    // 安装检查不读它，所以用它来数「首页有没有整页重来」。
+    const readsBefore = await page.evaluate(() => window.v2Test.calls.filter(entry => entry.method === 'getPlatformCapabilities').length)
+    await page.evaluate(() => window.v2Test.emit('onAccountSessionChanged', { authenticated: true, account: { userId: 17, username: 'fixture-user', group: 'default', role: 1, quota: 6_200_000, usedQuota: 0 } }))
+    await row.getByText('配置被改过').waitFor()
+    const readsAfter = await page.evaluate(() => window.v2Test.calls.filter(entry => entry.method === 'getPlatformCapabilities').length)
+    assert.equal(readsAfter, readsBefore, '恢复成功后首页不应整页重新检测')
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('an edited configuration can be kept as it is and stops asking', async () => {
   const page = await open('allInstalled=1&changedClaude=1')
   try {

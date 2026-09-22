@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { accountKeyQuota, accountOrigin, accountScope, accountSiteId, siteIdForOrigin, visibleAccountTab } from './account-context'
+import { accountKeyQuota, accountOrigin, accountScope, accountSiteId, sessionRestoring, sessionScope, siteIdForOrigin, visibleAccountTab } from './account-context'
 
 describe('renderer account ownership', () => {
   it('retains Sub2API fractional dollar limits and never rounds a limited key to unlimited', () => {
@@ -35,5 +35,28 @@ describe('renderer account ownership', () => {
     expect(visibleAccountTab('usage', session)).toBe(true)
     expect(visibleAccountTab('dashboard', session)).toBe(true)
     expect(visibleAccountTab('tasks', session)).toBe(false)
+  })
+})
+
+describe('renderer account scope while the startup restore is still running', () => {
+  const restored = { authenticated: true, siteId: 'solov-api' as const, account: { userId: 42, username: 'fixture', group: null, role: null, quota: null, usedQuota: null } }
+
+  it('scopes a restoring session to the account being restored, so a successful restore keeps the same scope', () => {
+    const restoring = { authenticated: false, account: null, siteId: 'solov' as const, restoring: { account: { siteId: 'solov-api' as const, userId: 42 } } }
+    expect(sessionRestoring(restoring)).toBe(true)
+    expect(sessionScope(restoring)).toBe('api-account:42')
+    expect(sessionScope(restored)).toBe(sessionScope(restoring))
+  })
+
+  it('falls back to the guest scope while the account being restored is not known yet', () => {
+    const unknown = { authenticated: false, account: null, restoring: { account: null } }
+    expect(sessionRestoring(unknown)).toBe(true)
+    expect(sessionScope(unknown)).toBe('xm-account:guest')
+  })
+
+  it('treats a session without the restoring mark as settled', () => {
+    expect(sessionRestoring({ authenticated: false })).toBe(false)
+    expect(sessionRestoring({ ...restored, restoring: { account: null } })).toBe(false)
+    expect(sessionScope(restored)).toBe(accountScope(restored))
   })
 })

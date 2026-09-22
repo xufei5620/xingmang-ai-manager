@@ -49,6 +49,8 @@ const account = { userId: 17, username: 'fixture-user', group: 'default', role: 
 let session: AccountSessionState = { authenticated: query.get('guest') !== '1', account: query.get('guest') === '1' ? null : account }
 const sub2ApiMetadata = { siteId: 'solov-api' as const, realmId: 'api-account' as const, capabilities: { supportsRegistration: false, supportsPasswordReset: false, supportsKeyManagement: true, supportsUsage: false, supportsBilling: false, supportsSubscriptions: false, supportsProfileUpdate: true, supportsSessionManagement: false, supportsAutoKeyProvision: true, supportsAccountSession: true } }
 if (query.has('sub2api')) session = { ...session, ...sub2ApiMetadata }
+// 开机账号恢复超过启动画面的等待上限：会话先答「正在恢复 17 号账号」。
+if (query.has('restoring')) session = { authenticated: false, account: null, restoring: { account: { siteId: 'solov', userId: account.userId } } }
 // Settings deliberately retain the historical site: active session owns routing.
 settings.relaySiteId = 'solov'
 const status = { installed: true, version: '1.2.3', path: 'C:\\Fixture\\bin', installDirectory: 'C:\\Fixture', latestVersion: '1.2.3', updateAvailable: false,
@@ -310,6 +312,11 @@ const methods = {
   },
   getConfig: async () => {
     const result = structuredClone(config)
+    // 同主进程：恢复中没有账号可比，来源只会是 unknown，并带上「待定」标记。
+    if (session.restoring) {
+      result.ownershipPending = true
+      for (const provider of Object.values(result.providers)) if (provider.configurationOwnership === 'account' || provider.configurationOwnership === 'changed') provider.configurationOwnership = 'unknown'
+    }
     if (query.has('readOnlyAccountMatch')) {
       const matched = session.authenticated && session.account?.userId === readOnlyConfigOwner.userId && (session.siteId ?? 'solov') === readOnlyConfigOwner.siteId
       for (const provider of Object.values(result.providers)) provider.configurationAccountMatched = matched && !query.has('matchedUnavailable')
