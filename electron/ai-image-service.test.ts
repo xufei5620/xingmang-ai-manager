@@ -372,7 +372,7 @@ describe('AI image service', () => {
     [403, { error: { message: 'Project does not have access to model' } }, '暂无该生图模型权限'],
     [403, { error: { message: '用户额度不足, 剩余额度: ＄0.000000 (request id: r1)', code: 'insufficient_user_quota' } }, '当前账号余额不足，充值后再试就行'],
     [403, { error: { message: 'token quota is not enough, token remain quota: ＄0.001000, need quota: ＄0.050000', code: 'pre_consume_token_quota_failed' } }, '额度上限用完了'],
-    [401, { error: { message: '无效的令牌 (request id: r2)', type: 'new_api_error', code: '' } }, 'Key 已失效，点「重试」会自动换一把新的'],
+    [401, { error: { message: '无效的令牌 (request id: r2)', type: 'new_api_error', code: '' } }, 'Key 已失效，再发一次就会自动换一把新的'],
     [429, { error: { message: 'API key 额度已用完', type: 'insufficient_quota', code: 'insufficient_quota' } }, '额度上限用完了'],
     [429, { error: { message: 'rate limited' } }, '上游限流'],
     [503, { error: { message: 'upstream unavailable' } }, '结果不明确'],

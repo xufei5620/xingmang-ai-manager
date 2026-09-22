@@ -31,7 +31,7 @@ export type RelayQuotaFailure = 'balance' | 'keyLimit' | 'keyInvalid'
 export const relayQuotaFailureMessages: Readonly<Record<RelayQuotaFailure, string>> = {
   balance: '当前账号余额不足，充值后再试就行，不用重新登录，也不用重写 Key',
   keyLimit: '这把 Key 设置的额度上限用完了，到「账号 → 密钥」调高上限后再试',
-  keyInvalid: '当前账号的 Key 已失效，点「重试」会自动换一把新的',
+  keyInvalid: '当前账号的 Key 已失效，再发一次就会自动换一把新的',
 }
 
 const balancePattern = /insufficient_user_quota|用户额度不足|预扣费额度失败|订阅额度不足|user quota is not enough|INSUFFICIENT_BALANCE|insufficient account balance/i

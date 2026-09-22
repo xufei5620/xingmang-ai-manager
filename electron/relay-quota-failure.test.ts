@@ -52,7 +52,7 @@ describe('relay quota failure classification', () => {
   it('never names a site and always says what to do next', () => {
     for (const message of Object.values(relayQuotaFailureMessages)) {
       expect(message).not.toMatch(/星芒|solov|Sub2API|new-api/i)
-      expect(message).toMatch(/充值|调高|重试/)
+      expect(message).toMatch(/充值|调高|再发一次/)
     }
   })
 })

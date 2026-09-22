@@ -143,7 +143,7 @@ export function chatErrorMessage(error: unknown, code?: AiChatErrorCode): string
   return '本次请求没有完成，已保留内容，请稍后重试'
 }
 
-/** 余额不足给「去充值」，Key 额度上限给「去调额度」；Key 失效靠消息自己的「重试」就能换新 Key。 */
+/** 余额不足给「去充值」，Key 额度上限给「去调额度」；Key 失效时点「重新生成」就会换新 Key。 */
 export function chatErrorAction(message: string | undefined): 'recharge' | 'keys' | null {
   const quota = matchRelayQuotaFailureMessage(message ?? '')
   if (quota === 'balance') return 'recharge'
