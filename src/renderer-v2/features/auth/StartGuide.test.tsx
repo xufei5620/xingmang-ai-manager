@@ -60,6 +60,24 @@ describe('renderer-v2 start guide first run', () => {
     expect(markup).not.toContain('data-testid="guide-first-run"')
   })
 
+  // 新手没有「项目」这个概念，最后一步要告诉他打开时选什么，并给一颗不用选的按钮。
+  it('offers to create a project folder before opening a CLI', () => {
+    stubResumedGuide('claude', 'ready')
+    const markup = render([guideTool()])
+    expect(markup).toContain('data-testid="guide-folder-hint"')
+    expect(markup).toContain('不知道选哪个')
+    expect(markup).toContain('data-testid="guide-open-tool-new-folder"')
+  })
+
+  it('does not offer a folder for the desktop app, the chat route or a tool that is not ready', () => {
+    stubResumedGuide('codexDesktop', 'ready')
+    expect(render([guideTool({ id: 'codexDesktop' })])).not.toContain('data-testid="guide-folder-hint"')
+    stubResumedGuide('chat', 'ready')
+    expect(render([guideTool()])).not.toContain('data-testid="guide-folder-hint"')
+    stubResumedGuide('claude', 'ready')
+    expect(render([guideTool({ configured: false, source: 'none' })])).not.toContain('data-testid="guide-folder-hint"')
+  })
+
   it('leaves the earlier steps unchanged', () => {
     stubResumedGuide('claude', 'connect')
     const markup = render([guideTool()])
