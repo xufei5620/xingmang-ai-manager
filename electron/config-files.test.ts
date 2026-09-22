@@ -24,8 +24,13 @@ import {
   saveProviderConfig,
   snapshotCodexChatGptAuth,
   switchProviderToOfficialAccount,
+  trustClaudeWorkspace,
+  trustClaudeWorkspaceInRootConfigText,
   trustCodexWorkspace,
   trustCodexWorkspaceInConfigText,
+  trustGeminiWorkspace,
+  trustGeminiWorkspaceInTrustedFoldersText,
+  trustManagedWorkspace,
   toNativeConfigSummary,
 } from './config-files'
 import { providerBaseUrls, type ProviderId } from './catalog'
@@ -1359,5 +1364,132 @@ describe('switching a provider back to the official subscription account', () =>
     expect(canLaunchManagedProvider({ hasApiKey: true, matchesRelay: false }, 'codex')).toBe(false)
     expect(canLaunchManagedProvider({ hasApiKey: false, matchesRelay: false }, 'grok')).toBe(false)
     expect(managedProviderLaunchBlockedMessage('codex')).toContain('ChatGPT 账号')
+  })
+})
+
+describe('workspace trust for the directory the user picked', () => {
+  // 字段形态见 config-files.ts 的长注释：2026-09-21 用空 HOME 走完
+  // Claude Code 2.1.277 与 Gemini CLI 0.60.0 的首启向导后 diff 出来的。
+  it('accepts the Claude trust dialog and the first-run wizard for that workspace', () => {
+    const result = trustClaudeWorkspaceInRootConfigText(null, 'D:\\Work')
+    expect(result.changed).toBe(true)
+    const parsed = JSON.parse(result.content) as Record<string, unknown>
+    expect(parsed.hasCompletedOnboarding).toBe(true)
+    expect(asRecord(asRecord(parsed.projects)?.['D:\\Work'])?.hasTrustDialogAccepted).toBe(true)
+  })
+
+  it('keeps every other Claude project entry and answer untouched', () => {
+    const existing = JSON.stringify({
+      hasCompletedOnboarding: false,
+      numStartups: 7,
+      projects: {
+        'D:\\Other': { hasTrustDialogAccepted: true, allowedTools: ['Bash'] },
+        'D:\\Work': { hasTrustDialogAccepted: false, mcpServers: { local: {} } },
+      },
+    })
+    const result = trustClaudeWorkspaceInRootConfigText(existing, 'd:/work')
+    expect(result.changed).toBe(false)
+    const parsed = JSON.parse(result.content) as Record<string, unknown>
+    // 用户自己答过「不信任」，本软件不替他翻案；向导的 false 同理。
+    expect(parsed.hasCompletedOnboarding).toBe(false)
+    expect(parsed.numStartups).toBe(7)
+    const projects = asRecord(parsed.projects)
+    expect(asRecord(projects?.['D:\\Work'])?.hasTrustDialogAccepted).toBe(false)
+    expect(asRecord(projects?.['D:\\Work'])?.mcpServers).toEqual({ local: {} })
+    expect(asRecord(projects?.['D:\\Other'])?.allowedTools).toEqual(['Bash'])
+  })
+
+  it('reuses the Claude project key that already names this workspace', () => {
+    const existing = JSON.stringify({ projects: { 'D:\\Work': { allowedTools: [] } } })
+    const result = trustClaudeWorkspaceInRootConfigText(existing, 'D:/Work/')
+    const projects = asRecord((JSON.parse(result.content) as Record<string, unknown>).projects)
+    expect(Object.keys(projects ?? {})).toEqual(['D:\\Work'])
+    expect(asRecord(projects?.['D:\\Work'])?.hasTrustDialogAccepted).toBe(true)
+  })
+
+  it('trusts an unknown Gemini folder and leaves an existing answer alone', () => {
+    const fresh = trustGeminiWorkspaceInTrustedFoldersText('{}', '/home/tester/work')
+    expect(fresh.changed).toBe(true)
+    expect(JSON.parse(fresh.content)).toEqual({ '/home/tester/work': 'TRUST_FOLDER' })
+
+    const declined = JSON.stringify({ '/home/tester/work': 'DO_NOT_TRUST', '/home/tester/other': 'TRUST_PARENT' })
+    const kept = trustGeminiWorkspaceInTrustedFoldersText(declined, '/home/tester/work/')
+    expect(kept.changed).toBe(false)
+    expect(JSON.parse(kept.content)).toEqual({
+      '/home/tester/work': 'DO_NOT_TRUST',
+      '/home/tester/other': 'TRUST_PARENT',
+    })
+  })
+
+  it('refuses to guess at a damaged trust file instead of overwriting it', () => {
+    expect(() => trustClaudeWorkspaceInRootConfigText('{"projects":', 'D:\\Work'))
+      .toThrow('无法解析为 JSON')
+    expect(() => trustGeminiWorkspaceInTrustedFoldersText('["a"]', '/home/tester/work'))
+      .toThrow('不是有效的 JSON 对象')
+    // 解析器原文会带上出错位置附近的片段，~/.claude.json 里有会话历史（I13）。
+    expect(() => trustClaudeWorkspaceInRootConfigText('{"apiKey": "sk-secret-value"', 'D:\\Work'))
+      .not.toThrow(/sk-secret-value/)
+  })
+
+  it('leaves a Claude project record it cannot read the shape of entirely alone', () => {
+    // 换成空对象就跳过了弹窗，代价是用户的项目记录没了，这笔买卖不做。
+    expect(() => trustClaudeWorkspaceInRootConfigText('{"projects": ["D:\\\\Work"]}', 'D:\\Work'))
+      .toThrow('项目记录已损坏')
+    expect(() => trustClaudeWorkspaceInRootConfigText('{"projects": {"D:\\\\Work": "trusted"}}', 'D:\\Work'))
+      .toThrow('项目记录已损坏')
+  })
+
+  it('writes the Claude trust transaction with a recoverable backup', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const configPath = path.join(home, '.claude.json')
+    fs.writeFileSync(configPath, JSON.stringify({ numStartups: 3 }), 'utf8')
+
+    const result = trustManagedWorkspace('claude', roots, path.join(home, 'project'))
+    expect(result.changed).toBe(true)
+    expect(result.backups).toHaveLength(1)
+    expect(fs.existsSync(result.backups[0])).toBe(true)
+    const written = JSON.parse(fs.readFileSync(configPath, 'utf8')) as Record<string, unknown>
+    expect(written.numStartups).toBe(3)
+    expect(written.hasCompletedOnboarding).toBe(true)
+    expect(asRecord(asRecord(written.projects)?.[path.join(home, 'project')])?.hasTrustDialogAccepted).toBe(true)
+
+    // 第二次打开同一个目录不再改文件，所以也不会再堆一份备份。
+    const again = trustClaudeWorkspace(roots, path.join(home, 'project'))
+    expect(again.changed).toBe(false)
+    expect(again.backups).toEqual([])
+  })
+
+  it('creates the Gemini trust file when the CLI has never written one', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const workspace = path.join(home, 'project')
+
+    const result = trustManagedWorkspace('gemini', roots, workspace)
+    expect(result.changed).toBe(true)
+    expect(result.backups).toEqual([])
+    const trustedFolders = path.join(home, '.gemini', 'trustedFolders.json')
+    expect(JSON.parse(fs.readFileSync(trustedFolders, 'utf8'))).toEqual({ [workspace]: 'TRUST_FOLDER' })
+  })
+
+  it('reports a damaged trust file instead of blocking the launch path', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    fs.writeFileSync(path.join(home, '.claude.json'), '{"projects":', 'utf8')
+
+    expect(() => trustManagedWorkspace('claude', roots, path.join(home, 'project')))
+      .toThrow('未执行修改')
+    // 原文件一字未动，等着 CLI 自己去修。
+    expect(fs.readFileSync(path.join(home, '.claude.json'), 'utf8')).toBe('{"projects":')
+  })
+
+  it('has nothing to write for the providers without a launch-time trust file', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    for (const provider of ['codex', 'grok'] as const) {
+      expect(trustManagedWorkspace(provider, roots, path.join(home, 'project')))
+        .toEqual({ backups: [], files: [], changed: false })
+    }
+    expect(fs.readdirSync(home)).toEqual([])
   })
 })

@@ -14,6 +14,9 @@ import { removeCodexContextLimits } from './codex-context-limits'
 import { assertNoReparseComponents, ensureSafeDataDirectory, readSafeUtf8FileSync } from './safe-local-data'
 
 const MAX_NATIVE_CONFIG_BYTES = 2 * 1024 * 1024
+// ~/.claude.json 会随会话历史一起长，2MB 上限会误伤正常用户。
+// 与 provider-extensions.ts 读同一份文件时用的上限保持一致。
+const MAX_CLAUDE_ROOT_CONFIG_BYTES = 16 * 1024 * 1024
 
 export interface NativeConfigFile {
   path: string
@@ -146,7 +149,11 @@ function readText(filePath: string): string | null {
   }
 }
 
-function requireConfigText(filePath: string, label: string): string | null {
+function requireConfigText(
+  filePath: string,
+  label: string,
+  maximumBytes = MAX_NATIVE_CONFIG_BYTES,
+): string | null {
   let info: fs.Stats
   try {
     info = fs.lstatSync(filePath)
@@ -157,7 +164,7 @@ function requireConfigText(filePath: string, label: string): string | null {
   if (!info.isFile() || info.nlink !== 1 || info.isSymbolicLink()) {
     throw new Error(`${label} 必须是单链接普通文件，未执行修改`)
   }
-  return readBoundedUtf8FileSync(filePath, MAX_NATIVE_CONFIG_BYTES, label)
+  return readBoundedUtf8FileSync(filePath, maximumBytes, label)
 }
 
 function readJson(filePath: string): Record<string, unknown> | null {
@@ -776,7 +783,7 @@ function tomlContent(value: Record<string, unknown>): string {
   return TOML.stringify(value as Parameters<typeof TOML.stringify>[0])
 }
 
-function normalizeCodexWorkspaceKey(value: string): string {
+function normalizeWorkspacePathKey(value: string): string {
   const trimmed = value.trim()
   if (!trimmed) return ''
   const windowsPath = /^[A-Za-z]:[\\/]/.test(trimmed) || trimmed.startsWith('\\\\')
@@ -796,8 +803,8 @@ function codexWorkspaceProjectEntry(
 ): { key: string; entry: Record<string, unknown> } | null {
   const projects = parsed.projects
   if (!isJsonRecord(projects)) return null
-  const wanted = normalizeCodexWorkspaceKey(workspace)
-  const key = Object.keys(projects).find((candidate) => normalizeCodexWorkspaceKey(candidate) === wanted)
+  const wanted = normalizeWorkspacePathKey(workspace)
+  const key = Object.keys(projects).find((candidate) => normalizeWorkspacePathKey(candidate) === wanted)
   if (!key) return null
   const entry = projects[key]
   return isJsonRecord(entry) ? { key, entry } : null
@@ -917,6 +924,168 @@ export function ensureCodexPermissionDefaultsInConfigText(
     changed = true
   }
   return { content: changed ? tomlContent(parsed) : withTrailingNewline(content), changed }
+}
+
+/**
+ * Workspace trust for Claude Code and Gemini CLI, written for the directory the
+ * user picked in this app's own folder dialog.
+ *
+ * Neither field is documented upstream, so the shapes below are what a first
+ * run actually wrote on 2026-09-21 (empty HOME + throwaway workspace, driven
+ * through a pty, then diffed):
+ *
+ *   Claude Code 2.1.277 — ~/.claude.json
+ *     projects["<绝对路径>"].hasTrustDialogAccepted = true   (信任这个目录)
+ *     hasCompletedOnboarding = true                          (主题 / 安全须知向导)
+ *   Gemini CLI 0.60.0 — ~/.gemini/trustedFolders.json
+ *     { "<绝对路径>": "TRUST_FOLDER" }                        (另两个取值是
+ *                                                             TRUST_PARENT 与
+ *                                                             DO_NOT_TRUST)
+ *
+ * Upstream may rename or drop either field at any time, so every write here is
+ * read-modify-write on that one file and adds nothing else. A field that
+ * disappears must fail silently -- never treat its absence as an error, and
+ * never read it back as the source of truth for whether a folder is trusted.
+ *
+ * 已经写着的条目一律不动：用户自己在 CLI 里选过「不信任」也是一个决定，
+ * 本软件不能替他翻案。
+ */
+
+export interface WorkspaceTrustWriteResult extends NativeConfigSaveResult {
+  changed: boolean
+}
+
+function matchingWorkspaceKey(entries: Record<string, unknown>, workspace: string): string | null {
+  const wanted = normalizeWorkspacePathKey(workspace)
+  const key = Object.keys(entries).find((candidate) => normalizeWorkspacePathKey(candidate) === wanted)
+  return key ?? null
+}
+
+function requireWorkspaceTrustJson(content: string | null, label: string): Record<string, unknown> {
+  if (!content?.trim()) return {}
+  try {
+    const parsed = JSON.parse(content) as unknown
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>
+    }
+  } catch {
+    // 与 requireJson 同理：解析器的原文会带上出错位置附近的片段，而
+    // ~/.claude.json 里有会话历史与 MCP 配置，不能进日志或反馈导出（I13）。
+    throw new Error(`${label} 无法解析为 JSON，未执行修改`)
+  }
+  throw new Error(`${label} 不是有效的 JSON 对象，未执行修改`)
+}
+
+export function trustClaudeWorkspaceInRootConfigText(
+  content: string | null,
+  workspace: string,
+): { content: string; changed: boolean } {
+  const trimmedWorkspace = workspace.trim()
+  if (!trimmedWorkspace) throw new Error('Claude Code 工作目录不能为空')
+  const label = '现有 Claude Code ~/.claude.json'
+  const parsed = requireWorkspaceTrustJson(content, label)
+  // ensureRecord 会把不是对象的值直接换成空对象。对一份只补一个布尔值的
+  // 写入来说，那是在拿用户的项目记录换取一次跳过弹窗，宁可整份不动。
+  if (parsed.projects !== undefined && !isJsonRecord(parsed.projects)) {
+    throw new Error(`${label} 的项目记录已损坏，未执行修改`)
+  }
+  const projects = ensureRecord(parsed, 'projects')
+  const key = matchingWorkspaceKey(projects, trimmedWorkspace) ?? trimmedWorkspace
+  if (projects[key] !== undefined && !isJsonRecord(projects[key])) {
+    throw new Error(`${label} 的项目记录已损坏，未执行修改`)
+  }
+  const entry = ensureRecord(projects, key)
+  let changed = false
+  if (typeof entry.hasTrustDialogAccepted !== 'boolean') {
+    entry.hasTrustDialogAccepted = true
+    changed = true
+  }
+  // 首启向导问的是主题与安全须知，登录方式本软件已经配好。对付费客户来说
+  // 它只是打开工具后的一段英文问答，跳过它不改变任何已有选择。
+  if (typeof parsed.hasCompletedOnboarding !== 'boolean') {
+    parsed.hasCompletedOnboarding = true
+    changed = true
+  }
+  return { content: jsonContent(parsed), changed }
+}
+
+export function trustGeminiWorkspaceInTrustedFoldersText(
+  content: string | null,
+  workspace: string,
+): { content: string; changed: boolean } {
+  const trimmedWorkspace = workspace.trim()
+  if (!trimmedWorkspace) throw new Error('Gemini CLI 工作目录不能为空')
+  const parsed = requireWorkspaceTrustJson(content, '现有 Gemini CLI trustedFolders.json')
+  const existing = matchingWorkspaceKey(parsed, trimmedWorkspace)
+  // A folder the user already answered for keeps its answer, including
+  // DO_NOT_TRUST. Only a folder Gemini has never asked about gets filled in.
+  if (existing !== null) return { content: jsonContent(parsed), changed: false }
+  parsed[trimmedWorkspace] = 'TRUST_FOLDER'
+  return { content: jsonContent(parsed), changed: true }
+}
+
+export function trustClaudeWorkspace(
+  rootsInput: ProviderConfigRoots = defaultProviderConfigRoots(),
+  workspace: string,
+): WorkspaceTrustWriteResult {
+  const roots = normalizeProviderConfigRoots(rootsInput)
+  // ~/.claude.json 与 ~/.claude/ 是并列的两项，所以这条事务的根是主目录本身。
+  const root = roots.userHome
+  const configPath = path.join(root, '.claude.json')
+  assertSafeConfigPath(configPath, root, 'file')
+  const current = requireConfigText(
+    configPath,
+    '现有 Claude Code ~/.claude.json',
+    MAX_CLAUDE_ROOT_CONFIG_BYTES,
+  )
+  const next = trustClaudeWorkspaceInRootConfigText(current, workspace)
+  if (!next.changed) return { backups: [], files: [], changed: false }
+  assertNoReparseComponents(path.dirname(root), '用户主目录')
+  ensureSafeDataDirectory(root, '用户主目录')
+  return {
+    ...executeFilePlans([{ path: configPath, content: next.content }], {}, root),
+    changed: true,
+  }
+}
+
+export function trustGeminiWorkspace(
+  rootsInput: ProviderConfigRoots = defaultProviderConfigRoots(),
+  workspace: string,
+): WorkspaceTrustWriteResult {
+  const roots = normalizeProviderConfigRoots(rootsInput)
+  const providerRoot = providerConfigRoot('gemini', roots)
+  const configPath = path.join(providerRoot, 'trustedFolders.json')
+  assertSafeConfigPath(configPath, providerRoot, 'file')
+  const current = requireConfigText(configPath, '现有 Gemini CLI trustedFolders.json')
+  const next = trustGeminiWorkspaceInTrustedFoldersText(current, workspace)
+  if (!next.changed) return { backups: [], files: [], changed: false }
+  assertNoReparseComponents(path.dirname(providerRoot), 'Provider 配置根目录')
+  ensureSafeDataDirectory(providerRoot, 'Provider 配置根目录')
+  return {
+    ...executeFilePlans([{ path: configPath, content: next.content }], {}, providerRoot),
+    changed: true,
+  }
+}
+
+/**
+ * 本软件「打开」某个目录时替用户写下的信任。Codex 的信任连带 approval_policy
+ * 与 sandbox_mode 两项默认值，是配置对话框里一个单独的按钮（trustCodexWorkspace），
+ * 不在这条路径上；Grok 没有目录信任这一说。
+ */
+export function trustManagedWorkspace(
+  provider: ProviderId,
+  rootsInput: ProviderConfigRoots = defaultProviderConfigRoots(),
+  workspace: string,
+): WorkspaceTrustWriteResult {
+  switch (provider) {
+    case 'claude':
+      return trustClaudeWorkspace(rootsInput, workspace)
+    case 'gemini':
+      return trustGeminiWorkspace(rootsInput, workspace)
+    case 'codex':
+    case 'grok':
+      return { backups: [], files: [], changed: false }
+  }
 }
 
 function updateEnvContent(content: string, updates: Record<string, string>): string {

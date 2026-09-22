@@ -3345,3 +3345,60 @@ describe('scan probe degradation', () => {
     })
   })
 })
+
+describe('trusting the workspace the user picked before opening a CLI', () => {
+  function launchService(userHome: string, provider: ProviderId) {
+    return createService({
+      platform: 'linux',
+      providerRoots: { userHome, codexHome: path.join(userHome, '.codex') },
+      inspectProviderConfig: vi.fn(() => ({
+        baseUrl: 'https://xm.solov.cc',
+        actualBaseUrl: 'https://xm.solov.cc',
+        exists: true,
+        hasApiKey: true,
+        matchesRelay: true,
+        apiKey: 'sk-test-key',
+        model: 'claude-opus-4-6',
+        dataDirectory: path.join(userHome, `.${provider}`),
+        dataDirectoryExists: true,
+        files: [],
+        updatedAt: '2026-09-21T00:00:00.000Z',
+      })),
+      // 本用例只关心打开之前那一步，所以让 CLI 检测稳定地答「没装」：
+      // 打开必然失败，而信任写入在它之前，两件事互不影响。
+      resolveCliInstallation: vi.fn(async () => null),
+      findExecutable: vi.fn(async () => null),
+    })
+  }
+
+  it('records the trust before it even looks for the CLI', async () => {
+    const userHome = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-launch-trust-'))
+    temporaryDirectories.push(userHome)
+    const workspace = path.join(userHome, 'project')
+    fs.mkdirSync(workspace)
+
+    await expect(launchService(userHome, 'claude').launchProvider('claude', workspace)).rejects.toThrow()
+    await expect(launchService(userHome, 'gemini').launchProvider('gemini', workspace)).rejects.toThrow()
+
+    const claudeConfig = JSON.parse(fs.readFileSync(path.join(userHome, '.claude.json'), 'utf8')) as Record<string, unknown>
+    const projects = claudeConfig.projects as Record<string, Record<string, unknown>>
+    expect(projects[workspace].hasTrustDialogAccepted).toBe(true)
+    expect(claudeConfig.hasCompletedOnboarding).toBe(true)
+    const trustedFolders = path.join(userHome, '.gemini', 'trustedFolders.json')
+    expect(JSON.parse(fs.readFileSync(trustedFolders, 'utf8'))).toEqual({ [workspace]: 'TRUST_FOLDER' })
+  })
+
+  it('opens the tool anyway when the trust file cannot be written', async () => {
+    const userHome = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-launch-trust-broken-'))
+    temporaryDirectories.push(userHome)
+    const workspace = path.join(userHome, 'project')
+    fs.mkdirSync(workspace)
+    fs.writeFileSync(path.join(userHome, '.claude.json'), '{"projects":', 'utf8')
+
+    // 损坏的配置只能让 CLI 自己再问一次，不能提前把打开这条路截断：
+    // 报出来的仍然是后面那一步的原因，不是配置解析失败。
+    await expect(launchService(userHome, 'claude').launchProvider('claude', workspace))
+      .rejects.toThrow('未检测到 Claude Code')
+    expect(fs.readFileSync(path.join(userHome, '.claude.json'), 'utf8')).toBe('{"projects":')
+  })
+})

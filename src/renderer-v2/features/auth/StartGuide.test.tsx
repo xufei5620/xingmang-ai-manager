@@ -66,4 +66,20 @@ describe('renderer-v2 start guide first run', () => {
     expect(markup).toContain('data-guide-step="connect"')
     expect(markup).not.toContain('data-testid="guide-first-run"')
   })
+
+  // 引导里留着官方来源的 Gemini 配置,在 CLI 里已经登不上去了(Google 2026-06-18
+  // 起停服个人账号)。确认这一步会把限制讲出来,而不是让用户带着它走到最后一屏。
+  it('spells out the Gemini enterprise-only limit while the official source is kept', () => {
+    stubResumedGuide('gemini', 'connect')
+    const markup = render([guideTool({ id: 'gemini', source: 'official' })])
+    expect(markup).toContain('data-testid="guide-official-note"')
+    expect(markup).toContain('企业版 Code Assist')
+  })
+
+  it('stays quiet about it for the other tools and for a relay-backed Gemini', () => {
+    stubResumedGuide('claude', 'connect')
+    expect(render([guideTool({ source: 'official' })])).not.toContain('data-testid="guide-official-note"')
+    stubResumedGuide('gemini', 'connect')
+    expect(render([guideTool({ id: 'gemini', source: 'account' })])).not.toContain('data-testid="guide-official-note"')
+  })
 })

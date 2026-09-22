@@ -722,6 +722,7 @@ if (!hasSingleInstanceLock) {
       getRelaySiteId: () => readAccountSiteId(),
       getExternalClientAccountId: () => readExternalClientAccountId(),
       windowsExecutionMode: windowsCliExecutionMode,
+      runtimeLog,
       ...rootedOptions.system,
       relayFetch,
       networkLocationFetch: (input, init) => net.fetch(input instanceof URL ? input.href : input, init),
