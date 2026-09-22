@@ -85,7 +85,7 @@ function matchWellKnownFolder(name: string, caseInsensitive: boolean): Sensitive
   return null
 }
 
-function isOneDriveContainer(name: string, caseInsensitive: boolean): boolean {
+export function isOneDriveContainer(name: string, caseInsensitive: boolean): boolean {
   if (samePath(name, 'OneDrive', caseInsensitive)) return true
   const prefix = 'OneDrive - '
   return name.length > prefix.length && samePath(name.slice(0, prefix.length), prefix, caseInsensitive)
@@ -137,13 +137,15 @@ export interface SensitiveWorkspacePrompt {
   buttons: readonly string[]
   /** 「仍然打开」在 buttons 里的下标。 */
   continueIndex: number
+  /** 「新建一个项目文件夹」在 buttons 里的下标，也是默认按钮（starter-workspace.ts）。 */
+  createIndex: number
   /** 「换一个文件夹」在 buttons 里的下标，同时是对话框被直接关掉时的取值。 */
   cancelIndex: number
 }
 
 /**
- * 提示只说清两件事：为什么不建议，以及坚持打开会少做什么。不劝退——有人确实
- * 把项目直接放在桌面上。
+ * 提示只说清三件事：为什么不建议、还没有项目文件夹时怎么办、坚持打开会少做什么。
+ * 不劝退——有人确实把项目直接放在桌面上。
  */
 export function buildSensitiveWorkspacePrompt(kind: SensitiveWorkspaceKind): SensitiveWorkspacePrompt {
   const label = sensitiveWorkspaceLabel(kind)
@@ -152,10 +154,14 @@ export function buildSensitiveWorkspacePrompt(kind: SensitiveWorkspaceKind): Sen
     message: `你选的是${label}，AI 工具会把它整个当成一个项目。`,
     detail: [
       `${label}里通常放着与这次工作无关的大量文件，工具第一次打开要扫很久，也可能读到你不想给它看的资料。建议改选一个具体的项目文件夹。`,
+      '还没有项目文件夹的话，点「新建一个项目文件夹」，会替你建一个空的项目文件夹并直接打开，不用再选、不用起名。',
       '仍然打开也可以，只是这一次不会替你把它标成「可信」，也不会在里面生成项目说明文件（AGENTS.md）——那份说明会对它下面的所有项目生效。',
     ].join('\n\n'),
-    buttons: ['换一个文件夹', '仍然打开'],
-    continueIndex: 1,
-    cancelIndex: 0,
+    // 客户多是新手，少让他做决定：「新建」放第一个并作为默认按钮（回车即选，
+    // macOS 上是高亮的那个），另外两个退成次要。
+    buttons: ['新建一个项目文件夹', '换一个文件夹', '仍然打开'],
+    createIndex: 0,
+    cancelIndex: 1,
+    continueIndex: 2,
   }
 }
