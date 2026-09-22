@@ -129,3 +129,6 @@
 .v2-first-run-line > .xm-btn { flex: none; }
 .v2-first-run-note { color: var(--ok); }
 .v2-first-run-note.is-warn { color: var(--warn); }
+.v2-blocked-link { display: grid; gap: 6px; margin: 0 0 12px; padding: 10px 12px; border-radius: var(--radius-input); background: var(--panel-2); color: var(--text-2); line-height: 1.6; }
+.v2-blocked-link p { margin: 0; }
+.v2-blocked-link code { font-family: var(--mono); font-size: var(--font-small-compact); overflow-wrap: anywhere; user-select: all; }

@@ -456,7 +456,7 @@ export const tutorialTopics: readonly TutorialTopic[] = [
         bullets: ['未登录先点「登录领取免费体验」。', '查看剩余时长、页面下方「本次连接」和「累计使用」。'],
         expected: '读到剩余时长与线路状态。',
         illustration: 'acceleration',
-        extra: [{ title: '时长用完和到期提醒', detail: `时长用完会自动停止，按钮变为「免费体验已用完」，可通过「帮助与客服」咨询。启用「设置」→「通知」里的桌面通知和「加速时长提醒」且系统允许通知时，剩余 ${accelerationExpiryWarningSeconds / 60} 分钟及用完断开会各提醒一次。` }],
+        extra: [{ title: '时长用完和到期提醒', detail: `时长用完会自动停止，按钮变为「免费体验已用完」，可通过「帮助与客服」咨询。启用「设置」→「通知」里的桌面通知和「加速提醒」且系统允许通知时，剩余 ${accelerationExpiryWarningSeconds / 60} 分钟及用完断开会各提醒一次。` }],
         action: '打开游戏加速',
         page: 'acceleration',
       },

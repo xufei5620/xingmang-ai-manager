@@ -7,6 +7,7 @@ import { createPreviewAccelerationApi } from './acceleration-fixture'
 import { accelerationTrialSeconds } from '../../../electron/acceleration-contract'
 import { getSourceMarkerStorage, writeManualSourceMarker } from '../features/tools/source-marker'
 import { resolveManagedCliKeyProfiles } from '../../../electron/catalog'
+import { ExternalUrlBlockedError } from '../../../electron/external-url-blocked'
 import '../styles/tokens.css'
 import '../styles/components.css'
 import '../styles/shell.css'
@@ -509,7 +510,11 @@ const methods = {
     return session
   },
   replyWindowClose: async () => true,
-  openExternal: async () => true,
+  openExternal: async () => {
+    // 与主进程 external:open 拒绝时一样：经 IPC 过桥后只剩 toString() 与通道前缀。
+    if (query.has('externalBlocked')) throw new Error(`Error invoking remote method 'external:open': ${new ExternalUrlBlockedError().toString()}`)
+    return true
+  },
 } satisfies Partial<XingmangApi>
 const eventNames = new Set(Object.keys(ipcEventChannels))
 const api = new Proxy(methods, { get(target, name) {

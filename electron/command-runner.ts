@@ -6,6 +6,7 @@ import { isDarwinForeignWritablePath } from './darwin-path-trust'
 import { darwinCommandPathCandidates } from './macos-platform'
 import { managedNativeProviderRoot, managedNpmBinDirectory } from './managed-cli-paths'
 import { isRegisteredTrustedManagedWindowsPath } from './managed-path-trust'
+import { redactSecretPatterns } from './redaction-patterns'
 import {
   isTrustedWindowsMachinePath,
   pathWithinWindowsRoot,
@@ -724,18 +725,7 @@ export function redactCommandText(value: string, sensitiveValues: readonly strin
     redacted = redacted.split(secret).join('[REDACTED]')
   }
 
-  return redacted
-    .replace(/(\bBearer\s+)[A-Za-z0-9._~+/=-]{6,}/gi, '$1[REDACTED]')
-    .replace(/\bsk-[A-Za-z0-9_-]{6,}\b/g, '[REDACTED]')
-    // The quoted spellings need their own rules: in `{"access_token":"…"}` the
-    // rule below can never match, because `\s*` does not cross the quote that
-    // closes the key name, so any CLI writing JSON to stderr leaked its secrets
-    // verbatim into the runtime log and the feedback export. Redacting between
-    // the existing quotes also keeps a JSON body parseable.
-    .replace(/((?:api[_-]?key|authorization|token|secret|password)"\s*[:=]\s*)"[^"]*"/gi, '$1"[REDACTED]"')
-    .replace(/((?:api[_-]?key|authorization|token|secret|password)'\s*[:=]\s*)'[^']*'/gi, "$1'[REDACTED]'")
-    .replace(/((?:api[_-]?key|authorization|token|secret|password)\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi, '$1[REDACTED]')
-    .replace(/([?&](?:api[_-]?key|token)=)[^&\s]+/gi, '$1[REDACTED]')
+  return redactSecretPatterns(redacted)
 }
 
 function validateSpec(spec: CommandSpec): void {

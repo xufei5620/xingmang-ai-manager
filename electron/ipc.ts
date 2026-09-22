@@ -10,13 +10,16 @@ import {
 } from 'electron'
 import { randomUUID } from 'node:crypto'
 import os from 'node:os'
+import path from 'node:path'
 import { buildSensitiveWorkspacePrompt, classifyWorkspace, sensitiveWorkspaceLabel } from './workspace-guard'
+import { createStarterWorkspace, resolveStarterWorkspaceParent } from './starter-workspace'
 import { usageDateRange } from './usage-date-range'
 import type { AppSettingsUpdate, AppTheme } from './app-settings'
 import { parseWindowState } from './window-preferences'
 import { parseWindowCloseReport, type WindowCloseReport } from './window-close-query'
 import { classifyNetworkFailure } from './network-failure'
 import type { ExternalDeepLink } from './external-deep-links'
+import { ExternalUrlBlockedError } from './external-url-blocked'
 import { savedAccountId, type SavedAccountsStore } from './saved-accounts'
 import { apiKeyDigest, type ConfigBackupAccountContext, type ConfigBackupStore } from './backups'
 import { parseLocalNoticeReadSync, type AnnouncementReadStore } from './announcement-read-store'
@@ -94,6 +97,7 @@ import {
 } from './new-api-client'
 import type { RelayBackendClient } from './relay-backend'
 import { normalizeRealmLoginIdentifier } from './realm-account-vault'
+import { realmForExplicitSite } from './realm-account'
 import { resolveAccountKeyOptions } from './account-key-options'
 import { loadManagedCliGroups } from './managed-cli-groups'
 import type { AiAssetStore } from './ai-asset-store'
@@ -131,6 +135,9 @@ export interface IpcRegistrationOptions {
   // 解析各 CLI 配置目录用的根路径（Codex 认 CODEX_HOME）。省略 = 按当前进程
   // 环境推一份，和 system-service 默认拿到的那份一致（旧行为）。
   providerRoots?: ProviderConfigRoots
+  // 「新建一个项目文件夹」优先建在它下面（starter-workspace.ts，被云盘同步时退到主目录）；
+  // main.ts 传系统「文档」目录（app.getPath('documents')）。省略 = 主目录下的 Documents。
+  documentsDirectory?: () => string
   sessionsService: CodexSessionsService
   providerSessionsService: ProviderSessionsService
   backupStore: ConfigBackupStore
@@ -1680,6 +1687,38 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     if (mode !== undefined && mode !== 'merge' && mode !== 'reset') throw new Error('未知的配置写入模式')
     return mode === undefined ? service.switchToOfficialAccount(provider) : service.switchToOfficialAccount(provider, mode)
   })
+  function documentsDirectory(): string | null {
+    if (!options.documentsDirectory) return path.join(os.homedir(), 'Documents')
+    try {
+      return options.documentsDirectory()
+    } catch {
+      // app.getPath 拿不到「文档」时退到主目录（resolveStarterWorkspaceParent）。
+      return null
+    }
+  }
+  // 建不成就说一句、回到选择器，由用户自己选；返回 null 让外层循环再开一次选择器。
+  async function createStarterWorkspaceOrExplain(parentWindow: BrowserWindow | undefined): Promise<string | null> {
+    try {
+      const context = { platform: process.platform, home: os.homedir(), env: process.env }
+      const created = createStarterWorkspace(resolveStarterWorkspaceParent(documentsDirectory(), context), context)
+      // 不记路径（I13）：客服要的只是「这个目录是软件替他建的」。
+      options.runtimeLog.log('info', 'config', 'workspace.starter.created', '已替用户新建项目文件夹')
+      return created
+    } catch (error) {
+      options.runtimeLog.exception('config', 'workspace.starter.failed', error)
+      const errorBoxOptions = {
+        type: 'error' as const,
+        title: '没能新建项目文件夹',
+        message: '没能替你新建项目文件夹。',
+        detail: `${error instanceof Error ? error.message : '未知错误'}\n\n接下来会重新打开文件夹选择窗口，可以在里面自己新建一个文件夹再选它。`,
+        buttons: ['知道了'],
+        noLink: true,
+      }
+      if (parentWindow) await dialog.showMessageBox(parentWindow, errorBoxOptions)
+      else await dialog.showMessageBox(errorBoxOptions)
+      return null
+    }
+  }
   registerTrustedHandler('workspace:choose', async (event) => {
     const parentWindow = BrowserWindow.fromWebContents(event.sender) ?? undefined
     const dialogOptions: OpenDialogOptions = {
@@ -1688,8 +1727,9 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     }
     let workspace: string | null = null
     // 选到主目录 / 盘根 / 桌面 / 下载 / 文档时先说清楚风险。「换一个文件夹」直接
-    // 把选择器再打开一次，用户点一次「打开」仍然能走到底；「仍然打开」照常返回，
-    // 打开时会跳过信任写入与 AGENTS.md 生成（workspace-guard.ts）。
+    // 把选择器再打开一次，用户点一次「打开」仍然能走到底；「新建一个项目文件夹」（默认）
+    // 替用户建好一个普通目录直接返回，信任写入与 AGENTS.md 都照常；「仍然打开」
+    // 照常返回，打开时会跳过信任写入与 AGENTS.md 生成（workspace-guard.ts）。
     while (workspace === null) {
       const result = parentWindow
         ? await dialog.showOpenDialog(parentWindow, dialogOptions)
@@ -1708,13 +1748,17 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
         message: prompt.message,
         detail: prompt.detail,
         buttons: [...prompt.buttons],
-        defaultId: prompt.cancelIndex,
+        defaultId: prompt.createIndex,
         cancelId: prompt.cancelIndex,
         noLink: true,
       }
       const answer = parentWindow
         ? await dialog.showMessageBox(parentWindow, messageBoxOptions)
         : await dialog.showMessageBox(messageBoxOptions)
+      if (answer.response === prompt.createIndex) {
+        workspace = await createStarterWorkspaceOrExplain(parentWindow)
+        continue
+      }
       if (answer.response === prompt.continueIndex) {
         workspace = selected
         // 只记类别不记路径（I13）；这条是客服排查「为什么工具又问了一次信任」的落点。
@@ -1885,7 +1929,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
       typeof url !== 'string'
       || !isAllowedExternalUrl(url, options.externalUrlAllowlist)
     ) {
-      throw new Error('不允许打开该链接')
+      throw new ExternalUrlBlockedError()
     }
     await externalShell.openExternal(url)
     return true
@@ -2482,8 +2526,11 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   registerTrustedHandler('account:send-verification-code', (_event, email: unknown) => (
     accountService.sendEmailVerification(parseAccountEmailInput(email))
   ))
+  const passwordResetSiteId = (siteInput: unknown) => (
+    siteInput === undefined ? options.realmAccounts?.getSiteId() ?? 'solov' : parseAccountSiteId(siteInput)
+  )
   const passwordResetClient = (siteInput: unknown) => {
-    const siteId = siteInput === undefined ? options.realmAccounts?.getSiteId() ?? 'solov' : parseAccountSiteId(siteInput)
+    const siteId = passwordResetSiteId(siteInput)
     if (!options.realmAccounts && siteId !== 'solov') throw new Error('当前账号服务不支持该账号来源')
     const client = options.realmAccounts?.getPublicClient(siteId) ?? accountService
     if (client.capabilities?.supportsPasswordReset === false) throw new Error('所选账号暂不支持在客户端找回密码，请前往对应账号官网')
@@ -2492,9 +2539,62 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   registerTrustedHandler('account:send-reset-code', (_event, email: unknown, siteId: unknown) => (
     passwordResetClient(siteId).sendPasswordResetEmail(parseAccountEmailInput(email))
   ))
-  registerTrustedHandler('account:reset-password', (_event, input: unknown, siteId: unknown) => (
-    passwordResetClient(siteId).resetPassword(parseAccountPasswordResetInput(input))
-  ))
+  const rememberedLoginStore = (siteId: 'solov' | 'solov-api') => (
+    options.accountCredentialsForSite?.(siteId) ?? (siteId === 'solov' ? options.accountCredentials : undefined)
+  )
+  // Whether the identifier kept by 记住密码 names this account. The typed
+  // identifier may be the username or the email (new-api accepts either), so
+  // the username alone cannot tell; the vault's login hints record which
+  // account each identifier actually signed in. Anything unprovable is "no":
+  // rewriting or clearing another account's remembered login is worse than
+  // leaving a stale one.
+  const rememberedLoginNamesAccount = async (
+    siteId: 'solov' | 'solov-api',
+    identifier: string,
+    account: { userId: number | string, username?: string },
+  ): Promise<boolean> => {
+    const normalized = normalizeRealmLoginIdentifier(identifier)
+    if (account.username && normalizeRealmLoginIdentifier(account.username) === normalized) return true
+    const owner = await options.realmAccounts?.loginHintOwner(normalized)
+    return Boolean(owner && owner.realmId === realmForExplicitSite(siteId) && owner.userId === String(account.userId))
+  }
+  // The password change / reset already succeeded by the time these run, so
+  // they never throw: a failure here must not turn a successful change into an
+  // error toast. Neither logs anything -- the stored value is a password (I3).
+  const replaceRememberedPassword = async (
+    siteId: 'solov' | 'solov-api',
+    account: { userId: number, username: string },
+    password: string,
+  ): Promise<void> => {
+    const store = rememberedLoginStore(siteId)
+    const remembered = await store?.read().catch(() => null)
+    if (!store || !remembered) return
+    const matches = await rememberedLoginNamesAccount(siteId, remembered.identifier, account).catch(() => false)
+    if (!matches) return
+    await store.save(remembered.identifier, password).catch(() => store.clear().catch(() => undefined))
+  }
+  const forgetRememberedPassword = async (siteId: 'solov' | 'solov-api', email: string): Promise<void> => {
+    const store = rememberedLoginStore(siteId)
+    const remembered = await store?.read().catch(() => null)
+    if (!store || !remembered) return
+    const matches = await (async () => {
+      if (normalizeRealmLoginIdentifier(remembered.identifier) === normalizeRealmLoginIdentifier(email)) return true
+      const owner = await options.realmAccounts?.loginHintOwner(email)
+      return Boolean(owner && owner.realmId === realmForExplicitSite(siteId)
+        && await rememberedLoginNamesAccount(siteId, remembered.identifier, { userId: owner.userId }))
+    })().catch(() => false)
+    if (matches) await store.clear().catch(() => undefined)
+  }
+  registerTrustedHandler('account:reset-password', (_event, input: unknown, siteInput: unknown) => {
+    const parsed = parseAccountPasswordResetInput(input)
+    const siteId = passwordResetSiteId(siteInput)
+    // The reset hands back a one-time server-generated password the user is
+    // about to replace, so it is not worth remembering; the old one is wrong.
+    return passwordResetClient(siteInput).resetPassword(parsed).then(async (result) => {
+      await forgetRememberedPassword(siteId, parsed.email)
+      return result
+    })
+  })
   registerTrustedHandler('account:get-profile', () => accountService.getProfile())
   registerTrustedHandler('account:update-display-name', (_event, input: unknown) => (
     accountService.updateDisplayName(parseAccountDisplayNameUpdateInput(input))
@@ -2579,9 +2679,18 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     assertAccountSessionUser(userId)
     return result
   })
-  registerTrustedHandler('account:change-password', (_event, input: unknown) => (
-    accountService.changePassword(parseAccountChangePasswordInput(input, accountService.getActiveSiteId?.() === 'solov-api'))
-  ))
+  registerTrustedHandler('account:change-password', (_event, input: unknown) => {
+    const parsed = parseAccountChangePasswordInput(input, accountService.getActiveSiteId?.() === 'solov-api')
+    // Captured before the call: a successful change can end the session, and
+    // the remembered login must follow the account that changed, not whatever
+    // is signed in afterwards.
+    const siteId = options.realmAccounts?.getSiteId() ?? 'solov'
+    const account = accountService.getSessionState().account
+    return accountService.changePassword(parsed).then(async (result) => {
+      if (account) await replaceRememberedPassword(siteId, account, parsed.newPassword)
+      return result
+    })
+  })
   registerTrustedHandler('account:list-login-sessions', () => accountService.listLoginSessions())
   registerTrustedHandler('account:revoke-login-session', async (_event, sid: unknown) => {
     const result = await accountService.revokeLoginSession(
@@ -2604,7 +2713,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     const hint = !explicitSite && options.realmAccounts ? await options.realmAccounts.latestLoginHint() : null
     const siteId = explicitSite ?? (hint ? (hint.realmId === 'api-account' ? 'solov-api' : 'solov')
       : options.realmAccounts?.getSiteId() ?? 'solov')
-    const store = options.accountCredentialsForSite?.(siteId) ?? (siteId === 'solov' ? options.accountCredentials : undefined)
+    const store = rememberedLoginStore(siteId)
     const remembered = await store?.read() ?? null
     if (remembered && hint && normalizeRealmLoginIdentifier(remembered.identifier) !== hint.identifier) return null
     // Re-shape to exactly the contract DTO -- the persisted record carries a
@@ -2614,7 +2723,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   registerTrustedHandler('account:set-remembered-login', async (_event, input: unknown, siteInput: unknown) => {
     const siteId = siteInput === undefined ? options.realmAccounts?.getSiteId() ?? 'solov' : parseAccountSiteId(siteInput)
     const parsed = parseRememberedAccountLogin(input)
-    const store = options.accountCredentialsForSite?.(siteId) ?? (siteId === 'solov' ? options.accountCredentials : undefined)
+    const store = rememberedLoginStore(siteId)
     if (!store) return
     if (parsed) {
       await store.save(parsed.identifier, parsed.password)
