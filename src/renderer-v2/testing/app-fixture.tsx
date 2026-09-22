@@ -7,10 +7,12 @@ import { createPreviewAccelerationApi } from './acceleration-fixture'
 import { accelerationTrialSeconds } from '../../../electron/acceleration-contract'
 import { getSourceMarkerStorage, writeManualSourceMarker } from '../features/tools/source-marker'
 import { resolveManagedCliKeyProfiles } from '../../../electron/catalog'
+import { ExternalUrlBlockedError } from '../../../electron/external-url-blocked'
 import '../styles/tokens.css'
 import '../styles/components.css'
 import '../styles/shell.css'
 import '../app.css'
+import '../styles/contrast.css'
 
 const query = new URLSearchParams(location.search)
 const accelerationDemo = createPreviewAccelerationApi({ remainingSeconds: query.has('accelerationExhausted') ? 0 : query.has('accelerationShort') ? 3 : accelerationTrialSeconds, storage: window.localStorage })
@@ -190,17 +192,18 @@ function sessionCapability(provider: ProviderId): MultiProviderSessionPage['capa
 }
 // 首页「打开」的最近目录是从会话记录里的 cwd 推出来的（N7），所以这里要有带目录的记录。
 // 同一个目录两条记录，用来盯住去重。
-function recentWorkspaceSession(id: string, provider: ProviderId, cwd: string, updatedAt: number, cwdExists = true): MultiProviderSessionPage['items'][number] {
+function recentWorkspaceSession(id: string, provider: ProviderId, cwd: string, updatedAt: number, cwdExists = true, detailAvailable = true): MultiProviderSessionPage['items'][number] {
   return { id: `${provider}:${id}`, provider, nativeId: id, title: `会话 ${id}`, cwd, model: 'fixture-model',
     archived: false, readonly: true, createdAt: updatedAt, updatedAt, messageCount: 2,
-    sourcePath: `C:\\Fixture\\${id}.jsonl`, detailAvailable: true, cwdExists }
+    sourcePath: `C:\\Fixture\\${id}.jsonl`, detailAvailable, cwdExists }
 }
 const recentWorkspaceSessions = [
   recentWorkspaceSession('1', 'claude', 'C:\\work\\my-app', 400),
   // older-app 的目录已经被删掉了:卡片上这一行的「接着聊」该按不动（候选 7）。
   recentWorkspaceSession('2', 'claude', 'C:\\work\\older-app', 300, false),
   recentWorkspaceSession('3', 'claude', 'C:\\work\\my-app', 200),
-  recentWorkspaceSession('4', 'codex', 'C:\\work\\codex-app', 100),
+  // 这条 Codex 记录只剩摘要（rollout 文件不在了）：记录页「查看记录」置灰并说明。
+  recentWorkspaceSession('4', 'codex', 'C:\\work\\codex-app', 100, true, false),
   recentWorkspaceSession('5', 'gemini', 'C:\\work\\a-very-long-project-name', 50),
 ]
 const methods = {
@@ -245,7 +248,7 @@ const methods = {
     return value
   },
   getAccountUsage: async () => ({ page: 1, pageSize: 1, total: 0, records: [], stats: { quota: 1_000_000, rpm: 0, tpm: 0 } }),
-  getWindowCapabilities: async () => ({ tray: true, notifications: true }),
+  getWindowCapabilities: async () => ({ tray: true, notifications: true, ...(query.has('lowEnd') ? { lowEndDevice: true } : {}) }),
   getUpdateState: async () => ({ phase: query.has('startupUpdate') || query.has('updateCheckFail') ? 'idle' : 'disabled', currentVersion: '0.1.31', availableVersion: null, releaseName: null, releaseNotesText: null, checkedAt: null, progress: null, error: null, development: true }),
   runStartupUpdate: async () => { throw new Error('本地更新源暂时不可用') },
   // 用户自己点「检查更新」时失败的那一条，与启动时自动跑的那一条分开：前者仍要
@@ -336,9 +339,9 @@ const methods = {
     if (query.has('externalLaunchPending')) await new Promise<void>((resolve) => { releaseLaunch = resolve })
     externalStatuses.find((entry) => entry.tool === tool)!.running = true
   },
-  chooseWorkspace: async () => {
+  chooseWorkspace: async (options) => {
     if (query.has('workspaceCancel')) return null
-    const workspace = 'C:\\Selected Project'
+    const workspace = options?.createStarter ? 'C:\\Users\\fixture\\Documents\\XingmangProjects\\my-project' : 'C:\\Selected Project'
     settings = { ...settings, workspace }
     config.workspace = workspace
     return workspace
@@ -379,6 +382,8 @@ const methods = {
   logoutAccount: async () => { session = { ...session, authenticated: false, account: null } },
   listProviderSessions: async () => ({ items: query.has('recentWorkspaces') ? recentWorkspaceSessions : [], page: 1, pageSize: 60, total: query.has('recentWorkspaces') ? recentWorkspaceSessions.length : 0, pages: 1, stats: { total: query.has('recentWorkspaces') ? recentWorkspaceSessions.length : 0, byProvider: { claude: query.has('recentWorkspaces') ? 3 : 0, codex: query.has('recentWorkspaces') ? 1 : 0, gemini: query.has('recentWorkspaces') ? 1 : 0, grok: 0 } }, capabilities: { claude: sessionCapability('claude'), codex: sessionCapability('codex'), gemini: sessionCapability('gemini'), grok: sessionCapability('grok') } }),
   openProviderSessionDirectory: async () => true,
+  exportDiagnostics: async () => ({ outputPath: 'C:\\Fixture\\xingmang-diagnostics.txt' }),
+  revealExportedFile: async () => true,
   launchCli: async () => query.has('launchPending') ? new Promise<void>((resolve) => { releaseLaunch = resolve }) : undefined,
   launchCodexDesktop: async () => ({ restarted: false, status: system.desktopApps.codex, ...(query.has('localeLaunchWarning') ? { chineseLocale: { status: 'failed' as const, message: 'Codex 已打开，但未确认中文界面生效，请在配置中再次启用。' } } : {}) }),
   inspectCodexDesktopLocale: async () => ({ installed: true, version: 'fixture', running: true, configPath: 'C:\\Fixture\\config.toml', configuredLocale: 'zh-CN', effectiveLocale: 'zh-CN', chineseResources: { available: true, frontendChunk: true, menuLocale: true, pakLocale: true, resourceRoot: 'C:\\Fixture' }, needsRestart: true, error: null }),
@@ -499,7 +504,11 @@ const methods = {
     return session
   },
   replyWindowClose: async () => true,
-  openExternal: async () => true,
+  openExternal: async () => {
+    // 与主进程 external:open 拒绝时一样：经 IPC 过桥后只剩 toString() 与通道前缀。
+    if (query.has('externalBlocked')) throw new Error(`Error invoking remote method 'external:open': ${new ExternalUrlBlockedError().toString()}`)
+    return true
+  },
 } satisfies Partial<XingmangApi>
 const eventNames = new Set(Object.keys(ipcEventChannels))
 const api = new Proxy(methods, { get(target, name) {

@@ -177,6 +177,9 @@ const backup = {
   totalSize: 128,
   valid: true,
   error: null,
+  ...(query.has('backupOtherKey')
+    ? { keyOwnership: 'other' as const, keyAccountName: 'old-user' }
+    : { keyOwnership: 'current' as const, keyAccountName: null }),
 }
 const key = {
   id: 1,
@@ -193,6 +196,16 @@ const key = {
 }
 // 「按工具分账」按托管 Key 的固定名称认工具，夹具照搬真实命名：一把有上限、
 // 一把不限额，另外两个工具还没签发过，这样四种格子在一张表里都能看到。
+// 撤销工具在用的 Key：keyInUse 让那把 Test key 标成 Claude Code 在用；
+// replaceFails=N 让自动换新的前 N 次失败，好看到「再换一次」那条出路。
+const keyInUse = query.has('keyInUse')
+let replaceFailures = Number(query.get('replaceFails') ?? 0)
+async function rewriteKey(provider: string) {
+  record('rewriteKey', provider)
+  if (replaceFailures <= 0) return true
+  replaceFailures--
+  return false
+}
 const managedKeys = query.has('managedKeys')
   ? [
       { ...key, id: 11, name: 'xingmang-desktop-claude', group: 'Claude-MAX订阅', unlimitedQuota: false, remainQuota: 1200, usedQuota: 600 },
@@ -358,8 +371,11 @@ const apiMethods = {
     page: 1,
     pageSize: 20,
     total: empty ? 0 : managedKeys ? managedKeys.length : 1,
-    keys: empty ? [] : managedKeys ?? [key],
+    keys: empty ? [] : managedKeys ?? [keyInUse ? { ...key, managedProvider: 'claude' as const } : key],
   }),
+  revokeAccountKey: async (id: number) => {
+    record('revokeAccountKey', id)
+  },
   getAccountUsableGroups: async () => {
     window.keyGroupsHarness.requests++
     const groups = keyGroups.map((group) => ({ ...group }))
@@ -726,10 +742,20 @@ const apiMethods = {
   restoreBackup: async (id: string) => {
     record('restore-backup', id)
     return {
+      provider: 'codex' as const,
       restoredBackupId: id,
       preRestoreBackupId: 'before-restore',
       restoredFiles: ['config.toml'],
       removedFiles: [],
+    }
+  },
+  checkProviderConnection: async (provider: Parameters<V2Bridge['checkProviderConnection']>[0]) => {
+    record('check-connection', provider)
+    return {
+      provider, siteId: 'solov', ok: true, layer: 'network' as const, status: 200, durationMs: 12,
+      checkedAt: new Date().toISOString(), detail: null, endpoint: null, model: 'gpt-6-astra',
+      summary: '连接正常，gpt-6-astra 可以直接使用', nextStep: '无需处理',
+      evidence: '已核对当前账号的可用模型清单，gpt-6-astra 在其中',
     }
   },
   getSettings: async () => settings,
@@ -813,6 +839,10 @@ const apiMethods = {
     record('export-report', id)
     return { outputPath: 'C:\test-report.txt' }
   },
+  revealExportedFile: async (filePath: string) => {
+    record('reveal-file', filePath)
+    return true
+  },
   getUpdateState: async () => ({
     phase: 'available' as const,
     currentVersion: '0.1.31',
@@ -886,7 +916,7 @@ if (query.has('system')) {
       requested: false,
       enabled: false,
       approvalRequired: false,
-      note: '不会随电脑登录自动启动。',
+      note: '打开后，开机时会在托盘里待命，不弹窗口。',
     },
   }
   const listeners = new Set<(value: PlatformSystemState) => void>()
@@ -1022,6 +1052,7 @@ const renderFixture = (paymentReturn?: {
           paymentReturn={paymentReturn}
           navigate={(next) => record('navigate', next)}
           openLogin={() => record('login')}
+          onRewriteKey={rewriteKey}
         />
       </BalanceTierProvider>
     </Shell>,

@@ -177,7 +177,7 @@ describe('saved account explicit CLI key sync', () => {
     }))
     h.context.configs.claude.matchesRelay = false
     expect(accountSyncCandidates(h.context, null)).toContainEqual(expect.objectContaining({
-      provider: 'claude', eligible: false, reason: '已有第三方配置',
+      provider: 'claude', eligible: false, reason: '用的是别处的配置',
     }))
   })
   it('does not inspect or write CLI configs after switching fails', async () => {

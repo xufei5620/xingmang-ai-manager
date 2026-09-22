@@ -3,6 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { parseDocument } from 'yaml'
 import { readBoundedUtf8FileSync } from './bounded-file'
+import { readBoundedResponseText } from './bounded-response'
 import { cliCatalog, providerConfigDirectoryNames, providerIds, type ProviderId } from './catalog'
 import {
   commandEnvironment,
@@ -11,7 +12,7 @@ import {
   runCommand,
   trustedCommandEnvironment,
 } from './command-runner'
-import { defaultProviderConfigRoots, type ProviderConfigRoots } from './codex-home'
+import { defaultProviderConfigRoots, type IgnoredCodexHome, type ProviderConfigRoots } from './codex-home'
 import { inspectProviderConfig, type NativeConfigInspection } from './config-files'
 import {
   formatFreeSpace,
@@ -21,9 +22,15 @@ import {
   readDiskSpace,
   type DiskSpaceReading,
 } from './disk-space'
-import { gitMissingNotice } from './git-runtime'
+import { gitMissingImpact, gitMissingNotice } from './git-runtime'
+import {
+  commandLineToolsShimNotice,
+  isCommandLineToolsShimBacked,
+  isMacOsCommandLineToolsShim,
+} from './macos-command-line-tools'
 import { managedCliRoot } from './managed-cli-paths'
 import { classifyNetworkFailure, networkFailureMessages } from './network-failure'
+import { redactSecretPatterns } from './redaction-patterns'
 import { relayApiProbeBaseUrl, resolveRelaySite, type RelaySite } from './relay-sites'
 import { resolveCliCommand, resolveCliInstallation } from './tool-installation'
 import type { ToolConfigOwnership } from './tool-config-ownership'
@@ -57,6 +64,8 @@ export interface DiagnosticToolStatus {
   version: string | null
   path: string | null
   running?: boolean
+  /** macOS：PATH 上只找到了命令行开发者工具的空壳，没去执行它（见 macos-command-line-tools.ts）。 */
+  commandLineToolsShim?: boolean
 }
 
 export interface DiagnosticAppInfo {
@@ -107,6 +116,12 @@ export interface DiagnosticsDependencies {
   readDiskSpace?: typeof readDiskSpace
   inspectProxyVariables?: (signal: AbortSignal) => Promise<ProxyVariableSummary[]>
   /**
+   * 启动时发现用户环境里的 CODEX_HOME 不可用、已按没设处理（codex-home.ts）。
+   * 传进来的 env 里 CODEX_HOME 已被换成本程序算出的位置，诊断自己看不到原值，
+   * 只能由宿主告诉它。原值只用来判断会不会连不上，从不进报告。
+   */
+  ignoredCodexHome?: IgnoredCodexHome
+  /**
    * 诊断报告是要上屏、也要能导出给客服的，所以它只装中文结论。认出一个失败靠的
    * 那段上游原文（`net::ERR_CERT_AUTHORITY_INVALID` 这类）留在 runtime.jsonl 里：
    * 用户看结论，排查的人看原文，两边都不用迁就对方。缺省不记。
@@ -149,6 +164,8 @@ const DEFAULT_CHECK_TIMEOUT_MS = 8_000
 const MAX_CLOCK_SKEW_MS = 5 * 60 * 1000
 const MAX_CLASH_CONFIG_BYTES = 2 * 1024 * 1024
 const MAX_CLAUDE_SETTINGS_BYTES = 256 * 1024
+/** 两个站的状态接口都只回几 KB 的 JSON；门户页再大也用不着读完才认出来。 */
+const MAX_NETWORK_PROBE_BYTES = 256 * 1024
 const MAX_YAML_ALIAS_COUNT = 20
 const PROXY_NAMES = ['HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY', 'FTP_PROXY'] as const
 
@@ -319,18 +336,7 @@ export function redactDiagnosticText(
     .sort((left, right) => right.length - left.length)
   for (const secret of secrets) result = result.split(secret).join('[REDACTED]')
 
-  result = result
-    .replace(/(\bBearer\s+)[A-Za-z0-9._~+/=-]{6,}/gi, '$1[REDACTED]')
-    .replace(/\bsk-[A-Za-z0-9_-]{6,}\b/gi, '[REDACTED]')
-    // The quoted spellings need their own rules: in `{"access_token":"…"}` the
-    // rule below can never match, because `\s*` does not cross the quote that
-    // closes the key name, so any CLI writing JSON to stderr leaked its secrets
-    // verbatim into the runtime log and the feedback export. Redacting between
-    // the existing quotes also keeps a JSON body parseable.
-    .replace(/((?:api[_-]?key|authorization|token|secret|password)"\s*[:=]\s*)"[^"]*"/gi, '$1"[REDACTED]"')
-    .replace(/((?:api[_-]?key|authorization|token|secret|password)'\s*[:=]\s*)'[^']*'/gi, "$1'[REDACTED]'")
-    .replace(/((?:api[_-]?key|authorization|token|secret|password)\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi, '$1[REDACTED]')
-  result = redactUrls(result)
+  result = redactUrls(redactSecretPatterns(result))
 
   return redactRootPaths(result, {
     userHome: options.userHome ?? options.homeDirectory,
@@ -481,12 +487,20 @@ async function defaultInspectTool(
     }
   }
   const commands = tool === 'python' ? ['python', 'python3', 'py'] : [tool]
+  let commandLineToolsShim = false
   for (const command of commands) {
     const executable = await findExecutable(command, {
       env: commandEnvironment(env),
       windowsPackageManagers: command === 'npm' ? ['npm'] : [],
     }) ?? findWindowsShim(command, env)
     if (!executable) continue
+    if (
+      isMacOsCommandLineToolsShim(executable)
+      && !await isCommandLineToolsShimBacked(executable, { env, signal })
+    ) {
+      commandLineToolsShim = true
+      continue
+    }
     let version: string | null = null
     try {
       version = await versionForExecutable(executable, tool, signal, env)
@@ -495,6 +509,7 @@ async function defaultInspectTool(
     }
     return { installed: true, version, path: executable }
   }
+  if (commandLineToolsShim) return { installed: false, version: null, path: null, commandLineToolsShim }
   return { installed: false, version: null, path: null }
 }
 
@@ -746,6 +761,41 @@ function environmentOverrideOutcome(matches: readonly EnvironmentOverrideMatch[]
 }
 
 /**
+ * 网络那一项探测的地址：当前站点上一个不用登录、本来就回 JSON 的公开接口。
+ *
+ * 站点根路径不能用来判断「被拦截」：两个站的根路径都是网页前端，正常时也回
+ * text/html，#302 就是因此对所有人误报。换成本来就回 JSON 的接口后，「拿到的
+ * 是网页而不是 JSON」才真正说明中间有东西替服务器答了话。两个接口都已按上游
+ * 源码核实：new-api 的 `GET /api/status`（docs/RECON-new-api.md 的「状态」行，
+ * 公开）与 sub2api 的 `GET /api/v1/settings/public`（登录页自己读的公开设置）。
+ * 都在 /api 下，是账号客户端本来就要走的路径，不会被只放行 /api 与 /v1 的反代
+ * 挡在外面。两者都只认 GET：gin 不会把 HEAD 路由到 GET 处理器，HEAD 拿不到这份
+ * JSON。
+ *
+ * 地址跟着 CLI 实际调用的域走（relayApiProbeBaseUrl），今天两个站的中转域与
+ * 账号域恰好同域，所以接口按 accountBackend 选。
+ */
+export function relayStatusProbeUrl(site: RelaySite): string {
+  const origin = new URL(relayApiProbeBaseUrl(site))
+  if (origin.protocol !== 'https:') throw new Error('星芒 AI 地址不是 https，已拒绝检查')
+  switch (site.accountBackend) {
+    case 'new-api':
+      return new URL('/api/status', origin).href
+    case 'sub2api':
+      return new URL('/api/v1/settings/public', origin).href
+  }
+}
+
+function parsesAsJson(body: string): boolean {
+  try {
+    const parsed: unknown = JSON.parse(body)
+    return typeof parsed === 'object' && parsed !== null
+  } catch {
+    return false
+  }
+}
+
+/**
  * 一张证书有没有过期，是拿本机时钟去比出来的：系统时间差得多，每一张正常的证书
  * 都会当场变成「已过期」，于是登录、装 CLI、检查更新一起卡在证书校验这一步，而
  * 用户看到的只是「换个网络」。HTTP 的 Date 头里就带着服务器那一侧的时间，顺手比
@@ -784,6 +834,59 @@ function errorChainText(error: unknown): string {
     current = record.cause
   }
   return parts.filter(Boolean).join(' <- ').slice(0, 500)
+}
+
+interface IgnoredCodexHomeFinding {
+  /** true = 在软件外面打开的 Codex 读不到本程序替当前账号写好的配置。 */
+  blocking: boolean
+}
+
+/**
+ * 软件自己启动的 Codex 拿到的是注入过的 CODEX_HOME，不受影响；受影响的是用户
+ * 从开始菜单、终端这些软件外面打开的 Codex，它读的仍是那个写错的值。Codex 不展开
+ * `~` 和 `%USERPROFILE%`，相对路径按当前目录解析，而这类进程的当前目录通常就是
+ * 用户目录，所以按用户目录解析一次：落回本程序写配置的那个目录（比如只写了
+ * `.codex`）就还连得上，否则就连不上。Codex 根本没接当前账号时，连不连得上
+ * 无从谈起，只提醒不算待处理。
+ */
+function inspectIgnoredCodexHome(
+  ignored: IgnoredCodexHome | undefined,
+  roots: ProviderConfigRoots,
+  codexInspection: NativeConfigInspection | undefined,
+): IgnoredCodexHomeFinding | null {
+  if (!ignored) return null
+  const configured = Boolean(codexInspection?.matchesRelay && codexInspection.hasApiKey)
+  const landsOnCodexHome = ignored.reason === 'relative'
+    && normalizedPathKey(path.resolve(roots.userHome, ignored.value)) === normalizedPathKey(roots.codexHome)
+  return { blocking: configured && !landsOnCodexHome }
+}
+
+/**
+ * 叠在 environmentOverrideOutcome 之后而不是改它：写错的 CODEX_HOME 不是「盖过
+ * 配置」，是「本来要盖、被本程序忽略了」，结论要单独说，其余变量的判定原样保留。
+ */
+function withIgnoredCodexHome(outcome: CheckOutcome, finding: IgnoredCodexHomeFinding | null): CheckOutcome {
+  if (!finding) return outcome
+  const previous = outcome.details ?? {}
+  const labels = Object.keys(previous)
+    .filter((key) => /^variable\d+$/.test(key))
+    .sort((left, right) => Number(left.slice(8)) - Number(right.slice(8)))
+    .map((key) => previous[key])
+  const details: Record<string, boolean | number | string | null> = {
+    ...Object.fromEntries(Object.entries(previous).filter(([key]) => !/^variable\d+$/.test(key))),
+    count: labels.length + 1,
+  }
+  // 写错的原值可能带着用户名，和其它变量一样只有名字进报告。
+  const ordered = [`CODEX_HOME（${cliCatalog.codex.name}，写得不对，已忽略）`, ...labels]
+  ordered.forEach((label, index) => {
+    details[`variable${index + 1}`] = label
+  })
+  const effect = finding.blocking ? '，但在软件外面打开 Codex 会连不上当前账号' : ''
+  const others = outcome.state === 'pass' ? '' : `；另外${outcome.summary}`
+  // 连不上当前账号才算「待处理」（开机横幅只数这一档）；软件里打开的 Codex 本来
+  // 就不受影响，其余情况只是提醒。其它变量已经判出更重的一档时不往下拉。
+  const state = finding.blocking || outcome.state === 'fail' ? 'fail' : 'warn'
+  return { state, summary: `电脑里有一个 Codex 的设置写得不对，软件已经忽略它${effect}${others}`, details }
 }
 
 function providerOutcome(provider: ProviderId, inspection: NativeConfigInspection, roots: ProviderConfigRoots): CheckOutcome {
@@ -1051,7 +1154,9 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
         const required = tool !== 'python'
         return {
           state: status.installed ? 'pass' : required ? 'fail' : 'warn',
-          summary: status.installed ? (status.version || '已安装') : '未安装',
+          summary: status.installed
+            ? (status.version || '已安装')
+            : status.commandLineToolsShim ? `未安装。${commandLineToolsShimNotice('python3')}。` : '未安装',
           details: { installed: status.installed, path: pathForDisplay(status.path, displayRoots) },
         }
       },
@@ -1068,7 +1173,9 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
           state: status.installed ? 'pass' : 'warn',
           summary: status.installed
             ? (status.version || '已安装')
-            : gitMissingNotice(platform),
+            : status.commandLineToolsShim
+              ? `${commandLineToolsShimNotice('git')}。${gitMissingImpact(platform)}。`
+              : gitMissingNotice(platform),
           details: {
             required: false,
             installed: status.installed,
@@ -1122,15 +1229,20 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
       title: '星芒 AI 网络',
       run: async (signal): Promise<CheckOutcome> => {
         if (!fetchImpl) throw new Error('当前运行时不支持 fetch')
-        const endpoint = `${relayApiProbeBaseUrl(relaySite)}/`
+        const endpoint = relayStatusProbeUrl(relaySite)
         let response: Response
+        let body = ''
         try {
           response = await fetchImpl(endpoint, {
-            method: 'HEAD',
+            method: 'GET',
+            credentials: 'omit',
             redirect: 'error',
             signal,
-            headers: { Accept: 'application/json,text/plain,*/*' },
+            headers: { Accept: 'application/json' },
           })
+          // 只有 2xx 才看内容；非 2xx 的错误页不读，免得一张大错误页顶掉下面那句 HTTP 状态。
+          if (response.ok) body = await readBoundedResponseText(response, MAX_NETWORK_PROBE_BYTES, '星芒 AI 状态接口')
+          else await response.body?.cancel().catch(() => undefined)
         } catch (error) {
           const reason = classifyNetworkFailure(error)
           // 认不出来就照旧抛给兜底。把一个跟网络无关的故障说成「换个网络再试」，
@@ -1143,10 +1255,11 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
           })
           return { state: 'fail', summary: networkFailureMessages[reason], details: { endpoint, reason } }
         }
-        // 门户认证页的另一种形态：HEAD 明明成功，回来的却是一张 HTML 登录页。
-        // 这时没有异常可归类，只能从 content-type 认出来。
-        const contentType = response.headers.get('content-type') ?? ''
-        if (response.ok && /^\s*text\/html\b/i.test(contentType)) {
+        // 门户认证页的另一种形态：请求明明成功，回来的却是一张 HTML 登录页。
+        // 这时没有异常可归类，只能从内容认出来：这个接口正常时一定回 JSON，
+        // 拿到别的（网页、空白）就是中间有东西替服务器答了话。
+        if (response.ok && !parsesAsJson(body)) {
+          const contentType = response.headers.get('content-type') ?? ''
           log?.('warn', 'diagnostics.network.failed', '星芒 AI 网络检查被拦截（intercepted）', {
             endpoint,
             reason: 'intercepted',
@@ -1171,7 +1284,7 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
             details: { endpoint, status: response.status },
           }
         }
-        // 这一次 HEAD 已经拿到了响应头，Date 就在里面：顺手和本机时间比一次，
+        // 这一次请求已经拿到了响应头，Date 就在里面：顺手和本机时间比一次，
         // 把「证书日期对不上」的真正源头提前抓出来，不新增任何请求。
         const skewMs = clockSkewMs(response.headers.get('date'), now())
         if (skewMs !== null && Math.abs(skewMs) > MAX_CLOCK_SKEW_MS) {
@@ -1285,8 +1398,9 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
     {
       code: 'PROVIDER_ENVIRONMENT_OVERRIDE',
       title: '环境变量覆盖',
-      run: () => environmentOverrideOutcome(
-        collectEnvironmentOverrides(env, relaySite.providerBaseUrls, userHome),
+      run: () => withIgnoredCodexHome(
+        environmentOverrideOutcome(collectEnvironmentOverrides(env, relaySite.providerBaseUrls, userHome)),
+        inspectIgnoredCodexHome(dependencies.ignoredCodexHome, providerRoots, providerInspections.get('codex')),
       ),
     },
     {

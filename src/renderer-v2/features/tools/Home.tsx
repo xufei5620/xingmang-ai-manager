@@ -14,7 +14,7 @@ import { macDesktopTutorialTopic, macRuntimeTutorialTopic } from '../../registry
 import { tools as toolRegistry } from '../../registry/tools'
 import { FirstRunSteps } from './FirstRun'
 import { dismissFirstRun, getFirstRunStorage, readFirstRunDismissals } from './first-run-dismissal'
-import { latestSessionIdsByWorkspace, recentWorkspaces, workspaceButtonLabel, workspaceChoices } from './recent-workspaces'
+import { latestSessionIdsByWorkspace, newWorkspaceLabel, recentWorkspaces, workspaceButtonLabel, workspaceChoices } from './recent-workspaces'
 import { errorMessage } from '../../business-common'
 import { isNetworkFailureText } from './online-resync'
 import { gitHostPlatform, gitMissingFirstRunHint, gitMissingNotice } from '../../../../electron/git-runtime'
@@ -53,6 +53,8 @@ export interface HomeProps {
    * mode 省略 = 开新对话;'resumeLast' = 接着这个目录里最近的一条对话(#292)。
    */
   onLaunch(tool: ToolId, workspace?: string, mode?: CliLaunchMode): void
+  /** 不选目录，替用户新建一个项目文件夹再打开；缺省 = 不给这个入口（旧行为）。 */
+  onLaunchInNewFolder?(tool: ToolId): void
   onConfigure(tool: ToolId): void
   /** 配置被改动过时按当前账号重写这一个工具的 Key；缺省 = 不给这颗按钮（旧行为）。 */
   onRewriteKey?(tool: ToolId): void
@@ -253,13 +255,20 @@ export function Home(props: HomeProps) {
         {primaryButton}
         {lastWorkspace && <Menu label="换一个目录" testId={`tool-${tool.id}-workspaces`}
           anchor={<Button size="sm" variant="primary" icon={ChevronDown} disabled={loading || launchBusy} aria-label="换一个目录" />}
-          items={workspaceChoices(workspaces).map((choice) => ({
+          items={workspaceChoices(workspaces).filter((choice) => !choice.create || props.onLaunchInNewFolder).map((choice) => ({
             label: choice.label,
-            testId: choice.path === null ? `tool-${tool.id}-choose-workspace` : undefined,
-            onSelect: () => props.onLaunch(tool.id, choice.path ?? undefined),
+            testId: choice.create ? `tool-${tool.id}-new-workspace` : choice.path === null ? `tool-${tool.id}-choose-workspace` : undefined,
+            onSelect: () => choice.create ? props.onLaunchInNewFolder?.(tool.id) : props.onLaunch(tool.id, choice.path ?? undefined),
           }))} />}
       </span> : primaryButton}
       menu={tool.status.installed && !job ? [
+        // 还没有最近目录时「打开」旁边没有下拉，新建入口放进这个菜单，新手照样找得到。
+        ...(opensWorkspace && !lastWorkspace && props.onLaunchInNewFolder ? [{
+          label: newWorkspaceLabel,
+          testId: `tool-${tool.id}-new-workspace`,
+          disabled: loading || launchBusy,
+          onSelect: () => props.onLaunchInNewFolder?.(tool.id),
+        }] : []),
         { label: '配置', onSelect: () => props.onConfigure(tool.id) },
         // 故意改过配置的人也要有出路，否则那颗黄角标会一直挂着。认下之后这个工具
         // 就按「自己填写的密钥」处理，下次在配置里改回星芒账号时标记自动清掉。
@@ -272,7 +281,7 @@ export function Home(props: HomeProps) {
           onSelect: () => props.onOpenConfigDirectory?.(tool.id),
         }] : []),
         ...(rollback && !blocked ? [{ label: `${rollbackVerb}推荐版本 ${rollback}`, testId: `tool-${tool.id}-rollback-menu`, onSelect: () => props.onInstall(tool.id, rollback) }] : []),
-        ...(tool.provider === 'codex' ? [{ label: '非 GPT 模型', testId: tool.id === 'codex' ? 'home-codex-models' : 'home-codexDesktop-models', onSelect: props.onCodexModels }] : []),
+        ...(tool.provider === 'codex' ? [{ label: '换用别家模型', testId: tool.id === 'codex' ? 'home-codex-models' : 'home-codexDesktop-models', onSelect: props.onCodexModels }] : []),
         { label: '查看记录', onSelect: () => props.onNavigate('sessions') },
         ...(tool.provider === 'codex' && tool.source === 'official' ? [{ label: '官方账户额度', onSelect: () => { setOfficial(snapshot?.system.officialChatGpt ?? null); setOfficialOpen(true) } }] : []),
         ...(canUninstallTool(
