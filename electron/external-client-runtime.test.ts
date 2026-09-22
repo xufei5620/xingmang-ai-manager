@@ -36,7 +36,7 @@ function commandResult(spec: CommandSpec, stdout = '') {
   return { executable: spec.executable, argv: [...spec.argv], exitCode: 0, signal: null, stdout, stderr: '', outputBytes: stdout.length, durationMs: 1 }
 }
 function wingetError(overrides: Partial<CommandErrorDetails> = {}) {
-  return new CommandRunnerError('Command exited with code 2147954429: winget.exe', {
+  return new CommandRunnerError('命令执行失败（退出码 2147954429）：winget.exe', {
     code: 'EXIT_NON_ZERO', executable: winget, argv: ['install'], exitCode: 2147954429, signal: null,
     stdout: '尝试更新源失败： winget\r\nInternetOpenUrl() failed.\r\n0x80072efd : unknown error\r\n',
     stderr: '', outputBytes: 130, maxOutputBytes: 2097152, durationMs: 30293, ...overrides,

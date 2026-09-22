@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { type runCommand as productionRunCommand } from './command-runner'
+import { CommandRunnerError, type runCommand as productionRunCommand } from './command-runner'
 import { providerIds } from './catalog'
 import type { ProviderId } from './catalog'
 import {
@@ -790,6 +790,33 @@ describe('ProviderExtensionService list facade', () => {
     expect(snapshot.capabilities.skill.reason).toContain('Gemini CLI Skill 状态读取失败：Gemini CLI failed')
     expect(snapshot.items.some((item) => item.kind === 'skill')).toBe(false)
     expect(snapshot.warnings.some((warning) => warning.includes('Gemini CLI Skill 状态读取失败：Gemini CLI failed'))).toBe(true)
+  })
+
+  it('appends the last lines of the command output to a failed provider CLI listing', async () => {
+    const invoke: ProviderCliInvoker = vi.fn(async (_provider, argv) => {
+      if (argv[0] !== 'mcp') return '[]'
+      throw new CommandRunnerError('命令执行失败（退出码 1）：codex', {
+        code: 'EXIT_NON_ZERO',
+        executable: 'codex',
+        argv: ['mcp', 'list', '--json'],
+        exitCode: 1,
+        signal: null,
+        stdout: '',
+        stderr: 'Usage: codex mcp\n\nError: config.toml is not valid TOML\n',
+        outputBytes: 64,
+        maxOutputBytes: 1024,
+        durationMs: 12,
+      })
+    })
+    const service = new ProviderExtensionService({ homeDirectory: temporaryDirectory(), invoke })
+
+    const snapshot = await service.list('codex')
+
+    expect(snapshot.capabilities.mcp.reason).toBe(
+      'MCP 列表读取失败：命令执行失败（退出码 1）：codex'
+      + '（命令输出：Usage: codex mcp / Error: config.toml is not valid TOML）',
+    )
+    expect(snapshot.warnings).toContain(`Codex CLI ${snapshot.capabilities.mcp.reason}`)
   })
 
   it('includes the original provider CLI failure in plugin capability diagnostics', async () => {

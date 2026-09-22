@@ -10,6 +10,7 @@ import { cliCatalog, providerIds, type ProviderId } from './catalog'
 import {
   cleanCommandOutput,
   commandEnvironment,
+  CommandRunnerError,
   findExecutable,
   runCommand,
   trustedCommandEnvironment,
@@ -371,9 +372,22 @@ function normalizeScope(
   return requested
 }
 
+// 命令失败只说「执行失败（退出码 1）」等于什么都没说，真正的原因全在命令自己的
+// 输出里。只取最后几行：这段话会直接上屏，而 CLI 失败时往往先吐一大段帮助。
+// stdout / stderr 在 CommandRunnerError 构造时已经过一道 redactCommandText（I13）。
+function commandOutputTail(error: unknown): string {
+  if (!(error instanceof CommandRunnerError)) return ''
+  const output = error.stderr.trim() || error.stdout.trim()
+  const lines = output.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
+  if (!lines.length) return ''
+  return lines.slice(-3).join(' / ').slice(0, 240)
+}
+
 function errorDetail(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error)
-  return message.replace(/\s+/g, ' ').trim().slice(0, 500) || '未知错误'
+  const summary = message.replace(/\s+/g, ' ').trim().slice(0, 500) || '未知错误'
+  const tail = commandOutputTail(error)
+  return tail ? `${summary}（命令输出：${tail}）` : summary
 }
 
 class UnsupportedSourceInspectionError extends Error {

@@ -535,7 +535,7 @@ describe('inspectMacosCodexApp', () => {
           // one shape a caller may treat as a conclusive rejection rather than an
           // execution failure. See macos-code-signing.ts for why nothing it prints
           // may be read instead.
-          throw commandRunnerError('EXIT_NON_ZERO', 'Command exited with code 1: codesign')
+          throw commandRunnerError('EXIT_NON_ZERO', '命令执行失败（退出码 1）：codesign')
         }
         if (executable === '/usr/bin/mdfind') return ''
         throw new Error(`unexpected command: ${executable}`)
@@ -547,7 +547,7 @@ describe('inspectMacosCodexApp', () => {
     await expect(inspectMacosCodexApp(options)).resolves.toEqual({
       app: null,
       detectionFailed: true,
-      detectionError: 'Command exited with code 1: codesign',
+      detectionError: '命令执行失败（退出码 1）：codesign',
     })
   })
 
@@ -808,7 +808,7 @@ describe('inspectMacosCodexApp', () => {
       if (executable === '/usr/bin/codesign') {
         // A timeout is not codesign telling us the signature is bad — the
         // check simply never finished.
-        throw commandRunnerError('TIMED_OUT', 'Command timed out: codesign')
+        throw commandRunnerError('TIMED_OUT', '命令执行时间过长，已中止：codesign')
       }
       if (executable === '/usr/bin/mdfind') return ''
       throw new Error(`unexpected command: ${executable}`)
@@ -823,7 +823,7 @@ describe('inspectMacosCodexApp', () => {
     expect(result).toEqual({
       app: null,
       detectionFailed: true,
-      detectionError: 'Command timed out: codesign',
+      detectionError: '命令执行时间过长，已中止：codesign',
     })
   })
 
@@ -842,7 +842,7 @@ describe('inspectMacosCodexApp', () => {
     const validInfo = createApp(validApp)
     const runSystemCommand = vi.fn(async (executable: string, argv: readonly string[]) => {
       if (executable === '/usr/bin/codesign' && argv.at(-1) === brokenCanonical) {
-        throw commandRunnerError('SPAWN_FAILED', 'Failed to start command: codesign')
+        throw commandRunnerError('SPAWN_FAILED', '无法启动命令：codesign')
       }
       const official = officialBundleCommand(executable, argv)
       if (official !== null) return official
@@ -1022,7 +1022,7 @@ describe('inspectMacosCodexApp', () => {
         // Transient the first time (58818d0's contract: only a pass may be
         // cached), a clean pass the second — simulating the same bundle
         // recovering from a one-off timeout.
-        if (codesignCalls === 1) throw commandRunnerError('TIMED_OUT', 'Command timed out: codesign')
+        if (codesignCalls === 1) throw commandRunnerError('TIMED_OUT', '命令执行时间过长，已中止：codesign')
         return ''
       }
       if (executable === '/usr/bin/mdfind') return ''
@@ -1037,7 +1037,7 @@ describe('inspectMacosCodexApp', () => {
     await expect(scan()).resolves.toEqual({
       app: null,
       detectionFailed: true,
-      detectionError: 'Command timed out: codesign',
+      detectionError: '命令执行时间过长，已中止：codesign',
     })
     await expect(scan()).resolves.toMatchObject({ app: { version: '26.727.51351' } })
 

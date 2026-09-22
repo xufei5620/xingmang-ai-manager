@@ -1628,11 +1628,11 @@ describe('registerIpcHandlers', () => {
 
   it('records failed maintenance calls without logging their arguments', async () => {
     const service = serviceStub()
-    vi.mocked(service.installCli).mockRejectedValueOnce(new Error('Failed to start command: npm'))
+    vi.mocked(service.installCli).mockRejectedValueOnce(new Error('无法启动命令：npm'))
     const { runtimeLog } = register(service)
     const handler = electronMocks.handlers.get('cli:install')!
 
-    await expect(handler(trustedEvent(), 'gemini')).rejects.toThrow('Failed to start command: npm')
+    await expect(handler(trustedEvent(), 'gemini')).rejects.toThrow('无法启动命令：npm')
     expect(runtimeLog.exception).toHaveBeenCalledWith(
       'maintenance',
       'cli.install.failed',
