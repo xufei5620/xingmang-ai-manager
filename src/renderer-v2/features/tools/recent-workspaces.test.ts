@@ -97,7 +97,7 @@ describe('workspaceName', () => {
 })
 
 describe('workspaceChoices', () => {
-  it('always offers the directory picker after the remembered directories', () => {
+  it('always offers the directory picker and a new folder after the remembered directories', () => {
     const choices = workspaceChoices([
       { path: 'C:\\work\\alpha', name: 'alpha' },
       { path: 'C:\\work\\beta', name: 'beta' },
@@ -106,11 +106,15 @@ describe('workspaceChoices', () => {
       { path: 'C:\\work\\alpha', label: 'C:\\work\\alpha' },
       { path: 'C:\\work\\beta', label: 'C:\\work\\beta' },
       { path: null, label: '选择其他目录…' },
+      { path: null, label: '新建项目文件夹并打开', create: true },
     ])
   })
 
-  it('offers the picker alone when nothing was remembered', () => {
-    expect(workspaceChoices([])).toEqual([{ path: null, label: '选择其他目录…' }])
+  it('offers the picker and a new folder when nothing was remembered', () => {
+    expect(workspaceChoices([])).toEqual([
+      { path: null, label: '选择其他目录…' },
+      { path: null, label: '新建项目文件夹并打开', create: true },
+    ])
   })
 })
 

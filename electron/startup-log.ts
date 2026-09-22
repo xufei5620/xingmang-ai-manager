@@ -1,13 +1,14 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { redactSecretPatterns } from './redaction-patterns'
 
 /**
  * This module records failures that happen before the normal logging stack
- * exists. It therefore imports nothing but Node built-ins: the failure being
- * recorded may well be `command-runner`, `safe-local-data` or Electron itself
- * failing to load, and a last-resort logger that shares their dependencies
- * would go down with them.
+ * exists. It therefore imports nothing but Node built-ins and the import-free
+ * `redaction-patterns` table: the failure being recorded may well be
+ * `command-runner`, `safe-local-data` or Electron itself failing to load, and a
+ * last-resort logger that shares their dependencies would go down with them.
  *
  * Everything here is synchronous. A fatal startup error usually kills the
  * process within the same tick, so a queued async write would never land.
@@ -47,24 +48,13 @@ export function redactHomeDirectory(value: string, homeDirectory: string): strin
 }
 
 /**
- * A deliberately independent copy of the secret patterns in
- * `redactCommandText`. Importing that function would pull `command-runner` and
- * its whole Windows path-resolution graph into the one module that has to keep
- * working when such a module is the reason startup failed.
+ * Uses the import-free pattern table directly rather than `redactCommandText`:
+ * importing that function would pull `command-runner` and its whole Windows
+ * path-resolution graph into the one module that has to keep working when such
+ * a module is the reason startup failed.
  */
 export function redactStartupSecrets(value: string): string {
-  return value
-    .replace(/(\bBearer\s+)[A-Za-z0-9._~+/=-]{6,}/gi, '$1[REDACTED]')
-    .replace(/\bsk-[A-Za-z0-9_-]{6,}\b/g, '[REDACTED]')
-    // The quoted spellings need their own rules: in `{"access_token":"…"}` the
-    // rule below can never match, because `\s*` does not cross the quote that
-    // closes the key name, so any CLI writing JSON to stderr leaked its secrets
-    // verbatim into the runtime log and the feedback export. Redacting between
-    // the existing quotes also keeps a JSON body parseable.
-    .replace(/((?:api[_-]?key|authorization|token|secret|password)"\s*[:=]\s*)"[^"]*"/gi, '$1"[REDACTED]"')
-    .replace(/((?:api[_-]?key|authorization|token|secret|password)'\s*[:=]\s*)'[^']*'/gi, "$1'[REDACTED]'")
-    .replace(/((?:api[_-]?key|authorization|token|secret|password)\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi, '$1[REDACTED]')
-    .replace(/([?&](?:api[_-]?key|token)=)[^&\s]+/gi, '$1[REDACTED]')
+  return redactSecretPatterns(value)
 }
 
 export interface StartupLogLocationOptions {

@@ -40,6 +40,7 @@ async function setup(
   const onDiagnostic = vi.fn()
   const onStartDiagnostic = vi.fn()
   const onConflictDiagnostic = vi.fn()
+  const onRuntimeInterrupted = vi.fn()
   const runtime = {
     start: vi.fn(async () => { events.push('runtime:start'); running = true; return { line, proxyPort: 19001 } }),
     stop: vi.fn(async () => { events.push('runtime:stop'); running = false }),
@@ -51,7 +52,7 @@ async function setup(
   }
   const backend = createAccelerationDevelopmentBackend({
     runtime, proxy, ledgerPath, now: () => wall, monotonicNow: () => monotonic,
-    listLines: async () => [line], pingLine, entitlementSource, onDiagnostic, onStartDiagnostic, onConflictDiagnostic,
+    listLines: async () => [line], pingLine, entitlementSource, onDiagnostic, onStartDiagnostic, onConflictDiagnostic, onRuntimeInterrupted,
     ...(detectConflicts ? { detectConflicts } : {}),
     schedule(callback, milliseconds) {
       const timer = { at: monotonic + milliseconds, callback }
@@ -65,7 +66,7 @@ async function setup(
     await backend.dispose().catch(() => undefined)
   })
   return {
-    backend, runtime, proxy, events, ledgerPath, scheduled, onDiagnostic, onStartDiagnostic, onConflictDiagnostic,
+    backend, runtime, proxy, events, ledgerPath, scheduled, onDiagnostic, onStartDiagnostic, onConflictDiagnostic, onRuntimeInterrupted,
     setRunning: (value: boolean) => { running = value },
     setWall: (value: number) => { wall = value },
     elapse(milliseconds: number) { wall += milliseconds; monotonic += milliseconds },
@@ -339,9 +340,32 @@ describe('local development acceleration backend', () => {
     test.events.length = 0
     await test.backend.notifyRuntimeExit()
     expect(test.events).toEqual(['proxy:restore', 'runtime:stop'])
-    expect(await test.backend.getAccelerationState(scope)).toMatchObject({ phase: 'error', remainingSeconds: accelerationTrialSeconds - 2, error: expect.stringContaining('意外退出') })
+    expect(test.onRuntimeInterrupted).toHaveBeenCalledOnce()
+    expect(await test.backend.getAccelerationState(scope)).toMatchObject({ phase: 'error', remainingSeconds: accelerationTrialSeconds - 2, error: expect.stringContaining('意外断开') })
     expect((await test.readLedger()).accounts[scope]).toEqual({ usedMs: 2500, startedAt: null })
     expect((await test.backend.startAcceleration(scope, 'system-proxy')).phase).toBe('active')
+  })
+
+  it('reports the interruption when a state read notices the dead core before the exit callback', async () => {
+    const test = await setup()
+    await test.backend.startAcceleration(scope, 'system-proxy')
+    test.setRunning(false)
+    expect(await test.backend.getAccelerationState(scope)).toMatchObject({ phase: 'error', error: expect.stringContaining('意外断开') })
+    expect(test.onRuntimeInterrupted).toHaveBeenCalledOnce()
+    // 随后才到的内核退出回调已经没有会话可结束，不再重复报告。
+    await test.backend.notifyRuntimeExit()
+    expect(test.onRuntimeInterrupted).toHaveBeenCalledOnce()
+  })
+
+  it('does not report an interruption for a core that exits with no session, such as a finished download', async () => {
+    const test = await setup()
+    await test.backend.startDownloadRoute(scope)
+    test.setRunning(false)
+    await test.backend.notifyRuntimeExit()
+    await test.backend.startAcceleration(scope, 'system-proxy')
+    await test.backend.stopAcceleration(scope)
+    expect(await test.backend.getAccelerationState(scope)).toMatchObject({ phase: 'idle' })
+    expect(test.onRuntimeInterrupted).not.toHaveBeenCalled()
   })
 
   it('keeps unexpected-exit recovery retryable when proxy restoration fails', async () => {
@@ -350,6 +374,8 @@ describe('local development acceleration backend', () => {
     test.setRunning(false)
     test.proxy.restore.mockRejectedValueOnce(new Error('private-secret'))
     await expect(test.backend.notifyRuntimeExit()).rejects.toThrow('尚未完全停止')
+    // 没还原成也要报：宿主据此去读状态，读到 stopping 才会如实说「网络可能还连不上」。
+    expect(test.onRuntimeInterrupted).toHaveBeenCalledOnce()
     expect((await test.backend.getAccelerationState(scope)).phase).toBe('stopping')
     expect((await test.backend.stopAcceleration(scope)).phase).toBe('idle')
   })

@@ -4,6 +4,7 @@ import {
   type AppConfigSummary,
   type AppSettingsV2,
   type ProviderId,
+  type RendererLogLevel,
   type SystemSnapshot,
   type XingmangApi,
 } from '../../../../electron/ipc-contract'
@@ -369,4 +370,56 @@ export async function bootstrapAccountTools(
     warnings,
     networkBlocked: networkBlockedFailures(failureSignals),
   }
+}
+
+const bootstrapModeLabels: Record<AccountBootstrapMode, string> = {
+  login: '登录后',
+  restore: '开机或联网后恢复',
+  rewrite: '点名重新写入',
+}
+
+const skipReasonLabels: Record<AccountBootstrapSkip['reason'], string> = {
+  'not-installed': '未安装',
+  'detection-failed': '安装状态没检测完',
+  configured: '已连好',
+  official: '官方账号',
+  manual: '手填密钥',
+  unknown: '来源未确认',
+  changed: '配置被改动过',
+}
+
+export interface AccountBootstrapLogLine {
+  level: RendererLogLevel
+  message: string
+}
+
+/**
+ * 「登录了但某个工具没配上」是账号侧最常见的工单，而「配不配」整段在渲染层决定，
+ * 主进程那两条通道成功时不记日志。这里把一轮的结论排成一行交给运行日志：写好了
+ * 哪几家、哪几家失败、哪几家跳过以及为什么。只写工具名、原因和主进程给的失败
+ * 文案，不带 Key、地址或模型（I13）。
+ */
+export function describeAccountBootstrapResult(
+  mode: AccountBootstrapMode,
+  result: AccountBootstrapResult,
+): AccountBootstrapLogLine {
+  const parts = [
+    `写好 ${result.configured.length ? result.configured.map(nameOf).join('、') : '无'}`,
+  ]
+  if (result.failed.length) {
+    parts.push(`没写成 ${result.failed.map((entry) => `${nameOf(entry.provider)}（${entry.message}）`).join('、')}`)
+  }
+  if (result.skipped.length) {
+    parts.push(`跳过 ${result.skipped.map((entry) => `${nameOf(entry.provider)}（${skipReasonLabels[entry.reason]}）`).join('、')}`)
+  }
+  if (result.networkBlocked) parts.push('被网络拦住，联网后会自动补跑')
+  return {
+    level: result.failed.length || result.networkBlocked ? 'warn' : 'info',
+    message: `Key 自动配置（${bootstrapModeLabels[mode]}）：${parts.join('；')}`,
+  }
+}
+
+/** 整轮没跑完（账号中途变了、读配置失败）时的那一行。 */
+export function describeAccountBootstrapFailure(mode: AccountBootstrapMode, reason: string): AccountBootstrapLogLine {
+  return { level: 'warn', message: `Key 自动配置（${bootstrapModeLabels[mode]}）没有完成：${reason}` }
 }

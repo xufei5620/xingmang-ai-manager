@@ -18,6 +18,11 @@ import {
   type RunCommandOptions,
 } from './command-runner'
 import { gitInstallGuidance } from './git-runtime'
+import {
+  commandLineToolsShimNotice,
+  isCommandLineToolsShimBacked,
+  isMacOsCommandLineToolsShim,
+} from './macos-command-line-tools'
 import { resolveCliCommand, type ResolvedCliCommand } from './tool-installation'
 import { isNewerVersion } from './versions'
 import {
@@ -239,6 +244,9 @@ export interface ProviderSourceUpdateDependencies {
   fetch?: typeof globalThis.fetch
   findExecutable?: typeof findExecutable
   runCommand?: typeof runCommand
+  platform?: NodeJS.Platform
+  /** 缺省真去问 xcode-select；与 runCommand 分开注入，免得假 git 输出被当成它的回答。 */
+  isCommandLineToolsShimBacked?: (shim: string) => Promise<boolean>
 }
 
 export interface ProviderExtensionServiceOptions {
@@ -257,6 +265,9 @@ export interface ProviderExtensionServiceOptions {
   sourceUpdateDependencies?: ProviderSourceUpdateDependencies
   now?: () => Date
   windowsExecutionMode?: WindowsCliExecutionMode
+  platform?: NodeJS.Platform
+  /** 缺省真去问 xcode-select（见 macos-command-line-tools.ts）。 */
+  isCommandLineToolsShimBacked?: (shim: string) => Promise<boolean>
 }
 
 interface MutableExtensionItem extends ProviderExtensionItem {
@@ -1060,7 +1071,13 @@ export function readClaudeSettingsMarketplaceNames(homeDirectory: string): strin
 
 export function claudeMarketplaceGitMissingMessage(
   platform: NodeJS.Platform = process.platform,
+  options: { commandLineToolsShim?: boolean } = {},
 ): string {
+  // 找到的只是 macOS 自带的空壳：让 CLI 去跑它只会招来苹果的安装弹窗、再失败一次，
+  // 不如在这里先把原因说清楚（#346 的后续）。
+  if (options.commandLineToolsShim) {
+    return `第一次安装 Claude Code 插件要先把官方插件市场下载到本机，这一步需要 Git。${commandLineToolsShimNotice('git')}，装好后重新打开本软件再试。`
+  }
   // 分平台的安装指引在 git-runtime.ts 只写一份：首页运行环境行和检查页要说的是
   // 同一句话，两处各抄一遍早晚会说岔（#294）。
   return `第一次安装 Claude Code 插件要先把官方插件市场下载到本机，这一步需要 Git，但这台电脑上没有找到它。${gitInstallGuidance(platform)}，装好后重新打开本软件再试。`
@@ -1539,6 +1556,9 @@ export function createProviderSourceUpdateInspector(
   const fetchImplementation = dependencies.fetch ?? globalThis.fetch
   const findExecutableImplementation = dependencies.findExecutable ?? findExecutable
   const runCommandImplementation = dependencies.runCommand ?? runCommand
+  const platform = dependencies.platform ?? process.platform
+  const commandLineToolsShimBacked = dependencies.isCommandLineToolsShimBacked
+    ?? ((shim: string) => isCommandLineToolsShimBacked(shim, { env }))
   return async (input) => {
     if (input.kind === 'pypi') {
       const root = await fetchJsonWithLimit(
@@ -1564,6 +1584,10 @@ export function createProviderSourceUpdateInspector(
       throw new UnsupportedSourceInspectionError(
         trustedOnly ? '高权限扩展更新检查未找到受信任的 Git' : '未检测到 Git',
       )
+    }
+    // 进外接工具页就会自动查更新：没装命令行开发者工具的 Mac 上跑空壳 git 会弹系统对话框。
+    if (isMacOsCommandLineToolsShim(git, platform) && !await commandLineToolsShimBacked(git)) {
+      throw new UnsupportedSourceInspectionError('未检测到可用的 Git：需要先装 macOS 的命令行开发者工具')
     }
     const runGit = async (argv: string[]) => (await runCommandImplementation(
       { executable: git, argv },
@@ -1622,6 +1646,8 @@ export class ProviderExtensionService {
   private readonly trustedOnly: boolean
   private readonly findExecutable: typeof findExecutable
   private readonly resolveSubprocessProxyEnvironment: () => Promise<NodeJS.ProcessEnv>
+  private readonly platform: NodeJS.Platform
+  private readonly commandLineToolsShimBacked: (shim: string) => Promise<boolean>
 
   constructor(options: ProviderExtensionServiceOptions = {}) {
     this.homeDirectory = path.resolve(options.homeDirectory ?? os.homedir())
@@ -1648,6 +1674,15 @@ export class ProviderExtensionService {
     this.findExecutable = options.findExecutable ?? findExecutable
     this.resolveSubprocessProxyEnvironment = options.resolveSubprocessProxyEnvironment
       ?? (async () => ({}))
+    this.platform = options.platform ?? process.platform
+    this.commandLineToolsShimBacked = options.isCommandLineToolsShimBacked
+      ?? ((shim) => isCommandLineToolsShimBacked(shim, { env }))
+  }
+
+  /** macOS 自带的 git / python3 空壳背后没有真货时，对用户而言就是没装。 */
+  private async isUnbackedCommandLineToolsShim(executable: string): Promise<boolean> {
+    return isMacOsCommandLineToolsShim(executable, this.platform)
+      && !await this.commandLineToolsShimBacked(executable)
   }
 
   /**
@@ -1673,9 +1708,16 @@ export class ProviderExtensionService {
       Promise.all(['uvx', 'uv'].map((name) => this.findExecutable(name, options))),
     ])
     return {
-      python: python.some((entry) => entry !== null),
+      python: await this.anyUsableExecutable(python),
       uv: uv.some((entry) => entry !== null),
     }
+  }
+
+  private async anyUsableExecutable(candidates: readonly (string | null)[]): Promise<boolean> {
+    for (const candidate of candidates) {
+      if (candidate && !await this.isUnbackedCommandLineToolsShim(candidate)) return true
+    }
+    return false
   }
 
   private async inspectClaudeMarketplaces(): Promise<{ names: string[]; reason: string | null }> {
@@ -1701,6 +1743,9 @@ export class ProviderExtensionService {
     if (names.includes(CLAUDE_OFFICIAL_MARKETPLACE_NAME)) return
     const git = await this.findExecutable('git', { env: this.env, trustedOnly: this.trustedOnly })
     if (!git) throw new Error(claudeMarketplaceGitMissingMessage())
+    if (await this.isUnbackedCommandLineToolsShim(git)) {
+      throw new Error(claudeMarketplaceGitMissingMessage(this.platform, { commandLineToolsShim: true }))
+    }
     await this.invoke('claude', claudeOfficialMarketplaceAddArgv(), {
       timeoutMs: MARKETPLACE_ADD_TIMEOUT_MS,
       maxOutputBytes: MAX_OUTPUT_BYTES,

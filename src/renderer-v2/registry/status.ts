@@ -1,5 +1,5 @@
 export const statuses = {
-  tool: { missing: ['未安装', 'neutral'], installing: ['安装中', 'accent'], configuring: ['正在配 Key', 'accent'], updating: ['更新中', 'accent'], ready: ['已配好', 'ok'], official: ['官方账号', 'ok'], unconfigured: ['还没配 Key', 'warn'], update: ['可更新', 'warn'], keyRevoked: ['Key 失效', 'bad'], zeroBalance: ['余额为零', 'bad'], unknownSource: ['已有第三方配置', 'neutral'], configChanged: ['配置被改过', 'warn'], detectionFailed: ['检测失败', 'bad'], configUnavailable: ['配置暂未读到', 'warn'] },
+  tool: { missing: ['未安装', 'neutral'], installing: ['安装中', 'accent'], configuring: ['正在配 Key', 'accent'], updating: ['更新中', 'accent'], ready: ['已配好', 'ok'], official: ['官方账号', 'ok'], unconfigured: ['还没配 Key', 'warn'], update: ['可更新', 'warn'], keyRevoked: ['Key 失效', 'bad'], zeroBalance: ['余额为零', 'bad'], unknownSource: ['用的是别处的配置', 'neutral'], configChanged: ['配置被改过', 'warn'], detectionFailed: ['检测失败', 'bad'], configUnavailable: ['配置暂未读到', 'warn'] },
   environment: { ok: ['已找到', 'ok'], missing: ['未安装', 'warn'], optional: ['可选 · 未装', 'neutral'] },
   key: { active: ['有效', 'ok'], disabled: ['已停用', 'neutral'], expired: ['已过期', 'warn'], exhausted: ['额度用完', 'warn'], revoked: ['已撤销', 'neutral'] },
   order: { pending: ['等待支付', 'warn'], paid: ['已到账', 'ok'], failed: ['支付失败', 'bad'], timeout: ['已超时', 'neutral'], unknown: ['待确认', 'neutral'] },
