@@ -13,13 +13,13 @@ import { Home } from './features/tools/Home'
 import { createToolsApi } from './features/tools/api'
 import { launchWarning } from './features/tools/launch-notice'
 import { chineseRuntimePatchAnswerMissing, shouldAskForChineseRuntimePatch } from './features/tools/chinese-runtime-choice'
-import { cliRuntimeBlockMessage, nodeRuntimeReady } from './features/tools/runtime-readiness'
+import { cliInstallStageLabel, nodeRuntimeReady, planCliInstall, pythonRuntimeReady, runtimeStageFailureMessage, type InstallRuntimeId } from './features/tools/runtime-readiness'
 import { isToolId, presentTools, providerFor, toolInstallDirectory, type ToolId, type ToolSource } from './features/tools/model'
 import { pendingToolUpdates, readAnnouncedToolUpdates, rememberAnnouncedToolUpdates, unannouncedToolUpdates, updateNoticeKey } from './features/tools/update-notice'
 import { isMissingWorkspace } from './features/tools/recent-workspaces'
 import { describeRuntimeInstallOutcome, type RuntimeInstallOutcome } from './features/tools/runtime-install-outcome'
 import { RuntimeRestartDialog } from './features/tools/RuntimeRestartDialog'
-import { installedToolSyncLabel, useToolbox } from './features/tools/useToolbox'
+import { guideJobProgress, installedToolSyncLabel, useToolbox } from './features/tools/useToolbox'
 import { ManualUninstallDialog, type ManualUninstallState } from './features/tools/ManualUninstall'
 import { operationLogPage, type OperationActionId } from './operation-error'
 import { accountTabs, macDesktopTutorialTopic, updateFailureLabel } from './registry/business'
@@ -454,18 +454,60 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     // 这不是一次失败：macOS 上这几个桌面端本来就要客户自己下载。以前当错误抛出来，
     // 用户会同时看到红色错误框和一个跳到教程首页、又没有对应章节的页面（第七批 3）。
     if (management === 'external') { navigate('tutorial', macDesktopTutorialTopic); toast.show('这个系统要你自己下载安装，教程里是完整步骤。', 'neutral'); return }
-    const runtimeBlocked = id === 'codexDesktop' ? null : cliRuntimeBlockMessage(state.system.runtime)
-    if (runtimeBlocked) throw new Error(runtimeBlocked)
-    if (tools.find((tool) => tool.id === id)?.requires.includes('python') && (!state.system.runtime.python.installed || state.system.runtime.python.detectionFailed)) throw new Error('Gemini 还需要 Python 环境。请先在运行环境卡中准备 Python，再安装工具。')
+    const definition = tools.find((tool) => tool.id === id)
+    const toolName = definition?.name ?? '工具'
+    const plan = id === 'codexDesktop'
+      ? { prepare: [], blocked: null }
+      : planCliInstall({ runtime: state.system.runtime, needsPython: Boolean(definition?.requires.includes('python')), nodeInstall: platform?.nodeRuntimeInstall, pythonInstall: platform?.pythonRuntimeInstall })
+    if (plan.blocked) throw new Error(plan.blocked)
+    const total = plan.prepare.length + 1
+    // 运行环境那一段主进程没有取消通道；这时按「取消」要说清楚，而不是回一句
+    //「没有正在进行的安装」。
+    let preparing = plan.prepare.length > 0
     // 收尾必须留在同一个安装任务里。任务一结束工具行就回落到安装前的快照：
     // 同步 Key 和重新检测还没跑完，版本号已经退回旧值、「更新」按钮跟着回弹，
     // 用户看到的是「装完了又要装一次」（yoyo 2026-09-20 真机反馈①）。
     // 用户中途取消时安装那一步抛出，收尾自然不会跑：本来就没装上，不用写 Key。
-    await toolbox.run(id, version ? `正在安装 ${version}` : '正在安装', async (report) => {
-      await toolsApi.install(id, version)
+    await toolbox.run(id, version ? `正在安装 ${version}` : preparing ? cliInstallStageLabel(plan.prepare[0], 0, total, toolName) : '正在安装', async (report) => {
+      for (const [index, runtime] of plan.prepare.entries()) {
+        report(cliInstallStageLabel(runtime, index, total, toolName))
+        // MSI 回 3010 时 Windows 要重启才算装完，接着装工具多半失败（第七批 5）：
+        // 停在这里弹「现在重启」，重启后再点一次「安装」只剩装工具这一段。
+        if ((await prepareRuntimeForInstall(runtime, toolName)).restartRequired) {
+          await toolbox.refresh(true).catch(() => undefined)
+          if (mounted.current) setRuntimeRestart(true)
+          return
+        }
+      }
+      preparing = false
+      if (plan.prepare.length > 0) report(cliInstallStageLabel('tool', total - 1, total, toolName))
+      try { await toolsApi.install(id, version) }
+      catch (cause) {
+        // 环境已经装好、工具没装上：刷新一次，下次再点只剩装工具这一段。
+        if (plan.prepare.length > 0) void toolbox.refresh(true).catch(() => undefined)
+        throw cause
+      }
       report(installedToolSyncLabel)
       await syncAfterToolInstalled(id)
-    }, { cancel: () => toolsApi.cancelInstall(id) })
+    }, { cancel: async () => preparing ? { cancelled: false, reason: '正在准备运行环境，这一步不能取消；准备好后会接着安装工具。' } : toolsApi.cancelInstall(id) })
+  }
+  /**
+   * 串在「安装」里的运行环境那一段。单独占一个 node / python 任务，运行环境卡上
+   * 的进度条照常走；那个任务已经在跑（用户先点过运行环境卡）时不重复发起。
+   */
+  async function prepareRuntimeForInstall(runtime: InstallRuntimeId, toolName: string): Promise<RuntimeInstallOutcome> {
+    try {
+      const done: { outcome?: RuntimeInstallOutcome } = {}
+      const started = await toolbox.run(runtime, '正在准备运行环境', async () => {
+        done.outcome = describeRuntimeInstallOutcome(runtime, await toolsApi.prepareRuntime(runtime))
+      })
+      if (!started || !done.outcome) throw new Error('运行环境正在准备，请等它完成后再点「安装」。')
+      return done.outcome
+    } catch (cause) {
+      // 原话留着不先翻成中文：外层的错误分类要靠 ENOSPC、ETIMEDOUT 这类原词认出
+      //「磁盘满」「下载超时」，展示前 errorMessage 会统一脱敏。
+      throw new Error(runtimeStageFailureMessage(runtime, toolName, cause instanceof Error ? cause.message : String(cause)))
+    }
   }
   async function cancelInstall(id: ToolId) {
     const outcome = await toolbox.cancel(id)
@@ -679,7 +721,8 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     id: tool.id, installed: tool.status.installed, configured: tool.configured, source: guideSource(tool.source),
     version: tool.currentVersion ?? undefined, model: tool.model, detectionError: Boolean(tool.error),
     runtimeReady: nodeRuntimeReady(toolbox.snapshot!.system.runtime),
-    pythonReady: toolbox.snapshot!.system.runtime.python.installed && !toolbox.snapshot!.system.runtime.python.detectionFailed,
+    pythonReady: pythonRuntimeReady(toolbox.snapshot!.system.runtime),
+    runtimeAutoPrepare: platform?.nodeRuntimeInstall === 'managed', pythonAutoPrepare: platform?.pythonRuntimeInstall === 'managed',
     supported: tool.id !== 'codexDesktop' || platform?.codexDesktop.launch,
     officialLoginRequired: guideOfficialLoginRequired(tool.provider, guideSource(tool.source), toolbox.snapshot!.config.providers[tool.provider]),
     installMode: tool.id === 'codexDesktop' ? platform?.codexDesktop.install : platform?.cliInstall[tool.id], workspace: toolbox.snapshot!.config.workspace,
@@ -724,7 +767,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   const renderedChatScope = page === 'chat' ? scope : chatScope
   if (boot !== 'ready') return <Splash phase="正在准备星芒 AI" error={bootError || undefined} progress={update?.progress?.percent} onRetry={() => setBootAttempt((value) => value + 1)} />
   return <AccountBalanceContext.Provider value={balanceStore}><BalanceTierProvider value={balanceAmount === null ? 'neutral' : balanceAmount <= 0 ? 'zero' : balanceAmount < 5 ? 'bad' : balanceAmount < 20 ? 'warn' : 'ok'}>
-    {guide ? <StartGuide platform={os} tools={guideTools} signedIn={session.authenticated} busy={Object.keys(toolbox.jobs).length > 0 || accountBootstrapBusy} progress={accountBootstrapBusy && accountBootstrap ? { label: accountBootstrap.label, percent: accountBootstrap.percent } : undefined} resumeKey={scope}
+    {guide ? <StartGuide platform={os} tools={guideTools} signedIn={session.authenticated} busy={Object.keys(toolbox.jobs).length > 0 || accountBootstrapBusy} progress={accountBootstrapBusy && accountBootstrap ? { label: accountBootstrap.label, percent: accountBootstrap.percent } : guideJobProgress(toolbox.jobs)} resumeKey={scope}
       onDetect={() => toolbox.refresh(true)} onInstall={install} onInstallRuntime={() => installRuntime('node')} onInstallPython={() => installRuntime('python')} onConfigure={async (id) => { openToolConfig(id) }} onLogin={() => setAuth('login')}
       onLaunch={async (id, newFolder) => id === 'chat' ? true : launch(id, 'open', undefined, newFolder)}
       onComplete={(id) => { if (!writeLocalPreference(`xingmang-v2-guide:${scope}`, id)) toast.show('工具已准备好，但引导偏好没有保存在本机。', 'warn'); setWorkspaceEntered(true); rememberTourPending(scope); setTourOpen(true); navigate(id === 'chat' ? 'chat' : 'home') }} onBack={() => setGuide(false)} onHelp={() => setHelp(true)} />
