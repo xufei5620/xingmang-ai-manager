@@ -37,8 +37,12 @@ function probeState(overrides: Partial<ProviderSessionProbeState> = {}): Provide
   }
 }
 
-function entry(fingerprint: string, overrides: Partial<ProviderSessionProbeState> = {}): ProviderSessionProbeEntry {
-  return { fingerprint, state: probeState(overrides) }
+function entry(
+  fingerprint: string,
+  overrides: Partial<ProviderSessionProbeState> = {},
+  scope = 'claude',
+): ProviderSessionProbeEntry {
+  return { scope, fingerprint, state: probeState(overrides) }
 }
 
 function storedDocument(filePath: string): { version: unknown; entries: unknown[] } {
@@ -87,7 +91,7 @@ describe('parseProbeCacheDocument', () => {
   it('discards the whole document when the version does not match', () => {
     const content = JSON.stringify({
       version: PROBE_CACHE_VERSION + 1,
-      entries: [{ key: '/a.jsonl', fingerprint: '1:1:1', state: probeState() }],
+      entries: [{ key: '/a.jsonl', scope: 'claude', fingerprint: '1:1:1', state: probeState() }],
     })
     expect(parseProbeCacheDocument(content, 10)).toBeNull()
   })
@@ -102,12 +106,13 @@ describe('parseProbeCacheDocument', () => {
     const content = JSON.stringify({
       version: PROBE_CACHE_VERSION,
       entries: [
-        { key: '/a.jsonl', fingerprint: '1:1:1', state: probeState() },
-        { key: '', fingerprint: '2:2:2', state: probeState() },
-        { key: '/c.jsonl', fingerprint: '', state: probeState() },
-        { key: '/d.jsonl', fingerprint: '4:4:4', state: { title: '缺字段' } },
-        { key: '/e.jsonl', fingerprint: 'x'.repeat(300), state: probeState() },
-        { key: '/f.jsonl', fingerprint: '6:6:6', state: probeState({ title: '保留' }) },
+        { key: '/a.jsonl', scope: 'claude', fingerprint: '1:1:1', state: probeState() },
+        { key: '', scope: 'claude', fingerprint: '2:2:2', state: probeState() },
+        { key: '/c.jsonl', scope: 'claude', fingerprint: '', state: probeState() },
+        { key: '/d.jsonl', scope: 'claude', fingerprint: '4:4:4', state: { title: '缺字段' } },
+        { key: '/e.jsonl', scope: 'claude', fingerprint: 'x'.repeat(300), state: probeState() },
+        { key: '/g.jsonl', fingerprint: '7:7:7', state: probeState() },
+        { key: '/f.jsonl', scope: 'claude', fingerprint: '6:6:6', state: probeState({ title: '保留' }) },
       ],
     })
     const parsed = parseProbeCacheDocument(content, 10) as Map<string, ProviderSessionProbeEntry>
@@ -172,6 +177,18 @@ describe('ProviderSessionProbeCache', () => {
     expect(storedDocument(filePath).entries).toHaveLength(2)
   })
 
+  it('prunes only the entries of the swept scope that were not seen again', async () => {
+    const cache = new ProviderSessionProbeCache()
+    await cache.ready()
+    cache.set('/claude-kept.jsonl', entry('1:1:1'))
+    cache.set('/claude-gone.jsonl', entry('2:2:2'))
+    cache.set('/gemini-untouched.json', entry('3:3:3', {}, 'gemini'))
+
+    cache.pruneScope('claude', new Set(['/claude-kept.jsonl']))
+
+    expect(cache.keys()).toEqual(['/claude-kept.jsonl', '/gemini-untouched.json'])
+  })
+
   it('forgets a deleted entry and leaves it out of the next write', async () => {
     const filePath = path.join(temporaryDirectory(), 'probe-cache.json')
     const cache = new ProviderSessionProbeCache({ filePath })
@@ -192,7 +209,7 @@ describe('ProviderSessionProbeCache', () => {
     const filePath = path.join(directory, 'probe-cache.json')
     fs.writeFileSync(filePath, JSON.stringify({
       version: PROBE_CACHE_VERSION + 1,
-      entries: [{ key: '/a.jsonl', fingerprint: '1:1:1', state: probeState() }],
+      entries: [{ key: '/a.jsonl', scope: 'claude', fingerprint: '1:1:1', state: probeState() }],
     }), 'utf8')
     const warnings: ProviderSessionProbeCacheWarning[] = []
     const cache = new ProviderSessionProbeCache({ filePath, onWarning: (warning) => warnings.push(warning) })

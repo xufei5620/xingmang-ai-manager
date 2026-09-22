@@ -19,6 +19,8 @@ export interface ProviderSessionProbeState {
 }
 
 export interface ProviderSessionProbeEntry {
+  /** Which sweep owns this entry, so a full sweep can prune its own leftovers. */
+  scope: string
   fingerprint: string
   state: ProviderSessionProbeState
 }
@@ -55,6 +57,7 @@ const maximumWriteBytes = 2 * 1024 * 1024
 const documentOverheadBytes = 64
 const maximumKeyLength = 1024
 const maximumFingerprintLength = 256
+const maximumScopeLength = 64
 const maximumTextLength = 2048
 
 function errorText(error: unknown): string {
@@ -94,11 +97,13 @@ function parseEntry(value: unknown): { key: string; entry: ProviderSessionProbeE
   const record = value as Record<string, unknown>
   const key = record.key
   const fingerprint = record.fingerprint
+  const scope = record.scope
   if (typeof key !== 'string' || !key || key.length > maximumKeyLength) return null
   if (typeof fingerprint !== 'string' || !fingerprint || fingerprint.length > maximumFingerprintLength) return null
+  if (typeof scope !== 'string' || !scope || scope.length > maximumScopeLength) return null
   const state = parseProbeState(record.state)
   if (!state) return null
-  return { key, entry: { fingerprint, state } }
+  return { key, entry: { scope, fingerprint, state } }
 }
 
 /**
@@ -143,7 +148,7 @@ export function serializeProbeCache(
   // sessions the user is most likely to open next.
   for (let index = ordered.length - 1; index >= 0; index -= 1) {
     const [key, entry] = ordered[index] as [string, ProviderSessionProbeEntry]
-    const line = JSON.stringify({ key, fingerprint: entry.fingerprint, state: entry.state })
+    const line = JSON.stringify({ key, scope: entry.scope, fingerprint: entry.fingerprint, state: entry.state })
     const cost = Buffer.byteLength(line, 'utf8') + 1
     if (used + cost > budgetBytes) break
     used += cost
@@ -195,6 +200,20 @@ export class ProviderSessionProbeCache {
 
   delete(key: string): void {
     if (this.entries.delete(key)) this.dirty = true
+  }
+
+  /**
+   * Drops everything this scope cached but did not see this time. Matching on
+   * the recorded scope rather than on the key's path prefix is what makes it
+   * correct when the root is reached through a symlink, as /tmp is on macOS:
+   * the probed paths are resolved and the configured root is not.
+   */
+  pruneScope(scope: string, seen: Set<string>): void {
+    for (const [key, entry] of [...this.entries]) {
+      if (entry.scope !== scope || seen.has(key)) continue
+      this.entries.delete(key)
+      this.dirty = true
+    }
   }
 
   keys(): string[] {

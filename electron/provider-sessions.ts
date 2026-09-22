@@ -1055,24 +1055,11 @@ export class ProviderSessionsService {
         }
       }
     }
-    this.forgetMissingProbes(provider, seen)
+    // A full sweep of one root is the only moment the cache can tell a deleted
+    // session from one that simply was not asked for, so pruning happens here
+    // and never on a single-session probe.
+    this.probeCache.pruneScope(provider, seen)
     return items
-  }
-
-  /**
-   * A full sweep of one root is the only moment the cache can tell a deleted
-   * session from one that simply was not asked for, so pruning happens here
-   * and never on a single-session probe.
-   */
-  private forgetMissingProbes(
-    provider: Exclude<ProviderSessionProvider, 'codex'>,
-    seen: Set<string>,
-  ): void {
-    const root = this.roots[provider]
-    for (const key of this.probeCache.keys()) {
-      if (seen.has(key) || !isInside(root, key)) continue
-      this.probeCache.delete(key)
-    }
   }
 
   private async probeFingerprint(candidate: SourceCandidate, stat: fs.Stats): Promise<string> {
@@ -1133,7 +1120,7 @@ export class ProviderSessionsService {
         if (!scan.sourceTruncated && state.messageCount === null) state.messageCount = count
       }
     }
-    this.probeCache.set(cacheKey, { fingerprint, state: { ...state } })
+    this.probeCache.set(cacheKey, { scope: candidate.provider, fingerprint, state: { ...state } })
     return finalizeExternalSummary(candidate, this.roots[candidate.provider], state)
   }
 

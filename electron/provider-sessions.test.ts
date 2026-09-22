@@ -538,6 +538,34 @@ describe('ProviderSessionsService', () => {
     expect(fs.readFileSync(cacheFile, 'utf8')).toContain('Claude 自定义标题')
   })
 
+  it('drops a deleted session from the cache when the root is reached through a link', async () => {
+    // macOS hands /tmp out as a symlink, so the probed paths come back resolved
+    // while the configured root does not: pruning must not compare prefixes.
+    const data = fixture()
+    const realRoot = path.join(data.root, 'real-home')
+    const aliasRoot = path.join(data.root, 'alias-home')
+    const claudeRoot = path.join(realRoot, '.claude', 'projects')
+    fs.mkdirSync(claudeRoot, { recursive: true })
+    fs.symlinkSync(realRoot, aliasRoot, process.platform === 'win32' ? 'junction' : 'dir')
+    writeJsonLines(path.join(claudeRoot, 'kept', 'kept.jsonl'), [
+      { type: 'custom-title', sessionId: 'kept', customTitle: '留下的会话' },
+    ])
+    const removedPath = path.join(claudeRoot, 'removed', 'removed.jsonl')
+    writeJsonLines(removedPath, [{ type: 'custom-title', sessionId: 'removed', customTitle: '待删除' }])
+    const cacheFile = path.join(data.root, 'sessions', 'probe-cache.json')
+    const sessions = service(data, codexReader([]), {
+      claudeProjectsRoot: path.join(aliasRoot, '.claude', 'projects'),
+      probeCacheFile: cacheFile,
+    })
+    await sessions.list({ provider: 'claude', pageSize: 100 })
+    await vi.waitFor(() => expect(fs.readFileSync(cacheFile, 'utf8')).toContain('待删除'))
+
+    fs.rmSync(removedPath)
+    await sessions.list({ provider: 'claude', pageSize: 100 })
+    await vi.waitFor(() => expect(fs.readFileSync(cacheFile, 'utf8')).not.toContain('待删除'))
+    expect(fs.readFileSync(cacheFile, 'utf8')).toContain('留下的会话')
+  })
+
   it('rebuilds a damaged probe cache without failing the list', async () => {
     const data = fixture()
     seedExternalSessions(data)
