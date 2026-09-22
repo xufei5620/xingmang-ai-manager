@@ -1686,7 +1686,7 @@ export function SettingsPage({
             '高对比度',
             systemState?.appearance.systemHighContrast
               ? '系统高对比度已开启；手动偏好会单独保留'
-              : '加深边框和次要文字',
+              : '加大文字、边框和按钮的对比度，开启时皮肤配色暂停使用',
             systemApi && systemState ? (
               <Switch
                 aria-label="高对比度"

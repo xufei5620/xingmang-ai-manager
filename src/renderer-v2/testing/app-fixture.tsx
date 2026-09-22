@@ -11,6 +11,7 @@ import '../styles/tokens.css'
 import '../styles/components.css'
 import '../styles/shell.css'
 import '../app.css'
+import '../styles/contrast.css'
 
 const query = new URLSearchParams(location.search)
 const accelerationDemo = createPreviewAccelerationApi({ remainingSeconds: query.has('accelerationExhausted') ? 0 : query.has('accelerationShort') ? 3 : accelerationTrialSeconds, storage: window.localStorage })
