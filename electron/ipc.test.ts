@@ -1584,7 +1584,7 @@ describe('registerIpcHandlers', () => {
     const accountWork = createAccountWorkGate({ revision: () => 0, assertReady: () => { if (busy) throw new Error('switching') } })
     const service = serviceStub()
     register(service, undefined, undefined, undefined, undefined, undefined, {
-      realmAccounts: {} as never, accountWork, accountSessionReady: restored,
+      realmAccounts: { stalledAccount: () => null } as never, accountWork, accountSessionReady: restored,
     })
     const result = electronMocks.handlers.get('config:get')!(trustedEvent())
     await Promise.resolve()
@@ -1609,15 +1609,17 @@ describe('registerIpcHandlers', () => {
         restoringAccount: () => settled ? null : { siteId: 'solov-api' as const, userId: 42 },
       }
       let busy = true
+      let stalled: { siteId: 'solov-api'; userId: number } | null = null
       const accountWork = createAccountWorkGate({ revision: () => 0, assertReady: () => { if (busy) throw new Error('switching') } })
       const service = serviceStub()
       const accountService = accountServiceStub()
       vi.mocked(accountService.getSessionState).mockReturnValue({ authenticated: false, account: null })
       register(service, undefined, undefined, accountService, undefined, undefined,
-        { realmAccounts: {} as never, accountWork, accountSessionReady: restored }, { accountStartupGate })
+        { realmAccounts: { stalledAccount: () => stalled } as never, accountWork, accountSessionReady: restored }, { accountStartupGate })
       return {
         service, accountService, releaseSplash,
         finishRestore: () => { busy = false; finishRestore() },
+        stall: () => { stalled = { siteId: 'solov-api', userId: 42 } },
       }
     }
 
@@ -1657,6 +1659,15 @@ describe('registerIpcHandlers', () => {
       await new Promise((resolve) => setTimeout(resolve, 0))
       await expect(electronMocks.handlers.get('account:get-session')!(trustedEvent())).resolves.toEqual({ authenticated: false, account: null })
       await expect(electronMocks.handlers.get('config:get')!(trustedEvent())).resolves.not.toHaveProperty('ownershipPending')
+    })
+
+    it('keeps ownership pending while an unreachable login waits for its retry', async () => {
+      const f = startupFixture()
+      f.stall()
+      f.finishRestore()
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      await expect(electronMocks.handlers.get('config:get')!(trustedEvent())).resolves.toMatchObject({ ownershipPending: true })
+      expect(f.service.getConfig).toHaveBeenCalledWith(false)
     })
   })
 

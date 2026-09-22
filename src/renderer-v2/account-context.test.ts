@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { accountKeyQuota, accountOrigin, accountScope, accountSiteId, sessionRestoring, sessionScope, siteIdForOrigin, visibleAccountTab } from './account-context'
+import { accountKeyQuota, accountOrigin, accountScope, accountSiteId, sessionRestoreRetrying, sessionRestoring, sessionScope, siteIdForOrigin, visibleAccountTab } from './account-context'
 
 describe('renderer account ownership', () => {
   it('retains Sub2API fractional dollar limits and never rounds a limited key to unlimited', () => {
@@ -52,6 +52,15 @@ describe('renderer account scope while the startup restore is still running', ()
     const unknown = { authenticated: false, account: null, restoring: { account: null } }
     expect(sessionRestoring(unknown)).toBe(true)
     expect(sessionScope(unknown)).toBe('xm-account:guest')
+  })
+
+  it('keeps an unreachable login in the same scope while it waits for a retry', () => {
+    const retrying = { authenticated: false, account: null, restoring: { account: { siteId: 'solov-api' as const, userId: 42 }, retrying: true } }
+    expect(sessionRestoring(retrying)).toBe(true)
+    expect(sessionRestoreRetrying(retrying)).toBe(true)
+    expect(sessionScope(retrying)).toBe(sessionScope(restored))
+    expect(sessionRestoreRetrying({ authenticated: false, restoring: { account: null } })).toBe(false)
+    expect(sessionRestoreRetrying({ ...restored, restoring: { account: null, retrying: true } })).toBe(false)
   })
 
   it('treats a session without the restoring mark as settled', () => {

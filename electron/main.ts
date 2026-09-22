@@ -89,6 +89,7 @@ import { resolveRealmDataRoots } from './realm-data-roots'
 import { createRealmServiceDispatch } from './realm-service-dispatch'
 import { createAccountWorkGate } from './account-work-gate'
 import { createAccountStartupGate } from './account-startup-gate'
+import { createAccountRestoreRetry } from './account-restore-retry'
 import { createAccountUsageTracker } from './account-usage-tracker'
 import type { RelayBackendClient } from './relay-backend'
 import { ProviderExtensionService } from './provider-extensions'
@@ -1750,11 +1751,18 @@ if (!hasSingleInstanceLock) {
       offline: !net.isOnline(),
       restoringAccount: () => accounts.restoringAccount(),
     })
+    // 联不上、服务维护、超时都不算登录失效：登录留在本机，隔一会儿自己再试。
+    const accountRestoreRetry = createAccountRestoreRetry({
+      restore: () => accounts.restoreActive(),
+      stalled: () => accounts.stalledAccount() !== null,
+      onFailure: (error, attempt) => runtimeLog.exception('account', 'session.restore.retry-failed', error, { attempt }),
+    })
     // 预算先到时界面拿到的是「正在恢复」。恢复成功会照常发一次会话变化；没恢复
-    // 成（没有保存的账号、登录已失效、联不上）时账号并没有变化，没人会发，界面
-    // 就会一直停在「正在恢复」——这里补发一次。
+    // 成（没有保存的账号、登录已失效）时账号并没有变化，没人会发，界面就会一直停在
+    // 「正在恢复」——这里补发一次。联不上而登录留着时账号服务自己发过了。
     void accountRestore.catch(() => false).then((restored) => {
-      if (restored || !accountStartupGate.releasedEarly()) return
+      accountRestoreRetry.schedule()
+      if (restored || accounts.stalledAccount() || !accountStartupGate.releasedEarly()) return
       const state = accounts.client.getSessionState()
       for (const window of BrowserWindow.getAllWindows()) {
         if (!window.isDestroyed()) window.webContents.send(ipcEventChannels.onAccountSessionChanged, state)
@@ -2083,6 +2091,7 @@ if (!hasSingleInstanceLock) {
       // 用户真正会用的那个动作上（关窗 / 托盘退出）。
       installDownloadedUpdate: () => { updaterService.install() },
       prepareToQuit: async () => {
+        accountRestoreRetry.dispose()
         await acceleration?.stopAll()
       },
       flushWindowState: () => windowPreferenceFlushers.get(mainWindow.webContents)?.() ?? Promise.resolve(),

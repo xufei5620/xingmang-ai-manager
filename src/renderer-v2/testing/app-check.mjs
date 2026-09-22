@@ -1318,6 +1318,25 @@ test('a slow startup restore opens the home page first and settles ownership aft
   } finally { await page.close() }
 })
 
+test('an unreachable startup restore keeps the login on the home page and waits for the retry', async () => {
+  const page = await open('allInstalled=1&changedClaude=1&restoring=1')
+  try {
+    const row = page.getByTestId('tool-row-claude')
+    await row.getByText('已配好').waitFor()
+    await page.evaluate(() => window.v2Test.emit('onAccountSessionChanged', { authenticated: false, account: null, restoring: { account: { siteId: 'solov', userId: 17 }, retrying: true } }))
+    await page.getByText('暂时连不上，登录还在').first().waitFor()
+    assert.equal(await page.getByTestId('welcome-login').count(), 0)
+    assert.equal(await page.getByText('当前登录已结束').count(), 0)
+    assert.equal(await page.getByText('配置被改过').count(), 0)
+    await page.getByTestId('nav-chat').click()
+    await page.getByText('暂时连不上服务，登录还在').waitFor()
+    await page.evaluate(() => window.v2Test.emit('onAccountSessionChanged', { authenticated: true, account: { userId: 17, username: 'fixture-user', group: 'default', role: 1, quota: 6_200_000, usedQuota: 0 } }))
+    await row.getByText('配置被改过').waitFor()
+    assert.equal(await page.getByText('暂时连不上，登录还在').count(), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('an edited configuration can be kept as it is and stops asking', async () => {
   const page = await open('allInstalled=1&changedClaude=1')
   try {
