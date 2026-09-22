@@ -15,6 +15,7 @@ import { createWindowCloseQuery } from './window-close-query'
 import { createAccountWorkGate } from './account-work-gate'
 import { accelerationBonusCode } from './acceleration-contract'
 import { managedCliKeyProfiles, providerIds } from './catalog'
+import { managedKeyQuotaExhaustedMessage } from './account-key-quota'
 import { externalUrlBlockedErrorName, isExternalUrlBlockedError } from './external-url-blocked'
 import { resolveXingmangAiBundledSkillRoot } from './xingmang-ai-skill'
 
@@ -4273,6 +4274,99 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
         expect.any(Error),
         { userId: 42, keyId: 42, cache: 'managed-cli' },
       )
+    })
+
+    describe('replacing a limited key a tool is using', () => {
+      const account = { userId: 42, username: 'tester', group: 'default', role: 1, quota: 1_000, usedQuota: 0 }
+      const codex = managedCliKeyProfiles.codex
+      const accountKey = (overrides: Partial<AccountKeysPage['keys'][number]>): AccountKeysPage['keys'][number] => ({
+        id: 7,
+        name: codex.keyName,
+        maskedKey: 'sk-abcd****wxyz',
+        group: codex.group,
+        status: 1,
+        remainQuota: 5_000,
+        unlimitedQuota: false,
+        usedQuota: 1_000,
+        createdAt: '2026-09-01T00:00:00.000Z',
+        expiredAt: '2099-01-01T00:00:00.000Z',
+        accessedAt: null,
+        ...overrides,
+      })
+      function setup(key: AccountKeysPage['keys'][number] | Error) {
+        const service = serviceStub()
+        const accountService = accountServiceStub()
+        vi.mocked(accountService.getSessionState).mockReturnValue({ authenticated: true, account })
+        vi.mocked(accountService.revokeKey).mockResolvedValue(undefined)
+        if (key instanceof Error) vi.mocked(accountService.listKeys).mockRejectedValue(key)
+        else vi.mocked(accountService.listKeys).mockResolvedValue({ page: 1, pageSize: 100, total: 1, keys: [key] })
+        vi.mocked(accountService.provisionCliKey).mockImplementation(async (input) => ({
+          id: 99,
+          name: input?.name ?? 'managed-key',
+          key: `sk-new-${input?.name}`,
+        }))
+        vi.mocked(service.fetchAvailableModels).mockResolvedValue(['gpt-5.6-sol'])
+        const managedCliKeys: NonNullable<Parameters<typeof registerIpcHandlers>[0]['managedCliKeys']> = {
+          read: vi.fn(async () => []),
+          save: vi.fn(async () => undefined),
+          remove: vi.fn(async () => undefined),
+        }
+        vi.mocked(managedCliKeys.read).mockResolvedValueOnce([
+          { id: 7, provider: 'codex', group: codex.group, name: codex.keyName, key: 'sk-old' },
+        ])
+        register(service, 'C:\\app-data\\logs', undefined, accountService, undefined, managedCliKeys)
+        return { accountService, service }
+      }
+      const configureCodex = () => electronMocks.handlers.get('account:configure-managed-clis')!(
+        trustedEvent(),
+        { providers: ['codex'], preferredModels: {}, intent: 'explicit', mode: 'merge' },
+      )
+
+      it('gives the replacement the revoked key\'s remaining cap and expiry instead of an unlimited key', async () => {
+        const { accountService } = setup(accountKey({}))
+
+        await expect(electronMocks.handlers.get('account:revoke-key')!(trustedEvent(), 7)).resolves.toBeUndefined()
+        await expect(configureCodex()).resolves.toEqual({ configured: ['codex'], failed: [] })
+
+        expect(accountService.provisionCliKey).toHaveBeenCalledWith(expect.objectContaining({
+          name: codex.keyName,
+          remainQuota: 5_000,
+          unlimitedQuota: false,
+          expiredTime: Math.floor(Date.parse('2099-01-01T00:00:00.000Z') / 1000),
+          fresh: true,
+        }))
+        // Only the one replacement inherits; the next issue for this tool is ordinary again.
+        vi.mocked(accountService.provisionCliKey).mockClear()
+        await configureCodex()
+        expect(accountService.provisionCliKey).toHaveBeenCalledWith(expect.not.objectContaining({ fresh: true }))
+      })
+
+      it('stops instead of issuing a replacement when the revoked key\'s cap was already used up', async () => {
+        const { accountService } = setup(accountKey({ remainQuota: 0, status: 4 }))
+
+        await electronMocks.handlers.get('account:revoke-key')!(trustedEvent(), 7)
+        const outcome = await configureCodex()
+
+        expect(outcome).toEqual({ configured: [], failed: [{ provider: 'codex', message: managedKeyQuotaExhaustedMessage }] })
+        expect(accountService.provisionCliKey).not.toHaveBeenCalledWith(expect.objectContaining({ name: codex.keyName }))
+      })
+
+      it('replaces an unlimited, never-expiring key the ordinary way', async () => {
+        const { accountService } = setup(accountKey({ unlimitedQuota: true, remainQuota: 0, expiredAt: null }))
+
+        await electronMocks.handlers.get('account:revoke-key')!(trustedEvent(), 7)
+        await configureCodex()
+
+        expect(accountService.provisionCliKey).toHaveBeenCalledWith({ name: codex.keyName, group: expect.any(String) })
+      })
+
+      it('does not revoke when the key\'s limits cannot be read first', async () => {
+        const { accountService } = setup(new Error('network down'))
+
+        await expect(electronMocks.handlers.get('account:revoke-key')!(trustedEvent(), 7))
+          .rejects.toThrow('没读到这把密钥的额度设置，先没撤销')
+        expect(accountService.revokeKey).not.toHaveBeenCalled()
+      })
     })
 
     it('rejects a non-number, non-integer, zero, or negative id -- id lands directly in a URL path segment (I5)', async () => {

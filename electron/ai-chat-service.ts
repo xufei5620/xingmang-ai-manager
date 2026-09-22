@@ -5,7 +5,8 @@ import {
   type AiChatParameters,
   type ChatCompletionsRequestBody,
 } from './ai-chat-protocol'
-import type { ChatCredentialCoordinator } from './chat-credential-coordinator'
+import { chatKeyQuotaExhaustedMessage } from './account-key-quota'
+import { ChatKeyQuotaExhaustedError, type ChatCredentialCoordinator } from './chat-credential-coordinator'
 import { observeAiOperation, type AiOperationStartedObserver } from './ai-operation-lifecycle'
 
 export const AI_CHAT_STREAM_LIMITS = {
@@ -32,6 +33,7 @@ export type AiChatStreamLimits = {
 
 export type AiChatStreamErrorCode =
   | 'credential-error'
+  | 'key-quota-exhausted'
   | 'model-unavailable'
   | 'connection-timeout'
   | 'idle-timeout'
@@ -182,6 +184,7 @@ const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308])
 
 const SAFE_ERROR_MESSAGES: Record<AiChatStreamErrorCode, string> = {
   'credential-error': '无法准备所选分组，请检查登录状态和 API Key',
+  'key-quota-exhausted': chatKeyQuotaExhaustedMessage,
   'model-unavailable': '当前模型不在所选分组的可用列表中，请刷新后重新选择',
   'connection-timeout': 'AI 服务响应较慢，本次等待已超时，请重试',
   'idle-timeout': 'AI 服务长时间没有返回内容，已停止等待',
@@ -296,6 +299,14 @@ async function discardBoundedErrorBody(
   } finally {
     reader.releaseLock()
   }
+}
+
+// 聊天 Key 自己的上限用完了要照直说，其余准备失败仍只给一句不带细节的话。
+function credentialFailure(error: unknown): StreamFailure {
+  if (error instanceof ChatKeyQuotaExhaustedError) {
+    return new StreamFailure('key-quota-exhausted', SAFE_ERROR_MESSAGES['key-quota-exhausted'])
+  }
+  return new StreamFailure('credential-error', SAFE_ERROR_MESSAGES['credential-error'])
 }
 
 function safeHttpFailure(status: number): StreamFailure {
@@ -609,8 +620,8 @@ export function createAiChatService(options: AiChatServiceOptions): AiChatServic
       let credential: Awaited<ReturnType<ChatCredentialCoordinator['resolveCredential']>>
       try {
         credential = await options.credentialCoordinator.resolveCredential(request.group)
-      } catch {
-        throw new StreamFailure('credential-error', SAFE_ERROR_MESSAGES['credential-error'])
+      } catch (error) {
+        throw credentialFailure(error)
       }
       if (request.completed) return
       request.userId = credential.userId
@@ -729,8 +740,8 @@ export function createAiChatService(options: AiChatServiceOptions): AiChatServic
     let credential: Awaited<ReturnType<ChatCredentialCoordinator['resolveCredential']>>
     try {
       credential = await options.credentialCoordinator.resolveCredential(input.group)
-    } catch {
-      throw new StreamFailure('credential-error', SAFE_ERROR_MESSAGES['credential-error'])
+    } catch (error) {
+      throw credentialFailure(error)
     }
     if (!credential.models.includes(body.model)) {
       throw new StreamFailure('model-unavailable', SAFE_ERROR_MESSAGES['model-unavailable'])

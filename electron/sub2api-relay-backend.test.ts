@@ -876,6 +876,16 @@ describe('Sub2API RelayBackend adapter', () => {
     }
   })
 
+  it('creates a capped replacement instead of reusing an unlimited same-named key when asked for a fresh key', async () => {
+    const profile = sub2ApiManagedCliKeyProfiles.codex
+    const f = fixture()
+    await f.client.login(loginInput)
+    f.state.keys = [keyRecord(31, { name: profile.keyName, status: 'quota_exhausted', quota: 5, quota_used: 5 }), keyRecord(32, { name: profile.keyName })]
+    const result = await f.client.provisionCliKey({ name: profile.keyName, group: profile.group, fresh: true, unlimitedQuota: false, remainQuota: 3, expiredTime: -1 })
+    expect(result.id).toBe(33)
+    expect(f.state.keys.find((key) => key.id === 33)).toMatchObject({ name: profile.keyName, quota: 3 })
+  })
+
   it('creates the four requested groups once even with concurrent provisioning', async () => {
     const f = fixture()
     await f.client.login(loginInput)

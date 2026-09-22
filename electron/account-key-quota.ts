@@ -56,6 +56,54 @@ export function isKeyQuotaExhaustedMessage(message: string): boolean {
  */
 export const managedKeyQuotaExhaustedMessage = '这个工具的额度用完了，软件不会自动放开。到「账号」页「密钥」里调高这个工具的额度后再试。'
 
+/** AI 工作台聊天自己那把 Key 的上限用完了：同样停下，不去换一把不限额的。 */
+export const chatKeyQuotaExhaustedMessage = '聊天用的密钥额度用完了，软件不会自动放开。到「账号」页「密钥」里调高它的额度后再试。'
+
+/** 按 id 在账号的密钥列表里找一把 Key；最多翻 5 页（500 把），找不到返回 null。 */
+export async function findAccountKeyById<T extends { id: number }>(
+  listKeys: (query: { page: number; pageSize: number }) => Promise<{ total: number; keys: readonly T[] }>,
+  keyId: number,
+): Promise<T | null> {
+  for (let page = 1; page <= 5; page++) {
+    const batch = await listKeys({ page, pageSize: 100 })
+    const found = batch.keys.find((key) => key.id === keyId)
+    if (found) return found
+    if (!batch.keys.length || page * 100 >= batch.total) return null
+  }
+  return null
+}
+
+export interface InheritedKeySettings {
+  remainQuota: number
+  unlimitedQuota: boolean
+  expiredTime: number
+}
+
+/**
+ * 撤销一把工具正在用的 Key 后，换上的新 Key 照抄它的限制：设了上限就沿用剩下的额度，
+ * 设了到期时间就沿用到期时间。什么都没设（不限额、永不过期）时返回 null，照旧签。
+ * 上限已经用完或已经过期的，不签一把「看着新、其实用不了」的 Key，直接说清楚。
+ */
+export function inheritedKeySettings(
+  key: { remainQuota: number; unlimitedQuota: boolean; expiredAt: string | null },
+  nowMs = Date.now(),
+): InheritedKeySettings | null {
+  const expiredTime = accountKeyExpiredTime(key.expiredAt)
+  if (key.unlimitedQuota && expiredTime === -1) return null
+  if (!key.unlimitedQuota && (!Number.isFinite(key.remainQuota) || key.remainQuota <= 0)) {
+    throw new Error(managedKeyQuotaExhaustedMessage)
+  }
+  if (expiredTime !== -1 && expiredTime * 1000 <= nowMs) {
+    throw new Error('原来那把密钥已经到期了，软件没有自动换新的。到「账号」页「密钥」里新建一把、设好到期时间就行。')
+  }
+  return {
+    // 原样照抄：new-api 回的本就是整数额度单位，Sub2API 的是可带小数的金额。
+    remainQuota: key.unlimitedQuota ? 0 : key.remainQuota,
+    unlimitedQuota: key.unlimitedQuota,
+    expiredTime,
+  }
+}
+
 export interface ManagedCliKeyLimit {
   provider: ProviderId
   /** 托管 Key 的固定名称,用来在账号的密钥列表里认出这把 Key。 */

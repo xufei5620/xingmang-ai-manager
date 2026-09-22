@@ -25,7 +25,8 @@ import { apiKeyDigest, type ConfigBackupAccountContext, type ConfigBackupStore }
 import { parseLocalNoticeReadSync, type AnnouncementReadStore } from './announcement-read-store'
 import type { AccelerationApi, AccelerationMode, AccelerationPreferenceApi } from './acceleration-contract'
 import { accelerationFailureReason } from './acceleration-contract'
-import { cliCatalog, isProviderId, type ProviderId } from './catalog'
+import { cliCatalog, isProviderId, providerIds, resolveManagedCliKeyProfiles, type ProviderId } from './catalog'
+import { findAccountKeyById, inheritedKeySettings } from './account-key-quota'
 import { isInstallCancelledError } from './install-cancellation'
 import {
   configureManagedClis,
@@ -110,6 +111,7 @@ import type {
   AccountSessionState,
   AccountKeyCreateInput,
   AccountKeyUpdateInput,
+  AccountKey,
   AccountKeysPage,
   AiChatStartInput,
   AiImageGenerateInput,
@@ -1545,6 +1547,46 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
       )
     })
   }
+  // 撤销一把工具正在用、又设了限制的 Key 时记下它，换上的新 Key 照抄这些限制（见
+  // inheritedKeySettings）。只放在内存里：撤销和换新是同一次点击里接连发生的。
+  const pendingKeyReplacements = new Map<string, AccountKey>()
+  const replacementSlot = (userId: number, provider: ProviderId): string => (
+    `${accountService.getActiveSiteId?.() ?? 'solov'}:${userId}:${provider}`
+  )
+  const provisioningAccountService: Parameters<typeof configureManagedClis>[0] = {
+    getSessionState: accountService.getSessionState.bind(accountService),
+    getSessionRevision: accountService.getSessionRevision?.bind(accountService),
+    getActiveSiteId: accountService.getActiveSiteId?.bind(accountService),
+    listUsableGroups: accountService.listUsableGroups.bind(accountService),
+    provisionCliKey: async (input = {}) => {
+      const userId = accountService.getSessionState().account?.userId
+      const profiles = resolveManagedCliKeyProfiles(accountService.getActiveSiteId?.())
+      const provider = providerIds.find((entry) => profiles[entry].keyName === input.name)
+      const slot = userId && provider ? replacementSlot(userId, provider) : null
+      const revoked = slot ? pendingKeyReplacements.get(slot) : undefined
+      const settings = revoked ? inheritedKeySettings(revoked) : null
+      if (!settings) return accountService.provisionCliKey(input)
+      const replacement = await accountService.provisionCliKey({ ...input, ...settings, fresh: true })
+      if (slot && pendingKeyReplacements.get(slot) === revoked) pendingKeyReplacements.delete(slot)
+      return replacement
+    },
+  }
+  // 撤销前先认出这是不是某个工具在用、又设了上限或到期时间的 Key。读不到就先不撤：
+  // 撤完再想知道新 Key 该照抄什么已经无从查起。
+  const limitedManagedKey = async (userId: number, keyId: number): Promise<{ provider: ProviderId; key: AccountKey } | null> => {
+    if (!options.managedCliKeys || options.previewOnboarding) return null
+    const cached = (await options.managedCliKeys.read(userId).catch(() => [])).find((entry) => entry.id === keyId)
+    if (!cached) return null
+    let key: AccountKey | null
+    try {
+      key = await findAccountKeyById((query) => accountService.listKeys(query), keyId)
+    } catch {
+      throw new Error('没读到这把密钥的额度设置，先没撤销。请稍后再试。')
+    }
+    if (!key || (key.unlimitedQuota && !key.expiredAt)) return null
+    return { provider: cached.provider, key }
+  }
+
   const unsubscribeUpdates = options.updaterService.subscribe(options.broadcastUpdate)
   registerTrustedHandler('platform:get-capabilities', () => platformCapabilitiesFor())
   registerTrustedHandler('system:scan', async (_event, forceRefresh: unknown) => {
@@ -2496,7 +2538,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     accountService.purchaseSubscriptionWithBalance(parsePositiveSafeInteger(planId, '订阅方案 ID'))
   ))
   registerTrustedHandler('account:sync-managed-cli-keys', async () => {
-    const summary = await syncManagedCliKeySummary(accountService, options.managedCliKeys)
+    const summary = await syncManagedCliKeySummary(provisioningAccountService, options.managedCliKeys)
     if (!options.xingmangAiSkill || accountService.getActiveSiteId?.() === 'solov-api') return summary
     try {
       const skill = await syncXingmangAiSkill({
@@ -2521,7 +2563,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   registerTrustedHandler('account:configure-managed-clis', (_event, input: unknown) => {
     const parsed = parseManagedCliConfigurationInput(input)
     return configureManagedClis(
-      accountService,
+      provisioningAccountService,
       service,
       parsed.providers,
       parsed.preferredModels,
@@ -2653,8 +2695,12 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   registerTrustedHandler('account:revoke-key', async (_event, id: unknown) => {
     const keyId = parseAccountRevokeKeyId(id)
     const userId = accountService.getSessionState().account?.userId
+    const limited = userId ? await limitedManagedKey(userId, keyId) : null
     await accountService.revokeKey(keyId)
     if (userId) await invalidateAccountKeyCaches(userId, keyId)
+    if (userId && limited && accountService.getSessionState().account?.userId === userId) {
+      pendingKeyReplacements.set(replacementSlot(userId, limited.provider), limited.key)
+    }
   })
   const assertAccountSessionUser = (expectedUserId: number): void => {
     const session = accountService.getSessionState()
@@ -2856,15 +2902,6 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   // issued for the tool is looked up in the account's key list: if it is a
   // capped key with nothing left, say so instead. Any doubt keeps the original
   // verdict -- this only ever narrows "密钥被拒绝" to its quota case.
-  const findAccountKeyById = async (keyId: number) => {
-    for (let page = 1; page <= 5; page++) {
-      const batch = await accountService.listKeys({ page, pageSize: 100 })
-      const found = batch.keys.find((key) => key.id === keyId)
-      if (found) return found
-      if (!batch.keys.length || page * 100 >= batch.total) return null
-    }
-    return null
-  }
   const explainRejectedManagedKey = async (provider: ProviderId, result: ConnectionCheckResult): Promise<ConnectionCheckResult> => {
     if (result.ok || result.layer !== 'credential' || !options.managedCliKeys || options.previewOnboarding) return result
     const userId = accountService.getSessionState().account?.userId
@@ -2872,7 +2909,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     try {
       const cached = (await options.managedCliKeys.read(userId)).find((entry) => entry.provider === provider)
       if (!cached || service.revealApiKey(provider, options.previewOnboarding) !== cached.key) return result
-      const key = await findAccountKeyById(cached.id)
+      const key = await findAccountKeyById((query) => accountService.listKeys(query), cached.id)
       if (accountService.getSessionState().account?.userId !== userId) return result
       return key && isCappedKeyUsedUp(key) ? withKeyQuotaExhausted(result, cliCatalog[provider].name) : result
     } catch {

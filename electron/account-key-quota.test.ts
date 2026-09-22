@@ -4,8 +4,11 @@ import {
   accountKeyExpiredTime,
   accountKeyQuota,
   buildManagedCliKeyLimitUpdate,
+  findAccountKeyById,
+  inheritedKeySettings,
   isKeyQuotaExhaustedMessage,
   loadManagedCliKeys,
+  managedKeyQuotaExhaustedMessage,
   parseManagedCliKeyLimitAmount,
   resolveManagedCliKeyLimits,
 } from './account-key-quota'
@@ -188,5 +191,39 @@ describe('isKeyQuotaExhaustedMessage', () => {
     for (const message of ['用户额度不足', 'user quota is not enough', '无效的令牌', '模型查询失败，服务返回 401']) {
       expect(isKeyQuotaExhaustedMessage(message)).toBe(false)
     }
+  })
+})
+
+describe('inheritedKeySettings', () => {
+  const now = Date.parse('2026-09-22T00:00:00.000Z')
+
+  it('carries the remaining cap and the expiry over to a replacement', () => {
+    expect(inheritedKeySettings(key({ id: 1, name: 'a', unlimitedQuota: false, remainQuota: 2.5, expiredAt: '2027-01-01T00:00:00.000Z' }), now))
+      .toEqual({ remainQuota: 2.5, unlimitedQuota: false, expiredTime: Date.parse('2027-01-01T00:00:00.000Z') / 1000 })
+    expect(inheritedKeySettings(key({ id: 1, name: 'a', expiredAt: '2027-01-01T00:00:00.000Z' }), now))
+      .toEqual({ remainQuota: 0, unlimitedQuota: true, expiredTime: Date.parse('2027-01-01T00:00:00.000Z') / 1000 })
+  })
+
+  it('has nothing to carry over for an unlimited key that never expires', () => {
+    expect(inheritedKeySettings(key({ id: 1, name: 'a' }), now)).toBeNull()
+  })
+
+  it('refuses to issue a replacement for a used-up cap or an expired key', () => {
+    expect(() => inheritedKeySettings(key({ id: 1, name: 'a', unlimitedQuota: false, remainQuota: 0 }), now))
+      .toThrow(managedKeyQuotaExhaustedMessage)
+    expect(() => inheritedKeySettings(key({ id: 1, name: 'a', expiredAt: '2026-01-01T00:00:00.000Z' }), now))
+      .toThrow('原来那把密钥已经到期了')
+  })
+})
+
+describe('findAccountKeyById', () => {
+  it('pages through the key list and stops at the last page', async () => {
+    const pages = [
+      { total: 150, keys: Array.from({ length: 100 }, (_, index) => key({ id: index + 1, name: `k${index}` })) },
+      { total: 150, keys: [key({ id: 140, name: 'target' })] },
+    ]
+    const listKeys = async ({ page }: { page: number }) => pages[page - 1]
+    await expect(findAccountKeyById(listKeys, 140)).resolves.toMatchObject({ name: 'target' })
+    await expect(findAccountKeyById(listKeys, 999)).resolves.toBeNull()
   })
 })

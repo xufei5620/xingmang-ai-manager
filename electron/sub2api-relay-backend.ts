@@ -478,10 +478,11 @@ export function createSub2ApiRelayBackend(options: Sub2ApiRelayBackendOptions): 
         const name = keyName(captured.name ?? sub2ApiManagedCliKeyProfiles.codex.keyName)
         const group = await resolveGroup(scope, groupName)
         const sameName = (await allKeys(scope)).filter((key) => key.name === name && key.groupId === group.id)
-        const existing = sameName.filter(usable).sort((a, b) => Number(b.id) - Number(a.id))[0]
+        // fresh: a revoked key's limits carry over, so an unlimited sibling must not be reused.
+        const existing = captured.fresh ? undefined : sameName.filter(usable).sort((a, b) => Number(b.id) - Number(a.id))[0]
         // A used-up per-key cap is a deliberate limit: a fresh unlimited key
         // under the same name would silently lift it.
-        if (!existing && sameName.some(exhaustedCap)) throw new Error(managedKeyQuotaExhaustedMessage)
+        if (!existing && captured.unlimitedQuota !== false && sameName.some(exhaustedCap)) throw new Error(managedKeyQuotaExhaustedMessage)
         const key = existing ?? await create(scope, { name, group: groupName, remainQuota: captured.remainQuota ?? 0,
           unlimitedQuota: captured.unlimitedQuota ?? true, expiredTime: captured.expiredTime ?? -1 }, group)
         return reveal(scope, key)

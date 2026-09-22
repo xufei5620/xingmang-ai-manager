@@ -731,7 +731,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
             logout: () => setConfirmation({ title: '退出星芒账号？', body: '已写入工具的配置会保留。', label: '退出登录', work: async () => { await app.logout(); await reloadAccount() } }),
           }}>
           <div key={scope} className="v2-page-host">
-            {renderedChatScope === scope && <div className="v2-chat-host" hidden={page !== 'chat'}><Suspense fallback={pageLoading}><ChatPage bridge={native} accountScope={scope} active={page === 'chat'} /></Suspense></div>}
+            {renderedChatScope === scope && <div className="v2-chat-host" hidden={page !== 'chat'}><Suspense fallback={pageLoading}><ChatPage bridge={native} accountScope={scope} active={page === 'chat'} onOpenKeys={() => navigate('account', 'keys')} /></Suspense></div>}
             {visitedPages.acceleration === scope && <div data-testid="page-acceleration" hidden={page !== 'acceleration'} inert={page !== 'acceleration'}>
               <Suspense fallback={pageLoading}>
                 <AccelerationPage connection={acceleration} scope={session.authenticated ? scope : null}

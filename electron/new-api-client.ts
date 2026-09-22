@@ -734,6 +734,12 @@ export interface NewApiProvisionCliKeyInput {
   remainQuota?: number
   unlimitedQuota?: boolean
   expiredTime?: number
+  /**
+   * Always create a new key with exactly these settings instead of reusing a
+   * usable one in the group. Used when a revoked key's limits must carry over
+   * to its replacement: reusing an unlimited sibling would drop them.
+   */
+  fresh?: boolean
 }
 
 // The plaintext key is meant to flow straight into a CLI config write (I3
@@ -2126,15 +2132,17 @@ function collectionEntries(payload: unknown): unknown[] {
 
 // Step 2 of the CLI-key three-call flow (RECON 坑1): POST /api/token/ never
 // returns the new record's id, so it has to be found again by the unique
-// name buildCliKeyName() generated for it.
+// name buildCliKeyName() generated for it. A managed name is stable, so older
+// keys can share it: the one just created is the highest id.
 export function findCliKeyIdByName(payload: unknown, name: string): number | null {
+  let newest: number | null = null
   for (const entry of collectionEntries(payload)) {
     if (!isRecord(entry)) continue
     if (asString(entry.name, '') !== name) continue
     const id = entry.id
-    if (typeof id === 'number' && Number.isInteger(id) && id > 0) return id
+    if (typeof id === 'number' && Number.isInteger(id) && id > 0 && (newest === null || id > newest)) newest = id
   }
-  return null
+  return newest
 }
 
 export interface NewApiExistingCliKeyMatch {
@@ -3183,9 +3191,11 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
         if (group.length > 128) throw new Error('CLI Key 分组格式错误')
         await assertUsableGroup(current, group)
         const records = await listAllTokenRecords(current)
-        const existing = findNewestUsableCliKeyByGroup(records, group)
+        const existing = input.fresh ? null : findNewestUsableCliKeyByGroup(records, group)
         // Only a usable key under this very name outranks a used-up cap on it.
-        if (existing?.name !== name && hasExhaustedCappedCliKey(records, name, group)) {
+        // A capped key being created never lifts a cap, so it is not stopped.
+        if (existing?.name !== name && input.unlimitedQuota !== false
+          && hasExhaustedCappedCliKey(records, name, group)) {
           throw new Error(managedKeyQuotaExhaustedMessage)
         }
         if (existing) return revealCliKeyForSession(current, existing)

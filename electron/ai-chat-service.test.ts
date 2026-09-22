@@ -5,7 +5,8 @@ import {
   type AiChatStreamEvent,
   type AiChatStreamLogEntry,
 } from './ai-chat-service'
-import type { ChatCredentialCoordinator } from './chat-credential-coordinator'
+import { ChatKeyQuotaExhaustedError, type ChatCredentialCoordinator } from './chat-credential-coordinator'
+import { chatKeyQuotaExhaustedMessage } from './account-key-quota'
 
 const encoder = new TextEncoder()
 type TestFetch = (input: string | URL, init?: RequestInit) => Promise<Response>
@@ -153,6 +154,24 @@ describe('AI chat streaming service', () => {
 
     expect(fetchImpl).not.toHaveBeenCalled()
     expect(events).toEqual([expect.objectContaining({ type: 'error', code: 'model-unavailable' })])
+  })
+
+  it('says the chat key\'s own cap is used up instead of the generic preparation failure', async () => {
+    const events: AiChatStreamEvent[] = []
+    const fetchImpl = vi.fn<TestFetch>()
+    const coordinator = credentialCoordinator()
+    coordinator.resolveCredential = vi.fn(async () => { throw new ChatKeyQuotaExhaustedError() })
+    const service = createAiChatService({
+      credentialCoordinator: coordinator,
+      fetchImpl,
+      emit: (_senderId, event) => events.push(event),
+    })
+
+    service.start(startInput())
+    await service.whenIdle()
+
+    expect(fetchImpl).not.toHaveBeenCalled()
+    expect(events).toEqual([expect.objectContaining({ type: 'error', code: 'key-quota-exhausted', message: chatKeyQuotaExhaustedMessage })])
   })
 
   it('coalesces nearby chunks on the configured batching interval', async () => {

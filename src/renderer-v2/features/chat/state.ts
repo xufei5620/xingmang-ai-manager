@@ -1,4 +1,5 @@
 import type { AiChatAsset, AiChatErrorCode, AiChatGroupSummary, AiChatMessageInput, AiChatParametersInput, AiChatStreamEvent } from '../../../../electron/ipc-contract'
+import { chatKeyQuotaExhaustedMessage } from '../../../../electron/account-key-quota'
 import { chatLimits } from './api'
 
 export type ChatMode = 'text' | 'image'
@@ -116,8 +117,14 @@ export function planTurn(conversation: Conversation, input: { prompt: string; re
   return { conversation: { ...conversation, title: conversation.messages.length ? conversation.title : prompt.slice(0, 32), updatedAt: Date.now(), draft: input.retryId || input.editId ? conversation.draft : '', messages: [...history, assistant] }, requestId: input.requestId, assistantId, settings: snapshot, prompt, messages }
 }
 
+/** 聊天 Key 自己的上限用完了：界面在这句话旁边给一个去调额度的按钮。 */
+export function isChatKeyQuotaError(text: string | undefined): boolean {
+  return Boolean(text?.includes(chatKeyQuotaExhaustedMessage))
+}
+
 export function chatErrorMessage(error: unknown, code?: AiChatErrorCode): string {
   const message = error instanceof Error ? error.message : typeof error === 'string' ? error : ''
+  if (code === 'key-quota-exhausted' || message.includes(chatKeyQuotaExhaustedMessage)) return chatKeyQuotaExhaustedMessage
   if (code === 'connection-timeout') return 'AI 服务响应较慢，本次等待已超时，请重试'
   if (code === 'idle-timeout') return 'AI 服务长时间没有返回内容，本次等待已停止，请重试'
   if (code === 'total-timeout') return '本次对话超过最长处理时间，已停止等待'
