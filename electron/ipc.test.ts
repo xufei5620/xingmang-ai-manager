@@ -23,7 +23,7 @@ const electronMocks = vi.hoisted(() => ({
   removeHandler: vi.fn(),
   showOpenDialog: vi.fn(),
   showSaveDialog: vi.fn(),
-  showMessageBox: vi.fn(async () => ({ response: 0 })),
+  showMessageBox: vi.fn(async (..._args: unknown[]) => ({ response: 0 })),
   browserWindowFromWebContents: vi.fn<(...args: unknown[]) => unknown>(() => undefined),
   openExternal: vi.fn(),
   openPath: vi.fn(),
@@ -919,6 +919,46 @@ describe('registerIpcHandlers', () => {
     expect(electronMocks.handlers.get('repository:get-context')!(trustedEvent())).toEqual({
       repositoryRoot: 'C:\\workspace',
     })
+  })
+
+  it('warns before accepting a workspace that would cover the whole machine', async () => {
+    const desktop = path.join(os.homedir(), 'Desktop')
+    electronMocks.showOpenDialog.mockResolvedValueOnce({ canceled: false, filePaths: [desktop] })
+    electronMocks.showMessageBox.mockResolvedValueOnce({ response: 1 })
+    const { service } = register()
+
+    await expect(electronMocks.handlers.get('workspace:choose')!(trustedEvent())).resolves.toBe(desktop)
+    expect(electronMocks.showMessageBox).toHaveBeenCalledTimes(1)
+    expect(service.updateStoredConfig).toHaveBeenCalledWith({ version: 2, workspace: desktop })
+    expect(electronMocks.showMessageBox).toHaveBeenCalledWith(expect.objectContaining({
+      message: expect.stringContaining('桌面'),
+      detail: expect.stringContaining('AGENTS.md'),
+    }))
+  })
+
+  it('reopens the picker when the warning is answered with 换一个文件夹', async () => {
+    const home = os.homedir()
+    electronMocks.showOpenDialog
+      .mockResolvedValueOnce({ canceled: false, filePaths: [home] })
+      .mockResolvedValueOnce({ canceled: false, filePaths: [path.join(home, 'project')] })
+    electronMocks.showMessageBox.mockResolvedValueOnce({ response: 0 })
+    const { service } = register()
+
+    await expect(electronMocks.handlers.get('workspace:choose')!(trustedEvent()))
+      .resolves.toBe(path.join(home, 'project'))
+    expect(electronMocks.showOpenDialog).toHaveBeenCalledTimes(2)
+    expect(service.updateStoredConfig).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps a cancelled picker from storing anything after a warning', async () => {
+    electronMocks.showOpenDialog
+      .mockResolvedValueOnce({ canceled: false, filePaths: [os.homedir()] })
+      .mockResolvedValueOnce({ canceled: true, filePaths: [] })
+    electronMocks.showMessageBox.mockResolvedValueOnce({ response: 0 })
+    const { service } = register()
+
+    await expect(electronMocks.handlers.get('workspace:choose')!(trustedEvent())).resolves.toBeNull()
+    expect(service.updateStoredConfig).not.toHaveBeenCalled()
   })
 
   it('rejects calls from a sender outside the application URL policy', () => {

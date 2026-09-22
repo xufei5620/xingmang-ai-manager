@@ -68,6 +68,7 @@ import {
   ensureProjectInstructions,
   readProjectInstructionsTemplate,
 } from './project-instructions'
+import { classifyWorkspace, sensitiveWorkspaceLabel } from './workspace-guard'
 import {
   fetchOfficialChatGptUsage,
   type OfficialChatGptAccount,
@@ -3777,29 +3778,45 @@ export function createSystemService(
     }
 
     const definition = cliCatalog[provider]
+    // 主目录 / 盘根 / 桌面 / 下载 / 文档这几类目录不写信任、也不生成 AGENTS.md：
+    // 两者都是「配一次管整棵目录树」的动作，放在这种目录上等于把整台电脑标成
+    // 可信、给所有项目加一份看不见的说明（workspace-guard.ts）。打开本身照常，
+    // 信任那一问由 CLI 自己去问 —— 在这种目录上那一问是有意义的。
+    const workspaceSensitivity = classifyWorkspace(workspace, {
+      platform,
+      home: providerRoots.userHome,
+    })
+    if (workspaceSensitivity) {
+      runtimeLog?.log('info', 'config', 'workspace.guard.skipped', `${definition.name} 打开的是${sensitiveWorkspaceLabel(workspaceSensitivity)}，不写入信任，也不生成项目说明`, {
+        provider,
+        kind: workspaceSensitivity,
+      })
+    }
     // 目录是用户刚在本软件的对话框里亲自选的，再让他去读一遍 CLI 自己的英文
     // 信任问答没有意义，所以打开之前先把这一项写进 CLI 的配置。写不进去
     // （文件损坏、只读、主目录被重定向）绝不能挡住打开：CLI 自己还会问一次。
-    try {
-      const trust = trustManagedWorkspace(provider, providerRoots, workspace)
-      if (trust.changed) {
-        runtimeLog?.log('info', 'config', 'workspace.trust.written', `${definition.name} 已信任所选工作目录`, {
+    if (!workspaceSensitivity) {
+      try {
+        const trust = trustManagedWorkspace(provider, providerRoots, workspace)
+        if (trust.changed) {
+          runtimeLog?.log('info', 'config', 'workspace.trust.written', `${definition.name} 已信任所选工作目录`, {
+            provider,
+          })
+        }
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error)
+        runtimeLog?.log('warn', 'config', 'workspace.trust.failed', `${definition.name} 未能记录工作目录信任，将由工具自己询问`, {
           provider,
+          reason: redactHomeDirectory(reason, providerRoots.userHome),
         })
       }
-    } catch (error) {
-      const reason = error instanceof Error ? error.message : String(error)
-      runtimeLog?.log('warn', 'config', 'workspace.trust.failed', `${definition.name} 未能记录工作目录信任，将由工具自己询问`, {
-        provider,
-        reason: redactHomeDirectory(reason, providerRoots.userHome),
-      })
     }
     // 目录里三种项目说明文件（CLAUDE.md / AGENTS.md / GEMINI.md）一个都没有、
     // 且本应用没给这个目录生成过时，放一份中文 AGENTS.md，三个工具打开这个目录
     // 都会读它。绝不覆盖已有文件；客户删掉生成的那份就不再生成（记录在
     // projectInstructionsState 里，不往客户目录写标记）；写不进去（磁盘满、只读、
     // 目录被重定向）绝不能挡住打开。
-    if (serviceOptions.projectInstructionsTemplatePath) {
+    if (serviceOptions.projectInstructionsTemplatePath && !workspaceSensitivity) {
       try {
         const template = readProjectInstructionsTemplate(serviceOptions.projectInstructionsTemplatePath)
         const result = await ensureProjectInstructions({
