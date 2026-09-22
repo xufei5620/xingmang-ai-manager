@@ -3,7 +3,11 @@ import type { NativeConfigInspection } from './config-files'
 import { externalClientNames, externalToolIds, type ExternalClientStatus } from './external-client-contract'
 import type { ExternalToolId } from './external-tool-config'
 import type { CliStatus, DesktopAppStatus, NetworkRegion, SystemSnapshot, ToolStatus } from './system-service'
-import type { WindowsCliExecutionMode } from './windows-elevation'
+import {
+  describeWindowsExecutionProbeFailure,
+  type WindowsCliExecutionMode,
+  type WindowsExecutionProbeFailureReason,
+} from './windows-elevation'
 
 /**
  * 反馈报告头部那段「工具与配置」的纯函数构造器。客服收到报告的第一句总是
@@ -156,6 +160,11 @@ export interface FeedbackRuntimeInput {
   platform: NodeJS.Platform
   /** 只有 Windows 有意义；其他平台传 null，这一行不出。 */
   executionMode: WindowsCliExecutionMode | null
+  /**
+   * 启动时那次「是不是管理员」探测的结果：null = 探测成功，原因 = 探测失败、按管理员
+   * 处理。缺省 = 不知道（旧行为），trusted-only 那一行照旧写「或无法确认」。
+   */
+  executionProbeFailure?: WindowsExecutionProbeFailureReason | null
   /** 软件主程序所在目录。 */
   appDirectory: string | null
   dataDirectory: string | null
@@ -199,6 +208,19 @@ function codexDesktopText(status: FeedbackCodexDesktop): string {
   return status.running ? `${head}，正在运行` : head
 }
 
+function executionModeText(
+  mode: WindowsCliExecutionMode,
+  probeFailure: WindowsExecutionProbeFailureReason | null | undefined,
+): string {
+  if (mode === 'same-user') return '普通用户'
+  // trusted-only 也是令牌探测失败时的保守回退（resolveWindowsCliExecutionMode）。
+  // 知道是哪一种就直说；不知道时把「或无法确认」一并写上，免得客服据此断定用户
+  // 右键了管理员运行。
+  if (probeFailure) return `按管理员处理（没能确认：${describeWindowsExecutionProbeFailure(probeFailure)}）`
+  if (probeFailure === null) return '以管理员身份运行'
+  return '以管理员身份运行（或无法确认，按管理员处理）'
+}
+
 /**
  * 从扫描快照里只挑报告要用的字段。网络位置在这一步就只剩 region：公网 IP 与
  * 国家代码不进入报告构造器，后面怎么改排版都漏不出去。
@@ -228,11 +250,7 @@ export function buildFeedbackRuntimeLines(input: FeedbackRuntimeInput): string[]
   lines.push(`Codex 桌面端: ${snapshot ? codexDesktopText(snapshot.codexDesktop) : unreadable}`)
   lines.push(`网络位置: ${snapshot ? regionLabels[snapshot.region] : unreadable}`)
   if (input.platform === 'win32' && input.executionMode) {
-    // trusted-only 也是令牌探测失败时的保守回退（resolveWindowsCliExecutionMode），
-    // 所以这里把「或无法确认」一并写上，免得客服据此断定用户右键了管理员运行。
-    lines.push(`运行权限: ${input.executionMode === 'same-user'
-      ? '普通用户'
-      : '以管理员身份运行（或无法确认，按管理员处理）'}`)
+    lines.push(`运行权限: ${executionModeText(input.executionMode, input.executionProbeFailure)}`)
   }
   lines.push(`软件位置: ${input.appDirectory?.trim() || unreadable}`)
   lines.push(`数据目录: ${input.dataDirectory?.trim() || unreadable}`)
