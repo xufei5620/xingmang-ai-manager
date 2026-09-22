@@ -29,6 +29,7 @@ export type PlatformHostNotification =
   | 'accelerationExhausted'
   | 'accelerationInterrupted'
   | 'accelerationInterruptedUnrestored'
+  | 'accelerationAutoStarted'
 
 interface NotificationMessage {
   title: string
@@ -85,6 +86,12 @@ const hostMessages: Record<
     kind: 'acceleration',
     title: '加速意外断开了',
     body: '网络可能暂时连不上，点这里回到加速页，星芒会再试着恢复。',
+  },
+  // 关掉桌面端不会跟着断开，所以要说清三件事：开着、在计时、在哪断开。
+  accelerationAutoStarted: {
+    kind: 'acceleration',
+    title: '已为 Codex 桌面端连上加速',
+    body: '打开桌面端时自动连上的，会计入免费加速时长，不用时可以在托盘或加速页断开。',
   },
 }
 

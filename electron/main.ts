@@ -887,8 +887,15 @@ if (!hasSingleInstanceLock) {
         : Promise.reject(new Error('加速服务尚未就绪。')),
       connect: async (scope, state) => {
         if (!acceleration) throw new Error('加速服务尚未就绪。')
-        return acceleration.startAcceleration(scope, ...await accelerationStartArguments(scope, state))
+        return acceleration.startAutomaticAcceleration(scope, 'codex-desktop', ...await accelerationStartArguments(scope, state))
       },
+      // 连上之后不会自动断开（那是之前定过的），所以连上的那一刻必须让用户知道：
+      // 加速开着、在计免费时长、在哪里能断开。同一次连接只提醒一次。
+      onAutoConnected: (state) => hostNotifier()({
+        event: 'accelerationAutoStarted',
+        eventKey: `${state.scope}:${state.connectedAt ?? state.measuredAt}`,
+        onClick: showAccelerationPage,
+      }),
       log: (level, event, message, detail) => runtimeLog.log(level, 'network', event, message, detail),
     })
     const systemService = createSystemService(settingsStore, {
