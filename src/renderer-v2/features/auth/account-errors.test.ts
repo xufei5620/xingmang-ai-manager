@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { matchAccountErrorMessage } from './account-errors'
+import { isUsernameTakenError, matchAccountErrorMessage } from './account-errors'
 
 describe('renderer-v2 new-api account error table', () => {
   it('names the register-time collision that happened instead of merging both', () => {
@@ -8,6 +8,20 @@ describe('renderer-v2 new-api account error table', () => {
     expect(matchAccountErrorMessage('用户名已存在，或已注销')).toBe('该用户名已被注册，请更换用户名，或点击“已有账号，登录”')
     expect(matchAccountErrorMessage('Email address is already in use')).toBe('该邮箱已被注册，请直接登录，或更换邮箱后重试')
     expect(matchAccountErrorMessage('邮箱地址已被占用')).toBe('该邮箱已被注册，请直接登录，或更换邮箱后重试')
+  })
+  it('tells the registration form when the derived username is already taken', () => {
+    expect(isUsernameTakenError(new Error("Error invoking remote method 'account:register': Error: Username already exists"))).toBe(true)
+    expect(isUsernameTakenError('用户名已存在，或已注销')).toBe(true)
+    expect(isUsernameTakenError(new Error('Email address is already in use'))).toBe(false)
+    expect(isUsernameTakenError(undefined)).toBe(false)
+  })
+  it('asks for another mailbox when the server only accepts some email domains', () => {
+    const expected = '这个邮箱暂时不能用来注册，请换一个常用邮箱（如 QQ 邮箱）再试'
+    expect(matchAccountErrorMessage('The administrator has enabled the email domain name whitelist, and your email address is not allowed')).toBe(expected)
+    expect(matchAccountErrorMessage('管理员启用了邮箱域名白名单，您的邮箱地址的域名不在白名单中')).toBe(expected)
+    expect(matchAccountErrorMessage('管理员已启用邮箱地址别名限制，您的邮箱地址由于包含特殊符号而被拒绝。')).toBe(expected)
+    // A whitelist that has nothing to do with email stays the caller's business.
+    expect(matchAccountErrorMessage('该链接不在白名单中，已阻止打开')).toBeNull()
   })
   it('keeps a change-password failure in the change-password vocabulary', () => {
     expect(matchAccountErrorMessage('Original password is incorrect')).toBe('原密码错误，请重新输入')

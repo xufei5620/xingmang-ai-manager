@@ -185,6 +185,51 @@ describe('diagnostics', () => {
       .toBe('~/.claude/config.json')
   })
 
+  it('flags project folder settings that override the current account, without values', async () => {
+    // macOS 的临时目录经过 /var → /private/var 这条符号链接，bounded 读法会拒读。
+    const home = fs.realpathSync.native(temporaryHome())
+    const workspace = path.join(home, 'work', 'app')
+    fs.mkdirSync(path.join(workspace, '.claude'), { recursive: true })
+    fs.writeFileSync(path.join(workspace, '.claude', 'settings.local.json'), JSON.stringify({
+      env: { ANTHROPIC_BASE_URL: 'https://elsewhere.example', ANTHROPIC_AUTH_TOKEN: 'sk-project-secret' },
+    }))
+    const input = dependencies(home)
+    input.platform = process.platform
+    input.workspace = workspace
+    input.claudeManagedDirectory = path.join(home, 'managed')
+
+    const item = (await runDiagnostics(input)).items.find((entry) => entry.code === 'WORKSPACE_CONFIG_OVERRIDE')
+
+    expect(item).toMatchObject({
+      title: '项目文件夹里的设置',
+      state: 'fail',
+      details: {
+        workspace: '~/work/app',
+        count: 1,
+        file1: 'Claude Code · .claude/settings.local.json：ANTHROPIC_BASE_URL、ANTHROPIC_AUTH_TOKEN',
+      },
+    })
+    expect(item?.summary).toContain('会让 Claude Code 不用当前账号')
+    expect(JSON.stringify(item)).not.toContain('elsewhere.example')
+    expect(JSON.stringify(item)).not.toContain('sk-project-secret')
+  })
+
+  it('still checks managed settings before any project folder was chosen', async () => {
+    const home = fs.realpathSync.native(temporaryHome())
+    const managed = path.join(home, 'managed')
+    fs.mkdirSync(managed, { recursive: true })
+    fs.writeFileSync(path.join(managed, 'managed-settings.json'), JSON.stringify({ apiKeyHelper: 'company-helper' }))
+    const input = dependencies(home)
+    input.platform = process.platform
+    input.claudeManagedDirectory = managed
+
+    const item = (await runDiagnostics(input)).items.find((entry) => entry.code === 'WORKSPACE_CONFIG_OVERRIDE')
+
+    expect(item?.state).toBe('warn')
+    expect(item?.summary).toBe('这台电脑上有统一下发的设置，可能会让 Claude Code 不用当前账号，需要找电脑管理员处理')
+    expect(item?.details?.workspace).toBeUndefined()
+  })
+
   it('rejects failed relay responses and refuses automatic redirects', async () => {
     const home = temporaryHome()
     const fetchImpl = vi.fn(async () => new Response(null, { status: 503 }))

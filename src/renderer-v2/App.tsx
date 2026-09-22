@@ -1,7 +1,7 @@
 import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { RefreshCw } from 'lucide-react'
 import QRCode from 'qrcode'
-import type { AccountSessionState, AppSettingsV2, CliLaunchMode, ExternalDeepLink, ExternalToolId, LegalDocumentKind, PlatformCapabilities, ProviderId, UpdateSnapshot, XingmangApi } from '../../electron/ipc-contract'
+import type { AccountSessionState, AccountSourceTarget, AppSettingsV2, CliLaunchMode, ExternalDeepLink, ExternalToolId, LegalDocumentKind, PlatformCapabilities, ProviderId, UpdateSnapshot, XingmangApi } from '../../electron/ipc-contract'
 import { resolveRelaySite, resolveSupportServiceUrl } from '../../electron/relay-sites'
 import { gitWindowsDownloadUrl } from '../../electron/git-runtime'
 import { Shell as AppFrame } from './features/shell/Shell'
@@ -11,6 +11,7 @@ import { ConfigDialog } from './features/tools/ConfigDialog'
 import { ExternalClientDialog } from './features/tools/ExternalClientDialog'
 import { Home } from './features/tools/Home'
 import { createToolsApi } from './features/tools/api'
+import { launchWarning } from './features/tools/launch-notice'
 import { chineseRuntimePatchAnswerMissing, shouldAskForChineseRuntimePatch } from './features/tools/chinese-runtime-choice'
 import { cliRuntimeBlockMessage, nodeRuntimeReady } from './features/tools/runtime-readiness'
 import { isToolId, presentTools, providerFor, toolInstallDirectory, type ToolId, type ToolSource } from './features/tools/model'
@@ -46,7 +47,7 @@ import { bootstrapAccountTools, describeAccountBootstrapFailure, describeAccount
 import { rewritableKeyProviders } from './features/tools/connection-check'
 import { applyManualSourceMarker, getSourceMarkerStorage } from './features/tools/source-marker'
 import { idleOnlineResync, noteBootstrapOutcome, planOnlineResync } from './features/tools/online-resync'
-import { accountOrigin, accountScope, accountSiteId, accountSupports, siteIdForOrigin, type AccountSiteId } from './account-context'
+import { accountOrigin, accountScope, accountSiteId, accountSupports, siteIdForOrigin, visibleAccountTab, type AccountSiteId } from './account-context'
 import { formatAccountReadError } from './features/app/account-read-error'
 import { AccountBalanceContext, useAccountBalanceStore } from './features/app/balance-context'
 import './business.css'
@@ -282,6 +283,24 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     else toast.show('已按现在这份配置处理，以后不再提示。', 'ok')
     await toolbox.refreshConfig().catch(() => undefined)
   }, [toast, toolbox.refreshConfig, toolbox.snapshot])
+  /**
+   * 首页「切到当前账号 / 切回官方账号」。主进程一次做完备份、写入、自检和失败
+   * 回滚，成功与失败都只说一句话；失败的那句走统一的错误条（perform）。
+   */
+  const switchToolAccount = useCallback(async (tool: ToolId, target: AccountSourceTarget) => {
+    if (target === 'account' && (!session.authenticated || !session.account)) { setAuth('login'); return }
+    const provider = providerFor(tool)
+    try {
+      const result = await toolsApi.switchSource(tool, target)
+      // 与配置对话框保存时一样：换了来源就清掉「自己填写密钥」的本机标记。
+      const baseUrl = toolbox.snapshot?.config.providers[provider].baseUrl
+      const markerWarning = baseUrl ? applyManualSourceMarker(getSourceMarkerStorage(), baseUrl, provider, false) : ''
+      toast.show(result.message, result.loginRequired || (target === 'account' && !result.verified) ? 'warn' : 'ok')
+      if (markerWarning) toast.show(markerWarning, 'warn')
+    } finally {
+      await toolbox.refresh(true).catch(() => undefined)
+    }
+  }, [session.account, session.authenticated, toast, toolbox.refresh, toolbox.snapshot, toolsApi])
   // 官方账号与手填密钥重写不动（重写流程本身会跳过它们），所以按钮按当前配置的
   // 来源决定给不给，而不是见到密钥层失败就画一颗出来。
   const rewritableKeys = useMemo(
@@ -523,10 +542,8 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       workspace = selectedWorkspace
     }
     return toolbox.run(`launch:${id}`, '正在打开工具', async () => {
-      const result = await toolsApi.launch(id, workspace, mode)
-      if (mounted.current && result?.chineseLocale && result.chineseLocale.status !== 'verified') {
-        toast.show(result.chineseLocale.message || 'Codex 已打开，中文界面尚未确认生效，请在配置中再次启用。', 'warn')
-      }
+      const warning = launchWarning(await toolsApi.launch(id, workspace, mode))
+      if (mounted.current && warning) toast.show(warning, 'warn')
     })
   }
   /**
@@ -731,7 +748,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
             logout: () => setConfirmation({ title: '退出星芒账号？', body: '已写入工具的配置会保留。', label: '退出登录', work: async () => { await app.logout(); await reloadAccount() } }),
           }}>
           <div key={scope} className="v2-page-host">
-            {renderedChatScope === scope && <div className="v2-chat-host" hidden={page !== 'chat'}><Suspense fallback={pageLoading}><ChatPage bridge={native} accountScope={scope} active={page === 'chat'} /></Suspense></div>}
+            {renderedChatScope === scope && <div className="v2-chat-host" hidden={page !== 'chat'}><Suspense fallback={pageLoading}><ChatPage bridge={native} accountScope={scope} active={page === 'chat'} onOpenAccount={(tab) => navigate('account', visibleAccountTab(tab, session) ? tab : 'overview')} /></Suspense></div>}
             {visitedPages.acceleration === scope && <div data-testid="page-acceleration" hidden={page !== 'acceleration'} inert={page !== 'acceleration'}>
               <Suspense fallback={pageLoading}>
                 <AccelerationPage connection={acceleration} scope={session.authenticated ? scope : null}
@@ -740,8 +757,9 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
             </div>}
             {page === 'home' ? <Home api={toolsApi} supportsUsage={accountSupports(session, 'supportsUsage')} supportsBilling={accountSupports(session, 'supportsBilling')} snapshot={toolbox.snapshot} loading={toolbox.loading} error={toolbox.error} failures={toolbox.failures} account={session.account} balance={balance} jobs={toolbox.jobs} bootstrap={accountBootstrap?.scope === scope ? accountBootstrap : null}
               externalClients={toolbox.externalClients} externalLoading={toolbox.externalLoading} externalError={toolbox.externalError} recentRevision={recentRevision}
-              onScan={() => { refreshRecent(); void toolbox.refresh(true).catch(() => undefined); void toolbox.refreshExternal().catch(() => undefined) }} onInstall={(id, version) => void perform('安装工具', () => install(id, version), id)} onCancelInstall={(id) => void perform('取消安装', () => cancelInstall(id))} onLaunch={requestLaunch} onLaunchInNewFolder={(id) => requestLaunch(id, undefined, 'new', true)} onConfigure={openToolConfig} onUninstall={requestUninstall}
+              onScan={() => { refreshRecent(); void toolbox.refresh(true).catch(() => undefined); void toolbox.refreshExternal(true).catch(() => undefined) }} onInstall={(id, version) => void perform('安装工具', () => install(id, version), id)} onCancelInstall={(id) => void perform('取消安装', () => cancelInstall(id))} onLaunch={requestLaunch} onLaunchInNewFolder={(id) => requestLaunch(id, undefined, 'new', true)} onConfigure={openToolConfig} onUninstall={requestUninstall}
               onRewriteKey={(id) => void perform('重新写入 Key', () => rewriteAccountKeys([providerFor(id)]), id)} onKeepConfig={(id) => void perform('保留当前配置', () => keepCurrentToolConfig(id))}
+              onSwitchAccount={(id, target) => void perform(target === 'account' ? '切到当前账号' : '切回官方账号', () => switchToolAccount(id, target), id)}
               onOpenConfigDirectory={(id) => void perform('打开配置文件夹', () => toolsApi.openConfigDirectory(id))}
               onInstallExternal={(id) => void perform('安装客户端', () => installExternal(id))} onLaunchExternal={(id) => void perform('打开客户端', () => launchExternal(id))}
               onConfigureExternal={setExternalClient} onCodexModels={() => { setCodexModelFilter('non-gpt'); setConfigTool(platform?.codexDesktop.launch ? 'codexDesktop' : 'codex') }}

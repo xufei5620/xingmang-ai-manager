@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { ArrowRight, ArrowUpRight, BookOpen, ChevronDown, Download, FolderOpen, History, KeyRound, MessageSquare, Plug, RefreshCw, RotateCcw, X, Zap } from 'lucide-react'
-import type { AccountBalance, AccountProfile, CliLaunchMode, ExternalClientStatus, ExternalToolId, MultiProviderSessionPage, OfficialChatGptAccount } from '../../../../electron/ipc-contract'
+import type { AccountBalance, AccountProfile, AccountSourceTarget, CliLaunchMode, ExternalClientStatus, ExternalToolId, MultiProviderSessionPage, OfficialChatGptAccount } from '../../../../electron/ipc-contract'
 import { presentExternalClients } from './external-model'
 import { useSharedAccountBalance } from '../app/balance-context'
 import { balanceStatusText } from '../shell/balance-status'
 import { BrandIcon, Button, Card, Dialog, Empty, ListRow, Menu, PageHead, Pill, Progress, ToolRow, useToast } from '../../ui'
-import { balanceTier, canUninstallTool, configDirectoryMenuItem, externalInstallHint, greeting, isExternallyManagedInstall, needsManualInstall, presentTools, recommendedVersionVerb, rollbackVersion, versionSubtitle, type ToolboxSnapshot, type ToolId, type ToolPresentation } from './model'
+import { accountSwitchTarget, balanceTier, canUninstallTool, configDirectoryMenuItem, externalInstallHint, greeting, isExternallyManagedInstall, needsManualInstall, presentTools, recommendedVersionVerb, rollbackVersion, versionSubtitle, type ToolboxSnapshot, type ToolId, type ToolPresentation } from './model'
 import type { ToolboxPartitionFailure, ToolsApi } from './api'
 import type { ToolJob } from './useToolbox'
 import type { AccountBootstrapProgress, AccountBootstrapResult } from './account-bootstrap'
@@ -60,6 +60,11 @@ export interface HomeProps {
   onRewriteKey?(tool: ToolId): void
   /** 配置被改动过时认下现在这份配置，以后不再提；缺省 = 不给这个菜单项（旧行为）。 */
   onKeepConfig?(tool: ToolId): void
+  /**
+   * 一键切换账号来源（切到当前账号 / 切回官方账号）；缺省 = 不给这个菜单项（旧行为）。
+   * 备份、写入、自检、失败回滚都由主进程一次做完，这里只负责把人送过去。
+   */
+  onSwitchAccount?(tool: ToolId, target: AccountSourceTarget): void
   /** 在资源管理器 / 访达里打开这个工具的配置文件夹；缺省 = 不给这个菜单项（旧行为）。 */
   onOpenConfigDirectory?(tool: ToolId): void
   onConfigureExternal(tool: ExternalToolId): void
@@ -91,6 +96,11 @@ const offlineBootstrapNotice = '当前网络不可用，已装好的工具照常
  * 文案以「当前账号」为主语，不提站点。
  */
 const configChangedDetail = '配置在软件之外被改动过，当前账号的 Key 可能已经不在里面了'
+
+const accountSwitchLabels: Record<AccountSourceTarget, string> = {
+  account: '切到当前账号',
+  official: '切回官方账号',
+}
 
 function bootstrapErrorText(error: string) {
   return isNetworkFailureText(error) ? offlineBootstrapNotice : `账号 Key 初始化没有完成：${error}`
@@ -222,6 +232,8 @@ export function Home(props: HomeProps) {
     const primary = () => configUnavailable ? props.onConfigure(tool.id) : tool.error ? props.onScan() : !tool.status.installed ? props.onInstall(tool.id)
       : tool.configured ? props.onLaunch(tool.id, lastWorkspace?.path) : props.onConfigure(tool.id)
     const rollback = job ? null : rollbackVersion(tool)
+    // 配置那一块没读到时来源是未知的，不给切换，免得在一份没读到的配置上做决定。
+    const switchTarget = configUnavailable || tool.error ? null : accountSwitchTarget(tool)
     const blocked = tool.versionAdvice?.blockedReason ?? null
     // 原生/其他来源装的 CLI 不走本工具的 npm 通道，不给 npm 更新/回滚按钮，
     // 该更新时改用一句被动提示，避免在 npm 全局目录另装一份并存。
@@ -273,6 +285,7 @@ export function Home(props: HomeProps) {
         // 故意改过配置的人也要有出路，否则那颗黄角标会一直挂着。认下之后这个工具
         // 就按「自己填写的密钥」处理，下次在配置里改回星芒账号时标记自动清掉。
         ...(status === 'configChanged' && props.onKeepConfig ? [{ label: '就用现在这份', testId: `tool-${tool.id}-keep-config`, onSelect: () => props.onKeepConfig?.(tool.id) }] : []),
+        ...(switchTarget && props.onSwitchAccount ? [{ label: accountSwitchLabels[switchTarget], testId: `tool-${tool.id}-switch-${switchTarget}`, onSelect: () => props.onSwitchAccount?.(tool.id, switchTarget) }] : []),
         // 界面上一直只把配置路径写成一行灰字，而 `.` 开头的目录在资源管理器和
         // 访达里默认都看不见，用户和客服只能手敲路径。
         ...(props.onOpenConfigDirectory ? [{

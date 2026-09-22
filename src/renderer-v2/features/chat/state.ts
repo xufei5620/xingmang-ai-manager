@@ -1,4 +1,5 @@
 import type { AiChatAsset, AiChatErrorCode, AiChatGroupSummary, AiChatMessageInput, AiChatParametersInput, AiChatStreamEvent } from '../../../../electron/ipc-contract'
+import { matchRelayQuotaFailureMessage, relayQuotaFailureMessages } from '../../../../electron/relay-quota-failure'
 import { chatLimits } from './api'
 
 export type ChatMode = 'text' | 'image'
@@ -129,6 +130,10 @@ export function chatErrorMessage(error: unknown, code?: AiChatErrorCode): string
   // 下一步怎么办，归进下面任何一类都会把这两句丢掉。
   const unwritable = message.indexOf('保存位置写不进去')
   if (unwritable >= 0) return message.slice(unwritable)
+  // 主进程已经把余额不足、Key 额度上限、Key 失效分开说好了，这里原样放行；否则下面那条
+  // 宽泛的「余额」正则会把「额度上限用完」又改回「请充值」。
+  const quota = matchRelayQuotaFailureMessage(message)
+  if (quota) return relayQuotaFailureMessages[quota]
   if (/余额|额度不足|insufficient|quota|402/i.test(message)) return '账号余额或密钥额度不足，请充值或更换可用分组后重试'
   if (/401|credential|未登录|登录|密钥|key.*失效/i.test(message)) return '当前登录或密钥已失效，请重新登录后准备分组'
   if (/429|rate.limit|限流|频繁/i.test(message)) return '请求太频繁，请稍候再试'
@@ -140,6 +145,14 @@ export function chatErrorMessage(error: unknown, code?: AiChatErrorCode): string
   if (/可能仍|结果不明确|重复提交/.test(message)) return '请求提交结果不明确，服务端可能仍在处理，请勿立即重复提交'
   if (/^当前对话|^找不到要|^请先|^单条消息|^这段对话/.test(message)) return message
   return '本次请求没有完成，已保留内容，请稍后重试'
+}
+
+/** 余额不足给「去充值」，Key 额度上限给「去调额度」；Key 失效时点「重新生成」就会换新 Key。 */
+export function chatErrorAction(message: string | undefined): 'recharge' | 'keys' | null {
+  const quota = matchRelayQuotaFailureMessage(message ?? '')
+  if (quota === 'balance') return 'recharge'
+  if (quota === 'keyLimit') return 'keys'
+  return null
 }
 
 export function updateRequest(state: ChatWorkspace, requestId: string, change: (message: ChatMessage) => ChatMessage): ChatWorkspace {

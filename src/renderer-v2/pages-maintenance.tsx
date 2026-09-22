@@ -177,6 +177,14 @@ export function diagnosticTarget(code: string): V2Page {
 }
 
 /**
+ * 有些项只能提醒、没有本软件能替用户做的一步：「项目文件夹里的设置」那些文件是
+ * 用户或公司的，本软件不去改，结论里已经说了怎么办，再给「去处理」只会原地跳转。
+ */
+export function diagnosticHasFix(code: string): boolean {
+  return code !== 'WORKSPACE_CONFIG_OVERRIDE'
+}
+
+/**
  * 每个工具一条结论。未配置的工具是灰的、不是红的：一个只用 Claude Code 的
  * 用户不该在这一页上看到三条失败。
  */
@@ -271,7 +279,9 @@ export function HealthPage({
           return { id: tool.id, provider: tool.id, name: tool.name, result: null, error: errorMessage(error) }
         }
       })),
-      Promise.all(clientConnections.map(async (client): Promise<ConnectionRow | null> => {
+      // 本机客户端盘点平时会复用几分钟；用户在这里亲手点「测试连接」时先强制重新
+      // 盘点一次，刚装上的客户端才会出现在结果里。盘点失败不拦着自检，各条照常报错。
+      api.scanExternalClients(true).catch(() => undefined).then(() => Promise.all(clientConnections.map(async (client): Promise<ConnectionRow | null> => {
         try {
           const result = await api.checkExternalClientConnection(client.id)
           // 没装这个客户端的用户不该在这一页上多看三行：那不是结论，是噪音。
@@ -280,7 +290,7 @@ export function HealthPage({
         } catch (error) {
           return { id: client.id, provider: null, name: client.name, result: null, error: errorMessage(error) }
         }
-      })),
+      }))),
     ])
     setConnections([...cliRows, ...clientRows.filter((row): row is ConnectionRow => row !== null)])
   }
@@ -419,7 +429,7 @@ export function HealthPage({
               desc={item.summary}
               actions={
                 <>
-                  {item.state !== 'pass' && (
+                  {item.state !== 'pass' && diagnosticHasFix(item.code) && (
                     <Button
                       size="sm"
                       icon={Wrench}

@@ -86,6 +86,40 @@ test('lists selectable acceleration lines, checks ping and switches back to smar
   } finally { if (!page.isClosed()) await page.close() }
 })
 
+test('the line list is one Tab stop: arrows move between rows without choosing, Enter or Space chooses', async () => {
+  const page = await open()
+  try {
+    await page.getByTestId('acceleration-line-picker-toggle').click()
+    const list = page.getByRole('listbox', { name: '加速线路选择' })
+    const options = list.getByRole('option')
+    assert.equal(await options.count(), 4)
+    const stops = await options.evaluateAll(rows => rows.map(row => row.tabIndex))
+    assert.deepEqual(stops, [0, -1, -1, -1], 'only the selected row sits in the Tab order')
+    const focusedRow = () => page.evaluate(() => document.activeElement?.getAttribute('data-testid'))
+    const selected = () => options.evaluateAll(rows => rows.filter(row => row.getAttribute('aria-selected') === 'true').map(row => row.getAttribute('data-testid')))
+
+    await page.getByTestId('acceleration-line-auto').focus()
+    await page.keyboard.press('ArrowDown')
+    await page.keyboard.press('ArrowDown')
+    const second = await options.nth(2).getAttribute('data-testid')
+    assert.equal(await focusedRow(), second)
+    assert.deepEqual(await selected(), ['acceleration-line-auto'], 'moving with the arrows does not change the choice')
+    await page.keyboard.press('End')
+    const last = await options.nth(3).getAttribute('data-testid')
+    assert.equal(await focusedRow(), last)
+    await page.keyboard.press('ArrowDown')
+    assert.equal(await focusedRow(), last, 'the last row does not wrap to the first')
+
+    await page.keyboard.press('Enter')
+    assert.deepEqual(await selected(), [last])
+    await page.keyboard.press('Home')
+    assert.equal(await focusedRow(), 'acceleration-line-auto')
+    await page.keyboard.press(' ')
+    assert.deepEqual(await selected(), ['acceleration-line-auto'])
+    assert.equal(await page.getByTestId('acceleration-line-current').innerText(), '智能分配')
+  } finally { await clean(page) }
+})
+
 test('network location refreshes on connect and disconnect, stays synced on other pages and supports retry', async () => {
   const page = await open()
   try {
