@@ -136,6 +136,9 @@ async function handle(message: unknown): Promise<unknown> {
     return backend.pingAccelerationLine?.(request.scope, request.lineId)
   }
   if (request.operation === 'stop') return backend.stopAcceleration(request.scope)
+  // 下载专用线路：只起内核、只交出本机端口，不动系统代理（见 backend 里的注释）。
+  if (request.operation === 'download-start') return backend.startDownloadRoute(request.scope)
+  if (request.operation === 'download-stop') return backend.stopDownloadRoute()
   if (request.operation === 'redeem-code' && typeof request.code === 'string' && request.code.length <= 64) {
     return backend.redeemAccelerationCode?.(request.scope, request.code)
   }

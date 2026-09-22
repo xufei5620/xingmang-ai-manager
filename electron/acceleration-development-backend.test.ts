@@ -886,6 +886,138 @@ describe('acceleration start failure reporting', () => {
   })
 })
 
+describe('download-only acceleration route', () => {
+  it('starts the core without ever touching the system proxy', async () => {
+    const test = await setup()
+    const route = await test.backend.startDownloadRoute(scope)
+    expect(route).toEqual({ status: 'ready', port: 19001 })
+    expect(test.runtime.start).toHaveBeenCalledTimes(1)
+    // 下载专用：内核起来了，系统代理一行未动（proxy:restore 是启动时的崩溃恢复）。
+    expect(test.proxy.enable).not.toHaveBeenCalled()
+    expect(test.events).toEqual(['proxy:restore', 'runtime:start'])
+  })
+
+  it('keeps the acceleration page showing an idle account', async () => {
+    const test = await setup()
+    await test.backend.startDownloadRoute(scope)
+    const state = await test.backend.getAccelerationState(scope)
+    expect(state).toMatchObject({ phase: 'idle', connectedAt: null, line: null, error: null })
+    expect(state.remainingSeconds).toBe(accelerationTrialSeconds)
+  })
+
+  it('does not bill the free allowance', async () => {
+    const test = await setup()
+    await test.backend.startDownloadRoute(scope)
+    test.elapse(120_000)
+    await test.backend.stopDownloadRoute()
+    const state = await test.backend.getAccelerationState(scope)
+    expect(state.remainingSeconds).toBe(accelerationTrialSeconds)
+    // 一个字节都没写：下载既不开账也不结账。
+    await expect(fs.readFile(test.ledgerPath, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
+  it('shares one core between downloads and stops it after the last one', async () => {
+    const test = await setup()
+    await test.backend.startDownloadRoute(scope)
+    await test.backend.startDownloadRoute(scope)
+    expect(test.runtime.start).toHaveBeenCalledTimes(1)
+    await test.backend.stopDownloadRoute()
+    expect(test.runtime.stop).not.toHaveBeenCalled()
+    await test.backend.stopDownloadRoute()
+    expect(test.runtime.stop).toHaveBeenCalledTimes(1)
+  })
+
+  it('refuses once the account has spent its allowance', async () => {
+    const test = await setup()
+    await test.backend.startAcceleration(scope, 'system-proxy')
+    await test.advance(accelerationTrialSeconds * 1000)
+    expect((await test.backend.getAccelerationState(scope)).phase).toBe('exhausted')
+    test.runtime.start.mockClear()
+    expect(await test.backend.startDownloadRoute(scope)).toEqual({ status: 'unavailable' })
+    expect(test.runtime.start).not.toHaveBeenCalled()
+  })
+
+  it('leaves a running game session alone', async () => {
+    const test = await setup()
+    await test.backend.startAcceleration(scope, 'system-proxy')
+    test.runtime.start.mockClear()
+    expect(await test.backend.startDownloadRoute(scope)).toEqual({ status: 'system-proxy-active' })
+    expect(test.runtime.start).not.toHaveBeenCalled()
+    expect((await test.backend.getAccelerationState(scope)).phase).toBe('active')
+  })
+
+  it('reports the failure stage instead of swallowing a core that cannot start', async () => {
+    const test = await setup()
+    test.runtime.start.mockImplementationOnce(async () => { throw new Error('加速内核启动失败') })
+    expect(await test.backend.startDownloadRoute(scope)).toEqual({ status: 'unavailable' })
+    expect(test.onStartDiagnostic).toHaveBeenCalledWith('core-launch')
+    expect((await test.backend.getAccelerationState(scope)).phase).toBe('idle')
+  })
+
+  it('adopts the running download core when the user then starts acceleration', async () => {
+    const test = await setup()
+    await test.backend.startDownloadRoute(scope)
+    test.runtime.start.mockClear()
+    const state = await test.backend.startAcceleration(scope, 'system-proxy')
+    expect(state).toMatchObject({ phase: 'active', line })
+    // 内核不重起，所以正在下载的包不会断在半路。
+    expect(test.runtime.start).not.toHaveBeenCalled()
+    expect(test.proxy.enable).toHaveBeenCalledWith(19001)
+  })
+
+  it('restarts the core when the user picks another line', async () => {
+    const test = await setup()
+    await test.backend.startDownloadRoute(scope)
+    test.runtime.start.mockClear()
+    await test.backend.startAcceleration(scope, 'system-proxy', 'line-1')
+    expect(test.runtime.start).not.toHaveBeenCalled()
+    await test.backend.stopAcceleration(scope)
+    await test.backend.startDownloadRoute(scope)
+    test.runtime.start.mockClear()
+    test.runtime.stop.mockClear()
+    await test.backend.startAcceleration(scope, 'system-proxy', 'line-2')
+    expect(test.runtime.stop).toHaveBeenCalled()
+    expect(test.runtime.start).toHaveBeenCalledWith('line-2')
+  })
+
+  it('keeps the core alive for a download when the game session stops', async () => {
+    const test = await setup()
+    await test.backend.startDownloadRoute(scope)
+    await test.backend.startAcceleration(scope, 'system-proxy')
+    test.runtime.stop.mockClear()
+    await test.backend.stopAcceleration(scope)
+    expect(test.proxy.restore).toHaveBeenCalled()
+    expect(test.runtime.stop).not.toHaveBeenCalled()
+    await test.backend.stopDownloadRoute()
+    expect(test.runtime.stop).toHaveBeenCalledTimes(1)
+  })
+
+  it('refuses a line probe while a download holds the core', async () => {
+    const test = await setup(undefined, async () => line)
+    await test.backend.startDownloadRoute(scope)
+    await expect(test.backend.pingAccelerationLine!(scope, 'line-1')).rejects.toThrow('正在下载安装包，暂不能检测线路。')
+  })
+
+  it('stops a download-only core on shutdown', async () => {
+    const test = await setup()
+    await test.backend.startDownloadRoute(scope)
+    await test.backend.dispose()
+    expect(test.runtime.stop).toHaveBeenCalled()
+  })
+
+  it('forgets the route when the core exits on its own', async () => {
+    const test = await setup()
+    await test.backend.startDownloadRoute(scope)
+    test.setRunning(false)
+    await test.backend.notifyRuntimeExit()
+    test.runtime.stop.mockClear()
+    // 端口已经没了，这次 stop 不该再去减一个不存在的持有。
+    await test.backend.stopDownloadRoute()
+    expect(test.runtime.stop).not.toHaveBeenCalled()
+    expect(await test.backend.startDownloadRoute(scope)).toEqual({ status: 'ready', port: 19001 })
+  })
+})
+
 describe('classifyAccelerationWorkerFailure', () => {
   it('separates a live owner from a lock it could not even take', () => {
     // 两句都以「系统代理」开头，但下一步完全不同：前者退掉旧软件就好，后者是

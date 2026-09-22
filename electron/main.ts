@@ -21,7 +21,7 @@ import { AccountCredentialStore } from './account-credential-store'
 import { AnnouncementReadStore } from './announcement-read-store'
 import { createAccelerationService } from './acceleration-service'
 import { accelerationConflictDescriptions, accelerationFailureMessages } from './acceleration-contract'
-import { accelerationStartFailureDescriptions, createAccelerationDevelopmentHost, readAccelerationDevelopmentConfig } from './acceleration-development-host'
+import { accelerationStartFailureDescriptions, createAccelerationDevelopmentHost, readAccelerationDevelopmentConfig, type AccelerationDevelopmentHost } from './acceleration-development-host'
 import { readBundledAccelerationConfig } from './acceleration-bundled-config'
 import { AiAssetStore, resolveAiOutputRoot } from './ai-asset-store'
 import { AI_CHAT_STREAM_LIMITS, createAiChatService } from './ai-chat-service'
@@ -119,7 +119,9 @@ import {
 import {
   parseChromiumProxyResult,
   subprocessDownloadProxyEnvironment,
+  type DownloadProxyEndpoint,
 } from './download-proxy'
+import { createDownloadAccelerationCoordinator } from './download-acceleration'
 import {
   createSystemService,
   type SystemService,
@@ -745,6 +747,34 @@ if (!hasSingleInstanceLock) {
     })
     let readAccountSiteId: () => string = () => 'solov'
     let readExternalClientAccountId: () => string | null = () => null
+    // 下载专用的网络分区：它的代理只在装 CLI / 下 Node 的那几分钟里被设成加速
+    // 内核的回环端口，默认 session 一行不动，所以账号、中转与画布流量不受
+    // 影响。非 persist: 前缀 = 内存分区，不落盘。
+    const acceleratedDownloadSession = session.fromPartition('xingmang-download-acceleration')
+    let acceleratedDownloadProxyRules: string | null = null
+    async function applyAcceleratedDownloadProxy(endpoint: DownloadProxyEndpoint | null): Promise<void> {
+      const rules = endpoint ? `http=${endpoint.host}:${endpoint.port};https=${endpoint.host}:${endpoint.port}` : null
+      if (rules === acceleratedDownloadProxyRules) return
+      await acceleratedDownloadSession.setProxy(rules
+        ? { proxyRules: rules, proxyBypassRules: '<local>' }
+        : { mode: 'direct' })
+      acceleratedDownloadProxyRules = rules
+    }
+    // 账号服务也建得比这里晚。下载线路与游戏加速用的是同一个账号口径，所以
+    // 指向同一个读取函数，而不是各写一份。
+    let readAccelerationAccountScope: () => string | null = () => null
+    // 加速宿主要晚得多才建得起来（它依赖账号与随包资源）。在那之前这里是空的，
+    // 任何一次下载都按没加速继续。
+    let accelerationDownloadRoutes: Pick<AccelerationDevelopmentHost, 'startDownloadRoute' | 'stopDownloadRoute'> | null = null
+    const downloadAcceleration = createDownloadAccelerationCoordinator({
+      getAccountScope: () => readAccelerationAccountScope(),
+      startRoute: (scope) => accelerationDownloadRoutes
+        ? accelerationDownloadRoutes.startDownloadRoute(scope)
+        : Promise.resolve({ status: 'unavailable' as const }),
+      stopRoute: async (scope) => { await accelerationDownloadRoutes?.stopDownloadRoute(scope) },
+      onRouteChanged: applyAcceleratedDownloadProxy,
+      log: (level, event, message, detail) => runtimeLog.log(level, 'network', event, message, detail),
+    })
     const systemService = createSystemService(settingsStore, {
       managerDataDirectory,
       getRelaySiteId: () => readAccountSiteId(),
@@ -763,12 +793,28 @@ if (!hasSingleInstanceLock) {
       reloadNetworkProxyConfig: () => session.defaultSession.forceReloadProxyConfig(),
       // CLI 产物下载以前走 Node 自带的网络栈，它不读系统代理，所以开着加速也
       // 一样直连。Chromium 的网络栈读，于是下载才真的走线路。
-      downloadFetch: (input, init) => net.fetch(input instanceof URL ? input.href : input, init),
-      resolveSubprocessProxyEnvironment: async () => subprocessDownloadProxyEnvironment(
-        // A PAC script can answer differently per host, so ask about the one
-        // host every CLI install has to reach.
-        parseChromiumProxyResult(await session.defaultSession.resolveProxy('https://registry.npmjs.org/')),
-      ),
+      // 临时线路生效时改走那条专用 session（它的代理只对下载有效，默认
+      // session 一行未动，账号与中转流量不受影响）。
+      downloadFetch: (input, init) => {
+        const url = input instanceof URL ? input.href : input
+        // 专用 session 的 fetch 只收字符串或 Request；下载链路一律传 URL 字符串。
+        if (downloadAcceleration.currentEndpoint() && typeof url === 'string') {
+          return acceleratedDownloadSession.fetch(url, init)
+        }
+        return net.fetch(url, init)
+      },
+      resolveSubprocessProxyEnvironment: async () => {
+        // 临时线路本身就是回环端点，直接交给子进程；没有临时线路时仍然沿用
+        // 系统代理那条老路（跨提权边界的过滤在 download-proxy.ts 里）。
+        const endpoint = downloadAcceleration.currentEndpoint()
+        if (endpoint) return subprocessDownloadProxyEnvironment(endpoint)
+        return subprocessDownloadProxyEnvironment(
+          // A PAC script can answer differently per host, so ask about the one
+          // host every CLI install has to reach.
+          parseChromiumProxyResult(await session.defaultSession.resolveProxy('https://registry.npmjs.org/')),
+        )
+      },
+      acquireDownloadAcceleration: () => downloadAcceleration.acquire(),
     })
     const storedSettings = systemService.readStoredConfig()
     const sessionsService = new CodexSessionsService({
@@ -1555,13 +1601,15 @@ if (!hasSingleInstanceLock) {
     if (developmentAcceleration) void developmentAcceleration.recover().catch((error) => {
       runtimeLog.exception('network', 'acceleration.recover.failed', error)
     })
+    readAccelerationAccountScope = () => {
+      const state = accountService.getSessionState()
+      if (!state.authenticated || !state.account) return null
+      return `${accounts.getSiteId() === 'solov-api' ? 'api-account' : 'xm-account'}:${state.account.userId}`
+    }
+    accelerationDownloadRoutes = developmentAcceleration ?? null
     acceleration = createAccelerationService({
       backend: developmentAcceleration,
-      getAccountScope: () => {
-        const state = accountService.getSessionState()
-        if (!state.authenticated || !state.account) return null
-        return `${accounts.getSiteId() === 'solov-api' ? 'api-account' : 'xm-account'}:${state.account.userId}`
-      },
+      getAccountScope: () => readAccelerationAccountScope(),
     })
     const unregisterIpcHandlers = registerIpcHandlers({
       acceleration,

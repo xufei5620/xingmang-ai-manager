@@ -3,6 +3,7 @@ import { performance } from 'node:perf_hooks'
 import type { AccelerationApi, AccelerationConflictKind, AccelerationFailureReason, AccelerationLine, AccelerationRedemptionResult, AccelerationState } from './acceleration-contract'
 import { accelerationBonusSeconds, accelerationConflictNotice, accelerationTrialSeconds, isAccelerationBonusCode } from './acceleration-contract'
 import { ensureSafeDataDirectory, readSafeUtf8File, writeAtomicSafeUtf8File } from './safe-local-data'
+import type { AccelerationDownloadRouteResult } from './download-acceleration'
 
 export type AccelerationStopFailureStage = 'proxy-restore' | 'core-stop' | 'ledger-write'
 
@@ -60,6 +61,13 @@ export interface AccelerationDevelopmentBackendOptions {
 }
 
 export interface AccelerationDevelopmentBackend extends AccelerationApi {
+  /**
+   * 下载专用线路：起内核、只交出本机回环端口，**不碰系统代理**，所以它既不
+   * 出现在界面的加速状态里，也不需要用户点「连接」。按持有数计数，多个下载
+   * 共用同一个内核（见 download-acceleration.ts）。
+   */
+  startDownloadRoute(scope: string): Promise<AccelerationDownloadRouteResult>
+  stopDownloadRoute(): Promise<void>
   recover(): Promise<void>
   notifyRuntimeExit(): Promise<void>
   dispose(): Promise<void>
@@ -82,6 +90,15 @@ interface Session {
   stoppedMono: number | null
   error: string | null
 }
+
+/**
+ * 下载临时加速是否计入免费时长。按「不计入」：这次加速是软件为了把包下下来
+ * 自己发起的，不是用户点的，把它算进那 20 分钟等于替用户花钱。额度本身仍然
+ * 是门槛——用完的账号不再起临时线路——所以这不是一条无限免费的路。
+ * 改成 true 即可按会话计费（届时 startDownloadRoute 要像 startAcceleration
+ * 一样写 startedAt，stopDownloadRoute 要结算 usedMs）。
+ */
+export const downloadRouteBillsFreeAllowance = false
 
 const baseTotalMs = accelerationTrialSeconds * 1000
 function accountTotalMs(entry: AccountUsage): number {
@@ -196,6 +213,9 @@ export function createAccelerationDevelopmentBackend(options: AccelerationDevelo
   let closing = false
   let disposed = false
   let probeNeedsCleanup = false
+  // 下载专用线路：holders 是还在下载的数量，route 是它们共用的那个端口。
+  let downloadHolders = 0
+  let downloadRoute: { port: number; line: AccelerationLine } | null = null
   const lastErrors = new Map<string, string>()
   const lastConflicts = new Map<string, AccelerationConflictKind[]>()
   const lastSessionSeconds = new Map<string, number>()
@@ -337,13 +357,23 @@ export function createAccelerationDevelopmentBackend(options: AccelerationDevelo
       }).catch(() => undefined)
     }, Math.max(1, Math.ceil(milliseconds)))
   }
+  /**
+   * 停内核。下载专用线路还有人握着时留着它：一次游戏加速的结束并不代表那边
+   * 的下载也结束了，端口一没就是下到一半的包断在那里。
+   */
+  function stopCore(): Promise<void> {
+    return stopStage('core-stop', async () => {
+      if (downloadHolders > 0 && downloadRoute) return
+      // A previous stop can exit the process yet fail to remove its private
+      // config. Retry the idempotent cleanup even when isRunning is false.
+      await options.runtime.stop()
+      if (options.runtime.isRunning()) throw new Error(stopFailure)
+    })
+  }
   async function stopSession() {
     if (!session) {
       if (probeNeedsCleanup) {
-        await stopStage('core-stop', async () => {
-          await options.runtime.stop()
-          if (options.runtime.isRunning()) throw new Error(stopFailure)
-        })
+        await stopCore()
         probeNeedsCleanup = false
       }
       return
@@ -356,12 +386,7 @@ export function createAccelerationDevelopmentBackend(options: AccelerationDevelo
         // Keep the core alive until proxy restoration succeeds. Otherwise an
         // incomplete restore could leave every proxied app pointing at a dead port.
         await stopStage('proxy-restore', () => options.proxy.restore())
-        await stopStage('core-stop', async () => {
-          // A previous stop can exit the process yet fail to remove its private
-          // config. Retry the idempotent cleanup even when isRunning is false.
-          await options.runtime.stop()
-          if (options.runtime.isRunning()) throw new Error(stopFailure)
-        })
+        await stopCore()
         current.stoppedMono = monotonicNow()
       }
       const spent = elapsed(current)
@@ -436,6 +461,16 @@ export function createAccelerationDevelopmentBackend(options: AccelerationDevelo
         lastConflicts.delete(scope)
         if (usage(scope).usedMs >= accountTotalMs(usage(scope))) return state(scope)
         if (await detectConflicts(scope, ignoreConflicts === true)) return state(scope)
+        // 下载专用线路已经把内核跑起来了：同一条线路直接接管，不重起内核，
+        // 正在进行的下载因此不会断在半路。用户点名了另一条线路才必须重起。
+        let adopted: { port: number; line: AccelerationLine } | null = null
+        if (downloadRoute && options.runtime.isRunning() && (!lineId || lineId === downloadRoute.line.id)) {
+          adopted = downloadRoute
+        } else if (downloadRoute) {
+          downloadRoute = null
+          downloadHolders = 0
+          try { await options.runtime.stop() } catch { /* 下面的 start 会把失败重新报出来。 */ }
+        }
         // Persist intent before touching OS state. A crash in the startup gap
         // is conservatively billed; an ordinary failed start clears it unpaid.
         try { await saveAccount(scope, { usedMs: usage(scope).usedMs, startedAt: now() }) }
@@ -445,7 +480,7 @@ export function createAccelerationDevelopmentBackend(options: AccelerationDevelo
         // purpose. `phase` is what survives that collapse for the log.
         let phase: AccelerationStartFailurePhase = 'runtime'
         try {
-          const result = await options.runtime.start(lineId)
+          const result = adopted ? { line: adopted.line, proxyPort: adopted.port } : await options.runtime.start(lineId)
           phase = 'verify'
           if (!Number.isInteger(result.proxyPort) || result.proxyPort < 1 || result.proxyPort > 65535 || !options.runtime.isRunning()) throw new Error(startFailure)
           session.line = { id: result.line.id, name: result.line.name, region: result.line.region, latencyMs: result.line.latencyMs }
@@ -484,6 +519,8 @@ export function createAccelerationDevelopmentBackend(options: AccelerationDevelo
         if (closing || disposed) throw new Error('本机加速服务正在关闭。')
         try { await recover() } catch { throw new Error(ledgerFailure) }
         if (session) throw new Error('加速连接进行中，暂不能检测线路。')
+        // 探测要独占内核，而下载专用线路正握着它。此时重起内核会把下载打断。
+        if (downloadRoute) throw new Error('正在下载安装包，暂不能检测线路。')
         if (probeNeedsCleanup) await stopSession()
         const lines = options.listLines ? await options.listLines() : []
         const line = lines.find((candidate) => candidate.id === lineId)
@@ -517,9 +554,60 @@ export function createAccelerationDevelopmentBackend(options: AccelerationDevelo
         return state(scope)
       })
     },
+    startDownloadRoute(scope) {
+      assertScope(scope)
+      return enqueue(async (): Promise<AccelerationDownloadRouteResult> => {
+        if (closing || disposed) return { status: 'unavailable' }
+        try { await recover() } catch { return { status: 'unavailable' } }
+        // 用户自己开着加速：系统代理已经指向内核，下载跟着走就行，别插手。
+        if (session) return options.runtime.isRunning() ? { status: 'system-proxy-active' } : { status: 'unavailable' }
+        if (downloadRoute && options.runtime.isRunning()) {
+          downloadHolders += 1
+          return { status: 'ready', port: downloadRoute.port }
+        }
+        // 内核已经不在了，记录也就作废，别让后来的 stop 去减一个不存在的持有。
+        downloadRoute = null
+        downloadHolders = 0
+        try { if (probeNeedsCleanup) await stopSession() } catch { return { status: 'unavailable' } }
+        // 下载不计费（见 downloadRouteBillsFreeAllowance），但额度仍是门槛：
+        // 用完的账号不再起临时线路，免得这里变成一条绕开时长的免费通道。
+        if (usage(scope).usedMs >= accountTotalMs(usage(scope))) return { status: 'unavailable' }
+        try {
+          const result = await options.runtime.start()
+          if (!Number.isInteger(result.proxyPort) || result.proxyPort < 1 || result.proxyPort > 65_535
+            || !options.runtime.isRunning()) throw new Error(startFailure)
+          downloadRoute = { port: result.proxyPort, line: result.line }
+          downloadHolders = 1
+          return { status: 'ready', port: result.proxyPort }
+        } catch (error) {
+          // 失败照样进日志：这条路用户点不到，不记就完全看不见。
+          reportStartFailure(error, 'runtime')
+          downloadRoute = null
+          downloadHolders = 0
+          // 起了一半的内核必须收掉，否则端口留在机器上没人管。
+          try { await options.runtime.stop() } catch { /* 停不掉就交给下一次 start / dispose。 */ }
+          return { status: 'unavailable' }
+        }
+      })
+    },
+    stopDownloadRoute() {
+      return enqueue(async () => {
+        if (downloadHolders > 0) downloadHolders -= 1
+        if (downloadHolders > 0 || !downloadRoute) return
+        downloadRoute = null
+        // 下载期间用户自己开了加速：内核已经归那个会话所有，不能在这里停。
+        if (session) return
+        try { await options.runtime.stop() }
+        catch { /* 下一次 start / stop / dispose 会再清一次；下载不该因此报错。 */ }
+      })
+    },
     recover: () => enqueue(recover),
     notifyRuntimeExit: () => enqueue(async () => {
-      if (!session || disposed || options.runtime.isRunning()) return
+      if (options.runtime.isRunning()) return
+      // 内核没了，下载线路的端口也就没了。记录必须跟着作废。
+      downloadRoute = null
+      downloadHolders = 0
+      if (!session || disposed) return
       const scope = session.scope
       try { await stopSession(); lastErrors.set(scope, exitFailure) }
       catch { arm(5000); throw new Error(stopFailure) }
@@ -529,7 +617,16 @@ export function createAccelerationDevelopmentBackend(options: AccelerationDevelo
       return enqueue(async () => {
         if (disposed) return
         await recover()
+        // 退出时下载线路没有豁免：内核必须停干净，端口不能留在机器上。
+        downloadHolders = 0
+        downloadRoute = null
         try { await stopSession() } catch { arm(5000); throw new Error(stopFailure) }
+        if (options.runtime.isRunning()) {
+          try {
+            await options.runtime.stop()
+            if (options.runtime.isRunning()) throw new Error(stopFailure)
+          } catch { arm(5000); throw new Error(stopFailure) }
+        }
         clearTimer()
         disposed = true
       })
