@@ -313,6 +313,15 @@ function disableGrokSelfUpdate(parsed: Record<string, unknown>): void {
   ensureRecord(parsed, 'cli').auto_update = false
 }
 
+// Grok CLI 的对话走 [model."grok"].base_url，但生成图片、改图、生成视频这几个工具另走
+// endpoints.xai_api_base_url（默认 https://api.x.ai/v1），而且带的是同一把 api_key。
+// 不改的话，用户一让它画图，中转 Key 就被发到 xAI 官方；国内连不上，还要卡 120 秒。
+// 沙箱实测 1.0.40：改指中转后 /v1/images/generations 打到中转，0.5 秒返回，不再连
+// api.x.ai。中转有没有对应的出图模型是另一回事，至少 Key 不外流、也不卡。
+function pointGrokXaiApiAtRelay(parsed: Record<string, unknown>, relayBaseUrl: string): void {
+  ensureRecord(parsed, 'endpoints').xai_api_base_url = relayBaseUrl
+}
+
 // Claude Code 与 Gemini CLI 都会自己删本机会话记录，默认都是 30 天，而记录页、首页
 // 「最近」卡、「接着聊」、导出记录全都建立在那些文件还在的前提上——用户只会看到
 // 「上个月那条对话不见了」。本软件替用户把保留期放长到一年。
@@ -1472,6 +1481,9 @@ function createPlans(
           'context_window = 1000000',
           'supports_backend_search = true',
           '',
+          '[endpoints]',
+          `xai_api_base_url = ${tomlString(siteBaseUrls.grok)}`,
+          '',
         ].join('\n'),
       }]
   }
@@ -1565,6 +1577,7 @@ function createMergePlans(
       targetModel.model = model
       targetModel.base_url = siteBaseUrls.grok
       disableGrokSelfUpdate(parsed)
+      pointGrokXaiApiAtRelay(parsed, siteBaseUrls.grok)
       return [{ path: paths[0], content: tomlContent(parsed) }]
     }
   }

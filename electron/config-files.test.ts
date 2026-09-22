@@ -403,6 +403,7 @@ describe('native CLI configuration files', () => {
         const settings = TOML.parse(fs.readFileSync(paths[0], 'utf8'))
         expect(settings.cli).toEqual({ auto_update: false })
         expect(settings.models).toEqual({ default: 'grok', web_search: 'grok' })
+        expect(settings.endpoints).toEqual({ xai_api_base_url: 'https://xm.solov.cc/v1' })
         expect(asRecord(settings.model)?.grok).toMatchObject({
           model,
           base_url: 'https://xm.solov.cc/v1',
@@ -786,6 +787,25 @@ describe('native CLI configuration files', () => {
     expect(TOML.parse(fs.readFileSync(configPath, 'utf8')).cli).toEqual({
       auto_update: false,
       show_tips: true,
+    })
+  })
+
+  it('routes Grok image and video tools to the relay instead of api.x.ai when merging', () => {
+    // Those tools send the same api_key to endpoints.xai_api_base_url; left at
+    // the xAI default, a relay key would leave for api.x.ai.
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    saveProviderConfig('grok', 'old-key', testModels.grok, 'reset', roots, {}, providerBaseUrls)
+    const [configPath] = providerConfigPaths('grok', roots)
+    const seeded = TOML.parse(fs.readFileSync(configPath, 'utf8'))
+    seeded.endpoints = { xai_api_base_url: 'https://api.x.ai/v1', feedback_base_url: 'https://example.invalid' }
+    fs.writeFileSync(configPath, TOML.stringify(seeded as Parameters<typeof TOML.stringify>[0]), 'utf8')
+
+    saveProviderConfig('grok', 'new-key', testModels.grok, 'merge', roots, {}, providerBaseUrls)
+
+    expect(TOML.parse(fs.readFileSync(configPath, 'utf8')).endpoints).toEqual({
+      xai_api_base_url: 'https://xm.solov.cc/v1',
+      feedback_base_url: 'https://example.invalid',
     })
   })
 
