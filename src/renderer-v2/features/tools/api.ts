@@ -169,6 +169,9 @@ export function createToolsApi(bridge: XingmangApi) {
     configuredModels: (tool: ToolId) => bridge.listConfiguredModels(providerFor(tool)),
     manualModels: (key: string) => bridge.listModels(key),
     reveal: (tool: ToolId) => bridge.revealApiKey(providerFor(tool)),
+    // 只打开工具自己的配置目录，不打开里面任何文件；Codex 桌面端与 Codex CLI
+    // 共用一份配置，所以两行打开的是同一个文件夹。
+    openConfigDirectory: (tool: ToolId) => bridge.openProviderConfigDirectory(providerFor(tool)),
     saveManual: (input: Parameters<XingmangApi['saveConfig']>[0]) => bridge.saveConfig(input),
     saveAccountKey: (input: Parameters<XingmangApi['saveConfigWithAccountKey']>[0]) => bridge.saveConfigWithAccountKey(input),
     configureManaged: (tool: ToolId, model?: string, mode: 'merge' | 'reset' = 'merge') => bridge.configureManagedCliKeys({

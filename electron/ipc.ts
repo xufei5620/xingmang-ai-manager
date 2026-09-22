@@ -65,6 +65,8 @@ import type {
   SystemService,
 } from './system-service'
 import { ensureSafeDataDirectory, writeAtomicSafeUtf8File } from './safe-local-data'
+import { assertOpenableConfigDirectory } from './config-directory'
+import { defaultProviderConfigRoots, providerConfigRoot, type ProviderConfigRoots } from './codex-home'
 import type { UpdateSnapshot, UpdaterService } from './updater'
 import {
   createNewApiClient,
@@ -120,6 +122,9 @@ export interface IpcRegistrationOptions {
   accountWork?: import('./account-work-gate').AccountWorkGate
   accountCredentialsForSite?: (siteId: 'solov' | 'solov-api') => NonNullable<IpcRegistrationOptions['accountCredentials']>
   systemService: SystemService
+  // 解析各 CLI 配置目录用的根路径（Codex 认 CODEX_HOME）。省略 = 按当前进程
+  // 环境推一份，和 system-service 默认拿到的那份一致（旧行为）。
+  providerRoots?: ProviderConfigRoots
   sessionsService: CodexSessionsService
   providerSessionsService: ProviderSessionsService
   backupStore: ConfigBackupStore
@@ -1093,6 +1098,7 @@ const ipcOperationLabels: Readonly<Record<string, string>> = {
   'config:get': '工具配置读取',
   'config:reveal-api-key': 'API Key 明文读取',
   'config:save': '工具配置保存',
+  'config:open-directory': '工具配置目录打开',
   'external-clients:scan': '外部客户端检测',
   'external-clients:install': '外部客户端安装',
   'external-clients:launch': '外部客户端启动',
@@ -1568,6 +1574,13 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     const parsed = parseConfigSavePayload(payload)
     return options.realmAccounts ? service.saveConfig(parsed, options.previewOnboarding, check)
       : service.saveConfig(parsed, options.previewOnboarding)
+  })
+  registerTrustedHandler('config:open-directory', async (_event, provider: unknown) => {
+    if (!isProviderId(provider)) throw new Error('未知的 CLI 类型')
+    const directory = providerConfigRoot(provider, options.providerRoots ?? defaultProviderConfigRoots())
+    assertOpenableConfigDirectory(directory)
+    await externalShell.openPath(directory)
+    return true
   })
   registerTrustedHandler('config:configure-external-tool', async (_event, tool: unknown, input: unknown) => {
     if (!isExternalToolId(tool)) {

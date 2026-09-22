@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { ProviderConfigSummary, ProviderId } from '../../../../electron/ipc-contract'
-import { canUninstallTool, codexDesktopUpdateKind, connectionReady, externalInstallHint, isExternallyManagedInstall, presentTools, providerFor, recommendedVersionVerb, rollbackVersion, sourceFor, toolAvailability, toolInstallDirectory, updateCheckFailure, versionSubtitle, type ToolboxSnapshot, type ToolPresentation } from './model'
+import { canUninstallTool, codexDesktopUpdateKind, configDirectoryMenuItem, connectionReady, externalInstallHint, isExternallyManagedInstall, presentTools, providerFor, recommendedVersionVerb, rollbackVersion, sourceFor, toolAvailability, toolInstallDirectory, updateCheckFailure, versionSubtitle, type ToolboxSnapshot, type ToolPresentation } from './model'
 import {
   writeManualSourceMarker,
   type SourceMarkerStorage,
@@ -420,5 +420,47 @@ describe('renderer CLI update check failure', () => {
 
   it('keeps a stale error from a previous run off the row once the check succeeded', () => {
     expect(updateCheckFailure({ updateCheck: 'checked', updateError: 'npm latest 查询超时' })).toBeNull()
+  })
+})
+
+describe('renderer config directory menu entry', () => {
+  it('offers to open the folder once the tool has written one', () => {
+    expect(configDirectoryMenuItem({ configDirectoryReady: true })).toEqual({ label: '打开配置文件夹', disabled: false })
+  })
+
+  it('greys the entry out instead of hiding it when nothing has been written yet', () => {
+    // 藏起来的代价更大:用户要找的就是这一项,看不到会以为这个工具没有配置文件。
+    expect(configDirectoryMenuItem({ configDirectoryReady: false })).toEqual({ label: '打开配置文件夹（还没生成）', disabled: true })
+  })
+
+  it('does not claim the folder is missing when the config block simply was not read', () => {
+    expect(configDirectoryMenuItem({ configDirectoryReady: true }, true))
+      .toEqual({ label: '打开配置文件夹（配置暂未读到）', disabled: true })
+    expect(configDirectoryMenuItem({ configDirectoryReady: false }, true).label).not.toContain('还没生成')
+  })
+
+  it('reads the folder state the main process reported, per tool', () => {
+    const providers = Object.fromEntries((['claude', 'codex', 'grok', 'gemini'] as const).map((provider) => [provider,
+      { ...relayConfig(), ...(provider === 'gemini' ? { dataDirectoryExists: false } : {}) },
+    ]))
+    const status = { installed: true, version: '1.0.0', path: '/fixture' }
+    const rows = presentTools({ config: { providers }, platform: { codexDesktop: { launch: true } },
+      system: { clis: { claude: status, codex: status, grok: status, gemini: status },
+        desktopApps: { codex: { ...status, appVersion: '1.0.0' } } },
+    } as unknown as ToolboxSnapshot, memoryStorage())
+    expect(rows.find((row) => row.id === 'gemini')?.configDirectoryReady).toBe(false)
+    // Codex 桌面端与 Codex CLI 共用一份配置,两行读的是同一个目录状态。
+    expect(rows.filter((row) => row.id === 'codex' || row.id === 'codexDesktop')
+      .every((row) => row.configDirectoryReady)).toBe(true)
+  })
+
+  it('treats an unreadable config partition as "not written yet"', () => {
+    const blank = { ...relayConfig(), exists: false, dataDirectory: '', dataDirectoryExists: false }
+    const providers = Object.fromEntries((['claude', 'codex', 'grok', 'gemini'] as const).map((provider) => [provider, blank]))
+    const status = { installed: true, version: '1.0.0', path: '/fixture' }
+    const rows = presentTools({ config: { providers }, platform: { codexDesktop: { launch: false } },
+      system: { clis: { claude: status, codex: status, grok: status, gemini: status }, desktopApps: { codex: status } },
+    } as unknown as ToolboxSnapshot, memoryStorage())
+    expect(rows.every((row) => !row.configDirectoryReady)).toBe(true)
   })
 })

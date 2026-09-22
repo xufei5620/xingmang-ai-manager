@@ -28,6 +28,12 @@ export interface ToolPresentation {
   source: ToolSource
   model: string
   configured: boolean
+  /**
+   * 这个工具的配置目录已经在磁盘上（主进程 inspect 时看到的）。false 有两种
+   * 情况：还没写过配置，或者这一遍配置整块没读到——两种都不该让「打开配置
+   * 文件夹」点下去报错，所以一律置灰。
+   */
+  configDirectoryReady: boolean
   updateAvailable: boolean
   currentVersion: string | null
   latestVersion: string | null
@@ -223,11 +229,29 @@ export function presentTools(
       : status.updateAvailable === true
     result.push({ id, provider, name: definition.name, vendor: definition.vendor, status, source,
       model: config.model, configured: connectionReady(config, provider, storage),
+      configDirectoryReady: config.dataDirectoryExists === true,
       updateAvailable, currentVersion: version,
       latestVersion: status.latestVersion ?? null, versionAdvice,
       error: status.detectionFailed ? snapshotErrorMessage(status.detectionError) ?? '工具检测没有完成' : null })
   }
   return result
+}
+
+/**
+ * 工具行「…」菜单里「打开配置文件夹」那一项。点不动时置灰而不是藏起来:
+ * 用户要找的就是这一项,藏了只会让人以为这个工具压根没有配置文件(「接着聊」
+ * 在目录已经不在时也是置灰,#319)。原因写进 label,是因为菜单项没有 title 可挂。
+ */
+export function configDirectoryMenuItem(
+  tool: Pick<ToolPresentation, 'configDirectoryReady'>,
+  configUnavailable = false,
+): { label: string; disabled: boolean } {
+  // 配置整块没读到时目录状态也是不知道的,不能说成「还没生成」——它多半就在那儿,
+  // 只是这一遍没读着。
+  if (configUnavailable) return { label: '打开配置文件夹（配置暂未读到）', disabled: true }
+  return tool.configDirectoryReady
+    ? { label: '打开配置文件夹', disabled: false }
+    : { label: '打开配置文件夹（还没生成）', disabled: true }
 }
 
 /**
