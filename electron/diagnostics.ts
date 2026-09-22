@@ -12,7 +12,7 @@ import {
   runCommand,
   trustedCommandEnvironment,
 } from './command-runner'
-import { defaultProviderConfigRoots, type ProviderConfigRoots } from './codex-home'
+import { defaultProviderConfigRoots, type IgnoredCodexHome, type ProviderConfigRoots } from './codex-home'
 import { inspectProviderConfig, type NativeConfigInspection } from './config-files'
 import {
   formatFreeSpace,
@@ -126,6 +126,12 @@ export interface DiagnosticsDependencies {
   windowsExecution?: WindowsCliExecutionModeResolution | null
   /** 「文件夹位置」一项逐级找被重定向的那一级；测试用它造「搬过家」的目录。 */
   findReparseComponent?: (target: string) => ReparseComponent | null
+  /**
+   * 启动时发现用户环境里的 CODEX_HOME 不可用、已按没设处理（codex-home.ts）。
+   * 传进来的 env 里 CODEX_HOME 已被换成本程序算出的位置，诊断自己看不到原值，
+   * 只能由宿主告诉它。原值只用来判断会不会连不上，从不进报告。
+   */
+  ignoredCodexHome?: IgnoredCodexHome
   /**
    * 诊断报告是要上屏、也要能导出给客服的，所以它只装中文结论。认出一个失败靠的
    * 那段上游原文（`net::ERR_CERT_AUTHORITY_INVALID` 这类）留在 runtime.jsonl 里：
@@ -802,6 +808,59 @@ function errorChainText(error: unknown): string {
   return parts.filter(Boolean).join(' <- ').slice(0, 500)
 }
 
+interface IgnoredCodexHomeFinding {
+  /** true = 在软件外面打开的 Codex 读不到本程序替当前账号写好的配置。 */
+  blocking: boolean
+}
+
+/**
+ * 软件自己启动的 Codex 拿到的是注入过的 CODEX_HOME，不受影响；受影响的是用户
+ * 从开始菜单、终端这些软件外面打开的 Codex，它读的仍是那个写错的值。Codex 不展开
+ * `~` 和 `%USERPROFILE%`，相对路径按当前目录解析，而这类进程的当前目录通常就是
+ * 用户目录，所以按用户目录解析一次：落回本程序写配置的那个目录（比如只写了
+ * `.codex`）就还连得上，否则就连不上。Codex 根本没接当前账号时，连不连得上
+ * 无从谈起，只提醒不算待处理。
+ */
+function inspectIgnoredCodexHome(
+  ignored: IgnoredCodexHome | undefined,
+  roots: ProviderConfigRoots,
+  codexInspection: NativeConfigInspection | undefined,
+): IgnoredCodexHomeFinding | null {
+  if (!ignored) return null
+  const configured = Boolean(codexInspection?.matchesRelay && codexInspection.hasApiKey)
+  const landsOnCodexHome = ignored.reason === 'relative'
+    && normalizedPathKey(path.resolve(roots.userHome, ignored.value)) === normalizedPathKey(roots.codexHome)
+  return { blocking: configured && !landsOnCodexHome }
+}
+
+/**
+ * 叠在 environmentOverrideOutcome 之后而不是改它：写错的 CODEX_HOME 不是「盖过
+ * 配置」，是「本来要盖、被本程序忽略了」，结论要单独说，其余变量的判定原样保留。
+ */
+function withIgnoredCodexHome(outcome: CheckOutcome, finding: IgnoredCodexHomeFinding | null): CheckOutcome {
+  if (!finding) return outcome
+  const previous = outcome.details ?? {}
+  const labels = Object.keys(previous)
+    .filter((key) => /^variable\d+$/.test(key))
+    .sort((left, right) => Number(left.slice(8)) - Number(right.slice(8)))
+    .map((key) => previous[key])
+  const details: Record<string, boolean | number | string | null> = {
+    ...Object.fromEntries(Object.entries(previous).filter(([key]) => !/^variable\d+$/.test(key))),
+    count: labels.length + 1,
+  }
+  // 写错的原值可能带着用户名，和其它变量一样只有名字进报告。
+  const ordered = [`CODEX_HOME（${cliCatalog.codex.name}，写得不对，已忽略）`, ...labels]
+  ordered.forEach((label, index) => {
+    details[`variable${index + 1}`] = label
+  })
+  const effect = finding.blocking ? '，但在软件外面打开 Codex 会连不上当前账号' : ''
+  const others = outcome.state === 'pass' ? '' : `；另外${outcome.summary}`
+  // 连不上当前账号才算「待处理」（开机横幅只数这一档）；软件里打开的 Codex 本来
+  // 就不受影响，其余情况只是提醒。其它变量已经判出更重的一档时不往下拉。
+  const state = finding.blocking || outcome.state === 'fail' ? 'fail' : 'warn'
+  return { state, summary: `电脑里有一个 Codex 的设置写得不对，软件已经忽略它${effect}${others}`, details }
+}
+
 function providerOutcome(provider: ProviderId, inspection: NativeConfigInspection, roots: ProviderConfigRoots): CheckOutcome {
   const details: Record<string, boolean | number | string | null> = {
     exists: inspection.exists,
@@ -1426,8 +1485,9 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
     {
       code: 'PROVIDER_ENVIRONMENT_OVERRIDE',
       title: '环境变量覆盖',
-      run: () => environmentOverrideOutcome(
-        collectEnvironmentOverrides(env, relaySite.providerBaseUrls, userHome),
+      run: () => withIgnoredCodexHome(
+        environmentOverrideOutcome(collectEnvironmentOverrides(env, relaySite.providerBaseUrls, userHome)),
+        inspectIgnoredCodexHome(dependencies.ignoredCodexHome, providerRoots, providerInspections.get('codex')),
       ),
     },
     {

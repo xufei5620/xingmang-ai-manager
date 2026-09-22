@@ -171,6 +171,28 @@ describe('provider source update network policy', () => {
       .toThrow('不含凭据')
   })
 
+  it('never runs the macOS git shim for an update check while the developer tools are missing', async () => {
+    const repository = temporaryDirectory()
+    write(path.join(repository, '.git', 'HEAD'), 'ref: refs/heads/main\n')
+    const runCommandImplementation = vi.fn<typeof productionRunCommand>(async () => {
+      throw new Error('must not run')
+    })
+    const inspect = createProviderSourceUpdateInspector({}, 'same-user', {
+      platform: 'darwin',
+      findExecutable: vi.fn(async () => '/usr/bin/git'),
+      runCommand: runCommandImplementation,
+      isCommandLineToolsShimBacked: async () => false,
+    })
+
+    await expect(inspect({
+      kind: 'git',
+      locator: repository,
+      localPath: repository,
+      currentVersion: null,
+    })).rejects.toThrow('命令行开发者工具')
+    expect(runCommandImplementation).not.toHaveBeenCalled()
+  })
+
   it('disables Git redirects and accepts only a bounded HEAD hash result', async () => {
     const head = 'a'.repeat(40)
     const repository = temporaryDirectory()
@@ -1395,6 +1417,26 @@ describe('official marketplace as a standalone action', () => {
     await expect(service.ensureMarketplace('grok')).rejects.toThrow('没有官方插件市场')
   })
 
+  it('explains the macOS git shim instead of letting the marketplace add summon the system dialog', async () => {
+    const calls: string[][] = []
+    const service = new ProviderExtensionService({
+      homeDirectory: temporaryDirectory(),
+      invoke: async (_provider, argv) => {
+        calls.push([...argv])
+        return '[]'
+      },
+      platform: 'darwin',
+      findExecutable: async () => '/usr/bin/git',
+      isCommandLineToolsShimBacked: async () => false,
+    })
+
+    const message = claudeMarketplaceGitMissingMessage('darwin', { commandLineToolsShim: true })
+    expect(message).toContain('空壳')
+    expect(message).toContain('xcode-select --install')
+    await expect(service.ensureMarketplace('claude')).rejects.toThrow(message)
+    expect(calls.some((argv) => argv.includes('add'))).toBe(false)
+  })
+
   it('reports the missing Git rather than adding the marketplace', async () => {
     const service = new ProviderExtensionService({
       homeDirectory: temporaryDirectory(),
@@ -1550,6 +1592,33 @@ describe('extension runtime availability', () => {
       homeDirectory: temporaryDirectory(),
       invoke: async () => '[]',
       findExecutable: async (command) => (command === 'py' ? 'C:/Windows/py.exe' : null),
+    })
+    expect((await service.list('claude')).runtimes).toEqual({ python: true, uv: false })
+  })
+
+  it('does not count the macOS python3 shim as Python while the developer tools are missing', async () => {
+    const probed: string[] = []
+    const service = new ProviderExtensionService({
+      homeDirectory: temporaryDirectory(),
+      invoke: async () => '[]',
+      platform: 'darwin',
+      findExecutable: async (command) => (command === 'python3' ? '/usr/bin/python3' : null),
+      isCommandLineToolsShimBacked: async (shim) => {
+        probed.push(shim)
+        return false
+      },
+    })
+    expect((await service.list('claude')).runtimes).toEqual({ python: false, uv: false })
+    expect(probed).toEqual(['/usr/bin/python3'])
+  })
+
+  it('counts the macOS python3 shim once the developer tools behind it exist', async () => {
+    const service = new ProviderExtensionService({
+      homeDirectory: temporaryDirectory(),
+      invoke: async () => '[]',
+      platform: 'darwin',
+      findExecutable: async (command) => (command === 'python3' ? '/usr/bin/python3' : null),
+      isCommandLineToolsShimBacked: async () => true,
     })
     expect((await service.list('claude')).runtimes).toEqual({ python: true, uv: false })
   })
