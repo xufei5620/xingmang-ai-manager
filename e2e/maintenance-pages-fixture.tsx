@@ -46,7 +46,7 @@ const feedbackApi: FeedbackPageApi = {
   async getRuntimeLogs() {
     window.maintenanceHarness.loadCalls += 1
     if (window.maintenanceHarness.loadFailure) throw new Error('日志文件读取失败')
-    const snapshot: RuntimeLogSnapshot = { generatedAt: '2026-09-07T00:00:00.000Z', directory: 'C:\\logs', filePath: 'C:\\logs\\runtime.jsonl', total: cleared ? 0 : 2, sizeBytes: 2048, truncated: false, sources: ['fixture'], counts: { debug: 0, info: cleared ? 0 : 1, warn: 0, error: cleared ? 0 : 1 }, entries: cleared ? [] : [
+    const snapshot: RuntimeLogSnapshot = { generatedAt: '2026-09-07T00:00:00.000Z', directory: 'C:\\logs', filePath: 'C:\\logs\\runtime.jsonl', total: cleared ? 0 : 2, sizeBytes: 2048, truncated: false, sources: ['fixture'], currentProcessId: 4242, startedAt: '2026-09-07T00:00:00.000Z', counts: { debug: 0, info: cleared ? 0 : 1, warn: 0, error: cleared ? 0 : 1 }, entries: cleared ? [] : [
       { id: 'log-info', timestamp: '2026-09-07T00:00:00.000Z', level: 'info', source: 'fixture', event: 'ready', message: `当前日志 ${window.maintenanceHarness.loadCalls}`, detail: null },
       { id: 'log-error', timestamp: '2026-09-07T00:00:01.000Z', level: 'error', source: 'fixture', event: 'request.failed', message: '网络请求失败', detail: { error: { code: 'TIMEOUT', stderr: 'Request timed out' } } },
     ] }
