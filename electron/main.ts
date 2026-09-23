@@ -53,6 +53,7 @@ import { createWindowLifecycle } from './window-lifecycle'
 import { hasLoginLaunchArgument, resolveLoginLaunch, shouldRevealInitialWindow, windowsAppUserModelId } from './login-launch'
 import { resolveInstallableUpdateOnQuit, resolveInterruptibleInstallTask } from './quit-blocking-tasks'
 import { createWindowResponsivenessGuard } from './window-responsiveness'
+import { createRendererCrashRecovery } from './renderer-crash-recovery'
 import { createApplicationTray, type ApplicationTrayController } from './application-tray'
 import { createTrayAccelerationCoordinator, type TrayAccelerationCoordinator } from './tray-acceleration'
 import { createExternalDeepLinkInbox } from './external-deep-links'
@@ -440,6 +441,25 @@ function createWindow(
   window.webContents.on('will-navigate', (event, targetUrl) => {
     if (!isAllowedAppNavigationUrl(targetUrl, urlPolicy)) event.preventDefault()
   })
+  const crashRecovery = createRendererCrashRecovery({
+    reload: () => window.webContents.reload(),
+    prompt: async () => {
+      const result = await dialog.showMessageBox(window, {
+        type: 'warning', title: '界面出了问题', message: '星芒AI管理工具的界面接连出错，自动重新加载也没能恢复。',
+        detail: `可以再试一次重新加载。如果还是空白，请从${process.platform === 'darwin' ? '屏幕顶部菜单栏' : '任务栏右下角'}的星芒图标退出软件后重新打开，并在「反馈」页把问题发给我们。正在进行的安装、下载和已保存的设置都不受影响。`,
+        buttons: ['重新加载', '先不管'], defaultId: 0, cancelId: 1,
+      })
+      return result.response === 0 ? 'reload' : 'dismiss'
+    },
+    log: (event) => {
+      if (event === 'reload.auto') { runtimeLog.log('warn', 'renderer', 'process.gone.reload', '界面进程退出后自动重新加载'); return }
+      if (event === 'prompt.shown') { runtimeLog.log('warn', 'renderer', 'process.gone.prompted', '界面接连退出，已提示用户'); return }
+      if (event === 'prompt.reload') { runtimeLog.log('info', 'renderer', 'process.gone.user-reload', '用户选择重新加载界面'); return }
+      runtimeLog.log('info', 'renderer', 'process.gone.dismissed', '用户暂不重新加载界面')
+    },
+    onError: (cause) => { runtimeLog.exception('renderer', 'process.gone.recover-failed', cause) },
+  })
+  window.once('closed', () => { crashRecovery.dispose() })
   window.webContents.on('render-process-gone', (_event, details) => {
     runtimeLog.log('error', 'renderer', 'process.gone', '渲染进程异常退出', {
       reason: details.reason,
@@ -456,6 +476,7 @@ function createWindow(
       error: new Error(`渲染进程异常退出：${details.reason}`),
       context: `exitCode=${details.exitCode}`,
     })
+    if (!window.isDestroyed()) crashRecovery.handleGone(details.reason)
   })
   window.webContents.on('did-finish-load', () => {
     runtimeLog.log('info', 'renderer', 'page.loaded', '渲染页面加载完成')
