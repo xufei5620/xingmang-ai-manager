@@ -3425,6 +3425,70 @@ test('tutorial actions navigate to their tool and retain the selected chapter an
   } finally { await page.close() }
 })
 
+// 全面检测 Q48：教程里「办理充值」「查看用量」以前都落在「我的账号」，设置里的隐私一步
+// 落在「外观」或上次看的那组。每次点都要落到这一步说的那一页，已经打开过也一样。
+test('tutorial actions land on the account tab or settings group the step describes, even after another one was chosen', async () => {
+  const page = await open()
+  try {
+    const tutorial = page.getByTestId('page-tutorial')
+    const accountTab = () => page.evaluate(() => document.querySelector('[data-testid="account-tabs"] [aria-selected="true"]')?.textContent ?? '')
+    async function openChapter(group, id) {
+      await page.getByTestId('nav-tutorial').click()
+      const directory = tutorial.getByTestId(`tutorial-group-${group}`)
+      if (!await directory.evaluate((element) => element.open)) await directory.locator('summary').click()
+      await tutorial.getByTestId(`tutorial-topic-${id}`).click()
+    }
+    await openChapter('everyday', 'account')
+    await tutorial.getByTestId('tutorial-account-action-2').click()
+    await page.getByTestId('account-tabs').waitFor()
+    await expect.poll(accountTab).toBe('充值与订阅')
+    await page.getByTestId('account-tabs').getByRole('tab', { name: '我的订单', exact: true }).click()
+    await expect.poll(accountTab).toBe('我的订单')
+    for (const [index, label] of [[3, '调用明细'], [1, '密钥'], [2, '充值与订阅'], [0, '我的账号']]) {
+      await openChapter('everyday', 'account')
+      await tutorial.getByTestId(`tutorial-account-action-${index}`).click()
+      await expect.poll(accountTab).toBe(label)
+    }
+
+    await page.getByTestId('nav-settings').click()
+    const settings = page.getByTestId('page-settings')
+    await settings.getByRole('tab', { name: '关于', exact: true }).click()
+    await expect(settings.getByRole('tab', { name: '关于', exact: true })).toHaveAttribute('aria-selected', 'true')
+    for (let visit = 0; visit < 2; visit += 1) {
+      await openChapter('advanced', 'safety')
+      await tutorial.getByTestId('tutorial-safety-action-2').click()
+      await expect(page.getByTestId('page-settings')).toBeVisible()
+      await expect(page.getByTestId('page-settings').getByRole('tab', { name: '隐私与数据', exact: true })).toHaveAttribute('aria-selected', 'true')
+      await page.getByTestId('page-settings').getByRole('tab', { name: '关于', exact: true }).click()
+    }
+    // 从侧栏点「设置」不点名分组，仍停在用户上次看的那组，不会被教程的跳转带偏。
+    await page.getByTestId('nav-home').click()
+    await page.getByTestId('nav-settings').click()
+    await expect(page.getByTestId('page-settings').getByRole('tab', { name: '关于', exact: true })).toHaveAttribute('aria-selected', 'true')
+    // 默认夹具没接充值、订单、用量那几个读取（会记进 unexpected），这里只看有没有报错。
+    assert.deepEqual(await page.evaluate(() => window.v2Test.errors), [])
+  } finally { await page.close() }
+})
+
+// 同一个毛病的另一头：检查页网络项的「去处理」以前只在设置页第一次打开时落到「网络」。
+test('the health network fix lands on the network settings group even when settings was already open', async () => {
+  const page = await open()
+  try {
+    await page.evaluate(() => {
+      window.xingmang.runDiagnostics = async () => ({ version: 1, generatedAt: new Date().toISOString(), durationMs: 1,
+        counts: { pass: 0, warn: 0, fail: 1, error: 0 },
+        items: [{ code: 'XINGMANG_NETWORK', title: '星芒服务连接', state: 'fail', summary: '连不上星芒服务', durationMs: 1 }] })
+    })
+    await page.getByTestId('nav-settings').click()
+    await page.getByTestId('page-settings').getByRole('tab', { name: '关于', exact: true }).click()
+    await page.getByTestId('nav-health').click()
+    await page.getByTestId('health-fix-XINGMANG_NETWORK').click()
+    await expect(page.getByTestId('page-settings')).toBeVisible()
+    await expect(page.getByTestId('page-settings').getByRole('tab', { name: '网络', exact: true })).toHaveAttribute('aria-selected', 'true')
+    assert.deepEqual(await page.evaluate(() => window.v2Test.errors), [])
+  } finally { await page.close() }
+})
+
 test('tutorial illustrations remain accessible and contained in both themes and the guide action opens onboarding', async () => {
   for (const theme of ['light', 'dark']) {
     const page = await open(`theme=${theme}`)

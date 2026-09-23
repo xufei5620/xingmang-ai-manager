@@ -18,3 +18,11 @@ export function takeSettingsGroup(): SettingsGroupId | null {
   pendingGroup = null
   return group
 }
+
+/**
+ * 设置页挂上之后只是隐藏，不会重新挂载，只在挂载时取一次的那一组第二次就接不住了。
+ * 外壳跳进设置前看一眼有没有待取的分组，有就让设置页重新挂一次（全面检测 Q48）。
+ */
+export function hasPendingSettingsGroup(): boolean {
+  return pendingGroup !== null
+}
