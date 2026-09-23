@@ -11,6 +11,11 @@ export interface AccelerationService extends AccelerationApi, AccelerationPrefer
   startAutomaticAcceleration(scope: string, origin: NonNullable<AccelerationState['autoStartedBy']>, mode: AccelerationMode, lineId?: string): Promise<AccelerationState>
   /** Host lifecycle barrier; also drains sessions whose account has already expired. */
   stopAll(): Promise<void>
+  /**
+   * 有没有可能还连着的加速会话（连上了、正在连或上次没停干净）。Windows 关机时
+   * 据此决定要不要推迟关机、先把系统代理还原；只读内存，不碰后台进程。
+   */
+  hasPossibleSession(): boolean
   onAccountChanged(): Promise<void>
   dispose(): Promise<void>
 }
@@ -369,6 +374,9 @@ export function createAccelerationService(options: AccelerationServiceOptions): 
       try { assertScope(scope); parsed = parsePreferenceUpdate(update) } catch (error) { return Promise.reject(error) }
       if (!options.preferences) return Promise.reject(new Error('加速线路偏好暂不可用，请稍后重试。'))
       return options.preferences.saveAccelerationPreference(scope, parsed)
+    },
+    hasPossibleSession() {
+      return possibleSessions.size > 0
     },
     stopAll() {
       revision += 1

@@ -22,6 +22,12 @@ export interface WindowLifecycleOptions {
    * 退出会被这套流程再拦一遍。抛错也不能否决用户已经做出的退出选择。
    */
   installDownloadedUpdate?(): void
+  /**
+   * Windows 关机 / 重启 / 注销时，退出前的清理还有没有必须做完的事（开着加速时
+   * 系统代理还指着本机端口）。返回 true 就先推迟关机，把 prepareToQuit 跑完再退；
+   * 缺省 = 旧行为，不推迟。
+   */
+  needsShutdownCleanup?(): boolean
   prepareToQuit(): Promise<void>
   flushWindowState(): Promise<void>
   show(): void
@@ -32,19 +38,38 @@ export interface WindowLifecycleOptions {
 
 interface PreventableEvent { preventDefault(): void }
 type LifecycleListener = (event: PreventableEvent) => void
+// query-session-end / session-end are BrowserWindow events on Windows; the
+// App never emits them, so listening on `app` (as this module once did) sees
+// nothing.
 interface WindowCloseSource {
-  on(event: 'close', listener: LifecycleListener): unknown
-  removeListener(event: 'close', listener: LifecycleListener): unknown
+  on(event: 'close' | 'query-session-end' | 'session-end', listener: LifecycleListener): unknown
+  removeListener(event: 'close' | 'query-session-end' | 'session-end', listener: LifecycleListener): unknown
 }
 interface ApplicationQuitSource {
-  on(event: 'before-quit' | 'session-end', listener: LifecycleListener): unknown
-  removeListener(event: 'before-quit' | 'session-end', listener: LifecycleListener): unknown
+  on(event: 'before-quit', listener: LifecycleListener): unknown
+  removeListener(event: 'before-quit', listener: LifecycleListener): unknown
 }
+
+const quitCleanupBudgetMs = 2_000
+// On WM_ENDSESSION Electron terminates the process immediately (no
+// before-quit, no will-quit), so cleanup that must finish has to run while
+// shutdown is held at query-session-end. Restoring the system proxy starts a
+// cold PowerShell or two in the acceleration helper; the budget covers that
+// without holding the user's shutdown indefinitely.
+const shutdownCleanupBudgetMs = 10_000
 
 export interface WindowLifecycle {
   readonly isQuitting: boolean
   requestClose(): Promise<WindowCloseResult>
   requestQuit(): Promise<WindowCloseResult>
+  /**
+   * 更新安装器就要结束这个进程：先跑退出前的清理，再让后面的 close / before-quit
+   * 直接放行，别把安装器发起的退出当成用户关窗再问一遍。已经在退出（用户在
+   * 退出确认里选了「安装并退出」）时什么都不做，返回 undefined，调用方同步拉起。
+   */
+  prepareUpdateQuit(): Promise<void> | undefined
+  /** 安装器没起来，程序照常开着：撤掉 prepareUpdateQuit 的放行。 */
+  abortUpdateQuit(): void
   attach(window: WindowCloseSource, application: ApplicationQuitSource): () => void
   dispose(): void
 }
@@ -55,6 +80,8 @@ export function createWindowLifecycle(options: WindowLifecycleOptions): WindowLi
   let explicitQuit = false
   let systemShutdown = false
   let inFlight: Promise<WindowCloseResult> | null = null
+  let shutdownQuit: Promise<WindowCloseResult> | null = null
+  let updateQuit = false
   const detachListeners = new Set<() => void>()
 
   const reportError = (error: unknown) => {
@@ -67,13 +94,13 @@ export function createWindowLifecycle(options: WindowLifecycleOptions): WindowLi
     if (!disposed) show()
     return 'cancelled'
   }
-  const cleanup = async (action: () => Promise<void>): Promise<void> => {
+  const cleanup = async (action: () => Promise<void>, budgetMs = quitCleanupBudgetMs): Promise<void> => {
     let timer: ReturnType<typeof setTimeout> | undefined
     try {
       await Promise.race([
         Promise.resolve().then(action),
         new Promise<never>((_resolve, reject) => {
-          timer = setTimeout(() => reject(new Error('关闭窗口的后台清理超时，继续执行所选操作')), 2_000)
+          timer = setTimeout(() => reject(new Error('关闭窗口的后台清理超时，继续执行所选操作')), budgetMs)
         }),
       ])
     } catch (error) {
@@ -82,10 +109,10 @@ export function createWindowLifecycle(options: WindowLifecycleOptions): WindowLi
       if (timer) clearTimeout(timer)
     }
   }
-  const performQuit = async (installUpdate = false): Promise<WindowCloseResult> => {
+  const runQuit = async (installUpdate: boolean, budgetMs: number): Promise<WindowCloseResult> => {
     // The user already chose to quit. Saving placement or cleaning up a
     // background task must never veto that choice or wait on a renderer.
-    await Promise.all([cleanup(options.prepareToQuit), cleanup(options.flushWindowState)])
+    await Promise.all([cleanup(options.prepareToQuit, budgetMs), cleanup(options.flushWindowState, budgetMs)])
     if (disposed) return 'cancelled'
     // Set before app.quit(): Electron emits before-quit synchronously.
     quitting = true
@@ -96,6 +123,19 @@ export function createWindowLifecycle(options: WindowLifecycleOptions): WindowLi
     }
     options.quit()
     return 'quit-requested'
+  }
+  // A close that was already in flight when shutdown began joins the shutdown
+  // quit instead of cleaning up, installing or quitting a second time.
+  const performQuit = (installUpdate = false): Promise<WindowCloseResult> => shutdownQuit ?? runQuit(installUpdate, quitCleanupBudgetMs)
+  // Runs beside any close already in flight: a close dialog left open must not
+  // keep a held shutdown waiting on an answer nobody is there to give.
+  const quitForShutdown = () => {
+    if (disposed || quitting || shutdownQuit) return
+    shutdownQuit = runQuit(false, shutdownCleanupBudgetMs).catch((error): WindowCloseResult => {
+      reportError(error)
+      options.quit()
+      return 'quit-requested'
+    })
   }
   const confirmedQuit = async (): Promise<WindowCloseResult> => {
     // Windows 关机 / 注销只给几秒钟，拦住它只会让系统强杀这个进程。
@@ -149,6 +189,20 @@ export function createWindowLifecycle(options: WindowLifecycleOptions): WindowLi
     get isQuitting() { return quitting },
     requestClose: () => request(false),
     requestQuit: () => request(true),
+    prepareUpdateQuit() {
+      if (quitting) return undefined
+      if (disposed) return Promise.reject(new Error('窗口已关闭，无法安装更新'))
+      return Promise.all([cleanup(options.prepareToQuit), cleanup(options.flushWindowState)]).then(() => {
+        if (disposed) throw new Error('窗口已关闭，无法安装更新')
+        quitting = true
+        updateQuit = true
+      })
+    },
+    abortUpdateQuit() {
+      if (!updateQuit || disposed) return
+      updateQuit = false
+      quitting = false
+    },
     attach(window, application) {
       if (disposed) return () => {}
       const onClose: LifecycleListener = (event) => {
@@ -161,17 +215,31 @@ export function createWindowLifecycle(options: WindowLifecycleOptions): WindowLi
         event.preventDefault()
         void lifecycle.requestQuit()
       }
-      // Windows 关机 / 注销先发 session-end 再走退出流程，记下来让后面的
-      // 确认框直接放行。macOS 注销没有对应事件，那边由系统自己的「有程序
-      // 阻止注销」界面兜底。
+      // Windows 关机 / 重启 / 注销先问一句 query-session-end，再发 session-end；
+      // 收到 session-end 之后 Electron 立刻结束进程，before-quit 和
+      // prepareToQuit 都不会跑。所以必须做完的清理（开着加速时还原系统代理）
+      // 只能在问的这一下推迟关机、当场做完再退；没有要做的就不拦，关机照常。
+      // 两个事件都记下来，让后面的确认框直接放行。macOS 注销没有对应事件，
+      // 那边由系统自己的「有程序阻止注销」界面兜底。
+      const onQuerySessionEnd: LifecycleListener = (event) => {
+        systemShutdown = true
+        if (quitting) return
+        let hold = false
+        try { hold = options.needsShutdownCleanup?.() === true } catch (error) { reportError(error) }
+        if (!hold) return
+        event.preventDefault()
+        quitForShutdown()
+      }
       const onSessionEnd: LifecycleListener = () => { systemShutdown = true }
       window.on('close', onClose)
+      window.on('query-session-end', onQuerySessionEnd)
+      window.on('session-end', onSessionEnd)
       application.on('before-quit', onBeforeQuit)
-      application.on('session-end', onSessionEnd)
       const detach = () => {
         window.removeListener('close', onClose)
+        window.removeListener('query-session-end', onQuerySessionEnd)
+        window.removeListener('session-end', onSessionEnd)
         application.removeListener('before-quit', onBeforeQuit)
-        application.removeListener('session-end', onSessionEnd)
         detachListeners.delete(detach)
       }
       detachListeners.add(detach)

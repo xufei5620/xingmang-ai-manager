@@ -1069,6 +1069,8 @@ if (!hasSingleInstanceLock) {
     // above is ever reached. The updater compensates by never downloading or
     // installing without the user and by re-checking the manifest digest itself.
     const unsignedChannel = app.isPackaged && applicationPackage.xingmangUnsignedRelease === true
+    // 窗口生命周期在主窗口建好后才有；更新在那之前不会下载完，这里先占个位。
+    let updateQuitHandoff: { prepare(): Promise<void> | undefined; abort(): void } | null = null
     const updaterService = createUpdaterService(autoUpdater, {
       currentVersion: app.getVersion(),
       isPackaged: app.isPackaged,
@@ -1087,6 +1089,8 @@ if (!hasSingleInstanceLock) {
       installEnvironmentGuard: process.platform === 'win32'
         ? (launch) => runWithTrustedWindowsProcessEnvironment(launch)
         : undefined,
+      prepareInstallQuit: () => updateQuitHandoff?.prepare(),
+      installQuitAborted: () => { updateQuitHandoff?.abort() },
       retryWithoutProxy: async () => {
         await autoUpdater.netSession.setProxy({ mode: 'direct' })
       },
@@ -2124,6 +2128,12 @@ if (!hasSingleInstanceLock) {
       // 更新页那颗「重启并安装」走的是同一条 install()；这里只是把入口挪到了
       // 用户真正会用的那个动作上（关窗 / 托盘退出）。
       installDownloadedUpdate: () => { updaterService.install() },
+      // 开着加速时系统代理指着本机端口：关机前不还原，下次开机整台电脑上不了网。
+      needsShutdownCleanup: () => {
+        const hold = acceleration?.hasPossibleSession() === true
+        if (hold) runtimeLog.log('info', 'window', 'shutdown.hold', '关机前先断开加速、还原系统代理')
+        return hold
+      },
       prepareToQuit: async () => {
         accountRestoreRetry.dispose()
         await acceleration?.stopAll()
@@ -2148,6 +2158,26 @@ if (!hasSingleInstanceLock) {
       },
     })
     lifecycle.attach(mainWindow, app)
+    // 更新页「重启并安装」和 Mac 下载完自动安装都会让安装器发起退出：先把退出前
+    // 的清理跑完（断开加速、还原系统代理，安装器会结束安装目录下的所有进程），
+    // 再放行，别被当成用户关窗又问一遍「顺手装上吗」。
+    updateQuitHandoff = {
+      prepare: () => {
+        const preparation = lifecycle.prepareUpdateQuit()
+        if (!preparation) return undefined
+        runtimeLog.log('info', 'updater', 'install.quit-prepare', '安装更新前先完成退出清理')
+        return preparation.then(() => {
+          // 与 quit() 一样：画布窗口会拦自己的关闭，不先放掉它，安装器发起的
+          // 退出（Mac 上是先关所有窗口）会被它挡住。
+          try { canvasController.dispose() } catch (cause) { runtimeLog.exception('canvas', 'shutdown.failed', cause) }
+          try { paymentWindow.destroy() } catch (cause) { runtimeLog.exception('payment', 'shutdown.failed', cause) }
+          for (const window of BrowserWindow.getAllWindows()) {
+            if (!window.isDestroyed()) window.webContents.on('will-prevent-unload', (event) => event.preventDefault())
+          }
+        })
+      },
+      abort: () => { lifecycle.abortUpdateQuit() },
+    }
     const trayAssets = path.join(app.getAppPath(), 'assets', 'brand', 'v3')
     applicationTray = createApplicationTray({
       iconPath: path.join(trayAssets, 'tray-16.png'), icon2xPath: path.join(trayAssets, 'tray-32.png'),
