@@ -2124,6 +2124,12 @@ if (!hasSingleInstanceLock) {
       // 更新页那颗「重启并安装」走的是同一条 install()；这里只是把入口挪到了
       // 用户真正会用的那个动作上（关窗 / 托盘退出）。
       installDownloadedUpdate: () => { updaterService.install() },
+      // 开着加速时系统代理指着本机端口：关机前不还原，下次开机整台电脑上不了网。
+      needsShutdownCleanup: () => {
+        const hold = acceleration?.hasPossibleSession() === true
+        if (hold) runtimeLog.log('info', 'window', 'shutdown.hold', '关机前先断开加速、还原系统代理')
+        return hold
+      },
       prepareToQuit: async () => {
         accountRestoreRetry.dispose()
         await acceleration?.stopAll()
