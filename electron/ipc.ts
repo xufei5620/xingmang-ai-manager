@@ -131,7 +131,7 @@ import type {
   RendererErrorPayload,
   RendererLogLevel,
 } from './ipc-contract'
-import type { DiagnosticsReport } from './diagnostics'
+import type { DiagnosticsReport, DiagnosticsRunOptions } from './diagnostics'
 import { isCappedKeyUsedUp, withKeyQuotaExhausted, type ConnectionCheckResult } from './connection-check'
 import type { RuntimeLogStore } from './runtime-log'
 import { createExternalShellLauncher, type ExternalShellLauncher } from './system-shell'
@@ -156,7 +156,7 @@ export interface IpcRegistrationOptions {
   providerSessionsService: ProviderSessionsService
   backupStore: ConfigBackupStore
   diagnosticsService: {
-    run(): Promise<DiagnosticsReport>
+    run(options?: DiagnosticsRunOptions): Promise<DiagnosticsReport>
     checkConnection(provider: ProviderId): Promise<ConnectionCheckResult>
     checkExternalConnection(tool: ExternalToolId): Promise<ExternalClientCheckResult>
     exportLatest(): string
@@ -278,6 +278,13 @@ function stringArray(value: unknown, label: string, maximumItems = 128): string[
   if (value === undefined) return []
   if (!Array.isArray(value) || value.length > maximumItems) throw new Error(`${label}格式错误`)
   return value.map((entry) => requiredString(entry, label))
+}
+
+export function parseDiagnosticsRunOptions(value: unknown): DiagnosticsRunOptions {
+  if (value === undefined) return {}
+  if (!isRecord(value) || Object.keys(value).some((key) => key !== 'reuseRecentScan')
+    || (value.reuseRecentScan !== undefined && typeof value.reuseRecentScan !== 'boolean')) throw new Error('诊断参数格式错误')
+  return value.reuseRecentScan === true ? { reuseRecentScan: true } : {}
 }
 
 // settings:save carries a field-wise update since ①栏11: absent field = keep
@@ -2244,7 +2251,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     options.onSettingsChanged?.()
     return next
   })
-  registerTrustedHandler('diagnostics:run', () => options.diagnosticsService.run())
+  registerTrustedHandler('diagnostics:run', (_event, input: unknown) => options.diagnosticsService.run(parseDiagnosticsRunOptions(input)))
   registerTrustedHandler('diagnostics:export', async () => {
     const result = await dialog.showSaveDialog({
       title: '导出脱敏诊断报告',

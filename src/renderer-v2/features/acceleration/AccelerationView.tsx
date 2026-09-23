@@ -86,6 +86,8 @@ export function AccelerationView({ state, mode, busy, signedIn, error, preview, 
   const notice = conflicts.length ? null : (error || state?.error)?.replaceAll('系统代理', '网络设置').replaceAll('代理', '网络连接')
   const stopRetry = phase === 'stopping' && Boolean(notice) && !busy
   const active = phase === 'active'
+  // 软件替他连上的（打开 Codex 桌面端时）：关掉桌面端不会跟着断开，这里要说清楚。
+  const autoStarted = active && state?.autoStartedBy === 'codex-desktop'
   const transitioning = phase === 'connecting' || (phase === 'stopping' && !stopRetry)
   const unavailable = phase === 'unavailable'
   const exhausted = phase === 'exhausted'
@@ -133,7 +135,7 @@ export function AccelerationView({ state, mode, busy, signedIn, error, preview, 
     <div className="acceleration-workbench">
       <section className="acceleration-stage" aria-label="网络连接状态">
         <div className="acceleration-stage-top"><span className="acceleration-eyebrow"><Globe2 size={15} aria-hidden="true" /> GAME CONNECT</span><span className="acceleration-stage-scope"><Laptop size={14} aria-hidden="true" />{effectiveMode === 'tun' ? '增强模式' : '标准模式'}</span></div>
-        <div className="acceleration-stage-title"><h2>连接热爱，准备开局。</h2><p>{active ? '加速连接已就绪，返回游戏继续体验。' : '从这里出发，连接你的游戏世界。'}</p></div>
+        <div className="acceleration-stage-title"><h2>连接热爱，准备开局。</h2><p>{autoStarted ? <span data-testid="acceleration-auto-started">打开 Codex 桌面端时自动连上的，关掉桌面端不会跟着断开，不用时点「停止加速」。</span> : active ? '加速连接已就绪，返回游戏继续体验。' : '从这里出发，连接你的游戏世界。'}</p></div>
         <div className="acceleration-orb"><Globe /></div>
         <div className="acceleration-route-info">
           <div className="acceleration-route-icon"><Route size={18} aria-hidden="true" /></div>

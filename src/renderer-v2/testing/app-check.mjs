@@ -1572,6 +1572,8 @@ test('startup environment findings are a notice with a way in, not an error and 
     assert.equal(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'reportRendererError' && entry.args[0]?.context !== 'account-bootstrap').length), 0)
     await notice.getByRole('button', { name: '去看看', exact: true }).click()
     await page.getByTestId('page-health').waitFor()
+    // 检查页自己那次检测不复用扫描结果，照旧全部重探。
+    await expect.poll(() => page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'runDiagnostics' && entry.args.length === 0).length)).toBeGreaterThan(0)
     await expect.poll(() => page.getByTestId('startup-notice-diagnostics').count()).toBe(0)
     await clean(page)
   } finally { await page.close() }
@@ -1582,6 +1584,8 @@ test('startup environment check says nothing when every finding is only worth a 
   const page = await open('diagnostics=1&diagnosticWarnings=5')
   try {
     await expect.poll(() => page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'runDiagnostics').length)).toBe(1)
+    // 开机这次让主进程直接用首页那轮扫描的探测结果，不再把子进程重跑一遍。
+    assert.deepEqual(await page.evaluate(() => window.v2Test.calls.find((entry) => entry.method === 'runDiagnostics').args), [{ reuseRecentScan: true }])
     await page.getByTestId('page-home').waitFor()
     // 结论是异步落地的：给它一拍，免得在提示出现之前就断言「没有」。
     await page.waitForTimeout(100)

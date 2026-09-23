@@ -122,13 +122,24 @@ describe('acceleration reminders sent by the main process', () => {
     h.preferences.acceleration = false
     expect(h.controller.notifyHost('accelerationInterrupted', 'xm-account:1:t2')).toBe('disabled')
   })
+  it('says an automatic connection is on, is billed and where to turn it off', () => {
+    const h = setup()
+    expect(h.controller.notifyHost('accelerationAutoStarted', 'xm-account:1:t0')).toBe('requested')
+    expect(h.runtime.create).toHaveBeenLastCalledWith({
+      title: '已为 Codex 桌面端连上加速',
+      body: '打开桌面端时自动连上的，会计入免费加速时长，不用时可以在托盘或加速页断开。',
+      silent: true,
+    })
+    expect(h.controller.notifyHost('accelerationAutoStarted', 'xm-account:1:t0')).toBe('duplicate')
+  })
   it('keeps the copy free of the relay site name, top-up pitch and technical words', () => {
     const h = setup()
     h.controller.notifyHost('accelerationExpiring', 'xm-account:1:t0')
     h.controller.notifyHost('accelerationExhausted', 'xm-account:1:t0')
     h.controller.notifyHost('accelerationInterrupted', 'xm-account:1:t0')
     h.controller.notifyHost('accelerationInterruptedUnrestored', 'xm-account:1:t0')
-    expect(h.runtime.create).toHaveBeenCalledTimes(4)
+    h.controller.notifyHost('accelerationAutoStarted', 'xm-account:1:t0')
+    expect(h.runtime.create).toHaveBeenCalledTimes(5)
     for (const call of (h.runtime.create as ReturnType<typeof vi.fn>).mock.calls) {
       expect(`${call[0].title} ${call[0].body}`).not.toMatch(/solov|sub2api|new-api|充值|购买|续费|内核|进程|代理|mihomo/i)
     }

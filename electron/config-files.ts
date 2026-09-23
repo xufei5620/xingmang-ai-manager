@@ -684,6 +684,23 @@ function dropDeprecatedCodexConfigKeys(parsed: Record<string, unknown>): void {
   }
 }
 
+// Codex 默认把使用统计（OTEL 指标）发去 ab.chatgpt.com，`codex exec` 退出前还要等它发完。
+// 国内连不上时这一等就是 10 秒左右——每跑一次都卡（沙箱实测 0.155.1：官方主机被丢包时
+// 10.28 秒，关掉后 0.24 秒）。统计只给 OpenAI 自己看，关掉没有任何功能损失。app-server
+// （Codex 桌面端）用同一个开关。只在用户没表过态时补，用户写了 true 就尊重他。
+function disableCodexRelayAnalytics(parsed: Record<string, unknown>): void {
+  const analytics = ensureRecord(parsed, 'analytics')
+  if (analytics.enabled === undefined) analytics.enabled = false
+}
+
+/** 切回 ChatGPT 时只收回本软件写的那一份：整张表恰好就是 `enabled = false`。 */
+function restoreCodexAnalytics(parsed: Record<string, unknown>): void {
+  const analytics = parsed.analytics
+  if (isJsonRecord(analytics) && Object.keys(analytics).length === 1 && analytics.enabled === false) {
+    delete parsed.analytics
+  }
+}
+
 function stripCodexRelayFromConfig(
   parsed: Record<string, unknown>,
   siteBaseUrl: string,
@@ -701,6 +718,7 @@ function stripCodexRelayFromConfig(
   delete parsed.model_provider
   delete parsed.model
   delete parsed.review_model
+  restoreCodexAnalytics(parsed)
   dropDeprecatedCodexConfigKeys(parsed)
 }
 
@@ -714,6 +732,7 @@ function applyCodexRelayConfig(
   parsed.review_model = model
   parsed.model_provider = providerName
   parsed.check_for_update_on_startup = false
+  disableCodexRelayAnalytics(parsed)
   dropDeprecatedCodexConfigKeys(parsed)
   const providerEntry = ensureRecord(ensureRecord(parsed, 'model_providers'), providerName)
   providerEntry.name = typeof providerEntry.name === 'string' && providerEntry.name.trim()
@@ -760,6 +779,9 @@ function buildCodexRelayConfigTemplate(
     '',
     '[features]',
     'goals = true',
+    '',
+    '[analytics]',
+    'enabled = false',
     '',
   ].join('\n')
 }

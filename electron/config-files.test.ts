@@ -710,6 +710,36 @@ describe('native CLI configuration files', () => {
     expect(merged.custom_official).toEqual({ enabled: true })
   })
 
+  it('turns off Codex analytics for the relay without overriding a user who enabled it', () => {
+    // Codex waits ~10 s on exit to flush metrics to ab.chatgpt.com, which is
+    // unreachable from mainland China.
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const configPath = codexConfigSnapshotPaths(roots).active
+    saveProviderConfig('codex', 'sk-relay', testModels.codex, 'reset', roots, {}, providerBaseUrls)
+    expect(TOML.parse(fs.readFileSync(configPath, 'utf8')).analytics).toEqual({ enabled: false })
+
+    const seeded = TOML.parse(fs.readFileSync(configPath, 'utf8'))
+    seeded.analytics = { enabled: true }
+    fs.writeFileSync(configPath, TOML.stringify(seeded as Parameters<typeof TOML.stringify>[0]), 'utf8')
+    saveProviderConfig('codex', 'sk-relay', testModels.codex, 'merge', roots, {}, providerBaseUrls)
+    expect(TOML.parse(fs.readFileSync(configPath, 'utf8')).analytics).toEqual({ enabled: true })
+  })
+
+  it('takes back only its own analytics switch when Codex leaves the relay without a ChatGPT snapshot', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const configPath = codexConfigSnapshotPaths(roots).active
+    fs.mkdirSync(path.dirname(configPath), { recursive: true })
+    fs.writeFileSync(configPath, '[analytics]\nenabled = false\n', 'utf8')
+    saveProviderConfig('codex', 'sk-relay', testModels.codex, 'merge', roots, {}, providerBaseUrls)
+    fs.rmSync(codexConfigSnapshotPaths(roots).chatgpt, { force: true })
+
+    switchProviderToOfficialAccount('codex', roots, {}, providerBaseUrls)
+
+    expect(TOML.parse(fs.readFileSync(configPath, 'utf8'))).not.toHaveProperty('analytics')
+  })
+
   it('writes no Codex settings that the recommended version no longer recognizes', () => {
     const home = temporaryHome()
     const roots = providerRoots(home)
