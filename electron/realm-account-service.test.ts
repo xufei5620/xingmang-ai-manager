@@ -63,6 +63,7 @@ function fixture(overrides: Partial<RealmAccountServiceOptions> = {}) {
     restoreError: Error | null
     restoreValid: boolean
     balance: () => Promise<unknown>
+    serverSessionsEnded: Array<string | null>
   }> = []
   const createClient: RealmAccountServiceOptions['createClient'] = (siteId, callback) => {
     let current: RealmSavedAccount | null = null
@@ -84,6 +85,9 @@ function fixture(overrides: Partial<RealmAccountServiceOptions> = {}) {
         return { account: state().account!, accessExpiresAt: null }
       }),
       logout: vi.fn(() => emit(null)),
+      // Records the identity it would revoke at call time, like the real client
+      // capturing its credentials synchronously before any await.
+      endServerSession: vi.fn(async () => { item.serverSessionsEnded.push(current ? current.userId : null) }),
       getPersistableSession: () => current?.credential.kind === 'new-api'
         ? { userId: Number(current.userId), cookies: [...current.credential.cookies] } : null,
     } as unknown as RelayBackendClient
@@ -94,7 +98,7 @@ function fixture(overrides: Partial<RealmAccountServiceOptions> = {}) {
       return true
     })
     const item = { siteId, client, restore, emit, failLogin: false, restoreError: null as Error | null,
-      restoreValid: true, balance: async (): Promise<unknown> => ({ quota: 100 }) }
+      restoreValid: true, balance: async (): Promise<unknown> => ({ quota: 100 }), serverSessionsEnded: [] as Array<string | null> }
     clients.push(item)
     return { client, restore, getSavedAccount: () => current }
   }
@@ -871,5 +875,81 @@ describe('realm switch guards on the shipped path', () => {
     expect((await f.service.listSavedAccounts()).map((entry) => entry.id)).toEqual([summaries[1].id])
     await f.service.logout()
     expect(await f.service.listSavedAccounts()).toEqual([])
+  })
+})
+
+describe('realm account server-side sign-out', () => {
+  function endServerSessionMock(client: RelayBackendClient) {
+    return vi.mocked(client.endServerSession!)
+  }
+  function totalServerSignOuts(f: ReturnType<typeof fixture>): number {
+    return f.clients.reduce((sum, entry) => sum + endServerSessionMock(entry.client).mock.calls.length, 0)
+  }
+
+  it('revokes the server session exactly once on an explicit logout, before local credentials are dropped', async () => {
+    const f = fixture()
+    await f.service.login(login)
+    const active = f.clients[1]
+    await f.service.logout()
+    expect(endServerSessionMock(active.client)).toHaveBeenCalledOnce()
+    expect(active.serverSessionsEnded).toEqual(['7'])
+    expect(endServerSessionMock(active.client).mock.invocationCallOrder[0])
+      .toBeLessThan(vi.mocked(active.client.logout).mock.invocationCallOrder[0])
+    expect(totalServerSignOuts(f)).toBe(1)
+    expect(f.service.client.getSessionState().authenticated).toBe(false)
+    expect(await f.vault.active()).toBeNull()
+  })
+
+  it('signs out locally even when the server call fails or never answers', async () => {
+    for (const outcome of ['reject', 'hang'] as const) {
+      const f = fixture()
+      await f.service.login(login)
+      endServerSessionMock(f.clients[1].client).mockImplementation(() => (
+        outcome === 'reject' ? Promise.reject(new Error('network down')) : new Promise<void>(() => undefined)
+      ))
+      await expect(f.service.logout()).resolves.toBeUndefined()
+      expect(f.service.client.getSessionState().authenticated).toBe(false)
+      expect(await f.vault.active()).toBeNull()
+      expect(await f.service.listSavedAccounts()).toEqual([])
+      await expect(f.service.login(login)).resolves.toMatchObject({ siteId: 'solov' })
+    }
+  })
+
+  it('does not revoke anything when the local sign-out cannot be persisted', async () => {
+    const f = fixture()
+    await f.service.login(login)
+    f.fail(true)
+    await expect(f.service.logout()).rejects.toMatchObject({ code: 'STORAGE' })
+    expect(totalServerSignOuts(f)).toBe(0)
+    expect(f.service.client.getSessionState().authenticated).toBe(true)
+  })
+
+  it('keeps saved accounts alive on the server across switching, re-login and removal', async () => {
+    const f = fixture()
+    await f.service.login(login)
+    await f.service.login({ ...login, siteId: 'solov-api' })
+    const summaries = await f.service.listSavedAccounts()
+    await f.service.switchSavedAccount(summaries[0].id)
+    await f.service.switchSavedAccount(summaries[1].id)
+    await f.service.login({ ...login, username: '8' })
+    await f.service.removeSavedAccount(summaries[1].id)
+    await expect(f.service.login({ ...login, password: 'bad' })).rejects.toMatchObject({ code: 'UNAUTHORIZED' })
+    expect(totalServerSignOuts(f)).toBe(0)
+    // Every switched-away client was still discarded locally.
+    expect(f.clients.filter((entry) => vi.mocked(entry.client.logout).mock.calls.length > 0).length).toBeGreaterThan(0)
+  })
+
+  it('still signs out locally with nothing signed in, leaving the no-request decision to the client', async () => {
+    const f = fixture()
+    await f.service.logout()
+    expect(f.clients[0].serverSessionsEnded).toEqual([null])
+    expect(f.service.client.getSessionState().authenticated).toBe(false)
+  })
+
+  it('never exposes server-side revocation through the business client proxy', async () => {
+    const f = fixture()
+    await f.service.login(login)
+    expect(f.service.client.endServerSession).toBeUndefined()
+    expect(totalServerSignOuts(f)).toBe(0)
   })
 })

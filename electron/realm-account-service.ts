@@ -179,6 +179,14 @@ export function createRealmAccountService(options: RealmAccountServiceOptions): 
   function dispose(handle: RuntimeHandle): void {
     try { handle.client.logout() } catch { /* detached credentials cannot affect the active client */ }
   }
+  // 只给用户亲手点的「退出登录」用。切换账号、登录/恢复失败丢掉的候选句柄都走上面的
+  // dispose：那些凭据还留在本机账号库里，在服务端注销掉就等于把保存的账号也登出了。
+  // Fire-and-forget: the client captures its credentials synchronously, then
+  // dispose() may clear them at once. The request has its own short timeout and
+  // never rejects, so the local sign-out is neither blocked nor failed by it.
+  function endServerSession(handle: RuntimeHandle): void {
+    try { void Promise.resolve(handle.client.endServerSession?.()).catch(() => undefined) } catch { /* best effort */ }
+  }
   function getPublicClient(siteId: RealmAccountSiteId): RelayBackendClient {
     const selected = site(siteId)
     let client = publicClients.get(selected)
@@ -272,10 +280,13 @@ export function createRealmAccountService(options: RealmAccountServiceOptions): 
   async function logout(): Promise<void> {
     return transition(async () => {
       const replacement = createHandle(active.siteId)
+      // 先把本机账号库里的这份凭据删掉再注销服务端：本机删不掉（存储出错）时
+      // 退出整体失败、登录照旧可用，不能出现本机还「登着」而服务端已经作废的状态。
       await options.vault.signOut()
       const previous = active
       active = replacement
       stalled = null
+      endServerSession(previous)
       dispose(previous)
       requestChanged()
     })
@@ -428,6 +439,9 @@ export function createRealmAccountService(options: RealmAccountServiceOptions): 
       if (property === 'logout') return logout
       if (property === 'getPersistableSession') return () => active.siteId === 'solov' ? active.client.getPersistableSession?.() ?? null : null
       if (property === 'restoreSession' || property === 'switchSession') return () => Promise.reject(new RealmAccountError('UNSUPPORTED'))
+      // Server-side revocation belongs to logout() alone; no business caller may
+      // end the active session behind the vault's back.
+      if (property === 'endServerSession') return undefined
       if (typeof property !== 'string') return undefined
       if (publicMethods.has(property as keyof RelayBackendClient)) {
         return (...args: unknown[]) => {

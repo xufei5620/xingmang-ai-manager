@@ -13,7 +13,7 @@
 | 登录 | `POST /api/user/login` | 公开+Turnstile | 响应体 `access_token`/`access_expires_at`/`user`；同时 Set-Cookie 下发 HttpOnly refresh token |
 | 2FA | `POST /api/user/login/2fa` | CriticalRateLimit | flow_token 补登录 |
 | 续期 | `POST /api/user/auth/refresh` | 凭 refresh cookie | 换新 access_token |
-| 登出 | `POST /api/user/auth/logout` | 会话 | 清 session |
+| 登出 | `POST /api/user/auth/logout` | Bearer access_token 或 refresh cookie（不经 UserAuth；受 SessionCookieOriginGuard，与续期同） | 注销这一个登录会话并清 cookie；access_token 过期时按 cookie 注销（rc.24 `controller/auth_session.go` 核实） |
 | 用户信息 | `GET/PUT/DELETE /api/user/self` | UserAuth | quota(整数余额)/used_quota/group/role/aff_* |
 | 系统访问令牌(PAT) | `GET /api/user/token` | UserAuth | 供第三方免会话调管理接口 |
 | CLI Key-创建 | `POST /api/token/` | UserAuth | name, remain_quota, expired_time(-1 永久), unlimited_quota, group, model_limits*, allow_ips；**响应只有 success，不返回 id/key** |
@@ -48,6 +48,7 @@
 6. 兑换码错误/已用/过期统一同一失败文案，且受「支付合规确认」开关整体拦截。
 7. **单把 Key 的额度是「剩余」不是「每月上限」**：`remain_quota` 就是这把 Key 还能用掉多少，用完不会自己重置（另一个后端的 `quota` 是总额，适配层写回时会把已用量加上去，对调用方同样呈现为剩余）。个人中心的「每个工具的额度上限」按这个语义做，换算与更新入参统一收口在 `electron/account-key-quota.ts`。
 8. PAT 权限与登录态等同、无独立 scope——不建议长期常驻存储；后台轮询优先短期 access_token + refresh 静默续期（**已拍板并按此方案落地**：`39c9671`，`electron/account-session-store.ts` 存 session token 而非 PAT）。
+9. **登录会话有上限**（rc.24 `service/auth_session.go`、`service/auth_token.go`、`common/constants.go` 核实）：每个账号最多 50 个未过期会话（TTL 30 天），满了登录回 409 `AUTH_SESSION_LIMIT`；24 小时内最多新建 100 个，超了回 429 `AUTH_SESSION_ISSUANCE_LIMIT`；登录路由另有按 IP 的 CriticalRateLimit，回空 body 的 429。网页登录同样受 50 个上限约束，所以客户端退出必须调登出端点（`new-api-client.ts` 的 `endServerSession`），否则会话只能等 30 天过期。
 
 ## D. 建议鉴权流
 

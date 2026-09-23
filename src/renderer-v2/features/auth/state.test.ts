@@ -128,6 +128,17 @@ describe('v2 auth recovery boundaries', () => {
     expect(authErrorMessage(new Error('Username already exists'), '注册')).toBe('该用户名已被注册，请更换用户名，或点击“已有账号，登录”')
     expect(authErrorMessage(new Error('Email address is already in use'), '注册')).toBe('该邮箱已被注册，请直接登录，或更换邮箱后重试')
   })
+  // 以前 409 落到「请稍后重试」：服务端的设备数满了，重试一万次也登不上。
+  it('explains login device and frequency limits instead of asking to try again later', () => {
+    const sessionLimit = authErrorMessage(new Error("Error invoking remote method 'account:login': Error: 这个账号同时登录的设备太多了，暂时登不上。"), '登录')
+    expect(sessionLimit).toContain('登录设备')
+    expect(sessionLimit).toContain('联系客服')
+    expect(sessionLimit).not.toMatch(/稍后重试|https?:|solov|\.cc/)
+    expect(authErrorMessage(new Error('AUTH_SESSION_LIMIT'), '登录')).toBe(sessionLimit)
+    expect(authErrorMessage(new Error('这个账号最近一天里登录的次数太多了，请过几个小时再试。'), '登录')).toBe('这个账号最近一天里登录的次数太多了，请过几个小时再试。')
+    expect(authErrorMessage(new Error('AUTH_SESSION_ISSUANCE_LIMIT'), '登录')).toContain('过几个小时')
+    expect(authErrorMessage(new Error("Error invoking remote method 'account:login': Error: 登录太频繁了，请过一会儿再试。"), '登录')).toBe('登录太频繁了，请过一会儿再试。')
+  })
   it('does not send an account that never had a password back to the password field', () => {
     expect(authErrorMessage(new Error('This account has no password set. Please use password reset or contact an administrator to reset it.'), '修改密码')).toBe('当前账号未设置密码，请先通过“找回密码”设置密码')
     expect(authErrorMessage(new Error('Original password is incorrect'), '修改密码')).toBe('原密码错误，请重新输入')

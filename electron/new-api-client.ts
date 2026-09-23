@@ -37,12 +37,17 @@ const defaultMaxResponseBytes = 512 * 1024
 const noticeMaxResponseBytes = 4 * 1024 * 1024
 const noticeMaxContentLength = 4 * 1024 * 1024
 const redirectStatuses = new Set([301, 302, 303, 307, 308])
+// 退出登录时顺手告诉服务端「这台设备不用了」。这一下只是尽力而为：联不上、
+// 超时、服务报错都不影响本机退出，所以等得比普通请求短得多，也不需要读多大的应答。
+const serverLogoutTimeoutMs = 3_000
+const serverLogoutMaxResponseBytes = 16 * 1024
 
 const statusPath = '/api/status'
 const verificationPath = '/api/verification'
 const registerPath = '/api/user/register'
 const loginPath = '/api/user/login'
 const refreshPath = '/api/user/auth/refresh'
+const serverLogoutPath = '/api/user/auth/logout'
 const selfPath = '/api/user/self'
 const logSelfPath = '/api/log/self'
 const logSelfStatPath = '/api/log/self/stat'
@@ -780,7 +785,13 @@ export interface NewApiClientService extends RelayBackendClient {
   resetPassword(input: NewApiResetPasswordInput): Promise<NewApiResetPasswordResult>
   register(input: NewApiRegisterInput): Promise<void>
   login(input: NewApiLoginInput): Promise<NewApiLoginResult>
+  // Local only: drops the in-memory session and nothing else. Saved-account
+  // switching and discarded login/restore candidates call this too, and those
+  // credentials must stay valid on the server -- see endServerSession below.
   logout(): void
+  // Best-effort POST /api/user/auth/logout for the explicit "退出登录" only.
+  // Never rejects and never touches the local session; see the implementation.
+  endServerSession(): Promise<void>
   isAuthenticated(): boolean
   getSessionState(): NewApiSessionState
   getBalance(): Promise<NewApiBalance>
@@ -1144,12 +1155,35 @@ const loginRejectionMessages = new Set([
   '使用者名或密碼錯誤，或使用者已被封禁',
 ])
 
+// 登录被服务端按「设备数 / 频率」拦下来时的中文说法。new-api 这几种拒绝只回
+// HTTP 状态码 + code + 一句英文状态名（Conflict / Too Many Requests），以前前者
+// 落到「请稍后重试」——可一直重试也不会好，用户还登不进去，没法自己去清理。
+// 渲染层 renderer-v2 的 account-errors.ts 按同样的字认它们（electron 不 import
+// src，同 T12 的有意重复）。文案里不出现网址或站点名。
+export const loginSessionLimitMessage = '这个账号同时登录的设备太多了，暂时登不上。如果别的电脑或浏览器上还登着这个账号，请在那里的个人中心「登录设备」里退出几个不用的，再回来登录；都登不上的话请联系客服。'
+export const loginIssuanceLimitMessage = '这个账号最近一天里登录的次数太多了，请过几个小时再试。'
+export const loginRateLimitedMessage = '登录太频繁了，请过一会儿再试。'
+
+// Verified against QuantumNous/new-api v1.0.0-rc.24 service/auth_session.go
+// (authSessionErrorCode, createLoginSession) and middleware/rate-limit.go:
+// 409 AUTH_SESSION_LIMIT once 50 unexpired sessions are live; 429
+// AUTH_SESSION_ISSUANCE_LIMIT after 100 sessions created in 24 hours; and the
+// route's CriticalRateLimit answers a bare 429 with an empty body.
+function loginLimitMessage(raw: NewApiRawResponse, envelope: Record<string, unknown> | null): string | null {
+  const code = envelope && typeof envelope.code === 'string' ? envelope.code : ''
+  if (raw.status === 409 && code === 'AUTH_SESSION_LIMIT') return loginSessionLimitMessage
+  if (raw.status === 429) return code === 'AUTH_SESSION_ISSUANCE_LIMIT' ? loginIssuanceLimitMessage : loginRateLimitedMessage
+  return null
+}
+
 function unwrapLoginEnvelope(raw: NewApiRawResponse, secrets: readonly string[]): unknown {
   const envelope = isRecord(raw.payload) ? raw.payload : null
   if (raw.status === 401 || (raw.ok && envelope?.success === false
     && typeof envelope.message === 'string' && loginRejectionMessages.has(envelope.message))) {
     throw new NewApiLoginRejectedError()
   }
+  const limited = loginLimitMessage(raw, envelope)
+  if (limited) throw new Error(limited)
   const data = unwrapEnvelope(raw, '账号登录', secrets)
   if (isRecord(data) && data.require_2fa === true) throw new Error('此账号需要双重验证，请先完成验证')
   return data
@@ -2591,6 +2625,44 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
     setSession(null)
   }
 
+  // Verified against QuantumNous/new-api v1.0.0-rc.24 (router/api-router.go,
+  // controller/auth_session.go AuthLogout, middleware/auth_origin.go): the
+  // route is POST /api/user/auth/logout, outside UserAuth. A parseable Bearer
+  // access token revokes that token's login session (plus the refresh cookie
+  // when it names the same session); an expired one falls through to the
+  // refresh-cookie path, which revokes by the cookie alone. Sending both
+  // therefore covers a session whose 15-minute access token has lapsed.
+  // New-Api-User is ignored there, but is sent anyway via buildAuthHeaders so a
+  // customized branch that wraps the route in UserAuth still accepts it. Its
+  // SessionCookieOriginGuard applies exactly as it does to the refresh call,
+  // which already sends the same Origin-less request shape.
+  //
+  // Without this, every sign-out left the server session alive for its full
+  // 30-day TTL; at 50 live sessions the server answers every new login with
+  // 409 AUTH_SESSION_LIMIT, and the user can no longer sign in anywhere to
+  // clean them up.
+  //
+  // Captures the session synchronously, before the first await, so the caller
+  // may clear local state right after starting this. Resolves, never rejects:
+  // a network failure, timeout or server error must not block a sign-out, and
+  // swallowing the error also keeps anything the server echoed out of logs.
+  const endServerSession = async (): Promise<void> => {
+    const current = session
+    if (!current) return
+    const headers: Record<string, string> = { ...buildAuthHeaders(current) }
+    if (current.cookies.length > 0) headers.Cookie = current.cookies.join('; ')
+    try {
+      await performRequest(
+        { ...ctx, timeoutMs: Math.min(ctx.timeoutMs, serverLogoutTimeoutMs) },
+        serverLogoutPath,
+        { method: 'POST', headers, maxResponseBytes: serverLogoutMaxResponseBytes },
+        '退出登录',
+      )
+    } catch {
+      // Best effort only; the local sign-out has already been decided.
+    }
+  }
+
   const isAuthenticated = (): boolean => session !== null
 
   const getSessionState = (): NewApiSessionState => ({
@@ -3353,6 +3425,7 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
     register,
     login,
     logout,
+    endServerSession,
     isAuthenticated,
     getSessionState,
     getBalance,

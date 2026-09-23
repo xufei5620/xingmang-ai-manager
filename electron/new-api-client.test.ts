@@ -5,6 +5,9 @@ import {
   createNewApiClient,
   extractSessionCookies,
   findCliKeyIdByName,
+  loginIssuanceLimitMessage,
+  loginRateLimitedMessage,
+  loginSessionLimitMessage,
   hasExhaustedCappedCliKey,
   NewApiAuthenticationError,
   NewApiLoginRejectedError,
@@ -39,6 +42,7 @@ import {
 import { managedCliKeyProfiles } from './catalog'
 import { networkFailureMessages } from './network-failure'
 import { buildManagedCliKeyLimitUpdate, resolveManagedCliKeyLimits } from './account-key-quota'
+import { matchAccountErrorMessage } from '../src/renderer-v2/features/auth/account-errors'
 
 function registerAckResponse(): Response {
   // RECON never confirmed a response shape for /api/user/register beyond the
@@ -1159,6 +1163,158 @@ describe('logout / session guards', () => {
     expect(client.isAuthenticated()).toBe(false)
     expect(client.getSessionState()).toEqual({ authenticated: false, account: null })
     await expect(client.getBalance()).rejects.toThrow('请先登录星芒账号')
+  })
+})
+
+describe('endServerSession (explicit sign-out only)', () => {
+  function neverSettlingFetch(): ReturnType<typeof vi.fn<NewApiFetch>> {
+    return vi.fn<NewApiFetch>().mockImplementation((_url, init) => (
+      new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')), { once: true })
+      })
+    ))
+  }
+
+  it('sends exactly one POST to the rc.24 logout route with the bearer token, user id and refresh cookie', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    fetchImpl.mockResolvedValue(jsonResponse({ success: true, message: '', data: { revoked_sid: 'sid-1', cookie_cleared: true } }))
+
+    await expect(client.endServerSession()).resolves.toBeUndefined()
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1)
+    const [url, init] = fetchImpl.mock.calls[0]
+    expect(String(url)).toBe(`${testBaseUrl}/api/user/auth/logout`)
+    expect(init?.method).toBe('POST')
+    expect(init?.body).toBeUndefined()
+    expect(init?.redirect).toBe('manual')
+    expect(init?.credentials).toBe('omit')
+    expect(init?.signal).toBeInstanceOf(AbortSignal)
+    expect(init?.headers).toMatchObject({
+      Authorization: 'Bearer test-access-token-abc',
+      'New-Api-User': '42',
+      Cookie: 'refresh_token=cookie-value-1',
+    })
+  })
+
+  it('leaves the local session alone; only logout() clears it, and logout() itself never calls the server', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    fetchImpl.mockResolvedValue(jsonResponse({ success: true, message: '' }))
+    client.logout()
+    expect(fetchImpl).not.toHaveBeenCalled()
+    expect(client.isAuthenticated()).toBe(false)
+
+    const again = await authenticatedClient(fetchImpl)
+    fetchImpl.mockResolvedValue(jsonResponse({ success: true, message: '' }))
+    await again.endServerSession()
+    expect(again.isAuthenticated()).toBe(true)
+  })
+
+  it('captures credentials synchronously so the caller can clear the local session right after starting it', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    fetchImpl.mockResolvedValue(jsonResponse({ success: true, message: '' }))
+    const pending = client.endServerSession()
+    client.logout()
+    await pending
+    expect(fetchImpl).toHaveBeenCalledTimes(1)
+    expect(fetchImpl.mock.calls[0][1]?.headers).toMatchObject({ Authorization: 'Bearer test-access-token-abc' })
+    expect(client.isAuthenticated()).toBe(false)
+  })
+
+  it('makes no request when nobody is signed in', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl })
+    await expect(client.endServerSession()).resolves.toBeUndefined()
+    expect(fetchImpl).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['a network failure', () => Promise.reject(new TypeError('fetch failed'))],
+    ['a server error', () => Promise.resolve(jsonResponse({ success: false, code: 'AUTH_INTERNAL_ERROR', message: 'Internal Server Error' }, { status: 500 }))],
+    ['an expired session', () => Promise.resolve(refreshRejectedResponse())],
+    ['a redirect', () => Promise.resolve(new Response(null, { status: 302, headers: { Location: 'https://attacker.example/' } }))],
+    ['a non-JSON page', () => Promise.resolve(new Response('<html>portal</html>', { status: 200 }))],
+  ])('resolves quietly and keeps the session after %s', async (_label, respond) => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    fetchImpl.mockImplementation(respond)
+    await expect(client.endServerSession()).resolves.toBeUndefined()
+    expect(fetchImpl).toHaveBeenCalledTimes(1)
+    expect(client.isAuthenticated()).toBe(true)
+  })
+
+  it('gives up after a few seconds instead of the ordinary 10-second request budget', async () => {
+    vi.useFakeTimers()
+    try {
+      const login = vi.fn<NewApiFetch>().mockResolvedValue(loginResponse())
+      const fetchImpl = neverSettlingFetch()
+      const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl: (url, init) => (
+        String(url).endsWith('/api/user/login') ? login(url, init) : fetchImpl(url, init)
+      ) })
+      await client.login({ username: 'tester', password: 'correct horse battery staple' })
+      let settled = false
+      const pending = client.endServerSession().then(() => { settled = true })
+      await vi.advanceTimersByTimeAsync(2_999)
+      expect(settled).toBe(false)
+      await vi.advanceTimersByTimeAsync(1)
+      await pending
+      expect(settled).toBe(true)
+      expect(fetchImpl).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('honours a client timeout that is already shorter than the logout cap', async () => {
+    const login = vi.fn<NewApiFetch>().mockResolvedValue(loginResponse())
+    const fetchImpl = neverSettlingFetch()
+    const client = createNewApiClient({ baseUrl: testBaseUrl, timeoutMs: 5, fetchImpl: (url, init) => (
+      String(url).endsWith('/api/user/login') ? login(url, init) : fetchImpl(url, init)
+    ) })
+    await client.login({ username: 'tester', password: 'correct horse battery staple' })
+    await expect(client.endServerSession()).resolves.toBeUndefined()
+  })
+})
+
+describe('login limits (rc.24 session caps and rate limiting)', () => {
+  it('explains the 50-device cap instead of asking the user to retry', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>().mockResolvedValue(
+      jsonResponse({ success: false, code: 'AUTH_SESSION_LIMIT', message: 'Conflict' }, { status: 409 }),
+    )
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl })
+    const error = await client.login({ username: 'tester', password: 'correct horse battery staple' }).catch((value: unknown) => value)
+    expect(error).toBeInstanceOf(Error)
+    expect(error).not.toBeInstanceOf(NewApiLoginRejectedError)
+    expect((error as Error).message).toBe(loginSessionLimitMessage)
+    expect(loginSessionLimitMessage).toContain('登录设备')
+    expect(loginSessionLimitMessage).not.toMatch(/https?:|solov|\.cc|稍后重试/)
+    expect(client.isAuthenticated()).toBe(false)
+  })
+
+  it('tells the daily issuance cap apart from ordinary rate limiting', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+      .mockResolvedValueOnce(jsonResponse({ success: false, code: 'AUTH_SESSION_ISSUANCE_LIMIT', message: 'Too Many Requests' }, { status: 429 }))
+      .mockResolvedValueOnce(new Response(null, { status: 429, headers: { 'Retry-After': '60' } }))
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl })
+    await expect(client.login({ username: 'tester', password: 'pw-1' })).rejects.toThrow(loginIssuanceLimitMessage)
+    await expect(client.login({ username: 'tester', password: 'pw-1' })).rejects.toThrow(loginRateLimitedMessage)
+  })
+
+  // electron 不 import src 的运行时代码，渲染层那张表是有意复制的一份；这里钉住两边不走样。
+  it('is recognised by the renderer-v2 error table word for word', () => {
+    expect(matchAccountErrorMessage(`Error invoking remote method 'account:login': Error: ${loginSessionLimitMessage}`)).toBe(loginSessionLimitMessage)
+    expect(matchAccountErrorMessage(loginIssuanceLimitMessage)).toBe(loginIssuanceLimitMessage)
+    expect(matchAccountErrorMessage(loginRateLimitedMessage)).toBe(loginRateLimitedMessage)
+  })
+
+  it('leaves other 409 answers to the ordinary envelope handling', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>().mockResolvedValue(
+      jsonResponse({ success: false, code: 'AUTH_SESSION_MISMATCH', message: 'Conflict' }, { status: 409 }),
+    )
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl })
+    await expect(client.login({ username: 'tester', password: 'pw-1' })).rejects.toThrow('Conflict')
   })
 })
 
