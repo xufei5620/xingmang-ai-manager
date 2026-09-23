@@ -155,6 +155,7 @@ import {
 import { verifyUpdatePackageDigest } from './update-package-digest'
 import { installStrictUpdateCodeSignatureVerifier } from './update-signature'
 import { createUpdaterService } from './updater'
+import { createServiceStatusMonitor, locateServiceStatusUrl, readServiceStatus } from './service-status'
 import { resolveWindowsCliExecutionModeDetailed } from './windows-elevation'
 import { ensureDirectoryOnWindowsUserPath } from './windows-cli-shell-access'
 import {
@@ -1147,6 +1148,32 @@ if (!hasSingleInstanceLock) {
         await autoUpdater.netSession.setProxy({ mode: 'system' })
       },
     })
+    // 更新目录上的服务状态文件：发布者在那里标「正在维护」，没登录的人也能看到。
+    // 只在更新开着的包里读（地址来自安装包自己的更新配置）；读不到当没在维护，
+    // 请求在后台走，不挡启动。
+    const serviceStatusUrl = updaterService.getState().phase === 'disabled'
+      ? null
+      : locateServiceStatusUrl(
+        app.isPackaged
+          ? path.join(process.resourcesPath, 'app-update.yml')
+          : path.join(app.getAppPath(), 'dev-app-update.yml'),
+        { allowLocalHttp: !app.isPackaged },
+      )
+    const serviceStatusMonitor = serviceStatusUrl
+      ? createServiceStatusMonitor({
+        read: () => readServiceStatus({
+          url: serviceStatusUrl,
+          fetch: (url, init) => autoUpdater.netSession.fetch(url, init),
+        }),
+        onChange: (status) => {
+          updaterService.setServiceStatus(status)
+          runtimeLog.log('info', 'updater', 'service-status.changed', status?.maintenance ? '服务状态文件：正在维护' : '服务状态文件：没在维护', {
+            maintenance: Boolean(status?.maintenance),
+          })
+        },
+      })
+      : null
+    serviceStatusMonitor?.start()
     runtimeLog.log('info', 'updater', 'runtime.selected', '主程序更新运行模式已确定', {
       enabled: updaterService.getState().phase !== 'disabled',
       localBuild,
@@ -2090,6 +2117,7 @@ if (!hasSingleInstanceLock) {
       process.off('uncaughtExceptionMonitor', onUncaughtException)
       process.off('unhandledRejection', onUnhandledRejection)
       if (periodicUpdateTimer) clearInterval(periodicUpdateTimer)
+      serviceStatusMonitor?.dispose()
       unsubscribeDesktopNotifications()
       desktopNotifications.dispose()
       unregisterIpcHandlers()

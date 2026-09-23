@@ -1012,6 +1012,38 @@ describe('updater service', () => {
   })
 })
 
+describe('service status from the update feed', () => {
+  it('carries a maintenance notice into every snapshot and announces only changes', () => {
+    const client = new FakeUpdater()
+    const service = createUpdaterService(client, { currentVersion: '1.0.0', isPackaged: true })
+    const seen: unknown[] = []
+    service.subscribe((state) => seen.push(state.serviceMaintenance))
+    expect(service.getState().serviceMaintenance).toBeNull()
+
+    service.setServiceStatus({ maintenance: { message: '升级中' } })
+    service.setServiceStatus({ maintenance: { message: '升级中' } })
+    expect(service.getState()).toMatchObject({ phase: 'idle', serviceMaintenance: { message: '升级中' } })
+    service.setServiceStatus(null)
+    expect(service.getState().serviceMaintenance).toBeNull()
+    expect(seen).toEqual([{ message: '升级中' }, null])
+    service.dispose()
+  })
+
+  it('does not disturb an update failure the user is looking at', () => {
+    const client = new FakeUpdater()
+    const service = createUpdaterService(client, { currentVersion: '1.0.0', isPackaged: true })
+    client.emit('error', { code: 'UPDATE_ERROR', message: 'broken' })
+    service.setServiceStatus({ maintenance: { message: null } })
+    expect(service.getState()).toMatchObject({
+      phase: 'error',
+      failedStep: 'check',
+      error: { code: 'UPDATE_ERROR' },
+      serviceMaintenance: { message: null },
+    })
+    service.dispose()
+  })
+})
+
 describe('unsigned release channel', () => {
   it('reports the unsigned channel in every snapshot it hands the renderer', () => {
     const client = new FakeUpdater()

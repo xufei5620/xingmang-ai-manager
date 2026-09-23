@@ -1,6 +1,7 @@
 import type { ProgressInfo, UpdateFileInfo, UpdateInfo } from 'builder-util-runtime'
 import { classifyNetworkFailure, updateNetworkFailureMessages } from './network-failure'
 import { redactSecretQueryParameters, redactSecretShapes } from './redaction-patterns'
+import type { ServiceMaintenance, ServiceStatus } from './service-status'
 
 export type UpdatePhase =
   | 'disabled'
@@ -48,6 +49,12 @@ export interface UpdateSnapshot {
    * downloads or installs on its own; the user confirms each step.
    */
   unsignedChannel?: boolean
+  /**
+   * 更新目录上的状态文件说服务正在维护时，这里是发布者写的那句话（见
+   * service-status.ts）；没在维护或读不到那份文件时为 null。放在更新快照里是因为
+   * 它本来就来自更新目录，而渲染层从启动那一刻起就订阅着这份快照——没登录也收得到。
+   */
+  serviceMaintenance?: ServiceMaintenance | null
 }
 
 type UpdateEventName =
@@ -81,6 +88,8 @@ export interface UpdaterService {
   check(): Promise<UpdateSnapshot>
   download(): Promise<UpdateSnapshot>
   install(): { accepted: true }
+  /** 更新目录上的状态文件读到了新内容（null = 读不到，当没有）。 */
+  setServiceStatus(status: ServiceStatus | null): void
   subscribe(listener: (snapshot: UpdateSnapshot) => void): () => void
   dispose(): void
 }
@@ -273,6 +282,7 @@ function cloneSnapshot(snapshot: UpdateSnapshot): UpdateSnapshot {
     ...snapshot,
     progress: snapshot.progress ? { ...snapshot.progress } : null,
     error: snapshot.error ? { ...snapshot.error } : null,
+    serviceMaintenance: snapshot.serviceMaintenance ? { ...snapshot.serviceMaintenance } : null,
   }
 }
 
@@ -316,6 +326,7 @@ export function createUpdaterService(
     failedStep: null,
     development,
     unsignedChannel,
+    serviceMaintenance: null,
   }
 
   client.autoDownload = false
@@ -699,6 +710,12 @@ export function createUpdaterService(
         throw new Error(snapshot.error?.message || '更新程序未能启动')
       }
       return { accepted: true }
+    },
+    setServiceStatus(status) {
+      if (disposed) return
+      const maintenance = status?.maintenance ? { message: status.maintenance.message } : null
+      if (JSON.stringify(maintenance) === JSON.stringify(snapshot.serviceMaintenance ?? null)) return
+      emit({ serviceMaintenance: maintenance })
     },
     subscribe(listener) {
       listeners.add(listener)

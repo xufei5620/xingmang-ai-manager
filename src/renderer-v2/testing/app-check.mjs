@@ -1749,6 +1749,36 @@ test('the updates page names the step that failed and offers that step again', a
   } finally { await page.close() }
 })
 
+// 维护提示来自更新目录上的状态文件，没登录也得看得到：欢迎页角落一条，登录框是
+// 模态的会盖住角落，所以框里再放一份。关掉的是这句话，发布者换了说法会再出现。
+test('a maintenance notice from the update feed reaches signed-out users, including inside the login dialog', async () => {
+  const page = await open('guest=1')
+  try {
+    await page.getByTestId('welcome-page').waitFor()
+    const emit = (message) => page.evaluate((value) => window.v2Test.emit('onUpdateState', {
+      phase: 'idle', currentVersion: '0.2.10', availableVersion: null, releaseName: null, releaseNotesText: null,
+      checkedAt: null, progress: null, error: null, failedStep: null, development: true,
+      serviceMaintenance: value === undefined ? null : { message: value },
+    }), message)
+    await emit('服务升级中，预计 22:00 恢复。')
+    const corner = page.getByTestId('service-maintenance-notice')
+    await corner.getByText('服务正在维护', { exact: true }).waitFor()
+    await corner.getByText(/服务升级中，预计 22:00 恢复。 这不是你这边的问题/).waitFor()
+    await page.getByTestId('welcome-login').click()
+    const dialog = page.getByTestId('login-dialog')
+    await dialog.getByTestId('auth-maintenance-notice').getByText('服务正在维护', { exact: true }).waitFor()
+    await dialog.getByRole('button', { name: '关闭', exact: true }).first().click()
+    await dialog.waitFor({ state: 'detached' })
+    await corner.getByRole('button', { name: '关闭', exact: true }).click()
+    await corner.waitFor({ state: 'detached' })
+    await emit('服务升级中，预计 23:00 恢复。')
+    await corner.getByText(/预计 23:00 恢复/).waitFor()
+    await emit(undefined)
+    await corner.waitFor({ state: 'detached' })
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('oversized announcements stay in a safe failure state and offer the allowlisted site', async () => {
   const page = await open('noticeOversized=1')
   try {
