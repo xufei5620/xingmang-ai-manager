@@ -161,6 +161,11 @@ export interface AccelerationState {
   error: string | null
   /** Present only when a start was refused for a conflict the user can override. */
   conflicts?: AccelerationConflictKind[]
+  /**
+   * 这次连接不是用户亲手点的，而是软件替他连上的（目前只有打开 Codex 桌面端
+   * 那一处）。只在这次会话还在跑时出现；缺省即旧行为，也就是用户自己连的。
+   */
+  autoStartedBy?: 'codex-desktop'
 }
 
 export interface AccelerationApi {

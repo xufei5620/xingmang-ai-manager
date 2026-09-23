@@ -552,3 +552,40 @@ describe('acceleration preference', () => {
     await connecting
   })
 })
+
+describe('acceleration started by the app', () => {
+  it('marks every state of the session it started automatically until that session ends', async () => {
+    const backend = createBackend()
+    const seen: AccelerationState[] = []
+    const service = createAccelerationService({ getAccountScope: () => scope, backend, onState: (published) => { seen.push(published) } })
+    const started = await service.startAutomaticAcceleration(scope, 'codex-desktop', 'system-proxy')
+    expect(started.autoStartedBy).toBe('codex-desktop')
+    vi.mocked(backend.getAccelerationState).mockResolvedValueOnce(active({ remainingSeconds: 3000 }))
+    expect((await service.getAccelerationState(scope)).autoStartedBy).toBe('codex-desktop')
+    expect(seen.every((published) => published.autoStartedBy === 'codex-desktop')).toBe(true)
+    const stopped = await service.stopAcceleration(scope)
+    expect(stopped.autoStartedBy).toBeUndefined()
+    // 之后用户自己再连，就是他自己的会话。
+    vi.mocked(backend.startAcceleration).mockResolvedValueOnce(active({ connectedAt: '2026-09-14T09:00:00.000Z' }))
+    expect((await service.startAcceleration(scope, 'system-proxy')).autoStartedBy).toBeUndefined()
+  })
+
+  it('leaves user starts and a session that was already running unmarked', async () => {
+    const backend = createBackend()
+    const service = createAccelerationService({ getAccountScope: () => scope, backend })
+    expect((await service.startAcceleration(scope, 'system-proxy')).autoStartedBy).toBeUndefined()
+    // 已经连着时 start 原样返回用户那次会话：不能被改记成软件连的。
+    expect((await service.startAutomaticAcceleration(scope, 'codex-desktop', 'system-proxy')).autoStartedBy).toBeUndefined()
+    expect((await service.getAccelerationState(scope)).autoStartedBy).toBeUndefined()
+  })
+
+  it('drops the mark when a later read shows a different session', async () => {
+    const backend = createBackend()
+    const service = createAccelerationService({ getAccountScope: () => scope, backend })
+    await service.startAutomaticAcceleration(scope, 'codex-desktop', 'system-proxy')
+    vi.mocked(backend.getAccelerationState).mockResolvedValueOnce(active({ connectedAt: '2026-09-14T09:30:00.000Z' }))
+    expect((await service.getAccelerationState(scope)).autoStartedBy).toBeUndefined()
+    vi.mocked(backend.getAccelerationState).mockResolvedValueOnce(active())
+    expect((await service.getAccelerationState(scope)).autoStartedBy).toBeUndefined()
+  })
+})

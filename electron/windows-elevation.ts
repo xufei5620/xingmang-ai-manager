@@ -52,6 +52,8 @@ export interface ResolveWindowsCliExecutionModeOptions {
   platform?: NodeJS.Platform
   probeAdministrator?: () => Promise<boolean>
   probeElevationType?: () => Promise<WindowsTokenElevationType>
+  /** Mandatory integrity RID of the current token, or null when it cannot be read. */
+  probeIntegrityRid?: () => Promise<number | null>
 }
 
 export interface WindowsAdministratorProbeOptions {
@@ -248,6 +250,46 @@ export function parseWindowsTokenElevationType(value: string): WindowsTokenEleva
   return null
 }
 
+/** SECURITY_MANDATORY_HIGH_RID: every TokenElevationTypeFull token runs at or above it. */
+const highMandatoryIntegrityRid = 0x3000
+
+/**
+ * Reads the mandatory label out of `whoami /groups /fo csv /nh`. Group names are
+ * localized, SIDs are not, so only a quoted field that is exactly an S-1-16-*
+ * SID counts; anything but exactly one such field is "unknown", never a guess.
+ */
+export function parseWindowsMandatoryLabelRid(output: string): number | null {
+  const labels = [...output.matchAll(/"S-1-16-(\d{1,6})"/g)]
+  if (labels.length !== 1) return null
+  const rid = Number(labels[0][1])
+  return Number.isSafeInteger(rid) ? rid : null
+}
+
+/**
+ * whoami.exe answers in tens of milliseconds, where the Add-Type probe below has
+ * to start PowerShell and compile C# first: seconds on an ordinary machine, and
+ * past its 15 second cap on a slow one or right after boot. The main window
+ * waits for this answer, so it is asked first.
+ */
+export async function inspectCurrentWindowsIntegrityRid(
+  options: WindowsAdministratorProbeOptions = {},
+): Promise<number | null> {
+  if (process.platform !== 'win32') return null
+  const env = options.env ?? process.env
+  const machinePaths = options.machinePaths ?? resolveWindowsMachinePaths()
+  const { stdout } = await execFileAsync(
+    path.win32.join(machinePaths.system32, 'whoami.exe'),
+    ['/groups', '/fo', 'csv', '/nh'],
+    {
+      env: trustedCommandEnvironment(env, machinePaths),
+      windowsHide: true,
+      timeout: options.timeoutMs ?? 5_000,
+      maxBuffer: 256 * 1024,
+    },
+  )
+  return parseWindowsMandatoryLabelRid(stdout)
+}
+
 /**
  * Distinguishes an explicitly elevated UAC token from a default token. The
  * built-in Administrator account can hold a high-integrity default token when
@@ -407,6 +449,18 @@ export async function resolveWindowsCliExecutionModeDetailed(
   })
   if (platform !== 'win32') return settle('same-user')
   try {
+    // Below High integrity the token cannot be the elevated half of a split
+    // admin token, which is the only case that answers trusted-only, so the
+    // verdict is the one the full probe would reach. At High and above (an
+    // elevated admin, or the built-in Administrator with a default token) and
+    // whenever the label cannot be read, the full probe still decides, and its
+    // failure still falls back to trusted-only.
+    const probeIntegrityRid = options.probeIntegrityRid
+      ?? (options.probeElevationType || options.probeAdministrator ? undefined : inspectCurrentWindowsIntegrityRid)
+    if (probeIntegrityRid) {
+      const rid = await probeIntegrityRid().catch(() => null)
+      if (rid !== null && rid < highMandatoryIntegrityRid) return settle('same-user')
+    }
     if (options.probeElevationType) {
       return settle(await options.probeElevationType() === 'full' ? 'trusted-only' : 'same-user')
     }
