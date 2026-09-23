@@ -75,6 +75,7 @@ import {
   parseLatestNpmVersion,
   providerCommandEnvironment,
   createScanCoalescer,
+  scanProbeConcurrency,
   readGrokLocalVersionForExecutable,
   resolveCliInstallRelease,
   replaceManagedNpmPrefixAtomically,
@@ -4038,5 +4039,63 @@ describe('scan coalescing', () => {
     await expect(failed).rejects.toThrow('probe crashed')
     void h.scan(false)
     expect(h.runs).toHaveLength(2)
+  })
+})
+
+describe('startup snapshot cache and probe limits', () => {
+  function service(directory: string, resolveCliInstallation: SystemServiceOptions['resolveCliInstallation']) {
+    return createSystemService(new AppSettingsStore(path.join(directory, 'settings.json'), directory), {
+      platform: 'linux',
+      findExecutable: async () => null,
+      resolveCliInstallation,
+      systemSnapshotCacheFile: path.join(directory, 'system-snapshot.json'),
+      appVersion: '0.2.9',
+    })
+  }
+
+  async function waitForFile(filePath: string) {
+    for (let attempt = 0; attempt < 200 && !fs.existsSync(filePath); attempt++) await new Promise((resolve) => setTimeout(resolve, 5))
+  }
+
+  it('hands the home page the last scan until this launch finishes one of its own, then never again', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-snapshot-startup-'))
+    temporaryDirectories.push(directory)
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('offline') }))
+    const first = service(directory, async () => null)
+    await expect(first.cachedScan()).resolves.toBeNull()
+    await first.scanSystem(false)
+    await waitForFile(path.join(directory, 'system-snapshot.json'))
+
+    let release!: () => void
+    const blocked = new Promise<void>((resolve) => { release = resolve })
+    const second = service(directory, async () => { await blocked; return null })
+    const cached = await second.cachedScan()
+    expect(cached?.cachedAt).toEqual(expect.any(String))
+    expect(cached?.clis.claude.installed).toBe(false)
+    expect(cached?.officialChatGpt).toBeUndefined()
+    // The cached answer must not stand in for a real scan anywhere else.
+    expect(second.recentScan(60_000)).not.toBeNull()
+    release()
+    const fresh = await second.scanSystem(false)
+    expect(fresh.cachedAt).toBeUndefined()
+    await expect(second.cachedScan()).resolves.toBeNull()
+  })
+
+  it('never starts more probe processes at once than the limit', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-probe-limit-'))
+    temporaryDirectories.push(directory)
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('offline') }))
+    let active = 0
+    let peak = 0
+    const probed = service(directory, async () => {
+      active++
+      peak = Math.max(peak, active)
+      await new Promise((resolve) => setTimeout(resolve, 20))
+      active--
+      return null
+    })
+    await probed.scanSystem(false)
+    expect(scanProbeConcurrency).toBe(3)
+    expect(peak).toBe(scanProbeConcurrency)
   })
 })

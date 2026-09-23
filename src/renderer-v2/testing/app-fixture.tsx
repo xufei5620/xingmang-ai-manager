@@ -304,7 +304,14 @@ const methods = {
       ? { ...base, ok: true, layer: 'network' as const, summary: '连接正常，gpt-6-astra 可以直接使用', nextStep: '无需处理', evidence: '已核对当前账号的可用模型清单，gpt-6-astra 在其中', endpoint: 'https://fixture.invalid/v1/models', model: 'gpt-6-astra' }
       : { ...base, ok: true, layer: 'network' as const, summary: '连接正常，claude-opus-5 可以直接使用', nextStep: '无需处理', evidence: '已用 claude-opus-5 发过一次最小请求', endpoint: 'https://fixture.invalid/v1/messages', model: 'claude-opus-5' }
   },
-  scanSystem: async () => {
+  scanSystem: async (_force, options) => {
+    // 同主进程：开机首屏先拿上次落盘的结果（Grok 那时还没装），真扫描随后才回来。
+    if (options?.acceptCached && query.has('cachedScan')) {
+      const cached = structuredClone(system)
+      cached.clis.grok = { ...cached.clis.grok, installed: false, version: null }
+      holdScan = true
+      return { ...cached, cachedAt: '2026-09-21T10:00:00.000Z' }
+    }
     if (query.has('desktopEvent')) window.v2Test.emit('onCodexDesktopStatus', { status: { ...system.desktopApps.codex, appVersion: '9.9.9' } })
     const result = structuredClone(system)
     if (holdScan) { holdScan = false; await new Promise<void>((resolve) => { releaseScan = resolve }) }

@@ -106,7 +106,7 @@ export function officialLoginHint(provider: ProviderId): string {
     case 'gemini':
       return '这台电脑还没登录过 Google 账号：打开 Gemini CLI 后按提示用 Google 企业版账号登录。'
     case 'grok':
-      return '打开 Grok CLI 后按提示登录。'
+      return '这台电脑还没登录过 Grok 账号：打开 Grok CLI 后按提示在浏览器里登录。'
   }
 }
 

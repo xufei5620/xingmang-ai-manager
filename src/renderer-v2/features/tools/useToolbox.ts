@@ -95,7 +95,10 @@ export function useToolbox(bridge: XingmangApi | null, enabled: boolean, scope: 
       throw cause
     } finally { if (active.current && id === externalRequest.current) setExternalLoading(false) }
   }, [bridge, scope])
-  const refresh = useCallback(async (force = false) => {
+  // acceptCached 只在开机首屏那一次为真：主进程先回上次落盘的检测结果，这里先把它
+  // 画出来（loading 保持为真，按钮照旧不可点），紧接着在同一个请求号下再读一次真的
+  // ——它接的是主进程开窗前就起好的那一轮，不会多扫一遍。
+  const load = useCallback(async (force: boolean, acceptCached: boolean) => {
     if (!bridge) return
     // Login completion can retain this callback from the preceding render.
     // Bind each read to the current account at invocation, not closure creation.
@@ -107,15 +110,26 @@ export function useToolbox(bridge: XingmangApi | null, enabled: boolean, scope: 
     setLoading(true)
     setError('')
     const isCurrent = () => active.current && currentScope.current === requestScope && id === request.current
+    function withLatest(next: ToolboxSnapshot): ToolboxSnapshot {
+      if (desktopRevision.current !== desktopAtStart && latestDesktop.current) next.system.desktopApps.codex = latestDesktop.current
+      if (configRevision.current !== configAtStart && latestConfig.current) next.config = latestConfig.current
+      return next
+    }
     try {
-      const { snapshot: next, failures: partitions } = await createToolsApi(bridge).read(force)
+      const api = createToolsApi(bridge)
+      let result = await api.read(force, acceptCached)
+      if (result.snapshot?.system.cachedAt) {
+        const cached = withLatest(result.snapshot)
+        if (isCurrent()) { snapshotRef.current = cached; setSnapshot(cached); setFailures(result.failures) }
+        result = await api.read(force)
+      }
+      const { snapshot: next, failures: partitions } = result
       if (isCurrent()) setFailures(partitions)
       // 工具列表整块没读到时仍然向调用方抛错：安装、保存配置等流程
       // 靠它提示「最新状态没有读到」。单块降级不算失败。
       if (!next) throw new Error(partitions[0]?.message ?? '检测没有完成，请重试。')
-      if (desktopRevision.current !== desktopAtStart && latestDesktop.current) next.system.desktopApps.codex = latestDesktop.current
-      if (configRevision.current !== configAtStart && latestConfig.current) next.config = latestConfig.current
-      if (isCurrent()) { snapshotRef.current = next; setSnapshot(next) }
+      const settled = withLatest(next)
+      if (isCurrent()) { snapshotRef.current = settled; setSnapshot(settled) }
     } catch (cause) {
       if (isCurrent()) setError(errorMessage(cause, '检测没有完成，请重试。'))
       throw cause
@@ -124,6 +138,7 @@ export function useToolbox(bridge: XingmangApi | null, enabled: boolean, scope: 
       if (isCurrent()) setLoading(false)
     }
   }, [bridge])
+  const refresh = useCallback((force = false) => load(force, false), [load])
   /**
    * 账号 Key 写完之后的刷新入口。只重读配置，不重跑环境探测、不清主进程缓存：
    * 用户看到的还是那份「已连接当前账号」，但开机不用再把整轮扫描走第二遍。
@@ -151,9 +166,9 @@ export function useToolbox(bridge: XingmangApi | null, enabled: boolean, scope: 
     let current = true
     // 外部客户端那轮盘点（Windows 上是一整段 PowerShell）排在首屏扫描之后：
     // 老电脑上两边的子进程同时冷启动，首页那几张工具卡反而出得更慢。
-    if (enabled) void refresh().catch(() => undefined).finally(() => { if (current) void refreshExternal().catch(() => undefined) })
+    if (enabled) void load(false, true).catch(() => undefined).finally(() => { if (current) void refreshExternal().catch(() => undefined) })
     return () => { current = false; active.current = false; request.current++; externalRequest.current++ }
-  }, [enabled, refresh, refreshExternal])
+  }, [enabled, load, refreshExternal])
   useEffect(() => {
     if (!bridge) return
     const update = (key: string, label: string, percent?: number) => setJobs((current) => {

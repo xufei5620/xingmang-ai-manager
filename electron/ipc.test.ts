@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import type { SystemService } from './system-service'
+import type { SystemService, SystemSnapshot } from './system-service'
 import type { UpdaterService } from './updater'
 import { mergeAppSettings, type AppSettings, type AppSettingsUpdate } from './app-settings'
 import type { NativeConfigSaveResult } from './config-files'
@@ -78,6 +78,7 @@ function serviceStub(): SystemService {
     adoptRestoredConfig: vi.fn(async () => undefined),
     scanSystem: vi.fn() as never,
     recentScan: vi.fn(() => null),
+    cachedScan: vi.fn(async (): Promise<SystemSnapshot | null> => null),
     refreshNetworkLocation: vi.fn() as never,
     refreshOfficialChatGptUsage: vi.fn() as never,
     inspectCodexSetupStatus: vi.fn() as never,
@@ -1280,6 +1281,27 @@ describe('registerIpcHandlers', () => {
     await expect(handler(trustedEvent(), 'yes')).rejects.toThrow('更新检查参数格式错误')
   })
 
+  it('answers the first home page read with the last saved scan, only when asked and never for a forced rescan', async () => {
+    const service = serviceStub()
+    const cached = { checkedAt: '2026-09-21T00:00:00.000Z', cachedAt: '2026-09-21T00:00:05.000Z' }
+    vi.mocked(service.cachedScan).mockResolvedValue(cached as never)
+    const { runtimeLog } = register(service)
+    const handler = electronMocks.handlers.get('system:scan')!
+
+    await expect(handler(trustedEvent(), false, { acceptCached: true })).resolves.toBe(cached)
+    expect(service.scanSystem).not.toHaveBeenCalled()
+    expect(runtimeLog.log).not.toHaveBeenCalledWith('info', 'system', 'scan.completed', expect.anything(), expect.anything())
+
+    await Promise.resolve(handler(trustedEvent(), true, { acceptCached: true })).catch(() => undefined)
+    await Promise.resolve(handler(trustedEvent(), false)).catch(() => undefined)
+    expect(service.cachedScan).toHaveBeenCalledTimes(1)
+    expect(service.scanSystem).toHaveBeenNthCalledWith(1, true)
+    expect(service.scanSystem).toHaveBeenNthCalledWith(2, false)
+
+    await expect(handler(trustedEvent(), false, { acceptCached: 'yes' })).rejects.toThrow('检测参数格式错误')
+    await expect(handler(trustedEvent(), false, { acceptCached: true, path: '/etc' })).rejects.toThrow('检测参数格式错误')
+  })
+
   it('refreshes only the network location through trusted IPC', async () => {
     const service = serviceStub()
     const location = {
@@ -1462,7 +1484,6 @@ describe('registerIpcHandlers', () => {
     const handler = electronMocks.handlers.get('config:switch-account-source')!
     await expect(handler(trustedEvent(), 'unknown', 'official')).rejects.toThrow('未知的 CLI 类型')
     await expect(handler(trustedEvent(), 'codex', 'erase-all')).rejects.toThrow('未知的账号来源')
-    await expect(handler(trustedEvent(), 'grok', 'official')).rejects.toThrow('Grok CLI 没有可切回的官方账号')
     await expect(handler(trustedEvent(), 'claude', 'account')).rejects.toThrow('请先登录账号，再切到当前账号')
     expect(service.switchToOfficialAccount).not.toHaveBeenCalled()
   })

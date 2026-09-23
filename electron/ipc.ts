@@ -61,7 +61,7 @@ import {
   providerSessionProviders,
   type ProviderSessionListQuery,
 } from './provider-sessions'
-import { providerSupportsOfficialAccount, type NativeConfigSaveMode } from './config-files'
+import type { NativeConfigSaveMode } from './config-files'
 import { AccountSourceServiceUnavailableError, switchAccountSource } from './account-source-switch'
 import { redactHomeDirectory } from './startup-log'
 import { isExternalToolId, parseExternalClientConfigRequest } from './external-client-contract'
@@ -77,6 +77,7 @@ import type {
   CliLaunchMode,
   CodexDesktopLaunchMode,
   ConfigSavePayload,
+  SystemScanOptions,
   SystemSnapshot,
   SystemService,
 } from './system-service'
@@ -285,6 +286,13 @@ export function parseDiagnosticsRunOptions(value: unknown): DiagnosticsRunOption
   if (!isRecord(value) || Object.keys(value).some((key) => key !== 'reuseRecentScan')
     || (value.reuseRecentScan !== undefined && typeof value.reuseRecentScan !== 'boolean')) throw new Error('诊断参数格式错误')
   return value.reuseRecentScan === true ? { reuseRecentScan: true } : {}
+}
+
+export function parseSystemScanOptions(value: unknown): SystemScanOptions {
+  if (value === undefined) return {}
+  if (!isRecord(value) || Object.keys(value).some((key) => key !== 'acceptCached')
+    || (value.acceptCached !== undefined && typeof value.acceptCached !== 'boolean')) throw new Error('检测参数格式错误')
+  return value.acceptCached === true ? { acceptCached: true } : {}
 }
 
 // settings:save carries a field-wise update since ①栏11: absent field = keep
@@ -1681,10 +1689,14 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
 
   const unsubscribeUpdates = options.updaterService.subscribe(options.broadcastUpdate)
   registerTrustedHandler('platform:get-capabilities', () => platformCapabilitiesFor())
-  registerTrustedHandler('system:scan', async (_event, forceRefresh: unknown) => {
+  registerTrustedHandler('system:scan', async (_event, forceRefresh: unknown, input: unknown) => {
     if (forceRefresh !== undefined && typeof forceRefresh !== 'boolean') {
       throw new Error('更新检查参数格式错误')
     }
+    const scanOptions = parseSystemScanOptions(input)
+    // 上次的结果只用来先把首页画出来：不进托盘、不记「检测完成」，真结果回来再说。
+    const cached = scanOptions.acceptCached && forceRefresh !== true ? await service.cachedScan() : null
+    if (cached) return options.transformSystemSnapshot?.(cached) ?? cached
     const scanned = await service.scanSystem(forceRefresh === true)
     const snapshot = options.transformSystemSnapshot?.(scanned) ?? scanned
     options.onSystemSnapshot?.(snapshot)
@@ -1835,7 +1847,6 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   registerTrustedHandler('config:switch-account-source', async (_event, provider: unknown, target: unknown) => {
     if (!isProviderId(provider)) throw new Error('未知的 CLI 类型')
     if (target !== 'account' && target !== 'official') throw new Error('未知的账号来源')
-    if (target === 'official' && !providerSupportsOfficialAccount(provider)) throw new Error(`${cliCatalog[provider].name} 没有可切回的官方账号`)
     if (target === 'account' && !accountService.getSessionState().account?.userId) throw new Error('请先登录账号，再切到当前账号')
     // 与备份页同一套账号上下文：备份里记下哪些 Key 是当前账号签发的，回滚后
     // 恢复出来的配置照样按来源登记，首页不会因此冒出「配置被改过」。

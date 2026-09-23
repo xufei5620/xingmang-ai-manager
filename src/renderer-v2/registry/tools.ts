@@ -24,7 +24,7 @@ export const officialAccountNames: Record<ProviderId, string | null> = {
   claude: 'Claude 账号',
   codex: 'ChatGPT 账号',
   gemini: 'Google 企业版账号',
-  grok: null,
+  grok: 'Grok 账号',
 };
 
 // 官方来源选项旁边的一句补充。Google 自 2026-06-18 起不再让个人 Google 账号
@@ -64,5 +64,5 @@ export const tools: ToolDef[] = [
   { id: 'codex', name: 'Codex CLI', vendor: 'OpenAI', brandIcon: 'OpenAI', kind: 'cli', install: npmInstall('codex'), requires: ['node'], configPath: configPathsFor('codex'), sources: ['account', 'official', 'manual'], shortcutIndex: 2, firstRun: firstRunHints.codex },
   { id: 'codexDesktop', name: 'Codex 桌面端', vendor: 'OpenAI', brandIcon: 'OpenAI', kind: 'desktop', install: { type: 'installer', win: 'managed', mac: 'external', linux: 'unavailable' }, requires: [], configPath: configPathsFor('codex'), sources: ['account', 'official', 'manual'], shortcutIndex: 3, hidden: os => os === 'linux' },
   { id: 'gemini', name: 'Gemini CLI', vendor: 'Google', brandIcon: 'Gemini', kind: 'cli', install: npmInstall('gemini'), requires: ['node', 'python'], configPath: configPathsFor('gemini'), sources: ['account', 'official', 'manual'], shortcutIndex: 4, firstRun: firstRunHints.gemini },
-  { id: 'grok', name: 'Grok CLI', vendor: 'xAI', brandIcon: 'Grok', kind: 'cli', install: npmInstall('grok'), requires: ['node'], configPath: configPathsFor('grok'), sources: ['account', 'manual'], shortcutIndex: 5, firstRun: firstRunHints.grok },
+  { id: 'grok', name: 'Grok CLI', vendor: 'xAI', brandIcon: 'Grok', kind: 'cli', install: npmInstall('grok'), requires: ['node'], configPath: configPathsFor('grok'), sources: ['account', 'official', 'manual'], shortcutIndex: 5, firstRun: firstRunHints.grok },
 ];
