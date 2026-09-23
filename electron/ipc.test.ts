@@ -214,6 +214,7 @@ function updaterStub(): UpdaterService {
     check: vi.fn(async () => state),
     download: vi.fn(async () => state),
     install: vi.fn(() => ({ accepted: true as const })),
+    setServiceStatus: vi.fn(),
     subscribe: vi.fn(() => vi.fn()),
     dispose: vi.fn(),
   }
