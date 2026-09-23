@@ -239,6 +239,23 @@ test('Gemini installs with one button when the runtimes can be prepared automati
   } finally { await page.close() }
 })
 
+// 全面检测 Q8：「打开工具」失败时说主进程给的原因，不借登录那套「输入已保留」，
+// 并且和「安装」一样给一颗「再试一次」。
+test('a failed tool launch in the guide keeps the real reason and can be retried', async () => {
+  const page = await open('scenario=guide&installed=1&connected=1&runtime=1&launchFail=1')
+  try {
+    await page.getByTestId('guide-route-codex').check()
+    await page.getByTestId('guide-next').click()
+    await page.getByTestId('guide-next').click()
+    await page.getByTestId('guide-open-tool').click()
+    await page.getByTestId('guide-error').filter({ hasText: '请先确认账号连接，再打开工具。' }).waitFor()
+    assert.doesNotMatch(await page.getByTestId('guide-error').textContent(), /输入已保留|星芒服务器/)
+    await page.getByTestId('guide-retry').click()
+    await page.waitForFunction(() => document.documentElement.dataset.calls?.includes('complete'))
+    assert.deepEqual((await calls(page)).map((item) => item.method), ['detect', 'launch', 'launch', 'complete'])
+  } finally { await page.close() }
+})
+
 test('guide pause resumes the chosen route and step without choosing for a fresh account', async () => {
   const page = await open('scenario=guide&resume=1&runtime=1&python=1&installed=1&strict=1')
   try {
