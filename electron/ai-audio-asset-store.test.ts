@@ -3,6 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AiAudioAssetStore, inspectAudio, inspectAudioMetadata } from './ai-audio-asset-store'
+import { setRelocatedFolderPolicy } from './relocated-folders'
 
 const roots: string[] = []
 
@@ -154,5 +155,50 @@ describe('AiAudioAssetStore', () => {
     await menuItems[1].run()
     expect(fs.readFileSync(target)).toEqual(fs.readFileSync(path.join(fixtureRoot, '8月14日.wav')))
     expect(revealInFolder).toHaveBeenCalledOnce()
+  })
+})
+
+/** A profile whose 文档 was moved to "another disk" and left a junction behind (「C 盘搬家」). */
+function relocatedDocuments(root: string): { home: string; documents: string } {
+  const home = path.join(root, 'Users', 'alice')
+  const moved = path.join(root, 'D', 'Documents')
+  fs.mkdirSync(home, { recursive: true })
+  fs.mkdirSync(moved, { recursive: true })
+  const documents = path.join(home, 'Documents')
+  // Junctions need no privilege on Windows; POSIX ignores the type argument.
+  fs.symlinkSync(moved, documents, 'junction')
+  return { home, documents }
+}
+
+describe('AiAudioAssetStore on a relocated documents folder', () => {
+  afterEach(() => setRelocatedFolderPolicy(null))
+
+  it('imports, reads back and removes audio after 文档 was moved to another disk', async () => {
+    const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-audio-relocated-')))
+    roots.push(root)
+    const { home, documents } = relocatedDocuments(root)
+    setRelocatedFolderPolicy({ homeDirectories: [home], acceptsTarget: () => true })
+    const sourcePath = path.join(documents, '音频素材.mp3')
+    fs.writeFileSync(sourcePath, mp3())
+    const outputRoot = path.join(documents, 'XingmangAI')
+
+    const stored = await new AiAudioAssetStore({ outputRoot }).storeLocalFile(36, sourcePath)
+    const restarted = new AiAudioAssetStore({ outputRoot })
+
+    await expect(restarted.readOwned(36, stored.assetId)).resolves.toMatchObject({ bytes: mp3() })
+    await restarted.removeOwned(36, stored.assetId)
+    await expect(restarted.readOwned(36, stored.assetId)).rejects.toThrow()
+  })
+
+  it('keeps refusing the relocated folder while no policy accepts it', async () => {
+    const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-audio-relocated-')))
+    roots.push(root)
+    const { documents } = relocatedDocuments(root)
+    const sourcePath = path.join(documents, '音频素材.mp3')
+    fs.writeFileSync(sourcePath, mp3())
+    const outputRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-audio-output-'))
+    roots.push(outputRoot)
+
+    await expect(new AiAudioAssetStore({ outputRoot }).storeLocalFile(36, sourcePath)).rejects.toThrow()
   })
 })

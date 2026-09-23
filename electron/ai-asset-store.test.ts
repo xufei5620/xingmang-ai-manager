@@ -12,6 +12,7 @@ import {
   type AiAssetContextMenuItem,
   type AiAssetNativeOperations,
 } from './ai-asset-store'
+import { setRelocatedFolderPolicy } from './relocated-folders'
 
 const temporaryDirectories: string[] = []
 
@@ -544,5 +545,45 @@ describe('AiAssetStore native operations', () => {
     })
     const asset = await store.storeBase64(42, png().toString('base64'))
     await expect(store.saveAs(42, asset.assetId)).resolves.toBe(false)
+  })
+})
+
+/** A profile whose 文档 was moved to "another disk" and left a junction behind (「C 盘搬家」). */
+function relocatedDocuments(root: string): { home: string; documents: string } {
+  const home = path.join(root, 'Users', 'alice')
+  const moved = path.join(root, 'D', 'Documents')
+  fs.mkdirSync(home, { recursive: true })
+  fs.mkdirSync(moved, { recursive: true })
+  const documents = path.join(home, 'Documents')
+  // Junctions need no privilege on Windows; POSIX ignores the type argument.
+  fs.symlinkSync(moved, documents, 'junction')
+  return { home, documents }
+}
+
+describe('AiAssetStore on a relocated documents folder', () => {
+  afterEach(() => setRelocatedFolderPolicy(null))
+
+  it('imports, lists and reads back images after 文档 was moved to another disk', async () => {
+    const { home, documents } = relocatedDocuments(fs.realpathSync.native(temporaryDirectory()))
+    setRelocatedFolderPolicy({ homeDirectories: [home], acceptsTarget: () => true })
+    const sourcePath = path.join(documents, 'reference.png')
+    fs.writeFileSync(sourcePath, png(640, 480))
+    const options = storeOptions(path.join(documents, 'XingmangAI'))
+
+    const asset = await new AiAssetStore(options).storeLocalFile(42, sourcePath)
+    const restarted = new AiAssetStore(options)
+
+    await expect(restarted.readOwned(42, asset.assetId)).resolves.toMatchObject({
+      asset: expect.objectContaining({ assetId: asset.assetId, width: 640, height: 480 }),
+    })
+    await expect(restarted.listOwned(42)).resolves.toEqual([expect.objectContaining({ assetId: asset.assetId })])
+  })
+
+  it('keeps refusing the relocated folder while no policy accepts it', async () => {
+    const { documents } = relocatedDocuments(fs.realpathSync.native(temporaryDirectory()))
+    const sourcePath = path.join(documents, 'reference.png')
+    fs.writeFileSync(sourcePath, png(640, 480))
+
+    await expect(new AiAssetStore(storeOptions()).storeLocalFile(42, sourcePath)).rejects.toThrow()
   })
 })
