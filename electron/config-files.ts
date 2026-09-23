@@ -45,6 +45,11 @@ export interface NativeConfigInspection {
    * OPENAI_API_KEY, so a Xingmang key with chatgpt mode still uses ChatGPT.
    */
   codexAuthMode?: 'apikey' | 'chatgpt' | null
+  /**
+   * `grok login` 留在 ~/.grok/auth.json 里的 `auth_mode`（oidc = 浏览器登录，api_key =
+   * 登录时填的 xAI Key）；null = 没登录。只读这一个字段，令牌与 Key 不读。
+   */
+  grokLoginMode?: string | null
   dataDirectory: string
   dataDirectoryExists: boolean
   files: NativeConfigFile[]
@@ -322,6 +327,60 @@ function pointGrokXaiApiAtRelay(parsed: Record<string, unknown>, relayBaseUrl: s
   ensureRecord(parsed, 'endpoints').xai_api_base_url = relayBaseUrl
 }
 
+function addManagedGrokModel(parsed: Record<string, unknown>): void {
+  const models = ensureRecord(parsed, 'models')
+  models.default = 'grok'
+  if (!nestedString(parsed, ['models', 'web_search'])) models.web_search = 'grok'
+  const table = ensureRecord(ensureRecord(parsed, 'model'), 'grok')
+  table.api_backend ??= 'responses'
+  table.context_window ??= 1000000
+  table.supports_backend_search ??= true
+}
+
+// Grok 1.0.40 的凭据顺序是 [model.X].api_key > ~/.grok/auth.json 的登录 > XAI_API_KEY。
+// 切回官方必须把指向中转的整张模型表拿掉：只删 api_key、留着 base_url，Grok 会带着
+// 官方登录的令牌去请求中转，等于把用户的 Grok 登录交给了第三方。出图工具走的
+// endpoints.xai_api_base_url 同理。只动指向当前账号服务的那几项，用户自己加的别的
+// 模型和设置原样留下。
+function removeGrokRelayConfig(parsed: Record<string, unknown>, relayBaseUrl: string): void {
+  const relay = normalizeUrl(relayBaseUrl)
+  const removed = new Set<string>()
+  const modelTables = parsed.model
+  if (modelTables && typeof modelTables === 'object' && !Array.isArray(modelTables)) {
+    const tables = modelTables as Record<string, unknown>
+    for (const [name, table] of Object.entries(tables)) {
+      if (!table || typeof table !== 'object' || Array.isArray(table)) continue
+      const baseUrl = (table as Record<string, unknown>).base_url
+      if (typeof baseUrl === 'string' && normalizeUrl(baseUrl) === relay) {
+        delete tables[name]
+        removed.add(name)
+      }
+    }
+    if (Object.keys(tables).length === 0) delete parsed.model
+  }
+  const selectors = parsed.models
+  if (selectors && typeof selectors === 'object' && !Array.isArray(selectors)) {
+    const models = selectors as Record<string, unknown>
+    for (const [key, value] of Object.entries(models)) {
+      if (typeof value === 'string' && removed.has(value)) delete models[key]
+    }
+    // 接中转时 allowed_models 只留了中转那一项（pinGrokModelsToRelay）；表删了名单还在，
+    // Grok 就一个可用型号都没有。
+    if (Array.isArray(models.allowed_models)) {
+      const allowed = models.allowed_models.filter((name) => typeof name !== 'string' || !removed.has(name))
+      if (allowed.length === 0) delete models.allowed_models
+      else models.allowed_models = allowed
+    }
+    if (Object.keys(models).length === 0) delete parsed.models
+  }
+  const endpoints = parsed.endpoints
+  if (endpoints && typeof endpoints === 'object' && !Array.isArray(endpoints)) {
+    const record = endpoints as Record<string, unknown>
+    if (typeof record.xai_api_base_url === 'string' && normalizeUrl(record.xai_api_base_url) === relay) delete record.xai_api_base_url
+    if (Object.keys(record).length === 0) delete parsed.endpoints
+  }
+}
+
 // Grok CLI 自带一份内置型号目录（grok-4.6 / grok-4.5），它们走 xAI 自己的
 // cli-chat-proxy.grok.com。接中转后这两项仍然出现在 /model 里，用户选了就一直
 // 「Connection failed, Retrying」——国内连不上，而且本来也不该绕开当前账号。另外会话标题
@@ -550,7 +609,29 @@ function readProviderAuthType(provider: ProviderId, paths: string[]): string | u
     : undefined
 }
 
+interface GrokLogin {
+  mode: string
+  email: string | null
+}
+
+// auth.json 按「签发方::客户端」分区，例如 `https://auth.x.ai::<uuid>`，每个分区里是
+// key / refresh_token（机密，不碰）和 auth_mode、email 等说明字段。
+function readGrokLogin(providerRoot: string): GrokLogin | null {
+  const parsed = readJson(path.join(providerRoot, 'auth.json'))
+  if (!parsed) return null
+  for (const entry of Object.values(parsed)) {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue
+    const record = entry as Record<string, unknown>
+    if (typeof record.auth_mode !== 'string' || !record.auth_mode.trim()) continue
+    return { mode: record.auth_mode.trim(), email: typeof record.email === 'string' && record.email.trim() ? record.email.trim() : null }
+  }
+  return null
+}
+
 function readOfficialAccountIdentity(provider: ProviderId, paths: string[]) {
+  if (provider === 'grok') {
+    return { email: readGrokLogin(path.dirname(paths[0]))?.email ?? null, planLabel: null, renewsAt: null }
+  }
   if (provider !== 'codex') {
     return { email: null, planLabel: null, renewsAt: null }
   }
@@ -1007,6 +1088,7 @@ export function inspectProviderConfig(
     officialAccountPlan: officialAccount.planLabel,
     officialAccountRenewsAt: officialAccount.renewsAt,
     ...(provider === 'codex' ? { codexAuthMode: readCodexAuthMode(paths) } : {}),
+    ...(provider === 'grok' ? { grokLoginMode: readGrokLogin(path.dirname(paths[0]))?.mode ?? null } : {}),
     dataDirectory,
     dataDirectoryExists: (() => {
       try {
@@ -1610,10 +1692,10 @@ function createMergePlans(
     case 'grok': {
       if (!fs.existsSync(paths[0])) return [initial(paths[0])]
       const parsed = requireToml(paths[0], '现有 Grok config.toml')
+      // 切回官方时整张中转模型表连同 models.default 一起拿掉（createOfficialAccountPlans）。
+      // 再切回当前账号时按初始模板补回，不让用户去点「重置为初始配置」。
+      if (!nestedString(parsed, ['models', 'default'])) addManagedGrokModel(parsed)
       const defaultModel = nestedString(parsed, ['models', 'default'])
-      if (!defaultModel) {
-        throw new Error('现有 Grok 配置缺少默认模型，请选择“重置为初始配置”')
-      }
       const models = ensureRecord(parsed, 'model')
       const target = models[defaultModel]
       if (!target || typeof target !== 'object' || Array.isArray(target)) {
@@ -2083,17 +2165,12 @@ export function providerAccountMode(
   return 'unknown'
 }
 
-/**
- * 星芒中转和官方订阅都能启动；自定义第三方地址不行。
- * Grok 没有官方登录，没配星芒 Key 时也拦下。
- */
+/** 星芒中转和官方账号都能启动；自定义第三方地址不行。 */
 export function canLaunchManagedProvider(
   inspection: Pick<NativeConfigInspection, 'hasApiKey' | 'matchesRelay'>,
-  provider: ProviderId,
 ): boolean {
   const mode = providerAccountMode(inspection)
-  if (mode === 'relay') return true
-  return mode === 'official' && providerSupportsOfficialAccount(provider)
+  return mode === 'relay' || mode === 'official'
 }
 
 export function managedProviderLaunchBlockedMessage(provider: ProviderId): string {
@@ -2105,21 +2182,8 @@ export function managedProviderLaunchBlockedMessage(provider: ProviderId): strin
     case 'gemini':
       return 'Gemini 当前用的是自定义接口，请先切到星芒中转或 Google 账号'
     case 'grok':
-      return 'Grok CLI 尚未配置星芒 AI，请先完成配置'
+      return 'Grok 当前用的是自定义接口，请先切到星芒中转或 Grok 账号'
   }
-}
-
-/** Grok(xAI CLI)只有 API Key 一种认证方式,没有可切回的官方订阅。 */
-export function providerSupportsOfficialAccount(provider: ProviderId): boolean {
-  return provider !== 'grok'
-}
-
-function officialAccountUnsupported(provider: ProviderId): never {
-  throw new Error(
-    provider === 'grok'
-      ? 'Grok CLI 只支持 API Key 登录，没有可切换的官方订阅账号'
-      : `暂不支持切换 ${provider} 的账号来源`,
-  )
 }
 
 /**
@@ -2201,8 +2265,14 @@ function createOfficialAccountPlans(
       }
       return plans
     }
-    case 'grok':
-      return officialAccountUnsupported(provider)
+    case 'grok': {
+      if (mode === 'reset') return [{ path: paths[0], content: ['[cli]', 'auto_update = false', ''].join('\n') }]
+      if (!fs.existsSync(paths[0])) return []
+      const parsed = requireToml(paths[0], '现有 Grok config.toml')
+      removeGrokRelayConfig(parsed, siteBaseUrls.grok)
+      disableGrokSelfUpdate(parsed)
+      return [{ path: paths[0], content: tomlContent(parsed) }]
+    }
   }
 }
 
@@ -2219,8 +2289,6 @@ export function switchProviderToOfficialAccount(
   siteBaseUrlsInput: Record<ProviderId, string> = providerBaseUrls,
   saveMode: NativeConfigSaveMode = 'merge',
 ): NativeConfigSaveResult {
-  if (!providerSupportsOfficialAccount(provider)) officialAccountUnsupported(provider)
-
   const roots = normalizeProviderConfigRoots(rootsInput)
   const providerRoot = providerConfigRoot(provider, roots)
   const configuredPaths = providerConfigPaths(provider, roots)
@@ -2379,7 +2447,10 @@ export function inspectOfficialLogin(
       assertSafeConfigPath(credentials, providerRoot, 'file')
       return Boolean(readText(credentials)?.trim())
     }
-    case 'grok':
-      return false
+    case 'grok': {
+      const credentials = path.join(providerRoot, 'auth.json')
+      assertSafeConfigPath(credentials, providerRoot, 'file')
+      return readGrokLogin(providerRoot) !== null
+    }
   }
 }

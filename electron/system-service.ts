@@ -4000,7 +4000,7 @@ export function createSystemService(
     mode: CliLaunchMode,
   ): Promise<CliLaunchResult> {
     const nativeConfig = inspectNativeProviderConfig(provider)
-    if (!canLaunchManagedProvider(nativeConfig, provider)) {
+    if (!canLaunchManagedProvider(nativeConfig)) {
       throw new Error(managedProviderLaunchBlockedMessage(provider))
     }
     if (!fs.existsSync(workspace) || !fs.statSync(workspace).isDirectory()) {
