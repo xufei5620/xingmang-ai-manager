@@ -591,7 +591,7 @@ export const tutorialTopics: readonly TutorialTopic[] = [
         bullets: ['发送下面的例句。', '下次从「记录」或首页「最近」找项目，支持时可点「接着聊」。'],
         example: firstRunHints.claude.prompt,
         expected: '收到项目相关的回复。',
-        extra: [{ title: '自己打开终端怎么启动？', detail: '可复制首页「试试第一条命令」里的启动命令。只有支持续接的最近会话显示「接着聊」。' }],
+        extra: [{ title: '自己打开终端怎么启动？', detail: '新开一个终端，粘贴首页「试试第一条命令」里的启动命令即可。只有支持续接的最近会话显示「接着聊」。' }],
         action: '打开记录',
         page: 'sessions',
       },

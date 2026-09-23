@@ -155,6 +155,7 @@ import { verifyUpdatePackageDigest } from './update-package-digest'
 import { installStrictUpdateCodeSignatureVerifier } from './update-signature'
 import { createUpdaterService } from './updater'
 import { resolveWindowsCliExecutionModeDetailed } from './windows-elevation'
+import { ensureDirectoryOnWindowsUserPath } from './windows-cli-shell-access'
 import {
   applyWindowTheme,
   buildMacApplicationMenuTemplate,
@@ -935,6 +936,9 @@ if (!hasSingleInstanceLock) {
       getExternalClientAccountId: () => readExternalClientAccountId(),
       windowsExecutionMode: windowsCliExecutionMode,
       runtimeLog,
+      ...(process.platform === 'win32'
+        ? { ensureWindowsUserPath: (directory: string) => ensureDirectoryOnWindowsUserPath(directory) }
+        : {}),
       projectInstructionsTemplatePath: resolveProjectInstructionsTemplatePath(app.getAppPath(), {
         packaged: app.isPackaged,
         resourcesPath: process.resourcesPath,
