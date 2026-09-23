@@ -18,6 +18,7 @@ import {
   type AccountSwitchSyncResult,
 } from './account-switch-sync'
 import { tools } from './registry/tools'
+import { keySyncFailureText } from './features/tools/key-sync-failure'
 import { accountOrigin } from './account-context'
 
 export function SavedAccounts({
@@ -81,9 +82,7 @@ export function SavedAccounts({
               {[...result.failed, ...result.skipped].map((entry) => (
                 <span key={entry.provider}>
                   <br />
-                  {tools.find((tool) => tool.id === entry.provider)?.name ??
-                    entry.provider}
-                  ：{entry.message}
+                  {keySyncFailureText(entry.provider, entry.message)}
                 </span>
               ))}
             </>
