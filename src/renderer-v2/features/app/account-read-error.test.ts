@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { formatAccountReadError } from './account-read-error'
+import { accountReadErrorAction, formatAccountReadError } from './account-read-error'
 import { networkFailureMessages } from '../../../../electron/network-failure'
 
 describe('account read error presentation', () => {
@@ -21,5 +21,11 @@ describe('account read error presentation', () => {
     const message = formatAccountReadError(wrapped, 'balance')
     expect(message).toContain(networkFailureMessages.serviceUnavailable)
     expect(message).not.toMatch(/检查网络|重新登录/)
+  })
+
+  it('offers a way to sign in again only when the message asks for it', () => {
+    expect(accountReadErrorAction(formatAccountReadError(new Error('请先登录账号'), 'session') ?? '')).toBe('relogin')
+    expect(accountReadErrorAction(formatAccountReadError(new Error('Failed to fetch'), 'session') ?? '')).toBe('retry')
+    expect(accountReadErrorAction(formatAccountReadError(new Error('unexpected response'), 'session') ?? '')).toBe('retry')
   })
 })

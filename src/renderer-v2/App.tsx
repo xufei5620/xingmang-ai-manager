@@ -50,7 +50,7 @@ import { rewritableKeyProviders } from './features/tools/connection-check'
 import { applyManualSourceMarker, getSourceMarkerStorage } from './features/tools/source-marker'
 import { idleOnlineResync, noteBootstrapOutcome, planOnlineResync } from './features/tools/online-resync'
 import { accountOrigin, accountScope, accountSiteId, accountSupports, sessionRestoreRetrying, sessionRestoring, sessionScope, siteIdForOrigin, visibleAccountTab, type AccountSiteId } from './account-context'
-import { formatAccountReadError } from './features/app/account-read-error'
+import { accountReadErrorAction, formatAccountReadError } from './features/app/account-read-error'
 import { AccountBalanceContext, useAccountBalanceStore } from './features/app/balance-context'
 import './business.css'
 
@@ -886,7 +886,12 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       onOpen={(id, action) => { dismissStartupNotice(id); if ('login' in action) setAuth('login'); else navigate(action.page) }} />
     {operationError && <OperationErrorDialog failure={operationError} installDirectory={toolInstallDirectory(toolbox.snapshot, operationError.tool)} onClose={() => setOperationError(null)} onAction={runOperationAction} />}
     {manualUninstall && <ManualUninstallDialog state={manualUninstall} platform={platform?.platform} onClose={() => setManualUninstall(null)} />}
-    {!operationError && session.authenticated && accountReadError?.scope === scope && <Dialog open title="操作没有完成" onClose={() => setAccountReadError(null)} footer={<Button onClick={() => setAccountReadError(null)}>返回</Button>}><p role="alert">{accountReadError.message}</p></Dialog>}
+    {!operationError && session.authenticated && accountReadError?.scope === scope && <Dialog open title="操作没有完成" onClose={() => setAccountReadError(null)} footer={<>
+      <Button onClick={() => setAccountReadError(null)}>返回</Button>
+      {accountReadErrorAction(accountReadError.message) === 'relogin'
+        ? <Button variant="primary" testId="account-read-relogin" onClick={() => { setAccountReadError(null); setAuth('login') }}>重新登录</Button>
+        : <Button variant="primary" testId="account-read-retry" onClick={() => { setAccountReadError(null); void reloadAccount() }}>重试</Button>}
+    </>}><p role="alert">{accountReadError.message}</p></Dialog>}
     {restartDialog && <Dialog open title="Codex 已在运行" onClose={() => setRestartDialog(false)} busy={Boolean(toolbox.jobs['launch:codexDesktop'])} footer={<>
       <Button variant="ghost" onClick={() => setRestartDialog(false)}>取消</Button>
       <Button onClick={() => void perform('重启 Codex', async () => { await launch('codexDesktop', 'restart'); setRestartDialog(false) })}>重启 Codex</Button>
