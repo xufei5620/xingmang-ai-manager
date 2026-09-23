@@ -6,6 +6,8 @@ import {
   describeWindowsCliLaunchError,
   encodeWindowsPowerShellCommand,
   inspectCurrentWindowsIntegrityRid,
+  inspectCurrentWindowsProcessHighIntegrity,
+  inspectWindowsElevationCapability,
   inspectCurrentWindowsTokenElevationType,
   parseWindowsElevationCapability,
   parseWindowsMandatoryLabelRid,
@@ -18,7 +20,6 @@ import {
   resolveWindowsCliExecutionModeDetailed,
   resolveWindowsPowerShellExecutable,
   windowsElevationCancelledMessage,
-  windowsElevationCapabilityScript,
   windowsElevationDeniedMessage,
   windowsPowerShellCandidates,
   windowsPowerShellExecutable,
@@ -417,19 +418,40 @@ describe('Windows CLI launch', () => {
 })
 
 describe('windows elevation capability', () => {
-  it('asks for the administrators group by SID, not by its localized name', () => {
-    // BUILTIN\Administrators renders differently per Windows display language;
-    // the SID does not.
-    expect(windowsElevationCapabilityScript).toContain('S-1-5-32-544')
-    expect(windowsElevationCapabilityScript).toContain('GetCurrent()')
-    expect(windowsElevationCapabilityScript).not.toMatch(/Administrators'/)
+  it('counts a deny-only administrators group, the way a UAC-filtered admin runs', () => {
+    // An administrator running unelevated: the group is there, but deny-only.
+    const filteredAdmin = [
+      '"Everyone","Well-known group","S-1-1-0","Mandatory group, Enabled by default, Enabled group"',
+      '"BUILTIN\\Administrators","Alias","S-1-5-32-544","Group used for deny only"',
+      '"Mandatory Label\\Medium Mandatory Level","Label","S-1-16-8192",""',
+    ].join('\r\n')
+    expect(parseWindowsElevationCapability(filteredAdmin)).toBe('administrator')
+    const standard = [
+      '"Everyone","Well-known group","S-1-1-0","Mandatory group, Enabled by default, Enabled group"',
+      '"BUILTIN\\Users","Alias","S-1-5-32-545","Mandatory group, Enabled by default, Enabled group"',
+      '"Mandatory Label\\Medium Mandatory Level","Label","S-1-16-8192",""',
+    ].join('\r\n')
+    expect(parseWindowsElevationCapability(standard)).toBe('standard')
   })
 
-  it('reads the probe answer and refuses to guess', () => {
-    expect(parseWindowsElevationCapability('administrator\r\n')).toBe('administrator')
-    expect(parseWindowsElevationCapability(' Standard ')).toBe('standard')
+  it('asks for the administrators group by SID, not by its localized name, and refuses to guess', () => {
+    const localized = [
+      '"BUILTIN\\管理员","别名","S-1-5-32-544","仅用于拒绝的组"',
+      '"Mandatory Label\\中等强制级别","标签","S-1-16-8192",""',
+    ].join('\r\n')
+    expect(parseWindowsElevationCapability(localized)).toBe('administrator')
+    // A name that merely mentions the SID is not membership.
+    expect(parseWindowsElevationCapability('"x S-1-5-32-544","Alias","S-1-5-32-545",""\r\n"L","Label","S-1-16-8192",""'))
+      .toBe('standard')
+    // Anything that is not whoami's output is no answer.
     expect(parseWindowsElevationCapability('')).toBe('unknown')
-    expect(parseWindowsElevationCapability('True')).toBe('unknown')
+    expect(parseWindowsElevationCapability('administrator')).toBe('unknown')
+    expect(parseWindowsElevationCapability('"BUILTIN\\Administrators","Alias","S-1-5-32-544",""')).toBe('unknown')
+  })
+
+  it.runIf(process.platform === 'win32')('answers the real account without falling back to unknown', async () => {
+    await expect(inspectWindowsElevationCapability()).resolves.toMatch(/^(administrator|standard)$/)
+    await expect(inspectCurrentWindowsProcessHighIntegrity()).resolves.toEqual(expect.any(Boolean))
   })
 
   it('tells a cancelled prompt apart from an account that cannot elevate', () => {
