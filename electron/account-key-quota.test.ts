@@ -4,6 +4,7 @@ import {
   accountKeyExpiredTime,
   accountKeyQuota,
   buildManagedCliKeyLimitUpdate,
+  accountKeyListTooLongMessage,
   findAccountKeyById,
   inheritedKeyExpiredMessage,
   inheritedKeySettings,
@@ -226,11 +227,35 @@ describe('inheritedKeySettings', () => {
 describe('findAccountKeyById', () => {
   it('pages through the key list and stops at the last page', async () => {
     const pages = [
-      { total: 150, keys: Array.from({ length: 100 }, (_, index) => key({ id: index + 1, name: `k${index}` })) },
-      { total: 150, keys: [key({ id: 140, name: 'target' })] },
+      { total: 101, keys: Array.from({ length: 100 }, (_, index) => key({ id: index + 1, name: `k${index}` })) },
+      { total: 101, keys: [key({ id: 140, name: 'target' })] },
     ]
     const listKeys = async ({ page }: { page: number }) => pages[page - 1]
     await expect(findAccountKeyById(listKeys, 140)).resolves.toMatchObject({ name: 'target' })
     await expect(findAccountKeyById(listKeys, 999)).resolves.toBeNull()
+  })
+
+  it('keeps paging past five pages until the list ends', async () => {
+    const all = Array.from({ length: 750 }, (_, index) => key({ id: index + 1, name: `k${index}` }))
+    const listKeys = async ({ page, pageSize }: { page: number; pageSize: number }) => (
+      { total: all.length, keys: all.slice((page - 1) * pageSize, page * pageSize) }
+    )
+    await expect(findAccountKeyById(listKeys, 720)).resolves.toMatchObject({ name: 'k719' })
+    await expect(findAccountKeyById(listKeys, 9_999)).resolves.toBeNull()
+  })
+
+  it('counts the keys it has seen, so a backend that serves smaller pages is not cut short', async () => {
+    const all = Array.from({ length: 150 }, (_, index) => key({ id: index + 1, name: `k${index}` }))
+    const listKeys = async ({ page }: { page: number }) => (
+      { total: all.length, keys: all.slice((page - 1) * 50, page * 50) }
+    )
+    await expect(findAccountKeyById(listKeys, 140)).resolves.toMatchObject({ name: 'k139' })
+  })
+
+  it('throws instead of reporting "not found" when the list never ends', async () => {
+    const listKeys = async ({ page }: { page: number }) => (
+      { total: 1_000_000, keys: [key({ id: page * 1_000, name: `k${page}` })] }
+    )
+    await expect(findAccountKeyById(listKeys, 7)).rejects.toThrow(accountKeyListTooLongMessage)
   })
 })

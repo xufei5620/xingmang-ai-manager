@@ -32,7 +32,7 @@ import { parseLocalNoticeReadSync, type AnnouncementReadStore } from './announce
 import type { AccelerationApi, AccelerationMode, AccelerationPreferenceApi } from './acceleration-contract'
 import { accelerationFailureReason } from './acceleration-contract'
 import { cliCatalog, isProviderId, providerIds, resolveManagedCliKeyProfiles, type ProviderId } from './catalog'
-import { findAccountKeyById, inheritedKeySettings, inheritedKeyExpiredMessage, isUsedUpKeyLimit, managedKeyQuotaExhaustedMessage } from './account-key-quota'
+import { accountKeyListTooLongMessage, findAccountKeyById, inheritedKeySettings, inheritedKeyExpiredMessage, isUsedUpKeyLimit, managedKeyQuotaExhaustedMessage } from './account-key-quota'
 import { createMemoryManagedKeyReplacementStore, type ManagedKeyReplacementStore } from './managed-key-replacement-store'
 import { isInstallCancelledError } from './install-cancellation'
 import {
@@ -1680,10 +1680,14 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     let key: AccountKey | null
     try {
       key = await findAccountKeyById((query) => accountService.listKeys(query), keyId)
-    } catch {
+    } catch (error) {
+      if (error instanceof Error && error.message === accountKeyListTooLongMessage) throw error
       throw new Error('没读到这把密钥的额度设置，先没撤销。请稍后再试。')
     }
-    if (!key || (key.unlimitedQuota && !key.expiredAt)) return null
+    // 本机记着这是某个工具在用的 Key，列表里却找不到：分不清它有没有上限，按不限额
+    // 撤了再换新，就等于悄悄放开了上限。停下，不撤。
+    if (!key) throw new Error('没在账号的密钥列表里找到这把密钥，先没撤销。刷新一下密钥列表再试。')
+    if (key.unlimitedQuota && !key.expiredAt) return null
     return { provider: cached.provider, key }
   }
 

@@ -4726,6 +4726,32 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
         expect(accountService.provisionCliKey).toHaveBeenCalledWith({ name: codex.keyName, group: expect.any(String) })
       })
 
+      it('finds a limited key that sits past the first five pages and still copies its cap', async () => {
+        const { accountService } = setup(accountKey({}))
+        const others = Array.from({ length: 600 }, (_, index) => accountKey({ id: 1_000 + index, name: `other-${index}` }))
+        const all = [...others.slice(0, 550), accountKey({}), ...others.slice(550)]
+        vi.mocked(accountService.listKeys).mockImplementation(async (query = {}) => {
+          const page = query.page ?? 1
+          const pageSize = query.pageSize ?? 100
+          return { page, pageSize, total: all.length, keys: all.slice((page - 1) * pageSize, page * pageSize) }
+        })
+
+        await expect(electronMocks.handlers.get('account:revoke-key')!(trustedEvent(), 7)).resolves.toBeUndefined()
+        await expect(configureCodex()).resolves.toEqual({ configured: ['codex'], failed: [] })
+
+        expect(accountService.provisionCliKey).toHaveBeenCalledWith(expect.objectContaining({
+          name: codex.keyName, remainQuota: 5_000, unlimitedQuota: false, fresh: true,
+        }))
+      })
+
+      it('does not revoke a key the tool is using when the key list does not contain it', async () => {
+        const { accountService } = setup(accountKey({ id: 8, name: 'someone-else' }))
+
+        await expect(electronMocks.handlers.get('account:revoke-key')!(trustedEvent(), 7))
+          .rejects.toThrow('没在账号的密钥列表里找到这把密钥，先没撤销')
+        expect(accountService.revokeKey).not.toHaveBeenCalled()
+      })
+
       it('does not revoke when the key\'s limits cannot be read first', async () => {
         const { accountService } = setup(new Error('network down'))
 
