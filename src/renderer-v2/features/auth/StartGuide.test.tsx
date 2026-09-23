@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { StartGuide, defaultGuideRoute, guideCanSkipConnect, guideInstallErrorMessage, type GuideToolState, type StartGuideProps } from './StartGuide'
+import { StartGuide, defaultGuideRoute, guideCanSkipConnect, guideInstallErrorMessage, guideStepErrorMessage, type GuideToolState, type StartGuideProps } from './StartGuide'
 
 const resumeKey = 'fixture-scope'
 
@@ -141,6 +141,27 @@ describe('guide install failure wording', () => {
     expect(message).not.toMatch(/星芒服务器|输入已保留/)
     expect(message).toContain('网络连不上')
     expect(guideInstallErrorMessage(new Error('HTTP 401 unauthorized'), 'Codex')).toBe('Codex 没装上。点「再试一次」，还不行就点「需要帮助」。')
+  })
+})
+
+describe('guide step failure wording', () => {
+  it('names the kind of failure instead of blaming the Xingmang server', () => {
+    const runtime = guideStepErrorMessage(new Error('Node.js 下载超时，请检查网络后重试'), '准备环境')
+    expect(runtime).toBe('准备环境没有成功：下载超时。下载没有完成，已安装的工具不受影响。')
+    expect(guideStepErrorMessage(new Error('ETIMEDOUT'), '检测工具')).toBe('检测工具没有成功：网络连不上。检查网络后点「再试一次」。')
+    expect(guideStepErrorMessage(new Error('EPERM: operation not permitted'), '准备 Python')).toContain('写不进安装目录')
+  })
+
+  it('keeps a Chinese reason the main process already wrote, with paths redacted', () => {
+    expect(guideStepErrorMessage(new Error('请先确认账号连接，再打开工具。'), '打开工具')).toBe('请先确认账号连接，再打开工具。')
+    expect(guideStepErrorMessage(new Error('找不到 C:\\Users\\alice\\.codex\\config.toml'), '确认连接')).not.toContain('alice')
+  })
+
+  it('never borrows the login wording', () => {
+    for (const reason of ['fetch failed', 'something odd', 'Node.js 下载超时，请检查网络后重试', '请先确认账号连接，再打开工具。']) {
+      expect(guideStepErrorMessage(new Error(reason), '打开工具')).not.toMatch(/星芒服务器|输入已保留/)
+    }
+    expect(guideStepErrorMessage(new Error('something odd'), '打开工具')).toBe('打开工具没有成功。点「再试一次」，还不行就点「需要帮助」。')
   })
 })
 

@@ -4,8 +4,9 @@ import type { ProviderConfigSummary, ProviderId } from '../../../../electron/ipc
 import { BrandIcon, Button, Card, Logo, Pill, Progress } from '../../ui'
 import { guideRecommendedTool, officialAccountNotes, tools as toolRegistry } from '../../registry/tools'
 import { FirstRunSteps } from '../tools/FirstRun'
-import { authErrorMessage } from './state'
+import { matchNetworkFailureMessage } from '../../../../electron/network-failure'
 import { classifyOperationError } from '../../operation-error'
+import { userFacingErrorMessage } from '../../business-common'
 import { errors } from '../../registry/errors'
 import { clearGuideProgress, getGuideStorage, readGuideProgress, writeGuideProgress } from './guide-progress'
 import { AuthWindow } from './AuthWindow'
@@ -86,6 +87,31 @@ export function guideInstallErrorMessage(reason: unknown, name: string): string 
 }
 
 /**
+ * 引导里除「安装」以外的几步（准备环境、准备 Python、检测、确认连接、打开工具）
+ * 失败时的说法（全面检测 Q8）。这几步都不是登录，以前借 authErrorMessage 翻译，
+ * 于是「Node.js 下载超时」成了「连接星芒服务器超时」，主进程写好的中文原因
+ * （「请先确认账号连接，再打开工具。」）被换成「输入已保留，请稍后重试」。
+ * 现在按统一的操作失败分类说出是哪一类；分不出类的中文原话本身就是给人看的，
+ * 原样留着（先脱敏，I13）；只有分不出类的英文原文才落到兜底那句。
+ */
+export function guideStepErrorMessage(reason: unknown, action: string): string {
+  const message = userFacingErrorMessage(reason)
+  // 主进程已经按受限网络的几种情形写好了中文（DNS、证书被替换、门户认证没做完），原样上屏。
+  const network = matchNetworkFailureMessage(message)
+  if (network) return network
+  const key = classifyOperationError(message)
+  // 目录里「超时」那条的标题是「连不上星芒服务器」，这几步多半连的是下载源或本机，
+  // 照搬会把人指错方向。
+  if (key === 'timeout') return `${action}没有成功：网络连不上。检查网络后点「再试一次」。`
+  if (key !== 'unknown') {
+    const { title, body } = errors[key]
+    return `${action}没有成功：${title}。${body ? body.replace(/。?$/, '。') : ''}`
+  }
+  if (/[\u3400-\u9fff]/.test(message)) return message
+  return `${action}没有成功。点「再试一次」，还不行就点「需要帮助」。`
+}
+
+/**
  * 引导第一步默认选中哪一项（第十一批候选 1）。上次停在半路的按上次的来；新来的
  * 直接给推荐项，新手一路「下一步」就能走完。推荐项在当前平台上看不到时（Linux）
  * 不替他选。
@@ -124,7 +150,8 @@ function ScopedStartGuide({ platform, tools, signedIn, busy = false, progress, o
   const [step, setStep] = useState<GuideStep>(restored?.step ?? 'choose')
   const [pending, setPending] = useState('')
   const [error, setError] = useState('')
-  const [installFailed, setInstallFailed] = useState(false)
+  // 上一次失败的那一步，留着给「再试一次」原样再跑一遍；以前只有「安装」有这颗按钮。
+  const [failed, setFailed] = useState<{ action: string; work: () => Promise<void> } | null>(null)
   const [storageWarning, setStorageWarning] = useState('')
   const lock = useRef(false)
   // 在「准备工具」这一步点「安装」成功后记下路线；等检测结果跟上来、工具确实
@@ -150,7 +177,7 @@ function ScopedStartGuide({ platform, tools, signedIn, busy = false, progress, o
     if (!writeGuideProgress(getGuideStorage(), resumeKey, { route: chosen, step: currentStep })) setStorageWarning('引导进度没有保存到本机，当前步骤仍可继续')
     else setStorageWarning('')
   }
-  const choose = (chosen: GuideRoute) => { if (locked) return; setRoute(chosen); setError(''); setInstallFailed(false); saveProgress(chosen, 'choose') }
+  const choose = (chosen: GuideRoute) => { if (locked) return; setRoute(chosen); setError(''); setFailed(null); saveProgress(chosen, 'choose') }
   const install = () => {
     if (!route || route === 'chat') return
     const chosen = route
@@ -161,7 +188,7 @@ function ScopedStartGuide({ platform, tools, signedIn, busy = false, progress, o
     if (step !== 'prepare' || route !== advanceAfterInstall.current) { advanceAfterInstall.current = null; return }
     if (locked || !readiness.prepared) return
     advanceAfterInstall.current = null
-    setError(''); setInstallFailed(false)
+    setError(''); setFailed(null)
     move(skipConnect ? 'ready' : 'connect')
   }, [step, route, locked, readiness.prepared, skipConnect])
   const move = (nextStep: GuideStep) => { setStep(nextStep); if (route) saveProgress(route, nextStep) }
@@ -169,12 +196,12 @@ function ScopedStartGuide({ platform, tools, signedIn, busy = false, progress, o
   const run = async (action: string, work: () => Promise<void>) => {
     if (lock.current || busy) return
     const ticket = owner.current
-    lock.current = true; setPending(action); setError(''); setInstallFailed(false)
+    lock.current = true; setPending(action); setError(''); setFailed(null)
     try { await work() }
     catch (reason) {
       if (ticket !== owner.current) return
-      if (action === '安装工具') { setError(guideInstallErrorMessage(reason, name)); setInstallFailed(true) }
-      else setError(authErrorMessage(reason, action))
+      setError(action === '安装工具' ? guideInstallErrorMessage(reason, name) : guideStepErrorMessage(reason, action))
+      setFailed({ action, work })
     }
     finally { if (ticket === owner.current) { lock.current = false; setPending('') } }
   }
@@ -183,7 +210,7 @@ function ScopedStartGuide({ platform, tools, signedIn, busy = false, progress, o
     if (step === 'choose') { move('prepare'); if (route !== 'chat') void run('检测工具', onDetect) }
     else if (step === 'prepare' && readiness.prepared) move(skipConnect ? 'ready' : 'connect')
     else if (step === 'connect' && readiness.prepared && readiness.connected) move('ready')
-    setError(''); setInstallFailed(false)
+    setError(''); setFailed(null)
   }
   const launch = (newFolder = false) => {
     if (!route || !readiness.prepared || !readiness.connected) return
@@ -222,7 +249,7 @@ function ScopedStartGuide({ platform, tools, signedIn, busy = false, progress, o
           {step === 'connect' && route && route !== 'chat' && <><p className="auth-guide-lead">{name} 的连接方式：<strong>{sourceLabel}</strong></p><p className="auth-guide-callout" data-testid={tool?.officialLoginRequired ? 'guide-official-login' : undefined}>{tool?.source === 'unknown' ? '你原来的配置已经原样留着。先看看处理步骤，确认哪些设置要留下，再决定怎么连接。' : tool?.officialLoginRequired ? `当前选的是官方账号，但还没有在 ${name} 里登录。请打开 ${name} 用 ChatGPT 账号登录后回来重新检测，或打开配置改用星芒账号的密钥。` : tool?.source === 'official' ? '保留当前官方来源。官方账号的登录和可用额度，请在工具内确认。' : readiness.connected ? '当前连接已确认。需要换密钥、模型或工作文件夹时，可以打开配置。' : '打开配置选择连接来源、密钥、模型和工作文件夹，确认后保存。'}</p>{officialNote && <p className="auth-hint" data-testid="guide-official-note">{officialNote}</p>}{tool?.model && <p className="auth-hint">模型：{tool.model}</p>}{tool?.workspace && <p className="auth-hint">工作文件夹：{tool.workspace}</p>}<div className="auth-form-actions"><Button icon={Settings} variant={readiness.connected ? 'secondary' : 'primary'} disabled={locked} onClick={() => void run('确认连接', () => onConfigure(route))} testId="guide-config">{tool?.source === 'unknown' ? '查看已有配置处理步骤' : readiness.connected ? '查看连接配置' : '去完成连接配置'}</Button><Button icon={RefreshCw} disabled={locked} onClick={() => void run('检测工具', onDetect)} testId="guide-connection-rescan">重新检测</Button></div></>}
           {step === 'ready' && <><p className="auth-guide-lead">{route === 'chat' ? '从一个问题开始，慢慢熟悉你的 AI 工作台。' : readiness.prepared && readiness.connected ? `${name} 已准备好。打开工具，即可开始第一次任务。` : '工具或配置状态已变化，请返回复核。'}</p>{skipConnect && <p className="auth-hint auth-guide-connected" data-testid="guide-connected-note">已用当前账号连好。想换密钥或模型，<Button variant="ghost" size="sm" disabled={locked} onClick={() => { if (route && route !== 'chat') void run('确认连接', () => onConfigure(route)) }} testId="guide-connected-config">点这里</Button></p>}{definition?.firstRun && readiness.prepared && readiness.connected && <FirstRunSteps key={route} name={name} firstRun={definition.firstRun} testId="guide-first-run" />}{opensFolder && readiness.prepared && readiness.connected && <div className="auth-guide-check-row" data-testid="guide-folder-hint"><FolderPlus size={20} aria-hidden="true" /><div><strong>选哪个文件夹</strong><p>打开时要选一个项目文件夹。不知道选哪个，就点「新建并打开」，软件替你建好一个空文件夹并直接打开。</p></div><Button icon={FolderPlus} disabled={locked} onClick={() => launch(true)} testId="guide-open-tool-new-folder">新建并打开</Button></div>}<div className="auth-guide-ready"><CircleCheck size={30} aria-hidden="true" /><span>有需要时，可从首页重新打开这份引导。</span></div></>}
           {(step === 'connect' || step === 'ready') && !readiness.prepared && <p className="auth-error" role="alert">工具或运行环境尚未准备好，请返回准备工具步骤后再继续。</p>}
-          {pending && <p className="auth-hint" role="status">正在{pending}，请稍候</p>}{progress && locked && <Progress value={progress.percent} label={progress.label} testId="guide-progress" />}{error && <p className="auth-error" role="alert" data-testid="guide-error">{error}</p>}{error && installFailed && step === 'prepare' && tool && !tool.installed && <Button icon={RefreshCw} disabled={locked} onClick={install} testId="guide-retry">再试一次</Button>}{storageWarning && <p className="auth-hint" role="status">{storageWarning}</p>}
+          {pending && <p className="auth-hint" role="status">正在{pending}，请稍候</p>}{progress && locked && <Progress value={progress.percent} label={progress.label} testId="guide-progress" />}{error && <p className="auth-error" role="alert" data-testid="guide-error">{error}</p>}{error && failed && <Button icon={RefreshCw} disabled={locked} onClick={() => void run(failed.action, failed.work)} testId="guide-retry">再试一次</Button>}{storageWarning && <p className="auth-hint" role="status">{storageWarning}</p>}
         </div>
         <footer className="auth-guide-actions start-guide-footer">
           {step !== 'choose' && <Button icon={ArrowLeft} variant="ghost" disabled={locked} onClick={() => { setError(''); move(steps[currentStep - 1].id) }} testId="guide-back">上一步</Button>}
