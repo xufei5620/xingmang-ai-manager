@@ -329,7 +329,8 @@ const apiMethods = {
   },
   switchSavedAccount: async (id: string) => {
     record('switch-account', id)
-    if (fail === 'switch') throw new Error('目标账号登录已过期')
+    // 与主进程 SAVED_EXPIRED 同一句（electron/realm-account.ts）。
+    if (fail === 'switch') throw new Error('这个保存的账号登录已失效，当前账号没有变化。点「重新登录这个账号」再登一次就行。')
     activeUserId = 8
     for (const config of Object.values(configs.providers)) {
       if (config.configurationOwnership === 'account') config.configurationOwnership = 'unknown'

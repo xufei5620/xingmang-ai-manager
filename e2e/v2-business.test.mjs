@@ -1162,7 +1162,12 @@ test('failed saved-account verification never writes selected CLI config', async
     await page
       .getByRole('button', { name: '切换', exact: true, disabled: false })
       .click()
-    await page.getByText('目标账号登录已过期', { exact: true }).waitFor()
+    await page
+      .getByText('这个保存的账号登录已失效，当前账号没有变化。', { exact: false })
+      .first()
+      .waitFor()
+    // 全面检测 Q12：不能套上「登录已过期」的标题，那读起来像当前账号掉线了。
+    assert.equal(await page.getByText('登录已过期', { exact: true }).count(), 0)
     assert.equal(
       (await calls(page)).some((call) => call.name === 'sync-config'),
       false,
@@ -1171,6 +1176,8 @@ test('failed saved-account verification never writes selected CLI config', async
       await page.getByTestId('account-sync-claude').isChecked(),
       true,
     )
+    await page.getByRole('button', { name: '重新登录这个账号', exact: true }).click()
+    assert.equal((await calls(page)).some((call) => call.name === 'login'), true)
   } finally {
     await page.close()
   }
