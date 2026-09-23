@@ -1472,6 +1472,7 @@ test('saved-account switching keeps CLI synchronization opt-in', async () => {
   try {
     await page.getByTestId('tool-row-claude').waitFor()
     await page.getByRole('button', { name: '切换账号' }).click()
+    await page.getByTestId('saved-account-row-saved-18').getByText('星芒账号', { exact: true }).waitFor()
     await page.getByTestId('saved-accounts-list').getByRole('button', { name: '切换', exact: true }).click()
     await page.getByText('saved-user', { exact: true }).first().waitFor()
     await page.waitForTimeout(100)
@@ -2448,8 +2449,8 @@ test('a saved account with the same id switches platform without reusing NewAPI 
     await page.getByTestId('tool-row-codex').waitFor()
     await page.getByRole('button', { name: '切换账号', exact: true }).click()
     const list = page.getByTestId('saved-accounts-list')
-    await list.getByText('账户尾号 aa0017', { exact: true }).waitFor()
-    assert.doesNotMatch(await list.innerText(), /Sub2API|NewAPI|new-api|api\.solov|xm\.solov/i)
+    await list.getByTestId('saved-account-row-saved-aa0017').getByText('历史账号', { exact: true }).waitFor()
+    assert.doesNotMatch(await list.innerText(), /Sub2API|NewAPI|new-api|api\.solov|xm\.solov|账户尾号|aa0017/i)
     await list.getByRole('button', { name: '切换', exact: true }).click()
     await page.getByRole('dialog', { name: '切换账号', exact: true }).waitFor({ state: 'hidden' })
     await page.getByRole('button', { name: '打开个人中心 fixture-user' }).click()

@@ -556,7 +556,7 @@ async function switchWithUi(page, origin) {
   assert.ok(target)
   await page.getByRole('button', { name: '切换账号', exact: true }).click()
   await assertCustomerUi(page)
-  const row = page.getByTestId('saved-accounts-list').locator('.xm-list-row').filter({ hasText: `账户尾号 ${target.id.slice(-6)}` })
+  const row = page.getByTestId(`saved-account-row-${target.id}`)
   await row.getByRole('button', { name: '切换', exact: true }).click()
   await page.getByTestId('saved-accounts-list').waitFor({ state: 'hidden', timeout: fixtureReadyTimeoutMs })
 }
