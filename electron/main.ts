@@ -28,7 +28,8 @@ import { accelerationConflictDescriptions, accelerationFailureMessages, type Acc
 import { accelerationStartRequest, createAccelerationPreferenceStore, defaultAccelerationPreference } from './acceleration-preference-store'
 import { accelerationStartFailureDescriptions, createAccelerationDevelopmentHost, readAccelerationDevelopmentConfig, type AccelerationDevelopmentHost } from './acceleration-development-host'
 import { readBundledAccelerationConfig } from './acceleration-bundled-config'
-import { AiAssetStore, resolveAiOutputRoot } from './ai-asset-store'
+import { AiAssetStore } from './ai-asset-store'
+import { migrateLegacyAiOutput, resolveAiOutputRoot, resolveLegacyAiOutputRoot } from './ai-output-location'
 import { AI_CHAT_STREAM_LIMITS, createAiChatService } from './ai-chat-service'
 import { createAiImageService } from './ai-image-service'
 import { AiVideoAssetStore } from './ai-video-asset-store'
@@ -262,6 +263,15 @@ function applicationUrlPolicy(): ApplicationUrlPolicy {
     // That value is intentionally limited to the local development process.
     devServerUrl: app.isPackaged ? undefined : process.env.VITE_DEV_SERVER_URL,
     packagedBaseUrl: packagedApplicationBaseUrl,
+  }
+}
+
+function readDocumentsDirectory(): string | null {
+  try {
+    return app.getPath('documents')
+  } catch {
+    // 拿不到「文档」时由 resolveAiOutputRoot 退到用户主目录。
+    return null
   }
 }
 
@@ -1339,6 +1349,19 @@ if (!hasSingleInstanceLock) {
       return state.authenticated && state.account ? JSON.stringify([accounts.getSiteId(), state.account.userId]) : null
     }
     const accountWork = createAccountWorkGate({ assertReady: accounts.assertReady, revision: () => accountService.getSessionRevision!() })
+    // Each realm moves its own subtree once per launch; a second realm object for
+    // the same subtree must not start a second walk over files already moving.
+    const aiOutputMigrations = new Set<string>()
+    function migrateAiOutputOnce(from: string, to: string): void {
+      if (aiOutputMigrations.has(from)) return
+      aiOutputMigrations.add(from)
+      void migrateLegacyAiOutput(from, to).then((result) => {
+        if (!result.moved && !result.kept && !result.failed) return
+        // Counts only: support needs to know whether anything stayed behind, not
+        // where the user's files are (I13).
+        runtimeLog.log(result.failed ? 'warn' : 'info', 'ai-chat', 'asset.output.migrated', '老版本的 AI 作品已搬到新的保存位置', { ...result })
+      }).catch((error) => runtimeLog.exception('ai-chat', 'asset.output.migrate-failed', error))
+    }
     function createBusiness(siteId: RealmAccountSiteId) {
       const definition = requireSiteRuntimeDefinition(siteId)
       const roots = resolveRealmDataRoots(managerDataDirectory, definition.realmId)
@@ -1365,12 +1388,17 @@ if (!hasSingleInstanceLock) {
       const aiOutputRoot = roots.assetOutputDirectory(resolveAiOutputRoot({
         isPackaged: app.isPackaged,
         projectRoot: path.join(__dirname, '..'),
-        execPath: process.execPath,
+        documentsDirectory: readDocumentsDirectory(),
+        location: { platform: process.platform, home: os.homedir(), env: process.env },
       }))
+      // 老版本存在可执行文件旁边的 output 里。画布、聊天记录只按作品编号找文件，
+      // 搬的时候布局不变，老作品搬完照样能打开；搬的过程在后台，不拖慢启动。
+      const legacyAiOutputRoot = resolveLegacyAiOutputRoot({ isPackaged: app.isPackaged, execPath: process.execPath })
+      if (legacyAiOutputRoot) migrateAiOutputOnce(roots.assetOutputDirectory(legacyAiOutputRoot), aiOutputRoot)
       const assetStore = new AiAssetStore({
         outputRoot: aiOutputRoot,
-        // 全局 output 在安装目录旁边，用户自己动不了它；能绕开的是画布项目，新项目的
-        // 作品存在用户自己选的文件夹里。改默认位置另走一个 PR（盲点 2 的后半）。
+        // 全局保存位置在「文档」里，写不进多半是整个文档出了状况，用户自己能绕开的是
+        // 画布项目：新项目的作品存在用户自己选的文件夹里。
         unwritableGuidance: '可以先在画布里新建一个项目、给它选一个自己的文件夹，在那里生成就能存下来；也可以联系客服。',
         trustedProxyFetchImpl: (input, init) => net.fetch(input, init),
         nativeOperations: {
