@@ -2,6 +2,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { randomUUID } from 'node:crypto'
 import * as TOML from '@iarna/toml'
+import { applyEdits, getNodeValue, modify, parseTree, type Node, type ParseError } from 'jsonc-parser'
 import { providerBaseUrls, type ProviderId } from './catalog'
 import { readBoundedUtf8FileSync } from './bounded-file'
 import {
@@ -248,6 +249,105 @@ function requireToml(filePath: string, label: string): Record<string, unknown> {
   } catch (error) {
     throw new Error(`${label} 无法解析，未执行修改${tomlErrorLocation(error)}`)
   }
+}
+
+/**
+ * Gemini CLI runs settings.json and trustedFolders.json through
+ * strip-json-comments before JSON.parse, so a file with comments is valid to
+ * it and used to be refused here as unparseable -- the account key never got
+ * written (全面检测 Q16). Parse them the way Gemini does: comments allowed,
+ * trailing commas not (strip-json-comments keeps those and JSON.parse then
+ * rejects them). Duplicate keys are refused on this path only, because the
+ * comment-preserving write edits one occurrence while Gemini reads the last.
+ */
+function parseGeminiJsonObject(content: string, label: string): Record<string, unknown> {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(content) as unknown
+  } catch {
+    const errors: ParseError[] = []
+    const tree = parseTree(content, errors, { allowTrailingComma: false, disallowComments: false })
+    // Same reason as requireJson for not surfacing the parser's own message.
+    if (!tree || errors.length || hasDuplicateProperties(tree)) {
+      throw new Error(`${label} 无法解析为 JSON，未执行修改`)
+    }
+    parsed = getNodeValue(tree) as unknown
+  }
+  if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed as Record<string, unknown>
+  throw new Error(`${label} 不是有效的 JSON 对象，未执行修改`)
+}
+
+function hasDuplicateProperties(node: Node): boolean {
+  if (node.type === 'object') {
+    const names = new Set<unknown>()
+    for (const property of node.children ?? []) {
+      const name = property.children?.[0]?.value as unknown
+      if (names.has(name)) return true
+      names.add(name)
+    }
+  }
+  return (node.children ?? []).some(hasDuplicateProperties)
+}
+
+function readGeminiJson(filePath: string): Record<string, unknown> | null {
+  const content = readText(filePath)
+  if (!content) return null
+  try {
+    return parseGeminiJsonObject(withoutByteOrderMark(content), 'Gemini 配置')
+  } catch {
+    return null
+  }
+}
+
+function requireGeminiJson(filePath: string, label: string): { parsed: Record<string, unknown>, original: string | null } {
+  const original = requireConfigText(filePath, label)
+  return { parsed: original === null ? {} : parseGeminiJsonObject(original, label), original }
+}
+
+function isJsonObject(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+}
+
+function collectJsonEdits(
+  location: string[],
+  before: unknown,
+  after: unknown,
+  edits: Array<{ path: string[], value: unknown }>,
+): void {
+  if (isJsonObject(before) && isJsonObject(after)) {
+    for (const key of new Set([...Object.keys(before), ...Object.keys(after)])) {
+      if (!Object.hasOwn(after, key)) edits.push({ path: [...location, key], value: undefined })
+      else if (!Object.hasOwn(before, key)) edits.push({ path: [...location, key], value: after[key] })
+      else collectJsonEdits([...location, key], before[key], after[key], edits)
+    }
+    return
+  }
+  if (JSON.stringify(before) !== JSON.stringify(after)) edits.push({ path: location, value: after })
+}
+
+/**
+ * Plain JSON is rewritten as before. A file that only parsed because comments
+ * were allowed gets just the changed values edited in place, so the user's
+ * comments and layout outside those values survive.
+ */
+function geminiJsonContent(original: string | null, next: Record<string, unknown>): string {
+  if (original === null || !original.trim()) return jsonContent(next)
+  try {
+    JSON.parse(original)
+    return jsonContent(next)
+  } catch {
+    // Has comments: fall through to the in-place edit.
+  }
+  const edits: Array<{ path: string[], value: unknown }> = []
+  collectJsonEdits([], parseGeminiJsonObject(original, 'Gemini 配置'), next, edits)
+  const eol = original.includes('\r\n') ? '\r\n' : '\n'
+  let content = original
+  for (const edit of edits) {
+    content = applyEdits(content, modify(content, edit.path, edit.value, {
+      formattingOptions: { insertSpaces: true, tabSize: 2, eol },
+    }))
+  }
+  return content.endsWith('\n') ? content : `${content}${eol}`
 }
 
 function ensureRecord(parent: Record<string, unknown>, key: string): Record<string, unknown> {
@@ -649,7 +749,7 @@ export function geminiCliCompatibleModel(model: string): string {
 
 function readProviderAuthType(provider: ProviderId, paths: string[]): string | undefined {
   return provider === 'gemini'
-    ? nestedString(readJson(paths[0]), ['security', 'auth', 'selectedType'])
+    ? nestedString(readGeminiJson(paths[0]), ['security', 'auth', 'selectedType'])
     : undefined
 }
 
@@ -1387,6 +1487,10 @@ function requireWorkspaceTrustJson(content: string | null, label: string): Recor
   throw new Error(`${label} 不是有效的 JSON 对象，未执行修改`)
 }
 
+function requireGeminiWorkspaceJson(content: string | null, label: string): Record<string, unknown> {
+  return content?.trim() ? parseGeminiJsonObject(content, label) : {}
+}
+
 export function trustClaudeWorkspaceInRootConfigText(
   content: string | null,
   workspace: string,
@@ -1426,13 +1530,13 @@ export function trustGeminiWorkspaceInTrustedFoldersText(
 ): { content: string; changed: boolean } {
   const trimmedWorkspace = workspace.trim()
   if (!trimmedWorkspace) throw new Error('Gemini CLI 工作目录不能为空')
-  const parsed = requireWorkspaceTrustJson(content, '现有 Gemini CLI trustedFolders.json')
+  const parsed = requireGeminiWorkspaceJson(content, '现有 Gemini CLI trustedFolders.json')
   const existing = matchingWorkspaceKey(parsed, trimmedWorkspace)
   // A folder the user already answered for keeps its answer, including
   // DO_NOT_TRUST. Only a folder Gemini has never asked about gets filled in.
-  if (existing !== null) return { content: jsonContent(parsed), changed: false }
+  if (existing !== null) return { content: geminiJsonContent(content, parsed), changed: false }
   parsed[trimmedWorkspace] = 'TRUST_FOLDER'
-  return { content: jsonContent(parsed), changed: true }
+  return { content: geminiJsonContent(content, parsed), changed: true }
 }
 
 export function trustClaudeWorkspace(
@@ -1485,13 +1589,13 @@ export const GEMINI_PROJECT_CONTEXT_FILENAMES = ['GEMINI.md', 'AGENTS.md'] as co
 export function ensureGeminiContextFilenamesInSettingsText(
   content: string | null,
 ): { content: string; changed: boolean } {
-  const parsed = requireWorkspaceTrustJson(content, '现有 Gemini CLI settings.json')
+  const parsed = requireGeminiWorkspaceJson(content, '现有 Gemini CLI settings.json')
   const context = ensureRecord(parsed, 'context')
   const raw = context.fileName
   // 结构读不懂时（既不是字符串也不是数组）一律不动，宁可让 Gemini 自己用默认值，
   // 也不能拿一份看不懂的配置换取读到 AGENTS.md。
   if (raw !== undefined && typeof raw !== 'string' && !Array.isArray(raw)) {
-    return { content: jsonContent(parsed), changed: false }
+    return { content: geminiJsonContent(content, parsed), changed: false }
   }
   const existing = typeof raw === 'string'
     ? (raw.trim() ? [raw.trim()] : [])
@@ -1499,9 +1603,9 @@ export function ensureGeminiContextFilenamesInSettingsText(
   const present = new Set(existing.filter((entry): entry is string => typeof entry === 'string'))
   const missing = GEMINI_PROJECT_CONTEXT_FILENAMES.filter((name) => !present.has(name))
   // 已有值一个不删，只把缺的补在后面（含用户自己写的其它文件名），已经齐了就不动。
-  if (missing.length === 0) return { content: jsonContent(parsed), changed: false }
+  if (missing.length === 0) return { content: geminiJsonContent(content, parsed), changed: false }
   context.fileName = [...existing, ...missing]
-  return { content: jsonContent(parsed), changed: true }
+  return { content: geminiJsonContent(content, parsed), changed: true }
 }
 
 /**
@@ -1714,7 +1818,7 @@ function createMergePlans(
       if (!fs.existsSync(paths[0])) {
         plans.push(initial(paths[0]))
       } else {
-        const parsed = requireJson(paths[0], '现有 Gemini settings.json')
+        const { parsed, original } = requireGeminiJson(paths[0], '现有 Gemini settings.json')
         // Gemini CLI keeps the auth strategy in settings.json. Updating only
         // .env after a prior OAuth login leaves the UI looking configured while
         // the CLI continues to authenticate with Google, so merge must restore
@@ -1724,7 +1828,7 @@ function createMergePlans(
         extendGeminiSessionRetention(parsed)
         applyGeminiRelayModelOverrides(parsed, geminiCliCompatibleModel(model))
         disableGeminiRelayUsageStatistics(parsed)
-        plans.push({ path: paths[0], content: jsonContent(parsed) })
+        plans.push({ path: paths[0], content: geminiJsonContent(original, parsed) })
       }
       // 读取失败必须中止保存，静默当空文件会把用户已有环境变量覆盖掉。
       const content = requireConfigText(paths[1], '现有 Gemini .env')
@@ -2309,12 +2413,12 @@ function createOfficialAccountPlans(
       }
       const plans: FilePlan[] = []
       if (fs.existsSync(paths[0])) {
-        const parsed = requireJson(paths[0], '现有 Gemini settings.json')
+        const { parsed, original } = requireGeminiJson(paths[0], '现有 Gemini settings.json')
         const auth = ensureRecord(ensureRecord(parsed, 'security'), 'auth')
         auth.selectedType = 'oauth-personal'
         removeGeminiRelayModelOverrides(parsed)
         restoreGeminiUsageStatistics(parsed)
-        plans.push({ path: paths[0], content: jsonContent(parsed) })
+        plans.push({ path: paths[0], content: geminiJsonContent(original, parsed) })
       }
       const envContent = requireConfigText(paths[1], '现有 Gemini .env')
       if (envContent !== null) {

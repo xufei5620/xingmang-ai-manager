@@ -2068,6 +2068,57 @@ describe('switching a provider back to the official subscription account', () =>
     expect(env).toContain('MY_OWN_VARIABLE=keep-me')
   })
 
+  it('writes the account key into a Gemini settings file that carries comments and keeps the comments', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const [settingsPath, envPath] = providerConfigPaths('gemini', roots)
+    fs.mkdirSync(path.dirname(settingsPath), { recursive: true })
+    // Gemini CLI strips comments before JSON.parse, so this is a valid file to it.
+    fs.writeFileSync(settingsPath, [
+      '{',
+      '  // 我的主题',
+      '  "ui": { "theme": "GitHub" },',
+      '  /* 登录方式 */',
+      '  "security": { "auth": { "selectedType": "oauth-personal" } }',
+      '}',
+      '',
+    ].join('\n'), 'utf8')
+
+    saveProviderConfig('gemini', 'sk-relay', testModels.gemini, 'merge', roots, {}, providerBaseUrls)
+
+    const written = fs.readFileSync(settingsPath, 'utf8')
+    expect(written).toContain('// 我的主题')
+    expect(written).toContain('/* 登录方式 */')
+    expect(written).toContain('"theme": "GitHub"')
+    expect(fs.readFileSync(envPath, 'utf8')).toContain('GEMINI_API_KEY=sk-relay')
+    expect(inspectProviderConfig('gemini', roots).authType).toBe('gemini-api-key')
+
+    switchProviderToOfficialAccount('gemini', roots, {}, providerBaseUrls)
+
+    const restored = fs.readFileSync(settingsPath, 'utf8')
+    expect(restored).toContain('// 我的主题')
+    expect(inspectProviderConfig('gemini', roots).authType).toBe('oauth-personal')
+  })
+
+  it('still refuses a Gemini settings file that Gemini itself could not read', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const [settingsPath] = providerConfigPaths('gemini', roots)
+    fs.mkdirSync(path.dirname(settingsPath), { recursive: true })
+    const damaged = [
+      // Trailing commas survive strip-json-comments, so Gemini rejects them too.
+      '{ "ui": { "theme": "GitHub", }, // note\n }',
+      // Duplicate keys: an in-place edit would change one copy while Gemini reads the other.
+      '{ // note\n "ui": {}, "ui": {} }',
+    ]
+    for (const content of damaged) {
+      fs.writeFileSync(settingsPath, content, 'utf8')
+      expect(() => saveProviderConfig('gemini', 'sk-relay', testModels.gemini, 'merge', roots, {}, providerBaseUrls))
+        .toThrow('现有 Gemini settings.json 无法解析为 JSON，未执行修改')
+      expect(fs.readFileSync(settingsPath, 'utf8')).toBe(content)
+    }
+  })
+
   it('refuses to touch a configuration that points at somebody else\'s relay', () => {
     const home = temporaryHome()
     saveProviderConfig('claude', 'sk-third-party', testModels.claude, 'reset', providerRoots(home), {}, {
@@ -2244,6 +2295,21 @@ describe('workspace trust for the directory the user picked', () => {
       '/home/tester/work': 'DO_NOT_TRUST',
       '/home/tester/other': 'TRUST_PARENT',
     })
+  })
+
+  it('keeps comments in Gemini trust and context files it adds entries to', () => {
+    const trust = trustGeminiWorkspaceInTrustedFoldersText('{\n  // 家里的项目\n  "/home/tester/other": "TRUST_FOLDER"\n}\n', '/home/tester/work')
+    expect(trust.changed).toBe(true)
+    expect(trust.content).toContain('// 家里的项目')
+    expect(trust.content).toContain('"/home/tester/work": "TRUST_FOLDER"')
+
+    const context = ensureGeminiContextFilenamesInSettingsText('{\n  // 我的主题\n  "ui": { "theme": "GitHub" }\n}\n')
+    expect(context.changed).toBe(true)
+    expect(context.content).toContain('// 我的主题')
+    expect(context.content).toContain('"AGENTS.md"')
+
+    const unchanged = '{\n  // 已经配好\n  "context": { "fileName": ["GEMINI.md", "AGENTS.md"] }\n}\n'
+    expect(ensureGeminiContextFilenamesInSettingsText(unchanged)).toEqual({ content: unchanged, changed: false })
   })
 
   it('refuses to guess at a damaged trust file instead of overwriting it', () => {
