@@ -4730,7 +4730,7 @@ export function createSystemService(
         : previousOwnership === 'account' || previousOwnership === 'manual' ? previousOwnership : 'unknown')
       await configOwnership.write(payload.provider, before, 'manual', owner)
       assertUnchanged()
-      const result = saveProviderConfig(payload.provider, apiKey, payload.model, payload.mode, providerRoots, {}, activeSite.providerBaseUrls, statusLineCommand)
+      const result = saveProviderConfig(payload.provider, apiKey, payload.model, payload.mode, providerRoots, {}, activeSite.providerBaseUrls, statusLineCommand, availableModels)
       await configOwnership.write(payload.provider, inspectNativeProviderConfig(payload.provider), source, owner)
       assertOwner()
       await store.setOfficialProvider(payload.provider, false)
