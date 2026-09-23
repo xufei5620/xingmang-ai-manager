@@ -75,6 +75,7 @@ import {
 } from './security'
 import type {
   CliLaunchMode,
+  CliLaunchResult,
   CodexDesktopLaunchMode,
   ConfigSavePayload,
   SystemScanOptions,
@@ -2175,7 +2176,9 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
         options.runtimeLog.log('info', 'config', 'workspace.guard.declined', `用户没有在${sensitiveWorkspaceLabel(sensitivity)}里打开工具`, {
           kind: sensitivity,
         })
-        return undefined
+        // 明说没打开：以前回 undefined，记录页把它当成功，照样弹「已打开…」。
+        const declined: CliLaunchResult = { declined: true }
+        return declined
       }
       consumeConfirmedEveryTimeWorkspace(replacement)
       await rememberWorkspace(replacement)

@@ -59,7 +59,7 @@ import {
 } from './registry/curated-extensions'
 import { tools } from './registry/tools'
 import { isMissingWorkspace, latestSessionIdsByWorkspace } from './features/tools/recent-workspaces'
-import { launchWarning } from './features/tools/launch-notice'
+import { launchDeclined, resumeSessionNotice } from './features/tools/launch-notice'
 import { runtimeHomebrewCommand } from './features/tools/runtime-install-guide'
 import { backupKeyView } from './features/tools/backup-key'
 import { connectionCheckView } from './features/tools/connection-check'
@@ -600,7 +600,8 @@ export function SessionsPage({
             session.cwd,
             'resumeLast',
           )
-          onResumed?.()
+          // 选了「先不打开」就什么都没开，首页那份「最近」也没变。
+          if (!launchDeclined(result)) onResumed?.()
           return result
         } catch (cause) {
           // 列表出来之后目录才被删掉的那一瞬间:按钮还亮着,但已经接不上了。
@@ -613,11 +614,7 @@ export function SessionsPage({
         }
       },
       // 项目文件夹里的设置会盖过当前账号时，那句提醒跟在成功提示后面，不另弹一条。
-      (result) => {
-        const opened = `已打开${providerName(session.provider)}，接着 ${session.cwd} 里最近的一条对话`
-        const warning = launchWarning(result)
-        return warning ? `${opened}。${warning}` : opened
-      },
+      (result) => resumeSessionNotice(result, providerName(session.provider), session.cwd),
     )
   }
   /**

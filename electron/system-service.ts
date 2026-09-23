@@ -399,6 +399,11 @@ export interface CliLaunchResult {
    * 提醒。只提醒不改：那些文件是用户或公司的，本软件不动它们。缺省 = 没发现。
    */
   configOverrideNotice?: string
+  /**
+   * 用户在「这个文件夹不建议打开」那一问里选了不打开（或关掉了对话框），工具
+   * 没有启动。界面据此不说「已打开」。缺省 = 打开了，老调用方照旧。
+   */
+  declined?: boolean
 }
 
 export type ToolUninstallResult =

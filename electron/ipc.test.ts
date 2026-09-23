@@ -1196,7 +1196,7 @@ describe('registerIpcHandlers', () => {
     const { service } = register()
 
     await expect(electronMocks.handlers.get('cli:launch')!(trustedEvent(), 'claude', configFolder, 'resumeLast'))
-      .resolves.toBeUndefined()
+      .resolves.toEqual({ declined: true })
     expect(service.launchProvider).not.toHaveBeenCalled()
     expect(electronMocks.showOpenDialog).not.toHaveBeenCalled()
     expect(electronMocks.showMessageBox).toHaveBeenCalledWith(expect.objectContaining({
