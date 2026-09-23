@@ -262,7 +262,7 @@ export function createRealmAccountVault(storage: RealmVaultStorage): RealmAccoun
         const data = await read()
         const id = realmOwnerKey(captured)
         const accounts = data.accounts.filter((entry) => realmOwnerKey(entry) !== id)
-        if (accounts.length >= maxAccounts) throw new RealmAccountError('STORAGE')
+        if (accounts.length >= maxAccounts) throw new RealmAccountError('ACCOUNT_LIMIT')
         const loginHints = normalized === undefined ? data.loginHints : [
           ...(data.loginHints ?? []).filter((hint) => hint.identifier !== normalized),
           { identifier: normalized, realmId: captured.realmId, userId: captured.userId },

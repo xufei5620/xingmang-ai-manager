@@ -45,7 +45,7 @@ export interface RealmSessionBackend {
 }
 
 export type RealmErrorCode = 'INVALID' | 'UNSUPPORTED' | 'DISABLED' | 'BUSY' | 'STALE' | 'SIGNED_OUT'
-  | 'STORAGE' | 'SAVED_EXPIRED' | 'NETWORK' | 'UNAVAILABLE' | 'TIMEOUT' | 'ABORTED' | 'UNAUTHORIZED' | 'LOGIN_REJECTED' | 'TWO_FACTOR_REQUIRED' | 'PROTOCOL'
+  | 'STORAGE' | 'SAVED_EXPIRED' | 'ACCOUNT_LIMIT' | 'NETWORK' | 'UNAVAILABLE' | 'TIMEOUT' | 'ABORTED' | 'UNAUTHORIZED' | 'LOGIN_REJECTED' | 'TWO_FACTOR_REQUIRED' | 'PROTOCOL'
 
 const messages: Record<RealmErrorCode, string> = {
   INVALID: '账号参数无效', UNSUPPORTED: '当前账号暂不支持此功能', DISABLED: '当前账号服务尚未启用',
@@ -55,6 +55,9 @@ const messages: Record<RealmErrorCode, string> = {
   // 「登录已过期」的标题，看起来像当前账号掉线了；其实当前账号完好，一字没动。
   // 措辞刻意避开「登录已过期」「请重新登录」，免得又被渲染层归到当前账号过期那一类。
   SAVED_EXPIRED: '这个保存的账号登录已失效，当前账号没有变化。点「重新登录这个账号」再登一次就行。',
+  // 本机账号库满了不是存储坏了（全面检测 Q40）：以前也报 STORAGE，用户被叫去重启软件，
+  // 重启一百次还是满的。渲染层按「保存的账号已满」原样上屏。
+  ACCOUNT_LIMIT: '这台电脑上保存的账号已满（最多 16 个）。先在「切换账号」里移除一个不用的，再登录。',
   NETWORK: '账号服务请求失败，请重试',
   UNAVAILABLE: networkFailureMessages.serviceUnavailable,
   TIMEOUT: '账号服务请求超时', ABORTED: '操作已取消', UNAUTHORIZED: '登录已失效，请重新登录',
