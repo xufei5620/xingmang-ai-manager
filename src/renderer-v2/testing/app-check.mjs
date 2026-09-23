@@ -858,6 +858,27 @@ test('the home recent card opens a record folder and says so when it cannot', as
   } finally { await page.close() }
 })
 
+// 全面检测 Q29：个人中心停在「我的订单」时，回首页再点「充值」要回到充值那一页。
+// 以前 App 里记的分页值没变（还是上次的「充值」），个人中心就不切。
+test('the home recharge button reopens the recharge tab even after another account tab was chosen', async () => {
+  const page = await open()
+  try {
+    const recharge = page.locator('.v2-balance-actions').getByRole('button', { name: '充值', exact: true })
+    const selected = (name) => page.getByTestId('account-tabs').getByRole('tab', { name, exact: true }).getAttribute('aria-selected')
+    await recharge.click()
+    await page.getByTestId('account-tabs').waitFor()
+    await page.waitForFunction(() => document.querySelector('[data-testid="account-tabs"] [aria-selected="true"]')?.textContent === '充值与订阅')
+    await page.getByTestId('account-tabs').getByRole('tab', { name: '我的订单', exact: true }).click()
+    assert.equal(await selected('我的订单'), 'true')
+    await page.getByTestId('nav-home').click()
+    await recharge.click()
+    await page.waitForFunction(() => document.querySelector('[data-testid="account-tabs"] [aria-selected="true"]')?.textContent === '充值与订阅')
+    assert.equal(await selected('我的订单'), 'false')
+    // 默认夹具没接充值、订单那几个读取（会记进 unexpected），这里只看有没有报错。
+    assert.deepEqual(await page.evaluate(() => window.v2Test.errors), [])
+  } finally { await page.close() }
+})
+
 test('home reuses the recent list instead of rescanning session folders on every visit', async () => {
   const page = await open('allInstalled=1&recentWorkspaces=1')
   // 首页读的是 pageSize 60 那一份;记录页自己读的是 20 / 100,不能混进来数。
