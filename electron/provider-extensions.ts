@@ -4,6 +4,7 @@ import path from 'node:path'
 import { parse as parseYaml } from 'yaml'
 import { readBoundedUtf8FileSync } from './bounded-file'
 import { sameLocalPathIdentity } from './path-identity'
+import { resolveRelocatedPath } from './relocated-folders'
 import { DirectoryEntryLimitError, readDirectoryEntriesSync } from './bounded-directory'
 import { readBoundedResponseText } from './bounded-response'
 import { cliCatalog, providerIds, type ProviderId } from './catalog'
@@ -1438,7 +1439,8 @@ function plainGitDirectory(directory: string): string {
     throw new Error('Git 元数据目录不是普通目录')
   }
   const canonical = fs.realpathSync(directory)
-  if (!sameLocalPathIdentity(canonical, directory)) {
+  // 用户文件夹搬到别的盘时按实际位置比（relocated-folders.ts）。
+  if (!sameLocalPathIdentity(canonical, resolveRelocatedPath(directory))) {
     throw new Error('Git 元数据目录不能经过符号链接或目录联接')
   }
   return canonical

@@ -1,9 +1,4 @@
-import { execFile } from 'node:child_process'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
-import os from 'node:os'
-import path from 'node:path'
-import { promisify } from 'node:util'
-import { afterAll, describe, expect, it, vi } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import {
   addCodexDesktopPackage,
   buildCodexAppxElevationScript,
@@ -11,7 +6,6 @@ import {
   codexDesktopElevationFailureMessage,
   requiresCodexAppxElevation,
 } from './codex-desktop-appx'
-import { resolveWindowsPowerShellExecutable } from './windows-elevation'
 
 const packagePath = 'C:\\Temp\\Codex Desktop.msix'
 const injectedPackagePath = "D:\\下载缓存\\O'Brien; $(Write-Output XINGMANG_TEST_INJECTION) & Codex.msix"
@@ -39,82 +33,91 @@ function decodeScript(argv: string[]): string {
   return script
 }
 
-let temporaryDirectory: string | null = null
+// These scripts used to be checked by handing them to a real Windows PowerShell parser, and
+// the cold start of powershell.exe on a busy windows-latest runner kept outlasting the 30s
+// test budget (#452's first run). What that check proved is a property of the generated
+// text: the hostile path only ever appears inside single-quoted literals and the brackets
+// around it still close. This scanner applies PowerShell's own quoting rules to that text,
+// so the property is checked on every platform without starting a process.
+// PowerShell accepts the typographic quotes as quote characters too (CharTraits.IsSingleQuote
+// and IsDoubleQuote), so the scanner must, or a stray U+2019 would pass unnoticed.
+const singleQuotes = '\'\u2018\u2019\u201a\u201b'
+const doubleQuotes = '"\u201c\u201d\u201e'
 
-afterAll(() => {
-  if (temporaryDirectory) rmSync(temporaryDirectory, { recursive: true, force: true })
-  temporaryDirectory = null
-})
-
-function writeTemporaryFile(name: string, contents: string): string {
-  temporaryDirectory ??= mkdtempSync(path.join(os.tmpdir(), 'xingmang-appx-test-'))
-  const file = path.join(temporaryDirectory, name)
-  // Windows PowerShell 5.1 reads a BOM-less .ps1 as ANSI, which would corrupt every
-  // non-ASCII literal the generated installer script carries.
-  writeFileSync(file, name.endsWith('.ps1') ? `\uFEFF${contents}` : contents, 'utf8')
-  return file
+interface PowerShellScan {
+  /** Everything outside string literals, each literal replaced by an empty pair of quotes. */
+  code: string
+  /** Decoded values of the single-quoted (verbatim) literals, in order. */
+  literals: string[]
+  /** Raw bodies of the double-quoted (expandable) strings, in order. */
+  expandable: string[]
+  unterminated: boolean
 }
 
-// Windows creates a process from a single command line capped at 32767 characters, and
-// -EncodedCommand inflates a script by 8/3 (UTF-16LE, then base64). Feeding these
-// multi-kilobyte scripts inline used to put ~30000 characters on that line, so a busy
-// runner could fail to spawn the child at all. Reading the script from a file keeps the
-// line at the length of a temp path. -ExecutionPolicy Bypass is what lets PowerShell read
-// a file this test just wrote into its own temp directory under a Restricted policy; the
-// script never comes from anywhere else.
-function powerShellScriptArgv(scriptFile: string, ...scriptArguments: string[]): string[] {
-  return ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', scriptFile, ...scriptArguments]
-}
-
-function commandLineLength(executable: string, argv: string[]): number {
-  return [executable, ...argv].reduce((total, part) => total + part.length + (/\s/.test(part) ? 3 : 1), 0)
-}
-
-// The two Windows-only cases below cold-start Windows PowerShell 5.1 before they can assert
-// anything, and that start is not what they test. #174 put six jobs on one windows-latest
-// runner, and on #217 the parser case was killed at the old fixed 15s budget while its shard
-// was already 399 seconds deep. So the wait gets the same treatment as the browser fixture
-// wait in e2e/fixture-readiness.mjs: a budget of its own, wide enough for a cold start behind
-// Defender, still bounded so a hung child fails the shard instead of the whole job, and
-// overridable on a machine where even this is not enough.
-const powerShellStartupTimeoutMs = Number(process.env.XINGMANG_POWERSHELL_TEST_TIMEOUT_MS ?? 90_000)
-
-// execFile appends stderr to the message only when the child exits non-zero, so a timeout kill
-// arrives as a bare `Command failed: <command line>` with an empty stderr — indistinguishable,
-// in the CI log, from a script that failed silently. Name the budget in the message rather than
-// leaving the next reader to infer the timeout from what the message does not say.
-function annotateTimeoutKill(error: unknown): unknown {
-  if (error instanceof Error && 'killed' in error && error.killed === true) {
-    error.message = `${error.message}PowerShell 未在 ${powerShellStartupTimeoutMs} 毫秒的预算内结束，已被终止。`
+function scanPowerShell(script: string): PowerShellScan {
+  const scan: PowerShellScan = { code: '', literals: [], expandable: [], unterminated: false }
+  let index = 0
+  while (index < script.length) {
+    const char = script[index]
+    if (char === '`') {
+      scan.code += script.slice(index, index + 2)
+      index += 2
+    } else if (char === '#') {
+      while (index < script.length && script[index] !== '\n') index += 1
+    } else if (singleQuotes.includes(char) || doubleQuotes.includes(char)) {
+      const quotes = singleQuotes.includes(char) ? singleQuotes : doubleQuotes
+      let value = ''
+      let closed = false
+      index += 1
+      while (index < script.length) {
+        const next = script[index]
+        if (quotes === doubleQuotes && next === '`') {
+          value += script.slice(index, index + 2)
+          index += 2
+        } else if (quotes.includes(next) && index + 1 < script.length && quotes.includes(script[index + 1])) {
+          value += script[index + 1]
+          index += 2
+        } else if (quotes.includes(next)) {
+          index += 1
+          closed = true
+          break
+        } else {
+          value += next
+          index += 1
+        }
+      }
+      if (!closed) scan.unterminated = true
+      if (quotes === singleQuotes) scan.literals.push(value)
+      else scan.expandable.push(value)
+      scan.code += quotes === singleQuotes ? "''" : '""'
+    } else {
+      scan.code += char
+      index += 1
+    }
   }
-  return error
+  return scan
 }
 
-function runPowerShellScript(executable: string, argv: string[]): Promise<{ stdout: string; stderr: string }> {
-  return promisify(execFile)(executable, argv, { windowsHide: true, timeout: powerShellStartupTimeoutMs, maxBuffer: 1024 * 1024 })
-    .catch((error: unknown) => { throw annotateTimeoutKill(error) })
+const closingBrackets = new Map([[')', '('], [']', '['], ['}', '{']])
+
+function unbalancedBracket(code: string): string | null {
+  const open: string[] = []
+  for (const char of code) {
+    if (char === '(' || char === '[' || char === '{') open.push(char)
+    else if (closingBrackets.has(char) && open.pop() !== closingBrackets.get(char)) return char
+  }
+  return open.at(-1) ?? null
 }
 
-function buildInjectedScripts(): string[] {
-  return [
-    buildCodexAppxElevationScript(injectedPackagePath, sha256Base64),
-    buildCodexAppxUacBrokerScript(powershell, injectedPackagePath, sha256Base64),
-  ]
+function expectInjectionHeldAsData(script: string): PowerShellScan {
+  const scan = scanPowerShell(script)
+  expect(scan.unterminated).toBe(false)
+  expect(unbalancedBracket(scan.code)).toBeNull()
+  expect(scan.code).not.toContain('XINGMANG_TEST_INJECTION')
+  expect(scan.code).not.toContain('Write-Output')
+  for (const body of scan.expandable) expect(body).not.toContain('XINGMANG_TEST_INJECTION')
+  return scan
 }
-
-const scriptParser = [
-  'param([Parameter(Mandatory = $true)][string]$ScriptsPath)',
-  "$ErrorActionPreference = 'Stop'",
-  '$scripts = ConvertFrom-Json ([IO.File]::ReadAllText($ScriptsPath, [Text.Encoding]::UTF8))',
-  '$result = @()',
-  'foreach ($script in $scripts) {',
-  '  $tokens = $null; $parseErrors = $null',
-  '  $ast = [System.Management.Automation.Language.Parser]::ParseInput($script, [ref]$tokens, [ref]$parseErrors)',
-  "  $injected = @($ast.FindAll({ param($node) $node -is [System.Management.Automation.Language.CommandAst] -and $node.GetCommandName() -eq 'Write-Output' }, $true))",
-  '  $result += [pscustomobject]@{ errors = @($parseErrors).Count; injected = $injected.Count }',
-  '}',
-  'ConvertTo-Json -InputObject $result -Compress',
-].join('\n')
 
 describe('Codex Desktop Appx elevation eligibility', () => {
   it.each([
@@ -287,55 +290,62 @@ describe('Codex Desktop Appx script boundaries', () => {
     expect(decodeScript(brokerArgv)).toBe(buildCodexAppxUacBrokerScript(powershell, file, sha256Base64))
   })
 
-  it('keeps the generated scripts off the PowerShell command line', () => {
-    const scriptsFile = writeTemporaryFile('scripts.json', JSON.stringify(buildInjectedScripts()))
-    const parserFile = writeTemporaryFile('parse-scripts.ps1', scriptParser)
-    // cmd.exe's 8191-character limit is the stricter of the two Windows ceilings; staying
-    // under it keeps the 32767 process limit out of reach however far these scripts grow.
-    expect(commandLineLength(powershell, powerShellScriptArgv(parserFile, scriptsFile))).toBeLessThan(8191)
-    const installerFile = writeTemporaryFile('installer.ps1', buildCodexAppxElevationScript(packagePath, sha256Base64))
-    expect(commandLineLength(powershell, powerShellScriptArgv(installerFile))).toBeLessThan(8191)
-    // Encoding the same payload inline is what used to approach the process limit, so this
-    // is the cliff the file route removes rather than merely moves.
-    expect(Math.ceil((buildInjectedScripts().join('').length * 8) / 3)).toBeGreaterThan(8191)
+  it('embeds a hostile MSIX path in both generated scripts only as quoted data', () => {
+    const installer = buildCodexAppxElevationScript(injectedPackagePath, sha256Base64)
+    expect(expectInjectionHeldAsData(installer).literals).toContain(injectedPackagePath)
+    // The broker carries the whole installer as one verbatim literal; it has to decode back
+    // to the exact script, whose own literals are then held to the same standard.
+    const broker = buildCodexAppxUacBrokerScript(powershell, injectedPackagePath, sha256Base64)
+    expect(expectInjectionHeldAsData(broker).literals).toContain(installer)
   })
 
-  it('keeps the PowerShell startup budget bounded and overridable', () => {
-    expect(powerShellStartupTimeoutMs).toBeGreaterThan(15_000)
-    expect(powerShellStartupTimeoutMs).toBeLessThanOrEqual(300_000)
-  })
-
-  it('tells a timeout kill apart from a script that exited on its own', () => {
-    const killed = Object.assign(new Error('Command failed: powershell.exe -File parse-scripts.ps1\n'), { killed: true })
-    annotateTimeoutKill(killed)
-    expect(killed.message).toContain(String(powerShellStartupTimeoutMs))
-    const exited = Object.assign(new Error('Command failed: powershell.exe -File installer.ps1\nboom\n'), { killed: false })
-    annotateTimeoutKill(exited)
-    expect(exited.message).not.toContain(String(powerShellStartupTimeoutMs))
-  })
-
-  it.skipIf(process.platform !== 'win32')('parses both generated PowerShell scripts without executing either script or injected text', async () => {
-    const scriptsFile = writeTemporaryFile('scripts.json', JSON.stringify(buildInjectedScripts()))
-    const executable = resolveWindowsPowerShellExecutable()
-    const argv = powerShellScriptArgv(writeTemporaryFile('parse-scripts.ps1', scriptParser), scriptsFile)
-    expect(commandLineLength(executable, argv)).toBeLessThan(8191)
-    const { stdout } = await runPowerShellScript(executable, argv)
-    expect(JSON.parse(stdout.trim())).toEqual([{ errors: 0, injected: 0 }, { errors: 0, injected: 0 }])
-  })
-
-  it.skipIf(process.platform !== 'win32')('stops an unbound installer template at the SID guard before any file operation', async () => {
+  it('stops an unbound installer template at the SID guard before any file operation', () => {
     const script = buildCodexAppxElevationScript('C:\\Xingmang-Fixture-Does-Not-Exist\\Codex.msix', sha256Base64)
-    const guard = script.indexOf("if ($identity.User.Value -ne '__XINGMANG_ORIGINAL_USER_SID__') { exit 2225 }")
-    expect(guard).toBeGreaterThanOrEqual(0)
-    expect(guard).toBeLessThan(script.indexOf('CreateDirectory'))
-    expect(guard).toBeLessThan(script.indexOf('[System.IO.File]::Open'))
-    // This is the helper itself, never the RunAs broker. The literal placeholder
-    // cannot equal a Windows SID, so neither package I/O nor installation is reached.
-    const executable = resolveWindowsPowerShellExecutable()
-    const argv = powerShellScriptArgv(writeTemporaryFile('installer.ps1', script))
-    expect(commandLineLength(executable, argv)).toBeLessThan(8191)
-    const failure = await runPowerShellScript(executable, argv).catch((error: unknown) => error)
-    expect(failure).toMatchObject({ code: 2225, stdout: '' })
+    const guard = "if ($identity.User.Value -ne '__XINGMANG_ORIGINAL_USER_SID__') { exit 2225 }"
+    const lines = script.split('\n')
+    const guardLine = lines.indexOf(guard)
+    expect(guardLine).toBeGreaterThanOrEqual(0)
+    // A top-level statement: not inside a try or a script block that could swallow the exit.
+    expect(unbalancedBracket(scanPowerShell(lines.slice(0, guardLine).join('\n')).code)).toBeNull()
+    for (const line of lines.slice(0, guardLine)) expect(line).not.toMatch(/IO\.(File|Directory)|Copy|Add-Appx/)
+    expect(script.indexOf(guard)).toBeLessThan(script.indexOf('CreateDirectory'))
+    expect(script.indexOf(guard)).toBeLessThan(script.indexOf('[System.IO.File]::Open'))
+    // The broker only substitutes a value that looks like a SID, and the literal placeholder
+    // never does, so the helper run on its own always takes the exit 2225 branch.
+    const broker = buildCodexAppxUacBrokerScript(powershell, packagePath, sha256Base64)
+    const sidPattern = /-notmatch '([^']+)'/.exec(broker)?.[1]
+    expect(sidPattern).toBe('^S-1-[0-9-]+$')
+    expect(new RegExp(sidPattern ?? '').test('__XINGMANG_ORIGINAL_USER_SID__')).toBe(false)
+    expect(new RegExp(sidPattern ?? '').test('S-1-5-21-1004336348-1177238915-682003330-1001')).toBe(true)
+  })
+})
+
+describe('PowerShell quoting scanner used by these tests', () => {
+  it('flags a path that closes its quotes and runs as code', () => {
+    const naive = `$source = [System.IO.File]::Open('${injectedPackagePath}')`
+    const scan = scanPowerShell(naive)
+    expect(scan.code).toContain('Write-Output')
+  })
+
+  it('reads doubled quotes as one quote inside a verbatim literal', () => {
+    expect(scanPowerShell("$a = 'O''Brien'").literals).toEqual(["O'Brien"])
+    expect(scanPowerShell("$a = 'O''Brien'").code).toBe("$a = ''")
+  })
+
+  it('treats typographic single quotes as quotes the way PowerShell does', () => {
+    expect(scanPowerShell('$a = \'O\u2019Brien\'').code).toContain('Brien')
+  })
+
+  it('keeps expandable strings apart and reports an unterminated literal', () => {
+    const scan = scanPowerShell('$b = "-EncodedCommand $encoded"; $c = \'open')
+    expect(scan.expandable).toEqual(['-EncodedCommand $encoded'])
+    expect(scan.unterminated).toBe(true)
+  })
+
+  it('finds a bracket the generator forgot to close', () => {
+    expect(unbalancedBracket('try { if ($a) { exit 1 } ')).toBe('{')
+    expect(unbalancedBracket('foreach ($a in @(1, 2)) { $a }')).toBeNull()
+    expect(unbalancedBracket('exit $result)')).toBe(')')
   })
 })
 

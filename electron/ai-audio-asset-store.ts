@@ -3,6 +3,7 @@ import fs from 'node:fs'
 import { randomBytes as nodeRandomBytes } from 'node:crypto'
 import { assertNoReparseComponents, ensureSafeDataDirectory, removeSafeDataFile } from './safe-local-data'
 import { sameLocalPathIdentity } from './path-identity'
+import { resolveRelocatedPath } from './relocated-folders'
 import { scopedLocalAssetId } from './content-addressed-asset'
 import { inspectIsoBmffMediaMetadata, inspectWaveDurationSeconds } from './media-container-metadata'
 import { indexOwnedAssetFiles, type AiAssetIndexEntry } from './ai-asset-index'
@@ -100,7 +101,9 @@ export function inspectAudioMetadata(
   return durationSeconds ? { durationSeconds } : {}
 }
 
-async function readBoundedAudio(filePath: string, maximumBytes: number): Promise<Buffer> {
+async function readBoundedAudio(requestedPath: string, maximumBytes: number): Promise<Buffer> {
+  // 「文档」被搬到别的盘时按实际位置核对，否则 realpath 与原路径永远对不上（relocated-folders.ts）。
+  const filePath = resolveRelocatedPath(requestedPath)
   assertNoReparseComponents(filePath, FILE_LABEL)
   const handle = await fs.promises.open(filePath, 'r')
   try {

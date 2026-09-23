@@ -3,6 +3,7 @@ import path from 'node:path'
 import { randomBytes as nodeRandomBytes } from 'node:crypto'
 import { assertNoReparseComponents, ensureSafeDataDirectory, removeSafeDataFile } from './safe-local-data'
 import { sameLocalPathIdentity } from './path-identity'
+import { resolveRelocatedPath } from './relocated-folders'
 import { scopedLocalAssetId } from './content-addressed-asset'
 import { inspectIsoBmffMediaMetadata } from './media-container-metadata'
 import { indexOwnedAssetFiles, type AiAssetIndexEntry } from './ai-asset-index'
@@ -86,7 +87,9 @@ export function inspectMp4VideoMetadata(bytes: Buffer): Pick<AiStoredVideoAsset,
   }
 }
 
-async function readBoundedVideo(filePath: string, maximumBytes: number): Promise<Buffer> {
+async function readBoundedVideo(requestedPath: string, maximumBytes: number): Promise<Buffer> {
+  // 「文档」被搬到别的盘时按实际位置核对，否则 realpath 与原路径永远对不上（relocated-folders.ts）。
+  const filePath = resolveRelocatedPath(requestedPath)
   assertNoReparseComponents(filePath, FILE_LABEL)
   const handle = await fs.promises.open(filePath, 'r')
   try {
@@ -277,7 +280,7 @@ export class AiVideoAssetStore {
       if (!stats.isFile() || stats.isSymbolicLink() || stats.nlink !== 1) {
         throw new Error('AI 视频资产必须是单链接普通文件')
       }
-      if (!sameLocalPathIdentity(await fs.promises.realpath(filePath), filePath)) {
+      if (!sameLocalPathIdentity(await fs.promises.realpath(filePath), resolveRelocatedPath(filePath))) {
         throw new Error('AI 视频资产不能经过符号链接或目录联接')
       }
       return filePath

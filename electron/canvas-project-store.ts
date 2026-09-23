@@ -5,6 +5,7 @@ import { ensureSafeDataDirectory, writeAtomicSafeUtf8File } from './safe-local-d
 import { copyBoundedFileExclusive, readBoundedUtf8File } from './bounded-file'
 import { parseCanvasProjectWorkflow } from './canvas-project-package'
 import { sameLocalPathIdentity } from './path-identity'
+import { resolveRelocatedPath } from './relocated-folders'
 
 const maximumProjects = 100
 const maximumCopiedEntries = 100_000
@@ -73,15 +74,17 @@ function normalizedWorkspaceDirectory(value: string, requireExisting: boolean): 
   }
   const directory = path.resolve(value)
   if (requireExisting) {
+    // 选在搬过家的「文档」「桌面」里（或就选它本身）时按实际位置核对，别的链接照旧拒绝（relocated-folders.ts）。
+    const checkedDirectory = resolveRelocatedPath(directory)
     let stat: fs.Stats
     try {
-      stat = fs.lstatSync(directory)
+      stat = fs.lstatSync(checkedDirectory)
     } catch {
       throw new Error('画布项目工作文件夹不存在')
     }
     if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error('画布项目工作文件夹必须是普通目录')
-    const realPath = fs.realpathSync(directory)
-    if (!sameLocalPathIdentity(realPath, directory)) throw new Error('画布项目工作文件夹不能经过符号链接或目录联接')
+    const realPath = fs.realpathSync(checkedDirectory)
+    if (!sameLocalPathIdentity(realPath, checkedDirectory)) throw new Error('画布项目工作文件夹不能经过符号链接或目录联接')
   }
   return directory
 }

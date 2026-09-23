@@ -3,6 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AiVideoAssetStore, inspectMp4Video, inspectMp4VideoMetadata } from './ai-video-asset-store'
+import { setRelocatedFolderPolicy } from './relocated-folders'
 
 const roots: string[] = []
 
@@ -111,5 +112,46 @@ describe('AiVideoAssetStore', () => {
     await menuItems[1].run()
     expect(fs.readFileSync(target)).toEqual(mp4())
     expect(revealInFolder).toHaveBeenCalledOnce()
+  })
+})
+
+/** A profile whose 文档 was moved to "another disk" and left a junction behind (「C 盘搬家」). */
+function relocatedDocuments(root: string): { home: string; documents: string } {
+  const home = path.join(root, 'Users', 'alice')
+  const moved = path.join(root, 'D', 'Documents')
+  fs.mkdirSync(home, { recursive: true })
+  fs.mkdirSync(moved, { recursive: true })
+  const documents = path.join(home, 'Documents')
+  // Junctions need no privilege on Windows; POSIX ignores the type argument.
+  fs.symlinkSync(moved, documents, 'junction')
+  return { home, documents }
+}
+
+describe('AiVideoAssetStore on a relocated documents folder', () => {
+  afterEach(() => setRelocatedFolderPolicy(null))
+
+  it('stores, reads back and removes videos after 文档 was moved to another disk', async () => {
+    const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-video-relocated-')))
+    roots.push(root)
+    const { home, documents } = relocatedDocuments(root)
+    setRelocatedFolderPolicy({ homeDirectories: [home], acceptsTarget: () => true })
+    const outputRoot = path.join(documents, 'XingmangAI')
+    const asset = await new AiVideoAssetStore({ outputRoot, now: () => new Date('2026-08-14T12:00:00.000Z') })
+      .storeMp4(7, mp4(), { taskId: 'video_123' })
+    const restarted = new AiVideoAssetStore({ outputRoot })
+
+    await expect(restarted.readOwned(7, asset.assetId)).resolves.toMatchObject({ bytes: mp4() })
+    await expect(restarted.resolveOwnedFilePath(7, asset.assetId)).resolves.toContain(`xingmang-${asset.assetId}.mp4`)
+    await restarted.removeOwned(7, asset.assetId)
+    await expect(restarted.readOwned(7, asset.assetId)).rejects.toThrow('不存在或无权访问')
+  })
+
+  it('keeps refusing the relocated folder while no policy accepts it', async () => {
+    const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-video-relocated-')))
+    roots.push(root)
+    const { documents } = relocatedDocuments(root)
+
+    await expect(new AiVideoAssetStore({ outputRoot: path.join(documents, 'XingmangAI') }).storeMp4(7, mp4(), { taskId: 'video_123' }))
+      .rejects.toThrow()
   })
 })

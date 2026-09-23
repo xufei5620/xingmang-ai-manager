@@ -29,6 +29,7 @@ import {
   type ProviderCliInvoker,
   type SourceUpdateInspector,
 } from './provider-extensions'
+import { setRelocatedFolderPolicy } from './relocated-folders'
 
 const temporaryDirectories: string[] = []
 
@@ -1699,5 +1700,38 @@ describe('extension runtime availability', () => {
       isCommandLineToolsShimBacked: async () => true,
     })
     expect((await service.list('claude')).runtimes).toEqual({ python: true, uv: false })
+  })
+})
+
+describe('local Git metadata on a relocated profile', () => {
+  afterEach(() => setRelocatedFolderPolicy(null))
+
+  function relocatedSkill(): { home: string; skill: string } {
+    const root = fs.realpathSync.native(temporaryDirectory())
+    const home = path.join(root, 'Users', 'alice')
+    const movedHome = path.join(root, 'D', 'alice')
+    fs.mkdirSync(path.dirname(home), { recursive: true })
+    const movedSkill = path.join(movedHome, '.claude', 'skills', 'demo')
+    write(path.join(movedSkill, '.git', 'HEAD'), `${'e'.repeat(40)}\n`)
+    write(path.join(movedSkill, '.git', 'config'), '[remote "origin"]\nurl = https://github.com/acme/demo.git\n')
+    // Junctions need no privilege on Windows; POSIX ignores the type argument.
+    fs.symlinkSync(movedHome, home, 'junction')
+    return { home, skill: path.join(home, '.claude', 'skills', 'demo') }
+  }
+
+  it('reads a Git-installed skill after the user folder was moved to another disk', () => {
+    const { home, skill } = relocatedSkill()
+    setRelocatedFolderPolicy({ homeDirectories: [home], acceptsTarget: () => true })
+
+    expect(readLocalGitMetadata(skill)).toEqual({
+      currentVersion: 'e'.repeat(40),
+      locator: 'https://github.com/acme/demo.git',
+    })
+  })
+
+  it('keeps refusing the moved Git directory while no policy accepts it', () => {
+    const { skill } = relocatedSkill()
+
+    expect(() => readLocalGitMetadata(skill)).toThrow('不能经过符号链接或目录联接')
   })
 })
