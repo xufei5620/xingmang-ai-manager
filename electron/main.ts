@@ -28,7 +28,8 @@ import { accelerationConflictDescriptions, accelerationFailureMessages, type Acc
 import { accelerationStartRequest, createAccelerationPreferenceStore, defaultAccelerationPreference } from './acceleration-preference-store'
 import { accelerationStartFailureDescriptions, createAccelerationDevelopmentHost, readAccelerationDevelopmentConfig, type AccelerationDevelopmentHost } from './acceleration-development-host'
 import { readBundledAccelerationConfig } from './acceleration-bundled-config'
-import { AiAssetStore, resolveAiOutputRoot } from './ai-asset-store'
+import { AiAssetStore } from './ai-asset-store'
+import { migrateLegacyAiOutput, resolveAiOutputRoot, resolveLegacyAiOutputRoot } from './ai-output-location'
 import { AI_CHAT_STREAM_LIMITS, createAiChatService } from './ai-chat-service'
 import { createAiImageService } from './ai-image-service'
 import { AiVideoAssetStore } from './ai-video-asset-store'
@@ -53,6 +54,7 @@ import { createWindowLifecycle } from './window-lifecycle'
 import { hasLoginLaunchArgument, resolveLoginLaunch, shouldRevealInitialWindow, windowsAppUserModelId } from './login-launch'
 import { resolveInstallableUpdateOnQuit, resolveInterruptibleInstallTask } from './quit-blocking-tasks'
 import { createWindowResponsivenessGuard } from './window-responsiveness'
+import { createRendererCrashRecovery } from './renderer-crash-recovery'
 import { createApplicationTray, type ApplicationTrayController } from './application-tray'
 import { createTrayAccelerationCoordinator, type TrayAccelerationCoordinator } from './tray-acceleration'
 import { createExternalDeepLinkInbox } from './external-deep-links'
@@ -154,7 +156,9 @@ import { verifyUpdatePackageDigest } from './update-package-digest'
 import { installStrictUpdateCodeSignatureVerifier } from './update-signature'
 import { createUpdaterService } from './updater'
 import { createLastRunVersionStore, hasPriorRunRecord, readBundledReleaseNotes, resolveInstalledRelease } from './installed-release'
+import { createServiceStatusMonitor, locateServiceStatusUrl, readServiceStatus } from './service-status'
 import { resolveWindowsCliExecutionModeDetailed } from './windows-elevation'
+import { ensureDirectoryOnWindowsUserPath } from './windows-cli-shell-access'
 import {
   applyWindowTheme,
   buildMacApplicationMenuTemplate,
@@ -262,6 +266,15 @@ function applicationUrlPolicy(): ApplicationUrlPolicy {
     // That value is intentionally limited to the local development process.
     devServerUrl: app.isPackaged ? undefined : process.env.VITE_DEV_SERVER_URL,
     packagedBaseUrl: packagedApplicationBaseUrl,
+  }
+}
+
+function readDocumentsDirectory(): string | null {
+  try {
+    return app.getPath('documents')
+  } catch {
+    // 拿不到「文档」时由 resolveAiOutputRoot 退到用户主目录。
+    return null
   }
 }
 
@@ -441,6 +454,25 @@ function createWindow(
   window.webContents.on('will-navigate', (event, targetUrl) => {
     if (!isAllowedAppNavigationUrl(targetUrl, urlPolicy)) event.preventDefault()
   })
+  const crashRecovery = createRendererCrashRecovery({
+    reload: () => window.webContents.reload(),
+    prompt: async () => {
+      const result = await dialog.showMessageBox(window, {
+        type: 'warning', title: '界面出了问题', message: '星芒AI管理工具的界面接连出错，自动重新加载也没能恢复。',
+        detail: `可以再试一次重新加载。如果还是空白，请从${process.platform === 'darwin' ? '屏幕顶部菜单栏' : '任务栏右下角'}的星芒图标退出软件后重新打开，并在「反馈」页把问题发给我们。正在进行的安装、下载和已保存的设置都不受影响。`,
+        buttons: ['重新加载', '先不管'], defaultId: 0, cancelId: 1,
+      })
+      return result.response === 0 ? 'reload' : 'dismiss'
+    },
+    log: (event) => {
+      if (event === 'reload.auto') { runtimeLog.log('warn', 'renderer', 'process.gone.reload', '界面进程退出后自动重新加载'); return }
+      if (event === 'prompt.shown') { runtimeLog.log('warn', 'renderer', 'process.gone.prompted', '界面接连退出，已提示用户'); return }
+      if (event === 'prompt.reload') { runtimeLog.log('info', 'renderer', 'process.gone.user-reload', '用户选择重新加载界面'); return }
+      runtimeLog.log('info', 'renderer', 'process.gone.dismissed', '用户暂不重新加载界面')
+    },
+    onError: (cause) => { runtimeLog.exception('renderer', 'process.gone.recover-failed', cause) },
+  })
+  window.once('closed', () => { crashRecovery.dispose() })
   window.webContents.on('render-process-gone', (_event, details) => {
     runtimeLog.log('error', 'renderer', 'process.gone', '渲染进程异常退出', {
       reason: details.reason,
@@ -457,6 +489,7 @@ function createWindow(
       error: new Error(`渲染进程异常退出：${details.reason}`),
       context: `exitCode=${details.exitCode}`,
     })
+    if (!window.isDestroyed()) crashRecovery.handleGone(details.reason)
   })
   window.webContents.on('did-finish-load', () => {
     runtimeLog.log('info', 'renderer', 'page.loaded', '渲染页面加载完成')
@@ -693,6 +726,14 @@ if (!hasSingleInstanceLock) {
       }),
     )
     const managerDataDirectory = app.getPath('userData')
+    // 内置加速内核三十多兆，校验要整读一遍。它以前排在建窗口前面单独等，慢机上
+    // 窗口因此晚出来；现在一开始就读，和后面的迁移、命令行探测叠着跑，用到时再等。
+    // 失败先接住：没等到它的这段时间里被拒绝，会被当成没人处理的错误。
+    const accelerationConfigRead = (app.isPackaged
+      ? readBundledAccelerationConfig({ isPackaged: true, platform: process.platform, resourcesPath: process.resourcesPath,
+        bundledMetadata: applicationPackage.xingmangAccelerationBundle })
+      : readAccelerationDevelopmentConfig({ isPackaged: false, platform: process.platform, dataDirectory: managerDataDirectory })
+    ).then((config) => ({ ok: true as const, config }), (error: unknown) => ({ ok: false as const, error }))
     const codexContext = resolveCodexHomeContext({
       isPackaged: app.isPackaged,
       env: process.env,
@@ -832,9 +873,12 @@ if (!hasSingleInstanceLock) {
       ...(windowsCliExecution.probeFailure ? { probeFailed: windowsCliExecution.probeFailure.reason } : {}),
     })
     if (windowsCliExecution.probeFailure) {
-      // 这次探测失败时从严按管理员处理：普通用户会因此装不了、打不开工具。原因
-      // 以前被 catch 吞掉，客服只看得到一个 trusted-only，分不出是真管理员还是没问出来。
-      runtimeLog.log('warn', 'security', 'cli.execution-mode.probe-failed', '没能确认当前是否以管理员身份运行，已按管理员处理', {
+      // 探测失败时：已看出是高权限的仍按管理员处理，什么都没看出来的按普通用户处理
+      // （resolveWindowsCliExecutionModeDetailed）。原因以前被 catch 吞掉，客服分不出
+      // 是真管理员还是没问出来。
+      const treatedAs = windowsCliExecutionMode === 'trusted-only' ? '管理员' : '普通用户'
+      runtimeLog.log('warn', 'security', 'cli.execution-mode.probe-failed', `没能确认当前是否以管理员身份运行，已按${treatedAs}处理`, {
+        mode: windowsCliExecutionMode,
         reason: windowsCliExecution.probeFailure.reason,
         detail: windowsCliExecution.probeFailure.detail,
         elapsedMs: windowsCliExecution.elapsedMs,
@@ -909,6 +953,9 @@ if (!hasSingleInstanceLock) {
       getExternalClientAccountId: () => readExternalClientAccountId(),
       windowsExecutionMode: windowsCliExecutionMode,
       runtimeLog,
+      ...(process.platform === 'win32'
+        ? { ensureWindowsUserPath: (directory: string) => ensureDirectoryOnWindowsUserPath(directory) }
+        : {}),
       projectInstructionsTemplatePath: resolveProjectInstructionsTemplatePath(app.getAppPath(), {
         packaged: app.isPackaged,
         resourcesPath: process.resourcesPath,
@@ -1128,6 +1175,32 @@ if (!hasSingleInstanceLock) {
         await autoUpdater.netSession.setProxy({ mode: 'system' })
       },
     })
+    // 更新目录上的服务状态文件：发布者在那里标「正在维护」，没登录的人也能看到。
+    // 只在更新开着的包里读（地址来自安装包自己的更新配置）；读不到当没在维护，
+    // 请求在后台走，不挡启动。
+    const serviceStatusUrl = updaterService.getState().phase === 'disabled'
+      ? null
+      : locateServiceStatusUrl(
+        app.isPackaged
+          ? path.join(process.resourcesPath, 'app-update.yml')
+          : path.join(app.getAppPath(), 'dev-app-update.yml'),
+        { allowLocalHttp: !app.isPackaged },
+      )
+    const serviceStatusMonitor = serviceStatusUrl
+      ? createServiceStatusMonitor({
+        read: () => readServiceStatus({
+          url: serviceStatusUrl,
+          fetch: (url, init) => autoUpdater.netSession.fetch(url, init),
+        }),
+        onChange: (status) => {
+          updaterService.setServiceStatus(status)
+          runtimeLog.log('info', 'updater', 'service-status.changed', status?.maintenance ? '服务状态文件：正在维护' : '服务状态文件：没在维护', {
+            maintenance: Boolean(status?.maintenance),
+          })
+        },
+      })
+      : null
+    serviceStatusMonitor?.start()
     runtimeLog.log('info', 'updater', 'runtime.selected', '主程序更新运行模式已确定', {
       enabled: updaterService.getState().phase !== 'disabled',
       localBuild,
@@ -1337,6 +1410,19 @@ if (!hasSingleInstanceLock) {
       return state.authenticated && state.account ? JSON.stringify([accounts.getSiteId(), state.account.userId]) : null
     }
     const accountWork = createAccountWorkGate({ assertReady: accounts.assertReady, revision: () => accountService.getSessionRevision!() })
+    // Each realm moves its own subtree once per launch; a second realm object for
+    // the same subtree must not start a second walk over files already moving.
+    const aiOutputMigrations = new Set<string>()
+    function migrateAiOutputOnce(from: string, to: string): void {
+      if (aiOutputMigrations.has(from)) return
+      aiOutputMigrations.add(from)
+      void migrateLegacyAiOutput(from, to).then((result) => {
+        if (!result.moved && !result.kept && !result.failed) return
+        // Counts only: support needs to know whether anything stayed behind, not
+        // where the user's files are (I13).
+        runtimeLog.log(result.failed ? 'warn' : 'info', 'ai-chat', 'asset.output.migrated', '老版本的 AI 作品已搬到新的保存位置', { ...result })
+      }).catch((error) => runtimeLog.exception('ai-chat', 'asset.output.migrate-failed', error))
+    }
     function createBusiness(siteId: RealmAccountSiteId) {
       const definition = requireSiteRuntimeDefinition(siteId)
       const roots = resolveRealmDataRoots(managerDataDirectory, definition.realmId)
@@ -1363,12 +1449,17 @@ if (!hasSingleInstanceLock) {
       const aiOutputRoot = roots.assetOutputDirectory(resolveAiOutputRoot({
         isPackaged: app.isPackaged,
         projectRoot: path.join(__dirname, '..'),
-        execPath: process.execPath,
+        documentsDirectory: readDocumentsDirectory(),
+        location: { platform: process.platform, home: os.homedir(), env: process.env },
       }))
+      // 老版本存在可执行文件旁边的 output 里。画布、聊天记录只按作品编号找文件，
+      // 搬的时候布局不变，老作品搬完照样能打开；搬的过程在后台，不拖慢启动。
+      const legacyAiOutputRoot = resolveLegacyAiOutputRoot({ isPackaged: app.isPackaged, execPath: process.execPath })
+      if (legacyAiOutputRoot) migrateAiOutputOnce(roots.assetOutputDirectory(legacyAiOutputRoot), aiOutputRoot)
       const assetStore = new AiAssetStore({
         outputRoot: aiOutputRoot,
-        // 全局 output 在安装目录旁边，用户自己动不了它；能绕开的是画布项目，新项目的
-        // 作品存在用户自己选的文件夹里。改默认位置另走一个 PR（盲点 2 的后半）。
+        // 全局保存位置在「文档」里，写不进多半是整个文档出了状况，用户自己能绕开的是
+        // 画布项目：新项目的作品存在用户自己选的文件夹里。
         unwritableGuidance: '可以先在画布里新建一个项目、给它选一个自己的文件夹，在那里生成就能存下来；也可以联系客服。',
         trustedProxyFetchImpl: (input, init) => net.fetch(input, init),
         nativeOperations: {
@@ -1834,10 +1925,9 @@ if (!hasSingleInstanceLock) {
     })
     let developmentAcceleration: ReturnType<typeof createAccelerationDevelopmentHost> | undefined
     try {
-      const accelerationConfig = app.isPackaged
-        ? await readBundledAccelerationConfig({ isPackaged: true, platform: process.platform, resourcesPath: process.resourcesPath,
-          bundledMetadata: applicationPackage.xingmangAccelerationBundle })
-        : await readAccelerationDevelopmentConfig({ isPackaged: false, platform: process.platform, dataDirectory: managerDataDirectory })
+      const read = await accelerationConfigRead
+      if (!read.ok) throw read.error
+      const accelerationConfig = read.config
       if (accelerationConfig) developmentAcceleration = createAccelerationDevelopmentHost({
         config: accelerationConfig, dataDirectory: managerDataDirectory, packaged: app.isPackaged,
         onDiagnostic: (stage) => runtimeLog.log('warn', 'network', 'acceleration.stop.failed',
@@ -1868,6 +1958,9 @@ if (!hasSingleInstanceLock) {
         // 先改回去，这里负责读一次状态让各处跟上，并告诉用户网络现在是什么样。
         onRuntimeExited: () => accelerationInterruption?.runtimeExited(),
         onHelperExited: (recovered) => accelerationInterruption?.helperExited(recovered),
+        // 登录后读一次加速状态就会拉起整份 Electron 辅助进程；从不用加速的人
+        // 不该一直背着它。两分钟没人用、又确认没在加速就退，下次用到再拉。
+        idleExitMs: 120_000,
         ...(app.isPackaged ? { entitlementSource: 'local-device' as const } : {}),
       })
     } catch {
@@ -2051,6 +2144,7 @@ if (!hasSingleInstanceLock) {
       process.off('uncaughtExceptionMonitor', onUncaughtException)
       process.off('unhandledRejection', onUnhandledRejection)
       if (periodicUpdateTimer) clearInterval(periodicUpdateTimer)
+      serviceStatusMonitor?.dispose()
       unsubscribeDesktopNotifications()
       desktopNotifications.dispose()
       unregisterIpcHandlers()

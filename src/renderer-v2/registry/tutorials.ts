@@ -1,6 +1,6 @@
 import type { PageId } from './pages';
 import { accelerationExpiryWarningSeconds, accelerationTrialSeconds } from '../../../electron/acceleration-contract';
-import { macDesktopTutorialTopic, macRuntimeTutorialTopic } from './business';
+import { macDesktopTutorialTopic, macRuntimeTutorialTopic, type accountTabs, type settingsGroups } from './business';
 import { errors } from './errors';
 import { statuses } from './status';
 import { firstRunHints } from './tools';
@@ -8,7 +8,17 @@ import { runtimeButtonLabel, runtimeHomebrewCommand } from '../features/tools/ru
 
 export type TutorialIllustrationId = 'desktop-home' | 'desktop-install' | 'desktop-config' | 'desktop-project' | 'desktop-message' | 'home' | 'account' | 'install' | 'config' | 'launch' | 'chat' | 'canvas' | 'acceleration' | 'extensions' | 'skills' | 'plugins' | 'backup' | 'health';
 
-export interface TutorialStep {
+/**
+ * 按钮落到哪一页、哪个分页。个人中心和设置里分页很多，只跳页会停在默认的
+ * 「我的账号」「外观」（或上次看的那页），用户还得自己再找一遍（全面检测 Q48）。
+ * section 按页收窄类型：给首页写分页、把设置分组写到个人中心上都编译不过。
+ */
+export type TutorialStepTarget =
+  | { page: 'account'; section?: (typeof accountTabs)[number]['value'] }
+  | { page: 'settings'; section?: (typeof settingsGroups)[number]['value'] }
+  | { page: Exclude<PageId, 'account' | 'settings'>; section?: never };
+
+interface TutorialStepContent {
   title: string;
   detail: string;
   where?: string;
@@ -19,8 +29,9 @@ export interface TutorialStep {
   illustration?: TutorialIllustrationId;
   extra?: readonly { title: string; detail: string }[];
   action: string;
-  page: PageId;
 }
+
+export type TutorialStep = TutorialStepContent & TutorialStepTarget;
 
 export interface TutorialTopic {
   id: string;
@@ -318,6 +329,7 @@ export const tutorialTopics: readonly TutorialTopic[] = [
         extra: [{ title: '官方账号也扣星芒余额吗？', detail: '切换到官方账号来源后，登录和额度按官方服务的规则使用。' }],
         action: '查看账号与密钥',
         page: 'account',
+        section: 'keys',
       },
       {
         title: '充值或兑换，并确认到账',
@@ -328,6 +340,7 @@ export const tutorialTopics: readonly TutorialTopic[] = [
         extra: [{ title: '付了钱但没有到账提示？', detail: '先「刷新余额与订阅」，再到「我的订单」点「查询订单」。关闭支付窗口不会取消订单，不要因窗口没关就重复付款；可用支付、订阅入口以页面实际显示为准。' }],
         action: '打开个人中心办理充值',
         page: 'account',
+        section: 'recharge',
       },
       {
         title: '查看每次调用消耗了多少',
@@ -338,6 +351,7 @@ export const tutorialTopics: readonly TutorialTopic[] = [
         extra: [{ title: '余额没变，或者想重试？', detail: '可以手动刷新余额；显示更新失败时可能仍是旧金额。聊天、生图和重试都是实际请求，费用以服务端记录为准。' }],
         action: '查看用量与调用明细',
         page: 'account',
+        section: 'usage',
       },
     ],
   },
@@ -591,7 +605,7 @@ export const tutorialTopics: readonly TutorialTopic[] = [
         bullets: ['发送下面的例句。', '下次从「记录」或首页「最近」找项目，支持时可点「接着聊」。'],
         example: firstRunHints.claude.prompt,
         expected: '收到项目相关的回复。',
-        extra: [{ title: '自己打开终端怎么启动？', detail: '可复制首页「试试第一条命令」里的启动命令。只有支持续接的最近会话显示「接着聊」。' }],
+        extra: [{ title: '自己打开终端怎么启动？', detail: '新开一个终端，粘贴首页「试试第一条命令」里的启动命令即可。只有支持续接的最近会话显示「接着聊」。' }],
         action: '打开记录',
         page: 'sessions',
       },
@@ -782,6 +796,7 @@ export const tutorialTopics: readonly TutorialTopic[] = [
         expected: '知道哪些文件要另外备份。',
         action: '查看隐私与数据设置',
         page: 'settings',
+        section: 'privacy',
       },
     ],
   },

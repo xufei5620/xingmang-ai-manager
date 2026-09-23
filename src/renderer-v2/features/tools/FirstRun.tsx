@@ -24,7 +24,7 @@ export function FirstRunSteps({ name, firstRun, testId, gitHint }: { name: strin
       .catch(() => { setCopied(''); setFailed(true) })
   }
   return <div className="v2-first-run" data-testid={testId}>
-    <p>在你要写代码的那个文件夹里打开终端，敲这一条就能启动（点「打开」时，星芒替你敲的也是它）：</p>
+    <p>在你要写代码的那个文件夹里新开一个终端，敲这一条就能启动（点「打开」时，星芒替你敲的也是它）：</p>
     <div className="v2-first-run-line">
       <code className="v2-business-code" data-testid={`${testId}-command`}>{firstRun.command}</code>
       <Button size="sm" icon={Copy} testId={`${testId}-copy-command`} onClick={() => copy('command', firstRun.command)}>复制命令</Button>

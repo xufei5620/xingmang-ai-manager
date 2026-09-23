@@ -153,19 +153,6 @@ export async function inspectCurrentWindowsProcessAdministrator(
   throw new Error('无法确认当前 Windows 进程是否具有管理员权限')
 }
 
-/** S-1-5-32-544 is BUILTIN\Administrators on every Windows install and in every language. */
-export const windowsElevationCapabilityScript = [
-  '$identity=[Security.Principal.WindowsIdentity]::GetCurrent()',
-  '$sids=@($identity.Groups | ForEach-Object { $_.Value })',
-  "if ($sids -contains 'S-1-5-32-544') { 'administrator' } else { 'standard' }",
-].join(';')
-
-export function parseWindowsElevationCapability(value: string): WindowsElevationCapability {
-  const normalized = value.trim().toLowerCase()
-  if (normalized === 'administrator' || normalized === 'standard') return normalized
-  return 'unknown'
-}
-
 /**
  * Whether this Windows account can raise itself to administrator at all. This is a
  * different question from `inspectCurrentWindowsProcessAdministrator`, which only
@@ -177,34 +164,24 @@ export function parseWindowsElevationCapability(value: string): WindowsElevation
  *
  * A UAC-filtered token still carries BUILTIN\Administrators in its group list
  * (as deny-only), which is why group membership survives the filtering and can be
- * read from the ordinary, unelevated process. The SID is compared numerically so
- * the answer does not depend on the Windows display language.
+ * read from the ordinary, unelevated process. whoami lists deny-only groups;
+ * .NET's WindowsIdentity.Groups deliberately skips them, so a PowerShell probe
+ * built on it calls every filtered administrator "standard". The SID is compared
+ * as a whole quoted field so the answer does not depend on the display language,
+ * and output without exactly one mandatory label is not whoami's and answers
+ * "unknown".
  */
+export function parseWindowsElevationCapability(output: string): WindowsElevationCapability {
+  if (parseWindowsMandatoryLabelRid(output) === null) return 'unknown'
+  return /"S-1-5-32-544"/.test(output) ? 'administrator' : 'standard'
+}
+
 export async function inspectWindowsElevationCapability(
   options: WindowsAdministratorProbeOptions & { signal?: AbortSignal } = {},
 ): Promise<WindowsElevationCapability> {
   if (process.platform !== 'win32') return 'unknown'
-  const env = options.env ?? process.env
-  const machinePaths = options.machinePaths ?? resolveWindowsMachinePaths()
   try {
-    const { stdout } = await execFileAsync(
-      resolveWindowsPowerShellExecutable({ env, machinePaths }),
-      [
-        '-NoLogo',
-        '-NoProfile',
-        '-NonInteractive',
-        '-Command',
-        windowsElevationCapabilityScript,
-      ],
-      {
-        env: trustedCommandEnvironment(env, machinePaths),
-        windowsHide: true,
-        timeout: options.timeoutMs ?? 8_000,
-        maxBuffer: 64 * 1024,
-        signal: options.signal,
-      },
-    )
-    return parseWindowsElevationCapability(stdout)
+    return parseWindowsElevationCapability(await readCurrentWindowsTokenGroups(options))
   } catch {
     // Never let this probe break an install or a self-check: an unknown answer
     // only means the extra sentence is left out.
@@ -275,6 +252,24 @@ export async function inspectCurrentWindowsIntegrityRid(
   options: WindowsAdministratorProbeOptions = {},
 ): Promise<number | null> {
   if (process.platform !== 'win32') return null
+  return parseWindowsMandatoryLabelRid(await readCurrentWindowsTokenGroups(options))
+}
+
+/**
+ * Whether the current token runs at High integrity or above, which is what an
+ * elevated administrator (or the built-in Administrator) holds. Null when the
+ * label cannot be read; the caller decides what that means.
+ */
+export async function inspectCurrentWindowsProcessHighIntegrity(
+  options: WindowsAdministratorProbeOptions = {},
+): Promise<boolean | null> {
+  const rid = await inspectCurrentWindowsIntegrityRid(options)
+  return rid === null ? null : rid >= highMandatoryIntegrityRid
+}
+
+async function readCurrentWindowsTokenGroups(
+  options: WindowsAdministratorProbeOptions & { signal?: AbortSignal },
+): Promise<string> {
   const env = options.env ?? process.env
   const machinePaths = options.machinePaths ?? resolveWindowsMachinePaths()
   const { stdout } = await execFileAsync(
@@ -285,9 +280,10 @@ export async function inspectCurrentWindowsIntegrityRid(
       windowsHide: true,
       timeout: options.timeoutMs ?? 5_000,
       maxBuffer: 256 * 1024,
+      signal: options.signal,
     },
   )
-  return parseWindowsMandatoryLabelRid(stdout)
+  return stdout
 }
 
 /**
@@ -331,7 +327,7 @@ export async function inspectCurrentWindowsTokenElevationType(
       env: trustedCommandEnvironment(env, machinePaths),
       windowsHide: true,
       // Keep startup bounded: main-window creation waits for this probe.
-      // The caller falls back to the restrictive mode when the probe times out.
+      // A timeout is a failed probe; the caller decides what that means.
       timeout: options.timeoutMs ?? 15_000,
       maxBuffer: 64 * 1024,
     },
@@ -342,8 +338,9 @@ export async function inspectCurrentWindowsTokenElevationType(
 }
 
 /**
- * 探测失败的几种可以分辨的原因。只用来让客服和用户看懂「为什么被按管理员
- * 处理了」，**不参与判定**：无论哪一种，执行模式都是 trusted-only。
+ * 探测失败的几种可以分辨的原因。只用来让客服看懂「这次为什么没问出来」，
+ * **不参与判定**：按哪种方式处理只看完整性标签读没读出来（见
+ * `resolveWindowsCliExecutionModeDetailed`）。
  */
 export type WindowsExecutionProbeFailureReason =
   | 'timeout'
@@ -362,7 +359,7 @@ export interface WindowsCliExecutionModeResolution {
   mode: WindowsCliExecutionMode
   /** 探测花了多久。主窗口要等它，慢机器上这一项本身就是线索。 */
   elapsedMs: number
-  /** 只有探测失败、按从严处理时才有。 */
+  /** 只有探测失败时才有；这时 mode 可能是 same-user，也可能是 trusted-only。 */
   probeFailure?: WindowsExecutionProbeFailure
 }
 
@@ -380,11 +377,9 @@ function probeFailureText(error: unknown): string {
 
 /**
  * Classifies why the token probe failed without changing what the failure
- * means: the caller still falls back to trusted-only. The distinctions exist
- * because the fallback is invisible otherwise — a standard user on a machine
- * whose security software blocks PowerShell's `Add-Type` compilation silently
- * loses every same-user install path and ends up "fixing" it by running the
- * whole app elevated.
+ * means; that is decided by `resolveWindowsCliExecutionModeDetailed`. The
+ * distinctions exist so support can tell a machine whose security software
+ * blocks PowerShell's `Add-Type` compilation from one that was merely too slow.
  */
 export function classifyWindowsExecutionProbeFailure(error: unknown): WindowsExecutionProbeFailure {
   const text = probeFailureText(error)
@@ -423,8 +418,9 @@ export function describeWindowsExecutionProbeFailure(reason: WindowsExecutionPro
 }
 
 /** Packaged and development builds normally run as the current user. If a user
- * explicitly starts the app as administrator, retain the restrictive boundary
- * so user-writable commands are never inherited by the elevated process. */
+ * explicitly starts the app as administrator and that can be confirmed, retain
+ * the restrictive boundary so user-writable commands are never inherited by the
+ * elevated process. */
 export async function resolveWindowsCliExecutionMode(
   options: ResolveWindowsCliExecutionModeOptions,
 ): Promise<WindowsCliExecutionMode> {
@@ -432,9 +428,18 @@ export async function resolveWindowsCliExecutionMode(
 }
 
 /**
- * Same decision as `resolveWindowsCliExecutionMode`, plus why a failed probe
- * fell back to trusted-only. The fallback itself is unchanged: a probe that
- * cannot prove the token is not elevated keeps the restrictive boundary.
+ * Same decision as `resolveWindowsCliExecutionMode`, plus why a probe failed.
+ *
+ * A failed elevation probe is resolved by what the integrity label already said:
+ * - label read as High or above: the token is known to be elevated (or the
+ *   built-in Administrator), so the failure keeps the restrictive boundary;
+ * - label unreadable too: nothing is known, and since this app never elevates
+ *   itself that is overwhelmingly an ordinary user on a slow or locked-down
+ *   machine. The strict fallback left exactly those users unable to install or
+ *   open any tool, so it answers same-user (product decision, 2026-09-23).
+ * The residual risk is an app started as administrator on a machine where
+ * whoami and the PowerShell probe both fail; the self-check page still
+ * compares the live token and tells that user to start it normally.
  */
 export async function resolveWindowsCliExecutionModeDetailed(
   options: ResolveWindowsCliExecutionModeOptions & { now?: () => number },
@@ -448,18 +453,18 @@ export async function resolveWindowsCliExecutionModeDetailed(
     ...(probeFailure ? { probeFailure } : {}),
   })
   if (platform !== 'win32') return settle('same-user')
+  let integrityRid: number | null = null
   try {
     // Below High integrity the token cannot be the elevated half of a split
     // admin token, which is the only case that answers trusted-only, so the
     // verdict is the one the full probe would reach. At High and above (an
     // elevated admin, or the built-in Administrator with a default token) and
-    // whenever the label cannot be read, the full probe still decides, and its
-    // failure still falls back to trusted-only.
+    // whenever the label cannot be read, the full probe still decides.
     const probeIntegrityRid = options.probeIntegrityRid
       ?? (options.probeElevationType || options.probeAdministrator ? undefined : inspectCurrentWindowsIntegrityRid)
     if (probeIntegrityRid) {
-      const rid = await probeIntegrityRid().catch(() => null)
-      if (rid !== null && rid < highMandatoryIntegrityRid) return settle('same-user')
+      integrityRid = await probeIntegrityRid().catch(() => null)
+      if (integrityRid !== null && integrityRid < highMandatoryIntegrityRid) return settle('same-user')
     }
     if (options.probeElevationType) {
       return settle(await options.probeElevationType() === 'full' ? 'trusted-only' : 'same-user')
@@ -469,7 +474,7 @@ export async function resolveWindowsCliExecutionModeDetailed(
     }
     return settle(await inspectCurrentWindowsTokenElevationType() === 'full' ? 'trusted-only' : 'same-user')
   } catch (error) {
-    return settle('trusted-only', classifyWindowsExecutionProbeFailure(error))
+    return settle(integrityRid === null ? 'same-user' : 'trusted-only', classifyWindowsExecutionProbeFailure(error))
   }
 }
 

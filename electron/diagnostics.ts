@@ -9,6 +9,7 @@ import {
   commandEnvironment,
   findExecutable,
   isTrustedHighIntegrityExecutable,
+  primeTrustedHighIntegrityExecutable,
   runCommand,
   trustedCommandEnvironment,
 } from './command-runner'
@@ -38,6 +39,7 @@ import type { ToolConfigOwnership } from './tool-config-ownership'
 import type { SystemSnapshot } from './system-service'
 import {
   describeWindowsExecutionProbeFailure,
+  inspectCurrentWindowsProcessHighIntegrity,
   inspectWindowsElevationCapability,
   resolveWindowsPowerShellExecutable,
   type WindowsCliExecutionModeResolution,
@@ -219,6 +221,8 @@ interface CheckDefinition {
   code: string
   title: string
   run: (signal: AbortSignal) => Promise<CheckOutcome> | CheckOutcome
+  /** 只说明情况、不决定软件行为的项，超时给这句提醒，不亮红色的「检查超时」。 */
+  timeoutOutcome?: CheckOutcome
 }
 
 const DEFAULT_CHECK_TIMEOUT_MS = 8_000
@@ -486,6 +490,9 @@ async function versionForExecutable(
   signal: AbortSignal,
   env: NodeJS.ProcessEnv,
 ): Promise<string | null> {
+  // 直接做同步校验，Program Files 下的路径会在主线程上起 PowerShell 读权限，
+  // node / npm / git 各一次，普通用户点「重新检测」时窗口就卡住了。
+  await primeTrustedHighIntegrityExecutable(executable)
   if (!isTrustedHighIntegrityExecutable(executable, env)) return null
   if (process.platform === 'win32' && path.extname(executable).toLowerCase() === '.cmd' && tool !== 'npm') {
     return null
@@ -526,6 +533,7 @@ async function defaultInspectTool(
         darwinStagingRetention: 'ephemeral',
       })
       try {
+        await primeTrustedHighIntegrityExecutable(command.executable)
         if (!isTrustedHighIntegrityExecutable(command.executable, env)) {
           return { installed: true, version: null, path: installation.commandPath }
         }
@@ -580,6 +588,10 @@ async function defaultInspectTool(
 
 async function defaultInspectAdministrator(signal: AbortSignal): Promise<boolean> {
   if (process.platform !== 'win32') return typeof process.getuid === 'function' && process.getuid() === 0
+  // whoami 几十毫秒就答；PowerShell 冷启动在慢电脑上要好几秒，和下面问「能不能提权」
+  // 那次加起来就超过单项预算了。读不出完整性标签时才退回 PowerShell。
+  const highIntegrity = await inspectCurrentWindowsProcessHighIntegrity({ timeoutMs: 3_000 }).catch(() => null)
+  if (highIntegrity !== null) return highIntegrity
   const script = [
     '$identity=[Security.Principal.WindowsIdentity]::GetCurrent()',
     '$principal=[Security.Principal.WindowsPrincipal]::new($identity)',
@@ -1018,6 +1030,14 @@ async function runIsolatedCheck(
     }
   } catch (error) {
     const timedOut = error instanceof Error && error.name === 'DiagnosticTimeoutError'
+    if (timedOut && check.timeoutOutcome) {
+      return {
+        ...check.timeoutOutcome,
+        code: check.code,
+        title: check.title,
+        durationMs: Date.now() - startedAt,
+      }
+    }
     const reason = timedOut
       ? `单项检查超过 ${timeoutMs}ms`
       : sanitize(error instanceof Error ? error.message : String(error))
@@ -1099,6 +1119,20 @@ export interface RelocatedFolderFinding {
   target: string | null
   /** 受影响的文件夹（去重后按出现顺序）。 */
   labels: string[]
+}
+
+/**
+ * 搬过去的位置多半带着用户名（D:\Users\alice），而报告的脱敏只认原来的用户目录，
+ * 认不出它。客服要知道的只是「搬到了哪块盘」，所以只说盘，不写整条路径。
+ */
+export function describeRelocationTarget(target: string, platform: NodeJS.Platform): string {
+  if (platform === 'win32') {
+    const drive = /^(?:\\\\[?.]\\)?([A-Za-z]):/.exec(target)?.[1]
+    if (drive) return ` ${drive.toUpperCase()} 盘`
+    return target.startsWith('\\\\') ? '另一台电脑的共享文件夹' : '别的位置'
+  }
+  const volume = /^\/Volumes\/([^/]+)/.exec(target)?.[1]
+  return volume ? `外接磁盘「${volume}」` : '别的位置'
 }
 
 /**
@@ -1239,7 +1273,7 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
   }
   const inspectAdmin = dependencies.inspectAdministrator ?? defaultInspectAdministrator
   const inspectElevation = dependencies.inspectElevationCapability
-    ?? ((signal) => inspectWindowsElevationCapability({ timeoutMs: 8_000, signal }))
+    ?? ((signal) => inspectWindowsElevationCapability({ timeoutMs: 3_000, signal }))
   const fetchImpl = dependencies.fetch ?? globalThis.fetch
   const paths = dependencies.clashConfigPaths ?? clashCandidates(userHome, env)
   const inspectProxy = dependencies.inspectProxyVariables ?? ((signal) => defaultProxyVariables(env))
@@ -1276,33 +1310,51 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
       // 从不提权，所以第二问只在 Windows 上做。
       code: 'ADMINISTRATOR',
       title: '运行权限',
+      // 软件按不按管理员方式做事，是启动时就定好的，这一项只负责说明。
+      // 电脑正忙时它没问完，不该让用户以为出了故障。
+      timeoutOutcome: {
+        state: 'warn',
+        summary: '电脑这会儿比较忙，没来得及确认运行权限。这不影响软件使用，稍后点「重新检测」再看一次',
+        details: { timedOut: true },
+      },
       run: async (signal): Promise<CheckOutcome> => {
-        const probeFailure = platform === 'win32' ? dependencies.windowsExecution?.probeFailure : undefined
+        const windowsExecution = platform === 'win32' ? dependencies.windowsExecution : undefined
+        const probeFailure = windowsExecution?.probeFailure
         // 启动时那次探测失败的机器上，这次探测多半也会失败（同样要起 PowerShell）。
         // 那时这一项要说的正是「没问出来」，不能让它自己的失败把原因盖掉。
         const elevated = probeFailure
           ? await Promise.resolve(inspectAdmin(signal)).catch(() => null)
           : await inspectAdmin(signal)
+        const probeDetails: Record<string, string | number | null> = probeFailure
+          ? {
+              executionMode: windowsExecution?.mode ?? null,
+              probeFailure: probeFailure.reason,
+              probeElapsedMs: windowsExecution?.elapsedMs ?? null,
+            }
+          : {}
+        if (probeFailure && windowsExecution?.mode === 'trusted-only') {
+          // 启动时已经看出是高权限、只是细节没问出来，软件按管理员方式处理（从严）。
+          // 这时再说「当前以普通用户权限运行」就和实际行为对不上，客服会被带偏。
+          return {
+            state: 'warn',
+            summary: `软件这次是以管理员权限打开的，但没能确认细节，已按管理员方式处理，所以安装和打开工具可能会失败。原因：${describeWindowsExecutionProbeFailure(probeFailure.reason)}。请关掉软件，直接双击重新打开（不要选「以管理员身份运行」）；还不行请在「反馈」页导出报告发给客服`,
+            details: { elevated, required: false, ...probeDetails },
+          }
+        }
         if (elevated) {
           return {
             state: 'warn',
             summary: '当前以管理员权限运行，建议普通启动',
-            details: { elevated, required: false, canElevate: true },
+            details: { elevated, required: false, canElevate: true, ...probeDetails },
           }
         }
         if (probeFailure) {
-          // 启动时那次探测没问出结果，软件已按管理员方式处理（从严）。这时再说
-          // 「当前以普通用户权限运行」就和实际行为对不上，客服会被带偏。
+          // 什么都没看出来时按普通用户处理，软件照常能用，不必吓用户；原因只留给客服。
+          // 「能不能提权」那一问同样要起 PowerShell，这时不再问。
           return {
-            state: 'warn',
-            summary: `没能确认软件是不是以管理员身份在运行，已按管理员方式处理，所以安装和打开工具可能会失败。原因：${describeWindowsExecutionProbeFailure(probeFailure.reason)}。重新打开软件会再确认一次；还不行请在「反馈」页导出报告发给客服`,
-            details: {
-              elevated,
-              required: false,
-              executionMode: dependencies.windowsExecution?.mode ?? null,
-              probeFailure: probeFailure.reason,
-              probeElapsedMs: dependencies.windowsExecution?.elapsedMs ?? null,
-            },
+            state: 'pass',
+            summary: '当前以普通用户权限运行',
+            details: { elevated, required: false, canElevate: null, ...probeDetails },
           }
         }
         const capability = platform === 'win32' ? await inspectElevation(signal) : 'unknown'
@@ -1490,14 +1542,15 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
           const minutes = Math.round(Math.abs(skewMs) / 60_000)
           return {
             state: 'warn',
-            summary: `已连通（HTTP ${response.status}），但这台电脑的系统时间与服务器相差约 ${minutes} 分钟，`
+            summary: `能连上星芒服务，但这台电脑的系统时间与服务器相差约 ${minutes} 分钟，`
               + `可能让登录、安装、更新卡在证书校验这一步。${clockSyncGuidance(platform)}`,
             details: { endpoint, status: response.status, clockSkewMinutes: Math.round(skewMs / 60_000) },
           }
         }
         return {
           state: 'pass',
-          summary: `已连通（HTTP ${response.status}）`,
+          // 状态码留在 details 里给导出报告，结论只说人话。
+          summary: '能连上星芒服务',
           details: { endpoint, status: response.status },
         }
       },
@@ -1593,14 +1646,14 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
           }
         }
         const described = findings.map((finding) => `${finding.labels.join('、')}${finding.target
-          ? `被搬到了 ${finding.target}`
+          ? `被搬到了${describeRelocationTarget(finding.target, platform)}`
           : '被搬走了，但读不出它现在在哪里'}`)
         const hint = platform === 'win32' ? '（常见于用过「C 盘搬家」一类的工具）' : ''
         const details: Record<string, boolean | number | string | null> = { relocated: findings.length }
         for (const [index, finding] of findings.entries()) {
           details[`folder${index + 1}`] = finding.labels.join('、')
           details[`from${index + 1}`] = finding.component
-          details[`to${index + 1}`] = finding.target
+          details[`to${index + 1}`] = finding.target ? describeRelocationTarget(finding.target, platform).trim() : null
         }
         return {
           state: 'fail',

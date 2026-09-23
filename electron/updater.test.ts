@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events'
 import { describe, expect, it, vi } from 'vitest'
 import { updateNetworkFailureMessages } from './network-failure'
-import { createUpdaterService, type UpdateClient } from './updater'
+import { createUpdaterService, type UpdateClient, type UpdaterService } from './updater'
 
 class FakeUpdater extends EventEmitter implements UpdateClient {
   autoDownload = true
@@ -56,6 +56,16 @@ const proxyConnectionError = () => Object.assign(
   new Error('net::ERR_PROXY_CONNECTION_FAILED'),
   { code: 'ERR_PROXY_CONNECTION_FAILED' },
 )
+
+// 下载好之后要用户点「重启安装」才会装（全面检测 Q42），这里替用户点这一下。
+// 安装没能启动时 install() 会抛错，各用例断言的是之后的快照。
+function clickInstall(service: UpdaterService): void {
+  try {
+    service.install()
+  } catch {
+    // asserted through the snapshot
+  }
+}
 
 const updateInfo = (version = '1.1.0') => ({
   version,
@@ -134,7 +144,7 @@ describe('updater service', () => {
     expect(changes).toContain('downloading')
   })
 
-  it('checks, downloads and restarts automatically during startup when an update is available', async () => {
+  it('checks and downloads during startup but waits for the user before restarting', async () => {
     const client = new FakeUpdater()
     client.checkForUpdates.mockImplementationOnce(async () => {
       client.emit('update-available', updateInfo())
@@ -151,7 +161,7 @@ describe('updater service', () => {
     await new Promise((resolve) => setTimeout(resolve, 350))
     expect(client.checkForUpdates).toHaveBeenCalledTimes(1)
     expect(client.downloadUpdate).toHaveBeenCalledTimes(1)
-    expect(client.quitAndInstall).toHaveBeenCalledWith(true, true)
+    expect(client.quitAndInstall).not.toHaveBeenCalled()
   })
 
   it('continues startup when the update check exceeds its deadline', async () => {
@@ -235,15 +245,22 @@ describe('updater service', () => {
     }
   })
 
-  it('automatically restarts to install a verified downloaded update in a packaged app', async () => {
-    const client = new FakeUpdater()
-    const service = createUpdaterService(client, { currentVersion: '1.0.0', isPackaged: true })
-    expect(() => service.install()).toThrow('尚未下载')
-    client.emit('update-downloaded', updateInfo())
-    await new Promise((resolve) => setTimeout(resolve, 350))
-    expect(client.quitAndInstall).toHaveBeenCalledWith(true, true)
-    expect(service.install()).toEqual({ accepted: true })
-    expect(client.quitAndInstall).toHaveBeenCalledTimes(1)
+  // Q42：签名通道（Mac）以前下载完 0.3 秒就自己退出重装，不管用户手上在做什么。
+  it('never restarts on its own after a verified download, on any platform', async () => {
+    for (const platform of ['darwin', 'win32'] as const) {
+      const client = new FakeUpdater()
+      const service = createUpdaterService(client, { currentVersion: '1.0.0', isPackaged: true, platform })
+      expect(() => service.install()).toThrow('尚未下载')
+      client.emit('update-downloaded', updateInfo())
+      await new Promise((resolve) => setTimeout(resolve, 350))
+      expect(service.getState()).toMatchObject({ phase: 'downloaded', error: null })
+      expect(client.quitAndInstall).not.toHaveBeenCalled()
+      expect(service.install()).toEqual({ accepted: true })
+      expect(service.install()).toEqual({ accepted: true })
+      expect(client.quitAndInstall).toHaveBeenCalledTimes(1)
+      expect(client.quitAndInstall).toHaveBeenCalledWith(true, true)
+      service.dispose()
+    }
   })
 
   it('launches the verified installer inside the configured environment guard', async () => {
@@ -256,7 +273,7 @@ describe('updater service', () => {
     })
 
     client.emit('update-downloaded', updateInfo())
-    await new Promise((resolve) => setTimeout(resolve, 350))
+    service.install()
 
     expect(guardedLaunch).toHaveBeenCalledOnce()
     expect(client.quitAndInstall).toHaveBeenCalledWith(true, true)
@@ -669,7 +686,7 @@ describe('updater service', () => {
       })
 
       client.emit('update-downloaded', updateInfo())
-      await vi.advanceTimersByTimeAsync(300)
+      clickInstall(service)
       expect(service.getState()).toMatchObject({
         phase: 'downloaded',
         error: { message: 'installer spawn failed' },
@@ -697,7 +714,7 @@ describe('updater service', () => {
       })
 
       client.emit('update-downloaded', updateInfo())
-      await vi.advanceTimersByTimeAsync(300)
+      clickInstall(service)
       expect(service.getState()).toMatchObject({
         phase: 'downloaded',
         error: { message: 'installer spawn failed' },
@@ -724,7 +741,9 @@ describe('updater service', () => {
 
       client.emit('update-downloaded', updateInfo())
       client.emit('update-downloaded', updateInfo())
-      await vi.advanceTimersByTimeAsync(325)
+      clickInstall(service)
+      clickInstall(service)
+      await vi.advanceTimersByTimeAsync(25)
       expect(client.quitAndInstall).toHaveBeenCalledTimes(1)
       expect(service.getState()).toMatchObject({
         phase: 'downloaded',
@@ -745,6 +764,7 @@ describe('updater service', () => {
       disposedClient.emit('update-downloaded', updateInfo())
       disposedClient.emit('update-downloaded', updateInfo())
       disposedService.dispose()
+      clickInstall(disposedService)
       await vi.advanceTimersByTimeAsync(1_000)
       expect(disposedClient.quitAndInstall).not.toHaveBeenCalled()
     } finally {
@@ -769,7 +789,7 @@ describe('updater service', () => {
       expect(errorListenerCount).toBe(1)
 
       client.emit('update-downloaded', updateInfo())
-      await vi.advanceTimersByTimeAsync(300)
+      clickInstall(service)
       expect(client.quitAndInstall).toHaveBeenCalledTimes(1)
       expect(client.nativeCheckForUpdates).toHaveBeenCalledTimes(1)
       expect(service.getState()).toMatchObject({ phase: 'downloaded', error: null })
@@ -807,7 +827,7 @@ describe('updater service', () => {
       })
 
       client.emit('update-downloaded', updateInfo())
-      await vi.advanceTimersByTimeAsync(300)
+      clickInstall(service)
       expect(client.quitAndInstall).toHaveBeenCalledTimes(1)
       expect(client.nativeCheckForUpdates).toHaveBeenCalledTimes(1)
       expect(client.nativeUpdater.listenerCount('update-downloaded')).toBe(
@@ -856,7 +876,7 @@ describe('updater service', () => {
       })
 
       client.emit('update-downloaded', updateInfo())
-      await vi.advanceTimersByTimeAsync(300)
+      clickInstall(service)
       expect(service.getState()).toMatchObject({
         phase: 'downloaded',
         error: { message: 'native check failed' },
@@ -901,7 +921,7 @@ describe('updater service', () => {
       })
 
       client.emit('update-downloaded', updateInfo())
-      await vi.advanceTimersByTimeAsync(300)
+      clickInstall(service)
       expect(service.getState()).toMatchObject({
         phase: 'downloaded',
         error: { message: 'pre-registration failure' },
@@ -934,7 +954,7 @@ describe('updater service', () => {
       })
 
       client.emit('update-downloaded', updateInfo())
-      await vi.advanceTimersByTimeAsync(300)
+      clickInstall(service)
       client.nativeUpdater.emit('error', {
         code: 'SQUIRREL_INSTALL_FAILED',
         message: 'native install failed',
@@ -974,7 +994,7 @@ describe('updater service', () => {
       })
 
       client.emit('update-downloaded', updateInfo())
-      await vi.advanceTimersByTimeAsync(300)
+      clickInstall(service)
       expect(service.getState()).toMatchObject({
         phase: 'downloaded',
         error: { message: 'installer spawn failed' },
@@ -989,6 +1009,38 @@ describe('updater service', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+})
+
+describe('service status from the update feed', () => {
+  it('carries a maintenance notice into every snapshot and announces only changes', () => {
+    const client = new FakeUpdater()
+    const service = createUpdaterService(client, { currentVersion: '1.0.0', isPackaged: true })
+    const seen: unknown[] = []
+    service.subscribe((state) => seen.push(state.serviceMaintenance))
+    expect(service.getState().serviceMaintenance).toBeNull()
+
+    service.setServiceStatus({ maintenance: { message: '升级中' } })
+    service.setServiceStatus({ maintenance: { message: '升级中' } })
+    expect(service.getState()).toMatchObject({ phase: 'idle', serviceMaintenance: { message: '升级中' } })
+    service.setServiceStatus(null)
+    expect(service.getState().serviceMaintenance).toBeNull()
+    expect(seen).toEqual([{ message: '升级中' }, null])
+    service.dispose()
+  })
+
+  it('does not disturb an update failure the user is looking at', () => {
+    const client = new FakeUpdater()
+    const service = createUpdaterService(client, { currentVersion: '1.0.0', isPackaged: true })
+    client.emit('error', { code: 'UPDATE_ERROR', message: 'broken' })
+    service.setServiceStatus({ maintenance: { message: null } })
+    expect(service.getState()).toMatchObject({
+      phase: 'error',
+      failedStep: 'check',
+      error: { code: 'UPDATE_ERROR' },
+      serviceMaintenance: { message: null },
+    })
+    service.dispose()
   })
 })
 
@@ -1248,7 +1300,7 @@ describe('downloaded package digest verification', () => {
       })
 
       client.emit('update-downloaded', updateInfo())
-      await vi.advanceTimersByTimeAsync(300)
+      clickInstall(service)
       expect(service.getState()).toMatchObject({ phase: 'downloaded', failedStep: 'install' })
       service.dispose()
     } finally {

@@ -1,6 +1,7 @@
 import type { ProgressInfo, UpdateFileInfo, UpdateInfo } from 'builder-util-runtime'
 import { classifyNetworkFailure, updateNetworkFailureMessages } from './network-failure'
 import { redactSecretQueryParameters, redactSecretShapes } from './redaction-patterns'
+import type { ServiceMaintenance, ServiceStatus } from './service-status'
 
 export type UpdatePhase =
   | 'disabled'
@@ -67,6 +68,12 @@ export interface UpdateSnapshot {
    * 的提示由渲染层在启动时读一次。可选＝旧快照，界面照旧只显示待下载版本的说明。
    */
   installedRelease?: InstalledRelease | null
+  /**
+   * 更新目录上的状态文件说服务正在维护时，这里是发布者写的那句话（见
+   * service-status.ts）；没在维护或读不到那份文件时为 null。放在更新快照里是因为
+   * 它本来就来自更新目录，而渲染层从启动那一刻起就订阅着这份快照——没登录也收得到。
+   */
+  serviceMaintenance?: ServiceMaintenance | null
 }
 
 type UpdateEventName =
@@ -100,6 +107,8 @@ export interface UpdaterService {
   check(): Promise<UpdateSnapshot>
   download(): Promise<UpdateSnapshot>
   install(): { accepted: true }
+  /** 更新目录上的状态文件读到了新内容（null = 读不到，当没有）。 */
+  setServiceStatus(status: ServiceStatus | null): void
   subscribe(listener: (snapshot: UpdateSnapshot) => void): () => void
   dispose(): void
 }
@@ -298,6 +307,7 @@ function cloneSnapshot(snapshot: UpdateSnapshot): UpdateSnapshot {
     progress: snapshot.progress ? { ...snapshot.progress } : null,
     error: snapshot.error ? { ...snapshot.error } : null,
     installedRelease: cloneInstalledRelease(snapshot.installedRelease),
+    serviceMaintenance: snapshot.serviceMaintenance ? { ...snapshot.serviceMaintenance } : null,
   }
 }
 
@@ -322,7 +332,6 @@ export function createUpdaterService(
   // check only reports the new version and waits for an explicit download.
   const autoDownload = !unsignedChannel
   const verifyPackageDigest = runtime.verifyPackageDigest
-  let autoInstallTimer: NodeJS.Timeout | null = null
   let installWatchdogTimer: NodeJS.Timeout | null = null
   let startupPromise: Promise<UpdateSnapshot> | null = null
   let installRequested = false
@@ -343,6 +352,7 @@ export function createUpdaterService(
     development,
     unsignedChannel,
     installedRelease: cloneInstalledRelease(runtime.installedRelease),
+    serviceMaintenance: null,
   }
 
   client.autoDownload = false
@@ -378,11 +388,6 @@ export function createUpdaterService(
     })
   }
 
-  const clearAutoInstallTimer = () => {
-    if (autoInstallTimer) clearTimeout(autoInstallTimer)
-    autoInstallTimer = null
-  }
-
   const clearInstallWatchdog = () => {
     if (installWatchdogTimer) clearTimeout(installWatchdogTimer)
     installWatchdogTimer = null
@@ -404,7 +409,6 @@ export function createUpdaterService(
 
   const requestInstall = (): boolean => {
     if (development || disposed || installRequested) return false
-    clearAutoInstallTimer()
     clearInstallWatchdog()
     installRequested = true
     emit({ error: null })
@@ -458,18 +462,12 @@ export function createUpdaterService(
     return true
   }
 
+  // 下载好就停在这里，等用户点「重启安装」。以前签名通道（Mac）下载完 0.3 秒就
+  // 自动退出重装，不管用户是在生图还是在装工具（全面检测 Q42），而设置页和更新页
+  // 都写着安装由你确认。未签名通道本来就不许自动安装：那里没有安装包签名校验，
+  // 挡在可疑安装包和这台电脑之间的只剩用户这一下点击。
   const acceptDownloadedUpdate = (info: UpdateInfo) => {
     applyInfo('downloaded', info)
-    if (development || installRequested || disposed) return
-    // The unsigned channel ships without any installer signature check, so the
-    // one thing standing between a hostile package and the machine is the user
-    // starting the install. Never take that step automatically there.
-    if (unsignedChannel) return
-    autoInstallTimer = setTimeout(() => {
-      autoInstallTimer = null
-      requestInstall()
-    }, 300)
-    autoInstallTimer.unref?.()
   }
 
   // 安装包校验不过时要重来的是下载，不是安装：本地这一份已经不可信了。
@@ -530,7 +528,6 @@ export function createUpdaterService(
     'update-not-available': (info: UpdateInfo) => applyInfo('not-available', info),
     'update-available': (info: UpdateInfo) => applyInfo('available', info),
     'update-downloaded': (event: DownloadedUpdateEvent) => {
-      clearAutoInstallTimer()
       if (disposed) return
       if (!verifyPackageDigest) {
         acceptDownloadedUpdate(event)
@@ -539,7 +536,6 @@ export function createUpdaterService(
       void verifyDownloadedUpdate(event)
     },
     'update-cancelled': (info: UpdateInfo) => {
-      clearAutoInstallTimer()
       clearInstallWatchdog()
       installRequested = false
       applyInfo('cancelled', info)
@@ -566,7 +562,6 @@ export function createUpdaterService(
       })
     },
     error: (error: unknown) => {
-      clearAutoInstallTimer()
       if (
         snapshot.phase === 'downloaded'
         && (
@@ -742,6 +737,12 @@ export function createUpdaterService(
       }
       return { accepted: true }
     },
+    setServiceStatus(status) {
+      if (disposed) return
+      const maintenance = status?.maintenance ? { message: status.maintenance.message } : null
+      if (JSON.stringify(maintenance) === JSON.stringify(snapshot.serviceMaintenance ?? null)) return
+      emit({ serviceMaintenance: maintenance })
+    },
     subscribe(listener) {
       listeners.add(listener)
       return () => listeners.delete(listener)
@@ -749,7 +750,6 @@ export function createUpdaterService(
     dispose() {
       disposed = true
       listeners.clear()
-      clearAutoInstallTimer()
       clearInstallWatchdog()
       for (const [event, handler] of Object.entries(eventHandlers)) {
         client.off(event as UpdateEventName, handler)

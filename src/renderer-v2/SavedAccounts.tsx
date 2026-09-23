@@ -18,7 +18,9 @@ import {
   type AccountSwitchSyncResult,
 } from './account-switch-sync'
 import { tools } from './registry/tools'
-import { accountOrigin } from './account-context'
+import { keySyncFailureText } from './features/tools/key-sync-failure'
+import { accountOrigin, siteIdForOrigin } from './account-context'
+import { accountSources } from './features/auth/state'
 
 export function SavedAccounts({
   api,
@@ -64,6 +66,9 @@ export function SavedAccounts({
     setSelected((values) => values.filter((value) => allowed.has(value)))
   }, [sync.data])
   const [remove, setRemove] = useState<string | null>(null)
+  // 切过去才发现登录已失效的那一个保存账号（全面检测 Q12）：当前账号没变，
+  // 这一行给个「重新登录这个账号」，不然用户只看到一句失败、不知道下一步。
+  const [expired, setExpired] = useState<string | null>(null)
   return (
     <div data-testid="saved-accounts-list">
       <ResultNotice {...operation} />
@@ -81,9 +86,7 @@ export function SavedAccounts({
               {[...result.failed, ...result.skipped].map((entry) => (
                 <span key={entry.provider}>
                   <br />
-                  {tools.find((tool) => tool.id === entry.provider)?.name ??
-                    entry.provider}
-                  ：{entry.message}
+                  {keySyncFailureText(entry.provider, entry.message)}
                 </span>
               ))}
             </>
@@ -107,8 +110,9 @@ export function SavedAccounts({
           return (
             <ListRow
               key={account.id}
+              testId={`saved-account-row-${account.id}`}
               title={account.username}
-              desc={`账户尾号 ${account.id.slice(-6)}`}
+              desc={savedAccountSourceLabel(account.origin)}
               badge={current && <Pill tone="ok">当前账号</Pill>}
               actions={
                 <>
@@ -120,13 +124,17 @@ export function SavedAccounts({
                       void operation.execute(
                         account.id,
                         async () => {
+                          setExpired(null)
                           const outcome = await switchAccountWithOptionalSync(
                             api,
                             account,
                             selected,
                             sync.data,
                             resource.data?.origin ?? '',
-                          )
+                          ).catch((error: unknown) => {
+                            if (savedAccountExpired(error)) setExpired(account.id)
+                            throw error
+                          })
                           preserveAccountSwitchResult(outcome)
                           setResult(outcome)
                           setSelected([])
@@ -140,6 +148,17 @@ export function SavedAccounts({
                   >
                     切换
                   </Button>
+                  {expired === account.id && !current && onLogin && (
+                    <Button
+                      size="sm"
+                      variant="primary"
+                      disabled={Boolean(operation.busy)}
+                      onClick={onLogin}
+                      testId={`saved-account-relogin-${account.id}`}
+                    >
+                      重新登录这个账号
+                    </Button>
+                  )}
                   {!current && (
                     <Menu
                       label={`账号 ${account.username} 的更多操作`}
@@ -228,4 +247,20 @@ export function SavedAccounts({
       </Dialog>
     </div>
   )
+}
+
+/**
+ * 保存账号那一行的副标题：说清是星芒账号还是历史账号（全面检测 Q45）。以前这里写
+ * 「账户尾号」，其实是保存记录 id（地址 + 用户 id 的 sha256）的末 6 位，用户对不上
+ * 任何东西，也分不出两类账号。标签沿用登录页两个来源的原名，不露地址。
+ */
+export function savedAccountSourceLabel(origin: string): string {
+  const siteId = siteIdForOrigin(origin)
+  return siteId ? accountSources[siteId].label : '账号来源无法识别'
+}
+
+/** 主进程 SAVED_EXPIRED 那句（electron/realm-account.ts）；只认它，不认当前账号过期。 */
+export function savedAccountExpired(error: unknown) {
+  const message = error instanceof Error ? error.message : typeof error === 'string' ? error : ''
+  return /保存的账号登录已失效/.test(message)
 }

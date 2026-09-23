@@ -13,6 +13,7 @@ import type { PageId } from '../../registry/pages'
 import { macDesktopTutorialTopic, macRuntimeTutorialTopic } from '../../registry/business'
 import { tools as toolRegistry } from '../../registry/tools'
 import { FirstRunSteps } from './FirstRun'
+import { keySyncFailureReason, keySyncFailureText } from './key-sync-failure'
 import { dismissFirstRun, getFirstRunStorage, readFirstRunDismissals } from './first-run-dismissal'
 import { latestSessionIdsByWorkspace, newWorkspaceLabel, recentWorkspaces, workspaceButtonLabel, workspaceChoices } from './recent-workspaces'
 import { errorMessage } from '../../business-common'
@@ -103,7 +104,7 @@ const accountSwitchLabels: Record<AccountSourceTarget, string> = {
 }
 
 function bootstrapErrorText(error: string) {
-  return isNetworkFailureText(error) ? offlineBootstrapNotice : `账号 Key 初始化没有完成：${error}`
+  return isNetworkFailureText(error) ? offlineBootstrapNotice : `账号 Key 初始化没有完成：${keySyncFailureReason(error)}`
 }
 
 export function Home(props: HomeProps) {
@@ -200,7 +201,8 @@ export function Home(props: HomeProps) {
   const renderTool = useCallback((tool: ToolPresentation) => {
     const installJob = jobs[tool.id]
     const launchJob = jobs[`launch:${tool.id}`]
-    const job = launchJob ?? installJob
+    const switchJob = jobs[`switch:${tool.id}`]
+    const job = launchJob ?? switchJob ?? installJob
     // 配置那一块没读到时，连接状态是未知而不是「还没配 Key」，
     // 否则用户会以为自己的配置丢了。工具本身的安装、卸载不受影响。
     const configUnavailable = !tool.error && tool.status.installed
@@ -229,7 +231,7 @@ export function Home(props: HomeProps) {
     const elevationHint = tool.id === 'codexDesktop' && !tool.status.installed
       ? elevatedInstallShortNotice('codexDesktop', snapshot?.platform.platform, snapshot?.platform.codexDesktop.install)
       : null
-    const primaryLabel = launchJob ? '打开中' : installJob ? '安装中' : configUnavailable ? '重新配置'
+    const primaryLabel = launchJob ? '打开中' : switchJob ? '切换中' : installJob ? '安装中' : configUnavailable ? '重新配置'
       : bootstrapBusy && !tool.configured ? '配置中' : tool.error ? '重新检测' : !tool.status.installed ? manualInstall ? '安装指南' : '安装'
       : tool.configured ? lastWorkspace ? `打开 ${workspaceButtonLabel(lastWorkspace.name)}` : '打开' : '连接账号'
     const primary = () => configUnavailable ? props.onConfigure(tool.id) : tool.error ? props.onScan() : !tool.status.installed ? props.onInstall(tool.id)
@@ -342,7 +344,7 @@ export function Home(props: HomeProps) {
       {props.bootstrap.error && props.onBootstrapRetry && <Button size="xs" onClick={props.onBootstrapRetry}>重新同步</Button>}
     </div>}
     {props.bootstrap?.result && (props.bootstrap.result.configured.length || props.bootstrap.result.failed.length || props.bootstrap.result.warnings.length) > 0 && <div className={`v2-bootstrap-notice ${props.bootstrap.result.failed.length || props.bootstrap.result.warnings.length ? 'is-warn' : ''}`} role="status">
-      <span className={`v2-dot ${props.bootstrap.result.failed.length || props.bootstrap.result.warnings.length ? 'is-warn' : 'is-ok'}`} /><span>{props.bootstrap.result.networkBlocked ? offlineBootstrapNotice : `${props.bootstrap.result.configured.length ? `已完成 ${props.bootstrap.result.configured.length} 组工具的 Key 配置。` : '账号 Key 已同步。'}${props.bootstrap.result.failed.length ? ` ${props.bootstrap.result.failed.map((entry) => entry.message).join('；')}` : ''}${props.bootstrap.result.warnings.length ? ` ${props.bootstrap.result.warnings.join('；')}` : ''}`}</span>
+      <span className={`v2-dot ${props.bootstrap.result.failed.length || props.bootstrap.result.warnings.length ? 'is-warn' : 'is-ok'}`} /><span>{props.bootstrap.result.networkBlocked ? offlineBootstrapNotice : `${props.bootstrap.result.configured.length ? `已完成 ${props.bootstrap.result.configured.length} 组工具的 Key 配置。` : '账号 Key 已同步。'}${props.bootstrap.result.failed.length ? ` ${props.bootstrap.result.failed.map((entry) => keySyncFailureText(entry.provider, entry.message)).join('；')}` : ''}${props.bootstrap.result.warnings.length ? ` ${props.bootstrap.result.warnings.join('；')}` : ''}`}</span>
       {(props.bootstrap.result.failed.length > 0 || props.bootstrap.result.warnings.length > 0) && props.onBootstrapRetry && <Button size="xs" onClick={props.onBootstrapRetry}>重新同步</Button>}
     </div>}
     {error && <div role="alert" className="v2-callout is-bad"><span>{error}</span><Button size="xs" onClick={props.onScan}>重新检测</Button></div>}

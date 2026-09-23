@@ -2,6 +2,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { randomUUID } from 'node:crypto'
 import * as TOML from '@iarna/toml'
+import { applyEdits, getNodeValue, modify, parseTree, type Node, type ParseError } from 'jsonc-parser'
 import { providerBaseUrls, type ProviderId } from './catalog'
 import { readBoundedUtf8FileSync } from './bounded-file'
 import {
@@ -151,10 +152,32 @@ function readText(filePath: string): string | null {
   try {
     const info = fs.lstatSync(filePath)
     if (!info.isFile() || info.nlink > 1 || info.isSymbolicLink()) return null
-    return readBoundedUtf8FileSync(filePath, MAX_NATIVE_CONFIG_BYTES, '配置文件')
+    return withoutByteOrderMark(readBoundedUtf8FileSync(filePath, MAX_NATIVE_CONFIG_BYTES, '配置文件'))
   } catch {
     return null
   }
+}
+
+/**
+ * Notepad on older Windows and PowerShell 5's `Set-Content -Encoding UTF8`
+ * both write a UTF-8 BOM. JSON.parse and @iarna/toml reject it as an unknown
+ * character, so a config the CLI itself reads fine used to be reported as
+ * unparseable and never got the account key (全面检测 Q41). Writing back
+ * without the BOM is harmless: every managed CLI reads plain UTF-8.
+ */
+function withoutByteOrderMark(content: string): string {
+  return content.replace(/^\uFEFF/, '')
+}
+
+/**
+ * @iarna/toml's message quotes the lines around the failure, and in these
+ * files those lines are often `api_key = "..."` or an MCP server's token. The
+ * message reaches the screen, the runtime log and the feedback export (I13),
+ * so only the row number is kept -- the same reason requireJson drops V8's.
+ */
+function tomlErrorLocation(error: unknown): string {
+  const line = error && typeof error === 'object' && 'line' in error ? error.line : null
+  return typeof line === 'number' && Number.isInteger(line) && line >= 0 ? `（第 ${line + 1} 行附近）` : ''
 }
 
 function requireConfigText(
@@ -172,7 +195,7 @@ function requireConfigText(
   if (!info.isFile() || info.nlink !== 1 || info.isSymbolicLink()) {
     throw new Error(`${label} 必须是单链接普通文件，未执行修改`)
   }
-  return readBoundedUtf8FileSync(filePath, maximumBytes, label)
+  return withoutByteOrderMark(readBoundedUtf8FileSync(filePath, maximumBytes, label))
 }
 
 function readJson(filePath: string): Record<string, unknown> | null {
@@ -224,9 +247,107 @@ function requireToml(filePath: string, label: string): Record<string, unknown> {
   try {
     return TOML.parse(content)
   } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error)
-    throw new Error(`${label} 无法解析，未执行修改：${detail}`)
+    throw new Error(`${label} 无法解析，未执行修改${tomlErrorLocation(error)}`)
   }
+}
+
+/**
+ * Gemini CLI runs settings.json and trustedFolders.json through
+ * strip-json-comments before JSON.parse, so a file with comments is valid to
+ * it and used to be refused here as unparseable -- the account key never got
+ * written (全面检测 Q16). Parse them the way Gemini does: comments allowed,
+ * trailing commas not (strip-json-comments keeps those and JSON.parse then
+ * rejects them). Duplicate keys are refused on this path only, because the
+ * comment-preserving write edits one occurrence while Gemini reads the last.
+ */
+function parseGeminiJsonObject(content: string, label: string): Record<string, unknown> {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(content) as unknown
+  } catch {
+    const errors: ParseError[] = []
+    const tree = parseTree(content, errors, { allowTrailingComma: false, disallowComments: false })
+    // Same reason as requireJson for not surfacing the parser's own message.
+    if (!tree || errors.length || hasDuplicateProperties(tree)) {
+      throw new Error(`${label} 无法解析为 JSON，未执行修改`)
+    }
+    parsed = getNodeValue(tree) as unknown
+  }
+  if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed as Record<string, unknown>
+  throw new Error(`${label} 不是有效的 JSON 对象，未执行修改`)
+}
+
+function hasDuplicateProperties(node: Node): boolean {
+  if (node.type === 'object') {
+    const names = new Set<unknown>()
+    for (const property of node.children ?? []) {
+      const name = property.children?.[0]?.value as unknown
+      if (names.has(name)) return true
+      names.add(name)
+    }
+  }
+  return (node.children ?? []).some(hasDuplicateProperties)
+}
+
+function readGeminiJson(filePath: string): Record<string, unknown> | null {
+  const content = readText(filePath)
+  if (!content) return null
+  try {
+    return parseGeminiJsonObject(withoutByteOrderMark(content), 'Gemini 配置')
+  } catch {
+    return null
+  }
+}
+
+function requireGeminiJson(filePath: string, label: string): { parsed: Record<string, unknown>, original: string | null } {
+  const original = requireConfigText(filePath, label)
+  return { parsed: original === null ? {} : parseGeminiJsonObject(original, label), original }
+}
+
+function isJsonObject(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+}
+
+function collectJsonEdits(
+  location: string[],
+  before: unknown,
+  after: unknown,
+  edits: Array<{ path: string[], value: unknown }>,
+): void {
+  if (isJsonObject(before) && isJsonObject(after)) {
+    for (const key of new Set([...Object.keys(before), ...Object.keys(after)])) {
+      if (!Object.hasOwn(after, key)) edits.push({ path: [...location, key], value: undefined })
+      else if (!Object.hasOwn(before, key)) edits.push({ path: [...location, key], value: after[key] })
+      else collectJsonEdits([...location, key], before[key], after[key], edits)
+    }
+    return
+  }
+  if (JSON.stringify(before) !== JSON.stringify(after)) edits.push({ path: location, value: after })
+}
+
+/**
+ * Plain JSON is rewritten as before. A file that only parsed because comments
+ * were allowed gets just the changed values edited in place, so the user's
+ * comments and layout outside those values survive.
+ */
+function geminiJsonContent(original: string | null, next: Record<string, unknown>): string {
+  if (original === null || !original.trim()) return jsonContent(next)
+  try {
+    JSON.parse(original)
+    return jsonContent(next)
+  } catch {
+    // Has comments: fall through to the in-place edit.
+  }
+  const edits: Array<{ path: string[], value: unknown }> = []
+  collectJsonEdits([], parseGeminiJsonObject(original, 'Gemini 配置'), next, edits)
+  const eol = original.includes('\r\n') ? '\r\n' : '\n'
+  let content = original
+  for (const edit of edits) {
+    content = applyEdits(content, modify(content, edit.path, edit.value, {
+      formattingOptions: { insertSpaces: true, tabSize: 2, eol },
+    }))
+  }
+  return content.endsWith('\n') ? content : `${content}${eol}`
 }
 
 function ensureRecord(parent: Record<string, unknown>, key: string): Record<string, unknown> {
@@ -245,22 +366,27 @@ function ensureRecord(parent: Record<string, unknown>, key: string): Record<stri
 // 被第三方 Anthropic 兼容端点拒绝。沙箱实测（2.1.277）确认 permissions.deny 是把工具
 // 定义整条从请求体的 tools 里摘掉，而不是只拦执行，所以这条 deny 能挡住同一类 schema
 // 故障，是版本名单之外的第二道保险。
-const claudeDeniedRelayTool = 'Artifact'
+//
+// DesignSync 同理：它把设计稿同步到 claude.ai 的 Claude Design，要 claude.ai 登录才能用，
+// 可 2.1.277 在中转上每一次请求都把它的定义发给模型（沙箱实测：deny 之后 tools 从 21 个
+// 变 20 个）。模型会以为自己有这个能力，调了只会失败；它的 schema 也多一份要过中转校验。
+const claudeDeniedRelayTools = ['Artifact', 'DesignSync']
 
 /**
- * 把 Artifact 追加进 permissions.deny（已有就不重复）。用户自己写的其他 deny 项与
+ * 把上面这几个工具追加进 permissions.deny（已有就不重复）。用户自己写的其他 deny 项与
  * permissions 下的其他键原样保留；deny 不是数组时按「缺省」处理，重建成数组。
  */
 function denyClaudeRelayTool(permissions: Record<string, unknown>): void {
   const current = permissions.deny
   const existing = Array.isArray(current) ? current : []
-  if (existing.includes(claudeDeniedRelayTool)) return
-  permissions.deny = [...existing, claudeDeniedRelayTool]
+  const missing = claudeDeniedRelayTools.filter((tool) => !existing.includes(tool))
+  if (missing.length === 0) return
+  permissions.deny = [...existing, ...missing]
 }
 
 /**
- * 切回官方 Claude 账号时只摘掉 Artifact 这一项：Artifact 对 claude.ai 账号用户是有用
- * 的。其他 deny 项保留，deny 变空则连键一起删掉，避免留下空数组。
+ * 切回官方 Claude 账号时只摘掉这几项：它们对 claude.ai 账号用户是有用的。其他 deny 项
+ * 保留，deny 变空则连键一起删掉，避免留下空数组。
  */
 function allowClaudeRelayTool(parsed: Record<string, unknown>): void {
   const permissions = parsed.permissions
@@ -268,7 +394,7 @@ function allowClaudeRelayTool(parsed: Record<string, unknown>): void {
   const record = permissions as Record<string, unknown>
   const current = record.deny
   if (!Array.isArray(current)) return
-  const kept = current.filter((entry) => entry !== claudeDeniedRelayTool)
+  const kept = current.filter((entry) => !claudeDeniedRelayTools.includes(entry))
   if (kept.length === current.length) return
   if (kept.length === 0) delete record.deny
   else record.deny = kept
@@ -505,6 +631,23 @@ function removeGeminiRelayModelOverrides(parsed: Record<string, unknown>): void 
   if (Object.keys(modelConfigs).length === 0) delete parsed.modelConfigs
 }
 
+// Gemini CLI 默认把使用统计发去 play.googleapis.com（clearcut），同时在发给中转的每一个
+// 请求上带 x-gemini-api-privileged-user-id: <本机安装 ID>——等于把一个跨会话不变的设备标识
+// 交给了中转。国内连不上前者，后者对我们毫无用处。privacy.usageStatisticsEnabled = false
+// 两样一起去掉（沙箱实测 0.60.0），不影响任何功能。只在用户没表过态时补，切回 Google 账号
+// 时只收回本软件写的那一份。
+function disableGeminiRelayUsageStatistics(parsed: Record<string, unknown>): void {
+  const privacy = ensureRecord(parsed, 'privacy')
+  if (privacy.usageStatisticsEnabled === undefined) privacy.usageStatisticsEnabled = false
+}
+
+function restoreGeminiUsageStatistics(parsed: Record<string, unknown>): void {
+  const privacy = parsed.privacy
+  if (isJsonRecord(privacy) && Object.keys(privacy).length === 1 && privacy.usageStatisticsEnabled === false) {
+    delete parsed.privacy
+  }
+}
+
 // Claude Code 的 language 设置会被原样插进系统提示（2.1.277 实测：settings.json 写
 // {"language":"简体中文"} 之后，请求体里出现「# Language\nAlways respond in 简体中文.」），
 // 回复和会话标题都跟着变中文。本软件今天让 Claude 说中文靠的是 AGENTS.md 模板，而那份
@@ -606,7 +749,7 @@ export function geminiCliCompatibleModel(model: string): string {
 
 function readProviderAuthType(provider: ProviderId, paths: string[]): string | undefined {
   return provider === 'gemini'
-    ? nestedString(readJson(paths[0]), ['security', 'auth', 'selectedType'])
+    ? nestedString(readGeminiJson(paths[0]), ['security', 'auth', 'selectedType'])
     : undefined
 }
 
@@ -858,8 +1001,7 @@ function createCodexRelayConfigPlans(
       currentParsed = TOML.parse(currentText)
     } catch (error) {
       if (mode !== 'reset') {
-        const detail = error instanceof Error ? error.message : String(error)
-        throw new Error(`现有 Codex config.toml 无法解析，未执行修改：${detail}`)
+        throw new Error(`现有 Codex config.toml 无法解析，未执行修改${tomlErrorLocation(error)}`)
       }
     }
   }
@@ -1345,6 +1487,10 @@ function requireWorkspaceTrustJson(content: string | null, label: string): Recor
   throw new Error(`${label} 不是有效的 JSON 对象，未执行修改`)
 }
 
+function requireGeminiWorkspaceJson(content: string | null, label: string): Record<string, unknown> {
+  return content?.trim() ? parseGeminiJsonObject(content, label) : {}
+}
+
 export function trustClaudeWorkspaceInRootConfigText(
   content: string | null,
   workspace: string,
@@ -1384,13 +1530,13 @@ export function trustGeminiWorkspaceInTrustedFoldersText(
 ): { content: string; changed: boolean } {
   const trimmedWorkspace = workspace.trim()
   if (!trimmedWorkspace) throw new Error('Gemini CLI 工作目录不能为空')
-  const parsed = requireWorkspaceTrustJson(content, '现有 Gemini CLI trustedFolders.json')
+  const parsed = requireGeminiWorkspaceJson(content, '现有 Gemini CLI trustedFolders.json')
   const existing = matchingWorkspaceKey(parsed, trimmedWorkspace)
   // A folder the user already answered for keeps its answer, including
   // DO_NOT_TRUST. Only a folder Gemini has never asked about gets filled in.
-  if (existing !== null) return { content: jsonContent(parsed), changed: false }
+  if (existing !== null) return { content: geminiJsonContent(content, parsed), changed: false }
   parsed[trimmedWorkspace] = 'TRUST_FOLDER'
-  return { content: jsonContent(parsed), changed: true }
+  return { content: geminiJsonContent(content, parsed), changed: true }
 }
 
 export function trustClaudeWorkspace(
@@ -1443,13 +1589,13 @@ export const GEMINI_PROJECT_CONTEXT_FILENAMES = ['GEMINI.md', 'AGENTS.md'] as co
 export function ensureGeminiContextFilenamesInSettingsText(
   content: string | null,
 ): { content: string; changed: boolean } {
-  const parsed = requireWorkspaceTrustJson(content, '现有 Gemini CLI settings.json')
+  const parsed = requireGeminiWorkspaceJson(content, '现有 Gemini CLI settings.json')
   const context = ensureRecord(parsed, 'context')
   const raw = context.fileName
   // 结构读不懂时（既不是字符串也不是数组）一律不动，宁可让 Gemini 自己用默认值，
   // 也不能拿一份看不懂的配置换取读到 AGENTS.md。
   if (raw !== undefined && typeof raw !== 'string' && !Array.isArray(raw)) {
-    return { content: jsonContent(parsed), changed: false }
+    return { content: geminiJsonContent(content, parsed), changed: false }
   }
   const existing = typeof raw === 'string'
     ? (raw.trim() ? [raw.trim()] : [])
@@ -1457,9 +1603,9 @@ export function ensureGeminiContextFilenamesInSettingsText(
   const present = new Set(existing.filter((entry): entry is string => typeof entry === 'string'))
   const missing = GEMINI_PROJECT_CONTEXT_FILENAMES.filter((name) => !present.has(name))
   // 已有值一个不删，只把缺的补在后面（含用户自己写的其它文件名），已经齐了就不动。
-  if (missing.length === 0) return { content: jsonContent(parsed), changed: false }
+  if (missing.length === 0) return { content: geminiJsonContent(content, parsed), changed: false }
   context.fileName = [...existing, ...missing]
-  return { content: jsonContent(parsed), changed: true }
+  return { content: geminiJsonContent(content, parsed), changed: true }
 }
 
 /**
@@ -1553,7 +1699,7 @@ function createPlans(
       }
       const settings: Record<string, unknown> = {
         env,
-        permissions: { defaultMode: 'bypassPermissions', deny: [claudeDeniedRelayTool] },
+        permissions: { defaultMode: 'bypassPermissions', deny: [...claudeDeniedRelayTools] },
         model,
         effortLevel: 'medium',
         skipDangerousModePermissionPrompt: true,
@@ -1563,7 +1709,9 @@ function createPlans(
         ...(claudeStatusLineCommand ? { statusLine: claudeStatusLineSetting(claudeStatusLineCommand) } : {}),
       }
       if (availableModels) applyClaudeRelayModelPicker(settings, env, availableModels, model)
-      return [{ path: paths[0], content: jsonContent(settings) }]
+      // 原文件读不出来时照旧重建（reset 本来就是给配置坏了的人用的），只是没东西可挪。
+      const aside = claudeForeignSettingsAsidePlans(settings, readJson(paths[0]) ?? {}, roots, apiKey)
+      return [...aside, { path: paths[0], content: jsonContent(settings) }]
     }
     case 'gemini':
       return [
@@ -1576,6 +1724,7 @@ function createPlans(
               sessionRetention: { maxAge: MANAGED_GEMINI_SESSION_MAX_AGE },
             },
             ide: { enabled: true },
+            privacy: { usageStatisticsEnabled: false },
             security: { auth: { selectedType: 'gemini-api-key' } },
             modelConfigs: { customOverrides: buildGeminiRelayModelOverrides(geminiCliCompatibleModel(model)) },
           }),
@@ -1661,14 +1810,15 @@ function createMergePlans(
       if (claudeStatusLineCommand) applyClaudeStatusLine(parsed, claudeStatusLineCommand)
       if (availableModels) applyClaudeRelayModelPicker(parsed, env, availableModels, model)
       parsed.model = model
-      return [{ path: paths[0], content: jsonContent(parsed) }]
+      const aside = claudeForeignSettingsAsidePlans(parsed, null, roots, apiKey)
+      return [...aside, { path: paths[0], content: jsonContent(parsed) }]
     }
     case 'gemini': {
       const plans: FilePlan[] = []
       if (!fs.existsSync(paths[0])) {
         plans.push(initial(paths[0]))
       } else {
-        const parsed = requireJson(paths[0], '现有 Gemini settings.json')
+        const { parsed, original } = requireGeminiJson(paths[0], '现有 Gemini settings.json')
         // Gemini CLI keeps the auth strategy in settings.json. Updating only
         // .env after a prior OAuth login leaves the UI looking configured while
         // the CLI continues to authenticate with Google, so merge must restore
@@ -1677,7 +1827,8 @@ function createMergePlans(
         disableGeminiSelfUpdate(parsed)
         extendGeminiSessionRetention(parsed)
         applyGeminiRelayModelOverrides(parsed, geminiCliCompatibleModel(model))
-        plans.push({ path: paths[0], content: jsonContent(parsed) })
+        disableGeminiRelayUsageStatistics(parsed)
+        plans.push({ path: paths[0], content: geminiJsonContent(original, parsed) })
       }
       // 读取失败必须中止保存，静默当空文件会把用户已有环境变量覆盖掉。
       const content = requireConfigText(paths[1], '现有 Gemini .env')
@@ -2217,14 +2368,13 @@ function createOfficialAccountPlans(
       // 保留期同理——它们是用户偏好，跟用哪个账号无关，reset 重建时一并写回，否则换回
       // 官方账号的用户会悄悄回到 30 天自动删。
       if (mode === 'reset') {
-        return [{
-          path: paths[0],
-          content: jsonContent({
-            env: { DISABLE_AUTOUPDATER: '1' },
-            language: MANAGED_CLAUDE_RESPONSE_LANGUAGE,
-            cleanupPeriodDays: MANAGED_CLAUDE_RETENTION_DAYS,
-          }),
-        }]
+        const settings: Record<string, unknown> = {
+          env: { DISABLE_AUTOUPDATER: '1' },
+          language: MANAGED_CLAUDE_RESPONSE_LANGUAGE,
+          cleanupPeriodDays: MANAGED_CLAUDE_RETENTION_DAYS,
+        }
+        const restore = claudeForeignSettingsRestorePlans(settings, roots)
+        return [...restore, { path: paths[0], content: jsonContent(settings) }]
       }
       if (!fs.existsSync(paths[0])) return []
       const parsed = requireJson(paths[0], '现有 Claude settings.json')
@@ -2241,7 +2391,8 @@ function createOfficialAccountPlans(
       allowClaudeRelayTool(parsed)
       delete parsed.skipWebFetchPreflight
       delete parsed.model
-      return [{ path: paths[0], content: jsonContent(parsed) }]
+      const restore = claudeForeignSettingsRestorePlans(parsed, roots)
+      return [...restore, { path: paths[0], content: jsonContent(parsed) }]
     }
     case 'gemini': {
       if (mode === 'reset') {
@@ -2262,11 +2413,12 @@ function createOfficialAccountPlans(
       }
       const plans: FilePlan[] = []
       if (fs.existsSync(paths[0])) {
-        const parsed = requireJson(paths[0], '现有 Gemini settings.json')
+        const { parsed, original } = requireGeminiJson(paths[0], '现有 Gemini settings.json')
         const auth = ensureRecord(ensureRecord(parsed, 'security'), 'auth')
         auth.selectedType = 'oauth-personal'
         removeGeminiRelayModelOverrides(parsed)
-        plans.push({ path: paths[0], content: jsonContent(parsed) })
+        restoreGeminiUsageStatistics(parsed)
+        plans.push({ path: paths[0], content: geminiJsonContent(original, parsed) })
       }
       const envContent = requireConfigText(paths[1], '现有 Gemini .env')
       if (envContent !== null) {
@@ -2324,6 +2476,144 @@ export function switchProviderToOfficialAccount(
   assertNoReparseComponents(path.dirname(providerRoot), 'Provider 配置根目录')
   ensureSafeDataDirectory(providerRoot, 'Provider 配置根目录')
   return executeFilePlans(plans, hooks, providerRoot)
+}
+
+// ---------------------------------------------------------------------------
+// 别家中转留下的 Claude 设置
+//
+// 照 GLM、Kimi 或别家中转的教程配过 Claude Code 的人，~/.claude/settings.json
+// 里常留着这几项。合并写入只换 ANTHROPIC_AUTH_TOKEN / ANTHROPIC_BASE_URL / model，
+// 它们原样留下就会顶掉当前账号：ANTHROPIC_API_KEY 与 apiKeyHelper 让请求多带一把
+// 别人的 Key（new-api 拿 x-api-key 顶掉 Authorization，见 diagnostics.ts 那段实测），
+// ANTHROPIC_MODEL 压过 model，其余几项把 Haiku / Sonnet / Opus 别名映射到当前账号
+// 没有的型号。界面却照样显示「正常」（全面检测 Q7）。
+//
+// 接当前账号时把它们挪进旁边的快照文件，切回官方账号时原样放回。和 settings.json
+// 在同一次两阶段提交里写，不会一边有一边没有。ANTHROPIC_DEFAULT_MODEL 不在这张表
+// 里：它是本软件自己的选模型菜单写的（claude-model-picker.ts）。
+// ---------------------------------------------------------------------------
+
+export const claudeForeignSettingsSnapshotName = 'xingmang-claude-foreign-settings.json'
+
+const claudeForeignEnvKeys = [
+  'ANTHROPIC_API_KEY',
+  'ANTHROPIC_MODEL',
+  'ANTHROPIC_SMALL_FAST_MODEL',
+  'ANTHROPIC_DEFAULT_OPUS_MODEL',
+  'ANTHROPIC_DEFAULT_SONNET_MODEL',
+  'ANTHROPIC_DEFAULT_HAIKU_MODEL',
+] as const
+const claudeForeignTopLevelKeys = ['apiKeyHelper'] as const
+
+interface ClaudeForeignSettings {
+  env: Record<string, unknown>
+  settings: Record<string, unknown>
+}
+
+function readClaudeForeignSnapshot(content: string | null): ClaudeForeignSettings {
+  const parsed = requireWorkspaceTrustJson(content, '已保存的 Claude 旧设置')
+  return {
+    env: isJsonRecord(parsed.env) ? { ...parsed.env } : {},
+    settings: isJsonRecord(parsed.settings) ? { ...parsed.settings } : {},
+  }
+}
+
+function claudeForeignSnapshotContent(snapshot: ClaudeForeignSettings): string {
+  return Object.keys(snapshot.env).length === 0 && Object.keys(snapshot.settings).length === 0
+    ? ''
+    : jsonContent({ version: 1, env: snapshot.env, settings: snapshot.settings })
+}
+
+/**
+ * 纯函数：把 settings 里会顶掉当前账号的几项挪进快照（会改 settings）。返回新的
+ * 快照内容；null = 没有可挪的，快照不用动。settings 里又出现了同一项（用户在这
+ * 期间自己改过）时以新值为准。值等于这次要写的 Key 的 ANTHROPIC_API_KEY 只删不存：
+ * 放回官方那份配置等于把当前账号的 Key 塞给官方。
+ */
+export function moveClaudeForeignSettingsAside(
+  settings: Record<string, unknown>,
+  snapshotContent: string | null,
+  relayApiKey: string,
+): string | null {
+  const env = isJsonRecord(settings.env) ? settings.env : null
+  const envKeys = env ? claudeForeignEnvKeys.filter((key) => env[key] !== undefined) : []
+  const topLevelKeys = claudeForeignTopLevelKeys.filter((key) => settings[key] !== undefined)
+  if (envKeys.length === 0 && topLevelKeys.length === 0) return null
+  const snapshot = readClaudeForeignSnapshot(snapshotContent)
+  for (const key of envKeys) {
+    const value = env![key]
+    delete env![key]
+    if (key === 'ANTHROPIC_API_KEY' && typeof value === 'string' && value.trim() === relayApiKey) continue
+    snapshot.env[key] = value
+  }
+  for (const key of topLevelKeys) {
+    snapshot.settings[key] = settings[key]
+    delete settings[key]
+  }
+  if (env && Object.keys(env).length === 0) delete settings.env
+  return claudeForeignSnapshotContent(snapshot)
+}
+
+/**
+ * 纯函数：把快照里的几项放回 settings（会改 settings），返回是否放回过东西。已经
+ * 有同名项（用户在这期间自己又设了）就以现有的为准。调用方随后清空快照。
+ */
+export function restoreClaudeForeignSettings(
+  settings: Record<string, unknown>,
+  snapshotContent: string | null,
+): boolean {
+  const snapshot = readClaudeForeignSnapshot(snapshotContent)
+  let restored = false
+  const envEntries = Object.entries(snapshot.env)
+    .filter(([key]) => (claudeForeignEnvKeys as readonly string[]).includes(key))
+  if (envEntries.length > 0) {
+    const env = ensureRecord(settings, 'env')
+    for (const [key, value] of envEntries) {
+      if (env[key] !== undefined) continue
+      env[key] = value
+      restored = true
+    }
+  }
+  for (const [key, value] of Object.entries(snapshot.settings)) {
+    if (!(claudeForeignTopLevelKeys as readonly string[]).includes(key) || settings[key] !== undefined) continue
+    settings[key] = value
+    restored = true
+  }
+  return restored
+}
+
+function claudeForeignSnapshotPath(roots: ProviderConfigRoots): string {
+  return path.join(providerConfigRoot('claude', roots), claudeForeignSettingsSnapshotName)
+}
+
+function readClaudeForeignSnapshotText(roots: ProviderConfigRoots): string | null {
+  const snapshotPath = claudeForeignSnapshotPath(roots)
+  assertSafeConfigPath(snapshotPath, providerConfigRoot('claude', roots), 'file')
+  return requireConfigText(snapshotPath, '已保存的 Claude 旧设置')
+}
+
+/** 接当前账号时：把会顶掉当前账号的几项挪走，需要时附上快照文件的写入计划。 */
+function claudeForeignSettingsAsidePlans(
+  settings: Record<string, unknown>,
+  existing: Record<string, unknown> | null,
+  roots: ProviderConfigRoots,
+  relayApiKey: string,
+): FilePlan[] {
+  // reset 从模板重建，原文件里的这几项要从 existing 里取；merge 时两者是同一个对象。
+  const source = existing ?? settings
+  const current = readClaudeForeignSnapshotText(roots)
+  const snapshot = moveClaudeForeignSettingsAside(source, current, relayApiKey)
+  // 只删掉了一把与这次相同的 Key、又本来没有快照时，不必为此建一个空文件。
+  if (snapshot === null || (snapshot === '' && current === null)) return []
+  return [{ path: claudeForeignSnapshotPath(roots), content: snapshot }]
+}
+
+/** 切回官方账号时：原样放回，并清空快照。没有快照就什么都不做。 */
+function claudeForeignSettingsRestorePlans(settings: Record<string, unknown>, roots: ProviderConfigRoots): FilePlan[] {
+  const content = readClaudeForeignSnapshotText(roots)
+  if (content === null) return []
+  restoreClaudeForeignSettings(settings, content)
+  return content === '' ? [] : [{ path: claudeForeignSnapshotPath(roots), content: '' }]
 }
 
 // ---------------------------------------------------------------------------

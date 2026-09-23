@@ -50,6 +50,7 @@ import {
   Table,
   Textarea,
   Toolbar,
+  useToast,
 } from './ui'
 import {
   displayDate,
@@ -74,9 +75,13 @@ import { canUninstallTool } from './features/tools/model'
 import { elevatedInstallNotice } from './features/tools/elevation-notice'
 import { ToolStatusMeta, ToolStatusReason } from './features/tools/ToolStatusMeta'
 import { connectionCheckView } from './features/tools/connection-check'
+import { diagnosticDetailRows } from './features/app/diagnostic-details'
+import { requestSettingsGroup, takeSettingsGroup } from './features/app/settings-group-intent'
+import { rememberedLoginAction, rememberedLoginForgottenMessage } from './features/app/remembered-login'
 import { maintenanceFailureNotice, readMaintenanceStatus } from './features/tools/maintenance-status'
 import { ManualUninstallDialog, type ManualUninstallState } from './features/tools/ManualUninstall'
 import { RuntimeRestartDialog } from './features/tools/RuntimeRestartDialog'
+import { uninstallHandOffNotice } from './features/tools/uninstall-handoff'
 import { describeRuntimeInstallOutcome } from './features/tools/runtime-install-outcome'
 import {
   anyRuntimeLogValue,
@@ -88,6 +93,7 @@ import {
 } from './features/app/runtime-log-filter'
 import { releaseNotesSection } from './features/app/release-notes'
 import type { V2Bridge, V2Page } from './types'
+import type { InstallCancelResult } from '../../electron/ipc-contract'
 import type {
   PlatformProxyStatus,
   PlatformSystemState,
@@ -122,6 +128,8 @@ type ExternalClientCheck = Awaited<ReturnType<V2Bridge['checkExternalClientConne
 // 没有自己的配置文件，自检无从下手，所以这里只取 CLI；三个外部客户端各有自己的
 // 配置文件，跟在 CLI 后面（registry/clients.ts 的次序）。
 const connectionTools = tools.filter((tool): tool is typeof tool & { id: Provider } => tool.kind === 'cli')
+/** installed：装好了；restart：运行环境要重启电脑才算装完；skipped：没有开始（取消、已在装或要自己下载）。 */
+export type ToolInstallOutcome = 'installed' | 'restart' | 'skipped'
 export type BusinessActions = {
   navigate?: (page: V2Page) => void
   openLogin?: () => void
@@ -138,6 +146,14 @@ export type BusinessActions = {
    * 只刷新自己那一份数据，回到首页仍会看到「未安装」（R-G3）。
    */
   onToolsChanged?: (tool: Provider | 'codexDesktop') => Promise<void> | void
+  /**
+   * 首页那条完整的安装：缺 Node.js / Python 先装运行环境，装完写 Key、刷新检测。
+   * 「安装卸载」页以前自己直接调主进程装工具，没装 Node.js 的人只看到「未检测到
+   * npm」（全面检测 Q33）；有了它就只走这一条。
+   */
+  installTool?: (tool: Provider | 'codexDesktop') => Promise<ToolInstallOutcome>
+  /** 与 installTool 配对的取消：首页那条安装在准备运行环境时会说明为什么不能取消。 */
+  cancelToolInstall?: (tool: Provider | 'codexDesktop') => Promise<InstallCancelResult>
   /**
    * 连接自检的密钥 / 分组层给出的「重新写入 Key」：复用装完工具后那条同样的重写
    * 流程（App 的 syncAfterToolInstalled），失败时把主进程的原话抛出来，页面照实显示。
@@ -158,31 +174,34 @@ export function withElevationNotice(lead: string, notice: string | null): string
   return notice ? `${lead} · ${notice}` : lead
 }
 
-export function diagnosticTarget(code: string): V2Page {
+/**
+ * 「去处理」要落在真能处理这件事的地方。落不到的（磁盘满、系统版本、运行权限、
+ * 系统里的代理和环境变量、项目文件夹里的设置……）就不给按钮：结论里已经说了怎么办，
+ * 以前统一兜底到「安装卸载」，用户点过去什么也找不到。
+ */
+export function diagnosticTarget(code: string): V2Page | null {
   // 文件夹被搬过没有能在软件里一键修的地方，下一步是导出报告找客服。
   if (code === 'FOLDER_RELOCATED') return 'feedback'
-  if (
-    code.includes('PROXY') ||
-    code.includes('ENVIRONMENT') ||
-    code === 'XINGMANG_NETWORK' ||
-    code === 'CLASH_VERGE_TUN'
-  )
+  // 这三项在「设置」的「网络」组，跳过去时由 diagnosticFix 指定落在那一组。
+  if (code === 'XINGMANG_NETWORK' || code === 'PROXY_ENVIRONMENT' || code === 'CLASH_VERGE_TUN')
     return 'settings'
+  // 环境变量要用户自己在系统里删，软件里没有对应的开关。
+  if (code === 'PROVIDER_ENVIRONMENT_OVERRIDE') return null
   if (
     code.startsWith('PROVIDER_') ||
     code === 'CODEX_DOTENV' ||
-    code === 'CLAUDE_BYPASS_PERMISSIONS'
+    code === 'CLAUDE_BYPASS_PERMISSIONS' ||
+    // Git 的安装指引挂在首页的「运行环境」里，「安装卸载」页没有它那一行。
+    code === 'RUNTIME_GIT'
   )
     return 'home'
-  return 'maintenance'
+  if (code.startsWith('RUNTIME_') || code.startsWith('CLI_') || code === 'CODEX_DESKTOP')
+    return 'maintenance'
+  return null
 }
 
-/**
- * 有些项只能提醒、没有本软件能替用户做的一步：「项目文件夹里的设置」那些文件是
- * 用户或公司的，本软件不去改，结论里已经说了怎么办，再给「去处理」只会原地跳转。
- */
 export function diagnosticHasFix(code: string): boolean {
-  return code !== 'WORKSPACE_CONFIG_OVERRIDE'
+  return diagnosticTarget(code) !== null
 }
 
 /**
@@ -221,11 +240,11 @@ function ConnectionRowNotice({
         <>
           <div>{view.title}</div>
           <div>{view.body}</div>
-          {view.endpoint && (
-            <div className="v2-connection-note">请求地址：{view.endpoint}</div>
-          )}
           {view.detail && (
-            <div className="v2-connection-note">服务返回：{view.detail}</div>
+            <details className="v2-connection-note">
+              <summary>服务的原话（联系客服时可以附上）</summary>
+              {view.detail}
+            </details>
           )}
         </>
       }
@@ -323,9 +342,14 @@ export function HealthPage({
   }
   const fix = (item: Diagnostic) => {
     const provider = item.code.replace('PROVIDER_', '').toLowerCase()
-    if (item.code.startsWith('PROVIDER_') && isProvider(provider) && openConfig)
+    if (item.code.startsWith('PROVIDER_') && isProvider(provider) && openConfig) {
       openConfig(provider)
-    else navigate?.(diagnosticTarget(item.code))
+      return
+    }
+    const target = diagnosticTarget(item.code)
+    if (!target) return
+    if (target === 'settings') requestSettingsGroup('network')
+    navigate?.(target)
   }
   return (
     <section
@@ -488,16 +512,24 @@ export function HealthPage({
       >
         <p>{details?.summary}</p>
         <dl className="v2-business-kv">
-          {Object.entries(details?.details ?? {}).map(([key, value]) => (
-            <div key={key}>
-              <dt>{key}</dt>
-              <dd>{value === null ? '未提供' : String(value)}</dd>
+          {diagnosticDetailRows(details?.details).map((row) => (
+            <div key={row.key}>
+              <dt>{row.label}</dt>
+              <dd>{row.value}</dd>
             </div>
           ))}
         </dl>
       </Drawer>
     </section>
   )
+}
+
+/** 与上面筛选条的说法一致；英文级别名只进导出的报告。 */
+const runtimeLogLevelLabels: Readonly<Record<string, string>> = {
+  error: '错误',
+  warn: '提醒',
+  info: '信息',
+  debug: '调试',
 }
 
 export function FeedbackPage({
@@ -660,7 +692,7 @@ export function FeedbackPage({
                         : 'neutral'
                   }
                 >
-                  {entry.level}
+                  {runtimeLogLevelLabels[entry.level] ?? entry.level}
                 </Pill>
               }
               desc={`${displayDate(entry.timestamp)} · ${entry.source}`}
@@ -912,7 +944,7 @@ export function UpdatesPage({
       data-page-id="updates"
       data-testid="page-updates"
     >
-      <PageHead title="更新" lead="下载和安装由你确认。" />
+      <PageHead title="更新" lead="新版本什么时候安装由你决定，不会自己重启。" />
       <ResultNotice
         error={resource.error || operation.error}
         message={operation.message}
@@ -930,8 +962,8 @@ export function UpdatesPage({
           <ListRow title="上次检查" meta={displayDate(update?.checkedAt)} />
           {update?.unsignedChannel && (
             <ListRow
-              title="更新通道"
-              meta="未签名，下载和安装都要你确认"
+              title="更新方式"
+              meta="每次下载和安装新版本前都会先问你"
               testId="updates-channel-unsigned"
             />
           )}
@@ -1036,11 +1068,21 @@ export function UpdatesPage({
   )
 }
 
+export function installResultMessage(result: ToolInstallOutcome | 'cancelled'): string {
+  if (result === 'cancelled') return '安装已取消'
+  if (result === 'restart') return '运行环境已装好，重启电脑后再点一次「安装」'
+  if (result === 'skipped') return '这个工具正在安装，等它做完就好'
+  return '安装完成，工具状态已更新'
+}
+
 export function MaintenancePage({
   api,
   navigate,
   onToolsChanged,
+  installTool,
+  cancelToolInstall,
 }: { api: V2Bridge } & BusinessActions) {
+  const toast = useToast()
   const load = useCallback(() => readMaintenanceStatus(api), [api])
   const resource = useResource(load)
   const snapshot = resource.data?.snapshot ?? null
@@ -1076,6 +1118,17 @@ export function MaintenancePage({
       async () => {
         cancelRequested.current.delete(id)
         setCancelNotice('')
+        if (installTool) {
+          try {
+            const outcome = await installTool(id)
+            if (outcome === 'skipped' && cancelRequested.current.has(id)) return 'cancelled' as const
+            await resource.reload()
+            return outcome
+          } finally {
+            cancelRequested.current.delete(id)
+            setCancelling('')
+          }
+        }
         try {
           if (id === 'codexDesktop') await api.installCodexDesktop()
           else await api.installCli(id)
@@ -1093,13 +1146,15 @@ export function MaintenancePage({
         await resource.reload()
         return 'installed' as const
       },
-      (result) => result === 'cancelled' ? '安装已取消' : '安装完成，工具状态已更新',
+      (result) => installResultMessage(result),
     )
   const cancelInstall = (id: Provider | 'codexDesktop') => {
     cancelRequested.current.add(id)
     setCancelling(id)
     setCancelNotice('')
-    const requested = id === 'codexDesktop' ? api.cancelCodexDesktopInstall() : api.cancelCliInstall(id)
+    const requested = cancelToolInstall
+      ? cancelToolInstall(id)
+      : id === 'codexDesktop' ? api.cancelCodexDesktopInstall() : api.cancelCliInstall(id)
     void requested.then((outcome) => {
       if (outcome.cancelled) return
       // 已经走到写入工具目录那一步：这次安装还会跑完，取消标记必须撤掉，
@@ -1431,14 +1486,17 @@ export function MaintenancePage({
                         // success while files are left on disk.
                         throw new Error(result.error)
                       }
-                      if (result.outcome === 'delegated')
-                        throw new Error(
-                          '已打开卸载窗口，请完成卸载后重新检测。',
-                        )
                       setRemove(null)
                       await resource.reload()
+                      return uninstallHandOffNotice(result)
                     },
-                    '工具已卸载，配置已保留',
+                    // 转交给普通窗口时还没卸完：不说「已卸载」，也不当失败，
+                    // 用一条中性提示说清下一步。
+                    (handedOff) => {
+                      if (!handedOff) return '工具已卸载，配置已保留'
+                      toast.show(handedOff, 'neutral')
+                      return null
+                    },
                   )
               }}
             >
@@ -1608,6 +1666,12 @@ export function SettingsPage({
   }
   const [group, setGroup] =
     useState<(typeof settingsGroups)[number]['value']>('appearance')
+  // 从检查页「去处理」跳进来时直接落在要去的那一组。放在副作用里取，严格模式下
+  // 初始化函数会跑两遍，第二遍会把已经取走的那一组读成空的。
+  useEffect(() => {
+    const requested = takeSettingsGroup()
+    if (requested) setGroup(requested)
+  }, [])
   const [pending, setPending] = useState(0)
   const [saveError, setSaveError] = useState('')
   const [saved, setSaved] = useState('')
@@ -1655,6 +1719,7 @@ export function SettingsPage({
     }
   }
   const settings = resource.data?.settings
+  const rememberedLogin = rememberedLoginAction(resource.data?.session)
   const row = (title: string, description: string, control: ReactNode) => (
     <SettingRow
       key={title}
@@ -1853,7 +1918,7 @@ export function SettingsPage({
           )}
           {row(
             '启动时检查新版本',
-            '只显示提醒，下载和安装由你确认',
+            '发现新版本会提醒你，什么时候安装由你决定',
             <Switch
               checked={settings.checkUpdatesOnStartup}
               aria-label="启动时检查新版本"
@@ -1923,8 +1988,8 @@ export function SettingsPage({
             </Button>,
           )}
           {row(
-            'npm 全局包装到哪',
-            '继续使用已有的用户安装目录，避免影响其他工具',
+            '工具装在哪里',
+            '沿用你电脑上原来的安装位置，不影响别的软件',
             <Button
               size="sm"
               icon={Wrench}
@@ -2085,13 +2150,32 @@ export function SettingsPage({
       ),
       account: (
         <>
-          {row(
-            '记住密码',
-            '由客户端安全存储处理',
-            <Button size="sm" icon={UserRound} onClick={openLogin}>
-              管理登录
-            </Button>,
-          )}
+          {rememberedLogin.kind === 'forget'
+            ? row(
+                '记住密码',
+                '由客户端安全存储处理；清掉后下次登录要重新输入密码',
+                <Button
+                  size="sm"
+                  icon={Trash2}
+                  loading={operation.busy === 'forget-remembered-login'}
+                  onClick={() =>
+                    void operation.execute(
+                      'forget-remembered-login',
+                      () => api.setRememberedAccountLogin(null, rememberedLogin.siteId),
+                      rememberedLoginForgottenMessage,
+                    )
+                  }
+                >
+                  清掉记住的密码
+                </Button>,
+              )
+            : row(
+                '记住密码',
+                '由客户端安全存储处理',
+                <Button size="sm" icon={UserRound} onClick={openLogin}>
+                  管理登录
+                </Button>,
+              )}
           {row(
             '退出登录',
             resource.data?.session.account?.username ?? '当前未登录',
@@ -2125,7 +2209,7 @@ export function SettingsPage({
           )}
           {row(
             '使用统计',
-            '仅保存匿名统计偏好。此版本不会自动收集或上传使用记录',
+            '只记下你的选择；目前软件不会收集或上传任何使用记录',
             systemApi && systemState ? (
               <Switch
                 aria-label="匿名使用统计偏好"
@@ -2178,9 +2262,9 @@ export function SettingsPage({
             </>,
           )}
           {row(
-            '从旧版本迁移',
-            '当前继续读取原有设置和配置，旧界面保留用于回滚',
-            <Pill>共用原数据格式</Pill>,
+            '以前的设置',
+            '升级后沿用你以前的设置和工具配置，不用重新设置',
+            <Pill>已沿用</Pill>,
           )}
           {row(
             '工具配置备份',

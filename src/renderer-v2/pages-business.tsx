@@ -12,12 +12,15 @@ import {
 import type { V2Bridge, V2Page, V2SystemState } from './types'
 import './business.css'
 
-export type BusinessPageProps = BusinessActions & {
+export type BusinessPageProps = Omit<BusinessActions, 'navigate'> & {
+  /** 第二个参数是要落的分页（个人中心、设置），只有教程页会传；其他页照旧只传页面。 */
+  navigate?: (page: V2Page, section?: string) => void
   api: V2Bridge
   page: V2Page
   state?: V2SystemState
   refresh?: () => void
   accountTab?: Parameters<typeof AccountPage>[0]['initialTab']
+  accountTabRequest?: number
   /** 教程页要停在哪一章；缺省 = 从第一章开始（旧行为）。 */
   tutorialTopic?: Parameters<typeof TutorialPage>[0]['topic']
   paymentReturn?: { sequence: number; order: string | null }
@@ -31,6 +34,7 @@ export function BusinessPage({
   api,
   page,
   accountTab,
+  accountTabRequest,
   tutorialTopic,
   paymentReturn,
   onSessionResumed,
@@ -42,6 +46,7 @@ export function BusinessPage({
       <AccountPage
         api={api}
         initialTab={accountTab}
+        tabRequest={accountTabRequest}
         paymentReturn={paymentReturn}
         onLogin={actions.openLogin}
         onAccountChanged={actions.onAccountChanged ?? actions.refresh}

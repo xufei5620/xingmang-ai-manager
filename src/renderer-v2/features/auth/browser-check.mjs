@@ -199,7 +199,7 @@ test('Gemini preparation unlocks Node then Python then CLI from confirmed snapsh
   try {
     await page.getByTestId('guide-route-gemini').check()
     await page.getByTestId('guide-next').click()
-    assert.deepEqual(await page.locator('.auth-guide-check-row strong').allTextContents(), ['Node.js 与 npm', 'Python', 'Gemini CLI'])
+    assert.deepEqual(await page.locator('.auth-guide-check-row strong').allTextContents(), ['运行环境', 'Python', 'Gemini CLI'])
     assert.equal(await page.getByTestId('guide-python').isDisabled(), true)
     assert.equal(await page.getByTestId('guide-install').isDisabled(), true)
     assert.equal(await page.getByTestId('guide-next').isDisabled(), true)
@@ -224,7 +224,7 @@ test('Gemini installs with one button when the runtimes can be prepared automati
   try {
     await page.getByTestId('guide-route-gemini').check()
     await page.getByTestId('guide-next').click()
-    assert.deepEqual(await page.locator('.auth-guide-check-row strong').allTextContents(), ['Node.js 与 npm', 'Python', 'Gemini CLI'])
+    assert.deepEqual(await page.locator('.auth-guide-check-row strong').allTextContents(), ['运行环境', 'Python', 'Gemini CLI'])
     assert.equal(await page.getByTestId('guide-node').count(), 0)
     assert.equal(await page.getByTestId('guide-python').count(), 0)
     assert.equal(await page.getByTestId('guide-install').isEnabled(), true)
@@ -253,6 +253,40 @@ test('a failed tool launch in the guide keeps the real reason and can be retried
     await page.getByTestId('guide-retry').click()
     await page.waitForFunction(() => document.documentElement.dataset.calls?.includes('complete'))
     assert.deepEqual((await calls(page)).map((item) => item.method), ['detect', 'launch', 'launch', 'complete'])
+  } finally { await page.close() }
+})
+
+// 全面检测 Q50：找到的版本比推荐的旧时不能只说「已经装好」。给一句建议和一颗
+// 「更新」，但「下一步」照常能点；更完留在这一步，让人看到已经换成新版。
+test('an old installed version is flagged with an update button that never blocks the next step', async () => {
+  const page = await open('scenario=guide&installed=1&connected=1&runtime=1&outdated=1')
+  try {
+    await page.getByTestId('guide-route-claude').check()
+    await page.getByTestId('guide-next').click()
+    await page.getByTestId('guide-update').waitFor()
+    assert.match(await page.locator('.auth-guide-lead').textContent(), /已经装好，但版本旧了，建议先点「更新」/)
+    assert.match(await page.locator('.auth-guide-checklist').textContent(), /已找到 v2\.1\.42，新版是 2\.1\.277/)
+    assert.equal(await page.getByTestId('guide-tool-status').textContent(), '可更新')
+    assert.equal(await page.getByTestId('guide-next').isEnabled(), true)
+    await page.getByTestId('guide-update').click()
+    await page.getByTestId('guide-tool-status').filter({ hasText: '已安装' }).waitFor()
+    assert.equal(await page.getByTestId('guide-update').count(), 0)
+    assert.match(await page.locator('.auth-guide-checklist').textContent(), /已找到 v2\.1\.277/)
+    assert.equal(await page.getByTestId('start-guide').getAttribute('data-guide-step'), 'prepare')
+    assert.deepEqual(await calls(page), [{ method: 'detect' }, { method: 'install', input: { route: 'claude', version: '2.1.277' } }])
+  } finally { await page.close() }
+})
+
+test('an old version installed some other way gets a hint instead of an update button', async () => {
+  const page = await open('scenario=guide&installed=1&connected=1&runtime=1&outdated=1&outdatedManual=1')
+  try {
+    await page.getByTestId('guide-route-claude').check()
+    await page.getByTestId('guide-next').click()
+    await page.getByTestId('guide-update-manual').waitFor()
+    assert.equal(await page.getByTestId('guide-update').count(), 0)
+    assert.match(await page.locator('.auth-guide-lead').textContent(), /建议先用它原来的方式更新/)
+    await page.getByTestId('guide-next').click()
+    assert.equal(await page.getByTestId('start-guide').getAttribute('data-guide-step'), 'ready')
   } finally { await page.close() }
 })
 
@@ -475,6 +509,31 @@ test('welcome renders the final star orbit and real brand assets in the dark/lig
       await page.screenshot({ path: path.join(output, `welcome-${theme}-${os}.png`) })
     } finally { await page.close() }
   }
+})
+
+test('welcome stops every animation when motion is reduced, and on a low-end computer', async () => {
+  function running(page) {
+    // Only keyframe animations: the clicked button's hover transition is not what this is about.
+    return page.evaluate(() => document.getAnimations().filter((animation) => animation instanceof CSSAnimation && animation.playState === 'running').length)
+  }
+  const page = await open('scenario=welcome&motion')
+  try {
+    await page.getByTestId('welcome-orbit-scene').waitFor()
+    assert.equal(await page.getByTestId('welcome-page').getAttribute('data-motion-paused'), 'false')
+    assert.ok(await running(page) > 0, 'the orbit animates when nothing asks it to stop')
+    await page.getByTestId('welcome-motion').click()
+    await page.waitForFunction(() => document.querySelector('[data-testid="welcome-page"]')?.dataset.motionPaused === 'true')
+    // A rule more specific than the pause rule used to keep one ellipse breathing.
+    assert.equal(await running(page), 0)
+  } finally { await page.close() }
+  const lowEnd = await open('scenario=welcome&motion&lowEnd')
+  try {
+    await lowEnd.getByTestId('welcome-orbit-scene').waitFor()
+    assert.equal(await lowEnd.getByTestId('welcome-page').getAttribute('data-motion-paused'), 'true')
+    assert.equal(await running(lowEnd), 0)
+    // Nothing to switch on or off there, so the switch is not offered.
+    assert.equal(await lowEnd.getByTestId('welcome-motion').count(), 0)
+  } finally { await lowEnd.close() }
 })
 
 test('auth and guide default surfaces fit the fixed desktop frame in both themes', async () => {

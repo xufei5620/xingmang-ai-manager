@@ -22,7 +22,7 @@ where.exe npm 2>&1
 
 Write-Host "`n=== 实际版本 ==="
 node --version 2>&1
-npm --version 2>&1
+npm.cmd --version 2>&1
 
 Write-Host "`n=== 用户 PATH ==="
 [Environment]::GetEnvironmentVariable("Path", "User")

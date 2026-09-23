@@ -210,16 +210,33 @@ describe('v2 business boundaries', () => {
   it('routes actionable diagnostic categories to their owning page', () => {
     expect(diagnosticTarget('PROVIDER_CODEX')).toBe('home')
     expect(diagnosticTarget('XINGMANG_NETWORK')).toBe('settings')
-    // 环境变量那条虽然叫 PROVIDER_*，要去的也是设置页而不是首页。
-    expect(diagnosticTarget('PROVIDER_ENVIRONMENT_OVERRIDE')).toBe('settings')
+    expect(diagnosticTarget('PROXY_ENVIRONMENT')).toBe('settings')
+    expect(diagnosticTarget('CLASH_VERGE_TUN')).toBe('settings')
     expect(diagnosticTarget('RUNTIME_NODE')).toBe('maintenance')
+    expect(diagnosticTarget('RUNTIME_PYTHON')).toBe('maintenance')
+    expect(diagnosticTarget('CLI_CLAUDE')).toBe('maintenance')
+    expect(diagnosticTarget('CODEX_DESKTOP')).toBe('maintenance')
+    // Git 的安装指引在首页「运行环境」里，「安装卸载」页没有它。
+    expect(diagnosticTarget('RUNTIME_GIT')).toBe('home')
     // 文件夹被搬过没有软件里能一键修的地方，下一步是导出报告。
     expect(diagnosticTarget('FOLDER_RELOCATED')).toBe('feedback')
   })
-  it('offers no fix button for workspace settings the app must not edit', () => {
-    expect(diagnosticHasFix('WORKSPACE_CONFIG_OVERRIDE')).toBe(false)
+  it('offers no fix button where no page in the app can fix it', () => {
+    for (const code of [
+      'WORKSPACE_CONFIG_OVERRIDE',
+      'PROVIDER_ENVIRONMENT_OVERRIDE',
+      'DISK_SPACE',
+      'ADMINISTRATOR',
+      'OPERATING_SYSTEM',
+      'SYSTEM_POWERSHELL',
+      'APP_RUNTIME',
+      'AI_OUTPUT',
+      'SOMETHING_NEW',
+    ]) {
+      expect(diagnosticTarget(code)).toBeNull()
+      expect(diagnosticHasFix(code)).toBe(false)
+    }
     expect(diagnosticHasFix('CODEX_DOTENV')).toBe(true)
-    expect(diagnosticHasFix('PROVIDER_ENVIRONMENT_OVERRIDE')).toBe(true)
   })
   it('tells the account page why the server refused instead of asking for a retry', () => {
     expect(errorMessage(new Error('Original password is incorrect'))).toBe(

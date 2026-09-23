@@ -40,6 +40,10 @@ import {
   managedCliPackageDirectory,
   probeRunningCliProcesses,
 } from './cli-process-probe'
+import {
+  npmPrefixGlobalRoot,
+  resolveSameUserNpmPrefix,
+} from './npm-user-prefix'
 import { buildClaudeStatusLineCommand } from './claude-status-line'
 import { isCodexDesktopExecutable } from './codex-desktop'
 import {
@@ -136,6 +140,7 @@ import {
 } from './windows-elevation'
 import { createTrustedTemporaryDirectory } from './trusted-temp'
 import { resolveWindowsMachinePaths } from './windows-machine-paths'
+import { buildCliTerminalAccessPlan, removeNpmPowerShellShim, type UserPathOutcome } from './windows-cli-shell-access'
 import { createManagedNpmCache, ensureManagedNpmLayout, type ManagedNpmLayout } from './managed-cli'
 import { managedCliRoot, managedNativeProviderRoot, managedNpmPrefix } from './managed-cli-paths'
 import {
@@ -395,6 +400,11 @@ export interface CliLaunchResult {
    * 提醒。只提醒不改：那些文件是用户或公司的，本软件不动它们。缺省 = 没发现。
    */
   configOverrideNotice?: string
+  /**
+   * 用户在「这个文件夹不建议打开」那一问里选了不打开（或关掉了对话框），工具
+   * 没有启动。界面据此不说「已打开」。缺省 = 打开了，老调用方照旧。
+   */
+  declined?: boolean
 }
 
 export type ToolUninstallResult =
@@ -2056,6 +2066,11 @@ export interface SystemServiceOptions {
   claudeStatusLineScriptPath?: string
   /** 安装前那次磁盘剩余空间预检的读取口，测试用它造「够 / 不够 / 读不到」三种盘。 */
   readDiskSpace?: typeof readDiskSpace
+  /**
+   * 把 Windows 上工具所在的目录补进当前用户的 PATH，让用户自己开的终端也能直接
+   * 敲工具名。缺省 = 不改（测试与旧行为），只有 main.ts 接真实现。
+   */
+  ensureWindowsUserPath?: (directory: string) => Promise<UserPathOutcome>
 }
 
 export function providerCommandEnvironment(
@@ -2774,6 +2789,7 @@ export function createSystemService(
       })
     : null
   let scanCompleted = false
+  let startupShimSweepDone = false
   let scansStarted = 0
   let newestSaved = 0
   const coalescedScan = createScanCoalescer({
@@ -2838,6 +2854,17 @@ export function createSystemService(
       providerIds.map((id) => limitedProbe(() => inspectCliTool(id, npm.path, npmGlobalRoot))),
     )
     const cliResults: ToolStatus[] = cliProbes.map(buildCliToolStatusFromSettled)
+    // 老版本装的工具旁边还留着 .ps1 启动文件；每次打开软件后的第一轮检测顺手清掉，
+    // 只动文件、不起 PowerShell，也不等它。
+    if (!startupShimSweepDone && platform === 'win32') {
+      startupShimSweepDone = true
+      providerIds.forEach((id, index) => {
+        const probe = cliProbes[index]
+        if (probe.status === 'fulfilled' && probe.value.installation) {
+          void prepareCliForUserTerminals(id, probe.value.installation, 'startup')
+        }
+      })
+    }
     const networkRegion = network.region
 
     // 离线时四家探测会一个个耗满超时，首屏本地信息早就齐了却还在等；
@@ -3284,6 +3311,24 @@ export function createSystemService(
           env: commandEnvironment(),
         })
       }
+      // 普通权限安装给 npm 的是空 --userconfig（不让用户 .npmrc 改源、改脚本策略），
+      // 这也把用户在 .npmrc 里改过的全局目录一并丢了：新版装进 npm 默认目录，
+      // 用户自己敲的命令还是旧版。这里只把 prefix 这一项读回来显式传给 npm。
+      // 提权安装走托管目录，绝不读用户可写的配置来决定管理员令牌写到哪里。
+      const sameUserNpmPrefix = !managedNpmLayout
+        && provider !== 'grok'
+        && !(process.platform === 'win32' && windowsExecutionMode === 'trusted-only')
+        ? await resolveSameUserNpmPrefix({ env: commandEnvironment(), platform })
+        : null
+      if (sameUserNpmPrefix) {
+        runtimeLog?.log(
+          'info',
+          'install',
+          'cli.install.user-npm-prefix',
+          `${definition.name} 按用户 npm 配置安装到 ${redactHomeDirectory(sameUserNpmPrefix.prefix, providerRoots.userHome)}`,
+          { provider },
+        )
+      }
       managedNpmTransaction = await createInstallTemporaryDirectory('npm-transaction', {
         ...(managedNpmLayout ? { baseDirectory: managedNpmLayout.cacheRoot } : {}),
       })
@@ -3293,6 +3338,11 @@ export function createSystemService(
       if (provider !== 'grok') {
         if (managedNpmLayout) {
           occupancyProbeRoot = managedCliPackageDirectory(managedNpmLayout.prefix, definition.packageName, platform)
+        } else if (sameUserNpmPrefix) {
+          occupancyProbeRoot = cliPackageDirectoryFromNpmRoot(
+            npmPrefixGlobalRoot(sameUserNpmPrefix.prefix, platform),
+            definition.packageName,
+          )
         } else {
           const npmGlobalRoot = await resolveNpmGlobalRoot(npmExecutable, commandEnvironment())
           occupancyProbeRoot = npmGlobalRoot
@@ -3542,7 +3592,7 @@ export function createSystemService(
           const plan = buildCliMaintenancePlan(
             provider,
             npmExecutable,
-            attemptPrefix,
+            attemptPrefix ?? sameUserNpmPrefix?.prefix ?? null,
             trustedRelease.version,
             true,
             platform,
@@ -3664,6 +3714,8 @@ export function createSystemService(
       )) {
         throw new Error(`${definition.name} npm 命令已结束，但未在托管目录识别到有效安装和版本`)
       }
+      // npm 每次安装都会把 .ps1 启动文件重新写回来，所以装完、更新完都要再清一遍。
+      if (verification?.installation) await prepareCliForUserTerminals(provider, verification.installation, 'install')
       sendInstallProgress(
         target,
         provider,
@@ -3790,6 +3842,71 @@ export function createSystemService(
     return sameLocalPathIdentity(expected, installation.npmPrefix)
   }
 
+  // 同一个目录一次会话里只确认一次：四个工具多半装在同一处，同时装两个时也
+  // 不能各起一个 PowerShell 往 PATH 里各追加一遍。
+  const userPathChecks = new Map<string, Promise<void>>()
+
+  /**
+   * 让用户在自己开的 PowerShell / cmd 里直接敲工具名就能用：删掉 npm 写的 .ps1
+   * 启动文件（默认执行策略下它会报「禁止运行脚本」），装完时再确认工具目录在
+   * 当前用户的 PATH 里。两步都只动当前用户自己的东西，不改执行策略、不提权；
+   * 失败只记日志，不影响安装结果。
+   */
+  async function prepareCliForUserTerminals(
+    provider: ProviderId,
+    installation: CliInstallation,
+    reason: 'install' | 'startup',
+  ): Promise<void> {
+    let managed = false
+    if (platform === 'win32' && windowsExecutionMode === 'trusted-only') {
+      try { managed = isManagedNpmInstallation(installation) } catch { managed = false }
+    }
+    const plan = buildCliTerminalAccessPlan({
+      platform,
+      executionMode: windowsExecutionMode,
+      source: installation.source,
+      npmPrefix: installation.npmPrefix,
+      managed,
+      reason,
+    })
+    const binDirectory = plan.binDirectory
+    if (!binDirectory) return
+    const definition = cliCatalog[provider]
+    try {
+      const removal = await removeNpmPowerShellShim({
+        binDirectory,
+        command: definition.command,
+        packageName: definition.packageName,
+      })
+      if (removal === 'removed') {
+        runtimeLog?.log('info', 'install', 'cli.powershell-shim.removed', `${definition.name} 的 PowerShell 启动文件已移除，改用 .cmd`, { provider, reason })
+      }
+    } catch (error) {
+      runtimeLog?.log('warn', 'install', 'cli.powershell-shim.failed', `${definition.name} 的 PowerShell 启动文件没有清理成功`, {
+        provider,
+        reason,
+        error: redactHomeDirectory(redactCommandText(error instanceof Error ? error.message : String(error)), providerRoots.userHome),
+      })
+    }
+    const ensureUserPath = serviceOptions.ensureWindowsUserPath
+    if (!plan.ensureUserPath || !ensureUserPath) return
+    const key = path.win32.resolve(binDirectory).toLowerCase()
+    if (userPathChecks.has(key)) return
+    // 不等它：PowerShell 冷启动在慢机器上要几十秒，安装完成的提示不该跟着等。
+    userPathChecks.set(key, ensureUserPath(binDirectory).then((outcome) => {
+      runtimeLog?.log('info', 'install', 'cli.user-path.checked', outcome === 'added'
+        ? '工具目录已加入当前用户的 PATH，新开的终端即可直接使用'
+        : '工具目录已在 PATH 中', { provider, outcome })
+    }, (error: unknown) => {
+      // 失败的不留在表里，下次安装还能再试。
+      userPathChecks.delete(key)
+      runtimeLog?.log('warn', 'install', 'cli.user-path.failed', '工具目录没有加入当前用户的 PATH', {
+        provider,
+        error: redactHomeDirectory(redactCommandText(error instanceof Error ? error.message : String(error)), providerRoots.userHome),
+      })
+    }))
+  }
+
   async function uninstallCliOperation(provider: ProviderId): Promise<ToolUninstallResult> {
     if (installing.has(provider)) throw new Error(`${cliCatalog[provider].name} 正在安装、更新或卸载中`)
     installing.add(provider)
@@ -3809,7 +3926,7 @@ export function createSystemService(
         if (!uninstall.available) {
           throw new Error([
             uninstall.reason,
-            uninstall.manualCommand ? `请在普通 PowerShell 中运行：${uninstall.manualCommand}` : null,
+            uninstall.manualCommand ? `请在${platform === 'win32' ? '普通 PowerShell' : '终端'}中运行：${uninstall.manualCommand}` : null,
           ].filter(Boolean).join('；'))
         }
         if (uninstall.delegated) {

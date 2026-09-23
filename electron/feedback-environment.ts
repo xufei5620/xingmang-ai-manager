@@ -161,8 +161,8 @@ export interface FeedbackRuntimeInput {
   /** 只有 Windows 有意义；其他平台传 null，这一行不出。 */
   executionMode: WindowsCliExecutionMode | null
   /**
-   * 启动时那次「是不是管理员」探测的结果：null = 探测成功，原因 = 探测失败、按管理员
-   * 处理。缺省 = 不知道（旧行为），trusted-only 那一行照旧写「或无法确认」。
+   * 启动时那次「是不是管理员」探测的结果：null 或缺省 = 探测成功，原因 = 探测失败
+   * （这时按哪种方式处理看 executionMode）。
    */
   executionProbeFailure?: WindowsExecutionProbeFailureReason | null
   /** 软件主程序所在目录。 */
@@ -212,13 +212,15 @@ function executionModeText(
   mode: WindowsCliExecutionMode,
   probeFailure: WindowsExecutionProbeFailureReason | null | undefined,
 ): string {
-  if (mode === 'same-user') return '普通用户'
-  // trusted-only 也是令牌探测失败时的保守回退（resolveWindowsCliExecutionMode）。
-  // 知道是哪一种就直说；不知道时把「或无法确认」一并写上，免得客服据此断定用户
-  // 右键了管理员运行。
-  if (probeFailure) return `按管理员处理（没能确认：${describeWindowsExecutionProbeFailure(probeFailure)}）`
-  if (probeFailure === null) return '以管理员身份运行'
-  return '以管理员身份运行（或无法确认，按管理员处理）'
+  // 探测失败时两种处理都可能：看出是高权限的按管理员，什么都没看出来的按普通用户
+  // （resolveWindowsCliExecutionModeDetailed）。把原因带上，客服才分得清。
+  if (mode === 'same-user') {
+    return probeFailure
+      ? `普通用户（没能确认是不是管理员：${describeWindowsExecutionProbeFailure(probeFailure)}，已按普通用户处理）`
+      : '普通用户'
+  }
+  if (probeFailure) return `以管理员身份运行（细节没能确认：${describeWindowsExecutionProbeFailure(probeFailure)}，已按管理员处理）`
+  return '以管理员身份运行'
 }
 
 /**

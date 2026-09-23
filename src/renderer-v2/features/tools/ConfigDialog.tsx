@@ -324,7 +324,7 @@ export function ConfigDialog({ api, tool, config, signedIn, initialModelFilter =
         <p>要让 Codex 界面显示中文，星芒每次打开 Codex 时会顺带开一个只有这台电脑自己能连的通道，关掉 Codex 就关上。不想要这个通道，选「跟随系统语言」即可。</p><div className="v2-inline-actions"><Button size="sm" onClick={() => void run('检查中文界面', async () => { const value = await api.getLocale(); if (value.error) throw new Error(value.error); if (active.current) setLocaleText(describeChineseLocale(value)) })}>检查中文界面</Button>
         <Button size="sm" onClick={() => void run('启用中文界面', async () => { setLocaleText(''); const result = await api.setLocale(); if (result.error) throw new Error(result.error); if (active.current) { if (result.warning) setWarning(result.warning); else setLocaleText(describeChineseLocaleResult(result)) } })}>启用中文界面</Button>
         <Button size="sm" onClick={() => void run('跟随系统语言', async () => { setLocaleText(''); const result = await api.setLocale('system'); if (result.error) throw new Error(result.error); if (active.current) setLocaleText(describeChineseLocaleResult(result)) })}>跟随系统语言</Button>
-        <Button size="sm" onClick={() => void run('查看文件夹权限', async () => { const result = await api.getPermissions(); if (active.current) setLocaleText(`工作目录：${result.workspace}，信任状态：${result.trustLevel}`) })}>查看文件夹权限</Button>
+        <Button size="sm" onClick={() => void run('查看文件夹权限', async () => { const result = await api.getPermissions(); if (active.current) setLocaleText(`文件夹：${result.workspace}，${result.trustLevel === 'trusted' ? 'Codex 已信任这个文件夹' : result.trustLevel === 'untrusted' ? 'Codex 没有信任这个文件夹' : 'Codex 还没对这个文件夹做过选择'}`) })}>查看文件夹权限</Button>
         <Button size="sm" onClick={() => void run('信任当前文件夹', async () => { await api.trustWorkspace(); if (active.current) setLocaleText('文件夹信任已保存') })}>信任当前文件夹</Button></div>{localeText && <p role="status">{localeText}</p>}</details>}
       <details data-testid="tool-config-advanced"><summary>高级</summary>
         <p>点「保存配置」只改账号、密钥和模型，你在工具里做的其他设置都会留着；改之前会先自动备份。</p>
@@ -335,7 +335,7 @@ export function ConfigDialog({ api, tool, config, signedIn, initialModelFilter =
       </fieldset>
       {error && !confirmation && <p className="v2-callout is-bad" role="alert">{error}</p>}{warning && <p className="v2-callout is-warn" role="status">{warning}</p>}
     </Dialog>
-    {confirmation === 'reset' && <Confirm title="重置为初始状态？" body={<><p>将先备份当前配置，再按所选账号来源重建配置。{provider === 'codex' ? '该来源' : '当前工具'}的自定义设置（如权限、MCP 和推理参数）会重置，历史会话和官方登录凭据会保留。</p>{saveSummary}{error && <p role="alert" className="v2-callout is-bad">{error}</p>}</>} okLabel="备份并重置" cancelLabel="取消" danger loading={Boolean(busy)} onClose={() => { setError(''); setConfirmation(null) }} onOk={() => save('reset')} />}
+    {confirmation === 'reset' && <Confirm title="重置为初始状态？" body={<><p>将先备份当前配置（在「备份」页能找回），再按所选账号来源重建配置。{provider === 'codex' ? '该来源' : '当前工具'}的自定义设置（如权限、MCP 和推理参数）会重置，历史会话和官方登录凭据会保留。</p>{saveSummary}{error && <p role="alert" className="v2-callout is-bad">{error}</p>}</>} okLabel="备份并重置" cancelLabel="取消" danger loading={Boolean(busy)} onClose={() => { setError(''); setConfirmation(null) }} onOk={() => save('reset')} />}
     {exitAction && <Confirm title="要放弃未保存的修改吗？" body="关闭后，这次修改不会保存。" okLabel="放弃修改" cancelLabel="继续编辑" danger onClose={() => setExitAction(null)} onOk={() => { const action = exitAction; setExitAction(null); action() }} />}
   </>
 }

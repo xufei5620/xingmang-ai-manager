@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { ProviderConfigSummary, ProviderId } from '../../../../electron/ipc-contract'
-import { accountSwitchTarget, canUninstallTool, codexDesktopUpdateKind, configDirectoryMenuItem, connectionReady, externalInstallHint, isExternallyManagedInstall, presentTools, providerFor, recommendedVersionVerb, rollbackVersion, sourceFor, toolAvailability, toolInstallDirectory, updateCheckFailure, versionSubtitle, type ToolboxSnapshot, type ToolPresentation } from './model'
+import { accountSwitchTarget, canUninstallTool, codexDesktopUpdateKind, configDirectoryMenuItem, connectionReady, externalInstallHint, isExternallyManagedInstall, presentTools, providerFor, recommendedVersionVerb, rollbackVersion, sourceFor, toolAvailability, toolInstallDirectory, toolUpdateOffer, updateCheckFailure, versionSubtitle, type ToolboxSnapshot, type ToolPresentation } from './model'
 import {
   writeManualSourceMarker,
   type SourceMarkerStorage,
@@ -303,6 +303,59 @@ describe('renderer CLI version advice', () => {
     expect(rollbackVersion(row(advice, null) as ToolPresentation)).toBeNull()
     expect(rollbackVersion(row(null) as ToolPresentation)).toBeNull()
     expect(rollbackVersion(row({ ...advice, rollbackAvailable: false }) as ToolPresentation)).toBeNull()
+  })
+})
+
+describe('renderer update offer for the start guide', () => {
+  const pinnedOld = { recommendedVersion: '2.1.277', blockedReason: null, onRecommended: false, pinned: true, rollbackAvailable: true, recommendedIsNewer: true }
+  const row = (overrides: Partial<Pick<ToolPresentation, 'id' | 'status' | 'updateAvailable' | 'latestVersion' | 'versionAdvice' | 'error'>> = {}): Pick<ToolPresentation, 'id' | 'status' | 'updateAvailable' | 'latestVersion' | 'versionAdvice' | 'error'> => ({
+    id: 'claude',
+    status: { installed: true, version: '2.1.42', path: null, installDirectory: null, installSource: 'npm' },
+    updateAvailable: true,
+    latestVersion: '2.1.280',
+    versionAdvice: pinnedOld,
+    error: null,
+    ...overrides,
+  })
+
+  it('moves an old pinned install to the recommended version, not whatever is newest', () => {
+    expect(toolUpdateOffer(row())).toEqual({ version: '2.1.277', target: '2.1.277', newer: true, knownIssue: false, manualHint: null })
+    // The update check may have failed; the list alone still knows the install is behind.
+    expect(toolUpdateOffer(row({ updateAvailable: false }))).toMatchObject({ version: '2.1.277', newer: true })
+  })
+
+  it('says nothing when the install is on or ahead of the recommended version', () => {
+    expect(toolUpdateOffer(row({ versionAdvice: { ...pinnedOld, onRecommended: true, rollbackAvailable: false, recommendedIsNewer: undefined }, updateAvailable: false }))).toBeNull()
+    // Ahead of a pinned recommendation the home page's update button would install the older
+    // recommended build again, so the guide must not call this install "old".
+    expect(toolUpdateOffer(row({ versionAdvice: { ...pinnedOld, recommendedIsNewer: undefined } }))).toBeNull()
+  })
+
+  it('follows the update check for tools without a list and for users who follow the latest release', () => {
+    expect(toolUpdateOffer(row({ id: 'grok', versionAdvice: { recommendedVersion: null, blockedReason: null, onRecommended: false, pinned: false, rollbackAvailable: false } })))
+      .toEqual({ version: null, target: '2.1.280', newer: true, knownIssue: false, manualHint: null })
+    expect(toolUpdateOffer(row({ versionAdvice: { ...pinnedOld, pinned: false, rollbackAvailable: false } }))).toMatchObject({ version: null, target: '2.1.280' })
+    expect(toolUpdateOffer(row({ versionAdvice: { ...pinnedOld, pinned: false, rollbackAvailable: false }, updateAvailable: false }))).toBeNull()
+  })
+
+  it('offers the desktop app only a mirror build it can install and names no version for it', () => {
+    expect(toolUpdateOffer(row({ id: 'codexDesktop', versionAdvice: null }))).toEqual({ version: null, target: null, newer: true, knownIssue: false, manualHint: null })
+    expect(toolUpdateOffer(row({ id: 'codexDesktop', versionAdvice: null, updateAvailable: false }))).toBeNull()
+  })
+
+  it('flags a known-problem version even when the recommended one is older', () => {
+    const blocked = { ...pinnedOld, blockedReason: '每次请求都 400', pinned: false, recommendedIsNewer: undefined }
+    expect(toolUpdateOffer(row({ versionAdvice: blocked }))).toEqual({ version: '2.1.277', target: '2.1.277', newer: false, knownIssue: true, manualHint: null })
+  })
+
+  it('points an install made some other way at its own updater', () => {
+    expect(toolUpdateOffer(row({ status: { installed: true, version: '2.1.42', path: null, installDirectory: null, installSource: 'native' } })))
+      .toMatchObject({ manualHint: '该版本由官方安装器管理，请用它自己的方式更新' })
+  })
+
+  it('stays quiet for a missing tool or a failed detection', () => {
+    expect(toolUpdateOffer(row({ status: { installed: false, version: null, path: null, installDirectory: null } }))).toBeNull()
+    expect(toolUpdateOffer(row({ error: '工具检测没有完成' }))).toBeNull()
   })
 })
 

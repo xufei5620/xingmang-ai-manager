@@ -1,4 +1,4 @@
-import { networkFailureMessages, networkFailureReasonForMessage } from '../../../../electron/network-failure'
+import { matchNetworkFailureMessage, networkFailureMessages, networkFailureReasonForMessage } from '../../../../electron/network-failure'
 import type { AiChatAsset, AiChatErrorCode, AiChatGroupSummary, AiChatMessageInput, AiChatParametersInput, AiChatStreamEvent } from '../../../../electron/ipc-contract'
 import { matchRelayQuotaFailureMessage, relayQuotaFailureMessages } from '../../../../electron/relay-quota-failure'
 import { chatLimits } from './api'
@@ -112,6 +112,9 @@ export function planTurn(conversation: Conversation, input: { prompt: string; re
   const messages: AiChatMessageInput[] = []
   if (settings.systemPrompt.trim()) messages.push({ role: 'system', content: settings.systemPrompt.trim() })
   for (const message of history) if (message.content.trim() && (message.role === 'user' || (!message.assets?.length && message.status !== 'error'))) messages.push({ role: message.role, content: message.content })
+  // 用户自己发的每条都在发出前查过长度，超长的只可能是 AI 的某条回复。不在这里拦，
+  // 主进程会按单条上限拒掉，落到兜底「请稍后重试」，怎么重试都一样。
+  if (messages.some((message) => message.content.length > chatLimits.messageLength)) throw new Error('这段对话里有一条回复太长，请新建对话后继续')
   if (messages.length > chatLimits.messageCount || messages.reduce((total, message) => total + message.content.length, 0) > chatLimits.totalMessageLength) throw new Error('这段对话已达到上下文上限，请新建对话后继续')
   const snapshot = { ...settings, parameters: { ...settings.parameters } }
   const assistant: ChatMessage = { id: assistantId, role: 'assistant', content: '', reasoning: '', status: 'pending', createdAt: Date.now(), requestId: input.requestId, settings: snapshot }
@@ -123,7 +126,8 @@ export function chatErrorMessage(error: unknown, code?: AiChatErrorCode): string
   if (code === 'connection-timeout') return 'AI 服务响应较慢，本次等待已超时，请重试'
   if (code === 'idle-timeout') return 'AI 服务长时间没有返回内容，本次等待已停止，请重试'
   if (code === 'total-timeout') return '本次对话超过最长处理时间，已停止等待'
-  if (code === 'network-error') return '无法连接 AI 服务，请检查网络后重试'
+  // 准备分组时断网，主进程带来的是账号服务那一层说清了原因的那句话，原样上屏。
+  if (code === 'network-error') return matchNetworkFailureMessage(message) ?? '无法连接 AI 服务，请检查网络后重试'
   if (code === 'stream-closed') return 'AI 服务提前结束了本次响应，请重试'
   if (code === 'model-unavailable') return '当前模型不在所选分组的可用列表中，请刷新后重新选择'
   // 必须排在下面那几条按字面猜的正则之前：服务在维护时主进程给的话已经说清楚了，

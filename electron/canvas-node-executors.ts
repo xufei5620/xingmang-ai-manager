@@ -301,26 +301,37 @@ export function createCanvasNodeExecutors(options: {
     if (!group) throw new Error('请先在「生成配置」中选择文字分组')
     const model = node.data.model.trim()
     if (!model) throw new Error('请选择文字模型')
-    async function parseOnce(): Promise<string> {
-      const raw = await options.completeText!.completeOnce({
-        group,
-        model,
-        system: dramaParseSystemPrompt,
-        user: script,
-        signal,
-      })
-      return JSON.stringify(parseDramaTablesJson(raw).tables)
+    function failure(error: unknown): Error {
+      const detail = error instanceof Error ? error.message : String(error)
+      return new Error(detail.includes('剧本') ? detail : `剧本解析失败：${detail.slice(0, 300)}`)
     }
+    async function requestOnce(): Promise<string> {
+      try {
+        return await options.completeText!.completeOnce({
+          group,
+          model,
+          system: dramaParseSystemPrompt,
+          user: script,
+          signal,
+        })
+      } catch (error) {
+        if (signal.aborted) throw error
+        throw failure(error)
+      }
+    }
+    // 只有模型答了、但答出来的表格读不懂时才再问一次。请求本身失败（断网、超时、
+    // 余额不足）再发一次只会多扣一次钱，结果还是一样。
+    const raw = await requestOnce()
     try {
-      return { outputText: await parseOnce(), group, model }
+      return { outputText: JSON.stringify(parseDramaTablesJson(raw).tables), group, model }
     } catch (error) {
       if (signal.aborted) throw error
-      try {
-        return { outputText: await parseOnce(), group, model }
-      } catch (retryError) {
-        const detail = retryError instanceof Error ? retryError.message : String(retryError)
-        throw new Error(detail.includes('剧本') ? detail : `剧本解析失败：${detail.slice(0, 300)}`)
-      }
+    }
+    const retried = await requestOnce()
+    try {
+      return { outputText: JSON.stringify(parseDramaTablesJson(retried).tables), group, model }
+    } catch (error) {
+      throw failure(error)
     }
   }
   const dramaText: CanvasNodeExecutors['drama-bible'] = async ({ node, inputs }) => ({

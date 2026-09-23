@@ -57,7 +57,8 @@
 .auth-welcome-foot > [data-testid='welcome-support'] .xm-card-body { padding: 10px 14px 10px 10px; }
 .auth-welcome-support > svg { flex: none; color: var(--accent); }
 .auth-welcome-support .xm-btn { margin-top: 3px; padding-inline: 0; }
-.auth-welcome[data-motion-paused='true'] *, .auth-welcome[data-motion-paused='true'] *::before { animation: none; animation-play-state: paused; }
+/* !important：几条动画写在比这里更具体的选择器上（例如 .auth-orbit-ellipses i:nth-child(2)），不加就停不全。 */
+.auth-welcome[data-motion-paused='true'] *, .auth-welcome[data-motion-paused='true'] *::before, .auth-welcome[data-motion-paused='true'] *::after { animation: none !important; animation-play-state: paused !important; }
 @keyframes auth-orbit { to { --auth-spin: 360deg; } }
 @keyframes auth-orbit-reverse { to { --auth-spin: -360deg; } }
 @keyframes auth-core { 50% { opacity: .7; transform: scale(1.08); } }

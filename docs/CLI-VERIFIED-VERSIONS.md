@@ -61,6 +61,10 @@ Codex 那时 `recommended` 是 `null`，也就是那两天点过「更新」的�
   挡在外面）。也就是说这条 deny 今天是零作用的保险，它挡的是「上游哪天又把它发出来」，
   以及顺带让 Claude Code 不再提议发布用户点不开的链接。
 
+- **DesignSync（2.1.277）同样每次都发**：`claude -p` 的请求里 21 个工具，其中有它；把它加进
+  `permissions.deny` 后剩 20 个。它把设计稿同步到 claude.ai 的 Claude Design，中转 Key 用不了，
+  所以与 Artifact 一样只在星芒来源下禁、切回官方撤掉。
+
 复核办法与上面抓包一致：空 HOME 装名单里的推荐版本，起一个把请求体落盘的本地 HTTP 接口，
 把 `ANTHROPIC_BASE_URL` 指过去、`ANTHROPIC_AUTH_TOKEN` 随便填，跑 `claude -p "hi"`，
 看请求体的 `tools[].name`。**不要对生产中转发这类探测请求。**
@@ -126,6 +130,7 @@ Codex 那时 `recommended` 是 `null`，也就是那两天点过「更新」的�
 | Claude 的 Artifact 工具 | `~/.claude/settings.json` 的 `permissions.deny` | 不禁 | 禁掉 | 中转 Key 用不了它，且它的 schema 曾整轮 400 |
 | Claude 的读网页预检 | `skipWebFetchPreflight` | 每抓一个域名先问 `api.anthropic.com` | 跳过（只在星芒来源下写，切回官方删掉） | 国内连不上那台主机，WebFetch 要么立即失败、要么等 30 秒后失败 |
 | Claude 的选模型菜单 | `modelPicker` 与 `env.ANTHROPIC_DEFAULT_MODEL` | 官方阵容（Default = Opus 5 · 1M）并标官方美元价 | 当前 Key 可用的 Claude 型号，Default 指向选定的型号（用户自己写过菜单就不动；切回官方收回） | 选到分组里没有的型号只会报「无可用渠道」，价格也不是当前账号的计费 |
+| Claude 的 DesignSync 工具 | 同上 | 不禁 | 禁掉（只在星芒来源下写，切回官方删掉） | 要 claude.ai 登录才能用，2.1.277 在中转上却每次都把它发给模型 |
 | Claude 的命令确认 | `permissions.defaultMode` | `default`（逐条问） | `bypassPermissions` | 本产品的卖点就是不用自己配、也不用自己按确认 |
 | Claude 的回复语言 | `language` | 未设（跟着对话语言走） | `简体中文` | 只靠 AGENTS.md 撑不住：克隆来的项目大多已有说明文件，模板不会生成 |
 | Claude 的记录保留期 | `cleanupPeriodDays` | 30 天 | 365 天 | 记录页、「接着聊」、导出都建立在文件还在的前提上 |
@@ -133,7 +138,9 @@ Codex 那时 `recommended` 是 `null`，也就是那两天点过「更新」的�
 | Gemini 后台功能用的型号 | `modelConfigs.customOverrides` | 联网搜索、读网页、压缩、子代理、会话摘要、Auto 各自写死 Google 官方型号名 | 这批官方型号名统一改写成当前配的中转型号（只在星芒来源下写，切回官方删掉） | 中转没有这些型号时，这些功能默默重试几分钟后失败 |
 | Grok 画图与视频工具的地址 | `~/.grok/config.toml` 的 `[endpoints] xai_api_base_url` | `https://api.x.ai/v1` | 与对话同一个中转地址 | 这几个工具带的是同一把 `api_key`，不改就把中转 Key 发给 xAI 官方，国内还要卡 120 秒 |
 | Codex 的使用统计 | `~/.codex/config.toml` 的 `[analytics] enabled` | 开（发往 `ab.chatgpt.com`） | `false`（用户写过就不动；切回 ChatGPT 且没有官方快照时收回） | 国内连不上，`codex exec` 每次退出前要等约 10 秒 |
+| Claude 里别家中转留下的设置 | `~/.claude/settings.json` 的 `env.ANTHROPIC_API_KEY` / `ANTHROPIC_MODEL` / `ANTHROPIC_SMALL_FAST_MODEL` / `ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU}_MODEL` 与顶层 `apiKeyHelper` | 用户自己写的，原样生效 | 接当前账号时挪进 `~/.claude/xingmang-claude-foreign-settings.json`，切回官方原样放回（当时已有同名项就不覆盖） | 它们会顶掉当前账号的 Key 或型号，界面却显示正常（全面检测 Q7） |
 | Grok 的型号名单与附带型号 | `~/.grok/config.toml` 的 `[models] allowed_models` / `session_summary` / `image_description` | 名单不限（内置 grok-4.6、grok-4.5 也在）；标题钉在字面量 `grok-4.6` | 只留中转那一项，标题与看图都用它（用户写过就不动） | 内置型号走 xAI 自己的服务，国内连不上、也不走当前账号；中转型号不叫 grok-4.6 时标题会悄悄失败 |
+| Gemini 的使用统计 | `privacy.usageStatisticsEnabled` | 开 | `false`（用户写过就不动；切回 Google 账号时只收回本软件写的那一份） | 开着时每个发给中转的请求都带本机安装 ID 头，统计本身发往国内连不上的 `play.googleapis.com` |
 | Gemini 的记录保留期 | `general.sessionRetention.maxAge` | `"30d"` | `"365d"` | 同上 |
 | Gemini 的 IDE 模式 | `ide.enabled` | 关 | 开 | 装在 IDE 里的客户少一步 |
 | 目录信任 | 见 `docs/WORKSPACE-TRUST.md` | 每次问 | 本软件打开的目录替用户信任 | 同上 |
@@ -231,11 +238,22 @@ Codex 那时 `recommended` 是 `null`，也就是那两天点过「更新」的�
   `allowed_models = ["grok"]` 后只剩中转那一项。把中转型号改成一个内置目录里没有的名字，在伪终端
   里连聊两轮：标题、主对话、每轮小结、输入建议一共 8 次请求，全部是中转型号。`hidden_models` /
   `disabled_models` 会按 `model` 字段把中转那一项一起藏掉，不能用。
+- **Gemini CLI 0.60.0 的使用统计 —— 跑起来看到了**。出网代理记录每一次去官方主机的连接：星芒配置
+  下唯一的官方连接是每次运行一次 `CONNECT play.googleapis.com:443`，不拖慢启动；同时发给中转的
+  每个请求都带 `x-gemini-api-privileged-user-id: <安装 ID>`。写上
+  `privacy.usageStatisticsEnabled: false` 后两样都没了。
 - **Gemini CLI 0.60.0 — 读 bundle 得出**。settings schema 里 `general.sessionRetention` 的
   `enabled` 默认 `true`、`maxAge` 默认 `"30d"`、`minRetention` 默认 `"1d"`；`maxAge` 的解析是
   `/^(\d+)([dhwm])$/`，`"365d"` 合法。要紧的是 `getDefaultsFromSchema` **会递归补齐嵌套默认
   值**，所以用户的 `settings.json` 里没有这一段时清理照样按 30 天跑，不是「没配就不清」。
   被清的目录是 `getProjectTempDir()/chats`，正是记录页读的那一处。
+- **Claude Code 2.1.277 里别家中转留下的设置 —— 跑起来看到了**（2026-09-23，本地假接口，出网代理指死端口）。
+  `settings.json` 按本软件模板写好 `ANTHROPIC_AUTH_TOKEN` / `ANTHROPIC_BASE_URL` / `model` 之后：
+  `env.ANTHROPIC_MODEL` 压过顶层 `model`，主对话和后台的标题、`/rename` 请求全用它，还提示型号不在目录里；
+  `env.ANTHROPIC_API_KEY` 在 `-p` 模式下不问就把它当 `x-api-key` 和我们的 `Authorization` 一起发出去，
+  交互模式开机弹「Detected a custom API key」让用户选（默认「No」）；顶层 `apiKeyHelper` 同样多带一个
+  `x-api-key`，交互模式只给一行警告；`ANTHROPIC_DEFAULT_HAIKU_MODEL` 或 `ANTHROPIC_SMALL_FAST_MODEL`
+  任一项都会把后台的标题、`/rename` 请求送到那个型号。
 
 ## 站点维度
 

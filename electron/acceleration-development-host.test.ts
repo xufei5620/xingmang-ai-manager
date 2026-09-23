@@ -5,7 +5,7 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { EventEmitter } from 'node:events'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { accelerationBonusCode, accelerationConflictKinds } from './acceleration-contract'
-import { accelerationDevelopmentDirectory, accelerationStartFailureDescriptions, createAccelerationDevelopmentHost, parseAccelerationDevelopmentConfig, parseAccelerationEntitlementSource, readAccelerationDevelopmentConfig } from './acceleration-development-host'
+import { accelerationDevelopmentDirectory, accelerationProxyJournalPath, accelerationStartFailureDescriptions, createAccelerationDevelopmentHost, parseAccelerationDevelopmentConfig, parseAccelerationEntitlementSource, readAccelerationDevelopmentConfig } from './acceleration-development-host'
 
 const mocks = vi.hoisted(() => ({ fork: vi.fn(), spawn: vi.fn(), read: vi.fn(), environment: vi.fn(), profile: vi.fn(), profileCleanup: vi.fn() }))
 vi.mock('node:child_process', async (original) => ({ ...await original<typeof import('node:child_process')>(), fork: mocks.fork, spawn: mocks.spawn }))
@@ -559,6 +559,7 @@ describe('development acceleration worker host', () => {
     const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'xm-acceleration-recover-test-'))
     try {
       await fs.mkdir(accelerationDevelopmentDirectory(directory))
+      await fs.writeFile(accelerationProxyJournalPath(directory), '{}')
       const worker = new FakeWorker()
       mocks.fork.mockReturnValue(worker)
       const host = createAccelerationDevelopmentHost({ config, dataDirectory: directory })
@@ -580,6 +581,7 @@ describe('development acceleration worker host', () => {
     const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'xm-acceleration-recover-test-'))
     try {
       await fs.mkdir(accelerationDevelopmentDirectory(directory))
+      await fs.writeFile(accelerationProxyJournalPath(directory), '{}')
       const worker = new FakeWorker()
       worker.autoInit = false
       mocks.fork.mockReturnValue(worker)
@@ -597,6 +599,35 @@ describe('development acceleration worker host', () => {
     await host.recover()
     expect(mocks.fork).not.toHaveBeenCalled()
     await host.dispose()
+  })
+
+  it('starts no worker when only the free-time ledger is left in the helper directory', async () => {
+    vi.useRealTimers()
+    // A state read after signing in creates the directory and the ledger; that
+    // alone must not pull a whole helper up on every later launch.
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'xm-acceleration-recover-test-'))
+    try {
+      await fs.mkdir(accelerationDevelopmentDirectory(directory))
+      await fs.writeFile(path.join(accelerationDevelopmentDirectory(directory), 'trial-ledger.json'), '{}')
+      const host = createAccelerationDevelopmentHost({ config, dataDirectory: directory })
+      await host.recover()
+      expect(mocks.fork).not.toHaveBeenCalled()
+      await host.dispose()
+    } finally { await fs.rm(directory, { recursive: true, force: true }) }
+  })
+
+  it('recovers when only the Windows lease beside the journal is left', async () => {
+    vi.useRealTimers()
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'xm-acceleration-recover-test-'))
+    try {
+      await fs.mkdir(accelerationDevelopmentDirectory(directory))
+      await fs.writeFile(`${accelerationProxyJournalPath(directory)}.lock`, '{}')
+      mocks.fork.mockReturnValue(new FakeWorker())
+      const host = createAccelerationDevelopmentHost({ config, dataDirectory: directory })
+      await host.recover()
+      expect(mocks.fork).toHaveBeenCalledOnce()
+      await host.dispose()
+    } finally { await fs.rm(directory, { recursive: true, force: true }) }
   })
 
   it('sanitizes fork exceptions and can dispose an unused host without spawning anything', async () => {
@@ -704,4 +735,95 @@ worker.on('message', () => process.exit(0))
       await fs.rm(directory, { recursive: true, force: true })
     }
   }, 10_000)
+
+  describe('idle exit', () => {
+    function idleSetup(first = new FakeWorker(), second = new FakeWorker()) {
+      mocks.fork.mockReturnValueOnce(first).mockReturnValueOnce(second)
+      const host = createAccelerationDevelopmentHost({ config, dataDirectory, idleExitMs: 1_000 })
+      return { host, first, second }
+    }
+    async function readState(host: ReturnType<typeof createAccelerationDevelopmentHost>, worker: FakeWorker) {
+      const request = host.getAccelerationState('xm-account:1')
+      await flush()
+      worker.respond(Number(worker.sent.at(-1)!.id), true, { phase: 'idle' })
+      return request
+    }
+
+    it('lets a helper that is not accelerating leave, then launches a fresh one on the next use', async () => {
+      const { host, first, second } = idleSetup()
+      await readState(host, first)
+      await vi.advanceTimersByTimeAsync(1_000)
+      expect(first.sent.at(-1)).toMatchObject({ operation: 'idle' })
+      first.respond(Number(first.sent.at(-1)!.id), true, true)
+      await flush()
+      // Leaving is the same IPC disconnect as quitting: the helper restores and
+      // stops everything itself, and it is never mistaken for a crash.
+      expect(first.disconnect).toHaveBeenCalledOnce()
+      const next = host.getAccelerationState('xm-account:1')
+      await flush()
+      expect(mocks.fork).toHaveBeenCalledOnce()
+      first.emit('exit', 0)
+      first.emit('close', 0)
+      await flush()
+      expect(mocks.fork).toHaveBeenCalledTimes(2)
+      await flush()
+      second.respond(Number(second.sent.at(-1)!.id), true, { phase: 'idle' })
+      expect(await next).toEqual({ phase: 'idle' })
+      await host.dispose()
+    })
+
+    it('keeps a helper that says it is still busy and asks again later', async () => {
+      const { host, first } = idleSetup()
+      await readState(host, first)
+      await vi.advanceTimersByTimeAsync(1_000)
+      first.respond(Number(first.sent.at(-1)!.id), true, false)
+      await flush()
+      expect(first.disconnect).not.toHaveBeenCalled()
+      await vi.advanceTimersByTimeAsync(1_000)
+      expect(first.sent.filter((message) => message.operation === 'idle')).toHaveLength(2)
+      await host.dispose()
+    })
+
+    it('keeps the helper when a request arrives while it is being asked', async () => {
+      const { host, first } = idleSetup()
+      await readState(host, first)
+      await vi.advanceTimersByTimeAsync(1_000)
+      const idleId = Number(first.sent.at(-1)!.id)
+      const start = host.startAcceleration('xm-account:1', 'system-proxy')
+      await flush()
+      first.respond(idleId, true, true)
+      await flush()
+      expect(first.disconnect).not.toHaveBeenCalled()
+      first.respond(Number(first.sent.at(-1)!.id), true, { phase: 'active' })
+      await start
+      await host.dispose()
+    })
+
+    it('waits for the next quiet period after every use', async () => {
+      const { host, first } = idleSetup()
+      await readState(host, first)
+      await vi.advanceTimersByTimeAsync(900)
+      await readState(host, first)
+      await vi.advanceTimersByTimeAsync(900)
+      expect(first.sent.some((message) => message.operation === 'idle')).toBe(false)
+      await vi.advanceTimersByTimeAsync(100)
+      expect(first.sent.at(-1)).toMatchObject({ operation: 'idle' })
+      await host.dispose()
+    })
+
+    it('never asks without the option, and stops asking once disposed', async () => {
+      const worker = new FakeWorker()
+      mocks.fork.mockReturnValue(worker)
+      const host = createAccelerationDevelopmentHost({ config, dataDirectory })
+      await readState(host, worker)
+      await vi.advanceTimersByTimeAsync(600_000)
+      expect(worker.sent.some((message) => message.operation === 'idle')).toBe(false)
+      await host.dispose()
+      const idle = idleSetup()
+      await readState(idle.host, idle.first)
+      await idle.host.dispose()
+      await vi.advanceTimersByTimeAsync(10_000)
+      expect(idle.first.sent.some((message) => message.operation === 'idle')).toBe(false)
+    })
+  })
 })

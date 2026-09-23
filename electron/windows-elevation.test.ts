@@ -6,6 +6,8 @@ import {
   describeWindowsCliLaunchError,
   encodeWindowsPowerShellCommand,
   inspectCurrentWindowsIntegrityRid,
+  inspectCurrentWindowsProcessHighIntegrity,
+  inspectWindowsElevationCapability,
   inspectCurrentWindowsTokenElevationType,
   parseWindowsElevationCapability,
   parseWindowsMandatoryLabelRid,
@@ -18,7 +20,6 @@ import {
   resolveWindowsCliExecutionModeDetailed,
   resolveWindowsPowerShellExecutable,
   windowsElevationCancelledMessage,
-  windowsElevationCapabilityScript,
   windowsElevationDeniedMessage,
   windowsPowerShellCandidates,
   windowsPowerShellExecutable,
@@ -54,21 +55,23 @@ describe('Windows CLI launch', () => {
     expect(packagedProbe).toHaveBeenCalledOnce()
   })
 
-  it('uses the restrictive boundary only for elevated tokens or probe failures', async () => {
+  it('uses the restrictive boundary for confirmed elevated tokens but not for an unanswered probe', async () => {
     await expect(resolveWindowsCliExecutionMode({
       isPackaged: true,
       platform: 'win32',
       probeAdministrator: async () => true,
     })).resolves.toBe('trusted-only')
 
+    // Nothing was learned about the token, so the app is treated as the ordinary
+    // user it almost always is (product decision, 2026-09-23).
     await expect(resolveWindowsCliExecutionMode({
       isPackaged: false,
       platform: 'win32',
       probeAdministrator: async () => { throw new Error('probe failed') },
-    })).resolves.toBe('trusted-only')
+    })).resolves.toBe('same-user')
   })
 
-  it('keeps the restrictive fallback but reports why the probe failed and how long it took', async () => {
+  it('treats an unanswered probe as an ordinary user and reports why it failed and how long it took', async () => {
     let clock = 1_000
     const blocked = Object.assign(new Error('Command failed: powershell.exe -Command Add-Type ...'), {
       code: 1,
@@ -83,7 +86,7 @@ describe('Windows CLI launch', () => {
         throw blocked
       },
     })).resolves.toEqual({
-      mode: 'trusted-only',
+      mode: 'same-user',
       elapsedMs: 2_500,
       probeFailure: {
         reason: 'blocked',
@@ -131,8 +134,14 @@ describe('Windows CLI launch', () => {
     expect(probeElevationType).not.toHaveBeenCalled()
   })
 
-  it('leaves High integrity and an unreadable label to the elevation probe, including its strict fallback', async () => {
-    for (const probeIntegrityRid of [async () => 12288, async () => 16384, async () => null, async () => { throw new Error('whoami failed') }]) {
+  it('leaves High integrity and an unreadable label to the elevation probe', async () => {
+    const cases = [
+      { probeIntegrityRid: async () => 12288, failedMode: 'trusted-only' },
+      { probeIntegrityRid: async () => 16384, failedMode: 'trusted-only' },
+      { probeIntegrityRid: async () => null, failedMode: 'same-user' },
+      { probeIntegrityRid: async () => { throw new Error('whoami failed') }, failedMode: 'same-user' },
+    ] as const
+    for (const { probeIntegrityRid, failedMode } of cases) {
       await expect(resolveWindowsCliExecutionModeDetailed({
         isPackaged: true, platform: 'win32', probeIntegrityRid, probeElevationType: async () => 'full',
       })).resolves.toMatchObject({ mode: 'trusted-only' })
@@ -146,7 +155,9 @@ describe('Windows CLI launch', () => {
         probeIntegrityRid,
         probeElevationType: async () => { throw Object.assign(new Error('Command failed'), { killed: true, signal: 'SIGTERM' }) },
       })
-      expect(failed).toMatchObject({ mode: 'trusted-only', probeFailure: { reason: 'timeout' } })
+      // A label already read as High keeps the strict fallback; with nothing
+      // known at all the failure answers same-user.
+      expect(failed).toMatchObject({ mode: failedMode, probeFailure: { reason: 'timeout' } })
     }
   })
 
@@ -417,19 +428,40 @@ describe('Windows CLI launch', () => {
 })
 
 describe('windows elevation capability', () => {
-  it('asks for the administrators group by SID, not by its localized name', () => {
-    // BUILTIN\Administrators renders differently per Windows display language;
-    // the SID does not.
-    expect(windowsElevationCapabilityScript).toContain('S-1-5-32-544')
-    expect(windowsElevationCapabilityScript).toContain('GetCurrent()')
-    expect(windowsElevationCapabilityScript).not.toMatch(/Administrators'/)
+  it('counts a deny-only administrators group, the way a UAC-filtered admin runs', () => {
+    // An administrator running unelevated: the group is there, but deny-only.
+    const filteredAdmin = [
+      '"Everyone","Well-known group","S-1-1-0","Mandatory group, Enabled by default, Enabled group"',
+      '"BUILTIN\\Administrators","Alias","S-1-5-32-544","Group used for deny only"',
+      '"Mandatory Label\\Medium Mandatory Level","Label","S-1-16-8192",""',
+    ].join('\r\n')
+    expect(parseWindowsElevationCapability(filteredAdmin)).toBe('administrator')
+    const standard = [
+      '"Everyone","Well-known group","S-1-1-0","Mandatory group, Enabled by default, Enabled group"',
+      '"BUILTIN\\Users","Alias","S-1-5-32-545","Mandatory group, Enabled by default, Enabled group"',
+      '"Mandatory Label\\Medium Mandatory Level","Label","S-1-16-8192",""',
+    ].join('\r\n')
+    expect(parseWindowsElevationCapability(standard)).toBe('standard')
   })
 
-  it('reads the probe answer and refuses to guess', () => {
-    expect(parseWindowsElevationCapability('administrator\r\n')).toBe('administrator')
-    expect(parseWindowsElevationCapability(' Standard ')).toBe('standard')
+  it('asks for the administrators group by SID, not by its localized name, and refuses to guess', () => {
+    const localized = [
+      '"BUILTIN\\管理员","别名","S-1-5-32-544","仅用于拒绝的组"',
+      '"Mandatory Label\\中等强制级别","标签","S-1-16-8192",""',
+    ].join('\r\n')
+    expect(parseWindowsElevationCapability(localized)).toBe('administrator')
+    // A name that merely mentions the SID is not membership.
+    expect(parseWindowsElevationCapability('"x S-1-5-32-544","Alias","S-1-5-32-545",""\r\n"L","Label","S-1-16-8192",""'))
+      .toBe('standard')
+    // Anything that is not whoami's output is no answer.
     expect(parseWindowsElevationCapability('')).toBe('unknown')
-    expect(parseWindowsElevationCapability('True')).toBe('unknown')
+    expect(parseWindowsElevationCapability('administrator')).toBe('unknown')
+    expect(parseWindowsElevationCapability('"BUILTIN\\Administrators","Alias","S-1-5-32-544",""')).toBe('unknown')
+  })
+
+  it.runIf(process.platform === 'win32')('answers the real account without falling back to unknown', async () => {
+    await expect(inspectWindowsElevationCapability()).resolves.toMatch(/^(administrator|standard)$/)
+    await expect(inspectCurrentWindowsProcessHighIntegrity()).resolves.toEqual(expect.any(Boolean))
   })
 
   it('tells a cancelled prompt apart from an account that cannot elevate', () => {

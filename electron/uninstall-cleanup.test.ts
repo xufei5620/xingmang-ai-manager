@@ -4,9 +4,12 @@ import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { accelerationProxyJournalPath } from './acceleration-development-host'
 import { windowsAppUserModelId } from './login-launch'
+import { uninstallCleanupArgument, uninstallClearLoginArgument } from './uninstall-cleanup-entry'
 import {
+  clearLoginRecords,
   describeCleanupFailure,
   hasProxyRecoveryRecords,
+  loginRecordFiles,
   runUninstallCleanup,
   startUninstallCleanup,
   uninstallCleanupExitCodes as codes,
@@ -137,5 +140,118 @@ describe('uninstall cleanup', () => {
     await expect(exited).resolves.toBe(0)
     expect(app.getPath).toHaveBeenCalledWith('userData')
     expect(calls).toEqual([`aumid:${windowsAppUserModelId}`, 'login:false'])
+  })
+
+  it('lists exactly the files the account stores keep a login in', () => {
+    const dataDirectory = temporaryDataDirectory()
+    const backup = 'realm-accounts-v2.dat.unreadable-1790000000000-0f2a6c1e-7b1d-4c55-9a51-2f4f3f0b1c2d.bak'
+    expect(loginRecordFiles(dataDirectory, [
+      backup, 'realm-accounts-v2.dat', 'managed-cli-keys.dat', 'chat-group-keys.dat', 'settings.json', 'realm-accounts-v2.dat.unreadable-x.bak.tmp',
+    ])).toEqual([
+      path.join(dataDirectory, 'account-session.dat'),
+      path.join(dataDirectory, 'saved-accounts.dat'),
+      path.join(dataDirectory, 'realm-accounts-v2.dat'),
+      path.join(dataDirectory, 'account-credentials.dat'),
+      path.join(dataDirectory, backup),
+      path.join(dataDirectory, 'realms', 'api-account', 'account-credentials.dat'),
+    ])
+    // A rename in any store would otherwise leave that login on disk with the box ticked.
+    const main = fs.readFileSync(path.join(__dirname, 'main.ts'), 'utf8')
+    expect(main).toContain("new AccountSessionStore(path.join(managerDataDirectory, 'account-session.dat')")
+    expect(main).toContain("new SavedAccountsStore(path.join(managerDataDirectory, 'saved-accounts.dat')")
+    expect(main).toContain("new AccountCredentialStore(path.join(roots.rootDirectory, 'account-credentials.dat')")
+    const vault = fs.readFileSync(path.join(__dirname, 'realm-account-vault-file.ts'), 'utf8')
+    expect(vault).toContain("path.join(userDataDirectory, 'realm-accounts-v2.dat')")
+    expect(vault).toContain('`realm-accounts-v2.dat.unreadable-${Date.now()}-${randomUUID()}.bak`')
+    const roots = fs.readFileSync(path.join(__dirname, 'realm-data-roots.ts'), 'utf8')
+    expect(roots).toContain("path.join(managerRoot, 'realms', 'api-account')")
+  })
+
+  it('clears the login records and leaves keys, settings and everything else alone', async () => {
+    const dataDirectory = temporaryDataDirectory()
+    const backup = 'realm-accounts-v2.dat.unreadable-1-a.bak'
+    const login = ['account-session.dat', 'saved-accounts.dat', 'realm-accounts-v2.dat', 'account-credentials.dat', backup]
+    const kept = ['managed-cli-keys.dat', 'chat-group-keys.dat', 'settings.json']
+    for (const name of [...login, ...kept]) fs.writeFileSync(path.join(dataDirectory, name), name)
+    fs.mkdirSync(path.join(dataDirectory, 'realms', 'api-account'), { recursive: true })
+    fs.writeFileSync(path.join(dataDirectory, 'realms', 'api-account', 'account-credentials.dat'), 'api')
+    fs.writeFileSync(path.join(dataDirectory, 'realms', 'api-account', 'managed-cli-keys.dat'), 'api keys')
+
+    await expect(clearLoginRecords(dataDirectory)).resolves.toBe(true)
+    expect(fs.readdirSync(dataDirectory).sort()).toEqual([...kept, 'realms'].sort())
+    expect(fs.readdirSync(path.join(dataDirectory, 'realms', 'api-account'))).toEqual(['managed-cli-keys.dat'])
+  })
+
+  it('treats a machine that never logged in as already clear', async () => {
+    await expect(clearLoginRecords(temporaryDataDirectory())).resolves.toBe(true)
+    await expect(clearLoginRecords(path.join(temporaryDataDirectory(), 'never-started'))).resolves.toBe(true)
+  })
+
+  it('refuses a linked login file but still clears the others', async () => {
+    const dataDirectory = temporaryDataDirectory()
+    const elsewhere = path.join(temporaryDataDirectory(), 'someone-elses.dat')
+    fs.writeFileSync(elsewhere, 'not ours')
+    // A hard link needs no privilege on Windows, and the elevated uninstaller
+    // must not delete through one (I8).
+    fs.linkSync(elsewhere, path.join(dataDirectory, 'account-session.dat'))
+    fs.writeFileSync(path.join(dataDirectory, 'saved-accounts.dat'), 'saved')
+    const report = vi.fn()
+
+    await expect(clearLoginRecords(dataDirectory, report)).resolves.toBe(false)
+    expect(fs.existsSync(path.join(dataDirectory, 'saved-accounts.dat'))).toBe(false)
+    expect(fs.readFileSync(elsewhere, 'utf8')).toBe('not ours')
+    expect(report).toHaveBeenCalledWith('login records: 登录记录必须是单链接普通文件')
+  })
+
+  it('clears login records only when asked, before proxy recovery, and reports what remains', async () => {
+    const order: string[] = []
+    await expect(runUninstallCleanup({
+      dataDirectory: temporaryDataDirectory(),
+      proxyRecordsExist: () => true,
+      removeLoginItem: () => { order.push('login item'); return true },
+      clearLoginRecords: async () => { order.push('login records'); return true },
+      recoverProxy: async () => { order.push('proxy') },
+    })).resolves.toBe(0)
+    expect(order).toEqual(['login item', 'login records', 'proxy'])
+
+    await expect(runUninstallCleanup({
+      dataDirectory: temporaryDataDirectory(),
+      removeLoginItem: () => true,
+      recoverProxy: async () => undefined,
+      clearLoginRecords: async () => false,
+    })).resolves.toBe(codes.loginRecordsRemain)
+
+    const report = vi.fn()
+    const recoverProxy = vi.fn(async () => undefined)
+    await expect(runUninstallCleanup({
+      report,
+      dataDirectory: temporaryDataDirectory(),
+      proxyRecordsExist: () => true,
+      removeLoginItem: () => true,
+      recoverProxy,
+      clearLoginRecords: async () => { throw new Error('登录记录无法验证路径组件') },
+    })).resolves.toBe(codes.loginRecordsRemain)
+    expect(recoverProxy).toHaveBeenCalledTimes(1)
+    expect(report).toHaveBeenCalledWith('login records: 登录记录无法验证路径组件')
+  })
+
+  it('keeps the login unless the uninstaller passed the clear-login switch', async () => {
+    for (const [argv, remains] of [
+      [['C:/App/xingmang.exe', uninstallCleanupArgument], true],
+      [['C:/App/xingmang.exe', uninstallCleanupArgument, uninstallClearLoginArgument], false],
+    ] as const) {
+      const dataDirectory = temporaryDataDirectory()
+      fs.writeFileSync(path.join(dataDirectory, 'account-session.dat'), 'session')
+      const app = {
+        isPackaged: true,
+        getPath: vi.fn(() => dataDirectory),
+        setAppUserModelId: vi.fn(),
+        getLoginItemSettings: vi.fn(() => ({ openAtLogin: false })),
+        setLoginItemSettings: vi.fn(),
+      }
+      const exited = new Promise<number>((resolve) => startUninstallCleanup(app as never, resolve, undefined, argv))
+      await expect(exited).resolves.toBe(0)
+      expect(fs.existsSync(path.join(dataDirectory, 'account-session.dat'))).toBe(remains)
+    }
   })
 })

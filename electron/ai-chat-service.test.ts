@@ -472,6 +472,76 @@ describe('AI chat streaming service', () => {
     service.dispose()
   })
 
+  it('says what went wrong with the network instead of blaming the key when preparing the group fails offline', async () => {
+    const coordinator = credentialCoordinator()
+    coordinator.resolveCredential = vi.fn(async () => {
+      throw new Error(networkFailureMessages.offline)
+    })
+    const events: AiChatStreamEvent[] = []
+    const fetchImpl = vi.fn<TestFetch>()
+    const service = createAiChatService({ credentialCoordinator: coordinator, fetchImpl, emit: (_senderId, event) => events.push(event) })
+    service.start(startInput())
+    await service.whenIdle()
+    expect(events).toEqual([expect.objectContaining({ code: 'network-error', message: networkFailureMessages.offline })])
+    await expect(service.completeOnce({ group: 'default', model: 'gpt-5.4', messages: [{ role: 'user', content: 'hi' }] }))
+      .rejects.toThrow(networkFailureMessages.offline)
+    expect(fetchImpl).not.toHaveBeenCalled()
+  })
+
+  it('stops a completeOnce request while the key is still being prepared, before anything is sent', async () => {
+    const coordinator = credentialCoordinator()
+    const resolveCredential = coordinator.resolveCredential
+    let releaseCredential: () => void = () => undefined
+    const credentialGate = new Promise<void>((resolve) => { releaseCredential = resolve })
+    coordinator.resolveCredential = vi.fn(async (group: string) => {
+      await credentialGate
+      return resolveCredential(group)
+    })
+    const fetchImpl = vi.fn<TestFetch>()
+    const service = createAiChatService({ credentialCoordinator: coordinator, fetchImpl, emit: vi.fn() })
+    const stop = new AbortController()
+    const pending = service.completeOnce({ group: 'Gemini', model: 'gpt-5.4', messages: [{ role: 'user', content: '解析' }], signal: stop.signal })
+    await vi.waitFor(() => expect(coordinator.resolveCredential).toHaveBeenCalledOnce())
+    stop.abort()
+    releaseCredential()
+    await expect(pending).rejects.toThrow('已取消')
+    expect(fetchImpl).not.toHaveBeenCalled()
+    service.dispose()
+  })
+
+  it('reports a completeOnce total timeout as a timeout, not as a cancel', async () => {
+    const fetchImpl = vi.fn<TestFetch>(async (_input, init) => new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')), { once: true })
+    }))
+    const service = createAiChatService({
+      credentialCoordinator: credentialCoordinator(),
+      fetchImpl,
+      emit: vi.fn(),
+      limits: { totalTimeoutMs: 5 },
+    })
+    await expect(service.completeOnce({ group: 'Gemini', model: 'gpt-5.4', messages: [{ role: 'user', content: '解析' }] }))
+      .rejects.toThrow('本次对话超过最长处理时间')
+    service.dispose()
+  })
+
+  it('does not hand back half an answer when a completeOnce stream closes without finishing', async () => {
+    const fetchImpl = vi.fn<TestFetch>(async () => sseResponse([
+      encoder.encode('data: {"choices":[{"delta":{"content":"{\\"shots\\":["}}]}\n\n'),
+    ]))
+    const service = createAiChatService({ credentialCoordinator: credentialCoordinator(), fetchImpl, emit: vi.fn() })
+    await expect(service.completeOnce({ group: 'Gemini', model: 'gpt-5.4', messages: [{ role: 'user', content: '解析' }] }))
+      .rejects.toThrow('AI 服务提前结束了本次响应')
+
+    const finished = vi.fn<TestFetch>(async () => sseResponse([
+      encoder.encode('data: {"choices":[{"delta":{"content":"完整"},"finish_reason":"stop"}]}\n\n'),
+    ]))
+    const finishing = createAiChatService({ credentialCoordinator: credentialCoordinator(), fetchImpl: finished, emit: vi.fn() })
+    await expect(finishing.completeOnce({ group: 'Gemini', model: 'gpt-5.4', messages: [{ role: 'user', content: '解析' }] }))
+      .resolves.toBe('完整')
+    service.dispose()
+    finishing.dispose()
+  })
+
   it('rejects an unavailable completeOnce model before sending a request', async () => {
     const fetchImpl = vi.fn<TestFetch>()
     const service = createAiChatService({

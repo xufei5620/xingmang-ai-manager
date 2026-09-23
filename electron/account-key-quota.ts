@@ -63,18 +63,34 @@ export const managedKeyQuotaExhaustedMessage = '这个工具的额度用完了�
  */
 export const chatKeyQuotaExhaustedMessage = relayQuotaFailureMessages.keyLimit
 
-/** 按 id 在账号的密钥列表里找一把 Key；最多翻 5 页（500 把），找不到返回 null。 */
+// 翻页的安全阀：一万把 Key 已经远超正常账号，真翻到这里还没见底，多半是后端
+// 分页出了问题，再翻下去只是空转。
+const findKeyPageSize = 100
+const findKeyPageLimit = 100
+
+export const accountKeyListTooLongMessage = '这个账号的密钥太多，没能在列表里查完，先没动它。请到网页上删掉一些不用的密钥后再试。'
+
+/**
+ * 按 id 在账号的密钥列表里找一把 Key，一直翻到列表见底。返回 null 只表示整张
+ * 列表都翻过了、确实没有这把；没翻完就停（到了安全阀）时抛错，不返回 null——
+ * 撤销那边把 null 当「没有上限可照抄」，翻不完就当没有等于把设了上限的 Key 换成
+ * 不限额的。
+ */
 export async function findAccountKeyById<T extends { id: number }>(
   listKeys: (query: { page: number; pageSize: number }) => Promise<{ total: number; keys: readonly T[] }>,
   keyId: number,
 ): Promise<T | null> {
-  for (let page = 1; page <= 5; page++) {
-    const batch = await listKeys({ page, pageSize: 100 })
+  let seen = 0
+  for (let page = 1; page <= findKeyPageLimit; page++) {
+    const batch = await listKeys({ page, pageSize: findKeyPageSize })
     const found = batch.keys.find((key) => key.id === keyId)
     if (found) return found
-    if (!batch.keys.length || page * 100 >= batch.total) return null
+    seen += batch.keys.length
+    // 按已经看到的条数判断见底，而不是 page * pageSize：后端若把每页压到比 100
+    // 少，按页码乘出来的数会以为翻完了，其实后面还有。
+    if (!batch.keys.length || seen >= batch.total) return null
   }
-  return null
+  throw new Error(accountKeyListTooLongMessage)
 }
 
 export interface InheritedKeySettings {

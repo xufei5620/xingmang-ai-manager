@@ -823,6 +823,53 @@ describe('createSystemService', () => {
     }
   }, 20_000)
 
+  // 老版本装好的工具旁边还留着 npm 写的 .ps1；打开软件后的第一轮检测要把它清掉，
+  // 用户在 PowerShell 里敲 claude 才会落到 .cmd 上，不再报「禁止运行脚本」。
+  // 真 Windows 上 platform: 'win32' 的扫描会去跑本机的其它探测（PowerShell 冷启动），
+  // 夹具不再封闭，CI 上超时；删文件本身在 windows-cli-shell-access.test.ts 里各平台都跑。
+  it.skipIf(process.platform === 'win32')('removes the npm PowerShell shims of detected Windows CLIs on the first scan', async () => {
+    const directory = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-startup-ps1-sweep-')))
+    temporaryDirectories.push(directory)
+    const prefix = path.join(directory, 'npm')
+    fs.mkdirSync(prefix)
+    fs.writeFileSync(path.join(prefix, 'claude.cmd'), '@ECHO off\r\n')
+    fs.writeFileSync(path.join(prefix, 'claude.ps1'), [
+      '#!/usr/bin/env pwsh',
+      '$basedir=Split-Path $MyInvocation.MyCommand.Definition -Parent',
+      '& "$basedir/node_modules/@anthropic-ai/claude-code/bin/claude.exe"   $args',
+      '',
+    ].join('\n'))
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('offline') }))
+    const ensureWindowsUserPath = vi.fn(async () => 'added' as const)
+    const service = createSystemService(
+      new AppSettingsStore(path.join(directory, 'settings.json'), directory),
+      {
+        platform: 'win32',
+        windowsExecutionMode: 'same-user',
+        resolveWindowsMachinePaths: () => testMachinePaths,
+        findExecutable: async () => null,
+        resolveCliInstallation: async (provider) => provider === 'claude'
+          ? {
+              commandPath: path.join(prefix, 'claude.cmd'),
+              installDirectory: path.join(prefix, 'node_modules', '@anthropic-ai', 'claude-code'),
+              packageRoot: path.join(prefix, 'node_modules', '@anthropic-ai', 'claude-code'),
+              npmPrefix: prefix,
+              packageVersion: '1.2.3',
+              source: 'npm',
+            }
+          : null,
+        ensureWindowsUserPath,
+      },
+    )
+
+    await service.scanSystem(false)
+    await vi.waitFor(() => expect(fs.existsSync(path.join(prefix, 'claude.ps1'))).toBe(false))
+
+    expect(fs.existsSync(path.join(prefix, 'claude.cmd'))).toBe(true)
+    // 打开软件时只清文件，不为了 PATH 去起 PowerShell。
+    expect(ensureWindowsUserPath).not.toHaveBeenCalled()
+  }, 20_000)
+
   it('reports Git with only its version number when it is installed', async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-git-present-'))
     temporaryDirectories.push(directory)
@@ -2198,6 +2245,119 @@ describe.runIf(process.platform === 'darwin')('Darwin managed npm update integra
     expect(path.relative(cacheRoot, lifecyclePrefix!)).not.toMatch(/^\.\.(?:[/\\]|$)/)
     expect(resolveCliInstallation).toHaveBeenCalledTimes(1)
     expect(target.send).not.toHaveBeenCalledWith(
+      'cli:install-progress',
+      expect.objectContaining({ state: 'success' }),
+    )
+  })
+})
+
+// The same-user install path is shared by Windows (same-user mode) and Linux;
+// Linux is the platform where it can run here without Windows-only fakes.
+describe.runIf(process.platform === 'linux')('Same-user npm install prefix', () => {
+  it('passes the prefix from the user npm config while keeping the empty userconfig', async () => {
+    const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-same-user-npm-'))
+    temporaryDirectories.push(temporaryRoot)
+    const root = fs.realpathSync(temporaryRoot)
+    const homeDirectory = path.join(root, 'home')
+    const userPrefix = path.join(root, 'npm-global')
+    const runtimeBin = path.join(root, 'runtime-bin')
+    fs.mkdirSync(homeDirectory, { recursive: true })
+    fs.mkdirSync(path.join(userPrefix, 'bin'), { recursive: true })
+    fs.mkdirSync(runtimeBin, { recursive: true })
+    fs.writeFileSync(path.join(homeDirectory, '.npmrc'), `registry=https://example.invalid/\nprefix=${userPrefix}\n`)
+    const npmExecutable = path.join(runtimeBin, 'npm')
+    fs.writeFileSync(npmExecutable, '#!/bin/sh\nexit 0\n')
+    fs.chmodSync(npmExecutable, 0o700)
+    vi.stubEnv('HOME', homeDirectory)
+    vi.stubEnv('PATH', `${runtimeBin}${path.delimiter}${path.join(userPrefix, 'bin')}`)
+    // `npm test` exports these to its children; the desktop app never inherits them.
+    vi.stubEnv('npm_config_prefix', undefined)
+    vi.stubEnv('npm_config_userconfig', undefined)
+
+    const expectedVersion = recommendedCodexVersion()
+    const integrity = `sha512-${Buffer.alloc(64, 0x32).toString('base64')}`
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request) => {
+      const url = String(input)
+      if (url.includes('cloudflare.com/cdn-cgi/trace')) {
+        return new Response('ip=203.0.113.8\nloc=US\n', { status: 200 })
+      }
+      if (url === npmPackageVersionUrl('https://registry.npmjs.org', '@openai/codex', expectedVersion)) {
+        return new Response(JSON.stringify({
+          name: '@openai/codex',
+          version: expectedVersion,
+          dist: { integrity },
+        }), { status: 200 })
+      }
+      throw new Error(`Unexpected fetch: ${url}`)
+    }))
+
+    let installArgv: readonly string[] | null = null
+    const runCommand = vi.fn(async (
+      spec: { executable: string; argv: readonly string[] },
+      options: { cwd?: string } = {},
+    ) => {
+      if (spec.executable !== npmExecutable) throw new Error(`Unexpected command: ${spec.executable}`)
+      if (spec.argv.includes('--package-lock-only')) {
+        const cwd = options.cwd
+        if (!cwd) throw new Error('Fake npm requires cwd')
+        const manifest = JSON.parse(fs.readFileSync(path.join(cwd, 'package.json'), 'utf8')) as {
+          name: string
+          version: string
+          dependencies: Record<string, string>
+        }
+        const [[packageName, version]] = Object.entries(manifest.dependencies)
+        fs.writeFileSync(path.join(cwd, 'package-lock.json'), JSON.stringify({
+          name: manifest.name,
+          version: manifest.version,
+          lockfileVersion: 3,
+          packages: {
+            '': { dependencies: manifest.dependencies },
+            [`node_modules/${packageName}`]: { version, integrity },
+          },
+        }))
+      } else if (spec.argv[0] === 'install' && spec.argv.includes('--global')) {
+        installArgv = [...spec.argv]
+      }
+      return {
+        executable: spec.executable,
+        argv: [...spec.argv],
+        exitCode: 0,
+        signal: null,
+        stdout: '',
+        stderr: '',
+        outputBytes: 0,
+        durationMs: 1,
+      }
+    })
+    const packageRoot = path.join(userPrefix, 'lib', 'node_modules', '@openai', 'codex')
+    const resolveCliInstallation = vi.fn<typeof resolveCliInstallationForTest>(async () => installArgv
+      ? {
+          commandPath: path.join(userPrefix, 'bin', 'codex'),
+          installDirectory: packageRoot,
+          packageRoot,
+          npmPrefix: userPrefix,
+          packageVersion: expectedVersion,
+          source: 'npm',
+        }
+      : null)
+    const target = { isDestroyed: () => false, send: vi.fn() }
+    const service = createSystemService(
+      new AppSettingsStore(path.join(root, 'settings.json'), root),
+      { platform: 'linux', runCommand, resolveCliInstallation },
+    )
+
+    await service.installCli('codex', target)
+
+    expect(installArgv).not.toBeNull()
+    const argv = installArgv!
+    expect(argv).toContain(`--prefix=${userPrefix}`)
+    expect(argv.filter((argument) => argument.startsWith('--prefix='))).toHaveLength(1)
+    const userConfigArgument = argv.find((argument) => argument.startsWith('--userconfig='))
+    expect(userConfigArgument).toBeDefined()
+    expect(userConfigArgument).not.toBe(`--userconfig=${path.join(homeDirectory, '.npmrc')}`)
+    // Only prefix is carried over; the registry line in the same file stays ignored.
+    expect(argv.some((argument) => argument.includes('example.invalid'))).toBe(false)
+    expect(target.send).toHaveBeenCalledWith(
       'cli:install-progress',
       expect.objectContaining({ state: 'success' }),
     )
