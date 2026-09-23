@@ -348,9 +348,13 @@ function credentialFailure(error: unknown): StreamFailure {
   if (error instanceof ChatKeyQuotaExhaustedError) {
     return new StreamFailure('key-quota-exhausted', SAFE_ERROR_MESSAGES['key-quota-exhausted'])
   }
-  if (classifyNetworkFailure(error) === 'serviceUnavailable') {
+  const network = classifyNetworkFailure(error)
+  if (network === 'serviceUnavailable') {
     return new StreamFailure('service-unavailable', SAFE_ERROR_MESSAGES['service-unavailable'])
   }
+  // 断网、校园网拦截这类失败，账号服务那一层已经说清了原因和下一步；换成「请检查
+  // 登录状态和 API Key」会让人去改一个本来没坏的 Key。
+  if (network) return new StreamFailure('network-error', networkFailureMessages[network])
   return new StreamFailure('credential-error', SAFE_ERROR_MESSAGES['credential-error'])
 }
 
@@ -771,20 +775,28 @@ export function createAiChatService(options: AiChatServiceOptions): AiChatServic
       stream: true,
       parameters: { temperature: 0, ...(input.parameters ?? {}) },
     })
-    let credential: Awaited<ReturnType<ChatCredentialCoordinator['resolveCredential']>>
-    try {
-      credential = await options.credentialCoordinator.resolveCredential(input.group)
-    } catch (error) {
-      throw credentialFailure(error)
-    }
-    if (!credential.models.includes(body.model)) {
-      throw new StreamFailure('model-unavailable', SAFE_ERROR_MESSAGES['model-unavailable'])
-    }
+    // 停止和总超时从这一刻起算：准备 Key 可能要等账号服务好几秒，这段时间里点了
+    // 停止，必须在付费请求发出去之前生效。
     const controller = new AbortController()
     const onAbort = () => controller.abort()
+    if (input.signal?.aborted) throw new Error('已取消')
     input.signal?.addEventListener('abort', onAbort, { once: true })
-    const totalTimer = clock.setTimeout(() => controller.abort(), limits.totalTimeoutMs)
+    let timedOut = false
+    const totalTimer = clock.setTimeout(() => {
+      timedOut = true
+      controller.abort()
+    }, limits.totalTimeoutMs)
     try {
+      let credential: Awaited<ReturnType<ChatCredentialCoordinator['resolveCredential']>>
+      try {
+        credential = await options.credentialCoordinator.resolveCredential(input.group)
+      } catch (error) {
+        throw credentialFailure(error)
+      }
+      if (!credential.models.includes(body.model)) {
+        throw new StreamFailure('model-unavailable', SAFE_ERROR_MESSAGES['model-unavailable'])
+      }
+      if (controller.signal.aborted) throw controller.signal.reason
       const response = await fetchImpl(endpoint, {
         method: 'POST',
         headers: {
@@ -836,16 +848,18 @@ export function createAiChatService(options: AiChatServiceOptions): AiChatServic
             }
             outputBytes += added
             text += delta.content
+            if (delta.finished) return text
           }
           if (chunk.done) break
         }
       } finally {
         reader.releaseLock()
       }
-      if (!text.trim()) throw new StreamFailure('stream-closed', SAFE_ERROR_MESSAGES['stream-closed'])
-      return text
+      // 没等到结束标记连接就断了：手里只是半截，交给调用方当成完整结果会被当真。
+      throw new StreamFailure('stream-closed', SAFE_ERROR_MESSAGES['stream-closed'])
     } catch (error) {
       if (error instanceof StreamFailure) throw new Error(error.message)
+      if (timedOut) throw new Error(SAFE_ERROR_MESSAGES['total-timeout'])
       if (input.signal?.aborted || controller.signal.aborted) throw new Error('已取消')
       throw new Error(SAFE_ERROR_MESSAGES['network-error'])
     } finally {
