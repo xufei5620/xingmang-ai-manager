@@ -10,6 +10,9 @@ import {
   classifyCodexAuthProfile,
   classifyCodexConfigProfile,
   claudeConsoleKeySnapshotName,
+  claudeForeignSettingsSnapshotName,
+  moveClaudeForeignSettingsAside,
+  restoreClaudeForeignSettings,
   codexApiKeyAuthSnapshotName,
   codexAuthSnapshotPaths,
   codexChatGptAuthSnapshotName,
@@ -1784,6 +1787,102 @@ describe('switching a provider back to the official subscription account', () =>
     // Artifact 对 claude.ai 账号用户是有用的,切回官方来源要把这条 deny 撤掉。
     expect(asRecord(after.permissions)?.deny).toBeUndefined()
     expect(asRecord(after.permissions)?.defaultMode).toBe('bypassPermissions')
+  })
+
+  // 全面检测 Q7：照别家中转教程配过 Claude Code 的人，settings.json 里留着的这几项
+  // 会顶掉当前账号。接当前账号时挪进快照，切回官方原样放回。
+  const foreignClaudeSettings = () => ({
+    env: {
+      ANTHROPIC_API_KEY: 'sk-other-relay',
+      ANTHROPIC_MODEL: 'glm-4.6',
+      ANTHROPIC_SMALL_FAST_MODEL: 'glm-4.5-air',
+      ANTHROPIC_DEFAULT_OPUS_MODEL: 'glm-4.6',
+      ANTHROPIC_DEFAULT_SONNET_MODEL: 'glm-4.6',
+      ANTHROPIC_DEFAULT_HAIKU_MODEL: 'glm-4.5-air',
+      MY_OWN_VARIABLE: 'keep-me',
+    },
+    apiKeyHelper: '/usr/local/bin/print-other-key',
+    theme: 'dark',
+  })
+
+  it('moves settings left by another relay aside for the account and puts them back for the official account', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const [configPath] = providerConfigPaths('claude', roots)
+    const snapshotPath = path.join(path.dirname(configPath), claudeForeignSettingsSnapshotName)
+    fs.mkdirSync(path.dirname(configPath), { recursive: true })
+    const original = foreignClaudeSettings()
+    fs.writeFileSync(configPath, JSON.stringify(original, null, 2))
+
+    saveProviderConfig('claude', 'sk-relay', testModels.claude, 'merge', roots, {}, providerBaseUrls)
+    const relay = JSON.parse(fs.readFileSync(configPath, 'utf8')) as Record<string, unknown>
+    const relayEnv = relay.env as Record<string, unknown>
+    for (const key of Object.keys(original.env).filter((key) => key !== 'MY_OWN_VARIABLE')) expect(relayEnv[key]).toBeUndefined()
+    expect(relay.apiKeyHelper).toBeUndefined()
+    expect(relayEnv.ANTHROPIC_AUTH_TOKEN).toBe('sk-relay')
+    expect(relayEnv.MY_OWN_VARIABLE).toBe('keep-me')
+    expect(relay.theme).toBe('dark')
+    expect(inspectProviderConfig('claude', roots).matchesRelay).toBe(true)
+    expect(JSON.parse(fs.readFileSync(snapshotPath, 'utf8'))).toMatchObject({
+      env: { ANTHROPIC_API_KEY: 'sk-other-relay', ANTHROPIC_MODEL: 'glm-4.6' },
+      settings: { apiKeyHelper: '/usr/local/bin/print-other-key' },
+    })
+
+    // 再保存一次（换 Key、换模型）不能把快照里的东西弄丢。
+    saveProviderConfig('claude', 'sk-relay-2', testModels.claude, 'merge', roots, {}, providerBaseUrls)
+    expect(JSON.parse(fs.readFileSync(snapshotPath, 'utf8')).env.ANTHROPIC_API_KEY).toBe('sk-other-relay')
+
+    switchProviderToOfficialAccount('claude', roots, {}, providerBaseUrls)
+    const official = JSON.parse(fs.readFileSync(configPath, 'utf8')) as Record<string, unknown>
+    expect(official.env).toMatchObject(original.env)
+    expect(official.apiKeyHelper).toBe(original.apiKeyHelper)
+    expect(official.theme).toBe('dark')
+    expect(fs.readFileSync(snapshotPath, 'utf8')).toBe('')
+  })
+
+  it('keeps foreign Claude settings through a reset and restores them on an official reset', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const [configPath] = providerConfigPaths('claude', roots)
+    fs.mkdirSync(path.dirname(configPath), { recursive: true })
+    fs.writeFileSync(configPath, JSON.stringify(foreignClaudeSettings(), null, 2))
+
+    saveProviderConfig('claude', 'sk-relay', testModels.claude, 'reset', roots, {}, providerBaseUrls)
+    const relay = JSON.parse(fs.readFileSync(configPath, 'utf8')) as Record<string, unknown>
+    expect((relay.env as Record<string, unknown>).ANTHROPIC_MODEL).toBeUndefined()
+
+    switchProviderToOfficialAccount('claude', roots, {}, providerBaseUrls, 'reset')
+    const official = JSON.parse(fs.readFileSync(configPath, 'utf8')) as Record<string, unknown>
+    expect((official.env as Record<string, unknown>).ANTHROPIC_MODEL).toBe('glm-4.6')
+    expect((official.env as Record<string, unknown>).DISABLE_AUTOUPDATER).toBe('1')
+    expect(official.apiKeyHelper).toBe('/usr/local/bin/print-other-key')
+  })
+
+  it('does not write a foreign-settings snapshot when there is nothing foreign to move', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const [configPath] = providerConfigPaths('claude', roots)
+    fs.mkdirSync(path.dirname(configPath), { recursive: true })
+    fs.writeFileSync(configPath, JSON.stringify({ env: { MY_OWN_VARIABLE: 'x' } }, null, 2))
+
+    saveProviderConfig('claude', 'sk-relay', testModels.claude, 'merge', roots, {}, providerBaseUrls)
+    switchProviderToOfficialAccount('claude', roots, {}, providerBaseUrls)
+
+    expect(fs.existsSync(path.join(path.dirname(configPath), claudeForeignSettingsSnapshotName))).toBe(false)
+  })
+
+  it('never hands the account key back to the official config and prefers values the user set again', () => {
+    const settings: Record<string, unknown> = { env: { ANTHROPIC_API_KEY: 'sk-relay', ANTHROPIC_MODEL: 'glm-4.6' } }
+    const snapshot = moveClaudeForeignSettingsAside(settings, null, 'sk-relay')
+    expect(settings.env).toBeUndefined()
+    expect(JSON.parse(String(snapshot)).env).toEqual({ ANTHROPIC_MODEL: 'glm-4.6' })
+
+    const official: Record<string, unknown> = { env: { ANTHROPIC_MODEL: 'claude-opus-5' } }
+    expect(restoreClaudeForeignSettings(official, snapshot)).toBe(false)
+    expect(official.env).toEqual({ ANTHROPIC_MODEL: 'claude-opus-5' })
+    // 本软件自己的选模型菜单写的 ANTHROPIC_DEFAULT_MODEL 不归这张表管。
+    const own: Record<string, unknown> = { env: { ANTHROPIC_DEFAULT_MODEL: 'claude-sonnet-5' } }
+    expect(moveClaudeForeignSettingsAside(own, null, 'sk-relay')).toBeNull()
   })
 
   it('skips the WebFetch domain preflight on the relay and restores it for the official account', () => {
