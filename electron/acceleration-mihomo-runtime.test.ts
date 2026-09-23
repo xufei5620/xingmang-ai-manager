@@ -282,11 +282,6 @@ describe('createMihomoRuntime', () => {
     const value = runtime()
     const starting = value.start(profile())
     const rejected = expect(starting).rejects.toThrow('加速连接已取消')
-    // Reaching the delay probe means copying and hashing the core, writing the
-    // config and two controller round trips first. The whole file averages
-    // about 350ms per start on a Windows runner and one start took over the
-    // default 1s wait on 2026-09-23, so give it the same order of room the
-    // other starts in this file get, still well inside the test timeout.
     await vi.waitFor(() => expect(children[0]?.routes.some((route) => route.includes('/delay?'))).toBe(true), { timeout: 10_000 })
     await value.stop()
     await rejected

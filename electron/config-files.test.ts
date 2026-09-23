@@ -370,7 +370,7 @@ describe('native CLI configuration files', () => {
             ANTHROPIC_BASE_URL: 'https://xm.solov.cc',
             DISABLE_AUTOUPDATER: '1',
           },
-          permissions: { defaultMode: 'bypassPermissions', deny: ['Artifact'] },
+          permissions: { defaultMode: 'bypassPermissions', deny: ['Artifact', 'DesignSync'] },
           model,
           effortLevel: 'medium',
           skipDangerousModePermissionPrompt: true,
@@ -479,11 +479,11 @@ describe('native CLI configuration files', () => {
     expect(merged.model).toBe('claude-sonnet-4-6')
     expect(merged.env.CUSTOM_TOKEN).toBe('preserved')
     expect(merged.customSetting).toEqual({ enabled: true })
-    expect(merged.permissions).toEqual({ defaultMode: 'bypassPermissions', deny: ['Artifact'] })
+    expect(merged.permissions).toEqual({ defaultMode: 'bypassPermissions', deny: ['Artifact', 'DesignSync'] })
     expect(merged.skipWebFetchPreflight).toBe(true)
   })
 
-  it('appends Artifact to an existing Claude deny list without touching the entries the user wrote', () => {
+  it('appends the claude.ai-only tools to an existing Claude deny list without touching the entries the user wrote', () => {
     const home = temporaryHome()
     const [settingsPath] = providerConfigPaths('claude', providerRoots(home))
     fs.mkdirSync(path.dirname(settingsPath), { recursive: true })
@@ -496,12 +496,12 @@ describe('native CLI configuration files', () => {
     const merged = JSON.parse(fs.readFileSync(settingsPath, 'utf8')) as Record<string, unknown>
     expect(merged.permissions).toEqual({
       defaultMode: 'acceptEdits',
-      deny: ['Bash(rm:*)', 'Artifact'],
+      deny: ['Bash(rm:*)', 'Artifact', 'DesignSync'],
       allow: ['Read'],
     })
   })
 
-  it('does not duplicate Artifact when merging twice over a Claude config', () => {
+  it('does not duplicate the denied claude.ai-only tools when merging twice over a Claude config', () => {
     const home = temporaryHome()
     const roots = providerRoots(home)
     saveProviderConfig('claude', 'old-key', testModels.claude, 'reset', roots, {}, providerBaseUrls)
@@ -509,7 +509,7 @@ describe('native CLI configuration files', () => {
 
     const [settingsPath] = providerConfigPaths('claude', roots)
     const merged = JSON.parse(fs.readFileSync(settingsPath, 'utf8')) as Record<string, unknown>
-    expect(asRecord(merged.permissions)?.deny).toEqual(['Artifact'])
+    expect(asRecord(merged.permissions)?.deny).toEqual(['Artifact', 'DesignSync'])
   })
 
   it('extends Claude transcript retention and pins the response language when merging over a bare config', () => {
@@ -1801,13 +1801,13 @@ describe('switching a provider back to the official subscription account', () =>
     expect(asRecord(settings.env)).not.toHaveProperty('ANTHROPIC_DEFAULT_MODEL')
   })
 
-  it('removes only Artifact from the Claude deny list when switching to the official account', () => {
+  it('removes only the claude.ai-only tools from the Claude deny list when switching to the official account', () => {
     const home = temporaryHome()
     saveProviderConfig('claude', 'sk-relay', testModels.claude, 'reset', providerRoots(home), {}, providerBaseUrls)
     const [configPath] = providerConfigPaths('claude', providerRoots(home))
     const seeded = JSON.parse(fs.readFileSync(configPath, 'utf8')) as Record<string, unknown>
     const permissions = seeded.permissions as Record<string, unknown>
-    permissions.deny = ['Bash(curl:*)', 'Artifact', 'WebFetch']
+    permissions.deny = ['Bash(curl:*)', 'Artifact', 'WebFetch', 'DesignSync']
     permissions.allow = ['Read']
     fs.writeFileSync(configPath, JSON.stringify(seeded, null, 2))
 
