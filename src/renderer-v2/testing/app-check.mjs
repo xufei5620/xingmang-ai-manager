@@ -1779,6 +1779,31 @@ test('a maintenance notice from the update feed reaches signed-out users, includ
   } finally { await page.close() }
 })
 
+// 发布者撤回了本机这个版本、线上退回到旧版本时，界面不能再说「发现新版本」。
+test('a withdrawn running version is called out and the older release is offered as a rollback', async () => {
+  const page = await open()
+  try {
+    await page.getByTestId('page-home').waitFor()
+    // 更新页打开时会自己重新读一次快照，所以进页面后要再推一次同样的状态。
+    const emitWithdrawn = () => page.evaluate(() => window.v2Test.emit('onUpdateState', {
+      phase: 'available', currentVersion: '0.2.10', availableVersion: '0.2.9', releaseName: null, releaseNotesText: null,
+      checkedAt: new Date().toISOString(), progress: null, error: null, failedStep: null, development: true,
+      serviceMaintenance: null, currentVersionWithdrawn: true, rollback: true,
+    }))
+    await emitWithdrawn()
+    await page.getByText('建议退回 0.2.9', { exact: true }).waitFor()
+    await page.getByTestId('nav-more').click()
+    await page.getByTestId('nav-updates').click()
+    const updates = page.getByTestId('page-updates')
+    await updates.waitFor()
+    await emitWithdrawn()
+    await updates.getByText('建议退回稳定版本', { exact: true }).waitFor()
+    await updates.getByTestId('updates-current-withdrawn').getByText(/建议装回 0\.2\.9/).waitFor()
+    assert.equal(await page.getByText('新版本 0.2.9 可以安装', { exact: true }).count(), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('oversized announcements stay in a safe failure state and offer the allowlisted site', async () => {
   const page = await open('noticeOversized=1')
   try {

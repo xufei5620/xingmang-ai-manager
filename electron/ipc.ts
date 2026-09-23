@@ -2238,7 +2238,8 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   })
   registerTrustedHandler('update:get-state', () => options.updaterService.getState())
   registerTrustedHandler('update:startup', () => options.updaterService.startup())
-  registerTrustedHandler('update:check', () => options.updaterService.check())
+  // 从界面来的检查都是用户自己点的：分批放量不拦主动来要新版本的人。
+  registerTrustedHandler('update:check', () => options.updaterService.check({ manual: true }))
   registerTrustedHandler('update:download', () => options.updaterService.download())
   registerTrustedHandler('update:install', () => options.updaterService.install())
   registerTrustedHandler('sessions:list', (_event, query: unknown) => (
