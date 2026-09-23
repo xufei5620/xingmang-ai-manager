@@ -388,9 +388,10 @@ describe('native CLI configuration files', () => {
             sessionRetention: { maxAge: '365d' },
           },
           ide: { enabled: true },
+          privacy: { usageStatisticsEnabled: false },
           security: { auth: { selectedType: 'gemini-api-key' } },
         })
-        expect(Object.keys(settings).sort()).toEqual(['general', 'ide', 'modelConfigs', 'security'])
+        expect(Object.keys(settings).sort()).toEqual(['general', 'ide', 'modelConfigs', 'privacy', 'security'])
         expect(fs.readFileSync(paths[1], 'utf8')).toBe([
           'GOOGLE_GEMINI_BASE_URL=https://xm.solov.cc',
           'GEMINI_API_KEY=sk-user-key',
@@ -1886,6 +1887,26 @@ describe('switching a provider back to the official subscription account', () =>
 
     const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8')) as Record<string, unknown>
     expect(settings).not.toHaveProperty('modelConfigs')
+  })
+
+  it('turns off Gemini usage statistics on the relay, respects a user choice and takes back only its own switch', () => {
+    // With statistics on, every relay request carries a stable installation id header.
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const [settingsPath] = providerConfigPaths('gemini', roots)
+    fs.mkdirSync(path.dirname(settingsPath), { recursive: true })
+    fs.writeFileSync(settingsPath, JSON.stringify({ privacy: { usageStatisticsEnabled: true } }), 'utf8')
+    saveProviderConfig('gemini', 'sk-relay', testModels.gemini, 'merge', roots, {}, providerBaseUrls)
+    expect(JSON.parse(fs.readFileSync(settingsPath, 'utf8')).privacy).toEqual({ usageStatisticsEnabled: true })
+
+    fs.writeFileSync(settingsPath, JSON.stringify({ theme: 'Dark' }), 'utf8')
+    saveProviderConfig('gemini', 'sk-relay', testModels.gemini, 'merge', roots, {}, providerBaseUrls)
+    expect(JSON.parse(fs.readFileSync(settingsPath, 'utf8')).privacy).toEqual({ usageStatisticsEnabled: false })
+
+    switchProviderToOfficialAccount('gemini', roots, {}, providerBaseUrls)
+    const official = JSON.parse(fs.readFileSync(settingsPath, 'utf8')) as Record<string, unknown>
+    expect(official).not.toHaveProperty('privacy')
+    expect(official.theme).toBe('Dark')
   })
 
   it('switches Gemini back to Google OAuth and strips its three relay env entries, keeping the rest of .env', () => {

@@ -510,6 +510,23 @@ function removeGeminiRelayModelOverrides(parsed: Record<string, unknown>): void 
   if (Object.keys(modelConfigs).length === 0) delete parsed.modelConfigs
 }
 
+// Gemini CLI 默认把使用统计发去 play.googleapis.com（clearcut），同时在发给中转的每一个
+// 请求上带 x-gemini-api-privileged-user-id: <本机安装 ID>——等于把一个跨会话不变的设备标识
+// 交给了中转。国内连不上前者，后者对我们毫无用处。privacy.usageStatisticsEnabled = false
+// 两样一起去掉（沙箱实测 0.60.0），不影响任何功能。只在用户没表过态时补，切回 Google 账号
+// 时只收回本软件写的那一份。
+function disableGeminiRelayUsageStatistics(parsed: Record<string, unknown>): void {
+  const privacy = ensureRecord(parsed, 'privacy')
+  if (privacy.usageStatisticsEnabled === undefined) privacy.usageStatisticsEnabled = false
+}
+
+function restoreGeminiUsageStatistics(parsed: Record<string, unknown>): void {
+  const privacy = parsed.privacy
+  if (isJsonRecord(privacy) && Object.keys(privacy).length === 1 && privacy.usageStatisticsEnabled === false) {
+    delete parsed.privacy
+  }
+}
+
 // Claude Code 的 language 设置会被原样插进系统提示（2.1.277 实测：settings.json 写
 // {"language":"简体中文"} 之后，请求体里出现「# Language\nAlways respond in 简体中文.」），
 // 回复和会话标题都跟着变中文。本软件今天让 Claude 说中文靠的是 AGENTS.md 模板，而那份
@@ -1581,6 +1598,7 @@ function createPlans(
               sessionRetention: { maxAge: MANAGED_GEMINI_SESSION_MAX_AGE },
             },
             ide: { enabled: true },
+            privacy: { usageStatisticsEnabled: false },
             security: { auth: { selectedType: 'gemini-api-key' } },
             modelConfigs: { customOverrides: buildGeminiRelayModelOverrides(geminiCliCompatibleModel(model)) },
           }),
@@ -1682,6 +1700,7 @@ function createMergePlans(
         disableGeminiSelfUpdate(parsed)
         extendGeminiSessionRetention(parsed)
         applyGeminiRelayModelOverrides(parsed, geminiCliCompatibleModel(model))
+        disableGeminiRelayUsageStatistics(parsed)
         plans.push({ path: paths[0], content: jsonContent(parsed) })
       }
       // 读取失败必须中止保存，静默当空文件会把用户已有环境变量覆盖掉。
@@ -2271,6 +2290,7 @@ function createOfficialAccountPlans(
         const auth = ensureRecord(ensureRecord(parsed, 'security'), 'auth')
         auth.selectedType = 'oauth-personal'
         removeGeminiRelayModelOverrides(parsed)
+        restoreGeminiUsageStatistics(parsed)
         plans.push({ path: paths[0], content: jsonContent(parsed) })
       }
       const envContent = requireConfigText(paths[1], '现有 Gemini .env')
