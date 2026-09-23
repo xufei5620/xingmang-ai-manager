@@ -4,7 +4,7 @@ import { relayQuotaFailureMessages } from '../../../../electron/relay-quota-fail
 import { activeConversation, applyStreamEvent, chatErrorAction, chatErrorMessage, createConversation, createWorkspace, DEFAULT_CHAT_GROUP, DEFAULT_CHAT_MODEL, DEFAULT_IMAGE_MODEL, defaultChatSettings, filterConversations, planTurn, resolveChatGroup, resolveChatModel, saveConversation, shouldSendOnEnter, type ChatMessage, type ChatWorkspace } from './state'
 import { createParameterDraft, parseParameters } from './parameters'
 import { historyKey, importLegacyHistory, readWorkspace, writeWorkspace } from './storage'
-import { inspectModel, validateImageRequest } from './api'
+import { chatLimits, inspectModel, validateImageRequest } from './api'
 
 function readyConversation() { const conversation = createConversation(undefined, 'conversation-1'); conversation.settings.group = 'group-a'; conversation.settings.model = 'gpt-test'; return conversation }
 function turn(conversation = readyConversation()) { return planTurn(conversation, { prompt: 'first question', requestId: 'request-1', assistantId: 'assistant-1', userMessageId: 'user-1' }) }
@@ -34,6 +34,16 @@ describe('v2 chat request transitions', () => {
     expect(resolveChatGroup(groups, '已下线分组')).toBe('GPT-中转/订阅')
     expect(resolveChatGroup([{ name: 'default' }])).toBe('default')
     expect(resolveChatGroup([])).toBe('')
+  })
+  it('tells the user to start a new conversation once one reply is longer than a single message may be', () => {
+    const first = turn()
+    const long = 'a'.repeat(chatLimits.messageLength + 1)
+    const completed = { ...first.conversation, messages: first.conversation.messages.map((message) => message.role === 'assistant' ? { ...message, status: 'complete' as const, content: long } : message) }
+    const next = () => planTurn(completed, { prompt: 'next question', requestId: 'request-2', assistantId: 'assistant-2', userMessageId: 'user-2' })
+    expect(next).toThrow('这段对话里有一条回复太长，请新建对话后继续')
+    let thrown: unknown
+    try { next() } catch (error) { thrown = error }
+    expect(chatErrorMessage(thrown)).toBe('这段对话里有一条回复太长，请新建对话后继续')
   })
   it('does not append a second user message when retrying and keeps the original model snapshot', () => {
     const first = turn()
@@ -70,6 +80,10 @@ describe('v2 chat request transitions', () => {
     const video = '视频任务已创建但本地恢复记录保存失败（任务 video_1），请勿重复提交'
     expect(chatErrorMessage(video)).toBe(video)
     expect(chatErrorMessage('生图请求超时')).toBe('请求未完成，请检查网络后重试')
+  })
+  it('keeps the network reason when preparing the group fails offline', () => {
+    expect(chatErrorMessage(networkFailureMessages.offline, 'network-error')).toBe(networkFailureMessages.offline)
+    expect(chatErrorMessage('无法连接 AI 服务，请检查网络后重试', 'network-error')).toBe('无法连接 AI 服务，请检查网络后重试')
   })
   it('never turns a service outage back into an expired login or a broken key', () => {
     const outage = networkFailureMessages.serviceUnavailable

@@ -510,7 +510,7 @@ describe('createCanvasNodeExecutors', () => {
   it('parses drama tables through injected chat completion and retries once', async () => {
     const { danyinTwoShotFixture } = await import('./drama-parse')
     const completeOnce = vi.fn()
-      .mockRejectedValueOnce(new Error('剧本解析返回的 JSON 无法读取'))
+      .mockResolvedValueOnce('这不是表格')
       .mockResolvedValueOnce(JSON.stringify(danyinTwoShotFixture))
     const executors = createCanvasNodeExecutors({
       imageService: { generate: vi.fn(), cancel: vi.fn(() => ({ canceled: false, mayStillComplete: false })) },
@@ -524,5 +524,20 @@ describe('createCanvasNodeExecutors', () => {
     })
     expect(completeOnce).toHaveBeenCalledTimes(2)
     expect(JSON.parse(result.outputText ?? '').shots[0].shotId).toBe('s01')
+  })
+
+  it('does not send a second paid drama parse request when the first request itself failed', async () => {
+    const completeOnce = vi.fn().mockRejectedValue(new Error('无法连接 AI 服务，请检查网络后重试'))
+    const executors = createCanvasNodeExecutors({
+      imageService: { generate: vi.fn(), cancel: vi.fn(() => ({ canceled: false, mayStillComplete: false })) },
+      completeText: { completeOnce },
+    })
+    await expect(executors['drama-parse']!({
+      runId: 'run', graphRevision: 'revision', attemptId: 'attempt', ownerId: 9, userId: 7,
+      node: { id: 'parse', kind: 'drama-parse', definitionVersion: 1, data: { prompt: '', model: 'gemini-3.7-flash', group: 'Gemini' } },
+      inputs: { text: '虞晚斜倚锦榻' },
+      signal: new AbortController().signal,
+    })).rejects.toThrow('剧本解析失败：无法连接 AI 服务，请检查网络后重试')
+    expect(completeOnce).toHaveBeenCalledOnce()
   })
 })
