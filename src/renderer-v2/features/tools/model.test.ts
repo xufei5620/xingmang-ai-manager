@@ -37,6 +37,13 @@ describe('renderer tool source', () => {
     expect(canUninstallTool(undefined)).toBe(false)
   })
 
+  it('treats Grok as on its own account only when a Grok login exists', () => {
+    const storage = memoryStorage()
+    const blank = { ...relayConfig(), hasApiKey: false, matchesRelay: false, actualBaseUrl: '', exists: true }
+    expect(sourceFor(blank, 'grok', storage)).toBe('missing')
+    expect(sourceFor({ ...blank, grokLoginMode: 'oidc' }, 'grok', storage)).toBe('official')
+  })
+
   it('distinguishes marked manual relay keys and keeps them launch-ready', () => {
     const storage = memoryStorage()
     const config = relayConfig()
@@ -479,7 +486,7 @@ describe('renderer config directory menu entry', () => {
 describe('renderer one-click account switch entry', () => {
   const installed = { installed: true } as ToolPresentation['status']
   it('offers the current account to any tool on its official account', () => {
-    for (const provider of ['claude', 'codex', 'gemini'] as const) {
+    for (const provider of ['claude', 'codex', 'gemini', 'grok'] as const) {
       expect(accountSwitchTarget({ provider, source: 'official', status: installed })).toBe('account')
     }
   })
@@ -488,9 +495,9 @@ describe('renderer one-click account switch entry', () => {
     for (const source of ['account', 'manual', 'changed'] as const) {
       expect(accountSwitchTarget({ provider: 'claude', source, status: installed })).toBe('official')
       expect(accountSwitchTarget({ provider: 'codex', source, status: installed })).toBe('official')
-      // 个人 Google 账号已不能用 Gemini CLI；Grok 没有官方来源。
+      expect(accountSwitchTarget({ provider: 'grok', source, status: installed })).toBe('official')
+      // 个人 Google 账号已不能用 Gemini CLI。
       expect(accountSwitchTarget({ provider: 'gemini', source, status: installed })).toBeNull()
-      expect(accountSwitchTarget({ provider: 'grok', source, status: installed })).toBeNull()
     }
   })
 
