@@ -11,3 +11,4 @@
 - `scripts/windows-uninstall-cleanup-smoke.ps1`：摆出登录记录后，直接调用清理程序（带与不带新参数）、静默卸载（不带参数应保留）、重装后带参数静默卸载（应删除），每一步都检查 Key 缓存与设置仍在。
 - `electron/tool-installation.ts`：提权时委派给普通权限窗口的卸载命令在 Windows 上写 `npm.cmd`（窗口里会把这一行回显给用户，用户照抄进 PowerShell 时不会撞上 npm.ps1 与默认执行策略；cmd.exe 里两种都能跑）。`electron/system-service.ts` 的手动卸载提示按平台写「普通 PowerShell」或「终端」：核对后这条路径上真正带命令的只有 macOS standalone Codex（一段 sh），Windows 上不可自动卸载时本来就不给命令，所以清单说的「叫用户在 PowerShell 里跑 npm」在当前代码里实际只剩委派窗口这一处。`用户端出问题测试命令.txt` 里的 `npm --version` 同理改为 `npm.cmd`。
 - `dl-landing/app.js`：Windows 下载项补「需要 Windows 10 或更新的系统」。仓库里只改源文件，dl.solov.cc 上的页面要另行更新。
+- 卸载清理还原代理的单次 PowerShell 时限从 45 秒放宽到 90 秒、总上限从 150 秒放宽到 300 秒：windows-uninstall-smoke 在 runner 上第一条冷启动命令就超过了 45 秒（#370 合并前那次整段 55 秒通过，余量本就不多）。慢机器上超时的后果是卸完断网，比多等一会儿重。冒烟步骤时限相应从 10 分钟放到 20 分钟。

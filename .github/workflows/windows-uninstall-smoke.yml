@@ -52,7 +52,8 @@ jobs:
           XINGMANG_LOCAL_BUILD: '1'
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
       - name: Install, uninstall with acceleration left on, and check the network is back
-        timeout-minutes: 10
+        # 两次安装、两次直接清理、两次卸载，每次清理冷启动 PowerShell 常要近一分钟。
+        timeout-minutes: 20
         shell: pwsh
         run: |
           $installer = Get-ChildItem -Path release -Filter '*Setup*.exe' | Select-Object -First 1

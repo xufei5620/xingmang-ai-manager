@@ -22,12 +22,14 @@ export const uninstallCleanupExitCodes = {
   loginRecordsRemain: 16,
 } as const
 
-// 单次 PowerShell 放宽到 45 秒：卸载时 PowerShell 往往是冷启动，第一次编译
-// WinInet 互操作代码在 CI runner 上实测超过辅助进程用的 15 秒。
-const proxyCommandTimeoutMs = 45_000
-// 还原最多是：等系统代理锁 12 秒，再加三次 PowerShell。正常几秒就完；
+// 单次 PowerShell 放宽到 90 秒：卸载时 PowerShell 往往是冷启动，第一次编译
+// WinInet 互操作代码在 CI runner 上实测超过辅助进程用的 15 秒，45 秒也被撞穿过
+// （同一份清理有一次整段 55 秒通过，另一次第一条命令就超过 45 秒）。慢机器上
+// 这里超时的代价是整台电脑断网，比卸载界面多停一会儿重得多。
+const proxyCommandTimeoutMs = 90_000
+// 还原最多是：等系统代理锁 12 秒，再加三次 PowerShell。正常一分钟以内；
 // 这个上限只防卸载界面一直停在「正在清理」。
-const defaultTimeoutMs = 150_000
+const defaultTimeoutMs = 300_000
 
 // 没有记录就说明这台电脑上本程序从没接管过系统代理（或者已经还原干净），
 // 不必再起 PowerShell 去拿锁。lstat 不跟随链接：记录位置被换成链接时照样交给
