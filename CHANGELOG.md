@@ -292,6 +292,19 @@
 - `cli:launch` 返回值从 `void` 改为 `CliLaunchResult { configOverrideNotice? }`（通道没增删，T1 不涉及）；`system-service.ts` 在信任写入与 AGENTS.md 之后检查，记 `workspace.config-override` warn 日志，检查失败不挡打开。渲染层 `features/tools/launch-notice.ts` 统一出打开后的提醒，首页 toast、记录页「接着上次」都接上。
 - 诊断新增 `WORKSPACE_CONFIG_OVERRIDE`，看 `settings.workspace`（最近一次选的项目文件夹）与 Claude 管理策略，只看已配置的工具；从本软件打开一定不用当前账号的定 fail，其余 warn。这一项没有「去处理」按钮（`diagnosticHasFix`）。
 - 未覆盖：Claude Code 的 Windows 注册表策略（`HKLM\SOFTWARE\Policies\ClaudeCode`）与 macOS 描述文件策略。
+- `electron/codex-desktop-appx.test.ts` 里两条只在 Windows 上跑、要真起 PowerShell 的用例（解析两段生成脚本、未绑定 SID 的安装脚本在守卫处退出）
+  改成所有平台都跑的纯文本检查：测试里按 PowerShell 自己的引号规则扫描生成的脚本，确认恶意路径只出现在单引号字面量里、括号成对、
+  SID 守卫是顶层语句且排在任何文件操作之前、占位符过不了代理脚本的 SID 校验。原来 Windows runner 上冷启动 powershell.exe
+  偶尔超过 30 秒用例预算，#452 首轮因此假红一次。随真跑一起删掉的还有只为它服务的临时文件、命令行长度与启动预算辅助。
+- `powerShellLiteral`（`electron/windows-elevation.ts`）原来只把 ASCII `'` 双写。PowerShell 的分词器把 U+2018~U+201B
+  四种弯单引号也当单引号（`CharTraits.cs` 的 `IsSingleQuote`，`tokenizer.cs` 的 `ScanStringLiteral` 对任意两个相邻的单引号字符取后一个为字面值），
+  所以路径里的 `’` 会提前闭合字面量，后半截被当成代码执行。现在五种单引号都原地双写。
+  受影响的脚本：打开 CLI 的终端脚本（same-user 下以用户身份，trusted-only 下带管理员令牌）、Node.js 与 Codex 桌面端的 UAC 代理脚本
+  及其提权安装脚本（经 `-Verb RunAs` 以管理员运行，same-user 下嵌入的是 `%TEMP%` 路径，含用户名）。
+- `codex-desktop-service.ts` 的 `powershellLiteral` 与 `claude-native-uninstall.ts` 的 `powerShellSingleQuote` 是同样写法的副本，删掉改用 `powerShellLiteral`。
+- `windows-elevation.test.ts` 新增按 PowerShell 引号规则扫描生成脚本的用例：每种弯引号、混用 ASCII 引号，以及四类生成脚本里恶意路径只作为数据出现、
+  脚本结构与无害路径生成的完全一致。
+- 把 #452 的「C 盘搬家」例外接到剩下几处自带路径检查的模块，全部复用 `resolveRelocatedPath`，不另起规则：画布资产读回（`ai-asset-store` / `ai-video-asset-store` / `ai-audio-asset-store` 的有界读取与 `resolveOwnedFilePath`）、画布项目工作文件夹（`canvas-project-store` 的 `normalizedWorkspaceDirectory`）、Codex 会话（`codex-sessions` 的 `isInside`：Codex 会把我们注入的 `CODEX_HOME` 规范化，搬家机器上 `rollout_path` 记的是新位置，先按字面比、不在里面再两边都换成实际位置比）、Codex 外接工具与技能（`codex-extensions` 的 `assertNoSymlinkComponents`）、技能 Git 目录（`provider-extensions` 的 `plainGitDirectory`）。都是先换成实际位置再照原样严查；策略没开（`trusted-only`、root、启动探测未定）时 `resolveRelocatedPath` 等价于 `path.resolve`，行为与之前一字不差。`canvas-v2/` 未改动。
 
 ## 0.2.9 - 2026-09-23
 
