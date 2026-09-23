@@ -40,6 +40,10 @@ import {
   managedCliPackageDirectory,
   probeRunningCliProcesses,
 } from './cli-process-probe'
+import {
+  npmPrefixGlobalRoot,
+  resolveSameUserNpmPrefix,
+} from './npm-user-prefix'
 import { buildClaudeStatusLineCommand } from './claude-status-line'
 import { isCodexDesktopExecutable } from './codex-desktop'
 import {
@@ -3284,6 +3288,24 @@ export function createSystemService(
           env: commandEnvironment(),
         })
       }
+      // 普通权限安装给 npm 的是空 --userconfig（不让用户 .npmrc 改源、改脚本策略），
+      // 这也把用户在 .npmrc 里改过的全局目录一并丢了：新版装进 npm 默认目录，
+      // 用户自己敲的命令还是旧版。这里只把 prefix 这一项读回来显式传给 npm。
+      // 提权安装走托管目录，绝不读用户可写的配置来决定管理员令牌写到哪里。
+      const sameUserNpmPrefix = !managedNpmLayout
+        && provider !== 'grok'
+        && !(process.platform === 'win32' && windowsExecutionMode === 'trusted-only')
+        ? await resolveSameUserNpmPrefix({ env: commandEnvironment(), platform })
+        : null
+      if (sameUserNpmPrefix) {
+        runtimeLog?.log(
+          'info',
+          'install',
+          'cli.install.user-npm-prefix',
+          `${definition.name} 按用户 npm 配置安装到 ${redactHomeDirectory(sameUserNpmPrefix.prefix, providerRoots.userHome)}`,
+          { provider },
+        )
+      }
       managedNpmTransaction = await createInstallTemporaryDirectory('npm-transaction', {
         ...(managedNpmLayout ? { baseDirectory: managedNpmLayout.cacheRoot } : {}),
       })
@@ -3293,6 +3315,11 @@ export function createSystemService(
       if (provider !== 'grok') {
         if (managedNpmLayout) {
           occupancyProbeRoot = managedCliPackageDirectory(managedNpmLayout.prefix, definition.packageName, platform)
+        } else if (sameUserNpmPrefix) {
+          occupancyProbeRoot = cliPackageDirectoryFromNpmRoot(
+            npmPrefixGlobalRoot(sameUserNpmPrefix.prefix, platform),
+            definition.packageName,
+          )
         } else {
           const npmGlobalRoot = await resolveNpmGlobalRoot(npmExecutable, commandEnvironment())
           occupancyProbeRoot = npmGlobalRoot
@@ -3542,7 +3569,7 @@ export function createSystemService(
           const plan = buildCliMaintenancePlan(
             provider,
             npmExecutable,
-            attemptPrefix,
+            attemptPrefix ?? sameUserNpmPrefix?.prefix ?? null,
             trustedRelease.version,
             true,
             platform,
