@@ -94,10 +94,12 @@ export function createToolsApi(bridge: XingmangApi) {
     /**
      * 三块分开结算（对照 legacy 的 runCoordinatedScan）。一份损坏的
      * CLI 配置文件曾经能让整个工具页空白，用户连重新配置的入口都找不到。
+     * `acceptCached` 只给开机首屏：主进程可以先回上次落盘的检测结果
+     * （`system.cachedAt` 有值），调用方要接着再读一次真的。
      */
-    async read(force = false): Promise<ToolboxReadResult> {
+    async read(force = false, acceptCached = false): Promise<ToolboxReadResult> {
       const [system, config, platform] = await Promise.allSettled([
-        bridge.scanSystem(force), bridge.getConfig(), bridge.getPlatformCapabilities(),
+        acceptCached ? bridge.scanSystem(force, { acceptCached: true }) : bridge.scanSystem(force), bridge.getConfig(), bridge.getPlatformCapabilities(),
       ])
       const failures: ToolboxPartitionFailure[] = []
       if (system.status === 'rejected') failures.push({ partition: 'system', message: errorMessage(system.reason, '工具检测没有完成，请重试。') })

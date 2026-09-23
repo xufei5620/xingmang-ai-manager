@@ -1340,6 +1340,24 @@ test('an unreachable startup restore keeps the login on the home page and waits 
   } finally { await page.close() }
 })
 
+test('a launch paints the last saved scan first and swaps in the fresh one without calling config changed', async () => {
+  const page = await open('allInstalled=1&changedClaude=1&cachedScan=1')
+  try {
+    const row = page.getByTestId('tool-row-claude')
+    await page.getByTestId('home-cached-scan').waitFor()
+    await row.getByText('已配好').waitFor()
+    assert.equal(await page.getByText('配置被改过').count(), 0)
+    assert.equal(await page.getByTestId('tool-claude-rewrite-key').count(), 0)
+    await page.evaluate(() => window.v2Test.releaseScan())
+    await row.getByText('配置被改过').waitFor()
+    assert.equal(await page.getByTestId('home-cached-scan').count(), 0)
+    await page.getByTestId('tool-row-grok').getByText('已配好').waitFor()
+    const cachedReads = await page.evaluate(() => window.v2Test.calls.filter(entry => entry.method === 'scanSystem' && entry.args[1]?.acceptCached === true).length)
+    assert.equal(cachedReads, 1, '只有开机首屏那一次可以先用上次的结果')
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('an edited configuration can be kept as it is and stops asking', async () => {
   const page = await open('allInstalled=1&changedClaude=1')
   try {

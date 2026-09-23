@@ -5,7 +5,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { _electron as electron, expect } from '@playwright/test'
 import { collectedPromiseAttempts, collectedPromiseBackoffFor, fixtureReadyTimeoutMs } from './fixture-readiness.mjs'
-import { createSmokeRuntime } from './smoke-runtime.mjs'
+import { createSmokeRuntime, debuggerReleaseBudgetMs, whenOnlyDebuggerHoldsProcess } from './smoke-runtime.mjs'
 
 // Run after npm run compile. Every network transport is replaced before the
 // application entry is loaded; the fixture never contacts either real site.
@@ -407,6 +407,7 @@ async function closeWhileRestoring() {
       exitedAlready = true
       resolve({ code, closeLatency: Date.now() - closeRequestedAt })
     }))
+    const debuggerOnly = whenOnlyDebuggerHoldsProcess(child)
     // The close is scheduled rather than run inside the evaluation, so the
     // evaluation answers before app.quit() can tear the inspector down. An
     // answer that never comes back ("Resulting promise was garbage collected",
@@ -434,10 +435,15 @@ async function closeWhileRestoring() {
       }
     }
     const windowLatency = await Promise.race([windowClosed, new Promise((resolve) => setTimeout(() => resolve(null), restoredCloseBudgetMs))])
-    const result = windowLatency === null
+    // The exit budget is the application's. It ends at the exit, or where only
+    // Playwright's inspector connection is left keeping the process alive: on a
+    // busy runner that connection alone has held a finished process past 10 s
+    // (main at fc90ce8), with the window gone 701 ms after the request.
+    const applicationDone = Promise.race([exited.then(() => Date.now()), debuggerOnly]).then((at) => at - closeRequestedAt)
+    const doneLatency = windowLatency === null
       ? null
-      : await Promise.race([exited, new Promise((resolve) => setTimeout(() => resolve(null), Math.max(0, closeRequestedAt + restoredExitBudgetMs - Date.now())))])
-    if (!result) {
+      : await Promise.race([applicationDone, new Promise((resolve) => setTimeout(() => resolve(null), Math.max(0, closeRequestedAt + restoredExitBudgetMs - Date.now())))])
+    if (doneLatency === null) {
       // Without this the failure only says "too slow"; whether the main thread
       // is wedged, the window is still up, or quit is waiting on something is
       // what decides the fix.
@@ -457,9 +463,10 @@ async function closeWhileRestoring() {
       progress(`runtime log since this launch:\n${recent.slice(-120).join('\n')}`)
     }
     assert.ok(windowLatency !== null, 'closing the window while the saved account restores must not wait on the start-up scan')
-    assert.ok(result, `the process must end within ${restoredExitBudgetMs}ms of the close request once the window is gone`)
+    assert.ok(doneLatency !== null, `the application must finish quitting within ${restoredExitBudgetMs}ms of the close request once the window is gone`)
+    const result = await withDeadline('inspector release after the application quit', debuggerReleaseBudgetMs, () => exited)
     assert.equal(result.code, 0)
-    progress(`window gone ${windowLatency}ms and process ended ${result.closeLatency}ms after the request (main-process ping before it ${mainPingMs})`)
+    progress(`window gone ${windowLatency}ms, application done ${doneLatency}ms and process ended ${result.closeLatency}ms after the request (main-process ping before it ${mainPingMs})`)
   } finally {
     await withDeadline('main process exit', 20_000, () => instance.evaluate(({ app }) => app.exit(0))).catch(() => undefined)
     await withDeadline('close', 20_000, () => instance.close()).catch(() => undefined)

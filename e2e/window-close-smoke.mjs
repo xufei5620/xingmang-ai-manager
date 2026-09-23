@@ -3,7 +3,7 @@ import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { _electron as electron } from '@playwright/test'
-import { createSmokeRuntime } from './smoke-runtime.mjs'
+import { createSmokeRuntime, debuggerReleaseBudgetMs, whenOnlyDebuggerHoldsProcess } from './smoke-runtime.mjs'
 
 const projectRoot = path.resolve('.')
 const sandbox = await fs.mkdtemp(path.join(os.tmpdir(), 'xingmang-window-close-'))
@@ -321,8 +321,17 @@ async function runScenario(blockQuit) {
     const { processIds } = await scheduleWindowAction('block-quit', null, blockQuit)
     progress(`${scenario}: forcing the exit`)
     const started = Date.now()
+    const debuggerOnly = whenOnlyDebuggerHoldsProcess(child)
     await chooseClose('强制退出程序')
-    const exit = await withDeadline(`${scenario}: forced exit`, 15_000, () => exitPromise)
+    // The 15 s budget is the application's. It ends at the exit, or where only
+    // Playwright's inspector connection is left keeping the process alive.
+    await withDeadline(`${scenario}: forced exit`, 15_000, () => Promise.race([exitPromise, debuggerOnly]))
+    const applicationDoneMs = Date.now() - started
+    const exit = await withDeadline(`${scenario}: inspector release after the application exited`, debuggerReleaseBudgetMs, () => exitPromise)
+    const exitedMs = Date.now() - started
+    if (exitedMs - applicationDoneMs > 2_000) {
+      progress(`${scenario}: application done ${applicationDoneMs}ms after the request, process released by the inspector ${exitedMs}ms after it`)
+    }
     assert.equal(exit.code, 0)
     const state = JSON.parse(await fs.readFile(evidence, 'utf8'))
     assert.ok(rendererDialogs.every((type) => type === 'beforeunload'))

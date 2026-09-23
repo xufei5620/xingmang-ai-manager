@@ -94,6 +94,7 @@ import type {
   OfficialChatGptAccount as MainOfficialChatGptAccount,
   OfficialChatGptWindow as MainOfficialChatGptWindow,
   SystemSnapshot as MainSystemSnapshot,
+  SystemScanOptions as MainSystemScanOptions,
   ToolStatus as MainToolStatus,
   ToolUninstallResult as MainToolUninstallResult,
 } from './system-service'
@@ -217,6 +218,7 @@ export type CodexDesktopLocale = MainCodexDesktopLocale
 export type CodexDesktopLocaleStatus = MainCodexDesktopLocaleStatus
 export type CodexDesktopLocaleResult = MainCodexDesktopLocaleResult
 export type SystemSnapshot = MainSystemSnapshot
+export type SystemScanOptions = MainSystemScanOptions
 export type OfficialChatGptAccount = MainOfficialChatGptAccount
 export type OfficialChatGptWindow = MainOfficialChatGptWindow
 export type CodexDesktopLaunchResult = MainCodexDesktopLaunchResult
@@ -545,7 +547,7 @@ export interface XingmangInvokeContract {
     [],
     PlatformCapabilities
   >
-  scanSystem: IpcInvokeDefinition<'system:scan', [forceRefresh?: boolean], SystemSnapshot>
+  scanSystem: IpcInvokeDefinition<'system:scan', [forceRefresh?: boolean, options?: SystemScanOptions], SystemSnapshot>
   refreshNetworkLocation: IpcInvokeDefinition<'system:refresh-network-location', [], SystemSnapshot['network']>
   refreshOfficialChatGptUsage: IpcInvokeDefinition<
     'system:refresh-official-chatgpt',

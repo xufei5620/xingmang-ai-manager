@@ -196,6 +196,8 @@ import { inspectClaudeDesktopStoreVirtualization } from './claude-desktop-manife
 import { assertClaudeDesktopUnmanaged } from './claude-desktop-policy'
 import { isServiceUnavailableResponse, networkFailureMessages, parsesAsJsonObject } from './network-failure'
 import { NewApiNetworkError } from './new-api-client'
+import { createSystemSnapshotCache } from './system-snapshot-cache'
+import { BoundedOperationQueue } from './bounded-operation-queue'
 
 const execFileAsync = promisify(execFile)
 const npmLatestCacheTtlMs = 10 * 60_000
@@ -367,6 +369,16 @@ export interface SystemSnapshot {
     codex: DesktopAppStatus
   }
   officialChatGpt?: OfficialChatGptAccount | null
+  /**
+   * 只有「上次的检测结果」才有：落盘的时间。界面见到它就当作还在检测，
+   * 真的扫描结果回来会整份替换（见 system-snapshot-cache.ts）。
+   */
+  cachedAt?: string
+}
+
+/** 首页那次读取可以先拿上次的结果（见 SystemService.cachedScan）；其余调用方不传。 */
+export interface SystemScanOptions {
+  acceptCached?: boolean
 }
 
 export interface CodexDesktopLaunchResult {
@@ -765,6 +777,11 @@ export interface SystemService {
   scanSystem(forceRefresh?: boolean): Promise<SystemSnapshot>
   /** 手上现成的扫描结果（正在跑的，或 `maxAgeMs` 以内跑完且之后没装卸过东西的）；没有就是 null，不会新起一轮。 */
   recentScan(maxAgeMs: number): Promise<SystemSnapshot> | null
+  /**
+   * 本次启动还没有扫完过一轮时，给出上次落盘的结果（带 `cachedAt`），同时确保
+   * 一轮真扫描在跑；已经扫完过、或没有可用的旧结果时是 null。只给首页「先画个样子」用。
+   */
+  cachedScan(): Promise<SystemSnapshot | null>
   refreshNetworkLocation(): Promise<SystemSnapshot['network']>
   refreshOfficialChatGptUsage(): Promise<OfficialChatGptAccount | null>
   inspectCodexSetupStatus(): Promise<CodexSetupStatus>
@@ -1937,6 +1954,10 @@ export function buildCliToolStatusFromSettled(
 
 export interface SystemServiceOptions {
   managerDataDirectory?: string
+  /** 首页扫描结果落在哪；缺省不落盘（测试与旧行为）。 */
+  systemSnapshotCacheFile?: string
+  /** 落盘的旧结果只认同一版本的软件写的。 */
+  appVersion?: string
   /** Native profile roots and policy reads are isolated in tests. */
   claudeDesktopEnv?: NodeJS.ProcessEnv
   inspectClaudeDesktopStoreVirtualization?: typeof inspectClaudeDesktopStoreVirtualization
@@ -2021,6 +2042,9 @@ export function providerCommandEnvironment(
 
 /** 刚跑完的一轮扫描在这么久以内可以直接复用（见 createScanCoalescer）。 */
 export const scanReuseMs = 15_000
+
+/** 一轮扫描里同时在跑的探测子进程上限（见 createSystemService 里的 limitedProbe）。 */
+export const scanProbeConcurrency = 3
 
 /**
  * 非强制的扫描先看手上有没有现成的：正在跑的那一轮直接接上，刚跑完不久（`reuseMs`
@@ -2702,9 +2726,47 @@ export function createSystemService(
     return inspectOfficialChatGptAccount(true)
   }
 
-  const coalescedScan = createScanCoalescer({ run: runScan, revision: () => installationQueue.revision, reuseMs: scanReuseMs })
+  const snapshotCache = serviceOptions.systemSnapshotCacheFile && serviceOptions.appVersion
+    ? createSystemSnapshotCache({
+        filePath: serviceOptions.systemSnapshotCacheFile,
+        appVersion: serviceOptions.appVersion,
+        onWarning: (code, message) => runtimeLog?.log('warn', 'system', code, '上次检测结果没有读写成功', { error: message }),
+      })
+    : null
+  let scanCompleted = false
+  let scansStarted = 0
+  let newestSaved = 0
+  const coalescedScan = createScanCoalescer({
+    run: async (force) => {
+      const started = ++scansStarted
+      const snapshot = await runScan(force)
+      scanCompleted = true
+      // 强制重扫与普通扫描可能交错完成，落盘只让后开始的那一轮覆盖先开始的。
+      if (started > newestSaved) {
+        newestSaved = started
+        void snapshotCache?.save(snapshot)
+      }
+      return snapshot
+    },
+    revision: () => installationQueue.revision,
+    reuseMs: scanReuseMs,
+  })
   function scanSystem(forceRefresh = false): Promise<SystemSnapshot> {
     return coalescedScan.scan(forceRefresh)
+  }
+  async function cachedScan(): Promise<SystemSnapshot | null> {
+    if (scanCompleted || !snapshotCache) return null
+    void scanSystem(false).catch(() => undefined)
+    const cached = await snapshotCache.load()
+    // 读文件这几毫秒里真扫描可能已经回来了，那就不必再给旧的。
+    return scanCompleted ? null : cached
+  }
+  // 低配机器上一轮扫描同时起十来个探测子进程（node、npm、python、git、PowerShell、
+  // 四家 CLI 的 --version），CPU 与磁盘被挤满，整轮反而更慢，别的程序也跟着卡。
+  // 起子进程的探测一次最多跑这么多个；网络位置这类只发请求的不占名额。
+  const probeQueue = new BoundedOperationQueue({ maxActive: scanProbeConcurrency, maxQueued: 64 })
+  function limitedProbe<T>(probe: () => Promise<T>): Promise<T> {
+    return probeQueue.enqueue(() => probe()).promise
   }
 
   async function runScan(forceRefresh: boolean): Promise<SystemSnapshot> {
@@ -2715,11 +2777,11 @@ export function createSystemService(
       officialChatGptCache = null
     }
     const [nodeResult, npmResult, pythonResult, gitResult, codexDesktopResult, networkResult, officialChatGptResult] = await Promise.allSettled([
-      inspectNode(),
-      inspectTool('npm'),
-      inspectPython(),
-      inspectGit(),
-      inspectCodexDesktopUpdate(forceRefresh),
+      limitedProbe(inspectNode),
+      limitedProbe(() => inspectTool('npm')),
+      limitedProbe(inspectPython),
+      limitedProbe(inspectGit),
+      limitedProbe(() => inspectCodexDesktopUpdate(forceRefresh)),
       inspectNetworkLocation(forceRefresh),
       inspectOfficialChatGptAccount(forceRefresh),
     ])
@@ -2733,7 +2795,7 @@ export function createSystemService(
     const npmGlobalRoot = await resolveNpmGlobalRoot(npm.path, commandEnvironment())
     // 单个 CLI 探测异常不能伪装成“未安装”，否则维护页会自动勾选并重装。
     const cliProbes = await Promise.allSettled(
-      providerIds.map((id) => inspectCliTool(id, npm.path, npmGlobalRoot)),
+      providerIds.map((id) => limitedProbe(() => inspectCliTool(id, npm.path, npmGlobalRoot))),
     )
     const cliResults: ToolStatus[] = cliProbes.map(buildCliToolStatusFromSettled)
     const networkRegion = network.region
@@ -4774,6 +4836,7 @@ export function createSystemService(
     adoptRestoredConfig,
     scanSystem,
     recentScan: (maxAgeMs: number) => coalescedScan.recent(maxAgeMs),
+    cachedScan,
     refreshNetworkLocation,
     refreshOfficialChatGptUsage,
     inspectCodexSetupStatus,
