@@ -150,6 +150,14 @@ describe('renderer-v2 home install cancellation', () => {
     expect(markup).not.toContain('data-testid="tool-claude-cancel"')
   })
 
+  it('shows a running account switch on the row and hides its menu so it cannot be clicked twice', () => {
+    const markup = render({ 'switch:claude': { label: '正在切回官方账号', log: [] } })
+    expect(markup).toContain('切换中')
+    expect(markup).toContain('正在切回官方账号')
+    expect(markup).not.toContain('data-testid="tool-claude-cancel"')
+    expect(markup).not.toContain('安装中')
+  })
+
   it('keeps 取消 off the launch job, which is not an install', () => {
     const markup = render({ 'launch:claude': { label: '正在打开工具', log: [], cancellable: true } })
     expect(markup).not.toContain('data-testid="tool-claude-cancel"')

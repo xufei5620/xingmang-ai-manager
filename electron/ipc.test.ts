@@ -1524,6 +1524,29 @@ describe('registerIpcHandlers', () => {
     expect(result).toMatchObject({ provider: 'codex', target: 'official', backupId: 'backup-1', verified: false })
   })
 
+  it('runs one account switch per tool at a time', async () => {
+    const service = serviceStub()
+    let finish!: () => void
+    vi.mocked(service.switchToOfficialAccount).mockImplementation(() => new Promise<never>((resolve) => { finish = () => resolve(undefined as never) }))
+    const create = vi.fn(() => ({ id: 'backup-1' }))
+    register(service, undefined, undefined, undefined, undefined, undefined, {}, {
+      backupStore: { list: vi.fn(), create, inspect: vi.fn(), restore: vi.fn() } as never,
+    })
+    const handler = electronMocks.handlers.get('config:switch-account-source')!
+    const first = handler(trustedEvent(), 'codex', 'official')
+    const repeated = handler(trustedEvent(), 'codex', 'official')
+    await expect(handler(trustedEvent(), 'codex', 'account')).rejects.toThrow('这个工具正在切换账号')
+    await vi.waitFor(() => expect(service.switchToOfficialAccount).toHaveBeenCalledTimes(1))
+    finish()
+    const [a, b] = await Promise.all([first, repeated])
+    expect(a).toBe(b)
+    expect(create).toHaveBeenCalledTimes(1)
+    // 跑完就放开，下一次照常能切。
+    vi.mocked(service.switchToOfficialAccount).mockResolvedValue(undefined as never)
+    await handler(trustedEvent(), 'codex', 'official')
+    expect(create).toHaveBeenCalledTimes(2)
+  })
+
   it('registers the restored config source when a failed switch rolls back', async () => {
     const service = serviceStub()
     vi.mocked(service.switchToOfficialAccount).mockRejectedValue(new Error('配置文件被占用'))
