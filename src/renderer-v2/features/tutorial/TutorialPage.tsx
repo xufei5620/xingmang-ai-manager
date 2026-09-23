@@ -3,6 +3,7 @@ import { ArrowLeft, ArrowRight, BookOpen, CheckCircle2, ChevronRight, Clock3, Co
 import { Button, Card, Empty, PageHead, Pill, SearchInput } from '../../ui'
 import type { BusinessActions } from '../../pages-maintenance'
 import { tutorialTopics, type TutorialTopic } from '../../registry/tutorials'
+import type { V2Page } from '../../types'
 import { TutorialIllustration } from './TutorialIllustration'
 import './tutorial.css'
 
@@ -61,7 +62,13 @@ function TutorialExample({ text, firstMessage, testId }: { text: string; firstMe
   </div>
 }
 
-export function TutorialPage({ navigate, openGuide, openHelp, topic }: BusinessActions & { topic?: { sequence: number; id: string } }) {
+export type TutorialPageProps = Omit<BusinessActions, 'navigate'> & {
+  /** section 是那一页里要落的分页；外壳按它切，缺省 = 只跳页（旧行为）。 */
+  navigate?: (page: V2Page, section?: string) => void
+  topic?: { sequence: number; id: string }
+}
+
+export function TutorialPage({ navigate, openGuide, openHelp, topic }: TutorialPageProps) {
   const [reading, setReading] = useState(() => initialReading(topic))
   // Native details can be closed manually; a new search must reveal its matches again.
   const searchKey = reading.query.trim().toLocaleLowerCase()
@@ -139,7 +146,7 @@ export function TutorialPage({ navigate, openGuide, openHelp, topic }: BusinessA
               {step.example && <TutorialExample text={step.example} firstMessage={current.id === 'start'} testId={`tutorial-${current.id}-copy-${index}`} />}
               {step.expected && <div className="v2-tutorial-expected"><CheckCircle2 size={17} aria-hidden="true" /><p><strong>看到这样，就做好了</strong>{step.expected}</p></div>}
               {step.tip && <p className="v2-tutorial-tip"><strong>小提醒：</strong>{step.tip}</p>}
-              {navigate && <Button size="sm" iconRight={ArrowRight} onClick={() => navigate(step.page)} testId={`tutorial-${current.id}-action-${index}`}>{step.action}</Button>}
+              {navigate && <Button size="sm" iconRight={ArrowRight} onClick={() => navigate(step.page, step.section)} testId={`tutorial-${current.id}-action-${index}`}>{step.action}</Button>}
               {step.extra?.map(note => <details className="v2-tutorial-extra" key={`${note.title}:${searchKey}`} open={Boolean(searchKey)}><summary>{note.title}</summary><p>{note.detail}</p></details>)}
             </div>
           </li>)}
