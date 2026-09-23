@@ -65,6 +65,9 @@ export function SavedAccounts({
     setSelected((values) => values.filter((value) => allowed.has(value)))
   }, [sync.data])
   const [remove, setRemove] = useState<string | null>(null)
+  // 切过去才发现登录已失效的那一个保存账号（全面检测 Q12）：当前账号没变，
+  // 这一行给个「重新登录这个账号」，不然用户只看到一句失败、不知道下一步。
+  const [expired, setExpired] = useState<string | null>(null)
   return (
     <div data-testid="saved-accounts-list">
       <ResultNotice {...operation} />
@@ -119,13 +122,17 @@ export function SavedAccounts({
                       void operation.execute(
                         account.id,
                         async () => {
+                          setExpired(null)
                           const outcome = await switchAccountWithOptionalSync(
                             api,
                             account,
                             selected,
                             sync.data,
                             resource.data?.origin ?? '',
-                          )
+                          ).catch((error: unknown) => {
+                            if (savedAccountExpired(error)) setExpired(account.id)
+                            throw error
+                          })
                           preserveAccountSwitchResult(outcome)
                           setResult(outcome)
                           setSelected([])
@@ -139,6 +146,17 @@ export function SavedAccounts({
                   >
                     切换
                   </Button>
+                  {expired === account.id && !current && onLogin && (
+                    <Button
+                      size="sm"
+                      variant="primary"
+                      disabled={Boolean(operation.busy)}
+                      onClick={onLogin}
+                      testId={`saved-account-relogin-${account.id}`}
+                    >
+                      重新登录这个账号
+                    </Button>
+                  )}
                   {!current && (
                     <Menu
                       label={`账号 ${account.username} 的更多操作`}
@@ -227,4 +245,10 @@ export function SavedAccounts({
       </Dialog>
     </div>
   )
+}
+
+/** 主进程 SAVED_EXPIRED 那句（electron/realm-account.ts）；只认它，不认当前账号过期。 */
+export function savedAccountExpired(error: unknown) {
+  const message = error instanceof Error ? error.message : typeof error === 'string' ? error : ''
+  return /保存的账号登录已失效/.test(message)
 }

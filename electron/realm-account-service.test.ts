@@ -742,6 +742,26 @@ describe('realm switch guards on the shipped path', () => {
     expect(f.service.getSiteId()).toBe('solov-api')
     expect(f.clients.at(-1)!.client.logout).toHaveBeenCalledTimes(1)
   })
+  it('says the saved account expired, not the current one, when switching to a dead saved login', async () => {
+    for (const failure of ['invalid', 'unauthorized'] as const) {
+      const f = fixture()
+      await f.service.login(login)
+      await f.service.login({ ...login, siteId: 'solov-api' })
+      const summaries = await f.service.listSavedAccounts()
+      const createClient = f.options.createClient
+      f.options.createClient = (siteId, callback) => {
+        const created = createClient(siteId, callback)
+        if (failure === 'invalid') f.clients.at(-1)!.restoreValid = false
+        else f.clients.at(-1)!.restoreError = new RealmAccountError('UNAUTHORIZED')
+        return created
+      }
+      await expect(f.service.switchSavedAccount(summaries[0].id)).rejects.toMatchObject({ code: 'SAVED_EXPIRED' })
+      // 当前账号原样留着，过期的那条也还在列表里，等用户重新登录它。
+      expect(f.service.getSiteId()).toBe('solov-api')
+      expect(f.service.client.getSessionState().authenticated).toBe(true)
+      expect(await f.service.listSavedAccounts()).toHaveLength(2)
+    }
+  })
   it('rejects forgetting the current account through the inactive-account action', async () => {
     const f = fixture()
     await f.service.login(login)

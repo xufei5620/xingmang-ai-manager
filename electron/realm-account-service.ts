@@ -323,7 +323,12 @@ export function createRealmAccountService(options: RealmAccountServiceOptions): 
     return transition(async () => {
       const saved = await findSaved(id)
       if (active.saved && realmOwnerKey(active.saved) === realmOwnerKey(saved)) return session()
-      if (!await restore(saved)) throw new RealmAccountError('UNAUTHORIZED')
+      let restored: boolean
+      try { restored = await restore(saved) } catch (error) {
+        if (error instanceof RealmAccountError && error.code === 'UNAUTHORIZED') throw new RealmAccountError('SAVED_EXPIRED')
+        throw error
+      }
+      if (!restored) throw new RealmAccountError('SAVED_EXPIRED')
       return session()
     })
   }
