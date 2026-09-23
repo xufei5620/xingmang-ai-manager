@@ -939,7 +939,7 @@ export function UpdatesPage({
       data-page-id="updates"
       data-testid="page-updates"
     >
-      <PageHead title="更新" lead="下载和安装由你确认。" />
+      <PageHead title="更新" lead="新版本什么时候安装由你决定，不会自己重启。" />
       <ResultNotice
         error={resource.error || operation.error}
         message={operation.message}
@@ -1899,7 +1899,7 @@ export function SettingsPage({
           )}
           {row(
             '启动时检查新版本',
-            '只显示提醒，下载和安装由你确认',
+            '发现新版本会提醒你，什么时候安装由你决定',
             <Switch
               checked={settings.checkUpdatesOnStartup}
               aria-label="启动时检查新版本"
