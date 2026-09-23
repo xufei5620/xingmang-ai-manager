@@ -340,6 +340,44 @@ export function rollbackVersion(tool: Pick<ToolPresentation, 'status' | 'version
   return advice && tool.status.installed && advice.rollbackAvailable ? advice.recommendedVersion : null
 }
 
+/** 已经装好的工具，建议先换一个版本再用（新手引导「准备工具」那一步）。 */
+export interface ToolUpdateOffer {
+  /** 交给安装的版本；null = 跟首页「更新」一样不点名，由主进程按名单或最新版决定。 */
+  version: string | null
+  /** 换完是哪个版本，只用来上屏；说不准（桌面端走镜像）时为 null。 */
+  target: string | null
+  /** 目标版本比装着的新；false 只出现在当前版本有已知问题、推荐版本反而更旧的时候。 */
+  newer: boolean
+  /** 装着的版本落在名单的不兼容区间里。 */
+  knownIssue: boolean
+  /** 不是本工具装的：只给这句提示，不给按钮（与首页同一条规矩）。 */
+  manualHint: string | null
+}
+
+/**
+ * 引导以前只问「装没装」，找到任何版本都说「已经装好」（全面检测 Q50）：
+ * 装着 2.1.42 的人一路走到打开工具，才发现和推荐的 2.1.277 差了一截。这里
+ * 不另找版本来源，只读首页已经在用的两份判定——名单的建议（主进程比过
+ * 版本号，recommendedIsNewer）和更新检查的 updateAvailable。
+ *
+ * 名单把安装钉在推荐版本上时，只有推荐版本更新才算旧：装着的比推荐还新时
+ * 首页那颗「更新」其实会装回推荐版本，引导不该把这说成「版本旧了」。
+ */
+export function toolUpdateOffer(
+  tool: Pick<ToolPresentation, 'id' | 'status' | 'updateAvailable' | 'latestVersion' | 'versionAdvice' | 'error'>,
+): ToolUpdateOffer | null {
+  if (!tool.status.installed || tool.error) return null
+  const advice = tool.versionAdvice
+  const knownIssue = Boolean(advice?.blockedReason)
+  const recommended = rollbackVersion(tool)
+  const manualHint = isExternallyManagedInstall(tool.status) ? externalInstallHint(tool.status.installSource) : null
+  if (recommended && (advice?.recommendedIsNewer || knownIssue)) {
+    return { version: recommended, target: recommended, newer: advice?.recommendedIsNewer === true, knownIssue, manualHint }
+  }
+  if (!tool.updateAvailable || (advice?.pinned && advice.recommendedVersion)) return null
+  return { version: null, target: tool.id === 'codexDesktop' ? null : tool.latestVersion, newer: true, knownIssue, manualHint }
+}
+
 export function greeting(hour: number): string {
   return hour < 11 ? '早上好' : hour < 14 ? '中午好' : hour < 18 ? '下午好' : '晚上好'
 }

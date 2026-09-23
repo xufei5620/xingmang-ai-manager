@@ -14,7 +14,7 @@ import { createToolsApi } from './features/tools/api'
 import { launchWaitLabel, launchWarning } from './features/tools/launch-notice'
 import { chineseRuntimePatchAnswerMissing, shouldAskForChineseRuntimePatch } from './features/tools/chinese-runtime-choice'
 import { cliInstallStageLabel, nodeRuntimeReady, planCliInstall, pythonRuntimeReady, runtimeStageFailureMessage, type InstallRuntimeId } from './features/tools/runtime-readiness'
-import { isToolId, presentTools, providerFor, toolInstallDirectory, type ToolId, type ToolSource } from './features/tools/model'
+import { isToolId, presentTools, providerFor, toolInstallDirectory, toolUpdateOffer, type ToolId, type ToolSource } from './features/tools/model'
 import { pendingToolUpdates, readAnnouncedToolUpdates, rememberAnnouncedToolUpdates, unannouncedToolUpdates, updateNoticeKey } from './features/tools/update-notice'
 import { isMissingWorkspace } from './features/tools/recent-workspaces'
 import { uninstallHandOffNotice } from './features/tools/uninstall-handoff'
@@ -771,6 +771,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     runtimeAutoPrepare: platform?.nodeRuntimeInstall === 'managed', pythonAutoPrepare: platform?.pythonRuntimeInstall === 'managed',
     supported: tool.id !== 'codexDesktop' || platform?.codexDesktop.launch,
     officialLoginRequired: guideOfficialLoginRequired(tool.provider, guideSource(tool.source), toolbox.snapshot!.config.providers[tool.provider]),
+    update: toolUpdateOffer(tool),
     installMode: tool.id === 'codexDesktop' ? platform?.codexDesktop.install : platform?.cliInstall[tool.id], workspace: toolbox.snapshot!.config.workspace,
   })) : []
   const balanceAmount = balance && balance.quotaPerUnit > 0 ? balance.quota / balance.quotaPerUnit : null
@@ -815,7 +816,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   if (boot !== 'ready') return <Splash phase="正在准备星芒 AI" error={bootError || undefined} progress={update?.progress?.percent} onRetry={() => setBootAttempt((value) => value + 1)} />
   return <AccountBalanceContext.Provider value={balanceStore}><BalanceTierProvider value={balanceAmount === null ? 'neutral' : balanceAmount <= 0 ? 'zero' : balanceAmount < 5 ? 'bad' : balanceAmount < 20 ? 'warn' : 'ok'}>
     {guide ? <StartGuide platform={os} tools={guideTools} signedIn={session.authenticated} busy={Object.keys(toolbox.jobs).length > 0 || accountBootstrapBusy} progress={accountBootstrapBusy && accountBootstrap ? { label: accountBootstrap.label, percent: accountBootstrap.percent } : guideJobProgress(toolbox.jobs)} resumeKey={scope}
-      onDetect={() => toolbox.refresh(true)} onInstall={async (id) => { await install(id) }} onInstallRuntime={() => installRuntime('node')} onInstallPython={() => installRuntime('python')} onConfigure={async (id) => { openToolConfig(id) }} onLogin={() => setAuth('login')}
+      onDetect={() => toolbox.refresh(true)} onInstall={async (id, version) => { await install(id, version) }} onInstallRuntime={() => installRuntime('node')} onInstallPython={() => installRuntime('python')} onConfigure={async (id) => { openToolConfig(id) }} onLogin={() => setAuth('login')}
       onLaunch={async (id, newFolder) => id === 'chat' ? true : launch(id, 'open', undefined, newFolder)}
       onComplete={(id) => { if (!writeLocalPreference(`xingmang-v2-guide:${scope}`, id)) toast.show('工具已准备好，但引导偏好没有保存在本机。', 'warn'); setWorkspaceEntered(true); rememberTourPending(scope); setTourOpen(true); navigate(id === 'chat' ? 'chat' : 'home') }} onBack={() => setGuide(false)} onHelp={() => setHelp(true)} />
       : !session.authenticated && !restoring && !workspaceEntered ? <Welcome onLogin={() => setAuth('login')} onRegister={() => setAuth('register')} onSteps={() => setGuide(true)} onHelp={() => setHelp(true)} onLegal={setLegal}
