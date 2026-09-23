@@ -34,6 +34,7 @@ import { classifyNetworkFailure, networkFailureMessages } from './network-failur
 import { redactSecretPatterns } from './redaction-patterns'
 import { relayApiProbeBaseUrl, resolveRelaySite, type RelaySite } from './relay-sites'
 import { findReparseComponent, type ReparseComponent } from './safe-local-data'
+import { resolveRelocatedPath } from './relocated-folders'
 import { resolveCliCommand, resolveCliInstallation } from './tool-installation'
 import type { ToolConfigOwnership } from './tool-config-ownership'
 import type { SystemSnapshot } from './system-service'
@@ -154,6 +155,8 @@ export interface DiagnosticsDependencies {
   windowsExecution?: WindowsCliExecutionModeResolution | null
   /** 「文件夹位置」一项逐级找被重定向的那一级；测试用它造「搬过家」的目录。 */
   findReparseComponent?: (target: string) => ReparseComponent | null
+  /** 按当前放行规则把「搬过家」的文件夹换成实际位置；测试用它模拟放行。 */
+  resolveRelocatedPath?: (target: string) => string
   /**
    * 启动时发现用户环境里的 CODEX_HOME 不可用、已按没设处理（codex-home.ts）。
    * 传进来的 env 里 CODEX_HOME 已被换成本程序算出的位置，诊断自己看不到原值，
@@ -1628,23 +1631,35 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
     }] : []),
     {
       // 「C 盘搬家」工具或 mklink /J 把用户文件夹、软件数据文件夹挪到别的盘之后，
-      // 路径上多出一级目录联接。safe-local-data 的写入校验（I8）会拒绝这种路径，
-      // 于是写 Key、存设置、写日志全部失败，而用户只看到一句「不能经过符号链接或
-      // 目录联接」。这一项只负责把它认出来，校验本身一点不放宽。
+      // 路径上多出一级目录联接。普通权限运行时，用户文件夹里、搬到本机硬盘的联接
+      // 会被跟过去读写（relocated-folders.ts），这一项只报告一句「搬到了哪」；
+      // 仍被写入校验（I8）拒绝的（管理员身份运行、网络盘、共享位置）才算失败。
       code: 'FOLDER_RELOCATED',
       title: '文件夹位置',
-      run: () => {
-        const findings = findRelocatedFolders(
-          relocatedFolderTargets(userHome, codexHome, dependencies.userDataDirectory),
-          dependencies.findReparseComponent ?? findReparseComponent,
-        )
-        if (!findings.length) {
+      run: (): CheckOutcome => {
+        const find = dependencies.findReparseComponent ?? findReparseComponent
+        const resolveRelocated = dependencies.resolveRelocatedPath ?? resolveRelocatedPath
+        const targets = relocatedFolderTargets(userHome, codexHome, dependencies.userDataDirectory)
+        const relocated = findRelocatedFolders(targets, find)
+        if (!relocated.length) {
           return {
             state: 'pass',
             summary: '软件要用到的文件夹都在原来的位置',
             details: { relocated: 0 },
           }
         }
+        const findings = findRelocatedFolders(targets, (target) => find(resolveRelocated(target)))
+        if (!findings.length) {
+          const moved = relocated.map((finding) => `${finding.labels.join('、')}${finding.target
+            ? `在${describeRelocationTarget(finding.target, platform)}`
+            : '在别的位置'}`)
+          return {
+            state: 'pass',
+            summary: `${moved.join('；')}，软件会跟过去读写，能正常使用`,
+            details: { relocated: relocated.length, followed: true },
+          }
+        }
+        const elevated = platform === 'win32' && dependencies.windowsExecution?.mode === 'trusted-only'
         const described = findings.map((finding) => `${finding.labels.join('、')}${finding.target
           ? `被搬到了${describeRelocationTarget(finding.target, platform)}`
           : '被搬走了，但读不出它现在在哪里'}`)
@@ -1655,11 +1670,15 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
           details[`from${index + 1}`] = finding.component
           details[`to${index + 1}`] = finding.target ? describeRelocationTarget(finding.target, platform).trim() : null
         }
+        if (elevated) details.elevated = true
         return {
           state: 'fail',
-          summary: `${described.join('；')}${hint}。为了安全，软件不往被搬过的文件夹里写东西，`
-            + '所以写入 Key、保存设置、记录日志都可能失败。把文件夹搬回原来的位置就能恢复；'
-            + '搬不回来请在「反馈」页导出报告发给客服',
+          summary: elevated
+            ? `${described.join('；')}${hint}。软件现在是用管理员身份运行的，为了安全不往被搬过的文件夹里写东西，`
+              + '所以写入 Key、保存设置、记录日志都可能失败。关掉软件，直接双击打开（不要选「以管理员身份运行」）就能恢复'
+            : `${described.join('；')}${hint}。为了安全，软件不往被搬过的文件夹里写东西，`
+              + '所以写入 Key、保存设置、记录日志都可能失败。把文件夹搬回原来的位置就能恢复；'
+              + '搬不回来请在「反馈」页导出报告发给客服',
           details,
         }
       },

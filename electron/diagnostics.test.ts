@@ -1071,6 +1071,41 @@ describe('diagnostics', () => {
     expect(JSON.stringify(item)).not.toContain('peaker')
   })
 
+  it('passes the folder check when every relocated folder is followed', async () => {
+    const home = temporaryHome()
+    const input = dependencies(home)
+    input.platform = 'win32'
+    input.userDataDirectory = path.join(home, 'AppData', 'Roaming', 'xingmang')
+    const moved = path.join(home, 'D-moved')
+    input.resolveRelocatedPath = (target) => (target.startsWith(home) ? `${moved}${target.slice(home.length)}` : target)
+    input.findReparseComponent = (target) => (target.startsWith(moved)
+      ? null
+      : { component: home, target: 'D:\\Users\\peaker' })
+
+    const item = (await runDiagnostics(input)).items.find((entry) => entry.code === 'FOLDER_RELOCATED')
+
+    expect(item?.state).toBe('pass')
+    expect(item?.summary).toContain('在 D 盘')
+    expect(item?.summary).toContain('能正常使用')
+    expect(item?.details).toMatchObject({ relocated: 1, followed: true })
+    expect(JSON.stringify(item)).not.toContain('peaker')
+  })
+
+  it('tells an elevated run to reopen the app normally when a relocation is refused', async () => {
+    const home = temporaryHome()
+    const input = dependencies(home)
+    input.platform = 'win32'
+    input.windowsExecution = { mode: 'trusted-only', elapsedMs: 5 }
+    input.findReparseComponent = () => ({ component: home, target: 'D:\\Users\\peaker' })
+
+    const item = (await runDiagnostics(input)).items.find((entry) => entry.code === 'FOLDER_RELOCATED')
+
+    expect(item?.state).toBe('fail')
+    expect(item?.summary).toContain('管理员身份运行')
+    expect(item?.summary).toContain('直接双击打开')
+    expect(item?.details).toMatchObject({ elevated: true })
+  })
+
   it('names only the drive or disk a folder was moved to', () => {
     expect(describeRelocationTarget('D:\\Users\\alice', 'win32')).toBe(' D 盘')
     expect(describeRelocationTarget('\\\\?\\e:\\Users\\alice\\.codex', 'win32')).toBe(' E 盘')

@@ -1,5 +1,6 @@
 import fs from 'node:fs'
 import { sameLocalPathIdentity } from './path-identity'
+import { resolveRelocatedPath } from './relocated-folders'
 
 function sameFileIdentity(left: fs.BigIntStats, right: fs.BigIntStats): boolean {
   return left.dev === right.dev
@@ -54,13 +55,14 @@ function readBufferSize(stats: fs.BigIntStats, maximumBytes: number, label: stri
 }
 
 export function readBoundedUtf8FileSync(
-  filePath: string,
+  requestedPath: string,
   maximumBytes: number,
   label: string,
 ): string {
   if (!Number.isSafeInteger(maximumBytes) || maximumBytes <= 0) {
     throw new Error(`${label}读取上限无效`)
   }
+  const filePath = resolveRelocatedPath(requestedPath)
   const pathBeforeOpen = pathSnapshotSync(filePath, label)
   const descriptor = fs.openSync(
     filePath,
@@ -101,13 +103,14 @@ export async function readBoundedUtf8File(
 }
 
 export async function readBoundedFile(
-  filePath: string,
+  requestedPath: string,
   maximumBytes: number,
   label: string,
 ): Promise<Buffer> {
   if (!Number.isSafeInteger(maximumBytes) || maximumBytes <= 0) {
     throw new Error(`${label}读取上限无效`)
   }
+  const filePath = resolveRelocatedPath(requestedPath)
   const pathBeforeOpen = await pathSnapshot(filePath, label)
   const handle = await fs.promises.open(
     filePath,
@@ -140,7 +143,7 @@ export async function readBoundedFile(
 }
 
 export async function copyBoundedFileExclusive(
-  sourcePath: string,
+  requestedSourcePath: string,
   targetPath: string,
   maximumBytes: number,
   label: string,
@@ -148,6 +151,7 @@ export async function copyBoundedFileExclusive(
   if (!Number.isSafeInteger(maximumBytes) || maximumBytes <= 0) {
     throw new Error(`${label}复制上限无效`)
   }
+  const sourcePath = resolveRelocatedPath(requestedSourcePath)
   const pathBeforeOpen = await pathSnapshot(sourcePath, label)
   const source = await fs.promises.open(
     sourcePath,

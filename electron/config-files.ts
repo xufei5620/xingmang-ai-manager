@@ -15,6 +15,7 @@ import { removeCodexContextLimits } from './codex-context-limits'
 import { applyClaudeStatusLine, claudeStatusLineSetting } from './claude-status-line'
 import { applyClaudeRelayModelPicker, removeClaudeRelayModelPicker } from './claude-model-picker'
 import { assertNoReparseComponents, ensureSafeDataDirectory, readSafeUtf8FileSync } from './safe-local-data'
+import { resolveRelocatedPath } from './relocated-folders'
 
 const MAX_NATIVE_CONFIG_BYTES = 2 * 1024 * 1024
 // ~/.claude.json 会随会话历史一起长，2MB 上限会误伤正常用户。
@@ -1940,8 +1941,10 @@ function removeIfPresent(filePath: string): void {
 }
 
 function assertSafeConfigPath(filePath: string, rootDirectory: string, target: 'file' | 'parent'): void {
-  const root = path.resolve(rootDirectory)
-  const resolved = path.resolve(filePath)
+  // A profile moved to another disk is judged at where it lives now; any link the
+  // relocation policy does not accept stays in the path and is rejected below.
+  const root = resolveRelocatedPath(rootDirectory)
+  const resolved = resolveRelocatedPath(filePath)
   const relative = path.relative(root, resolved)
   if (!relative || relative.startsWith(`..${path.sep}`) || relative === '..' || path.isAbsolute(relative)) {
     throw new Error(`配置路径越过 Provider 根目录，已拒绝写入：${filePath}`)
