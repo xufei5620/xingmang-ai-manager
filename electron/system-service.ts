@@ -19,6 +19,7 @@ import {
   type ProviderConfigRoots,
 } from './codex-home'
 import {
+  CommandRunnerError,
   cleanCommandOutput,
   commandEnvironment,
   findExecutable,
@@ -1276,6 +1277,45 @@ export function npmResolutionStartMessage(registry: string): string {
 
 export function npmResolutionHeartbeatMessage(registry: string, elapsedMs: number): string {
   return `仍在解析${npmRegistryLabel(registry)}的依赖图…（已用时 ${formatElapsedDuration(elapsedMs)}）`
+}
+
+/**
+ * CommandRunnerError keeps npm's stderr on the error object, but its message
+ * only says "命令执行失败（退出码 1）：node". The renderer classifies install
+ * failures by the tokens npm prints (ENOSPC, EPERM, ETIMEDOUT, certificate
+ * codes), so without npm's own lines a full disk, a denied folder and a
+ * dropped connection all looked the same and every one of them was sent to
+ * customer support.
+ *
+ * The runner's generic timeout wording deliberately avoids "超时" because a
+ * command running long is not always a network problem. Inside an npm install
+ * it is: npm spends its time downloading, so here it is said plainly.
+ */
+export function describeNpmCommandFailure(error: unknown): string {
+  if (!(error instanceof CommandRunnerError)) {
+    return error instanceof Error ? error.message : String(error)
+  }
+  if (error.code === 'TIMED_OUT') return '下载超时，长时间没有完成，已中止'
+  const highlights = npmFailureHighlights(error.stderr)
+  return highlights ? `${error.message}（${highlights}）` : error.message
+}
+
+function npmFailureHighlights(stderr: string): string {
+  const lines = stderr
+    .split(/\r?\n/)
+    .filter((line) => !/^\s*npm (?:warn|notice|verbose|info|http|timing)\b/i.test(line))
+    .map((line) => line.replace(/^\s*npm (?:error|ERR!)\s*/i, '').trim())
+    // The pointer to npm's own log file names a folder under the user's
+    // profile and says nothing about what went wrong.
+    .filter((line) => line && !/complete log of this run/i.test(line))
+  const codeLine = lines.find((line) => /^code\s+\S+$/.test(line))
+  const picked = codeLine
+    ? [
+        codeLine.replace(/^code\s+/, ''),
+        ...lines.filter((line) => line !== codeLine && !/^(?:syscall|errno|path|dest)\s/.test(line)).slice(0, 1),
+      ]
+    : lines.slice(-2)
+  return redactCommandText(picked.map((line) => line.slice(0, 160)).join('；'))
 }
 
 export function npmPackageLatestUrl(registry: string, packageName: string): string {
@@ -3432,7 +3472,13 @@ export function createSystemService(
       const officialResolution = path.join(transaction, 'official-resolution')
       const officialCache = path.join(transaction, 'official-cache')
       await createResolutionManifest(officialResolution)
-      await resolveDependencyGraph(npmOfficialRegistry, officialResolution, officialCache)
+      try {
+        await resolveDependencyGraph(npmOfficialRegistry, officialResolution, officialCache)
+      } catch (error) {
+        if (isInstallCancelledError(error)) throw error
+        cancellation?.throwIfCancelled()
+        throw new Error(`${definition.name} 安装失败：npm 官方源：${describeNpmCommandFailure(error)}`)
+      }
       const officialLock = await readBoundedUtf8File(
         path.join(officialResolution, 'package-lock.json'),
         maximumNpmPackageLockBytes,
@@ -3531,7 +3577,7 @@ export function createSystemService(
         } catch (error) {
           if (isInstallCancelledError(error)) throw error
           cancellation?.throwIfCancelled()
-          const detail = error instanceof Error ? error.message : String(error)
+          const detail = describeNpmCommandFailure(error)
           installErrors.push(
             `${registry === npmMirrorRegistry ? '国内 npm 镜像' : 'npm 官方源'}：${redactCommandText(detail).replace(/\s+/g, ' ').trim().slice(0, 300) || '安装失败'}`,
           )
