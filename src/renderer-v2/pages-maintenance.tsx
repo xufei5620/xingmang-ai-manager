@@ -50,6 +50,7 @@ import {
   Table,
   Textarea,
   Toolbar,
+  useToast,
 } from './ui'
 import {
   displayDate,
@@ -76,9 +77,11 @@ import { ToolStatusMeta, ToolStatusReason } from './features/tools/ToolStatusMet
 import { connectionCheckView } from './features/tools/connection-check'
 import { diagnosticDetailRows } from './features/app/diagnostic-details'
 import { requestSettingsGroup, takeSettingsGroup } from './features/app/settings-group-intent'
+import { rememberedLoginAction, rememberedLoginForgottenMessage } from './features/app/remembered-login'
 import { maintenanceFailureNotice, readMaintenanceStatus } from './features/tools/maintenance-status'
 import { ManualUninstallDialog, type ManualUninstallState } from './features/tools/ManualUninstall'
 import { RuntimeRestartDialog } from './features/tools/RuntimeRestartDialog'
+import { uninstallHandOffNotice } from './features/tools/uninstall-handoff'
 import { describeRuntimeInstallOutcome } from './features/tools/runtime-install-outcome'
 import {
   anyRuntimeLogValue,
@@ -1068,6 +1071,7 @@ export function MaintenancePage({
   installTool,
   cancelToolInstall,
 }: { api: V2Bridge } & BusinessActions) {
+  const toast = useToast()
   const load = useCallback(() => readMaintenanceStatus(api), [api])
   const resource = useResource(load)
   const snapshot = resource.data?.snapshot ?? null
@@ -1471,14 +1475,17 @@ export function MaintenancePage({
                         // success while files are left on disk.
                         throw new Error(result.error)
                       }
-                      if (result.outcome === 'delegated')
-                        throw new Error(
-                          '已打开卸载窗口，请完成卸载后重新检测。',
-                        )
                       setRemove(null)
                       await resource.reload()
+                      return uninstallHandOffNotice(result)
                     },
-                    '工具已卸载，配置已保留',
+                    // 转交给普通窗口时还没卸完：不说「已卸载」，也不当失败，
+                    // 用一条中性提示说清下一步。
+                    (handedOff) => {
+                      if (!handedOff) return '工具已卸载，配置已保留'
+                      toast.show(handedOff, 'neutral')
+                      return null
+                    },
                   )
               }}
             >
@@ -1701,6 +1708,7 @@ export function SettingsPage({
     }
   }
   const settings = resource.data?.settings
+  const rememberedLogin = rememberedLoginAction(resource.data?.session)
   const row = (title: string, description: string, control: ReactNode) => (
     <SettingRow
       key={title}
@@ -2131,13 +2139,32 @@ export function SettingsPage({
       ),
       account: (
         <>
-          {row(
-            '记住密码',
-            '由客户端安全存储处理',
-            <Button size="sm" icon={UserRound} onClick={openLogin}>
-              管理登录
-            </Button>,
-          )}
+          {rememberedLogin.kind === 'forget'
+            ? row(
+                '记住密码',
+                '由客户端安全存储处理；清掉后下次登录要重新输入密码',
+                <Button
+                  size="sm"
+                  icon={Trash2}
+                  loading={operation.busy === 'forget-remembered-login'}
+                  onClick={() =>
+                    void operation.execute(
+                      'forget-remembered-login',
+                      () => api.setRememberedAccountLogin(null, rememberedLogin.siteId),
+                      rememberedLoginForgottenMessage,
+                    )
+                  }
+                >
+                  清掉记住的密码
+                </Button>,
+              )
+            : row(
+                '记住密码',
+                '由客户端安全存储处理',
+                <Button size="sm" icon={UserRound} onClick={openLogin}>
+                  管理登录
+                </Button>,
+              )}
           {row(
             '退出登录',
             resource.data?.session.account?.username ?? '当前未登录',

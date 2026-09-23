@@ -17,6 +17,7 @@ import { cliInstallStageLabel, nodeRuntimeReady, planCliInstall, pythonRuntimeRe
 import { isToolId, presentTools, providerFor, toolInstallDirectory, type ToolId, type ToolSource } from './features/tools/model'
 import { pendingToolUpdates, readAnnouncedToolUpdates, rememberAnnouncedToolUpdates, unannouncedToolUpdates, updateNoticeKey } from './features/tools/update-notice'
 import { isMissingWorkspace } from './features/tools/recent-workspaces'
+import { uninstallHandOffNotice } from './features/tools/uninstall-handoff'
 import { describeRuntimeInstallOutcome, type RuntimeInstallOutcome } from './features/tools/runtime-install-outcome'
 import { RuntimeRestartDialog } from './features/tools/RuntimeRestartDialog'
 import { guideJobProgress, installedToolSyncLabel, useToolbox } from './features/tools/useToolbox'
@@ -693,9 +694,9 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
           setManualUninstall({ name: definition.name, reason: result.manualHelp.reason, manualCommand: result.manualHelp.manualCommand })
           return
         }
-        if (result.outcome !== 'uninstalled' && result.outcome !== 'not-installed') {
-          throw new Error('已打开卸载窗口，完成后请重新检测。')
-        }
+        // 管理员模式下卸载转交给普通窗口：是预料之中的一步，给中性提示，不当失败弹红框。
+        const handedOff = uninstallHandOffNotice(result)
+        if (handedOff && mounted.current) toast.show(handedOff, 'neutral')
       })
       await toolbox.refresh(true)
     } })
@@ -885,7 +886,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     </Dialog>}
     {help && <Dialog open title="帮助与客服" onClose={() => setHelp(false)} width={480} footer={<Button onClick={() => { setHelp(false); navigate('tutorial') }}>使用教程</Button>}>
       <div className="v2-support">{qr && <img src={qr} alt="微信客服二维码" />}<h3>微信扫码找客服</h3><p>装不上、付了没到账，都可以问。</p>
-        {qrFallback && <p role="alert" data-testid="support-qr-fallback">{qrFallback}</p>}<Button onClick={() => void perform('打开帮助', () => app.openExternal(supportUrl))}>在浏览器打开</Button><Button onClick={() => { setHelp(false); navigate('feedback') }}>复制反馈报告</Button></div>
+        {qrFallback && <p role="alert" data-testid="support-qr-fallback">{qrFallback}</p>}<Button onClick={() => void perform('打开帮助', () => app.openExternal(supportUrl))}>在浏览器打开</Button><Button onClick={() => { setHelp(false); navigate('feedback') }}>去反馈页</Button></div>
     </Dialog>}
     <StartupNotices notices={startupNotices} onDismiss={dismissStartupNotice}
       onOpen={(id, action) => { dismissStartupNotice(id); if ('login' in action) setAuth('login'); else navigate(action.page) }} />
