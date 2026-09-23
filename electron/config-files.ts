@@ -151,10 +151,32 @@ function readText(filePath: string): string | null {
   try {
     const info = fs.lstatSync(filePath)
     if (!info.isFile() || info.nlink > 1 || info.isSymbolicLink()) return null
-    return readBoundedUtf8FileSync(filePath, MAX_NATIVE_CONFIG_BYTES, '配置文件')
+    return withoutByteOrderMark(readBoundedUtf8FileSync(filePath, MAX_NATIVE_CONFIG_BYTES, '配置文件'))
   } catch {
     return null
   }
+}
+
+/**
+ * Notepad on older Windows and PowerShell 5's `Set-Content -Encoding UTF8`
+ * both write a UTF-8 BOM. JSON.parse and @iarna/toml reject it as an unknown
+ * character, so a config the CLI itself reads fine used to be reported as
+ * unparseable and never got the account key (全面检测 Q41). Writing back
+ * without the BOM is harmless: every managed CLI reads plain UTF-8.
+ */
+function withoutByteOrderMark(content: string): string {
+  return content.replace(/^\uFEFF/, '')
+}
+
+/**
+ * @iarna/toml's message quotes the lines around the failure, and in these
+ * files those lines are often `api_key = "..."` or an MCP server's token. The
+ * message reaches the screen, the runtime log and the feedback export (I13),
+ * so only the row number is kept -- the same reason requireJson drops V8's.
+ */
+function tomlErrorLocation(error: unknown): string {
+  const line = error && typeof error === 'object' && 'line' in error ? error.line : null
+  return typeof line === 'number' && Number.isInteger(line) && line >= 0 ? `（第 ${line + 1} 行附近）` : ''
 }
 
 function requireConfigText(
@@ -172,7 +194,7 @@ function requireConfigText(
   if (!info.isFile() || info.nlink !== 1 || info.isSymbolicLink()) {
     throw new Error(`${label} 必须是单链接普通文件，未执行修改`)
   }
-  return readBoundedUtf8FileSync(filePath, maximumBytes, label)
+  return withoutByteOrderMark(readBoundedUtf8FileSync(filePath, maximumBytes, label))
 }
 
 function readJson(filePath: string): Record<string, unknown> | null {
@@ -224,8 +246,7 @@ function requireToml(filePath: string, label: string): Record<string, unknown> {
   try {
     return TOML.parse(content)
   } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error)
-    throw new Error(`${label} 无法解析，未执行修改：${detail}`)
+    throw new Error(`${label} 无法解析，未执行修改${tomlErrorLocation(error)}`)
   }
 }
 
@@ -863,8 +884,7 @@ function createCodexRelayConfigPlans(
       currentParsed = TOML.parse(currentText)
     } catch (error) {
       if (mode !== 'reset') {
-        const detail = error instanceof Error ? error.message : String(error)
-        throw new Error(`现有 Codex config.toml 无法解析，未执行修改：${detail}`)
+        throw new Error(`现有 Codex config.toml 无法解析，未执行修改${tomlErrorLocation(error)}`)
       }
     }
   }

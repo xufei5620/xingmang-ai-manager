@@ -224,6 +224,48 @@ describe('native CLI configuration files', () => {
     expect(fs.readFileSync(configPath, 'utf8')).toBe(before)
   })
 
+  it('names only the row of a broken TOML config, never the lines around it', () => {
+    const userHome = temporaryHome()
+    const roots = providerRoots(userHome)
+    const broken = 'model = "grok-4"\napi_key = "xai-secret-value-123"\n[mcp.\nGITHUB_PERSONAL_ACCESS_TOKEN = "ghp_secretvalue"\n'
+    for (const provider of ['codex', 'grok'] as const) {
+      const configPath = providerConfigPaths(provider, roots)[0]
+      fs.mkdirSync(path.dirname(configPath), { recursive: true })
+      fs.writeFileSync(configPath, broken, 'utf8')
+      let message = ''
+      try {
+        saveProviderConfig(provider, 'sk-merge', provider === 'codex' ? 'gpt-5.6-sol' : 'grok-4', 'merge', roots, {}, providerBaseUrls)
+      } catch (error) {
+        message = error instanceof Error ? error.message : String(error)
+      }
+      // 全面检测 Q17：TOML 解析器的原文自带前后几行，截图发客服就带出 Key。
+      expect(message).toMatch(/无法解析，未执行修改（第 3 行附近）/)
+      expect(message).not.toMatch(/xai-secret|ghp_secret|api_key/)
+      expect(fs.readFileSync(configPath, 'utf8')).toBe(broken)
+    }
+  })
+
+  it('reads configs that start with a UTF-8 byte order mark', () => {
+    const userHome = temporaryHome()
+    const roots = providerRoots(userHome)
+    const claudePath = providerConfigPaths('claude', roots)[0]
+    const codexPath = providerConfigPaths('codex', roots)[0]
+    fs.mkdirSync(path.dirname(claudePath), { recursive: true })
+    fs.mkdirSync(path.dirname(codexPath), { recursive: true })
+    // 老记事本和 PowerShell 5 的 Set-Content -Encoding UTF8 都会写 BOM（全面检测 Q41）。
+    fs.writeFileSync(claudePath, `\uFEFF${JSON.stringify({ theme: 'dark' })}`, 'utf8')
+    fs.writeFileSync(codexPath, '\uFEFFapproval_policy = "never"\n', 'utf8')
+
+    saveProviderConfig('claude', 'sk-claude', 'claude-sonnet-5', 'merge', roots, {}, providerBaseUrls)
+    saveProviderConfig('codex', 'sk-codex', 'gpt-5.6-sol', 'merge', roots, {}, providerBaseUrls)
+
+    const claude = JSON.parse(fs.readFileSync(claudePath, 'utf8')) as Record<string, unknown>
+    expect(claude.theme).toBe('dark')
+    const codex = TOML.parse(fs.readFileSync(codexPath, 'utf8'))
+    expect(codex.approval_policy).toBe('never')
+    expect(inspectProviderConfig('claude', roots).hasApiKey).toBe(true)
+  })
+
   it('keeps an existing provider name when the config is still readable', () => {
     const userHome = temporaryHome()
     const roots = providerRoots(userHome)
