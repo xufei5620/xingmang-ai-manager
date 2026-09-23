@@ -50,6 +50,7 @@ import {
   Table,
   Textarea,
   Toolbar,
+  useToast,
 } from './ui'
 import {
   displayDate,
@@ -80,6 +81,7 @@ import { rememberedLoginAction, rememberedLoginForgottenMessage } from './featur
 import { maintenanceFailureNotice, readMaintenanceStatus } from './features/tools/maintenance-status'
 import { ManualUninstallDialog, type ManualUninstallState } from './features/tools/ManualUninstall'
 import { RuntimeRestartDialog } from './features/tools/RuntimeRestartDialog'
+import { uninstallHandOffNotice } from './features/tools/uninstall-handoff'
 import { describeRuntimeInstallOutcome } from './features/tools/runtime-install-outcome'
 import {
   anyRuntimeLogValue,
@@ -1069,6 +1071,7 @@ export function MaintenancePage({
   installTool,
   cancelToolInstall,
 }: { api: V2Bridge } & BusinessActions) {
+  const toast = useToast()
   const load = useCallback(() => readMaintenanceStatus(api), [api])
   const resource = useResource(load)
   const snapshot = resource.data?.snapshot ?? null
@@ -1472,14 +1475,17 @@ export function MaintenancePage({
                         // success while files are left on disk.
                         throw new Error(result.error)
                       }
-                      if (result.outcome === 'delegated')
-                        throw new Error(
-                          '已打开卸载窗口，请完成卸载后重新检测。',
-                        )
                       setRemove(null)
                       await resource.reload()
+                      return uninstallHandOffNotice(result)
                     },
-                    '工具已卸载，配置已保留',
+                    // 转交给普通窗口时还没卸完：不说「已卸载」，也不当失败，
+                    // 用一条中性提示说清下一步。
+                    (handedOff) => {
+                      if (!handedOff) return '工具已卸载，配置已保留'
+                      toast.show(handedOff, 'neutral')
+                      return null
+                    },
                   )
               }}
             >
