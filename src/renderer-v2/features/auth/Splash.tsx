@@ -1,12 +1,13 @@
 import { RefreshCw } from 'lucide-react'
 import { Button, Logo, Progress } from '../../ui'
+import type { WindowOs } from '../app/window-os'
 import { AuthWindow } from './AuthWindow'
 import './auth.css'
 
-export interface SplashProps { phase: string; detail?: string; progress?: number; error?: string; onRetry?: () => void }
+export interface SplashProps { phase: string; detail?: string; progress?: number; error?: string; onRetry?: () => void; platform?: WindowOs }
 
-export function Splash({ phase, detail, progress, error, onRetry }: SplashProps) {
-  return <AuthWindow><main className="auth-splash" data-testid="startup-splash" aria-busy={!error}>
+export function Splash({ phase, detail, progress, error, onRetry, platform }: SplashProps) {
+  return <AuthWindow platform={platform}><main className="auth-splash" data-testid="startup-splash" aria-busy={!error}>
     <Logo kind="symbol" height={132} /><Logo kind="wordmark" height={28} />
     <div role={error ? 'alert' : 'status'}><h1>{phase}</h1>{detail && <p>{detail}</p>}{error && <p className="auth-error">{error}</p>}</div>
     {typeof progress === 'number' && <Progress value={progress} label={`${Math.round(progress)}%`} testId="startup-splash-progress" />}

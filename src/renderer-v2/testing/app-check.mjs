@@ -78,9 +78,10 @@ before(async () => {
   await (await open()).close()
 })
 after(async () => { await browser?.close(); await server?.close() })
-async function open(query = '', clock = false) {
+async function open(query = '', clock = false, initScript = null) {
   const page = await browser.newPage({ viewport: { width: 1280, height: 820 } })
   await page.addInitScript(recordToasts)
+  if (initScript) await page.addInitScript(initScript)
   // The host outlives a renderer reload and does not share the page's localStorage.
   const noticeReads = new Map()
   await page.exposeFunction('fixtureNoticeStore', (scope, ids) => {
@@ -165,6 +166,36 @@ test('the workspace starfield stays still on low-end machines, runs at most 30 f
     assert.equal(await countStarfieldPaints(page, 800), 0, '窗口不在前台时星空停下')
     await page.evaluate(() => window.dispatchEvent(new Event('focus')))
     assert.ok(await countStarfieldPaints(page, 800) >= 2, '回到前台后星空接着动')
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// Runs before the fixture mounts: the page reports a Mac the way Chromium does
+// on macOS, and every state the startup windows reach is recorded as it is
+// committed, so a frame laid out for the wrong system cannot slip by between
+// two polls.
+function recordAuthWindowOs() {
+  Object.defineProperty(Navigator.prototype, 'platform', { configurable: true, get: () => 'MacIntel' })
+  window.__authWindowOs = []
+  new MutationObserver(() => {
+    for (const frame of document.querySelectorAll('.auth-window')) {
+      const entry = `${frame.querySelector('main')?.dataset.testid ?? ''}:${frame.dataset.os}`
+      if (window.__authWindowOs.at(-1) !== entry) window.__authWindowOs.push(entry)
+    }
+  }).observe(document, { childList: true, subtree: true, attributes: true, attributeFilter: ['data-os'] })
+}
+
+// 红黄绿三个按钮压在 Mac 窗口左上角，顶栏得从第一帧起就让出位置。以前系统类型要等
+// 画面出来之后才写到根节点上，启动时先写的还是 Windows，欢迎页头几帧就照 Windows 排版，
+// 直到外观同步那次重绘才挪过去。
+test('the macOS startup and welcome windows leave room for the traffic lights from their first frame', async () => {
+  const page = await open('os=mac&guest=1', false, recordAuthWindowOs)
+  try {
+    await page.getByTestId('welcome-page').waitFor()
+    const seen = await page.evaluate(() => window.__authWindowOs)
+    assert.ok(seen.some((entry) => entry.startsWith('welcome-page:')), `应记录到欢迎页：${seen.join(', ')}`)
+    assert.deepEqual(seen.filter((entry) => !entry.endsWith(':mac')), [], `启动页和欢迎页每一帧都按 Mac 排版：${seen.join(', ')}`)
+    assert.equal(await page.getByTestId('window-titlebar').evaluate((element) => getComputedStyle(element).paddingLeft), '84px')
     await clean(page)
   } finally { await page.close() }
 })
