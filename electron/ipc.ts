@@ -1857,9 +1857,27 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     if (mode !== undefined && mode !== 'merge' && mode !== 'reset') throw new Error('未知的配置写入模式')
     return mode === undefined ? service.switchToOfficialAccount(provider) : service.switchToOfficialAccount(provider, mode)
   })
+  // 同一个工具的一键切换一次只跑一个（全面检测 Q35）。切换要备份、写入、自检，
+  // 失败还要回滚；两次叠在一起时，后一次的备份会拍到前一次写了一半的配置，两边
+  // 的回滚也会互相覆盖。同方向的重复点击共用正在跑的那一次，反方向的直接拒绝。
+  const accountSourceSwitches = new Map<ProviderId, { target: 'account' | 'official'; promise: Promise<unknown> }>()
   registerTrustedHandler('config:switch-account-source', async (_event, provider: unknown, target: unknown) => {
     if (!isProviderId(provider)) throw new Error('未知的 CLI 类型')
     if (target !== 'account' && target !== 'official') throw new Error('未知的账号来源')
+    const running = accountSourceSwitches.get(provider)
+    if (running) {
+      if (running.target === target) return running.promise
+      throw new Error('这个工具正在切换账号，等这次切完再试')
+    }
+    const promise = switchAccountSourceOnce(provider, target)
+    accountSourceSwitches.set(provider, { target, promise })
+    try {
+      return await promise
+    } finally {
+      if (accountSourceSwitches.get(provider)?.promise === promise) accountSourceSwitches.delete(provider)
+    }
+  })
+  async function switchAccountSourceOnce(provider: ProviderId, target: 'account' | 'official') {
     if (target === 'account' && !accountService.getSessionState().account?.userId) throw new Error('请先登录账号，再切到当前账号')
     // 与备份页同一套账号上下文：备份里记下哪些 Key 是当前账号签发的，回滚后
     // 恢复出来的配置照样按来源登记，首页不会因此冒出「配置被改过」。
@@ -1902,7 +1920,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
         ? JSON.parse(redactHomeDirectory(JSON.stringify(detail), options.providerRoots?.userHome ?? os.homedir())) as Record<string, unknown>
         : undefined),
     }, provider, target)
-  })
+  }
   function documentsDirectory(): string | null {
     if (!options.documentsDirectory) return path.join(os.homedir(), 'Documents')
     try {

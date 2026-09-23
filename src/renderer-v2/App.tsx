@@ -306,17 +306,22 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   const switchToolAccount = useCallback(async (tool: ToolId, target: AccountSourceTarget) => {
     if (target === 'account' && (!session.authenticated || !session.account)) { setAuth('login'); return }
     const provider = providerFor(tool)
-    try {
-      const result = await toolsApi.switchSource(tool, target)
-      // 与配置对话框保存时一样：换了来源就清掉「自己填写密钥」的本机标记。
-      const baseUrl = toolbox.snapshot?.config.providers[provider].baseUrl
-      const markerWarning = baseUrl ? applyManualSourceMarker(getSourceMarkerStorage(), baseUrl, provider, false) : ''
-      toast.show(result.message, result.loginRequired || (target === 'account' && !result.verified) ? 'warn' : 'ok')
-      if (markerWarning) toast.show(markerWarning, 'warn')
-    } finally {
-      await toolbox.refresh(true).catch(() => undefined)
-    }
-  }, [session.account, session.authenticated, toast, toolbox.refresh, toolbox.snapshot, toolsApi])
+    // 登记成工具行上的任务（全面检测 Q35）：切换要备份、写入、自检，失败还要回滚，
+    // 一次得好几秒。以前没有忙态，连点两下就是两次切换叠在一起跑；现在同一个工具
+    // 在切的时候行上显示「切换中」、菜单收起，再点也进不来。
+    await toolbox.run(`switch:${tool}`, target === 'account' ? '正在切到当前账号' : '正在切回官方账号', async () => {
+      try {
+        const result = await toolsApi.switchSource(tool, target)
+        // 与配置对话框保存时一样：换了来源就清掉「自己填写密钥」的本机标记。
+        const baseUrl = toolbox.snapshot?.config.providers[provider].baseUrl
+        const markerWarning = baseUrl ? applyManualSourceMarker(getSourceMarkerStorage(), baseUrl, provider, false) : ''
+        toast.show(result.message, result.loginRequired || (target === 'account' && !result.verified) ? 'warn' : 'ok')
+        if (markerWarning) toast.show(markerWarning, 'warn')
+      } finally {
+        await toolbox.refresh(true).catch(() => undefined)
+      }
+    })
+  }, [session.account, session.authenticated, toast, toolbox.refresh, toolbox.run, toolbox.snapshot, toolsApi])
   // 官方账号与手填密钥重写不动（重写流程本身会跳过它们），所以按钮按当前配置的
   // 来源决定给不给，而不是见到密钥层失败就画一颗出来。
   const rewritableKeys = useMemo(
