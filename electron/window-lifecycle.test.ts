@@ -496,4 +496,51 @@ describe('window close coordination', () => {
     expect(options.quit).toHaveBeenCalledOnce()
     expect(options.prepareToQuit).toHaveBeenCalledOnce()
   })
+  // electron-updater's quitAndInstall ends in app.quit(); on macOS it closes
+  // every window first. Both must pass once the host has cleaned up.
+  it('cleans up, then lets an installer-initiated quit through without asking', async () => {
+    const window = new EventEmitter()
+    const application = new EventEmitter()
+    const confirmQuit = vi.fn<NonNullable<WindowLifecycleOptions['confirmQuit']>>(async (): Promise<QuitConfirmation> => 'install-update')
+    const { options, lifecycle } = fixture({ readPreference: () => 'ask', confirmQuit })
+    lifecycle.attach(window, application)
+    await lifecycle.prepareUpdateQuit()
+    expect(options.prepareToQuit).toHaveBeenCalledOnce()
+    expect(options.flushWindowState).toHaveBeenCalledOnce()
+    const close = { preventDefault: vi.fn() }
+    window.emit('close', close)
+    const beforeQuit = { preventDefault: vi.fn() }
+    application.emit('before-quit', beforeQuit)
+    expect(close.preventDefault).not.toHaveBeenCalled()
+    expect(beforeQuit.preventDefault).not.toHaveBeenCalled()
+    expect(confirmQuit).not.toHaveBeenCalled()
+    expect(options.requestCloseDecision).not.toHaveBeenCalled()
+  })
+
+  it('hands back synchronously when the user already chose to install on quit', async () => {
+    const { lifecycle } = fixture({ readPreference: () => 'quit', confirmQuit: async () => 'install-update' as const, installDownloadedUpdate: () => {
+      expect(lifecycle.prepareUpdateQuit()).toBeUndefined()
+    } })
+    expect(await lifecycle.requestClose()).toBe('quit-requested')
+  })
+
+  it('intercepts closes again when the installer never started', async () => {
+    const window = new EventEmitter()
+    const application = new EventEmitter()
+    const { lifecycle } = fixture()
+    lifecycle.attach(window, application)
+    await lifecycle.prepareUpdateQuit()
+    lifecycle.abortUpdateQuit()
+    expect(lifecycle.isQuitting).toBe(false)
+    const close = { preventDefault: vi.fn() }
+    window.emit('close', close)
+    expect(close.preventDefault).toHaveBeenCalledOnce()
+  })
+
+  it('does not undo a quit the user chose when an aborted install is reported late', async () => {
+    const { lifecycle } = fixture({ readPreference: () => 'quit' })
+    expect(await lifecycle.requestClose()).toBe('quit-requested')
+    lifecycle.abortUpdateQuit()
+    expect(lifecycle.isQuitting).toBe(true)
+  })
 })

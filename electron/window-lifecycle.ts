@@ -62,6 +62,14 @@ export interface WindowLifecycle {
   readonly isQuitting: boolean
   requestClose(): Promise<WindowCloseResult>
   requestQuit(): Promise<WindowCloseResult>
+  /**
+   * 更新安装器就要结束这个进程：先跑退出前的清理，再让后面的 close / before-quit
+   * 直接放行，别把安装器发起的退出当成用户关窗再问一遍。已经在退出（用户在
+   * 退出确认里选了「安装并退出」）时什么都不做，返回 undefined，调用方同步拉起。
+   */
+  prepareUpdateQuit(): Promise<void> | undefined
+  /** 安装器没起来，程序照常开着：撤掉 prepareUpdateQuit 的放行。 */
+  abortUpdateQuit(): void
   attach(window: WindowCloseSource, application: ApplicationQuitSource): () => void
   dispose(): void
 }
@@ -73,6 +81,7 @@ export function createWindowLifecycle(options: WindowLifecycleOptions): WindowLi
   let systemShutdown = false
   let inFlight: Promise<WindowCloseResult> | null = null
   let shutdownQuit: Promise<WindowCloseResult> | null = null
+  let updateQuit = false
   const detachListeners = new Set<() => void>()
 
   const reportError = (error: unknown) => {
@@ -180,6 +189,20 @@ export function createWindowLifecycle(options: WindowLifecycleOptions): WindowLi
     get isQuitting() { return quitting },
     requestClose: () => request(false),
     requestQuit: () => request(true),
+    prepareUpdateQuit() {
+      if (quitting) return undefined
+      if (disposed) return Promise.reject(new Error('窗口已关闭，无法安装更新'))
+      return Promise.all([cleanup(options.prepareToQuit), cleanup(options.flushWindowState)]).then(() => {
+        if (disposed) throw new Error('窗口已关闭，无法安装更新')
+        quitting = true
+        updateQuit = true
+      })
+    },
+    abortUpdateQuit() {
+      if (!updateQuit || disposed) return
+      updateQuit = false
+      quitting = false
+    },
     attach(window, application) {
       if (disposed) return () => {}
       const onClose: LifecycleListener = (event) => {

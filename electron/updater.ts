@@ -108,6 +108,19 @@ export interface UpdaterRuntime {
   restoreProxy?: () => Promise<void>
   now?: () => Date
   installEnvironmentGuard?: (launch: () => void) => void
+  /**
+   * Lets the host's quit flow stand aside before the installer is launched.
+   * quitAndInstall ends in app.quit() (and on macOS closes every window first);
+   * without this the window lifecycle intercepts that quit as if the user had
+   * closed the window, and asks about the very update being installed. A
+   * returned promise is awaited first (the host runs its quit cleanup, such as
+   * stopping acceleration, which must happen before the installer kills the
+   * process); returning nothing launches synchronously. A rejection is
+   * reported as an install failure.
+   */
+  prepareInstallQuit?: () => Promise<void> | void
+  /** The installer did not start after prepareInstallQuit: the app keeps running. */
+  installQuitAborted?: () => void
   macInstallHandoff?: MacInstallHandoff
   /**
    * Set for builds produced with XINGMANG_UNSIGNED_RELEASE=1. electron-updater
@@ -352,6 +365,7 @@ export function createUpdaterService(
   const reportInstallFailure = (error: unknown) => {
     clearInstallWatchdog()
     installRequested = false
+    try { runtime.installQuitAborted?.() } catch { /* The failure below is what the user needs to see. */ }
     emit({
       // The verified package remains available for a retry. Keeping the phase
       // downloaded also makes the recovery action visible in the UI.
@@ -368,6 +382,22 @@ export function createUpdaterService(
     clearInstallWatchdog()
     installRequested = true
     emit({ error: null })
+    let preparation: Promise<void> | void
+    try {
+      preparation = runtime.prepareInstallQuit?.()
+    } catch (error) {
+      reportInstallFailure(error)
+      return false
+    }
+    if (!preparation) return launchInstaller()
+    void preparation.then(() => {
+      if (disposed || !installRequested) return
+      launchInstaller()
+    }, reportInstallFailure)
+    return true
+  }
+
+  const launchInstaller = (): boolean => {
     try {
       installEnvironmentGuard(() => {
         if (macInstallHandoffRegistered && macInstallHandoff) {
