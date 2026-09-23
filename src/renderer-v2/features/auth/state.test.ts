@@ -116,6 +116,9 @@ describe('v2 auth recovery boundaries', () => {
     expect(authErrorMessage(new Error('账号安全存储不可用，原记录未修改'), '登录')).toBe(expected)
     expect(authErrorMessage('本地账号存储恢复失败：password credential diagnostic detail', '登录')).toBe(expected)
     expect(authErrorMessage(new Error('账号或密码不正确'), '登录')).toBe('账号或密码不正确，请检查后重试')
+    const full = authErrorMessage(new Error("Error invoking remote method 'account:login': RealmAccountError: 这台电脑上保存的账号已满（最多 16 个）。先在「切换账号」里移除一个不用的，再登录。"), '登录')
+    expect(full).toContain('移除一个不用的')
+    expect(full).not.toMatch(/安全存储|退出软件/)
   })
   it('keeps the reason the server gave instead of asking the user to try again later', () => {
     expect(authErrorMessage(new Error('User has been banned'), '登录')).toBe('该账号已被封禁，请联系客服')

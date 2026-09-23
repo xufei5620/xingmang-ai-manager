@@ -119,8 +119,10 @@ describe('realm account contracts and encrypted vault', () => {
   it('does not exceed the saved-account limit or evict an old account', async () => {
     const example = storageFixture()
     for (let i = 1; i <= 16; i += 1) await example.vault.activate(account('xm-account', String(i)))
-    await assert.rejects(example.vault.activate(account('api-account')), hasCode('STORAGE'))
+    await assert.rejects(example.vault.activate(account('api-account')), hasCode('ACCOUNT_LIMIT'))
     assert.equal((await example.vault.list()).length, 16)
+    // 已经存着的账号再登录一次不算新增，满了也照样能登。
+    await example.vault.activate(account('xm-account', '3'))
   })
   it('migrates legacy xm records idempotently without overwriting a newer credential', async () => {
     const example = storageFixture()

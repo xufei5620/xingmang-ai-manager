@@ -94,6 +94,9 @@ export function remainingCooldown(deadline: number, now = Date.now()): number {
 
 export function authErrorMessage(error: unknown, action: string): string {
   const message = error instanceof Error ? error.message : typeof error === 'string' ? error : ''
+  // 本机账号库存满（全面检测 Q40）。放在「安全存储」之前：以前满了也报存储不可用，
+  // 用户被叫去重启软件。文案与主进程 realm-account.ts 那句一致（electron 不 import src，有意重复）。
+  if (/保存的账号已满/.test(message)) return '这台电脑上保存的账号已满（最多 16 个）。先在「切换账号」里移除一个不用的，再登录。'
   if (/账号安全存储不可用|本地账号存储/.test(message)) return '本地账号安全存储暂不可用，原有数据已保留。请完全退出软件后重试；若仍失败，请联系支持并提供诊断日志。'
   if (requiresBrowserAuthentication(error)) return '此账号需要双重验证。客户端暂不支持该验证方式，请前往所选账号官网登录或联系官网客服。'
   // 主进程已经把受限网络下的失败分好类并写好了中文（DNS / 证书被替换 / 门户认证

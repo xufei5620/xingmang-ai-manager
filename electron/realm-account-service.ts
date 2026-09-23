@@ -69,7 +69,7 @@ interface RuntimeHandle extends RealmAccountClientHandle {
 }
 
 function restoreMayRecover(error: unknown): boolean {
-  return !(error instanceof RealmAccountError && ['INVALID', 'PROTOCOL', 'STORAGE', 'UNSUPPORTED'].includes(error.code))
+  return !(error instanceof RealmAccountError && ['INVALID', 'PROTOCOL', 'STORAGE', 'ACCOUNT_LIMIT', 'UNSUPPORTED'].includes(error.code))
 }
 
 /** Promote the authenticated client itself: rotating cookies are never restored twice. */
