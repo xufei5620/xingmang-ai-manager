@@ -162,6 +162,42 @@ describe('acceleration controller', () => {
     expect(controller.getSnapshot().state?.remainingSeconds).toBe(accelerationTrialSeconds - 30)
   })
 
+  it('does not poll while idle, polls while connected, and stops polling once disconnected', async () => {
+    const { controller, api } = create()
+    controller.setScope('new-api:1')
+    await controller.refresh()
+    await advance(120_000)
+    expect(api.getAccelerationState).toHaveBeenCalledTimes(1)
+    await controller.start()
+    await advance(30_000)
+    expect(api.getAccelerationState).toHaveBeenCalledTimes(3)
+    await controller.stop()
+    await advance(120_000)
+    expect(api.getAccelerationState).toHaveBeenCalledTimes(3)
+  })
+
+  it('reads again on demand while idle, and starts polling when a read finds a session started elsewhere', async () => {
+    const { controller, api } = create()
+    controller.setScope('new-api:1')
+    await controller.refresh()
+    // 托盘或 Codex 桌面端连上了加速；窗口回到前台或进加速页时的这一次读会看到它。
+    api.getAccelerationState.mockResolvedValueOnce(state({ phase: 'active', connectedAt: 'tray', sessionSeconds: 5, remainingSeconds: accelerationTrialSeconds - 5 }))
+    await controller.refresh()
+    expect(controller.getSnapshot().state?.phase).toBe('active')
+    await advance(15_000)
+    expect(api.getAccelerationState).toHaveBeenCalledTimes(3)
+  })
+
+  it('does not keep retrying a failed first read on a timer', async () => {
+    const { controller, api } = create()
+    api.getAccelerationState.mockRejectedValue(new Error('加速服务暂不可用'))
+    controller.setScope('new-api:1')
+    await controller.refresh()
+    await advance(120_000)
+    expect(api.getAccelerationState).toHaveBeenCalledTimes(1)
+    expect(controller.getSnapshot().error).toBe('加速服务暂不可用')
+  })
+
   it('does not grant time when the system wall clock changes', async () => {
     const { controller } = create()
     controller.setScope('new-api:1')
@@ -364,7 +400,7 @@ describe('acceleration controller', () => {
     controller.setScope('new-api:1')
     await controller.refresh()
     controller.setMode('tun')
-    await advance(15_000)
+    await controller.refresh()
     expect(controller.getSnapshot().mode).toBe('tun')
     await controller.start()
     expect(api.startAcceleration).toHaveBeenCalledWith('new-api:1', 'tun')

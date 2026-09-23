@@ -92,10 +92,14 @@ export function createAccelerationController(api: AccelerationClient, { now = ()
     }
   }
 
+  // 只有连着（或正在连、正在断）的时候才定时读：剩余时长要校准，托盘那边也可能把它断掉。
+  // 没在加速就不轮询——绝大多数人一整天都不点加速，没必要每 15 秒跑一趟进程间往返。
+  // 这时的状态靠进加速页、点开关、窗口回到前台这三个时机各读一次；窗口在后台时从托盘
+  // 或 Codex 桌面端连上的加速，要等窗口回到前台才显示出来。
   function schedulePoll() {
     cancelPoll?.()
     cancelPoll = undefined
-    if (!disposed && visible && scope && !mutation && !readFlight) {
+    if (!disposed && visible && scope && !mutation && !readFlight && (connected(source) || source?.phase === 'connecting')) {
       cancelPoll = schedule(() => { cancelPoll = undefined; void refresh() }, 15_000)
     }
   }

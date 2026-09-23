@@ -263,6 +263,80 @@ describe('updater service', () => {
     service.dispose()
   })
 
+  it('lets the host finish its quit cleanup before launching the installer', async () => {
+    const client = new FakeUpdater()
+    let release!: () => void
+    const prepareInstallQuit = vi.fn(() => new Promise<void>((resolve) => { release = resolve }))
+    const service = createUpdaterService(client, {
+      currentVersion: '1.0.0',
+      isPackaged: true,
+      unsignedChannel: true,
+      prepareInstallQuit,
+    })
+    client.emit('update-downloaded', updateInfo())
+    expect(service.install()).toEqual({ accepted: true })
+    expect(prepareInstallQuit).toHaveBeenCalledOnce()
+    await Promise.resolve()
+    expect(client.quitAndInstall).not.toHaveBeenCalled()
+    release()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(client.quitAndInstall).toHaveBeenCalledWith(true, true)
+    service.dispose()
+  })
+
+  it('launches synchronously when the host is already quitting', () => {
+    const client = new FakeUpdater()
+    const service = createUpdaterService(client, {
+      currentVersion: '1.0.0',
+      isPackaged: true,
+      unsignedChannel: true,
+      prepareInstallQuit: () => undefined,
+    })
+    client.emit('update-downloaded', updateInfo())
+    service.install()
+    expect(client.quitAndInstall).toHaveBeenCalledOnce()
+    service.dispose()
+  })
+
+  it('reports a failed quit preparation as an install failure and lets the host stand back up', async () => {
+    const client = new FakeUpdater()
+    const installQuitAborted = vi.fn()
+    const service = createUpdaterService(client, {
+      currentVersion: '1.0.0',
+      isPackaged: true,
+      unsignedChannel: true,
+      prepareInstallQuit: () => Promise.reject(new Error('窗口已关闭，无法安装更新')),
+      installQuitAborted,
+    })
+    client.emit('update-downloaded', updateInfo())
+    service.install()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(client.quitAndInstall).not.toHaveBeenCalled()
+    expect(installQuitAborted).toHaveBeenCalledOnce()
+    expect(service.getState()).toMatchObject({ phase: 'downloaded', failedStep: 'install' })
+    service.dispose()
+  })
+
+  it('lets the host stand back up when the installer never starts', async () => {
+    const client = new FakeUpdater()
+    const installQuitAborted = vi.fn()
+    const service = createUpdaterService(client, {
+      currentVersion: '1.0.0',
+      isPackaged: true,
+      unsignedChannel: true,
+      installLaunchTimeoutMs: 20,
+      prepareInstallQuit: () => Promise.resolve(),
+      installQuitAborted,
+    })
+    client.emit('update-downloaded', updateInfo())
+    service.install()
+    await new Promise((resolve) => setTimeout(resolve, 60))
+    expect(client.quitAndInstall).toHaveBeenCalledOnce()
+    expect(installQuitAborted).toHaveBeenCalledOnce()
+    expect(service.getState()).toMatchObject({ phase: 'downloaded', failedStep: 'install' })
+    service.dispose()
+  })
+
   it('keeps a downloaded update ready instead of replacing it during a scheduled check', async () => {
     const client = new FakeUpdater()
     const service = createUpdaterService(client, { currentVersion: '1.0.0', isPackaged: true })

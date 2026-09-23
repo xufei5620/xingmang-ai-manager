@@ -165,12 +165,12 @@ describe('AI image service', () => {
 
     await expect(service.generate(4, {
       requestId: 'remote-download-failed', group: '生图分组', model: 'grok-imagine-image-2.0', prompt: '图',
-    })).rejects.toThrow(/已生成但下载失败.*代理/)
+    })).rejects.toThrow(/已生成但下载失败.*请勿立即重复提交.*检查网络/)
 
     vi.mocked(assets.storeRemoteUrl).mockRejectedValue(new Error('无法写入 output 目录'))
     await expect(service.generate(4, {
       requestId: 'remote-write-failed', group: '生图分组', model: 'grok-imagine-image-2.0', prompt: '图',
-    })).rejects.toThrow(/本地保存失败.*output/)
+    })).rejects.toThrow(/本地保存失败.*请勿立即重复提交.*磁盘空间/)
   })
 
   it('treats a successful response without images as ambiguous and never retries it', async () => {
@@ -202,6 +202,23 @@ describe('AI image service', () => {
     expect(fetchImpl).toHaveBeenCalledOnce()
   })
 
+  it('does not let the request timeout interrupt downloading an image that was already generated', async () => {
+    const fetchImpl = vi.fn(async () => response({ data: [{ url: 'https://imgen.x.ai/result.jpg' }] })) as unknown as typeof fetch
+    const { service, assets } = setup(fetchImpl, { timeoutMs: 5 })
+    const storeRemoteUrl = assets.storeRemoteUrl
+    vi.mocked(assets.storeRemoteUrl).mockImplementation(async (_userId, _url, metadata) => {
+      await new Promise((resolve) => setTimeout(resolve, 30))
+      return {
+        assetId: 'asset-url', localUrl: 'xingmang-asset://image/asset-url', mimeType: 'image/jpeg', fileName: 'b.jpg', ...metadata,
+      }
+    })
+    await expect(service.generate(4, {
+      requestId: 'slow-download', group: '生图分组', model: 'grok-imagine-image-2.0', prompt: '图',
+    })).resolves.toMatchObject([{ assetId: 'asset-url' }])
+    expect(storeRemoteUrl).toHaveBeenCalledOnce()
+    expect(fetchImpl).toHaveBeenCalledOnce()
+  })
+
   it('warns against resubmission when a dispatched image request times out', async () => {
     const fetchImpl = vi.fn((_url: URL | RequestInfo, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
       init?.signal?.addEventListener('abort', () => reject(init.signal?.reason), { once: true })
@@ -219,6 +236,34 @@ describe('AI image service', () => {
     await expect(service.generate(4, {
       requestId: 'account-switch', group: '生图分组', model: 'gpt-image-2', prompt: '图', expectedUserId: 8,
     })).rejects.toThrow('登录账号已变化')
+    expect(fetchImpl).not.toHaveBeenCalled()
+  })
+
+  it('stops before paid dispatch when the save location cannot be written', async () => {
+    const fetchImpl = vi.fn(async () => response({ data: [{ b64_json: 'aGVsbG8=' }] })) as unknown as typeof fetch
+    const { service, assets } = setup(fetchImpl)
+    const unwritable = new Error('保存位置写不进去，这次没有扣费。请联系客服帮你处理。')
+    Object.assign(unwritable, { code: 'AI_OUTPUT_UNWRITABLE' })
+    assets.assertWritable = vi.fn(async () => { throw unwritable })
+
+    await expect(service.generate(4, {
+      requestId: 'unwritable', group: '生图分组', model: 'gpt-image-2', prompt: '图', projectId: 'project-1',
+    })).rejects.toBe(unwritable)
+    expect(assets.assertWritable).toHaveBeenCalledWith(7, 'project-1')
+    expect(fetchImpl).not.toHaveBeenCalled()
+    expect(assets.storeBase64).not.toHaveBeenCalled()
+  })
+
+  it('probes the save location before image edits read sources or dispatch', async () => {
+    const fetchImpl = vi.fn(async () => response({ data: [{ b64_json: 'aGVsbG8=' }] })) as unknown as typeof fetch
+    const { service, assets } = setup(fetchImpl)
+    assets.assertWritable = vi.fn(async () => { throw new Error('保存位置写不进去，这次没有扣费。') })
+
+    await expect(service.edit(4, {
+      requestId: 'unwritable-edit', group: '生图分组', model: 'gpt-image-2', prompt: '改一下',
+      sourceAssetIds: ['a'.repeat(43)],
+    })).rejects.toThrow('这次没有扣费')
+    expect(assets.readOwned).not.toHaveBeenCalled()
     expect(fetchImpl).not.toHaveBeenCalled()
   })
 
@@ -419,6 +464,36 @@ describe('AI image service', () => {
 
     expect(service.cancel(4, 'bounded-running')).toEqual({ canceled: true, mayStillComplete: true })
     await expect(running).rejects.toThrow('服务端可能仍在生成')
+  })
+
+  it('lets the canvas stop a request that is still queued or preparing before the account is known', async () => {
+    const fetchImpl = vi.fn((_url: URL | RequestInfo, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')), { once: true })
+    })) as unknown as typeof fetch
+    const { service, credentials } = setup(fetchImpl, { maxActive: 1, maxQueued: 1 })
+    let releaseCredential: () => void = () => undefined
+    const credentialGate = new Promise<void>((resolve) => { releaseCredential = resolve })
+    const resolveCredential = credentials.resolveCredential.getMockImplementation()!
+    credentials.resolveCredential.mockImplementationOnce(async (group: string) => {
+      await credentialGate
+      return resolveCredential(group)
+    })
+    const preparing = service.generate(4, {
+      requestId: 'canvas-preparing', group: '生图分组', model: 'gpt-image-2', prompt: '图一', expectedUserId: 7,
+    })
+    const queued = service.generate(4, {
+      requestId: 'canvas-queued', group: '生图分组', model: 'gpt-image-2', prompt: '图二', expectedUserId: 7,
+    })
+    await vi.waitFor(() => expect(credentials.resolveCredential).toHaveBeenCalledTimes(1))
+
+    expect(service.cancel(4, 'canvas-queued', 8)).toEqual({ canceled: false, mayStillComplete: false })
+    expect(service.cancel(4, 'canvas-queued', 7)).toEqual({ canceled: true, mayStillComplete: false })
+    expect(service.cancel(4, 'canvas-preparing', 7)).toEqual({ canceled: true, mayStillComplete: false })
+    releaseCredential()
+
+    await expect(queued).rejects.toThrow('已取消生图请求')
+    await expect(preparing).rejects.toThrow('已取消生图请求')
+    expect(fetchImpl).not.toHaveBeenCalled()
   })
 
   it('rejects work beyond maxQueued without starting credentials or fetch', async () => {

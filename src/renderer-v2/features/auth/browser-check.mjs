@@ -125,8 +125,12 @@ test('chat guide keeps all four steps and never installs a runtime or tool', asy
   const page = await open('scenario=guide&loggedOut=1')
   try {
     assert.equal(await page.locator('input[type=radio]').count(), 6)
-    assert.equal(await page.locator('input[type=radio]:checked').count(), 0)
-    assert.equal(await page.getByTestId('guide-next').isDisabled(), true)
+    // 第十一批 1：默认选中推荐的 Codex 桌面端并排在第一位，「下一步」一开始就能点。
+    assert.equal(await page.locator('input[type=radio]:checked').getAttribute('value'), 'codexDesktop')
+    assert.equal(await page.locator('input[type=radio]').first().getAttribute('value'), 'codexDesktop')
+    assert.equal(await page.getByTestId('guide-recommended').count(), 1)
+    assert.equal(await page.getByText(/Node\.js|Python/).count(), 0)
+    assert.equal(await page.getByTestId('guide-next').isEnabled(), true)
     await page.getByTestId('guide-route-chat').check()
     await page.getByTestId('guide-next').click()
     assert.equal(await page.getByTestId('start-guide').getAttribute('data-guide-step'), 'prepare')
@@ -178,9 +182,10 @@ test('canceling CLI workspace selection keeps the guide on its ready step', asyn
   try {
     await page.getByTestId('guide-route-codex').check()
     await page.getByTestId('guide-next').click()
-    await page.getByTestId('guide-next').click()
+    // 第十一批 3：Key 已经写好、连上了，「确认连接」这一步直接跳过。
     await page.getByTestId('guide-next').click()
     assert.equal(await page.getByTestId('start-guide').getAttribute('data-guide-step'), 'ready')
+    await page.getByTestId('guide-connected-note').waitFor()
     await page.getByTestId('guide-open-tool').click()
     await page.waitForFunction(() => document.documentElement.dataset.calls?.includes('launch'))
     await page.getByTestId('guide-open-tool').waitFor()
@@ -207,17 +212,55 @@ test('Gemini preparation unlocks Node then Python then CLI from confirmed snapsh
     await page.evaluate(() => window.authHarness.release('python'))
     await page.waitForFunction(() => !document.querySelector('[data-testid="guide-install"]').disabled)
     await page.getByTestId('guide-install').click()
-    await page.getByTestId('guide-next').click()
-    assert.equal(await page.getByTestId('start-guide').getAttribute('data-guide-step'), 'connect')
+    await page.locator('[data-guide-step="connect"]').waitFor()
     assert.deepEqual((await calls(page)).map((item) => item.method), ['detect', 'runtime', 'python', 'install'])
   } finally { await page.close() }
 })
 
+// 第十一批 2：能代装运行环境的平台上，「准备工具」这一步只剩一颗「安装」，
+// Node.js 和 Python 两行只报状态；失败时说清是哪一段没装上，并给一颗「再试一次」。
+test('Gemini installs with one button when the runtimes can be prepared automatically', async () => {
+  const page = await open('scenario=guide&auto=1&installFail=1')
+  try {
+    await page.getByTestId('guide-route-gemini').check()
+    await page.getByTestId('guide-next').click()
+    assert.deepEqual(await page.locator('.auth-guide-check-row strong').allTextContents(), ['Node.js 与 npm', 'Python', 'Gemini CLI'])
+    assert.equal(await page.getByTestId('guide-node').count(), 0)
+    assert.equal(await page.getByTestId('guide-python').count(), 0)
+    assert.equal(await page.getByTestId('guide-install').isEnabled(), true)
+    await page.getByTestId('guide-install').click()
+    await page.getByTestId('guide-error').filter({ hasText: '运行环境没装上（下载超时），Gemini CLI 还没开始装' }).waitFor()
+    await page.getByTestId('guide-retry').click()
+    // 装好之后替用户点「下一步」；还没连上，所以停在「确认连接」。
+    await page.locator('[data-guide-step="connect"]').waitFor()
+    assert.equal(await page.getByTestId('guide-error').count(), 0)
+    assert.equal(await page.getByTestId('guide-retry').count(), 0)
+    assert.deepEqual((await calls(page)).map((item) => item.method), ['detect', 'install', 'install'])
+  } finally { await page.close() }
+})
+
+// 全面检测 Q8：「打开工具」失败时说主进程给的原因，不借登录那套「输入已保留」，
+// 并且和「安装」一样给一颗「再试一次」。
+test('a failed tool launch in the guide keeps the real reason and can be retried', async () => {
+  const page = await open('scenario=guide&installed=1&connected=1&runtime=1&launchFail=1')
+  try {
+    await page.getByTestId('guide-route-codex').check()
+    await page.getByTestId('guide-next').click()
+    await page.getByTestId('guide-next').click()
+    await page.getByTestId('guide-open-tool').click()
+    await page.getByTestId('guide-error').filter({ hasText: '请先确认账号连接，再打开工具。' }).waitFor()
+    assert.doesNotMatch(await page.getByTestId('guide-error').textContent(), /输入已保留|星芒服务器/)
+    await page.getByTestId('guide-retry').click()
+    await page.waitForFunction(() => document.documentElement.dataset.calls?.includes('complete'))
+    assert.deepEqual((await calls(page)).map((item) => item.method), ['detect', 'launch', 'launch', 'complete'])
+  } finally { await page.close() }
+})
+
 test('guide pause resumes the chosen route and step without choosing for a fresh account', async () => {
-  const page = await open('scenario=guide&resume=1&runtime=1&python=1&installed=1&connected=1&strict=1')
+  const page = await open('scenario=guide&resume=1&runtime=1&python=1&installed=1&strict=1')
   try {
     assert.equal(await page.evaluate(() => localStorage.getItem('xingmang-ui-v2:guide:site%3A7')), null)
-    assert.equal(await page.locator('input[type=radio]:checked').count(), 0)
+    assert.equal(await page.getByTestId('start-guide').getAttribute('data-guide-route'), 'codexDesktop')
     await page.getByTestId('guide-route-gemini').check()
     await page.getByTestId('guide-next').click()
     await page.getByTestId('guide-next').click()
@@ -230,7 +273,8 @@ test('guide pause resumes the chosen route and step without choosing for a fresh
     await page.waitForFunction(() => document.activeElement?.getAttribute('data-testid') === 'guide-heading')
     await page.evaluate(() => window.authHarness.switchScope('site:8'))
     await page.getByTestId('guide-route-chat').waitFor()
-    assert.equal(await page.locator('input[type=radio]:checked').count(), 0)
+    // 新账号拿到的是推荐项，不是上一个账号停在半路的 Gemini。
+    assert.equal(await page.getByTestId('start-guide').getAttribute('data-guide-route'), 'codexDesktop')
     assert.equal(await page.evaluate(() => localStorage.getItem('xingmang-ui-v2:guide:site%3A8')), null)
     await page.getByTestId('guide-route-chat').check()
     await page.evaluate(() => window.authHarness.switchScope('site:7'))
@@ -252,7 +296,7 @@ test('a failed detection from the previous account cannot lock or report an erro
     await page.evaluate(() => window.authHarness.reject('detect'))
     assert.equal(await page.getByTestId('start-guide').getAttribute('aria-busy'), 'false')
     assert.equal(await page.getByTestId('guide-error').count(), 0)
-    assert.equal(await page.locator('input[type=radio]:checked').count(), 0)
+    assert.equal(await page.getByTestId('start-guide').getAttribute('data-guide-route'), 'codexDesktop')
   } finally { await page.close() }
 })
 

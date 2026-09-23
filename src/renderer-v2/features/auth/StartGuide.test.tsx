@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { StartGuide, type GuideToolState, type StartGuideProps } from './StartGuide'
+import { StartGuide, defaultGuideRoute, guideCanSkipConnect, guideInstallErrorMessage, guideStepErrorMessage, type GuideToolState, type StartGuideProps } from './StartGuide'
 
 const resumeKey = 'fixture-scope'
 
@@ -99,5 +99,112 @@ describe('renderer-v2 start guide first run', () => {
     expect(render([guideTool({ source: 'official' })])).not.toContain('data-testid="guide-official-note"')
     stubResumedGuide('gemini', 'connect')
     expect(render([guideTool({ id: 'gemini', source: 'account' })])).not.toContain('data-testid="guide-official-note"')
+  })
+
+  it('leaves one install button when the app can prepare the missing runtime itself', () => {
+    stubResumedGuide('gemini', 'prepare')
+    const markup = render([guideTool({ id: 'gemini', installed: false, configured: false, source: 'none', runtimeReady: false, pythonReady: false, runtimeAutoPrepare: true, pythonAutoPrepare: true })], { onInstallRuntime: async () => undefined, onInstallPython: async () => undefined })
+    expect(markup).not.toContain('data-testid="guide-node"')
+    expect(markup).not.toContain('data-testid="guide-python"')
+    expect(markup).toContain('点「安装」时会一并装好')
+    expect(markup).toMatch(/<button[^>]*data-testid="guide-install"(?![^>]*disabled)/)
+    expect(markup).not.toMatch(/Node\.js 和 Python|PATH|LTS/)
+  })
+
+  // 工具已经装了、Node 却太旧：这时没有「安装」可点，运行环境那一行必须留着自己的按钮。
+  it('keeps the runtime button when the tool is installed but its runtime is not ready', () => {
+    stubResumedGuide('claude', 'prepare')
+    const markup = render([guideTool({ runtimeReady: false, runtimeAutoPrepare: true })], { onInstallRuntime: async () => undefined })
+    expect(markup).toContain('data-testid="guide-node"')
+    expect(markup).not.toContain('data-testid="guide-install"')
+  })
+
+  it('keeps the old step-by-step preparation where the runtime has to be installed by hand', () => {
+    stubResumedGuide('claude', 'prepare')
+    const markup = render([guideTool({ installed: false, runtimeReady: false })], { platform: 'mac', onInstallRuntime: async () => undefined })
+    expect(markup).toContain('data-testid="guide-node"')
+    expect(markup).toMatch(/<button[^>]*data-testid="guide-install"[^>]*disabled/)
+  })
+})
+
+describe('guide install failure wording', () => {
+  it('names the stage that failed and points at the retry button', () => {
+    const runtime = guideInstallErrorMessage(new Error('Node.js 运行环境没装上，Claude Code 还没开始安装。下载 Node.js 时 ETIMEDOUT'), 'Claude Code')
+    expect(runtime).toBe('运行环境没装上（下载超时），Claude Code 还没开始装。点「再试一次」，还不行就点「需要帮助」。')
+    const tool = guideInstallErrorMessage(new Error('Claude Code 安装失败：ENOSPC: no space left on device'), 'Claude Code')
+    expect(tool).toBe('Claude Code 没装上（磁盘空间不够）。点「再试一次」，还不行就点「需要帮助」。')
+    expect(guideInstallErrorMessage(new Error('something odd'), 'Codex')).toBe('Codex 没装上。点「再试一次」，还不行就点「需要帮助」。')
+  })
+
+  it('never borrows the login wording about the Xingmang server or kept input', () => {
+    const message = guideInstallErrorMessage(new Error('fetch failed'), 'Codex')
+    expect(message).not.toMatch(/星芒服务器|输入已保留/)
+    expect(message).toContain('网络连不上')
+    expect(guideInstallErrorMessage(new Error('HTTP 401 unauthorized'), 'Codex')).toBe('Codex 没装上。点「再试一次」，还不行就点「需要帮助」。')
+  })
+})
+
+describe('guide step failure wording', () => {
+  it('names the kind of failure instead of blaming the Xingmang server', () => {
+    const runtime = guideStepErrorMessage(new Error('Node.js 下载超时，请检查网络后重试'), '准备环境')
+    expect(runtime).toBe('准备环境没有成功：下载超时。下载没有完成，已安装的工具不受影响。')
+    expect(guideStepErrorMessage(new Error('ETIMEDOUT'), '检测工具')).toBe('检测工具没有成功：网络连不上。检查网络后点「再试一次」。')
+    expect(guideStepErrorMessage(new Error('EPERM: operation not permitted'), '准备 Python')).toContain('写不进安装目录')
+  })
+
+  it('keeps a Chinese reason the main process already wrote, with paths redacted', () => {
+    expect(guideStepErrorMessage(new Error('请先确认账号连接，再打开工具。'), '打开工具')).toBe('请先确认账号连接，再打开工具。')
+    expect(guideStepErrorMessage(new Error('找不到 C:\\Users\\alice\\.codex\\config.toml'), '确认连接')).not.toContain('alice')
+  })
+
+  it('never borrows the login wording', () => {
+    for (const reason of ['fetch failed', 'something odd', 'Node.js 下载超时，请检查网络后重试', '请先确认账号连接，再打开工具。']) {
+      expect(guideStepErrorMessage(new Error(reason), '打开工具')).not.toMatch(/星芒服务器|输入已保留/)
+    }
+    expect(guideStepErrorMessage(new Error('something odd'), '打开工具')).toBe('打开工具没有成功。点「再试一次」，还不行就点「需要帮助」。')
+  })
+})
+
+describe('guide default route', () => {
+  it('keeps where the user left off, otherwise picks the recommended tool when it is shown', () => {
+    expect(defaultGuideRoute('gemini', ['claude', 'codexDesktop'])).toBe('gemini')
+    expect(defaultGuideRoute(null, ['claude', 'codexDesktop'])).toBe('codexDesktop')
+    expect(defaultGuideRoute(undefined, ['claude', 'codex'])).toBeNull()
+  })
+
+  it('opens a fresh guide with the recommended tool selected, first and labelled', () => {
+    for (const platform of ['win', 'mac'] as const) {
+      const markup = render([], { platform })
+      expect(markup).toContain('data-guide-route="codexDesktop"')
+      expect(markup.indexOf('guide-route-codexDesktop')).toBeLessThan(markup.indexOf('guide-route-claude'))
+      expect(markup).toContain('data-testid="guide-recommended"')
+      expect(markup).not.toMatch(/Node\.js|Python/)
+      expect(markup).toMatch(/<button[^>]*data-testid="guide-next"(?![^>]*disabled)/)
+    }
+  })
+})
+
+describe('guide connect step skipping', () => {
+  it('skips only when the account key is already written and the tool is ready', () => {
+    expect(guideCanSkipConnect('claude', guideTool(), true)).toBe(true)
+    expect(guideCanSkipConnect('codexDesktop', guideTool({ id: 'codexDesktop', runtimeReady: false }), true)).toBe(true)
+  })
+
+  it('still stops for third-party config, official accounts, typed keys, a missing key, unfinished preparation and chat', () => {
+    expect(guideCanSkipConnect('claude', guideTool({ source: 'unknown' }), true)).toBe(false)
+    expect(guideCanSkipConnect('claude', guideTool({ source: 'official' }), true)).toBe(false)
+    expect(guideCanSkipConnect('codex', guideTool({ id: 'codex', source: 'official', officialLoginRequired: true }), true)).toBe(false)
+    expect(guideCanSkipConnect('claude', guideTool({ source: 'manual' }), true)).toBe(false)
+    expect(guideCanSkipConnect('claude', guideTool({ configured: false }), true)).toBe(false)
+    expect(guideCanSkipConnect('claude', guideTool({ runtimeReady: false }), true)).toBe(false)
+    expect(guideCanSkipConnect('chat', undefined, true)).toBe(false)
+    expect(guideCanSkipConnect(null, guideTool(), true)).toBe(false)
+  })
+
+  it('tells the user on the last step that the current account is already connected', () => {
+    stubResumedGuide('claude', 'ready')
+    expect(render([guideTool()])).toContain('data-testid="guide-connected-note"')
+    stubResumedGuide('claude', 'ready')
+    expect(render([guideTool({ source: 'official' })])).not.toContain('data-testid="guide-connected-note"')
   })
 })

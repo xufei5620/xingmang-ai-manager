@@ -87,6 +87,18 @@ export class CanvasProjectAssetManager {
     context.images.ensureOutputDirectory()
   }
 
+  /**
+   * Runs before every new paid image or video request of a canvas project, but
+   * not before resuming a task the account has already paid for (that path
+   * still uses prepareProject). Images and videos share the context's output
+   * root, so the image store's probe answers for both.
+   */
+  async assertWritable(userId: number, projectId?: string): Promise<void> {
+    if (!projectId) throw new Error('画布项目尚未选择，无法保存生成素材')
+    const context = await this.forProject(userId, projectId)
+    await context.images.assertWritable(userId)
+  }
+
   async storeBase64(userId: number, value: string, metadata?: CanvasProjectImageMetadata): Promise<AiStoredAsset> {
     const projectId = this.requiredMetadataProjectId(metadata)
     const context = await this.forProject(userId, projectId)

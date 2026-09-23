@@ -3,11 +3,13 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import * as TOML from '@iarna/toml'
+import { classifyNetworkFailure } from './network-failure'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AppSettingsStore, defaultAppSettings } from './app-settings'
 import { providerBaseUrls, type ProviderId } from './catalog'
 import { providerConfigRoot, type ProviderConfigRoots } from './codex-home'
 import {
+  CommandRunnerError,
   findExecutable as productionFindExecutable,
   runCommand,
   trustedCommandEnvironment,
@@ -60,6 +62,7 @@ import {
   effectiveNetworkRegion,
   npmInstallRegistries,
   npmRegistryLabel,
+  describeNpmCommandFailure,
   grokDownloadStallHeartbeatMs,
   grokDownloadStallMessage,
   npmResolutionHeartbeatMessage,
@@ -73,6 +76,8 @@ import {
   parseGrokLocalVersion,
   parseLatestNpmVersion,
   providerCommandEnvironment,
+  createScanCoalescer,
+  scanProbeConcurrency,
   readGrokLocalVersionForExecutable,
   resolveCliInstallRelease,
   replaceManagedNpmPrefixAtomically,
@@ -1058,6 +1063,16 @@ describe('createSystemService', () => {
 
     await expect(service.fetchAvailableModels('bad\nkey')).rejects.toThrow('API Key 格式错误')
     expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('says the service is unavailable when the model list answers with a maintenance page', async () => {
+    // 盲点 1：写入 Key 与 AI 对话都经过这一步，「服务返回 503」会被渲染层猜成 Key 或分组的问题。
+    const service = createService()
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('<html>维护中</html>', { status: 503, headers: { 'content-type': 'text/html' } })))
+
+    const error = await service.fetchAvailableModels('sk-maintenance-probe').catch((cause: unknown) => cause)
+    expect(classifyNetworkFailure(error)).toBe('serviceUnavailable')
+    expect((error as Error).message).toContain('HTTP 503')
   })
 
   it('redacts echoed API keys and bounds relay error messages', async () => {
@@ -2505,6 +2520,68 @@ describe('npm install progress reporting', () => {
     expect(npmResolutionTimeoutMs).toBeLessThanOrEqual(10 * 60_000)
   })
 
+  it('carries npm\'s own failure lines into the install error instead of only the exit code', async () => {
+    // A real child process writing what npm prints when the disk is full: the
+    // runner keeps it on error.stderr, and the install error must repeat the
+    // code so the renderer can tell a full disk from a dropped connection.
+    const script = [
+      "process.stderr.write('npm warn deprecated glob@7.2.3: Glob versions prior to v9 are no longer supported\\n')",
+      "process.stderr.write('npm error code ENOSPC\\n')",
+      "process.stderr.write('npm error syscall write\\n')",
+      "process.stderr.write('npm error errno -28\\n')",
+      "process.stderr.write('npm error nospc ENOSPC: no space left on device, write\\n')",
+      "process.stderr.write('npm error nospc There appears to be insufficient space on your system to finish.\\n')",
+      "process.stderr.write('npm error A complete log of this run can be found in: /home/alice/.npm/_logs/debug-0.log\\n')",
+      'process.exit(1)',
+    ].join(';')
+    const failure = await runCommand({ executable: process.execPath, argv: ['-e', script] }).catch((error: unknown) => error)
+
+    expect(failure).toBeInstanceOf(CommandRunnerError)
+    const detail = describeNpmCommandFailure(failure)
+    expect(detail).toContain('退出码 1')
+    expect(detail).toContain('ENOSPC；nospc ENOSPC: no space left on device, write')
+    expect(detail).not.toContain('complete log')
+    expect(detail).not.toContain('deprecated')
+  })
+
+  it('keeps the last npm lines when npm printed no error code', () => {
+    const failure = new CommandRunnerError('命令执行失败（退出码 1）：node', {
+      code: 'EXIT_NON_ZERO',
+      executable: 'node',
+      argv: [],
+      exitCode: 1,
+      signal: null,
+      stdout: '',
+      stderr: 'first\nrequest to https://registry.npmjs.org/x failed, reason: connect ETIMEDOUT 1.2.3.4:443\nAuthorization: Bearer sk-secret-value-1234567890\n',
+      outputBytes: 0,
+      maxOutputBytes: 0,
+      durationMs: 0,
+    })
+
+    const detail = describeNpmCommandFailure(failure)
+    expect(detail).toContain('ETIMEDOUT')
+    expect(detail).not.toContain('first')
+    expect(detail).not.toContain('sk-secret-value')
+  })
+
+  it('says a timed-out npm step is a download timeout', () => {
+    const failure = new CommandRunnerError('命令执行时间过长，已中止：node', {
+      code: 'TIMED_OUT',
+      executable: 'node',
+      argv: [],
+      exitCode: null,
+      signal: 'SIGTERM',
+      stdout: '',
+      stderr: '',
+      outputBytes: 0,
+      maxOutputBytes: 0,
+      durationMs: npmDownloadTimeoutMs,
+    })
+
+    expect(describeNpmCommandFailure(failure)).toContain('下载超时')
+    expect(describeNpmCommandFailure(new Error('plain'))).toBe('plain')
+  })
+
   it('tells the user why the official source cannot be replaced by a mirror', () => {
     const message = npmResolutionStartMessage('https://registry.npmjs.org')
 
@@ -3933,5 +4010,156 @@ describe('trusting the workspace the user picked before opening a CLI', () => {
     await expect(launchService(userHome, 'claude').launchProvider('claude', workspace))
       .rejects.toThrow('未检测到 Claude Code')
     expect(fs.readFileSync(path.join(userHome, '.claude.json'), 'utf8')).toBe('{"projects":')
+  })
+})
+
+describe('scan coalescing', () => {
+  function harness() {
+    let revision = 0
+    let clock = 0
+    const runs: { force: boolean; finish: (value: string) => void; fail: (error: Error) => void }[] = []
+    const coalescer = createScanCoalescer({
+      run: (force) => new Promise<string>((resolve, reject) => { runs.push({ force, finish: resolve, fail: reject }) }),
+      revision: () => revision,
+      reuseMs: 15_000,
+      now: () => clock,
+    })
+    return { scan: coalescer.scan, recent: coalescer.recent, runs, bump: () => { revision++ }, advance: (ms: number) => { clock += ms } }
+  }
+
+  it('lets a later non-forced scan join the one already running instead of probing twice', async () => {
+    const h = harness()
+    const warmup = h.scan(false)
+    const renderer = h.scan(false)
+    expect(renderer).toBe(warmup)
+    expect(h.runs).toHaveLength(1)
+    h.runs[0].finish('snapshot')
+    await expect(renderer).resolves.toBe('snapshot')
+  })
+
+  it('reuses a scan that finished moments ago, and scans again once it is older than the reuse window', async () => {
+    const h = harness()
+    const warmup = h.scan(false)
+    h.runs[0].finish('warmup')
+    await warmup
+    h.advance(15_000)
+    await expect(h.scan(false)).resolves.toBe('warmup')
+    expect(h.runs).toHaveLength(1)
+    h.advance(1)
+    void h.scan(false)
+    expect(h.runs).toHaveLength(2)
+  })
+
+  it('never lets a forced rescan reuse anything, and lets later plain reads use the forced result', async () => {
+    const h = harness()
+    const plain = h.scan(false)
+    const forced = h.scan(true)
+    expect(forced).not.toBe(plain)
+    expect(h.runs.map((run) => run.force)).toEqual([false, true])
+    expect(h.scan(false)).toBe(forced)
+    h.runs[1].finish('forced')
+    h.runs[0].finish('stale plain')
+    await Promise.all([plain, forced])
+    await expect(h.scan(false)).resolves.toBe('forced')
+    await expect(h.scan(true)).not.toBe(forced)
+    expect(h.runs).toHaveLength(3)
+  })
+
+  it('does not reuse a scan that started before an installation began or finished', async () => {
+    const h = harness()
+    const beforeInstall = h.scan(false)
+    h.bump()
+    const whileInstalling = h.scan(false)
+    expect(whileInstalling).not.toBe(beforeInstall)
+    h.runs[0].finish('before')
+    h.runs[1].finish('during')
+    await Promise.all([beforeInstall, whileInstalling])
+    h.bump()
+    void h.scan(false)
+    expect(h.runs).toHaveLength(3)
+  })
+
+  it('hands out what it already has without ever starting a scan of its own', async () => {
+    const h = harness()
+    expect(h.recent(60_000)).toBeNull()
+    const running = h.scan(false)
+    expect(h.recent(60_000)).toBe(running)
+    h.runs[0].finish('fresh')
+    await running
+    h.advance(60_000)
+    await expect(h.recent(60_000)).resolves.toBe('fresh')
+    h.advance(1)
+    expect(h.recent(60_000)).toBeNull()
+    h.advance(-1)
+    h.bump()
+    expect(h.recent(60_000)).toBeNull()
+    expect(h.runs).toHaveLength(1)
+  })
+
+  it('forgets a failed scan so the next read tries again', async () => {
+    const h = harness()
+    const failed = h.scan(false)
+    h.runs[0].fail(new Error('probe crashed'))
+    await expect(failed).rejects.toThrow('probe crashed')
+    void h.scan(false)
+    expect(h.runs).toHaveLength(2)
+  })
+})
+
+describe('startup snapshot cache and probe limits', () => {
+  function service(directory: string, resolveCliInstallation: SystemServiceOptions['resolveCliInstallation']) {
+    return createSystemService(new AppSettingsStore(path.join(directory, 'settings.json'), directory), {
+      platform: 'linux',
+      findExecutable: async () => null,
+      resolveCliInstallation,
+      systemSnapshotCacheFile: path.join(directory, 'system-snapshot.json'),
+      appVersion: '0.2.9',
+    })
+  }
+
+  async function waitForFile(filePath: string) {
+    for (let attempt = 0; attempt < 200 && !fs.existsSync(filePath); attempt++) await new Promise((resolve) => setTimeout(resolve, 5))
+  }
+
+  it('hands the home page the last scan until this launch finishes one of its own, then never again', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-snapshot-startup-'))
+    temporaryDirectories.push(directory)
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('offline') }))
+    const first = service(directory, async () => null)
+    await expect(first.cachedScan()).resolves.toBeNull()
+    await first.scanSystem(false)
+    await waitForFile(path.join(directory, 'system-snapshot.json'))
+
+    let release!: () => void
+    const blocked = new Promise<void>((resolve) => { release = resolve })
+    const second = service(directory, async () => { await blocked; return null })
+    const cached = await second.cachedScan()
+    expect(cached?.cachedAt).toEqual(expect.any(String))
+    expect(cached?.clis.claude.installed).toBe(false)
+    expect(cached?.officialChatGpt).toBeUndefined()
+    // The cached answer must not stand in for a real scan anywhere else.
+    expect(second.recentScan(60_000)).not.toBeNull()
+    release()
+    const fresh = await second.scanSystem(false)
+    expect(fresh.cachedAt).toBeUndefined()
+    await expect(second.cachedScan()).resolves.toBeNull()
+  })
+
+  it('never starts more probe processes at once than the limit', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-probe-limit-'))
+    temporaryDirectories.push(directory)
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('offline') }))
+    let active = 0
+    let peak = 0
+    const probed = service(directory, async () => {
+      active++
+      peak = Math.max(peak, active)
+      await new Promise((resolve) => setTimeout(resolve, 20))
+      active--
+      return null
+    })
+    await probed.scanSystem(false)
+    expect(scanProbeConcurrency).toBe(3)
+    expect(peak).toBe(scanProbeConcurrency)
   })
 })

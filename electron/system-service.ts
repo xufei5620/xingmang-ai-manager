@@ -19,10 +19,12 @@ import {
   type ProviderConfigRoots,
 } from './codex-home'
 import {
+  CommandRunnerError,
   cleanCommandOutput,
   commandEnvironment,
   findExecutable,
   isTrustedHighIntegrityExecutable,
+  primeTrustedHighIntegrityExecutable,
   isUserWritablePath,
   redactCommandText,
   runCommand,
@@ -193,6 +195,10 @@ import { createClaudeDesktopConfigService } from './claude-desktop-config'
 import { resolveClaudeDesktopPaths } from './claude-desktop-paths'
 import { inspectClaudeDesktopStoreVirtualization } from './claude-desktop-manifest'
 import { assertClaudeDesktopUnmanaged } from './claude-desktop-policy'
+import { isServiceUnavailableResponse, networkFailureMessages, parsesAsJsonObject } from './network-failure'
+import { NewApiNetworkError } from './new-api-client'
+import { createSystemSnapshotCache } from './system-snapshot-cache'
+import { BoundedOperationQueue } from './bounded-operation-queue'
 
 const execFileAsync = promisify(execFile)
 const npmLatestCacheTtlMs = 10 * 60_000
@@ -364,6 +370,16 @@ export interface SystemSnapshot {
     codex: DesktopAppStatus
   }
   officialChatGpt?: OfficialChatGptAccount | null
+  /**
+   * 只有「上次的检测结果」才有：落盘的时间。界面见到它就当作还在检测，
+   * 真的扫描结果回来会整份替换（见 system-snapshot-cache.ts）。
+   */
+  cachedAt?: string
+}
+
+/** 首页那次读取可以先拿上次的结果（见 SystemService.cachedScan）；其余调用方不传。 */
+export interface SystemScanOptions {
+  acceptCached?: boolean
 }
 
 export interface CodexDesktopLaunchResult {
@@ -424,6 +440,11 @@ export interface ConfigSavePayload {
 export interface AppConfigSummary {
   workspace: string
   providers: Record<ProviderId, NativeConfigSummary>
+  /**
+   * 账号还在恢复时读到的配置：「是不是当前账号写的」这一问还答不上来，
+   * configurationOwnership 只会是 unknown，不代表真的来源不明。缺省 = 已判定。
+   */
+  ownershipPending?: boolean
 }
 
 export interface CodexReadinessStatus {
@@ -755,6 +776,13 @@ export interface SystemService {
   /** 备份恢复成功之后调用；`isAccountKey` 判断一把 Key 是不是当前账号由本软件签发的。 */
   adoptRestoredConfig(provider: ProviderId, isAccountKey: (apiKey: string) => boolean): Promise<void>
   scanSystem(forceRefresh?: boolean): Promise<SystemSnapshot>
+  /** 手上现成的扫描结果（正在跑的，或 `maxAgeMs` 以内跑完且之后没装卸过东西的）；没有就是 null，不会新起一轮。 */
+  recentScan(maxAgeMs: number): Promise<SystemSnapshot> | null
+  /**
+   * 本次启动还没有扫完过一轮时，给出上次落盘的结果（带 `cachedAt`），同时确保
+   * 一轮真扫描在跑；已经扫完过、或没有可用的旧结果时是 null。只给首页「先画个样子」用。
+   */
+  cachedScan(): Promise<SystemSnapshot | null>
   refreshNetworkLocation(): Promise<SystemSnapshot['network']>
   refreshOfficialChatGptUsage(): Promise<OfficialChatGptAccount | null>
   inspectCodexSetupStatus(): Promise<CodexSetupStatus>
@@ -1249,6 +1277,45 @@ export function npmResolutionStartMessage(registry: string): string {
 
 export function npmResolutionHeartbeatMessage(registry: string, elapsedMs: number): string {
   return `仍在解析${npmRegistryLabel(registry)}的依赖图…（已用时 ${formatElapsedDuration(elapsedMs)}）`
+}
+
+/**
+ * CommandRunnerError keeps npm's stderr on the error object, but its message
+ * only says "命令执行失败（退出码 1）：node". The renderer classifies install
+ * failures by the tokens npm prints (ENOSPC, EPERM, ETIMEDOUT, certificate
+ * codes), so without npm's own lines a full disk, a denied folder and a
+ * dropped connection all looked the same and every one of them was sent to
+ * customer support.
+ *
+ * The runner's generic timeout wording deliberately avoids "超时" because a
+ * command running long is not always a network problem. Inside an npm install
+ * it is: npm spends its time downloading, so here it is said plainly.
+ */
+export function describeNpmCommandFailure(error: unknown): string {
+  if (!(error instanceof CommandRunnerError)) {
+    return error instanceof Error ? error.message : String(error)
+  }
+  if (error.code === 'TIMED_OUT') return '下载超时，长时间没有完成，已中止'
+  const highlights = npmFailureHighlights(error.stderr)
+  return highlights ? `${error.message}（${highlights}）` : error.message
+}
+
+function npmFailureHighlights(stderr: string): string {
+  const lines = stderr
+    .split(/\r?\n/)
+    .filter((line) => !/^\s*npm (?:warn|notice|verbose|info|http|timing)\b/i.test(line))
+    .map((line) => line.replace(/^\s*npm (?:error|ERR!)\s*/i, '').trim())
+    // The pointer to npm's own log file names a folder under the user's
+    // profile and says nothing about what went wrong.
+    .filter((line) => line && !/complete log of this run/i.test(line))
+  const codeLine = lines.find((line) => /^code\s+\S+$/.test(line))
+  const picked = codeLine
+    ? [
+        codeLine.replace(/^code\s+/, ''),
+        ...lines.filter((line) => line !== codeLine && !/^(?:syscall|errno|path|dest)\s/.test(line)).slice(0, 1),
+      ]
+    : lines.slice(-2)
+  return redactCommandText(picked.map((line) => line.slice(0, 160)).join('；'))
 }
 
 export function npmPackageLatestUrl(registry: string, packageName: string): string {
@@ -1927,6 +1994,10 @@ export function buildCliToolStatusFromSettled(
 
 export interface SystemServiceOptions {
   managerDataDirectory?: string
+  /** 首页扫描结果落在哪；缺省不落盘（测试与旧行为）。 */
+  systemSnapshotCacheFile?: string
+  /** 落盘的旧结果只认同一版本的软件写的。 */
+  appVersion?: string
   /** Native profile roots and policy reads are isolated in tests. */
   claudeDesktopEnv?: NodeJS.ProcessEnv
   inspectClaudeDesktopStoreVirtualization?: typeof inspectClaudeDesktopStoreVirtualization
@@ -2007,6 +2078,52 @@ export function providerCommandEnvironment(
     }
   }
   return environment
+}
+
+/** 刚跑完的一轮扫描在这么久以内可以直接复用（见 createScanCoalescer）。 */
+export const scanReuseMs = 15_000
+
+/** 一轮扫描里同时在跑的探测子进程上限（见 createSystemService 里的 limitedProbe）。 */
+export const scanProbeConcurrency = 3
+
+/**
+ * 非强制的扫描先看手上有没有现成的：正在跑的那一轮直接接上，刚跑完不久（`reuseMs`
+ * 以内）的那一轮直接拿来用，而不是再起一整套探测子进程。主进程开窗前先起一轮预热，
+ * 首页随后那次读取、账号恢复后 Key 同步那次检查就都用它；低配机器上两轮探测抢同一
+ * 时刻的 CPU 与磁盘，比串着跑还慢。
+ *
+ * 两种情况不复用：调用方要求强制重扫（「重新检测」、装完工具、保存配置之后），以及
+ * 那一轮开始之后安装队列动过——它可能是在工具装好之前探的，拿它回答「装完了吗」
+ * 会答错。`revision` 就是安装队列的读数。失败的那一轮不留。
+ */
+export function createScanCoalescer<T>(options: { run(force: boolean): Promise<T>; revision(): number; reuseMs: number; now?(): number }) {
+  const now = options.now ?? Date.now
+  let sequence = 0
+  let inFlight: { promise: Promise<T>; revision: number } | null = null
+  let latest: { value: T; revision: number; sequence: number; at: number } | null = null
+  /** 手上现成的一轮：正在跑的，或 `maxAgeMs` 以内跑完的；安装队列动过就都不算。没有就是 null，不会新起一轮。 */
+  function recent(maxAgeMs: number): Promise<T> | null {
+    const revision = options.revision()
+    if (inFlight && inFlight.revision === revision) return inFlight.promise
+    if (latest && latest.revision === revision && now() - latest.at <= maxAgeMs) return Promise.resolve(latest.value)
+    return null
+  }
+  function scan(force: boolean): Promise<T> {
+    const current = force ? null : recent(options.reuseMs)
+    if (current) return current
+    const revision = options.revision()
+    const started = ++sequence
+    const promise = options.run(force)
+    const entry = { promise, revision }
+    inFlight = entry
+    function release() { if (inFlight === entry) inFlight = null }
+    void promise.then((value) => {
+      if (!latest || latest.sequence < started) latest = { value, revision, sequence: started, at: now() }
+      release()
+    }, release)
+    return promise
+  }
+  return { scan, recent }
 }
 
 /**
@@ -2229,6 +2346,7 @@ export function createSystemService(
   ): Promise<string | null> {
     try {
       const trustedOnly = platform === 'win32' && windowsExecutionMode === 'trusted-only'
+      if (trustedOnly) await primeTrustedHighIntegrityExecutable(executable, platform)
       if (trustedOnly && !isTrustedHighIntegrityExecutable(executable)) return null
       const result = await executeCommand({ executable, argv: args, windowsPackageManager }, {
         env: trustedOnly ? trustedCommandEnvironment(baseEnv) : commandEnvironment(baseEnv),
@@ -2648,7 +2766,50 @@ export function createSystemService(
     return inspectOfficialChatGptAccount(true)
   }
 
-  async function scanSystem(forceRefresh = false): Promise<SystemSnapshot> {
+  const snapshotCache = serviceOptions.systemSnapshotCacheFile && serviceOptions.appVersion
+    ? createSystemSnapshotCache({
+        filePath: serviceOptions.systemSnapshotCacheFile,
+        appVersion: serviceOptions.appVersion,
+        onWarning: (code, message) => runtimeLog?.log('warn', 'system', code, '上次检测结果没有读写成功', { error: message }),
+      })
+    : null
+  let scanCompleted = false
+  let scansStarted = 0
+  let newestSaved = 0
+  const coalescedScan = createScanCoalescer({
+    run: async (force) => {
+      const started = ++scansStarted
+      const snapshot = await runScan(force)
+      scanCompleted = true
+      // 强制重扫与普通扫描可能交错完成，落盘只让后开始的那一轮覆盖先开始的。
+      if (started > newestSaved) {
+        newestSaved = started
+        void snapshotCache?.save(snapshot)
+      }
+      return snapshot
+    },
+    revision: () => installationQueue.revision,
+    reuseMs: scanReuseMs,
+  })
+  function scanSystem(forceRefresh = false): Promise<SystemSnapshot> {
+    return coalescedScan.scan(forceRefresh)
+  }
+  async function cachedScan(): Promise<SystemSnapshot | null> {
+    if (scanCompleted || !snapshotCache) return null
+    void scanSystem(false).catch(() => undefined)
+    const cached = await snapshotCache.load()
+    // 读文件这几毫秒里真扫描可能已经回来了，那就不必再给旧的。
+    return scanCompleted ? null : cached
+  }
+  // 低配机器上一轮扫描同时起十来个探测子进程（node、npm、python、git、PowerShell、
+  // 四家 CLI 的 --version），CPU 与磁盘被挤满，整轮反而更慢，别的程序也跟着卡。
+  // 起子进程的探测一次最多跑这么多个；网络位置这类只发请求的不占名额。
+  const probeQueue = new BoundedOperationQueue({ maxActive: scanProbeConcurrency, maxQueued: 64 })
+  function limitedProbe<T>(probe: () => Promise<T>): Promise<T> {
+    return probeQueue.enqueue(() => probe()).promise
+  }
+
+  async function runScan(forceRefresh: boolean): Promise<SystemSnapshot> {
     if (forceRefresh) {
       npmLatestCacheGeneration += 1
       npmLatestCache.clear()
@@ -2656,11 +2817,11 @@ export function createSystemService(
       officialChatGptCache = null
     }
     const [nodeResult, npmResult, pythonResult, gitResult, codexDesktopResult, networkResult, officialChatGptResult] = await Promise.allSettled([
-      inspectNode(),
-      inspectTool('npm'),
-      inspectPython(),
-      inspectGit(),
-      inspectCodexDesktopUpdate(forceRefresh),
+      limitedProbe(inspectNode),
+      limitedProbe(() => inspectTool('npm')),
+      limitedProbe(inspectPython),
+      limitedProbe(inspectGit),
+      limitedProbe(() => inspectCodexDesktopUpdate(forceRefresh)),
       inspectNetworkLocation(forceRefresh),
       inspectOfficialChatGptAccount(forceRefresh),
     ])
@@ -2674,7 +2835,7 @@ export function createSystemService(
     const npmGlobalRoot = await resolveNpmGlobalRoot(npm.path, commandEnvironment())
     // 单个 CLI 探测异常不能伪装成“未安装”，否则维护页会自动勾选并重装。
     const cliProbes = await Promise.allSettled(
-      providerIds.map((id) => inspectCliTool(id, npm.path, npmGlobalRoot)),
+      providerIds.map((id) => limitedProbe(() => inspectCliTool(id, npm.path, npmGlobalRoot))),
     )
     const cliResults: ToolStatus[] = cliProbes.map(buildCliToolStatusFromSettled)
     const networkRegion = network.region
@@ -2922,6 +3083,7 @@ export function createSystemService(
 
     const detectedNpm = await findInstalledExecutable('npm')
     if (detectedNpm) {
+      if (trustedOnly) await primeTrustedHighIntegrityExecutable(detectedNpm, platform)
       if (!trustedOnly || isTrustedHighIntegrityExecutable(detectedNpm)) return detectedNpm
       throw new Error(
         `已检测到 npm（${detectedNpm}），但当前会话经过了显式提权或权限状态无法确认，不能安全执行该路径。请以普通权限启动本程序，或将 Node.js 安装到受保护的系统目录后重试`,
@@ -3310,7 +3472,13 @@ export function createSystemService(
       const officialResolution = path.join(transaction, 'official-resolution')
       const officialCache = path.join(transaction, 'official-cache')
       await createResolutionManifest(officialResolution)
-      await resolveDependencyGraph(npmOfficialRegistry, officialResolution, officialCache)
+      try {
+        await resolveDependencyGraph(npmOfficialRegistry, officialResolution, officialCache)
+      } catch (error) {
+        if (isInstallCancelledError(error)) throw error
+        cancellation?.throwIfCancelled()
+        throw new Error(`${definition.name} 安装失败：npm 官方源：${describeNpmCommandFailure(error)}`)
+      }
       const officialLock = await readBoundedUtf8File(
         path.join(officialResolution, 'package-lock.json'),
         maximumNpmPackageLockBytes,
@@ -3409,7 +3577,7 @@ export function createSystemService(
         } catch (error) {
           if (isInstallCancelledError(error)) throw error
           cancellation?.throwIfCancelled()
-          const detail = error instanceof Error ? error.message : String(error)
+          const detail = describeNpmCommandFailure(error)
           installErrors.push(
             `${registry === npmMirrorRegistry ? '国内 npm 镜像' : 'npm 官方源'}：${redactCommandText(detail).replace(/\s+/g, ' ').trim().slice(0, 300) || '安装失败'}`,
           )
@@ -3878,7 +4046,7 @@ export function createSystemService(
     mode: CliLaunchMode,
   ): Promise<CliLaunchResult> {
     const nativeConfig = inspectNativeProviderConfig(provider)
-    if (!canLaunchManagedProvider(nativeConfig, provider)) {
+    if (!canLaunchManagedProvider(nativeConfig)) {
       throw new Error(managedProviderLaunchBlockedMessage(provider))
     }
     if (!fs.existsSync(workspace) || !fs.statSync(workspace).isDirectory()) {
@@ -4241,6 +4409,12 @@ export function createSystemService(
       })
       const body = await readBoundedResponseText(response, maximumModelResponseBytes, '模型接口')
       if (!response.ok) {
+        // 维护、网关错误、防护层验证页：写入 Key 与 AI 对话都经过这一步，按「服务
+        // 暂时不可用」说，免得渲染层把「服务返回 503」猜成 Key 或分组出了问题。
+        if (isServiceUnavailableResponse({ status: response.status, json: parsesAsJsonObject(body), headers: response.headers, bodyText: body })) {
+          // 用带分类的错误，一键切换才认得出「服务在维护」而不回滚（account-source-switch.ts）。
+          throw new NewApiNetworkError('serviceUnavailable', `模型查询 HTTP ${response.status}`)
+        }
         let detail = ''
         try {
           const parsed = JSON.parse(body) as { error?: { message?: unknown }; message?: unknown }
@@ -4602,7 +4776,7 @@ export function createSystemService(
         : previousOwnership === 'account' || previousOwnership === 'manual' ? previousOwnership : 'unknown')
       await configOwnership.write(payload.provider, before, 'manual', owner)
       assertUnchanged()
-      const result = saveProviderConfig(payload.provider, apiKey, payload.model, payload.mode, providerRoots, {}, activeSite.providerBaseUrls, statusLineCommand)
+      const result = saveProviderConfig(payload.provider, apiKey, payload.model, payload.mode, providerRoots, {}, activeSite.providerBaseUrls, statusLineCommand, availableModels)
       await configOwnership.write(payload.provider, inspectNativeProviderConfig(payload.provider), source, owner)
       assertOwner()
       await store.setOfficialProvider(payload.provider, false)
@@ -4707,6 +4881,8 @@ export function createSystemService(
     inspectOfficialLogin: (provider) => inspectOfficialLogin(provider, providerRoots),
     adoptRestoredConfig,
     scanSystem,
+    recentScan: (maxAgeMs: number) => coalescedScan.recent(maxAgeMs),
+    cachedScan,
     refreshNetworkLocation,
     refreshOfficialChatGptUsage,
     inspectCodexSetupStatus,

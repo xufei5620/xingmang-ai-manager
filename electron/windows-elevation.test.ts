@@ -5,8 +5,10 @@ import {
   decodeWindowsPowerShellCommand,
   describeWindowsCliLaunchError,
   encodeWindowsPowerShellCommand,
+  inspectCurrentWindowsIntegrityRid,
   inspectCurrentWindowsTokenElevationType,
   parseWindowsElevationCapability,
+  parseWindowsMandatoryLabelRid,
   parseWindowsTokenElevationType,
   parseStartedWindowsProcessId,
   powerShellLiteral,
@@ -101,6 +103,57 @@ describe('Windows CLI launch', () => {
     })
     expect(succeeded).toMatchObject({ mode: 'trusted-only' })
     expect(succeeded.probeFailure).toBeUndefined()
+  })
+
+  it('reads the mandatory label SID from whoami output whatever language the group names are in', () => {
+    const medium = [
+      '"Everyone","Well-known group","S-1-1-0","Mandatory group, Enabled by default, Enabled group"',
+      '"BUILTIN\\Administrators","Alias","S-1-5-32-544","Group used for deny only"',
+      '"Mandatory Label\\中等强制级别","标签","S-1-16-8192",""',
+    ].join('\r\n')
+    expect(parseWindowsMandatoryLabelRid(medium)).toBe(8192)
+    expect(parseWindowsMandatoryLabelRid('"Mandatory Label\\High Mandatory Level","Label","S-1-16-12288",""')).toBe(12288)
+    // No label, or more than one, is not an answer.
+    expect(parseWindowsMandatoryLabelRid('"Everyone","Well-known group","S-1-1-0",""')).toBeNull()
+    expect(parseWindowsMandatoryLabelRid('"x","Label","S-1-16-8192",""\r\n"S-1-16-4096","Alias","S-1-5-21-1",""')).toBeNull()
+    // Only a whole quoted field counts, not a SID-looking piece of a name.
+    expect(parseWindowsMandatoryLabelRid('"Mandatory Label\\S-1-16-8192 lookalike","Label","S-1-16-12288",""')).toBe(12288)
+  })
+
+  it('answers same-user from a below-High integrity label without running the slow elevation probe', async () => {
+    const probeElevationType = vi.fn(async () => 'full' as const)
+    await expect(resolveWindowsCliExecutionModeDetailed({
+      isPackaged: true,
+      platform: 'win32',
+      probeIntegrityRid: async () => 8192,
+      probeElevationType,
+    })).resolves.toMatchObject({ mode: 'same-user' })
+    expect(probeElevationType).not.toHaveBeenCalled()
+  })
+
+  it('leaves High integrity and an unreadable label to the elevation probe, including its strict fallback', async () => {
+    for (const probeIntegrityRid of [async () => 12288, async () => 16384, async () => null, async () => { throw new Error('whoami failed') }]) {
+      await expect(resolveWindowsCliExecutionModeDetailed({
+        isPackaged: true, platform: 'win32', probeIntegrityRid, probeElevationType: async () => 'full',
+      })).resolves.toMatchObject({ mode: 'trusted-only' })
+      // The built-in Administrator with a default token stays same-user, as before.
+      await expect(resolveWindowsCliExecutionModeDetailed({
+        isPackaged: true, platform: 'win32', probeIntegrityRid, probeElevationType: async () => 'default',
+      })).resolves.toMatchObject({ mode: 'same-user' })
+      const failed = await resolveWindowsCliExecutionModeDetailed({
+        isPackaged: true,
+        platform: 'win32',
+        probeIntegrityRid,
+        probeElevationType: async () => { throw Object.assign(new Error('Command failed'), { killed: true, signal: 'SIGTERM' }) },
+      })
+      expect(failed).toMatchObject({ mode: 'trusted-only', probeFailure: { reason: 'timeout' } })
+    }
+  })
+
+  it.runIf(process.platform === 'win32')('reads the integrity label of the real process token', async () => {
+    const rid = await inspectCurrentWindowsIntegrityRid()
+    expect(rid).not.toBeNull()
+    expect(rid).toBeGreaterThanOrEqual(4096)
   })
 
   it('classifies probe failures without reading the echoed command line', () => {

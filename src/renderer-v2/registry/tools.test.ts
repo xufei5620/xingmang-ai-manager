@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { cliCatalog, isProviderId, providerConfigDirectoryNames, providerIds } from '../../../electron/catalog';
-import { firstRunHints, officialAccountNames, officialAccountNotes, tools } from './tools';
+import { firstRunHints, guideRecommendedTool, officialAccountNames, officialAccountNotes, tools } from './tools';
 
 describe('renderer-v2 tool registry', () => {
   it('only carries ids the main process knows, plus the Codex desktop entry', () => {
@@ -92,5 +92,14 @@ describe('renderer-v2 tool registry', () => {
     for (const provider of providerIds)
       if (!tools.some(tool => (tool.id === 'codexDesktop' ? 'codex' : tool.id) === provider && tool.sources.includes('official')))
         expect(officialAccountNotes[provider]).toBeNull();
+  });
+
+  // 引导第一步默认选中它：必须在 Windows 与 Mac 上都看得到，而且不需要先准备
+  // 运行环境，否则「一路下一步」会在第二步卡住。
+  it('recommends a guide default that needs no runtime and shows on Windows and Mac', () => {
+    const recommended = tools.find(tool => tool.id === guideRecommendedTool);
+    expect(recommended?.requires).toEqual([]);
+    expect(recommended?.hidden?.('win') ?? false).toBe(false);
+    expect(recommended?.hidden?.('mac') ?? false).toBe(false);
   });
 });

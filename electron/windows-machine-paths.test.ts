@@ -4,6 +4,7 @@ import {
   deriveWindowsSystemRoot,
   isTrustedWindowsMachinePath,
   pathWithinWindowsRoot,
+  primeTrustedWindowsMachinePath,
   programFilesAclCacheTtlMs,
   resolveWindowsKnownFolders,
   resolveWindowsMachinePaths,
@@ -255,5 +256,67 @@ describe('Program Files ACL cache', () => {
 
     expect(cache.read('D:\\Program Files\\Vendor', programFilesAclCacheTtlMs - 1)).toBe(true)
     expect(cache.read('D:\\Program Files\\Vendor', programFilesAclCacheTtlMs)).toBeNull()
+  })
+})
+
+describe('priming Program Files verdicts off the main thread', () => {
+  const roots = resolveWindowsMachinePaths({
+    platform: 'win32',
+    resolveSystemRoot: () => 'D:\\Windows',
+    resolveKnownFolders: () => ({
+      programFiles: 'D:\\Program Files',
+      programFilesX86: 'D:\\Program Files (x86)',
+      programData: 'D:\\ProgramData',
+    }),
+  })
+  const trustedAcl = {
+    tokenSids: ['S-1-5-21-1-2-3-1001', 'S-1-5-11', 'S-1-5-32-545', 'S-1-5-32-544'],
+    entries: [{ ownerSid: 'S-1-5-32-544', reparsePoint: false, allowWriteSids: ['S-1-5-32-544'] }],
+  }
+  const identity = (candidate: string) => candidate
+  function refusingSyncProbe(): never {
+    throw new Error('the synchronous probe must not run once the verdict is primed')
+  }
+
+  it('leaves the verdict where the synchronous check reads it without starting its own probe', async () => {
+    const aclCache = createProgramFilesAclCache()
+    await primeTrustedWindowsMachinePath('D:\\Program Files\\nodejs\\node.exe', roots, {
+      realpath: identity, aclCache, inspectProgramFilesAcl: async () => trustedAcl,
+    })
+    expect(isTrustedWindowsMachinePath('D:\\Program Files\\nodejs\\node.exe', roots, {
+      realpath: identity, aclCache, inspectProgramFilesAcl: refusingSyncProbe,
+    })).toBe(true)
+  })
+
+  it('caches a failed or untrusted probe as untrusted, exactly like the synchronous path', async () => {
+    const aclCache = createProgramFilesAclCache()
+    await primeTrustedWindowsMachinePath('D:\\Program Files\\Vendor\\a.exe', roots, {
+      realpath: identity, aclCache, inspectProgramFilesAcl: async () => { throw new Error('ACL unavailable') },
+    })
+    await primeTrustedWindowsMachinePath('D:\\Program Files (x86)\\Vendor\\b.exe', roots, {
+      realpath: identity, aclCache,
+      inspectProgramFilesAcl: async () => ({ ...trustedAcl, entries: [{ ...trustedAcl.entries[0], allowWriteSids: ['S-1-5-32-545'] }] }),
+    })
+    for (const candidate of ['D:\\Program Files\\Vendor\\a.exe', 'D:\\Program Files (x86)\\Vendor\\b.exe']) {
+      expect(isTrustedWindowsMachinePath(candidate, roots, {
+        realpath: identity, aclCache, inspectProgramFilesAcl: refusingSyncProbe,
+      })).toBe(false)
+    }
+  })
+
+  it('probes nothing outside Program Files and shares one probe between concurrent callers', async () => {
+    const aclCache = createProgramFilesAclCache()
+    const probed: string[] = []
+    const probe = async (candidate: string) => { probed.push(candidate); return trustedAcl }
+    await Promise.all([
+      primeTrustedWindowsMachinePath('D:\\Windows\\System32\\cmd.exe', roots, { realpath: identity, aclCache, inspectProgramFilesAcl: probe }),
+      primeTrustedWindowsMachinePath('D:\\ProgramData\\tool.exe', roots, { realpath: identity, aclCache, inspectProgramFilesAcl: probe }),
+      primeTrustedWindowsMachinePath('relative\\tool.exe', roots, { realpath: identity, aclCache, inspectProgramFilesAcl: probe }),
+      primeTrustedWindowsMachinePath('D:\\Program Files\\Git\\cmd\\git.exe', roots, { realpath: identity, aclCache, inspectProgramFilesAcl: probe }),
+      primeTrustedWindowsMachinePath('D:\\Program Files\\Git\\cmd\\git.exe', roots, { realpath: identity, aclCache, inspectProgramFilesAcl: probe }),
+    ])
+    expect(probed).toEqual(['D:\\Program Files\\Git\\cmd\\git.exe'])
+    await primeTrustedWindowsMachinePath('D:\\Program Files\\Git\\cmd\\git.exe', roots, { realpath: identity, aclCache, inspectProgramFilesAcl: probe })
+    expect(probed).toHaveLength(1)
   })
 })

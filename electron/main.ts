@@ -9,6 +9,7 @@ import {
   Menu,
   nativeImage,
   net,
+  powerMonitor,
   protocol,
   safeStorage,
   screen,
@@ -21,6 +22,7 @@ import { AccountCredentialStore } from './account-credential-store'
 import { AnnouncementReadStore } from './announcement-read-store'
 import { createAccelerationExpiryNotice, type AccelerationExpiryNotice } from './acceleration-expiry-notice'
 import { createAccelerationInterruptionNotice, type AccelerationInterruptionNotice } from './acceleration-interruption-notice'
+import { createAccelerationPower } from './acceleration-power'
 import { createAccelerationService } from './acceleration-service'
 import { accelerationConflictDescriptions, accelerationFailureMessages, type AccelerationMode, type AccelerationState } from './acceleration-contract'
 import { accelerationStartRequest, createAccelerationPreferenceStore, defaultAccelerationPreference } from './acceleration-preference-store'
@@ -39,6 +41,7 @@ import { assetThumbnailMaxEdge, assetThumbnailSize } from './asset-thumbnail'
 import { AssetThumbnailStore } from './asset-thumbnail-store'
 import { createAssetThumbnailService, type AssetThumbnailRenderer } from './asset-thumbnail-service'
 import { createChatCredentialCoordinator } from './chat-credential-coordinator'
+import { createManagedKeyReplacementStore } from './managed-key-replacement-store'
 import { ChatKeyStore } from './chat-key-store'
 import { ManagedCliKeyStore } from './managed-cli-key-store'
 import { AccountSessionStore } from './account-session-store'
@@ -86,6 +89,8 @@ import { createActiveIdentityReader } from './active-identity'
 import { resolveRealmDataRoots } from './realm-data-roots'
 import { createRealmServiceDispatch } from './realm-service-dispatch'
 import { createAccountWorkGate } from './account-work-gate'
+import { createAccountStartupGate } from './account-startup-gate'
+import { createAccountRestoreRetry } from './account-restore-retry'
 import { createAccountUsageTracker } from './account-usage-tracker'
 import type { RelayBackendClient } from './relay-backend'
 import { ProviderExtensionService } from './provider-extensions'
@@ -108,8 +113,10 @@ import { createPaymentOrderStatusReader } from './payment-status-reader'
 import {
   createDiagnosticsExport,
   redactDiagnosticText,
+  diagnosticsScanReuseMs,
   runDiagnostics,
   type DiagnosticsReport,
+  type DiagnosticsRunOptions,
 } from './diagnostics'
 import { runConnectionCheck } from './connection-check'
 import type { ExternalToolId } from './external-tool-config'
@@ -883,12 +890,21 @@ if (!hasSingleInstanceLock) {
         : Promise.reject(new Error('加速服务尚未就绪。')),
       connect: async (scope, state) => {
         if (!acceleration) throw new Error('加速服务尚未就绪。')
-        return acceleration.startAcceleration(scope, ...await accelerationStartArguments(scope, state))
+        return acceleration.startAutomaticAcceleration(scope, 'codex-desktop', ...await accelerationStartArguments(scope, state))
       },
+      // 连上之后不会自动断开（那是之前定过的），所以连上的那一刻必须让用户知道：
+      // 加速开着、在计免费时长、在哪里能断开。同一次连接只提醒一次。
+      onAutoConnected: (state) => hostNotifier()({
+        event: 'accelerationAutoStarted',
+        eventKey: `${state.scope}:${state.connectedAt ?? state.measuredAt}`,
+        onClick: showAccelerationPage,
+      }),
       log: (level, event, message, detail) => runtimeLog.log(level, 'network', event, message, detail),
     })
     const systemService = createSystemService(settingsStore, {
       managerDataDirectory,
+      systemSnapshotCacheFile: path.join(managerDataDirectory, 'system-snapshot.json'),
+      appVersion: app.getVersion(),
       getRelaySiteId: () => readAccountSiteId(),
       getExternalClientAccountId: () => readExternalClientAccountId(),
       windowsExecutionMode: windowsCliExecutionMode,
@@ -978,8 +994,14 @@ if (!hasSingleInstanceLock) {
       .map((provider) => inspectProviderConfig(provider, rootedOptions.system.providerRoots).apiKey)
       .filter(Boolean)
     const diagnosticsService = {
-      run: async () => {
+      run: async (options: DiagnosticsRunOptions = {}) => {
+        // 开机自动检查紧跟着首页扫描：扫描正在跑就等它，一分钟内刚跑完就直接用，
+        // 不再把各工具的版本探测、PowerShell、Codex 桌面端检测重跑一遍。没有现成的
+        // 就照旧自己探，不为此专门起一轮扫描。
+        const recent = options.reuseRecentScan ? systemService.recentScan(diagnosticsScanReuseMs) : null
+        const recentScan = recent ? await recent.catch(() => null) : null
         latestDiagnostics = await runDiagnostics({
+          recentScan,
           ...rootedOptions.diagnostics,
           app: {
             name: '星芒AI管理工具',
@@ -990,6 +1012,8 @@ if (!hasSingleInstanceLock) {
           // 「磁盘空间」那一项要看软件数据目录所在的盘，而 userData 在哪只有宿主
           // 知道；CLI 落点由诊断自己算。
           userDataDirectory: app.getPath('userData'),
+          // 跟着当前账号所在的那一套 output 走（历史账号多一层 realms/api-account）。
+          probeAiOutput: () => assetStore.assertWritable(),
           windowsExecution: windowsCliExecution,
           // 报告只装中文结论（它会被导出发给客服），认出失败靠的那段上游原文
           // 留在 runtime.jsonl 里。
@@ -1071,6 +1095,8 @@ if (!hasSingleInstanceLock) {
         })
       })
     }
+    // 窗口生命周期在主窗口建好后才有；更新在那之前不会下载完，这里先占个位。
+    let updateQuitHandoff: { prepare(): Promise<void> | undefined; abort(): void } | null = null
     const updaterService = createUpdaterService(autoUpdater, {
       installedRelease,
       currentVersion: app.getVersion(),
@@ -1090,6 +1116,8 @@ if (!hasSingleInstanceLock) {
       installEnvironmentGuard: process.platform === 'win32'
         ? (launch) => runWithTrustedWindowsProcessEnvironment(launch)
         : undefined,
+      prepareInstallQuit: () => updateQuitHandoff?.prepare(),
+      installQuitAborted: () => { updateQuitHandoff?.abort() },
       retryWithoutProxy: async () => {
         await autoUpdater.netSession.setProxy({ mode: 'direct' })
       },
@@ -1339,6 +1367,9 @@ if (!hasSingleInstanceLock) {
       }))
       const assetStore = new AiAssetStore({
         outputRoot: aiOutputRoot,
+        // 全局 output 在安装目录旁边，用户自己动不了它；能绕开的是画布项目，新项目的
+        // 作品存在用户自己选的文件夹里。改默认位置另走一个 PR（盲点 2 的后半）。
+        unwritableGuidance: '可以先在画布里新建一个项目、给它选一个自己的文件夹，在那里生成就能存下来；也可以联系客服。',
         trustedProxyFetchImpl: (input, init) => net.fetch(input, init),
         nativeOperations: {
           copyImage: (bytes) => {
@@ -1372,15 +1403,17 @@ if (!hasSingleInstanceLock) {
           },
         },
       })
-      // Keep the image output location visible from the moment the app starts.
-      // The write path is checked again by AiAssetStore for every asset.
-      try {
-        assetStore.ensureOutputDirectory()
-      } catch (error) {
-        runtimeLog.log('warn', 'ai-chat', 'asset.output-directory.unavailable', 'AI 图片 output 目录初始化失败', {
-          reason: error instanceof Error ? error.message : String(error),
+      // Create the output location at startup and prove it accepts a file, so a
+      // location that cannot be written shows up in the log and on the check page
+      // (AI_OUTPUT) before anyone pays for a generation. Every paid request probes
+      // again, and the write path is still checked by AiAssetStore for each asset.
+      void assetStore.assertWritable().catch((error) => {
+        runtimeLog.log('warn', 'ai-chat', 'asset.output-directory.unavailable', 'AI 作品保存位置写不进去', {
+          // The user-facing message only says "写不进去"; the log keeps the OS
+          // reason (EACCES, EROFS, ENOSPC …) that support needs.
+          reason: error instanceof Error && error.cause instanceof Error ? error.cause.message : String(error),
         })
-      }
+      })
       const videoAssets = new AiVideoAssetStore({
         outputRoot: aiOutputRoot,
         nativeOperations: {
@@ -1423,6 +1456,7 @@ if (!hasSingleInstanceLock) {
       const createProjectAssetContext = (outputRoot: string) => {
         const images = new AiAssetStore({
           outputRoot,
+          unwritableGuidance: '这个项目的文件夹可能被移走了，或者放不进新文件。请新建一个项目、换个文件夹再试。',
           trustedProxyFetchImpl: (input, init) => net.fetch(input, init),
           nativeOperations: {
             copyImage: (bytes) => {
@@ -1575,6 +1609,7 @@ if (!hasSingleInstanceLock) {
         credentials: chatCredentials,
         assets: {
           prepareProject: (userId, projectId) => canvasProjectAssets.prepareProject(userId, projectId),
+          assertWritable: (userId, projectId) => canvasProjectAssets.assertWritable(userId, projectId),
           storeBase64: (userId, value, metadata) => canvasProjectAssets.storeBase64(userId, value, metadata),
           storeRemoteUrl: (userId, url, metadata) => canvasProjectAssets.storeRemoteUrl(userId, url, metadata),
           readOwned: (userId, assetId, projectId) => canvasProjectAssets.readImageOwned(userId, assetId, projectId),
@@ -1590,6 +1625,7 @@ if (!hasSingleInstanceLock) {
         tasks: videoTasks,
         assets: {
           prepareProject: (userId, projectId) => canvasProjectAssets.prepareProject(userId, projectId),
+          assertWritable: (userId, projectId) => canvasProjectAssets.assertWritable(userId, projectId),
           storeMp4: (userId, bytes, metadata) => canvasProjectAssets.storeMp4(userId, bytes, metadata),
           readImageDataUri: (userId, assetId, projectId) => canvasProjectAssets.readImageDataUri(userId, assetId, projectId),
           readOwned: (userId, assetId, kind, projectId) => canvasProjectAssets.readMediaOwned(userId, assetId, kind, projectId),
@@ -1760,8 +1796,41 @@ if (!hasSingleInstanceLock) {
         error instanceof Error ? error.message : '星芒AI Skill 默认安装失败',
       )
     })
-    const accountSessionReady = accounts.restoreActive().then(() => undefined).catch((error) => {
+    const accountRestore = accounts.restoreActive()
+    const accountSessionReady = accountRestore.then(() => undefined).catch((error) => {
       runtimeLog.exception('account', 'session.restore.failed', error)
+    })
+    // 首页那遍扫描不必等窗口和启动画面：和账号恢复一起现在就跑起来，渲染层随后那次读取
+    // 直接接上它（scanSystem 同一时刻只跑一轮）。结果由那次读取照常交给托盘与日志。
+    // 只在有账号要恢复时预热：没有账号的新用户先落在欢迎页，那里本来不检测工具；而
+    // Windows 上一轮检测要起好几段 PowerShell，白跑一轮只是给欢迎页添负担。这几段
+    // 权限检查已经先异步探测再读缓存（primeTrustedWindowsMachinePath），不占主线程。
+    void vault.active().then((saved) => {
+      if (saved) void systemService.scanSystem().catch(() => undefined)
+    }).catch(() => undefined)
+    // 启动画面最多为账号恢复等 3 秒，明确断网就不等（yoyo 2026-09-22 拍板）。
+    const accountStartupGate = createAccountStartupGate({
+      settled: accountSessionReady,
+      budgetMs: 3000,
+      offline: !net.isOnline(),
+      restoringAccount: () => accounts.restoringAccount(),
+    })
+    // 联不上、服务维护、超时都不算登录失效：登录留在本机，隔一会儿自己再试。
+    const accountRestoreRetry = createAccountRestoreRetry({
+      restore: () => accounts.restoreActive(),
+      stalled: () => accounts.stalledAccount() !== null,
+      onFailure: (error, attempt) => runtimeLog.exception('account', 'session.restore.retry-failed', error, { attempt }),
+    })
+    // 预算先到时界面拿到的是「正在恢复」。恢复成功会照常发一次会话变化；没恢复
+    // 成（没有保存的账号、登录已失效）时账号并没有变化，没人会发，界面就会一直停在
+    // 「正在恢复」——这里补发一次。联不上而登录留着时账号服务自己发过了。
+    void accountRestore.catch(() => false).then((restored) => {
+      accountRestoreRetry.schedule()
+      if (restored || accounts.stalledAccount() || !accountStartupGate.releasedEarly()) return
+      const state = accounts.client.getSessionState()
+      for (const window of BrowserWindow.getAllWindows()) {
+        if (!window.isDestroyed()) window.webContents.send(ipcEventChannels.onAccountSessionChanged, state)
+      }
     })
     let developmentAcceleration: ReturnType<typeof createAccelerationDevelopmentHost> | undefined
     try {
@@ -1875,6 +1944,27 @@ if (!hasSingleInstanceLock) {
       onChanged: () => applicationTray?.updateSnapshot(),
       log: (level, event, message, detail) => runtimeLog.log(level, 'network', event, message, detail),
     })
+    // 睡着的那段不计免费时长；醒来看加速还在不在，不在了先恢复网络再提醒。
+    if (developmentAcceleration) {
+      const accelerationHost = developmentAcceleration
+      const accelerationPower = createAccelerationPower({
+        suspend: () => accelerationHost.suspend(),
+        resume: () => accelerationHost.resume(),
+        getAccountScope: () => readAccelerationAccountScope(),
+        readState: (scope) => acceleration
+          ? acceleration.getAccelerationState(scope)
+          : Promise.reject(new Error('加速服务尚未就绪。')),
+        log: (level, event, message, detail) => runtimeLog.log(level, 'network', event, message, detail),
+      })
+      const onSuspend = () => accelerationPower.suspended()
+      const onResume = () => accelerationPower.resumed()
+      powerMonitor.on('suspend', onSuspend)
+      powerMonitor.on('resume', onResume)
+      app.once('will-quit', () => {
+        powerMonitor.off('suspend', onSuspend)
+        powerMonitor.off('resume', onResume)
+      })
+    }
     const unregisterIpcHandlers = registerIpcHandlers({
       acceleration,
       realmAccounts: accounts,
@@ -1887,9 +1977,11 @@ if (!hasSingleInstanceLock) {
       accountService,
       paymentWindow,
       accountSessionReady,
+      accountStartupGate,
       announcementReads: new AnnouncementReadStore(path.join(managerDataDirectory, 'announcement-reads')),
       accountCredentials: accountCredentialStore,
       managedCliKeys: managedCliKeyStore,
+      keyReplacements: createManagedKeyReplacementStore({ filePath: path.join(managerDataDirectory, 'managed-key-replacements.json') }),
       chatKeyStore,
       chatCredentials,
       chatService,
@@ -2063,7 +2155,14 @@ if (!hasSingleInstanceLock) {
       // 更新页那颗「重启并安装」走的是同一条 install()；这里只是把入口挪到了
       // 用户真正会用的那个动作上（关窗 / 托盘退出）。
       installDownloadedUpdate: () => { updaterService.install() },
+      // 开着加速时系统代理指着本机端口：关机前不还原，下次开机整台电脑上不了网。
+      needsShutdownCleanup: () => {
+        const hold = acceleration?.hasPossibleSession() === true
+        if (hold) runtimeLog.log('info', 'window', 'shutdown.hold', '关机前先断开加速、还原系统代理')
+        return hold
+      },
       prepareToQuit: async () => {
+        accountRestoreRetry.dispose()
         await acceleration?.stopAll()
       },
       flushWindowState: () => windowPreferenceFlushers.get(mainWindow.webContents)?.() ?? Promise.resolve(),
@@ -2086,6 +2185,26 @@ if (!hasSingleInstanceLock) {
       },
     })
     lifecycle.attach(mainWindow, app)
+    // 更新页「重启并安装」和 Mac 下载完自动安装都会让安装器发起退出：先把退出前
+    // 的清理跑完（断开加速、还原系统代理，安装器会结束安装目录下的所有进程），
+    // 再放行，别被当成用户关窗又问一遍「顺手装上吗」。
+    updateQuitHandoff = {
+      prepare: () => {
+        const preparation = lifecycle.prepareUpdateQuit()
+        if (!preparation) return undefined
+        runtimeLog.log('info', 'updater', 'install.quit-prepare', '安装更新前先完成退出清理')
+        return preparation.then(() => {
+          // 与 quit() 一样：画布窗口会拦自己的关闭，不先放掉它，安装器发起的
+          // 退出（Mac 上是先关所有窗口）会被它挡住。
+          try { canvasController.dispose() } catch (cause) { runtimeLog.exception('canvas', 'shutdown.failed', cause) }
+          try { paymentWindow.destroy() } catch (cause) { runtimeLog.exception('payment', 'shutdown.failed', cause) }
+          for (const window of BrowserWindow.getAllWindows()) {
+            if (!window.isDestroyed()) window.webContents.on('will-prevent-unload', (event) => event.preventDefault())
+          }
+        })
+      },
+      abort: () => { lifecycle.abortUpdateQuit() },
+    }
     const trayAssets = path.join(app.getAppPath(), 'assets', 'brand', 'v3')
     applicationTray = createApplicationTray({
       iconPath: path.join(trayAssets, 'tray-16.png'), icon2xPath: path.join(trayAssets, 'tray-32.png'),

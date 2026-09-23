@@ -12,6 +12,7 @@ import {
 import { identityFromCodexAuthTokens } from './official-account-identity'
 import { removeCodexContextLimits } from './codex-context-limits'
 import { applyClaudeStatusLine, claudeStatusLineSetting } from './claude-status-line'
+import { applyClaudeRelayModelPicker, removeClaudeRelayModelPicker } from './claude-model-picker'
 import { assertNoReparseComponents, ensureSafeDataDirectory, readSafeUtf8FileSync } from './safe-local-data'
 
 const MAX_NATIVE_CONFIG_BYTES = 2 * 1024 * 1024
@@ -45,6 +46,11 @@ export interface NativeConfigInspection {
    * OPENAI_API_KEY, so a Xingmang key with chatgpt mode still uses ChatGPT.
    */
   codexAuthMode?: 'apikey' | 'chatgpt' | null
+  /**
+   * `grok login` 留在 ~/.grok/auth.json 里的 `auth_mode`（oidc = 浏览器登录，api_key =
+   * 登录时填的 xAI Key）；null = 没登录。只读这一个字段，令牌与 Key 不读。
+   */
+  grokLoginMode?: string | null
   dataDirectory: string
   dataDirectoryExists: boolean
   files: NativeConfigFile[]
@@ -313,6 +319,91 @@ function disableGrokSelfUpdate(parsed: Record<string, unknown>): void {
   ensureRecord(parsed, 'cli').auto_update = false
 }
 
+// Grok CLI 的对话走 [model."grok"].base_url，但生成图片、改图、生成视频这几个工具另走
+// endpoints.xai_api_base_url（默认 https://api.x.ai/v1），而且带的是同一把 api_key。
+// 不改的话，用户一让它画图，中转 Key 就被发到 xAI 官方；国内连不上，还要卡 120 秒。
+// 沙箱实测 1.0.40：改指中转后 /v1/images/generations 打到中转，0.5 秒返回，不再连
+// api.x.ai。中转有没有对应的出图模型是另一回事，至少 Key 不外流、也不卡。
+function pointGrokXaiApiAtRelay(parsed: Record<string, unknown>, relayBaseUrl: string): void {
+  ensureRecord(parsed, 'endpoints').xai_api_base_url = relayBaseUrl
+}
+
+function addManagedGrokModel(parsed: Record<string, unknown>): void {
+  const models = ensureRecord(parsed, 'models')
+  models.default = 'grok'
+  if (!nestedString(parsed, ['models', 'web_search'])) models.web_search = 'grok'
+  const table = ensureRecord(ensureRecord(parsed, 'model'), 'grok')
+  table.api_backend ??= 'responses'
+  table.context_window ??= 1000000
+  table.supports_backend_search ??= true
+}
+
+// Grok 1.0.40 的凭据顺序是 [model.X].api_key > ~/.grok/auth.json 的登录 > XAI_API_KEY。
+// 切回官方必须把指向中转的整张模型表拿掉：只删 api_key、留着 base_url，Grok 会带着
+// 官方登录的令牌去请求中转，等于把用户的 Grok 登录交给了第三方。出图工具走的
+// endpoints.xai_api_base_url 同理。只动指向当前账号服务的那几项，用户自己加的别的
+// 模型和设置原样留下。
+function removeGrokRelayConfig(parsed: Record<string, unknown>, relayBaseUrl: string): void {
+  const relay = normalizeUrl(relayBaseUrl)
+  const removed = new Set<string>()
+  const modelTables = parsed.model
+  if (modelTables && typeof modelTables === 'object' && !Array.isArray(modelTables)) {
+    const tables = modelTables as Record<string, unknown>
+    for (const [name, table] of Object.entries(tables)) {
+      if (!table || typeof table !== 'object' || Array.isArray(table)) continue
+      const baseUrl = (table as Record<string, unknown>).base_url
+      if (typeof baseUrl === 'string' && normalizeUrl(baseUrl) === relay) {
+        delete tables[name]
+        removed.add(name)
+      }
+    }
+    if (Object.keys(tables).length === 0) delete parsed.model
+  }
+  const selectors = parsed.models
+  if (selectors && typeof selectors === 'object' && !Array.isArray(selectors)) {
+    const models = selectors as Record<string, unknown>
+    for (const [key, value] of Object.entries(models)) {
+      if (typeof value === 'string' && removed.has(value)) delete models[key]
+    }
+    // 接中转时 allowed_models 只留了中转那一项（pinGrokModelsToRelay）；表删了名单还在，
+    // Grok 就一个可用型号都没有。
+    if (Array.isArray(models.allowed_models)) {
+      const allowed = models.allowed_models.filter((name) => typeof name !== 'string' || !removed.has(name))
+      if (allowed.length === 0) delete models.allowed_models
+      else models.allowed_models = allowed
+    }
+    if (Object.keys(models).length === 0) delete parsed.models
+  }
+  const endpoints = parsed.endpoints
+  if (endpoints && typeof endpoints === 'object' && !Array.isArray(endpoints)) {
+    const record = endpoints as Record<string, unknown>
+    if (typeof record.xai_api_base_url === 'string' && normalizeUrl(record.xai_api_base_url) === relay) delete record.xai_api_base_url
+    if (Object.keys(record).length === 0) delete parsed.endpoints
+  }
+}
+
+// Grok CLI 自带一份内置型号目录（grok-4.6 / grok-4.5），它们走 xAI 自己的
+// cli-chat-proxy.grok.com。接中转后这两项仍然出现在 /model 里，用户选了就一直
+// 「Connection failed, Retrying」——国内连不上，而且本来也不该绕开当前账号。另外会话标题
+// 与摘要（session_summary）默认钉在字面量 grok-4.6 上，经中转发出去；中转型号不叫这个
+// 名字时标题就悄悄生成失败。
+//
+// 沙箱实测 1.0.40：allowed_models 只留中转那一项后，`grok models` 与 /model 只剩它；
+// session_summary 指到它之后，标题、每轮小结、输入建议全部用中转型号。千万别用
+// hidden_models / disabled_models：它们按 model 字段匹配，会连中转那一项一起藏掉，
+// 结果一个可用型号都没有。image_description（看图转文字）同理指过去。
+//
+// 只在用户没写过时补，用户自己配了别的型号或名单就尊重他。
+const grokRelayModelRoles = ['session_summary', 'image_description'] as const
+
+function pinGrokModelsToRelay(parsed: Record<string, unknown>, relayModelName: string): void {
+  const models = ensureRecord(parsed, 'models')
+  if (models.allowed_models === undefined) models.allowed_models = [relayModelName]
+  for (const role of grokRelayModelRoles) {
+    if (models[role] === undefined) models[role] = relayModelName
+  }
+}
+
 // Claude Code 与 Gemini CLI 都会自己删本机会话记录，默认都是 30 天，而记录页、首页
 // 「最近」卡、「接着聊」、导出记录全都建立在那些文件还在的前提上——用户只会看到
 // 「上个月那条对话不见了」。本软件替用户把保留期放长到一年。
@@ -344,6 +435,74 @@ function extendGeminiSessionRetention(parsed: Record<string, unknown>): void {
   const general = ensureRecord(parsed, 'general')
   if (general.sessionRetention !== undefined) return
   general.sessionRetention = { maxAge: MANAGED_GEMINI_SESSION_MAX_AGE }
+}
+
+// Gemini CLI 的主对话用 GEMINI_MODEL，但一批后台功能各自写死了 Google 官方的型号名：
+// 联网搜索、读网页与 codebase_investigator 子代理走 gemini-3-flash-preview，/compress
+// 与自动压缩走 gemini-3.1-pro-preview-customtools，每次启动给上次会话写摘要走
+// gemini-3.1-flash-lite，Auto 模式先用 flash-lite 分类再用 3.1-pro。中转只开放自己的
+// 型号时这些请求一律「无可用渠道」，而 CLI 对它们默默重试：搜索和读网页 2.5 分钟以上
+// 才失败，压缩转圈一分多钟，用户只觉得「卡住了」。
+//
+// modelConfigs.customOverrides 按请求里的型号名改写目标型号，把这批官方名统一指到当前
+// 配的中转型号（沙箱实测 0.60.0：上述每一项 2~3 秒完成）。代价是这些后台调用按主型号
+// 计费。当前型号本身若恰好在表里，不给它写改写，免得自己指向自己。
+//
+// 这张表出自 0.60.0 bundle 的 DEFAULT_MODEL_CONFIGS（aliases / modelIdResolutions），
+// 升级 Gemini CLI 推荐版本时要重新核一遍。
+const geminiRelayHelperModels = [
+  'gemini-3-flash-preview',
+  'gemini-3-pro-preview',
+  'gemini-3.1-pro-preview',
+  'gemini-3.1-pro-preview-customtools',
+  'gemini-3.1-flash-lite',
+  'gemini-3.5-flash',
+  'gemini-2.5-pro',
+  'gemini-2.5-flash',
+  'gemini-2.5-flash-lite',
+  'flash-lite',
+  'flash',
+  'pro',
+] as const
+
+function buildGeminiRelayModelOverrides(model: string): Array<Record<string, unknown>> {
+  return geminiRelayHelperModels
+    .filter((helper) => helper !== model)
+    .map((helper) => ({ match: { model: helper }, modelConfig: { model } }))
+}
+
+/**
+ * 认出本软件写的那种改写：match 只有一个官方型号名、modelConfig 只改 model。用户自己写
+ * 的改写（带别的匹配条件或别的参数）不是这个形状，原样保留。
+ */
+function isGeminiRelayModelOverride(entry: unknown): boolean {
+  if (!isJsonRecord(entry) || Object.keys(entry).length !== 2) return false
+  const { match, modelConfig } = entry
+  if (!isJsonRecord(match) || !isJsonRecord(modelConfig)) return false
+  if (Object.keys(match).length !== 1 || Object.keys(modelConfig).length !== 1) return false
+  return typeof modelConfig.model === 'string'
+    && geminiRelayHelperModels.some((helper) => helper === match.model)
+}
+
+function applyGeminiRelayModelOverrides(parsed: Record<string, unknown>, model: string): void {
+  const modelConfigs = ensureRecord(parsed, 'modelConfigs')
+  const current = modelConfigs.customOverrides
+  const kept = Array.isArray(current) ? current.filter((entry) => !isGeminiRelayModelOverride(entry)) : []
+  modelConfigs.customOverrides = [...kept, ...buildGeminiRelayModelOverrides(model)]
+}
+
+/**
+ * 切回 Google 账号时撤掉：官方型号在那边都真实存在，留着改写反而会把后台请求指到一个
+ * 官方不存在的中转型号上。只删本软件写的那种，空了连键一起删。
+ */
+function removeGeminiRelayModelOverrides(parsed: Record<string, unknown>): void {
+  const modelConfigs = parsed.modelConfigs
+  if (!isJsonRecord(modelConfigs) || !Array.isArray(modelConfigs.customOverrides)) return
+  const kept = modelConfigs.customOverrides.filter((entry) => !isGeminiRelayModelOverride(entry))
+  if (kept.length === modelConfigs.customOverrides.length) return
+  if (kept.length > 0) modelConfigs.customOverrides = kept
+  else delete modelConfigs.customOverrides
+  if (Object.keys(modelConfigs).length === 0) delete parsed.modelConfigs
 }
 
 // Claude Code 的 language 设置会被原样插进系统提示（2.1.277 实测：settings.json 写
@@ -451,7 +610,29 @@ function readProviderAuthType(provider: ProviderId, paths: string[]): string | u
     : undefined
 }
 
+interface GrokLogin {
+  mode: string
+  email: string | null
+}
+
+// auth.json 按「签发方::客户端」分区，例如 `https://auth.x.ai::<uuid>`，每个分区里是
+// key / refresh_token（机密，不碰）和 auth_mode、email 等说明字段。
+function readGrokLogin(providerRoot: string): GrokLogin | null {
+  const parsed = readJson(path.join(providerRoot, 'auth.json'))
+  if (!parsed) return null
+  for (const entry of Object.values(parsed)) {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue
+    const record = entry as Record<string, unknown>
+    if (typeof record.auth_mode !== 'string' || !record.auth_mode.trim()) continue
+    return { mode: record.auth_mode.trim(), email: typeof record.email === 'string' && record.email.trim() ? record.email.trim() : null }
+  }
+  return null
+}
+
 function readOfficialAccountIdentity(provider: ProviderId, paths: string[]) {
+  if (provider === 'grok') {
+    return { email: readGrokLogin(path.dirname(paths[0]))?.email ?? null, planLabel: null, renewsAt: null }
+  }
   if (provider !== 'codex') {
     return { email: null, planLabel: null, renewsAt: null }
   }
@@ -533,6 +714,23 @@ function dropDeprecatedCodexConfigKeys(parsed: Record<string, unknown>): void {
   }
 }
 
+// Codex 默认把使用统计（OTEL 指标）发去 ab.chatgpt.com，`codex exec` 退出前还要等它发完。
+// 国内连不上时这一等就是 10 秒左右——每跑一次都卡（沙箱实测 0.155.1：官方主机被丢包时
+// 10.28 秒，关掉后 0.24 秒）。统计只给 OpenAI 自己看，关掉没有任何功能损失。app-server
+// （Codex 桌面端）用同一个开关。只在用户没表过态时补，用户写了 true 就尊重他。
+function disableCodexRelayAnalytics(parsed: Record<string, unknown>): void {
+  const analytics = ensureRecord(parsed, 'analytics')
+  if (analytics.enabled === undefined) analytics.enabled = false
+}
+
+/** 切回 ChatGPT 时只收回本软件写的那一份：整张表恰好就是 `enabled = false`。 */
+function restoreCodexAnalytics(parsed: Record<string, unknown>): void {
+  const analytics = parsed.analytics
+  if (isJsonRecord(analytics) && Object.keys(analytics).length === 1 && analytics.enabled === false) {
+    delete parsed.analytics
+  }
+}
+
 function stripCodexRelayFromConfig(
   parsed: Record<string, unknown>,
   siteBaseUrl: string,
@@ -550,6 +748,7 @@ function stripCodexRelayFromConfig(
   delete parsed.model_provider
   delete parsed.model
   delete parsed.review_model
+  restoreCodexAnalytics(parsed)
   dropDeprecatedCodexConfigKeys(parsed)
 }
 
@@ -563,6 +762,7 @@ function applyCodexRelayConfig(
   parsed.review_model = model
   parsed.model_provider = providerName
   parsed.check_for_update_on_startup = false
+  disableCodexRelayAnalytics(parsed)
   dropDeprecatedCodexConfigKeys(parsed)
   const providerEntry = ensureRecord(ensureRecord(parsed, 'model_providers'), providerName)
   providerEntry.name = typeof providerEntry.name === 'string' && providerEntry.name.trim()
@@ -609,6 +809,9 @@ function buildCodexRelayConfigTemplate(
     '',
     '[features]',
     'goals = true',
+    '',
+    '[analytics]',
+    'enabled = false',
     '',
   ].join('\n')
 }
@@ -886,6 +1089,7 @@ export function inspectProviderConfig(
     officialAccountPlan: officialAccount.planLabel,
     officialAccountRenewsAt: officialAccount.renewsAt,
     ...(provider === 'codex' ? { codexAuthMode: readCodexAuthMode(paths) } : {}),
+    ...(provider === 'grok' ? { grokLoginMode: readGrokLogin(path.dirname(paths[0]))?.mode ?? null } : {}),
     dataDirectory,
     dataDirectoryExists: (() => {
       try {
@@ -1332,6 +1536,7 @@ function createPlans(
   roots: ProviderConfigRoots,
   siteBaseUrls: Record<ProviderId, string>,
   claudeStatusLineCommand?: string,
+  availableModels?: readonly string[],
 ): FilePlan[] {
   const paths = providerConfigPaths(provider, roots)
   switch (provider) {
@@ -1340,25 +1545,26 @@ function createPlans(
         ...createCodexRelayConfigPlans(model, roots, siteBaseUrls, 'reset'),
         ...createCodexRelayAuthPlans(apiKey, roots),
       ]
-    case 'claude':
-      return [{
-        path: paths[0],
-        content: jsonContent({
-          env: {
-            ANTHROPIC_AUTH_TOKEN: apiKey,
-            ANTHROPIC_BASE_URL: siteBaseUrls.claude,
-            DISABLE_AUTOUPDATER: '1',
-          },
-          permissions: { defaultMode: 'bypassPermissions', deny: [claudeDeniedRelayTool] },
-          model,
-          effortLevel: 'medium',
-          skipDangerousModePermissionPrompt: true,
-          skipWebFetchPreflight: true,
-          language: MANAGED_CLAUDE_RESPONSE_LANGUAGE,
-          cleanupPeriodDays: MANAGED_CLAUDE_RETENTION_DAYS,
-          ...(claudeStatusLineCommand ? { statusLine: claudeStatusLineSetting(claudeStatusLineCommand) } : {}),
-        }),
-      }]
+    case 'claude': {
+      const env: Record<string, unknown> = {
+        ANTHROPIC_AUTH_TOKEN: apiKey,
+        ANTHROPIC_BASE_URL: siteBaseUrls.claude,
+        DISABLE_AUTOUPDATER: '1',
+      }
+      const settings: Record<string, unknown> = {
+        env,
+        permissions: { defaultMode: 'bypassPermissions', deny: [claudeDeniedRelayTool] },
+        model,
+        effortLevel: 'medium',
+        skipDangerousModePermissionPrompt: true,
+        skipWebFetchPreflight: true,
+        language: MANAGED_CLAUDE_RESPONSE_LANGUAGE,
+        cleanupPeriodDays: MANAGED_CLAUDE_RETENTION_DAYS,
+        ...(claudeStatusLineCommand ? { statusLine: claudeStatusLineSetting(claudeStatusLineCommand) } : {}),
+      }
+      if (availableModels) applyClaudeRelayModelPicker(settings, env, availableModels, model)
+      return [{ path: paths[0], content: jsonContent(settings) }]
+    }
     case 'gemini':
       return [
         {
@@ -1371,6 +1577,7 @@ function createPlans(
             },
             ide: { enabled: true },
             security: { auth: { selectedType: 'gemini-api-key' } },
+            modelConfigs: { customOverrides: buildGeminiRelayModelOverrides(geminiCliCompatibleModel(model)) },
           }),
         },
         {
@@ -1393,6 +1600,9 @@ function createPlans(
           '[models]',
           'default = "grok"',
           'web_search = "grok"',
+          'session_summary = "grok"',
+          'image_description = "grok"',
+          'allowed_models = ["grok"]',
           '',
           '[model."grok"]',
           `model = ${tomlString(model)}`,
@@ -1402,6 +1612,9 @@ function createPlans(
           'api_backend = "responses"',
           'context_window = 1000000',
           'supports_backend_search = true',
+          '',
+          '[endpoints]',
+          `xai_api_base_url = ${tomlString(siteBaseUrls.grok)}`,
           '',
         ].join('\n'),
       }]
@@ -1415,10 +1628,12 @@ function createMergePlans(
   roots: ProviderConfigRoots,
   siteBaseUrls: Record<ProviderId, string>,
   claudeStatusLineCommand?: string,
+  availableModels?: readonly string[],
 ): FilePlan[] {
   const paths = providerConfigPaths(provider, roots)
   const initialPlans = new Map(
-    createPlans(provider, apiKey, model, roots, siteBaseUrls, claudeStatusLineCommand).map((plan) => [plan.path, plan]),
+    createPlans(provider, apiKey, model, roots, siteBaseUrls, claudeStatusLineCommand, availableModels)
+      .map((plan) => [plan.path, plan]),
   )
   const initial = (filePath: string): FilePlan => {
     const plan = initialPlans.get(filePath)
@@ -1444,6 +1659,7 @@ function createMergePlans(
       ensureClaudeResponseLanguage(parsed)
       extendClaudeSessionRetention(parsed)
       if (claudeStatusLineCommand) applyClaudeStatusLine(parsed, claudeStatusLineCommand)
+      if (availableModels) applyClaudeRelayModelPicker(parsed, env, availableModels, model)
       parsed.model = model
       return [{ path: paths[0], content: jsonContent(parsed) }]
     }
@@ -1460,6 +1676,7 @@ function createMergePlans(
         ensureRecord(ensureRecord(parsed, 'security'), 'auth').selectedType = 'gemini-api-key'
         disableGeminiSelfUpdate(parsed)
         extendGeminiSessionRetention(parsed)
+        applyGeminiRelayModelOverrides(parsed, geminiCliCompatibleModel(model))
         plans.push({ path: paths[0], content: jsonContent(parsed) })
       }
       // 读取失败必须中止保存，静默当空文件会把用户已有环境变量覆盖掉。
@@ -1481,10 +1698,10 @@ function createMergePlans(
     case 'grok': {
       if (!fs.existsSync(paths[0])) return [initial(paths[0])]
       const parsed = requireToml(paths[0], '现有 Grok config.toml')
+      // 切回官方时整张中转模型表连同 models.default 一起拿掉（createOfficialAccountPlans）。
+      // 再切回当前账号时按初始模板补回，不让用户去点「重置为初始配置」。
+      if (!nestedString(parsed, ['models', 'default'])) addManagedGrokModel(parsed)
       const defaultModel = nestedString(parsed, ['models', 'default'])
-      if (!defaultModel) {
-        throw new Error('现有 Grok 配置缺少默认模型，请选择“重置为初始配置”')
-      }
       const models = ensureRecord(parsed, 'model')
       const target = models[defaultModel]
       if (!target || typeof target !== 'object' || Array.isArray(target)) {
@@ -1495,6 +1712,8 @@ function createMergePlans(
       targetModel.model = model
       targetModel.base_url = siteBaseUrls.grok
       disableGrokSelfUpdate(parsed)
+      pointGrokXaiApiAtRelay(parsed, siteBaseUrls.grok)
+      pinGrokModelsToRelay(parsed, defaultModel)
       return [{ path: paths[0], content: tomlContent(parsed) }]
     }
   }
@@ -1820,6 +2039,9 @@ export function saveProviderConfig(
   // 与从前一致：解析不到托管 Node、脚本没随包拷进来、路径里有 shell 元字符，
   // 调用方都只是不传，配置的其余部分照写。见 claude-status-line.ts。
   claudeStatusLineCommand?: string,
+  // 当前 Key 可用的模型清单。Claude Code 用它把 /model 菜单换成账号实际能用的型号
+  // （见 claude-model-picker.ts）；缺省 = 不动菜单。
+  availableModels?: readonly string[],
 ): NativeConfigSaveResult {
   const apiKey = apiKeyInput.trim()
   const model = modelInput.trim()
@@ -1836,8 +2058,8 @@ export function saveProviderConfig(
   const statusLineCommand = claudeStatusLineCommand?.trim() || undefined
   if (statusLineCommand && /\r|\n/.test(statusLineCommand)) throw new Error('状态行命令不能包含换行符')
   const plans = mode === 'merge'
-    ? createMergePlans(provider, apiKey, model, roots, siteBaseUrlsInput, statusLineCommand)
-    : createPlans(provider, apiKey, model, roots, siteBaseUrlsInput, statusLineCommand)
+    ? createMergePlans(provider, apiKey, model, roots, siteBaseUrlsInput, statusLineCommand, availableModels)
+    : createPlans(provider, apiKey, model, roots, siteBaseUrlsInput, statusLineCommand, availableModels)
 
   assertNoReparseComponents(path.dirname(providerRoot), 'Provider 配置根目录')
   ensureSafeDataDirectory(providerRoot, 'Provider 配置根目录')
@@ -1952,17 +2174,12 @@ export function providerAccountMode(
   return 'unknown'
 }
 
-/**
- * 星芒中转和官方订阅都能启动；自定义第三方地址不行。
- * Grok 没有官方登录，没配星芒 Key 时也拦下。
- */
+/** 星芒中转和官方账号都能启动；自定义第三方地址不行。 */
 export function canLaunchManagedProvider(
   inspection: Pick<NativeConfigInspection, 'hasApiKey' | 'matchesRelay'>,
-  provider: ProviderId,
 ): boolean {
   const mode = providerAccountMode(inspection)
-  if (mode === 'relay') return true
-  return mode === 'official' && providerSupportsOfficialAccount(provider)
+  return mode === 'relay' || mode === 'official'
 }
 
 export function managedProviderLaunchBlockedMessage(provider: ProviderId): string {
@@ -1974,21 +2191,8 @@ export function managedProviderLaunchBlockedMessage(provider: ProviderId): strin
     case 'gemini':
       return 'Gemini 当前用的是自定义接口，请先切到星芒中转或 Google 账号'
     case 'grok':
-      return 'Grok CLI 尚未配置星芒 AI，请先完成配置'
+      return 'Grok 当前用的是自定义接口，请先切到星芒中转或 Grok 账号'
   }
-}
-
-/** Grok(xAI CLI)只有 API Key 一种认证方式,没有可切回的官方订阅。 */
-export function providerSupportsOfficialAccount(provider: ProviderId): boolean {
-  return provider !== 'grok'
-}
-
-function officialAccountUnsupported(provider: ProviderId): never {
-  throw new Error(
-    provider === 'grok'
-      ? 'Grok CLI 只支持 API Key 登录，没有可切换的官方订阅账号'
-      : `暂不支持切换 ${provider} 的账号来源`,
-  )
 }
 
 /**
@@ -2029,7 +2233,10 @@ function createOfficialAccountPlans(
         const envRecord = env as Record<string, unknown>
         delete envRecord.ANTHROPIC_AUTH_TOKEN
         delete envRecord.ANTHROPIC_BASE_URL
+        removeClaudeRelayModelPicker(parsed, envRecord)
         if (Object.keys(envRecord).length === 0) delete parsed.env
+      } else {
+        removeClaudeRelayModelPicker(parsed, null)
       }
       allowClaudeRelayTool(parsed)
       delete parsed.skipWebFetchPreflight
@@ -2058,6 +2265,7 @@ function createOfficialAccountPlans(
         const parsed = requireJson(paths[0], '现有 Gemini settings.json')
         const auth = ensureRecord(ensureRecord(parsed, 'security'), 'auth')
         auth.selectedType = 'oauth-personal'
+        removeGeminiRelayModelOverrides(parsed)
         plans.push({ path: paths[0], content: jsonContent(parsed) })
       }
       const envContent = requireConfigText(paths[1], '现有 Gemini .env')
@@ -2069,8 +2277,14 @@ function createOfficialAccountPlans(
       }
       return plans
     }
-    case 'grok':
-      return officialAccountUnsupported(provider)
+    case 'grok': {
+      if (mode === 'reset') return [{ path: paths[0], content: ['[cli]', 'auto_update = false', ''].join('\n') }]
+      if (!fs.existsSync(paths[0])) return []
+      const parsed = requireToml(paths[0], '现有 Grok config.toml')
+      removeGrokRelayConfig(parsed, siteBaseUrls.grok)
+      disableGrokSelfUpdate(parsed)
+      return [{ path: paths[0], content: tomlContent(parsed) }]
+    }
   }
 }
 
@@ -2087,8 +2301,6 @@ export function switchProviderToOfficialAccount(
   siteBaseUrlsInput: Record<ProviderId, string> = providerBaseUrls,
   saveMode: NativeConfigSaveMode = 'merge',
 ): NativeConfigSaveResult {
-  if (!providerSupportsOfficialAccount(provider)) officialAccountUnsupported(provider)
-
   const roots = normalizeProviderConfigRoots(rootsInput)
   const providerRoot = providerConfigRoot(provider, roots)
   const configuredPaths = providerConfigPaths(provider, roots)
@@ -2247,7 +2459,10 @@ export function inspectOfficialLogin(
       assertSafeConfigPath(credentials, providerRoot, 'file')
       return Boolean(readText(credentials)?.trim())
     }
-    case 'grok':
-      return false
+    case 'grok': {
+      const credentials = path.join(providerRoot, 'auth.json')
+      assertSafeConfigPath(credentials, providerRoot, 'file')
+      return readGrokLogin(providerRoot) !== null
+    }
   }
 }

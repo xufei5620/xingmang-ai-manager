@@ -2292,7 +2292,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
       throw new Error('macOS 不支持重启 Codex，请使用打开操作唤起现有应用')
     }
     const nativeConfig = inspectNativeProviderConfig('codex')
-    if (!canLaunchManagedProvider(nativeConfig, 'codex')) {
+    if (!canLaunchManagedProvider(nativeConfig)) {
       throw new Error(managedProviderLaunchBlockedMessage('codex'))
     }
     if (platform === 'darwin') {

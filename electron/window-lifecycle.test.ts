@@ -243,7 +243,8 @@ describe('window close coordination', () => {
     lifecycle.dispose()
     expect(window.listenerCount('close')).toBe(0)
     expect(application.listenerCount('before-quit')).toBe(0)
-    expect(application.listenerCount('session-end')).toBe(0)
+    expect(window.listenerCount('session-end')).toBe(0)
+    expect(window.listenerCount('query-session-end')).toBe(0)
   })
 
   it('confirms before a direct quit and keeps the window when the user stays', async () => {
@@ -318,7 +319,7 @@ describe('window close coordination', () => {
     lifecycle.attach(window, application)
     const result = lifecycle.requestClose()
     await vi.advanceTimersByTimeAsync(0)
-    application.emit('session-end', { preventDefault: vi.fn() })
+    window.emit('session-end', { preventDefault: vi.fn() })
     answer.resolve('install-update')
     expect(await result).toBe('quit-requested')
     expect(installDownloadedUpdate).not.toHaveBeenCalled()
@@ -361,7 +362,7 @@ describe('window close coordination', () => {
     const confirmQuit = vi.fn<NonNullable<WindowLifecycleOptions['confirmQuit']>>(async (): Promise<QuitConfirmation> => 'cancel')
     const { options, lifecycle } = fixture({ readPreference: () => 'quit', confirmQuit })
     lifecycle.attach(window, application)
-    application.emit('session-end', { preventDefault: vi.fn() })
+    window.emit('session-end', { preventDefault: vi.fn() })
     expect(await lifecycle.requestClose()).toBe('quit-requested')
     expect(confirmQuit).not.toHaveBeenCalled()
     expect(options.quit).toHaveBeenCalledOnce()
@@ -375,7 +376,7 @@ describe('window close coordination', () => {
     lifecycle.attach(window, application)
     const result = lifecycle.requestClose()
     await vi.advanceTimersByTimeAsync(0)
-    application.emit('session-end', { preventDefault: vi.fn() })
+    window.emit('session-end', { preventDefault: vi.fn() })
     answer.resolve('cancel')
     expect(await result).toBe('quit-requested')
     expect(options.show).not.toHaveBeenCalled()
@@ -407,5 +408,139 @@ describe('window close coordination', () => {
     expect(options.hide).not.toHaveBeenCalled()
     expect(options.quit).not.toHaveBeenCalled()
     expect(options.show).not.toHaveBeenCalled()
+  })
+  // Electron terminates the process on WM_ENDSESSION without before-quit, so
+  // a session-end is too late for cleanup; query-session-end is the last hook.
+  it('holds Windows shutdown while cleanup that must finish runs, then quits without asking', async () => {
+    const window = new EventEmitter()
+    const application = new EventEmitter()
+    const preparation = deferred<void>()
+    const confirmQuit = vi.fn<NonNullable<WindowLifecycleOptions['confirmQuit']>>(async (): Promise<QuitConfirmation> => 'cancel')
+    const { options, lifecycle } = fixture({
+      readPreference: () => 'quit',
+      confirmQuit,
+      needsShutdownCleanup: () => true,
+      prepareToQuit: vi.fn(() => preparation.promise),
+    })
+    lifecycle.attach(window, application)
+    const query = { preventDefault: vi.fn() }
+    window.emit('query-session-end', query)
+    expect(query.preventDefault).toHaveBeenCalledOnce()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(options.prepareToQuit).toHaveBeenCalledOnce()
+    expect(options.quit).not.toHaveBeenCalled()
+    preparation.resolve()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(options.quit).toHaveBeenCalledOnce()
+    expect(confirmQuit).not.toHaveBeenCalled()
+    expect(lifecycle.isQuitting).toBe(true)
+  })
+
+  it('gives a held shutdown longer than an ordinary quit before giving up on cleanup', async () => {
+    const window = new EventEmitter()
+    const application = new EventEmitter()
+    const { options, lifecycle } = fixture({
+      needsShutdownCleanup: () => true,
+      prepareToQuit: vi.fn(() => new Promise<void>(() => {})),
+    })
+    lifecycle.attach(window, application)
+    window.emit('query-session-end', { preventDefault: vi.fn() })
+    await vi.advanceTimersByTimeAsync(2_000)
+    expect(options.quit).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(8_000)
+    expect(options.quit).toHaveBeenCalledOnce()
+    expect(options.onError).toHaveBeenCalledOnce()
+  })
+
+  it('lets Windows shut down right away when nothing needs cleaning up', async () => {
+    const window = new EventEmitter()
+    const application = new EventEmitter()
+    const { options, lifecycle } = fixture({ needsShutdownCleanup: () => false })
+    lifecycle.attach(window, application)
+    const query = { preventDefault: vi.fn() }
+    window.emit('query-session-end', query)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(query.preventDefault).not.toHaveBeenCalled()
+    expect(options.prepareToQuit).not.toHaveBeenCalled()
+    expect(options.quit).not.toHaveBeenCalled()
+  })
+
+  it('does not hold shutdown when the cleanup check itself fails', async () => {
+    const window = new EventEmitter()
+    const application = new EventEmitter()
+    const failure = new Error('state unreadable')
+    const { options, lifecycle } = fixture({ needsShutdownCleanup: () => { throw failure } })
+    lifecycle.attach(window, application)
+    const query = { preventDefault: vi.fn() }
+    window.emit('query-session-end', query)
+    expect(query.preventDefault).not.toHaveBeenCalled()
+    expect(options.onError).toHaveBeenCalledExactlyOnceWith(failure)
+  })
+
+  it('does not let a close dialog left open keep a held shutdown waiting', async () => {
+    const window = new EventEmitter()
+    const application = new EventEmitter()
+    const decision = deferred<'hide' | 'quit' | 'cancel'>()
+    const { options, lifecycle } = fixture({
+      requestCloseDecision: () => decision.promise,
+      needsShutdownCleanup: () => true,
+    })
+    lifecycle.attach(window, application)
+    const close = lifecycle.requestClose()
+    await vi.advanceTimersByTimeAsync(0)
+    window.emit('query-session-end', { preventDefault: vi.fn() })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(options.quit).toHaveBeenCalledOnce()
+    decision.resolve('quit')
+    expect(await close).toBe('quit-requested')
+    expect(options.quit).toHaveBeenCalledOnce()
+    expect(options.prepareToQuit).toHaveBeenCalledOnce()
+  })
+  // electron-updater's quitAndInstall ends in app.quit(); on macOS it closes
+  // every window first. Both must pass once the host has cleaned up.
+  it('cleans up, then lets an installer-initiated quit through without asking', async () => {
+    const window = new EventEmitter()
+    const application = new EventEmitter()
+    const confirmQuit = vi.fn<NonNullable<WindowLifecycleOptions['confirmQuit']>>(async (): Promise<QuitConfirmation> => 'install-update')
+    const { options, lifecycle } = fixture({ readPreference: () => 'ask', confirmQuit })
+    lifecycle.attach(window, application)
+    await lifecycle.prepareUpdateQuit()
+    expect(options.prepareToQuit).toHaveBeenCalledOnce()
+    expect(options.flushWindowState).toHaveBeenCalledOnce()
+    const close = { preventDefault: vi.fn() }
+    window.emit('close', close)
+    const beforeQuit = { preventDefault: vi.fn() }
+    application.emit('before-quit', beforeQuit)
+    expect(close.preventDefault).not.toHaveBeenCalled()
+    expect(beforeQuit.preventDefault).not.toHaveBeenCalled()
+    expect(confirmQuit).not.toHaveBeenCalled()
+    expect(options.requestCloseDecision).not.toHaveBeenCalled()
+  })
+
+  it('hands back synchronously when the user already chose to install on quit', async () => {
+    const { lifecycle } = fixture({ readPreference: () => 'quit', confirmQuit: async () => 'install-update' as const, installDownloadedUpdate: () => {
+      expect(lifecycle.prepareUpdateQuit()).toBeUndefined()
+    } })
+    expect(await lifecycle.requestClose()).toBe('quit-requested')
+  })
+
+  it('intercepts closes again when the installer never started', async () => {
+    const window = new EventEmitter()
+    const application = new EventEmitter()
+    const { lifecycle } = fixture()
+    lifecycle.attach(window, application)
+    await lifecycle.prepareUpdateQuit()
+    lifecycle.abortUpdateQuit()
+    expect(lifecycle.isQuitting).toBe(false)
+    const close = { preventDefault: vi.fn() }
+    window.emit('close', close)
+    expect(close.preventDefault).toHaveBeenCalledOnce()
+  })
+
+  it('does not undo a quit the user chose when an aborted install is reported late', async () => {
+    const { lifecycle } = fixture({ readPreference: () => 'quit' })
+    expect(await lifecycle.requestClose()).toBe('quit-requested')
+    lifecycle.abortUpdateQuit()
+    expect(lifecycle.isQuitting).toBe(true)
   })
 })

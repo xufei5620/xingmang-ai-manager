@@ -71,6 +71,7 @@ import type {
 import type {
   DiagnosticState as MainDiagnosticState,
   DiagnosticsReport as MainDiagnosticsReport,
+  DiagnosticsRunOptions as MainDiagnosticsRunOptions,
 } from './diagnostics'
 import type { CliVersionAdvice as MainCliVersionAdvice } from './cli-verified-versions'
 import type { AccountSourceSwitchResult, AccountSourceTarget } from './account-source-switch'
@@ -93,6 +94,7 @@ import type {
   OfficialChatGptAccount as MainOfficialChatGptAccount,
   OfficialChatGptWindow as MainOfficialChatGptWindow,
   SystemSnapshot as MainSystemSnapshot,
+  SystemScanOptions as MainSystemScanOptions,
   ToolStatus as MainToolStatus,
   ToolUninstallResult as MainToolUninstallResult,
 } from './system-service'
@@ -218,6 +220,7 @@ export type CodexDesktopLocale = MainCodexDesktopLocale
 export type CodexDesktopLocaleStatus = MainCodexDesktopLocaleStatus
 export type CodexDesktopLocaleResult = MainCodexDesktopLocaleResult
 export type SystemSnapshot = MainSystemSnapshot
+export type SystemScanOptions = MainSystemScanOptions
 export type OfficialChatGptAccount = MainOfficialChatGptAccount
 export type OfficialChatGptWindow = MainOfficialChatGptWindow
 export type CodexDesktopLaunchResult = MainCodexDesktopLaunchResult
@@ -234,6 +237,7 @@ export interface ChooseWorkspaceOptions {
 }
 export type DiagnosticState = MainDiagnosticState
 export type DiagnosticsReport = MainDiagnosticsReport
+export type DiagnosticsRunOptions = MainDiagnosticsRunOptions
 export type ConnectionCheckLayer = MainConnectionCheckLayer
 export type ConnectionCheckResult = MainConnectionCheckResult
 /** 自检结论本身，不含身份。CLI 与外部客户端的结果条共用同一套渲染（R-S11 同理）。 */
@@ -287,7 +291,17 @@ export interface AccountContextMetadata {
   realmId?: 'xm-account' | 'api-account'
   capabilities?: import('./relay-backend').RelayBackendCapabilities
 }
-export type AccountSessionState = NewApiSessionState & AccountContextMetadata
+/**
+ * 开机账号恢复超过启动画面的等待上限时，会话先按「未登录、正在恢复」作答。
+ * `account` 是正在恢复的那个账号（本机账号库读出来之前为 null），界面据此把
+ * 首页先画在它名下，恢复结束后不用整页重来。恢复结束后的会话不带这个字段。
+ */
+export interface AccountRestoringState {
+  account: { siteId: AccountSiteId; userId: number } | null
+  /** 开机恢复联不上（不是登录失效）：登录还在本机，主进程隔一会儿自己重试。缺省 = 恢复还在进行。 */
+  retrying?: boolean
+}
+export type AccountSessionState = NewApiSessionState & AccountContextMetadata & { restoring?: AccountRestoringState }
 export type AccountBalance = NewApiBalance
 export interface AccountUsageChangedEvent {
   scope: string
@@ -535,7 +549,7 @@ export interface XingmangInvokeContract {
     [],
     PlatformCapabilities
   >
-  scanSystem: IpcInvokeDefinition<'system:scan', [forceRefresh?: boolean], SystemSnapshot>
+  scanSystem: IpcInvokeDefinition<'system:scan', [forceRefresh?: boolean, options?: SystemScanOptions], SystemSnapshot>
   refreshNetworkLocation: IpcInvokeDefinition<'system:refresh-network-location', [], SystemSnapshot['network']>
   refreshOfficialChatGptUsage: IpcInvokeDefinition<
     'system:refresh-official-chatgpt',
@@ -682,7 +696,7 @@ export interface XingmangInvokeContract {
   >
   getSettings: IpcInvokeDefinition<'settings:get', [], AppSettingsV2>
   saveSettings: IpcInvokeDefinition<'settings:save', [settings: AppSettingsV2Update], AppSettingsV2>
-  runDiagnostics: IpcInvokeDefinition<'diagnostics:run', [], DiagnosticsReport>
+  runDiagnostics: IpcInvokeDefinition<'diagnostics:run', [options?: DiagnosticsRunOptions], DiagnosticsReport>
   exportDiagnostics: IpcInvokeDefinition<'diagnostics:export', [], { outputPath: string } | null>
   getRuntimeLogs: IpcInvokeDefinition<'runtime-logs:list', [limit?: number], RuntimeLogSnapshot>
   getFeedbackReport: IpcInvokeDefinition<'runtime-logs:preview-feedback', [], FeedbackReportPreview>

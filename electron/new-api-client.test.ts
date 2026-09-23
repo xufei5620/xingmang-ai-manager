@@ -148,6 +148,11 @@ function failureResponse(message: string, status = 200): Response {
   return jsonResponse({ success: false, message, data: null }, { status })
 }
 
+// What rc.24 writeAuthSessionError returns when the refresh cookie is dead.
+function refreshRejectedResponse(): Response {
+  return jsonResponse({ success: false, code: 'AUTH_UNAUTHORIZED', message: 'Unauthorized' }, { status: 401 })
+}
+
 function usableGroupsResponse(): Response {
   return jsonResponse({
     success: true,
@@ -526,6 +531,7 @@ describe('buildCliKeyName', () => {
 describe('findCliKeyIdByName / parseCliKeySecret', () => {
   it('finds a matching id from a bare array', () => {
     expect(findCliKeyIdByName([{ id: 1, name: 'a' }, { id: 2, name: 'target' }], 'target')).toBe(2)
+    expect(findCliKeyIdByName([{ id: 5, name: 'target' }, { id: 9, name: 'target' }, { id: 7, name: 'target' }], 'target')).toBe(9)
   })
 
   it('finds a matching id nested under common wrapper keys', () => {
@@ -598,7 +604,9 @@ describe('getStatus', () => {
   it('surfaces a clear error when the envelope reports failure', async () => {
     const fetchImpl = vi.fn<NewApiFetch>().mockResolvedValue(failureResponse('维护中', 503))
     const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl })
-    await expect(client.getStatus()).rejects.toThrow('维护中')
+    const error = await client.getStatus().catch((cause: unknown) => cause)
+    expect((error as Error).message).toContain('维护中')
+    expect(error).toMatchObject({ reason: 'serviceUnavailable' })
   })
 })
 
@@ -739,6 +747,30 @@ describe('login', () => {
     expect(error).toMatchObject({ reason: 'intercepted' })
     expect((error as Error).message).toContain(networkFailureMessages.intercepted)
     expect(client.isAuthenticated()).toBe(false)
+  })
+
+  it.each([
+    ['a maintenance page', new Response('<html><title>502 Bad Gateway</title></html>', { status: 502, headers: { 'Content-Type': 'text/html' } })],
+    ['an edge origin timeout', new Response('<html>error code: 522</html>', { status: 522, headers: { 'Content-Type': 'text/html' } })],
+    ['a managed challenge', new Response('<!DOCTYPE html><title>Just a moment...</title>', { status: 403, headers: { 'Content-Type': 'text/html', 'cf-mitigated': 'challenge' } })],
+    ['a JSON 503 from the gateway', jsonResponse({ success: false, message: 'service unavailable' }, { status: 503 })],
+  ])('reports %s as the service being unavailable, not as a bad password or a portal', async (_label, response) => {
+    const fetchImpl = vi.fn<NewApiFetch>().mockResolvedValue(response)
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl })
+    const error = await client.login({ username: 'tester', password: 'private-password' }).catch((cause: unknown) => cause)
+    expect(error).toBeInstanceOf(NewApiNetworkError)
+    expect(error).toMatchObject({ reason: 'serviceUnavailable' })
+    expect((error as Error).message).toContain(networkFailureMessages.serviceUnavailable)
+    // 渲染层有几处按「登录」二字兜底，detail 里不许带 label。
+    expect((error as Error).message).not.toMatch(/登录/)
+  })
+
+  it('keeps new-api\'s own JSON 403 meaning what it says', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>().mockResolvedValue(jsonResponse({ success: false, message: '用户已被封禁' }, { status: 403, headers: { server: 'cloudflare' } }))
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl })
+    const error = await client.login({ username: 'tester', password: 'x' }).catch((cause: unknown) => cause)
+    expect(error).not.toBeInstanceOf(NewApiNetworkError)
+    expect((error as Error).message).toContain('用户已被封禁')
   })
 
   it('leaves a failure it cannot attribute to the network untouched', async () => {
@@ -1173,6 +1205,7 @@ describe('getBalance', () => {
     fetchImpl
       .mockResolvedValueOnce(statusResponse())
       .mockResolvedValueOnce(failureResponse('AuthVersion 已变化', 401))
+      .mockResolvedValueOnce(refreshRejectedResponse())
 
     await expect(client.getBalance()).rejects.toBeInstanceOf(NewApiAuthenticationError)
     expect(client.isAuthenticated()).toBe(false)
@@ -1738,6 +1771,7 @@ describe('getProfile', () => {
     const fetchImpl = vi.fn<NewApiFetch>()
     const client = await authenticatedClient(fetchImpl)
     fetchImpl.mockResolvedValueOnce(failureResponse('登录状态已失效', 401))
+    fetchImpl.mockResolvedValueOnce(refreshRejectedResponse())
 
     await expect(client.getProfile()).rejects.toBeInstanceOf(NewApiAuthenticationError)
     expect(client.isAuthenticated()).toBe(false)
@@ -2222,6 +2256,7 @@ describe('listKeys', () => {
     const fetchImpl = vi.fn<NewApiFetch>()
     const client = await authenticatedClient(fetchImpl)
     fetchImpl.mockResolvedValueOnce(failureResponse('登录状态已失效', 401))
+    fetchImpl.mockResolvedValueOnce(refreshRejectedResponse())
 
     await expect(client.listKeys()).rejects.toBeInstanceOf(NewApiAuthenticationError)
     expect(client.isAuthenticated()).toBe(false)
@@ -2274,6 +2309,7 @@ describe('revokeKey', () => {
     const fetchImpl = vi.fn<NewApiFetch>()
     const client = await authenticatedClient(fetchImpl)
     fetchImpl.mockResolvedValueOnce(failureResponse('登录状态已失效', 401))
+    fetchImpl.mockResolvedValueOnce(refreshRejectedResponse())
 
     await expect(client.revokeKey(1)).rejects.toBeInstanceOf(NewApiAuthenticationError)
     expect(client.isAuthenticated()).toBe(false)
@@ -2655,6 +2691,7 @@ describe('changePassword', () => {
     const fetchImpl = vi.fn<NewApiFetch>()
     const client = await authenticatedClient(fetchImpl)
     fetchImpl.mockResolvedValueOnce(failureResponse('登录状态已失效', 401))
+    fetchImpl.mockResolvedValueOnce(refreshRejectedResponse())
 
     await expect(client.changePassword({ originalPassword: 'old-password-1', newPassword: 'new-password-2' }))
       .rejects.toBeInstanceOf(NewApiAuthenticationError)
@@ -2698,6 +2735,26 @@ describe('provisionCliKey with a used-up per-key cap', () => {
       .mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: { key: 'sk-raised-cap-value' } }))
 
     await expect(client.provisionCliKey({ name, group: 'codex-pro' })).resolves.toEqual({ id: 8, name, key: 'sk-raised-cap-value' })
+  })
+  it('creates a capped replacement when asked for a fresh key, ignoring the used-up cap and unlimited siblings', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    const other = { id: 9, name: 'hand-made', group: 'codex-pro', status: 1, remain_quota: 0, unlimited_quota: true, expired_time: -1 }
+    const created = { id: 12, name, group: 'codex-pro', status: 1, remain_quota: 500, unlimited_quota: false, expired_time: -1 }
+    fetchImpl
+      .mockResolvedValueOnce(usableGroupsResponse())
+      .mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: { total: 2, items: [capped, other] } }))
+      .mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: true }))
+      .mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: { total: 3, items: [capped, created, other] } }))
+      .mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: { key: 'sk-capped-replacement' } }))
+
+    await expect(client.provisionCliKey({
+      name, group: 'codex-pro', fresh: true, unlimitedQuota: false, remainQuota: 500, expiredTime: -1,
+    })).resolves.toEqual({ id: 12, name, key: 'sk-capped-replacement' })
+    const create = fetchImpl.mock.calls.find(([, init]) => init?.method === 'POST' && !String(init.body).includes('"key"'))
+    expect(JSON.parse(String(create?.[1]?.body))).toEqual({
+      name, group: 'codex-pro', remain_quota: 500, unlimited_quota: false, expired_time: -1,
+    })
   })
 })
 
@@ -2851,7 +2908,25 @@ describe('silent 401 refresh-and-retry (withSession)', () => {
     expect(retriedSelfHeaders.Authorization).toBe('Bearer rotated-token')
   })
 
-  it('attempts exactly one refresh, then surfaces the original 401 when the refresh call itself fails', async () => {
+  it('attempts exactly one refresh, then clears the session and surfaces the original 401 when the refresh endpoint rejects the cookie', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    fetchImpl
+      .mockResolvedValueOnce(statusResponse())
+      .mockResolvedValueOnce(failureResponse('AuthVersion 已变化', 401))
+      .mockResolvedValueOnce(jsonResponse({ success: false, code: 'AUTH_UNAUTHORIZED', message: 'Unauthorized' }, { status: 401 }))
+
+    const error = await client.getBalance().catch((caught: unknown) => caught)
+    expect(error).toBeInstanceOf(NewApiAuthenticationError)
+    expect((error as Error).message).toBe('AuthVersion 已变化')
+    expect(client.isAuthenticated()).toBe(false)
+    expect(fetchImpl).toHaveBeenCalledTimes(3)
+    expect(String(fetchImpl.mock.calls[2][0])).toBe(`${testBaseUrl}/api/user/auth/refresh`)
+  })
+
+  // The access token lives 15 minutes, so this refresh runs all day. Before
+  // this, a network blip here signed the user out and removed the account.
+  it('keeps the session and surfaces the refresh failure itself when the refresh call cannot reach the server', async () => {
     const fetchImpl = vi.fn<NewApiFetch>()
     const client = await authenticatedClient(fetchImpl)
     fetchImpl
@@ -2859,10 +2934,56 @@ describe('silent 401 refresh-and-retry (withSession)', () => {
       .mockResolvedValueOnce(failureResponse('AuthVersion 已变化', 401))
       .mockRejectedValueOnce(new TypeError('network down'))
 
-    await expect(client.getBalance()).rejects.toBeInstanceOf(NewApiAuthenticationError)
-    expect(client.isAuthenticated()).toBe(false)
+    const error = await client.getBalance().catch((caught: unknown) => caught)
+    expect(error).toBeInstanceOf(TypeError)
+    expect(error).not.toBeInstanceOf(NewApiAuthenticationError)
+    expect(client.isAuthenticated()).toBe(true)
     expect(fetchImpl).toHaveBeenCalledTimes(3)
-    expect(String(fetchImpl.mock.calls[2][0])).toBe(`${testBaseUrl}/api/user/auth/refresh`)
+  })
+
+  it('keeps the session when the refresh endpoint is rate limited or in maintenance', async () => {
+    for (const refreshFailure of [
+      () => new Response('', { status: 429 }),
+      () => jsonResponse({ success: false, code: 'AUTH_INTERNAL_ERROR', message: 'Internal Server Error' }, { status: 500 }),
+      () => new Response('<html>maintenance</html>', { status: 503, headers: { 'content-type': 'text/html' } }),
+    ]) {
+      const fetchImpl = vi.fn<NewApiFetch>()
+      const client = await authenticatedClient(fetchImpl)
+      fetchImpl
+        .mockResolvedValueOnce(statusResponse())
+        .mockResolvedValueOnce(failureResponse('AuthVersion 已变化', 401))
+        .mockResolvedValueOnce(refreshFailure())
+
+      const error = await client.getBalance().catch((caught: unknown) => caught)
+      expect(error).toBeInstanceOf(Error)
+      expect(error).not.toBeInstanceOf(NewApiAuthenticationError)
+      expect(client.isAuthenticated()).toBe(true)
+    }
+  })
+
+  it('recovers on the next call after a transient refresh failure kept the session', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    fetchImpl
+      .mockResolvedValueOnce(statusResponse())
+      .mockResolvedValueOnce(failureResponse('AuthVersion 已变化', 401))
+      .mockRejectedValueOnce(new TypeError('network down'))
+    await expect(client.getBalance()).rejects.toThrow('network down')
+
+    fetchImpl
+      .mockResolvedValueOnce(statusResponse())
+      .mockResolvedValueOnce(failureResponse('AuthVersion 已变化', 401))
+      .mockResolvedValueOnce(jsonResponse({
+        success: true,
+        message: '',
+        data: { access_token: 'rotated-token', access_expires_at: null },
+      }))
+      .mockResolvedValueOnce(statusResponse())
+      .mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: userData() }))
+
+    const balance = await client.getBalance()
+    expect(balance.quota).toBe(1_000_000)
+    expect(client.isAuthenticated()).toBe(true)
   })
 
   it('gives up after exactly one refresh attempt when the retried call 401s again (bounded retry, no loop)', async () => {
@@ -2997,6 +3118,16 @@ describe('restoreSession', () => {
     await expect(client.restoreSession({ userId: 0, cookies: ['x=y'] })).resolves.toBe(false)
     await expect(client.restoreSession({ userId: 1, cookies: [] })).resolves.toBe(false)
     expect(fetchImpl).not.toHaveBeenCalled()
+  })
+
+  it('throws the service-unavailable failure instead of calling the credential dead during maintenance', async () => {
+    // 盲点 1：只有 401 才说明凭据死了；维护期间把它当成失效，会把用户登出。
+    const fetchImpl = vi.fn<NewApiFetch>().mockResolvedValue(new Response('<html>维护中</html>', { status: 503, headers: { 'Content-Type': 'text/html' } }))
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl })
+
+    const error = await client.restoreSession({ userId: 42, cookies: ['refresh_token=persisted'] }).catch((cause: unknown) => cause)
+    expect(error).toMatchObject({ reason: 'serviceUnavailable' })
+    expect(client.isAuthenticated()).toBe(false)
   })
 
   it('resolves false (does not throw) when the refresh cookie is already dead', async () => {

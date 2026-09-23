@@ -26,7 +26,6 @@ import {
   moveClaudeConsoleKeyAsideTexts,
   providerAccountMode,
   providerConfigPaths,
-  providerSupportsOfficialAccount,
   restoreClaudeConsoleKey,
   restoreClaudeConsoleKeyTexts,
   saveProviderConfig,
@@ -381,7 +380,8 @@ describe('native CLI configuration files', () => {
         })
       }
       if (provider === 'gemini') {
-        expect(JSON.parse(fs.readFileSync(paths[0], 'utf8'))).toEqual({
+        const settings = JSON.parse(fs.readFileSync(paths[0], 'utf8'))
+        expect(settings).toMatchObject({
           general: {
             enableAutoUpdate: false,
             enableAutoUpdateNotification: false,
@@ -390,6 +390,7 @@ describe('native CLI configuration files', () => {
           ide: { enabled: true },
           security: { auth: { selectedType: 'gemini-api-key' } },
         })
+        expect(Object.keys(settings).sort()).toEqual(['general', 'ide', 'modelConfigs', 'security'])
         expect(fs.readFileSync(paths[1], 'utf8')).toBe([
           'GOOGLE_GEMINI_BASE_URL=https://xm.solov.cc',
           'GEMINI_API_KEY=sk-user-key',
@@ -400,7 +401,14 @@ describe('native CLI configuration files', () => {
       if (provider === 'grok') {
         const settings = TOML.parse(fs.readFileSync(paths[0], 'utf8'))
         expect(settings.cli).toEqual({ auto_update: false })
-        expect(settings.models).toEqual({ default: 'grok', web_search: 'grok' })
+        expect(settings.models).toEqual({
+          default: 'grok',
+          web_search: 'grok',
+          session_summary: 'grok',
+          image_description: 'grok',
+          allowed_models: ['grok'],
+        })
+        expect(settings.endpoints).toEqual({ xai_api_base_url: 'https://xm.solov.cc/v1' })
         expect(asRecord(settings.model)?.grok).toMatchObject({
           model,
           base_url: 'https://xm.solov.cc/v1',
@@ -708,6 +716,36 @@ describe('native CLI configuration files', () => {
     expect(merged.custom_official).toEqual({ enabled: true })
   })
 
+  it('turns off Codex analytics for the relay without overriding a user who enabled it', () => {
+    // Codex waits ~10 s on exit to flush metrics to ab.chatgpt.com, which is
+    // unreachable from mainland China.
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const configPath = codexConfigSnapshotPaths(roots).active
+    saveProviderConfig('codex', 'sk-relay', testModels.codex, 'reset', roots, {}, providerBaseUrls)
+    expect(TOML.parse(fs.readFileSync(configPath, 'utf8')).analytics).toEqual({ enabled: false })
+
+    const seeded = TOML.parse(fs.readFileSync(configPath, 'utf8'))
+    seeded.analytics = { enabled: true }
+    fs.writeFileSync(configPath, TOML.stringify(seeded as Parameters<typeof TOML.stringify>[0]), 'utf8')
+    saveProviderConfig('codex', 'sk-relay', testModels.codex, 'merge', roots, {}, providerBaseUrls)
+    expect(TOML.parse(fs.readFileSync(configPath, 'utf8')).analytics).toEqual({ enabled: true })
+  })
+
+  it('takes back only its own analytics switch when Codex leaves the relay without a ChatGPT snapshot', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const configPath = codexConfigSnapshotPaths(roots).active
+    fs.mkdirSync(path.dirname(configPath), { recursive: true })
+    fs.writeFileSync(configPath, '[analytics]\nenabled = false\n', 'utf8')
+    saveProviderConfig('codex', 'sk-relay', testModels.codex, 'merge', roots, {}, providerBaseUrls)
+    fs.rmSync(codexConfigSnapshotPaths(roots).chatgpt, { force: true })
+
+    switchProviderToOfficialAccount('codex', roots, {}, providerBaseUrls)
+
+    expect(TOML.parse(fs.readFileSync(configPath, 'utf8'))).not.toHaveProperty('analytics')
+  })
+
   it('writes no Codex settings that the recommended version no longer recognizes', () => {
     const home = temporaryHome()
     const roots = providerRoots(home)
@@ -784,6 +822,54 @@ describe('native CLI configuration files', () => {
     expect(TOML.parse(fs.readFileSync(configPath, 'utf8')).cli).toEqual({
       auto_update: false,
       show_tips: true,
+    })
+  })
+
+  it('routes Grok image and video tools to the relay instead of api.x.ai when merging', () => {
+    // Those tools send the same api_key to endpoints.xai_api_base_url; left at
+    // the xAI default, a relay key would leave for api.x.ai.
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    saveProviderConfig('grok', 'old-key', testModels.grok, 'reset', roots, {}, providerBaseUrls)
+    const [configPath] = providerConfigPaths('grok', roots)
+    const seeded = TOML.parse(fs.readFileSync(configPath, 'utf8'))
+    seeded.endpoints = { xai_api_base_url: 'https://api.x.ai/v1', feedback_base_url: 'https://example.invalid' }
+    fs.writeFileSync(configPath, TOML.stringify(seeded as Parameters<typeof TOML.stringify>[0]), 'utf8')
+
+    saveProviderConfig('grok', 'new-key', testModels.grok, 'merge', roots, {}, providerBaseUrls)
+
+    expect(TOML.parse(fs.readFileSync(configPath, 'utf8')).endpoints).toEqual({
+      xai_api_base_url: 'https://xm.solov.cc/v1',
+      feedback_base_url: 'https://example.invalid',
+    })
+  })
+
+  it('limits the Grok model picker to the relay entry and routes titles through it when merging', () => {
+    // The built-in grok-4.6 / grok-4.5 entries go to xAI's own proxy, which the
+    // relay key cannot use, and session titles default to the literal grok-4.6.
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const [configPath] = providerConfigPaths('grok', roots)
+    fs.mkdirSync(path.dirname(configPath), { recursive: true })
+    fs.writeFileSync(configPath, [
+      '[models]',
+      'default = "mine"',
+      'image_description = "vision"',
+      '',
+      '[model."mine"]',
+      'model = "grok-old"',
+      'base_url = "https://legacy.example.com/v1"',
+      'api_key = "old"',
+      '',
+    ].join('\n'), 'utf8')
+
+    saveProviderConfig('grok', 'new-key', testModels.grok, 'merge', roots, {}, providerBaseUrls)
+
+    expect(TOML.parse(fs.readFileSync(configPath, 'utf8')).models).toEqual({
+      default: 'mine',
+      image_description: 'vision',
+      session_summary: 'mine',
+      allowed_models: ['mine'],
     })
   })
 
@@ -1676,6 +1762,45 @@ describe('switching a provider back to the official subscription account', () =>
     expect(official.theme).toBe('dark')
   })
 
+  it('replaces the Claude model menu with the models the key can use and takes it back for the official account', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const [configPath] = providerConfigPaths('claude', roots)
+    saveProviderConfig('claude', 'sk-relay', 'claude-sonnet-5', 'reset', roots, {}, providerBaseUrls, undefined, [
+      'claude-opus-5',
+      'claude-sonnet-5',
+    ])
+    const relay = JSON.parse(fs.readFileSync(configPath, 'utf8')) as Record<string, unknown>
+    expect(asRecord(relay.env)?.ANTHROPIC_DEFAULT_MODEL).toBe('claude-sonnet-5')
+    expect(relay.modelPicker).toEqual({
+      replaceBuiltInOptions: true,
+      options: [
+        { model: 'claude-opus-5', label: 'Opus 5', description: 'claude-opus-5' },
+        { model: 'claude-sonnet-5', label: 'Sonnet 5', description: 'claude-sonnet-5' },
+      ],
+    })
+
+    saveProviderConfig('claude', 'sk-relay', 'claude-opus-5', 'merge', roots, {}, providerBaseUrls, undefined, ['claude-opus-5'])
+    const merged = JSON.parse(fs.readFileSync(configPath, 'utf8')) as Record<string, unknown>
+    expect(asRecord(merged.env)?.ANTHROPIC_DEFAULT_MODEL).toBe('claude-opus-5')
+    expect(asRecord(merged.modelPicker)?.options).toHaveLength(1)
+
+    switchProviderToOfficialAccount('claude', roots, {}, providerBaseUrls)
+    const official = JSON.parse(fs.readFileSync(configPath, 'utf8')) as Record<string, unknown>
+    expect(official).not.toHaveProperty('modelPicker')
+    expect(asRecord(official.env)).not.toHaveProperty('ANTHROPIC_DEFAULT_MODEL')
+  })
+
+  it('leaves the Claude model menu untouched when no model list is supplied', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    saveProviderConfig('claude', 'sk-relay', testModels.claude, 'reset', roots, {}, providerBaseUrls)
+    const [configPath] = providerConfigPaths('claude', roots)
+    const settings = JSON.parse(fs.readFileSync(configPath, 'utf8')) as Record<string, unknown>
+    expect(settings).not.toHaveProperty('modelPicker')
+    expect(asRecord(settings.env)).not.toHaveProperty('ANTHROPIC_DEFAULT_MODEL')
+  })
+
   it('removes only Artifact from the Claude deny list when switching to the official account', () => {
     const home = temporaryHome()
     saveProviderConfig('claude', 'sk-relay', testModels.claude, 'reset', providerRoots(home), {}, providerBaseUrls)
@@ -1694,6 +1819,73 @@ describe('switching a provider back to the official subscription account', () =>
       deny: ['Bash(curl:*)', 'WebFetch'],
       allow: ['Read'],
     })
+  })
+
+  it('points every built-in Gemini helper model at the relay model so background features do not hit missing channels', () => {
+    const home = temporaryHome()
+    saveProviderConfig('gemini', 'sk-relay', 'gemini-3.8-flash', 'reset', providerRoots(home), {}, providerBaseUrls)
+    const [settingsPath] = providerConfigPaths('gemini', providerRoots(home))
+    const overrides = asRecord(JSON.parse(fs.readFileSync(settingsPath, 'utf8')).modelConfigs)?.customOverrides
+    expect(overrides).toContainEqual({
+      match: { model: 'gemini-3-flash-preview' },
+      modelConfig: { model: 'gemini-3.8-flash-high' },
+    })
+    expect(overrides).toContainEqual({
+      match: { model: 'gemini-3.1-pro-preview-customtools' },
+      modelConfig: { model: 'gemini-3.8-flash-high' },
+    })
+    expect(overrides).toContainEqual({
+      match: { model: 'gemini-3.1-flash-lite' },
+      modelConfig: { model: 'gemini-3.8-flash-high' },
+    })
+  })
+
+  it('never rewrites the configured Gemini model onto itself', () => {
+    const home = temporaryHome()
+    saveProviderConfig('gemini', 'sk-relay', 'gemini-3.5-flash', 'reset', providerRoots(home), {}, providerBaseUrls)
+    const [settingsPath] = providerConfigPaths('gemini', providerRoots(home))
+    const overrides = asRecord(JSON.parse(fs.readFileSync(settingsPath, 'utf8')).modelConfigs)?.customOverrides
+    expect(Array.isArray(overrides)).toBe(true)
+    const matched = (overrides as Array<{ match: { model: string } }>).map((entry) => entry.match.model)
+    expect(matched).not.toContain('gemini-3.5-flash')
+    expect(matched).toContain('gemini-3-flash-preview')
+  })
+
+  it('replaces its own Gemini helper overrides on merge and keeps the ones the user wrote', () => {
+    const home = temporaryHome()
+    saveProviderConfig('gemini', 'sk-relay', 'gemini-3.8-flash', 'reset', providerRoots(home), {}, providerBaseUrls)
+    const [settingsPath] = providerConfigPaths('gemini', providerRoots(home))
+    const seeded = JSON.parse(fs.readFileSync(settingsPath, 'utf8')) as Record<string, unknown>
+    const userOverride = {
+      match: { model: 'gemini-3-flash-preview', overrideScope: 'web-search' },
+      modelConfig: { generateContentConfig: { temperature: 0.2 } },
+    }
+    const modelConfigs = asRecord(seeded.modelConfigs) as Record<string, unknown>
+    modelConfigs.customOverrides = [userOverride, ...(modelConfigs.customOverrides as unknown[])]
+    modelConfigs.customAliases = { mine: { modelConfig: { model: 'gemini-3.8-pro' } } }
+    fs.writeFileSync(settingsPath, JSON.stringify(seeded, null, 2))
+
+    saveProviderConfig('gemini', 'sk-relay', 'gemini-3.8-pro', 'merge', providerRoots(home), {}, providerBaseUrls)
+
+    const merged = asRecord(JSON.parse(fs.readFileSync(settingsPath, 'utf8')).modelConfigs) as Record<string, unknown>
+    const overrides = merged.customOverrides as Array<Record<string, unknown>>
+    expect(overrides[0]).toEqual(userOverride)
+    const ours = overrides.slice(1)
+    expect(ours.length).toBeGreaterThan(0)
+    expect(ours.every((entry) => asRecord(entry.modelConfig)?.model === 'gemini-3.8-pro')).toBe(true)
+    expect(new Set(ours.map((entry) => asRecord(entry.match)?.model)).size).toBe(ours.length)
+    expect(merged.customAliases).toEqual({ mine: { modelConfig: { model: 'gemini-3.8-pro' } } })
+  })
+
+  it('drops the relay helper overrides when Gemini switches back to the Google account', () => {
+    const home = temporaryHome()
+    saveProviderConfig('gemini', 'sk-relay', 'gemini-3.8-flash', 'reset', providerRoots(home), {}, providerBaseUrls)
+    const [settingsPath] = providerConfigPaths('gemini', providerRoots(home))
+
+    switchProviderToOfficialAccount('gemini', providerRoots(home), {}, providerBaseUrls)
+
+    const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8')) as Record<string, unknown>
+    expect(settings).not.toHaveProperty('modelConfigs')
   })
 
   it('switches Gemini back to Google OAuth and strips its three relay env entries, keeping the rest of .env', () => {
@@ -1751,13 +1943,72 @@ describe('switching a provider back to the official subscription account', () =>
     for (const backup of result.backups) expect(fs.existsSync(backup)).toBe(true)
   })
 
-  it('reports Grok as unswitchable -- xAI CLI has no subscription login to fall back to', () => {
-    expect(providerSupportsOfficialAccount('grok')).toBe(false)
-    expect(providerSupportsOfficialAccount('codex')).toBe(true)
+  it('switches Grok back to its own login by removing every table that points at the relay', () => {
+    // Grok 1.0.40: [model.X].api_key beats the ~/.grok/auth.json login, and a
+    // leftover base_url alone makes Grok send the official session token to it.
     const home = temporaryHome()
-    saveProviderConfig('grok', 'sk-relay', testModels.grok, 'reset', providerRoots(home), {}, providerBaseUrls)
-    expect(() => switchProviderToOfficialAccount('grok', providerRoots(home), {}, providerBaseUrls))
-      .toThrow(/只支持 API Key 登录/)
+    const roots = providerRoots(home)
+    saveProviderConfig('grok', 'sk-relay', testModels.grok, 'reset', roots, {}, providerBaseUrls)
+    const [configPath] = providerConfigPaths('grok', roots)
+    const seeded = TOML.parse(fs.readFileSync(configPath, 'utf8'))
+    asRecord(seeded.model)!.mine = { model: 'grok-4.6', base_url: 'https://my.example.com/v1', api_key: 'sk-mine' }
+    ;(seeded.endpoints as Record<string, unknown>).feedback_base_url = 'https://example.invalid'
+    fs.writeFileSync(configPath, TOML.stringify(seeded as Parameters<typeof TOML.stringify>[0]), 'utf8')
+
+    // The relay merge limits the picker to the relay entry; that list must go with it.
+    saveProviderConfig('grok', 'sk-relay', testModels.grok, 'merge', roots, {}, providerBaseUrls)
+    expect(asRecord(TOML.parse(fs.readFileSync(configPath, 'utf8')).models)?.allowed_models).toEqual(['grok'])
+
+    switchProviderToOfficialAccount('grok', roots, {}, providerBaseUrls)
+
+    const settings = TOML.parse(fs.readFileSync(configPath, 'utf8'))
+    expect(settings.cli).toEqual({ auto_update: false })
+    expect(settings.models).toBeUndefined()
+    expect(settings.model).toEqual({ mine: { model: 'grok-4.6', base_url: 'https://my.example.com/v1', api_key: 'sk-mine' } })
+    expect(settings.endpoints).toEqual({ feedback_base_url: 'https://example.invalid' })
+    expect(fs.readFileSync(configPath, 'utf8')).not.toContain('sk-relay')
+    const inspection = inspectProviderConfig('grok', roots, providerBaseUrls)
+    expect(providerAccountMode(inspection)).toBe('official')
+    expect(canLaunchManagedProvider(inspection)).toBe(true)
+  })
+
+  it('writes the relay model back after Grok was switched to its own login', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    saveProviderConfig('grok', 'sk-relay', testModels.grok, 'reset', roots, {}, providerBaseUrls)
+    switchProviderToOfficialAccount('grok', roots, {}, providerBaseUrls)
+
+    saveProviderConfig('grok', 'sk-relay-2', testModels.grok, 'merge', roots, {}, providerBaseUrls)
+
+    const settings = TOML.parse(fs.readFileSync(providerConfigPaths('grok', roots)[0], 'utf8'))
+    expect(settings.models).toEqual({
+      default: 'grok', web_search: 'grok', allowed_models: ['grok'], session_summary: 'grok', image_description: 'grok',
+    })
+    expect(asRecord(settings.model)?.grok).toMatchObject({
+      model: testModels.grok, base_url: 'https://xm.solov.cc/v1', api_key: 'sk-relay-2',
+      api_backend: 'responses', context_window: 1000000, supports_backend_search: true,
+    })
+    expect(settings.endpoints).toEqual({ xai_api_base_url: 'https://xm.solov.cc/v1' })
+    expect(providerAccountMode(inspectProviderConfig('grok', roots, providerBaseUrls))).toBe('relay')
+  })
+
+  it('reads only the non-secret Grok login fields', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    expect(inspectOfficialLogin('grok', roots)).toBe(false)
+    expect(inspectProviderConfig('grok', roots, providerBaseUrls).grokLoginMode).toBeNull()
+    const grokRoot = path.join(home, '.grok')
+    fs.mkdirSync(grokRoot, { recursive: true })
+    fs.writeFileSync(path.join(grokRoot, 'auth.json'), JSON.stringify({
+      'https://auth.x.ai::b1a00492-073a-47ea-816f-4c329264a828': {
+        key: 'session-secret', refresh_token: 'refresh-secret', auth_mode: 'oidc', email: 'user@example.com',
+      },
+    }), 'utf8')
+    expect(inspectOfficialLogin('grok', roots)).toBe(true)
+    const summary = toNativeConfigSummary(inspectProviderConfig('grok', roots, providerBaseUrls))
+    expect(summary.grokLoginMode).toBe('oidc')
+    expect(summary.officialAccountEmail).toBe('user@example.com')
+    expect(JSON.stringify(summary)).not.toContain('secret')
   })
 
   it('classifies the account mode from an inspection', () => {
@@ -1772,10 +2023,9 @@ describe('switching a provider back to the official subscription account', () =>
   })
 
   it('lets official ChatGPT launch Codex and still refuses a third-party URL', () => {
-    expect(canLaunchManagedProvider({ hasApiKey: false, matchesRelay: false }, 'codex')).toBe(true)
-    expect(canLaunchManagedProvider({ hasApiKey: true, matchesRelay: true }, 'codex')).toBe(true)
-    expect(canLaunchManagedProvider({ hasApiKey: true, matchesRelay: false }, 'codex')).toBe(false)
-    expect(canLaunchManagedProvider({ hasApiKey: false, matchesRelay: false }, 'grok')).toBe(false)
+    expect(canLaunchManagedProvider({ hasApiKey: false, matchesRelay: false })).toBe(true)
+    expect(canLaunchManagedProvider({ hasApiKey: true, matchesRelay: true })).toBe(true)
+    expect(canLaunchManagedProvider({ hasApiKey: true, matchesRelay: false })).toBe(false)
     expect(managedProviderLaunchBlockedMessage('codex')).toContain('ChatGPT 账号')
   })
 })

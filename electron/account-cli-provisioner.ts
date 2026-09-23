@@ -3,6 +3,8 @@ import { resolveDefaultCliModel } from './cli-model-defaults'
 import { isKeyQuotaExhaustedMessage, managedKeyQuotaExhaustedMessage } from './account-key-quota'
 import { loadManagedCliGroups } from './managed-cli-groups'
 import type { StoredManagedCliKey } from './managed-cli-key-store'
+import { NewApiNetworkError } from './new-api-client'
+import { RealmAccountError } from './realm-account'
 import type { RelayBackendClient } from './relay-backend'
 import type { ConfigSavePayload, SystemService } from './system-service'
 
@@ -16,6 +18,8 @@ export interface ManagedCliKeyFailure {
   provider: ProviderId
   group: string
   message: string
+  /** 服务在维护或被防护层拦住（统一分类），不是 Key、分组或配置的问题；缺省 = 不是。 */
+  serviceUnavailable?: boolean
 }
 
 export interface ManagedCliKeySyncSummary {
@@ -27,7 +31,13 @@ export interface ManagedCliKeySyncSummary {
 
 export interface ManagedCliConfigurationOutcome {
   configured: ProviderId[]
-  failed: Array<{ provider: ProviderId; message: string }>
+  failed: Array<{ provider: ProviderId; message: string; serviceUnavailable?: boolean }>
+}
+
+/** new-api 与 Sub2API 两条后端各自的「服务暂时不可用」错误（network-failure.ts 的统一分类）。 */
+export function isServiceUnavailableError(error: unknown): boolean {
+  return (error instanceof NewApiNetworkError && error.reason === 'serviceUnavailable')
+    || (error instanceof RealmAccountError && error.code === 'UNAVAILABLE')
 }
 
 export interface ManagedCliKeyStoreLike {
@@ -172,6 +182,7 @@ async function resolveManagedCliKeys(
           provider,
           group,
           message: error instanceof Error ? error.message : 'CLI Key 初始化失败',
+          ...(isServiceUnavailableError(error) ? { serviceUnavailable: true } : {}),
         })
       }
     }
@@ -245,13 +256,18 @@ export async function configureManagedClis(
   const synchronized = await resolveManagedCliKeys(accountService, capture, keyStore)
   assertSameAuthenticatedUser(accountService, capture)
   const keys = new Map(synchronized.keys.map((entry) => [entry.provider, entry]))
-  const syncFailures = new Map(synchronized.failed.map((entry) => [entry.provider, entry.message]))
+  const syncFailures = new Map(synchronized.failed.map((entry) => [entry.provider, entry]))
   const outcome: ManagedCliConfigurationOutcome = { configured: [], failed: [] }
 
   for (const provider of providers) {
     let managedKey = keys.get(provider)
     if (!managedKey) {
-      outcome.failed.push({ provider, message: syncFailures.get(provider) ?? '对应分组 Key 未就绪' })
+      const syncFailure = syncFailures.get(provider)
+      outcome.failed.push({
+        provider,
+        message: syncFailure?.message ?? '对应分组 Key 未就绪',
+        ...(syncFailure?.serviceUnavailable ? { serviceUnavailable: true } : {}),
+      })
       continue
     }
     try {
@@ -312,6 +328,7 @@ export async function configureManagedClis(
       outcome.failed.push({
         provider,
         message: error instanceof Error ? error.message : 'CLI 配置失败',
+        ...(isServiceUnavailableError(error) ? { serviceUnavailable: true } : {}),
       })
     }
   }

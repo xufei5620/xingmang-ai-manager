@@ -1,5 +1,6 @@
 import { cliCatalog, type ProviderId } from './catalog'
 import type { ConnectionCheckLayer, ConnectionCheckResult } from './connection-check'
+import { networkFailureMessages } from './network-failure'
 
 /**
  * 一键切换账号来源（首页工具行「切到当前账号 / 切回官方账号」）。
@@ -44,45 +45,40 @@ export interface AccountSourceSwitchDependencies {
 }
 
 /**
+ * 写入当前账号时服务在维护：Key 还没签下来，配置一个字都没写，所以不回滚，
+ * 只让用户稍后再点一次。由 writeAccountConfig 的实现按统一分类抛出。
+ */
+export class AccountSourceServiceUnavailableError extends Error {
+  constructor() {
+    super(networkFailureMessages.serviceUnavailable)
+    this.name = 'AccountSourceServiceUnavailableError'
+  }
+}
+
+/**
  * 这些层的失败说明「刚写进去的配置本身用不了」（unconfigured 在刚写完之后出现，
  * 同样说明写入没有落到 CLI 真正读的地方），留着只会让用户打开工具就报错，
- * 所以回滚。网络、额度、未知不回滚：配置是对的，只是此刻确认不了或余额不够，
+ * 所以回滚。网络、服务维护、额度、未知不回滚：配置是对的，只是此刻确认不了或余额不够，
  * 切回官方反而让用户以为切换没生效。
  */
 const rollbackLayers: ReadonlySet<ConnectionCheckLayer> = new Set<ConnectionCheckLayer>([
   'unconfigured', 'config', 'credential', 'group', 'model', 'protocol',
 ])
 
-/**
- * 自检把 502/504、Cloudflare 的 520-526 和拦截页、返回网页而不是 JSON 都落进
- * credential / protocol 层，但那时服务本身在维护或被拦，写进去的配置是对的：
- * 回滚并告诉用户「Key 有问题」两样都错。503 单独看：new-api 用它表示分组下
- * 没有可用渠道，带着分组字样时仍是分组问题。
- */
-const serviceUnavailableStatuses: ReadonlySet<number> = new Set([502, 504, 520, 521, 522, 523, 524, 525, 526])
-const groupHints = ['无可用渠道', '无可用的渠道', '当前分组', '分组', '渠道', 'no available channel', 'no channel', 'group']
-
 export type SwitchCheckVerdict = 'passed' | 'rollback' | 'serviceUnavailable' | 'quota' | 'unverified'
 
-function looksLikeServiceOutage(status: number | null, detail: string): boolean {
-  if (status !== null && serviceUnavailableStatuses.has(status)) return true
-  const lowered = detail.toLowerCase()
-  if (status === 503 && !groupHints.some((hint) => lowered.includes(hint))) return true
-  if (/^\s*<(!doctype|html|head|body)/.test(lowered) || lowered.includes('<html')) return true
-  return lowered.includes('cloudflare') || lowered.includes('cf-ray') || lowered.includes('attention required')
-}
-
-export function judgeSwitchCheck(check: Pick<ConnectionCheckResult, 'ok' | 'layer' | 'status' | 'detail'>): SwitchCheckVerdict {
+export function judgeSwitchCheck(check: Pick<ConnectionCheckResult, 'ok' | 'layer' | 'status'>): SwitchCheckVerdict {
   if (check.ok) return 'passed'
-  const detail = check.detail ?? ''
-  if (looksLikeServiceOutage(check.status, detail)) return 'serviceUnavailable'
+  // 维护、网关错误、防护层验证页由自检统一归到 service 层（network-failure.ts 的
+  // isServiceUnavailableResponse）。写进去的配置是对的，回滚或说 Key 有问题都错。
+  if (check.layer === 'service') return 'serviceUnavailable'
   // 额度层自带说法（账号余额不够，或这个工具的额度上限用完，见 connection-check.ts）。
   // 429 也落在额度层，但多半只是请求太频繁，不能说成额度用完。
   if (check.layer === 'quota' && check.status !== 429) return 'quota'
   return rollbackLayers.has(check.layer) ? 'rollback' : 'unverified'
 }
 
-export function shouldRollBackAfterCheck(check: Pick<ConnectionCheckResult, 'ok' | 'layer' | 'status' | 'detail'>): boolean {
+export function shouldRollBackAfterCheck(check: Pick<ConnectionCheckResult, 'ok' | 'layer' | 'status'>): boolean {
   return judgeSwitchCheck(check) === 'rollback'
 }
 
@@ -110,7 +106,7 @@ export function officialLoginHint(provider: ProviderId): string {
     case 'gemini':
       return '这台电脑还没登录过 Google 账号：打开 Gemini CLI 后按提示用 Google 企业版账号登录。'
     case 'grok':
-      return '打开 Grok CLI 后按提示登录。'
+      return '这台电脑还没登录过 Grok 账号：打开 Grok CLI 后按提示在浏览器里登录。'
   }
 }
 
@@ -163,6 +159,10 @@ export async function switchAccountSource(
   try {
     await deps.writeAccountConfig(provider)
   } catch (error) {
+    if (error instanceof AccountSourceServiceUnavailableError) {
+      deps.log?.('warn', 'account-source.service-unavailable', `${toolName(provider)} 切到当前账号时服务暂时不可用，配置没有改动`, { provider, backupId })
+      throw new Error(`切到当前账号没有完成：${error.message}原来的配置没有改动。`)
+    }
     throw failure(`切到当前账号没有完成：${errorText(error)}。`, await rollBack())
   }
 
@@ -180,7 +180,7 @@ export async function switchAccountSource(
   const verified = verdict === 'passed'
   deps.log?.('info', 'account-source.switched', `${toolName(provider)} 已切到当前账号`, { provider, target, backupId, verified, verdict, layer: check?.layer ?? null })
   const status = verified ? '连接自检通过。'
-    : verdict === 'serviceUnavailable' ? '不过服务暂时不可用，这次没能确认能用，稍后再试。'
+    : verdict === 'serviceUnavailable' ? `不过这次没能确认能用：${networkFailureMessages.serviceUnavailable}`
       : verdict === 'quota' && check ? `不过${check.summary}。${check.nextStep ? `${check.nextStep}。` : ''}`
         : check ? `这次没能确认能用：${check.summary}。`
           : '连接自检没有完成，稍后可以在检查页再测一次。'

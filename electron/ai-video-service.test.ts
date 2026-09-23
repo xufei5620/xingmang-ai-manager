@@ -54,6 +54,7 @@ function setup(
     remove: vi.fn(async () => undefined),
   }
   const assets = {
+    assertWritable: vi.fn(async (_userId: number, _projectId?: string) => undefined),
     storeMp4: vi.fn(async (_userId: number, _bytes: Buffer, metadata: { taskId: string }) => ({
       assetId: 'a'.repeat(43), localUrl: `xingmang-asset://video/${'a'.repeat(43)}`,
       mimeType: 'video/mp4' as const, fileName: 'video.mp4', taskId: metadata.taskId,
@@ -487,6 +488,20 @@ describe('createAiVideoService', () => {
     expect(tasks.upsert).not.toHaveBeenCalled()
   })
 
+  it('stops before paid dispatch when the save location cannot be written', async () => {
+    const fetchImpl = vi.fn(async () => jsonResponse({ id: 'must-not-run' })) as unknown as typeof fetch
+    const { service, assets, tasks } = setup(fetchImpl)
+    assets.assertWritable.mockRejectedValueOnce(new Error('保存位置写不进去，这次没有扣费。请新建一个项目、换个文件夹再试。'))
+
+    await expect(service.generate(41, {
+      requestId: 'video-unwritable', group: '生图分组', model: 'grok-imagine-video', prompt: '海浪', seconds: '5',
+      projectId: '11111111-1111-4111-8111-111111111111',
+    })).rejects.toThrow('保存位置写不进去，这次没有扣费')
+    expect(assets.assertWritable).toHaveBeenCalledWith(7, '11111111-1111-4111-8111-111111111111')
+    expect(fetchImpl).not.toHaveBeenCalled()
+    expect(tasks.upsert).not.toHaveBeenCalled()
+  })
+
   it('reserves recovery capacity before dispatching a paid video request', async () => {
     const pending = Array.from({ length: 200 }, (_, index): StoredAiVideoTask => ({
       version: AI_VIDEO_TASK_VERSION,
@@ -505,6 +520,29 @@ describe('createAiVideoService', () => {
     })).rejects.toThrow('200 条上限')
     expect(fetchImpl).not.toHaveBeenCalled()
     expect(tasks.upsert).not.toHaveBeenCalled()
+  })
+
+  it('lets the canvas stop a request that is still preparing before the account is known', async () => {
+    const fetchImpl = vi.fn() as unknown as typeof fetch
+    const { service, credentials } = setup(fetchImpl)
+    let releaseCredential: () => void = () => undefined
+    const credentialGate = new Promise<void>((resolve) => { releaseCredential = resolve })
+    const resolveCredential = credentials.resolveCredential.getMockImplementation()!
+    credentials.resolveCredential.mockImplementationOnce(async (group: string) => {
+      await credentialGate
+      return resolveCredential(group)
+    })
+    const pending = service.generate(41, {
+      requestId: 'canvas-preparing', group: 'grok', model: 'grok-imagine-video', prompt: '海浪', seconds: '5', expectedUserId: 7,
+    })
+    await vi.waitFor(() => expect(credentials.resolveCredential).toHaveBeenCalledOnce())
+
+    expect(service.cancel(41, 'canvas-preparing', 8)).toEqual({ canceled: false, mayStillComplete: false })
+    expect(service.cancel(41, 'canvas-preparing', 7)).toEqual({ canceled: true, mayStillComplete: false })
+    releaseCredential()
+
+    await expect(pending).rejects.toThrow('已取消视频请求')
+    expect(fetchImpl).not.toHaveBeenCalled()
   })
 
   it('releases a reservation when cancellation wins before paid dispatch', async () => {
@@ -642,6 +680,9 @@ describe('createAiVideoService', () => {
     expect(assets.storeMp4).toHaveBeenCalledWith(7, expect.any(Buffer), {
       taskId: 'video_resume', projectId: stored.projectId,
     })
+    // The task was paid for in an earlier session. Refusing to fetch it here
+    // would only make the clip harder to get back, so no pre-payment probe runs.
+    expect(assets.assertWritable).not.toHaveBeenCalled()
   })
 
   it('records the prompt with the task and writes it onto the clip a later session finishes', async () => {

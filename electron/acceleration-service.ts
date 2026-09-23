@@ -3,8 +3,19 @@ import { accelerationBonusSeconds, accelerationConflictKinds, accelerationFailur
 
 export interface AccelerationService extends AccelerationApi, AccelerationPreferenceApi {
   redeemAccelerationCode(scope: string, code: string): Promise<AccelerationRedemptionResult>
+  /**
+   * 软件替用户发起的连接（打开 Codex 桌面端时）。与 startAcceleration 走同一条
+   * 路，只多记一笔「这次是谁连的」，此后这次会话的每一份状态都带上
+   * `autoStartedBy`。刻意不进 AccelerationApi：渲染层没有通道能冒充这个来源。
+   */
+  startAutomaticAcceleration(scope: string, origin: NonNullable<AccelerationState['autoStartedBy']>, mode: AccelerationMode, lineId?: string): Promise<AccelerationState>
   /** Host lifecycle barrier; also drains sessions whose account has already expired. */
   stopAll(): Promise<void>
+  /**
+   * 有没有可能还连着的加速会话（连上了、正在连或上次没停干净）。Windows 关机时
+   * 据此决定要不要推迟关机、先把系统代理还原；只读内存，不碰后台进程。
+   */
+  hasPossibleSession(): boolean
   onAccountChanged(): Promise<void>
   dispose(): Promise<void>
 }
@@ -185,6 +196,8 @@ export function createAccelerationService(options: AccelerationServiceOptions): 
   let revision = 0
   let disposed = false
   let disposePromise: Promise<void> | null = null
+  // 按账号记住「哪一次连接是软件替他连的」，认 connectedAt：重连就是另一次会话。
+  const automaticSessions = new Map<string, { connectedAt: string; origin: NonNullable<AccelerationState['autoStartedBy']> }>()
 
   function enqueue<T>(operation: () => Promise<T>): Promise<T> {
     const result = queue.then(operation, operation)
@@ -208,6 +221,17 @@ export function createAccelerationService(options: AccelerationServiceOptions): 
     else possibleSessions.delete(state.scope)
   }
 
+  /** 这次会话还在跑、且正是软件替他连上的那一次，才标出来源。 */
+  function withOrigin(state: AccelerationState): AccelerationState {
+    const automatic = automaticSessions.get(state.scope)
+    if (!automatic) return state
+    if (!isRunning(state.phase) || state.connectedAt !== automatic.connectedAt) {
+      if (state.phase !== 'connecting') automaticSessions.delete(state.scope)
+      return state
+    }
+    return { ...state, autoStartedBy: automatic.origin }
+  }
+
   async function stopSession(scope: string): Promise<void> {
     if (!backend) return
     try {
@@ -226,7 +250,8 @@ export function createAccelerationService(options: AccelerationServiceOptions): 
     }
   }
 
-  function request(scope: string, operation: 'get' | 'start' | 'stop', mode?: AccelerationMode, lineId?: string, ignoreConflicts?: boolean): Promise<AccelerationState> {
+  function request(scope: string, operation: 'get' | 'start' | 'stop', mode?: AccelerationMode, lineId?: string, ignoreConflicts?: boolean,
+    origin?: NonNullable<AccelerationState['autoStartedBy']>): Promise<AccelerationState> {
     try {
       assertScope(scope)
       if (operation === 'start') assertMode(mode)
@@ -237,7 +262,7 @@ export function createAccelerationService(options: AccelerationServiceOptions): 
     const expectedRevision = revision
     // A retry that overrides the conflict warning is a different request from
     // the one that raised it, so it must not be served the refusal in flight.
-    const key = `${revision}:${scope}:${operation}:${mode ?? ''}:${lineId ?? ''}:${ignoreConflicts === true}`
+    const key = `${revision}:${scope}:${operation}:${mode ?? ''}:${lineId ?? ''}:${ignoreConflicts === true}:${origin ?? ''}`
     if (operation !== 'get' && lastMutation?.key === key) return lastMutation.promise
     const promise = enqueue(async () => {
       await stopOtherAccounts(options.getAccountScope())
@@ -246,6 +271,7 @@ export function createAccelerationService(options: AccelerationServiceOptions): 
         if (operation === 'start') throw new Error(SERVICE_UNAVAILABLE)
         return notify(unavailableState(scope))
       }
+      const wasRunning = possibleSessions.has(scope)
       if (operation === 'start') possibleSessions.add(scope)
       let state: AccelerationState
       try {
@@ -258,6 +284,11 @@ export function createAccelerationService(options: AccelerationServiceOptions): 
         state = projectState(raw, scope)
         if (operation === 'start' && state.mode !== mode) throw new Error(INVALID_RESPONSE)
         track(state)
+        // 已经连着时 start 原样返回那次会话：那条线路归用户，不能因此改记成自动连的。
+        if (operation === 'start' && origin && state.phase === 'active' && state.connectedAt
+          && !wasRunning) {
+          automaticSessions.set(scope, { connectedAt: state.connectedAt, origin })
+        }
       } catch (error) {
         if (operation === 'start' || options.getAccountScope() !== scope || expectedRevision !== revision || disposed) {
           if (possibleSessions.has(scope)) await stopSession(scope)
@@ -268,7 +299,7 @@ export function createAccelerationService(options: AccelerationServiceOptions): 
         if (possibleSessions.has(scope)) await stopSession(scope)
         throw new Error(ACCOUNT_CHANGED)
       }
-      return notify(state)
+      return notify(withOrigin(state))
     })
     lastMutation = operation === 'get' ? null : { key, promise }
     void promise.finally(() => {
@@ -280,6 +311,7 @@ export function createAccelerationService(options: AccelerationServiceOptions): 
   return {
     getAccelerationState: (scope) => request(scope, 'get'),
     startAcceleration: (scope, mode, lineId, ignoreConflicts) => request(scope, 'start', mode, lineId, ignoreConflicts),
+    startAutomaticAcceleration: (scope, origin, mode, lineId) => request(scope, 'start', mode, lineId, false, origin),
     stopAcceleration: (scope) => request(scope, 'stop'),
     redeemAccelerationCode(scope, code) {
       try {
@@ -300,8 +332,9 @@ export function createAccelerationService(options: AccelerationServiceOptions): 
         }
         assertCurrent(scope, expectedRevision)
         track(result.state)
-        notify(result.state)
-        return result
+        const decorated = { ...result, state: withOrigin(result.state) }
+        notify(decorated.state)
+        return decorated
       })
     },
     listAccelerationLines(scope) {
@@ -341,6 +374,9 @@ export function createAccelerationService(options: AccelerationServiceOptions): 
       try { assertScope(scope); parsed = parsePreferenceUpdate(update) } catch (error) { return Promise.reject(error) }
       if (!options.preferences) return Promise.reject(new Error('加速线路偏好暂不可用，请稍后重试。'))
       return options.preferences.saveAccelerationPreference(scope, parsed)
+    },
+    hasPossibleSession() {
+      return possibleSessions.size > 0
     },
     stopAll() {
       revision += 1

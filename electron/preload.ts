@@ -225,7 +225,7 @@ function subscribe<Method extends keyof XingmangEventContract>(
 
 const xingmangApi: XingmangApi = {
   getPlatformCapabilities: () => invoke('getPlatformCapabilities'),
-  scanSystem: (forceRefresh) => invoke('scanSystem', forceRefresh),
+  scanSystem: (forceRefresh, options) => invoke('scanSystem', forceRefresh, options),
   refreshNetworkLocation: () => invoke('refreshNetworkLocation'),
   refreshOfficialChatGptUsage: () => invoke('refreshOfficialChatGptUsage'),
   getCodexReadiness: () => invoke('getCodexReadiness'),
@@ -286,7 +286,7 @@ const xingmangApi: XingmangApi = {
   openProviderSessionDirectory: (sessionId) => invoke('openProviderSessionDirectory', sessionId),
   getSettings: () => invoke('getSettings'),
   saveSettings: (settings) => invoke('saveSettings', settings),
-  runDiagnostics: () => invoke('runDiagnostics'),
+  runDiagnostics: (options) => invoke('runDiagnostics', options),
   exportDiagnostics: () => invoke('exportDiagnostics'),
   getRuntimeLogs: (limit) => invoke('getRuntimeLogs', limit),
   getFeedbackReport: () => invoke('getFeedbackReport'),

@@ -1,3 +1,4 @@
+import { networkFailureMessages, networkFailureReasonForMessage } from '../../../../electron/network-failure'
 import type { AiChatAsset, AiChatErrorCode, AiChatGroupSummary, AiChatMessageInput, AiChatParametersInput, AiChatStreamEvent } from '../../../../electron/ipc-contract'
 import { matchRelayQuotaFailureMessage, relayQuotaFailureMessages } from '../../../../electron/relay-quota-failure'
 import { chatLimits } from './api'
@@ -125,7 +126,18 @@ export function chatErrorMessage(error: unknown, code?: AiChatErrorCode): string
   if (code === 'network-error') return '无法连接 AI 服务，请检查网络后重试'
   if (code === 'stream-closed') return 'AI 服务提前结束了本次响应，请重试'
   if (code === 'model-unavailable') return '当前模型不在所选分组的可用列表中，请刷新后重新选择'
+  // 必须排在下面那几条按字面猜的正则之前：服务在维护时主进程给的话已经说清楚了，
+  // 再被 /登录|密钥/ 之类撞上，就会变回「请重新登录」。
+  if (code === 'service-unavailable' || networkFailureReasonForMessage(message) === 'serviceUnavailable') return networkFailureMessages.serviceUnavailable
   if (code) return message || '本次请求没有完成，已保留内容，请稍后重试'
+  // 主进程在发付费请求之前试写保存位置，写不进就停下。原话里有「这次没有扣费」和
+  // 下一步怎么办，归进下面任何一类都会把这两句丢掉。
+  const unwritable = message.indexOf('保存位置写不进去')
+  if (unwritable >= 0) return message.slice(unwritable)
+  // 生图、视频的付费请求可能已经发出去时，主进程的原话都带「请勿重复提交」，还说清了是
+  // 超时、已生成没下载下来还是没存下来。必须排在下面「超时 / 网络」那条前面，否则会被改成
+  // 「请检查网络后重试」，照做就再扣一次钱。IPC 前缀是英文，从第一个汉字开始截。
+  if (/重复提交/.test(message)) return message.slice(Math.max(0, message.search(/[\u4e00-\u9fff]/)))
   // 主进程已经把余额不足、Key 额度上限、Key 失效分开说好了，这里原样放行；否则下面那条
   // 宽泛的「余额」正则会把「额度上限用完」又改回「请充值」。
   const quota = matchRelayQuotaFailureMessage(message)
@@ -138,7 +150,7 @@ export function chatErrorMessage(error: unknown, code?: AiChatErrorCode): string
   if (/size|尺寸/.test(message)) return '当前模型不支持这个图片尺寸，请调整后重试'
   if (/quality|画质/.test(message)) return '当前模型不支持这个画质档位，请调整后重试'
   if (/invalid.parameter|parameter|参数/.test(message)) return '参数超出可用范围，请检查后重试'
-  if (/可能仍|结果不明确|重复提交/.test(message)) return '请求提交结果不明确，服务端可能仍在处理，请勿立即重复提交'
+  if (/可能仍|结果不明确/.test(message)) return '请求提交结果不明确，服务端可能仍在处理，请勿立即重复提交'
   if (/^当前对话|^找不到要|^请先|^单条消息|^这段对话/.test(message)) return message
   return '本次请求没有完成，已保留内容，请稍后重试'
 }

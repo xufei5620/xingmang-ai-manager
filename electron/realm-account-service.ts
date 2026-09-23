@@ -12,6 +12,8 @@ export interface RealmAccountSessionState extends NewApiSessionState {
   siteId: RealmAccountSiteId
   realmId: AccountRealmId
   capabilities: RelayBackendCapabilities
+  /** 只在开机恢复因为联不上而搁着时出现：登录还在本机，等下一次重试。 */
+  restoring?: { account: { siteId: RealmAccountSiteId; userId: number }; retrying: true }
 }
 export interface RealmAccountLoginResult extends NewApiLoginResult {
   siteId: RealmAccountSiteId
@@ -47,6 +49,14 @@ export interface RealmAccountService {
   switchSavedAccount(id: string): Promise<RealmAccountSessionState>
   removeSavedAccount(id: string): Promise<void>
   restoreActive(): Promise<boolean>
+  /** 开机恢复进行中时，正在恢复的那个账号；本机账号库读出来之前与恢复结束之后都是 null。 */
+  restoringAccount(): { siteId: RealmAccountSiteId; userId: number } | null
+  /**
+   * 开机恢复登录没成、但不是因为登录失效（联不上、服务维护、超时）时，那个仍留在
+   * 本机的账号；再调一次 restoreActive() 就是重试。恢复成功、确认失效、登录、
+   * 退出或切换账号之后都是 null。
+   */
+  stalledAccount(): { siteId: RealmAccountSiteId; userId: number } | null
   migrateLegacy(): Promise<void>
   latestLoginHint(): Promise<RealmLoginHintSummary | null>
   loginHintOwner(identifier: string): Promise<RealmAccountOwner | null>
@@ -58,6 +68,10 @@ interface RuntimeHandle extends RealmAccountClientHandle {
   expiredAtRevision: number | null
 }
 
+function restoreMayRecover(error: unknown): boolean {
+  return !(error instanceof RealmAccountError && ['INVALID', 'PROTOCOL', 'STORAGE', 'UNSUPPORTED'].includes(error.code))
+}
+
 /** Promote the authenticated client itself: rotating cookies are never restored twice. */
 export function createRealmAccountService(options: RealmAccountServiceOptions): RealmAccountService {
   let active: RuntimeHandle
@@ -67,6 +81,8 @@ export function createRealmAccountService(options: RealmAccountServiceOptions): 
   let notifyPending = false
   let prepareDeadline = 0
   let migration: Promise<void> | undefined
+  let restoring: { siteId: RealmAccountSiteId; userId: number } | null = null
+  let stalled: { siteId: RealmAccountSiteId; userId: number } | null = null
   const prepareTimeoutMs = options.prepareTimeoutMs ?? 30000
   if (!Number.isSafeInteger(prepareTimeoutMs) || prepareTimeoutMs < 1 || prepareTimeoutMs > 120000) throw new RealmAccountError('INVALID')
   const publicClients = new Map<RealmAccountSiteId, RelayBackendClient>()
@@ -85,7 +101,14 @@ export function createRealmAccountService(options: RealmAccountServiceOptions): 
     return { siteId: handle.siteId, realmId: realmForExplicitSite(handle.siteId), capabilities: handle.client.capabilities }
   }
   function session(): RealmAccountSessionState {
-    return { ...active.client.getSessionState(), ...metadata() }
+    const state = { ...active.client.getSessionState(), ...metadata() }
+    // 界面据此留在首页、说「暂时连不上，登录还在」，而不是当成没登录退回欢迎页。
+    return stalled && !state.authenticated ? { ...state, restoring: { account: { ...stalled }, retrying: true } } : state
+  }
+  function markStalled(value: typeof stalled): void {
+    if (stalled?.siteId === value?.siteId && stalled?.userId === value?.userId) return
+    stalled = value
+    requestChanged()
   }
   function changed(): void {
     // A renderer/window callback cannot roll back an already committed identity.
@@ -223,6 +246,7 @@ export function createRealmAccountService(options: RealmAccountServiceOptions): 
     const previous = active
     handle.saved = saved
     active = handle
+    stalled = null
     dispose(previous)
     requestChanged()
   }
@@ -251,6 +275,7 @@ export function createRealmAccountService(options: RealmAccountServiceOptions): 
       await options.vault.signOut()
       const previous = active
       active = replacement
+      stalled = null
       dispose(previous)
       requestChanged()
     })
@@ -273,12 +298,25 @@ export function createRealmAccountService(options: RealmAccountServiceOptions): 
   async function restoreActive(): Promise<boolean> {
     return transition(async () => {
       const saved = await options.vault.active()
-      if (!saved) return false
-      try { if (await restore(saved)) return true } catch (error) {
-        if (!(error instanceof RealmAccountError) || error.code !== 'UNAUTHORIZED') throw error
-      }
-      await options.vault.signOut(saved)
-      return false
+      if (!saved) { markStalled(null); return false }
+      const userId = Number(saved.userId)
+      const owner = Number.isSafeInteger(userId) && userId > 0 ? { siteId: site(accountRealms[saved.realmId].siteId), userId } : null
+      restoring = owner
+      try {
+        try { if (await restore(saved)) return true } catch (error) {
+          // 只有服务明确说登录失效（401）才清掉本机登录。联不上、维护、超时都不是
+          // 凭据的问题：登录留着，记下来等重试，界面也不按「没登录」处理。
+          if (!(error instanceof RealmAccountError) || error.code !== 'UNAUTHORIZED') {
+            // 本机记录本身读不通（格式、存储）再试也不会好：登录照旧留着，但不挂
+            // 「稍后重试」，免得界面一直停在「暂时连不上」而用户找不到登录入口。
+            markStalled(restoreMayRecover(error) ? owner : null)
+            throw error
+          }
+        }
+        await options.vault.signOut(saved)
+        markStalled(null)
+        return false
+      } finally { restoring = null }
     })
   }
   async function switchSavedAccount(id: string): Promise<RealmAccountSessionState> {
@@ -351,6 +389,8 @@ export function createRealmAccountService(options: RealmAccountServiceOptions): 
   })
   return Object.freeze({ client, getSiteId: () => active.siteId, assertReady, getPublicClient, login, logout, listSavedAccounts,
     switchSavedAccount, removeSavedAccount, restoreActive, migrateLegacy,
+    restoringAccount: () => restoring ? { ...restoring } : null,
+    stalledAccount: () => stalled ? { ...stalled } : null,
     latestLoginHint: async () => { await migrateLegacy(); return options.vault.latestLoginHint() },
     loginHintOwner: async (identifier: string) => { await migrateLegacy(); return options.vault.loginHintOwner(identifier) } })
 }

@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { readBoundedResponseText } from './bounded-response'
 import { redactCommandText } from './command-runner'
 import { managedKeyQuotaExhaustedMessage } from './account-key-quota'
-import { classifyNetworkFailure, networkFailureMessages, type NetworkFailureReason } from './network-failure'
+import { classifyNetworkFailure, isServiceUnavailableResponse, networkFailureMessages, type NetworkFailureReason } from './network-failure'
 import type { RelayBackendCapabilities, RelayBackendClient } from './relay-backend'
 import { relaySites } from './relay-sites'
 import { parseNewApiUsagePricing } from './usage-pricing-parser'
@@ -734,6 +734,12 @@ export interface NewApiProvisionCliKeyInput {
   remainQuota?: number
   unlimitedQuota?: boolean
   expiredTime?: number
+  /**
+   * Always create a new key with exactly these settings instead of reusing a
+   * usable one in the group. Used when a revoked key's limits must carry over
+   * to its replacement: reusing an unlimited sibling would drop them.
+   */
+  fresh?: boolean
 }
 
 // The plaintext key is meant to flow straight into a CLI config write (I3
@@ -1093,6 +1099,20 @@ async function performRequest(
   }
 }
 
+/**
+ * 维护、网关挂掉、防护层弹验证页时，服务回的是 5xx 或一张网页。以前这些都落进
+ * 「xx失败，服务返回 HTTP 503」，渲染层再按字面把它猜成别的事；这里直接给出
+ * 「服务暂时不可用」那一类，调用方（启动时恢复登录、登录框、账号页）据此知道
+ * 这不是凭据的问题。detail 只放状态码和服务自己的原话，不放 label：label 里的
+ * 「登录」二字会让渲染层的兜底正则把它认回「登录失效」。
+ */
+function assertServiceAvailable(raw: NewApiRawResponse, detail: string): void {
+  if (isServiceUnavailableResponse({ status: raw.status, json: isRecord(raw.payload), headers: raw.headers })) {
+    // 服务自己在 JSON 里说了原因（「维护中」）就带上，那比状态码更有用。
+    throw new NewApiNetworkError('serviceUnavailable', detail ? `HTTP ${raw.status}：${detail}` : `HTTP ${raw.status}`)
+  }
+}
+
 function unwrapEnvelope(raw: NewApiRawResponse, label: string, secrets: readonly string[]): unknown {
   const envelope = isRecord(raw.payload) ? raw.payload : null
   const serverMessage = envelope && typeof envelope.message === 'string' ? envelope.message : ''
@@ -1100,6 +1120,7 @@ function unwrapEnvelope(raw: NewApiRawResponse, label: string, secrets: readonly
   if (raw.status === 401) {
     throw new NewApiAuthenticationError(detail || '登录状态已失效，请重新登录')
   }
+  assertServiceAvailable(raw, detail)
   if (!envelope) {
     // HTTP 成功却不是 JSON，最常见的来源是门户认证页把响应换掉了；真的服务出错
     // 时状态码不会是 2xx，走的是下面那条带 HTTP 码的分支。
@@ -1145,6 +1166,7 @@ function unwrapPublicNotice(raw: NewApiRawResponse): unknown {
   const serverMessage = envelope && typeof envelope.message === 'string' ? envelope.message : ''
   const detail = sanitizeUpstreamMessage(serverMessage, [])
   if (raw.status === 401) throw new NewApiAuthenticationError(detail || '公告读取未授权')
+  assertServiceAvailable(raw, detail)
   if (!raw.ok) throw new Error(detail || `公告读取失败，服务返回 HTTP ${raw.status}`)
   if (!envelope || !Object.prototype.hasOwnProperty.call(envelope, 'data')) {
     throw new Error('公告读取返回的不是有效数据')
@@ -1182,6 +1204,7 @@ function unwrapLegacyBusinessEnvelope(
   if (raw.status === 401) {
     throw new NewApiAuthenticationError(detail || '登录状态已失效，请重新登录')
   }
+  assertServiceAvailable(raw, detail)
   if (!envelope) {
     throw new Error(raw.ok ? `${label}返回的不是有效 JSON` : (detail || `${label}失败，服务返回 HTTP ${raw.status}`))
   }
@@ -2126,15 +2149,17 @@ function collectionEntries(payload: unknown): unknown[] {
 
 // Step 2 of the CLI-key three-call flow (RECON 坑1): POST /api/token/ never
 // returns the new record's id, so it has to be found again by the unique
-// name buildCliKeyName() generated for it.
+// name buildCliKeyName() generated for it. A managed name is stable, so older
+// keys can share it: the one just created is the highest id.
 export function findCliKeyIdByName(payload: unknown, name: string): number | null {
+  let newest: number | null = null
   for (const entry of collectionEntries(payload)) {
     if (!isRecord(entry)) continue
     if (asString(entry.name, '') !== name) continue
     const id = entry.id
-    if (typeof id === 'number' && Number.isInteger(id) && id > 0) return id
+    if (typeof id === 'number' && Number.isInteger(id) && id > 0 && (newest === null || id > newest)) newest = id
   }
-  return null
+  return newest
 }
 
 export interface NewApiExistingCliKeyMatch {
@@ -2282,7 +2307,9 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
   // withSession here would recurse into another retry attempt instead of
   // failing cleanly.
   const performRefresh = async (current: InternalSession): Promise<InternalSession> => {
-    if (current.cookies.length === 0) throw new Error('没有可用的登录凭据用于续期，请重新登录')
+    // No cookie means this session can never be refreshed: that is as final
+    // as a 401 from the refresh endpoint, so it must end the login too.
+    if (current.cookies.length === 0) throw new NewApiAuthenticationError('没有可用的登录凭据用于续期，请重新登录')
     const raw = await performRequest(
       ctx,
       refreshPath,
@@ -2348,11 +2375,18 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
   // section D: "401 时凭 refresh cookie 静默续期"). Bounded to exactly one
   // attempt by construction -- this function does not call itself, and the
   // retried run() is only ever invoked once -- so a session that is well and
-  // truly dead fails fast instead of looping. If refresh itself fails for any
-  // reason, or the retried call 401s again even with a fresh access_token,
-  // the session is cleared and the *original* 401 is what the caller sees: a
-  // failed recovery attempt shouldn't bury the real failure behind unrelated
-  // refresh-plumbing noise (e.g. a network blip mid-refresh).
+  // truly dead fails fast instead of looping. If the refresh endpoint itself
+  // rejects the credential, or the retried call 401s again even with a fresh
+  // access_token, the session is cleared and the *original* 401 is what the
+  // caller sees.
+  //
+  // Any other refresh failure keeps the session, same as refreshAccessToken
+  // below. The access token expires every 15 minutes, so this path runs all
+  // day; the refresh route shares an IP-keyed rate limit with login (a campus
+  // NAT hits HTTP 429 easily), and a timeout, a 5xx or maintenance says
+  // nothing about the refresh cookie. Clearing here used to sign people out
+  // and drop the account from the vault on a network blip. The refresh error
+  // is rethrown so callers classify it as unreachable, not as expired.
   const retryAfterSilentRefresh = async <T>(
     failedSession: InternalSession,
     run: (current: InternalSession) => Promise<T>,
@@ -2365,6 +2399,7 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
     } catch (error) {
       assertCurrentOwner(failedSession)
       if (error instanceof NewApiCredentialPersistenceError) throw error
+      if (!(error instanceof NewApiAuthenticationError)) throw error
       if (session === failedSession) setSession(null)
       throw originalError
     }
@@ -3183,9 +3218,11 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
         if (group.length > 128) throw new Error('CLI Key 分组格式错误')
         await assertUsableGroup(current, group)
         const records = await listAllTokenRecords(current)
-        const existing = findNewestUsableCliKeyByGroup(records, group)
+        const existing = input.fresh ? null : findNewestUsableCliKeyByGroup(records, group)
         // Only a usable key under this very name outranks a used-up cap on it.
-        if (existing?.name !== name && hasExhaustedCappedCliKey(records, name, group)) {
+        // A capped key being created never lifts a cap, so it is not stopped.
+        if (existing?.name !== name && input.unlimitedQuota !== false
+          && hasExhaustedCappedCliKey(records, name, group)) {
           throw new Error(managedKeyQuotaExhaustedMessage)
         }
         if (existing) return revealCliKeyForSession(current, existing)

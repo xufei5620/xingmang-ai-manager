@@ -59,6 +59,11 @@ export interface GeneratedAiVideoAsset extends AiStoredVideoAsset {
 
 export interface AiVideoAssetWriter {
   prepareProject?(userId: number, projectId?: string): Promise<void>
+  /**
+   * 新提交视频前试写一次保存位置，写不进就在扣费之前停下。续查已付费的旧任务不走
+   * 这里：那笔钱已经花了，拦下来只会让视频更拿不回来。
+   */
+  assertWritable?(userId: number, projectId?: string): Promise<void>
   storeMp4(userId: number, bytes: Buffer, metadata: { taskId: string; projectId?: string; prompt?: string }): Promise<AiStoredVideoAsset>
   readImageDataUri(userId: number, assetId: string, projectId?: string): Promise<string>
   readOwned?(
@@ -79,6 +84,9 @@ interface ActiveVideoRequest {
   requestId: string
   controller: AbortController
   userId?: number
+  // See ActiveImageRequest.expectedUserId: a stop pressed before the
+  // credential resolves must still match the submitting account.
+  expectedUserId?: number
   taskId?: string
   apiKey?: string
   provider?: 'grok-video' | 'minimax-h3'
@@ -90,6 +98,12 @@ interface MiniMaxMediaPart {
   bytes: Buffer
   mimeType: string
   fileName: string
+}
+
+function ownedBy(operation: ActiveVideoRequest, expectedUserId: number | undefined): boolean {
+  if (expectedUserId === undefined) return true
+  const owner = operation.userId ?? operation.expectedUserId
+  return owner === undefined || owner === expectedUserId
 }
 
 function requestKey(senderId: number, requestId: string): string {
@@ -531,7 +545,7 @@ export function createAiVideoService(options: {
     const key = requestKey(senderId, requestId)
     if (active.has(key)) throw new Error('该视频请求正在处理中')
     const operation: ActiveVideoRequest = {
-      senderId, requestId, controller: new AbortController(), dispatched: false,
+      senderId, requestId, expectedUserId: input.expectedUserId, controller: new AbortController(), dispatched: false,
     }
     let reservationId: string | undefined
     active.set(key, operation)
@@ -549,6 +563,7 @@ export function createAiVideoService(options: {
       operation.apiKey = credential.apiKey
       operation.provider = capability.provider
       await options.assets.prepareProject?.(credential.userId, input.projectId)
+      await options.assets.assertWritable?.(credential.userId, input.projectId)
       const imageAssetIds = [
         ...(input.imageAssetId ? [input.imageAssetId] : []),
         ...(input.imageAssetIds ?? []),
@@ -690,7 +705,7 @@ export function createAiVideoService(options: {
   function cancel(senderId: number, requestIdInput: string, expectedUserId?: number): AiVideoCancelResult {
     const requestId = requiredIdentifier(requestIdInput, '视频请求标识', 160)
     const operation = active.get(requestKey(senderId, requestId))
-    if (!operation || (expectedUserId !== undefined && operation.userId !== expectedUserId) || operation.controller.signal.aborted) return { canceled: false, mayStillComplete: false }
+    if (!operation || !ownedBy(operation, expectedUserId) || operation.controller.signal.aborted) return { canceled: false, mayStillComplete: false }
     void cancelRemoteTask(operation).catch(() => undefined)
     operation.controller.abort(new Error('用户停止等待视频生成'))
     return { canceled: true, mayStillComplete: operation.dispatched }

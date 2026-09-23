@@ -5,7 +5,7 @@ import { presentExternalClients } from './external-model'
 import { useSharedAccountBalance } from '../app/balance-context'
 import { balanceStatusText } from '../shell/balance-status'
 import { BrandIcon, Button, Card, Dialog, Empty, ListRow, Menu, PageHead, Pill, Progress, ToolRow, useToast } from '../../ui'
-import { accountSwitchTarget, balanceTier, canUninstallTool, configDirectoryMenuItem, externalInstallHint, greeting, isExternallyManagedInstall, needsManualInstall, presentTools, recommendedVersionVerb, rollbackVersion, versionSubtitle, type ToolboxSnapshot, type ToolId, type ToolPresentation } from './model'
+import { accountSwitchTarget, balanceTier, canUninstallTool, configDirectoryMenuItem, externalInstallHint, greeting, isExternallyManagedInstall, needsManualInstall, ownershipAwaitingAccount, presentTools, recommendedVersionVerb, rollbackVersion, versionSubtitle, type ToolboxSnapshot, type ToolId, type ToolPresentation } from './model'
 import type { ToolboxPartitionFailure, ToolsApi } from './api'
 import type { ToolJob } from './useToolbox'
 import type { AccountBootstrapProgress, AccountBootstrapResult } from './account-bootstrap'
@@ -205,10 +205,13 @@ export function Home(props: HomeProps) {
     // 否则用户会以为自己的配置丢了。工具本身的安装、卸载不受影响。
     const configUnavailable = !tool.error && tool.status.installed
       && props.failures?.some((failure) => failure.partition === 'config') === true
+    // 开机先画出来的是上次的检测结果（cachedAt），装没装、配置归谁都可能已经变了，
+    // 这时不下「被改过」「第三方配置」的结论，真结果回来再说。
+    const ownershipPending = snapshot !== null && (Boolean(snapshot.system.cachedAt) || ownershipAwaitingAccount(snapshot.config, tool))
     const status = installJob ? 'installing' : tool.error ? 'detectionFailed' : !tool.status.installed ? 'missing'
       : configUnavailable ? 'configUnavailable'
-      : tool.source === 'changed' ? 'configChanged'
-      : tool.source === 'unknown' ? 'unknownSource' : tool.source === 'official' ? 'official'
+      : tool.source === 'changed' && !ownershipPending ? 'configChanged'
+      : tool.source === 'unknown' && !ownershipPending ? 'unknownSource' : tool.source === 'official' ? 'official'
         : bootstrapBusy && !tool.configured ? 'configuring'
         : tool.configured ? 'ready' : 'unconfigured'
     // 「打开」以前每次都要重新选一遍目录。会话记录里本来就存着用过的目录，
@@ -233,7 +236,8 @@ export function Home(props: HomeProps) {
       : tool.configured ? props.onLaunch(tool.id, lastWorkspace?.path) : props.onConfigure(tool.id)
     const rollback = job ? null : rollbackVersion(tool)
     // 配置那一块没读到时来源是未知的，不给切换，免得在一份没读到的配置上做决定。
-    const switchTarget = configUnavailable || tool.error ? null : accountSwitchTarget(tool)
+    // 账号还在恢复时来源同样没判定（见 ownershipAwaitingAccount），等恢复完再给。
+    const switchTarget = configUnavailable || tool.error || ownershipPending ? null : accountSwitchTarget(tool)
     const blocked = tool.versionAdvice?.blockedReason ?? null
     // 原生/其他来源装的 CLI 不走本工具的 npm 通道，不给 npm 更新/回滚按钮，
     // 该更新时改用一句被动提示，避免在 npm 全局目录另装一份并存。
@@ -345,6 +349,7 @@ export function Home(props: HomeProps) {
     {props.externalError && <div role="alert" className="v2-callout is-bad"><span>客户端状态暂未读到：{props.externalError}</span><Button size="xs" onClick={props.onScan}>重新检测</Button></div>}
     {snapshot && configFailure && <div role="alert" className="v2-callout is-bad" data-testid="home-config-failure"><span>工具配置暂未读到：{configFailure.message}工具列表、安装和卸载照常可用；点工具行的“重新配置”可以重新写入。</span><Button size="xs" onClick={props.onScan}>重新检测</Button></div>}
     {props.supportsBilling !== false && dollars !== null && dollars < 5 && <div role="status" className="v2-callout is-bad"><Zap size={18} /><span>余额只剩 ${dollars.toFixed(2)}，充值后可继续使用。</span><Button size="sm" variant="balance" onClick={() => props.onNavigate('account', 'recharge')}>马上充值</Button></div>}
+    {loading && snapshot?.system.cachedAt && <div className="v2-loading-inline" role="status" data-testid="home-cached-scan">正在检查本机工具，先显示上次的结果。</div>}
     <div className="v2-home-grid">
       <div className="v2-home-main">
         {!ready && !loading && !configFailure && <Card title="开始使用" meta="第 1 步，共 4 步" padding="none" testId="home-setup">

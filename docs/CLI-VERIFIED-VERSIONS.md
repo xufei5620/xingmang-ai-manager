@@ -125,10 +125,15 @@ Codex 那时 `recommended` 是 `null`，也就是那两天点过「更新」的�
 | 四家的自更新 | 见上一节 | 都开着 | 关掉 | 不关名单等于白钉 |
 | Claude 的 Artifact 工具 | `~/.claude/settings.json` 的 `permissions.deny` | 不禁 | 禁掉 | 中转 Key 用不了它，且它的 schema 曾整轮 400 |
 | Claude 的读网页预检 | `skipWebFetchPreflight` | 每抓一个域名先问 `api.anthropic.com` | 跳过（只在星芒来源下写，切回官方删掉） | 国内连不上那台主机，WebFetch 要么立即失败、要么等 30 秒后失败 |
+| Claude 的选模型菜单 | `modelPicker` 与 `env.ANTHROPIC_DEFAULT_MODEL` | 官方阵容（Default = Opus 5 · 1M）并标官方美元价 | 当前 Key 可用的 Claude 型号，Default 指向选定的型号（用户自己写过菜单就不动；切回官方收回） | 选到分组里没有的型号只会报「无可用渠道」，价格也不是当前账号的计费 |
 | Claude 的命令确认 | `permissions.defaultMode` | `default`（逐条问） | `bypassPermissions` | 本产品的卖点就是不用自己配、也不用自己按确认 |
 | Claude 的回复语言 | `language` | 未设（跟着对话语言走） | `简体中文` | 只靠 AGENTS.md 撑不住：克隆来的项目大多已有说明文件，模板不会生成 |
 | Claude 的记录保留期 | `cleanupPeriodDays` | 30 天 | 365 天 | 记录页、「接着聊」、导出都建立在文件还在的前提上 |
 | Claude 的状态行 | `statusLine` | 未设（终端里没有状态行） | 指向随包脚本的一条命令 | 用户按 token 付费，却看不到在用哪个模型、上下文吃到几成 |
+| Gemini 后台功能用的型号 | `modelConfigs.customOverrides` | 联网搜索、读网页、压缩、子代理、会话摘要、Auto 各自写死 Google 官方型号名 | 这批官方型号名统一改写成当前配的中转型号（只在星芒来源下写，切回官方删掉） | 中转没有这些型号时，这些功能默默重试几分钟后失败 |
+| Grok 画图与视频工具的地址 | `~/.grok/config.toml` 的 `[endpoints] xai_api_base_url` | `https://api.x.ai/v1` | 与对话同一个中转地址 | 这几个工具带的是同一把 `api_key`，不改就把中转 Key 发给 xAI 官方，国内还要卡 120 秒 |
+| Codex 的使用统计 | `~/.codex/config.toml` 的 `[analytics] enabled` | 开（发往 `ab.chatgpt.com`） | `false`（用户写过就不动；切回 ChatGPT 且没有官方快照时收回） | 国内连不上，`codex exec` 每次退出前要等约 10 秒 |
+| Grok 的型号名单与附带型号 | `~/.grok/config.toml` 的 `[models] allowed_models` / `session_summary` / `image_description` | 名单不限（内置 grok-4.6、grok-4.5 也在）；标题钉在字面量 `grok-4.6` | 只留中转那一项，标题与看图都用它（用户写过就不动） | 内置型号走 xAI 自己的服务，国内连不上、也不走当前账号；中转型号不叫 grok-4.6 时标题会悄悄失败 |
 | Gemini 的记录保留期 | `general.sessionRetention.maxAge` | `"30d"` | `"365d"` | 同上 |
 | Gemini 的 IDE 模式 | `ide.enabled` | 关 | 开 | 装在 IDE 里的客户少一步 |
 | 目录信任 | 见 `docs/WORKSPACE-TRUST.md` | 每次问 | 本软件打开的目录替用户信任 | 同上 |
@@ -179,6 +184,12 @@ Codex 那时 `recommended` 是 `null`，也就是那两天点过「更新」的�
   `WebFetch tool error (30006ms) … EDEADLINE_PREFLIGHT`，干等 30 秒。settings.json 顶层写
   `"skipWebFetchPreflight": true` 后同样条件 1.2 秒抓到，且不再请求 `/api/web/domain_info`。
   另外确认了 `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` **不会**跳过这一步。2.1.278 表现相同。
+- **Claude Code 2.1.277 的选模型菜单 —— 跑起来看到了**。不写时 `/model` 列出 Default（Opus 5 · 1M）、
+  Opus、Fable、Sonnet、Haiku 等官方阵容与单价。用 `config-files.ts` 按可用模型
+  `claude-opus-5` / `claude-sonnet-5` / `claude-haiku-4-5-20251001` 生成配置后，菜单变成
+  `Default (currently Opus 5) · Set by ANTHROPIC_DEFAULT_MODEL`、`Haiku 4.5`、`Opus 5`、
+  `Sonnet 5` 四行，选 Sonnet 5 后请求里的 `model` 就是 `claude-sonnet-5`。`modelPicker` 写成字符串
+  或缺字段时 Claude Code 只忽略这一个键，Key 与地址照常生效，不会连带整份配置失效。
 - **Claude Code 2.1.277 — 跑起来看到了**。`~/.claude/settings.json` 写
   `{"language":"简体中文"}`，把 `ANTHROPIC_BASE_URL` 指到本机假接口（原样落盘请求体、一律回
   500）后跑 `claude -p "hi"`，请求体的系统提示里出现
@@ -193,6 +204,33 @@ Codex 那时 `recommended` 是 `null`，也就是那两天点过「更新」的�
   Use a large value for long retention`，校验失败时的提示原文是
   `cleanupPeriodDays must be at least 1. To keep transcripts for a long time, set a large number
   (e.g. 3650 for ~10 years).`——**所以「不删」只能靠写一个大数，写 0 会被拒**。
+- **Gemini CLI 0.60.0 的后台型号 —— 跑起来看到了**。本机假接口只放行中转型号
+  `gemini-3.8-flash-high`、其余型号一律回「无可用渠道」。不做改写时：联网搜索与读网页发的是
+  `gemini-3-flash-preview`，默默重试 2.5 分钟以上；`/compress` 发
+  `gemini-3.1-pro-preview-customtools`，转圈一分多钟；有过上一次会话时，启动就用
+  `gemini-3.1-flash-lite` 写摘要；`-m auto` 先用 flash-lite 分类再用 `gemini-3.1-pro-preview`，
+  77 秒后报错。用 `config-files.ts` 生成的 settings.json 复跑联网搜索，`googleSearch` 那次请求
+  打到 `gemini-3.8-flash-high`，全程 2.2 秒。型号表出自 bundle 的 `DEFAULT_MODEL_CONFIGS`，抬
+  Gemini 推荐版本时要重新核。
+- **Grok 1.0.40 的画图工具 —— 跑起来看到了**。二进制里的配置表原文
+  `| endpoints.xai_api_base_url | string | pin | user | Public xAI API base. Also GROK_XAI_API_BASE_URL. |`。
+  本机假接口当中转、出网代理记录去官方主机的连接，让模型调一次 `image_gen`：不改时请求带着
+  `Authorization: Bearer <中转 Key>`、型号 `grok-imagine-image-quality` 去连 `api.x.ai`，
+  官方主机被丢包时 `-p` 卡满 120 秒；写上 `[endpoints] xai_api_base_url = "<中转>/v1"` 后
+  请求变成打到中转的 `POST /v1/images/generations`，整次 0.5 秒，没有任何去 `api.x.ai` 的连接。
+- **Codex 0.155.1 的使用统计 —— 跑起来看到了**。出网代理把官方主机静默丢包，跑
+  `codex exec --skip-git-repo-check "hi"`：整次 10.28 秒，时间都花在退出前往
+  `https://ab.chatgpt.com/otlp/v1/metrics` 发指标；`[analytics] enabled = false` 后 0.24 秒，也不再
+  连 `ab.chatgpt.com`。TUI 退出从约 1.3 秒降到约 0.9 秒。app-server 默认不开统计，只有桌面端这类
+  第一方客户端用 `--analytics-default-enabled` 拉起时才开，而 `enabled = false` 能压过这个参数。
+  请求体不受影响。
+- **Grok 1.0.40 的型号名单 —— 跑起来看到了**。二进制里的配置表写明 `models.allowed_models` 是
+  「Glob allowlist for the model picker, default, and `-m`」，`models.session_summary` 是
+  「Model used for session titles and summaries」。不加名单时 `grok models` 列出
+  `grok-4.6`、`grok-4.5` 与中转那一项，选内置的会去连 `cli-chat-proxy.grok.com`；加上
+  `allowed_models = ["grok"]` 后只剩中转那一项。把中转型号改成一个内置目录里没有的名字，在伪终端
+  里连聊两轮：标题、主对话、每轮小结、输入建议一共 8 次请求，全部是中转型号。`hidden_models` /
+  `disabled_models` 会按 `model` 字段把中转那一项一起藏掉，不能用。
 - **Gemini CLI 0.60.0 — 读 bundle 得出**。settings schema 里 `general.sessionRetention` 的
   `enabled` 默认 `true`、`maxAge` 默认 `"30d"`、`minRetention` 默认 `"1d"`；`maxAge` 的解析是
   `/^(\d+)([dhwm])$/`，`"365d"` 合法。要紧的是 `getDefaultsFromSchema` **会递归补齐嵌套默认

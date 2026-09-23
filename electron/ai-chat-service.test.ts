@@ -5,7 +5,8 @@ import {
   type AiChatStreamEvent,
   type AiChatStreamLogEntry,
 } from './ai-chat-service'
-import type { ChatCredentialCoordinator } from './chat-credential-coordinator'
+import { ChatKeyQuotaExhaustedError, type ChatCredentialCoordinator } from './chat-credential-coordinator'
+import { networkFailureMessages } from './network-failure'
 import { relayQuotaFailureMessages } from './relay-quota-failure'
 
 const encoder = new TextEncoder()
@@ -154,6 +155,24 @@ describe('AI chat streaming service', () => {
 
     expect(fetchImpl).not.toHaveBeenCalled()
     expect(events).toEqual([expect.objectContaining({ type: 'error', code: 'model-unavailable' })])
+  })
+
+  it('says the chat key\'s own cap is used up instead of the generic preparation failure', async () => {
+    const events: AiChatStreamEvent[] = []
+    const fetchImpl = vi.fn<TestFetch>()
+    const coordinator = credentialCoordinator()
+    coordinator.resolveCredential = vi.fn(async () => { throw new ChatKeyQuotaExhaustedError() })
+    const service = createAiChatService({
+      credentialCoordinator: coordinator,
+      fetchImpl,
+      emit: (_senderId, event) => events.push(event),
+    })
+
+    service.start(startInput())
+    await service.whenIdle()
+
+    expect(fetchImpl).not.toHaveBeenCalled()
+    expect(events).toEqual([expect.objectContaining({ type: 'error', code: 'key-quota-exhausted', message: relayQuotaFailureMessages.keyLimit })])
   })
 
   it('coalesces nearby chunks on the configured batching interval', async () => {
@@ -361,6 +380,54 @@ describe('AI chat streaming service', () => {
     service.start(startInput())
     await service.whenIdle()
     expect(events).toEqual([expect.objectContaining({ message: '当前 API Key 无权使用所选模型或分组' })])
+  })
+
+  it.each([
+    ['a gateway error page', 502, { 'content-type': 'text/html' }],
+    ['an edge origin timeout', 522, { 'content-type': 'text/html' }],
+    ['a managed challenge', 403, { 'content-type': 'text/html', 'cf-mitigated': 'challenge' }],
+  ])('says the service is unavailable for %s instead of blaming the key', async (_label, status, headers) => {
+    const events: AiChatStreamEvent[] = []
+    const service = createAiChatService({
+      credentialCoordinator: credentialCoordinator(),
+      fetchImpl: vi.fn<TestFetch>(async () => new Response('<html>Just a moment...</html>', { status, headers })),
+      emit: (_senderId, event) => events.push(event),
+    })
+    service.start(startInput())
+    await service.whenIdle()
+    expect(events).toEqual([expect.objectContaining({
+      type: 'error',
+      code: 'service-unavailable',
+      message: networkFailureMessages.serviceUnavailable,
+    })])
+  })
+
+  it('keeps a JSON 403 from the relay on the key and group wording', async () => {
+    const events: AiChatStreamEvent[] = []
+    const service = createAiChatService({
+      credentialCoordinator: credentialCoordinator(),
+      fetchImpl: vi.fn<TestFetch>(async () => new Response('{"error":{"message":"forbidden"}}', { status: 403, headers: { 'content-type': 'application/json', server: 'cloudflare' } })),
+      emit: (_senderId, event) => events.push(event),
+    })
+    service.start(startInput())
+    await service.whenIdle()
+    expect(events).toEqual([expect.objectContaining({ code: 'upstream-http-error' })])
+  })
+
+  it('does not blame the login or the key when preparing the group fails because the service is down', async () => {
+    const coordinator = credentialCoordinator()
+    coordinator.resolveCredential = vi.fn(async () => {
+      throw new Error(`${networkFailureMessages.serviceUnavailable}（HTTP 503）`)
+    })
+    const events: AiChatStreamEvent[] = []
+    const fetchImpl = vi.fn<TestFetch>()
+    const service = createAiChatService({ credentialCoordinator: coordinator, fetchImpl, emit: (_senderId, event) => events.push(event) })
+    service.start(startInput())
+    await service.whenIdle()
+    expect(events).toEqual([expect.objectContaining({ code: 'service-unavailable' })])
+    expect(fetchImpl).not.toHaveBeenCalled()
+    await expect(service.completeOnce({ group: 'default', model: 'gpt-5.4', messages: [{ role: 'user', content: 'hi' }] }))
+      .rejects.toThrow(networkFailureMessages.serviceUnavailable)
   })
 
   it('rejects media models, duplicate ownership keys, and excessive per-sender concurrency', async () => {

@@ -5,7 +5,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { _electron as electron, expect } from '@playwright/test'
 import { collectedPromiseAttempts, collectedPromiseBackoffFor, fixtureReadyTimeoutMs } from './fixture-readiness.mjs'
-import { createSmokeRuntime } from './smoke-runtime.mjs'
+import { createSmokeRuntime, debuggerReleaseBudgetMs, whenOnlyDebuggerHoldsProcess } from './smoke-runtime.mjs'
 
 // Run after npm run compile. Every network transport is replaced before the
 // application entry is loaded; the fixture never contacts either real site.
@@ -350,6 +350,130 @@ async function start() {
   return page
 }
 
+// A start with a saved account is the one that restores the session and warms
+// the home-page scan at the same time (#372). On an elevated Windows token that scan
+// used to hold the main thread on synchronous Program Files ACL probes, so a
+// window closed in those first seconds took longer than the close-race smoke's
+// budget to exit. This start is deliberately not counted in applicationStarts:
+// it closes before the isolation probes could run, and it never reaches a step
+// that talks to the fixture beyond what start-up does on its own.
+//
+// Two budgets, because they measure different things. The window has to be gone
+// within the close-race smoke's 5 seconds: that is what the user sees, and every
+// step up to it runs on the main thread, so a wedged main thread fails it. The
+// process then has longer to end: the quit path itself allows 2 seconds of
+// cleanup and 2 more before it forces the exit, so a process-exit budget of 5
+// seconds left a loaded runner under a second for Windows to tear the process
+// down, and failed PRs that never touched start-up (#400).
+const restoredCloseBudgetMs = 5_000
+const restoredExitBudgetMs = 10_000
+async function closeWhileRestoring() {
+  progress('launching an instance that is closed while it restores the saved account')
+  // The settings file seeded above has no workspace, so the first start already
+  // replaced it with valid defaults, and those ask on close: a modal dialog, not
+  // an exit. Only this start needs to quit on close, so only it gets the
+  // preference, written onto whatever the earlier starts left behind.
+  const settingsPath = path.join(userData, 'settings.json')
+  const settings = JSON.parse(await fs.readFile(settingsPath, 'utf8'))
+  await fs.writeFile(settingsPath, JSON.stringify({ ...settings, closeBehavior: 'quit' }), 'utf8')
+  const runtimeLogLinesBefore = (await fs.readFile(path.join(userData, 'logs/runtime.jsonl'), 'utf8').catch(() => '')).split(/\r?\n/).filter(Boolean).length
+  const instance = await withDeadline('Electron launch', stepBudgetMs, () => electron.launch({
+    cwd: projectRoot, args: [bootstrap, `--user-data-dir=${userData}`], env, timeout: stepBudgetMs }))
+  const child = instance.process()
+  if (child.pid) trackProcessIds([child.pid])
+  try {
+    const page = await withDeadline('first window', stepBudgetMs, () => instance.firstWindow({ timeout: stepBudgetMs }))
+    await withDeadline('preload bridge', fixtureReadyTimeoutMs,
+      () => page.waitForFunction(() => Boolean(window.xingmang), { timeout: fixtureReadyTimeoutMs }))
+    // Wait for the restore itself to land so the forced exit cannot interrupt a
+    // credential rotation the next start depends on. The scan warmed alongside
+    // it is still running at this point on a Windows runner.
+    await expect.poll(() => withDeadline('restored session', stepBudgetMs,
+      () => page.evaluate(() => window.xingmang.getAccountSession())).then((state) => state.authenticated === true),
+    { timeout: fixtureReadyTimeoutMs }).toBe(true)
+    // How long a trivial main-process round trip takes right before the close:
+    // a main thread stuck in synchronous work shows up here, not in the close.
+    const pingStartedAt = Date.now()
+    const mainPingMs = await withDeadline('main-process ping', stepBudgetMs, () => instance.evaluate(() => 1))
+      .then(() => `${Date.now() - pingStartedAt}ms`, (error) => {
+        // Evidence only: a collected answer says nothing about the main thread.
+        if (!/Resulting promise was garbage collected/.test(String(error?.message))) throw error
+        return 'unknown (answer collected)'
+      })
+    let closeRequestedAt = 0
+    let exitedAlready = false
+    const windowClosed = new Promise((resolve) => page.once('close', () => resolve(Date.now() - closeRequestedAt)))
+    const exited = new Promise((resolve) => child.once('exit', (code) => {
+      exitedAlready = true
+      resolve({ code, closeLatency: Date.now() - closeRequestedAt })
+    }))
+    const debuggerOnly = whenOnlyDebuggerHoldsProcess(child)
+    // The close is scheduled rather than run inside the evaluation, so the
+    // evaluation answers before app.quit() can tear the inspector down. An
+    // answer that never comes back ("Resulting promise was garbage collected",
+    // which this fixture hits routinely) does not prove the close ran: the first
+    // CI run of this check swallowed exactly that and then waited on a window
+    // nobody had asked to close. So it is retried, and a second close on a
+    // window that is already quitting is a no-op in the lifecycle.
+    let closeScheduled = false
+    for (let attempt = 1; attempt <= collectedPromiseAttempts && !closeScheduled && !exitedAlready; attempt += 1) {
+      closeRequestedAt = Date.now()
+      try {
+        closeScheduled = await withDeadline(`close request (attempt ${attempt}/${collectedPromiseAttempts})`, stepBudgetMs,
+          () => instance.evaluate(({ BrowserWindow }) => {
+            const window = BrowserWindow.getAllWindows()[0]
+            if (!window || window.isDestroyed()) return false
+            setTimeout(() => { if (!window.isDestroyed()) window.close() }, 0)
+            return true
+          }))
+        if (!closeScheduled) throw new Error('the main window was gone before the close request')
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        if (/Target|closed|destroyed/i.test(message) && !/garbage collected/.test(message)) break
+        if (!/Resulting promise was garbage collected/.test(message) || attempt === collectedPromiseAttempts) throw error
+        progress(`close request: the inspector promise was collected on attempt ${attempt}/${collectedPromiseAttempts}, asking again`)
+      }
+    }
+    const windowLatency = await Promise.race([windowClosed, new Promise((resolve) => setTimeout(() => resolve(null), restoredCloseBudgetMs))])
+    // The exit budget is the application's. It ends at the exit, or where only
+    // Playwright's inspector connection is left keeping the process alive: on a
+    // busy runner that connection alone has held a finished process past 10 s
+    // (main at fc90ce8), with the window gone 701 ms after the request.
+    const applicationDone = Promise.race([exited.then(() => Date.now()), debuggerOnly]).then((at) => at - closeRequestedAt)
+    const doneLatency = windowLatency === null
+      ? null
+      : await Promise.race([applicationDone, new Promise((resolve) => setTimeout(() => resolve(null), Math.max(0, closeRequestedAt + restoredExitBudgetMs - Date.now())))])
+    if (doneLatency === null) {
+      // Without this the failure only says "too slow"; whether the main thread
+      // is wedged, the window is still up, or quit is waiting on something is
+      // what decides the fix.
+      const state = await withDeadline('main-process state after the close budget', 3_000, () => instance.evaluate(({ BrowserWindow }) =>
+        BrowserWindow.getAllWindows().map((window) => ({ destroyed: window.isDestroyed(), visible: !window.isDestroyed() && window.isVisible() }))))
+        .then((windows) => JSON.stringify(windows), (error) => `main process did not answer: ${error instanceof Error ? error.message : String(error)}`)
+      const runtimeLog = await fs.readFile(path.join(userData, 'logs/runtime.jsonl'), 'utf8').catch(() => '')
+      const recent = runtimeLog.split(/\r?\n/).slice(runtimeLogLinesBefore).filter(Boolean).map((line) => {
+        try {
+          const entry = JSON.parse(line)
+          return `${entry.timestamp} ${entry.level} ${entry.source}/${entry.event}${entry.detail?.durationMs !== undefined ? ` ${entry.detail.durationMs}ms` : ''}${entry.event === 'cli.execution-mode' ? ` ${JSON.stringify(entry.detail)}` : ''}`
+        } catch {
+          return line.slice(0, 200)
+        }
+      })
+      progress(`close request at ${new Date(closeRequestedAt).toISOString()}, main-process ping before it ${mainPingMs}, window ${windowLatency === null ? `still up after ${restoredCloseBudgetMs}ms` : `gone ${windowLatency}ms after the request`}, windows now ${state}`)
+      progress(`runtime log since this launch:\n${recent.slice(-120).join('\n')}`)
+    }
+    assert.ok(windowLatency !== null, 'closing the window while the saved account restores must not wait on the start-up scan')
+    assert.ok(doneLatency !== null, `the application must finish quitting within ${restoredExitBudgetMs}ms of the close request once the window is gone`)
+    const result = await withDeadline('inspector release after the application quit', debuggerReleaseBudgetMs, () => exited)
+    assert.equal(result.code, 0)
+    progress(`window gone ${windowLatency}ms, application done ${doneLatency}ms and process ended ${result.closeLatency}ms after the request (main-process ping before it ${mainPingMs})`)
+  } finally {
+    await withDeadline('main process exit', 20_000, () => instance.evaluate(({ app }) => app.exit(0))).catch(() => undefined)
+    await withDeadline('close', 20_000, () => instance.close()).catch(() => undefined)
+    if (child.pid) releaseProcessIds([child.pid])
+  }
+}
+
 async function stop() {
   if (!application) return
   // Named after the stage it interrupts: a failure anywhere above unwinds
@@ -543,8 +667,10 @@ async function main() {
     await fs.access(path.join(userData, 'managed-cli-keys.dat'))
     await fs.access(path.join(userData, 'realms/api-account/managed-cli-keys.dat'))
     recordPass('key-stores-separated')
-    beginStage('restart with sub2api active')
+    beginStage('close while the saved account restores')
     await stop()
+    await closeWhileRestoring()
+    beginStage('restart with sub2api active')
     page = await start()
     assert.equal((await evaluateInRenderer(page, 'restored session', () => window.xingmang.getAccountSession())).siteId, 'solov-api')
     assert.equal((await evaluateInRenderer(page, 'restored saved accounts', () => window.xingmang.listSavedAccounts())).length, 2)

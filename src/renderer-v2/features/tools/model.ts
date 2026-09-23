@@ -191,6 +191,9 @@ export function sourceFor(
   }
   if (config.actualBaseUrl && !config.matchesRelay) return 'unknown'
   if (config.exists && !config.hasApiKey && provider !== 'grok') return 'official'
+  // Grok 的 config.toml 装好就有（软件写了关自动更新），没填密钥不等于用官方账号；
+  // 只有 ~/.grok/auth.json 里真有一份登录，才算在用 Grok 账号。
+  if (provider === 'grok' && config.exists && !config.hasApiKey && config.grokLoginMode) return 'official'
   return 'missing'
 }
 
@@ -199,11 +202,11 @@ function sameServiceUrl(left: string, right: string): boolean {
 }
 
 /**
- * 一键切回官方只给 Claude Code 与 Codex。Gemini 的官方登录自 2026-06 起只剩企业版
+ * 一键切回官方给 Claude Code、Codex 与 Grok。Gemini 的官方登录自 2026-06 起只剩企业版
  * Code Assist（registry/tools.ts 的 officialAccountNotes），小白点下去只会在 Google
- * 登录页反复失败；企业用户仍可在配置里选。Grok 没有做官方来源。
+ * 登录页反复失败；企业用户仍可在配置里选。
  */
-const oneClickOfficialProviders: ReadonlySet<ProviderId> = new Set<ProviderId>(['claude', 'codex'])
+const oneClickOfficialProviders: ReadonlySet<ProviderId> = new Set<ProviderId>(['claude', 'codex', 'grok'])
 
 /**
  * 首页工具行「…」菜单里那一项切换指向哪边；null = 不给这一项。
@@ -226,6 +229,19 @@ export function connectionReady(
   if (source === 'official') return true
   if ((source !== 'account' && source !== 'manual' && !((source === 'unknown' || source === 'changed') && config.hasApiKey && config.matchesRelay)) || !config.model.trim()) return false
   return provider !== 'gemini' || config.authType === 'gemini-api-key'
+}
+
+/**
+ * 账号还在恢复时读到的配置，没有账号可比，来源只可能判成 unknown——不是真的来源
+ * 不明，更不是被改过。这一段时间里「用的是别处的配置」「配置被改过」都先不说，按
+ * 连接本身能不能用显示，等恢复结束补读一次配置再下结论。只放过 sourceFor 里要看
+ * 账号才判得了的那一支（Key 在、地址对得上当前中转）：地址指向别处的配置与账号
+ * 无关，照常显示。
+ */
+export function ownershipAwaitingAccount(config: AppConfigSummary, tool: Pick<ToolPresentation, 'provider' | 'source'>): boolean {
+  const provider = config.providers[tool.provider]
+  return config.ownershipPending === true && (tool.source === 'unknown' || tool.source === 'changed')
+    && provider.hasApiKey && provider.matchesRelay
 }
 
 export type CodexDesktopUpdateKind = 'latest' | 'installable' | 'store-current' | 'unknown'

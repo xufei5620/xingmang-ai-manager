@@ -16,6 +16,7 @@ import {
   redactDiagnosticText,
   relayStatusProbeUrl,
   runDiagnostics,
+  type DiagnosticsScanSnapshot,
   type DiagnosticToolId,
   type DiagnosticsDependencies,
 } from './diagnostics'
@@ -1427,6 +1428,46 @@ describe('the disk space check', () => {
   })
 })
 
+describe('runDiagnostics AI output location', () => {
+  it('only checks the AI output location when the host provides a probe', async () => {
+    const report = await runDiagnostics(dependencies(temporaryHome()))
+    expect(report.items.some((entry) => entry.code === 'AI_OUTPUT')).toBe(false)
+  })
+
+  it('passes when the probe can write', async () => {
+    const probeAiOutput = vi.fn(async () => undefined)
+    const report = await runDiagnostics({ ...dependencies(temporaryHome()), probeAiOutput })
+
+    expect(probeAiOutput).toHaveBeenCalledTimes(1)
+    expect(report.items.find((entry) => entry.code === 'AI_OUTPUT')).toMatchObject({
+      state: 'pass',
+      title: 'AI 作品保存位置',
+    })
+  })
+
+  it('shows an unwritable location as worth watching, in plain words, and logs the raw reason', async () => {
+    const home = temporaryHome()
+    const log = vi.fn()
+    const cause = Object.assign(new Error(`EACCES: permission denied, open '${path.join(home, 'output', '.write-check.tmp')}'`), { code: 'EACCES' })
+    const report = await runDiagnostics({
+      ...dependencies(home),
+      log,
+      probeAiOutput: async () => { throw new Error('保存位置写不进去，这次没有扣费。', { cause }) },
+    })
+
+    const item = report.items.find((entry) => entry.code === 'AI_OUTPUT')
+    // warn, not fail: the paid request is already stopped before charging, and
+    // a fail would put a startup notice in front of people who never generate.
+    expect(item?.state).toBe('warn')
+    expect(item?.summary).toContain('扣费前先拦下来')
+    expect(item?.summary).not.toMatch(/权限|Program Files|EACCES|output/)
+    expect(log).toHaveBeenCalledWith('warn', 'diagnostics.ai-output.unwritable', expect.any(String), expect.objectContaining({
+      raw: expect.stringContaining('EACCES'),
+    }))
+    expect(JSON.stringify(log.mock.calls)).not.toContain(home)
+  })
+})
+
 describe('parseClashTunConfig', () => {
   it('reads supported top-level and nested TUN switches', () => {
     expect(parseClashTunConfig('enable_tun_mode: true\n')).toBe(true)
@@ -1448,3 +1489,56 @@ describe('parseClashTunConfig', () => {
     expect(() => parseClashTunConfig(source)).toThrow(/alias|Alias|aliases|YAML/i)
   })
 })
+
+describe('diagnostics reusing the home page scan', () => {
+  function scanned(overrides: { gitFailed?: boolean; codexFailed?: boolean; desktopFailed?: boolean } = {}): DiagnosticsScanSnapshot {
+    const tool = (version: string, failed = false) => failed
+      ? { installed: false, version: null, path: null, installDirectory: null, detectionFailed: true, detectionError: '探测失败' }
+      : { installed: true, version, path: `C:\\tools\\${version}.exe`, installDirectory: null }
+    const cli = (version: string, failed = false) => ({ ...tool(version, failed), latestVersion: null, updateAvailable: false })
+    return {
+      runtime: { node: tool('22.12.0'), npm: tool('10.9.0'), python: { installed: false, version: null, path: null, installDirectory: null }, git: tool('2.47.0', overrides.gitFailed) },
+      clis: { claude: cli('2.1.277'), codex: cli('0.155.1', overrides.codexFailed), gemini: cli('0.60.0'), grok: cli('1.0.40') },
+      desktopApps: { codex: { ...tool('26.1', overrides.desktopFailed), appVersion: null, mirrorVersion: null, mirrorUpdateAvailable: null, mirrorError: null, running: false } },
+    } as unknown as DiagnosticsScanSnapshot
+  }
+
+  function probes(home: string) {
+    const input = dependencies(home)
+    const inspectTool = vi.fn(input.inspectTool!)
+    const inspectPowerShell = vi.fn(input.inspectPowerShell!)
+    const inspectCodexDesktop = vi.fn(input.inspectCodexDesktop!)
+    return { input: { ...input, inspectTool, inspectPowerShell, inspectCodexDesktop, resolvePowerShellExecutable: () => 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe' }, inspectTool, inspectPowerShell, inspectCodexDesktop }
+  }
+
+  it('answers runtimes, CLIs, the desktop app and PowerShell from the scan without starting any probe', async () => {
+    const p = probes(temporaryHome())
+    const report = await runDiagnostics({ ...p.input, recentScan: scanned() })
+    expect(p.inspectTool).not.toHaveBeenCalled()
+    expect(p.inspectPowerShell).not.toHaveBeenCalled()
+    expect(p.inspectCodexDesktop).not.toHaveBeenCalled()
+    expect(report.items.find((item) => item.code === 'RUNTIME_NODE')).toMatchObject({ state: 'pass', summary: '22.12.0' })
+    expect(report.items.find((item) => item.code === 'RUNTIME_PYTHON')).toMatchObject({ state: 'warn', summary: '未安装' })
+    expect(report.items.find((item) => item.code === 'CLI_CODEX')).toMatchObject({ state: 'pass', summary: '0.155.1' })
+    expect(report.items.find((item) => item.code === 'SYSTEM_POWERSHELL')).toMatchObject({ state: 'pass', summary: '可用' })
+    expect(report.items.find((item) => item.code === 'CODEX_DESKTOP')).toMatchObject({ state: 'pass', summary: '已安装，当前未运行' })
+  })
+
+  it('still probes the items the scan itself could not detect', async () => {
+    const p = probes(temporaryHome())
+    await runDiagnostics({ ...p.input, recentScan: scanned({ gitFailed: true, codexFailed: true, desktopFailed: true }) })
+    expect(p.inspectTool.mock.calls.map(([tool]) => tool).sort()).toEqual(['codex', 'git'])
+    expect(p.inspectCodexDesktop).toHaveBeenCalledOnce()
+    // 桌面端那次 PowerShell 没跑成，就证明不了 PowerShell 可用，得自己起一次。
+    expect(p.inspectPowerShell).toHaveBeenCalledOnce()
+  })
+
+  it('probes everything itself when no scan is handed in, as a manual re-check does', async () => {
+    const p = probes(temporaryHome())
+    await runDiagnostics(p.input)
+    expect(p.inspectTool).toHaveBeenCalledTimes(8)
+    expect(p.inspectPowerShell).toHaveBeenCalledOnce()
+    expect(p.inspectCodexDesktop).toHaveBeenCalledOnce()
+  })
+})
+

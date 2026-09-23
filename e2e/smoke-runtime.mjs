@@ -25,6 +25,31 @@ export function describeProcessTree() {
   return probe.stdout?.trim() || probe.stderr?.trim() || 'no process listing available'
 }
 
+// Node prints this line once the main process has run its whole exit path and
+// is held open only by an attached inspector client. electron.launch always
+// attaches one (--inspect=0), and Playwright drops it when it reads this line,
+// which normally ends the process within half a second. On a busy Windows
+// runner that last step has taken longer than 15 s (main at fc90ce8, #404),
+// after the application itself had already finished quitting. Resolves with
+// the time the line arrived; never rejects.
+export function whenOnlyDebuggerHoldsProcess(child) {
+  return new Promise((resolve) => {
+    let tail = ''
+    function onData(chunk) {
+      tail = (tail + String(chunk)).slice(-256)
+      if (!tail.includes('Waiting for the debugger to disconnect')) return
+      child.stderr?.off('data', onData)
+      resolve(Date.now())
+    }
+    child.stderr?.on('data', onData)
+  })
+}
+
+// How long the process may stay up after that line before a smoke gives up on
+// it. Playwright closes the inspector socket gracefully, and the WebSocket
+// library waits up to 30 s for the other side to acknowledge before dropping it.
+export const debuggerReleaseBudgetMs = 45_000
+
 export function killProcessTree(pid) {
   if (!Number.isSafeInteger(pid) || pid <= 0) return
   if (process.platform === 'win32') {
