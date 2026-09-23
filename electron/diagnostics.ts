@@ -1310,7 +1310,7 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
       // 从不提权，所以第二问只在 Windows 上做。
       code: 'ADMINISTRATOR',
       title: '运行权限',
-      // 软件按不按管理员方式做事，是启动时就定好的（从严），这一项只负责说明。
+      // 软件按不按管理员方式做事，是启动时就定好的，这一项只负责说明。
       // 电脑正忙时它没问完，不该让用户以为出了故障。
       timeoutOutcome: {
         state: 'warn',
@@ -1318,32 +1318,43 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
         details: { timedOut: true },
       },
       run: async (signal): Promise<CheckOutcome> => {
-        const probeFailure = platform === 'win32' ? dependencies.windowsExecution?.probeFailure : undefined
+        const windowsExecution = platform === 'win32' ? dependencies.windowsExecution : undefined
+        const probeFailure = windowsExecution?.probeFailure
         // 启动时那次探测失败的机器上，这次探测多半也会失败（同样要起 PowerShell）。
         // 那时这一项要说的正是「没问出来」，不能让它自己的失败把原因盖掉。
         const elevated = probeFailure
           ? await Promise.resolve(inspectAdmin(signal)).catch(() => null)
           : await inspectAdmin(signal)
+        const probeDetails: Record<string, string | number | null> = probeFailure
+          ? {
+              executionMode: windowsExecution?.mode ?? null,
+              probeFailure: probeFailure.reason,
+              probeElapsedMs: windowsExecution?.elapsedMs ?? null,
+            }
+          : {}
+        if (probeFailure && windowsExecution?.mode === 'trusted-only') {
+          // 启动时已经看出是高权限、只是细节没问出来，软件按管理员方式处理（从严）。
+          // 这时再说「当前以普通用户权限运行」就和实际行为对不上，客服会被带偏。
+          return {
+            state: 'warn',
+            summary: `软件这次是以管理员权限打开的，但没能确认细节，已按管理员方式处理，所以安装和打开工具可能会失败。原因：${describeWindowsExecutionProbeFailure(probeFailure.reason)}。请关掉软件，直接双击重新打开（不要选「以管理员身份运行」）；还不行请在「反馈」页导出报告发给客服`,
+            details: { elevated, required: false, ...probeDetails },
+          }
+        }
         if (elevated) {
           return {
             state: 'warn',
             summary: '当前以管理员权限运行，建议普通启动',
-            details: { elevated, required: false, canElevate: true },
+            details: { elevated, required: false, canElevate: true, ...probeDetails },
           }
         }
         if (probeFailure) {
-          // 启动时那次探测没问出结果，软件已按管理员方式处理（从严）。这时再说
-          // 「当前以普通用户权限运行」就和实际行为对不上，客服会被带偏。
+          // 什么都没看出来时按普通用户处理，软件照常能用，不必吓用户；原因只留给客服。
+          // 「能不能提权」那一问同样要起 PowerShell，这时不再问。
           return {
-            state: 'warn',
-            summary: `没能确认软件是不是以管理员身份在运行，已按管理员方式处理，所以安装和打开工具可能会失败。原因：${describeWindowsExecutionProbeFailure(probeFailure.reason)}。重新打开软件会再确认一次；还不行请在「反馈」页导出报告发给客服`,
-            details: {
-              elevated,
-              required: false,
-              executionMode: dependencies.windowsExecution?.mode ?? null,
-              probeFailure: probeFailure.reason,
-              probeElapsedMs: dependencies.windowsExecution?.elapsedMs ?? null,
-            },
+            state: 'pass',
+            summary: '当前以普通用户权限运行',
+            details: { elevated, required: false, canElevate: null, ...probeDetails },
           }
         }
         const capability = platform === 'win32' ? await inspectElevation(signal) : 'unknown'

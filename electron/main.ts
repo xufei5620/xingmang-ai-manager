@@ -858,9 +858,12 @@ if (!hasSingleInstanceLock) {
       ...(windowsCliExecution.probeFailure ? { probeFailed: windowsCliExecution.probeFailure.reason } : {}),
     })
     if (windowsCliExecution.probeFailure) {
-      // 这次探测失败时从严按管理员处理：普通用户会因此装不了、打不开工具。原因
-      // 以前被 catch 吞掉，客服只看得到一个 trusted-only，分不出是真管理员还是没问出来。
-      runtimeLog.log('warn', 'security', 'cli.execution-mode.probe-failed', '没能确认当前是否以管理员身份运行，已按管理员处理', {
+      // 探测失败时：已看出是高权限的仍按管理员处理，什么都没看出来的按普通用户处理
+      // （resolveWindowsCliExecutionModeDetailed）。原因以前被 catch 吞掉，客服分不出
+      // 是真管理员还是没问出来。
+      const treatedAs = windowsCliExecutionMode === 'trusted-only' ? '管理员' : '普通用户'
+      runtimeLog.log('warn', 'security', 'cli.execution-mode.probe-failed', `没能确认当前是否以管理员身份运行，已按${treatedAs}处理`, {
+        mode: windowsCliExecutionMode,
         reason: windowsCliExecution.probeFailure.reason,
         detail: windowsCliExecution.probeFailure.detail,
         elapsedMs: windowsCliExecution.elapsedMs,
