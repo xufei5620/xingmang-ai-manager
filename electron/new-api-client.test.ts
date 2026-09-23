@@ -148,6 +148,11 @@ function failureResponse(message: string, status = 200): Response {
   return jsonResponse({ success: false, message, data: null }, { status })
 }
 
+// What rc.24 writeAuthSessionError returns when the refresh cookie is dead.
+function refreshRejectedResponse(): Response {
+  return jsonResponse({ success: false, code: 'AUTH_UNAUTHORIZED', message: 'Unauthorized' }, { status: 401 })
+}
+
 function usableGroupsResponse(): Response {
   return jsonResponse({
     success: true,
@@ -1200,6 +1205,7 @@ describe('getBalance', () => {
     fetchImpl
       .mockResolvedValueOnce(statusResponse())
       .mockResolvedValueOnce(failureResponse('AuthVersion 已变化', 401))
+      .mockResolvedValueOnce(refreshRejectedResponse())
 
     await expect(client.getBalance()).rejects.toBeInstanceOf(NewApiAuthenticationError)
     expect(client.isAuthenticated()).toBe(false)
@@ -1765,6 +1771,7 @@ describe('getProfile', () => {
     const fetchImpl = vi.fn<NewApiFetch>()
     const client = await authenticatedClient(fetchImpl)
     fetchImpl.mockResolvedValueOnce(failureResponse('登录状态已失效', 401))
+    fetchImpl.mockResolvedValueOnce(refreshRejectedResponse())
 
     await expect(client.getProfile()).rejects.toBeInstanceOf(NewApiAuthenticationError)
     expect(client.isAuthenticated()).toBe(false)
@@ -2249,6 +2256,7 @@ describe('listKeys', () => {
     const fetchImpl = vi.fn<NewApiFetch>()
     const client = await authenticatedClient(fetchImpl)
     fetchImpl.mockResolvedValueOnce(failureResponse('登录状态已失效', 401))
+    fetchImpl.mockResolvedValueOnce(refreshRejectedResponse())
 
     await expect(client.listKeys()).rejects.toBeInstanceOf(NewApiAuthenticationError)
     expect(client.isAuthenticated()).toBe(false)
@@ -2301,6 +2309,7 @@ describe('revokeKey', () => {
     const fetchImpl = vi.fn<NewApiFetch>()
     const client = await authenticatedClient(fetchImpl)
     fetchImpl.mockResolvedValueOnce(failureResponse('登录状态已失效', 401))
+    fetchImpl.mockResolvedValueOnce(refreshRejectedResponse())
 
     await expect(client.revokeKey(1)).rejects.toBeInstanceOf(NewApiAuthenticationError)
     expect(client.isAuthenticated()).toBe(false)
@@ -2682,6 +2691,7 @@ describe('changePassword', () => {
     const fetchImpl = vi.fn<NewApiFetch>()
     const client = await authenticatedClient(fetchImpl)
     fetchImpl.mockResolvedValueOnce(failureResponse('登录状态已失效', 401))
+    fetchImpl.mockResolvedValueOnce(refreshRejectedResponse())
 
     await expect(client.changePassword({ originalPassword: 'old-password-1', newPassword: 'new-password-2' }))
       .rejects.toBeInstanceOf(NewApiAuthenticationError)
@@ -2898,7 +2908,25 @@ describe('silent 401 refresh-and-retry (withSession)', () => {
     expect(retriedSelfHeaders.Authorization).toBe('Bearer rotated-token')
   })
 
-  it('attempts exactly one refresh, then surfaces the original 401 when the refresh call itself fails', async () => {
+  it('attempts exactly one refresh, then clears the session and surfaces the original 401 when the refresh endpoint rejects the cookie', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    fetchImpl
+      .mockResolvedValueOnce(statusResponse())
+      .mockResolvedValueOnce(failureResponse('AuthVersion 已变化', 401))
+      .mockResolvedValueOnce(jsonResponse({ success: false, code: 'AUTH_UNAUTHORIZED', message: 'Unauthorized' }, { status: 401 }))
+
+    const error = await client.getBalance().catch((caught: unknown) => caught)
+    expect(error).toBeInstanceOf(NewApiAuthenticationError)
+    expect((error as Error).message).toBe('AuthVersion 已变化')
+    expect(client.isAuthenticated()).toBe(false)
+    expect(fetchImpl).toHaveBeenCalledTimes(3)
+    expect(String(fetchImpl.mock.calls[2][0])).toBe(`${testBaseUrl}/api/user/auth/refresh`)
+  })
+
+  // The access token lives 15 minutes, so this refresh runs all day. Before
+  // this, a network blip here signed the user out and removed the account.
+  it('keeps the session and surfaces the refresh failure itself when the refresh call cannot reach the server', async () => {
     const fetchImpl = vi.fn<NewApiFetch>()
     const client = await authenticatedClient(fetchImpl)
     fetchImpl
@@ -2906,10 +2934,56 @@ describe('silent 401 refresh-and-retry (withSession)', () => {
       .mockResolvedValueOnce(failureResponse('AuthVersion 已变化', 401))
       .mockRejectedValueOnce(new TypeError('network down'))
 
-    await expect(client.getBalance()).rejects.toBeInstanceOf(NewApiAuthenticationError)
-    expect(client.isAuthenticated()).toBe(false)
+    const error = await client.getBalance().catch((caught: unknown) => caught)
+    expect(error).toBeInstanceOf(TypeError)
+    expect(error).not.toBeInstanceOf(NewApiAuthenticationError)
+    expect(client.isAuthenticated()).toBe(true)
     expect(fetchImpl).toHaveBeenCalledTimes(3)
-    expect(String(fetchImpl.mock.calls[2][0])).toBe(`${testBaseUrl}/api/user/auth/refresh`)
+  })
+
+  it('keeps the session when the refresh endpoint is rate limited or in maintenance', async () => {
+    for (const refreshFailure of [
+      () => new Response('', { status: 429 }),
+      () => jsonResponse({ success: false, code: 'AUTH_INTERNAL_ERROR', message: 'Internal Server Error' }, { status: 500 }),
+      () => new Response('<html>maintenance</html>', { status: 503, headers: { 'content-type': 'text/html' } }),
+    ]) {
+      const fetchImpl = vi.fn<NewApiFetch>()
+      const client = await authenticatedClient(fetchImpl)
+      fetchImpl
+        .mockResolvedValueOnce(statusResponse())
+        .mockResolvedValueOnce(failureResponse('AuthVersion 已变化', 401))
+        .mockResolvedValueOnce(refreshFailure())
+
+      const error = await client.getBalance().catch((caught: unknown) => caught)
+      expect(error).toBeInstanceOf(Error)
+      expect(error).not.toBeInstanceOf(NewApiAuthenticationError)
+      expect(client.isAuthenticated()).toBe(true)
+    }
+  })
+
+  it('recovers on the next call after a transient refresh failure kept the session', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    fetchImpl
+      .mockResolvedValueOnce(statusResponse())
+      .mockResolvedValueOnce(failureResponse('AuthVersion 已变化', 401))
+      .mockRejectedValueOnce(new TypeError('network down'))
+    await expect(client.getBalance()).rejects.toThrow('network down')
+
+    fetchImpl
+      .mockResolvedValueOnce(statusResponse())
+      .mockResolvedValueOnce(failureResponse('AuthVersion 已变化', 401))
+      .mockResolvedValueOnce(jsonResponse({
+        success: true,
+        message: '',
+        data: { access_token: 'rotated-token', access_expires_at: null },
+      }))
+      .mockResolvedValueOnce(statusResponse())
+      .mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: userData() }))
+
+    const balance = await client.getBalance()
+    expect(balance.quota).toBe(1_000_000)
+    expect(client.isAuthenticated()).toBe(true)
   })
 
   it('gives up after exactly one refresh attempt when the retried call 401s again (bounded retry, no loop)', async () => {
