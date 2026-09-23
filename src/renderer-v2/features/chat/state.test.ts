@@ -62,6 +62,15 @@ describe('v2 chat request transitions', () => {
     expect(chatErrorMessage('当前模型不可用', 'model-unavailable')).toBe('当前模型不在所选分组的可用列表中，请刷新后重新选择')
     expect(chatErrorMessage('无法连接 AI 服务，请检查网络后重试', 'network-error')).toBe('无法连接 AI 服务，请检查网络后重试')
   })
+  it('keeps the do-not-resubmit warning when a paid image request times out or cannot be saved', () => {
+    const timeout = '生图请求超时；服务端可能仍在生成图片，请勿立即重复提交'
+    expect(chatErrorMessage(new Error(`Error invoking remote method 'ai:image-generate': Error: ${timeout}`))).toBe(timeout)
+    const downloaded = '图片已生成但下载失败，这次可能已经扣费，请勿立即重复提交；先检查网络，稍后再重新生成'
+    expect(chatErrorMessage(new Error(downloaded))).toBe(downloaded)
+    const video = '视频任务已创建但本地恢复记录保存失败（任务 video_1），请勿重复提交'
+    expect(chatErrorMessage(video)).toBe(video)
+    expect(chatErrorMessage('生图请求超时')).toBe('请求未完成，请检查网络后重试')
+  })
   it('never turns a service outage back into an expired login or a broken key', () => {
     const outage = networkFailureMessages.serviceUnavailable
     expect(chatErrorMessage(outage, 'service-unavailable')).toBe(outage)
