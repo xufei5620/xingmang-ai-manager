@@ -1,5 +1,5 @@
 import path from 'node:path'
-import { stat } from 'node:fs/promises'
+import { lstat } from 'node:fs/promises'
 import { fork, spawn, type ChildProcess, type ForkOptions } from 'node:child_process'
 import type { AccelerationApi, AccelerationConflictKind, AccelerationFailureReason, AccelerationState } from './acceleration-contract'
 import { accelerationFailureReason, isAccelerationConflictKind, isAccelerationFailureReason, withAccelerationReason } from './acceleration-contract'
@@ -129,6 +129,12 @@ export function createAccelerationDevelopmentHost(options: {
    * 那个在初始化时把网络设置改回去；`recovered` 就是这一次有没有成功。
    */
   onHelperExited?(recovered: boolean): void
+  /**
+   * 辅助进程是一整个 Electron（约 100MB），登录后读一次加速状态就会拉起来。
+   * 给了这个值，它在这么久没有新请求、且确认没在加速也没在给下载走线路时
+   * 自己退掉，下次用到再拉。缺省不退（旧行为）。
+   */
+  idleExitMs?: number
 }): AccelerationDevelopmentHost {
   const config = parseAccelerationDevelopmentConfig(options.config)
   const entitlementSource = parseAccelerationEntitlementSource(options.entitlementSource)
@@ -139,6 +145,11 @@ export function createAccelerationDevelopmentHost(options: {
   }
   let child: ChildProcess | null = null
   let ready: Promise<void> | null = null
+  // 闲置退出的那一个还在收尾（macOS 上它的系统代理组件要先放掉锁），新的
+  // 得等它真走了再拉，否则两个抢同一把锁，新的初始化会报「另一实例」。
+  let retiring: Promise<void> | null = null
+  let activity = 0
+  let idleTimer: ReturnType<typeof setTimeout> | null = null
   let disposed = false
   let disposal: Promise<void> | null = null
   let nextId = 0
@@ -191,9 +202,75 @@ export function createAccelerationDevelopmentHost(options: {
     })
   }
 
+  function clearIdleTimer() {
+    if (idleTimer) clearTimeout(idleTimer)
+    idleTimer = null
+  }
+
+  function scheduleIdleExit() {
+    clearIdleTimer()
+    const idleExitMs = options.idleExitMs
+    if (disposed || !child || !idleExitMs || idleExitMs <= 0) return
+    idleTimer = setTimeout(() => {
+      idleTimer = null
+      void retireIfIdle()
+    }, idleExitMs)
+    idleTimer.unref?.()
+  }
+
+  async function retireIfIdle() {
+    const worker = child
+    if (disposed || !worker) return
+    const seen = activity
+    let idle = false
+    // 只有辅助进程自己说得清有没有会话、下载线路或还没还原完的网络设置；
+    // 问不到（超时、断开）就当它还在忙，留着。
+    if (worker.connected && ready && pending.size === 0) {
+      try {
+        await ready
+        idle = await rpc('idle') === true
+      } catch { idle = false }
+    }
+    if (disposed || child !== worker) return
+    if (!idle || activity !== seen || pending.size > 0) {
+      scheduleIdleExit()
+      return
+    }
+    const exited = new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, 10_000)
+      timer.unref?.()
+      function done() { clearTimeout(timer); resolve() }
+      worker.once('exit', done)
+      worker.once('close', done)
+    })
+    retiring = exited
+    void exited.then(() => { if (retiring === exited) retiring = null })
+    // 和退出软件一样只断开 IPC：它自己停内核、还原代理再退，不会被当成崩溃重拉。
+    disconnectWorker(worker)
+    child = null
+    ready = null
+  }
+
   function ensureReady(): Promise<void> {
     if (disposed) return Promise.reject(withAccelerationReason(new Error('本机加速服务已关闭。'), 'helper-launch'))
-    if (ready) return ready
+    activity += 1
+    if (ready) {
+      scheduleIdleExit()
+      return ready
+    }
+    if (retiring) {
+      const waiting = retiring
+      const relaunch = waiting.then(() => {
+        if (ready === relaunch) ready = null
+        return ensureReady()
+      })
+      ready = relaunch
+      return relaunch
+    }
+    return launch()
+  }
+
+  function launch(): Promise<void> {
     const workerOptions: ForkOptions & { windowsHide: boolean } = {
       execPath: process.execPath,
       execArgv: [],
@@ -299,6 +376,7 @@ export function createAccelerationDevelopmentHost(options: {
       try { options.onHelperFailure?.(reason, error) } catch { /* Reporting must not change the launch result. */ }
       throw withAccelerationReason(new Error('本机加速进程初始化未完成。'), reason)
     })
+    scheduleIdleExit()
     return ready
   }
 
@@ -316,12 +394,23 @@ export function createAccelerationDevelopmentHost(options: {
   }
 
   async function hasProxyRecoveryRecords(): Promise<boolean> {
-    try { return (await stat(accelerationDevelopmentDirectory(options.dataDirectory))).isDirectory() }
-    catch (error) {
-      // Only a missing directory proves this machine never took a proxy lease.
-      // Any other failure falls through to the worker, which owns the real check.
-      return (error as NodeJS.ErrnoException | null)?.code !== 'ENOENT'
+    // The directory alone proves nothing: the worker creates it on its first
+    // initialization, including the one a mere state read triggers, and keeps
+    // the free-time ledger there. Only the journal or its lease means a proxy
+    // was taken and not yet handed back. On macOS the native helper keeps its
+    // lock elsewhere, so the journal is the one record there. lstat does not
+    // follow links; anything but a clean ENOENT goes to the worker, which owns
+    // the real check and refuses a redirected record (I8).
+    const journalPath = accelerationProxyJournalPath(options.dataDirectory)
+    for (const file of [journalPath, `${journalPath}.lock`]) {
+      try {
+        await lstat(file)
+        return true
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException | null)?.code !== 'ENOENT') return true
+      }
     }
+    return false
   }
 
   async function request(operation: string, scope: string, mode?: string, lineId?: string, ignoreConflicts?: boolean): Promise<AccelerationState> {
@@ -378,6 +467,7 @@ export function createAccelerationDevelopmentHost(options: {
     dispose() {
       if (disposal) return disposal
       disposed = true
+      clearIdleTimer()
       disposal = (async () => {
         if (!child) return
         const worker = child
