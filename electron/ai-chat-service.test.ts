@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   AI_CHAT_STREAM_LIMITS,
   createAiChatService,
@@ -557,5 +557,204 @@ describe('AI chat streaming service', () => {
     })).rejects.toThrow('当前模型不在所选分组')
     expect(fetchImpl).not.toHaveBeenCalled()
     service.dispose()
+  })
+})
+
+describe('AI chat time limits for long-thinking models', () => {
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  const reasoningFrame = 'data: {"choices":[{"delta":{"reasoning_content":"想"}}]}\n\n'
+  const keepAliveFrame = ': PING\n\n'
+  const finishFrame = 'data: {"choices":[{"delta":{"content":"完整"},"finish_reason":"stop"}]}\n\n'
+
+  function streamingService(stream: ReturnType<typeof controlledSseResponse>, limits: { idleTimeoutMs: number; totalTimeoutMs: number }) {
+    const events: AiChatStreamEvent[] = []
+    const fetchImpl = vi.fn<TestFetch>(async () => stream.response)
+    const service = createAiChatService({
+      credentialCoordinator: credentialCoordinator(),
+      fetchImpl,
+      emit: (_senderId, event) => events.push(event),
+      limits,
+    })
+    return { events, fetchImpl, service }
+  }
+
+  it('tolerates minutes of silence while keeping every limit finite', () => {
+    expect(AI_CHAT_STREAM_LIMITS.idleTimeoutMs).toBeGreaterThanOrEqual(120_000)
+    expect(AI_CHAT_STREAM_LIMITS.totalTimeoutMs).toBeGreaterThanOrEqual(20 * 60_000)
+    expect(AI_CHAT_STREAM_LIMITS.totalTimeoutMs).toBeLessThanOrEqual(60 * 60_000)
+    expect(AI_CHAT_STREAM_LIMITS.idleTimeoutMs).toBeLessThan(AI_CHAT_STREAM_LIMITS.totalTimeoutMs)
+  })
+
+  it('keeps a stream alive while only reasoning deltas or SSE keep-alive comments arrive', async () => {
+    vi.useFakeTimers()
+    const stream = controlledSseResponse()
+    const { events, service } = streamingService(stream, { idleTimeoutMs: 1_000, totalTimeoutMs: 60_000 })
+    service.start(startInput())
+    await vi.advanceTimersByTimeAsync(0)
+    for (let index = 0; index < 5; index += 1) {
+      stream.enqueue(reasoningFrame)
+      await vi.advanceTimersByTimeAsync(800)
+    }
+    for (let index = 0; index < 5; index += 1) {
+      stream.enqueue(keepAliveFrame)
+      await vi.advanceTimersByTimeAsync(800)
+    }
+    expect(service.activeCount()).toBe(1)
+    stream.enqueue(finishFrame)
+    await vi.advanceTimersByTimeAsync(100)
+    await service.whenIdle()
+
+    expect(events.some((event) => event.type === 'error')).toBe(false)
+    expect(events.at(-1)).toMatchObject({ type: 'complete' })
+    const deltas = events.filter((event) => event.type === 'delta')
+    expect(deltas.map((event) => event.reasoning ?? '').join('')).toBe('想想想想想')
+    expect(deltas.map((event) => event.content ?? '').join('')).toBe('完整')
+  })
+
+  it('stops on real silence, keeps the partial answer, and says what was received and may be billed', async () => {
+    vi.useFakeTimers()
+    const runSilence = async (frames: readonly string[]) => {
+      const stream = controlledSseResponse()
+      const { events, fetchImpl, service } = streamingService(stream, { idleTimeoutMs: 1_000, totalTimeoutMs: 60_000 })
+      service.start(startInput())
+      await vi.advanceTimersByTimeAsync(0)
+      for (const frame of frames) stream.enqueue(frame)
+      await vi.advanceTimersByTimeAsync(999)
+      expect(service.activeCount()).toBe(1)
+      await vi.advanceTimersByTimeAsync(2)
+      await service.whenIdle()
+      expect(fetchImpl.mock.calls[0][1]?.signal?.aborted).toBe(true)
+      return events
+    }
+
+    const withAnswer = await runSilence([reasoningFrame, 'data: {"choices":[{"delta":{"content":"前半段"}}]}\n\n'])
+    expect(withAnswer).toEqual([
+      expect.objectContaining({ type: 'delta', content: '前半段', reasoning: '想' }),
+      expect.objectContaining({
+        type: 'error',
+        code: 'idle-timeout',
+        message: '回复太久没有新内容，已经停下；上面是已经收到的部分，这部分可能已经计费',
+      }),
+    ])
+
+    const thinkingOnly = await runSilence([reasoningFrame])
+    expect(thinkingOnly.at(-1)).toMatchObject({
+      type: 'error',
+      code: 'idle-timeout',
+      message: '思考太久没有新内容，已经停下，还没收到正式回复；上面的思考过程可能已经计费，可以重新生成',
+    })
+
+    const nothing = await runSilence([keepAliveFrame])
+    expect(nothing).toEqual([
+      expect.objectContaining({ type: 'error', code: 'idle-timeout', message: 'AI 服务太久没有返回内容，已经停下，请重试' }),
+    ])
+  })
+
+  it('still enforces the total cap while keep-alives keep arriving', async () => {
+    vi.useFakeTimers()
+    const stream = controlledSseResponse()
+    const { events, service } = streamingService(stream, { idleTimeoutMs: 1_000, totalTimeoutMs: 3_000 })
+    service.start(startInput())
+    await vi.advanceTimersByTimeAsync(0)
+    stream.enqueue('data: {"choices":[{"delta":{"content":"开头"}}]}\n\n')
+    for (let index = 0; index < 8 && service.activeCount() > 0; index += 1) {
+      stream.enqueue(keepAliveFrame)
+      await vi.advanceTimersByTimeAsync(500)
+    }
+    await service.whenIdle()
+    expect(events).toEqual([
+      expect.objectContaining({ type: 'delta', content: '开头' }),
+      expect.objectContaining({
+        type: 'error',
+        code: 'total-timeout',
+        message: '回复写得太久，超过了最长处理时间，已经停下；上面是已经收到的部分，这部分可能已经计费',
+      }),
+    ])
+  })
+
+  it('keeps the user stop as a cancel, not a timeout, after part of the answer arrived', async () => {
+    vi.useFakeTimers()
+    const stream = controlledSseResponse()
+    const { events, service } = streamingService(stream, { idleTimeoutMs: 1_000, totalTimeoutMs: 60_000 })
+    service.start(startInput())
+    await vi.advanceTimersByTimeAsync(0)
+    stream.enqueue('data: {"choices":[{"delta":{"content":"一半"}}]}\n\n')
+    await vi.advanceTimersByTimeAsync(100)
+    expect(service.cancel(1, 'request-1')).toBe(true)
+    await vi.advanceTimersByTimeAsync(5_000)
+    expect(events.map((event) => event.type)).toEqual(['delta', 'canceled'])
+  })
+
+  it('applies the same liveness rule to completeOnce without ever returning half an answer', async () => {
+    vi.useFakeTimers()
+    const alive = controlledSseResponse()
+    const aliveService = createAiChatService({
+      credentialCoordinator: credentialCoordinator(),
+      fetchImpl: vi.fn<TestFetch>(async () => alive.response),
+      emit: vi.fn(),
+      limits: { idleTimeoutMs: 1_000, totalTimeoutMs: 60_000 },
+    })
+    const finished = aliveService.completeOnce({ group: 'Gemini', model: 'gpt-5.4', messages: [{ role: 'user', content: '解析' }] })
+    await vi.advanceTimersByTimeAsync(0)
+    for (const frame of [reasoningFrame, keepAliveFrame, reasoningFrame, keepAliveFrame, reasoningFrame]) {
+      alive.enqueue(frame)
+      await vi.advanceTimersByTimeAsync(800)
+    }
+    alive.enqueue(finishFrame)
+    await expect(finished).resolves.toBe('完整')
+
+    const silent = controlledSseResponse()
+    const silentService = createAiChatService({
+      credentialCoordinator: credentialCoordinator(),
+      fetchImpl: vi.fn<TestFetch>(async () => silent.response),
+      emit: vi.fn(),
+      limits: { idleTimeoutMs: 1_000, totalTimeoutMs: 60_000 },
+    })
+    const cut = silentService.completeOnce({ group: 'Gemini', model: 'gpt-5.4', messages: [{ role: 'user', content: '解析' }] })
+    const cutResult = expect(cut).rejects.toThrow('AI 服务太久没有返回内容，已经停下，请重试')
+    await vi.advanceTimersByTimeAsync(0)
+    silent.enqueue('data: {"choices":[{"delta":{"content":"{\\"shots\\":["}}]}\n\n')
+    await vi.advanceTimersByTimeAsync(1_001)
+    await cutResult
+    aliveService.dispose()
+    silentService.dispose()
+  })
+
+  it('bounds the completeOnce wait for response headers and lets a user stop end a silent read', async () => {
+    vi.useFakeTimers()
+    const hanging = createAiChatService({
+      credentialCoordinator: credentialCoordinator(),
+      fetchImpl: vi.fn<TestFetch>(async (_input, init) => new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')), { once: true })
+      })),
+      emit: vi.fn(),
+      limits: { connectionTimeoutMs: 1_000, idleTimeoutMs: 5_000, totalTimeoutMs: 60_000 },
+    })
+    const waiting = hanging.completeOnce({ group: 'Gemini', model: 'gpt-5.4', messages: [{ role: 'user', content: '解析' }] })
+    const waitingResult = expect(waiting).rejects.toThrow('AI 服务响应较慢，本次等待已超时，请重试')
+    await vi.advanceTimersByTimeAsync(1_001)
+    await waitingResult
+
+    const stream = controlledSseResponse()
+    const stop = new AbortController()
+    const stoppable = createAiChatService({
+      credentialCoordinator: credentialCoordinator(),
+      fetchImpl: vi.fn<TestFetch>(async () => stream.response),
+      emit: vi.fn(),
+      limits: { idleTimeoutMs: 60_000, totalTimeoutMs: 120_000 },
+    })
+    const stopped = stoppable.completeOnce({ group: 'Gemini', model: 'gpt-5.4', messages: [{ role: 'user', content: '解析' }], signal: stop.signal })
+    const stoppedResult = expect(stopped).rejects.toThrow('已取消')
+    await vi.advanceTimersByTimeAsync(0)
+    stream.enqueue(reasoningFrame)
+    await vi.advanceTimersByTimeAsync(10)
+    stop.abort()
+    await vi.advanceTimersByTimeAsync(0)
+    await stoppedResult
+    hanging.dispose()
+    stoppable.dispose()
   })
 })

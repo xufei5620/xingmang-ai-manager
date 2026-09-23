@@ -1151,6 +1151,8 @@ if (!hasSingleInstanceLock) {
       localBuild,
       unsignedChannel,
       verifyPackageDigest: verifyUpdatePackageDigest,
+      // 监视器在更新服务之后才建（它要把结果交回更新服务），这里等真正检查时再取。
+      refreshServiceStatus: () => serviceStatusMonitor ? serviceStatusMonitor.refresh() : Promise.resolve(null),
       enableDevelopmentUpdates: process.env.XINGMANG_UPDATE_DEV === '1',
       macInstallHandoff: process.platform === 'darwin'
         ? {

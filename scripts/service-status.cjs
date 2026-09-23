@@ -20,7 +20,7 @@ function isRecord(value) {
 function parseCurrentStatus(text) {
   if (typeof text !== 'string' || !text.trim()) return {}
   try {
-    const parsed = JSON.parse(text.replace(/^﻿/, ''))
+    const parsed = JSON.parse(text.replace(/^\uFEFF/, ''))
     return isRecord(parsed) ? parsed : {}
   } catch {
     return {}
@@ -31,7 +31,7 @@ function parseCurrentStatus(text) {
 // 悄悄截断——发布者该知道用户看到的不是他写的那一整句。
 function normalizeMessage(value) {
   const cleaned = String(value ?? '')
-    .replace(/[\u0000-\u001f\u007f-\u009f‎‏‪-‮⁦-⁩]/g, ' ')
+    .replace(/[\u0000-\u001f\u007f-\u009f\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
   if (Array.from(cleaned).length > MAX_MESSAGE_LENGTH) {
@@ -58,6 +58,42 @@ function normalizeUntil(value, now = new Date()) {
   return new Date(time).toISOString()
 }
 
+const PLAIN_VERSION = /^\d{1,5}\.\d{1,5}\.\d{1,5}$/
+
+function plainVersion(value) {
+  const version = String(value ?? '').trim().replace(/^v/i, '')
+  if (!PLAIN_VERSION.test(version)) throw new StatusInputError(`版本号要写成 0.2.10 这样：${value}`)
+  return version
+}
+
+/**
+ * 撤回名单只加不减：一个版本撤回之后，还停在它上面的人随时可能来检查更新，名单
+ * 上少了它，那些人就退不回去了。真要移除写「-0.2.10」，清空写 none。
+ */
+function applyBadVersions(current, input) {
+  const raw = String(input ?? '').trim()
+  if (!raw) return current
+  if (raw.toLowerCase() === 'none') return []
+  const versions = new Set(Array.isArray(current) ? current.filter((entry) => typeof entry === 'string') : [])
+  for (const token of raw.split(/[\s,，]+/).filter(Boolean)) {
+    if (token.startsWith('-')) versions.delete(plainVersion(token.slice(1)))
+    else versions.add(plainVersion(token))
+  }
+  return [...versions]
+}
+
+/** 「0.2.11 20」或「0.2.11 20%」= 0.2.11 先给两成电脑；none = 取消分批，全部放开。 */
+function applyRollout(current, input) {
+  const raw = String(input ?? '').trim()
+  if (!raw) return current
+  if (raw.toLowerCase() === 'none') return undefined
+  const match = raw.match(/^v?(\S+)\s+(\d{1,3})\s*%?$/)
+  if (!match) throw new StatusInputError(`分批放量要写成「0.2.11 20」（版本号 空格 百分比）：${raw}`)
+  const percent = Number(match[2])
+  if (percent > 100) throw new StatusInputError(`百分比最多 100：${raw}`)
+  return { version: plainVersion(match[1]), percent }
+}
+
 /**
  * maintenance: 'on' | 'off' | 'keep'。message / until 只在打开维护时有意义；
  * 关掉维护时整段删掉，下次打开从干净的一段开始。
@@ -78,6 +114,12 @@ function applyStatusChanges(current, changes, now = new Date()) {
   } else if (String(changes.message ?? '').trim() || String(changes.until ?? '').trim()) {
     throw new StatusInputError('只有打开维护时才能填说明和结束时间')
   }
+  const badVersions = applyBadVersions(next.badVersions, changes['bad-versions'])
+  if (badVersions === undefined || (Array.isArray(badVersions) && badVersions.length === 0)) delete next.badVersions
+  else next.badVersions = badVersions
+  const rollout = applyRollout(next.rollout, changes.rollout)
+  if (rollout === undefined) delete next.rollout
+  else next.rollout = rollout
   next.updatedAt = now.toISOString()
   const text = `${JSON.stringify(next, null, 2)}\n`
   if (Buffer.byteLength(text) > MAX_STATUS_BYTES) throw new StatusInputError('状态文件超过 16 KB，客户端会拒绝读取')
@@ -88,6 +130,8 @@ function describeStatus(status) {
   const lines = []
   const maintenance = isRecord(status.maintenance) && status.maintenance.active === true ? status.maintenance : null
   lines.push(maintenance ? `维护：打开${maintenance.message ? `，说明「${maintenance.message}」` : ''}${maintenance.until ? `，${maintenance.until} 自动结束` : ''}` : '维护：关闭')
+  lines.push(Array.isArray(status.badVersions) && status.badVersions.length ? `撤回的版本：${status.badVersions.join('、')}` : '撤回的版本：无')
+  lines.push(isRecord(status.rollout) ? `分批放量：${status.rollout.version} 先给 ${status.rollout.percent}% 的电脑` : '分批放量：无（新版本全部放开）')
   return lines
 }
 
@@ -106,7 +150,7 @@ function parseArguments(argv) {
 
 function main(argv) {
   const options = parseArguments(argv)
-  if (!options.current || !options.output) throw new StatusInputError('用法：service-status.cjs --current <file> --output <file> [--maintenance on|off|keep] [--message …] [--until …]')
+  if (!options.current || !options.output) throw new StatusInputError('用法：service-status.cjs --current <file> --output <file> [--maintenance on|off|keep] [--message …] [--until …] [--bad-versions …] [--rollout …]')
   const currentText = fs.existsSync(options.current) ? fs.readFileSync(options.current, 'utf8') : ''
   const next = applyStatusChanges(parseCurrentStatus(currentText), options)
   fs.writeFileSync(options.output, `${JSON.stringify(next, null, 2)}\n`)
@@ -122,4 +166,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { StatusInputError, applyStatusChanges, describeStatus, normalizeMessage, normalizeUntil, parseCurrentStatus }
+module.exports = { StatusInputError, applyBadVersions, applyRollout, applyStatusChanges, describeStatus, normalizeMessage, normalizeUntil, parseCurrentStatus }

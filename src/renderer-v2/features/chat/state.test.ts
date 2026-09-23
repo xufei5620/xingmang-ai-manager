@@ -72,6 +72,16 @@ describe('v2 chat request transitions', () => {
     expect(chatErrorMessage('当前模型不可用', 'model-unavailable')).toBe('当前模型不在所选分组的可用列表中，请刷新后重新选择')
     expect(chatErrorMessage('无法连接 AI 服务，请检查网络后重试', 'network-error')).toBe('无法连接 AI 服务，请检查网络后重试')
   })
+  it('keeps the partial reply and shows the main-process cut-off note when a stream times out', () => {
+    const plan = turn(); let state = saveConversation(createWorkspace('owner:7'), plan.conversation)
+    state = applyStreamEvent(state, { type: 'reasoning', requestId: 'request-1', content: '先想一下' })
+    state = applyStreamEvent(state, { type: 'content', requestId: 'request-1', content: '前半段' })
+    const note = '回复太久没有新内容，已经停下；上面是已经收到的部分，这部分可能已经计费'
+    state = applyStreamEvent(state, { type: 'error', requestId: 'request-1', code: 'idle-timeout', message: note })
+    expect(activeConversation(state).messages.at(-1)).toMatchObject({ content: '前半段', reasoning: '先想一下', status: 'error', error: note })
+    expect(chatErrorMessage('', 'idle-timeout')).toBe('AI 服务太久没有返回内容，已经停下，请重试')
+    expect(chatErrorMessage('', 'total-timeout')).toBe('本次对话超过最长处理时间，已经停下，请重试')
+  })
   it('keeps the do-not-resubmit warning when a paid image request times out or cannot be saved', () => {
     const timeout = '生图请求超时；服务端可能仍在生成图片，请勿立即重复提交'
     expect(chatErrorMessage(new Error(`Error invoking remote method 'ai:image-generate': Error: ${timeout}`))).toBe(timeout)

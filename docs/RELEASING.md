@@ -375,6 +375,7 @@ npm run update:verify-feed -- http://127.0.0.1:8123/ --allow-local --platform=wi
 
 ## 8. 回滚
 
+- **新版本已经发出去、要让用户退回旧版本**：跑 `rollback-release` 工作流（填上一个好版本号），步骤与限制见 `docs/SERVICE-STATUS.md`「坏版本回退」。它依赖 publish-release 在每次发布时存到 `manifests/<版本>/` 的清单备份，并在 `service-status.json` 里撤回坏版本——只有被撤回版本上的客户端才会接受更低的版本号。
 - 若新 `latest.yml` 尚未发布，删除未引用的新产物即可。
 - 若新 `latest.yml` 已发布但验收失败，原子恢复旧 `latest.yml`。保留新产物用于调查，不要让它继续被元数据引用。
 - 不得用修改后的同版本安装程序覆盖线上文件。任何二进制变化都必须提升版本并重新生成 `latest.yml`。

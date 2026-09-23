@@ -124,8 +124,9 @@ export function planTurn(conversation: Conversation, input: { prompt: string; re
 export function chatErrorMessage(error: unknown, code?: AiChatErrorCode): string {
   const message = error instanceof Error ? error.message : typeof error === 'string' ? error : ''
   if (code === 'connection-timeout') return 'AI 服务响应较慢，本次等待已超时，请重试'
-  if (code === 'idle-timeout') return 'AI 服务长时间没有返回内容，本次等待已停止，请重试'
-  if (code === 'total-timeout') return '本次对话超过最长处理时间，已停止等待'
+  // 主进程知道停下前已经发来了什么，会说清上面是不是半截、可能已经计费，原话上屏。
+  if (code === 'idle-timeout') return message || 'AI 服务太久没有返回内容，已经停下，请重试'
+  if (code === 'total-timeout') return message || '本次对话超过最长处理时间，已经停下，请重试'
   // 准备分组时断网，主进程带来的是账号服务那一层说清了原因的那句话，原样上屏。
   if (code === 'network-error') return matchNetworkFailureMessage(message) ?? '无法连接 AI 服务，请检查网络后重试'
   if (code === 'stream-closed') return 'AI 服务提前结束了本次响应，请重试'

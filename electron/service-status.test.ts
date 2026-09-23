@@ -63,12 +63,12 @@ describe('locateServiceStatusUrl', () => {
 describe('parseServiceStatus', () => {
   it('reads an active maintenance notice and its message', () => {
     expect(parseServiceStatus(JSON.stringify({ maintenance: { active: true, message: '  服务升级中，\n预计 22:00 恢复  ' } }), now))
-      .toEqual({ maintenance: { message: '服务升级中， 预计 22:00 恢复' } })
+      .toMatchObject({ maintenance: { message: '服务升级中， 预计 22:00 恢复' } })
   })
 
   it('treats anything but a literal true as not in maintenance', () => {
     for (const active of [false, 'true', 1, null, undefined]) {
-      expect(parseServiceStatus(JSON.stringify({ maintenance: { active, message: 'x' } }), now)).toEqual({ maintenance: null })
+      expect(parseServiceStatus(JSON.stringify({ maintenance: { active, message: 'x' } }), now).maintenance).toBeNull()
     }
   })
 
@@ -76,23 +76,37 @@ describe('parseServiceStatus', () => {
     const past = { maintenance: { active: true, until: '2026-09-23T07:59:59Z' } }
     const future = { maintenance: { active: true, until: '2026-09-23T09:00:00Z' } }
     const unreadable = { maintenance: { active: true, until: 'tonight' } }
-    expect(parseServiceStatus(JSON.stringify(past), now)).toEqual({ maintenance: null })
-    expect(parseServiceStatus(JSON.stringify(future), now)).toEqual({ maintenance: { message: null } })
-    expect(parseServiceStatus(JSON.stringify(unreadable), now)).toEqual({ maintenance: { message: null } })
+    expect(parseServiceStatus(JSON.stringify(past), now).maintenance).toBeNull()
+    expect(parseServiceStatus(JSON.stringify(future), now).maintenance).toEqual({ message: null })
+    expect(parseServiceStatus(JSON.stringify(unreadable), now).maintenance).toEqual({ message: null })
   })
 
   it('strips control and bidi characters and caps the message length', () => {
-    const message = `a\u0007b‮c${'长'.repeat(400)}`
+    const message = `a\u0007b\u202ec${'长'.repeat(400)}`
     const parsed = parseServiceStatus(JSON.stringify({ maintenance: { active: true, message } }), now)
     expect(parsed.maintenance?.message?.startsWith('a b c')).toBe(true)
     expect(Array.from(parsed.maintenance?.message ?? '')).toHaveLength(200)
   })
 
   it('never throws on malformed content', () => {
-    for (const text of ['', 'not json', '[]', 'null', '"x"', '{"maintenance": []}', '﻿{}']) {
-      expect(parseServiceStatus(text, now)).toEqual({ maintenance: null })
+    for (const text of ['', 'not json', '[]', 'null', '"x"', '{"maintenance": []}', '\uFEFF{}']) {
+      expect(parseServiceStatus(text, now)).toEqual({ maintenance: null, badVersions: [], rollout: null })
     }
-    expect(parseServiceStatus('﻿{"maintenance":{"active":true}}', now)).toEqual({ maintenance: { message: null } })
+    expect(parseServiceStatus('\uFEFF{"maintenance":{"active":true}}', now).maintenance).toEqual({ message: null })
+  })
+
+  it('reads withdrawn versions and a staged rollout, dropping entries it cannot read', () => {
+    const text = JSON.stringify({
+      badVersions: ['0.2.10', 'v0.2.11', '0.2.10', 'latest', 12, '1.0'],
+      rollout: { version: '0.2.12', percent: 150 },
+    })
+    expect(parseServiceStatus(text, now)).toEqual({
+      maintenance: null,
+      badVersions: ['0.2.10', '0.2.11'],
+      rollout: { version: '0.2.12', percent: 100 },
+    })
+    expect(parseServiceStatus(JSON.stringify({ badVersions: '0.2.10', rollout: { version: '0.2.12', percent: '20' } }), now))
+      .toEqual({ maintenance: null, badVersions: [], rollout: null })
   })
 })
 
@@ -101,7 +115,7 @@ describe('readServiceStatus', () => {
 
   it('asks for the file without following redirects or reusing a cache', async () => {
     const fetch = vi.fn(async () => jsonResponse('{"maintenance":{"active":true,"message":"升级中"}}'))
-    await expect(readServiceStatus({ url, fetch, now: () => now })).resolves.toEqual({ maintenance: { message: '升级中' } })
+    await expect(readServiceStatus({ url, fetch, now: () => now })).resolves.toMatchObject({ maintenance: { message: '升级中' } })
     expect(fetch).toHaveBeenCalledWith(url, expect.objectContaining({ redirect: 'error', cache: 'no-store', credentials: 'omit' }))
   })
 

@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events'
 import { describe, expect, it, vi } from 'vitest'
 import { updateNetworkFailureMessages } from './network-failure'
-import { createUpdaterService, type UpdateClient, type UpdaterService } from './updater'
+import { createUpdaterService, decideUpdateOffer, isOlderVersion, type UpdateClient, type UpdaterService } from './updater'
 
 class FakeUpdater extends EventEmitter implements UpdateClient {
   autoDownload = true
@@ -18,6 +18,7 @@ class FakeUpdater extends EventEmitter implements UpdateClient {
   checkForUpdates = vi.fn<() => Promise<unknown>>(async () => undefined)
   downloadUpdate = vi.fn<() => Promise<unknown>>(async () => undefined)
   quitAndInstall = vi.fn()
+  isUserWithinRollout?: UpdateClient['isUserWithinRollout']
 }
 
 class FakeMacUpdater extends FakeUpdater {
@@ -1040,6 +1041,120 @@ describe('service status from the update feed', () => {
       error: { code: 'UPDATE_ERROR' },
       serviceMaintenance: { message: null },
     })
+    service.dispose()
+  })
+})
+
+describe('withdrawn versions and staged rollout', () => {
+  it('never offers a withdrawn version and only gates automatic checks on the rollout', () => {
+    const base = { currentVersion: '0.2.9', badVersions: ['0.2.10'], rollout: { version: '0.2.11', percent: 20 }, manual: false }
+    expect(decideUpdateOffer({ ...base, version: '0.2.10' })).toEqual({ offer: false })
+    expect(decideUpdateOffer({ ...base, version: 'v0.2.10', manual: true })).toEqual({ offer: false })
+    expect(decideUpdateOffer({ ...base, version: '0.2.11' })).toEqual({ offer: true, stagingPercentage: 20 })
+    expect(decideUpdateOffer({ ...base, version: '0.2.11', manual: true })).toEqual({ offer: true })
+    expect(decideUpdateOffer({ ...base, version: '0.2.12' })).toEqual({ offer: true })
+    // 本机就在撤回名单上：放量不拦，它得尽快离开这个版本。
+    expect(decideUpdateOffer({ ...base, currentVersion: '0.2.10', version: '0.2.11' })).toEqual({ offer: true })
+  })
+
+  it('never rolls back below the floor, whatever the feed says', () => {
+    const base = { currentVersion: '0.3.0', badVersions: ['0.3.0'], rollout: null, manual: true }
+    expect(decideUpdateOffer({ ...base, version: '0.2.9' })).toEqual({ offer: true })
+    expect(decideUpdateOffer({ ...base, version: '0.2.8' })).toEqual({ offer: false })
+    expect(decideUpdateOffer({ ...base, version: '0.2.12', rollbackFloor: '0.2.12' })).toEqual({ offer: true })
+    expect(decideUpdateOffer({ ...base, version: '0.2.11', rollbackFloor: '0.2.12' })).toEqual({ offer: false })
+  })
+
+  it('compares plain release versions', () => {
+    expect(isOlderVersion('0.2.9', '0.2.10')).toBe(true)
+    expect(isOlderVersion('0.2.10', '0.2.9')).toBe(false)
+    expect(isOlderVersion('1.0.0', '1.0.0')).toBe(false)
+    expect(isOlderVersion('garbage', '1.0.0')).toBe(false)
+  })
+
+  it('reads the status file before every check and allows a downgrade only off a withdrawn version', async () => {
+    const client = new FakeUpdater()
+    const statuses = [
+      { maintenance: null, badVersions: [], rollout: null },
+      { maintenance: null, badVersions: ['1.0.0'], rollout: null },
+    ]
+    const refreshServiceStatus = vi.fn(async () => statuses.shift() ?? null)
+    const allowDowngradeSeen: boolean[] = []
+    client.checkForUpdates.mockImplementation(async () => {
+      allowDowngradeSeen.push(client.allowDowngrade)
+      client.emit('update-not-available', updateInfo('1.0.0'))
+    })
+    const service = createUpdaterService(client, { currentVersion: '1.0.0', isPackaged: true, refreshServiceStatus })
+
+    await service.check()
+    expect(service.getState().currentVersionWithdrawn).toBe(false)
+    client.checkForUpdates.mockImplementationOnce(async () => {
+      allowDowngradeSeen.push(client.allowDowngrade)
+      client.emit('update-available', updateInfo('0.9.0'))
+    })
+    await service.check()
+    expect(refreshServiceStatus).toHaveBeenCalledTimes(2)
+    expect(allowDowngradeSeen).toEqual([false, true])
+    expect(service.getState()).toMatchObject({
+      phase: 'available',
+      availableVersion: '0.9.0',
+      rollback: true,
+      currentVersionWithdrawn: true,
+    })
+    service.dispose()
+  })
+
+  it('keeps checking when the status file cannot be read', async () => {
+    const client = new FakeUpdater()
+    client.checkForUpdates.mockImplementationOnce(async () => {
+      client.emit('update-available', updateInfo('1.1.0'))
+    })
+    const service = createUpdaterService(client, {
+      currentVersion: '1.0.0',
+      isPackaged: true,
+      refreshServiceStatus: async () => { throw new Error('offline') },
+    })
+    await expect(service.check()).resolves.toMatchObject({ phase: 'available', availableVersion: '1.1.0', rollback: false })
+    expect(client.allowDowngrade).toBe(false)
+    service.dispose()
+  })
+
+  it('routes electron-updater rollout checks through the status file and back to its own staging logic', async () => {
+    const client = new FakeUpdater()
+    const defaultRollout = vi.fn(async (info: { stagingPercentage?: number }) => (info.stagingPercentage ?? 100) >= 50)
+    client.isUserWithinRollout = defaultRollout
+    let status = { maintenance: null, badVersions: ['1.2.0'], rollout: { version: '1.1.0', percent: 20 } }
+    const service = createUpdaterService(client, { currentVersion: '1.0.0', isPackaged: true, refreshServiceStatus: async () => status })
+    const hook = client.isUserWithinRollout
+    expect(hook).not.toBe(defaultRollout)
+    const offered: boolean[] = []
+    client.checkForUpdates.mockImplementation(async () => {
+      offered.push(await hook!(updateInfo('1.1.0')))
+      offered.push(await hook!(updateInfo('1.2.0')))
+      client.emit('update-not-available', updateInfo('1.0.0'))
+    })
+
+    await service.check()
+    await service.check({ manual: true })
+    status = { ...status, rollout: { version: '1.1.0', percent: 80 } }
+    await service.check()
+    expect(offered).toEqual([false, false, true, false, true, false])
+    expect(defaultRollout).toHaveBeenCalledWith(expect.objectContaining({ version: '1.1.0', stagingPercentage: 20 }))
+    service.dispose()
+  })
+
+  it('takes back an offer that is withdrawn after it was found or downloaded', async () => {
+    const client = new FakeUpdater()
+    const service = createUpdaterService(client, { currentVersion: '1.0.0', isPackaged: true, platform: 'darwin' })
+    client.emit('update-downloaded', updateInfo('1.1.0'))
+    expect(service.getState().phase).toBe('downloaded')
+    service.setServiceStatus({ maintenance: null, badVersions: ['1.1.0'], rollout: null })
+    expect(service.getState()).toMatchObject({ phase: 'idle', availableVersion: null, error: null })
+    expect(() => service.install()).toThrow('尚未下载')
+
+    client.emit('update-downloaded', updateInfo('1.1.0'))
+    expect(service.getState()).toMatchObject({ phase: 'idle', availableVersion: null })
+    expect(client.quitAndInstall).not.toHaveBeenCalled()
     service.dispose()
   })
 })

@@ -368,6 +368,12 @@ jobs:
       # 第三步，且必须是最后一步：更新清单。到这里为止线上仍是旧版本，随时可以放弃。
       # 两份清单都在这一步，别的步骤一律不许碰它们 —— 顺手 cp 一次就让上面这道顺序
       # 形同虚设，由 scripts/publish-workflow-config.test.cjs 钉住。
+      #
+      # 覆盖之前先把线上那一份按它自己的版本号备份到 manifests/<版本>/，新清单也同样
+      # 留一份：根目录的清单一覆盖就没了，发现坏版本时 rollback-release 工作流要靠这些
+      # 备份退回去（docs/SERVICE-STATUS.md「坏版本回退」）。线上读不到（404，第一次发
+      # 这个平台）就不备份；别的读取失败一律停下——此刻线上还是旧版本，停下没有代价，
+      # 而丢了备份就等于放弃了这一版的回退能力。
       - name: Publish the update manifests
         env:
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
@@ -375,9 +381,33 @@ jobs:
           AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           AWS_DEFAULT_REGION: auto
+          PUBLIC_BASE: ${{ steps.feed.outputs.base }}
         run: |
           set -euo pipefail
           endpoint="https://$R2_ACCOUNT_ID.r2.cloudflarestorage.com"
+          for manifest in latest.yml latest-mac.yml; do
+            [ -f "release-artifacts/$manifest" ] || continue
+            code=$(curl --silent --show-error --max-time 60 --output "$RUNNER_TEMP/live-$manifest" \
+              --write-out '%{http_code}' "$PUBLIC_BASE/$manifest")
+            case "$code" in
+              200)
+                live=$(node scripts/rollback-release.cjs version --manifest "$RUNNER_TEMP/live-$manifest" --name "$manifest")
+                aws s3 cp "$RUNNER_TEMP/live-$manifest" \
+                  "s3://$R2_BUCKET/$OBJECT_PREFIX/manifests/$live/$manifest" \
+                  --endpoint-url "$endpoint" \
+                  --content-type text/yaml \
+                  --cache-control 'no-cache'
+                echo "已备份线上的 $manifest（$live）"
+                ;;
+              404) echo "线上还没有 $manifest，这次不用备份" ;;
+              *) echo "::error::读取线上 $manifest 失败（HTTP $code），没能备份，已停在覆盖清单之前"; exit 1 ;;
+            esac
+            aws s3 cp "release-artifacts/$manifest" \
+              "s3://$R2_BUCKET/$OBJECT_PREFIX/manifests/$PACKAGE_VERSION/$manifest" \
+              --endpoint-url "$endpoint" \
+              --content-type text/yaml \
+              --cache-control 'no-cache'
+          done
           for manifest in latest.yml latest-mac.yml; do
             [ -f "release-artifacts/$manifest" ] || continue
             aws s3 cp "release-artifacts/$manifest" \

@@ -17,8 +17,11 @@ export const AI_CHAT_STREAM_LIMITS = {
   // queued relay can legitimately take longer than 15 seconds to produce that
   // first response, while the total request remains bounded below.
   connectionTimeoutMs: 60_000,
-  idleTimeoutMs: 45_000,
-  totalTimeoutMs: 300_000,
+  // 长思考模型可能好几分钟不出一个字，有的中转连保活注释都不发。45 秒就断，
+  // 会把已经在计费的回复截掉（Q43）。收到任何字节都算有动静，见 resetIdleTimer。
+  idleTimeoutMs: 180_000,
+  // 总时长只防连接一直挂着不放；长思考加长回复也该在半小时内写完。
+  totalTimeoutMs: 1_800_000,
   batchIntervalMs: 50,
   eventBytes: 256 * 1024,
   fragmentBytes: 64 * 1024,
@@ -162,6 +165,7 @@ type ActiveRequest = {
   sequence: number
   pendingContent: string
   pendingReasoning: string
+  received: ReceivedOutput
   completed: boolean
   phase: AiChatStreamLogEntry['phase']
   responseStatus: number | null
@@ -182,6 +186,11 @@ class StreamFailure extends Error {
   }
 }
 
+/** 截断时手里已经有什么：决定超时提示要不要说「上面是已经收到的部分」。 */
+type ReceivedOutput = 'none' | 'reasoning' | 'content'
+
+type StreamTimeoutCode = 'idle-timeout' | 'total-timeout'
+
 const CONTROL_CHARACTER_PATTERN = /[\u0000-\u001f\u007f]/
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308])
 
@@ -190,8 +199,8 @@ const SAFE_ERROR_MESSAGES: Record<AiChatStreamErrorCode, string> = {
   'key-quota-exhausted': chatKeyQuotaExhaustedMessage,
   'model-unavailable': '当前模型不在所选分组的可用列表中，请刷新后重新选择',
   'connection-timeout': 'AI 服务响应较慢，本次等待已超时，请重试',
-  'idle-timeout': 'AI 服务长时间没有返回内容，已停止等待',
-  'total-timeout': '本次对话超过最长处理时间，已停止等待',
+  'idle-timeout': 'AI 服务太久没有返回内容，已经停下，请重试',
+  'total-timeout': '本次对话超过最长处理时间，已经停下，请重试',
   'network-error': '无法连接 AI 服务，请检查网络后重试',
   'upstream-http-error': 'AI 服务暂时无法完成请求',
   'service-unavailable': networkFailureMessages.serviceUnavailable,
@@ -201,6 +210,25 @@ const SAFE_ERROR_MESSAGES: Record<AiChatStreamErrorCode, string> = {
   'event-limit-exceeded': 'AI 服务单个事件超过安全上限',
   'fragment-limit-exceeded': 'AI 服务单次输出超过安全上限',
   'output-limit-exceeded': 'AI 服务累计输出超过安全上限',
+}
+
+// 超时停下时已经显示出来的内容不撤回，所以提示要说清哪些是半截、可能已经计费，
+// 别让人以为回复本来就这么短，也别让人以为这次白等没扣钱。
+const TIMEOUT_MESSAGES: Record<StreamTimeoutCode, Record<ReceivedOutput, string>> = {
+  'idle-timeout': {
+    none: SAFE_ERROR_MESSAGES['idle-timeout'],
+    reasoning: '思考太久没有新内容，已经停下，还没收到正式回复；上面的思考过程可能已经计费，可以重新生成',
+    content: '回复太久没有新内容，已经停下；上面是已经收到的部分，这部分可能已经计费',
+  },
+  'total-timeout': {
+    none: SAFE_ERROR_MESSAGES['total-timeout'],
+    reasoning: '思考超过了最长处理时间，已经停下，还没收到正式回复；上面的思考过程可能已经计费',
+    content: '回复写得太久，超过了最长处理时间，已经停下；上面是已经收到的部分，这部分可能已经计费',
+  },
+}
+
+function timeoutFailure(code: StreamTimeoutCode, received: ReceivedOutput): StreamFailure {
+  return new StreamFailure(code, TIMEOUT_MESSAGES[code][received])
 }
 
 function defaultClock(): AiChatServiceClock {
@@ -616,12 +644,16 @@ export function createAiChatService(options: AiChatServiceOptions): AiChatServic
     void request.reader?.cancel().catch(() => undefined)
   }
 
+  // Any received byte counts as liveness, not just visible answer text:
+  // reasoning deltas, role-only chunks and SSE comment keep-alives (`: PING`)
+  // all prove the relay is still working on this paid request. Only a
+  // connection that sends nothing at all for idleTimeoutMs is treated as dead.
   function resetIdleTimer(request: ActiveRequest): void {
     clearTimer(request, 'idleTimer')
     if (request.completed) return
     request.idleTimer = clock.setTimeout(() => {
       request.idleTimer = null
-      fail(request, new StreamFailure('idle-timeout', SAFE_ERROR_MESSAGES['idle-timeout']))
+      fail(request, timeoutFailure('idle-timeout', request.received))
     }, limits.idleTimeoutMs)
   }
 
@@ -638,6 +670,8 @@ export function createAiChatService(options: AiChatServiceOptions): AiChatServic
     request.outputBytes += addedBytes
     request.pendingContent += content
     request.pendingReasoning += reasoning
+    if (content) request.received = 'content'
+    else if (reasoning && request.received === 'none') request.received = 'reasoning'
     if (content || reasoning) scheduleFlush(request)
   }
 
@@ -692,6 +726,8 @@ export function createAiChatService(options: AiChatServiceOptions): AiChatServic
         throw new StreamFailure('network-error', SAFE_ERROR_MESSAGES['network-error'])
       }
       clearTimer(request, 'connectionTimer')
+      // 总时长放宽到半小时后，读错误体这一步不能只靠它兜底。
+      resetIdleTimer(request)
       request.responseStatus = response.status
       if (request.completed) {
         await response.body?.cancel().catch(() => undefined)
@@ -778,14 +814,31 @@ export function createAiChatService(options: AiChatServiceOptions): AiChatServic
     // 停止和总超时从这一刻起算：准备 Key 可能要等账号服务好几秒，这段时间里点了
     // 停止，必须在付费请求发出去之前生效。
     const controller = new AbortController()
-    const onAbort = () => controller.abort()
+    let reader: ReadableStreamDefaultReader<Uint8Array> | null = null
+    const onAbort = () => {
+      controller.abort()
+      void reader?.cancel().catch(() => undefined)
+    }
     if (input.signal?.aborted) throw new Error('已取消')
     input.signal?.addEventListener('abort', onAbort, { once: true })
-    let timedOut = false
-    const totalTimer = clock.setTimeout(() => {
-      timedOut = true
+    // 与流式聊天同一套三道时限：等响应头、两次收到数据之间、总时长。只有总时长时，
+    // 放宽到半小时后一个不出声的连接会把画布节点挂住半小时。
+    let timedOut: 'connection-timeout' | StreamTimeoutCode | null = null
+    let stageTimer: unknown | null = null
+    function stopFor(code: 'connection-timeout' | StreamTimeoutCode): void {
+      if (timedOut || controller.signal.aborted) return
+      timedOut = code
       controller.abort()
-    }, limits.totalTimeoutMs)
+      void reader?.cancel().catch(() => undefined)
+    }
+    function armStageTimer(code: 'connection-timeout' | 'idle-timeout', delayMs: number): void {
+      if (stageTimer !== null) clock.clearTimeout(stageTimer)
+      stageTimer = clock.setTimeout(() => {
+        stageTimer = null
+        stopFor(code)
+      }, delayMs)
+    }
+    const totalTimer = clock.setTimeout(() => stopFor('total-timeout'), limits.totalTimeoutMs)
     try {
       let credential: Awaited<ReturnType<ChatCredentialCoordinator['resolveCredential']>>
       try {
@@ -797,6 +850,7 @@ export function createAiChatService(options: AiChatServiceOptions): AiChatServic
         throw new StreamFailure('model-unavailable', SAFE_ERROR_MESSAGES['model-unavailable'])
       }
       if (controller.signal.aborted) throw controller.signal.reason
+      armStageTimer('connection-timeout', limits.connectionTimeoutMs)
       const response = await fetchImpl(endpoint, {
         method: 'POST',
         headers: {
@@ -809,6 +863,7 @@ export function createAiChatService(options: AiChatServiceOptions): AiChatServic
         redirect: 'manual',
         signal: controller.signal,
       })
+      armStageTimer('idle-timeout', limits.idleTimeoutMs)
       if (!responseOriginIsTrusted(response, baseUrl.origin) || REDIRECT_STATUSES.has(response.status)) {
         await response.body?.cancel().catch(() => undefined)
         throw new StreamFailure('network-error', SAFE_ERROR_MESSAGES['network-error'])
@@ -822,13 +877,18 @@ export function createAiChatService(options: AiChatServiceOptions): AiChatServic
         throw new StreamFailure('invalid-stream-response', SAFE_ERROR_MESSAGES['invalid-stream-response'])
       }
       const parser = new BoundedSseParser(limits.eventBytes)
-      const reader = response.body.getReader()
+      const streamReader = response.body.getReader()
+      reader = streamReader
       let text = ''
       let receivedBytes = 0
       let outputBytes = 0
       try {
         for (;;) {
-          const chunk = await reader.read()
+          const chunk = await streamReader.read()
+          // 超时或停止后取消读取，read 会以 done 返回；不能再把缓冲里的半截当成结果。
+          if (controller.signal.aborted) throw controller.signal.reason
+          // 思考内容和保活注释都算有动静，与流式聊天同一口径。
+          if (chunk.value?.byteLength) armStageTimer('idle-timeout', limits.idleTimeoutMs)
           const frames = chunk.done ? parser.finish() : parser.push(chunk.value ?? new Uint8Array())
           if (!chunk.done) {
             receivedBytes += chunk.value?.byteLength ?? 0
@@ -853,17 +913,21 @@ export function createAiChatService(options: AiChatServiceOptions): AiChatServic
           if (chunk.done) break
         }
       } finally {
-        reader.releaseLock()
+        reader = null
+        streamReader.releaseLock()
       }
       // 没等到结束标记连接就断了：手里只是半截，交给调用方当成完整结果会被当真。
       throw new StreamFailure('stream-closed', SAFE_ERROR_MESSAGES['stream-closed'])
     } catch (error) {
+      // 时限先认：超时后取消读取会让读取以「连接提前结束」收尾，那不是真正的原因。
+      // 这条路径从不交回半截结果，所以只用「什么都没拿到」那一句。
+      if (timedOut) throw new Error(SAFE_ERROR_MESSAGES[timedOut])
       if (error instanceof StreamFailure) throw new Error(error.message)
-      if (timedOut) throw new Error(SAFE_ERROR_MESSAGES['total-timeout'])
       if (input.signal?.aborted || controller.signal.aborted) throw new Error('已取消')
       throw new Error(SAFE_ERROR_MESSAGES['network-error'])
     } finally {
       clock.clearTimeout(totalTimer)
+      if (stageTimer !== null) clock.clearTimeout(stageTimer)
       input.signal?.removeEventListener('abort', onAbort)
     }
   }
@@ -900,6 +964,7 @@ export function createAiChatService(options: AiChatServiceOptions): AiChatServic
       sequence: 0,
       pendingContent: '',
       pendingReasoning: '',
+      received: 'none',
       completed: false,
       phase: 'credential',
       responseStatus: null,
@@ -912,7 +977,7 @@ export function createAiChatService(options: AiChatServiceOptions): AiChatServic
     active.set(key, request)
     request.totalTimer = clock.setTimeout(() => {
       request.totalTimer = null
-      fail(request, new StreamFailure('total-timeout', SAFE_ERROR_MESSAGES['total-timeout']))
+      fail(request, timeoutFailure('total-timeout', request.received))
     }, limits.totalTimeoutMs)
     void run(request)
     return { accepted: true, requestId }

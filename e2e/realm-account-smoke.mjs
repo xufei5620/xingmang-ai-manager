@@ -98,6 +98,8 @@ function bootFixture(config) {
       if (route === '/api/user/login') return body.password === 'fixture-shared-password-123'
         ? xm(xmAuth, 'refresh_token=fixture-xm-cookie; HttpOnly; Path=/') : rejected(raw)
       if (route === '/api/user/auth/refresh') return xm(xmAuth, 'refresh_token=fixture-xm-restored; HttpOnly; Path=/')
+      // 显式退出时主进程会尽力通知服务端注销这台设备（全面检测 Q11）。
+      if (route === '/api/user/auth/logout' && method === 'POST') return xm(null)
       if (route === '/api/user/self') return xm(xmUser)
       if (route === '/api/log/self') return xm({ items: [], total: 0, page: 1, page_size: 20 })
       if (route === '/api/log/self/stat') return xm({ quota: 0, rpm: 0, tpm: 0 })
