@@ -1462,6 +1462,28 @@ describe('registerIpcHandlers', () => {
     expect(() => handler(trustedEvent(), { provider: 'unknown' })).toThrow('未知的 CLI 类型')
   })
 
+  it('keeps a restorable backup before a reset save and refuses to reset without one', async () => {
+    const service = serviceStub()
+    const create = vi.fn(() => ({ id: 'backup-1' }))
+    register(service, undefined, undefined, undefined, undefined, undefined, {}, {
+      backupStore: { list: vi.fn(), create, inspect: vi.fn(), restore: vi.fn() } as never,
+    })
+    const handler = electronMocks.handlers.get('config:save')!
+    const base = { provider: 'codex', apiKey: 'sk-test', model: 'gpt-5.6-sol' }
+
+    await handler(trustedEvent(), { ...base, mode: 'merge' })
+    expect(create).not.toHaveBeenCalled()
+
+    await handler(trustedEvent(), { ...base, mode: 'reset' })
+    expect(create).toHaveBeenCalledWith('codex', 'pre-save', undefined, null)
+    expect(create.mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(service.saveConfig).mock.invocationCallOrder[1])
+
+    vi.mocked(service.saveConfig).mockClear()
+    create.mockImplementationOnce(() => { throw new Error('配置文件超过 2048 KB 备份安全上限') })
+    await expect(handler(trustedEvent(), { ...base, mode: 'reset' })).rejects.toThrow('没能先备份当前配置，这次没有重置')
+    expect(service.saveConfig).not.toHaveBeenCalled()
+  })
+
   it('validates and forwards the official save mode while accepting legacy calls', async () => {
     const { service } = register()
     const handler = electronMocks.handlers.get('config:switch-to-official-account')!

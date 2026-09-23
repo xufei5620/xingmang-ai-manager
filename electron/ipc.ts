@@ -1793,8 +1793,21 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
       if (revision !== undefined && accountService.getSessionRevision?.() !== revision) throw new Error('账号已变化，请重新配置')
     }
     const parsed = parseConfigSavePayload(payload)
-    return options.realmAccounts ? service.saveConfig(parsed, options.previewOnboarding, check)
+    const save = () => options.realmAccounts ? service.saveConfig(parsed, options.previewOnboarding, check)
       : service.saveConfig(parsed, options.previewOnboarding)
+    if (parsed.mode !== 'reset') return save()
+    // 「备份并重置」答应过先备份。配置旁的 *.bak.<时间> 每个文件只留 5 份，每次在新
+    // 文件夹打开工具写一次信任就挤掉一份，备份页也看不到它（全面检测 Q18）。所以
+    // 重置前在备份页那套存储里留一份；留不下就不重置，免得用户以为还找得回来。
+    return (async () => {
+      try {
+        options.backupStore.create(parsed.provider, 'pre-save', undefined, await readBackupAccountContext())
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error)
+        throw new Error(`没能先备份当前配置，这次没有重置：${reason}`)
+      }
+      return save()
+    })()
   })
   registerTrustedHandler('config:open-directory', async (_event, provider: unknown) => {
     if (!isProviderId(provider)) throw new Error('未知的 CLI 类型')

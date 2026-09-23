@@ -335,7 +335,7 @@ export function ConfigDialog({ api, tool, config, signedIn, initialModelFilter =
       </fieldset>
       {error && !confirmation && <p className="v2-callout is-bad" role="alert">{error}</p>}{warning && <p className="v2-callout is-warn" role="status">{warning}</p>}
     </Dialog>
-    {confirmation === 'reset' && <Confirm title="重置为初始状态？" body={<><p>将先备份当前配置，再按所选账号来源重建配置。{provider === 'codex' ? '该来源' : '当前工具'}的自定义设置（如权限、MCP 和推理参数）会重置，历史会话和官方登录凭据会保留。</p>{saveSummary}{error && <p role="alert" className="v2-callout is-bad">{error}</p>}</>} okLabel="备份并重置" cancelLabel="取消" danger loading={Boolean(busy)} onClose={() => { setError(''); setConfirmation(null) }} onOk={() => save('reset')} />}
+    {confirmation === 'reset' && <Confirm title="重置为初始状态？" body={<><p>将先备份当前配置（在「备份」页能找回），再按所选账号来源重建配置。{provider === 'codex' ? '该来源' : '当前工具'}的自定义设置（如权限、MCP 和推理参数）会重置，历史会话和官方登录凭据会保留。</p>{saveSummary}{error && <p role="alert" className="v2-callout is-bad">{error}</p>}</>} okLabel="备份并重置" cancelLabel="取消" danger loading={Boolean(busy)} onClose={() => { setError(''); setConfirmation(null) }} onOk={() => save('reset')} />}
     {exitAction && <Confirm title="要放弃未保存的修改吗？" body="关闭后，这次修改不会保存。" okLabel="放弃修改" cancelLabel="继续编辑" danger onClose={() => setExitAction(null)} onOk={() => { const action = exitAction; setExitAction(null); action() }} />}
   </>
 }
