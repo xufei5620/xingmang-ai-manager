@@ -2307,7 +2307,9 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
   // withSession here would recurse into another retry attempt instead of
   // failing cleanly.
   const performRefresh = async (current: InternalSession): Promise<InternalSession> => {
-    if (current.cookies.length === 0) throw new Error('没有可用的登录凭据用于续期，请重新登录')
+    // No cookie means this session can never be refreshed: that is as final
+    // as a 401 from the refresh endpoint, so it must end the login too.
+    if (current.cookies.length === 0) throw new NewApiAuthenticationError('没有可用的登录凭据用于续期，请重新登录')
     const raw = await performRequest(
       ctx,
       refreshPath,
@@ -2373,11 +2375,18 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
   // section D: "401 时凭 refresh cookie 静默续期"). Bounded to exactly one
   // attempt by construction -- this function does not call itself, and the
   // retried run() is only ever invoked once -- so a session that is well and
-  // truly dead fails fast instead of looping. If refresh itself fails for any
-  // reason, or the retried call 401s again even with a fresh access_token,
-  // the session is cleared and the *original* 401 is what the caller sees: a
-  // failed recovery attempt shouldn't bury the real failure behind unrelated
-  // refresh-plumbing noise (e.g. a network blip mid-refresh).
+  // truly dead fails fast instead of looping. If the refresh endpoint itself
+  // rejects the credential, or the retried call 401s again even with a fresh
+  // access_token, the session is cleared and the *original* 401 is what the
+  // caller sees.
+  //
+  // Any other refresh failure keeps the session, same as refreshAccessToken
+  // below. The access token expires every 15 minutes, so this path runs all
+  // day; the refresh route shares an IP-keyed rate limit with login (a campus
+  // NAT hits HTTP 429 easily), and a timeout, a 5xx or maintenance says
+  // nothing about the refresh cookie. Clearing here used to sign people out
+  // and drop the account from the vault on a network blip. The refresh error
+  // is rethrown so callers classify it as unreachable, not as expired.
   const retryAfterSilentRefresh = async <T>(
     failedSession: InternalSession,
     run: (current: InternalSession) => Promise<T>,
@@ -2390,6 +2399,7 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
     } catch (error) {
       assertCurrentOwner(failedSession)
       if (error instanceof NewApiCredentialPersistenceError) throw error
+      if (!(error instanceof NewApiAuthenticationError)) throw error
       if (session === failedSession) setSession(null)
       throw originalError
     }
