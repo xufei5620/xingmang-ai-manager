@@ -92,6 +92,7 @@ import {
   runtimeLogSourceOptions,
   runtimeLogWriteNotice,
 } from './features/app/runtime-log-filter'
+import { releaseNotesSection } from './features/app/release-notes'
 import type { V2Bridge, V2Page } from './types'
 import type { InstallCancelResult } from '../../electron/ipc-contract'
 import type {
@@ -904,6 +905,7 @@ export function UpdatesPage({
   // 失败在哪一步，重试就从哪一步接着走：检查失败重新检查，安装失败直接回到那个
   // 重启确认框（安装包已经下好并校验过，不必再下一遍）。
   const failure = updateFailureLabel(update?.failedStep)
+  const releaseNotes = releaseNotesSection(update)
   const retryFailedStep = () => {
     if (update?.failedStep === 'check') { check(); return }
     if (update?.failedStep === 'install') { setConfirm(true); return }
@@ -1020,10 +1022,19 @@ export function UpdatesPage({
           )}
           {update?.development && <p>当前是开发运行环境。</p>}
         </Card>
-        <Card title={`${update?.availableVersion ?? ''} 更新内容`}>
-          <div className="v2-business-release-notes">
-            {update?.releaseNotesText || '暂无更新说明。'}
-          </div>
+        <Card title={releaseNotes.title}>
+          {releaseNotes.items ? (
+            <ul
+              className="v2-business-release-notes v2-business-release-notes-list"
+              data-testid="updates-installed-notes"
+            >
+              {releaseNotes.items.map((item, index) => (
+                <li key={index}>{item}</li>
+              ))}
+            </ul>
+          ) : (
+            <div className="v2-business-release-notes">{releaseNotes.text}</div>
+          )}
           <details>
             <summary>安装前需要知道</summary>
             <p>

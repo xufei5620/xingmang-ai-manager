@@ -42,7 +42,7 @@ import { FailureBoundary } from './features/app/FailureBoundary'
 import { OperationErrorDialog, type OperationFailure } from './features/app/OperationErrorDialog'
 import { StartupNotices } from './features/app/StartupNotices'
 import { MaintenanceNotice, maintenanceNoticeKey } from './features/app/MaintenanceNotice'
-import { startupCheckFailure, startupCheckLogContext, startupDiagnosticsIssues, vaultRecoveredNotice, withStartupNotice, withoutStartupNotice, type StartupCheckId, type StartupNotice } from './features/app/startup-notice'
+import { startupCheckFailure, startupCheckLogContext, startupDiagnosticsIssues, updatedNotice, vaultRecoveredNotice, withStartupNotice, withoutStartupNotice, type StartupCheckId, type StartupNotice } from './features/app/startup-notice'
 import { readLocalPreference, writeLocalPreference } from './features/app/preferences'
 import { rememberTourPending, rememberTourSeen, tourReplayPending } from './features/shell/tour-state'
 import { onboardingPreviewEnabled } from './features/app/dev-preview'
@@ -211,6 +211,8 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       // 退出登录后再开软件也找不回账号。没登录就先到欢迎页，登录或看使用步骤由用户点。
       // 工具配置文件原样保留，终端里照常能用。
       setBoot('ready')
+      const updated = updatedNotice(result.update.currentVersion, result.update.installedRelease)
+      if (updated) noteStartupCheck(updated)
       if (result.settings.checkUpdatesOnStartup && result.update.phase !== 'disabled') {
         void app.startupUpdate().then((checked) => { if (current) setUpdate(checked) }).catch((cause) => {
           if (current) noteStartupCheck(startupCheckFailure('update', errorMessage(cause, '更新检查没有完成')))
@@ -909,7 +911,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     </Dialog>}
     <StartupNotices notices={startupNotices} onDismiss={dismissStartupNotice}
       leading={maintenance && maintenanceKey !== dismissedMaintenance ? <MaintenanceNotice maintenance={maintenance} onDismiss={() => setDismissedMaintenance(maintenanceKey)} /> : undefined}
-      onOpen={(id, action) => { dismissStartupNotice(id); if ('login' in action) setAuth('login'); else navigate(action.page) }} />
+      onOpen={(id, action) => { dismissStartupNotice(id); if ('login' in action) setAuth('login'); else if ('page' in action) navigate(action.page) }} />
     {operationError && <OperationErrorDialog failure={operationError} installDirectory={toolInstallDirectory(toolbox.snapshot, operationError.tool)} onClose={() => setOperationError(null)} onAction={runOperationAction} />}
     {manualUninstall && <ManualUninstallDialog state={manualUninstall} platform={platform?.platform} onClose={() => setManualUninstall(null)} />}
     {!operationError && session.authenticated && accountReadError?.scope === scope && <Dialog open title="操作没有完成" onClose={() => setAccountReadError(null)} footer={<>

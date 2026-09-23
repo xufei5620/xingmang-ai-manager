@@ -22,6 +22,19 @@ export type UpdatePhase =
  */
 export type UpdateFailedStep = 'check' | 'download' | 'install'
 
+/**
+ * 定义在这里而不是 installed-release.ts：这个类型经 ipc-contract.ts 进渲染层的
+ * 程序图，而那个模块要读文件（node:fs），不能被拖进去（AGENTS.md T9）。
+ */
+export interface InstalledRelease {
+  /** 这次启动是更新后的第一次。 */
+  justUpdated: boolean
+  /** 上次运行的版本；从还没有这项记录的旧版升上来时不知道，为 null。 */
+  previousVersion: string | null
+  /** 本版随包带的用户可见改动；构建时 release-notes.md 顶节不是这一版（日常测试包）时为 null。 */
+  notes: string[] | null
+}
+
 export interface UpdateSnapshot {
   phase: UpdatePhase
   currentVersion: string
@@ -49,6 +62,12 @@ export interface UpdateSnapshot {
    * downloads or installs on its own; the user confirms each step.
    */
   unsignedChannel?: boolean
+  /**
+   * 这次启动是不是刚更新完、这一版随包带了哪些改动（installed-release.ts）。整个
+   * 进程生命周期内不变：更新页要一直能看到「当前版本的更新内容」，而「已更新到」
+   * 的提示由渲染层在启动时读一次。可选＝旧快照，界面照旧只显示待下载版本的说明。
+   */
+  installedRelease?: InstalledRelease | null
   /**
    * 更新目录上的状态文件说服务正在维护时，这里是发布者写的那句话（见
    * service-status.ts）；没在维护或读不到那份文件时为 null。放在更新快照里是因为
@@ -161,6 +180,7 @@ export interface UpdaterRuntime {
    * not be made. Both outcomes reject the package.
    */
   verifyPackageDigest?: (filePath: string, expectedSha512: string) => Promise<boolean>
+  installedRelease?: InstalledRelease | null
   /**
    * 每次检查前重读一遍更新目录上的状态文件，撤回名单与分批放量都以最新的为准。
    * 读不到返回 null（当作没有那份文件），不能抛错。
@@ -356,11 +376,16 @@ function safeError(error: unknown, platform: NodeJS.Platform): { code: string; m
   return { code, message: message || '更新操作失败' }
 }
 
+function cloneInstalledRelease(release: InstalledRelease | null | undefined): InstalledRelease | null {
+  return release ? { ...release, notes: release.notes ? [...release.notes] : null } : null
+}
+
 function cloneSnapshot(snapshot: UpdateSnapshot): UpdateSnapshot {
   return {
     ...snapshot,
     progress: snapshot.progress ? { ...snapshot.progress } : null,
     error: snapshot.error ? { ...snapshot.error } : null,
+    installedRelease: cloneInstalledRelease(snapshot.installedRelease),
     serviceMaintenance: snapshot.serviceMaintenance ? { ...snapshot.serviceMaintenance } : null,
   }
 }
@@ -407,6 +432,7 @@ export function createUpdaterService(
     failedStep: null,
     development,
     unsignedChannel,
+    installedRelease: cloneInstalledRelease(runtime.installedRelease),
     serviceMaintenance: null,
     currentVersionWithdrawn: false,
     rollback: false,

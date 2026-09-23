@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { startupCheckFailure, startupCheckLogContext, startupDiagnosticsIssues, vaultRecoveredNotice, withStartupNotice, withoutStartupNotice } from './startup-notice'
+import { startupCheckFailure, startupCheckLogContext, releaseNoteHeadline, startupDiagnosticsIssues, updatedNotice, vaultRecoveredNotice, withStartupNotice, withoutStartupNotice } from './startup-notice'
 
 describe('startup check notices', () => {
   it('keeps the backend sentence as the body so support still sees the original wording', () => {
@@ -73,5 +73,42 @@ describe('startup check notices', () => {
 
   it('names the check in the runtime log context', () => {
     expect(startupCheckLogContext('diagnostics')).toBe('renderer-v2 startup check: diagnostics')
+  })
+
+  it('announces the first launch after an update with its first changes and only an acknowledgement', () => {
+    // yoyo 定的原则：用户是小白，这张卡片不让人做选择，只有一颗「知道了」。
+    const notice = updatedNotice('0.2.9', { justUpdated: true, previousVersion: '0.2.8', notes: ['第一件事：细节', '第二件事。更多', '第三件事', '第四件事'] })
+    expect(notice).toEqual({
+      id: 'updated',
+      failure: false,
+      tone: 'ok',
+      title: '已更新到 0.2.9',
+      body: '这一版的主要改动如下，另外 1 项在「更新」页可以看到。',
+      items: ['第一件事', '第二件事', '第三件事'],
+      action: { label: '知道了', dismiss: true },
+    })
+    expect(updatedNotice('0.2.9', { justUpdated: true, previousVersion: '0.2.8', notes: ['唯一一件'] })?.body).toBe('这一版的改动：')
+  })
+
+  it('still confirms the update when the build carried no notes', () => {
+    const notice = updatedNotice('0.2.9', { justUpdated: true, previousVersion: null, notes: null })
+    expect(notice?.title).toBe('已更新到 0.2.9')
+    expect(notice?.body).toBe('已经在用新版本了，可以照常使用。')
+    expect(notice?.items).toBeUndefined()
+    expect(notice?.action).toEqual({ label: '知道了', dismiss: true })
+  })
+
+  it('keeps only the leading clause of a change and trims it to fit the corner card', () => {
+    expect(releaseNoteHeadline('修复开着本机加速时安装 CLI 却下载不动：安装用的下载以前从不经过加速线路')).toBe('修复开着本机加速时安装 CLI 却下载不动')
+    expect(releaseNoteHeadline('没有标点的一句话')).toBe('没有标点的一句话')
+    const long = releaseNoteHeadline('长'.repeat(80))
+    expect(long).toHaveLength(36)
+    expect(long.endsWith('…')).toBe(true)
+  })
+
+  it('says nothing on an ordinary launch or with an old snapshot', () => {
+    expect(updatedNotice('0.2.9', { justUpdated: false, previousVersion: '0.2.9', notes: ['一条'] })).toBeNull()
+    expect(updatedNotice('0.2.9', null)).toBeNull()
+    expect(updatedNotice('0.2.9', undefined)).toBeNull()
   })
 })
