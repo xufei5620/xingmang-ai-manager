@@ -1605,7 +1605,9 @@ function createPlans(
         ...(claudeStatusLineCommand ? { statusLine: claudeStatusLineSetting(claudeStatusLineCommand) } : {}),
       }
       if (availableModels) applyClaudeRelayModelPicker(settings, env, availableModels, model)
-      return [{ path: paths[0], content: jsonContent(settings) }]
+      // 原文件读不出来时照旧重建（reset 本来就是给配置坏了的人用的），只是没东西可挪。
+      const aside = claudeForeignSettingsAsidePlans(settings, readJson(paths[0]) ?? {}, roots, apiKey)
+      return [...aside, { path: paths[0], content: jsonContent(settings) }]
     }
     case 'gemini':
       return [
@@ -1704,7 +1706,8 @@ function createMergePlans(
       if (claudeStatusLineCommand) applyClaudeStatusLine(parsed, claudeStatusLineCommand)
       if (availableModels) applyClaudeRelayModelPicker(parsed, env, availableModels, model)
       parsed.model = model
-      return [{ path: paths[0], content: jsonContent(parsed) }]
+      const aside = claudeForeignSettingsAsidePlans(parsed, null, roots, apiKey)
+      return [...aside, { path: paths[0], content: jsonContent(parsed) }]
     }
     case 'gemini': {
       const plans: FilePlan[] = []
@@ -2261,14 +2264,13 @@ function createOfficialAccountPlans(
       // 保留期同理——它们是用户偏好，跟用哪个账号无关，reset 重建时一并写回，否则换回
       // 官方账号的用户会悄悄回到 30 天自动删。
       if (mode === 'reset') {
-        return [{
-          path: paths[0],
-          content: jsonContent({
-            env: { DISABLE_AUTOUPDATER: '1' },
-            language: MANAGED_CLAUDE_RESPONSE_LANGUAGE,
-            cleanupPeriodDays: MANAGED_CLAUDE_RETENTION_DAYS,
-          }),
-        }]
+        const settings: Record<string, unknown> = {
+          env: { DISABLE_AUTOUPDATER: '1' },
+          language: MANAGED_CLAUDE_RESPONSE_LANGUAGE,
+          cleanupPeriodDays: MANAGED_CLAUDE_RETENTION_DAYS,
+        }
+        const restore = claudeForeignSettingsRestorePlans(settings, roots)
+        return [...restore, { path: paths[0], content: jsonContent(settings) }]
       }
       if (!fs.existsSync(paths[0])) return []
       const parsed = requireJson(paths[0], '现有 Claude settings.json')
@@ -2285,7 +2287,8 @@ function createOfficialAccountPlans(
       allowClaudeRelayTool(parsed)
       delete parsed.skipWebFetchPreflight
       delete parsed.model
-      return [{ path: paths[0], content: jsonContent(parsed) }]
+      const restore = claudeForeignSettingsRestorePlans(parsed, roots)
+      return [...restore, { path: paths[0], content: jsonContent(parsed) }]
     }
     case 'gemini': {
       if (mode === 'reset') {
@@ -2369,6 +2372,144 @@ export function switchProviderToOfficialAccount(
   assertNoReparseComponents(path.dirname(providerRoot), 'Provider 配置根目录')
   ensureSafeDataDirectory(providerRoot, 'Provider 配置根目录')
   return executeFilePlans(plans, hooks, providerRoot)
+}
+
+// ---------------------------------------------------------------------------
+// 别家中转留下的 Claude 设置
+//
+// 照 GLM、Kimi 或别家中转的教程配过 Claude Code 的人，~/.claude/settings.json
+// 里常留着这几项。合并写入只换 ANTHROPIC_AUTH_TOKEN / ANTHROPIC_BASE_URL / model，
+// 它们原样留下就会顶掉当前账号：ANTHROPIC_API_KEY 与 apiKeyHelper 让请求多带一把
+// 别人的 Key（new-api 拿 x-api-key 顶掉 Authorization，见 diagnostics.ts 那段实测），
+// ANTHROPIC_MODEL 压过 model，其余几项把 Haiku / Sonnet / Opus 别名映射到当前账号
+// 没有的型号。界面却照样显示「正常」（全面检测 Q7）。
+//
+// 接当前账号时把它们挪进旁边的快照文件，切回官方账号时原样放回。和 settings.json
+// 在同一次两阶段提交里写，不会一边有一边没有。ANTHROPIC_DEFAULT_MODEL 不在这张表
+// 里：它是本软件自己的选模型菜单写的（claude-model-picker.ts）。
+// ---------------------------------------------------------------------------
+
+export const claudeForeignSettingsSnapshotName = 'xingmang-claude-foreign-settings.json'
+
+const claudeForeignEnvKeys = [
+  'ANTHROPIC_API_KEY',
+  'ANTHROPIC_MODEL',
+  'ANTHROPIC_SMALL_FAST_MODEL',
+  'ANTHROPIC_DEFAULT_OPUS_MODEL',
+  'ANTHROPIC_DEFAULT_SONNET_MODEL',
+  'ANTHROPIC_DEFAULT_HAIKU_MODEL',
+] as const
+const claudeForeignTopLevelKeys = ['apiKeyHelper'] as const
+
+interface ClaudeForeignSettings {
+  env: Record<string, unknown>
+  settings: Record<string, unknown>
+}
+
+function readClaudeForeignSnapshot(content: string | null): ClaudeForeignSettings {
+  const parsed = requireWorkspaceTrustJson(content, '已保存的 Claude 旧设置')
+  return {
+    env: isJsonRecord(parsed.env) ? { ...parsed.env } : {},
+    settings: isJsonRecord(parsed.settings) ? { ...parsed.settings } : {},
+  }
+}
+
+function claudeForeignSnapshotContent(snapshot: ClaudeForeignSettings): string {
+  return Object.keys(snapshot.env).length === 0 && Object.keys(snapshot.settings).length === 0
+    ? ''
+    : jsonContent({ version: 1, env: snapshot.env, settings: snapshot.settings })
+}
+
+/**
+ * 纯函数：把 settings 里会顶掉当前账号的几项挪进快照（会改 settings）。返回新的
+ * 快照内容；null = 没有可挪的，快照不用动。settings 里又出现了同一项（用户在这
+ * 期间自己改过）时以新值为准。值等于这次要写的 Key 的 ANTHROPIC_API_KEY 只删不存：
+ * 放回官方那份配置等于把当前账号的 Key 塞给官方。
+ */
+export function moveClaudeForeignSettingsAside(
+  settings: Record<string, unknown>,
+  snapshotContent: string | null,
+  relayApiKey: string,
+): string | null {
+  const env = isJsonRecord(settings.env) ? settings.env : null
+  const envKeys = env ? claudeForeignEnvKeys.filter((key) => env[key] !== undefined) : []
+  const topLevelKeys = claudeForeignTopLevelKeys.filter((key) => settings[key] !== undefined)
+  if (envKeys.length === 0 && topLevelKeys.length === 0) return null
+  const snapshot = readClaudeForeignSnapshot(snapshotContent)
+  for (const key of envKeys) {
+    const value = env![key]
+    delete env![key]
+    if (key === 'ANTHROPIC_API_KEY' && typeof value === 'string' && value.trim() === relayApiKey) continue
+    snapshot.env[key] = value
+  }
+  for (const key of topLevelKeys) {
+    snapshot.settings[key] = settings[key]
+    delete settings[key]
+  }
+  if (env && Object.keys(env).length === 0) delete settings.env
+  return claudeForeignSnapshotContent(snapshot)
+}
+
+/**
+ * 纯函数：把快照里的几项放回 settings（会改 settings），返回是否放回过东西。已经
+ * 有同名项（用户在这期间自己又设了）就以现有的为准。调用方随后清空快照。
+ */
+export function restoreClaudeForeignSettings(
+  settings: Record<string, unknown>,
+  snapshotContent: string | null,
+): boolean {
+  const snapshot = readClaudeForeignSnapshot(snapshotContent)
+  let restored = false
+  const envEntries = Object.entries(snapshot.env)
+    .filter(([key]) => (claudeForeignEnvKeys as readonly string[]).includes(key))
+  if (envEntries.length > 0) {
+    const env = ensureRecord(settings, 'env')
+    for (const [key, value] of envEntries) {
+      if (env[key] !== undefined) continue
+      env[key] = value
+      restored = true
+    }
+  }
+  for (const [key, value] of Object.entries(snapshot.settings)) {
+    if (!(claudeForeignTopLevelKeys as readonly string[]).includes(key) || settings[key] !== undefined) continue
+    settings[key] = value
+    restored = true
+  }
+  return restored
+}
+
+function claudeForeignSnapshotPath(roots: ProviderConfigRoots): string {
+  return path.join(providerConfigRoot('claude', roots), claudeForeignSettingsSnapshotName)
+}
+
+function readClaudeForeignSnapshotText(roots: ProviderConfigRoots): string | null {
+  const snapshotPath = claudeForeignSnapshotPath(roots)
+  assertSafeConfigPath(snapshotPath, providerConfigRoot('claude', roots), 'file')
+  return requireConfigText(snapshotPath, '已保存的 Claude 旧设置')
+}
+
+/** 接当前账号时：把会顶掉当前账号的几项挪走，需要时附上快照文件的写入计划。 */
+function claudeForeignSettingsAsidePlans(
+  settings: Record<string, unknown>,
+  existing: Record<string, unknown> | null,
+  roots: ProviderConfigRoots,
+  relayApiKey: string,
+): FilePlan[] {
+  // reset 从模板重建，原文件里的这几项要从 existing 里取；merge 时两者是同一个对象。
+  const source = existing ?? settings
+  const current = readClaudeForeignSnapshotText(roots)
+  const snapshot = moveClaudeForeignSettingsAside(source, current, relayApiKey)
+  // 只删掉了一把与这次相同的 Key、又本来没有快照时，不必为此建一个空文件。
+  if (snapshot === null || (snapshot === '' && current === null)) return []
+  return [{ path: claudeForeignSnapshotPath(roots), content: snapshot }]
+}
+
+/** 切回官方账号时：原样放回，并清空快照。没有快照就什么都不做。 */
+function claudeForeignSettingsRestorePlans(settings: Record<string, unknown>, roots: ProviderConfigRoots): FilePlan[] {
+  const content = readClaudeForeignSnapshotText(roots)
+  if (content === null) return []
+  restoreClaudeForeignSettings(settings, content)
+  return content === '' ? [] : [{ path: claudeForeignSnapshotPath(roots), content: '' }]
 }
 
 // ---------------------------------------------------------------------------
