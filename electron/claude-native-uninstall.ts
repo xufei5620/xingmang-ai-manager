@@ -6,6 +6,7 @@ import type {
   NativeCliUninstallOptions,
 } from './native-cli-uninstall'
 import { sameLocalPathIdentity } from './path-identity'
+import { powerShellLiteral } from './windows-elevation'
 
 const label = 'Claude Code'
 const claudeVersionPattern = '\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z][0-9A-Za-z.-]{0,126})?(?:\\+[0-9A-Za-z][0-9A-Za-z.-]{0,126})?'
@@ -351,10 +352,6 @@ function shellSingleQuote(value: string): string {
   return `'${value.replaceAll("'", `'"'"'`)}'`
 }
 
-function powerShellSingleQuote(value: string): string {
-  return `'${value.replaceAll("'", "''")}'`
-}
-
 /** A copyable command for the version files the uninstall had to leave behind, or null when none. */
 export function buildClaudeRetainedVersionFilesCommand(
   retainedVersionFiles: readonly string[],
@@ -363,7 +360,7 @@ export function buildClaudeRetainedVersionFilesCommand(
   if (retainedVersionFiles.length === 0) return null
   if (platform === 'win32') {
     return retainedVersionFiles
-      .map((filePath) => `Remove-Item -LiteralPath ${powerShellSingleQuote(filePath)} -Force`)
+      .map((filePath) => `Remove-Item -LiteralPath ${powerShellLiteral(filePath)} -Force`)
       .join('; ')
   }
   return `rm -f ${retainedVersionFiles.map(shellSingleQuote).join(' ')}`

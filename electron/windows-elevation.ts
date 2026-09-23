@@ -484,8 +484,14 @@ function requireWindowsLaunchValue(value: string, label: string): string {
   return value
 }
 
+// PowerShell's tokenizer accepts U+2018..U+201B as single quotes too
+// (CharExtensions.IsSingleQuote in engine/parser/CharTraits.cs), both to open
+// and to close a verbatim string. Escaping only the ASCII quote lets a path
+// such as C:\Users\O’Brien end the literal early and run the rest as code.
+// Inside a verbatim string any quote character followed by another is read as
+// one literal copy of the second, so doubling each one in place keeps the text.
 export function powerShellLiteral(value: string): string {
-  return `'${value.replace(/'/g, "''")}'`
+  return `'${value.replace(/['\u2018-\u201b]/g, '$&$&')}'`
 }
 
 export function encodeWindowsPowerShellCommand(script: string): string {
