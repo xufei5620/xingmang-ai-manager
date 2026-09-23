@@ -114,12 +114,6 @@ export type AiAssetFetch = (
 ) => Promise<Response>
 export type AiAssetProxyFetch = (input: string, init: RequestInit) => Promise<Response>
 
-export interface ResolveAiOutputRootOptions {
-  isPackaged: boolean
-  projectRoot?: string
-  execPath?: string
-}
-
 export interface AiAssetStoreOptions {
   outputRoot: string
   fetchImpl?: AiAssetFetch
@@ -131,7 +125,7 @@ export interface AiAssetStoreOptions {
   maximumImageBytes?: number
   downloadTimeoutMs?: number
   /**
-   * 保存位置写不进时「下一步怎么办」那半句。安装目录下的全局 output 和画布项目自己的
+   * 保存位置写不进时「下一步怎么办」那半句。「文档」下的全局保存位置和画布项目自己的
    * 文件夹，用户能做的事不一样，只有宿主知道这个 store 落在哪。
    */
   unwritableGuidance?: string
@@ -148,13 +142,6 @@ interface ImageInspection {
   extension: 'png' | 'jpg' | 'webp'
   width?: number
   height?: number
-}
-
-export function resolveAiOutputRoot(options: ResolveAiOutputRootOptions): string {
-  const base = options.isPackaged
-    ? path.dirname(path.resolve(options.execPath ?? process.execPath))
-    : path.resolve(options.projectRoot ?? process.cwd())
-  return path.join(base, 'output')
 }
 
 /**
@@ -611,7 +598,7 @@ export class AiAssetStore {
     try {
       ensureSafeDataDirectory(this.outputRoot, FILE_LABEL)
     } catch {
-      throw new Error('无法创建 output 目录，请检查安装目录写入权限')
+      throw new Error('AI 作品保存位置建不起来，请稍后重试；一直不行请联系客服')
     }
   }
 
@@ -933,7 +920,7 @@ export class AiAssetStore {
       if ((error as NodeJS.ErrnoException).code === 'EEXIST' && fs.existsSync(filePath)) {
         throw new Error('AI 图片资产标识冲突，请重试')
       }
-      throw new Error('无法写入 output 目录，请检查安装目录写入权限')
+      throw new Error('作品没能存进保存位置，请稍后重试；一直不行请联系客服')
     }
     const record: OwnedAssetRecord = { userId, filePath, asset }
     this.records.set(assetId, record)

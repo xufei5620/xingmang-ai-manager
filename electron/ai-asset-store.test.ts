@@ -8,7 +8,6 @@ import {
   AiAssetStore,
   inspectAiImage,
   isPublicAiAssetAddress,
-  resolveAiOutputRoot,
   validateAiAssetRemoteUrl,
   type AiAssetContextMenuItem,
   type AiAssetNativeOperations,
@@ -73,14 +72,7 @@ afterEach(() => {
   }
 })
 
-describe('output root and image inspection', () => {
-  it('resolves development and packaged output roots exactly', () => {
-    expect(resolveAiOutputRoot({ isPackaged: false, projectRoot: 'C:\\work\\manager' }))
-      .toBe(path.join(path.resolve('C:\\work\\manager'), 'output'))
-    expect(resolveAiOutputRoot({ isPackaged: true, execPath: 'C:\\Program Files\\Xingmang\\xingmang.exe' }))
-      .toBe(path.join(path.dirname(path.resolve('C:\\Program Files\\Xingmang\\xingmang.exe')), 'output'))
-  })
-
+describe('image inspection', () => {
   it('recognizes PNG, JPEG, and WebP dimensions by magic bytes', () => {
     expect(inspectAiImage(png())).toMatchObject({ mimeType: 'image/png', width: 2, height: 3 })
     expect(inspectAiImage(jpeg())).toMatchObject({ mimeType: 'image/jpeg', width: 4, height: 5 })
@@ -288,7 +280,7 @@ describe('AiAssetStore base64 and ownership', () => {
     const store = new AiAssetStore(storeOptions(outputRoot))
 
     await expect(store.storeBase64(42, png().toString('base64')))
-      .rejects.toThrow('无法写入 output 目录，请检查安装目录写入权限')
+      .rejects.toThrow('作品没能存进保存位置，请稍后重试；一直不行请联系客服')
   })
 })
 
