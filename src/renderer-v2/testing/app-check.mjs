@@ -6,6 +6,7 @@ import react from '@vitejs/plugin-react'
 import { chromium, expect } from '@playwright/test'
 import { createFixtureServer } from '../../../e2e/harness.mjs'
 import { fixtureMountSliceMs, openFixturePage, waitForFixtureMount } from '../../../e2e/fixture-readiness.mjs'
+import { enterWorkspaceWithoutAccount } from './guest-workspace.mjs'
 
 let server, browser, origin
 const artifacts = path.resolve('artifacts/renderer-v2-app')
@@ -1216,8 +1217,10 @@ test('read-only account matches remain third-party when the host cannot match an
 test('read-only account matches restore on fresh login without treating the match as configuration consent', async () => {
   const page = await open('readOnlyAccountMatch=1&allInstalled=1&guest=1&existing=1')
   try {
-    await matchedToolBadges(page, '用的是别处的配置')
-    await page.getByTestId('nav-chat').click()
+    await page.getByTestId('welcome-page').waitFor()
+    const before = await page.evaluate(() => window.xingmang.getConfig())
+    assert.ok(Object.values(before.providers).every(provider => provider.configurationAccountMatched !== true))
+    await page.getByTestId('welcome-login').click()
     await page.getByTestId('login-account').fill('fixture-user')
     await page.getByTestId('login-password').fill('fixture-password')
     await page.getByTestId('auth-agree').check()
@@ -1282,7 +1285,10 @@ test('read-only account matches do not survive logout or a late config read when
     await assertNoMatchedKeyOperations(page)
     await clean(page)
     await page.goto(`${origin}/src/renderer-v2/testing/app.html?readOnlyAccountMatch=1&allInstalled=1&guest=1&existing=1`)
-    await matchedToolBadges(page, '用的是别处的配置')
+    // 引导进度按未登录作用域记在本机，重开直接回到上面停下的「确认连接」。
+    await page.getByTestId('welcome-steps').click()
+    await page.getByText('你原来的配置已经原样留着。先看看处理步骤，确认哪些设置要留下，再决定怎么连接。', { exact: true }).waitFor()
+    assert.equal(await page.getByTestId('guide-next').isDisabled(), true)
     await assertNoMatchedKeyOperations(page)
     await clean(page)
   } finally { await page.close() }
@@ -1507,9 +1513,15 @@ test('read-only account matches switch only explicitly selected CLI providers on
   } finally { await page.close() }
 })
 
-test('existing local tools remain accessible without a Xingmang account', async () => {
+test('local keys no longer skip the welcome page, which offers login first and still lets tools open without an account', async () => {
   const page = await open('guest=1&existing=1')
   try {
+    await page.getByTestId('welcome-page').waitFor()
+    assert.equal(await page.getByTestId('tool-row-codex').count(), 0)
+    await page.getByTestId('welcome-login').click()
+    await page.getByTestId('login-account').waitFor()
+    await page.getByTestId('login-cancel').click()
+    await enterWorkspaceWithoutAccount(page)
     await page.getByTestId('tool-codexDesktop-primary').click()
     await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'launchCodexDesktop'))
     const methods = await page.evaluate(() => window.v2Test.calls.map((entry) => entry.method))
@@ -1915,6 +1927,7 @@ test('configuration migration shares Codex drafts and failed saves retain the se
 test('a manual relay key saved over a third-party config survives the next login bootstrap', async () => {
   const page = await open('guest=1&existing=1&unknown=1')
   try {
+    await enterWorkspaceWithoutAccount(page, 'claude')
     await page.getByTestId('tool-row-codex').getByRole('button', { name: '更多操作' }).click()
     await page.getByRole('menuitem', { name: '配置', exact: true }).click()
     await page.getByRole('button', { name: '填写星芒密钥' }).click()
@@ -2538,11 +2551,29 @@ const defaultModelCases = [
   { tool: 'gemini', provider: 'gemini', model: 'gemini-3.8-flash-high' },
   { tool: 'grok', provider: 'grok', model: 'grok-4.6' },
 ]
+// 没登录时欢迎页挡在前面（本机有 Key 也一样）。配好模型的工具走完使用步骤进首页再开配置；
+// 没配模型的工具在引导「确认连接」那一步就能打开配置，未登录用户实际也是这么走的。
+async function openGuestToolConfiguration(page, tool, existing) {
+  if (existing) {
+    if (await page.getByTestId('welcome-page').count()) await enterWorkspaceWithoutAccount(page)
+    return openToolConfiguration(page, tool)
+  }
+  if (await page.getByTestId('welcome-page').count()) {
+    await page.getByTestId('welcome-steps').click()
+    await page.getByTestId(`guide-route-${tool}`).check()
+    await page.getByTestId('guide-next').click()
+    await page.locator('[data-guide-step="prepare"]').waitFor()
+    await page.getByTestId('guide-next').click()
+    await page.locator('[data-guide-step="connect"]').waitFor()
+  }
+  await page.getByTestId('guide-config').click()
+  await page.getByTestId('config-dialog').waitFor()
+}
 for (const existing of [false, true]) for (const { tool, provider, model } of defaultModelCases) {
   test(`${tool} model detection ${existing ? 'preserves the saved model' : `defaults to ${model} before the first returned model`}`, async () => {
     const page = await open(`guest=1&existing=1&allInstalled=1&keyOptions=1&cliDefaultModels=1${existing ? '' : '&cliMissingModels=1'}`)
     try {
-      await openToolConfiguration(page, tool)
+      await openGuestToolConfiguration(page, tool, existing)
       const expected = existing ? 'fixture-model' : model
       assert.equal(await page.getByLabel('默认模型').inputValue(), expected)
       await page.getByTestId('tool-detect-models').click()
@@ -2554,7 +2585,7 @@ for (const existing of [false, true]) for (const { tool, provider, model } of de
       assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'saveConfig').map((entry) => entry.args[0])), [
         { provider, apiKey: '', model: expected, mode: 'merge' },
       ])
-      await openToolConfiguration(page, tool)
+      await openGuestToolConfiguration(page, tool, existing)
       assert.equal(await page.getByLabel('默认模型').inputValue(), expected)
       await clean(page)
     } finally { await page.close() }

@@ -205,7 +205,9 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       // 预览开关要等主进程说清这是不是打包版才生效，所以放在 bootstrap 里而不是
       // 初始 state；`boot !== 'ready'` 期间只渲染 Splash，用户看不到中间态。
       if (onboardingPreviewEnabled(window.location.search, result.update.development)) setGuide(true)
-      setWorkspaceEntered(Object.values(result.config.providers).some((provider) => provider.hasApiKey || provider.codexAuthMode === 'chatgpt' || provider.authType === 'oauth-personal' || Boolean(provider.officialAccountEmail)))
+      // 本机工具里已经有 Key 也不再绕过欢迎页直接进首页：那样进来的人看不到登录按钮，
+      // 退出登录后再开软件也找不回账号。没登录就先到欢迎页，登录或看使用步骤由用户点。
+      // 工具配置文件原样保留，终端里照常能用。
       setBoot('ready')
       if (result.settings.checkUpdatesOnStartup && result.update.phase !== 'disabled') {
         void app.startupUpdate().then((checked) => { if (current) setUpdate(checked) }).catch((cause) => {
@@ -428,7 +430,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     if (restoring) {
       // 开机恢复结束。先进首页时读到的配置没有账号可比，来源是「待定」：恢复成功
       // 就当场补读一次（作用域没变，首页不重来）；没恢复成就只是落回未登录，
-      // 首页或欢迎页照配置决定，不按「登录被结束」处理。
+      // 回到欢迎页，不按「登录被结束」处理。
       if (next.authenticated) { void toolbox.refreshConfig().catch(() => undefined); void balanceStore.refresh('foreground') }
       return
     }
