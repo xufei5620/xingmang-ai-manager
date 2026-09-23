@@ -2,12 +2,13 @@ import type { CanvasRunGraph, CanvasRunScope } from '../host'
 
 const imageRunNodeKinds = new Set(['image', 'image-generate', 'image-edit'])
 const videoRunNodeKinds = new Set(['video', 'video-generate'])
-const paidRunNodeKinds = new Set([...imageRunNodeKinds, ...videoRunNodeKinds])
+const textRunNodeKinds = new Set(['drama-parse'])
+const paidRunNodeKinds = new Set([...imageRunNodeKinds, ...videoRunNodeKinds, ...textRunNodeKinds])
 const assetInputKinds = new Set(['image-input', 'video-input', 'audio-input'])
 
 export type CanvasPreflightSeverity = 'info' | 'warning' | 'blocking'
 export type CanvasPreflightAction = 'execute' | 'cached' | 'skip' | 'blocked'
-export type CanvasPreflightReasonCode = 'disabled' | 'upstream-skip' | 'missing-group' | 'unavailable-model' | 'missing-asset' | 'drama-gate'
+export type CanvasPreflightReasonCode = 'disabled' | 'upstream-skip' | 'missing-group' | 'unavailable-model' | 'missing-asset' | 'drama-gate' | 'unsupported-node'
 
 export interface CanvasRunPreflightInput {
   graph: CanvasRunGraph
@@ -15,6 +16,8 @@ export interface CanvasRunPreflightInput {
   cachedNodeIds?: readonly string[]
   imageGroup?: string
   videoGroup?: string
+  textGroup?: string
+  textModels?: readonly string[]
   imageModels: readonly string[]
   videoModels: readonly string[]
   nodeBlockReasons?: Readonly<Record<string, string>>
@@ -41,9 +44,12 @@ export interface CanvasRunPreflight {
   cacheHitCount: number
   skippedCount: number
   blockedCount: number
+  /** Planned remote execution steps, NOT an upper bound on HTTP calls or charges. */
   paidRequestCount: number
   imageRequestCount: number
   videoRequestCount: number
+  /** Optional for compatibility with existing preflight snapshots. */
+  textRequestCount?: number
   risk: CanvasPreflightSeverity
   warnings: string[]
   canStart: boolean
@@ -111,12 +117,15 @@ function scopeLabel(scope: CanvasRunScope): string {
 function nodeGroup(node: CanvasRunGraph['nodes'][number], input: CanvasRunPreflightInput): string | undefined {
   if (imageRunNodeKinds.has(node.kind)) return node.data.group || input.imageGroup
   if (videoRunNodeKinds.has(node.kind)) return node.data.group || input.videoGroup
+  if (textRunNodeKinds.has(node.kind)) return node.data.group || input.textGroup
   return node.data.group
 }
 
 function modelAvailable(node: CanvasRunGraph['nodes'][number], input: CanvasRunPreflightInput): boolean {
   if (imageRunNodeKinds.has(node.kind)) return input.imageModels.includes(node.data.model)
   if (videoRunNodeKinds.has(node.kind)) return input.videoModels.includes(node.data.model)
+  if (textRunNodeKinds.has(node.kind)) return Boolean(node.data.model.trim())
+    && (input.textModels === undefined || input.textModels.includes(node.data.model))
   return true
 }
 
@@ -156,9 +165,16 @@ export function buildCanvasRunPreflight(input: CanvasRunPreflightInput): CanvasR
       action = 'skip'
       reason = '上游节点已跳过'
       reasonCode = 'upstream-skip'
+    } else if (node.kind === 'frame-extract') {
+      // The main-process executor deliberately rejects this capability. Even
+      // an optimistic cache hint must not make an unsupported chain runnable.
+      action = 'blocked'
+      reason = '视频抽帧尚未接入，请先移除此步骤或停用对应链路'
+      reasonCode = 'unsupported-node'
     } else if (paid && !group) {
       action = 'blocked'
-      reason = node.kind.startsWith('video') ? '缺少视频分组' : '缺少生图分组'
+      reason = videoRunNodeKinds.has(node.kind) ? '缺少视频分组'
+        : textRunNodeKinds.has(node.kind) ? '缺少文字分组' : '缺少生图分组'
       reasonCode = 'missing-group'
     } else if (paid && !modelAvailable(node, input)) {
       action = 'blocked'
@@ -201,7 +217,11 @@ export function buildCanvasRunPreflight(input: CanvasRunPreflightInput): CanvasR
   const paidRequestCount = items.filter((item) => item.action === 'execute' && item.paid).length
   const imageRequestCount = items.filter((item) => item.action === 'execute' && imageRunNodeKinds.has(item.kind)).length
   const videoRequestCount = items.filter((item) => item.action === 'execute' && videoRunNodeKinds.has(item.kind)).length
-  if (paidRequestCount > 0) warnings.push(`本次最多提交 ${paidRequestCount} 个付费生成请求；不确定的上游提交不会自动重试`)
+  const textRequestCount = items.filter((item) => item.action === 'execute' && textRunNodeKinds.has(item.kind)).length
+  if (paidRequestCount > 0) warnings.push(`预计执行 ${paidRequestCount} 个生成步骤；步骤数不等于实际请求次数，费用以实际结算为准`)
+  if (items.some((item) => item.kind === 'drama-parse' && item.action === 'execute')) {
+    warnings.push('剧本解析失败时可能再次调用文字模型，实际请求次数可能增加')
+  }
   if (cacheHitCount > 0) warnings.push(`已有 ${cacheHitCount} 个节点可复用缓存结果`)
   return {
     scope: structuredClone(input.scope),
@@ -216,6 +236,7 @@ export function buildCanvasRunPreflight(input: CanvasRunPreflightInput): CanvasR
     paidRequestCount,
     imageRequestCount,
     videoRequestCount,
+    textRequestCount,
     risk: blockedCount > 0 ? 'blocking' : paidRequestCount > 0 ? 'warning' : 'info',
     warnings: [scopeLabel(input.scope), ...warnings],
     canStart: selected.size > 0 && blockedCount === 0,
@@ -233,6 +254,9 @@ export function canvasMediaConfigurationErrors(
   const missingVideoGroup = preflight.items.some((item) => videoRunNodeKinds.has(item.kind) && item.reasonCode === 'missing-group')
   if (missingImageGroup) errors.push('请选择生图分组')
   if (missingVideoGroup) errors.push('请选择视频分组')
+  if (preflight.items.some((item) => textRunNodeKinds.has(item.kind) && item.reasonCode === 'missing-group')) {
+    errors.push('请选择文字分组')
+  }
   const unavailableImageModels = [...new Set(preflight.items
     .filter((item) => imageRunNodeKinds.has(item.kind) && item.reasonCode === 'unavailable-model')
     .map((item) => item.model)
@@ -247,5 +271,7 @@ export function canvasMediaConfigurationErrors(
   if (configuration.videoGroup && unavailableVideoModels.length > 0) {
     errors.push(`视频分组「${configuration.videoGroup}」不提供模型：${unavailableVideoModels.join('、')}`)
   }
+  const unavailableTextModels = preflight.items.filter((item) => textRunNodeKinds.has(item.kind) && item.reasonCode === 'unavailable-model')
+  if (unavailableTextModels.length > 0) errors.push('请选择当前文字分组可用的模型')
   return errors
 }
