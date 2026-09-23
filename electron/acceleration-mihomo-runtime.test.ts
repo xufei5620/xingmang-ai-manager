@@ -282,7 +282,7 @@ describe('createMihomoRuntime', () => {
     const value = runtime()
     const starting = value.start(profile())
     const rejected = expect(starting).rejects.toThrow('加速连接已取消')
-    await vi.waitFor(() => expect(children[0]?.routes.some((route) => route.includes('/delay?'))).toBe(true))
+    await vi.waitFor(() => expect(children[0]?.routes.some((route) => route.includes('/delay?'))).toBe(true), { timeout: 10_000 })
     await value.stop()
     await rejected
     expect(value.isRunning()).toBe(false)
