@@ -329,7 +329,7 @@ describe('diagnostics', () => {
 
       expect(report.items.find((item) => item.code === 'XINGMANG_NETWORK')).toMatchObject({
         state: 'pass',
-        summary: '已连通（HTTP 200）',
+        summary: '能连上星芒服务',
       })
       expect(fetchImpl).toHaveBeenCalledTimes(1)
       expect(fetchImpl.mock.calls[0][0]).toBe('https://xm.solov.cc/api/status')
@@ -509,7 +509,7 @@ describe('diagnostics', () => {
 
       const report = await runDiagnostics(input)
 
-      expect(networkItem(report)).toMatchObject({ state: 'pass', summary: '已连通（HTTP 200）' })
+      expect(networkItem(report)).toMatchObject({ state: 'pass', summary: '能连上星芒服务' })
       // 不新增请求：这一项本来就要发的那一次请求就是全部。
       expect(fetchImpl).toHaveBeenCalledTimes(1)
     })
@@ -556,7 +556,7 @@ describe('diagnostics', () => {
       const report = await runDiagnostics(input)
 
       const network = networkItem(report)
-      expect(network).toMatchObject({ state: 'pass', summary: '已连通（HTTP 200）' })
+      expect(network).toMatchObject({ state: 'pass', summary: '能连上星芒服务' })
       expect(network?.details).not.toHaveProperty('clockSkewMinutes')
     })
   })

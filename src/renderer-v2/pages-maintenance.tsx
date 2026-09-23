@@ -520,6 +520,14 @@ export function HealthPage({
   )
 }
 
+/** 与上面筛选条的说法一致；英文级别名只进导出的报告。 */
+const runtimeLogLevelLabels: Readonly<Record<string, string>> = {
+  error: '错误',
+  warn: '提醒',
+  info: '信息',
+  debug: '调试',
+}
+
 export function FeedbackPage({
   api,
   openHelp,
@@ -680,7 +688,7 @@ export function FeedbackPage({
                         : 'neutral'
                   }
                 >
-                  {entry.level}
+                  {runtimeLogLevelLabels[entry.level] ?? entry.level}
                 </Pill>
               }
               desc={`${displayDate(entry.timestamp)} · ${entry.source}`}
@@ -949,8 +957,8 @@ export function UpdatesPage({
           <ListRow title="上次检查" meta={displayDate(update?.checkedAt)} />
           {update?.unsignedChannel && (
             <ListRow
-              title="更新通道"
-              meta="未签名，下载和安装都要你确认"
+              title="更新方式"
+              meta="每次下载和安装新版本前都会先问你"
               testId="updates-channel-unsigned"
             />
           )}
@@ -1961,8 +1969,8 @@ export function SettingsPage({
             </Button>,
           )}
           {row(
-            'npm 全局包装到哪',
-            '继续使用已有的用户安装目录，避免影响其他工具',
+            '工具装在哪里',
+            '沿用你电脑上原来的安装位置，不影响别的软件',
             <Button
               size="sm"
               icon={Wrench}
@@ -2163,7 +2171,7 @@ export function SettingsPage({
           )}
           {row(
             '使用统计',
-            '仅保存匿名统计偏好。此版本不会自动收集或上传使用记录',
+            '只记下你的选择；目前软件不会收集或上传任何使用记录',
             systemApi && systemState ? (
               <Switch
                 aria-label="匿名使用统计偏好"
@@ -2216,9 +2224,9 @@ export function SettingsPage({
             </>,
           )}
           {row(
-            '从旧版本迁移',
-            '当前继续读取原有设置和配置，旧界面保留用于回滚',
-            <Pill>共用原数据格式</Pill>,
+            '以前的设置',
+            '升级后沿用你以前的设置和工具配置，不用重新设置',
+            <Pill>已沿用</Pill>,
           )}
           {row(
             '工具配置备份',

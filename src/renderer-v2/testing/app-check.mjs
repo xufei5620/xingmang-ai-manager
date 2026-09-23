@@ -3225,7 +3225,7 @@ test('a self-check failure is attributed per tool and never takes the other tool
     await page.getByTestId('nav-health').click()
     await page.getByTestId('health-connection-run').click()
     const claude = page.getByTestId('health-connection-result-claude')
-    await claude.getByText('Claude Code · 分组与渠道', { exact: true }).waitFor()
+    await claude.getByText('Claude Code · 账号分组', { exact: true }).waitFor()
     // 分组层的下一步是重签一把 Key，所以这一条给的是「重新写入 Key」；仍旧跳页的
     // 那几层（这里是未配置的 Gemini）继续给「去处理」。
     await claude.getByRole('button', { name: '重新写入 Key', exact: true }).waitFor()

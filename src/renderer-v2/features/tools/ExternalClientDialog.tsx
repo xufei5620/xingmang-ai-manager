@@ -109,9 +109,9 @@ export function ExternalClientDialog({ api, tool, signedIn, onClose, onSaved }: 
       <div className="v2-config-field"><Select label="使用模型" value={model} options={models.length ? models.map((id) => ({ value: id, label: id })) : [{ value: model, label: model || '先检测这把密钥的可用模型' }]} onChange={(event) => { setModel(event.target.value); setDirty(true); setResult(null) }} disabled={!models.length} testId="external-client-model" />
         <Button icon={RefreshCw} size="sm" loading={busy === 'models'} disabled={source === 'manual' && !secret.trim()} onClick={() => void detect()} testId="external-client-detect">检测模型</Button>
       </div>
-      {tool === 'opencode' && <div className="v2-config-field"><Select label="模型接口" value={protocol} options={[{ value: 'responses', label: 'Responses（Codex / GPT）' }, { value: 'chat-completions', label: 'Chat Completions（其他兼容模型）' }]} onChange={(event) => { setProtocol(event.target.value as typeof protocol); setDirty(true); setResult(null) }} testId="external-client-protocol" /><p>按所选模型支持的接口选择。配置会同时供 OpenCode CLI 与桌面端读取。</p></div>}
-      {tool === 'workbuddy' && <p className="v2-callout">配置腾讯 WorkBuddy 的自定义模型。请选择支持 Chat Completions 与工具调用的模型；保存后在 WorkBuddy 的模型列表选择它。</p>}
-      {tool === 'claudeDesktop' && <p className="v2-callout">Claude Desktop 第三方推理 · Gateway。保存后请完全退出并重新打开 Claude Desktop。</p>}
+      {tool === 'opencode' && <div className="v2-config-field"><Select label="模型类型" value={protocol} options={[{ value: 'responses', label: 'Codex / GPT 系列模型' }, { value: 'chat-completions', label: '其他模型' }]} onChange={(event) => { setProtocol(event.target.value as typeof protocol); setDirty(true); setResult(null) }} testId="external-client-protocol" /><p>按上面选的模型挑一项；拿不准就选和模型名对应的那一项。配置会同时给 OpenCode 命令行版和桌面版用。</p></div>}
+      {tool === 'workbuddy' && <p className="v2-callout">配置腾讯 WorkBuddy 的自定义模型。请选择能调用工具的模型；保存后在 WorkBuddy 的模型列表选择它。</p>}
+      {tool === 'claudeDesktop' && <p className="v2-callout">让 Claude Desktop 用当前账号的模型。保存后请完全退出并重新打开 Claude Desktop。</p>}
       <p>保存前会重新校验模型权限并备份已有配置。密钥只写入对应客户端的本地配置，现有配置内容不会返回界面。</p>
     </fieldset>
     {error && <p className="v2-callout is-bad" role="alert">{error}</p>}
