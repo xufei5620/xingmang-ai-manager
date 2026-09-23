@@ -1531,14 +1531,15 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
           const minutes = Math.round(Math.abs(skewMs) / 60_000)
           return {
             state: 'warn',
-            summary: `已连通（HTTP ${response.status}），但这台电脑的系统时间与服务器相差约 ${minutes} 分钟，`
+            summary: `能连上星芒服务，但这台电脑的系统时间与服务器相差约 ${minutes} 分钟，`
               + `可能让登录、安装、更新卡在证书校验这一步。${clockSyncGuidance(platform)}`,
             details: { endpoint, status: response.status, clockSkewMinutes: Math.round(skewMs / 60_000) },
           }
         }
         return {
           state: 'pass',
-          summary: `已连通（HTTP ${response.status}）`,
+          // 状态码留在 details 里给导出报告，结论只说人话。
+          summary: '能连上星芒服务',
           details: { endpoint, status: response.status },
         }
       },

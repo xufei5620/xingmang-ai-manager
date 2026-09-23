@@ -199,7 +199,7 @@ test('Gemini preparation unlocks Node then Python then CLI from confirmed snapsh
   try {
     await page.getByTestId('guide-route-gemini').check()
     await page.getByTestId('guide-next').click()
-    assert.deepEqual(await page.locator('.auth-guide-check-row strong').allTextContents(), ['Node.js 与 npm', 'Python', 'Gemini CLI'])
+    assert.deepEqual(await page.locator('.auth-guide-check-row strong').allTextContents(), ['运行环境', 'Python', 'Gemini CLI'])
     assert.equal(await page.getByTestId('guide-python').isDisabled(), true)
     assert.equal(await page.getByTestId('guide-install').isDisabled(), true)
     assert.equal(await page.getByTestId('guide-next').isDisabled(), true)
@@ -224,7 +224,7 @@ test('Gemini installs with one button when the runtimes can be prepared automati
   try {
     await page.getByTestId('guide-route-gemini').check()
     await page.getByTestId('guide-next').click()
-    assert.deepEqual(await page.locator('.auth-guide-check-row strong').allTextContents(), ['Node.js 与 npm', 'Python', 'Gemini CLI'])
+    assert.deepEqual(await page.locator('.auth-guide-check-row strong').allTextContents(), ['运行环境', 'Python', 'Gemini CLI'])
     assert.equal(await page.getByTestId('guide-node').count(), 0)
     assert.equal(await page.getByTestId('guide-python').count(), 0)
     assert.equal(await page.getByTestId('guide-install').isEnabled(), true)
