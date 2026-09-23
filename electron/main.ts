@@ -713,6 +713,14 @@ if (!hasSingleInstanceLock) {
       }),
     )
     const managerDataDirectory = app.getPath('userData')
+    // 内置加速内核三十多兆，校验要整读一遍。它以前排在建窗口前面单独等，慢机上
+    // 窗口因此晚出来；现在一开始就读，和后面的迁移、命令行探测叠着跑，用到时再等。
+    // 失败先接住：没等到它的这段时间里被拒绝，会被当成没人处理的错误。
+    const accelerationConfigRead = (app.isPackaged
+      ? readBundledAccelerationConfig({ isPackaged: true, platform: process.platform, resourcesPath: process.resourcesPath,
+        bundledMetadata: applicationPackage.xingmangAccelerationBundle })
+      : readAccelerationDevelopmentConfig({ isPackaged: false, platform: process.platform, dataDirectory: managerDataDirectory })
+    ).then((config) => ({ ok: true as const, config }), (error: unknown) => ({ ok: false as const, error }))
     const codexContext = resolveCodexHomeContext({
       isPackaged: app.isPackaged,
       env: process.env,
@@ -1828,10 +1836,9 @@ if (!hasSingleInstanceLock) {
     })
     let developmentAcceleration: ReturnType<typeof createAccelerationDevelopmentHost> | undefined
     try {
-      const accelerationConfig = app.isPackaged
-        ? await readBundledAccelerationConfig({ isPackaged: true, platform: process.platform, resourcesPath: process.resourcesPath,
-          bundledMetadata: applicationPackage.xingmangAccelerationBundle })
-        : await readAccelerationDevelopmentConfig({ isPackaged: false, platform: process.platform, dataDirectory: managerDataDirectory })
+      const read = await accelerationConfigRead
+      if (!read.ok) throw read.error
+      const accelerationConfig = read.config
       if (accelerationConfig) developmentAcceleration = createAccelerationDevelopmentHost({
         config: accelerationConfig, dataDirectory: managerDataDirectory, packaged: app.isPackaged,
         onDiagnostic: (stage) => runtimeLog.log('warn', 'network', 'acceleration.stop.failed',
