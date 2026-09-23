@@ -357,7 +357,16 @@ async function start() {
 // budget to exit. This start is deliberately not counted in applicationStarts:
 // it closes before the isolation probes could run, and it never reaches a step
 // that talks to the fixture beyond what start-up does on its own.
+//
+// Two budgets, because they measure different things. The window has to be gone
+// within the close-race smoke's 5 seconds: that is what the user sees, and every
+// step up to it runs on the main thread, so a wedged main thread fails it. The
+// process then has longer to end: the quit path itself allows 2 seconds of
+// cleanup and 2 more before it forces the exit, so a process-exit budget of 5
+// seconds left a loaded runner under a second for Windows to tear the process
+// down, and failed PRs that never touched start-up (#400).
 const restoredCloseBudgetMs = 5_000
+const restoredExitBudgetMs = 10_000
 async function closeWhileRestoring() {
   progress('launching an instance that is closed while it restores the saved account')
   // The settings file seeded above has no workspace, so the first start already
@@ -393,6 +402,7 @@ async function closeWhileRestoring() {
       })
     let closeRequestedAt = 0
     let exitedAlready = false
+    const windowClosed = new Promise((resolve) => page.once('close', () => resolve(Date.now() - closeRequestedAt)))
     const exited = new Promise((resolve) => child.once('exit', (code) => {
       exitedAlready = true
       resolve({ code, closeLatency: Date.now() - closeRequestedAt })
@@ -423,7 +433,10 @@ async function closeWhileRestoring() {
         progress(`close request: the inspector promise was collected on attempt ${attempt}/${collectedPromiseAttempts}, asking again`)
       }
     }
-    const result = await Promise.race([exited, new Promise((resolve) => setTimeout(() => resolve(null), restoredCloseBudgetMs))])
+    const windowLatency = await Promise.race([windowClosed, new Promise((resolve) => setTimeout(() => resolve(null), restoredCloseBudgetMs))])
+    const result = windowLatency === null
+      ? null
+      : await Promise.race([exited, new Promise((resolve) => setTimeout(() => resolve(null), Math.max(0, closeRequestedAt + restoredExitBudgetMs - Date.now())))])
     if (!result) {
       // Without this the failure only says "too slow"; whether the main thread
       // is wedged, the window is still up, or quit is waiting on something is
@@ -440,12 +453,13 @@ async function closeWhileRestoring() {
           return line.slice(0, 200)
         }
       })
-      progress(`close request at ${new Date(closeRequestedAt).toISOString()}, main-process ping before it ${mainPingMs}, windows now ${state}`)
+      progress(`close request at ${new Date(closeRequestedAt).toISOString()}, main-process ping before it ${mainPingMs}, window ${windowLatency === null ? `still up after ${restoredCloseBudgetMs}ms` : `gone ${windowLatency}ms after the request`}, windows now ${state}`)
       progress(`runtime log since this launch:\n${recent.slice(-120).join('\n')}`)
     }
-    assert.ok(result, 'closing the window while the saved account restores must not wait on the start-up scan')
+    assert.ok(windowLatency !== null, 'closing the window while the saved account restores must not wait on the start-up scan')
+    assert.ok(result, `the process must end within ${restoredExitBudgetMs}ms of the close request once the window is gone`)
     assert.equal(result.code, 0)
-    progress(`closed ${result.closeLatency}ms after the request (main-process ping before it ${mainPingMs})`)
+    progress(`window gone ${windowLatency}ms and process ended ${result.closeLatency}ms after the request (main-process ping before it ${mainPingMs})`)
   } finally {
     await withDeadline('main process exit', 20_000, () => instance.evaluate(({ app }) => app.exit(0))).catch(() => undefined)
     await withDeadline('close', 20_000, () => instance.close()).catch(() => undefined)
