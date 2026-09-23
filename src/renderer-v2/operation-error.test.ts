@@ -210,6 +210,15 @@ describe('renderer-v2 operation error classification', () => {
     expect(hint?.actions).toEqual([{ id: 'copyPath', label: '复制路径' }, { id: 'retry', label: '重试' }, { id: 'log', label: '查看日志' }])
   })
 
+  // Q13：主进程以前只交出「命令执行失败（退出码 1）：node」，上面那几条分类一条
+  // 都命中不了。这里钉的是主进程 describeNpmCommandFailure 现在真正拼出来的句子。
+  it('classifies the install failures the main process now spells out from npm stderr', () => {
+    expect(classifyOperationError('Claude Code 安装失败：国内 npm 镜像：命令执行失败（退出码 1）：node（ENOSPC；nospc ENOSPC: no space left on device, write）')).toBe('diskFull')
+    expect(classifyOperationError('Codex CLI 安装失败：国内 npm 镜像：命令执行失败（退出码 1）：node（EPERM；Error: EPERM: operation not permitted, rename）')).toBe('permission')
+    expect(classifyOperationError('Gemini CLI 安装失败：国内 npm 镜像：命令执行失败（退出码 1）：node（ETIMEDOUT；network request to https://registry.npmmirror.com/x failed, reason: connect ETIMEDOUT）')).toBe('downloadTimeout')
+    expect(classifyOperationError('Claude Code 安装失败：npm 官方源：下载超时，长时间没有完成，已中止')).toBe('downloadTimeout')
+  })
+
   it('names a replaced certificate instead of blaming the network', () => {
     for (const intercepted of [
       'Codex CLI 安装失败：npm 官方源：request to https://registry.npmjs.org failed, reason: self signed certificate in certificate chain',
