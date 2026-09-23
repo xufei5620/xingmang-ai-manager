@@ -1,7 +1,7 @@
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
-import { OnboardingSettingRows, TutorialPage, tutorialTopics, withElevationNotice } from './pages-maintenance'
+import { OnboardingSettingRows, TutorialPage, installResultMessage, tutorialTopics, withElevationNotice } from './pages-maintenance'
 import { macDesktopTutorialTopic, macRuntimeTutorialTopic } from './registry/business'
 import { clientConnections } from './registry/clients'
 import { pages } from './registry/pages'
@@ -245,5 +245,15 @@ describe('withElevationNotice', () => {
 
   it('leaves the row untouched where nothing elevates', () => {
     expect(withElevationNotice('命令行工具需要的运行环境', null)).toBe('命令行工具需要的运行环境')
+  })
+})
+
+describe('installResultMessage', () => {
+  // Q33：「安装卸载」页改走首页那条安装之后，结果不止「装好 / 取消」两种。
+  it('does not claim success when the install stopped for a restart or never started', () => {
+    expect(installResultMessage('installed')).toBe('安装完成，工具状态已更新')
+    expect(installResultMessage('cancelled')).toBe('安装已取消')
+    expect(installResultMessage('restart')).toContain('重启电脑')
+    expect(installResultMessage('skipped')).not.toContain('安装完成')
   })
 })

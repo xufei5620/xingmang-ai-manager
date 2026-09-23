@@ -87,6 +87,7 @@ import {
   runtimeLogWriteNotice,
 } from './features/app/runtime-log-filter'
 import type { V2Bridge, V2Page } from './types'
+import type { InstallCancelResult } from '../../electron/ipc-contract'
 import type {
   PlatformProxyStatus,
   PlatformSystemState,
@@ -121,6 +122,8 @@ type ExternalClientCheck = Awaited<ReturnType<V2Bridge['checkExternalClientConne
 // 没有自己的配置文件，自检无从下手，所以这里只取 CLI；三个外部客户端各有自己的
 // 配置文件，跟在 CLI 后面（registry/clients.ts 的次序）。
 const connectionTools = tools.filter((tool): tool is typeof tool & { id: Provider } => tool.kind === 'cli')
+/** installed：装好了；restart：运行环境要重启电脑才算装完；skipped：没有开始（取消、已在装或要自己下载）。 */
+export type ToolInstallOutcome = 'installed' | 'restart' | 'skipped'
 export type BusinessActions = {
   navigate?: (page: V2Page) => void
   openLogin?: () => void
@@ -137,6 +140,14 @@ export type BusinessActions = {
    * 只刷新自己那一份数据，回到首页仍会看到「未安装」（R-G3）。
    */
   onToolsChanged?: (tool: Provider | 'codexDesktop') => Promise<void> | void
+  /**
+   * 首页那条完整的安装：缺 Node.js / Python 先装运行环境，装完写 Key、刷新检测。
+   * 「安装卸载」页以前自己直接调主进程装工具，没装 Node.js 的人只看到「未检测到
+   * npm」（全面检测 Q33）；有了它就只走这一条。
+   */
+  installTool?: (tool: Provider | 'codexDesktop') => Promise<ToolInstallOutcome>
+  /** 与 installTool 配对的取消：首页那条安装在准备运行环境时会说明为什么不能取消。 */
+  cancelToolInstall?: (tool: Provider | 'codexDesktop') => Promise<InstallCancelResult>
   /**
    * 连接自检的密钥 / 分组层给出的「重新写入 Key」：复用装完工具后那条同样的重写
    * 流程（App 的 syncAfterToolInstalled），失败时把主进程的原话抛出来，页面照实显示。
@@ -1025,10 +1036,19 @@ export function UpdatesPage({
   )
 }
 
+export function installResultMessage(result: ToolInstallOutcome | 'cancelled'): string {
+  if (result === 'cancelled') return '安装已取消'
+  if (result === 'restart') return '运行环境已装好，重启电脑后再点一次「安装」'
+  if (result === 'skipped') return '这个工具正在安装，等它做完就好'
+  return '安装完成，工具状态已更新'
+}
+
 export function MaintenancePage({
   api,
   navigate,
   onToolsChanged,
+  installTool,
+  cancelToolInstall,
 }: { api: V2Bridge } & BusinessActions) {
   const load = useCallback(() => readMaintenanceStatus(api), [api])
   const resource = useResource(load)
@@ -1065,6 +1085,17 @@ export function MaintenancePage({
       async () => {
         cancelRequested.current.delete(id)
         setCancelNotice('')
+        if (installTool) {
+          try {
+            const outcome = await installTool(id)
+            if (outcome === 'skipped' && cancelRequested.current.has(id)) return 'cancelled' as const
+            await resource.reload()
+            return outcome
+          } finally {
+            cancelRequested.current.delete(id)
+            setCancelling('')
+          }
+        }
         try {
           if (id === 'codexDesktop') await api.installCodexDesktop()
           else await api.installCli(id)
@@ -1082,13 +1113,15 @@ export function MaintenancePage({
         await resource.reload()
         return 'installed' as const
       },
-      (result) => result === 'cancelled' ? '安装已取消' : '安装完成，工具状态已更新',
+      (result) => installResultMessage(result),
     )
   const cancelInstall = (id: Provider | 'codexDesktop') => {
     cancelRequested.current.add(id)
     setCancelling(id)
     setCancelNotice('')
-    const requested = id === 'codexDesktop' ? api.cancelCodexDesktopInstall() : api.cancelCliInstall(id)
+    const requested = cancelToolInstall
+      ? cancelToolInstall(id)
+      : id === 'codexDesktop' ? api.cancelCodexDesktopInstall() : api.cancelCliInstall(id)
     void requested.then((outcome) => {
       if (outcome.cancelled) return
       // 已经走到写入工具目录那一步：这次安装还会跑完，取消标记必须撤掉，

@@ -11,7 +11,7 @@ import { ConfigDialog } from './features/tools/ConfigDialog'
 import { ExternalClientDialog } from './features/tools/ExternalClientDialog'
 import { Home } from './features/tools/Home'
 import { createToolsApi } from './features/tools/api'
-import { launchWarning } from './features/tools/launch-notice'
+import { launchWaitLabel, launchWarning } from './features/tools/launch-notice'
 import { chineseRuntimePatchAnswerMissing, shouldAskForChineseRuntimePatch } from './features/tools/chinese-runtime-choice'
 import { cliInstallStageLabel, nodeRuntimeReady, planCliInstall, pythonRuntimeReady, runtimeStageFailureMessage, type InstallRuntimeId } from './features/tools/runtime-readiness'
 import { isToolId, presentTools, providerFor, toolInstallDirectory, type ToolId, type ToolSource } from './features/tools/model'
@@ -24,7 +24,9 @@ import { ManualUninstallDialog, type ManualUninstallState } from './features/too
 import { operationLogPage, type OperationActionId } from './operation-error'
 import { accountTabs, macDesktopTutorialTopic, updateFailureLabel } from './registry/business'
 import { tools } from './registry/tools'
+import { clientConnections } from './registry/clients'
 import type { PageId } from './registry/pages'
+import type { ToolInstallOutcome } from './pages-maintenance'
 import { BalanceTierProvider, Button, Confirm, Dialog, Notice, ToastProvider, useToast, useReducedMotion } from './ui'
 import { bridge as getBridge } from './bridge'
 import { errorMessage, pendingBusinessOperations } from './business-common'
@@ -469,13 +471,13 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     else if (action === 'repair') void perform('重新写入 Key', () => rewriteAccountKeys())
     else setHelp(true)
   }, [navigate, operationError, perform, rewriteAccountKeys])
-  async function install(id: ToolId, version?: string) {
+  async function install(id: ToolId, version?: string): Promise<ToolInstallOutcome> {
     const state = toolbox.snapshot
     if (!state) throw new Error('请先完成工具检测')
     const management = id === 'codexDesktop' ? state.platform.codexDesktop.install : state.platform.cliInstall[id]
     // 这不是一次失败：macOS 上这几个桌面端本来就要客户自己下载。以前当错误抛出来，
     // 用户会同时看到红色错误框和一个跳到教程首页、又没有对应章节的页面（第七批 3）。
-    if (management === 'external') { navigate('tutorial', macDesktopTutorialTopic); toast.show('这个系统要你自己下载安装，教程里是完整步骤。', 'neutral'); return }
+    if (management === 'external') { navigate('tutorial', macDesktopTutorialTopic); toast.show('这个系统要你自己下载安装，教程里是完整步骤。', 'neutral'); return 'skipped' }
     const definition = tools.find((tool) => tool.id === id)
     const toolName = definition?.name ?? '工具'
     const plan = id === 'codexDesktop'
@@ -486,11 +488,12 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     // 运行环境那一段主进程没有取消通道；这时按「取消」要说清楚，而不是回一句
     //「没有正在进行的安装」。
     let preparing = plan.prepare.length > 0
+    let outcome: ToolInstallOutcome = 'installed'
     // 收尾必须留在同一个安装任务里。任务一结束工具行就回落到安装前的快照：
     // 同步 Key 和重新检测还没跑完，版本号已经退回旧值、「更新」按钮跟着回弹，
     // 用户看到的是「装完了又要装一次」（yoyo 2026-09-20 真机反馈①）。
     // 用户中途取消时安装那一步抛出，收尾自然不会跑：本来就没装上，不用写 Key。
-    await toolbox.run(id, version ? `正在安装 ${version}` : preparing ? cliInstallStageLabel(plan.prepare[0], 0, total, toolName) : '正在安装', async (report) => {
+    const finished = await toolbox.run(id, version ? `正在安装 ${version}` : preparing ? cliInstallStageLabel(plan.prepare[0], 0, total, toolName) : '正在安装', async (report) => {
       for (const [index, runtime] of plan.prepare.entries()) {
         report(cliInstallStageLabel(runtime, index, total, toolName))
         // MSI 回 3010 时 Windows 要重启才算装完，接着装工具多半失败（第七批 5）：
@@ -498,6 +501,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
         if ((await prepareRuntimeForInstall(runtime, toolName)).restartRequired) {
           await toolbox.refresh(true).catch(() => undefined)
           if (mounted.current) setRuntimeRestart(true)
+          outcome = 'restart'
           return
         }
       }
@@ -512,6 +516,8 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       report(installedToolSyncLabel)
       await syncAfterToolInstalled(id)
     }, { cancel: async () => preparing ? { cancelled: false, reason: '正在准备运行环境，这一步不能取消；准备好后会接着安装工具。' } : toolsApi.cancelInstall(id) })
+    // run 返回 false 只有两种：用户取消了，或同一个工具已经有一次安装在跑。
+    return finished ? outcome : 'skipped'
   }
   /**
    * 串在「安装」里的运行环境那一段。单独占一个 node / python 任务，运行环境卡上
@@ -608,7 +614,8 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       if (!selectedWorkspace) return false
       workspace = selectedWorkspace
     }
-    return toolbox.run(`launch:${id}`, '正在打开工具', async () => {
+    const waitLabel = launchWaitLabel(toolbox.jobs, (key) => tools.find((tool) => tool.id === key)?.name ?? clientConnections.find((client) => client.id === key)?.name)
+    return toolbox.run(`launch:${id}`, waitLabel, async () => {
       const warning = launchWarning(await toolsApi.launch(id, workspace, mode))
       if (mounted.current && warning) toast.show(warning, 'warn')
     })
@@ -791,7 +798,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   if (boot !== 'ready') return <Splash phase="正在准备星芒 AI" error={bootError || undefined} progress={update?.progress?.percent} onRetry={() => setBootAttempt((value) => value + 1)} />
   return <AccountBalanceContext.Provider value={balanceStore}><BalanceTierProvider value={balanceAmount === null ? 'neutral' : balanceAmount <= 0 ? 'zero' : balanceAmount < 5 ? 'bad' : balanceAmount < 20 ? 'warn' : 'ok'}>
     {guide ? <StartGuide platform={os} tools={guideTools} signedIn={session.authenticated} busy={Object.keys(toolbox.jobs).length > 0 || accountBootstrapBusy} progress={accountBootstrapBusy && accountBootstrap ? { label: accountBootstrap.label, percent: accountBootstrap.percent } : guideJobProgress(toolbox.jobs)} resumeKey={scope}
-      onDetect={() => toolbox.refresh(true)} onInstall={install} onInstallRuntime={() => installRuntime('node')} onInstallPython={() => installRuntime('python')} onConfigure={async (id) => { openToolConfig(id) }} onLogin={() => setAuth('login')}
+      onDetect={() => toolbox.refresh(true)} onInstall={async (id) => { await install(id) }} onInstallRuntime={() => installRuntime('node')} onInstallPython={() => installRuntime('python')} onConfigure={async (id) => { openToolConfig(id) }} onLogin={() => setAuth('login')}
       onLaunch={async (id, newFolder) => id === 'chat' ? true : launch(id, 'open', undefined, newFolder)}
       onComplete={(id) => { if (!writeLocalPreference(`xingmang-v2-guide:${scope}`, id)) toast.show('工具已准备好，但引导偏好没有保存在本机。', 'warn'); setWorkspaceEntered(true); rememberTourPending(scope); setTourOpen(true); navigate(id === 'chat' ? 'chat' : 'home') }} onBack={() => setGuide(false)} onHelp={() => setHelp(true)} />
       : !session.authenticated && !restoring && !workspaceEntered ? <Welcome onLogin={() => setAuth('login')} onRegister={() => setAuth('register')} onSteps={() => setGuide(true)} onHelp={() => setHelp(true)} onLegal={setLegal}
@@ -844,6 +851,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
                   onToolsChanged={(tool) => syncAfterToolInstalled(tool).catch((cause) => {
                     if (mounted.current) toast.show(errorMessage(cause, '工具已安装，但最新状态没有读到。请回到首页重新检测。'), 'warn')
                   })}
+                  installTool={install} cancelToolInstall={(tool) => toolbox.cancel(tool)}
                   onRewriteKey={(provider) => rewriteAccountKeys([provider])} rewritableKeys={rewritableKeys} />
               </Suspense>
             </div>)}
