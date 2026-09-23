@@ -17,6 +17,14 @@ export interface NativeCliUninstallOptions {
   expectedResolvedSymbolicLinkTargets?: Readonly<Record<string, NativeCliResolvedSymbolicLinkTarget>>
   expectedOwnerUid?: number
   expectedDirectoryIdentity?: NativeCliDirectoryIdentity
+  /**
+   * Anthropic's official installer writes ~/.local/bin/claude as an absolute
+   * link into ~/.local/share/claude/versions. The link text is still pinned
+   * byte-for-byte and its realpath still has to land inside the verified root,
+   * so an absolute text only changes how the plan is spelled, not where it may
+   * resolve. Omitted = relative targets only (the Grok layout).
+   */
+  allowAbsoluteSymbolicLinkTargets?: boolean
 }
 
 export interface NativeCliDirectoryIdentity {
@@ -193,6 +201,7 @@ interface VerifiedUninstallFile {
   symbolicLinkIdentity: NativeCliSymbolicLinkIdentity | null
   symbolicLinkTarget: string | null
   resolvedSymbolicLinkTarget: NativeCliResolvedSymbolicLinkTarget | null
+  allowAbsoluteSymbolicLinkTarget: boolean
   moved: boolean
 }
 
@@ -267,7 +276,7 @@ async function requireVerifiedSymbolicLinkTarget(
       linkTarget !== file.symbolicLinkTarget
       || !linkTarget
       || linkTarget.includes('\0')
-      || path.isAbsolute(linkTarget)
+      || (path.isAbsolute(linkTarget) && !file.allowAbsoluteSymbolicLinkTarget)
     ) {
       throw new Error('符号链接文本发生变化')
     }
@@ -305,6 +314,7 @@ async function prepareVerifiedFile(
   expectedResolvedSymbolicLinkTarget?: NativeCliResolvedSymbolicLinkTarget,
   expectedOwnerUid?: number,
   symbolicLinkTargetContext: VerifiedSymbolicLinkTargetContext | null = null,
+  allowAbsoluteSymbolicLinkTarget = false,
 ): Promise<VerifiedUninstallFile | null> {
   requireSafeFileName(fileName)
   const filePath = path.join(directory, fileName)
@@ -322,7 +332,7 @@ async function prepareVerifiedFile(
     if (
       !expectedSymbolicLinkTarget
       || expectedSymbolicLinkTarget.includes('\0')
-      || path.isAbsolute(expectedSymbolicLinkTarget)
+      || (path.isAbsolute(expectedSymbolicLinkTarget) && !allowAbsoluteSymbolicLinkTarget)
     ) {
       throw new Error(`${label} 符号链接 ${fileName} 的卸载计划无效`)
     }
@@ -347,6 +357,7 @@ async function prepareVerifiedFile(
       symbolicLinkIdentity: plannedIdentity,
       symbolicLinkTarget: expectedSymbolicLinkTarget,
       resolvedSymbolicLinkTarget: expectedResolvedSymbolicLinkTarget ?? null,
+      allowAbsoluteSymbolicLinkTarget,
       moved: false,
     }
     if (await fs.promises.readlink(filePath) !== expectedSymbolicLinkTarget) {
@@ -384,6 +395,7 @@ async function prepareVerifiedFile(
     symbolicLinkIdentity: null,
     symbolicLinkTarget: null,
     resolvedSymbolicLinkTarget: null,
+    allowAbsoluteSymbolicLinkTarget: false,
     moved: false,
   }
 }
@@ -534,6 +546,11 @@ export async function uninstallVerifiedNativeCliFiles(
       rootDirectoryIdentity: options.expectedSymbolicLinkRootDirectoryIdentity,
     }
   }
+  if (options.allowAbsoluteSymbolicLinkTargets && !symbolicLinkTargetContext) {
+    // An absolute link text is only acceptable because the resolved-target
+    // verification pins where it lands; without that context it could name anything.
+    throw new Error(`${options.label} 符号链接卸载计划缺少完整目标身份`)
+  }
   const expectedOwnerUid = options.expectedSymbolicLinks
     ? options.expectedOwnerUid ?? process.getuid?.()
     : undefined
@@ -574,6 +591,7 @@ export async function uninstallVerifiedNativeCliFiles(
       expectedResolvedTarget,
       expectedOwnerUid,
       symbolicLinkTargetContext,
+      options.allowAbsoluteSymbolicLinkTargets === true,
     )
     if (file) files.push(file)
   }
