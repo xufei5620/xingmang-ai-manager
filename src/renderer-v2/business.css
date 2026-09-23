@@ -525,6 +525,7 @@
   flex: none;
 }
 .v2-connection-note { margin: 6px 0 0; color: var(--text-2); font-size: var(--font-small); line-height: 1.7; overflow-wrap: anywhere; }
+.v2-connection-note > summary { cursor: pointer; }
 .v2-curated-lead {
   margin: 0;
   padding: 14px 16px 0;

@@ -74,6 +74,8 @@ import { canUninstallTool } from './features/tools/model'
 import { elevatedInstallNotice } from './features/tools/elevation-notice'
 import { ToolStatusMeta, ToolStatusReason } from './features/tools/ToolStatusMeta'
 import { connectionCheckView } from './features/tools/connection-check'
+import { diagnosticDetailRows } from './features/app/diagnostic-details'
+import { requestSettingsGroup, takeSettingsGroup } from './features/app/settings-group-intent'
 import { maintenanceFailureNotice, readMaintenanceStatus } from './features/tools/maintenance-status'
 import { ManualUninstallDialog, type ManualUninstallState } from './features/tools/ManualUninstall'
 import { RuntimeRestartDialog } from './features/tools/RuntimeRestartDialog'
@@ -157,31 +159,34 @@ export function withElevationNotice(lead: string, notice: string | null): string
   return notice ? `${lead} · ${notice}` : lead
 }
 
-export function diagnosticTarget(code: string): V2Page {
+/**
+ * 「去处理」要落在真能处理这件事的地方。落不到的（磁盘满、系统版本、运行权限、
+ * 系统里的代理和环境变量、项目文件夹里的设置……）就不给按钮：结论里已经说了怎么办，
+ * 以前统一兜底到「安装卸载」，用户点过去什么也找不到。
+ */
+export function diagnosticTarget(code: string): V2Page | null {
   // 文件夹被搬过没有能在软件里一键修的地方，下一步是导出报告找客服。
   if (code === 'FOLDER_RELOCATED') return 'feedback'
-  if (
-    code.includes('PROXY') ||
-    code.includes('ENVIRONMENT') ||
-    code === 'XINGMANG_NETWORK' ||
-    code === 'CLASH_VERGE_TUN'
-  )
+  // 这三项在「设置」的「网络」组，跳过去时由 diagnosticFix 指定落在那一组。
+  if (code === 'XINGMANG_NETWORK' || code === 'PROXY_ENVIRONMENT' || code === 'CLASH_VERGE_TUN')
     return 'settings'
+  // 环境变量要用户自己在系统里删，软件里没有对应的开关。
+  if (code === 'PROVIDER_ENVIRONMENT_OVERRIDE') return null
   if (
     code.startsWith('PROVIDER_') ||
     code === 'CODEX_DOTENV' ||
-    code === 'CLAUDE_BYPASS_PERMISSIONS'
+    code === 'CLAUDE_BYPASS_PERMISSIONS' ||
+    // Git 的安装指引挂在首页的「运行环境」里，「安装卸载」页没有它那一行。
+    code === 'RUNTIME_GIT'
   )
     return 'home'
-  return 'maintenance'
+  if (code.startsWith('RUNTIME_') || code.startsWith('CLI_') || code === 'CODEX_DESKTOP')
+    return 'maintenance'
+  return null
 }
 
-/**
- * 有些项只能提醒、没有本软件能替用户做的一步：「项目文件夹里的设置」那些文件是
- * 用户或公司的，本软件不去改，结论里已经说了怎么办，再给「去处理」只会原地跳转。
- */
 export function diagnosticHasFix(code: string): boolean {
-  return code !== 'WORKSPACE_CONFIG_OVERRIDE'
+  return diagnosticTarget(code) !== null
 }
 
 /**
@@ -220,11 +225,11 @@ function ConnectionRowNotice({
         <>
           <div>{view.title}</div>
           <div>{view.body}</div>
-          {view.endpoint && (
-            <div className="v2-connection-note">请求地址：{view.endpoint}</div>
-          )}
           {view.detail && (
-            <div className="v2-connection-note">服务返回：{view.detail}</div>
+            <details className="v2-connection-note">
+              <summary>服务的原话（联系客服时可以附上）</summary>
+              {view.detail}
+            </details>
           )}
         </>
       }
@@ -322,9 +327,14 @@ export function HealthPage({
   }
   const fix = (item: Diagnostic) => {
     const provider = item.code.replace('PROVIDER_', '').toLowerCase()
-    if (item.code.startsWith('PROVIDER_') && isProvider(provider) && openConfig)
+    if (item.code.startsWith('PROVIDER_') && isProvider(provider) && openConfig) {
       openConfig(provider)
-    else navigate?.(diagnosticTarget(item.code))
+      return
+    }
+    const target = diagnosticTarget(item.code)
+    if (!target) return
+    if (target === 'settings') requestSettingsGroup('network')
+    navigate?.(target)
   }
   return (
     <section
@@ -487,10 +497,10 @@ export function HealthPage({
       >
         <p>{details?.summary}</p>
         <dl className="v2-business-kv">
-          {Object.entries(details?.details ?? {}).map(([key, value]) => (
-            <div key={key}>
-              <dt>{key}</dt>
-              <dd>{value === null ? '未提供' : String(value)}</dd>
+          {diagnosticDetailRows(details?.details).map((row) => (
+            <div key={row.key}>
+              <dt>{row.label}</dt>
+              <dd>{row.value}</dd>
             </div>
           ))}
         </dl>
@@ -1597,6 +1607,12 @@ export function SettingsPage({
   }
   const [group, setGroup] =
     useState<(typeof settingsGroups)[number]['value']>('appearance')
+  // 从检查页「去处理」跳进来时直接落在要去的那一组。放在副作用里取，严格模式下
+  // 初始化函数会跑两遍，第二遍会把已经取走的那一组读成空的。
+  useEffect(() => {
+    const requested = takeSettingsGroup()
+    if (requested) setGroup(requested)
+  }, [])
   const [pending, setPending] = useState(0)
   const [saveError, setSaveError] = useState('')
   const [saved, setSaved] = useState('')
