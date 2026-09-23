@@ -1,13 +1,14 @@
 # electron-builder 的 NSIS 自定义脚本。本文件被插在生成脚本的最前面，
 # 所以这里只能定义宏和 !define，真正的代码都在宏里，由模板在合适的位置插入。
 #
-# 这里一共做五件事，每一件都对应一个客户机上会真实发生的问题：
+# 这里一共做六件事，每一件都对应一个客户机上会真实发生的问题：
 #
 #   1. customInstall：安装收尾时补齐缺失的快捷方式（见下面那段长注释）。
 #   2. customHeader 里的目录页守卫：不许把程序装进别人的非空目录。
 #   3. customRemoveFiles：卸载时只删本程序自己装进去的东西。
 #   4. customInit：系统太旧（Windows 10 以下）时一开始就说明并退出。
 #   5. customUnInstall：删文件之前先还原加速改过的系统代理、删掉开机项。
+#   6. customUnWelcomePage：卸载欢迎页上的「同时清除登录记录」勾选框（默认不勾）。
 #
 # 2 和 3 是一对。老版本允许用户把安装目录选成任意已有目录（比如 D:\下载），
 # 而卸载时执行的是 electron-builder 默认的 `RMDir /r $INSTDIR`——整个目录连
@@ -21,6 +22,17 @@
 # 与 electron/uninstall-cleanup-entry.ts 的 uninstallCleanupArgument 是同一个值，
 # scripts/windows-installer-uninstall-cleanup.test.cjs 钉住两边一致。
 !define XINGMANG_UNINSTALL_CLEANUP_ARGUMENT "--xingmang-uninstall-cleanup"
+# 与 uninstall-cleanup-entry.ts 的 uninstallClearLoginArgument 是同一个值，同样由那份
+# 测试钉住。卸载页勾了「同时清除登录记录」时跟在上面那个参数后面传给程序；静默卸载
+# 没有页面可勾，在卸载程序自己的命令行上带同一个参数，效果等于勾上。
+!define XINGMANG_CLEAR_LOGIN_ARGUMENT "--xingmang-clear-login"
+
+!ifdef BUILD_UNINSTALLER
+  # "1" 表示要清。没赋过值的变量是空串，所以不勾、静默卸载不带参数、升级时跑的
+  # 旧卸载程序，都是保留登录，跟加这个勾选框以前一样。
+  Var xingmangClearLogin
+  Var xingmangClearLoginCheckbox
+!endif
 
 !ifndef BUILD_UNINSTALLER
   !ifdef allowToChangeInstallationDirectory
@@ -156,11 +168,40 @@
       Push $R0
       DetailPrint "Restoring system proxy and removing login item."
       ClearErrors
-      ExecWait '"$INSTDIR\${APP_EXECUTABLE_FILENAME}" ${XINGMANG_UNINSTALL_CLEANUP_ARGUMENT}' $R0
+      ${If} $xingmangClearLogin == "1"
+        DetailPrint "Clearing saved sign-in."
+        ExecWait '"$INSTDIR\${APP_EXECUTABLE_FILENAME}" ${XINGMANG_UNINSTALL_CLEANUP_ARGUMENT} ${XINGMANG_CLEAR_LOGIN_ARGUMENT}' $R0
+      ${Else}
+        ExecWait '"$INSTDIR\${APP_EXECUTABLE_FILENAME}" ${XINGMANG_UNINSTALL_CLEANUP_ARGUMENT}' $R0
+      ${EndIf}
       ${If} ${Errors}
         DetailPrint "Uninstall cleanup could not start."
       ${ElseIf} $R0 != 0
         DetailPrint "Uninstall cleanup finished with code $R0."
+      ${EndIf}
+      Pop $R0
+    FunctionEnd
+
+    # 卸载欢迎页上加一个勾选框。欢迎页正文标签占到 175u（MUI2 Welcome.nsh：从 45u
+    # 起 130u 高），整页 193u 高，勾选框放在正文下面、页面底边之内。背景跟欢迎页
+    # 一样是白的，不设就会是一块灰底。
+    Function un.xingmangWelcomeShow
+      ${NSD_CreateCheckbox} 120u 178u 195u 12u "同时清除登录记录"
+      Pop $xingmangClearLoginCheckbox
+      SetCtlColors $xingmangClearLoginCheckbox "" "${MUI_BGCOLOR}"
+      # 从后一页点「上一步」回来，照上次的选择显示。
+      ${If} $xingmangClearLogin == "1"
+        ${NSD_Check} $xingmangClearLoginCheckbox
+      ${EndIf}
+    FunctionEnd
+
+    Function un.xingmangWelcomeLeave
+      Push $R0
+      ${NSD_GetState} $xingmangClearLoginCheckbox $R0
+      ${If} $R0 == ${BST_CHECKED}
+        StrCpy $xingmangClearLogin "1"
+      ${Else}
+        StrCpy $xingmangClearLogin "0"
       ${EndIf}
       Pop $R0
     FunctionEnd
@@ -271,6 +312,29 @@
     MessageBox MB_OK|MB_ICONSTOP "星芒AI管理工具在这台电脑上需要 Windows 11 才能运行（ARM 处理器的 Windows 10 不支持）。$\r$\n$\r$\n这次没有安装任何东西。" /SD IDOK
     Quit
   ${EndIf}
+!macroend
+
+# electron-builder 的卸载界面第一页是 MUI_UNPAGE_WELCOME；定义了这个宏就由这里
+# 插入那一页，只多挂两个回调：显示时加勾选框，离开时记下勾没勾。
+!macro customUnWelcomePage
+  !define MUI_PAGE_CUSTOMFUNCTION_SHOW un.xingmangWelcomeShow
+  !define MUI_PAGE_CUSTOMFUNCTION_LEAVE un.xingmangWelcomeLeave
+  !insertmacro MUI_UNPAGE_WELCOME
+!macroend
+
+# 在模板的 un.onInit 最后执行。静默卸载（/S）不显示欢迎页，想清登录记录只能从
+# 命令行说；客服远程协助和 CI 冒烟都走这条。
+!macro customUnInit
+  Push $R0
+  Push $R1
+  ${GetParameters} $R0
+  ClearErrors
+  ${GetOptions} $R0 "${XINGMANG_CLEAR_LOGIN_ARGUMENT}" $R1
+  ${IfNot} ${Errors}
+    StrCpy $xingmangClearLogin "1"
+  ${EndIf}
+  Pop $R1
+  Pop $R0
 !macroend
 
 # 卸载区段里，这个宏在 CHECK_APP_RUNNING 已经结束掉程序之后、删文件之前执行。

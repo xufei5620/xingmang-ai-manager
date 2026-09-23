@@ -185,7 +185,7 @@ describe('CLI installation resolution', () => {
       available: true,
       delegated: true,
       reason: '当前为用户级或非托管 npm 安装，将以普通用户权限打开窗口执行卸载',
-      manualCommand: 'npm uninstall -g @openai/codex',
+      manualCommand: 'npm.cmd uninstall -g @openai/codex',
     })
 
     expect(cliUninstallCapability('codex', {
@@ -198,6 +198,20 @@ describe('CLI installation resolution', () => {
       managedNpmPrefix: 'c:\\programdata\\xingmangai\\cli\\npm\\',
       platform: 'win32',
     })).toEqual({ available: true, reason: null, manualCommand: null })
+  })
+
+  it('keeps plain npm outside Windows, where there is no npm.ps1 to trip over', () => {
+    const installation = {
+      commandPath: '/Users/tester/.npm-global/bin/codex',
+      installDirectory: '/Users/tester/.npm-global/lib/node_modules/@openai/codex',
+      packageRoot: '/Users/tester/.npm-global/lib/node_modules/@openai/codex',
+      npmPrefix: '/Users/tester/.npm-global',
+      source: 'npm' as const,
+    }
+    expect(cliUninstallCapability('codex', installation, {
+      managedNpmPrefix: '/Users/tester/Library/Application Support/XingMang/npm',
+      platform: 'darwin',
+    }).manualCommand).toBe('npm uninstall -g @openai/codex')
   })
 
   it('allows uninstalling a user-level npm install when the app is not elevated', () => {
