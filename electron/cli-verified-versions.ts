@@ -75,10 +75,10 @@ export const cliVerifiedVersions: Record<ProviderId, CliVersionCompatibility> = 
   },
   codex: {
     recommended: {
-      version: '0.155.1',
-      verifiedAt: '2026-09-21',
+      version: '0.156.1',
+      verifiedAt: '2026-09-23',
       verifiedSites: [],
-      note: '当前 npm latest,且把 0.155.0 那次「默认索要推理摘要」改了回去',
+      note: '当前 npm latest,自带 GPT-6 Sol / Luna 的模型资料;0.155.1 用这两个模型会报「Model metadata not found」并退回旧版提示词与工具',
     },
     blocked: [
       {

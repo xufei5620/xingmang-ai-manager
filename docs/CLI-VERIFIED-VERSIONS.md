@@ -266,11 +266,29 @@ Codex 那时 `recommended` 是 `null`，也就是那两天点过「更新」的�
 | 工具 | `recommended` | `blocked` | 依据 |
 |---|---|---|---|
 | Claude Code | `2.1.277`（2026-09-18） | `[2.1.265, 2.1.268)`、`[2.1.275, 2.1.277)` | 上游 changelog 两条网关回归 |
-| Codex CLI | `0.155.1`（2026-09-21） | `[0.155.0, 0.155.1)` | 上游 release note 与 PR #46467（见上一节） |
+| Codex CLI | `0.156.1`（2026-09-23） | `[0.155.0, 0.155.1)` | 上游 release note 与 PR #46467（见上一节）；抬到 0.156.1 的依据见下一段 |
 | Gemini CLI | `0.60.0`（2026-09-21） | 无 | 当前 npm `latest`；0.57~0.60 四个正式版全是安全加固，未发现与第三方 base URL 相关的回归 |
 | Grok CLI | 无 | 无 | 还没有遇到过需要挡的版本，行为与从前一致（装 npm `latest`） |
 
 三条 `recommended` 的 `verifiedSites` 目前都是空数组：中转实测所需的仓库 secret 还没配（见下文），所以这三个版本都还**没有**在任何站点上跑过真实请求。跑通之后把站点 id 填进去。
+
+**Codex 0.155.1 → 0.156.1（2026-09-23）：为了 GPT-6 Sol / Luna。** OpenAI 9 月 22 日发布
+`gpt-6-sol` 与 `gpt-6-luna`。Codex 按自带的模型目录（`codex-rs/models-manager/models.json`）决定
+每个模型用哪套系统提示词、哪些工具、支持哪些推理档位，`/model` 菜单也只列这份目录；这两个模型
+从 `rust-v0.156.1` 才进目录（两者 `minimal_client_version` 都是 `0.155.0`）。沙箱里空 HOME、
+按 `buildCodexRelayConfigTemplate` 写配置、base URL 指本地假接口实测：
+
+- 0.155.1 选 `gpt-6-sol` / `gpt-6-luna`：能跑通，但每次打一条
+  `Model metadata for 'gpt-6-sol' not found. Defaulting to fallback metadata`，请求退回旧版提示词、
+  9 个工具、`reasoning.summary = "auto"`，效果打折。
+- 0.156.1 选这两个：没有警告，请求体的字段与 0.155.1 跑默认的 `gpt-6-astra` 一模一样；0.156.1 跑
+  `gpt-6-astra` 与 0.155.1 相比请求体字段也没有变化。
+- 0.156.1 的 `codex doctor`：`config.toml parse ok`、`startup update check false`；出网代理记录下
+  `[analytics] enabled = false` 仍然挡住 `ab.chatgpt.com`；官方主机被静默丢包时 `codex exec` 0.27 秒
+  跑完，与 0.155.1 一样不卡；Key 仍从 `auth.json` 进 `Authorization`。
+
+没做的：中转上的真实请求（secret 没配，`verifiedSites` 仍为空）；中转那边有没有开这两个模型要在
+服务端「GPT-中转/订阅」分组的渠道里看。配置窗口的模型下拉取自当前账号的模型清单，开了就能选到。
 
 加第四个工具只需要填上它的 `recommended`，其余代码不用动；要让中转实测也覆盖它，还得在 `scripts/probe-cli-relay.cjs` 的 `probeRunners` 里加一条。
 
