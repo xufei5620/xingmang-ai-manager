@@ -823,6 +823,53 @@ describe('createSystemService', () => {
     }
   }, 20_000)
 
+  // 老版本装好的工具旁边还留着 npm 写的 .ps1；打开软件后的第一轮检测要把它清掉，
+  // 用户在 PowerShell 里敲 claude 才会落到 .cmd 上，不再报「禁止运行脚本」。
+  // 真 Windows 上 platform: 'win32' 的扫描会去跑本机的其它探测（PowerShell 冷启动），
+  // 夹具不再封闭，CI 上超时；删文件本身在 windows-cli-shell-access.test.ts 里各平台都跑。
+  it.skipIf(process.platform === 'win32')('removes the npm PowerShell shims of detected Windows CLIs on the first scan', async () => {
+    const directory = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-startup-ps1-sweep-')))
+    temporaryDirectories.push(directory)
+    const prefix = path.join(directory, 'npm')
+    fs.mkdirSync(prefix)
+    fs.writeFileSync(path.join(prefix, 'claude.cmd'), '@ECHO off\r\n')
+    fs.writeFileSync(path.join(prefix, 'claude.ps1'), [
+      '#!/usr/bin/env pwsh',
+      '$basedir=Split-Path $MyInvocation.MyCommand.Definition -Parent',
+      '& "$basedir/node_modules/@anthropic-ai/claude-code/bin/claude.exe"   $args',
+      '',
+    ].join('\n'))
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('offline') }))
+    const ensureWindowsUserPath = vi.fn(async () => 'added' as const)
+    const service = createSystemService(
+      new AppSettingsStore(path.join(directory, 'settings.json'), directory),
+      {
+        platform: 'win32',
+        windowsExecutionMode: 'same-user',
+        resolveWindowsMachinePaths: () => testMachinePaths,
+        findExecutable: async () => null,
+        resolveCliInstallation: async (provider) => provider === 'claude'
+          ? {
+              commandPath: path.join(prefix, 'claude.cmd'),
+              installDirectory: path.join(prefix, 'node_modules', '@anthropic-ai', 'claude-code'),
+              packageRoot: path.join(prefix, 'node_modules', '@anthropic-ai', 'claude-code'),
+              npmPrefix: prefix,
+              packageVersion: '1.2.3',
+              source: 'npm',
+            }
+          : null,
+        ensureWindowsUserPath,
+      },
+    )
+
+    await service.scanSystem(false)
+    await vi.waitFor(() => expect(fs.existsSync(path.join(prefix, 'claude.ps1'))).toBe(false))
+
+    expect(fs.existsSync(path.join(prefix, 'claude.cmd'))).toBe(true)
+    // 打开软件时只清文件，不为了 PATH 去起 PowerShell。
+    expect(ensureWindowsUserPath).not.toHaveBeenCalled()
+  }, 20_000)
+
   it('reports Git with only its version number when it is installed', async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-git-present-'))
     temporaryDirectories.push(directory)
