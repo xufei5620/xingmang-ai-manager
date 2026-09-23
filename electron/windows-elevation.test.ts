@@ -1,4 +1,11 @@
 import { describe, expect, it, vi } from 'vitest'
+import { buildClaudeRetainedVersionFilesCommand } from './claude-native-uninstall'
+import { buildCodexAppxElevationScript, buildCodexAppxUacBrokerScript } from './codex-desktop-appx'
+import {
+  buildNodeRuntimeElevatedInstallScript,
+  buildNodeRuntimeInstallPlan,
+  buildNodeRuntimeUacBrokerScript,
+} from './node-runtime'
 import {
   assertTrustedElevatedCliCommand,
   buildCliLaunchPlan,
@@ -486,5 +493,169 @@ describe('windows elevation capability', () => {
       expect(windowsElevationCancelledMessage('Node.js', capability)).not.toContain('以管理员身份运行')
       expect(windowsElevationDeniedMessage('Node.js', capability)).not.toContain('以管理员身份运行')
     }
+  })
+})
+
+// PowerShell reads U+2018..U+201B as single quotes and U+201C..U+201E as double
+// quotes (CharExtensions.IsSingleQuote / IsDoubleQuote in engine/parser/CharTraits.cs).
+const powerShellSingleQuotes = ['\'', '\u2018', '\u2019', '\u201a', '\u201b']
+const powerShellDoubleQuotes = ['"', '\u201c', '\u201d', '\u201e']
+const injectionMarker = 'XINGMANG_TEST_INJECTION'
+
+interface PowerShellQuoteScan {
+  /** The script with every string literal replaced by an empty pair of quotes. */
+  code: string
+  /** Decoded values of the verbatim (single-quoted) literals, in order. */
+  literals: string[]
+  unterminated: boolean
+}
+
+// Follows Tokenizer.ScanStringLiteral / ScanStringExpandable: inside a string a
+// quote of the same kind followed by another is one literal copy of the second,
+// and a backtick escapes the next character in code and in expandable strings.
+// The generated scripts use no comments or here-strings, so neither is modelled.
+function scanPowerShellQuotes(script: string): PowerShellQuoteScan {
+  const scan: PowerShellQuoteScan = { code: '', literals: [], unterminated: false }
+  let index = 0
+  while (index < script.length) {
+    const char = script[index]
+    if (char === '`') {
+      scan.code += script.slice(index, index + 2)
+      index += 2
+      continue
+    }
+    const quotes = powerShellSingleQuotes.includes(char)
+      ? powerShellSingleQuotes
+      : powerShellDoubleQuotes.includes(char) ? powerShellDoubleQuotes : null
+    if (!quotes) {
+      scan.code += char
+      index += 1
+      continue
+    }
+    let value = ''
+    let closed = false
+    index += 1
+    while (index < script.length) {
+      const next = script[index]
+      if (quotes === powerShellDoubleQuotes && next === '`') {
+        value += script.slice(index, index + 2)
+        index += 2
+      } else if (quotes.includes(next) && quotes.includes(script[index + 1] ?? '')) {
+        value += script[index + 1]
+        index += 2
+      } else if (quotes.includes(next)) {
+        index += 1
+        closed = true
+        break
+      } else {
+        value += next
+        index += 1
+      }
+    }
+    if (!closed) scan.unterminated = true
+    if (quotes === powerShellSingleQuotes) scan.literals.push(value)
+    scan.code += quotes === powerShellSingleQuotes ? "''" : '""'
+  }
+  return scan
+}
+
+/** A legal Windows path that ends its literal early and runs a command if a quote is left unescaped. */
+function hostilePath(quote: string, extension: string): string {
+  return `C:\\Users\\O${quote}Brien${quote}; Write-Output ${injectionMarker}; ${quote}\\AppData\\Local\\Temp\\x${extension}`
+}
+
+function expectQuotedLike(script: string, benignScript: string): PowerShellQuoteScan {
+  const scan = scanPowerShellQuotes(script)
+  expect(scan.unterminated).toBe(false)
+  expect(scan.code).not.toContain(injectionMarker)
+  // Only literal contents may differ from the same script built from a harmless path.
+  expect(scan.code).toBe(scanPowerShellQuotes(benignScript).code)
+  return scan
+}
+
+function decodeTerminalScript(brokerScript: string): string {
+  const literals = scanPowerShellQuotes(brokerScript).literals
+  const encoded = literals[literals.indexOf('-EncodedCommand') + 1]
+  expect(encoded).toMatch(/^[A-Za-z0-9+/]+=*$/)
+  return decodeWindowsPowerShellCommand(encoded)
+}
+
+describe('PowerShell verbatim literals', () => {
+  it.each(powerShellSingleQuotes)('doubles the single quote %j so it stays inside the literal', (quote) => {
+    const value = `C:\\Users\\O${quote}Brien`
+    const literal = powerShellLiteral(value)
+    expect(literal).toBe(`'C:\\Users\\O${quote}${quote}Brien'`)
+    expect(scanPowerShellQuotes(`$path = ${literal}`))
+      .toEqual({ code: "$path = ''", literals: [value], unterminated: false })
+  })
+
+  it('escapes typographic and ASCII quotes mixed in one value, including at both ends', () => {
+    const value = '\u2019\'\u2018 it\'s \u201a\u201b\'\' \u2019'
+    const literal = powerShellLiteral(value)
+    expect(literal).toBe('\'\u2019\u2019\'\'\u2018\u2018 it\'\'s \u201a\u201a\u201b\u201b\'\'\'\' \u2019\u2019\'')
+    expect(scanPowerShellQuotes(literal)).toEqual({ code: "''", literals: [value], unterminated: false })
+  })
+
+  it('leaves double quotes and backticks alone, since a verbatim literal never expands them', () => {
+    expect(powerShellLiteral('\u201c$env:PATH\u201d `n "x"')).toBe('\'\u201c$env:PATH\u201d `n "x"\'')
+  })
+
+  it.each(powerShellSingleQuotes)('keeps a hostile path with %j as data in the CLI terminal scripts', (quote) => {
+    const workspace = hostilePath(quote, '')
+    const request = {
+      executable: `${workspace}\\codex.cmd`,
+      argv: [`${workspace}\\cli.js`, `--note=${quote}x`],
+      workspace,
+      title: `Codex CLI ${quote}`,
+    }
+    const benign = {
+      executable: 'C:\\Tools\\codex.cmd',
+      argv: ['C:\\Tools\\cli.js', '--note=x'],
+      workspace: 'C:\\Work',
+      title: 'Codex CLI',
+    }
+    const broker = decodeWindowsPowerShellCommand(buildCliLaunchPlan(request, testPowerShell).argv.at(-1)!)
+    const benignBroker = decodeWindowsPowerShellCommand(buildCliLaunchPlan(benign, testPowerShell).argv.at(-1)!)
+    expect(expectQuotedLike(broker, benignBroker).literals).toContain(workspace)
+    const terminal = decodeTerminalScript(broker)
+    expect(expectQuotedLike(terminal, decodeTerminalScript(benignBroker)).literals)
+      .toEqual(expect.arrayContaining([workspace, request.executable, ...request.argv, request.title]))
+  })
+
+  it.each(powerShellSingleQuotes)('keeps a hostile MSI path with %j as data in both Node.js UAC scripts', (quote) => {
+    function scripts(msiPath: string) {
+      const plan = buildNodeRuntimeInstallPlan(msiPath, testPowerShell, false, testMachinePaths, 'a'.repeat(64))
+      return {
+        broker: buildNodeRuntimeUacBrokerScript(plan.msi, testPowerShell),
+        installer: buildNodeRuntimeElevatedInstallScript(plan.msi),
+      }
+    }
+    const msiPath = hostilePath(quote, '.msi')
+    const hostile = scripts(msiPath)
+    const benign = scripts('C:\\Temp\\node.msi')
+    const brokerLiterals = expectQuotedLike(hostile.broker, benign.broker).literals
+    expect(brokerLiterals).toContain(msiPath)
+    // The elevated script travels inside the broker as one literal and must decode back exactly.
+    expect(brokerLiterals).toContain(hostile.installer)
+    expect(expectQuotedLike(hostile.installer, benign.installer).literals).toContain(msiPath)
+  })
+
+  it.each(powerShellSingleQuotes)('keeps a hostile MSIX path with %j as data in both Codex Desktop UAC scripts', (quote) => {
+    const sha256Base64 = Buffer.alloc(32, 1).toString('base64')
+    const packagePath = hostilePath(quote, '.msix')
+    const benignPath = 'C:\\Temp\\Codex.msix'
+    const installer = buildCodexAppxElevationScript(packagePath, sha256Base64)
+    const broker = buildCodexAppxUacBrokerScript(testPowerShell, packagePath, sha256Base64)
+    const benignBroker = buildCodexAppxUacBrokerScript(testPowerShell, benignPath, sha256Base64)
+    expect(expectQuotedLike(broker, benignBroker).literals).toContain(installer)
+    expect(expectQuotedLike(installer, buildCodexAppxElevationScript(benignPath, sha256Base64)).literals)
+      .toContain(packagePath)
+  })
+
+  it.each(powerShellSingleQuotes)('keeps a leftover Claude version path with %j as data in the copyable command', (quote) => {
+    const file = hostilePath(quote, '')
+    const command = buildClaudeRetainedVersionFilesCommand([file, 'C:\\Other'], 'win32')!
+    const benign = buildClaudeRetainedVersionFilesCommand(['C:\\Temp\\2.1.0', 'C:\\Other'], 'win32')!
+    expect(expectQuotedLike(command, benign).literals).toEqual([file, 'C:\\Other'])
   })
 })

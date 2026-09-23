@@ -60,7 +60,7 @@ import type {
   UpdateSource,
   VersionUpdateStatus,
 } from './system-service'
-import { resolveWindowsPowerShellExecutable } from './windows-elevation'
+import { powerShellLiteral, resolveWindowsPowerShellExecutable } from './windows-elevation'
 import { resolveWindowsMachinePaths } from './windows-machine-paths'
 import { repairCodexDesktopGlobalState } from './codex-desktop-state'
 import { addCodexDesktopPackage } from './codex-desktop-appx'
@@ -900,10 +900,6 @@ export async function downloadCodexDesktopPackageFromCandidates(
   throw new Error(`所有国内镜像均未通过完整校验：${failures.join('；') || '没有可用镜像'}`)
 }
 
-export function powershellLiteral(value: string): string {
-  return `'${value.replace(/'/g, "''")}'`
-}
-
 export async function inspectCodexDesktopPackageFile(
   packagePath: string,
 ): Promise<CodexDesktopPackageMetadata> {
@@ -911,7 +907,7 @@ export async function inspectCodexDesktopPackageFile(
     '$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)',
     '$ErrorActionPreference = \'Stop\'',
     'Add-Type -AssemblyName System.IO.Compression.FileSystem',
-    `$archive = [System.IO.Compression.ZipFile]::OpenRead(${powershellLiteral(packagePath)})`,
+    `$archive = [System.IO.Compression.ZipFile]::OpenRead(${powerShellLiteral(packagePath)})`,
     'try {',
     "  $manifestEntry = $archive.Entries | Where-Object { $_.FullName -ieq 'AppxManifest.xml' } | Select-Object -First 1",
     "  $signatureEntry = $archive.Entries | Where-Object { $_.FullName -ieq 'AppxSignature.p7x' } | Select-Object -First 1",
@@ -2231,7 +2227,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
       const script = [
         '$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)',
         '$ErrorActionPreference = "Stop"',
-        `Remove-AppxPackage -Package ${powershellLiteral(installedPackage.packageFullName)} -ErrorAction Stop`,
+        `Remove-AppxPackage -Package ${powerShellLiteral(installedPackage.packageFullName)} -ErrorAction Stop`,
       ].join('; ')
       await execFileAsync(resolveWindowsPowerShellExecutable(), [
         '-NoLogo',
