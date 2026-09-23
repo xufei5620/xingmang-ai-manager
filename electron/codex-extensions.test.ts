@@ -9,6 +9,7 @@ import {
   type CodexInvocationOptions,
   type CodexInvoker,
 } from './codex-extensions'
+import { setRelocatedFolderPolicy } from './relocated-folders'
 
 const temporaryDirectories: string[] = []
 
@@ -652,3 +653,49 @@ function isPathInside(parent: string, child: string): boolean {
   const relative = path.relative(path.resolve(parent), path.resolve(child))
   return relative !== '' && !relative.startsWith('..') && !path.isAbsolute(relative)
 }
+
+/** A home moved to "another disk" with a junction left at the old place (「C 盘搬家」). */
+function relocatedHome(): { home: string; movedHome: string } {
+  const root = fs.realpathSync.native(temporaryDirectory())
+  const home = path.join(root, 'Users', 'alice')
+  const movedHome = path.join(root, 'D', 'alice')
+  fs.mkdirSync(path.dirname(home), { recursive: true })
+  fs.mkdirSync(movedHome, { recursive: true })
+  // Junctions need no privilege on Windows; POSIX ignores the type argument.
+  fs.symlinkSync(movedHome, home, 'junction')
+  return { home, movedHome }
+}
+
+describe('Codex MCP on a relocated profile', () => {
+  afterEach(() => setRelocatedFolderPolicy(null))
+
+  it('reads and rewrites config.toml after the user folder was moved to another disk', async () => {
+    const { home, movedHome } = relocatedHome()
+    write(path.join(movedHome, '.codex', 'config.toml'), '[mcp_servers.local_server]\ncommand = "node"\n')
+    write(path.join(movedHome, '.agents', 'skills', 'alpha', 'SKILL.md'), '---\nname: Alpha\ndescription: Test\n---\n')
+    setRelocatedFolderPolicy({ homeDirectories: [home], acceptsTarget: () => true })
+    const service = new CodexExtensionService({
+      homeDirectory: home,
+      invoke: async () => mcpList([stdioMcp('local_server')]),
+    })
+
+    await expect(service.listMcpServers()).resolves.toEqual([
+      expect.objectContaining({ name: 'local_server', origin: 'user', editable: true }),
+    ])
+    const { skills } = await service.setSkillEnabled(path.join(home, '.agents', 'skills', 'alpha', 'SKILL.md'), false)
+    expect(skills[0].enabled).toBe(false)
+    const parsed = TOML.parse(fs.readFileSync(path.join(movedHome, '.codex', 'config.toml'), 'utf8'))
+    expect(asRecord(parsed.mcp_servers)?.local_server).toBeDefined()
+  })
+
+  it('keeps refusing the moved config while no policy accepts it', async () => {
+    const { home, movedHome } = relocatedHome()
+    write(path.join(movedHome, '.codex', 'config.toml'), '[mcp_servers.local_server]\ncommand = "node"\n')
+    const service = new CodexExtensionService({
+      homeDirectory: home,
+      invoke: async () => mcpList([stdioMcp('local_server')]),
+    })
+
+    await expect(service.listMcpServers()).rejects.toThrow('不能经过符号链接')
+  })
+})

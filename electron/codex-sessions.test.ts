@@ -9,6 +9,7 @@ import {
   type CodexSessionRecoveryWarning,
   type CodexSessionsOptions,
 } from './codex-sessions'
+import { setRelocatedFolderPolicy } from './relocated-folders'
 
 const temporaryDirectories: string[] = []
 const openDatabases: DatabaseSync[] = []
@@ -866,5 +867,74 @@ describe('CodexSessionsService', () => {
     expect(fs.existsSync(targetPath)).toBe(false)
     expect(lastJournalEntry(sessions.operationJournalPath).state).toBe('rolled-back')
     expect(sessions.list().items[0]).toMatchObject({ archived: false, rolloutAvailable: true })
+  })
+})
+
+/**
+ * A profile moved to "another disk" with a junction left at the old place
+ * (「C 盘搬家」). Codex canonicalizes the CODEX_HOME we launch it with, so the
+ * rollout paths it records name the new location while ours names the old one.
+ */
+function relocatedProfileFixture(sessionId: string) {
+  const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-sessions-relocated-')))
+  temporaryDirectories.push(root)
+  const home = path.join(root, 'Users', 'alice')
+  const movedHome = path.join(root, 'D', 'alice')
+  fs.mkdirSync(path.dirname(home), { recursive: true })
+  fs.mkdirSync(movedHome, { recursive: true })
+  // Junctions need no privilege on Windows; POSIX ignores the type argument.
+  fs.symlinkSync(movedHome, home, 'junction')
+  const codexHome = path.join(home, '.codex')
+  const recordedRollout = path.join(movedHome, '.codex', 'sessions', '2026', '07', '24', `rollout-${sessionId}.jsonl`)
+  writeRollout(recordedRollout, sessionId)
+  const databasePath = path.join(codexHome, 'state_5.sqlite')
+  const database = createThreadsDatabase(databasePath, true)
+  insertThread(database, { id: sessionId, rolloutPath: recordedRollout })
+  database.close()
+  const data: Fixture = {
+    root,
+    codexHome,
+    managerData: path.join(root, 'manager-data'),
+    databasePath,
+    rolloutPath: recordedRollout,
+  }
+  return { home, data }
+}
+
+describe('CodexSessionsService on a relocated profile', () => {
+  afterEach(() => setRelocatedFolderPolicy(null))
+
+  it('opens, archives and restores sessions Codex recorded under the moved location', async () => {
+    const { home, data } = relocatedProfileFixture('session-1')
+    setRelocatedFolderPolicy({ homeDirectories: [home], acceptsTarget: () => true })
+    const sessions = service(data)
+
+    expect(sessions.list().items[0].rolloutAvailable).toBe(true)
+    await expect(sessions.detail('session-1')).resolves.toMatchObject({
+      session: { id: 'session-1', rolloutAvailable: true },
+      messages: [expect.objectContaining({ text: '请检查项目' }), expect.objectContaining({ text: '检查完成' })],
+    })
+    const archived = await sessions.archive('session-1')
+    expect(fs.existsSync(archived.rolloutPath)).toBe(true)
+    const restored = await sessions.restore('session-1')
+    expect(restored.archived).toBe(false)
+    expect(fs.existsSync(restored.rolloutPath)).toBe(true)
+  })
+
+  it('keeps treating the moved location as outside CODEX_HOME while no policy accepts it', async () => {
+    const { data } = relocatedProfileFixture('session-1')
+    const sessions = service(data)
+
+    expect(sessions.list().items[0].rolloutAvailable).toBe(false)
+    await expect(sessions.detail('session-1')).rejects.toThrow('不在 CODEX_HOME 内')
+  })
+
+  it('keeps refusing a link the policy does not cover', async () => {
+    const { data } = relocatedProfileFixture('session-1')
+    setRelocatedFolderPolicy({ homeDirectories: [path.join(data.root, 'Users', 'bob')], acceptsTarget: () => true })
+    const sessions = service(data)
+
+    expect(sessions.list().items[0].rolloutAvailable).toBe(false)
+    await expect(sessions.detail('session-1')).rejects.toThrow('不在 CODEX_HOME 内')
   })
 })

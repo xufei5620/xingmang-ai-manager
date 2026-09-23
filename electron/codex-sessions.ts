@@ -7,6 +7,7 @@ import readline from 'node:readline'
 import { backup, DatabaseSync, type SQLOutputValue } from 'node:sqlite'
 import { readBoundedUtf8FileSync } from './bounded-file'
 import { sameLocalPathIdentity } from './path-identity'
+import { resolveRelocatedPath } from './relocated-folders'
 
 const MAX_OPERATION_JOURNAL_BYTES = 64 * 1024 * 1024
 const MAX_RECOVERY_WARNING_DETAILS = 32
@@ -247,9 +248,18 @@ function normalizeForComparison(filePath: string): string {
   return process.platform === 'win32' ? resolved.toLowerCase() : resolved
 }
 
-function isInside(parentPath: string, childPath: string): boolean {
+function isLexicallyInside(parentPath: string, childPath: string): boolean {
   const relative = path.relative(normalizeForComparison(parentPath), normalizeForComparison(childPath))
   return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative))
+}
+
+function isInside(parentPath: string, childPath: string): boolean {
+  if (isLexicallyInside(parentPath, childPath)) return true
+  // Codex canonicalizes the CODEX_HOME we launch it with, so on a profile moved
+  // to another disk it records rollout paths under the new location while ours
+  // still names the old one. Compare both sides where they really live; a link
+  // the relocation policy does not accept stays in the path and still fails.
+  return isLexicallyInside(resolveRelocatedPath(stripWindowsNamespace(parentPath)), resolveRelocatedPath(stripWindowsNamespace(childPath)))
 }
 
 function ensureInside(parentPath: string, childPath: string, label: string): string {

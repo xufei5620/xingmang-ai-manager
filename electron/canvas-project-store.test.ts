@@ -3,6 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { CanvasProjectStore } from './canvas-project-store'
+import { setRelocatedFolderPolicy } from './relocated-folders'
 
 const roots: string[] = []
 
@@ -197,5 +198,47 @@ describe('CanvasProjectStore', () => {
     await expect(archive).resolves.toEqual(expect.objectContaining({ archivedAt: expect.any(String) }))
     await expect(save).rejects.toThrow('已归档')
     await expect(store.list(36)).resolves.toEqual([expect.objectContaining({ name: '队列项目', archivedAt: expect.any(String) })])
+  })
+})
+
+/** A profile whose 文档 was moved to "another disk" and left a junction behind (「C 盘搬家」). */
+function relocatedDocuments(root: string): { home: string; documents: string } {
+  const home = path.join(root, 'Users', 'alice')
+  const moved = path.join(root, 'D', 'Documents')
+  fs.mkdirSync(home, { recursive: true })
+  fs.mkdirSync(moved, { recursive: true })
+  const documents = path.join(home, 'Documents')
+  // Junctions need no privilege on Windows; POSIX ignores the type argument.
+  fs.symlinkSync(moved, documents, 'junction')
+  return { home, documents }
+}
+
+describe('CanvasProjectStore on a relocated documents folder', () => {
+  afterEach(() => setRelocatedFolderPolicy(null))
+
+  it('accepts a workspace in or at a 文档 folder that was moved to another disk', async () => {
+    const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-canvas-relocated-')))
+    roots.push(root)
+    const { home, documents } = relocatedDocuments(root)
+    const inside = path.join(documents, '我的画布')
+    fs.mkdirSync(inside)
+    setRelocatedFolderPolicy({ homeDirectories: [home], acceptsTarget: () => true })
+    const store = new CanvasProjectStore(path.join(root, 'projects'))
+
+    const nested = await store.create(36, '搬家后的项目', inside)
+    const atFolder = await store.create(36, '直接选文档', documents)
+
+    await expect(store.getWorkspaceDirectory(36, nested.project.id)).resolves.toBe(inside)
+    await expect(store.getWorkspaceDirectory(36, atFolder.project.id)).resolves.toBe(documents)
+    expect(fs.existsSync(path.join(inside, 'assets'))).toBe(true)
+  })
+
+  it('keeps refusing the relocated folder while no policy accepts it', async () => {
+    const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-canvas-relocated-')))
+    roots.push(root)
+    const { documents } = relocatedDocuments(root)
+    const store = new CanvasProjectStore(path.join(root, 'projects'))
+
+    await expect(store.create(36, '搬家后的项目', documents)).rejects.toThrow()
   })
 })

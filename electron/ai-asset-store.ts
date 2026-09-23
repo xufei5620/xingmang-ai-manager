@@ -11,6 +11,7 @@ import {
   removeSafeDataFile,
 } from './safe-local-data'
 import { sameLocalPathIdentity } from './path-identity'
+import { resolveRelocatedPath } from './relocated-folders'
 import { scopedLocalAssetId } from './content-addressed-asset'
 import { indexOwnedAssetFiles, type AiAssetIndexEntry } from './ai-asset-index'
 
@@ -532,7 +533,9 @@ async function fetchRemoteImage(
   }
 }
 
-async function readBoundedOwnedFile(filePath: string, maximumBytes: number, directoryAlreadyChecked = false): Promise<Buffer> {
+async function readBoundedOwnedFile(requestedPath: string, maximumBytes: number, directoryAlreadyChecked = false): Promise<Buffer> {
+  // 「文档」被搬到别的盘时按实际位置核对，否则 realpath 与原路径永远对不上（relocated-folders.ts）。
+  const filePath = resolveRelocatedPath(requestedPath)
   if (!directoryAlreadyChecked) assertNoReparseComponents(filePath, FILE_LABEL)
   const handle = await fs.promises.open(filePath, 'r')
   try {

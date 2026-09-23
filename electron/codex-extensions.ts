@@ -20,6 +20,7 @@ import {
   type ResolvedCliCommand,
 } from './tool-installation'
 import { sameLocalPathIdentity } from './path-identity'
+import { resolveRelocatedPath } from './relocated-folders'
 import {
   assertTrustedElevatedCliCommand,
   type WindowsCliExecutionMode,
@@ -227,7 +228,8 @@ function isWithin(parentPath: string, childPath: string): boolean {
 }
 
 function assertNoSymlinkComponents(targetPath: string, label: string): void {
-  const resolved = path.resolve(targetPath)
+  // 用户文件夹搬到别的盘时按实际位置逐级检查；不在放行范围内的链接留在路径里，下面照旧拒绝（relocated-folders.ts）。
+  const resolved = resolveRelocatedPath(targetPath)
   const root = path.parse(resolved).root
   let current = root
   for (const part of path.relative(root, resolved).split(path.sep).filter(Boolean)) {
