@@ -178,6 +178,11 @@ import {
 import { inspectMacosCodexApp, type MacosCodexAppInfo } from './macos-codex-app'
 import { isCommandLineToolsShimBacked, isMacOsCommandLineToolsShim } from './macos-command-line-tools'
 import { uninstallVerifiedNativeCliFiles } from './native-cli-uninstall'
+import {
+  buildClaudeRetainedVersionFilesCommand,
+  buildClaudeRetainedVersionFilesReason,
+  uninstallVerifiedClaudeNativeInstallation,
+} from './claude-native-uninstall'
 import { sameLocalPathIdentity } from './path-identity'
 import { syncXingmangAiSkillCodexAvailability } from './xingmang-ai-skill'
 import {
@@ -423,7 +428,8 @@ export type ToolUninstallResult =
          * (e.g. a security check itself failed, so the file identities behind
          * a command can no longer be trusted). Non-null only where the
          * producer already fully re-verified every path it names — see
-         * DarwinGrokRetainedPathsError below for the one current source.
+         * DarwinGrokRetainedPathsError below, and the Claude native version
+         * files left behind by uninstallVerifiedClaudeNativeInstallation.
          */
         manualCommand: string | null
       }
@@ -3804,16 +3810,16 @@ export function createSystemService(
     if (!managed) await removeDirectoryFromUserPath(result.directory)
   }
 
-  async function uninstallNativeClaude(installation: CliInstallation): Promise<void> {
-    const expectedDirectory = path.resolve(os.homedir(), '.local', 'bin')
-    await uninstallVerifiedNativeCliFiles({
-      actualDirectory: installation.installDirectory,
-      expectedDirectory,
-      fileNames: [process.platform === 'win32' ? 'claude.exe' : 'claude'],
-      label: 'Claude Code',
+  // Q14：官方脚本装的 ~/.local/bin/claude 在 macOS/Linux 上是指向
+  // ~/.local/share/claude/versions/<版本> 的符号链接，旧实现按普通文件校验直接拒绝；
+  // 两个平台也都把 versions 里的程序本体留在了磁盘上。
+  async function uninstallNativeClaude(installation: CliInstallation): Promise<string[]> {
+    const result = await uninstallVerifiedClaudeNativeInstallation({
+      homeDirectory: os.homedir(),
+      installDirectory: installation.installDirectory,
       platform: process.platform,
-      removeDirectoryWhenEmpty: false,
     })
+    return result.retainedVersionFiles
   }
 
   function isManagedNpmInstallation(installation: CliInstallation): boolean {
@@ -3834,6 +3840,7 @@ export function createSystemService(
       }
       let current = initial
       const removedInstallations: string[] = []
+      const retainedClaudeVersionFiles: string[] = []
       for (let attempt = 0; attempt < 8 && current.installation; attempt += 1) {
         const installation = current.installation
         const uninstall = current.status.uninstall
@@ -3910,7 +3917,7 @@ export function createSystemService(
             throw error
           }
         } else {
-          await uninstallNativeClaude(installation)
+          retainedClaudeVersionFiles.push(...await uninstallNativeClaude(installation))
         }
         removedInstallations.push(installation.installDirectory)
         current = await inspectCliTool(provider, npmTool.path, npmGlobalRoot)
@@ -3923,6 +3930,18 @@ export function createSystemService(
         throw new Error(`${removed}仍检测到 ${cliCatalog[provider].name}：${remaining}`)
       }
       invalidateCliUpdateCache(provider)
+      const retainedReason = buildClaudeRetainedVersionFilesReason(retainedClaudeVersionFiles, process.platform)
+      if (retainedReason) {
+        return {
+          outcome: 'manual-required',
+          previousVersion: initial.status.version,
+          error: retainedReason,
+          manualHelp: {
+            reason: retainedReason,
+            manualCommand: buildClaudeRetainedVersionFilesCommand(retainedClaudeVersionFiles, process.platform),
+          },
+        }
+      }
       return { outcome: 'uninstalled', previousVersion: initial.status.version }
     } finally {
       installing.delete(provider)
