@@ -188,11 +188,14 @@ export function cliUninstallCapability(
     }
     // Elevated: still offered, but handed to a command window running under the
     // logged-on user so the package's own scripts never see an admin token.
+    // npm.cmd rather than npm: the same line is shown to the user, and pasted into
+    // PowerShell a bare `npm` resolves to npm.ps1, which the default Restricted
+    // execution policy refuses to run. cmd.exe runs npm.cmd either way.
     return {
       available: true,
       delegated: true,
       reason: '当前为用户级或非托管 npm 安装，将以普通用户权限打开窗口执行卸载',
-      manualCommand: `npm uninstall -g ${cliCatalog[provider].packageName}`,
+      manualCommand: `${platform === 'win32' ? 'npm.cmd' : 'npm'} uninstall -g ${cliCatalog[provider].packageName}`,
     }
   }
 

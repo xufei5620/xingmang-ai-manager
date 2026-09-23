@@ -3809,7 +3809,7 @@ export function createSystemService(
         if (!uninstall.available) {
           throw new Error([
             uninstall.reason,
-            uninstall.manualCommand ? `请在普通 PowerShell 中运行：${uninstall.manualCommand}` : null,
+            uninstall.manualCommand ? `请在${platform === 'win32' ? '普通 PowerShell' : '终端'}中运行：${uninstall.manualCommand}` : null,
           ].filter(Boolean).join('；'))
         }
         if (uninstall.delegated) {
