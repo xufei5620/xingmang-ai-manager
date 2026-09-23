@@ -19,7 +19,7 @@ const sourceModules = new Map()
 // application compile or writing generated files into the working tree.
 function sourceModule(name) {
   if (sourceModules.has(name)) return sourceModules.get(name)
-  assert.ok(['safe-local-data', 'bounded-file', 'path-identity', 'acceleration-clash-config', 'acceleration-binary'].includes(name))
+  assert.ok(['safe-local-data', 'bounded-file', 'path-identity', 'relocated-folders', 'darwin-path-trust', 'acceleration-clash-config', 'acceleration-binary'].includes(name))
   const file = path.join(projectRoot, 'electron', `${name}.ts`)
   const compiled = ts.transpileModule(fs.readFileSync(file, 'utf8'), {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true },

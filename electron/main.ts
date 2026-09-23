@@ -98,6 +98,7 @@ import type { RelayBackendClient } from './relay-backend'
 import { ProviderExtensionService } from './provider-extensions'
 import { ProviderSessionsService } from './provider-sessions'
 import { guardProcessOutputStreams } from './process-stream-errors'
+import { configureRelocatedFolderAccess } from './relocated-folders'
 import { RuntimeLogStore } from './runtime-log'
 import { hostNotifier } from './platform/host-notification-bridge'
 import { attachPlatformAuditLog } from './platform/runtime-log-bridge'
@@ -725,6 +726,9 @@ if (!hasSingleInstanceLock) {
         responseHeaders: canvasSecurityResponseHeaders(details.responseHeaders),
       }),
     )
+    // macOS 上本程序从不提权，一开始就能按普通权限对待「搬过家」的用户文件夹；
+    // Windows 要等下面的管理员探测有了结论再定（relocated-folders.ts）。
+    if (process.platform !== 'win32') configureRelocatedFolderAccess('same-user')
     const managerDataDirectory = app.getPath('userData')
     // 内置加速内核三十多兆，校验要整读一遍。它以前排在建窗口前面单独等，慢机上
     // 窗口因此晚出来；现在一开始就读，和后面的迁移、命令行探测叠着跑，用到时再等。
@@ -867,6 +871,9 @@ if (!hasSingleInstanceLock) {
     // unmanaged npm uninstall can run in-app.
     const windowsCliExecution = await windowsCliExecutionModePromise
     const windowsCliExecutionMode = windowsCliExecution.mode
+    // 只有确认是普通权限运行时，才跟着「C 盘搬家」留下的联接去写 Key、设置和日志；
+    // 按管理员身份处理（trusted-only）时照旧一律拒绝。
+    configureRelocatedFolderAccess(windowsCliExecutionMode)
     runtimeLog.log('info', 'security', 'cli.execution-mode', 'CLI 扩展执行边界已确定', {
       mode: windowsCliExecutionMode,
       elapsedMs: windowsCliExecution.elapsedMs,

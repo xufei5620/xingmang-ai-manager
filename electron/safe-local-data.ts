@@ -2,6 +2,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { sameLocalPathIdentity } from './path-identity'
+import { resolveRelocatedPath } from './relocated-folders'
 
 function existingPathIsReparsePoint(filePath: string): boolean {
   try {
@@ -13,7 +14,7 @@ function existingPathIsReparsePoint(filePath: string): boolean {
 }
 
 export function assertNoReparseComponents(targetPath: string, label: string): void {
-  const resolved = path.resolve(targetPath)
+  const resolved = resolveRelocatedPath(targetPath)
   const parsed = path.parse(resolved)
   const relative = resolved.slice(parsed.root.length)
   let current = parsed.root
@@ -72,16 +73,18 @@ export function findReparseComponent(targetPath: string): ReparseComponent | nul
   return null
 }
 
-export function ensureSafeDataDirectory(directory: string, label: string): void {
-  assertNoReparseComponents(path.dirname(path.resolve(directory)), label)
+export function ensureSafeDataDirectory(requestedDirectory: string, label: string): void {
+  const directory = resolveRelocatedPath(requestedDirectory)
+  assertNoReparseComponents(path.dirname(directory), label)
   fs.mkdirSync(directory, { recursive: true })
   assertNoReparseComponents(directory, label)
   const stats = fs.lstatSync(directory)
   if (!stats.isDirectory() || stats.isSymbolicLink()) throw new Error(`${label}必须是普通目录`)
 }
 
-export function assertSafeDataFile(filePath: string, label: string): boolean {
-  assertNoReparseComponents(path.dirname(path.resolve(filePath)), label)
+export function assertSafeDataFile(requestedPath: string, label: string): boolean {
+  const filePath = resolveRelocatedPath(requestedPath)
+  assertNoReparseComponents(path.dirname(filePath), label)
   try {
     const stats = fs.lstatSync(filePath)
     if (!stats.isFile() || stats.isSymbolicLink() || stats.nlink !== 1) {
@@ -198,11 +201,12 @@ async function openSafeDataFileForAppend(
 }
 
 export function readSafeUtf8FileSync(
-  filePath: string,
+  requestedPath: string,
   label: string,
   maximumBytes?: number,
 ): string | null {
   validateReadLimit(maximumBytes, label)
+  const filePath = resolveRelocatedPath(requestedPath)
   const descriptor = openSafeDataFileSync(filePath, label)
   if (descriptor === null) return null
   try {
@@ -229,11 +233,12 @@ export function readSafeUtf8FileSync(
 }
 
 export async function readSafeUtf8File(
-  filePath: string,
+  requestedPath: string,
   label: string,
   maximumBytes?: number,
 ): Promise<string | null> {
   validateReadLimit(maximumBytes, label)
+  const filePath = resolveRelocatedPath(requestedPath)
   const handle = await openSafeDataFile(filePath, label)
   if (!handle) return null
   try {
@@ -259,7 +264,8 @@ export async function readSafeUtf8File(
   }
 }
 
-export async function appendSafeUtf8File(filePath: string, content: string, label: string): Promise<void> {
+export async function appendSafeUtf8File(requestedPath: string, content: string, label: string): Promise<void> {
+  const filePath = resolveRelocatedPath(requestedPath)
   const { handle, snapshot } = await openSafeDataFileForAppend(filePath, label)
   try {
     const buffer = Buffer.from(content, 'utf8')
@@ -288,7 +294,8 @@ export async function appendSafeUtf8File(filePath: string, content: string, labe
   }
 }
 
-export async function removeSafeDataFile(filePath: string, label: string): Promise<void> {
+export async function removeSafeDataFile(requestedPath: string, label: string): Promise<void> {
+  const filePath = resolveRelocatedPath(requestedPath)
   if (!assertSafeDataFile(filePath, label)) return
   await fs.promises.rm(filePath)
 }
@@ -376,13 +383,14 @@ async function replaceSafeDataFile(
 }
 
 async function writeAtomicSafeFile(
-  filePath: string,
+  requestedPath: string,
   content: string | Buffer,
   encoding: BufferEncoding | null,
   label: string,
   options: SafeAtomicWriteOptions,
 ): Promise<void> {
-  const directory = path.dirname(path.resolve(filePath))
+  const filePath = resolveRelocatedPath(requestedPath)
+  const directory = path.dirname(filePath)
   assertNoReparseComponents(directory, label)
   const directoryStats = fs.lstatSync(directory)
   if (!directoryStats.isDirectory() || directoryStats.isSymbolicLink()) {

@@ -104,6 +104,8 @@ npm run build:mac:dir   # macOS 本机 ad-hoc 签名解包应用
 **I8. 本地文件读写必须走 `safe-local-data` / `bounded-*` 系列。**
 目标路径都在用户可写区，攻击者可放 symlink/junction/硬链接重定向写操作。检查点：`assertNoReparseComponents`、`nlink !== 1` 拒绝、`readBoundedUtf8File*`。
 
+*已登记的例外*：「C 盘搬家」留下的联接（yoyo 2026-09-23 同意）。只在执行模式为 `same-user` 时，`relocated-folders.ts` 跟随用户主目录本身、其上级或其内部、指向本机盘符目录的联接，先换成实际位置再照原样严查。`trusted-only` 下一律拒绝——那正是本条要防的「中完整性进程放联接，诱导提权写入」。不要把跟随范围扩到主目录以外，也不要在 `trusted-only` 下放开。
+
 **I9. 配置写入必须两阶段提交 + 备份 + 失败回滚。**
 一次保存要同时改多个文件（Codex 是 `config.toml` + `auth.json`），写一半会让 CLI 处于不可用的混合状态。
 
