@@ -23,7 +23,7 @@ import { RuntimeRestartDialog } from './features/tools/RuntimeRestartDialog'
 import { guideJobProgress, installedToolSyncLabel, useToolbox } from './features/tools/useToolbox'
 import { ManualUninstallDialog, type ManualUninstallState } from './features/tools/ManualUninstall'
 import { operationLogPage, type OperationActionId } from './operation-error'
-import { accountTabs, macDesktopTutorialTopic, updateFailureLabel } from './registry/business'
+import { accountTabs, macDesktopTutorialTopic, settingsGroups, updateFailureLabel } from './registry/business'
 import { tools } from './registry/tools'
 import { clientConnections } from './registry/clients'
 import type { PageId } from './registry/pages'
@@ -53,6 +53,7 @@ import { idleOnlineResync, noteBootstrapOutcome, planOnlineResync } from './feat
 import { accountOrigin, accountScope, accountSiteId, accountSupports, sessionRestoreRetrying, sessionRestoring, sessionScope, siteIdForOrigin, visibleAccountTab, type AccountSiteId } from './account-context'
 import { accountReadErrorAction, formatAccountReadError } from './features/app/account-read-error'
 import { AccountBalanceContext, useAccountBalanceStore } from './features/app/balance-context'
+import { hasPendingSettingsGroup, requestSettingsGroup } from './features/app/settings-group-intent'
 import './business.css'
 
 const BusinessPage = lazy(() => import('./pages-business').then((module) => ({ default: module.BusinessPage })))
@@ -107,6 +108,9 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   // 教程页停在哪一章。页面挂上之后只是 hidden 不会重新挂载，所以每次跳转都换一个
   // sequence，教程页才接得住第二次、第三次跳过来。
   const [tutorialTopic, setTutorialTopic] = useState<{ sequence: number; id: string } | null>(null)
+  // 设置页只在挂载时取一次要落的分组（settings-group-intent），已经打开过再点名
+  // 某一组就换个 key 让它重新挂一次，否则会停在上次看的那组（全面检测 Q48）。
+  const [settingsRequest, setSettingsRequest] = useState(0)
   const [guide, setGuide] = useState(false)
   const [workspaceEntered, setWorkspaceEntered] = useState(false)
   const [tourOpen, setTourOpen] = useState(false)
@@ -455,6 +459,11 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     if ((target === 'account' || target === 'chat') && !session.authenticated) { setAuth('login'); return }
     if (target === 'account') setAccountTab((current) => ({ sequence: current.sequence + 1, value: accountTabs.find((entry) => entry.value === section)?.value ?? 'overview' }))
     if (target === 'tutorial' && section) setTutorialTopic((current) => ({ sequence: (current?.sequence ?? 0) + 1, id: section }))
+    if (target === 'settings') {
+      const group = settingsGroups.find((entry) => entry.value === section)?.value
+      if (group) requestSettingsGroup(group)
+      if (hasPendingSettingsGroup()) setSettingsRequest((current) => current + 1)
+    }
     if (target === 'chat') setChatScope(scope)
     if (target !== 'home' && target !== 'chat') setVisitedPages((current) => ({ ...current, [target]: scope }))
     setGuide(false); setPage(target)
@@ -849,7 +858,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
               onConfigureExternal={setExternalClient} onCodexModels={() => { setCodexModelFilter('non-gpt'); setConfigTool(platform?.codexDesktop.launch ? 'codexDesktop' : 'codex') }}
               onRuntime={(runtime) => void perform('准备环境', () => installRuntime(runtime))} onNavigate={navigate} onGuide={() => setGuide(true)} onBootstrapRetry={() => { if (session.account) void runAccountBootstrap(session.account.userId, 'login', true) }} />
               : null}
-            {(Object.keys(visitedPages) as PageId[]).filter((id) => id !== 'acceleration' && (visitedPages[id] === scope || id === page)).map((id) => <div key={id} hidden={page !== id} inert={page !== id}>
+            {(Object.keys(visitedPages) as PageId[]).filter((id) => id !== 'acceleration' && (visitedPages[id] === scope || id === page)).map((id) => <div key={id === 'settings' ? `settings:${settingsRequest}` : id} hidden={page !== id} inert={page !== id}>
               <Suspense fallback={pageLoading}>
                 <BusinessPage api={native} page={id} accountTab={accountTab.value} accountTabRequest={accountTab.sequence} tutorialTopic={tutorialTopic ?? undefined} paymentReturn={paymentReturn} navigate={navigate} openLogin={() => setAuth('login')} openHelp={() => setHelp(true)}
                   onSessionResumed={refreshRecent}
