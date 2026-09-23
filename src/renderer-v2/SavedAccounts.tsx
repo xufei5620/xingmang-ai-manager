@@ -19,7 +19,8 @@ import {
 } from './account-switch-sync'
 import { tools } from './registry/tools'
 import { keySyncFailureText } from './features/tools/key-sync-failure'
-import { accountOrigin } from './account-context'
+import { accountOrigin, siteIdForOrigin } from './account-context'
+import { accountSources } from './features/auth/state'
 
 export function SavedAccounts({
   api,
@@ -109,8 +110,9 @@ export function SavedAccounts({
           return (
             <ListRow
               key={account.id}
+              testId={`saved-account-row-${account.id}`}
               title={account.username}
-              desc={`账户尾号 ${account.id.slice(-6)}`}
+              desc={savedAccountSourceLabel(account.origin)}
               badge={current && <Pill tone="ok">当前账号</Pill>}
               actions={
                 <>
@@ -245,6 +247,16 @@ export function SavedAccounts({
       </Dialog>
     </div>
   )
+}
+
+/**
+ * 保存账号那一行的副标题：说清是星芒账号还是历史账号（全面检测 Q45）。以前这里写
+ * 「账户尾号」，其实是保存记录 id（地址 + 用户 id 的 sha256）的末 6 位，用户对不上
+ * 任何东西，也分不出两类账号。标签沿用登录页两个来源的原名，不露地址。
+ */
+export function savedAccountSourceLabel(origin: string): string {
+  const siteId = siteIdForOrigin(origin)
+  return siteId ? accountSources[siteId].label : '账号来源无法识别'
 }
 
 /** 主进程 SAVED_EXPIRED 那句（electron/realm-account.ts）；只认它，不认当前账号过期。 */
