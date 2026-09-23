@@ -315,6 +315,7 @@ function PaymentOptions({
 export function AccountPage({
   api,
   initialTab,
+  tabRequest,
   paymentReturn,
   onLogin,
   onAccountChanged,
@@ -323,6 +324,8 @@ export function AccountPage({
 }: {
   api: V2Bridge
   initialTab?: AccountTab
+  /** 每次从外面点名要切到某个分页就加一；同一个分页再点一次也得切回去（Q29）。 */
+  tabRequest?: number
   paymentReturn?: { sequence: number; order: string | null }
   onLogin?: () => void
   onAccountChanged?: () => void
@@ -340,7 +343,7 @@ export function AccountPage({
   }, [tab])
   useEffect(() => {
     if (initialTab) setTab(initialTab)
-  }, [initialTab])
+  }, [initialTab, tabRequest])
   const load = useCallback(async () => {
     const session = await api.getAccountSession()
     if (!session.authenticated) return null

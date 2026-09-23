@@ -18,6 +18,7 @@ export type BusinessPageProps = BusinessActions & {
   state?: V2SystemState
   refresh?: () => void
   accountTab?: Parameters<typeof AccountPage>[0]['initialTab']
+  accountTabRequest?: number
   /** 教程页要停在哪一章；缺省 = 从第一章开始（旧行为）。 */
   tutorialTopic?: Parameters<typeof TutorialPage>[0]['topic']
   paymentReturn?: { sequence: number; order: string | null }
@@ -31,6 +32,7 @@ export function BusinessPage({
   api,
   page,
   accountTab,
+  accountTabRequest,
   tutorialTopic,
   paymentReturn,
   onSessionResumed,
@@ -42,6 +44,7 @@ export function BusinessPage({
       <AccountPage
         api={api}
         initialTab={accountTab}
+        tabRequest={accountTabRequest}
         paymentReturn={paymentReturn}
         onLogin={actions.openLogin}
         onAccountChanged={actions.onAccountChanged ?? actions.refresh}

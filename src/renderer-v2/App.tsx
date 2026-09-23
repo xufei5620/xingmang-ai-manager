@@ -98,7 +98,9 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   const [page, setPage] = useState<PageId>('home')
   const [chatScope, setChatScope] = useState<string | null>(null)
   const [visitedPages, setVisitedPages] = useState<Partial<Record<PageId, string>>>({})
-  const [accountTab, setAccountTab] = useState<AccountTab>('overview')
+  // 带序号：已经停在「我的订单」时再点「充值」，值还是上次那个 'wallet'，
+  // 光比值 React 不会重新切过去（全面检测 Q29），同 tutorialTopic。
+  const [accountTab, setAccountTab] = useState<{ sequence: number; value: AccountTab }>({ sequence: 0, value: 'overview' })
   // 教程页停在哪一章。页面挂上之后只是 hidden 不会重新挂载，所以每次跳转都换一个
   // sequence，教程页才接得住第二次、第三次跳过来。
   const [tutorialTopic, setTutorialTopic] = useState<{ sequence: number; id: string } | null>(null)
@@ -443,7 +445,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       return
     }
     if ((target === 'account' || target === 'chat') && !session.authenticated) { setAuth('login'); return }
-    if (target === 'account') setAccountTab(accountTabs.find((entry) => entry.value === section)?.value ?? 'overview')
+    if (target === 'account') setAccountTab((current) => ({ sequence: current.sequence + 1, value: accountTabs.find((entry) => entry.value === section)?.value ?? 'overview' }))
     if (target === 'tutorial' && section) setTutorialTopic((current) => ({ sequence: (current?.sequence ?? 0) + 1, id: section }))
     if (target === 'chat') setChatScope(scope)
     if (target !== 'home' && target !== 'chat') setVisitedPages((current) => ({ ...current, [target]: scope }))
@@ -836,7 +838,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
               : null}
             {(Object.keys(visitedPages) as PageId[]).filter((id) => id !== 'acceleration' && (visitedPages[id] === scope || id === page)).map((id) => <div key={id} hidden={page !== id} inert={page !== id}>
               <Suspense fallback={pageLoading}>
-                <BusinessPage api={native} page={id} accountTab={accountTab} tutorialTopic={tutorialTopic ?? undefined} paymentReturn={paymentReturn} navigate={navigate} openLogin={() => setAuth('login')} openHelp={() => setHelp(true)}
+                <BusinessPage api={native} page={id} accountTab={accountTab.value} accountTabRequest={accountTab.sequence} tutorialTopic={tutorialTopic ?? undefined} paymentReturn={paymentReturn} navigate={navigate} openLogin={() => setAuth('login')} openHelp={() => setHelp(true)}
                   onSessionResumed={refreshRecent}
                   onBackupRestored={() => void toolbox.refreshConfig().catch(() => undefined)}
                   onAccountChanged={() => void perform('刷新账号', reloadAccount)} onSettingsChanged={setSettings} openConfig={openToolConfig}
