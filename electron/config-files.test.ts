@@ -401,7 +401,13 @@ describe('native CLI configuration files', () => {
       if (provider === 'grok') {
         const settings = TOML.parse(fs.readFileSync(paths[0], 'utf8'))
         expect(settings.cli).toEqual({ auto_update: false })
-        expect(settings.models).toEqual({ default: 'grok', web_search: 'grok' })
+        expect(settings.models).toEqual({
+          default: 'grok',
+          web_search: 'grok',
+          session_summary: 'grok',
+          image_description: 'grok',
+          allowed_models: ['grok'],
+        })
         expect(settings.endpoints).toEqual({ xai_api_base_url: 'https://xm.solov.cc/v1' })
         expect(asRecord(settings.model)?.grok).toMatchObject({
           model,
@@ -835,6 +841,35 @@ describe('native CLI configuration files', () => {
     expect(TOML.parse(fs.readFileSync(configPath, 'utf8')).endpoints).toEqual({
       xai_api_base_url: 'https://xm.solov.cc/v1',
       feedback_base_url: 'https://example.invalid',
+    })
+  })
+
+  it('limits the Grok model picker to the relay entry and routes titles through it when merging', () => {
+    // The built-in grok-4.6 / grok-4.5 entries go to xAI's own proxy, which the
+    // relay key cannot use, and session titles default to the literal grok-4.6.
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const [configPath] = providerConfigPaths('grok', roots)
+    fs.mkdirSync(path.dirname(configPath), { recursive: true })
+    fs.writeFileSync(configPath, [
+      '[models]',
+      'default = "mine"',
+      'image_description = "vision"',
+      '',
+      '[model."mine"]',
+      'model = "grok-old"',
+      'base_url = "https://legacy.example.com/v1"',
+      'api_key = "old"',
+      '',
+    ].join('\n'), 'utf8')
+
+    saveProviderConfig('grok', 'new-key', testModels.grok, 'merge', roots, {}, providerBaseUrls)
+
+    expect(TOML.parse(fs.readFileSync(configPath, 'utf8')).models).toEqual({
+      default: 'mine',
+      image_description: 'vision',
+      session_summary: 'mine',
+      allowed_models: ['mine'],
     })
   })
 
@@ -1881,6 +1916,10 @@ describe('switching a provider back to the official subscription account', () =>
     ;(seeded.endpoints as Record<string, unknown>).feedback_base_url = 'https://example.invalid'
     fs.writeFileSync(configPath, TOML.stringify(seeded as Parameters<typeof TOML.stringify>[0]), 'utf8')
 
+    // The relay merge limits the picker to the relay entry; that list must go with it.
+    saveProviderConfig('grok', 'sk-relay', testModels.grok, 'merge', roots, {}, providerBaseUrls)
+    expect(asRecord(TOML.parse(fs.readFileSync(configPath, 'utf8')).models)?.allowed_models).toEqual(['grok'])
+
     switchProviderToOfficialAccount('grok', roots, {}, providerBaseUrls)
 
     const settings = TOML.parse(fs.readFileSync(configPath, 'utf8'))
@@ -1903,7 +1942,9 @@ describe('switching a provider back to the official subscription account', () =>
     saveProviderConfig('grok', 'sk-relay-2', testModels.grok, 'merge', roots, {}, providerBaseUrls)
 
     const settings = TOML.parse(fs.readFileSync(providerConfigPaths('grok', roots)[0], 'utf8'))
-    expect(settings.models).toEqual({ default: 'grok', web_search: 'grok' })
+    expect(settings.models).toEqual({
+      default: 'grok', web_search: 'grok', allowed_models: ['grok'], session_summary: 'grok', image_description: 'grok',
+    })
     expect(asRecord(settings.model)?.grok).toMatchObject({
       model: testModels.grok, base_url: 'https://xm.solov.cc/v1', api_key: 'sk-relay-2',
       api_backend: 'responses', context_window: 1000000, supports_backend_search: true,

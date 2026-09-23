@@ -364,6 +364,13 @@ function removeGrokRelayConfig(parsed: Record<string, unknown>, relayBaseUrl: st
     for (const [key, value] of Object.entries(models)) {
       if (typeof value === 'string' && removed.has(value)) delete models[key]
     }
+    // 接中转时 allowed_models 只留了中转那一项（pinGrokModelsToRelay）；表删了名单还在，
+    // Grok 就一个可用型号都没有。
+    if (Array.isArray(models.allowed_models)) {
+      const allowed = models.allowed_models.filter((name) => typeof name !== 'string' || !removed.has(name))
+      if (allowed.length === 0) delete models.allowed_models
+      else models.allowed_models = allowed
+    }
     if (Object.keys(models).length === 0) delete parsed.models
   }
   const endpoints = parsed.endpoints
@@ -371,6 +378,28 @@ function removeGrokRelayConfig(parsed: Record<string, unknown>, relayBaseUrl: st
     const record = endpoints as Record<string, unknown>
     if (typeof record.xai_api_base_url === 'string' && normalizeUrl(record.xai_api_base_url) === relay) delete record.xai_api_base_url
     if (Object.keys(record).length === 0) delete parsed.endpoints
+  }
+}
+
+// Grok CLI 自带一份内置型号目录（grok-4.6 / grok-4.5），它们走 xAI 自己的
+// cli-chat-proxy.grok.com。接中转后这两项仍然出现在 /model 里，用户选了就一直
+// 「Connection failed, Retrying」——国内连不上，而且本来也不该绕开当前账号。另外会话标题
+// 与摘要（session_summary）默认钉在字面量 grok-4.6 上，经中转发出去；中转型号不叫这个
+// 名字时标题就悄悄生成失败。
+//
+// 沙箱实测 1.0.40：allowed_models 只留中转那一项后，`grok models` 与 /model 只剩它；
+// session_summary 指到它之后，标题、每轮小结、输入建议全部用中转型号。千万别用
+// hidden_models / disabled_models：它们按 model 字段匹配，会连中转那一项一起藏掉，
+// 结果一个可用型号都没有。image_description（看图转文字）同理指过去。
+//
+// 只在用户没写过时补，用户自己配了别的型号或名单就尊重他。
+const grokRelayModelRoles = ['session_summary', 'image_description'] as const
+
+function pinGrokModelsToRelay(parsed: Record<string, unknown>, relayModelName: string): void {
+  const models = ensureRecord(parsed, 'models')
+  if (models.allowed_models === undefined) models.allowed_models = [relayModelName]
+  for (const role of grokRelayModelRoles) {
+    if (models[role] === undefined) models[role] = relayModelName
   }
 }
 
@@ -1568,6 +1597,9 @@ function createPlans(
           '[models]',
           'default = "grok"',
           'web_search = "grok"',
+          'session_summary = "grok"',
+          'image_description = "grok"',
+          'allowed_models = ["grok"]',
           '',
           '[model."grok"]',
           `model = ${tomlString(model)}`,
@@ -1675,6 +1707,7 @@ function createMergePlans(
       targetModel.base_url = siteBaseUrls.grok
       disableGrokSelfUpdate(parsed)
       pointGrokXaiApiAtRelay(parsed, siteBaseUrls.grok)
+      pinGrokModelsToRelay(parsed, defaultModel)
       return [{ path: paths[0], content: tomlContent(parsed) }]
     }
   }

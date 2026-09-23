@@ -4,5 +4,5 @@
 
 ## 开发
 
-- `config-files.ts`：去掉 `providerSupportsOfficialAccount` / `officialAccountUnsupported`，Grok 切官方走 `removeGrokRelayConfig`：删掉 `base_url` 等于中转的 `[model.*]` 表、指向这些表的 `models.*` 选择、等于中转的 `endpoints.xai_api_base_url`。Grok 的优先级是 `[model.X].api_key` > `auth.json` 会话 > `XAI_API_KEY`，只删 Key 留 base_url 会把 Grok 登录令牌发给中转，所以整张表一起删。切回中转时 `models.default` 空着就补回托管模型。`inspectOfficialLogin` 与汇总里的 `grokLoginMode` 只读 `~/.grok/auth.json` 的 `auth_mode` 与 `email`，令牌不读。`canLaunchManagedProvider` 只收 inspection 一个参数。
+- `config-files.ts`：去掉 `providerSupportsOfficialAccount` / `officialAccountUnsupported`，Grok 切官方走 `removeGrokRelayConfig`：删掉 `base_url` 等于中转的 `[model.*]` 表、指向这些表的 `models.*` 选择、等于中转的 `endpoints.xai_api_base_url`，以及 #402 写进 `models.allowed_models` 的那一项（表删了名单还在 Grok 就没有可选型号）。Grok 的优先级是 `[model.X].api_key` > `auth.json` 会话 > `XAI_API_KEY`，只删 Key 留 base_url 会把 Grok 登录令牌发给中转，所以整张表一起删。切回中转时 `models.default` 空着就补回托管模型。`inspectOfficialLogin` 与汇总里的 `grokLoginMode` 只读 `~/.grok/auth.json` 的 `auth_mode` 与 `email`，令牌不读。`canLaunchManagedProvider` 只收 inspection 一个参数。
 - 渲染层：`registry/tools.ts` 的 Grok 来源加 `official`（「Grok 账号」），`sourceFor` 只在 `grokLoginMode` 有值时把没密钥的 Grok 认成官方，`oneClickOfficialProviders` 加 Grok。
