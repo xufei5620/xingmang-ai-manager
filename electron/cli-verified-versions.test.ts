@@ -85,7 +85,9 @@ describe('cliVerifiedVersions coverage', () => {
     // providers that do not support them reject the request outright; OpenAI
     // shipped 0.155.1 the next day. Codex had no list at all until then, so a
     // customer who pressed "更新" in that window installed exactly 0.155.0.
-    expect(cliVerifiedVersions.codex.recommended?.version).toBe('0.155.1')
+    // 0.156.1 is the first release whose bundled catalog knows gpt-6-sol and
+    // gpt-6-luna; on 0.155.1 they run on fallback metadata.
+    expect(cliVerifiedVersions.codex.recommended?.version).toBe('0.156.1')
     expect(findBlockedCliVersion('codex', '0.155.0')?.fixed).toBe('0.155.1')
     expect(findBlockedCliVersion('codex', '0.155.1')).toBeNull()
     expect(findBlockedCliVersion('codex', '0.154.0')).toBeNull()
@@ -209,7 +211,7 @@ describe('buildCliVersionAdvice', () => {
 
   it('tells a Codex user on the blocked release to move forward, not back', () => {
     const advice = buildCliVersionAdvice('codex', '0.155.0')
-    expect(advice.recommendedVersion).toBe('0.155.1')
+    expect(advice.recommendedVersion).toBe('0.156.1')
     expect(advice.blockedReason).toMatch(/推理摘要/)
     expect(advice.rollbackAvailable).toBe(true)
     expect(advice.recommendedIsNewer).toBe(true)
