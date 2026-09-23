@@ -13,6 +13,8 @@
  * - 连不上就照常打开。加速是加分项，不能变成「打开」的前置条件，所以这里的每
  *   一处失败都收敛成一句日志，绝不抛给调用方。
  * - 不自动断开。连上之后由用户自己在加速页停，软件不替他决定什么时候结束。
+ *   正因为不断开，连上的那一刻要告诉他（onAutoConnected，宿主发一条系统通知），
+ *   否则关掉桌面端之后加速还一直开着、一直在计时，他却毫不知情。
  *
  * 不含任何 Electron 依赖：读状态与连接都由宿主注入。
  */
@@ -41,6 +43,8 @@ export interface CodexDesktopAccelerationOptions {
   readState(scope: string): Promise<AccelerationState>
   /** 第二个参数是刚读到的那一份状态：宿主据此判断记住的模式当前支不支持。 */
   connect(scope: string, state: AccelerationState): Promise<AccelerationState>
+  /** 这次确实是本模块替用户连上的（已经连着的不算）。回调抛错不影响打开。 */
+  onAutoConnected?(state: AccelerationState): void
   /**
    * 连线路要校验随包资源、拉起内核、再探一次节点，实测几秒。预算给 15 秒：
    * 比正常值宽出一截，又不至于让一台连不上的机器把「打开」拖成半分钟没反应。
@@ -136,6 +140,11 @@ export function createCodexDesktopAccelerationCoordinator(
       return skip('connect-failed', '打开 Codex 桌面端前自动连接加速未成功，已照常打开', { phase: connected.phase })
     }
     log('info', 'acceleration.codex-desktop.connected', '已为打开 Codex 桌面端自动连接加速，结束后请在加速页自行停止')
+    // connecting 还不算连上：会话没有 connectedAt，通知也就没有稳定的去重编号。
+    if (connected.phase === 'active') {
+      try { options.onAutoConnected?.(connected) }
+      catch (error) { log('warn', 'acceleration.codex-desktop.notify.failed', '自动连接加速的提醒没有发出', failureDetail(error)) }
+    }
     return { status: 'connected' }
   }
 
