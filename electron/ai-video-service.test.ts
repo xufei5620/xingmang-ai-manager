@@ -522,6 +522,29 @@ describe('createAiVideoService', () => {
     expect(tasks.upsert).not.toHaveBeenCalled()
   })
 
+  it('lets the canvas stop a request that is still preparing before the account is known', async () => {
+    const fetchImpl = vi.fn() as unknown as typeof fetch
+    const { service, credentials } = setup(fetchImpl)
+    let releaseCredential: () => void = () => undefined
+    const credentialGate = new Promise<void>((resolve) => { releaseCredential = resolve })
+    const resolveCredential = credentials.resolveCredential.getMockImplementation()!
+    credentials.resolveCredential.mockImplementationOnce(async (group: string) => {
+      await credentialGate
+      return resolveCredential(group)
+    })
+    const pending = service.generate(41, {
+      requestId: 'canvas-preparing', group: 'grok', model: 'grok-imagine-video', prompt: '海浪', seconds: '5', expectedUserId: 7,
+    })
+    await vi.waitFor(() => expect(credentials.resolveCredential).toHaveBeenCalledOnce())
+
+    expect(service.cancel(41, 'canvas-preparing', 8)).toEqual({ canceled: false, mayStillComplete: false })
+    expect(service.cancel(41, 'canvas-preparing', 7)).toEqual({ canceled: true, mayStillComplete: false })
+    releaseCredential()
+
+    await expect(pending).rejects.toThrow('已取消视频请求')
+    expect(fetchImpl).not.toHaveBeenCalled()
+  })
+
   it('releases a reservation when cancellation wins before paid dispatch', async () => {
     const fetchImpl = vi.fn() as unknown as typeof fetch
     const { service, tasks } = setup(fetchImpl)

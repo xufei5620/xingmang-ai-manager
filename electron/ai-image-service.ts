@@ -70,8 +70,19 @@ interface ActiveImageRequest {
   requestId: string
   handle: BoundedOperationHandle<GeneratedAiAsset[]>
   userId?: number
+  // The account the caller submitted for. userId is only known once the
+  // credential resolves, so a stop pressed while queued or preparing has to
+  // be matched against this instead, or it is refused and the paid request
+  // still goes out.
+  expectedUserId?: number
   dispatched: boolean
   cancelReason?: 'user' | 'sender' | 'account' | 'application' | 'timeout' | 'shutdown'
+}
+
+function ownedBy(operation: ActiveImageRequest, expectedUserId: number | undefined): boolean {
+  if (expectedUserId === undefined) return true
+  const owner = operation.userId ?? operation.expectedUserId
+  return owner === undefined || owner === expectedUserId
 }
 
 function requestKey(senderId: number, requestId: string): string {
@@ -252,7 +263,7 @@ export function createAiImageService(options: {
     const requestId = requiredRequestId(input.requestId)
     const key = requestKey(senderId, requestId)
     if (active.has(key)) throw new Error('该生图请求正在处理中')
-    const operation = { senderId, requestId, dispatched: false } as ActiveImageRequest
+    const operation = { senderId, requestId, expectedUserId: input.expectedUserId, dispatched: false } as ActiveImageRequest
     const handle = queue.enqueue(async (signal) => {
       const timeout = setTimeout(() => {
         operation.cancelReason = 'timeout'
@@ -310,6 +321,9 @@ export function createAiImageService(options: {
         } catch {
           throw ambiguousImageSubmission()
         }
+        // 到这里图已经生成、钱已经扣了。下载有资产库自己的超时，本地保存不出网，
+        // 再让总超时打断只会报成「服务端可能仍在生成」，而用户照着重试就又扣一次。
+        clearTimeout(timeout)
         const results: GeneratedAiAsset[] = []
         await progress?.onStage('saving')
         for (const entry of entries) {
@@ -329,9 +343,9 @@ export function createAiImageService(options: {
           } catch (error) {
             if (signal.aborted) throw signal.reason
             if (!entry.b64Json && isAssetDownloadError(error)) {
-              throw new Error('图片已生成但下载失败，请勿立即重复提交；请检查网络或代理设置后重试下载')
+              throw new Error('图片已生成但下载失败，这次可能已经扣费，请勿立即重复提交；先检查网络，稍后再重新生成')
             }
-            throw new Error('图片已生成但本地保存失败，请勿立即重复提交；请检查 output 目录和磁盘空间')
+            throw new Error('图片已生成但本地保存失败，这次可能已经扣费，请勿立即重复提交；先看看保存位置所在的磁盘空间够不够')
           }
         }
         return results
@@ -457,7 +471,7 @@ export function createAiImageService(options: {
   function cancel(senderId: number, requestIdInput: string, expectedUserId?: number): AiImageCancelResult {
     const requestId = requiredRequestId(requestIdInput)
     const operation = active.get(requestKey(senderId, requestId))
-    if (!operation || (expectedUserId !== undefined && operation.userId !== expectedUserId)) return { canceled: false, mayStillComplete: false }
+    if (!operation || !ownedBy(operation, expectedUserId)) return { canceled: false, mayStillComplete: false }
     return cancelOperation(operation, 'user', '用户停止生图')
   }
 
