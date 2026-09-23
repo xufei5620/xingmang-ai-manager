@@ -87,3 +87,34 @@ test('a page chosen from the command palette also receives focus once the palett
     await clean(page)
   } finally { await page.close() }
 })
+
+test('on a short screen the sidebar keeps Settings in view and scrolls the opened More list into view', async () => {
+  const page = await open()
+  try {
+    // 1280×720 屏幕、1920×1080 开 150% 缩放时，窗口里能给侧栏的高度大约就这么多。
+    await page.setViewportSize({ width: 1280, height: 672 })
+    function visibleInSidebar(testId) {
+      return page.evaluate((id) => {
+        const element = document.querySelector(`[data-testid="${id}"]`)
+        const nav = document.querySelector('.v2-sidebar-nav')
+        const scroll = document.querySelector('.v2-sidebar-scroll')
+        if (!element || !nav || !scroll) return false
+        const box = element.getBoundingClientRect()
+        const clip = element.closest('.v2-sidebar-scroll') ? scroll.getBoundingClientRect() : nav.getBoundingClientRect()
+        const hit = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2)
+        return box.top >= clip.top - 1 && box.bottom <= clip.bottom + 1 && Boolean(hit && element.contains(hit))
+      }, testId)
+    }
+    assert.equal(await visibleInSidebar('nav-settings'), true, 'Settings is not cut off below the fold')
+    await page.getByTestId('nav-more').click()
+    await page.getByTestId('nav-updates').waitFor()
+    await page.waitForFunction(() => {
+      const item = document.querySelector('[data-testid="nav-updates"]')?.getBoundingClientRect()
+      const scroll = document.querySelector('.v2-sidebar-scroll')?.getBoundingClientRect()
+      return Boolean(item && scroll && item.bottom <= scroll.bottom + 1)
+    })
+    assert.equal(await visibleInSidebar('nav-updates'), true, 'the last item of More is scrolled into view')
+    assert.equal(await visibleInSidebar('nav-settings'), true, 'Settings stays in view with More open')
+    await clean(page)
+  } finally { await page.close() }
+})

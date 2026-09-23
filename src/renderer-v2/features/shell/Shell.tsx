@@ -60,6 +60,12 @@ export function Shell({ activePage, account, platform, adapter, environment, bal
   useEffect(() => { if (tourOpen) setTourStep(0) }, [tourOpen])
   const [collapsed, setCollapsed] = useState(() => readLocalPreference('xingmang-v2-sidebar') === 'collapsed')
   const [more, setMore] = useState(false)
+  const moreListRef = useRef<HTMLDivElement>(null)
+  // 矮屏（1280×720、1080p 开 150% 缩放）上展开「更多」时，新出来的四项落在侧栏
+  // 可视区下面，看起来像点了没反应，所以展开后把它们滚进来。
+  useEffect(() => {
+    if (more) moreListRef.current?.scrollIntoView?.({ block: 'nearest' })
+  }, [more])
   const [command, setCommand] = useState(false)
   const [query, setQuery] = useState('')
   const [selection, setSelection] = useState(0)
@@ -207,9 +213,13 @@ export function Shell({ activePage, account, platform, adapter, environment, bal
         <a className="v2-skip-link" href="#v2-main" onClick={skipToContent} data-testid="shell-skip-to-content">跳到正文</a>
         <div className="v2-brand"><Logo kind="micro" height={32} />{!collapsed && <Logo kind="wordmark" height={32} />}
           <Button variant="ghost" size="xs" icon={PanelLeft} aria-label={collapsed ? '展开侧栏' : '收起侧栏'} title={collapsed ? '展开侧栏' : '收起侧栏'} onClick={toggleSidebar} testId="sidebar-collapse" /></div>
-        <nav className="v2-sidebar-nav" aria-label="主导航">{shellNavigation.map((group, index) => <div className="v2-nav-group" key={index}>{group.map(navButton)}</div>)}
-          <button type="button" className="v2-nav-item" onClick={() => setMore((current) => !current)} aria-expanded={more} aria-label="更多" title={collapsed ? '更多' : undefined} data-testid="nav-more"><MenuIcon size={20} /><span>更多</span><ChevronDown size={16} /></button>
-          {more && <div className="v2-more-navigation">{moreNavigation.map(navButton)}</div>}{navButton('settings')}
+        <nav className="v2-sidebar-nav" aria-label="主导航">
+          {/* 「设置」不跟着滚：屏幕矮时滚动区先收缩，「设置」始终露在外面。 */}
+          <div className="v2-sidebar-scroll" data-testid="sidebar-scroll">{shellNavigation.map((group, index) => <div className="v2-nav-group" key={index}>{group.map(navButton)}</div>)}
+            <button type="button" className="v2-nav-item" onClick={() => setMore((current) => !current)} aria-expanded={more} aria-label="更多" title={collapsed ? '更多' : undefined} data-testid="nav-more"><MenuIcon size={20} /><span>更多</span><ChevronDown size={16} /></button>
+            {more && <div className="v2-more-navigation" ref={moreListRef}>{moreNavigation.map(navButton)}</div>}
+          </div>
+          {navButton('settings')}
         </nav>
         <section className="v2-account-entry" data-testid="account-entry">
           <div className="v2-account-top"><button type="button" aria-label={account.signedIn ? `打开个人中心 ${account.displayName}` : '登录'} title={account.displayName ?? '登录'} onClick={adapter.openAccount}>
