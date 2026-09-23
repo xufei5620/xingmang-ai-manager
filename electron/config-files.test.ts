@@ -10,6 +10,9 @@ import {
   classifyCodexAuthProfile,
   classifyCodexConfigProfile,
   claudeConsoleKeySnapshotName,
+  claudeForeignSettingsSnapshotName,
+  moveClaudeForeignSettingsAside,
+  restoreClaudeForeignSettings,
   codexApiKeyAuthSnapshotName,
   codexAuthSnapshotPaths,
   codexChatGptAuthSnapshotName,
@@ -1786,6 +1789,102 @@ describe('switching a provider back to the official subscription account', () =>
     expect(asRecord(after.permissions)?.defaultMode).toBe('bypassPermissions')
   })
 
+  // 全面检测 Q7：照别家中转教程配过 Claude Code 的人，settings.json 里留着的这几项
+  // 会顶掉当前账号。接当前账号时挪进快照，切回官方原样放回。
+  const foreignClaudeSettings = () => ({
+    env: {
+      ANTHROPIC_API_KEY: 'sk-other-relay',
+      ANTHROPIC_MODEL: 'glm-4.6',
+      ANTHROPIC_SMALL_FAST_MODEL: 'glm-4.5-air',
+      ANTHROPIC_DEFAULT_OPUS_MODEL: 'glm-4.6',
+      ANTHROPIC_DEFAULT_SONNET_MODEL: 'glm-4.6',
+      ANTHROPIC_DEFAULT_HAIKU_MODEL: 'glm-4.5-air',
+      MY_OWN_VARIABLE: 'keep-me',
+    },
+    apiKeyHelper: '/usr/local/bin/print-other-key',
+    theme: 'dark',
+  })
+
+  it('moves settings left by another relay aside for the account and puts them back for the official account', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const [configPath] = providerConfigPaths('claude', roots)
+    const snapshotPath = path.join(path.dirname(configPath), claudeForeignSettingsSnapshotName)
+    fs.mkdirSync(path.dirname(configPath), { recursive: true })
+    const original = foreignClaudeSettings()
+    fs.writeFileSync(configPath, JSON.stringify(original, null, 2))
+
+    saveProviderConfig('claude', 'sk-relay', testModels.claude, 'merge', roots, {}, providerBaseUrls)
+    const relay = JSON.parse(fs.readFileSync(configPath, 'utf8')) as Record<string, unknown>
+    const relayEnv = relay.env as Record<string, unknown>
+    for (const key of Object.keys(original.env).filter((key) => key !== 'MY_OWN_VARIABLE')) expect(relayEnv[key]).toBeUndefined()
+    expect(relay.apiKeyHelper).toBeUndefined()
+    expect(relayEnv.ANTHROPIC_AUTH_TOKEN).toBe('sk-relay')
+    expect(relayEnv.MY_OWN_VARIABLE).toBe('keep-me')
+    expect(relay.theme).toBe('dark')
+    expect(inspectProviderConfig('claude', roots).matchesRelay).toBe(true)
+    expect(JSON.parse(fs.readFileSync(snapshotPath, 'utf8'))).toMatchObject({
+      env: { ANTHROPIC_API_KEY: 'sk-other-relay', ANTHROPIC_MODEL: 'glm-4.6' },
+      settings: { apiKeyHelper: '/usr/local/bin/print-other-key' },
+    })
+
+    // 再保存一次（换 Key、换模型）不能把快照里的东西弄丢。
+    saveProviderConfig('claude', 'sk-relay-2', testModels.claude, 'merge', roots, {}, providerBaseUrls)
+    expect(JSON.parse(fs.readFileSync(snapshotPath, 'utf8')).env.ANTHROPIC_API_KEY).toBe('sk-other-relay')
+
+    switchProviderToOfficialAccount('claude', roots, {}, providerBaseUrls)
+    const official = JSON.parse(fs.readFileSync(configPath, 'utf8')) as Record<string, unknown>
+    expect(official.env).toMatchObject(original.env)
+    expect(official.apiKeyHelper).toBe(original.apiKeyHelper)
+    expect(official.theme).toBe('dark')
+    expect(fs.readFileSync(snapshotPath, 'utf8')).toBe('')
+  })
+
+  it('keeps foreign Claude settings through a reset and restores them on an official reset', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const [configPath] = providerConfigPaths('claude', roots)
+    fs.mkdirSync(path.dirname(configPath), { recursive: true })
+    fs.writeFileSync(configPath, JSON.stringify(foreignClaudeSettings(), null, 2))
+
+    saveProviderConfig('claude', 'sk-relay', testModels.claude, 'reset', roots, {}, providerBaseUrls)
+    const relay = JSON.parse(fs.readFileSync(configPath, 'utf8')) as Record<string, unknown>
+    expect((relay.env as Record<string, unknown>).ANTHROPIC_MODEL).toBeUndefined()
+
+    switchProviderToOfficialAccount('claude', roots, {}, providerBaseUrls, 'reset')
+    const official = JSON.parse(fs.readFileSync(configPath, 'utf8')) as Record<string, unknown>
+    expect((official.env as Record<string, unknown>).ANTHROPIC_MODEL).toBe('glm-4.6')
+    expect((official.env as Record<string, unknown>).DISABLE_AUTOUPDATER).toBe('1')
+    expect(official.apiKeyHelper).toBe('/usr/local/bin/print-other-key')
+  })
+
+  it('does not write a foreign-settings snapshot when there is nothing foreign to move', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const [configPath] = providerConfigPaths('claude', roots)
+    fs.mkdirSync(path.dirname(configPath), { recursive: true })
+    fs.writeFileSync(configPath, JSON.stringify({ env: { MY_OWN_VARIABLE: 'x' } }, null, 2))
+
+    saveProviderConfig('claude', 'sk-relay', testModels.claude, 'merge', roots, {}, providerBaseUrls)
+    switchProviderToOfficialAccount('claude', roots, {}, providerBaseUrls)
+
+    expect(fs.existsSync(path.join(path.dirname(configPath), claudeForeignSettingsSnapshotName))).toBe(false)
+  })
+
+  it('never hands the account key back to the official config and prefers values the user set again', () => {
+    const settings: Record<string, unknown> = { env: { ANTHROPIC_API_KEY: 'sk-relay', ANTHROPIC_MODEL: 'glm-4.6' } }
+    const snapshot = moveClaudeForeignSettingsAside(settings, null, 'sk-relay')
+    expect(settings.env).toBeUndefined()
+    expect(JSON.parse(String(snapshot)).env).toEqual({ ANTHROPIC_MODEL: 'glm-4.6' })
+
+    const official: Record<string, unknown> = { env: { ANTHROPIC_MODEL: 'claude-opus-5' } }
+    expect(restoreClaudeForeignSettings(official, snapshot)).toBe(false)
+    expect(official.env).toEqual({ ANTHROPIC_MODEL: 'claude-opus-5' })
+    // 本软件自己的选模型菜单写的 ANTHROPIC_DEFAULT_MODEL 不归这张表管。
+    const own: Record<string, unknown> = { env: { ANTHROPIC_DEFAULT_MODEL: 'claude-sonnet-5' } }
+    expect(moveClaudeForeignSettingsAside(own, null, 'sk-relay')).toBeNull()
+  })
+
   it('skips the WebFetch domain preflight on the relay and restores it for the official account', () => {
     // The preflight asks api.anthropic.com about every domain; from mainland
     // China that host is unreachable, so relay users could not fetch any page.
@@ -1969,6 +2068,57 @@ describe('switching a provider back to the official subscription account', () =>
     expect(env).toContain('MY_OWN_VARIABLE=keep-me')
   })
 
+  it('writes the account key into a Gemini settings file that carries comments and keeps the comments', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const [settingsPath, envPath] = providerConfigPaths('gemini', roots)
+    fs.mkdirSync(path.dirname(settingsPath), { recursive: true })
+    // Gemini CLI strips comments before JSON.parse, so this is a valid file to it.
+    fs.writeFileSync(settingsPath, [
+      '{',
+      '  // 我的主题',
+      '  "ui": { "theme": "GitHub" },',
+      '  /* 登录方式 */',
+      '  "security": { "auth": { "selectedType": "oauth-personal" } }',
+      '}',
+      '',
+    ].join('\n'), 'utf8')
+
+    saveProviderConfig('gemini', 'sk-relay', testModels.gemini, 'merge', roots, {}, providerBaseUrls)
+
+    const written = fs.readFileSync(settingsPath, 'utf8')
+    expect(written).toContain('// 我的主题')
+    expect(written).toContain('/* 登录方式 */')
+    expect(written).toContain('"theme": "GitHub"')
+    expect(fs.readFileSync(envPath, 'utf8')).toContain('GEMINI_API_KEY=sk-relay')
+    expect(inspectProviderConfig('gemini', roots).authType).toBe('gemini-api-key')
+
+    switchProviderToOfficialAccount('gemini', roots, {}, providerBaseUrls)
+
+    const restored = fs.readFileSync(settingsPath, 'utf8')
+    expect(restored).toContain('// 我的主题')
+    expect(inspectProviderConfig('gemini', roots).authType).toBe('oauth-personal')
+  })
+
+  it('still refuses a Gemini settings file that Gemini itself could not read', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const [settingsPath] = providerConfigPaths('gemini', roots)
+    fs.mkdirSync(path.dirname(settingsPath), { recursive: true })
+    const damaged = [
+      // Trailing commas survive strip-json-comments, so Gemini rejects them too.
+      '{ "ui": { "theme": "GitHub", }, // note\n }',
+      // Duplicate keys: an in-place edit would change one copy while Gemini reads the other.
+      '{ // note\n "ui": {}, "ui": {} }',
+    ]
+    for (const content of damaged) {
+      fs.writeFileSync(settingsPath, content, 'utf8')
+      expect(() => saveProviderConfig('gemini', 'sk-relay', testModels.gemini, 'merge', roots, {}, providerBaseUrls))
+        .toThrow('现有 Gemini settings.json 无法解析为 JSON，未执行修改')
+      expect(fs.readFileSync(settingsPath, 'utf8')).toBe(content)
+    }
+  })
+
   it('refuses to touch a configuration that points at somebody else\'s relay', () => {
     const home = temporaryHome()
     saveProviderConfig('claude', 'sk-third-party', testModels.claude, 'reset', providerRoots(home), {}, {
@@ -2145,6 +2295,21 @@ describe('workspace trust for the directory the user picked', () => {
       '/home/tester/work': 'DO_NOT_TRUST',
       '/home/tester/other': 'TRUST_PARENT',
     })
+  })
+
+  it('keeps comments in Gemini trust and context files it adds entries to', () => {
+    const trust = trustGeminiWorkspaceInTrustedFoldersText('{\n  // 家里的项目\n  "/home/tester/other": "TRUST_FOLDER"\n}\n', '/home/tester/work')
+    expect(trust.changed).toBe(true)
+    expect(trust.content).toContain('// 家里的项目')
+    expect(trust.content).toContain('"/home/tester/work": "TRUST_FOLDER"')
+
+    const context = ensureGeminiContextFilenamesInSettingsText('{\n  // 我的主题\n  "ui": { "theme": "GitHub" }\n}\n')
+    expect(context.changed).toBe(true)
+    expect(context.content).toContain('// 我的主题')
+    expect(context.content).toContain('"AGENTS.md"')
+
+    const unchanged = '{\n  // 已经配好\n  "context": { "fileName": ["GEMINI.md", "AGENTS.md"] }\n}\n'
+    expect(ensureGeminiContextFilenamesInSettingsText(unchanged)).toEqual({ content: unchanged, changed: false })
   })
 
   it('refuses to guess at a damaged trust file instead of overwriting it', () => {

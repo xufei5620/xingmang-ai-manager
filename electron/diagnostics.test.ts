@@ -329,7 +329,7 @@ describe('diagnostics', () => {
 
       expect(report.items.find((item) => item.code === 'XINGMANG_NETWORK')).toMatchObject({
         state: 'pass',
-        summary: '已连通（HTTP 200）',
+        summary: '能连上星芒服务',
       })
       expect(fetchImpl).toHaveBeenCalledTimes(1)
       expect(fetchImpl.mock.calls[0][0]).toBe('https://xm.solov.cc/api/status')
@@ -509,7 +509,7 @@ describe('diagnostics', () => {
 
       const report = await runDiagnostics(input)
 
-      expect(networkItem(report)).toMatchObject({ state: 'pass', summary: '已连通（HTTP 200）' })
+      expect(networkItem(report)).toMatchObject({ state: 'pass', summary: '能连上星芒服务' })
       // 不新增请求：这一项本来就要发的那一次请求就是全部。
       expect(fetchImpl).toHaveBeenCalledTimes(1)
     })
@@ -556,7 +556,7 @@ describe('diagnostics', () => {
       const report = await runDiagnostics(input)
 
       const network = networkItem(report)
-      expect(network).toMatchObject({ state: 'pass', summary: '已连通（HTTP 200）' })
+      expect(network).toMatchObject({ state: 'pass', summary: '能连上星芒服务' })
       expect(network?.details).not.toHaveProperty('clockSkewMinutes')
     })
   })
@@ -946,7 +946,7 @@ describe('diagnostics', () => {
     })
   })
 
-  it('explains that a failed startup probe was treated as administrator, instead of reporting a plain user', async () => {
+  it('explains that an elevated start with a failed startup probe was treated as administrator', async () => {
     const home = temporaryHome()
     const input = dependencies(home)
     input.windowsExecution = {
@@ -954,6 +954,7 @@ describe('diagnostics', () => {
       elapsedMs: 15_020,
       probeFailure: { reason: 'blocked', detail: 'Add-Type : Cannot add type. Compilation errors occurred.' },
     }
+    input.inspectAdministrator = async () => true
     // The failure answer must not depend on a second probe of the same kind.
     input.inspectElevationCapability = async () => {
       throw new Error('must not probe capability once the startup probe failed')
@@ -964,32 +965,52 @@ describe('diagnostics', () => {
 
     expect(item).toMatchObject({
       state: 'warn',
-      details: { elevated: false, executionMode: 'trusted-only', probeFailure: 'blocked', probeElapsedMs: 15_020 },
+      details: { elevated: true, executionMode: 'trusted-only', probeFailure: 'blocked', probeElapsedMs: 15_020 },
     })
     expect(item?.summary).toContain('已按管理员方式处理')
     expect(item?.summary).toContain('被安全软件或电脑的管控策略拦下了')
+    expect(item?.summary).toContain('直接双击重新打开')
     // 上游英文原文只进运行日志，不上屏；文案不出现技术词。
     expect(item?.summary).not.toMatch(/Add-Type|Compilation|PowerShell|管理员组|SID/)
     // 不能教用户「以管理员身份运行」来绕过去。
     expect(item?.summary).not.toContain('以管理员身份运行本')
   })
 
-  it('still explains the failed startup probe when the self-check probe fails as well', async () => {
+  it('reports a plain user when the startup probe learned nothing and was treated as an ordinary user', async () => {
     const home = temporaryHome()
     const input = dependencies(home)
     input.windowsExecution = {
-      mode: 'trusted-only',
+      mode: 'same-user',
       elapsedMs: 15_000,
       probeFailure: { reason: 'timeout', detail: 'signal=SIGTERM' },
     }
     input.inspectAdministrator = async () => {
       throw new Error('powershell timed out again')
     }
+    input.inspectElevationCapability = async () => {
+      throw new Error('must not probe capability once the startup probe failed')
+    }
 
     const item = (await runDiagnostics(input)).items.find((entry) => entry.code === 'ADMINISTRATOR')
 
-    expect(item).toMatchObject({ state: 'warn', details: { elevated: null, probeFailure: 'timeout' } })
-    expect(item?.summary).toContain('超过 15 秒没做完')
+    expect(item).toMatchObject({
+      state: 'pass',
+      summary: '当前以普通用户权限运行',
+      details: { elevated: null, executionMode: 'same-user', probeFailure: 'timeout', probeElapsedMs: 15_000 },
+    })
+  })
+
+  it('still advises a normal start when the live token is elevated after an unanswered startup probe', async () => {
+    const home = temporaryHome()
+    const input = dependencies(home)
+    input.windowsExecution = { mode: 'same-user', elapsedMs: 900, probeFailure: { reason: 'failed', detail: 'x' } }
+    input.inspectAdministrator = async () => true
+
+    expect((await runDiagnostics(input)).items.find((item) => item.code === 'ADMINISTRATOR')).toMatchObject({
+      state: 'warn',
+      summary: '当前以管理员权限运行，建议普通启动',
+      details: { probeFailure: 'failed', executionMode: 'same-user' },
+    })
   })
 
   it('keeps the old answers when the startup probe succeeded or on macOS', async () => {

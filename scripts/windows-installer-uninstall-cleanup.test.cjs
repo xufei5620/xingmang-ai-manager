@@ -62,3 +62,30 @@ test('the cleanup names the login item with the same AppUserModelId electron-bui
   assert.ok(appId && aumid)
   assert.equal(aumid, appId)
 })
+
+test('the uninstaller passes the clear-login switch the cleanup recognizes, and only when asked', () => {
+  const nsis = include.match(/^!define XINGMANG_CLEAR_LOGIN_ARGUMENT "([^"]+)"$/m)?.[1]
+  const electron = entrySource.match(/export const uninstallClearLoginArgument = '([^']+)'/)?.[1]
+  assert.ok(nsis && electron)
+  assert.equal(nsis, electron)
+  const body = functionBody('un.xingmangUninstallCleanup')
+  // The switch rides only on the branch the ticked box (or the silent flag) selects.
+  assert.match(body, /\$\{If\} \$xingmangClearLogin == "1"[\s\S]*?\$\{XINGMANG_UNINSTALL_CLEANUP_ARGUMENT\} \$\{XINGMANG_CLEAR_LOGIN_ARGUMENT\}'[\s\S]*?\$\{Else\}/)
+  assert.equal(body.match(/XINGMANG_CLEAR_LOGIN_ARGUMENT/g).length, 1)
+})
+
+test('the uninstall welcome page carries an unticked clear-login box', () => {
+  const page = macroBody('customUnWelcomePage')
+  // electron-builder inserts this macro in place of its own MUI_UNPAGE_WELCOME.
+  assert.match(page, /!define MUI_PAGE_CUSTOMFUNCTION_SHOW un\.xingmangWelcomeShow\s+!define MUI_PAGE_CUSTOMFUNCTION_LEAVE un\.xingmangWelcomeLeave\s+!insertmacro MUI_UNPAGE_WELCOME/)
+  const show = functionBody('un.xingmangWelcomeShow')
+  assert.match(show, /\$\{NSD_CreateCheckbox\} [^\n]*"同时清除登录记录"/)
+  // Default is keep: the box is ticked only when coming back to a page already ticked.
+  assert.match(show, /\$\{If\} \$xingmangClearLogin == "1"\s+\$\{NSD_Check\} \$xingmangClearLoginCheckbox\s+\$\{EndIf\}/)
+  assert.match(functionBody('un.xingmangWelcomeLeave'), /\$\{NSD_GetState\} \$xingmangClearLoginCheckbox/)
+  // A silent uninstall has no page; the same switch on its own command line stands in.
+  assert.match(macroBody('customUnInit'), /\$\{GetOptions\} \$R0 "\$\{XINGMANG_CLEAR_LOGIN_ARGUMENT\}" \$R1\s+\$\{IfNot\} \$\{Errors\}\s+StrCpy \$xingmangClearLogin "1"/)
+  // The variables exist only in the uninstaller build; an unused one elsewhere is
+  // a makensis warning, and warnings are errors (-WX).
+  assert.match(include, /!ifdef BUILD_UNINSTALLER\s+(?:#[^\n]*\n\s*)*Var xingmangClearLogin\s+Var xingmangClearLoginCheckbox\s+!endif/)
+})

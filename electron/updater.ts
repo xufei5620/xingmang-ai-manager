@@ -1,6 +1,7 @@
 import type { ProgressInfo, UpdateFileInfo, UpdateInfo } from 'builder-util-runtime'
 import { classifyNetworkFailure, updateNetworkFailureMessages } from './network-failure'
 import { redactSecretQueryParameters, redactSecretShapes } from './redaction-patterns'
+import type { ServiceMaintenance, ServiceRollout, ServiceStatus } from './service-status'
 
 export type UpdatePhase =
   | 'disabled'
@@ -48,6 +49,24 @@ export interface UpdateSnapshot {
    * downloads or installs on its own; the user confirms each step.
    */
   unsignedChannel?: boolean
+  /**
+   * 更新目录上的状态文件说服务正在维护时，这里是发布者写的那句话（见
+   * service-status.ts）；没在维护或读不到那份文件时为 null。放在更新快照里是因为
+   * 它本来就来自更新目录，而渲染层从启动那一刻起就订阅着这份快照——没登录也收得到。
+   */
+  serviceMaintenance?: ServiceMaintenance | null
+  /**
+   * 发布者在状态文件里撤回了本机正在用的这个版本。界面据此说「这个版本有已知问题」，
+   * 更新器据此允许装一个更低的版本号（退回上一个好版本）。
+   */
+  currentVersionWithdrawn?: boolean
+  /** 找到的「新版本」其实比本机旧：这是一次退回，不是升级，界面要换个说法。 */
+  rollback?: boolean
+}
+
+export interface UpdateCheckOptions {
+  /** 用户自己点了「检查更新」。分批放量只约束自动检查，不拦主动来要的人。 */
+  manual?: boolean
 }
 
 type UpdateEventName =
@@ -73,14 +92,21 @@ export interface UpdateClient {
   checkForUpdates(): Promise<unknown>
   downloadUpdate(): Promise<unknown>
   quitAndInstall(isSilent?: boolean, isForceRunAfter?: boolean): void
+  /**
+   * electron-updater 判断「这台电脑在不在放量范围内」的钩子，默认读 latest.yml
+   * 的 stagingPercentage。这里包一层，先过状态文件里的撤回名单与分批放量。
+   */
+  isUserWithinRollout?: (info: UpdateInfo) => boolean | Promise<boolean>
 }
 
 export interface UpdaterService {
   getState(): UpdateSnapshot
   startup(): Promise<UpdateSnapshot>
-  check(): Promise<UpdateSnapshot>
+  check(options?: UpdateCheckOptions): Promise<UpdateSnapshot>
   download(): Promise<UpdateSnapshot>
   install(): { accepted: true }
+  /** 更新目录上的状态文件读到了新内容（null = 读不到，当没有）。 */
+  setServiceStatus(status: ServiceStatus | null): void
   subscribe(listener: (snapshot: UpdateSnapshot) => void): () => void
   dispose(): void
 }
@@ -135,6 +161,68 @@ export interface UpdaterRuntime {
    * not be made. Both outcomes reject the package.
    */
   verifyPackageDigest?: (filePath: string, expectedSha512: string) => Promise<boolean>
+  /**
+   * 每次检查前重读一遍更新目录上的状态文件，撤回名单与分批放量都以最新的为准。
+   * 读不到返回 null（当作没有那份文件），不能抛错。
+   */
+  refreshServiceStatus?: () => Promise<ServiceStatus | null>
+}
+
+function versionParts(version: string): number[] | null {
+  const match = /^v?(\d+)\.(\d+)\.(\d+)/.exec(version.trim())
+  return match ? match.slice(1, 4).map(Number) : null
+}
+
+/** 只比 x.y.z；比不出来（版本号写法不认识）按「不更旧」处理。 */
+export function isOlderVersion(candidate: string, current: string): boolean {
+  const left = versionParts(candidate)
+  const right = versionParts(current)
+  if (!left || !right) return false
+  for (let index = 0; index < 3; index += 1) {
+    if (left[index] !== right[index]) return left[index] < right[index]
+  }
+  return false
+}
+
+/**
+ * 退回的下限。撤回名单让更新目录有了「把客户端装回旧版本」的能力；更新目录一旦被
+ * 人拿到，这条路就能被用来把大家退回一个有已知安全问题的老版本。所以退回只能退到
+ * 这个版本及以后：它是第一个有清单备份、能被正规回退流程选中的版本。以后哪一版修了
+ * 安全问题，就把这里抬到那一版，更新目录再也没法把客户端退到它之前。
+ */
+export const rollbackFloorVersion = '0.2.9'
+
+export type UpdateOfferDecision =
+  | { offer: false }
+  | { offer: true; stagingPercentage?: number }
+
+/**
+ * 更新目录给出了某个版本时，这台电脑要不要接：
+ * - 撤回名单上的版本一律不接，手动检查也不接；
+ * - 分批放量只管自动检查：用户主动点「检查更新」的不拦，本机版本已被撤回的也不拦
+ *   （它得尽快离开这个版本）；
+ * - 其余交回 electron-updater 原本的判断（latest.yml 里的 stagingPercentage）。
+ */
+export function decideUpdateOffer(input: {
+  version: string
+  currentVersion: string
+  badVersions: readonly string[]
+  rollout: ServiceRollout | null
+  manual: boolean
+  rollbackFloor?: string
+}): UpdateOfferDecision {
+  const version = input.version.trim().replace(/^v/i, '')
+  const bad = new Set(input.badVersions)
+  if (bad.has(version)) return { offer: false }
+  if (
+    isOlderVersion(version, input.currentVersion)
+    && (!versionParts(version) || isOlderVersion(version, input.rollbackFloor ?? rollbackFloorVersion))
+  ) return { offer: false }
+  const currentWithdrawn = bad.has(input.currentVersion)
+  if (input.rollout && input.rollout.version === version && !input.manual && !currentWithdrawn) {
+    return { offer: true, stagingPercentage: input.rollout.percent }
+  }
+  return { offer: true }
 }
 
 // Chromium reports an unreachable proxy as a structured net error code. The
@@ -273,6 +361,7 @@ function cloneSnapshot(snapshot: UpdateSnapshot): UpdateSnapshot {
     ...snapshot,
     progress: snapshot.progress ? { ...snapshot.progress } : null,
     error: snapshot.error ? { ...snapshot.error } : null,
+    serviceMaintenance: snapshot.serviceMaintenance ? { ...snapshot.serviceMaintenance } : null,
   }
 }
 
@@ -297,13 +386,14 @@ export function createUpdaterService(
   // check only reports the new version and waits for an explicit download.
   const autoDownload = !unsignedChannel
   const verifyPackageDigest = runtime.verifyPackageDigest
-  let autoInstallTimer: NodeJS.Timeout | null = null
   let installWatchdogTimer: NodeJS.Timeout | null = null
   let startupPromise: Promise<UpdateSnapshot> | null = null
   let installRequested = false
   let macInstallHandoffRegistered = false
   let disposed = false
   let lastProgressAt = 0
+  let serviceStatus: ServiceStatus | null = null
+  let manualCheck = false
   let lastProgressPercent = -1
   let snapshot: UpdateSnapshot = {
     phase: enabled ? 'idle' : 'disabled',
@@ -317,6 +407,9 @@ export function createUpdaterService(
     failedStep: null,
     development,
     unsignedChannel,
+    serviceMaintenance: null,
+    currentVersionWithdrawn: false,
+    rollback: false,
   }
 
   client.autoDownload = false
@@ -327,6 +420,28 @@ export function createUpdaterService(
   client.disableWebInstaller = true
   client.forceDevUpdateConfig = development && enabled
   client.logger = null
+
+  function isWithdrawn(version: string | null | undefined): boolean {
+    return Boolean(version) && (serviceStatus?.badVersions ?? []).includes(String(version).trim().replace(/^v/i, ''))
+  }
+
+  // 撤回名单与分批放量都在 electron-updater 判断「有没有可用更新」的那一步生效：
+  // 被拦下的版本对它来说就是没有更新，后面的下载、安装根本不会开始。
+  const defaultRolloutCheck = client.isUserWithinRollout
+  client.isUserWithinRollout = async (info: UpdateInfo) => {
+    const decision = decideUpdateOffer({
+      version: info.version,
+      currentVersion: runtime.currentVersion,
+      badVersions: serviceStatus?.badVersions ?? [],
+      rollout: serviceStatus?.rollout ?? null,
+      manual: manualCheck,
+    })
+    if (!decision.offer) return false
+    if (!defaultRolloutCheck) return true
+    return defaultRolloutCheck(decision.stagingPercentage === undefined
+      ? info
+      : { ...info, stagingPercentage: decision.stagingPercentage })
+  }
 
   const emit = (patch: Partial<UpdateSnapshot>) => {
     // 失败步骤在这里统一跟着 error 走：清错误的地方有七八处（applyInfo、进度、
@@ -344,6 +459,7 @@ export function createUpdaterService(
     emit({
       phase,
       availableVersion: phase === 'not-available' ? null : info.version,
+      rollback: phase !== 'not-available' && isOlderVersion(info.version, runtime.currentVersion),
       releaseName: info.releaseName?.trim() || null,
       releaseNotesText: releaseNotesText(info),
       checkedAt: now().toISOString(),
@@ -352,9 +468,43 @@ export function createUpdaterService(
     })
   }
 
-  const clearAutoInstallTimer = () => {
-    if (autoInstallTimer) clearTimeout(autoInstallTimer)
-    autoInstallTimer = null
+  // 已经找到或下载好的版本刚被撤回：收回这个提议，界面回到「没有可装的更新」。
+  const withdrawOffer = () => {
+    emit({
+      phase: 'idle',
+      availableVersion: null,
+      releaseName: null,
+      releaseNotesText: null,
+      rollback: false,
+      progress: null,
+      error: null,
+    })
+  }
+
+  const applyServiceStatus = (status: ServiceStatus | null) => {
+    serviceStatus = status
+    const maintenance = status?.maintenance ? { message: status.maintenance.message } : null
+    const patch: Partial<UpdateSnapshot> = {}
+    if (JSON.stringify(maintenance) !== JSON.stringify(snapshot.serviceMaintenance ?? null)) {
+      patch.serviceMaintenance = maintenance
+    }
+    const withdrawn = isWithdrawn(runtime.currentVersion)
+    if (withdrawn !== (snapshot.currentVersionWithdrawn === true)) patch.currentVersionWithdrawn = withdrawn
+    if (Object.keys(patch).length) emit(patch)
+    if (
+      !installRequested
+      && isWithdrawn(snapshot.availableVersion)
+      && (snapshot.phase === 'available' || snapshot.phase === 'downloaded' || snapshot.phase === 'cancelled')
+    ) withdrawOffer()
+  }
+
+  const syncServiceStatus = async () => {
+    if (!runtime.refreshServiceStatus) return
+    try {
+      applyServiceStatus(await runtime.refreshServiceStatus())
+    } catch {
+      // 状态文件读不到只是少一份信息，检查照常进行。
+    }
   }
 
   const clearInstallWatchdog = () => {
@@ -378,7 +528,6 @@ export function createUpdaterService(
 
   const requestInstall = (): boolean => {
     if (development || disposed || installRequested) return false
-    clearAutoInstallTimer()
     clearInstallWatchdog()
     installRequested = true
     emit({ error: null })
@@ -432,18 +581,17 @@ export function createUpdaterService(
     return true
   }
 
+  // 下载好就停在这里，等用户点「重启安装」。以前签名通道（Mac）下载完 0.3 秒就
+  // 自动退出重装，不管用户是在生图还是在装工具（全面检测 Q42），而设置页和更新页
+  // 都写着安装由你确认。未签名通道本来就不许自动安装：那里没有安装包签名校验，
+  // 挡在可疑安装包和这台电脑之间的只剩用户这一下点击。
   const acceptDownloadedUpdate = (info: UpdateInfo) => {
+    // 下载途中被撤回的版本：下好了也不留，免得用户一点「重启安装」装上它。
+    if (isWithdrawn(info.version)) {
+      withdrawOffer()
+      return
+    }
     applyInfo('downloaded', info)
-    if (development || installRequested || disposed) return
-    // The unsigned channel ships without any installer signature check, so the
-    // one thing standing between a hostile package and the machine is the user
-    // starting the install. Never take that step automatically there.
-    if (unsignedChannel) return
-    autoInstallTimer = setTimeout(() => {
-      autoInstallTimer = null
-      requestInstall()
-    }, 300)
-    autoInstallTimer.unref?.()
   }
 
   // 安装包校验不过时要重来的是下载，不是安装：本地这一份已经不可信了。
@@ -504,7 +652,6 @@ export function createUpdaterService(
     'update-not-available': (info: UpdateInfo) => applyInfo('not-available', info),
     'update-available': (info: UpdateInfo) => applyInfo('available', info),
     'update-downloaded': (event: DownloadedUpdateEvent) => {
-      clearAutoInstallTimer()
       if (disposed) return
       if (!verifyPackageDigest) {
         acceptDownloadedUpdate(event)
@@ -513,7 +660,6 @@ export function createUpdaterService(
       void verifyDownloadedUpdate(event)
     },
     'update-cancelled': (info: UpdateInfo) => {
-      clearAutoInstallTimer()
       clearInstallWatchdog()
       installRequested = false
       applyInfo('cancelled', info)
@@ -540,7 +686,6 @@ export function createUpdaterService(
       })
     },
     error: (error: unknown) => {
-      clearAutoInstallTimer()
       if (
         snapshot.phase === 'downloaded'
         && (
@@ -593,7 +738,7 @@ export function createUpdaterService(
     }
   }
 
-  const check = async (): Promise<UpdateSnapshot> => {
+  const check = async (options: UpdateCheckOptions = {}): Promise<UpdateSnapshot> => {
     requireEnabled()
     if (
       snapshot.phase === 'checking'
@@ -603,6 +748,12 @@ export function createUpdaterService(
       || (snapshot.phase === 'downloaded' && !snapshot.error)
     ) return cloneSnapshot(snapshot)
     emit({ phase: 'checking', error: null, progress: null })
+    await syncServiceStatus()
+    if (disposed) return cloneSnapshot(snapshot)
+    // 只有本机版本被撤回时才放开降级：平时 latest.yml 哪怕被误退回旧版本，也不能
+    // 让全体用户跟着「更新」回去。
+    client.allowDowngrade = isWithdrawn(runtime.currentVersion)
+    manualCheck = options.manual === true
     try {
       await client.checkForUpdates()
     } catch (error) {
@@ -618,6 +769,8 @@ export function createUpdaterService(
       } else {
         emit({ phase: 'error', error: safeError(error, platform), failedStep: 'check', progress: null })
       }
+    } finally {
+      manualCheck = false
     }
     return cloneSnapshot(snapshot)
   }
@@ -711,10 +864,15 @@ export function createUpdaterService(
       requireEnabled()
       if (development) throw new Error('开发环境禁止执行安装更新')
       if (snapshot.phase !== 'downloaded') throw new Error('更新尚未下载并校验完成')
+      if (isWithdrawn(snapshot.availableVersion)) throw new Error('这个版本已被撤回，请重新检查更新')
       if (!installRequested && !requestInstall()) {
         throw new Error(snapshot.error?.message || '更新程序未能启动')
       }
       return { accepted: true }
+    },
+    setServiceStatus(status) {
+      if (disposed) return
+      applyServiceStatus(status)
     },
     subscribe(listener) {
       listeners.add(listener)
@@ -723,7 +881,6 @@ export function createUpdaterService(
     dispose() {
       disposed = true
       listeners.clear()
-      clearAutoInstallTimer()
       clearInstallWatchdog()
       for (const [event, handler] of Object.entries(eventHandlers)) {
         client.off(event as UpdateEventName, handler)

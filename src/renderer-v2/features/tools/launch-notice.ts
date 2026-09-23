@@ -17,6 +17,25 @@ export function launchWarning(result: CodexDesktopLaunchResult | CliLaunchResult
 }
 
 /**
+ * 主进程在「这个文件夹不建议打开」那一问里被用户拒了，工具没有启动（全面检测
+ * Q39）。只认明说的 declined：测试夹具和旧版主进程什么都不回时仍按「打开了」算。
+ */
+export function launchDeclined(result: CodexDesktopLaunchResult | CliLaunchResult | void | undefined): boolean {
+  return Boolean(result && 'declined' in result && result.declined === true)
+}
+
+/**
+ * 记录页「接着上次对话」成功后那句话。用户选了「先不打开」就什么都不说，
+ * 不能再说「已打开」。
+ */
+export function resumeSessionNotice(result: CliLaunchResult | void | undefined, toolName: string, cwd: string): string | null {
+  if (launchDeclined(result)) return null
+  const opened = `已打开${toolName}，接着 ${cwd} 里最近的一条对话`
+  const warning = launchWarning(result)
+  return warning ? `${opened}。${warning}` : opened
+}
+
+/**
  * 安装、卸载、打开工具在主进程排同一个队（AGENTS.md I11），前面那一项没做完，
  * 「打开」只能干等，装一个工具最长要十几分钟。工具行以前只写「正在打开工具」，
  * 用户以为卡死了（全面检测 Q15）。这里挑出排在前面、还在跑的那一项，说清在等谁。

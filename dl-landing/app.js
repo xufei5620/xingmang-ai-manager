@@ -312,7 +312,7 @@ function resolveSubmitAffCode(rawInvite) {
 
 function renderDownloads(latest, downloadsNode = els.downloads, releaseNode = els.releaseVersion) {
   const items = [
-    { title: 'Windows', detail: '64 位安装包 · .exe', icon: 'windows' },
+    { title: 'Windows', detail: '64 位安装包 · .exe · 需要 Windows 10 或更新的系统', icon: 'windows' },
     { title: 'macOS Apple Silicon', detail: 'M 系列芯片 · .dmg', icon: 'mac' },
     { title: 'macOS Intel', detail: 'Intel 芯片 · .dmg', icon: 'mac' }
   ]

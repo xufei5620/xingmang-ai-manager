@@ -89,6 +89,25 @@ const accountErrorPatterns: readonly AccountErrorPattern[] = [
     friendly: '当前暂不支持密码登录，请联系客服',
   },
   {
+    // rc.24 login: 409 AUTH_SESSION_LIMIT once 50 login sessions are live. The
+    // main process (new-api-client.ts loginSessionLimitMessage) already words it
+    // in Chinese; the bare code is matched too in case another path forwards it.
+    // Not a "try again later": retries never help, and the website login hits
+    // the same limit, so the way out is a device that is still signed in.
+    test: /AUTH_SESSION_LIMIT\b|同时登录的设备太多/,
+    friendly: '这个账号同时登录的设备太多了，暂时登不上。如果别的电脑或浏览器上还登着这个账号，请在那里的个人中心「登录设备」里退出几个不用的，再回来登录；都登不上的话请联系客服。',
+  },
+  {
+    // rc.24 login: 429 AUTH_SESSION_ISSUANCE_LIMIT, 100 new sessions per 24 hours.
+    test: /AUTH_SESSION_ISSUANCE_LIMIT|登录的次数太多/,
+    friendly: '这个账号最近一天里登录的次数太多了，请过几个小时再试。',
+  },
+  {
+    // rc.24 login: bare 429 from the route's CriticalRateLimit (keyed by IP).
+    test: /登录太频繁/,
+    friendly: '登录太频繁了，请过一会儿再试。',
+  },
+  {
     // i18n key common.database_error
     test: /database error|数据库出错/i,
     friendly: '服务暂时不可用，请稍后重试',

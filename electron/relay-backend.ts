@@ -170,8 +170,14 @@ export interface RelayBackendClient {
   register(input: NewApiRegisterInput): Promise<void>
   /** ipc.ts: account:login */
   login(input: NewApiLoginInput): Promise<NewApiLoginResult>
-  /** ipc.ts: account:logout */
+  /** ipc.ts: account:logout. Local only; also used to discard switched-away and candidate clients. */
   logout(): void
+  /**
+   * realm-account-service.ts: the explicit sign-out only. Best-effort server
+   * revocation of this client's own login session; must never reject or touch
+   * local state. Backends without a documented logout endpoint omit it.
+   */
+  endServerSession?(): Promise<void>
   /** ipc.ts: account:get-session; chat-credential-coordinator.ts (the account a canvas request resolves against) */
   getSessionState(): NewApiSessionState
   /** ipc.ts: account:get-balance */

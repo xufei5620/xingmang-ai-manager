@@ -3,11 +3,14 @@ param([Parameter(Mandatory = $true)][string]$Installer)
 # Installs the freshly built NSIS package, leaves the machine in the state an
 # uninstall meets while acceleration is on (system proxy pointing at a local
 # port nobody listens on any more, recovery journal on disk, login item in the
-# Run key), then clears it twice: once by starting the installed exe with the
+# Run key), then clears it several ways: by starting the installed exe with the
 # cleanup switch directly (tells a broken cleanup apart from an uninstaller
-# that never calls it), once through the real silent uninstaller. Each time
+# that never calls it), with and without the clear-login switch, then through
+# the real silent uninstaller, once plain and once (after reinstalling) with
+# the clear-login switch the uninstall page's checkbox stands for. Each time
 # the proxy must be back to what it was, the journal gone, the login item
-# removed.
+# removed; the saved sign-in must survive unless clearing it was asked for,
+# and the stored CLI keys must survive either way.
 #
 # The acceleration worker itself is not started: the uninstaller kills it
 # before customUnInstall runs, so "journal present, owner dead" is exactly the
@@ -58,6 +61,50 @@ function Get-LoginItem {
   return $item.$loginItemName
 }
 
+function Set-SignedIn {
+  foreach ($file in $loginRecords + $keptFiles) {
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $file) | Out-Null
+    [IO.File]::WriteAllText($file, 'smoke')
+  }
+}
+
+function Assert-SignIn([string]$stage, [bool]$expectKept) {
+  $verb = if ($expectKept) { 'kept' } else { 'removed' }
+  foreach ($file in $loginRecords) {
+    Check ((Test-Path -LiteralPath $file) -eq $expectKept) "$stage $verb $file"
+  }
+  foreach ($file in $keptFiles) { Check (Test-Path -LiteralPath $file) "$stage kept $file" }
+}
+
+function Install-App {
+  $install = Start-Process -FilePath $Installer -ArgumentList '/S', "/D=$installDir" -Wait -PassThru
+  Check ($install.ExitCode -eq 0) "silent install exits 0 (got $($install.ExitCode))"
+  $script:exe = Get-ChildItem -LiteralPath $installDir -Filter '*.exe' | Where-Object { $_.Name -notlike 'Uninstall *' } | Select-Object -First 1
+  $script:uninstaller = Get-ChildItem -LiteralPath $installDir -Filter 'Uninstall *.exe' | Select-Object -First 1
+  Check ($null -ne $script:exe -and $null -ne $script:uninstaller) 'installed app and uninstaller found'
+}
+
+function Invoke-DirectCleanup([string]$stage, [string[]]$arguments) {
+  $cleanupErrors = Join-Path $installRoot 'cleanup-stderr.txt'
+  $clock = [Diagnostics.Stopwatch]::StartNew()
+  $direct = Start-Process -FilePath $exe.FullName -ArgumentList $arguments -RedirectStandardError $cleanupErrors -Wait -PassThru
+  Show-Diagnostics "$stage exit code $($direct.ExitCode) after $([int]$clock.Elapsed.TotalSeconds)s"
+  if (Test-Path -LiteralPath $cleanupErrors) { Get-Content -LiteralPath $cleanupErrors -Encoding utf8 | ForEach-Object { Write-Output "cleanup stderr: $_" } }
+  Check ($direct.ExitCode -eq 0) "$stage exits 0 (got $($direct.ExitCode))"
+  Assert-Cleaned $stage
+}
+
+function Invoke-Uninstall([string]$stage, [string[]]$arguments) {
+  # _?= keeps the uninstaller in place so -Wait covers the whole uninstall.
+  $clock = [Diagnostics.Stopwatch]::StartNew()
+  $uninstall = Start-Process -FilePath $uninstaller.FullName -ArgumentList ($arguments + "_?=$installDir") -Wait -PassThru
+  Write-Output "$stage took $([int]$clock.Elapsed.TotalSeconds)s"
+  Check ($uninstall.ExitCode -eq 0) "$stage exits 0 (got $($uninstall.ExitCode))"
+  Show-Diagnostics "after $stage"
+  Check (-not (Test-Path -LiteralPath $exe.FullName)) "$stage removed the app"
+  Assert-Cleaned $stage
+}
+
 function Show-Diagnostics([string]$stage) {
   Write-Output "--- $stage"
   Write-Output ('proxy: ' + ((Read-State) | ConvertTo-Json -Depth 8 -Compress))
@@ -75,21 +122,23 @@ function Assert-Cleaned([string]$stage) {
 
 $installRoot = Join-Path ([IO.Path]::GetTempPath()) ('xingmang-uninstall-smoke-' + [Guid]::NewGuid().ToString('N').Substring(0, 8))
 $installDir = Join-Path $installRoot 'app'
-$dataDirectory = Join-Path $env:APPDATA 'xingmang-ai-manager\acceleration-development'
+$userData = Join-Path $env:APPDATA 'xingmang-ai-manager'
+$dataDirectory = Join-Path $userData 'acceleration-development'
 $journalPath = Join-Path $dataDirectory 'proxy-lease.json'
 $leasePath = "$journalPath.lock"
+# The files electron/uninstall-cleanup.ts loginRecordFiles names, and two that
+# must never go with them.
+$loginRecords = @('account-session.dat', 'saved-accounts.dat', 'realm-accounts-v2.dat', 'account-credentials.dat', 'realms\api-account\account-credentials.dat') |
+  ForEach-Object { Join-Path $userData $_ }
+$keptFiles = @('managed-cli-keys.dat', 'settings.json') | ForEach-Object { Join-Path $userData $_ }
 $runKeyPath = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
 $loginItemName = 'com.xingmang.ai.manager'
 $original = Read-State
 
 try {
   Check (-not (Test-Path -LiteralPath $journalPath) -and -not (Test-Path -LiteralPath $leasePath)) 'runner starts without a recovery journal'
-
-  $install = Start-Process -FilePath $Installer -ArgumentList '/S', "/D=$installDir" -Wait -PassThru
-  Check ($install.ExitCode -eq 0) "silent install exits 0 (got $($install.ExitCode))"
-  $exe = Get-ChildItem -LiteralPath $installDir -Filter '*.exe' | Where-Object { $_.Name -notlike 'Uninstall *' } | Select-Object -First 1
-  $uninstaller = Get-ChildItem -LiteralPath $installDir -Filter 'Uninstall *.exe' | Select-Object -First 1
-  Check ($null -ne $exe -and $null -ne $uninstaller) 'installed app and uninstaller found'
+  Check (-not (Test-Path -LiteralPath $loginRecords[0])) 'runner starts signed out'
+  Install-App
 
   # A distinct "before" proves the cleanup writes back the recorded original,
   # not merely "proxy off".
@@ -99,29 +148,29 @@ try {
   }
   Write-State $before
   Check (Same-State (Read-State) $before) 'original user proxy installed'
+  Set-SignedIn
 
   # Stage 1: the cleanup entry on its own, so a failure below can be told apart
-  # from the uninstaller never reaching it.
+  # from the uninstaller never reaching it. Without the switch the sign-in stays.
   Set-AccelerationLeftOn $exe.FullName
-  $cleanupErrors = Join-Path $installRoot 'cleanup-stderr.txt'
-  $clock = [Diagnostics.Stopwatch]::StartNew()
-  $direct = Start-Process -FilePath $exe.FullName -ArgumentList '--xingmang-uninstall-cleanup' -RedirectStandardError $cleanupErrors -Wait -PassThru
-  Show-Diagnostics "direct cleanup exit code $($direct.ExitCode) after $([int]$clock.Elapsed.TotalSeconds)s"
-  if (Test-Path -LiteralPath $cleanupErrors) { Get-Content -LiteralPath $cleanupErrors -Encoding utf8 | ForEach-Object { Write-Output "cleanup stderr: $_" } }
-  Check ($direct.ExitCode -eq 0) "direct cleanup exits 0 (got $($direct.ExitCode))"
-  Assert-Cleaned 'direct cleanup'
+  Invoke-DirectCleanup 'direct cleanup' @('--xingmang-uninstall-cleanup')
+  Assert-SignIn 'direct cleanup' $true
 
-  # Stage 2: the real uninstaller.
   Set-AccelerationLeftOn $exe.FullName
-  # _?= keeps the uninstaller in place so -Wait covers the whole uninstall.
-  $clock.Restart()
-  $uninstall = Start-Process -FilePath $uninstaller.FullName -ArgumentList '/S', "_?=$installDir" -Wait -PassThru
-  Write-Output "uninstall took $([int]$clock.Elapsed.TotalSeconds)s"
-  Check ($uninstall.ExitCode -eq 0) "silent uninstall exits 0 (got $($uninstall.ExitCode))"
+  Invoke-DirectCleanup 'direct cleanup with clear-login' @('--xingmang-uninstall-cleanup', '--xingmang-clear-login')
+  Assert-SignIn 'direct cleanup with clear-login' $false
 
-  Show-Diagnostics 'after uninstall'
-  Check (-not (Test-Path -LiteralPath $exe.FullName)) 'uninstall removed the app'
-  Assert-Cleaned 'uninstall'
+  # Stage 2: the real uninstaller with the box left unticked, the default.
+  Set-SignedIn
+  Set-AccelerationLeftOn $exe.FullName
+  Invoke-Uninstall 'uninstall' @('/S')
+  Assert-SignIn 'uninstall' $true
+
+  # Stage 3: reinstall, then uninstall with the switch a ticked box stands for.
+  Install-App
+  Set-AccelerationLeftOn $exe.FullName
+  Invoke-Uninstall 'uninstall with clear-login' @('/S', '--xingmang-clear-login')
+  Assert-SignIn 'uninstall with clear-login' $false
 } catch {
   Write-Output $_.ScriptStackTrace
   throw
@@ -129,4 +178,5 @@ try {
   try { Write-State $original } catch { Write-Warning 'could not restore the runner proxy' }
   Remove-ItemProperty -Path $runKeyPath -Name $loginItemName -ErrorAction SilentlyContinue
   Remove-Item -LiteralPath $journalPath, $leasePath -Force -ErrorAction SilentlyContinue
+  Remove-Item -LiteralPath ($loginRecords + $keptFiles) -Force -ErrorAction SilentlyContinue
 }

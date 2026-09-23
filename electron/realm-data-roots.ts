@@ -13,7 +13,7 @@ export interface RealmDataRoots {
   readonly canvasRuntimeDirectory: string
   readonly canvasVideoTasksDirectory: string
   readonly assetThumbnailsDirectory: string
-  /** Resolve the generated-media root. xm keeps the pre-existing output root. */
+  /** Place a generated-media base (current or legacy) for this realm: xm uses it as is, api-account nests below it. */
   assetOutputDirectory(legacyRoot: string): string
   accountDirectory(userId: number): string
 }

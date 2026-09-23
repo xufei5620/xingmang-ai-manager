@@ -3,6 +3,14 @@ export async function readBoundedResponseText(
   maximumBytes: number,
   label: string,
 ): Promise<string> {
+  return (await readBoundedResponseBytes(response, maximumBytes, label)).toString('utf8')
+}
+
+export async function readBoundedResponseBytes(
+  response: Response,
+  maximumBytes: number,
+  label: string,
+): Promise<Buffer> {
   if (!Number.isSafeInteger(maximumBytes) || maximumBytes <= 0) {
     throw new Error(`${label}响应读取上限无效`)
   }
@@ -11,7 +19,7 @@ export async function readBoundedResponseText(
   if (Number.isFinite(declaredLength) && declaredLength > maximumBytes) {
     throw new Error(`${label}响应超过 ${Math.floor(maximumBytes / 1024)} KB 安全上限`)
   }
-  if (!response.body) return ''
+  if (!response.body) return Buffer.alloc(0)
 
   const reader = response.body.getReader()
   const chunks: Buffer[] = []
@@ -31,5 +39,5 @@ export async function readBoundedResponseText(
   } finally {
     reader.releaseLock()
   }
-  return Buffer.concat(chunks, received).toString('utf8')
+  return Buffer.concat(chunks, received)
 }

@@ -6,6 +6,7 @@ import react from '@vitejs/plugin-react'
 import { chromium, expect } from '@playwright/test'
 import { createFixtureServer } from '../../../e2e/harness.mjs'
 import { fixtureMountSliceMs, openFixturePage, waitForFixtureMount } from '../../../e2e/fixture-readiness.mjs'
+import { enterWorkspaceWithoutAccount } from './guest-workspace.mjs'
 
 let server, browser, origin
 const artifacts = path.resolve('artifacts/renderer-v2-app')
@@ -1216,8 +1217,10 @@ test('read-only account matches remain third-party when the host cannot match an
 test('read-only account matches restore on fresh login without treating the match as configuration consent', async () => {
   const page = await open('readOnlyAccountMatch=1&allInstalled=1&guest=1&existing=1')
   try {
-    await matchedToolBadges(page, '用的是别处的配置')
-    await page.getByTestId('nav-chat').click()
+    await page.getByTestId('welcome-page').waitFor()
+    const before = await page.evaluate(() => window.xingmang.getConfig())
+    assert.ok(Object.values(before.providers).every(provider => provider.configurationAccountMatched !== true))
+    await page.getByTestId('welcome-login').click()
     await page.getByTestId('login-account').fill('fixture-user')
     await page.getByTestId('login-password').fill('fixture-password')
     await page.getByTestId('auth-agree').check()
@@ -1282,7 +1285,10 @@ test('read-only account matches do not survive logout or a late config read when
     await assertNoMatchedKeyOperations(page)
     await clean(page)
     await page.goto(`${origin}/src/renderer-v2/testing/app.html?readOnlyAccountMatch=1&allInstalled=1&guest=1&existing=1`)
-    await matchedToolBadges(page, '用的是别处的配置')
+    // 引导进度按未登录作用域记在本机，重开直接回到上面停下的「确认连接」。
+    await page.getByTestId('welcome-steps').click()
+    await page.getByText('你原来的配置已经原样留着。先看看处理步骤，确认哪些设置要留下，再决定怎么连接。', { exact: true }).waitFor()
+    assert.equal(await page.getByTestId('guide-next').isDisabled(), true)
     await assertNoMatchedKeyOperations(page)
     await clean(page)
   } finally { await page.close() }
@@ -1472,6 +1478,7 @@ test('saved-account switching keeps CLI synchronization opt-in', async () => {
   try {
     await page.getByTestId('tool-row-claude').waitFor()
     await page.getByRole('button', { name: '切换账号' }).click()
+    await page.getByTestId('saved-account-row-saved-18').getByText('星芒账号', { exact: true }).waitFor()
     await page.getByTestId('saved-accounts-list').getByRole('button', { name: '切换', exact: true }).click()
     await page.getByText('saved-user', { exact: true }).first().waitFor()
     await page.waitForTimeout(100)
@@ -1506,9 +1513,15 @@ test('read-only account matches switch only explicitly selected CLI providers on
   } finally { await page.close() }
 })
 
-test('existing local tools remain accessible without a Xingmang account', async () => {
+test('local keys no longer skip the welcome page, which offers login first and still lets tools open without an account', async () => {
   const page = await open('guest=1&existing=1')
   try {
+    await page.getByTestId('welcome-page').waitFor()
+    assert.equal(await page.getByTestId('tool-row-codex').count(), 0)
+    await page.getByTestId('welcome-login').click()
+    await page.getByTestId('login-account').waitFor()
+    await page.getByTestId('login-cancel').click()
+    await enterWorkspaceWithoutAccount(page)
     await page.getByTestId('tool-codexDesktop-primary').click()
     await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'launchCodexDesktop'))
     const methods = await page.evaluate(() => window.v2Test.calls.map((entry) => entry.method))
@@ -1736,6 +1749,61 @@ test('the updates page names the step that failed and offers that step again', a
   } finally { await page.close() }
 })
 
+// 维护提示来自更新目录上的状态文件，没登录也得看得到：欢迎页角落一条，登录框是
+// 模态的会盖住角落，所以框里再放一份。关掉的是这句话，发布者换了说法会再出现。
+test('a maintenance notice from the update feed reaches signed-out users, including inside the login dialog', async () => {
+  const page = await open('guest=1')
+  try {
+    await page.getByTestId('welcome-page').waitFor()
+    const emit = (message) => page.evaluate((value) => window.v2Test.emit('onUpdateState', {
+      phase: 'idle', currentVersion: '0.2.10', availableVersion: null, releaseName: null, releaseNotesText: null,
+      checkedAt: null, progress: null, error: null, failedStep: null, development: true,
+      serviceMaintenance: value === undefined ? null : { message: value },
+    }), message)
+    await emit('服务升级中，预计 22:00 恢复。')
+    const corner = page.getByTestId('service-maintenance-notice')
+    await corner.getByText('服务正在维护', { exact: true }).waitFor()
+    await corner.getByText(/服务升级中，预计 22:00 恢复。 这不是你这边的问题/).waitFor()
+    await page.getByTestId('welcome-login').click()
+    const dialog = page.getByTestId('login-dialog')
+    await dialog.getByTestId('auth-maintenance-notice').getByText('服务正在维护', { exact: true }).waitFor()
+    await dialog.getByRole('button', { name: '关闭', exact: true }).first().click()
+    await dialog.waitFor({ state: 'detached' })
+    await corner.getByRole('button', { name: '关闭', exact: true }).click()
+    await corner.waitFor({ state: 'detached' })
+    await emit('服务升级中，预计 23:00 恢复。')
+    await corner.getByText(/预计 23:00 恢复/).waitFor()
+    await emit(undefined)
+    await corner.waitFor({ state: 'detached' })
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// 发布者撤回了本机这个版本、线上退回到旧版本时，界面不能再说「发现新版本」。
+test('a withdrawn running version is called out and the older release is offered as a rollback', async () => {
+  const page = await open()
+  try {
+    await page.getByTestId('page-home').waitFor()
+    // 更新页打开时会自己重新读一次快照，所以进页面后要再推一次同样的状态。
+    const emitWithdrawn = () => page.evaluate(() => window.v2Test.emit('onUpdateState', {
+      phase: 'available', currentVersion: '0.2.10', availableVersion: '0.2.9', releaseName: null, releaseNotesText: null,
+      checkedAt: new Date().toISOString(), progress: null, error: null, failedStep: null, development: true,
+      serviceMaintenance: null, currentVersionWithdrawn: true, rollback: true,
+    }))
+    await emitWithdrawn()
+    await page.getByText('建议退回 0.2.9', { exact: true }).waitFor()
+    await page.getByTestId('nav-more').click()
+    await page.getByTestId('nav-updates').click()
+    const updates = page.getByTestId('page-updates')
+    await updates.waitFor()
+    await emitWithdrawn()
+    await updates.getByText('建议退回稳定版本', { exact: true }).waitFor()
+    await updates.getByTestId('updates-current-withdrawn').getByText(/建议装回 0\.2\.9/).waitFor()
+    assert.equal(await page.getByText('新版本 0.2.9 可以安装', { exact: true }).count(), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('oversized announcements stay in a safe failure state and offer the allowlisted site', async () => {
   const page = await open('noticeOversized=1')
   try {
@@ -1914,6 +1982,7 @@ test('configuration migration shares Codex drafts and failed saves retain the se
 test('a manual relay key saved over a third-party config survives the next login bootstrap', async () => {
   const page = await open('guest=1&existing=1&unknown=1')
   try {
+    await enterWorkspaceWithoutAccount(page, 'claude')
     await page.getByTestId('tool-row-codex').getByRole('button', { name: '更多操作' }).click()
     await page.getByRole('menuitem', { name: '配置', exact: true }).click()
     await page.getByRole('button', { name: '填写星芒密钥' }).click()
@@ -2448,8 +2517,8 @@ test('a saved account with the same id switches platform without reusing NewAPI 
     await page.getByTestId('tool-row-codex').waitFor()
     await page.getByRole('button', { name: '切换账号', exact: true }).click()
     const list = page.getByTestId('saved-accounts-list')
-    await list.getByText('账户尾号 aa0017', { exact: true }).waitFor()
-    assert.doesNotMatch(await list.innerText(), /Sub2API|NewAPI|new-api|api\.solov|xm\.solov/i)
+    await list.getByTestId('saved-account-row-saved-aa0017').getByText('历史账号', { exact: true }).waitFor()
+    assert.doesNotMatch(await list.innerText(), /Sub2API|NewAPI|new-api|api\.solov|xm\.solov|账户尾号|aa0017/i)
     await list.getByRole('button', { name: '切换', exact: true }).click()
     await page.getByRole('dialog', { name: '切换账号', exact: true }).waitFor({ state: 'hidden' })
     await page.getByRole('button', { name: '打开个人中心 fixture-user' }).click()
@@ -2537,11 +2606,29 @@ const defaultModelCases = [
   { tool: 'gemini', provider: 'gemini', model: 'gemini-3.8-flash-high' },
   { tool: 'grok', provider: 'grok', model: 'grok-4.6' },
 ]
+// 没登录时欢迎页挡在前面（本机有 Key 也一样）。配好模型的工具走完使用步骤进首页再开配置；
+// 没配模型的工具在引导「确认连接」那一步就能打开配置，未登录用户实际也是这么走的。
+async function openGuestToolConfiguration(page, tool, existing) {
+  if (existing) {
+    if (await page.getByTestId('welcome-page').count()) await enterWorkspaceWithoutAccount(page)
+    return openToolConfiguration(page, tool)
+  }
+  if (await page.getByTestId('welcome-page').count()) {
+    await page.getByTestId('welcome-steps').click()
+    await page.getByTestId(`guide-route-${tool}`).check()
+    await page.getByTestId('guide-next').click()
+    await page.locator('[data-guide-step="prepare"]').waitFor()
+    await page.getByTestId('guide-next').click()
+    await page.locator('[data-guide-step="connect"]').waitFor()
+  }
+  await page.getByTestId('guide-config').click()
+  await page.getByTestId('config-dialog').waitFor()
+}
 for (const existing of [false, true]) for (const { tool, provider, model } of defaultModelCases) {
   test(`${tool} model detection ${existing ? 'preserves the saved model' : `defaults to ${model} before the first returned model`}`, async () => {
     const page = await open(`guest=1&existing=1&allInstalled=1&keyOptions=1&cliDefaultModels=1${existing ? '' : '&cliMissingModels=1'}`)
     try {
-      await openToolConfiguration(page, tool)
+      await openGuestToolConfiguration(page, tool, existing)
       const expected = existing ? 'fixture-model' : model
       assert.equal(await page.getByLabel('默认模型').inputValue(), expected)
       await page.getByTestId('tool-detect-models').click()
@@ -2553,7 +2640,7 @@ for (const existing of [false, true]) for (const { tool, provider, model } of de
       assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'saveConfig').map((entry) => entry.args[0])), [
         { provider, apiKey: '', model: expected, mode: 'merge' },
       ])
-      await openToolConfiguration(page, tool)
+      await openGuestToolConfiguration(page, tool, existing)
       assert.equal(await page.getByLabel('默认模型').inputValue(), expected)
       await clean(page)
     } finally { await page.close() }
@@ -3225,7 +3312,7 @@ test('a self-check failure is attributed per tool and never takes the other tool
     await page.getByTestId('nav-health').click()
     await page.getByTestId('health-connection-run').click()
     const claude = page.getByTestId('health-connection-result-claude')
-    await claude.getByText('Claude Code · 分组与渠道', { exact: true }).waitFor()
+    await claude.getByText('Claude Code · 账号分组', { exact: true }).waitFor()
     // 分组层的下一步是重签一把 Key，所以这一条给的是「重新写入 Key」；仍旧跳页的
     // 那几层（这里是未配置的 Gemini）继续给「去处理」。
     await claude.getByRole('button', { name: '重新写入 Key', exact: true }).waitFor()
@@ -3422,6 +3509,70 @@ test('tutorial actions navigate to their tool and retain the selected chapter an
     await expect(tutorial.getByRole('searchbox', { name: '搜索教程', exact: true })).toHaveValue('MCP')
     await expect(tutorial.getByTestId('tutorial-article').getByRole('heading', { level: 2 })).toHaveText(heading)
     await clean(page)
+  } finally { await page.close() }
+})
+
+// 全面检测 Q48：教程里「办理充值」「查看用量」以前都落在「我的账号」，设置里的隐私一步
+// 落在「外观」或上次看的那组。每次点都要落到这一步说的那一页，已经打开过也一样。
+test('tutorial actions land on the account tab or settings group the step describes, even after another one was chosen', async () => {
+  const page = await open()
+  try {
+    const tutorial = page.getByTestId('page-tutorial')
+    const accountTab = () => page.evaluate(() => document.querySelector('[data-testid="account-tabs"] [aria-selected="true"]')?.textContent ?? '')
+    async function openChapter(group, id) {
+      await page.getByTestId('nav-tutorial').click()
+      const directory = tutorial.getByTestId(`tutorial-group-${group}`)
+      if (!await directory.evaluate((element) => element.open)) await directory.locator('summary').click()
+      await tutorial.getByTestId(`tutorial-topic-${id}`).click()
+    }
+    await openChapter('everyday', 'account')
+    await tutorial.getByTestId('tutorial-account-action-2').click()
+    await page.getByTestId('account-tabs').waitFor()
+    await expect.poll(accountTab).toBe('充值与订阅')
+    await page.getByTestId('account-tabs').getByRole('tab', { name: '我的订单', exact: true }).click()
+    await expect.poll(accountTab).toBe('我的订单')
+    for (const [index, label] of [[3, '调用明细'], [1, '密钥'], [2, '充值与订阅'], [0, '我的账号']]) {
+      await openChapter('everyday', 'account')
+      await tutorial.getByTestId(`tutorial-account-action-${index}`).click()
+      await expect.poll(accountTab).toBe(label)
+    }
+
+    await page.getByTestId('nav-settings').click()
+    const settings = page.getByTestId('page-settings')
+    await settings.getByRole('tab', { name: '关于', exact: true }).click()
+    await expect(settings.getByRole('tab', { name: '关于', exact: true })).toHaveAttribute('aria-selected', 'true')
+    for (let visit = 0; visit < 2; visit += 1) {
+      await openChapter('advanced', 'safety')
+      await tutorial.getByTestId('tutorial-safety-action-2').click()
+      await expect(page.getByTestId('page-settings')).toBeVisible()
+      await expect(page.getByTestId('page-settings').getByRole('tab', { name: '隐私与数据', exact: true })).toHaveAttribute('aria-selected', 'true')
+      await page.getByTestId('page-settings').getByRole('tab', { name: '关于', exact: true }).click()
+    }
+    // 从侧栏点「设置」不点名分组，仍停在用户上次看的那组，不会被教程的跳转带偏。
+    await page.getByTestId('nav-home').click()
+    await page.getByTestId('nav-settings').click()
+    await expect(page.getByTestId('page-settings').getByRole('tab', { name: '关于', exact: true })).toHaveAttribute('aria-selected', 'true')
+    // 默认夹具没接充值、订单、用量那几个读取（会记进 unexpected），这里只看有没有报错。
+    assert.deepEqual(await page.evaluate(() => window.v2Test.errors), [])
+  } finally { await page.close() }
+})
+
+// 同一个毛病的另一头：检查页网络项的「去处理」以前只在设置页第一次打开时落到「网络」。
+test('the health network fix lands on the network settings group even when settings was already open', async () => {
+  const page = await open()
+  try {
+    await page.evaluate(() => {
+      window.xingmang.runDiagnostics = async () => ({ version: 1, generatedAt: new Date().toISOString(), durationMs: 1,
+        counts: { pass: 0, warn: 0, fail: 1, error: 0 },
+        items: [{ code: 'XINGMANG_NETWORK', title: '星芒服务连接', state: 'fail', summary: '连不上星芒服务', durationMs: 1 }] })
+    })
+    await page.getByTestId('nav-settings').click()
+    await page.getByTestId('page-settings').getByRole('tab', { name: '关于', exact: true }).click()
+    await page.getByTestId('nav-health').click()
+    await page.getByTestId('health-fix-XINGMANG_NETWORK').click()
+    await expect(page.getByTestId('page-settings')).toBeVisible()
+    await expect(page.getByTestId('page-settings').getByRole('tab', { name: '网络', exact: true })).toHaveAttribute('aria-selected', 'true')
+    assert.deepEqual(await page.evaluate(() => window.v2Test.errors), [])
   } finally { await page.close() }
 })
 

@@ -694,6 +694,33 @@ test('the curated plugin shelf shows both commands and installs through the exis
   }
 })
 
+test('the Codex plugin market downloads the official catalog by itself and lists what can be installed', async () => {
+  const page = await fixture('page=plugins&codexCatalogOffline')
+  try {
+    await page.getByRole('button', { name: 'Codex CLI', exact: true }).click()
+    await page.getByRole('tab', { name: '市场' }).click()
+    // 第一次按国内常见的样子失败：说清楚原因，留一颗按钮让用户开加速后自己再点。
+    await page.getByText(/插件目录要从国外的网站下载/).first().waitFor()
+    const notice = page.getByTestId('plugins-official-marketplace')
+    await notice.getByText('官方插件目录还没下载').waitFor()
+    assert.equal(
+      (await calls(page)).filter((call) => call.name === 'ensure-marketplace').length,
+      1,
+    )
+    await notice.getByTestId('plugins-official-marketplace-add').click()
+    await notice.getByText('官方插件目录已就绪').waitFor()
+    const row = page.getByTestId('plugins-row-game-studio@openai-api-curated')
+    await row.getByText('Design and prototype browser games').waitFor()
+    await row.getByTestId('plugins-install-game-studio@openai-api-curated').waitFor()
+    assert.deepEqual(
+      (await calls(page)).filter((call) => call.name === 'ensure-marketplace').map((call) => call.args),
+      ['codex', 'codex'],
+    )
+  } finally {
+    await page.close()
+  }
+})
+
 test('a curated entry that needs a folder prefills the form instead of installing a broken connection', async () => {
   const page = await fixture('page=mcp')
   try {
@@ -1162,7 +1189,12 @@ test('failed saved-account verification never writes selected CLI config', async
     await page
       .getByRole('button', { name: '切换', exact: true, disabled: false })
       .click()
-    await page.getByText('目标账号登录已过期', { exact: true }).waitFor()
+    await page
+      .getByText('这个保存的账号登录已失效，当前账号没有变化。', { exact: false })
+      .first()
+      .waitFor()
+    // 全面检测 Q12：不能套上「登录已过期」的标题，那读起来像当前账号掉线了。
+    assert.equal(await page.getByText('登录已过期', { exact: true }).count(), 0)
     assert.equal(
       (await calls(page)).some((call) => call.name === 'sync-config'),
       false,
@@ -1171,6 +1203,8 @@ test('failed saved-account verification never writes selected CLI config', async
       await page.getByTestId('account-sync-claude').isChecked(),
       true,
     )
+    await page.getByRole('button', { name: '重新登录这个账号', exact: true }).click()
+    assert.equal((await calls(page)).some((call) => call.name === 'login'), true)
   } finally {
     await page.close()
   }

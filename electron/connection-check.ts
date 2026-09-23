@@ -43,9 +43,9 @@ export const connectionCheckLayerLabels: Readonly<Record<ConnectionCheckLayer, s
   network: '网络',
   credential: '密钥',
   quota: '额度',
-  group: '分组与渠道',
+  group: '账号分组',
   model: '模型',
-  protocol: '协议与端点',
+  protocol: '连接方式',
   service: '服务端',
   unknown: '未知',
 }

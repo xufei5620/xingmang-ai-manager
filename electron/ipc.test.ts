@@ -142,6 +142,7 @@ function accountServiceStub(): NewApiClientService {
     register: vi.fn(async () => undefined),
     login: vi.fn() as never,
     logout: vi.fn(),
+    endServerSession: vi.fn(async () => undefined),
     isAuthenticated: vi.fn(() => false),
     getSessionState: vi.fn(() => ({ authenticated: false, account: null })),
     getBalance: vi.fn() as never,
@@ -214,6 +215,7 @@ function updaterStub(): UpdaterService {
     check: vi.fn(async () => state),
     download: vi.fn(async () => state),
     install: vi.fn(() => ({ accepted: true as const })),
+    setServiceStatus: vi.fn(),
     subscribe: vi.fn(() => vi.fn()),
     dispose: vi.fn(),
   }
@@ -1196,7 +1198,7 @@ describe('registerIpcHandlers', () => {
     const { service } = register()
 
     await expect(electronMocks.handlers.get('cli:launch')!(trustedEvent(), 'claude', configFolder, 'resumeLast'))
-      .resolves.toBeUndefined()
+      .resolves.toEqual({ declined: true })
     expect(service.launchProvider).not.toHaveBeenCalled()
     expect(electronMocks.showOpenDialog).not.toHaveBeenCalled()
     expect(electronMocks.showMessageBox).toHaveBeenCalledWith(expect.objectContaining({
@@ -1522,6 +1524,29 @@ describe('registerIpcHandlers', () => {
     expect(service.switchToOfficialAccount).toHaveBeenCalledWith('codex', 'merge')
     expect(create.mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(service.switchToOfficialAccount).mock.invocationCallOrder[0])
     expect(result).toMatchObject({ provider: 'codex', target: 'official', backupId: 'backup-1', verified: false })
+  })
+
+  it('runs one account switch per tool at a time', async () => {
+    const service = serviceStub()
+    let finish!: () => void
+    vi.mocked(service.switchToOfficialAccount).mockImplementation(() => new Promise<never>((resolve) => { finish = () => resolve(undefined as never) }))
+    const create = vi.fn(() => ({ id: 'backup-1' }))
+    register(service, undefined, undefined, undefined, undefined, undefined, {}, {
+      backupStore: { list: vi.fn(), create, inspect: vi.fn(), restore: vi.fn() } as never,
+    })
+    const handler = electronMocks.handlers.get('config:switch-account-source')!
+    const first = handler(trustedEvent(), 'codex', 'official')
+    const repeated = handler(trustedEvent(), 'codex', 'official')
+    await expect(handler(trustedEvent(), 'codex', 'account')).rejects.toThrow('这个工具正在切换账号')
+    await vi.waitFor(() => expect(service.switchToOfficialAccount).toHaveBeenCalledTimes(1))
+    finish()
+    const [a, b] = await Promise.all([first, repeated])
+    expect(a).toBe(b)
+    expect(create).toHaveBeenCalledTimes(1)
+    // 跑完就放开，下一次照常能切。
+    vi.mocked(service.switchToOfficialAccount).mockResolvedValue(undefined as never)
+    await handler(trustedEvent(), 'codex', 'official')
+    expect(create).toHaveBeenCalledTimes(2)
   })
 
   it('registers the restored config source when a failed switch rolls back', async () => {
@@ -4701,6 +4726,32 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
         await configureCodex()
 
         expect(accountService.provisionCliKey).toHaveBeenCalledWith({ name: codex.keyName, group: expect.any(String) })
+      })
+
+      it('finds a limited key that sits past the first five pages and still copies its cap', async () => {
+        const { accountService } = setup(accountKey({}))
+        const others = Array.from({ length: 600 }, (_, index) => accountKey({ id: 1_000 + index, name: `other-${index}` }))
+        const all = [...others.slice(0, 550), accountKey({}), ...others.slice(550)]
+        vi.mocked(accountService.listKeys).mockImplementation(async (query = {}) => {
+          const page = query.page ?? 1
+          const pageSize = query.pageSize ?? 100
+          return { page, pageSize, total: all.length, keys: all.slice((page - 1) * pageSize, page * pageSize) }
+        })
+
+        await expect(electronMocks.handlers.get('account:revoke-key')!(trustedEvent(), 7)).resolves.toBeUndefined()
+        await expect(configureCodex()).resolves.toEqual({ configured: ['codex'], failed: [] })
+
+        expect(accountService.provisionCliKey).toHaveBeenCalledWith(expect.objectContaining({
+          name: codex.keyName, remainQuota: 5_000, unlimitedQuota: false, fresh: true,
+        }))
+      })
+
+      it('does not revoke a key the tool is using when the key list does not contain it', async () => {
+        const { accountService } = setup(accountKey({ id: 8, name: 'someone-else' }))
+
+        await expect(electronMocks.handlers.get('account:revoke-key')!(trustedEvent(), 7))
+          .rejects.toThrow('没在账号的密钥列表里找到这把密钥，先没撤销')
+        expect(accountService.revokeKey).not.toHaveBeenCalled()
       })
 
       it('does not revoke when the key\'s limits cannot be read first', async () => {

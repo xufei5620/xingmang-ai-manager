@@ -69,7 +69,7 @@ interface RuntimeHandle extends RealmAccountClientHandle {
 }
 
 function restoreMayRecover(error: unknown): boolean {
-  return !(error instanceof RealmAccountError && ['INVALID', 'PROTOCOL', 'STORAGE', 'UNSUPPORTED'].includes(error.code))
+  return !(error instanceof RealmAccountError && ['INVALID', 'PROTOCOL', 'STORAGE', 'ACCOUNT_LIMIT', 'UNSUPPORTED'].includes(error.code))
 }
 
 /** Promote the authenticated client itself: rotating cookies are never restored twice. */
@@ -179,6 +179,14 @@ export function createRealmAccountService(options: RealmAccountServiceOptions): 
   function dispose(handle: RuntimeHandle): void {
     try { handle.client.logout() } catch { /* detached credentials cannot affect the active client */ }
   }
+  // 只给用户亲手点的「退出登录」用。切换账号、登录/恢复失败丢掉的候选句柄都走上面的
+  // dispose：那些凭据还留在本机账号库里，在服务端注销掉就等于把保存的账号也登出了。
+  // Fire-and-forget: the client captures its credentials synchronously, then
+  // dispose() may clear them at once. The request has its own short timeout and
+  // never rejects, so the local sign-out is neither blocked nor failed by it.
+  function endServerSession(handle: RuntimeHandle): void {
+    try { void Promise.resolve(handle.client.endServerSession?.()).catch(() => undefined) } catch { /* best effort */ }
+  }
   function getPublicClient(siteId: RealmAccountSiteId): RelayBackendClient {
     const selected = site(siteId)
     let client = publicClients.get(selected)
@@ -272,10 +280,13 @@ export function createRealmAccountService(options: RealmAccountServiceOptions): 
   async function logout(): Promise<void> {
     return transition(async () => {
       const replacement = createHandle(active.siteId)
+      // 先把本机账号库里的这份凭据删掉再注销服务端：本机删不掉（存储出错）时
+      // 退出整体失败、登录照旧可用，不能出现本机还「登着」而服务端已经作废的状态。
       await options.vault.signOut()
       const previous = active
       active = replacement
       stalled = null
+      endServerSession(previous)
       dispose(previous)
       requestChanged()
     })
@@ -296,6 +307,7 @@ export function createRealmAccountService(options: RealmAccountServiceOptions): 
     } finally { if (active !== candidate) dispose(candidate) }
   }
   async function restoreActive(): Promise<boolean> {
+    if (stalled && !busy) return retryStalled()
     return transition(async () => {
       const saved = await options.vault.active()
       if (!saved) { markStalled(null); return false }
@@ -319,11 +331,86 @@ export function createRealmAccountService(options: RealmAccountServiceOptions): 
       } finally { restoring = null }
     })
   }
+  // 「暂时连不上，登录还在」之后的自动重试（全面检测 Q9）。以前每次重试都走一遍
+  // transition：先推 revision、再占 busy，网络那一段（超时时十几秒）里读工具配置、
+  // 打开工具、保存、一键切回官方全报「账号切换正在进行」，正在跑的保存做完了又报
+  // 「账号上下文已变化」。可这时当前身份本来就是未登录，没有什么要保护的：续期只动
+  // 一个还没接上的候选句柄。所以网络那段不占锁，只在真要换身份的那一下进 transition。
+  //
+  // The refresh may rotate the saved cookie on the server. When the candidate
+  // cannot be promoted (the user logged in meanwhile, or quiescing failed),
+  // its rotated credential is written back to the untouched vault record, or
+  // the next retry would present a cookie the server has already retired.
+  let retrying = false
+  async function retryStalled(): Promise<boolean> {
+    if (retrying) return false
+    retrying = true
+    try {
+      await migrateLegacy()
+      const saved = await options.vault.active()
+      if (!saved) { markStalled(null); return false }
+      const userId = Number(saved.userId)
+      const owner = Number.isSafeInteger(userId) && userId > 0 ? { siteId: site(accountRealms[saved.realmId].siteId), userId } : null
+      const epoch = revision
+      const candidate = createHandle(site(accountRealms[saved.realmId].siteId))
+      restoring = owner
+      let restored = false
+      try {
+        try { restored = await withinRestoreBudget(() => candidate.restore(saved)) } catch (error) {
+          if (!(error instanceof RealmAccountError) || error.code !== 'UNAUTHORIZED') {
+            // 等的这段时间里用户自己登录、切换或退出过，就别把「等重试」的标记再挂回去：
+            // 那会让新登录的账号被下一轮重试当成掉线的去恢复。
+            if (revision === epoch && stalled !== null) markStalled(restoreMayRecover(error) ? owner : null)
+            throw error
+          }
+        }
+        return await transition(async () => {
+          // 等网络的这段时间里，用户可能已经自己登录、切换或退出：那一次说了算。
+          const current = await options.vault.active()
+          if (revision !== epoch + 1 || stalled === null || !current || realmOwnerKey(current) !== realmOwnerKey(saved)) return false
+          if (!restored) {
+            await options.vault.signOut(saved)
+            markStalled(null)
+            return false
+          }
+          await promote(candidate, saved)
+          return true
+        })
+      } finally {
+        restoring = null
+        if (active !== candidate) {
+          if (restored) await keepRotatedCredential(candidate, saved)
+          dispose(candidate)
+        }
+      }
+    } finally { retrying = false }
+  }
+  async function withinRestoreBudget<T>(operation: () => Promise<T>): Promise<T> {
+    let timer: ReturnType<typeof setTimeout> | undefined
+    try {
+      return await Promise.race([operation(), new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new RealmAccountError('TIMEOUT')), prepareTimeoutMs)
+      })])
+    } finally { clearTimeout(timer) }
+  }
+  async function keepRotatedCredential(candidate: RuntimeHandle, saved: RealmSavedAccount): Promise<void> {
+    try {
+      const rotated = candidateSaved(candidate, saved)
+      const stored = await options.vault.get(saved)
+      // 只在本机记录还是出发时那一份时写回；这期间重新登录过同一个账号就以那次为准。
+      if (stored && JSON.stringify(stored) === JSON.stringify(saved)) await options.vault.updateSession(rotated)
+    } catch { /* the next retry reports whatever is still wrong */ }
+  }
   async function switchSavedAccount(id: string): Promise<RealmAccountSessionState> {
     return transition(async () => {
       const saved = await findSaved(id)
       if (active.saved && realmOwnerKey(active.saved) === realmOwnerKey(saved)) return session()
-      if (!await restore(saved)) throw new RealmAccountError('UNAUTHORIZED')
+      let restored: boolean
+      try { restored = await restore(saved) } catch (error) {
+        if (error instanceof RealmAccountError && error.code === 'UNAUTHORIZED') throw new RealmAccountError('SAVED_EXPIRED')
+        throw error
+      }
+      if (!restored) throw new RealmAccountError('SAVED_EXPIRED')
       return session()
     })
   }
@@ -352,6 +439,9 @@ export function createRealmAccountService(options: RealmAccountServiceOptions): 
       if (property === 'logout') return logout
       if (property === 'getPersistableSession') return () => active.siteId === 'solov' ? active.client.getPersistableSession?.() ?? null : null
       if (property === 'restoreSession' || property === 'switchSession') return () => Promise.reject(new RealmAccountError('UNSUPPORTED'))
+      // Server-side revocation belongs to logout() alone; no business caller may
+      // end the active session behind the vault's back.
+      if (property === 'endServerSession') return undefined
       if (typeof property !== 'string') return undefined
       if (publicMethods.has(property as keyof RelayBackendClient)) {
         return (...args: unknown[]) => {

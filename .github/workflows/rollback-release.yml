@@ -1,0 +1,161 @@
+# 坏版本回退：把线上的更新清单换回某个旧版本的备份，并在 service-status.json 里撤回
+# 线上那个坏版本。客户端（0.2.10 起）看到本机版本被撤回，才会接受一个更低的版本号，
+# 于是下次检查时提示「建议退回」；还没升上去的人则不会再被推送坏版本。
+#
+# 备份由 publish-release 在每次发布时写到 manifests/<版本>/，所以只能退回到「在这个
+# 工作流上线之后发布过、或者在那之后被新版本覆盖掉」的版本。操作步骤见
+# docs/SERVICE-STATUS.md「坏版本回退」。
+name: rollback-release
+
+on:
+  workflow_dispatch:
+    inputs:
+      to_version:
+        description: 退回到哪个版本（例 0.2.9，必须比线上的旧）
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: service-status
+  cancel-in-progress: false
+
+jobs:
+  rollback:
+    runs-on: ubuntu-latest
+    environment: release
+    timeout-minutes: 30
+    env:
+      OBJECT_PREFIX: xingmang-manager
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci --registry=https://registry.npmjs.org/
+
+      - name: Fail early when the R2 credentials are not configured
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+        run: |
+          missing=""
+          for name in R2_ACCOUNT_ID R2_BUCKET AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY; do
+            [ -n "${!name}" ] || missing="$missing $name"
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::release 环境缺少这些 secret：$missing（见 docs/SERVICE-STATUS.md）"
+            exit 1
+          fi
+
+      - name: Resolve the update feed address
+        id: feed
+        run: |
+          set -euo pipefail
+          base=$(node -p "require('./scripts/update-release-utils.cjs').resolveUpdateUrlForVersion(require('./package.json').version)")
+          echo "base=${base%/}" >> "$GITHUB_OUTPUT"
+
+      # 每个平台：读线上清单的版本、取回备份、核对备份确实是要退回的旧版本，再确认
+      # 它引用的安装包都还在。哪一步不对都停下，此刻线上什么都还没改。
+      - name: Check the backups before touching anything
+        id: plan
+        env:
+          PUBLIC_BASE: ${{ steps.feed.outputs.base }}
+          TO_VERSION: ${{ inputs.to_version }}
+        run: |
+          set -euo pipefail
+          target=$(node -e "console.log(require('./scripts/rollback-release.cjs').requirePlainVersion(process.env.TO_VERSION, '要退回的版本'))")
+          mkdir -p "$RUNNER_TEMP/restore"
+          withdrawn=""
+          platforms=""
+          for manifest in latest.yml latest-mac.yml; do
+            code=$(curl --silent --show-error --max-time 60 --output "$RUNNER_TEMP/live-$manifest" --write-out '%{http_code}' "$PUBLIC_BASE/$manifest")
+            if [ "$code" = 404 ]; then echo "线上没有 $manifest，跳过这个平台"; continue; fi
+            [ "$code" = 200 ] || { echo "::error::读取线上 $manifest 失败（HTTP $code）"; exit 1; }
+            live=$(node scripts/rollback-release.cjs version --manifest "$RUNNER_TEMP/live-$manifest" --name "$manifest")
+            code=$(curl --silent --show-error --max-time 60 --output "$RUNNER_TEMP/restore/$manifest" --write-out '%{http_code}' "$PUBLIC_BASE/manifests/$target/$manifest")
+            if [ "$code" = 404 ]; then
+              echo "::warning::没有 $target 的 $manifest 备份，这个平台保持线上的 $live 不动"
+              rm -f "$RUNNER_TEMP/restore/$manifest"
+              continue
+            fi
+            [ "$code" = 200 ] || { echo "::error::读取 $target 的 $manifest 备份失败（HTTP $code）"; exit 1; }
+            files=$(node scripts/rollback-release.cjs inspect --manifest "$RUNNER_TEMP/restore/$manifest" --name "$manifest" --expect "$target" --live "$live")
+            while IFS= read -r file; do
+              [ -n "$file" ] || continue
+              curl --fail --silent --show-error --head --max-time 60 --output /dev/null "$PUBLIC_BASE/$file" \
+                || { echo "::error::$target 的安装包 $file 已经不在更新目录里，不能退回"; exit 1; }
+            done <<< "$files"
+            echo "$manifest：线上 $live → 退回 $target"
+            withdrawn="$withdrawn $live"
+            platforms="$platforms $manifest"
+          done
+          if [ -z "$platforms" ]; then
+            echo "::error::两个平台都没有 $target 的备份清单，什么也没改"
+            exit 1
+          fi
+          echo "target=$target" >> "$GITHUB_OUTPUT"
+          echo "withdrawn=$(echo $withdrawn | tr ' ' '\n' | sort -u | tr '\n' ' ')" >> "$GITHUB_OUTPUT"
+          echo "platforms=$platforms" >> "$GITHUB_OUTPUT"
+
+      # 先撤回，再换清单：撤回一落地，还没升上去的人就不会再装坏版本；换清单之前
+      # 客户端看到的「最新版」仍是坏版本本身，已经在上面的人不会有任何变化。
+      - name: Withdraw the live version in the status file
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          PUBLIC_BASE: ${{ steps.feed.outputs.base }}
+          WITHDRAWN: ${{ steps.plan.outputs.withdrawn }}
+        run: |
+          set -euo pipefail
+          code=$(curl --silent --show-error --max-time 30 --output "$RUNNER_TEMP/current.json" --write-out '%{http_code}' "$PUBLIC_BASE/service-status.json")
+          case "$code" in
+            200) ;;
+            404) rm -f "$RUNNER_TEMP/current.json" ;;
+            *) echo "::error::读取线上状态文件失败（HTTP $code），为免覆盖别的开关，这次不改"; exit 1 ;;
+          esac
+          node scripts/service-status.cjs \
+            --current "$RUNNER_TEMP/current.json" \
+            --output "$RUNNER_TEMP/service-status.json" \
+            --bad-versions "$WITHDRAWN"
+          aws s3 cp "$RUNNER_TEMP/service-status.json" \
+            "s3://$R2_BUCKET/$OBJECT_PREFIX/service-status.json" \
+            --endpoint-url "https://$R2_ACCOUNT_ID.r2.cloudflarestorage.com" \
+            --content-type 'application/json; charset=utf-8' \
+            --cache-control 'no-cache'
+
+      - name: Put the backup manifests back
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          PLATFORMS: ${{ steps.plan.outputs.platforms }}
+        run: |
+          set -euo pipefail
+          for manifest in $PLATFORMS; do
+            aws s3 cp "$RUNNER_TEMP/restore/$manifest" \
+              "s3://$R2_BUCKET/$OBJECT_PREFIX/$manifest" \
+              --endpoint-url "https://$R2_ACCOUNT_ID.r2.cloudflarestorage.com" \
+              --content-type text/yaml \
+              --cache-control 'no-cache'
+          done
+
+      - name: Re-verify the restored update feed end to end
+        env:
+          PLATFORMS: ${{ steps.plan.outputs.platforms }}
+        run: |
+          set -euo pipefail
+          case "$PLATFORMS" in *latest.yml*) npm run update:verify-feed -- --platform=windows ;; esac
+          case "$PLATFORMS" in *latest-mac.yml*) npm run update:verify-feed -- --platform=macos ;; esac

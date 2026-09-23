@@ -28,7 +28,8 @@ import { accelerationConflictDescriptions, accelerationFailureMessages, type Acc
 import { accelerationStartRequest, createAccelerationPreferenceStore, defaultAccelerationPreference } from './acceleration-preference-store'
 import { accelerationStartFailureDescriptions, createAccelerationDevelopmentHost, readAccelerationDevelopmentConfig, type AccelerationDevelopmentHost } from './acceleration-development-host'
 import { readBundledAccelerationConfig } from './acceleration-bundled-config'
-import { AiAssetStore, resolveAiOutputRoot } from './ai-asset-store'
+import { AiAssetStore } from './ai-asset-store'
+import { migrateLegacyAiOutput, resolveAiOutputRoot, resolveLegacyAiOutputRoot } from './ai-output-location'
 import { AI_CHAT_STREAM_LIMITS, createAiChatService } from './ai-chat-service'
 import { createAiImageService } from './ai-image-service'
 import { AiVideoAssetStore } from './ai-video-asset-store'
@@ -154,7 +155,9 @@ import {
 import { verifyUpdatePackageDigest } from './update-package-digest'
 import { installStrictUpdateCodeSignatureVerifier } from './update-signature'
 import { createUpdaterService } from './updater'
+import { createServiceStatusMonitor, locateServiceStatusUrl, readServiceStatus } from './service-status'
 import { resolveWindowsCliExecutionModeDetailed } from './windows-elevation'
+import { ensureDirectoryOnWindowsUserPath } from './windows-cli-shell-access'
 import {
   applyWindowTheme,
   buildMacApplicationMenuTemplate,
@@ -262,6 +265,15 @@ function applicationUrlPolicy(): ApplicationUrlPolicy {
     // That value is intentionally limited to the local development process.
     devServerUrl: app.isPackaged ? undefined : process.env.VITE_DEV_SERVER_URL,
     packagedBaseUrl: packagedApplicationBaseUrl,
+  }
+}
+
+function readDocumentsDirectory(): string | null {
+  try {
+    return app.getPath('documents')
+  } catch {
+    // 拿不到「文档」时由 resolveAiOutputRoot 退到用户主目录。
+    return null
   }
 }
 
@@ -713,6 +725,14 @@ if (!hasSingleInstanceLock) {
       }),
     )
     const managerDataDirectory = app.getPath('userData')
+    // 内置加速内核三十多兆，校验要整读一遍。它以前排在建窗口前面单独等，慢机上
+    // 窗口因此晚出来；现在一开始就读，和后面的迁移、命令行探测叠着跑，用到时再等。
+    // 失败先接住：没等到它的这段时间里被拒绝，会被当成没人处理的错误。
+    const accelerationConfigRead = (app.isPackaged
+      ? readBundledAccelerationConfig({ isPackaged: true, platform: process.platform, resourcesPath: process.resourcesPath,
+        bundledMetadata: applicationPackage.xingmangAccelerationBundle })
+      : readAccelerationDevelopmentConfig({ isPackaged: false, platform: process.platform, dataDirectory: managerDataDirectory })
+    ).then((config) => ({ ok: true as const, config }), (error: unknown) => ({ ok: false as const, error }))
     const codexContext = resolveCodexHomeContext({
       isPackaged: app.isPackaged,
       env: process.env,
@@ -850,9 +870,12 @@ if (!hasSingleInstanceLock) {
       ...(windowsCliExecution.probeFailure ? { probeFailed: windowsCliExecution.probeFailure.reason } : {}),
     })
     if (windowsCliExecution.probeFailure) {
-      // 这次探测失败时从严按管理员处理：普通用户会因此装不了、打不开工具。原因
-      // 以前被 catch 吞掉，客服只看得到一个 trusted-only，分不出是真管理员还是没问出来。
-      runtimeLog.log('warn', 'security', 'cli.execution-mode.probe-failed', '没能确认当前是否以管理员身份运行，已按管理员处理', {
+      // 探测失败时：已看出是高权限的仍按管理员处理，什么都没看出来的按普通用户处理
+      // （resolveWindowsCliExecutionModeDetailed）。原因以前被 catch 吞掉，客服分不出
+      // 是真管理员还是没问出来。
+      const treatedAs = windowsCliExecutionMode === 'trusted-only' ? '管理员' : '普通用户'
+      runtimeLog.log('warn', 'security', 'cli.execution-mode.probe-failed', `没能确认当前是否以管理员身份运行，已按${treatedAs}处理`, {
+        mode: windowsCliExecutionMode,
         reason: windowsCliExecution.probeFailure.reason,
         detail: windowsCliExecution.probeFailure.detail,
         elapsedMs: windowsCliExecution.elapsedMs,
@@ -919,6 +942,18 @@ if (!hasSingleInstanceLock) {
       }),
       log: (level, event, message, detail) => runtimeLog.log(level, 'network', event, message, detail),
     })
+    // CLI 产物下载以前走 Node 自带的网络栈，它不读系统代理，所以开着加速也
+    // 一样直连。Chromium 的网络栈读，于是下载才真的走线路。
+    // 临时线路生效时改走那条专用 session（它的代理只对下载有效，默认
+    // session 一行未动，账号与中转流量不受影响）。
+    const downloadFetch: typeof fetch = (input, init) => {
+      const url = input instanceof URL ? input.href : input
+      // 专用 session 的 fetch 只收字符串或 Request；下载链路一律传 URL 字符串。
+      if (downloadAcceleration.currentEndpoint() && typeof url === 'string') {
+        return acceleratedDownloadSession.fetch(url, init)
+      }
+      return net.fetch(url, init)
+    }
     const systemService = createSystemService(settingsStore, {
       managerDataDirectory,
       systemSnapshotCacheFile: path.join(managerDataDirectory, 'system-snapshot.json'),
@@ -927,6 +962,9 @@ if (!hasSingleInstanceLock) {
       getExternalClientAccountId: () => readExternalClientAccountId(),
       windowsExecutionMode: windowsCliExecutionMode,
       runtimeLog,
+      ...(process.platform === 'win32'
+        ? { ensureWindowsUserPath: (directory: string) => ensureDirectoryOnWindowsUserPath(directory) }
+        : {}),
       projectInstructionsTemplatePath: resolveProjectInstructionsTemplatePath(app.getAppPath(), {
         packaged: app.isPackaged,
         resourcesPath: process.resourcesPath,
@@ -941,18 +979,7 @@ if (!hasSingleInstanceLock) {
       // Re-read the existing session/system proxy selection without changing
       // the OS proxy or imposing a new Chromium proxy mode.
       reloadNetworkProxyConfig: () => session.defaultSession.forceReloadProxyConfig(),
-      // CLI 产物下载以前走 Node 自带的网络栈，它不读系统代理，所以开着加速也
-      // 一样直连。Chromium 的网络栈读，于是下载才真的走线路。
-      // 临时线路生效时改走那条专用 session（它的代理只对下载有效，默认
-      // session 一行未动，账号与中转流量不受影响）。
-      downloadFetch: (input, init) => {
-        const url = input instanceof URL ? input.href : input
-        // 专用 session 的 fetch 只收字符串或 Request；下载链路一律传 URL 字符串。
-        if (downloadAcceleration.currentEndpoint() && typeof url === 'string') {
-          return acceleratedDownloadSession.fetch(url, init)
-        }
-        return net.fetch(url, init)
-      },
+      downloadFetch,
       resolveSubprocessProxyEnvironment: async () => {
         // 临时线路本身就是回环端点，直接交给子进程；没有临时线路时仍然沿用
         // 系统代理那条老路（跨提权边界的过滤在 download-proxy.ts 里）。
@@ -1002,6 +1029,10 @@ if (!hasSingleInstanceLock) {
         // PAC 脚本可以按主机给出不同答案，扩展这条链路真正要到的是 GitHub。
         parseChromiumProxyResult(await session.defaultSession.resolveProxy('https://github.com/')),
       ),
+      // Codex 的官方插件目录由本软件替它下载（codex-plugin-catalog.ts），与装 CLI
+      // 同一条下载通道，也同样临时借加速线路。
+      downloadFetch,
+      acquireDownloadAcceleration: () => downloadAcceleration.acquire(),
     })
     let latestDiagnostics: DiagnosticsReport | null = null
     // 最近一次连接自检的结论，只留进报告的那几项（没有 Key、没有地址、没有站
@@ -1098,6 +1129,8 @@ if (!hasSingleInstanceLock) {
       localBuild,
       unsignedChannel,
       verifyPackageDigest: verifyUpdatePackageDigest,
+      // 监视器在更新服务之后才建（它要把结果交回更新服务），这里等真正检查时再取。
+      refreshServiceStatus: () => serviceStatusMonitor ? serviceStatusMonitor.refresh() : Promise.resolve(null),
       enableDevelopmentUpdates: process.env.XINGMANG_UPDATE_DEV === '1',
       macInstallHandoff: process.platform === 'darwin'
         ? {
@@ -1122,6 +1155,32 @@ if (!hasSingleInstanceLock) {
         await autoUpdater.netSession.setProxy({ mode: 'system' })
       },
     })
+    // 更新目录上的服务状态文件：发布者在那里标「正在维护」，没登录的人也能看到。
+    // 只在更新开着的包里读（地址来自安装包自己的更新配置）；读不到当没在维护，
+    // 请求在后台走，不挡启动。
+    const serviceStatusUrl = updaterService.getState().phase === 'disabled'
+      ? null
+      : locateServiceStatusUrl(
+        app.isPackaged
+          ? path.join(process.resourcesPath, 'app-update.yml')
+          : path.join(app.getAppPath(), 'dev-app-update.yml'),
+        { allowLocalHttp: !app.isPackaged },
+      )
+    const serviceStatusMonitor = serviceStatusUrl
+      ? createServiceStatusMonitor({
+        read: () => readServiceStatus({
+          url: serviceStatusUrl,
+          fetch: (url, init) => autoUpdater.netSession.fetch(url, init),
+        }),
+        onChange: (status) => {
+          updaterService.setServiceStatus(status)
+          runtimeLog.log('info', 'updater', 'service-status.changed', status?.maintenance ? '服务状态文件：正在维护' : '服务状态文件：没在维护', {
+            maintenance: Boolean(status?.maintenance),
+          })
+        },
+      })
+      : null
+    serviceStatusMonitor?.start()
     runtimeLog.log('info', 'updater', 'runtime.selected', '主程序更新运行模式已确定', {
       enabled: updaterService.getState().phase !== 'disabled',
       localBuild,
@@ -1331,6 +1390,19 @@ if (!hasSingleInstanceLock) {
       return state.authenticated && state.account ? JSON.stringify([accounts.getSiteId(), state.account.userId]) : null
     }
     const accountWork = createAccountWorkGate({ assertReady: accounts.assertReady, revision: () => accountService.getSessionRevision!() })
+    // Each realm moves its own subtree once per launch; a second realm object for
+    // the same subtree must not start a second walk over files already moving.
+    const aiOutputMigrations = new Set<string>()
+    function migrateAiOutputOnce(from: string, to: string): void {
+      if (aiOutputMigrations.has(from)) return
+      aiOutputMigrations.add(from)
+      void migrateLegacyAiOutput(from, to).then((result) => {
+        if (!result.moved && !result.kept && !result.failed) return
+        // Counts only: support needs to know whether anything stayed behind, not
+        // where the user's files are (I13).
+        runtimeLog.log(result.failed ? 'warn' : 'info', 'ai-chat', 'asset.output.migrated', '老版本的 AI 作品已搬到新的保存位置', { ...result })
+      }).catch((error) => runtimeLog.exception('ai-chat', 'asset.output.migrate-failed', error))
+    }
     function createBusiness(siteId: RealmAccountSiteId) {
       const definition = requireSiteRuntimeDefinition(siteId)
       const roots = resolveRealmDataRoots(managerDataDirectory, definition.realmId)
@@ -1357,12 +1429,17 @@ if (!hasSingleInstanceLock) {
       const aiOutputRoot = roots.assetOutputDirectory(resolveAiOutputRoot({
         isPackaged: app.isPackaged,
         projectRoot: path.join(__dirname, '..'),
-        execPath: process.execPath,
+        documentsDirectory: readDocumentsDirectory(),
+        location: { platform: process.platform, home: os.homedir(), env: process.env },
       }))
+      // 老版本存在可执行文件旁边的 output 里。画布、聊天记录只按作品编号找文件，
+      // 搬的时候布局不变，老作品搬完照样能打开；搬的过程在后台，不拖慢启动。
+      const legacyAiOutputRoot = resolveLegacyAiOutputRoot({ isPackaged: app.isPackaged, execPath: process.execPath })
+      if (legacyAiOutputRoot) migrateAiOutputOnce(roots.assetOutputDirectory(legacyAiOutputRoot), aiOutputRoot)
       const assetStore = new AiAssetStore({
         outputRoot: aiOutputRoot,
-        // 全局 output 在安装目录旁边，用户自己动不了它；能绕开的是画布项目，新项目的
-        // 作品存在用户自己选的文件夹里。改默认位置另走一个 PR（盲点 2 的后半）。
+        // 全局保存位置在「文档」里，写不进多半是整个文档出了状况，用户自己能绕开的是
+        // 画布项目：新项目的作品存在用户自己选的文件夹里。
         unwritableGuidance: '可以先在画布里新建一个项目、给它选一个自己的文件夹，在那里生成就能存下来；也可以联系客服。',
         trustedProxyFetchImpl: (input, init) => net.fetch(input, init),
         nativeOperations: {
@@ -1828,10 +1905,9 @@ if (!hasSingleInstanceLock) {
     })
     let developmentAcceleration: ReturnType<typeof createAccelerationDevelopmentHost> | undefined
     try {
-      const accelerationConfig = app.isPackaged
-        ? await readBundledAccelerationConfig({ isPackaged: true, platform: process.platform, resourcesPath: process.resourcesPath,
-          bundledMetadata: applicationPackage.xingmangAccelerationBundle })
-        : await readAccelerationDevelopmentConfig({ isPackaged: false, platform: process.platform, dataDirectory: managerDataDirectory })
+      const read = await accelerationConfigRead
+      if (!read.ok) throw read.error
+      const accelerationConfig = read.config
       if (accelerationConfig) developmentAcceleration = createAccelerationDevelopmentHost({
         config: accelerationConfig, dataDirectory: managerDataDirectory, packaged: app.isPackaged,
         onDiagnostic: (stage) => runtimeLog.log('warn', 'network', 'acceleration.stop.failed',
@@ -2048,6 +2124,7 @@ if (!hasSingleInstanceLock) {
       process.off('uncaughtExceptionMonitor', onUncaughtException)
       process.off('unhandledRejection', onUnhandledRejection)
       if (periodicUpdateTimer) clearInterval(periodicUpdateTimer)
+      serviceStatusMonitor?.dispose()
       unsubscribeDesktopNotifications()
       desktopNotifications.dispose()
       unregisterIpcHandlers()

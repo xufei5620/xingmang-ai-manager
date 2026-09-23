@@ -52,6 +52,25 @@ Object.defineProperty(navigator, 'clipboard', {
   },
 })
 let keyGroups = [{ name: 'default', description: '默认分组', ratio: 1 }]
+// Codex 官方插件目录：一开始不在本机，下载成功后市场页才有可装的插件。
+// codexCatalogOffline 让第一次下载按国内常见的样子失败。
+let codexCatalogReady = false
+let codexCatalogAttempts = 0
+const codexCatalogPlugin = {
+  provider: 'codex' as const,
+  kind: 'plugin' as const,
+  id: 'game-studio@openai-api-curated',
+  name: 'Game Studio',
+  description: 'Design and prototype browser games',
+  installed: false,
+  enabled: false,
+  scope: null,
+  currentVersion: null,
+  latestVersion: '0.1.2',
+  source: { kind: 'native' as const, locator: 'openai-api-curated', reference: null },
+  update: { state: 'unsupported' as const, reason: '扩展尚未安装', checkedAt: null },
+  operations: { install: true, uninstall: true, enable: false, disable: false, update: false },
+}
 let nextKeyGroupsRequest: 'ready' | 'deferred' | 'failed' = 'ready'
 // 主进程按原因抛不同的错误（NewApiAuthenticationError 的中文、限流的英文原文……），
 // 夹具让用例自己指定原文，才能验证 R-G5 之后这些原因不再被抹成同一句。
@@ -329,7 +348,8 @@ const apiMethods = {
   },
   switchSavedAccount: async (id: string) => {
     record('switch-account', id)
-    if (fail === 'switch') throw new Error('目标账号登录已过期')
+    // 与主进程 SAVED_EXPIRED 同一句（electron/realm-account.ts）。
+    if (fail === 'switch') throw new Error('这个保存的账号登录已失效，当前账号没有变化。点「重新登录这个账号」再登一次就行。')
     activeUserId = 8
     for (const config of Object.values(configs.providers)) {
       if (config.configurationOwnership === 'account') config.configurationOwnership = 'unknown'
@@ -663,7 +683,12 @@ const apiMethods = {
     warnings: [],
     // 缺 Python 的机器是多数：添加 uvx 型连接前那条提示就是靠它出的。
     runtimes: { python: false, uv: false },
-    items: empty
+    ...(provider === 'codex'
+      ? { marketplace: { name: 'openai-api-curated', registered: codexCatalogReady, reason: null } }
+      : {}),
+    items: [
+      ...(provider === 'codex' && page === 'plugins' && codexCatalogReady ? [codexCatalogPlugin] : []),
+      ...(empty
       ? []
       : [
           {
@@ -699,8 +724,19 @@ const apiMethods = {
               update: true,
             },
           },
-        ],
+        ]),
+    ],
   }),
+  ensureProviderMarketplace: async (
+    provider: Parameters<V2Bridge['ensureProviderMarketplace']>[0],
+  ) => {
+    record('ensure-marketplace', provider)
+    codexCatalogAttempts += 1
+    if (query.has('codexCatalogOffline') && codexCatalogAttempts === 1)
+      throw new Error('插件目录要从国外的网站下载，当前网络连不上或太慢。打开加速后再点一次「下载插件目录」，或者换个网络再试。')
+    codexCatalogReady = true
+    return api.listProviderExtensions(provider)
+  },
   // Windows 是唯一由本应用代装 Python 的平台，那颗按钮只在这里出得来。
   getPlatformCapabilities: async () => platformCapabilitiesFor('win32', 'x64'),
   checkProviderMcpHealth: async (

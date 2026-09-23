@@ -63,6 +63,7 @@ function fixture(overrides: Partial<RealmAccountServiceOptions> = {}) {
     restoreError: Error | null
     restoreValid: boolean
     balance: () => Promise<unknown>
+    serverSessionsEnded: Array<string | null>
   }> = []
   const createClient: RealmAccountServiceOptions['createClient'] = (siteId, callback) => {
     let current: RealmSavedAccount | null = null
@@ -84,6 +85,9 @@ function fixture(overrides: Partial<RealmAccountServiceOptions> = {}) {
         return { account: state().account!, accessExpiresAt: null }
       }),
       logout: vi.fn(() => emit(null)),
+      // Records the identity it would revoke at call time, like the real client
+      // capturing its credentials synchronously before any await.
+      endServerSession: vi.fn(async () => { item.serverSessionsEnded.push(current ? current.userId : null) }),
       getPersistableSession: () => current?.credential.kind === 'new-api'
         ? { userId: Number(current.userId), cookies: [...current.credential.cookies] } : null,
     } as unknown as RelayBackendClient
@@ -94,7 +98,7 @@ function fixture(overrides: Partial<RealmAccountServiceOptions> = {}) {
       return true
     })
     const item = { siteId, client, restore, emit, failLogin: false, restoreError: null as Error | null,
-      restoreValid: true, balance: async (): Promise<unknown> => ({ quota: 100 }) }
+      restoreValid: true, balance: async (): Promise<unknown> => ({ quota: 100 }), serverSessionsEnded: [] as Array<string | null> }
     clients.push(item)
     return { client, restore, getSavedAccount: () => current }
   }
@@ -412,6 +416,103 @@ describe('realm account service', () => {
       expect(onChanged.mock.lastCall?.[1]).toMatchObject({ authenticated: outcome === 'restored' })
       if (outcome === 'expired') expect(await f.vault.active()).toBeNull()
     }
+  })
+  // 全面检测 Q9：等重试的那段网络请求不占账号锁，工具页的读取、打开、保存照常。
+  for (const interrupt of ['none', 'login'] as const) {
+    it(`keeps tool work running while a stalled login retries (${interrupt})`, async () => {
+      const f = fixture()
+      await f.vault.activate(saved('solov-api', '42'))
+      let fail = true
+      let release!: () => void
+      const gate = new Promise<void>((resolve) => { release = resolve })
+      const restarted = createRealmAccountService({ ...f.options, createClient: (siteId, callback) => {
+        const result = f.options.createClient(siteId, callback)
+        const item = f.clients[f.clients.length - 1]
+        if (fail) item.restoreError = new RealmAccountError('UNAVAILABLE')
+        else {
+          const original = item.restore.getMockImplementation() as (value: RealmSavedAccount) => Promise<boolean>
+          item.restore.mockImplementationOnce(async (value: RealmSavedAccount) => { await gate; return original(value) })
+        }
+        return result
+      } })
+      await expect(restarted.restoreActive()).rejects.toMatchObject({ code: 'UNAVAILABLE' })
+      fail = false
+      const revision = restarted.client.getSessionRevision!()
+      const before = f.clients.length
+      const retry = restarted.restoreActive()
+      await vi.waitFor(() => expect(f.clients.length).toBeGreaterThan(before))
+      await vi.waitFor(() => expect(f.clients.at(-1)!.restore).toHaveBeenCalled())
+      expect(() => restarted.assertReady()).not.toThrow()
+      expect(restarted.client.getSessionRevision!()).toBe(revision)
+      if (interrupt === 'login') {
+        // 用户在等的时候自己登录了：那一次说了算，重试不再改动当前身份。
+        await restarted.login(login)
+        release()
+        await expect(retry).resolves.toBe(false)
+        expect(restarted.getSiteId()).toBe('solov')
+        expect(restarted.client.getSessionState().account?.userId).toBe(7)
+        return
+      }
+      release()
+      await expect(retry).resolves.toBe(true)
+      expect(restarted.stalledAccount()).toBeNull()
+      expect(restarted.client.getSessionState()).toMatchObject({ authenticated: true })
+      expect(restarted.getSiteId()).toBe('solov-api')
+    })
+  }
+  it('does not put the retrying mark back when the user signed in or out while a retry was failing', async () => {
+    for (const action of ['login', 'logout'] as const) {
+      const f = fixture()
+      await f.vault.activate(saved('solov-api', '42'))
+      let hold = false
+      let release!: () => void
+      const gate = new Promise<void>((resolve) => { release = resolve })
+      const restarted = createRealmAccountService({ ...f.options, createClient: (siteId, callback) => {
+        const result = f.options.createClient(siteId, callback)
+        const item = f.clients[f.clients.length - 1]
+        item.restoreError = new RealmAccountError('UNAVAILABLE')
+        if (hold) {
+          const original = item.restore.getMockImplementation() as (value: RealmSavedAccount) => Promise<boolean>
+          item.restore.mockImplementationOnce(async (value: RealmSavedAccount) => { await gate; return original(value) })
+        }
+        return result
+      } })
+      await expect(restarted.restoreActive()).rejects.toMatchObject({ code: 'UNAVAILABLE' })
+      hold = true
+      const before = f.clients.length
+      const retry = restarted.restoreActive()
+      await vi.waitFor(() => expect(f.clients.length).toBeGreaterThan(before))
+      await vi.waitFor(() => expect(f.clients.at(-1)!.restore).toHaveBeenCalled())
+      hold = false
+      if (action === 'login') await restarted.login(login)
+      else await restarted.logout()
+      release()
+      await expect(retry).rejects.toMatchObject({ code: 'UNAVAILABLE' })
+      expect(restarted.stalledAccount()).toBeNull()
+      expect(restarted.client.getSessionState()).not.toHaveProperty('restoring')
+    }
+  })
+  it('writes a rotated credential back when a background retry cannot take over', async () => {
+    const f = fixture()
+    await f.vault.activate(saved('solov-api', '42'))
+    let fail = true
+    let quiesceFails = false
+    const restarted = createRealmAccountService({ ...f.options,
+      quiesce: async () => { if (quiesceFails) throw new RealmAccountError('BUSY') },
+      createClient: (siteId, callback) => {
+        const result = f.options.createClient(siteId, callback)
+        if (fail) f.clients[f.clients.length - 1].restoreError = new RealmAccountError('UNAVAILABLE')
+        return result
+      } })
+    await expect(restarted.restoreActive()).rejects.toMatchObject({ code: 'UNAVAILABLE' })
+    fail = false
+    quiesceFails = true
+    await expect(restarted.restoreActive()).rejects.toMatchObject({ code: 'BUSY' })
+    // 服务端已经换过一次凭据；不写回的话，下一次重试拿的是已经作废的那份。
+    expect(await f.vault.get({ realmId: 'api-account', userId: '42' })).toEqual(saved('solov-api', '42', 'test-rotated-once'))
+    expect(restarted.stalledAccount()).not.toBeNull()
+    quiesceFails = false
+    await expect(restarted.restoreActive()).resolves.toBe(true)
   })
   it('does not promise a retry when the saved record itself cannot be used', async () => {
     const f = fixture()
@@ -742,6 +843,26 @@ describe('realm switch guards on the shipped path', () => {
     expect(f.service.getSiteId()).toBe('solov-api')
     expect(f.clients.at(-1)!.client.logout).toHaveBeenCalledTimes(1)
   })
+  it('says the saved account expired, not the current one, when switching to a dead saved login', async () => {
+    for (const failure of ['invalid', 'unauthorized'] as const) {
+      const f = fixture()
+      await f.service.login(login)
+      await f.service.login({ ...login, siteId: 'solov-api' })
+      const summaries = await f.service.listSavedAccounts()
+      const createClient = f.options.createClient
+      f.options.createClient = (siteId, callback) => {
+        const created = createClient(siteId, callback)
+        if (failure === 'invalid') f.clients.at(-1)!.restoreValid = false
+        else f.clients.at(-1)!.restoreError = new RealmAccountError('UNAUTHORIZED')
+        return created
+      }
+      await expect(f.service.switchSavedAccount(summaries[0].id)).rejects.toMatchObject({ code: 'SAVED_EXPIRED' })
+      // 当前账号原样留着，过期的那条也还在列表里，等用户重新登录它。
+      expect(f.service.getSiteId()).toBe('solov-api')
+      expect(f.service.client.getSessionState().authenticated).toBe(true)
+      expect(await f.service.listSavedAccounts()).toHaveLength(2)
+    }
+  })
   it('rejects forgetting the current account through the inactive-account action', async () => {
     const f = fixture()
     await f.service.login(login)
@@ -754,5 +875,81 @@ describe('realm switch guards on the shipped path', () => {
     expect((await f.service.listSavedAccounts()).map((entry) => entry.id)).toEqual([summaries[1].id])
     await f.service.logout()
     expect(await f.service.listSavedAccounts()).toEqual([])
+  })
+})
+
+describe('realm account server-side sign-out', () => {
+  function endServerSessionMock(client: RelayBackendClient) {
+    return vi.mocked(client.endServerSession!)
+  }
+  function totalServerSignOuts(f: ReturnType<typeof fixture>): number {
+    return f.clients.reduce((sum, entry) => sum + endServerSessionMock(entry.client).mock.calls.length, 0)
+  }
+
+  it('revokes the server session exactly once on an explicit logout, before local credentials are dropped', async () => {
+    const f = fixture()
+    await f.service.login(login)
+    const active = f.clients[1]
+    await f.service.logout()
+    expect(endServerSessionMock(active.client)).toHaveBeenCalledOnce()
+    expect(active.serverSessionsEnded).toEqual(['7'])
+    expect(endServerSessionMock(active.client).mock.invocationCallOrder[0])
+      .toBeLessThan(vi.mocked(active.client.logout).mock.invocationCallOrder[0])
+    expect(totalServerSignOuts(f)).toBe(1)
+    expect(f.service.client.getSessionState().authenticated).toBe(false)
+    expect(await f.vault.active()).toBeNull()
+  })
+
+  it('signs out locally even when the server call fails or never answers', async () => {
+    for (const outcome of ['reject', 'hang'] as const) {
+      const f = fixture()
+      await f.service.login(login)
+      endServerSessionMock(f.clients[1].client).mockImplementation(() => (
+        outcome === 'reject' ? Promise.reject(new Error('network down')) : new Promise<void>(() => undefined)
+      ))
+      await expect(f.service.logout()).resolves.toBeUndefined()
+      expect(f.service.client.getSessionState().authenticated).toBe(false)
+      expect(await f.vault.active()).toBeNull()
+      expect(await f.service.listSavedAccounts()).toEqual([])
+      await expect(f.service.login(login)).resolves.toMatchObject({ siteId: 'solov' })
+    }
+  })
+
+  it('does not revoke anything when the local sign-out cannot be persisted', async () => {
+    const f = fixture()
+    await f.service.login(login)
+    f.fail(true)
+    await expect(f.service.logout()).rejects.toMatchObject({ code: 'STORAGE' })
+    expect(totalServerSignOuts(f)).toBe(0)
+    expect(f.service.client.getSessionState().authenticated).toBe(true)
+  })
+
+  it('keeps saved accounts alive on the server across switching, re-login and removal', async () => {
+    const f = fixture()
+    await f.service.login(login)
+    await f.service.login({ ...login, siteId: 'solov-api' })
+    const summaries = await f.service.listSavedAccounts()
+    await f.service.switchSavedAccount(summaries[0].id)
+    await f.service.switchSavedAccount(summaries[1].id)
+    await f.service.login({ ...login, username: '8' })
+    await f.service.removeSavedAccount(summaries[1].id)
+    await expect(f.service.login({ ...login, password: 'bad' })).rejects.toMatchObject({ code: 'UNAUTHORIZED' })
+    expect(totalServerSignOuts(f)).toBe(0)
+    // Every switched-away client was still discarded locally.
+    expect(f.clients.filter((entry) => vi.mocked(entry.client.logout).mock.calls.length > 0).length).toBeGreaterThan(0)
+  })
+
+  it('still signs out locally with nothing signed in, leaving the no-request decision to the client', async () => {
+    const f = fixture()
+    await f.service.logout()
+    expect(f.clients[0].serverSessionsEnded).toEqual([null])
+    expect(f.service.client.getSessionState().authenticated).toBe(false)
+  })
+
+  it('never exposes server-side revocation through the business client proxy', async () => {
+    const f = fixture()
+    await f.service.login(login)
+    expect(f.service.client.endServerSession).toBeUndefined()
+    expect(totalServerSignOuts(f)).toBe(0)
   })
 })

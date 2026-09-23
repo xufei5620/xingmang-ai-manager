@@ -125,6 +125,46 @@ describe('renderer-v2 start guide first run', () => {
     expect(markup).toContain('data-testid="guide-node"')
     expect(markup).toMatch(/<button[^>]*data-testid="guide-install"[^>]*disabled/)
   })
+
+  // 全面检测 Q50：装着 2.1.42 也说「已经装好」，人要到打开工具才发现差了一截。
+  it('says an installed tool is out of date and offers the update without blocking the next step', () => {
+    stubResumedGuide('claude', 'prepare')
+    const markup = render([guideTool({ version: '2.1.42', update: { version: '2.1.277', target: '2.1.277', newer: true, knownIssue: false, manualHint: null } })])
+    expect(markup).toContain('Claude Code 已经装好，但版本旧了，建议先点「更新」。不更新也能直接点「下一步」。')
+    expect(markup).toContain('已找到 v2.1.42，新版是 2.1.277')
+    expect(markup).toMatch(/data-testid="guide-tool-status"[^>]*>可更新</)
+    expect(markup).toMatch(/<button[^>]*data-testid="guide-update"(?![^>]*disabled)/)
+    expect(markup).toMatch(/<button[^>]*data-testid="guide-next"(?![^>]*disabled)/)
+  })
+
+  it('calls a version with a known problem what it is and stops advertising the skip', () => {
+    stubResumedGuide('codex', 'prepare')
+    const markup = render([guideTool({ id: 'codex', version: '0.155.0', update: { version: '0.155.1', target: '0.155.1', newer: true, knownIssue: true, manualHint: null } })])
+    expect(markup).toContain('Codex CLI 已经装好，但这个版本有已知问题，用起来会出错，建议先点「更新」。')
+    expect(markup).not.toContain('不更新也能')
+    expect(markup).toMatch(/data-testid="guide-tool-status"[^>]*>有已知问题</)
+    expect(markup).toMatch(/<button[^>]*data-testid="guide-next"(?![^>]*disabled)/)
+  })
+
+  it('points a tool installed some other way at its own updater instead of offering a button', () => {
+    stubResumedGuide('claude', 'prepare')
+    const markup = render([guideTool({ version: '2.1.42', update: { version: '2.1.277', target: '2.1.277', newer: true, knownIssue: false, manualHint: '该版本由官方安装器管理，请用它自己的方式更新' } })])
+    expect(markup).toContain('data-testid="guide-update-manual"')
+    expect(markup).toContain('建议先用它原来的方式更新')
+    expect(markup).not.toContain('data-testid="guide-update"')
+  })
+
+  it('keeps the plain installed wording when nothing needs updating, and says nothing until the tool is ready', () => {
+    stubResumedGuide('claude', 'prepare')
+    const current = render([guideTool({ version: '2.1.277' })])
+    expect(current).toContain('Claude Code 已经装好。')
+    expect(current).toMatch(/data-testid="guide-tool-status"[^>]*>已安装</)
+    expect(current).not.toContain('data-testid="guide-update"')
+    const offer = { version: '2.1.277', target: '2.1.277', newer: true, knownIssue: false, manualHint: null }
+    const notReady = render([guideTool({ version: '2.1.42', runtimeReady: false, update: offer })], { onInstallRuntime: async () => undefined })
+    expect(notReady).not.toContain('data-testid="guide-update"')
+    expect(notReady).not.toContain('版本旧了')
+  })
 })
 
 describe('guide install failure wording', () => {

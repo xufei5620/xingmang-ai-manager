@@ -32,7 +32,7 @@ import { parseLocalNoticeReadSync, type AnnouncementReadStore } from './announce
 import type { AccelerationApi, AccelerationMode, AccelerationPreferenceApi } from './acceleration-contract'
 import { accelerationFailureReason } from './acceleration-contract'
 import { cliCatalog, isProviderId, providerIds, resolveManagedCliKeyProfiles, type ProviderId } from './catalog'
-import { findAccountKeyById, inheritedKeySettings, inheritedKeyExpiredMessage, isUsedUpKeyLimit, managedKeyQuotaExhaustedMessage } from './account-key-quota'
+import { accountKeyListTooLongMessage, findAccountKeyById, inheritedKeySettings, inheritedKeyExpiredMessage, isUsedUpKeyLimit, managedKeyQuotaExhaustedMessage } from './account-key-quota'
 import { createMemoryManagedKeyReplacementStore, type ManagedKeyReplacementStore } from './managed-key-replacement-store'
 import { isInstallCancelledError } from './install-cancellation'
 import {
@@ -75,6 +75,7 @@ import {
 } from './security'
 import type {
   CliLaunchMode,
+  CliLaunchResult,
   CodexDesktopLaunchMode,
   ConfigSavePayload,
   SystemScanOptions,
@@ -1680,10 +1681,14 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     let key: AccountKey | null
     try {
       key = await findAccountKeyById((query) => accountService.listKeys(query), keyId)
-    } catch {
+    } catch (error) {
+      if (error instanceof Error && error.message === accountKeyListTooLongMessage) throw error
       throw new Error('没读到这把密钥的额度设置，先没撤销。请稍后再试。')
     }
-    if (!key || (key.unlimitedQuota && !key.expiredAt)) return null
+    // 本机记着这是某个工具在用的 Key，列表里却找不到：分不清它有没有上限，按不限额
+    // 撤了再换新，就等于悄悄放开了上限。停下，不撤。
+    if (!key) throw new Error('没在账号的密钥列表里找到这把密钥，先没撤销。刷新一下密钥列表再试。')
+    if (key.unlimitedQuota && !key.expiredAt) return null
     return { provider: cached.provider, key }
   }
 
@@ -1857,9 +1862,27 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     if (mode !== undefined && mode !== 'merge' && mode !== 'reset') throw new Error('未知的配置写入模式')
     return mode === undefined ? service.switchToOfficialAccount(provider) : service.switchToOfficialAccount(provider, mode)
   })
+  // 同一个工具的一键切换一次只跑一个（全面检测 Q35）。切换要备份、写入、自检，
+  // 失败还要回滚；两次叠在一起时，后一次的备份会拍到前一次写了一半的配置，两边
+  // 的回滚也会互相覆盖。同方向的重复点击共用正在跑的那一次，反方向的直接拒绝。
+  const accountSourceSwitches = new Map<ProviderId, { target: 'account' | 'official'; promise: Promise<unknown> }>()
   registerTrustedHandler('config:switch-account-source', async (_event, provider: unknown, target: unknown) => {
     if (!isProviderId(provider)) throw new Error('未知的 CLI 类型')
     if (target !== 'account' && target !== 'official') throw new Error('未知的账号来源')
+    const running = accountSourceSwitches.get(provider)
+    if (running) {
+      if (running.target === target) return running.promise
+      throw new Error('这个工具正在切换账号，等这次切完再试')
+    }
+    const promise = switchAccountSourceOnce(provider, target)
+    accountSourceSwitches.set(provider, { target, promise })
+    try {
+      return await promise
+    } finally {
+      if (accountSourceSwitches.get(provider)?.promise === promise) accountSourceSwitches.delete(provider)
+    }
+  })
+  async function switchAccountSourceOnce(provider: ProviderId, target: 'account' | 'official') {
     if (target === 'account' && !accountService.getSessionState().account?.userId) throw new Error('请先登录账号，再切到当前账号')
     // 与备份页同一套账号上下文：备份里记下哪些 Key 是当前账号签发的，回滚后
     // 恢复出来的配置照样按来源登记，首页不会因此冒出「配置被改过」。
@@ -1902,7 +1925,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
         ? JSON.parse(redactHomeDirectory(JSON.stringify(detail), options.providerRoots?.userHome ?? os.homedir())) as Record<string, unknown>
         : undefined),
     }, provider, target)
-  })
+  }
   function documentsDirectory(): string | null {
     if (!options.documentsDirectory) return path.join(os.homedir(), 'Documents')
     try {
@@ -2153,7 +2176,9 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
         options.runtimeLog.log('info', 'config', 'workspace.guard.declined', `用户没有在${sensitiveWorkspaceLabel(sensitivity)}里打开工具`, {
           kind: sensitivity,
         })
-        return undefined
+        // 明说没打开：以前回 undefined，记录页把它当成功，照样弹「已打开…」。
+        const declined: CliLaunchResult = { declined: true }
+        return declined
       }
       consumeConfirmedEveryTimeWorkspace(replacement)
       await rememberWorkspace(replacement)
@@ -2213,7 +2238,8 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   })
   registerTrustedHandler('update:get-state', () => options.updaterService.getState())
   registerTrustedHandler('update:startup', () => options.updaterService.startup())
-  registerTrustedHandler('update:check', () => options.updaterService.check())
+  // 从界面来的检查都是用户自己点的：分批放量不拦主动来要新版本的人。
+  registerTrustedHandler('update:check', () => options.updaterService.check({ manual: true }))
   registerTrustedHandler('update:download', () => options.updaterService.download())
   registerTrustedHandler('update:install', () => options.updaterService.install())
   registerTrustedHandler('sessions:list', (_event, query: unknown) => (

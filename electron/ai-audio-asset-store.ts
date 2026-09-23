@@ -176,7 +176,7 @@ export class AiAudioAssetStore {
         throw new Error('AI 音频内容摘要冲突')
       }
       if ((error as NodeJS.ErrnoException).code === 'EEXIST') throw new Error('AI 音频资产标识冲突，请重试')
-      throw new Error('无法写入 output 目录，请检查安装目录写入权限')
+      throw new Error('作品没能存进保存位置，请稍后重试；一直不行请联系客服')
     }
     return {
       assetId,

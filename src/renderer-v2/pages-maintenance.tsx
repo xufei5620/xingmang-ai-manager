@@ -50,6 +50,7 @@ import {
   Table,
   Textarea,
   Toolbar,
+  useToast,
 } from './ui'
 import {
   displayDate,
@@ -66,7 +67,8 @@ import {
   settingsGroups,
   skinOptions,
   updateFailureLabel,
-  updateLabels,
+  updateCardTitle,
+  withdrawnVersionAdvice,
 } from './registry/business'
 import { tools } from './registry/tools'
 import { clientConnections } from './registry/clients'
@@ -76,9 +78,11 @@ import { ToolStatusMeta, ToolStatusReason } from './features/tools/ToolStatusMet
 import { connectionCheckView } from './features/tools/connection-check'
 import { diagnosticDetailRows } from './features/app/diagnostic-details'
 import { requestSettingsGroup, takeSettingsGroup } from './features/app/settings-group-intent'
+import { rememberedLoginAction, rememberedLoginForgottenMessage } from './features/app/remembered-login'
 import { maintenanceFailureNotice, readMaintenanceStatus } from './features/tools/maintenance-status'
 import { ManualUninstallDialog, type ManualUninstallState } from './features/tools/ManualUninstall'
 import { RuntimeRestartDialog } from './features/tools/RuntimeRestartDialog'
+import { uninstallHandOffNotice } from './features/tools/uninstall-handoff'
 import { describeRuntimeInstallOutcome } from './features/tools/runtime-install-outcome'
 import {
   anyRuntimeLogValue,
@@ -520,6 +524,14 @@ export function HealthPage({
   )
 }
 
+/** 与上面筛选条的说法一致；英文级别名只进导出的报告。 */
+const runtimeLogLevelLabels: Readonly<Record<string, string>> = {
+  error: '错误',
+  warn: '提醒',
+  info: '信息',
+  debug: '调试',
+}
+
 export function FeedbackPage({
   api,
   openHelp,
@@ -680,7 +692,7 @@ export function FeedbackPage({
                         : 'neutral'
                   }
                 >
-                  {entry.level}
+                  {runtimeLogLevelLabels[entry.level] ?? entry.level}
                 </Pill>
               }
               desc={`${displayDate(entry.timestamp)} · ${entry.source}`}
@@ -931,14 +943,14 @@ export function UpdatesPage({
       data-page-id="updates"
       data-testid="page-updates"
     >
-      <PageHead title="更新" lead="下载和安装由你确认。" />
+      <PageHead title="更新" lead="新版本什么时候安装由你决定，不会自己重启。" />
       <ResultNotice
         error={resource.error || operation.error}
         message={operation.message}
       />
       <div className="v2-business-update-grid">
         <Card
-          title={update ? updateLabels[update.phase] : '正在读取更新状态…'}
+          title={update ? updateCardTitle(update) : '正在读取更新状态…'}
           actions={action}
         >
           <ListRow
@@ -947,10 +959,18 @@ export function UpdatesPage({
             meta={update?.currentVersion ?? '暂未读到'}
           />
           <ListRow title="上次检查" meta={displayDate(update?.checkedAt)} />
+          {update?.currentVersionWithdrawn && (
+            <Notice
+              tone="warn"
+              title="这个版本有已知问题"
+              body={withdrawnVersionAdvice(update)}
+              testId="updates-current-withdrawn"
+            />
+          )}
           {update?.unsignedChannel && (
             <ListRow
-              title="更新通道"
-              meta="未签名，下载和安装都要你确认"
+              title="更新方式"
+              meta="每次下载和安装新版本前都会先问你"
               testId="updates-channel-unsigned"
             />
           )}
@@ -1060,6 +1080,7 @@ export function MaintenancePage({
   installTool,
   cancelToolInstall,
 }: { api: V2Bridge } & BusinessActions) {
+  const toast = useToast()
   const load = useCallback(() => readMaintenanceStatus(api), [api])
   const resource = useResource(load)
   const snapshot = resource.data?.snapshot ?? null
@@ -1463,14 +1484,17 @@ export function MaintenancePage({
                         // success while files are left on disk.
                         throw new Error(result.error)
                       }
-                      if (result.outcome === 'delegated')
-                        throw new Error(
-                          '已打开卸载窗口，请完成卸载后重新检测。',
-                        )
                       setRemove(null)
                       await resource.reload()
+                      return uninstallHandOffNotice(result)
                     },
-                    '工具已卸载，配置已保留',
+                    // 转交给普通窗口时还没卸完：不说「已卸载」，也不当失败，
+                    // 用一条中性提示说清下一步。
+                    (handedOff) => {
+                      if (!handedOff) return '工具已卸载，配置已保留'
+                      toast.show(handedOff, 'neutral')
+                      return null
+                    },
                   )
               }}
             >
@@ -1693,6 +1717,7 @@ export function SettingsPage({
     }
   }
   const settings = resource.data?.settings
+  const rememberedLogin = rememberedLoginAction(resource.data?.session)
   const row = (title: string, description: string, control: ReactNode) => (
     <SettingRow
       key={title}
@@ -1891,7 +1916,7 @@ export function SettingsPage({
           )}
           {row(
             '启动时检查新版本',
-            '只显示提醒，下载和安装由你确认',
+            '发现新版本会提醒你，什么时候安装由你决定',
             <Switch
               checked={settings.checkUpdatesOnStartup}
               aria-label="启动时检查新版本"
@@ -1961,8 +1986,8 @@ export function SettingsPage({
             </Button>,
           )}
           {row(
-            'npm 全局包装到哪',
-            '继续使用已有的用户安装目录，避免影响其他工具',
+            '工具装在哪里',
+            '沿用你电脑上原来的安装位置，不影响别的软件',
             <Button
               size="sm"
               icon={Wrench}
@@ -2123,13 +2148,32 @@ export function SettingsPage({
       ),
       account: (
         <>
-          {row(
-            '记住密码',
-            '由客户端安全存储处理',
-            <Button size="sm" icon={UserRound} onClick={openLogin}>
-              管理登录
-            </Button>,
-          )}
+          {rememberedLogin.kind === 'forget'
+            ? row(
+                '记住密码',
+                '由客户端安全存储处理；清掉后下次登录要重新输入密码',
+                <Button
+                  size="sm"
+                  icon={Trash2}
+                  loading={operation.busy === 'forget-remembered-login'}
+                  onClick={() =>
+                    void operation.execute(
+                      'forget-remembered-login',
+                      () => api.setRememberedAccountLogin(null, rememberedLogin.siteId),
+                      rememberedLoginForgottenMessage,
+                    )
+                  }
+                >
+                  清掉记住的密码
+                </Button>,
+              )
+            : row(
+                '记住密码',
+                '由客户端安全存储处理',
+                <Button size="sm" icon={UserRound} onClick={openLogin}>
+                  管理登录
+                </Button>,
+              )}
           {row(
             '退出登录',
             resource.data?.session.account?.username ?? '当前未登录',
@@ -2163,7 +2207,7 @@ export function SettingsPage({
           )}
           {row(
             '使用统计',
-            '仅保存匿名统计偏好。此版本不会自动收集或上传使用记录',
+            '只记下你的选择；目前软件不会收集或上传任何使用记录',
             systemApi && systemState ? (
               <Switch
                 aria-label="匿名使用统计偏好"
@@ -2216,9 +2260,9 @@ export function SettingsPage({
             </>,
           )}
           {row(
-            '从旧版本迁移',
-            '当前继续读取原有设置和配置，旧界面保留用于回滚',
-            <Pill>共用原数据格式</Pill>,
+            '以前的设置',
+            '升级后沿用你以前的设置和工具配置，不用重新设置',
+            <Pill>已沿用</Pill>,
           )}
           {row(
             '工具配置备份',

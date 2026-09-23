@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { diagnosticDetailRows } from './diagnostic-details'
-import { requestSettingsGroup, takeSettingsGroup } from './settings-group-intent'
+import { hasPendingSettingsGroup, requestSettingsGroup, takeSettingsGroup } from './settings-group-intent'
 
 describe('diagnostic detail rows', () => {
   it('translates field names and yes/no values instead of showing raw keys', () => {
@@ -44,5 +44,14 @@ describe('settings group intent', () => {
     requestSettingsGroup('network')
     expect(takeSettingsGroup()).toBe('network')
     expect(takeSettingsGroup()).toBeNull()
+  })
+
+  it('reports a pending group without consuming it', () => {
+    expect(hasPendingSettingsGroup()).toBe(false)
+    requestSettingsGroup('privacy')
+    expect(hasPendingSettingsGroup()).toBe(true)
+    expect(hasPendingSettingsGroup()).toBe(true)
+    expect(takeSettingsGroup()).toBe('privacy')
+    expect(hasPendingSettingsGroup()).toBe(false)
   })
 })

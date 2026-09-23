@@ -12,7 +12,7 @@
 
 1. 选择密钥来源：已有工具当前站点的星芒密钥、已登录账号中的启用密钥，或“自己填写星芒密钥”。
 2. 点击“检测模型”，从该 Key 返回的列表中选择模型。改变密钥来源后需要重新检测。
-3. OpenCode 还需选择“模型接口”，默认为 Responses，可显式改为 Chat Completions。WorkBuddy 使用 Chat Completions；Claude Desktop 应选择支持 Anthropic Messages 的 Claude 模型。
+3. OpenCode 还需选择“模型类型”（界面上写「Codex / GPT 系列模型」即 Responses，「其他模型」即 Chat Completions），默认为 Responses。WorkBuddy 使用 Chat Completions；Claude Desktop 应选择支持 Anthropic Messages 的 Claude 模型。
 4. 点击“保存配置”。结果显示本地配置路径、备份数量和后续操作；Claude Desktop 保存后需完全退出并重新打开客户端。取消未保存的修改不会写入客户端配置。
 
 已有完整 Key 由主进程读取，不随配置摘要或操作结果返回界面；手动填写的 Key 经保存请求交给主进程。保存前重新查询模型权限，并在网络请求后、提交前检查账号和站点是否变化。写入地址固定来自当前账号站点，界面不能指定其他服务地址。

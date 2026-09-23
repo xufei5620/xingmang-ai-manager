@@ -40,6 +40,10 @@ import {
   managedCliPackageDirectory,
   probeRunningCliProcesses,
 } from './cli-process-probe'
+import {
+  npmPrefixGlobalRoot,
+  resolveSameUserNpmPrefix,
+} from './npm-user-prefix'
 import { buildClaudeStatusLineCommand } from './claude-status-line'
 import { isCodexDesktopExecutable } from './codex-desktop'
 import {
@@ -136,6 +140,7 @@ import {
 } from './windows-elevation'
 import { createTrustedTemporaryDirectory } from './trusted-temp'
 import { resolveWindowsMachinePaths } from './windows-machine-paths'
+import { createCliTerminalAccess, type UserPathOutcome } from './windows-cli-shell-access'
 import { createManagedNpmCache, ensureManagedNpmLayout, type ManagedNpmLayout } from './managed-cli'
 import { managedCliRoot, managedNativeProviderRoot, managedNpmPrefix } from './managed-cli-paths'
 import {
@@ -174,6 +179,11 @@ import {
 import { inspectMacosCodexApp, type MacosCodexAppInfo } from './macos-codex-app'
 import { isCommandLineToolsShimBacked, isMacOsCommandLineToolsShim } from './macos-command-line-tools'
 import { uninstallVerifiedNativeCliFiles } from './native-cli-uninstall'
+import {
+  buildClaudeRetainedVersionFilesCommand,
+  buildClaudeRetainedVersionFilesReason,
+  uninstallVerifiedClaudeNativeInstallation,
+} from './claude-native-uninstall'
 import { sameLocalPathIdentity } from './path-identity'
 import { syncXingmangAiSkillCodexAvailability } from './xingmang-ai-skill'
 import {
@@ -395,6 +405,11 @@ export interface CliLaunchResult {
    * 提醒。只提醒不改：那些文件是用户或公司的，本软件不动它们。缺省 = 没发现。
    */
   configOverrideNotice?: string
+  /**
+   * 用户在「这个文件夹不建议打开」那一问里选了不打开（或关掉了对话框），工具
+   * 没有启动。界面据此不说「已打开」。缺省 = 打开了，老调用方照旧。
+   */
+  declined?: boolean
 }
 
 export type ToolUninstallResult =
@@ -414,7 +429,8 @@ export type ToolUninstallResult =
          * (e.g. a security check itself failed, so the file identities behind
          * a command can no longer be trusted). Non-null only where the
          * producer already fully re-verified every path it names — see
-         * DarwinGrokRetainedPathsError below for the one current source.
+         * DarwinGrokRetainedPathsError below, and the Claude native version
+         * files left behind by uninstallVerifiedClaudeNativeInstallation.
          */
         manualCommand: string | null
       }
@@ -2056,6 +2072,11 @@ export interface SystemServiceOptions {
   claudeStatusLineScriptPath?: string
   /** 安装前那次磁盘剩余空间预检的读取口，测试用它造「够 / 不够 / 读不到」三种盘。 */
   readDiskSpace?: typeof readDiskSpace
+  /**
+   * 把 Windows 上工具所在的目录补进当前用户的 PATH，让用户自己开的终端也能直接
+   * 敲工具名。缺省 = 不改（测试与旧行为），只有 main.ts 接真实现。
+   */
+  ensureWindowsUserPath?: (directory: string) => Promise<UserPathOutcome>
 }
 
 export function providerCommandEnvironment(
@@ -2838,6 +2859,14 @@ export function createSystemService(
       providerIds.map((id) => limitedProbe(() => inspectCliTool(id, npm.path, npmGlobalRoot))),
     )
     const cliResults: ToolStatus[] = cliProbes.map(buildCliToolStatusFromSettled)
+    // 老版本装的工具旁边还留着 .ps1 启动文件；每次打开软件后的第一轮检测顺手清掉，
+    // 只动文件、不起 PowerShell，也不等它。
+    void cliTerminalAccess.sweepOnce(providerIds.flatMap((provider, index) => {
+      const probe = cliProbes[index]
+      return probe.status === 'fulfilled' && probe.value.installation
+        ? [{ provider, installation: probe.value.installation }]
+        : []
+    }))
     const networkRegion = network.region
 
     // 离线时四家探测会一个个耗满超时，首屏本地信息早就齐了却还在等；
@@ -3284,6 +3313,24 @@ export function createSystemService(
           env: commandEnvironment(),
         })
       }
+      // 普通权限安装给 npm 的是空 --userconfig（不让用户 .npmrc 改源、改脚本策略），
+      // 这也把用户在 .npmrc 里改过的全局目录一并丢了：新版装进 npm 默认目录，
+      // 用户自己敲的命令还是旧版。这里只把 prefix 这一项读回来显式传给 npm。
+      // 提权安装走托管目录，绝不读用户可写的配置来决定管理员令牌写到哪里。
+      const sameUserNpmPrefix = !managedNpmLayout
+        && provider !== 'grok'
+        && !(process.platform === 'win32' && windowsExecutionMode === 'trusted-only')
+        ? await resolveSameUserNpmPrefix({ env: commandEnvironment(), platform })
+        : null
+      if (sameUserNpmPrefix) {
+        runtimeLog?.log(
+          'info',
+          'install',
+          'cli.install.user-npm-prefix',
+          `${definition.name} 按用户 npm 配置安装到 ${redactHomeDirectory(sameUserNpmPrefix.prefix, providerRoots.userHome)}`,
+          { provider },
+        )
+      }
       managedNpmTransaction = await createInstallTemporaryDirectory('npm-transaction', {
         ...(managedNpmLayout ? { baseDirectory: managedNpmLayout.cacheRoot } : {}),
       })
@@ -3293,6 +3340,11 @@ export function createSystemService(
       if (provider !== 'grok') {
         if (managedNpmLayout) {
           occupancyProbeRoot = managedCliPackageDirectory(managedNpmLayout.prefix, definition.packageName, platform)
+        } else if (sameUserNpmPrefix) {
+          occupancyProbeRoot = cliPackageDirectoryFromNpmRoot(
+            npmPrefixGlobalRoot(sameUserNpmPrefix.prefix, platform),
+            definition.packageName,
+          )
         } else {
           const npmGlobalRoot = await resolveNpmGlobalRoot(npmExecutable, commandEnvironment())
           occupancyProbeRoot = npmGlobalRoot
@@ -3542,7 +3594,7 @@ export function createSystemService(
           const plan = buildCliMaintenancePlan(
             provider,
             npmExecutable,
-            attemptPrefix,
+            attemptPrefix ?? sameUserNpmPrefix?.prefix ?? null,
             trustedRelease.version,
             true,
             platform,
@@ -3664,6 +3716,8 @@ export function createSystemService(
       )) {
         throw new Error(`${definition.name} npm 命令已结束，但未在托管目录识别到有效安装和版本`)
       }
+      // npm 每次安装都会把 .ps1 启动文件重新写回来，所以装完、更新完都要再清一遍。
+      if (verification?.installation) await cliTerminalAccess.prepare({ provider, installation: verification.installation }, 'install')
       sendInstallProgress(
         target,
         provider,
@@ -3772,23 +3826,39 @@ export function createSystemService(
     if (!managed) await removeDirectoryFromUserPath(result.directory)
   }
 
-  async function uninstallNativeClaude(installation: CliInstallation): Promise<void> {
-    const expectedDirectory = path.resolve(os.homedir(), '.local', 'bin')
-    await uninstallVerifiedNativeCliFiles({
-      actualDirectory: installation.installDirectory,
-      expectedDirectory,
-      fileNames: [process.platform === 'win32' ? 'claude.exe' : 'claude'],
-      label: 'Claude Code',
+  // Q14：官方脚本装的 ~/.local/bin/claude 在 macOS/Linux 上是指向
+  // ~/.local/share/claude/versions/<版本> 的符号链接，旧实现按普通文件校验直接拒绝；
+  // 两个平台也都把 versions 里的程序本体留在了磁盘上。
+  async function uninstallNativeClaude(installation: CliInstallation): Promise<string[]> {
+    const result = await uninstallVerifiedClaudeNativeInstallation({
+      homeDirectory: os.homedir(),
+      installDirectory: installation.installDirectory,
       platform: process.platform,
-      removeDirectoryWhenEmpty: false,
     })
+    return result.retainedVersionFiles
   }
 
-  function isManagedNpmInstallation(installation: CliInstallation): boolean {
+  function isManagedNpmInstallation(installation: Pick<CliInstallation, 'npmPrefix'>): boolean {
     if ((platform !== 'win32' && platform !== 'darwin') || !installation.npmPrefix) return false
     const expected = managedNpmPrefix(commandEnvironment(), platform)
     return sameLocalPathIdentity(expected, installation.npmPrefix)
   }
+
+  // 让用户在自己开的 PowerShell / cmd 里直接敲工具名就能用：删掉 npm 写的 .ps1
+  // 启动文件（默认执行策略下它会报「禁止运行脚本」），装完时再确认工具目录在
+  // 当前用户的 PATH 里。两步都只动当前用户自己的东西，不改执行策略、不提权；
+  // 失败只记日志，不影响安装结果。
+  const cliTerminalAccess = createCliTerminalAccess({
+    platform,
+    executionMode: windowsExecutionMode,
+    isManaged: isManagedNpmInstallation,
+    ensureUserPath: serviceOptions.ensureWindowsUserPath,
+    log: (level, event, message, detail) => runtimeLog?.log(level, 'install', event, message, detail),
+    describeError: (error) => redactHomeDirectory(
+      redactCommandText(error instanceof Error ? error.message : String(error)),
+      providerRoots.userHome,
+    ),
+  })
 
   async function uninstallCliOperation(provider: ProviderId): Promise<ToolUninstallResult> {
     if (installing.has(provider)) throw new Error(`${cliCatalog[provider].name} 正在安装、更新或卸载中`)
@@ -3802,6 +3872,7 @@ export function createSystemService(
       }
       let current = initial
       const removedInstallations: string[] = []
+      const retainedClaudeVersionFiles: string[] = []
       for (let attempt = 0; attempt < 8 && current.installation; attempt += 1) {
         const installation = current.installation
         const uninstall = current.status.uninstall
@@ -3809,7 +3880,7 @@ export function createSystemService(
         if (!uninstall.available) {
           throw new Error([
             uninstall.reason,
-            uninstall.manualCommand ? `请在普通 PowerShell 中运行：${uninstall.manualCommand}` : null,
+            uninstall.manualCommand ? `请在${platform === 'win32' ? '普通 PowerShell' : '终端'}中运行：${uninstall.manualCommand}` : null,
           ].filter(Boolean).join('；'))
         }
         if (uninstall.delegated) {
@@ -3878,7 +3949,7 @@ export function createSystemService(
             throw error
           }
         } else {
-          await uninstallNativeClaude(installation)
+          retainedClaudeVersionFiles.push(...await uninstallNativeClaude(installation))
         }
         removedInstallations.push(installation.installDirectory)
         current = await inspectCliTool(provider, npmTool.path, npmGlobalRoot)
@@ -3891,6 +3962,18 @@ export function createSystemService(
         throw new Error(`${removed}仍检测到 ${cliCatalog[provider].name}：${remaining}`)
       }
       invalidateCliUpdateCache(provider)
+      const retainedReason = buildClaudeRetainedVersionFilesReason(retainedClaudeVersionFiles, process.platform)
+      if (retainedReason) {
+        return {
+          outcome: 'manual-required',
+          previousVersion: initial.status.version,
+          error: retainedReason,
+          manualHelp: {
+            reason: retainedReason,
+            manualCommand: buildClaudeRetainedVersionFilesCommand(retainedClaudeVersionFiles, process.platform),
+          },
+        }
+      }
       return { outcome: 'uninstalled', previousVersion: initial.status.version }
     } finally {
       installing.delete(provider)

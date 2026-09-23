@@ -12,7 +12,9 @@ import {
 import type { V2Bridge, V2Page, V2SystemState } from './types'
 import './business.css'
 
-export type BusinessPageProps = BusinessActions & {
+export type BusinessPageProps = Omit<BusinessActions, 'navigate'> & {
+  /** 第二个参数是要落的分页（个人中心、设置），只有教程页会传；其他页照旧只传页面。 */
+  navigate?: (page: V2Page, section?: string) => void
   api: V2Bridge
   page: V2Page
   state?: V2SystemState

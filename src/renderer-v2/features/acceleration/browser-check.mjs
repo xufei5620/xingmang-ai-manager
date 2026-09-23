@@ -5,6 +5,7 @@ import react from '@vitejs/plugin-react'
 import { chromium } from '@playwright/test'
 import { createFixtureServer } from '../../../../e2e/harness.mjs'
 import { waitForFixtureMount } from '../../../../e2e/fixture-readiness.mjs'
+import { enterWorkspaceWithoutAccount } from '../../testing/guest-workspace.mjs'
 
 let server, browser, origin
 before(async () => {
@@ -25,6 +26,7 @@ async function open(query = 'accelerationPreview=1') {
   // appearing. Take the shared mount budget first; everything after it keeps
   // the default so a real regression still fails in 30s.
   await waitForFixtureMount(page, { what: 'the acceleration fixture' })
+  if (new URLSearchParams(query).get('guest') === '1') await enterWorkspaceWithoutAccount(page)
   await openLazyAcceleration(page)
   return page
 }

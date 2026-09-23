@@ -34,6 +34,7 @@
 - `system-service.ts` (3751) — **最大模块**。`createSystemService` 之前是纯函数库（可直接单测），它之后是闭包工厂
 - `tool-installation.ts` (705) / `node-runtime.ts` (1198) / `grok-installer.ts` (662) / `grok-update.ts` (161)
 - `managed-cli.ts` / `managed-cli-paths.ts` / `native-cli-uninstall.ts` / `trusted-native-cli.ts`
+- `npm-user-prefix.ts` — 普通权限安装只从用户 `.npmrc` 读回 `prefix` 一项（照 npm 的 ini 解析与路径展开），显式传 `--prefix`；其余配置仍被空 `--userconfig` 挡在外面
 
 **配置与数据**
 - `config-files.ts` (1673) — 四个 CLI 的配置读写，**两阶段提交 + .bak 备份 + 失败回滚**；打开目录时替用户写下的工作区信任也在这里，字段实测记录见 `docs/WORKSPACE-TRUST.md`
@@ -61,12 +62,13 @@
 - `canvas-request-parser.ts` / `canvas-run-contract.ts` / `canvas-run-engine.ts` / `canvas-node-executors.ts` — 入参白名单校验、运行契约、DAG 运行引擎与节点执行器（**都在主进程**）
 - `canvas-account-lifecycle.ts` / `canvas-fingerprint.ts` — 账号切换隔离与画布指纹
 - `canvas-project-package.ts` / `canvas-prompt-preset-store.ts` — 项目导入导出（导出会清理凭据/本机路径/远端 URL）与提示词预设
-- `ai-chat-service.ts` (930) / `ai-image-service.ts` (494) / `ai-chat-protocol.ts` / `ai-asset-store.ts` — 主进程侧的聊天流式、图像生成（`/v1/images/generations` 与 multipart 的 `/v1/images/edits`）、协议校验与产物落盘
+- `ai-chat-service.ts` (930) / `ai-image-service.ts` (494) / `ai-chat-protocol.ts` / `ai-asset-store.ts` / `ai-output-location.ts` — 主进程侧的聊天流式、图像生成（`/v1/images/generations` 与 multipart 的 `/v1/images/edits`）、协议校验与产物落盘（保存位置在「文档/XingmangAI」，启动时把老版本安装目录旁 output 里的作品搬过来）
 - `chat-credential-coordinator.ts` (211) — **按分组按需签发并缓存 Key**（`xingmang-chat-*`）：命中缓存先验、失效自愈（被吊销就重签）、账号切换即失效。这是 2026-08-12 画布 503（令牌分组下无可用渠道）的根治方案
 - `canvas-v2/` 是当前画布源码；`dist-canvas/` 是构建产物**不入 git**。`npm run canvas:prepare` 构建源码并由 `scripts/copy-canvas-assets.mjs` 复制（可用 `XINGMANG_CANVAS_DIST` 覆盖）。云端测试包与 CI 正式包都现场构建 `canvas-v2` 打入
 
 **扩展生态**
 - `provider-extensions.ts` (1585) — 四工具统一的 MCP/Skill/Plugin 抽象
+- `codex-plugin-catalog.ts` — 替 Codex 下载官方插件目录快照（`$CODEX_HOME/.tmp/plugins`），国内它自己同步不下来
 - `codex-extensions.ts` (1254) — Codex 专用。DTO 只暴露 env **变量名**不暴露值
 
 **更新、诊断、工具库**

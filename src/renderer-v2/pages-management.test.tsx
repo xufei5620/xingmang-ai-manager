@@ -201,6 +201,18 @@ describe('official plugin marketplace notice', () => {
     })?.body).toBe('Claude Code 插件市场列表读取失败：命令超时')
   })
 
+  it('offers to download the Codex catalog in plain words, without asking for Git', () => {
+    const notice = officialMarketplaceNotice({
+      name: 'openai-api-curated',
+      registered: false,
+      reason: null,
+    })
+    expect(notice).toMatchObject({ tone: 'warn', needsAction: true, actionLabel: '下载插件目录' })
+    expect(notice?.body).not.toContain('Git')
+    expect(officialMarketplaceNotice({ name: 'openai-api-curated', registered: true, reason: null }))
+      .toMatchObject({ tone: 'neutral', needsAction: false, title: '官方插件目录已就绪' })
+  })
+
   it('stops asking once the marketplace is registered', () => {
     expect(officialMarketplaceNotice({
       name: 'claude-plugins-official',

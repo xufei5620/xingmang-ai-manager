@@ -8,6 +8,12 @@ import { DirectoryEntryLimitError, readDirectoryEntriesSync } from './bounded-di
 import { readBoundedResponseText } from './bounded-response'
 import { cliCatalog, providerIds, type ProviderId } from './catalog'
 import {
+  CODEX_API_CURATED_MARKETPLACE_NAME,
+  ensureCodexPluginCatalog,
+  inspectCodexPluginCatalog,
+  readCodexCatalogPluginInterface,
+} from './codex-plugin-catalog'
+import {
   cleanCommandOutput,
   commandEnvironment,
   CommandRunnerError,
@@ -17,6 +23,7 @@ import {
   type CommandSpec,
   type RunCommandOptions,
 } from './command-runner'
+import type { DownloadAccelerationLease } from './download-acceleration'
 import { gitInstallGuidance } from './git-runtime'
 import {
   commandLineToolsShimNotice,
@@ -261,6 +268,10 @@ export interface ProviderExtensionServiceOptions {
   findExecutable?: typeof findExecutable
   /** 出网的扩展操作跟当前加速线路走，缺省不带任何代理变量。 */
   resolveSubprocessProxyEnvironment?: () => Promise<NodeJS.ProcessEnv>
+  /** 下载 Codex 插件目录用的网络栈；main.ts 接的是读系统代理与下载加速的那一条。 */
+  downloadFetch?: typeof fetch
+  /** 下载前临时借一条加速线路，与装 CLI 同一套；缺省 = 不借。 */
+  acquireDownloadAcceleration?: () => Promise<DownloadAccelerationLease>
   inspectSource?: SourceUpdateInspector
   sourceUpdateDependencies?: ProviderSourceUpdateDependencies
   now?: () => Date
@@ -1022,6 +1033,18 @@ export function parseProviderPluginList(
     .sort((left, right) => Number(right.installed) - Number(left.installed) || left.name.localeCompare(right.name))
 }
 
+/** 官方目录里的插件补上 plugin.json 里的显示名与一句说明；别的市场原样不动。 */
+export function describeCodexCatalogPlugins(items: MutableExtensionItem[], codexHome: string): void {
+  const suffix = `@${CODEX_API_CURATED_MARKETPLACE_NAME}`
+  for (const item of items) {
+    if (!item.id.endsWith(suffix)) continue
+    const face = readCodexCatalogPluginInterface(codexHome, item.id.slice(0, -suffix.length))
+    if (!face) continue
+    if (face.displayName) item.name = face.displayName
+    if (!item.description && face.shortDescription) item.description = face.shortDescription
+  }
+}
+
 function pluginListArgv(provider: ProviderId): string[] {
   if (provider === 'codex') return ['plugin', 'list', '--available', '--json']
   if (provider === 'claude') return ['plugin', 'list', '--available', '--json']
@@ -1646,6 +1669,9 @@ export class ProviderExtensionService {
   private readonly trustedOnly: boolean
   private readonly findExecutable: typeof findExecutable
   private readonly resolveSubprocessProxyEnvironment: () => Promise<NodeJS.ProcessEnv>
+  private readonly downloadFetch: typeof fetch
+  private readonly acquireDownloadAcceleration: (() => Promise<DownloadAccelerationLease>) | null
+  private codexCatalogDownload: Promise<void> | null = null
   private readonly platform: NodeJS.Platform
   private readonly commandLineToolsShimBacked: (shim: string) => Promise<boolean>
 
@@ -1674,6 +1700,8 @@ export class ProviderExtensionService {
     this.findExecutable = options.findExecutable ?? findExecutable
     this.resolveSubprocessProxyEnvironment = options.resolveSubprocessProxyEnvironment
       ?? (async () => ({}))
+    this.downloadFetch = options.downloadFetch ?? fetch
+    this.acquireDownloadAcceleration = options.acquireDownloadAcceleration ?? null
     this.platform = options.platform ?? process.platform
     this.commandLineToolsShimBacked = options.isCommandLineToolsShimBacked
       ?? ((shim) => isCommandLineToolsShimBacked(shim, { env }))
@@ -1848,12 +1876,14 @@ export class ProviderExtensionService {
         cwd: provider === 'gemini' ? this.repositoryRoot ?? undefined : undefined,
         maxOutputBytes: MAX_OUTPUT_BYTES,
       })
-      items.push(...parseProviderPluginList(
+      const plugins = parseProviderPluginList(
         provider,
         output,
         checkedAt,
         provider === 'gemini' ? (this.repositoryRoot ? 'workspace' : 'user') : null,
-      ))
+      )
+      if (provider === 'codex') describeCodexCatalogPlugins(plugins, this.codexHome)
+      items.push(...plugins)
     } catch (error) {
       const noun = provider === 'gemini' ? 'Extension' : 'Plugin'
       const reason = `${cliCatalog[provider].name} ${noun} 列表读取失败：${errorDetail(error)}`
@@ -1870,6 +1900,12 @@ export class ProviderExtensionService {
         name: CLAUDE_OFFICIAL_MARKETPLACE_NAME,
         registered: inspection.names.includes(CLAUDE_OFFICIAL_MARKETPLACE_NAME),
         reason: inspection.reason,
+      }
+    } else if (provider === 'codex') {
+      marketplace = {
+        name: CODEX_API_CURATED_MARKETPLACE_NAME,
+        registered: inspectCodexPluginCatalog(this.codexHome).present,
+        reason: null,
       }
     }
 
@@ -1937,9 +1973,32 @@ export class ProviderExtensionService {
    * 安装时的自动注册，界面必须给一条自己能走通的路。
    */
   async ensureMarketplace(provider: ProviderId): Promise<ProviderExtensionsSnapshot> {
-    if (provider !== 'claude') throw new Error('当前工具没有官方插件市场')
-    await this.ensureClaudeOfficialMarketplace()
+    if (provider === 'claude') await this.ensureClaudeOfficialMarketplace()
+    else if (provider === 'codex') await this.ensureCodexPluginCatalog()
+    else throw new Error('当前工具没有官方插件市场')
     return this.list(provider)
+  }
+
+  /** 连点两下、两个页面同时触发，都只下载一次。 */
+  private ensureCodexPluginCatalog(): Promise<void> {
+    if (!this.codexCatalogDownload) {
+      this.codexCatalogDownload = this.downloadCodexPluginCatalog()
+        .finally(() => { this.codexCatalogDownload = null })
+    }
+    return this.codexCatalogDownload
+  }
+
+  private async downloadCodexPluginCatalog(): Promise<void> {
+    if (inspectCodexPluginCatalog(this.codexHome).present) return
+    // 借不到线路就按直连下载：加速是加分项，不能变成下载的前置条件。
+    const lease = this.acquireDownloadAcceleration
+      ? await this.acquireDownloadAcceleration().catch(() => null)
+      : null
+    try {
+      await ensureCodexPluginCatalog({ codexHome: this.codexHome, fetch: this.downloadFetch })
+    } finally {
+      await lease?.release().catch(() => undefined)
+    }
   }
 
   private mcpInstallArgv(input: ProviderExtensionMutation, id: string): { argv: string[]; secrets: string[] } {
