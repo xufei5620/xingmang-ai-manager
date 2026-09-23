@@ -153,19 +153,6 @@ export async function inspectCurrentWindowsProcessAdministrator(
   throw new Error('无法确认当前 Windows 进程是否具有管理员权限')
 }
 
-/** S-1-5-32-544 is BUILTIN\Administrators on every Windows install and in every language. */
-export const windowsElevationCapabilityScript = [
-  '$identity=[Security.Principal.WindowsIdentity]::GetCurrent()',
-  '$sids=@($identity.Groups | ForEach-Object { $_.Value })',
-  "if ($sids -contains 'S-1-5-32-544') { 'administrator' } else { 'standard' }",
-].join(';')
-
-export function parseWindowsElevationCapability(value: string): WindowsElevationCapability {
-  const normalized = value.trim().toLowerCase()
-  if (normalized === 'administrator' || normalized === 'standard') return normalized
-  return 'unknown'
-}
-
 /**
  * Whether this Windows account can raise itself to administrator at all. This is a
  * different question from `inspectCurrentWindowsProcessAdministrator`, which only
@@ -177,34 +164,24 @@ export function parseWindowsElevationCapability(value: string): WindowsElevation
  *
  * A UAC-filtered token still carries BUILTIN\Administrators in its group list
  * (as deny-only), which is why group membership survives the filtering and can be
- * read from the ordinary, unelevated process. The SID is compared numerically so
- * the answer does not depend on the Windows display language.
+ * read from the ordinary, unelevated process. whoami lists deny-only groups;
+ * .NET's WindowsIdentity.Groups deliberately skips them, so a PowerShell probe
+ * built on it calls every filtered administrator "standard". The SID is compared
+ * as a whole quoted field so the answer does not depend on the display language,
+ * and output without exactly one mandatory label is not whoami's and answers
+ * "unknown".
  */
+export function parseWindowsElevationCapability(output: string): WindowsElevationCapability {
+  if (parseWindowsMandatoryLabelRid(output) === null) return 'unknown'
+  return /"S-1-5-32-544"/.test(output) ? 'administrator' : 'standard'
+}
+
 export async function inspectWindowsElevationCapability(
   options: WindowsAdministratorProbeOptions & { signal?: AbortSignal } = {},
 ): Promise<WindowsElevationCapability> {
   if (process.platform !== 'win32') return 'unknown'
-  const env = options.env ?? process.env
-  const machinePaths = options.machinePaths ?? resolveWindowsMachinePaths()
   try {
-    const { stdout } = await execFileAsync(
-      resolveWindowsPowerShellExecutable({ env, machinePaths }),
-      [
-        '-NoLogo',
-        '-NoProfile',
-        '-NonInteractive',
-        '-Command',
-        windowsElevationCapabilityScript,
-      ],
-      {
-        env: trustedCommandEnvironment(env, machinePaths),
-        windowsHide: true,
-        timeout: options.timeoutMs ?? 8_000,
-        maxBuffer: 64 * 1024,
-        signal: options.signal,
-      },
-    )
-    return parseWindowsElevationCapability(stdout)
+    return parseWindowsElevationCapability(await readCurrentWindowsTokenGroups(options))
   } catch {
     // Never let this probe break an install or a self-check: an unknown answer
     // only means the extra sentence is left out.
@@ -275,6 +252,24 @@ export async function inspectCurrentWindowsIntegrityRid(
   options: WindowsAdministratorProbeOptions = {},
 ): Promise<number | null> {
   if (process.platform !== 'win32') return null
+  return parseWindowsMandatoryLabelRid(await readCurrentWindowsTokenGroups(options))
+}
+
+/**
+ * Whether the current token runs at High integrity or above, which is what an
+ * elevated administrator (or the built-in Administrator) holds. Null when the
+ * label cannot be read; the caller decides what that means.
+ */
+export async function inspectCurrentWindowsProcessHighIntegrity(
+  options: WindowsAdministratorProbeOptions = {},
+): Promise<boolean | null> {
+  const rid = await inspectCurrentWindowsIntegrityRid(options)
+  return rid === null ? null : rid >= highMandatoryIntegrityRid
+}
+
+async function readCurrentWindowsTokenGroups(
+  options: WindowsAdministratorProbeOptions & { signal?: AbortSignal },
+): Promise<string> {
   const env = options.env ?? process.env
   const machinePaths = options.machinePaths ?? resolveWindowsMachinePaths()
   const { stdout } = await execFileAsync(
@@ -285,9 +280,10 @@ export async function inspectCurrentWindowsIntegrityRid(
       windowsHide: true,
       timeout: options.timeoutMs ?? 5_000,
       maxBuffer: 256 * 1024,
+      signal: options.signal,
     },
   )
-  return parseWindowsMandatoryLabelRid(stdout)
+  return stdout
 }
 
 /**

@@ -11,6 +11,7 @@ import {
   clockSkewMs,
   clockSyncGuidance,
   createDiagnosticsExport,
+  describeRelocationTarget,
   findRelocatedFolders,
   parseClashTunConfig,
   redactDiagnosticText,
@@ -808,6 +809,20 @@ describe('diagnostics', () => {
     expect(report.durationMs).toBeLessThan(500)
   })
 
+  it('turns a slow permission check into a reminder instead of a red timeout', async () => {
+    const home = temporaryHome()
+    const input = dependencies(home)
+    input.timeoutMs = 20
+    input.platform = 'win32'
+    input.inspectElevationCapability = async () => await new Promise(() => undefined)
+
+    const item = (await runDiagnostics(input)).items.find((entry) => entry.code === 'ADMINISTRATOR')
+
+    expect(item).toMatchObject({ state: 'warn', title: '运行权限', details: { timedOut: true } })
+    expect(item?.summary).toContain('不影响软件使用')
+    expect(item?.summary).not.toContain('超时')
+  })
+
   it('treats a missing Git as optional (warn) and spells out the impact', async () => {
     const home = temporaryHome()
     const input = dependencies(home)
@@ -1026,11 +1041,22 @@ describe('diagnostics', () => {
     ]))
     expect(item?.state).toBe('fail')
     expect(item?.summary).toContain('用户文件夹、软件数据文件夹、Claude Code 配置文件夹')
-    expect(item?.summary).toContain('被搬到了 D:\\Users\\peaker')
+    expect(item?.summary).toContain('被搬到了 D 盘')
     expect(item?.summary).toContain('C 盘搬家')
     expect(item?.summary).toContain('写入 Key、保存设置、记录日志都可能失败')
     expect(item?.summary).not.toMatch(/AppData|junction|联接|符号链接/)
-    expect(item?.details).toMatchObject({ relocated: 1, to1: 'D:\\Users\\peaker' })
+    expect(item?.details).toMatchObject({ relocated: 1, to1: 'D 盘' })
+    // 搬过去的路径带着用户名，报告的脱敏认不出它，所以压根不写进去。
+    expect(JSON.stringify(item)).not.toContain('peaker')
+  })
+
+  it('names only the drive or disk a folder was moved to', () => {
+    expect(describeRelocationTarget('D:\\Users\\alice', 'win32')).toBe(' D 盘')
+    expect(describeRelocationTarget('\\\\?\\e:\\Users\\alice\\.codex', 'win32')).toBe(' E 盘')
+    expect(describeRelocationTarget('\\\\nas\\home\\alice', 'win32')).toBe('另一台电脑的共享文件夹')
+    expect(describeRelocationTarget('Users\\alice', 'win32')).toBe('别的位置')
+    expect(describeRelocationTarget('/Volumes/Backup/alice/.codex', 'darwin')).toBe('外接磁盘「Backup」')
+    expect(describeRelocationTarget('/Users/alice/Dropbox/.codex', 'darwin')).toBe('别的位置')
   })
 
   it('leaves the Windows-only hint out on macOS', async () => {
