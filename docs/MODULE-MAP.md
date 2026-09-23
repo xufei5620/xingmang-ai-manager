@@ -68,6 +68,7 @@
 
 **扩展生态**
 - `provider-extensions.ts` (1585) — 四工具统一的 MCP/Skill/Plugin 抽象
+- `codex-plugin-catalog.ts` — 替 Codex 下载官方插件目录快照（`$CODEX_HOME/.tmp/plugins`），国内它自己同步不下来
 - `codex-extensions.ts` (1254) — Codex 专用。DTO 只暴露 env **变量名**不暴露值
 
 **更新、诊断、工具库**

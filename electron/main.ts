@@ -942,6 +942,18 @@ if (!hasSingleInstanceLock) {
       }),
       log: (level, event, message, detail) => runtimeLog.log(level, 'network', event, message, detail),
     })
+    // CLI 产物下载以前走 Node 自带的网络栈，它不读系统代理，所以开着加速也
+    // 一样直连。Chromium 的网络栈读，于是下载才真的走线路。
+    // 临时线路生效时改走那条专用 session（它的代理只对下载有效，默认
+    // session 一行未动，账号与中转流量不受影响）。
+    const downloadFetch: typeof fetch = (input, init) => {
+      const url = input instanceof URL ? input.href : input
+      // 专用 session 的 fetch 只收字符串或 Request；下载链路一律传 URL 字符串。
+      if (downloadAcceleration.currentEndpoint() && typeof url === 'string') {
+        return acceleratedDownloadSession.fetch(url, init)
+      }
+      return net.fetch(url, init)
+    }
     const systemService = createSystemService(settingsStore, {
       managerDataDirectory,
       systemSnapshotCacheFile: path.join(managerDataDirectory, 'system-snapshot.json'),
@@ -967,18 +979,7 @@ if (!hasSingleInstanceLock) {
       // Re-read the existing session/system proxy selection without changing
       // the OS proxy or imposing a new Chromium proxy mode.
       reloadNetworkProxyConfig: () => session.defaultSession.forceReloadProxyConfig(),
-      // CLI 产物下载以前走 Node 自带的网络栈，它不读系统代理，所以开着加速也
-      // 一样直连。Chromium 的网络栈读，于是下载才真的走线路。
-      // 临时线路生效时改走那条专用 session（它的代理只对下载有效，默认
-      // session 一行未动，账号与中转流量不受影响）。
-      downloadFetch: (input, init) => {
-        const url = input instanceof URL ? input.href : input
-        // 专用 session 的 fetch 只收字符串或 Request；下载链路一律传 URL 字符串。
-        if (downloadAcceleration.currentEndpoint() && typeof url === 'string') {
-          return acceleratedDownloadSession.fetch(url, init)
-        }
-        return net.fetch(url, init)
-      },
+      downloadFetch,
       resolveSubprocessProxyEnvironment: async () => {
         // 临时线路本身就是回环端点，直接交给子进程；没有临时线路时仍然沿用
         // 系统代理那条老路（跨提权边界的过滤在 download-proxy.ts 里）。
@@ -1028,6 +1029,10 @@ if (!hasSingleInstanceLock) {
         // PAC 脚本可以按主机给出不同答案，扩展这条链路真正要到的是 GitHub。
         parseChromiumProxyResult(await session.defaultSession.resolveProxy('https://github.com/')),
       ),
+      // Codex 的官方插件目录由本软件替它下载（codex-plugin-catalog.ts），与装 CLI
+      // 同一条下载通道，也同样临时借加速线路。
+      downloadFetch,
+      acquireDownloadAcceleration: () => downloadAcceleration.acquire(),
     })
     let latestDiagnostics: DiagnosticsReport | null = null
     // 最近一次连接自检的结论，只留进报告的那几项（没有 Key、没有地址、没有站

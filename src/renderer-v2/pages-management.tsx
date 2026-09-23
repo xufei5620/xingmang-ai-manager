@@ -116,21 +116,53 @@ export function extensionItemsForView(
   )
 }
 
+/** Codex 用 Key（接当前账号）登录时，官方插件目录的市场名。与主进程同名常量一致。 */
+const codexOfficialCatalogName = 'openai-api-curated'
+
 /**
  * Claude Code 只在自己首次交互式启动时注册官方市场，而本软件一律非交互调用
  * 它，所以没在终端用过的机器上可装清单永远是空的。界面必须能分辨「这里没有
  * 可装的」和「市场还没加进来」，否则用户看到空列表也无从下手。
+ *
+ * Codex 同理：它的官方插件目录要在启动时从国外网站同步，国内常常同步不下来，
+ * 由本软件替它下载（主进程 codex-plugin-catalog.ts）。
  */
 export function officialMarketplaceNotice(
   marketplace: ExtensionSnapshot['marketplace'],
-): { tone: 'neutral' | 'warn'; title: string; body: string; needsAction: boolean } | null {
+): {
+  tone: 'neutral' | 'warn'
+  title: string
+  body: string
+  needsAction: boolean
+  actionLabel: string
+} | null {
   if (!marketplace) return null
+  if (marketplace.name === codexOfficialCatalogName) {
+    return marketplace.registered
+      ? {
+          tone: 'neutral',
+          title: '官方插件目录已就绪',
+          body: '下面是 Codex 可以安装的插件，安装前确认插件来源。要登录 ChatGPT 账号才能用的插件不在其中。',
+          needsAction: false,
+          actionLabel: '下载插件目录',
+        }
+      : {
+          tone: 'warn',
+          title: '官方插件目录还没下载',
+          body:
+            marketplace.reason ||
+            '下载之后这里才会出现可以安装的插件。目录要从国外的网站下载，网络慢时要等一会儿。',
+          needsAction: true,
+          actionLabel: '下载插件目录',
+        }
+  }
   if (marketplace.registered) {
     return {
       tone: 'neutral',
       title: '官方插件市场已添加',
       body: '下面是可以安装的插件，安装前确认插件来源。',
       needsAction: false,
+      actionLabel: '添加官方市场',
     }
   }
   return {
@@ -140,6 +172,7 @@ export function officialMarketplaceNotice(
       marketplace.reason ||
       '添加之后这里才会出现可以安装的插件。添加需要这台电脑上装有 Git。',
     needsAction: true,
+    actionLabel: '添加官方市场',
   }
 }
 
@@ -1171,7 +1204,9 @@ export function ExtensionsPage({
   )
   const marketplace = officialMarketplaceNotice(snapshot?.marketplace)
   const officialMarketplacePage =
-    kind === 'plugin' && view === 'market' && provider === 'claude'
+    kind === 'plugin' &&
+    view === 'market' &&
+    (provider === 'claude' || provider === 'codex')
   const addOfficialMarketplace = () =>
     void operation.execute(
       'marketplace-ensure',
@@ -1179,8 +1214,22 @@ export function ExtensionsPage({
         await api.ensureProviderMarketplace(provider)
         await resource.reload()
       },
-      '官方插件市场已添加，下面就是可以安装的插件。',
+      provider === 'codex'
+        ? '插件目录已下载，下面就是可以安装的插件。'
+        : '官方插件市场已添加，下面就是可以安装的插件。',
     )
+  // Codex 的目录缺了就直接替用户下载，不让他先看一句「还没下载」再去点。每次进到
+  // 这一页只自动下一次；失败了留着按钮，由用户换网或开加速后自己再点。
+  const codexCatalogAutoTried = useRef(false)
+  const codexCatalogMissing =
+    officialMarketplacePage &&
+    provider === 'codex' &&
+    snapshot?.marketplace?.registered === false
+  useEffect(() => {
+    if (!codexCatalogMissing || codexCatalogAutoTried.current || operation.busy) return
+    codexCatalogAutoTried.current = true
+    addOfficialMarketplace()
+  })
   const officialMarketplaceButton = (
     <Button
       variant="primary"
@@ -1190,7 +1239,7 @@ export function ExtensionsPage({
       onClick={addOfficialMarketplace}
       testId="plugins-official-marketplace-add"
     >
-      添加官方市场
+      {marketplace?.actionLabel ?? '添加官方市场'}
     </Button>
   )
   const headerAction =
@@ -1343,77 +1392,13 @@ export function ExtensionsPage({
         />
       )}
       {view === 'market' && kind === 'plugin' && !officialMarketplacePage ? (
-        <>
-          <Card padding="none">
-            {provider !== 'codex' ? (
-              <Notice
-                tone="neutral"
-                title="当前工具未提供市场管理接口"
-                body="已安装插件仍可在上一页管理。"
-              />
-            ) : (
-              <ListState
-                page="plugins-market"
-                noun="市场"
-                loading={resource.loading}
-                error={resource.error}
-                count={filteredMarkets.length}
-                filtered={Boolean(query)}
-                retry={() => void resource.reload()}
-                clear={() => setQuery('')}
-              >
-                {filteredMarkets.map((market) => (
-                  <ListRow
-                    key={market.name}
-                    icon={Package}
-                    title={market.name}
-                    desc={market.root}
-                    descMono
-                    actions={
-                      <>
-                        <Button
-                          size="sm"
-                          icon={RefreshCw}
-                          disabled={Boolean(operation.busy)}
-                          onClick={() =>
-                            void operation.execute(
-                              'market-update',
-                              async () => {
-                                await api.upgradeMarketplace(market.name)
-                                await resource.reload()
-                              },
-                            )
-                          }
-                        >
-                          更新
-                        </Button>
-                        <Menu
-                          label={`市场 ${market.name} 的更多操作`}
-                          anchor={<MoreHorizontal size={18} />}
-                          items={[
-                            {
-                              label: '移除市场',
-                              icon: Trash2,
-                              danger: true,
-                              onSelect: () =>
-                                void operation.execute(
-                                  'market-delete',
-                                  async () => {
-                                    await api.removeMarketplace(market.name)
-                                    await resource.reload()
-                                  },
-                                ),
-                            },
-                          ]}
-                        />
-                      </>
-                    }
-                  />
-                ))}
-              </ListState>
-            )}
-          </Card>
-        </>
+        <Card padding="none">
+          <Notice
+            tone="neutral"
+            title="当前工具未提供市场管理接口"
+            body="已安装插件仍可在上一页管理。"
+          />
+        </Card>
       ) : (
         <Card padding="none">
           <ListState
@@ -1616,6 +1601,71 @@ export function ExtensionsPage({
                 />
               )
             })}
+          </ListState>
+        </Card>
+      )}
+      {/* 自己加的市场还在，只是退到官方目录下面：这里管的是市场本身（更新、移除），
+          市场里的插件已经和官方目录一起列在上面了。 */}
+      {kind === 'plugin' && view === 'market' && provider === 'codex' && markets.length > 0 && (
+        <Card padding="none" title="自己添加的市场" testId="plugins-custom-markets">
+          <ListState
+            page="plugins-market"
+            noun="市场"
+            loading={resource.loading}
+            error={resource.error}
+            count={filteredMarkets.length}
+            filtered={Boolean(query)}
+            retry={() => void resource.reload()}
+            clear={() => setQuery('')}
+          >
+            {filteredMarkets.map((market) => (
+              <ListRow
+                key={market.name}
+                icon={Package}
+                title={market.name}
+                desc={market.root}
+                descMono
+                actions={
+                  <>
+                    <Button
+                      size="sm"
+                      icon={RefreshCw}
+                      disabled={Boolean(operation.busy)}
+                      onClick={() =>
+                        void operation.execute(
+                          'market-update',
+                          async () => {
+                            await api.upgradeMarketplace(market.name)
+                            await resource.reload()
+                          },
+                        )
+                      }
+                    >
+                      更新
+                    </Button>
+                    <Menu
+                      label={`市场 ${market.name} 的更多操作`}
+                      anchor={<MoreHorizontal size={18} />}
+                      items={[
+                        {
+                          label: '移除市场',
+                          icon: Trash2,
+                          danger: true,
+                          onSelect: () =>
+                            void operation.execute(
+                              'market-delete',
+                              async () => {
+                                await api.removeMarketplace(market.name)
+                                await resource.reload()
+                              },
+                            ),
+                        },
+                      ]}
+                    />
+                  </>
+                }
+              />
+            ))}
           </ListState>
         </Card>
       )}

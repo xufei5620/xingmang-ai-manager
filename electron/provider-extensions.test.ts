@@ -3,6 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { CommandRunnerError, type runCommand as productionRunCommand } from './command-runner'
+import { codexPluginCatalogNetworkMessage } from './codex-plugin-catalog'
 import { providerIds } from './catalog'
 import type { ProviderId } from './catalog'
 import {
@@ -1446,6 +1447,83 @@ describe('official marketplace as a standalone action', () => {
 
     await expect(service.ensureMarketplace('claude'))
       .rejects.toThrow(claudeMarketplaceGitMissingMessage())
+  })
+})
+
+describe('Codex official plugin catalog', () => {
+  function seedCatalog(codexHome: string): void {
+    write(path.join(codexHome, '.tmp', 'plugins', '.agents', 'plugins', 'marketplace.json'), '{}')
+    write(path.join(codexHome, '.tmp', 'plugins', '.agents', 'plugins', 'api_marketplace.json'), '{}')
+    write(path.join(codexHome, '.tmp', 'plugins.sha'), 'export-backup\n')
+  }
+
+  it('tells the page whether the catalog Codex reads is on disk', async () => {
+    const home = temporaryDirectory()
+    const service = new ProviderExtensionService({ homeDirectory: home, invoke: async () => '[]' })
+
+    expect((await service.list('codex')).marketplace)
+      .toEqual({ name: 'openai-api-curated', registered: false, reason: null })
+    seedCatalog(path.join(home, '.codex'))
+    expect((await service.list('codex')).marketplace).toMatchObject({ registered: true })
+  })
+
+  it('names official catalog plugins from their own manifest and leaves other marketplaces alone', async () => {
+    const home = temporaryDirectory()
+    const codexHome = path.join(home, '.codex')
+    seedCatalog(codexHome)
+    write(path.join(codexHome, '.tmp', 'plugins', 'plugins', 'game-studio', '.codex-plugin', 'plugin.json'), JSON.stringify({
+      name: 'game-studio',
+      interface: { displayName: 'Game Studio', shortDescription: 'Design and prototype browser games' },
+    }))
+    const listing = JSON.stringify({
+      installed: [],
+      available: [
+        { pluginId: 'game-studio@openai-api-curated', name: 'game-studio', marketplaceName: 'openai-api-curated' },
+        { pluginId: 'game-studio@team', name: 'game-studio', marketplaceName: 'team' },
+      ],
+    })
+    const service = new ProviderExtensionService({
+      homeDirectory: home,
+      invoke: async (_provider, argv) => argv[0] === 'plugin' ? listing : '[]',
+    })
+
+    const plugins = (await service.list('codex')).items.filter((item) => item.kind === 'plugin')
+
+    expect(plugins.find((item) => item.id === 'game-studio@openai-api-curated'))
+      .toMatchObject({ name: 'Game Studio', description: 'Design and prototype browser games' })
+    expect(plugins.find((item) => item.id === 'game-studio@team')).toMatchObject({ name: 'game-studio', description: '' })
+  })
+
+  it('downloads once for concurrent requests and always returns the acceleration lease', async () => {
+    const fetchCalls: string[] = []
+    const release = vi.fn(async () => undefined)
+    const service = new ProviderExtensionService({
+      homeDirectory: fs.realpathSync(temporaryDirectory()),
+      invoke: async () => '[]',
+      downloadFetch: async (input) => {
+        fetchCalls.push(String(input))
+        throw new TypeError('fetch failed')
+      },
+      acquireDownloadAcceleration: async () => ({ endpoint: null, accelerated: false, release }),
+    })
+
+    const results = await Promise.allSettled([service.ensureMarketplace('codex'), service.ensureMarketplace('codex')])
+
+    expect(results.map((result) => result.status)).toEqual(['rejected', 'rejected'])
+    expect(fetchCalls).toHaveLength(1)
+    expect(release).toHaveBeenCalledTimes(1)
+    await expect(service.ensureMarketplace('codex')).rejects.toThrow(codexPluginCatalogNetworkMessage)
+    expect(fetchCalls).toHaveLength(2)
+  })
+
+  it('does not touch the network when the catalog is already there', async () => {
+    const home = temporaryDirectory()
+    seedCatalog(path.join(home, '.codex'))
+    const downloadFetch = vi.fn<typeof fetch>()
+    const service = new ProviderExtensionService({ homeDirectory: home, invoke: async () => '[]', downloadFetch })
+
+    await expect(service.ensureMarketplace('codex')).resolves.toMatchObject({ marketplace: { registered: true } })
+    expect(downloadFetch).not.toHaveBeenCalled()
   })
 })
 
