@@ -258,20 +258,22 @@ describe('buildFeedbackRuntimeLines', () => {
     expect(lines[0]).toBe('系统 Node.js: 已安装 v16.0.0，版本过低')
   })
 
-  it('does not claim the user chose to run as administrator when the probe only fell back', () => {
-    const lines = buildFeedbackRuntimeLines(runtimeInput({ executionMode: 'trusted-only' }))
+  it('says why the app was treated as an ordinary user when the startup probe learned nothing', () => {
+    const lines = buildFeedbackRuntimeLines(runtimeInput({ executionMode: 'same-user', executionProbeFailure: 'blocked' }))
 
-    expect(lines).toContain('运行权限: 以管理员身份运行（或无法确认，按管理员处理）')
+    expect(lines).toContain('运行权限: 普通用户（没能确认是不是管理员：确认权限这一步被安全软件或电脑的管控策略拦下了，已按普通用户处理）')
   })
 
-  it('says why the app was treated as administrator when the startup probe failed', () => {
-    const lines = buildFeedbackRuntimeLines(runtimeInput({ executionMode: 'trusted-only', executionProbeFailure: 'blocked' }))
+  it('says why an administrator run kept the strict handling when the startup probe failed', () => {
+    const lines = buildFeedbackRuntimeLines(runtimeInput({ executionMode: 'trusted-only', executionProbeFailure: 'timeout' }))
 
-    expect(lines).toContain('运行权限: 按管理员处理（没能确认：确认权限这一步被安全软件或电脑的管控策略拦下了）')
+    expect(lines).toContain('运行权限: 以管理员身份运行（细节没能确认：确认权限这一步超过 15 秒没做完，常见于电脑较慢或刚开机，已按管理员处理）')
   })
 
   it('states a real administrator run plainly once the probe is known to have succeeded', () => {
     expect(buildFeedbackRuntimeLines(runtimeInput({ executionMode: 'trusted-only', executionProbeFailure: null })))
+      .toContain('运行权限: 以管理员身份运行')
+    expect(buildFeedbackRuntimeLines(runtimeInput({ executionMode: 'trusted-only' })))
       .toContain('运行权限: 以管理员身份运行')
     expect(buildFeedbackRuntimeLines(runtimeInput({ executionMode: 'same-user', executionProbeFailure: null })))
       .toContain('运行权限: 普通用户')

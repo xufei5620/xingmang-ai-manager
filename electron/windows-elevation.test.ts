@@ -55,21 +55,23 @@ describe('Windows CLI launch', () => {
     expect(packagedProbe).toHaveBeenCalledOnce()
   })
 
-  it('uses the restrictive boundary only for elevated tokens or probe failures', async () => {
+  it('uses the restrictive boundary for confirmed elevated tokens but not for an unanswered probe', async () => {
     await expect(resolveWindowsCliExecutionMode({
       isPackaged: true,
       platform: 'win32',
       probeAdministrator: async () => true,
     })).resolves.toBe('trusted-only')
 
+    // Nothing was learned about the token, so the app is treated as the ordinary
+    // user it almost always is (product decision, 2026-09-23).
     await expect(resolveWindowsCliExecutionMode({
       isPackaged: false,
       platform: 'win32',
       probeAdministrator: async () => { throw new Error('probe failed') },
-    })).resolves.toBe('trusted-only')
+    })).resolves.toBe('same-user')
   })
 
-  it('keeps the restrictive fallback but reports why the probe failed and how long it took', async () => {
+  it('treats an unanswered probe as an ordinary user and reports why it failed and how long it took', async () => {
     let clock = 1_000
     const blocked = Object.assign(new Error('Command failed: powershell.exe -Command Add-Type ...'), {
       code: 1,
@@ -84,7 +86,7 @@ describe('Windows CLI launch', () => {
         throw blocked
       },
     })).resolves.toEqual({
-      mode: 'trusted-only',
+      mode: 'same-user',
       elapsedMs: 2_500,
       probeFailure: {
         reason: 'blocked',
@@ -132,8 +134,14 @@ describe('Windows CLI launch', () => {
     expect(probeElevationType).not.toHaveBeenCalled()
   })
 
-  it('leaves High integrity and an unreadable label to the elevation probe, including its strict fallback', async () => {
-    for (const probeIntegrityRid of [async () => 12288, async () => 16384, async () => null, async () => { throw new Error('whoami failed') }]) {
+  it('leaves High integrity and an unreadable label to the elevation probe', async () => {
+    const cases = [
+      { probeIntegrityRid: async () => 12288, failedMode: 'trusted-only' },
+      { probeIntegrityRid: async () => 16384, failedMode: 'trusted-only' },
+      { probeIntegrityRid: async () => null, failedMode: 'same-user' },
+      { probeIntegrityRid: async () => { throw new Error('whoami failed') }, failedMode: 'same-user' },
+    ] as const
+    for (const { probeIntegrityRid, failedMode } of cases) {
       await expect(resolveWindowsCliExecutionModeDetailed({
         isPackaged: true, platform: 'win32', probeIntegrityRid, probeElevationType: async () => 'full',
       })).resolves.toMatchObject({ mode: 'trusted-only' })
@@ -147,7 +155,9 @@ describe('Windows CLI launch', () => {
         probeIntegrityRid,
         probeElevationType: async () => { throw Object.assign(new Error('Command failed'), { killed: true, signal: 'SIGTERM' }) },
       })
-      expect(failed).toMatchObject({ mode: 'trusted-only', probeFailure: { reason: 'timeout' } })
+      // A label already read as High keeps the strict fallback; with nothing
+      // known at all the failure answers same-user.
+      expect(failed).toMatchObject({ mode: failedMode, probeFailure: { reason: 'timeout' } })
     }
   })
 
