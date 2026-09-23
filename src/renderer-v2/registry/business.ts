@@ -1,4 +1,4 @@
-import type { UpdateFailedStep } from '../../../electron/ipc-contract'
+import type { UpdateFailedStep, UpdateSnapshot } from '../../../electron/ipc-contract'
 /**
  * 教程里讲「Mac 上怎么自己装桌面端」的那一章。首页那几行点不动的「安装」要直接跳到
  * 这一章而不是教程首页，所以 id 放在注册表里由两边共用：教程页写章节、App 写跳转，
@@ -60,6 +60,29 @@ export const updateFailureLabels = {
 export const updateFailureFallback = { title: '更新没有完成', retry: '重新下载' } as const
 export function updateFailureLabel(step: UpdateFailedStep | null | undefined) {
   return step ? updateFailureLabels[step] : updateFailureFallback
+}
+/**
+ * 发布者撤回了本机这个版本（状态文件的 badVersions），或者找到的「新版本」其实比
+ * 本机旧（退回上一个好版本）时，照常说「发现新版本」就是在骗人。这几句也只在这里
+ * 定义一次，更新页与首页气泡读同一份。
+ */
+type UpdateOfferState = Pick<UpdateSnapshot, 'phase' | 'currentVersion' | 'availableVersion' | 'rollback' | 'currentVersionWithdrawn'>
+export function updateCardTitle(update: UpdateOfferState): string {
+  if (update.rollback && update.phase === 'available') return '建议退回稳定版本'
+  if (update.currentVersionWithdrawn && (update.phase === 'not-available' || update.phase === 'idle')) return '这个版本有已知问题'
+  return updateLabels[update.phase]
+}
+export function updateBubbleTitle(update: UpdateOfferState): string {
+  if (update.phase === 'downloaded') return '更新已下载'
+  if (update.phase === 'downloading') return '正在下载更新'
+  if (update.phase === 'available') return update.rollback ? `建议退回 ${update.availableVersion}` : `新版本 ${update.availableVersion} 可以安装`
+  return '这个版本有已知问题'
+}
+export function withdrawnVersionAdvice(update: UpdateOfferState): string {
+  const next = update.availableVersion
+  if (next && update.rollback) return `发布者撤回了 ${update.currentVersion}。建议装回 ${next}：先下载，再点「重启安装」。`
+  if (next) return `发布者撤回了 ${update.currentVersion}，修好的 ${next} 已经可以装了，建议尽快更新。`
+  return `发布者撤回了 ${update.currentVersion}。修好的版本准备好后，这里会提示你更新。`
 }
 export const keyStates = {
   1: { label: '有效', tone: 'ok' },

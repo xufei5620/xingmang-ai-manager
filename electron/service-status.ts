@@ -21,12 +21,26 @@ export interface ServiceMaintenance {
   message: string | null
 }
 
+export interface ServiceRollout {
+  /** 这一版先只给一部分电脑。 */
+  version: string
+  /** 0～100：自动检查时只有这个百分比的电脑会看到它；用户手动点「检查更新」不受限。 */
+  percent: number
+}
+
 export interface ServiceStatus {
   /** 正在维护为对象，没在维护为 null。 */
   maintenance: ServiceMaintenance | null
+  /**
+   * 发布者撤回的版本。客户端永远不会装上这些版本；本机正是其中之一时，允许
+   * 「更新」到更低的版本号（退回上一个好版本）。
+   */
+  badVersions?: readonly string[]
+  /** 分批放量；没有就是 null。 */
+  rollout?: ServiceRollout | null
 }
 
-export const emptyServiceStatus: ServiceStatus = Object.freeze({ maintenance: null })
+export const emptyServiceStatus: ServiceStatus = Object.freeze({ maintenance: null, badVersions: [], rollout: null })
 
 // 一份只写着几个开关的 JSON 远用不到这么大；上限是给「这个地址被换成了别的东西」
 // 准备的，免得把一整张网页读进内存再去解析。
@@ -105,6 +119,35 @@ function readMaintenance(value: unknown, now: Date): ServiceMaintenance | null {
   return { message: readMessage(value.message) }
 }
 
+// 只认 x.y.z（可带预发布后缀），与 package.json 的版本号写法一致；前导 v 去掉。
+// 写错的条目直接丢掉：一个认不出的版本号什么也挡不住，但也不该让整份文件作废。
+const versionPattern = /^\d{1,5}\.\d{1,5}\.\d{1,5}(?:-[0-9A-Za-z.-]{1,40})?$/
+const maxBadVersions = 100
+
+function readVersion(value: unknown): string | null {
+  if (typeof value !== 'string') return null
+  const version = value.trim().replace(/^v/i, '')
+  return versionPattern.test(version) ? version : null
+}
+
+function readBadVersions(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+  const versions = new Set<string>()
+  for (const entry of value.slice(0, maxBadVersions)) {
+    const version = readVersion(entry)
+    if (version) versions.add(version)
+  }
+  return [...versions]
+}
+
+function readRollout(value: unknown): ServiceRollout | null {
+  if (!isRecord(value)) return null
+  const version = readVersion(value.version)
+  const percent = value.percent
+  if (!version || typeof percent !== 'number' || !Number.isFinite(percent)) return null
+  return { version, percent: Math.min(100, Math.max(0, percent)) }
+}
+
 /** 解析状态文件；格式不对的部分一律按「没有」处理，永不抛错。 */
 export function parseServiceStatus(text: string, now: Date): ServiceStatus {
   let parsed: unknown
@@ -114,7 +157,11 @@ export function parseServiceStatus(text: string, now: Date): ServiceStatus {
     return emptyServiceStatus
   }
   if (!isRecord(parsed)) return emptyServiceStatus
-  return { maintenance: readMaintenance(parsed.maintenance, now) }
+  return {
+    maintenance: readMaintenance(parsed.maintenance, now),
+    badVersions: readBadVersions(parsed.badVersions),
+    rollout: readRollout(parsed.rollout),
+  }
 }
 
 export interface ServiceStatusReaderOptions {

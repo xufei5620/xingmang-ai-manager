@@ -3,9 +3,12 @@ import type { PlatformNotificationKind } from '../../../electron/platform/contra
 import type { UpdateFailedStep } from '../../../electron/ipc-contract';
 import {
   notificationOptions,
+  updateBubbleTitle,
+  updateCardTitle,
   updateFailureFallback,
   updateFailureLabel,
   updateFailureLabels,
+  withdrawnVersionAdvice,
 } from './business';
 
 describe('renderer-v2 notification settings registry', () => {
@@ -57,5 +60,26 @@ describe('renderer-v2 update failure labels', () => {
     expect(updateFailureLabel(null)).toEqual(updateFailureFallback);
     expect(updateFailureLabel(undefined)).toEqual(updateFailureFallback);
     expect(updateFailureFallback.title).not.toContain('检查');
+  });
+});
+
+describe('renderer-v2 withdrawn version and rollback wording', () => {
+  const base = { currentVersion: '0.2.10', availableVersion: null, rollback: false, currentVersionWithdrawn: false } as const;
+
+  it('does not call an older version new', () => {
+    const rollback = { ...base, phase: 'available', availableVersion: '0.2.9', rollback: true, currentVersionWithdrawn: true } as const;
+    expect(updateCardTitle(rollback)).toBe('建议退回稳定版本');
+    expect(updateBubbleTitle(rollback)).toBe('建议退回 0.2.9');
+    expect(withdrawnVersionAdvice(rollback)).toContain('建议装回 0.2.9');
+    expect(updateBubbleTitle({ ...base, phase: 'available', availableVersion: '0.2.11' })).toBe('新版本 0.2.11 可以安装');
+  });
+
+  it('says the running version has a known problem when there is nothing to install yet', () => {
+    const stranded = { ...base, phase: 'not-available', currentVersionWithdrawn: true } as const;
+    expect(updateCardTitle(stranded)).toBe('这个版本有已知问题');
+    expect(updateBubbleTitle(stranded)).toBe('这个版本有已知问题');
+    expect(withdrawnVersionAdvice(stranded)).toContain('修好的版本准备好后');
+    expect(withdrawnVersionAdvice({ ...stranded, phase: 'available', availableVersion: '0.2.11' })).toContain('修好的 0.2.11');
+    expect(updateCardTitle({ ...base, phase: 'not-available' })).toBe('已是最新版本');
   });
 });

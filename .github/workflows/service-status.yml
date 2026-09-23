@@ -1,4 +1,5 @@
-# 改更新目录上的 service-status.json：打开或关闭「服务正在维护」提示。
+# 改更新目录上的 service-status.json：打开或关闭「服务正在维护」提示、撤回坏版本、
+# 分批放量。要把线上退回旧版本，用 rollback-release 工作流（它会顺带在这里撤回）。
 # 客户端怎么读见 electron/service-status.ts，一步步的操作见 docs/SERVICE-STATUS.md。
 #
 # 只改这次选了或填了的那几项，其余字段照线上原样保留。凭据与正式发布共用
@@ -22,6 +23,14 @@ on:
         required: false
       until:
         description: 到这个北京时间自动当维护结束（可留空，例 2026-09-24 23:00）
+        type: string
+        required: false
+      bad_versions:
+        description: 撤回的版本（留空不改；写 0.2.10 加入名单，-0.2.10 移出，none 清空）
+        type: string
+        required: false
+      rollout:
+        description: 分批放量（留空不改；写「0.2.11 20」表示先给两成电脑，none 表示全部放开）
         type: string
         required: false
 
@@ -92,6 +101,8 @@ jobs:
           MAINTENANCE_CHOICE: ${{ inputs.maintenance }}
           MAINTENANCE_MESSAGE: ${{ inputs.message }}
           MAINTENANCE_UNTIL: ${{ inputs.until }}
+          BAD_VERSIONS: ${{ inputs.bad_versions }}
+          ROLLOUT: ${{ inputs.rollout }}
         run: |
           set -euo pipefail
           node scripts/service-status.cjs \
@@ -99,7 +110,9 @@ jobs:
             --output "$RUNNER_TEMP/service-status.json" \
             --maintenance "${MAINTENANCE_CHOICE%%:*}" \
             --message "$MAINTENANCE_MESSAGE" \
-            --until "$MAINTENANCE_UNTIL"
+            --until "$MAINTENANCE_UNTIL" \
+            --bad-versions "$BAD_VERSIONS" \
+            --rollout "$ROLLOUT"
           echo "将要发布："
           cat "$RUNNER_TEMP/service-status.json"
 

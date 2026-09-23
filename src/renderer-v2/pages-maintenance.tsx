@@ -67,7 +67,8 @@ import {
   settingsGroups,
   skinOptions,
   updateFailureLabel,
-  updateLabels,
+  updateCardTitle,
+  withdrawnVersionAdvice,
 } from './registry/business'
 import { tools } from './registry/tools'
 import { clientConnections } from './registry/clients'
@@ -949,7 +950,7 @@ export function UpdatesPage({
       />
       <div className="v2-business-update-grid">
         <Card
-          title={update ? updateLabels[update.phase] : '正在读取更新状态…'}
+          title={update ? updateCardTitle(update) : '正在读取更新状态…'}
           actions={action}
         >
           <ListRow
@@ -958,6 +959,14 @@ export function UpdatesPage({
             meta={update?.currentVersion ?? '暂未读到'}
           />
           <ListRow title="上次检查" meta={displayDate(update?.checkedAt)} />
+          {update?.currentVersionWithdrawn && (
+            <Notice
+              tone="warn"
+              title="这个版本有已知问题"
+              body={withdrawnVersionAdvice(update)}
+              testId="updates-current-withdrawn"
+            />
+          )}
           {update?.unsignedChannel && (
             <ListRow
               title="更新方式"
