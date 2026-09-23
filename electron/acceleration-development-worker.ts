@@ -1,6 +1,6 @@
 import path from 'node:path'
 import { accelerationDevelopmentDirectory, accelerationProxyJournalPath, parseAccelerationDevelopmentConfig, parseAccelerationEntitlementSource } from './acceleration-development-host'
-import { classifyAccelerationWorkerFailure, createAccelerationDevelopmentBackend } from './acceleration-development-backend'
+import { accelerationShutdownRetryDelayMs, classifyAccelerationWorkerFailure, createAccelerationDevelopmentBackend } from './acceleration-development-backend'
 import { createAccelerationConflictDetector } from './acceleration-conflict'
 import { accelerationLinesFromProfile, createMihomoRuntime } from './acceleration-mihomo-runtime'
 import { createWindowsSystemProxy } from './platform/windows-system-proxy'
@@ -134,6 +134,7 @@ async function handle(message: unknown): Promise<unknown> {
     return
   }
   if (request.operation === 'resume') return backend.resume()
+  if (request.operation === 'idle') return backend.isIdle()
   if (typeof request.scope !== 'string' || !/^(xm|api)-account:[1-9]\d{0,15}$/.test(request.scope)) throw new Error('加速账号参数无效。')
   if (request.operation === 'get') return backend.getAccelerationState(request.scope)
   if (request.operation === 'list-lines') return backend.listAccelerationLines?.(request.scope) ?? []
@@ -158,6 +159,7 @@ async function shutdown(): Promise<void> {
   if (shuttingDown) return
   shuttingDown = true
   let stopped = false
+  let failedAttempts = 0
   // Parent crashes cannot leave the proxy pointing at an orphaned helper.
   // Failed restoration stays alive for retry instead of killing the live core.
   while (!stopped) {
@@ -173,7 +175,8 @@ async function shutdown(): Promise<void> {
       })
       stopped = true
     } catch {
-      await new Promise((resolve) => setTimeout(resolve, 1000))
+      failedAttempts += 1
+      await new Promise((resolve) => setTimeout(resolve, accelerationShutdownRetryDelayMs(failedAttempts)))
     }
   }
   process.exit(0)

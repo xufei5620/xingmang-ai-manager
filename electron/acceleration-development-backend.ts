@@ -76,6 +76,11 @@ export interface AccelerationDevelopmentBackend extends AccelerationApi {
   startDownloadRoute(scope: string): Promise<AccelerationDownloadRouteResult>
   stopDownloadRoute(): Promise<void>
   recover(): Promise<void>
+  /**
+   * 没有会话、没有下载线路、内核没在跑、网络设置也都还原完了：这时让辅助
+   * 进程退出不会丢掉任何东西。排在队列里答，免得和正在进行的连接抢着判断。
+   */
+  isIdle(): Promise<boolean>
   notifyRuntimeExit(): Promise<void>
   /**
    * 电脑要睡了：冻结正在跑的会话的计时并撤掉到期定时器。刻意同步、不排队——
@@ -120,6 +125,15 @@ interface Session {
  * 一样写 startedAt，stopDownloadRoute 要结算 usedMs）。
  */
 export const downloadRouteBillsFreeAllowance = false
+
+/**
+ * 主程序没了、辅助进程还原网络设置一直失败时，下一次重试等多久。每轮要起
+ * 两个 PowerShell，以前固定一秒一轮、永不停，一台还原不了的电脑会被它一直
+ * 占着。第一次仍是一秒（多数失败只是锁被占着），之后翻倍，最多五分钟一轮。
+ */
+export function accelerationShutdownRetryDelayMs(failedAttempts: number): number {
+  return Math.min(300_000, 1_000 * 2 ** Math.max(0, Math.min(failedAttempts - 1, 9)))
+}
 
 const baseTotalMs = accelerationTrialSeconds * 1000
 function accountTotalMs(entry: AccountUsage): number {
@@ -476,6 +490,11 @@ export function createAccelerationDevelopmentBackend(options: AccelerationDevelo
     getAccelerationState(scope) {
       assertScope(scope)
       return enqueue(() => inspect(scope))
+    },
+    isIdle() {
+      return enqueue(async () => !closing && !disposed && !needsRecovery && recoveryError === null
+        && !session && cancelTimer === null && !probeNeedsCleanup
+        && downloadHolders === 0 && !downloadRoute && !options.runtime.isRunning())
     },
     redeemAccelerationCode(scope, code): Promise<AccelerationRedemptionResult> {
       assertScope(scope)

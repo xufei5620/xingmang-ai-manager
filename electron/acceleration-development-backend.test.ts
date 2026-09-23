@@ -2,7 +2,7 @@ import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { classifyAccelerationStartFailure, classifyAccelerationWorkerFailure, createAccelerationDevelopmentBackend } from './acceleration-development-backend'
+import { accelerationShutdownRetryDelayMs, classifyAccelerationStartFailure, classifyAccelerationWorkerFailure, createAccelerationDevelopmentBackend } from './acceleration-development-backend'
 import { accelerationBonusCode, accelerationBonusSeconds, accelerationConflictNotice, accelerationTrialSeconds, type AccelerationConflictKind } from './acceleration-contract'
 import * as safe from './safe-local-data'
 
@@ -1145,5 +1145,40 @@ describe('classifyAccelerationWorkerFailure', () => {
   it('reports an unrecognised message as unknown rather than guessing at it', () => {
     expect(classifyAccelerationWorkerFailure(new Error('something else entirely'))).toBe('unknown')
     expect(classifyAccelerationWorkerFailure(null)).toBe('unknown')
+  })
+})
+
+describe('idle helper check', () => {
+  it('is idle after startup recovery and again once acceleration has stopped', async () => {
+    const test = await setup()
+    await test.backend.recover()
+    expect(await test.backend.isIdle()).toBe(true)
+    await test.backend.startAcceleration(scope, 'system-proxy')
+    expect(await test.backend.isIdle()).toBe(false)
+    await test.backend.stopAcceleration(scope)
+    expect(await test.backend.isIdle()).toBe(true)
+  })
+
+  it('is not idle while a download holds the route', async () => {
+    const test = await setup()
+    await test.backend.startDownloadRoute(scope)
+    expect(await test.backend.isIdle()).toBe(false)
+    await test.backend.stopDownloadRoute()
+    expect(await test.backend.isIdle()).toBe(true)
+  })
+
+  it('is not idle while the network settings still wait to be restored', async () => {
+    const test = await setup()
+    test.proxy.restore.mockRejectedValue(new Error('still pointing at the core'))
+    await expect(test.backend.recover()).rejects.toThrow()
+    expect(await test.backend.isIdle()).toBe(false)
+  })
+})
+
+describe('helper shutdown retry delay', () => {
+  it('starts at one second, doubles and settles at five minutes', () => {
+    expect([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 50].map(accelerationShutdownRetryDelayMs))
+      .toEqual([1_000, 2_000, 4_000, 8_000, 16_000, 32_000, 64_000, 128_000, 256_000, 300_000, 300_000])
+    expect(accelerationShutdownRetryDelayMs(0)).toBe(1_000)
   })
 })
