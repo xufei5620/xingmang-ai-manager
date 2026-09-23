@@ -477,6 +477,31 @@ test('welcome renders the final star orbit and real brand assets in the dark/lig
   }
 })
 
+test('welcome stops every animation when motion is reduced, and on a low-end computer', async () => {
+  function running(page) {
+    // Only keyframe animations: the clicked button's hover transition is not what this is about.
+    return page.evaluate(() => document.getAnimations().filter((animation) => animation instanceof CSSAnimation && animation.playState === 'running').length)
+  }
+  const page = await open('scenario=welcome&motion')
+  try {
+    await page.getByTestId('welcome-orbit-scene').waitFor()
+    assert.equal(await page.getByTestId('welcome-page').getAttribute('data-motion-paused'), 'false')
+    assert.ok(await running(page) > 0, 'the orbit animates when nothing asks it to stop')
+    await page.getByTestId('welcome-motion').click()
+    await page.waitForFunction(() => document.querySelector('[data-testid="welcome-page"]')?.dataset.motionPaused === 'true')
+    // A rule more specific than the pause rule used to keep one ellipse breathing.
+    assert.equal(await running(page), 0)
+  } finally { await page.close() }
+  const lowEnd = await open('scenario=welcome&motion&lowEnd')
+  try {
+    await lowEnd.getByTestId('welcome-orbit-scene').waitFor()
+    assert.equal(await lowEnd.getByTestId('welcome-page').getAttribute('data-motion-paused'), 'true')
+    assert.equal(await running(lowEnd), 0)
+    // Nothing to switch on or off there, so the switch is not offered.
+    assert.equal(await lowEnd.getByTestId('welcome-motion').count(), 0)
+  } finally { await lowEnd.close() }
+})
+
 test('auth and guide default surfaces fit the fixed desktop frame in both themes', async () => {
   for (const theme of ['light', 'dark']) for (const scenario of ['login', 'register', 'recovery', 'guide', 'splash']) {
     const page = await open(`scenario=${scenario}&theme=${theme}`)

@@ -13,6 +13,8 @@ const query = new URLSearchParams(location.search)
 document.documentElement.dataset.theme = query.get('theme') ?? 'light'
 document.documentElement.dataset.skin = query.get('skin') ?? (document.documentElement.dataset.theme === 'dark' ? 'obsidian' : 'dawn')
 document.documentElement.dataset.os = query.get('os') ?? 'win'
+// 与 App.tsx 一致：低配判定由主进程给出，挂在根节点上。
+if (query.has('lowEnd')) document.documentElement.dataset.lowEnd = 'true'
 document.body.style.margin = '0'
 document.body.style.fontFamily = 'var(--font)'
 document.body.style.background = 'var(--bg)'
@@ -42,7 +44,7 @@ const api: AuthApi = {
 }
 declare global { interface Window { authHarness: { release: (method: string) => void; reject: (method: string) => void; switchScope: (scope: string) => void; reopen: () => void } } }
 function Fixture() {
-  const [motion, setMotion] = useState(true)
+  const [motion, setMotion] = useState(!query.has('motion'))
   const [signedIn, setSignedIn] = useState(!query.has('loggedOut'))
   const [tools, setTools] = useState<GuideToolState[]>(['claude', 'codex', 'codexDesktop', 'gemini', 'grok'].map((id) => ({ id: id as GuideToolState['id'], installed: query.has('installed'), configured: query.has('connected'), source: query.has('unknown') ? 'unknown' : query.has('official') ? 'official' : 'account', runtimeReady: query.has('runtime'), pythonReady: query.has('python'), officialLoginRequired: query.has('officialLoginRequired'), installMode: 'managed', runtimeAutoPrepare: query.has('auto'), pythonAutoPrepare: query.has('auto') })))
   const [resumeScope, setResumeScope] = useState('site:7')

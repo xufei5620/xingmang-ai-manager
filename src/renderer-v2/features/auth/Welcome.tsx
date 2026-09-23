@@ -20,6 +20,23 @@ export interface WelcomeProps {
   supportQrUrl?: string
 }
 
+/**
+ * 低配电脑由主进程判一次，结论挂在根节点的 data-low-end 上（App.tsx）。星空已经据此
+ * 只画静态一帧；欢迎页的星轨这些 CSS 动画同样要停，否则老电脑上光这一页就占一大截 CPU。
+ */
+function useLowEndDevice(): boolean {
+  const [lowEnd, setLowEnd] = useState(() => typeof document !== 'undefined' && document.documentElement.dataset.lowEnd === 'true')
+  useEffect(() => {
+    const root = document.documentElement
+    const update = () => setLowEnd(root.dataset.lowEnd === 'true')
+    update()
+    const observer = new MutationObserver(update)
+    observer.observe(root, { attributes: true, attributeFilter: ['data-low-end'] })
+    return () => observer.disconnect()
+  }, [])
+  return lowEnd
+}
+
 export function Welcome({ onLogin, onRegister, onSteps, onHelp, onLegal, reducedMotion = false, onReducedMotionChange, environmentLabel = '环境待检测', keyStatusLabel = '登录后确认连接', supportQrUrl }: WelcomeProps) {
   const [systemReduced, setSystemReduced] = useState(() => typeof matchMedia !== 'undefined' && matchMedia('(prefers-reduced-motion: reduce)').matches)
   useEffect(() => {
@@ -28,7 +45,8 @@ export function Welcome({ onLogin, onRegister, onSteps, onHelp, onLegal, reduced
     media.addEventListener('change', update)
     return () => media.removeEventListener('change', update)
   }, [])
-  const paused = reducedMotion || systemReduced
+  const lowEnd = useLowEndDevice()
+  const paused = reducedMotion || systemReduced || lowEnd
   const providers = tools.filter((tool) => tool.kind === 'cli').sort((a, b) => a.shortcutIndex - b.shortcutIndex)
   return <AuthWindow><main className="auth-welcome welcome-page welcome-v3" data-testid="welcome-page" data-motion-paused={paused}>
     <Starfield paused={paused} />
@@ -39,7 +57,7 @@ export function Welcome({ onLogin, onRegister, onSteps, onHelp, onLegal, reduced
         <p className="auth-welcome-lead">一个账号，四家工具。环境、安装、Key 全都由这里帮你配好，不用敲命令，不用改配置文件。</p>
         <div className="auth-welcome-brands">{providers.map((tool) => <span key={tool.id}><BrandIcon tool={tool.id} size={22} variant="xs" />{tool.name}</span>)}</div>
         <div className="auth-welcome-cta"><Button variant="primary" onClick={onLogin} testId="welcome-login">登录</Button><Button onClick={onRegister} testId="welcome-register">注册新账号</Button></div>
-        <div className="auth-welcome-links"><Button variant="ghost" size="xs" onClick={onSteps} testId="welcome-steps">先看看使用步骤</Button><Button variant="ghost" size="xs" onClick={() => onReducedMotionChange(!reducedMotion)} testId="welcome-motion">{reducedMotion ? '开启动画' : '减少动画'}</Button></div>
+        <div className="auth-welcome-links"><Button variant="ghost" size="xs" onClick={onSteps} testId="welcome-steps">先看看使用步骤</Button>{!lowEnd && <Button variant="ghost" size="xs" onClick={() => onReducedMotionChange(!reducedMotion)} testId="welcome-motion">{reducedMotion ? '开启动画' : '减少动画'}</Button>}</div>
         <div className="auth-welcome-legal"><Button variant="ghost" size="xs" onClick={() => onLegal('user-agreement')} testId="welcome-terms">用户协议</Button><Button variant="ghost" size="xs" onClick={() => onLegal('privacy-policy')} testId="welcome-privacy">隐私政策</Button></div>
       </div>
       <div className="auth-orbit-scene" aria-label="星芒与四家工具的星轨" data-testid="welcome-orbit-scene">
