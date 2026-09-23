@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   buildCliTerminalAccessPlan,
   buildEnsureUserPathScript,
+  createCliTerminalAccess,
   ensureDirectoryOnWindowsUserPath,
   isNpmPowerShellShim,
   parseEnsureUserPathOutput,
@@ -322,5 +323,153 @@ describe('buildCliTerminalAccessPlan', () => {
     expect(buildCliTerminalAccessPlan({ ...base, source: 'native' }).binDirectory).toBeNull()
     expect(buildCliTerminalAccessPlan({ ...base, npmPrefix: null }).binDirectory).toBeNull()
     expect(buildCliTerminalAccessPlan({ ...base, platform: 'darwin' }).binDirectory).toBeNull()
+  })
+})
+
+// Runs on every platform, real Windows included: the Windows behaviour here is
+// plain file removal, so only the platform the service reports is faked.
+describe('createCliTerminalAccess', () => {
+  function npmPrefixWithShims(...commands: Array<'claude' | 'codex'>): string {
+    const prefix = binDirectory()
+    for (const command of commands) {
+      fs.writeFileSync(path.join(prefix, `${command}.cmd`), '@ECHO off\r\n')
+      fs.writeFileSync(path.join(prefix, `${command}.ps1`), command === 'claude' ? claudeShim : codexShim)
+    }
+    return prefix
+  }
+
+  function npmInstall(prefix: string) {
+    return { source: 'npm' as const, npmPrefix: prefix }
+  }
+
+  it('sweeps the shims of detected installs once, without touching PATH', async () => {
+    const prefix = npmPrefixWithShims('claude', 'codex')
+    const ensureUserPath = vi.fn(async () => 'added' as const)
+    const access = createCliTerminalAccess({
+      platform: 'win32',
+      executionMode: 'same-user',
+      isManaged: () => false,
+      ensureUserPath,
+    })
+    const targets = [
+      { provider: 'claude' as const, installation: npmInstall(prefix) },
+      { provider: 'codex' as const, installation: npmInstall(prefix) },
+    ]
+
+    await access.sweepOnce(targets)
+
+    expect(fs.existsSync(path.join(prefix, 'claude.ps1'))).toBe(false)
+    expect(fs.existsSync(path.join(prefix, 'codex.ps1'))).toBe(false)
+    expect(fs.existsSync(path.join(prefix, 'claude.cmd'))).toBe(true)
+    expect(ensureUserPath).not.toHaveBeenCalled()
+
+    // Only the first scan of a session sweeps.
+    fs.writeFileSync(path.join(prefix, 'claude.ps1'), claudeShim)
+    await access.sweepOnce(targets)
+    expect(fs.existsSync(path.join(prefix, 'claude.ps1'))).toBe(true)
+  })
+
+  it('removes the shim after an install and checks PATH once per directory', async () => {
+    const prefix = npmPrefixWithShims('claude', 'codex')
+    const ensureUserPath = vi.fn(async () => 'added' as const)
+    const access = createCliTerminalAccess({
+      platform: 'win32',
+      executionMode: 'same-user',
+      isManaged: () => false,
+      ensureUserPath,
+    })
+
+    await access.prepare({ provider: 'claude', installation: npmInstall(prefix) }, 'install')
+    await access.prepare({ provider: 'codex', installation: npmInstall(prefix) }, 'install')
+
+    expect(fs.existsSync(path.join(prefix, 'claude.ps1'))).toBe(false)
+    expect(fs.existsSync(path.join(prefix, 'codex.ps1'))).toBe(false)
+    expect(ensureUserPath).toHaveBeenCalledTimes(1)
+    expect(ensureUserPath).toHaveBeenCalledWith(prefix)
+  })
+
+  it('tries PATH again on the next install after a failure and logs the failure', async () => {
+    const prefix = npmPrefixWithShims('claude')
+    const ensureUserPath = vi.fn()
+      .mockRejectedValueOnce(new Error('timed out'))
+      .mockResolvedValueOnce('present')
+    const log = vi.fn()
+    const access = createCliTerminalAccess({
+      platform: 'win32',
+      executionMode: 'same-user',
+      isManaged: () => false,
+      ensureUserPath,
+      log,
+    })
+
+    await access.prepare({ provider: 'claude', installation: npmInstall(prefix) }, 'install')
+    await vi.waitFor(() => expect(log).toHaveBeenCalledWith('warn', 'cli.user-path.failed', expect.any(String), expect.objectContaining({ error: 'timed out' })))
+    await access.prepare({ provider: 'claude', installation: npmInstall(prefix) }, 'install')
+
+    expect(ensureUserPath).toHaveBeenCalledTimes(2)
+  })
+
+  it('logs a shim it cannot read instead of failing the install', async () => {
+    const prefix = binDirectory()
+    fs.writeFileSync(path.join(prefix, 'claude.cmd'), '@ECHO off\r\n')
+    fs.writeFileSync(path.join(prefix, 'claude.ps1'), `${claudeShim}${'#'.repeat(70 * 1024)}`)
+    const log = vi.fn()
+    const access = createCliTerminalAccess({
+      platform: 'win32',
+      executionMode: 'same-user',
+      isManaged: () => false,
+      log,
+    })
+
+    await expect(access.prepare({ provider: 'claude', installation: npmInstall(prefix) }, 'install')).resolves.toBeUndefined()
+
+    expect(fs.existsSync(path.join(prefix, 'claude.ps1'))).toBe(true)
+    expect(log).toHaveBeenCalledWith('warn', 'cli.powershell-shim.failed', expect.any(String), expect.objectContaining({ provider: 'claude' }))
+  })
+
+  it('under an elevated token only touches the managed prefix', async () => {
+    const userPrefix = npmPrefixWithShims('claude')
+    const managedPrefix = npmPrefixWithShims('claude')
+    const access = createCliTerminalAccess({
+      platform: 'win32',
+      executionMode: 'trusted-only',
+      isManaged: (installation) => installation.npmPrefix === managedPrefix,
+    })
+
+    await access.prepare({ provider: 'claude', installation: npmInstall(userPrefix) }, 'install')
+    await access.prepare({ provider: 'claude', installation: npmInstall(managedPrefix) }, 'install')
+
+    expect(fs.existsSync(path.join(userPrefix, 'claude.ps1'))).toBe(true)
+    expect(fs.existsSync(path.join(managedPrefix, 'claude.ps1'))).toBe(false)
+  })
+
+  it('leaves the files alone when the managed check itself fails', async () => {
+    const prefix = npmPrefixWithShims('claude')
+    const access = createCliTerminalAccess({
+      platform: 'win32',
+      executionMode: 'trusted-only',
+      isManaged: () => { throw new Error('未找到可信的 Windows ProgramData 目录') },
+    })
+
+    await access.prepare({ provider: 'claude', installation: npmInstall(prefix) }, 'install')
+
+    expect(fs.existsSync(path.join(prefix, 'claude.ps1'))).toBe(true)
+  })
+
+  it('does nothing on macOS', async () => {
+    const prefix = npmPrefixWithShims('claude')
+    const ensureUserPath = vi.fn(async () => 'added' as const)
+    const access = createCliTerminalAccess({
+      platform: 'darwin',
+      executionMode: 'same-user',
+      isManaged: () => false,
+      ensureUserPath,
+    })
+
+    await access.sweepOnce([{ provider: 'claude', installation: npmInstall(prefix) }])
+    await access.prepare({ provider: 'claude', installation: npmInstall(prefix) }, 'install')
+
+    expect(fs.existsSync(path.join(prefix, 'claude.ps1'))).toBe(true)
+    expect(ensureUserPath).not.toHaveBeenCalled()
   })
 })

@@ -3,9 +3,10 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { promisify } from 'node:util'
 import { readBoundedUtf8File } from './bounded-file'
+import { cliCatalog, type ProviderId } from './catalog'
 import { trustedCommandEnvironment } from './command-runner'
 import { assertNoReparseComponents } from './safe-local-data'
-import type { CliInstallSource } from './tool-installation'
+import type { CliInstallation, CliInstallSource } from './tool-installation'
 import { resolveWindowsPowerShellExecutable } from './windows-elevation'
 
 const execFileAsync = promisify(execFile)
@@ -230,4 +231,102 @@ export function buildCliTerminalAccessPlan(input: CliTerminalAccessInput): CliTe
   if (input.platform !== 'win32' || input.source !== 'npm' || !input.npmPrefix) return skip
   if (input.executionMode === 'trusted-only' && !input.managed) return skip
   return { binDirectory: input.npmPrefix, ensureUserPath: input.reason === 'install' }
+}
+
+export interface CliTerminalAccessTarget {
+  provider: ProviderId
+  installation: Pick<CliInstallation, 'source' | 'npmPrefix'>
+}
+
+export interface CliTerminalAccessOptions {
+  platform: NodeJS.Platform
+  executionMode: 'trusted-only' | 'same-user'
+  /** Whether an install lives in the app's admin-owned managed prefix; may throw. */
+  isManaged: (installation: CliTerminalAccessTarget['installation']) => boolean
+  /** Absent = never touch PATH (tests and hosts other than the desktop app). */
+  ensureUserPath?: (directory: string) => Promise<UserPathOutcome>
+  log?: (level: 'info' | 'warn', event: string, message: string, detail: Record<string, unknown>) => void
+  /** Error text for the log; the caller redacts home directories and secrets. */
+  describeError?: (error: unknown) => string
+}
+
+export interface CliTerminalAccess {
+  /** Never throws; failures only reach the log. */
+  prepare(target: CliTerminalAccessTarget, reason: 'install' | 'startup'): Promise<void>
+  /** The first call sweeps every detected install; later calls do nothing. */
+  sweepOnce(targets: readonly CliTerminalAccessTarget[]): Promise<void>
+}
+
+/**
+ * Everything the service does so a user's own terminal can run a CLI by name,
+ * kept out of the scan so it can be exercised on a real Windows file system
+ * without the rest of the machine probes.
+ */
+export function createCliTerminalAccess(options: CliTerminalAccessOptions): CliTerminalAccess {
+  const describe = options.describeError ?? ((error: unknown) => error instanceof Error ? error.message : String(error))
+  // One directory is checked once per session: the four CLIs usually share a
+  // prefix, and two installs finishing together must not both append it.
+  const userPathChecks = new Map<string, Promise<void>>()
+  let swept = false
+
+  async function prepare(target: CliTerminalAccessTarget, reason: 'install' | 'startup'): Promise<void> {
+    const { provider, installation } = target
+    let managed = false
+    if (options.platform === 'win32' && options.executionMode === 'trusted-only') {
+      try { managed = options.isManaged(installation) } catch { managed = false }
+    }
+    const plan = buildCliTerminalAccessPlan({
+      platform: options.platform,
+      executionMode: options.executionMode,
+      source: installation.source,
+      npmPrefix: installation.npmPrefix,
+      managed,
+      reason,
+    })
+    const binDirectory = plan.binDirectory
+    if (!binDirectory) return
+    const definition = cliCatalog[provider]
+    try {
+      const removal = await removeNpmPowerShellShim({
+        binDirectory,
+        command: definition.command,
+        packageName: definition.packageName,
+      })
+      if (removal === 'removed') {
+        options.log?.('info', 'cli.powershell-shim.removed', `${definition.name} 的 PowerShell 启动文件已移除，改用 .cmd`, { provider, reason })
+      }
+    } catch (error) {
+      options.log?.('warn', 'cli.powershell-shim.failed', `${definition.name} 的 PowerShell 启动文件没有清理成功`, {
+        provider,
+        reason,
+        error: describe(error),
+      })
+    }
+    const ensureUserPath = options.ensureUserPath
+    if (!plan.ensureUserPath || !ensureUserPath) return
+    const key = path.win32.resolve(binDirectory).toLowerCase()
+    if (userPathChecks.has(key)) return
+    // Not awaited: a cold PowerShell start takes tens of seconds on a slow
+    // machine, and the "installed" message should not wait for it.
+    userPathChecks.set(key, ensureUserPath(binDirectory).then((outcome) => {
+      options.log?.('info', 'cli.user-path.checked', outcome === 'added'
+        ? '工具目录已加入当前用户的 PATH，新开的终端即可直接使用'
+        : '工具目录已在 PATH 中', { provider, outcome })
+    }, (error: unknown) => {
+      // Forget the failure so the next install tries again.
+      userPathChecks.delete(key)
+      options.log?.('warn', 'cli.user-path.failed', '工具目录没有加入当前用户的 PATH', {
+        provider,
+        error: describe(error),
+      })
+    }))
+  }
+
+  async function sweepOnce(targets: readonly CliTerminalAccessTarget[]): Promise<void> {
+    if (swept || options.platform !== 'win32') return
+    swept = true
+    await Promise.all(targets.map((target) => prepare(target, 'startup')))
+  }
+
+  return { prepare, sweepOnce }
 }
