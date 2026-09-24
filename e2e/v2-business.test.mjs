@@ -299,6 +299,23 @@ test('revoking a key a hand-configured tool is using never claims a fresh key an
   } finally { await page.close() }
 })
 
+test('revoking the only key on the last page steps back to a real page instead of showing 2 / 1', async () => {
+  const page = await fixture('page=account&keyCount=21')
+  try {
+    await page.getByRole('tab', { name: '密钥', exact: true }).click()
+    await page.getByRole('button', { name: '密钥 paged-key-1 的更多操作', exact: true }).waitFor()
+    await page.getByRole('button', { name: '下一页', exact: true }).click()
+    await page.getByRole('button', { name: '密钥 paged-key-21 的更多操作', exact: true }).waitFor()
+    await page.getByText('2 / 2', { exact: true }).waitFor()
+    await page.getByRole('button', { name: '密钥 paged-key-21 的更多操作', exact: true }).click()
+    await page.getByRole('menuitem', { name: '撤销密钥', exact: true }).click()
+    await page.getByRole('dialog', { name: '撤销这把密钥？', exact: true }).getByRole('button', { name: '确认撤销', exact: true }).click()
+    await page.getByRole('button', { name: '密钥 paged-key-1 的更多操作', exact: true }).waitFor()
+    await page.getByText('1 / 1', { exact: true }).waitFor()
+    assert.equal(await page.getByText('2 / 1', { exact: true }).count(), 0)
+  } finally { await page.close() }
+})
+
 test('revoking a key no tool is using keeps the old confirmation and never rewrites a tool', async () => {
   const page = await fixture('page=account')
   try {

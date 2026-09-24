@@ -379,6 +379,14 @@ export function ListState({
     </>
   )
 }
+/**
+ * 当前页超出了总页数（比如撤销了末页最后一项）时该退到哪一页；没超出返回 null。
+ * 不收敛的话列表是空的，页码写「2 / 1」（#496）。
+ */
+export function overflowedPage(page: number, total: number, size = 20): number | null {
+  const pages = Math.max(1, Math.ceil(total / size))
+  return page > pages ? pages : null
+}
 export function Pagination({
   page,
   total,

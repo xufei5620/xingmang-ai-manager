@@ -44,6 +44,7 @@ import {
   errorMessage,
   ListState,
   Pagination,
+  overflowedPage,
   ResultNotice,
   useOperation,
   useResource,
@@ -898,6 +899,12 @@ function AccountKeys({
   )
   const resource = useResource(load)
   const operation = useOperation()
+  const keyTotal = resource.data?.page.total
+  useEffect(() => {
+    if (keyTotal === undefined) return
+    const fallback = overflowedPage(page, keyTotal)
+    if (fallback !== null) setPage(fallback)
+  }, [keyTotal, page])
   const [editing, setEditing] = useState<AccountKey | 'new' | null>(null)
   const [name, setName] = useState('')
   const [group, setGroup] = useState('')
