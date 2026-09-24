@@ -2319,7 +2319,9 @@ describe.runIf(process.platform === 'darwin')('Darwin managed npm update integra
     expect(fs.readFileSync(activeCommand, 'utf8')).toContain('old-cli')
     expect(lifecyclePrefix).not.toBe(activePrefix)
     expect(path.relative(cacheRoot, lifecyclePrefix!)).not.toMatch(/^\.\.(?:[/\\]|$)/)
-    expect(resolveCliInstallation).toHaveBeenCalledTimes(1)
+    // 一次是安装前确认现有那份归 npm 通道管（#481），一次是装完后的校验；
+    // 两次都对着托管 npm 全局根（见 resolveCliInstallation 里的断言）。
+    expect(resolveCliInstallation).toHaveBeenCalledTimes(2)
     expect(target.send).not.toHaveBeenCalledWith(
       'cli:install-progress',
       expect.objectContaining({ state: 'success' }),
