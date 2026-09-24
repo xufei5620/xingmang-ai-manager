@@ -157,6 +157,12 @@ export interface ProbeRunningCliProcessesOptions {
     argv: string[],
     options: { env: NodeJS.ProcessEnv; timeoutMs: number; maxOutputBytes: number },
   ) => Promise<string>
+  /**
+   * Overrides the system PowerShell lookup. Production never passes it; tests do,
+   * so the Windows branch can be checked on every platform without a real
+   * powershell.exe, whose cold start on a busy CI runner outlasts any budget.
+   */
+  resolvePowerShell?: () => string
   timeoutMs?: number
 }
 
@@ -195,7 +201,7 @@ export async function probeRunningCliProcesses(
   try {
     if (platform === 'win32') {
       const stdout = await runProbe(
-        resolveWindowsPowerShellExecutable(),
+        (options.resolvePowerShell ?? resolveWindowsPowerShellExecutable)(),
         ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', buildWindowsCliProcessProbeScript()],
         {
           env: { ...trustedCommandEnvironment(), [cliProcessRootEnvironmentVariable]: root },
