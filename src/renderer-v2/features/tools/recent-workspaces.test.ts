@@ -163,6 +163,35 @@ describe('latestSessionIdsByWorkspace', () => {
     expect([...ids]).toEqual(['claude:new'])
   })
 
+  // #497：归档的最新一条不占位置，同目录较旧、还在用的那条照样能接着聊。
+  it('skips an archived newest record so the older active one stays resumable', () => {
+    const ids = latestSessionIdsByWorkspace([
+      session({ id: 'codex:archived', provider: 'codex', cwd: 'C:\\work\\alpha', archived: true }),
+      session({ id: 'codex:active', provider: 'codex', cwd: 'C:\\work\\alpha' }),
+      session({ id: 'codex:older', provider: 'codex', cwd: 'C:\\work\\alpha' }),
+    ])
+
+    expect([...ids]).toEqual(['codex:active'])
+  })
+
+  it('gives the button back to the newest record once it is restored', () => {
+    const ids = latestSessionIdsByWorkspace([
+      session({ id: 'codex:restored', provider: 'codex', cwd: 'C:\\work\\alpha', archived: false }),
+      session({ id: 'codex:active', provider: 'codex', cwd: 'C:\\work\\alpha' }),
+    ])
+
+    expect([...ids]).toEqual(['codex:restored'])
+  })
+
+  it('offers nothing for a folder whose records are all archived', () => {
+    const ids = latestSessionIdsByWorkspace([
+      session({ id: 'codex:gone', provider: 'codex', cwd: 'C:\\work\\alpha', archived: true }),
+      session({ id: 'codex:gone-too', provider: 'codex', cwd: 'C:\\work\\alpha', archived: true }),
+    ])
+
+    expect([...ids]).toEqual([])
+  })
+
   // 没记下目录的记录没法接：CLI 要按目录才找得到会话。
   it('offers nothing for a record with no folder', () => {
     expect([...latestSessionIdsByWorkspace([session({ id: 'claude:blank', cwd: '   ' })])])

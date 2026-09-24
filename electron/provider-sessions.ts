@@ -117,6 +117,7 @@ export interface CodexSessionReader {
     sessionId: string
     outputPath: string
     messages: number
+    truncated?: boolean
   }>
 }
 
@@ -961,7 +962,7 @@ export class ProviderSessionsService {
     if (provider === 'codex') {
       const nativeId = id.slice('codex:'.length)
       const exported = await this.codexService.exportMarkdown(nativeId, destinationPath)
-      return { id, provider, outputPath: exported.outputPath, messages: exported.messages, truncated: false }
+      return { id, provider, outputPath: exported.outputPath, messages: exported.messages, truncated: exported.truncated === true }
     }
     const session = await this.resolveExternalSummary(provider, id)
     let outputPath = path.resolve(destinationPath)

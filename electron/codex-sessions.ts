@@ -96,6 +96,8 @@ export interface CodexSessionExportResult {
   sessionId: string
   outputPath: string
   messages: number
+  /** 源记录里有读不出来的行（损坏或超长），导出文件因此不完整。缺省 = 完整（旧行为）。 */
+  truncated?: boolean
 }
 
 export interface CodexSessionsCapabilities {
@@ -934,7 +936,8 @@ export class CodexSessionsService {
       session: toSummary(row, this.codexHome),
       messages,
       messageStats,
-      messagesTruncated: messageStats.total > messages.length,
+      // 跳过的坏行也是看不到的内容（#491），和只留最近若干条一样算「不完整」。
+      messagesTruncated: messageStats.total > messages.length || messageStats.invalidLines > 0,
     }
   }
 
@@ -964,9 +967,14 @@ export class CodexSessionsService {
       const stats = await streamMessages(rolloutPath, this.maxJsonLineBytes, async (message) => {
         await writeChunk(output, `## ${markdownHeadingText(roleLabel(message.role))}\n\n${message.text}\n\n`)
       })
+      // 与其它工具的导出同一句话（provider-sessions.ts）：用户拿它当备份，缺了内容必须写在文件里。
+      const truncated = stats.invalidLines > 0
+      if (truncated) {
+        await writeChunk(output, '> 注意：源会话超过安全读取上限或含有损坏记录，本导出文件已明确标记为不完整。\n')
+      }
       await endStream(output)
       await fsPromises.rename(tempPath, outputPath)
-      return { sessionId, outputPath, messages: stats.total }
+      return { sessionId, outputPath, messages: stats.total, truncated }
     } catch (error) {
       output.destroy()
       await fsPromises.rm(tempPath, { force: true })

@@ -370,11 +370,14 @@ describe('CodexSessionsService', () => {
     const detail = await sessions.detail('session-1')
     expect(detail.messages.map((message) => message.text)).toEqual(['请检查项目', '检查完成'])
     expect(detail.messageStats).toMatchObject({ total: 2, user: 1, assistant: 1, invalidLines: 1 })
+    // #491: a skipped line is missing content, so the preview is not complete either.
+    expect(detail.messagesTruncated).toBe(true)
 
     const outputPath = path.join(data.root, 'exports', 'session.md')
     const exported = await sessions.exportMarkdown('session-1', outputPath)
-    expect(exported).toMatchObject({ sessionId: 'session-1', outputPath, messages: 2 })
+    expect(exported).toMatchObject({ sessionId: 'session-1', outputPath, messages: 2, truncated: true })
     expect(fs.readFileSync(outputPath, 'utf8')).toContain('## Codex\n\n检查完成')
+    expect(fs.readFileSync(outputPath, 'utf8')).toContain('本导出文件已明确标记为不完整')
 
     const reExported = await sessions.exportMarkdown('session-1', outputPath)
     expect(reExported).toMatchObject({ sessionId: 'session-1', outputPath, messages: 2 })
@@ -415,6 +418,23 @@ describe('CodexSessionsService', () => {
 
     expect(detail.messages.map((message) => message.text)).toEqual(['请检查项目', '检查完成', '后续消息'])
     expect(detail.messageStats).toMatchObject({ total: 3, invalidLines: 1 })
+    expect(detail.messagesTruncated).toBe(true)
+    const outputPath = path.join(data.root, 'exports', 'oversized.md')
+    await expect(sessions.exportMarkdown('session-1', outputPath)).resolves.toMatchObject({ messages: 3, truncated: true })
+    expect(fs.readFileSync(outputPath, 'utf8')).toContain('## Codex\n\n后续消息')
+    expect(fs.readFileSync(outputPath, 'utf8')).toContain('本导出文件已明确标记为不完整')
+  })
+
+  it('does not mark an intact session as incomplete', async () => {
+    const data = fixture('session-1')
+    const database = createThreadsDatabase(data.databasePath)
+    insertThread(database, { id: 'session-1', rolloutPath: data.rolloutPath })
+    database.close()
+    const sessions = service(data)
+    expect((await sessions.detail('session-1')).messagesTruncated).toBe(false)
+    const outputPath = path.join(data.root, 'exports', 'intact.md')
+    await expect(sessions.exportMarkdown('session-1', outputPath)).resolves.toMatchObject({ messages: 2, truncated: false })
+    expect(fs.readFileSync(outputPath, 'utf8')).not.toContain('不完整')
   })
 
   it('creates an online SQLite backup before archive and restores the original active path', async () => {
