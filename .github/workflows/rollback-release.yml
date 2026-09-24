@@ -18,12 +18,14 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: service-status
-  cancel-in-progress: false
-
 jobs:
   rollback:
+    # 与 publish-release 的 publish 作业、service-status 共用一个并发组（#492）。回滚
+    # 读线上清单与状态文件、再写回旧清单与撤回名单；正式发布同时在写根目录清单的话，
+    # 两边会在「读」与「写」之间互相盖掉，撤回名单与实际线上版本就对不上了。
+    concurrency:
+      group: update-feed
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     environment: release
     timeout-minutes: 30
