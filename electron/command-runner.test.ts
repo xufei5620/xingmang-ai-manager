@@ -299,6 +299,19 @@ describe('secure command runner', () => {
     expect(entries.indexOf('/custom/python')).toBeLessThan(entries.indexOf(python))
   })
 
+  it.runIf(process.platform !== 'darwin')('finds the app-installed Git without restarting, behind the inherited PATH', () => {
+    const localAppData = path.join(os.tmpdir(), 'xingmang-local-app-data')
+    const programFiles = path.join(os.tmpdir(), 'xingmang-program-files')
+    const environment = commandEnvironment({ PATH: '/custom/git', LOCALAPPDATA: localAppData, ProgramFiles: programFiles })
+    const entries = environment.PATH?.split(path.delimiter) ?? []
+    const userGit = path.join(localAppData, 'Programs', 'Git', 'cmd')
+    const machineGit = path.join(programFiles, 'Git', 'cmd')
+
+    expect(entries).toContain(userGit)
+    expect(entries).toContain(machineGit)
+    expect(entries.indexOf('/custom/git')).toBeLessThan(entries.indexOf(userGit))
+  })
+
   it.runIf(process.platform === 'darwin')('orders deterministic macOS command paths before inherited PATH entries', () => {
     const environment = commandEnvironment({
       PATH: '/usr/bin:/custom/inherited:/opt/homebrew/bin',

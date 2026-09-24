@@ -835,8 +835,8 @@ describe('diagnostics', () => {
     const git = report.items.find((item) => item.code === 'RUNTIME_GIT')
     expect(git).toMatchObject({ state: 'warn', details: { required: false, installed: false } })
     // Windows 依赖是这份夹具的平台；提示要说清楚缺了会怎样，而不只是「未安装」。
-    expect(git?.summary).toContain('PowerShell')
-    expect(git?.summary).toContain('git-scm.com')
+    expect(git?.summary).toContain('Claude Code')
+    expect(git?.summary).toContain('安装 Git')
   })
 
   it('explains the macOS git/python3 shims instead of a bare "not installed"', async () => {

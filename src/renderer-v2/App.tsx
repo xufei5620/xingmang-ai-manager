@@ -3,7 +3,6 @@ import { RefreshCw } from 'lucide-react'
 import QRCode from 'qrcode'
 import type { AccountSessionState, AccountSourceTarget, AppSettingsV2, CliLaunchMode, ExternalDeepLink, ExternalToolId, LegalDocumentKind, PlatformCapabilities, ProviderId, UpdateSnapshot, XingmangApi } from '../../electron/ipc-contract'
 import { resolveRelaySite, resolveSupportServiceUrl } from '../../electron/relay-sites'
-import { gitWindowsDownloadUrl } from '../../electron/git-runtime'
 import { Shell as AppFrame } from './features/shell/Shell'
 import { createAppApi } from './features/app/api'
 import { AuthFlow, LegalDocument, Splash, StartGuide, Welcome, createAuthApi, guideOfficialLoginRequired, type AuthMode, type GuideToolState } from './features/auth'
@@ -580,9 +579,14 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     await toolbox.refresh(true)
   }
   async function installRuntime(runtime: 'node' | 'python' | 'git') {
-    // Git 本产品从不代装（候选 4）：按钮只在 Windows 出现，点了就打开官方下载页，
-    // 其余平台的引导（xcode-select / Homebrew）以文案给出，没有可打开的下载页。
-    if (runtime === 'git') { await app.openExternal(gitWindowsDownloadUrl); return }
+    // Git 按钮只在 Windows 出现（其余平台的装法以文案给出）。以前点了是打开官网让
+    // 客户自己下安装包，小白卡在这一步（yoyo 2026-09-24），现在由主进程按当前用户代装。
+    if (runtime === 'git') {
+      const done = await toolbox.run('git', '正在准备安装 Git', () => toolsApi.installGit())
+      await toolbox.refresh(true)
+      if (done && mounted.current) toast.show('Git 装好了。', 'ok')
+      return
+    }
     const mode = runtime === 'node' ? platform?.nodeRuntimeInstall : platform?.pythonRuntimeInstall
     if (mode !== 'managed') { await app.openExternal(runtime === 'node' ? 'https://nodejs.org/' : 'https://www.python.org/downloads/'); return }
     // 主进程装完带回「要重启 / 要刷新 PATH」两个标记，以前这里直接扔掉（第七批 5）。

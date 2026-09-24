@@ -2086,6 +2086,22 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
       throw error
     }
   })
+  registerTrustedHandler('runtime:install-git', async (event) => {
+    options.runtimeLog.log('info', 'maintenance', 'runtime.git.install.started', '开始自动安装 Git')
+    try {
+      const result = await service.installGitRuntime(event.sender)
+      options.runtimeLog.log('info', 'maintenance', 'runtime.git.install.completed', 'Git 自动安装完成', {
+        action: result.action,
+        source: result.source,
+        version: result.version,
+        architecture: result.architecture,
+      })
+      return result
+    } catch (error) {
+      options.runtimeLog.exception('maintenance', 'runtime.git.install.failed', error)
+      throw error
+    }
+  })
   registerTrustedHandler('cli:install', async (event, provider: unknown, version: unknown) => {
     if (!isProviderId(provider)) throw new Error('未知的 CLI 类型')
     const requestedVersion = parseCliInstallVersion(version)

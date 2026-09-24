@@ -2426,6 +2426,87 @@ describe('Python runtime installation', () => {
   })
 })
 
+describe('Git runtime installation', () => {
+  function gitInstaller() {
+    return vi.fn(async () => ({
+      installed: true as const,
+      action: 'installed' as const,
+      source: 'npmmirror' as const,
+      version: '2.55.0.5',
+      architecture: 'x64' as const,
+      pathRefreshRequired: true,
+    }))
+  }
+
+  it('installs Git on Windows for the current user when none is visible', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-missing-git-runtime-'))
+    temporaryDirectories.push(directory)
+    const installGitRuntime = gitInstaller()
+    const service = createSystemService(
+      new AppSettingsStore(path.join(directory, 'settings.json'), directory),
+      {
+        platform: 'win32',
+        windowsExecutionMode: 'same-user',
+        findExecutable: async () => null,
+        networkLocationFetch: (async () => { throw new Error('offline') }) as unknown as typeof fetch,
+        installGitRuntime,
+      },
+    )
+    const target = { isDestroyed: () => false, send: vi.fn() }
+
+    await expect(service.installGitRuntime(target)).resolves.toMatchObject({ action: 'installed', version: '2.55.0.5' })
+    expect(installGitRuntime).toHaveBeenCalledWith(expect.objectContaining({ temporaryDirectoryMode: 'same-user' }))
+    const options = (installGitRuntime.mock.calls[0] as unknown as [{ onProgress(progress: unknown): void }])[0]
+    options.onProgress({ phase: 'downloading', source: 'npmmirror', message: '正在从国内镜像下载 Git', percent: 10 })
+    expect(target.send).toHaveBeenCalledWith('runtime:git-install-progress', expect.objectContaining({ phase: 'downloading' }))
+  })
+
+  it('does not reinstall a Git that is already visible', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-existing-git-runtime-'))
+    temporaryDirectories.push(directory)
+    const installGitRuntime = gitInstaller()
+    const service = createSystemService(
+      new AppSettingsStore(path.join(directory, 'settings.json'), directory),
+      {
+        platform: 'win32',
+        windowsExecutionMode: 'same-user',
+        findExecutable: async (command) => command === 'git' ? 'C:\\Program Files\\Git\\cmd\\git.exe' : null,
+        runCommand: async (spec) => ({
+          executable: spec.executable, argv: [...spec.argv], exitCode: 0, signal: null,
+          stdout: 'git version 2.43.0.windows.1\n', stderr: '', outputBytes: 29, durationMs: 1,
+        }),
+        installGitRuntime,
+      },
+    )
+    const target = { isDestroyed: () => false, send: vi.fn() }
+
+    await expect(service.installGitRuntime(target)).resolves.toMatchObject({
+      action: 'unchanged',
+      version: '2.43.0',
+      pathRefreshRequired: false,
+    })
+    expect(installGitRuntime).not.toHaveBeenCalled()
+    expect(target.send).toHaveBeenCalledWith(
+      'runtime:git-install-progress',
+      expect.objectContaining({ phase: 'complete', message: expect.stringContaining('不用重复安装') }),
+    )
+  })
+
+  it('refuses to install Git outside Windows', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-mac-git-runtime-'))
+    temporaryDirectories.push(directory)
+    const installGitRuntime = gitInstaller()
+    const service = createSystemService(
+      new AppSettingsStore(path.join(directory, 'settings.json'), directory),
+      { platform: 'darwin', findExecutable: async () => null, installGitRuntime },
+    )
+
+    await expect(service.installGitRuntime({ isDestroyed: () => false, send: vi.fn() }))
+      .rejects.toThrow('仅支持 Windows')
+    expect(installGitRuntime).not.toHaveBeenCalled()
+  })
+})
+
 describe('Windows restart handoff', () => {
   it('uses the fixed system shutdown command with a delayed restart', async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-windows-restart-'))

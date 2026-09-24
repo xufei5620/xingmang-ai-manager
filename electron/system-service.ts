@@ -119,6 +119,10 @@ import {
   isPython312RuntimeVersion,
   type PythonRuntimeInstallResult,
 } from './python-runtime'
+import {
+  installGitRuntime as installGitForWindows,
+  type GitRuntimeInstallResult,
+} from './git-runtime-install'
 import { InstallationQueue, type InstallationQueueSnapshot } from './installation-queue'
 import type { DownloadAccelerationLease } from './download-acceleration'
 import {
@@ -805,6 +809,7 @@ export interface SystemService {
   installNodeRuntime(target: RendererMessageTarget): Promise<NodeRuntimeInstallResult>
   restartWindows(): Promise<void>
   installPythonRuntime(target: RendererMessageTarget): Promise<PythonRuntimeInstallResult>
+  installGitRuntime(target: RendererMessageTarget): Promise<GitRuntimeInstallResult>
   installCli(provider: ProviderId, target: RendererMessageTarget, version?: string): Promise<void>
   cancelCliInstall(provider: ProviderId): InstallCancellationOutcome
   uninstallCli(provider: ProviderId): Promise<ToolUninstallResult>
@@ -2038,6 +2043,7 @@ export interface SystemServiceOptions {
   inspectInstalledPythonRuntime?: typeof inspectInstalledPythonRuntime
   inspectWindowsRestartRequired?: typeof inspectWindowsRestartRequired
   installNodeRuntime?: typeof installNodeRuntimeLts
+  installGitRuntime?: typeof installGitForWindows
   /** Test seam for Windows-only operations exercised on non-Windows CI runners. */
   resolveWindowsMachinePaths?: typeof resolveWindowsMachinePaths
   /** Test seam so scanSystem never talks to chatgpt.com under vitest. */
@@ -2207,6 +2213,7 @@ export function createSystemService(
   const inspectInstalledPythonRuntimeForService = serviceOptions.inspectInstalledPythonRuntime ?? inspectInstalledPythonRuntime
   const inspectWindowsRestartRequiredForService = serviceOptions.inspectWindowsRestartRequired ?? inspectWindowsRestartRequired
   const installNodeRuntimeForService = serviceOptions.installNodeRuntime ?? installNodeRuntimeLts
+  const installGitRuntimeForService = serviceOptions.installGitRuntime ?? installGitForWindows
   // 安装下载曾经完全无视机器上的代理：产物下载走 Node 自带网络栈、npm 子进程
   // 没有任何代理变量，于是开着加速也一样直连。这两个注入点把下载接回系统代理。
   const downloadFetch = serviceOptions.downloadFetch ?? fetch
@@ -3078,6 +3085,44 @@ export function createSystemService(
 
   function installPythonRuntime(target: RendererMessageTarget): Promise<PythonRuntimeInstallResult> {
     return installationQueue.enqueue('runtime:python', () => installPythonRuntimeOperation(target))
+  }
+
+  async function installGitRuntimeOperation(target: RendererMessageTarget): Promise<GitRuntimeInstallResult> {
+    if (platform !== 'win32') throw new Error('Git 自动安装当前仅支持 Windows')
+    const git = buildToolStatusFromSettled((await Promise.allSettled([inspectGit()]))[0])
+    if (git.detectionFailed) throw new Error(git.detectionError ?? 'Git 检测失败，请重新检测后再试')
+    const architecture = process.arch === 'arm64' ? 'arm64' : 'x64'
+    if (git.installed) {
+      if (!target.isDestroyed()) {
+        target.send('runtime:git-install-progress', {
+          phase: 'complete',
+          source: null,
+          message: 'Git 本来就装好了，不用重复安装',
+          percent: 100,
+        })
+      }
+      return {
+        installed: true,
+        action: 'unchanged',
+        source: null,
+        version: git.version,
+        architecture,
+        pathRefreshRequired: false,
+      }
+    }
+    return installGitRuntimeForService({
+      networkRegion: await inspectNetworkRegion(),
+      temporaryDirectoryMode: windowsExecutionMode,
+      dependencies: { fetch: downloadFetch },
+      onProgress: (progress) => {
+        if (!target.isDestroyed()) target.send('runtime:git-install-progress', progress)
+      },
+    })
+  }
+
+  function installGitRuntime(target: RendererMessageTarget): Promise<GitRuntimeInstallResult> {
+    return installationQueue.enqueue('runtime:git',
+      () => withDownloadAcceleration(null, () => installGitRuntimeOperation(target)))
   }
 
   function sendInstallProgress(
@@ -4972,6 +5017,7 @@ export function createSystemService(
     installNodeRuntime,
     restartWindows,
     installPythonRuntime,
+    installGitRuntime,
     installCli,
     cancelCliInstall,
     uninstallCli,

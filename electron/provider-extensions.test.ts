@@ -1201,7 +1201,7 @@ describe('Claude Code official marketplace', () => {
   })
 
   it('names a platform-appropriate way to install Git', () => {
-    expect(claudeMarketplaceGitMissingMessage('win32')).toContain('git-scm.com')
+    expect(claudeMarketplaceGitMissingMessage('win32')).toContain('「安装 Git」')
     expect(claudeMarketplaceGitMissingMessage('darwin')).toContain('xcode-select --install')
     expect(claudeMarketplaceGitMissingMessage('linux')).toContain('包管理器')
     for (const platform of ['win32', 'darwin', 'linux'] as const) {

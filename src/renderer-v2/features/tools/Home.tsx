@@ -18,7 +18,7 @@ import { dismissFirstRun, getFirstRunStorage, readFirstRunDismissals } from './f
 import { latestSessionIdsByWorkspace, newWorkspaceLabel, recentWorkspaces, workspaceButtonLabel, workspaceChoices } from './recent-workspaces'
 import { errorMessage } from '../../business-common'
 import { isNetworkFailureText } from './online-resync'
-import { gitHostPlatform, gitMissingFirstRunHint, gitMissingNotice } from '../../../../electron/git-runtime'
+import { gitHostPlatform, gitMissingFirstRunHint, gitMissingHomeNotice } from '../../../../electron/git-runtime'
 import { runtimeButtonLabel, runtimeInstallGuide } from './runtime-install-guide'
 import { RuntimeInstallHint } from './RuntimeInstallHint'
 import { elevatedInstallNotice, elevatedInstallShortNotice } from './elevation-notice'
@@ -396,14 +396,14 @@ export function Home(props: HomeProps) {
               <span>{jobs[id]?.label ?? (loading ? '检测中' : status?.detectionFailed ? '检测失败' : status?.version ?? (optional ? '可选 · 未装' : '未安装'))}</span>
             </div>
           })}</div>
-          {gitMissing && <p className="v2-runtime-hint" data-testid="home-runtime-git-hint">{gitMissingNotice(gitHost)}</p>}
+          {gitMissing && !jobs.git && <p className="v2-runtime-hint" data-testid="home-runtime-git-hint">{gitMissingHomeNotice(gitHost)}</p>}
           {nodeElevationNotice && <p className="v2-runtime-hint" data-testid="home-runtime-node-elevation">{nodeElevationNotice}</p>}
           {nodeGuide && <RuntimeInstallHint runtime="node" guide={nodeGuide} />}
           {pythonGuide && <RuntimeInstallHint runtime="python" guide={pythonGuide} />}
           <div className="v2-runtime-actions">{!snapshot?.system.runtime.node.installed && <Button variant="ghost" size="sm" icon={Download} onClick={() => props.onRuntime('node')} testId="home-runtime-node">{runtimeButtonLabel('node', snapshot?.platform.nodeRuntimeInstall)}</Button>}
             {!snapshot?.system.runtime.python.installed && <Button variant="ghost" size="sm" icon={Download} onClick={() => props.onRuntime('python')} testId="home-runtime-python">{runtimeButtonLabel('python', snapshot?.platform.pythonRuntimeInstall)}</Button>}
             {(nodeGuide || pythonGuide) && <Button variant="ghost" size="sm" icon={BookOpen} onClick={() => props.onNavigate('tutorial', macRuntimeTutorialTopic)} testId="home-runtime-tutorial">看教程</Button>}
-            {gitMissing && gitHost === 'windows' && <Button variant="ghost" size="sm" icon={Download} onClick={() => props.onRuntime('git')} testId="home-runtime-git">下载 Git</Button>}</div>
+            {gitMissing && gitHost === 'windows' && <Button variant="ghost" size="sm" icon={Download} loading={Boolean(jobs.git)} disabled={Boolean(jobs.git)} onClick={() => props.onRuntime('git')} testId="home-runtime-git">安装 Git</Button>}</div>
         </Card>
         <Card title="账户余额" padding="none" actions={<Pill tone={connectedCount ? 'ok' : 'neutral'}>{connectedCount ? `${connectedCount} 个工具已连接` : '等待连接'}</Pill>}>
           <div className={`v2-balance-body tone-${tier}`}><div title={balanceHint}><strong data-testid="home-balance">{dollars === null ? '暂未读到' : `$${dollars.toFixed(2)}`}</strong><small>可用余额 · 美元</small>{balanceStore && account && <Button variant="ghost" size="xs" icon={RefreshCw} loading={balanceState.loading} aria-label="刷新账户余额" title={balanceHint} onClick={() => void balanceStore.refresh('manual')} testId="home-balance-refresh" />}</div>
