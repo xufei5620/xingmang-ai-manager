@@ -27,6 +27,23 @@ const { stepBudgetMs, progress, withDeadline, trackProcessIds, attachEvidence, r
   totalBudgetMs: Number(process.env.XINGMANG_SMOKE_TOTAL_TIMEOUT_MS ?? 180_000),
 })
 
+const collectedPromiseAttempts = 3
+
+async function evaluateInMainProcess(application, label, body, argument) {
+  let collected
+  for (let attempt = 1; attempt <= collectedPromiseAttempts; attempt += 1) {
+    try {
+      return await withDeadline(`${label} (attempt ${attempt}/${collectedPromiseAttempts})`, stepBudgetMs, () => application.evaluate(body, argument))
+    } catch (error) {
+      if (!/Resulting promise was garbage collected/.test(String(error?.message))) throw error
+      collected = error
+      progress(`${label}: the inspector promise was collected on attempt ${attempt}/${collectedPromiseAttempts}, retrying`)
+      await new Promise((resolve) => setTimeout(resolve, 500))
+    }
+  }
+  throw collected
+}
+
 async function main() {
   progress('preparing the isolated profile')
   const sandbox = await fs.mkdtemp(path.join(os.tmpdir(), 'xingmang-v2-close-race-'))
@@ -72,9 +89,14 @@ async function main() {
     await withDeadline('welcome page', stepBudgetMs, () => page.getByTestId('welcome-page').waitFor({ timeout: stepBudgetMs }))
 
     // The recorder lives in the main process and writes each event down as it happens, so
-    // whatever the process did before it died is on disk even if it was forced out.
+    // whatever the process did before it died is on disk even if it was forced out. The
+    // inspector routinely drops the answer to an evaluation ("Resulting promise was garbage
+    // collected", run 36032954800) even though the body ran, so the install is retried the way
+    // electron-ci-smoke.mjs does it, and a marker keeps a retry from hooking everything twice.
     progress('recording what the main process does with the close')
-    await withDeadline('close recorder', stepBudgetMs, () => application.evaluate(({ app, BrowserWindow }, file) => {
+    await evaluateInMainProcess(application, 'close recorder', ({ app, BrowserWindow }, file) => {
+      if (globalThis.__xingmangCloseRaceRecorder) return true
+      globalThis.__xingmangCloseRaceRecorder = true
       const fs = process.getBuiltinModule('node:fs')
       const record = (event) => { fs.appendFileSync(file, `${JSON.stringify({ event, at: Date.now() })}\n`, 'utf8') }
       for (const window of BrowserWindow.getAllWindows()) {
@@ -85,7 +107,8 @@ async function main() {
       }
       app.once('before-quit', () => record('before-quit'))
       app.once('will-quit', () => record('will-quit'))
-    }, tracePath))
+      return true
+    }, tracePath)
 
     // Commit is emitted after navigation starts but before the new React root
     // mounts. Closing in this gap must bypass the renderer entirely instead of
