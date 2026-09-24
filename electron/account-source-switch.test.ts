@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import type { ProviderId } from './catalog'
 import type { ConnectionCheckLayer, ConnectionCheckResult } from './connection-check'
 import { AccountSourceServiceUnavailableError, shouldRollBackAfterCheck, switchAccountSource, type AccountSourceSwitchDependencies } from './account-source-switch'
+import type { RunningToolsReport } from './running-tools'
 
 function check(
   ok: boolean,
@@ -157,5 +158,47 @@ describe('shouldRollBackAfterCheck', () => {
     for (const layer of ['unconfigured', 'config', 'credential', 'group', 'model', 'protocol'] as const) expect(shouldRollBackAfterCheck({ ...base, ok: false, layer })).toBe(true)
     for (const layer of ['network', 'service', 'quota', 'unknown'] as const) expect(shouldRollBackAfterCheck({ ...base, ok: false, layer })).toBe(false)
     expect(shouldRollBackAfterCheck({ ...base, ok: true, layer: 'credential' })).toBe(false)
+  })
+})
+
+describe('switchAccountSource restart hint', () => {
+  function running(overrides: Partial<RunningToolsReport> = {}): RunningToolsReport {
+    return { running: [], unknown: [], codexDesktopRunning: false, canRestartCodexDesktop: true, ...overrides }
+  }
+
+  it('drops the restart sentence when the tool is not open', async () => {
+    const { deps } = dependencies({ inspectRunning: async () => running() })
+    const result = await switchAccountSource(deps, 'claude', 'account')
+    expect(result.message).toBe('已切到当前账号，连接自检通过。')
+    expect(result.runningTools).toEqual(running())
+  })
+
+  it('names the tool and Codex desktop only when they are actually open', async () => {
+    const inspectRunning = vi.fn(async () => running({ running: ['codex'], codexDesktopRunning: true }))
+    const { deps } = dependencies({ inspectRunning })
+    const result = await switchAccountSource(deps, 'codex', 'account')
+    expect(inspectRunning).toHaveBeenCalledWith('codex')
+    expect(result.message).toBe('已切到当前账号，连接自检通过。Codex CLI、Codex 桌面端 还开着，要关掉重开才会用上当前账号。')
+    expect(result.runningTools?.codexDesktopRunning).toBe(true)
+  })
+
+  it('says the switch goes back to the official account when that is the target', async () => {
+    const { deps } = dependencies({ inspectRunning: async () => running({ running: ['claude'] }) })
+    const result = await switchAccountSource(deps, 'claude', 'official')
+    expect(result.message).toBe('已切回官方账号，原来的配置已备份。Claude Code 还开着，要关掉重开才会换回官方账号。')
+  })
+
+  it('checks only after the config is written, and never before a rollback', async () => {
+    const inspectRunning = vi.fn(async () => running())
+    const { deps } = dependencies({ inspectRunning, checkConnection: async () => check(false, 'credential') })
+    await expect(switchAccountSource(deps, 'claude', 'account')).rejects.toThrow(/已恢复到切换前的配置/)
+    expect(inspectRunning).not.toHaveBeenCalled()
+  })
+
+  it('falls back to the unconditional reminder when the check itself fails', async () => {
+    const { deps } = dependencies({ inspectRunning: async () => { throw new Error('denied') } })
+    const result = await switchAccountSource(deps, 'gemini', 'account')
+    expect(result.message).toContain('已经开着的 Gemini CLI 要关掉重开才会换过来。')
+    expect(result.runningTools).toBeUndefined()
   })
 })

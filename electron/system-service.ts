@@ -40,6 +40,7 @@ import {
   managedCliPackageDirectory,
   probeRunningCliProcesses,
 } from './cli-process-probe'
+import { cliProcessProbeRoots, inspectRunningTools as inspectRunningToolsWith, type RunningToolsReport } from './running-tools'
 import {
   npmPrefixGlobalRoot,
   resolveSameUserNpmPrefix,
@@ -827,6 +828,8 @@ export interface SystemService {
     target: RendererMessageTarget,
     launchOptions?: { injectChinese?: boolean },
   ): Promise<CodexDesktopLaunchResult>
+  /** 换账号之后看哪些工具还开着（Codex 连同桌面端）；可选 = 旧实现不提供，调用方退回无条件提醒。 */
+  inspectRunningTools?(providers: readonly ProviderId[]): Promise<RunningToolsReport>
   fetchAvailableModels(apiKey: string, options?: { bypassCache?: boolean }): Promise<string[]>
   configureExternalTool(tool: ExternalToolId, options: ExternalToolConfigOptions, assertBeforeWrite?: () => void): Promise<ExternalClientConfigResult>
   scanExternalClients(force?: boolean): Promise<ExternalClientStatus[]>
@@ -2743,6 +2746,47 @@ export function createSystemService(
       return inspectLatestGrokVersion(budgetSignal)
     }
     return inspectLatestNpmVersion(cliCatalog[provider].packageName, networkRegion, budgetSignal)
+  }
+
+  /**
+   * 进程检测要的是「用户实际在跑的那一份」装在哪，和启动工具时用的是同一套发现
+   * （resolveCliInstallation），而不是安装流程里「npm 这次会装到哪」的那个推算：
+   * 两者在用户自己改过 npm 全局目录、或同时装了两份时并不相同。npm 与它的全局
+   * 目录对所有工具只算一次，只找路径、不跑任何工具的 --version。
+   */
+  async function inspectRunningTools(providers: readonly ProviderId[]): Promise<RunningToolsReport> {
+    let npmLocation: Promise<{ npmExecutable: string | null; npmGlobalRoot: string | null }> | null = null
+    function locateNpm() {
+      npmLocation ??= (async () => {
+        const npmExecutable = await findInstalledExecutable('npm')
+        return { npmExecutable, npmGlobalRoot: await resolveNpmGlobalRoot(npmExecutable, commandEnvironment()) }
+      })()
+      return npmLocation
+    }
+    return inspectRunningToolsWith(providers, {
+      probeRoots: async (provider) => {
+        const { npmExecutable, npmGlobalRoot } = await locateNpm()
+        const installation = await resolveCliInstallationForService(provider, {
+          env: providerEnvironment(provider),
+          npmExecutable,
+          npmGlobalRoot,
+          platform,
+        })
+        // 与 inspectCliTool 同一条排除：命令行找到的若是桌面端自带的 codex，那是
+        // 桌面端的进程，下面单独问桌面端，别在这里再算一遍 Codex CLI。
+        if (installation && provider === 'codex' && installation.source === 'native'
+          && isCodexDesktopExecutable(installation.commandPath)) return []
+        return cliProcessProbeRoots(installation, platform)
+      },
+      probe: (root) => probeRunningCliProcesses(root, { platform }),
+      codexDesktopRunning: async () => {
+        if (platform !== 'win32' && platform !== 'darwin') return false
+        const status = await inspectCodexDesktop()
+        if (status.running) return true
+        return status.detectionFailed ? null : false
+      },
+      canRestartCodexDesktop: platform === 'win32',
+    })
   }
 
   async function inspectCliUpdate(
@@ -5016,6 +5060,7 @@ export function createSystemService(
     trustCodexWorkspace: trustCodexWorkspaceForService,
     setCodexDesktopLocale,
     launchCodexDesktop,
+    inspectRunningTools,
     fetchAvailableModels,
     configureExternalTool,
     scanExternalClients,

@@ -63,6 +63,7 @@ import {
 } from './provider-sessions'
 import type { NativeConfigSaveMode } from './config-files'
 import { AccountSourceServiceUnavailableError, switchAccountSource } from './account-source-switch'
+import { emptyRunningToolsReport } from './running-tools'
 import { redactHomeDirectory } from './startup-log'
 import { isExternalToolId, parseExternalClientConfigRequest } from './external-client-contract'
 import type { ExternalToolId } from './external-tool-config'
@@ -1191,6 +1192,7 @@ const ipcOperationLabels: Readonly<Record<string, string>> = {
   'desktop:check-update-codex': 'Codex 桌面端更新检查',
   'cli:launch': 'CLI 终端启动',
   'desktop:codex-status': 'Codex 桌面端运行状态检测',
+  'tools:inspect-running': '换账号后检查哪些工具还开着',
   'desktop:codex-locale-status': 'Codex Desktop 中文资源检测',
   'desktop:codex-permissions-status': 'Codex Desktop 工作区权限检测',
   'desktop:trust-workspace': 'Codex Desktop 工作区信任设置',
@@ -1285,6 +1287,17 @@ const ipcOperationLabels: Readonly<Record<string, string>> = {
   'account:update-key': '星芒账号 Key 更新',
   'chat-history:read': '聊天记录读取',
   'chat-history:write': '聊天记录保存',
+}
+
+/** 只收已知工具，去重；一次问的个数不超过工具总数（I5）。 */
+export function parseRunningToolsProviders(value: unknown): ProviderId[] {
+  if (!Array.isArray(value) || value.length > providerIds.length) throw new Error('工具列表格式错误')
+  const providers: ProviderId[] = []
+  for (const item of value) {
+    if (!isProviderId(item)) throw new Error('未知的 CLI 类型')
+    if (!providers.includes(item)) providers.push(item)
+  }
+  return providers
 }
 
 const quietIpcSuccessChannels = new Set([
@@ -1937,12 +1950,21 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
       restoreOfficialCredentials: async (id) => { await service.restoreOfficialCredentials?.(id) },
       checkConnection: (id) => options.diagnosticsService.checkConnection(id),
       officialLoginPresent: (id) => service.inspectOfficialLogin?.(id) ?? null,
+      ...(service.inspectRunningTools ? { inspectRunning: (id: ProviderId) => service.inspectRunningTools!([id]) } : {}),
       // 失败原因可能带着配置文件的绝对路径（I13）：进日志前把主目录换掉。
       log: (level, event, message, detail) => options.runtimeLog.log(level, 'config', event, message, detail
         ? JSON.parse(redactHomeDirectory(JSON.stringify(detail), options.providerRoots?.userHome ?? os.homedir())) as Record<string, unknown>
         : undefined),
     }, provider, target)
   }
+  registerTrustedHandler('tools:inspect-running', async (_event, providers: unknown) => {
+    const parsed = parseRunningToolsProviders(providers)
+    // 旧实现没有这项检测：全部报「看不出来」，界面退回「如果还开着」的说法。
+    if (!service.inspectRunningTools) {
+      return { ...emptyRunningToolsReport, unknown: parsed, codexDesktopRunning: parsed.includes('codex') ? null : false }
+    }
+    return service.inspectRunningTools(parsed)
+  })
   function documentsDirectory(): string | null {
     if (!options.documentsDirectory) return path.join(os.homedir(), 'Documents')
     try {

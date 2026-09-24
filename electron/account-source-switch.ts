@@ -1,6 +1,7 @@
 import { cliCatalog, type ProviderId } from './catalog'
 import type { ConnectionCheckLayer, ConnectionCheckResult } from './connection-check'
 import { networkFailureMessages } from './network-failure'
+import { describeRunningTools, type RunningToolsReport } from './running-tools'
 
 /**
  * 一键切换账号来源（首页工具行「切到当前账号 / 切回官方账号」）。
@@ -25,6 +26,11 @@ export interface AccountSourceSwitchResult {
   loginRequired: boolean
   /** 直接上屏的一句中文。 */
   message: string
+  /**
+   * 切完之后哪些工具还开着（界面据此决定给不给「帮我重开」）。缺省 = 没有检测，
+   * 提示按旧行为无条件带上「关掉重开」。
+   */
+  runningTools?: RunningToolsReport
 }
 
 export interface AccountSourceSwitchDependencies {
@@ -41,6 +47,11 @@ export interface AccountSourceSwitchDependencies {
   restoreOfficialCredentials(provider: ProviderId): Promise<void>
   checkConnection(provider: ProviderId): Promise<ConnectionCheckResult>
   officialLoginPresent(provider: ProviderId): boolean | null
+  /**
+   * 写完配置后看这个工具（Codex 连同桌面端）还开没开着，只对开着的提醒重开。
+   * 可选 = 旧调用方照旧无条件提醒；实现不许抛错（见 running-tools.ts）。
+   */
+  inspectRunning?(provider: ProviderId): Promise<RunningToolsReport>
   log?(level: 'info' | 'warn', event: string, message: string, detail?: Record<string, unknown>): void
 }
 
@@ -141,6 +152,18 @@ export async function switchAccountSource(
       : `${prefix}已恢复到切换前的配置。`)
   }
 
+  /** 检测失败不影响切换结果：退回旧说法，照样提醒一句。 */
+  async function runningHint(): Promise<{ hint: string; runningTools?: RunningToolsReport }> {
+    if (!deps.inspectRunning) return { hint: restartHint(provider) }
+    try {
+      const runningTools = await deps.inspectRunning(provider)
+      return { hint: describeRunningTools(runningTools, target), runningTools }
+    } catch (error) {
+      deps.log?.('warn', 'account-source.running-probe-failed', `${toolName(provider)} 切换后没能确认它还开没开着`, { provider, reason: errorText(error) })
+      return { hint: restartHint(provider) }
+    }
+  }
+
   if (target === 'official') {
     try {
       await deps.writeOfficialConfig(provider)
@@ -149,10 +172,12 @@ export async function switchAccountSource(
     }
     const present = deps.officialLoginPresent(provider)
     const loginRequired = present === false
-    deps.log?.('info', 'account-source.switched', `${toolName(provider)} 已切回官方账号`, { provider, target, backupId, loginRequired })
+    const { hint, runningTools } = await runningHint()
+    deps.log?.('info', 'account-source.switched', `${toolName(provider)} 已切回官方账号`, { provider, target, backupId, loginRequired, running: runningTools ?? null })
     return {
       provider, target, backupId, verified: false, loginRequired,
-      message: `已切回官方账号，原来的配置已备份。${loginRequired ? officialLoginHint(provider) : restartHint(provider)}`,
+      message: `已切回官方账号，原来的配置已备份。${loginRequired ? officialLoginHint(provider) : hint}`,
+      ...(runningTools ? { runningTools } : {}),
     }
   }
 
@@ -178,7 +203,8 @@ export async function switchAccountSource(
     throw failure(`当前账号在 ${toolName(provider)} 上没有连通：${check.summary}。${check.nextStep ? `${check.nextStep}。` : ''}`, await rollBack())
   }
   const verified = verdict === 'passed'
-  deps.log?.('info', 'account-source.switched', `${toolName(provider)} 已切到当前账号`, { provider, target, backupId, verified, verdict, layer: check?.layer ?? null })
+  const { hint, runningTools } = await runningHint()
+  deps.log?.('info', 'account-source.switched', `${toolName(provider)} 已切到当前账号`, { provider, target, backupId, verified, verdict, layer: check?.layer ?? null, running: runningTools ?? null })
   const status = verified ? '连接自检通过。'
     : verdict === 'serviceUnavailable' ? `不过这次没能确认能用：${networkFailureMessages.serviceUnavailable}`
       : verdict === 'quota' && check ? `不过${check.summary}。${check.nextStep ? `${check.nextStep}。` : ''}`
@@ -186,6 +212,7 @@ export async function switchAccountSource(
           : '连接自检没有完成，稍后可以在检查页再测一次。'
   return {
     provider, target, backupId, verified, loginRequired: false,
-    message: `已切到当前账号，${status}${restartHint(provider)}`,
+    message: `已切到当前账号，${status}${hint}`,
+    ...(runningTools ? { runningTools } : {}),
   }
 }
