@@ -209,6 +209,102 @@ export async function readCodexExtensionMetadata(
         : { plugins: [], marketplaces: [] },
   }
 }
+type NativeSkill = CodexExtensionMetadata['skills'][number]
+type RowAction = 'enable' | 'disable' | 'uninstall' | 'update' | 'install'
+
+/**
+ * 通用列表里的 Codex 技能 ID 是 SKILL.md 的路径；按路径对上原生列表那一条，
+ * 对不上才退回按名字找（同名技能在 user 与 repo 各有一份时按名字会对错）。
+ */
+export function findNativeSkill(
+  skills: readonly NativeSkill[],
+  item: ExtensionItem,
+): NativeSkill | undefined {
+  const id = item.id.toLowerCase()
+  return (
+    skills.find((entry) => entry.path === item.id) ??
+    skills.find((entry) => entry.path.toLowerCase() === id) ??
+    skills.find((entry) => entry.name === item.name)
+  )
+}
+
+export interface ExtensionRowState {
+  /** 系统自带、不许改的那些。 */
+  readonly: boolean
+  enabled: boolean
+  canToggle: boolean
+  canUninstall: boolean
+  canUpdate: boolean
+}
+
+/**
+ * Codex 技能不走通用的 mutate：启停写 config.toml、移除挪进回收站，都由原生
+ * 接口完成。原生接口里 managed=true 恰恰是「用户自己的、可以管」，只有
+ * system 那一层才是内置只读（#490）。
+ */
+export function extensionRowState(
+  item: ExtensionItem,
+  nativeSkill?: NativeSkill,
+): ExtensionRowState {
+  if (item.provider === 'codex' && item.kind === 'skill' && nativeSkill) {
+    const readonly = !nativeSkill.managed || nativeSkill.scope === 'system'
+    return {
+      readonly,
+      enabled: nativeSkill.enabled,
+      canToggle: !readonly,
+      canUninstall: !readonly,
+      canUpdate: false,
+    }
+  }
+  const readonly = item.scope === 'builtin'
+  return {
+    readonly,
+    enabled: item.enabled,
+    canToggle: !readonly && item.operations[item.enabled ? 'disable' : 'enable'],
+    canUninstall: !readonly && item.operations.uninstall,
+    canUpdate: !readonly && item.operations.update,
+  }
+}
+
+/** 列表里带回来的 scope 原样交回去；内置、扩展自带或不知道的不带，由主进程按缺省处理。 */
+export function extensionMutationScope(
+  scope: ExtensionItem['scope'],
+): Mutation['scope'] {
+  return scope === 'user' ||
+    scope === 'project' ||
+    scope === 'local' ||
+    scope === 'workspace'
+    ? scope
+    : undefined
+}
+
+/**
+ * 列表行上的一次操作。项目里装的那一份必须带着它自己的 scope 回去，否则 CLI
+ * 按缺省的 user 去找，项目里的删不掉，同名的全局那份反倒被改了（#488）。
+ */
+export async function runExtensionAction(
+  api: Pick<V2Bridge, 'mutateProviderExtension' | 'toggleSkill' | 'uninstallSkill'>,
+  item: ExtensionItem,
+  action: RowAction,
+  nativeSkill?: NativeSkill,
+): Promise<void> {
+  if (item.provider === 'codex' && item.kind === 'skill' && nativeSkill) {
+    if (action === 'enable' || action === 'disable')
+      await api.toggleSkill(nativeSkill.path, action === 'enable')
+    else if (action === 'uninstall') await api.uninstallSkill(nativeSkill.path)
+    else throw new Error('Codex 技能不支持这个操作。')
+    return
+  }
+  const scope = extensionMutationScope(item.scope)
+  await api.mutateProviderExtension({
+    provider: item.provider,
+    kind: item.kind,
+    action,
+    id: item.id,
+    ...(scope ? { scope } : {}),
+  })
+}
+
 function isProvider(id: string): id is Provider {
   return ['claude', 'codex', 'gemini', 'grok'].includes(id)
 }
@@ -1075,10 +1171,24 @@ export function ExtensionsPage({
     )
   const supportsInstall =
     kind !== 'skill' || provider === 'codex' || provider === 'gemini'
-  const act = (item: ExtensionItem, action: Mutation['action']) => {
-    if (!item.operations[action]) return
+  const nativeSkillFor = (item: ExtensionItem) =>
+    kind === 'skill' && resource.data?.codex
+      ? findNativeSkill(resource.data.codex.skills, item)
+      : undefined
+  const act = (item: ExtensionItem, action: RowAction) => {
+    const native = nativeSkillFor(item)
+    const state = extensionRowState(item, native)
+    const allowed =
+      action === 'install'
+        ? item.operations.install
+        : action === 'update'
+          ? state.canUpdate
+          : action === 'uninstall'
+            ? state.canUninstall
+            : state.canToggle
+    if (!allowed) return
     void operation.execute(action, async () => {
-      await api.mutateProviderExtension({ provider, kind, action, id: item.id })
+      await runExtensionAction(api, item, action, native)
       await resource.reload()
     })
   }
@@ -1435,20 +1545,15 @@ export function ExtensionsPage({
               const nativeMcp = resource.data?.codex?.mcp.find(
                 (entry) => entry.name === item.id || entry.name === item.name,
               )
-              const nativeSkill = resource.data?.codex?.skills.find(
-                (entry) => entry.path === item.id || entry.name === item.name,
-              )
-              const readonly =
-                item.scope === 'builtin' || nativeSkill?.managed === true
+              const rowState = extensionRowState(item, nativeSkillFor(item))
+              const { readonly, enabled } = rowState
               const mcpHealth = kind === 'mcp'
                 ? mcpHealthView(health.report, item.id, health.checking)
                 : null
-              const togglable =
-                !readonly &&
-                item.operations[item.enabled ? 'disable' : 'enable']
+              const togglable = rowState.canToggle
               return (
                 <ListRow
-                  key={item.id}
+                  key={`${item.scope ?? ''}:${item.id}`}
                   icon={
                     kind === 'mcp'
                       ? item.source.kind === 'native'
@@ -1507,7 +1612,7 @@ export function ExtensionsPage({
                   }
                   meta={item.currentVersion || undefined}
                   // 市场里没装的那些本来就谈不上启用与否，别把它们画成停用的。
-                  off={item.installed && !item.enabled}
+                  off={item.installed && !enabled}
                   testId={`${page}-row-${item.id}`}
                   actions={
                     <>
@@ -1524,11 +1629,11 @@ export function ExtensionsPage({
                         </Button>
                       ) : togglable ? (
                         <Switch
-                          label={item.enabled ? '已启用' : '已停用'}
-                          checked={item.enabled}
+                          label={enabled ? '已启用' : '已停用'}
+                          checked={enabled}
                           onChange={() => {
                             if (!operation.busy)
-                              act(item, item.enabled ? 'disable' : 'enable')
+                              act(item, enabled ? 'disable' : 'enable')
                           }}
                           testId={`${page}-toggle-${item.id}`}
                         />
@@ -1536,7 +1641,7 @@ export function ExtensionsPage({
                         <Pill>
                           {readonly
                             ? '只读'
-                            : item.enabled
+                            : enabled
                               ? '已启用'
                               : '已停用'}
                         </Pill>
@@ -1575,7 +1680,7 @@ export function ExtensionsPage({
                                 },
                               ]
                             : []),
-                          ...(item.operations.update && !readonly
+                          ...(rowState.canUpdate
                             ? [
                                 {
                                   label: '更新',
@@ -1584,7 +1689,7 @@ export function ExtensionsPage({
                                 },
                               ]
                             : []),
-                          ...(item.operations.uninstall && !readonly
+                          ...(rowState.canUninstall
                             ? [
                                 {
                                   label: '移除',
@@ -1898,12 +2003,12 @@ export function ExtensionsPage({
                   void operation.execute(
                     'delete',
                     async () => {
-                      await api.mutateProviderExtension({
-                        provider,
-                        kind,
-                        action: 'uninstall',
-                        id: deletion.id,
-                      })
+                      await runExtensionAction(
+                        api,
+                        deletion,
+                        'uninstall',
+                        nativeSkillFor(deletion),
+                      )
                       setDeletion(null)
                       await resource.reload()
                     },

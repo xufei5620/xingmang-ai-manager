@@ -7,7 +7,7 @@ import { userFacingErrorMessage } from '../../business-common'
 import { BlockedLinkHint, openExternalOrCopy, type BlockedLinkNotice } from '../../external-link-fallback'
 import { writeLocalPreference } from '../app/preferences'
 import type { RelayNotice } from '../../../../electron/relay-backend'
-import { announcementAttentionKeys, legacyAnnouncementReadId, markLocalAnnouncementRead, parseNewApiAnnouncementCollection, readLegacyAnnouncementId, readLocalAnnouncementIds, readSeenAnnouncementKeys, rememberLocalAnnouncementIds, rememberSeenAnnouncementKeys } from './newapi-announcements'
+import { announcementAttentionKeys, announcementNotificationKey, legacyAnnouncementReadId, markLocalAnnouncementRead, parseNewApiAnnouncementCollection, readLegacyAnnouncementId, readLocalAnnouncementIds, readNotifiedAnnouncementKeys, readSeenAnnouncementKeys, rememberLocalAnnouncementIds, rememberNotifiedAnnouncementKeys, rememberSeenAnnouncementKeys, sameAnnouncementSnapshot } from './newapi-announcements'
 
 type Announcement = RelayNotice & { localEntries?: boolean }
 interface Props {
@@ -22,7 +22,14 @@ interface Props {
   openExternal(url: string): Promise<unknown>
   /** Official relay home used when the rich announcement exceeds the client cap. */
   noticeUrl?: string
+  /** Asks the host for one system notification; the host owns the wording. */
+  notify?(eventKey: string): void
 }
+
+// 公告要及时到用户眼前：开着软件时定时再读一次，切回窗口时也读一次。
+// 读的是一个公开的小接口，十分钟一次对服务端没有压力；切窗口太频繁时按一分钟限流。
+export const announcementPollIntervalMs = 10 * 60 * 1000
+const announcementFocusRefreshGapMs = 60 * 1000
 
 interface AnnouncementError {
   message: string
@@ -843,7 +850,7 @@ export function formatAnnouncementError(cause: unknown): AnnouncementError {
     : { responseTooLarge: false, message: message || '公告读取失败' }
 }
 
-export function AnnouncementCenter({ scope, read, markRemoteRead, syncLocalReads, open, onClose, onOpen, onUnread, openExternal, noticeUrl }: Props) {
+export function AnnouncementCenter({ scope, read, markRemoteRead, syncLocalReads, open, onClose, onOpen, onUnread, openExternal, noticeUrl, notify }: Props) {
   const [announcement, setAnnouncement] = useState<Announcement | null>(null)
   const [error, setError] = useState<AnnouncementError | null>(null)
   const [loading, setLoading] = useState(true)
@@ -869,6 +876,29 @@ export function AnnouncementCenter({ scope, read, markRemoteRead, syncLocalReads
   const openLink = useCallback(async (url: string) => {
     setBlockedLink(await openExternalOrCopy(url, openExternal))
   }, [openExternal])
+  const lastLoad = useRef(0)
+  const silentLoad = useRef(false)
+  const loadNotice = useCallback(async (isCurrent: () => boolean): Promise<Announcement | null> => {
+    lastLoad.current = Date.now()
+    const value = await read()
+    if (!isCurrent() || !value || value.entries) return value
+    const collection = await parseNewApiAnnouncementCollection(value.text)
+    if (!isCurrent()) return value
+    const previouslyRead = readLegacyAnnouncementId(scope) === value.id
+    if (!collection) {
+      if (syncLocalReads) {
+        const id = await legacyAnnouncementReadId(value.id)
+        if (!isCurrent()) return value
+        const ids = await syncLocalReads(scope, previouslyRead ? [id] : [])
+        if (isCurrent()) setReadId(ids.includes(id) ? value.id : null)
+      }
+      return value
+    }
+    const migrated = [...new Set([...readLocalAnnouncementIds(scope), ...(previouslyRead ? collection.map((entry) => entry.id) : [])])].slice(-200)
+    const readIds = new Set(syncLocalReads ? await syncLocalReads(scope, migrated) : migrated)
+    if (previouslyRead && isCurrent()) rememberLocalAnnouncementIds(scope, collection.map((entry) => entry.id))
+    return { ...value, localEntries: true, entries: collection.map((entry) => ({ ...entry, read: readIds.has(entry.id) })) }
+  }, [scope, read, syncLocalReads])
   useEffect(() => {
     let current = true
     revision.current += 1
@@ -876,27 +906,43 @@ export function AnnouncementCenter({ scope, read, markRemoteRead, syncLocalReads
     setReadErrors({}); setMarkingIds([])
     returnToRow.current = null
     setReadId(readLegacyAnnouncementId(scope))
-    void read().then(async (value): Promise<Announcement | null> => {
-      if (!current || !value || value.entries) return value
-      const collection = await parseNewApiAnnouncementCollection(value.text)
-      if (!current) return value
-      const previouslyRead = readLegacyAnnouncementId(scope) === value.id
-      if (!collection) {
-        if (syncLocalReads) {
-          const id = await legacyAnnouncementReadId(value.id)
-          if (!current) return value
-          const ids = await syncLocalReads(scope, previouslyRead ? [id] : [])
-          if (current) setReadId(ids.includes(id) ? value.id : null)
-        }
-        return value
-      }
-      const migrated = [...new Set([...readLocalAnnouncementIds(scope), ...(previouslyRead ? collection.map((entry) => entry.id) : [])])].slice(-200)
-      const readIds = new Set(syncLocalReads ? await syncLocalReads(scope, migrated) : migrated)
-      if (previouslyRead && current) rememberLocalAnnouncementIds(scope, collection.map((entry) => entry.id))
-      return { ...value, localEntries: true, entries: collection.map((entry) => ({ ...entry, read: readIds.has(entry.id) })) }
-    }).then((value) => { if (current) setAnnouncement(value) }).catch((cause) => { if (current) setError(formatAnnouncementError(cause)) }).finally(() => { if (current) setLoading(false) })
+    void loadNotice(() => current).then((value) => { if (current) setAnnouncement(value) }).catch((cause) => { if (current) setError(formatAnnouncementError(cause)) }).finally(() => { if (current) setLoading(false) })
     return () => { current = false; revision.current += 1 }
-  }, [scope, read, syncLocalReads, attempt])
+  }, [scope, loadNotice, attempt])
+  // 后台再读不打断用户：不清空、不转圈，读失败就保留眼前的内容，下一轮再试。
+  // 公告窗口开着时不读，那里有「重新读取」，免得正在看的内容被换掉。
+  useEffect(() => {
+    if (open) return
+    let active = true
+    async function refreshSilently() {
+      if (silentLoad.current || Date.now() - lastLoad.current < announcementFocusRefreshGapMs) return
+      silentLoad.current = true
+      const startRevision = revision.current
+      const isCurrent = () => active && revision.current === startRevision
+      try {
+        const value = await loadNotice(isCurrent)
+        if (!isCurrent()) return
+        setAnnouncement((previous) => sameAnnouncementSnapshot(previous, value) ? previous : value)
+        setError(null)
+      } catch {
+        // The next focus or tick retries; a transient failure is not worth an alert.
+      } finally { silentLoad.current = false }
+    }
+    function refreshWhenVisible() {
+      if (document.visibilityState === 'visible') void refreshSilently()
+    }
+    window.addEventListener('focus', refreshWhenVisible)
+    document.addEventListener('visibilitychange', refreshWhenVisible)
+    // The tick runs even while the window sits hidden in the tray; that is
+    // exactly when a system notification is the only way to reach the user.
+    const timer = window.setInterval(() => void refreshSilently(), announcementPollIntervalMs)
+    return () => {
+      active = false
+      window.removeEventListener('focus', refreshWhenVisible)
+      document.removeEventListener('visibilitychange', refreshWhenVisible)
+      window.clearInterval(timer)
+    }
+  }, [open, loadNotice])
   useLayoutEffect(() => {
     if (selectedId) detailHeading.current?.focus()
     else if (returnToRow.current) {
@@ -916,6 +962,15 @@ export function AnnouncementCenter({ scope, read, markRemoteRead, syncLocalReads
     if (attentionKeys.length) setSeenKeys(rememberSeenAnnouncementKeys(scope, attentionKeys))
   }, [attentionKeys, scope])
   useEffect(() => { if (open && unseen) acknowledge() }, [open, unseen, acknowledge])
+  // 窗口在后台或缩到托盘时，横条没人看得见，再补一条系统通知；同一条公告只弹一次。
+  useEffect(() => {
+    if (!notify || !unseen || (document.visibilityState === 'visible' && document.hasFocus())) return
+    const notified = readNotifiedAnnouncementKeys(scope)
+    const fresh = attentionKeys.filter((key) => !seenKeys.includes(key) && !notified.includes(key))
+    if (!fresh.length) return
+    rememberNotifiedAnnouncementKeys(scope, fresh)
+    notify(announcementNotificationKey(fresh))
+  }, [notify, unseen, attentionKeys, seenKeys, scope])
 
   async function markEntryRead(entry: NonNullable<Announcement['entries']>[number]) {
     if (!announcement || entry.read) return

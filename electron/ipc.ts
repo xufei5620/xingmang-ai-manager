@@ -1685,14 +1685,22 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   // 撤完再想知道新 Key 该照抄什么已经无从查起。
   const limitedManagedKey = async (userId: number, keyId: number): Promise<{ provider: ProviderId; key: AccountKey } | null> => {
     if (!options.managedCliKeys || options.previewOnboarding) return null
-    const cached = (await options.managedCliKeys.read(userId).catch(() => [])).find((entry) => entry.id === keyId)
-    if (!cached) return null
+    // 本机记录读坏了（#475）：分不清这是不是哪个工具在用的 Key，不能当成「不是」。
+    const cachedEntries = await options.managedCliKeys.read(userId).catch(() => null)
+    const cached = cachedEntries?.find((entry) => entry.id === keyId)
+    if (cachedEntries && !cached) return null
     let key: AccountKey | null
     try {
       key = await findAccountKeyById((query) => accountService.listKeys(query), keyId)
     } catch (error) {
       if (error instanceof Error && error.message === accountKeyListTooLongMessage) throw error
       throw new Error('没读到这把密钥的额度设置，先没撤销。请稍后再试。')
+    }
+    // 记录读坏时，只有不限额、不到期的 Key 撤了也没有限制可丢，照常撤；设了限制的
+    // 不知道该记到哪个工具名下，撤了换新就会变成不限额，先停下。
+    if (!cached) {
+      if (key && key.unlimitedQuota && !key.expiredAt) return null
+      throw new Error('没读到本机记着的工具密钥，分不清这把密钥是不是某个工具在用的，先没撤销。请重新打开软件后再试。')
     }
     // 本机记着这是某个工具在用的 Key，列表里却找不到：分不清它有没有上限，按不限额
     // 撤了再换新，就等于悄悄放开了上限。停下，不撤。
@@ -2970,7 +2978,14 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     try {
       await accountService.revokeKey(keyId)
     } catch (error) {
-      if (slot) await keyReplacements.remove(slot).catch(() => undefined)
+      // 撤销报错不等于没撤成：服务端可能撤了、只是回话丢了（#475）。只有在列表里
+      // 还看得见这把 Key 时才确定没撤，删掉记下的限制；看不见或查不了就留着，
+      // 换新时照抄，宁可多限一次也不悄悄放开。
+      if (slot) {
+        const stillThere = await findAccountKeyById((query) => accountService.listKeys(query), keyId)
+          .then((key) => key !== null, () => false)
+        if (stillThere) await keyReplacements.remove(slot).catch(() => undefined)
+      }
       throw error
     }
     if (userId) await invalidateAccountKeyCaches(userId, keyId)

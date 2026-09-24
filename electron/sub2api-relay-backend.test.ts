@@ -895,6 +895,23 @@ describe('Sub2API RelayBackend adapter', () => {
     }
   })
 
+  it('does not fall back to an older unlimited same-named key when the newer cap is used up', async () => {
+    const profile = sub2ApiManagedCliKeyProfiles.codex
+    const f = fixture()
+    await f.client.login(loginInput)
+    f.state.keys = [keyRecord(31, { name: profile.keyName }), keyRecord(32, { name: profile.keyName, status: 'quota_exhausted', quota: 5, quota_used: 5 })]
+    await expect(f.client.provisionCliKey({ name: profile.keyName, group: profile.group })).rejects.toThrow('这个工具的额度用完了')
+    expect(f.calls.some((call) => call.url.pathname.endsWith('/keys/31') || (call.init.method === 'POST' && call.url.pathname.endsWith('/keys')))).toBe(false)
+  })
+
+  it('still reuses a same-named key created after the used-up cap', async () => {
+    const profile = sub2ApiManagedCliKeyProfiles.codex
+    const f = fixture()
+    await f.client.login(loginInput)
+    f.state.keys = [keyRecord(31, { name: profile.keyName, status: 'quota_exhausted', quota: 5, quota_used: 5 }), keyRecord(32, { name: profile.keyName })]
+    await expect(f.client.provisionCliKey({ name: profile.keyName, group: profile.group })).resolves.toMatchObject({ id: 32 })
+  })
+
   it('creates a capped replacement instead of reusing an unlimited same-named key when asked for a fresh key', async () => {
     const profile = sub2ApiManagedCliKeyProfiles.codex
     const f = fixture()

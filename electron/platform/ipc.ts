@@ -46,7 +46,8 @@ function isActivityKind(value: unknown): value is PlatformActivityKind {
     value === 'install' ||
     value === 'balance' ||
     value === 'task' ||
-    value === 'cliUpdate'
+    value === 'cliUpdate' ||
+    value === 'announcement'
   )
 }
 

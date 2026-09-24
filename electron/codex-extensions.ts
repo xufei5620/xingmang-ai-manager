@@ -805,6 +805,21 @@ function skillEnabled(config: Record<string, unknown>, skillPath: string): boole
   return true
 }
 
+/**
+ * 外接工具页的通用技能列表也要知道哪些技能在 config.toml 里被停用了，
+ * 否则停用过的技能照样显示「已启用」（#490）。配置读不出来时按 Codex 的
+ * 缺省（全部启用）算，不让一份坏配置拖垮整张列表。
+ */
+export function readCodexSkillEnablement(configPath: string): (skillPath: string) => boolean {
+  let config: Record<string, unknown>
+  try {
+    config = parseTomlFile(configPath)
+  } catch {
+    return () => true
+  }
+  return (skillPath) => skillEnabled(config, skillPath)
+}
+
 function skillFromFile(filePath: string, root: SkillRoot, config: Record<string, unknown>): SkillDto {
   const metadata = frontmatter(readBoundedUtf8FileSync(
     filePath,

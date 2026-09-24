@@ -566,6 +566,8 @@ test('extension toggle preserves original state and reports mutation failure', a
         kind: 'mcp',
         action: 'disable',
         id: 'test-extension',
+        // 列表给出的层要原样带回去，否则项目里的那份会被当成全局的去改（#488）。
+        scope: 'user',
       },
     )
   } finally {
@@ -809,7 +811,7 @@ test('feedback narrows the log list by source and to this run, and copies one en
   const page = await fixture('page=feedback')
   try {
     await page.getByText('上次启动的更新记录').waitFor()
-    await page.getByTestId('feedback-source').selectOption('updater')
+    await page.getByTestId('feedback-source').selectOption('更新')
     await page.waitForFunction(() => !document.body.innerText.includes('测试日志'))
     await page.getByText('本次启动的更新失败').waitFor()
 
