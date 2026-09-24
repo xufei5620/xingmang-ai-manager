@@ -321,6 +321,49 @@ jobs:
           base=$(node -p "require('./scripts/update-release-utils.cjs').resolveUpdateUrlForVersion(require('./package.json').version)")
           echo "base=${base%/}" >> "$GITHUB_OUTPUT"
 
+      # 第零步：往更新目录写任何东西之前，确认这一版可以发（#493）。放在上传前而不是
+      # 收尾：只发 Mac 时原来要到最后打 tag 才发现版本号撞车，线上的 Mac 包那时已经被
+      # 同名覆盖了。两件事：
+      #   1. tag 已存在且指向别的 commit：同一个版本号已经从别处出过包，停下。先发
+      #      Windows、之后在同一个 commit 上补发 Mac 仍然放行。
+      #   2. 线上清单已经是这个版本或更高：只有和本次是同一批文件（同一次出包的发布
+      #      作业被重跑）才放行，见 scripts/publish-guard.cjs。
+      - name: Refuse to overwrite a version that already shipped
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHIPPED_SHA: ${{ github.sha }}
+          PUBLIC_BASE: ${{ steps.feed.outputs.base }}
+        run: |
+          set -euo pipefail
+          tag="v$PACKAGE_VERSION"
+          object=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag" \
+            --jq '[.object.type, .object.sha] | join(" ")' 2> /dev/null || true)
+          existing=''
+          case "$object" in
+            'tag '*) existing=$(gh api "repos/$GITHUB_REPOSITORY/git/tags/${object#tag }" --jq '.object.sha') ;;
+            'commit '*) existing=${object#commit } ;;
+          esac
+          if [ -n "$existing" ] && [ "$existing" != "$SHIPPED_SHA" ]; then
+            echo "::error::$tag 已存在且指向 $existing，与本次出包的 $SHIPPED_SHA 不一致；同一个版本号不能从别的 commit 再发，请先提升版本号。线上什么都没改"
+            exit 1
+          fi
+          checked=0
+          for manifest in latest.yml latest-mac.yml; do
+            [ -f "release-artifacts/$manifest" ] || continue
+            code=$(curl --silent --show-error --max-time 60 --output "$RUNNER_TEMP/guard-live-$manifest" \
+              --write-out '%{http_code}' "$PUBLIC_BASE/$manifest")
+            case "$code" in
+              200) node scripts/publish-guard.cjs --local "release-artifacts/$manifest" --name "$manifest" --live "$RUNNER_TEMP/guard-live-$manifest" ;;
+              404) node scripts/publish-guard.cjs --local "release-artifacts/$manifest" --name "$manifest" ;;
+              *) echo "::error::读取线上 $manifest 失败（HTTP $code），确认不了会不会覆盖已发布的版本，线上什么都没改"; exit 1 ;;
+            esac
+            checked=$((checked + 1))
+          done
+          if [ "$checked" -eq 0 ]; then
+            echo "::error::产物里没有任何更新清单，线上什么都没改"
+            exit 1
+          fi
+
       # 第一步：安装包与 blockmap。这些文件先落地，客户端此刻还不知道有新版本。
       - name: Upload the installers and their blockmaps
         env:
