@@ -2222,6 +2222,7 @@ export function createSystemService(
   const installCancellations = new InstallCancellationRegistry()
   const externalClientRuntime = serviceOptions.externalClientRuntime ?? createExternalClientRuntime({
     installationQueue, platform, userHome: providerRoots.userHome, runCommand: executeCommand, windowsExecutionMode,
+    onWingetUnavailable: (reason) => runtimeLog?.log('warn', 'install', 'external-client.winget-unavailable', '桌面客户端无法一键安装：系统 winget 不可用', { reason }),
   })
   let nodeRuntimeInstalling = false
   let pythonRuntimeInstalling = false
