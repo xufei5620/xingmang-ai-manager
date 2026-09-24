@@ -22,6 +22,7 @@ import { tools } from './registry/tools'
 import { keySyncFailureText } from './features/tools/key-sync-failure'
 import { accountOrigin, siteIdForOrigin } from './account-context'
 import { accountSources } from './features/auth/state'
+import type { LoginTarget } from './features/auth/api'
 import { offersCodexDesktopRestart } from '../../electron/running-tools'
 
 export function SavedAccounts({
@@ -31,7 +32,7 @@ export function SavedAccounts({
 }: {
   api: V2Bridge
   onAccountChanged?: (result?: AccountSwitchSyncResult) => void
-  onLogin?: () => void
+  onLogin?: (target?: LoginTarget) => void
 }) {
   const load = useCallback(async () => {
     const [accounts, session] = await Promise.all([
@@ -188,7 +189,7 @@ export function SavedAccounts({
                       size="sm"
                       variant="primary"
                       disabled={Boolean(operation.busy)}
-                      onClick={onLogin}
+                      onClick={() => onLogin?.(savedAccountLoginTarget(account))}
                       testId={`saved-account-relogin-${account.id}`}
                     >
                       重新登录这个账号
@@ -243,7 +244,7 @@ export function SavedAccounts({
         ))}
       </details>
       <div className="v2-business-card-inset">
-        <Button icon={Plus} onClick={onLogin} testId="account-add">
+        <Button icon={Plus} onClick={() => onLogin?.()} testId="account-add">
           添加另一个账号
         </Button>
         <p>登录状态失效时需要重新登录。未勾选的工具保持原配置。</p>
@@ -292,6 +293,16 @@ export function SavedAccounts({
 export function savedAccountSourceLabel(origin: string): string {
   const siteId = siteIdForOrigin(origin)
   return siteId ? accountSources[siteId].label : '账号来源无法识别'
+}
+
+/**
+ * 「重新登录这个账号」要把登录框直接对到这一行的来源和用户名（#480）。以前只是打开
+ * 登录框，默认星芒账号、用户名空着，历史账号的用户得自己改回来源再重填，改漏了就登错站。
+ * 来源认不出时不预选，照常打开登录框。
+ */
+export function savedAccountLoginTarget(account: { origin: string; username: string }): LoginTarget | undefined {
+  const siteId = siteIdForOrigin(account.origin)
+  return siteId ? { siteId, identifier: account.username } : undefined
 }
 
 /** 主进程 SAVED_EXPIRED 那句（electron/realm-account.ts）；只认它，不认当前账号过期。 */

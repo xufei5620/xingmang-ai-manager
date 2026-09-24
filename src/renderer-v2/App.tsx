@@ -7,7 +7,7 @@ import { gitWindowsDownloadUrl } from '../../electron/git-runtime'
 import { offersCodexDesktopRestart } from '../../electron/running-tools'
 import { Shell as AppFrame } from './features/shell/Shell'
 import { createAppApi } from './features/app/api'
-import { AuthFlow, LegalDocument, Splash, StartGuide, Welcome, createAuthApi, guideOfficialLoginRequired, type AuthMode, type GuideToolState } from './features/auth'
+import { AuthFlow, LegalDocument, Splash, StartGuide, Welcome, createAuthApi, guideOfficialLoginRequired, type AuthMode, type GuideToolState, type LoginTarget } from './features/auth'
 import { ConfigDialog } from './features/tools/ConfigDialog'
 import { ExternalClientDialog } from './features/tools/ExternalClientDialog'
 import { Home } from './features/tools/Home'
@@ -127,6 +127,8 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   const [workspaceEntered, setWorkspaceEntered] = useState(false)
   const [tourOpen, setTourOpen] = useState(false)
   const [auth, setAuth] = useState<AuthMode | null>(null)
+  // 登录框要预先对准的保存账号（#480）；只有「重新登录这个账号」给，关框就清。
+  const [authTarget, setAuthTarget] = useState<LoginTarget | null>(null)
   const [legal, setLegal] = useState<LegalDocumentKind | null>(null)
   const [configTool, setConfigTool] = useState<ToolId | null>(null)
   const [codexModelFilter, setCodexModelFilter] = useState<'all' | 'non-gpt'>('all')
@@ -898,7 +900,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
               : null}
             {(Object.keys(visitedPages) as PageId[]).filter((id) => id !== 'acceleration' && (visitedPages[id] === scope || id === page)).map((id) => <div key={id === 'settings' ? `settings:${settingsRequest}` : id} hidden={page !== id} inert={page !== id}>
               <Suspense fallback={pageLoading}>
-                <BusinessPage api={native} page={id} accountTab={accountTab.value} accountTabRequest={accountTab.sequence} tutorialTopic={tutorialTopic ?? undefined} paymentReturn={paymentReturn} navigate={navigate} openLogin={() => setAuth('login')} openHelp={() => setHelp(true)}
+                <BusinessPage api={native} page={id} accountTab={accountTab.value} accountTabRequest={accountTab.sequence} tutorialTopic={tutorialTopic ?? undefined} paymentReturn={paymentReturn} navigate={navigate} openLogin={(target) => { setAuthTarget(target ?? null); setAuth('login') }} openHelp={() => setHelp(true)}
                   onSessionResumed={refreshRecent}
                   onBackupRestored={() => void toolbox.refreshConfig().catch(() => undefined)}
                   onAccountChanged={() => void perform('刷新账号', reloadAccount)} onSettingsChanged={setSettings} openConfig={openToolConfig}
@@ -912,16 +914,16 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
             </div>)}
           </div>
         </AppFrame>}
-    {auth && <AuthFlow api={authApi} initialMode={auth} initialInviteCode={inviteCode} onClose={() => setAuth(null)} onHelp={() => setHelp(true)}
+    {auth && <AuthFlow api={authApi} initialMode={auth} initialInviteCode={inviteCode} initialSiteId={authTarget?.siteId} initialIdentifier={authTarget?.identifier} onClose={() => { setAuth(null); setAuthTarget(null) }} onHelp={() => setHelp(true)}
       notice={maintenance ? <MaintenanceNotice maintenance={maintenance} testId="auth-maintenance-notice" /> : undefined} onAuthenticated={(result, options) => {
       const authenticatedScope = accountScope(result)
       suppressRestoredBootstrap.current.add(authenticatedScope)
-      setAuth(null); setSession({ ...result, authenticated: true }); setGuide(!readLocalPreference(`xingmang-v2-guide:${authenticatedScope}`))
+      setAuth(null); setAuthTarget(null); setSession({ ...result, authenticated: true }); setGuide(!readLocalPreference(`xingmang-v2-guide:${authenticatedScope}`))
       void runAccountBootstrap(result.account.userId, 'login', true, undefined, accountSiteId(result))
       if (options?.rememberError) toast.show(options.rememberError, 'warn')
     }} />}
     {legal && <LegalDocument api={authApi} kind={legal} onClose={() => setLegal(null)} />}
-    {switcher && <Dialog open title="切换账号" width={480} onClose={() => setSwitcher(false)}><SavedAccounts api={native} onAccountChanged={(result) => { bootstrapEpoch.current++; bootstrapInFlight.current = null; if (result) suppressRestoredBootstrap.current.add(accountScope({ siteId: siteIdForOrigin(result.origin) ?? undefined, account: { userId: result.userId } as AccountSessionState['account'] })); setAccountBootstrap(null); if (!result || !accountSwitchNeedsAttention(result)) setSwitcher(false); setPaymentReturn(undefined); void perform('刷新账号', reloadAccount) }} onLogin={() => { setSwitcher(false); setAuth('login') }} /></Dialog>}
+    {switcher && <Dialog open title="切换账号" width={480} onClose={() => setSwitcher(false)}><SavedAccounts api={native} onAccountChanged={(result) => { bootstrapEpoch.current++; bootstrapInFlight.current = null; if (result) suppressRestoredBootstrap.current.add(accountScope({ siteId: siteIdForOrigin(result.origin) ?? undefined, account: { userId: result.userId } as AccountSessionState['account'] })); setAccountBootstrap(null); if (!result || !accountSwitchNeedsAttention(result)) setSwitcher(false); setPaymentReturn(undefined); void perform('刷新账号', reloadAccount) }} onLogin={(target) => { setSwitcher(false); setAuthTarget(target ?? null); setAuth('login') }} /></Dialog>}
     {externalClient && <ExternalClientDialog key={`${scope}:${externalClient}`} api={native} tool={externalClient} signedIn={session.authenticated} onClose={() => setExternalClient(null)} onSaved={finishExternalConfigSave} />}
     {configTool && toolbox.snapshot && <ConfigDialog key={`${scope}:${configTool}:${codexModelFilter}`} api={toolsApi} tool={configTool} config={toolbox.snapshot.config} signedIn={session.authenticated} initialModelFilter={codexModelFilter}
       onClose={() => setConfigTool(null)} onRefresh={() => toolbox.refresh(true)} onSaved={finishConfigSave} onLogin={() => setAuth('login')} onKeys={() => { setConfigTool(null); navigate('account', 'keys') }} onHelp={() => setHelp(true)} />}

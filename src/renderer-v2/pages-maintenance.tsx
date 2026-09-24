@@ -103,6 +103,7 @@ import type {
   PlatformSystemState,
 } from '../../electron/platform/contract'
 import { platformApi } from './platform-api'
+import type { LoginTarget } from './features/auth/api'
 
 type AppSettings = Awaited<ReturnType<V2Bridge['getSettings']>>
 type SettingsUpdate = Parameters<V2Bridge['saveSettings']>[0]
@@ -136,7 +137,7 @@ const connectionTools = tools.filter((tool): tool is typeof tool & { id: Provide
 export type ToolInstallOutcome = 'installed' | 'restart' | 'skipped'
 export type BusinessActions = {
   navigate?: (page: V2Page) => void
-  openLogin?: () => void
+  openLogin?: (target?: LoginTarget) => void
   openHelp?: () => void
   onAccountChanged?: () => void
   onSettingsChanged?: (settings: AppSettings) => void
@@ -2198,7 +2199,7 @@ export function SettingsPage({
             : row(
                 '记住密码',
                 '由客户端安全存储处理',
-                <Button size="sm" icon={UserRound} onClick={openLogin}>
+                <Button size="sm" icon={UserRound} onClick={() => openLogin?.()}>
                   管理登录
                 </Button>,
               )}
@@ -2215,7 +2216,7 @@ export function SettingsPage({
                 退出
               </Button>
             ) : (
-              <Button size="sm" icon={UserRound} onClick={openLogin}>
+              <Button size="sm" icon={UserRound} onClick={() => openLogin?.()}>
                 登录
               </Button>
             ),

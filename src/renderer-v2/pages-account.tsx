@@ -76,6 +76,7 @@ import { balanceStatusText } from './features/shell/balance-status'
 import { UsageDetails } from './features/account/UsageDetails'
 import { ToolKeyLimits } from './features/account/ToolKeyLimits'
 import { ToolUsage } from './features/account/ToolUsage'
+import type { LoginTarget } from './features/auth/api'
 import { describeLoginDevice } from './features/account/login-device-label'
 import {
   getSourceMarkerStorage,
@@ -328,7 +329,7 @@ export function AccountPage({
   /** 每次从外面点名要切到某个分页就加一；同一个分页再点一次也得切回去（Q29）。 */
   tabRequest?: number
   paymentReturn?: { sequence: number; order: string | null }
-  onLogin?: () => void
+  onLogin?: (target?: LoginTarget) => void
   onAccountChanged?: () => void
   onBack?: () => void
   /** 撤销了工具正在用的 Key 之后，给那个工具换一把新的；缺省 = 不自动换（旧行为）。 */
@@ -452,7 +453,7 @@ export function AccountPage({
           title="登录后查看个人中心"
           description="工具里已经写入的配置会继续保留。"
           action={
-            <Button variant="primary" icon={UserRound} onClick={onLogin}>
+            <Button variant="primary" icon={UserRound} onClick={() => onLogin?.()}>
               登录账号
             </Button>
           }
@@ -568,7 +569,7 @@ function AccountOverview({
   balance: Balance
   changed: () => void
   navigateTab: (tab: AccountTab) => void
-  onLogin?: () => void
+  onLogin?: (target?: LoginTarget) => void
   identity: AvatarIdentity
   session: AccountSessionState
 }) {
