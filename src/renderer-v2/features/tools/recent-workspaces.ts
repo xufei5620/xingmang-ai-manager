@@ -98,6 +98,10 @@ export function isMissingWorkspace(cause: unknown): boolean {
  * 顺序给出的记录里,某个组合第一次出现的那条就是它最近的一条。传进来的记录不全
  * 时(分页、条数超过一次能取的上限),没被覆盖到的组合一个按钮都不给——宁可少给,
  * 也不能给一颗点下去接到别处的按钮。
+ *
+ * 归档的记录不算(#497):CLI 续接时只在还没归档的会话里找最近一条(codex resume
+ * --last 就是这样),归档项本身也不给按钮。让它占着「最近」的位置,同目录里较旧、
+ * 其实能接上的那条就一颗按钮都没有了。
  */
 export function latestSessionIdsByWorkspace(
   sessions: readonly SessionSummary[],
@@ -105,6 +109,7 @@ export function latestSessionIdsByWorkspace(
   const seen = new Set<string>()
   const latest = new Set<string>()
   for (const session of sessions) {
+    if (session.archived) continue
     const path = session.cwd.trim()
     if (path === '') continue
     // 与 recentWorkspaces 同一条理由:Windows 路径大小写不敏感。

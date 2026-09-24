@@ -324,6 +324,16 @@ describe('ProviderSessionsService.resolveWorkspace', () => {
 })
 
 describe('ProviderSessionsService', () => {
+  it('passes the Codex export incompleteness through the unified result, defaulting to complete (#491)', async () => {
+    const data = fixture()
+    const codex = codexReader([codexSummary('codex-native')])
+    const sessions = service(data, codex)
+    const outputPath = path.join(data.root, 'codex.md')
+    await expect(sessions.exportMarkdown('codex:codex-native', outputPath)).resolves.toMatchObject({ truncated: false })
+    vi.mocked(codex.exportMarkdown).mockResolvedValueOnce({ sessionId: 'codex-native', outputPath, messages: 1, truncated: true })
+    await expect(sessions.exportMarkdown('codex:codex-native', outputPath)).resolves.toMatchObject({ messages: 1, truncated: true })
+  })
+
   it('unifies Codex SQLite and Claude/Gemini/Grok local sessions with explicit capabilities', async () => {
     const data = fixture()
     seedExternalSessions(data)
