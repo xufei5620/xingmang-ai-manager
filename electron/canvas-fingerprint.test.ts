@@ -118,4 +118,73 @@ describe('canvas fingerprints', () => {
     expect(computeCanvasNodeFingerprint({ node: first, upstream: [] }))
       .not.toBe(computeCanvasNodeFingerprint({ node: second, upstream: [] }))
   })
+  it('changes an image fingerprint when the resolution moves off the default', () => {
+    const base = computeCanvasNodeFingerprint({ node: imageNode(), upstream: [] })
+    expect(computeCanvasNodeFingerprint({ node: imageNode({ imageResolution: '4K' }), upstream: [] })).not.toBe(base)
+    expect(computeCanvasNodeFingerprint({ node: imageNode({ imageResolution: '2K' }), upstream: [] }))
+      .not.toBe(computeCanvasNodeFingerprint({ node: imageNode({ imageResolution: '4K' }), upstream: [] }))
+  })
+
+  it('keeps the pre-existing image fingerprint when the resolution equals the model default', () => {
+    // Pinned so caches written before resolution joined the key stay valid.
+    const legacy = computeCanvasNodeFingerprint({ node: imageNode(), upstream: [] })
+    expect(computeCanvasNodeFingerprint({ node: imageNode({ imageResolution: '1K' }), upstream: [] })).toBe(legacy)
+  })
+
+  it('changes a MiniMax video fingerprint for each generation parameter but not for its defaults', () => {
+    function videoNode(overrides: Partial<CanvasRunGraphNode['data']> = {}): CanvasRunGraphNode {
+      return {
+        id: 'video',
+        kind: 'video',
+        definitionVersion: 1,
+        data: { prompt: 'waves', model: 'minimax-h3-fast', group: '视频', seconds: '5', ...overrides },
+      }
+    }
+    const base = computeCanvasNodeFingerprint({ node: videoNode(), upstream: [] })
+    expect(computeCanvasNodeFingerprint({
+      node: videoNode({ videoMode: 'auto', videoResolution: '720p', videoAspectRatio: '16:9', promptOptimization: false }),
+      upstream: [],
+    })).toBe(base)
+    const changed: Array<Partial<CanvasRunGraphNode['data']>> = [
+      { videoMode: 't2va' },
+      { videoResolution: '480p' },
+      { videoAspectRatio: '9:16' },
+      { promptOptimization: true },
+    ]
+    for (const overrides of changed) {
+      expect(computeCanvasNodeFingerprint({ node: videoNode(overrides), upstream: [] })).not.toBe(base)
+    }
+  })
+
+  it('ignores MiniMax-only parameters on models that never send them', () => {
+    const grok: CanvasRunGraphNode = {
+      id: 'video',
+      kind: 'video',
+      definitionVersion: 1,
+      data: { prompt: 'waves', model: 'grok-imagine-video', seconds: '5' },
+    }
+    expect(computeCanvasNodeFingerprint({
+      node: { ...grok, data: { ...grok.data, videoAspectRatio: '9:16', promptOptimization: true } },
+      upstream: [],
+    })).toBe(computeCanvasNodeFingerprint({ node: grok, upstream: [] }))
+  })
+
+  it('changes the graph revision for MiniMax video parameters', () => {
+    const video: CanvasRunGraphNode = {
+      id: 'video',
+      kind: 'video',
+      definitionVersion: 1,
+      data: { prompt: 'waves', model: 'minimax-h3-fast', seconds: '5' },
+    }
+    const base = computeCanvasGraphRevision({ nodes: [video], edges: [] })
+    for (const overrides of [
+      { videoMode: 't2va' as const },
+      { videoResolution: '480p' as const },
+      { videoAspectRatio: '9:16' as const },
+      { promptOptimization: true },
+    ]) {
+      expect(computeCanvasGraphRevision({ nodes: [{ ...video, data: { ...video.data, ...overrides } }], edges: [] }))
+        .not.toBe(base)
+    }
+  })
 })

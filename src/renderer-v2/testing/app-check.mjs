@@ -78,9 +78,10 @@ before(async () => {
   await (await open()).close()
 })
 after(async () => { await browser?.close(); await server?.close() })
-async function open(query = '', clock = false) {
+async function open(query = '', clock = false, initScript = null) {
   const page = await browser.newPage({ viewport: { width: 1280, height: 820 } })
   await page.addInitScript(recordToasts)
+  if (initScript) await page.addInitScript(initScript)
   // The host outlives a renderer reload and does not share the page's localStorage.
   const noticeReads = new Map()
   await page.exposeFunction('fixtureNoticeStore', (scope, ids) => {
@@ -165,6 +166,36 @@ test('the workspace starfield stays still on low-end machines, runs at most 30 f
     assert.equal(await countStarfieldPaints(page, 800), 0, '窗口不在前台时星空停下')
     await page.evaluate(() => window.dispatchEvent(new Event('focus')))
     assert.ok(await countStarfieldPaints(page, 800) >= 2, '回到前台后星空接着动')
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// Runs before the fixture mounts: the page reports a Mac the way Chromium does
+// on macOS, and every state the startup windows reach is recorded as it is
+// committed, so a frame laid out for the wrong system cannot slip by between
+// two polls.
+function recordAuthWindowOs() {
+  Object.defineProperty(Navigator.prototype, 'platform', { configurable: true, get: () => 'MacIntel' })
+  window.__authWindowOs = []
+  new MutationObserver(() => {
+    for (const frame of document.querySelectorAll('.auth-window')) {
+      const entry = `${frame.querySelector('main')?.dataset.testid ?? ''}:${frame.dataset.os}`
+      if (window.__authWindowOs.at(-1) !== entry) window.__authWindowOs.push(entry)
+    }
+  }).observe(document, { childList: true, subtree: true, attributes: true, attributeFilter: ['data-os'] })
+}
+
+// 红黄绿三个按钮压在 Mac 窗口左上角，顶栏得从第一帧起就让出位置。以前系统类型要等
+// 画面出来之后才写到根节点上，启动时先写的还是 Windows，欢迎页头几帧就照 Windows 排版，
+// 直到外观同步那次重绘才挪过去。
+test('the macOS startup and welcome windows leave room for the traffic lights from their first frame', async () => {
+  const page = await open('os=mac&guest=1', false, recordAuthWindowOs)
+  try {
+    await page.getByTestId('welcome-page').waitFor()
+    const seen = await page.evaluate(() => window.__authWindowOs)
+    assert.ok(seen.some((entry) => entry.startsWith('welcome-page:')), `应记录到欢迎页：${seen.join(', ')}`)
+    assert.deepEqual(seen.filter((entry) => !entry.endsWith(':mac')), [], `启动页和欢迎页每一帧都按 Mac 排版：${seen.join(', ')}`)
+    assert.equal(await page.getByTestId('window-titlebar').evaluate((element) => getComputedStyle(element).paddingLeft), '84px')
     await clean(page)
   } finally { await page.close() }
 })
@@ -631,7 +662,7 @@ test('full App preserves the fixed desktop columns and renders only the new rend
       assert.ok(Math.abs(actionGeometry.topCenterOffset) <= 1)
       assert.equal(actionGeometry.homeTopOffset, 4)
       assert.equal(await page.locator('[data-testid^="tool-row-"]').count(), 8)
-      await page.getByRole('button', { name: '标为已读' }).click()
+      await page.getByRole('button', { name: '关闭公告提示' }).click()
       await page.screenshot({ path: path.join(artifacts, `home-${theme}.png`) })
       await page.getByTestId('sidebar-collapse').click()
       assert.equal(await page.locator('.v2-sidebar').evaluate((element) => element.getBoundingClientRect().width), 60)
@@ -2194,7 +2225,7 @@ test('Sub2API announcements list titles and automatically mark only the opened d
     await dialog.getByRole('button', { name: '返回列表', exact: true }).click()
     await list.getByRole('button', { name: '服务通知 已读', exact: true }).waitFor()
     await list.getByRole('button', { name: '套餐更新 未读', exact: true }).waitFor()
-    assert.equal(await button.locator('.v2-unread').count(), 1)
+    assert.equal(await button.locator('.v2-unread').count(), 0)
 
     await list.getByTestId('announcement-item-12').click()
     await detail.getByRole('heading', { name: '服务通知', exact: true }).waitFor()
@@ -2204,7 +2235,7 @@ test('Sub2API announcements list titles and automatically mark only the opened d
     await detail.getByText('套餐详情已更新', { exact: true }).waitFor()
     assert.equal(await dialog.locator('script').count(), 0)
     assert.equal(await page.evaluate(() => window.nativeXss), undefined)
-    await button.locator('.v2-unread').waitFor({ state: 'hidden' })
+    assert.equal(await button.locator('.v2-unread').count(), 0)
     const writes = await page.evaluate(() => window.v2Test.calls.filter((call) => call.method === 'markAccountNoticeRead'))
     assert.deepEqual(writes.map((call) => call.args), [['sub2api-notices', '12'], ['sub2api-notices', '8']])
     await page.screenshot({ path: path.join(artifacts, 'sub2api-announcement-detail.png') })
@@ -2227,7 +2258,7 @@ test('Sub2API detail stays readable when marking fails and retry only marks that
     await dialog.getByTestId('announcement-item-12').click()
     await dialog.getByRole('alert').getByText('本地测试操作失败').waitFor()
     await dialog.getByTestId('announcement-detail').getByText('系统升级完成', { exact: true }).waitFor()
-    assert.equal(await button.locator('.v2-unread').count(), 1)
+    assert.equal(await button.locator('.v2-unread').count(), 0)
     await dialog.getByRole('button', { name: '返回列表', exact: true }).click()
     await dialog.getByRole('button', { name: '服务通知 未读', exact: true }).waitFor()
     await dialog.getByTestId('announcement-item-12').click()
@@ -2239,7 +2270,7 @@ test('Sub2API detail stays readable when marking fails and retry only marks that
     await dialog.getByRole('button', { name: '返回列表', exact: true }).click()
     await dialog.getByRole('button', { name: '服务通知 已读', exact: true }).waitFor()
     await dialog.getByRole('button', { name: '套餐更新 未读', exact: true }).waitFor()
-    assert.equal(await button.locator('.v2-unread').count(), 1)
+    assert.equal(await button.locator('.v2-unread').count(), 0)
     const writes = await page.evaluate(() => window.v2Test.calls.filter((call) => call.method === 'markAccountNoticeRead'))
     assert.deepEqual(writes.map((call) => call.args), Array.from({ length: 3 }, () => ['sub2api-notices', '12']))
     await clean(page)
@@ -2262,13 +2293,13 @@ test('Sub2API pending read updates stay attached to their own announcement after
     await page.evaluate(() => window.v2Test.releaseNoticeMark('12'))
     await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))))
     assert.equal(await detail.getByRole('heading', { name: '套餐更新', exact: true }).isVisible(), true)
-    assert.equal(await button.locator('.v2-unread').count(), 1)
+    assert.equal(await button.locator('.v2-unread').count(), 0)
     await dialog.getByRole('button', { name: '返回列表', exact: true }).click()
     await dialog.getByRole('button', { name: '服务通知 已读', exact: true }).waitFor()
     await dialog.getByRole('button', { name: '套餐更新 未读', exact: true }).waitFor()
     await page.evaluate(() => window.v2Test.releaseNoticeMark('8'))
     await dialog.getByRole('button', { name: '套餐更新 已读', exact: true }).waitFor()
-    await button.locator('.v2-unread').waitFor({ state: 'hidden' })
+    assert.equal(await button.locator('.v2-unread').count(), 0)
     assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((call) => call.method === 'markAccountNoticeRead').map((call) => call.args)), [['sub2api-notices', '12'], ['sub2api-notices', '8']])
     await clean(page)
   } finally { await page.close() }
@@ -2313,6 +2344,49 @@ test('legacy announcements keep their content view and local mark-read action', 
     await dialog.waitFor({ state: 'hidden' })
     await button.locator('.v2-unread').waitFor({ state: 'hidden' })
     assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((call) => call.method === 'markAccountNoticeRead')), [])
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('announcement banner can be closed, stays closed after reload, and returns only for a notice not seen yet', async () => {
+  const page = await open('noticeCollection=1')
+  try {
+    const button = page.getByTestId('announcement-open')
+    const banner = page.getByTestId('announcement-banner')
+    await banner.waitFor()
+    await button.locator('.v2-unread').waitFor()
+    await page.getByRole('button', { name: '关闭公告提示' }).click()
+    await banner.waitFor({ state: 'hidden' })
+    // The bell dot is lifted through App state one render after the banner hides.
+    await button.locator('.v2-unread').waitFor({ state: 'hidden' })
+    const [seenKey, seen] = await page.evaluate(() => {
+      const key = Object.keys(localStorage).find((name) => name.startsWith('xingmang-v2-notice-seen:'))
+      return [key, JSON.parse(localStorage.getItem(key) ?? '[]')]
+    })
+    assert.equal(seen.length, 3)
+    await page.reload()
+    await page.getByTestId('tool-row-codex').waitFor()
+    // Absence only means something once the collection has been read and its read state synced.
+    await page.waitForFunction(() => window.v2Test.calls.some((call) => call.method === 'syncLocalNoticeReads'))
+    await page.waitForTimeout(500)
+    assert.equal(await banner.count(), 0)
+    assert.equal(await button.locator('.v2-unread').count(), 0)
+    // Closing only quiets the reminder; every entry is still listed as unread.
+    await button.click()
+    const dialog = page.getByRole('dialog', { name: '公告', exact: true })
+    // Opening the center re-reads the notice, so wait for the list before reading its rows.
+    await dialog.getByTestId('announcement-list').waitFor()
+    assert.deepEqual(await dialog.getByTestId('announcement-list').locator('.v2-announcement-read-state').allTextContents(), ['未读', '未读', '未读'])
+    await dialog.getByRole('button', { name: '关闭', exact: true }).click()
+    // Simulate a newly published entry: one unread key this account has never seen.
+    await page.evaluate(([key, keys]) => localStorage.setItem(key, JSON.stringify(keys)), [seenKey, seen.slice(1)])
+    await page.reload()
+    await banner.waitFor()
+    await button.locator('.v2-unread').waitFor()
+    await banner.getByRole('button', { name: '查看' }).click()
+    await dialog.getByTestId('announcement-list').waitFor()
+    assert.equal(await banner.count(), 0)
+    await button.locator('.v2-unread').waitFor({ state: 'hidden' })
     await clean(page)
   } finally { await page.close() }
 })

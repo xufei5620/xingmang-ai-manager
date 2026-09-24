@@ -7,6 +7,7 @@ import './styles/shell.css'
 import './app.css'
 import './styles/contrast.css'
 import { attachRuntimeReporting } from './features/app/error-report'
+import { initialWindowOs } from './features/app/window-os'
 
 declare const __XINGMANG_RENDERER__: string
 const root = document.getElementById('root')!
@@ -17,6 +18,9 @@ const initialTheme = 'light'
 document.documentElement.dataset.theme = initialTheme
 document.documentElement.dataset.skin = 'mist'
 document.documentElement.style.colorScheme = initialTheme
+// The Mac title bar has to make room for the traffic lights on the very first
+// frame, long before the platform capabilities come back over IPC.
+document.documentElement.dataset.os = initialWindowOs(undefined, navigator.platform)
 root.dataset.renderer = __XINGMANG_RENDERER__
 const native = window.xingmang
 if (native) {
