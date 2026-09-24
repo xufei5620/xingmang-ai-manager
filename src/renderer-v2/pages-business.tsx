@@ -52,6 +52,7 @@ export function BusinessPage({
         onAccountChanged={actions.onAccountChanged ?? actions.refresh}
         onBack={actions.navigate ? () => actions.navigate?.('home') : undefined}
         onRewriteKey={actions.onRewriteKey}
+        onConfigureTool={actions.openConfig}
       />
     )
   if (page === 'sessions')

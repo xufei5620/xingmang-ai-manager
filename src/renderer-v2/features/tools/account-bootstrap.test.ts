@@ -6,12 +6,14 @@ import type {
   SystemSnapshot,
 } from '../../../../electron/ipc-contract'
 import {
+  KeyRewriteSkippedError,
   accountBootstrapPlan,
   bootstrapAccountTools,
   configurationFailure,
   configurationFailureMessages,
   describeAccountBootstrapFailure,
   describeAccountBootstrapResult,
+  skippedNamedProviders,
   type AccountBootstrapBridge,
   type AccountBootstrapResult,
 } from './account-bootstrap'
@@ -608,5 +610,21 @@ describe('account bootstrap log lines', () => {
       level: 'warn',
       message: 'Key 自动配置（登录后）没有完成：星芒账号已变化，已停止本次 Key 配置',
     })
+  })
+})
+
+describe('named key rewrite outcome', () => {
+  it('reports a named tool the planner skipped so a revoke never claims a fresh key', () => {
+    const skipped = [
+      { provider: 'claude' as const, reason: 'manual' as const, message: 'Claude Code 保留手动填写的密钥' },
+      { provider: 'codex' as const, reason: 'official' as const, message: 'Codex CLI 保留官方账号连接' },
+    ]
+    expect(skippedNamedProviders({ skipped }, ['claude'])).toEqual([skipped[0]])
+    expect(skippedNamedProviders({ skipped }, ['gemini'])).toEqual([])
+    expect(skippedNamedProviders({ skipped }, undefined)).toEqual([])
+    expect(skippedNamedProviders(undefined, ['claude'])).toEqual([])
+    const error = new KeyRewriteSkippedError([skipped[0]])
+    expect(error).toBeInstanceOf(Error)
+    expect(error.message).toBe('Claude Code 保留手动填写的密钥')
   })
 })

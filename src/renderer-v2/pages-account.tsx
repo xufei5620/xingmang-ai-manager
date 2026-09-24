@@ -78,6 +78,7 @@ import { ToolKeyLimits } from './features/account/ToolKeyLimits'
 import { ToolUsage } from './features/account/ToolUsage'
 import type { LoginTarget } from './features/auth/api'
 import { describeLoginDevice } from './features/account/login-device-label'
+import { KeyRewriteSkippedError } from './features/tools/account-bootstrap'
 import {
   getSourceMarkerStorage,
   writeManualSourceMarker,
@@ -323,6 +324,7 @@ export function AccountPage({
   onAccountChanged,
   onBack,
   onRewriteKey,
+  onConfigureTool,
 }: {
   api: V2Bridge
   initialTab?: AccountTab
@@ -334,6 +336,8 @@ export function AccountPage({
   onBack?: () => void
   /** 撤销了工具正在用的 Key 之后，给那个工具换一把新的；缺省 = 不自动换（旧行为）。 */
   onRewriteKey?: (provider: Provider) => Promise<boolean>
+  /** 打开某个工具的设置；自动换新不适用时（手填等），这是用户的下一步。缺省 = 不给按钮。 */
+  onConfigureTool?: (provider: Provider) => void
 }) {
   const [tab, setTab] = useState<AccountTab>(initialTab ?? 'overview')
   const { store: balanceStore, snapshot: balanceState } = useSharedAccountBalance()
@@ -509,6 +513,7 @@ export function AccountPage({
                       providerBaseUrls={account.providerBaseUrls}
                       siteId={accountSiteId(account.session)}
                       onRewriteKey={onRewriteKey}
+                      onConfigureTool={onConfigureTool}
                     />
                   )}
                   {panel === 'usage' && (
@@ -868,12 +873,14 @@ function AccountKeys({
   providerBaseUrls,
   siteId,
   onRewriteKey,
+  onConfigureTool,
 }: {
   api: V2Bridge
   balance: Balance
   providerBaseUrls: Record<Provider, string>
   siteId: AccountSiteId
   onRewriteKey?: (provider: Provider) => Promise<boolean>
+  onConfigureTool?: (provider: Provider) => void
 }) {
   const [page, setPage] = useState(1)
   const [query, setQuery] = useState('')
@@ -899,7 +906,9 @@ function AccountKeys({
   const [expires, setExpires] = useState('')
   const [removing, setRemoving] = useState<AccountKey | null>(null)
   // 撤销了工具在用的 Key、自动换新却没成：记下是哪个工具，好给一颗「再换一次」。
-  const [replaceFailed, setReplaceFailed] = useState<Provider | null>(null)
+  // skipped = 这个工具的配置不归自动流程管（手填、来源没确认等），再换一次也还是跳过，
+  // 要给的是「去设置」（#478）。
+  const [replaceFailed, setReplaceFailed] = useState<{ provider: Provider; skipped: boolean } | null>(null)
   const [revealed, setRevealed] = useState('')
   const [selected, setSelected] = useState<AccountKey | null>(null)
   const [models, setModels] = useState<string[]>([])
@@ -1011,8 +1020,12 @@ function AccountKeys({
     )
   // 失败只记下工具，不把主进程的原话摆出来：这里要告诉用户的只有「点哪里」。
   const replaceKey = async (provider: Provider): Promise<boolean> => {
-    const replaced = await onRewriteKey?.(provider).catch(() => false) ?? false
-    setReplaceFailed(replaced ? null : provider)
+    let skipped = false
+    const replaced = await onRewriteKey?.(provider).catch((error: unknown) => {
+      skipped = error instanceof KeyRewriteSkippedError
+      return false
+    }) ?? false
+    setReplaceFailed(replaced ? null : { provider, skipped })
     return replaced
   }
   const retryReplaceKey = (provider: Provider) =>
@@ -1052,11 +1065,28 @@ function AccountKeys({
         }
       />
       <ResultNotice {...operation} />
-      {replaceFailed && onRewriteKey && (
+      {replaceFailed && onRewriteKey && (replaceFailed.skipped ? (
         <Notice
           tone="warn"
-          title={`${keyToolName(replaceFailed)} 暂时用不了`}
-          body={`刚撤销的是 ${keyToolName(replaceFailed)} 正在用的密钥，新密钥没有换上。点「再换一次」就好。`}
+          title={`${keyToolName(replaceFailed.provider)} 还在用刚撤销的密钥`}
+          body={`${keyToolName(replaceFailed.provider)} 的配置不是按当前账号自动写的，这次没有替你改，它现在会连不上。${onConfigureTool ? '点「去设置」改用当前账号就好。' : '到首页打开它的设置，改用当前账号就好。'}`}
+          testId="account-key-replace-skipped"
+          actions={onConfigureTool && (
+            <Button
+              size="sm"
+              icon={KeyRound}
+              testId="account-key-replace-configure"
+              onClick={() => { onConfigureTool(replaceFailed.provider); setReplaceFailed(null) }}
+            >
+              去设置
+            </Button>
+          )}
+        />
+      ) : (
+        <Notice
+          tone="warn"
+          title={`${keyToolName(replaceFailed.provider)} 暂时用不了`}
+          body={`刚撤销的是 ${keyToolName(replaceFailed.provider)} 正在用的密钥，新密钥没有换上。点「再换一次」就好。`}
           testId="account-key-replace-failed"
           actions={
             <Button
@@ -1065,13 +1095,13 @@ function AccountKeys({
               loading={operation.busy === 'replace'}
               disabled={Boolean(operation.busy)}
               testId="account-key-replace-retry"
-              onClick={() => void retryReplaceKey(replaceFailed)}
+              onClick={() => void retryReplaceKey(replaceFailed.provider)}
             >
               再换一次
             </Button>
           }
         />
-      )}
+      ))}
       <Card padding="none">
         <ListState
           page="keys"

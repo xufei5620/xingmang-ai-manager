@@ -7,9 +7,10 @@ import type {
   PlatformSystemState,
   XingmangPlatformApi,
 } from '../electron/platform/contract'
-import type { AccountPaymentWindowTerminalEvent } from '../electron/ipc-contract'
+import type { AccountPaymentWindowTerminalEvent, ProviderId } from '../electron/ipc-contract'
 import { usageDetailFixture } from '../src/renderer-v2/testing/usage-fixture'
 import { platformCapabilitiesFor } from '../electron/platform-capabilities'
+import { KeyRewriteSkippedError } from '../src/renderer-v2/features/tools/account-bootstrap'
 
 declare global {
   interface Window {
@@ -219,8 +220,11 @@ const key = {
 // replaceFails=N 让自动换新的前 N 次失败，好看到「再换一次」那条出路。
 const keyInUse = query.has('keyInUse')
 let replaceFailures = Number(query.get('replaceFails') ?? 0)
-async function rewriteKey(provider: string) {
+// replaceSkipped：那个工具的配置是手填的，自动换新把它跳过（#478）。
+const replaceSkipped = query.has('replaceSkipped')
+async function rewriteKey(provider: ProviderId) {
   record('rewriteKey', provider)
+  if (replaceSkipped) throw new KeyRewriteSkippedError([{ provider, reason: 'manual', message: 'Claude Code 保留手动填写的密钥' }])
   if (replaceFailures <= 0) return true
   replaceFailures--
   return false
@@ -1091,6 +1095,7 @@ const renderFixture = (paymentReturn?: {
           navigate={(next) => record('navigate', next)}
           openLogin={() => record('login')}
           onRewriteKey={rewriteKey}
+          openConfig={(provider) => record('openConfig', provider)}
         />
       </BalanceTierProvider>
     </Shell>,
