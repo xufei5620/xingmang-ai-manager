@@ -566,6 +566,8 @@ test('extension toggle preserves original state and reports mutation failure', a
         kind: 'mcp',
         action: 'disable',
         id: 'test-extension',
+        // 列表给出的层要原样带回去，否则项目里的那份会被当成全局的去改（#488）。
+        scope: 'user',
       },
     )
   } finally {
