@@ -900,10 +900,13 @@ export async function downloadCodexDesktopPackageFromCandidates(
   throw new Error(`所有国内镜像均未通过完整校验：${failures.join('；') || '没有可用镜像'}`)
 }
 
-export async function inspectCodexDesktopPackageFile(
-  packagePath: string,
-): Promise<CodexDesktopPackageMetadata> {
-  const script = [
+/**
+ * The package path is the only outside value in the script, and it only ever
+ * appears as a single-quoted PowerShell literal. The manifest's compressed
+ * size is checked before anything decompresses or parses it.
+ */
+export function buildCodexDesktopPackageInspectionScript(packagePath: string): string {
+  return [
     '$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)',
     '$ErrorActionPreference = \'Stop\'',
     'Add-Type -AssemblyName System.IO.Compression.FileSystem',
@@ -937,23 +940,57 @@ export async function inspectCodexDesktopPackageFile(
     '  } | ConvertTo-Json -Compress',
     '} finally { $archive.Dispose() }',
   ].join('\n')
-  const { stdout } = await execFileAsync(resolveWindowsPowerShellExecutable(), [
+}
+
+export interface CodexDesktopPackageInspectionDependencies {
+  /**
+   * Tests stand in for powershell.exe here: its cold start on a busy CI runner
+   * outlasted the budget, and what they check is what this module hands it and
+   * what it makes of the answer. Production never passes these.
+   */
+  run?: (
+    executable: string,
+    argv: string[],
+    options: { env: NodeJS.ProcessEnv; timeoutMs: number; maxOutputBytes: number },
+  ) => Promise<string>
+  resolvePowerShell?: () => string
+}
+
+async function runPackageInspection(
+  executable: string,
+  argv: string[],
+  options: { env: NodeJS.ProcessEnv; timeoutMs: number; maxOutputBytes: number },
+): Promise<string> {
+  const { stdout } = await execFileAsync(executable, argv, {
+    env: options.env,
+    windowsHide: true,
+    timeout: options.timeoutMs,
+    maxBuffer: options.maxOutputBytes,
+  })
+  return stdout
+}
+
+export async function inspectCodexDesktopPackageFile(
+  packagePath: string,
+  dependencies: CodexDesktopPackageInspectionDependencies = {},
+): Promise<CodexDesktopPackageMetadata> {
+  const run = dependencies.run ?? runPackageInspection
+  const stdout = await run((dependencies.resolvePowerShell ?? resolveWindowsPowerShellExecutable)(), [
     '-NoLogo',
     '-NoProfile',
     '-NonInteractive',
     '-Command',
-    script,
+    buildCodexDesktopPackageInspectionScript(packagePath),
   ], {
     env: trustedCommandEnvironment(),
-    windowsHide: true,
     // The first inspection on a machine pays for loading the compression and
     // XML assemblies into a stripped environment, which measurably exceeds 30s
     // on a cold, contended host. Later inspections finish in well under a
     // second. This runs once per package during an install or update the user
     // is already waiting on, so bound it generously rather than failing a
     // healthy package as a timeout.
-    timeout: 90_000,
-    maxBuffer: 1024 * 1024,
+    timeoutMs: 90_000,
+    maxOutputBytes: 1024 * 1024,
   })
   const metadata = parseCodexDesktopPackageMetadata(stdout)
   if (!metadata) throw new Error('无法读取 Codex Desktop 安装包元数据')
