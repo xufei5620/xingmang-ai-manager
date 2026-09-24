@@ -1,6 +1,7 @@
 import { _electron as electron } from '@playwright/test'
 import fs from 'node:fs/promises'
 import path from 'node:path'
+import { replayCollectedPromise } from './fixture-readiness.mjs'
 import { createSmokeRuntime } from './smoke-runtime.mjs'
 
 const artifactDir = path.resolve('artifacts')
@@ -45,19 +46,8 @@ async function main() {
   // only read window geometry and capture a frame, so replaying one changes
   // nothing. The window close smoke deliberately does not retry, because its
   // evaluations drive the quit lifecycle and a replay would change the test.
-  const evaluateInMainProcess = async (label, body) => {
-    let collected
-    for (let attempt = 1; attempt <= 3; attempt += 1) {
-      try { return await withDeadline(`${label} (attempt ${attempt})`, stepBudgetMs, () => application.evaluate(body)) }
-      catch (error) {
-        if (!/Resulting promise was garbage collected/.test(String(error?.message))) throw error
-        collected = error
-        progress(`${label}: the inspector promise was collected, retrying`)
-        await new Promise((resolve) => setTimeout(resolve, 500))
-      }
-    }
-    throw collected
-  }
+  const evaluateInMainProcess = (label, body) => replayCollectedPromise(label,
+    (attempt) => withDeadline(`${label} (attempt ${attempt})`, stepBudgetMs, () => application.evaluate(body)), { progress })
 
   progress('waiting for the first window')
   const page = await withDeadline('first window', stepBudgetMs, () => application.firstWindow({ timeout: stepBudgetMs }))

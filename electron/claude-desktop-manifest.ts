@@ -43,23 +43,16 @@ function parseVirtualization(value: unknown, windowsBuild: number): ClaudeDeskto
   }
 }
 
-/** Manifest inspection is read-only and must precede resolving Store profile paths. */
-export async function inspectClaudeDesktopStoreVirtualization(options: ClaudeDesktopManifestOptions): Promise<ClaudeDesktopStoreVirtualization | undefined> {
-  const platform = options.platform ?? process.platform
-  if (platform !== 'win32' || !options.installationPath) return undefined
-  const executable = options.installationPath.replace(/\//g, '\\')
-  const match = storeExecutablePattern.exec(executable)
-  if (!match) return undefined
-  const release = /^(\d+)\.(\d+)\.(\d+)(?:\.\d+)?$/.exec(options.osRelease ?? os.release())
-  if (!release || Number(release[1]) !== 10 || Number(release[2]) !== 0 || Number(release[3]) < 18362) {
-    throw new Error('Claude Desktop 商店版目录规则不支持此 Windows 版本，请更新系统后重试')
-  }
-  const windowsBuild = Number(release[3])
-  if (!/^[a-z]:\\/i.test(executable) || /[\x00-\x1f]/.test(executable)
-    || path.win32.normalize(executable) !== executable) throw new Error('Claude Desktop 商店版安装路径无效')
-  const manifestPath = path.win32.join(path.win32.dirname(path.win32.dirname(executable)), 'AppxManifest.xml')
+/**
+ * The manifest reader handed to Windows PowerShell. Pure, so its guards can be checked as text on
+ * every platform instead of by cold-starting powershell.exe, which is what kept outlasting the
+ * Windows runner's budget (#244, run 36042396731). The path arrives base64-encoded; `version` and
+ * `architecture` come from `storeExecutablePattern`, which admits only digits, dots and three
+ * fixed architecture names.
+ */
+export function buildClaudeDesktopManifestInspectionScript(manifestPath: string, version: string, architecture: string): string {
   const encodedPath = Buffer.from(manifestPath, 'utf16le').toString('base64')
-  const script = String.raw`
+  return String.raw`
 $ErrorActionPreference='Stop'
 [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)
 $manifestPath=[Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('${encodedPath}'))
@@ -83,7 +76,7 @@ $namespaces.AddNamespace('p','http://schemas.microsoft.com/appx/manifest/foundat
 $namespaces.AddNamespace('d6','http://schemas.microsoft.com/appx/manifest/desktop/windows10/6')
 $namespaces.AddNamespace('v','http://schemas.microsoft.com/appx/manifest/virtualization/windows10')
 $identity=$manifest.SelectSingleNode('/p:Package/p:Identity',$namespaces)
-if($null -eq $identity -or $identity.GetAttribute('Name') -cne 'Claude' -or $identity.GetAttribute('Version') -cne '${match[1]}' -or $identity.GetAttribute('ProcessorArchitecture') -ine '${match[2]}'){throw 'manifest-identity-mismatch'}
+if($null -eq $identity -or $identity.GetAttribute('Name') -cne 'Claude' -or $identity.GetAttribute('Version') -cne '${version}' -or $identity.GetAttribute('ProcessorArchitecture') -ine '${architecture}'){throw 'manifest-identity-mismatch'}
 $globalNodes=$manifest.SelectNodes('/p:Package/p:Properties/d6:FileSystemWriteVirtualization',$namespaces)
 if($globalNodes.Count -gt 1){throw 'ambiguous-virtualization'}
 $globalMode='enabled'
@@ -93,6 +86,24 @@ $excluded=@($manifest.SelectNodes('/p:Package/p:Properties/v:FileSystemWriteVirt
 if($excluded.Count -gt 512){throw 'manifest-exclusions-limit'}
 @{globalMode=$globalMode;excludedDirectories=$excluded} | ConvertTo-Json -Depth 3 -Compress
 `
+}
+
+/** Manifest inspection is read-only and must precede resolving Store profile paths. */
+export async function inspectClaudeDesktopStoreVirtualization(options: ClaudeDesktopManifestOptions): Promise<ClaudeDesktopStoreVirtualization | undefined> {
+  const platform = options.platform ?? process.platform
+  if (platform !== 'win32' || !options.installationPath) return undefined
+  const executable = options.installationPath.replace(/\//g, '\\')
+  const match = storeExecutablePattern.exec(executable)
+  if (!match) return undefined
+  const release = /^(\d+)\.(\d+)\.(\d+)(?:\.\d+)?$/.exec(options.osRelease ?? os.release())
+  if (!release || Number(release[1]) !== 10 || Number(release[2]) !== 0 || Number(release[3]) < 18362) {
+    throw new Error('Claude Desktop 商店版目录规则不支持此 Windows 版本，请更新系统后重试')
+  }
+  const windowsBuild = Number(release[3])
+  if (!/^[a-z]:\\/i.test(executable) || /[\x00-\x1f]/.test(executable)
+    || path.win32.normalize(executable) !== executable) throw new Error('Claude Desktop 商店版安装路径无效')
+  const manifestPath = path.win32.join(path.win32.dirname(path.win32.dirname(executable)), 'AppxManifest.xml')
+  const script = buildClaudeDesktopManifestInspectionScript(manifestPath, match[1], match[2])
   try {
     const result = await (options.execute ?? runCommand)({
       executable: (options.resolvePowerShell ?? resolveWindowsPowerShellExecutable)(),

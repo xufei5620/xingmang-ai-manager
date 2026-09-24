@@ -3,6 +3,7 @@ import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { _electron as electron } from '@playwright/test'
+import { replayCollectedPromise } from './fixture-readiness.mjs'
 import { createSmokeRuntime } from './smoke-runtime.mjs'
 
 // T-G5: 写完之后从来没接进任何地方。它验的是一条没有别的套件覆盖的保证：导航已经
@@ -27,21 +28,9 @@ const { stepBudgetMs, progress, withDeadline, trackProcessIds, attachEvidence, r
   totalBudgetMs: Number(process.env.XINGMANG_SMOKE_TOTAL_TIMEOUT_MS ?? 180_000),
 })
 
-const collectedPromiseAttempts = 3
-
-async function evaluateInMainProcess(application, label, body, argument) {
-  let collected
-  for (let attempt = 1; attempt <= collectedPromiseAttempts; attempt += 1) {
-    try {
-      return await withDeadline(`${label} (attempt ${attempt}/${collectedPromiseAttempts})`, stepBudgetMs, () => application.evaluate(body, argument))
-    } catch (error) {
-      if (!/Resulting promise was garbage collected/.test(String(error?.message))) throw error
-      collected = error
-      progress(`${label}: the inspector promise was collected on attempt ${attempt}/${collectedPromiseAttempts}, retrying`)
-      await new Promise((resolve) => setTimeout(resolve, 500))
-    }
-  }
-  throw collected
+function evaluateInMainProcess(application, label, body, argument) {
+  return replayCollectedPromise(label,
+    (attempt) => withDeadline(`${label} (attempt ${attempt})`, stepBudgetMs, () => application.evaluate(body, argument)), { progress })
 }
 
 async function main() {

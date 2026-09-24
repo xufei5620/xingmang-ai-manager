@@ -36,6 +36,36 @@ export function collectedPromiseBackoffFor(attempt) {
   return Math.min(collectedPromiseBackoffCapMs, collectedPromiseBackoffMs * 2 ** (attempt - 1))
 }
 
+/**
+ * 重放一次被 V8 收走回答的 `ElectronApplication.evaluate`，次数与退避都取自上面的共享参数。
+ * `attemptOnce(attempt)` 自己决定这一次怎么跑（套不套 withDeadline），只有
+ * 「Resulting promise was garbage collected」会重放，别的错误原样抛出。
+ *
+ * Four smokes each carried their own copy of this loop at a flat 500ms three times, the very
+ * shape run #236 showed landing inside a single stall; run 36042396731 lost
+ * renderer-v2-native's first evaluation to it again, 1.5s after the window appeared. Only
+ * replay what reads state or is guarded against running twice.
+ */
+export async function replayCollectedPromise(label, attemptOnce, { progress = () => {}, attempts = collectedPromiseAttempts, backoffFor = collectedPromiseBackoffFor } = {}) {
+  let collected
+  let backedOffMs = 0
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      return await attemptOnce(attempt)
+    } catch (error) {
+      if (!/Resulting promise was garbage collected/.test(String(error?.message))) throw error
+      collected = error
+      if (attempt === attempts) break
+      const backoffMs = backoffFor(attempt)
+      progress(`${label}: the inspector promise was collected on attempt ${attempt}/${attempts}, retrying in ${backoffMs}ms (${backedOffMs}ms of backoff spent so far)`)
+      await new Promise((resolve) => setTimeout(resolve, backoffMs))
+      backedOffMs += backoffMs
+    }
+  }
+  throw new Error(`${label}: the inspector promise was collected on all ${attempts} attempts, spread over ${backedOffMs}ms of backoff`,
+    { cause: collected })
+}
+
 // page.goto resolves on `load`, which says nothing about a Vite fixture: the
 // module graph is transformed on demand and the page is reloaded outright once
 // a dependency has to be pre-bundled. A suite that starts asserting there finds

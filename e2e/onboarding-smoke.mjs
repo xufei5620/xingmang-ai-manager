@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { _electron as electron } from '@playwright/test'
 import fs from 'node:fs/promises'
 import path from 'node:path'
+import { replayCollectedPromise } from './fixture-readiness.mjs'
 
 const artifactDir = path.resolve('artifacts')
 const testRoot = path.join(artifactDir, '.e2e-onboarding-user-data')
@@ -24,17 +25,8 @@ const application = await electron.launch({
 // Same Windows-runner failure as electron-ci-smoke.mjs: V8 can collect the
 // inspector's promise wrapper while the main process is busy. The only call
 // routed through here reads window geometry, so replaying it changes nothing.
-async function readMainProcess(body) {
-  let collected
-  for (let attempt = 1; attempt <= 3; attempt += 1) {
-    try { return await application.evaluate(body) }
-    catch (error) {
-      if (!/Resulting promise was garbage collected/.test(String(error?.message))) throw error
-      collected = error
-      await new Promise((resolve) => setTimeout(resolve, 500))
-    }
-  }
-  throw collected
+function readMainProcess(body) {
+  return replayCollectedPromise('main process read', () => application.evaluate(body))
 }
 
 const page = await application.firstWindow()
