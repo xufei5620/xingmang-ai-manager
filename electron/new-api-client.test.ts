@@ -1278,6 +1278,41 @@ describe('endServerSession (explicit sign-out only)', () => {
   })
 })
 
+describe('endPersistedServerSession (a stored credential a fresh login replaced)', () => {
+  it('posts the stored refresh cookie alone to the logout route and leaves the running session untouched', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    fetchImpl.mockResolvedValue(jsonResponse({ success: true, message: '' }))
+    await expect(client.endPersistedServerSession({ userId: 42, cookies: ['refresh_token=old-cookie'] })).resolves.toBeUndefined()
+    expect(fetchImpl).toHaveBeenCalledTimes(1)
+    const [url, init] = fetchImpl.mock.calls[0]
+    expect(String(url)).toBe(`${testBaseUrl}/api/user/auth/logout`)
+    expect(init?.method).toBe('POST')
+    expect(init?.redirect).toBe('manual')
+    expect(init?.headers).toMatchObject({ 'New-Api-User': '42', Cookie: 'refresh_token=old-cookie' })
+    expect(init?.headers).not.toHaveProperty('Authorization')
+    expect(client.isAuthenticated()).toBe(true)
+  })
+
+  it.each([
+    ['no cookies', { userId: 42, cookies: [] }],
+    ['a bad user id', { userId: 0, cookies: ['refresh_token=x'] }],
+    ['a header-splitting cookie', { userId: 42, cookies: ['refresh_token=x\r\nHost: evil'] }],
+  ])('sends nothing for %s', async (_label, persisted) => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl })
+    await expect(client.endPersistedServerSession(persisted)).resolves.toBeUndefined()
+    expect(fetchImpl).not.toHaveBeenCalled()
+  })
+
+  it('resolves quietly when the server cannot be reached', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>().mockRejectedValue(new TypeError('fetch failed'))
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl })
+    await expect(client.endPersistedServerSession({ userId: 42, cookies: ['refresh_token=old'] })).resolves.toBeUndefined()
+    expect(fetchImpl).toHaveBeenCalledTimes(1)
+  })
+})
+
 describe('login limits (rc.24 session caps and rate limiting)', () => {
   it('explains the 50-device cap instead of asking the user to retry', async () => {
     const fetchImpl = vi.fn<NewApiFetch>().mockResolvedValue(

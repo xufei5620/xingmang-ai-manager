@@ -24,6 +24,11 @@ export interface RealmAccountClientHandle {
   client: RelayBackendClient
   restore(saved: RealmSavedAccount): Promise<boolean>
   getSavedAccount(): RealmSavedAccount | null
+  /**
+   * Best-effort server revocation of a stored credential this handle does not
+   * hold. Never rejects; backends without a logout endpoint omit it.
+   */
+  endSavedSession?(saved: RealmSavedAccount): Promise<void>
 }
 export interface RealmAccountServiceOptions {
   vault: RealmAccountVault
@@ -187,6 +192,9 @@ export function createRealmAccountService(options: RealmAccountServiceOptions): 
   function endServerSession(handle: RuntimeHandle): void {
     try { void Promise.resolve(handle.client.endServerSession?.()).catch(() => undefined) } catch { /* best effort */ }
   }
+  function endSavedSession(handle: RuntimeHandle, saved: RealmSavedAccount): void {
+    try { void Promise.resolve(handle.endSavedSession?.(saved)).catch(() => undefined) } catch { /* best effort */ }
+  }
   function getPublicClient(siteId: RealmAccountSiteId): RelayBackendClient {
     const selected = site(siteId)
     let client = publicClients.get(selected)
@@ -247,14 +255,25 @@ export function createRealmAccountService(options: RealmAccountServiceOptions): 
       if (notifyPending) { notifyPending = false; changed() }
     }
   }
-  async function promote(handle: RuntimeHandle, expected?: RealmSavedAccount, identifier?: string): Promise<void> {
+  async function promote(handle: RuntimeHandle, expected?: RealmSavedAccount, identifier?: string, fresh = false): Promise<void> {
     const saved = candidateSaved(handle, expected)
+    // 重新输密码登录同一个账号（#476）：新登录是服务端的一个新会话，本机账号库里这个
+    // 账号原来那份凭据马上被覆盖，旧会话从此没人能用也没人去注销，攒到 50 个就登不进了。
+    // 所以提交成功后把它注销掉。切换已保存账号、开机恢复用的就是库里那份，不能动。
+    const stored = fresh ? await options.vault.get(saved).catch(() => null) : null
     await options.vault.activate(saved, identifier)
     // No await between durable commit and the synchronous pointer swap.
     const previous = active
     handle.saved = saved
     active = handle
     stalled = null
+    if (fresh) {
+      // The running client holds the freshest (possibly rotated) credential of
+      // the replaced session; the vault copy only covers a signed-out or
+      // stalled client whose record outlived its in-memory session.
+      if (previous.saved && realmOwnerKey(previous.saved) === realmOwnerKey(saved)) endServerSession(previous)
+      else if (stored && JSON.stringify(stored.credential) !== JSON.stringify(saved.credential)) endSavedSession(handle, stored)
+    }
     dispose(previous)
     requestChanged()
   }
@@ -272,9 +291,16 @@ export function createRealmAccountService(options: RealmAccountServiceOptions): 
       try {
         const result = await prepare(() => candidate.client.login({ username: captured.identifier, password: captured.password,
           ...(captured.turnstileToken === undefined ? {} : { turnstileToken: captured.turnstileToken }) }))
-        await promote(candidate, undefined, captured.identifier)
+        await promote(candidate, undefined, captured.identifier, true)
         return { ...result, ...metadata() }
-      } finally { if (active !== candidate) dispose(candidate) }
+      } finally {
+        // 服务端已经登上、本机却没存下来（账号库写失败、校验不过）：这个会话本机再也
+        // 找不到，当场注销，别让它占着服务端的登录名额（#476）。没登上时这里什么也不发。
+        if (active !== candidate) {
+          if (candidate.client.getSessionState().authenticated) endServerSession(candidate)
+          dispose(candidate)
+        }
+      }
     }, true)
   }
   async function logout(): Promise<void> {
@@ -441,7 +467,7 @@ export function createRealmAccountService(options: RealmAccountServiceOptions): 
       if (property === 'restoreSession' || property === 'switchSession') return () => Promise.reject(new RealmAccountError('UNSUPPORTED'))
       // Server-side revocation belongs to logout() alone; no business caller may
       // end the active session behind the vault's back.
-      if (property === 'endServerSession') return undefined
+      if (property === 'endServerSession' || property === 'endPersistedServerSession') return undefined
       if (typeof property !== 'string') return undefined
       if (publicMethods.has(property as keyof RelayBackendClient)) {
         return (...args: unknown[]) => {

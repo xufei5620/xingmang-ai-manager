@@ -364,14 +364,20 @@ export function createAccelerationService(options: AccelerationServiceOptions): 
         } catch (error) { throw backendFailure(error) }
       })
     },
+    // 线路和模式偏好决定了下次自动连接走哪条线，所以和其它加速操作一样只认当前登录的
+    // 账号（#487）：界面传来别的已保存账号，或者退出、切换账号之后才到的旧请求，一律不读不写。
     getAccelerationPreference(scope) {
-      try { assertScope(scope) } catch (error) { return Promise.reject(error) }
+      try { assertScope(scope); assertCurrent(scope, revision) } catch (error) { return Promise.reject(error) }
+      const expectedRevision = revision
       // 没有偏好存储时按「从没选过」回答：加速页照旧从智能分配 + 标准模式开始。
-      return options.preferences?.getAccelerationPreference(scope) ?? Promise.resolve(defaultPreference())
+      return (options.preferences?.getAccelerationPreference(scope) ?? Promise.resolve(defaultPreference())).then((preference) => {
+        assertCurrent(scope, expectedRevision)
+        return preference
+      })
     },
     saveAccelerationPreference(scope, update) {
       let parsed: AccelerationPreferenceUpdate
-      try { assertScope(scope); parsed = parsePreferenceUpdate(update) } catch (error) { return Promise.reject(error) }
+      try { assertScope(scope); assertCurrent(scope, revision); parsed = parsePreferenceUpdate(update) } catch (error) { return Promise.reject(error) }
       if (!options.preferences) return Promise.reject(new Error('加速线路偏好暂不可用，请稍后重试。'))
       return options.preferences.saveAccelerationPreference(scope, parsed)
     },

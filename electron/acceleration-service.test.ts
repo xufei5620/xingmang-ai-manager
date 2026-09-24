@@ -533,6 +533,29 @@ describe('acceleration preference', () => {
     expect(saveAccelerationPreference).toHaveBeenLastCalledWith(scope, { lineId: null })
   })
 
+  // #487：偏好决定下次自动连接走哪条线，别的已保存账号的偏好不许读写。
+  it('refuses another saved account, a signed-out app and a request that outlived an account switch', async () => {
+    let current: string | null = scope
+    const { service, getAccelerationPreference, saveAccelerationPreference } = preferenceService({ getAccountScope: () => current })
+    const other = 'xm-account:43'
+    await expect(service.getAccelerationPreference(other)).rejects.toThrow('账号已变更，请重新打开游戏加速。')
+    await expect(service.saveAccelerationPreference(other, { lineId: 'jp-01' })).rejects.toThrow('账号已变更，请重新打开游戏加速。')
+    current = null
+    await expect(service.getAccelerationPreference(scope)).rejects.toThrow('账号已变更，请重新打开游戏加速。')
+    await expect(service.saveAccelerationPreference(scope, { mode: 'tun' })).rejects.toThrow('账号已变更，请重新打开游戏加速。')
+    expect(getAccelerationPreference).not.toHaveBeenCalled()
+    expect(saveAccelerationPreference).not.toHaveBeenCalled()
+
+    current = scope
+    const read = deferred<{ lineId: string; mode: 'tun' }>()
+    getAccelerationPreference.mockImplementationOnce(() => read.promise)
+    const pending = service.getAccelerationPreference(scope)
+    current = other
+    await service.onAccountChanged()
+    read.resolve({ lineId: 'jp-01', mode: 'tun' })
+    await expect(pending).rejects.toThrow('账号已变更，请重新打开游戏加速。')
+  })
+
   // 没有偏好存储的宿主（早于这一版、或本机联调）照旧每次从智能分配 + 标准模式开始。
   it('answers "never chose anything" when no store was injected', async () => {
     const service = createAccelerationService({ backend: createBackend(), getAccountScope: () => scope })

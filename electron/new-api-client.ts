@@ -792,6 +792,10 @@ export interface NewApiClientService extends RelayBackendClient {
   // Best-effort POST /api/user/auth/logout for the explicit "退出登录" only.
   // Never rejects and never touches the local session; see the implementation.
   endServerSession(): Promise<void>
+  // Same best-effort revocation for a stored credential this client does not
+  // hold: the realm service ends a same-account session a fresh login just
+  // replaced. Never rejects and never touches this client's own session.
+  endPersistedServerSession(persisted: NewApiPersistableSession): Promise<void>
   isAuthenticated(): boolean
   getSessionState(): NewApiSessionState
   getBalance(): Promise<NewApiBalance>
@@ -1034,6 +1038,13 @@ function sanitizeUpstreamMessage(value: string, secrets: readonly string[]): str
 // expired session instead of a client bug (docs/RECON-new-api.md 坑2).
 // Building both from the same session object makes that class of bug
 // impossible rather than merely tested-against.
+function isPersistableSessionShape(persisted: NewApiPersistableSession): boolean {
+  return isRecord(persisted) && Number.isSafeInteger(persisted.userId) && persisted.userId > 0
+    && Array.isArray(persisted.cookies) && persisted.cookies.length > 0 && persisted.cookies.length <= 16
+    && persisted.cookies.every((cookie) => typeof cookie === 'string' && cookie.length > 0 && cookie.length <= 4096 && !/[\r\n\u0000]/.test(cookie))
+    && Buffer.byteLength(persisted.cookies.join('; '), 'utf8') <= 16 * 1024
+}
+
 function buildAuthHeaders(session: InternalSession): Record<string, string> {
   return {
     Authorization: `Bearer ${session.accessToken}`,
@@ -2651,6 +2662,17 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
     if (!current) return
     const headers: Record<string, string> = { ...buildAuthHeaders(current) }
     if (current.cookies.length > 0) headers.Cookie = current.cookies.join('; ')
+    await postServerLogout(headers)
+  }
+
+  // A stored record carries only {userId, cookies}: no access token, so the
+  // server takes the refresh-cookie path above and revokes by the cookie alone.
+  const endPersistedServerSession = async (persisted: NewApiPersistableSession): Promise<void> => {
+    if (!isPersistableSessionShape(persisted)) return
+    await postServerLogout({ 'New-Api-User': String(persisted.userId), Cookie: persisted.cookies.join('; ') })
+  }
+
+  const postServerLogout = async (headers: Record<string, string>): Promise<void> => {
     try {
       await performRequest(
         { ...ctx, timeoutMs: Math.min(ctx.timeoutMs, serverLogoutTimeoutMs) },
@@ -3356,12 +3378,7 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
   )
 
   const switchSession = async (persisted: NewApiPersistableSession): Promise<boolean> => {
-    if (!isRecord(persisted) || !Number.isSafeInteger(persisted.userId) || persisted.userId <= 0
-      || !Array.isArray(persisted.cookies) || persisted.cookies.length === 0 || persisted.cookies.length > 16
-      || !persisted.cookies.every((cookie) => typeof cookie === 'string' && cookie.length > 0 && cookie.length <= 4096 && !/[\r\n\u0000]/.test(cookie))
-      || Buffer.byteLength(persisted.cookies.join('; '), 'utf8') > 16 * 1024) {
-      return false
-    }
+    if (!isPersistableSessionShape(persisted)) return false
     const attempt = ++authAttemptGeneration
     const owner = ownerGeneration
     const seed: InternalSession = {
@@ -3426,6 +3443,7 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
     login,
     logout,
     endServerSession,
+    endPersistedServerSession,
     isAuthenticated,
     getSessionState,
     getBalance,
