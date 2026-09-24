@@ -512,6 +512,85 @@ describe('createSystemService', () => {
     expect(fs.existsSync(fallbackCodexHome)).toBe(false)
   })
 
+  function claudeConsoleKeyFixture(prefix: string) {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), prefix))
+    temporaryDirectories.push(root)
+    const roots = { userHome: path.join(root, 'home'), codexHome: path.join(root, 'codex') }
+    fs.mkdirSync(roots.userHome, { recursive: true })
+    const rootConfigPath = path.join(roots.userHome, '.claude.json')
+    const snapshotPath = path.join(providerConfigRoot('claude', roots), 'xingmang-claude-console-key.json')
+    const [settingsPath] = providerConfigPaths('claude', roots)
+    const store = new AppSettingsStore(path.join(root, 'settings.json'), root)
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      data: [{ id: 'claude-sonnet-5' }],
+    }), { status: 200 })))
+    const service = createSystemService(store, { providerRoots: roots })
+    const payload = { provider: 'claude' as const, apiKey: 'sk-relay', model: 'claude-sonnet-5', mode: 'merge' as const }
+    return { root, roots, rootConfigPath, snapshotPath, settingsPath, store, service, payload }
+  }
+
+  it('moves the Claude Console key aside before writing the relay config', async () => {
+    const f = claudeConsoleKeyFixture('xingmang-console-key-move-')
+    fs.writeFileSync(f.rootConfigPath, JSON.stringify({ primaryApiKey: 'sk-ant-console', theme: 'dark' }), 'utf8')
+
+    await f.service.saveConfig(f.payload, false)
+
+    expect(JSON.parse(fs.readFileSync(f.rootConfigPath, 'utf8'))).toEqual({ theme: 'dark' })
+    expect(JSON.parse(fs.readFileSync(f.snapshotPath, 'utf8'))).toEqual({ primaryApiKey: 'sk-ant-console' })
+    expect(inspectProviderConfig('claude', f.roots, providerBaseUrls).apiKey).toBe('sk-relay')
+  })
+
+  it('refuses to save Claude when the Console key cannot be moved aside', async () => {
+    const f = claudeConsoleKeyFixture('xingmang-console-key-move-fail-')
+    fs.writeFileSync(f.rootConfigPath, '{ not json', 'utf8')
+    await f.store.setOfficialProvider('claude', true)
+
+    await expect(f.service.saveConfig(f.payload, false)).rejects.toThrow(/官方 Key 没能挪开，配置没有改动/)
+
+    expect(fs.existsSync(f.settingsPath)).toBe(false)
+    expect(fs.readFileSync(f.rootConfigPath, 'utf8')).toBe('{ not json')
+    expect(f.store.read().officialProviders).toContain('claude')
+  })
+
+  it('puts the Console key back when the Claude relay config write fails', async () => {
+    const f = claudeConsoleKeyFixture('xingmang-console-key-undo-')
+    fs.writeFileSync(f.rootConfigPath, JSON.stringify({ primaryApiKey: 'sk-ant-console' }), 'utf8')
+    fs.mkdirSync(path.dirname(f.settingsPath), { recursive: true })
+    fs.writeFileSync(f.settingsPath, '{ broken', 'utf8')
+
+    const error = await f.service.saveConfig(f.payload, false).catch((reason: unknown) => reason)
+    expect(error).toBeInstanceOf(Error)
+    expect(String(error)).not.toMatch(/官方 Key/)
+
+    expect(JSON.parse(fs.readFileSync(f.rootConfigPath, 'utf8'))).toEqual({ primaryApiKey: 'sk-ant-console' })
+    expect(fs.readFileSync(f.snapshotPath, 'utf8')).toBe('')
+  })
+
+  it('reports a failed Console key restore instead of swallowing it', async () => {
+    const f = claudeConsoleKeyFixture('xingmang-console-key-restore-fail-')
+    fs.writeFileSync(f.rootConfigPath, JSON.stringify({ primaryApiKey: 'sk-ant-console' }), 'utf8')
+    await f.service.saveConfig(f.payload, false)
+    fs.writeFileSync(f.rootConfigPath, '{ not json', 'utf8')
+
+    await expect(f.service.restoreOfficialCredentials?.('claude')).rejects.toThrow(/官方 Key 没能放回原处/)
+    await expect(f.service.switchToOfficialAccount('claude')).rejects.toThrow(/官方 Key 没能放回原处/)
+
+    expect(inspectProviderConfig('claude', f.roots, providerBaseUrls).apiKey).toBe('sk-relay')
+    expect(f.store.read().officialProviders ?? []).not.toContain('claude')
+    expect(JSON.parse(fs.readFileSync(f.snapshotPath, 'utf8'))).toEqual({ primaryApiKey: 'sk-ant-console' })
+  })
+
+  it('restores the Console key when switching Claude back to the official account', async () => {
+    const f = claudeConsoleKeyFixture('xingmang-console-key-official-')
+    fs.writeFileSync(f.rootConfigPath, JSON.stringify({ primaryApiKey: 'sk-ant-console' }), 'utf8')
+    await f.service.saveConfig(f.payload, false)
+
+    await f.service.switchToOfficialAccount('claude')
+
+    expect(JSON.parse(fs.readFileSync(f.rootConfigPath, 'utf8'))).toEqual({ primaryApiKey: 'sk-ant-console' })
+    expect(f.store.read().officialProviders).toContain('claude')
+  })
+
   it('passes official reset through to the selected Codex root and persists its account source', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-official-reset-'))
     temporaryDirectories.push(root)

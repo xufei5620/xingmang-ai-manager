@@ -140,6 +140,8 @@ export interface NewApiUsableGroup {
   name: string
   description: string
   ratio: number | string
+  /** Upstream the group routes to. Only the Sub2API realm reports it; new-api has no such field. */
+  platform?: string
 }
 
 export interface NewApiAccountProfile {
