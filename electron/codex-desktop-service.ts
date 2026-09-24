@@ -444,6 +444,25 @@ export function describeCodexDesktopPrimaryMirrorSkip(
   return null
 }
 
+/**
+ * 一路下载尝试开始时给用户看的那半句话。第一路之后的尝试只可能是前一路没过
+ * 校验；第一路就是备用源时，把探测阶段主源的失败原因带上。
+ */
+export function describeCodexDesktopDownloadAttempt(
+  packageSource: CodexDesktopPackageSource,
+  attemptIndex: number,
+  previousFailure: string | null,
+  probeErrors: readonly string[],
+): string {
+  if (attemptIndex > 0 && previousFailure) return `前一路镜像未通过校验，已改从${packageSource.label}下载`
+  const primaryMirrorSkip = attemptIndex === 0
+    ? describeCodexDesktopPrimaryMirrorSkip(packageSource, probeErrors)
+    : null
+  return primaryMirrorSkip
+    ? `${primaryMirrorSkip}，正在从${packageSource.label}下载`
+    : `正在从${packageSource.label}下载`
+}
+
 export function buildCodexDesktopManifestSources(
 ): CodexDesktopManifestSource[] {
   return [
@@ -2016,6 +2035,9 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
     const temporaryDirectory = await createInstallTemporaryDirectory('codex-desktop')
     const packagePath = path.join(temporaryDirectory, `ChatGPT-${architecture}.msix`)
     try {
+      // 换线路的原因以前只在 0% 那一刻出现，进度一动就被普通文案盖掉，用户只看得到
+      // 「正在从镜像备用源下载」。每一路尝试开始时记下自己的说法，整段下载都带着。
+      let attemptNotice: string | null = null
       const downloadWithProgress = (
         candidates: CodexDesktopManifestCandidate[],
         probeErrors: readonly string[],
@@ -2026,18 +2048,11 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
           const release = candidate.release
           const source = candidate.packageSource
           if (!release || !source) return
-          const primaryMirrorSkip = attemptIndex === 0
-            ? describeCodexDesktopPrimaryMirrorSkip(source, probeErrors)
-            : null
-          const fallbackNotice = attemptIndex > 0 && previousFailure
-            ? `前一路镜像未通过校验，正在切换${source.label}`
-            : primaryMirrorSkip
-              ? `${primaryMirrorSkip}，正在从${source.label}下载`
-              : `正在从${source.label}下载`
+          attemptNotice = describeCodexDesktopDownloadAttempt(source, attemptIndex, previousFailure, probeErrors)
           sendCodexDesktopInstallProgress(target, {
             phase: 'downloading',
             percent: 0,
-            message: `${fallbackNotice} Codex Desktop ${release.version}（0%）`,
+            message: `${attemptNotice} Codex Desktop ${release.version}（0%）`,
           })
         },
         onProgress: (candidate, { percent }) => {
@@ -2047,7 +2062,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
           sendCodexDesktopInstallProgress(target, {
             phase: 'downloading',
             percent,
-            message: `正在从${source.label}下载 Codex Desktop ${release.version}（${percent}%）`,
+            message: `${attemptNotice ?? `正在从${source.label}下载`} Codex Desktop ${release.version}（${percent}%）`,
           })
         },
         validatePackage: async (candidate) => {

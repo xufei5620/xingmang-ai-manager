@@ -26,6 +26,7 @@ import {
   buildDesktopUpdateStatus,
   canAttemptCodexDesktopFirstInstallFallback,
   describeCodexDesktopLaunchFailure,
+  describeCodexDesktopDownloadAttempt,
   describeCodexDesktopPrimaryMirrorSkip,
   desktopMirrorUpdateAvailable,
   downloadCodexDesktopPackage,
@@ -862,6 +863,16 @@ describe('Codex Desktop mirror fallback disclosure', () => {
       { label: '镜像备用源', url: 'https://codexapp-r2.agentsmirror.com/latest/win-x64' },
       ['OpenAI 官方源：返回 HTTP 503'],
     )).toBeNull()
+  })
+
+  it('words each download attempt so the reason can stay on screen for the whole download', () => {
+    const fallback = { label: '镜像备用源', url: 'https://codexapp-r2.agentsmirror.com/latest/win-x64' }
+    expect(describeCodexDesktopDownloadAttempt(fallback, 0, null, ['国内镜像：查询超时']))
+      .toBe('国内镜像本次不可用（查询超时），正在从镜像备用源下载')
+    expect(describeCodexDesktopDownloadAttempt(fallback, 0, null, []))
+      .toBe('正在从镜像备用源下载')
+    expect(describeCodexDesktopDownloadAttempt(fallback, 1, '国内镜像（26.917.9434.0）：SHA-256 不一致', ['国内镜像：查询超时']))
+      .toBe('前一路镜像未通过校验，已改从镜像备用源下载')
   })
 
   it('reads the failure the historical probe actually produces', async () => {
