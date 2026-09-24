@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto'
+import { resolveAiModelCapability, type AiModelCapability } from './ai-chat-protocol'
 import type {
   CanvasRunAsset,
   CanvasRunGraph,
@@ -59,6 +60,38 @@ function adoptedAssetIdForFingerprint(node: CanvasRunGraphNode): string | undefi
   return undefined
 }
 
+function capabilityForFingerprint(model: string): AiModelCapability | undefined {
+  try {
+    return resolveAiModelCapability(model)
+  } catch {
+    return undefined
+  }
+}
+
+// These parameters joined the fingerprint after caches already existed. Each
+// one is left out while it equals what the executor would send anyway, so a
+// node still sitting on the default keeps its old cache key (no silent re-run
+// and re-charge on upgrade) while any real change produces a new key.
+function generationParametersForFingerprint(node: CanvasRunGraphNode): object {
+  const capability = capabilityForFingerprint(node.data.model)
+  const imageResolution = node.data.imageResolution
+  const effectiveImageResolution = imageResolution
+    && !(capability?.kind === 'image' && imageResolution === capability.defaultResolution)
+    ? imageResolution
+    : undefined
+  if (capability?.kind !== 'video' || capability.provider !== 'minimax-h3') {
+    return { imageResolution: effectiveImageResolution }
+  }
+  const { videoMode, videoResolution, videoAspectRatio, promptOptimization } = node.data
+  return {
+    imageResolution: effectiveImageResolution,
+    videoMode: videoMode && videoMode !== 'auto' ? videoMode : undefined,
+    videoResolution: videoResolution && videoResolution !== '720p' ? videoResolution : undefined,
+    videoAspectRatio: videoAspectRatio && videoAspectRatio !== '16:9' ? videoAspectRatio : undefined,
+    promptOptimization: promptOptimization === true ? true : undefined,
+  }
+}
+
 export function computeCanvasNodeFingerprint(input: CanvasFingerprintInput): string {
   return sha256({
     version: 1,
@@ -74,6 +107,7 @@ export function computeCanvasNodeFingerprint(input: CanvasFingerprintInput): str
       size: input.node.data.size,
       seconds: input.node.data.seconds,
       adoptedAssetId: adoptedAssetIdForFingerprint(input.node),
+      ...generationParametersForFingerprint(input.node),
     },
     upstream: input.upstream
       .map((entry) => ({
@@ -104,6 +138,10 @@ export function computeCanvasGraphRevision(graph: CanvasRunGraph): string {
         imageResolution: node.data.imageResolution,
         seconds: node.data.seconds,
         adoptedAssetId: node.data.adoptedAssetId,
+        videoMode: node.data.videoMode,
+        videoResolution: node.data.videoResolution,
+        videoAspectRatio: node.data.videoAspectRatio,
+        promptOptimization: node.data.promptOptimization,
       }))
       .sort((left, right) => left.id.localeCompare(right.id)),
     edges: graph.edges
