@@ -2643,6 +2643,32 @@ test('a saved account with the same id switches platform without reusing NewAPI 
 })
 
 
+test('relogin on an expired saved account opens the login dialog on that account source and name', async () => {
+  const page = await open('crossSite=1')
+  try {
+    await page.getByTestId('tool-row-codex').waitFor()
+    await page.getByRole('button', { name: '切换账号', exact: true }).click()
+    const list = page.getByTestId('saved-accounts-list')
+    await list.getByTestId('saved-account-row-saved-aa0017').waitFor()
+    await page.evaluate(() => { window.v2Test.fail = 'switchSavedAccount'; window.v2Test.failMessage = '保存的账号登录已失效，请重新登录' })
+    await list.getByRole('button', { name: '切换', exact: true }).click()
+    await list.getByTestId('saved-account-relogin-saved-aa0017').click()
+    const dialog = page.getByTestId('login-dialog')
+    await dialog.getByRole('heading', { name: '登录历史账号' }).waitFor()
+    assert.equal(await page.getByTestId('login-account').inputValue(), 'fixture-user')
+    // 取消后当前账号不变，下一次普通登录也不带着刚才那个账号的来源和名字（不串草稿）。
+    await page.getByTestId('login-cancel').click()
+    await dialog.waitFor({ state: 'hidden' })
+    assert.equal(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'loginAccount').length), 0)
+    await page.evaluate(() => { window.v2Test.fail = ''; window.v2Test.failMessage = '' })
+    await page.getByRole('button', { name: '切换账号', exact: true }).click()
+    await page.getByTestId('account-add').click()
+    await page.getByRole('heading', { name: '登录星芒账号' }).waitFor()
+    assert.equal(await page.getByTestId('login-account').inputValue(), '')
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('Sub2API keeps fractional key limits and changing its password returns to login', async () => {
   const page = await open('sub2api=1')
   try {
