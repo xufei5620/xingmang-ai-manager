@@ -80,3 +80,34 @@ export function rememberLocalAnnouncementIds(scope: string, ids: string[]): bool
   const previous = readLocalAnnouncementIds(scope).filter((id) => !next.includes(id))
   return writeLocalPreference(storageKey(scope), JSON.stringify([...new Set([...previous, ...next])].slice(-maximumRememberedEntries)))
 }
+
+function seenStorageKey(scope: string): string { return `xingmang-v2-notice-seen:${scope}` }
+const maximumSeenKeyLength = 256
+
+/**
+ * Keys for the notices that still ask for attention. Seen is weaker than read:
+ * once someone opened the notice center or closed the banner, the banner and
+ * the bell dot stay quiet until a notice with a new key shows up.
+ */
+export function announcementAttentionKeys(announcement: { id: string; entries?: Array<{ id: string; read: boolean }> } | null, readId: string | null): string[] {
+  if (!announcement) return []
+  if (announcement.entries) return announcement.entries.filter((entry) => !entry.read).map((entry) => `entry:${entry.id}`.slice(0, maximumSeenKeyLength))
+  return announcement.id === readId ? [] : [`notice:${announcement.id}`.slice(0, maximumSeenKeyLength)]
+}
+
+export function readSeenAnnouncementKeys(scope: string): string[] {
+  const stored = readLocalPreference(seenStorageKey(scope))
+  if (!stored || stored.length > 80_000) return []
+  try {
+    const value: unknown = JSON.parse(stored)
+    return Array.isArray(value) ? [...new Set(value.filter((key): key is string => typeof key === 'string' && key.length <= maximumSeenKeyLength))].slice(-maximumRememberedEntries) : []
+  } catch { return [] }
+}
+
+/** Returns the merged list even when storage is unavailable, so this session still stays quiet. */
+export function rememberSeenAnnouncementKeys(scope: string, keys: string[]): string[] {
+  const previous = readSeenAnnouncementKeys(scope).filter((key) => !keys.includes(key))
+  const next = [...new Set([...previous, ...keys])].slice(-maximumRememberedEntries)
+  writeLocalPreference(seenStorageKey(scope), JSON.stringify(next))
+  return next
+}
