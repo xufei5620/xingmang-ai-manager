@@ -6,6 +6,7 @@ import {
   codexDesktopElevationFailureMessage,
   requiresCodexAppxElevation,
 } from './codex-desktop-appx'
+import { scanPowerShell, unbalancedBracket, type PowerShellScan } from './powershell-script-scan.test-support'
 
 const packagePath = 'C:\\Temp\\Codex Desktop.msix'
 const injectedPackagePath = "D:\\下载缓存\\O'Brien; $(Write-Output XINGMANG_TEST_INJECTION) & Codex.msix"
@@ -31,82 +32,6 @@ function decodeScript(argv: string[]): string {
   const script = Buffer.from(encoded, 'base64').toString('utf16le')
   expect(Buffer.from(script, 'utf16le').toString('base64')).toBe(encoded)
   return script
-}
-
-// These scripts used to be checked by handing them to a real Windows PowerShell parser, and
-// the cold start of powershell.exe on a busy windows-latest runner kept outlasting the 30s
-// test budget (#452's first run). What that check proved is a property of the generated
-// text: the hostile path only ever appears inside single-quoted literals and the brackets
-// around it still close. This scanner applies PowerShell's own quoting rules to that text,
-// so the property is checked on every platform without starting a process.
-// PowerShell accepts the typographic quotes as quote characters too (CharTraits.IsSingleQuote
-// and IsDoubleQuote), so the scanner must, or a stray U+2019 would pass unnoticed.
-const singleQuotes = '\'\u2018\u2019\u201a\u201b'
-const doubleQuotes = '"\u201c\u201d\u201e'
-
-interface PowerShellScan {
-  /** Everything outside string literals, each literal replaced by an empty pair of quotes. */
-  code: string
-  /** Decoded values of the single-quoted (verbatim) literals, in order. */
-  literals: string[]
-  /** Raw bodies of the double-quoted (expandable) strings, in order. */
-  expandable: string[]
-  unterminated: boolean
-}
-
-function scanPowerShell(script: string): PowerShellScan {
-  const scan: PowerShellScan = { code: '', literals: [], expandable: [], unterminated: false }
-  let index = 0
-  while (index < script.length) {
-    const char = script[index]
-    if (char === '`') {
-      scan.code += script.slice(index, index + 2)
-      index += 2
-    } else if (char === '#') {
-      while (index < script.length && script[index] !== '\n') index += 1
-    } else if (singleQuotes.includes(char) || doubleQuotes.includes(char)) {
-      const quotes = singleQuotes.includes(char) ? singleQuotes : doubleQuotes
-      let value = ''
-      let closed = false
-      index += 1
-      while (index < script.length) {
-        const next = script[index]
-        if (quotes === doubleQuotes && next === '`') {
-          value += script.slice(index, index + 2)
-          index += 2
-        } else if (quotes.includes(next) && index + 1 < script.length && quotes.includes(script[index + 1])) {
-          value += script[index + 1]
-          index += 2
-        } else if (quotes.includes(next)) {
-          index += 1
-          closed = true
-          break
-        } else {
-          value += next
-          index += 1
-        }
-      }
-      if (!closed) scan.unterminated = true
-      if (quotes === singleQuotes) scan.literals.push(value)
-      else scan.expandable.push(value)
-      scan.code += quotes === singleQuotes ? "''" : '""'
-    } else {
-      scan.code += char
-      index += 1
-    }
-  }
-  return scan
-}
-
-const closingBrackets = new Map([[')', '('], [']', '['], ['}', '{']])
-
-function unbalancedBracket(code: string): string | null {
-  const open: string[] = []
-  for (const char of code) {
-    if (char === '(' || char === '[' || char === '{') open.push(char)
-    else if (closingBrackets.has(char) && open.pop() !== closingBrackets.get(char)) return char
-  }
-  return open.at(-1) ?? null
 }
 
 function expectInjectionHeldAsData(script: string): PowerShellScan {
