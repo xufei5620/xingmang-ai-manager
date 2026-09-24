@@ -3,6 +3,7 @@ import { ArrowUpRight, Key, MessageCircle, ShieldCheck, Zap } from 'lucide-react
 import type { LegalDocumentKind } from '../../../../electron/ipc-contract'
 import { BrandIcon, Button, Card, Logo } from '../../ui'
 import { tools } from '../../registry/tools'
+import type { WindowOs } from '../app/window-os'
 import { Starfield } from './Starfield'
 import { AuthWindow } from './AuthWindow'
 import './auth.css'
@@ -18,6 +19,7 @@ export interface WelcomeProps {
   environmentLabel?: string
   keyStatusLabel?: string
   supportQrUrl?: string
+  platform?: WindowOs
 }
 
 /**
@@ -37,7 +39,7 @@ function useLowEndDevice(): boolean {
   return lowEnd
 }
 
-export function Welcome({ onLogin, onRegister, onSteps, onHelp, onLegal, reducedMotion = false, onReducedMotionChange, environmentLabel = '环境待检测', keyStatusLabel = '登录后确认连接', supportQrUrl }: WelcomeProps) {
+export function Welcome({ onLogin, onRegister, onSteps, onHelp, onLegal, reducedMotion = false, onReducedMotionChange, environmentLabel = '环境待检测', keyStatusLabel = '登录后确认连接', supportQrUrl, platform }: WelcomeProps) {
   const [systemReduced, setSystemReduced] = useState(() => typeof matchMedia !== 'undefined' && matchMedia('(prefers-reduced-motion: reduce)').matches)
   useEffect(() => {
     const media = matchMedia('(prefers-reduced-motion: reduce)')
@@ -48,7 +50,7 @@ export function Welcome({ onLogin, onRegister, onSteps, onHelp, onLegal, reduced
   const lowEnd = useLowEndDevice()
   const paused = reducedMotion || systemReduced || lowEnd
   const providers = tools.filter((tool) => tool.kind === 'cli').sort((a, b) => a.shortcutIndex - b.shortcutIndex)
-  return <AuthWindow><main className="auth-welcome welcome-page welcome-v3" data-testid="welcome-page" data-motion-paused={paused}>
+  return <AuthWindow platform={platform}><main className="auth-welcome welcome-page welcome-v3" data-testid="welcome-page" data-motion-paused={paused}>
     <Starfield paused={paused} />
     <div className="auth-welcome-hero">
       <div className="auth-welcome-copy">
