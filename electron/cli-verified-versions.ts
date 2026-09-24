@@ -91,10 +91,10 @@ export const cliVerifiedVersions: Record<ProviderId, CliVersionCompatibility> = 
   grok: { recommended: null, blocked: [] },
   gemini: {
     recommended: {
-      version: '0.60.0',
-      verifiedAt: '2026-09-21',
+      version: '0.61.0',
+      verifiedAt: '2026-09-24',
       verifiedSites: [],
-      note: '当前 npm latest;0.57~0.60 四个正式版全是安全加固,未发现与第三方 base URL 相关的回归',
+      note: '当前 npm latest,不再把名字以 flash 结尾的自选型号换成 gemini-3.5-flash;但会把恰好叫 gemini-3.5-flash / gemini-3-flash / gemini-3.1-flash-lite 的型号改发成 3.8-flash / 3.5-flash-lite',
     },
     blocked: [],
   },

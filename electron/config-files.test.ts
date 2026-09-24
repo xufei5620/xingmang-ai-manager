@@ -1982,6 +1982,20 @@ describe('switching a provider back to the official subscription account', () =>
     })
   })
 
+  it('covers the Flash models Gemini CLI 0.61.0 added to its built-in table and model menu', () => {
+    // 0.61.0 的 /model 菜单列出这两个；不改写的话选了就直接发出官方型号名。
+    const home = temporaryHome()
+    saveProviderConfig('gemini', 'sk-relay', 'gemini-3.8-flash', 'reset', providerRoots(home), {}, providerBaseUrls)
+    const [settingsPath] = providerConfigPaths('gemini', providerRoots(home))
+    const overrides = asRecord(JSON.parse(fs.readFileSync(settingsPath, 'utf8')).modelConfigs)?.customOverrides
+    for (const helper of ['gemini-3.8-flash', 'gemini-3.5-flash-lite']) {
+      expect(overrides).toContainEqual({
+        match: { model: helper },
+        modelConfig: { model: 'gemini-3.8-flash-high' },
+      })
+    }
+  })
+
   it('never rewrites the configured Gemini model onto itself', () => {
     const home = temporaryHome()
     saveProviderConfig('gemini', 'sk-relay', 'gemini-3.5-flash', 'reset', providerRoots(home), {}, providerBaseUrls)

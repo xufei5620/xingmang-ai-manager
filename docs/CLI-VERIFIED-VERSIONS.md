@@ -275,7 +275,7 @@ Codex 那时 `recommended` 是 `null`，也就是那两天点过「更新」的�
 |---|---|---|---|
 | Claude Code | `2.1.277`（2026-09-18） | `[2.1.265, 2.1.268)`、`[2.1.275, 2.1.277)` | 上游 changelog 两条网关回归 |
 | Codex CLI | `0.156.1`（2026-09-23） | `[0.155.0, 0.155.1)` | 上游 release note 与 PR #46467（见上一节）；抬到 0.156.1 的依据见下一段 |
-| Gemini CLI | `0.60.0`（2026-09-21） | 无 | 当前 npm `latest`；0.57~0.60 四个正式版全是安全加固，未发现与第三方 base URL 相关的回归 |
+| Gemini CLI | `0.61.0`（2026-09-24） | 无 | 当前 npm `latest`；抬到 0.61.0 的依据见下文 |
 | Grok CLI | 无 | 无 | 还没有遇到过需要挡的版本，行为与从前一致（装 npm `latest`） |
 
 三条 `recommended` 的 `verifiedSites` 目前都是空数组：中转实测所需的仓库 secret 还没配（见下文），所以这三个版本都还**没有**在任何站点上跑过真实请求。跑通之后把站点 id 填进去。
@@ -297,6 +297,48 @@ Codex 那时 `recommended` 是 `null`，也就是那两天点过「更新」的�
 
 没做的：中转上的真实请求（secret 没配，`verifiedSites` 仍为空）；中转那边有没有开这两个模型要在
 服务端「GPT-中转/订阅」分组的渠道里看。配置窗口的模型下拉取自当前账号的模型清单，开了就能选到。
+
+**Gemini CLI 0.60.0 → 0.61.0（2026-09-24）：型号不再被偷换，但换了一种偷换。** 0.60.0 → 0.61.0
+上游只有 8 个提交，和中转有关的是两条：
+
+- `ed2ac40df` *fix(core): preserve explicit versioned Flash model IDs*（#29252）：0.60.0 用 API Key 登录时，
+  **名字以 `flash` 结尾的型号一律改发成 `gemini-3.5-flash`**。本软件早就靠
+  `geminiCliCompatibleModel` 把 `gemini-3.7-flash` / `gemini-3.8-flash` 写成带 `-high` 的名字绕开，
+  默认的 `gemini-3.8-flash-high` 也不受影响，所以今天的客户基本碰不到；碰得到的是自己选了别的
+  `*-flash` 型号（比如 `gemini-2.5-flash`）的人。
+- `62364cb20` *Feat/gemini 3.8 flash 3.5 flash lite*（#29443，以 cherry-pick 进 0.61.0-preview.1）：内置表加了
+  `gemini-3.8-flash` 与 `gemini-3.5-flash-lite`，`/model` 菜单里也列着它们；另外给 API Key 这条路
+  **新加了一层出网前的改名**（`getBackendModelMappings`）：`gemini-3.5-flash`、`gemini-3-flash` 改发
+  `gemini-3.8-flash`，`gemini-3.1-flash-lite` 改发 `gemini-3.5-flash-lite`。这一层在
+  `modelConfigs.customOverrides` 之后，本软件改不动。
+
+其余是安全加固（构建文件改动引起的间接提示注入、沙箱文件边界）和一处内部对象展开的修复；设置
+文件、`.env`、信任目录、MCP 状态行、base URL 与鉴权那几段代码没有改动。
+
+沙箱实测（空 HOME、`GEMINI_API_KEY` + `GOOGLE_GEMINI_BASE_URL` 指本地假接口、按
+`config-files.ts` 写 `settings.json`，看假接口收到的型号）：
+
+| 配的型号 | 0.60.0 实际发出 | 0.61.0 实际发出 |
+|---|---|---|
+| `gemini-3.8-flash-high`（默认） | 原样 | 原样 |
+| `gemini-3.8-flash` / `gemini-3.7-flash`（不经本软件改名时） | `gemini-3.5-flash` | 原样 |
+| `gemini-2.5-flash` | `gemini-3.5-flash` | 原样 |
+| `gemini-3-flash` | `gemini-3.5-flash` | `gemini-3.8-flash` |
+| `gemini-3.5-flash` | 原样 | `gemini-3.8-flash`，且联网搜索那一请求丢了 `googleSearch` 工具 |
+| `gemini-3.1-flash-lite` | 原样 | `gemini-3.5-flash-lite` |
+
+- 主型号 `gemini-3.8-flash-high` 下，联网搜索（带 `googleSearch`）、读网页（带 `urlContext`）、
+  Auto 模式的分流请求与之后的主请求，两版都只发中转型号。不写改写时 0.61.0 的 Auto 分流改用
+  `gemini-3.5-flash-lite`（0.60.0 是 `gemini-3.1-flash-lite`），现有的 `flash-lite` 改写照样接住。
+- 在 `/model` 里选 `gemini-3.8-flash` / `gemini-3.5-flash-lite`：旧改写表下 0.61.0 原样发出官方
+  型号名，所以两者已补进 `geminiRelayHelperModels`，补后都改发中转型号。
+- 完整的本软件模板（含 `ide`、`sessionRetention`、`context.fileName`）加信任目录读 `~/.gemini/.env`：
+  0.61.0 正常启动、请求打到 base URL，终端输出与 0.60.0 一致。
+
+**要留意的一点**：中转的 Gemini 分组如果有型号恰好叫 `gemini-3.5-flash`、`gemini-3-flash` 或
+`gemini-3.1-flash-lite`，0.61.0 上选它们会被改发成别的型号（见上表），本软件在客户端这边拦不住。
+今天默认的 `gemini-3.8-flash-high` 不在其列。没做的：中转上的真实请求（secret 没配，`verifiedSites`
+仍为空）。
 
 加第四个工具只需要填上它的 `recommended`，其余代码不用动；要让中转实测也覆盖它，还得在 `scripts/probe-cli-relay.cjs` 的 `probeRunners` 里加一条。
 

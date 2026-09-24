@@ -576,14 +576,18 @@ function extendGeminiSessionRetention(parsed: Record<string, unknown>): void {
 // 计费。当前型号本身若恰好在表里，不给它写改写，免得自己指向自己。
 //
 // 这张表出自 0.60.0 bundle 的 DEFAULT_MODEL_CONFIGS（aliases / modelIdResolutions），
-// 升级 Gemini CLI 推荐版本时要重新核一遍。
+// 升级 Gemini CLI 推荐版本时要重新核一遍。0.61.0 新增 gemini-3.8-flash 与
+// gemini-3.5-flash-lite 两个内置型号，/model 菜单里也列着它们，不补上的话用户在菜单里
+// 选了就直接发出官方型号名（沙箱实测 0.61.0）。
 const geminiRelayHelperModels = [
   'gemini-3-flash-preview',
   'gemini-3-pro-preview',
   'gemini-3.1-pro-preview',
   'gemini-3.1-pro-preview-customtools',
   'gemini-3.1-flash-lite',
+  'gemini-3.5-flash-lite',
   'gemini-3.5-flash',
+  'gemini-3.8-flash',
   'gemini-2.5-pro',
   'gemini-2.5-flash',
   'gemini-2.5-flash-lite',
@@ -743,6 +747,8 @@ function readProviderModel(provider: ProviderId, paths: string[]): string {
  * built-in `gemini-3.5-flash` alias. The relay exposes the current 3.7/3.8
  * tiers with an explicit suffix, bypassing that client-side rewrite. Always
  * report the actual stored ID: a tier suffix must not be hidden in the UI.
+ * 0.61.0 stopped that rewrite, but a customer may still be running an older
+ * install, so the suffix stays.
  */
 export function geminiCliCompatibleModel(model: string): string {
   return /^(gemini-3\.[78]-flash)$/i.test(model.trim()) ? `${model.trim()}-high` : model.trim()
