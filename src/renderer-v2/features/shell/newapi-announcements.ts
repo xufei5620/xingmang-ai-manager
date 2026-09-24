@@ -82,6 +82,7 @@ export function rememberLocalAnnouncementIds(scope: string, ids: string[]): bool
 }
 
 function seenStorageKey(scope: string): string { return `xingmang-v2-notice-seen:${scope}` }
+function notifiedStorageKey(scope: string): string { return `xingmang-v2-notice-notified:${scope}` }
 const maximumSeenKeyLength = 256
 
 /**
@@ -95,8 +96,8 @@ export function announcementAttentionKeys(announcement: { id: string; entries?: 
   return announcement.id === readId ? [] : [`notice:${announcement.id}`.slice(0, maximumSeenKeyLength)]
 }
 
-export function readSeenAnnouncementKeys(scope: string): string[] {
-  const stored = readLocalPreference(seenStorageKey(scope))
+function readAnnouncementKeys(storageKey: string): string[] {
+  const stored = readLocalPreference(storageKey)
   if (!stored || stored.length > 80_000) return []
   try {
     const value: unknown = JSON.parse(stored)
@@ -104,10 +105,44 @@ export function readSeenAnnouncementKeys(scope: string): string[] {
   } catch { return [] }
 }
 
-/** Returns the merged list even when storage is unavailable, so this session still stays quiet. */
-export function rememberSeenAnnouncementKeys(scope: string, keys: string[]): string[] {
-  const previous = readSeenAnnouncementKeys(scope).filter((key) => !keys.includes(key))
+function rememberAnnouncementKeys(storageKey: string, keys: string[]): string[] {
+  const previous = readAnnouncementKeys(storageKey).filter((key) => !keys.includes(key))
   const next = [...new Set([...previous, ...keys])].slice(-maximumRememberedEntries)
-  writeLocalPreference(seenStorageKey(scope), JSON.stringify(next))
+  writeLocalPreference(storageKey, JSON.stringify(next))
   return next
+}
+
+export function readSeenAnnouncementKeys(scope: string): string[] { return readAnnouncementKeys(seenStorageKey(scope)) }
+
+/** Returns the merged list even when storage is unavailable, so this session still stays quiet. */
+export function rememberSeenAnnouncementKeys(scope: string, keys: string[]): string[] { return rememberAnnouncementKeys(seenStorageKey(scope), keys) }
+
+// A system notification is a louder, separate reminder: it goes out once per
+// notice even though the banner stays until the notice is seen.
+export function readNotifiedAnnouncementKeys(scope: string): string[] { return readAnnouncementKeys(notifiedStorageKey(scope)) }
+
+export function rememberNotifiedAnnouncementKeys(scope: string, keys: string[]): string[] { return rememberAnnouncementKeys(notifiedStorageKey(scope), keys) }
+
+/**
+ * The platform bridge only accepts short ASCII event keys, while notice ids
+ * are opaque server strings. A stable 32-bit FNV-1a digest is enough to tell
+ * two batches apart for de-duplication; the text of the notice never leaves
+ * the renderer.
+ */
+export function announcementNotificationKey(keys: string[]): string {
+  let hash = 0x811c9dc5
+  for (const character of [...keys].sort().join('\n')) {
+    hash ^= character.codePointAt(0) ?? 0
+    hash = Math.imul(hash, 0x01000193) >>> 0
+  }
+  return `notice-${hash.toString(16).padStart(8, '0')}`
+}
+
+/** Whether a background refresh brought anything the screen does not already show. */
+export function sameAnnouncementSnapshot(previous: { id: string; entries?: Array<{ id: string; read: boolean }> } | null, next: { id: string; entries?: Array<{ id: string; read: boolean }> } | null): boolean {
+  if (!previous || !next) return previous === next
+  if (previous.id !== next.id || Boolean(previous.entries) !== Boolean(next.entries)) return false
+  if (!previous.entries || !next.entries) return true
+  return previous.entries.length === next.entries.length
+    && previous.entries.every((entry, index) => entry.id === next.entries?.[index]?.id && entry.read === next.entries[index].read)
 }

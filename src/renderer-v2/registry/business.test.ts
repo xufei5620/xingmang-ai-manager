@@ -20,6 +20,7 @@ describe('renderer-v2 notification settings registry', () => {
       balance: true,
       task: true,
       cliUpdate: true,
+      announcement: true,
       acceleration: true,
     };
     expect([...notificationOptions.map(option => option.value)].sort())
@@ -37,6 +38,14 @@ describe('renderer-v2 notification settings registry', () => {
     expect(option?.label).toBe('工具有新版本');
     // 站点名、内部代号不进面向用户的文案（双站点对用户无感）。
     expect(`${option?.label} ${option?.description}`).not.toMatch(/solov|new-api|relay|CLI/i);
+  });
+});
+
+describe('renderer-v2 announcement notification option', () => {
+  it('names the announcement reminder without the relay site', () => {
+    const option = notificationOptions.find(entry => entry.value === 'announcement');
+    expect(option?.label).toBe('新公告');
+    expect(`${option?.label} ${option?.description}`).not.toMatch(/solov|new-api|relay|sub2api/i);
   });
 });
 
