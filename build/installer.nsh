@@ -161,6 +161,10 @@
     # PATH；参数是固定字面量，没有任何外部输入拼进命令行。
     #
     # 失败只记在详情里，不拦卸载：让用户卡在一个卸不掉的软件上，比留一条开机项更糟。
+    #
+    # 普通账号卸载时要输别的管理员的密码，这一支就以那个管理员的身份运行，看到的
+    # 当前用户注册表和数据目录都是那个管理员的。程序自己会认出这种情况，什么都不清、
+    # 以 32 退出（uninstall-cleanup.ts 的 otherAccount，#498）：别人的东西不该动。
     Function un.xingmangUninstallCleanup
       ${IfNot} ${FileExists} "$INSTDIR\${APP_EXECUTABLE_FILENAME}"
         Return

@@ -1,12 +1,19 @@
+import { execFile } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
+import { promisify } from 'node:util'
 import type { App } from 'electron'
 import { accelerationProxyJournalPath } from './acceleration-development-host'
+import { trustedCommandEnvironment } from './command-runner'
 import { windowsAppUserModelId } from './login-launch'
 import { removeWindowsLoginItem } from './platform/system-service'
 import { createWindowsSystemProxy } from './platform/windows-system-proxy'
 import { removeSafeDataFile } from './safe-local-data'
 import { uninstallClearLoginArgument } from './uninstall-cleanup-entry'
+import { resolveWindowsPowerShellExecutable } from './windows-elevation'
+import { resolveWindowsMachinePaths } from './windows-machine-paths'
+
+const execFileAsync = promisify(execFile)
 
 // 卸载程序拉起这一支时，桌面进程和加速辅助进程都已经被它强行结束，辅助进程
 // 来不及把系统代理改回去；系统代理还指着本机一个已经没人监听的端口，整台电脑
@@ -20,6 +27,8 @@ export const uninstallCleanupExitCodes = {
   timedOut: 4,
   unsupported: 8,
   loginRecordsRemain: 16,
+  // 跑卸载的不是桌面上登录着的那个人，什么都没动（#498）。
+  otherAccount: 32,
 } as const
 
 // 单次 PowerShell 放宽到 90 秒：卸载时 PowerShell 往往是冷启动，第一次编译
@@ -87,8 +96,79 @@ export async function clearLoginRecords(dataDirectory: string, report?: (line: s
   return cleared
 }
 
+// 卸载程序是整机安装的，一定带着管理员身份跑。普通账号卸载时要输别的管理员的
+// 密码，这时卸载程序连同它拉起的这一支都以那个管理员的身份运行：注册表里的当前
+// 用户、userData 全是那个管理员的，而不是坐在电脑前的这个人的（#498）。
+//
+// 这种情况下什么都不清，别人的数据原样不动，跟 0.2.9 完全不清代理时一样。
+// 分不清的时候（问不出来、会话里没有桌面、有两个桌面主人）照旧清理：
+// 代理还原本来就只在代理仍是加速写进去的那一份时才动，别的账号从没开过加速
+// 就不会有恢复记录，清不到别人的东西；而把真正卸载的这个人的代理留在失效端口上，
+// 是整台电脑断网。
+export type UninstallAccountMatch = 'same' | 'other' | 'unknown'
+
+// The desktop user is the owner of explorer.exe in this process's session.
+// Over-the-shoulder UAC runs the uninstaller as the approving administrator
+// but in the signed-in user's session, so the two SIDs differ exactly then.
+// Only SIDs are compared: account names are localized and can be renamed.
+const uninstallAccountProbeScript = [
+  "$ErrorActionPreference='Stop'",
+  '$session=[Diagnostics.Process]::GetCurrentProcess().SessionId',
+  "'process=' + [Security.Principal.WindowsIdentity]::GetCurrent().User.Value",
+  "Get-CimInstance -ClassName Win32_Process | Where-Object { $_.Name -eq 'explorer.exe' -and $_.SessionId -eq $session } | ForEach-Object { $owner = Invoke-CimMethod -InputObject $_ -MethodName GetOwnerSid; if ($owner.ReturnValue -eq 0 -and $owner.Sid) { 'desktop=' + $owner.Sid } }",
+].join('; ')
+
+// S-1-5-21-… for local and domain accounts, S-1-12-1-… for work or school ones.
+const accountSidPattern = /^S-1-\d+(?:-\d+)+$/i
+
+export function parseUninstallAccountProbe(output: string): UninstallAccountMatch {
+  let processSid: string | null = null
+  const desktopSids = new Set<string>()
+  for (const line of output.split(/\r?\n/)) {
+    const match = /^(process|desktop)=(.+)$/.exec(line.trim())
+    if (!match || !accountSidPattern.test(match[2])) continue
+    const sid = match[2].toUpperCase()
+    if (match[1] === 'process') {
+      if (processSid !== null && processSid !== sid) return 'unknown'
+      processSid = sid
+    } else {
+      desktopSids.add(sid)
+    }
+  }
+  if (processSid === null || desktopSids.size !== 1) return 'unknown'
+  return desktopSids.has(processSid) ? 'same' : 'other'
+}
+
+export async function inspectUninstallAccount(
+  platform: NodeJS.Platform = process.platform,
+  report?: (line: string) => void,
+): Promise<UninstallAccountMatch> {
+  if (platform !== 'win32') return 'unknown'
+  try {
+    // Same fixed resolver and scrubbed environment as every elevated probe
+    // (I2, I14): this process holds an administrator token.
+    const machinePaths = resolveWindowsMachinePaths()
+    const { stdout } = await execFileAsync(
+      resolveWindowsPowerShellExecutable({ env: process.env, machinePaths }),
+      ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', uninstallAccountProbeScript],
+      {
+        env: trustedCommandEnvironment(process.env, machinePaths),
+        windowsHide: true,
+        timeout: proxyCommandTimeoutMs,
+        maxBuffer: 64 * 1024,
+      },
+    )
+    return parseUninstallAccountProbe(stdout)
+  } catch (error) {
+    try { report?.(`account: ${describeCleanupFailure(error)}`) } catch { /* Reporting must not change the result. */ }
+    return 'unknown'
+  }
+}
+
 export interface UninstallCleanupDependencies {
   dataDirectory: string
+  // 缺省 = 不问，照旧清理。
+  inspectAccount?: () => Promise<UninstallAccountMatch>
   recoverProxy(journalPath: string): Promise<void>
   removeLoginItem(): boolean
   // 只有卸载页勾了「同时清除登录记录」才给；缺省 = 保留登录，跟以前一样。
@@ -113,6 +193,19 @@ export function describeCleanupFailure(error: unknown): string {
 
 export async function runUninstallCleanup(dependencies: UninstallCleanupDependencies): Promise<number> {
   const codes = uninstallCleanupExitCodes
+  // 开机项、代理、登录记录全在当前用户名下，一样都不能碰别人的。
+  if (dependencies.inspectAccount) {
+    let match: UninstallAccountMatch = 'unknown'
+    try {
+      match = await dependencies.inspectAccount()
+    } catch (error) {
+      try { dependencies.report?.(`account: ${describeCleanupFailure(error)}`) } catch { /* Reporting must not change the result. */ }
+    }
+    if (match === 'other') {
+      try { dependencies.report?.('account: uninstaller runs as another account than the desktop user; nothing cleaned') } catch { /* Reporting must not change the result. */ }
+      return codes.otherAccount
+    }
+  }
   let code = 0
   // 开机项在前：它是一次同步的注册表删除，不能因为后面的代理还原超时而被跳过。
   try {
@@ -158,6 +251,7 @@ export function startUninstallCleanup(
   exit: (code: number) => void,
   report?: (line: string) => void,
   argv: readonly string[] = process.argv,
+  inspectAccount: () => Promise<UninstallAccountMatch> = () => inspectUninstallAccount(process.platform, report),
 ): void {
   // A development build shares the login item's name with the installed app,
   // so running this from a checkout would switch off the real one's autostart.
@@ -171,6 +265,7 @@ export function startUninstallCleanup(
   const dataDirectory = app.getPath('userData')
   void runUninstallCleanup({
     dataDirectory,
+    inspectAccount,
     recoverProxy: (journalPath) => createWindowsSystemProxy({ journalPath, commandTimeoutMs: proxyCommandTimeoutMs }).recover(),
     removeLoginItem: () => removeWindowsLoginItem({ app, executablePath: process.execPath }),
     clearLoginRecords: argv.includes(uninstallClearLoginArgument) ? () => clearLoginRecords(dataDirectory, report) : undefined,

@@ -9,7 +9,9 @@ import {
   clearLoginRecords,
   describeCleanupFailure,
   hasProxyRecoveryRecords,
+  inspectUninstallAccount,
   loginRecordFiles,
+  parseUninstallAccountProbe,
   runUninstallCleanup,
   startUninstallCleanup,
   uninstallCleanupExitCodes as codes,
@@ -253,5 +255,94 @@ describe('uninstall cleanup', () => {
       await expect(exited).resolves.toBe(0)
       expect(fs.existsSync(path.join(dataDirectory, 'account-session.dat'))).toBe(remains)
     }
+  })
+
+  it('tells the desktop user apart from an administrator who approved the uninstall', () => {
+    const user = 'S-1-5-21-1111111111-2222222222-3333333333-1001'
+    const admin = 'S-1-5-21-1111111111-2222222222-3333333333-500'
+    expect(parseUninstallAccountProbe(`process=${user}\r\ndesktop=${user}\r\n`)).toBe('same')
+    // SIDs compare case-insensitively; work or school accounts are S-1-12-1-….
+    expect(parseUninstallAccountProbe(`process=${user}\ndesktop=${user.toLowerCase()}`)).toBe('same')
+    expect(parseUninstallAccountProbe('process=S-1-12-1-10-20-30-40\ndesktop=S-1-12-1-10-20-30-40')).toBe('same')
+    // A standard account entered another administrator's password (#498).
+    expect(parseUninstallAccountProbe(`process=${admin}\ndesktop=${user}`)).toBe('other')
+    // Two explorer.exe for one user is ordinary; they collapse to one owner.
+    expect(parseUninstallAccountProbe(`process=${admin}\ndesktop=${user}\ndesktop=${user}`)).toBe('other')
+  })
+
+  it('answers unknown whenever the probe output does not name exactly one desktop user', () => {
+    const user = 'S-1-5-21-1-2-3-1001'
+    const other = 'S-1-5-21-1-2-3-1002'
+    for (const output of [
+      '',
+      `process=${user}`,
+      `desktop=${user}`,
+      `process=${user}\ndesktop=${user}\ndesktop=${other}`,
+      `process=${user}\nprocess=${other}\ndesktop=${user}`,
+      `process=${user}\ndesktop=not-a-sid`,
+      `process=${user}\ndesktop=${other} extra`,
+    ]) {
+      expect(parseUninstallAccountProbe(output)).toBe('unknown')
+    }
+  })
+
+  it('does not ask outside Windows', async () => {
+    await expect(inspectUninstallAccount('darwin')).resolves.toBe('unknown')
+    await expect(inspectUninstallAccount('linux')).resolves.toBe('unknown')
+  })
+
+  it('touches nothing when the uninstaller runs as another account than the desktop user', async () => {
+    const recoverProxy = vi.fn(async () => undefined)
+    const removeLoginItem = vi.fn(() => true)
+    const clearLoginRecords = vi.fn(async () => true)
+    const report = vi.fn()
+    await expect(runUninstallCleanup({
+      dataDirectory: temporaryDataDirectory(),
+      inspectAccount: async () => 'other',
+      proxyRecordsExist: () => true,
+      recoverProxy, removeLoginItem, clearLoginRecords, report,
+    })).resolves.toBe(codes.otherAccount)
+    expect(removeLoginItem).not.toHaveBeenCalled()
+    expect(recoverProxy).not.toHaveBeenCalled()
+    expect(clearLoginRecords).not.toHaveBeenCalled()
+    expect(report).toHaveBeenCalledWith(expect.stringMatching(/^account: /))
+  })
+
+  it('cleans up as before when the account matches or cannot be told', async () => {
+    for (const inspectAccount of [
+      async () => 'same' as const,
+      async () => 'unknown' as const,
+      async () => { throw new Error('探测失败') },
+    ]) {
+      const recoverProxy = vi.fn(async () => undefined)
+      const removeLoginItem = vi.fn(() => true)
+      const clearLoginRecords = vi.fn(async () => true)
+      await expect(runUninstallCleanup({
+        dataDirectory: temporaryDataDirectory(),
+        inspectAccount,
+        proxyRecordsExist: () => true,
+        recoverProxy, removeLoginItem, clearLoginRecords,
+      })).resolves.toBe(0)
+      expect(removeLoginItem).toHaveBeenCalledTimes(1)
+      expect(recoverProxy).toHaveBeenCalledTimes(1)
+      expect(clearLoginRecords).toHaveBeenCalledTimes(1)
+    }
+  })
+
+  it('leaves the login item and sign-in alone when started under another account', async () => {
+    const dataDirectory = temporaryDataDirectory()
+    fs.writeFileSync(path.join(dataDirectory, 'account-session.dat'), 'session')
+    const app = {
+      isPackaged: true,
+      getPath: vi.fn(() => dataDirectory),
+      setAppUserModelId: vi.fn(),
+      getLoginItemSettings: vi.fn(() => ({ openAtLogin: false })),
+      setLoginItemSettings: vi.fn(),
+    }
+    const argv = ['C:/App/xingmang.exe', uninstallCleanupArgument, uninstallClearLoginArgument]
+    const exited = new Promise<number>((resolve) => startUninstallCleanup(app as never, resolve, undefined, argv, async () => 'other'))
+    await expect(exited).resolves.toBe(codes.otherAccount)
+    expect(app.setLoginItemSettings).not.toHaveBeenCalled()
+    expect(fs.existsSync(path.join(dataDirectory, 'account-session.dat'))).toBe(true)
   })
 })
