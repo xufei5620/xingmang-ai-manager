@@ -1010,6 +1010,45 @@ describe('createSystemService', () => {
     expect(snapshot.runtime.git).toMatchObject({ installed: true, version: '2.39.5', path: '/usr/bin/git' })
   })
 
+  // 同上，夹具要 POSIX 路径。
+  it.skipIf(process.platform === 'win32')('treats the macOS shims as not installed while the Xcode license is not agreed', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-xcode-license-'))
+    temporaryDirectories.push(directory)
+    const developerDirectory = path.join(directory, 'Xcode.app', 'Contents', 'Developer')
+    fs.mkdirSync(path.join(developerDirectory, 'usr', 'bin'), { recursive: true })
+    fs.writeFileSync(path.join(developerDirectory, 'usr', 'bin', 'git'), '')
+    fs.writeFileSync(path.join(developerDirectory, 'usr', 'bin', 'python3'), '')
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('offline') }))
+    const license = "You have not agreed to the Xcode license agreements. Please run 'sudo xcodebuild -license' from within a Terminal window to review and agree to the Xcode and Apple SDKs license."
+    const service = createSystemService(
+      new AppSettingsStore(path.join(directory, 'settings.json'), directory),
+      {
+        platform: 'darwin',
+        findExecutable: async (command) =>
+          command === 'git' ? '/usr/bin/git' : command === 'python3' ? '/usr/bin/python3' : null,
+        runCommand: async (spec) => {
+          if (spec.executable === '/usr/bin/xcode-select') {
+            const stdout = `${developerDirectory}\n`
+            return {
+              executable: spec.executable, argv: [...spec.argv], exitCode: 0, signal: null,
+              stdout, stderr: '', outputBytes: stdout.length, durationMs: 1,
+            }
+          }
+          throw Object.assign(new Error('Command failed with exit code 69'), { stdout: '', stderr: `${license}\n` })
+        },
+        resolveCliInstallation: async () => null,
+        macosCodexAppDetector: async () => ({ app: null, detectionFailed: false, detectionError: null }),
+      },
+    )
+
+    const snapshot = await service.scanSystem(false)
+
+    // 以前这句英文被当成 Python 的版本号整段上了首页。
+    expect(snapshot.runtime.python).toMatchObject({ installed: false, version: null, path: null })
+    expect(snapshot.runtime.git).toMatchObject({ installed: false, version: null, path: null })
+    expect(snapshot.runtime.git.detectionFailed).not.toBe(true)
+  })
+
   it('keeps a Git probe failure distinguishable from "not installed"', async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-git-failure-'))
     temporaryDirectories.push(directory)
