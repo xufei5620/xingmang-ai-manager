@@ -1,21 +1,11 @@
-import fs from 'node:fs'
-import os from 'node:os'
 import path from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
-import { runCommand, type CommandResult, type CommandSpec, type RunCommandOptions } from './command-runner'
-import { inspectClaudeDesktopStoreVirtualization } from './claude-desktop-manifest'
+import type { CommandResult, CommandSpec, RunCommandOptions } from './command-runner'
+import { buildClaudeDesktopManifestInspectionScript, inspectClaudeDesktopStoreVirtualization } from './claude-desktop-manifest'
+import { scanPowerShell, unbalancedBracket } from './powershell-script-scan.test-support'
 
 const installationPath = 'C:\\Program Files\\WindowsApps\\Claude_2.2553.1.0_x64__pzs8sxrjxfjjc\\app\\Claude.exe'
 const allVirtualized = { localProfileVirtualized: true, roamingProfileVirtualized: true, roamingDeveloperVirtualized: true }
-
-// The Windows-only case below cold-starts Windows PowerShell 5.1 before it can assert anything,
-// and that start is not what it tests. Six jobs share one windows-latest runner, and on #244 the
-// first probe was killed at the old fixed 60s budget; the production code deliberately swallows
-// the child's error (I13), so all CI showed was the generic 「清单无法安全读取」. Same treatment
-// #219 gave electron/codex-desktop-appx.test.ts: a budget wide enough for a cold start behind
-// Defender, still bounded, and overridable through the same variable on a machine where even
-// this is not enough. The 180s case timeout below still bounds the test as a whole.
-const powerShellStartupTimeoutMs = Number(process.env.XINGMANG_POWERSHELL_TEST_TIMEOUT_MS ?? 90_000)
 
 function result(spec: CommandSpec, value: unknown): CommandResult {
   const stdout = JSON.stringify(value)
@@ -127,28 +117,67 @@ describe('inspectClaudeDesktopStoreVirtualization', () => {
     expect(String(error)).not.toContain('sk-secret')
   })
 
-  it.runIf(process.platform === 'win32')('reads isolated XML manifests and rejects DTDs and oversized files using PowerShell', async () => {
-    const directory = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-claude-manifest-')))
-    const packageDirectory = path.join(directory, 'WindowsApps', 'Claude_2.2553.1.0_x64__pzs8sxrjxfjjc')
-    fs.mkdirSync(packageDirectory, { recursive: true })
-    const manifestPath = path.join(packageDirectory, 'AppxManifest.xml')
-    const options = {
-      platform: 'win32' as const, osRelease: '10.0.22621', installationPath: path.join(packageDirectory, 'app', 'Claude.exe'),
-      // Hosted runners can cold-start PowerShell beyond the production probe budget.
-      execute: (spec: CommandSpec, commandOptions?: RunCommandOptions) => runCommand(spec, { ...commandOptions, timeoutMs: powerShellStartupTimeoutMs }),
+  // These used to be proven by writing manifests to disk and cold-starting Windows PowerShell 5.1
+  // against each one, and that start kept outlasting even a 90s budget on a busy runner (#244, run
+  // 36042396731) - with the production code swallowing the reason (I13), all CI ever showed was
+  // 「清单无法安全读取」. What the case really pinned is a property of the text PowerShell is
+  // handed, so the text is checked directly, on every platform, without starting a process.
+  it('keeps every manifest guard ahead of the step it guards', () => {
+    const script = buildClaudeDesktopManifestInspectionScript('C:\\WindowsApps\\Claude\\AppxManifest.xml', '2.2553.1.0', 'x64')
+    const at = (fragment: string) => {
+      const index = script.indexOf(fragment)
+      expect(index, fragment).toBeGreaterThanOrEqual(0)
+      return index
     }
-    try {
-      fs.writeFileSync(manifestPath, manifest(), 'utf8')
-      expect(await inspectClaudeDesktopStoreVirtualization(options)).toEqual(allVirtualized)
-      fs.writeFileSync(manifestPath, manifest('<v:FileSystemWriteVirtualization><v:ExcludedDirectories><v:ExcludedDirectory>$(KnownFolder:LocalAppData)\\Claude-3p</v:ExcludedDirectory></v:ExcludedDirectories></v:FileSystemWriteVirtualization>'), 'utf8')
-      expect(await inspectClaudeDesktopStoreVirtualization(options)).toEqual({ ...allVirtualized, localProfileVirtualized: false })
-      expect(await inspectClaudeDesktopStoreVirtualization({ ...options, osRelease: '10.0.19045' })).toEqual(allVirtualized)
-      fs.writeFileSync(manifestPath, manifest('<d6:FileSystemWriteVirtualization>disabled</d6:FileSystemWriteVirtualization>'), 'utf8')
-      expect(await inspectClaudeDesktopStoreVirtualization(options)).toEqual({ localProfileVirtualized: false, roamingProfileVirtualized: false, roamingDeveloperVirtualized: false })
-      fs.writeFileSync(manifestPath, manifest().replace('<?xml version="1.0"?>', '<?xml version="1.0"?><!DOCTYPE Package [<!ENTITY test "content">]>'), 'utf8')
-      await expect(inspectClaudeDesktopStoreVirtualization(options)).rejects.toThrow('清单无法安全读取')
-      fs.writeFileSync(manifestPath, ' '.repeat(1024 * 1024 + 1), 'utf8')
-      await expect(inspectClaudeDesktopStoreVirtualization(options)).rejects.toThrow('清单无法安全读取')
-    } finally { fs.rmSync(directory, { recursive: true, force: true }) }
-  }, 180000)
+    const open = at('[IO.File]::Open($manifestPath')
+    const create = at('[Xml.XmlReader]::Create($stream,$settings)')
+    const load = at('$manifest.Load($reader)')
+    // A junction planted over the manifest is refused before the file is opened at all.
+    expect(at('[IO.FileAttributes]::ReparsePoint')).toBeLessThan(open)
+    // An oversized or empty file is refused before a single byte reaches the XML parser.
+    expect(at("$stream.Length -gt 1048576){throw 'manifest-size-limit'}")).toBeLessThan(create)
+    for (const setting of ['$settings.DtdProcessing=[Xml.DtdProcessing]::Prohibit', '$settings.XmlResolver=$null', '$settings.MaxCharactersInDocument=1048576']) {
+      expect(at(setting), setting).toBeLessThan(create)
+    }
+    expect(at('$manifest.XmlResolver=$null')).toBeLessThan(load)
+    expect(at('$ErrorActionPreference=\'Stop\'')).toBeLessThan(open)
+  })
+
+  it('keeps the package path and identity inside closed single-quoted literals, even for a hostile path', () => {
+    const manifestPath = "C:\\Program Files';$(throw 'injected')\"&calc\\WindowsApps\\AppxManifest.xml"
+    const scan = scanPowerShell(buildClaudeDesktopManifestInspectionScript(manifestPath, '2.2553.1.0', 'arm64'))
+    expect(scan.unterminated).toBe(false)
+    expect(unbalancedBracket(scan.code)).toBeNull()
+    expect(scan.expandable).toEqual([])
+    expect(scan.code).not.toContain('injected')
+    expect(scan.code).not.toContain('calc')
+    const encoded = scan.literals.filter((literal) => /^[A-Za-z0-9+/]+=*$/.test(literal) && literal.length > 40)
+    expect(encoded.map((literal) => Buffer.from(literal, 'base64').toString('utf16le'))).toEqual([manifestPath])
+    expect(scan.literals).toContain('2.2553.1.0')
+    expect(scan.literals).toContain('arm64')
+  })
+
+  it('queries the manifest through the namespaces a Store package declares', () => {
+    const script = buildClaudeDesktopManifestInspectionScript('C:\\WindowsApps\\Claude\\AppxManifest.xml', '2.2553.1.0', 'x64')
+    const declared = new Map([...manifest().matchAll(/xmlns(?::(\w+))?="([^"]+)"/g)].map(([, prefix, uri]) => [prefix ?? 'p', uri]))
+    const registered = new Map([...script.matchAll(/AddNamespace\('(\w+)','([^']+)'\)/g)].map(([, prefix, uri]) => [prefix, uri]))
+    expect(registered).toEqual(declared)
+    const queries = [...script.matchAll(/Select(?:Single)?Nodes?\('([^']+)',\$namespaces\)/g)].map(([, query]) => query)
+    expect(queries).toEqual([
+      '/p:Package/p:Identity',
+      '/p:Package/p:Properties/d6:FileSystemWriteVirtualization',
+      '/p:Package/p:Properties/v:FileSystemWriteVirtualization/v:ExcludedDirectories/v:ExcludedDirectory',
+    ])
+    for (const query of queries) {
+      for (const [, prefix] of query.matchAll(/(\w+):/g)) expect(registered.has(prefix), `${query} uses ${prefix}`).toBe(true)
+    }
+  })
+
+  it('hands inspection the script the builder produces for the package it resolved', async () => {
+    const options = fixture()
+    await inspectClaudeDesktopStoreVirtualization(options)
+    const script = Buffer.from(options.execute.mock.calls[0][0].argv.at(-1)!, 'base64').toString('utf16le')
+    expect(script).toBe(buildClaudeDesktopManifestInspectionScript(
+      'C:\\Program Files\\WindowsApps\\Claude_2.2553.1.0_x64__pzs8sxrjxfjjc\\AppxManifest.xml', '2.2553.1.0', 'x64'))
+  })
 })

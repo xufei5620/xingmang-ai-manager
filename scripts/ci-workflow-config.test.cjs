@@ -983,6 +983,33 @@ test('a lost fixture navigation is retried inside the budget rather than waited 
   assert.ok(Date.now() - started < 600, 'the attempts must share one deadline rather than each taking the whole budget')
 })
 
+// Quality run 36034905213 lost all three navigations within 204ms of a 90s
+// budget: page.goto threw net::ERR_NO_BUFFER_SPACE after 13ms, the retry was
+// cut off by the chrome-error page, and the third went the same way. Retrying
+// only helps once the machine has had a moment, so a navigation that loses fast
+// must sit out the rest of its own slice before the next one starts.
+test('a navigation that loses in milliseconds waits out its slice before the next one', async () => {
+  const readiness = await import(require('node:url').pathToFileURL(path.join(root, fixtureReadinessModule)).href)
+
+  const timeout = 600
+  const slice = readiness.fixtureMountSliceMs(timeout, 3)
+  const starts = []
+  const started = Date.now()
+  const mounted = await readiness.openFixturePage({
+    goto: async () => {
+      starts.push(Date.now() - started)
+      if (starts.length < 3) throw new Error('page.goto: net::ERR_NO_BUFFER_SPACE')
+    },
+  }, 'about:blank', async () => {}, { label: 'probe', timeout, attempts: 3 })
+
+  assert.ok(mounted, 'the third navigation reaches a mounted page')
+  assert.equal(starts.length, 3)
+  // Scheduling may fire a timer a millisecond early, never a slice early.
+  assert.ok(starts[1] >= slice - 5, `the second navigation started ${starts[1]}ms in, before the first slice (${slice}ms) was over`)
+  assert.ok(starts[2] >= 2 * slice - 5, `the third navigation started ${starts[2]}ms in, before the second slice was over`)
+  assert.ok(Date.now() - started < timeout, 'sitting out a slice spends the same budget, never a wider one')
+})
+
 // The list above was right about every suite on it and blind to every suite
 // that was not: nothing tied it to the suites that actually exist, so the chat
 // fixture under src/renderer-v2/ was never noticed. Discovering the suites
@@ -1073,6 +1100,60 @@ test('the inspector replay backs off instead of repeating on a fixed interval', 
   const smoke = fs.readFileSync(path.join(root, 'e2e/realm-account-smoke.mjs'), 'utf8')
   assert.match(smoke, /collectedPromiseBackoffFor/, 'the smoke must take its backoff from the shared module')
   assert.doesNotMatch(smoke, /setTimeout\(resolve, \d/, 'the smoke must not restate a retry interval of its own')
+})
+
+// Four more smokes carried their own copy of the flat 500ms x3 replay after the
+// shared backoff existed, and run 36042396731 lost renderer-v2-native's first
+// evaluation to exactly that shape. Finding the loops instead of listing the
+// smokes is what keeps a fifth copy from growing back.
+test('every smoke that replays a collected inspector answer backs off through the shared module', async () => {
+  const readiness = await import(require('node:url').pathToFileURL(path.join(root, fixtureReadinessModule)).href)
+  const e2e = path.join(root, 'e2e')
+  const smokes = fs.readdirSync(e2e).filter((name) => name.endsWith('.mjs') && name !== 'fixture-readiness.mjs')
+  let replaying = 0
+  for (const name of smokes) {
+    const source = fs.readFileSync(path.join(e2e, name), 'utf8')
+    if (/replayCollectedPromise\(/.test(source)) {
+      replaying += 1
+      assert.match(source, /import \{[^}]*\breplayCollectedPromise\b[^}]*\} from '\.\/fixture-readiness\.mjs'/, `${name} must take the replay from the shared module`)
+    }
+    if (/for \(let attempt/.test(source) && /Resulting promise was garbage collected/.test(source)) {
+      assert.match(source, /collectedPromiseBackoffFor|replayCollectedPromise/, `${name} replays a collected answer on an interval of its own`)
+      assert.doesNotMatch(source, /setTimeout\(resolve, \d/, `${name} must not restate a retry interval of its own`)
+    }
+  }
+  assert.ok(replaying >= 4, `the Electron smokes must replay through the shared module, found ${replaying}`)
+
+  // The loop itself: only a collected answer is replayed, the waits come from
+  // the backoff it is given, and running out says how much patience was spent.
+  const progress = []
+  const waits = []
+  let calls = 0
+  const value = await readiness.replayCollectedPromise('probe', async (attempt) => {
+    calls += 1
+    if (attempt < 3) throw new Error('electronApplication.evaluate: Resulting promise was garbage collected.')
+    return 'answer'
+  }, { progress: (line) => progress.push(line), attempts: 4, backoffFor: (attempt) => { waits.push(attempt); return 1 } })
+  assert.equal(value, 'answer')
+  assert.equal(calls, 3)
+  assert.deepEqual(waits, [1, 2])
+  assert.equal(progress.length, 2)
+  assert.match(progress[0], /probe: the inspector promise was collected on attempt 1\/4, retrying in 1ms/)
+
+  calls = 0
+  await assert.rejects(readiness.replayCollectedPromise('probe', async () => {
+    calls += 1
+    throw new Error('Target page, context or browser has been closed')
+  }, { attempts: 4, backoffFor: () => 1 }), /has been closed/)
+  assert.equal(calls, 1, 'anything but a collected answer must surface on the first attempt')
+
+  await assert.rejects(readiness.replayCollectedPromise('probe', async () => {
+    throw new Error('Resulting promise was garbage collected')
+  }, { attempts: 3, backoffFor: () => 1 }), (error) => {
+    assert.match(error.message, /probe: the inspector promise was collected on all 3 attempts, spread over 2ms of backoff/)
+    assert.match(String(error.cause?.message), /garbage collected/)
+    return true
+  })
 })
 
 // A React render crash or an unhandled rejection inside a fixture leaves the

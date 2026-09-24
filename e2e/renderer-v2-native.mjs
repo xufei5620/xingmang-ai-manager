@@ -3,6 +3,7 @@ import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { _electron as electron } from '@playwright/test'
+import { replayCollectedPromise } from './fixture-readiness.mjs'
 import { createSmokeRuntime } from './smoke-runtime.mjs'
 
 // T-G5: 这份冒烟写完之后从来没人跑过。挡住它进 CI 的是两件事，都在这里修掉了：
@@ -104,20 +105,11 @@ async function main() {
   // run 35542609628 lost the 1440px iteration to it after the same commit had
   // passed one run earlier. Every evaluation below either reads window geometry,
   // captures a frame, or sets a size the window may already have, so replaying
-  // one changes nothing. The close-race smoke deliberately does not retry,
-  // because its evaluations drive the quit lifecycle.
-  async function evaluateInMainProcess(label, body, argument) {
-    let collected
-    for (let attempt = 1; attempt <= 3; attempt += 1) {
-      try { return await withDeadline(`${label} (attempt ${attempt})`, stepBudgetMs, () => application.evaluate(body, argument)) }
-      catch (error) {
-        if (!/Resulting promise was garbage collected/.test(String(error?.message))) throw error
-        collected = error
-        progress(`${label}: the inspector promise was collected, retrying`)
-        await new Promise((resolve) => setTimeout(resolve, 500))
-      }
-    }
-    throw collected
+  // one changes nothing. The close-race smoke replays only its recorder, which
+  // marks itself installed; the close itself is never replayed.
+  function evaluateInMainProcess(label, body, argument) {
+    return replayCollectedPromise(label,
+      (attempt) => withDeadline(`${label} (attempt ${attempt})`, stepBudgetMs, () => application.evaluate(body, argument)), { progress })
   }
 
   async function readWindowState() {
