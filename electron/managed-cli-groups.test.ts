@@ -106,6 +106,44 @@ describe('resolveManagedCliGroup', () => {
     })
   })
 
+  it('recognises a renamed group by the upstream the historical backend says it routes to', () => {
+    const renamed = [
+      { name: 'default', platform: 'openai' },
+      { name: 'MAX 专线', platform: 'anthropic' },
+      { name: 'Pro 通道', platform: 'openai' },
+      { name: '谷歌通道', platform: 'Gemini' },
+      { name: '图片模型', platform: 'openai' },
+    ]
+    expect(resolveManagedCliGroup('claude', renamed, 'solov-api')).toEqual({ group: 'MAX 专线', source: 'detected' })
+    expect(resolveManagedCliGroup('codex', renamed, 'solov-api')).toEqual({ group: 'Pro 通道', source: 'detected' })
+    expect(resolveManagedCliGroup('gemini', renamed, 'solov-api')).toEqual({ group: '谷歌通道', source: 'detected' })
+    expect(resolveManagedCliGroup('grok', renamed, 'solov-api')).toEqual({
+      group: sub2ApiManagedCliKeyProfiles.grok.group,
+      source: 'fallback',
+    })
+  })
+
+  it('uses the name only to tell apart several groups on the right upstream', () => {
+    const tiers = [
+      { name: 'Claude MAX 专线', platform: 'anthropic' },
+      { name: '按量通道', platform: 'anthropic' },
+      { name: 'Claude 兼容（Kimi）', platform: 'kimi' },
+    ]
+    expect(resolveManagedCliGroup('claude', tiers, 'solov-api')).toEqual({ group: 'Claude MAX 专线', source: 'detected' })
+    const undecided = [{ name: 'MAX 专线', platform: 'anthropic' }, { name: '按量通道', platform: 'anthropic' }]
+    expect(resolveManagedCliGroup('claude', undecided, 'solov-api')).toEqual({
+      group: sub2ApiManagedCliKeyProfiles.claude.group,
+      source: 'fallback',
+    })
+  })
+
+  it('never takes a group routed to another CLI upstream, whatever its name says', () => {
+    expect(resolveManagedCliGroup('claude', [{ name: 'Claude 风格 GPT 通道', platform: 'openai' }], 'solov-api')).toEqual({
+      group: sub2ApiManagedCliKeyProfiles.claude.group,
+      source: 'fallback',
+    })
+  })
+
   it('falls back when the backend returns nothing usable', () => {
     expect(resolveManagedCliGroup('codex', [])).toEqual({
       group: managedCliKeyProfiles.codex.group,
