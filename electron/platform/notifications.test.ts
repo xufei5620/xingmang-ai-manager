@@ -7,7 +7,7 @@ import {
 
 function setup() {
   let enabled = true
-  const preferences = { install: true, balance: true, task: true, cliUpdate: true, acceleration: true }
+  const preferences = { install: true, balance: true, task: true, cliUpdate: true, announcement: true, acceleration: true }
   const notifications: Array<
     EventEmitter & {
       show: ReturnType<typeof vi.fn>
@@ -187,5 +187,21 @@ describe('CLI update reminders', () => {
       'disabled',
     )
     expect(h.runtime.create).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe('announcement reminders', () => {
+  it('uses the host wording, never repeats a notice and stays silent once its switch is off', () => {
+    const h = setup()
+    expect(h.controller.notify('announcement', 'notice-0a1b2c3d')).toBe('requested')
+    expect(h.runtime.create).toHaveBeenCalledWith({
+      title: '有新公告',
+      body: '当前账号有一条新公告，回到星芒就能看到。',
+      silent: true,
+    })
+    expect(h.controller.notify('announcement', 'notice-0a1b2c3d')).toBe('duplicate')
+    h.preferences.announcement = false
+    expect(h.controller.notify('announcement', 'notice-ffffffff')).toBe('disabled')
+    expect(h.runtime.create).toHaveBeenCalledTimes(1)
   })
 })

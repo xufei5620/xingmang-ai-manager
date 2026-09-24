@@ -14,7 +14,7 @@ import { networkLocationLabel } from './network'
 import { balanceStatusText, type BalanceStatusView } from './balance-status'
 import { accelerationBonusSeconds, isAccelerationBonusCode, type AccelerationRedemptionResult } from '../../../../electron/acceleration-contract'
 
-interface AccountView extends BalanceStatusView { signedIn: boolean; supportsBilling?: boolean; supportsAnnouncements?: boolean; displayName?: string; email?: string; balance?: string; identity?: AvatarIdentity }
+interface AccountView extends BalanceStatusView { signedIn: boolean; supportsBilling?: boolean; supportsAnnouncements?: boolean; displayName?: string; email?: string; sourceLabel?: string; balance?: string; identity?: AvatarIdentity }
 interface Adapter {
   navigate?(page: PageId): void
   openAccount?(): void
@@ -223,7 +223,7 @@ export function Shell({ activePage, account, platform, adapter, environment, bal
         </nav>
         <section className="v2-account-entry" data-testid="account-entry">
           <div className="v2-account-top"><button type="button" aria-label={account.signedIn ? `打开个人中心 ${account.displayName}` : '登录'} title={account.displayName ?? '登录'} onClick={adapter.openAccount}>
-            <LocalAvatar identity={account.identity ?? null} name={account.displayName ?? '未登录'} />{!collapsed && <span className="v2-account-who"><strong>{account.displayName ?? '未登录'}</strong><small>{account.email ?? (account.signedIn ? '星芒账号' : '登录后自动配 Key')}</small></span>}
+            <LocalAvatar identity={account.identity ?? null} name={account.displayName ?? '未登录'} />{!collapsed && <span className="v2-account-who"><strong>{account.displayName ?? '未登录'}</strong><small>{account.email ?? (account.signedIn ? account.sourceLabel ?? '星芒账号' : '登录后自动配 Key')}</small></span>}
           </button><Button variant="ghost" size="xs" icon={ChevronDown} aria-label="切换账号" title="切换账号" onClick={adapter.switchAccount} /></div>
           <div className="v2-account-balance">
             {!collapsed ? <div className="v2-account-balance-summary" title={balanceTitle}>

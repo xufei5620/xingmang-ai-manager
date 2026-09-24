@@ -55,40 +55,67 @@ function storedWorkspace() {
   return { version: 2, owner: 'xm-account:7', activeId: 'saved', conversations: [conversation('saved')], draftConversation: conversation('draft') }
 }
 
-test('long historical content and reasoning survive hydration, autosave and reload without truncation', async () => {
+async function saved(page, scope = 'xm-account:7') { return page.evaluate((scope) => window.chatHarness.savedWorkspace(scope), scope) }
+// waitForFunction does not await an async predicate, and the saved files live
+// behind an async store, so poll it here; the predicate runs in the page to
+// avoid shipping megabytes of history back on every poll.
+async function waitSaved(page, predicate, timeout = 30_000) {
+  const deadline = Date.now() + timeout
+  while (!await page.evaluate(async (source) => {
+    const workspace = await window.chatHarness.savedWorkspace('xm-account:7')
+    return Boolean(workspace) && new Function('workspace', `return (${source})(workspace)`)(workspace)
+  }, predicate.toString())) {
+    if (Date.now() > deadline) throw new Error('chat history was not saved in time')
+    await page.waitForTimeout(50)
+  }
+}
+
+test('long localStorage history migrates into the file store and survives autosave and reload without truncation', async () => {
   const state = storedWorkspace()
   const content = `${'历史完整正文'.repeat(9000)}CONTENT-END`
   const reasoning = `${'历史完整思考'.repeat(9000)}REASONING-END`
   state.conversations[0].messages = [{ id: 'long-history', role: 'assistant', content, reasoning, status: 'complete', createdAt: 1 }]
-  const page = await open('strict=1', { [storedChatKey]: JSON.stringify(state) })
+  const raw = JSON.stringify(state)
+  const page = await open('strict=1', { [storedChatKey]: raw })
   try {
     await ready(page)
     await page.getByTestId('chat-composer-input').fill('autosave trigger')
-    await page.waitForFunction((key) => JSON.parse(localStorage.getItem(key)).conversations[0].draft === 'autosave trigger', storedChatKey)
-    const saved = await page.evaluate((key) => JSON.parse(localStorage.getItem(key)).conversations[0].messages[0], storedChatKey)
-    assert.equal(saved.content, content)
-    assert.equal(saved.reasoning, reasoning)
+    await waitSaved(page, (workspace) => workspace.conversations[0].draft === 'autosave trigger')
+    const message = (await saved(page)).conversations[0].messages[0]
+    assert.equal(message.content, content)
+    assert.equal(message.reasoning, reasoning)
+    assert.equal(await page.evaluate((key) => localStorage.getItem(key), storedChatKey), raw)
     await page.reload()
     await page.getByTestId('chat-message-long-history').waitFor()
     assert.equal(await page.locator('.chat-bubble').innerText(), content)
     assert.equal(await page.locator('.chat-reasoning > div').textContent(), reasoning)
+    assert.equal(await page.getByTestId('chat-composer-input').inputValue(), 'autosave trigger')
   } finally { await page.close() }
 })
 
-test('oversized persisted history remains byte-for-byte intact through edits and account unmount while saving is blocked', async () => {
+// This used to pin the opposite: past 4 MB the page stopped saving, and
+// anything said after that was gone once the window closed.
+test('history past the former 4 MB limit keeps saving, and a reopened window has everything said after it', async () => {
   const state = storedWorkspace()
-  state.conversations[0].messages = [{ id: 'over-limit', role: 'assistant', content: 'x'.repeat(4 * 1024 * 1024), reasoning: '', status: 'complete', createdAt: 1 }]
-  const raw = JSON.stringify(state)
-  const page = await open('strict=1', { [storedChatKey]: raw })
+  // The large record sits in an older conversation: a single request has its
+  // own size limit, which is not what this test is about.
+  state.conversations.push({ ...state.conversations[0], id: 'older', title: '很长的旧对话', messages: [{ id: 'over-limit', role: 'assistant', content: 'x'.repeat(4 * 1024 * 1024), reasoning: '', status: 'complete', createdAt: 1 }] })
+  const page = await open('strict=1', { [storedChatKey]: JSON.stringify(state) })
   try {
-    await page.getByRole('alert').filter({ hasText: '超过本地存储上限' }).waitFor()
-    await page.getByTestId('chat-composer-input').fill('temporary unsaved draft')
-    await page.waitForTimeout(400)
-    assert.equal(await page.evaluate((key) => localStorage.getItem(key), storedChatKey), raw)
-    assert.equal(await page.getByTestId('page-chat').getAttribute('data-unsaved'), 'true')
-    await page.evaluate(() => window.chatHarness.switchScope(8))
-    await page.waitForFunction(() => document.querySelector('[data-testid=page-chat]')?.getAttribute('data-account-scope') === 'xm-account:8')
-    assert.equal(await page.evaluate((key) => localStorage.getItem(key), storedChatKey), raw)
+    const request = await send(page, 'asked after the limit')
+    await emit(page, { type: 'reasoning', requestId: request.requestId, content: 'y'.repeat(4 * 1024 * 1024) })
+    await emit(page, { type: 'content', requestId: request.requestId, content: 'ANSWER-AFTER-LIMIT' })
+    await emit(page, { type: 'complete', requestId: request.requestId })
+    await page.getByTestId('chat-composer-input').fill('draft after the limit')
+    await waitSaved(page, (workspace) => workspace.conversations[0].draft === 'draft after the limit' && workspace.conversations[0].messages.at(-1).status === 'complete')
+    assert.equal(await page.getByRole('alert').count(), 0)
+    await page.reload()
+    await page.getByText('ANSWER-AFTER-LIMIT', { exact: true }).waitFor()
+    assert.equal(await page.locator('.chat-bubble').filter({ hasText: 'asked after the limit' }).count(), 1)
+    assert.equal(await page.locator('.chat-reasoning > div').last().evaluate((element) => element.textContent.length), 4 * 1024 * 1024)
+    assert.equal(await page.getByTestId('chat-composer-input').inputValue(), 'draft after the limit')
+    await page.locator('.chat-conversation-select').filter({ hasText: '很长的旧对话' }).click()
+    assert.equal(await page.locator('[data-testid=chat-message-over-limit] .chat-bubble').evaluate((element) => element.textContent.length), 4 * 1024 * 1024)
   } finally { await page.close() }
 })
 
@@ -100,45 +127,47 @@ test('legacy import completes before autosave and preserves long history under S
   try {
     await page.getByTestId('chat-message-legacy-119').waitFor()
     await page.getByTestId('chat-composer-input').fill('post migration draft')
-    await page.waitForFunction((key) => JSON.parse(localStorage.getItem(key)).conversations[0].draft === 'post migration draft', storedChatKey)
-    const stored = await page.evaluate((key) => JSON.parse(localStorage.getItem(key)), storedChatKey)
+    await waitSaved(page, (workspace) => workspace.conversations[0].draft === 'post migration draft')
+    const stored = await saved(page)
     assert.equal(stored.conversations[0].messages.length, 120)
     assert.equal(stored.conversations[0].messages.at(-1).content, content)
     assert.equal(await page.evaluate((key) => localStorage.getItem(key), legacyChatKey), raw)
+    assert.equal(await page.evaluate((key) => localStorage.getItem(key), storedChatKey), null)
   } finally { await page.close() }
 })
 
-test('legacy read failures cannot establish an empty canonical history via autosave or unmount', async () => {
-  const raw = JSON.stringify({ version: 1, userId: '7', data: { messages: [{ id: 'old', role: 'user', content: 'x'.repeat(4 * 1024 * 1024) }] } })
+test('legacy read failures cannot establish an empty history via autosave or unmount', async () => {
+  const raw = JSON.stringify({ version: 1, userId: '8', data: { messages: [{ id: 'old', role: 'user', content: 'belongs to someone else' }] } })
   const page = await open('strict=1', { [legacyChatKey]: raw })
   try {
-    await page.getByRole('alert').filter({ hasText: '超过本地存储上限' }).waitFor()
+    await page.getByRole('alert').filter({ hasText: '原始记录已保留' }).waitFor()
     await page.getByTestId('chat-composer-input').fill('not persisted')
     await page.waitForTimeout(400)
-    assert.equal(await page.evaluate((key) => localStorage.getItem(key), storedChatKey), null)
+    assert.equal(await saved(page), null)
     await page.evaluate(() => window.chatHarness.switchScope(8))
     await page.waitForFunction(() => document.querySelector('[data-testid=page-chat]')?.getAttribute('data-account-scope') === 'xm-account:8')
-    assert.equal(await page.evaluate((key) => localStorage.getItem(key), storedChatKey), null)
+    assert.equal(await saved(page), null)
     assert.equal(await page.evaluate((key) => localStorage.getItem(key), legacyChatKey), raw)
   } finally { await page.close() }
 })
 
-test('a new oversized streamed result stays in the window and reports failed persistence without overwriting saved history', async () => {
+test('a failed save keeps the result in the window, reports it and leaves the saved files alone until a later save succeeds', async () => {
   const page = await open()
   try {
     const request = await send(page, 'retained question')
-    await page.waitForFunction((key) => JSON.parse(localStorage.getItem(key) || '{}').conversations?.[0]?.messages.length === 2, storedChatKey)
-    const previous = await page.evaluate((key) => localStorage.getItem(key), storedChatKey)
-    await emit(page, { type: 'reasoning', requestId: request.requestId, content: 'x'.repeat(4 * 1024 * 1024) })
+    await waitSaved(page, (workspace) => workspace.conversations[0]?.messages.length === 2)
+    const previous = await saved(page)
+    await page.evaluate(() => window.chatHarness.failHistoryWrites(true))
     await emit(page, { type: 'content', requestId: request.requestId, content: 'VISIBLE-UNSAVED-RESULT' })
     await emit(page, { type: 'complete', requestId: request.requestId })
-    await page.getByRole('alert').filter({ hasText: '超过本地存储上限' }).waitFor()
+    await page.getByRole('alert').filter({ hasText: '聊天记录没有保存到本机' }).waitFor()
     assert.equal(await page.getByText('VISIBLE-UNSAVED-RESULT', { exact: true }).count(), 1)
-    assert.equal(await page.locator('.chat-reasoning > div').evaluate((element) => element.textContent.length), 4 * 1024 * 1024)
-    assert.equal(await page.evaluate((key) => localStorage.getItem(key), storedChatKey), previous)
-    await page.evaluate(() => window.chatHarness.switchScope(8))
-    await page.waitForFunction(() => document.querySelector('[data-testid=page-chat]')?.getAttribute('data-account-scope') === 'xm-account:8')
-    assert.equal(await page.evaluate((key) => localStorage.getItem(key), storedChatKey), previous)
+    assert.equal(await page.getByTestId('page-chat').getAttribute('data-unsaved'), 'true')
+    assert.deepEqual(await saved(page), previous)
+    await page.evaluate(() => window.chatHarness.failHistoryWrites(false))
+    await page.getByTestId('chat-composer-input').fill('saved again')
+    await waitSaved(page, (workspace) => workspace.conversations[0].messages.at(-1).content === 'VISIBLE-UNSAVED-RESULT')
+    await page.getByRole('alert').filter({ hasText: '聊天记录没有保存到本机' }).waitFor({ state: 'detached' })
   } finally { await page.close() }
 })
 
@@ -348,7 +377,7 @@ test('new conversations preserve unsent drafts and local history can be restored
     await page.getByTestId('chat-conversation-new').click()
     await page.locator('.chat-conversation-select').filter({ hasText: 'unsent local draft' }).click()
     assert.equal(await page.getByTestId('chat-composer-input').inputValue(), 'unsent local draft')
-    await page.waitForFunction(() => localStorage.getItem('xingmang-ui-v2:chat:xm-account%3A7')?.includes('unsent local draft'))
+    await waitSaved(page, (workspace) => JSON.stringify(workspace).includes('unsent local draft'))
     await page.reload()
     await ready(page)
     assert.equal(await page.getByTestId('chat-composer-input').inputValue(), 'unsent local draft')

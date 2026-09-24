@@ -3,13 +3,13 @@ import { platformApi } from '../../platform-api'
 import type { AiChatGroupSummary } from '../../../../electron/ipc-contract'
 import { inspectModel, validateChatRequest, validateImageRequest, type ChatApi } from './api'
 import { activeConversation, applyStreamEvent, changeConversation, chatErrorMessage, completeImages, createConversation, createId, DEFAULT_CHAT_MODEL, DEFAULT_IMAGE_MODEL, isGenerating, planTurn, resolveChatGroup, resolveChatModel, saveConversation, updateRequest, type ChatMode, type ChatSettings, type ChatWorkspace, type Conversation } from './state'
-import { ChatStorageError, readWorkspace, writeWorkspace } from './storage'
+import { ChatStorageError, createHistoryWriter, type LoadedChatHistory } from './storage'
 
 export interface GroupPreparation { phase: 'loading' | 'ready' | 'error'; models: string[]; error?: string; warning?: string }
 interface PendingRequest { conversationId: string; assistantId: string; mode: ChatMode; epoch: number; cancelRequested?: boolean; failureDuringCancel?: unknown }
 
-export function useChatController(api: ChatApi, scope: string, active = true) {
-  const [initial] = useState(() => readWorkspace(window.localStorage, scope))
+export function useChatController(api: ChatApi, scope: string, initial: LoadedChatHistory, active = true) {
+  const [writer] = useState(() => createHistoryWriter(api, initial.saved))
   const [state, setState] = useState(initial.state)
   const [groups, setGroups] = useState<AiChatGroupSummary[]>([])
   const [groupLoading, setGroupLoading] = useState(false)
@@ -142,13 +142,15 @@ export function useChatController(api: ChatApi, scope: string, active = true) {
   useEffect(() => {
     if (!persist.current) return
     const timer = window.setTimeout(() => {
-      try { writeWorkspace(window.localStorage, stateRef.current); setStorageError('') }
-      catch (reason) { setStorageError(`${reason instanceof ChatStorageError ? reason.message : '聊天记录没有保存到本机'}。当前内容仍保留在窗口中，请勿关闭窗口。`) }
+      writer.save(stateRef.current).then(() => { if (alive.current) setStorageError('') }, (reason: unknown) => {
+        if (alive.current) setStorageError(`${reason instanceof ChatStorageError ? reason.message : '聊天记录没有保存到本机'}。当前内容仍保留在窗口中，请勿关闭窗口。`)
+      })
     }, 250)
     return () => window.clearTimeout(timer)
   }, [state])
   useEffect(() => () => {
-    if (persist.current) try { writeWorkspace(window.localStorage, stateRef.current) } catch { /* Keep the previous atomic localStorage value when storage is full. */ }
+    // A failed final save keeps the previous files as they were; nothing is left to show the error to.
+    if (persist.current) void writer.save(stateRef.current).catch(() => undefined)
   }, [])
   const conversation = activeConversation(state)
   const updateActive = (change: (conversation: Conversation) => Conversation) => { const id = activeConversation(stateRef.current).id; commit((current) => changeConversation(current, id, change)) }

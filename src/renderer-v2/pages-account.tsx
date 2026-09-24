@@ -77,6 +77,7 @@ import { UsageDetails } from './features/account/UsageDetails'
 import { ToolKeyLimits } from './features/account/ToolKeyLimits'
 import { ToolUsage } from './features/account/ToolUsage'
 import type { LoginTarget } from './features/auth/api'
+import { describeLoginDevice } from './features/account/login-device-label'
 import {
   getSourceMarkerStorage,
   writeManualSourceMarker,
@@ -2512,7 +2513,7 @@ function AccountDevices({
             <ListRow
               key={session.sid}
               icon={Users}
-              title={session.userAgent || '未知设备'}
+              title={describeLoginDevice(session.userAgent)}
               badge={session.current && <Pill tone="ok">当前设备</Pill>}
               desc={`${session.ip || '地址未提供'} · 最近活动 ${displayDate(session.lastActiveAt)}`}
               actions={

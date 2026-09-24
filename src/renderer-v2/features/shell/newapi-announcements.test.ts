@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { announcementAttentionKeys, readSeenAnnouncementKeys, rememberSeenAnnouncementKeys } from './newapi-announcements'
+import { announcementAttentionKeys, announcementNotificationKey, readNotifiedAnnouncementKeys, readSeenAnnouncementKeys, rememberNotifiedAnnouncementKeys, rememberSeenAnnouncementKeys, sameAnnouncementSnapshot } from './newapi-announcements'
 
 describe('announcement attention keys', () => {
   it('asks for attention only for unread entries or an unread single notice', () => {
@@ -46,5 +46,35 @@ describe('seen announcement storage', () => {
   it('still returns the merged keys when storage refuses writes', () => {
     vi.stubGlobal('localStorage', { getItem: () => null, setItem: () => { throw new Error('quota') } })
     expect(rememberSeenAnnouncementKeys('s', ['entry:a'])).toEqual(['entry:a'])
+  })
+})
+
+describe('announcement notification helpers', () => {
+  it('derives a short bridge-safe key that ignores order but changes with the notices', () => {
+    const key = announcementNotificationKey(['entry:b', 'notice:任意 服务端 id'])
+    expect(key).toMatch(/^notice-[0-9a-f]{8}$/)
+    expect(announcementNotificationKey(['notice:任意 服务端 id', 'entry:b'])).toBe(key)
+    expect(announcementNotificationKey(['entry:c'])).not.toBe(key)
+  })
+
+  it('treats a background read as unchanged only when ids and read states match', () => {
+    const base = { id: 's', entries: [{ id: 'a', read: false }, { id: 'b', read: true }] }
+    expect(sameAnnouncementSnapshot(base, { id: 's', entries: [{ id: 'a', read: false }, { id: 'b', read: true }] })).toBe(true)
+    expect(sameAnnouncementSnapshot(base, { id: 's', entries: [{ id: 'a', read: true }, { id: 'b', read: true }] })).toBe(false)
+    expect(sameAnnouncementSnapshot(base, { id: 's', entries: [{ id: 'a', read: false }] })).toBe(false)
+    expect(sameAnnouncementSnapshot({ id: 'x' }, { id: 'x' })).toBe(true)
+    expect(sameAnnouncementSnapshot({ id: 'x' }, { id: 'y' })).toBe(false)
+    expect(sameAnnouncementSnapshot(null, null)).toBe(true)
+    expect(sameAnnouncementSnapshot(null, { id: 'x' })).toBe(false)
+  })
+
+  it('keeps notified notices separate from seen ones', () => {
+    const store = new Map<string, string>()
+    vi.stubGlobal('localStorage', { getItem: (key: string) => store.get(key) ?? null, setItem: (key: string, value: string) => { store.set(key, value) } })
+    try {
+      rememberNotifiedAnnouncementKeys('s', ['entry:a'])
+      expect(readNotifiedAnnouncementKeys('s')).toEqual(['entry:a'])
+      expect(readSeenAnnouncementKeys('s')).toEqual([])
+    } finally { vi.unstubAllGlobals() }
   })
 })
