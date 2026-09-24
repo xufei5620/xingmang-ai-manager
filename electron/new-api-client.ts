@@ -140,6 +140,8 @@ export interface NewApiUsableGroup {
   name: string
   description: string
   ratio: number | string
+  /** Upstream the group routes to. Only the Sub2API realm reports it; new-api has no such field. */
+  platform?: string
 }
 
 export interface NewApiAccountProfile {
@@ -2238,10 +2240,16 @@ export function findNewestUsableCliKeyByGroup(
 // 按工具分账 cap). Its existence means someone deliberately capped this tool:
 // creating a fresh unlimited key under the same name would silently lift that
 // cap, so provisioning stops instead. Expired or disabled keys are not this.
-export function hasExhaustedCappedCliKey(payload: unknown, name: string, group: string): boolean {
+// newerThanId: a usable key under the same name that is newer than every
+// used-up cap is the user's own later reset and may be reused; an older one
+// is not -- reusing it would fall back past the newest cap (#475). Records
+// without a readable id are counted, so an unreadable listing never lifts a cap.
+export function hasExhaustedCappedCliKey(payload: unknown, name: string, group: string, newerThanId = 0): boolean {
   for (const entry of collectionEntries(payload)) {
     if (!isRecord(entry) || asString(entry.name, '') !== name || asString(entry.group, '') !== group) continue
     if (entry.unlimited_quota === true) continue
+    const id = entry.id
+    if (typeof id === 'number' && Number.isInteger(id) && id > 0 && id <= newerThanId) continue
     const status = asFiniteNumber(entry.status, 0)
     if (status === 4 || (status === 1 && asFiniteNumber(entry.remain_quota, 0) <= 0)) return true
   }
@@ -3313,10 +3321,11 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
         await assertUsableGroup(current, group)
         const records = await listAllTokenRecords(current)
         const existing = input.fresh ? null : findNewestUsableCliKeyByGroup(records, group)
-        // Only a usable key under this very name outranks a used-up cap on it.
-        // A capped key being created never lifts a cap, so it is not stopped.
-        if (existing?.name !== name && input.unlimitedQuota !== false
-          && hasExhaustedCappedCliKey(records, name, group)) {
+        // Only a usable key under this very name, newer than the used-up cap,
+        // outranks it. A capped key being created never lifts a cap, so it is
+        // not stopped.
+        if (input.unlimitedQuota !== false
+          && hasExhaustedCappedCliKey(records, name, group, existing?.name === name ? existing.id : 0)) {
           throw new Error(managedKeyQuotaExhaustedMessage)
         }
         if (existing) return revealCliKeyForSession(current, existing)

@@ -861,6 +861,29 @@ describe('diagnostics', () => {
     expect(python?.summary).toContain('macOS 自带的 python3 只是个空壳')
   })
 
+  it('explains a pending Xcode license on the Git and Python rows without leaking the raw message', async () => {
+    const home = temporaryHome()
+    const input = { ...dependencies(home), platform: 'darwin' as const }
+    const previous = input.inspectTool!
+    input.inspectTool = async (tool, signal) =>
+      tool === 'git' || tool === 'python'
+        ? { installed: false, version: null, path: null, commandLineToolsShim: true, xcodeLicensePending: true }
+        : previous(tool, signal)
+
+    const report = await runDiagnostics(input)
+
+    const git = report.items.find((item) => item.code === 'RUNTIME_GIT')
+    const python = report.items.find((item) => item.code === 'RUNTIME_PYTHON')
+    expect(git).toMatchObject({ state: 'warn', details: { installed: false } })
+    expect(git?.summary).toContain('Xcode 装好后还没点过「同意」')
+    expect(git?.summary).not.toContain('空壳')
+    expect(python).toMatchObject({ state: 'warn' })
+    expect(python?.summary).toContain('Xcode 装好后还没点过「同意」')
+    for (const summary of [git?.summary, python?.summary]) {
+      expect(summary).not.toMatch(/sudo|xcodebuild|xcode-select/)
+    }
+  })
+
   it('passes the Git check when Git is present', async () => {
     const home = temporaryHome()
     const report = await runDiagnostics(dependencies(home))
@@ -1010,6 +1033,40 @@ describe('diagnostics', () => {
       state: 'warn',
       summary: '当前以管理员权限运行，建议普通启动',
       details: { probeFailure: 'failed', executionMode: 'same-user' },
+    })
+  })
+
+  it('calmly passes an account whose ordinary token is already elevated', async () => {
+    // The built-in Administrator (or a machine with the consent prompt turned off)
+    // runs every program at High integrity with a default token, so the startup
+    // probe settled on same-user and there is no "normal start" to ask for.
+    const home = temporaryHome()
+    const input = dependencies(home)
+    input.windowsExecution = { mode: 'same-user', elapsedMs: 120 }
+    input.inspectAdministrator = async () => true
+    input.inspectElevationCapability = async () => {
+      throw new Error('must not probe capability for an elevated token')
+    }
+
+    const item = (await runDiagnostics(input)).items.find((entry) => entry.code === 'ADMINISTRATOR')
+
+    expect(item).toMatchObject({
+      state: 'pass',
+      details: { elevated: true, required: false, alwaysElevated: true },
+    })
+    expect(item?.summary).toContain('不用处理')
+    expect(item?.summary).not.toMatch(/普通启动|双击|UAC|用户账户控制|提权|Administrator/)
+  })
+
+  it('still advises a normal start when the app was explicitly elevated', async () => {
+    const home = temporaryHome()
+    const input = dependencies(home)
+    input.windowsExecution = { mode: 'trusted-only', elapsedMs: 120 }
+    input.inspectAdministrator = async () => true
+
+    expect((await runDiagnostics(input)).items.find((item) => item.code === 'ADMINISTRATOR')).toMatchObject({
+      state: 'warn',
+      summary: '当前以管理员权限运行，建议普通启动',
     })
   })
 

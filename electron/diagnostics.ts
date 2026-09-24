@@ -26,8 +26,9 @@ import {
 import { gitMissingImpact, gitMissingNotice } from './git-runtime'
 import {
   commandLineToolsShimNotice,
-  isCommandLineToolsShimBacked,
+  inspectCommandLineToolsShim,
   isMacOsCommandLineToolsShim,
+  xcodeLicensePendingNotice,
 } from './macos-command-line-tools'
 import { managedCliRoot } from './managed-cli-paths'
 import { classifyNetworkFailure, networkFailureMessages } from './network-failure'
@@ -78,6 +79,8 @@ export interface DiagnosticToolStatus {
   running?: boolean
   /** macOS：PATH 上只找到了命令行开发者工具的空壳，没去执行它（见 macos-command-line-tools.ts）。 */
   commandLineToolsShim?: boolean
+  /** macOS：空壳背后是 Xcode，但许可协议还没同意，一跑只吐一句英文报错。 */
+  xcodeLicensePending?: boolean
 }
 
 export interface DiagnosticAppInfo {
@@ -564,18 +567,20 @@ async function defaultInspectTool(
   }
   const commands = tool === 'python' ? ['python', 'python3', 'py'] : [tool]
   let commandLineToolsShim = false
+  let xcodeLicensePending = false
   for (const command of commands) {
     const executable = await findExecutable(command, {
       env: commandEnvironment(env),
       windowsPackageManagers: command === 'npm' ? ['npm'] : [],
     }) ?? findWindowsShim(command, env)
     if (!executable) continue
-    if (
-      isMacOsCommandLineToolsShim(executable)
-      && !await isCommandLineToolsShimBacked(executable, { env, signal })
-    ) {
-      commandLineToolsShim = true
-      continue
+    if (isMacOsCommandLineToolsShim(executable)) {
+      const shimState = await inspectCommandLineToolsShim(executable, { env, signal })
+      if (shimState !== 'usable') {
+        commandLineToolsShim = true
+        xcodeLicensePending ||= shimState === 'license-pending'
+        continue
+      }
     }
     let version: string | null = null
     try {
@@ -585,7 +590,15 @@ async function defaultInspectTool(
     }
     return { installed: true, version, path: executable }
   }
-  if (commandLineToolsShim) return { installed: false, version: null, path: null, commandLineToolsShim }
+  if (commandLineToolsShim) {
+    return {
+      installed: false,
+      version: null,
+      path: null,
+      commandLineToolsShim,
+      ...(xcodeLicensePending ? { xcodeLicensePending } : {}),
+    }
+  }
   return { installed: false, version: null, path: null }
 }
 
@@ -1344,6 +1357,17 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
             details: { elevated, required: false, ...probeDetails },
           }
         }
+        if (elevated && !probeFailure && windowsExecution?.mode === 'same-user') {
+          // 令牌是高权限，启动时却确认了不是专门提权打开的（TokenElevationType 为 default）：
+          // 系统自带的 Administrator 账号，或整台电脑关了授权弹窗。这就是这个账号平常的
+          // 权限，没有「普通启动」可选，软件也已按普通方式做事。国内很多装机版系统默认
+          // 登这个账号，一直挂着「建议普通启动」只会让客户以为软件坏了（0.2.8 起就这样）。
+          return {
+            state: 'pass',
+            summary: '这台电脑登录的账号本身就带管理员权限，软件每次都是这样打开的，已按平常方式运行，不用处理',
+            details: { elevated, required: false, alwaysElevated: true },
+          }
+        }
         if (elevated) {
           return {
             state: 'warn',
@@ -1410,7 +1434,8 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
           state: status.installed ? 'pass' : required ? 'fail' : 'warn',
           summary: status.installed
             ? (status.version || '已安装')
-            : status.commandLineToolsShim ? `未安装。${commandLineToolsShimNotice('python3')}。` : '未安装',
+            : status.xcodeLicensePending ? `未安装。${xcodeLicensePendingNotice('python3')}。`
+              : status.commandLineToolsShim ? `未安装。${commandLineToolsShimNotice('python3')}。` : '未安装',
           details: { installed: status.installed, path: pathForDisplay(status.path, displayRoots) },
         }
       },
@@ -1427,9 +1452,11 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
           state: status.installed ? 'pass' : 'warn',
           summary: status.installed
             ? (status.version || '已安装')
-            : status.commandLineToolsShim
-              ? `${commandLineToolsShimNotice('git')}。${gitMissingImpact(platform)}。`
-              : gitMissingNotice(platform),
+            : status.xcodeLicensePending
+              ? `${xcodeLicensePendingNotice('git')}。${gitMissingImpact(platform)}。`
+              : status.commandLineToolsShim
+                ? `${commandLineToolsShimNotice('git')}。${gitMissingImpact(platform)}。`
+                : gitMissingNotice(platform),
           details: {
             required: false,
             installed: status.installed,

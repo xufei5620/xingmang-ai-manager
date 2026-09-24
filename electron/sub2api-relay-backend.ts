@@ -418,7 +418,7 @@ export function createSub2ApiRelayBackend(options: Sub2ApiRelayBackendOptions): 
       const available = await groups(capture())
       const names = available.map((group) => group.name)
       return available.filter((group) => names.indexOf(group.name) === names.lastIndexOf(group.name))
-        .map((group) => ({ name: group.name, description: group.platform, ratio: group.rateMultiplier ?? '' }))
+        .map((group) => ({ name: group.name, description: group.platform, ratio: group.rateMultiplier ?? '', platform: group.platform }))
     },
     listKeys: async (input = {}) => {
       const scope = capture()
@@ -481,8 +481,10 @@ export function createSub2ApiRelayBackend(options: Sub2ApiRelayBackendOptions): 
         // fresh: a revoked key's limits carry over, so an unlimited sibling must not be reused.
         const existing = captured.fresh ? undefined : sameName.filter(usable).sort((a, b) => Number(b.id) - Number(a.id))[0]
         // A used-up per-key cap is a deliberate limit: a fresh unlimited key
-        // under the same name would silently lift it.
-        if (!existing && captured.unlimitedQuota !== false && sameName.some(exhaustedCap)) throw new Error(managedKeyQuotaExhaustedMessage)
+        // under the same name would silently lift it, and so would falling
+        // back to an older usable sibling. Only a key newer than the cap wins.
+        if (captured.unlimitedQuota !== false && sameName.some((key) => exhaustedCap(key)
+          && (!existing || Number(key.id) > Number(existing.id)))) throw new Error(managedKeyQuotaExhaustedMessage)
         const key = existing ?? await create(scope, { name, group: groupName, remainQuota: captured.remainQuota ?? 0,
           unlimitedQuota: captured.unlimitedQuota ?? true, expiredTime: captured.expiredTime ?? -1 }, group)
         return reveal(scope, key)

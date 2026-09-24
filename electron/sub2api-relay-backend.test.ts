@@ -4,6 +4,7 @@ import { parseRealmSavedAccount, RealmAccountError, type RealmSavedAccount } fro
 import { sub2ApiManagedCliKeyProfiles } from './catalog'
 import { buildManagedCliKeyLimitUpdate, resolveManagedCliKeyLimits } from './account-key-quota'
 import { networkFailureMessages } from './network-failure'
+import { loadManagedCliGroups } from './managed-cli-groups'
 
 const now = Date.parse('2026-09-09T00:00:00Z')
 const user = (id = 7) => ({ id, username: `user-${id}`, email: 'same@example.test', balance: 100.25, status: 'active', role: 'user' })
@@ -853,6 +854,23 @@ describe('Sub2API RelayBackend adapter', () => {
     expect(f.getSavedAccount()?.credential).toMatchObject({ accessToken: 'access-7', refreshToken: 'refresh-7' })
   })
 
+  it('passes each group\'s upstream platform through so a renamed Claude group is still recognised', async () => {
+    const f = fixture()
+    await f.client.login(loginInput)
+    f.state.available = [
+      { id: 21, name: 'MAX 专线', platform: 'anthropic', status: 'active', rate_multiplier: 1 },
+      { id: 22, name: 'Codex_pro', platform: 'openai', status: 'active', rate_multiplier: 1 },
+    ]
+    expect(await f.client.listUsableGroups()).toEqual([
+      { name: 'MAX 专线', description: 'anthropic', ratio: 1, platform: 'anthropic' },
+      { name: 'Codex_pro', description: 'openai', ratio: 1, platform: 'openai' },
+    ])
+    const resolved = await loadManagedCliGroups({ listUsableGroups: () => f.client.listUsableGroups(), getActiveSiteId: () => 'solov-api' })
+    expect(resolved?.claude).toEqual({ group: 'MAX 专线', source: 'detected' })
+    await f.client.provisionCliKey({ name: sub2ApiManagedCliKeyProfiles.claude.keyName, group: resolved!.claude.group })
+    expect(f.calls.find((call) => call.init.method === 'POST' && call.url.pathname.endsWith('/keys'))?.body).toMatchObject({ group_id: 21 })
+  })
+
   it('traverses every key page and reuses only an exact active group/name match', async () => {
     const f = fixture()
     await f.client.login(loginInput)
@@ -875,6 +893,23 @@ describe('Sub2API RelayBackend adapter', () => {
       expect(f.calls.some((call) => call.init.method === 'POST' && call.url.pathname.endsWith('/keys'))).toBe(false)
       expect(f.state.keys).toHaveLength(1)
     }
+  })
+
+  it('does not fall back to an older unlimited same-named key when the newer cap is used up', async () => {
+    const profile = sub2ApiManagedCliKeyProfiles.codex
+    const f = fixture()
+    await f.client.login(loginInput)
+    f.state.keys = [keyRecord(31, { name: profile.keyName }), keyRecord(32, { name: profile.keyName, status: 'quota_exhausted', quota: 5, quota_used: 5 })]
+    await expect(f.client.provisionCliKey({ name: profile.keyName, group: profile.group })).rejects.toThrow('这个工具的额度用完了')
+    expect(f.calls.some((call) => call.url.pathname.endsWith('/keys/31') || (call.init.method === 'POST' && call.url.pathname.endsWith('/keys')))).toBe(false)
+  })
+
+  it('still reuses a same-named key created after the used-up cap', async () => {
+    const profile = sub2ApiManagedCliKeyProfiles.codex
+    const f = fixture()
+    await f.client.login(loginInput)
+    f.state.keys = [keyRecord(31, { name: profile.keyName, status: 'quota_exhausted', quota: 5, quota_used: 5 }), keyRecord(32, { name: profile.keyName })]
+    await expect(f.client.provisionCliKey({ name: profile.keyName, group: profile.group })).resolves.toMatchObject({ id: 32 })
   })
 
   it('creates a capped replacement instead of reusing an unlimited same-named key when asked for a fresh key', async () => {

@@ -12,6 +12,7 @@ import { tools } from '../../registry/tools'
 import { connectionReady, sourceFor } from './model'
 import { userFacingErrorMessage } from '../../business-common'
 import { networkBlockedFailures } from './online-resync'
+import { keySyncFailureText } from './key-sync-failure'
 import {
   applyManualSourceMarker,
   getSourceMarkerStorage,
@@ -335,6 +336,11 @@ export async function bootstrapAccountTools(
   }
 
   const readyKeys = synchronized?.ready.map((entry) => entry.provider) ?? []
+  // 没装的工具 Key 签不下来，用户在首页什么也做不了，点「重新同步」也还是那句；
+  // 等他真去装的时候，装完那一轮会只针对这个工具再写一次，失败原因在那时报。
+  const notInstalled = new Set(
+    plan.skipped.filter((entry) => entry.reason === 'not-installed').map((entry) => entry.provider),
+  )
   const warnings = [
     ...(syncError ? [`Key 同步阶段：${syncError}`] : []),
     ...markerWarnings,
@@ -347,10 +353,11 @@ export async function bootstrapAccountTools(
     ...(synchronized?.failed ?? [])
       .filter(
         (entry) =>
+          !notInstalled.has(entry.provider) &&
           !configured.includes(entry.provider) &&
           !failed.some((item) => item.provider === entry.provider),
       )
-      .map((entry) => `${nameOf(entry.provider)}：${entry.message}`),
+      .map((entry) => keySyncFailureText(entry.provider, entry.message)),
   ]
 
   // 只看「这次为什么没写成」的那几条：syncError（整次同步都没发出去）、逐个工具的
