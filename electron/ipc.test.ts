@@ -4754,6 +4754,63 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
         expect(accountService.revokeKey).not.toHaveBeenCalled()
       })
 
+      it('does not revoke a limited key when the tool key cache cannot be read', async () => {
+        const { accountService, managedCliKeys } = setup(accountKey({}), undefined, false)
+        vi.mocked(managedCliKeys.read).mockRejectedValueOnce(new Error('cache unreadable'))
+
+        await expect(electronMocks.handlers.get('account:revoke-key')!(trustedEvent(), 7))
+          .rejects.toThrow('没读到本机记着的工具密钥')
+        expect(accountService.revokeKey).not.toHaveBeenCalled()
+      })
+
+      it('still revokes an unlimited, never-expiring key when the tool key cache cannot be read', async () => {
+        const { accountService, managedCliKeys } = setup(accountKey({ unlimitedQuota: true, remainQuota: 0, expiredAt: null }), undefined, false)
+        vi.mocked(managedCliKeys.read).mockRejectedValueOnce(new Error('cache unreadable'))
+
+        await expect(electronMocks.handlers.get('account:revoke-key')!(trustedEvent(), 7)).resolves.toBeUndefined()
+        expect(accountService.revokeKey).toHaveBeenCalledWith(7)
+      })
+
+      it('keeps the saved limits when revoking errors but the key is gone from the list', async () => {
+        const { accountService } = setup(accountKey({}))
+        vi.mocked(accountService.revokeKey).mockRejectedValueOnce(new Error('response lost'))
+        vi.mocked(accountService.listKeys)
+          .mockResolvedValueOnce({ page: 1, pageSize: 100, total: 1, keys: [accountKey({})] })
+          .mockResolvedValue({ page: 1, pageSize: 100, total: 0, keys: [] })
+
+        await expect(electronMocks.handlers.get('account:revoke-key')!(trustedEvent(), 7)).rejects.toThrow('response lost')
+        await configureCodex()
+
+        expect(accountService.provisionCliKey).toHaveBeenCalledWith(expect.objectContaining({
+          name: codex.keyName, remainQuota: 5_000, unlimitedQuota: false, fresh: true,
+        }))
+      })
+
+      it('keeps the saved limits when revoking errors and the key list cannot be read either', async () => {
+        const { accountService } = setup(accountKey({}))
+        vi.mocked(accountService.revokeKey).mockRejectedValueOnce(new Error('response lost'))
+        vi.mocked(accountService.listKeys)
+          .mockResolvedValueOnce({ page: 1, pageSize: 100, total: 1, keys: [accountKey({})] })
+          .mockRejectedValueOnce(new Error('network down'))
+
+        await expect(electronMocks.handlers.get('account:revoke-key')!(trustedEvent(), 7)).rejects.toThrow('response lost')
+        await configureCodex()
+
+        expect(accountService.provisionCliKey).toHaveBeenCalledWith(expect.objectContaining({
+          name: codex.keyName, unlimitedQuota: false, fresh: true,
+        }))
+      })
+
+      it('drops the saved limits when revoking errors and the key is plainly still there', async () => {
+        const { accountService } = setup(accountKey({}))
+        vi.mocked(accountService.revokeKey).mockRejectedValueOnce(new Error('server said no'))
+
+        await expect(electronMocks.handlers.get('account:revoke-key')!(trustedEvent(), 7)).rejects.toThrow('server said no')
+        await configureCodex()
+
+        expect(accountService.provisionCliKey).toHaveBeenCalledWith(expect.not.objectContaining({ fresh: true }))
+      })
+
       it('does not revoke when the key\'s limits cannot be read first', async () => {
         const { accountService } = setup(new Error('network down'))
 
