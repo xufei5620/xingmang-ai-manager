@@ -875,10 +875,10 @@ describe('diagnostics', () => {
     const git = report.items.find((item) => item.code === 'RUNTIME_GIT')
     const python = report.items.find((item) => item.code === 'RUNTIME_PYTHON')
     expect(git).toMatchObject({ state: 'warn', details: { installed: false } })
-    expect(git?.summary).toContain('Xcode 还没同意许可协议')
+    expect(git?.summary).toContain('Xcode 装好后还没点过「同意」')
     expect(git?.summary).not.toContain('空壳')
     expect(python).toMatchObject({ state: 'warn' })
-    expect(python?.summary).toContain('Xcode 还没同意许可协议')
+    expect(python?.summary).toContain('Xcode 装好后还没点过「同意」')
     for (const summary of [git?.summary, python?.summary]) {
       expect(summary).not.toMatch(/sudo|xcodebuild|xcode-select/)
     }

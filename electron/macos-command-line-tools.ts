@@ -143,9 +143,10 @@ export function commandLineToolsShimNotice(command: 'git' | 'python3'): string {
 
 /**
  * 许可协议没同意时的原因句，句末不带标点。客户能自己做的只有两件：打开一次 Xcode
- * 在弹出的协议上点「同意」，或者另装一份。不叫客户开终端跑 sudo。
+ * 在弹出的协议上点「同意」，或者另装一份。不叫客户开终端跑 sudo，也不说「许可协议」
+ * 这类词，只提他在屏幕上会看到的那个按钮。「Xcode」保留，是因为要他去打开的就是它。
  */
 export function xcodeLicensePendingNotice(command: 'git' | 'python3'): string {
   const name = command === 'git' ? 'Git' : 'Python'
-  return `这台 Mac 上的 Xcode 还没同意许可协议，系统自带的 ${name} 暂时用不了：打开一次 Xcode，在弹出的协议上点「同意」，或者另装一份 ${name}`
+  return `这台 Mac 上的 Xcode 装好后还没点过「同意」，系统自带的 ${name} 暂时用不了：打开一次 Xcode，在弹出的窗口里点「同意」，或者另装一份 ${name}`
 }
