@@ -384,3 +384,119 @@ test('the release tag is never moved or force-pushed', () => {
   assert.doesNotMatch(String(step.run), /^\s*git push/m)
 })
 
+
+// #493：往更新目录写任何东西之前先确认这一版可以发。
+const { PublishGuardError, assessPublish } = require('./publish-guard.cjs')
+
+function manifestText(version, bytes, name = `XingMang-AI-Manager-${version}-Setup.exe`) {
+  const sha512 = require('node:crypto').createHash('sha512').update(bytes).digest('base64')
+  return YAML.stringify({ version, files: [{ url: name, sha512, size: Buffer.byteLength(bytes) }], path: name, sha512, releaseDate: '2026-09-24T00:00:00.000Z' })
+}
+
+test('the publish guard runs before the first upload', () => {
+  const guard = stepIndex(publishJob, /Refuse to overwrite a version that already shipped/)
+  const firstUpload = publishJob.steps.findIndex((step) => /aws s3 cp/.test(String(step.run || '')))
+  assert.ok(guard >= 0 && firstUpload > guard, '同版本检查必须排在第一次上传之前')
+})
+
+test('the publish guard allows a first release, an upgrade and a rerun of the same build only', () => {
+  const ours = manifestText('0.2.11', 'build A')
+  assert.equal(assessPublish(ours, null, 'latest-mac.yml'), 'first')
+  assert.equal(assessPublish(ours, manifestText('0.2.10', 'old'), 'latest-mac.yml'), 'upgrade')
+  assert.equal(assessPublish(ours, ours, 'latest-mac.yml'), 'same')
+  // 同一个版本号换一批字节：Mac 出包不可复现，重新出包就是这样。
+  assert.throws(() => assessPublish(ours, manifestText('0.2.11', 'build B'), 'latest-mac.yml'), /不能换内容/)
+  assert.throws(() => assessPublish(ours, manifestText('0.2.12', 'newer'), 'latest-mac.yml'), /更高的 0\.2\.12/)
+  assert.throws(() => assessPublish(ours, null, 'latest-linux.yml'), PublishGuardError)
+  assert.throws(() => assessPublish(ours, '<!doctype html><html></html>', 'latest-mac.yml'), /HTML/)
+})
+
+function runGuardStep({ existingTagSha = null, live = {}, artifacts }) {
+  const step = publishJob.steps.find((entry) => /Refuse to overwrite a version that already shipped/.test(entry.name || ''))
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-publish-guard-'))
+  const binDirectory = path.join(workspace, 'bin')
+  fs.mkdirSync(binDirectory)
+  fs.mkdirSync(path.join(workspace, 'release-artifacts'))
+  fs.symlinkSync(path.join(root, 'scripts'), path.join(workspace, 'scripts'))
+  fs.symlinkSync(path.join(root, 'node_modules'), path.join(workspace, 'node_modules'))
+  for (const [name, text] of Object.entries(artifacts)) fs.writeFileSync(path.join(workspace, 'release-artifacts', name), text)
+  const liveDirectory = path.join(workspace, 'live')
+  fs.mkdirSync(liveDirectory)
+  for (const [name, text] of Object.entries(live)) fs.writeFileSync(path.join(liveDirectory, name), text)
+  const ghStub = `#!/bin/bash
+case "$2" in
+  */git/ref/tags/*) ${existingTagSha ? `printf 'commit %s\\n' ${JSON.stringify(existingTagSha)}` : 'exit 1'} ;;
+esac
+exit 0
+`
+  // 最后一个参数是地址；按文件名去 live 目录里找，没有就是 404。
+  const curlStub = `#!/bin/bash
+output=''
+while [ "$#" -gt 1 ]; do
+  if [ "$1" = '--output' ]; then output=$2; shift; fi
+  shift
+done
+name=$(basename "$1")
+if [ -f ${JSON.stringify(liveDirectory)}/"$name" ]; then
+  cp ${JSON.stringify(liveDirectory)}/"$name" "$output"
+  printf 200
+else
+  printf 404
+fi
+`
+  for (const [name, body] of [['gh', ghStub], ['curl', curlStub]]) {
+    const executable = path.join(binDirectory, name)
+    fs.writeFileSync(executable, body)
+    fs.chmodSync(executable, 0o755)
+  }
+  const result = spawnSync(SHELL_PATH, ['-c', step.run], {
+    cwd: workspace,
+    encoding: 'utf8',
+    env: {
+      PATH: `${binDirectory}:${path.dirname(process.execPath)}:/usr/bin:/bin`,
+      HOME: workspace,
+      RUNNER_TEMP: workspace,
+      PACKAGE_VERSION: '0.2.11',
+      SHIPPED_SHA: 'a'.repeat(40),
+      PUBLIC_BASE: 'https://updates.example.test/xingmang-manager',
+      GH_TOKEN: 'stub',
+      GITHUB_REPOSITORY: 'xufei5620/xingmang-ai-manager',
+    },
+  })
+  fs.rmSync(workspace, { recursive: true, force: true })
+  return { status: result.status, output: result.stdout + result.stderr }
+}
+
+test('a macOS-only publish of a version that already shipped stops before any upload', posixOnly, () => {
+  const ours = manifestText('0.2.11', 'mac build B', 'XingMang-AI-Manager-0.2.11-arm64-mac.zip')
+  const shipped = manifestText('0.2.11', 'mac build A', 'XingMang-AI-Manager-0.2.11-arm64-mac.zip')
+
+  // 版本号撞车：tag 已从别的 commit 发过。
+  const otherCommit = runGuardStep({ existingTagSha: 'b'.repeat(40), artifacts: { 'latest-mac.yml': ours } })
+  assert.notEqual(otherCommit.status, 0)
+  assert.match(otherCommit.output, /::error::v0\.2\.11 已存在/)
+
+  // 同一个 commit 重新出包，线上已是这个版本的另一批字节。
+  const rebuilt = runGuardStep({ existingTagSha: 'a'.repeat(40), live: { 'latest-mac.yml': shipped }, artifacts: { 'latest-mac.yml': ours } })
+  assert.notEqual(rebuilt.status, 0)
+  assert.match(rebuilt.output, /不能换内容/)
+
+  // 同一次出包的发布作业被重跑：一样的文件，放行。
+  const rerun = runGuardStep({ existingTagSha: 'a'.repeat(40), live: { 'latest-mac.yml': ours }, artifacts: { 'latest-mac.yml': ours } })
+  assert.equal(rerun.status, 0, rerun.output)
+})
+
+test('publishing macOS later for a version Windows already shipped from the same commit is allowed', posixOnly, () => {
+  const ours = manifestText('0.2.11', 'mac build', 'XingMang-AI-Manager-0.2.11-arm64-mac.zip')
+  const older = manifestText('0.2.10', 'old mac build', 'XingMang-AI-Manager-0.2.10-arm64-mac.zip')
+  const run = runGuardStep({
+    existingTagSha: 'a'.repeat(40),
+    live: { 'latest.yml': manifestText('0.2.11', 'windows build'), 'latest-mac.yml': older },
+    artifacts: { 'latest-mac.yml': ours },
+  })
+  assert.equal(run.status, 0, run.output)
+  assert.match(run.output, /latest-mac\.yml：线上是旧版本，可以发/)
+  const first = runGuardStep({ artifacts: { 'latest-mac.yml': ours } })
+  assert.equal(first.status, 0, first.output)
+  assert.match(first.output, /第一次发布/)
+})
