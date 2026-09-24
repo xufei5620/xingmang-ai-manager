@@ -85,6 +85,7 @@ function serviceStub(): SystemService {
     installNodeRuntime: vi.fn() as never,
     restartWindows: vi.fn() as never,
     installPythonRuntime: vi.fn() as never,
+    installGitRuntime: vi.fn() as never,
     installCli: vi.fn() as never,
     cancelCliInstall: vi.fn(() => ({ cancelled: true, reason: null })) as never,
     uninstallCli: vi.fn() as never,
@@ -1277,6 +1278,30 @@ describe('registerIpcHandlers', () => {
     expect(runtimeLog.log).toHaveBeenCalledWith(
       'info', 'maintenance', 'runtime.python.install.completed', 'Python 3.12 自动安装完成',
       expect.objectContaining({ method: 'winget', source: 'winget', version: 'Python 3.12' }),
+    )
+  })
+
+  it('routes Git installation through the trusted service and runtime log', async () => {
+    const service = serviceStub()
+    vi.mocked(service.installGitRuntime).mockResolvedValue({
+      installed: true,
+      action: 'installed',
+      source: 'npmmirror',
+      version: '2.55.0.5',
+      architecture: 'x64',
+      pathRefreshRequired: true,
+    })
+    const { runtimeLog } = register(service)
+    const event = trustedEvent()
+
+    await expect(electronMocks.handlers.get('runtime:install-git')!(event)).resolves.toMatchObject({
+      action: 'installed',
+      version: '2.55.0.5',
+    })
+    expect(service.installGitRuntime).toHaveBeenCalledWith(event.sender)
+    expect(runtimeLog.log).toHaveBeenCalledWith(
+      'info', 'maintenance', 'runtime.git.install.completed', 'Git 自动安装完成',
+      expect.objectContaining({ action: 'installed', source: 'npmmirror', version: '2.55.0.5' }),
     )
   })
 

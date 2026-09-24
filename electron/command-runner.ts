@@ -509,9 +509,16 @@ function defaultCommandPaths(env: NodeJS.ProcessEnv): string[] {
  * 不顶掉用户自己在 PATH 里放的另一版 Python。
  */
 function fallbackCommandPaths(env: NodeJS.ProcessEnv): string[] {
-  if (!env.LOCALAPPDATA) return []
+  // 代装的 Git for Windows（git-runtime-install.ts）同理：普通权限装在当前用户目录，
+  // 以管理员身份运行时装在 Program Files；只补 cmd 这一层，git.exe 在里面。
+  const programFiles = env.ProgramW6432 || env.ProgramFiles
+  const git = [
+    env.LOCALAPPDATA && path.join(env.LOCALAPPDATA, 'Programs', 'Git', 'cmd'),
+    programFiles && path.join(programFiles, 'Git', 'cmd'),
+  ].filter((entry): entry is string => Boolean(entry))
+  if (!env.LOCALAPPDATA) return git
   const python = path.join(env.LOCALAPPDATA, 'Programs', 'Python', 'Python312')
-  return [python, path.join(python, 'Scripts')]
+  return [...git, python, path.join(python, 'Scripts')]
 }
 
 /** Builds a deterministic PATH without mutating process.env or duplicating entries. */

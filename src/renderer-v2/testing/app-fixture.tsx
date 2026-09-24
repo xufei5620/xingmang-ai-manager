@@ -138,7 +138,7 @@ if (query.has('detectionFailed')) {
   system.clis.claude = { ...system.clis.claude, installed: false, version: null, path: null,
     detectionFailed: true, detectionError: '本地探针暂时不可用' }
 }
-// 缺 Git（可选环境）：首页运行环境行给中文提示 + Windows 下载入口，装完 Claude Code
+// 缺 Git（可选环境）：首页运行环境行给中文提示 + Windows「安装 Git」按钮，装完 Claude Code
 // 的第一条命令卡下面也补一句。
 if (query.has('gitMissing')) {
   system.runtime.git = { ...status, installed: false, version: null, path: null }
@@ -429,6 +429,12 @@ const methods = {
     system.runtime.node = { ...system.runtime.node, installed: true, version: 'v24.0.0', tooOld: false, versionStatus: 'supported' }
     system.runtime.npm = { ...system.runtime.npm, installed: true, version: '11.0.0' }
     return { installed: true as const, action: 'installed' as const, method: 'msi' as const, source: null, version: 'v24.0.0', architecture: 'x64' as const, pathRefreshRequired: true, systemRestartRequired: query.has('nodeRestart') }
+  },
+  // 首页「安装 Git」：主进程按当前用户代装，装完重新检测就能看到版本。
+  installGitRuntime: async () => {
+    if (query.has('gitInstallFail')) throw new Error('Git 没装上。国内镜像：HTTP 404；Git 官方源：下载超时')
+    system.runtime.git = { ...system.runtime.git, installed: true, version: '2.55.0', path: 'C:\\Users\\Fixture\\AppData\\Local\\Programs\\Git\\cmd\\git.exe' }
+    return { installed: true as const, action: 'installed' as const, source: 'npmmirror' as const, version: '2.55.0.5', architecture: 'x64' as const, pathRefreshRequired: true }
   },
   installCli: async (provider) => {
     if (query.has('installPermissionDenied')) throw new Error(`Gemini CLI 安装失败：npm 官方源：EPERM: operation not permitted, mkdir`)

@@ -161,6 +161,7 @@ export function createToolsApi(bridge: XingmangApi) {
       return result
     },
     prepareRuntime: (runtime: 'node' | 'python') => runtime === 'node' ? bridge.installNodeRuntime() : bridge.installPythonRuntime(),
+    installGit: () => bridge.installGitRuntime(),
     restartWindows: () => bridge.restartWindows(),
     chooseWorkspace: (options?: ChooseWorkspaceOptions) => options === undefined ? bridge.chooseWorkspace() : bridge.chooseWorkspace(options),
     // 首页「最近」卡只显示 3 条,但同一份记录还要推出每个工具最近用过的目录(N7),

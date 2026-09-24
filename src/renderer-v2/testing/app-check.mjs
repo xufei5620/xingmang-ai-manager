@@ -1034,17 +1034,36 @@ test('a failed runtime probe on the maintenance page says so instead of 尚未�
     await clean(page)
   } finally { await page.close() }
 })
-// 候选 4：Windows 上缺 Git 时首页运行环境行给中文提示和下载入口，不替客户装。
-test('the home runtime card warns about a missing Git and offers the download on Windows', async () => {
+// 候选 4 → 2026-09-24：Windows 上缺 Git 时首页给大白话提示和「安装 Git」，点了由软件代装，
+// 不再把客户送去官网自己找安装包。
+test('the home runtime card installs a missing Git on Windows instead of sending the customer to a website', async () => {
   const page = await open('gitMissing=1')
   try {
     await page.getByTestId('page-home').waitFor()
     const hint = page.getByTestId('home-runtime-git-hint')
     await hint.waitFor()
     assert.match(await hint.innerText(), /没有找到 Git/)
-    assert.match(await hint.innerText(), /PowerShell/)
-    assert.match(await hint.innerText(), /git-scm\.com/)
+    assert.match(await hint.innerText(), /点下面的「安装 Git」/)
+    assert.doesNotMatch(await hint.innerText(), /PowerShell|bash|PATH|git-scm/)
+    const button = page.getByTestId('home-runtime-git')
+    assert.equal((await button.innerText()).trim(), '安装 Git')
+    await button.click()
+    await hint.waitFor({ state: 'detached' })
+    await button.waitFor({ state: 'detached' })
+    const calls = await page.evaluate(() => window.v2Test.calls.map((call) => call.method))
+    assert.ok(calls.includes('installGitRuntime'))
+    assert.ok(!calls.includes('openExternal'))
+    await clean(page)
+  } finally { await page.close() }
+})
+test('a failed Git install keeps the button so the customer can simply try again', async () => {
+  const page = await open('gitMissing=1&gitInstallFail=1')
+  try {
+    await page.getByTestId('page-home').waitFor()
+    await page.getByTestId('home-runtime-git').click()
+    await page.getByText(/Git 没装上/).first().waitFor()
     await page.getByTestId('home-runtime-git').waitFor()
+    assert.equal(await page.getByTestId('home-runtime-git').isEnabled(), true)
     await clean(page)
   } finally { await page.close() }
 })

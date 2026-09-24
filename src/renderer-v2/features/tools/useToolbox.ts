@@ -182,6 +182,7 @@ export function useToolbox(bridge: XingmangApi | null, enabled: boolean, scope: 
       bridge.onInstallProgress((event: InstallProgress) => update(event.provider, event.message, event.percent)),
       bridge.onNodeRuntimeInstallProgress((event) => update('node', event.message, event.percent ?? undefined)),
       bridge.onPythonRuntimeInstallProgress((event) => update('python', event.message, event.percent ?? undefined)),
+      bridge.onGitRuntimeInstallProgress((event) => update('git', event.message, event.percent ?? undefined)),
       bridge.onCodexDesktopInstallProgress((event) => update('codexDesktop', event.message, event.percent ?? undefined)),
       bridge.onExternalClientInstallProgress((event) => update(event.tool, event.message, event.percent ?? undefined)),
       bridge.onCodexDesktopStatus((event) => {

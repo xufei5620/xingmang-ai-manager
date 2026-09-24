@@ -117,6 +117,10 @@ import type {
   PythonRuntimeInstallResult as MainPythonRuntimeInstallResult,
 } from './python-runtime'
 import type {
+  GitRuntimeInstallProgress as MainGitRuntimeInstallProgress,
+  GitRuntimeInstallResult as MainGitRuntimeInstallResult,
+} from './git-runtime-install'
+import type {
   RuntimeLogEntry as MainRuntimeLogEntry,
   RuntimeLogSnapshot as MainRuntimeLogSnapshot,
 } from './runtime-log'
@@ -271,6 +275,8 @@ export type NodeRuntimeInstallProgress = MainNodeRuntimeInstallProgress
 export type NodeRuntimeInstallResult = MainNodeRuntimeInstallResult
 export type PythonRuntimeInstallProgress = MainPythonRuntimeInstallProgress
 export type PythonRuntimeInstallResult = MainPythonRuntimeInstallResult
+export type GitRuntimeInstallProgress = MainGitRuntimeInstallProgress
+export type GitRuntimeInstallResult = MainGitRuntimeInstallResult
 export type PlatformCapabilities = MainPlatformCapabilities
 export type AccountStatus = NewApiAccountStatus
 export type AccountProfile = NewApiAccountProfile
@@ -640,6 +646,8 @@ export interface XingmangInvokeContract {
   installNodeRuntime: IpcInvokeDefinition<'runtime:install-node', [], NodeRuntimeInstallResult>
   restartWindows: IpcInvokeDefinition<'runtime:restart-windows', [], void>
   installPythonRuntime: IpcInvokeDefinition<'runtime:install-python', [], PythonRuntimeInstallResult>
+  /** Windows 上按当前用户静默安装钉死版本的 Git for Windows；其余平台直接报错。 */
+  installGitRuntime: IpcInvokeDefinition<'runtime:install-git', [], GitRuntimeInstallResult>
   /** version 省略时由主进程按已验证版本名单与设置决定装哪个版本(N1)。 */
   installCli: IpcInvokeDefinition<'cli:install', [provider: ProviderId, version?: string], void>
   /** 中止正在进行的安装或更新;已经走到写入工具目录那一步时会被拒绝并给出原因。 */
@@ -1004,6 +1012,10 @@ export interface XingmangEventContract {
     'runtime:python-install-progress',
     PythonRuntimeInstallProgress
   >
+  onGitRuntimeInstallProgress: IpcEventDefinition<
+    'runtime:git-install-progress',
+    GitRuntimeInstallProgress
+  >
   onInstallProgress: IpcEventDefinition<'cli:install-progress', InstallProgress>
   onCodexDesktopStatus: IpcEventDefinition<
     'desktop:codex-status-changed',
@@ -1054,6 +1066,7 @@ export const ipcInvokeChannels = {
   installNodeRuntime: 'runtime:install-node',
   restartWindows: 'runtime:restart-windows',
   installPythonRuntime: 'runtime:install-python',
+  installGitRuntime: 'runtime:install-git',
   installCli: 'cli:install',
   cancelCliInstall: 'cli:cancel-install',
   uninstallCli: 'cli:uninstall',
@@ -1217,6 +1230,7 @@ export const ipcEventChannels = {
   onLaunchTool: 'window:launch-tool',
   onNodeRuntimeInstallProgress: 'runtime:node-install-progress',
   onPythonRuntimeInstallProgress: 'runtime:python-install-progress',
+  onGitRuntimeInstallProgress: 'runtime:git-install-progress',
   onInstallProgress: 'cli:install-progress',
   onCodexDesktopStatus: 'desktop:codex-status-changed',
   onCodexDesktopInstallProgress: 'desktop:codex-install-progress',

@@ -122,6 +122,11 @@ import {
   isPython312RuntimeVersion,
   type PythonRuntimeInstallResult,
 } from './python-runtime'
+import {
+  installGitRuntime as installGitForWindows,
+  type GitRuntimeInstallProgress,
+  type GitRuntimeInstallResult,
+} from './git-runtime-install'
 import { InstallationQueue, type InstallationQueueSnapshot } from './installation-queue'
 import type { DownloadAccelerationLease } from './download-acceleration'
 import {
@@ -808,6 +813,7 @@ export interface SystemService {
   installNodeRuntime(target: RendererMessageTarget): Promise<NodeRuntimeInstallResult>
   restartWindows(): Promise<void>
   installPythonRuntime(target: RendererMessageTarget): Promise<PythonRuntimeInstallResult>
+  installGitRuntime(target: RendererMessageTarget): Promise<GitRuntimeInstallResult>
   installCli(provider: ProviderId, target: RendererMessageTarget, version?: string): Promise<void>
   cancelCliInstall(provider: ProviderId): InstallCancellationOutcome
   uninstallCli(provider: ProviderId): Promise<ToolUninstallResult>
@@ -1955,6 +1961,23 @@ function safeVersionCheckError(error: unknown, operation = 'npm latest'): string
 
 // `describeProbeFailure` (probe-failure.ts) and the `build*FromSettled`
 // helpers below keep a rejected probe from masquerading as "not installed".
+/**
+ * 装 Claude Code 时顺带把缺的 Git 装上（协调者 2026-09-24：能自动的就不让客户点）。
+ * Git 只是可选环境，它装不上**不能**让已经装好的 Claude Code 报失败：这里吞掉错误，
+ * 只留一句中文说明，首页运行环境那行的「安装 Git」按钮照旧在，客户想重试点它就行。
+ */
+export async function installGitAlongsideClaude(
+  install: () => Promise<{ action: 'installed' | 'unchanged' }>,
+  note: (message: string) => void,
+): Promise<void> {
+  try {
+    const result = await install()
+    if (result.action === 'installed') note('Git 也顺带装好了')
+  } catch {
+    note('Git 这次没装上，不影响使用 Claude Code；以后可以在首页「运行环境」里点「安装 Git」再试')
+  }
+}
+
 export function buildToolStatusFromSettled(result: PromiseSettledResult<ToolStatus>): ToolStatus {
   if (result.status === 'fulfilled') return result.value
   return {
@@ -2045,6 +2068,7 @@ export interface SystemServiceOptions {
   inspectInstalledPythonRuntime?: typeof inspectInstalledPythonRuntime
   inspectWindowsRestartRequired?: typeof inspectWindowsRestartRequired
   installNodeRuntime?: typeof installNodeRuntimeLts
+  installGitRuntime?: typeof installGitForWindows
   /** Test seam for Windows-only operations exercised on non-Windows CI runners. */
   resolveWindowsMachinePaths?: typeof resolveWindowsMachinePaths
   /** Test seam so scanSystem never talks to chatgpt.com under vitest. */
@@ -2214,6 +2238,7 @@ export function createSystemService(
   const inspectInstalledPythonRuntimeForService = serviceOptions.inspectInstalledPythonRuntime ?? inspectInstalledPythonRuntime
   const inspectWindowsRestartRequiredForService = serviceOptions.inspectWindowsRestartRequired ?? inspectWindowsRestartRequired
   const installNodeRuntimeForService = serviceOptions.installNodeRuntime ?? installNodeRuntimeLts
+  const installGitRuntimeForService = serviceOptions.installGitRuntime ?? installGitForWindows
   // 安装下载曾经完全无视机器上的代理：产物下载走 Node 自带网络栈、npm 子进程
   // 没有任何代理变量，于是开着加速也一样直连。这两个注入点把下载接回系统代理。
   const downloadFetch = serviceOptions.downloadFetch ?? fetch
@@ -3129,6 +3154,51 @@ export function createSystemService(
     return installationQueue.enqueue('runtime:python', () => installPythonRuntimeOperation(target))
   }
 
+  async function installGitRuntimeOperation(
+    target: RendererMessageTarget,
+    onProgress?: (progress: GitRuntimeInstallProgress) => void,
+  ): Promise<GitRuntimeInstallResult> {
+    if (platform !== 'win32') throw new Error('Git 自动安装当前仅支持 Windows')
+    const git = buildToolStatusFromSettled((await Promise.allSettled([inspectGit()]))[0])
+    if (git.detectionFailed) throw new Error(git.detectionError ?? 'Git 检测失败，请重新检测后再试')
+    const architecture = process.arch === 'arm64' ? 'arm64' : 'x64'
+    if (git.installed) {
+      if (!target.isDestroyed()) {
+        target.send('runtime:git-install-progress', {
+          phase: 'complete',
+          source: null,
+          message: 'Git 本来就装好了，不用重复安装',
+          percent: 100,
+        })
+      }
+      return {
+        installed: true,
+        action: 'unchanged',
+        source: null,
+        version: git.version,
+        architecture,
+        pathRefreshRequired: false,
+      }
+    }
+    return installGitRuntimeForService({
+      networkRegion: await inspectNetworkRegion(),
+      temporaryDirectoryMode: windowsExecutionMode,
+      dependencies: { fetch: downloadFetch },
+      onProgress: (progress) => {
+        if (!target.isDestroyed()) target.send('runtime:git-install-progress', progress)
+        onProgress?.(progress)
+      },
+    })
+  }
+
+  function installGitRuntime(
+    target: RendererMessageTarget,
+    onProgress?: (progress: GitRuntimeInstallProgress) => void,
+  ): Promise<GitRuntimeInstallResult> {
+    return installationQueue.enqueue('runtime:git',
+      () => withDownloadAcceleration(null, () => installGitRuntimeOperation(target, onProgress)))
+  }
+
   function sendInstallProgress(
     target: RendererMessageTarget,
     provider: ProviderId,
@@ -3811,8 +3881,15 @@ export function createSystemService(
     const finished = installationQueue.enqueue(
       key,
       () => installCliOperation(provider, target, version, cancellation),
-    )
-    return finished.finally(() => cancellation.release())
+    ).finally(() => cancellation.release())
+    // Windows 上 Claude Code 靠 Git 自带的 bash 跑技能和插件里的命令。Claude Code 自己
+    // 那一项出队之后才排 Git：队列是全局串行的，在队列任务里再入队会互相等死。
+    if (provider !== 'claude' || platform !== 'win32') return finished
+    return finished.then(() => installGitAlongsideClaude(
+      () => installGitRuntime(target, (progress) => sendInstallProgress(
+        target, provider, 'output', progress.message, progress.percent ?? undefined)),
+      (message) => sendInstallProgress(target, provider, 'output', message),
+    ))
   }
 
   function cancelCliInstall(provider: ProviderId): InstallCancellationOutcome {
@@ -5074,6 +5151,7 @@ export function createSystemService(
     installNodeRuntime,
     restartWindows,
     installPythonRuntime,
+    installGitRuntime,
     installCli,
     cancelCliInstall,
     uninstallCli,
