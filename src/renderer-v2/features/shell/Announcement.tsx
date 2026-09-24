@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ElementType, type ReactNode } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { ArrowLeft, Bell, Check, ChevronRight, ExternalLink } from 'lucide-react'
+import { ArrowLeft, Bell, ChevronRight, ExternalLink, X } from 'lucide-react'
 import { Button, Dialog } from '../../ui'
 import { userFacingErrorMessage } from '../../business-common'
 import { BlockedLinkHint, openExternalOrCopy, type BlockedLinkNotice } from '../../external-link-fallback'
 import { writeLocalPreference } from '../app/preferences'
 import type { RelayNotice } from '../../../../electron/relay-backend'
-import { legacyAnnouncementReadId, markLocalAnnouncementRead, parseNewApiAnnouncementCollection, readLegacyAnnouncementId, readLocalAnnouncementIds, rememberLocalAnnouncementIds } from './newapi-announcements'
+import { announcementAttentionKeys, legacyAnnouncementReadId, markLocalAnnouncementRead, parseNewApiAnnouncementCollection, readLegacyAnnouncementId, readLocalAnnouncementIds, readSeenAnnouncementKeys, rememberLocalAnnouncementIds, rememberSeenAnnouncementKeys } from './newapi-announcements'
 
 type Announcement = RelayNotice & { localEntries?: boolean }
 interface Props {
@@ -906,8 +906,16 @@ export function AnnouncementCenter({ scope, read, markRemoteRead, syncLocalReads
   }, [selectedId])
   const entries = announcement?.entries
   const selected = entries?.find((entry) => entry.id === selectedId)
-  const unread = Boolean(announcement && (entries ? entries.some((entry) => !entry.read) : announcement.id !== readId))
-  useEffect(() => { onUnread(unread) }, [unread, onUnread])
+  const [seenKeys, setSeenKeys] = useState(() => readSeenAnnouncementKeys(scope))
+  const attentionKeys = useMemo(() => announcementAttentionKeys(announcement, readId), [announcement, readId])
+  // 一条公告只提醒一次：打开过公告或关掉过横条，就不再占一整行、铃铛也不再亮红点，
+  // 直到服务端出现新的一条。列表里每条的已读/未读照旧。
+  const unseen = attentionKeys.some((key) => !seenKeys.includes(key))
+  useEffect(() => { onUnread(unseen) }, [unseen, onUnread])
+  const acknowledge = useCallback(() => {
+    if (attentionKeys.length) setSeenKeys(rememberSeenAnnouncementKeys(scope, attentionKeys))
+  }, [attentionKeys, scope])
+  useEffect(() => { if (open && unseen) acknowledge() }, [open, unseen, acknowledge])
 
   async function markEntryRead(entry: NonNullable<Announcement['entries']>[number]) {
     if (!announcement || entry.read) return
@@ -974,13 +982,14 @@ export function AnnouncementCenter({ scope, read, markRemoteRead, syncLocalReads
     if (!noticeUrl) return
     void openLink(noticeUrl).catch((cause) => setError(formatAnnouncementError(cause)))
   }
-  const preview = entries?.find((entry) => !entry.read)?.title ?? announcement?.text ?? ''
+  const unreadEntries = entries?.filter((entry) => !entry.read)
+  const preview = (unreadEntries?.find((entry) => !seenKeys.includes(`entry:${entry.id}`)) ?? unreadEntries?.[0])?.title ?? announcement?.text ?? ''
   return <>
     {!open && error && announcement && <p className="v2-announcement-error" role="alert">{error.message}</p>}
-    {unread && announcement && <div className="v2-announcement-banner">
+    {unseen && !open && announcement && <div className="v2-announcement-banner" data-testid="announcement-banner">
       <Bell size={15} /><strong>公告</strong><span>{announcementTextPreview(preview) || '有一条新公告'}</span>
       <Button size="xs" variant="ghost" onClick={onOpen}>查看</Button>
-      {!entries && <Button size="xs" variant="ghost" icon={Check} aria-label="标为已读" onClick={() => markLegacyRead()} />}
+      <Button size="xs" variant="ghost" icon={X} aria-label="关闭公告提示" title="关闭，有新公告时再提醒" onClick={acknowledge} testId="announcement-banner-close" />
     </div>}
     {open && <Dialog open title="公告" width={640} onClose={onClose} icon={Bell} footer={selected
       ? <Button icon={ArrowLeft} onClick={backToList}>返回列表</Button>
