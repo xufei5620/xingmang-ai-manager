@@ -215,6 +215,31 @@ describe('account managed Key bootstrap', () => {
     ).resolves.toMatchObject({ networkBlocked: false })
   })
 
+  it('keeps key sync failures of tools that are not installed off the home banner', async () => {
+    const current = config()
+    const api: AccountBootstrapBridge = {
+      getAccountSession: vi.fn(async () => ({ authenticated: true, account: { userId: 17, username: 'member', quota: 0, usedQuota: 0, group: 'default', role: 1 } })),
+      syncManagedCliKeys: vi.fn(async () => ({
+        ready: [],
+        failed: [
+          { provider: 'claude' as ProviderId, group: 'group', message: '分组不存在、不可用或名称重复，请确认账号可用分组' },
+          { provider: 'grok' as ProviderId, group: 'group', message: '分组不存在、不可用或名称重复，请确认账号可用分组' },
+        ],
+      })),
+      scanSystem: vi.fn(async () => system(['grok'])),
+      getSettings: vi.fn(async () => settings),
+      getConfig: vi.fn(async () => structuredClone(current)),
+      configureManagedCliKeys: vi.fn(async () => ({ configured: [], failed: [] })),
+    }
+
+    const result = await bootstrapAccountTools(api, 17, undefined, 'restore', undefined, memoryStorage())
+
+    expect(result.skipped).toContainEqual(expect.objectContaining({ provider: 'claude', reason: 'not-installed' }))
+    expect(result.warnings.join('；')).not.toContain('Claude Code')
+    // An installed tool's failure is still reported: only the missing one goes quiet.
+    expect(result.failed.map((entry) => entry.provider)).toEqual(['grok'])
+  })
+
   it('reports no network block when everything is written', async () => {
     const current = config()
     const storage = memoryStorage()

@@ -1,12 +1,14 @@
-import type { AiChatAsset } from '../../../../electron/ipc-contract'
+import type { AiChatAsset, AiChatHistorySnapshot, AiChatHistoryWrite } from '../../../../electron/ipc-contract'
 import { createConversation, createId, createWorkspace, defaultChatSettings, type ChatMessage, type ChatSettings, type ChatWorkspace, type Conversation } from './state'
 
-export interface ChatStorage { getItem: (key: string) => string | null; setItem: (key: string, value: string) => void }
-const MAX_BYTES = 4 * 1024 * 1024
+// 只读：localStorage 现在只是旧版本留下的迁移来源，新记录一律写到主进程的文件里。
+export interface ChatStorage { getItem: (key: string) => string | null }
 const MAX_CONVERSATIONS = 50
+const HISTORY_VERSION = 3
 const ASSET_ID = /^[A-Za-z0-9_-]{43}$/
+const FILE_KEY = /^[A-Za-z0-9_-]{1,64}$/
 export class ChatStorageError extends Error {}
-const limitMessage = '聊天记录超过本地存储上限（4 MB 或 50 个对话），原始记录已保留，未进行截断'
+const limitMessage = '聊天记录超过本地保存上限（50 个对话），原始记录已保留，未进行截断'
 
 export function historyKey(scope: string): string { return `xingmang-ui-v2:chat:${encodeURIComponent(scope)}` }
 function object(value: unknown): Record<string, unknown> | null { return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null }
@@ -60,7 +62,6 @@ function readConversation(value: unknown): Conversation {
   return { id: id(conversation.id), title: text(conversation.title) || '新对话', createdAt: timestamp(conversation.createdAt), updatedAt: timestamp(conversation.updatedAt), draft: text(conversation.draft), settings: readSettings(conversation.settings), messages }
 }
 function parseWorkspace(raw: string, scope: string): ChatWorkspace {
-  if (new TextEncoder().encode(raw).byteLength > MAX_BYTES) throw new ChatStorageError(limitMessage)
   const parsed = object(JSON.parse(raw))
   if (!parsed || parsed.version !== 2 || parsed.owner !== scope || !Array.isArray(parsed.conversations)) throw new Error('invalid owner or version')
   if (parsed.conversations.length > MAX_CONVERSATIONS) throw new ChatStorageError(limitMessage)
@@ -91,6 +92,9 @@ function mergeAliases(candidates: ChatWorkspace[], scope: string): ChatWorkspace
   }
   return state
 }
+// Reads what earlier versions left in localStorage. It never writes: the
+// caller saves the result to the file store, and every source key stays as it
+// was, so a failed first save can simply be retried from the same source.
 export function readWorkspace(storage: ChatStorage, scope: string): { state: ChatWorkspace; warning?: string; exists: boolean } {
   const empty = () => ({ state: createWorkspace(scope), exists: false })
   try {
@@ -111,26 +115,17 @@ export function readWorkspace(storage: ChatStorage, scope: string): { state: Cha
       // Both aliases could have been used over time. Keep the most recent
       // selection, while merging unique conversations and conflicting versions.
       candidates.sort((left, right) => modifiedAt(right) - modifiedAt(left))
-      if (candidates[0]) {
-        const state = mergeAliases(candidates, scope)
-        try { writeWorkspace(storage, state) }
-        catch (error) { return { state, exists: true, warning: `之前的聊天记录已载入，但本机迁移未保存，原始数据已保留${error instanceof ChatStorageError ? `；${error.message}` : ''}` } }
-        return { state, exists: true }
-      }
+      if (candidates[0]) return { state: mergeAliases(candidates, scope), exists: true }
       // Scope is already the authenticated account boundary, also used above
       // for alias ownership. Resolve v1 synchronously before any autosave can
       // establish an empty v2 destination and permanently hide the old history.
       const legacy = importLegacyHistory(storage, scope, Number(xm[1]))
-      if (legacy) {
-        try { writeWorkspace(storage, legacy) }
-        catch (error) { return { state: legacy, exists: true, warning: `之前的聊天记录已载入，但本机迁移未保存，原始数据已保留${error instanceof ChatStorageError ? `；${error.message}` : ''}` } }
-        return { state: legacy, exists: true }
-      }
+      if (legacy) return { state: legacy, exists: true }
     }
     return empty()
   } catch (error) { return { ...empty(), exists: true, warning: error instanceof ChatStorageError ? error.message : '本地聊天记录暂时无法读取，原始数据已保留' } }
 }
-// localStorage sits unencrypted in the user profile, and chat text is the one
+// The history files sit unencrypted in the user profile, and chat text is the one
 // surface where a pasted key, an Authorization header or a whole base64 image
 // arrives verbatim. Redacting on the way out keeps those out of the record that
 // survives the window they were typed in, without touching the copy on screen.
@@ -166,10 +161,102 @@ function persistedMessage(message: ChatMessage) {
 function persistedConversation(conversation: Conversation) {
   return { ...conversation, title: redactPersistentChatText(conversation.title), draft: redactPersistentChatText(conversation.draft), settings: persistedSettings(conversation.settings), messages: conversation.messages.map((message) => persistedMessage(message)) }
 }
-export function writeWorkspace(storage: ChatStorage, state: ChatWorkspace): void {
-  const serialized = JSON.stringify({ ...state, conversations: state.conversations.map(persistedConversation), draftConversation: persistedConversation(state.draftConversation) })
-  if (state.conversations.length > MAX_CONVERSATIONS || new TextEncoder().encode(serialized).byteLength > MAX_BYTES) throw new ChatStorageError(limitMessage)
-  storage.setItem(historyKey(state.owner), serialized)
+
+// What the file store holds after the last successful save. Conversations are
+// compared by identity: state updates replace only the conversation they
+// touch, so a save rewrites just those files instead of the whole history.
+export interface SavedHistory { index: string; keys: ReadonlyMap<string, string>; conversations: ReadonlyMap<string, Conversation> }
+export interface LoadedChatHistory { state: ChatWorkspace; exists: boolean; warning?: string; saved: SavedHistory | null }
+
+export function planHistoryWrite(state: ChatWorkspace, previous: SavedHistory | null): { write: AiChatHistoryWrite; saved: SavedHistory } | null {
+  if (state.conversations.length > MAX_CONVERSATIONS) throw new ChatStorageError(limitMessage)
+  const keys = new Map<string, string>()
+  const used = new Set<string>()
+  for (const conversation of state.conversations) {
+    let key = previous?.keys.get(conversation.id) ?? (FILE_KEY.test(conversation.id) ? conversation.id : createId())
+    while (used.has(key)) key = createId()
+    used.add(key)
+    keys.set(conversation.id, key)
+  }
+  const put = state.conversations
+    .filter((conversation) => previous?.conversations.get(conversation.id) !== conversation || previous.keys.get(conversation.id) !== keys.get(conversation.id))
+    .map((conversation) => ({ key: keys.get(conversation.id)!, content: JSON.stringify({ version: HISTORY_VERSION, owner: state.owner, conversation: persistedConversation(conversation) }) }))
+  const index = JSON.stringify({ version: HISTORY_VERSION, owner: state.owner, activeId: state.activeId, draftConversation: persistedConversation(state.draftConversation), conversations: state.conversations.map((conversation) => ({ id: conversation.id, key: keys.get(conversation.id) })) })
+  if (previous && !put.length && index === previous.index) return null
+  return {
+    write: { scope: state.owner, index, keys: [...keys.values()], put },
+    saved: { index, keys, conversations: new Map(state.conversations.map((conversation) => [conversation.id, conversation])) },
+  }
+}
+
+export function parseHistorySnapshot(snapshot: AiChatHistorySnapshot, scope: string): { state: ChatWorkspace; saved: SavedHistory } {
+  if (snapshot.index === null) throw new ChatStorageError('聊天记录不存在')
+  let parsed: Record<string, unknown> | null
+  try { parsed = object(JSON.parse(snapshot.index)) } catch { throw new ChatStorageError('聊天记录索引无法读取，原始记录已保留') }
+  if (!parsed || parsed.version !== HISTORY_VERSION || parsed.owner !== scope || !Array.isArray(parsed.conversations)) throw new ChatStorageError('聊天记录归属或版本无效，原始记录已保留')
+  if (parsed.conversations.length > MAX_CONVERSATIONS) throw new ChatStorageError(limitMessage)
+  const files = new Map(snapshot.conversations.map((file) => [file.key, file.content]))
+  const keys = new Map<string, string>()
+  const conversations = parsed.conversations.map((value) => {
+    const entry = object(value)
+    const key = entry?.key
+    if (!entry || typeof key !== 'string' || !FILE_KEY.test(key) || [...keys.values()].includes(key)) throw new ChatStorageError('聊天记录索引无效，原始记录已保留')
+    const content = files.get(key)
+    if (content === undefined) throw new ChatStorageError('聊天记录缺少部分对话，原始记录已保留')
+    let file: Record<string, unknown> | null
+    try { file = object(JSON.parse(content)) } catch { throw new ChatStorageError('聊天对话无法读取，原始记录已保留') }
+    if (!file || file.version !== HISTORY_VERSION || file.owner !== scope) throw new ChatStorageError('聊天对话归属或版本无效，原始记录已保留')
+    const conversation = readConversation(file.conversation)
+    if (conversation.id !== entry.id) throw new ChatStorageError('聊天记录索引与对话不一致，原始记录已保留')
+    keys.set(conversation.id, key)
+    return conversation
+  })
+  const draftConversation = parsed.draftConversation === undefined ? createConversation() : readConversation(parsed.draftConversation)
+  assertUniqueIds([...conversations, draftConversation])
+  const activeId = typeof parsed.activeId === 'string' && conversations.some((item) => item.id === parsed.activeId) ? parsed.activeId : null
+  return {
+    state: { version: 2, owner: scope, conversations, activeId, draftConversation },
+    saved: { index: snapshot.index, keys, conversations: new Map(conversations.map((conversation) => [conversation.id, conversation])) },
+  }
+}
+
+// The file store wins once it has a record for this account. Before that the
+// localStorage record of earlier versions (and its account aliases and the v1
+// key) is loaded and becomes the first save, which is the whole migration.
+export async function loadChatHistory(api: { readHistory: (scope: string) => Promise<AiChatHistorySnapshot> }, storage: ChatStorage, scope: string): Promise<LoadedChatHistory> {
+  let snapshot: AiChatHistorySnapshot
+  try { snapshot = await api.readHistory(scope) } catch { return { state: createWorkspace(scope), exists: true, warning: '本地聊天记录暂时无法读取，原始数据已保留', saved: null } }
+  if (snapshot.index === null) return { ...readWorkspace(storage, scope), saved: null }
+  try { return { ...parseHistorySnapshot(snapshot, scope), exists: true } }
+  catch (error) { return { state: createWorkspace(scope), exists: true, warning: error instanceof ChatStorageError ? error.message : '本地聊天记录暂时无法读取，原始数据已保留', saved: null } }
+}
+
+// One save runs at a time; a save requested meanwhile only replaces the
+// pending snapshot, so bursts of edits collapse into the newest one.
+export function createHistoryWriter(api: { writeHistory: (input: AiChatHistoryWrite) => Promise<void> }, saved: SavedHistory | null) {
+  let committed = saved
+  let pending: ChatWorkspace | null = null
+  let running: Promise<void> | null = null
+  async function drain(): Promise<void> {
+    try {
+      while (pending) {
+        const state = pending
+        pending = null
+        const plan = planHistoryWrite(state, committed)
+        if (!plan) continue
+        await api.writeHistory(plan.write)
+        committed = plan.saved
+      }
+    } finally { running = null }
+  }
+  return {
+    save(state: ChatWorkspace): Promise<void> {
+      pending = state
+      // Start on a microtask so `running` is assigned before drain can clear it.
+      if (!running) running = Promise.resolve().then(drain)
+      return running
+    },
+  }
 }
 
 export function importLegacyHistory(storage: ChatStorage, scope: string, userId: number): ChatWorkspace | null {
@@ -181,7 +268,6 @@ export function importLegacyHistory(storage: ChatStorage, scope: string, userId:
   if (!legacyOwner || Number(legacyOwner[2]) !== userId) return null
   const raw = storage.getItem(`xingmang-ai-chat:v1:${encodeURIComponent(String(userId))}`)
   if (raw === null) return null
-  if (new TextEncoder().encode(raw).byteLength > MAX_BYTES) throw new ChatStorageError(limitMessage)
   try {
     const envelope = object(JSON.parse(raw)); const data = object(envelope?.data)
     if (envelope?.version !== 1 || envelope.userId !== String(userId) || !data || !Array.isArray(data.messages)) throw new ChatStorageError('旧版聊天记录格式或归属无效，原始记录已保留')

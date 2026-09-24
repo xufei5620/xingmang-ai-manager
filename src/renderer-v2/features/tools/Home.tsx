@@ -5,7 +5,7 @@ import { presentExternalClients } from './external-model'
 import { useSharedAccountBalance } from '../app/balance-context'
 import { balanceStatusText } from '../shell/balance-status'
 import { BrandIcon, Button, Card, Dialog, Empty, ListRow, Menu, PageHead, Pill, Progress, ToolRow, useToast } from '../../ui'
-import { accountSwitchTarget, balanceTier, canUninstallTool, ccSwitchLeftoverFor, configDirectoryMenuItem, externalInstallHint, greeting, isExternallyManagedInstall, needsManualInstall, ownershipAwaitingAccount, presentTools, recommendedVersionVerb, rollbackVersion, versionSubtitle, type ToolboxSnapshot, type ToolId, type ToolPresentation } from './model'
+import { accountSwitchTarget, balanceTier, canUninstallTool, ccSwitchLeftoverFor, configDirectoryMenuItem, externalInstallHint, greeting, isExternallyManagedInstall, needsManualInstall, ownershipAwaitingAccount, presentTools, providerFor, recommendedVersionVerb, rollbackVersion, versionSubtitle, type ToolboxSnapshot, type ToolId, type ToolPresentation } from './model'
 import type { ToolboxPartitionFailure, ToolsApi } from './api'
 import type { ToolJob } from './useToolbox'
 import type { AccountBootstrapProgress, AccountBootstrapResult } from './account-bootstrap'
@@ -13,7 +13,7 @@ import type { PageId } from '../../registry/pages'
 import { macDesktopTutorialTopic, macRuntimeTutorialTopic } from '../../registry/business'
 import { tools as toolRegistry } from '../../registry/tools'
 import { FirstRunSteps } from './FirstRun'
-import { keySyncFailureReason, keySyncFailureText } from './key-sync-failure'
+import { isAccountNotEnabledFailure, keySyncFailureReason, keySyncFailureText } from './key-sync-failure'
 import { dismissFirstRun, getFirstRunStorage, readFirstRunDismissals } from './first-run-dismissal'
 import { latestSessionIdsByWorkspace, newWorkspaceLabel, recentWorkspaces, workspaceButtonLabel, workspaceChoices } from './recent-workspaces'
 import { errorMessage } from '../../business-common'
@@ -219,6 +219,9 @@ export function Home(props: HomeProps) {
       && props.failures?.some((failure) => failure.partition === 'config') === true
     // 开机先画出来的是上次的检测结果（cachedAt），装没装、配置归谁都可能已经变了，
     // 这时不下「被改过」「第三方配置」的结论，真结果回来再说。
+    // 这次写 Key 时服务端说这个账号没开通它：再点「配置」也配不上，别显示成「还没配 Key」。
+    const notEnabled = props.bootstrap?.result?.failed.some((entry) => entry.provider === providerFor(tool.id)
+      && isAccountNotEnabledFailure(entry.message)) === true
     const ownershipPending = snapshot !== null && (Boolean(snapshot.system.cachedAt) || ownershipAwaitingAccount(snapshot.config, tool))
     const ccSwitch = snapshot && !ownershipPending ? ccSwitchLeftoverFor(snapshot.config.providers[tool.provider], tool.provider, tool.source) : null
     const status = installJob ? 'installing' : tool.error ? 'detectionFailed' : !tool.status.installed ? 'missing'
@@ -227,7 +230,7 @@ export function Home(props: HomeProps) {
       : tool.source === 'changed' && !ownershipPending ? 'configChanged'
       : tool.source === 'unknown' && !ownershipPending ? 'unknownSource' : tool.source === 'official' ? 'official'
         : bootstrapBusy && !tool.configured ? 'configuring'
-        : tool.configured ? 'ready' : 'unconfigured'
+        : tool.configured ? 'ready' : notEnabled ? 'notEnabled' : 'unconfigured'
     // 「打开」以前每次都要重新选一遍目录。会话记录里本来就存着用过的目录，
     // 拿它当主按钮的默认值，旁边的下拉再给最近几个和原来的选择器（N7）。
     // Codex 桌面端自己管工作区，不走这条路。
@@ -359,7 +362,8 @@ export function Home(props: HomeProps) {
     </div>}
     {props.bootstrap?.result && (props.bootstrap.result.configured.length || props.bootstrap.result.failed.length || props.bootstrap.result.warnings.length) > 0 && <div className={`v2-bootstrap-notice ${props.bootstrap.result.failed.length || props.bootstrap.result.warnings.length ? 'is-warn' : ''}`} role="status">
       <span className={`v2-dot ${props.bootstrap.result.failed.length || props.bootstrap.result.warnings.length ? 'is-warn' : 'is-ok'}`} /><span>{props.bootstrap.result.networkBlocked ? offlineBootstrapNotice : `${props.bootstrap.result.configured.length ? `已完成 ${props.bootstrap.result.configured.length} 组工具的 Key 配置。` : '账号 Key 已同步。'}${props.bootstrap.result.failed.length ? ` ${props.bootstrap.result.failed.map((entry) => keySyncFailureText(entry.provider, entry.message)).join('；')}` : ''}${props.bootstrap.result.warnings.length ? ` ${props.bootstrap.result.warnings.join('；')}` : ''}`}</span>
-      {(props.bootstrap.result.failed.length > 0 || props.bootstrap.result.warnings.length > 0) && props.onBootstrapRetry && <Button size="xs" onClick={props.onBootstrapRetry}>重新同步</Button>}
+      {/* 账号没开通的工具点多少次「重新同步」都一样，只剩这种失败时不给这个按钮。 */}
+      {(props.bootstrap.result.failed.some((entry) => !isAccountNotEnabledFailure(entry.message)) || props.bootstrap.result.warnings.length > 0) && props.onBootstrapRetry && <Button size="xs" onClick={props.onBootstrapRetry}>重新同步</Button>}
     </div>}
     {error && <div role="alert" className="v2-callout is-bad"><span>{error}</span><Button size="xs" onClick={props.onScan}>重新检测</Button></div>}
     {props.externalError && <div role="alert" className="v2-callout is-bad"><span>客户端状态暂未读到：{props.externalError}</span><Button size="xs" onClick={props.onScan}>重新检测</Button></div>}
