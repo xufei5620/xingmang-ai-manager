@@ -29,6 +29,7 @@ import { accelerationStartRequest, createAccelerationPreferenceStore, defaultAcc
 import { accelerationStartFailureDescriptions, createAccelerationDevelopmentHost, readAccelerationDevelopmentConfig, type AccelerationDevelopmentHost } from './acceleration-development-host'
 import { readBundledAccelerationConfig } from './acceleration-bundled-config'
 import { AiAssetStore } from './ai-asset-store'
+import { createAiChatHistoryStore } from './ai-chat-history-store'
 import { migrateLegacyAiOutput, resolveAiOutputRoot, resolveLegacyAiOutputRoot } from './ai-output-location'
 import { AI_CHAT_STREAM_LIMITS, createAiChatService } from './ai-chat-service'
 import { createAiImageService } from './ai-image-service'
@@ -2072,6 +2073,7 @@ if (!hasSingleInstanceLock) {
         powerMonitor.off('resume', onResume)
       })
     }
+    const chatHistoryStore = createAiChatHistoryStore({ root: path.join(managerDataDirectory, 'chat-history') })
     const unregisterIpcHandlers = registerIpcHandlers({
       acceleration,
       realmAccounts: accounts,
@@ -2094,6 +2096,7 @@ if (!hasSingleInstanceLock) {
       chatService,
       imageService,
       aiAssets: assetStore,
+      chatHistory: chatHistoryStore,
       sessionsService,
       providerSessionsService,
       backupStore,
@@ -2271,7 +2274,8 @@ if (!hasSingleInstanceLock) {
       },
       prepareToQuit: async () => {
         accountRestoreRetry.dispose()
-        await acceleration?.stopAll()
+        // 聊天记录最后一次保存可能还在写盘，写完再退，别让刚聊的那几句丢在半路。
+        await Promise.all([acceleration?.stopAll(), chatHistoryStore.idle()])
       },
       flushWindowState: () => windowPreferenceFlushers.get(mainWindow.webContents)?.() ?? Promise.resolve(),
       show: showMainWindow,
