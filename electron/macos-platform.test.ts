@@ -113,7 +113,9 @@ describe('macOS terminal launcher', () => {
       ['/usr/bin/true', cliExitHintLines.normal, cliExitHintLines.unexpected],
       ['/usr/bin/false', cliExitHintLines.unexpected, cliExitHintLines.normal],
     ] as const) {
-      const launcher = path.join(directory, 'launcher.zsh')
+      // The launcher removes itself and its (then empty) directory, so each
+      // run gets its own launcher directory apart from the workspace.
+      const launcher = path.join(fs.mkdtempSync(path.join(directory, 'launcher-')), 'launcher.zsh')
       fs.writeFileSync(launcher, buildMacosTerminalScript({
         executable,
         argv: [],
