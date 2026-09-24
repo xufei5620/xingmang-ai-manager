@@ -222,6 +222,30 @@ describe('window close coordination', () => {
     expect(options.quit).toHaveBeenCalledOnce()
   })
 
+  // e2e/renderer-v2-native-close-race.mjs used to prove this with a five-second wall clock
+  // around a real Electron exit, which a busy Windows runner outlasted on its own. The
+  // guarantee itself is that nothing on this path waits for the page: with no clock time
+  // passing at all, a native close under the quit preference is already a quit.
+  it('turns a native close under the quit preference into a quit without any time passing', async () => {
+    const window = new EventEmitter()
+    const application = new EventEmitter()
+    const { options, lifecycle } = fixture({
+      readPreference: () => 'quit',
+      confirmQuit: vi.fn(async (): Promise<QuitConfirmation> => 'quit'),
+      quit: vi.fn(() => application.emit('before-quit', { preventDefault: vi.fn() })),
+    })
+    lifecycle.attach(window, application)
+    const close = { preventDefault: vi.fn() }
+    window.emit('close', close)
+    expect(close.preventDefault).toHaveBeenCalledOnce()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(options.quit).toHaveBeenCalledOnce()
+    expect(options.requestCloseDecision).not.toHaveBeenCalled()
+    expect(options.show).not.toHaveBeenCalled()
+    expect(vi.getTimerCount()).toBe(0)
+    lifecycle.dispose()
+  })
+
   it('intercepts native close and app quit, then permits reentrant before-quit after preparation', async () => {
     const window = new EventEmitter()
     const application = new EventEmitter()
