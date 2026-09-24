@@ -65,14 +65,40 @@ export interface CommandLineToolsProbeOptions {
 }
 
 /**
- * 空壳背后那份真的在，才值得去跑它的 `--version`。任何一步拿不准（xcode-select
- * 跑失败、超时、打印的目录下没有同名命令）都回 false：误判成「未安装」的代价是
- * 检查页多一句怎么装，误判成「已安装」的代价是一个系统弹窗。
+ * - `usable`：背后那份在，试跑也成功，可以照常用。
+ * - `missing`：背后那份不在（没装命令行开发者工具，或者跑不通且原因不明）。
+ * - `license-pending`：装了 Xcode 但还没同意它的许可协议。此时空壳不弹窗，
+ *   而是只在 stderr 打一句「You have not agreed to the Xcode license agreements…」
+ *   然后以非零退出。以前我们只看背后那份在不在，结果把这句英文当成版本号上了首页。
  */
-export async function isCommandLineToolsShimBacked(
+export type CommandLineToolsShimState = 'usable' | 'missing' | 'license-pending'
+
+/**
+ * xcrun 在许可协议没同意时打印的那句话。它只有英文版，也不随系统语言变；
+ * 只认这两个固定片段，别的失败一律按 missing 处理。
+ */
+export function isXcodeLicenseNotAgreedOutput(output: string): boolean {
+  return /xcode license|xcodebuild -license/i.test(output)
+}
+
+function commandOutputOf(error: unknown): string {
+  if (!error || typeof error !== 'object') return ''
+  const candidate = error as { stdout?: unknown; stderr?: unknown; message?: unknown }
+  return [candidate.stdout, candidate.stderr, candidate.message]
+    .filter((part): part is string => typeof part === 'string')
+    .join('\n')
+}
+
+/**
+ * 空壳背后那份真的在，还要试跑一次 `--version` 才算能用。任何一步拿不准（xcode-select
+ * 跑失败、超时、打印的目录下没有同名命令、试跑失败）都不回 usable：误判成「未安装」的
+ * 代价是检查页多一句怎么装，误判成「已安装」的代价是一个系统弹窗或一段英文报错。
+ * 试跑排在确认背后那份存在之后，所以不会把「安装命令行开发者工具」的对话框招出来。
+ */
+export async function inspectCommandLineToolsShim(
   shim: string,
   options: CommandLineToolsProbeOptions = {},
-): Promise<boolean> {
+): Promise<CommandLineToolsShimState> {
   const execute = options.runCommand ?? runCommand
   try {
     const result = await execute({ executable: xcodeSelectExecutable, argv: ['-p'] }, {
@@ -82,11 +108,29 @@ export async function isCommandLineToolsShimBacked(
       signal: options.signal,
     })
     const developerDirectory = parseXcodeSelectDeveloperDirectory(result.stdout)
-    if (!developerDirectory) return false
-    return (options.isFile ?? isRegularFile)(commandLineToolsTargetFor(developerDirectory, shim))
+    if (!developerDirectory) return 'missing'
+    if (!(options.isFile ?? isRegularFile)(commandLineToolsTargetFor(developerDirectory, shim))) return 'missing'
   } catch {
-    return false
+    return 'missing'
   }
+  try {
+    await execute({ executable: shim, argv: ['--version'] }, {
+      env: commandEnvironment(options.env),
+      timeoutMs: 8_000,
+      maxOutputBytes: 64 * 1024,
+      signal: options.signal,
+    })
+    return 'usable'
+  } catch (error) {
+    return isXcodeLicenseNotAgreedOutput(commandOutputOf(error)) ? 'license-pending' : 'missing'
+  }
+}
+
+export async function isCommandLineToolsShimBacked(
+  shim: string,
+  options: CommandLineToolsProbeOptions = {},
+): Promise<boolean> {
+  return await inspectCommandLineToolsShim(shim, options) === 'usable'
 }
 
 /**
@@ -95,4 +139,14 @@ export async function isCommandLineToolsShimBacked(
  */
 export function commandLineToolsShimNotice(command: 'git' | 'python3'): string {
   return `macOS 自带的 ${command} 只是个空壳，要先装「命令行开发者工具」才能用：在「终端」里运行 xcode-select --install，或者用 Homebrew 另装一份`
+}
+
+/**
+ * 许可协议没同意时的原因句，句末不带标点。客户能自己做的只有两件：打开一次 Xcode
+ * 在弹出的协议上点「同意」，或者另装一份。不叫客户开终端跑 sudo，也不说「许可协议」
+ * 这类词，只提他在屏幕上会看到的那个按钮。「Xcode」保留，是因为要他去打开的就是它。
+ */
+export function xcodeLicensePendingNotice(command: 'git' | 'python3'): string {
+  const name = command === 'git' ? 'Git' : 'Python'
+  return `这台 Mac 上的 Xcode 装好后还没点过「同意」，系统自带的 ${name} 暂时用不了：打开一次 Xcode，在弹出的窗口里点「同意」，或者另装一份 ${name}`
 }

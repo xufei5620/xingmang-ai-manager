@@ -29,8 +29,10 @@ import type { DownloadAccelerationLease } from './download-acceleration'
 import { gitInstallGuidance } from './git-runtime'
 import {
   commandLineToolsShimNotice,
-  isCommandLineToolsShimBacked,
+  inspectCommandLineToolsShim,
   isMacOsCommandLineToolsShim,
+  xcodeLicensePendingNotice,
+  type CommandLineToolsShimState,
 } from './macos-command-line-tools'
 import { resolveCliCommand, type ResolvedCliCommand } from './tool-installation'
 import { isNewerVersion } from './versions'
@@ -256,6 +258,8 @@ export interface ProviderSourceUpdateDependencies {
   platform?: NodeJS.Platform
   /** 缺省真去问 xcode-select；与 runCommand 分开注入，免得假 git 输出被当成它的回答。 */
   isCommandLineToolsShimBacked?: (shim: string) => Promise<boolean>
+  /** 同上，但能分出「Xcode 许可还没同意」；与上一个同时给时以它为准。 */
+  inspectCommandLineToolsShim?: (shim: string) => Promise<CommandLineToolsShimState>
 }
 
 export interface ProviderExtensionServiceOptions {
@@ -281,6 +285,8 @@ export interface ProviderExtensionServiceOptions {
   platform?: NodeJS.Platform
   /** 缺省真去问 xcode-select（见 macos-command-line-tools.ts）。 */
   isCommandLineToolsShimBacked?: (shim: string) => Promise<boolean>
+  /** 同上，但能分出「Xcode 许可还没同意」；与上一个同时给时以它为准。 */
+  inspectCommandLineToolsShim?: (shim: string) => Promise<CommandLineToolsShimState>
 }
 
 interface MutableExtensionItem extends ProviderExtensionItem {
@@ -1148,8 +1154,13 @@ export function readClaudeSettingsMarketplaceNames(homeDirectory: string): strin
 
 export function claudeMarketplaceGitMissingMessage(
   platform: NodeJS.Platform = process.platform,
-  options: { commandLineToolsShim?: boolean } = {},
+  options: { commandLineToolsShim?: boolean; xcodeLicensePending?: boolean } = {},
 ): string {
+  // 开发者工具其实装了，只是 Xcode 的协议还没点「同意」：说「先装命令行开发者工具」
+  // 会让客户去装一份已经有的东西，装完照样失败。
+  if (options.xcodeLicensePending) {
+    return `第一次安装 Claude Code 插件要先把官方插件市场下载到本机，这一步需要 Git。${xcodeLicensePendingNotice('git')}，弄好后重新打开本软件再试。`
+  }
   // 找到的只是 macOS 自带的空壳：让 CLI 去跑它只会招来苹果的安装弹窗、再失败一次，
   // 不如在这里先把原因说清楚（#346 的后续）。
   if (options.commandLineToolsShim) {
@@ -1624,6 +1635,24 @@ export function readLocalGitMetadata(localPath: string): LocalGitMetadata {
   }
 }
 
+
+/**
+ * 注入口有两个：老的布尔判断（测试里常用）和能分出许可状态的新判断。都没给时真去问
+ * xcode-select 并试跑一次。布尔版只能说「能用 / 不能用」，不能用一律按 missing。
+ */
+function commandLineToolsShimInspector(
+  options: {
+    isCommandLineToolsShimBacked?: (shim: string) => Promise<boolean>
+    inspectCommandLineToolsShim?: (shim: string) => Promise<CommandLineToolsShimState>
+  },
+  env: NodeJS.ProcessEnv,
+): (shim: string) => Promise<CommandLineToolsShimState> {
+  if (options.inspectCommandLineToolsShim) return options.inspectCommandLineToolsShim
+  const backed = options.isCommandLineToolsShimBacked
+  if (backed) return async (shim) => await backed(shim) ? 'usable' : 'missing'
+  return (shim) => inspectCommandLineToolsShim(shim, { env })
+}
+
 export function createProviderSourceUpdateInspector(
   envInput: NodeJS.ProcessEnv,
   windowsExecutionMode: WindowsCliExecutionMode,
@@ -1635,8 +1664,7 @@ export function createProviderSourceUpdateInspector(
   const findExecutableImplementation = dependencies.findExecutable ?? findExecutable
   const runCommandImplementation = dependencies.runCommand ?? runCommand
   const platform = dependencies.platform ?? process.platform
-  const commandLineToolsShimBacked = dependencies.isCommandLineToolsShimBacked
-    ?? ((shim: string) => isCommandLineToolsShimBacked(shim, { env }))
+  const commandLineToolsShimState = commandLineToolsShimInspector(dependencies, env)
   return async (input) => {
     if (input.kind === 'pypi') {
       const root = await fetchJsonWithLimit(
@@ -1664,8 +1692,14 @@ export function createProviderSourceUpdateInspector(
       )
     }
     // 进外接工具页就会自动查更新：没装命令行开发者工具的 Mac 上跑空壳 git 会弹系统对话框。
-    if (isMacOsCommandLineToolsShim(git, platform) && !await commandLineToolsShimBacked(git)) {
-      throw new UnsupportedSourceInspectionError('未检测到可用的 Git：需要先装 macOS 的命令行开发者工具')
+    if (isMacOsCommandLineToolsShim(git, platform)) {
+      const shimState = await commandLineToolsShimState(git)
+      if (shimState === 'license-pending') {
+        throw new UnsupportedSourceInspectionError(`未检测到可用的 Git：${xcodeLicensePendingNotice('git')}`)
+      }
+      if (shimState !== 'usable') {
+        throw new UnsupportedSourceInspectionError('未检测到可用的 Git：需要先装 macOS 的命令行开发者工具')
+      }
     }
     const runGit = async (argv: string[]) => (await runCommandImplementation(
       { executable: git, argv },
@@ -1728,7 +1762,7 @@ export class ProviderExtensionService {
   private readonly acquireDownloadAcceleration: (() => Promise<DownloadAccelerationLease>) | null
   private codexCatalogDownload: Promise<void> | null = null
   private readonly platform: NodeJS.Platform
-  private readonly commandLineToolsShimBacked: (shim: string) => Promise<boolean>
+  private readonly commandLineToolsShimState: (shim: string) => Promise<CommandLineToolsShimState>
 
   constructor(options: ProviderExtensionServiceOptions = {}) {
     this.homeDirectory = path.resolve(options.homeDirectory ?? os.homedir())
@@ -1758,14 +1792,20 @@ export class ProviderExtensionService {
     this.downloadFetch = options.downloadFetch ?? fetch
     this.acquireDownloadAcceleration = options.acquireDownloadAcceleration ?? null
     this.platform = options.platform ?? process.platform
-    this.commandLineToolsShimBacked = options.isCommandLineToolsShimBacked
-      ?? ((shim) => isCommandLineToolsShimBacked(shim, { env }))
+    this.commandLineToolsShimState = commandLineToolsShimInspector(options, env)
   }
 
-  /** macOS 自带的 git / python3 空壳背后没有真货时，对用户而言就是没装。 */
+  /**
+   * macOS 自带的 git / python3 空壳背后没有真货、或者 Xcode 许可还没同意时，对用户
+   * 而言就是没装。不是空壳的一律回 usable。
+   */
+  private async commandLineToolsShimStateOf(executable: string): Promise<CommandLineToolsShimState> {
+    if (!isMacOsCommandLineToolsShim(executable, this.platform)) return 'usable'
+    return this.commandLineToolsShimState(executable)
+  }
+
   private async isUnbackedCommandLineToolsShim(executable: string): Promise<boolean> {
-    return isMacOsCommandLineToolsShim(executable, this.platform)
-      && !await this.commandLineToolsShimBacked(executable)
+    return await this.commandLineToolsShimStateOf(executable) !== 'usable'
   }
 
   /**
@@ -1826,8 +1866,12 @@ export class ProviderExtensionService {
     if (names.includes(CLAUDE_OFFICIAL_MARKETPLACE_NAME)) return
     const git = await this.findExecutable('git', { env: this.env, trustedOnly: this.trustedOnly })
     if (!git) throw new Error(claudeMarketplaceGitMissingMessage())
-    if (await this.isUnbackedCommandLineToolsShim(git)) {
-      throw new Error(claudeMarketplaceGitMissingMessage(this.platform, { commandLineToolsShim: true }))
+    const shimState = await this.commandLineToolsShimStateOf(git)
+    if (shimState !== 'usable') {
+      throw new Error(claudeMarketplaceGitMissingMessage(this.platform, {
+        commandLineToolsShim: true,
+        xcodeLicensePending: shimState === 'license-pending',
+      }))
     }
     await this.invoke('claude', claudeOfficialMarketplaceAddArgv(), {
       timeoutMs: MARKETPLACE_ADD_TIMEOUT_MS,

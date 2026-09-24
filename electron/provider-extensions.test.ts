@@ -195,6 +195,25 @@ describe('provider source update network policy', () => {
     expect(runCommandImplementation).not.toHaveBeenCalled()
   })
 
+  it('explains a pending Xcode agreement when the update check cannot use the macOS git shim', async () => {
+    const repository = temporaryDirectory()
+    write(path.join(repository, '.git', 'HEAD'), 'ref: refs/heads/main\n')
+    const runCommandImplementation = vi.fn<typeof productionRunCommand>(async () => {
+      throw new Error('must not run')
+    })
+    const inspect = createProviderSourceUpdateInspector({}, 'same-user', {
+      platform: 'darwin',
+      findExecutable: vi.fn(async () => '/usr/bin/git'),
+      runCommand: runCommandImplementation,
+      inspectCommandLineToolsShim: async () => 'license-pending',
+    })
+
+    const failure = inspect({ kind: 'git', locator: repository, localPath: repository, currentVersion: null })
+    await expect(failure).rejects.toThrow('点「同意」')
+    await expect(failure).rejects.not.toThrow('命令行开发者工具')
+    expect(runCommandImplementation).not.toHaveBeenCalled()
+  })
+
   it('disables Git redirects and accepts only a bounded HEAD hash result', async () => {
     const head = 'a'.repeat(40)
     const repository = temporaryDirectory()
@@ -1439,6 +1458,27 @@ describe('official marketplace as a standalone action', () => {
     const message = claudeMarketplaceGitMissingMessage('darwin', { commandLineToolsShim: true })
     expect(message).toContain('空壳')
     expect(message).toContain('xcode-select --install')
+    await expect(service.ensureMarketplace('claude')).rejects.toThrow(message)
+    expect(calls.some((argv) => argv.includes('add'))).toBe(false)
+  })
+
+  it('says the Xcode agreement is pending instead of asking for developer tools that are already there', async () => {
+    const calls: string[][] = []
+    const service = new ProviderExtensionService({
+      homeDirectory: temporaryDirectory(),
+      invoke: async (_provider, argv) => {
+        calls.push([...argv])
+        return '[]'
+      },
+      platform: 'darwin',
+      findExecutable: async () => '/usr/bin/git',
+      isCommandLineToolsShimBacked: async () => false,
+      inspectCommandLineToolsShim: async () => 'license-pending',
+    })
+
+    const message = claudeMarketplaceGitMissingMessage('darwin', { commandLineToolsShim: true, xcodeLicensePending: true })
+    expect(message).toContain('点「同意」')
+    expect(message).not.toMatch(/空壳|xcode-select|xcodebuild|sudo|许可协议/)
     await expect(service.ensureMarketplace('claude')).rejects.toThrow(message)
     expect(calls.some((argv) => argv.includes('add'))).toBe(false)
   })

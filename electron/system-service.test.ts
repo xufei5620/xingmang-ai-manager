@@ -511,6 +511,85 @@ describe('createSystemService', () => {
     expect(fs.existsSync(fallbackCodexHome)).toBe(false)
   })
 
+  function claudeConsoleKeyFixture(prefix: string) {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), prefix))
+    temporaryDirectories.push(root)
+    const roots = { userHome: path.join(root, 'home'), codexHome: path.join(root, 'codex') }
+    fs.mkdirSync(roots.userHome, { recursive: true })
+    const rootConfigPath = path.join(roots.userHome, '.claude.json')
+    const snapshotPath = path.join(providerConfigRoot('claude', roots), 'xingmang-claude-console-key.json')
+    const [settingsPath] = providerConfigPaths('claude', roots)
+    const store = new AppSettingsStore(path.join(root, 'settings.json'), root)
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      data: [{ id: 'claude-sonnet-5' }],
+    }), { status: 200 })))
+    const service = createSystemService(store, { providerRoots: roots })
+    const payload = { provider: 'claude' as const, apiKey: 'sk-relay', model: 'claude-sonnet-5', mode: 'merge' as const }
+    return { root, roots, rootConfigPath, snapshotPath, settingsPath, store, service, payload }
+  }
+
+  it('moves the Claude Console key aside before writing the relay config', async () => {
+    const f = claudeConsoleKeyFixture('xingmang-console-key-move-')
+    fs.writeFileSync(f.rootConfigPath, JSON.stringify({ primaryApiKey: 'sk-ant-console', theme: 'dark' }), 'utf8')
+
+    await f.service.saveConfig(f.payload, false)
+
+    expect(JSON.parse(fs.readFileSync(f.rootConfigPath, 'utf8'))).toEqual({ theme: 'dark' })
+    expect(JSON.parse(fs.readFileSync(f.snapshotPath, 'utf8'))).toEqual({ primaryApiKey: 'sk-ant-console' })
+    expect(inspectProviderConfig('claude', f.roots, providerBaseUrls).apiKey).toBe('sk-relay')
+  })
+
+  it('refuses to save Claude when the Console key cannot be moved aside', async () => {
+    const f = claudeConsoleKeyFixture('xingmang-console-key-move-fail-')
+    fs.writeFileSync(f.rootConfigPath, '{ not json', 'utf8')
+    await f.store.setOfficialProvider('claude', true)
+
+    await expect(f.service.saveConfig(f.payload, false)).rejects.toThrow(/官方 Key 没能挪开，配置没有改动/)
+
+    expect(fs.existsSync(f.settingsPath)).toBe(false)
+    expect(fs.readFileSync(f.rootConfigPath, 'utf8')).toBe('{ not json')
+    expect(f.store.read().officialProviders).toContain('claude')
+  })
+
+  it('puts the Console key back when the Claude relay config write fails', async () => {
+    const f = claudeConsoleKeyFixture('xingmang-console-key-undo-')
+    fs.writeFileSync(f.rootConfigPath, JSON.stringify({ primaryApiKey: 'sk-ant-console' }), 'utf8')
+    fs.mkdirSync(path.dirname(f.settingsPath), { recursive: true })
+    fs.writeFileSync(f.settingsPath, '{ broken', 'utf8')
+
+    const error = await f.service.saveConfig(f.payload, false).catch((reason: unknown) => reason)
+    expect(error).toBeInstanceOf(Error)
+    expect(String(error)).not.toMatch(/官方 Key/)
+
+    expect(JSON.parse(fs.readFileSync(f.rootConfigPath, 'utf8'))).toEqual({ primaryApiKey: 'sk-ant-console' })
+    expect(fs.readFileSync(f.snapshotPath, 'utf8')).toBe('')
+  })
+
+  it('reports a failed Console key restore instead of swallowing it', async () => {
+    const f = claudeConsoleKeyFixture('xingmang-console-key-restore-fail-')
+    fs.writeFileSync(f.rootConfigPath, JSON.stringify({ primaryApiKey: 'sk-ant-console' }), 'utf8')
+    await f.service.saveConfig(f.payload, false)
+    fs.writeFileSync(f.rootConfigPath, '{ not json', 'utf8')
+
+    await expect(f.service.restoreOfficialCredentials?.('claude')).rejects.toThrow(/官方 Key 没能放回原处/)
+    await expect(f.service.switchToOfficialAccount('claude')).rejects.toThrow(/官方 Key 没能放回原处/)
+
+    expect(inspectProviderConfig('claude', f.roots, providerBaseUrls).apiKey).toBe('sk-relay')
+    expect(f.store.read().officialProviders ?? []).not.toContain('claude')
+    expect(JSON.parse(fs.readFileSync(f.snapshotPath, 'utf8'))).toEqual({ primaryApiKey: 'sk-ant-console' })
+  })
+
+  it('restores the Console key when switching Claude back to the official account', async () => {
+    const f = claudeConsoleKeyFixture('xingmang-console-key-official-')
+    fs.writeFileSync(f.rootConfigPath, JSON.stringify({ primaryApiKey: 'sk-ant-console' }), 'utf8')
+    await f.service.saveConfig(f.payload, false)
+
+    await f.service.switchToOfficialAccount('claude')
+
+    expect(JSON.parse(fs.readFileSync(f.rootConfigPath, 'utf8'))).toEqual({ primaryApiKey: 'sk-ant-console' })
+    expect(f.store.read().officialProviders).toContain('claude')
+  })
+
   it('passes official reset through to the selected Codex root and persists its account source', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-official-reset-'))
     temporaryDirectories.push(root)
@@ -929,6 +1008,45 @@ describe('createSystemService', () => {
 
     expect(executed).toContain('/usr/bin/git')
     expect(snapshot.runtime.git).toMatchObject({ installed: true, version: '2.39.5', path: '/usr/bin/git' })
+  })
+
+  // 同上，夹具要 POSIX 路径。
+  it.skipIf(process.platform === 'win32')('treats the macOS shims as not installed while the Xcode license is not agreed', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-xcode-license-'))
+    temporaryDirectories.push(directory)
+    const developerDirectory = path.join(directory, 'Xcode.app', 'Contents', 'Developer')
+    fs.mkdirSync(path.join(developerDirectory, 'usr', 'bin'), { recursive: true })
+    fs.writeFileSync(path.join(developerDirectory, 'usr', 'bin', 'git'), '')
+    fs.writeFileSync(path.join(developerDirectory, 'usr', 'bin', 'python3'), '')
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('offline') }))
+    const license = "You have not agreed to the Xcode license agreements. Please run 'sudo xcodebuild -license' from within a Terminal window to review and agree to the Xcode and Apple SDKs license."
+    const service = createSystemService(
+      new AppSettingsStore(path.join(directory, 'settings.json'), directory),
+      {
+        platform: 'darwin',
+        findExecutable: async (command) =>
+          command === 'git' ? '/usr/bin/git' : command === 'python3' ? '/usr/bin/python3' : null,
+        runCommand: async (spec) => {
+          if (spec.executable === '/usr/bin/xcode-select') {
+            const stdout = `${developerDirectory}\n`
+            return {
+              executable: spec.executable, argv: [...spec.argv], exitCode: 0, signal: null,
+              stdout, stderr: '', outputBytes: stdout.length, durationMs: 1,
+            }
+          }
+          throw Object.assign(new Error('Command failed with exit code 69'), { stdout: '', stderr: `${license}\n` })
+        },
+        resolveCliInstallation: async () => null,
+        macosCodexAppDetector: async () => ({ app: null, detectionFailed: false, detectionError: null }),
+      },
+    )
+
+    const snapshot = await service.scanSystem(false)
+
+    // 以前这句英文被当成 Python 的版本号整段上了首页。
+    expect(snapshot.runtime.python).toMatchObject({ installed: false, version: null, path: null })
+    expect(snapshot.runtime.git).toMatchObject({ installed: false, version: null, path: null })
+    expect(snapshot.runtime.git.detectionFailed).not.toBe(true)
   })
 
   it('keeps a Git probe failure distinguishable from "not installed"', async () => {
