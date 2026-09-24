@@ -92,7 +92,11 @@ export interface AppSettings {
   /** Absent follows the theme: dawn for light, obsidian for dark. */
   uiSkin?: AppUiSkin
   reducedMotion?: boolean
-  /** System desktop notifications are opt-in; absent = disabled. */
+  /**
+   * Absent = enabled. Only an explicit opt-out is stored, the same as
+   * crashReporting; versions before 0.2.10 never wrote `false`, so a file
+   * from them reads as enabled either way.
+   */
   desktopNotifications?: boolean
   /** Absent = automatic. A pinned percentage multiplies the automatic zoom. */
   uiScale?: Exclude<AppUiScale, 'auto'>
@@ -288,7 +292,7 @@ function parseSettingsValue(value: unknown): AppSettings {
     ...(codexDesktopChineseRuntimePatch !== undefined ? { codexDesktopChineseRuntimePatch } : {}),
     uiSkin: uiSkin ?? 'mist',
     ...(optionalBoolean(value.reducedMotion, false) ? { reducedMotion: true as const } : {}),
-    ...(optionalBoolean(value.desktopNotifications, false) ? { desktopNotifications: true as const } : {}),
+    ...(value.desktopNotifications === false ? { desktopNotifications: false as const } : {}),
     ...(uiScale !== undefined ? { uiScale } : {}),
     ...(closeBehavior !== undefined ? { closeBehavior } : {}),
     ...(windowState !== undefined ? { windowState } : {}),
@@ -434,7 +438,7 @@ export function mergeAppSettings(base: AppSettings, update: AppSettingsUpdate): 
     ...(codexDesktopChineseRuntimePatch !== undefined ? { codexDesktopChineseRuntimePatch } : {}),
     uiSkin,
     ...(reducedMotion ? { reducedMotion: true as const } : {}),
-    ...(desktopNotifications ? { desktopNotifications: true as const } : {}),
+    ...(desktopNotifications === false ? { desktopNotifications: false as const } : {}),
     ...(uiScale !== undefined ? { uiScale } : {}),
     ...(closeBehavior !== undefined ? { closeBehavior } : {}),
     ...(windowState !== undefined ? { windowState } : {}),

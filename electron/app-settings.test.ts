@@ -439,16 +439,19 @@ describe('field-wise settings updates (①栏11)', () => {
 describe('UI and window preferences', () => {
   const windowState = { bounds: { x: -1500, y: 40, width: 1280, height: 820 }, maximized: true }
 
-  it('keeps desktop notifications opt-in and clears a saved opt-in with an explicit false', async () => {
+  it('turns desktop notifications on by default and keeps only an explicit opt-out', async () => {
     const filePath = temporarySettingsPath()
+    // 老版本从不写 false：没存过值的一律按新默认打开。
     expect(readAppSettings(filePath)).not.toHaveProperty('desktopNotifications')
     await writeAppSettings(filePath, settings({ desktopNotifications: true, windowState }))
-    expect(readAppSettings(filePath).desktopNotifications).toBe(true)
-    await updateAppSettings(filePath, { version: 2, theme: 'light' })
-    expect(readAppSettings(filePath).desktopNotifications).toBe(true)
-    await updateAppSettings(filePath, { version: 2, desktopNotifications: false })
     expect(readAppSettings(filePath)).not.toHaveProperty('desktopNotifications')
+    await updateAppSettings(filePath, { version: 2, desktopNotifications: false })
+    expect(readAppSettings(filePath).desktopNotifications).toBe(false)
+    await updateAppSettings(filePath, { version: 2, theme: 'light' })
+    expect(readAppSettings(filePath).desktopNotifications).toBe(false)
     expect(readAppSettings(filePath).windowState).toEqual(windowState)
+    await updateAppSettings(filePath, { version: 2, desktopNotifications: true })
+    expect(readAppSettings(filePath)).not.toHaveProperty('desktopNotifications')
   })
 
   it('rejects malformed persisted notification preferences without discarding other settings', () => {
