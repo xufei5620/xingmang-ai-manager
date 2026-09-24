@@ -55,10 +55,10 @@ export interface CliVersionCompatibility {
 export const cliVerifiedVersions: Record<ProviderId, CliVersionCompatibility> = {
   claude: {
     recommended: {
-      version: '2.1.277',
-      verifiedAt: '2026-09-18',
+      version: '2.1.281',
+      verifiedAt: '2026-09-24',
       verifiedSites: [],
-      note: '当前 npm latest,且修复了 2.1.275 引入的「指向网关时每个请求 400」回归',
+      note: '当前 npm latest;2.1.278~2.1.281 没有新的网关回归,修了中转断流被当成完成、重复流事件让工具调用跑两遍、断网时启动卡十几秒',
     },
     blocked: [
       {

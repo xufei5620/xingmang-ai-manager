@@ -80,6 +80,17 @@ describe('versionInBlockedRange', () => {
 })
 
 describe('cliVerifiedVersions coverage', () => {
+  it('pins Claude Code past both gateway regressions', () => {
+    // 2.1.278-2.1.281 shipped no new third-party base URL regression, and 2.1.281
+    // fixes stream handling behind proxies (a cleanly closed stream reported as
+    // complete, duplicated stream events running a tool call twice). A sandbox
+    // capture against a local fake endpoint sent the same request fields and the
+    // same tool list as 2.1.277.
+    expect(cliVerifiedVersions.claude.recommended?.version).toBe('2.1.281')
+    expect(findBlockedCliVersion('claude', '2.1.281')).toBeNull()
+    expect(findBlockedCliVersion('claude', '2.1.276')?.fixed).toBe('2.1.277')
+  })
+
   it('pins Codex and blocks the release that asks the relay for reasoning summaries', () => {
     // 0.155.0 (2026-09-17) turned detailed reasoning summaries on by default and
     // providers that do not support them reject the request outright; OpenAI
