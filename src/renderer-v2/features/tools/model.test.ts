@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { ProviderConfigSummary, ProviderId } from '../../../../electron/ipc-contract'
-import { accountSwitchTarget, canUninstallTool, codexDesktopUpdateKind, configDirectoryMenuItem, connectionReady, externalInstallHint, isExternallyManagedInstall, presentTools, providerFor, recommendedVersionVerb, rollbackVersion, sourceFor, toolAvailability, toolInstallDirectory, toolUpdateOffer, updateCheckFailure, versionSubtitle, type ToolboxSnapshot, type ToolPresentation } from './model'
+import { accountSwitchTarget, canUninstallTool, ccSwitchLeftoverFor, codexDesktopUpdateKind, configDirectoryMenuItem, connectionReady, externalInstallHint, isExternallyManagedInstall, presentTools, providerFor, recommendedVersionVerb, rollbackVersion, sourceFor, toolAvailability, toolInstallDirectory, toolUpdateOffer, updateCheckFailure, versionSubtitle, type ToolboxSnapshot, type ToolPresentation } from './model'
 import {
   writeManualSourceMarker,
   type SourceMarkerStorage,
@@ -53,6 +53,27 @@ describe('renderer tool source', () => {
     expect(sourceFor(config, 'codex', storage)).toBe('manual')
     expect(connectionReady(config, 'codex', storage)).toBe(true)
     expect(providerFor('codexDesktop')).toBe('codex')
+  })
+
+  describe('a configuration CC Switch left behind', () => {
+    it('only counts while the source is unconfirmed or edited', () => {
+      const storage = memoryStorage()
+      const config: ProviderConfigSummary = { ...relayConfig(), matchesRelay: false, actualBaseUrl: 'https://elsewhere.example', ccSwitchLeftover: 'provider' }
+      expect(ccSwitchLeftoverFor(config, 'claude', 'unknown', storage)).toBe('provider')
+      expect(ccSwitchLeftoverFor({ ...config, ccSwitchLeftover: 'proxy' }, 'claude', 'changed', storage)).toBe('proxy')
+      for (const source of ['account', 'manual', 'official', 'missing'] as const) expect(ccSwitchLeftoverFor(config, 'claude', source, storage)).toBeNull()
+      expect(ccSwitchLeftoverFor({ ...config, ccSwitchLeftover: undefined }, 'claude', 'unknown', storage)).toBeNull()
+      expect(ccSwitchLeftoverFor(undefined, 'claude', 'unknown', storage)).toBeNull()
+    })
+
+    it('stops nagging once the user keeps the configuration as it is', () => {
+      const storage = memoryStorage()
+      const config: ProviderConfigSummary = { ...relayConfig(), matchesRelay: false, actualBaseUrl: 'https://elsewhere.example', ccSwitchLeftover: 'provider' }
+      writeManualSourceMarker(storage, config.baseUrl, 'claude', true)
+      expect(ccSwitchLeftoverFor(config, 'claude', 'unknown', storage)).toBeNull()
+      // 标记是按工具记的，别的工具照旧提醒。
+      expect(ccSwitchLeftoverFor(config, 'gemini', 'unknown', storage)).toBe('provider')
+    })
   })
 
   describe('a configuration this app wrote and someone else edited', () => {

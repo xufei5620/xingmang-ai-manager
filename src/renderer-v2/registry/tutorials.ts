@@ -987,6 +987,7 @@ export const tutorialTopics: readonly TutorialTopic[] = [
         expected: '工具使用正确的配置，文件任务在选定的项目内进行。',
         extra: [
           { title: statuses.tool.configChanged[0], detail: '其他程序或手工操作改过配置，当前账号的 Key 可能已不在里面。要用星芒配置就重新写入 Key；如果这是你有意做的修改，在「…」中选择「就用现在这份」。' },
+          { title: statuses.tool.ccSwitch[0], detail: '以前用 CC Switch 配过这个工具，它现在还连着 CC Switch 里选的那一家。点「改用当前账号」会先备份原来的设置（在「备份」里能找回），再换成当前账号；想继续用 CC Switch 的，在「…」中选择「就用现在这份」。不再用 CC Switch 的话请把它退出，免得它又把设置改回去。' },
           { title: statuses.tool.detectionFailed[0], detail: '检测失败不等于没安装。先查看具体原因，处理后重新检测。' },
           { title: '这个文件夹范围太大', detail: '用户主目录、磁盘根目录、桌面、下载、文档等范围太大，改选具体项目文件夹，或者直接点提示里的「新建一个项目文件夹」。若仍选择这次打开，不会把该目录标为信任，也不会自动生成项目说明。' },
         ],

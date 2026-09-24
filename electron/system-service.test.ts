@@ -4459,7 +4459,9 @@ describe('startup snapshot cache and probe limits', () => {
     const first = service(directory, async () => null)
     await expect(first.cachedScan()).resolves.toBeNull()
     await first.scanSystem(false)
-    await waitForFile(path.join(directory, 'system-snapshot.json'))
+    const snapshotFile = path.join(directory, 'system-snapshot.json')
+    await waitForFile(snapshotFile)
+    const firstSaved = fs.readFileSync(snapshotFile, 'utf8')
 
     let release!: () => void
     const blocked = new Promise<void>((resolve) => { release = resolve })
@@ -4474,6 +4476,11 @@ describe('startup snapshot cache and probe limits', () => {
     const fresh = await second.scanSystem(false)
     expect(fresh.cachedAt).toBeUndefined()
     await expect(second.cachedScan()).resolves.toBeNull()
+    // scanSystem 不等快照落盘就返回。落盘是写临时文件再改名，收尾删目录时要是
+    // 撞上那个临时文件，macOS 上会报 ENOTEMPTY。等新快照改名到位再结束。
+    for (let attempt = 0; attempt < 200 && fs.readFileSync(snapshotFile, 'utf8') === firstSaved; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 5))
+    }
   })
 
   it('never starts more probe processes at once than the limit', async () => {
@@ -4492,5 +4499,30 @@ describe('startup snapshot cache and probe limits', () => {
     await probed.scanSystem(false)
     expect(scanProbeConcurrency).toBe(3)
     expect(peak).toBe(scanProbeConcurrency)
+  })
+})
+
+describe('CC Switch leftovers in the config summary', () => {
+  it('flags configurations CC Switch left behind without exposing anything new', () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-cc-switch-summary-'))
+    temporaryDirectories.push(directory)
+    const service = createService({ providerRoots: { userHome: directory, codexHome: path.join(directory, '.codex') } })
+    fs.mkdirSync(path.join(directory, '.claude'))
+    fs.writeFileSync(path.join(directory, '.claude', 'settings.json'), JSON.stringify({
+      env: { ANTHROPIC_BASE_URL: 'http://127.0.0.1:15721', ANTHROPIC_AUTH_TOKEN: 'PROXY_MANAGED' },
+    }), 'utf8')
+    fs.mkdirSync(path.join(directory, '.gemini'))
+    fs.writeFileSync(path.join(directory, '.gemini', '.env'), 'GOOGLE_GEMINI_BASE_URL=https://other.example\nGEMINI_API_KEY=sk-other\n', 'utf8')
+
+    const before = service.getConfig(false).providers
+    expect(before.claude.ccSwitchLeftover).toBe('proxy')
+    expect(before.gemini).not.toHaveProperty('ccSwitchLeftover')
+    expect(before.codex).not.toHaveProperty('ccSwitchLeftover')
+
+    fs.mkdirSync(path.join(directory, '.cc-switch'))
+    const after = service.getConfig(false).providers
+    expect(after.claude.ccSwitchLeftover).toBe('proxy')
+    expect(after.gemini.ccSwitchLeftover).toBe('provider')
+    expect(after.codex).not.toHaveProperty('ccSwitchLeftover')
   })
 })

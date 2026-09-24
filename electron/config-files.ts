@@ -66,6 +66,12 @@ export interface NativeConfigSummary extends Omit<NativeConfigInspection, 'apiKe
   configurationOwnership?: 'account' | 'manual' | 'unknown' | 'missing' | 'changed'
   /** Exact current-account cache match for display; never grants automatic write consent. */
   configurationAccountMatched?: boolean
+  /**
+   * 这份配置看起来是 CC Switch 写的（cc-switch-leftover.ts）：`proxy` = 它的本地代理
+   * 接管占位，`provider` = 装过它且配置里有别处的连接。只是线索，不代表来源已确认，
+   * 渲染层只在来源没确认或被改过时才用。缺省 = 没看出来。
+   */
+  ccSwitchLeftover?: 'proxy' | 'provider'
 }
 
 export function apiKeyPreview(apiKey: string): string | null {
@@ -2521,6 +2527,11 @@ const claudeForeignEnvKeys = [
   'ANTHROPIC_DEFAULT_OPUS_MODEL',
   'ANTHROPIC_DEFAULT_SONNET_MODEL',
   'ANTHROPIC_DEFAULT_HAIKU_MODEL',
+  // CC Switch 给每个供应商都会写这两项。Claude Code 2.1.277 实测 `--model fable`
+  // 照样被 ANTHROPIC_DEFAULT_FABLE_MODEL 改道去别家的型号名；子任务的型号由
+  // CLAUDE_CODE_SUBAGENT_MODEL 指定，同理。
+  'ANTHROPIC_DEFAULT_FABLE_MODEL',
+  'CLAUDE_CODE_SUBAGENT_MODEL',
 ] as const
 const claudeForeignTopLevelKeys = ['apiKeyHelper'] as const
 

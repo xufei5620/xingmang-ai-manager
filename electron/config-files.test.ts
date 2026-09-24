@@ -1799,6 +1799,8 @@ describe('switching a provider back to the official subscription account', () =>
       ANTHROPIC_DEFAULT_OPUS_MODEL: 'glm-4.6',
       ANTHROPIC_DEFAULT_SONNET_MODEL: 'glm-4.6',
       ANTHROPIC_DEFAULT_HAIKU_MODEL: 'glm-4.5-air',
+      ANTHROPIC_DEFAULT_FABLE_MODEL: 'glm-4.6',
+      CLAUDE_CODE_SUBAGENT_MODEL: 'glm-4.5-air',
       MY_OWN_VARIABLE: 'keep-me',
     },
     apiKeyHelper: '/usr/local/bin/print-other-key',
@@ -1838,6 +1840,39 @@ describe('switching a provider back to the official subscription account', () =>
     expect(official.apiKeyHelper).toBe(original.apiKeyHelper)
     expect(official.theme).toBe('dark')
     expect(fs.readFileSync(snapshotPath, 'utf8')).toBe('')
+  })
+
+  // CC Switch 写的样子照抄它的源码（services/proxy.rs 的接管、codexProviderPresets.ts 的模板）。
+  // 首页「改用当前账号」走的就是这条 merge，写完必须认得出是当前中转。
+  it('takes over files written by CC Switch, including its local proxy takeover', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const [claudePath] = providerConfigPaths('claude', roots)
+    const [codexConfigPath, codexAuthPath] = providerConfigPaths('codex', roots)
+    fs.mkdirSync(path.dirname(claudePath), { recursive: true })
+    fs.mkdirSync(path.dirname(codexConfigPath), { recursive: true })
+    fs.writeFileSync(claudePath, JSON.stringify({
+      env: {
+        ANTHROPIC_BASE_URL: 'http://127.0.0.1:15721',
+        ANTHROPIC_AUTH_TOKEN: 'PROXY_MANAGED',
+        ANTHROPIC_DEFAULT_FABLE_MODEL: 'claude-fable-5',
+        CLAUDE_CODE_SUBAGENT_MODEL: 'glm-5',
+      },
+    }))
+    fs.writeFileSync(codexConfigPath, [
+      'model_provider = "custom"', 'model = "glm-5"', 'model_reasoning_effort = "high"', 'disable_response_storage = true', '',
+      '[model_providers.custom]', 'name = "Other"', 'base_url = "https://other.example/v1"', 'wire_api = "responses"', 'requires_openai_auth = true', '',
+    ].join('\n'))
+    fs.writeFileSync(codexAuthPath, JSON.stringify({ OPENAI_API_KEY: 'sk-other' }))
+
+    saveProviderConfig('claude', 'sk-relay', testModels.claude, 'merge', roots, {}, providerBaseUrls)
+    saveProviderConfig('codex', 'sk-relay', testModels.codex, 'merge', roots, {}, providerBaseUrls)
+
+    expect(inspectProviderConfig('claude', roots)).toMatchObject({ matchesRelay: true, apiKey: 'sk-relay' })
+    expect(inspectProviderConfig('codex', roots)).toMatchObject({ matchesRelay: true, apiKey: 'sk-relay' })
+    const claudeEnv = (JSON.parse(fs.readFileSync(claudePath, 'utf8')) as { env: Record<string, unknown> }).env
+    expect(claudeEnv.ANTHROPIC_DEFAULT_FABLE_MODEL).toBeUndefined()
+    expect(claudeEnv.CLAUDE_CODE_SUBAGENT_MODEL).toBeUndefined()
   })
 
   it('keeps foreign Claude settings through a reset and restores them on an official reset', () => {
