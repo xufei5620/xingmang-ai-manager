@@ -273,12 +273,40 @@ Codex 那时 `recommended` 是 `null`，也就是那两天点过「更新」的�
 
 | 工具 | `recommended` | `blocked` | 依据 |
 |---|---|---|---|
-| Claude Code | `2.1.277`（2026-09-18） | `[2.1.265, 2.1.268)`、`[2.1.275, 2.1.277)` | 上游 changelog 两条网关回归 |
+| Claude Code | `2.1.281`（2026-09-24） | `[2.1.265, 2.1.268)`、`[2.1.275, 2.1.277)` | 上游 changelog 两条网关回归；抬到 2.1.281 的依据见下一段 |
 | Codex CLI | `0.156.1`（2026-09-23） | `[0.155.0, 0.155.1)` | 上游 release note 与 PR #46467（见上一节）；抬到 0.156.1 的依据见下一段 |
 | Gemini CLI | `0.60.0`（2026-09-21） | 无 | 当前 npm `latest`；0.57~0.60 四个正式版全是安全加固，未发现与第三方 base URL 相关的回归 |
 | Grok CLI | 无 | 无 | 还没有遇到过需要挡的版本，行为与从前一致（装 npm `latest`） |
 
 三条 `recommended` 的 `verifiedSites` 目前都是空数组：中转实测所需的仓库 secret 还没配（见下文），所以这三个版本都还**没有**在任何站点上跑过真实请求。跑通之后把站点 id 填进去。
+
+**Claude Code 2.1.277 → 2.1.281（2026-09-24）：修的都是接中转才碰得到的毛病，没有新回归。**
+npm `latest` 是 2.1.281（2.1.279 没发过）。上游 changelog 2.1.278、2.1.280、2.1.281 三段逐条读过，
+跟代理、网关、第三方端点、鉴权、400、请求体、型号沾边的全部是修复，没有「自某版起」的回归：
+
+- 2.1.281：*Fixed responses cut short by a proxy or gateway that closes the stream cleanly being shown
+  as complete with no warning, and tool calls running twice on duplicated stream events*；
+  *Fixed responses failing with "Content block not found" when a proxy drops a stream event
+  mid-response*；*Fixed the stop reason being lost when a proxy sends a trailing usage-only frame*；
+  *Fixed an empty completed response being requested twice when the connection dropped before the
+  stream's final event*；*Fixed interactive startup waiting on the managed-settings network request
+  (about 80 ms, 17+ seconds when the network is unreachable) when no MCP servers or plugins are
+  configured*；*Fixed API errors from an HTML error page (such as a proxy's 429 or 502 page) printing
+  the page's raw markup*。
+- 2.1.280：*Fixed conversations with the advisor on failing every turn with API Error 400 "Input tag
+  'advisor_20260301'" behind a proxy or gateway that doesn't support it; the request now retries
+  without it*——比 2.1.277 的修法多了一层兜底；另外把 Opus 5.5 设为默认 Opus，本产品写了
+  `ANTHROPIC_DEFAULT_MODEL` 与 `modelPicker`，不受影响。
+- 2.1.278：只改了 auto mode 在网关上默认用服务端分类器；本产品模板写的是 `bypassPermissions`，不走 auto mode。
+
+沙箱实测（空 HOME、非 root、`env -i`、出网代理指死端口，`settings.json` 按本产品模板写
+`ANTHROPIC_BASE_URL` 指本地假接口、`bypassPermissions`、`skipWebFetchPreflight`、`language`、
+`DISABLE_AUTOUPDATER`）与 2.1.277 对照：`claude -p "hi"` 两版都正常拿到假接口的回复；请求体字段、
+`anthropic-beta` 头、鉴权头（只有 `Authorization`、没有 `x-api-key`）完全一样；不写 deny 时两版都发
+21 个工具（含 `DesignSync`、不含 `Artifact`），每个工具的输入 schema 一字不差，写上
+`deny: ['Artifact', 'DesignSync']` 后都剩 20 个；`claude doctor` 仍是
+`Auto-updates: disabled (set by env: DISABLE_AUTOUPDATER)`；`--continue` 还在。
+没做的：中转上的真实请求（`verifiedSites` 仍为空）。
 
 **Codex 0.155.1 → 0.156.1（2026-09-23）：为了 GPT-6 Sol / Luna。** OpenAI 9 月 22 日发布
 `gpt-6-sol` 与 `gpt-6-luna`。Codex 按自带的模型目录（`codex-rs/models-manager/models.json`）决定
