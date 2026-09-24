@@ -2343,6 +2343,8 @@ test('announcement banner can be closed, stays closed after reload, and returns 
     // Closing only quiets the reminder; every entry is still listed as unread.
     await button.click()
     const dialog = page.getByRole('dialog', { name: '公告', exact: true })
+    // Opening the center re-reads the notice, so wait for the list before reading its rows.
+    await dialog.getByTestId('announcement-list').waitFor()
     assert.deepEqual(await dialog.getByTestId('announcement-list').locator('.v2-announcement-read-state').allTextContents(), ['未读', '未读', '未读'])
     await dialog.getByRole('button', { name: '关闭', exact: true }).click()
     // Simulate a newly published entry: one unread key this account has never seen.
