@@ -38,6 +38,7 @@ import {
   buildDesktopAppStatusFromSettled,
   buildNetworkLocationStatusFromSettled,
   buildToolStatusFromSettled,
+  installGitAlongsideClaude,
   buildUncheckedLatestVersion,
   latestVersionUncheckedMessage,
   networkProbeSuggestsOffline,
@@ -2490,6 +2491,24 @@ describe('Git runtime installation', () => {
       'runtime:git-install-progress',
       expect.objectContaining({ phase: 'complete', message: expect.stringContaining('不用重复安装') }),
     )
+  })
+
+  it('notes a Git that came along with Claude Code and stays quiet when it was already there', async () => {
+    const notes: string[] = []
+    await installGitAlongsideClaude(async () => ({ action: 'installed' }), (message) => notes.push(message))
+    await installGitAlongsideClaude(async () => ({ action: 'unchanged' }), (message) => notes.push(message))
+    expect(notes).toEqual(['Git 也顺带装好了'])
+  })
+
+  it('never lets a failed Git install fail the Claude Code install', async () => {
+    const notes: string[] = []
+    await expect(installGitAlongsideClaude(
+      async () => { throw new Error('Git 没装上。国内镜像：HTTP 404；Git 官方源：下载超时') },
+      (message) => notes.push(message),
+    )).resolves.toBeUndefined()
+    expect(notes).toHaveLength(1)
+    expect(notes[0]).toContain('不影响使用 Claude Code')
+    expect(notes[0]).toContain('「安装 Git」')
   })
 
   it('refuses to install Git outside Windows', async () => {
