@@ -132,6 +132,10 @@ if (query.has('desktopOnly')) {
 if (query.has('cliUpdate')) {
   system.clis.claude = { ...system.clis.claude, latestVersion: '2.0.0', updateAvailable: true }
 }
+// 官方安装器装的 Claude Code：维护页不给 npm「重新安装」（#481）。
+if (query.has('nativeInstall')) {
+  system.clis.claude = { ...system.clis.claude, installSource: 'native' }
+}
 // 探针抛错时主进程给的就是这个形状（`buildToolStatusFromSettled`）：装没装没有结论，
 // 版本号也没有，只有一句原因。
 if (query.has('detectionFailed')) {

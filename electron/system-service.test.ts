@@ -6,6 +6,8 @@ import * as TOML from '@iarna/toml'
 import { classifyNetworkFailure } from './network-failure'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AppSettingsStore, defaultAppSettings } from './app-settings'
+import { InstallationQueue } from './installation-queue'
+import { resolveInterruptibleInstallTask } from './quit-blocking-tasks'
 import { providerBaseUrls, type ProviderId } from './catalog'
 import { providerConfigRoot, type ProviderConfigRoots } from './codex-home'
 import {
@@ -29,7 +31,9 @@ import {
   assertNpmPackageLocksEquivalent,
   assertNpmReleaseIntegrityMatches,
   assertNpmReleaseMatchesOfficialLock,
+  buildCliLaunchQueueKey,
   buildCliStatus,
+  externalCliInstallRefusal,
   buildCliMaintenancePlan,
   buildCliToolStatusFromSettled,
   buildDarwinCliLaunchPlan,
@@ -2315,7 +2319,9 @@ describe.runIf(process.platform === 'darwin')('Darwin managed npm update integra
     expect(fs.readFileSync(activeCommand, 'utf8')).toContain('old-cli')
     expect(lifecyclePrefix).not.toBe(activePrefix)
     expect(path.relative(cacheRoot, lifecyclePrefix!)).not.toMatch(/^\.\.(?:[/\\]|$)/)
-    expect(resolveCliInstallation).toHaveBeenCalledTimes(1)
+    // 一次是安装前确认现有那份归 npm 通道管（#481），一次是装完后的校验；
+    // 两次都对着托管 npm 全局根（见 resolveCliInstallation 里的断言）。
+    expect(resolveCliInstallation).toHaveBeenCalledTimes(2)
     expect(target.send).not.toHaveBeenCalledWith(
       'cli:install-progress',
       expect.objectContaining({ state: 'success' }),
@@ -3033,6 +3039,39 @@ describe('interactiveTerminalEnvironment', () => {
       CLICOLOR_FORCE: '1',
     })
     expect(env.NO_COLOR).toBeUndefined()
+  })
+})
+
+describe('CLI launch queue key', () => {
+  it('merges only identical launches and keeps different workspaces or modes apart', async () => {
+    const first = path.join(os.tmpdir(), 'project-a')
+    expect(buildCliLaunchQueueKey('codex', first, 'new')).toBe(buildCliLaunchQueueKey('codex', path.join(first, '.'), 'new'))
+    expect(buildCliLaunchQueueKey('codex', first, 'new')).not.toBe(buildCliLaunchQueueKey('codex', path.join(os.tmpdir(), 'project-b'), 'new'))
+    expect(buildCliLaunchQueueKey('codex', first, 'new')).not.toBe(buildCliLaunchQueueKey('codex', first, 'resumeLast'))
+    expect(buildCliLaunchQueueKey('codex', first, 'new')).not.toBe(buildCliLaunchQueueKey('claude', first, 'new'))
+
+    const queue = new InstallationQueue()
+    const ran: string[] = []
+    let releaseInstall: () => void = () => {}
+    const install = queue.enqueue('cli:install:codex', () => new Promise<void>((resolve) => { releaseInstall = resolve }))
+    const home = queue.enqueue(buildCliLaunchQueueKey('codex', first, 'new'), async () => { ran.push('home'); return 'home' })
+    const doubleClick = queue.enqueue(buildCliLaunchQueueKey('codex', first, 'new'), async () => { ran.push('duplicate'); return 'duplicate' })
+    const resume = queue.enqueue(buildCliLaunchQueueKey('codex', first, 'resumeLast'), async () => { ran.push('resume'); return 'resume' })
+    releaseInstall()
+    await install
+    await expect(Promise.all([home, doubleClick, resume])).resolves.toEqual(['home', 'home', 'resume'])
+    expect(ran).toEqual(['home', 'resume'])
+    expect(resolveInterruptibleInstallTask({ activeKey: buildCliLaunchQueueKey('codex', first, 'new'), pendingKeys: [] })).toBeNull()
+  })
+})
+
+describe('externalCliInstallRefusal', () => {
+  it('refuses the npm channel only for CLIs installed some other way', () => {
+    expect(externalCliInstallRefusal('claude', 'native')).toMatch(/官方安装器管理，这里不会再另装一份/)
+    expect(externalCliInstallRefusal('codex', 'path')).toMatch(/不是通过本工具安装的/)
+    expect(externalCliInstallRefusal('gemini', 'npm')).toBeNull()
+    expect(externalCliInstallRefusal('claude', undefined)).toBeNull()
+    expect(externalCliInstallRefusal('grok', 'native')).toBeNull()
   })
 })
 
