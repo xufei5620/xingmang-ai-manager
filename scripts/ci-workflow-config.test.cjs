@@ -983,6 +983,33 @@ test('a lost fixture navigation is retried inside the budget rather than waited 
   assert.ok(Date.now() - started < 600, 'the attempts must share one deadline rather than each taking the whole budget')
 })
 
+// Quality run 36034905213 lost all three navigations within 204ms of a 90s
+// budget: page.goto threw net::ERR_NO_BUFFER_SPACE after 13ms, the retry was
+// cut off by the chrome-error page, and the third went the same way. Retrying
+// only helps once the machine has had a moment, so a navigation that loses fast
+// must sit out the rest of its own slice before the next one starts.
+test('a navigation that loses in milliseconds waits out its slice before the next one', async () => {
+  const readiness = await import(require('node:url').pathToFileURL(path.join(root, fixtureReadinessModule)).href)
+
+  const timeout = 600
+  const slice = readiness.fixtureMountSliceMs(timeout, 3)
+  const starts = []
+  const started = Date.now()
+  const mounted = await readiness.openFixturePage({
+    goto: async () => {
+      starts.push(Date.now() - started)
+      if (starts.length < 3) throw new Error('page.goto: net::ERR_NO_BUFFER_SPACE')
+    },
+  }, 'about:blank', async () => {}, { label: 'probe', timeout, attempts: 3 })
+
+  assert.ok(mounted, 'the third navigation reaches a mounted page')
+  assert.equal(starts.length, 3)
+  // Scheduling may fire a timer a millisecond early, never a slice early.
+  assert.ok(starts[1] >= slice - 5, `the second navigation started ${starts[1]}ms in, before the first slice (${slice}ms) was over`)
+  assert.ok(starts[2] >= 2 * slice - 5, `the third navigation started ${starts[2]}ms in, before the second slice was over`)
+  assert.ok(Date.now() - started < timeout, 'sitting out a slice spends the same budget, never a wider one')
+})
+
 // The list above was right about every suite on it and blind to every suite
 // that was not: nothing tied it to the suites that actually exist, so the chat
 // fixture under src/renderer-v2/ was never noticed. Discovering the suites

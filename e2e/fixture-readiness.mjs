@@ -128,6 +128,16 @@ export async function openFixturePage(page, url, mount, options = {}) {
     if (attempt < attempts) {
       const reason = String(failure?.message ?? failure).split('\n')[0]
       process.stderr.write(`[fixture] ${label} lost navigation ${attempt}/${attempts} after ${Date.now() - attemptStarted}ms, navigating again: ${reason}\n`)
+      // A navigation that loses in milliseconds must not hand the machine its
+      // next one straight away. Quality run 36034905213 threw
+      // net::ERR_NO_BUFFER_SPACE 13ms into page.goto, the retry landed on the
+      // chrome-error page the first one left behind, and all three navigations
+      // were gone within 204ms of a 90s budget — the runner's socket buffers had
+      // no time to drain between them. Each navigation already owns its slice, so
+      // it sits out what is left of it: the budget is unchanged, and the
+      // navigations land spread across it instead of inside one bad moment.
+      const idle = attemptDeadline - Date.now()
+      if (idle > 0) await new Promise((resolve) => setTimeout(resolve, idle))
     }
   }
   throw new Error(`${label} did not finish installing within ${timeout}ms after ${attempts} navigations`, { cause: failure })
