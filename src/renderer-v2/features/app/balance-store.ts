@@ -21,14 +21,23 @@ export interface AccountBalanceStore {
   dispose(): void
 }
 
-const refreshInterval = 30_000
+// 这是软件里唯一按时去服务端拉数据的地方：余额、公告时间线和后台的新公告提醒都跟着它。
+// 以前窗口没缩到托盘就每 30 秒刷一次，被别的窗口挡着也照刷，一台电脑一天能到三千次。
+// 现在用户正看着软件时每分钟一次，被挡住、在后台或缩到托盘时每 10 分钟一次（只为了
+// 及时弹新公告的系统通知），切回窗口马上刷一次。
+export const activeRefreshInterval = 60_000
+export const backgroundRefreshInterval = 10 * 60_000
 const foregroundReuseWindow = 5_000
 const activityDelay = 2_000
 
+function alwaysFocused() { return true }
+
 /** One renderer owns the account balance; views subscribe instead of polling independently. */
-export function createAccountBalanceStore({ read, now = Date.now }: {
+export function createAccountBalanceStore({ read, now = Date.now, focused = alwaysFocused }: {
   read: () => Promise<AccountBalance>
   now?: () => number
+  /** Whether the user is looking at the window; decides the refresh pace. */
+  focused?: () => boolean
 }): AccountBalanceStore {
   let snapshot: AccountBalanceSnapshot = { scope: null, balance: null, loading: false, updatedAt: null, error: null }
   const listeners = new Set<() => void>()
@@ -39,6 +48,8 @@ export function createAccountBalanceStore({ read, now = Date.now }: {
   let activityTimer: ReturnType<typeof setTimeout> | undefined
   let activityDueAt: number | null = null
   let inFlight: { promise: Promise<void>; repeat: boolean } | null = null
+  // A failed read counts too, so a network outage does not speed the pace up.
+  let lastAttemptAt = 0
 
   function publish(update: Partial<AccountBalanceSnapshot>) {
     snapshot = { ...snapshot, ...update }
@@ -55,13 +66,21 @@ export function createAccountBalanceStore({ read, now = Date.now }: {
     activityTimer = undefined
   }
 
+  function refreshDelay() {
+    return visible && focused() ? activeRefreshInterval : backgroundRefreshInterval
+  }
+
+  // The timer always wakes after the short delay and then decides: focus can
+  // come and go without an event this store sees, so the pace is re-read on
+  // every wake instead of being fixed when the timer was set.
   function scheduleInterval() {
     clearIntervalTimer()
-    if (disposed || !visible || !snapshot.scope || inFlight) return
+    if (disposed || !snapshot.scope || inFlight) return
     intervalTimer = setTimeout(() => {
       intervalTimer = undefined
-      void refresh('interval')
-    }, refreshInterval)
+      if (now() - lastAttemptAt >= refreshDelay() - activeRefreshInterval / 2) void refresh('interval')
+      else scheduleInterval()
+    }, activeRefreshInterval)
   }
 
   function schedulePendingActivity() {
@@ -77,7 +96,7 @@ export function createAccountBalanceStore({ read, now = Date.now }: {
   }
 
   function refresh(reason: AccountBalanceRefreshReason = 'manual'): Promise<void> {
-    if (disposed || !snapshot.scope || (!visible && (reason === 'interval' || reason === 'foreground'))) return Promise.resolve()
+    if (disposed || !snapshot.scope || (!visible && reason === 'foreground')) return Promise.resolve()
     if (inFlight) {
       // A payment or completed generation may have changed the server balance
       // after this read started. Ordinary refresh callers can share that read.
@@ -102,6 +121,7 @@ export function createAccountBalanceStore({ read, now = Date.now }: {
         do {
           if (!current()) return
           flight.repeat = false
+          lastAttemptAt = now()
           try {
             const balance = await read()
             if (!current()) return
@@ -144,7 +164,6 @@ export function createAccountBalanceStore({ read, now = Date.now }: {
       if (disposed || visible === nextVisible) return
       visible = nextVisible
       if (!visible) {
-        clearIntervalTimer()
         clearActivityTimer()
         return
       }

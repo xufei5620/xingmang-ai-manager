@@ -6,13 +6,20 @@ import { Button, Dialog } from '../../ui'
 import { userFacingErrorMessage } from '../../business-common'
 import { BlockedLinkHint, openExternalOrCopy, type BlockedLinkNotice } from '../../external-link-fallback'
 import { writeLocalPreference } from '../app/preferences'
-import type { RelayNotice } from '../../../../electron/relay-backend'
-import { announcementAttentionKeys, announcementNotificationKey, legacyAnnouncementReadId, markLocalAnnouncementRead, parseNewApiAnnouncementCollection, readLegacyAnnouncementId, readLocalAnnouncementIds, readNotifiedAnnouncementKeys, readSeenAnnouncementKeys, rememberLocalAnnouncementIds, rememberNotifiedAnnouncementKeys, rememberSeenAnnouncementKeys, sameAnnouncementSnapshot } from './newapi-announcements'
+import type { RelayNotice, RelayNoticeReadMode } from '../../../../electron/relay-backend'
+import { formatTimelineDate, readTimelineMigrated, rememberTimelineMigrated, timelineEntries, timelineMigrationReadIds, timelineTypeLabels, withMarkdownLineBreaks, type LocalAnnouncementEntry, type TimelineMeta, announcementAttentionKeys, announcementNotificationKey, legacyAnnouncementReadId, markLocalAnnouncementRead, parseNewApiAnnouncementCollection, readLegacyAnnouncementId, readLocalAnnouncementIds, readNotifiedAnnouncementKeys, readSeenAnnouncementKeys, rememberLocalAnnouncementIds, rememberNotifiedAnnouncementKeys, rememberSeenAnnouncementKeys, sameAnnouncementSnapshot } from './newapi-announcements'
 
-type Announcement = RelayNotice & { localEntries?: boolean }
+interface AnnouncementEntry { id: string; title: string; text: string; read: boolean; timeline?: TimelineMeta }
+type Announcement = Omit<RelayNotice, 'entries'> & { localEntries?: boolean; entries?: AnnouncementEntry[] }
 interface Props {
   scope: string
-  read(): Promise<Announcement | null>
+  read(mode?: RelayNoticeReadMode): Promise<Announcement | null>
+  /**
+   * Changes after each balance refresh. That refresh is the app's only timed
+   * request and it brings the new-api timeline along, so the periodic
+   * announcement check follows it instead of running a timer of its own.
+   */
+  refreshTick?: number | null
   markRemoteRead?(id: string, entryId: string): Promise<void>
   syncLocalReads?(scope: string, ids: string[]): Promise<string[]>
   open: boolean
@@ -26,10 +33,10 @@ interface Props {
   notify?(eventKey: string): void
 }
 
-// 公告要及时到用户眼前：开着软件时定时再读一次，切回窗口时也读一次。
-// 读的是一个公开的小接口，十分钟一次对服务端没有压力；切窗口太频繁时按一分钟限流。
+// 公告要及时到用户眼前，但不能自己再开一个定时器去拉：定时检查跟着余额刷新走
+// （看着软件时每分钟、后台时每 10 分钟）。星芒账号的时间线就在余额那次请求里，
+// 这里只取主进程已经拿到的；另一个站点的公告要单独请求，所以最多十分钟看一次。
 export const announcementPollIntervalMs = 10 * 60 * 1000
-const announcementFocusRefreshGapMs = 60 * 1000
 
 interface AnnouncementError {
   message: string
@@ -834,6 +841,10 @@ export function AnnouncementContent({
  * "Error invoking remote method ...", so match the stable, sanitized portion
  * emitted by `readBoundedResponseText` instead of the whole message.
  */
+function TimelineTag({ type }: { type: TimelineMeta['type'] }) {
+  return <span className={`v2-announcement-tag is-${type}`}>{timelineTypeLabels[type]}</span>
+}
+
 export function formatAnnouncementError(cause: unknown): AnnouncementError {
   // Chromium/Electron wraps rejected IPC calls with the channel name. That
   // implementation detail is useful in logs but confusing and noisy in the
@@ -850,7 +861,7 @@ export function formatAnnouncementError(cause: unknown): AnnouncementError {
     : { responseTooLarge: false, message: message || '公告读取失败' }
 }
 
-export function AnnouncementCenter({ scope, read, markRemoteRead, syncLocalReads, open, onClose, onOpen, onUnread, openExternal, noticeUrl, notify }: Props) {
+export function AnnouncementCenter({ scope, read, refreshTick, markRemoteRead, syncLocalReads, open, onClose, onOpen, onUnread, openExternal, noticeUrl, notify }: Props) {
   const [announcement, setAnnouncement] = useState<Announcement | null>(null)
   const [error, setError] = useState<AnnouncementError | null>(null)
   const [loading, setLoading] = useState(true)
@@ -876,15 +887,36 @@ export function AnnouncementCenter({ scope, read, markRemoteRead, syncLocalReads
   const openLink = useCallback(async (url: string) => {
     setBlockedLink(await openExternalOrCopy(url, openExternal))
   }, [openExternal])
-  const lastLoad = useRef(0)
+  const lastSilentLoad = useRef(0)
   const silentLoad = useRef(false)
-  const loadNotice = useCallback(async (isCurrent: () => boolean): Promise<Announcement | null> => {
-    lastLoad.current = Date.now()
-    const value = await read()
+  // 「内容 → 公告」时间线和旧系统公告合进一个列表：时间线在前、按时间从新到旧，
+  // 旧的在后，各自按条记已读。旧系统公告沿用原来的已读编号，接进来之前读过的仍算已读。
+  const withTimeline = useCallback(async (value: Announcement, collection: LocalAnnouncementEntry[] | null, previouslyRead: boolean, isCurrent: () => boolean): Promise<Announcement> => {
+    const system = collection ?? (value.text ? [{ id: await legacyAnnouncementReadId(value.id), title: '系统公告', text: value.text }] : [])
+    const timeline = timelineEntries(value.bulletins ?? [])
+    const known = [...new Set([...readLocalAnnouncementIds(scope), ...(previouslyRead ? system.map((entry) => entry.id) : [])])].slice(-200)
+    if (!isCurrent()) return value
+    let readIds = new Set(syncLocalReads ? await syncLocalReads(scope, known) : known)
+    if (previouslyRead && collection && isCurrent()) rememberLocalAnnouncementIds(scope, collection.map((entry) => entry.id))
+    if (timeline.length && !readTimelineMigrated(scope) && isCurrent()) {
+      const readTitles = (collection ?? []).filter((entry) => readIds.has(entry.id)).map((entry) => entry.title)
+      const migrated = timelineMigrationReadIds(timeline, readTitles, Date.now())
+      if (migrated.length) {
+        readIds = new Set([...readIds, ...(syncLocalReads ? await syncLocalReads(scope, migrated) : migrated)])
+        rememberLocalAnnouncementIds(scope, migrated)
+      }
+      if (isCurrent()) rememberTimelineMigrated(scope)
+    }
+    const entries: Omit<AnnouncementEntry, 'read'>[] = [...timeline, ...system]
+    return { ...value, localEntries: true, entries: entries.map((entry) => ({ ...entry, read: readIds.has(entry.id) })) }
+  }, [scope, syncLocalReads])
+  const loadNotice = useCallback(async (isCurrent: () => boolean, mode?: RelayNoticeReadMode): Promise<Announcement | null> => {
+    const value = await read(mode)
     if (!isCurrent() || !value || value.entries) return value
     const collection = await parseNewApiAnnouncementCollection(value.text)
     if (!isCurrent()) return value
     const previouslyRead = readLegacyAnnouncementId(scope) === value.id
+    if (value.bulletins?.length) return withTimeline(value, collection, previouslyRead, isCurrent)
     if (!collection) {
       if (syncLocalReads) {
         const id = await legacyAnnouncementReadId(value.id)
@@ -898,7 +930,7 @@ export function AnnouncementCenter({ scope, read, markRemoteRead, syncLocalReads
     const readIds = new Set(syncLocalReads ? await syncLocalReads(scope, migrated) : migrated)
     if (previouslyRead && isCurrent()) rememberLocalAnnouncementIds(scope, collection.map((entry) => entry.id))
     return { ...value, localEntries: true, entries: collection.map((entry) => ({ ...entry, read: readIds.has(entry.id) })) }
-  }, [scope, read, syncLocalReads])
+  }, [scope, read, syncLocalReads, withTimeline])
   useEffect(() => {
     let current = true
     revision.current += 1
@@ -906,43 +938,35 @@ export function AnnouncementCenter({ scope, read, markRemoteRead, syncLocalReads
     setReadErrors({}); setMarkingIds([])
     returnToRow.current = null
     setReadId(readLegacyAnnouncementId(scope))
+    lastSilentLoad.current = Date.now()
     void loadNotice(() => current).then((value) => { if (current) setAnnouncement(value) }).catch((cause) => { if (current) setError(formatAnnouncementError(cause)) }).finally(() => { if (current) setLoading(false) })
     return () => { current = false; revision.current += 1 }
   }, [scope, loadNotice, attempt])
   // 后台再读不打断用户：不清空、不转圈，读失败就保留眼前的内容，下一轮再试。
   // 公告窗口开着时不读，那里有「重新读取」，免得正在看的内容被换掉。
+  const seenTick = useRef(refreshTick)
+  const followsBalance = scope.startsWith('xm-account:')
   useEffect(() => {
-    if (open) return
+    const previous = seenTick.current
+    if (refreshTick === previous) return
+    seenTick.current = refreshTick
+    // The first balance read lands together with the initial announcement load.
+    if (previous === null || previous === undefined || open || silentLoad.current) return
+    if (!followsBalance && Date.now() - lastSilentLoad.current < announcementPollIntervalMs) return
+    lastSilentLoad.current = Date.now()
+    silentLoad.current = true
     let active = true
-    async function refreshSilently() {
-      if (silentLoad.current || Date.now() - lastLoad.current < announcementFocusRefreshGapMs) return
-      silentLoad.current = true
-      const startRevision = revision.current
-      const isCurrent = () => active && revision.current === startRevision
-      try {
-        const value = await loadNotice(isCurrent)
-        if (!isCurrent()) return
-        setAnnouncement((previous) => sameAnnouncementSnapshot(previous, value) ? previous : value)
-        setError(null)
-      } catch {
-        // The next focus or tick retries; a transient failure is not worth an alert.
-      } finally { silentLoad.current = false }
-    }
-    function refreshWhenVisible() {
-      if (document.visibilityState === 'visible') void refreshSilently()
-    }
-    window.addEventListener('focus', refreshWhenVisible)
-    document.addEventListener('visibilitychange', refreshWhenVisible)
-    // The tick runs even while the window sits hidden in the tray; that is
-    // exactly when a system notification is the only way to reach the user.
-    const timer = window.setInterval(() => void refreshSilently(), announcementPollIntervalMs)
-    return () => {
-      active = false
-      window.removeEventListener('focus', refreshWhenVisible)
-      document.removeEventListener('visibilitychange', refreshWhenVisible)
-      window.clearInterval(timer)
-    }
-  }, [open, loadNotice])
+    const startRevision = revision.current
+    const isCurrent = () => active && revision.current === startRevision
+    void loadNotice(isCurrent, 'cached').then((value) => {
+      if (!isCurrent()) return
+      setAnnouncement((previous) => sameAnnouncementSnapshot(previous, value) ? previous : value)
+      setError(null)
+    }).catch(() => {
+      // The next balance refresh retries; a transient failure is not worth an alert.
+    }).finally(() => { silentLoad.current = false })
+    return () => { active = false }
+  }, [refreshTick, open, followsBalance, loadNotice])
   useLayoutEffect(() => {
     if (selectedId) detailHeading.current?.focus()
     else if (returnToRow.current) {
@@ -1054,12 +1078,19 @@ export function AnnouncementCenter({ scope, read, markRemoteRead, syncLocalReads
       {loading ? <p role="status">正在读取公告</p> : announcement ? entries ? selected ? (
         <article className="v2-announcement-entry" data-testid="announcement-detail" key={selected.id}>
           <h2 tabIndex={-1} ref={detailHeading}>{selected.title}</h2>
+          {selected.timeline && <p className="v2-announcement-meta" data-testid="announcement-detail-meta">
+            <TimelineTag type={selected.timeline.type} />
+            <time dateTime={selected.timeline.publishedAt}>{formatTimelineDate(selected.timeline.publishedAt, Date.now())}</time>
+          </p>}
           {markingIds.includes(selected.id) && <p className="v2-announcement-read-status" role="status">正在保存已读状态…</p>}
           {readErrors[selected.id] && <div className="v2-announcement-error" role="alert">
             <p>已读状态保存失败：{readErrors[selected.id]}</p>
             <Button size="sm" onClick={() => void markEntryRead(selected)}>重试保存已读</Button>
           </div>}
-          <AnnouncementContent text={selected.text} noticeUrl={noticeUrl} openExternal={openLink} onError={(cause) => setError(formatAnnouncementError(cause))} onClose={onClose} />
+          <AnnouncementContent text={selected.timeline ? withMarkdownLineBreaks(selected.text) : selected.text} noticeUrl={noticeUrl} openExternal={openLink} onError={(cause) => setError(formatAnnouncementError(cause))} onClose={onClose} />
+          {selected.timeline?.extra && <div className="v2-announcement-extra" data-testid="announcement-detail-extra">
+            <AnnouncementContent text={withMarkdownLineBreaks(selected.timeline.extra)} noticeUrl={noticeUrl} openExternal={openLink} onError={(cause) => setError(formatAnnouncementError(cause))} onClose={onClose} />
+          </div>}
         </article>
       ) : (
         <ul className="v2-announcement-list" data-testid="announcement-list" aria-label="公告列表">
@@ -1067,7 +1098,9 @@ export function AnnouncementCenter({ scope, read, markRemoteRead, syncLocalReads
             <button type="button" className="v2-announcement-row" data-testid={`announcement-item-${entry.id}`}
               ref={(element) => { if (element) rows.current.set(entry.id, element); else rows.current.delete(entry.id) }}
               onClick={() => openEntry(entry)} title={entry.title}>
+              {entry.timeline && <TimelineTag type={entry.timeline.type} />}
               <span className="v2-announcement-title">{entry.title}</span>
+              {entry.timeline && <time className="v2-announcement-date" dateTime={entry.timeline.publishedAt}>{formatTimelineDate(entry.timeline.publishedAt, Date.now()).slice(5, 10)}</time>}
               <span className={`v2-announcement-read-state${entry.read ? '' : ' is-unread'}`}>{entry.read ? '已读' : '未读'}</span>
               <ChevronRight size={16} aria-hidden="true" />
             </button>

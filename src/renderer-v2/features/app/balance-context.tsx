@@ -16,7 +16,7 @@ export function useSharedAccountBalance() {
 }
 
 export function useAccountBalanceStore(api: XingmangApi, scope: string | null) {
-  const store = useMemo(() => createAccountBalanceStore({ read: () => api.getAccountBalance() }), [api])
+  const store = useMemo(() => createAccountBalanceStore({ read: () => api.getAccountBalance(), focused: () => document.hasFocus() }), [api])
   const lifetime = useMemo(() => ({ consumers: 0 }), [store])
   const snapshot = useSyncExternalStore(store.subscribe, store.getSnapshot)
   useLayoutEffect(() => { store.setScope(scope) }, [store, scope])

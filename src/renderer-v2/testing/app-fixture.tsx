@@ -39,7 +39,17 @@ const collectionFixture = `<div class="xm-newapi-collection-fixture1234" data-ne
     <div class="collection-body">${nativeFixtureNotice.replaceAll('亮色公告', `${title}亮色详情`).replaceAll('暗色公告', `${title}暗色详情`)}</div>
   </details>`).join('')}
 </div>`
-let noticeOverride: { id: string; text: string } | null = null
+let noticeOverride: Awaited<ReturnType<XingmangApi['getAccountNotice']>> = null
+// 「内容 → 公告」时间线，时间相对当前时钟：一条两小时前、一条昨天、一条一个月前。
+function timelineFixture() {
+  const now = Date.now()
+  const hour = 60 * 60 * 1000
+  return [
+    { id: `newapi-${'a'.repeat(64)}`, type: 'success' as const, publishedAt: new Date(now - 2 * hour).toISOString(), extra: '有问题请[联系客服](https://work.weixin.qq.com/kfid/fixture)，勿发送 API 密钥。', content: '**图片模型上线**\n新模型已上线，三步即可使用：\n1. 打开「配置」\n2. 选择图片分组\n3. 选择模型' },
+    { id: `newapi-${'b'.repeat(64)}`, type: 'warning' as const, publishedAt: new Date(now - 24 * hour).toISOString(), extra: '', content: '**本周维护通知**\n周六凌晨维护半小时。' },
+    { id: `newapi-${'c'.repeat(64)}`, type: 'ongoing' as const, publishedAt: new Date(now - 30 * 24 * hour).toISOString(), extra: '', content: '**开票中心上线测试**\n测试阶段可能存在问题。' },
+  ]
+}
 // The Chinese runtime patch defaults to an answered 'enabled' here: an
 // ordinary launch must not be interrupted by the one-time question, which
 // `chineseAsk` exercises on its own.
@@ -165,7 +175,7 @@ if (query.has('uninstallUnavailable')) {
     },
   }
 }
-declare global { interface Window { v2Test: { calls: Array<{ method: string; args: unknown[] }>; unexpected: string[]; errors: string[]; fail: string; failMessage: string; emit(name: string, payload: unknown): void; releaseBootstrap(): void; releaseLaunch(): void; holdNextExternalScan(): void; releaseExternalScan(): void; holdNextConfigRead(): void; releaseConfigRead(): void; holdNextScan(): void; releaseScan(): void; setExternalStatus(tool: ExternalToolId, patch: Partial<ExternalClientStatus>): void; releaseBalance(error?: string): void; holdNextBalance(): void; setBalance(amount: number): void; releaseKeyMetadata(provider: ProviderId): void; releaseNoticeMark(id: string): void; setNotice(value: { id: string; text: string }): void; holdNextConfigSave(): void; releaseConfigSave(error?: string): void } } }
+declare global { interface Window { v2Test: { calls: Array<{ method: string; args: unknown[] }>; unexpected: string[]; errors: string[]; fail: string; failMessage: string; emit(name: string, payload: unknown): void; releaseBootstrap(): void; releaseLaunch(): void; holdNextExternalScan(): void; releaseExternalScan(): void; holdNextConfigRead(): void; releaseConfigRead(): void; holdNextScan(): void; releaseScan(): void; setExternalStatus(tool: ExternalToolId, patch: Partial<ExternalClientStatus>): void; releaseBalance(error?: string): void; holdNextBalance(): void; setBalance(amount: number): void; releaseKeyMetadata(provider: ProviderId): void; releaseNoticeMark(id: string): void; setNotice(value: Awaited<ReturnType<XingmangApi['getAccountNotice']>>): void; timelineFixture(): ReturnType<typeof timelineFixture>; holdNextConfigSave(): void; releaseConfigSave(error?: string): void } } }
 const listeners = new Map<string, Set<(payload: unknown) => void>>()
 let releaseBootstrap: () => void = () => undefined
 let releaseLaunch: () => void = () => undefined
@@ -184,7 +194,7 @@ const keyRewritten = new Set<ProviderId>()
 let nextConfigSaveHeld = false
 let releaseConfigSave: (error?: string) => void = () => undefined
 const configSaveMethods = new Set(['saveConfig', 'saveConfigWithAccountKey', 'configureManagedCliKeys', 'switchToOfficialAccount', 'switchAccountSource'])
-window.v2Test = { calls: [], unexpected: [], errors: [], fail: '', failMessage: '', emit(name, payload) { if (name === 'onAccountSessionChanged') session = payload as AccountSessionState; listeners.get(name)?.forEach((listener) => listener(payload)) }, releaseBootstrap() { releaseBootstrap() }, releaseLaunch() { releaseLaunch() }, holdNextExternalScan() { holdExternalScan = true }, releaseExternalScan() { releaseExternalScan() }, holdNextConfigRead() { holdConfigRead = true }, releaseConfigRead() { releaseConfigRead() }, holdNextScan() { holdScan = true }, releaseScan() { releaseScan() }, setExternalStatus(tool, patch) { Object.assign(externalStatuses.find((entry) => entry.tool === tool)!, patch) }, releaseBalance(error) { releaseBalance(error) }, holdNextBalance() { nextBalanceHeld = true }, setBalance(amount) { balanceOverride = amount }, releaseKeyMetadata(provider) { pendingKeyMetadata.get(provider)?.(); pendingKeyMetadata.delete(provider) }, releaseNoticeMark(id) { pendingNoticeMarks.get(id)?.(); pendingNoticeMarks.delete(id) }, setNotice(value) { noticeOverride = value }, holdNextConfigSave() { nextConfigSaveHeld = true }, releaseConfigSave(error) { releaseConfigSave(error) } }
+window.v2Test = { calls: [], unexpected: [], errors: [], fail: '', failMessage: '', emit(name, payload) { if (name === 'onAccountSessionChanged') session = payload as AccountSessionState; listeners.get(name)?.forEach((listener) => listener(payload)) }, releaseBootstrap() { releaseBootstrap() }, releaseLaunch() { releaseLaunch() }, holdNextExternalScan() { holdExternalScan = true }, releaseExternalScan() { releaseExternalScan() }, holdNextConfigRead() { holdConfigRead = true }, releaseConfigRead() { releaseConfigRead() }, holdNextScan() { holdScan = true }, releaseScan() { releaseScan() }, setExternalStatus(tool, patch) { Object.assign(externalStatuses.find((entry) => entry.tool === tool)!, patch) }, releaseBalance(error) { releaseBalance(error) }, holdNextBalance() { nextBalanceHeld = true }, setBalance(amount) { balanceOverride = amount }, releaseKeyMetadata(provider) { pendingKeyMetadata.get(provider)?.(); pendingKeyMetadata.delete(provider) }, releaseNoticeMark(id) { pendingNoticeMarks.get(id)?.(); pendingNoticeMarks.delete(id) }, setNotice(value) { noticeOverride = value }, timelineFixture() { return timelineFixture() }, holdNextConfigSave() { nextConfigSaveHeld = true }, releaseConfigSave(error) { releaseConfigSave(error) } }
 window.addEventListener('error', (event) => window.v2Test.errors.push(event.message))
 window.addEventListener('unhandledrejection', (event) => window.v2Test.errors.push(String(event.reason)))
 const capabilities = { platform: query.get('os') === 'mac' ? 'macos' : 'windows', architecture: 'x64', isMac: query.get('os') === 'mac', nodeRuntimeInstall: query.has('runtimeExternal') ? 'external' : 'managed', pythonRuntimeInstall: query.has('runtimeExternal') ? 'external' : 'managed', cliInstall: { claude: 'managed', codex: 'managed', gemini: 'managed', grok: 'managed' }, codexDesktop: { install: 'managed', launch: true, uninstall: true, windowsStore: true } } as const
@@ -370,6 +380,7 @@ const methods = {
   },
   getAccountNotice: async () => {
     if (noticeOverride) return noticeOverride
+    if (query.has('noticeTimeline')) return { id: 'newapi-timeline-fixture', text: query.has('noticeCollection') ? collectionFixture : '', bulletins: timelineFixture() }
     if (query.has('noticeCollection')) return { id: 'newapi-collection-fixture', text: collectionFixture }
     if (query.has('noticeOversized')) throw new Error("Error invoking remote method 'account:get-notice': Error: 公告读取响应超过 512 KB 安全上限")
     if (query.has('noticeNative')) return { id: 'native-notice', text: nativeFixtureNotice }

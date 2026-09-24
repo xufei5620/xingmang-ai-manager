@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   buildCliKeyName,
   computeBalanceDisplay,
@@ -3102,18 +3102,17 @@ describe('silent 401 refresh-and-retry (withSession)', () => {
         message: '',
         data: { access_token: 'rotated-token', access_expires_at: null },
       }))
-      .mockResolvedValueOnce(statusResponse())
       .mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: userData() }))
 
     const balance = await client.getBalance()
 
     expect(balance.quota).toBe(1_000_000)
     expect(client.isAuthenticated()).toBe(true)
-    expect(fetchImpl).toHaveBeenCalledTimes(5)
-    // call order: status, self (401), refresh, status (retry), self (retry)
+    expect(fetchImpl).toHaveBeenCalledTimes(4)
+    // call order: status, self (401), refresh, self (retry); the retry reuses the status read
     const [refreshUrl] = fetchImpl.mock.calls[2]
     expect(String(refreshUrl)).toBe(`${testBaseUrl}/api/user/auth/refresh`)
-    const retriedSelfHeaders = fetchImpl.mock.calls[4][1]?.headers as Record<string, string>
+    const retriedSelfHeaders = fetchImpl.mock.calls[3][1]?.headers as Record<string, string>
     expect(retriedSelfHeaders.Authorization).toBe('Bearer rotated-token')
   })
 
@@ -3180,14 +3179,12 @@ describe('silent 401 refresh-and-retry (withSession)', () => {
     await expect(client.getBalance()).rejects.toThrow('network down')
 
     fetchImpl
-      .mockResolvedValueOnce(statusResponse())
       .mockResolvedValueOnce(failureResponse('AuthVersion 已变化', 401))
       .mockResolvedValueOnce(jsonResponse({
         success: true,
         message: '',
         data: { access_token: 'rotated-token', access_expires_at: null },
       }))
-      .mockResolvedValueOnce(statusResponse())
       .mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: userData() }))
 
     const balance = await client.getBalance()
@@ -3206,13 +3203,12 @@ describe('silent 401 refresh-and-retry (withSession)', () => {
         message: '',
         data: { access_token: 'rotated-token', access_expires_at: null },
       }))
-      .mockResolvedValueOnce(statusResponse())
       .mockResolvedValueOnce(failureResponse('AuthVersion 仍然异常', 401))
 
     await expect(client.getBalance()).rejects.toBeInstanceOf(NewApiAuthenticationError)
     expect(client.isAuthenticated()).toBe(false)
-    // Exactly 5 calls -- a second refresh attempt would make this 6 or more.
-    expect(fetchImpl).toHaveBeenCalledTimes(5)
+    // Exactly 4 calls -- a second refresh attempt would make this 5 or more.
+    expect(fetchImpl).toHaveBeenCalledTimes(4)
   })
 
   it('does not attempt a refresh at all for a non-401 failure', async () => {
@@ -3258,7 +3254,6 @@ describe('onSessionChange', () => {
         {},
         ['refresh_token=cookie-value-2'],
       ))
-      .mockResolvedValueOnce(statusResponse())
       .mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: userData() }))
 
     await client.getBalance()
@@ -3494,5 +3489,61 @@ describe('redaction (I13)', () => {
     expect(message).not.toContain('\n')
     expect(message).not.toContain('\t')
     expect(message.length).toBeLessThanOrEqual(300)
+  })
+})
+
+describe('shared public status reads', () => {
+  afterEach(() => { vi.useRealTimers() })
+
+  function paths(fetchImpl: ReturnType<typeof vi.fn<NewApiFetch>>, from: number) {
+    return fetchImpl.mock.calls.slice(from).map(([input]) => new URL(String(input)).pathname)
+  }
+
+  it('merges status reads that arrive together and reads again on the next refresh', async () => {
+    vi.useFakeTimers({ now: new Date('2026-09-24T10:00:00Z'), toFake: ['Date'] })
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    const start = fetchImpl.mock.calls.length
+    fetchImpl.mockImplementation(async (input) => new URL(String(input)).pathname === '/api/status'
+      ? statusResponse()
+      : jsonResponse({ success: true, message: '', data: userData() }))
+    await Promise.all([client.getBalance(), client.getBalance()])
+    await client.getBalance()
+    expect(paths(fetchImpl, start).filter((path) => path === '/api/status')).toHaveLength(1)
+    expect(paths(fetchImpl, start).filter((path) => path === '/api/user/self')).toHaveLength(3)
+    // The balance store paces refreshes a minute apart; each one brings a fresh timeline.
+    vi.setSystemTime(new Date('2026-09-24T10:01:00Z'))
+    await client.getBalance()
+    expect(paths(fetchImpl, start).filter((path) => path === '/api/status')).toHaveLength(2)
+  })
+
+  it('hands the timeline from a balance refresh to the announcement check without another status read', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    const start = fetchImpl.mock.calls.length
+    fetchImpl.mockImplementation(async (input) => {
+      const path = new URL(String(input)).pathname
+      if (path === '/api/status') return statusResponse({ announcements: [{ publishDate: '2026-09-24T08:00:00Z', content: '**新公告**\n正文' }] })
+      if (path === '/api/notice') return jsonResponse({ success: true, data: '' })
+      return jsonResponse({ success: true, message: '', data: userData() })
+    })
+    await client.getBalance()
+    const notice = await client.getNotice!('cached')
+    expect(notice?.bulletins?.map(({ content }) => content)).toEqual(['**新公告**\n正文'])
+    expect(paths(fetchImpl, start).filter((path) => path === '/api/status')).toHaveLength(1)
+  })
+
+  it('does not keep a failed status read', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    const start = fetchImpl.mock.calls.length
+    let failStatus = true
+    fetchImpl.mockImplementation(async (input) => new URL(String(input)).pathname === '/api/status'
+      ? (failStatus ? failureResponse('服务暂时不可用', 503) : statusResponse())
+      : jsonResponse({ success: true, message: '', data: userData() }))
+    await expect(client.getBalance()).rejects.toThrow()
+    failStatus = false
+    await expect(client.getBalance()).resolves.toMatchObject({ quota: 1_000_000 })
+    expect(paths(fetchImpl, start).filter((path) => path === '/api/status')).toHaveLength(2)
   })
 })

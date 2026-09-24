@@ -2580,7 +2580,10 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
       ? options.realmAccounts.getPublicClient(parseAccountSiteId(siteId)).getStatus()
       : accountService.getStatus()
   ))
-  registerTrustedHandler('account:get-notice', () => accountService.getNotice?.() ?? null)
+  registerTrustedHandler('account:get-notice', (_event, mode: unknown) => {
+    if (mode !== undefined && mode !== 'cached') throw new Error('公告读取方式无效')
+    return accountService.getNotice?.(mode) ?? null
+  })
   registerTrustedHandler('account:mark-notice-read', (_event, id: unknown, entryId: unknown) => {
     const noticeId = requiredString(id, '公告 ID', 128)
     if (typeof entryId !== 'string' || !/^[1-9]\d{0,15}$/.test(entryId) || !Number.isSafeInteger(Number(entryId))) {

@@ -802,7 +802,7 @@ export interface XingmangInvokeContract {
     ProviderMcpHealthReport
   >
   getAccountStatus: IpcInvokeDefinition<'account:get-status', [siteId?: AccountSiteId], AccountStatus>
-  getAccountNotice: IpcInvokeDefinition<'account:get-notice', [], import('./relay-backend').RelayNotice | null>
+  getAccountNotice: IpcInvokeDefinition<'account:get-notice', [mode?: import('./relay-backend').RelayNoticeReadMode], import('./relay-backend').RelayNotice | null>
   markAccountNoticeRead: IpcInvokeDefinition<'account:mark-notice-read', [id: string, entryId: string], void>
   syncLocalNoticeReads: IpcInvokeDefinition<'account:sync-local-notice-reads', [scope: string, ids: string[]], string[]>
   getAccelerationState: IpcInvokeDefinition<'acceleration:get-state', [scope: string], import('./acceleration-contract').AccelerationState>

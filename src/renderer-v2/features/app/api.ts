@@ -1,4 +1,5 @@
 import type { XingmangApi } from '../../../../electron/ipc-contract'
+import type { RelayNoticeReadMode } from '../../../../electron/relay-backend'
 
 export function createAppApi(bridge: XingmangApi) {
   return {
@@ -19,7 +20,7 @@ export function createAppApi(bridge: XingmangApi) {
     startupUpdate: () => bridge.runStartupUpdate(),
     openCanvas: () => bridge.openCanvasWindow(),
     openExternal: (url: string) => bridge.openExternal(url),
-    announcement: () => bridge.getAccountNotice(),
+    announcement: (mode?: RelayNoticeReadMode) => mode === undefined ? bridge.getAccountNotice() : bridge.getAccountNotice(mode),
     markAnnouncementRead: (id: string, entryId: string) => bridge.markAccountNoticeRead(id, entryId),
     syncLocalNoticeReads: (scope: string, ids: string[]) => bridge.syncLocalNoticeReads(scope, ids),
   }

@@ -1,6 +1,14 @@
 import { describe, expect, it, vi } from 'vitest'
 import { createNewApiClient } from './new-api-client'
 
+// getNotice also reads the announcement timeline from /api/status. These
+// cases are about /api/notice alone, so answer that one with an empty status.
+function withEmptyStatus(fetchImpl: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>) {
+  return async (input: RequestInfo | URL, init?: RequestInit) => new URL(String(input)).pathname === '/api/status'
+    ? new Response(JSON.stringify({ success: true, data: {} }), { headers: { 'Content-Type': 'application/json' } })
+    : fetchImpl(input, init)
+}
+
 describe('public account notices', () => {
   function response(data: unknown, init: ResponseInit = {}) {
     return new Response(JSON.stringify({ success: true, data }), {
@@ -11,7 +19,7 @@ describe('public account notices', () => {
 
   it('uses the public notice contract without account credentials and gives content a stable id', async () => {
     const fetchImpl = vi.fn().mockImplementation(async () => response('公告正文'))
-    const client = createNewApiClient({ baseUrl: 'https://notice.example.test', fetchImpl })
+    const client = createNewApiClient({ baseUrl: 'https://notice.example.test', fetchImpl: withEmptyStatus(fetchImpl) })
     const first = await client.getNotice!()
     const second = await client.getNotice!()
     expect(first).toEqual(second)
@@ -26,7 +34,7 @@ describe('public account notices', () => {
         headers: { 'Content-Type': 'application/json' },
       }),
     )
-    const client = createNewApiClient({ baseUrl: 'https://notice.example.test', fetchImpl })
+    const client = createNewApiClient({ baseUrl: 'https://notice.example.test', fetchImpl: withEmptyStatus(fetchImpl) })
     await expect(client.getNotice!()).resolves.toMatchObject({ text: '<p>上线通知</p>' })
   })
 
@@ -36,7 +44,7 @@ describe('public account notices', () => {
         headers: { 'Content-Type': 'application/json' },
       }),
     )
-    const client = createNewApiClient({ baseUrl: 'https://notice.example.test', fetchImpl })
+    const client = createNewApiClient({ baseUrl: 'https://notice.example.test', fetchImpl: withEmptyStatus(fetchImpl) })
     await expect(client.getNotice!()).rejects.toThrow('公告读取失败')
   })
 
@@ -45,7 +53,7 @@ describe('public account notices', () => {
       .mockResolvedValueOnce(response(''))
       .mockResolvedValueOnce(response({ text: 'wrong shape' }))
       .mockResolvedValueOnce(response('x'.repeat(4 * 1024 * 1024 + 1)))
-    const client = createNewApiClient({ baseUrl: 'https://notice.example.test', fetchImpl })
+    const client = createNewApiClient({ baseUrl: 'https://notice.example.test', fetchImpl: withEmptyStatus(fetchImpl) })
     await expect(client.getNotice!()).resolves.toBeNull()
     await expect(client.getNotice!()).rejects.toThrow('公告内容格式')
     await expect(client.getNotice!()).rejects.toThrow('公告读取响应超过 4096 KB 安全上限')
@@ -55,7 +63,7 @@ describe('public account notices', () => {
     const fetchImpl = vi.fn().mockResolvedValue(
       response('本来很短的正文', { headers: { 'Content-Length': String(4 * 1024 * 1024 + 1) } }),
     )
-    const client = createNewApiClient({ baseUrl: 'https://notice.example.test', fetchImpl })
+    const client = createNewApiClient({ baseUrl: 'https://notice.example.test', fetchImpl: withEmptyStatus(fetchImpl) })
 
     await expect(client.getNotice!()).rejects.toThrow('公告读取响应超过 4096 KB 安全上限')
   })
