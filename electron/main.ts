@@ -1427,10 +1427,10 @@ if (!hasSingleInstanceLock) {
     // Each realm moves its own subtree once per launch; a second realm object for
     // the same subtree must not start a second walk over files already moving.
     const aiOutputMigrations = new Set<string>()
-    function migrateAiOutputOnce(from: string, to: string): void {
+    function migrateAiOutputOnce(from: string, to: string, mergeMetadata: (userId: number, content: string) => Promise<void>): void {
       if (aiOutputMigrations.has(from)) return
       aiOutputMigrations.add(from)
-      void migrateLegacyAiOutput(from, to).then((result) => {
+      void migrateLegacyAiOutput(from, to, { mergeMetadata }).then((result) => {
         if (!result.moved && !result.kept && !result.failed) return
         // Counts only: support needs to know whether anything stayed behind, not
         // where the user's files are (I13).
@@ -1466,10 +1466,6 @@ if (!hasSingleInstanceLock) {
         documentsDirectory: readDocumentsDirectory(),
         location: { platform: process.platform, home: os.homedir(), env: process.env },
       }))
-      // 老版本存在可执行文件旁边的 output 里。画布、聊天记录只按作品编号找文件，
-      // 搬的时候布局不变，老作品搬完照样能打开；搬的过程在后台，不拖慢启动。
-      const legacyAiOutputRoot = resolveLegacyAiOutputRoot({ isPackaged: app.isPackaged, execPath: process.execPath })
-      if (legacyAiOutputRoot) migrateAiOutputOnce(roots.assetOutputDirectory(legacyAiOutputRoot), aiOutputRoot)
       const assetStore = new AiAssetStore({
         outputRoot: aiOutputRoot,
         // 全局保存位置在「文档」里，写不进多半是整个文档出了状况，用户自己能绕开的是
@@ -1552,6 +1548,13 @@ if (!hasSingleInstanceLock) {
         },
       })
       const assetMetadata = new AiAssetMetadataStore({ outputRoot: aiOutputRoot })
+      // 老版本存在可执行文件旁边的 output 里。画布、聊天记录只按作品编号找文件，
+      // 搬的时候布局不变，老作品搬完照样能打开；搬的过程在后台，不拖慢启动。
+      // 元数据合并交给正在用的这个 store，和搬家期间的收藏、新作品写入排同一个队。
+      const legacyAiOutputRoot = resolveLegacyAiOutputRoot({ isPackaged: app.isPackaged, execPath: process.execPath })
+      if (legacyAiOutputRoot) {
+        migrateAiOutputOnce(roots.assetOutputDirectory(legacyAiOutputRoot), aiOutputRoot, (userId, content) => assetMetadata.mergeLegacy(userId, content))
+      }
       // Permanent deletion hands the file to the OS recycle bin rather than
       // unlinking it. The bytes are the user's artwork; the last recoverable copy
       // should not depend on this program being right.

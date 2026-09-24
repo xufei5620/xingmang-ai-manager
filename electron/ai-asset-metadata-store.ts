@@ -11,6 +11,9 @@ import {
 const FILE_LABEL = 'AI 素材元数据'
 const STORE_VERSION = 4
 const MAXIMUM_BYTES = 2 * 1024 * 1024
+/** 每个账号文件夹里的元数据文件名；搬作品目录时要认出它来合并而不是跳过。 */
+export const aiAssetMetadataFileName = 'asset-metadata.json'
+export const aiAssetMetadataMaximumBytes = MAXIMUM_BYTES
 const MAXIMUM_ITEMS = 5_000
 const MAXIMUM_TAGS = 12
 const MAXIMUM_TAG_LENGTH = 32
@@ -176,6 +179,50 @@ function parseState(content: string, userId: number): AiAssetMetadataState {
   return { version: STORE_VERSION, userId, items }
 }
 
+// Written once and never cleared by the user, so an older record may fill them
+// in when the newer one lacks them. Favorite, tags and deletedAt are toggles:
+// their absence on the newer record is itself a choice and must win.
+const FILL_IN_FIELDS = ['displayName', 'source', 'prompt'] as const
+
+function isNewer(left: AiAssetMetadataItem, right: AiAssetMetadataItem): boolean {
+  return Date.parse(left.updatedAt) > Date.parse(right.updatedAt)
+}
+
+/**
+ * Combines the records of two copies of one account's metadata file (the old
+ * output folder and the new one) without dropping any asset. A record present
+ * on one side only is kept as it is. When both sides have the same asset, the
+ * more recently updated record wins; on a tie the current side wins, so
+ * merging the same legacy file twice changes nothing.
+ */
+export function mergeAiAssetMetadataItems(
+  current: readonly AiAssetMetadataItem[],
+  legacy: readonly AiAssetMetadataItem[],
+): AiAssetMetadataItem[] {
+  const merged = current.map((item) => structuredClone(item))
+  const index = new Map(merged.map((item, position) => [item.assetId, position]))
+  for (const incoming of legacy) {
+    const position = index.get(incoming.assetId)
+    if (position === undefined) {
+      index.set(incoming.assetId, merged.length)
+      merged.push(structuredClone(incoming))
+      continue
+    }
+    const existing = merged[position]
+    const newer = isNewer(incoming, existing) ? incoming : existing
+    const older = newer === incoming ? existing : incoming
+    const item: AiAssetMetadataItem = structuredClone(newer)
+    for (const field of FILL_IN_FIELDS) {
+      if (item[field] === undefined && older[field] !== undefined) Object.assign(item, { [field]: older[field] })
+    }
+    if (older.lastUsedAt && (!item.lastUsedAt || Date.parse(older.lastUsedAt) > Date.parse(item.lastUsedAt))) {
+      item.lastUsedAt = older.lastUsedAt
+    }
+    merged[position] = item
+  }
+  return merged
+}
+
 export class AiAssetMetadataStore {
   private readonly outputRoot: string
   private readonly now: () => Date
@@ -326,6 +373,24 @@ export class AiAssetMetadataStore {
     })
   }
 
+  /**
+   * Folds a metadata file carried over from the old output folder into this
+   * account's state. It runs in the same per-account queue as every other
+   * write, so a favorite or a new asset recorded while the move is under way is
+   * not lost to a read-modify-write race. An unreadable legacy file throws and
+   * is left for the caller to keep; it is never treated as empty.
+   */
+  mergeLegacy(userId: number, content: string): Promise<void> {
+    return this.enqueue(userId, async () => {
+      const legacy = parseState(content, userId)
+      if (legacy.items.length === 0) return
+      const state = await this.readState(userId)
+      const items = mergeAiAssetMetadataItems(state.items, legacy.items)
+      if (items.length > MAXIMUM_ITEMS) throw new Error(`AI 素材元数据最多保存 ${MAXIMUM_ITEMS} 条`)
+      await this.writeState(userId, { ...state, items })
+    })
+  }
+
   private upsert(state: AiAssetMetadataState, assetId: string, updatedAt: string): AiAssetMetadataItem {
     const existing = state.items.find((item) => item.assetId === assetId)
     if (existing) {
@@ -343,7 +408,7 @@ export class AiAssetMetadataStore {
   }
 
   private filePath(userId: number): string {
-    return path.join(this.accountDirectory(userId), 'asset-metadata.json')
+    return path.join(this.accountDirectory(userId), aiAssetMetadataFileName)
   }
 
   private async readState(userId: number): Promise<AiAssetMetadataState> {

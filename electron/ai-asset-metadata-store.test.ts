@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { AiAssetMetadataStore } from './ai-asset-metadata-store'
+import { AiAssetMetadataStore, mergeAiAssetMetadataItems } from './ai-asset-metadata-store'
 
 const roots: string[] = []
 const assetId = 'a'.repeat(43)
@@ -193,5 +193,53 @@ describe('AiAssetMetadataStore', () => {
       userId: 7,
       items: [{ assetId, displayName: '恢复后的名称' }],
     })
+  })
+
+  it('merges legacy records without dropping either side and is idempotent', async () => {
+    const { store } = fixture()
+    const other = 'b'.repeat(43)
+    await store.updatePreferences(7, assetId, { favorite: true })
+    const legacy = JSON.stringify({
+      version: 4,
+      userId: 7,
+      items: [
+        { assetId: other, tags: ['旧'], deletedAt: '2026-08-01T09:00:00.000Z', updatedAt: '2026-08-01T09:00:00.000Z' },
+        { assetId, prompt: '一只猫', favorite: true, updatedAt: '2026-08-01T09:00:00.000Z' },
+      ],
+    })
+
+    await store.mergeLegacy(7, legacy)
+    const once = await store.getAll(7)
+    await store.mergeLegacy(7, legacy)
+
+    expect(once).toEqual({
+      [assetId]: { favorite: true, prompt: '一只猫', updatedAt: '2026-08-14T09:00:00.000Z' },
+      [other]: { tags: ['旧'], deletedAt: '2026-08-01T09:00:00.000Z', updatedAt: '2026-08-01T09:00:00.000Z' },
+    })
+    await expect(store.getAll(7)).resolves.toEqual(once)
+  })
+
+  it('refuses a legacy file for another account or one it cannot parse', async () => {
+    const { store } = fixture()
+    await expect(store.mergeLegacy(7, JSON.stringify({ version: 4, userId: 8, items: [] }))).rejects.toThrow()
+    await expect(store.mergeLegacy(7, '{')).rejects.toThrow()
+  })
+})
+
+describe('mergeAiAssetMetadataItems', () => {
+  it('lets the newer record decide toggles and fills in write-once fields from the older one', () => {
+    const merged = mergeAiAssetMetadataItems(
+      [{ assetId, favorite: true, updatedAt: '2026-09-01T00:00:00.000Z', lastUsedAt: '2026-09-01T00:00:00.000Z' }],
+      [{ assetId, displayName: '海报', source: 'generated', prompt: '猫', deletedAt: '2026-09-02T00:00:00.000Z', lastUsedAt: '2026-08-30T00:00:00.000Z', updatedAt: '2026-09-02T00:00:00.000Z' }],
+    )
+    expect(merged).toEqual([{
+      assetId,
+      displayName: '海报',
+      source: 'generated',
+      prompt: '猫',
+      deletedAt: '2026-09-02T00:00:00.000Z',
+      lastUsedAt: '2026-09-01T00:00:00.000Z',
+      updatedAt: '2026-09-02T00:00:00.000Z',
+    }])
   })
 })

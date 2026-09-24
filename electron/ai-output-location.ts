@@ -1,7 +1,8 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { randomBytes as nodeRandomBytes } from 'node:crypto'
-import { assertNoReparseComponents, ensureSafeDataDirectory } from './safe-local-data'
+import { assertNoReparseComponents, ensureSafeDataDirectory, readSafeUtf8File } from './safe-local-data'
+import { AiAssetMetadataStore, aiAssetMetadataFileName, aiAssetMetadataMaximumBytes } from './ai-asset-metadata-store'
 import { resolveStarterWorkspaceParent, type StarterWorkspaceLocationContext } from './starter-workspace'
 
 /**
@@ -46,6 +47,7 @@ export interface AiOutputMigrationResult {
   moved: number
   /** 新位置已有同名文件、或不是普通文件，原样留在老位置的。 */
   kept: number
+  /** 搬不过去的；元数据文件合并失败也算这里，原文件留在老位置。 */
   failed: number
 }
 
@@ -53,6 +55,11 @@ export interface MigrateLegacyAiOutputOptions {
   randomBytes?: (size: number) => Buffer
   /** 测试注入：模拟跨盘改名失败。 */
   rename?: (from: string, to: string) => Promise<void>
+  /**
+   * 把老位置某账号的元数据并进新位置。主进程传入正在使用的那个元数据 store 的
+   * mergeLegacy，好和收藏、生成这些写入排在同一个队列里；缺省时临时建一个。
+   */
+  mergeMetadata?: (userId: number, content: string) => Promise<void>
 }
 
 const userDirectoryPattern = /^user-[1-9]\d*$/
@@ -72,8 +79,10 @@ const userDirectoryPattern = /^user-[1-9]\d*$/
  * when they read); when files move one by one, only single-link regular files
  * move. An existing file at the destination is never replaced (AGENTS.md I8).
  * Anything refused stays where it was; nothing is ever deleted unless its bytes
- * now exist at the new location. Safe to run again: a finished move leaves
- * nothing to do.
+ * now exist at the new location. The one exception to "never replace" is each
+ * account's metadata file, which is merged record by record into the new one
+ * (see mergeMetadataFile). Safe to run again: a finished move leaves nothing to
+ * do, and merging the same records twice changes nothing.
  */
 export async function migrateLegacyAiOutput(
   from: string,
@@ -97,8 +106,10 @@ export async function migrateLegacyAiOutput(
   const users = entries.filter((entry) => entry.isDirectory() && userDirectoryPattern.test(entry.name))
   if (users.length) {
     ensureSafeDataDirectory(target, LABEL)
+    const mergeMetadata = options.mergeMetadata ?? createDefaultMetadataMerge(target)
     for (const entry of users) {
-      await moveTree(path.join(source, entry.name), path.join(target, entry.name), result, options)
+      const userId = Number(entry.name.slice('user-'.length))
+      await moveTree(path.join(source, entry.name), path.join(target, entry.name), result, options, { userId, mergeMetadata })
     }
   }
   await removeIfEmpty(source)
@@ -114,11 +125,22 @@ function isSameOrInside(child: string, parent: string): boolean {
   return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative))
 }
 
+function createDefaultMetadataMerge(target: string): (userId: number, content: string) => Promise<void> {
+  const store = new AiAssetMetadataStore({ outputRoot: target })
+  return (userId, content) => store.mergeLegacy(userId, content)
+}
+
+interface AccountFolder {
+  userId: number
+  mergeMetadata: (userId: number, content: string) => Promise<void>
+}
+
 async function moveTree(
   source: string,
   target: string,
   result: AiOutputMigrationResult,
   options: MigrateLegacyAiOutputOptions,
+  account: AccountFolder | null,
 ): Promise<void> {
   try {
     assertNoReparseComponents(source, LABEL)
@@ -150,7 +172,8 @@ async function moveTree(
   for (const entry of entries) {
     const from = path.join(source, entry.name)
     const to = path.join(target, entry.name)
-    if (entry.isDirectory()) await moveTree(from, to, result, options)
+    if (entry.isDirectory()) await moveTree(from, to, result, options, null)
+    else if (entry.isFile() && account && entry.name === aiAssetMetadataFileName) await mergeMetadataFile(from, account, result)
     else if (entry.isFile()) await moveFile(from, to, result, options)
     else result.kept += 1
   }
@@ -196,6 +219,31 @@ async function moveFile(
     result.failed += 1
   } finally {
     if (temporary) await fs.promises.rm(temporary, { force: true }).catch(() => undefined)
+  }
+}
+
+/**
+ * The account's metadata file carries favorites, tags, prompts and recycle-bin
+ * state keyed by asset id. Skipping it when the new folder already has one
+ * (as plain files are skipped) would move the assets but leave their records
+ * behind, so trashed assets would reappear and favorites vanish. It is merged
+ * instead, and the old copy goes only after the merged state is written; a file
+ * that cannot be read or merged stays where it was.
+ */
+async function mergeMetadataFile(source: string, account: AccountFolder, result: AiOutputMigrationResult): Promise<void> {
+  try {
+    const stats = await fs.promises.lstat(source)
+    if (!stats.isFile() || stats.isSymbolicLink() || stats.nlink !== 1) {
+      result.kept += 1
+      return
+    }
+    const content = await readSafeUtf8File(source, LABEL, aiAssetMetadataMaximumBytes)
+    if (content === null) return
+    await account.mergeMetadata(account.userId, content)
+    await fs.promises.rm(source, { force: true })
+    result.moved += 1
+  } catch {
+    result.failed += 1
   }
 }
 
