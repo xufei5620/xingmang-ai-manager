@@ -305,6 +305,101 @@
 - `windows-elevation.test.ts` 新增按 PowerShell 引号规则扫描生成脚本的用例：每种弯引号、混用 ASCII 引号，以及四类生成脚本里恶意路径只作为数据出现、
   脚本结构与无害路径生成的完全一致。
 - 把 #452 的「C 盘搬家」例外接到剩下几处自带路径检查的模块，全部复用 `resolveRelocatedPath`，不另起规则：画布资产读回（`ai-asset-store` / `ai-video-asset-store` / `ai-audio-asset-store` 的有界读取与 `resolveOwnedFilePath`）、画布项目工作文件夹（`canvas-project-store` 的 `normalizedWorkspaceDirectory`）、Codex 会话（`codex-sessions` 的 `isInside`：Codex 会把我们注入的 `CODEX_HOME` 规范化，搬家机器上 `rollout_path` 记的是新位置，先按字面比、不在里面再两边都换成实际位置比）、Codex 外接工具与技能（`codex-extensions` 的 `assertNoSymlinkComponents`）、技能 Git 目录（`provider-extensions` 的 `plainGitDirectory`）。都是先换成实际位置再照原样严查；策略没开（`trusted-only`、root、启动探测未定）时 `resolveRelocatedPath` 等价于 `path.resolve`，行为与之前一字不差。`canvas-v2/` 未改动。
+- 新增 `electron/running-tools.ts`（按实际安装位置认进程、逐个检测、文案生成）与只读通道 `tools:inspect-running`；首页一键切换账号来源（`account-source-switch.ts` 的 `inspectRunning` 依赖）和保存账号之间切换（`account-switch-sync.ts`）写完配置后都走它，检测失败退回「如果还开着」的说法；桌面端重开复用 `desktop:launch-codex` 的 restart。
+- `ai-output-location.ts`：迁移遇到账号目录下的 `asset-metadata.json` 不再跳过，改为按作品编号合并进新位置（#486）；主进程把正在使用的 `AiAssetMetadataStore.mergeLegacy` 传进去，和搬家期间的收藏、新作品写入排同一个队列。老文件读不了或合并写不进时原样留在老位置、计入 `failed`，合并成功后才删老文件；重复合并结果不变。
+- `ai-asset-metadata-store.ts` 新增 `mergeLegacy` 与纯函数 `mergeAiAssetMetadataItems`：同一作品两边都有记录时以更新时间较新的为准（收藏、标签、回收站状态都听它的），名称、来源、提示词缺了从旧记录补上，最近使用时间取较晚的。
+- `features/shell/Announcement.tsx`：横条与铃铛红点改看「还没看过的公告」（本机 `xingmang-v2-notice-seen:<scope>`，最多记 200 条），打开公告中心或点横条的关闭按钮即记为看过；逐条已读状态与服务端/本机已读写入不变。去掉横条上旧的单条公告「标为已读」小勾，统一换成关闭按钮。
+- `newapi-announcements.ts` 新增 `announcementAttentionKeys` / `readSeenAnnouncementKeys` / `rememberSeenAnnouncementKeys` 及单测；`app-check.mjs` 相应调整红点断言并新增关闭、刷新后保持、新公告重新提醒的浏览器回归。
+- 余额刷新是唯一的定时请求（`balance-store.ts`）：窗口可见且有焦点时 60 秒一次，否则 10 分钟一次（隐藏时也继续，为了后台的新公告通知），按上次尝试计时，失败不会加快。以前是窗口没隐藏就 30 秒一次，每次打 `/api/status` + `/api/user/self`，中转运营方看到单机一天约三千次。
+- new-api 客户端：`/api/status` 读取合并为一处（同时到达的 20 秒内复用），每次成功顺带解析 `announcements`（`parseNoticeBulletins`：最多看 100 条、显示 20 条，按发布时间从新到旧；`content` > 2000、`extra` > 500、日期或类型不对的跳过；忽略服务端会复用的整数 `id`，条目 id 为 `newapi-` + SHA-256(origin + publishDate)，同一时间的两条再加上正文）。失败时保留上一次的时间线。
+- `getNotice` 增加 `cached` 读法（`account:get-notice` 多一个可选参数，没加通道）：余额刷新后的公告检查只取主进程已有的系统公告和时间线，不另发请求；打开公告、切账号、点「重新读取」仍按原来读 `/api/notice`，时间线超过 5 分钟时顺带读一次 `/api/status`。
+- renderer-v2 的 `AnnouncementCenter` 去掉自己的 10 分钟定时器和 focus 监听，改为跟着余额快照的 `updatedAt` 检查；另一个站点的公告仍最多 10 分钟请求一次。时间线条目走本机已读（`localEntries` + `syncLocalReads`），标题取正文第一行，单个换行按硬换行渲染，类型用圆点标签。每个账号首次拿到时间线时，把标题与已读旧合集条目相同的、以及发布超过 7 天的记为已读，并记下 `xingmang-v2-notice-timeline:<scope>`。Sub2API 的公告路径不变，不放宽任何 CSP，公告内容不进日志。
+- `features/shell/Announcement.tsx`：抽出 `loadNotice`，在公告窗口关着时每 10 分钟、以及窗口 `focus` / `visibilitychange` 回到可见时静默重读（按 1 分钟限流，失败不打扰、不清空当前内容，内容没变不重渲染）。之前只在挂载、切账号、打开公告时读。
+- 窗口不在前台时有没提醒过的公告，经平台通道 `notifyActivity('announcement', key)` 请求一次系统通知；文案固定在主进程（`electron/platform/notifications.ts`），渲染层只给 FNV 摘要做事件编号，本机另记已通知过的公告（`xingmang-v2-notice-notified:<scope>`），同一条只弹一次。
+- `PlatformActivityKind` / 通知偏好新增 `announcement`（默认开，老设置文件缺项按默认补齐），设置页多一个「新公告」开关。
+- 修 #501：`announcement-persistence.browser-check.mjs` 改为等列表稳定到预期的已读/未读状态再断言，不再在首行出现时立即读取（打开窗口和切账号都会重读，可能读到中间的加载状态）。
+- `electron/diagnostics.ts` 的 `ADMINISTRATOR` 检查：当前令牌是高权限、但启动探测成功且定为 `same-user`（TokenElevationType 为 default，即内置 Administrator 或关了 UAC）时改为 `pass`，details 带 `alwaysElevated: true`。这种账号没有普通启动可选，0.2.8 起就一直挂着 warn。只改检查页说法；`resolveWindowsCliExecutionModeDetailed` 的判定、写 Key 与搬盘的拦截条件都没动。启动探测失败、或确认是专门提权打开的（`trusted-only`），仍照旧提示普通启动。
+- `electron/canvas-fingerprint.ts`：节点缓存指纹加入 `imageResolution` 与 MiniMax 的 `videoMode` / `videoResolution` / `videoAspectRatio` / `promptOptimization`，图版本同步加入后四项（#485，D11 = E-S5）。取值等于执行器默认值（模型默认清晰度、`auto`、`720p`、`16:9`、关闭）时不进指纹，已有缓存的键不变，升级后不会整批重跑扣费；非 MiniMax 模型不发送的视频参数也不进指纹。
+- 新增 `electron/cc-switch-leftover.ts`：用户主目录有 `~/.cc-switch` 数据目录且配置里有别处的连接记 `provider`，密钥是 CC Switch 代理接管占位 `PROXY_MANAGED` 记 `proxy`；`buildConfigSummary` 把它挂到 `NativeConfigSummary.ccSwitchLeftover`（可选字段，不加 IPC 通道）。
+- 渲染层 `ccSwitchLeftoverFor` 只在来源为 unknown / changed 且没有「就用现在这份」标记时生效；首页新状态 `ccSwitch`，按钮走现成的 `config:switch-account-source`（备份 → explicit 合并写入 → 连接自检 → 失败回滚）。
+- `claudeForeignEnvKeys` 增加 `ANTHROPIC_DEFAULT_FABLE_MODEL`、`CLAUDE_CODE_SUBAGENT_MODEL`（CC Switch 会写；Claude Code 2.1.277 实测 `--model fable` 会被前者改道）。
+- 聊天记录从渲染层 localStorage（4 MB 上限，超限整份不写）改存到用户数据目录 `chat-history/<scope 的 sha256 前 32 位>/`，一个对话一个文件加一份索引，由新模块 `electron/ai-chat-history-store.ts`（每个账号 256 MB、单个对话 64 MB、最多 64 个账号目录的安全上限）经 `chat-history:read` / `chat-history:write` 两条通道读写；每次只重写改过的对话，索引最后写、删掉的对话在索引落盘后清理，退出前等最后一次保存写完。旧的 localStorage 记录（含账号别名与 v1 旧键）只读不写，首次保存即完成迁移，来源原样保留。50 个对话上限不变。
+- `system-service.ts`（#477）：`saveConfig` 改为先挪开 `~/.claude.json` 的 `primaryApiKey` 再提交中转配置，挪不开直接抛错、不写配置；写配置失败时把 Key 放回。`switchToOfficialAccount` 对称地先放回 Key 再切，切换失败再挪开。`restoreOfficialCredentials` 不再吞错，一键切换的回滚能看到恢复不完整。新增 5 条单测覆盖挪开/放回成功、根配置不可解析、写配置失败后撤回。
+- 第十二批候选 10：`electron/windows-elevation.ts` 的 `buildCliLaunchPlan` 在 `& <工具>` 后按 `$LASTEXITCODE` 输出两行固定提示（非零或启动失败走「可能是意外退出」），`-NoExit` 保留；`electron/macos-platform.ts` 的 `buildMacosTerminalScript` 去掉 `exec`，用 `|| cli_exit_code=$?` 接住 `set -e` 下的非零退出，并加 `trap ':' INT` 让 zsh 在 Ctrl+C 时不随工具一起被打断（处理器不是忽略，子进程仍是默认 SIGINT）。文案收在新模块 `electron/cli-exit-hint.ts`，两侧共用；只加固定字符串，未引入新输入（I1、I14）。
+- `system-service.ts`（#482）：打开 CLI 的排队 key 由 `cli:launch:<provider>` 改为新增的纯函数 `buildCliLaunchQueueKey`（工具 + 打开方式 + 规整后的文件夹路径），不同文件夹或「接着聊」不再合并到前一个请求的 Promise。前缀不变，退出拦截照旧不把它当安装。补单测覆盖前面有安装排队时的交叠。
+- `codex-desktop-service.ts`：Windows 安装/更新先走 `winget install --id 9PLM9XGG6VKS --source msstore`（winget 路径只取 `resolveSystemWingetExecutable` 校验过的 App Installer 包目录，argv 固定，当前用户身份运行，15 分钟上限），以本机实际装着的包版本判断成败；失败则按原顺序退到国内镜像 → 镜像备用源 → 上一版本，镜像下载、校验逻辑一行未动。更新时只有官方清单比本机新（或清单没读到）才试商店。
+- 新增纯函数 `buildCodexDesktopStoreInstallCommand` / `describeCodexDesktopStoreFailure` / `parseCodexDesktopStoreProgress` / `shouldTryCodexDesktopStoreUpdate` / `describeCodexDesktopDownloadAttempt`；换线路的原因（商店没装上、国内镜像不可用）整段下载都显示，不再在 0% 之后被盖掉。镜像也失败时报错同时写出两边的原因。
+- #491：`codex-sessions.ts` 的 `detail` 在跳过坏行或超长行（`invalidLines > 0`）时置 `messagesTruncated`；`exportMarkdown` 在文件末尾写与其它工具相同的不完整提示，并返回可选的 `truncated`（缺省 = 完整）；`provider-sessions.ts` 把它透传到统一导出结果，不再写死 `false`。
+- #497：`renderer-v2/features/tools/recent-workspaces.ts` 的 `latestSessionIdsByWorkspace` 跳过归档记录，归档的最新一条不再占掉同一工具、同一目录里较旧活动会话的「接着聊」。
+- `electron/codex-desktop-service.test.ts` 里两条只在 Windows 上跑的 MSIX 读取用例（读出身份字段与签名项、清单超 1 MiB 在解析前拒绝）
+  原来先用 Compress-Archive 现场打一个 MSIX 再交给真 powershell.exe，一条用例两次冷启动，run 35809812859 里读取那一步被自己的 90 秒预算杀掉。
+  现在拆成所有平台都跑的三条：注入 `run` / `resolvePowerShell` 检查交给 PowerShell 的参数、可信环境与超时，并把输出解析回元数据；
+  用 #454 的引号扫描器检查带恶意字符的安装包路径只出现在单引号字面量里、清单大小检查排在解压之前、XML 读取禁 DTD 与外部解析；
+  输出读不懂时报「无法读取」、PowerShell 自己拒绝时原样透出。生成脚本拆成 `buildCodexDesktopPackageInspectionScript`，行为不变。
+- 补 #458：`e2e/renderer-v2-native-close-race.mjs` 装关窗记录器那一步的 `application.evaluate` 碰上 Playwright「Resulting promise was garbage collected」会直接红（run 36032954800），
+  照 `electron-ci-smoke.mjs` 的做法最多重试 3 次，记录器在主进程挂一个已装标记，重试不会重复挂监听。
+- `AppSettings.desktopNotifications` 改为缺省 = 开启，只落盘显式的 `false`（同 `crashReporting`）；主进程通知控制器、平台通知读取与 renderer-v2 设置页都按 `!== false` 判断。旧版本从不写 `false`，所以以前手动关过的用户升级后会被打开一次。legacy 回滚界面已冻结，未跟改。
+- #488：`provider-extensions.ts` 的 Claude 插件列表按 ID + scope 分开，并去掉别的项目里的条目；Claude / Gemini 的 MCP 配置按文件标出 user / project / local；Claude 与 Gemini 的变更一律在项目目录里跑，项目层的操作没选项目时直接提示。渲染层 `runExtensionAction` 把列表里的 scope 原样带回。Gemini 扩展的 scope 如实标 user（原先猜成 workspace）。
+- #489：Gemini 技能的 ID 是 SKILL.md 路径，`mutate()` 先 `skills list --all` 按路径找回技能名和所在层再下命令，找不到就报错，不把路径塞给 CLI。
+- #490：通用技能扫描读 Codex config.toml 的 `skills.config` 停用项（`readCodexSkillEnablement`）；渲染层按原生 `managed` / `scope === 'system'` 判只读，用户技能走 `toggleSkill` / `uninstallSkill`。
+- 浏览器分片的夹具在一次导航秒败（如 Windows 跑机上 `net::ERR_NO_BUFFER_SPACE`）后，先等完这次导航分到的那段时间再重新导航，不再在几百毫秒内把三次导航全用光；总预算仍是 90 秒，没有调大任何超时。
+- `electron/claude-desktop-manifest.test.ts` 里只在 Windows 上跑的清单读取用例原来现场写清单、再真起 powershell.exe 读六遍，冷启动在跑机上连 90 秒都等不到（run 36042396731），CI 只看得到「清单无法安全读取」。
+  生成脚本拆成 `buildClaudeDesktopManifestInspectionScript`（行为不变），改成所有平台都跑的文本检查：联接检查在打开文件前、大小检查与禁 DTD / 外部解析 / 字符上限在建 XmlReader 前；
+  带恶意字符的路径只以 base64 出现在闭合的单引号字面量里；XPath 用到的命名空间与商店清单声明的一致；实际交给 PowerShell 的正是这份脚本。
+- `e2e/fixture-readiness.mjs` 新增 `replayCollectedPromise`：Playwright「Resulting promise was garbage collected」的重放统一走共享的次数与退避（4 次，500/1000/2000ms）。
+  electron-ci-smoke、onboarding-smoke、renderer-v2-native、renderer-v2-native-close-race 原来各自平着等 500ms 重试 3 次，run 36042396731 的 renderer-v2-native 首次读取就在 1.5 秒内三次全丢；
+  门禁用例改为扫描 e2e 下所有冒烟，重放必须走共享模块，不许自带间隔。
+- 新增 `electron/git-runtime-install.ts`：钉死 Git for Windows 2.55.0.5（`v2.55.0.windows.5`）与 x64 / arm64 安装包的 SHA-256，npmmirror 与 GitHub 发布两路按地区排序（同 Node.js），重定向只放行镜像与 GitHub 发布资源主机。普通权限下用 Inno Setup 静默参数加 `/DIR=%LOCALAPPDATA%\Programs\Git` 按当前用户安装；以管理员身份运行时不给 `/DIR`，避免系统 PATH 指向普通用户可写目录。
+- 新 IPC `runtime:install-git` 与进度事件 `runtime:git-install-progress`（排在 `runtime:install-python` 之后），经 `InstallationQueue` 的 `runtime:git` 与下载加速。
+- Windows 上 `installCli('claude')` 出队后再排 `runtime:git`（队列全局串行，不能在队列任务里再入队），经 `installGitAlongsideClaude` 吞掉 Git 的失败，只往 Claude Code 的安装进度里写一句说明；已有 Git 时安静跳过。
+- `command-runner.ts` 的兜底 PATH 补上两处 Git 的 `cmd` 目录，装完不用重开本软件就能被检测到、被从本软件打开的 Claude Code 找到。
+- `git-runtime.ts` 的 Windows 文案改为指向「安装 Git」，面向客户的缺 Git 提示不再出现 PowerShell、bash、网址；macOS 行为不变。
+- #484（审计 D10）：`canvas-run-engine.ts` 在 running/submitting 落盘之后、调用 executor 之前，再检查一次是否已取消；`canvas-node-executors.ts` 的 image、image-edit、video 三个入口对已经 aborted 的 signal 直接拒绝。原因是 `addEventListener('abort')` 对已经取消的 signal 不会触发。两处都补了测试，去掉修复后测试会失败。
+- #479（审计 D05）：`pages-account.tsx` 的「配置到工具」保存成功后调用新的 `onToolConfigSaved`（经 `pages-business.tsx` 透传），`App.tsx` 接到 `toolbox.refreshConfig()`——它自带账号范围守卫，读失败时首页标成配置没读到，不会拿旧快照冒充新配置。`testing/app-check.mjs` 加用例钉住保存之后会重读配置。
+- #496（审计 D22）：`business-common.tsx` 新增纯函数 `overflowedPage`，`pages-account.tsx` 的密钥列表在总数变少、当前页越界时退到最后一页。`e2e/v2-business-fixture.tsx` 加 `keyCount=N` 真分页夹具（撤销会真的少一把），`e2e/v2-business.test.mjs` 钉住 21 → 20 的情形。
+- #495（审计 D21）：`account:list-keys` 的查询多一个可选 `keyword`（`NewApiAccountKeysQuery`，`ipc.ts` 限 64 字），带上时主进程用新的 `searchAccountKeys`（`account-key-quota.ts`，与 `findAccountKeyById` 同一个翻页安全阀）翻完整张列表按名称、分组筛完再分页，搜索词不发给后端；翻不完就报错，不拿半截结果说「没有」。渲染层 `pages-account.tsx` 停手 300 毫秒后带搜索词重查、回到第一页，去掉原先只筛本页的本地过滤。通道不变，三处通道表无需改动。
+- `account-bootstrap.ts`：`synchronized.failed` 里 `plan.skipped` 为 `not-installed` 的工具不再拼进 warnings；装完工具那一轮（`syncAfterToolInstalled`）会只针对它重写，失败在那时经 `failed` 上屏。warnings 里的签发失败也改走 `keySyncFailureText`，与首页 `failed` 同一套脱敏与归类。
+- `key-sync-failure.ts`：识别 Sub2API「分组不存在、不可用或名称重复」与 new-api「当前账号不可使用分组」两句，换成客户能照做的话。
+- 侧栏 `AccountView` 加可选 `sourceLabel`，App 按 `accountSources[siteId].label` 传入；缺省仍是「星芒账号」。
+- `managed-cli-groups.ts`：Sub2API 每个分组自带 `platform`（anthropic / openai / gemini / grok），识别档先按它找唯一一个，同上游多个时再按名字里的工具词区分；上游明确属于别家 CLI 的分组不再按名字认领。`sub2api-relay-backend.ts` 的 `listUsableGroups` 把 `platform` 透传出来（`NewApiUsableGroup` 加可选字段，新站不给）。`resolveAccountKeyOptions` 不 await、全缓存时零请求这两条不变。
+- 首页工具行新增 `notEnabled` 状态（`registry/status.ts`：「账号未开通」，neutral）：本轮 `bootstrap.result.failed` 里该工具的原因经 `isAccountNotEnabledFailure` 认定是账号没开通时取代 `unconfigured`；只剩这类失败时横幅不给「重新同步」。
+- `features/account/login-device-label.ts`：只在显示层把登录会话的 User-Agent 认成大白话，发给服务端和服务端回来的原文都不动。
+- `features/app/runtime-log-filter.ts`：新增 `runtimeLogArea`（source + event → 侧栏叫法；source 为 ipc 时按通道前缀认），「全部来源」下拉改按这个叫法筛选，选项从已加载的条目里取；`runtimeLogDisplayMessage` 去掉网络失败文案后面括号里的排查现场。复制这一条、导出报告的格式不变。
+- 自签证书没有 TeamIdentifier，钥匙串按每版程序指纹（cdhash）认人，Mac 每换一个版本第一次读 safeStorage 都会要「登录」钥匙串密码。代码绕不开，只加提示：`pages-maintenance.tsx` 的重启确认框按 `getPlatformCapabilities().platform === 'macos'` 显示 `macKeychainUpdateHint`；`registry/tutorials.ts` 的 safety 章节加一条 extra 与关键词。
+- renderer-v2 的系统类型在挂载前就定好：`main.tsx` 先按 Chromium 自报的系统写 `data-os`，`App.tsx` 在平台能力回来前沿用它（以前先写 `win`），并把它显式传给 `Splash` / `Welcome` 的 `AuthWindow`；判断收口到 `features/app/window-os.ts`。`testing/app-check.mjs` 逐帧记录启动页和欢迎页的 `data-os`，钉住 Mac 上每一帧都按 Mac 排版。
+- `macos-command-line-tools.ts` 新增 `inspectCommandLineToolsShim`：确认 `/usr/bin/git`、`/usr/bin/python3` 背后那份存在后，再试跑一次 `--version`，失败就不算可用；stderr 是 xcrun 的「You have not agreed to the Xcode license agreements」时回 `license-pending`。`isCommandLineToolsShimBacked` 改为它的布尔包装，首页扫描、检查页、外接工具页三处调用方自动跟上。以前 Xcode 许可没同意时空壳不弹窗、只吐这句英文并以 69 退出，`system-service.ts` 的 `executeVersion` 在失败分支把 stderr 第一行当成版本号，于是整段英文上了首页；0.2.9 已是如此，不是 0.2.10 回归。
+- 检查页 `DiagnosticToolStatus` 新增可选 `xcodeLicensePending`，Git / Python 两行给 `xcodeLicensePendingNotice` 的说明，不提 sudo、不叫客户开终端。
+- `provider-extensions.ts`：服务与更新检查器新增可注入的 `inspectCommandLineToolsShim`（与原布尔注入并存，给了以它为准），`claudeMarketplaceGitMissingMessage` 新增 `xcodeLicensePending` 选项；许可没同意时插件市场与扩展更新检查的报错改用 `xcodeLicensePendingNotice`，不再说「先装命令行开发者工具」。
+- `pages-maintenance.tsx`（#481）：与首页同一判定 `isExternallyManagedInstall`，原生/其他来源的 CLI 禁用「重新安装」（新增 `maintenance-install-<id>` testid），说明改用 `externalInstallHint`。
+- `system-service.ts`：`installCliOperation` 开头新增 `assertNpmChannelOwnsCli`，按首页同一 npm 全局根判定来源，原生/其他来源直接拒绝（纯函数 `externalCliInstallRefusal`），探测失败不拦；Grok 不受影响。浏览器夹具新增 `nativeInstall`，补单测与浏览器回归。
+- #493（D19）：publish-release 的 publish 作业在第一次上传之前新增「Refuse to overwrite a version that already shipped」：tag 已存在且指向别的 commit，或线上 `latest.yml` / `latest-mac.yml` 已是这个版本（或更高）而本次产物不是同一批文件（`scripts/publish-guard.cjs` 逐个比 SHA-512 与大小），直接停下。原先只发 Mac 时要到最后打 tag 才发现版本号撞车，线上的 Mac 包那时已被同名覆盖。同一 commit 上先发 Windows 再补发 Mac、以及同一批产物的发布作业重跑仍然放行。
+- #476：`realm-account-service.ts` 的 `promote` 在输密码登录（`fresh`）提交成功后，注销被替换掉的同账号会话：当前客户端就是这个账号时用它自己的 `endServerSession`，否则（另一账号在用、开机恢复卡着）用本机账号库里被覆盖的那份凭据走新增的 `endSavedSession` → `new-api-client.ts` 的 `endPersistedServerSession`（只带 refresh cookie 与 New-Api-User，服务端按 cookie 注销）。登录成功但本机没存下来时当场注销那个新会话。切换已保存账号、开机恢复、密码错误都不发。业务代理不暴露新方法。线上注销接口是否接受这种只带 cookie、不带 Origin 的请求没法在沙箱里验证，要真机看个人中心「登录设备」数量。
+- #487：`acceleration-service.ts` 读写加速线路/模式偏好前先核对是不是当前登录账号，读完再核一次，退出或切换账号之后到的旧请求一律拒绝。
+- #478（审计 D04）：`App.tsx` 的 `rewriteAccountKeys` 点名重写时，被规划器跳过（手填、来源没确认、官方等）的工具不再算成功，抛 `KeyRewriteSkippedError`（`features/tools/account-bootstrap.ts`，另有纯函数 `skippedNamedProviders`）。`pages-account.tsx` 的 Key 页据此区分「没换成、再换一次」与「跳过了、去设置」两种提示；「去设置」经新的 `onConfigureTool` 打开该工具的设置（`pages-business.tsx` 接 `openConfig`）。`e2e/v2-business.test.mjs` 加手填工具的撤销用例。
+- #494（D20）：rollback-release 在撤回版本、覆盖根目录清单之前，就把备份清单引用的每个安装包完整下载一遍，核大小、SHA-512 与 blockmap（新增 `rollback-release.cjs verify`，与发布后 `update:verify-feed` 共用 `update-release-utils.cjs` 里同一段核对逻辑）。原先预检只 HEAD 一下确认文件在，200 但内容已被同名覆盖的安装包要等线上换过之后才暴露。`docs/SERVICE-STATUS.md` 的回退例子改成「0.2.11 退回 0.2.10」，并写明 0.2.10 自己出问题只能撤回 + 发 0.2.11（0.2.9 没发过、没有备份，0.2.8 低于客户端的回退下限）。
+- #480（审计 D06，0.2.10 由 #428 引入）：`SavedAccounts.tsx` 的重登按钮带上 `savedAccountLoginTarget(account)`（来源 + 用户名），`App.tsx` 用新的 `authTarget` 状态传给 `AuthFlow` 的 `initialSiteId` / `initialIdentifier`，关框或登录成功即清空，其它入口照旧打开默认的星芒账号登录框。`onLogin` / `openLogin` 改为可带可选 `LoginTarget`，原先直接 `onClick={onLogin}` 的几处包一层，避免把点击事件当成目标传进去。
+- #500（R03）：`scripts/service-status.cjs` 只在线上状态文件确实不存在（工作流拿到 404）时从空白开始；读回来是空白、网页、不是 JSON 或不是对象时报错停下，不再当成空白重建。原先缓存或路由临时回一张 200 的 HTML，改一次维护开关或跑一次回滚就会把线上的撤回名单与分批放量一起抹掉。
+- #475（D01）：按工具额度在四种情况下被放开，统一改成拿不准就不放开。`new-api-client.ts` 的 `hasExhaustedCappedCliKey` 加 `newerThanId`、`sub2api-relay-backend.ts` 的 `provisionCliKey` 同理：同名 Key 里比用完的上限更旧的不再被复用；`ipc.ts` 撤销前读不到本机工具密钥记录时，设了限制的 Key 不撤；撤销报错后只有列表里还看得见这把 Key 才删记下的限制；`chat-credential-coordinator.ts` 聊天 Key 401 后查不了列表就保留本机 Key 报错，不再当成「没用完」去换新的。
+- 新增 `electron/tool-model-check.ts`（按工具与「站点 + 账号 + Key + 型号」缓存一天，失败一小时后再试，模型接口最多等 5 秒）与通道 `tools:check-models`；只核本软件用当前账号写的配置，Claude Code 菜单过期（`claude-model-picker.ts` 的 `claudeRelayModelPickerOutdated`）时走 `saveConfig` 的自动写入闸刷新。renderer-v2 在 `launch()` 里、选目录之前调用，换模型走空 Key + merge 的 `saveConfig`，配置来源保持不变。
+- #498：卸载清理（`electron/uninstall-cleanup.ts`）先比对本进程账号与本会话桌面（explorer.exe 主人）的账号 SID；不一致时开机项、系统代理、登录记录一样都不动，以 32（`otherAccount`）退出。问不出来时照旧清理。0.2.9 本来就不清代理，这种情况跟 0.2.9 一样。
+- #492（D18）：正式发布的 publish 作业、rollback-release、service-status 三处写更新目录的作业改为共用 `update-feed` 并发组（挂在作业上，出包阶段不受影响）。原先发布用 `publish-release`、回滚与维护开关用 `service-status` 两个组，发布与回滚可以在「读线上 → 写回」之间交错，互相盖掉清单，撤回名单与线上版本对不上。`scripts/publish-workflow-config.test.cjs` 扫描全部工作流，凡是 `aws s3` 写入的作业都必须在这个组里。
+- #483（D09）：`ai-video-service.ts` 的 `fetchWithTimeout` 改为 `fetchAndRead`，超时与取消覆盖响应头到正文最后一个字节；视频正文按「多久没收到数据」计时，JSON 响应按整次请求计时；正文读取与 `raceAbort` 竞速，body 不响应 signal 时也能结束，`whenIdle` 与账号切换不再被挂住。
+- #499（R02）：外部视频下载地址（签名 URL 与中转重定向目标）连网前先做 DNS 解析，任一结果落在本机/内网/保留段即拒绝；签名 URL 被拒或解析失败时退回中转的 `/content` 接口，重定向目标被拒则报错。放行 198.18.0.0/15 以兼容 Fake-IP 代理。未做 IP 固定（请求仍走代理感知的 `net.fetch`），属纵深防御。
+- Windows CI 里三处在 runner 忙时偶发超时假红的检查改成不依赖 PowerShell 冷启动或墙钟：
+  `electron/cli-process-probe.test.ts` 的「real PowerShell probe」（Get-CimInstance 三次超过 60 秒探测预算）改成所有平台都跑的两半——
+  注入 `runProbe` / 新增的 `resolvePowerShell` 检查交给 PowerShell 的参数与可信环境，再用 #454 的引号扫描器检查脚本只从环境变量读目录、两种进程形态都按序数比较；
+  `scripts/windows-acceleration-recovery.test.cjs` 的逻辑测试本来就把原生读写全换成桩，不再现场 Add-Type 编译用不到的 WinInet 类型（多起一次 csc.exe，run 35885043224 超 30 秒），
+  另加一条全平台检查保证恢复脚本与 `electron/platform/windows-system-proxy.ts` 的 WinInet 源码一字不差（真编译真改代理仍由 windows-uninstall-smoke 覆盖）；
+  `e2e/renderer-v2-native-close-race.mjs` 去掉 5 秒退出墙钟（退出本身就允许 2 秒清理加 2 秒兜底强退，run 35892482024 超时），改为在主进程记录关窗事件，断言关窗走到自己的 before-quit、全程没向界面发退出询问，
+  「不等界面」改由 `electron/window-lifecycle.test.ts` 在不推进任何时钟的前提下直接证明。
+- 引号扫描器从 `codex-desktop-appx.test.ts` 挪到 `electron/powershell-script-scan.test-support.ts` 供多个测试共用；`tsconfig.electron.json` 排除 `*.test-support.ts`，不进 dist-electron。
+- `electron/chat-key-store.test.ts`「每个账号最多 32 个分组」原来连着做 33 次落盘原子写，Windows 跑机忙时连放宽到的 15 秒都不够（#511）。
+  裁剪逻辑拆成纯函数 `pruneChatKeys` 直接测（32 个分组、16 个账号、总数 128、返回副本）；存储层用例先一次写好到上限的缓存文件，再做一次写入，确认真的按上限裁；「16 个账号」那条同样改写。去掉了那条单独放宽的 15 秒超时。
+- `electron/windows-elevation.test.ts`「读当前令牌提升类型」原来真起 Windows PowerShell 现场编译 Add-Type，失败再来一次，跑机忙时仍会红（#511）。
+  生成脚本拆成 `buildWindowsTokenElevationProbeScript`（行为不变），`inspectCurrentWindowsTokenElevationType` 新增只给测试用的 `platform` / `resolvePowerShell` / `run` 注入口；
+  改成所有平台都跑：交给系统 PowerShell 的参数、可信环境（`NODE_OPTIONS` 被剥掉）、15 秒与 64 KiB 上限、输出解析；读不懂报错、失败原样透出；非 Windows 不问；TokenElevationType=18 与 1/2/3 的映射；here-string 与括号闭合。
+- `external-client-runtime.ts`：找不到可信系统 winget 时，`installHint` 固定为 `externalClientWingetUnavailableHint`，原始原因（如 `realpath` 的 ENOENT）经新增的 `onWingetUnavailable` 回调写进运行日志 `external-client.winget-unavailable`，同一原因只记一次；安装进度与失败文案去掉「winget」字样。`node-runtime.ts` / `python-runtime.ts` 切换到官方安装包时的进度文案同理，`failures` 里的原始原因不变。
+- 新增 `externalClientOfficialDownloadUrls`（`external-client-contract.ts`）与可选状态字段 `officialDownloadUrl`：Windows 上 winget 不可用、又没有腾讯官方包兜底时给出。两条网址逐条并进 `main.ts` 的外链白名单（I12 全等匹配，不放宽规则）；首页 `onOpenExternalDownload` 缺省时仍是「暂不支持」。
 
 ## 0.2.9 - 2026-09-23
 
