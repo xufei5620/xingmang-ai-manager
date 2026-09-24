@@ -26,6 +26,7 @@ const ipcInvokeChannels = {
   launchExternalClient: 'external-clients:launch',
   switchToOfficialAccount: 'config:switch-to-official-account',
   switchAccountSource: 'config:switch-account-source',
+  inspectRunningTools: 'tools:inspect-running',
   listModels: 'models:list',
   listConfiguredModels: 'models:list-configured',
   chooseWorkspace: 'workspace:choose',
@@ -241,6 +242,7 @@ const xingmangApi: XingmangApi = {
     ? invoke('switchToOfficialAccount', provider)
     : invoke('switchToOfficialAccount', provider, mode),
   switchAccountSource: (provider, target) => invoke('switchAccountSource', provider, target),
+  inspectRunningTools: (providers) => invoke('inspectRunningTools', providers),
   listModels: (apiKey) => invoke('listModels', apiKey),
   listConfiguredModels: (provider) => invoke('listConfiguredModels', provider),
   chooseWorkspace: (options) => options === undefined ? invoke('chooseWorkspace') : invoke('chooseWorkspace', options),

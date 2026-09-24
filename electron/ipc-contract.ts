@@ -76,6 +76,8 @@ import type {
 import type { CliVersionAdvice as MainCliVersionAdvice } from './cli-verified-versions'
 import type { AccountSourceSwitchResult, AccountSourceTarget } from './account-source-switch'
 export type { AccountSourceSwitchResult, AccountSourceTarget } from './account-source-switch'
+import type { RunningToolsReport } from './running-tools'
+export type { RunningToolsReport } from './running-tools'
 import type {
   ConnectionCheckLayer as MainConnectionCheckLayer,
   ConnectionCheckResult as MainConnectionCheckResult,
@@ -593,6 +595,15 @@ export interface XingmangInvokeContract {
     [provider: ProviderId, target: AccountSourceTarget],
     AccountSourceSwitchResult
   >
+  /**
+   * 换账号把 Key 写进这些工具之后，看哪些还开着（Codex 连同桌面端），只对开着的
+   * 提醒关掉重开。只读，不改任何东西；检测不出来的归到 unknown，不抛错。
+   */
+  inspectRunningTools: IpcInvokeDefinition<
+    'tools:inspect-running',
+    [providers: ProviderId[]],
+    RunningToolsReport
+  >
   listModels: IpcInvokeDefinition<'models:list', [apiKey: string], string[]>
   listConfiguredModels: IpcInvokeDefinition<'models:list-configured', [provider: ProviderId], string[]>
   /** options 省略 = 弹目录选择器；createStarter = 不弹选择器，直接替用户新建一个项目文件夹。 */
@@ -1006,6 +1017,7 @@ export const ipcInvokeChannels = {
   launchExternalClient: 'external-clients:launch',
   switchToOfficialAccount: 'config:switch-to-official-account',
   switchAccountSource: 'config:switch-account-source',
+  inspectRunningTools: 'tools:inspect-running',
   chooseWorkspace: 'workspace:choose',
   getRepositoryContext: 'repository:get-context',
   installNodeRuntime: 'runtime:install-node',

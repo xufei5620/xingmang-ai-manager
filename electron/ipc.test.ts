@@ -53,7 +53,7 @@ vi.mock('electron', () => ({
   clipboard: { writeText: electronMocks.writeText },
 }))
 
-import { accelerationStateLogKey, parseDiagnosticsRunOptions, registerIpcHandlers } from './ipc'
+import { accelerationStateLogKey, parseDiagnosticsRunOptions, parseRunningToolsProviders, registerIpcHandlers } from './ipc'
 
 const stubStoredConfig: AppSettings = {
   version: 2,
@@ -1355,6 +1355,26 @@ describe('registerIpcHandlers', () => {
     const handler = electronMocks.handlers.get('system:scan')!
     await expect(handler(trustedEvent(), false)).resolves.toBe(projected)
     expect(transform).toHaveBeenCalledWith(source)
+  })
+
+  it('asks the service which switched tools are still open', async () => {
+    const service = serviceStub()
+    const report = { running: ['codex' as const], unknown: [], codexDesktopRunning: true, canRestartCodexDesktop: true }
+    service.inspectRunningTools = vi.fn(async () => report)
+    register(service)
+    const handler = electronMocks.handlers.get(ipcInvokeChannels.inspectRunningTools)!
+
+    await expect(handler(trustedEvent(), ['codex', 'codex', 'claude'])).resolves.toEqual(report)
+    expect(service.inspectRunningTools).toHaveBeenCalledWith(['codex', 'claude'])
+  })
+
+  it('reports every tool as unknown when the service cannot check running tools', async () => {
+    register()
+    const handler = electronMocks.handlers.get(ipcInvokeChannels.inspectRunningTools)!
+
+    await expect(handler(trustedEvent(), ['gemini'])).resolves.toEqual({
+      running: [], unknown: ['gemini'], codexDesktopRunning: false, canRestartCodexDesktop: false,
+    })
   })
 
   it('reads only Codex readiness during startup', async () => {
@@ -6108,5 +6128,21 @@ describe('backup handlers and account key ownership', () => {
     register(serviceStub(), undefined, undefined, undefined, undefined, undefined, {}, { backupStore: backupStore as never })
     expect(() => electronMocks.handlers.get('backups:restore')!(trustedEvent(), '')).toThrow('备份 ID格式错误')
     expect(backupStore.restore).not.toHaveBeenCalled()
+  })
+})
+
+describe('parseRunningToolsProviders', () => {
+  it('accepts known tools and drops repeats', () => {
+    expect(parseRunningToolsProviders(['claude', 'grok', 'claude'])).toEqual(['claude', 'grok'])
+    expect(parseRunningToolsProviders([])).toEqual([])
+  })
+
+  it.each([
+    ['a non-array', 'claude'],
+    ['an unknown tool', ['claude', '../codex']],
+    ['a non-string entry', [1]],
+    ['an oversized list', [...providerIds, 'claude']],
+  ])('rejects %s', (_label, value) => {
+    expect(() => parseRunningToolsProviders(value)).toThrow()
   })
 })
