@@ -89,6 +89,8 @@ export class ChatKeyQuotaExhaustedError extends Error {
   }
 }
 
+export const chatKeyStatusUnknownMessage = '没查到这把聊天密钥现在的额度情况，先没换新的。请稍后再试。'
+
 const inFlightByService = new WeakMap<object, Map<string, Promise<ResolvedChatCredential>>>()
 
 export function createChatCredentialCoordinator(options: {
@@ -138,8 +140,12 @@ export function createChatCredentialCoordinator(options: {
         }
         if (!isCredentialFailure(error)) throw error
         // new-api 用到 0 之后回的 401 和 Key 被删一样，只能去密钥列表里认一下。
+        // 列表查不了就分不清是用完还是被删：不能当成「没用完」去换新的（#475），
+        // 保留本机这把，让用户稍后再试。
         const capUsedUp = await findAccountKeyById((query) => accountService.listKeys(query), cached.keyId)
-          .then((key) => key !== null && isCappedKeyUsedUp(key), () => false)
+          .then((key) => key !== null && isCappedKeyUsedUp(key), () => {
+            throw new Error(chatKeyStatusUnknownMessage)
+          })
         assertSameSession(accountService, userId, revision)
         if (capUsedUp) throw new ChatKeyQuotaExhaustedError()
         // A revoked/expired server key must not poison the local cache. The

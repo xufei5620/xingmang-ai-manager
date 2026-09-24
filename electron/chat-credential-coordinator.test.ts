@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
+  chatKeyStatusUnknownMessage,
   createChatCredentialCoordinator,
   type ChatKeyStoreLike,
 } from './chat-credential-coordinator'
@@ -199,6 +200,17 @@ describe('chat credential coordinator', () => {
     vi.mocked(context.modelService.fetchAvailableModels).mockRejectedValueOnce(new Error('模型查询失败，服务返回 401'))
 
     await expect(context.coordinator.resolveCredential('codex-pro')).rejects.toThrow(chatKeyQuotaExhaustedMessage)
+    expect(context.store.remove).not.toHaveBeenCalled()
+    expect(context.accountService.provisionCliKey).not.toHaveBeenCalled()
+  })
+
+  it('keeps a cached key instead of replacing it when the key list cannot tell a used-up cap from a deleted key', async () => {
+    const cached: StoredChatKey = { userId: 7, group: 'codex-pro', keyId: 3, keyName: 'xingmang-chat-1', key: 'sk-capped-secret' }
+    const context = setup({ cached: [cached] })
+    vi.mocked(context.modelService.fetchAvailableModels).mockRejectedValueOnce(new Error('模型查询失败，服务返回 401'))
+    vi.mocked(context.accountService.listKeys).mockRejectedValueOnce(new Error('network down'))
+
+    await expect(context.coordinator.resolveCredential('codex-pro')).rejects.toThrow(chatKeyStatusUnknownMessage)
     expect(context.store.remove).not.toHaveBeenCalled()
     expect(context.accountService.provisionCliKey).not.toHaveBeenCalled()
   })

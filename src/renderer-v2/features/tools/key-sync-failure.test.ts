@@ -18,4 +18,11 @@ describe('key sync failure wording', () => {
   it('does not repeat the tool name the reason already starts with', () => {
     expect(keySyncFailureText('grok', 'Grok CLI 没有收到配置完成结果，请重新检测')).toBe('Grok CLI 没有收到配置完成结果，请重新检测')
   })
+
+  it('turns an unavailable account group into advice the customer can act on', () => {
+    expect(keySyncFailureText('claude', '分组不存在、不可用或名称重复，请确认账号可用分组'))
+      .toBe('Claude Code：当前账号还不能用，需要的话请联系客服开通')
+    expect(keySyncFailureText('gemini', '当前账号不可使用分组「Gemini-中转/订阅」'))
+      .toBe('Gemini CLI：当前账号还不能用，需要的话请联系客服开通')
+  })
 })
