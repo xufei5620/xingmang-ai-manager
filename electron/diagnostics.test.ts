@@ -861,6 +861,29 @@ describe('diagnostics', () => {
     expect(python?.summary).toContain('macOS 自带的 python3 只是个空壳')
   })
 
+  it('explains a pending Xcode license on the Git and Python rows without leaking the raw message', async () => {
+    const home = temporaryHome()
+    const input = { ...dependencies(home), platform: 'darwin' as const }
+    const previous = input.inspectTool!
+    input.inspectTool = async (tool, signal) =>
+      tool === 'git' || tool === 'python'
+        ? { installed: false, version: null, path: null, commandLineToolsShim: true, xcodeLicensePending: true }
+        : previous(tool, signal)
+
+    const report = await runDiagnostics(input)
+
+    const git = report.items.find((item) => item.code === 'RUNTIME_GIT')
+    const python = report.items.find((item) => item.code === 'RUNTIME_PYTHON')
+    expect(git).toMatchObject({ state: 'warn', details: { installed: false } })
+    expect(git?.summary).toContain('Xcode 还没同意许可协议')
+    expect(git?.summary).not.toContain('空壳')
+    expect(python).toMatchObject({ state: 'warn' })
+    expect(python?.summary).toContain('Xcode 还没同意许可协议')
+    for (const summary of [git?.summary, python?.summary]) {
+      expect(summary).not.toMatch(/sudo|xcodebuild|xcode-select/)
+    }
+  })
+
   it('passes the Git check when Git is present', async () => {
     const home = temporaryHome()
     const report = await runDiagnostics(dependencies(home))
