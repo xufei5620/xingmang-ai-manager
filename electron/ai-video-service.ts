@@ -7,7 +7,9 @@ import {
   type MiniMaxVideoResolution,
 } from './ai-chat-protocol'
 import { createHash } from 'node:crypto'
-import { isIP } from 'node:net'
+import { lookup as nodeLookup } from 'node:dns/promises'
+import { BlockList, isIP } from 'node:net'
+import { isPublicAiAssetAddress } from './ai-asset-store'
 import type { ChatCredentialCoordinator } from './chat-credential-coordinator'
 import type { AiStoredVideoAsset } from './ai-video-asset-store'
 import { AI_VIDEO_TASK_VERSION, normalizeAiVideoTaskPrompt } from './ai-video-task-store'
@@ -28,6 +30,16 @@ const MAXIMUM_MINIMAX_MEDIA_BYTES = 120 * 1024 * 1024
 const MAXIMUM_ERROR_MESSAGE = 300
 const TASK_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/
 const ASSET_ID_PATTERN = /^[A-Za-z0-9_-]{43}$/
+
+// Fake-IP proxies (Clash and friends, very common among our users) answer
+// every DNS query with an address from the 198.18.0.0/15 benchmarking range
+// and route the connection through the proxy. Nothing real lives there on a
+// home or office LAN, so allowing it keeps signed CDN downloads working
+// without reopening loopback, RFC 1918, link-local or metadata targets.
+const fakeIpProxyAddresses = new BlockList()
+fakeIpProxyAddresses.addSubnet('198.18.0.0', 15, 'ipv4')
+
+export type AiVideoDnsLookup = (hostname: string) => Promise<readonly string[]>
 
 export interface AiVideoGenerationInput {
   requestId: string
@@ -186,17 +198,55 @@ function ambiguousVideoSubmission(): Error {
   return new Error('视频提交结果不明确，服务端可能已创建任务，请勿立即重复提交')
 }
 
-async function readBoundedBytes(response: Response, maximumBytes: number, label: string): Promise<Buffer> {
+interface ResponseBodyGuard {
+  signal: AbortSignal
+  // Called after every chunk so a slow but moving download is judged on
+  // inactivity, not on its total duration.
+  onChunk?: () => void
+}
+
+/**
+ * Settles with the promise, or rejects with the signal's reason as soon as the
+ * signal aborts. A response body that ignores its request signal (a mock, or a
+ * stream a proxy keeps open) must still let a timeout or 「停止」 finish the
+ * operation instead of hanging whenIdle() and the account switch behind it.
+ */
+function raceAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) {
+    void promise.catch(() => undefined)
+    return Promise.reject(signal.reason)
+  }
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => {
+      void promise.catch(() => undefined)
+      reject(signal.reason)
+    }
+    signal.addEventListener('abort', onAbort, { once: true })
+    promise.then((value) => {
+      signal.removeEventListener('abort', onAbort)
+      resolve(value)
+    }, (error: unknown) => {
+      signal.removeEventListener('abort', onAbort)
+      reject(error)
+    })
+  })
+}
+
+async function readBoundedBytes(response: Response, maximumBytes: number, label: string, guard?: ResponseBodyGuard): Promise<Buffer> {
   const declared = Number(response.headers.get('content-length'))
-  if (Number.isFinite(declared) && declared > maximumBytes) throw new Error(`${label}超过安全上限`)
+  if (Number.isFinite(declared) && declared > maximumBytes) {
+    await response.body?.cancel().catch(() => undefined)
+    throw new Error(`${label}超过安全上限`)
+  }
   if (!response.body) throw new Error(`${label}没有内容`)
   const reader = response.body.getReader()
   const chunks: Buffer[] = []
   let received = 0
   try {
     for (;;) {
-      const chunk = await reader.read()
+      const chunk = guard ? await raceAbort(reader.read(), guard.signal) : await reader.read()
       if (chunk.done) break
+      guard?.onChunk?.()
       received += chunk.value.byteLength
       if (received > maximumBytes) {
         await reader.cancel().catch(() => undefined)
@@ -244,8 +294,18 @@ function validDownloadUrl(value: unknown): URL | undefined {
   return url
 }
 
-async function responseJson(response: Response): Promise<Record<string, unknown>> {
-  const bytes = await readBoundedBytes(response, MAXIMUM_JSON_BYTES, '视频接口响应')
+export function isAllowedVideoDownloadAddress(address: string): boolean {
+  if (isPublicAiAssetAddress(address)) return true
+  const literal = address.split('%', 1)[0]
+  return isIP(literal) === 4 && fakeIpProxyAddresses.check(literal, 'ipv4')
+}
+
+async function defaultVideoDnsLookup(hostname: string): Promise<readonly string[]> {
+  return (await nodeLookup(hostname, { all: true, verbatim: true })).map((entry) => entry.address)
+}
+
+async function responseJson(response: Response, guard?: ResponseBodyGuard): Promise<Record<string, unknown>> {
+  const bytes = await readBoundedBytes(response, MAXIMUM_JSON_BYTES, '视频接口响应', guard)
   let payload: unknown
   try {
     payload = JSON.parse(bytes.toString('utf8')) as unknown
@@ -308,6 +368,7 @@ export function createAiVideoService(options: {
   maximumPollIntervalMs?: number
   maximumWaitMs?: number
   requestTimeoutMs?: number
+  dnsLookup?: AiVideoDnsLookup
   now?: () => Date
 }) {
   const baseUrl = new URL(options.baseUrl)
@@ -318,6 +379,7 @@ export function createAiVideoService(options: {
   const maximumWaitMs = options.maximumWaitMs ?? DEFAULT_MAXIMUM_WAIT_MS
   const requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS
   const now = options.now ?? (() => new Date())
+  const dnsLookup = options.dnsLookup ?? defaultVideoDnsLookup
   if (!Number.isSafeInteger(pollIntervalMs) || pollIntervalMs < 1
     || !Number.isSafeInteger(maximumPollIntervalMs) || maximumPollIntervalMs < pollIntervalMs
     || !Number.isSafeInteger(maximumWaitMs) || maximumWaitMs < 1
@@ -385,30 +447,78 @@ export function createAiVideoService(options: {
     return form
   }
 
-  async function fetchWithTimeout(url: URL, init: RequestInit, operationSignal: AbortSignal, allowContentRedirect = false, redirectDepth = 0): Promise<Response> {
-    const controller = new AbortController()
-    const onAbort = () => controller.abort(operationSignal.reason)
-    operationSignal.addEventListener('abort', onAbort, { once: true })
-    const timer = setTimeout(() => controller.abort(new Error('视频接口请求超时')), requestTimeoutMs)
+  async function downloadHostAllowed(url: URL): Promise<boolean> {
     try {
-      const response = await fetchImpl(url, { ...init, redirect: allowContentRedirect ? 'manual' : 'error', signal: controller.signal })
-      if (allowContentRedirect && response.status >= 300 && response.status < 400) {
-        if (redirectDepth >= 3) throw new Error('视频下载重定向次数超过安全上限')
-        const location = response.headers.get('location')
-        const redirectUrl = validDownloadUrl(location ? new URL(location, url).href : undefined)
-        if (!redirectUrl) throw new Error('视频下载重定向地址不可信')
-        const headers = new Headers(init.headers)
-        headers.delete('Authorization')
-        return await fetchWithTimeout(redirectUrl, { ...init, headers }, operationSignal, true, redirectDepth + 1)
+      const addresses = await dnsLookup(url.hostname)
+      return addresses.length > 0 && addresses.every(isAllowedVideoDownloadAddress)
+    } catch {
+      return false
+    }
+  }
+
+  /**
+   * One request from headers to the last body byte under a single deadline
+   * and the operation's stop signal. The consumer reads the body inside, so a
+   * server that sends headers and then stalls can no longer outlive either.
+   * A consumer that calls touch() (the MP4 download) turns the deadline into
+   * an inactivity timeout, because a large clip on a slow line legitimately
+   * takes longer than one request timeout while still making progress.
+   */
+  async function fetchAndRead<T>(
+    url: URL,
+    init: RequestInit,
+    operationSignal: AbortSignal,
+    consume: (response: Response, guard: Required<ResponseBodyGuard>) => Promise<T>,
+    allowContentRedirect = false,
+  ): Promise<T> {
+    let target = url
+    let requestInit = init
+    for (let redirectDepth = 0; ; redirectDepth += 1) {
+      if (operationSignal.aborted) throw operationSignal.reason
+      const controller = new AbortController()
+      const onAbort = () => controller.abort(operationSignal.reason)
+      operationSignal.addEventListener('abort', onAbort, { once: true })
+      let timer: ReturnType<typeof setTimeout> | undefined
+      const touch = () => {
+        clearTimeout(timer)
+        timer = setTimeout(() => controller.abort(new Error('视频接口请求超时')), requestTimeoutMs)
       }
-      if (response.url) {
-        const finalUrl = new URL(response.url)
-        if (finalUrl.origin !== url.origin) throw new Error('视频接口响应来源不可信')
+      touch()
+      try {
+        // The relay itself is configured, not supplied by a response; every
+        // other host came from the relay and must not resolve into this
+        // machine or its LAN.
+        if (target.origin !== baseUrl.origin && !await raceAbort(downloadHostAllowed(target), controller.signal)) {
+          throw new Error('视频下载地址指向本机或内网，已拒绝')
+        }
+        const response = await raceAbort(
+          fetchImpl(target, { ...requestInit, redirect: allowContentRedirect ? 'manual' : 'error', signal: controller.signal }),
+          controller.signal,
+        )
+        if (allowContentRedirect && response.status >= 300 && response.status < 400) {
+          await response.body?.cancel().catch(() => undefined)
+          if (redirectDepth >= 3) throw new Error('视频下载重定向次数超过安全上限')
+          const location = response.headers.get('location')
+          const redirectUrl = validDownloadUrl(location ? new URL(location, target).href : undefined)
+          if (!redirectUrl) throw new Error('视频下载重定向地址不可信')
+          const headers = new Headers(requestInit.headers)
+          headers.delete('Authorization')
+          target = redirectUrl
+          requestInit = { ...requestInit, headers }
+          continue
+        }
+        if (response.url) {
+          const finalUrl = new URL(response.url)
+          if (finalUrl.origin !== target.origin) {
+            await response.body?.cancel().catch(() => undefined)
+            throw new Error('视频接口响应来源不可信')
+          }
+        }
+        return await consume(response, { signal: controller.signal, onChunk: touch })
+      } finally {
+        clearTimeout(timer)
+        operationSignal.removeEventListener('abort', onAbort)
       }
-      return response
-    } finally {
-      clearTimeout(timer)
-      operationSignal.removeEventListener('abort', onAbort)
     }
   }
 
@@ -418,17 +528,18 @@ export function createAiVideoService(options: {
     signal: AbortSignal,
     init: RequestInit = {},
   ): Promise<Record<string, unknown>> {
-    const response = await fetchWithTimeout(new URL(pathName, baseUrl), {
+    return fetchAndRead(new URL(pathName, baseUrl), {
       ...init,
       headers: {
         Accept: 'application/json',
         Authorization: `Bearer ${apiKey}`,
         ...(init.body ? { 'Content-Type': 'application/json' } : {}),
       },
-    }, signal)
-    const payload = await responseJson(response)
-    if (!response.ok) throw videoRequestFailure(response.status, errorDetail(payload), response.headers.get('retry-after'))
-    return payload
+    }, signal, async (response, guard) => {
+      const payload = await responseJson(response, { signal: guard.signal })
+      if (!response.ok) throw videoRequestFailure(response.status, errorDetail(payload), response.headers.get('retry-after'))
+      return payload
+    })
   }
 
   async function pollTask(
@@ -471,27 +582,36 @@ export function createAiVideoService(options: {
     const expiry = parseExpiry(descriptor.urlExpiresAt)
     const signedUrl = validDownloadUrl(descriptor.url)
     const expiryProvided = descriptor.urlExpiresAt !== undefined && descriptor.urlExpiresAt !== null
-    const urlUsable = Boolean(signedUrl && (!expiryProvided || (expiry !== undefined && expiry > now().getTime())))
+    const signedUrlFresh = Boolean(signedUrl && (!expiryProvided || (expiry !== undefined && expiry > now().getTime())))
+    // A signed URL whose host resolves into this machine or its LAN is
+    // treated like an expired one: the relay's own content endpoint still
+    // delivers the clip, so the user loses nothing.
+    const urlUsable = Boolean(signedUrl && signedUrlFresh && await raceAbort(downloadHostAllowed(signedUrl), signal))
     const downloadUrl = urlUsable && signedUrl
       ? signedUrl
       : new URL(`${AI_CHAT_ENDPOINTS.videos}/${encodeURIComponent(task.taskId)}/content`, baseUrl)
-    const response = await fetchWithTimeout(downloadUrl, {
+    const { contentType, bytes } = await fetchAndRead(downloadUrl, {
       method: 'GET',
       headers: {
         Accept: 'video/mp4',
         // TOS signed URLs authenticate via their query string. Never leak the API key there.
         ...(urlUsable ? {} : { Authorization: `Bearer ${apiKey}` }),
       },
-    }, signal, downloadUrl.origin === baseUrl.origin && !urlUsable)
-    if (!response.ok) {
-      const payload = await responseJson(response).catch(() => ({}))
-      throw videoRequestFailure(response.status, errorDetail(payload), response.headers.get('retry-after'))
-    }
-    const contentType = response.headers.get('content-type')?.split(';', 1)[0].trim().toLowerCase()
-    if (contentType && contentType !== 'video/mp4' && contentType !== 'application/octet-stream') {
-      throw new Error('视频下载响应类型不受支持')
-    }
-    const bytes = await readBoundedBytes(response, MAXIMUM_VIDEO_BYTES, '视频文件')
+    }, signal, async (response, guard) => {
+      if (!response.ok) {
+        const payload = await responseJson(response, { signal: guard.signal }).catch((error: unknown) => {
+          if (guard.signal.aborted) throw error
+          return {}
+        })
+        throw videoRequestFailure(response.status, errorDetail(payload), response.headers.get('retry-after'))
+      }
+      const declaredType = response.headers.get('content-type')?.split(';', 1)[0].trim().toLowerCase()
+      if (declaredType && declaredType !== 'video/mp4' && declaredType !== 'application/octet-stream') {
+        await response.body?.cancel().catch(() => undefined)
+        throw new Error('视频下载响应类型不受支持')
+      }
+      return { contentType: declaredType, bytes: await readBoundedBytes(response, MAXIMUM_VIDEO_BYTES, '视频文件', guard) }
+    }, downloadUrl.origin === baseUrl.origin && !urlUsable)
     if (descriptor.contentType) {
       const expectedType = descriptor.contentType.split(';', 1)[0].trim().toLowerCase()
       if (expectedType !== 'video/mp4' && expectedType !== 'application/octet-stream') throw new Error('视频文件类型不受支持')
@@ -601,7 +721,7 @@ export function createAiVideoService(options: {
       reservationId = await options.tasks.reserve(credential.userId)
       if (operation.controller.signal.aborted) throw operation.controller.signal.reason
       operation.dispatched = true
-      let response: Response
+      let submitted: { response: Response; payload?: Record<string, unknown> }
       try {
         const headers: Record<string, string> = {
           Accept: 'application/json',
@@ -609,19 +729,27 @@ export function createAiVideoService(options: {
           ...(typeof requestBody === 'string' ? { 'Content-Type': 'application/json' } : {}),
           ...(capability.provider === 'minimax-h3' ? { 'Idempotency-Key': requestId } : {}),
         }
-        response = await fetchWithTimeout(new URL(AI_CHAT_ENDPOINTS.videos, baseUrl), {
+        submitted = await fetchAndRead(new URL(AI_CHAT_ENDPOINTS.videos, baseUrl), {
           method: 'POST',
           headers,
           body: requestBody,
-        }, operation.controller.signal)
+        }, operation.controller.signal, async (response, guard) => {
+          try {
+            return { response, payload: await responseJson(response, { signal: guard.signal }) }
+          } catch (error) {
+            // Only 「停止」 propagates; an unreadable or stalled body is judged
+            // from the status below, exactly like an unparseable one.
+            if (operation.controller.signal.aborted) throw error
+            return { response }
+          }
+        })
       } catch (error) {
         if (operation.controller.signal.aborted) throw error
         throw ambiguousVideoSubmission()
       }
-      let payload: Record<string, unknown>
-      try {
-        payload = await responseJson(response)
-      } catch {
+      const { response } = submitted
+      const payload = submitted.payload
+      if (!payload) {
         if (!response.ok && response.status < 500) {
           throw videoRequestFailure(response.status, '', response.headers.get('retry-after'))
         }

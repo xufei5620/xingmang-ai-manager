@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
-import { createAiVideoService, delayVideoPoll } from './ai-video-service'
+import { createAiVideoService, delayVideoPoll, isAllowedVideoDownloadAddress } from './ai-video-service'
 import { AI_VIDEO_TASK_VERSION, AiVideoTaskStore, MAXIMUM_VIDEO_TASKS, type StoredAiVideoTask } from './ai-video-task-store'
 
 function jsonResponse(body: unknown, status = 200, headers: Record<string, string> = {}): Response {
@@ -17,9 +17,27 @@ function mp4Response(): Response {
   return new Response(bytes, { headers: { 'Content-Type': 'video/mp4', 'Content-Length': String(bytes.length) } })
 }
 
+// Tests never resolve real hostnames; signed CDN hosts resolve to a public
+// documentation-free address unless a test says otherwise.
+async function publicDnsLookup(): Promise<readonly string[]> {
+  return ['93.184.216.34']
+}
+
+function stalledBodyResponse(contentType: string, onCancel?: () => void): Response {
+  return new Response(new ReadableStream<Uint8Array>({
+    start(controller) { controller.enqueue(new Uint8Array([0, 0, 0, 24])) },
+    cancel() { onCancel?.() },
+  }), { headers: { 'Content-Type': contentType } })
+}
+
 function setup(
   fetchImpl: typeof fetch,
-  options: { pending?: StoredAiVideoTask[]; tasks?: AiVideoTaskStore } = {},
+  options: {
+    pending?: StoredAiVideoTask[]
+    tasks?: AiVideoTaskStore
+    dnsLookup?: (hostname: string) => Promise<readonly string[]>
+    requestTimeoutMs?: number
+  } = {},
 ) {
   const credentials = {
     resolveCredential: vi.fn(async (group: string) => ({
@@ -73,6 +91,8 @@ function setup(
     service: createAiVideoService({
       baseUrl: 'https://xm.solov.cc', credentials, tasks: options.tasks ?? tasks, assets, fetchImpl,
       pollIntervalMs: 1, maximumPollIntervalMs: 2, maximumWaitMs: 2_000,
+      dnsLookup: options.dnsLookup ?? publicDnsLookup,
+      ...(options.requestTimeoutMs ? { requestTimeoutMs: options.requestTimeoutMs } : {}),
     }),
   }
 }
@@ -609,7 +629,7 @@ describe('createAiVideoService', () => {
       }
       const service = createAiVideoService({
         baseUrl: 'https://xm.solov.cc', credentials, tasks, assets, fetchImpl,
-        pollIntervalMs: 1, maximumPollIntervalMs: 2, maximumWaitMs: 2_000,
+        pollIntervalMs: 1, maximumPollIntervalMs: 2, maximumWaitMs: 2_000, dnsLookup: publicDnsLookup,
       })
 
       const first = service.generate(41, {
@@ -804,5 +824,189 @@ describe('createAiVideoService', () => {
 
     await expect(service.resumeVideoTask(41, 7, stored.taskId)).rejects.toThrow('登录账号已变化')
     expect(fetchImpl).not.toHaveBeenCalled()
+  })
+
+  it('lets 「停止」 and the account switch end a download whose body stalls after the headers', async () => {
+    const bodyCanceled = vi.fn()
+    const fetchImpl = vi.fn(async (input: URL | RequestInfo, init?: RequestInit) => {
+      if (init?.method === 'POST') return jsonResponse({ id: 'video_stalled', status: 'queued' })
+      if (String(input).endsWith('/content')) return stalledBodyResponse('video/mp4', bodyCanceled)
+      return jsonResponse({ id: 'video_stalled', status: 'completed' })
+    }) as unknown as typeof fetch
+    const { service, tasks, assets } = setup(fetchImpl)
+    const stages: string[] = []
+    const pending = service.generate(41, {
+      requestId: 'stalled-download', group: 'grok', model: 'grok-imagine-video', prompt: '海浪', seconds: '5',
+    }, { onStage: (stage) => { stages.push(stage) } })
+    const settled = pending.catch((error: unknown) => error)
+    await vi.waitFor(() => expect(stages).toContain('downloading'))
+    await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalledTimes(3))
+
+    expect(service.cancelAll()).toBe(1)
+    await service.whenIdle()
+    expect(await settled).toMatchObject({ message: expect.stringContaining('服务端可能仍在生成视频') })
+    expect(bodyCanceled).toHaveBeenCalled()
+    expect(assets.storeMp4).not.toHaveBeenCalled()
+    expect(tasks.remove).not.toHaveBeenCalled()
+  })
+
+  it('times out a download whose body stops sending, but not one that keeps moving', async () => {
+    vi.useFakeTimers()
+    try {
+      const movingBytes = Buffer.concat([Buffer.from([0, 0, 0, 24]), Buffer.from('ftypisom'), Buffer.alloc(16)])
+      let stalled = true
+      const fetchImpl = vi.fn(async (input: URL | RequestInfo, init?: RequestInit) => {
+        if (init?.method === 'POST') return jsonResponse({ id: 'video_timeout', status: 'queued' })
+        if (!String(input).endsWith('/content')) return jsonResponse({ id: 'video_timeout', status: 'completed' })
+        if (stalled) return stalledBodyResponse('video/mp4')
+        let index = 0
+        // One byte per 60ms: every gap is under the 100ms request timeout,
+        // while the whole transfer takes well over it.
+        return new Response(new ReadableStream<Uint8Array>({
+          pull(controller) {
+            return new Promise<void>((resolve) => {
+              setTimeout(() => {
+                if (index < movingBytes.length) controller.enqueue(movingBytes.subarray(index, index += 1))
+                else controller.close()
+                resolve()
+              }, 60)
+            })
+          },
+        }), { headers: { 'Content-Type': 'video/mp4' } })
+      }) as unknown as typeof fetch
+      const { service, assets } = setup(fetchImpl, { requestTimeoutMs: 100 })
+
+      const stuck = service.generate(41, {
+        requestId: 'timeout-download', group: 'grok', model: 'grok-imagine-video', prompt: '海浪', seconds: '5',
+      }).catch((error: unknown) => error)
+      await vi.advanceTimersByTimeAsync(500)
+      expect(await stuck).toMatchObject({ message: '视频接口请求超时' })
+      await service.whenIdle()
+      expect(assets.storeMp4).not.toHaveBeenCalled()
+
+      stalled = false
+      const moving = service.generate(41, {
+        requestId: 'moving-download', group: 'grok', model: 'grok-imagine-video', prompt: '海浪', seconds: '5',
+      }).catch((error: unknown) => error)
+      await vi.advanceTimersByTimeAsync(60 * (movingBytes.length + 5))
+      expect(await moving).toMatchObject({ taskId: 'video_timeout' })
+      expect(assets.storeMp4).toHaveBeenCalledWith(7, movingBytes, expect.anything())
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('times out a status poll whose JSON body stalls after the headers', async () => {
+    vi.useFakeTimers()
+    try {
+      const fetchImpl = vi.fn(async (_input: URL | RequestInfo, init?: RequestInit) => {
+        if (init?.method === 'POST') return jsonResponse({ id: 'video_poll_stall', status: 'queued' })
+        return stalledBodyResponse('application/json')
+      }) as unknown as typeof fetch
+      const { service, tasks } = setup(fetchImpl, { requestTimeoutMs: 100 })
+      const pending = service.generate(41, {
+        requestId: 'poll-stall', group: 'grok', model: 'grok-imagine-video', prompt: '海浪', seconds: '5',
+      }).catch((error: unknown) => error)
+      await vi.advanceTimersByTimeAsync(500)
+      expect(await pending).toMatchObject({ message: '视频接口请求超时' })
+      await service.whenIdle()
+      expect(tasks.remove).not.toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('treats a stalled submit body as ambiguous instead of hanging the paid request', async () => {
+    vi.useFakeTimers()
+    try {
+      const fetchImpl = vi.fn(async () => stalledBodyResponse('application/json')) as unknown as typeof fetch
+      const { service, tasks } = setup(fetchImpl, { requestTimeoutMs: 100 })
+      const pending = service.generate(41, {
+        requestId: 'submit-stall', group: 'grok', model: 'grok-imagine-video', prompt: '海浪', seconds: '5',
+      }).catch((error: unknown) => error)
+      await vi.advanceTimersByTimeAsync(500)
+      expect(await pending).toMatchObject({ message: expect.stringContaining('请勿立即重复提交') })
+      expect(fetchImpl).toHaveBeenCalledOnce()
+      expect(tasks.releaseReservation).toHaveBeenCalledOnce()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('classifies download addresses: public and Fake-IP proxy ranges pass, local and LAN ranges do not', () => {
+    for (const address of ['93.184.216.34', '2606:2800:220:1::1', '198.18.0.7', '198.19.255.1']) {
+      expect(isAllowedVideoDownloadAddress(address)).toBe(true)
+    }
+    for (const address of [
+      '127.0.0.1', '10.1.2.3', '172.16.0.1', '192.168.1.10', '169.254.169.254', '100.64.0.1', '0.0.0.0',
+      '::1', 'fe80::1', 'fd00::1', '::ffff:127.0.0.1', 'not-an-ip',
+    ]) {
+      expect(isAllowedVideoDownloadAddress(address)).toBe(false)
+    }
+  })
+
+  it('falls back to the relay when a signed URL host resolves into the LAN or cannot be resolved', async () => {
+    const signedUrl = 'https://internal.example.test/private.mp4?sig=test'
+    for (const dnsLookup of [
+      async () => ['192.168.1.20'],
+      async () => ['93.184.216.34', '127.0.0.1'],
+      async (): Promise<readonly string[]> => { throw new Error('ENOTFOUND') },
+    ]) {
+      const fetchImpl = vi.fn(async (input: URL | RequestInfo, init?: RequestInit) => {
+        const url = String(input)
+        if (init?.method === 'POST') return jsonResponse({ id: 'video_lan', status: 'queued' })
+        if (url.endsWith('/content')) return mp4Response()
+        return jsonResponse({ id: 'video_lan', status: 'completed', url: signedUrl })
+      }) as unknown as typeof fetch
+      const lookup = vi.fn(dnsLookup)
+      const { service } = setup(fetchImpl, { dnsLookup: lookup })
+
+      await expect(service.generate(41, {
+        requestId: 'lan-download', group: 'grok', model: 'grok-imagine-video', prompt: '海浪', seconds: '5',
+      })).resolves.toMatchObject({ taskId: 'video_lan' })
+      expect(lookup).toHaveBeenCalledWith('internal.example.test')
+      expect(vi.mocked(fetchImpl).mock.calls.some(([input]) => String(input) === signedUrl)).toBe(false)
+      const contentCall = vi.mocked(fetchImpl).mock.calls.find(([input]) => String(input).endsWith('/content'))
+      expect(contentCall?.[1]?.headers).toMatchObject({ Authorization: 'Bearer sk-secret-never-return' })
+    }
+  })
+
+  it('refuses a relay redirect to a host that resolves into the LAN and never contacts it', async () => {
+    const contentUrl = 'https://xm.solov.cc/v1/videos/video_lan_redirect/content'
+    const storageUrl = 'https://storage.example.com/videos/video_lan_redirect.mp4?sig=test'
+    const fetchImpl = vi.fn(async (input: URL | RequestInfo, init?: RequestInit) => {
+      const url = String(input)
+      if (init?.method === 'POST') return jsonResponse({ id: 'video_lan_redirect', status: 'queued' })
+      if (url === contentUrl) return new Response(null, { status: 302, headers: { Location: storageUrl } })
+      if (url === storageUrl) return mp4Response()
+      return jsonResponse({ id: 'video_lan_redirect', status: 'completed' })
+    }) as unknown as typeof fetch
+    const lookup = vi.fn(async () => ['10.0.0.8'])
+    const { service, assets } = setup(fetchImpl, { dnsLookup: lookup })
+
+    await expect(service.generate(41, {
+      requestId: 'lan-redirect', group: 'grok', model: 'grok-imagine-video', prompt: '海浪', seconds: '5',
+    })).rejects.toThrow('视频下载地址指向本机或内网')
+    expect(lookup).toHaveBeenCalledWith('storage.example.com')
+    expect(vi.mocked(fetchImpl).mock.calls.some(([input]) => String(input) === storageUrl)).toBe(false)
+    expect(assets.storeMp4).not.toHaveBeenCalled()
+  })
+
+  it('keeps a signed CDN URL behind a Fake-IP proxy without sending the API key', async () => {
+    const signedUrl = 'https://cdn.example.com/videos/video_fakeip.mp4?sig=test'
+    const fetchImpl = vi.fn(async (input: URL | RequestInfo, init?: RequestInit) => {
+      const url = String(input)
+      if (init?.method === 'POST') return jsonResponse({ id: 'video_fakeip', status: 'queued' })
+      if (url === signedUrl) return mp4Response()
+      return jsonResponse({ id: 'video_fakeip', status: 'completed', url: signedUrl })
+    }) as unknown as typeof fetch
+    const { service } = setup(fetchImpl, { dnsLookup: async () => ['198.18.0.42'] })
+
+    await expect(service.generate(41, {
+      requestId: 'fakeip-download', group: 'grok', model: 'grok-imagine-video', prompt: '海浪', seconds: '5',
+    })).resolves.toMatchObject({ taskId: 'video_fakeip' })
+    const signedCall = vi.mocked(fetchImpl).mock.calls.find(([input]) => String(input) === signedUrl)
+    expect(signedCall?.[1]?.headers).not.toHaveProperty('Authorization')
+    expect(vi.mocked(fetchImpl).mock.calls.some(([input]) => String(input).endsWith('/content'))).toBe(false)
   })
 })
