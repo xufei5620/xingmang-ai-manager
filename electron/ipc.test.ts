@@ -877,6 +877,31 @@ describe('registerIpcHandlers', () => {
     dispose()
   })
 
+  it('validates chat history requests, forwards them to the file store and keeps their content out of the log', async () => {
+    const chatHistory = {
+      read: vi.fn(async () => ({ index: '{"secret":"chat body"}', conversations: [{ key: 'a', content: 'chat body' }] })),
+      write: vi.fn(async () => undefined),
+      idle: vi.fn(async () => undefined),
+    }
+    const { runtimeLog, dispose } = register(serviceStub(), 'C:\\app-data\\logs', undefined, accountServiceStub(), undefined, undefined, {}, { chatHistory })
+    const read = electronMocks.handlers.get('chat-history:read')!
+    const write = electronMocks.handlers.get('chat-history:write')!
+    const input = { scope: 'xm-account:7', index: 'chat body index', keys: ['a'], put: [{ key: 'a', content: 'chat body' }] }
+
+    expect(() => write(trustedEvent('https://attacker.example/', 9), input)).toThrow('已拒绝来自非应用页面的操作请求')
+    expect(() => write(trustedEvent(), { ...input, keys: ['../a'], put: [] })).toThrow('聊天对话标识无效')
+    expect(() => read(trustedEvent(), 7)).toThrow('聊天记录归属无效')
+    expect(chatHistory.write).not.toHaveBeenCalled()
+    expect(chatHistory.read).not.toHaveBeenCalled()
+
+    await expect(write(trustedEvent(), input)).resolves.toBeUndefined()
+    expect(chatHistory.write).toHaveBeenCalledWith(input)
+    await expect(read(trustedEvent(), 'xm-account:7')).resolves.toMatchObject({ conversations: [{ key: 'a' }] })
+    expect(chatHistory.read).toHaveBeenCalledWith('xm-account:7')
+    expect(JSON.stringify(runtimeLog.log.mock.calls)).not.toContain('chat body')
+    dispose()
+  })
+
   it('cancels both text and image requests before logging out', async () => {
     const accountService = accountServiceStub()
     vi.mocked(accountService.logout).mockResolvedValue(undefined)

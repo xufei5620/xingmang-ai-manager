@@ -472,6 +472,27 @@ export type AiChatStreamEvent =
   | { requestId: string; type: 'canceled'; mayStillComplete?: boolean }
   | { requestId: string; type: 'error'; code?: AiChatErrorCode; message: string }
 
+/** 一个对话一份文件；key 由渲染层分配，只含字母、数字、_ 和 -。 */
+export interface AiChatHistoryFile {
+  key: string
+  content: string
+}
+
+export interface AiChatHistorySnapshot {
+  /** null = 这个账号在新存储里还没有记录（首次使用，或还没从旧的本机存储搬过来）。 */
+  index: string | null
+  conversations: AiChatHistoryFile[]
+}
+
+export interface AiChatHistoryWrite {
+  scope: string
+  index: string
+  /** 索引引用的全部对话；不在这里的对话文件会在索引写好之后删掉。 */
+  keys: string[]
+  /** 这次真正改过、需要重写的对话，必须是 keys 的子集。 */
+  put: AiChatHistoryFile[]
+}
+
 export interface AiChatCancelResult {
   canceled: boolean
   mayStillComplete: boolean
@@ -931,6 +952,8 @@ export interface XingmangInvokeContract {
   copyAiChatAsset: IpcInvokeDefinition<'chat:copy-asset', [assetId: string], void>
   saveAiChatAsset: IpcInvokeDefinition<'chat:save-asset', [assetId: string], { saved: boolean }>
   showAiChatAssetMenu: IpcInvokeDefinition<'chat:asset-menu', [assetId: string], void>
+  readAiChatHistory: IpcInvokeDefinition<'chat-history:read', [scope: string], AiChatHistorySnapshot>
+  writeAiChatHistory: IpcInvokeDefinition<'chat-history:write', [input: AiChatHistoryWrite], void>
   /**
    * 连接自检：用该工具配置文件里真正写着的 Key、服务地址和模型，向星芒服务
    * 发一次最小请求，把失败归到网络 / 密钥 / 额度 / 分组 / 模型 / 协议中的
@@ -1166,6 +1189,8 @@ export const ipcInvokeChannels = {
   copyAiChatAsset: 'chat:copy-asset',
   saveAiChatAsset: 'chat:save-asset',
   showAiChatAssetMenu: 'chat:asset-menu',
+  readAiChatHistory: 'chat-history:read',
+  writeAiChatHistory: 'chat-history:write',
   checkProviderConnection: 'diagnostics:check-connection',
   checkExternalClientConnection: 'diagnostics:check-external-connection',
   getAccountKeyOptions: 'account:get-key-options',

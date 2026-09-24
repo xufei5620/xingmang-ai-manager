@@ -141,6 +141,7 @@ import { createExternalShellLauncher, type ExternalShellLauncher } from './syste
 import { platformCapabilitiesFor } from './platform-capabilities'
 import { validatePaymentForm, validatePaymentQrCode, validatePaymentUrl, type PaymentWindowController } from './payment-window'
 import type { AccountStartupGate } from './account-startup-gate'
+import { parseAiChatHistoryScope, parseAiChatHistoryWrite, type AiChatHistoryStore } from './ai-chat-history-store'
 
 export type AppWindowMode = 'onboarding' | 'dashboard'
 
@@ -239,6 +240,7 @@ export interface IpcRegistrationOptions {
   chatService?: AiChatService
   imageService?: AiImageService
   aiAssets?: AiAssetStore
+  chatHistory?: AiChatHistoryStore
   transformSystemSnapshot?: (snapshot: SystemSnapshot) => SystemSnapshot
   // Bundled 星芒AI skill: login copies the template into user skill roots and
   // writes the image-group key into config.json. Optional so existing IPC
@@ -1283,6 +1285,8 @@ const ipcOperationLabels: Readonly<Record<string, string>> = {
   'account:set-remembered-login': '记住的登录凭据更新',
   'account:create-key': '星芒账号 Key 创建',
   'account:update-key': '星芒账号 Key 更新',
+  'chat-history:read': '聊天记录读取',
+  'chat-history:write': '聊天记录保存',
 }
 
 /** 只收已知工具，去重；一次问的个数不超过工具总数（I5）。 */
@@ -1297,6 +1301,11 @@ export function parseRunningToolsProviders(value: unknown): ProviderId[] {
 }
 
 const quietIpcSuccessChannels = new Set([
+  // Chat history carries whole conversations and autosaves after every edit:
+  // a success line would flood the log, and the payload must never reach it
+  // (I13). Failures still log, with the Chinese reason only.
+  'chat-history:read',
+  'chat-history:write',
   'account:get-key-options',
   'system:scan',
   'system:refresh-network-location',
@@ -3180,6 +3189,17 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
         if (currentChatUserId() !== userId) throw new Error('账号已切换，请重新打开图片菜单')
       },
     )
+  })
+  // Deliberately outside the chat: account gate. The window saves the old
+  // account's last edits while an account switch is in progress, and history
+  // was never tied to the live session (it used to sit in localStorage).
+  registerTrustedHandler('chat-history:read', (_event, scope: unknown) => {
+    if (!options.chatHistory) throw new Error('聊天记录存储未就绪')
+    return options.chatHistory.read(parseAiChatHistoryScope(scope))
+  })
+  registerTrustedHandler('chat-history:write', (_event, input: unknown) => {
+    if (!options.chatHistory) throw new Error('聊天记录存储未就绪')
+    return options.chatHistory.write(parseAiChatHistoryWrite(input))
   })
 
   // A used-up per-tool cap reaches the self-check as the same 401 a revoked
