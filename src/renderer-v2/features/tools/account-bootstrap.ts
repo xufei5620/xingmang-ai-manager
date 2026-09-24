@@ -43,6 +43,23 @@ export interface AccountBootstrapSkip {
   message: string
 }
 
+/**
+ * 点名重写某个工具，规划器却把它跳过了（手填、来源没确认、官方账号等）：这不是
+ * 「没换成、再试一次」，再试还是跳过。单独一类，调用方据此给出真正的下一步（#478）。
+ */
+export class KeyRewriteSkippedError extends Error {
+  constructor(readonly skipped: AccountBootstrapSkip[]) {
+    super(skipped.map((entry) => entry.message).join('；'))
+    this.name = 'KeyRewriteSkippedError'
+  }
+}
+
+/** 点名重写的那几个工具里，被这一轮跳过、配置没动的（#478）。不点名的整轮修复不算。 */
+export function skippedNamedProviders(result: Pick<AccountBootstrapResult, 'skipped'> | undefined, providers?: readonly ProviderId[]): AccountBootstrapSkip[] {
+  if (!providers) return []
+  return (result?.skipped ?? []).filter((entry) => providers.includes(entry.provider))
+}
+
 export interface AccountBootstrapPlan {
   targets: ProviderId[]
   skipped: AccountBootstrapSkip[]

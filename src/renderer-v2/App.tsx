@@ -52,7 +52,7 @@ import { currentWindowOs, windowOsFor } from './features/app/window-os'
 import { rememberTourPending, rememberTourSeen, tourReplayPending } from './features/shell/tour-state'
 import { onboardingPreviewEnabled } from './features/app/dev-preview'
 import { deepLinkReadErrorText, supportQrFallbackText } from './features/app/fallback-messages'
-import { bootstrapAccountTools, describeAccountBootstrapFailure, describeAccountBootstrapResult, type AccountBootstrapLogLine, type AccountBootstrapMode, type AccountBootstrapProgress, type AccountBootstrapResult } from './features/tools/account-bootstrap'
+import { KeyRewriteSkippedError, bootstrapAccountTools, skippedNamedProviders, describeAccountBootstrapFailure, describeAccountBootstrapResult, type AccountBootstrapLogLine, type AccountBootstrapMode, type AccountBootstrapProgress, type AccountBootstrapResult } from './features/tools/account-bootstrap'
 import { rewritableKeyProviders } from './features/tools/connection-check'
 import { applyManualSourceMarker, getSourceMarkerStorage } from './features/tools/source-marker'
 import { idleOnlineResync, noteBootstrapOutcome, planOnlineResync } from './features/tools/online-resync'
@@ -309,6 +309,9 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     const failed = outcome?.result?.failed ?? []
     const relevant = providers ? failed.filter((entry) => providers.includes(entry.provider)) : failed
     if (relevant.length) throw new Error(relevant.map((entry) => entry.message).join('；'))
+    // 点名的工具被跳过 = 配置里还是原来那把 Key，不能算写好了（#478）。
+    const skipped = skippedNamedProviders(outcome?.result, providers)
+    if (skipped.length) throw new KeyRewriteSkippedError(skipped)
     return true
   }, [runAccountBootstrap, session.account, session.authenticated])
   /**

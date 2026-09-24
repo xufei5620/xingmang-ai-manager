@@ -283,6 +283,22 @@ test('a failed key replacement after revoking says what to press and retries on 
   } finally { await page.close() }
 })
 
+test('revoking a key a hand-configured tool is using never claims a fresh key and points at its settings', async () => {
+  const page = await fixture('page=account&keyInUse=1&replaceSkipped=1')
+  try {
+    const dialog = await revokeTestKey(page)
+    await dialog.getByRole('button', { name: '确认撤销', exact: true }).click()
+    const notice = page.getByTestId('account-key-replace-skipped')
+    await notice.getByText('Claude Code 还在用刚撤销的密钥', { exact: true }).waitFor()
+    await page.getByText('密钥已撤销', { exact: true }).waitFor()
+    assert.equal(await page.getByText(/已自动换上新密钥/).count(), 0)
+    assert.equal(await page.getByTestId('account-key-replace-retry').count(), 0)
+    await page.getByTestId('account-key-replace-configure').click()
+    assert.deepEqual((await calls(page)).filter((call) => call.name === 'openConfig').map((call) => call.args), ['claude'])
+    assert.equal(await notice.count(), 0)
+  } finally { await page.close() }
+})
+
 test('revoking a key no tool is using keeps the old confirmation and never rewrites a tool', async () => {
   const page = await fixture('page=account')
   try {
