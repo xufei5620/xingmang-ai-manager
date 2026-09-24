@@ -583,6 +583,71 @@ async function fetchWithTimeout(url, options, timeoutMs) {
   }
 }
 
+// 逐个下载清单引用的安装包，核对大小与 SHA-512，再按平台要求核 blockmap。清单本身
+// 从哪里读来不归它管：发布后复核读的是根目录那份，回滚读的是 manifests/<版本>/ 下
+// 的备份，两边核对安装包的口径必须一模一样。
+async function verifyRemoteArtifacts({ normalizedBaseUrl, metadata, metadataFile, requireBlockmap, timeoutMs }) {
+  for (const file of metadata.files) {
+    if (file.size !== null && file.size > MAX_ARTIFACT_BYTES) {
+      throw validationError(
+        'REMOTE_ARTIFACT_TOO_LARGE',
+        `${file.relativePath} 的声明大小超过安装包允许上限`,
+      )
+    }
+    const assetUrl = new URL(file.encodedPath, normalizedBaseUrl).href
+    const response = await fetchWithTimeout(assetUrl, {}, timeoutMs)
+    assertSafeResponseUrl(response, assetUrl, normalizedBaseUrl)
+    if (!response.ok) {
+      await cancelResponseBody(response)
+      throw validationError('REMOTE_ARTIFACT_STATUS', `${file.relativePath} 返回 HTTP ${response.status}`)
+    }
+    const artifact = await readBoundedResponse(response, {
+      label: file.relativePath,
+      absoluteLimit: MAX_ARTIFACT_BYTES,
+      expectedSize: file.size,
+      hashAlgorithm: 'sha512',
+      tooLargeCode: 'REMOTE_ARTIFACT_TOO_LARGE',
+      sizeMismatchCode: 'REMOTE_ARTIFACT_SIZE_MISMATCH',
+    })
+    if (artifact.digest !== file.sha512) {
+      throw validationError('REMOTE_ARTIFACT_HASH_MISMATCH', `${file.relativePath} 远端 SHA-512 不匹配`)
+    }
+  }
+
+  if (requireBlockmap) {
+    const primary = metadata.files.find((file) => (
+      file.relativePath.toLowerCase() === metadata.primaryPath.toLowerCase()
+    ))
+    if (!primary) throw validationError('METADATA_PRIMARY_MISSING', `${metadataFile} 主更新文件缺失`)
+    const blockmapFiles = requireBlockmap === 'all-zips'
+      ? metadata.files.filter((file) => file.relativePath.toLowerCase().endsWith('.zip'))
+      : [primary]
+    for (const file of blockmapFiles) {
+      const blockmapPath = `${file.relativePath}.blockmap`
+      const blockmapUrl = new URL(`${file.encodedPath}.blockmap`, normalizedBaseUrl).href
+      const blockmapResponse = await fetchWithTimeout(blockmapUrl, {}, timeoutMs)
+      assertSafeResponseUrl(blockmapResponse, blockmapUrl, normalizedBaseUrl)
+      if (!blockmapResponse.ok) {
+        await cancelResponseBody(blockmapResponse)
+        throw validationError('REMOTE_BLOCKMAP_STATUS', `${blockmapPath} 返回 HTTP ${blockmapResponse.status}`)
+      }
+      const blockmapContentType = blockmapResponse.headers.get('content-type')?.toLowerCase() || ''
+      if (blockmapContentType.includes('text/html')) {
+        await cancelResponseBody(blockmapResponse)
+        throw validationError('REMOTE_BLOCKMAP_INVALID', `${blockmapPath} 返回了 HTML 页面`)
+      }
+      const blockmap = await readBoundedResponse(blockmapResponse, {
+        label: blockmapPath,
+        absoluteLimit: MAX_BLOCKMAP_BYTES,
+        collect: true,
+        tooLargeCode: 'REMOTE_BLOCKMAP_TOO_LARGE',
+        emptyCode: 'REMOTE_BLOCKMAP_EMPTY',
+      })
+      assertBlockmap(blockmap.buffer, `ZIP blockmap ${blockmapPath}`, 'REMOTE_BLOCKMAP_INVALID')
+    }
+  }
+}
+
 async function verifyRemoteChannel({
   normalizedBaseUrl,
   metadataFile,
@@ -621,68 +686,36 @@ async function verifyRemoteChannel({
   if (metadataFile === 'latest-mac.yml') assertMacosUpdateArchitectureInventory(metadata)
 
   if (verifyAssets) {
-    for (const file of metadata.files) {
-      if (file.size !== null && file.size > MAX_ARTIFACT_BYTES) {
-        throw validationError(
-          'REMOTE_ARTIFACT_TOO_LARGE',
-          `${file.relativePath} 的声明大小超过安装包允许上限`,
-        )
-      }
-      const assetUrl = new URL(file.encodedPath, normalizedBaseUrl).href
-      const response = await fetchWithTimeout(assetUrl, {}, timeoutMs)
-      assertSafeResponseUrl(response, assetUrl, normalizedBaseUrl)
-      if (!response.ok) {
-        await cancelResponseBody(response)
-        throw validationError('REMOTE_ARTIFACT_STATUS', `${file.relativePath} 返回 HTTP ${response.status}`)
-      }
-      const artifact = await readBoundedResponse(response, {
-        label: file.relativePath,
-        absoluteLimit: MAX_ARTIFACT_BYTES,
-        expectedSize: file.size,
-        hashAlgorithm: 'sha512',
-        tooLargeCode: 'REMOTE_ARTIFACT_TOO_LARGE',
-        sizeMismatchCode: 'REMOTE_ARTIFACT_SIZE_MISMATCH',
-      })
-      if (artifact.digest !== file.sha512) {
-        throw validationError('REMOTE_ARTIFACT_HASH_MISMATCH', `${file.relativePath} 远端 SHA-512 不匹配`)
-      }
-    }
-
-    if (requireBlockmap) {
-      const primary = metadata.files.find((file) => (
-        file.relativePath.toLowerCase() === metadata.primaryPath.toLowerCase()
-      ))
-      if (!primary) throw validationError('METADATA_PRIMARY_MISSING', `${metadataFile} 主更新文件缺失`)
-      const blockmapFiles = requireBlockmap === 'all-zips'
-        ? metadata.files.filter((file) => file.relativePath.toLowerCase().endsWith('.zip'))
-        : [primary]
-      for (const file of blockmapFiles) {
-        const blockmapPath = `${file.relativePath}.blockmap`
-        const blockmapUrl = new URL(`${file.encodedPath}.blockmap`, normalizedBaseUrl).href
-        const blockmapResponse = await fetchWithTimeout(blockmapUrl, {}, timeoutMs)
-        assertSafeResponseUrl(blockmapResponse, blockmapUrl, normalizedBaseUrl)
-        if (!blockmapResponse.ok) {
-          await cancelResponseBody(blockmapResponse)
-          throw validationError('REMOTE_BLOCKMAP_STATUS', `${blockmapPath} 返回 HTTP ${blockmapResponse.status}`)
-        }
-        const blockmapContentType = blockmapResponse.headers.get('content-type')?.toLowerCase() || ''
-        if (blockmapContentType.includes('text/html')) {
-          await cancelResponseBody(blockmapResponse)
-          throw validationError('REMOTE_BLOCKMAP_INVALID', `${blockmapPath} 返回了 HTML 页面`)
-        }
-        const blockmap = await readBoundedResponse(blockmapResponse, {
-          label: blockmapPath,
-          absoluteLimit: MAX_BLOCKMAP_BYTES,
-          collect: true,
-          tooLargeCode: 'REMOTE_BLOCKMAP_TOO_LARGE',
-          emptyCode: 'REMOTE_BLOCKMAP_EMPTY',
-        })
-        assertBlockmap(blockmap.buffer, `ZIP blockmap ${blockmapPath}`, 'REMOTE_BLOCKMAP_INVALID')
-      }
-    }
+    await verifyRemoteArtifacts({ normalizedBaseUrl, metadata, metadataFile, requireBlockmap, timeoutMs })
   }
 
   return { missing: false, metadata }
+}
+
+// 回滚用：清单是本地文件（从 manifests/<版本>/ 取回的备份，也正是随后要写回根目录的
+// 那几个字节），安装包在线上。任何一个安装包的大小、SHA-512 或 blockmap 不对都抛错，
+// 调用方据此在改动线上任何东西之前停下（#494）。
+async function verifyManifestArtifacts({
+  baseUrl,
+  metadataText,
+  metadataFile,
+  allowLocalHttp = false,
+  timeoutMs = 30_000,
+}) {
+  if (!['latest.yml', 'latest-mac.yml'].includes(metadataFile)) {
+    throw validationError('VERIFY_PLATFORM_INVALID', `不认识的更新清单：${metadataFile}`)
+  }
+  const normalizedBaseUrl = normalizeUpdateBaseUrl(baseUrl, { allowLocalHttp })
+  const metadata = parseLatestMetadata(metadataText, metadataFile)
+  if (metadataFile === 'latest-mac.yml') assertMacosUpdateArchitectureInventory(metadata)
+  await verifyRemoteArtifacts({
+    normalizedBaseUrl,
+    metadata,
+    metadataFile,
+    requireBlockmap: metadataFile === 'latest.yml' ? true : 'all-zips',
+    timeoutMs,
+  })
+  return metadata
 }
 
 async function verifyRemoteFeed({
@@ -840,5 +873,6 @@ module.exports = {
   sha512File,
   validateLocalRelease,
   validateReleaseEnvironment,
+  verifyManifestArtifacts,
   verifyRemoteFeed,
 }
