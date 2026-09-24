@@ -3,6 +3,7 @@ import {
   applyClaudeRelayModelPicker,
   buildClaudeRelayModelPicker,
   claudeModelLabel,
+  claudeRelayModelPickerOutdated,
   isManagedClaudeModelPicker,
   removeClaudeRelayModelPicker,
 } from './claude-model-picker'
@@ -77,5 +78,39 @@ describe('claude model picker', () => {
     removeClaudeRelayModelPicker(parsed, env)
     expect(parsed).not.toHaveProperty('modelPicker')
     expect(env).toEqual({})
+  })
+
+  describe('claudeRelayModelPickerOutdated', () => {
+    function written(models: string[], model: string): Record<string, unknown> {
+      const parsed: Record<string, unknown> = {}
+      const env: Record<string, unknown> = {}
+      parsed.env = env
+      applyClaudeRelayModelPicker(parsed, env, models, model)
+      return parsed
+    }
+
+    it('is current when the settings were written from the same model list', () => {
+      expect(claudeRelayModelPickerOutdated(written(['claude-opus-5', 'claude-sonnet-5'], 'claude-opus-5'), ['claude-sonnet-5', 'claude-opus-5'], 'claude-opus-5')).toBe(false)
+    })
+
+    it('is outdated when the account gained or lost a model', () => {
+      const parsed = written(['claude-opus-5', 'claude-sonnet-5'], 'claude-opus-5')
+      expect(claudeRelayModelPickerOutdated(parsed, ['claude-opus-5', 'claude-sonnet-5', 'claude-opus-5-5'], 'claude-opus-5')).toBe(true)
+      expect(claudeRelayModelPickerOutdated(parsed, ['claude-opus-5'], 'claude-opus-5')).toBe(true)
+    })
+
+    it('is outdated when Default does not point at the current model, including settings written before the picker existed', () => {
+      expect(claudeRelayModelPickerOutdated(written(['claude-opus-5'], 'claude-opus-5'), ['claude-opus-5', 'claude-sonnet-5'], 'claude-sonnet-5')).toBe(true)
+      expect(claudeRelayModelPickerOutdated({ env: {} }, ['claude-opus-5'], 'claude-opus-5')).toBe(true)
+    })
+
+    it('never counts a picker the user wrote as outdated', () => {
+      const parsed = { env: { ANTHROPIC_DEFAULT_MODEL: 'claude-opus-5' }, modelPicker: { options: [{ model: 'claude-opus-5', label: 'Mine', description: 'mine' }] } }
+      expect(claudeRelayModelPickerOutdated(parsed, ['claude-opus-5', 'claude-sonnet-5'], 'claude-opus-5')).toBe(false)
+    })
+
+    it('keeps the picker when the list has no Claude model rather than asking to rewrite it', () => {
+      expect(claudeRelayModelPickerOutdated(written(['claude-opus-5'], 'claude-opus-5'), ['gpt-6-astra'], 'claude-opus-5')).toBe(false)
+    })
   })
 })

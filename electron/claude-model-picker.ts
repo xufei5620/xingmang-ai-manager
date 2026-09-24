@@ -109,3 +109,23 @@ export function removeClaudeRelayModelPicker(parsed: Record<string, unknown>, en
   if (isManagedClaudeModelPicker(parsed.modelPicker)) delete parsed.modelPicker
   if (env) delete env.ANTHROPIC_DEFAULT_MODEL
 }
+
+/**
+ * 菜单只在保存配置时写一次，账号能用的型号之后变了它不会跟着变（第十二批候选 5）。
+ * 这里判断现在这份 settings.json 按最新的型号清单重写会不会不一样：Default 指向不是
+ * 当前型号、或本软件管的菜单（没写过也算）和新生成的对不上。用户自己写的菜单照旧不认。
+ */
+export function claudeRelayModelPickerOutdated(
+  parsed: Record<string, unknown>,
+  availableModels: readonly string[],
+  currentModel: string,
+): boolean {
+  const env = parsed.env && typeof parsed.env === 'object' && !Array.isArray(parsed.env)
+    ? parsed.env as Record<string, unknown>
+    : null
+  if (env?.ANTHROPIC_DEFAULT_MODEL !== currentModel) return true
+  const picker = buildClaudeRelayModelPicker(availableModels, currentModel)
+  if (!picker) return false
+  if (parsed.modelPicker !== undefined && !isManagedClaudeModelPicker(parsed.modelPicker)) return false
+  return JSON.stringify(parsed.modelPicker) !== JSON.stringify(picker)
+}

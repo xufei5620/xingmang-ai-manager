@@ -1403,6 +1403,25 @@ describe('registerIpcHandlers', () => {
     })
   })
 
+  it('checks the models of one known tool before it opens', async () => {
+    const service = serviceStub()
+    const verdict = { status: 'unavailable' as const, model: 'gpt-5', replacement: 'gpt-6-astra' }
+    service.checkToolModels = vi.fn(async () => verdict)
+    register(service)
+    const handler = electronMocks.handlers.get(ipcInvokeChannels.checkToolModels)!
+
+    await expect(handler(trustedEvent(), 'codex')).resolves.toEqual(verdict)
+    expect(service.checkToolModels).toHaveBeenCalledWith('codex')
+    await expect(handler(trustedEvent(), '../codex')).rejects.toThrow('未知的 CLI 类型')
+  })
+
+  it('skips the model check when the service cannot do it', async () => {
+    register()
+    const handler = electronMocks.handlers.get(ipcInvokeChannels.checkToolModels)!
+
+    await expect(handler(trustedEvent(), 'claude')).resolves.toEqual({ status: 'skipped' })
+  })
+
   it('reads only Codex readiness during startup', async () => {
     const { service } = register()
     const handler = electronMocks.handlers.get(ipcInvokeChannels.getCodexReadiness)!

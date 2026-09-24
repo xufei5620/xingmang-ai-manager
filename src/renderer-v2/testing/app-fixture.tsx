@@ -479,6 +479,10 @@ const methods = {
   inspectRunningTools: async (providers: ProviderId[]) => query.has('runningTools')
     ? fixtureRunningTools(providers)
     : { running: [], unknown: [], codexDesktopRunning: false, canRestartCodexDesktop: false },
+  // modelGone：Claude Code 里设的默认模型当前账号用不了，打开前该问一句；换过之后就不再问。
+  checkToolModels: async (provider: ProviderId) => query.has('modelGone') && provider === 'claude' && config.providers.claude.model !== 'claude-opus-5-5'
+    ? { status: 'unavailable' as const, model: config.providers.claude.model, replacement: 'claude-opus-5-5' }
+    : { status: 'skipped' as const },
   getAccountUsableGroups: async () => [{ name: session.siteId === 'solov-api' ? 'Codex_pro' : 'GPT-中转/订阅', description: 'Codex', ratio: 1 }],
   createAccountKey: async () => undefined,
   changeAccountPassword: async () => {

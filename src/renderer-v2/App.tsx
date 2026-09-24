@@ -13,6 +13,7 @@ import { ExternalClientDialog } from './features/tools/ExternalClientDialog'
 import { Home } from './features/tools/Home'
 import { createToolsApi } from './features/tools/api'
 import { launchWaitLabel, launchWarning } from './features/tools/launch-notice'
+import { modelSwapOffer, modelSwapQuestion, type ModelSwapChoice, type ModelSwapOffer } from './features/tools/model-check'
 import { chineseRuntimePatchAnswerMissing, shouldAskForChineseRuntimePatch } from './features/tools/chinese-runtime-choice'
 import { cliInstallStageLabel, nodeRuntimeReady, planCliInstall, pythonRuntimeReady, runtimeStageFailureMessage, type InstallRuntimeId } from './features/tools/runtime-readiness'
 import { isToolId, presentTools, providerFor, toolInstallDirectory, toolUpdateOffer, type ToolId, type ToolSource } from './features/tools/model'
@@ -146,6 +147,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   const [restartDialog, setRestartDialog] = useState(false)
   // 首页一键切换账号来源之后 Codex 桌面端还开着：问一次要不要替用户重开，记下切到了哪边。
   const [switchRestartOffer, setSwitchRestartOffer] = useState<AccountSourceTarget | null>(null)
+  const [modelSwap, setModelSwap] = useState<{ offer: ModelSwapOffer; answer: (choice: ModelSwapChoice) => void } | null>(null)
   const [chineseDialog, setChineseDialog] = useState(false)
   const chineseDecline = useRef<HTMLButtonElement>(null)
   const [dismissedUpdate, setDismissedUpdate] = useState('')
@@ -644,6 +646,17 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     if (tool.error) throw new Error(tool.error)
     if (!tool.status.installed) throw new Error('工具尚未安装，请先完成准备。')
     if (!tool.configured) { openToolConfig(id); throw new Error('请先确认账号连接，再打开工具。') }
+    const offer = modelSwapOffer(tool.name, await toolsApi.checkModels(id))
+    if (offer) {
+      const choice = await new Promise<ModelSwapChoice>((answer) => setModelSwap({ offer, answer }))
+      setModelSwap(null)
+      if (choice === 'cancel') return false
+      if (choice === 'swap') {
+        // 空 Key + merge：只换模型，Key 和这份配置的来源都原样留着（Claude Code 的菜单随之重写）。
+        try { await toolsApi.saveManual({ provider: providerFor(id), apiKey: '', model: offer.replacement, mode: 'merge' }) }
+        catch (cause) { if (mounted.current) toast.show(`模型没换成，先照旧打开：${errorMessage(cause)}`, 'warn') }
+      }
+    }
     let workspace = config.workspace
     if (id !== 'codexDesktop') {
       // newFolder：不弹选择器，主进程在「文档」下替用户建一个空的项目文件夹。
@@ -950,6 +963,11 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       <Button testId="codex-chinese-enable" onClick={() => void perform('启用中文界面', () => answerChineseRuntimePatch('enabled'))}>显示中文</Button>
     </>}><p>选「显示中文」后，星芒每次打开 Codex 时会顺带开一个只有这台电脑自己能连的通道，用来把界面换成中文；关掉 Codex，通道也跟着关上。</p>
       <p>不用也没关系，Codex 照样能用，只是界面是英文。只问这一次，以后想改，随时可以在 Codex 桌面端的配置里打开或关掉。</p></Dialog>}
+    {/* 默认模型换不换由用户点，不替付费客户自动换（第十二批候选 5）；关掉对话框 = 这次先不打开。 */}
+    {modelSwap && <Dialog open title="默认模型用不了了" onClose={() => modelSwap.answer('cancel')} footer={<>
+      <Button testId="model-swap-keep" onClick={() => modelSwap.answer('keep')}>照旧打开</Button>
+      <Button variant="primary" testId="model-swap-confirm" onClick={() => modelSwap.answer('swap')}>换成 {modelSwap.offer.replacement}</Button>
+    </>}><p data-testid="model-swap-question">{modelSwapQuestion(modelSwap.offer)}</p></Dialog>}
     {runtimeRestart && <RuntimeRestartDialog onClose={() => setRuntimeRestart(false)} restart={toolsApi.restartWindows} />}
     {confirmation && <Confirm title={confirmation.title} body={confirmation.body} danger={confirmation.danger} okLabel={confirmation.label} loading={confirmBusy} onClose={() => setConfirmation(null)} onOk={() => {
       if (confirmationLock.current) return

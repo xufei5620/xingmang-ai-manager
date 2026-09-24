@@ -78,6 +78,8 @@ import type { AccountSourceSwitchResult, AccountSourceTarget } from './account-s
 export type { AccountSourceSwitchResult, AccountSourceTarget } from './account-source-switch'
 import type { RunningToolsReport } from './running-tools'
 export type { RunningToolsReport } from './running-tools'
+import type { ToolModelCheck } from './tool-model-check'
+export type { ToolModelCheck } from './tool-model-check'
 import type {
   ConnectionCheckLayer as MainConnectionCheckLayer,
   ConnectionCheckResult as MainConnectionCheckResult,
@@ -625,6 +627,11 @@ export interface XingmangInvokeContract {
     [providers: ProviderId[]],
     RunningToolsReport
   >
+  /**
+   * 打开工具前核对当前账号能用的模型，每个工具一天一次。Claude Code 的模型菜单顺手
+   * 悄悄刷新；默认模型用不了时只报回来，换不换由用户点。核对不成一律 skipped，不抛错。
+   */
+  checkToolModels: IpcInvokeDefinition<'tools:check-models', [provider: ProviderId], ToolModelCheck>
   listModels: IpcInvokeDefinition<'models:list', [apiKey: string], string[]>
   listConfiguredModels: IpcInvokeDefinition<'models:list-configured', [provider: ProviderId], string[]>
   /** options 省略 = 弹目录选择器；createStarter = 不弹选择器，直接替用户新建一个项目文件夹。 */
@@ -1041,6 +1048,7 @@ export const ipcInvokeChannels = {
   switchToOfficialAccount: 'config:switch-to-official-account',
   switchAccountSource: 'config:switch-account-source',
   inspectRunningTools: 'tools:inspect-running',
+  checkToolModels: 'tools:check-models',
   chooseWorkspace: 'workspace:choose',
   getRepositoryContext: 'repository:get-context',
   installNodeRuntime: 'runtime:install-node',

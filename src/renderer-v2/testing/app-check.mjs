@@ -3230,6 +3230,41 @@ test('a CLI launch still opens but warns when the project folder overrides the c
   } finally { await page.close() }
 })
 
+// 第十二批候选 5：默认模型下架时打开前问一句，点了才换，不点照旧打开。
+test('opening a tool whose default model is gone asks first and only swaps the model when told to', async () => {
+  const page = await open('allInstalled=1&recentWorkspaces=1&modelGone=1')
+  try {
+    await page.getByTestId('tool-claude-primary').click()
+    const question = page.getByTestId('model-swap-question')
+    await question.waitFor()
+    assert.match(await question.innerText(), /当前账号用不了了/)
+    assert.equal(await page.evaluate(() => window.v2Test.calls.some((call) => call.method === 'launchCli' || call.method === 'saveConfig')), false, '回答之前既不打开也不改配置')
+    await page.getByTestId('model-swap-confirm').click()
+    await page.waitForFunction(() => window.v2Test.calls.some((call) => call.method === 'launchCli'))
+    assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((call) => call.method === 'saveConfig').map((call) => call.args[0])),
+      [{ provider: 'claude', apiKey: '', model: 'claude-opus-5-5', mode: 'merge' }])
+    await question.waitFor({ state: 'detached' })
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('keeping the old model opens the tool without touching its config, and closing the question opens nothing', async () => {
+  const page = await open('allInstalled=1&recentWorkspaces=1&modelGone=1')
+  try {
+    await page.getByTestId('tool-claude-primary').click()
+    await page.getByTestId('model-swap-question').waitFor()
+    await page.keyboard.press('Escape')
+    await page.getByTestId('model-swap-question').waitFor({ state: 'detached' })
+    assert.equal(await page.evaluate(() => window.v2Test.calls.some((call) => call.method === 'launchCli')), false)
+    await page.waitForFunction(() => !document.querySelector('[data-testid="tool-claude-primary"]')?.disabled)
+    await page.getByTestId('tool-claude-primary').click()
+    await page.getByTestId('model-swap-keep').click()
+    await page.waitForFunction(() => window.v2Test.calls.some((call) => call.method === 'launchCli'))
+    assert.equal(await page.evaluate(() => window.v2Test.calls.some((call) => call.method === 'saveConfig')), false)
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('ordinary desktop launch preserves the opened app and exposes a Chinese-locale warning', async () => {
   const page = await open('localeLaunchWarning=1')
   try {
