@@ -1,6 +1,7 @@
 import { accountOrigin, siteIdForOrigin } from './account-context'
 import { resolveRelaySite } from '../../electron/relay-sites'
 import { isProviderId } from '../../electron/catalog'
+import { describeRunningTools, type RunningToolsReport } from '../../electron/running-tools'
 import { tools } from './registry/tools'
 import { errorMessage } from './business-common'
 import {
@@ -18,7 +19,7 @@ type Config = Awaited<ReturnType<V2Bridge['getConfig']>>['providers'][Provider]
 export type AccountSwitchBridge = Pick<
   V2Bridge,
   'switchSavedAccount' | 'getAccountSession' | 'configureManagedCliKeys'
-> & {
+> & Partial<Pick<V2Bridge, 'inspectRunningTools'>> & {
   getConfig(): Promise<{ providers: AccountSyncContext['configs'] }>
   scanSystem(refresh?: boolean): Promise<{ clis: AccountSyncContext['clis'] }>
   getSettings(): Promise<{
@@ -85,6 +86,8 @@ export interface AccountSwitchSyncResult {
   configured: Provider[]
   failed: Array<{ provider: Provider; message: string }>
   skipped: Array<{ provider: Provider; message: string }>
+  /** 写好 Key 的工具里哪些还开着；没写任何工具或检测不可用时缺省。 */
+  runningTools?: RunningToolsReport
 }
 export function sameAccountOrigin(actual: string, expected: string): boolean {
   try {
@@ -264,7 +267,33 @@ export async function switchAccountWithOptionalSync(
       )
       .map((provider) => ({ provider, message: errorMessage(error) })))
   }
+  if (result.configured.length) result.runningTools = await inspectRunningAfterSwitch(api, result.configured)
   return result
+}
+
+/**
+ * 已经开着的工具只在启动时读一次配置，换了 Key 也还在用旧账号扣费。只问刚写了
+ * Key 的那几个；问不出来就当「看不出来」，提示改成「如果还开着」，不让切换失败。
+ */
+async function inspectRunningAfterSwitch(
+  api: Pick<AccountSwitchBridge, 'inspectRunningTools'>,
+  configured: readonly Provider[],
+): Promise<RunningToolsReport | undefined> {
+  if (!api.inspectRunningTools) return undefined
+  try {
+    return await api.inspectRunningTools([...configured])
+  } catch {
+    return { running: [], unknown: [...configured], codexDesktopRunning: configured.includes('codex') ? null : false, canRestartCodexDesktop: false }
+  }
+}
+
+export function accountSwitchRestartHint(result: AccountSwitchSyncResult): string {
+  return result.runningTools ? describeRunningTools(result.runningTools, 'account') : ''
+}
+
+/** 这次切换还有要用户看的：有工具没同步好，或有写了新 Key 的工具还开着。 */
+export function accountSwitchNeedsAttention(result: AccountSwitchSyncResult): boolean {
+  return result.failed.length > 0 || accountSwitchRestartHint(result) !== ''
 }
 
 const previousResults = new Map<string, AccountSwitchSyncResult>()

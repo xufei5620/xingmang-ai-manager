@@ -63,6 +63,7 @@ import {
 } from './provider-sessions'
 import type { NativeConfigSaveMode } from './config-files'
 import { AccountSourceServiceUnavailableError, switchAccountSource } from './account-source-switch'
+import { emptyRunningToolsReport } from './running-tools'
 import { redactHomeDirectory } from './startup-log'
 import { isExternalToolId, parseExternalClientConfigRequest } from './external-client-contract'
 import type { ExternalToolId } from './external-tool-config'
@@ -140,6 +141,7 @@ import { createExternalShellLauncher, type ExternalShellLauncher } from './syste
 import { platformCapabilitiesFor } from './platform-capabilities'
 import { validatePaymentForm, validatePaymentQrCode, validatePaymentUrl, type PaymentWindowController } from './payment-window'
 import type { AccountStartupGate } from './account-startup-gate'
+import { parseAiChatHistoryScope, parseAiChatHistoryWrite, type AiChatHistoryStore } from './ai-chat-history-store'
 
 export type AppWindowMode = 'onboarding' | 'dashboard'
 
@@ -238,6 +240,7 @@ export interface IpcRegistrationOptions {
   chatService?: AiChatService
   imageService?: AiImageService
   aiAssets?: AiAssetStore
+  chatHistory?: AiChatHistoryStore
   transformSystemSnapshot?: (snapshot: SystemSnapshot) => SystemSnapshot
   // Bundled 星芒AI skill: login copies the template into user skill roots and
   // writes the image-group key into config.json. Optional so existing IPC
@@ -1189,6 +1192,7 @@ const ipcOperationLabels: Readonly<Record<string, string>> = {
   'desktop:check-update-codex': 'Codex 桌面端更新检查',
   'cli:launch': 'CLI 终端启动',
   'desktop:codex-status': 'Codex 桌面端运行状态检测',
+  'tools:inspect-running': '换账号后检查哪些工具还开着',
   'desktop:codex-locale-status': 'Codex Desktop 中文资源检测',
   'desktop:codex-permissions-status': 'Codex Desktop 工作区权限检测',
   'desktop:trust-workspace': 'Codex Desktop 工作区信任设置',
@@ -1281,9 +1285,27 @@ const ipcOperationLabels: Readonly<Record<string, string>> = {
   'account:set-remembered-login': '记住的登录凭据更新',
   'account:create-key': '星芒账号 Key 创建',
   'account:update-key': '星芒账号 Key 更新',
+  'chat-history:read': '聊天记录读取',
+  'chat-history:write': '聊天记录保存',
+}
+
+/** 只收已知工具，去重；一次问的个数不超过工具总数（I5）。 */
+export function parseRunningToolsProviders(value: unknown): ProviderId[] {
+  if (!Array.isArray(value) || value.length > providerIds.length) throw new Error('工具列表格式错误')
+  const providers: ProviderId[] = []
+  for (const item of value) {
+    if (!isProviderId(item)) throw new Error('未知的 CLI 类型')
+    if (!providers.includes(item)) providers.push(item)
+  }
+  return providers
 }
 
 const quietIpcSuccessChannels = new Set([
+  // Chat history carries whole conversations and autosaves after every edit:
+  // a success line would flood the log, and the payload must never reach it
+  // (I13). Failures still log, with the Chinese reason only.
+  'chat-history:read',
+  'chat-history:write',
   'account:get-key-options',
   'system:scan',
   'system:refresh-network-location',
@@ -1676,14 +1698,22 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   // 撤完再想知道新 Key 该照抄什么已经无从查起。
   const limitedManagedKey = async (userId: number, keyId: number): Promise<{ provider: ProviderId; key: AccountKey } | null> => {
     if (!options.managedCliKeys || options.previewOnboarding) return null
-    const cached = (await options.managedCliKeys.read(userId).catch(() => [])).find((entry) => entry.id === keyId)
-    if (!cached) return null
+    // 本机记录读坏了（#475）：分不清这是不是哪个工具在用的 Key，不能当成「不是」。
+    const cachedEntries = await options.managedCliKeys.read(userId).catch(() => null)
+    const cached = cachedEntries?.find((entry) => entry.id === keyId)
+    if (cachedEntries && !cached) return null
     let key: AccountKey | null
     try {
       key = await findAccountKeyById((query) => accountService.listKeys(query), keyId)
     } catch (error) {
       if (error instanceof Error && error.message === accountKeyListTooLongMessage) throw error
       throw new Error('没读到这把密钥的额度设置，先没撤销。请稍后再试。')
+    }
+    // 记录读坏时，只有不限额、不到期的 Key 撤了也没有限制可丢，照常撤；设了限制的
+    // 不知道该记到哪个工具名下，撤了换新就会变成不限额，先停下。
+    if (!cached) {
+      if (key && key.unlimitedQuota && !key.expiredAt) return null
+      throw new Error('没读到本机记着的工具密钥，分不清这把密钥是不是某个工具在用的，先没撤销。请重新打开软件后再试。')
     }
     // 本机记着这是某个工具在用的 Key，列表里却找不到：分不清它有没有上限，按不限额
     // 撤了再换新，就等于悄悄放开了上限。停下，不撤。
@@ -1920,12 +1950,21 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
       restoreOfficialCredentials: async (id) => { await service.restoreOfficialCredentials?.(id) },
       checkConnection: (id) => options.diagnosticsService.checkConnection(id),
       officialLoginPresent: (id) => service.inspectOfficialLogin?.(id) ?? null,
+      ...(service.inspectRunningTools ? { inspectRunning: (id: ProviderId) => service.inspectRunningTools!([id]) } : {}),
       // 失败原因可能带着配置文件的绝对路径（I13）：进日志前把主目录换掉。
       log: (level, event, message, detail) => options.runtimeLog.log(level, 'config', event, message, detail
         ? JSON.parse(redactHomeDirectory(JSON.stringify(detail), options.providerRoots?.userHome ?? os.homedir())) as Record<string, unknown>
         : undefined),
     }, provider, target)
   }
+  registerTrustedHandler('tools:inspect-running', async (_event, providers: unknown) => {
+    const parsed = parseRunningToolsProviders(providers)
+    // 旧实现没有这项检测：全部报「看不出来」，界面退回「如果还开着」的说法。
+    if (!service.inspectRunningTools) {
+      return { ...emptyRunningToolsReport, unknown: parsed, codexDesktopRunning: parsed.includes('codex') ? null : false }
+    }
+    return service.inspectRunningTools(parsed)
+  })
   function documentsDirectory(): string | null {
     if (!options.documentsDirectory) return path.join(os.homedir(), 'Documents')
     try {
@@ -2977,7 +3016,14 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     try {
       await accountService.revokeKey(keyId)
     } catch (error) {
-      if (slot) await keyReplacements.remove(slot).catch(() => undefined)
+      // 撤销报错不等于没撤成：服务端可能撤了、只是回话丢了（#475）。只有在列表里
+      // 还看得见这把 Key 时才确定没撤，删掉记下的限制；看不见或查不了就留着，
+      // 换新时照抄，宁可多限一次也不悄悄放开。
+      if (slot) {
+        const stillThere = await findAccountKeyById((query) => accountService.listKeys(query), keyId)
+          .then((key) => key !== null, () => false)
+        if (stillThere) await keyReplacements.remove(slot).catch(() => undefined)
+      }
       throw error
     }
     if (userId) await invalidateAccountKeyCaches(userId, keyId)
@@ -3174,6 +3220,17 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
         if (currentChatUserId() !== userId) throw new Error('账号已切换，请重新打开图片菜单')
       },
     )
+  })
+  // Deliberately outside the chat: account gate. The window saves the old
+  // account's last edits while an account switch is in progress, and history
+  // was never tied to the live session (it used to sit in localStorage).
+  registerTrustedHandler('chat-history:read', (_event, scope: unknown) => {
+    if (!options.chatHistory) throw new Error('聊天记录存储未就绪')
+    return options.chatHistory.read(parseAiChatHistoryScope(scope))
+  })
+  registerTrustedHandler('chat-history:write', (_event, input: unknown) => {
+    if (!options.chatHistory) throw new Error('聊天记录存储未就绪')
+    return options.chatHistory.write(parseAiChatHistoryWrite(input))
   })
 
   // A used-up per-tool cap reaches the self-check as the same 401 a revoked

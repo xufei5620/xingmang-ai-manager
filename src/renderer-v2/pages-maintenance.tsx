@@ -89,6 +89,9 @@ import {
   filterRuntimeLogs,
   formatRuntimeLogEntry,
   hasRuntimeLogFilter,
+  runtimeLogArea,
+  runtimeLogAreaLabel,
+  runtimeLogDisplayMessage,
   runtimeLogSourceOptions,
   runtimeLogWriteNotice,
 } from './features/app/runtime-log-filter'
@@ -632,7 +635,7 @@ export function FeedbackPage({
             />
             <Select
               aria-label="按来源筛选"
-              options={runtimeLogSourceOptions(resource.data?.sources, source)}
+              options={runtimeLogSourceOptions(resource.data?.entries, source)}
               value={source}
               onChange={(event) => setSource(event.target.value)}
               testId="feedback-source"
@@ -682,7 +685,7 @@ export function FeedbackPage({
             <ListRow
               key={entry.id}
               icon={FileText}
-              title={entry.message}
+              title={runtimeLogDisplayMessage(entry.message)}
               badge={
                 <Pill
                   tone={
@@ -696,7 +699,7 @@ export function FeedbackPage({
                   {runtimeLogLevelLabels[entry.level] ?? entry.level}
                 </Pill>
               }
-              desc={`${displayDate(entry.timestamp)} · ${entry.source}`}
+              desc={[displayDate(entry.timestamp), runtimeLogAreaLabel(entry)].filter(Boolean).join(' · ')}
               actions={
                 <Button
                   size="sm"
@@ -820,7 +823,7 @@ export function FeedbackPage({
           <dt>时间</dt>
           <dd>{displayDate(selected?.timestamp)}</dd>
           <dt>来源</dt>
-          <dd>{selected?.source}</dd>
+          <dd>{selected && runtimeLogArea(selected)}</dd>
           <dt>事件</dt>
           <dd>{selected?.event}</dd>
           <dt>内容</dt>
@@ -877,7 +880,16 @@ export function UpdatesPage({
   const resource = useResource(load)
   const operation = useOperation()
   const [confirm, setConfirm] = useState(false)
+  const [isMac, setIsMac] = useState(false)
   useEffect(() => api.onUpdateState(resource.setData), [api, resource.setData])
+  useEffect(() => {
+    let current = true
+    // 读不到平台就不提示：多说一句对 Windows 客户是噪音，少说一句只是回到原来的样子。
+    void api.getPlatformCapabilities()
+      .then((capability) => { if (current) setIsMac(capability.platform === 'macos') })
+      .catch(() => undefined)
+    return () => { current = false }
+  }, [api])
   const update = resource.data
   const check = () =>
     void operation.execute(
@@ -1071,11 +1083,16 @@ export function UpdatesPage({
         }
       >
         <p>请先保存当前工作。安装完成后重新打开工具箱。</p>
+        {isMac && <p data-testid="updates-mac-keychain-hint">{macKeychainUpdateHint}</p>}
         <ResultNotice error={operation.error} />
       </Dialog>
     </section>
   )
 }
+
+// 为什么 Mac 每换一版都会问一次钥匙串密码，见 registry/tutorials.ts 的
+// macKeychainTutorialDetail。重启前说一句，客户就不会慌着点「拒绝」。
+export const macKeychainUpdateHint = '重启后 Mac 可能弹出钥匙串密码框，输入这台 Mac 的开机密码，点「始终允许」就好。'
 
 export function installResultMessage(result: ToolInstallOutcome | 'cancelled'): string {
   if (result === 'cancelled') return '安装已取消'
@@ -2079,7 +2096,7 @@ export function SettingsPage({
             '桌面通知',
             '后台运行时提醒你查看结果',
             <Switch
-              checked={Boolean(settings.desktopNotifications)}
+              checked={settings.desktopNotifications !== false}
               disabled={!resource.data?.capabilities.notifications}
               aria-label="桌面通知"
               onChange={(desktopNotifications) =>
@@ -2099,7 +2116,7 @@ export function SettingsPage({
                     true
                   }
                   disabled={
-                    !settings.desktopNotifications || Boolean(operation.busy)
+                    settings.desktopNotifications === false || Boolean(operation.busy)
                   }
                   onChange={(enabled) =>
                     void operation.execute(
@@ -2123,7 +2140,7 @@ export function SettingsPage({
           {row(
             '新版本可用',
             '新版本和更新下载完成提醒随桌面通知总开关控制',
-            <Pill>{settings.desktopNotifications ? '已开启' : '已关闭'}</Pill>,
+            <Pill>{settings.desktopNotifications !== false ? '已开启' : '已关闭'}</Pill>,
           )}
           {row(
             '看看长什么样',
@@ -2133,7 +2150,7 @@ export function SettingsPage({
               icon={Zap}
               disabled={
                 !systemApi ||
-                !settings.desktopNotifications ||
+                settings.desktopNotifications === false ||
                 !resource.data?.capabilities.notifications
               }
               loading={operation.busy === 'test-notification'}

@@ -5,9 +5,11 @@ import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { MacosCodexAppInspection } from './macos-codex-app'
+import { scanPowerShell, unbalancedBracket } from './powershell-script-scan.test-support'
 import { windowsPowerShellExecutable } from './windows-elevation'
 import { AppSettingsStore } from './app-settings'
 import { InstallationQueue } from './installation-queue'
+import { CommandRunnerError } from './command-runner'
 import type { NativeConfigInspection } from './config-files'
 import {
   buildCodexDesktopDarwinStatus,
@@ -18,6 +20,7 @@ import {
   buildCodexDesktopPackageSources,
   buildCodexDesktopCombinedProbeFailure,
   buildCodexDesktopCombinedProbeScript,
+  buildCodexDesktopPackageInspectionScript,
   buildCodexDesktopPackageProbeScript,
   buildCodexDesktopProcessProbeScript,
   buildCodexDesktopWorkspaceLaunchPlan,
@@ -26,6 +29,11 @@ import {
   buildDesktopUpdateStatus,
   canAttemptCodexDesktopFirstInstallFallback,
   describeCodexDesktopLaunchFailure,
+  buildCodexDesktopStoreInstallCommand,
+  describeCodexDesktopDownloadAttempt,
+  describeCodexDesktopStoreFailure,
+  parseCodexDesktopStoreProgress,
+  shouldTryCodexDesktopStoreUpdate,
   describeCodexDesktopPrimaryMirrorSkip,
   desktopMirrorUpdateAvailable,
   downloadCodexDesktopPackage,
@@ -95,33 +103,6 @@ function testMirrorCandidate(
     release: { version, architecture: 'x64', contentLength, sha256Base64 },
     packageSource: { label, url: packageUrl },
   }
-}
-
-function createTestMsix(manifest: string): string {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-msix-inspect-'))
-  temporaryDirectories.push(directory)
-  const sourceDirectory = path.join(directory, 'source')
-  const zipPath = path.join(directory, 'Codex.zip')
-  const packagePath = path.join(directory, 'Codex.msix')
-  fs.mkdirSync(sourceDirectory)
-  fs.writeFileSync(path.join(sourceDirectory, 'AppxManifest.xml'), manifest, 'utf8')
-  fs.writeFileSync(path.join(sourceDirectory, 'AppxSignature.p7x'), 'test-signature', 'utf8')
-  execFileSync(windowsPowerShellExecutable(), [
-    '-NoLogo',
-    '-NoProfile',
-    '-NonInteractive',
-    '-Command',
-    'Get-ChildItem -LiteralPath $env:XINGMANG_TEST_MSIX_SOURCE | Compress-Archive -DestinationPath $env:XINGMANG_TEST_MSIX_ZIP',
-  ], {
-    windowsHide: true,
-    env: {
-      ...process.env,
-      XINGMANG_TEST_MSIX_SOURCE: sourceDirectory,
-      XINGMANG_TEST_MSIX_ZIP: zipPath,
-    },
-  })
-  fs.renameSync(zipPath, packagePath)
-  return packagePath
 }
 
 describe('Codex Desktop AppModel launch diagnostics', () => {
@@ -812,34 +793,87 @@ describe('Codex Desktop update state', () => {
     expect(fs.existsSync(destination)).toBe(false)
   })
 
-  it.skipIf(process.platform !== 'win32')('reads identity fields and the signature entry from an MSIX archive', async () => {
-    const packagePath = createTestMsix([
-      '<?xml version="1.0" encoding="utf-8"?>',
-      '<Package xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10">',
-      '  <Identity Name="OpenAI.Codex" Publisher="CN=50BDFD77-8903-4850-9FFE-6E8522F64D5B" Version="26.721.3996.0" ProcessorArchitecture="x64" />',
-      '</Package>',
-    ].join('\n'))
-
-    await expect(inspectCodexDesktopPackageFile(packagePath)).resolves.toEqual({
+  // These two used to build a real MSIX with Compress-Archive and hand it to a real
+  // powershell.exe, two cold starts per test; on a busy windows-latest runner the inspection
+  // was killed at its own 90-second budget (run 35809812859). What they checked is what this
+  // module hands PowerShell, what the script does before it touches the manifest, and what
+  // comes back, so each of those is checked directly on every platform.
+  it('hands PowerShell the package path only as quoted data and reads the metadata it prints', async () => {
+    const hostilePath = "D:\\下载缓存\\O'Brien; $(Write-Output XINGMANG_TEST_INJECTION) & Codex.msix"
+    const calls: Array<{ executable: string; argv: string[]; options: { env: NodeJS.ProcessEnv; timeoutMs: number; maxOutputBytes: number } }> = []
+    const previousNodeOptions = process.env.NODE_OPTIONS
+    process.env.NODE_OPTIONS = '--require C:\\Users\\Public\\hook.js'
+    let metadata: Awaited<ReturnType<typeof inspectCodexDesktopPackageFile>>
+    try {
+      metadata = await inspectCodexDesktopPackageFile(hostilePath, {
+        resolvePowerShell: () => 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe',
+        run: async (executable, argv, options) => {
+          calls.push({ executable, argv, options })
+          return '{"name":"OpenAI.Codex","version":"26.721.3996.0","architecture":"x64","publisher":"CN=50BDFD77-8903-4850-9FFE-6E8522F64D5B","hasSignature":true}\r\n'
+        },
+      })
+    } finally {
+      if (previousNodeOptions === undefined) delete process.env.NODE_OPTIONS
+      else process.env.NODE_OPTIONS = previousNodeOptions
+    }
+    expect(metadata).toEqual({
       name: 'OpenAI.Codex',
       version: '26.721.3996.0',
       architecture: 'x64',
       publisher: 'CN=50BDFD77-8903-4850-9FFE-6E8522F64D5B',
       hasSignature: true,
     })
-  }, 180_000)
+    expect(calls).toHaveLength(1)
+    const [call] = calls
+    expect(call.executable).toBe('C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe')
+    expect(call.argv).toEqual(['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', buildCodexDesktopPackageInspectionScript(hostilePath)])
+    expect(call.options.env.NODE_OPTIONS).toBeUndefined()
+    expect(call.options.timeoutMs).toBe(90_000)
+    expect(call.options.maxOutputBytes).toBe(1024 * 1024)
 
-  it.skipIf(process.platform !== 'win32')('rejects an oversized compressed AppxManifest before XML parsing', async () => {
-    const packagePath = createTestMsix([
-      '<?xml version="1.0" encoding="utf-8"?>',
-      '<Package xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10">',
-      `  <!-- ${'x'.repeat(1024 * 1024)} -->`,
-      '  <Identity Name="OpenAI.Codex" Publisher="CN=invalid" Version="1.0.0.0" ProcessorArchitecture="x64" />',
-      '</Package>',
-    ].join('\n'))
+    const scan = scanPowerShell(call.argv[4])
+    expect(scan.unterminated).toBe(false)
+    expect(unbalancedBracket(scan.code)).toBeNull()
+    expect(scan.literals).toContain(hostilePath)
+    expect(scan.code).not.toContain('XINGMANG_TEST_INJECTION')
+    for (const body of scan.expandable) expect(body).not.toContain('XINGMANG_TEST_INJECTION')
+  })
 
-    await expect(inspectCodexDesktopPackageFile(packagePath)).rejects.toThrow('1 MiB 安全上限')
-  }, 180_000)
+  it('checks the manifest size before decompressing it and parses it without DTDs or resolvers', () => {
+    const scan = scanPowerShell(buildCodexDesktopPackageInspectionScript('C:\\Temp\\Codex.msix'))
+    expect(scan.code).toContain('$archive = [System.IO.Compression.ZipFile]::OpenRead(\'\')')
+    expect(scan.literals).toEqual(expect.arrayContaining(['C:\\Temp\\Codex.msix', 'AppxManifest.xml', 'AppxSignature.p7x']))
+    expect(scan.code).toContain("$_.FullName -ieq ''")
+    const sizeCheck = scan.code.indexOf('$manifestEntry.Length -gt 1048576')
+    const open = scan.code.indexOf('$manifestEntry.Open()')
+    const reader = scan.code.indexOf('[System.Xml.XmlReader]::Create($stream, $settings)')
+    expect(sizeCheck).toBeGreaterThan(0)
+    expect(sizeCheck).toBeLessThan(open)
+    expect(scan.code.slice(scan.code.indexOf('$manifestEntry.Length -le 0'), open)).toContain("throw ''")
+    for (const setting of [
+      '$settings.DtdProcessing = [System.Xml.DtdProcessing]::Prohibit',
+      '$settings.XmlResolver = $null',
+      '$settings.MaxCharactersInDocument = 1048576',
+    ]) {
+      const at = scan.code.indexOf(setting)
+      expect(at).toBeGreaterThan(open)
+      expect(at).toBeLessThan(reader)
+    }
+    expect(scan.code).toContain('$manifest.XmlResolver = $null')
+    expect(scan.literals).toContain('AppxManifest.xml 大小无效或超过 1 MiB 安全上限')
+    expect(scan.code).toContain('hasSignature = ($null -ne $signatureEntry)')
+    expect(scan.code).toContain('ConvertTo-Json -Compress')
+  })
+
+  it('reports an unreadable answer as unreadable and passes a refusal through untouched', async () => {
+    const resolvePowerShell = () => 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe'
+    await expect(inspectCodexDesktopPackageFile('C:\\Temp\\Codex.msix', { resolvePowerShell, run: async () => 'not json' }))
+      .rejects.toThrow('无法读取 Codex Desktop 安装包元数据')
+    await expect(inspectCodexDesktopPackageFile('C:\\Temp\\Codex.msix', {
+      resolvePowerShell,
+      run: async () => { throw new Error('AppxManifest.xml 大小无效或超过 1 MiB 安全上限') },
+    })).rejects.toThrow('1 MiB 安全上限')
+  })
 })
 
 describe('Codex Desktop mirror fallback disclosure', () => {
@@ -862,6 +896,22 @@ describe('Codex Desktop mirror fallback disclosure', () => {
       { label: '镜像备用源', url: 'https://codexapp-r2.agentsmirror.com/latest/win-x64' },
       ['OpenAI 官方源：返回 HTTP 503'],
     )).toBeNull()
+  })
+
+  it('words each download attempt so the reason can stay on screen for the whole download', () => {
+    const fallback = { label: '镜像备用源', url: 'https://codexapp-r2.agentsmirror.com/latest/win-x64' }
+    expect(describeCodexDesktopDownloadAttempt(fallback, 0, null, ['国内镜像：查询超时']))
+      .toBe('国内镜像本次不可用（查询超时），正在从镜像备用源下载')
+    expect(describeCodexDesktopDownloadAttempt(fallback, 0, null, []))
+      .toBe('正在从镜像备用源下载')
+    expect(describeCodexDesktopDownloadAttempt(fallback, 1, '国内镜像（26.917.9434.0）：SHA-256 不一致', ['国内镜像：查询超时']))
+      .toBe('前一路镜像未通过校验，已改从镜像备用源下载')
+  })
+
+  it('keeps the Microsoft Store failure in front of every mirror attempt', () => {
+    const primary = { label: '国内镜像', url: 'https://codexapp.agentsmirror.com/latest/win-x64' }
+    expect(describeCodexDesktopDownloadAttempt(primary, 0, null, [], '连不上微软商店'))
+      .toBe('微软商店这次没装上（连不上微软商店），正在从国内镜像下载')
   })
 
   it('reads the failure the historical probe actually produces', async () => {
@@ -1542,5 +1592,53 @@ describe('Codex Desktop launch acceleration', () => {
     await fixture.service.launchCodexDesktop('open', fixture.target)
 
     expect(fixture.order).toEqual(['launch'])
+  })
+})
+
+describe('Codex Desktop Microsoft Store install', () => {
+  const winget = 'C:\\Program Files\\WindowsApps\\Microsoft.DesktopAppInstaller_1.0_x64__8wekyb3d8bbwe\\winget.exe'
+
+  function storeError(overrides: Partial<ConstructorParameters<typeof CommandRunnerError>[1]> = {}) {
+    return new CommandRunnerError('命令执行失败：winget.exe', {
+      code: 'EXIT_NON_ZERO', executable: winget, argv: ['install'], exitCode: 1, signal: null,
+      stdout: '', stderr: '', outputBytes: 0, maxOutputBytes: 1024, durationMs: 1, ...overrides,
+    })
+  }
+
+  it('installs the Store product with a fixed argv and no interactive prompts', () => {
+    expect(buildCodexDesktopStoreInstallCommand(winget)).toEqual({
+      executable: winget,
+      argv: [
+        'install', '--id', '9PLM9XGG6VKS', '--exact', '--source', 'msstore', '--silent',
+        '--accept-package-agreements', '--accept-source-agreements', '--disable-interactivity',
+      ],
+    })
+  })
+
+  it('refuses anything that is not an absolute winget.exe path', () => {
+    expect(() => buildCodexDesktopStoreInstallCommand('winget.exe')).toThrow('路径无效')
+    expect(() => buildCodexDesktopStoreInstallCommand('C:\\Temp\\evil.exe')).toThrow('路径无效')
+    expect(() => buildCodexDesktopStoreInstallCommand(`${winget}\0`)).toThrow('路径无效')
+  })
+
+  it('explains Store failures in plain words', () => {
+    expect(describeCodexDesktopStoreFailure(storeError({ exitCode: 0x80072efd | 0 }))).toBe('连不上微软商店')
+    expect(describeCodexDesktopStoreFailure(storeError({ exitCode: 0x8a15002b | 0 }))).toBe('商店里暂时还没有更新的版本')
+    expect(describeCodexDesktopStoreFailure(storeError({ exitCode: 0x8a150014 | 0 }))).toBe('商店里没找到 Codex 桌面端')
+    expect(describeCodexDesktopStoreFailure(storeError({ code: 'TIMED_OUT', exitCode: null }))).toBe('等了很久还没装完')
+    expect(describeCodexDesktopStoreFailure(storeError({ exitCode: 0x8a150084 | 0 }))).toBe('错误码 0x8a150084')
+    expect(describeCodexDesktopStoreFailure(new Error('spawn failed'))).toBe('安装没有完成')
+  })
+
+  it('reads the last percentage from Store progress output', () => {
+    expect(parseCodexDesktopStoreProgress('  ██████      12%\r  ████████████  48%')).toBe(48)
+    expect(parseCodexDesktopStoreProgress('已找到 Codex [9PLM9XGG6VKS]')).toBeNull()
+    expect(parseCodexDesktopStoreProgress('999%')).toBeNull()
+  })
+
+  it('tries the Store for an update unless the official feed says nothing newer exists', () => {
+    expect(shouldTryCodexDesktopStoreUpdate('26.900.1.0', '26.917.9434.0')).toBe(true)
+    expect(shouldTryCodexDesktopStoreUpdate('26.917.9434.0', '26.917.9434.0')).toBe(false)
+    expect(shouldTryCodexDesktopStoreUpdate('26.917.9434.0', null)).toBe(true)
   })
 })

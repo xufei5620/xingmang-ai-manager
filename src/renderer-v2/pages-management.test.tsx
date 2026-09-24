@@ -6,10 +6,13 @@ import {
   curatedPlaceholderField,
   curatedRuntimeCommand,
   curatedVersionText,
+  extensionRowState,
+  findNativeSkill,
   mcpCommandRuntime,
   mcpHealthView,
   mcpRuntimeNotice,
   officialMarketplaceNotice,
+  runExtensionAction,
   submitMcpInstall,
   unresolvedInstallPlaceholders,
 } from './pages-management'
@@ -325,5 +328,131 @@ describe('Python runtime notice before adding a connection', () => {
   it('checks a curated entry by its own launch command', () => {
     expect(curatedRuntimeCommand(item('files'))).toBe('npx')
     expect(curatedRuntimeCommand(item('github'))).toBe('')
+  })
+})
+
+type ListItem = Parameters<typeof extensionRowState>[0]
+type NativeSkillEntry = NonNullable<Parameters<typeof extensionRowState>[1]>
+
+function listItem(overrides: Partial<ListItem>): ListItem {
+  return {
+    provider: 'claude',
+    kind: 'plugin',
+    id: 'demo@market',
+    name: 'demo',
+    description: '',
+    installed: true,
+    enabled: true,
+    scope: 'user',
+    currentVersion: null,
+    latestVersion: null,
+    source: { kind: 'native', locator: null, reference: null },
+    update: { state: 'unsupported', reason: '', checkedAt: null },
+    operations: { install: true, uninstall: true, enable: true, disable: true, update: true },
+    ...overrides,
+  }
+}
+
+function nativeSkill(overrides: Partial<NativeSkillEntry>): NativeSkillEntry {
+  return {
+    id: '/home/me/.agents/skills/quiet/skill.md',
+    name: 'Quiet',
+    description: '',
+    path: '/home/me/.agents/skills/quiet/SKILL.md',
+    scope: 'user',
+    source: 'agents',
+    enabled: false,
+    managed: true,
+    ...overrides,
+  }
+}
+
+function extensionApi() {
+  return {
+    mutateProviderExtension: vi.fn().mockResolvedValue({}),
+    toggleSkill: vi.fn().mockResolvedValue({ skills: [] }),
+    uninstallSkill: vi.fn().mockResolvedValue({ skills: [], trashPath: '' }),
+  }
+}
+
+describe('extension row actions', () => {
+  it('sends the scope a project copy was listed under, so the user copy is left alone', async () => {
+    const api = extensionApi()
+    await runExtensionAction(api, listItem({ scope: 'project' }), 'uninstall')
+    await runExtensionAction(api, listItem({ kind: 'mcp', id: 'shared', scope: 'local' }), 'uninstall')
+    await runExtensionAction(api, listItem({ scope: 'user', enabled: false }), 'enable')
+
+    expect(api.mutateProviderExtension.mock.calls.map(([input]) => input)).toEqual([
+      { provider: 'claude', kind: 'plugin', action: 'uninstall', id: 'demo@market', scope: 'project' },
+      { provider: 'claude', kind: 'mcp', action: 'uninstall', id: 'shared', scope: 'local' },
+      { provider: 'claude', kind: 'plugin', action: 'enable', id: 'demo@market', scope: 'user' },
+    ])
+  })
+
+  it('leaves the scope out for built-in or unknown layers and lets the main process pick', async () => {
+    const api = extensionApi()
+    await runExtensionAction(
+      api,
+      listItem({ provider: 'gemini', kind: 'skill', id: '/cli/builtin/x/SKILL.md', scope: 'builtin' }),
+      'disable',
+    )
+    await runExtensionAction(api, listItem({ provider: 'codex', kind: 'mcp', id: 'docs', scope: null }), 'uninstall')
+
+    expect(api.mutateProviderExtension.mock.calls.map(([input]) => input)).toEqual([
+      { provider: 'gemini', kind: 'skill', action: 'disable', id: '/cli/builtin/x/SKILL.md' },
+      { provider: 'codex', kind: 'mcp', action: 'uninstall', id: 'docs' },
+    ])
+  })
+
+  it('manages a user Codex skill through the native interface and shows it disabled', async () => {
+    const api = extensionApi()
+    const skill = nativeSkill({})
+    const row = listItem({
+      provider: 'codex',
+      kind: 'skill',
+      id: skill.path,
+      name: 'Quiet',
+      enabled: true,
+      operations: { install: false, uninstall: false, enable: false, disable: false, update: false },
+    })
+
+    expect(extensionRowState(row, skill)).toEqual({
+      readonly: false,
+      enabled: false,
+      canToggle: true,
+      canUninstall: true,
+      canUpdate: false,
+    })
+    await runExtensionAction(api, row, 'enable', skill)
+    await runExtensionAction(api, row, 'uninstall', skill)
+    expect(api.toggleSkill).toHaveBeenCalledWith(skill.path, true)
+    expect(api.uninstallSkill).toHaveBeenCalledWith(skill.path)
+    expect(api.mutateProviderExtension).not.toHaveBeenCalled()
+  })
+
+  it('keeps only the Codex system skills read-only', () => {
+    const row = listItem({ provider: 'codex', kind: 'skill', id: '/codex/skills/.system/x/SKILL.md' })
+    expect(extensionRowState(row, nativeSkill({ scope: 'system', managed: false, enabled: true }))).toMatchObject({
+      readonly: true,
+      canToggle: false,
+      canUninstall: false,
+    })
+  })
+
+  it('matches a Codex skill by its path before falling back to its name', () => {
+    const user = nativeSkill({ path: '/home/me/.agents/skills/dup/SKILL.md', name: 'Dup', scope: 'user' })
+    const repo = nativeSkill({ path: '/work/.agents/skills/dup/SKILL.md', name: 'Dup', scope: 'repo' })
+    const row = listItem({ provider: 'codex', kind: 'skill', id: repo.path, name: 'Dup' })
+
+    expect(findNativeSkill([user, repo], row)).toBe(repo)
+  })
+
+  it('still treats a built-in row as read-only for the other tools', () => {
+    expect(extensionRowState(listItem({ provider: 'gemini', kind: 'skill', scope: 'builtin' }))).toMatchObject({
+      readonly: true,
+      canToggle: false,
+      canUninstall: false,
+      canUpdate: false,
+    })
   })
 })

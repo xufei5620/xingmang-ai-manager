@@ -109,12 +109,13 @@ export function installPlatformSystemApi(
         }
         notifications = createPlatformNotifications(
           {
-            readEnabled: () => existing.read().desktopNotifications === true,
+            readEnabled: () => existing.read().desktopNotifications !== false,
             readPreferences: () => ({
               install: true,
               balance: true,
               task: true,
               cliUpdate: true,
+              announcement: true,
               acceleration: true,
               ...store.read().notifications,
             }),

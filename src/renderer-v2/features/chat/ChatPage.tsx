@@ -8,6 +8,7 @@ import { createChatApi, inspectModel, type ChatApi } from './api'
 import { chatErrorAction, chatErrorMessage, filterConversations, isGenerating, shouldSendOnEnter, type ChatMessage, type ChatMode } from './state'
 import { ParametersPanel } from './ParametersPanel'
 import { useChatController } from './useChatController'
+import { loadChatHistory, type LoadedChatHistory } from './storage'
 import './chat.css'
 
 export interface ChatPageProps { bridge: XingmangApi; accountScope: string; active?: boolean; onOpenAccount?: (tab: 'recharge' | 'keys') => void }
@@ -18,8 +19,24 @@ export function ChatPage({ bridge, accountScope, active = true, onOpenAccount }:
   return <ChatScope key={accountScope} api={api} scope={accountScope} active={active} onOpenAccount={onOpenAccount} />
 }
 
-function ChatScope({ api, scope, active, onOpenAccount }: { api: ChatApi; scope: string; active: boolean; onOpenAccount?: ChatPageProps['onOpenAccount'] }) {
-  const chat = useChatController(api, scope, active)
+interface ChatScopeProps { api: ChatApi; scope: string; active: boolean; onOpenAccount?: ChatPageProps['onOpenAccount'] }
+
+// History lives in files read through the main process, so it arrives
+// asynchronously. The page waits for it instead of starting empty: an early
+// autosave or keystroke must never race the record it is about to replace.
+function ChatScope(props: ChatScopeProps) {
+  const [history, setHistory] = useState<LoadedChatHistory | null>(null)
+  useEffect(() => {
+    let current = true
+    void loadChatHistory(props.api, window.localStorage, props.scope).then((loaded) => { if (current) setHistory(loaded) })
+    return () => { current = false }
+  }, [props.api, props.scope])
+  if (!history) return <section className="chat-page" hidden={!props.active} data-testid="page-chat" data-page-id="ai-chat" data-account-scope={props.scope} data-loading="true" aria-busy="true" />
+  return <ChatView {...props} history={history} />
+}
+
+function ChatView({ api, scope, active, onOpenAccount, history }: ChatScopeProps & { history: LoadedChatHistory }) {
+  const chat = useChatController(api, scope, history, active)
   const { conversation, preparations } = chat
   const [search, setSearch] = useState('')
   const [confirmationState, setConfirmation] = useState<Confirmation>(null)

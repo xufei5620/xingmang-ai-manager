@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { cliExitHintLines } from './cli-exit-hint'
 import { managedNpmBinDirectory } from './managed-cli-paths'
 import type { CommandSpec, RunCommandOptions } from './command-runner'
 
@@ -241,7 +242,19 @@ export function buildMacosTerminalScript(plan: MacosTerminalScriptPlan): string 
     `rmdir -- ${quotePosixArgument(path.dirname(plan.launcherPath))} 2>/dev/null || true`,
     `cd -- ${quotePosixArgument(plan.workspace)}`,
     ...environmentExports,
-    `exec -- ${[plan.executable, ...plan.argv].map(quotePosixArgument).join(' ')}`,
+    // 不再 exec：工具退出后还要留在这个脚本里补一句中文，告诉用户下一步。
+    // set -e 下工具非零退出会直接结束脚本，所以用 || 接住退出码。trap 让 zsh
+    // 在用户按 Ctrl+C 时不跟着工具一起被打断；它是 shell 函数处理器不是忽略，
+    // 子进程照旧收到默认的 SIGINT 行为。只输出固定文案，不引入外部输入。
+    "trap ':' INT",
+    'cli_exit_code=0',
+    `${[plan.executable, ...plan.argv].map(quotePosixArgument).join(' ')} || cli_exit_code=$?`,
+    'print -r --',
+    'if [ "$cli_exit_code" -eq 0 ]; then',
+    ...cliExitHintLines.normal.map((line) => `  print -r -- ${quotePosixArgument(line)}`),
+    'else',
+    ...cliExitHintLines.unexpected.map((line) => `  print -r -- ${quotePosixArgument(line)}`),
+    'fi',
     '',
   ].join('\n')
 }

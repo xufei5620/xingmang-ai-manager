@@ -1,12 +1,33 @@
 import { describe, expect, it, vi } from 'vitest'
+import type { AiChatHistorySnapshot, AiChatHistoryWrite } from '../../../../electron/ipc-contract'
 import { createConversation, createWorkspace, type ChatMessage, type ChatWorkspace } from './state'
-import { ChatStorageError, historyKey, importLegacyHistory, readWorkspace, redactPersistentChatText, writeWorkspace } from './storage'
+import { ChatStorageError, createHistoryWriter, historyKey, importLegacyHistory, loadChatHistory, parseHistorySnapshot, planHistoryWrite, readWorkspace, redactPersistentChatText } from './storage'
 
 const scope = 'xm-account:7'
 const legacyKey = 'xingmang-ai-chat:v1:7'
+const formerLimitBytes = 4 * 1024 * 1024
 function memoryStorage() {
   const data = new Map<string, string>()
   return { getItem: (key: string) => data.get(key) ?? null, setItem: vi.fn((key: string, value: string) => { data.set(key, value) }) }
+}
+// Same contract as electron/ai-chat-history-store.ts: rewrite the listed
+// conversations, then the index, then drop files the index no longer names.
+function memoryFiles() {
+  const stores = new Map<string, AiChatHistorySnapshot>()
+  const api = {
+    readHistory: vi.fn(async (owner: string): Promise<AiChatHistorySnapshot> => structuredClone(stores.get(owner) ?? { index: null, conversations: [] })),
+    writeHistory: vi.fn(async (input: AiChatHistoryWrite) => {
+      const files = new Map((stores.get(input.scope)?.conversations ?? []).map((file) => [file.key, file.content]))
+      for (const file of input.put) files.set(file.key, file.content)
+      stores.set(input.scope, { index: input.index, conversations: input.keys.map((key) => ({ key, content: files.get(key)! })) })
+    }),
+  }
+  function raw(owner = scope) { const snapshot = stores.get(owner); return snapshot ? [snapshot.index, ...snapshot.conversations.map((file) => file.content)].join('\n') : null }
+  return { api, stores, raw }
+}
+async function saveAndReopen(state: ChatWorkspace, files = memoryFiles(), storage = memoryStorage()) {
+  await createHistoryWriter(files.api, null).save(state)
+  return loadChatHistory(files.api, storage, state.owner)
 }
 function message(index = 0, patch: Partial<ChatMessage> = {}): ChatMessage {
   return { id: `message-${index}`, role: index % 2 ? 'assistant' : 'user', content: `content-${index}`, reasoning: `reasoning-${index}`, status: 'complete', createdAt: index, ...patch }
@@ -20,10 +41,14 @@ function workspace(owner = scope, count = 1): ChatWorkspace {
 function legacy(messages: unknown[], extra: Record<string, unknown> = {}): string {
   return JSON.stringify({ version: 1, userId: '7', data: { group: 'group-a', model: 'gpt-test', messages, ...extra } })
 }
+// Hand-built files, so a test can store what planHistoryWrite would refuse to produce.
+function snapshotOf(state: ChatWorkspace, owner = scope): AiChatHistorySnapshot {
+  const conversations = state.conversations.map((conversation, index) => ({ key: `k${index}`, content: JSON.stringify({ version: 3, owner, conversation }) }))
+  return { index: JSON.stringify({ version: 3, owner, activeId: state.activeId, draftConversation: state.draftConversation, conversations: state.conversations.map((conversation, index) => ({ id: conversation.id, key: `k${index}` })) }), conversations }
+}
 
-describe('lossless bounded chat storage', () => {
-  it('round-trips already-stored long Unicode content, reasoning, prompts and drafts without the former 40,000-character clipping', () => {
-    const storage = memoryStorage()
+describe('lossless chat history files', () => {
+  it('round-trips long Unicode content, reasoning, prompts and drafts without the former 40,000-character clipping', async () => {
     const state = workspace()
     const long = '长文🙂\n'.repeat(18_000)
     const conversation = state.conversations[0]
@@ -34,22 +59,18 @@ describe('lossless bounded chat storage', () => {
     conversation.settings.group = 'group-'.repeat(30)
     conversation.messages = [message(0, { content: long, reasoning: long, settings: conversation.settings }), message(1, { status: 'error', error: '已脱敏的历史错误详情' })]
     state.draftConversation.draft = long
-    const raw = JSON.stringify(state)
-    storage.setItem(historyKey(scope), raw)
-    const restored = readWorkspace(storage, scope)
+    const files = memoryFiles()
+    const restored = await saveAndReopen(state, files)
     expect(restored.warning).toBeUndefined()
     expect(restored.state).toEqual(state)
-    writeWorkspace(storage, restored.state)
-    expect(readWorkspace(storage, scope).state).toEqual(state)
+    expect(planHistoryWrite(restored.state, restored.saved)).toBeNull()
   })
 
-  it('preserves all 350 messages and all asset references without reusing request limits for stored history', () => {
-    const storage = memoryStorage()
+  it('preserves all 350 messages and all asset references without reusing request limits for stored history', async () => {
     const state = workspace()
     state.conversations[0].messages = Array.from({ length: 350 }, (_, index) => message(index))
     state.conversations[0].messages[0].assets = Array.from({ length: 10 }, (_, index) => ({ assetId: String(index).repeat(43), mimeType: 'image/png', localUrl: `runtime:${index}`, fileName: `图${index}.png`, revisedPrompt: '完整图片提示词'.repeat(8_000) }))
-    writeWorkspace(storage, state)
-    const restored = readWorkspace(storage, scope)
+    const restored = await saveAndReopen(state)
     expect(restored.warning).toBeUndefined()
     expect(restored.state.conversations[0].messages).toHaveLength(350)
     expect(restored.state.conversations[0].messages.at(-1)?.content).toBe('content-349')
@@ -57,22 +78,152 @@ describe('lossless bounded chat storage', () => {
     expect(restored.state.conversations[0].messages[0].assets?.[0].revisedPrompt).toBe(state.conversations[0].messages[0].assets[0].revisedPrompt)
   })
 
-  it.each(['bytes', 'conversations'] as const)('retains the prior atomic value when a %s write exceeds storage capacity', (limit) => {
-    const storage = memoryStorage()
-    const state = workspace()
-    writeWorkspace(storage, state)
-    const before = storage.getItem(historyKey(scope))
-    const excessive = limit === 'bytes' ? workspace() : workspace(scope, 51)
-    if (limit === 'bytes') excessive.conversations[0].messages[0].content = '文'.repeat(1_400_000)
-    expect(() => writeWorkspace(storage, excessive)).toThrow(ChatStorageError)
-    expect(storage.getItem(historyKey(scope))).toBe(before)
-    expect(excessive.conversations[0].messages[0].content).toBe(limit === 'bytes' ? '文'.repeat(1_400_000) : 'content-0')
+  // Used to pin the opposite: past 4 MB the write was refused and the older
+  // copy kept, so everything said after that point vanished on exit.
+  it('keeps saving past the former 4 MB limit, so a reopened window still has the newest content', async () => {
+    const files = memoryFiles()
+    const writer = createHistoryWriter(files.api, null)
+    const state = workspace(scope, 3)
+    await writer.save(state)
+    const grown = { ...state, conversations: state.conversations.map((conversation, index) => index === 1 ? { ...conversation, messages: [...conversation.messages, message(1, { content: '文'.repeat(1_400_000), reasoning: 'x'.repeat(formerLimitBytes) })] } : conversation) }
+    expect(new TextEncoder().encode(files.raw()! + grown.conversations[1].messages[1].content + grown.conversations[1].messages[1].reasoning).byteLength).toBeGreaterThan(2 * formerLimitBytes)
+    await writer.save(grown)
+    await writer.save({ ...grown, conversations: [{ ...grown.conversations[0], draft: 'said after the limit' }, ...grown.conversations.slice(1)] })
+    const reopened = await loadChatHistory(files.api, memoryStorage(), scope)
+    expect(reopened.warning).toBeUndefined()
+    expect(reopened.state.conversations[1].messages[1].content).toBe('文'.repeat(1_400_000))
+    expect(reopened.state.conversations[1].messages[1].reasoning).toHaveLength(formerLimitBytes)
+    expect(reopened.state.conversations[0].draft).toBe('said after the limit')
   })
 
-  it.each(['bytes', 'conversations', 'duplicate-message', 'duplicate-conversation', 'invalid-message', 'invalid-asset'] as const)('refuses a lossy read of %s while retaining its original storage', (kind) => {
+  it('retains the prior files when a save exceeds the 50-conversation limit', async () => {
+    const files = memoryFiles()
+    const writer = createHistoryWriter(files.api, null)
+    await writer.save(workspace())
+    const before = files.raw()
+    await expect(writer.save(workspace(scope, 51))).rejects.toThrow(ChatStorageError)
+    expect(files.raw()).toBe(before)
+  })
+
+  it('rewrites only the conversations that changed and removes deleted ones after the index', async () => {
+    const files = memoryFiles()
+    const writer = createHistoryWriter(files.api, null)
+    const state = workspace(scope, 3)
+    await writer.save(state)
+    expect(files.api.writeHistory.mock.calls[0][0].put).toHaveLength(3)
+    const edited = { ...state, conversations: [state.conversations[0], { ...state.conversations[1], draft: 'edited' }] }
+    await writer.save(edited)
+    const second = files.api.writeHistory.mock.calls[1][0]
+    expect(second.put.map((file) => file.key)).toEqual(['conversation-1'])
+    expect(second.keys).toEqual(['conversation-0', 'conversation-1'])
+    expect(files.stores.get(scope)?.conversations.map((file) => file.key)).toEqual(['conversation-0', 'conversation-1'])
+    await writer.save(edited)
+    expect(files.api.writeHistory).toHaveBeenCalledTimes(2)
+  })
+
+  it('gives conversations with ids unfit for file names their own stable key', async () => {
+    const files = memoryFiles()
+    const state = workspace()
+    state.conversations[0].id = '旧版对话/../1'
+    state.activeId = state.conversations[0].id
+    const writer = createHistoryWriter(files.api, null)
+    await writer.save(state)
+    await writer.save({ ...state, conversations: [{ ...state.conversations[0], draft: 'again' }] })
+    const [first, second] = files.api.writeHistory.mock.calls.map(([input]) => input)
+    expect(first.keys[0]).toMatch(/^[A-Za-z0-9_-]{1,64}$/)
+    expect(second.keys).toEqual(first.keys)
+    expect((await loadChatHistory(files.api, memoryStorage(), scope)).state.conversations[0]).toMatchObject({ id: '旧版对话/../1', draft: 'again' })
+  })
+
+  it('collapses saves requested while one is running into the newest snapshot', async () => {
+    const files = memoryFiles()
+    let release!: () => void
+    files.api.writeHistory.mockImplementationOnce(() => new Promise<void>((resolve) => { release = resolve }))
+    const writer = createHistoryWriter(files.api, null)
+    const first = writer.save(workspace())
+    await vi.waitFor(() => expect(files.api.writeHistory).toHaveBeenCalledTimes(1))
+    for (const draft of ['a', 'ab', 'abc']) void writer.save({ ...workspace(), conversations: [{ ...workspace().conversations[0], draft }] })
+    release()
+    await first
+    expect(files.api.writeHistory).toHaveBeenCalledTimes(2)
+    expect((await loadChatHistory(files.api, memoryStorage(), scope)).state.conversations[0].draft).toBe('abc')
+  })
+
+  it('keeps the previous files when a write fails and writes everything still pending on the next save', async () => {
+    const files = memoryFiles()
+    const writer = createHistoryWriter(files.api, null)
+    const state = workspace()
+    await writer.save(state)
+    const before = files.raw()
+    files.api.writeHistory.mockRejectedValueOnce(new Error('disk full'))
+    const changed = { ...state, conversations: [{ ...state.conversations[0], draft: 'new unsaved content' }] }
+    await expect(writer.save(changed)).rejects.toThrow('disk full')
+    expect(files.raw()).toBe(before)
+    await writer.save({ ...changed })
+    expect((await loadChatHistory(files.api, memoryStorage(), scope)).state.conversations[0].draft).toBe('new unsaved content')
+  })
+
+  it.each(['conversations', 'duplicate-message', 'duplicate-conversation', 'invalid-message', 'invalid-asset', 'missing-file', 'wrong-owner', 'broken-index'] as const)('refuses a lossy read of %s while retaining its original files', async (kind) => {
+    const state = workspace(scope, kind === 'conversations' ? 51 : 1)
+    if (kind === 'duplicate-message') state.conversations[0].messages.push(message())
+    if (kind === 'duplicate-conversation') state.conversations.push(structuredClone(state.conversations[0]))
+    if (kind === 'invalid-message') state.conversations[0].messages.push({ role: 'unrecognized' } as unknown as ChatMessage)
+    if (kind === 'invalid-asset') state.conversations[0].messages[0].assets = [{ assetId: 'invalid' } as never]
+    const snapshot = snapshotOf(state, kind === 'wrong-owner' ? 'xm-account:8' : scope)
+    if (kind === 'missing-file') snapshot.conversations = []
+    if (kind === 'broken-index') snapshot.index = '{truncated'
+    const files = memoryFiles()
+    files.stores.set(scope, snapshot)
+    const before = files.raw()
+    const restored = await loadChatHistory(files.api, memoryStorage(), scope)
+    expect(restored.warning).toContain('原始记录已保留')
+    expect(restored.exists).toBe(true)
+    expect(restored.saved).toBeNull()
+    expect(files.raw()).toBe(before)
+    expect(() => parseHistorySnapshot(snapshot, scope)).toThrow(ChatStorageError)
+  })
+
+  it('reports an unreadable store without falling back to older localStorage history', async () => {
+    const storage = memoryStorage()
+    storage.setItem(historyKey(scope), JSON.stringify(workspace()))
+    const restored = await loadChatHistory({ readHistory: async () => { throw new Error('reparse point') } }, storage, scope)
+    expect(restored).toMatchObject({ exists: true, saved: null, warning: '本地聊天记录暂时无法读取，原始数据已保留' })
+    expect(restored.state.conversations).toHaveLength(0)
+  })
+
+  it('prefers the file store over an older localStorage copy once it has a record', async () => {
+    const storage = memoryStorage()
+    const old = workspace()
+    old.conversations[0].draft = 'stale localStorage copy'
+    storage.setItem(historyKey(scope), JSON.stringify(old))
+    const files = memoryFiles()
+    const current = workspace()
+    current.conversations[0].draft = 'file store copy'
+    const restored = await saveAndReopen(current, files, storage)
+    expect(restored.state.conversations[0].draft).toBe('file store copy')
+  })
+})
+
+describe('localStorage history from earlier versions', () => {
+  it('reads a stored workspace and moves it into the file store on the first save, leaving the source untouched', async () => {
+    const storage = memoryStorage()
+    const state = workspace(scope, 2)
+    const raw = JSON.stringify(state)
+    storage.setItem(historyKey(scope), raw)
+    storage.setItem.mockClear()
+    const files = memoryFiles()
+    const loaded = await loadChatHistory(files.api, storage, scope)
+    expect(loaded).toMatchObject({ exists: true, saved: null })
+    expect(loaded.state).toEqual(state)
+    await createHistoryWriter(files.api, loaded.saved).save(loaded.state)
+    expect((await loadChatHistory(files.api, memoryStorage(), scope)).state).toEqual(state)
+    expect(storage.getItem(historyKey(scope))).toBe(raw)
+    expect(storage.setItem).not.toHaveBeenCalled()
+  })
+
+  it.each(['conversations', 'duplicate-message', 'duplicate-conversation', 'invalid-message', 'invalid-asset'] as const)('refuses a lossy read of %s while retaining its original storage', (kind) => {
     const storage = memoryStorage()
     const state = workspace(scope, kind === 'conversations' ? 51 : 1)
-    if (kind === 'bytes') state.conversations[0].messages[0].content = 'x'.repeat(4 * 1024 * 1024)
     if (kind === 'duplicate-message') state.conversations[0].messages.push(message())
     if (kind === 'duplicate-conversation') state.conversations.push(structuredClone(state.conversations[0]))
     if (kind === 'invalid-message') state.conversations[0].messages.push({ role: 'unrecognized' } as unknown as ChatMessage)
@@ -85,17 +236,6 @@ describe('lossless bounded chat storage', () => {
     expect(restored.exists).toBe(true)
     expect(storage.getItem(historyKey(scope))).toBe(raw)
     expect(storage.setItem).not.toHaveBeenCalled()
-  })
-
-  it('keeps the previous serialized workspace when localStorage quota rejects a write', () => {
-    const storage = memoryStorage()
-    const state = workspace()
-    writeWorkspace(storage, state)
-    const before = storage.getItem(historyKey(scope))
-    storage.setItem.mockImplementationOnce(() => { throw new DOMException('quota', 'QuotaExceededError') })
-    state.conversations[0].messages[0].content = 'new unsaved content'
-    expect(() => writeWorkspace(storage, state)).toThrow('quota')
-    expect(storage.getItem(historyKey(scope))).toBe(before)
   })
 })
 
@@ -115,17 +255,16 @@ describe('credential redaction before persistence', () => {
     return state
   }
 
-  it('keeps pasted keys, bearer headers and inline payloads out of every persisted text field', () => {
-    const storage = memoryStorage()
+  it('keeps pasted keys, bearer headers and inline payloads out of every persisted text field', async () => {
+    const files = memoryFiles()
     const state = secretWorkspace()
-    writeWorkspace(storage, state)
-    const raw = storage.getItem(historyKey(scope)) ?? ''
+    const restored = (await saveAndReopen(state, files)).state
+    const raw = files.raw() ?? ''
     for (const secret of secrets) expect(raw).not.toContain(secret)
     expect(raw).toContain('[密钥未保存]')
     expect(raw).toContain('[本地临时链接未保存]')
     expect(raw).toContain('[图片数据未保存]')
     expect(raw).toContain('content-1')
-    const restored = readWorkspace(storage, scope).state
     expect(restored.conversations[0].title).toBe('标题 [密钥未保存]')
     expect(restored.conversations[0].draft).toBe('草稿 Bearer [密钥未保存]')
     expect(restored.conversations[0].settings.systemPrompt).toBe('系统提示 [密钥未保存]')
@@ -136,15 +275,14 @@ describe('credential redaction before persistence', () => {
     expect(restored.draftConversation.draft).toBe('另一个草稿 [密钥未保存]')
   })
 
-  it('leaves the workspace held in the window untouched and stays stable across a second save', () => {
-    const storage = memoryStorage()
+  it('leaves the workspace held in the window untouched and stays stable across a second save', async () => {
+    const files = memoryFiles()
     const state = secretWorkspace()
     const before = structuredClone(state)
-    writeWorkspace(storage, state)
+    const restored = (await saveAndReopen(state, files)).state
     expect(state).toEqual(before)
-    const restored = readWorkspace(storage, scope).state
-    writeWorkspace(storage, restored)
-    expect(readWorkspace(storage, scope).state).toEqual(restored)
+    await createHistoryWriter(files.api, null).save(restored)
+    expect((await loadChatHistory(files.api, memoryStorage(), scope)).state).toEqual(restored)
   })
 
   it('redacts credentials carried in configuration snippets and link parameters', () => {
@@ -155,14 +293,12 @@ describe('credential redaction before persistence', () => {
     expect(redactPersistentChatText(`hash ${'Zm9vYmFy'.repeat(80)} end`)).toBe(`hash ${'Zm9vYmFy'.repeat(80)} end`)
   })
 
-  it('keeps ordinary links, prose and long Unicode content byte-identical', () => {
-    const storage = memoryStorage()
+  it('keeps ordinary links, prose and long Unicode content byte-identical', async () => {
     const state = workspace()
     const kept = '见 https://xm.example.test/docs/使用说明 与 http://127.0.0.1:3000 ，正文 🙂\n'.repeat(500)
     state.conversations[0].messages = [message(0, { content: kept, reasoning: kept })]
     state.conversations[0].draft = kept
-    writeWorkspace(storage, state)
-    const restored = readWorkspace(storage, scope)
+    const restored = await saveAndReopen(state)
     expect(restored.warning).toBeUndefined()
     expect(restored.state.conversations[0].messages[0].content).toBe(kept)
     expect(restored.state.conversations[0].messages[0].reasoning).toBe(kept)
@@ -170,7 +306,7 @@ describe('credential redaction before persistence', () => {
   })
 })
 describe('complete legacy and account-alias migration', () => {
-  it('imports all historical messages, reasoning and system text synchronously before creating a canonical value', () => {
+  it('imports all historical messages, reasoning and system text without writing any localStorage key', () => {
     const storage = memoryStorage()
     const content = '旧版长正文'.repeat(12_000)
     const reasoning = '旧版长思考'.repeat(11_000)
@@ -184,11 +320,18 @@ describe('complete legacy and account-alias migration', () => {
     expect(restored.state.conversations[0].messages).toHaveLength(210)
     expect(restored.state.conversations[0].messages[0]).toMatchObject({ content, reasoning })
     expect(restored.state.conversations[0].settings).toMatchObject({ systemPrompt: system, model: 'model'.repeat(40), group: 'group'.repeat(30) })
-    expect(readWorkspace(storage, scope).state).toEqual(restored.state)
+    expect(readWorkspace(storage, scope).state.conversations[0].messages).toEqual(restored.state.conversations[0].messages)
     expect(storage.getItem(legacyKey)).toBe(raw)
-    const writes = storage.setItem.mock.calls.filter(([key]) => key === historyKey(scope))
-    expect(writes).toHaveLength(1)
-    expect(JSON.parse(writes[0][1]).conversations[0].messages).toHaveLength(210)
+    expect(storage.setItem.mock.calls.filter(([key]) => key !== legacyKey)).toHaveLength(0)
+    expect(JSON.parse(planHistoryWrite(restored.state, null)!.write.put[0].content).conversation.messages).toHaveLength(210)
+  })
+
+  it('imports a legacy record past the former 4 MB limit in full', () => {
+    const storage = memoryStorage()
+    storage.setItem(legacyKey, legacy([message(0, { content: 'x'.repeat(formerLimitBytes) })]))
+    const restored = readWorkspace(storage, scope)
+    expect(restored.warning).toBeUndefined()
+    expect(restored.state.conversations[0].messages[0].content).toHaveLength(formerLimitBytes)
   })
 
   it('imports a system-only old workspace instead of silently ignoring it', () => {
@@ -197,10 +340,9 @@ describe('complete legacy and account-alias migration', () => {
     expect(readWorkspace(storage, scope).state.conversations[0].settings.systemPrompt).toBe('only prompt')
   })
 
-  it.each(['oversized', 'malformed', 'wrong-owner', 'invalid-message'] as const)('does not create a canonical key after a %s legacy read', (kind) => {
+  it.each(['malformed', 'wrong-owner', 'invalid-message'] as const)('does not create a canonical key after a %s legacy read', (kind) => {
     const storage = memoryStorage()
-    const raw = kind === 'oversized' ? legacy([message(0, { content: 'x'.repeat(4 * 1024 * 1024) })])
-      : kind === 'malformed' ? '{invalid'
+    const raw = kind === 'malformed' ? '{invalid'
         : kind === 'wrong-owner' ? legacy([message()]).replace('"userId":"7"', '"userId":"8"')
           : legacy([{ role: 'tool', content: 'unsupported' }])
     storage.setItem(legacyKey, raw)
@@ -236,29 +378,35 @@ describe('complete legacy and account-alias migration', () => {
     expect(storage.getItem(historyKey('sub2api:7'))).toBe(right)
   })
 
-  it('blocks migration writes if merging aliases exceeds the conversation budget, while retaining every loaded conversation', () => {
+  it('refuses to save merged aliases beyond the conversation budget, while retaining every loaded conversation and both sources', async () => {
     const storage = memoryStorage()
     for (const alias of ['solov', 'sub2api']) {
       const state = workspace(`${alias}:7`, 30)
       state.conversations.forEach((item) => { item.id = `${alias}-${item.id}` })
       storage.setItem(historyKey(`${alias}:7`), JSON.stringify(state))
     }
-    const restored = readWorkspace(storage, scope)
-    expect(restored.warning).toContain('迁移未保存')
-    expect(restored.warning).toContain('上限')
+    const files = memoryFiles()
+    const restored = await loadChatHistory(files.api, storage, scope)
+    expect(restored.warning).toBeUndefined()
     expect(restored.state.conversations).toHaveLength(60)
-    expect(storage.getItem(historyKey(scope))).toBeNull()
+    await expect(createHistoryWriter(files.api, restored.saved).save(restored.state)).rejects.toThrow('上限')
+    expect(files.raw()).toBeNull()
+    expect(storage.getItem(historyKey('solov:7'))).not.toBeNull()
+    expect(storage.getItem(historyKey('sub2api:7'))).not.toBeNull()
   })
 
-  it('preserves readable migrated content and source when writing the canonical destination fails', () => {
+  it('preserves readable migrated content and its source when the first save fails, so the next launch migrates again', async () => {
     const storage = memoryStorage()
     const raw = legacy([message(0, { content: 'long'.repeat(20_000) })])
     storage.setItem(legacyKey, raw)
-    storage.setItem.mockImplementationOnce(() => { throw new Error('quota') })
-    const restored = readWorkspace(storage, scope)
-    expect(restored.warning).toContain('迁移未保存')
+    const files = memoryFiles()
+    files.api.writeHistory.mockRejectedValueOnce(new Error('disk full'))
+    const restored = await loadChatHistory(files.api, storage, scope)
+    expect(restored.warning).toBeUndefined()
     expect(restored.state.conversations[0].messages[0].content).toHaveLength(80_000)
-    expect(storage.getItem(historyKey(scope))).toBeNull()
+    await expect(createHistoryWriter(files.api, restored.saved).save(restored.state)).rejects.toThrow('disk full')
+    expect(files.raw()).toBeNull()
     expect(storage.getItem(legacyKey)).toBe(raw)
+    expect((await loadChatHistory(files.api, storage, scope)).state.conversations[0].messages[0].content).toHaveLength(80_000)
   })
 })

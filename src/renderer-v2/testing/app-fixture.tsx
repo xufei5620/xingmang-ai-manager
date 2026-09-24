@@ -189,6 +189,10 @@ window.addEventListener('error', (event) => window.v2Test.errors.push(event.mess
 window.addEventListener('unhandledrejection', (event) => window.v2Test.errors.push(String(event.reason)))
 const capabilities = { platform: query.get('os') === 'mac' ? 'macos' : 'windows', architecture: 'x64', isMac: query.get('os') === 'mac', nodeRuntimeInstall: query.has('runtimeExternal') ? 'external' : 'managed', pythonRuntimeInstall: query.has('runtimeExternal') ? 'external' : 'managed', cliInstall: { claude: 'managed', codex: 'managed', gemini: 'managed', grok: 'managed' }, codexDesktop: { install: 'managed', launch: true, uninstall: true, windowsStore: true } } as const
 const balance = { quota: 6_200_000, usedQuota: 0, quotaPerUnit: 500_000, quotaDisplayType: 'USD', usdExchangeRate: 7.3, displayAmount: 12.4 }
+/** ?runningTools：问到的工具都还开着，问到 Codex 时桌面端也开着，且能替用户重开。 */
+function fixtureRunningTools(providers: readonly ProviderId[]) {
+  return { running: [...providers], unknown: [], codexDesktopRunning: providers.includes('codex'), canRestartCodexDesktop: true }
+}
 function sessionCapability(provider: ProviderId): MultiProviderSessionPage['capabilities'][ProviderId] {
   return { provider, available: true, readable: true, readonly: true, source: 'jsonl', reason: '', operations: { list: true, detail: true, exportMarkdown: true, archive: false, restore: false } }
 }
@@ -459,12 +463,17 @@ const methods = {
     if (target === 'official') {
       config.providers[provider] = { ...config.providers[provider], hasApiKey: false, matchesRelay: false, actualBaseUrl: '',
         ...(provider === 'codex' ? { codexAuthMode: 'chatgpt' as const } : {}) }
-      return { provider, target, backupId: 'fixture-backup', verified: false, loginRequired: false, message: '已切回官方账号，原来的配置已备份。' }
+      return { provider, target, backupId: 'fixture-backup', verified: false, loginRequired: false, message: '已切回官方账号，原来的配置已备份。',
+        ...(query.has('runningTools') ? { runningTools: fixtureRunningTools([provider]) } : {}) }
     }
     config.providers[provider] = { ...config.providers[provider], hasApiKey: true, matchesRelay: true, actualBaseUrl: config.providers[provider].baseUrl,
       configurationOwnership: 'account', ...(provider === 'codex' ? { codexAuthMode: 'apikey' as const } : {}) }
-    return { provider, target, backupId: 'fixture-backup', verified: true, loginRequired: false, message: '已切到当前账号，连接自检通过。' }
+    return { provider, target, backupId: 'fixture-backup', verified: true, loginRequired: false, message: '已切到当前账号，连接自检通过。',
+      ...(query.has('runningTools') ? { runningTools: fixtureRunningTools([provider]) } : {}) }
   },
+  inspectRunningTools: async (providers: ProviderId[]) => query.has('runningTools')
+    ? fixtureRunningTools(providers)
+    : { running: [], unknown: [], codexDesktopRunning: false, canRestartCodexDesktop: false },
   getAccountUsableGroups: async () => [{ name: session.siteId === 'solov-api' ? 'Codex_pro' : 'GPT-中转/订阅', description: 'Codex', ratio: 1 }],
   createAccountKey: async () => undefined,
   changeAccountPassword: async () => {
@@ -531,6 +540,8 @@ const methods = {
   prepareAiChatGroup: async (group: string) => ({ group, models: ['gpt-test'], keyCreated: false }),
   startAiChat: async (input) => ({ requestId: input.requestId, accepted: true }),
   cancelAiChat: async () => ({ canceled: true, mayStillComplete: false }),
+  readAiChatHistory: async () => ({ index: null, conversations: [] }),
+  writeAiChatHistory: async () => {},
   getLegalDocument: async (kind) => ({ kind, markdown: '# 本地协议\n\n测试内容。', fetchedAt: '2026-09-07T00:00:00Z' }),
   getAccountProfile: async () => ({ ...account, displayName: account.username, email: 'fixture@example.com', requestCount: 0, affCode: 'test', affCount: 0, affQuota: 0, affHistoryQuota: 0 }),
   getAccountLoginSessions: async () => [],

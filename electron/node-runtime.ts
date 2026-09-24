@@ -1312,7 +1312,7 @@ export async function installNodeRuntime(
       report(options, {
         phase: 'checking',
         source: 'winget',
-        message: `已跳过 winget：${reason}，正在切换到经过校验的 MSI 安装包`,
+        message: '这台电脑缺少系统自带的应用安装组件，改用经过校验的 Node.js 安装包',
         percent: null,
       })
     } else {
@@ -1342,7 +1342,7 @@ export async function installNodeRuntime(
         report(options, {
           phase: 'checking',
           source: 'winget',
-          message: `系统级 winget 安装或安装后验证失败：${reason}，正在切换到经过校验的 MSI 安装包`,
+          message: '系统自带的应用安装组件没装成，改用经过校验的 Node.js 安装包',
           percent: null,
         })
       }

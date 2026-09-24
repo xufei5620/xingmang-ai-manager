@@ -76,6 +76,8 @@ import type {
 import type { CliVersionAdvice as MainCliVersionAdvice } from './cli-verified-versions'
 import type { AccountSourceSwitchResult, AccountSourceTarget } from './account-source-switch'
 export type { AccountSourceSwitchResult, AccountSourceTarget } from './account-source-switch'
+import type { RunningToolsReport } from './running-tools'
+export type { RunningToolsReport } from './running-tools'
 import type {
   ConnectionCheckLayer as MainConnectionCheckLayer,
   ConnectionCheckResult as MainConnectionCheckResult,
@@ -476,6 +478,27 @@ export type AiChatStreamEvent =
   | { requestId: string; type: 'canceled'; mayStillComplete?: boolean }
   | { requestId: string; type: 'error'; code?: AiChatErrorCode; message: string }
 
+/** 一个对话一份文件；key 由渲染层分配，只含字母、数字、_ 和 -。 */
+export interface AiChatHistoryFile {
+  key: string
+  content: string
+}
+
+export interface AiChatHistorySnapshot {
+  /** null = 这个账号在新存储里还没有记录（首次使用，或还没从旧的本机存储搬过来）。 */
+  index: string | null
+  conversations: AiChatHistoryFile[]
+}
+
+export interface AiChatHistoryWrite {
+  scope: string
+  index: string
+  /** 索引引用的全部对话；不在这里的对话文件会在索引写好之后删掉。 */
+  keys: string[]
+  /** 这次真正改过、需要重写的对话，必须是 keys 的子集。 */
+  put: AiChatHistoryFile[]
+}
+
 export interface AiChatCancelResult {
   canceled: boolean
   mayStillComplete: boolean
@@ -598,6 +621,15 @@ export interface XingmangInvokeContract {
     'config:switch-account-source',
     [provider: ProviderId, target: AccountSourceTarget],
     AccountSourceSwitchResult
+  >
+  /**
+   * 换账号把 Key 写进这些工具之后，看哪些还开着（Codex 连同桌面端），只对开着的
+   * 提醒关掉重开。只读，不改任何东西；检测不出来的归到 unknown，不抛错。
+   */
+  inspectRunningTools: IpcInvokeDefinition<
+    'tools:inspect-running',
+    [providers: ProviderId[]],
+    RunningToolsReport
   >
   listModels: IpcInvokeDefinition<'models:list', [apiKey: string], string[]>
   listConfiguredModels: IpcInvokeDefinition<'models:list-configured', [provider: ProviderId], string[]>
@@ -928,6 +960,8 @@ export interface XingmangInvokeContract {
   copyAiChatAsset: IpcInvokeDefinition<'chat:copy-asset', [assetId: string], void>
   saveAiChatAsset: IpcInvokeDefinition<'chat:save-asset', [assetId: string], { saved: boolean }>
   showAiChatAssetMenu: IpcInvokeDefinition<'chat:asset-menu', [assetId: string], void>
+  readAiChatHistory: IpcInvokeDefinition<'chat-history:read', [scope: string], AiChatHistorySnapshot>
+  writeAiChatHistory: IpcInvokeDefinition<'chat-history:write', [input: AiChatHistoryWrite], void>
   /**
    * 连接自检：用该工具配置文件里真正写着的 Key、服务地址和模型，向星芒服务
    * 发一次最小请求，把失败归到网络 / 密钥 / 额度 / 分组 / 模型 / 协议中的
@@ -1018,6 +1052,7 @@ export const ipcInvokeChannels = {
   launchExternalClient: 'external-clients:launch',
   switchToOfficialAccount: 'config:switch-to-official-account',
   switchAccountSource: 'config:switch-account-source',
+  inspectRunningTools: 'tools:inspect-running',
   chooseWorkspace: 'workspace:choose',
   getRepositoryContext: 'repository:get-context',
   installNodeRuntime: 'runtime:install-node',
@@ -1167,6 +1202,8 @@ export const ipcInvokeChannels = {
   copyAiChatAsset: 'chat:copy-asset',
   saveAiChatAsset: 'chat:save-asset',
   showAiChatAssetMenu: 'chat:asset-menu',
+  readAiChatHistory: 'chat-history:read',
+  writeAiChatHistory: 'chat-history:write',
   checkProviderConnection: 'diagnostics:check-connection',
   checkExternalClientConnection: 'diagnostics:check-external-connection',
   getAccountKeyOptions: 'account:get-key-options',

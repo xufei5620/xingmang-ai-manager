@@ -1021,6 +1021,7 @@ if (query.has('system')) {
             balance: true,
             task: true,
             cliUpdate: true,
+            announcement: true,
             acceleration: true,
             ...systemState.preferences.notifications,
             [kind]: enabled,
@@ -1042,7 +1043,7 @@ if (query.has('system')) {
     },
     testNotification: async () => {
       record('test-notification')
-      return settings.desktopNotifications ? 'requested' : 'disabled'
+      return settings.desktopNotifications !== false ? 'requested' : 'disabled'
     },
     notifyActivity: async (kind, eventKey) => {
       record('activity-notification', { kind, eventKey })

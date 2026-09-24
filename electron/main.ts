@@ -29,6 +29,7 @@ import { accelerationStartRequest, createAccelerationPreferenceStore, defaultAcc
 import { accelerationStartFailureDescriptions, createAccelerationDevelopmentHost, readAccelerationDevelopmentConfig, type AccelerationDevelopmentHost } from './acceleration-development-host'
 import { readBundledAccelerationConfig } from './acceleration-bundled-config'
 import { AiAssetStore } from './ai-asset-store'
+import { createAiChatHistoryStore } from './ai-chat-history-store'
 import { migrateLegacyAiOutput, resolveAiOutputRoot, resolveLegacyAiOutputRoot } from './ai-output-location'
 import { AI_CHAT_STREAM_LIMITS, createAiChatService } from './ai-chat-service'
 import { createAiImageService } from './ai-image-service'
@@ -64,6 +65,7 @@ import { ConfigBackupStore } from './backups'
 import { crashReportDsn, crashReportSelfTestEnvironmentKey, shouldReportCrashes } from './crash-report'
 import { createCrashReporter } from './crash-reporter'
 import { providerIds, type ProviderId } from './catalog'
+import { externalClientOfficialDownloadUrls } from './external-client-contract'
 import { gitWindowsDownloadUrl } from './git-runtime'
 import { canvasProtocolScheme, canvasSecurityResponseHeaders } from './canvas-protocol'
 import { createCanvasWindowController } from './canvas-window'
@@ -181,6 +183,8 @@ const nonSiteExternalUrlAllowlist = [
   'https://www.python.org/downloads/',
   // 首页运行环境行的「下载 Git」按钮只在 Windows 出现，落点就是这一条（I12 全等匹配）。
   gitWindowsDownloadUrl,
+  // 缺少系统 winget 时首页 Claude Desktop、OpenCode 两行的「去官网下载」（逐条全等）。
+  ...Object.values(externalClientOfficialDownloadUrls),
   'https://chatgpt.com/download/',
   'ms-windows-store://pdp/?ProductId=9PLM9XGG6VKS',
 ] as const
@@ -1292,7 +1296,7 @@ if (!hasSingleInstanceLock) {
       }),
     }))
     const desktopNotifications = createDesktopNotificationController({
-      readEnabled: () => systemService.readStoredConfig().desktopNotifications === true,
+      readEnabled: () => systemService.readStoredConfig().desktopNotifications !== false,
       focusMainWindow: () => {
         if (!managedMainWindow || managedMainWindow.isDestroyed()) return
         if (managedMainWindow.isMinimized()) managedMainWindow.restore()
@@ -2072,6 +2076,7 @@ if (!hasSingleInstanceLock) {
         powerMonitor.off('resume', onResume)
       })
     }
+    const chatHistoryStore = createAiChatHistoryStore({ root: path.join(managerDataDirectory, 'chat-history') })
     const unregisterIpcHandlers = registerIpcHandlers({
       acceleration,
       realmAccounts: accounts,
@@ -2094,6 +2099,7 @@ if (!hasSingleInstanceLock) {
       chatService,
       imageService,
       aiAssets: assetStore,
+      chatHistory: chatHistoryStore,
       sessionsService,
       providerSessionsService,
       backupStore,
@@ -2271,7 +2277,8 @@ if (!hasSingleInstanceLock) {
       },
       prepareToQuit: async () => {
         accountRestoreRetry.dispose()
-        await acceleration?.stopAll()
+        // 聊天记录最后一次保存可能还在写盘，写完再退，别让刚聊的那几句丢在半路。
+        await Promise.all([acceleration?.stopAll(), chatHistoryStore.idle()])
       },
       flushWindowState: () => windowPreferenceFlushers.get(mainWindow.webContents)?.() ?? Promise.resolve(),
       show: showMainWindow,

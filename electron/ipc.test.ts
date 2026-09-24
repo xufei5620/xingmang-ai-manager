@@ -53,7 +53,7 @@ vi.mock('electron', () => ({
   clipboard: { writeText: electronMocks.writeText },
 }))
 
-import { accelerationStateLogKey, parseDiagnosticsRunOptions, registerIpcHandlers } from './ipc'
+import { accelerationStateLogKey, parseDiagnosticsRunOptions, parseRunningToolsProviders, registerIpcHandlers } from './ipc'
 
 const stubStoredConfig: AppSettings = {
   version: 2,
@@ -878,6 +878,31 @@ describe('registerIpcHandlers', () => {
     dispose()
   })
 
+  it('validates chat history requests, forwards them to the file store and keeps their content out of the log', async () => {
+    const chatHistory = {
+      read: vi.fn(async () => ({ index: '{"secret":"chat body"}', conversations: [{ key: 'a', content: 'chat body' }] })),
+      write: vi.fn(async () => undefined),
+      idle: vi.fn(async () => undefined),
+    }
+    const { runtimeLog, dispose } = register(serviceStub(), 'C:\\app-data\\logs', undefined, accountServiceStub(), undefined, undefined, {}, { chatHistory })
+    const read = electronMocks.handlers.get('chat-history:read')!
+    const write = electronMocks.handlers.get('chat-history:write')!
+    const input = { scope: 'xm-account:7', index: 'chat body index', keys: ['a'], put: [{ key: 'a', content: 'chat body' }] }
+
+    expect(() => write(trustedEvent('https://attacker.example/', 9), input)).toThrow('已拒绝来自非应用页面的操作请求')
+    expect(() => write(trustedEvent(), { ...input, keys: ['../a'], put: [] })).toThrow('聊天对话标识无效')
+    expect(() => read(trustedEvent(), 7)).toThrow('聊天记录归属无效')
+    expect(chatHistory.write).not.toHaveBeenCalled()
+    expect(chatHistory.read).not.toHaveBeenCalled()
+
+    await expect(write(trustedEvent(), input)).resolves.toBeUndefined()
+    expect(chatHistory.write).toHaveBeenCalledWith(input)
+    await expect(read(trustedEvent(), 'xm-account:7')).resolves.toMatchObject({ conversations: [{ key: 'a' }] })
+    expect(chatHistory.read).toHaveBeenCalledWith('xm-account:7')
+    expect(JSON.stringify(runtimeLog.log.mock.calls)).not.toContain('chat body')
+    dispose()
+  })
+
   it('cancels both text and image requests before logging out', async () => {
     const accountService = accountServiceStub()
     vi.mocked(accountService.logout).mockResolvedValue(undefined)
@@ -1380,6 +1405,26 @@ describe('registerIpcHandlers', () => {
     const handler = electronMocks.handlers.get('system:scan')!
     await expect(handler(trustedEvent(), false)).resolves.toBe(projected)
     expect(transform).toHaveBeenCalledWith(source)
+  })
+
+  it('asks the service which switched tools are still open', async () => {
+    const service = serviceStub()
+    const report = { running: ['codex' as const], unknown: [], codexDesktopRunning: true, canRestartCodexDesktop: true }
+    service.inspectRunningTools = vi.fn(async () => report)
+    register(service)
+    const handler = electronMocks.handlers.get(ipcInvokeChannels.inspectRunningTools)!
+
+    await expect(handler(trustedEvent(), ['codex', 'codex', 'claude'])).resolves.toEqual(report)
+    expect(service.inspectRunningTools).toHaveBeenCalledWith(['codex', 'claude'])
+  })
+
+  it('reports every tool as unknown when the service cannot check running tools', async () => {
+    register()
+    const handler = electronMocks.handlers.get(ipcInvokeChannels.inspectRunningTools)!
+
+    await expect(handler(trustedEvent(), ['gemini'])).resolves.toEqual({
+      running: [], unknown: ['gemini'], codexDesktopRunning: false, canRestartCodexDesktop: false,
+    })
   })
 
   it('reads only Codex readiness during startup', async () => {
@@ -4779,6 +4824,63 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
         expect(accountService.revokeKey).not.toHaveBeenCalled()
       })
 
+      it('does not revoke a limited key when the tool key cache cannot be read', async () => {
+        const { accountService, managedCliKeys } = setup(accountKey({}), undefined, false)
+        vi.mocked(managedCliKeys.read).mockRejectedValueOnce(new Error('cache unreadable'))
+
+        await expect(electronMocks.handlers.get('account:revoke-key')!(trustedEvent(), 7))
+          .rejects.toThrow('没读到本机记着的工具密钥')
+        expect(accountService.revokeKey).not.toHaveBeenCalled()
+      })
+
+      it('still revokes an unlimited, never-expiring key when the tool key cache cannot be read', async () => {
+        const { accountService, managedCliKeys } = setup(accountKey({ unlimitedQuota: true, remainQuota: 0, expiredAt: null }), undefined, false)
+        vi.mocked(managedCliKeys.read).mockRejectedValueOnce(new Error('cache unreadable'))
+
+        await expect(electronMocks.handlers.get('account:revoke-key')!(trustedEvent(), 7)).resolves.toBeUndefined()
+        expect(accountService.revokeKey).toHaveBeenCalledWith(7)
+      })
+
+      it('keeps the saved limits when revoking errors but the key is gone from the list', async () => {
+        const { accountService } = setup(accountKey({}))
+        vi.mocked(accountService.revokeKey).mockRejectedValueOnce(new Error('response lost'))
+        vi.mocked(accountService.listKeys)
+          .mockResolvedValueOnce({ page: 1, pageSize: 100, total: 1, keys: [accountKey({})] })
+          .mockResolvedValue({ page: 1, pageSize: 100, total: 0, keys: [] })
+
+        await expect(electronMocks.handlers.get('account:revoke-key')!(trustedEvent(), 7)).rejects.toThrow('response lost')
+        await configureCodex()
+
+        expect(accountService.provisionCliKey).toHaveBeenCalledWith(expect.objectContaining({
+          name: codex.keyName, remainQuota: 5_000, unlimitedQuota: false, fresh: true,
+        }))
+      })
+
+      it('keeps the saved limits when revoking errors and the key list cannot be read either', async () => {
+        const { accountService } = setup(accountKey({}))
+        vi.mocked(accountService.revokeKey).mockRejectedValueOnce(new Error('response lost'))
+        vi.mocked(accountService.listKeys)
+          .mockResolvedValueOnce({ page: 1, pageSize: 100, total: 1, keys: [accountKey({})] })
+          .mockRejectedValueOnce(new Error('network down'))
+
+        await expect(electronMocks.handlers.get('account:revoke-key')!(trustedEvent(), 7)).rejects.toThrow('response lost')
+        await configureCodex()
+
+        expect(accountService.provisionCliKey).toHaveBeenCalledWith(expect.objectContaining({
+          name: codex.keyName, unlimitedQuota: false, fresh: true,
+        }))
+      })
+
+      it('drops the saved limits when revoking errors and the key is plainly still there', async () => {
+        const { accountService } = setup(accountKey({}))
+        vi.mocked(accountService.revokeKey).mockRejectedValueOnce(new Error('server said no'))
+
+        await expect(electronMocks.handlers.get('account:revoke-key')!(trustedEvent(), 7)).rejects.toThrow('server said no')
+        await configureCodex()
+
+        expect(accountService.provisionCliKey).toHaveBeenCalledWith(expect.not.objectContaining({ fresh: true }))
+      })
+
       it('does not revoke when the key\'s limits cannot be read first', async () => {
         const { accountService } = setup(new Error('network down'))
 
@@ -6133,5 +6235,21 @@ describe('backup handlers and account key ownership', () => {
     register(serviceStub(), undefined, undefined, undefined, undefined, undefined, {}, { backupStore: backupStore as never })
     expect(() => electronMocks.handlers.get('backups:restore')!(trustedEvent(), '')).toThrow('备份 ID格式错误')
     expect(backupStore.restore).not.toHaveBeenCalled()
+  })
+})
+
+describe('parseRunningToolsProviders', () => {
+  it('accepts known tools and drops repeats', () => {
+    expect(parseRunningToolsProviders(['claude', 'grok', 'claude'])).toEqual(['claude', 'grok'])
+    expect(parseRunningToolsProviders([])).toEqual([])
+  })
+
+  it.each([
+    ['a non-array', 'claude'],
+    ['an unknown tool', ['claude', '../codex']],
+    ['a non-string entry', [1]],
+    ['an oversized list', [...providerIds, 'claude']],
+  ])('rejects %s', (_label, value) => {
+    expect(() => parseRunningToolsProviders(value)).toThrow()
   })
 })
