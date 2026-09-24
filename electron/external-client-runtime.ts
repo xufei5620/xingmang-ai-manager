@@ -6,7 +6,7 @@ import {
   cleanCommandOutput, CommandRunnerError, runCommand, trustedCommandEnvironment,
   type CommandSpec, type RunCommandOptions,
 } from './command-runner'
-import { isExternalToolId, type ExternalClientInstallProgress, type ExternalClientRuntimeStatus } from './external-client-contract'
+import { externalClientOfficialDownloadUrls, isExternalToolId, type ExternalClientInstallProgress, type ExternalClientRuntimeStatus } from './external-client-contract'
 import type { ExternalToolId } from './external-tool-config'
 import { InstallationQueue } from './installation-queue'
 import { darwinDeveloperIdVerificationArgv } from './macos-code-signing'
@@ -29,7 +29,7 @@ const claudeApplicationId = `${claudeFamily}!Claude`
 const maximumProbeBytes = 256 * 1024
 // 找不到可信的系统 winget 时，原因是 ENOENT、包身份校验失败之类的内部细节，客户看不懂
 // 也做不了什么；首页行里只说装不了、怎么办，原因写进运行日志给客服查。
-export const externalClientWingetUnavailableHint = '这台电脑暂时装不了：缺少系统自带的应用安装组件，可以去官网下载安装'
+export const externalClientWingetUnavailableHint = '这台电脑缺少系统自带的应用安装组件，不能一键安装；点「去官网下载」装好后回来重新检测'
 // 老电脑上这一轮 PowerShell 盘点（注册表、进程、AppX、签名）要好几秒，而装没装
 // 客户端这件事几分钟内几乎不会变；装、卸、打开之后会主动作废。
 const defaultScanCacheTtlMs = 5 * 60_000
@@ -89,6 +89,11 @@ export interface KnownExternalClientSignature {
 
 function errorText(error: unknown): string {
   return cleanCommandOutput(error instanceof Error ? error.message : String(error)).slice(0, 1500)
+}
+
+function officialDownloadUrl(tool: ExternalToolId): string | null {
+  const urls: Partial<Record<ExternalToolId, string>> = externalClientOfficialDownloadUrls
+  return urls[tool] ?? null
 }
 
 function wingetNetworkFailure(error: unknown): boolean {
@@ -393,12 +398,14 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
     const platformHint = noInstallHint(tool)
     const officialDownload = platform === 'win32' && architecture === 'x64' && tool === 'workbuddy'
     const hint = platformHint ?? (!winget.executable ? officialDownload ? '将使用腾讯官方安装包' : externalClientWingetUnavailableHint : null)
+    const manualDownload = platform === 'win32' && platformHint === null && !winget.executable && !officialDownload
     return {
       tool, installed: Boolean(client), version: client?.version ?? null, path: client?.path ?? null,
       installDirectory: client ? (platform === 'win32' ? path.win32.dirname(client.path) : client.path) : null,
       running: client?.running ?? false, installSupported: platform === 'win32' && platformHint === null && Boolean(winget.executable || officialDownload),
       launchSupported: Boolean(client) && (platform === 'win32' || (platform === 'darwin' && (options.getuid?.() ?? process.getuid?.() ?? 1) !== 0)),
       detectionError: inspection.errors[tool] ?? null, installHint: hint,
+      officialDownloadUrl: manualDownload ? officialDownloadUrl(tool) : null,
     }
   }
   function invalidateScan() {

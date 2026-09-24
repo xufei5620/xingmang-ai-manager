@@ -534,4 +534,27 @@ describe('renderer-v2 home manual desktop install on macOS', () => {
     expect(clientButton(markup)).toContain('暂不支持')
     expect(markup).not.toContain('安装指南')
   })
+
+  it('offers the official download page when Windows cannot install the client in one click', () => {
+    const base = snapshot({ claude: cliStatus, codex: cliStatus, grok: cliStatus, gemini: cliStatus })
+    const windows = {
+      ...base,
+      platform: {
+        platform: 'windows', isMac: false, nodeRuntimeInstall: 'managed', pythonRuntimeInstall: 'managed',
+        cliInstall: { claude: 'managed', codex: 'managed', gemini: 'managed', grok: 'managed' },
+        codexDesktop: { install: 'managed', launch: true, uninstall: true, windowsStore: true },
+      },
+    } as unknown as ToolboxSnapshot
+    const opencode = {
+      ...macClient, tool: 'opencode', installHint: '这台电脑缺少系统自带的应用安装组件，不能一键安装；点「去官网下载」装好后回来重新检测',
+      officialDownloadUrl: 'https://opencode.ai/download',
+    } as typeof macClient
+    const withDownload = render({}, undefined, { snapshot: windows, externalClients: [opencode], onOpenExternalDownload: () => undefined })
+    expect(rowButton(withDownload, 'opencode')).toContain('去官网下载')
+    expect(rowButton(withDownload, 'opencode')).not.toContain('disabled')
+    expect(withDownload).not.toContain('暂不支持')
+    expect(withDownload).not.toMatch(/winget|ENOENT/i)
+    // 没接下载入口的宿主仍是旧行为：点不动的「暂不支持」。
+    expect(rowButton(render({}, undefined, { snapshot: windows, externalClients: [opencode] }), 'opencode')).toContain('暂不支持')
+  })
 })

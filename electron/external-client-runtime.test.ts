@@ -346,6 +346,7 @@ function Get-AppxPackage { @() }
       expect(tool.installHint).toBe(externalClientWingetUnavailableHint)
       expect(tool.installHint).not.toMatch(/winget|ENOENT|App Installer/i)
     }
+    expect(statuses.map((entry) => entry.officialDownloadUrl)).toEqual([null, 'https://claude.com/download', 'https://opencode.ai/download'])
     clock += 10 * 60_000
     await f.runtime.scan({ force: true })
     expect(onWingetUnavailable.mock.calls).toEqual([[reason]])
@@ -374,7 +375,7 @@ function Get-AppxPackage { @() }
 
   it('uses the official WorkBuddy installer when trusted winget is unavailable', async () => {
     const f = fixture({ resolveWingetExecutable: async () => ({ executable: null, reason: 'missing' }) })
-    expect((await f.runtime.scan())[0]).toMatchObject({ installSupported: true, installHint: '将使用腾讯官方安装包' })
+    expect((await f.runtime.scan())[0]).toMatchObject({ installSupported: true, installHint: '将使用腾讯官方安装包', officialDownloadUrl: null })
     f.officialInstaller.mockImplementation(async () => { f.setInventory([candidate('workbuddy')]) })
     await expect(f.runtime.install('workbuddy')).resolves.toMatchObject({ installed: true })
     expect(f.officialInstaller).toHaveBeenCalledOnce()

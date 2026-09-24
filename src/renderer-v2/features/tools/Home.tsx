@@ -71,6 +71,8 @@ export interface HomeProps {
   onConfigureExternal(tool: ExternalToolId): void
   onInstallExternal(tool: ExternalToolId): void
   onLaunchExternal(tool: ExternalToolId): void
+  /** 一键安装用不了时打开客户端官网下载页；缺省 = 不给这颗按钮，仍是「暂不支持」（旧行为）。 */
+  onOpenExternalDownload?(url: string): void
   onCodexModels(): void
   onUninstall(tool: ToolId): void
   onRuntime(runtime: 'node' | 'python' | 'git'): void
@@ -320,11 +322,14 @@ export function Home(props: HomeProps) {
     // Windows arm64 上 WorkBuddy 同样装不了，但那是没有对应架构的包，教程救不了，
     // 仍旧保持「暂不支持」。
     const manualInstall = tool.action === 'install' && tool.disabled && snapshot?.platform.isMac === true
-    const primaryLabel = launchJob ? '打开中' : installJob ? '安装中' : tool.action === 'scan' ? '重新检测' : tool.action === 'install' ? manualInstall ? '安装指南' : tool.disabled ? '暂不支持' : '安装' : tool.action === 'launch' ? '打开' : '配置'
-    const primary = () => manualInstall ? props.onNavigate('tutorial', macDesktopTutorialTopic) : tool.action === 'scan' ? props.onScan() : tool.action === 'install' ? props.onInstallExternal(tool.id) : tool.action === 'launch' ? props.onLaunchExternal(tool.id) : props.onConfigureExternal(tool.id)
+    // Windows 上缺系统安装组件时一键安装不了，与其留一颗点不动的「暂不支持」，
+    // 不如直接把人送到官网下载页（网址由主进程给，白名单逐条收录）。
+    const downloadUrl = tool.action === 'install' && tool.disabled && !manualInstall && props.onOpenExternalDownload ? tool.status.officialDownloadUrl ?? null : null
+    const primaryLabel = launchJob ? '打开中' : installJob ? '安装中' : tool.action === 'scan' ? '重新检测' : tool.action === 'install' ? manualInstall ? '安装指南' : downloadUrl ? '去官网下载' : tool.disabled ? '暂不支持' : '安装' : tool.action === 'launch' ? '打开' : '配置'
+    const primary = () => manualInstall ? props.onNavigate('tutorial', macDesktopTutorialTopic) : downloadUrl ? props.onOpenExternalDownload?.(downloadUrl) : tool.action === 'scan' ? props.onScan() : tool.action === 'install' ? props.onInstallExternal(tool.id) : tool.action === 'launch' ? props.onLaunchExternal(tool.id) : props.onConfigureExternal(tool.id)
     return <ToolRow key={tool.id} tool={tool.id} status={status} detail={job?.label ?? tool.detail} progress={installJob?.percent}
-      primaryAction={<Button size="sm" variant={tool.status.installed ? 'primary' : 'secondary'} loading={Boolean(job)} disabled={props.externalLoading || launchBusy || (tool.disabled && !manualInstall)} title={tool.disabled && !manualInstall ? tool.status.installHint ?? '当前平台暂不支持此操作' : undefined}
-        icon={tool.action === 'launch' ? ArrowUpRight : undefined} onClick={primary} testId={tool.action === 'configure' ? `home-client-${tool.id}` : `tool-${tool.id}-primary`}>{primaryLabel}</Button>}
+      primaryAction={<Button size="sm" variant={tool.status.installed ? 'primary' : 'secondary'} loading={Boolean(job)} disabled={props.externalLoading || launchBusy || (tool.disabled && !manualInstall && !downloadUrl)} title={tool.disabled && !manualInstall && !downloadUrl ? tool.status.installHint ?? '当前平台暂不支持此操作' : undefined}
+        icon={tool.action === 'launch' || downloadUrl ? ArrowUpRight : undefined} onClick={primary} testId={tool.action === 'configure' ? `home-client-${tool.id}` : `tool-${tool.id}-primary`}>{primaryLabel}</Button>}
       menu={tool.status.installed && !job ? [
         // 配置入口只留「…」菜单这一处：行左边不再放独立的「配置」按钮，否则同一行会出现两个配置入口，
         // 而四个 CLI 行从来只有菜单入口，用户看到的是同类工具行给法不一致。主按钮已经是这个动作时菜单里不再重复。
