@@ -19,6 +19,11 @@ import {
 
 const temporaryDirectories: string[] = []
 
+// Without this the real probe starts PowerShell on the Windows shard.
+async function sameAccount(): Promise<'same'> {
+  return 'same'
+}
+
 function temporaryDataDirectory(): string {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-uninstall-cleanup-'))
   temporaryDirectories.push(directory)
@@ -138,7 +143,7 @@ describe('uninstall cleanup', () => {
       getLoginItemSettings: vi.fn(() => ({ openAtLogin: false })),
       setLoginItemSettings: vi.fn((value: { openAtLogin: boolean }) => { calls.push(`login:${value.openAtLogin}`) }),
     }
-    const exited = new Promise<number>((resolve) => startUninstallCleanup(app as never, resolve))
+    const exited = new Promise<number>((resolve) => startUninstallCleanup(app as never, resolve, undefined, undefined, sameAccount))
     await expect(exited).resolves.toBe(0)
     expect(app.getPath).toHaveBeenCalledWith('userData')
     expect(calls).toEqual([`aumid:${windowsAppUserModelId}`, 'login:false'])
@@ -251,7 +256,7 @@ describe('uninstall cleanup', () => {
         getLoginItemSettings: vi.fn(() => ({ openAtLogin: false })),
         setLoginItemSettings: vi.fn(),
       }
-      const exited = new Promise<number>((resolve) => startUninstallCleanup(app as never, resolve, undefined, argv))
+      const exited = new Promise<number>((resolve) => startUninstallCleanup(app as never, resolve, undefined, argv, sameAccount))
       await expect(exited).resolves.toBe(0)
       expect(fs.existsSync(path.join(dataDirectory, 'account-session.dat'))).toBe(remains)
     }
