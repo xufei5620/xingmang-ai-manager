@@ -13,7 +13,21 @@ export interface ExternalClientRuntimeStatus {
   launchSupported: boolean
   detectionError: string | null
   installHint: string | null
+  /**
+   * 一键安装用不了、但官网有 Windows 安装包时给出的下载页；缺省 = 没有可打开的
+   * 下载页（旧行为）。只会是 externalClientOfficialDownloadUrls 里的一条。
+   */
+  officialDownloadUrl?: string | null
 }
+
+/**
+ * 缺少系统 winget 时首页「去官网下载」打开的页面。主进程外链白名单逐条收录这几条
+ * （I12 全等匹配），所以这里只放完整网址，不拼接。WorkBuddy 有腾讯官方安装包兜底，不在此列。
+ */
+export const externalClientOfficialDownloadUrls = {
+  claudeDesktop: 'https://claude.com/download',
+  opencode: 'https://opencode.ai/download',
+} as const satisfies Partial<Record<ExternalToolId, string>>
 
 export interface ExternalClientConnectionStatus {
   /** Valid configuration explicitly associated with the current toolbox account. */

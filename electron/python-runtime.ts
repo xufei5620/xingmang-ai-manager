@@ -626,7 +626,7 @@ export async function installPythonRuntime(
         report(options, {
           phase: 'resolving',
           source: 'python-org',
-          message: 'winget 安装或复检失败，正在切换到 Python 官方安装包',
+          message: '系统自带的应用安装组件没装成，改用 Python 官方安装包',
           percent: null,
         })
       }
