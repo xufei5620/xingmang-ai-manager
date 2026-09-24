@@ -64,8 +64,8 @@ jobs:
           base=$(node -p "require('./scripts/update-release-utils.cjs').resolveUpdateUrlForVersion(require('./package.json').version)")
           echo "base=${base%/}" >> "$GITHUB_OUTPUT"
 
-      # 每个平台：读线上清单的版本、取回备份、核对备份确实是要退回的旧版本，再确认
-      # 它引用的安装包都还在。哪一步不对都停下，此刻线上什么都还没改。
+      # 每个平台：读线上清单的版本、取回备份、核对备份确实是要退回的旧版本，再把它
+      # 引用的安装包完整下载核一遍。哪一步不对都停下，此刻线上什么都还没改。
       - name: Check the backups before touching anything
         id: plan
         env:
@@ -89,12 +89,11 @@ jobs:
               continue
             fi
             [ "$code" = 200 ] || { echo "::error::读取 $target 的 $manifest 备份失败（HTTP $code）"; exit 1; }
-            files=$(node scripts/rollback-release.cjs inspect --manifest "$RUNNER_TEMP/restore/$manifest" --name "$manifest" --expect "$target" --live "$live")
-            while IFS= read -r file; do
-              [ -n "$file" ] || continue
-              curl --fail --silent --show-error --head --max-time 60 --output /dev/null "$PUBLIC_BASE/$file" \
-                || { echo "::error::$target 的安装包 $file 已经不在更新目录里，不能退回"; exit 1; }
-            done <<< "$files"
+            # 完整下载备份引用的每个安装包，核大小、SHA-512 与 blockmap（#494）。只 HEAD
+            # 一下确认「在」不够：200 但内容已被同名覆盖的安装包，要等清单换过去之后的端到端
+            # 复核才暴露，那时撤回名单和根目录清单都已经改了。
+            node scripts/rollback-release.cjs verify --manifest "$RUNNER_TEMP/restore/$manifest" --name "$manifest" \
+              --expect "$target" --live "$live" --base "$PUBLIC_BASE"
             echo "$manifest：线上 $live → 退回 $target"
             withdrawn="$withdrawn $live"
             platforms="$platforms $manifest"

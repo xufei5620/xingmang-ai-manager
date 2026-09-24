@@ -6,13 +6,15 @@
 //     按版本号备份到 manifests/<版本>/ 下——R2 上的根目录清单一覆盖就没了，没有这份
 //     备份，发现坏版本时就没有东西可以退回去。
 //
-//   inspect --manifest <file> --name … --expect <版本> --live <线上版本>
-//     核对一份备份清单确实是要退回的那个版本、而且比线上的旧，然后逐行打印它引用
-//     的安装包路径，工作流据此确认这些安装包还在，才去覆盖根目录清单。
+//   verify --manifest <file> --name … --expect <版本> --live <线上版本> --base <更新目录>
+//     核对一份备份清单确实是要退回的那个版本、而且比线上的旧，再把它引用的每个安装包
+//     从更新目录完整下载一遍，大小、SHA-512、blockmap 全对上才算过（#494）。回滚工作流
+//     在撤回版本、覆盖根目录清单**之前**跑它：只确认文件「在」不够，一个返回 200 却
+//     被同名覆盖或传坏的安装包，会让退回的人下载到一半校验失败，而此刻线上已经换过了。
 //
 // 版本号只收 x.y.z：它要拼进对象路径，任何别的写法都不该出现在这里。
 const fs = require('node:fs')
-const { compareReleaseVersions, parseLatestMetadata } = require('./update-release-utils.cjs')
+const { compareReleaseVersions, parseLatestMetadata, verifyManifestArtifacts } = require('./update-release-utils.cjs')
 
 const MANIFEST_NAMES = new Set(['latest.yml', 'latest-mac.yml'])
 const PLAIN_VERSION = /^\d{1,5}\.\d{1,5}\.\d{1,5}$/
@@ -47,6 +49,16 @@ function inspectBackup(file, name, expected, live) {
   return metadata.files.map((entry) => entry.encodedPath)
 }
 
+async function verifyBackup({ file, name, expected, live, baseUrl, allowLocalHttp = false }) {
+  inspectBackup(file, name, expected, live)
+  await verifyManifestArtifacts({
+    baseUrl,
+    metadataText: fs.readFileSync(file, 'utf8'),
+    metadataFile: name,
+    allowLocalHttp,
+  })
+}
+
 function parseArguments(argv) {
   const [command, ...rest] = argv
   const options = {}
@@ -58,26 +70,30 @@ function parseArguments(argv) {
   return { command, options }
 }
 
-function main(argv) {
+async function main(argv) {
   const { command, options } = parseArguments(argv)
   if (command === 'version') {
     console.log(manifestVersion(options.manifest, options.name))
     return
   }
-  if (command === 'inspect') {
-    for (const file of inspectBackup(options.manifest, options.name, options.expect, options.live)) console.log(file)
+  if (command === 'verify') {
+    await verifyBackup({
+      file: options.manifest,
+      name: options.name,
+      expected: options.expect,
+      live: options.live,
+      baseUrl: options.base,
+    })
     return
   }
-  throw new RollbackInputError('用法：rollback-release.cjs version|inspect --manifest <file> --name <latest.yml|latest-mac.yml> [--expect <版本> --live <版本>]')
+  throw new RollbackInputError('用法：rollback-release.cjs version|verify --manifest <file> --name <latest.yml|latest-mac.yml> [--expect <版本> --live <版本> --base <更新目录>]')
 }
 
 if (require.main === module) {
-  try {
-    main(process.argv.slice(2))
-  } catch (error) {
+  main(process.argv.slice(2)).catch((error) => {
     console.error(`::error::${error instanceof Error ? error.message : String(error)}`)
     process.exit(1)
-  }
+  })
 }
 
-module.exports = { RollbackInputError, inspectBackup, manifestVersion, requirePlainVersion }
+module.exports = { RollbackInputError, inspectBackup, manifestVersion, requirePlainVersion, verifyBackup }
