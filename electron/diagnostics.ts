@@ -1357,6 +1357,17 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
             details: { elevated, required: false, ...probeDetails },
           }
         }
+        if (elevated && !probeFailure && windowsExecution?.mode === 'same-user') {
+          // 令牌是高权限，启动时却确认了不是专门提权打开的（TokenElevationType 为 default）：
+          // 系统自带的 Administrator 账号，或整台电脑关了授权弹窗。这就是这个账号平常的
+          // 权限，没有「普通启动」可选，软件也已按普通方式做事。国内很多装机版系统默认
+          // 登这个账号，一直挂着「建议普通启动」只会让客户以为软件坏了（0.2.8 起就这样）。
+          return {
+            state: 'pass',
+            summary: '这台电脑登录的账号本身就带管理员权限，软件每次都是这样打开的，已按平常方式运行，不用处理',
+            details: { elevated, required: false, alwaysElevated: true },
+          }
+        }
         if (elevated) {
           return {
             state: 'warn',

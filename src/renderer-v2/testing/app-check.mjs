@@ -1816,6 +1816,30 @@ test('the updates page names the step that failed and offers that step again', a
   } finally { await page.close() }
 })
 
+// Mac 自签包每换一版，第一次读登录信息都会弹「登录」钥匙串密码框；重启确认框里
+// 先打招呼，Windows 没有这回事，不许多这一句。
+test('the restart-to-install dialog warns about the keychain prompt on Mac only', async () => {
+  for (const [query, expected] of [['os=mac', 1], ['', 0]]) {
+    const page = await open(query)
+    try {
+      await page.getByTestId('nav-more').click()
+      await page.getByTestId('nav-updates').click()
+      const updates = page.getByTestId('page-updates')
+      await updates.waitFor()
+      await page.evaluate(() => window.v2Test.emit('onUpdateState', {
+        phase: 'downloaded', currentVersion: '0.1.31', availableVersion: '0.1.32', releaseName: null, releaseNotesText: null,
+        checkedAt: new Date().toISOString(), progress: null, failedStep: null, error: null, development: true,
+      }))
+      await updates.getByRole('button', { name: '重启安装', exact: true }).click()
+      const dialog = page.getByRole('dialog', { name: '重启并安装更新？' })
+      await dialog.waitFor()
+      if (expected) await dialog.getByTestId('updates-mac-keychain-hint').getByText('始终允许', { exact: false }).waitFor()
+      assert.equal(await dialog.getByTestId('updates-mac-keychain-hint').count(), expected, query || 'windows')
+      await clean(page)
+    } finally { await page.close() }
+  }
+})
+
 // 维护提示来自更新目录上的状态文件，没登录也得看得到：欢迎页角落一条，登录框是
 // 模态的会盖住角落，所以框里再放一份。关掉的是这句话，发布者换了说法会再出现。
 test('a maintenance notice from the update feed reaches signed-out users, including inside the login dialog', async () => {
@@ -2387,6 +2411,39 @@ test('announcement banner can be closed, stays closed after reload, and returns 
     await dialog.getByTestId('announcement-list').waitFor()
     assert.equal(await banner.count(), 0)
     await button.locator('.v2-unread').waitFor({ state: 'hidden' })
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('a notice published while the app is open shows up on the next background check and notifies once when the window is away', async () => {
+  const page = await open('noticeCollection=1', true)
+  try {
+    const button = page.getByTestId('announcement-open')
+    const banner = page.getByTestId('announcement-banner')
+    await banner.waitFor()
+    await page.getByRole('button', { name: '关闭公告提示' }).click()
+    await banner.waitFor({ state: 'hidden' })
+    await button.locator('.v2-unread').waitFor({ state: 'hidden' })
+    // The window goes behind other apps; system notifications are the only way to reach the user now.
+    await page.evaluate(() => {
+      window.__notified = []
+      window.xingmangPlatform = { notifyActivity: async (kind, key) => { window.__notified.push([kind, key]); return 'requested' } }
+      document.hasFocus = () => false
+      window.v2Test.setNotice({ id: 'collection-with-new-entry', text: `<div data-newapi-collection="v1">
+        <details class="collection-entry"><summary class="collection-summary"><span class="collection-entry-title">新活动上线</span></summary><div class="collection-body"><p>活动详情</p></div></details>
+      </div>` })
+    })
+    await page.clock.fastForward('10:30')
+    await banner.getByText('新活动上线').waitFor()
+    await button.locator('.v2-unread').waitFor()
+    const notified = await page.evaluate(() => window.__notified)
+    assert.equal(notified.length, 1)
+    assert.equal(notified[0][0], 'announcement')
+    assert.match(notified[0][1], /^notice-[0-9a-f]{8}$/)
+    // The same notice is never announced twice, even after further checks.
+    await page.clock.fastForward('10:30')
+    await page.waitForFunction(() => window.v2Test.calls.filter((call) => call.method === 'getAccountNotice').length >= 3)
+    assert.equal(await page.evaluate(() => window.__notified.length), 1)
     await clean(page)
   } finally { await page.close() }
 })

@@ -1021,6 +1021,7 @@ if (query.has('system')) {
             balance: true,
             task: true,
             cliUpdate: true,
+            announcement: true,
             acceleration: true,
             ...systemState.preferences.notifications,
             [kind]: enabled,

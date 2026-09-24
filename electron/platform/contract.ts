@@ -1,7 +1,7 @@
 export type PlatformThemePreference = 'system' | 'light' | 'dark'
 /** 渲染层能自己请求的活动通知；文案固定在主进程，渲染层只给事件编号。 */
 export type PlatformActivityKind =
-  'install' | 'balance' | 'task' | 'cliUpdate'
+  'install' | 'balance' | 'task' | 'cliUpdate' | 'announcement'
 // 加速那两条（快用完、已断开）是主进程自己发的：窗口缩到托盘之后渲染层的计时
 // 与轮询都停着，而「时长用完」恰恰只在那时候发生。渲染层不能请求这一类，但用户
 // 要能在设置页单独关掉它，所以它进偏好集合、不进 PlatformActivityKind。
@@ -14,6 +14,8 @@ export interface PlatformNotificationPreferences {
   balance: boolean
   task: boolean
   cliUpdate: boolean
+  // 0.2.10 之后才有；老文件缺这一项时按默认开启补齐（settings-store.ts）。
+  announcement: boolean
   acceleration: boolean
 }
 export type PlatformNotificationResult =
