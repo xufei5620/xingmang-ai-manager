@@ -10,6 +10,7 @@ import {
 import {
   assertTrustedElevatedCliCommand,
   buildCliLaunchPlan,
+  buildWindowsTokenElevationProbeScript,
   decodeWindowsPowerShellCommand,
   describeWindowsCliLaunchError,
   encodeWindowsPowerShellCommand,
@@ -33,6 +34,7 @@ import {
   windowsPowerShellExecutable,
   windowsStandardAccountAdvice,
 } from './windows-elevation'
+import { scanPowerShell, unbalancedBracket } from './powershell-script-scan.test-support'
 import type { WindowsMachinePaths } from './windows-machine-paths'
 
 const testMachinePaths: WindowsMachinePaths = {
@@ -243,19 +245,81 @@ describe('Windows CLI launch', () => {
     expect(parseWindowsTokenElevationType('unknown')).toBeNull()
   })
 
-  it.runIf(process.platform === 'win32')('reads the current token elevation type through system PowerShell', async () => {
-    let lastError: unknown
-    for (let attempt = 0; attempt < 2; attempt += 1) {
-      try {
-        const value = await inspectCurrentWindowsTokenElevationType({ timeoutMs: 30_000 })
-        expect(['default', 'full', 'limited']).toContain(value)
-        return
-      } catch (error) {
-        lastError = error
-      }
-    }
-    throw lastError
-  }, 70_000)
+  // This used to start the real Windows PowerShell and compile the Add-Type below through csc.exe,
+  // twice if the first try failed, and on a busy runner even that kept failing (#511). What it
+  // pinned is what the probe hands PowerShell and how the answer is read; both are checked here on
+  // every platform without starting a process.
+  it('hands system PowerShell the probe through a trusted environment and reads its answer', async () => {
+    const calls: Array<{ executable: string; argv: string[]; options: { env: NodeJS.ProcessEnv; timeoutMs: number; maxOutputBytes: number } }> = []
+    const value = await inspectCurrentWindowsTokenElevationType({
+      platform: 'win32',
+      env: { SystemRoot: 'D:\\Windows', NODE_OPTIONS: '--require C:\\Users\\tester\\evil.js', PATH: 'C:\\Users\\tester\\bin' },
+      machinePaths: testMachinePaths,
+      resolvePowerShell: () => testPowerShell,
+      run: async (executable, argv, options) => {
+        calls.push({ executable, argv, options })
+        return 'limited\r\n'
+      },
+    })
+
+    expect(value).toBe('limited')
+    expect(calls).toHaveLength(1)
+    expect(calls[0].executable).toBe(testPowerShell)
+    expect(calls[0].argv).toEqual(['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', buildWindowsTokenElevationProbeScript()])
+    expect(calls[0].options.env.NODE_OPTIONS).toBeUndefined()
+    expect(calls[0].options).toMatchObject({ timeoutMs: 15_000, maxOutputBytes: 64 * 1024 })
+  })
+
+  it('refuses an answer it cannot read and passes a failed probe through unchanged', async () => {
+    const options = { platform: 'win32' as const, env: {}, machinePaths: testMachinePaths, resolvePowerShell: () => testPowerShell }
+    await expect(inspectCurrentWindowsTokenElevationType({ ...options, run: async () => 'elevated' }))
+      .rejects.toThrow('无法确认当前 Windows 进程的令牌提升类型')
+    const refused = new Error('spawn EPERM')
+    await expect(inspectCurrentWindowsTokenElevationType({ ...options, run: async () => { throw refused } }))
+      .rejects.toBe(refused)
+  })
+
+  it('answers default without asking PowerShell anywhere but Windows', async () => {
+    const run = vi.fn(async () => 'full')
+    await expect(inspectCurrentWindowsTokenElevationType({ platform: 'darwin', run })).resolves.toBe('default')
+    expect(run).not.toHaveBeenCalled()
+  })
+
+  it('asks for TokenElevationType and maps each of its values onto the parser', () => {
+    const script = buildWindowsTokenElevationProbeScript()
+    // TOKEN_INFORMATION_CLASS: TokenElevationType is 18, and it answers one 4-byte DWORD.
+    expect(script).toContain('GetTokenInformation($identity.Token, 18, [ref]$elevationType, 4, [ref]$returnLength)')
+    // TOKEN_ELEVATION_TYPE: 1 Default, 2 Full, 3 Limited; anything else must fail, not guess.
+    const mapped = [...script.matchAll(/^ {2}(\d) \{ "(\w+)" \}$/gm)].map(([, value, name]) => [Number(value), parseWindowsTokenElevationType(name)])
+    expect(mapped).toEqual([[1, 'default'], [2, 'full'], [3, 'limited']])
+    expect(script).toMatch(/default \{ throw "Unexpected TokenElevationType: \$elevationType" \}/)
+    expect(script.startsWith("$ErrorActionPreference = 'Stop'")).toBe(true)
+  })
+
+  it('leaves PowerShell a probe whose here-string and brackets close', () => {
+    const script = buildWindowsTokenElevationProbeScript()
+    const lines = script.split('\n')
+    // A here-string opens at the end of its line and closes only at the start of one.
+    const opener = lines.findIndex((line) => line.endsWith("@'"))
+    const closer = lines.findIndex((line) => line === "'@")
+    expect(opener).toBeGreaterThanOrEqual(0)
+    expect(closer).toBeGreaterThan(opener)
+    const typeDefinition = lines.slice(opener + 1, closer).join('\n')
+    expect(unbalancedBracket(typeDefinition)).toBeNull()
+    expect(typeDefinition).toContain('[DllImport("advapi32.dll", SetLastError = true)]')
+
+    // Outside the here-string the text is ordinary PowerShell, so the #454 scanner applies.
+    const outside = [...lines.slice(0, opener), 'Add-Type -TypeDefinition $typeDefinition', ...lines.slice(closer + 1)].join('\n')
+    const scan = scanPowerShell(outside)
+    expect(scan.unterminated).toBe(false)
+    expect(unbalancedBracket(scan.code)).toBeNull()
+  })
+
+  it.runIf(process.platform === 'win32')('asks the system PowerShell resolver when nothing is injected', async () => {
+    const run = vi.fn(async (_executable: string, _argv: string[]) => 'default')
+    await expect(inspectCurrentWindowsTokenElevationType({ run })).resolves.toBe('default')
+    expect(run.mock.calls[0][0]).toBe(resolveWindowsPowerShellExecutable())
+  })
 
   it('round-trips PowerShell scripts through UTF-16LE EncodedCommand', () => {
     const script = `$env:TERM = 'xterm-256color'; Write-Host '星芒AI'`

@@ -103,7 +103,13 @@ export function decodePersistedChatKeys(
   }
 }
 
-function pruneKeys(keys: readonly StoredChatKey[]): StoredChatKey[] {
+/**
+ * Keeps the newest entries within the cache bounds. `keys` is newest first, which is the order
+ * `upsert` writes, so trimming from the end drops the least recently upserted group and account.
+ * Pure, so the bounds are tested directly instead of through dozens of durable atomic writes,
+ * which a busy Windows runner took more than 15 seconds to finish (#511).
+ */
+export function pruneChatKeys(keys: readonly StoredChatKey[]): StoredChatKey[] {
   const retainedAccounts = new Set<number>()
   const accountCounts = new Map<number, number>()
   const retained: StoredChatKey[] = []
@@ -158,7 +164,7 @@ export class ChatKeyStore {
       this.assertEncryptionAvailable()
       if (this.invalidationRevision !== expectedRevision) return false
       const existing = await this.readRecord()
-      const keys = pruneKeys([
+      const keys = pruneChatKeys([
         entry,
         ...(existing?.keys.filter((candidate) => this.isVisible(candidate) && !(
           candidate.userId === entry.userId
