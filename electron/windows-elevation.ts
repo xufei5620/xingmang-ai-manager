@@ -9,6 +9,7 @@ import {
   trustedCommandEnvironment,
   type CommandSpec,
 } from './command-runner'
+import { cliExitHintLines } from './cli-exit-hint'
 import { resolveWindowsMachinePaths, type WindowsMachinePaths } from './windows-machine-paths'
 
 const execFileAsync = promisify(execFile)
@@ -537,6 +538,10 @@ export function assertTrustedElevatedCliCommand(
   }
 }
 
+function windowsCliExitHint(lines: readonly string[], color: 'Cyan' | 'Yellow'): string {
+  return ["Write-Host ''", ...lines.map((line) => `Write-Host ${powerShellLiteral(line)} -ForegroundColor ${color}`)].join('; ')
+}
+
 export function buildCliLaunchPlan(
   request: WindowsCliLaunchRequest,
   resolvedPowerShellExecutable = windowsPowerShellExecutable(),
@@ -569,6 +574,10 @@ export function buildCliLaunchPlan(
     'Remove-Item Env:NODE_DISABLE_COLORS -ErrorAction SilentlyContinue',
     `Set-Location -LiteralPath ${powerShellLiteral(workspace)}`,
     `& ${powerShellLiteral(cliExecutable)}${cliArguments.map((argument) => ` ${powerShellLiteral(argument)}`).join('')}`,
+    // 工具退出后 -NoExit 留下一个 PowerShell 提示符，小白会以为 AI 还在，往里打中文
+    // 只换来一串红字。补一句中文告诉他下一步；各家退出码含义不一，非零只说「可能」。
+    // 启动失败时 $LASTEXITCODE 仍是 $null，同样落到意外那一支。只输出固定文案，不引入变量。
+    `if ($LASTEXITCODE -eq 0) { ${windowsCliExitHint(cliExitHintLines.normal, 'Cyan')} } else { ${windowsCliExitHint(cliExitHintLines.unexpected, 'Yellow')} }`,
   ].join('; ')
   const terminalEncodedCommand = encodeWindowsPowerShellCommand(terminalScript)
   const terminalArguments = [
