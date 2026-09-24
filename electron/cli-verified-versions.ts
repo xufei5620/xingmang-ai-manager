@@ -111,11 +111,11 @@ export const cliVerifiedVersions: Record<ProviderId, CliVersionCompatibility> = 
   },
   gemini: {
     recommended: {
-      version: '0.60.0',
-      verifiedAt: '2026-09-21',
+      version: '0.62.0',
+      verifiedAt: '2026-10-05',
       verifiedSites: [],
-      note: '当前 npm latest;0.57~0.60 四个正式版全是安全加固,未发现与第三方 base URL 相关的回归',
-      userNote: '加强了安全防护，用法不变',
+      note: '当前 npm latest;0.61.0 起不再把名字以 flash 结尾的自选型号换成 gemini-3.5-flash,但会把恰好叫 gemini-3.5-flash / gemini-3-flash / gemini-3.1-flash-lite 的型号改发成 3.8-flash / 3.5-flash-lite;0.62.0 的 DEFAULT_MODEL_CONFIGS 与出网改名函数和 0.61.0 逐字相同',
+      userNote: '自己选的型号不会再被悄悄换成别的，菜单里新出的几个型号也照样走当前账号',
     },
     blocked: [],
   },

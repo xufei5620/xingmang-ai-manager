@@ -110,7 +110,7 @@ describe('cliVerifiedVersions coverage', () => {
   })
 
   it('pins Gemini without blocking anything', () => {
-    expect(cliVerifiedVersions.gemini.recommended?.version).toBe('0.60.0')
+    expect(cliVerifiedVersions.gemini.recommended?.version).toBe('0.62.0')
     expect(cliVerifiedVersions.gemini.blocked).toEqual([])
   })
 
