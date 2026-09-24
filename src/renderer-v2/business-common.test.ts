@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { errorMessage, rawErrorMessage, snapshotErrorMessage, userFacingErrorMessage } from './business-common'
+import { errorMessage, overflowedPage, rawErrorMessage, snapshotErrorMessage, userFacingErrorMessage } from './business-common'
 
 describe('rawErrorMessage', () => {
   it('strips the Electron IPC prefix that would otherwise expose channel names', () => {
@@ -168,5 +168,15 @@ describe('snapshotErrorMessage', () => {
     expect(snapshotErrorMessage(null)).toBeNull()
     expect(snapshotErrorMessage(undefined)).toBeNull()
     expect(snapshotErrorMessage('   ')).toBeNull()
+  })
+})
+
+describe('overflowedPage', () => {
+  it('steps back to the last real page once the current one has emptied out', () => {
+    expect(overflowedPage(2, 20)).toBe(1)
+    expect(overflowedPage(2, 21)).toBeNull()
+    expect(overflowedPage(1, 0)).toBeNull()
+    expect(overflowedPage(3, 0)).toBe(1)
+    expect(overflowedPage(5, 41, 20)).toBe(3)
   })
 })

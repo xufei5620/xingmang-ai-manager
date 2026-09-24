@@ -4458,6 +4458,28 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       expect(() => handler(trustedEvent(), { pageSize: 0 })).toThrow('分页大小格式错误')
     })
 
+    it('searches every page in the main process when a keyword is given and never sends it to the backend', async () => {
+      const { accountService } = register()
+      const key = (id: number, name: string) => ({ id, name, maskedKey: 'sk-****', group: 'default', status: 1, remainQuota: 0, unlimitedQuota: true, usedQuota: 0, createdAt: '', expiredAt: null, accessedAt: null })
+      vi.mocked(accountService.listKeys).mockImplementation(async (query) => query?.page === 1
+        ? { page: 1, pageSize: 100, total: 101, keys: Array.from({ length: 100 }, (_, index) => key(index + 1, `key-${index + 1}`)) }
+        : { page: 2, pageSize: 100, total: 101, keys: [key(101, 'Wanted Key')] })
+      const handler = electronMocks.handlers.get('account:list-keys')!
+
+      const result = await handler(trustedEvent(), { page: 1, pageSize: 20, keyword: '  wanted ' }) as AccountKeysPage
+      expect(result.total).toBe(1)
+      expect(result.keys.map((entry) => entry.id)).toEqual([101])
+      expect(vi.mocked(accountService.listKeys).mock.calls).toEqual([[{ page: 1, pageSize: 100 }], [{ page: 2, pageSize: 100 }]])
+    })
+
+    it('rejects a keyword that is not a short string', () => {
+      register()
+      const handler = electronMocks.handlers.get('account:list-keys')!
+
+      expect(() => handler(trustedEvent(), { keyword: 1 })).toThrow('搜索词格式错误')
+      expect(() => handler(trustedEvent(), { keyword: 'x'.repeat(65) })).toThrow('搜索词不能超过 64 个字符')
+    })
+
     it('never reaches the account service -- and never the real production client -- when validation fails', () => {
       const { accountService } = register()
       const handler = electronMocks.handlers.get('account:list-keys')!

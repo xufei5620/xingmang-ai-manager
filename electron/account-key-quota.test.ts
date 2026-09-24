@@ -13,6 +13,8 @@ import {
   loadManagedCliKeys,
   parseManagedCliKeyLimitAmount,
   resolveManagedCliKeyLimits,
+  searchAccountKeys,
+  accountKeySearchTooLongMessage,
 } from './account-key-quota'
 import type { AccountKey } from './ipc-contract'
 
@@ -257,5 +259,32 @@ describe('findAccountKeyById', () => {
       { total: 1_000_000, keys: [key({ id: page * 1_000, name: `k${page}` })] }
     )
     await expect(findAccountKeyById(listKeys, 7)).rejects.toThrow(accountKeyListTooLongMessage)
+  })
+})
+
+describe('searchAccountKeys', () => {
+  const keys = (count: number) => Array.from({ length: count }, (_, index) => ({ id: index + 1, name: `key-${index + 1}`, group: index % 2 ? 'Codex_pro' : 'default' }))
+  function lister(all: Array<{ id: number; name: string; group: string }>) {
+    return async ({ page, pageSize }: { page: number; pageSize: number }) => ({ total: all.length, keys: all.slice((page - 1) * pageSize, page * pageSize) })
+  }
+
+  it('finds a key that sits beyond the first page and pages the matches', async () => {
+    const all = keys(150)
+    const result = await searchAccountKeys(lister(all), 'KEY-14', 1, 20)
+    expect(result.total).toBe(11)
+    expect(result.keys.map((key) => key.id)).toEqual([14, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149])
+    const second = await searchAccountKeys(lister(all), 'codex', 2, 20)
+    expect(second.total).toBe(75)
+    expect(second.keys[0].id).toBe(42)
+  })
+
+  it('returns an empty page only after the whole list was read', async () => {
+    const result = await searchAccountKeys(lister(keys(3)), 'nothing', 1, 20)
+    expect(result).toEqual({ page: 1, pageSize: 20, total: 0, keys: [] })
+  })
+
+  it('refuses to pretend it searched everything when the list never ends', async () => {
+    await expect(searchAccountKeys(async () => ({ total: 1_000_000, keys: [{ id: 1, name: 'x', group: 'g' }] }), 'y', 1, 20))
+      .rejects.toThrow(accountKeySearchTooLongMessage)
   })
 })

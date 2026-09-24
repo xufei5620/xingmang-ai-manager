@@ -32,7 +32,7 @@ import { parseLocalNoticeReadSync, type AnnouncementReadStore } from './announce
 import type { AccelerationApi, AccelerationMode, AccelerationPreferenceApi } from './acceleration-contract'
 import { accelerationFailureReason } from './acceleration-contract'
 import { cliCatalog, isProviderId, providerIds, resolveManagedCliKeyProfiles, type ProviderId } from './catalog'
-import { accountKeyListTooLongMessage, findAccountKeyById, inheritedKeySettings, inheritedKeyExpiredMessage, isUsedUpKeyLimit, managedKeyQuotaExhaustedMessage } from './account-key-quota'
+import { accountKeyListTooLongMessage, findAccountKeyById, searchAccountKeys, inheritedKeySettings, inheritedKeyExpiredMessage, isUsedUpKeyLimit, managedKeyQuotaExhaustedMessage } from './account-key-quota'
 import { createMemoryManagedKeyReplacementStore, type ManagedKeyReplacementStore } from './managed-key-replacement-store'
 import { isInstallCancelledError } from './install-cancellation'
 import {
@@ -970,6 +970,7 @@ function parseAccountKeysQuery(value: unknown): NewApiAccountKeysQuery {
   return {
     page: page as number | undefined,
     pageSize: pageSize as number | undefined,
+    keyword: parseOptionalAccountUsageText(value.keyword, '搜索词', 64),
   }
 }
 
@@ -3004,9 +3005,12 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     }
   }
   registerTrustedHandler('account:list-keys', (_event, input: unknown) => {
-    const query = parseAccountKeysQuery(input)
+    const { keyword, ...query } = parseAccountKeysQuery(input)
     const userId = accountService.getSessionState().account?.userId
-    return accountService.listKeys(query).then((page) => markKeysInUse(page, userId))
+    const listed = keyword
+      ? searchAccountKeys((pageQuery) => accountService.listKeys(pageQuery), keyword, query.page ?? 1, query.pageSize ?? 20)
+      : accountService.listKeys(query)
+    return listed.then((page) => markKeysInUse(page, userId))
   })
   registerTrustedHandler('account:list-groups', () => accountService.listUsableGroups())
   registerTrustedHandler('account:revoke-key', async (_event, id: unknown) => {

@@ -44,6 +44,7 @@ import {
   errorMessage,
   ListState,
   Pagination,
+  overflowedPage,
   ResultNotice,
   useOperation,
   useResource,
@@ -325,6 +326,7 @@ export function AccountPage({
   onBack,
   onRewriteKey,
   onConfigureTool,
+  onToolConfigSaved,
 }: {
   api: V2Bridge
   initialTab?: AccountTab
@@ -338,6 +340,8 @@ export function AccountPage({
   onRewriteKey?: (provider: Provider) => Promise<boolean>
   /** 打开某个工具的设置；自动换新不适用时（手填等），这是用户的下一步。缺省 = 不给按钮。 */
   onConfigureTool?: (provider: Provider) => void
+  /** 「配置到工具」写成功后让首页重读配置；缺省 = 不通知（旧行为）。 */
+  onToolConfigSaved?: () => void
 }) {
   const [tab, setTab] = useState<AccountTab>(initialTab ?? 'overview')
   const { store: balanceStore, snapshot: balanceState } = useSharedAccountBalance()
@@ -514,6 +518,7 @@ export function AccountPage({
                       siteId={accountSiteId(account.session)}
                       onRewriteKey={onRewriteKey}
                       onConfigureTool={onConfigureTool}
+                      onToolConfigSaved={onToolConfigSaved}
                     />
                   )}
                   {panel === 'usage' && (
@@ -874,6 +879,7 @@ function AccountKeys({
   siteId,
   onRewriteKey,
   onConfigureTool,
+  onToolConfigSaved,
 }: {
   api: V2Bridge
   balance: Balance
@@ -881,17 +887,37 @@ function AccountKeys({
   siteId: AccountSiteId
   onRewriteKey?: (provider: Provider) => Promise<boolean>
   onConfigureTool?: (provider: Provider) => void
+  onToolConfigSaved?: () => void
 }) {
   const [page, setPage] = useState(1)
   const [query, setQuery] = useState('')
+  // 搜索交给主进程翻完整张列表去筛（#495），以前只筛当前这 20 条，目标在第二页就
+  // 显示「没有」。停手 300 毫秒再搜，免得每敲一个字都把整张列表翻一遍；换了搜索词
+  // 从第一页看起。
+  const [keyword, setKeyword] = useState('')
+  useEffect(() => {
+    const next = query.trim()
+    if (next === keyword) return
+    const timer = window.setTimeout(() => {
+      setKeyword(next)
+      setPage(1)
+    }, next ? 300 : 0)
+    return () => window.clearTimeout(timer)
+  }, [query, keyword])
   const load = useCallback(
     async () => ({
-      page: await api.getAccountKeys({ page, pageSize: 20 }),
+      page: await api.getAccountKeys(keyword ? { page, pageSize: 20, keyword } : { page, pageSize: 20 }),
     }),
-    [api, page],
+    [api, page, keyword],
   )
   const resource = useResource(load)
   const operation = useOperation()
+  const keyTotal = resource.data?.page.total
+  useEffect(() => {
+    if (keyTotal === undefined) return
+    const fallback = overflowedPage(page, keyTotal)
+    if (fallback !== null) setPage(fallback)
+  }, [keyTotal, page])
   const [editing, setEditing] = useState<AccountKey | 'new' | null>(null)
   const [name, setName] = useState('')
   const [group, setGroup] = useState('')
@@ -1037,10 +1063,7 @@ function AccountKeys({
       },
       `${keyToolName(provider)} 已换上新密钥`,
     )
-  const list =
-    resource.data?.page.keys.filter((key) =>
-      `${key.name} ${key.group}`.toLowerCase().includes(query.toLowerCase()),
-    ) ?? []
+  const list = resource.data?.page.keys ?? []
   return (
     <>
       <ToolKeyLimits api={api} balance={balance} siteId={siteId} />
@@ -1396,6 +1419,9 @@ function AccountKeys({
                         false,
                       )
                       setSelected(null)
+                      // 主进程保存这条路不发配置变更事件，首页那份快照得由这里叫它重读，
+                      // 否则回到首页还是旧的来源和模型（#479）。
+                      onToolConfigSaved?.()
                     },
                     '密钥已写入工具配置',
                   )

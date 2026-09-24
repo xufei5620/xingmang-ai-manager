@@ -229,6 +229,10 @@ async function rewriteKey(provider: ProviderId) {
   replaceFailures--
   return false
 }
+// keyCount=N：N 把普通 Key，按真实接口那样分页，撤销会真的少一把（#496）。
+const pagedKeys = query.has('keyCount')
+  ? Array.from({ length: Number(query.get('keyCount')) }, (_, index) => ({ ...key, id: 100 + index, name: `paged-key-${index + 1}` }))
+  : null
 const managedKeys = query.has('managedKeys')
   ? [
       { ...key, id: 11, name: 'xingmang-desktop-claude', group: 'Claude-MAX订阅', unlimitedQuota: false, remainQuota: 1200, usedQuota: 600 },
@@ -391,14 +395,27 @@ const apiMethods = {
           : [],
     }
   },
-  getAccountKeys: async () => ({
-    page: 1,
-    pageSize: 20,
-    total: empty ? 0 : managedKeys ? managedKeys.length : 1,
-    keys: empty ? [] : managedKeys ?? [keyInUse ? { ...key, managedProvider: 'claude' as const } : key],
-  }),
+  getAccountKeys: async (input?: { page?: number; pageSize?: number; keyword?: string }) => {
+    if (pagedKeys) {
+      const page = input?.page ?? 1
+      const pageSize = input?.pageSize ?? 20
+      // 与主进程 searchAccountKeys 一样：带搜索词时在整张列表里筛完再分页（#495）。
+      const needle = input?.keyword?.toLowerCase()
+      if (needle) record('searchAccountKeys', input?.keyword)
+      const matched = needle ? pagedKeys.filter((entry) => `${entry.name} ${entry.group}`.toLowerCase().includes(needle)) : pagedKeys
+      return { page, pageSize, total: matched.length, keys: matched.slice((page - 1) * pageSize, page * pageSize) }
+    }
+    return {
+      page: 1,
+      pageSize: 20,
+      total: empty ? 0 : managedKeys ? managedKeys.length : 1,
+      keys: empty ? [] : managedKeys ?? [keyInUse ? { ...key, managedProvider: 'claude' as const } : key],
+    }
+  },
   revokeAccountKey: async (id: number) => {
     record('revokeAccountKey', id)
+    const index = pagedKeys?.findIndex((entry) => entry.id === id) ?? -1
+    if (pagedKeys && index >= 0) pagedKeys.splice(index, 1)
   },
   getAccountUsableGroups: async () => {
     window.keyGroupsHarness.requests++

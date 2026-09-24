@@ -28,6 +28,8 @@ export type BusinessPageProps = Omit<BusinessActions, 'navigate'> & {
   onSessionResumed?: () => void
   /** 备份页恢复成功后回调，用来让首页重读这份配置。 */
   onBackupRestored?: Parameters<typeof BackupsPage>[0]['onRestored']
+  /** 密钥页「配置到工具」写成功后回调，让首页重读工具配置（#479）。 */
+  onToolConfigSaved?: () => void
 }
 
 export function BusinessPage({
@@ -39,6 +41,7 @@ export function BusinessPage({
   paymentReturn,
   onSessionResumed,
   onBackupRestored,
+  onToolConfigSaved,
   ...actions
 }: BusinessPageProps) {
   if (page === 'account')
@@ -53,6 +56,7 @@ export function BusinessPage({
         onBack={actions.navigate ? () => actions.navigate?.('home') : undefined}
         onRewriteKey={actions.onRewriteKey}
         onConfigureTool={actions.openConfig}
+        onToolConfigSaved={onToolConfigSaved}
       />
     )
   if (page === 'sessions')
