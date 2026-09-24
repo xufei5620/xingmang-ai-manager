@@ -39,3 +39,17 @@ describe('renderer-v2 shell keyboard landmarks', () => {
     expect(markup).toMatch(/<p class="v2-visually-hidden" role="status" aria-live="polite"[^>]*><\/p>/)
   })
 })
+
+describe('renderer-v2 sidebar account source', () => {
+  it('names which account the user is signed in with', () => {
+    const markup = renderToStaticMarkup(createElement(Shell, {
+      activePage: 'home',
+      platform: 'win',
+      account: { signedIn: true, displayName: '星芒用户', sourceLabel: '历史账号' },
+      adapter: {},
+      children: null,
+    }))
+    expect(markup).toContain('<small>历史账号</small>')
+    expect(render()).toContain('<small>星芒账号</small>')
+  })
+})
