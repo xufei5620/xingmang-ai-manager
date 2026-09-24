@@ -16,11 +16,16 @@ const unavailableGroupPatterns: readonly RegExp[] = [
  */
 export function keySyncFailureReason(message: string): string {
   const safe = userFacingErrorMessage(message).replace(/[。；;.\s]+$/, '')
-  if (unavailableGroupPatterns.some((pattern) => pattern.test(safe))) return '当前账号还不能用，需要的话请联系客服开通'
+  if (isAccountNotEnabledFailure(safe)) return '当前账号还不能用，需要的话请联系客服开通'
   const hint = presentOperationError(safe)
   if (hint) return hint.title
   if (/[㐀-鿿]/.test(safe)) return safe
   return 'Key 没有写进去，点「重新同步」再试'
+}
+
+/** 这条失败是不是「账号没开通这个工具」：重新同步、重新写入都救不了，只能找客服。 */
+export function isAccountNotEnabledFailure(message: string): boolean {
+  return unavailableGroupPatterns.some((pattern) => pattern.test(message))
 }
 
 /** 一条失败带上是哪个工具的；原话已经以工具名开头的不再重复。 */

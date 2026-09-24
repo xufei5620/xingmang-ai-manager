@@ -269,6 +269,26 @@ describe('renderer-v2 home account key bootstrap notice', () => {
     expect(markup).toContain('>重新同步<')
   })
 
+  it('shows a tool the account has not enabled as not enabled instead of waiting for a key', () => {
+    const failure = { provider: 'gemini' as const, message: '分组不存在、不可用或名称重复，请确认账号可用分组' }
+    const waiting = render({})
+    // The fixture's Gemini config carries no auth type, so without a failure it reads as keyless.
+    expect(waiting).toContain('还没配 Key')
+    const markup = render({}, undefined, {
+      bootstrap: {
+        phase: 'verifying', label: 'Key 同步完成，部分工具待处理', percent: 100, scope: 'scope',
+        result: bootstrapResult({ failed: [failure] }),
+      },
+      onBootstrapRetry: () => undefined,
+    })
+    expect(markup).toContain('Gemini CLI：当前账号还不能用，需要的话请联系客服开通')
+    expect(markup).toContain('账号未开通')
+    expect(markup).not.toContain('还没配 Key')
+    expect(markup).not.toContain('分组')
+    // Re-syncing cannot enable a tool on the account, so the banner offers no button for it.
+    expect(markup).not.toContain('>重新同步<')
+  })
+
   it('keeps the original wording when the failure is not a network one', () => {
     const markup = render({}, undefined, {
       bootstrap: {
