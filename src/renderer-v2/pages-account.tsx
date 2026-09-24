@@ -891,11 +891,24 @@ function AccountKeys({
 }) {
   const [page, setPage] = useState(1)
   const [query, setQuery] = useState('')
+  // 搜索交给主进程翻完整张列表去筛（#495），以前只筛当前这 20 条，目标在第二页就
+  // 显示「没有」。停手 300 毫秒再搜，免得每敲一个字都把整张列表翻一遍；换了搜索词
+  // 从第一页看起。
+  const [keyword, setKeyword] = useState('')
+  useEffect(() => {
+    const next = query.trim()
+    if (next === keyword) return
+    const timer = window.setTimeout(() => {
+      setKeyword(next)
+      setPage(1)
+    }, next ? 300 : 0)
+    return () => window.clearTimeout(timer)
+  }, [query, keyword])
   const load = useCallback(
     async () => ({
-      page: await api.getAccountKeys({ page, pageSize: 20 }),
+      page: await api.getAccountKeys(keyword ? { page, pageSize: 20, keyword } : { page, pageSize: 20 }),
     }),
-    [api, page],
+    [api, page, keyword],
   )
   const resource = useResource(load)
   const operation = useOperation()
@@ -1050,10 +1063,7 @@ function AccountKeys({
       },
       `${keyToolName(provider)} 已换上新密钥`,
     )
-  const list =
-    resource.data?.page.keys.filter((key) =>
-      `${key.name} ${key.group}`.toLowerCase().includes(query.toLowerCase()),
-    ) ?? []
+  const list = resource.data?.page.keys ?? []
   return (
     <>
       <ToolKeyLimits api={api} balance={balance} siteId={siteId} />

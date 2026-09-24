@@ -93,6 +93,33 @@ export async function findAccountKeyById<T extends { id: number }>(
   throw new Error(accountKeyListTooLongMessage)
 }
 
+export const accountKeySearchTooLongMessage = '这个账号的密钥太多，没能全部搜一遍。请换个更准确的名称再搜，或到网页上删掉一些不用的密钥。'
+
+/**
+ * 密钥页的搜索（#495）。两个后端的 Key 列表接口都只能按页取、不带搜索条件，
+ * 以前渲染层只在当前这 20 条里筛，目标在第二页就显示「没有」。这里在主进程把
+ * 整张列表翻一遍（与 findAccountKeyById 同一个安全阀），按名称和分组筛完再分页。
+ * 翻不完时抛错，不返回半截结果冒充「搜完了、没有」。
+ */
+export async function searchAccountKeys<T extends { name: string; group: string }>(
+  listKeys: (query: { page: number; pageSize: number }) => Promise<{ total: number; keys: readonly T[] }>,
+  keyword: string,
+  page: number,
+  pageSize: number,
+): Promise<{ page: number; pageSize: number; total: number; keys: T[] }> {
+  const needle = keyword.trim().toLowerCase()
+  const matches: T[] = []
+  let seen = 0
+  for (let index = 1; ; index++) {
+    if (index > findKeyPageLimit) throw new Error(accountKeySearchTooLongMessage)
+    const batch = await listKeys({ page: index, pageSize: findKeyPageSize })
+    for (const key of batch.keys) if (`${key.name} ${key.group}`.toLowerCase().includes(needle)) matches.push(key)
+    seen += batch.keys.length
+    if (!batch.keys.length || seen >= batch.total) break
+  }
+  return { page, pageSize, total: matches.length, keys: matches.slice((page - 1) * pageSize, page * pageSize) }
+}
+
 export interface InheritedKeySettings {
   remainQuota: number
   unlimitedQuota: boolean

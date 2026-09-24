@@ -316,6 +316,23 @@ test('revoking the only key on the last page steps back to a real page instead o
   } finally { await page.close() }
 })
 
+test('key search finds a key that lives on a later page and starts from the first page of matches', async () => {
+  const page = await fixture('page=account&keyCount=45')
+  try {
+    await page.getByRole('tab', { name: '密钥', exact: true }).click()
+    await page.getByRole('button', { name: '密钥 paged-key-1 的更多操作', exact: true }).waitFor()
+    await page.getByRole('button', { name: '下一页', exact: true }).click()
+    await page.getByText('2 / 3', { exact: true }).waitFor()
+    await page.getByTestId('keys-search').fill('paged-key-43')
+    await page.getByRole('button', { name: '密钥 paged-key-43 的更多操作', exact: true }).waitFor()
+    await page.getByText('1 / 1', { exact: true }).waitFor()
+    await page.getByText('共 1 条', { exact: true }).waitFor()
+    assert.deepEqual((await calls(page)).filter((call) => call.name === 'searchAccountKeys').map((call) => call.args), ['paged-key-43'])
+    await page.getByTestId('keys-search').fill('')
+    await page.getByText('共 45 条', { exact: true }).waitFor()
+  } finally { await page.close() }
+})
+
 test('revoking a key no tool is using keeps the old confirmation and never rewrites a tool', async () => {
   const page = await fixture('page=account')
   try {

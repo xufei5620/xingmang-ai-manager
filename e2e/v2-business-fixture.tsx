@@ -395,11 +395,15 @@ const apiMethods = {
           : [],
     }
   },
-  getAccountKeys: async (input?: { page?: number; pageSize?: number }) => {
+  getAccountKeys: async (input?: { page?: number; pageSize?: number; keyword?: string }) => {
     if (pagedKeys) {
       const page = input?.page ?? 1
       const pageSize = input?.pageSize ?? 20
-      return { page, pageSize, total: pagedKeys.length, keys: pagedKeys.slice((page - 1) * pageSize, page * pageSize) }
+      // 与主进程 searchAccountKeys 一样：带搜索词时在整张列表里筛完再分页（#495）。
+      const needle = input?.keyword?.toLowerCase()
+      if (needle) record('searchAccountKeys', input?.keyword)
+      const matched = needle ? pagedKeys.filter((entry) => `${entry.name} ${entry.group}`.toLowerCase().includes(needle)) : pagedKeys
+      return { page, pageSize, total: matched.length, keys: matched.slice((page - 1) * pageSize, page * pageSize) }
     }
     return {
       page: 1,

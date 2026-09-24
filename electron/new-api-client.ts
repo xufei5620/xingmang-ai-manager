@@ -671,6 +671,12 @@ export interface NewApiAccountKeysQuery {
   page?: number
   /** Server clamps to 100 regardless of what is sent (common/page_info.go). */
   pageSize?: number
+  /**
+   * Name/group filter for the key page's search (#495). Never sent to either
+   * backend: the IPC handler walks every page and filters in the main process
+   * (account-key-quota.ts searchAccountKeys), so listKeys ignores it.
+   */
+  keyword?: string
 }
 
 // One row of GET /api/token/'s `items` array (model.Token, model/token.go),
