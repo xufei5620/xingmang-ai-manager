@@ -4359,7 +4359,9 @@ describe('startup snapshot cache and probe limits', () => {
     const first = service(directory, async () => null)
     await expect(first.cachedScan()).resolves.toBeNull()
     await first.scanSystem(false)
-    await waitForFile(path.join(directory, 'system-snapshot.json'))
+    const snapshotFile = path.join(directory, 'system-snapshot.json')
+    await waitForFile(snapshotFile)
+    const firstSaved = fs.readFileSync(snapshotFile, 'utf8')
 
     let release!: () => void
     const blocked = new Promise<void>((resolve) => { release = resolve })
@@ -4374,6 +4376,11 @@ describe('startup snapshot cache and probe limits', () => {
     const fresh = await second.scanSystem(false)
     expect(fresh.cachedAt).toBeUndefined()
     await expect(second.cachedScan()).resolves.toBeNull()
+    // scanSystem 不等快照落盘就返回。落盘是写临时文件再改名，收尾删目录时要是
+    // 撞上那个临时文件，macOS 上会报 ENOTEMPTY。等新快照改名到位再结束。
+    for (let attempt = 0; attempt < 200 && fs.readFileSync(snapshotFile, 'utf8') === firstSaved; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 5))
+    }
   })
 
   it('never starts more probe processes at once than the limit', async () => {
