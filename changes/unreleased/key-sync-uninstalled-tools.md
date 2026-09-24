@@ -1,0 +1,11 @@
+## 用户
+
+- 登录后首页不再为没装的工具报「Key 没配上」；装上那个工具时才会说明原因。
+- 账号还没开通某个工具时，提示改成「当前账号还不能用，需要的话请联系客服开通」，不再出现分组之类看不懂的字眼。
+- 左下角账号名下面按实际登录的账号显示「星芒账号」或「历史账号」，不再一律写星芒账号。
+
+## 开发
+
+- `account-bootstrap.ts`：`synchronized.failed` 里 `plan.skipped` 为 `not-installed` 的工具不再拼进 warnings；装完工具那一轮（`syncAfterToolInstalled`）会只针对它重写，失败在那时经 `failed` 上屏。warnings 里的签发失败也改走 `keySyncFailureText`，与首页 `failed` 同一套脱敏与归类。
+- `key-sync-failure.ts`：识别 Sub2API「分组不存在、不可用或名称重复」与 new-api「当前账号不可使用分组」两句，换成客户能照做的话。
+- 侧栏 `AccountView` 加可选 `sourceLabel`，App 按 `accountSources[siteId].label` 传入；缺省仍是「星芒账号」。
