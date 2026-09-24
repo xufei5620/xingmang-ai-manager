@@ -19,6 +19,8 @@ import {
   probeRunningCliProcesses,
   type CliProcessProbe,
 } from './cli-process-probe'
+import { scanPowerShell, unbalancedBracket } from './powershell-script-scan.test-support'
+import { resolveWindowsPowerShellExecutable } from './windows-elevation'
 
 const temporaryDirectories: string[] = []
 const spawned: ChildProcess[] = []
@@ -248,18 +250,71 @@ describe('cli process probe', () => {
     }
   })
 
-  it.runIf(process.platform === 'win32')('recognises a live process from the real PowerShell probe', async () => {
-    const root = path.join(createTemporaryDirectory(), 'node_modules', '@anthropic-ai', 'claude-code')
-    await fs.promises.mkdir(root, { recursive: true })
-    const entry = path.join(root, 'cli.js')
-    await fs.promises.writeFile(entry, 'setInterval(() => {}, 1000)\n', 'utf8')
+  // This used to hand the script to a real powershell.exe and look for a live node process.
+  // On a busy windows-latest runner Get-CimInstance alone outlasted the 60-second probe budget
+  // three times (#452, #457 and an earlier run), so the Windows branch is now checked in two
+  // halves that need no process: what Node hands PowerShell, and what the script text does
+  // with it.
+  it('hands PowerShell the resolved package directory through a trusted environment', async () => {
+    const root = path.join(os.tmpdir(), 'xingmang-probe', 'node_modules', '@anthropic-ai', 'claude-code')
+    const calls: Array<{ executable: string; argv: string[]; options: { env: NodeJS.ProcessEnv; timeoutMs: number; maxOutputBytes: number } }> = []
+    const previousNodeOptions = process.env.NODE_OPTIONS
+    process.env.NODE_OPTIONS = '--require C:\\Users\\Public\\hook.js'
+    let probe: CliProcessProbe
+    try {
+      probe = await probeRunningCliProcesses(root, {
+        platform: 'win32',
+        resolvePowerShell: () => 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe',
+        runProbe: async (executable, argv, options) => {
+          calls.push({ executable, argv, options })
+          return JSON.stringify([{ ProcessId: 4321, Name: 'node.exe', ExecutablePath: 'C:\\Program Files\\nodejs\\node.exe' }])
+        },
+      })
+    } finally {
+      if (previousNodeOptions === undefined) delete process.env.NODE_OPTIONS
+      else process.env.NODE_OPTIONS = previousNodeOptions
+    }
+    expect(calls).toHaveLength(1)
+    const [call] = calls
+    expect(call.executable).toBe('C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe')
+    expect(call.argv).toEqual(['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', buildWindowsCliProcessProbeScript()])
+    expect(call.argv.join(' ')).not.toContain(root)
+    expect(call.options.env[cliProcessRootEnvironmentVariable]).toBe(root)
+    // The probe reads every process's command line; nothing the parent inherited may load
+    // code into it first (I2).
+    expect(call.options.env.NODE_OPTIONS).toBeUndefined()
+    expect(call.options.timeoutMs).toBe(8_000)
+    expect(call.options.maxOutputBytes).toBe(1024 * 1024)
+    expect(probe).toEqual({
+      status: 'checked',
+      processes: [{ processId: 4321, name: 'node.exe', executablePath: 'C:\\Program Files\\nodejs\\node.exe' }],
+    })
+  })
 
-    const ours = spawn(process.execPath, [entry], { stdio: 'ignore', windowsHide: true })
-    spawned.push(ours)
-    await new Promise((resolve) => setTimeout(resolve, 1_000))
+  it('matches only against the directory it reads from the environment, in both process shapes', () => {
+    const scan = scanPowerShell(buildWindowsCliProcessProbeScript())
+    expect(scan.unterminated).toBe(false)
+    expect(unbalancedBracket(scan.code)).toBeNull()
+    // No path is ever spliced into the text: the only literal is the empty-result JSON.
+    expect(scan.literals).toEqual(['[]'])
+    expect(scan.code).toContain(`$root = [string]$env:${cliProcessRootEnvironmentVariable}`)
+    expect(scan.code).toContain("if (-not $root) { ''; exit 0 }")
+    // A native CLI is its own image; a node-hosted one carries its entry script on the command
+    // line. Both are ordinal, case-insensitive comparisons against that one directory.
+    expect(scan.code).toContain('$image = [string]$_.ExecutablePath')
+    expect(scan.code).toContain('$commandLine = [string]$_.CommandLine')
+    expect(scan.code).toContain('$image.StartsWith($root, [System.StringComparison]::OrdinalIgnoreCase)')
+    expect(scan.code).toContain('$commandLine.IndexOf($root, [System.StringComparison]::OrdinalIgnoreCase) -ge 0')
+    expect(scan.code).toContain('Get-CimInstance Win32_Process')
+    // What the script emits is exactly what the parser reads back.
+    expect(scan.code).toContain('[pscustomobject]@{ ProcessId = $_.ProcessId; Name = [string]$_.Name; ExecutablePath = $image }')
+  })
 
-    const probe = await probeRunningCliProcesses(root, { timeoutMs: 60_000 })
-    expect(probe.status).toBe('checked')
-    expect(probe.processes.map((entryFound) => entryFound.processId)).toContain(ours.pid)
-  }, 90_000)
+  it.runIf(process.platform === 'win32')('asks the system PowerShell resolver when nothing is injected', async () => {
+    const executables: string[] = []
+    await probeRunningCliProcesses(path.join(os.tmpdir(), 'xingmang-probe'), {
+      runProbe: async (executable) => { executables.push(executable); return '[]' },
+    })
+    expect(executables).toEqual([resolveWindowsPowerShellExecutable()])
+  })
 })

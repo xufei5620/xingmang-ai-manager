@@ -1,6 +1,6 @@
 import { StrictMode, useState } from 'react'
 import { createRoot } from 'react-dom/client'
-import type { AiChatAsset, AiChatGroupSummary, AiChatPreparedGroup, AiChatStreamEvent, XingmangApi } from '../../../../electron/ipc-contract'
+import type { AiChatAsset, AiChatGroupSummary, AiChatHistorySnapshot, AiChatHistoryWrite, AiChatPreparedGroup, AiChatStreamEvent, XingmangApi } from '../../../../electron/ipc-contract'
 import type { ChatBridge } from './api'
 import { ChatPage } from './ChatPage'
 import '../../ui'
@@ -23,6 +23,47 @@ let groupGate: Promise<void> | undefined
 let releaseGroupGate: (() => void) | undefined
 const imageAsset: AiChatAsset = { assetId: 'a'.repeat(43), localUrl: '/assets/brand/v3/symbol-standard.svg', mimeType: 'image/png', fileName: 'fixture.png', width: 288, height: 256 }
 function record(method: string, input?: unknown) { calls.push({ method, input }) }
+// Stands in for the main-process history files. IndexedDB survives page.reload()
+// like the files survive a restart, and has room for records far past the
+// localStorage quota this fixture used to depend on.
+let failHistoryWrites = false
+function historyDatabase(): Promise<IDBDatabase> {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open('chat-history-fixture', 1)
+    request.onupgradeneeded = () => { request.result.createObjectStore('files') }
+    request.onsuccess = () => resolve(request.result)
+    request.onerror = () => reject(request.error)
+  })
+}
+async function historyFiles(scope: string): Promise<AiChatHistorySnapshot> {
+  const database = await historyDatabase()
+  return new Promise((resolve, reject) => {
+    const request = database.transaction('files').objectStore('files').get(scope)
+    request.onsuccess = () => resolve(request.result ?? { index: null, conversations: [] })
+    request.onerror = () => reject(request.error)
+  })
+}
+async function writeHistoryFiles(input: AiChatHistoryWrite): Promise<void> {
+  if (failHistoryWrites) throw new Error('disk full')
+  const current = await historyFiles(input.scope)
+  const files = new Map(current.conversations.map((file) => [file.key, file.content]))
+  for (const file of input.put) files.set(file.key, file.content)
+  const conversations = input.keys.map((key) => ({ key, content: files.get(key) ?? '' }))
+  const database = await historyDatabase()
+  await new Promise<void>((resolve, reject) => {
+    const transaction = database.transaction('files', 'readwrite')
+    transaction.objectStore('files').put({ index: input.index, conversations }, input.scope)
+    transaction.oncomplete = () => resolve()
+    transaction.onerror = () => reject(transaction.error)
+  })
+}
+async function savedWorkspace(scope = 'xm-account:7') {
+  const snapshot = await historyFiles(scope)
+  if (snapshot.index === null) return null
+  const index = JSON.parse(snapshot.index)
+  const files = new Map(snapshot.conversations.map((file) => [file.key, JSON.parse(file.content).conversation]))
+  return { ...index, conversations: index.conversations.map((entry: { key: string }) => files.get(entry.key)) }
+}
 const bridge: ChatBridge = {
   listAiChatGroups: async () => {
     record('groups')
@@ -41,10 +82,12 @@ const bridge: ChatBridge = {
   copyAiChatAsset: async (assetId) => { record('copy-asset', assetId) },
   saveAiChatAsset: async (assetId) => { record('save-asset', assetId); return { saved: !query.has('saveCancel') } },
   showAiChatAssetMenu: async (assetId) => { record('menu-asset', assetId) },
+  readAiChatHistory: (scope) => historyFiles(scope),
+  writeAiChatHistory: (input) => writeHistoryFiles(input),
   getAccountSession: async () => ({ authenticated: true, account: { userId, username: `fixture-${userId}`, quota: 10, usedQuota: 0, group: 'default', role: 1 } }),
 }
 declare global {
-  interface Window { chatHarness: { calls: typeof calls; emit: (event: AiChatStreamEvent) => void; completeImage: (requestId: string) => void; failImage: (requestId: string) => void; finishPreparation: () => void; switchScope: (id: number) => void; resetGroupFailure: () => void; setActive: (active: boolean) => void; setGroups: (names: string[]) => void; failGroupList: () => void; deferGroupList: () => void; releaseGroupList: () => void } }
+  interface Window { chatHarness: { calls: typeof calls; emit: (event: AiChatStreamEvent) => void; completeImage: (requestId: string) => void; failImage: (requestId: string) => void; finishPreparation: () => void; switchScope: (id: number) => void; resetGroupFailure: () => void; setActive: (active: boolean) => void; setGroups: (names: string[]) => void; failGroupList: () => void; deferGroupList: () => void; releaseGroupList: () => void; savedWorkspace: typeof savedWorkspace; failHistoryWrites: (fail: boolean) => void } }
 }
 function Fixture() {
   const [scope, setScope] = useState(query.has('sub2api') ? 'api-account:7' : 'xm-account:7')
@@ -54,6 +97,8 @@ function Fixture() {
     failGroupList: () => { failedGroupList = true },
     deferGroupList: () => { groupGate = new Promise<void>((resolve) => { releaseGroupGate = resolve }) },
     releaseGroupList: () => { releaseGroupGate?.(); groupGate = undefined; releaseGroupGate = undefined },
+    savedWorkspace,
+    failHistoryWrites: (fail) => { failHistoryWrites = fail },
   }
   return <ChatPage bridge={bridge as XingmangApi} accountScope={scope} active={active} />
 }

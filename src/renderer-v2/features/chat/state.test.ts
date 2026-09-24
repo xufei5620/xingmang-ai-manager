@@ -3,12 +3,14 @@ import { networkFailureMessages } from '../../../../electron/network-failure'
 import { relayQuotaFailureMessages } from '../../../../electron/relay-quota-failure'
 import { activeConversation, applyStreamEvent, chatErrorAction, chatErrorMessage, createConversation, createWorkspace, DEFAULT_CHAT_GROUP, DEFAULT_CHAT_MODEL, DEFAULT_IMAGE_MODEL, defaultChatSettings, filterConversations, planTurn, resolveChatGroup, resolveChatModel, saveConversation, shouldSendOnEnter, type ChatMessage, type ChatWorkspace } from './state'
 import { createParameterDraft, parseParameters } from './parameters'
-import { historyKey, importLegacyHistory, readWorkspace, writeWorkspace } from './storage'
+import { historyKey, importLegacyHistory, parseHistorySnapshot, planHistoryWrite, readWorkspace } from './storage'
 import { chatLimits, inspectModel, validateImageRequest } from './api'
 
 function readyConversation() { const conversation = createConversation(undefined, 'conversation-1'); conversation.settings.group = 'group-a'; conversation.settings.model = 'gpt-test'; return conversation }
 function turn(conversation = readyConversation()) { return planTurn(conversation, { prompt: 'first question', requestId: 'request-1', assistantId: 'assistant-1', userMessageId: 'user-1' }) }
 function memoryStorage() { const values = new Map<string, string>(); return { values, getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => { values.set(key, value) } } }
+// Earlier versions kept the workspace in localStorage; these tests seed that migration source directly.
+function seed(storage: ReturnType<typeof memoryStorage>, state: ChatWorkspace) { storage.setItem(historyKey(state.owner), JSON.stringify(state)) }
 
 describe('v2 chat request transitions', () => {
   it('starts a fresh workspace in text mode and chooses the screenshot defaults when available', () => {
@@ -149,7 +151,7 @@ describe('v2 chat persistence ownership', () => {
     const storage = memoryStorage()
     const old = saveConversation(createWorkspace(`${alias}:7`), readyConversation())
     old.conversations[0].draft = 'previous draft'
-    writeWorkspace(storage, old)
+    seed(storage, old)
     const source = storage.getItem(historyKey(`${alias}:7`))
     expect(readWorkspace(storage, 'api-account:7').exists).toBe(false)
     expect(readWorkspace(storage, 'xm-account:8').exists).toBe(false)
@@ -158,19 +160,19 @@ describe('v2 chat persistence ownership', () => {
     expect(migrated.state.owner).toBe('xm-account:7')
     expect(migrated.state.conversations[0].draft).toBe('previous draft')
     expect(storage.getItem(historyKey(`${alias}:7`))).toBe(source)
-    expect(JSON.parse(storage.getItem(historyKey('xm-account:7'))!).owner).toBe('xm-account:7')
-    writeWorkspace(storage, createWorkspace('xm-account:7'))
+    expect(storage.getItem(historyKey('xm-account:7'))).toBeNull()
+    seed(storage, createWorkspace('xm-account:7'))
     expect(readWorkspace(storage, 'xm-account:7').state.conversations).toHaveLength(0)
   })
-  it('does not relabel a mismatched old owner or hide readable history after a migration write failure', () => {
+  it('does not relabel a mismatched old owner and reads readable migration sources without writing them', () => {
     const storage = memoryStorage()
     storage.setItem(historyKey('solov:7'), JSON.stringify(createWorkspace('solov:8')))
     expect(readWorkspace(storage, 'xm-account:7').warning).toBeTruthy()
     expect(storage.getItem(historyKey('xm-account:7'))).toBeNull()
-    writeWorkspace(storage, saveConversation(createWorkspace('solov:7'), readyConversation()))
-    const blocked = { getItem: storage.getItem, setItem: () => { throw new Error('storage full') } }
-    const migrated = readWorkspace(blocked, 'xm-account:7')
-    expect(migrated.warning).toContain('迁移未保存')
+    seed(storage, saveConversation(createWorkspace('solov:7'), readyConversation()))
+    const readOnly = { getItem: storage.getItem, setItem: () => { throw new Error('migration must not write localStorage') } }
+    const migrated = readWorkspace(readOnly, 'xm-account:7')
+    expect(migrated.warning).toBeUndefined()
     expect(migrated.state.conversations).toHaveLength(1)
     expect(storage.getItem(historyKey('xm-account:7'))).toBeNull()
   })
@@ -181,14 +183,14 @@ describe('v2 chat persistence ownership', () => {
     expect(storage.getItem(historyKey('owner:7'))).toBe(raw)
   })
   it('persists opaque assets but no runtime URLs or in-flight request ids', () => {
-    const storage = memoryStorage(); const first = turn(); const assetId = 'a'.repeat(43)
+    const first = turn(); const assetId = 'a'.repeat(43)
     first.conversation.messages[1] = { ...first.conversation.messages[1], assets: [{ assetId, localUrl: 'https://private.example.test/a', mimeType: 'image/png', fileName: 'a.png' }] }
     const state = saveConversation(createWorkspace('owner:7'), first.conversation)
-    writeWorkspace(storage, state)
-    const serialized = storage.getItem(historyKey('owner:7'))!
+    const { write } = planHistoryWrite(state, null)!
+    const serialized = [write.index, ...write.put.map((file) => file.content)].join('\n')
     expect(serialized).not.toContain('https://private')
     expect(serialized).not.toContain('request-1')
-    const loaded = activeConversation(readWorkspace(storage, 'owner:7').state).messages.at(-1)!
+    const loaded = activeConversation(parseHistorySnapshot({ index: write.index, conversations: write.put }, 'owner:7').state).messages.at(-1)!
     expect(loaded.status).toBe('canceled')
     expect(loaded.assets?.[0].localUrl).toBe(`xingmang-asset://image/${assetId}`)
   })
