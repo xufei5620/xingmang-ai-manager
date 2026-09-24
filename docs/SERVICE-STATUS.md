@@ -41,6 +41,10 @@ https://updatesnew.shenfengwl.fun/xingmang-manager/service-status.json
 
 留空的项不会动线上已有的内容：比如只想关维护，选 off 其余都不填就行。
 
+如果它红在「线上的状态文件读回来不是有效的 JSON 对象」：多半是缓存或网站临时回了一张网页。它故意停下，
+因为照空白重建会把撤回名单和分批放量一起抹掉。过几分钟重跑；还不行就用浏览器打开上面那个地址看看，
+内容真坏了就按下面「备用」一节在 Cloudflare 后台传一份好的。回滚（rollback-release）读同一个文件，也会同样停下，这时线上什么都还没改。
+
 **核对**：浏览器打开上面那个地址，看到的就是客户端读到的内容。
 
 这个按钮要 release 环境里已有这四个 secret：`R2_ACCOUNT_ID`、`R2_BUCKET`、`R2_ACCESS_KEY_ID`、
