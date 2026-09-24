@@ -325,7 +325,7 @@ Key 走的型号菜单）不用抬。
 
 | 工具 | `recommended` | `blocked` | 依据 |
 |---|---|---|---|
-| Claude Code | `2.1.277`（2026-09-18） | `[2.1.265, 2.1.268)`、`[2.1.275, 2.1.277)` | 上游 changelog 两条网关回归 |
+| Claude Code | `2.1.289`（2026-10-05） | `[2.1.265, 2.1.268)`、`[2.1.275, 2.1.277)` | 上游 changelog 两条网关回归；抬到 2.1.281、2.1.289 的依据见下文 |
 | Codex CLI | `0.160.0`（2026-10-05） | `[0.155.0, 0.155.1)` | 上游 release note 与 PR #46467（见上一节）；抬到 0.156.1、0.160.0 的依据见下文 |
 | Gemini CLI | `0.62.0`（2026-10-05） | 无 | 当前 npm `latest`；抬到 0.61.0、0.62.0 的依据见下文 |
 | Grok CLI | `1.0.46`（2026-10-05） | 无 | 当前 npm `latest` 且是 xAI stable；本地假接口核过接当前账号的四项配置（1.0.44 与 1.0.46 各一遍，见下文） |
@@ -368,6 +368,62 @@ base URL 指本地假接口，型号名故意起成内置目录里没有的 `rel
 **维护节奏**：Grok 一周能发好几版，名单一旦有它就得跟着看，最少每周一次，否则等于把客户钉在老版本上。
 抬版本前按上面五条在沙箱里重跑一遍（假接口脚本思路：本地 HTTP 服务回 Responses 流、另起一个只记录不放行的
 出网代理），挑一个**同时是 npm `latest` 和 xAI stable** 的版本——只打 `alpha` 或没打 `latest` 的不选。
+
+**Claude Code 2.1.277 → 2.1.281（2026-09-24）：修的都是接中转才碰得到的毛病，没有新回归。**
+npm `latest` 是 2.1.281（2.1.279 没发过）。上游 changelog 2.1.278、2.1.280、2.1.281 三段逐条读过，
+跟代理、网关、第三方端点、鉴权、400、请求体、型号沾边的全部是修复，没有「自某版起」的回归：
+
+- 2.1.281：*Fixed responses cut short by a proxy or gateway that closes the stream cleanly being shown
+  as complete with no warning, and tool calls running twice on duplicated stream events*；
+  *Fixed responses failing with "Content block not found" when a proxy drops a stream event
+  mid-response*；*Fixed the stop reason being lost when a proxy sends a trailing usage-only frame*；
+  *Fixed an empty completed response being requested twice when the connection dropped before the
+  stream's final event*；*Fixed interactive startup waiting on the managed-settings network request
+  (about 80 ms, 17+ seconds when the network is unreachable) when no MCP servers or plugins are
+  configured*；*Fixed API errors from an HTML error page (such as a proxy's 429 or 502 page) printing
+  the page's raw markup*。
+- 2.1.280：*Fixed conversations with the advisor on failing every turn with API Error 400 "Input tag
+  'advisor_20260301'" behind a proxy or gateway that doesn't support it; the request now retries
+  without it*——比 2.1.277 的修法多了一层兜底；另外把 Opus 5.5 设为默认 Opus，本产品写了
+  `ANTHROPIC_DEFAULT_MODEL` 与 `modelPicker`，不受影响。
+- 2.1.278：只改了 auto mode 在网关上默认用服务端分类器；本产品模板写的是 `bypassPermissions`，不走 auto mode。
+
+沙箱实测（空 HOME、非 root、`env -i`、出网代理指死端口，`settings.json` 按本产品模板写
+`ANTHROPIC_BASE_URL` 指本地假接口、`bypassPermissions`、`skipWebFetchPreflight`、`language`、
+`DISABLE_AUTOUPDATER`）与 2.1.277 对照：`claude -p "hi"` 两版都正常拿到假接口的回复；请求体字段、
+`anthropic-beta` 头、鉴权头（只有 `Authorization`、没有 `x-api-key`）完全一样；不写 deny 时两版都发
+21 个工具（含 `DesignSync`、不含 `Artifact`），每个工具的输入 schema 一字不差，写上
+`deny: ['Artifact', 'DesignSync']` 后都剩 20 个；`claude doctor` 仍是
+`Auto-updates: disabled (set by env: DISABLE_AUTOUPDATER)`；`--continue` 还在。
+没做的：中转上的真实请求（`verifiedSites` 仍为空）。
+
+**Claude Code 2.1.281 → 2.1.289（2026-10-05 每周巡检）：没有新的网关回归，但上下文窗口的算法变了。**
+2.1.282~2.1.289 逐条读过，和接中转有关的修复：
+
+- 2.1.282：*Fixed every request failing with a 400 error in conversations whose history holds web search
+  results the API cannot decrypt (for example, from a turn answered through a third-party gateway)*。
+- 2.1.284：流被打坏时不再把「JSON Parse error」或单词 undefined 写进回答；认不出的型号 id（比如代理后面的
+  自定义型号）下 Explore 子任务不再擅自换成 Opus。
+- 2.1.286：*Fixed API 400 errors after a tool or hook returned an object, number or boolean instead of text*。
+- 2.1.288：*Fixed session titles, memory recall and prompt hooks failing on Mantle or behind gateways that
+  reject structured outputs*，并加了 `CLAUDE_CODE_DISABLE_STRUCTURED_OUTPUTS`。
+
+看着会咬到我们、实际不会的：2.1.283 / 2.1.285 把没配权限模式的会话（含 `claude -p`）默认改成 auto mode，
+模板写死 `permissions.defaultMode: 'bypassPermissions'`；2.1.284 把 Sonnet 5.5 设为 API 上的默认 Sonnet，
+模板用 `modelPicker` 整份换掉菜单、`ANTHROPIC_DEFAULT_MODEL` 自己写。
+
+**要中转那边回答的一条**：2.1.285 原文 *Changed sessions behind a custom `ANTHROPIC_BASE_URL` to use the 1M
+context window of models that have one (Opus 4.7+, Sonnet 5+, Fable); run `/autocompact 200k` if your gateway
+stops at 200K*。沙箱里按模板写配置跑 `claude -p /context`：2.1.277 显示 `1.9k / 200k`，2.1.289 显示
+`2k / 1m`——也就是到 200K 附近不再自动压缩，要一路涨到 1M 才压。中转的 Claude 渠道要是只收 200K，长对话会
+撑到中转回「太长」才失败。在 `env` 里写 `CLAUDE_CODE_DISABLE_1M_CONTEXT=1` 后 2.1.289 又显示 `2k / 200k`，
+请求照常，这是收不下时的退路。模板目前没写。
+
+沙箱实测（同上一段的做法）与 2.1.277 对照：`claude -p "hi"` 两版都拿到假接口的回复；请求体字段一样
+（`model`、`messages`、`system`、`tools`、`metadata`、`max_tokens`、`thinking`、`context_management`、
+`output_config`、`stream`），写了 deny 后都是 20 个工具、没有 `Artifact` / `DesignSync`，鉴权只有
+`Authorization`；`anthropic-beta` 头 2.1.289 少了 `fallback-credit-2026-06-01`，没有新增。
+没做的：中转上的真实请求（`verifiedSites` 仍为空）。
 
 **Codex 0.155.1 → 0.156.1（2026-09-23）：为了 GPT-6 Sol / Luna。** OpenAI 9 月 22 日发布
 `gpt-6-sol` 与 `gpt-6-luna`。Codex 按自带的模型目录（`codex-rs/models-manager/models.json`）决定

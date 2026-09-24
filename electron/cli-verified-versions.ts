@@ -64,11 +64,11 @@ export interface CliVersionCompatibility {
 export const cliVerifiedVersions: Record<ProviderId, CliVersionCompatibility> = {
   claude: {
     recommended: {
-      version: '2.1.277',
-      verifiedAt: '2026-09-18',
+      version: '2.1.289',
+      verifiedAt: '2026-10-05',
       verifiedSites: [],
-      note: '当前 npm latest,且修复了 2.1.275 引入的「指向网关时每个请求 400」回归',
-      userNote: '修好了一个会让每次提问都失败的问题',
+      note: '当前 npm latest;2.1.278~2.1.289 没有新的网关回归,修了中转断流被当成完成、重复流事件让工具调用跑两遍、工具返回非文本后每轮 400、网关拒收 structured outputs 时标题与记忆失败;2.1.285 起接自定义 ANTHROPIC_BASE_URL 时上下文按 1M 算(以前 200K)',
+      userNote: '修好了几个会让回答中途断掉、或者每次提问都失败的问题',
     },
     blocked: [
       {
