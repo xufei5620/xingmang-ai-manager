@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { accountTabs, settingsGroups } from './business';
-import { tutorialTopics, type TutorialStep } from './tutorials';
+import { macKeychainTutorialTitle, tutorialTopics, type TutorialStep } from './tutorials';
 
 function step(topicId: string, action: string): TutorialStep {
   const found = tutorialTopics.find((topic) => topic.id === topicId)?.steps.find((entry) => entry.action === action);
@@ -49,5 +49,15 @@ describe('tutorial step targets', () => {
     for (const topic of tutorialTopics) for (const entry of topic.steps) {
       expect(entry.section, `${topic.id} / ${entry.action}`).toBe(sectionNamedIn(entry));
     }
+  });
+});
+
+describe('mac keychain prompt help', () => {
+  it('explains the keychain password prompt next to the toolbox update step', () => {
+    const extra = step('safety', '打开工具箱更新').extra ?? [];
+    const entry = extra.find((item) => item.title === macKeychainTutorialTitle);
+    expect(entry?.detail).toContain('xingmang-ai-manager Safe Storage');
+    expect(entry?.detail).toContain('始终允许');
+    expect(tutorialTopics.find((topic) => topic.id === 'safety')?.keywords).toContain('钥匙串');
   });
 });

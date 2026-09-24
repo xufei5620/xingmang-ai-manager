@@ -1785,6 +1785,30 @@ test('the updates page names the step that failed and offers that step again', a
   } finally { await page.close() }
 })
 
+// Mac 自签包每换一版，第一次读登录信息都会弹「登录」钥匙串密码框；重启确认框里
+// 先打招呼，Windows 没有这回事，不许多这一句。
+test('the restart-to-install dialog warns about the keychain prompt on Mac only', async () => {
+  for (const [query, expected] of [['os=mac', 1], ['', 0]]) {
+    const page = await open(query)
+    try {
+      await page.getByTestId('nav-more').click()
+      await page.getByTestId('nav-updates').click()
+      const updates = page.getByTestId('page-updates')
+      await updates.waitFor()
+      await page.evaluate(() => window.v2Test.emit('onUpdateState', {
+        phase: 'downloaded', currentVersion: '0.1.31', availableVersion: '0.1.32', releaseName: null, releaseNotesText: null,
+        checkedAt: new Date().toISOString(), progress: null, failedStep: null, error: null, development: true,
+      }))
+      await updates.getByRole('button', { name: '重启安装', exact: true }).click()
+      const dialog = page.getByRole('dialog', { name: '重启并安装更新？' })
+      await dialog.waitFor()
+      if (expected) await dialog.getByTestId('updates-mac-keychain-hint').getByText('始终允许', { exact: false }).waitFor()
+      assert.equal(await dialog.getByTestId('updates-mac-keychain-hint').count(), expected, query || 'windows')
+      await clean(page)
+    } finally { await page.close() }
+  }
+})
+
 // 维护提示来自更新目录上的状态文件，没登录也得看得到：欢迎页角落一条，登录框是
 // 模态的会盖住角落，所以框里再放一份。关掉的是这句话，发布者换了说法会再出现。
 test('a maintenance notice from the update feed reaches signed-out users, including inside the login dialog', async () => {
