@@ -2096,7 +2096,7 @@ export function SettingsPage({
             '桌面通知',
             '后台运行时提醒你查看结果',
             <Switch
-              checked={Boolean(settings.desktopNotifications)}
+              checked={settings.desktopNotifications !== false}
               disabled={!resource.data?.capabilities.notifications}
               aria-label="桌面通知"
               onChange={(desktopNotifications) =>
@@ -2116,7 +2116,7 @@ export function SettingsPage({
                     true
                   }
                   disabled={
-                    !settings.desktopNotifications || Boolean(operation.busy)
+                    settings.desktopNotifications === false || Boolean(operation.busy)
                   }
                   onChange={(enabled) =>
                     void operation.execute(
@@ -2140,7 +2140,7 @@ export function SettingsPage({
           {row(
             '新版本可用',
             '新版本和更新下载完成提醒随桌面通知总开关控制',
-            <Pill>{settings.desktopNotifications ? '已开启' : '已关闭'}</Pill>,
+            <Pill>{settings.desktopNotifications !== false ? '已开启' : '已关闭'}</Pill>,
           )}
           {row(
             '看看长什么样',
@@ -2150,7 +2150,7 @@ export function SettingsPage({
               icon={Zap}
               disabled={
                 !systemApi ||
-                !settings.desktopNotifications ||
+                settings.desktopNotifications === false ||
                 !resource.data?.capabilities.notifications
               }
               loading={operation.busy === 'test-notification'}

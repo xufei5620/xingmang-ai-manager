@@ -1296,7 +1296,7 @@ if (!hasSingleInstanceLock) {
       }),
     }))
     const desktopNotifications = createDesktopNotificationController({
-      readEnabled: () => systemService.readStoredConfig().desktopNotifications === true,
+      readEnabled: () => systemService.readStoredConfig().desktopNotifications !== false,
       focusMainWindow: () => {
         if (!managedMainWindow || managedMainWindow.isDestroyed()) return
         if (managedMainWindow.isMinimized()) managedMainWindow.restore()

@@ -1240,7 +1240,7 @@ test('four skins persist via existing settings and failed changes leave the save
   }
 })
 
-test('test notifications respect the master switch and privacy stores only an explicit local preference', async () => {
+test('desktop notifications start on, the master switch gates test notifications and privacy stores only an explicit local preference', async () => {
   const page = await fixture('page=settings&system=1')
   try {
     await page.getByRole('tab', { name: '通知', exact: true }).click()
@@ -1248,8 +1248,18 @@ test('test notifications respect the master switch and privacy stores only an ex
       name: '发一条测试通知',
       exact: true,
     })
+    // 没存过的设置按默认打开；关掉时只存下显式的 false，再打开能恢复。
+    const master = page.getByRole('switch', { name: '桌面通知', exact: true })
+    assert.equal(await master.getAttribute('aria-checked'), 'true')
+    assert.equal(await testNotice.isDisabled(), false)
+    await master.click()
+    await page.waitForFunction(() => document.querySelector('[aria-label="桌面通知"]')?.getAttribute('aria-checked') === 'false')
+    assert.deepEqual(
+      (await calls(page)).filter((call) => call.name === 'settings').at(-1).args,
+      { version: 2, desktopNotifications: false },
+    )
     assert.equal(await testNotice.isDisabled(), true)
-    await page.getByRole('switch', { name: '桌面通知', exact: true }).click()
+    await master.click()
     await page
       .getByRole('switch', { name: '余额不足通知', exact: true })
       .click()
