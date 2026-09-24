@@ -2869,6 +2869,24 @@ describe('provisionCliKey with a used-up per-key cap', () => {
     expect(hasExhaustedCappedCliKey([capped], name, 'vip')).toBe(false)
   })
 
+  it('counts only used-up caps newer than the key that would be reused', () => {
+    expect(hasExhaustedCappedCliKey([capped], name, 'codex-pro', 6)).toBe(true)
+    expect(hasExhaustedCappedCliKey([capped], name, 'codex-pro', 8)).toBe(false)
+    expect(hasExhaustedCappedCliKey([{ ...capped, id: 'broken' }], name, 'codex-pro', 8)).toBe(true)
+  })
+
+  it('does not fall back to an older unlimited key under the same name when the newer cap is used up', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    const olderUnlimited = { ...capped, id: 5, status: 1, remain_quota: 0, unlimited_quota: true }
+    fetchImpl
+      .mockResolvedValueOnce(usableGroupsResponse())
+      .mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: { total: 2, items: [olderUnlimited, capped] } }))
+
+    await expect(client.provisionCliKey({ name, group: 'codex-pro' })).rejects.toThrow('这个工具的额度用完了')
+    expect(fetchImpl.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false)
+  })
+
   it('refuses to create a fresh unlimited key and never sends POST /api/token/', async () => {
     const fetchImpl = vi.fn<NewApiFetch>()
     const client = await authenticatedClient(fetchImpl)
