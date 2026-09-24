@@ -8,6 +8,7 @@ import { resolveRelocatedPath } from './relocated-folders'
 import { DirectoryEntryLimitError, readDirectoryEntriesSync } from './bounded-directory'
 import { readBoundedResponseText } from './bounded-response'
 import { cliCatalog, providerIds, type ProviderId } from './catalog'
+import { readCodexSkillEnablement } from './codex-extensions'
 import {
   CODEX_API_CURATED_MARKETPLACE_NAME,
   ensureCodexPluginCatalog,
@@ -292,6 +293,8 @@ interface RawMcpServer {
   args: string[]
   url: string | null
   enabled: boolean
+  /** 只有从配置文件读出来的才知道落在哪一层；CLI 自己列的缺省为 null。 */
+  scope?: ProviderExtensionScope | null
 }
 
 interface ParsedPackageSource {
@@ -422,6 +425,15 @@ class UnsupportedSourceInspectionError extends Error {
 
 function defaultUpdate(state: ProviderExtensionUpdateState, reason: string): ProviderExtensionUpdate {
   return { state, reason, checkedAt: null }
+}
+
+interface GeminiSkillTarget {
+  name: string
+  scope: ProviderExtensionScope | undefined
+}
+
+function isMutationScope(value: ProviderExtensionItemScope | null): value is ProviderExtensionScope {
+  return value === 'user' || value === 'project' || value === 'local' || value === 'workspace'
 }
 
 function nativeOperations(provider: ProviderId, kind: ProviderExtensionKind): ProviderExtensionOperations {
@@ -571,12 +583,18 @@ function readJsonFile(filePath: string, maximumBytes = MAX_CONFIG_BYTES): Record
   return parsed
 }
 
-function configMcpEntries(config: Record<string, unknown> | null): RawMcpServer[] {
+function configMcpEntries(
+  config: Record<string, unknown> | null,
+  scope: ProviderExtensionScope,
+): RawMcpServer[] {
   const servers = config?.mcpServers
   if (!isRecord(servers)) return []
-  return Object.entries(servers).map(([name, value]) => rawMcpFromJson({
-    name,
-    ...(isRecord(value) ? value : {}),
+  return Object.entries(servers).map(([name, value]) => ({
+    ...rawMcpFromJson({
+      name,
+      ...(isRecord(value) ? value : {}),
+    }),
+    scope,
   }))
 }
 
@@ -600,16 +618,18 @@ function readConfiguredMcpServers(
   repositoryRoot: string | null,
 ): ConfiguredMcpServers {
   const claudeRootConfig = path.join(homeDirectory, '.claude.json')
-  const files = provider === 'claude'
+  // 每个文件对应 CLI 里的一层 scope。移除时必须带着它，否则 `mcp remove`
+  // 会去默认那一层找，项目里的连接删不掉，同名的全局连接反倒被删了（#488）。
+  const files: Array<{ path: string; scope: ProviderExtensionScope } | null> = provider === 'claude'
     ? [
-        claudeRootConfig,
-        path.join(homeDirectory, '.claude', 'settings.json'),
-        repositoryRoot ? path.join(repositoryRoot, '.mcp.json') : null,
-        repositoryRoot ? path.join(repositoryRoot, '.claude', 'settings.json') : null,
+        { path: claudeRootConfig, scope: 'user' },
+        { path: path.join(homeDirectory, '.claude', 'settings.json'), scope: 'user' },
+        repositoryRoot ? { path: path.join(repositoryRoot, '.mcp.json'), scope: 'project' } : null,
+        repositoryRoot ? { path: path.join(repositoryRoot, '.claude', 'settings.json'), scope: 'project' } : null,
       ]
     : [
-        path.join(homeDirectory, '.gemini', 'settings.json'),
-        repositoryRoot ? path.join(repositoryRoot, '.gemini', 'settings.json') : null,
+        { path: path.join(homeDirectory, '.gemini', 'settings.json'), scope: 'user' },
+        repositoryRoot ? { path: path.join(repositoryRoot, '.gemini', 'settings.json'), scope: 'project' } : null,
       ]
   // ~/.claude.json 会随会话历史增长，2MB 上限会误伤正常用户，单独放宽。
   const limitFor = (filePath: string) => filePath === claudeRootConfig
@@ -622,13 +642,15 @@ function readConfiguredMcpServers(
     failedFiles.add(filePath)
     warnings.push(`MCP 配置读取失败（${filePath}）：${errorDetail(error)}`)
   }
-  for (const filePath of files) {
-    if (!filePath) continue
+  // 同名连接在不同层各列一条，同一层里后读的覆盖先读的。
+  const record = (server: RawMcpServer) => result.set(`${server.scope ?? ''}\0${server.name}`, server)
+  for (const file of files) {
+    if (!file) continue
     // 单个文件损坏或超限只降级为警告，避免拖垮其余配置来源。
     try {
-      for (const server of configMcpEntries(readJsonFile(filePath, limitFor(filePath)))) result.set(server.name, server)
+      for (const server of configMcpEntries(readJsonFile(file.path, limitFor(file.path)), file.scope)) record(server)
     } catch (error) {
-      recordFailure(filePath, error)
+      recordFailure(file.path, error)
     }
   }
   if (provider === 'claude' && repositoryRoot && !failedFiles.has(claudeRootConfig)) {
@@ -639,7 +661,7 @@ function readConfiguredMcpServers(
         ? Object.entries(projects).find(([projectPath]) => equivalentProjectPath(projectPath, repositoryRoot))?.[1]
         : null
       const project = isRecord(projectValue) ? projectValue : null
-      for (const server of configMcpEntries(project)) result.set(server.name, server)
+      for (const server of configMcpEntries(project, 'local')) record(server)
     } catch (error) {
       recordFailure(claudeRootConfig, error)
     }
@@ -660,7 +682,7 @@ function mcpItem(provider: ProviderId, server: RawMcpServer): MutableExtensionIt
       : ''),
     installed: true,
     enabled: server.enabled,
-    scope: null,
+    scope: server.scope ?? null,
     currentVersion: detected.reference,
     latestVersion: null,
     source: detected,
@@ -749,6 +771,7 @@ function scanSkills(
   home: string,
   codexHome: string,
   repository: string | null,
+  isEnabled: (definitionPath: string) => boolean = () => true,
 ): MutableExtensionItem[] {
   const result = new Map<string, MutableExtensionItem>()
   for (const root of skillRoots(provider, home, codexHome, repository)) {
@@ -804,7 +827,7 @@ function scanSkills(
         name,
         description: nullableText(frontmatter.description) ?? '',
         installed: true,
-        enabled: true,
+        enabled: isEnabled(id),
         scope: root.scope,
         currentVersion: null,
         latestVersion: null,
@@ -996,18 +1019,42 @@ function pluginItem(
   }
 }
 
+/**
+ * Claude Code 会把别的项目里装的插件也列出来（带 projectPath）。它们对当前项目不起作用，
+ * 在这里也操作不了——`--scope project` 只认命令运行时所在的项目。`repositoryRoot`
+ * 缺省（undefined）表示不按项目过滤。
+ */
+function pluginEntryAppliesHere(entry: Record<string, unknown>, repositoryRoot: string | null | undefined): boolean {
+  if (repositoryRoot === undefined) return true
+  const scope = text(entry.scope).toLowerCase()
+  if (scope !== 'project' && scope !== 'local') return true
+  const projectPath = nullableText(entry.projectPath)
+  if (!projectPath) return true
+  return Boolean(repositoryRoot) && equivalentProjectPath(projectPath, repositoryRoot!)
+}
+
 export function parseProviderPluginList(
   provider: ProviderId,
   output: string,
   checkedAt = new Date().toISOString(),
   defaultScope: ProviderExtensionScope | null = null,
+  repositoryRoot?: string | null,
 ): ProviderExtensionItem[] {
   const parsed = parseJson(output, `${cliCatalog[provider].name} 扩展列表`)
-  const installed = new Map<string, Record<string, unknown>>()
+  // 同一个插件可以在 user 与 project 各装一份，CLI 会各列一条。按 ID 合并会丢掉
+  // 其中一条，之后的停用/移除就可能落到另一层去（#488），所以按 ID + scope 分开。
+  const installed = new Map<string, Map<string, Record<string, unknown>>>()
   const available = new Map<string, Record<string, unknown>>()
+  const addInstalled = (entry: Record<string, unknown>) => {
+    if (!pluginEntryAppliesHere(entry, repositoryRoot)) return
+    const key = pluginKey(provider, entry)
+    const scopes = installed.get(key) ?? new Map<string, Record<string, unknown>>()
+    scopes.set(text(entry.scope).toLowerCase(), entry)
+    installed.set(key, scopes)
+  }
   if (isRecord(parsed)) {
     for (const entry of Array.isArray(parsed.installed) ? parsed.installed : []) {
-      if (isRecord(entry)) installed.set(pluginKey(provider, entry), entry)
+      if (isRecord(entry)) addInstalled(entry)
     }
     for (const entry of Array.isArray(parsed.available) ? parsed.available : []) {
       if (isRecord(entry)) available.set(pluginKey(provider, entry), entry)
@@ -1016,22 +1063,28 @@ export function parseProviderPluginList(
     for (const entry of parsed) {
       if (!isRecord(entry)) continue
       const status = text(entry.status).toLowerCase()
-      if (status === 'installed' || entry.installed === true) installed.set(pluginKey(provider, entry), entry)
+      if (status === 'installed' || entry.installed === true) addInstalled(entry)
       else if (status === 'available' || entry.installed === false) available.set(pluginKey(provider, entry), entry)
-      else installed.set(pluginKey(provider, entry), entry)
+      else addInstalled(entry)
     }
   } else {
     throw new Error(`${cliCatalog[provider].name} 扩展列表格式不受支持`)
   }
   return [...new Set([...installed.keys(), ...available.keys()])]
-    .map((key) => pluginItem(
-      provider,
-      installed.get(key) ?? null,
-      available.get(key) ?? null,
-      checkedAt,
-      defaultScope,
-    ))
-    .sort((left, right) => Number(right.installed) - Number(left.installed) || left.name.localeCompare(right.name))
+    .flatMap((key) => {
+      const scopes = [...(installed.get(key)?.values() ?? [])]
+      const entries: Array<Record<string, unknown> | null> = scopes.length ? scopes : [null]
+      return entries.map((entry) => pluginItem(
+        provider,
+        entry,
+        available.get(key) ?? null,
+        checkedAt,
+        defaultScope,
+      ))
+    })
+    .sort((left, right) => Number(right.installed) - Number(left.installed)
+      || left.name.localeCompare(right.name)
+      || (left.scope ?? '').localeCompare(right.scope ?? ''))
 }
 
 /** 官方目录里的插件补上 plugin.json 里的显示名与一句说明；别的市场原样不动。 */
@@ -1865,7 +1918,13 @@ export class ProviderExtensionService {
         })
         items.push(...parseGeminiSkillList(output, this.homeDirectory, this.repositoryRoot))
       } else {
-        items.push(...scanSkills(provider, this.homeDirectory, this.codexHome, this.repositoryRoot))
+        items.push(...scanSkills(
+          provider,
+          this.homeDirectory,
+          this.codexHome,
+          this.repositoryRoot,
+          provider === 'codex' ? readCodexSkillEnablement(path.join(this.codexHome, 'config.toml')) : undefined,
+        ))
       }
     } catch (error) {
       const reason = `${provider === 'gemini' ? 'Gemini CLI Skill 状态' : 'Skill 目录'}读取失败：${errorDetail(error)}`
@@ -1882,7 +1941,10 @@ export class ProviderExtensionService {
         provider,
         output,
         checkedAt,
-        provider === 'gemini' ? (this.repositoryRoot ? 'workspace' : 'user') : null,
+        // Gemini 的扩展装在用户目录下，启停不带 scope 时 CLI 也按 user 算；
+        // 这里如实标 user，免得界面带着猜出来的 workspace 去启停（#488）。
+        provider === 'gemini' ? 'user' : null,
+        provider === 'claude' ? this.repositoryRoot : undefined,
       )
       if (provider === 'codex') describeCodexCatalogPlugins(plugins, this.codexHome)
       items.push(...plugins)
@@ -2035,7 +2097,10 @@ export class ProviderExtensionService {
     return { argv: ['mcp', 'add', '--scope', scope, ...envArgs, id, '--', command, ...args], secrets }
   }
 
-  private mutationArgv(input: ProviderExtensionMutation): { argv: string[]; secrets: string[] } {
+  private mutationArgv(
+    input: ProviderExtensionMutation,
+    geminiSkill?: GeminiSkillTarget,
+  ): { argv: string[]; secrets: string[] } {
     const operations = nativeOperations(input.provider, input.kind)
     if (!operations[input.action]) throw new Error('当前 Provider 不支持该原生操作')
     const id = input.action === 'install' && input.kind !== 'mcp'
@@ -2058,8 +2123,13 @@ export class ProviderExtensionService {
       if (input.action === 'install') {
         return { argv: ['skills', 'install', safeSource(input.source), '--scope', scope, '--consent'], secrets: [] }
       }
-      const argv = ['skills', input.action, id!]
-      if (input.action === 'uninstall' || input.action === 'disable') argv.push('--scope', scope)
+      // 列表里的 ID 是 SKILL.md 的绝对路径，CLI 只认技能名（#489）；名字与
+      // scope 都以 mutate() 刚从 CLI 重新读到的那一条为准。
+      if (!geminiSkill) throw new Error('没有找到这个技能，请刷新列表后再试。')
+      const argv = ['skills', input.action, geminiSkill.name]
+      if (input.action === 'uninstall' || input.action === 'disable') {
+        argv.push('--scope', normalizeScope('gemini', geminiSkill.scope, 'skill'))
+      }
       return { argv, secrets: [] }
     }
 
@@ -2068,7 +2138,10 @@ export class ProviderExtensionService {
     }
     const command = input.provider === 'gemini' ? 'extensions' : 'plugin'
     if (input.action === 'install') {
-      return { argv: [command, 'install', safeSource(id ?? input.source)], secrets: [] }
+      const argv = [command, 'install', safeSource(id ?? input.source)]
+      // 不带 --scope 时 Claude Code 装进 user；用户在表单里选了「当前项目」就得带上。
+      if (input.provider === 'claude' && input.scope) argv.push('--scope', scope)
+      return { argv, secrets: [] }
     }
     if (input.provider === 'gemini') {
       const argv = [command, input.action, id!]
@@ -2081,14 +2154,45 @@ export class ProviderExtensionService {
     return { argv, secrets: [] }
   }
 
+  /** 按列表里的 ID（SKILL.md 路径）从 CLI 当前的输出里找回技能名与所在层。 */
+  private async resolveGeminiSkill(input: ProviderExtensionMutation): Promise<GeminiSkillTarget | undefined> {
+    if (input.provider !== 'gemini' || input.kind !== 'skill' || input.action === 'install') return undefined
+    const requested = safeIdentifier(input.id, '扩展 ID')
+    const output = await this.invoke('gemini', ['skills', 'list', '--all'], {
+      cwd: this.repositoryRoot ?? undefined,
+      maxOutputBytes: MAX_OUTPUT_BYTES,
+    })
+    const items = parseGeminiSkillList(output, this.homeDirectory, this.repositoryRoot)
+    const byPath = path.isAbsolute(requested)
+      ? items.find((item) => equivalentProjectPath(item.id, requested))
+      : undefined
+    // 旧调用方可能直接传技能名；同名时优先调用方指定的那一层。
+    const item = byPath
+      ?? items.find((item) => item.name === requested && item.scope === input.scope)
+      ?? items.find((item) => item.name === requested)
+    if (!item) return undefined
+    return {
+      name: safeIdentifier(item.name, 'Skill 名称'),
+      scope: isMutationScope(item.scope) ? item.scope : undefined,
+    }
+  }
+
   async mutate(input: ProviderExtensionMutation): Promise<ProviderExtensionsSnapshot> {
     if (!providerIds.includes(input.provider)) throw new Error('未知的 Provider')
-    const { argv, secrets } = this.mutationArgv(input)
+    const geminiSkill = await this.resolveGeminiSkill(input)
+    const { argv, secrets } = this.mutationArgv(input, geminiSkill)
+    const scope = geminiSkill ? geminiSkill.scope : input.scope
+    const projectBound = input.provider === 'claude' || input.provider === 'gemini'
+    // 这两家的 project / local / workspace 都是「命令在哪个项目里跑就改哪个项目」，
+    // 不在项目目录里跑，CLI 会改错地方或者直接报找不到（#488）。
+    if (projectBound && scope && scope !== 'user' && !this.repositoryRoot) {
+      throw new Error('这一项属于某个项目，请先在工作目录里选好这个项目再操作。')
+    }
     if (input.provider === 'claude' && input.kind === 'plugin' && input.action === 'install') {
       await this.ensureClaudeOfficialMarketplace()
     }
     await this.invoke(input.provider, argv, {
-      cwd: input.provider === 'gemini' ? this.repositoryRoot ?? undefined : undefined,
+      cwd: projectBound ? this.repositoryRoot ?? undefined : undefined,
       timeoutMs: MUTATION_TIMEOUT_MS,
       maxOutputBytes: MAX_OUTPUT_BYTES,
       sensitiveValues: secrets,

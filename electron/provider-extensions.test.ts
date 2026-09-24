@@ -1070,10 +1070,14 @@ describe('ProviderExtensionService native mutations', () => {
 
   it('uses native Gemini skill operations and rejects unsupported Codex updates', async () => {
     const repository = path.join(temporaryDirectory(), 'workspace')
+    const workspaceSkill = path.join(repository, '.gemini', 'skills', 'workspace-skill', 'SKILL.md')
     const calls: Array<{ argv: string[]; cwd?: string }> = []
     const invoke: ProviderCliInvoker = vi.fn(async (_provider, argv, options) => {
       calls.push({ argv: [...argv], cwd: options?.cwd })
       if (argv[0] === 'extensions') return '[]'
+      if (argv.join(' ') === 'skills list --all') {
+        return ['workspace-skill [Enabled]', `  Location:    ${workspaceSkill}`, ''].join('\n')
+      }
       return ''
     })
     const service = new ProviderExtensionService({
@@ -1093,7 +1097,7 @@ describe('ProviderExtensionService native mutations', () => {
       provider: 'gemini',
       kind: 'skill',
       action: 'disable',
-      id: 'workspace-skill',
+      id: workspaceSkill,
       scope: 'workspace',
     })
     await expect(service.mutate({
@@ -1733,5 +1737,182 @@ describe('local Git metadata on a relocated profile', () => {
     const { skill } = relocatedSkill()
 
     expect(() => readLocalGitMetadata(skill)).toThrow('不能经过符号链接或目录联接')
+  })
+})
+
+describe('ProviderExtensionService scope-preserving mutations', () => {
+  function recordingInvoke(responses: (argv: readonly string[]) => string | undefined) {
+    const calls: Array<{ provider: ProviderId; argv: string[]; cwd?: string }> = []
+    const invoke: ProviderCliInvoker = vi.fn(async (provider, argv, options) => {
+      calls.push({ provider, argv: [...argv], cwd: options?.cwd })
+      return responses(argv) ?? ''
+    })
+    return { calls, invoke }
+  }
+
+  it('maps listed Gemini skill paths back to the skill name and the scope it lives in', async () => {
+    const home = temporaryDirectory()
+    const repository = path.join(temporaryDirectory(), 'workspace')
+    const userSkill = path.join(home, '.gemini', 'skills', 'demo', 'SKILL.md')
+    const workspaceSkill = path.join(repository, '.gemini', 'skills', 'demo', 'SKILL.md')
+    const listing = [
+      'Discovered Agent Skills:',
+      '',
+      'demo [Enabled]',
+      '  Description: user copy',
+      `  Location:    ${userSkill}`,
+      '',
+      'demo [Disabled]',
+      '  Description: workspace copy',
+      `  Location:    ${workspaceSkill}`,
+      '',
+    ].join('\n')
+    const { calls, invoke } = recordingInvoke((argv) => {
+      if (argv.join(' ') === 'skills list --all') return listing
+      if (argv[0] === 'extensions') return '[]'
+      return undefined
+    })
+    const service = new ProviderExtensionService({ homeDirectory: home, repositoryRoot: repository, invoke })
+
+    const snapshot = await service.list('gemini')
+    const skills = snapshot.items.filter((item) => item.kind === 'skill')
+    const user = skills.find((item) => item.id === path.resolve(userSkill))!
+    const workspace = skills.find((item) => item.id === path.resolve(workspaceSkill))!
+    expect(user.scope).toBe('user')
+    expect(workspace.scope).toBe('workspace')
+
+    const mutations: Array<{ id: string; action: 'enable' | 'disable' | 'uninstall' }> = [
+      { id: user.id, action: 'disable' },
+      { id: workspace.id, action: 'disable' },
+      { id: workspace.id, action: 'enable' },
+      { id: user.id, action: 'uninstall' },
+      { id: workspace.id, action: 'uninstall' },
+    ]
+    for (const mutation of mutations) {
+      calls.length = 0
+      const item = mutation.id === user.id ? user : workspace
+      await service.mutate({ provider: 'gemini', kind: 'skill', action: mutation.action, id: item.id })
+      const mutating = calls.filter((call) => call.argv[0] === 'skills' && call.argv[1] === mutation.action)
+      expect(mutating).toHaveLength(1)
+      expect(mutating[0].argv[2]).toBe('demo')
+      expect(mutating[0].cwd).toBe(repository)
+      if (mutation.action === 'enable') expect(mutating[0].argv).toEqual(['skills', 'enable', 'demo'])
+      else expect(mutating[0].argv).toEqual(['skills', mutation.action, 'demo', '--scope', item.scope])
+    }
+  })
+
+  it('refuses a Gemini skill the CLI no longer lists instead of passing the path through', async () => {
+    const { calls, invoke } = recordingInvoke((argv) => (argv[0] === 'extensions' ? '[]' : undefined))
+    const service = new ProviderExtensionService({ homeDirectory: temporaryDirectory(), invoke })
+    const stale = path.join(temporaryDirectory(), 'gone', 'SKILL.md')
+
+    await expect(service.mutate({ provider: 'gemini', kind: 'skill', action: 'disable', id: stale }))
+      .rejects.toThrow('没有找到这个技能')
+    expect(calls.some((call) => call.argv[1] === 'disable')).toBe(false)
+  })
+
+  it('keeps user and project copies of one Claude plugin apart and runs project operations inside the project', async () => {
+    const repository = temporaryDirectory()
+    const otherProject = temporaryDirectory()
+    const pluginList = JSON.stringify([
+      { id: 'demo@market', scope: 'project', enabled: true, projectPath: repository },
+      { id: 'demo@market', scope: 'user', enabled: false },
+      { id: 'elsewhere@market', scope: 'project', enabled: true, projectPath: otherProject },
+    ])
+    const { calls, invoke } = recordingInvoke((argv) => {
+      if (argv.join(' ') === 'plugin list --available --json') return pluginList
+      if (argv.join(' ') === 'plugin marketplace list --json') return registeredMarketplaceList
+      if (argv.join(' ') === 'mcp list') return ''
+      return undefined
+    })
+    const service = new ProviderExtensionService({
+      homeDirectory: temporaryDirectory(),
+      repositoryRoot: repository,
+      invoke,
+    })
+
+    const plugins = (await service.list('claude')).items.filter((item) => item.kind === 'plugin')
+    expect(plugins.map((item) => [item.id, item.scope, item.enabled])).toEqual([
+      ['demo@market', 'project', true],
+      ['demo@market', 'user', false],
+    ])
+
+    for (const item of plugins) {
+      calls.length = 0
+      await service.mutate({
+        provider: 'claude',
+        kind: 'plugin',
+        action: 'uninstall',
+        id: item.id,
+        scope: item.scope === 'project' ? 'project' : 'user',
+      })
+      const uninstall = calls.find((call) => call.argv[1] === 'uninstall')!
+      expect(uninstall.argv).toEqual(['plugin', 'uninstall', 'demo@market', '--scope', item.scope])
+      expect(uninstall.cwd).toBe(repository)
+    }
+  })
+
+  it('reports each Claude MCP configuration layer and removes from the layer that was picked', async () => {
+    const home = temporaryDirectory()
+    const repository = temporaryDirectory()
+    write(path.join(home, '.claude.json'), JSON.stringify({
+      mcpServers: { shared: { command: 'user-server' } },
+      projects: { [repository]: { mcpServers: { mine: { command: 'local-server' } } } },
+    }))
+    write(path.join(repository, '.mcp.json'), JSON.stringify({ mcpServers: { shared: { command: 'project-server' } } }))
+    const { calls, invoke } = recordingInvoke((argv) => {
+      if (argv.join(' ') === 'plugin list --available --json') return '[]'
+      if (argv.join(' ') === 'plugin marketplace list --json') return registeredMarketplaceList
+      return undefined
+    })
+    const service = new ProviderExtensionService({ homeDirectory: home, repositoryRoot: repository, invoke })
+
+    const servers = (await service.list('claude')).items.filter((item) => item.kind === 'mcp')
+    expect(servers.map((item) => [item.id, item.scope]).sort()).toEqual([
+      ['mine', 'local'],
+      ['shared', 'project'],
+      ['shared', 'user'],
+    ])
+
+    calls.length = 0
+    await service.mutate({ provider: 'claude', kind: 'mcp', action: 'uninstall', id: 'shared', scope: 'project' })
+    const remove = calls.find((call) => call.argv[1] === 'remove')!
+    expect(remove.argv).toEqual(['mcp', 'remove', '--scope', 'project', 'shared'])
+    expect(remove.cwd).toBe(repository)
+  })
+
+  it('asks for the project folder before touching a project-scoped item', async () => {
+    const { calls, invoke } = recordingInvoke(() => undefined)
+    const service = new ProviderExtensionService({ homeDirectory: temporaryDirectory(), invoke })
+
+    await expect(service.mutate({
+      provider: 'claude',
+      kind: 'plugin',
+      action: 'disable',
+      id: 'demo@market',
+      scope: 'project',
+    })).rejects.toThrow('请先在工作目录里选好这个项目')
+    expect(calls).toHaveLength(0)
+  })
+
+  it('shows Codex skills disabled in config.toml as disabled', async () => {
+    const home = temporaryDirectory()
+    const codexHome = temporaryDirectory()
+    const disabled = path.join(home, '.agents', 'skills', 'quiet', 'SKILL.md')
+    write(disabled, '---\nname: Quiet\n---\n')
+    write(path.join(home, '.agents', 'skills', 'loud', 'SKILL.md'), '---\nname: Loud\n---\n')
+    write(path.join(codexHome, 'config.toml'), `[[skills.config]]\npath = ${JSON.stringify(disabled)}\nenabled = false\n`)
+    const { invoke } = recordingInvoke((argv) => {
+      if (argv.join(' ') === 'mcp list --json') return '[]'
+      if (argv[0] === 'plugin') return '{"installed":[],"available":[]}'
+      return undefined
+    })
+    const service = new ProviderExtensionService({ homeDirectory: home, codexHome, invoke })
+
+    const skills = (await service.list('codex')).items.filter((item) => item.kind === 'skill')
+    expect(skills.map((item) => [item.name, item.enabled]).sort()).toEqual([
+      ['Loud', true],
+      ['Quiet', false],
+    ])
   })
 })
