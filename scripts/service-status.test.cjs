@@ -1,7 +1,9 @@
 const assert = require('node:assert/strict')
 const fs = require('node:fs')
+const os = require('node:os')
 const path = require('node:path')
 const test = require('node:test')
+const { spawnSync } = require('node:child_process')
 const YAML = require('yaml')
 const {
   StatusInputError,
@@ -44,9 +46,43 @@ test('rejects an end time that is unreadable or already past, and an overlong me
   assert.throws(() => applyStatusChanges({}, { maintenance: 'maybe' }, now), /on \/ off \/ keep/)
 })
 
-test('an unreadable live file starts from a blank status', () => {
-  for (const text of ['', 'not json', '[]', 'null']) assert.deepEqual(parseCurrentStatus(text), {})
+test('only a live file that does not exist starts from a blank status', () => {
+  assert.deepEqual(parseCurrentStatus(null), {})
   assert.deepEqual(parseCurrentStatus('\uFEFF{"a":1}'), { a: 1 })
+  // #500：200 回来却读不懂，多半是缓存或路由回了网页，线上真正的文件里可能还有撤回名单。
+  for (const text of ['', '  \n', '<!doctype html><html></html>', 'not json', '[]', 'null', '"text"', '42']) {
+    assert.throws(() => parseCurrentStatus(text), StatusInputError, JSON.stringify(text))
+  }
+})
+
+test('a corrupt live file stops the script before anything is written', () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-status-'))
+  try {
+    const current = path.join(directory, 'current.json')
+    const output = path.join(directory, 'service-status.json')
+    const script = path.join(__dirname, 'service-status.cjs')
+    fs.writeFileSync(current, '<html>502 Bad Gateway</html>')
+    const corrupt = spawnSync(process.execPath, [script, '--current', current, '--output', output, '--maintenance', 'off'], { encoding: 'utf8' })
+    assert.equal(corrupt.status, 1)
+    assert.match(corrupt.stderr, /不是有效的 JSON 对象/)
+    assert.equal(fs.existsSync(output), false)
+
+    // 有效的文件：只改这次填的，撤回名单与分批放量原样留着。
+    fs.writeFileSync(current, JSON.stringify({ badVersions: ['0.2.10'], rollout: { version: '0.2.11', percent: 20 }, extra: 1 }))
+    const valid = spawnSync(process.execPath, [script, '--current', current, '--output', output, '--maintenance', 'off'], { encoding: 'utf8' })
+    assert.equal(valid.status, 0, valid.stderr)
+    const written = JSON.parse(fs.readFileSync(output, 'utf8'))
+    assert.deepEqual(written.badVersions, ['0.2.10'])
+    assert.deepEqual(written.rollout, { version: '0.2.11', percent: 20 })
+    assert.equal(written.extra, 1)
+
+    // 线上 404：工作流删掉 current.json，从空白开始。
+    fs.rmSync(current)
+    const missing = spawnSync(process.execPath, [script, '--current', current, '--output', output, '--maintenance', 'off'], { encoding: 'utf8' })
+    assert.equal(missing.status, 0, missing.stderr)
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true })
+  }
 })
 
 test('the workflow keeps free text out of the shell and publishes only the status file', () => {

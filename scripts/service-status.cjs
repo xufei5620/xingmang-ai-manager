@@ -16,15 +16,24 @@ function isRecord(value) {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
-/** 线上那一份读不出来（第一次发、被删了、不是 JSON）就当从空白开始。 */
+/**
+ * 线上那一份确实不存在（第一次发、被删了，工作流拿到 404 后传 null）就从空白开始。
+ * 存在但读出来是空白、不是 JSON 或不是对象，一律报错停下（#500）：那多半是缓存或
+ * 路由临时回了一张 HTML 页面，而线上真正的文件里可能还有撤回名单与分批放量。
+ * 当成空白重建再传上去，只改一个维护开关也会把它们一起抹掉。
+ */
 function parseCurrentStatus(text) {
-  if (typeof text !== 'string' || !text.trim()) return {}
+  if (text === null || text === undefined) return {}
+  const unreadable = '线上的状态文件读回来不是有效的 JSON 对象（可能是缓存或路由回了网页）。为免抹掉撤回名单和分批放量，这次不改；过几分钟重跑，还不行就去 Cloudflare 后台看看这个文件'
+  if (typeof text !== 'string' || !text.trim()) throw new StatusInputError(unreadable)
+  let parsed
   try {
-    const parsed = JSON.parse(text.replace(/^\uFEFF/, ''))
-    return isRecord(parsed) ? parsed : {}
+    parsed = JSON.parse(text.replace(/^\uFEFF/, ''))
   } catch {
-    return {}
+    throw new StatusInputError(unreadable)
   }
+  if (!isRecord(parsed)) throw new StatusInputError(unreadable)
+  return parsed
 }
 
 // 与客户端一样去掉控制字符和双向文本控制符；这里再多一步：超长直接报错，而不是
@@ -151,7 +160,8 @@ function parseArguments(argv) {
 function main(argv) {
   const options = parseArguments(argv)
   if (!options.current || !options.output) throw new StatusInputError('用法：service-status.cjs --current <file> --output <file> [--maintenance on|off|keep] [--message …] [--until …] [--bad-versions …] [--rollout …]')
-  const currentText = fs.existsSync(options.current) ? fs.readFileSync(options.current, 'utf8') : ''
+  // 工作流只在线上返回 404 时删掉这个文件；文件在就必须读得懂。
+  const currentText = fs.existsSync(options.current) ? fs.readFileSync(options.current, 'utf8') : null
   const next = applyStatusChanges(parseCurrentStatus(currentText), options)
   fs.writeFileSync(options.output, `${JSON.stringify(next, null, 2)}\n`)
   for (const line of describeStatus(next)) console.log(line)
