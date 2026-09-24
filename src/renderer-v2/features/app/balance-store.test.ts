@@ -16,8 +16,8 @@ function deferred<T>() {
 
 describe('shared account balance refresh', () => {
   const stores: AccountBalanceStore[] = []
-  function create(read = vi.fn<() => Promise<AccountBalance>>().mockResolvedValue(balance(100))) {
-    const store = createAccountBalanceStore({ read })
+  function create(read = vi.fn<() => Promise<AccountBalance>>().mockResolvedValue(balance(100)), focused?: () => boolean) {
+    const store = createAccountBalanceStore({ read, ...(focused ? { focused } : {}) })
     stores.push(store)
     return { store, read }
   }
@@ -45,23 +45,37 @@ describe('shared account balance refresh', () => {
     expect(listener).not.toHaveBeenCalled()
   })
 
-  it('polls every 30 seconds while visible, pauses when hidden and refreshes on return', async () => {
+  it('polls every minute while visible, pauses when hidden and refreshes on return', async () => {
     const { store, read } = create()
     store.setScope('new-api:1')
     await store.refresh()
-    await vi.advanceTimersByTimeAsync(29_999)
+    await vi.advanceTimersByTimeAsync(59_999)
     expect(read).toHaveBeenCalledTimes(1)
     await vi.advanceTimersByTimeAsync(1)
     expect(read).toHaveBeenCalledTimes(2)
     store.setVisible(false)
-    await vi.advanceTimersByTimeAsync(90_000)
+    await vi.advanceTimersByTimeAsync(180_000)
     expect(read).toHaveBeenCalledTimes(2)
     expect(store.getSnapshot().balance).toEqual(balance(100))
     store.setVisible(true)
     await store.refresh('foreground')
     expect(read).toHaveBeenCalledTimes(3)
-    await vi.advanceTimersByTimeAsync(30_000)
+    await vi.advanceTimersByTimeAsync(60_000)
     expect(read).toHaveBeenCalledTimes(4)
+  })
+
+  it('skips timed refreshes while the window is not focused and still refreshes on return', async () => {
+    let focused = false
+    const { store, read } = create(undefined, () => focused)
+    store.setScope('new-api:1')
+    await store.refresh()
+    await vi.advanceTimersByTimeAsync(10 * 60_000)
+    expect(read).toHaveBeenCalledTimes(1)
+    focused = true
+    await store.refresh('foreground')
+    expect(read).toHaveBeenCalledTimes(2)
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(read).toHaveBeenCalledTimes(3)
   })
 
   it('reuses a successful balance for five seconds on focus but manual refresh bypasses the window', async () => {
@@ -86,7 +100,7 @@ describe('shared account balance refresh', () => {
     await store.refresh()
     const lastUpdate = store.getSnapshot().updatedAt
     read.mockRejectedValueOnce(new Error('Failed to fetch'))
-    await vi.advanceTimersByTimeAsync(30_000)
+    await vi.advanceTimersByTimeAsync(60_000)
     expect(store.getSnapshot()).toMatchObject({ balance: balance(100), updatedAt: lastUpdate, loading: false, error: '余额暂时没有读到，请检查网络后重试。' })
     read.mockResolvedValue(balance(90))
     await store.refresh()

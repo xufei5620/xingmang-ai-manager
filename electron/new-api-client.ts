@@ -43,6 +43,7 @@ const serverLogoutTimeoutMs = 3_000
 const serverLogoutMaxResponseBytes = 16 * 1024
 
 const statusPath = '/api/status'
+const sharedStatusTtlMs = 10 * 60 * 1_000
 const verificationPath = '/api/verification'
 const registerPath = '/api/user/register'
 const loginPath = '/api/user/login'
@@ -2296,6 +2297,28 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
   }
 
   const legalDocumentCache = new Map<NewApiLegalDocumentKind, { expiresAt: number; value: NewApiLegalDocument }>()
+  // /api/status is public site configuration (conversion rate, display unit,
+  // dashboard announcements) that an admin changes by hand. The balance used
+  // to fetch it on every 30-second refresh, which the relay operator saw as
+  // thousands of requests a day from one machine. Share one successful read
+  // for ten minutes; failures are not cached so the next caller retries.
+  let sharedStatus: { expiresAt: number; data: unknown } | null = null
+  let sharedStatusInFlight: Promise<unknown> | null = null
+  const readSharedStatus = (label: string): Promise<unknown> => {
+    if (sharedStatus && sharedStatus.expiresAt > Date.now()) return Promise.resolve(sharedStatus.data)
+    if (sharedStatusInFlight) return sharedStatusInFlight
+    const request = (async () => {
+      try {
+        const data = unwrapEnvelope(await performRequest(ctx, statusPath, { method: 'GET' }, label), label, [])
+        sharedStatus = { expiresAt: Date.now() + sharedStatusTtlMs, data }
+        return data
+      } finally {
+        sharedStatusInFlight = null
+      }
+    })()
+    sharedStatusInFlight = request
+    return request
+  }
 
   let session: InternalSession | null = null
   let ownerGeneration = 0
@@ -2679,11 +2702,11 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
   })
 
   const getBalance = (): Promise<NewApiBalance> => withSession(async (current) => {
-    const [statusRaw, selfRaw] = await Promise.all([
-      performRequest(ctx, statusPath, { method: 'GET' }, '账号余额查询'),
+    const [statusData, selfRaw] = await Promise.all([
+      readSharedStatus('账号余额查询'),
       performRequest(ctx, selfPath, { method: 'GET', headers: authHeaders(current) }, '账号余额查询'),
     ])
-    const status = parseAccountStatus(unwrapEnvelope(statusRaw, '账号余额查询', []))
+    const status = parseAccountStatus(statusData)
     const profile = parseAccountProfile(unwrapEnvelope(selfRaw, '账号余额查询', [current.accessToken]))
     if (profile.quota === null) throw new Error('账号余额查询失败，服务未返回余额')
     return {

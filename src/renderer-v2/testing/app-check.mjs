@@ -2597,8 +2597,11 @@ test('a current-account balance failure stays inline and disappears on logout', 
 })
 
 
-test('visible balances poll every 30 seconds, pause while hidden, and refresh when returning after five seconds', async () => {
-  const page = await open('sub2api=1', true)
+test('balances poll every minute only while the window has focus, pause while hidden, and refresh when returning after five seconds', async () => {
+  const page = await open('sub2api=1', true, () => {
+    window.fixtureFocus = true
+    document.hasFocus = () => window.fixtureFocus
+  })
   const reads = () => page.evaluate(() => window.v2Test.calls.filter((call) => call.method === 'getAccountBalance').length)
   const visibility = (value) => page.evaluate((state) => {
     Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => state })
@@ -2607,7 +2610,7 @@ test('visible balances poll every 30 seconds, pause while hidden, and refresh wh
   try {
     await page.getByTestId('home-balance').getByText('$12.40', { exact: true }).waitFor()
     assert.equal(await reads(), 1)
-    await page.clock.fastForward(29_999)
+    await page.clock.fastForward(59_999)
     assert.equal(await reads(), 1)
     await page.evaluate(() => window.v2Test.setBalance(11.25))
     await page.clock.fastForward(1)
@@ -2618,13 +2621,19 @@ test('visible balances poll every 30 seconds, pause while hidden, and refresh wh
     await page.clock.fastForward(5_000)
     await page.evaluate(() => window.dispatchEvent(new Event('focus')))
     await page.waitForFunction(() => window.v2Test.calls.filter((call) => call.method === 'getAccountBalance').length === 3)
+    // 窗口还在屏幕上但用户在用别的程序：不按时刷新，切回来再刷。
+    await page.evaluate(() => { window.fixtureFocus = false })
+    await page.clock.fastForward(300_000)
+    assert.equal(await reads(), 3)
+    await page.evaluate(() => { window.fixtureFocus = true; window.dispatchEvent(new Event('focus')) })
+    await page.waitForFunction(() => window.v2Test.calls.filter((call) => call.method === 'getAccountBalance').length === 4)
     await visibility('hidden')
     await page.clock.fastForward(120_000)
-    assert.equal(await reads(), 3)
+    assert.equal(await reads(), 4)
     await page.evaluate(() => window.v2Test.setBalance(9.5))
     await visibility('visible')
     await page.getByTestId('home-balance').getByText('$9.50', { exact: true }).waitFor()
-    assert.equal(await reads(), 4)
+    assert.equal(await reads(), 5)
     await clean(page)
   } finally { await page.close() }
 })

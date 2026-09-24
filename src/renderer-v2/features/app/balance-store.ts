@@ -21,14 +21,21 @@ export interface AccountBalanceStore {
   dispose(): void
 }
 
-const refreshInterval = 30_000
+// 每刷一次余额，服务端都要收到一次请求。以前是窗口没缩到托盘就每 30 秒刷一次，
+// 被别的窗口挡着也照刷，一台电脑一天能到三千次。改成只在用户正看着软件时每分钟刷一次，
+// 其余时候等切回来再刷（focus 会触发一次 foreground 刷新）。
+const refreshInterval = 60_000
 const foregroundReuseWindow = 5_000
 const activityDelay = 2_000
 
+function alwaysFocused() { return true }
+
 /** One renderer owns the account balance; views subscribe instead of polling independently. */
-export function createAccountBalanceStore({ read, now = Date.now }: {
+export function createAccountBalanceStore({ read, now = Date.now, focused = alwaysFocused }: {
   read: () => Promise<AccountBalance>
   now?: () => number
+  /** Whether the user is looking at the window; timed refreshes skip while not. */
+  focused?: () => boolean
 }): AccountBalanceStore {
   let snapshot: AccountBalanceSnapshot = { scope: null, balance: null, loading: false, updatedAt: null, error: null }
   const listeners = new Set<() => void>()
@@ -60,7 +67,8 @@ export function createAccountBalanceStore({ read, now = Date.now }: {
     if (disposed || !visible || !snapshot.scope || inFlight) return
     intervalTimer = setTimeout(() => {
       intervalTimer = undefined
-      void refresh('interval')
+      if (focused()) void refresh('interval')
+      else scheduleInterval()
     }, refreshInterval)
   }
 
