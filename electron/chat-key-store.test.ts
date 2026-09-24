@@ -8,6 +8,7 @@ import {
   decodePersistedChatKeys,
   encodePersistedChatKeys,
   isPersistedChatKeys,
+  pruneChatKeys,
   type PersistedChatKeys,
   type StoredChatKey,
 } from './chat-key-store'
@@ -41,6 +42,13 @@ function chatKey(userId: number, group: string, keyId = 1): StoredChatKey {
     keyName: `chat-key-${keyId}`,
     key: `sk-${userId}-${keyId}-chat-secret-value`,
   }
+}
+
+// Writes a cache file the way the store would have left it, in one write instead of one
+// durable atomic write per entry.
+function seedStore(filePath: string, storage: SafeStorageLike, keys: StoredChatKey[]): void {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true })
+  fs.writeFileSync(filePath, encodePersistedChatKeys({ version: 1, keys }, storage), 'utf8')
 }
 
 afterEach(() => {
@@ -91,6 +99,39 @@ describe('chat key safeStorage codec', () => {
   })
 })
 
+describe('pruneChatKeys', () => {
+  it('keeps the 32 newest groups of an account and drops the rest', () => {
+    const newestFirst = Array.from({ length: 40 }, (_, index) => chatKey(42, `group-${40 - index}`, 40 - index))
+    const kept = pruneChatKeys(newestFirst)
+    expect(kept.map((entry) => entry.group)).toEqual(newestFirst.slice(0, 32).map((entry) => entry.group))
+  })
+
+  it('keeps the 16 most recently used accounts and every group they own', () => {
+    const newestFirst = Array.from({ length: 20 }, (_, index) => [
+      chatKey(20 - index, 'codex-pro', (20 - index) * 10),
+      chatKey(20 - index, 'claude-pro', (20 - index) * 10 + 1),
+    ]).flat()
+    const kept = pruneChatKeys(newestFirst)
+    expect([...new Set(kept.map((entry) => entry.userId))]).toEqual(Array.from({ length: 16 }, (_, index) => 20 - index))
+    expect(kept).toHaveLength(32)
+  })
+
+  it('caps the whole cache at 128 keys even when every account is within its own bound', () => {
+    const newestFirst = Array.from({ length: 16 }, (_, account) =>
+      Array.from({ length: 10 }, (_, group) => chatKey(account + 1, `group-${group}`, account * 100 + group + 1))).flat()
+    const kept = pruneChatKeys(newestFirst)
+    expect(kept).toHaveLength(128)
+    expect(kept).toEqual(newestFirst.slice(0, 128))
+  })
+
+  it('returns copies, so trimming never aliases the caller\'s entries', () => {
+    const entry = chatKey(42, 'codex-pro')
+    const [kept] = pruneChatKeys([entry])
+    expect(kept).toEqual(entry)
+    expect(kept).not.toBe(entry)
+  })
+})
+
 describe('ChatKeyStore', () => {
   it('persists ciphertext and isolates records by account', async () => {
     const filePath = temporaryFilePath()
@@ -120,25 +161,35 @@ describe('ChatKeyStore', () => {
     await expect(store.read(42)).resolves.toEqual([moved])
   })
 
-  it('bounds each account to its 32 most recently upserted groups', async () => {
-    const store = new ChatKeyStore(temporaryFilePath(), fakeSafeStorage())
-    for (let index = 1; index <= 33; index += 1) {
-      await store.upsert(chatKey(42, `dynamic-group-${index}`, index))
-    }
+  // Both bounds used to be reached by upserting one entry at a time, 33 and 17 durable atomic
+  // writes in a row, and on a busy Windows runner the 33 took longer than the 15s this case had
+  // been widened to (#511). The trimming is proven on the pure function below; here the file is
+  // seeded at the bound in one write, so a single upsert shows the store really applies it.
+  it('drops the least recently upserted group once an account holds 32', async () => {
+    const filePath = temporaryFilePath()
+    const storage = fakeSafeStorage()
+    const newestFirst = Array.from({ length: 32 }, (_, index) => chatKey(42, `dynamic-group-${32 - index}`, 32 - index))
+    seedStore(filePath, storage, newestFirst)
+    const store = new ChatKeyStore(filePath, storage)
+
+    await store.upsert(chatKey(42, 'dynamic-group-33', 33))
 
     const keys = await store.read(42)
     expect(keys).toHaveLength(32)
     expect(keys[0].group).toBe('dynamic-group-33')
     expect(keys.some((entry) => entry.group === 'dynamic-group-1')).toBe(false)
-  }, 15_000) // 33 durable atomic writes can exceed Vitest's 5 s default under the full Windows suite.
+  })
 
-  it('bounds the cache to the 16 most recently used accounts', async () => {
-    const store = new ChatKeyStore(temporaryFilePath(), fakeSafeStorage())
-    for (let userId = 1; userId <= 17; userId += 1) {
-      await store.upsert(chatKey(userId, 'codex-pro', userId))
-    }
+  it('drops the least recently used account once the cache holds 16', async () => {
+    const filePath = temporaryFilePath()
+    const storage = fakeSafeStorage()
+    seedStore(filePath, storage, Array.from({ length: 16 }, (_, index) => chatKey(16 - index, 'codex-pro', 16 - index)))
+    const store = new ChatKeyStore(filePath, storage)
+
+    await store.upsert(chatKey(17, 'codex-pro', 17))
 
     await expect(store.read(1)).resolves.toEqual([])
+    await expect(store.read(2)).resolves.toEqual([chatKey(2, 'codex-pro', 2)])
     await expect(store.read(17)).resolves.toEqual([chatKey(17, 'codex-pro', 17)])
   })
 

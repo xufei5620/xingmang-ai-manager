@@ -293,13 +293,13 @@ async function readCurrentWindowsTokenGroups(
  * Admin Approval Mode is disabled; that is the account's ordinary execution
  * context, not an elevation boundary introduced by launching this app.
  */
-export async function inspectCurrentWindowsTokenElevationType(
-  options: WindowsAdministratorProbeOptions = {},
-): Promise<WindowsTokenElevationType> {
-  if (process.platform !== 'win32') return 'default'
-  const env = options.env ?? process.env
-  const machinePaths = options.machinePaths ?? resolveWindowsMachinePaths()
-  const script = [
+/**
+ * What the token-elevation probe hands PowerShell. Pure, so the script is checked as text on
+ * every platform: compiling this Add-Type through csc.exe inside a cold Windows PowerShell is
+ * what a busy runner kept failing to finish in time (#511).
+ */
+export function buildWindowsTokenElevationProbeScript(): string {
+  return [
     "$ErrorActionPreference = 'Stop'",
     "Add-Type -TypeDefinition @'",
     'using System;',
@@ -321,16 +321,45 @@ export async function inspectCurrentWindowsTokenElevationType(
     '  default { throw "Unexpected TokenElevationType: $elevationType" }',
     '}',
   ].join('\n')
-  const { stdout } = await execFileAsync(
-    resolveWindowsPowerShellExecutable({ env, machinePaths }),
-    ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script],
+}
+
+export interface WindowsTokenElevationProbeOptions extends WindowsAdministratorProbeOptions {
+  platform?: NodeJS.Platform
+  /** Test seams: production leaves both unset and runs the resolved system PowerShell through execFile. */
+  resolvePowerShell?: () => string
+  run?: (executable: string, argv: string[], options: { env: NodeJS.ProcessEnv; timeoutMs: number; maxOutputBytes: number }) => Promise<string>
+}
+
+async function runTokenElevationProbe(
+  executable: string,
+  argv: string[],
+  options: { env: NodeJS.ProcessEnv; timeoutMs: number; maxOutputBytes: number },
+): Promise<string> {
+  const { stdout } = await execFileAsync(executable, argv, {
+    env: options.env,
+    windowsHide: true,
+    timeout: options.timeoutMs,
+    maxBuffer: options.maxOutputBytes,
+  })
+  return stdout
+}
+
+export async function inspectCurrentWindowsTokenElevationType(
+  options: WindowsTokenElevationProbeOptions = {},
+): Promise<WindowsTokenElevationType> {
+  if ((options.platform ?? process.platform) !== 'win32') return 'default'
+  const env = options.env ?? process.env
+  const machinePaths = options.machinePaths ?? resolveWindowsMachinePaths()
+  const executable = options.resolvePowerShell?.() ?? resolveWindowsPowerShellExecutable({ env, machinePaths })
+  const stdout = await (options.run ?? runTokenElevationProbe)(
+    executable,
+    ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', buildWindowsTokenElevationProbeScript()],
     {
       env: trustedCommandEnvironment(env, machinePaths),
-      windowsHide: true,
       // Keep startup bounded: main-window creation waits for this probe.
       // A timeout is a failed probe; the caller decides what that means.
-      timeout: options.timeoutMs ?? 15_000,
-      maxBuffer: 64 * 1024,
+      timeoutMs: options.timeoutMs ?? 15_000,
+      maxOutputBytes: 64 * 1024,
     },
   )
   const elevationType = parseWindowsTokenElevationType(stdout)
