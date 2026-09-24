@@ -2360,6 +2360,39 @@ test('announcement banner can be closed, stays closed after reload, and returns 
   } finally { await page.close() }
 })
 
+test('a notice published while the app is open shows up on the next background check and notifies once when the window is away', async () => {
+  const page = await open('noticeCollection=1', true)
+  try {
+    const button = page.getByTestId('announcement-open')
+    const banner = page.getByTestId('announcement-banner')
+    await banner.waitFor()
+    await page.getByRole('button', { name: '关闭公告提示' }).click()
+    await banner.waitFor({ state: 'hidden' })
+    await button.locator('.v2-unread').waitFor({ state: 'hidden' })
+    // The window goes behind other apps; system notifications are the only way to reach the user now.
+    await page.evaluate(() => {
+      window.__notified = []
+      window.xingmangPlatform = { notifyActivity: async (kind, key) => { window.__notified.push([kind, key]); return 'requested' } }
+      document.hasFocus = () => false
+      window.v2Test.setNotice({ id: 'collection-with-new-entry', text: `<div data-newapi-collection="v1">
+        <details class="collection-entry"><summary class="collection-summary"><span class="collection-entry-title">新活动上线</span></summary><div class="collection-body"><p>活动详情</p></div></details>
+      </div>` })
+    })
+    await page.clock.fastForward('10:30')
+    await banner.getByText('新活动上线').waitFor()
+    await button.locator('.v2-unread').waitFor()
+    const notified = await page.evaluate(() => window.__notified)
+    assert.equal(notified.length, 1)
+    assert.equal(notified[0][0], 'announcement')
+    assert.match(notified[0][1], /^notice-[0-9a-f]{8}$/)
+    // The same notice is never announced twice, even after further checks.
+    await page.clock.fastForward('10:30')
+    await page.waitForFunction(() => window.v2Test.calls.filter((call) => call.method === 'getAccountNotice').length >= 3)
+    assert.equal(await page.evaluate(() => window.__notified.length), 1)
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('Sub2API announcements keep server-read and empty states and recover from read errors', async () => {
   for (const query of ['sub2api=1&noticesRead=1', 'sub2api=1&noticeEmpty=1']) {
     const page = await open(query)

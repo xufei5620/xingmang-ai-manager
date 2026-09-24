@@ -115,6 +115,7 @@ export function installPlatformSystemApi(
               balance: true,
               task: true,
               cliUpdate: true,
+              announcement: true,
               acceleration: true,
               ...store.read().notifications,
             }),

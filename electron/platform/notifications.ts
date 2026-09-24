@@ -56,6 +56,11 @@ const messages = {
     title: '命令行工具有新版本',
     body: '你装的工具出了新版本，回到星芒的「你的工具」就能逐个更新。',
   },
+  // 公告正文可能很长、也可能带图，通知里只说有新公告，点开回到星芒看全文。
+  announcement: {
+    title: '有新公告',
+    body: '当前账号有一条新公告，回到星芒就能看到。',
+  },
 } as const satisfies Record<PlatformActivityKind | 'test', NotificationMessage>
 
 // 一条只说「还剩多久」，一条只说「已经断开了」：用户在游戏里看到的就这一行，

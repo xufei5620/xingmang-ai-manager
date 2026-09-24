@@ -58,6 +58,19 @@ async function open(store, { alternate = false, query = 'noticeCollection=1', be
   const list = dialog.getByTestId('announcement-list')
   return { browser, page, dialog, list }
 }
+// Opening the dialog and switching accounts each start a fresh read, so the
+// list can render, drop back to loading and render again. Wait for the rows to
+// settle on the expected states instead of reading whatever is there the
+// moment the first row appears.
+async function expectReadStates({ page }, expected) {
+  const rows = '[data-testid="announcement-list"] .v2-announcement-read-state'
+  try {
+    await page.waitForFunction(([selector, want]) => JSON.stringify([...document.querySelectorAll(selector)].map((node) => node.textContent)) === JSON.stringify(want), [rows, expected])
+  } catch (error) {
+    assert.deepEqual(await page.locator(rows).allTextContents(), expected)
+    throw error
+  }
+}
 async function close({ browser, page }) {
   assert.deepEqual(await page.evaluate(() => window.v2Test.errors), [])
   assert.deepEqual(await page.evaluate(() => window.v2Test.unexpected), [])
@@ -76,7 +89,7 @@ test('NewAPI read state survives a browser process restart, a new host store and
 
   const reopened = await open(new storeClass(directory), { alternate: true })
   await reopened.list.waitFor()
-  assert.deepEqual(await reopened.list.locator('.v2-announcement-read-state').allTextContents(), ['已读', '未读', '未读'])
+  await expectReadStates(reopened, ['已读', '未读', '未读'])
   assert.equal(await reopened.page.evaluate(() => localStorage.getItem('xingmang-v2-notice-entries:xm-account:17')), null)
   assert.equal(await reopened.page.evaluate(() => window.v2Test.calls.some((call) => call.method === 'markAccountNoticeRead')), false)
   await reopened.dialog.getByRole('button', { name: '关闭', exact: true }).click()
@@ -85,7 +98,7 @@ test('NewAPI read state survives a browser process restart, a new host store and
   }))
   await reopened.page.getByTestId('announcement-open').click()
   await reopened.list.getByRole('button', { name: '图片模型上线 未读' }).waitFor()
-  assert.deepEqual(await reopened.list.locator('.v2-announcement-read-state').allTextContents(), ['未读', '未读', '未读'])
+  await expectReadStates(reopened, ['未读', '未读', '未读'])
   await close(reopened)
 })
 
@@ -112,7 +125,7 @@ test('existing local read IDs migrate to the host and a failed browser cache can
   await close(current)
   const reopened = await open(new storeClass(directory), { alternate: true })
   await reopened.list.waitFor()
-  assert.deepEqual(await reopened.list.locator('.v2-announcement-read-state').allTextContents(), ['已读', '已读', '未读'])
+  await expectReadStates(reopened, ['已读', '已读', '未读'])
   await close(reopened)
 })
 

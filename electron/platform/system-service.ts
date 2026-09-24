@@ -259,6 +259,7 @@ export class PlatformSystemService {
           balance: true,
           task: true,
           cliUpdate: true,
+          announcement: true,
           acceleration: true,
           ...current.notifications,
           [kind]: enabled,
