@@ -41,6 +41,7 @@ import {
   probeRunningCliProcesses,
 } from './cli-process-probe'
 import { cliProcessProbeRoots, inspectRunningTools as inspectRunningToolsWith, type RunningToolsReport } from './running-tools'
+import { createToolModelChecker, type ToolModelCheck } from './tool-model-check'
 import {
   npmPrefixGlobalRoot,
   resolveSameUserNpmPrefix,
@@ -59,6 +60,7 @@ import {
   ensureGeminiProjectContextFiles,
   inspectCodexWorkspacePermissions,
   inspectOfficialLogin,
+  claudeModelPickerNeedsRefresh,
   inspectProviderConfig,
   managedProviderLaunchBlockedMessage,
   moveClaudeConsoleKeyAside,
@@ -830,6 +832,8 @@ export interface SystemService {
   ): Promise<CodexDesktopLaunchResult>
   /** 换账号之后看哪些工具还开着（Codex 连同桌面端）；可选 = 旧实现不提供，调用方退回无条件提醒。 */
   inspectRunningTools?(providers: readonly ProviderId[]): Promise<RunningToolsReport>
+  /** 打开工具前核对当前账号能用的模型（一天一次）；可选 = 旧实现不提供，调用方直接打开。 */
+  checkToolModels?(provider: ProviderId): Promise<ToolModelCheck>
   fetchAvailableModels(apiKey: string, options?: { bypassCache?: boolean }): Promise<string[]>
   configureExternalTool(tool: ExternalToolId, options: ExternalToolConfigOptions, assertBeforeWrite?: () => void): Promise<ExternalClientConfigResult>
   scanExternalClients(force?: boolean): Promise<ExternalClientStatus[]>
@@ -4922,6 +4926,31 @@ export function createSystemService(
     })
   }
 
+  // 打开前的模型核对（tool-model-check.ts）。只认本软件用当前账号写的配置：官方账号、
+  // 手填、被改动过的都不碰；刷新菜单走 saveConfig 的自动写入那道闸，与开机同步 Key
+  // 同一套所有权规则，写一半回滚（I9）也照旧。
+  const toolModelChecker = createToolModelChecker({
+    now: () => Date.now(),
+    target: (provider) => {
+      if (store.read().officialProviders?.includes(provider)) return null
+      const owner = serviceOptions.getExternalClientAccountId?.() ?? null
+      if (!owner) return null
+      const config = inspectNativeProviderConfig(provider)
+      const apiKey = config.apiKey?.trim() ?? ''
+      const model = config.model.trim()
+      if (!config.hasApiKey || !config.matchesRelay || !apiKey || !model) return null
+      if (configOwnership.read(provider, config, owner) !== 'account') return null
+      const site = resolveRelaySite(serviceOptions.getRelaySiteId?.() ?? store.read().relaySiteId)
+      return { apiKey, model, identity: `${site.id}:${owner}:${modelAccessCacheKey(apiKey)}:${model}` }
+    },
+    listModels: (apiKey) => fetchAvailableModels(apiKey, { bypassCache: true }),
+    pickerOutdated: (models, model) => claudeModelPickerNeedsRefresh(models, model, providerRoots),
+    refreshPicker: async (model) => {
+      await saveConfig({ provider: 'claude', apiKey: '', model, mode: 'merge' }, false, undefined, { source: 'account', automatic: true })
+    },
+    log: (level, event, message, detail) => runtimeLog?.log(level, 'config', event, message, detail),
+  })
+
   function credentialFailureReason(error: unknown): string {
     return redactHomeDirectory(error instanceof Error ? error.message : String(error), providerRoots.userHome)
   }
@@ -5061,6 +5090,7 @@ export function createSystemService(
     setCodexDesktopLocale,
     launchCodexDesktop,
     inspectRunningTools,
+    checkToolModels: (provider: ProviderId) => toolModelChecker.check(provider),
     fetchAvailableModels,
     configureExternalTool,
     scanExternalClients,

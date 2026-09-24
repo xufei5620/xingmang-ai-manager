@@ -9,6 +9,7 @@ import {
   type InstallCancelResult,
   type ProviderConfigSummary,
   type ProviderId,
+  type ToolModelCheck,
   type XingmangApi,
 } from '../../../../electron/ipc-contract'
 import { providerFor, type ToolboxSnapshot, type ToolId } from './model'
@@ -187,6 +188,11 @@ export function createToolsApi(bridge: XingmangApi) {
     official: (tool: ToolId, mode: 'merge' | 'reset' = 'merge') => bridge.switchToOfficialAccount(providerFor(tool), mode),
     // 首页的一键切换：备份、写入、自检、失败回滚都在主进程一次做完。
     switchSource: (tool: ToolId, target: AccountSourceTarget) => bridge.switchAccountSource(providerFor(tool), target),
+    /** 打开前的模型核对（第十二批候选 5）。核对本身出错也绝不挡住打开，一律当没核。 */
+    async checkModels(tool: ToolId): Promise<ToolModelCheck> {
+      try { return await bridge.checkToolModels(providerFor(tool)) }
+      catch { return { status: 'skipped' } }
+    },
     getLocale: () => bridge.inspectCodexDesktopLocale(),
     setLocale: (locale: 'zh-CN' | 'system' = 'zh-CN') => bridge.setCodexDesktopLocale(locale),
     getPermissions: () => bridge.inspectCodexWorkspacePermissions(),

@@ -133,6 +133,7 @@ import type {
   RememberedAccountLogin,
   RendererErrorPayload,
   RendererLogLevel,
+  ToolModelCheck,
 } from './ipc-contract'
 import type { DiagnosticsReport, DiagnosticsRunOptions } from './diagnostics'
 import { isCappedKeyUsedUp, withKeyQuotaExhausted, type ConnectionCheckResult } from './connection-check'
@@ -1193,6 +1194,7 @@ const ipcOperationLabels: Readonly<Record<string, string>> = {
   'cli:launch': 'CLI 终端启动',
   'desktop:codex-status': 'Codex 桌面端运行状态检测',
   'tools:inspect-running': '换账号后检查哪些工具还开着',
+  'tools:check-models': '打开工具前核对当前账号能用的模型',
   'desktop:codex-locale-status': 'Codex Desktop 中文资源检测',
   'desktop:codex-permissions-status': 'Codex Desktop 工作区权限检测',
   'desktop:trust-workspace': 'Codex Desktop 工作区信任设置',
@@ -1964,6 +1966,11 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
       return { ...emptyRunningToolsReport, unknown: parsed, codexDesktopRunning: parsed.includes('codex') ? null : false }
     }
     return service.inspectRunningTools(parsed)
+  })
+  registerTrustedHandler('tools:check-models', async (_event, provider: unknown): Promise<ToolModelCheck> => {
+    if (!isProviderId(provider)) throw new Error('未知的 CLI 类型')
+    if (!service.checkToolModels) return { status: 'skipped' }
+    return service.checkToolModels(provider)
   })
   function documentsDirectory(): string | null {
     if (!options.documentsDirectory) return path.join(os.homedir(), 'Documents')

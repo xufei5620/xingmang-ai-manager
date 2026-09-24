@@ -13,7 +13,7 @@ import {
 import { identityFromCodexAuthTokens } from './official-account-identity'
 import { removeCodexContextLimits } from './codex-context-limits'
 import { applyClaudeStatusLine, claudeStatusLineSetting } from './claude-status-line'
-import { applyClaudeRelayModelPicker, removeClaudeRelayModelPicker } from './claude-model-picker'
+import { applyClaudeRelayModelPicker, claudeRelayModelPickerOutdated, removeClaudeRelayModelPicker } from './claude-model-picker'
 import { assertNoReparseComponents, ensureSafeDataDirectory, readSafeUtf8FileSync } from './safe-local-data'
 import { resolveRelocatedPath } from './relocated-folders'
 
@@ -1179,6 +1179,22 @@ function normalizeUrl(value: string): string {
   } catch {
     return value.trim().replace(/\/+$/, '').toLowerCase()
   }
+}
+
+/**
+ * Claude Code 的 /model 菜单与 Default 指向按这份型号清单重写会不会变（见
+ * claude-model-picker.ts 的 claudeRelayModelPickerOutdated）。只读，读之前先过路径校验。
+ */
+export function claudeModelPickerNeedsRefresh(
+  availableModels: readonly string[],
+  currentModel: string,
+  rootsInput: ProviderConfigRoots = defaultProviderConfigRoots(),
+): boolean {
+  const roots = normalizeProviderConfigRoots(rootsInput)
+  const providerRoot = providerConfigRoot('claude', roots)
+  const [settingsPath] = providerConfigPaths('claude', roots)
+  assertSafeConfigPath(settingsPath, providerRoot, 'file')
+  return claudeRelayModelPickerOutdated(requireJson(settingsPath, '现有 Claude settings.json'), availableModels, currentModel)
 }
 
 export function inspectProviderConfig(
