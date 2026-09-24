@@ -2326,7 +2326,8 @@ test('announcement banner can be closed, stays closed after reload, and returns 
     await button.locator('.v2-unread').waitFor()
     await page.getByRole('button', { name: '关闭公告提示' }).click()
     await banner.waitFor({ state: 'hidden' })
-    assert.equal(await button.locator('.v2-unread').count(), 0)
+    // The bell dot is lifted through App state one render after the banner hides.
+    await button.locator('.v2-unread').waitFor({ state: 'hidden' })
     const [seenKey, seen] = await page.evaluate(() => {
       const key = Object.keys(localStorage).find((name) => name.startsWith('xingmang-v2-notice-seen:'))
       return [key, JSON.parse(localStorage.getItem(key) ?? '[]')]
@@ -2334,7 +2335,9 @@ test('announcement banner can be closed, stays closed after reload, and returns 
     assert.equal(seen.length, 3)
     await page.reload()
     await page.getByTestId('tool-row-codex').waitFor()
-    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))))
+    // Absence only means something once the collection has been read and its read state synced.
+    await page.waitForFunction(() => window.v2Test.calls.some((call) => call.method === 'syncLocalNoticeReads'))
+    await page.waitForTimeout(500)
     assert.equal(await banner.count(), 0)
     assert.equal(await button.locator('.v2-unread').count(), 0)
     // Closing only quiets the reminder; every entry is still listed as unread.
@@ -2350,7 +2353,7 @@ test('announcement banner can be closed, stays closed after reload, and returns 
     await banner.getByRole('button', { name: '查看' }).click()
     await dialog.getByTestId('announcement-list').waitFor()
     assert.equal(await banner.count(), 0)
-    assert.equal(await button.locator('.v2-unread').count(), 0)
+    await button.locator('.v2-unread').waitFor({ state: 'hidden' })
     await clean(page)
   } finally { await page.close() }
 })
