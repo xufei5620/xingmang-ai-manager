@@ -809,7 +809,7 @@ test('feedback narrows the log list by source and to this run, and copies one en
   const page = await fixture('page=feedback')
   try {
     await page.getByText('上次启动的更新记录').waitFor()
-    await page.getByTestId('feedback-source').selectOption('updater')
+    await page.getByTestId('feedback-source').selectOption('更新')
     await page.waitForFunction(() => !document.body.innerText.includes('测试日志'))
     await page.getByText('本次启动的更新失败').waitFor()
 
