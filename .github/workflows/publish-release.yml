@@ -247,6 +247,13 @@ jobs:
       && needs.windows-build.result != 'failure'
       && needs.macos-build.result != 'failure'
       && (needs.windows-build.result == 'success' || needs.macos-build.result == 'success') }}
+    # 写更新目录的三条工作流（这里、rollback-release、service-status）共用这个并发组
+    # （#492）。它们都是「读线上的清单或状态 → 算出新内容 → 写回去」，交错执行时后写
+    # 的会盖掉先写的：回滚刚把清单换回旧版、发布又把新版盖上去，撤回名单里却还写着它。
+    # 挂在作业上而不是整条工作流上：出包要一个多小时，不该在这段时间里挡住维护开关。
+    concurrency:
+      group: update-feed
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     # 产品所有者按下 Approve 的那一刻，就是 RELEASING.md 要求的「针对当前版本的
     # 明确发布授权」。没有这一行，凭据会对任意分支可见，而 workflow_dispatch 允许

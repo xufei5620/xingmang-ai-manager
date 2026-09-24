@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import { describe, expect, it, vi } from 'vitest'
 import { CommandRunnerError, runCommand, type CommandSpec, type CommandErrorDetails } from './command-runner'
 import type { ExternalClientInstallProgress } from './external-client-contract'
-import { buildExternalClientWingetInstall, createExternalClientRuntime, verifyExternalClientPath, windowsExternalClientInventoryScript, type ExternalClientRuntimeOptions } from './external-client-runtime'
+import { buildExternalClientWingetInstall, createExternalClientRuntime, externalClientWingetUnavailableHint, verifyExternalClientPath, windowsExternalClientInventoryScript, type ExternalClientRuntimeOptions } from './external-client-runtime'
 import type { ExternalToolId } from './external-tool-config'
 import { InstallationQueue } from './installation-queue'
 import { encodeWindowsPowerShellCommand, resolveWindowsPowerShellExecutable } from './windows-elevation'
@@ -328,9 +328,31 @@ function Get-AppxPackage { @() }
 
   it('reports unavailable winget for clients without an official fallback, without consulting a PATH alias', async () => {
     const f = fixture({ resolveWingetExecutable: async () => ({ executable: null, reason: 'Microsoft App Installer missing' }) })
-    expect((await f.runtime.scan())[2]).toMatchObject({ installSupported: false, installHint: 'Microsoft App Installer missing' })
-    await expect(f.runtime.install('opencode')).rejects.toThrow('App Installer missing')
+    expect((await f.runtime.scan())[2]).toMatchObject({ installSupported: false, installHint: externalClientWingetUnavailableHint })
+    await expect(f.runtime.install('opencode')).rejects.toThrow(externalClientWingetUnavailableHint)
     expect(f.execute.mock.calls.some(([spec]) => /winget/i.test(spec.executable))).toBe(false)
+  })
+
+  it('keeps the raw winget failure out of the hint and logs it once per distinct reason', async () => {
+    const onWingetUnavailable = vi.fn()
+    let reason = "系统级 winget 解析失败：ENOENT: no such file or directory, realpath 'C:\\Program Files\\WindowsApps\\x\\winget.exe'"
+    let clock = 0
+    const f = fixture({
+      resolveWingetExecutable: async () => ({ executable: null, reason }),
+      onWingetUnavailable, now: () => clock,
+    })
+    const statuses = await f.runtime.scan()
+    for (const tool of [statuses[1], statuses[2]]) {
+      expect(tool.installHint).toBe(externalClientWingetUnavailableHint)
+      expect(tool.installHint).not.toMatch(/winget|ENOENT|App Installer/i)
+    }
+    expect(statuses.map((entry) => entry.officialDownloadUrl)).toEqual([null, 'https://claude.com/download', 'https://opencode.ai/download'])
+    clock += 10 * 60_000
+    await f.runtime.scan({ force: true })
+    expect(onWingetUnavailable.mock.calls).toEqual([[reason]])
+    reason = '未检测到系统级 Microsoft App Installer 包'
+    await f.runtime.scan({ force: true })
+    expect(onWingetUnavailable.mock.calls.map(([logged]) => logged)).toEqual([expect.stringContaining('ENOENT'), reason])
   })
 
   it.each([0x80072efd, 0x80072efd | 0, 0x80072ee7, 0x80072ee2])('recovers a WorkBuddy source connection failure %s through its official installer and verifies the result', async (exitCode) => {
@@ -353,7 +375,7 @@ function Get-AppxPackage { @() }
 
   it('uses the official WorkBuddy installer when trusted winget is unavailable', async () => {
     const f = fixture({ resolveWingetExecutable: async () => ({ executable: null, reason: 'missing' }) })
-    expect((await f.runtime.scan())[0]).toMatchObject({ installSupported: true, installHint: '将使用腾讯官方安装包' })
+    expect((await f.runtime.scan())[0]).toMatchObject({ installSupported: true, installHint: '将使用腾讯官方安装包', officialDownloadUrl: null })
     f.officialInstaller.mockImplementation(async () => { f.setInventory([candidate('workbuddy')]) })
     await expect(f.runtime.install('workbuddy')).resolves.toMatchObject({ installed: true })
     expect(f.officialInstaller).toHaveBeenCalledOnce()
@@ -382,7 +404,7 @@ function Get-AppxPackage { @() }
       }
       return commandResult(spec, '{"clients":[],"errors":{}}')
     })
-    await expect(f.runtime.install('workbuddy')).rejects.toThrow('winget 无法连接')
+    await expect(f.runtime.install('workbuddy')).rejects.toThrow('连不上微软的软件下载源')
     expect(f.officialInstaller).not.toHaveBeenCalled()
   })
 
@@ -395,7 +417,7 @@ function Get-AppxPackage { @() }
       }
       return commandResult(spec, '{"clients":[],"errors":{}}')
     })
-    await expect(f.runtime.install('workbuddy')).rejects.toThrow('winget 无法连接')
+    await expect(f.runtime.install('workbuddy')).rejects.toThrow('连不上微软的软件下载源')
     expect(f.officialInstaller).not.toHaveBeenCalled()
   })
 
@@ -423,7 +445,7 @@ function Get-AppxPackage { @() }
     })
     f.officialInstaller.mockRejectedValue(invalidPackage)
     for (let attempt = 0; attempt < 2; attempt++) {
-      await expect(f.runtime.install('workbuddy')).rejects.toMatchObject({ message: 'winget 源连接失败；腾讯官方安装未完成：SHA-256 校验失败', originalError: { winget: network, official: invalidPackage } })
+      await expect(f.runtime.install('workbuddy')).rejects.toMatchObject({ message: '连不上微软的软件下载源；腾讯官方安装未完成：SHA-256 校验失败', originalError: { winget: network, official: invalidPackage } })
     }
     expect(f.officialInstaller).toHaveBeenCalledTimes(2)
   })
@@ -443,7 +465,7 @@ function Get-AppxPackage { @() }
       if (spec.executable === winget) throw wingetError()
       return commandResult(spec, '{"clients":[],"errors":{}}')
     })
-    await expect(f.runtime.install('opencode')).rejects.toThrow('winget 无法连接软件源或下载服务器（错误码 0x80072efd）')
+    await expect(f.runtime.install('opencode')).rejects.toThrow('连不上微软的软件下载源（错误码 0x80072efd）')
     expect(f.officialInstaller).not.toHaveBeenCalled()
   })
 

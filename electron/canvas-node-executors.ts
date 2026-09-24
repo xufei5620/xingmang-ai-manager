@@ -105,6 +105,13 @@ function imageResult(
   }
 }
 
+// addEventListener('abort') never fires for a signal that is already
+// aborted, so a stop that lands before an executor starts would otherwise
+// slip through and submit a paid generation request.
+function throwIfCancelled(signal: AbortSignal): void {
+  if (signal.aborted) throw signal.reason ?? new Error('运行已取消')
+}
+
 export function createCanvasNodeExecutors(options: {
   imageService: CanvasImageOperationService
   videoService?: CanvasVideoOperationService
@@ -120,6 +127,7 @@ export function createCanvasNodeExecutors(options: {
     if (!prompt) throw new Error('请输入图像提示词或连接上游文本节点')
     const group = node.data.group || options.imageGroup || '图片模型-中转/订阅'
     const requestId = `canvas-run:${attemptId}`
+    throwIfCancelled(signal)
     const onAbort = () => { options.imageService.cancel(ownerId, requestId) }
     signal.addEventListener('abort', onAbort, { once: true })
     try {
@@ -163,6 +171,7 @@ export function createCanvasNodeExecutors(options: {
     if (sourceAssetIds.length > 4) throw new Error('图片编辑最多支持 4 张参考图片')
     const group = node.data.group || options.imageGroup || '图片模型-中转/订阅'
     const requestId = `canvas-run:${attemptId}`
+    throwIfCancelled(signal)
     const onAbort = () => { options.imageService.cancel(ownerId, requestId) }
     signal.addEventListener('abort', onAbort, { once: true })
     try {
@@ -239,6 +248,7 @@ export function createCanvasNodeExecutors(options: {
     const imageAssetIds = ownedInputAssetIds(inputs.images ?? (inputs.image ? [inputs.image] : []), '视频参考图片')
     const videoAssetIds = ownedInputAssetIds(inputs.videos ?? (inputs.video ? [inputs.video] : []), '视频参考视频')
     const audioAssetIds = ownedInputAssetIds(inputs.audios ?? (inputs.audio ? [inputs.audio] : []), '视频参考音频')
+    throwIfCancelled(signal)
     const onAbort = () => { options.videoService?.cancel(ownerId, requestId) }
     signal.addEventListener('abort', onAbort, { once: true })
     try {

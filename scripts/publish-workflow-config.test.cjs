@@ -217,6 +217,27 @@ test('two publishes cannot run at once', () => {
   assert.equal(workflow.concurrency['cancel-in-progress'], false)
 })
 
+test('every job that writes the update feed shares one concurrency group', () => {
+  // #492：发布、回滚、维护开关都是「读线上 → 算新内容 → 写回去」。并发组不同的话，
+  // 回滚刚把清单换回旧版，发布又把新版盖上去，撤回名单里却还写着它。这里扫全部
+  // 工作流而不是点名三个作业，以后新加一条往 R2 写东西的工作流也逃不掉。
+  const workflowsDir = path.join(root, '.github', 'workflows')
+  const writers = []
+  for (const file of fs.readdirSync(workflowsDir).filter((name) => /\.ya?ml$/.test(name)).sort()) {
+    const parsed = YAML.parse(fs.readFileSync(path.join(workflowsDir, file), 'utf8'))
+    for (const [id, job] of Object.entries(parsed.jobs || {})) {
+      if (!(job.steps || []).some((step) => /\baws s3\b/.test(String(step.run || '')))) continue
+      writers.push(`${file}#${id}`)
+      assert.equal(job.concurrency?.group, 'update-feed', `${file}#${id} must join the update-feed group`)
+      assert.equal(job.concurrency?.['cancel-in-progress'], false, `${file}#${id} must never cancel a write in progress`)
+      // 组挂在作业上。工作流级再挂一个同名组，publish-release 出包的一个多小时里
+      // 就会一直挡着维护开关。
+      assert.notEqual(parsed.concurrency?.group, 'update-feed', `${file} must hold the group per job`)
+    }
+  }
+  assert.deepEqual(writers, ['publish-release.yml#publish', 'rollback-release.yml#rollback', 'service-status.yml#publish'])
+})
+
 // 这一步排在上传产物与覆盖更新清单**之后**。它失败时线上已经是新版本了，作业却
 // 报红，而「究竟发出去没有」是发布现场最不该需要人去猜的一件事。platforms 选单个
 // 平台时一个版本要分两次发，第二次跑到这里 tag 与 Release 都已经存在——原来的写法

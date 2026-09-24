@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { buildClaudeRetainedVersionFilesCommand } from './claude-native-uninstall'
+import { cliExitHintLines } from './cli-exit-hint'
 import { buildCodexAppxElevationScript, buildCodexAppxUacBrokerScript } from './codex-desktop-appx'
 import {
   buildNodeRuntimeElevatedInstallScript,
@@ -387,6 +388,36 @@ describe('Windows CLI launch', () => {
     expect(terminalScript).not.toMatch(/\bchcp\b/i)
     expect(terminalScript.indexOf('UTF8Encoding')).toBeLessThan(terminalScript.indexOf('Set-Location'))
     expect(terminalScript.indexOf('UTF8Encoding')).toBeLessThan(terminalScript.indexOf('node.exe'))
+  })
+
+  it('tells the user what to do next once the CLI exits, keeping the window open', () => {
+    const plan = buildCliLaunchPlan({
+      executable: 'C:\\Program Files\\nodejs\\node.exe',
+      argv: ['C:\\ProgramData\\XingMangAI\\Cli\\node_modules\\tool\\cli.js'],
+      workspace: 'C:\\Work',
+      title: 'Claude Code',
+    }, testPowerShell)
+
+    const brokerScript = decodeWindowsPowerShellCommand(plan.argv.at(-1)!)
+    expect(brokerScript).toContain("'-NoExit'")
+    const innerCommand = brokerScript.match(/'-EncodedCommand', '([^']+)'/)?.[1]
+    const terminalScript = decodeWindowsPowerShellCommand(innerCommand!)
+
+    const launch = terminalScript.indexOf("& 'C:\\Program Files\\nodejs\\node.exe'")
+    const exitCheck = terminalScript.indexOf('if ($LASTEXITCODE -eq 0) {')
+    const otherwise = terminalScript.indexOf('} else {')
+    expect(launch).toBeGreaterThan(-1)
+    expect(exitCheck).toBeGreaterThan(launch)
+    expect(otherwise).toBeGreaterThan(exitCheck)
+    for (const line of cliExitHintLines.normal) {
+      const index = terminalScript.indexOf(`Write-Host '${line}' -ForegroundColor Cyan`)
+      expect(index).toBeGreaterThan(exitCheck)
+      expect(index).toBeLessThan(otherwise)
+    }
+    for (const line of cliExitHintLines.unexpected) {
+      expect(terminalScript.indexOf(`Write-Host '${line}' -ForegroundColor Yellow`)).toBeGreaterThan(otherwise)
+    }
+    expect(terminalScript.trimEnd().endsWith('}')).toBe(true)
   })
 
   it('uses the resolved absolute PowerShell 7 path directly', () => {

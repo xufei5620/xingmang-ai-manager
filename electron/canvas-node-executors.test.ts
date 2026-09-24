@@ -507,6 +507,41 @@ describe('createCanvasNodeExecutors', () => {
     expect(result?.assets?.map((asset) => asset.assetId)).toEqual(images.map((asset) => asset.assetId))
   })
 
+  it('refuses to dispatch image, image-edit or video when the run was already cancelled', async () => {
+    const controller = new AbortController()
+    controller.abort(new Error('stopped before dispatch'))
+    const generate = vi.fn(async () => [])
+    const edit = vi.fn(async () => [])
+    const generateVideo = vi.fn()
+    const executors = createCanvasNodeExecutors({
+      imageService: { generate, edit, cancel: vi.fn(() => ({ canceled: false, mayStillComplete: false })) },
+      videoService: { generate: generateVideo, cancel: vi.fn(() => ({ canceled: false, mayStillComplete: false })) },
+      videoGroup: 'grok',
+    })
+    const source = { kind: 'image' as const, assetId: 'a'.repeat(43), localUrl: `xingmang-asset://image/${'a'.repeat(43)}` }
+    const base = { runId: 'run', graphRevision: 'revision', attemptId: 'attempt', ownerId: 41, userId: 7, signal: controller.signal }
+
+    await expect(executors.image({
+      ...base,
+      node: { id: 'image', kind: 'image', definitionVersion: 1, data: { prompt: 'p', model: 'gpt-image-2' } },
+      inputs: {},
+    })).rejects.toThrow('stopped before dispatch')
+    await expect(executors['image-edit']!({
+      ...base,
+      node: { id: 'edit', kind: 'image-edit', definitionVersion: 1, data: { prompt: 'p', model: 'gpt-image-2' } },
+      inputs: { image: source },
+    })).rejects.toThrow('stopped before dispatch')
+    await expect(executors.video({
+      ...base,
+      node: { id: 'video', kind: 'video-generate', definitionVersion: 1, data: { prompt: 'p', model: 'grok-imagine-video' } },
+      inputs: {},
+    })).rejects.toThrow('stopped before dispatch')
+
+    expect(generate).not.toHaveBeenCalled()
+    expect(edit).not.toHaveBeenCalled()
+    expect(generateVideo).not.toHaveBeenCalled()
+  })
+
   it('parses drama tables through injected chat completion and retries once', async () => {
     const { danyinTwoShotFixture } = await import('./drama-parse')
     const completeOnce = vi.fn()

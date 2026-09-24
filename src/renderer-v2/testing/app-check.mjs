@@ -1544,6 +1544,53 @@ test('read-only account matches switch only explicitly selected CLI providers on
   } finally { await page.close() }
 })
 
+test('saved-account switching names the rewritten tools that are still open and restarts Codex desktop only when asked', async () => {
+  const page = await open('savedAccount=1&readOnlyAccountMatch=1&allInstalled=1&runningTools=1')
+  try {
+    await matchedToolBadges(page, '已配好')
+    await settleMatchedBootstrap(page)
+    await page.getByRole('button', { name: '切换账号', exact: true }).click()
+    const saved = page.getByTestId('saved-accounts-list')
+    await saved.getByText('同步到工具（可选）', { exact: true }).click()
+    await page.getByTestId('account-sync-claude').check()
+    await page.getByTestId('account-sync-codex').check()
+    await saved.getByRole('button', { name: '切换', exact: true }).click()
+    // 有工具还开着时切换框不自己关掉，提示和按钮要让用户看得到。
+    await page.getByTestId('account-sync-restart-hint')
+      .getByText('Claude Code、Codex CLI、Codex 桌面端 还开着，要关掉重开才会用上当前账号。', { exact: true }).waitFor()
+    const asked = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'inspectRunningTools').map((entry) => entry.args[0]))
+    assert.deepEqual(asked, [['claude', 'codex']])
+    assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => entry.method === 'launchCodexDesktop')), false, '不点就不许重开桌面端')
+    await page.getByTestId('account-sync-restart-codex-desktop').click()
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'launchCodexDesktop'))
+    const launches = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'launchCodexDesktop').map((entry) => entry.args[0]))
+    assert.deepEqual(launches, ['restart'])
+    await page.getByTestId('account-sync-restart-hint')
+      .getByText('Claude Code、Codex CLI 还开着，要关掉重开才会用上当前账号。', { exact: true }).waitFor()
+    assert.equal(await page.getByTestId('account-sync-restart-codex-desktop').count(), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('switching Codex account source offers to restart an open Codex desktop and does nothing until asked', async () => {
+  const page = await open('runningTools=1&allInstalled=1')
+  try {
+    const row = page.getByTestId('tool-row-codex')
+    await row.waitFor()
+    await row.getByRole('button', { name: '更多操作', exact: true }).click()
+    const item = page.getByTestId('tool-codex-switch-official').or(page.getByTestId('tool-codex-switch-account'))
+    await item.click()
+    const restart = page.getByTestId('switch-restart-codex-desktop')
+    await restart.waitFor()
+    assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => entry.method === 'launchCodexDesktop')), false, '不点就不许重开桌面端')
+    await restart.click()
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'launchCodexDesktop'))
+    assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'launchCodexDesktop').map((entry) => entry.args[0])), ['restart'])
+    await restart.waitFor({ state: 'detached' })
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('local keys no longer skip the welcome page, which offers login first and still lets tools open without an account', async () => {
   const page = await open('guest=1&existing=1')
   try {
@@ -1814,6 +1861,30 @@ test('the updates page names the step that failed and offers that step again', a
     await page.getByRole('dialog', { name: '重启并安装更新？' }).waitFor()
     await clean(page)
   } finally { await page.close() }
+})
+
+// Mac 自签包每换一版，第一次读登录信息都会弹「登录」钥匙串密码框；重启确认框里
+// 先打招呼，Windows 没有这回事，不许多这一句。
+test('the restart-to-install dialog warns about the keychain prompt on Mac only', async () => {
+  for (const [query, expected] of [['os=mac', 1], ['', 0]]) {
+    const page = await open(query)
+    try {
+      await page.getByTestId('nav-more').click()
+      await page.getByTestId('nav-updates').click()
+      const updates = page.getByTestId('page-updates')
+      await updates.waitFor()
+      await page.evaluate(() => window.v2Test.emit('onUpdateState', {
+        phase: 'downloaded', currentVersion: '0.1.31', availableVersion: '0.1.32', releaseName: null, releaseNotesText: null,
+        checkedAt: new Date().toISOString(), progress: null, failedStep: null, error: null, development: true,
+      }))
+      await updates.getByRole('button', { name: '重启安装', exact: true }).click()
+      const dialog = page.getByRole('dialog', { name: '重启并安装更新？' })
+      await dialog.waitFor()
+      if (expected) await dialog.getByTestId('updates-mac-keychain-hint').getByText('始终允许', { exact: false }).waitFor()
+      assert.equal(await dialog.getByTestId('updates-mac-keychain-hint').count(), expected, query || 'windows')
+      await clean(page)
+    } finally { await page.close() }
+  }
 })
 
 // 维护提示来自更新目录上的状态文件，没登录也得看得到：欢迎页角落一条，登录框是

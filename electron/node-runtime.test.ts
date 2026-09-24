@@ -273,7 +273,7 @@ describe('Node.js installer routing and process plans', () => {
 
     expect(runProcess).not.toHaveBeenCalled()
     expect(progress).toContain(
-      '已跳过 winget：Microsoft App Installer 包身份或安装目录校验失败，正在切换到经过校验的 MSI 安装包',
+      '这台电脑缺少系统自带的应用安装组件，改用经过校验的 Node.js 安装包',
     )
   })
 

@@ -44,6 +44,12 @@ export interface TutorialTopic {
   reminders?: readonly string[];
 }
 
+// 自签证书没有苹果团队号，钥匙串只能按每一版程序自己的指纹认人，所以 Mac 上每换
+// 一个版本，第一次读本机加密的登录信息都会弹一次「登录」钥匙串密码框。代码绕不开，
+// 只能提前告诉客户该怎么点：点「拒绝」看上去像被退出登录，客户会以为更新坏了。
+export const macKeychainTutorialTitle = 'Mac 更新后弹出钥匙串密码框？';
+export const macKeychainTutorialDetail = 'Mac 上换新版本后第一次打开，系统可能提示「星芒AI管理工具」想使用钥匙串里「xingmang-ai-manager Safe Storage」的信息。这是工具箱在读你本机保存的登录信息：输入这台 Mac 的开机密码，点「始终允许」就好，换新版本后一般只问这一次。点了「拒绝」会像退出了登录，下次打开还会再问。Windows 不会出现这个提示。';
+
 export const tutorialTopics: readonly TutorialTopic[] = [
   {
     id: 'start',
@@ -766,7 +772,7 @@ export const tutorialTopics: readonly TutorialTopic[] = [
     lead: '改配置前留备份，更新前保存工作，项目文件另外保管。',
     category: 'advanced',
     minutes: 3,
-    keywords: ['备份', '恢复', '更新', '重置', '数据', '隐私', '卸载', '版本'],
+    keywords: ['备份', '恢复', '更新', '重置', '数据', '隐私', '卸载', '版本', 'Mac', '钥匙串', '开机密码', '始终允许'],
     steps: [
       {
         title: '先备份工具配置',
@@ -784,7 +790,10 @@ export const tutorialTopics: readonly TutorialTopic[] = [
         detail: '「更多」里的更新管工具箱，首页工具行的更新管那个 AI 工具。',
         bullets: ['进入对应的更新入口，按提示下载。', '先保存任务，再确认重启安装。'],
         expected: '重新打开并检测后看到新版本。',
-        extra: [{ title: '更新失败怎么办？', detail: '按页面给出的失败步骤处理后重试，不要把工具箱版本和 Codex 等工具的版本混在一起。' }],
+        extra: [
+          { title: '更新失败怎么办？', detail: '按页面给出的失败步骤处理后重试，不要把工具箱版本和 Codex 等工具的版本混在一起。' },
+          { title: macKeychainTutorialTitle, detail: macKeychainTutorialDetail },
+        ],
         action: '打开工具箱更新',
         page: 'updates',
       },

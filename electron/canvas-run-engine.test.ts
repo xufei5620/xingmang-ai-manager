@@ -315,6 +315,23 @@ describe('executeCanvasRun', () => {
     expect(record.events.some((event) => event.type === 'node-state' && event.state === 'succeeded')).toBe(false)
   })
 
+  it('does not dispatch a remote executor when cancelled while the running state is being persisted', async () => {
+    const controller = new AbortController()
+    const image = vi.fn(async () => ({ assets: [asset()] }))
+    const record = await executeCanvasRun(runOptions(graph([node('image', 'image-generate')]), {
+      executors: executors({ image }),
+      signal: controller.signal,
+      persistRecord: async (snapshot: CanvasRunRecord) => {
+        if (snapshot.nodes.some((entry) => entry.state === 'running')) controller.abort(new Error('stop pressed'))
+      },
+    }))
+
+    expect(image).not.toHaveBeenCalled()
+    expect(record.status).toBe('cancelled')
+    expect(record.outcome?.cancelled).toEqual(['image'])
+    expect(record.nodes[0].attempts.at(-1)?.state).toBe('cancelled')
+  })
+
   it('uses valid cache entries without dispatching an executor', async () => {
     const text = vi.fn(async () => ({ outputText: 'fresh' }))
     const record = await executeCanvasRun(runOptions(graph([node('a', 'text')]), {

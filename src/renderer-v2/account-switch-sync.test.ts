@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
+  accountSwitchNeedsAttention,
+  accountSwitchRestartHint,
   accountSyncCandidates,
   preserveAccountSwitchResult,
   previousAccountSwitchResult,
@@ -365,3 +367,49 @@ describe('saved account explicit CLI key sync', () => {
     expect(result.failed[0].message).toBe('账号状态已变化，已停止同步工具密钥。')
   })
 })
+
+describe('saved account switch restart hint', () => {
+  function running(overrides: Partial<Awaited<ReturnType<NonNullable<AccountSwitchBridge['inspectRunningTools']>>>> = {}) {
+    return { running: [], unknown: [], codexDesktopRunning: false, canRestartCodexDesktop: true, ...overrides }
+  }
+
+  it('asks only about the tools that just got the new key, after writing them', async () => {
+    const h = setup()
+    const inspectRunningTools = vi.fn(async (_providers: Parameters<NonNullable<AccountSwitchBridge['inspectRunningTools']>>[0]) => {
+      h.calls.push('inspect')
+      return running({ running: ['claude'] })
+    })
+    const result = await switchAccountWithOptionalSync({ ...h.api, inspectRunningTools }, h.target, ['claude', 'gemini'], h.context, h.context.origin, memoryStorage())
+    expect(inspectRunningTools).toHaveBeenCalledWith(['claude', 'gemini'])
+    expect(h.calls.at(-1)).toBe('inspect')
+    expect(accountSwitchRestartHint(result)).toBe('Claude Code 还开着，要关掉重开才会用上当前账号。')
+    expect(accountSwitchNeedsAttention(result)).toBe(true)
+  })
+
+  it('does not ask or warn when no tool was rewritten', async () => {
+    const h = setup()
+    const inspectRunningTools = vi.fn(async () => running({ running: ['claude'] }))
+    const result = await switchAccountWithOptionalSync({ ...h.api, inspectRunningTools }, h.target, [], null, h.context.origin)
+    expect(inspectRunningTools).not.toHaveBeenCalled()
+    expect(accountSwitchRestartHint(result)).toBe('')
+    expect(accountSwitchNeedsAttention(result)).toBe(false)
+  })
+
+  it('stays quiet when the rewritten tools are all closed', async () => {
+    const h = setup()
+    const result = await switchAccountWithOptionalSync({ ...h.api, inspectRunningTools: async () => running() }, h.target, ['claude'], h.context, h.context.origin, memoryStorage())
+    expect(result.configured).toEqual(['claude'])
+    expect(accountSwitchNeedsAttention(result)).toBe(false)
+  })
+
+  it('hedges instead of failing the switch when the check cannot run', async () => {
+    const h = setup()
+    h.context.configs.codex.codexAuthMode = 'apikey'
+    h.fresh.configs.codex.codexAuthMode = 'apikey'
+    const result = await switchAccountWithOptionalSync({ ...h.api, inspectRunningTools: async () => { throw new Error('denied') } }, h.target, ['codex'], h.context, h.context.origin, memoryStorage())
+    expect(result.configured).toEqual(['codex'])
+    expect(result.runningTools).toEqual(running({ unknown: ['codex'], codexDesktopRunning: null, canRestartCodexDesktop: false }))
+    expect(accountSwitchRestartHint(result)).toBe('如果 Codex CLI、Codex 桌面端 还开着，要关掉重开才会用上当前账号。')
+  })
+})
+

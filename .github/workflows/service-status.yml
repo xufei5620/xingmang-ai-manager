@@ -37,12 +37,13 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: service-status
-  cancel-in-progress: false
-
 jobs:
   publish:
+    # 与 publish-release 的 publish 作业、rollback-release 共用一个并发组：三者都是
+    # 「先读线上、再写回去」，交错执行会让后写的盖掉先写的（#492）。
+    concurrency:
+      group: update-feed
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     environment: release
     timeout-minutes: 15
