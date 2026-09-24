@@ -6,7 +6,7 @@ import {
   cleanCommandOutput, CommandRunnerError, runCommand, trustedCommandEnvironment,
   type CommandSpec, type RunCommandOptions,
 } from './command-runner'
-import { isExternalToolId, type ExternalClientInstallProgress, type ExternalClientRuntimeStatus } from './external-client-contract'
+import { externalClientOfficialDownloadUrls, isExternalToolId, type ExternalClientInstallProgress, type ExternalClientRuntimeStatus } from './external-client-contract'
 import type { ExternalToolId } from './external-tool-config'
 import { InstallationQueue } from './installation-queue'
 import { darwinDeveloperIdVerificationArgv } from './macos-code-signing'
@@ -27,6 +27,9 @@ const definitions = {
 const claudeFamily = 'Claude_pzs8sxrjxfjjc'
 const claudeApplicationId = `${claudeFamily}!Claude`
 const maximumProbeBytes = 256 * 1024
+// 找不到可信的系统 winget 时，原因是 ENOENT、包身份校验失败之类的内部细节，客户看不懂
+// 也做不了什么；首页行里只说装不了、怎么办，原因写进运行日志给客服查。
+export const externalClientWingetUnavailableHint = '这台电脑缺少系统自带的应用安装组件，不能一键安装；点「去官网下载」装好后回来重新检测'
 // 老电脑上这一轮 PowerShell 盘点（注册表、进程、AppX、签名）要好几秒，而装没装
 // 客户端这件事几分钟内几乎不会变；装、卸、打开之后会主动作废。
 const defaultScanCacheTtlMs = 5 * 60_000
@@ -67,6 +70,8 @@ export interface ExternalClientRuntimeOptions {
   /** 同一份盘点结果复用多久；缺省 5 分钟。测试用假时钟时一并注入 now。 */
   scanCacheTtlMs?: number
   now?: () => number
+  /** 系统 winget 用不了的原因只进运行日志，不上屏。 */
+  onWingetUnavailable?: (reason: string) => void
 }
 
 export interface ExternalClientScanOptions {
@@ -86,6 +91,11 @@ function errorText(error: unknown): string {
   return cleanCommandOutput(error instanceof Error ? error.message : String(error)).slice(0, 1500)
 }
 
+function officialDownloadUrl(tool: ExternalToolId): string | null {
+  const urls: Partial<Record<ExternalToolId, string>> = externalClientOfficialDownloadUrls
+  return urls[tool] ?? null
+}
+
 function wingetNetworkFailure(error: unknown): boolean {
   if (!(error instanceof CommandRunnerError) || error.code !== 'EXIT_NON_ZERO' || error.exitCode === null || error.signal) return false
   // WinINet timeout, name resolution, connection and connection-reset failures.
@@ -95,10 +105,10 @@ function wingetNetworkFailure(error: unknown): boolean {
 function wingetFailureMessage(error: unknown): string {
   if (!(error instanceof CommandRunnerError)) return errorText(error)
   const exitCode = error.exitCode === null ? '' : `（错误码 0x${(error.exitCode >>> 0).toString(16)}）`
-  if (wingetNetworkFailure(error)) return `winget 无法连接软件源或下载服务器${exitCode}，请检查网络连接后重试。`
+  if (wingetNetworkFailure(error)) return `连不上微软的软件下载源${exitCode}，请检查网络连接后重试。`
   if (error.code === 'ABORTED' || error.exitCode !== null && [1223, 0x800704c7].includes(error.exitCode >>> 0)) return '安装已取消。'
-  if (error.code === 'TIMED_OUT') return 'winget 安装超时，请重新检测客户端状态后再尝试安装。'
-  return `winget 安装失败${exitCode}，请查看运行日志中的安装器输出。`
+  if (error.code === 'TIMED_OUT') return '安装超时，请重新检测客户端状态后再尝试安装。'
+  return `安装没有完成${exitCode}，请查看运行日志中的安装器输出。`
 }
 
 function installationError(message: string, originalError: unknown): Error {
@@ -279,10 +289,17 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
     if (platform === 'darwin') return 'macOS 请先从客户端官网下载并将应用移入 Applications，然后重新检测'
     return '工具箱当前不支持此系统的桌面客户端安装与启动，请使用客户端官网提供的平台安装方案'
   }
+  let lastWingetReason: string | null = null
   const resolveWinget = async (): Promise<SystemWingetResolution> => {
     if (platform !== 'win32') return { executable: null, reason: null }
-    try { return await (options.resolveWingetExecutable ?? resolveSystemWingetExecutable)() }
-    catch (error) { return { executable: null, reason: errorText(error) } }
+    let winget: SystemWingetResolution
+    try { winget = await (options.resolveWingetExecutable ?? resolveSystemWingetExecutable)() }
+    catch (error) { winget = { executable: null, reason: errorText(error) } }
+    const reason = winget.executable ? null : winget.reason || '未找到受信任的系统 winget'
+    // 每次检测都会重找一遍；原因没变就不重复记，免得运行日志被同一行刷满。
+    if (reason && reason !== lastWingetReason) options.onWingetUnavailable?.(reason)
+    lastWingetReason = reason
+    return winget
   }
 
   function rememberSignature(item: Record<string, unknown>) {
@@ -380,13 +397,15 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
     const client = inspection.clients.find((item) => item.tool === tool)
     const platformHint = noInstallHint(tool)
     const officialDownload = platform === 'win32' && architecture === 'x64' && tool === 'workbuddy'
-    const hint = platformHint ?? (!winget.executable ? officialDownload ? '将使用腾讯官方安装包' : winget.reason || '未找到受信任的系统 winget，请安装或修复 Microsoft App Installer 后重新检测' : null)
+    const hint = platformHint ?? (!winget.executable ? officialDownload ? '将使用腾讯官方安装包' : externalClientWingetUnavailableHint : null)
+    const manualDownload = platform === 'win32' && platformHint === null && !winget.executable && !officialDownload
     return {
       tool, installed: Boolean(client), version: client?.version ?? null, path: client?.path ?? null,
       installDirectory: client ? (platform === 'win32' ? path.win32.dirname(client.path) : client.path) : null,
       running: client?.running ?? false, installSupported: platform === 'win32' && platformHint === null && Boolean(winget.executable || officialDownload),
       launchSupported: Boolean(client) && (platform === 'win32' || (platform === 'darwin' && (options.getuid?.() ?? process.getuid?.() ?? 1) !== 0)),
       detectionError: inspection.errors[tool] ?? null, installHint: hint,
+      officialDownloadUrl: manualDownload ? officialDownloadUrl(tool) : null,
     }
   }
   function invalidateScan() {
@@ -437,7 +456,7 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
         // Its WindowsApps ACL is deliberately handled by that resolver, as in
         // node-runtime/python-runtime; never substitute a PATH/AppExecutionAlias.
         if (winget.executable) {
-          report('downloading', `正在通过 winget 下载并安装 ${definitions[tool].name}`)
+          report('downloading', `正在下载并安装 ${definitions[tool].name}`)
           try {
             await execute(buildExternalClientWingetInstall(tool, winget.executable), {
               env: environment(), trustedOnly: false, windowsHide: true,
@@ -455,19 +474,19 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
             if (tool !== 'workbuddy' || installerStarted || !wingetNetworkFailure(error)) throw installationError(wingetFailureMessage(error), error)
             sourceFailure = error
             const recheck = status(tool, await inspect(), winget)
-            if (recheck.detectionError) throw installationError(`winget 连接失败，且无法确认客户端安装状态：${recheck.detectionError}`, error)
+            if (recheck.detectionError) throw installationError(`连不上微软的软件下载源，且无法确认客户端安装状态：${recheck.detectionError}`, error)
             officialDownloadNeeded = !recheck.installed
           }
         }
         if (officialDownloadNeeded) {
-          report('downloading', sourceFailure ? 'winget 源连接失败，正在切换到腾讯官方下载' : '正在使用腾讯官方安装包')
+          report('downloading', sourceFailure ? '连不上微软的软件下载源，正在切换到腾讯官方下载' : '正在使用腾讯官方安装包')
           try {
             await (options.installWorkBuddyFromOfficial ?? installWorkBuddyFromOfficial)({
               architecture, windowsExecutionMode: options.windowsExecutionMode ?? 'trusted-only', runCommand: execute,
               onProgress: (event) => report(event.phase, event.message, event.percent),
             })
           } catch (error) {
-            throw installationError(`${sourceFailure ? 'winget 源连接失败；' : ''}腾讯官方安装未完成：${errorText(error)}`, { winget: sourceFailure, official: error })
+            throw installationError(`${sourceFailure ? '连不上微软的软件下载源；' : ''}腾讯官方安装未完成：${errorText(error)}`, { winget: sourceFailure, official: error })
           }
         }
         report('checking', '正在验证安装结果')

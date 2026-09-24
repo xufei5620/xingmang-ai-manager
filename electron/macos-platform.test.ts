@@ -3,6 +3,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { cliExitHintLines } from './cli-exit-hint'
 import {
   buildMacosTerminalScript,
   cleanupStaleTerminalDirectories,
@@ -74,11 +75,59 @@ describe('macOS terminal launcher', () => {
     expect(script.indexOf('cd --')).toBeLessThan(script.indexOf('export CODEX_HOME='))
     expect(script.indexOf('export CODEX_HOME=')).toBeLessThan(script.indexOf('export HOME='))
     expect(script.indexOf('export HOME=')).toBeLessThan(script.indexOf('export PATH='))
-    expect(script.indexOf('export PATH=')).toBeLessThan(script.indexOf('exec --'))
+    expect(script.indexOf('export PATH=')).toBeLessThan(script.indexOf("trap ':' INT"))
     for (const key of ['PWD', 'OLDPWD', 'SHLVL', '_']) {
       expect(script).not.toContain(`export ${key}=`)
     }
     expect(fs.existsSync(launcher)).toBe(false)
+  })
+
+  it('stays in the launcher after the CLI exits to tell the user what to do next', () => {
+    const script = buildMacosTerminalScript({
+      executable: '/usr/local/bin/codex',
+      argv: ['resume', '--last'],
+      workspace: '/workspace',
+      launcherPath: '/tmp/launcher',
+      env: { HOME: '/tmp/home', PATH: '/usr/bin' },
+    })
+
+    expect(script).not.toMatch(/^exec\b/m)
+    expect(script).toContain("'/usr/local/bin/codex' 'resume' '--last' || cli_exit_code=$?")
+    const exitCheck = script.indexOf('if [ "$cli_exit_code" -eq 0 ]; then')
+    const otherwise = script.indexOf('\nelse\n')
+    expect(exitCheck).toBeGreaterThan(script.indexOf('|| cli_exit_code=$?'))
+    for (const line of cliExitHintLines.normal) {
+      const index = script.indexOf(`print -r -- '${line}'`)
+      expect(index).toBeGreaterThan(exitCheck)
+      expect(index).toBeLessThan(otherwise)
+    }
+    for (const line of cliExitHintLines.unexpected) {
+      expect(script.indexOf(`print -r -- '${line}'`)).toBeGreaterThan(otherwise)
+    }
+  })
+
+  it.runIf(process.platform === 'darwin')('prints the normal hint on a clean exit and the cautious one otherwise', () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-macos-exit-hint-'))
+    temporaryDirectories.push(directory)
+    for (const [executable, expected, absent] of [
+      ['/usr/bin/true', cliExitHintLines.normal, cliExitHintLines.unexpected],
+      ['/usr/bin/false', cliExitHintLines.unexpected, cliExitHintLines.normal],
+    ] as const) {
+      // The launcher removes itself and its (then empty) directory, so each
+      // run gets its own launcher directory apart from the workspace.
+      const launcher = path.join(fs.mkdtempSync(path.join(directory, 'launcher-')), 'launcher.zsh')
+      fs.writeFileSync(launcher, buildMacosTerminalScript({
+        executable,
+        argv: [],
+        workspace: directory,
+        launcherPath: launcher,
+        env: { HOME: directory, PATH: '/usr/bin' },
+      }), { mode: 0o700 })
+
+      const output = execFileSync('/bin/zsh', ['-f', launcher], { encoding: 'utf8' })
+      for (const line of expected) expect(output).toContain(line)
+      for (const line of absent) expect(output).not.toContain(line)
+    }
   })
 
   it('rejects invalid environment keys and NUL values', () => {

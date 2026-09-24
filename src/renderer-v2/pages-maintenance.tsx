@@ -881,7 +881,16 @@ export function UpdatesPage({
   const resource = useResource(load)
   const operation = useOperation()
   const [confirm, setConfirm] = useState(false)
+  const [isMac, setIsMac] = useState(false)
   useEffect(() => api.onUpdateState(resource.setData), [api, resource.setData])
+  useEffect(() => {
+    let current = true
+    // 读不到平台就不提示：多说一句对 Windows 客户是噪音，少说一句只是回到原来的样子。
+    void api.getPlatformCapabilities()
+      .then((capability) => { if (current) setIsMac(capability.platform === 'macos') })
+      .catch(() => undefined)
+    return () => { current = false }
+  }, [api])
   const update = resource.data
   const check = () =>
     void operation.execute(
@@ -1075,11 +1084,16 @@ export function UpdatesPage({
         }
       >
         <p>请先保存当前工作。安装完成后重新打开工具箱。</p>
+        {isMac && <p data-testid="updates-mac-keychain-hint">{macKeychainUpdateHint}</p>}
         <ResultNotice error={operation.error} />
       </Dialog>
     </section>
   )
 }
+
+// 为什么 Mac 每换一版都会问一次钥匙串密码，见 registry/tutorials.ts 的
+// macKeychainTutorialDetail。重启前说一句，客户就不会慌着点「拒绝」。
+export const macKeychainUpdateHint = '重启后 Mac 可能弹出钥匙串密码框，输入这台 Mac 的开机密码，点「始终允许」就好。'
 
 export function installResultMessage(result: ToolInstallOutcome | 'cancelled'): string {
   if (result === 'cancelled') return '安装已取消'

@@ -9,6 +9,7 @@ import { scanPowerShell, unbalancedBracket } from './powershell-script-scan.test
 import { windowsPowerShellExecutable } from './windows-elevation'
 import { AppSettingsStore } from './app-settings'
 import { InstallationQueue } from './installation-queue'
+import { CommandRunnerError } from './command-runner'
 import type { NativeConfigInspection } from './config-files'
 import {
   buildCodexDesktopDarwinStatus,
@@ -28,6 +29,11 @@ import {
   buildDesktopUpdateStatus,
   canAttemptCodexDesktopFirstInstallFallback,
   describeCodexDesktopLaunchFailure,
+  buildCodexDesktopStoreInstallCommand,
+  describeCodexDesktopDownloadAttempt,
+  describeCodexDesktopStoreFailure,
+  parseCodexDesktopStoreProgress,
+  shouldTryCodexDesktopStoreUpdate,
   describeCodexDesktopPrimaryMirrorSkip,
   desktopMirrorUpdateAvailable,
   downloadCodexDesktopPackage,
@@ -892,6 +898,22 @@ describe('Codex Desktop mirror fallback disclosure', () => {
     )).toBeNull()
   })
 
+  it('words each download attempt so the reason can stay on screen for the whole download', () => {
+    const fallback = { label: '镜像备用源', url: 'https://codexapp-r2.agentsmirror.com/latest/win-x64' }
+    expect(describeCodexDesktopDownloadAttempt(fallback, 0, null, ['国内镜像：查询超时']))
+      .toBe('国内镜像本次不可用（查询超时），正在从镜像备用源下载')
+    expect(describeCodexDesktopDownloadAttempt(fallback, 0, null, []))
+      .toBe('正在从镜像备用源下载')
+    expect(describeCodexDesktopDownloadAttempt(fallback, 1, '国内镜像（26.917.9434.0）：SHA-256 不一致', ['国内镜像：查询超时']))
+      .toBe('前一路镜像未通过校验，已改从镜像备用源下载')
+  })
+
+  it('keeps the Microsoft Store failure in front of every mirror attempt', () => {
+    const primary = { label: '国内镜像', url: 'https://codexapp.agentsmirror.com/latest/win-x64' }
+    expect(describeCodexDesktopDownloadAttempt(primary, 0, null, [], '连不上微软商店'))
+      .toBe('微软商店这次没装上（连不上微软商店），正在从国内镜像下载')
+  })
+
   it('reads the failure the historical probe actually produces', async () => {
     const fallbackManifestUrl = 'https://codexapp-r2.agentsmirror.com/previous/manifest'
     const fetchMock = vi.fn(async (value: string | URL | Request) => {
@@ -1570,5 +1592,53 @@ describe('Codex Desktop launch acceleration', () => {
     await fixture.service.launchCodexDesktop('open', fixture.target)
 
     expect(fixture.order).toEqual(['launch'])
+  })
+})
+
+describe('Codex Desktop Microsoft Store install', () => {
+  const winget = 'C:\\Program Files\\WindowsApps\\Microsoft.DesktopAppInstaller_1.0_x64__8wekyb3d8bbwe\\winget.exe'
+
+  function storeError(overrides: Partial<ConstructorParameters<typeof CommandRunnerError>[1]> = {}) {
+    return new CommandRunnerError('命令执行失败：winget.exe', {
+      code: 'EXIT_NON_ZERO', executable: winget, argv: ['install'], exitCode: 1, signal: null,
+      stdout: '', stderr: '', outputBytes: 0, maxOutputBytes: 1024, durationMs: 1, ...overrides,
+    })
+  }
+
+  it('installs the Store product with a fixed argv and no interactive prompts', () => {
+    expect(buildCodexDesktopStoreInstallCommand(winget)).toEqual({
+      executable: winget,
+      argv: [
+        'install', '--id', '9PLM9XGG6VKS', '--exact', '--source', 'msstore', '--silent',
+        '--accept-package-agreements', '--accept-source-agreements', '--disable-interactivity',
+      ],
+    })
+  })
+
+  it('refuses anything that is not an absolute winget.exe path', () => {
+    expect(() => buildCodexDesktopStoreInstallCommand('winget.exe')).toThrow('路径无效')
+    expect(() => buildCodexDesktopStoreInstallCommand('C:\\Temp\\evil.exe')).toThrow('路径无效')
+    expect(() => buildCodexDesktopStoreInstallCommand(`${winget}\0`)).toThrow('路径无效')
+  })
+
+  it('explains Store failures in plain words', () => {
+    expect(describeCodexDesktopStoreFailure(storeError({ exitCode: 0x80072efd | 0 }))).toBe('连不上微软商店')
+    expect(describeCodexDesktopStoreFailure(storeError({ exitCode: 0x8a15002b | 0 }))).toBe('商店里暂时还没有更新的版本')
+    expect(describeCodexDesktopStoreFailure(storeError({ exitCode: 0x8a150014 | 0 }))).toBe('商店里没找到 Codex 桌面端')
+    expect(describeCodexDesktopStoreFailure(storeError({ code: 'TIMED_OUT', exitCode: null }))).toBe('等了很久还没装完')
+    expect(describeCodexDesktopStoreFailure(storeError({ exitCode: 0x8a150084 | 0 }))).toBe('错误码 0x8a150084')
+    expect(describeCodexDesktopStoreFailure(new Error('spawn failed'))).toBe('安装没有完成')
+  })
+
+  it('reads the last percentage from Store progress output', () => {
+    expect(parseCodexDesktopStoreProgress('  ██████      12%\r  ████████████  48%')).toBe(48)
+    expect(parseCodexDesktopStoreProgress('已找到 Codex [9PLM9XGG6VKS]')).toBeNull()
+    expect(parseCodexDesktopStoreProgress('999%')).toBeNull()
+  })
+
+  it('tries the Store for an update unless the official feed says nothing newer exists', () => {
+    expect(shouldTryCodexDesktopStoreUpdate('26.900.1.0', '26.917.9434.0')).toBe(true)
+    expect(shouldTryCodexDesktopStoreUpdate('26.917.9434.0', '26.917.9434.0')).toBe(false)
+    expect(shouldTryCodexDesktopStoreUpdate('26.917.9434.0', null)).toBe(true)
   })
 })

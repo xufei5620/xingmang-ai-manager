@@ -9,6 +9,7 @@ import {
 } from './business-common'
 import type { V2Bridge } from './types'
 import {
+  accountSwitchRestartHint,
   accountSyncCandidates,
   preserveAccountSwitchResult,
   previousAccountSwitchResult,
@@ -22,6 +23,7 @@ import { keySyncFailureText } from './features/tools/key-sync-failure'
 import { accountOrigin, siteIdForOrigin } from './account-context'
 import { accountSources } from './features/auth/state'
 import type { LoginTarget } from './features/auth/api'
+import { offersCodexDesktopRestart } from '../../electron/running-tools'
 
 export function SavedAccounts({
   api,
@@ -53,6 +55,7 @@ export function SavedAccounts({
     >
   >([])
   const [result, setResult] = useState<AccountSwitchSyncResult | null>(null)
+  const restartHint = result ? accountSwitchRestartHint(result) : ''
   const candidates = sync.data ? accountSyncCandidates(sync.data) : []
   useEffect(() => {
     setSelected([])
@@ -75,7 +78,7 @@ export function SavedAccounts({
       <ResultNotice {...operation} />
       {result && (
         <Notice
-          tone={result.failed.length ? 'warn' : 'ok'}
+          tone={result.failed.length || restartHint ? 'warn' : 'ok'}
           title={
             result.failed.length ? '账号已切换，部分工具没有同步' : '账号已切换'
           }
@@ -90,8 +93,40 @@ export function SavedAccounts({
                   {keySyncFailureText(entry.provider, entry.message)}
                 </span>
               ))}
+              {restartHint && (
+                <span data-testid="account-sync-restart-hint">
+                  <br />
+                  {restartHint}
+                </span>
+              )}
             </>
           }
+          actions={offersCodexDesktopRestart(result.runningTools) && (
+            <Button
+              size="sm"
+              variant="primary"
+              disabled={Boolean(operation.busy)}
+              loading={operation.busy === 'restart-codex-desktop'}
+              testId="account-sync-restart-codex-desktop"
+              onClick={() =>
+                void operation.execute(
+                  'restart-codex-desktop',
+                  async () => {
+                    // 点了才重开，从不自动重开：桌面端正在回答的那一轮会被打断。
+                    await api.launchCodexDesktop('restart')
+                    const next = result.runningTools
+                      ? { ...result, runningTools: { ...result.runningTools, codexDesktopRunning: false } }
+                      : result
+                    preserveAccountSwitchResult(next)
+                    setResult(next)
+                  },
+                  'Codex 桌面端已重开，用上当前账号了。',
+                )
+              }
+            >
+              帮我重开 Codex 桌面端
+            </Button>
+          )}
           testId="account-sync-result"
         />
       )}
