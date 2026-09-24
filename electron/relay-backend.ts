@@ -85,7 +85,30 @@ export interface RelayNotice {
   text: string
   /** Multiple user-visible notices with server-owned read state. */
   entries?: Array<{ id: string; title: string; text: string; read: boolean }>
+  /**
+   * new-api's announcement timeline (「控制台 → 内容 → 公告」), delivered
+   * with GET /api/status next to the system notice in `text`. Read state is
+   * kept on this machine. Newest first, at most 20.
+   */
+  bulletins?: RelayNoticeBulletin[]
 }
+
+export type RelayNoticeBulletinType = 'default' | 'ongoing' | 'success' | 'warning' | 'error'
+
+export interface RelayNoticeBulletin {
+  /** `newapi-` + SHA-256 of the origin and publish time. */
+  id: string
+  /** Markdown; by convention the first line is `**title**`. */
+  content: string
+  /** Markdown shown under the body. */
+  extra: string
+  /** RFC 3339 as the relay stored it. */
+  publishedAt: string
+  type: RelayNoticeBulletinType
+}
+
+/** `cached`: a periodic check that must not send requests of its own. */
+export type RelayNoticeReadMode = 'cached'
 
 /** Checkout payload returned by a relay top-up endpoint. Forms are the
  * legacy new-api POST flow; URL/QR payloads are handled by the main process
@@ -155,7 +178,7 @@ export interface RelayBackendClient {
 
   /** ipc.ts: account:get-status */
   getStatus(): Promise<NewApiAccountStatus>
-  getNotice?(): Promise<RelayNotice | null>
+  getNotice?(mode?: RelayNoticeReadMode): Promise<RelayNotice | null>
   /** Mark one entry from the last fetched notice snapshot read in the active account. */
   markNoticeRead?(id: string, entryId: string): Promise<void>
   /** ipc.ts: account:get-legal-document */

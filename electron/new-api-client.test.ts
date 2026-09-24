@@ -3464,7 +3464,7 @@ describe('shared public status reads', () => {
     return fetchImpl.mock.calls.slice(from).map(([input]) => new URL(String(input)).pathname)
   }
 
-  it('reads /api/status at most once per ten minutes across balance refreshes', async () => {
+  it('merges status reads that arrive together and reads again on the next refresh', async () => {
     vi.useFakeTimers({ now: new Date('2026-09-24T10:00:00Z'), toFake: ['Date'] })
     const fetchImpl = vi.fn<NewApiFetch>()
     const client = await authenticatedClient(fetchImpl)
@@ -3472,15 +3472,30 @@ describe('shared public status reads', () => {
     fetchImpl.mockImplementation(async (input) => new URL(String(input)).pathname === '/api/status'
       ? statusResponse()
       : jsonResponse({ success: true, message: '', data: userData() }))
-    await client.getBalance()
-    await client.getBalance()
-    vi.setSystemTime(new Date('2026-09-24T10:09:59Z'))
+    await Promise.all([client.getBalance(), client.getBalance()])
     await client.getBalance()
     expect(paths(fetchImpl, start).filter((path) => path === '/api/status')).toHaveLength(1)
     expect(paths(fetchImpl, start).filter((path) => path === '/api/user/self')).toHaveLength(3)
-    vi.setSystemTime(new Date('2026-09-24T10:10:01Z'))
+    // The balance store paces refreshes a minute apart; each one brings a fresh timeline.
+    vi.setSystemTime(new Date('2026-09-24T10:01:00Z'))
     await client.getBalance()
     expect(paths(fetchImpl, start).filter((path) => path === '/api/status')).toHaveLength(2)
+  })
+
+  it('hands the timeline from a balance refresh to the announcement check without another status read', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    const start = fetchImpl.mock.calls.length
+    fetchImpl.mockImplementation(async (input) => {
+      const path = new URL(String(input)).pathname
+      if (path === '/api/status') return statusResponse({ announcements: [{ publishDate: '2026-09-24T08:00:00Z', content: '**新公告**\n正文' }] })
+      if (path === '/api/notice') return jsonResponse({ success: true, data: '' })
+      return jsonResponse({ success: true, message: '', data: userData() })
+    })
+    await client.getBalance()
+    const notice = await client.getNotice!('cached')
+    expect(notice?.bulletins?.map(({ content }) => content)).toEqual(['**新公告**\n正文'])
+    expect(paths(fetchImpl, start).filter((path) => path === '/api/status')).toHaveLength(1)
   })
 
   it('does not keep a failed status read', async () => {

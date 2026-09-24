@@ -327,7 +327,7 @@ const xingmangApi: XingmangApi = {
   ensureProviderMarketplace: (provider) => invoke('ensureProviderMarketplace', provider),
   checkProviderMcpHealth: (provider) => invoke('checkProviderMcpHealth', provider),
   getAccountStatus: (siteId) => siteId === undefined ? invoke('getAccountStatus') : invoke('getAccountStatus', siteId),
-  getAccountNotice: () => invoke('getAccountNotice'),
+  getAccountNotice: (mode) => mode === undefined ? invoke('getAccountNotice') : invoke('getAccountNotice', mode),
   markAccountNoticeRead: (id, entryId) => invoke('markAccountNoticeRead', id, entryId),
   syncLocalNoticeReads: (scope, ids) => invoke('syncLocalNoticeReads', scope, ids),
   getAccelerationState: (scope) => invoke('getAccelerationState', scope),

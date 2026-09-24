@@ -2221,6 +2221,99 @@ test('NewAPI collection shows titles and keeps each opened notice read locally a
   } finally { await page.close() }
 })
 
+const timelineRows = '[data-testid="announcement-list"] .v2-announcement-read-state'
+async function expectTimelineStates(page, expected) {
+  try {
+    await page.waitForFunction(([selector, want]) => JSON.stringify([...document.querySelectorAll(selector)].map((node) => node.textContent)) === JSON.stringify(want), [timelineRows, expected])
+  } catch (error) {
+    assert.deepEqual(await page.locator(timelineRows).allTextContents(), expected)
+    throw error
+  }
+}
+
+test('the announcement timeline shows title, type, date and note, and only recent entries ask for attention', async () => {
+  const page = await open('noticeTimeline=1&externalBlocked=1')
+  try {
+    await page.evaluate(() => {
+      window.__blockedLinkClipboard = []
+      Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async (text) => { window.__blockedLinkClipboard.push(text) } } })
+    })
+    await page.getByTestId('announcement-banner').getByText('图片模型上线', { exact: true }).waitFor()
+    await page.getByTestId('announcement-open').click()
+    const dialog = page.getByRole('dialog', { name: '公告', exact: true })
+    const list = dialog.getByTestId('announcement-list')
+    await list.waitFor()
+    assert.deepEqual(await list.locator('.v2-announcement-title').allTextContents(), ['图片模型上线', '本周维护通知', '开票中心上线测试'])
+    assert.deepEqual(await list.locator('.v2-announcement-tag').allTextContents(), ['上新', '注意', '进行中'])
+    // 一个月前的那条第一次出现就算已读，不会一下子全弹出来。
+    await expectTimelineStates(page, ['未读', '未读', '已读'])
+    assert.equal(await dialog.getByRole('button', { name: '标为已读', exact: true }).count(), 0)
+    await list.locator('.v2-announcement-row').first().click()
+    const detail = dialog.getByTestId('announcement-detail')
+    await detail.getByRole('heading', { name: '图片模型上线' }).waitFor()
+    assert.match(await detail.getByTestId('announcement-detail-meta').textContent(), /^上新\d{4}-\d{2}-\d{2} \d{2}:\d{2} · 2 小时前$/)
+    // 单个换行也要换行：三步说明逐行显示，不挤成一行。
+    assert.equal(await detail.locator('.v2-announcement-content').first().locator('li').count(), 3)
+    await detail.getByTestId('announcement-detail-extra').getByText(/勿发送 API 密钥/).waitFor()
+    await detail.getByTestId('announcement-detail-extra').getByRole('link', { name: '联系客服' }).click()
+    await expect(dialog.getByTestId('announcement-blocked-link').locator('code')).toHaveText('https://work.weixin.qq.com/kfid/fixture')
+    assert.deepEqual(await page.evaluate(() => window.__blockedLinkClipboard), ['https://work.weixin.qq.com/kfid/fixture'])
+    await dialog.getByRole('button', { name: '返回列表' }).click()
+    await expectTimelineStates(page, ['已读', '未读', '已读'])
+    await dialog.getByRole('button', { name: '关闭', exact: true }).click()
+    await page.reload()
+    await waitForFixtureReady(page)
+    await page.getByTestId('announcement-open').click()
+    await list.waitFor()
+    await expectTimelineStates(page, ['已读', '未读', '已读'])
+    assert.equal(await page.evaluate(() => window.v2Test.calls.some((call) => call.method === 'markAccountNoticeRead')), false)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('an old account keeps the moved-over notice read and counts unread entries from both sources', async () => {
+  const page = await open('noticeCollection=1')
+  try {
+    await page.getByTestId('announcement-open').click()
+    const dialog = page.getByRole('dialog', { name: '公告', exact: true })
+    const list = dialog.getByTestId('announcement-list')
+    await list.getByRole('button', { name: '图片模型上线 未读' }).click()
+    await dialog.getByRole('button', { name: '返回列表' }).click()
+    await list.getByRole('button', { name: '图片模型上线 已读' }).waitFor()
+    await dialog.getByRole('button', { name: '关闭', exact: true }).click()
+    // 升级到读时间线的版本：服务端同时下发旧合集和时间线。
+    await page.goto(page.url().replace('noticeCollection=1', 'noticeTimeline=1&noticeCollection=1'))
+    await waitForFixtureReady(page)
+    await page.getByTestId('announcement-open').click()
+    await list.waitFor()
+    assert.deepEqual(await list.locator('.v2-announcement-title').allTextContents(), ['图片模型上线', '本周维护通知', '开票中心上线测试', '图片模型上线', '旧模型下架通知', '发票中心上线'])
+    // 搬过来的同名公告已读、一个月前的已读；未读是时间线 1 条加旧合集 2 条。
+    await expectTimelineStates(page, ['已读', '未读', '已读', '已读', '未读', '未读'])
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('a new timeline entry shows up with the next balance refresh without another timer', async () => {
+  const page = await open('noticeTimeline=1', true, () => { document.hasFocus = () => true })
+  try {
+    await page.getByTestId('announcement-banner').waitFor()
+    await page.getByTestId('announcement-banner-close').click()
+    await page.getByTestId('announcement-banner').waitFor({ state: 'hidden' })
+    const noticeReads = () => page.evaluate(() => window.v2Test.calls.filter((call) => call.method === 'getAccountNotice').map((call) => call.args[0] ?? 'full'))
+    const before = await noticeReads()
+    assert.equal(before.includes('cached'), false)
+    await page.evaluate(() => {
+      const next = { id: `newapi-${'d'.repeat(64)}`, type: 'default', publishedAt: new Date(Date.now() - 60_000).toISOString(), extra: '', content: '**刚发布的公告**\n正文' }
+      window.v2Test.setNotice({ id: 'newapi-timeline-fixture', text: '', bulletins: [next, ...window.v2Test.timelineFixture()] })
+    })
+    await page.clock.fastForward(60_000)
+    await page.getByTestId('announcement-banner').getByText('刚发布的公告', { exact: true }).waitFor()
+    // 跟着余额那次刷新走的检查只取主进程已有的数据，不单独再请求公告。
+    assert.deepEqual(await noticeReads(), [...before, 'cached'])
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('NewAPI read states survive collection updates and stay isolated between accounts', async () => {
   const page = await open('noticeCollection=1')
   const makeNotice = (firstBody) => ({ id: `collection-${firstBody}`, text: `<div data-newapi-collection="v1">

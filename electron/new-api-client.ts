@@ -3,7 +3,7 @@ import { readBoundedResponseText } from './bounded-response'
 import { redactCommandText } from './command-runner'
 import { managedKeyQuotaExhaustedMessage } from './account-key-quota'
 import { classifyNetworkFailure, isServiceUnavailableResponse, networkFailureMessages, type NetworkFailureReason } from './network-failure'
-import type { RelayBackendCapabilities, RelayBackendClient } from './relay-backend'
+import type { RelayBackendCapabilities, RelayBackendClient, RelayNotice, RelayNoticeBulletin, RelayNoticeBulletinType, RelayNoticeReadMode } from './relay-backend'
 import { relaySites } from './relay-sites'
 import { parseNewApiUsagePricing } from './usage-pricing-parser'
 import type { NewApiAccountUsagePricingTier, NewApiAccountUsageUnitPrices } from './usage-pricing-parser'
@@ -43,7 +43,12 @@ const serverLogoutTimeoutMs = 3_000
 const serverLogoutMaxResponseBytes = 16 * 1024
 
 const statusPath = '/api/status'
-const sharedStatusTtlMs = 10 * 60 * 1_000
+// Callers that arrive together (focus, login, a balance tick) share one read.
+// Pacing belongs to the renderer's balance store, the single scheduler.
+const sharedStatusReuseMs = 20 * 1_000
+// Opening the notice center reuses the timeline the balance refresh already
+// brought in, and reads /api/status itself only when that copy is this old.
+const timelineStaleMs = 5 * 60 * 1_000
 const verificationPath = '/api/verification'
 const registerPath = '/api/user/register'
 const loginPath = '/api/user/login'
@@ -1451,6 +1456,49 @@ export function parseAccountStatus(payload: unknown): NewApiAccountStatus {
   }
 }
 
+// new-api validates these when an admin saves them (content ≤ 500, extra
+// ≤ 100, RFC 3339 publishDate, ≤ 100 entries), but a direct database edit
+// skips that. These looser caps only bound what we are willing to render.
+const bulletinMaxProcessed = 100
+const bulletinMaxShown = 20
+const bulletinMaxContentLength = 2_000
+const bulletinMaxExtraLength = 500
+const bulletinTypes = new Set<RelayNoticeBulletinType>(['default', 'ongoing', 'success', 'warning', 'error'])
+
+function isBulletinType(value: unknown): value is RelayNoticeBulletinType {
+  return typeof value === 'string' && bulletinTypes.has(value as RelayNoticeBulletinType)
+}
+
+/**
+ * `announcements` from GET /api/status (「控制台 → 内容 → 公告」). Absent
+ * whenever the admin switched the panel off. new-api stores no id, so the id
+ * hashes the publish time: fixing a typo keeps everyone's read state, and
+ * only a new publish time counts as a new announcement.
+ */
+export function parseNoticeBulletins(payload: unknown, origin: string): RelayNoticeBulletin[] {
+  if (!isRecord(payload) || !Array.isArray(payload.announcements)) return []
+  const parsed: Array<RelayNoticeBulletin & { time: number }> = []
+  const dates = new Set<string>()
+  for (const item of payload.announcements.slice(0, bulletinMaxProcessed)) {
+    if (!isRecord(item) || typeof item.content !== 'string' || typeof item.publishDate !== 'string') continue
+    if (item.extra !== undefined && item.extra !== null && typeof item.extra !== 'string') continue
+    const content = item.content.trim()
+    const extra = typeof item.extra === 'string' ? item.extra.trim() : ''
+    const publishedAt = item.publishDate.trim()
+    const time = publishedAt.length <= 64 ? Date.parse(publishedAt) : Number.NaN
+    if (!content || content.length > bulletinMaxContentLength || extra.length > bulletinMaxExtraLength || !Number.isFinite(time)) continue
+    // Two entries with the same publish time would otherwise share an id.
+    const key = dates.has(publishedAt) ? `${publishedAt}\n${content}` : publishedAt
+    dates.add(publishedAt)
+    const id = `newapi-${createHash('sha256').update(`${origin}\nannouncement\n${key}`).digest('hex')}`
+    parsed.push({ id, content, extra, publishedAt, type: isBulletinType(item.type) ? item.type : 'default', time })
+  }
+  return parsed
+    .sort((left, right) => right.time - left.time)
+    .slice(0, bulletinMaxShown)
+    .map(({ time: _time, ...bulletin }) => bulletin)
+}
+
 export function parseAccountProfile(payload: unknown): NewApiAccountProfile {
   const data = isRecord(payload) ? payload : null
   const userId = data ? asFiniteNumber(data.id, Number.NaN) : Number.NaN
@@ -2297,20 +2345,25 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
   }
 
   const legalDocumentCache = new Map<NewApiLegalDocumentKind, { expiresAt: number; value: NewApiLegalDocument }>()
-  // /api/status is public site configuration (conversion rate, display unit,
-  // dashboard announcements) that an admin changes by hand. The balance used
-  // to fetch it on every 30-second refresh, which the relay operator saw as
-  // thousands of requests a day from one machine. Share one successful read
-  // for ten minutes; failures are not cached so the next caller retries.
-  let sharedStatus: { expiresAt: number; data: unknown } | null = null
+  // GET /api/status is the one request that is repeated on a timer: it
+  // carries the conversion rate the balance needs and the dashboard
+  // announcement timeline. The relay operator once counted ~3,000 hits a day
+  // from a single machine, so every consumer goes through this one read and
+  // the renderer's balance store decides how often it happens.
+  let sharedStatus: { fetchedAt: number; data: unknown } | null = null
   let sharedStatusInFlight: Promise<unknown> | null = null
+  // The last timeline a successful read produced. A failed read keeps it, so a
+  // network blip neither empties the list nor brings old entries back unread.
+  let timeline: { fetchedAt: number; bulletins: RelayNoticeBulletin[] } | null = null
   const readSharedStatus = (label: string): Promise<unknown> => {
-    if (sharedStatus && sharedStatus.expiresAt > Date.now()) return Promise.resolve(sharedStatus.data)
+    if (sharedStatus && Date.now() - sharedStatus.fetchedAt < sharedStatusReuseMs) return Promise.resolve(sharedStatus.data)
     if (sharedStatusInFlight) return sharedStatusInFlight
     const request = (async () => {
       try {
         const data = unwrapEnvelope(await performRequest(ctx, statusPath, { method: 'GET' }, label), label, [])
-        sharedStatus = { expiresAt: Date.now() + sharedStatusTtlMs, data }
+        const fetchedAt = Date.now()
+        sharedStatus = { fetchedAt, data }
+        timeline = { fetchedAt, bulletins: parseNoticeBulletins(data, origin) }
         return data
       } finally {
         sharedStatusInFlight = null
@@ -2319,6 +2372,7 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
     sharedStatusInFlight = request
     return request
   }
+  let lastNotice: string | null = null
 
   let session: InternalSession | null = null
   let ownerGeneration = 0
@@ -2497,7 +2551,7 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
     return parseAccountStatus(unwrapEnvelope(raw, '账号服务状态查询', []))
   }
 
-  const getNotice = async (): Promise<{ id: string; text: string } | null> => {
+  const readNoticeText = async (): Promise<string> => {
     const raw = await performRequest(
       ctx,
       '/api/notice',
@@ -2505,11 +2559,34 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
       '公告读取',
     )
     const data = unwrapPublicNotice(raw)
-    if (data === null || data === undefined || data === '') return null
+    if (data === null || data === undefined || data === '') return ''
     if (typeof data !== 'string' || data.length > noticeMaxContentLength) throw new Error('公告内容格式无效或超出上限')
-    const text = data.trim()
-    return text ? { id: createHash('sha256').update(`${origin}\n${text}`).digest('hex'), text } : null
+    return data.trim()
   }
+
+  // `cached` is the renderer's periodic check that follows each balance
+  // refresh: it must not add requests of its own, so it reuses the last
+  // /api/notice text and the timeline that refresh just stored.
+  const getNotice = async (mode?: RelayNoticeReadMode): Promise<RelayNotice | null> => {
+    const text = mode === 'cached' && lastNotice !== null ? lastNotice : await readNoticeText()
+    lastNotice = text
+    if (!timeline || Date.now() - timeline.fetchedAt >= timelineStaleMs) {
+      // The timeline is an addition; its failure must never hide the system
+      // notice or show up as an announcement error.
+      await readSharedStatus('公告读取').catch(() => undefined)
+    }
+    const bulletins = timeline?.bulletins ?? []
+    if (!text && !bulletins.length) return null
+    // The id stays the system notice's own digest whenever there is one: its
+    // saved read state is keyed by it.
+    const identity = text || bulletins.map((bulletin) => bulletin.id).join('\n')
+    return {
+      id: createHash('sha256').update(`${origin}\n${identity}`).digest('hex'),
+      text,
+      ...(bulletins.length ? { bulletins } : {}),
+    }
+  }
+
 
   const getLegalDocument = async (kind: NewApiLegalDocumentKind): Promise<NewApiLegalDocument> => {
     const pathName = legalDocumentPaths[kind]

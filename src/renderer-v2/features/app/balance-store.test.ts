@@ -45,7 +45,7 @@ describe('shared account balance refresh', () => {
     expect(listener).not.toHaveBeenCalled()
   })
 
-  it('polls every minute while visible, pauses when hidden and refreshes on return', async () => {
+  it('polls every minute while visible, slows to ten minutes when hidden and refreshes on return', async () => {
     const { store, read } = create()
     store.setScope('new-api:1')
     await store.refresh()
@@ -54,28 +54,45 @@ describe('shared account balance refresh', () => {
     await vi.advanceTimersByTimeAsync(1)
     expect(read).toHaveBeenCalledTimes(2)
     store.setVisible(false)
-    await vi.advanceTimersByTimeAsync(180_000)
+    await vi.advanceTimersByTimeAsync(9 * 60_000)
     expect(read).toHaveBeenCalledTimes(2)
     expect(store.getSnapshot().balance).toEqual(balance(100))
+    // 缩到托盘时仍每 10 分钟看一次，新公告才能弹系统通知。
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(read).toHaveBeenCalledTimes(3)
+    await vi.advanceTimersByTimeAsync(5_000)
     store.setVisible(true)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(read).toHaveBeenCalledTimes(4)
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(read).toHaveBeenCalledTimes(5)
+  })
+
+  it('checks only every ten minutes while the window is not focused and refreshes on return', async () => {
+    let focused = false
+    const { store, read } = create(undefined, () => focused)
+    store.setScope('new-api:1')
+    await store.refresh()
+    await vi.advanceTimersByTimeAsync(9 * 60_000)
+    expect(read).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(read).toHaveBeenCalledTimes(2)
+    await vi.advanceTimersByTimeAsync(5_000)
+    focused = true
     await store.refresh('foreground')
     expect(read).toHaveBeenCalledTimes(3)
     await vi.advanceTimersByTimeAsync(60_000)
     expect(read).toHaveBeenCalledTimes(4)
   })
 
-  it('skips timed refreshes while the window is not focused and still refreshes on return', async () => {
+  it('does not speed up after a failed read', async () => {
     let focused = false
-    const { store, read } = create(undefined, () => focused)
+    const read = vi.fn<() => Promise<AccountBalance>>().mockRejectedValue(new Error('Failed to fetch'))
+    const { store } = create(read, () => focused)
     store.setScope('new-api:1')
     await store.refresh()
-    await vi.advanceTimersByTimeAsync(10 * 60_000)
+    await vi.advanceTimersByTimeAsync(9 * 60_000)
     expect(read).toHaveBeenCalledTimes(1)
-    focused = true
-    await store.refresh('foreground')
-    expect(read).toHaveBeenCalledTimes(2)
-    await vi.advanceTimersByTimeAsync(60_000)
-    expect(read).toHaveBeenCalledTimes(3)
   })
 
   it('reuses a successful balance for five seconds on focus but manual refresh bypasses the window', async () => {
@@ -206,13 +223,12 @@ describe('shared account balance refresh', () => {
     expect(read).toHaveBeenCalledTimes(2)
   })
 
-  it('allows payment and manual refresh while hidden without starting hidden polling', async () => {
+  it('allows payment and manual refresh while hidden without starting fast polling', async () => {
     const { store, read } = create()
     store.setScope('new-api:1')
     await store.refresh()
     store.setVisible(false)
     await store.refresh('foreground')
-    await store.refresh('interval')
     expect(read).toHaveBeenCalledTimes(1)
     await store.refresh('mutation')
     await store.refresh('manual')

@@ -1,6 +1,14 @@
 import { describe, expect, it, vi } from 'vitest'
 import { createNewApiClient } from './new-api-client'
 
+// getNotice also reads the announcement timeline from /api/status. These
+// cases are about /api/notice alone, so answer that one with an empty status.
+function withEmptyStatus(fetchImpl: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>) {
+  return async (input: RequestInfo | URL, init?: RequestInit) => new URL(String(input)).pathname === '/api/status'
+    ? new Response(JSON.stringify({ success: true, data: {} }), { headers: { 'Content-Type': 'application/json' } })
+    : fetchImpl(input, init)
+}
+
 describe('production-shaped public notice responses', () => {
   it('reads a rich notice over the ordinary 512 KB cap without a success flag', async () => {
     const richBody = `<style>${'x'.repeat(600 * 1024)}</style><article><h1>重要通知</h1><p>请查看详情</p></article>`
@@ -9,7 +17,7 @@ describe('production-shaped public notice responses', () => {
         headers: { 'Content-Type': 'application/json' },
       }),
     )
-    const client = createNewApiClient({ baseUrl: 'https://notice.example.test', fetchImpl })
+    const client = createNewApiClient({ baseUrl: 'https://notice.example.test', fetchImpl: withEmptyStatus(fetchImpl) })
 
     const notice = await client.getNotice!()
 
@@ -29,7 +37,7 @@ describe('production-shaped public notice responses', () => {
         },
       }),
     )
-    const client = createNewApiClient({ baseUrl: 'https://notice.example.test', fetchImpl })
+    const client = createNewApiClient({ baseUrl: 'https://notice.example.test', fetchImpl: withEmptyStatus(fetchImpl) })
 
     await expect(client.getNotice!()).rejects.toThrow('公告读取响应超过 4096 KB 安全上限')
   })
