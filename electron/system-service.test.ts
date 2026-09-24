@@ -6,6 +6,8 @@ import * as TOML from '@iarna/toml'
 import { classifyNetworkFailure } from './network-failure'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AppSettingsStore, defaultAppSettings } from './app-settings'
+import { InstallationQueue } from './installation-queue'
+import { resolveInterruptibleInstallTask } from './quit-blocking-tasks'
 import { providerBaseUrls, type ProviderId } from './catalog'
 import { providerConfigRoot, type ProviderConfigRoots } from './codex-home'
 import {
@@ -29,6 +31,7 @@ import {
   assertNpmPackageLocksEquivalent,
   assertNpmReleaseIntegrityMatches,
   assertNpmReleaseMatchesOfficialLock,
+  buildCliLaunchQueueKey,
   buildCliStatus,
   buildCliMaintenancePlan,
   buildCliToolStatusFromSettled,
@@ -3033,6 +3036,29 @@ describe('interactiveTerminalEnvironment', () => {
       CLICOLOR_FORCE: '1',
     })
     expect(env.NO_COLOR).toBeUndefined()
+  })
+})
+
+describe('CLI launch queue key', () => {
+  it('merges only identical launches and keeps different workspaces or modes apart', async () => {
+    const first = path.join(os.tmpdir(), 'project-a')
+    expect(buildCliLaunchQueueKey('codex', first, 'new')).toBe(buildCliLaunchQueueKey('codex', path.join(first, '.'), 'new'))
+    expect(buildCliLaunchQueueKey('codex', first, 'new')).not.toBe(buildCliLaunchQueueKey('codex', path.join(os.tmpdir(), 'project-b'), 'new'))
+    expect(buildCliLaunchQueueKey('codex', first, 'new')).not.toBe(buildCliLaunchQueueKey('codex', first, 'resumeLast'))
+    expect(buildCliLaunchQueueKey('codex', first, 'new')).not.toBe(buildCliLaunchQueueKey('claude', first, 'new'))
+
+    const queue = new InstallationQueue()
+    const ran: string[] = []
+    let releaseInstall: () => void = () => {}
+    const install = queue.enqueue('cli:install:codex', () => new Promise<void>((resolve) => { releaseInstall = resolve }))
+    const home = queue.enqueue(buildCliLaunchQueueKey('codex', first, 'new'), async () => { ran.push('home'); return 'home' })
+    const doubleClick = queue.enqueue(buildCliLaunchQueueKey('codex', first, 'new'), async () => { ran.push('duplicate'); return 'duplicate' })
+    const resume = queue.enqueue(buildCliLaunchQueueKey('codex', first, 'resumeLast'), async () => { ran.push('resume'); return 'resume' })
+    releaseInstall()
+    await install
+    await expect(Promise.all([home, doubleClick, resume])).resolves.toEqual(['home', 'home', 'resume'])
+    expect(ran).toEqual(['home', 'resume'])
+    expect(resolveInterruptibleInstallTask({ activeKey: buildCliLaunchQueueKey('codex', first, 'new'), pendingKeys: [] })).toBeNull()
   })
 })
 

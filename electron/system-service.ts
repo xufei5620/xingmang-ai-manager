@@ -355,6 +355,16 @@ export function interactiveTerminalEnvironment(
   return env
 }
 
+/**
+ * 打开 CLI 的排队 key。只有同一工具、同一文件夹、同一种打开方式才算「同一次打开」
+ * 合并成一个（双击幂等，I11）；换了文件夹或从记录页「接着聊」是另一件事，
+ * 要排在后面各自执行，不能被前一个吞掉、再拿到前一个的结果（#482）。
+ * 前缀保持 `cli:launch:`，退出拦截（quit-blocking-tasks.ts）按前缀认它不是安装。
+ */
+export function buildCliLaunchQueueKey(provider: ProviderId, workspace: string, mode: CliLaunchMode): string {
+  return `cli:launch:${provider}:${mode}:${path.resolve(workspace)}`
+}
+
 /** Keeps service-level macOS launching bound to the command already verified by CLI resolution. */
 export function buildDarwinCliLaunchPlan(
   command: { executable: string; argv: readonly string[] },
@@ -4477,7 +4487,7 @@ export function createSystemService(
     mode: CliLaunchMode = 'new',
   ): Promise<CliLaunchResult> {
     return installationQueue.enqueue(
-      `cli:launch:${provider}`,
+      buildCliLaunchQueueKey(provider, workspace, mode),
       () => launchProviderOperation(provider, workspace, mode),
     )
   }
