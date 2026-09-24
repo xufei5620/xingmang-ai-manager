@@ -72,7 +72,7 @@ import {
 } from './registry/business'
 import { tools } from './registry/tools'
 import { clientConnections } from './registry/clients'
-import { canUninstallTool } from './features/tools/model'
+import { canUninstallTool, externalInstallHint, isExternallyManagedInstall } from './features/tools/model'
 import { elevatedInstallNotice } from './features/tools/elevation-notice'
 import { ToolStatusMeta, ToolStatusReason } from './features/tools/ToolStatusMeta'
 import { connectionCheckView } from './features/tools/connection-check'
@@ -1283,6 +1283,11 @@ export function MaintenancePage({
           // of a working tool.
           const detectionFailed = status?.detectionFailed === true
           const rescan = statusUnknown || detectionFailed
+          // 官方安装器或别的方式装的 CLI，这里的「重新安装」走的是 npm，只会在
+          // 旁边再装一份和它抢着用（#481）。与首页一样不给这个按钮，改说明怎么更新。
+          const externalHint = id !== 'codexDesktop' && !rescan && isExternallyManagedInstall(status)
+            ? externalInstallHint(status?.installSource)
+            : null
           return (
             <ListRow
               key={id}
@@ -1297,9 +1302,9 @@ export function MaintenancePage({
                 <ToolStatusReason
                   lead={withElevationNotice(
                     tool.vendor,
-                    id === 'codexDesktop' && !status?.installed && !rescan
+                    externalHint ?? (id === 'codexDesktop' && !status?.installed && !rescan
                       ? elevatedInstallNotice('codexDesktop', capability?.platform, capability?.codexDesktop.install)
-                      : null,
+                      : null),
                   )}
                   status={status}
                   statusUnknown={statusUnknown}
@@ -1322,8 +1327,10 @@ export function MaintenancePage({
                     disabled={
                       statusUnknown
                         ? resource.loading
-                        : (!managed && !detectionFailed) || Boolean(operation.busy)
+                        : (!managed && !detectionFailed) || Boolean(externalHint) || Boolean(operation.busy)
                     }
+                    title={externalHint ?? undefined}
+                    testId={'maintenance-install-' + id}
                     onClick={() =>
                       statusUnknown
                         ? void resource.reload()

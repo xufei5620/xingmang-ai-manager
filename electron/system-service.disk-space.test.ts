@@ -80,3 +80,35 @@ describe('checking free space before a CLI install starts', () => {
     },
   )
 })
+
+describe('refusing an npm install over a CLI installed another way', () => {
+  it('does not add a second npm copy next to a CLI from elsewhere', async () => {
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-external-cli-')))
+    temporaryDirectories.push(root)
+    vi.stubEnv('HOME', path.join(root, 'home'))
+    const target = { isDestroyed: () => false, send: vi.fn() }
+    const readDiskSpace = vi.fn(async () => diskWith(40 * gigabyte))
+    const service = createSystemService(
+      new AppSettingsStore(path.join(root, 'settings.json'), root),
+      {
+        platform: 'linux',
+        windowsExecutionMode: 'same-user',
+        findExecutable: vi.fn(async () => null),
+        readDiskSpace,
+        resolveCliInstallation: async () => ({
+          commandPath: path.join(root, 'other', 'bin', 'claude'),
+          installDirectory: path.join(root, 'other'),
+          packageRoot: null,
+          npmPrefix: null,
+          source: 'native',
+        }),
+      },
+    )
+
+    const error = await service.installCli('claude', target).catch((reason: unknown) => reason)
+
+    expect(String(error)).toContain('不是通过本工具安装的，这里不会再另装一份')
+    expect(target.send).not.toHaveBeenCalled()
+    expect(readDiskSpace).not.toHaveBeenCalled()
+  })
+})

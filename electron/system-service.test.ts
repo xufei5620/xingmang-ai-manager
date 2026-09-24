@@ -33,6 +33,7 @@ import {
   assertNpmReleaseMatchesOfficialLock,
   buildCliLaunchQueueKey,
   buildCliStatus,
+  externalCliInstallRefusal,
   buildCliMaintenancePlan,
   buildCliToolStatusFromSettled,
   buildDarwinCliLaunchPlan,
@@ -3059,6 +3060,16 @@ describe('CLI launch queue key', () => {
     await expect(Promise.all([home, doubleClick, resume])).resolves.toEqual(['home', 'home', 'resume'])
     expect(ran).toEqual(['home', 'resume'])
     expect(resolveInterruptibleInstallTask({ activeKey: buildCliLaunchQueueKey('codex', first, 'new'), pendingKeys: [] })).toBeNull()
+  })
+})
+
+describe('externalCliInstallRefusal', () => {
+  it('refuses the npm channel only for CLIs installed some other way', () => {
+    expect(externalCliInstallRefusal('claude', 'native')).toMatch(/官方安装器管理，这里不会再另装一份/)
+    expect(externalCliInstallRefusal('codex', 'path')).toMatch(/不是通过本工具安装的/)
+    expect(externalCliInstallRefusal('gemini', 'npm')).toBeNull()
+    expect(externalCliInstallRefusal('claude', undefined)).toBeNull()
+    expect(externalCliInstallRefusal('grok', 'native')).toBeNull()
   })
 })
 

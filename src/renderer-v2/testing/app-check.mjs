@@ -1003,6 +1003,21 @@ test('tool probe failures show a retry state instead of a third-party configurat
     await clean(page)
   } finally { await page.close() }
 })
+test('the maintenance page does not reinstall over a CLI from the official installer', async () => {
+  const page = await open('nativeInstall=1')
+  try {
+    await page.getByTestId('nav-more').click()
+    await page.getByTestId('nav-maintenance').click()
+    const row = page.getByTestId('maintenance-tool-claude')
+    const reinstall = page.getByTestId('maintenance-install-claude')
+    await reinstall.waitFor()
+    assert.equal(await reinstall.isDisabled(), true)
+    assert.match(await row.innerText(), /由官方安装器管理/)
+    assert.equal(await page.getByTestId('maintenance-install-codex').isDisabled(), false)
+    assert.match(await row.innerText(), /已安装（官方安装器）/)
+    await clean(page)
+  } finally { await page.close() }
+})
 test('a failed probe offers a rescan on the maintenance page instead of an install', async () => {
   const page = await open('detectionFailed=1')
   try {

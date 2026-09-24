@@ -365,6 +365,19 @@ export function buildCliLaunchQueueKey(provider: ProviderId, workspace: string, 
   return `cli:launch:${provider}:${mode}:${path.resolve(workspace)}`
 }
 
+/**
+ * 本工具给 Claude Code / Codex / Gemini CLI 的安装、更新、回滚都走 npm。已经由官方
+ * 安装器或别的方式装好的那份，npm 碰不到，只会在 npm 全局目录旁边再装一份，两份
+ * 抢着被找到（#481）。这种情况不装，给一句怎么办。Grok 走自己的原生通道，不在此列。
+ */
+export function externalCliInstallRefusal(provider: ProviderId, installSource: CliInstallDisplaySource | undefined): string | null {
+  if (provider === 'grok') return null
+  const name = cliCatalog[provider].name
+  if (installSource === 'native') return `这台电脑上的 ${name} 由官方安装器管理，这里不会再另装一份，请用它自己的方式更新`
+  if (installSource === 'path') return `这台电脑上的 ${name} 不是通过本工具安装的，这里不会再另装一份，更新请用它原本的安装方式`
+  return null
+}
+
 /** Keeps service-level macOS launching bound to the command already verified by CLI resolution. */
 export function buildDarwinCliLaunchPlan(
   command: { executable: string; argv: readonly string[] },
@@ -3326,6 +3339,7 @@ export function createSystemService(
     // 已经在装、排队期间被取消、或磁盘根本不够的，一条线路都不要起。
     if (installing.has(provider)) throw new Error(`${cliCatalog[provider].name} 正在安装中`)
     cancellation?.throwIfCancelled()
+    await assertNpmChannelOwnsCli(provider)
     // 磁盘快满时 npm 会跑到一半才报 ENOSPC：用户白等几分钟，旧版本还可能已经被
     // 动过。所以一个字节都还没下之前先看一眼盘（读不到空间照常放行）。
     await assertInstallDiskSpace(`${cliCatalog[provider].name} 安装失败`)
@@ -3333,6 +3347,24 @@ export function createSystemService(
       (message) => sendInstallProgress(target, provider, 'output', message),
       () => runCliInstall(provider, target, requestedVersion, cancellation),
     )
+  }
+
+  /**
+   * 按首页同一套判定（同一个 npm 全局根）看现在装着的是哪一份。探测本身失败时不拦：
+   * 那时装没装都没有结论，界面给的是「重新检测」，不会走到这里。
+   */
+  async function assertNpmChannelOwnsCli(provider: ProviderId): Promise<void> {
+    if (provider === 'grok') return
+    let installSource: CliInstallDisplaySource | undefined
+    try {
+      const npmTool = await inspectTool('npm')
+      const npmGlobalRoot = await resolveNpmGlobalRoot(npmTool.path, commandEnvironment())
+      installSource = (await inspectCliTool(provider, npmTool.path, npmGlobalRoot)).status.installSource
+    } catch {
+      return
+    }
+    const refusal = externalCliInstallRefusal(provider, installSource)
+    if (refusal) throw new Error(refusal)
   }
 
   async function runCliInstall(
