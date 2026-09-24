@@ -254,6 +254,8 @@ Codex 那时 `recommended` 是 `null`，也就是那两天点过「更新」的�
   交互模式开机弹「Detected a custom API key」让用户选（默认「No」）；顶层 `apiKeyHelper` 同样多带一个
   `x-api-key`，交互模式只给一行警告；`ANTHROPIC_DEFAULT_HAIKU_MODEL` 或 `ANTHROPIC_SMALL_FAST_MODEL`
   任一项都会把后台的标题、`/rename` 请求送到那个型号。
+  2026-09-24 补测：CC Switch 另写的 `ANTHROPIC_DEFAULT_FABLE_MODEL` 让 `--model fable` 直接请求它指定的
+  别家型号名；`CLAUDE_CODE_SUBAGENT_MODEL` 在二进制里有读取点、指定子任务型号，这一项没单独跑。两项已并进收起清单。
 
 ## 站点维度
 

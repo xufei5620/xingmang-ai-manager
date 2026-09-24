@@ -4276,3 +4276,28 @@ describe('startup snapshot cache and probe limits', () => {
     expect(peak).toBe(scanProbeConcurrency)
   })
 })
+
+describe('CC Switch leftovers in the config summary', () => {
+  it('flags configurations CC Switch left behind without exposing anything new', () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-cc-switch-summary-'))
+    temporaryDirectories.push(directory)
+    const service = createService({ providerRoots: { userHome: directory, codexHome: path.join(directory, '.codex') } })
+    fs.mkdirSync(path.join(directory, '.claude'))
+    fs.writeFileSync(path.join(directory, '.claude', 'settings.json'), JSON.stringify({
+      env: { ANTHROPIC_BASE_URL: 'http://127.0.0.1:15721', ANTHROPIC_AUTH_TOKEN: 'PROXY_MANAGED' },
+    }), 'utf8')
+    fs.mkdirSync(path.join(directory, '.gemini'))
+    fs.writeFileSync(path.join(directory, '.gemini', '.env'), 'GOOGLE_GEMINI_BASE_URL=https://other.example\nGEMINI_API_KEY=sk-other\n', 'utf8')
+
+    const before = service.getConfig(false).providers
+    expect(before.claude.ccSwitchLeftover).toBe('proxy')
+    expect(before.gemini).not.toHaveProperty('ccSwitchLeftover')
+    expect(before.codex).not.toHaveProperty('ccSwitchLeftover')
+
+    fs.mkdirSync(path.join(directory, '.cc-switch'))
+    const after = service.getConfig(false).providers
+    expect(after.claude.ccSwitchLeftover).toBe('proxy')
+    expect(after.gemini.ccSwitchLeftover).toBe('provider')
+    expect(after.codex).not.toHaveProperty('ccSwitchLeftover')
+  })
+})

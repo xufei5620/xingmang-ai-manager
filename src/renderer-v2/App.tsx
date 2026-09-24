@@ -317,6 +317,10 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   const switchToolAccount = useCallback(async (tool: ToolId, target: AccountSourceTarget) => {
     if (target === 'account' && (!session.authenticated || !session.account)) { setAuth('login'); return }
     const provider = providerFor(tool)
+    // CC Switch 还开着的话，它切供应商、退出时写回接管前的备份，都会把刚写好的配置
+    // 改回去。这里只提醒一句，退不退由用户定。
+    const ccSwitchRunningHint = target === 'account' && toolbox.snapshot?.config.providers[provider].ccSwitchLeftover
+      ? '不再用 CC Switch 的话，请把它退出，免得它又把设置改回去。' : ''
     // 登记成工具行上的任务（全面检测 Q35）：切换要备份、写入、自检，失败还要回滚，
     // 一次得好几秒。以前没有忙态，连点两下就是两次切换叠在一起跑；现在同一个工具
     // 在切的时候行上显示「切换中」、菜单收起，再点也进不来。
@@ -328,6 +332,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
         const markerWarning = baseUrl ? applyManualSourceMarker(getSourceMarkerStorage(), baseUrl, provider, false) : ''
         toast.show(result.message, result.loginRequired || (target === 'account' && !result.verified) ? 'warn' : 'ok')
         if (markerWarning) toast.show(markerWarning, 'warn')
+        if (ccSwitchRunningHint) toast.show(ccSwitchRunningHint, 'warn')
       } finally {
         await toolbox.refresh(true).catch(() => undefined)
       }

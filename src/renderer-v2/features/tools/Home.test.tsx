@@ -441,6 +441,49 @@ describe('renderer-v2 home missing runtime guidance on macOS', () => {
     })
   })
 
+  // 以前用 CC Switch 配过的电脑：登录后软件不改来源没确认的配置，工具还连着以前那家，
+  // 以前首页只挂一个中性的「用的是别处的配置」。现在要说清是 CC Switch，并给一颗按钮。
+  describe('a tool still configured by CC Switch', () => {
+    function ccSwitchSnapshot(leftover: 'proxy' | 'provider', extra: Record<string, unknown> = {}): ToolboxSnapshot {
+      const base = snapshot({ claude: cliStatus, codex: cliStatus, grok: cliStatus, gemini: cliStatus })
+      return {
+        ...base,
+        config: {
+          ...base.config,
+          providers: { ...base.config.providers, claude: {
+            ...providerConfig, matchesRelay: false, actualBaseUrl: 'https://elsewhere.example', configurationOwnership: 'unknown', ccSwitchLeftover: leftover, ...extra,
+          } },
+        },
+      } as unknown as ToolboxSnapshot
+    }
+
+    it('names CC Switch and offers to switch the tool to the current account', () => {
+      const markup = render({}, undefined, { snapshot: ccSwitchSnapshot('provider'), onSwitchAccount: () => undefined, onKeepConfig: () => undefined })
+      expect(markup).toContain('CC Switch 的设置')
+      expect(markup).toContain('还在用 CC Switch 里选的连接，没有用当前账号')
+      expect(markup).toContain('data-testid="tool-claude-replace-cc-switch"')
+      expect(markup).toContain('改用当前账号')
+      expect(markup).not.toContain('用的是别处的配置')
+      expect(markup).not.toContain('solov')
+    })
+
+    it('warns that a proxy takeover only works while CC Switch is running', () => {
+      const markup = render({}, undefined, { snapshot: ccSwitchSnapshot('proxy'), onSwitchAccount: () => undefined })
+      expect(markup).toContain('CC Switch 一关就用不了')
+    })
+
+    it('does not second-guess a configuration the account already owns', () => {
+      const markup = render({}, undefined, { snapshot: ccSwitchSnapshot('provider', { matchesRelay: true, actualBaseUrl: providerConfig.baseUrl, configurationOwnership: 'account' }), onSwitchAccount: () => undefined })
+      expect(markup).not.toContain('CC Switch')
+    })
+
+    it('keeps the old neutral row when the host offers no switch action', () => {
+      const markup = render({}, undefined, { snapshot: ccSwitchSnapshot('provider') })
+      expect(markup).toContain('CC Switch 的设置')
+      expect(markup).not.toContain('data-testid="tool-claude-replace-cc-switch"')
+    })
+  })
+
   // 开机账号恢复超过启动画面的等待上限时先进首页，这时读到的配置没有账号可比。
   // 恢复完补读之前，一行都不许说「配置被改过」或「用的是别处的配置」。
   describe('while the account is still being restored at startup', () => {

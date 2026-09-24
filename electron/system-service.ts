@@ -128,6 +128,7 @@ import {
   type InstallCancellationHandle,
   type InstallCancellationOutcome,
 } from './install-cancellation'
+import { inspectCcSwitchInstalled, resolveCcSwitchLeftover, type CcSwitchLeftover } from './cc-switch-leftover'
 import { ToolConfigOwnershipStore, toolConfigIdentity, type ToolConfigOwnership } from './tool-config-ownership'
 import type { StoredManagedCliKey } from './managed-cli-key-store'
 import { ExternalClientOwnershipStore } from './external-client-ownership'
@@ -2165,6 +2166,11 @@ export function planRestoredConfigOwnership(input: {
   if (!input.hasApiKey) return null
   if (input.current === 'account' || input.current === 'manual') return null
   return input.owner && input.matchesRelay && input.isAccountKey ? 'account' : 'manual'
+}
+
+/** 看不出来就不带这个字段，旧的快照与测试夹具不用跟着改。 */
+export function ccSwitchLeftoverField(leftover: CcSwitchLeftover | null): { ccSwitchLeftover?: CcSwitchLeftover } {
+  return leftover ? { ccSwitchLeftover: leftover } : {}
 }
 
 export function createSystemService(
@@ -4744,6 +4750,7 @@ export function createSystemService(
   function buildConfigSummary(previewOnboarding: boolean, cachedKeys: readonly StoredManagedCliKey[] = []): AppConfigSummary {
     const stored = store.read()
     const owner = serviceOptions.getExternalClientAccountId?.() ?? null
+    const ccSwitchInstalled = inspectCcSwitchInstalled(providerRoots.userHome)
     const result = {
       workspace: stored.workspace,
       providers: Object.fromEntries(
@@ -4754,6 +4761,7 @@ export function createSystemService(
             configurationOwnership: configOwnership.read(id, current, owner),
             configurationAccountMatched: Boolean(owner) && current.hasApiKey && current.matchesRelay
               && cachedKeys.some((entry) => entry.provider === id && entry.key === current.apiKey),
+            ...ccSwitchLeftoverField(resolveCcSwitchLeftover(current, ccSwitchInstalled)),
           }]
         }),
       ) as Record<ProviderId, NativeConfigSummary>,
@@ -4766,6 +4774,7 @@ export function createSystemService(
         hasApiKey: false,
         matchesRelay: false,
         configurationAccountMatched: false,
+        ccSwitchLeftover: undefined,
         apiKeyPreview: null,
         officialAccountEmail: null,
         officialAccountPlan: null,

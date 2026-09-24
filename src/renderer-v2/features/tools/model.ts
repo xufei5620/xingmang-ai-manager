@@ -385,3 +385,20 @@ export function greeting(hour: number): string {
 export function balanceTier(dollars: number): 'ok' | 'warn' | 'bad' {
   return dollars < 5 ? 'bad' : dollars < 20 ? 'warn' : 'ok'
 }
+
+/**
+ * 首页要不要把这一行当成「CC Switch 设置的」处理：主进程只给线索（装过 CC Switch，
+ * 或配置里有它的代理接管占位），来源是不是已经确认要在这里看。当前账号写的、
+ * 官方账号、手填的都不算，免得装过 CC Switch 的人每一行都挂黄牌。
+ */
+export function ccSwitchLeftoverFor(
+  config: ProviderConfigSummary | undefined,
+  provider: ProviderId,
+  source: ToolSource,
+  storage: SourceMarkerStorage | null = getSourceMarkerStorage(),
+): 'proxy' | 'provider' | null {
+  if (!config?.ccSwitchLeftover || (source !== 'unknown' && source !== 'changed')) return null
+  // 「就用现在这份」写的是同一个本机标记。地址指向别处的配置不会因此变成「手动」，
+  // 所以在这里认它：认过之后回到原来那个中性的「用的是别处的配置」，不再挂黄牌。
+  return readManualSourceMarker(storage, config.baseUrl, provider) ? null : config.ccSwitchLeftover
+}
