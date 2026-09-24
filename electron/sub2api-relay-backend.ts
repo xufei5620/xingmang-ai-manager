@@ -418,7 +418,7 @@ export function createSub2ApiRelayBackend(options: Sub2ApiRelayBackendOptions): 
       const available = await groups(capture())
       const names = available.map((group) => group.name)
       return available.filter((group) => names.indexOf(group.name) === names.lastIndexOf(group.name))
-        .map((group) => ({ name: group.name, description: group.platform, ratio: group.rateMultiplier ?? '' }))
+        .map((group) => ({ name: group.name, description: group.platform, ratio: group.rateMultiplier ?? '', platform: group.platform }))
     },
     listKeys: async (input = {}) => {
       const scope = capture()

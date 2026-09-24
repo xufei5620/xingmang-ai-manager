@@ -4903,50 +4903,71 @@ export function createSystemService(
         : previousOwnership === 'account' || previousOwnership === 'manual' ? previousOwnership : 'unknown')
       await configOwnership.write(payload.provider, before, 'manual', owner)
       assertUnchanged()
-      const result = saveProviderConfig(payload.provider, apiKey, payload.model, payload.mode, providerRoots, {}, activeSite.providerBaseUrls, statusLineCommand, availableModels)
+      // 官方 Key 先挪、配置后写：挪不开就一个字都不写，写配置失败再把 Key 放回，
+      // 不会留下「配置已是当前账号、官方 Key 还在抢道」的半切换状态（#477）。
+      const movedConsoleKey = payload.provider === 'claude' && moveOfficialCredentialsAside()
+      let result: ReturnType<typeof saveProviderConfig>
+      try {
+        result = saveProviderConfig(payload.provider, apiKey, payload.model, payload.mode, providerRoots, {}, activeSite.providerBaseUrls, statusLineCommand, availableModels)
+      } catch (error) {
+        if (movedConsoleKey) throw withCredentialUndo(error, restoreOfficialCredentialsNow, '原来登录留下的官方 Key 暂时收在一边，切回官方账号时会放回')
+        throw error
+      }
       await configOwnership.write(payload.provider, inspectNativeProviderConfig(payload.provider), source, owner)
       assertOwner()
       await store.setOfficialProvider(payload.provider, false)
       if (payload.provider === 'codex') await applyXingmangAiSkillForCodexAccount(false)
-      if (payload.provider === 'claude') moveOfficialCredentialsAside('claude')
       return result
     })
   }
 
-  /**
-   * Console 登录留下的 primaryApiKey 会以 x-api-key 跟着每个请求出去，中转拿它
-   * 覆盖掉当前账号的 Key（config-files.ts 顶部那段）。配置已经提交，这一步失败
-   * 只记日志：一键切换后面的连接自检会把这种情况认出来并整体回滚。
-   */
-  function moveOfficialCredentialsAside(provider: 'claude'): void {
+  function credentialFailureReason(error: unknown): string {
+    return redactHomeDirectory(error instanceof Error ? error.message : String(error), providerRoots.userHome)
+  }
+
+  /** 配置写入失败后撤回刚才对官方 Key 的挪动；撤不回来要让用户知道，不能只报配置那一半。 */
+  function withCredentialUndo(error: unknown, undo: () => unknown, leftover: string): unknown {
     try {
-      if (moveClaudeConsoleKeyAside(providerRoots)) {
-        runtimeLog?.log('info', 'config', 'official-credentials.moved', 'Claude Code 的官方 Console Key 已挪到一边，切回官方账号时放回', { provider })
-      }
-    } catch (error) {
-      const reason = error instanceof Error ? error.message : String(error)
-      runtimeLog?.log('warn', 'config', 'official-credentials.move-failed', 'Claude Code 的官方 Console Key 没能挪开，可能会和当前账号的 Key 冲突', {
-        provider,
-        reason: redactHomeDirectory(reason, providerRoots.userHome),
-      })
+      undo()
+      return error
+    } catch {
+      // undo 自己已经记了带原因的日志，这里只告诉用户现在是什么状态。
+      const message = error instanceof Error ? error.message : String(error)
+      return new Error(`${message}（${leftover}）`)
     }
   }
 
-  function restoreClaudeCredentialsQuietly(): void {
+  /**
+   * Console 登录留下的 primaryApiKey 会以 x-api-key 跟着每个请求出去，中转拿它
+   * 覆盖掉当前账号的 Key（config-files.ts 顶部那段）。挪不开就抛错，由调用方放弃
+   * 这次写入：配置写成当前账号而 Key 还在，打开工具就是 401。返回是否真的挪了一把。
+   */
+  function moveOfficialCredentialsAside(): boolean {
     try {
-      restoreClaudeConsoleKey(providerRoots)
+      const moved = moveClaudeConsoleKeyAside(providerRoots)
+      if (moved) runtimeLog?.log('info', 'config', 'official-credentials.moved', 'Claude Code 的官方 Console Key 已挪到一边，切回官方账号时放回', { provider: 'claude' })
+      return moved
     } catch (error) {
-      const reason = error instanceof Error ? error.message : String(error)
-      runtimeLog?.log('warn', 'config', 'official-credentials.restore-failed', 'Claude Code 的官方 Console Key 没能放回原处', {
-        provider: 'claude',
-        reason: redactHomeDirectory(reason, providerRoots.userHome),
-      })
+      const reason = credentialFailureReason(error)
+      runtimeLog?.log('warn', 'config', 'official-credentials.move-failed', 'Claude Code 的官方 Console Key 没能挪开，本次配置没有写入', { provider: 'claude', reason })
+      throw new Error(`Claude Code 原来登录留下的官方 Key 没能挪开，配置没有改动：${reason}`)
+    }
+  }
+
+  /** 放回挪开的官方 Key；失败抛错，回滚方据此知道恢复不完整。返回是否改动了文件。 */
+  function restoreOfficialCredentialsNow(): boolean {
+    try {
+      return restoreClaudeConsoleKey(providerRoots)
+    } catch (error) {
+      const reason = credentialFailureReason(error)
+      runtimeLog?.log('warn', 'config', 'official-credentials.restore-failed', 'Claude Code 的官方 Console Key 没能放回原处', { provider: 'claude', reason })
+      throw new Error(`Claude Code 原来的官方 Key 没能放回原处：${reason}`)
     }
   }
 
   async function restoreOfficialCredentials(provider: ProviderId): Promise<void> {
     if (provider !== 'claude') return
-    await serializeConfigWrite(async () => { restoreClaudeCredentialsQuietly() })
+    await serializeConfigWrite(async () => { restoreOfficialCredentialsNow() })
   }
 
   async function setOfficialSourcePreference(provider: ProviderId, official: boolean): Promise<void> {
@@ -4974,10 +4995,17 @@ export function createSystemService(
   async function switchToOfficialAccount(provider: ProviderId, mode: ConfigSavePayload['mode'] = 'merge') {
     return serializeConfigWrite(async () => {
       const activeSite = resolveRelaySite(serviceOptions.getRelaySiteId?.() ?? store.read().relaySiteId)
-      const result = switchProviderToOfficialAccount(provider, providerRoots, {}, activeSite.providerBaseUrls, mode)
+      // 与 saveConfig 对称：先放回官方 Key，放不回就不切；切换失败再把 Key 挪开。
+      const restoredConsoleKey = provider === 'claude' && restoreOfficialCredentialsNow()
+      let result: ReturnType<typeof switchProviderToOfficialAccount>
+      try {
+        result = switchProviderToOfficialAccount(provider, providerRoots, {}, activeSite.providerBaseUrls, mode)
+      } catch (error) {
+        if (restoredConsoleKey) throw withCredentialUndo(error, moveOfficialCredentialsAside, '原来登录留下的官方 Key 已经放回，可能会和当前账号的 Key 冲突，请再切一次')
+        throw error
+      }
       await store.setOfficialProvider(provider, true)
       if (provider === 'codex') await applyXingmangAiSkillForCodexAccount(true)
-      if (provider === 'claude') restoreClaudeCredentialsQuietly()
       return result
     })
   }
