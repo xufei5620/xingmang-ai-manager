@@ -1371,6 +1371,9 @@ if (!hasSingleInstanceLock) {
         return { client, getSavedAccount: saved, restore: async (record) => {
           if (record.realmId !== 'xm-account' || record.credential.kind !== 'new-api') throw new Error('账号凭据与当前账号不匹配')
           return client.restoreSession({ userId: Number(record.userId), cookies: [...record.credential.cookies] })
+        }, endSavedSession: async (record) => {
+          if (record.realmId !== 'xm-account' || record.credential.kind !== 'new-api') return
+          await client.endPersistedServerSession({ userId: Number(record.userId), cookies: [...record.credential.cookies] })
         } }
       },
       legacy: { list: () => savedAccounts.list(), getSession: (id, origin) => savedAccounts.getSession(id, origin),

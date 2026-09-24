@@ -143,6 +143,7 @@ function accountServiceStub(): NewApiClientService {
     login: vi.fn() as never,
     logout: vi.fn(),
     endServerSession: vi.fn(async () => undefined),
+    endPersistedServerSession: vi.fn(async () => undefined),
     isAuthenticated: vi.fn(() => false),
     getSessionState: vi.fn(() => ({ authenticated: false, account: null })),
     getBalance: vi.fn() as never,

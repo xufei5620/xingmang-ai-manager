@@ -54,6 +54,7 @@ function fixture(overrides: Partial<RealmAccountServiceOptions> = {}) {
   let authenticationPolicy: (siteId: RealmAccountSiteId, input: NewApiLoginInput) => void = () => undefined
   let restoredIdentity: (siteId: RealmAccountSiteId, value: RealmSavedAccount) => RealmSavedAccount
     = (siteId, value) => saved(siteId, value.userId, 'test-rotated-once')
+  let loginToken = 'test-original'
   const clients: Array<{
     siteId: RealmAccountSiteId
     client: RelayBackendClient
@@ -64,6 +65,7 @@ function fixture(overrides: Partial<RealmAccountServiceOptions> = {}) {
     restoreValid: boolean
     balance: () => Promise<unknown>
     serverSessionsEnded: Array<string | null>
+    savedSessionsEnded: RealmSavedAccount[]
   }> = []
   const createClient: RealmAccountServiceOptions['createClient'] = (siteId, callback) => {
     let current: RealmSavedAccount | null = null
@@ -81,7 +83,7 @@ function fixture(overrides: Partial<RealmAccountServiceOptions> = {}) {
       login: vi.fn(async (input: NewApiLoginInput) => {
         authenticationPolicy(siteId, input)
         if (item.failLogin || input.password === 'bad') throw new RealmAccountError('UNAUTHORIZED')
-        emit(saved(siteId, input.username === '8' ? '8' : '7'))
+        emit(saved(siteId, input.username === '8' ? '8' : '7', loginToken))
         return { account: state().account!, accessExpiresAt: null }
       }),
       logout: vi.fn(() => emit(null)),
@@ -98,16 +100,19 @@ function fixture(overrides: Partial<RealmAccountServiceOptions> = {}) {
       return true
     })
     const item = { siteId, client, restore, emit, failLogin: false, restoreError: null as Error | null,
-      restoreValid: true, balance: async (): Promise<unknown> => ({ quota: 100 }), serverSessionsEnded: [] as Array<string | null> }
+      restoreValid: true, balance: async (): Promise<unknown> => ({ quota: 100 }), serverSessionsEnded: [] as Array<string | null>,
+      savedSessionsEnded: [] as RealmSavedAccount[] }
     clients.push(item)
-    return { client, restore, getSavedAccount: () => current }
+    const endSavedSession = vi.fn(async (value: RealmSavedAccount) => { item.savedSessionsEnded.push(value) })
+    return { client, restore, getSavedAccount: () => current, endSavedSession }
   }
   const quiesce = vi.fn(async (): Promise<void> => undefined)
   const options = { ...disk, createClient, quiesce, ...overrides }
   const service = createRealmAccountService(options)
   return { ...disk, options, clients, service, quiesce,
     authenticationPolicy: (policy: typeof authenticationPolicy) => { authenticationPolicy = policy },
-    restoredIdentity: (policy: typeof restoredIdentity) => { restoredIdentity = policy } }
+    restoredIdentity: (policy: typeof restoredIdentity) => { restoredIdentity = policy },
+    loginToken: (token: string) => { loginToken = token } }
 }
 const login = { username: 'same@example.test', password: 'test-password', siteId: 'solov' as const }
 
@@ -950,6 +955,90 @@ describe('realm account server-side sign-out', () => {
     const f = fixture()
     await f.service.login(login)
     expect(f.service.client.endServerSession).toBeUndefined()
+    expect(Reflect.get(f.service.client, 'endPersistedServerSession')).toBeUndefined()
     expect(totalServerSignOuts(f)).toBe(0)
+  })
+})
+
+describe('realm account re-login of the same account (#476)', () => {
+  function savedSignOuts(f: ReturnType<typeof fixture>): RealmSavedAccount[] {
+    return f.clients.flatMap((entry) => entry.savedSessionsEnded)
+  }
+  function liveSignOuts(f: ReturnType<typeof fixture>): Array<string | null> {
+    return f.clients.flatMap((entry) => entry.serverSessionsEnded)
+  }
+
+  it('revokes the replaced session of the signed-in client when the same account logs in again', async () => {
+    const f = fixture()
+    await f.service.login(login)
+    f.loginToken('test-second-login')
+    await f.service.login(login)
+    expect(f.clients[1].serverSessionsEnded).toEqual(['7'])
+    expect(f.clients[2].serverSessionsEnded).toEqual([])
+    expect(savedSignOuts(f)).toEqual([])
+    expect((await f.vault.active())?.credential).toEqual(saved('solov', '7', 'test-second-login').credential)
+    expect(f.service.client.getSessionState().account?.userId).toBe(7)
+  })
+
+  it('revokes the stored session a re-login overwrites while another account is active', async () => {
+    const f = fixture()
+    await f.service.login(login)
+    await f.service.login({ ...login, siteId: 'solov-api' })
+    f.loginToken('test-second-login')
+    await f.service.login(login)
+    expect(savedSignOuts(f).map((entry) => entry.credential)).toEqual([saved('solov', '7', 'test-original').credential])
+    // The api-account session is still saved on this machine and stays valid.
+    expect(liveSignOuts(f)).toEqual([])
+    expect(await f.service.listSavedAccounts()).toHaveLength(2)
+  })
+
+  it('revokes the stored session of a stalled restore that the user replaced by logging in', async () => {
+    const f = fixture()
+    await f.vault.activate(saved())
+    let fail = true
+    const restarted = createRealmAccountService({ ...f.options, createClient: (siteId, callback) => {
+      const result = f.options.createClient(siteId, callback)
+      if (fail) f.clients[f.clients.length - 1].restoreError = new RealmAccountError('UNAVAILABLE')
+      return result
+    } })
+    await expect(restarted.restoreActive()).rejects.toMatchObject({ code: 'UNAVAILABLE' })
+    expect(restarted.stalledAccount()).not.toBeNull()
+    fail = false
+    f.loginToken('test-second-login')
+    await restarted.login(login)
+    expect(savedSignOuts(f).map((entry) => entry.credential)).toEqual([saved('solov', '7', 'test-original').credential])
+    expect(liveSignOuts(f)).toEqual([])
+    expect(restarted.stalledAccount()).toBeNull()
+  })
+
+  it('keeps sessions alive when nothing was replaced: other accounts, first logins, switching', async () => {
+    const f = fixture()
+    await f.service.login(login)
+    await f.service.login({ ...login, username: '8' })
+    const summaries = await f.service.listSavedAccounts()
+    await f.service.switchSavedAccount(summaries[0].id)
+    expect(liveSignOuts(f)).toEqual([])
+    expect(savedSignOuts(f)).toEqual([])
+  })
+
+  it('revokes a new server session that could not be saved and keeps the previous account', async () => {
+    const f = fixture()
+    await f.service.login({ ...login, username: '8' })
+    f.fail(true)
+    f.loginToken('test-unsaved')
+    await expect(f.service.login(login)).rejects.toMatchObject({ code: 'STORAGE' })
+    const candidate = f.clients[f.clients.length - 1]
+    expect(candidate.serverSessionsEnded).toEqual(['7'])
+    expect(f.clients[1].serverSessionsEnded).toEqual([])
+    expect(f.service.client.getSessionState().account?.userId).toBe(8)
+    expect(savedSignOuts(f)).toEqual([])
+  })
+
+  it('sends nothing for a rejected password', async () => {
+    const f = fixture()
+    await f.service.login(login)
+    await expect(f.service.login({ ...login, password: 'bad' })).rejects.toMatchObject({ code: 'UNAUTHORIZED' })
+    expect(liveSignOuts(f)).toEqual([])
+    expect(savedSignOuts(f)).toEqual([])
   })
 })
