@@ -2894,6 +2894,30 @@ test('relogin on an expired saved account opens the login dialog on that account
   } finally { await page.close() }
 })
 
+test('configuring a tool from the key page makes the home page re-read tool configuration', async () => {
+  const page = await open('keyOptions=1')
+  try {
+    await page.getByTestId('tool-row-codex').waitFor()
+    await page.getByRole('button', { name: '打开个人中心 fixture-user' }).click()
+    await page.getByTestId('account-display').waitFor()
+    await page.getByTestId('account-tabs').getByRole('tab', { name: '密钥', exact: true }).click()
+    await page.getByRole('button', { name: '密钥 custom-key 的更多操作', exact: true }).click()
+    await page.getByRole('menuitem', { name: '配置到工具', exact: true }).click()
+    const dialog = page.getByRole('dialog', { name: '配置到工具', exact: true })
+    await dialog.getByLabel('选择工具').selectOption('codex')
+    await dialog.getByLabel('选择模型').locator('option[value="fixture-other"]').waitFor({ state: 'attached' })
+    await dialog.getByLabel('选择模型').selectOption('fixture-other')
+    const reads = () => page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'getConfig').length)
+    const before = await reads()
+    await dialog.getByRole('button', { name: '保存配置', exact: true }).click()
+    await page.getByText('密钥已写入工具配置', { exact: true }).waitFor()
+    await page.waitForFunction((count) => window.v2Test.calls.filter((entry) => entry.method === 'getConfig').length > count, before)
+    const calls = await page.evaluate(() => window.v2Test.calls.map((entry) => entry.method))
+    assert.ok(calls.lastIndexOf('getConfig') > calls.indexOf('saveConfigWithAccountKey'))
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('Sub2API keeps fractional key limits and changing its password returns to login', async () => {
   const page = await open('sub2api=1')
   try {

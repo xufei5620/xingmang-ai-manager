@@ -325,6 +325,7 @@ export function AccountPage({
   onBack,
   onRewriteKey,
   onConfigureTool,
+  onToolConfigSaved,
 }: {
   api: V2Bridge
   initialTab?: AccountTab
@@ -338,6 +339,8 @@ export function AccountPage({
   onRewriteKey?: (provider: Provider) => Promise<boolean>
   /** 打开某个工具的设置；自动换新不适用时（手填等），这是用户的下一步。缺省 = 不给按钮。 */
   onConfigureTool?: (provider: Provider) => void
+  /** 「配置到工具」写成功后让首页重读配置；缺省 = 不通知（旧行为）。 */
+  onToolConfigSaved?: () => void
 }) {
   const [tab, setTab] = useState<AccountTab>(initialTab ?? 'overview')
   const { store: balanceStore, snapshot: balanceState } = useSharedAccountBalance()
@@ -514,6 +517,7 @@ export function AccountPage({
                       siteId={accountSiteId(account.session)}
                       onRewriteKey={onRewriteKey}
                       onConfigureTool={onConfigureTool}
+                      onToolConfigSaved={onToolConfigSaved}
                     />
                   )}
                   {panel === 'usage' && (
@@ -874,6 +878,7 @@ function AccountKeys({
   siteId,
   onRewriteKey,
   onConfigureTool,
+  onToolConfigSaved,
 }: {
   api: V2Bridge
   balance: Balance
@@ -881,6 +886,7 @@ function AccountKeys({
   siteId: AccountSiteId
   onRewriteKey?: (provider: Provider) => Promise<boolean>
   onConfigureTool?: (provider: Provider) => void
+  onToolConfigSaved?: () => void
 }) {
   const [page, setPage] = useState(1)
   const [query, setQuery] = useState('')
@@ -1396,6 +1402,9 @@ function AccountKeys({
                         false,
                       )
                       setSelected(null)
+                      // 主进程保存这条路不发配置变更事件，首页那份快照得由这里叫它重读，
+                      // 否则回到首页还是旧的来源和模型（#479）。
+                      onToolConfigSaved?.()
                     },
                     '密钥已写入工具配置',
                   )
