@@ -89,6 +89,9 @@ import {
   filterRuntimeLogs,
   formatRuntimeLogEntry,
   hasRuntimeLogFilter,
+  runtimeLogArea,
+  runtimeLogAreaLabel,
+  runtimeLogDisplayMessage,
   runtimeLogSourceOptions,
   runtimeLogWriteNotice,
 } from './features/app/runtime-log-filter'
@@ -632,7 +635,7 @@ export function FeedbackPage({
             />
             <Select
               aria-label="按来源筛选"
-              options={runtimeLogSourceOptions(resource.data?.sources, source)}
+              options={runtimeLogSourceOptions(resource.data?.entries, source)}
               value={source}
               onChange={(event) => setSource(event.target.value)}
               testId="feedback-source"
@@ -682,7 +685,7 @@ export function FeedbackPage({
             <ListRow
               key={entry.id}
               icon={FileText}
-              title={entry.message}
+              title={runtimeLogDisplayMessage(entry.message)}
               badge={
                 <Pill
                   tone={
@@ -696,7 +699,7 @@ export function FeedbackPage({
                   {runtimeLogLevelLabels[entry.level] ?? entry.level}
                 </Pill>
               }
-              desc={`${displayDate(entry.timestamp)} · ${entry.source}`}
+              desc={[displayDate(entry.timestamp), runtimeLogAreaLabel(entry)].filter(Boolean).join(' · ')}
               actions={
                 <Button
                   size="sm"
@@ -820,7 +823,7 @@ export function FeedbackPage({
           <dt>时间</dt>
           <dd>{displayDate(selected?.timestamp)}</dd>
           <dt>来源</dt>
-          <dd>{selected?.source}</dd>
+          <dd>{selected && runtimeLogArea(selected)}</dd>
           <dt>事件</dt>
           <dd>{selected?.event}</dd>
           <dt>内容</dt>
