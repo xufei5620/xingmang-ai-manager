@@ -8,6 +8,8 @@ import {
 
 export interface ManagedCliGroupCandidate {
   name: string
+  /** 分组背后接的是哪家上游。只有「历史账号」那套后端（Sub2API）会给，新站没有。 */
+  platform?: string
 }
 
 /** preferred: 服务端就有这个名字；alias: 命中另一套已知名单；
@@ -41,7 +43,25 @@ const sharedGroupPatterns: readonly RegExp[] = [
   /rerank/i,
 ]
 
+// Sub2API tags every group with the upstream it routes to. That tag is set by
+// whoever configured the group, not typed into its display name, so it still
+// holds after a rename to something like 「MAX 专线」 that carries no vendor
+// token at all. Only the four platforms that map onto our CLIs are listed;
+// everything else (antigravity, composite, kimi, ...) says nothing either way.
+const providerPlatforms: Record<ProviderId, readonly string[]> = {
+  claude: ['anthropic'],
+  codex: ['openai'],
+  gemini: ['gemini'],
+  grok: ['grok'],
+}
+
 const maximumGroupNameLength = 128
+const maximumPlatformLength = 64
+
+interface NormalizedGroup {
+  name: string
+  platform?: string
+}
 
 function knownGroupAliases(provider: ProviderId, preferred: string): string[] {
   return [managedCliKeyProfiles[provider].group, sub2ApiManagedCliKeyProfiles[provider].group]
@@ -68,21 +88,32 @@ function matchesOnlyProvider(provider: ProviderId, name: string): boolean {
  *  进建 Key 的请求体和面向用户的错误文案，所以按敌意输入对待（I5），
  *  口径与 `xingmang-ai-skill.ts` 对分组名的校验保持一致。 */
 export function normalizeGroupNames(groups: readonly ManagedCliGroupCandidate[]): string[] {
+  return normalizeGroups(groups).map((group) => group.name)
+}
+
+function normalizeGroups(groups: readonly ManagedCliGroupCandidate[]): NormalizedGroup[] {
   const seen = new Set<string>()
-  const names: string[] = []
+  const normalized: NormalizedGroup[] = []
   for (const group of groups) {
     const name = typeof group?.name === 'string' ? group.name.trim() : ''
     if (!name || name.length > maximumGroupNameLength || seen.has(name)) continue
     if (/[\u0000-\u001f\u007f]/.test(name)) continue
     seen.add(name)
-    names.push(name)
+    const platform = typeof group.platform === 'string' ? group.platform.trim().toLowerCase() : ''
+    normalized.push(platform && platform.length <= maximumPlatformLength ? { name, platform } : { name })
   }
-  return names
+  return normalized
+}
+
+function platformOwner(platform: string | undefined): ProviderId | null {
+  if (!platform) return null
+  return providerIds.find((provider) => providerPlatforms[provider].includes(platform)) ?? null
 }
 
 /**
  * 从服务端实际可用的分组里挑出这家 CLI 该用的那个。四档从准到松：
- * 名单里的名字还在 → 另一套已知名单里的名字 → 靠工具专属词唯一认出 → 退回名单。
+ * 名单里的名字还在 → 另一套已知名单里的名字 → 认出来（先看分组接的是哪家上游，
+ * 再看名字里的工具专属词，都要唯一）→ 退回名单。
  * 认不出或认到多个一律退回名单，让后续校验报「分组不可用」，不猜。
  */
 export function resolveManagedCliGroup(
@@ -91,14 +122,26 @@ export function resolveManagedCliGroup(
   siteId?: string,
 ): ResolvedManagedCliGroup {
   const preferred = resolveManagedCliKeyProfiles(siteId)[provider].group
-  const names = normalizeGroupNames(groups)
+  const normalized = normalizeGroups(groups)
+  const names = normalized.map((group) => group.name)
   if (names.length === 0) return { group: preferred, source: 'fallback' }
   if (names.includes(preferred)) return { group: preferred, source: 'preferred' }
   for (const alias of knownGroupAliases(provider, preferred)) {
     if (names.includes(alias)) return { group: alias, source: 'alias' }
   }
-  const detected = names.filter((name) => !isSharedGroup(name) && matchesOnlyProvider(provider, name))
-  if (detected.length === 1) return { group: detected[0], source: 'detected' }
+  // A group the backend says routes to another CLI's upstream is never ours,
+  // whatever its name says; an unknown or missing platform decides nothing.
+  const eligible = normalized.filter((group) => {
+    const owner = platformOwner(group.platform)
+    return !isSharedGroup(group.name) && (owner === null || owner === provider)
+  })
+  const byPlatform = eligible.filter((group) => platformOwner(group.platform) === provider)
+  if (byPlatform.length === 1) return { group: byPlatform[0].name, source: 'detected' }
+  // Several groups on the right upstream (a MAX tier and a Pro tier, say) are
+  // only told apart by name; with none, the name is all there is to go on.
+  const pool = byPlatform.length > 1 ? byPlatform : eligible
+  const detected = pool.filter((group) => matchesOnlyProvider(provider, group.name))
+  if (detected.length === 1) return { group: detected[0].name, source: 'detected' }
   return { group: preferred, source: 'fallback' }
 }
 
