@@ -12,9 +12,10 @@ export interface ManagedCliGroupCandidate {
   platform?: string
 }
 
-/** preferred: 服务端就有这个名字；alias: 命中另一套已知名单；
+/** subscription: 账号买了这家工具的订阅，Key 要放进订阅分组才扣订阅额度；
+ *  preferred: 服务端就有这个名字；alias: 命中另一套已知名单；
  *  detected: 靠工具专属词认出来的；fallback: 没认出来，退回写死名单。 */
-export type ManagedCliGroupSource = 'preferred' | 'alias' | 'detected' | 'fallback'
+export type ManagedCliGroupSource = 'subscription' | 'preferred' | 'alias' | 'detected' | 'fallback'
 
 export interface ResolvedManagedCliGroup {
   group: string
@@ -120,11 +121,14 @@ export function resolveManagedCliGroup(
   provider: ProviderId,
   groups: readonly ManagedCliGroupCandidate[],
   siteId?: string,
+  subscribedGroups: readonly string[] = [],
 ): ResolvedManagedCliGroup {
   const preferred = resolveManagedCliKeyProfiles(siteId)[provider].group
   const normalized = normalizeGroups(groups)
   const names = normalized.map((group) => group.name)
   if (names.length === 0) return { group: preferred, source: 'fallback' }
+  const subscription = subscribedGroupFor(provider, normalized, subscribedGroups)
+  if (subscription) return { group: subscription, source: 'subscription' }
   if (names.includes(preferred)) return { group: preferred, source: 'preferred' }
   for (const alias of knownGroupAliases(provider, preferred)) {
     if (names.includes(alias)) return { group: alias, source: 'alias' }
@@ -145,23 +149,70 @@ export function resolveManagedCliGroup(
   return { group: preferred, source: 'fallback' }
 }
 
+/**
+ * 历史账号的订阅绑在一个分组上：只有放在那个分组里的 Key 才扣订阅额度，放在别的
+ * 分组里照旧扣余额。所以买了某家工具的订阅，这家工具的 Key 就该换进订阅分组。
+ * 认法与下面认普通分组同一套（先看分组接的上游，再看名字里的工具专属词），但只在
+ * 「这个账号有生效订阅、且服务端此刻仍允许用」的分组里挑，认到多个就不挑——猜错了
+ * 是把钱扣到用户没想用的地方。
+ */
+function subscribedGroupFor(
+  provider: ProviderId,
+  normalized: readonly NormalizedGroup[],
+  subscribedGroups: readonly string[],
+): string | null {
+  if (subscribedGroups.length === 0) return null
+  const subscribed = new Set(subscribedGroups)
+  const candidates = normalized.filter((group) => subscribed.has(group.name) && !isSharedGroup(group.name))
+  const byPlatform = candidates.filter((group) => platformOwner(group.platform) === provider)
+  if (byPlatform.length === 1) return byPlatform[0].name
+  const pool = byPlatform.length > 1
+    ? byPlatform
+    : candidates.filter((group) => platformOwner(group.platform) === null)
+  const detected = pool.filter((group) => matchesOnlyProvider(provider, group.name))
+  return detected.length === 1 ? detected[0].name : null
+}
+
 export function resolveManagedCliGroups(
   groups: readonly ManagedCliGroupCandidate[],
   siteId?: string,
+  subscribedGroups: readonly string[] = [],
 ): Record<ProviderId, ResolvedManagedCliGroup> {
   return Object.fromEntries(
-    providerIds.map((provider) => [provider, resolveManagedCliGroup(provider, groups, siteId)]),
+    providerIds.map((provider) => [provider, resolveManagedCliGroup(provider, groups, siteId, subscribedGroups)]),
   ) as Record<ProviderId, ResolvedManagedCliGroup>
 }
 
-interface ManagedCliGroupAccountService {
+interface ManagedCliSubscriptionSnapshot {
+  activeSubscriptions: ReadonlyArray<{ status: string; groupName?: string; endsAt?: string }>
+}
+
+export interface ManagedCliGroupAccountService {
   listUsableGroups?: () => Promise<ManagedCliGroupCandidate[]>
   getActiveSiteId?: () => string
+  getSubscriptionSelf?: () => Promise<ManagedCliSubscriptionSnapshot>
+}
+
+/** 订阅会不会决定 Key 该放哪个分组。星芒账号的订阅不看分组、哪把 Key 都先扣订阅，只有历史账号要换。 */
+export function subscriptionsBindKeyGroups(accountService: ManagedCliGroupAccountService): boolean {
+  return accountService.getActiveSiteId?.() === 'solov-api' && typeof accountService.getSubscriptionSelf === 'function'
+}
+
+export function activeSubscriptionGroupNames(snapshot: ManagedCliSubscriptionSnapshot, now = Date.now()): string[] {
+  if (!snapshot || !Array.isArray(snapshot.activeSubscriptions)) throw new Error('当前订阅响应格式异常')
+  return normalizeGroupNames(snapshot.activeSubscriptions.flatMap((subscription) => {
+    if (subscription?.status !== 'active' || typeof subscription.groupName !== 'string') return []
+    // 状态还没来得及翻成到期、时间已经过了的，不再往里放 Key。
+    const endsAt = typeof subscription.endsAt === 'string' ? Date.parse(subscription.endsAt) : Number.NaN
+    return Number.isFinite(endsAt) && endsAt <= now ? [] : [{ name: subscription.groupName }]
+  }))
 }
 
 /**
  * 读一次服务端的可用分组并解析。拿不到（离线、鉴权过期、接口异常）返回 null，
  * 由调用方退回写死名单——那正是加入动态识别之前的行为，所以这条路径不引入新的失败方式。
+ * 历史账号还要一并读订阅：订阅读不到时同样返回 null，不能当成「没有订阅」，
+ * 否则一次读失败就会把已经在扣订阅的工具换回扣余额。
  */
 export async function loadManagedCliGroups(
   accountService: ManagedCliGroupAccountService,
@@ -169,10 +220,15 @@ export async function loadManagedCliGroups(
   if (typeof accountService.listUsableGroups !== 'function') return null
   const siteId = accountService.getActiveSiteId?.()
   try {
-    const groups = await accountService.listUsableGroups()
+    const [groups, subscribedGroups] = await Promise.all([
+      accountService.listUsableGroups(),
+      subscriptionsBindKeyGroups(accountService)
+        ? accountService.getSubscriptionSelf!().then((snapshot) => activeSubscriptionGroupNames(snapshot))
+        : Promise.resolve([]),
+    ])
     // 读分组这段时间里切了站点，这份结果就不属于当前账号了，按「没拿到」处理。
     if (accountService.getActiveSiteId?.() !== siteId) return null
-    return resolveManagedCliGroups(groups, siteId)
+    return resolveManagedCliGroups(groups, siteId, subscribedGroups)
   } catch {
     return null
   }

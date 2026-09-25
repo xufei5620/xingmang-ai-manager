@@ -32,6 +32,8 @@ export type BusinessPageProps = Omit<BusinessActions, 'navigate'> & {
   onToolConfigSaved?: () => void
   /** 工具设置窗口保存成功并读回之后的信号，用来收起密钥页「还在用刚撤销的密钥」（#546）。 */
   toolConfigConfirmed?: Parameters<typeof AccountPage>[0]['toolConfigConfirmed']
+  /** 订阅开通后把用得上它的工具换过去；缺省 = 不换（旧行为）。 */
+  onSubscriptionActivated?: Parameters<typeof AccountPage>[0]['onSubscriptionActivated']
 }
 
 export function BusinessPage({
@@ -45,6 +47,7 @@ export function BusinessPage({
   onBackupRestored,
   onToolConfigSaved,
   toolConfigConfirmed,
+  onSubscriptionActivated,
   ...actions
 }: BusinessPageProps) {
   if (page === 'account')
@@ -61,6 +64,7 @@ export function BusinessPage({
         onConfigureTool={actions.openConfig}
         onToolConfigSaved={onToolConfigSaved}
         toolConfigConfirmed={toolConfigConfirmed}
+        onSubscriptionActivated={onSubscriptionActivated}
       />
     )
   if (page === 'sessions')

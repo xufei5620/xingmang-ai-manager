@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { managedCliKeyProfiles, providerIds, sub2ApiManagedCliKeyProfiles } from './catalog'
 import {
+  activeSubscriptionGroupNames,
   loadManagedCliGroups,
   normalizeGroupNames,
   resolveManagedCliGroup,
@@ -166,7 +167,75 @@ describe('resolveManagedCliGroups', () => {
   })
 })
 
+describe('subscription groups', () => {
+  const sub2ApiGroups = [
+    ...providerIds.map((provider) => ({ name: sub2ApiManagedCliKeyProfiles[provider].group, platform: provider === 'claude' ? 'anthropic' : provider === 'codex' ? 'openai' : provider })),
+    { name: 'Claude 包月', platform: 'anthropic' },
+    { name: 'GPT 包月', platform: 'openai' },
+  ]
+
+  it('moves a CLI into the subscription group that routes to its upstream', () => {
+    expect(resolveManagedCliGroup('claude', sub2ApiGroups, 'solov-api', ['Claude 包月'])).toEqual({ group: 'Claude 包月', source: 'subscription' })
+    // A subscription for one CLI leaves the others on their usual groups.
+    expect(resolveManagedCliGroup('codex', sub2ApiGroups, 'solov-api', ['Claude 包月'])).toEqual({
+      group: sub2ApiManagedCliKeyProfiles.codex.group, source: 'preferred',
+    })
+  })
+
+  it('ignores a subscription group the backend no longer lets the account use', () => {
+    const withoutSubscriptionGroup = sub2ApiGroups.filter((group) => group.name !== 'Claude 包月')
+    expect(resolveManagedCliGroup('claude', withoutSubscriptionGroup, 'solov-api', ['Claude 包月'])).toEqual({
+      group: sub2ApiManagedCliKeyProfiles.claude.group, source: 'preferred',
+    })
+  })
+
+  it('tells two subscriptions on the same upstream apart only by name, and otherwise picks neither', () => {
+    const groups = [...sub2ApiGroups, { name: 'MAX 包季', platform: 'anthropic' }, { name: 'Pro 包年', platform: 'anthropic' }]
+    expect(resolveManagedCliGroup('claude', groups, 'solov-api', ['Claude 包月', 'MAX 包季'])).toEqual({ group: 'Claude 包月', source: 'subscription' })
+    expect(resolveManagedCliGroup('claude', groups, 'solov-api', ['Pro 包年', 'MAX 包季']).source).toBe('preferred')
+  })
+
+  it('reads only live subscriptions that name a group', () => {
+    const now = Date.parse('2026-09-25T00:00:00Z')
+    expect(activeSubscriptionGroupNames({ activeSubscriptions: [
+      { status: 'active', groupName: 'Claude 包月', endsAt: '2026-10-25T00:00:00Z' },
+      { status: 'active', groupName: 'GPT 包月', endsAt: '2026-09-24T00:00:00Z' },
+      { status: 'expired', groupName: 'Grok 包月' },
+      { status: 'active' },
+    ] }, now)).toEqual(['Claude 包月'])
+  })
+})
+
 describe('loadManagedCliGroups', () => {
+  it('uses the history account\'s active subscriptions when picking groups', async () => {
+    const resolved = await loadManagedCliGroups({
+      listUsableGroups: async () => [{ name: 'Claude 包月', platform: 'anthropic' }, ...named(...providerIds.map((p) => sub2ApiManagedCliKeyProfiles[p].group))],
+      getActiveSiteId: () => 'solov-api',
+      getSubscriptionSelf: async () => ({ activeSubscriptions: [{ status: 'active', groupName: 'Claude 包月' }] }),
+    })
+    expect(resolved?.claude).toEqual({ group: 'Claude 包月', source: 'subscription' })
+  })
+
+  it('reports null rather than "no subscription" when subscriptions cannot be read', async () => {
+    const resolved = await loadManagedCliGroups({
+      listUsableGroups: async () => named(...providerIds.map((p) => sub2ApiManagedCliKeyProfiles[p].group)),
+      getActiveSiteId: () => 'solov-api',
+      getSubscriptionSelf: async () => { throw new Error('连接服务器失败') },
+    })
+    expect(resolved).toBeNull()
+  })
+
+  it('never asks the xm account for subscriptions: they do not depend on the key group there', async () => {
+    let asked = false
+    const resolved = await loadManagedCliGroups({
+      listUsableGroups: async () => productionGroups,
+      getActiveSiteId: () => 'solov',
+      getSubscriptionSelf: async () => { asked = true; return { activeSubscriptions: [] } },
+    })
+    expect(asked).toBe(false)
+    expect(resolved?.claude.source).toBe('preferred')
+  })
+
   it('resolves against the site the session is on', async () => {
     const resolved = await loadManagedCliGroups({
       listUsableGroups: async () => named(...providerIds.map((p) => sub2ApiManagedCliKeyProfiles[p].group)),

@@ -1696,6 +1696,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     getSessionRevision: accountService.getSessionRevision?.bind(accountService),
     getActiveSiteId: accountService.getActiveSiteId?.bind(accountService),
     listUsableGroups: accountService.listUsableGroups.bind(accountService),
+    getSubscriptionSelf: accountService.getSubscriptionSelf.bind(accountService),
     provisionCliKey: async (input = {}) => {
       const userId = accountService.getSessionState().account?.userId
       const siteId = accountService.getActiveSiteId?.()
@@ -2908,7 +2909,12 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     const parent = BrowserWindow.fromWebContents(event.sender) ?? undefined
     return accountService.createSubscriptionPayment(parsed).then(async (checkout) => {
       if (checkout.kind === 'form') await options.paymentWindow.open(checkout.form, parent)
-      else await options.paymentWindow.openUrl(checkout.url, parent, checkout.tradeNo)
+      else if (checkout.kind === 'qrcode') {
+        // 同充值那条：二维码内容先按白名单校验，再交给支付窗口。
+        const validated = validatePaymentQrCode(checkout)
+        if (!options.paymentWindow.openQrCode) throw new Error('当前版本不支持二维码支付')
+        await options.paymentWindow.openQrCode(validated, parent)
+      } else await options.paymentWindow.openUrl(checkout.url, parent, checkout.tradeNo)
       return {
         opened: true as const,
         tradeNo: checkout.tradeNo,

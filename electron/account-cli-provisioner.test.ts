@@ -904,3 +904,102 @@ describe('managed CLI groups resolved from the account backend', () => {
     })
   })
 })
+
+describe('history-account subscriptions decide the managed key group', () => {
+  const sub2Api = profilesBySite['solov-api']
+  const platforms: Record<ProviderId, string> = { claude: 'anthropic', codex: 'openai', gemini: 'gemini', grok: 'grok' }
+
+  function subscriptionAccountService(state: { subscribed: string[]; groupsFail?: boolean }) {
+    const provisionCliKey = vi.fn(async (input: { name?: string; group?: string } = {}) => ({
+      id: input.group === 'Claude 包月' ? 900 : 100,
+      name: input.name ?? 'xingmang-desktop',
+      key: `sk-${input.group}-plaintext-secret-123456`,
+    }))
+    const getSubscriptionSelf = vi.fn(async () => ({
+      billingPreference: null,
+      activeSubscriptions: state.subscribed.map((groupName, index) => ({
+        id: index + 1, planId: index + 1, status: 'active', source: 'sub2api', groupName,
+        amountTotal: null, amountUsed: null, startedAt: '', endsAt: '', nextResetAt: null,
+      })),
+      allSubscriptions: [],
+    }))
+    const listUsableGroups = vi.fn(async () => {
+      if (state.groupsFail) throw new Error('连接服务器失败')
+      return [
+        ...providerIds.map((provider) => ({ name: sub2Api[provider].group, description: '', ratio: 1, platform: platforms[provider] })),
+        ...state.subscribed.map((name) => ({ name, description: '', ratio: 1, platform: 'anthropic' })),
+      ]
+    })
+    const accountService = {
+      getSessionState: vi.fn(() => ({ authenticated: true, account: { userId: 73 } })),
+      getActiveSiteId: () => 'solov-api',
+      provisionCliKey,
+      listUsableGroups,
+      getSubscriptionSelf,
+    } as unknown as AccountService
+    return { accountService, provisionCliKey, listUsableGroups }
+  }
+
+  it('moves only the subscribed CLI into its subscription group and reports it as regrouped', async () => {
+    const store = recordingKeyStore(providerIds.map((provider) => siteManagedKey('solov-api', provider)))
+    const { accountService, provisionCliKey, listUsableGroups } = subscriptionAccountService({ subscribed: ['Claude 包月'] })
+
+    const summary = await syncManagedCliKeySummary(accountService, store)
+
+    // The complete cache does not short-circuit here: a purchase is invisible locally.
+    expect(listUsableGroups).toHaveBeenCalledTimes(1)
+    expect(provisionCliKey.mock.calls.map(([input]) => input)).toEqual([{ name: sub2Api.claude.keyName, group: 'Claude 包月' }])
+    expect(summary.regrouped).toEqual(['claude'])
+    expect(summary.ready.find((entry) => entry.provider === 'claude')?.group).toBe('Claude 包月')
+    expect(store.cached.find((entry) => entry.provider === 'codex')?.key).toBe(siteManagedKey('solov-api', 'codex').key)
+  })
+
+  it('moves the CLI back to its usual group once the subscription is gone', async () => {
+    const store = recordingKeyStore([
+      { ...siteManagedKey('solov-api', 'claude'), id: 900, group: 'Claude 包月', key: 'sk-subscription-plaintext-secret-123456' },
+      ...providerIds.filter((provider) => provider !== 'claude').map((provider) => siteManagedKey('solov-api', provider)),
+    ])
+    const { accountService, provisionCliKey } = subscriptionAccountService({ subscribed: [] })
+
+    const summary = await syncManagedCliKeySummary(accountService, store)
+
+    expect(provisionCliKey.mock.calls.map(([input]) => input)).toEqual([{ name: sub2Api.claude.keyName, group: sub2Api.claude.group }])
+    expect(summary.regrouped).toEqual(['claude'])
+  })
+
+  it('keeps a cached subscription key when the groups cannot be read', async () => {
+    const store = recordingKeyStore([
+      { ...siteManagedKey('solov-api', 'claude'), id: 900, group: 'Claude 包月', key: 'sk-subscription-plaintext-secret-123456' },
+      ...providerIds.filter((provider) => provider !== 'claude').map((provider) => siteManagedKey('solov-api', provider)),
+    ])
+    const { accountService, provisionCliKey } = subscriptionAccountService({ subscribed: ['Claude 包月'], groupsFail: true })
+
+    const summary = await syncManagedCliKeySummary(accountService, store)
+
+    expect(provisionCliKey).not.toHaveBeenCalled()
+    expect(summary.failed).toEqual([])
+    expect(summary.regrouped).toBeUndefined()
+    expect(summary.ready.find((entry) => entry.provider === 'claude')?.group).toBe('Claude 包月')
+  })
+
+  it('leaves the xm account alone: its subscriptions do not depend on the key group', async () => {
+    const store = recordingKeyStore(providerIds.map((provider) => siteManagedKey('solov', provider)))
+    const getSubscriptionSelf = vi.fn()
+    const listUsableGroups = vi.fn()
+    const provisionCliKey = vi.fn()
+    const accountService = {
+      getSessionState: vi.fn(() => ({ authenticated: true, account: { userId: 73 } })),
+      getActiveSiteId: () => 'solov',
+      provisionCliKey,
+      listUsableGroups,
+      getSubscriptionSelf,
+    } as unknown as AccountService
+
+    const summary = await syncManagedCliKeySummary(accountService, store)
+
+    expect(summary.regrouped).toBeUndefined()
+    expect(getSubscriptionSelf).not.toHaveBeenCalled()
+    expect(listUsableGroups).not.toHaveBeenCalled()
+    expect(provisionCliKey).not.toHaveBeenCalled()
+  })
+})
