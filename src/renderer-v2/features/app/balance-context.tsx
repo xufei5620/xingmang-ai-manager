@@ -3,7 +3,7 @@ import type { XingmangApi } from '../../../../electron/ipc-contract'
 import { createAccountBalanceStore, type AccountBalanceSnapshot, type AccountBalanceStore } from './balance-store'
 
 export const AccountBalanceContext = createContext<AccountBalanceStore | null>(null)
-const emptySnapshot: AccountBalanceSnapshot = { scope: null, balance: null, loading: false, updatedAt: null, error: null }
+const emptySnapshot: AccountBalanceSnapshot = { scope: null, balance: null, loading: false, updatedAt: null, error: null, networkFailures: 0 }
 function emptySubscribe() { return () => undefined }
 function getEmptySnapshot() { return emptySnapshot }
 

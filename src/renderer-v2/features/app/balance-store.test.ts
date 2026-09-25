@@ -246,7 +246,7 @@ describe('shared account balance refresh', () => {
     await vi.advanceTimersByTimeAsync(0)
     store.scheduleActivity('new-api:1')
     store.setScope('sub2api:1')
-    expect(store.getSnapshot()).toMatchObject({ scope: 'sub2api:1', balance: null, loading: true, updatedAt: null, error: null })
+    expect(store.getSnapshot()).toMatchObject({ scope: 'sub2api:1', balance: null, loading: true, updatedAt: null, error: null, networkFailures: 0 })
     const current = store.refresh()
     newRead.resolve(balance(200))
     await current
@@ -285,7 +285,7 @@ describe('shared account balance refresh', () => {
     await vi.advanceTimersByTimeAsync(0)
     store.scheduleActivity('new-api:1')
     store.setScope(null)
-    expect(store.getSnapshot()).toEqual({ scope: null, balance: null, loading: false, updatedAt: null, error: null })
+    expect(store.getSnapshot()).toEqual({ scope: null, balance: null, loading: false, updatedAt: null, error: null, networkFailures: 0 })
     pending.resolve(balance(100))
     await request
     await vi.advanceTimersByTimeAsync(90_000)
@@ -326,5 +326,43 @@ describe('shared account balance refresh', () => {
     expect(read).toHaveBeenCalledTimes(1)
     expect(vi.getTimerCount()).toBe(0)
     expect(store.getSnapshot().balance).toBeNull()
+  })
+})
+
+describe('shared account balance network failure streak', () => {
+  const stores: AccountBalanceStore[] = []
+  afterEach(() => { stores.splice(0).forEach((store) => store.dispose()) })
+
+  it('counts consecutive local network failures and resets on success or another failure', async () => {
+    const read = vi.fn<() => Promise<AccountBalance>>()
+    const store = createAccountBalanceStore({ read })
+    stores.push(store)
+    read.mockRejectedValueOnce(new Error('net::ERR_INTERNET_DISCONNECTED'))
+    store.setScope('new-api:1')
+    await store.refresh()
+    expect(store.getSnapshot().networkFailures).toBe(1)
+    read.mockRejectedValueOnce(new Error('getaddrinfo ENOTFOUND xm.solov.cc'))
+    await store.refresh('manual')
+    expect(store.getSnapshot().networkFailures).toBe(2)
+    read.mockResolvedValueOnce(balance(5))
+    await store.refresh('manual')
+    expect(store.getSnapshot()).toMatchObject({ networkFailures: 0, error: null })
+    read.mockRejectedValueOnce(new Error('net::ERR_INTERNET_DISCONNECTED'))
+    await store.refresh('manual')
+    read.mockRejectedValueOnce(new Error('当前登录已失效，请重新登录。'))
+    await store.refresh('manual')
+    expect(store.getSnapshot().networkFailures).toBe(0)
+  })
+
+  it('starts a new account at zero', async () => {
+    const read = vi.fn<() => Promise<AccountBalance>>().mockRejectedValue(new Error('net::ERR_INTERNET_DISCONNECTED'))
+    const store = createAccountBalanceStore({ read })
+    stores.push(store)
+    store.setScope('new-api:1')
+    await store.refresh()
+    await store.refresh('manual')
+    expect(store.getSnapshot().networkFailures).toBe(2)
+    store.setScope('new-api:2')
+    expect(store.getSnapshot().networkFailures).toBe(0)
   })
 })

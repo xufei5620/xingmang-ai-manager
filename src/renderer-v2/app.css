@@ -84,6 +84,8 @@
 .v2-support img { width: 160px; height: 160px; }
 .v2-support h3, .v2-support p { margin: 0; }
 .v2-announcement-banner { display: flex; align-items: center; gap: 10px; height: 36px; flex: none; padding: 0 14px; border-bottom: 1px solid var(--line); color: var(--text-2); background: var(--panel-2); font-size: var(--font-small-compact); }
+.v2-offline-banner { display: flex; align-items: center; gap: 10px; min-height: 36px; flex: none; padding: 4px 14px; border-bottom: 1px solid var(--line); color: var(--warn); background: var(--panel-2); font-size: var(--font-small-compact); }
+.v2-offline-banner > span { flex: 1; color: var(--text-2); }
 .v2-announcement-banner > span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .v2-announcement-content, .v2-announcement-rich { display: grid; gap: 10px; max-height: min(62vh, 560px); overflow: auto; padding-right: 4px; color: var(--text); line-height: 1.7; overflow-wrap: anywhere; }
 .v2-announcement-content > *, .v2-announcement-rich > * { min-width: 0; }
