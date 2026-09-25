@@ -3,7 +3,7 @@ import { createRoot } from 'react-dom/client'
 import type { AiChatAsset, AiChatGroupSummary, AiChatHistorySnapshot, AiChatHistoryWrite, AiChatPreparedGroup, AiChatStreamEvent, XingmangApi } from '../../../../electron/ipc-contract'
 import type { ChatBridge } from './api'
 import { ChatPage } from './ChatPage'
-import '../../ui'
+import { ToastProvider } from '../../ui'
 
 const query = new URLSearchParams(location.search)
 document.documentElement.dataset.theme = query.get('theme') ?? 'light'
@@ -100,6 +100,6 @@ function Fixture() {
     savedWorkspace,
     failHistoryWrites: (fail) => { failHistoryWrites = fail },
   }
-  return <ChatPage bridge={bridge as XingmangApi} accountScope={scope} active={active} />
+  return <ToastProvider testId="chat-toasts"><ChatPage bridge={bridge as XingmangApi} accountScope={scope} active={active} /></ToastProvider>
 }
 createRoot(document.getElementById('root')!).render(query.has('strict') ? <StrictMode><Fixture /></StrictMode> : <Fixture />)

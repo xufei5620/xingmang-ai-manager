@@ -1,9 +1,9 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
-import { ArrowUp, ArrowUpRight, ChevronDown, Copy, Download, Image as ImageIcon, MessageSquare, MoreHorizontal, Pencil, Plus, RefreshCw, Search, SlidersHorizontal, Square, Trash2, User, X } from 'lucide-react'
-import ReactMarkdown from 'react-markdown'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { ArrowUp, ArrowUpRight, Check, ChevronDown, Copy, Download, Image as ImageIcon, MessageSquare, MoreHorizontal, Pencil, Plus, RefreshCw, Search, SlidersHorizontal, Square, Trash2, User, X } from 'lucide-react'
+import ReactMarkdown, { type Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import type { AiChatAsset, XingmangApi } from '../../../../electron/ipc-contract'
-import { BrandIcon, Button, Confirm, Dialog, Empty, Input, Menu, Pill, Popover, SearchInput, Segment, Select, Textarea } from '../../ui'
+import { BrandIcon, Button, Confirm, Dialog, Empty, Input, Menu, Pill, Popover, SearchInput, Segment, Select, Textarea, useToast } from '../../ui'
 import { createChatApi, inspectModel, type ChatApi } from './api'
 import { chatErrorAction, chatErrorMessage, filterConversations, isGenerating, shouldSendOnEnter, type ChatMessage, type ChatMode } from './state'
 import { ParametersPanel } from './ParametersPanel'
@@ -37,6 +37,7 @@ function ChatScope(props: ChatScopeProps) {
 
 function ChatView({ api, scope, active, onOpenAccount, history }: ChatScopeProps & { history: LoadedChatHistory }) {
   const chat = useChatController(api, scope, history, active)
+  const toast = useToast()
   const { conversation, preparations } = chat
   const [search, setSearch] = useState('')
   const [confirmationState, setConfirmation] = useState<Confirmation>(null)
@@ -87,6 +88,16 @@ function ChatView({ api, scope, active, onOpenAccount, history }: ChatScopeProps
     try { await api.copyText(text); if (ticket === owner.current) chat.setNotice('内容已复制') }
     catch { if (ticket === owner.current) setCopyFallback(text) }
   }
+  const copyCode = async (text: string) => {
+    const ticket = owner.current
+    try { await api.copyText(text); if (ticket === owner.current) toast.show('已复制', 'ok'); return true }
+    catch { if (ticket === owner.current) setCopyFallback(text); return false }
+  }
+  const copyCodeRef = useRef(copyCode)
+  copyCodeRef.current = copyCode
+  // react-markdown treats each renderer as a component type, so a new function
+  // every render would remount the code blocks and drop their 已复制 state.
+  const markdownComponents = useMemo<Components>(() => ({ a: ({ href, children }) => <span className="chat-blocked-link" title={href ? `链接不可直接打开：${href}` : undefined}>{children}</span>, img: ({ alt }) => <span>{alt ?? '图片链接'}</span>, pre: ({ children }) => <CodeBlock onCopy={(text) => copyCodeRef.current(text)}>{children}</CodeBlock> }), [])
   const saveAsset = async (assetId: string) => {
     const ticket = owner.current
     try { const result = await api.saveAsset(assetId); if (ticket === owner.current && result.saved) chat.setNotice('图片已保存') }
@@ -133,7 +144,7 @@ function ChatView({ api, scope, active, onOpenAccount, history }: ChatScopeProps
           <span className="chat-avatar">{message.role === 'user' ? <User size={15} aria-hidden="true" /> : <BrandIcon model={message.settings?.model ?? conversation.settings.model} size={18} />}</span>
           <div className="chat-message-main">
             {message.reasoning && <details className="chat-reasoning"><summary>思考过程 <ChevronDown size={13} aria-hidden="true" /></summary><div>{message.reasoning}</div><Button icon={Copy} size="xs" variant="ghost" aria-label="复制思考过程" title="复制思考过程" onClick={() => void copyText(message.reasoning)} /></details>}
-            <div className="chat-bubble">{message.content ? <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ a: ({ href, children }) => <span className="chat-blocked-link" title={href ? `链接不可直接打开：${href}` : undefined}>{children}</span>, img: ({ alt }) => <span>{alt ?? '图片链接'}</span> }}>{message.content}</ReactMarkdown> : (message.status === 'pending' || message.status === 'streaming') && <span className="chat-generating" role="status"><RefreshCw size={15} aria-hidden="true" />{message.settings?.mode === 'image' ? '正在生成图片' : message.reasoning ? '正在思考' : '正在生成'}</span>}
+            <div className="chat-bubble">{message.content ? <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>{message.content}</ReactMarkdown> : (message.status === 'pending' || message.status === 'streaming') && <span className="chat-generating" role="status"><RefreshCw size={15} aria-hidden="true" />{message.settings?.mode === 'image' ? '正在生成图片' : message.reasoning ? '正在思考' : '正在生成'}</span>}
               {message.assets?.map((asset) => <div className="chat-asset" key={asset.assetId}><button type="button" className="chat-asset-preview" aria-label="查看生成图片" onClick={() => setPreview(asset)} onContextMenu={(event) => { event.preventDefault(); void task(() => api.assetMenu(asset.assetId), '') }}><img src={asset.localUrl} alt={asset.revisedPrompt || '生成的图片'} onError={(event) => { event.currentTarget.dataset.failed = 'true'; event.currentTarget.alt = '预览暂不可用，仍可尝试复制或另存图片' }} /></button><div className="chat-asset-actions"><Button size="xs" icon={Copy} variant="ghost" aria-label="复制图片" title="复制图片" onClick={() => void task(() => api.copyAsset(asset.assetId), '图片已复制')} testId="chat-asset-copy" /><Button size="xs" icon={Download} variant="ghost" aria-label="另存图片" title="另存图片" onClick={() => void saveAsset(asset.assetId)} testId="chat-asset-save" /><Button size="xs" icon={MoreHorizontal} variant="ghost" aria-label="图片更多操作" title="图片更多操作" onClick={() => void task(() => api.assetMenu(asset.assetId), '')} testId="chat-asset-menu" />{asset.width && asset.height && <small>{asset.width} × {asset.height}</small>}</div></div>)}
             </div>
             {message.status === 'error' && <ErrorLine message={message.error} onOpenAccount={onOpenAccount} />}{message.status === 'canceled' && <p className="chat-message-note">{message.mayStillComplete ? '已停止等待，服务端仍可能处理并计费' : '已停止生成，保留已返回的内容'}</p>}
@@ -154,6 +165,24 @@ function ChatView({ api, scope, active, onOpenAccount, history }: ChatScopeProps
     {active && copyFallback !== null && <Dialog open title="手动复制内容" subtitle="无法访问剪贴板，选中文字后使用系统复制操作。" width={640} onClose={() => setCopyFallback(null)} footer={<Button variant="primary" onClick={() => setCopyFallback(null)}>关闭</Button>} testId="chat-copy-fallback"><Textarea label="待复制内容" value={copyFallback} readOnly rows={12} onFocus={(event) => event.currentTarget.select()} /></Dialog>}
     {active && preview && <Dialog open title="生成的图片" width={640} onClose={() => setPreview(null)} footer={<><Button icon={Copy} onClick={() => void task(() => api.copyAsset(preview.assetId), '图片已复制')}>复制图片</Button><Button icon={Download} onClick={() => void saveAsset(preview.assetId)}>另存图片</Button><Button icon={ArrowUpRight} onClick={() => void task(() => api.assetMenu(preview.assetId), '')}>更多操作</Button></>} testId="chat-image-preview"><img className="chat-preview-image" src={preview.localUrl} alt={preview.revisedPrompt || '生成的图片'} /></Dialog>}
   </section>
+}
+
+// Commands arrive wrapped in explanation, and pasting the whole reply into a
+// terminal runs the explanation too. Each block copies only its own text, read
+// from the rendered element so whatever markdown put inside stays exact.
+function CodeBlock({ children, onCopy }: { children: ReactNode; onCopy: (text: string) => Promise<boolean> }) {
+  const block = useRef<HTMLPreElement>(null)
+  const [copied, setCopied] = useState(false)
+  useEffect(() => {
+    if (!copied) return
+    const timer = window.setTimeout(() => setCopied(false), 2000)
+    return () => window.clearTimeout(timer)
+  }, [copied])
+  const copy = async () => {
+    const text = (block.current?.textContent ?? '').replace(/\n$/, '')
+    if (await onCopy(text)) setCopied(true)
+  }
+  return <div className="chat-code"><pre ref={block}>{children}</pre><Button size="xs" variant="ghost" icon={copied ? Check : Copy} aria-label={copied ? '已复制' : '复制这段'} title="只复制这一段" onClick={() => void copy()} testId="chat-code-copy">{copied ? '已复制' : '复制'}</Button></div>
 }
 
 function ErrorLine({ message, onOpenAccount }: { message?: string; onOpenAccount?: ChatPageProps['onOpenAccount'] }) {

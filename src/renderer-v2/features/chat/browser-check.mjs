@@ -370,6 +370,38 @@ test('parameters and system prompt are applied to the request and text copy has 
   } finally { await page.close() }
 })
 
+test('each code block copies only its own text and inline code gets no button', async () => {
+  const page = await open()
+  try {
+    const request = await send(page, 'how to install')
+    await emit(page, { type: 'content', requestId: request.requestId, content: 'Run `npm` like this:\n\n```powershell\nnpm install -g demo\n```\n\nThen check:\n\n```\ndemo --version\n```\n' })
+    await emit(page, { type: 'complete', requestId: request.requestId })
+    const assistant = page.locator('.chat-message[data-role=assistant]')
+    const buttons = assistant.getByTestId('chat-code-copy')
+    assert.equal(await buttons.count(), 2)
+    await buttons.first().click()
+    await page.waitForFunction(() => document.querySelector('[data-testid=chat-code-copy]')?.textContent?.trim() === '已复制')
+    assert.equal(await page.evaluate(() => window.__copied), 'npm install -g demo')
+    await page.getByTestId('chat-toasts').getByText('已复制').waitFor()
+    await buttons.nth(1).click()
+    await page.waitForFunction(() => window.__copied === 'demo --version')
+    await page.waitForFunction(() => document.querySelector('[data-testid=chat-code-copy]')?.textContent?.trim() === '复制', undefined, { timeout: 5000 })
+  } finally { await page.close() }
+})
+
+test('code block copy falls back to manual copy when the clipboard is unavailable', async () => {
+  const page = await open('copyFail=1')
+  try {
+    const request = await send(page, 'command please')
+    await emit(page, { type: 'content', requestId: request.requestId, content: '```\necho hi\n```' })
+    await emit(page, { type: 'complete', requestId: request.requestId })
+    await page.getByTestId('chat-code-copy').click()
+    await page.getByTestId('chat-copy-fallback').waitFor()
+    assert.equal(await page.getByTestId('chat-copy-fallback').getByRole('textbox').inputValue(), 'echo hi')
+    assert.equal((await page.getByTestId('chat-code-copy').textContent())?.trim(), '复制')
+  } finally { await page.close() }
+})
+
 test('new conversations preserve unsent drafts and local history can be restored after reload', async () => {
   const page = await open()
   try {
