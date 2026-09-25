@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { PlatformNotificationKind } from '../../../electron/platform/contract';
 import type { UpdateFailedStep } from '../../../electron/ipc-contract';
 import {
+  autoUpdateBubbleBody,
   notificationOptions,
   updateBubbleTitle,
   updateCardTitle,
@@ -90,5 +91,13 @@ describe('renderer-v2 withdrawn version and rollback wording', () => {
     expect(withdrawnVersionAdvice(stranded)).toContain('修好的版本准备好后');
     expect(withdrawnVersionAdvice({ ...stranded, phase: 'available', availableVersion: '0.2.11' })).toContain('修好的 0.2.11');
     expect(updateCardTitle({ ...base, phase: 'not-available' })).toBe('已是最新版本');
+  });
+});
+
+describe('renderer-v2 auto-update bubble wording', () => {
+  it('tells the user what happens next when auto-update is on', () => {
+    expect(autoUpdateBubbleBody('downloaded', true)).toContain('关掉软件或下次打开时自动装上');
+    expect(autoUpdateBubbleBody('downloading', true)).toContain('正在后台下载');
+    expect(autoUpdateBubbleBody('downloaded', false)).toBe('查看更新内容和安装状态。');
   });
 });

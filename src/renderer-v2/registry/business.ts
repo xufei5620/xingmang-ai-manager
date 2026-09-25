@@ -78,6 +78,12 @@ export function updateBubbleTitle(update: UpdateOfferState): string {
   if (update.phase === 'available') return update.rollback ? `建议退回 ${update.availableVersion}` : `新版本 ${update.availableVersion} 可以安装`
   return '这个版本有已知问题'
 }
+// 提示气泡的正文。自动更新开着时直接告诉用户接下来会怎样，不用他再点进更新页。
+export function autoUpdateBubbleBody(phase: UpdateOfferState['phase'], autoUpdate: boolean): string {
+  if (!autoUpdate) return '查看更新内容和安装状态。';
+  if (phase === 'downloaded') return '已经下好了，关掉软件或下次打开时自动装上，不打断你现在用。';
+  return '正在后台下载，下好后关掉软件或下次打开时自动装上。';
+}
 export function withdrawnVersionAdvice(update: UpdateOfferState): string {
   const next = update.availableVersion
   if (next && update.rollback) return `发布者撤回了 ${update.currentVersion}。建议装回 ${next}：先下载，再点「重启安装」。`

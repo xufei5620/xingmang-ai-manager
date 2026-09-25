@@ -24,12 +24,12 @@ import { RuntimeRestartDialog } from './features/tools/RuntimeRestartDialog'
 import { guideJobProgress, installedToolSyncLabel, useToolbox } from './features/tools/useToolbox'
 import { ManualUninstallDialog, type ManualUninstallState } from './features/tools/ManualUninstall'
 import { operationLogPage, type OperationActionId } from './operation-error'
-import { accountTabs, macDesktopTutorialTopic, settingsGroups, updateBubbleTitle, updateFailureLabel } from './registry/business'
+import { accountTabs, macDesktopTutorialTopic, settingsGroups, autoUpdateBubbleBody, updateBubbleTitle, updateFailureLabel } from './registry/business'
 import { tools } from './registry/tools'
 import { clientConnections } from './registry/clients'
 import type { PageId } from './registry/pages'
 import type { ToolInstallOutcome } from './pages-maintenance'
-import { BalanceTierProvider, Button, Confirm, Dialog, Notice, ToastProvider, useToast, useReducedMotion } from './ui'
+import { BalanceTierProvider, Button, Confirm, Dialog, Notice, Switch, ToastProvider, useToast, useReducedMotion } from './ui'
 import { bridge as getBridge } from './bridge'
 import { errorMessage, pendingBusinessOperations } from './business-common'
 import { SavedAccounts } from './SavedAccounts'
@@ -879,6 +879,10 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   const maintenance = update?.serviceMaintenance ?? null
   const maintenanceKey = maintenanceNoticeKey(maintenance)
   const showUpdate = update && (update.error || update.currentVersionWithdrawn || ['available', 'downloading', 'downloaded'].includes(update.phase)) && dismissedUpdate !== updateKey
+  // 「自动更新」勾选跟着提示气泡走：用户第一次看到「有新版本」时就能看到它、改它。
+  // 这台电脑的更新通道不支持自动更新时不显示，免得勾了没用。
+  const autoUpdateToggle = Boolean(update?.autoUpdateSupported && settings && !update.error && !update.rollback)
+  const autoUpdateOn = autoUpdateToggle && settings?.autoUpdate !== false
   const accountBootstrapBusy = Boolean(accountBootstrap?.scope === scope && !accountBootstrap.result && !accountBootstrap.error)
   // Account switches can happen while the chat route is active. The retained
   // chat host deliberately keeps its previous scope in state, but rendering
@@ -904,7 +908,9 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
           networkRefreshing={networkLocation.snapshot.busy}
           banner={session.authenticated && <AnnouncementCenter key={scope} scope={scope} read={app.announcement} refreshTick={balanceState.updatedAt} markRemoteRead={app.markAnnouncementRead} syncLocalReads={app.syncLocalNoticeReads} open={announcementOpen} onClose={() => setAnnouncementOpen(false)} onOpen={() => setAnnouncementOpen(true)} onUnread={setUnread} openExternal={app.openExternal} noticeUrl={relaySite.websiteUrl} notify={notifyAnnouncement} />}
           notification={showUpdate && <Notice tone={update.error ? 'bad' : 'accent'} title={update.error ? updateFailureLabel(update.failedStep).title : updateBubbleTitle(update)}
-            body={update.error?.message ?? '查看更新内容和安装状态。'} progress={update.progress?.percent} onDismiss={() => setDismissedUpdate(updateKey)} actions={<Button size="sm" onClick={() => navigate('updates')}>查看更新</Button>} />}
+            body={update.error?.message ?? autoUpdateBubbleBody(update.phase, autoUpdateOn)} progress={update.progress?.percent} onDismiss={() => setDismissedUpdate(updateKey)}
+            actions={<><Button size="sm" onClick={() => navigate('updates')}>查看更新</Button>
+              {autoUpdateToggle && <Switch testId="update-auto-toggle" label="自动更新" checked={autoUpdateOn} onChange={(autoUpdate) => void perform('保存自动更新', async () => setSettings(await app.savePreferences({ version: 2, autoUpdate })))} />}</>} />}
           adapter={{ navigate, refreshNetwork: () => { void networkLocation.refresh() }, openAccount: () => navigate('account'), switchAccount: () => setSwitcher(true), topUp: () => navigate('account', accountSupports(session, 'supportsBilling') ? 'recharge' : 'overview'), refreshBalance: () => { void balanceStore.refresh('manual') },
             redeemAccelerationCode: async (code) => {
               if (!session.authenticated) throw new Error('请先登录星芒账号，再领取加速时长。')

@@ -454,6 +454,19 @@ describe('UI and window preferences', () => {
     expect(readAppSettings(filePath)).not.toHaveProperty('desktopNotifications')
   })
 
+  it('turns app auto-update on by default and keeps only an explicit opt-out', async () => {
+    const filePath = temporarySettingsPath()
+    expect(readAppSettings(filePath)).not.toHaveProperty('autoUpdate')
+    await updateAppSettings(filePath, { version: 2, autoUpdate: false })
+    expect(readAppSettings(filePath).autoUpdate).toBe(false)
+    await updateAppSettings(filePath, { version: 2, theme: 'light' })
+    expect(readAppSettings(filePath).autoUpdate).toBe(false)
+    await updateAppSettings(filePath, { version: 2, autoUpdate: true })
+    expect(readAppSettings(filePath)).not.toHaveProperty('autoUpdate')
+    fs.writeFileSync(filePath, JSON.stringify({ ...settings({ uiSkin: 'mist' }), autoUpdate: 'off' }), 'utf8')
+    expect(readAppSettings(filePath)).toEqual(settings({ uiSkin: 'mist' }))
+  })
+
   it('rejects malformed persisted notification preferences without discarding other settings', () => {
     const filePath = temporarySettingsPath()
     fs.writeFileSync(filePath, JSON.stringify({ ...settings({ uiSkin: 'mist' }), desktopNotifications: 'enabled' }), 'utf8')
