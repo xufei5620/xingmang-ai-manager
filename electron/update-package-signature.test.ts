@@ -14,7 +14,7 @@ function keyPair(): { privateKey: KeyObject, publicKey: string } {
 
 const entry = { url: 'XingMang-AI-Manager-0.2.11-Setup.exe', sha512: `${'A'.repeat(86)}==` }
 
-function signed(privateKey: KeyObject, version = '0.2.11', target = entry): Record<string, string> {
+function signed(privateKey: KeyObject, version = '0.2.11', target = entry): Record<string, unknown> {
   const payload = buildUpdateSignaturePayload(version, target)
   if (payload === null) throw new Error('payload')
   return { ...target, [UPDATE_SIGNATURE_FIELD]: sign(null, Buffer.from(payload, 'utf8'), privateKey).toString('base64') }
