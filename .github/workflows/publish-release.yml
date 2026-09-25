@@ -364,22 +364,30 @@ jobs:
             echo "::error::$tag 已存在且指向 $existing，与本次出包的 $SHIPPED_SHA 不一致；同一个版本号不能从别的 commit 再发，请先提升版本号。线上什么都没改"
             exit 1
           fi
-          status_args=()
+          # 不用数组传参：macOS 自带的 bash 3.2 在 set -u 下把空数组当成未定义变量。
+          status_file=''
           code=$(curl --silent --show-error --max-time 30 --output "$RUNNER_TEMP/guard-service-status.json" \
             --write-out '%{http_code}' "$PUBLIC_BASE/service-status.json")
           case "$code" in
-            200) status_args=(--status "$RUNNER_TEMP/guard-service-status.json") ;;
+            200) status_file="$RUNNER_TEMP/guard-service-status.json" ;;
             404) echo "线上还没有 service-status.json，没有撤回名单" ;;
             *) echo "::error::读取线上 service-status.json 失败（HTTP $code），确认不了这一版有没有被撤回，线上什么都没改"; exit 1 ;;
           esac
+          guard() {
+            if [ -n "$status_file" ]; then
+              node scripts/publish-guard.cjs "$@" --status "$status_file"
+            else
+              node scripts/publish-guard.cjs "$@"
+            fi
+          }
           checked=0
           for manifest in latest.yml latest-mac.yml; do
             [ -f "release-artifacts/$manifest" ] || continue
             code=$(curl --silent --show-error --max-time 60 --output "$RUNNER_TEMP/guard-live-$manifest" \
               --write-out '%{http_code}' "$PUBLIC_BASE/$manifest")
             case "$code" in
-              200) node scripts/publish-guard.cjs --local "release-artifacts/$manifest" --name "$manifest" --live "$RUNNER_TEMP/guard-live-$manifest" "${status_args[@]}" ;;
-              404) node scripts/publish-guard.cjs --local "release-artifacts/$manifest" --name "$manifest" "${status_args[@]}" ;;
+              200) guard --local "release-artifacts/$manifest" --name "$manifest" --live "$RUNNER_TEMP/guard-live-$manifest" ;;
+              404) guard --local "release-artifacts/$manifest" --name "$manifest" ;;
               *) echo "::error::读取线上 $manifest 失败（HTTP $code），确认不了会不会覆盖已发布的版本，线上什么都没改"; exit 1 ;;
             esac
             checked=$((checked + 1))
