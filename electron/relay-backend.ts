@@ -49,6 +49,7 @@ import type {
   NewApiChangePasswordResult,
   NewApiCliKeyResult,
   NewApiLoginInput,
+  NewApiTwoFactorLoginInput,
   NewApiLoginResult,
   NewApiLoginSession,
   NewApiLegalDocument,
@@ -193,6 +194,8 @@ export interface RelayBackendClient {
   register(input: NewApiRegisterInput): Promise<void>
   /** ipc.ts: account:login */
   login(input: NewApiLoginInput): Promise<NewApiLoginResult>
+  /** ipc.ts: account:submit-two-factor-code. Backends without an in-client second step omit it. */
+  completeTwoFactorLogin?(input: NewApiTwoFactorLoginInput): Promise<NewApiLoginResult>
   /** ipc.ts: account:logout. Local only; also used to discard switched-away and candidate clients. */
   logout(): void
   /**

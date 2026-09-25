@@ -52,6 +52,7 @@ const timelineStaleMs = 5 * 60 * 1_000
 const verificationPath = '/api/verification'
 const registerPath = '/api/user/register'
 const loginPath = '/api/user/login'
+const loginTwoFactorPath = '/api/user/login/2fa'
 const refreshPath = '/api/user/auth/refresh'
 const serverLogoutPath = '/api/user/auth/logout'
 const selfPath = '/api/user/self'
@@ -170,6 +171,11 @@ export interface NewApiLoginInput {
   username: string
   password: string
   turnstileToken?: string
+}
+
+export interface NewApiTwoFactorLoginInput {
+  flowToken: string
+  code: string
 }
 
 // RECON (docs/RECON-new-api.md section A) confirms /api/user/register wants
@@ -809,6 +815,8 @@ export interface NewApiClientService extends RelayBackendClient {
   resetPassword(input: NewApiResetPasswordInput): Promise<NewApiResetPasswordResult>
   register(input: NewApiRegisterInput): Promise<void>
   login(input: NewApiLoginInput): Promise<NewApiLoginResult>
+  // Second step after login() threw NewApiTwoFactorRequiredError.
+  completeTwoFactorLogin(input: NewApiTwoFactorLoginInput): Promise<NewApiLoginResult>
   // Local only: drops the in-memory session and nothing else. Saved-account
   // switching and discarded login/restore candidates call this too, and those
   // credentials must stay valid on the server -- see endServerSession below.
@@ -937,6 +945,39 @@ export class NewApiLoginRejectedError extends NewApiAuthenticationError {
   constructor() {
     super('账号或密码错误，请检查后重试')
     this.name = 'NewApiLoginRejectedError'
+  }
+}
+
+// 渲染层按这几句原文认出两步验证的各个分支（electron 不 import src，那边有意重复一份）。
+// 第一句与改造前抛的原文一字不差：旧界面（已冻结）照旧只看到这句报错。
+export const twoFactorRequiredMessage = '此账号需要双重验证，请先完成验证'
+export const twoFactorUnsupportedMessage = '此账号需要双重验证，客户端暂不支持这种验证方式'
+export const twoFactorExpiredMessage = '等太久了，请重新输入密码登录'
+export const twoFactorInvalidCodeMessage = '验证码不对或已过期，请看验证器里最新的数字再试'
+export const twoFactorRateLimitedMessage = '试得太频繁了，请过一会儿再试'
+
+/**
+ * Password accepted, second factor still owed. The flow token is the only
+ * thing that can finish this login, so it lives in a private field: neither
+ * the message, JSON.stringify nor a structured-clone across IPC carries it.
+ */
+export class NewApiTwoFactorRequiredError extends Error {
+  readonly #flowToken: string
+  readonly expiresAt: number
+  constructor(flowToken: string, expiresAt: number) {
+    super(twoFactorRequiredMessage)
+    this.name = 'NewApiTwoFactorRequiredError'
+    this.#flowToken = flowToken
+    this.expiresAt = expiresAt
+  }
+  get flowToken(): string { return this.#flowToken }
+}
+
+/** The server no longer knows the flow token: the password step must be redone. */
+export class NewApiTwoFactorExpiredError extends Error {
+  constructor() {
+    super(twoFactorExpiredMessage)
+    this.name = 'NewApiTwoFactorExpiredError'
   }
 }
 
@@ -1220,8 +1261,51 @@ function unwrapLoginEnvelope(raw: NewApiRawResponse, secrets: readonly string[])
   const limited = loginLimitMessage(raw, envelope)
   if (limited) throw new Error(limited)
   const data = unwrapEnvelope(raw, '账号登录', secrets)
-  if (isRecord(data) && data.require_2fa === true) throw new Error('此账号需要双重验证，请先完成验证')
+  const challenge = parseTwoFactorChallenge(data)
+  if (challenge) throw challenge
   return data
+}
+
+// Longest a flow token is honoured locally, whatever expires_at claims.
+// rc.24 controller/user.go Login issues it for 5 minutes.
+export const twoFactorFlowTtlMs = 5 * 60_000
+
+/**
+ * rc.24 (controller/user.go Login) answers a 2FA account with
+ * `{require_2fa, flow_token, expires_at}`. Upstream main renamed it to
+ * `{require_verification, flow_token, expires_at, methods:[{method, available}]}`
+ * (service/login_verification.go LoginChallenge) and still completes a
+ * `2fa` method at POST /api/user/login/2fa. Production has not moved yet, so
+ * the second shape is read from upstream source only. A challenge the
+ * client cannot finish (only passkey/email offered, or no flow token) keeps
+ * the old "go to the website" outcome instead of a dead code prompt.
+ */
+export function parseTwoFactorChallenge(data: unknown, now = Date.now()): Error | null {
+  if (!isRecord(data) || (data.require_2fa !== true && data.require_verification !== true)) return null
+  if (data.require_verification === true && data.require_2fa !== true && Array.isArray(data.methods)
+    && !data.methods.some((entry) => isRecord(entry) && entry.method === '2fa' && entry.available !== false)) {
+    return new Error(twoFactorUnsupportedMessage)
+  }
+  const flowToken = typeof data.flow_token === 'string' ? data.flow_token : ''
+  if (!flowToken || flowToken.length > 512 || /[^\x21-\x7e]/.test(flowToken)) return new Error(twoFactorUnsupportedMessage)
+  const claimed = typeof data.expires_at === 'number' && Number.isFinite(data.expires_at) ? data.expires_at * 1000 : Infinity
+  return new NewApiTwoFactorRequiredError(flowToken, Math.min(now + twoFactorFlowTtlMs, claimed))
+}
+
+// rc.24 controller/twofa.go Verify2FALogin answers every failure as HTTP 200
+// `success:false` with a fixed Chinese message; model/twofa.go adds the
+// lockout text. The flow survives a wrong code (ConsumeAuthFlow runs only
+// after a match), so only the "会话已过期" family ends the second step.
+function unwrapTwoFactorLoginEnvelope(raw: NewApiRawResponse, secrets: readonly string[]): unknown {
+  const envelope = isRecord(raw.payload) ? raw.payload : null
+  if (raw.status === 429) throw new Error(twoFactorRateLimitedMessage)
+  if (raw.ok && envelope?.success === false) {
+    const message = typeof envelope.message === 'string' ? envelope.message : ''
+    if (/过期|重新登录|expired/i.test(message)) throw new NewApiTwoFactorExpiredError()
+    if (/锁定|频繁|locked|too many/i.test(message)) throw new Error(twoFactorRateLimitedMessage)
+    if (/验证码|备用码|code/i.test(message)) throw new Error(twoFactorInvalidCodeMessage)
+  }
+  return unwrapEnvelope(raw, '两步验证登录', secrets)
 }
 
 /**
@@ -2756,6 +2840,25 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
     return { account: data.account, accessExpiresAt: data.accessExpiresAt }
   }
 
+  // POST /api/user/login/2fa (rc.24 router/api-router.go:74, CriticalRateLimit,
+  // no Turnstile). A match runs the same setupLogin as the password route, so
+  // the reply and the refresh cookie are handled exactly like login() above.
+  const completeTwoFactorLogin = async (input: NewApiTwoFactorLoginInput): Promise<NewApiLoginResult> => {
+    const code = input.code.trim()
+    if (!code) throw new Error(twoFactorInvalidCodeMessage)
+    const attempt = ++authAttemptGeneration
+    const owner = ownerGeneration
+    const body = { code, flow_token: input.flowToken }
+    let raw: NewApiRawResponse
+    try { raw = await performRequest(ctx, loginTwoFactorPath, { method: 'POST', body }, '两步验证登录') }
+    catch (error) { assertAuthAttempt(attempt, owner); throw error }
+    assertAuthAttempt(attempt, owner)
+    const data = parseLoginResponseData(unwrapTwoFactorLoginEnvelope(raw, [code, input.flowToken]))
+    const cookies = extractSessionCookies(raw.headers)
+    setSession({ accessToken: data.accessToken, userId: data.account.userId, cookies, profile: data.account })
+    return { account: data.account, accessExpiresAt: data.accessExpiresAt }
+  }
+
   const logout = (): void => {
     setSession(null)
   }
@@ -3566,6 +3669,7 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
     resetPassword,
     register,
     login,
+    completeTwoFactorLogin,
     logout,
     endServerSession,
     endPersistedServerSession,

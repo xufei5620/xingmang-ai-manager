@@ -4,7 +4,10 @@ import {
 } from './realm-account'
 import type { RealmAccountVault, RealmLoginHintSummary } from './realm-account-vault'
 import type { RelayBackendCapabilities, RelayBackendClient } from './relay-backend'
-import type { NewApiLoginInput, NewApiLoginResult, NewApiPersistableSession, NewApiSessionState } from './new-api-client'
+import {
+  NewApiTwoFactorExpiredError, NewApiTwoFactorRequiredError,
+  type NewApiLoginInput, type NewApiLoginResult, type NewApiPersistableSession, type NewApiSessionState,
+} from './new-api-client'
 import { savedAccountId, type SavedAccountSummary } from './saved-accounts'
 
 export type RealmAccountSiteId = 'solov' | 'solov-api'
@@ -49,6 +52,11 @@ export interface RealmAccountService {
   assertReady(): void
   getPublicClient(siteId: RealmAccountSiteId): RelayBackendClient
   login(input: NewApiLoginInput & { siteId?: RealmAccountSiteId }): Promise<RealmAccountLoginResult>
+  /**
+   * 登录抛出 NewApiTwoFactorRequiredError 后的第二步。flow token 只存在这里的内存里，
+   * 渲染层只交验证码；没有待验证的登录或已过期都抛 NewApiTwoFactorExpiredError。
+   */
+  completeTwoFactorLogin(code: string): Promise<RealmAccountLoginResult>
   logout(): Promise<void>
   listSavedAccounts(): Promise<SavedAccountSummary[]>
   switchSavedAccount(id: string): Promise<RealmAccountSessionState>
@@ -88,6 +96,9 @@ export function createRealmAccountService(options: RealmAccountServiceOptions): 
   let migration: Promise<void> | undefined
   let restoring: { siteId: RealmAccountSiteId; userId: number } | null = null
   let stalled: { siteId: RealmAccountSiteId; userId: number } | null = null
+  // At most one password-verified login waits for its second factor. A new
+  // login attempt, a sign-out or the flow's own expiry drops it.
+  let twoFactor: { siteId: RealmAccountSiteId; identifier: string; flowToken: string; expiresAt: number } | null = null
   const prepareTimeoutMs = options.prepareTimeoutMs ?? 30000
   if (!Number.isSafeInteger(prepareTimeoutMs) || prepareTimeoutMs < 1 || prepareTimeoutMs > 120000) throw new RealmAccountError('INVALID')
   const publicClients = new Map<RealmAccountSiteId, RelayBackendClient>()
@@ -288,11 +299,20 @@ export function createRealmAccountService(options: RealmAccountServiceOptions): 
       // this machine already recorded for the identifier; a rejection ends the
       // attempt. Probing the other backend with the same secret would hand a
       // password the user only ever meant for one site to both of them.
+      twoFactor = null
       const siteId = selected ?? await options.vault.preferredLoginSite(captured.identifier) ?? 'solov'
       const candidate = createHandle(siteId)
       try {
-        const result = await prepare(() => candidate.client.login({ username: captured.identifier, password: captured.password,
-          ...(captured.turnstileToken === undefined ? {} : { turnstileToken: captured.turnstileToken }) }))
+        let result: NewApiLoginResult
+        try {
+          result = await prepare(() => candidate.client.login({ username: captured.identifier, password: captured.password,
+            ...(captured.turnstileToken === undefined ? {} : { turnstileToken: captured.turnstileToken }) }))
+        } catch (error) {
+          if (error instanceof NewApiTwoFactorRequiredError) {
+            twoFactor = { siteId, identifier: captured.identifier, flowToken: error.flowToken, expiresAt: error.expiresAt }
+          }
+          throw error
+        }
         await promote(candidate, undefined, captured.identifier, true)
         return { ...result, ...metadata() }
       } finally {
@@ -305,8 +325,38 @@ export function createRealmAccountService(options: RealmAccountServiceOptions): 
       }
     }, true)
   }
+  async function completeTwoFactorLogin(code: string): Promise<RealmAccountLoginResult> {
+    const pending = twoFactor
+    if (!pending || pending.expiresAt <= Date.now()) { twoFactor = null; throw new NewApiTwoFactorExpiredError() }
+    return transition(async () => {
+      if (twoFactor !== pending) throw new NewApiTwoFactorExpiredError()
+      const candidate = createHandle(pending.siteId)
+      try {
+        const complete = candidate.client.completeTwoFactorLogin
+        if (!complete) { twoFactor = null; throw new NewApiTwoFactorExpiredError() }
+        let result: NewApiLoginResult
+        try { result = await prepare(() => complete.call(candidate.client, { flowToken: pending.flowToken, code })) }
+        catch (error) {
+          // 输错、限流都还能接着输：服务端只在验证通过后才作废 flow token。
+          if (error instanceof NewApiTwoFactorExpiredError) twoFactor = null
+          throw error
+        }
+        // 服务端这时已经作废了 flow token；后面存本机失败也只能从输密码重来。
+        twoFactor = null
+        await promote(candidate, undefined, pending.identifier, true)
+        return { ...result, ...metadata() }
+      } finally {
+        // Same as login(): a server session this machine failed to keep is ended at once.
+        if (active !== candidate) {
+          if (candidate.client.getSessionState().authenticated) endServerSession(candidate)
+          dispose(candidate)
+        }
+      }
+    }, true)
+  }
   async function logout(): Promise<void> {
     return transition(async () => {
+      twoFactor = null
       const replacement = createHandle(active.siteId)
       // 先把本机账号库里的这份凭据删掉再注销服务端：本机删不掉（存储出错）时
       // 退出整体失败、登录照旧可用，不能出现本机还「登着」而服务端已经作废的状态。
@@ -505,7 +555,7 @@ export function createRealmAccountService(options: RealmAccountServiceOptions): 
       }
     },
   })
-  return Object.freeze({ client, getSiteId: () => active.siteId, assertReady, getPublicClient, login, logout, listSavedAccounts,
+  return Object.freeze({ client, getSiteId: () => active.siteId, assertReady, getPublicClient, login, completeTwoFactorLogin, logout, listSavedAccounts,
     switchSavedAccount, removeSavedAccount, restoreActive, migrateLegacy,
     restoringAccount: () => restoring ? { ...restoring } : null,
     stalledAccount: () => stalled ? { ...stalled } : null,

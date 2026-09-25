@@ -27,7 +27,7 @@
 - 新增定向测试后，realm 服务 + auth API + auth state 共 3 个文件、57 个测试通过。
 - 最终 auth 浏览器回归 19 项通过，覆盖默认登录、显式历史账号、迟到记住密码响应、操作锁、2FA、历史账号官网找回、星芒重置链接来源、真实增加账号及原有引导。
 - 真实 App “增加账号”在星芒 / 历史两个方向均验证失败保留旧会话、重试后登录所选来源，通过 1 项。
-- 尚未执行生产认证或重置；2FA 仅提供对应官网入口和准确的不支持说明。
+- 尚未执行生产认证或重置；2FA 仅提供对应官网入口和准确的不支持说明。（2026-09-25 更新：星芒账号的 2FA 已能在客户端输验证码或备用码完成，见 `changes/unreleased/current-account-two-step-login.md`；历史账号仍只给官网入口。）
 - realm 服务、登录提示、auth 与 preload 共 6 个文件、87 项通过；找回 IPC 定向 12 项通过。
 - `tsconfig.renderer-v2.json`、`tsconfig.electron.json`、`tsconfig.electron.test.json` 类型检查通过；27 个相关文件 UTF-8 无 BOM；差异空白检查通过。
 - 早期整组 IPC + auth 验证为 370 通过、4 失败，均为并行工具配置归属变更的 `service.saveConfig` 第四参数断言。root 后续已修正并报告 IPC 整组 431 通过、App 浏览器 86/86 通过。
