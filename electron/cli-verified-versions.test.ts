@@ -55,6 +55,21 @@ describe('cliVerifiedVersions data', () => {
       expect(recommended.note.trim().length).toBeGreaterThan(0)
     }
   })
+
+  it('keeps every customer-facing sentence free of developer jargon', () => {
+    // userNote and blocked reasons go straight onto the tool row. The customers
+    // are not developers, and the relay is supposed to be invisible to them.
+    const jargon = /\b(?:npm|400|base ?url|api|http)\b|中转|网关|站点|上游|回归|changelog/i
+    for (const provider of providerIds) {
+      const entry = cliVerifiedVersions[provider]
+      const userNote = entry.recommended?.userNote
+      if (userNote !== undefined) {
+        expect(userNote.trim().length).toBeGreaterThan(0)
+        expect(userNote).not.toMatch(jargon)
+      }
+      for (const range of entry.blocked) expect(range.reason).not.toMatch(jargon)
+    }
+  })
 })
 
 describe('versionInBlockedRange', () => {
@@ -212,9 +227,25 @@ describe('buildCliVersionAdvice', () => {
   it('tells a Codex user on the blocked release to move forward, not back', () => {
     const advice = buildCliVersionAdvice('codex', '0.155.0')
     expect(advice.recommendedVersion).toBe('0.156.1')
-    expect(advice.blockedReason).toMatch(/推理摘要/)
+    expect(advice.blockedReason).toMatch(/拒绝/)
     expect(advice.rollbackAvailable).toBe(true)
     expect(advice.recommendedIsNewer).toBe(true)
+  })
+
+  it('says what the recommended version fixes only when updating would install it', () => {
+    const noted = listWith({
+      recommended: { version: '2.1.277', verifiedAt: '2026-09-18', verifiedSites: [], note: '测试', userNote: '修好了提问失败' },
+      blocked: [],
+    })
+    expect(buildCliVersionAdvice('claude', '2.1.270', { list: noted }).recommendedNote).toBe('修好了提问失败')
+    // Already there, ahead of it, or following latest: the sentence is not about
+    // what the next update installs, so it stays off the row.
+    expect(buildCliVersionAdvice('claude', '2.1.277', { list: noted }).recommendedNote).toBeUndefined()
+    expect(buildCliVersionAdvice('claude', '2.1.280', { list: noted }).recommendedNote).toBeUndefined()
+    expect(buildCliVersionAdvice('claude', '2.1.270', { list: noted, alwaysLatest: true }).recommendedNote).toBeUndefined()
+    expect(buildCliVersionAdvice('claude', '版本读取失败', { list: noted }).recommendedNote).toBeUndefined()
+    // No sentence written for this release: nothing extra, same as before.
+    expect(buildCliVersionAdvice('claude', '2.1.270', { list }).recommendedNote).toBeUndefined()
   })
 
   it('reads a version out of a full CLI banner line', () => {

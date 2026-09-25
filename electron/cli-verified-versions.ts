@@ -24,6 +24,13 @@ export interface VerifiedCliRelease {
   verifiedSites: readonly string[]
   /** 中文备注,说明为什么选它。 */
   note: string
+  /**
+   * 给客户看的一句话:换到这一版,他会碰到的哪个现象好了。note 是写给开发的
+   * (npm、网关、400 满篇),小白看不出这次更新和自己有没有关系,怕「更新完
+   * 更糟」就一直不点——推荐版本专门修掉的那些「每次提问都失败」他们就一直碰到。
+   * 只写客户碰得到的现象,不写技术词、站点名;可以不填,不填界面就只写版本号。
+   */
+  userNote?: string
 }
 
 export interface BlockedCliVersionRange {
@@ -31,7 +38,7 @@ export interface BlockedCliVersionRange {
   introduced: string
   /** 首个修复版本(不含);null = 上游尚未修复。 */
   fixed: string | null
-  /** 中文原因,直接展示给用户。 */
+  /** 中文原因,直接展示给用户:只写客户碰得到的现象,不写状态码、中转这类词。 */
   reason: string
   /**
    * 只影响这些站点时列出站点 id;缺省 = 所有站点。绝大多数上游回归打的是
@@ -59,17 +66,18 @@ export const cliVerifiedVersions: Record<ProviderId, CliVersionCompatibility> = 
       verifiedAt: '2026-09-18',
       verifiedSites: [],
       note: '当前 npm latest,且修复了 2.1.275 引入的「指向网关时每个请求 400」回归',
+      userNote: '修好了一个会让每次提问都失败的问题',
     },
     blocked: [
       {
         introduced: '2.1.265',
         fixed: '2.1.268',
-        reason: '这些版本在第三方中转上每次请求都返回 400（上游已在 2.1.268 修复）',
+        reason: '这个版本每次提问都会失败，换到推荐版本就好',
       },
       {
         introduced: '2.1.275',
         fixed: '2.1.277',
-        reason: '这些版本指向中转时每次请求都返回 400（上游已在 2.1.277 修复）',
+        reason: '这个版本每次提问都会失败，换到推荐版本就好',
       },
     ],
   },
@@ -79,12 +87,13 @@ export const cliVerifiedVersions: Record<ProviderId, CliVersionCompatibility> = 
       verifiedAt: '2026-09-23',
       verifiedSites: [],
       note: '当前 npm latest,自带 GPT-6 Sol / Luna 的模型资料;0.155.1 用这两个模型会报「Model metadata not found」并退回旧版提示词与工具',
+      userNote: '能正常用 GPT-6 Sol 和 GPT-6 Luna 两个新模型',
     },
     blocked: [
       {
         introduced: '0.155.0',
         fixed: '0.155.1',
-        reason: '这个版本每次都向中转索要推理摘要，不支持的中转会直接拒绝请求（上游已在 0.155.1 修复）',
+        reason: '这个版本经常一提问就被拒绝，换到推荐版本就好',
       },
     ],
   },
@@ -95,6 +104,7 @@ export const cliVerifiedVersions: Record<ProviderId, CliVersionCompatibility> = 
       verifiedAt: '2026-09-21',
       verifiedSites: [],
       note: '当前 npm latest;0.57~0.60 四个正式版全是安全加固,未发现与第三方 base URL 相关的回归',
+      userNote: '加强了安全防护，用法不变',
     },
     blocked: [],
   },
@@ -191,6 +201,12 @@ export interface CliVersionAdvice {
    * 没名单、版本号读不出来)保持旧文案。
    */
   recommendedIsNewer?: boolean
+  /**
+   * 点「更新」会换到的推荐版本修了什么,给客户看的一句话(VerifiedCliRelease
+   * 的 userNote)。只在推荐版本比已装的新、且更新确实会装它(pinned)时才带:
+   * 跟随最新版的用户点更新装的是 npm latest,这句话说的就不是他要装的那一版。
+   */
+  recommendedNote?: string
 }
 
 export function buildCliVersionAdvice(
@@ -203,7 +219,8 @@ export function buildCliVersionAdvice(
   } = {},
 ): CliVersionAdvice {
   const list = options.list ?? cliVerifiedVersions
-  const recommended = list[provider].recommended?.version ?? null
+  const release = list[provider].recommended
+  const recommended = release?.version ?? null
   const blocked = findBlockedCliVersion(provider, installedVersion, options.siteId, list)
   const comparable = containsComparableVersion(installedVersion)
   const onRecommended = Boolean(
@@ -213,6 +230,8 @@ export function buildCliVersionAdvice(
     && !isNewerVersion(recommended, installedVersion),
   )
   const pinned = Boolean(recommended) && options.alwaysLatest !== true
+  const recommendedIsNewer = Boolean(recommended && comparable && isNewerVersion(installedVersion, recommended))
+  const recommendedNote = release?.userNote?.trim()
   return {
     recommendedVersion: recommended,
     blockedReason: blocked ? blocked.reason : null,
@@ -221,8 +240,7 @@ export function buildCliVersionAdvice(
     // 跟随最新版的用户只在真的撞上不兼容版本时才被拉回推荐版本;否则这是
     // 他自己选的策略,不该在每一行挂一个回滚按钮。
     rollbackAvailable: Boolean(recommended && comparable && !onRecommended && (pinned || blocked)),
-    ...(recommended && comparable && isNewerVersion(installedVersion, recommended)
-      ? { recommendedIsNewer: true }
-      : {}),
+    ...(recommendedIsNewer ? { recommendedIsNewer: true } : {}),
+    ...(recommendedIsNewer && pinned && recommendedNote ? { recommendedNote } : {}),
   }
 }

@@ -3786,7 +3786,7 @@ describe('CLI latest version state', () => {
     }, latest(recommendedClaudeVersion()), buildCliVersionAdvice('claude', '2.1.276 (Claude Code)'))).toMatchObject({
       versionAdvice: {
         recommendedVersion: recommendedClaudeVersion(),
-        blockedReason: expect.stringContaining('400'),
+        blockedReason: expect.stringContaining('失败'),
         onRecommended: false,
         rollbackAvailable: true,
       },
