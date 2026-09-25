@@ -938,6 +938,31 @@ test('home reuses the recent list instead of rescanning session folders on every
   } finally { await page.close() }
 })
 
+test('archiving a session on the sessions page refreshes the home recent card right away', async () => {
+  const page = await open('allInstalled=1&recentWorkspaces=1&sessionArchive=1')
+  const homeReads = () => page.evaluate(() => window.v2Test.calls
+    .filter((entry) => entry.method === 'listProviderSessions' && entry.args[0]?.pageSize === 60).length)
+  try {
+    await page.getByTestId('home-recent-resume-claude:1').waitFor()
+    assert.equal(await homeReads(), 1)
+
+    await page.getByTestId('nav-sessions').click()
+    await page.getByTestId('sessions-view-claude:1').click()
+    await page.getByTestId('session-detail-drawer').getByRole('button', { name: '归档记录' }).click()
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'archiveSession'))
+
+    // 首页那份「最近」缓存一分钟；以前归档之后回首页，刚归档的那条还挂着「接着聊」（#544）。
+    await page.getByTestId('nav-home').click()
+    await page.getByTestId('home-recent-card').waitFor()
+    await page.waitForFunction(() => window.v2Test.calls
+      .filter((entry) => entry.method === 'listProviderSessions' && entry.args[0]?.pageSize === 60).length === 2)
+    await page.waitForFunction(() => !document.querySelector('[data-testid="home-recent-resume-claude:1"]'))
+    // 同一目录里的 claude:3 现在是最近一条，「接着聊」挪到它身上。
+    await page.getByTestId('home-recent-resume-claude:3').waitFor()
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('a new user can open a CLI in a folder the app creates, without the directory picker', async () => {
   const page = await open('allInstalled=1')
   try {

@@ -207,8 +207,10 @@ const balance = { quota: 6_200_000, usedQuota: 0, quotaPerUnit: 500_000, quotaDi
 function fixtureRunningTools(providers: readonly ProviderId[]) {
   return { running: [...providers], unknown: [], codexDesktopRunning: providers.includes('codex'), canRestartCodexDesktop: true }
 }
+/** ?sessionArchive：Claude 的记录也能归档 / 恢复，用来盯住记录页归档后首页「最近」跟着重读（#544）。 */
 function sessionCapability(provider: ProviderId): MultiProviderSessionPage['capabilities'][ProviderId] {
-  return { provider, available: true, readable: true, readonly: true, source: 'jsonl', reason: '', operations: { list: true, detail: true, exportMarkdown: true, archive: false, restore: false } }
+  const mutable = query.has('sessionArchive') && provider === 'claude'
+  return { provider, available: true, readable: true, readonly: !mutable, source: 'jsonl', reason: '', operations: { list: true, detail: true, exportMarkdown: true, archive: mutable, restore: mutable } }
 }
 // 首页「打开」的最近目录是从会话记录里的 cwd 推出来的（N7），所以这里要有带目录的记录。
 // 同一个目录两条记录，用来盯住去重。
@@ -226,6 +228,12 @@ const recentWorkspaceSessions = [
   recentWorkspaceSession('4', 'codex', 'C:\\work\\codex-app', 100, true, false),
   recentWorkspaceSession('5', 'gemini', 'C:\\work\\a-very-long-project-name', 50),
 ]
+function fixtureSetArchived(nativeId: string, archived: boolean) {
+  const item = recentWorkspaceSessions.find((entry) => entry.nativeId === nativeId)
+  if (!item) throw new Error('会话不存在。')
+  item.archived = archived
+  return { sessionId: nativeId, archived, backupPath: 'C:\\Fixture\\backup', rolloutPath: item.sourcePath, operationId: `fixture-${nativeId}` }
+}
 const methods = {
   listAccelerationLines: async () => query.has('accelerationPreview') ? accelerationDemo.listAccelerationLines?.('xm-account:17') ?? [] : [],
   pingAccelerationLine: async (_scope: string, lineId: string) => {
@@ -415,8 +423,15 @@ const methods = {
   loginAccount: async (input) => { const resolvedSite = input.siteId ?? (query.has('sub2api') ? 'solov-api' : 'solov'); session = { authenticated: true, account, ...(resolvedSite === 'solov-api' ? sub2ApiMetadata : { siteId: 'solov' as const }) }; return { ...session, account, accessExpiresAt: null } },
   registerAccount: async () => {},
   logoutAccount: async () => { session = { ...session, authenticated: false, account: null } },
-  listProviderSessions: async () => ({ items: query.has('recentWorkspaces') ? recentWorkspaceSessions : [], page: 1, pageSize: 60, total: query.has('recentWorkspaces') ? recentWorkspaceSessions.length : 0, pages: 1, stats: { total: query.has('recentWorkspaces') ? recentWorkspaceSessions.length : 0, byProvider: { claude: query.has('recentWorkspaces') ? 3 : 0, codex: query.has('recentWorkspaces') ? 1 : 0, gemini: query.has('recentWorkspaces') ? 1 : 0, grok: 0 } }, capabilities: { claude: sessionCapability('claude'), codex: sessionCapability('codex'), gemini: sessionCapability('gemini'), grok: sessionCapability('grok') } }),
+  listProviderSessions: async () => ({ items: query.has('recentWorkspaces') ? recentWorkspaceSessions.map((item) => ({ ...item })) : [], page: 1, pageSize: 60, total: query.has('recentWorkspaces') ? recentWorkspaceSessions.length : 0, pages: 1, stats: { total: query.has('recentWorkspaces') ? recentWorkspaceSessions.length : 0, byProvider: { claude: query.has('recentWorkspaces') ? 3 : 0, codex: query.has('recentWorkspaces') ? 1 : 0, gemini: query.has('recentWorkspaces') ? 1 : 0, grok: 0 } }, capabilities: { claude: sessionCapability('claude'), codex: sessionCapability('codex'), gemini: sessionCapability('gemini'), grok: sessionCapability('grok') } }),
   openProviderSessionDirectory: async () => true,
+  getProviderSessionDetail: async (id: string) => {
+    const item = recentWorkspaceSessions.find((entry) => entry.id === id)
+    if (!item) throw new Error('会话不存在。')
+    return { session: { ...item }, messages: [], messageStats: { total: 0, user: 0, assistant: 0, system: 0, other: 0, invalidLines: 0 }, messagesTruncated: false, sourceTruncated: false }
+  },
+  archiveSession: async (nativeId: string) => fixtureSetArchived(nativeId, true),
+  restoreSession: async (nativeId: string) => fixtureSetArchived(nativeId, false),
   exportDiagnostics: async () => ({ outputPath: 'C:\\Fixture\\xingmang-diagnostics.txt' }),
   revealExportedFile: async () => true,
   launchCli: async () => query.has('launchPending') ? new Promise<{}>((resolve) => { releaseLaunch = () => resolve({}) }) : query.has('launchOverride') ? { configOverrideNotice: '这个项目文件夹里有自己的设置，会让 Claude Code 不用当前账号，余额和用量会对不上。不是你有意这样设的话，换一个文件夹打开就好。' } : {},
