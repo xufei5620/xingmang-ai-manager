@@ -200,6 +200,46 @@ function cloneState(state: CanvasRunStateFile): CanvasRunStateFile {
   return structuredClone(state)
 }
 
+function serializeState(state: CanvasRunStateFile): string {
+  return `${JSON.stringify(state, null, 2)}\n`
+}
+
+// Each run / cache entry sits two levels deep in the pretty-printed file: four
+// extra spaces on every line, plus the separating comma and newline.
+function serializedEntryBytes(entry: unknown): number {
+  const text = JSON.stringify(entry, null, 2)
+  return Buffer.byteLength(text, 'utf8') + text.split('\n').length * 4 + 2
+}
+
+// 先丢最旧的运行记录（只是历史，丢了不花钱），再丢最旧的缓存（丢了下次要重新生成）。
+// 最新一条和还在跑的记录不丢，它们正是这次要保存的东西。
+function dropOldestEntry(state: CanvasRunStateFile): unknown {
+  for (let index = state.runs.length - 1; index > 0; index -= 1) {
+    if (state.runs[index].status !== 'running') return state.runs.splice(index, 1)[0]
+  }
+  return state.cache.pop()
+}
+
+/**
+ * Serializes the state within the byte budget, evicting the oldest history
+ * first. Retention used to be count-only, so long text outputs filled the file
+ * long before 100 runs and every later save failed for good (#542).
+ */
+function serializeStateWithinBudget(state: CanvasRunStateFile, maximumBytes: number): string {
+  let content = serializeState(state)
+  let excess = Buffer.byteLength(content, 'utf8') - maximumBytes
+  while (excess > 0) {
+    const dropped = dropOldestEntry(state)
+    if (dropped === undefined) throw new Error('画布运行记录超过安全上限')
+    excess -= serializedEntryBytes(dropped)
+    if (excess <= 0) {
+      content = serializeState(state)
+      excess = Buffer.byteLength(content, 'utf8') - maximumBytes
+    }
+  }
+  return content
+}
+
 export class CanvasRunStore {
   private readonly rootDirectory: string
   private readonly assets: CanvasRunAssetResolver
@@ -460,8 +500,7 @@ export class CanvasRunStore {
     normalized.runs = normalized.runs.slice(0, this.runRetention)
     normalized.cache = normalized.cache.slice(0, this.cacheRetention)
     normalized.assets = normalized.assets.slice(0, this.assetRetention)
-    const content = `${JSON.stringify(normalized, null, 2)}\n`
-    if (Buffer.byteLength(content, 'utf8') > this.maximumBytes) throw new Error('画布运行记录超过安全上限')
+    const content = serializeStateWithinBudget(normalized, this.maximumBytes)
     if (stateContainsSecretOrPath(stateScanSubject(normalized))) throw new Error('画布运行记录包含密钥、远程地址或本地路径')
     await writeAtomicSafeUtf8File(this.filePath(userId), content, FILE_LABEL)
   }

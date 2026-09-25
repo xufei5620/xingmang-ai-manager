@@ -22,7 +22,13 @@ import { computeCanvasNodeFingerprint } from './canvas-fingerprint'
 
 const DEFAULT_MAX_CONCURRENCY = 20
 const MAXIMUM_ERROR_LENGTH = 300
-const nonCacheableCanvasNodeKinds = new Set<CanvasRunNodeKind>(['gallery', 'router', 'output'])
+// 剧本的角色、场景、道具节点读的是用户当前绑定的图，本身不花钱。它们的指纹不含
+// 绑定的图，换图后命中缓存会一直交出旧图（#541）。这里让它们每次都重读，而不是
+// 把绑定的图加进指纹：改指纹会让升级后所有下游节点的缓存一起失效、整批重跑重复扣费。
+// 下游指纹本来就含上游交出的图，图没换时下游照常命中缓存。
+const nonCacheableCanvasNodeKinds = new Set<CanvasRunNodeKind>([
+  'gallery', 'router', 'output', 'drama-character', 'drama-scene', 'drama-prop',
+])
 
 export function isCanvasNodeCacheEligible(kind: CanvasRunNodeKind): boolean {
   return !nonCacheableCanvasNodeKinds.has(kind)

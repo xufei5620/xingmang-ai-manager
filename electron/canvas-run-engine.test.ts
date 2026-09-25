@@ -16,6 +16,7 @@ import type {
   CanvasRunRecord,
 } from './canvas-run-contract'
 import { canvasRunTimelineLimit } from './canvas-run-contract'
+import { createCanvasNodeExecutors } from './canvas-node-executors'
 
 function node(id: string, kind: CanvasRunGraphNode['kind'], prompt = id): CanvasRunGraphNode {
   return { id, kind, definitionVersion: 1, data: { prompt, model: kind === 'image' ? 'gpt-image-2' : '' } }
@@ -350,6 +351,51 @@ describe('executeCanvasRun', () => {
     expect(record.nodes[0].state).toBe('cached')
     expect(record.outcome?.cached).toEqual(['a'])
   })
+
+  it.each(['drama-character', 'drama-scene', 'drama-prop'] as const)(
+    'rereads the bound image of %s after it is swapped while unchanged downstream work stays cached',
+    async (kind) => {
+      const imageA = 'a'.repeat(43)
+      const imageB = 'b'.repeat(43)
+      const reads: string[] = []
+      const cache = new Map<string, CanvasRunCacheEntry>()
+      const generate = vi.fn(async () => ({ assets: [asset('g'.repeat(43))] }))
+      const realExecutors = createCanvasNodeExecutors({
+        imageService: { generate: async () => { throw new Error('unused') }, cancel: () => ({ canceled: false, mayStillComplete: false }) },
+        assets: {
+          readOwned: async (_userId, assetId) => {
+            reads.push(assetId)
+            return { asset: { assetId, localUrl: `xingmang-asset://image/${assetId}`, mimeType: 'image/png' } }
+          },
+        },
+      })
+      function workflow(bound: string): CanvasRunGraph {
+        const source = node('ref', kind, '角色设定')
+        source.data.adoptedAssetId = bound
+        return graph([source, node('shot', 'image-generate')], [edge('ref', 'shot', 'image')])
+      }
+      async function run(bound: string) {
+        return executeCanvasRun(runOptions(workflow(bound), {
+          executors: { ...realExecutors, 'image-generate': generate },
+          resolveCache: async (fingerprint) => cache.get(fingerprint) ?? null,
+          storeCache: async (entry) => { cache.set(entry.fingerprint, entry) },
+        }))
+      }
+
+      await run(imageA)
+      const unchanged = await run(imageA)
+      expect(unchanged.nodes.find((entry) => entry.nodeId === 'shot')?.state).toBe('cached')
+      expect(generate).toHaveBeenCalledTimes(1)
+
+      const swapped = await run(imageB)
+      const source = swapped.nodes.find((entry) => entry.nodeId === 'ref')
+      expect(source?.state).toBe('succeeded')
+      expect(source?.attempts.at(-1)?.candidates[0]?.asset.assetId).toBe(imageB)
+      expect(reads).toEqual([imageA, imageA, imageB])
+      expect(swapped.nodes.find((entry) => entry.nodeId === 'shot')?.state).toBe('succeeded')
+      expect(generate).toHaveBeenCalledTimes(2)
+    },
+  )
 
   it('still executes the explicit to-node target even when a cache entry exists', async () => {
     const image = vi.fn(async () => ({ assets: [asset()] }))
