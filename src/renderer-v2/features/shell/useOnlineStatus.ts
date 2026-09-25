@@ -1,10 +1,18 @@
 import { createContext, useContext, useSyncExternalStore } from 'react'
+import type { NetworkSettingsKind } from '../../../../electron/ipc-contract'
+import type { OfflineCause } from './online-status'
 
 export interface OnlineStatus {
   offline: boolean
+  /** 断网是哪一种；缺省 = 'offline'，横幅照旧那一句。 */
+  cause?: OfflineCause
+  /** 代理连不上、星芒已经改成直连，且用户还没点「知道了」。 */
+  proxyBypassNotice?: boolean
   /** 「重新检测」正在跑。 */
   checking: boolean
   recheck(): void
+  openNetworkSettings?(kind: NetworkSettingsKind): void
+  dismissProxyBypassNotice?(): void
 }
 
 function noRecheck() {}

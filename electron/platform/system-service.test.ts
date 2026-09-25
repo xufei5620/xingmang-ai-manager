@@ -5,6 +5,7 @@ import { loginLaunchArgument } from '../login-launch'
 import {
   migrateLegacyWindowsLoginItem,
   PlatformSystemService,
+  describeSessionProxy,
   removeWindowsLoginItem,
   summarizeSessionProxy,
   type PlatformSystemDependencies,
@@ -256,6 +257,19 @@ describe('platform system preferences', () => {
     )
     expect(summarizeSessionProxy('PROXY user:secret@host:123').route).toBe(
       'unknown',
+    )
+  })
+  it('says why the app window is direct after the broken proxy was bypassed', () => {
+    expect(describeSessionProxy('DIRECT', true)).toEqual({
+      route: 'direct',
+      summary: '应用窗口当前直接连接（电脑里的代理连不上，本次已自动绕开）',
+    })
+    expect(describeSessionProxy('DIRECT', false).summary).toBe(
+      '应用窗口当前直接连接',
+    )
+    // A proxy route is reported as it is; the bypass note only explains DIRECT.
+    expect(describeSessionProxy('PROXY 127.0.0.1:7890', true).route).toBe(
+      'proxy',
     )
   })
   it('persists granular notification and privacy preferences without any network or startup mutation', async () => {

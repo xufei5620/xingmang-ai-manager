@@ -106,6 +106,8 @@ import { guardProcessOutputStreams } from './process-stream-errors'
 import { configureRelocatedFolderAccess } from './relocated-folders'
 import { RuntimeLogStore } from './runtime-log'
 import { hostNotifier } from './platform/host-notification-bridge'
+import { attachProxyBypassState } from './platform/proxy-bypass-bridge'
+import { createProxyBypass, networkSettingsTarget, probeDirectConnection } from './proxy-bypass'
 import { attachPlatformAuditLog } from './platform/runtime-log-bridge'
 import { migrateLegacyWindowsLoginItem } from './platform/system-service'
 import { recordStartupFailure, redactHomeDirectory } from './startup-log'
@@ -122,6 +124,7 @@ import {
   createDiagnosticsExport,
   redactDiagnosticText,
   diagnosticsScanReuseMs,
+  relayStatusProbeUrl,
   runDiagnostics,
   type DiagnosticsReport,
   type DiagnosticsRunOptions,
@@ -2253,6 +2256,25 @@ if (!hasSingleInstanceLock) {
         powerMonitor.off('resume', onResume)
       })
     }
+    // 系统代理指着一个已经关掉的代理软件时，星芒自己改走直连（更新那条路早就这么做）。
+    // 只动 defaultSession，不落盘；装工具时给子进程的代理也按它 resolveProxy，一起跟着直连。
+    const proxyBypass = createProxyBypass({
+      probeUrl: () => {
+        try { return relayStatusProbeUrl(resolveRelaySite(systemService.readStoredConfig().relaySiteId)) }
+        catch { return null }
+      },
+      resolveProxy: (url) => session.defaultSession.resolveProxy(url),
+      setProxy: (mode) => session.defaultSession.setProxy({ mode }),
+      probe: (url) => probeDirectConnection((input, init) => net.fetch(input, init), url),
+      accelerationActive: async () => {
+        const scope = readAccelerationAccountScope()
+        if (!scope || !acceleration) return false
+        const { phase } = await acceleration.getAccelerationState(scope)
+        return phase === 'active' || phase === 'connecting' || phase === 'stopping'
+      },
+      log: (level, event, message, detail) => runtimeLog.log(level, 'network', event, message, detail),
+    })
+    attachProxyBypassState(() => proxyBypass.active())
     const chatHistoryStore = createAiChatHistoryStore({ root: path.join(managerDataDirectory, 'chat-history') })
     const unregisterIpcHandlers = registerIpcHandlers({
       acceleration,
@@ -2308,6 +2330,17 @@ if (!hasSingleInstanceLock) {
         ...(displayCompatPending ? { displayCompat: 'auto' as const } : {}),
       }),
       relaunchApp: () => requestRelaunch?.() ?? Promise.resolve(false),
+      bypassBrokenProxy: () => proxyBypass.tryBypass(),
+      // 固定地址、不经渲染层：系统设置页和系统自己检测门户用的那个网址。普通权限
+      // 运行时直接交给系统打开（同 ms-windows-store 那一条）；按管理员身份处理时不替
+      // 用户开浏览器，免得浏览器跟着拿到管理员权限，界面改为提示他自己打开网页。
+      openNetworkSettings: async (kind) => {
+        const target = networkSettingsTarget(process.platform, kind)
+        if (!target) return false
+        if (kind === 'captive-portal' && windowsCliExecutionMode === 'trusted-only') return false
+        await shell.openExternal(target)
+        return true
+      },
       onSettingsChanged: (update) => {
         if (update.hardwareAcceleration !== undefined) {
           // 用户对显示方式做了选择（设置页开关，或兼容提示里的两颗按钮）：之前的崩溃

@@ -1,6 +1,7 @@
 import type { AccountBalance } from '../../../../electron/ipc-contract'
 import { formatAccountReadError } from './account-read-error'
-import { isLocalNetworkFailure } from '../shell/online-status'
+import type { NetworkFailureReason } from '../../../../electron/network-failure'
+import { localNetworkFailureReason } from '../shell/online-status'
 
 export interface AccountBalanceSnapshot {
   scope: string | null
@@ -14,6 +15,8 @@ export interface AccountBalanceSnapshot {
    * 认出 navigator.onLine 看不出来的那几种断网。
    */
   networkFailures: number
+  /** 最近那次本机网络失败是哪一种（代理、门户认证……）；计数归零时一起清掉。 */
+  networkFailureReason?: NetworkFailureReason
 }
 
 export type AccountBalanceRefreshReason = 'manual' | 'mutation' | 'foreground' | 'interval'
@@ -132,10 +135,11 @@ export function createAccountBalanceStore({ read, now = Date.now, focused = alwa
           try {
             const balance = await read()
             if (!current()) return
-            publish({ balance, updatedAt: now(), error: null, networkFailures: 0 })
+            publish({ balance, updatedAt: now(), error: null, networkFailures: 0, networkFailureReason: undefined })
           } catch (cause) {
             if (!current()) return
-            publish({ error: formatAccountReadError(cause, 'balance'), networkFailures: isLocalNetworkFailure(cause) ? snapshot.networkFailures + 1 : 0 })
+            const reason = localNetworkFailureReason(cause) ?? undefined
+            publish({ error: formatAccountReadError(cause, 'balance'), networkFailures: reason ? snapshot.networkFailures + 1 : 0, networkFailureReason: reason })
           }
         } while (flight.repeat)
       } finally {
@@ -164,7 +168,7 @@ export function createAccountBalanceStore({ read, now = Date.now, focused = alwa
       clearActivityTimer()
       activityDueAt = null
       inFlight = null
-      publish({ scope, balance: null, loading: false, updatedAt: null, error: null, networkFailures: 0 })
+      publish({ scope, balance: null, loading: false, updatedAt: null, error: null, networkFailures: 0, networkFailureReason: undefined })
       if (scope) void refresh()
     },
     setVisible(nextVisible) {
