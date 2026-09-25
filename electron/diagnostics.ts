@@ -151,6 +151,11 @@ export interface DiagnosticsDependencies {
    */
   probeAiOutput?: () => Promise<void>
   /**
+   * 正式安装包自带的加速文件启动时读没读通。只有安装包本来就带加速文件时宿主才给，
+   * 给了才有「加速功能」这一项；开发时和不带加速的包都没有这一项。
+   */
+  accelerationBundle?: 'intact' | 'damaged'
+  /**
    * 启动时那次「是不是管理员」探测的结果（`resolveWindowsCliExecutionModeDetailed`）。
    * 只读、不重跑：执行模式在启动时就定死了，检查页要说的是「这次启动被怎么处理了」。
    * 缺省按探测成功处理，只看当前令牌。
@@ -232,6 +237,8 @@ interface CheckDefinition {
 }
 
 const DEFAULT_CHECK_TIMEOUT_MS = 8_000
+const accelerationBundleDamagedSummary = '加速用的文件被删掉或改动了，多半是杀毒软件拦的。'
+  + '打开杀毒软件的「隔离区」或「恢复区」把星芒的文件恢复，并把星芒加入信任；也可以重新安装一次星芒，装在原来的位置就行。'
 /**
  * 差多少才值得说。证书校验本身有容差，本机时钟与服务器差几十秒也是常态，
  * 阈值定低了就是每次检查都亮一条没人能处理的黄灯。
@@ -1655,6 +1662,16 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
         }
         return { state: 'pass', summary: 'AI 生成的图片和视频能正常保存' }
       },
+    }] : []),
+    // 杀毒软件隔离了加速内核时，加速页以前只写「线路准备中」，客户会一直等下去。
+    // 这里说同一句话；读文件是启动时做的，这一项只报告结果、不再读一遍几十 MB 的内核。
+    // 标黄不标红（同 AI_OUTPUT）：只影响用加速的人，不为它在每次开机时弹「需要处理」。
+    ...(dependencies.accelerationBundle ? [{
+      code: 'ACCELERATION_BUNDLE',
+      title: '加速功能',
+      run: (): CheckOutcome => dependencies.accelerationBundle === 'damaged'
+        ? { state: 'warn', summary: accelerationBundleDamagedSummary }
+        : { state: 'pass', summary: '加速用的文件完好' },
     }] : []),
     {
       // 「C 盘搬家」工具或 mklink /J 把用户文件夹、软件数据文件夹挪到别的盘之后，

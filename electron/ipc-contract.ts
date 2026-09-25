@@ -897,6 +897,7 @@ export interface XingmangInvokeContract {
   redeemAccelerationCode: IpcInvokeDefinition<'acceleration:redeem-code', [scope: string, code: string], import('./acceleration-contract').AccelerationRedemptionResult>
   getAccelerationPreference: IpcInvokeDefinition<'acceleration:get-preference', [scope: string], import('./acceleration-contract').AccelerationPreference>
   saveAccelerationPreference: IpcInvokeDefinition<'acceleration:save-preference', [scope: string, update: import('./acceleration-contract').AccelerationPreferenceUpdate], import('./acceleration-contract').AccelerationPreference>
+  recheckAccelerationBundle: IpcInvokeDefinition<'acceleration:recheck-bundle', [], import('./acceleration-contract').AccelerationBundleCheck>
   getLegalDocument: IpcInvokeDefinition<'account:get-legal-document', [kind: LegalDocumentKind, siteId?: AccountSiteId], LegalDocument>
   loginAccount: IpcInvokeDefinition<'account:login', [input: AccountLoginInput], AccountLoginResult>
   submitTwoFactorCode: IpcInvokeDefinition<'account:submit-two-factor-code', [code: string], AccountLoginResult>
@@ -1231,6 +1232,7 @@ export const ipcInvokeChannels = {
   redeemAccelerationCode: 'acceleration:redeem-code',
   getAccelerationPreference: 'acceleration:get-preference',
   saveAccelerationPreference: 'acceleration:save-preference',
+  recheckAccelerationBundle: 'acceleration:recheck-bundle',
   getLegalDocument: 'account:get-legal-document',
   loginAccount: 'account:login',
   submitTwoFactorCode: 'account:submit-two-factor-code',

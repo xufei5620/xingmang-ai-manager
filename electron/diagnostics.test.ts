@@ -1607,6 +1607,27 @@ describe('runDiagnostics AI output location', () => {
   })
 })
 
+describe('runDiagnostics acceleration bundle', () => {
+  it('only reports the acceleration bundle when the installed app ships one', async () => {
+    const report = await runDiagnostics(dependencies(temporaryHome()))
+    expect(report.items.some((entry) => entry.code === 'ACCELERATION_BUNDLE')).toBe(false)
+  })
+
+  it('passes when the bundle read intact at startup', async () => {
+    const report = await runDiagnostics({ ...dependencies(temporaryHome()), accelerationBundle: 'intact' })
+    expect(report.items.find((entry) => entry.code === 'ACCELERATION_BUNDLE')).toMatchObject({ title: '加速功能', state: 'pass' })
+  })
+
+  it('names antivirus quarantine in plain words when the bundle is damaged', async () => {
+    const report = await runDiagnostics({ ...dependencies(temporaryHome()), accelerationBundle: 'damaged' })
+    const item = report.items.find((entry) => entry.code === 'ACCELERATION_BUNDLE')
+    // warn, not fail: only people who use acceleration are affected, same as AI_OUTPUT.
+    expect(item?.state).toBe('warn')
+    expect(item?.summary).toContain('多半是杀毒软件拦的')
+    expect(item?.summary).not.toMatch(/mihomo|内核|manifest|profile|聊天记录/)
+  })
+})
+
 describe('parseClashTunConfig', () => {
   it('reads supported top-level and nested TUN switches', () => {
     expect(parseClashTunConfig('enable_tun_mode: true\n')).toBe(true)

@@ -1,4 +1,4 @@
-import type { AccelerationApi, AccelerationConflictKind, AccelerationLine, AccelerationMode, AccelerationPhase, AccelerationPreference, AccelerationPreferenceApi, AccelerationPreferenceUpdate, AccelerationRedemptionResult, AccelerationState } from './acceleration-contract'
+import type { AccelerationApi, AccelerationBundleCheck, AccelerationConflictKind, AccelerationLine, AccelerationMode, AccelerationPhase, AccelerationPreference, AccelerationPreferenceApi, AccelerationPreferenceUpdate, AccelerationRedemptionResult, AccelerationState, AccelerationUnavailableReason } from './acceleration-contract'
 import { accelerationBonusSeconds, accelerationConflictKinds, accelerationFailure, accelerationFailureMessages, accelerationFailureReason, accelerationTrialSeconds, isAccelerationConflictKind, isAccelerationLineId } from './acceleration-contract'
 
 export interface AccelerationService extends AccelerationApi, AccelerationPreferenceApi {
@@ -33,6 +33,11 @@ interface AccelerationServiceOptions {
    * 排着的可能是一次十几秒的连接，界面上点一下线路不该等它。
    */
   preferences?: AccelerationPreferenceApi
+  /**
+   * 启动时自带的加速文件就没读通（见 main.ts）。给了就把原因带进「开不了」的状态里，
+   * 并提供「重新检查」；不给就是旧口径的「线路准备中」。
+   */
+  bundleDamaged?: { recheck(): Promise<AccelerationBundleCheck> }
 }
 
 const SERVICE_UNAVAILABLE = '加速线路暂未开通，请稍后再试。'
@@ -170,10 +175,11 @@ function defaultPreference(): AccelerationPreference {
   return { lineId: null, mode: 'system-proxy' }
 }
 
-function unavailableState(scope: string): AccelerationState {
+function unavailableState(scope: string, reason?: AccelerationUnavailableReason): AccelerationState {
   return {
     scope, phase: 'unavailable', mode: 'system-proxy', totalSeconds: accelerationTrialSeconds, remainingSeconds: null,
     sessionSeconds: 0, measuredAt: new Date().toISOString(), connectedAt: null, line: null, error: null,
+    ...(reason ? { unavailableReason: reason } : {}),
   }
 }
 
@@ -188,7 +194,7 @@ function projectRedemption(value: unknown, scope: string): AccelerationRedemptio
 }
 
 export function createAccelerationService(options: AccelerationServiceOptions): AccelerationService {
-  const { backend } = options
+  const { backend, bundleDamaged } = options
   // Track a start before awaiting it: a failed/late response does not prove the tunnel never started.
   const possibleSessions = new Set<string>()
   let queue: Promise<unknown> = Promise.resolve()
@@ -269,7 +275,7 @@ export function createAccelerationService(options: AccelerationServiceOptions): 
       assertCurrent(scope, expectedRevision)
       if (!backend) {
         if (operation === 'start') throw new Error(SERVICE_UNAVAILABLE)
-        return notify(unavailableState(scope))
+        return notify(unavailableState(scope, bundleDamaged ? 'bundle-damaged' : undefined))
       }
       const wasRunning = possibleSessions.has(scope)
       if (operation === 'start') possibleSessions.add(scope)
@@ -381,6 +387,7 @@ export function createAccelerationService(options: AccelerationServiceOptions): 
       if (!options.preferences) return Promise.reject(new Error('加速线路偏好暂不可用，请稍后重试。'))
       return options.preferences.saveAccelerationPreference(scope, parsed)
     },
+    ...(bundleDamaged ? { recheckAccelerationBundle: () => bundleDamaged.recheck() } : {}),
     hasPossibleSession() {
       return possibleSessions.size > 0
     },

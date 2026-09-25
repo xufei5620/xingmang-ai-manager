@@ -2746,6 +2746,12 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
       ...(update.mode !== undefined ? { mode: update.mode as AccelerationMode } : {}),
     })
   })
+  // 不收参数：读的是安装包里那几个固定文件名，渲染层给不出任何路径（I5）。
+  registerTrustedHandler('acceleration:recheck-bundle', () => {
+    const service = accelerationService()
+    if (!service.recheckAccelerationBundle) throw new Error('加速文件现在不用检查，请刷新一下加速页。')
+    return service.recheckAccelerationBundle()
+  })
   registerTrustedHandler('account:get-legal-document', (_event, kind: unknown, siteId: unknown) => (
     (options.realmAccounts ? options.realmAccounts.getPublicClient(siteId === undefined
       ? options.realmAccounts.getSiteId() : parseAccountSiteId(siteId)) : accountService).getLegalDocument(parseLegalDocumentKind(kind))

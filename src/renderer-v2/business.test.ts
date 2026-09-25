@@ -220,6 +220,8 @@ describe('v2 business boundaries', () => {
     expect(diagnosticTarget('RUNTIME_GIT')).toBe('home')
     // 文件夹被搬过没有软件里能一键修的地方，下一步是导出报告。
     expect(diagnosticTarget('FOLDER_RELOCATED')).toBe('feedback')
+    // 加速文件坏了：「重新检查」和「联系客服」都在加速页上。
+    expect(diagnosticTarget('ACCELERATION_BUNDLE')).toBe('acceleration')
   })
   it('offers no fix button where no page in the app can fix it', () => {
     for (const code of [

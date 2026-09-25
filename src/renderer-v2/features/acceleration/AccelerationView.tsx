@@ -1,6 +1,6 @@
 import { useEffect, useState, type KeyboardEvent } from 'react'
 import { ArrowUpRight, Check, CircleHelp, Clock3, Globe2, Laptop, Pause, Power, RefreshCw, Route, ScrollText, ShieldAlert, ShieldCheck, Timer, Zap } from 'lucide-react'
-import { accelerationConflictDescriptions, accelerationConflictNotice, accelerationTrialSeconds, type AccelerationMode, type AccelerationPhase, type AccelerationState } from '../../../../electron/acceleration-contract'
+import { accelerationConflictDescriptions, accelerationConflictNotice, accelerationTrialSeconds, type AccelerationBundleCheck, type AccelerationMode, type AccelerationPhase, type AccelerationState } from '../../../../electron/acceleration-contract'
 import { Button, Switch } from '../../ui'
 // 落点规则只有 operationLogPage 一份：加速这条线没有 tool，按它的口径永远落
 // 「反馈」页的运行日志，而不是「安装卸载」页那张只装当次安装进度的卡。
@@ -34,6 +34,24 @@ interface AccelerationViewProps {
   onSelectLine(lineId: string | null): void
   onPingLine(lineId: string): void
   onRefreshLines(): void
+  /** 加速文件坏了时「重新检查」的进度与结果；null = 还没点过。 */
+  bundleCheck?: AccelerationBundleCheck | 'checking' | null
+  onRecheckBundle?(): void
+  onContactSupport?(): void
+  onRelaunch?(): void
+}
+
+// 客户看到的是「加速开不了」，要说清是本机文件的事、能自己怎么修。不写「重新安装会
+// 保留聊天记录和设置」：安装器是否保留还没实测过。
+const bundleDamagedLead = '加速用的文件被删掉或改动了，现在开不了加速。'
+const bundleDamagedGuide = '多半是杀毒软件把它当成了可疑文件。'
+  + '打开杀毒软件的「隔离区」或「恢复区」，把星芒的文件恢复，并把星芒加入信任，然后点「重新检查」。'
+  + '也可以重新安装一次星芒，装在原来的位置就行。'
+
+export function bundleDamagedNotice(check: AccelerationBundleCheck | 'checking' | null | undefined): { title: string; body: string | null } {
+  if (check === 'repaired') return { title: '加速文件恢复了，重新打开星芒后就能用。', body: null }
+  if (check === 'damaged') return { title: '加速文件还是不对。请先在杀毒软件里恢复，或者重新安装一次星芒。', body: bundleDamagedGuide }
+  return { title: bundleDamagedLead, body: bundleDamagedGuide }
 }
 
 // 线路列表是 listbox：方向键只移动焦点、不改选择，回车或空格才选中。选中会记进本机
@@ -67,7 +85,7 @@ function describePhase(phase: AccelerationPhase | undefined, signedIn: boolean) 
   }
 }
 
-export function AccelerationView({ state, mode, busy, signedIn, error, preview, onModeChange, onStart, onStartAnyway, onStop, onRefresh, onLogin, onHelp, onViewLog, lines, selectedLineId, rememberedLine, linesBusy, linesError, onSelectLine, onPingLine, onRefreshLines }: AccelerationViewProps) {
+export function AccelerationView({ state, mode, busy, signedIn, error, preview, onModeChange, onStart, onStartAnyway, onStop, onRefresh, onLogin, onHelp, onViewLog, lines, selectedLineId, rememberedLine, linesBusy, linesError, onSelectLine, onPingLine, onRefreshLines, bundleCheck, onRecheckBundle, onContactSupport, onRelaunch }: AccelerationViewProps) {
   const [visible, setVisible] = useState(() => typeof document === 'undefined' || !document.hidden)
   const [linePickerOpen, setLinePickerOpen] = useState(false)
   const [lineFocus, setLineFocus] = useState<string | null | undefined>(undefined)
@@ -90,6 +108,9 @@ export function AccelerationView({ state, mode, busy, signedIn, error, preview, 
   const autoStarted = active && state?.autoStartedBy === 'codex-desktop'
   const transitioning = phase === 'connecting' || (phase === 'stopping' && !stopRetry)
   const unavailable = phase === 'unavailable'
+  // 本机加速文件坏了：等多久都不会好，与「线路准备中」分开说。
+  const bundleDamaged = signedIn && unavailable && state?.unavailableReason === 'bundle-damaged'
+  const damagedNotice = bundleDamaged ? bundleDamagedNotice(bundleCheck) : null
   const exhausted = phase === 'exhausted'
   const modeLocked = active || phase === 'stopping' || transitioning || busy || !tunAvailable
   const lineLocked = active || phase === 'connecting' || phase === 'stopping' || busy
@@ -121,10 +142,10 @@ export function AccelerationView({ state, mode, busy, signedIn, error, preview, 
   const totalMinutes = total / 60
   const ratio = remaining === null || total <= 0 ? 0 : Math.min(1, Math.max(0, remaining / total))
   const used = remaining === null ? null : Math.max(0, total - remaining)
-  const phaseLabel = describePhase(phase, signedIn)
-  const actionLabel = !signedIn ? '登录领取免费体验' : stopRetry ? '重试停止' : active ? '停止加速' : phase === 'connecting' ? '正在连接…' : phase === 'stopping' ? '正在停止…' : exhausted ? '免费体验已用完' : unavailable ? '线路准备中' : !state ? '正在读取状态…' : '开始加速'
+  const phaseLabel = bundleDamaged ? '加速文件损坏' : describePhase(phase, signedIn)
+  const actionLabel = !signedIn ? '登录领取免费体验' : stopRetry ? '重试停止' : active ? '停止加速' : phase === 'connecting' ? '正在连接…' : phase === 'stopping' ? '正在停止…' : exhausted ? '免费体验已用完' : bundleDamaged ? '暂时开不了加速' : unavailable ? '线路准备中' : !state ? '正在读取状态…' : '开始加速'
   const actionDisabled = signedIn && (busy || transitioning || unavailable || exhausted || !state)
-  const quotaNote = !signedIn ? '每个账号可领取 20 分钟免费体验' : active ? '按实际连接时长计时，停止后保留剩余额度' : exhausted ? '感谢体验，了解后续服务请联系帮助与客服' : unavailable ? '服务准备完成后即可开启，当前不消耗时长' : '连接成功才计时，随时停止，剩余下次继续'
+  const quotaNote = !signedIn ? '每个账号可领取 20 分钟免费体验' : active ? '按实际连接时长计时，停止后保留剩余额度' : exhausted ? '感谢体验，了解后续服务请联系帮助与客服' : bundleDamaged ? '修好之前不计时' : unavailable ? '服务准备完成后即可开启，当前不消耗时长' : '连接成功才计时，随时停止，剩余下次继续'
 
   return <section className="acceleration-page" data-testid="acceleration-page" data-phase={phase ?? 'loading'} data-motion={visible ? 'running' : 'paused'}>
     <header className="acceleration-heading">
@@ -151,7 +172,7 @@ export function AccelerationView({ state, mode, busy, signedIn, error, preview, 
           {lines.map(line => <div className={`acceleration-line-option${selectedLineId === line.id ? ' is-selected' : ''}`} role="option" aria-selected={selectedLineId === line.id} data-testid={`acceleration-line-option-${line.id}`} key={line.id} {...lineOptionProps(line.id)}><button type="button" tabIndex={-1} disabled={lineLocked} onClick={() => onSelectLine(line.id)}><strong>{line.name}</strong><small>{line.region}</small></button><span>{line.latencyMs == null ? '未检测' : `${line.latencyMs} ms`}</span><Button variant="ghost" size="xs" disabled={lineLocked} onClick={() => { void onPingLine(line.id) }} loading={linesBusy} aria-label={`检测${line.name}延迟`}>Ping</Button></div>)}
           {linesError && <span className="acceleration-line-error" role="alert">{linesError}</span>}
         </div>}</div>}
-        <div className="acceleration-stage-bottom"><span role="status"><span className="acceleration-status-dot" />{phaseLabel}</span>{(unavailable || exhausted) && signedIn ? <Button variant="ghost" size="sm" icon={exhausted ? ArrowUpRight : RefreshCw} loading={busy} onClick={exhausted ? onHelp : onRefresh} testId="acceleration-status-refresh">{exhausted ? '帮助与客服' : '刷新线路状态'}</Button> : <span>{!state?.line ? '线路信息将在连接后显示' : active ? '连接状态由服务实时确认' : '等待建立连接'}</span>}</div>
+        <div className="acceleration-stage-bottom"><span role="status"><span className="acceleration-status-dot" />{phaseLabel}</span>{bundleDamaged ? <span>照下面的办法处理后点「重新检查」</span> : (unavailable || exhausted) && signedIn ? <Button variant="ghost" size="sm" icon={exhausted ? ArrowUpRight : RefreshCw} loading={busy} onClick={exhausted ? onHelp : onRefresh} testId="acceleration-status-refresh">{exhausted ? '帮助与客服' : '刷新线路状态'}</Button> : <span>{!state?.line ? '线路信息将在连接后显示' : active ? '连接状态由服务实时确认' : '等待建立连接'}</span>}</div>
       </section>
 
       <section className="acceleration-console" aria-label="免费加速额度与操作">
@@ -173,6 +194,18 @@ export function AccelerationView({ state, mode, busy, signedIn, error, preview, 
         <span>{conflicts.map(kind => accelerationConflictDescriptions[kind]).join('；')}。关掉之后再点「开始加速」会重新检测。</span>
       </div>
       <Button variant="secondary" size="sm" icon={Power} onClick={onStartAnyway} disabled={actionDisabled} testId="acceleration-conflict-force">仍然连接</Button>
+    </div>}
+
+    {damagedNotice && <div className="acceleration-conflict acceleration-bundle-damaged" role="alert" data-testid="acceleration-bundle-damaged">
+      <ShieldAlert size={16} aria-hidden="true" />
+      <div className="acceleration-conflict-text">
+        <strong>{damagedNotice.title}</strong>
+        {damagedNotice.body && <span>{damagedNotice.body}</span>}
+      </div>
+      {bundleCheck === 'repaired'
+        ? onRelaunch && <Button variant="secondary" size="sm" icon={Power} onClick={onRelaunch} testId="acceleration-bundle-relaunch">现在重新打开</Button>
+        : onRecheckBundle && <Button variant="secondary" size="sm" icon={RefreshCw} loading={bundleCheck === 'checking'} onClick={onRecheckBundle} testId="acceleration-bundle-recheck">重新检查</Button>}
+      {onContactSupport && <Button variant="ghost" size="sm" icon={ArrowUpRight} onClick={onContactSupport} testId="acceleration-bundle-support">联系客服</Button>}
     </div>}
 
     {notice && <div className="acceleration-error" role="alert"><CircleHelp size={16} aria-hidden="true" /><span>{notice}</span>{onViewLog && operationLogPage({ message: notice }) === 'feedback' && <Button variant="ghost" size="sm" icon={ScrollText} onClick={onViewLog} testId="acceleration-error-log">查看日志</Button>}<Button variant="ghost" size="sm" icon={RefreshCw} onClick={onRefresh} disabled={busy}>重新检查</Button></div>}
