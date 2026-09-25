@@ -23,7 +23,7 @@ interface Fixture {
 }
 
 function fixture(sessionId = 'session-1'): Fixture {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-sessions-test-'))
+  const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-sessions-test-')))
   temporaryDirectories.push(root)
   const codexHome = path.join(root, '.codex')
   const managerData = path.join(root, 'manager-data')
@@ -670,6 +670,67 @@ describe('CodexSessionsService', () => {
       detail: { errorCode: 'Error' },
     }])
     expect(JSON.stringify(warnings)).not.toContain(data.root)
+  })
+
+  it('refuses to archive while the journal is a hard link and leaves the linked file untouched', async () => {
+    const data = fixture('session-1')
+    const database = createThreadsDatabase(data.databasePath)
+    insertThread(database, { id: 'session-1', rolloutPath: data.rolloutPath })
+    database.close()
+    fs.mkdirSync(data.managerData, { recursive: true })
+    const victim = path.join(data.root, 'victim.txt')
+    fs.writeFileSync(victim, 'victim\n', 'utf8')
+    fs.linkSync(victim, path.join(data.managerData, 'operations.jsonl'))
+    const warnings: CodexSessionRecoveryWarning[] = []
+
+    const sessions = new CodexSessionsService({
+      codexHome: data.codexHome,
+      databasePath: data.databasePath,
+      managerDataDirectory: data.managerData,
+      onRecoveryWarning: (warning) => warnings.push(warning),
+    })
+    expect(warnings.map((warning) => warning.code)).toEqual(['journal-read-failed'])
+
+    await expect(sessions.archive('session-1')).rejects.toThrow('已暂停归档和恢复')
+    expect(fs.readFileSync(victim, 'utf8')).toBe('victim\n')
+    expect(fs.existsSync(data.rolloutPath)).toBe(true)
+    expect(fs.existsSync(path.join(data.managerData, 'backups'))).toBe(false)
+    const live = new DatabaseSync(data.databasePath, { readOnly: true })
+    expect(live.prepare('SELECT archived, rollout_path FROM threads WHERE id = ?').get('session-1'))
+      .toMatchObject({ archived: 0, rollout_path: data.rolloutPath })
+    live.close()
+  })
+
+  it('refuses to archive when the journal becomes a hard link after startup', async () => {
+    const data = fixture('session-1')
+    const database = createThreadsDatabase(data.databasePath)
+    insertThread(database, { id: 'session-1', rolloutPath: data.rolloutPath })
+    database.close()
+    const sessions = service(data)
+    fs.mkdirSync(data.managerData, { recursive: true })
+    const victim = path.join(data.root, 'victim.txt')
+    fs.writeFileSync(victim, 'victim\n', 'utf8')
+    fs.linkSync(victim, sessions.operationJournalPath)
+
+    await expect(sessions.archive('session-1')).rejects.toThrow('无法安全写入')
+    expect(fs.readFileSync(victim, 'utf8')).toBe('victim\n')
+    expect(fs.existsSync(data.rolloutPath)).toBe(true)
+  })
+
+  it('retries startup recovery once the journal is readable again before mutating', async () => {
+    const data = fixture('session-1')
+    const database = createThreadsDatabase(data.databasePath)
+    insertThread(database, { id: 'session-1', rolloutPath: data.rolloutPath })
+    database.close()
+    fs.mkdirSync(path.join(data.managerData, 'operations.jsonl'), { recursive: true })
+    const sessions = service(data)
+    await expect(sessions.archive('session-1')).rejects.toThrow('无法安全读取')
+
+    fs.rmdirSync(path.join(data.managerData, 'operations.jsonl'))
+    const archived = await sessions.archive('session-1')
+    expect(archived.archived).toBe(true)
+    expect(lastJournalEntry(sessions.operationJournalPath)).toMatchObject({ state: 'committed' })
+    expect(fs.lstatSync(sessions.operationJournalPath).nlink).toBe(1)
   })
 
   it('warns for malformed journal records but ignores only a clearly truncated final line', () => {

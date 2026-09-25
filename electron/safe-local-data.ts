@@ -200,6 +200,31 @@ async function openSafeDataFileForAppend(
   }
 }
 
+function openSafeDataFileForAppendSync(
+  filePath: string,
+  label: string,
+): { descriptor: number; snapshot: fs.BigIntStats } {
+  assertNoReparseComponents(path.dirname(path.resolve(filePath)), label)
+  const existed = assertSafeDataFile(filePath, label)
+  let descriptor: number
+  try {
+    descriptor = fs.openSync(filePath, existed ? 'r+' : 'wx', 0o600)
+  } catch (error) {
+    if (existed || (error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
+    if (!assertSafeDataFile(filePath, label)) throw error
+    descriptor = fs.openSync(filePath, 'r+', 0o600)
+  }
+  try {
+    const opened = fs.fstatSync(descriptor, { bigint: true })
+    validateOpenedSafeDataFile(filePath, opened, label)
+    safeNumericSize(opened.size, label)
+    return { descriptor, snapshot: opened }
+  } catch (error) {
+    fs.closeSync(descriptor)
+    throw error
+  }
+}
+
 export function readSafeUtf8FileSync(
   requestedPath: string,
   label: string,
@@ -264,7 +289,17 @@ export async function readSafeUtf8File(
   }
 }
 
-export async function appendSafeUtf8File(requestedPath: string, content: string, label: string): Promise<void> {
+export interface SafeAppendOptions {
+  /** fsync before closing, for journals whose records must survive a crash. */
+  durable?: boolean
+}
+
+export async function appendSafeUtf8File(
+  requestedPath: string,
+  content: string,
+  label: string,
+  options: SafeAppendOptions = {},
+): Promise<void> {
   const filePath = resolveRelocatedPath(requestedPath)
   const { handle, snapshot } = await openSafeDataFileForAppend(filePath, label)
   try {
@@ -289,8 +324,46 @@ export async function appendSafeUtf8File(requestedPath: string, content: string,
       throw new Error(`${label}在追加写入过程中发生变化`)
     }
     validateOpenedSafeDataFile(filePath, after, label)
+    if (options.durable) await handle.sync()
   } finally {
     await handle.close()
+  }
+}
+
+export function appendSafeUtf8FileSync(
+  requestedPath: string,
+  content: string,
+  label: string,
+  options: SafeAppendOptions = {},
+): void {
+  const filePath = resolveRelocatedPath(requestedPath)
+  const { descriptor, snapshot } = openSafeDataFileForAppendSync(filePath, label)
+  try {
+    const buffer = Buffer.from(content, 'utf8')
+    const position = safeNumericSize(snapshot.size, label)
+    let offset = 0
+    while (offset < buffer.length) {
+      const bytesWritten = fs.writeSync(
+        descriptor,
+        buffer,
+        offset,
+        buffer.length - offset,
+        position + offset,
+      )
+      if (bytesWritten === 0) throw new Error(`${label}追加写入不完整`)
+      offset += bytesWritten
+    }
+    const after = fs.fstatSync(descriptor, { bigint: true })
+    if (
+      !sameFileIdentity(snapshot, after)
+      || after.size !== snapshot.size + BigInt(buffer.length)
+    ) {
+      throw new Error(`${label}在追加写入过程中发生变化`)
+    }
+    validateOpenedSafeDataFile(filePath, after, label)
+    if (options.durable) fs.fsyncSync(descriptor)
+  } finally {
+    fs.closeSync(descriptor)
   }
 }
 
