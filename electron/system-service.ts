@@ -5156,6 +5156,10 @@ export function createSystemService(
     refreshPicker: async (model, assertCurrent) => {
       await saveConfig({ provider: 'claude', apiKey: '', model, mode: 'merge' }, false, assertCurrent, { source: 'account', automatic: true })
     },
+    upgradeOffered: (provider, model) => (store.read().offeredModelUpgrades ?? []).includes(`${provider}:${model}`),
+    markUpgradeOffered: async (provider, model) => {
+      await store.update({ version: 2, offeredModelUpgrades: [`${provider}:${model}`] })
+    },
     log: (level, event, message, detail) => runtimeLog?.log(level, 'config', event, message, detail),
   })
 

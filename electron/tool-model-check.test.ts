@@ -140,4 +140,54 @@ describe('tool model check', () => {
     expect(modelOffered('gemini', 'gemini-3.8-flash-high', ['gemini-3.8-flash'])).toBe(true)
     expect(modelOffered('claude', 'claude-opus-5-high', ['claude-opus-5'])).toBe(false)
   })
+
+  describe('newer default model', () => {
+    function upgradeSetup(offered: string[] = [], mark = vi.fn(async (provider: ProviderId, model: string) => { offered.push(`${provider}:${model}`) })) {
+      return setup({
+        listModels: vi.fn(async () => ['claude-opus-5', 'claude-opus-5-5', 'claude-sonnet-5']),
+        upgradeOffered: (provider, model) => offered.includes(`${provider}:${model}`),
+        markUpgradeOffered: mark,
+      })
+    }
+
+    it('asks once when the config still holds the previous default and the account offers the new one', async () => {
+      const offered: string[] = []
+      const { deps, checker, advance } = upgradeSetup(offered)
+      await expect(checker.check('claude')).resolves.toEqual({ status: 'upgrade', model: 'claude-opus-5', replacement: 'claude-opus-5-5' })
+      expect(offered).toEqual(['claude:claude-opus-5-5'])
+      expect(deps.refreshPicker).not.toHaveBeenCalled()
+      advance(25 * hour)
+      await expect(checker.check('claude')).resolves.toEqual({ status: 'ok', pickerRefreshed: false })
+    })
+
+    it('does not ask when the account has no newer model or the model was chosen by the user', async () => {
+      const { checker } = setup({
+        upgradeOffered: () => false,
+        markUpgradeOffered: vi.fn(async () => undefined),
+      })
+      await expect(checker.check('claude')).resolves.toEqual({ status: 'ok', pickerRefreshed: false })
+      const { checker: sonnet } = setup({
+        listModels: vi.fn(async () => ['claude-opus-5-5', 'claude-sonnet-5']),
+        upgradeOffered: () => false,
+        markUpgradeOffered: vi.fn(async () => undefined),
+      }, { claude: { apiKey: 'sk-fixture', model: 'claude-sonnet-5', identity: 'x' } })
+      await expect(sonnet.check('claude')).resolves.toEqual({ status: 'ok', pickerRefreshed: false })
+    })
+
+    it('stays quiet when it cannot remember having asked, so it never nags on every open', async () => {
+      const { deps, checker } = upgradeSetup([], vi.fn(async () => { throw new Error('disk full') }))
+      await expect(checker.check('claude')).resolves.toEqual({ status: 'ok', pickerRefreshed: false })
+      expect(deps.log).toHaveBeenCalledWith('warn', 'tool-models.upgrade-mark-failed', expect.any(String), expect.objectContaining({ provider: 'claude' }))
+    })
+
+    it('does not offer the new model to an account that took over while the answer was being recorded', async () => {
+      const target = { apiKey: 'sk-fixture', model: 'claude-opus-5', identity: 'site:1' }
+      const { checker } = setup({
+        listModels: vi.fn(async () => ['claude-opus-5', 'claude-opus-5-5']),
+        upgradeOffered: () => false,
+        markUpgradeOffered: vi.fn(async () => { target.identity = 'site:2' }),
+      }, { claude: target })
+      await expect(checker.check('claude')).resolves.toEqual({ status: 'skipped' })
+    })
+  })
 })

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { resolveDefaultCliModel } from './cli-model-defaults'
+import { resolveCliModelUpgrade, resolveDefaultCliModel } from './cli-model-defaults'
 
 describe('resolveDefaultCliModel', () => {
   it('selects the Codex product default regardless of model endpoint ordering', () => {
@@ -31,7 +31,7 @@ describe('resolveDefaultCliModel', () => {
   })
 
   it.each([
-    ['claude', 'claude-opus-5', 'claude-opus-4-6'],
+    ['claude', 'claude-opus-5-5', 'claude-opus-4-6'],
     ['gemini', 'gemini-3.8-flash-high', 'gemini-3.1-pro'],
     ['grok', 'grok-4.6', 'grok-4.5'],
   ] as const)('chooses the %s default from the available group while preserving saved choices', (provider, model, existing) => {
@@ -46,5 +46,26 @@ describe('resolveDefaultCliModel', () => {
     expect(resolveDefaultCliModel('claude', ['claude-first', 'claude-preferred'], 'claude-preferred')).toBe('claude-preferred')
     expect(resolveDefaultCliModel('gemini', ['gemini-first', 'gpt-6-astra'], 'retired-model')).toBe('gemini-first')
     expect(resolveDefaultCliModel('grok', [])).toBeNull()
+  })
+
+  it('falls back to the previous Claude default before picking an arbitrary model', () => {
+    expect(resolveDefaultCliModel('claude', ['claude-haiku-4-5', 'claude-opus-5', 'claude-sonnet-5'])).toBe('claude-opus-5')
+    expect(resolveDefaultCliModel('claude', ['claude-opus-5', 'claude-opus-5-5'])).toBe('claude-opus-5-5')
+    expect(resolveDefaultCliModel('claude', ['claude-opus-5', 'claude-opus-5-5'], 'claude-opus-5')).toBe('claude-opus-5')
+  })
+})
+
+describe('resolveCliModelUpgrade', () => {
+  it('offers the new default only for the previous default and only when the account has it', () => {
+    expect(resolveCliModelUpgrade('claude', 'claude-opus-5', ['claude-opus-5', 'claude-opus-5-5'])).toBe('claude-opus-5-5')
+    expect(resolveCliModelUpgrade('claude', 'claude-opus-5', ['claude-opus-5'])).toBeNull()
+    expect(resolveCliModelUpgrade('claude', 'claude-sonnet-5', ['claude-sonnet-5', 'claude-opus-5-5'])).toBeNull()
+    expect(resolveCliModelUpgrade('claude', 'claude-opus-5-5', ['claude-opus-5-5'])).toBeNull()
+    expect(resolveCliModelUpgrade('codex', 'claude-opus-5', ['claude-opus-5-5'])).toBeNull()
+  })
+
+  it('ignores model names that collide with object prototype keys', () => {
+    expect(resolveCliModelUpgrade('claude', 'constructor', ['claude-opus-5-5'])).toBeNull()
+    expect(resolveCliModelUpgrade('claude', '__proto__', ['claude-opus-5-5'])).toBeNull()
   })
 })
