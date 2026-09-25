@@ -41,3 +41,17 @@ test('the install guides avoid jargon customers do not know', () => {
     assert.ok(!guides.includes(word), `download guide still mentions ${word}`)
   }
 })
+
+test('the Mac guide leads with the System Settings route that still works on macOS 15 and later', () => {
+  // macOS 15 起「右键 → 打开」不再放行，只剩「隐私与安全性 → 仍要打开」。
+  // 放行主路必须在步骤列表里，右键打开只能作为旧系统的补充留在折叠段。
+  const guide = html.slice(html.indexOf('mac-guide-title'), html.indexOf('<form id="register-view"'))
+  const steps = guide.slice(guide.indexOf('<ol class="mac-guide-steps">'), guide.indexOf('</ol>'))
+  assert.match(steps, /隐私与安全性/)
+  assert.match(steps, /仍要打开/)
+  assert.match(steps, /移到废纸篓/)
+  assert.doesNotMatch(steps, /右键|按住 Control/)
+  const fallback = guide.slice(guide.indexOf('<details'), guide.indexOf('</details>'))
+  assert.match(fallback, /macOS 14 或更早/)
+  assert.match(fallback, /右键/)
+})
