@@ -147,6 +147,23 @@ async function removeTemporaryRoot(temporaryRoot) {
   }
 }
 
+// 设置页的外观、开机启动和六个通知分项都靠隔离 preload 暴露的 window.xingmangPlatform；
+// 它没挂上时页面不报错，只把这些开关换成「此版本暂不支持」（0.2.10 第四版 Mac 测试包就是这样）。
+// 渲染层一启动就会调一次 getState 同步系统外观，所以主进程日志里有没有这条审计记录，
+// 就是打包后的 Mac 应用里这座桥通没通的证据。
+async function waitForPlatformBridge(runtimeLogPath) {
+  const deadline = Date.now() + 20_000
+  let log = ''
+  while (Date.now() < deadline) {
+    try { log = await fs.readFile(runtimeLogPath, 'utf8') } catch (error) {
+      if (error?.code !== 'ENOENT') throw error
+    }
+    if (log.includes('"event":"xingmang-platform:get-state","message":"读取系统设置完成"')) return { ok: true, log }
+    await delay(250)
+  }
+  return { ok: false, log }
+}
+
 async function main() {
   if (process.platform !== 'darwin') throw new Error('macOS 启动冒烟只能在 macOS 上运行')
   const version = require(path.resolve('package.json')).version
@@ -191,6 +208,16 @@ async function main() {
     process.stdout.write(result.ready
       ? '打包后的 macOS 应用已启动并完成首屏加载\n'
       : `打包后的 macOS 应用启动后存活超过 ${Math.round(aliveWithoutReadinessMs / 1000)} 秒（未等到首屏事件）\n`)
+    if (result.ready) {
+      const bridge = await waitForPlatformBridge(runtimeLogPath)
+      const related = bridge.log.split('\n').filter((line) => /xingmang-platform|platform\.denied|renderer-v2 platform|page\.load/.test(line))
+      assert.ok(
+        bridge.ok,
+        '打包后的 macOS 应用里系统设置桥（window.xingmangPlatform）没有接通，设置页的通知分项会显示「此版本暂不支持」。'
+          + `\n相关日志：\n${related.join('\n') || '（无）'}\n进程输出：\n${output.text.trim() || '（无）'}`,
+      )
+      process.stdout.write('打包后的 macOS 应用系统设置桥已接通\n')
+    }
   } finally {
     await stopApplication(child)
     await removeTemporaryRoot(temporaryRoot)
