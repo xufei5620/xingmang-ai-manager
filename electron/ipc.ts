@@ -217,6 +217,11 @@ export interface IpcRegistrationOptions {
   onRendererError?(error: RendererErrorPayload): void
   replyWindowClose?(target: WebContents, requestId: string, report: WindowCloseReport): boolean
   onSystemSnapshot?(snapshot: SystemSnapshot): void
+  /**
+   * 开机拉起时的安静期（login-launch.ts）。期间工具检测、启动时检查更新、账号 Key
+   * 初始化都等它结束再做；首页那次读取只回上次落盘的结果、不起真扫描。缺省 = 不等。
+   */
+  startupQuiet?: { active(): boolean; whenOver(): Promise<void> }
   onAccountBalance?(balance: Awaited<ReturnType<RelayBackendClient['getBalance']>>): void
   // Opens (or focuses, if already open) the isolated canvas window. Kept as
   // a plain callback -- not a CanvasWindowController -- so this module never
@@ -1740,8 +1745,12 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     }
     const scanOptions = parseSystemScanOptions(input)
     // 上次的结果只用来先把首页画出来：不进托盘、不记「检测完成」，真结果回来再说。
-    const cached = scanOptions.acceptCached && forceRefresh !== true ? await service.cachedScan() : null
+    const quiet = options.startupQuiet?.active() === true
+    const cached = scanOptions.acceptCached && forceRefresh !== true
+      ? await service.cachedScan(quiet ? { startScan: false } : undefined)
+      : null
     if (cached) return options.transformSystemSnapshot?.(cached) ?? cached
+    await options.startupQuiet?.whenOver()
     const scanned = await service.scanSystem(forceRefresh === true)
     const snapshot = options.transformSystemSnapshot?.(scanned) ?? scanned
     options.onSystemSnapshot?.(snapshot)
@@ -2308,7 +2317,10 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     return true
   })
   registerTrustedHandler('update:get-state', () => options.updaterService.getState())
-  registerTrustedHandler('update:startup', () => options.updaterService.startup())
+  registerTrustedHandler('update:startup', async () => {
+    await options.startupQuiet?.whenOver()
+    return options.updaterService.startup()
+  })
   // 从界面来的检查都是用户自己点的：分批放量不拦主动来要新版本的人。
   registerTrustedHandler('update:check', () => options.updaterService.check({ manual: true }))
   registerTrustedHandler('update:download', () => options.updaterService.download())
@@ -2865,6 +2877,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     accountService.purchaseSubscriptionWithBalance(parsePositiveSafeInteger(planId, '订阅方案 ID'))
   ))
   registerTrustedHandler('account:sync-managed-cli-keys', async () => {
+    await options.startupQuiet?.whenOver()
     const summary = await syncManagedCliKeySummary(automaticProvisioning, options.managedCliKeys)
     if (!options.xingmangAiSkill || accountService.getActiveSiteId?.() === 'solov-api') return summary
     try {

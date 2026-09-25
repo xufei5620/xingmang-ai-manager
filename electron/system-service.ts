@@ -829,8 +829,9 @@ export interface SystemService {
   /**
    * 本次启动还没有扫完过一轮时，给出上次落盘的结果（带 `cachedAt`），同时确保
    * 一轮真扫描在跑；已经扫完过、或没有可用的旧结果时是 null。只给首页「先画个样子」用。
+   * `startScan: false` 只读旧结果、不起真扫描：开机安静期里用（见 login-launch.ts）。
    */
-  cachedScan(): Promise<SystemSnapshot | null>
+  cachedScan(options?: { startScan?: boolean }): Promise<SystemSnapshot | null>
   refreshNetworkLocation(): Promise<SystemSnapshot['network']>
   refreshOfficialChatGptUsage(): Promise<OfficialChatGptAccount | null>
   inspectCodexSetupStatus(): Promise<CodexSetupStatus>
@@ -2918,9 +2919,9 @@ export function createSystemService(
   function scanSystem(forceRefresh = false): Promise<SystemSnapshot> {
     return coalescedScan.scan(forceRefresh)
   }
-  async function cachedScan(): Promise<SystemSnapshot | null> {
+  async function cachedScan(options: { startScan?: boolean } = {}): Promise<SystemSnapshot | null> {
     if (scanCompleted || !snapshotCache) return null
-    void scanSystem(false).catch(() => undefined)
+    if (options.startScan !== false) void scanSystem(false).catch(() => undefined)
     const cached = await snapshotCache.load()
     // 读文件这几毫秒里真扫描可能已经回来了，那就不必再给旧的。
     return scanCompleted ? null : cached
