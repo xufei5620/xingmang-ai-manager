@@ -134,6 +134,7 @@ import type {
   RendererErrorPayload,
   RendererLogLevel,
   ToolModelCheck,
+  WindowCapabilities,
 } from './ipc-contract'
 import type { DiagnosticsReport, DiagnosticsRunOptions } from './diagnostics'
 import { isCappedKeyUsedUp, withKeyQuotaExhausted, type ConnectionCheckResult } from './connection-check'
@@ -206,7 +207,7 @@ export interface IpcRegistrationOptions {
   broadcastUpdate(snapshot: UpdateSnapshot): void
   setWindowMode(target: WebContents, mode: AppWindowMode): void
   setWindowTheme(target: WebContents, theme: AppTheme): void
-  getWindowCapabilities?(): { tray: boolean; notifications: boolean }
+  getWindowCapabilities?(): WindowCapabilities
   takeExternalDeepLink?(target: WebContents): ExternalDeepLink | null
   onSettingsChanged?(): void
   /** Renderer-side crashes the host may forward to crash reporting. The

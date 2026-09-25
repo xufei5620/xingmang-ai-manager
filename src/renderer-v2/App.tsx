@@ -45,7 +45,7 @@ import { FailureBoundary } from './features/app/FailureBoundary'
 import { OperationErrorDialog, type OperationFailure } from './features/app/OperationErrorDialog'
 import { StartupNotices } from './features/app/StartupNotices'
 import { MaintenanceNotice, maintenanceNoticeKey } from './features/app/MaintenanceNotice'
-import { startupCheckFailure, startupCheckLogContext, startupDiagnosticsIssues, updatedNotice, vaultRecoveredNotice, withStartupNotice, withoutStartupNotice, type StartupCheckId, type StartupNotice } from './features/app/startup-notice'
+import { settingsSaveNotice, startupCheckFailure, startupCheckLogContext, startupDiagnosticsIssues, updatedNotice, vaultRecoveredNotice, withStartupNotice, withoutStartupNotice, type StartupCheckId, type StartupNotice } from './features/app/startup-notice'
 import { readLocalPreference, writeLocalPreference } from './features/app/preferences'
 import { currentWindowOs, windowOsFor } from './features/app/window-os'
 import { rememberTourPending, rememberTourSeen, tourReplayPending } from './features/shell/tour-state'
@@ -228,6 +228,8 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       setBoot('ready')
       const updated = updatedNotice(result.update.currentVersion, result.update.installedRelease)
       if (updated) noteStartupCheck(updated)
+      const settingsSave = settingsSaveNotice(result.capabilities.settingsSaveIssue)
+      if (settingsSave) noteStartupCheck(settingsSave)
       if (result.settings.checkUpdatesOnStartup && result.update.phase !== 'disabled') {
         void app.startupUpdate().then((checked) => { if (current) setUpdate(checked) }).catch((cause) => {
           if (current) noteStartupCheck(startupCheckFailure('update', errorMessage(cause, '更新检查没有完成')))
