@@ -386,7 +386,8 @@ function App() {
       // 加速页只有 renderer-v2 有，而发这条通知的系统通知服务也只在 v2 下装起来
       // （platform/desktop-entry.ts），所以这条事件不会到达冻结的回滚界面；这里
       // 只是跟着 RendererNavigationTarget 一起编译，行为保持原样。
-      if (page === 'acceleration') return
+      // home / chat / tasks / announcement 同理，只由 v2 的系统通知点击发出。
+      if (page === 'acceleration' || page === 'home' || page === 'chat' || page === 'tasks' || page === 'announcement') return
       setAppView('dashboard')
       setActivePage(page)
     })
