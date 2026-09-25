@@ -54,6 +54,7 @@ import { recoverOffscreenWindow } from './window-recovery'
 import { createWindowLifecycle } from './window-lifecycle'
 import { hasLoginLaunchArgument, resolveLoginLaunch, shouldRevealInitialWindow, windowsAppUserModelId } from './login-launch'
 import { resolveInstallableUpdateOnQuit, resolveInterruptibleInstallTask } from './quit-blocking-tasks'
+import { createPendingUpdateStore, decideLaunchInstall, resolveDownloadedVersionToRecord } from './auto-update-install'
 import { createWindowResponsivenessGuard } from './window-responsiveness'
 import { createRendererCrashRecovery } from './renderer-crash-recovery'
 import { createApplicationTray, type ApplicationTrayController } from './application-tray'
@@ -1132,8 +1133,9 @@ if (!hasSingleInstanceLock) {
     const localBuild = app.isPackaged && applicationPackage.xingmangLocalBuild === true
     // Builds made with XINGMANG_UNSIGNED_RELEASE=1 carry no publisherName, so
     // electron-updater returns from verifySignature before the strict verifier
-    // above is ever reached. The updater compensates by never downloading or
-    // installing without the user and by re-checking the manifest digest itself.
+    // above is ever reached. The updater re-checks the manifest digest itself;
+    // the publisher accepted automatic download/install on this channel as well
+    // (yoyo 2026-09-25), so the user's click is no longer the compensating step.
     const unsignedChannel = app.isPackaged && applicationPackage.xingmangUnsignedRelease === true
     const lastRunVersion = createLastRunVersionStore({ filePath: path.join(managerDataDirectory, 'last-run-version.json') })
     const recordedVersion = lastRunVersion.read()
@@ -1166,6 +1168,10 @@ if (!hasSingleInstanceLock) {
       isPackaged: app.isPackaged,
       localBuild,
       unsignedChannel,
+      // 未签名通道（Windows）也跟着「自动更新」开关走：yoyo 2026-09-25 在项目聊天亲口
+      // 同意「Windows 也自动更新」。撤回名单、分批放量、SHA-512 复核照旧生效。
+      unsignedAutoUpdate: true,
+      readAutoUpdate: () => systemService.readStoredConfig().autoUpdate !== false,
       verifyPackageDigest: verifyUpdatePackageDigest,
       // 监视器在更新服务之后才建（它要把结果交回更新服务），这里等真正检查时再取。
       refreshServiceStatus: () => serviceStatusMonitor ? serviceStatusMonitor.refresh() : Promise.resolve(null),
@@ -1230,7 +1236,7 @@ if (!hasSingleInstanceLock) {
         'warn',
         'updater',
         'channel.unsigned',
-        '本机为未签名更新通道，安装包签名未校验；更新改为下载与安装均需用户确认，并在下载后强制校验安装包 SHA-512',
+        '本机为未签名更新通道，安装包签名未校验；下载后强制校验安装包 SHA-512，是否自动下载与安装跟随「自动更新」开关',
       )
     }
     let periodicUpdateTimer: NodeJS.Timeout | null = null
@@ -1310,6 +1316,40 @@ if (!hasSingleInstanceLock) {
       iconPath: path.join(app.getAppPath(), 'assets', 'brand', 'v3', 'app-icon.png'),
     })
     const unsubscribeDesktopNotifications = updaterService.subscribe((state) => desktopNotifications.handleUpdate(state))
+    // 自动更新：上一次运行已经下好的版本，这次一打开就装上（见 auto-update-install.ts）。
+    const launchedAt = Date.now()
+    const pendingUpdateStore = createPendingUpdateStore({ filePath: path.join(managerDataDirectory, 'pending-update.json') })
+    const pendingUpdateAtLaunch = pendingUpdateStore.read()
+    let pendingUpdateRecord = { ...pendingUpdateAtLaunch }
+    let launchInstallTried = false
+    const unsubscribeAutoUpdateInstall = updaterService.subscribe((state) => {
+      const downloaded = resolveDownloadedVersionToRecord(state, pendingUpdateRecord)
+      if (downloaded) {
+        pendingUpdateRecord = { ...pendingUpdateRecord, downloadedVersion: downloaded }
+        void pendingUpdateStore.write(pendingUpdateRecord).catch((cause: unknown) => {
+          runtimeLog.exception('updater', 'pending.record-failed', cause)
+        })
+      }
+      // 退出交接还没接上时（主窗口没建好）不装：那时安装器发起的退出会被当成用户关窗。
+      if (launchInstallTried || !updateQuitHandoff) return
+      const version = decideLaunchInstall({
+        autoUpdate: updaterService.autoUpdateEnabled(),
+        snapshot: state,
+        recordAtLaunch: pendingUpdateAtLaunch,
+        elapsedSinceLaunchMs: Date.now() - launchedAt,
+        busy: resolveInterruptibleInstallTask(systemService.inspectInstallationQueue()) !== null,
+      })
+      if (!version) return
+      launchInstallTried = true
+      runtimeLog.log('info', 'updater', 'install.on-launch', `上次已下载好 ${version}，启动时自动安装`)
+      pendingUpdateRecord = { ...pendingUpdateRecord, attemptedVersion: version }
+      // 先把「试过了」写稳再装：安装器起不来时，下次打开不会再试同一个版本。
+      void pendingUpdateStore.write(pendingUpdateRecord).then(() => {
+        updaterService.install()
+      }).catch((cause: unknown) => {
+        runtimeLog.exception('updater', 'install.on-launch.failed', cause)
+      })
+    })
     const urlPolicy = applicationUrlPolicy()
     registerApplicationProtocol(urlPolicy)
     const previewOnboarding = !app.isPackaged && process.env.XINGMANG_ONBOARDING_PREVIEW === '1'
@@ -2130,7 +2170,12 @@ if (!hasSingleInstanceLock) {
         applicationTray?.updateSnapshot()
       },
       getWindowCapabilities: () => ({ tray: applicationTray?.available ?? false, notifications: desktopNotifications.getCapability().supported, lowEndDevice }),
-      onSettingsChanged: () => { desktopNotifications.refresh() },
+      onSettingsChanged: () => {
+        desktopNotifications.refresh()
+        void updaterService.autoUpdateChanged().catch((cause: unknown) => {
+          runtimeLog.exception('updater', 'auto.download.failed', cause)
+        })
+      },
       onRendererError: (error) => {
         crashReporter.report({
           mechanism: 'renderer-error',
@@ -2172,6 +2217,7 @@ if (!hasSingleInstanceLock) {
       if (periodicUpdateTimer) clearInterval(periodicUpdateTimer)
       serviceStatusMonitor?.dispose()
       unsubscribeDesktopNotifications()
+      unsubscribeAutoUpdateInstall()
       desktopNotifications.dispose()
       unregisterIpcHandlers()
       for (const business of businesses.values()) {
@@ -2259,8 +2305,20 @@ if (!hasSingleInstanceLock) {
           // 刚劝过一次的人不该紧接着再被问一句更新，这次退出就干净地退出。
           return result.response === 1 ? 'quit' : 'cancel'
         }
-        const update = resolveInstallableUpdateOnQuit(updaterService.getState())
+        let update = resolveInstallableUpdateOnQuit(updaterService.getState())
         if (!update) return 'quit'
+        if (updaterService.autoUpdateEnabled()) {
+          // 自动更新开着就不再问，直接装。装之前再看一眼撤回名单：下载之后才被撤回
+          // 的版本会在这里被收回，最多等几秒，读不到就按上次读到的算。
+          await Promise.race([
+            serviceStatusMonitor?.refresh().catch(() => null),
+            new Promise((resolve) => { setTimeout(resolve, 3_000).unref() }),
+          ])
+          update = resolveInstallableUpdateOnQuit(updaterService.getState())
+          if (!update) return 'quit'
+          runtimeLog.log('info', 'window', 'quit.update-auto-install', `退出时自动安装更新：${update.version ?? '版本未知'}`)
+          return 'install-update'
+        }
         runtimeLog.log('info', 'window', 'quit.update-downloaded', `退出前确认安装更新：${update.version ?? '版本未知'}`)
         if (!mainWindow.isVisible()) showMainWindow()
         const result = await dialog.showMessageBox(mainWindow, {
@@ -2373,7 +2431,7 @@ if (!hasSingleInstanceLock) {
       const checkForUpdates = () => {
         // 已下载阶段（含安装失败后的恢复态）不允许定时检查覆盖，否则错误横幅和「重启并安装」入口会消失
         if (updaterService.getState().phase === 'downloaded') return
-        void updaterService.check().catch((error) => {
+        void updaterService.scheduledCheck().catch((error) => {
           runtimeLog.exception('updater', 'scheduled.check.failed', error)
         })
       }
