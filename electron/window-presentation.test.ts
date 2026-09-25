@@ -75,6 +75,36 @@ describe('macOS application menu', () => {
     expect(roles[3]).toEqual(expect.arrayContaining(['minimize', 'zoom', 'front']))
   })
 
+  it('gives every role item a Chinese label so no built-in English name shows', () => {
+    const template = buildMacApplicationMenuTemplate('星芒AI管理工具', vi.fn())
+    const roleItems = template.flatMap((item) => (
+      Array.isArray(item.submenu) ? item.submenu.filter((child) => child.role) : []
+    ))
+
+    expect(roleItems.map((item) => [item.role, item.label])).toEqual([
+      ['about', '关于星芒AI管理工具'],
+      ['services', '服务'],
+      ['hide', '隐藏星芒AI管理工具'],
+      ['hideOthers', '隐藏其他'],
+      ['unhide', '全部显示'],
+      ['quit', '退出星芒AI管理工具'],
+      ['undo', '撤销'],
+      ['redo', '重做'],
+      ['cut', '剪切'],
+      ['copy', '复制'],
+      ['paste', '粘贴'],
+      ['selectAll', '全选'],
+      ['resetZoom', '实际大小'],
+      ['zoomIn', '放大'],
+      ['zoomOut', '缩小'],
+      ['togglefullscreen', '切换全屏'],
+      ['minimize', '最小化'],
+      ['zoom', '缩放'],
+      ['front', '前置全部窗口'],
+    ])
+    for (const item of roleItems) expect(item.accelerator).toBeUndefined()
+  })
+
   it('routes the Settings command through the typed renderer navigation target', () => {
     const send = vi.fn()
     const template = buildMacApplicationMenuTemplate(

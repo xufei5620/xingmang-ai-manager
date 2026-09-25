@@ -89,3 +89,16 @@ test('the uninstall welcome page carries an unticked clear-login box', () => {
   // a makensis warning, and warnings are errors (-WX).
   assert.match(include, /!ifdef BUILD_UNINSTALLER\s+(?:#[^\n]*\n\s*)*Var xingmangClearLogin\s+Var xingmangClearLoginCheckbox\s+!endif/)
 })
+
+test('the uninstall details the user reads are Chinese and the other-account code matches the cleanup', () => {
+  // DetailPrint / Abort text shows in the install and uninstall windows. Any
+  // message without a CJK character is an English line a customer would read.
+  const messages = [...include.matchAll(/^\s*(?:DetailPrint|Abort)\s+(["`])(.*)\1\s*$/gm)].map((match) => match[2])
+  assert.ok(messages.length > 0)
+  for (const message of messages) assert.match(message, /[一-鿿]/, message)
+
+  const otherAccount = fs.readFileSync(path.join(root, 'electron', 'uninstall-cleanup.ts'), 'utf8')
+    .match(/^\s*otherAccount: (\d+),$/m)?.[1]
+  assert.ok(otherAccount)
+  assert.match(functionBody('un.xingmangUninstallCleanup'), new RegExp(`\\$\\{ElseIf\\} \\$R0 == ${otherAccount}\\n`))
+})

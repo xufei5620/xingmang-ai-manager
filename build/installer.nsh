@@ -181,18 +181,22 @@
         Return
       ${EndIf}
       Push $R0
-      DetailPrint "Restoring system proxy and removing login item."
+      DetailPrint "正在还原系统代理，并移除开机启动项。"
       ClearErrors
       ${If} $xingmangClearLogin == "1"
-        DetailPrint "Clearing saved sign-in."
+        DetailPrint "正在清除登录记录。"
         ExecWait '"$INSTDIR\${APP_EXECUTABLE_FILENAME}" ${XINGMANG_UNINSTALL_CLEANUP_ARGUMENT} ${XINGMANG_CLEAR_LOGIN_ARGUMENT}' $R0
       ${Else}
         ExecWait '"$INSTDIR\${APP_EXECUTABLE_FILENAME}" ${XINGMANG_UNINSTALL_CLEANUP_ARGUMENT}' $R0
       ${EndIf}
       ${If} ${Errors}
-        DetailPrint "Uninstall cleanup could not start."
+        DetailPrint "卸载清理没能启动，可以忽略，不影响卸载。"
+      ${ElseIf} $R0 == 32
+        DetailPrint "这次是用另一个管理员账号卸载的，原来那个账号的开机启动项和登录记录没有动。"
       ${ElseIf} $R0 != 0
-        DetailPrint "Uninstall cleanup finished with code $R0."
+        # 退出码只给排查的人看，单独一行，不混进给用户读的那句。
+        DetailPrint "卸载清理已完成，有几项没清掉，不影响卸载。"
+        DetailPrint "（排查用代码：$R0）"
       ${EndIf}
       Pop $R0
     FunctionEnd
@@ -234,11 +238,11 @@
           Call un.atomicRMDir
           Pop $R0
           ${If} $R0 != 0
-            DetailPrint "File is busy, aborting: $R0"
+            DetailPrint "（排查用代码：$R0）"
             Push ""
             Call un.restoreFiles
             Pop $R0
-            Abort `Can't rename "$INSTDIR" to "$PLUGINSDIR\old-install".`
+            Abort "星芒AI管理工具还在运行，或文件被别的程序占用。请先退出软件（包括右下角托盘里的图标），再重新安装。"
           ${EndIf}
         ${EndIf}
         SetOutPath $TEMP
@@ -269,11 +273,11 @@
           Call un.xingmangMoveAside
           Pop $R7
           ${If} $R7 != 0
-            DetailPrint "File is busy, aborting: $R7"
+            DetailPrint "（排查用代码：$R7）"
             Push ""
             Call un.restoreFiles
             Pop $R7
-            Abort `Can't rename "$INSTDIR" to "$PLUGINSDIR\old-install".`
+            Abort "星芒AI管理工具还在运行，或文件被别的程序占用。请先退出软件（包括右下角托盘里的图标），再重新安装。"
           ${EndIf}
         ${Else}
           ${If} ${FileExists} "$INSTDIR\$R6\*.*"
