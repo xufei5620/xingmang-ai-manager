@@ -2029,6 +2029,8 @@ if (!hasSingleInstanceLock) {
         // 先改回去，这里负责读一次状态让各处跟上，并告诉用户网络现在是什么样。
         onRuntimeExited: () => accelerationInterruption?.runtimeExited(),
         onHelperExited: (recovered) => accelerationInterruption?.helperExited(recovered),
+        onProxyRecoveryRetry: (attempt, recovered) => runtimeLog.log(recovered ? 'info' : 'warn', 'network', 'acceleration.recover.retry',
+          recovered ? '重试后已把网络设置改回去' : '重试仍未能把网络设置改回去', { attempt }),
         // 登录后读一次加速状态就会拉起整份 Electron 辅助进程；从不用加速的人
         // 不该一直背着它。两分钟没人用、又确认没在加速就退，下次用到再拉。
         idleExitMs: 120_000,

@@ -5,7 +5,7 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { EventEmitter } from 'node:events'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { accelerationBonusCode, accelerationConflictKinds } from './acceleration-contract'
-import { accelerationDevelopmentDirectory, accelerationProxyJournalPath, accelerationStartFailureDescriptions, createAccelerationDevelopmentHost, parseAccelerationDevelopmentConfig, parseAccelerationEntitlementSource, readAccelerationDevelopmentConfig } from './acceleration-development-host'
+import { accelerationDevelopmentDirectory, accelerationProxyJournalPath, accelerationProxyRecoveryRetryDelaysMs, accelerationStartFailureDescriptions, createAccelerationDevelopmentHost, parseAccelerationDevelopmentConfig, parseAccelerationEntitlementSource, readAccelerationDevelopmentConfig } from './acceleration-development-host'
 
 const mocks = vi.hoisted(() => ({ fork: vi.fn(), spawn: vi.fn(), read: vi.fn(), environment: vi.fn(), profile: vi.fn(), profileCleanup: vi.fn() }))
 vi.mock('node:child_process', async (original) => ({ ...await original<typeof import('node:child_process')>(), fork: mocks.fork, spawn: mocks.spawn }))
@@ -628,6 +628,177 @@ describe('development acceleration worker host', () => {
       expect(mocks.fork).toHaveBeenCalledOnce()
       await host.dispose()
     } finally { await fs.rm(directory, { recursive: true, force: true }) }
+  })
+
+  describe('proxy recovery retries', () => {
+    // setImmediate is not faked, so this lets real lstat calls settle while the
+    // retry delays stay under the test's control.
+    async function settle(condition: () => boolean = () => false) {
+      for (let round = 0; round < 200 && !condition(); round += 1) {
+        await new Promise<void>((resolve) => setImmediate(resolve))
+      }
+    }
+    async function withJournal(run: (directory: string) => Promise<void>) {
+      const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'xm-acceleration-retry-test-'))
+      try {
+        await fs.mkdir(accelerationDevelopmentDirectory(directory))
+        await fs.writeFile(accelerationProxyJournalPath(directory), '{}')
+        await run(directory)
+      } finally { await fs.rm(directory, { recursive: true, force: true }) }
+    }
+
+    it('retries a startup recovery whose helper could not be launched', async () => {
+      await withJournal(async (directory) => {
+        const onProxyRecoveryRetry = vi.fn()
+        const worker = new FakeWorker()
+        mocks.fork.mockImplementationOnce(() => { throw new Error('spawn blocked') }).mockReturnValue(worker)
+        const host = createAccelerationDevelopmentHost({ config, dataDirectory: directory, onProxyRecoveryRetry })
+        await expect(host.recover()).rejects.toThrow(/^本机加速进程启动失败。$/)
+        expect(mocks.fork).toHaveBeenCalledOnce()
+        await vi.advanceTimersByTimeAsync(accelerationProxyRecoveryRetryDelaysMs[0])
+        await settle(() => onProxyRecoveryRetry.mock.calls.length > 0)
+        expect(mocks.fork).toHaveBeenCalledTimes(2)
+        expect(worker.sent.map((message) => message.operation)).toEqual(['init'])
+        expect(onProxyRecoveryRetry.mock.calls).toEqual([[1, true]])
+        // Recovered: nothing else is scheduled.
+        await vi.advanceTimersByTimeAsync(10 * 60_000)
+        await settle()
+        expect(mocks.fork).toHaveBeenCalledTimes(2)
+        await host.dispose()
+      })
+    })
+
+    it('retries after a recovery helper exits before answering its initialization', async () => {
+      await withJournal(async (directory) => {
+        const onProxyRecoveryRetry = vi.fn()
+        const crashed = new FakeWorker()
+        crashed.autoInit = false
+        const healthy = new FakeWorker()
+        mocks.fork.mockReturnValueOnce(crashed).mockReturnValueOnce(healthy)
+        const host = createAccelerationDevelopmentHost({ config, dataDirectory: directory, onProxyRecoveryRetry })
+        const recovery = host.recover()
+        await settle(() => crashed.sent.length > 0)
+        crashed.connected = false
+        crashed.emit('exit', null)
+        await expect(recovery).rejects.toThrow(/^本机加速进程初始化未完成。$/)
+        await vi.advanceTimersByTimeAsync(accelerationProxyRecoveryRetryDelaysMs[0])
+        await settle(() => onProxyRecoveryRetry.mock.calls.length > 0)
+        expect(mocks.fork).toHaveBeenCalledTimes(2)
+        expect(onProxyRecoveryRetry.mock.calls).toEqual([[1, true]])
+        await host.dispose()
+      })
+    })
+
+    it('does not launch a new helper while the failed one is still restoring on its way out', async () => {
+      await withJournal(async (directory) => {
+        const onProxyRecoveryRetry = vi.fn()
+        const failing = new FakeWorker()
+        failing.autoInit = false
+        mocks.fork.mockReturnValueOnce(failing)
+        const host = createAccelerationDevelopmentHost({ config, dataDirectory: directory, onProxyRecoveryRetry })
+        const recovery = host.recover()
+        await settle(() => failing.sent.length > 0)
+        failing.respond(1, false)
+        await expect(recovery).rejects.toThrow(/^本机加速进程初始化未完成。$/)
+        expect(failing.disconnect).toHaveBeenCalledOnce()
+        // It has not exited yet: the retry counts as failed and forks nothing.
+        await vi.advanceTimersByTimeAsync(accelerationProxyRecoveryRetryDelaysMs[0])
+        await settle(() => onProxyRecoveryRetry.mock.calls.length > 0)
+        expect(onProxyRecoveryRetry.mock.calls).toEqual([[1, false]])
+        expect(mocks.fork).toHaveBeenCalledOnce()
+        const healthy = new FakeWorker()
+        mocks.fork.mockReturnValueOnce(healthy)
+        failing.emit('exit', 0)
+        await vi.advanceTimersByTimeAsync(accelerationProxyRecoveryRetryDelaysMs[1])
+        await settle(() => onProxyRecoveryRetry.mock.calls.length > 1)
+        expect(onProxyRecoveryRetry.mock.calls).toEqual([[1, false], [2, true]])
+        expect(mocks.fork).toHaveBeenCalledTimes(2)
+        await host.dispose()
+      })
+    })
+
+    it('gives up after a bounded number of attempts and leaves the recovery record in place', async () => {
+      await withJournal(async (directory) => {
+        const onProxyRecoveryRetry = vi.fn()
+        mocks.fork.mockImplementation(() => { throw new Error('spawn blocked') })
+        const host = createAccelerationDevelopmentHost({ config, dataDirectory: directory, onProxyRecoveryRetry })
+        await expect(host.recover()).rejects.toThrow(/^本机加速进程启动失败。$/)
+        for (const [index, delayMs] of accelerationProxyRecoveryRetryDelaysMs.entries()) {
+          await vi.advanceTimersByTimeAsync(delayMs)
+          await settle(() => onProxyRecoveryRetry.mock.calls.length > index)
+        }
+        const attempts = accelerationProxyRecoveryRetryDelaysMs.length
+        expect(onProxyRecoveryRetry.mock.calls).toEqual(Array.from({ length: attempts }, (_, index) => [index + 1, false]))
+        expect(mocks.fork).toHaveBeenCalledTimes(attempts + 1)
+        await vi.advanceTimersByTimeAsync(60 * 60_000)
+        await settle()
+        expect(mocks.fork).toHaveBeenCalledTimes(attempts + 1)
+        expect(vi.getTimerCount()).toBe(0)
+        // The worker owns the record; the host never deletes it, so the next
+        // launch (or the support script) can still restore the network.
+        await expect(fs.readFile(accelerationProxyJournalPath(directory), 'utf8')).resolves.toBe('{}')
+        await host.dispose()
+      })
+    })
+
+    it('stops retrying once the recovery record is gone', async () => {
+      await withJournal(async (directory) => {
+        const onProxyRecoveryRetry = vi.fn()
+        mocks.fork.mockImplementation(() => { throw new Error('spawn blocked') })
+        const host = createAccelerationDevelopmentHost({ config, dataDirectory: directory, onProxyRecoveryRetry })
+        await expect(host.recover()).rejects.toThrow(/^本机加速进程启动失败。$/)
+        await fs.rm(accelerationProxyJournalPath(directory))
+        await vi.advanceTimersByTimeAsync(accelerationProxyRecoveryRetryDelaysMs[0])
+        await settle()
+        expect(mocks.fork).toHaveBeenCalledOnce()
+        expect(onProxyRecoveryRetry).not.toHaveBeenCalled()
+        expect(vi.getTimerCount()).toBe(0)
+        await host.dispose()
+      })
+    })
+
+    it('cancels a pending retry on shutdown', async () => {
+      await withJournal(async (directory) => {
+        mocks.fork.mockImplementation(() => { throw new Error('spawn blocked') })
+        const host = createAccelerationDevelopmentHost({ config, dataDirectory: directory })
+        await expect(host.recover()).rejects.toThrow(/^本机加速进程启动失败。$/)
+        expect(vi.getTimerCount()).toBe(1)
+        await host.dispose()
+        expect(vi.getTimerCount()).toBe(0)
+        await vi.advanceTimersByTimeAsync(10 * 60_000)
+        await settle()
+        expect(mocks.fork).toHaveBeenCalledOnce()
+      })
+    })
+
+    it('keeps retrying after a crash relaunch could not restore the network', async () => {
+      await withJournal(async (directory) => {
+        const onHelperExited = vi.fn()
+        const onProxyRecoveryRetry = vi.fn()
+        const first = new FakeWorker()
+        const second = new FakeWorker()
+        second.autoInit = false
+        const third = new FakeWorker()
+        mocks.fork.mockReturnValueOnce(first).mockReturnValueOnce(second).mockReturnValueOnce(third)
+        const host = createAccelerationDevelopmentHost({ config, dataDirectory: directory, onHelperExited, onProxyRecoveryRetry })
+        const start = host.startAcceleration('xm-account:1', 'system-proxy')
+        await settle(() => first.sent.length > 1)
+        first.respond(2, true, { phase: 'active' })
+        await start
+        first.connected = false
+        first.emit('exit', null)
+        await settle(() => second.sent.length > 0)
+        second.respond(3, false)
+        await settle(() => onHelperExited.mock.calls.length > 0)
+        expect(onHelperExited.mock.calls).toEqual([[false]])
+        second.emit('exit', 0)
+        await vi.advanceTimersByTimeAsync(accelerationProxyRecoveryRetryDelaysMs[0])
+        await settle(() => onProxyRecoveryRetry.mock.calls.length > 0)
+        expect(onProxyRecoveryRetry.mock.calls).toEqual([[1, true]])
+        expect(third.sent.map((message) => message.operation)).toEqual(['init'])
+        await host.dispose()
+      })
+    })
   })
 
   it('sanitizes fork exceptions and can dispose an unused host without spawning anything', async () => {
