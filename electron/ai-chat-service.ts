@@ -1,9 +1,11 @@
 import {
   AI_CHAT_ENDPOINTS,
   buildChatCompletionsRequest,
+  toChatCompletionsWireBody,
   type AiChatMessage,
   type AiChatParameters,
   type ChatCompletionsRequestBody,
+  type ChatCompletionsWireBody,
 } from './ai-chat-protocol'
 import { chatKeyQuotaExhaustedMessage } from './account-key-quota'
 import { ChatKeyQuotaExhaustedError, type ChatCredentialCoordinator } from './chat-credential-coordinator'
@@ -52,6 +54,7 @@ export type AiChatStreamErrorCode =
   | 'event-limit-exceeded'
   | 'fragment-limit-exceeded'
   | 'output-limit-exceeded'
+  | 'image-unavailable'
 
 export type AiChatStreamEvent =
   | {
@@ -144,6 +147,8 @@ export type AiChatServiceOptions = {
   log?: (entry: AiChatStreamLogEntry) => void
   limits?: Partial<AiChatStreamLimits>
   onRequestStarted?: AiOperationStartedObserver
+  /** Reads an image the user attached, as a data URI, from the account's own store. */
+  readChatImage?: (userId: number, assetId: string) => Promise<string>
 }
 
 type ResolvedLimits = AiChatStreamLimits
@@ -210,6 +215,7 @@ const SAFE_ERROR_MESSAGES: Record<AiChatStreamErrorCode, string> = {
   'event-limit-exceeded': 'AI 服务单个事件超过安全上限',
   'fragment-limit-exceeded': 'AI 服务单次输出超过安全上限',
   'output-limit-exceeded': 'AI 服务累计输出超过安全上限',
+  'image-unavailable': '刚附上的图片找不到了，这次没有发出去，也没有扣费。请把图片重新加一次再发',
 }
 
 // 超时停下时已经显示出来的内容不撤回，所以提示要说清哪些是半截、可能已经计费，
@@ -507,6 +513,52 @@ function parsedDelta(data: string): { content: string; reasoning: string; finish
   }
 }
 
+function missingImageNote(count: number): string {
+  return `（这里原本附了 ${count} 张图片，已经找不到了）`
+}
+
+/**
+ * Images are read only after the credential names the account, so a renderer
+ * can only ever send pictures that account's own store holds. An image that
+ * went missing from an earlier turn becomes a sentence instead of failing the
+ * whole conversation; one missing from the turn being sent stops the request
+ * before anything is paid for.
+ */
+export async function resolveChatImages(
+  body: ChatCompletionsRequestBody,
+  userId: number,
+  readChatImage: AiChatServiceOptions['readChatImage'],
+): Promise<ChatCompletionsWireBody> {
+  const ids = [...new Set(body.messages.flatMap((message) => message.images ?? []))]
+  if (!ids.length) return toChatCompletionsWireBody(body, new Map())
+  const resolved = new Map<string, string>()
+  const missing = new Set<string>()
+  await Promise.all(ids.map(async (id) => {
+    try {
+      if (!readChatImage) throw new Error('chat images are not available')
+      resolved.set(id, await readChatImage(userId, id))
+    } catch {
+      missing.add(id)
+    }
+  }))
+  let latestUser = -1
+  body.messages.forEach((message, index) => { if (message.role === 'user') latestUser = index })
+  if (body.messages[latestUser]?.images?.some((id) => missing.has(id))) {
+    throw new StreamFailure('image-unavailable', SAFE_ERROR_MESSAGES['image-unavailable'])
+  }
+  const messages = body.messages.map((message) => {
+    const lost = message.images?.filter((id) => missing.has(id)).length ?? 0
+    if (!lost) return message
+    const note = missingImageNote(lost)
+    return {
+      ...message,
+      content: message.content.trim() ? `${message.content}\n${note}` : note,
+      images: message.images!.filter((id) => !missing.has(id)),
+    }
+  })
+  return toChatCompletionsWireBody({ ...body, messages }, resolved)
+}
+
 export function createAiChatService(options: AiChatServiceOptions): AiChatService {
   const fetchImpl = options.fetchImpl ?? fetch
   const clock = options.clock ?? defaultClock()
@@ -701,6 +753,8 @@ export function createAiChatService(options: AiChatServiceOptions): AiChatServic
       if (!credential.models.includes(request.body.model)) {
         throw new StreamFailure('model-unavailable', SAFE_ERROR_MESSAGES['model-unavailable'])
       }
+      const wireBody = await resolveChatImages(request.body, credential.userId, options.readChatImage)
+      if (request.completed) return
       request.phase = 'response-headers'
       request.connectionTimer = clock.setTimeout(() => {
         request.connectionTimer = null
@@ -716,7 +770,7 @@ export function createAiChatService(options: AiChatServiceOptions): AiChatServic
             Authorization: `Bearer ${credential.apiKey}`,
             'Content-Type': 'application/json',
           },
-          body: JSON.stringify(request.body),
+          body: JSON.stringify(wireBody),
           credentials: 'omit',
           redirect: 'manual',
           signal: request.controller.signal,
@@ -858,7 +912,9 @@ export function createAiChatService(options: AiChatServiceOptions): AiChatServic
           Authorization: `Bearer ${credential.apiKey}`,
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify(body),
+        // Canvas text nodes never attach images; an id slipping through must
+        // fail here rather than reach the relay as a literal asset id.
+        body: JSON.stringify(toChatCompletionsWireBody(body, new Map())),
         credentials: 'omit',
         redirect: 'manual',
         signal: controller.signal,

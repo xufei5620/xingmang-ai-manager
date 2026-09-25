@@ -79,6 +79,7 @@ import { CanvasPromptPresetStore } from './canvas-prompt-preset-store'
 import { CanvasProjectStore } from './canvas-project-store'
 import { CanvasProjectAssetManager, createCanvasProjectAssetContext } from './canvas-project-asset-manager'
 import { createAiAssetProtocolHandler } from './ai-asset-protocol'
+import { createChatAttachmentService, type ChatImageCodec } from './ai-chat-attachments'
 import { resolveCodexHomeContext } from './codex-home'
 import { runCodexContextLimitsMigration } from './codex-config-migration'
 import { runWithTrustedWindowsProcessEnvironment } from './command-runner'
@@ -350,6 +351,24 @@ function createNativeThumbnailRenderer(): AssetThumbnailRenderer {
       }
     },
   }
+}
+
+// Screenshots pasted into the chat are shrunk here, in the main process, before
+// anything is stored or sent. nativeImage decodes PNG and JPEG on every
+// platform; a WebP it cannot read comes back empty and is reported as such.
+const nativeChatImageCodec: ChatImageCodec = {
+  decode(bytes, maxEdge) {
+    let image = nativeImage.createFromBuffer(bytes)
+    if (image.isEmpty()) return null
+    const size = image.getSize()
+    const longest = Math.max(size.width, size.height)
+    if (longest > maxEdge) {
+      const scale = maxEdge / longest
+      image = image.resize({ width: Math.max(1, Math.round(size.width * scale)), height: Math.max(1, Math.round(size.height * scale)), quality: 'good' })
+    }
+    const resized = image.getSize()
+    return { width: resized.width, height: resized.height, png: () => image.toPNG(), jpeg: (quality) => image.toJPEG(quality) }
+  },
 }
 
 function windowForContents(contents: WebContents): BrowserWindow {
@@ -1805,6 +1824,22 @@ if (!hasSingleInstanceLock) {
           { assetId, reason },
         ),
       })
+      const chatAttachments = createChatAttachmentService({
+        store: assetStore,
+        codec: nativeChatImageCodec,
+        pickFiles: async () => {
+          const result = await dialog.showOpenDialog({
+            title: '选择要发给 AI 的图片',
+            properties: ['openFile', 'multiSelections'],
+            filters: [{ name: '图片', extensions: ['png', 'jpg', 'jpeg', 'webp'] }],
+          })
+          return result.canceled ? [] : result.filePaths
+        },
+        readClipboardImage: () => {
+          const image = clipboard.readImage()
+          return image.isEmpty() ? null : image.toPNG()
+        },
+      })
       const assetProtocol = createAiAssetProtocolHandler({
         assets: canvasProjectAssets,
         identities: createActiveIdentityReader(definition, { getSessionState: () => accountService.getSessionState(),
@@ -1813,6 +1848,7 @@ if (!hasSingleInstanceLock) {
       })
       const chatService = createAiChatService({
         onRequestStarted: onAiRequestStarted,
+        readChatImage: (userId, assetId) => chatAttachments.readDataUri(userId, assetId),
         baseUrl: definition.aiBaseUrl,
         credentialCoordinator: chatCredentials,
         fetchImpl: relayFetch,
@@ -1925,7 +1961,7 @@ if (!hasSingleInstanceLock) {
       })
       return { accountCredentialStore, managedCliKeyStore, chatKeyStore, chatCredentials, assetStore, videoAssets,
         audioAssets, mediaAssets, canvasPromptPresets, canvasProjects, canvasProjectAssets,
-        chatService, imageService, canvasImageService, videoService, canvasRuns, assetProtocol }
+        chatService, imageService, canvasImageService, videoService, canvasRuns, assetProtocol, chatAttachments }
     }
     const businesses = new Map<RealmAccountSiteId, ReturnType<typeof createBusiness>>()
     type CanvasRunListener = Parameters<ReturnType<typeof createCanvasRunService>['subscribe']>[0]
@@ -1955,6 +1991,7 @@ if (!hasSingleInstanceLock) {
     const chatKeyStore = createRealmServiceDispatch(() => currentBusiness().chatKeyStore)
     const chatCredentials = createRealmServiceDispatch(() => currentBusiness().chatCredentials)
     const assetStore = createRealmServiceDispatch(() => currentBusiness().assetStore)
+    const chatAttachments = createRealmServiceDispatch(() => currentBusiness().chatAttachments)
     const videoAssets = createRealmServiceDispatch(() => currentBusiness().videoAssets)
     const audioAssets = createRealmServiceDispatch(() => currentBusiness().audioAssets)
     const mediaAssets = createRealmServiceDispatch(() => currentBusiness().mediaAssets)
@@ -2300,6 +2337,7 @@ if (!hasSingleInstanceLock) {
       chatService,
       imageService,
       aiAssets: assetStore,
+      chatAttachments,
       chatHistory: chatHistoryStore,
       sessionsService,
       providerSessionsService,

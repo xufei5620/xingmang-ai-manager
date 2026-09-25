@@ -66,6 +66,19 @@ describe('lossless chat history files', () => {
     expect(planHistoryWrite(restored.state, restored.saved)).toBeNull()
   })
 
+  it('keeps images waiting in the composer as references, and refuses a malformed list', async () => {
+    const state = workspace()
+    const assetId = 'D'.repeat(43)
+    state.conversations[0].draftImages = [{ assetId, mimeType: 'image/png', localUrl: `xingmang-asset://image/${assetId}`, fileName: 'shot.png' }]
+    const files = memoryFiles()
+    const restored = await saveAndReopen(state, files)
+    expect(restored.state.conversations[0].draftImages).toEqual(state.conversations[0].draftImages)
+    expect(files.raw()).not.toContain('xingmang-asset://')
+    const broken = workspace()
+    Object.assign(broken.conversations[0], { draftImages: 'not a list' })
+    expect(() => parseHistorySnapshot(snapshotOf(broken), scope)).toThrow(ChatStorageError)
+  })
+
   it('preserves all 350 messages and all asset references without reusing request limits for stored history', async () => {
     const state = workspace()
     state.conversations[0].messages = Array.from({ length: 350 }, (_, index) => message(index))
