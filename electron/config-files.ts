@@ -881,6 +881,29 @@ function restoreCodexAnalytics(parsed: Record<string, unknown>): void {
   }
 }
 
+// Windows 上 Codex 真正决定「怎么隔离命令」的是 [windows] sandbox，缺省时第一次让 AI
+// 跑命令会弹英文的沙箱设置，选推荐那档还要过一次管理员确认（上游 #40627 / #23712 /
+// #24098 都是反复弹、设置失败）。unelevated 用当前用户权限建沙箱，不弹管理员框；
+// sandbox_mode = "workspace-write" 照旧，所以不是放宽，只是不需要提权。Mac 没有这张表。
+//
+// prevent_idle_sleep 是 0.156.1 的实验开关：只在 Codex 正在跑一轮时不让电脑自动睡，
+// 跑完就放开，屏幕照样会关。笔记本跑长任务睡着了，连接断掉这一轮就白扣了。
+//
+// 两项都只在键缺省时写，用户写过（哪怕写成 false 或 elevated）一律不动；键名以
+// rust-v0.156.1 的 core/config.schema.json 为准。
+export function applyCodexRelayMachineDefaults(
+  parsed: Record<string, unknown>,
+  platform: NodeJS.Platform = process.platform,
+): void {
+  const features = parsed.features === undefined ? ensureRecord(parsed, 'features') : parsed.features
+  if (isJsonRecord(features) && features.prevent_idle_sleep === undefined) {
+    features.prevent_idle_sleep = true
+  }
+  if (platform !== 'win32') return
+  const windows = parsed.windows === undefined ? ensureRecord(parsed, 'windows') : parsed.windows
+  if (isJsonRecord(windows) && windows.sandbox === undefined) windows.sandbox = 'unelevated'
+}
+
 function stripCodexRelayFromConfig(
   parsed: Record<string, unknown>,
   siteBaseUrl: string,
@@ -927,6 +950,7 @@ function applyCodexRelayConfig(
   // Never override an explicit user policy such as `never`.
   if (parsed.approval_policy === undefined) parsed.approval_policy = 'on-request'
   if (parsed.sandbox_mode === undefined) parsed.sandbox_mode = 'workspace-write'
+  applyCodexRelayMachineDefaults(parsed)
   // With `keyring` or `auto`, Codex reads the OS credential store before
   // auth.json (login/src/auth/storage.rs), so a ChatGPT login kept there would
   // keep winning over the relay key written below and reach the relay as a
@@ -940,8 +964,12 @@ function buildCodexRelayConfigTemplate(
   model: string,
   providerName: string,
   siteBaseUrl: string,
+  platform: NodeJS.Platform = process.platform,
 ): string {
   const providerKey = tomlTableKey(providerName)
+  // Same values as applyCodexRelayMachineDefaults; the template is spelled out
+  // so a fresh install reads top to bottom like the upstream docs.
+  const windowsTable = platform === 'win32' ? ['[windows]', 'sandbox = "unelevated"', ''] : []
   return [
     `model_provider = ${tomlString(providerName)}`,
     `model = ${tomlString(model)}`,
@@ -959,7 +987,9 @@ function buildCodexRelayConfigTemplate(
     '',
     '[features]',
     'goals = true',
+    'prevent_idle_sleep = true',
     '',
+    ...windowsTable,
     '[analytics]',
     'enabled = false',
     '',
