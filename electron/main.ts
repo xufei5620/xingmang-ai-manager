@@ -24,7 +24,7 @@ import { createAccelerationExpiryNotice, type AccelerationExpiryNotice } from '.
 import { createAccelerationInterruptionNotice, type AccelerationInterruptionNotice } from './acceleration-interruption-notice'
 import { createAccelerationPower } from './acceleration-power'
 import { createAccelerationService } from './acceleration-service'
-import { accelerationConflictDescriptions, accelerationFailureMessages, type AccelerationMode, type AccelerationState } from './acceleration-contract'
+import { accelerationConflictDescriptions, accelerationFailureMessages, type AccelerationBundleCheck, type AccelerationMode, type AccelerationState } from './acceleration-contract'
 import { accelerationStartRequest, createAccelerationPreferenceStore, defaultAccelerationPreference } from './acceleration-preference-store'
 import { accelerationStartFailureDescriptions, createAccelerationDevelopmentHost, readAccelerationDevelopmentConfig, type AccelerationDevelopmentHost } from './acceleration-development-host'
 import { readBundledAccelerationConfig } from './acceleration-bundled-config'
@@ -837,6 +837,20 @@ if (!hasSingleInstanceLock) {
         bundledMetadata: applicationPackage.xingmangAccelerationBundle })
       : readAccelerationDevelopmentConfig({ isPackaged: false, platform: process.platform, dataDirectory: managerDataDirectory })
     ).then((config) => ({ ok: true as const, config }), (error: unknown) => ({ ok: false as const, error }))
+    // 正式安装包自带的加速文件读不通：多半被杀毒软件隔离或改动了。开发时没带加速
+    // 文件照旧是「线路准备中」，只有安装包里本该有、却读坏了才这样说（第十六批 6）。
+    const accelerationBundleStatus = accelerationConfigRead.then((read): 'intact' | 'damaged' | null => (
+      !app.isPackaged ? null : !read.ok ? 'damaged' : read.config ? 'intact' : null
+    ))
+    // 「重新检查」连点几下只读一遍：内核文件有几十 MB。
+    let accelerationBundleRecheck: Promise<AccelerationBundleCheck> | null = null
+    function recheckAccelerationBundle(): Promise<AccelerationBundleCheck> {
+      accelerationBundleRecheck ??= readBundledAccelerationConfig({ isPackaged: true, platform: process.platform,
+        resourcesPath: process.resourcesPath, bundledMetadata: applicationPackage.xingmangAccelerationBundle })
+        .then((config): AccelerationBundleCheck => config ? 'repaired' : 'damaged', (): AccelerationBundleCheck => 'damaged')
+        .finally(() => { accelerationBundleRecheck = null })
+      return accelerationBundleRecheck
+    }
     const codexContext = resolveCodexHomeContext({
       isPackaged: app.isPackaged,
       env: process.env,
@@ -1183,6 +1197,7 @@ if (!hasSingleInstanceLock) {
           userDataDirectory: app.getPath('userData'),
           // 跟着当前账号所在的那一套 output 走（历史账号多一层 realms/api-account）。
           probeAiOutput: () => assetStore.assertWritable(),
+          ...await accelerationBundleStatus.then((status) => status ? { accelerationBundle: status } : {}),
           windowsExecution: windowsCliExecution,
           // 报告只装中文结论（它会被导出发给客服），认出失败靠的那段上游原文
           // 留在 runtime.jsonl 里。
@@ -2121,9 +2136,14 @@ if (!hasSingleInstanceLock) {
       }
     })
     let developmentAcceleration: ReturnType<typeof createAccelerationDevelopmentHost> | undefined
+    // 只看读文件这一步：后面建加速服务失败不是文件坏了，不能叫客户去翻杀毒软件。
+    let accelerationBundleDamaged = false
     try {
       const read = await accelerationConfigRead
-      if (!read.ok) throw read.error
+      if (!read.ok) {
+        accelerationBundleDamaged = app.isPackaged
+        throw read.error
+      }
       const accelerationConfig = read.config
       if (accelerationConfig) developmentAcceleration = createAccelerationDevelopmentHost({
         config: accelerationConfig, dataDirectory: managerDataDirectory, packaged: app.isPackaged,
@@ -2212,6 +2232,12 @@ if (!hasSingleInstanceLock) {
     acceleration = createAccelerationService({
       backend: developmentAcceleration,
       preferences: accelerationPreferences,
+      ...(accelerationBundleDamaged ? { bundleDamaged: { recheck: async () => {
+        const result = await recheckAccelerationBundle()
+        runtimeLog.log(result === 'repaired' ? 'info' : 'warn', 'network', 'acceleration.config.recheck',
+          result === 'repaired' ? '本机加速资源已恢复，重新打开软件后生效' : '本机加速资源仍未通过校验', { result })
+        return result
+      } } } : {}),
       getAccountScope: () => readAccelerationAccountScope(),
       onState: (state) => {
         trayAcceleration?.observe(state)

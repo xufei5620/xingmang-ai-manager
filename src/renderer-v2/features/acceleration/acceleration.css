@@ -92,5 +92,7 @@
 .acceleration-conflict > svg { flex: none; }
 .acceleration-conflict-text { flex: 1; display: flex; flex-direction: column; gap: 2px; overflow-wrap: anywhere; }
 .acceleration-conflict-text > span { color: var(--text-2); }
+.acceleration-bundle-damaged { flex-wrap: wrap; }
+.acceleration-bundle-damaged .acceleration-conflict-text { min-width: 240px; }
 @keyframes acceleration-route-flow { to { stroke-dashoffset: -90; } }
 @media (prefers-reduced-motion: reduce) { .acceleration-page *, .acceleration-page *::before, .acceleration-page *::after { animation: none !important; transition: none !important; } }

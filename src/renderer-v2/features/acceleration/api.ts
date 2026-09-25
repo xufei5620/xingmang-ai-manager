@@ -1,6 +1,6 @@
 import type { AccelerationApi, AccelerationPreferenceApi } from '../../../../electron/acceleration-contract'
 
-export type { AccelerationApi, AccelerationConflictKind, AccelerationLine, AccelerationMode, AccelerationPreference, AccelerationPreferenceApi, AccelerationPreferenceUpdate, AccelerationRedemptionResult, AccelerationState } from '../../../../electron/acceleration-contract'
+export type { AccelerationApi, AccelerationBundleCheck, AccelerationConflictKind, AccelerationLine, AccelerationMode, AccelerationPreference, AccelerationPreferenceApi, AccelerationPreferenceUpdate, AccelerationRedemptionResult, AccelerationState } from '../../../../electron/acceleration-contract'
 
 /**
  * 偏好那两个方法是可选的：交互预览与旧版宿主上没有它们，那里照旧每次从
@@ -24,5 +24,6 @@ export function createAccelerationApi(bridge: (Partial<AccelerationApi> & Partia
     pingAccelerationLine: (scope, lineId) => bridge?.pingAccelerationLine ? bridge.pingAccelerationLine(scope, lineId) : unavailable(),
     ...(bridge?.getAccelerationPreference ? { getAccelerationPreference: bridge.getAccelerationPreference.bind(bridge) } : {}),
     ...(bridge?.saveAccelerationPreference ? { saveAccelerationPreference: bridge.saveAccelerationPreference.bind(bridge) } : {}),
+    ...(bridge?.recheckAccelerationBundle ? { recheckAccelerationBundle: bridge.recheckAccelerationBundle.bind(bridge) } : {}),
   }
 }

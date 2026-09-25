@@ -198,6 +198,8 @@ export function withElevationNotice(lead: string, notice: string | null): string
 export function diagnosticTarget(code: string): V2Page | null {
   // 文件夹被搬过没有能在软件里一键修的地方，下一步是导出报告找客服。
   if (code === 'FOLDER_RELOCATED') return 'feedback'
+  // 加速文件坏了：加速页上有「重新检查」和「联系客服」。
+  if (code === 'ACCELERATION_BUNDLE') return 'acceleration'
   // 这三项在「设置」的「网络」组，跳过去时由 diagnosticFix 指定落在那一组。
   if (code === 'XINGMANG_NETWORK' || code === 'PROXY_ENVIRONMENT' || code === 'CLASH_VERGE_TUN')
     return 'settings'

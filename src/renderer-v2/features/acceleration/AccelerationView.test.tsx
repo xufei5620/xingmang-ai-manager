@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import { accelerationConflictNotice, accelerationFailureMessages, accelerationTrialSeconds, type AccelerationLine, type AccelerationState } from '../../../../electron/acceleration-contract'
-import { AccelerationView, lineOptionTarget } from './AccelerationView'
+import { AccelerationView, bundleDamagedNotice, lineOptionTarget } from './AccelerationView'
 
 function state(overrides: Partial<AccelerationState> = {}): AccelerationState {
   return {
@@ -11,7 +11,7 @@ function state(overrides: Partial<AccelerationState> = {}): AccelerationState {
   }
 }
 
-function render(current: AccelerationState | null, extra: { error?: string; onViewLog?(): void; rememberedLine?: boolean; lines?: AccelerationLine[]; selectedLineId?: string } = {}) {
+function render(current: AccelerationState | null, extra: { error?: string; onViewLog?(): void; rememberedLine?: boolean; lines?: AccelerationLine[]; selectedLineId?: string; bundleCheck?: 'checking' | 'damaged' | 'repaired' | null } = {}) {
   return renderToStaticMarkup(<AccelerationView
     state={current} mode="system-proxy" busy={false} signedIn error={extra.error ?? null}
     onModeChange={() => undefined} onStart={() => undefined} onStartAnyway={() => undefined}
@@ -19,6 +19,7 @@ function render(current: AccelerationState | null, extra: { error?: string; onVi
     onViewLog={extra.onViewLog} lines={extra.lines ?? []} selectedLineId={extra.selectedLineId ?? null}
     rememberedLine={extra.rememberedLine} linesBusy={false} linesError={null}
     onSelectLine={() => undefined} onPingLine={() => undefined} onRefreshLines={() => undefined}
+    bundleCheck={extra.bundleCheck} onRecheckBundle={() => undefined} onContactSupport={() => undefined} onRelaunch={() => undefined}
   />)
 }
 
@@ -141,5 +142,40 @@ describe('acceleration started by the app', () => {
     const markup = render(state(connected))
     expect(markup).not.toContain('acceleration-auto-started')
     expect(markup).toContain('加速连接已就绪')
+  })
+})
+
+describe('acceleration bundle damaged', () => {
+  const damaged = () => state({ phase: 'unavailable', remainingSeconds: null, line: null, unavailableReason: 'bundle-damaged' })
+
+  it('explains the damaged files instead of waiting for lines', () => {
+    const markup = render(damaged())
+    expect(markup).toContain('加速文件损坏')
+    expect(markup).toContain('多半是杀毒软件把它当成了可疑文件')
+    expect(markup).toContain('修好之前不计时')
+    expect(markup).toContain('data-testid="acceleration-bundle-recheck"')
+    expect(markup).toContain('data-testid="acceleration-bundle-support"')
+    expect(markup).not.toContain('线路准备中')
+    expect(markup).not.toContain('刷新线路状态')
+    // 安装器是否保留聊天记录没实测过，不许承诺。
+    expect(markup).not.toContain('聊天记录')
+  })
+
+  it('keeps the plain waiting copy when no reason is given', () => {
+    const markup = render(state({ phase: 'unavailable', remainingSeconds: null, line: null }))
+    expect(markup).toContain('线路准备中')
+    expect(markup).not.toContain('acceleration-bundle-damaged')
+  })
+
+  it('offers a relaunch once the recheck finds the files restored', () => {
+    const markup = render(damaged(), { bundleCheck: 'repaired' })
+    expect(markup).toContain('加速文件恢复了，重新打开星芒后就能用。')
+    expect(markup).toContain('data-testid="acceleration-bundle-relaunch"')
+    expect(markup).not.toContain('data-testid="acceleration-bundle-recheck"')
+  })
+
+  it('says the files are still wrong after a failed recheck', () => {
+    expect(bundleDamagedNotice('damaged').title).toBe('加速文件还是不对。请先在杀毒软件里恢复，或者重新安装一次星芒。')
+    expect(bundleDamagedNotice(null).title).toBe('加速用的文件被删掉或改动了，现在开不了加速。')
   })
 })
