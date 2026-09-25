@@ -2,13 +2,14 @@ import { useEffect, useRef, useState } from 'react'
 import { platformApi } from '../../platform-api'
 import type { AiChatGroupSummary } from '../../../../electron/ipc-contract'
 import { inspectModel, validateChatRequest, validateImageRequest, type ChatApi } from './api'
-import { activeConversation, applyStreamEvent, changeConversation, chatErrorMessage, completeImages, createConversation, createId, DEFAULT_CHAT_MODEL, DEFAULT_IMAGE_MODEL, isGenerating, planTurn, resolveChatGroup, resolveChatModel, saveConversation, updateRequest, type ChatMode, type ChatSettings, type ChatWorkspace, type Conversation } from './state'
+import { activeConversation, applyStreamEvent, changeConversation, chatErrorMessage, completeImages, continueInNewConversation, createConversation, createId, isConversationTooLongMessage, DEFAULT_CHAT_MODEL, DEFAULT_IMAGE_MODEL, isGenerating, planTurn, resolveChatGroup, resolveChatModel, saveConversation, updateRequest, type ChatMode, type ChatSettings, type ChatWorkspace, type Conversation } from './state'
 import { ChatStorageError, createHistoryWriter, type LoadedChatHistory } from './storage'
 import { offlineActionMessage } from '../shell/online-status'
 import { useOnlineStatus } from '../shell/useOnlineStatus'
 import { isWindowInFront } from '../tools/install-notice'
 
 export interface GroupPreparation { phase: 'loading' | 'ready' | 'error'; models: string[]; error?: string; warning?: string }
+interface CarriedDraft { conversationId: string; text: string; fromDraft: boolean }
 interface PendingRequest { conversationId: string; assistantId: string; mode: ChatMode; epoch: number; cancelRequested?: boolean; failureDuringCancel?: unknown }
 
 export function useChatController(api: ChatApi, scope: string, initial: LoadedChatHistory, active = true) {
@@ -35,6 +36,8 @@ export function useChatController(api: ChatApi, scope: string, initial: LoadedCh
   const groupFlight = useRef<{ epoch: number; promise: Promise<boolean> } | null>(null)
   const interactionTimer = useRef<number | undefined>(undefined)
   const persist = useRef(!initial.warning)
+  // 被上限拦下的那句话。编辑重发时它在编辑框里而不在输入框，得单独记住才搬得走。
+  const carried = useRef<CarriedDraft | null>(null)
   const commit = (change: (current: ChatWorkspace) => ChatWorkspace) => {
     const next = change(stateRef.current)
     stateRef.current = next
@@ -229,8 +232,21 @@ export function useChatController(api: ChatApi, scope: string, initial: LoadedCh
           requests.current.delete(plan.requestId)
         }
       }
-    } catch (reason) { setError(chatErrorMessage(reason)) }
+    } catch (reason) {
+      const message = chatErrorMessage(reason)
+      carried.current = isConversationTooLongMessage(message) ? { conversationId: current.id, ...(options.editId ? { text: options.prompt ?? '', fromDraft: false } : { text: current.draft, fromDraft: true }) } : null
+      setError(message)
+    }
   }
+  const continueInNew = () => {
+    const current = activeConversation(stateRef.current)
+    if (stateRef.current.conversations.length + 1 > 50) { setError('最多保存 50 个对话，请先删除不再需要的对话'); return }
+    const carry = carried.current?.conversationId === current.id ? carried.current : { text: current.draft, fromDraft: true }
+    carried.current = null
+    commit((workspace) => continueInNewConversation(workspace, current.id, carry.text, carry.fromDraft))
+    setError('')
+  }
+  const dismissLengthNotice = () => updateActive((item) => ({ ...item, lengthNoticeDismissed: true }))
   const stop = async () => {
     const current = activeConversation(stateRef.current)
     const message = current.messages.find((item) => item.requestId && (item.status === 'pending' || item.status === 'streaming'))
@@ -272,7 +288,7 @@ export function useChatController(api: ChatApi, scope: string, initial: LoadedCh
   }
   const clearConversation = () => { if (!isGenerating(activeConversation(stateRef.current))) updateActive((item) => ({ ...item, messages: [], title: '新对话' })) }
   const deleteFrom = (id: string) => { if (!isGenerating(activeConversation(stateRef.current))) updateActive((item) => { const index = item.messages.findIndex((message) => message.id === id); return index < 0 ? item : { ...item, messages: item.messages.slice(0, index) } }) }
-  return { state, conversation, groups, groupsLoaded, groupLoading, groupError, preparations, error, notice, storageError, setError, setNotice, changeSettings, selectGroup, selectModel, selectMode, refreshGroups, refreshGroupsAndModels, refreshOnInteraction, prepareGroup, newConversation, openConversation, removeConversation, clearConversation, deleteFrom, send, stop, setDraft: (draft: string) => updateActive((item) => ({ ...item, draft })), updateConversation: updateActive }
+  return { state, conversation, groups, groupsLoaded, groupLoading, groupError, preparations, error, notice, storageError, setError, setNotice, changeSettings, selectGroup, selectModel, selectMode, refreshGroups, refreshGroupsAndModels, refreshOnInteraction, prepareGroup, newConversation, continueInNew, dismissLengthNotice, openConversation, removeConversation, clearConversation, deleteFrom, send, stop, setDraft: (draft: string) => updateActive((item) => ({ ...item, draft })), updateConversation: updateActive }
 }
 
 function normalizeModel(settings: ChatSettings): ChatSettings {
