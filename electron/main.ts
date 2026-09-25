@@ -53,7 +53,7 @@ import { calculateUiZoom, resolveWindowPlacement } from './window-preferences'
 import { attachEditContextMenu } from './context-menu'
 import { recoverOffscreenWindow } from './window-recovery'
 import { createWindowLifecycle } from './window-lifecycle'
-import { hasLoginLaunchArgument, resolveLoginLaunch, shouldRevealInitialWindow, windowsAppUserModelId } from './login-launch'
+import { createLoginQuietPeriod, hasLoginLaunchArgument, loginQuietPeriodMs, resolveLoginLaunch, shouldRevealInitialWindow, windowsAppUserModelId } from './login-launch'
 import { resolveInstallableUpdateOnQuit, resolveInterruptibleInstallTask } from './quit-blocking-tasks'
 import { createPendingUpdateStore, decideLaunchInstall, resolveDownloadedVersionToRecord } from './auto-update-install'
 import { createWindowResponsivenessGuard } from './window-responsiveness'
@@ -2070,7 +2070,26 @@ if (!hasSingleInstanceLock) {
     // 只在有账号要恢复时预热：没有账号的新用户先落在欢迎页，那里本来不检测工具；而
     // Windows 上一轮检测要起好几段 PowerShell，白跑一轮只是给欢迎页添负担。这几段
     // 权限检查已经先异步探测再读缓存（primeTrustedWindowsMachinePath），不占主线程。
-    void vault.active().then((saved) => {
+    const launchedAtLogin = resolveLoginLaunch({
+      platform: process.platform,
+      argv: process.argv,
+      wasOpenedAtLogin: () => app.getLoginItemSettings().wasOpenedAtLogin,
+    })
+    // 开机拉起时这几件后台事都往后挪：窗口第一次显示或满 3 分钟才开始（见 login-launch.ts）。
+    // 加速要还原的系统代理不在其中，照原来的顺序先做。
+    const startupQuiet = createLoginQuietPeriod({
+      active: launchedAtLogin,
+      durationMs: loginQuietPeriodMs,
+      onEnd: (reason) => runtimeLog.log('info', 'main', 'launch.quiet-ended', reason === 'window-shown' ? '开机安静期结束：窗口已打开' : '开机安静期结束：已到时间', { reason }),
+    })
+    if (startupQuiet.active()) {
+      runtimeLog.log('info', 'main', 'launch.quiet-started', '开机自动启动，检测和更新稍后再做', { durationMs: loginQuietPeriodMs })
+      // 托盘在安静期里先用上次落盘的检测结果（能打开哪些工具），真扫描回来再换掉。
+      void systemService.cachedScan({ startScan: false }).then((cached) => {
+        if (cached && !latestTraySystem) { latestTraySystem = cached; applicationTray?.updateSnapshot() }
+      }).catch(() => undefined)
+    }
+    void startupQuiet.whenOver().then(() => vault.active()).then((saved) => {
       if (saved) void systemService.scanSystem().catch(() => undefined)
     }).catch(() => undefined)
     // 启动画面最多为账号恢复等 3 秒，明确断网就不等（yoyo 2026-09-22 拍板）。
@@ -2316,6 +2335,7 @@ if (!hasSingleInstanceLock) {
       },
       takeExternalDeepLink: (sender) => managedMainWindow?.webContents === sender ? deepLinkInbox.take() : null,
       onSystemSnapshot: (snapshot) => { latestTraySystem = snapshot; applicationTray?.updateSnapshot() },
+      startupQuiet,
       onAccountBalance: (balance) => { latestTrayBalance = balance; applicationTray?.updateSnapshot() },
       setWindowMode,
       setWindowTheme: (contents, theme) => {
@@ -2362,16 +2382,12 @@ if (!hasSingleInstanceLock) {
       canvasController.dispose()
       updaterService.dispose()
     })
-    const launchedAtLogin = resolveLoginLaunch({
-      platform: process.platform,
-      argv: process.argv,
-      wasOpenedAtLogin: () => app.getLoginItemSettings().wasOpenedAtLogin,
-    })
     const mainWindow = createWindow(systemService, urlPolicy, runtimeLog, () => shouldRevealInitialWindow({
       launchedAtLogin,
       trayAvailable: applicationTray?.available ?? false,
     }))
     managedMainWindow = mainWindow
+    mainWindow.once('show', () => { startupQuiet.end('window-shown') })
     // 拔掉外接显示器时正开着的窗口也挪回来；缩在托盘里的等下次显示时再挪。
     // 稍等一下再看：Windows 自己也会挪一部分窗口，别跟系统抢。
     let displayChangeTimer: ReturnType<typeof setTimeout> | undefined

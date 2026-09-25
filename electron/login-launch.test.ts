@@ -1,5 +1,6 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
+  createLoginQuietPeriod,
   hasLoginLaunchArgument,
   loginLaunchArgument,
   resolveLoginLaunch,
@@ -51,5 +52,48 @@ describe('login launch', () => {
     expect(shouldRevealInitialWindow({ launchedAtLogin: true, trayAvailable: false })).toBe(true)
     expect(shouldRevealInitialWindow({ launchedAtLogin: false, trayAvailable: true })).toBe(true)
     expect(shouldRevealInitialWindow({ launchedAtLogin: false, trayAvailable: false })).toBe(true)
+  })
+})
+
+describe('createLoginQuietPeriod', () => {
+  afterEach(() => { vi.useRealTimers() })
+
+  async function settled(promise: Promise<void>): Promise<boolean> {
+    let done = false
+    void promise.then(() => { done = true })
+    await Promise.resolve()
+    await Promise.resolve()
+    return done
+  }
+
+  it('is already over when the app was not launched at login', async () => {
+    const quiet = createLoginQuietPeriod({ active: false, durationMs: 1000 })
+    expect(quiet.active()).toBe(false)
+    expect(await settled(quiet.whenOver())).toBe(true)
+  })
+
+  it('holds background work until the window is first shown', async () => {
+    vi.useFakeTimers()
+    const ends: string[] = []
+    const quiet = createLoginQuietPeriod({ active: true, durationMs: 180_000, onEnd: (reason) => ends.push(reason) })
+    expect(quiet.active()).toBe(true)
+    expect(await settled(quiet.whenOver())).toBe(false)
+    quiet.end('window-shown')
+    expect(quiet.active()).toBe(false)
+    expect(await settled(quiet.whenOver())).toBe(true)
+    vi.advanceTimersByTime(180_000)
+    quiet.end('window-shown')
+    expect(ends).toEqual(['window-shown'])
+  })
+
+  it('ends by itself once the quiet period has elapsed', async () => {
+    vi.useFakeTimers()
+    const ends: string[] = []
+    const quiet = createLoginQuietPeriod({ active: true, durationMs: 180_000, onEnd: (reason) => ends.push(reason) })
+    vi.advanceTimersByTime(179_999)
+    expect(await settled(quiet.whenOver())).toBe(false)
+    vi.advanceTimersByTime(1)
+    expect(await settled(quiet.whenOver())).toBe(true)
+    expect(ends).toEqual(['timeout'])
   })
 })
