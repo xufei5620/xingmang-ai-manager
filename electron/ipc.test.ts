@@ -16,7 +16,7 @@ import { createAccountWorkGate } from './account-work-gate'
 import { accelerationBonusCode } from './acceleration-contract'
 import { managedCliKeyProfiles, providerIds } from './catalog'
 import { managedKeyQuotaExhaustedMessage } from './account-key-quota'
-import { createManagedKeyReplacementStore, type ManagedKeyReplacementStore } from './managed-key-replacement-store'
+import { createManagedKeyReplacementStore, managedKeyReplacementUnreadableRevokeMessage, type ManagedKeyReplacementStore } from './managed-key-replacement-store'
 import { externalUrlBlockedErrorName, isExternalUrlBlockedError } from './external-url-blocked'
 import { resolveXingmangAiBundledSkillRoot } from './xingmang-ai-skill'
 
@@ -4829,6 +4829,22 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
 
           await expect(configure('explicit')).resolves.toEqual({ configured: ['codex'], failed: [] })
           expect(accountService.provisionCliKey).toHaveBeenCalledWith(expect.not.objectContaining({ fresh: true }))
+        } finally {
+          fs.rmSync(directory, { recursive: true, force: true })
+        }
+      })
+
+      it('refuses to revoke a limited key while the saved limits of other tools cannot be read', async () => {
+        const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-key-replacements-'))
+        const filePath = path.join(directory, 'managed-key-replacements.json')
+        try {
+          fs.writeFileSync(filePath, '{ not json')
+          const { accountService } = setup(accountKey({}), createManagedKeyReplacementStore({ filePath }))
+
+          await expect(electronMocks.handlers.get('account:revoke-key')!(trustedEvent(), 7))
+            .rejects.toThrow(managedKeyReplacementUnreadableRevokeMessage)
+          expect(accountService.revokeKey).not.toHaveBeenCalled()
+          expect(fs.readFileSync(filePath, 'utf8')).toBe('{ not json')
         } finally {
           fs.rmSync(directory, { recursive: true, force: true })
         }

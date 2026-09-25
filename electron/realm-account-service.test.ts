@@ -1011,6 +1011,27 @@ describe('realm account re-login of the same account (#476)', () => {
     expect(restarted.stalledAccount()).toBeNull()
   })
 
+  it('refuses a re-login it cannot check against the stored session and ends the new one instead', async () => {
+    const f = fixture()
+    await f.service.login(login)
+    await f.service.login({ ...login, siteId: 'solov-api' })
+    const get = vi.fn(async () => { throw new Error('disk hiccup') })
+    const failing = createRealmAccountService({ ...f.options, vault: { ...f.vault, get } })
+    await failing.restoreActive()
+    const before = f.content()
+    f.loginToken('test-second-login')
+    await expect(failing.login(login)).rejects.toMatchObject({ code: 'STORAGE' })
+    expect(get).toHaveBeenCalledOnce()
+    // The stored solov cookie is still there to sign out later, and the fresh
+    // session this machine could not keep has already been ended.
+    expect(f.content()).toBe(before)
+    expect((await f.vault.get(saved()))?.credential).toEqual(saved('solov', '7', 'test-original').credential)
+    expect(f.clients[f.clients.length - 1].serverSessionsEnded).toEqual(['7'])
+    expect(savedSignOuts(f)).toEqual([])
+    expect(failing.client.getSessionState().authenticated).toBe(true)
+    expect((await f.vault.active())?.realmId).toBe('api-account')
+  })
+
   it('keeps sessions alive when nothing was replaced: other accounts, first logins, switching', async () => {
     const f = fixture()
     await f.service.login(login)
