@@ -3,7 +3,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { cliExitHintLines } from './cli-exit-hint'
+import { cliExitHintLines, macosFolderAccessHintLines } from './cli-exit-hint'
 import {
   buildMacosTerminalScript,
   cleanupStaleTerminalDirectories,
@@ -127,6 +127,75 @@ describe('macOS terminal launcher', () => {
       const output = execFileSync('/bin/zsh', ['-f', launcher], { encoding: 'utf8' })
       for (const line of expected) expect(output).toContain(line)
       for (const line of absent) expect(output).not.toContain(line)
+    }
+  })
+
+  it('checks the project folder can be entered and read before starting the CLI', () => {
+    const script = buildMacosTerminalScript({
+      executable: '/usr/local/bin/claude',
+      argv: [],
+      workspace: '/Users/alex/Documents/project',
+      launcherPath: '/tmp/launcher',
+      env: { HOME: '/tmp/home', PATH: '/usr/bin' },
+    })
+
+    const enter = script.indexOf("if ! cd -- '/Users/alex/Documents/project' 2>/dev/null; then")
+    const read = script.indexOf('if ! /bin/ls -A -- . >/dev/null 2>&1; then')
+    const cli = script.indexOf("'/usr/local/bin/claude' || cli_exit_code=$?")
+    expect(enter).toBeGreaterThan(-1)
+    expect(read).toBeGreaterThan(enter)
+    expect(cli).toBeGreaterThan(read)
+    for (const line of macosFolderAccessHintLines.unreachable) {
+      const index = script.indexOf(`print -r -- '${line}'`)
+      expect(index).toBeGreaterThan(enter)
+      expect(index).toBeLessThan(read)
+    }
+    for (const line of macosFolderAccessHintLines.unreadable) {
+      const index = script.indexOf(`print -r -- '${line}'`)
+      expect(index).toBeGreaterThan(read)
+      expect(index).toBeLessThan(cli)
+    }
+    expect(script.slice(enter, cli).match(/^ {2}exit 1$/gm)).toHaveLength(2)
+  })
+
+  it.runIf(process.platform === 'darwin' && process.getuid?.() !== 0)('explains an unreachable or unreadable folder in Chinese and does not start the CLI', () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-macos-folder-access-'))
+    temporaryDirectories.push(directory)
+    const marker = path.join(directory, 'cli-started')
+    const fakeCli = path.join(directory, 'fake-cli')
+    fs.writeFileSync(fakeCli, `#!/bin/sh\n/usr/bin/touch ${quotePosixArgument(marker)}\n`, { mode: 0o700 })
+    // 能进不能读：受保护文件夹被拒时大致是这个样子（推测）。
+    const unreadable = path.join(directory, 'unreadable')
+    fs.mkdirSync(unreadable, { mode: 0o300 })
+    try {
+      for (const [workspace, expected, absent] of [
+        [path.join(directory, 'missing'), macosFolderAccessHintLines.unreachable, macosFolderAccessHintLines.unreadable],
+        [unreadable, macosFolderAccessHintLines.unreadable, macosFolderAccessHintLines.unreachable],
+      ] as const) {
+        const launcher = path.join(fs.mkdtempSync(path.join(directory, 'launcher-')), 'launcher.zsh')
+        fs.writeFileSync(launcher, buildMacosTerminalScript({
+          executable: fakeCli,
+          argv: [],
+          workspace,
+          launcherPath: launcher,
+          env: { HOME: directory, PATH: '/usr/bin' },
+        }), { mode: 0o700 })
+
+        let output = ''
+        try {
+          execFileSync('/bin/zsh', ['-f', launcher], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+        } catch (error) {
+          const failure = error as { status?: number, stdout?: string, stderr?: string }
+          expect(failure.status).toBe(1)
+          expect(failure.stderr ?? '').toBe('')
+          output = failure.stdout ?? ''
+        }
+        for (const line of expected) expect(output).toContain(line)
+        for (const line of absent) expect(output).not.toContain(line)
+        expect(fs.existsSync(marker)).toBe(false)
+      }
+    } finally {
+      fs.chmodSync(unreadable, 0o700)
     }
   })
 

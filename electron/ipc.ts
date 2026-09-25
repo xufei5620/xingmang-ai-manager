@@ -18,7 +18,7 @@ import {
   sensitiveWorkspacePolicy,
   type SensitiveWorkspaceKind,
 } from './workspace-guard'
-import { createStarterWorkspace, resolveStarterWorkspaceParent } from './starter-workspace'
+import { createStarterWorkspace, resolveNewProjectParent } from './starter-workspace'
 import { usageDateRange } from './usage-date-range'
 import type { AppSettingsUpdate, AppTheme } from './app-settings'
 import { parseWindowState } from './window-preferences'
@@ -156,9 +156,13 @@ export interface IpcRegistrationOptions {
   // 解析各 CLI 配置目录用的根路径（Codex 认 CODEX_HOME）。省略 = 按当前进程
   // 环境推一份，和 system-service 默认拿到的那份一致（旧行为）。
   providerRoots?: ProviderConfigRoots
-  // 「新建一个项目文件夹」优先建在它下面（starter-workspace.ts，被云盘同步时退到主目录）；
+  // Windows 上「新建一个项目文件夹」优先建在它下面（starter-workspace.ts，被云盘同步时退到
+  // 主目录；macOS 一律建在主目录）；
   // main.ts 传系统「文档」目录（app.getPath('documents')）。省略 = 主目录下的 Documents。
   documentsDirectory?: () => string
+  // 新建项目文件夹认的用户主目录（macOS 建在它下面）。省略 = os.homedir()；测试注入，
+  // 免得在跑测试的 Mac 上往真实主目录里建文件夹。
+  homeDirectory?: () => string
   sessionsService: CodexSessionsService
   providerSessionsService: ProviderSessionsService
   backupStore: ConfigBackupStore
@@ -2002,15 +2006,15 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     try {
       return options.documentsDirectory()
     } catch {
-      // app.getPath 拿不到「文档」时退到主目录（resolveStarterWorkspaceParent）。
+      // app.getPath 拿不到「文档」时退到主目录（resolveNewProjectParent）。
       return null
     }
   }
   // 建不成就说一句、回到选择器，由用户自己选；返回 null 让外层循环再开一次选择器。
   async function createStarterWorkspaceOrExplain(parentWindow: BrowserWindow | undefined, nextStep: string): Promise<string | null> {
     try {
-      const context = { platform: process.platform, home: os.homedir(), env: process.env }
-      const created = createStarterWorkspace(resolveStarterWorkspaceParent(documentsDirectory(), context), context)
+      const context = { platform: process.platform, home: options.homeDirectory?.() ?? os.homedir(), env: process.env }
+      const created = createStarterWorkspace(resolveNewProjectParent(documentsDirectory(), context), context)
       // 不记路径（I13）：客服要的只是「这个目录是软件替他建的」。
       options.runtimeLog.log('info', 'config', 'workspace.starter.created', '已替用户新建项目文件夹')
       return created

@@ -5,6 +5,7 @@ import path from 'node:path'
 import {
   buildStarterWorkspaceName,
   createStarterWorkspace,
+  resolveNewProjectParent,
   resolveStarterWorkspaceContainer,
   resolveStarterWorkspaceParent,
   starterWorkspaceContainerName,
@@ -76,6 +77,27 @@ describe('resolveStarterWorkspaceParent', () => {
       const impl = context.platform === 'win32' ? path.win32 : path.posix
       expect(classifyWorkspace(impl.join(container, buildStarterWorkspaceName(3)), context)).toBeNull()
     }
+  })
+})
+
+describe('resolveNewProjectParent', () => {
+  function mac(existing: readonly string[]): StarterWorkspaceLocationContext {
+    return { platform: 'darwin', home: '/Users/alex', env: {}, directoryExists: (directory) => existing.includes(directory) }
+  }
+
+  it('puts new projects in the home folder on macOS so Terminal needs no Documents permission', () => {
+    expect(resolveNewProjectParent('/Users/alex/Documents', mac(['/Users/alex/Documents']))).toBe('/Users/alex')
+    expect(resolveNewProjectParent(null, mac([]))).toBe('/Users/alex')
+    const container = resolveStarterWorkspaceContainer(resolveNewProjectParent('/Users/alex/Documents', mac(['/Users/alex/Documents'])), 'darwin')
+    expect(container).toBe('/Users/alex/XingmangProjects')
+    expect(classifyWorkspace(path.posix.join(container, buildStarterWorkspaceName(1)), mac([]))).toBeNull()
+  })
+
+  it('keeps the documents folder on Windows', () => {
+    const windows: StarterWorkspaceLocationContext = { platform: 'win32', home: 'C:\\Users\\peaker', env: {}, directoryExists: () => true }
+
+    expect(resolveNewProjectParent('C:\\Users\\peaker\\Documents', windows)).toBe('C:\\Users\\peaker\\Documents')
+    expect(resolveNewProjectParent('C:\\Users\\peaker\\OneDrive\\Documents', windows)).toBe('C:\\Users\\peaker')
   })
 })
 

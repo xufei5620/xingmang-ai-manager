@@ -5,8 +5,8 @@ import { classifyWorkspace, isOneDriveContainer, type WorkspaceGuardContext } fr
 
 /**
  * 新手没有「项目」这个概念，选到桌面或整个文档被 workspace-guard 拦下之后，
- * 最需要的是有人替他建一个。建在「文档」下面的一层容器里：文档是两个平台都有、
- * 用户找得到的位置，多一层容器是为了不把一串项目直接撒进文档里，也让以后再建的
+ * 最需要的是有人替他建一个。Windows 建在「文档」下面的一层容器里，那是用户找得到的
+ * 位置；macOS 建在个人文件夹下（原因见 resolveNewProjectParent）。多一层容器是为了不把一串项目直接撒进文档里，也让以后再建的
  * 几个挨在一起。
  *
  * 名字刻意用英文、不带空格和括号。本产品的客户多用中文 Windows，用户名本身常是
@@ -52,6 +52,25 @@ export function resolveStarterWorkspaceParent(documentsDirectory: string | null,
     if (directoryExists(iCloudDocuments)) return context.home
   }
   return documentsDirectory
+}
+
+/**
+ * 「新建项目文件夹」放在哪个目录下面：Windows 照 resolveStarterWorkspaceParent，
+ * macOS 一律放用户主目录。
+ *
+ * macOS 把「文稿」「桌面」「下载」当受保护文件夹，授权是按程序给的：星芒能读，
+ * 不代表替它跑 CLI 的「终端」能读。第一次读会弹「“终端”想访问“文稿”文件夹中的文件」，
+ * 小白不认识「终端」、容易点「不允许」，之后系统不再问，AI 在项目里什么都读不到，
+ * 要去系统设置里找回来（推测，没在真机上复现弹框时机与报错原文）。主目录本身不受
+ * 这层保护，项目放这里就用不着这份授权。
+ *
+ * 只管新建的位置：已经建在「文稿」里的项目不搬。AI 生成的图片视频（ai-output-location.ts）
+ * 由星芒自己写，不经过终端，仍照 resolveStarterWorkspaceParent 放，免得老用户的作品
+ * 换了地方。
+ */
+export function resolveNewProjectParent(documentsDirectory: string | null, context: StarterWorkspaceLocationContext): string {
+  if (context.platform === 'darwin') return context.home
+  return resolveStarterWorkspaceParent(documentsDirectory, context)
 }
 
 function isInsideOneDrive(directory: string, env: NodeJS.ProcessEnv): boolean {

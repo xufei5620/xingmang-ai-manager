@@ -69,8 +69,11 @@ AGENTS.md，所以主目录里的一份会对这台电脑上的所有项目生�
   CLI 自己 —— 在这种目录上那一问是有意义的。
 - **提示里可以直接新建**：同一个提示框的第一个、也是默认按钮是「新建一个项目文件夹」，在系统
   「文档」目录下的 `XingmangProjects\my-project`（重名顺延 `my-project-2`）建一个空目录并直接打开，
-  给没有「项目」概念的新手一条路（`electron/starter-workspace.ts`）。文档被 OneDrive 或 iCloud
-  同步时改建在主目录下（`~\XingmangProjects\…`），免得 node_modules 之类被实时上传。新目录比
+  给没有「项目」概念的新手一条路（`electron/starter-workspace.ts`）。Windows 上文档被 OneDrive
+  同步时改建在主目录下（`~\XingmangProjects\…`），免得 node_modules 之类被实时上传。macOS 一律
+  建在主目录下（`~/XingmangProjects/…`）：「文稿」「桌面」「下载」受系统保护，读取授权是给「终端」
+  的，用户点了「不允许」AI 就读不到文件；已经建在「文稿」里的项目不搬。终端启动脚本进目录后先试读
+  一次，进不去或读不到就打两行中文说明去系统设置哪里开，不启动工具。新目录比
   「文档」或主目录至少深两层，不在上表里，信任与 AGENTS.md 照常；已有的同名文件夹一律不复用，
   上层目录不存在时也不替用户建。名字用 ASCII、不带空格括号，是为了不给下游工具添非 ASCII 路径的
   兼容风险。
