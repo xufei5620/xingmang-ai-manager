@@ -50,6 +50,7 @@ import { AccountSessionStore } from './account-session-store'
 import { SavedAccountsStore } from './saved-accounts'
 import { AppSettingsStore, readAppSettings, type AppTheme } from './app-settings'
 import { calculateUiZoom, resolveWindowPlacement } from './window-preferences'
+import { attachEditContextMenu } from './context-menu'
 import { recoverOffscreenWindow } from './window-recovery'
 import { createWindowLifecycle } from './window-lifecycle'
 import { hasLoginLaunchArgument, resolveLoginLaunch, shouldRevealInitialWindow, windowsAppUserModelId } from './login-launch'
@@ -406,6 +407,12 @@ function createWindow(
       webviewTag: false,
       navigateOnDragDrop: false,
     },
+  })
+
+  // Electron 默认没有右键菜单，客户手动复制、粘贴只能靠这个。
+  attachEditContextMenu(window.webContents, {
+    popup: (template) => { Menu.buildFromTemplate(template).popup({ window }) },
+    writeText: (text) => { clipboard.writeText(text) },
   })
 
   window.once('ready-to-show', () => {
