@@ -45,6 +45,17 @@
     # 调 makensis 时带着 -WX，未引用的函数是警告、警告即错误，Windows 打包会
     # 当场红。也就是说守卫失效不会是静默的。
     !define MUI_PAGE_CUSTOMFUNCTION_LEAVE xingmangVerifyInstallDirectory
+
+    # 目录页点「浏览」选了别的盘或文件夹之后，NSIS 会把 InstallDir 最后一段
+    # 自动接到选中的目录后面（Ui.c 的 install_directory_auto_append；选中的文件夹
+    # 本身就叫这个名字时不再接）。electron-builder 的模板不写 InstallDir，只在
+    # .onInit 里给 $INSTDIR 赋默认值，于是选 D 盘就只剩光秃秃的「D:\」——NSIS
+    # 不许装在盘根，「安装」按钮直接变灰，用户不知道该怎么办。
+    #
+    # 这里补一句 InstallDir，只为让浏览后接上跟默认位置同一个文件夹名。默认安装
+    # 位置仍由 multiUser.nsh 在 .onInit 里决定（它会覆盖这里的值），/D= 参数与
+    # 升级时读注册表里的旧位置也照旧。
+    InstallDir "$PROGRAMFILES64\${APP_FILENAME}"
   !endif
 !endif
 
