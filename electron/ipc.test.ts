@@ -1358,6 +1358,36 @@ describe('registerIpcHandlers', () => {
     await expect(handler(trustedEvent(), false, { acceptCached: true, path: '/etc' })).rejects.toThrow('检测参数格式错误')
   })
 
+  it('holds scans and the startup update check until the login quiet period ends', async () => {
+    const service = serviceStub()
+    const cached = { checkedAt: '2026-09-21T00:00:00.000Z', cachedAt: '2026-09-21T00:00:05.000Z' }
+    vi.mocked(service.cachedScan).mockResolvedValue(cached as never)
+    const updaterService = updaterStub()
+    let active = true
+    let release!: () => void
+    const over = new Promise<void>((resolve) => { release = resolve })
+    const startupQuiet = { active: () => active, whenOver: () => over }
+    register(service, undefined, undefined, undefined, undefined, undefined, undefined, { updaterService, startupQuiet })
+    const scan = electronMocks.handlers.get('system:scan')!
+
+    // The home page may draw the last saved result, but that read must not start a real scan.
+    await expect(scan(trustedEvent(), false, { acceptCached: true })).resolves.toBe(cached)
+    expect(service.cachedScan).toHaveBeenCalledWith({ startScan: false })
+
+    const pendingScan = Promise.resolve(scan(trustedEvent(), false))
+    const pendingUpdate = Promise.resolve(electronMocks.handlers.get('update:startup')!(trustedEvent()))
+    for (let tick = 0; tick < 5; tick++) await Promise.resolve()
+    expect(service.scanSystem).not.toHaveBeenCalled()
+    expect(updaterService.startup).not.toHaveBeenCalled()
+
+    active = false
+    release()
+    await pendingScan.catch(() => undefined)
+    await pendingUpdate
+    expect(service.scanSystem).toHaveBeenCalledWith(false)
+    expect(updaterService.startup).toHaveBeenCalledTimes(1)
+  })
+
   it('refreshes only the network location through trusted IPC', async () => {
     const service = serviceStub()
     const location = {
