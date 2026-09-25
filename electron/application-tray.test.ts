@@ -5,6 +5,7 @@ import {
   buildApplicationTrayMenu,
   createApplicationTray,
   trayBalanceLabel,
+  traySubscriptionLabel,
   type ApplicationTrayOptions,
   type ApplicationTrayRuntime,
   type ApplicationTraySnapshot,
@@ -238,5 +239,27 @@ describe('native tray lifecycle', () => {
     click(menu, '打开星芒AI管理工具')
     controller.updateSnapshot()
     expect(options.onOpen).not.toHaveBeenCalled()
+  })
+})
+
+describe('application tray subscription line', () => {
+  const now = Date.parse('2026-09-25T12:00:00Z')
+  const endsAt = new Date(2026, 9, 3, 12).toISOString()
+  const self = {
+    billingPreference: null, allSubscriptions: [],
+    activeSubscriptions: [{ id: 1, planId: 2, status: 'active', source: 'order', amountTotal: 10 * 500_000, amountUsed: 500_000, startedAt: '', endsAt, nextResetAt: null }],
+  }
+
+  it('summarises a usable subscription and stays empty without one', () => {
+    expect(traySubscriptionLabel(self, 500_000, now)).toBe('剩余 USD 9.00 · 10 月 3 日到期')
+    expect(traySubscriptionLabel(null, 500_000, now)).toBeNull()
+    expect(traySubscriptionLabel({ ...self, billingPreference: 'wallet_only' }, 500_000, now)).toBeNull()
+  })
+
+  it('adds the subscription row under the balance only when there is one', () => {
+    const actions = { onOpen: vi.fn(), onNavigate: vi.fn(), onLaunchTool: vi.fn(), onQuit: vi.fn() }
+    const labels = (subscriptionLabel?: string) => buildApplicationTrayMenu({ accountLabel: 'u', balanceUsd: 0, subscriptionLabel, installedTools: [] }, actions, () => undefined).map((entry) => entry.label)
+    expect(labels('剩余 USD 9.00 · 10 月 3 日到期').slice(3, 5)).toEqual(['余额：USD 0.00', '订阅：剩余 USD 9.00 · 10 月 3 日到期'])
+    expect(labels()).not.toContainEqual(expect.stringContaining('订阅'))
   })
 })

@@ -1,5 +1,6 @@
 import type { AccountSourceTarget, AppConfigSummary, CliStatus, CliVersionAdvice, DesktopAppStatus, PlatformCapabilities, ProviderConfigSummary, ProviderId, SystemSnapshot, ToolStatus } from '../../../../electron/ipc-contract'
 import { snapshotErrorMessage } from '../../business-common'
+import { subscriptionEndDate, type UsableSubscription } from '../../../../electron/subscription-summary'
 import { tools } from '../../registry/tools'
 import {
   getSourceMarkerStorage,
@@ -424,6 +425,19 @@ export function greeting(hour: number): string {
 
 export function balanceTier(dollars: number): 'ok' | 'warn' | 'bad' {
   return dollars < 5 ? 'bad' : dollars < 20 ? 'warn' : 'ok'
+}
+
+/**
+ * 订阅快到期或快用完时首页那一条红条（第十五批 2）；不用提醒时 null。
+ * 余额还够 $5 时订阅到期也只是改扣余额，不值得挂红条；扣费偏好是「只用订阅」
+ * 时余额帮不上忙，不看余额。
+ */
+export function subscriptionWarning(subscription: UsableSubscription, walletDollars: number | null): string | null {
+  if (!subscription.subscriptionOnly && (walletDollars === null || walletDollars >= 5)) return null
+  const after = subscription.subscriptionOnly ? '工具就用不了了，续费后可继续使用' : '会从余额扣费'
+  if (subscription.expiringSoon) return `订阅 ${subscriptionEndDate(subscription.endsAt)}到期，到期后${after}。`
+  if (subscription.lowRemaining && subscription.remainingUsd !== null) return `订阅只剩 $${subscription.remainingUsd.toFixed(2)}，用完后${after}。`
+  return null
 }
 
 /**

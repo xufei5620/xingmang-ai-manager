@@ -656,3 +656,29 @@ describe('renderer-v2 home manual desktop install on macOS', () => {
     expect(rowButton(render({}, undefined, { snapshot: windows, externalClients: [opencode] }), 'opencode')).toContain('暂不支持')
   })
 })
+
+describe('renderer-v2 home balance for subscription customers', () => {
+  const empty = { quota: 0, usedQuota: 0, quotaPerUnit: 500_000, quotaDisplayType: 'USD', usdExchangeRate: 7.3, displayAmount: 0 }
+  const endsAt = new Date(2026, 9, 3, 12).toISOString()
+  const subscription = { name: '月卡', remainingUsd: 8, endsAt, expiringSoon: false, lowRemaining: false, subscriptionOnly: false }
+
+  it('keeps the low-balance warning for wallet-only customers', () => {
+    const markup = render({}, undefined, { balance: empty })
+    expect(markup).toContain('余额只剩 $0.00，充值后可继续使用。')
+    expect(markup).not.toContain('home-subscription')
+  })
+
+  it('drops the empty-wallet warning and shows the subscription while one is usable', () => {
+    const markup = render({}, undefined, { balance: empty, subscription })
+    expect(markup).not.toContain('余额只剩')
+    expect(markup).toContain('订阅：月卡 · 剩余 $8.00 · 10 月 3 日到期')
+    expect(markup).not.toContain('tone-bad')
+  })
+
+  it('warns about renewal when the subscription is about to end and the wallet cannot take over', () => {
+    const markup = render({}, undefined, { balance: empty, subscription: { ...subscription, expiringSoon: true } })
+    expect(markup).toContain('订阅 10 月 3 日到期，到期后会从余额扣费。')
+    expect(markup).toContain('去续费')
+    expect(markup).not.toContain('余额只剩')
+  })
+})

@@ -5,7 +5,7 @@ import { presentExternalClients } from './external-model'
 import { useSharedAccountBalance } from '../app/balance-context'
 import { balanceStatusText } from '../shell/balance-status'
 import { BrandIcon, Button, Card, Dialog, Empty, ListRow, Menu, PageHead, Pill, Progress, ToolRow, useToast } from '../../ui'
-import { accountSwitchTarget, balanceTier, canUninstallTool, ccSwitchLeftoverFor, foreignKeyKind, switchAccountLabel, configDirectoryMenuItem, externalInstallHint, greeting, isExternallyManagedInstall, needsManualInstall, ownershipAwaitingAccount, presentTools, providerFor, recommendedVersionVerb, revertVersion, rollbackVersion, versionSubtitle, type ToolboxSnapshot, type ToolId, type ToolPresentation } from './model'
+import { accountSwitchTarget, balanceTier, subscriptionWarning, canUninstallTool, ccSwitchLeftoverFor, foreignKeyKind, switchAccountLabel, configDirectoryMenuItem, externalInstallHint, greeting, isExternallyManagedInstall, needsManualInstall, ownershipAwaitingAccount, presentTools, providerFor, recommendedVersionVerb, revertVersion, rollbackVersion, versionSubtitle, type ToolboxSnapshot, type ToolId, type ToolPresentation } from './model'
 import type { ToolboxPartitionFailure, ToolsApi } from './api'
 import type { ToolJob } from './useToolbox'
 import type { AccountBootstrapProgress, AccountBootstrapResult } from './account-bootstrap'
@@ -17,6 +17,7 @@ import { isAccountNotEnabledFailure, keySyncFailureReason, keySyncFailureText } 
 import { dismissFirstRun, getFirstRunStorage, readFirstRunDismissals } from './first-run-dismissal'
 import { latestSessionIdsByWorkspace, newWorkspaceLabel, recentWorkspaces, workspaceButtonLabel, workspaceChoices } from './recent-workspaces'
 import { errorMessage } from '../../business-common'
+import { subscriptionSummaryText, type UsableSubscription } from '../../../../electron/subscription-summary'
 import { isNetworkFailureText } from './online-resync'
 import { gitHostPlatform, gitMissingFirstRunHint, gitMissingHomeNotice } from '../../../../electron/git-runtime'
 import { runtimeButtonLabel, runtimeInstallGuide } from './runtime-install-guide'
@@ -35,6 +36,8 @@ export interface HomeProps {
   supportsUsage?: boolean
   supportsBilling?: boolean
   balance: AccountBalance | null
+  /** 当前账号能用的订阅；缺省 / null = 没有，一切按钱包说（旧行为）。 */
+  subscription?: UsableSubscription | null
   jobs: Record<string, ToolJob>
   externalClients: ExternalClientStatus[]
   externalLoading: boolean
@@ -185,7 +188,11 @@ export function Home(props: HomeProps) {
   const installedCount = installed.length + installedExternal.length
   const availableCount = available.length + availableExternal.length
   const dollars = balance && balance.quotaPerUnit > 0 ? balance.quota / balance.quotaPerUnit : null
-  const tier = dollars === null ? 'neutral' : balanceTier(dollars)
+  const subscription = props.subscription ?? null
+  // 有订阅时请求先扣订阅，钱包是 0 也照常能用，余额卡不再标红。
+  const tier = dollars === null || subscription ? 'neutral' : balanceTier(dollars)
+  const subscriptionNotice = subscription ? subscriptionWarning(subscription, dollars) : null
+  const subscriptionLine = subscription ? `订阅：${subscription.name ? `${subscription.name} · ` : ''}${subscriptionSummaryText(subscription, (usd) => `$${usd.toFixed(2)}`)}` : null
   const monthUsed = usage && balance && balance.quotaPerUnit > 0 ? usage.monthQuota / balance.quotaPerUnit : null
   const remainingDays = usage && balance && usage.weekQuota > 0 ? Math.max(0, Math.floor(balance.quota / (usage.weekQuota / 7))) : null
   const configFailure = props.failures?.find((failure) => failure.partition === 'config') ?? null
@@ -390,7 +397,8 @@ export function Home(props: HomeProps) {
     {error && <div role="alert" className="v2-callout is-bad"><span>{error}</span><Button size="xs" onClick={props.onScan}>重新检测</Button></div>}
     {props.externalError && <div role="alert" className="v2-callout is-bad"><span>客户端状态暂未读到：{props.externalError}</span><Button size="xs" onClick={props.onScan}>重新检测</Button></div>}
     {snapshot && configFailure && <div role="alert" className="v2-callout is-bad" data-testid="home-config-failure"><span>工具配置暂未读到：{configFailure.message}工具列表、安装和卸载照常可用；点工具行的“重新配置”可以重新写入。</span><Button size="xs" onClick={props.onScan}>重新检测</Button></div>}
-    {props.supportsBilling !== false && dollars !== null && dollars < 5 && <div role="status" className="v2-callout is-bad"><Zap size={18} /><span>余额只剩 ${dollars.toFixed(2)}，充值后可继续使用。</span><Button size="sm" variant="balance" onClick={() => props.onNavigate('account', 'recharge')}>马上充值</Button></div>}
+    {props.supportsBilling !== false && dollars !== null && dollars < 5 && !subscription && <div role="status" className="v2-callout is-bad"><Zap size={18} /><span>余额只剩 ${dollars.toFixed(2)}，充值后可继续使用。</span><Button size="sm" variant="balance" onClick={() => props.onNavigate('account', 'recharge')}>马上充值</Button></div>}
+    {props.supportsBilling !== false && subscriptionNotice && <div role="status" className="v2-callout is-bad" data-testid="home-subscription-warning"><Zap size={18} /><span>{subscriptionNotice}</span><Button size="sm" variant="balance" onClick={() => props.onNavigate('account', 'recharge')}>去续费</Button></div>}
     {loading && snapshot?.system.cachedAt && <div className="v2-loading-inline" role="status" data-testid="home-cached-scan">正在检查本机工具，先显示上次的结果。</div>}
     <div className="v2-home-grid">
       <div className="v2-home-main">
@@ -449,7 +457,7 @@ export function Home(props: HomeProps) {
           <div className={`v2-balance-body tone-${tier}`}><div title={balanceHint}><strong data-testid="home-balance">{dollars === null ? '暂未读到' : `$${dollars.toFixed(2)}`}</strong><small>可用余额 · 美元</small>{balanceStore && account && <Button variant="ghost" size="xs" icon={RefreshCw} loading={balanceState.loading} aria-label="刷新账户余额" title={balanceHint} onClick={() => void balanceStore.refresh('manual')} testId="home-balance-refresh" />}</div>
             {balanceState.error && <p className="v2-balance-error" role="status" title={balanceState.error}>更新失败，{balance ? '显示上次余额' : '请重试'}</p>}
             <div className="v2-balance-usage">{monthUsed !== null && dollars !== null && <Progress tone={tier === 'neutral' ? 'neutral' : tier} value={monthUsed + dollars > 0 ? monthUsed / (monthUsed + dollars) * 100 : 0} label={`本月已用 $${monthUsed.toFixed(2)}`} />}
-              <p>{props.supportsUsage === false ? '请在官方网站查看消费记录。' : usageError || (remainingDays !== null ? `按最近 7 天用量约还能用 ${remainingDays} 天${remainingDays < 7 ? '，建议提前充值' : ''}。` : usage ? '最近 7 天暂无用量' : account ? '正在读取用量' : '登录后查看用量')}</p></div>
+              <p>{subscriptionLine ? <span data-testid="home-subscription">{subscriptionLine}</span> : props.supportsUsage === false ? '请在官方网站查看消费记录。' : usageError || (remainingDays !== null ? `按最近 7 天用量约还能用 ${remainingDays} 天${remainingDays < 7 ? '，建议提前充值' : ''}。` : usage ? '最近 7 天暂无用量' : account ? '正在读取用量' : '登录后查看用量')}</p></div>
             <div className="v2-balance-actions">{props.supportsBilling !== false && <Button variant="balance" size="sm" icon={Zap} onClick={() => props.onNavigate('account', 'recharge')}>充值</Button>}{props.supportsUsage !== false && <Button variant="ghost" size="sm" onClick={() => props.onNavigate('account', 'dashboard')}>用量看板</Button>}</div>
           </div>
         </Card>
