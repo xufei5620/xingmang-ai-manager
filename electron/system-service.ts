@@ -3213,6 +3213,12 @@ export function createSystemService(
       networkRegion: await inspectNetworkRegion(),
       temporaryDirectoryMode: windowsExecutionMode,
       dependencies: { fetch: downloadFetch },
+      // 安装程序退出 0 不等于装好：被安全软件或公司策略拦了一半时它照样退出 0（#549）。
+      // inspectGit 会额外找代装的两个固定目录，本进程的 PATH 没刷新也找得到。
+      verifyInstalled: async () => {
+        const installed = await inspectGit()
+        return installed.installed ? { version: installed.version } : null
+      },
       onProgress: (progress) => {
         if (!target.isDestroyed()) target.send('runtime:git-install-progress', progress)
         onProgress?.(progress)
