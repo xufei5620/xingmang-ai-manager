@@ -8,8 +8,15 @@ import { backup, DatabaseSync, type SQLOutputValue } from 'node:sqlite'
 import { readBoundedUtf8FileSync } from './bounded-file'
 import { sameLocalPathIdentity } from './path-identity'
 import { resolveRelocatedPath } from './relocated-folders'
+import {
+  appendSafeUtf8File,
+  appendSafeUtf8FileSync,
+  assertSafeDataFile,
+  ensureSafeDataDirectory,
+} from './safe-local-data'
 
 const MAX_OPERATION_JOURNAL_BYTES = 64 * 1024 * 1024
+const OPERATION_JOURNAL_LABEL = 'Codex 会话操作日志'
 const MAX_RECOVERY_WARNING_DETAILS = 32
 const MAX_RETAINED_BACKUPS = 20
 const BACKUP_RETENTION_MS = 7 * 24 * 60 * 60 * 1000
@@ -813,6 +820,7 @@ export class CodexSessionsService {
   private mutationQueue: Promise<unknown> = Promise.resolve()
   private recoveryWarningsEmitted = 0
   private recoveryWarningsSuppressed = 0
+  private journalUnreadable = false
 
   constructor(options: CodexSessionsOptions = {}) {
     this.codexHome = options.codexHome === undefined
@@ -1068,25 +1076,49 @@ export class CodexSessionsService {
     }
   }
 
+  // The journal lives in a user-writable directory. A plain open(..., 'a')
+  // follows a planted hard link or reparse point and appends operation records
+  // into whatever file it names, so every append goes through the same
+  // single-link, no-reparse boundary as the other local data files.
   private async appendJournal(entry: JournalEntry): Promise<void> {
-    await fsPromises.mkdir(this.managerDataDirectory, { recursive: true })
-    const handle = await fsPromises.open(this.operationJournalPath, 'a', 0o600)
-    try {
-      await handle.write(`${JSON.stringify(entry)}\n`, undefined, 'utf8')
-      await handle.sync()
-    } finally {
-      await handle.close()
-    }
+    ensureSafeDataDirectory(this.managerDataDirectory, OPERATION_JOURNAL_LABEL)
+    await appendSafeUtf8File(
+      this.operationJournalPath,
+      `${JSON.stringify(entry)}\n`,
+      OPERATION_JOURNAL_LABEL,
+      { durable: true },
+    )
   }
 
   private appendJournalSync(entry: JournalEntry): void {
-    fs.mkdirSync(this.managerDataDirectory, { recursive: true })
-    const descriptor = fs.openSync(this.operationJournalPath, 'a', 0o600)
+    ensureSafeDataDirectory(this.managerDataDirectory, OPERATION_JOURNAL_LABEL)
+    appendSafeUtf8FileSync(
+      this.operationJournalPath,
+      `${JSON.stringify(entry)}\n`,
+      OPERATION_JOURNAL_LABEL,
+      { durable: true },
+    )
+  }
+
+  // A mutation that cannot be journaled safely must not start: without the
+  // pending/ready records an interrupted archive can neither be recovered nor
+  // rolled back. An earlier unreadable journal also hid interrupted operations
+  // from startup recovery, so recovery is retried before anything new runs.
+  private assertJournalUsable(): void {
+    if (this.journalUnreadable) {
+      try {
+        this.recoverInterruptedOperations()
+      } finally {
+        this.flushSuppressedRecoveryWarnings()
+      }
+    }
+    if (this.journalUnreadable) {
+      throw new Error('Codex 会话操作日志无法安全读取，已暂停归档和恢复；请重启本工具后再试')
+    }
     try {
-      fs.writeSync(descriptor, `${JSON.stringify(entry)}\n`, undefined, 'utf8')
-      fs.fsyncSync(descriptor)
-    } finally {
-      fs.closeSync(descriptor)
+      assertSafeDataFile(this.operationJournalPath, OPERATION_JOURNAL_LABEL)
+    } catch {
+      throw new Error('Codex 会话操作日志无法安全写入，已暂停归档和恢复；请重启本工具后再试')
     }
   }
 
@@ -1178,7 +1210,9 @@ export class CodexSessionsService {
     let interrupted: RecoveryJournalEntry[]
     try {
       interrupted = this.interruptedOperations()
+      this.journalUnreadable = false
     } catch (error) {
+      this.journalUnreadable = true
       this.warnRecovery('journal-read-failed', 'Codex 会话操作日志读取失败，已跳过启动恢复', {
         errorCode: recoveryErrorCode(error),
       })
@@ -1324,6 +1358,7 @@ export class CodexSessionsService {
   }
 
   private async changeArchiveState(sessionId: string, archived: boolean): Promise<CodexSessionMutationResult> {
+    this.assertJournalUsable()
     const { row, schema } = this.readThread(sessionId)
     if (!schema.status.mutationsAllowed) throw new Error(schema.status.reason)
     if (row.archived === archived) {
