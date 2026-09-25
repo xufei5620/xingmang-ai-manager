@@ -408,7 +408,8 @@ const methods = {
     return next
   },
   getAccountStatus: async () => ({ systemName: 'Fixture', version: '1', setupComplete: true, quotaPerUnit: 500000, quotaDisplayType: 'USD', usdExchangeRate: 7.3, registerEnabled: true, passwordRegisterEnabled: true, emailVerificationEnabled: true, turnstileCheckEnabled: false }),
-  getRememberedAccountLogin: async () => null,
+  // rememberedLegacy：历史账号记住过注册邮箱（#480 复核 F12，昵称和邮箱不一样）。
+  getRememberedAccountLogin: async (siteId) => query.has('rememberedLegacy') && siteId === 'solov-api' ? { identifier: 'user@example.test', password: 'fixture-password' } : null,
   setRememberedAccountLogin: async () => {},
   loginAccount: async (input) => { const resolvedSite = input.siteId ?? (query.has('sub2api') ? 'solov-api' : 'solov'); session = { authenticated: true, account, ...(resolvedSite === 'solov-api' ? sub2ApiMetadata : { siteId: 'solov' as const }) }; return { ...session, account, accessExpiresAt: null } },
   registerAccount: async () => {},

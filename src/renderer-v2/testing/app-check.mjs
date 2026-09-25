@@ -2921,8 +2921,8 @@ test('a saved account with the same id switches platform without reusing NewAPI 
 })
 
 
-test('relogin on an expired saved account opens the login dialog on that account source and name', async () => {
-  const page = await open('crossSite=1')
+test('relogin on an expired saved account opens the login dialog on that account source with its remembered email, not its nickname', async () => {
+  const page = await open('crossSite=1&rememberedLegacy=1')
   try {
     await page.getByTestId('tool-row-codex').waitFor()
     await page.getByRole('button', { name: '切换账号', exact: true }).click()
@@ -2933,7 +2933,8 @@ test('relogin on an expired saved account opens the login dialog on that account
     await list.getByTestId('saved-account-relogin-saved-aa0017').click()
     const dialog = page.getByTestId('login-dialog')
     await dialog.getByRole('heading', { name: '登录历史账号' }).waitFor()
-    assert.equal(await page.getByTestId('login-account').inputValue(), 'fixture-user')
+    // 这一行存的是昵称 fixture-user，历史账号却只认注册邮箱：不预填昵称，带出记住的邮箱（#480 复核 F12）。
+    await page.waitForFunction(() => document.querySelector('[data-testid="login-account"]')?.value === 'user@example.test')
     // 取消后当前账号不变，下一次普通登录也不带着刚才那个账号的来源和名字（不串草稿）。
     await page.getByTestId('login-cancel').click()
     await dialog.waitFor({ state: 'hidden' })

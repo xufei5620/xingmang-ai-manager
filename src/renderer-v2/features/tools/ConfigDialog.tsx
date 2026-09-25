@@ -23,6 +23,11 @@ interface ConfigDialogProps {
   onClose(): void
   onRefresh(): Promise<void>
   onSaved(warning?: string): void
+  /**
+   * 主进程已经把一把新的 Key（或官方登录）写进这个工具；原样沿用现有 Key 的保存不算。
+   * 密钥页靠它收起「还在用刚撤销的密钥」（#546）。缺省 = 不通知（旧行为）。
+   */
+  onKeyWritten?(tool: ToolId): void
   onLogin(): void
   onKeys(): void
   onHelp(): void
@@ -36,7 +41,7 @@ interface ConfigDialogProps {
   onSwitchAccount?(tool: ToolId): Promise<AccountSourceSwitchResult | null>
 }
 
-export function ConfigDialog({ api, tool, config, signedIn, initialModelFilter = 'all', onClose, onRefresh, onSaved, onLogin, onKeys, accountName = null, onSwitchAccount }: ConfigDialogProps) {
+export function ConfigDialog({ api, tool, config, signedIn, initialModelFilter = 'all', onClose, onRefresh, onSaved, onKeyWritten, onLogin, onKeys, accountName = null, onSwitchAccount }: ConfigDialogProps) {
   const [tab, setTab] = useState<ToolId>(tool)
   const [drafts, setDrafts] = useState<Partial<Record<ProviderId, ConfigDraft>>>({})
   const [keys, setKeys] = useState<AccountKey[]>([])
@@ -177,6 +182,7 @@ export function ConfigDialog({ api, tool, config, signedIn, initialModelFilter =
     locked.current = true; setBusy('改用当前账号'); setError(''); setWarning(''); setNotice('')
     try {
       const result = await onSwitchAccount(tab)
+      if (result) onKeyWritten?.(tab)
       if (!active.current || !result) return
       setDrafts((current) => { const next = { ...current }; delete next[provider]; return next })
       setNotice(result.verified ? `已${switchLabel}，可以开始用了。` : `已${switchLabel}。${result.message.replace(/^已改用当前账号[，。]?/, '')}`)
@@ -222,6 +228,7 @@ export function ConfigDialog({ api, tool, config, signedIn, initialModelFilter =
       if (outcome.failed.length) throw new Error(outcome.failed.map((item) => item.message).join('；'))
       if (!outcome.configured.includes(provider)) throw new Error('工具没有返回配置写入结果，请重新检测后再试。')
       saved = true
+      onKeyWritten?.(tab)
       const markerWarning = applyManualSourceMarker(sourceStorage, native.baseUrl, provider, false)
       if (!active.current) return
       // 首页状态刷新失败不影响已经写好的配置，模型照样检测。主进程可能因为分组里
@@ -251,6 +258,7 @@ export function ConfigDialog({ api, tool, config, signedIn, initialModelFilter =
     void run('保存配置', async () => {
       const provider = providerFor(tab)
       let markerWarning = ''
+      let keyWritten = true
       if (draft.source === 'official') {
         await api.official(tab, mode)
         markerWarning = applyManualSourceMarker(sourceStorage, native.baseUrl, provider, false)
@@ -263,6 +271,7 @@ export function ConfigDialog({ api, tool, config, signedIn, initialModelFilter =
         // Empty is the main-process reuse sentinel. It never reveals or
         // replaces the local key and must not mark its source as manual.
         await api.saveManual({ provider, apiKey: '', model: draft.model, mode })
+        keyWritten = false
       }
       else if (selectedKey) {
         await api.saveAccountKey({ provider, keyId: selectedKey.id, model: draft.model, mode })
@@ -275,6 +284,7 @@ export function ConfigDialog({ api, tool, config, signedIn, initialModelFilter =
         markerWarning = applyManualSourceMarker(sourceStorage, native.baseUrl, provider, false)
       }
       else throw new Error('请选择要保存的密钥。')
+      if (keyWritten) onKeyWritten?.(tab)
       if (!active.current) return
       // The host has committed the write. Close through the owner so feedback
       // survives this dialog's unmount; a later refresh cannot undo that save.

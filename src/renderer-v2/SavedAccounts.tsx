@@ -21,7 +21,7 @@ import {
 import { tools } from './registry/tools'
 import { keySyncFailureText } from './features/tools/key-sync-failure'
 import { accountOrigin, siteIdForOrigin } from './account-context'
-import { accountSources } from './features/auth/state'
+import { accountSources, isEmail } from './features/auth/state'
 import type { LoginTarget } from './features/auth/api'
 import { offersCodexDesktopRestart } from '../../electron/running-tools'
 
@@ -78,9 +78,9 @@ export function SavedAccounts({
       <ResultNotice {...operation} />
       {result && (
         <Notice
-          tone={result.failed.length || restartHint ? 'warn' : 'ok'}
+          tone={result.failed.length || result.skipped.length || restartHint ? 'warn' : 'ok'}
           title={
-            result.failed.length ? '账号已切换，部分工具没有同步' : '账号已切换'
+            result.failed.length || result.skipped.length ? '账号已切换，部分工具没有同步' : '账号已切换'
           }
           body={
             <>
@@ -299,10 +299,16 @@ export function savedAccountSourceLabel(origin: string): string {
  * 「重新登录这个账号」要把登录框直接对到这一行的来源和用户名（#480）。以前只是打开
  * 登录框，默认星芒账号、用户名空着，历史账号的用户得自己改回来源再重填，改漏了就登错站。
  * 来源认不出时不预选，照常打开登录框。
+ *
+ * 历史账号只能用注册邮箱登录，这一行存的却是账号昵称，改过昵称的老用户两者不一样。
+ * 昵称不是邮箱时就不预填，登录框空着才会带出记住的邮箱；硬填昵称只会换来一句
+ * 「请使用注册邮箱登录」。
  */
 export function savedAccountLoginTarget(account: { origin: string; username: string }): LoginTarget | undefined {
   const siteId = siteIdForOrigin(account.origin)
-  return siteId ? { siteId, identifier: account.username } : undefined
+  if (!siteId) return undefined
+  const identifier = account.username.trim()
+  return { siteId, identifier: siteId === 'solov-api' && !isEmail(identifier) ? '' : identifier }
 }
 
 /** 主进程 SAVED_EXPIRED 那句（electron/realm-account.ts）；只认它，不认当前账号过期。 */

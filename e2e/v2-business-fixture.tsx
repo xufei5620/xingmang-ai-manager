@@ -1080,6 +1080,8 @@ if (query.has('system')) {
   window.xingmangPlatform = platform
 }
 const root = createRoot(document.getElementById('root')!)
+// 首页设置窗口保存并读回之后发给密钥页的信号（#546）；测试用事件模拟它。
+let toolConfigConfirmed: { provider: 'claude' | 'codex' | 'gemini' | 'grok'; sequence: number } | null = null
 const renderFixture = (paymentReturn?: {
   sequence: number
   order: string | null
@@ -1113,6 +1115,7 @@ const renderFixture = (paymentReturn?: {
           openLogin={() => record('login')}
           onRewriteKey={rewriteKey}
           openConfig={(provider) => record('openConfig', provider)}
+          toolConfigConfirmed={toolConfigConfirmed}
         />
       </BalanceTierProvider>
     </Shell>,
@@ -1124,4 +1127,9 @@ window.addEventListener('test-payment-return', () =>
 // 真实环境里余额 store 每 30 秒 publish 一次，整棵树跟着重渲染；夹具用一次
 // root.render 复现同一件事，不动任何页面状态。
 window.rerenderFixture = () => renderFixture()
+window.addEventListener('test-tool-config-confirmed', (event) => {
+  const provider = (event as CustomEvent<'claude' | 'codex' | 'gemini' | 'grok'>).detail
+  toolConfigConfirmed = { provider, sequence: (toolConfigConfirmed?.sequence ?? 0) + 1 }
+  renderFixture()
+})
 renderFixture()
