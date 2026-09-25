@@ -691,6 +691,38 @@ function sanitizeMcpServer(
   }
 }
 
+// A failed add is only treated as "persisted before the failure" when the
+// listed server carries what was requested. A same-named older entry would
+// otherwise make a failed replacement look like it succeeded (#539).
+function mcpServerMatchesInput(server: McpServerDto, input: AddMcpInput): boolean {
+  if (input.type === 'stdio') {
+    const requestedArgs = input.args ?? []
+    return server.transportType === 'stdio'
+      && server.command === input.command
+      && server.args.length === requestedArgs.length
+      && server.args.every((argument, index) => argument === requestedArgs[index])
+      && sameNames(server.envNames, Object.keys(input.env ?? {}))
+  }
+  return server.transportType === 'http'
+    && server.url !== null
+    && sameHttpUrl(server.url, input.url)
+    && (server.bearerTokenEnvVar ?? '') === (input.bearerTokenEnvVar ?? '')
+}
+
+function sameNames(left: readonly string[], right: readonly string[]): boolean {
+  const sortedLeft = [...left].sort()
+  const sortedRight = [...right].sort()
+  return sortedLeft.length === sortedRight.length && sortedLeft.every((name, index) => name === sortedRight[index])
+}
+
+function sameHttpUrl(left: string, right: string): boolean {
+  try {
+    return new URL(left).toString() === new URL(right).toString()
+  } catch {
+    return false
+  }
+}
+
 function pluginDto(value: unknown): PluginDto {
   if (!isRecord(value)) throw new Error('Codex Plugin 列表包含无效条目')
   const source = isRecord(value.source) ? value.source : {}
@@ -901,6 +933,9 @@ function validateSkillTree(sourceDirectory: string): void {
     const stats = fs.lstatSync(current)
     if (stats.isSymbolicLink()) throw new Error('Skill 导入不允许包含符号链接')
     if (stats.isFile()) {
+      // A hard link looks like an ordinary file but can carry content from
+      // outside the chosen directory into the managed skills tree (I8).
+      if (stats.nlink !== 1) throw new Error('Skill 导入不允许包含硬链接文件')
       files += 1
       bytes += stats.size
       if (files > MAX_SKILL_FILES || bytes > MAX_SKILL_BYTES) throw new Error('Skill 导入内容超过安全限制')
@@ -916,6 +951,48 @@ function validateSkillTree(sourceDirectory: string): void {
   }
   if (!fs.existsSync(path.join(sourceDirectory, 'SKILL.md'))) {
     throw new Error('Skill 目录根部缺少 SKILL.md')
+  }
+}
+
+// validateSkillTree only inspects paths; each file is re-checked on its open
+// handle so a file swapped for a hard link or symlink after validation is
+// still refused, and writes use exclusive create so nothing is followed.
+function copySkillTree(sourceDirectory: string, targetDirectory: string): void {
+  fs.mkdirSync(targetDirectory)
+  const pending = [{ source: sourceDirectory, target: targetDirectory }]
+  let bytes = 0
+  while (pending.length) {
+    const { source, target } = pending.pop()!
+    const children = readDirectoryEntriesSync(source, MAX_SKILL_DISCOVERY_ENTRIES, 'Skill 导入目录')
+    for (const child of children) {
+      const childSource = path.join(source, child.name)
+      const childTarget = path.join(target, child.name)
+      const stats = fs.lstatSync(childSource)
+      if (stats.isDirectory()) {
+        fs.mkdirSync(childTarget)
+        pending.push({ source: childSource, target: childTarget })
+        continue
+      }
+      if (!stats.isFile()) throw new Error('Skill 导入只允许普通文件和目录')
+      const descriptor = fs.openSync(childSource, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0))
+      try {
+        const opened = fs.fstatSync(descriptor)
+        if (!opened.isFile() || opened.nlink !== 1) throw new Error('Skill 导入不允许包含硬链接文件')
+        if (opened.dev !== stats.dev || opened.ino !== stats.ino) throw new Error('Skill 导入文件在复制期间发生变化')
+        bytes += opened.size
+        if (bytes > MAX_SKILL_BYTES) throw new Error('Skill 导入内容超过安全限制')
+        const content = Buffer.alloc(opened.size)
+        let offset = 0
+        while (offset < content.length) {
+          const read = fs.readSync(descriptor, content, offset, content.length - offset, offset)
+          if (read === 0) throw new Error('Skill 导入文件在复制期间发生变化')
+          offset += read
+        }
+        fs.writeFileSync(childTarget, content, { flag: 'wx' })
+      } finally {
+        fs.closeSync(descriptor)
+      }
+    }
   }
 }
 
@@ -1056,7 +1133,8 @@ export class CodexExtensionService {
       await this.invoke(argv, { sensitiveValues, timeoutMs: 120_000 })
     } catch (error) {
       const reconciled = await this.listMcpServers()
-      if (reconciled.some((server) => server.name === name)) return reconciled
+      const persisted = reconciled.find((server) => server.name === name)
+      if (persisted && mcpServerMatchesInput(persisted, input)) return reconciled
       throw error
     }
     const reconciled = await this.listMcpServers()
@@ -1241,7 +1319,7 @@ export class CodexExtensionService {
     if (fs.existsSync(target)) throw new Error(`Skill 已存在：${directoryName}`)
     fs.mkdirSync(root, { recursive: true })
     try {
-      fs.cpSync(sourceDirectory, target, { recursive: true, errorOnExist: true, force: false })
+      copySkillTree(sourceDirectory, target)
     } catch (error) {
       if (fs.existsSync(target) && isWithin(root, target)) fs.rmSync(target, { recursive: true, force: true })
       throw error
