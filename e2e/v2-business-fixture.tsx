@@ -1043,6 +1043,7 @@ if (query.has('system')) {
             task: true,
             cliUpdate: true,
             announcement: true,
+            spend: true,
             acceleration: true,
             ...systemState.preferences.notifications,
             [kind]: enabled,

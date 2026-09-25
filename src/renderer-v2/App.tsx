@@ -65,6 +65,7 @@ import { idleOnlineResync, noteBootstrapOutcome, planOnlineResync } from './feat
 import { accountOrigin, accountScope, accountSiteId, accountSupports, sessionRestoreRetrying, sessionRestoring, sessionScope, siteIdForOrigin, visibleAccountTab, type AccountSiteId } from './account-context'
 import { accountReadErrorAction, formatAccountReadError } from './features/app/account-read-error'
 import { AccountBalanceContext, useAccountBalanceStore } from './features/app/balance-context'
+import { createSpendSpikeWatch } from './features/app/spend-spike'
 import { hasPendingSettingsGroup, requestSettingsGroup } from './features/app/settings-group-intent'
 import './business.css'
 
@@ -931,12 +932,13 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     } else if (!linkPrompted.current) { linkPrompted.current = true; setAuth('login') }
   }, [pendingLink, boot, auth, configTool, confirmation, switcher, restartDialog, session.authenticated, navigate])
   useEffect(() => native.onNavigate((target) => {
-    // 系统通知点进来：余额去「充值与订阅」，异步任务去个人中心那一栏，公告直接打开公告。
+    // 系统通知点进来：余额去「充值与订阅」，异步任务去个人中心那一栏，花费突然变多去「用量看板」，公告直接打开公告。
     if (target === 'topup') navigate('account', 'recharge')
     else if (target === 'tasks') navigate('account', 'tasks')
+    else if (target === 'usage') navigate('account', visibleAccountTab('dashboard', session) ? 'dashboard' : 'usage')
     else if (target === 'announcement') { if (session.authenticated) setAnnouncementOpen(true) }
     else navigate(target)
-  }), [native, navigate, session.authenticated])
+  }), [native, navigate, session])
   useEffect(() => native.onLaunchTool((id) => { if (isToolId(id)) requestLaunch(id) }), [native, toolbox.snapshot, session.authenticated])
   useEffect(() => {
     const unsubscribe = native.onWindowCloseRequest(({ requestId }) => {
@@ -1007,6 +1009,17 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     }
     previousBalance.current = { scope, value: balanceAmount }
   }, [balanceAmount, scope, session.account?.userId])
+  // 一小时里花掉的钱远超平时就提醒一次（第十五批 7）：只用余额每次刷新读到的数，
+  // 掉得够多了才去读一次用量核账。开关在设置 → 通知「花费突然变多」，由主进程把关。
+  const spendWatch = useMemo(() => createSpendSpikeWatch({
+    readBaseline: () => toolsApi.spendBaseline(),
+    notify: (eventKey, notice) => { void platformApi()?.notifyActivity('spend', eventKey, notice).catch(() => undefined) },
+  }), [toolsApi])
+  const supportsSpendCheck = session.authenticated && accountSupports(session, 'supportsUsage')
+  useEffect(() => {
+    if (!balance || balanceState.updatedAt === null || !supportsSpendCheck) return
+    void spendWatch.observe({ scope, account: String(session.account?.userId ?? 0), quota: balance.quota, quotaPerUnit: balance.quotaPerUnit, at: balanceState.updatedAt })
+  }, [balanceState.updatedAt, balance, scope, session.account?.userId, supportsSpendCheck, spendWatch])
   // 导览看完或被关掉才记成「已看」，所以上次没看完的用户一回到首页就接着播。
   // 从没有过记录的老用户不在此列：他们不会凭空多出一段导览。
   const workspaceVisible = boot === 'ready' && !guide && (session.authenticated || restoring || workspaceEntered)

@@ -1,7 +1,7 @@
 export type PlatformThemePreference = 'system' | 'light' | 'dark'
 /** 渲染层能自己请求的活动通知；文案固定在主进程，渲染层只给事件编号。 */
 export type PlatformActivityKind =
-  'install' | 'balance' | 'task' | 'cliUpdate' | 'announcement'
+  'install' | 'balance' | 'task' | 'cliUpdate' | 'announcement' | 'spend'
 /**
  * 安装类通知要说清是哪个工具、成了没有。渲染层只给工具编号和结果，标题与正文
  * 仍由主进程按固定名单拼出来；名单外的编号一律说成「工具」。
@@ -12,6 +12,15 @@ export interface PlatformInstallNotice {
   tool: string
   outcome: PlatformInstallOutcome
 }
+/**
+ * 花费突然变多：渲染层只给两个整数（用掉的美分、是平时的几倍），句子由主进程
+ * 按固定格式拼。倍数算不出来（平时几乎不用）时为 null，正文就不提倍数。
+ */
+export interface PlatformSpendNotice {
+  cents: number
+  multiple: number | null
+}
+export type PlatformActivityDetail = PlatformInstallNotice | PlatformSpendNotice
 // 加速那两条（快用完、已断开）是主进程自己发的：窗口缩到托盘之后渲染层的计时
 // 与轮询都停着，而「时长用完」恰恰只在那时候发生。渲染层不能请求这一类，但用户
 // 要能在设置页单独关掉它，所以它进偏好集合、不进 PlatformActivityKind。
@@ -26,6 +35,8 @@ export interface PlatformNotificationPreferences {
   cliUpdate: boolean
   // 0.2.10 之后才有；老文件缺这一项时按默认开启补齐（settings-store.ts）。
   announcement: boolean
+  // 同上，老文件缺这一项时按默认开启补齐。
+  spend: boolean
   acceleration: boolean
 }
 export type PlatformNotificationResult =
@@ -84,7 +95,7 @@ export interface XingmangPlatformApi {
   notifyActivity(
     kind: PlatformActivityKind,
     eventKey: string,
-    install?: PlatformInstallNotice,
+    detail?: PlatformActivityDetail,
   ): Promise<PlatformNotificationResult>
   onStateChanged(listener: (state: PlatformSystemState) => void): () => void
 }

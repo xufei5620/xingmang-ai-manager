@@ -3,7 +3,7 @@ import { loginLaunchArgument } from '../login-launch'
 import { resolveRelaySite } from '../relay-sites'
 import type {
   PlatformActivityKind,
-  PlatformInstallNotice,
+  PlatformActivityDetail,
   PlatformNotificationKind,
   PlatformNotificationResult,
   PlatformPrivacyPreference,
@@ -34,7 +34,7 @@ export interface PlatformSystemDependencies {
   notify?: (
     kind: PlatformActivityKind | 'test',
     eventKey: string,
-    install?: PlatformInstallNotice,
+    detail?: PlatformActivityDetail,
   ) => PlatformNotificationResult
 }
 
@@ -275,6 +275,7 @@ export class PlatformSystemService {
           task: true,
           cliUpdate: true,
           announcement: true,
+          spend: true,
           acceleration: true,
           ...current.notifications,
           [kind]: enabled,
@@ -300,9 +301,9 @@ export class PlatformSystemService {
   notifyActivity(
     kind: PlatformActivityKind,
     eventKey: string,
-    install?: PlatformInstallNotice,
+    detail?: PlatformActivityDetail,
   ) {
-    return this.dependencies.notify?.(kind, eventKey, install) ?? 'unsupported'
+    return this.dependencies.notify?.(kind, eventKey, detail) ?? 'unsupported'
   }
 
   async getProxyStatus(): Promise<PlatformProxyStatus> {

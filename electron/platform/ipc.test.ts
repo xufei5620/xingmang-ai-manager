@@ -321,6 +321,32 @@ describe('platform IPC audit log', () => {
     ).toThrow('参数')
   })
 
+  it('passes a rebuilt spend notice and rejects anything that is not two bounded integers', async () => {
+    const sink = logged()
+    const { h, callbacks, service } = registered(sink.log)
+    const notify = callbacks.get(platformChannels.notifyActivity)!
+    await notify(h.event, 'spend', 'spend:7:1', { cents: 1240, multiple: 8, title: 'injected' })
+    expect(service.notifyActivity).toHaveBeenLastCalledWith('spend', 'spend:7:1', { cents: 1240, multiple: 8 })
+    await notify(h.event, 'spend', 'spend:7:2', { cents: 600, multiple: null })
+    expect(service.notifyActivity).toHaveBeenLastCalledWith('spend', 'spend:7:2', { cents: 600, multiple: null })
+    // 金额不进日志：日志里只要知道发过一条这类通知。
+    expect(sink.entries.at(-1)!.detail).not.toHaveProperty('cents')
+    for (const detail of [
+      undefined,
+      null,
+      { cents: '1240', multiple: 8 },
+      { cents: 12.4, multiple: 8 },
+      { cents: 0, multiple: 8 },
+      { cents: 1240, multiple: 0 },
+      { cents: 1240 },
+      { cents: 20_000_000, multiple: 8 },
+      { tool: 'claude', outcome: 'installed' },
+    ])
+      expect(() => notify(h.event, 'spend', 'spend:7:3', detail)).toThrow('通知内容')
+    // 带金额的只有花费这一类，别的通知不能借它塞数字。
+    expect(() => notify(h.event, 'balance', 'balance:7:1', { cents: 1240, multiple: 8 })).toThrow('通知内容')
+  })
+
   it('records a rejected sender as a security event naming the page', () => {
     const sink = logged()
     const { h, callbacks } = registered(sink.log)
