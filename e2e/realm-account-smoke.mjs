@@ -252,7 +252,7 @@ async function prepareSandbox() {
   await fs.mkdir(userData)
   await fs.mkdir(reviewDirectory, { recursive: true })
   await fs.writeFile(path.join(userData, 'settings.json'), JSON.stringify({ version: 2, theme: 'dark',
-    checkUpdatesOnStartup: false, runDiagnosticsOnStartup: false, officialProviders: ['claude', 'codex', 'gemini', 'grok'] }), 'utf8')
+    checkUpdatesOnStartup: false, runDiagnosticsOnStartup: false, crashReportingNoticeShown: true, officialProviders: ['claude', 'codex', 'gemini', 'grok'] }), 'utf8')
   await fs.writeFile(bootstrap, `(${bootFixture.toString()})(${JSON.stringify({ userHome, userData, projectRoot,
     entry: path.join(projectRoot, 'dist-electron/platform/entry.js'), catalog: path.join(projectRoot, 'dist-electron/catalog.js') })})\n`, 'utf8')
   env = { ...process.env, HOME: userHome, USERPROFILE: userHome, APPDATA: path.join(sandbox, 'appdata'),

@@ -148,6 +148,7 @@ import { platformCapabilitiesFor } from './platform-capabilities'
 import { validatePaymentForm, validatePaymentQrCode, validatePaymentUrl, type PaymentWindowController } from './payment-window'
 import type { AccountStartupGate } from './account-startup-gate'
 import { parseAiChatHistoryScope, parseAiChatHistoryWrite, type AiChatHistoryStore } from './ai-chat-history-store'
+import { createSensitiveClipboard } from './sensitive-clipboard'
 
 export type AppWindowMode = 'onboarding' | 'dashboard'
 
@@ -287,6 +288,13 @@ function requiredString(value: unknown, label: string, maximum = 4_096): string 
   return value.trim()
 }
 
+// Not requiredString: a generated password is copied byte for byte, so it
+// must not be trimmed on the way to the clipboard.
+function parseResetPasswordToCopy(value: unknown): string {
+  if (typeof value !== 'string' || !value || value.length > 256 || value.includes('\0')) throw new Error('新密码格式错误')
+  return value
+}
+
 function optionalString(value: unknown, label: string, maximum = 4_096): string | undefined {
   if (value === undefined || value === '') return undefined
   return requiredString(value, label, maximum)
@@ -361,6 +369,7 @@ function parseSettingsUpdate(value: unknown): AppSettingsUpdate {
   const codexDesktopInstallDisabled = optionalBoolean(value.codexDesktopInstallDisabled, 'Codex 桌面端自动安装偏好')
   const alwaysInstallLatestCli = optionalBoolean(value.alwaysInstallLatestCli, '命令行工具版本偏好')
   const crashReporting = optionalBoolean(value.crashReporting, '崩溃上报设置')
+  const crashReportingNoticeShown = optionalBoolean(value.crashReportingNoticeShown, '错误报告告知记录')
   // Unlike the degrade-don't-throw fields above, an unrecognized value here is
   // rejected: this one decides whether Codex starts with a local debugging
   // port, so a typo must not quietly read as "not asked yet" (E-S3).
@@ -390,6 +399,7 @@ function parseSettingsUpdate(value: unknown): AppSettingsUpdate {
     ...(codexDesktopInstallDisabled !== undefined ? { codexDesktopInstallDisabled } : {}),
     ...(alwaysInstallLatestCli !== undefined ? { alwaysInstallLatestCli } : {}),
     ...(crashReporting !== undefined ? { crashReporting } : {}),
+    ...(crashReportingNoticeShown !== undefined ? { crashReportingNoticeShown } : {}),
     ...(value.codexDesktopChineseRuntimePatch !== undefined
       ? { codexDesktopChineseRuntimePatch: value.codexDesktopChineseRuntimePatch as AppSettingsUpdate['codexDesktopChineseRuntimePatch'] }
       : {}),
@@ -1315,6 +1325,7 @@ const ipcOperationLabels: Readonly<Record<string, string>> = {
   'account:list-groups': '星芒账号可用分组读取',
   'account:revoke-key': '星芒账号 Key 撤销',
   'account:copy-key': '星芒账号 Key 复制',
+  'account:copy-reset-password': '找回密码后的新密码复制',
   'account:reveal-key': '星芒账号 Key 明文读取',
   'account:list-key-models': '星芒账号 Key 可用模型读取',
   'account:configure-cli-with-key': '星芒账号 Key 写入 CLI 配置',
@@ -1398,6 +1409,8 @@ const quietIpcSuccessChannels = new Set([
   'account:list-keys',
   'account:list-groups',
   'account:copy-key',
+  // The input is the plaintext password the reset just produced.
+  'account:copy-reset-password',
   'account:reveal-key',
   'account:list-key-models',
   'account:configure-cli-with-key',
@@ -1566,6 +1579,8 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   const externalShell = options.externalShell ?? createExternalShellLauncher()
   let lastAccelerationStateLogKey: string | null = null
   const revealInFolder = options.revealInFolder ?? ((filePath: string) => shell.showItemInFolder(filePath))
+  // 密钥和新密码 60 秒后自动从剪贴板清掉（第十三批 8）。
+  const sensitiveClipboard = createSensitiveClipboard({ clipboard })
   // 最近几次导出写出来的文件：「打开所在位置」只认这里面的路径。
   const exportedFiles: string[] = []
   const rememberExportedFile = (filePath: string) => {
@@ -1626,7 +1641,8 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
         const publicAccountChannels = new Set(['account:login', 'account:submit-two-factor-code', 'account:logout', 'account:get-session',
           'account:switch-saved', 'account:remove-saved', 'account:list-saved', 'account:get-status',
           'account:get-legal-document', 'account:get-remembered-login', 'account:set-remembered-login',
-          'account:register', 'account:send-verification-code', 'account:send-reset-code', 'account:reset-password'])
+          'account:register', 'account:send-verification-code', 'account:send-reset-code', 'account:reset-password',
+          'account:copy-reset-password'])
         const scoped = (channel.startsWith('account:') || channel.startsWith('chat:') || channel === 'canvas:open'
           || channel.startsWith('models:') || channel.startsWith('config:') || channel === 'external-clients:scan' || channel === 'external-clients:launch' || channel === 'cli:launch' || channel === 'desktop:launch-codex' || channel === 'tools:check-models')
           && !publicAccountChannels.has(channel)
@@ -3141,7 +3157,10 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   }
   registerTrustedHandler('account:copy-key', async (_event, id: unknown) => {
     const key = await revealAccountKeySecret(id)
-    clipboard.writeText(key)
+    sensitiveClipboard.write(key)
+  })
+  registerTrustedHandler('account:copy-reset-password', async (_event, value: unknown) => {
+    sensitiveClipboard.write(parseResetPasswordToCopy(value))
   })
   registerTrustedHandler('account:reveal-key', (_event, id: unknown) => revealAccountKeySecret(id))
   registerTrustedHandler('account:list-key-models', async (_event, id: unknown) => {
@@ -3420,6 +3439,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
 
   return () => {
     feedbackPreviews.clear()
+    sensitiveClipboard.dispose()
     unsubscribeUpdates()
     options.chatService?.dispose()
     options.imageService?.cancelAll()

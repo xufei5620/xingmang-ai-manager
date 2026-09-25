@@ -997,6 +997,8 @@ export interface XingmangInvokeContract {
   getAccountUsableGroups: IpcInvokeDefinition<'account:list-groups', [], AccountUsableGroup[]>
   revokeAccountKey: IpcInvokeDefinition<'account:revoke-key', [id: number], void>
   copyAccountKey: IpcInvokeDefinition<'account:copy-key', [id: number], void>
+  /** 找回密码后复制新密码：走主进程写剪贴板，60 秒后自动清掉。 */
+  copyResetPassword: IpcInvokeDefinition<'account:copy-reset-password', [password: string], void>
   revealAccountKey: IpcInvokeDefinition<'account:reveal-key', [id: number], string>
   listAccountKeyModels: IpcInvokeDefinition<'account:list-key-models', [id: number], string[]>
   saveConfigWithAccountKey: IpcInvokeDefinition<
@@ -1267,6 +1269,7 @@ export const ipcInvokeChannels = {
   getAccountUsableGroups: 'account:list-groups',
   revokeAccountKey: 'account:revoke-key',
   copyAccountKey: 'account:copy-key',
+  copyResetPassword: 'account:copy-reset-password',
   revealAccountKey: 'account:reveal-key',
   listAccountKeyModels: 'account:list-key-models',
   saveConfigWithAccountKey: 'account:configure-cli-with-key',

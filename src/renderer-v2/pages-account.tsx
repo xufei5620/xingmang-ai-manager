@@ -1208,7 +1208,7 @@ function AccountKeys({
                         void operation.execute(
                           'copy',
                           () => api.copyAccountKey(key.id),
-                          '密钥已复制',
+                          '密钥已复制。为了安全，1 分钟后会从剪贴板里清掉',
                         )
                       }
                     >

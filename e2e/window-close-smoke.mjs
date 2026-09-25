@@ -219,7 +219,7 @@ async function runScenario(blockQuit) {
   await fs.mkdir(path.join(testRoot, 'appdata'), { recursive: true })
   await fs.mkdir(path.join(testRoot, 'local-appdata'), { recursive: true })
   await fs.writeFile(path.join(userData, 'settings.json'), JSON.stringify({
-    version: 2, workspace: userHome, theme: 'dark', checkUpdatesOnStartup: false, runDiagnosticsOnStartup: false,
+    version: 2, workspace: userHome, theme: 'dark', checkUpdatesOnStartup: false, runDiagnosticsOnStartup: false, crashReportingNoticeShown: true,
   }) + '\n', 'utf8')
   await fs.writeFile(bootstrap, `(${bootFixture.toString()})(${JSON.stringify({
     userHome, userData, projectRoot, evidence, command: commandPath, entry: path.join(projectRoot, 'dist-electron/platform/entry.js'),

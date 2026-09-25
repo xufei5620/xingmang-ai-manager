@@ -81,6 +81,12 @@ export interface AppSettings {
    */
   crashReporting?: boolean
   /**
+   * 已经用一次性卡片告诉过用户「出错时会把错误报告发到海外的错误收集服务」。只落 true：
+   * 老版本没有这个字段，读出来就是「还没说过」，升级后说一次。和 crashReporting 的开关
+   * 互不影响——告知不等于同意，也不改上报的缺省。
+   */
+  crashReportingNoticeShown?: boolean
+  /**
    * Consent for the Codex Desktop Chinese runtime patch (E-S3). That patch
    * needs a loopback CDP port which stays open for the whole Codex session and
    * accepts any local client, so consent must never be inferred from
@@ -157,6 +163,8 @@ export interface AppSettingsUpdate {
   codexDesktopInstallDisabled?: boolean
   alwaysInstallLatestCli?: boolean
   crashReporting?: boolean
+  /** true is sticky and false is ignored, like trayHintShown. */
+  crashReportingNoticeShown?: boolean
   codexDesktopChineseRuntimePatch?: CodexChineseRuntimePatchChoice
   uiSkin?: AppUiSkin | 'auto'
   reducedMotion?: boolean
@@ -315,6 +323,7 @@ function parseSettingsValue(value: unknown): AppSettings {
     // Only the explicit opt-out survives a round trip; anything else (absent,
     // true, a hand-edited string) reads back as "reporting on".
     ...(value.crashReporting === false ? { crashReporting: false as const } : {}),
+    ...(value.crashReportingNoticeShown === true ? { crashReportingNoticeShown: true as const } : {}),
     ...(codexDesktopChineseRuntimePatch !== undefined ? { codexDesktopChineseRuntimePatch } : {}),
     uiSkin: uiSkin ?? 'mist',
     ...(optionalBoolean(value.reducedMotion, false) ? { reducedMotion: true as const } : {}),
@@ -468,6 +477,7 @@ export function mergeAppSettings(base: AppSettings, update: AppSettingsUpdate): 
     ...(codexDesktopInstallDisabled ? { codexDesktopInstallDisabled: true as const } : {}),
     ...(alwaysInstallLatestCli ? { alwaysInstallLatestCli: true as const } : {}),
     ...(crashReporting === false ? { crashReporting: false as const } : {}),
+    ...(update.crashReportingNoticeShown === true || base.crashReportingNoticeShown === true ? { crashReportingNoticeShown: true as const } : {}),
     ...(codexDesktopChineseRuntimePatch !== undefined ? { codexDesktopChineseRuntimePatch } : {}),
     uiSkin,
     ...(reducedMotion ? { reducedMotion: true as const } : {}),

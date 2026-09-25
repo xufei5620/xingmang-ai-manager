@@ -66,6 +66,7 @@ async function main() {
     theme: 'dark',
     checkUpdatesOnStartup: false,
     runDiagnosticsOnStartup: false,
+    crashReportingNoticeShown: true,
     // 有保存状态 = resolveWindowPlacement 用它的 maximized，而不是按工作区大小自己决定。
     windowState: { bounds: { x: 0, y: 0, width: 1280, height: 820 }, maximized: false },
   }), 'utf8')

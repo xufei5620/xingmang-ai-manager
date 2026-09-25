@@ -50,7 +50,7 @@ import { FailureBoundary } from './features/app/FailureBoundary'
 import { OperationErrorDialog, type OperationFailure } from './features/app/OperationErrorDialog'
 import { StartupNotices } from './features/app/StartupNotices'
 import { MaintenanceNotice, maintenanceNoticeKey } from './features/app/MaintenanceNotice'
-import { displayCompatNotice, displayRelaunchNotice, settingsSaveNotice, startupCheckFailure, startupCheckLogContext, startupDiagnosticsIssues, updatedNotice, vaultRecoveredNotice, withStartupNotice, withoutStartupNotice, type StartupCheckId, type StartupNotice } from './features/app/startup-notice'
+import { crashReportingNotice, displayCompatNotice, displayRelaunchNotice, settingsSaveNotice, startupCheckFailure, startupCheckLogContext, startupDiagnosticsIssues, updatedNotice, vaultRecoveredNotice, withStartupNotice, withoutStartupNotice, type StartupCheckId, type StartupNotice } from './features/app/startup-notice'
 import { readLocalPreference, writeLocalPreference } from './features/app/preferences'
 import { currentWindowOs, windowOsFor } from './features/app/window-os'
 import { nextUiScale, uiScaleShortcutFor, type UiScaleShortcut } from './features/app/ui-scale-shortcut'
@@ -568,6 +568,20 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     if (choice === 'restore') noteStartupCheck(displayRelaunchNotice())
     else toast.show('以后都用兼容方式显示。想改回来，到「设置」的「外观」里打开「用显卡加速显示」。', 'ok')
   }), [app, noteStartupCheck, perform, toast])
+  // 错误报告告知：登录进来后说一次，这次运行里只出一回。两颗按钮都记下「已告知」，
+  // 「不想发送」同时把上报关掉，和设置页那个开关是同一个设置。
+  const crashNoticeOffered = useRef(false)
+  useEffect(() => {
+    if (boot !== 'ready' || crashNoticeOffered.current) return
+    const notice = crashReportingNotice(settings, session.authenticated)
+    if (!notice) return
+    crashNoticeOffered.current = true
+    noteStartupCheck(notice)
+  }, [boot, noteStartupCheck, session.authenticated, settings])
+  const chooseCrashReporting = useCallback((choice: 'keep' | 'off') => perform('保存错误报告设置', async () => {
+    setSettings(await app.savePreferences({ version: 2, crashReportingNoticeShown: true, ...(choice === 'off' ? { crashReporting: false } : {}) }))
+    if (choice === 'off') toast.show('已关掉，出错时不再发送错误报告。想重新打开，到「设置」的「隐私与数据」里。', 'ok')
+  }), [app, perform, toast])
   // 连按几下 Ctrl 加号时，保存还没回来，下一下要接着上一下算，不能都从旧设置起步。
   const uiScaleRef = useRef<AppSettingsV2['uiScale']>(undefined)
   useEffect(() => { uiScaleRef.current = settings?.uiScale }, [settings?.uiScale])
@@ -1139,6 +1153,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
         if ('login' in action) setAuth('login')
         else if ('page' in action) navigate(action.page)
         else if ('displayCompat' in action) void chooseDisplayCompat(action.displayCompat)
+        else if ('crashReporting' in action) void chooseCrashReporting(action.crashReporting)
         else if ('relaunch' in action) void perform('重开软件', async () => { await app.relaunch() })
       }} />
     {operationError && <OperationErrorDialog failure={operationError} installDirectory={toolInstallDirectory(toolbox.snapshot, operationError.tool)} onClose={() => setOperationError(null)} onAction={runOperationAction} />}

@@ -1,4 +1,4 @@
-import type { InstalledRelease, SettingsSaveIssue, WindowCapabilities } from '../../../../electron/ipc-contract'
+import type { AppSettingsV2, InstalledRelease, SettingsSaveIssue, WindowCapabilities } from '../../../../electron/ipc-contract'
 import type { PageId } from '../../registry/pages'
 import type { Tone } from '../../ui'
 
@@ -8,12 +8,12 @@ import type { Tone } from '../../ui'
  * （CI 的原生冒烟正是这样被挡住的）。用户自己点「检查更新」「运行检查」时
  * 走的是各页面自己的失败提示，不经过这里，照常报错。
  */
-export type StartupCheckId = 'update' | 'diagnostics' | 'appearance' | 'vault-recovered' | 'updated' | 'settings-save' | 'display-compat' | 'display-relaunch'
+export type StartupCheckId = 'update' | 'diagnostics' | 'appearance' | 'vault-recovered' | 'updated' | 'settings-save' | 'display-compat' | 'display-relaunch' | 'crash-reporting'
 /**
- * `vault-recovered`、`updated`、`settings-save` 与两条显示方式的提示不是应用跑出来的检查，
- * 是主进程报上来的一次性事实，没有「失败」这一面。
+ * `vault-recovered`、`updated`、`settings-save`、两条显示方式的提示与错误报告告知不是应用
+ * 跑出来的检查，是一次性要告诉用户的事，没有「失败」这一面。
  */
-export type StartupCheckFailureId = Exclude<StartupCheckId, 'vault-recovered' | 'updated' | 'settings-save' | 'display-compat' | 'display-relaunch'>
+export type StartupCheckFailureId = Exclude<StartupCheckId, 'vault-recovered' | 'updated' | 'settings-save' | 'display-compat' | 'display-relaunch' | 'crash-reporting'>
 
 /**
  * 有的提示要把人带到某一页，有的要直接把登录弹出来（账号页在未登录时才等价于登录），
@@ -21,6 +21,7 @@ export type StartupCheckFailureId = Exclude<StartupCheckId, 'vault-recovered' | 
  */
 export type StartupNoticeAction = { label: string; page: PageId } | { label: string; login: true } | { label: string; dismiss: true }
   | { label: string; displayCompat: 'keep' | 'restore' } | { label: string; relaunch: true }
+  | { label: string; crashReporting: 'keep' | 'off' }
 
 export interface StartupNotice {
   id: StartupCheckId
@@ -194,6 +195,24 @@ export function displayRelaunchNotice(): StartupNotice {
     body: '显示方式已经改好，重开一次星芒就会用上。',
     action: { label: '现在重开', relaunch: true },
     secondaryAction: { label: '稍后', dismiss: true },
+  }
+}
+
+/**
+ * 出错时会自动把错误报告发到海外，这件事以前只写在设置页的一行开关旁边，没人主动
+ * 说过。登录进来后说一次：缺省照旧开着（告知不等于改缺省），给一颗「不想发送」当场
+ * 关掉。不写服务名，用户要知道的是「发去海外、能关」。已经关掉的人不用再告诉他。
+ */
+export function crashReportingNotice(settings: Pick<AppSettingsV2, 'crashReporting' | 'crashReportingNoticeShown'> | null | undefined, authenticated: boolean): StartupNotice | null {
+  if (!authenticated || !settings || settings.crashReportingNoticeShown === true || settings.crashReporting === false) return null
+  return {
+    id: 'crash-reporting',
+    failure: false,
+    tone: 'neutral',
+    title: '软件出错时会发送错误报告',
+    body: '软件出错时，会自动把一份错误报告发到海外的错误收集服务，帮我们更快修好问题。报告里不含你的账号、密钥、文件路径和聊天内容。以后想改，可以在「设置」的「隐私与数据」里关掉。',
+    action: { label: '知道了', crashReporting: 'keep' },
+    secondaryAction: { label: '不想发送', crashReporting: 'off' },
   }
 }
 

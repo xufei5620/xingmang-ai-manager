@@ -31,6 +31,8 @@ const electronMocks = vi.hoisted(() => ({
   openExternal: vi.fn(),
   openPath: vi.fn(),
   writeText: vi.fn(),
+  readText: vi.fn(() => ''),
+  clearClipboard: vi.fn(),
 }))
 
 vi.mock('electron', () => ({
@@ -50,7 +52,7 @@ vi.mock('electron', () => ({
     fromWebContents: electronMocks.browserWindowFromWebContents,
   },
   shell: { openExternal: electronMocks.openExternal, openPath: electronMocks.openPath },
-  clipboard: { writeText: electronMocks.writeText },
+  clipboard: { writeText: electronMocks.writeText, readText: electronMocks.readText, clear: electronMocks.clearClipboard },
 }))
 
 import { accelerationStateLogKey, parseDiagnosticsRunOptions, parseRunningToolsProviders, registerIpcHandlers } from './ipc'
@@ -384,6 +386,9 @@ beforeEach(() => {
   electronMocks.openPath.mockReset()
   electronMocks.openPath.mockResolvedValue('')
   electronMocks.writeText.mockReset()
+  electronMocks.readText.mockReset()
+  electronMocks.readText.mockReturnValue('')
+  electronMocks.clearClipboard.mockReset()
   electronMocks.browserWindowFromWebContents.mockReset()
   electronMocks.browserWindowFromWebContents.mockReturnValue(undefined)
 })
@@ -2682,6 +2687,17 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       const { service } = register()
       const handler = electronMocks.handlers.get('settings:save')!
       await expect(handler(trustedEvent(), { version: 2, ...fields })).rejects.toThrow()
+      expect(service.updateStoredConfig).not.toHaveBeenCalled()
+    })
+
+    it('carries the crash reporting notice marker and rejects a non-boolean one', async () => {
+      const { service } = register()
+      const handler = electronMocks.handlers.get('settings:save')!
+
+      await handler(trustedEvent(), { version: 2, crashReportingNoticeShown: true, crashReporting: false })
+      expect(service.updateStoredConfig).toHaveBeenCalledWith({ version: 2, crashReportingNoticeShown: true, crashReporting: false })
+      vi.mocked(service.updateStoredConfig).mockClear()
+      await expect(handler(trustedEvent(), { version: 2, crashReportingNoticeShown: 'yes' })).rejects.toThrow('错误报告告知记录')
       expect(service.updateStoredConfig).not.toHaveBeenCalled()
     })
 
@@ -5724,6 +5740,25 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
     })
   })
 
+  describe('account:copy-reset-password', () => {
+    it('writes the new password to the clipboard verbatim, without logging it or requiring a session', async () => {
+      const { runtimeLog } = register()
+      const password = ' Xm-reset-Secret9 '
+      await expect(electronMocks.handlers.get('account:copy-reset-password')!(trustedEvent(), password)).resolves.toBeUndefined()
+      expect(electronMocks.writeText).toHaveBeenCalledWith(password)
+      expect(JSON.stringify(runtimeLog.log.mock.calls)).not.toContain('Xm-reset-Secret9')
+    })
+
+    it('rejects anything that is not a short non-empty string', async () => {
+      register()
+      const handler = electronMocks.handlers.get('account:copy-reset-password')!
+      for (const value of ['', 'a'.repeat(257), 'a\0b', 42, undefined]) {
+        await expect(handler(trustedEvent(), value)).rejects.toThrow('新密码格式错误')
+      }
+      expect(electronMocks.writeText).not.toHaveBeenCalled()
+    })
+  })
+
   describe('account:copy-key', () => {
     it('uses the encrypted managed-key cache for both copy and reveal without contacting the server', async () => {
       const accountService = accountServiceStub()
@@ -5782,6 +5817,30 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       expect(accountService.revealKey).toHaveBeenCalledWith(42)
       expect(electronMocks.writeText).toHaveBeenCalledWith(plaintextKey)
       expect(JSON.stringify(runtimeLog.log.mock.calls)).not.toContain(plaintextKey)
+    })
+
+    it('clears the copied key from the clipboard after sixty seconds unless the user copied something else', async () => {
+      vi.useFakeTimers()
+      try {
+        const { accountService } = register()
+        const plaintextKey = 'sk-ipc-auto-clear'
+        vi.mocked(accountService.revealKey).mockResolvedValue(plaintextKey)
+        electronMocks.readText.mockReturnValue(plaintextKey)
+        await electronMocks.handlers.get('account:copy-key')!(trustedEvent(), 42)
+
+        vi.advanceTimersByTime(59_999)
+        expect(electronMocks.clearClipboard).not.toHaveBeenCalled()
+        vi.advanceTimersByTime(1)
+        expect(electronMocks.clearClipboard).toHaveBeenCalledTimes(1)
+
+        electronMocks.clearClipboard.mockClear()
+        await electronMocks.handlers.get('account:copy-key')!(trustedEvent(), 42)
+        electronMocks.readText.mockReturnValue('something the user copied')
+        vi.advanceTimersByTime(60_000)
+        expect(electronMocks.clearClipboard).not.toHaveBeenCalled()
+      } finally {
+        vi.useRealTimers()
+      }
     })
 
     it('falls back to the server for an ordinary key that is absent from the managed cache', async () => {

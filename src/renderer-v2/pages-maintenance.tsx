@@ -2443,7 +2443,7 @@ export function SettingsPage({
         <>
           {row(
             '崩溃自动上报',
-            '应用出错时自动回传错误堆栈和版本、系统信息，帮助我们更快修好；不包含你的账号、密钥、文件路径和聊天内容',
+            '应用出错时，自动把错误堆栈和版本、系统信息发到海外的错误收集服务，帮助我们更快修好；不包含你的账号、密钥、文件路径和聊天内容',
             <Switch
               aria-label="崩溃自动上报"
               checked={settings.crashReporting !== false}

@@ -54,6 +54,7 @@ function timelineFixture() {
 // ordinary launch must not be interrupted by the one-time question, which
 // `chineseAsk` exercises on its own.
 let settings: AppSettingsV2 = { version: 2, workspace: 'C:\\Fixture', theme: query.get('theme') === 'dark' ? 'dark' : 'light', runDiagnosticsOnStartup: query.has('diagnostics'), checkUpdatesOnStartup: query.has('startupUpdate'),
+  ...(query.has('crashNotice') ? {} : { crashReportingNoticeShown: true as const }),
   ...(query.has('chineseAsk') ? {} : { codexDesktopChineseRuntimePatch: 'enabled' as const }) }
 const account = { userId: 17, username: 'fixture-user', group: 'default', role: 1, quota: 6_200_000, usedQuota: 0 }
 let session: AccountSessionState = { authenticated: query.get('guest') !== '1', account: query.get('guest') === '1' ? null : account }
@@ -262,7 +263,7 @@ const methods = {
     return accelerationDemo.redeemAccelerationCode!(scope, code)
   },
   getSettings: async () => ({ ...settings }),
-  saveSettings: async (patch) => { settings = { ...settings, theme: patch.theme ?? settings.theme, reducedMotion: patch.reducedMotion ?? settings.reducedMotion, hardwareAcceleration: patch.hardwareAcceleration ?? settings.hardwareAcceleration, largeText: patch.largeText ?? settings.largeText, ...(patch.uiScale === undefined ? {} : { uiScale: patch.uiScale === 'auto' ? undefined : patch.uiScale }), codexDesktopChineseRuntimePatch: patch.codexDesktopChineseRuntimePatch ?? settings.codexDesktopChineseRuntimePatch }; return settings },
+  saveSettings: async (patch) => { settings = { ...settings, theme: patch.theme ?? settings.theme, reducedMotion: patch.reducedMotion ?? settings.reducedMotion, hardwareAcceleration: patch.hardwareAcceleration ?? settings.hardwareAcceleration, largeText: patch.largeText ?? settings.largeText, ...(patch.uiScale === undefined ? {} : { uiScale: patch.uiScale === 'auto' ? undefined : patch.uiScale }), codexDesktopChineseRuntimePatch: patch.codexDesktopChineseRuntimePatch ?? settings.codexDesktopChineseRuntimePatch, crashReporting: patch.crashReporting ?? settings.crashReporting, crashReportingNoticeShown: patch.crashReportingNoticeShown || settings.crashReportingNoticeShown }; return settings },
   getPlatformCapabilities: async () => capabilities,
   getAccountSession: async () => session,
   getAccountBalance: async () => {

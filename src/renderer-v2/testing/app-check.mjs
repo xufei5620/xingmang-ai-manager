@@ -1841,6 +1841,46 @@ test('the account-store notice can be dismissed and leaves nothing behind', asyn
   } finally { await page.close() }
 })
 
+// 错误报告发到海外这件事，登录进来后说一次；两颗按钮都记下「已告知」，
+// 「不想发送」同时关掉上报。没登录时不说。
+test('the crash reporting notice appears once after login and records the choice', async () => {
+  const page = await open('crashNotice=1')
+  try {
+    await page.getByTestId('page-home').waitFor()
+    const notice = page.getByTestId('startup-notice-crash-reporting')
+    await notice.waitFor()
+    await notice.getByText('软件出错时会发送错误报告', { exact: true }).waitFor()
+    assert.match(await notice.textContent(), /海外的错误收集服务/)
+    assert.equal(await notice.getByRole('button', { name: '关闭', exact: true }).count(), 0)
+    await page.getByTestId('startup-notice-crash-reporting-secondary').click()
+    await expect.poll(() => page.getByTestId('startup-notice-crash-reporting').count()).toBe(0)
+    const saves = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'saveSettings').map((entry) => entry.args[0]))
+    assert.deepEqual(saves.at(-1), { version: 2, crashReportingNoticeShown: true, crashReporting: false })
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('acknowledging the crash reporting notice keeps reporting on', async () => {
+  const page = await open('crashNotice=1')
+  try {
+    await page.getByTestId('page-home').waitFor()
+    await page.getByTestId('startup-notice-crash-reporting-primary').click()
+    await expect.poll(() => page.getByTestId('startup-notice-crash-reporting').count()).toBe(0)
+    const saves = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'saveSettings').map((entry) => entry.args[0]))
+    assert.deepEqual(saves.at(-1), { version: 2, crashReportingNoticeShown: true })
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('the crash reporting notice waits until the user is signed in', async () => {
+  const page = await open('crashNotice=1&guest=1')
+  try {
+    await page.getByTestId('welcome-page').waitFor()
+    assert.equal(await page.getByTestId('startup-notice-crash-reporting').count(), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
 // 显卡接连崩溃后这次自动改用了兼容方式显示：角落里说一句，并让用户二选一，
 // 不放关闭叉（关掉等于没选）。两个选择都写进设置，「恢复」接着给一颗「现在重开」。
 test('an automatic display fallback explains itself and keeps the fallback when chosen', async () => {
