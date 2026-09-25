@@ -88,6 +88,32 @@ test('a page chosen from the command palette also receives focus once the palett
   } finally { await page.close() }
 })
 
+test('the command palette finds tutorials by the problem and hands unmatched text to the tutorial search', async () => {
+  const page = await open()
+  try {
+    await page.keyboard.press('Control+k')
+    const search = page.getByRole('searchbox', { name: '搜索页面、设置和教程' })
+    await search.waitFor()
+    await search.fill('打不开')
+    const first = page.getByTestId('command-palette').getByRole('option').first()
+    assert.match(await first.getAttribute('aria-label'), /^教程 · /)
+    await page.getByTestId('command-group-tutorial').waitFor()
+    await page.keyboard.press('Enter')
+    await page.getByTestId('page-tutorial').waitFor()
+    assert.equal(await page.getByTestId('command-palette').count(), 0)
+
+    await page.keyboard.press('Control+k')
+    await search.fill('qqqq')
+    assert.equal(await page.getByTestId('command-palette').getByRole('option').count(), 0)
+    await page.getByText('没找到相关的页面或设置。').waitFor()
+    await page.getByTestId('command-search-tutorial').click()
+    await page.getByTestId('page-tutorial').waitFor()
+    // 教程页上一步已经开着，页面出现时新的搜索词可能还没落进输入框，要等它落进去。
+    await page.waitForFunction(() => document.querySelector('[data-testid="tutorial-search"]')?.value === 'qqqq')
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('on a short screen the sidebar keeps Settings in view and scrolls the opened More list into view', async () => {
   const page = await open()
   try {

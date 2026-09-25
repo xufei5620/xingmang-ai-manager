@@ -15,11 +15,17 @@ import { balanceFailureLabel, balanceStatusText, type BalanceStatusView } from '
 import { OfflineBanner } from './OfflineBanner'
 import { offlineActionMessage } from './online-status'
 import { useOnlineStatus } from './useOnlineStatus'
+import { commandGroupLabels, searchCommands, type CommandResult } from './command-search'
 import { accelerationBonusSeconds, isAccelerationBonusCode, type AccelerationRedemptionResult } from '../../../../electron/acceleration-contract'
 
 interface AccountView extends BalanceStatusView { signedIn: boolean; supportsBilling?: boolean; supportsAnnouncements?: boolean; displayName?: string; email?: string; sourceLabel?: string; balance?: string; identity?: AvatarIdentity }
 interface Adapter {
-  navigate?(page: PageId): void
+  /** section 是那一页里要落的分页、分组或教程主题；缺省 = 只跳页。 */
+  navigate?(page: PageId, section?: string): void
+  /** 顶部搜索什么都没搜到时，把输入的字带去教程页接着搜。 */
+  searchTutorial?(query: string): void
+  /** 当前账号能看到的个人中心分页；缺省 = 全部。 */
+  accountTabVisible?(tab: string): boolean
   openAccount?(): void
   switchAccount?(): void
   topUp?(): void
@@ -78,21 +84,32 @@ export function Shell({ activePage, account, platform, adapter, environment, bal
   const commandEpoch = useRef(0)
   const bonusFlight = useRef<object | null>(null)
   const searchRef = useRef<HTMLInputElement>(null)
+  const resultsRef = useRef<HTMLDivElement>(null)
   const viewport = useRef<HTMLElement>(null)
   const scroll = useRef(new Map<PageId, number>())
   const navigateRef = useRef(adapter.navigate)
   navigateRef.current = adapter.navigate
   const shownPage = useRef<PageId | null>(null)
   const [pageAnnouncement, setPageAnnouncement] = useState('')
-  const results = pageRegistry.filter((page) => `${page.label} ${page.id}`.toLowerCase().includes(query.toLowerCase().trim()))
+  const results = searchCommands(query, { accountTabVisible: adapter.accountTabVisible })
   const bonusAction = Boolean(adapter.redeemAccelerationCode && isAccelerationBonusCode(query))
   const resultCount = bonusAction ? 1 : results.length
   useEffect(() => () => { commandEpoch.current++; bonusFlight.current = null }, [])
+  // 结果比列表高时，用方向键选到下面的项也要滚进来。
+  useEffect(() => {
+    resultsRef.current?.querySelector('[aria-selected="true"]')?.scrollIntoView?.({ block: 'nearest' })
+  }, [selection])
   function openCommand() {
     commandEpoch.current++
     setCommand(true); setQuery(''); setSelection(0); setBonusFeedback(null)
   }
   function closeCommand() { commandEpoch.current++; setCommand(false) }
+  function openResult(item: CommandResult) {
+    adapter.navigate?.(item.page, item.section); closeCommand()
+  }
+  function searchTutorial() {
+    adapter.searchTutorial?.(query.trim().slice(0, 200)); closeCommand()
+  }
   async function redeemBonus() {
     if (bonusFlight.current || !isAccelerationBonusCode(query) || !adapter.redeemAccelerationCode) return
     if (offline) { setBonusFeedback({ error: true, text: offlineActionMessage }); return }
@@ -263,20 +280,31 @@ export function Shell({ activePage, account, platform, adapter, environment, bal
       </div>
     </div>
     {command && <Dialog open title="搜索、打开、跳转" onClose={closeCommand} width={640} initialFocus={searchRef} testId="command-palette">
-      <Input ref={searchRef} type="search" aria-label="搜索页面" value={query} onChange={(event) => { commandEpoch.current++; setQuery(event.target.value); setSelection(0); setBonusFeedback(null) }} onKeyDown={(event) => {
+      <Input ref={searchRef} type="search" aria-label="搜索页面、设置和教程" value={query} onChange={(event) => { commandEpoch.current++; setQuery(event.target.value); setSelection(0); setBonusFeedback(null) }} onKeyDown={(event) => {
         if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return
         if (event.key === 'ArrowDown') { event.preventDefault(); setSelection((current) => resultCount ? (current + 1) % resultCount : 0) }
         else if (event.key === 'ArrowUp') { event.preventDefault(); setSelection((current) => resultCount ? (current + resultCount - 1) % resultCount : 0) }
         else if (event.key === 'Enter' && bonusAction) { event.preventDefault(); void redeemBonus() }
-        else if (event.key === 'Enter' && results[selection]) { event.preventDefault(); adapter.navigate?.(results[selection].id); closeCommand() }
+        else if (event.key === 'Enter' && results[selection]) { event.preventDefault(); openResult(results[selection]) }
       }} />
-      <div className="v2-command-results" role="listbox" aria-label="页面与操作">{bonusAction
+      <div ref={resultsRef} className="v2-command-results" role="listbox" aria-label="页面与操作">{bonusAction
         ? <button role="option" aria-selected={selection === 0} aria-busy={bonusBusy} disabled={bonusBusy} type="button" data-testid="command-acceleration-bonus" onClick={() => { void redeemBonus() }}>
           {bonusBusy ? <RefreshCw size={18} className="xm-spin" aria-hidden="true" /> : <Zap size={18} aria-hidden="true" />}<span>{bonusBusy ? '正在领取…' : `领取 ${accelerationBonusSeconds / 60} 分钟加速时长`}</span><ArrowRight size={14} aria-hidden="true" />
         </button>
-        : results.map((item, index) => <button role="option" aria-selected={index === selection} type="button" key={item.id} onClick={() => { adapter.navigate?.(item.id); closeCommand() }}><item.icon size={18} /><span>{item.label}</span><ArrowRight size={14} /></button>)}</div>
+        : results.map((item, index) => {
+          const Icon = pageRegistry.find((page) => page.id === item.page)!.icon
+          const heading = index === 0 || results[index - 1].group !== item.group
+          // 分组标题只给看的人；读屏在每一项的名字里听到它属于哪一组。
+          return <div className="v2-command-entry" key={item.key}>
+            {heading && <p className="v2-command-group" aria-hidden="true" data-testid={`command-group-${item.group}`}>{commandGroupLabels[item.group]}</p>}
+            <button role="option" aria-selected={index === selection} aria-label={item.group === 'page' ? item.label : `${commandGroupLabels[item.group]} · ${item.label}`} type="button" data-testid={`command-result-${item.key}`} onClick={() => openResult(item)}><Icon size={18} aria-hidden="true" /><span>{item.label}</span><ArrowRight size={14} aria-hidden="true" /></button>
+          </div>
+        })}</div>
       {bonusFeedback && <p role={bonusFeedback.error ? 'alert' : 'status'} data-testid="command-acceleration-feedback">{bonusFeedback.text}</p>}
-      {!resultCount && <p role="status">没有匹配的页面</p>}
+      {!resultCount && <div className="v2-command-empty">
+        <p role="status">没找到相关的页面或设置。</p>
+        {adapter.searchTutorial && query.trim() && <Button size="sm" icon={Search} onClick={searchTutorial} testId="command-search-tutorial">{`去教程里搜「${query.trim().slice(0, 40)}」`}</Button>}
+      </div>}
     </Dialog>}
     <Coachmark open={Boolean(tourOpen && !command)} {...shellTour[tourStep]} step={tourStep + 1} count={shellTour.length} onNext={() => tourStep + 1 === shellTour.length ? onTourClose?.() : setTourStep((value) => value + 1)} onClose={() => onTourClose?.()} testId="shell-guide-tip" />
   </div>

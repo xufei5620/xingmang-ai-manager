@@ -7,26 +7,28 @@ import type { UpdateFailedStep, UpdateSnapshot } from '../../../electron/ipc-con
 export const macDesktopTutorialTopic = 'mac-desktop-apps'
 /** 同理：教程里讲「Mac 上怎么自己装 Node.js 和 Python」的那一章。 */
 export const macRuntimeTutorialTopic = 'runtime-mac'
+// keywords 是顶部搜索用的常用说法：小白搜「余额」「Key」「开机」时也要能找到对应的分页，
+// 界面上不显示。
 export const accountTabs = [
-  { value: 'overview', label: '我的账号' },
-  { value: 'dashboard', label: '用量看板' },
-  { value: 'keys', label: '密钥' },
-  { value: 'usage', label: '调用明细' },
-  { value: 'tasks', label: '异步任务' },
-  { value: 'recharge', label: '充值与订阅' },
-  { value: 'orders', label: '我的订单' },
-  { value: 'invite', label: '邀请返利' },
-  { value: 'devices', label: '登录设备' },
+  { value: 'overview', label: '我的账号', keywords: ['账号', '资料', '邮箱', '密码', '改密码'] },
+  { value: 'dashboard', label: '用量看板', keywords: ['用量', '统计', '消耗', '花了多少'] },
+  { value: 'keys', label: '密钥', keywords: ['Key', 'API Key', '令牌', '秘钥', 'token'] },
+  { value: 'usage', label: '调用明细', keywords: ['明细', '扣费', '消费', '扣了多少', '花费'] },
+  { value: 'tasks', label: '异步任务', keywords: ['任务', '生成进度'] },
+  { value: 'recharge', label: '充值与订阅', keywords: ['充值', '余额', '买', '购买', '续费', '付款', '支付', '订阅', '套餐', '兑换'] },
+  { value: 'orders', label: '我的订单', keywords: ['订单', '到账', '没到账', '付款记录'] },
+  { value: 'invite', label: '邀请返利', keywords: ['邀请', '返利', '推广', '分享'] },
+  { value: 'devices', label: '登录设备', keywords: ['设备', '下线', '其他电脑', '登录记录'] },
 ] as const
 export const settingsGroups = [
-  { value: 'appearance', label: '外观' },
-  { value: 'startup', label: '启动与关闭' },
-  { value: 'tools', label: '工具' },
-  { value: 'network', label: '网络' },
-  { value: 'notifications', label: '通知' },
-  { value: 'account', label: '账号' },
-  { value: 'privacy', label: '隐私与数据' },
-  { value: 'about', label: '关于' },
+  { value: 'appearance', label: '外观', keywords: ['主题', '深色', '夜间', '颜色', '显卡', '显示', '语言'] },
+  { value: 'startup', label: '启动与关闭', keywords: ['开机', '自启', '自动启动', '关闭', '托盘', '最小化', '自动更新'] },
+  { value: 'tools', label: '工具', keywords: ['工作文件夹', '文件夹', '终端', '安装位置', '装在哪', '服务器'] },
+  { value: 'network', label: '网络', keywords: ['下载来源', '网络', '证书', '连不上'] },
+  { value: 'notifications', label: '通知', keywords: ['通知', '提醒', '消息提示'] },
+  { value: 'account', label: '账号', keywords: ['记住密码', '退出登录', '登出'] },
+  { value: 'privacy', label: '隐私与数据', keywords: ['隐私', '数据', '崩溃', '上报', '日志', '统计'] },
+  { value: 'about', label: '关于', keywords: ['版本', '版本号', '许可'] },
 ] as const
 export const scopeOptions = [
   { value: 'all', label: '全部范围' },
