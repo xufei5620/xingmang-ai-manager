@@ -599,6 +599,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     //「没有正在进行的安装」。
     let preparing = plan.prepare.length > 0
     let outcome: ToolInstallOutcome = 'installed'
+    const updating = Boolean(presentTools(state).find((tool) => tool.id === id)?.status.installed)
     // 收尾必须留在同一个安装任务里。任务一结束工具行就回落到安装前的快照：
     // 同步 Key 和重新检测还没跑完，版本号已经退回旧值、「更新」按钮跟着回弹，
     // 用户看到的是「装完了又要装一次」（yoyo 2026-09-20 真机反馈①）。
@@ -625,7 +626,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       }
       report(installedToolSyncLabel)
       await syncAfterToolInstalled(id)
-    }, { cancel: async () => preparing ? { cancelled: false, reason: '正在准备运行环境，这一步不能取消；准备好后会接着安装工具。' } : toolsApi.cancelInstall(id) })
+    }, { cancel: async () => preparing ? { cancelled: false, reason: '正在准备运行环境，这一步不能取消；准备好后会接着安装工具。' } : toolsApi.cancelInstall(id), notice: { updating, unfinished: () => outcome === 'restart' } })
     // run 返回 false 只有两种：用户取消了，或同一个工具已经有一次安装在跑。
     return finished ? outcome : 'skipped'
   }
@@ -671,7 +672,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     // Git 按钮只在 Windows 出现（其余平台的装法以文案给出）。以前点了是打开官网让
     // 客户自己下安装包，小白卡在这一步（yoyo 2026-09-24），现在由主进程按当前用户代装。
     if (runtime === 'git') {
-      const done = await toolbox.run('git', '正在准备安装 Git', () => toolsApi.installGit())
+      const done = await toolbox.run('git', '正在准备安装 Git', () => toolsApi.installGit(), { notice: {} })
       await toolbox.refresh(true)
       if (done && mounted.current) toast.show('Git 装好了。', 'ok')
       return
@@ -682,7 +683,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     const done: { outcome?: RuntimeInstallOutcome } = {}
     await toolbox.run(runtime, '正在准备运行环境', async () => {
       done.outcome = describeRuntimeInstallOutcome(runtime, await toolsApi.prepareRuntime(runtime))
-    })
+    }, { notice: { unfinished: () => Boolean(done.outcome?.restartRequired) } })
     await toolbox.refresh(true)
     if (!done.outcome || !mounted.current) return
     if (done.outcome.restartRequired) setRuntimeRestart(true)
@@ -691,7 +692,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   async function installExternal(id: ExternalToolId) {
     const epoch = accountEpoch.current
     try {
-      const completed = await toolbox.run(id, '正在安装', () => toolsApi.installExternal(id))
+      const completed = await toolbox.run(id, '正在安装', () => toolsApi.installExternal(id), { notice: {} })
       if (!completed || !mounted.current || epoch !== accountEpoch.current) return
       await toolbox.refreshExternal()
       if (mounted.current && epoch === accountEpoch.current) toast.show('客户端已安装，点击“配置”选择密钥和模型。', 'ok')

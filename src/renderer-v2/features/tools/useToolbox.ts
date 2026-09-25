@@ -4,6 +4,7 @@ import { createToolsApi, withConfigFailure, withToolboxConfig, type ToolboxParti
 import type { ToolboxSnapshot } from './model'
 import { platformApi } from '../../platform-api'
 import { errorMessage } from '../../business-common'
+import { isWindowInFront, resolveInstallNoticeOutcome, type InstallNoticePlan } from './install-notice'
 
 export interface ToolJob {
   label: string
@@ -18,6 +19,8 @@ export interface ToolJob {
 export interface ToolJobOptions {
   /** 提供后工具行会出现「取消」；返回主进程是否真的接受了这次取消。 */
   cancel?: () => Promise<InstallCancelResult>
+  /** 装好、更新好或没装上时发一条系统通知（设置里「安装 / 更新结果」管着）；缺省不发。 */
+  notice?: InstallNoticePlan
 }
 
 /** 让长任务在运行途中改写工具行上那句话（安装完成后还要同步 Key、重新检测）。 */
@@ -208,16 +211,21 @@ export function useToolbox(bridge: XingmangApi | null, enabled: boolean, scope: 
         return { ...current, [key]: { ...job, label: next, percent, log: [...job.log, next].slice(-200) } }
       })
     }
+    // 任务的 key 就是工具编号（claude、node、git……），主进程按它换成工具名。
+    const notify = (succeeded: boolean) => {
+      const outcome = options?.notice && resolveInstallNoticeOutcome(options.notice, succeeded)
+      if (!outcome || isWindowInFront(typeof document === 'undefined' ? undefined : document)) return
+      void platformApi()?.notifyActivity('install', `install:${key}:${outcome}:${Date.now()}`, { tool: key, outcome }).catch(() => undefined)
+    }
     try {
       await operation(report)
-      if (!key.startsWith('launch:') && /安装|更新|准备运行环境/.test(label)) {
-        void platformApi()?.notifyActivity('install', `install:${key}:${Date.now()}`).catch(() => undefined)
-      }
+      notify(true)
       return true
     } catch (cause) {
       // 用户自己点的取消不是失败：吞掉这次拒绝，调用方按「没做完」处理，
-      // 界面就不会再弹一条红色的「安装工具没有完成」。
+      // 界面就不会再弹一条红色的「安装工具没有完成」，也不发「没装上」的通知。
       if (cancelRequests.current.has(key)) return false
+      notify(false)
       throw cause
     } finally {
       locks.current.delete(key)

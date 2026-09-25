@@ -167,8 +167,8 @@ export const skinOptions = [
 export const notificationOptions = [
   {
     value: 'install',
-    label: '安装 / 更新完成',
-    description: '工具准备完成后提醒你查看结果',
+    label: '安装 / 更新结果',
+    description: '工具装好或没装上时提醒你',
   },
   {
     value: 'balance',

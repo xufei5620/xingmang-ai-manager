@@ -281,6 +281,46 @@ describe('platform IPC audit log', () => {
     })
   })
 
+  it('passes a rebuilt install notice and rejects any other shape', async () => {
+    const sink = logged()
+    const { h, callbacks, service } = registered(sink.log)
+    const notify = callbacks.get(platformChannels.notifyActivity)!
+    await notify(h.event, 'install', 'install:claude:installed:1', {
+      tool: 'claude',
+      outcome: 'installed',
+      title: 'injected',
+    })
+    expect(service.notifyActivity).toHaveBeenLastCalledWith(
+      'install',
+      'install:claude:installed:1',
+      { tool: 'claude', outcome: 'installed' },
+    )
+    expect(sink.entries[0]!.detail).toMatchObject({
+      kind: 'install',
+      tool: 'claude',
+      outcome: 'installed',
+    })
+    for (const detail of [
+      null,
+      'claude',
+      { tool: 'claude', outcome: 'done' },
+      { tool: 'Claude Code 装好了', outcome: 'installed' },
+    ])
+      expect(() => notify(h.event, 'install', 'install:x:1', detail)).toThrow(
+        '通知内容',
+      )
+    // 只有安装那一类能带工具名，别的通知还是固定文案。
+    expect(() =>
+      notify(h.event, 'task', 'chat:1', {
+        tool: 'claude',
+        outcome: 'installed',
+      }),
+    ).toThrow('通知内容')
+    expect(() =>
+      notify(h.event, 'install', 'install:x:1', undefined, 'extra'),
+    ).toThrow('参数')
+  })
+
   it('records a rejected sender as a security event naming the page', () => {
     const sink = logged()
     const { h, callbacks } = registered(sink.log)

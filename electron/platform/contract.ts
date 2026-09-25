@@ -2,6 +2,16 @@ export type PlatformThemePreference = 'system' | 'light' | 'dark'
 /** 渲染层能自己请求的活动通知；文案固定在主进程，渲染层只给事件编号。 */
 export type PlatformActivityKind =
   'install' | 'balance' | 'task' | 'cliUpdate' | 'announcement'
+/**
+ * 安装类通知要说清是哪个工具、成了没有。渲染层只给工具编号和结果，标题与正文
+ * 仍由主进程按固定名单拼出来；名单外的编号一律说成「工具」。
+ */
+export type PlatformInstallOutcome =
+  'installed' | 'updated' | 'installFailed' | 'updateFailed'
+export interface PlatformInstallNotice {
+  tool: string
+  outcome: PlatformInstallOutcome
+}
 // 加速那两条（快用完、已断开）是主进程自己发的：窗口缩到托盘之后渲染层的计时
 // 与轮询都停着，而「时长用完」恰恰只在那时候发生。渲染层不能请求这一类，但用户
 // 要能在设置页单独关掉它，所以它进偏好集合、不进 PlatformActivityKind。
@@ -74,6 +84,7 @@ export interface XingmangPlatformApi {
   notifyActivity(
     kind: PlatformActivityKind,
     eventKey: string,
+    install?: PlatformInstallNotice,
   ): Promise<PlatformNotificationResult>
   onStateChanged(listener: (state: PlatformSystemState) => void): () => void
 }
