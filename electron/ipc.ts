@@ -84,6 +84,8 @@ import type {
   SystemService,
 } from './system-service'
 import { ensureSafeDataDirectory, writeAtomicSafeUtf8File } from './safe-local-data'
+import { readBoundedUtf8File } from './bounded-file'
+import { buildDataTransferFile, conversationFileName, dataTransferFileName, dataTransferInvalidMessage, MAX_DATA_TRANSFER_BYTES, parseChatConversationExport, parseDataTransferExportInput, parseDataTransferFile, planPortableSettingsImport } from './data-transfer'
 import { assertOpenableConfigDirectory } from './config-directory'
 import { resolveOpenableSessionWorkspace } from './session-workspace'
 import { resolveRevealableExportedFile } from './exported-file'
@@ -159,6 +161,9 @@ export interface IpcRegistrationOptions {
   // 「新建一个项目文件夹」优先建在它下面（starter-workspace.ts，被云盘同步时退到主目录）；
   // main.ts 传系统「文档」目录（app.getPath('documents')）。省略 = 主目录下的 Documents。
   documentsDirectory?: () => string
+  // 「搬到新电脑」和「导出这段对话」的保存框默认落在桌面；main.ts 传 app.getPath('desktop')。
+  // 省略 = 主目录下的 Desktop。
+  desktopDirectory?: () => string
   sessionsService: CodexSessionsService
   providerSessionsService: ProviderSessionsService
   backupStore: ConfigBackupStore
@@ -1310,6 +1315,9 @@ const ipcOperationLabels: Readonly<Record<string, string>> = {
   'account:update-key': '星芒账号 Key 更新',
   'chat-history:read': '聊天记录读取',
   'chat-history:write': '聊天记录保存',
+  'chat-history:export-text': '聊天对话导出',
+  'data-transfer:export': '聊天记录与设置导出',
+  'data-transfer:import': '聊天记录与设置导入',
 }
 
 /** 只收已知工具，去重；一次问的个数不超过工具总数（I5）。 */
@@ -1436,6 +1444,8 @@ function ipcSuccessMessage(channel: string, args: unknown[], result: unknown): s
   if ((channel === 'diagnostics:export' || channel === 'runtime-logs:export-feedback') && result === null) {
     return '已取消导出报告'
   }
+  if ((channel === 'chat-history:export-text' || channel === 'data-transfer:export') && result === null) return '已取消导出'
+  if (channel === 'data-transfer:import' && result === null) return '已取消导入'
   if (channel === 'config:save' && provider) return `${provider} 配置已保存`
   if (channel === 'cli:install' && provider) return `${provider} 安装或更新已完成`
   if (channel === 'runtime:install-node') return 'Node.js LTS 自动安装完成'
@@ -3283,6 +3293,62 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   registerTrustedHandler('chat-history:write', (_event, input: unknown) => {
     if (!options.chatHistory) throw new Error('聊天记录存储未就绪')
     return options.chatHistory.write(parseAiChatHistoryWrite(input))
+  })
+  function desktopDirectory(): string {
+    try {
+      if (options.desktopDirectory) return options.desktopDirectory()
+    } catch {
+      // app.getPath 拿不到桌面时退到主目录下的 Desktop，保存框里用户还能自己换。
+    }
+    return path.join(os.homedir(), 'Desktop')
+  }
+  registerTrustedHandler('chat-history:export-text', async (_event, input: unknown) => {
+    const { title, text } = parseChatConversationExport(input)
+    const result = await dialog.showSaveDialog({
+      title: '导出这段对话',
+      defaultPath: path.join(desktopDirectory(), conversationFileName(title)),
+      filters: [{ name: '文本文件', extensions: ['txt'] }],
+    })
+    if (result.canceled || !result.filePath) return null
+    await writeAtomicSafeUtf8File(result.filePath, text, '聊天对话导出文件')
+    rememberExportedFile(result.filePath)
+    return { outputPath: result.filePath }
+  })
+  // 「搬到新电脑」：设置由这里自己从 settings.json 挑，渲染层只交对话；文件里没有 Key、
+  // 密码和登录状态（data-transfer.ts）。
+  registerTrustedHandler('data-transfer:export', async (_event, input: unknown) => {
+    const exportInput = parseDataTransferExportInput(input)
+    const now = new Date()
+    const content = buildDataTransferFile(service.readStoredConfig(), exportInput, now)
+    const result = await dialog.showSaveDialog({
+      title: '导出聊天记录和设置',
+      defaultPath: path.join(desktopDirectory(), dataTransferFileName(now)),
+      filters: [{ name: '星芒聊天记录与设置', extensions: ['json'] }],
+    })
+    if (result.canceled || !result.filePath) return null
+    await writeAtomicSafeUtf8File(result.filePath, content, '聊天记录与设置导出文件')
+    rememberExportedFile(result.filePath)
+    return { outputPath: result.filePath, conversations: exportInput.conversations.length }
+  })
+  // 只读、只解析，什么都不写：对话交给渲染层逐条校验后合并，设置由渲染层走 settings:save，
+  // 改过的那几项先问用户。
+  registerTrustedHandler('data-transfer:import', async () => {
+    const result = await dialog.showOpenDialog({
+      title: '选择导出的聊天记录和设置',
+      properties: ['openFile'],
+      filters: [{ name: '星芒聊天记录与设置', extensions: ['json'] }],
+    })
+    const filePath = result.canceled ? undefined : result.filePaths[0]
+    if (!filePath) return null
+    let raw: string
+    try {
+      raw = await readBoundedUtf8File(filePath, MAX_DATA_TRANSFER_BYTES, '聊天记录与设置文件')
+    } catch {
+      // 太大、是链接、读不了：对用户都是「这不是一份能导入的文件」。
+      throw new Error(dataTransferInvalidMessage)
+    }
+    const parsed = parseDataTransferFile(raw)
+    return { conversations: parsed.conversations, ...planPortableSettingsImport(service.readStoredConfig(), parsed.settings) }
   })
 
   // A used-up per-tool cap reaches the self-check as the same 401 a revoked

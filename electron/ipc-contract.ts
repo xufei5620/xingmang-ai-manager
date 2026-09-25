@@ -513,6 +513,38 @@ export interface AiChatHistoryWrite {
   put: AiChatHistoryFile[]
 }
 
+/**
+ * 「搬到新电脑」导出：聊天对话由渲染层按它自己的格式整理好交过来（已去掉图片和
+ * 运行时字段），设置由主进程自己从 settings.json 里挑能带走的几项，渲染层塞不进别的。
+ */
+export interface DataTransferExportInput {
+  conversations: unknown[]
+}
+
+export interface DataTransferExportResult {
+  outputPath: string
+  conversations: number
+}
+
+/**
+ * 「搬到新电脑」导入读出来的内容，还没有写进任何地方。对话由渲染层逐条严格校验后
+ * 合并；设置分两份：settings 是这台电脑上还没改过、可以直接换的，conflictingSettings
+ * 是这台电脑上已经改过、和文件里不一样的，要先问用户。
+ */
+export interface DataTransferImportPreview {
+  conversations: unknown[]
+  settings: AppSettingsUpdate
+  conflictingSettings: AppSettingsUpdate
+  /** conflictingSettings 对应的设置名，给询问框用。 */
+  conflictLabels: string[]
+}
+
+/** 聊天页「导出这段对话」：渲染层排好的纯文本。 */
+export interface ChatConversationExportInput {
+  title: string
+  text: string
+}
+
 export interface AiChatCancelResult {
   canceled: boolean
   mayStillComplete: boolean
@@ -1006,6 +1038,9 @@ export interface XingmangInvokeContract {
   showAiChatAssetMenu: IpcInvokeDefinition<'chat:asset-menu', [assetId: string], void>
   readAiChatHistory: IpcInvokeDefinition<'chat-history:read', [scope: string], AiChatHistorySnapshot>
   writeAiChatHistory: IpcInvokeDefinition<'chat-history:write', [input: AiChatHistoryWrite], void>
+  exportAiChatConversation: IpcInvokeDefinition<'chat-history:export-text', [input: ChatConversationExportInput], { outputPath: string } | null>
+  exportAppData: IpcInvokeDefinition<'data-transfer:export', [input: DataTransferExportInput], DataTransferExportResult | null>
+  importAppData: IpcInvokeDefinition<'data-transfer:import', [], DataTransferImportPreview | null>
   /**
    * 连接自检：用该工具配置文件里真正写着的 Key、服务地址和模型，向星芒服务
    * 发一次最小请求，把失败归到网络 / 密钥 / 额度 / 分组 / 模型 / 协议中的
@@ -1252,6 +1287,9 @@ export const ipcInvokeChannels = {
   showAiChatAssetMenu: 'chat:asset-menu',
   readAiChatHistory: 'chat-history:read',
   writeAiChatHistory: 'chat-history:write',
+  exportAiChatConversation: 'chat-history:export-text',
+  exportAppData: 'data-transfer:export',
+  importAppData: 'data-transfer:import',
   checkProviderConnection: 'diagnostics:check-connection',
   checkExternalClientConnection: 'diagnostics:check-external-connection',
   getAccountKeyOptions: 'account:get-key-options',
