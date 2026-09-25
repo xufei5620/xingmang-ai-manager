@@ -16,6 +16,7 @@ import {
   codexApiKeyAuthSnapshotName,
   codexAuthSnapshotPaths,
   codexChatGptAuthSnapshotName,
+  applyCodexRelayMachineDefaults,
   codexConfigSnapshotPaths,
   defaultCodexRelayProvider,
   ensureCodexPermissionDefaultsInConfigText,
@@ -790,6 +791,56 @@ describe('native CLI configuration files', () => {
     switchProviderToOfficialAccount('codex', roots, {}, providerBaseUrls)
 
     expect(TOML.parse(fs.readFileSync(configPath, 'utf8'))).not.toHaveProperty('analytics')
+  })
+
+  it('keeps the computer awake and skips the admin sandbox prompt only where Codex supports it', () => {
+    const windows: Record<string, unknown> = {}
+    applyCodexRelayMachineDefaults(windows, 'win32')
+    expect(windows).toEqual({ features: { prevent_idle_sleep: true }, windows: { sandbox: 'unelevated' } })
+
+    // [windows] is a Windows-only table; macOS has no elevation prompt to avoid.
+    const mac: Record<string, unknown> = {}
+    applyCodexRelayMachineDefaults(mac, 'darwin')
+    expect(mac).toEqual({ features: { prevent_idle_sleep: true } })
+  })
+
+  it('leaves Codex sleep and sandbox choices the user already made', () => {
+    const chosen: Record<string, unknown> = {
+      features: { prevent_idle_sleep: false, goals: true },
+      windows: { sandbox: 'elevated' },
+    }
+    applyCodexRelayMachineDefaults(chosen, 'win32')
+    expect(chosen).toEqual({
+      features: { prevent_idle_sleep: false, goals: true },
+      windows: { sandbox: 'elevated' },
+    })
+
+    // A malformed scalar is the user's problem to see in Codex, not ours to overwrite.
+    const scalar: Record<string, unknown> = { features: 'off', windows: 'x' }
+    applyCodexRelayMachineDefaults(scalar, 'win32')
+    expect(scalar).toEqual({ features: 'off', windows: 'x' })
+  })
+
+  it('writes the Codex sleep and sandbox defaults on both a fresh install and an existing config', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const configPath = codexConfigSnapshotPaths(roots).active
+    const expectedWindows = process.platform === 'win32' ? { sandbox: 'unelevated' } : undefined
+
+    saveProviderConfig('codex', 'sk-relay', testModels.codex, 'reset', roots, {}, providerBaseUrls)
+    const fresh = TOML.parse(fs.readFileSync(configPath, 'utf8'))
+    expect(fresh.features).toEqual({ goals: true, prevent_idle_sleep: true })
+    expect(fresh.windows).toEqual(expectedWindows)
+
+    const existingRoots = providerRoots(temporaryHome())
+    const existingPath = codexConfigSnapshotPaths(existingRoots).active
+    fs.mkdirSync(path.dirname(existingPath), { recursive: true })
+    fs.writeFileSync(existingPath, '[custom_official]\nenabled = true\n', 'utf8')
+    saveProviderConfig('codex', 'sk-relay', testModels.codex, 'merge', existingRoots, {}, providerBaseUrls)
+    const merged = TOML.parse(fs.readFileSync(existingPath, 'utf8'))
+    expect(merged.features).toEqual({ prevent_idle_sleep: true })
+    expect(merged.windows).toEqual(expectedWindows)
+    expect(merged.custom_official).toEqual({ enabled: true })
   })
 
   it('writes no Codex settings that the recommended version no longer recognizes', () => {
