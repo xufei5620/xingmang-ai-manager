@@ -82,6 +82,13 @@ jobs:
             if [ "$code" = 404 ]; then echo "线上没有 $manifest，跳过这个平台"; continue; fi
             [ "$code" = 200 ] || { echo "::error::读取线上 $manifest 失败（HTTP $code）"; exit 1; }
             live=$(node scripts/rollback-release.cjs version --manifest "$RUNNER_TEMP/live-$manifest" --name "$manifest")
+            # 两个平台分开判断（#547）：只有一边升到了坏版本时，另一边线上本来就是要退回
+            # 的那一版，跳过它，别让它连带挡住另一边的回退。线上比目标还旧照样报错停下。
+            action=$(node scripts/rollback-release.cjs plan --live "$live" --expect "$target")
+            if [ "$action" = skip ]; then
+              echo "$manifest：线上已经是 $target，这个平台不用退回"
+              continue
+            fi
             code=$(curl --silent --show-error --max-time 60 --output "$RUNNER_TEMP/restore/$manifest" --write-out '%{http_code}' "$PUBLIC_BASE/manifests/$target/$manifest")
             if [ "$code" = 404 ]; then
               echo "::warning::没有 $target 的 $manifest 备份，这个平台保持线上的 $live 不动"
@@ -99,7 +106,7 @@ jobs:
             platforms="$platforms $manifest"
           done
           if [ -z "$platforms" ]; then
-            echo "::error::两个平台都没有 $target 的备份清单，什么也没改"
+            echo "::error::没有哪个平台需要退回到 $target（要么已经是这个版本，要么没有它的备份清单），什么也没改"
             exit 1
           fi
           echo "target=$target" >> "$GITHUB_OUTPUT"

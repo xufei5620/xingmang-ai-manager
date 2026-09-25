@@ -386,7 +386,7 @@ test('the release tag is never moved or force-pushed', () => {
 
 
 // #493：往更新目录写任何东西之前先确认这一版可以发。
-const { PublishGuardError, assessPublish } = require('./publish-guard.cjs')
+const { PublishGuardError, assertNotWithdrawn, assessPublish } = require('./publish-guard.cjs')
 
 function manifestText(version, bytes, name = `XingMang-AI-Manager-${version}-Setup.exe`) {
   const sha512 = require('node:crypto').createHash('sha512').update(bytes).digest('base64')
@@ -411,7 +411,7 @@ test('the publish guard allows a first release, an upgrade and a rerun of the sa
   assert.throws(() => assessPublish(ours, '<!doctype html><html></html>', 'latest-mac.yml'), /HTML/)
 })
 
-function runGuardStep({ existingTagSha = null, live = {}, artifacts }) {
+function runGuardStep({ existingTagSha = null, tagLookupFails = false, live = {}, artifacts }) {
   const step = publishJob.steps.find((entry) => /Refuse to overwrite a version that already shipped/.test(entry.name || ''))
   const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-publish-guard-'))
   const binDirectory = path.join(workspace, 'bin')
@@ -425,7 +425,10 @@ function runGuardStep({ existingTagSha = null, live = {}, artifacts }) {
   for (const [name, text] of Object.entries(live)) fs.writeFileSync(path.join(liveDirectory, name), text)
   const ghStub = `#!/bin/bash
 case "$2" in
-  */git/ref/tags/*) ${existingTagSha ? `printf 'commit %s\\n' ${JSON.stringify(existingTagSha)}` : 'exit 1'} ;;
+  */git/matching-refs/tags/*) ${tagLookupFails
+    ? `echo 'gh: Server Error (HTTP 502)' >&2; exit 1`
+    // 按前缀匹配：v0.2.110 也会被列出来，只能认完整的 ref 名。
+    : `printf 'refs/tags/v0.2.110 commit %s\\n' ${JSON.stringify('c'.repeat(40))}${existingTagSha ? `; printf 'refs/tags/v0.2.11 commit %s\\n' ${JSON.stringify(existingTagSha)}` : ''}`} ;;
 esac
 exit 0
 `
@@ -499,4 +502,47 @@ test('publishing macOS later for a version Windows already shipped from the same
   const first = runGuardStep({ artifacts: { 'latest-mac.yml': ours } })
   assert.equal(first.status, 0, first.output)
   assert.match(first.output, /第一次发布/)
+})
+
+// #493 剩下的那半：查 tag 时只有「确实没有」才算没有，接口报错不能当成没有。
+test('a failing tag lookup stops the publish instead of being read as no tag', posixOnly, () => {
+  const ours = manifestText('0.2.11', 'mac build', 'XingMang-AI-Manager-0.2.11-arm64-mac.zip')
+  const run = runGuardStep({ tagLookupFails: true, live: { 'latest-mac.yml': manifestText('0.2.10', 'old') }, artifacts: { 'latest-mac.yml': ours } })
+  assert.notEqual(run.status, 0)
+  assert.match(run.output, /::error::查不了 v0\.2\.11 是否已存在/)
+  assert.doesNotMatch(run.output, /可以发/)
+})
+
+test('the tag lookup never swallows errors from the GitHub API', () => {
+  const step = publishJob.steps.find((entry) => /Refuse to overwrite a version that already shipped/.test(entry.name || ''))
+  assert.doesNotMatch(String(step.run), /\|\|\s*true/)
+  assert.doesNotMatch(String(step.run), /2>\s*\/dev\/null/)
+})
+
+// #548：回退之后重跑坏版本的发布，会把清单又指回它。
+test('the publish guard refuses a version on the withdrawn list', () => {
+  const ours = manifestText('0.2.11', 'build A')
+  assert.doesNotThrow(() => assertNotWithdrawn(ours, null, 'latest.yml'))
+  assert.doesNotThrow(() => assertNotWithdrawn(ours, JSON.stringify({ badVersions: ['0.2.9'] }), 'latest.yml'))
+  assert.doesNotThrow(() => assertNotWithdrawn(ours, JSON.stringify({ maintenance: { active: false } }), 'latest.yml'))
+  assert.throws(() => assertNotWithdrawn(ours, JSON.stringify({ badVersions: ['0.2.11'] }), 'latest.yml'), /0\.2\.11 已经被撤回/)
+  assert.throws(() => assertNotWithdrawn(ours, JSON.stringify({ badVersions: ['v0.2.11'] }), 'latest.yml'), /已经被撤回/)
+  // 看不懂的状态文件不能当成「没有撤回名单」。
+  assert.throws(() => assertNotWithdrawn(ours, '<!doctype html><html></html>', 'latest.yml'), /看不懂/)
+  assert.throws(() => assertNotWithdrawn(ours, JSON.stringify({ badVersions: '0.2.11' }), 'latest.yml'), /格式不对/)
+})
+
+test('re-running the publish of a withdrawn version after a rollback stops before any upload', posixOnly, () => {
+  const bad = manifestText('0.2.11', 'windows build')
+  const restored = manifestText('0.2.10', 'previous build')
+  const status = JSON.stringify({ badVersions: ['0.2.11'] })
+  const rerun = runGuardStep({ existingTagSha: 'a'.repeat(40), live: { 'latest.yml': restored, 'service-status.json': status }, artifacts: { 'latest.yml': bad } })
+  assert.notEqual(rerun.status, 0)
+  assert.match(rerun.output, /0\.2\.11 已经被撤回/)
+  // 撤回名单里没有它时照常放行；状态文件不存在也照常放行。
+  const clean = runGuardStep({ existingTagSha: 'a'.repeat(40), live: { 'latest.yml': restored, 'service-status.json': JSON.stringify({ badVersions: ['0.2.9'] }) }, artifacts: { 'latest.yml': bad } })
+  assert.equal(clean.status, 0, clean.output)
+  const noStatus = runGuardStep({ live: { 'latest.yml': restored }, artifacts: { 'latest.yml': bad } })
+  assert.equal(noStatus.status, 0, noStatus.output)
+  assert.match(noStatus.output, /没有撤回名单/)
 })
