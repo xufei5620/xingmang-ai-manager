@@ -8,6 +8,7 @@ import {
   pendingToolUpdates,
   readAnnouncedToolUpdates,
   rememberAnnouncedToolUpdates,
+  rememberRevertedToolUpdate,
   unannouncedToolUpdates,
   updateNoticeKey,
 } from './update-notice'
@@ -126,6 +127,17 @@ describe('renderer-v2 CLI update reminder suppression', () => {
     // 下次 codex 再出新版本时要重新提醒。
     rememberAnnouncedToolUpdates([{ id: 'claude', version: '2.0.0' }])
     expect(readAnnouncedToolUpdates()).toEqual({ claude: '2.0.0' })
+  })
+
+  it('does not remind about the version the user just reverted from', () => {
+    globalWithStorage.localStorage = memoryStorage()
+    rememberAnnouncedToolUpdates([{ id: 'codex', version: '1.9.0' }])
+    expect(rememberRevertedToolUpdate('claude', '2.1.282')).toBe(true)
+    expect(readAnnouncedToolUpdates()).toEqual({ codex: '1.9.0', claude: '2.1.282' })
+    expect(unannouncedToolUpdates([{ id: 'claude', version: '2.1.282' }], readAnnouncedToolUpdates())).toEqual([])
+    // 上游之后再出更新的版本，照常提醒。
+    expect(unannouncedToolUpdates([{ id: 'claude', version: '2.1.290' }], readAnnouncedToolUpdates()))
+      .toEqual([{ id: 'claude', version: '2.1.290' }])
   })
 
   it('treats unreadable or missing local storage as 「还没提醒过」 instead of throwing', () => {
