@@ -260,7 +260,9 @@ export function createRealmAccountService(options: RealmAccountServiceOptions): 
     // 重新输密码登录同一个账号（#476）：新登录是服务端的一个新会话，本机账号库里这个
     // 账号原来那份凭据马上被覆盖，旧会话从此没人能用也没人去注销，攒到 50 个就登不进了。
     // 所以提交成功后把它注销掉。切换已保存账号、开机恢复用的就是库里那份，不能动。
-    const stored = fresh ? await options.vault.get(saved).catch(() => null) : null
+    // 读不出库里原来那份就不往下写：写了就把它盖掉，那个旧会话再也没人能注销（#476
+    // 复核 F05）。这里报错后 login 的 finally 会把刚登上的新会话注销，本机什么都没变。
+    const stored = fresh ? await options.vault.get(saved).catch(() => { throw new RealmAccountError('STORAGE') }) : null
     await options.vault.activate(saved, identifier)
     // No await between durable commit and the synchronous pointer swap.
     const previous = active

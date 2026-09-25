@@ -33,7 +33,7 @@ import type { AccelerationApi, AccelerationMode, AccelerationPreferenceApi } fro
 import { accelerationFailureReason } from './acceleration-contract'
 import { cliCatalog, isProviderId, providerIds, resolveManagedCliKeyProfiles, type ProviderId } from './catalog'
 import { accountKeyListTooLongMessage, findAccountKeyById, searchAccountKeys, inheritedKeySettings, inheritedKeyExpiredMessage, isUsedUpKeyLimit, managedKeyQuotaExhaustedMessage } from './account-key-quota'
-import { createMemoryManagedKeyReplacementStore, type ManagedKeyReplacementStore } from './managed-key-replacement-store'
+import { createMemoryManagedKeyReplacementStore, ManagedKeyReplacementUnreadableError, managedKeyReplacementUnreadableRevokeMessage, type ManagedKeyReplacementStore } from './managed-key-replacement-store'
 import { isInstallCancelledError } from './install-cancellation'
 import {
   configureManagedClis,
@@ -3025,7 +3025,10 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
       const { remainQuota, unlimitedQuota, expiredAt } = limited.key
       try {
         await keyReplacements.set(slot, { remainQuota, unlimitedQuota, expiredAt })
-      } catch {
+      } catch (error) {
+        // 记录读坏了，稍后再试也没用：要先让用户亲手「重新写入 Key」清掉它（见
+        // provisioningAccountService 的 explicit 分支）。
+        if (error instanceof ManagedKeyReplacementUnreadableError) throw new Error(managedKeyReplacementUnreadableRevokeMessage)
         throw new Error('没能记下这把密钥的额度设置，先没撤销。请稍后再试。')
       }
     }
