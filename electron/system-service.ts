@@ -5073,8 +5073,8 @@ export function createSystemService(
     },
     listModels: (apiKey) => fetchAvailableModels(apiKey, { bypassCache: true }),
     pickerOutdated: (models, model) => claudeModelPickerNeedsRefresh(models, model, providerRoots),
-    refreshPicker: async (model) => {
-      await saveConfig({ provider: 'claude', apiKey: '', model, mode: 'merge' }, false, undefined, { source: 'account', automatic: true })
+    refreshPicker: async (model, assertCurrent) => {
+      await saveConfig({ provider: 'claude', apiKey: '', model, mode: 'merge' }, false, assertCurrent, { source: 'account', automatic: true })
     },
     log: (level, event, message, detail) => runtimeLog?.log(level, 'config', event, message, detail),
   })

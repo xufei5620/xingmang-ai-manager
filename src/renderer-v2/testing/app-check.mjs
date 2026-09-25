@@ -3387,6 +3387,19 @@ test('keeping the old model opens the tool without touching its config, and clos
   } finally { await page.close() }
 })
 
+// #538：换模型的提问属于发起时那个账号，中途切号要替用户关掉，不打开也不改配置。
+test('switching accounts while the model question is open drops it without opening or saving', async () => {
+  const page = await open('allInstalled=1&recentWorkspaces=1&modelGone=1')
+  try {
+    await page.getByTestId('tool-claude-primary').click()
+    await page.getByTestId('model-swap-question').waitFor()
+    await page.evaluate(() => window.v2Test.emit('onAccountSessionChanged', { authenticated: true, account: { userId: 18, username: 'next-user', group: 'default', role: 1, quota: 1_000_000, usedQuota: 0 } }))
+    await page.getByTestId('model-swap-question').waitFor({ state: 'detached' })
+    assert.equal(await page.evaluate(() => window.v2Test.calls.some((call) => call.method === 'launchCli' || call.method === 'saveConfig')), false)
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('ordinary desktop launch preserves the opened app and exposes a Chinese-locale warning', async () => {
   const page = await open('localeLaunchWarning=1')
   try {

@@ -29,7 +29,11 @@ export interface ToolModelCheckDependencies {
   listModels(apiKey: string): Promise<string[]>
   /** 只有 Claude Code 有菜单要刷新。 */
   pickerOutdated(models: readonly string[], model: string): boolean
-  refreshPicker(model: string): Promise<void>
+  /**
+   * assertCurrent 要在真正落盘前再调一次：核对和写入之间隔着网络请求，账号随时会切走，
+   * 写入那一刻认的必须还是开始核对时那个账号那份配置（#538）。
+   */
+  refreshPicker(model: string, assertCurrent: () => void): Promise<void>
   log?(level: 'info' | 'warn', event: string, message: string, detail?: Record<string, unknown>): void
   /** 模型接口最多等这么久；打开工具的人在等，不能按保存配置时那 12 秒算。 */
   listTimeoutMs?: number
@@ -68,7 +72,20 @@ export function createToolModelChecker(deps: ToolModelCheckDependencies) {
   async function check(provider: ProviderId): Promise<ToolModelCheck> {
     const target = deps.target(provider)
     if (!target) return { status: 'skipped' }
-    const key = `${provider}:${target.identity}`
+    const identity = target.identity
+    const key = `${provider}:${identity}`
+    // 模型列表是按开始时那个账号的 Key 拿的。等它回来这段时间里切了账号（或 Key、型号变了），
+    // 这份结论就不属于现在这份配置：既不能拿去改新账号的菜单，也不能劝新账号换模型（#538）。
+    function stillCurrent(): boolean {
+      return deps.target(provider)?.identity === identity
+    }
+    function assertCurrent(): void {
+      if (!stillCurrent()) throw new Error('账号已变化，这次核对作废')
+    }
+    function staleResult(): ToolModelCheck {
+      deps.log?.('info', 'tool-models.account-changed', '核对期间账号或配置变了，这次核对结果不用', { provider })
+      return { status: 'skipped' }
+    }
     const now = deps.now()
     if ((nextCheckAt.get(key) ?? 0) > now) return { status: 'skipped' }
     let models: string[]
@@ -79,6 +96,7 @@ export function createToolModelChecker(deps: ToolModelCheckDependencies) {
       deps.log?.('warn', 'tool-models.check-failed', '打开前没能核对当前账号能用的模型，照常打开', { provider, reason: errorText(error) })
       return { status: 'skipped' }
     }
+    if (!stillCurrent()) return staleResult()
     // 一个都没列出来多半是接口或分组的问题，不是型号全下架了：不能据此劝用户换。
     if (models.length === 0) {
       nextCheckAt.set(key, now + failedRetryMs)
@@ -99,8 +117,9 @@ export function createToolModelChecker(deps: ToolModelCheckDependencies) {
       return { status: 'ok', pickerRefreshed: false }
     }
     if (!outdated) return { status: 'ok', pickerRefreshed: false }
+    if (!stillCurrent()) return staleResult()
     try {
-      await deps.refreshPicker(target.model)
+      await deps.refreshPicker(target.model, assertCurrent)
     } catch (error) {
       // 没刷成照样打开；明天第一次打开再试。
       deps.log?.('warn', 'tool-models.picker-refresh-failed', 'Claude Code 的模型菜单没能刷新', { reason: errorText(error) })
