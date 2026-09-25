@@ -354,6 +354,7 @@ function parseSettingsUpdate(value: unknown): AppSettingsUpdate {
   if (value.closeBehavior !== undefined && (typeof value.closeBehavior !== 'string' || !['ask', 'tray', 'quit'].includes(value.closeBehavior))) throw new Error('关闭偏好格式错误')
   const reducedMotion = optionalBoolean(value.reducedMotion, '减少动画设置')
   const desktopNotifications = optionalBoolean(value.desktopNotifications, '系统通知设置')
+  const autoUpdate = optionalBoolean(value.autoUpdate, '自动更新设置')
   const windowState = value.windowState === null ? null : parseWindowState(value.windowState)
   if (value.windowState !== undefined && windowState === undefined) throw new Error('窗口位置格式错误')
   return {
@@ -377,6 +378,7 @@ function parseSettingsUpdate(value: unknown): AppSettingsUpdate {
     ...(value.closeBehavior !== undefined ? { closeBehavior: value.closeBehavior as AppSettingsUpdate['closeBehavior'] } : {}),
     ...(reducedMotion !== undefined ? { reducedMotion } : {}),
     ...(desktopNotifications !== undefined ? { desktopNotifications } : {}),
+    ...(autoUpdate !== undefined ? { autoUpdate } : {}),
     ...(windowState !== undefined ? { windowState } : {}),
   }
 }

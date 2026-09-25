@@ -63,6 +63,11 @@ export interface UpdateSnapshot {
    */
   unsignedChannel?: boolean
   /**
+   * 这台电脑上「自动更新」开关能不能起作用。未签名通道在没有放开之前为 false，界面
+   * 据此不显示那个勾选框。可选＝旧快照，界面照旧不显示。
+   */
+  autoUpdateSupported?: boolean
+  /**
    * 这次启动是不是刚更新完、这一版随包带了哪些改动（installed-release.ts）。整个
    * 进程生命周期内不变：更新页要一直能看到「当前版本的更新内容」，而「已更新到」
    * 的提示由渲染层在启动时读一次。可选＝旧快照，界面照旧只显示待下载版本的说明。
@@ -122,6 +127,12 @@ export interface UpdaterService {
   getState(): UpdateSnapshot
   startup(): Promise<UpdateSnapshot>
   check(options?: UpdateCheckOptions): Promise<UpdateSnapshot>
+  /** 定时检查：找到新版本且自动更新开着时顺手下载。 */
+  scheduledCheck(): Promise<UpdateSnapshot>
+  /** 自动更新开关刚被打开：已经找到但还没下的版本现在就开始下。 */
+  autoUpdateChanged(): Promise<UpdateSnapshot>
+  /** 自动更新此刻是否生效（开关开着，且这个更新通道允许自动下载）。 */
+  autoUpdateEnabled(): boolean
   download(): Promise<UpdateSnapshot>
   install(): { accepted: true }
   /** 更新目录上的状态文件读到了新内容（null = 读不到，当没有）。 */
@@ -174,6 +185,17 @@ export interface UpdaterRuntime {
    * machine without an explicit user action.
    */
   unsignedChannel?: boolean
+  /**
+   * Opt-in that lets the unsigned channel download on its own as well. Kept
+   * separate from `unsignedChannel` because it removes the compensating control
+   * described above, and the publisher has to accept that explicitly.
+   */
+  unsignedAutoUpdate?: boolean
+  /**
+   * 读用户的「自动更新」开关（app-settings 的 autoUpdate，缺省开）。每次要决定下不下载
+   * 时现读，改了开关不用重启。不传＝开着（签名通道的旧行为）。
+   */
+  readAutoUpdate?: () => boolean
   /**
    * Recomputes the downloaded package digest and compares it with the manifest
    * value. Resolving false means a mismatch; throwing means the comparison could
@@ -407,9 +429,18 @@ export function createUpdaterService(
   const installEnvironmentGuard = runtime.installEnvironmentGuard ?? ((launch) => launch())
   const macInstallHandoff = platform === 'darwin' ? runtime.macInstallHandoff : undefined
   const unsignedChannel = runtime.unsignedChannel === true
-  // An unsigned installer is never fetched behind the user's back: the startup
-  // check only reports the new version and waits for an explicit download.
-  const autoDownload = !unsignedChannel
+  // An unsigned installer is never fetched behind the user's back unless the
+  // publisher opted that channel in: otherwise the check only reports the new
+  // version and waits for an explicit download.
+  const autoUpdateSupported = !unsignedChannel || runtime.unsignedAutoUpdate === true
+  const autoDownload = (): boolean => {
+    if (!autoUpdateSupported) return false
+    try {
+      return runtime.readAutoUpdate ? runtime.readAutoUpdate() !== false : true
+    } catch {
+      return true
+    }
+  }
   const verifyPackageDigest = runtime.verifyPackageDigest
   let installWatchdogTimer: NodeJS.Timeout | null = null
   let startupPromise: Promise<UpdateSnapshot> | null = null
@@ -432,6 +463,7 @@ export function createUpdaterService(
     failedStep: null,
     development,
     unsignedChannel,
+    autoUpdateSupported,
     installedRelease: cloneInstalledRelease(runtime.installedRelease),
     serviceMaintenance: null,
     currentVersionWithdrawn: false,
@@ -609,8 +641,8 @@ export function createUpdaterService(
 
   // 下载好就停在这里，等用户点「重启安装」。以前签名通道（Mac）下载完 0.3 秒就
   // 自动退出重装，不管用户是在生图还是在装工具（全面检测 Q42），而设置页和更新页
-  // 都写着安装由你确认。未签名通道本来就不许自动安装：那里没有安装包签名校验，
-  // 挡在可疑安装包和这台电脑之间的只剩用户这一下点击。
+  // 都写着安装由你确认。「自动更新」开着时也不在这里装，而是由主进程等到用户退出、
+  // 或下次一打开时再装（auto-update-install.ts），同样不打断正在用的人。
   const acceptDownloadedUpdate = (info: UpdateInfo) => {
     // 下载途中被撤回的版本：下好了也不留，免得用户一点「重启安装」装上它。
     if (isWithdrawn(info.version)) {
@@ -847,7 +879,7 @@ export function createUpdaterService(
           // instead of replacing a real result with a synthetic timeout.
           if (snapshot.phase !== 'checking') {
             const eventSnapshot = cloneSnapshot(snapshot)
-            if (eventSnapshot.phase === 'available' && autoDownload) {
+            if (eventSnapshot.phase === 'available' && autoDownload()) {
               if (development) {
                 void download()
                 return eventSnapshot
@@ -858,7 +890,7 @@ export function createUpdaterService(
           }
           // The timeout only releases the startup UI. Keep the updater request
           // alive so a slow network can still download the discovered release.
-          if (autoDownload) {
+          if (autoDownload()) {
             void checkPromise.then((lateSnapshot) => {
               if (lateSnapshot.phase === 'available') void download()
             })
@@ -875,7 +907,7 @@ export function createUpdaterService(
           })
           return cloneSnapshot(snapshot)
         }
-        if (checked.value.phase !== 'available' || !autoDownload) return checked.value
+        if (checked.value.phase !== 'available' || !autoDownload()) return checked.value
         if (development) {
           void download()
           return checked.value
@@ -885,6 +917,16 @@ export function createUpdaterService(
       return startupPromise
     },
     check,
+    async scheduledCheck() {
+      const checked = await check()
+      if (checked.phase !== 'available' || !autoDownload()) return checked
+      return download()
+    },
+    async autoUpdateChanged() {
+      if (!enabled || snapshot.phase !== 'available' || !autoDownload()) return cloneSnapshot(snapshot)
+      return download()
+    },
+    autoUpdateEnabled: () => enabled && !development && autoDownload(),
     download,
     install() {
       requireEnabled()

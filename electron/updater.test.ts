@@ -1514,3 +1514,123 @@ describe('downloaded package digest verification', () => {
     service.dispose()
   })
 })
+
+describe('auto-update preference', () => {
+  function availableOnCheck(client: FakeUpdater) {
+    client.checkForUpdates.mockImplementation(async () => {
+      client.emit('update-available', updateInfo())
+    })
+  }
+
+  it('lets the unsigned channel download at startup once the publisher opted it in', async () => {
+    const client = new FakeUpdater()
+    availableOnCheck(client)
+    const service = createUpdaterService(client, {
+      currentVersion: '1.0.0',
+      isPackaged: true,
+      unsignedChannel: true,
+      unsignedAutoUpdate: true,
+    })
+    expect(service.getState().autoUpdateSupported).toBe(true)
+    await service.startup()
+    expect(client.downloadUpdate).toHaveBeenCalledOnce()
+    service.dispose()
+  })
+
+  it('reports the unsigned channel as unsupported until it is opted in', () => {
+    const service = createUpdaterService(new FakeUpdater(), {
+      currentVersion: '1.0.0',
+      isPackaged: true,
+      unsignedChannel: true,
+      readAutoUpdate: () => true,
+    })
+    expect(service.getState().autoUpdateSupported).toBe(false)
+    expect(service.autoUpdateEnabled()).toBe(false)
+    service.dispose()
+  })
+
+  it('only reports the new version at startup when the user turned auto-update off', async () => {
+    const client = new FakeUpdater()
+    availableOnCheck(client)
+    const service = createUpdaterService(client, {
+      currentVersion: '1.0.0',
+      isPackaged: true,
+      readAutoUpdate: () => false,
+    })
+    await expect(service.startup()).resolves.toMatchObject({ phase: 'available' })
+    expect(client.downloadUpdate).not.toHaveBeenCalled()
+    expect(service.autoUpdateEnabled()).toBe(false)
+    service.dispose()
+  })
+
+  it('downloads after a scheduled check only while auto-update is on', async () => {
+    const client = new FakeUpdater()
+    availableOnCheck(client)
+    let autoUpdate = false
+    const service = createUpdaterService(client, {
+      currentVersion: '1.0.0',
+      isPackaged: true,
+      readAutoUpdate: () => autoUpdate,
+    })
+    await expect(service.scheduledCheck()).resolves.toMatchObject({ phase: 'available' })
+    expect(client.downloadUpdate).not.toHaveBeenCalled()
+    autoUpdate = true
+    await service.scheduledCheck()
+    expect(client.downloadUpdate).toHaveBeenCalledOnce()
+    service.dispose()
+  })
+
+  it('starts the pending download as soon as the user turns auto-update on', async () => {
+    const client = new FakeUpdater()
+    availableOnCheck(client)
+    let autoUpdate = false
+    const service = createUpdaterService(client, {
+      currentVersion: '1.0.0',
+      isPackaged: true,
+      readAutoUpdate: () => autoUpdate,
+    })
+    await service.check()
+    await service.autoUpdateChanged()
+    expect(client.downloadUpdate).not.toHaveBeenCalled()
+    autoUpdate = true
+    await service.autoUpdateChanged()
+    expect(client.downloadUpdate).toHaveBeenCalledOnce()
+    service.dispose()
+  })
+
+  it('never installs on its own even with auto-update on; the host picks the moment', async () => {
+    const client = new FakeUpdater()
+    availableOnCheck(client)
+    client.downloadUpdate.mockImplementation(async () => {
+      client.emit('update-downloaded', updateInfo())
+    })
+    const service = createUpdaterService(client, { currentVersion: '1.0.0', isPackaged: true, readAutoUpdate: () => true })
+    await service.startup()
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(service.getState().phase).toBe('downloaded')
+    expect(client.quitAndInstall).not.toHaveBeenCalled()
+    expect(service.autoUpdateEnabled()).toBe(true)
+    service.dispose()
+  })
+
+  it('skips a scheduled download for a version the publisher has withdrawn', async () => {
+    const client = new FakeUpdater()
+    client.checkForUpdates.mockImplementation(async () => {
+      const info = updateInfo()
+      if (await client.isUserWithinRollout?.(info) === false) {
+        client.emit('update-not-available', info)
+        return
+      }
+      client.emit('update-available', info)
+    })
+    const service = createUpdaterService(client, {
+      currentVersion: '1.0.0',
+      isPackaged: true,
+      readAutoUpdate: () => true,
+      refreshServiceStatus: async () => ({ maintenance: null, badVersions: ['1.1.0'], rollout: null }),
+    })
+    await expect(service.scheduledCheck()).resolves.toMatchObject({ phase: 'not-available' })
+    expect(client.downloadUpdate).not.toHaveBeenCalled()
+    service.dispose()
+  })
+})

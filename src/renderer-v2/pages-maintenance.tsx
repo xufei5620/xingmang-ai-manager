@@ -982,7 +982,7 @@ export function UpdatesPage({
               testId="updates-current-withdrawn"
             />
           )}
-          {update?.unsignedChannel && (
+          {update?.unsignedChannel && !update.autoUpdateSupported && (
             <ListRow
               title="更新方式"
               meta="每次下载和安装新版本前都会先问你"
@@ -1641,12 +1641,14 @@ export function SettingsPage({
   replayTour,
 }: { api: V2Bridge } & BusinessActions) {
   const load = useCallback(async () => {
-    const [settings, capabilities, session] = await Promise.all([
+    const [settings, capabilities, session, update] = await Promise.all([
       api.getSettings(),
       api.getWindowCapabilities(),
       api.getAccountSession(),
+      // 只用来决定显不显示「自动更新」：读不到就当这台电脑不支持，不挡设置页。
+      api.getUpdateState().catch(() => null),
     ])
-    return { settings, capabilities, session }
+    return { settings, capabilities, session, update }
   }, [api])
   const resource = useResource(load)
   const operation = useOperation()
@@ -1952,7 +1954,7 @@ export function SettingsPage({
           )}
           {row(
             '启动时检查新版本',
-            '发现新版本会提醒你，什么时候安装由你决定',
+            '发现新版本会提醒你',
             <Switch
               checked={settings.checkUpdatesOnStartup}
               aria-label="启动时检查新版本"
@@ -1961,6 +1963,17 @@ export function SettingsPage({
               }
             />,
           )}
+          {resource.data?.update?.autoUpdateSupported &&
+            row(
+              '自动更新',
+              '新版本在后台下好，等你关掉软件或下次打开时自动装上，不会打断正在用的你。关掉后改成先提醒你，由你点安装',
+              <Switch
+                testId="settings-auto-update"
+                checked={settings.autoUpdate !== false}
+                aria-label="自动更新"
+                onChange={(autoUpdate) => void update({ autoUpdate })}
+              />,
+            )}
           {row(
             '启动时检查环境',
             '只检查已使用工具和当前运行环境',
