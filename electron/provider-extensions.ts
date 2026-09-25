@@ -352,6 +352,31 @@ function safeSource(value: string | undefined): string {
   return result
 }
 
+// 私有仓库常被整条贴成 https://user:token@host/repo（#537）。地址照样交给 CLI，
+// 用户已有的用法不受影响；但账号和令牌要作为敏感值传给 command-runner，失败时
+// 的 argv、CLI 输出、运行日志和反馈报告里才不会原样留下它们。
+function sourceCredentials(value: string | undefined): string[] {
+  const text = value?.trim()
+  if (!text) return []
+  let parsed: URL
+  try {
+    parsed = new URL(text.replace(/^git\+/i, ''))
+  } catch {
+    return []
+  }
+  const values = new Set<string>()
+  for (const part of [parsed.username, parsed.password]) {
+    if (!part) continue
+    values.add(part)
+    try {
+      values.add(decodeURIComponent(part))
+    } catch {
+      // 百分号编码不完整时 URL 里出现的就是原文，上面已经收下。
+    }
+  }
+  return [...values]
+}
+
 function safeUrl(value: string): string {
   let parsed: URL
   try {
@@ -2199,14 +2224,17 @@ export class ProviderExtensionService {
   }
 
   /** 按列表里的 ID（SKILL.md 路径）从 CLI 当前的输出里找回技能名与所在层。 */
-  private async resolveGeminiSkill(input: ProviderExtensionMutation): Promise<GeminiSkillTarget | undefined> {
+  private async resolveGeminiSkill(
+    input: ProviderExtensionMutation,
+    repositoryRoot: string | null,
+  ): Promise<GeminiSkillTarget | undefined> {
     if (input.provider !== 'gemini' || input.kind !== 'skill' || input.action === 'install') return undefined
     const requested = safeIdentifier(input.id, '扩展 ID')
     const output = await this.invoke('gemini', ['skills', 'list', '--all'], {
-      cwd: this.repositoryRoot ?? undefined,
+      cwd: repositoryRoot ?? undefined,
       maxOutputBytes: MAX_OUTPUT_BYTES,
     })
-    const items = parseGeminiSkillList(output, this.homeDirectory, this.repositoryRoot)
+    const items = parseGeminiSkillList(output, this.homeDirectory, repositoryRoot)
     const byPath = path.isAbsolute(requested)
       ? items.find((item) => equivalentProjectPath(item.id, requested))
       : undefined
@@ -2215,31 +2243,37 @@ export class ProviderExtensionService {
       ?? items.find((item) => item.name === requested && item.scope === input.scope)
       ?? items.find((item) => item.name === requested)
     if (!item) return undefined
-    return {
-      name: safeIdentifier(item.name, 'Skill 名称'),
-      scope: isMutationScope(item.scope) ? item.scope : undefined,
+    const scope = isMutationScope(item.scope) ? item.scope : undefined
+    // 认不出技能在哪一层时，缺省的 --scope user 会删到同名的用户级技能（#488）。
+    // 停用不删文件，内置和扩展自带的技能本来就只能在用户层停用，照旧放行。
+    if (!scope && input.action === 'uninstall') {
+      throw new Error('没法确定这个技能装在哪里，请刷新列表后再试。')
     }
+    return { name: safeIdentifier(item.name, 'Skill 名称'), scope }
   }
 
   async mutate(input: ProviderExtensionMutation): Promise<ProviderExtensionsSnapshot> {
     if (!providerIds.includes(input.provider)) throw new Error('未知的 Provider')
-    const geminiSkill = await this.resolveGeminiSkill(input)
+    // 选工作目录或保存设置会随时改写 this.repositoryRoot；一次操作从查找技能到
+    // 执行命令必须落在同一个项目里，否则列表在 A 读、命令在 B 跑（#488）。
+    const repositoryRoot = this.repositoryRoot
+    const geminiSkill = await this.resolveGeminiSkill(input, repositoryRoot)
     const { argv, secrets } = this.mutationArgv(input, geminiSkill)
     const scope = geminiSkill ? geminiSkill.scope : input.scope
     const projectBound = input.provider === 'claude' || input.provider === 'gemini'
     // 这两家的 project / local / workspace 都是「命令在哪个项目里跑就改哪个项目」，
     // 不在项目目录里跑，CLI 会改错地方或者直接报找不到（#488）。
-    if (projectBound && scope && scope !== 'user' && !this.repositoryRoot) {
+    if (projectBound && scope && scope !== 'user' && !repositoryRoot) {
       throw new Error('这一项属于某个项目，请先在工作目录里选好这个项目再操作。')
     }
     if (input.provider === 'claude' && input.kind === 'plugin' && input.action === 'install') {
       await this.ensureClaudeOfficialMarketplace()
     }
     await this.invoke(input.provider, argv, {
-      cwd: projectBound ? this.repositoryRoot ?? undefined : undefined,
+      cwd: projectBound ? repositoryRoot ?? undefined : undefined,
       timeoutMs: MUTATION_TIMEOUT_MS,
       maxOutputBytes: MAX_OUTPUT_BYTES,
-      sensitiveValues: secrets,
+      sensitiveValues: [...secrets, ...sourceCredentials(input.source), ...sourceCredentials(input.id)],
       ...(isNetworkBoundExtensionMutation(input)
         ? { extraEnvironment: await this.networkEnvironment() }
         : {}),

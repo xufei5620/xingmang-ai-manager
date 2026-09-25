@@ -33,6 +33,26 @@ describe('redactSecretShapes', () => {
     expect(redactSecretShapes(`SK-FAKE-UPPER-VALUE`)).toBe('[REDACTED]')
   })
 
+  it('redacts credentials pasted into a Git source URL but keeps the host readable', () => {
+    expect(redactSecretShapes('git clone https://fake-user:fake-pass-value@git.example.invalid/acme/demo.git failed'))
+      .toBe('git clone https://[REDACTED]@git.example.invalid/acme/demo.git failed')
+    expect(redactSecretShapes('git+https://fake-token-only@git.example.invalid/acme/demo'))
+      .toBe('git+https://[REDACTED]@git.example.invalid/acme/demo')
+    expect(redactSecretShapes('ssh://oauth2:fake-pass-value@git.example.invalid/acme'))
+      .toBe('ssh://[REDACTED]@git.example.invalid/acme')
+    expect(redactSecretShapes('ssh://git@github.com/acme/demo.git')).toBe('ssh://git@github.com/acme/demo.git')
+    expect(redactSecretShapes('https://registry.npmjs.org/@xai-official/grok')).toBe('https://registry.npmjs.org/@xai-official/grok')
+  })
+
+  it('redacts GitHub and GitLab access tokens wherever they appear', () => {
+    const classic = `ghp_${'FakeClassicTokenFiller0123'}`
+    const fineGrained = `github_pat_${'Fake_Fine_Grained_Filler_0123'}`
+    const gitlab = `glpat-${'Fake-GitLab-Filler-012345'}`
+    expect(redactSecretShapes(`remote rejected ${classic} ${fineGrained} ${gitlab}`))
+      .toBe('remote rejected [REDACTED] [REDACTED] [REDACTED]')
+    expect(redactSecretShapes('ghp_short github_pat_short')).toBe('ghp_short github_pat_short')
+  })
+
   it('does not treat short look-alikes as keys', () => {
     expect(redactSecretShapes('AIzaShort and xai-short and desk-toolbar')).toBe('AIzaShort and xai-short and desk-toolbar')
   })
@@ -65,8 +85,9 @@ describe('shared redaction table', () => {
     `grok ${fakeGrokKey}`,
     'x-goog-api-key: plain-fake-header',
     'https://example.invalid/v1?key=plain-fake-query',
+    'https://fake-user:plain-fake-userinfo@git.example.invalid/acme/demo.git',
   ].join('\n')
-  const leaked = [fakeRelayKey, fakeGoogleKey, fakeGrokKey, 'plain-fake-header', 'plain-fake-query']
+  const leaked = [fakeRelayKey, fakeGoogleKey, fakeGrokKey, 'plain-fake-header', 'plain-fake-query', 'plain-fake-userinfo']
 
   it.each([
     ['redactSecretPatterns', (value: string) => redactSecretPatterns(value)],

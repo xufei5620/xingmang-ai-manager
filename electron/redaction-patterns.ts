@@ -16,9 +16,19 @@ const KEY_TAIL = '(?![A-Za-z0-9_-])'
  * - `AIza…` Google (Gemini) API keys, always 39 characters
  * - `xai-…` Grok keys; the 20-character floor keeps the npm package name
  *   `@xai-official/grok` in install logs readable
+ * - `ghp_…` / `github_pat_…` / `glpat-…` GitHub and GitLab access tokens
+ * - URL userinfo: private Git sources are pasted as
+ *   `https://user:token@host/repo` (#537). Any userinfo on http(s) is a
+ *   credential; other schemes only lose it when a password is present, so
+ *   `ssh://git@host` stays readable.
  */
 export function redactSecretShapes(value: string): string {
   return value
+    .replace(/\b(https?:\/\/)[^\s/?#@]+@/gi, `$1${REDACTED}@`)
+    .replace(/\b([a-z][a-z0-9+.-]*:\/\/)[^\s/?#@:]*:[^\s/?#@]*@/gi, `$1${REDACTED}@`)
+    .replace(new RegExp(`\\bgh[pousr]_[A-Za-z0-9]{20,}${KEY_TAIL}`, 'g'), REDACTED)
+    .replace(new RegExp(`\\bgithub_pat_[A-Za-z0-9_]{20,}${KEY_TAIL}`, 'g'), REDACTED)
+    .replace(new RegExp(`\\bglpat-[A-Za-z0-9_-]{20,}${KEY_TAIL}`, 'g'), REDACTED)
     .replace(/(\bBearer\s+)[A-Za-z0-9._~+/=-]{6,}/gi, `$1${REDACTED}`)
     .replace(/\bsk-[A-Za-z0-9_-]{6,}\b/gi, REDACTED)
     .replace(new RegExp(`\\bAIza[A-Za-z0-9_-]{35,}${KEY_TAIL}`, 'g'), REDACTED)
