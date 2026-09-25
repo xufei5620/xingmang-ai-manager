@@ -51,6 +51,7 @@ import { MaintenanceNotice, maintenanceNoticeKey } from './features/app/Maintena
 import { displayCompatNotice, displayRelaunchNotice, settingsSaveNotice, startupCheckFailure, startupCheckLogContext, startupDiagnosticsIssues, updatedNotice, vaultRecoveredNotice, withStartupNotice, withoutStartupNotice, type StartupCheckId, type StartupNotice } from './features/app/startup-notice'
 import { readLocalPreference, writeLocalPreference } from './features/app/preferences'
 import { currentWindowOs, windowOsFor } from './features/app/window-os'
+import { nextUiScale, uiScaleShortcutFor, type UiScaleShortcut } from './features/app/ui-scale-shortcut'
 import { rememberTourPending, rememberTourSeen, tourReplayPending } from './features/shell/tour-state'
 import { onboardingPreviewEnabled } from './features/app/dev-preview'
 import { deepLinkReadErrorText, supportQrFallbackText } from './features/app/fallback-messages'
@@ -122,7 +123,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   const [accountTab, setAccountTab] = useState<{ sequence: number; value: AccountTab }>({ sequence: 0, value: 'overview' })
   // 教程页停在哪一章。页面挂上之后只是 hidden 不会重新挂载，所以每次跳转都换一个
   // sequence，教程页才接得住第二次、第三次跳过来。
-  const [tutorialTopic, setTutorialTopic] = useState<{ sequence: number; id: string } | null>(null)
+  const [tutorialTopic, setTutorialTopic] = useState<{ sequence: number; id: string; query?: string } | null>(null)
   // 设置页只在挂载时取一次要落的分组（settings-group-intent），已经打开过再点名
   // 某一组就换个 key 让它重新挂一次，否则会停在上次看的那组（全面检测 Q48）。
   const [settingsRequest, setSettingsRequest] = useState(0)
@@ -489,6 +490,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     document.documentElement.dataset.theme = settings.theme
     document.documentElement.dataset.skin = settings.uiSkin ?? 'mist'
     document.documentElement.dataset.reducedMotion = String(settings.reducedMotion === true)
+    document.documentElement.dataset.largeText = String(settings.largeText === true)
     document.documentElement.style.colorScheme = settings.theme
   }, [settings])
   useEffect(() => {
@@ -564,6 +566,17 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     if (choice === 'restore') noteStartupCheck(displayRelaunchNotice())
     else toast.show('以后都用兼容方式显示。想改回来，到「设置」的「外观」里打开「用显卡加速显示」。', 'ok')
   }), [app, noteStartupCheck, perform, toast])
+  // 连按几下 Ctrl 加号时，保存还没回来，下一下要接着上一下算，不能都从旧设置起步。
+  const uiScaleRef = useRef<AppSettingsV2['uiScale']>(undefined)
+  useEffect(() => { uiScaleRef.current = settings?.uiScale }, [settings?.uiScale])
+  const changeUiScale = useCallback((shortcut: UiScaleShortcut) => {
+    const step = nextUiScale(uiScaleRef.current, shortcut, os)
+    toast.show(step.message)
+    const next = step.next
+    if (next === null) return
+    uiScaleRef.current = next === 'auto' ? undefined : next
+    void perform('保存界面缩放', async () => setSettings(await app.savePreferences({ version: 2, uiScale: next })))
+  }, [app, os, perform, toast])
   const navigate = useCallback((target: PageId, section?: string) => {
     if (target === 'canvas') { void perform('打开画布', app.openCanvas); return }
     if ((target === 'account' || target === 'chat') && restoring) {
@@ -582,6 +595,11 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     if (target !== 'home' && target !== 'chat') setVisitedPages((current) => ({ ...current, [target]: scope }))
     setGuide(false); setPage(target)
   }, [app, perform, restoring, restoreRetrying, session.authenticated, scope, toast])
+  // 顶部搜索没搜到时的「去教程里搜」：带着输入的字打开教程页。
+  const searchTutorial = useCallback((query: string) => {
+    setTutorialTopic((current) => ({ sequence: (current?.sequence ?? 0) + 1, id: 'start', query }))
+    navigate('tutorial')
+  }, [navigate])
   // 设置页的「重看界面导览」：回到首页立刻重播一遍，同时把「还没看完」记进本机，
   // 这样中途关掉软件下次还能接着看。
   const replayTour = useCallback(() => {
@@ -914,6 +932,13 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   }, [native, toolbox.jobs, confirmBusy, accountBootstrap, scope])
   useEffect(() => {
     function onShortcut(event: KeyboardEvent) {
+      // 放大缩小对整个窗口都有效，弹窗开着也照样能调；Mac 上这里拦下后菜单里的「放大」就不会再动一遍。
+      const zoom = uiScaleShortcutFor(event)
+      if (zoom) {
+        event.preventDefault()
+        if (settings) changeUiScale(zoom)
+        return
+      }
       if (event.isComposing || event.altKey || !(event.ctrlKey || event.metaKey) || document.querySelector('dialog[open]')) return
       if (event.key === ',') { event.preventDefault(); navigate('settings') }
       if (/^[1-5]$/.test(event.key)) {
@@ -923,7 +948,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     }
     document.addEventListener('keydown', onShortcut)
     return () => document.removeEventListener('keydown', onShortcut)
-  }, [navigate, os, toolbox.snapshot, session.authenticated])
+  }, [navigate, os, toolbox.snapshot, session.authenticated, settings, changeUiScale])
   const guideTools: GuideToolState[] = toolbox.snapshot ? presentTools(toolbox.snapshot).map((tool) => ({
     id: tool.id, installed: tool.status.installed, configured: tool.configured, source: guideSource(tool.source),
     version: tool.currentVersion ?? undefined, model: tool.model, detectionError: Boolean(tool.error),
@@ -1006,7 +1031,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
             body={update.error?.message ?? autoUpdateBubbleBody(update.phase, autoUpdateOn)} progress={update.progress?.percent} onDismiss={() => setDismissedUpdate(updateKey)}
             actions={<><Button size="sm" onClick={() => navigate('updates')}>查看更新</Button>
               {autoUpdateToggle && <Switch testId="update-auto-toggle" label="自动更新" checked={autoUpdateOn} onChange={(autoUpdate) => void perform('保存自动更新', async () => setSettings(await app.savePreferences({ version: 2, autoUpdate })))} />}</>} />}
-          adapter={{ navigate, refreshNetwork: () => { void networkLocation.refresh() }, openAccount: () => navigate('account'), switchAccount: () => setSwitcher(true), topUp: () => navigate('account', accountSupports(session, 'supportsBilling') ? 'recharge' : 'overview'), refreshBalance: () => { void balanceStore.refresh('manual') },
+          adapter={{ navigate, searchTutorial, accountTabVisible: (tab) => !session.authenticated || visibleAccountTab(tab, session), refreshNetwork: () => { void networkLocation.refresh() }, openAccount: () => navigate('account'), switchAccount: () => setSwitcher(true), topUp: () => navigate('account', accountSupports(session, 'supportsBilling') ? 'recharge' : 'overview'), refreshBalance: () => { void balanceStore.refresh('manual') },
             redeemAccelerationCode: async (code) => {
               if (!session.authenticated) throw new Error('请先登录星芒账号，再领取加速时长。')
               const epoch = accountEpoch.current
@@ -1041,7 +1066,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
                   onBackupRestored={() => void toolbox.refreshConfig().catch(() => undefined)}
                   onToolConfigSaved={() => void toolbox.refreshConfig().catch(() => undefined)}
                   toolConfigConfirmed={toolConfigConfirmed}
-                  onAccountChanged={() => void perform('刷新账号', reloadAccount)} onSettingsChanged={setSettings} openConfig={openToolConfig}
+                  onAccountChanged={() => void perform('刷新账号', reloadAccount)} onSettingsChanged={setSettings} uiScale={settings ? settings.uiScale ?? 'auto' : undefined} openConfig={openToolConfig}
                   openGuide={() => setGuide(true)} replayTour={replayTour}
                   onToolsChanged={(tool) => syncAfterToolInstalled(tool).catch((cause) => {
                     if (mounted.current) toast.show(errorMessage(cause, '工具已安装，但最新状态没有读到。请回到首页重新检测。'), 'warn')

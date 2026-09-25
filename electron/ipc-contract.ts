@@ -524,10 +524,29 @@ export interface InstallCancelResult {
   reason: string | null
 }
 
+/**
+ * Which step of a CLI install a progress line belongs to. The renderer shows a
+ * fixed plain-language sentence per stage instead of the main process's own
+ * wording (registry names, SHA-512, package specs, URLs); `raw-output` is npm's
+ * own console text and never replaces the visible line at all.
+ */
+export type InstallProgressStage =
+  | 'version'
+  | 'download'
+  | 'switch-route'
+  | 'verify'
+  | 'install'
+  | 'final-check'
+  | 'raw-output'
+
 export interface InstallProgress {
   provider: ProviderId
   state: 'started' | 'output' | 'success' | 'error'
   message: string
+  /** 缺省 = 旧行为：界面直接显示 message。 */
+  stage?: InstallProgressStage
+  /** 心跳行才有：这一步已经等了多久。 */
+  elapsedMs?: number
   /**
    * Only the few phases that can honestly measure themselves report this --
    * today the signed Grok download. Absent means "no percentage is knowable",

@@ -5,6 +5,7 @@ import type { BusinessActions } from '../../pages-maintenance'
 import { tutorialTopics, type TutorialTopic } from '../../registry/tutorials'
 import type { V2Page } from '../../types'
 import { TutorialIllustration } from './TutorialIllustration'
+import { tutorialMatchesSearch } from './tutorial-search'
 import './tutorial.css'
 
 const readingKey = 'xingmang-v2-tutorial-reading'
@@ -14,9 +15,9 @@ const groups = [
   { id: 'advanced', label: '更多用法与问题处理' },
 ] as const
 
-function initialReading(topic?: { id: string }) {
+function initialReading(topic?: { id: string; query?: string }) {
   const fallback = { selected: 'start', query: '' }
-  if (topic) return { selected: tutorialTopics.some(entry => entry.id === topic.id) ? topic.id : 'start', query: '' }
+  if (topic) return { selected: tutorialTopics.some(entry => entry.id === topic.id) ? topic.id : 'start', query: topic.query?.slice(0, 200) ?? '' }
   try {
     const raw = typeof window === 'undefined' ? null : window.sessionStorage.getItem(readingKey)
     if (!raw || raw.length > 2_000) return fallback
@@ -27,14 +28,6 @@ function initialReading(topic?: { id: string }) {
       query: 'query' in value && typeof value.query === 'string' ? value.query.slice(0, 200) : '',
     }
   } catch { return fallback }
-}
-
-function matchesSearch(topic: TutorialTopic, query: string) {
-  const text = [topic.title, topic.lead, ...topic.keywords, ...(topic.reminders ?? []), ...topic.steps.flatMap(step => [
-    step.title, step.detail, step.where ?? '', step.expected ?? '', step.tip ?? '', step.example ?? '', ...(step.bullets ?? []),
-    ...(step.extra ?? []).flatMap(note => [note.title, note.detail]),
-  ])].join(' ').toLocaleLowerCase()
-  return query.trim().toLocaleLowerCase().split(/\s+/).every(word => text.includes(word))
 }
 
 function TutorialExample({ text, firstMessage, testId }: { text: string; firstMessage: boolean; testId: string }) {
@@ -65,7 +58,8 @@ function TutorialExample({ text, firstMessage, testId }: { text: string; firstMe
 export type TutorialPageProps = Omit<BusinessActions, 'navigate'> & {
   /** section 是那一页里要落的分页；外壳按它切，缺省 = 只跳页（旧行为）。 */
   navigate?: (page: V2Page, section?: string) => void
-  topic?: { sequence: number; id: string }
+  /** query：从顶部搜索「去教程里搜」过来时带上的字，缺省 = 清空搜索（旧行为）。 */
+  topic?: { sequence: number; id: string; query?: string }
 }
 
 export function TutorialPage({ navigate, openGuide, openHelp, topic }: TutorialPageProps) {
@@ -73,7 +67,7 @@ export function TutorialPage({ navigate, openGuide, openHelp, topic }: TutorialP
   // Native details can be closed manually; a new search must reveal its matches again.
   const searchKey = reading.query.trim().toLocaleLowerCase()
   const article = useRef<HTMLElement>(null)
-  const topics = tutorialTopics.filter(topic => matchesSearch(topic, reading.query))
+  const topics = tutorialTopics.filter(topic => tutorialMatchesSearch(topic, reading.query))
   const current = topics.find(topic => topic.id === reading.selected) ?? topics[0]
   const currentIndex = current ? topics.indexOf(current) : -1
   const previousTopic = useRef(current?.id)

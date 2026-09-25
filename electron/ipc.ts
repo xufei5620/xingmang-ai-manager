@@ -368,6 +368,7 @@ function parseSettingsUpdate(value: unknown): AppSettingsUpdate {
   const desktopNotifications = optionalBoolean(value.desktopNotifications, '系统通知设置')
   const autoUpdate = optionalBoolean(value.autoUpdate, '自动更新设置')
   const hardwareAcceleration = optionalBoolean(value.hardwareAcceleration, '显卡加速显示设置')
+  const largeText = optionalBoolean(value.largeText, '大字设置')
   const windowState = value.windowState === null ? null : parseWindowState(value.windowState)
   if (value.windowState !== undefined && windowState === undefined) throw new Error('窗口位置格式错误')
   return {
@@ -393,6 +394,7 @@ function parseSettingsUpdate(value: unknown): AppSettingsUpdate {
     ...(desktopNotifications !== undefined ? { desktopNotifications } : {}),
     ...(autoUpdate !== undefined ? { autoUpdate } : {}),
     ...(hardwareAcceleration !== undefined ? { hardwareAcceleration } : {}),
+    ...(largeText !== undefined ? { largeText } : {}),
     ...(windowState !== undefined ? { windowState } : {}),
   }
 }

@@ -95,3 +95,7 @@ button, input, select, textarea { font: inherit; }
 .v2-skip-link:not(:focus), .v2-visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
 /* 正文区只是焦点落点，不是可操作的控件；给整块内容画一圈焦点框只会让人以为选中了什么。 */
 .v2-content:focus { outline: none; }
+.v2-command-entry { display: grid; }
+.v2-command-group { margin: 8px 10px 4px; color: var(--text-3); font-size: var(--font-small); }
+.v2-command-entry:first-child .v2-command-group { margin-top: 0; }
+.v2-command-empty { display: grid; justify-items: start; gap: 8px; }

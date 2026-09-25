@@ -2584,16 +2584,16 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
     it('persists appearance updates without replacing unrelated settings', async () => {
       const { service } = register()
       const handler = electronMocks.handlers.get('settings:save')!
-      const patch = { version: 2, uiSkin: 'mist', reducedMotion: true, uiScale: '90', closeBehavior: 'tray' }
+      const patch = { version: 2, uiSkin: 'mist', reducedMotion: true, largeText: true, uiScale: '90', closeBehavior: 'tray' }
       await expect(handler(trustedEvent(), patch)).resolves.toMatchObject({
-        workspace: 'C:\\workspace', uiSkin: 'mist', reducedMotion: true, uiScale: '90', closeBehavior: 'tray',
+        workspace: 'C:\\workspace', uiSkin: 'mist', reducedMotion: true, largeText: true, uiScale: '90', closeBehavior: 'tray',
       })
       expect(service.updateStoredConfig).toHaveBeenCalledWith(patch)
     })
 
     it.each([
       { uiSkin: ['mist'] }, { uiSkin: 'unknown' }, { uiScale: 90 }, { uiScale: '500' },
-      { closeBehavior: 'hide-anywhere' }, { reducedMotion: 'true' },
+      { closeBehavior: 'hide-anywhere' }, { reducedMotion: 'true' }, { largeText: 1 },
       { windowState: { bounds: { x: 0, y: 0, width: -1, height: 600 }, maximized: false } },
     ])('rejects malformed appearance and window updates before persistence: %j', async (fields) => {
       const { service } = register()
