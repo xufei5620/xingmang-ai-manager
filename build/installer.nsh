@@ -8,7 +8,7 @@
 #   3. customRemoveFiles：卸载时只删本程序自己装进去的东西。
 #   4. customInit：系统太旧（Windows 10 以下）时一开始就说明并退出。
 #   5. customUnInstall：删文件之前先还原加速改过的系统代理、删掉开机项。
-#   6. customUnWelcomePage：卸载欢迎页上的「同时清除登录记录」勾选框（默认不勾）。
+#   6. customUnWelcomePage：卸载欢迎页上的「同时清除登录记录和聊天记录」勾选框（默认不勾）。
 #
 # 2 和 3 是一对。老版本允许用户把安装目录选成任意已有目录（比如 D:\下载），
 # 而卸载时执行的是 electron-builder 默认的 `RMDir /r $INSTDIR`——整个目录连
@@ -23,7 +23,7 @@
 # scripts/windows-installer-uninstall-cleanup.test.cjs 钉住两边一致。
 !define XINGMANG_UNINSTALL_CLEANUP_ARGUMENT "--xingmang-uninstall-cleanup"
 # 与 uninstall-cleanup-entry.ts 的 uninstallClearLoginArgument 是同一个值，同样由那份
-# 测试钉住。卸载页勾了「同时清除登录记录」时跟在上面那个参数后面传给程序；静默卸载
+# 测试钉住。卸载页勾了「同时清除登录记录和聊天记录」时跟在上面那个参数后面传给程序；静默卸载
 # 没有页面可勾，在卸载程序自己的命令行上带同一个参数，效果等于勾上。
 !define XINGMANG_CLEAR_LOGIN_ARGUMENT "--xingmang-clear-login"
 
@@ -201,7 +201,7 @@
     # 起 130u 高），整页 193u 高，勾选框放在正文下面、页面底边之内。背景跟欢迎页
     # 一样是白的，不设就会是一块灰底。
     Function un.xingmangWelcomeShow
-      ${NSD_CreateCheckbox} 120u 178u 195u 12u "同时清除登录记录"
+      ${NSD_CreateCheckbox} 120u 178u 195u 12u "同时清除登录记录和聊天记录"
       Pop $xingmangClearLoginCheckbox
       SetCtlColors $xingmangClearLoginCheckbox "" "${MUI_BGCOLOR}"
       # 从后一页点「上一步」回来，照上次的选择显示。

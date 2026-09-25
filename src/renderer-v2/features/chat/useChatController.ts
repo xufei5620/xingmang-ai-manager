@@ -9,7 +9,7 @@ export interface GroupPreparation { phase: 'loading' | 'ready' | 'error'; models
 interface PendingRequest { conversationId: string; assistantId: string; mode: ChatMode; epoch: number; cancelRequested?: boolean; failureDuringCancel?: unknown }
 
 export function useChatController(api: ChatApi, scope: string, initial: LoadedChatHistory, active = true) {
-  const [writer] = useState(() => createHistoryWriter(api, initial.saved))
+  const [writer] = useState(() => createHistoryWriter(api, initial.saved, initial.afterFirstSave))
   const [state, setState] = useState(initial.state)
   const [groups, setGroups] = useState<AiChatGroupSummary[]>([])
   const [groupLoading, setGroupLoading] = useState(false)

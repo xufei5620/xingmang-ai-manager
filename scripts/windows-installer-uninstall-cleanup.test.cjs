@@ -79,7 +79,7 @@ test('the uninstall welcome page carries an unticked clear-login box', () => {
   // electron-builder inserts this macro in place of its own MUI_UNPAGE_WELCOME.
   assert.match(page, /!define MUI_PAGE_CUSTOMFUNCTION_SHOW un\.xingmangWelcomeShow\s+!define MUI_PAGE_CUSTOMFUNCTION_LEAVE un\.xingmangWelcomeLeave\s+!insertmacro MUI_UNPAGE_WELCOME/)
   const show = functionBody('un.xingmangWelcomeShow')
-  assert.match(show, /\$\{NSD_CreateCheckbox\} [^\n]*"同时清除登录记录"/)
+  assert.match(show, /\$\{NSD_CreateCheckbox\} [^\n]*"同时清除登录记录和聊天记录"/)
   // Default is keep: the box is ticked only when coming back to a page already ticked.
   assert.match(show, /\$\{If\} \$xingmangClearLogin == "1"\s+\$\{NSD_Check\} \$xingmangClearLoginCheckbox\s+\$\{EndIf\}/)
   assert.match(functionBody('un.xingmangWelcomeLeave'), /\$\{NSD_GetState\} \$xingmangClearLoginCheckbox/)

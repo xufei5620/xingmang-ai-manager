@@ -8,7 +8,7 @@ import { trustedCommandEnvironment } from './command-runner'
 import { windowsAppUserModelId } from './login-launch'
 import { removeWindowsLoginItem } from './platform/system-service'
 import { createWindowsSystemProxy } from './platform/windows-system-proxy'
-import { removeSafeDataFile } from './safe-local-data'
+import { assertNoReparseComponents, removeSafeDataFile } from './safe-local-data'
 import { uninstallClearLoginArgument } from './uninstall-cleanup-entry'
 import { resolveWindowsPowerShellExecutable } from './windows-elevation'
 import { resolveWindowsMachinePaths } from './windows-machine-paths'
@@ -26,6 +26,7 @@ export const uninstallCleanupExitCodes = {
   loginItemRemains: 2,
   timedOut: 4,
   unsupported: 8,
+  // 登录记录或聊天记录有没删掉的（勾选项把两样一起清）。
   loginRecordsRemain: 16,
   // 跑卸载的不是桌面上登录着的那个人，什么都没动（#498）。
   otherAccount: 32,
@@ -54,7 +55,7 @@ export function hasProxyRecoveryRecords(journalPath: string): boolean {
   })
 }
 
-// 卸载页「同时清除登录记录」删的就是这几样：能让下一个用这台电脑的人重装后
+// 卸载页「同时清除登录记录和聊天记录」里登录那一半删的就是这几样：能让下一个用这台电脑的人重装后
 // 直接进到这个账号的东西——当前登录态、本机保存的账号、记住的密码（两个站点
 // 各一份）。本机 Key 缓存和 CLI 配置里的 Key 不在其内：退出登录也保留本机 Key，
 // 这里跟它一致。名字与 main.ts、realm-account-vault-file.ts、realm-data-roots.ts
@@ -94,6 +95,86 @@ export async function clearLoginRecords(dataDirectory: string, report?: (line: s
     }
   }
   return cleared
+}
+
+// 聊天那一半：新版存在 chat-history，旧版本存在界面的本地存储（Local Storage）
+// 里——新版只在迁移成功后才删那份，没打开过新版聊天的老用户那份一直都在。本地
+// 存储里另有几样界面偏好一起没了，卸载时无所谓。名字与 main.ts 里的写法、
+// Chromium 的目录名对应，uninstall-cleanup.test.ts 钉住。
+export const chatHistoryDirectoryNames = ['chat-history', 'Local Storage']
+// chat-history 是两层，Local Storage 是 leveldb 下一层；再深就不是我们写的东西。
+const maxChatHistoryDepth = 6
+
+function reportCleanup(report: ((line: string) => void) | undefined, error: unknown): void {
+  try { report?.(`chat history: ${describeCleanupFailure(error)}`) } catch { /* Reporting must not change the result. */ }
+}
+
+// Nothing here is followed: a link or junction anywhere in the tree, or a file
+// that has another hard link, is refused and left in place (I8) while the rest
+// is still removed. The elevated uninstaller must never delete through a
+// redirect into files that are not ours.
+async function removeChatHistoryTree(directory: string, depth: number, report?: (line: string) => void): Promise<boolean> {
+  let stats: fs.Stats
+  try {
+    stats = fs.lstatSync(directory)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException | null)?.code === 'ENOENT') return true
+    reportCleanup(report, error)
+    return false
+  }
+  try {
+    assertNoReparseComponents(directory, '聊天记录')
+    if (!stats.isDirectory() || stats.isSymbolicLink()) throw new Error('聊天记录必须是普通目录')
+    if (depth > maxChatHistoryDepth) throw new Error('聊天记录目录层级超出预期')
+  } catch (error) {
+    reportCleanup(report, error)
+    return false
+  }
+  let entries: fs.Dirent[]
+  try {
+    entries = fs.readdirSync(directory, { withFileTypes: true })
+  } catch (error) {
+    reportCleanup(report, error)
+    return false
+  }
+  let cleared = true
+  for (const entry of entries) {
+    const child = path.join(directory, entry.name)
+    if (entry.isDirectory()) {
+      if (!await removeChatHistoryTree(child, depth + 1, report)) cleared = false
+      continue
+    }
+    try {
+      // Refuses links (not a regular file) and hard-linked files alike.
+      await removeSafeDataFile(child, '聊天记录')
+    } catch (error) {
+      cleared = false
+      reportCleanup(report, error)
+    }
+  }
+  if (!cleared) return false
+  try {
+    fs.rmdirSync(directory)
+    return true
+  } catch (error) {
+    reportCleanup(report, error)
+    return false
+  }
+}
+
+export async function clearChatHistory(dataDirectory: string, report?: (line: string) => void): Promise<boolean> {
+  let cleared = true
+  for (const name of chatHistoryDirectoryNames) {
+    if (!await removeChatHistoryTree(path.join(dataDirectory, name), 0, report)) cleared = false
+  }
+  return cleared
+}
+
+// 勾选项的全部内容。两样各清各的，一样失败不耽误另一样。
+export async function clearLoginAndChatRecords(dataDirectory: string, report?: (line: string) => void): Promise<boolean> {
+  const login = await clearLoginRecords(dataDirectory, report)
+  const chat = await clearChatHistory(dataDirectory, report)
+  return login && chat
 }
 
 // 卸载程序是整机安装的，一定带着管理员身份跑。普通账号卸载时要输别的管理员的
@@ -171,7 +252,7 @@ export interface UninstallCleanupDependencies {
   inspectAccount?: () => Promise<UninstallAccountMatch>
   recoverProxy(journalPath: string): Promise<void>
   removeLoginItem(): boolean
-  // 只有卸载页勾了「同时清除登录记录」才给；缺省 = 保留登录，跟以前一样。
+  // 只有卸载页勾了「同时清除登录记录和聊天记录」才给；缺省 = 两样都保留，跟以前一样。
   clearLoginRecords?: () => Promise<boolean>
   proxyRecordsExist?: (journalPath: string) => boolean
   timeoutMs?: number
@@ -268,7 +349,7 @@ export function startUninstallCleanup(
     inspectAccount,
     recoverProxy: (journalPath) => createWindowsSystemProxy({ journalPath, commandTimeoutMs: proxyCommandTimeoutMs }).recover(),
     removeLoginItem: () => removeWindowsLoginItem({ app, executablePath: process.execPath }),
-    clearLoginRecords: argv.includes(uninstallClearLoginArgument) ? () => clearLoginRecords(dataDirectory, report) : undefined,
+    clearLoginRecords: argv.includes(uninstallClearLoginArgument) ? () => clearLoginAndChatRecords(dataDirectory, report) : undefined,
     report,
   }).then(exit, () => exit(uninstallCleanupExitCodes.proxyNotRestored))
 }

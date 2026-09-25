@@ -1,14 +1,14 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { AiChatHistorySnapshot, AiChatHistoryWrite } from '../../../../electron/ipc-contract'
 import { createConversation, createWorkspace, type ChatMessage, type ChatWorkspace } from './state'
-import { ChatStorageError, createHistoryWriter, historyKey, importLegacyHistory, loadChatHistory, parseHistorySnapshot, planHistoryWrite, readWorkspace, redactPersistentChatText } from './storage'
+import { ChatStorageError, createHistoryWriter, historyKey, importLegacyHistory, legacyHistoryKeys, loadChatHistory, parseHistorySnapshot, planHistoryWrite, readWorkspace, redactPersistentChatText } from './storage'
 
 const scope = 'xm-account:7'
 const legacyKey = 'xingmang-ai-chat:v1:7'
 const formerLimitBytes = 4 * 1024 * 1024
 function memoryStorage() {
   const data = new Map<string, string>()
-  return { getItem: (key: string) => data.get(key) ?? null, setItem: vi.fn((key: string, value: string) => { data.set(key, value) }) }
+  return { getItem: (key: string) => data.get(key) ?? null, setItem: vi.fn((key: string, value: string) => { data.set(key, value) }), removeItem: vi.fn((key: string) => { data.delete(key) }), keys: () => [...data.keys()] }
 }
 // Same contract as electron/ai-chat-history-store.ts: rewrite the listed
 // conversations, then the index, then drop files the index no longer names.
@@ -205,7 +205,7 @@ describe('lossless chat history files', () => {
 })
 
 describe('localStorage history from earlier versions', () => {
-  it('reads a stored workspace and moves it into the file store on the first save, leaving the source untouched', async () => {
+  it('reads a stored workspace and moves it into the file store on the first save, removing the source only after that save', async () => {
     const storage = memoryStorage()
     const state = workspace(scope, 2)
     const raw = JSON.stringify(state)
@@ -215,10 +215,66 @@ describe('localStorage history from earlier versions', () => {
     const loaded = await loadChatHistory(files.api, storage, scope)
     expect(loaded).toMatchObject({ exists: true, saved: null })
     expect(loaded.state).toEqual(state)
-    await createHistoryWriter(files.api, loaded.saved).save(loaded.state)
-    expect((await loadChatHistory(files.api, memoryStorage(), scope)).state).toEqual(state)
     expect(storage.getItem(historyKey(scope))).toBe(raw)
     expect(storage.setItem).not.toHaveBeenCalled()
+    await createHistoryWriter(files.api, loaded.saved, loaded.afterFirstSave).save(loaded.state)
+    expect((await loadChatHistory(files.api, memoryStorage(), scope)).state).toEqual(state)
+    expect(storage.getItem(historyKey(scope))).toBeNull()
+  })
+
+  it('keeps the source when the first save fails and removes it after a later save succeeds', async () => {
+    const storage = memoryStorage()
+    const state = workspace(scope, 1)
+    const raw = JSON.stringify(state)
+    storage.setItem(historyKey(scope), raw)
+    const files = memoryFiles()
+    const loaded = await loadChatHistory(files.api, storage, scope)
+    let diskFull = true
+    const writer = createHistoryWriter({ writeHistory: async (input) => { if (diskFull) throw new Error('disk full'); await files.api.writeHistory(input) } }, loaded.saved, loaded.afterFirstSave)
+    await expect(writer.save(loaded.state)).rejects.toThrow('disk full')
+    expect(storage.getItem(historyKey(scope))).toBe(raw)
+    diskFull = false
+    await writer.save({ ...loaded.state })
+    expect(storage.getItem(historyKey(scope))).toBeNull()
+  })
+
+  it('does not bring migrated history back when the history folder is cleared later', async () => {
+    const storage = memoryStorage()
+    const state = workspace(scope, 1)
+    storage.setItem(historyKey(scope), JSON.stringify(state))
+    const files = memoryFiles()
+    const loaded = await loadChatHistory(files.api, storage, scope)
+    // Removal refused (for example by a locked profile): only the marker lands.
+    storage.removeItem.mockImplementation(() => { throw new Error('denied') })
+    await createHistoryWriter(files.api, loaded.saved, loaded.afterFirstSave).save(loaded.state)
+    expect(storage.getItem(historyKey(scope))).not.toBeNull()
+    files.stores.clear()
+    const reopened = await loadChatHistory(files.api, storage, scope)
+    expect(reopened).toMatchObject({ exists: false, saved: null })
+    expect(reopened.state.conversations).toHaveLength(0)
+    expect(reopened.afterFirstSave).toBeUndefined()
+  })
+
+  it('removes stale copies an earlier version left behind once the file store has a record', async () => {
+    const storage = memoryStorage()
+    const files = memoryFiles()
+    const state = workspace(scope, 1)
+    await createHistoryWriter(files.api, null).save(state)
+    for (const key of legacyHistoryKeys(scope)) storage.setItem(key, 'stale copy')
+    storage.setItem(historyKey('api-account:7'), 'another account')
+    expect(legacyHistoryKeys(scope)).toEqual([historyKey(scope), historyKey('solov:7'), historyKey('sub2api:7'), legacyKey])
+    expect((await loadChatHistory(files.api, storage, scope)).state).toEqual(state)
+    for (const key of legacyHistoryKeys(scope)) expect(storage.getItem(key)).toBeNull()
+    expect(storage.getItem(historyKey('api-account:7'))).toBe('another account')
+  })
+
+  it('keeps an unreadable localStorage record and never offers to remove it', async () => {
+    const storage = memoryStorage()
+    storage.setItem(historyKey(scope), '{not json')
+    const loaded = await loadChatHistory(memoryFiles().api, storage, scope)
+    expect(loaded.warning).toBeTruthy()
+    expect(loaded.afterFirstSave).toBeUndefined()
+    expect(storage.getItem(historyKey(scope))).toBe('{not json')
   })
 
   it.each(['conversations', 'duplicate-message', 'duplicate-conversation', 'invalid-message', 'invalid-asset'] as const)('refuses a lossy read of %s while retaining its original storage', (kind) => {

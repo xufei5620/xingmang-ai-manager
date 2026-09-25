@@ -6,6 +6,8 @@ import { accelerationProxyJournalPath } from './acceleration-development-host'
 import { windowsAppUserModelId } from './login-launch'
 import { uninstallCleanupArgument, uninstallClearLoginArgument } from './uninstall-cleanup-entry'
 import {
+  chatHistoryDirectoryNames,
+  clearChatHistory,
   clearLoginRecords,
   describeCleanupFailure,
   hasProxyRecoveryRecords,
@@ -210,6 +212,61 @@ describe('uninstall cleanup', () => {
     expect(report).toHaveBeenCalledWith('login records: 登录记录必须是单链接普通文件')
   })
 
+  it('names the chat history folders the desktop process writes', () => {
+    const main = fs.readFileSync(path.join(__dirname, 'main.ts'), 'utf8')
+    expect(main).toContain("createAiChatHistoryStore({ root: path.join(managerDataDirectory, 'chat-history') })")
+    // Chromium keeps the renderer's localStorage there, where earlier versions kept chats.
+    expect(chatHistoryDirectoryNames).toEqual(['chat-history', 'Local Storage'])
+  })
+
+  it('clears both chat history folders and leaves everything else alone', async () => {
+    const dataDirectory = temporaryDataDirectory()
+    const conversation = path.join(dataDirectory, 'chat-history', 'xm-account%3A7')
+    fs.mkdirSync(conversation, { recursive: true })
+    fs.writeFileSync(path.join(conversation, 'index.json'), '{}')
+    fs.writeFileSync(path.join(conversation, 'a.json'), '{}')
+    fs.mkdirSync(path.join(dataDirectory, 'Local Storage', 'leveldb'), { recursive: true })
+    fs.writeFileSync(path.join(dataDirectory, 'Local Storage', 'leveldb', '000003.log'), 'old chats')
+    fs.writeFileSync(path.join(dataDirectory, 'settings.json'), '{}')
+    fs.mkdirSync(path.join(dataDirectory, 'logs'))
+
+    await expect(clearChatHistory(dataDirectory)).resolves.toBe(true)
+    expect(fs.readdirSync(dataDirectory).sort()).toEqual(['logs', 'settings.json'])
+    // Nothing there is already clear.
+    await expect(clearChatHistory(dataDirectory)).resolves.toBe(true)
+  })
+
+  it('refuses a linked file or folder inside the chat history but still clears the rest', async () => {
+    const dataDirectory = temporaryDataDirectory()
+    const elsewhere = temporaryDataDirectory()
+    fs.writeFileSync(path.join(elsewhere, 'someone-elses.json'), 'not ours')
+    const history = path.join(dataDirectory, 'chat-history', 'scope')
+    fs.mkdirSync(history, { recursive: true })
+    fs.linkSync(path.join(elsewhere, 'someone-elses.json'), path.join(history, 'hard-linked.json'))
+    fs.writeFileSync(path.join(history, 'ours.json'), 'ours')
+    fs.mkdirSync(path.join(dataDirectory, 'Local Storage'))
+    fs.symlinkSync(elsewhere, path.join(dataDirectory, 'Local Storage', 'leveldb'), 'junction')
+    const report = vi.fn()
+
+    await expect(clearChatHistory(dataDirectory, report)).resolves.toBe(false)
+    expect(fs.readdirSync(history)).toEqual(['hard-linked.json'])
+    expect(fs.readFileSync(path.join(elsewhere, 'someone-elses.json'), 'utf8')).toBe('not ours')
+    expect(fs.readdirSync(elsewhere)).toEqual(['someone-elses.json'])
+    expect(report).toHaveBeenCalledWith('chat history: 聊天记录必须是单链接普通文件')
+  })
+
+  it('refuses a chat history folder that is itself a link', async () => {
+    const dataDirectory = temporaryDataDirectory()
+    const elsewhere = temporaryDataDirectory()
+    fs.writeFileSync(path.join(elsewhere, 'index.json'), 'not ours')
+    fs.symlinkSync(elsewhere, path.join(dataDirectory, 'chat-history'), 'junction')
+    const report = vi.fn()
+
+    await expect(clearChatHistory(dataDirectory, report)).resolves.toBe(false)
+    expect(fs.readFileSync(path.join(elsewhere, 'index.json'), 'utf8')).toBe('not ours')
+    expect(report).toHaveBeenCalledWith('chat history: 聊天记录不能经过符号链接或目录联接')
+  })
+
   it('clears login records only when asked, before proxy recovery, and reports what remains', async () => {
     const order: string[] = []
     await expect(runUninstallCleanup({
@@ -242,13 +299,15 @@ describe('uninstall cleanup', () => {
     expect(report).toHaveBeenCalledWith('login records: 登录记录无法验证路径组件')
   })
 
-  it('keeps the login unless the uninstaller passed the clear-login switch', async () => {
+  it('keeps the login and chat history unless the uninstaller passed the clear-login switch', async () => {
     for (const [argv, remains] of [
       [['C:/App/xingmang.exe', uninstallCleanupArgument], true],
       [['C:/App/xingmang.exe', uninstallCleanupArgument, uninstallClearLoginArgument], false],
     ] as const) {
       const dataDirectory = temporaryDataDirectory()
       fs.writeFileSync(path.join(dataDirectory, 'account-session.dat'), 'session')
+      fs.mkdirSync(path.join(dataDirectory, 'chat-history'))
+      fs.writeFileSync(path.join(dataDirectory, 'chat-history', 'index.json'), '{}')
       const app = {
         isPackaged: true,
         getPath: vi.fn(() => dataDirectory),
@@ -259,6 +318,7 @@ describe('uninstall cleanup', () => {
       const exited = new Promise<number>((resolve) => startUninstallCleanup(app as never, resolve, undefined, argv, sameAccount))
       await expect(exited).resolves.toBe(0)
       expect(fs.existsSync(path.join(dataDirectory, 'account-session.dat'))).toBe(remains)
+      expect(fs.existsSync(path.join(dataDirectory, 'chat-history'))).toBe(remains)
     }
   })
 
