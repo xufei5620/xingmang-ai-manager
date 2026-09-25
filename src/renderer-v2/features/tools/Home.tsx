@@ -15,6 +15,7 @@ import { tools as toolRegistry } from '../../registry/tools'
 import { FirstRunSteps } from './FirstRun'
 import { isAccountNotEnabledFailure, keySyncFailureReason, keySyncFailureText } from './key-sync-failure'
 import { dismissFirstRun, getFirstRunStorage, readFirstRunDismissals } from './first-run-dismissal'
+import { formatRecentTime, recentResumeHint, recentSessionSubtitle } from './recent-display'
 import { latestSessionIdsByWorkspace, newWorkspaceLabel, recentWorkspaces, workspaceButtonLabel, workspaceChoices } from './recent-workspaces'
 import { errorMessage } from '../../business-common'
 import { isNetworkFailureText } from './online-resync'
@@ -412,13 +413,14 @@ export function Home(props: HomeProps) {
         <Card title="最近" meta="从上次停下的地方继续" padding="none" testId="home-recent-card" actions={<Button variant="ghost" size="xs" onClick={() => props.onNavigate('sessions')}>全部记录</Button>}>
           {recentError ? <Empty icon={History} title="记录暂时没有读到" description={recentError} action={<Button onClick={() => setRecentAttempt((value) => value + 1)}>重新加载</Button>} />
             : !recent ? <div className="v2-loading-inline" role="status">正在读取最近记录</div>
-              : recent.items.length ? recent.items.slice(0, 3).map((session) => <ListRow key={session.id} icon={History}
-                title={session.title} desc={session.cwd ?? undefined} meta={session.updatedAt === null ? '时间未记录' : new Date(session.updatedAt * 1000).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}
+              : recent.items.length ? recent.items.slice(0, 3).map((session) => <ListRow key={session.id} leading={<BrandIcon tool={session.provider} size={18} />}
+                testId={`home-recent-row-${session.id}`} title={session.title}
+                desc={<span title={session.cwd || undefined}>{recentSessionSubtitle(session)}</span>} meta={formatRecentTime(session.updatedAt, Date.now())}
                 badge={session.cwdExists === false ? <Pill tone="warn" testId={`home-recent-missing-${session.id}`}>文件夹已不存在</Pill> : undefined}
                 actions={<>
                   {resumable.has(session.id) && !session.archived && <Button size="xs" disabled={loading || launchBusy || session.cwdExists === false}
                     onClick={() => props.onLaunch(session.provider, session.cwd, 'resumeLast')}
-                    title={session.cwdExists === false ? '这个文件夹已经不在了，接不上上次的对话' : `接着 ${session.cwd} 里最近的一条对话`} testId={`home-recent-resume-${session.id}`}>接着聊</Button>}
+                    title={recentResumeHint(session)} testId={`home-recent-resume-${session.id}`}>接着聊</Button>}
                   {Boolean(session.cwd) && <Button size="xs" variant="ghost" icon={FolderOpen} disabled={session.cwdExists === false}
                     aria-label="打开文件夹" title={session.cwdExists === false ? '这个文件夹已经不在了，打不开' : `在文件管理器里打开 ${session.cwd}`}
                     onClick={() => void openRecentDirectory(session.id)} testId={`home-recent-open-directory-${session.id}`} />}
