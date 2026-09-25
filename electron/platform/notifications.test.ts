@@ -10,7 +10,7 @@ import {
 
 function setup() {
   let enabled = true
-  const preferences = { install: true, balance: true, task: true, cliUpdate: true, announcement: true, acceleration: true }
+  const preferences = { install: true, balance: true, task: true, cliUpdate: true, announcement: true, spend: true, acceleration: true }
   const notifications: Array<
     EventEmitter & {
       show: ReturnType<typeof vi.fn>
@@ -257,6 +257,32 @@ describe('announcement reminders', () => {
   })
 })
 
+describe('spend spike reminders', () => {
+  it('writes the amount and multiple in a fixed format built in the main process', () => {
+    expect(buildActivityNotificationMessage('spend', 'spend:7:1', { cents: 1240, multiple: 8 })).toEqual({
+      title: '这一小时花得比平时多',
+      body: '过去一小时用掉了 $12.40，大约是平时的 8 倍。如果不是你在用，回星芒看看是哪个工具。',
+    })
+    expect(buildActivityNotificationMessage('spend', 'spend:7:1', { cents: 505, multiple: null }).body)
+      .toBe('过去一小时用掉了 $5.05，比平时多很多。如果不是你在用，回星芒看看是哪个工具。')
+  })
+  it('can be switched off on its own and opens the usage page on click', () => {
+    const h = setup()
+    h.openPage.mockImplementation(() => undefined)
+    h.preferences.spend = false
+    expect(h.controller.notify('spend', 'spend:7:1', { cents: 1240, multiple: 8 })).toBe('disabled')
+    h.preferences.spend = true
+    expect(h.controller.notify('spend', 'spend:7:1', { cents: 1240, multiple: 8 })).toBe('requested')
+    expect(h.controller.notify('spend', 'spend:7:1', { cents: 1240, multiple: 8 })).toBe('duplicate')
+    h.notifications[0].emit('click')
+    expect(h.openPage).toHaveBeenCalledWith('usage')
+  })
+  it('never names the relay site', () => {
+    const { title, body } = buildActivityNotificationMessage('spend', 'spend:7:1', { cents: 1240, multiple: 8 })
+    expect(`${title} ${body}`).not.toMatch(/solov|new-api|relay|sub2api|API/i)
+  })
+})
+
 describe('chat notifications and click destinations', () => {
   it('uses chat-specific copy for chat and image completions instead of the async task sentence', () => {
     expect(buildActivityNotificationMessage('task', 'chat:req-1')).toEqual({
@@ -279,6 +305,7 @@ describe('chat notifications and click destinations', () => {
     expect(resolveNotificationTarget('install', 'install:claude:installed:1')).toBe('home')
     expect(resolveNotificationTarget('cliUpdate', 'claude@2')).toBe('home')
     expect(resolveNotificationTarget('announcement', 'notice-1')).toBe('announcement')
+    expect(resolveNotificationTarget('spend', 'spend:7:1')).toBe('usage')
     expect(resolveNotificationTarget('test', 'test')).toBeNull()
   })
   it('focuses the window before opening the destination page on click', () => {
@@ -301,7 +328,7 @@ describe('chat notifications and click destinations', () => {
     const controller = createPlatformNotifications(
       {
         readEnabled: () => true,
-        readPreferences: () => ({ install: true, balance: true, task: true, cliUpdate: true, announcement: true, acceleration: true }),
+        readPreferences: () => ({ install: true, balance: true, task: true, cliUpdate: true, announcement: true, spend: true, acceleration: true }),
         focusMainWindow,
         onError,
       },
