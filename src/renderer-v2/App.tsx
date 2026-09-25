@@ -1,11 +1,11 @@
 import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { RefreshCw } from 'lucide-react'
 import QRCode from 'qrcode'
-import type { AccountSessionState, AccountSourceSwitchResult, AccountSourceTarget, AppSettingsV2, CliLaunchMode, ExternalDeepLink, ExternalToolId, LegalDocumentKind, PlatformCapabilities, ProviderId, UpdateSnapshot, XingmangApi } from '../../electron/ipc-contract'
+import type { AccountSessionState, AccountSourceSwitchResult, AccountSourceTarget, AppSettingsV2, CliLaunchMode, ExternalDeepLink, ExternalToolId, LegalDocumentKind, NetworkSettingsKind, PlatformCapabilities, ProviderId, UpdateSnapshot, XingmangApi } from '../../electron/ipc-contract'
 import { resolveRelaySite, resolveSupportServiceUrl } from '../../electron/relay-sites'
 import { offersCodexDesktopRestart } from '../../electron/running-tools'
 import { Shell as AppFrame } from './features/shell/Shell'
-import { isOffline, offlineActionMessage } from './features/shell/online-status'
+import { isOffline, offlineActionMessage, offlineCause } from './features/shell/online-status'
 import { OnlineStatusContext, useBrowserOnline, type OnlineStatus } from './features/shell/useOnlineStatus'
 import { createAppApi } from './features/app/api'
 import { AuthFlow, LegalDocument, Splash, StartGuide, Welcome, createAuthApi, guideOfficialLoginRequired, type AuthMode, type GuideToolState, type LoginTarget } from './features/auth'
@@ -202,12 +202,44 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   useEffect(() => {
     if (browserOnline && session.authenticated && balanceStore.getSnapshot().networkFailures > 0) void balanceStore.refresh('manual')
   }, [browserOnline, balanceStore, session.authenticated])
+  const onlineCause = offline ? offlineCause({ browserOnline, networkFailureReason: balanceState.networkFailureReason }) : undefined
+  // 代理连不上时，星芒先替用户试一次直连（只改自己的连接，下次打开软件照旧跟随系统）。
+  // 自动只试一次；之后点「重新检测」再试。
+  const proxyBypassTried = useRef(false)
+  const [proxyBypassNotice, setProxyBypassNotice] = useState(false)
+  const tryProxyBypass = useCallback(async () => {
+    proxyBypassTried.current = true
+    const outcome = await Promise.resolve().then(() => native.bypassBrokenProxy()).catch(() => 'unavailable' as const)
+    if (outcome === 'direct' && mounted.current) setProxyBypassNotice(true)
+    return outcome === 'direct'
+  }, [native])
+  useEffect(() => {
+    if (onlineCause !== 'proxy' || proxyBypassTried.current) return
+    void tryProxyBypass().then((direct) => { if (direct) void balanceStore.refresh('manual') })
+  }, [onlineCause, tryProxyBypass, balanceStore])
   const recheckOnline = useCallback(() => {
     if (!navigator.onLine || !session.authenticated) return
     setOnlineChecking(true)
-    void balanceStore.refresh('manual').finally(() => { if (mounted.current) setOnlineChecking(false) })
-  }, [balanceStore, session.authenticated])
-  const onlineStatus = useMemo<OnlineStatus>(() => ({ offline, checking: onlineChecking, recheck: recheckOnline }), [offline, onlineChecking, recheckOnline])
+    const bypass = onlineCause === 'proxy' ? tryProxyBypass() : Promise.resolve(false)
+    void bypass.then(() => balanceStore.refresh('manual')).finally(() => { if (mounted.current) setOnlineChecking(false) })
+  }, [balanceStore, session.authenticated, onlineCause, tryProxyBypass])
+  const openNetworkSettings = useCallback((kind: NetworkSettingsKind) => {
+    void Promise.resolve().then(() => native.openNetworkSettings(kind)).then((opened) => {
+      if (!opened) throw new Error('not-opened')
+    }).catch(() => {
+      toast.show(kind === 'proxy' ? '没能打开系统代理设置，请在系统设置里找「代理」。' : '没能打开认证页，请打开浏览器随便访问一个网页。', 'warn')
+    })
+  }, [native, toast])
+  const dismissProxyBypassNotice = useCallback(() => setProxyBypassNotice(false), [])
+  const onlineStatus = useMemo<OnlineStatus>(() => ({
+    offline,
+    cause: onlineCause,
+    proxyBypassNotice: !offline && proxyBypassNotice,
+    checking: onlineChecking,
+    recheck: recheckOnline,
+    openNetworkSettings,
+    dismissProxyBypassNotice,
+  }), [offline, onlineCause, proxyBypassNotice, onlineChecking, recheckOnline, openNetworkSettings, dismissProxyBypassNotice])
   // 换账号等于换了一整套上下文：首页那份「最近」缓存（60 秒）必须当场作废，
   // 否则切过去的头一眼看到的还是上一个账号在的时候读到的列表。
   useLayoutEffect(() => { accountEpoch.current++; pendingModelSwap.current?.('cancel'); setAccountReadError(null); refreshRecent() }, [scope, session.authenticated, refreshRecent])

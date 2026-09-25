@@ -140,6 +140,7 @@ import type { DiagnosticsReport, DiagnosticsRunOptions } from './diagnostics'
 import { isCappedKeyUsedUp, withKeyQuotaExhausted, type ConnectionCheckResult } from './connection-check'
 import type { RuntimeLogStore } from './runtime-log'
 import { createExternalShellLauncher, type ExternalShellLauncher } from './system-shell'
+import { isNetworkSettingsKind, type NetworkSettingsKind, type ProxyBypassOutcome } from './proxy-bypass'
 import { platformCapabilitiesFor } from './platform-capabilities'
 import { validatePaymentForm, validatePaymentQrCode, validatePaymentUrl, type PaymentWindowController } from './payment-window'
 import type { AccountStartupGate } from './account-startup-gate'
@@ -208,6 +209,9 @@ export interface IpcRegistrationOptions {
   setWindowMode(target: WebContents, mode: AppWindowMode): void
   setWindowTheme(target: WebContents, theme: AppTheme): void
   getWindowCapabilities?(): WindowCapabilities
+  /** 见 electron/proxy-bypass.ts；不传 = 不绕（测试与旧调用方）。 */
+  bypassBrokenProxy?(): Promise<ProxyBypassOutcome>
+  openNetworkSettings?(kind: NetworkSettingsKind): Promise<boolean>
   relaunchApp?(): Promise<boolean>
   takeExternalDeepLink?(target: WebContents): ExternalDeepLink | null
   /** `update` is the parsed request, so a hook can tell which fields the user just changed. */
@@ -1218,6 +1222,8 @@ const ipcOperationLabels: Readonly<Record<string, string>> = {
   'window:set-mode': '窗口模式切换',
   'window:set-theme': '界面主题切换',
   'external:open': '外部链接打开',
+  'network:bypass-broken-proxy': '代理连不上时改走直连',
+  'network:open-settings': '打开系统网络设置',
   'update:get-state': '主程序更新状态读取',
   'update:startup': '主程序启动更新',
   'update:check': '主程序更新检查',
@@ -2315,6 +2321,11 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     }
     await externalShell.openExternal(url)
     return true
+  })
+  registerTrustedHandler('network:bypass-broken-proxy', () => options.bypassBrokenProxy?.() ?? 'unavailable')
+  registerTrustedHandler('network:open-settings', async (_event, kind: unknown) => {
+    if (!isNetworkSettingsKind(kind)) throw new Error('未知的网络设置页')
+    return await options.openNetworkSettings?.(kind) ?? false
   })
   registerTrustedHandler('update:get-state', () => options.updaterService.getState())
   registerTrustedHandler('update:startup', async () => {
