@@ -333,6 +333,22 @@ describe('shared account balance network failure streak', () => {
   const stores: AccountBalanceStore[] = []
   afterEach(() => { stores.splice(0).forEach((store) => store.dispose()) })
 
+  it('remembers which kind of local failure it was so the banner can say what to do', async () => {
+    const read = vi.fn<() => Promise<AccountBalance>>()
+    const store = createAccountBalanceStore({ read })
+    stores.push(store)
+    read.mockRejectedValueOnce(new Error('net::ERR_PROXY_CONNECTION_FAILED'))
+    store.setScope('new-api:1')
+    await store.refresh()
+    expect(store.getSnapshot()).toMatchObject({ networkFailures: 1, networkFailureReason: 'proxy' })
+    read.mockRejectedValueOnce(new Error('net::ERR_UNSAFE_REDIRECT'))
+    await store.refresh('manual')
+    expect(store.getSnapshot()).toMatchObject({ networkFailures: 2, networkFailureReason: 'intercepted' })
+    read.mockResolvedValueOnce(balance(5))
+    await store.refresh('manual')
+    expect(store.getSnapshot().networkFailureReason).toBeUndefined()
+  })
+
   it('counts consecutive local network failures and resets on success or another failure', async () => {
     const read = vi.fn<() => Promise<AccountBalance>>()
     const store = createAccountBalanceStore({ read })

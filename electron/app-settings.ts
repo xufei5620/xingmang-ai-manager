@@ -109,6 +109,11 @@ export interface AppSettings {
    * 落盘。主进程在 ready 之前读它，改了要重开软件才生效。
    */
   hardwareAcceleration?: boolean
+  /**
+   * 「大字」：只把说明文字和小字调大一档，正文和布局不动。缺省 = 关，和
+   * reducedMotion 一样只把打开的 true 落盘。
+   */
+  largeText?: boolean
   /** Absent = automatic. A pinned percentage multiplies the automatic zoom. */
   uiScale?: Exclude<AppUiScale, 'auto'>
   /** Absent = ask. The host must keep a visible entry when no tray exists. */
@@ -158,6 +163,7 @@ export interface AppSettingsUpdate {
   desktopNotifications?: boolean
   autoUpdate?: boolean
   hardwareAcceleration?: boolean
+  largeText?: boolean
   uiScale?: AppUiScale
   closeBehavior?: AppCloseBehavior
   /** Only the host sets this; true is sticky and false is ignored. */
@@ -315,6 +321,7 @@ function parseSettingsValue(value: unknown): AppSettings {
     ...(value.desktopNotifications === false ? { desktopNotifications: false as const } : {}),
     ...(value.autoUpdate === false ? { autoUpdate: false as const } : {}),
     ...(value.hardwareAcceleration === false ? { hardwareAcceleration: false as const } : {}),
+    ...(optionalBoolean(value.largeText, false) ? { largeText: true as const } : {}),
     ...(uiScale !== undefined ? { uiScale } : {}),
     ...(closeBehavior !== undefined ? { closeBehavior } : {}),
     ...(value.trayHintShown === true ? { trayHintShown: true as const } : {}),
@@ -444,6 +451,7 @@ export function mergeAppSettings(base: AppSettings, update: AppSettingsUpdate): 
   const desktopNotifications = update.desktopNotifications ?? base.desktopNotifications
   const autoUpdate = update.autoUpdate ?? base.autoUpdate
   const hardwareAcceleration = update.hardwareAcceleration ?? base.hardwareAcceleration
+  const largeText = update.largeText ?? base.largeText
   const uiScale = update.uiScale === 'auto' ? undefined : parseUiScale(update.uiScale) ?? base.uiScale
   const closeBehavior = update.closeBehavior === 'ask' ? undefined : parseCloseBehavior(update.closeBehavior) ?? base.closeBehavior
   const windowState = update.windowState === null ? undefined : parseWindowState(update.windowState) ?? base.windowState
@@ -466,6 +474,7 @@ export function mergeAppSettings(base: AppSettings, update: AppSettingsUpdate): 
     ...(desktopNotifications === false ? { desktopNotifications: false as const } : {}),
     ...(autoUpdate === false ? { autoUpdate: false as const } : {}),
     ...(hardwareAcceleration === false ? { hardwareAcceleration: false as const } : {}),
+    ...(largeText ? { largeText: true as const } : {}),
     ...(uiScale !== undefined ? { uiScale } : {}),
     ...(closeBehavior !== undefined ? { closeBehavior } : {}),
     ...(update.trayHintShown === true || base.trayHintShown === true ? { trayHintShown: true as const } : {}),

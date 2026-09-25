@@ -481,6 +481,19 @@ describe('UI and window preferences', () => {
     expect(readAppSettings(filePath)).toEqual(settings({ uiSkin: 'mist' }))
   })
 
+  it('keeps large text off by default and stores only an explicit opt-in', async () => {
+    const filePath = temporarySettingsPath()
+    expect(readAppSettings(filePath)).not.toHaveProperty('largeText')
+    await updateAppSettings(filePath, { version: 2, largeText: true })
+    expect(readAppSettings(filePath).largeText).toBe(true)
+    await updateAppSettings(filePath, { version: 2, theme: 'light' })
+    expect(readAppSettings(filePath).largeText).toBe(true)
+    await updateAppSettings(filePath, { version: 2, largeText: false })
+    expect(readAppSettings(filePath)).not.toHaveProperty('largeText')
+    fs.writeFileSync(filePath, JSON.stringify({ ...settings({ uiSkin: 'mist' }), largeText: 'yes' }), 'utf8')
+    expect(readAppSettings(filePath)).toEqual(settings({ uiSkin: 'mist' }))
+  })
+
   it('rejects malformed persisted notification preferences without discarding other settings', () => {
     const filePath = temporarySettingsPath()
     fs.writeFileSync(filePath, JSON.stringify({ ...settings({ uiSkin: 'mist' }), desktopNotifications: 'enabled' }), 'utf8')

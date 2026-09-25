@@ -7,6 +7,7 @@ import path from 'node:path'
 import { promisify } from 'node:util'
 import { type AppSettings, type AppSettingsUpdate, AppSettingsStore, type MirrorPolicy } from './app-settings'
 import type { RuntimeLogLike } from './account-session-store'
+import type { InstallProgressStage } from './ipc-contract'
 import { redactHomeDirectory } from './startup-log'
 import { cliCatalog, providerIds, type ProviderId } from './catalog'
 import {
@@ -3241,8 +3242,26 @@ export function createSystemService(
     state: 'started' | 'output' | 'success' | 'error',
     message: string,
     percent?: number,
+    staged?: { stage: InstallProgressStage; elapsedMs?: number },
   ): void {
-    if (!target.isDestroyed()) target.send('cli:install-progress', { provider, state, message, percent })
+    // 界面只按阶段显示白话，原话（源名、SHA-512、包名、网址、npm 自己的英文）
+    // 客服排查还要看，所以落进运行日志。心跳和下载百分比每隔几秒一条，不记。
+    if (staged && staged.elapsedMs === undefined && percent === undefined) {
+      runtimeLog?.log('info', 'install', staged.stage === 'raw-output' ? 'cli.install.output' : 'cli.install.progress', message, {
+        provider,
+        stage: staged.stage,
+      })
+    }
+    if (!target.isDestroyed()) {
+      target.send('cli:install-progress', {
+        provider,
+        state,
+        message,
+        percent,
+        ...(staged ? { stage: staged.stage } : {}),
+        ...(staged?.elapsedMs !== undefined ? { elapsedMs: staged.elapsedMs } : {}),
+      })
+    }
   }
 
   async function findNpmForCliInstall(
@@ -3406,6 +3425,8 @@ export function createSystemService(
             provider,
             'started',
             `正在从 xAI 官方下载并验证已签名的 Grok CLI ${installedBefore ? '更新' : '安装'}包`,
+            undefined,
+            { stage: 'download' },
           )
           let lastReportedBucket = -1
           // 百分比只在有新数据时才动，所以一条不通的线路看上去和「正在下载」
@@ -3419,6 +3440,8 @@ export function createSystemService(
               provider,
               'output',
               grokDownloadStallMessage(idleMs),
+              undefined,
+              { stage: 'download', elapsedMs: idleMs },
             )
           }, grokDownloadStallHeartbeatMs)
           try {
@@ -3437,6 +3460,7 @@ export function createSystemService(
                   'output',
                   `Grok CLI 下载 ${percent}%（${Math.floor(transferred / 1024 / 1024)} / ${Math.floor(total / 1024 / 1024)} MiB）`,
                   percent,
+                  { stage: 'download' },
                 )
               },
             })
@@ -3448,6 +3472,8 @@ export function createSystemService(
             provider,
             'output',
             `xAI 签名与文件校验通过（${downloadedGrokBinary.version}，SHA-256 ${downloadedGrokBinary.sha256Hex.slice(0, 16)}…）`,
+            undefined,
+            { stage: 'install' },
           )
           cancellation?.seal(grokBinarySwapSealReason)
           const installed = await installDownloadedGrokBinary(downloadedGrokBinary, sameUserInstall
@@ -3458,6 +3484,7 @@ export function createSystemService(
             : {})
           cancellation?.unseal()
           invalidateCliUpdateCache(provider)
+          sendInstallProgress(target, provider, 'output', `${definition.name} 已写入，正在检查安装结果`, undefined, { stage: 'final-check' })
           const verification = await inspectCliTool(provider, null, null, installed.executablePath)
           if (
             !verification.installation
@@ -3558,6 +3585,8 @@ export function createSystemService(
         versionChoice.source === 'latest'
           ? '正在从 npm 官方源校验最新版本和 SHA-512 完整性元数据'
           : `正在从 npm 官方源校验${versionChoice.source === 'recommended' ? '推荐' : '指定'}版本 ${versionChoice.version} 和 SHA-512 完整性元数据`,
+        undefined,
+        { stage: 'version' },
       )
       const trustedRelease = await resolveCliInstallRelease(provider, grokInstallStrategy, {
         version: versionChoice.version,
@@ -3583,7 +3612,7 @@ export function createSystemService(
             ? '检测到非中国大陆网络'
             : '未能识别网络区域，按国内网络处理'
       const action = `${regionLabel}，正在通过${primaryLabel}安装已校验版本 ${definition.packageName}@${trustedRelease.version}`
-      sendInstallProgress(target, provider, 'started', action)
+      sendInstallProgress(target, provider, 'started', action, undefined, { stage: 'download' })
       const transaction = managedNpmTransaction
       const npmUserConfig = managedNpmLayout?.userConfig ?? path.join(transaction, 'npmrc')
       if (!managedNpmLayout) {
@@ -3641,7 +3670,7 @@ export function createSystemService(
           maxOutputBytes: 8 * 1024 * 1024,
           onOutput: ({ text }) => {
             const message = text.trim()
-            if (message) sendInstallProgress(target, provider, 'output', message)
+            if (message) sendInstallProgress(target, provider, 'output', message, undefined, { stage: 'raw-output' })
           },
         })
       }
@@ -3672,14 +3701,17 @@ export function createSystemService(
         resolution: string,
         cache: string,
       ) => {
-        sendInstallProgress(target, provider, 'output', npmResolutionStartMessage(registry))
+        sendInstallProgress(target, provider, 'output', npmResolutionStartMessage(registry), undefined, { stage: 'download' })
         const startedAt = Date.now()
         const ticker = setInterval(() => {
+          const elapsedMs = Date.now() - startedAt
           sendInstallProgress(
             target,
             provider,
             'output',
-            npmResolutionHeartbeatMessage(registry, Date.now() - startedAt),
+            npmResolutionHeartbeatMessage(registry, elapsedMs),
+            undefined,
+            { stage: 'download', elapsedMs },
           )
         }, npmResolutionHeartbeatMs)
         try {
@@ -3723,6 +3755,8 @@ export function createSystemService(
             provider,
             'output',
             `${registries[0] === npmMirrorRegistry ? '国内 npm 镜像' : 'npm 官方源'}安装失败，正在切换${registry === npmMirrorRegistry ? '国内 npm 镜像' : 'npm 官方源'} ${registry}`,
+            undefined,
+            { stage: 'switch-route' },
           )
         }
         try {
@@ -3750,6 +3784,8 @@ export function createSystemService(
             provider,
             'output',
             `${registry === npmMirrorRegistry ? '国内 npm 镜像' : 'npm 官方源'}完整依赖图与官方 SHA-512 对账通过，正在下载校验包缓存`,
+            undefined,
+            { stage: 'verify' },
           )
           await executeNpm([
             'ci',
@@ -3773,6 +3809,7 @@ export function createSystemService(
             true,
             platform,
           )
+          sendInstallProgress(target, provider, 'output', `${definition.name} 下载校验完成，正在安装到本机`, undefined, { stage: 'install' })
           const lifecycle = () => executeNpm([
             ...plan.argv,
             '--offline',
@@ -3816,6 +3853,7 @@ export function createSystemService(
         const occupied = await describeOccupiedCliFailure(provider, detail, detail, occupancyProbeRoot, updatingExistingInstall)
         throw new Error(occupied ?? `${definition.name} 安装失败：${detail}`)
       }
+      sendInstallProgress(target, provider, 'output', `${definition.name} 已安装，正在检查安装结果`, undefined, { stage: 'final-check' })
       invalidateCliUpdateCache(provider)
       const stagedManifest = installPrefix
         ? path.join(

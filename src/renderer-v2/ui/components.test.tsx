@@ -1,9 +1,24 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
-import { Button, Input, Menu, Pill, Progress, Segment, Switch, Tabs } from './components';
+import { Button, Input, Menu, Pill, Progress, Segment, Switch, Tabs, Toast, toastDurationMs } from './components';
 import { BrandIcon } from './brand';
 
 describe('renderer-v2 component contract', () => {
+  it('keeps short toasts at 2.4s and gives longer ones more time up to 10s', () => {
+    expect(toastDurationMs('已复制')).toBe(2400);
+    expect(toastDurationMs('一二三四五六七八九十一二')).toBe(2400);
+    expect(toastDurationMs('一二三四五六七八九十一二三')).toBe(2600);
+    expect(toastDurationMs('已切回官方账号，原来的配置已备份。', 'ok')).toBe(2400 + 5 * 200);
+    expect(toastDurationMs('字'.repeat(200))).toBe(10000);
+  });
+  it('keeps warning and error toasts until they are closed', () => {
+    expect(toastDurationMs('已复制', 'warn')).toBeNull();
+    expect(toastDurationMs('已复制', 'bad')).toBeNull();
+    const closable = renderToStaticMarkup(<Toast text="模型没换成" tone="warn" onDismiss={() => undefined} />);
+    expect(closable).toContain('role="status"');
+    expect(closable).toContain('aria-label="关闭"');
+    expect(renderToStaticMarkup(<Toast text="已复制" tone="ok" />)).not.toContain('<button');
+  });
   it('透传 testId 并支持语义按钮状态', () => {
     const html = renderToStaticMarkup(<Button testId="button-save" variant="primary">保存</Button>);
     expect(html).toContain('data-testid="button-save"');

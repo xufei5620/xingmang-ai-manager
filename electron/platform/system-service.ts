@@ -27,6 +27,8 @@ export interface PlatformSystemDependencies {
   executablePath: string
   resolveProxy(url: string): Promise<string>
   relaySiteId?: () => string | undefined
+  /** 本次运行是否因为系统代理连不上而改成了直连（见 electron/proxy-bypass.ts）。 */
+  proxyBypassed?: () => boolean
   onError?: (error: unknown) => void
   notify?: (
     kind: PlatformActivityKind | 'test',
@@ -46,6 +48,17 @@ export function summarizeSessionProxy(
   if (/^(?:PROXY|HTTPS?|SOCKS[45]?)\s+[^\s;@]+(?::\d+)?$/i.test(firstRoute))
     return { route: 'proxy', summary: '应用窗口当前通过转发连接' }
   return { route: 'unknown', summary: '暂时无法确认应用窗口的连接路径' }
+}
+
+/** 直连是星芒替用户绕开坏代理的结果时写明原因，否则用户会以为自己的代理没生效。 */
+export function describeSessionProxy(
+  value: string,
+  bypassed: boolean,
+): Pick<PlatformProxyStatus, 'route' | 'summary'> {
+  const status = summarizeSessionProxy(value)
+  if (bypassed && status.route === 'direct')
+    return { route: 'direct', summary: '应用窗口当前直接连接（电脑里的代理连不上，本次已自动绕开）' }
+  return status
 }
 
 // Windows 的开机项按「程序路径 + 参数」整条比对。0.2.9 之前登记的是不带参数的
@@ -293,8 +306,9 @@ export class PlatformSystemService {
       readOnly: true,
       scope: 'electron-session',
       targetOrigin,
-      ...summarizeSessionProxy(
+      ...describeSessionProxy(
         await this.dependencies.resolveProxy(targetOrigin),
+        this.dependencies.proxyBypassed?.() ?? false,
       ),
       note: proxyScopeNote,
     }

@@ -25,8 +25,37 @@ export const offlineFailureThreshold = 2
 
 /** 同时吃得下主进程写好的中文和底层的 `ERR_*` / errno 原文（归类只有 network-failure.ts 这一份）。 */
 export function isLocalNetworkFailure(cause: unknown): boolean {
+  return localNetworkFailureReason(cause) !== null
+}
+
+/** 同上，但把是哪一种也交出来：代理挂了、要网页认证和真断网，出路完全不同。 */
+export function localNetworkFailureReason(cause: unknown): NetworkFailureReason | null {
   const reason = classifyNetworkFailure(cause)
-  return reason !== null && localNetworkFailures.has(reason)
+  return reason !== null && localNetworkFailures.has(reason) ? reason : null
+}
+
+/**
+ * 顶上那条横幅按哪种情况说。代理连不上时重启路由器、换 Wi-Fi 都没用，要么把代理软件
+ * 打开、要么把系统代理关掉；门户认证则是在浏览器里登一下就好。都写成「连不上网」，
+ * 用户只会去折腾路由器。
+ */
+export type OfflineCause = 'offline' | 'proxy' | 'portal'
+
+export const offlineBannerTexts: Readonly<Record<OfflineCause, string>> = {
+  offline: offlineBannerText,
+  proxy: '电脑里设置的代理连不上，所以现在上不了网。请重新打开你的代理（加速）软件，或者把系统代理关掉。',
+  portal: '这个网络要先登录认证（校园网、酒店、公共 Wi-Fi 常见）。点「打开认证页」登录后，这里会自动恢复。',
+}
+
+/** 代理连不上、星芒已经替用户改成直连之后挂的那一条：网是通的，只是说明一下。 */
+export const proxyBypassedBannerText = '电脑里设置的代理连不上，星芒已经改为直接联网，可以照常使用。浏览器等其它软件可能还上不了网，可以点右边去关掉代理。'
+
+/** navigator.onLine 说没网时就是真断网；否则看最近那次本机网络失败是哪一种。 */
+export function offlineCause({ browserOnline, networkFailureReason }: Pick<OnlineSignals, 'browserOnline' | 'networkFailureReason'>): OfflineCause {
+  if (!browserOnline) return 'offline'
+  if (networkFailureReason === 'proxy') return 'proxy'
+  if (networkFailureReason === 'intercepted') return 'portal'
+  return 'offline'
 }
 
 export interface OnlineSignals {
@@ -37,6 +66,8 @@ export interface OnlineSignals {
   browserOnline: boolean
   /** 最近连着几次请求都是本机网络的问题；成功一次就归零。 */
   networkFailures: number
+  /** 最近那次本机网络失败的原因；没有就是 null 或缺省。 */
+  networkFailureReason?: NetworkFailureReason | null
 }
 
 export function isOffline({ browserOnline, networkFailures }: OnlineSignals): boolean {
