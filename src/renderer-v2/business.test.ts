@@ -6,6 +6,7 @@ import {
   passwordFormDirty,
   paymentTerminalPresentation,
   resetTopupQuoteForMethod,
+  subscriptionToolsNotice,
   validateTopupAmount,
   subscriptionPaymentMethods,
 } from './pages-account'
@@ -92,6 +93,22 @@ describe('v2 business boundaries', () => {
     expect(paymentTerminalPresentation('failed')).toMatchObject({
       tone: 'bad',
       title: '支付没有完成',
+    })
+  })
+
+  it('says a paid subscription is open instead of calling it a top-up', () => {
+    expect(paymentTerminalPresentation('success', 'subscription')).toMatchObject({ tone: 'ok', title: '订阅已开通' })
+    expect(paymentTerminalPresentation('failed', 'subscription')).toMatchObject({ title: '支付没有完成' })
+  })
+
+  it('tells the customer whether their tools now draw on the subscription', () => {
+    expect(subscriptionToolsNotice({ followsPreference: true }).body).toContain('扣费偏好')
+    expect(subscriptionToolsNotice({ followsPreference: false, switched: ['Claude Code', 'Codex'] })).toMatchObject({
+      tone: 'ok', title: '工具已改用订阅额度', body: expect.stringContaining('Claude Code、Codex'),
+    })
+    expect(subscriptionToolsNotice({ followsPreference: false, switched: [] }).title).toBe('工具不用重新设置')
+    expect(subscriptionToolsNotice({ followsPreference: false, error: '网络连接失败。' })).toMatchObject({
+      tone: 'warn', body: expect.stringContaining('重新写入 Key'),
     })
   })
 

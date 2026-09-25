@@ -106,14 +106,17 @@ describe('Sub2API account data contracts', () => {
     expect(JSON.stringify(result)).not.toMatch(/private|admin-only/)
   })
 
-  it('rejects subscription writes and task reads without issuing requests', async () => {
+  it('rejects unsupported subscription writes and task reads without issuing requests', async () => {
     const f = fixture()
     await f.client.login(loginInput)
     const count = f.calls.length
     expect(f.client.capabilities).toMatchObject({ supportsSubscriptions: true, supportsSubscriptionPreference: false,
-      supportsSubscriptionPayment: false, supportsSubscriptionBalancePurchase: false, supportsTasks: false })
+      supportsSubscriptionPayment: true, supportsSubscriptionBalancePurchase: false, supportsTasks: false })
     await expect(f.client.updateSubscriptionPreference('wallet_first')).rejects.toMatchObject({ code: 'UNSUPPORTED' })
-    await expect(f.client.createSubscriptionPayment({ planId: 1, provider: 'epay' })).rejects.toMatchObject({ code: 'UNSUPPORTED' })
+    // Only the one online checkout Sub2API has; a malformed input never reaches the order endpoint.
+    await expect(f.client.createSubscriptionPayment({ planId: 1, provider: 'epay' })).rejects.toMatchObject({ code: 'INVALID' })
+    await expect(f.client.createSubscriptionPayment({ planId: 1, provider: 'stripe' })).rejects.toMatchObject({ code: 'INVALID' })
+    await expect(f.client.createSubscriptionPayment({ planId: 0, provider: 'epay', paymentMethod: 'alipay' })).rejects.toMatchObject({ code: 'INVALID' })
     await expect(f.client.purchaseSubscriptionWithBalance(1)).rejects.toMatchObject({ code: 'UNSUPPORTED' })
     await expect(f.client.getTasks()).rejects.toMatchObject({ code: 'UNSUPPORTED' })
     expect(f.calls).toHaveLength(count)
@@ -552,6 +555,26 @@ describe('Sub2API RelayBackend adapter', () => {
     await expect(f.client.createTopupPayment({ amount: 10, paymentMethod: 'alipay' })).resolves.toMatchObject({ kind: 'qrcode', code: 'weixin://wxpay/bizpayurl?pr=test', tradeNo: 'trade-qr', amount: 10.2 })
     expect(f.calls.filter(({ url, init }) => url.pathname.endsWith('/payment/orders') && init.method === 'POST').map(({ body }) => body))
       .toEqual([{ amount: 10, payment_type: 'alipay', order_type: 'balance', is_mobile: false }])
+  })
+  it('orders a subscription plan through the shared order endpoint without sending an amount', async () => {
+    const f = fixture()
+    f.state.override = ({ url, init }) => url.pathname.endsWith('/payment/orders') && init.method === 'POST'
+      ? json({ out_trade_no: 'sub2_trade-plan', pay_url: 'https://pay.example.test/plan', expires_at: '2026-09-10T01:00:00Z' })
+      : undefined
+    await f.client.login(loginInput)
+    await expect(f.client.createSubscriptionPayment({ planId: 5, provider: 'epay', paymentMethod: ' alipay ' }))
+      .resolves.toEqual({ kind: 'url', url: 'https://pay.example.test/plan', tradeNo: 'sub2_trade-plan', expiresAt: '2026-09-10T01:00:00.000Z' })
+    expect(f.calls.filter(({ url, init }) => url.pathname.endsWith('/payment/orders') && init.method === 'POST').map(({ body }) => body))
+      .toEqual([{ plan_id: 5, payment_type: 'alipay', order_type: 'subscription', is_mobile: false }])
+  })
+  it('passes a scan-to-pay subscription checkout through as a QR code', async () => {
+    const f = fixture()
+    f.state.override = ({ url, init }) => url.pathname.endsWith('/payment/orders') && init.method === 'POST'
+      ? json({ out_trade_no: 'sub2_trade-qr', qr_code: 'weixin://wxpay/bizpayurl?pr=plan', pay_amount: 71.5, currency: 'CNY' })
+      : undefined
+    await f.client.login(loginInput)
+    await expect(f.client.createSubscriptionPayment({ planId: 5, provider: 'epay', paymentMethod: 'wxpay' }))
+      .resolves.toMatchObject({ kind: 'qrcode', code: 'weixin://wxpay/bizpayurl?pr=plan', tradeNo: 'sub2_trade-qr', amount: 71.5, currency: 'CNY' })
   })
   it.each([
     ['PENDING', 'pending'], ['PAID', 'pending'], ['RECHARGING', 'pending'], ['COMPLETED', 'success'],

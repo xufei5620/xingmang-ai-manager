@@ -79,6 +79,8 @@ export interface AccountBootstrapResult {
    * 分辨哪条是网络问题就只能猜。
    */
   networkBlocked: boolean
+  /** 这一轮因为 Key 换了分组（买了订阅、订阅到期）而改写的工具；缺省 = 没有。 */
+  regrouped?: ProviderId[]
 }
 
 export type AccountBootstrapBridge = Pick<
@@ -120,6 +122,7 @@ export function accountBootstrapPlan(
   settings: AppSettingsV2,
   mode: AccountBootstrapMode = 'login',
   storage: SourceMarkerStorage | null = getSourceMarkerStorage(),
+  regrouped: readonly ProviderId[] = [],
 ): AccountBootstrapPlan {
   const explicitOfficial = new Set(settings.officialProviders ?? [])
   const targets: ProviderId[] = []
@@ -201,7 +204,9 @@ export function accountBootstrapPlan(
       })
       continue
     }
-    if (source === 'account' && mode === 'restore' && connectionReady(current, provider, storage)) {
+    // 已连好的工具开机时不重写，除非它的 Key 刚换了分组：买了订阅（或订阅到期），
+    // 配置里那把旧 Key 扣的已经不是该扣的额度了。
+    if (source === 'account' && mode === 'restore' && connectionReady(current, provider, storage) && !regrouped.includes(provider)) {
       skipped.push({
         provider,
         reason: 'configured',
@@ -296,7 +301,7 @@ export async function bootstrapAccountTools(
     api.getSettings(),
   ])
   await assertAccount(api, expectedUserId, expectedSiteId)
-  const planned = accountBootstrapPlan(system, config, settings, mode, storage)
+  const planned = accountBootstrapPlan(system, config, settings, mode, storage, synchronized?.regrouped ?? [])
   const permitted = onlyProviders ? new Set(onlyProviders) : null
   const plan = permitted
     ? { ...planned, targets: planned.targets.filter((provider) => permitted.has(provider)) }
@@ -393,6 +398,9 @@ export async function bootstrapAccountTools(
     skipped: plan.skipped,
     warnings,
     networkBlocked: networkBlockedFailures(failureSignals),
+    ...(synchronized?.regrouped?.length
+      ? { regrouped: configured.filter((provider) => synchronized?.regrouped?.includes(provider)) }
+      : {}),
   }
 }
 

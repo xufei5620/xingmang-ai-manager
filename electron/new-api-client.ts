@@ -404,6 +404,16 @@ export type NewApiSubscriptionCheckout =
       tradeNo: string | null
       expiresAt: string | null
     }
+  // Only the history-account backend answers some channels (WeChat Native)
+  // with a code to scan; new-api subscription checkout never does.
+  | {
+      kind: 'qrcode'
+      code: string
+      tradeNo: string | null
+      expiresAt: string | null
+      amount: number
+      currency: string
+    }
 
 export interface SubscriptionQuotaPeriod {
   period: 'daily' | 'weekly' | 'monthly'
