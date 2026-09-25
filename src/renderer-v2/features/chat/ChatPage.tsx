@@ -8,6 +8,7 @@ import { createChatApi, inspectModel, type ChatApi } from './api'
 import { chatErrorAction, chatErrorMessage, filterConversations, isGenerating, shouldSendOnEnter, type ChatMessage, type ChatMode } from './state'
 import { ParametersPanel } from './ParametersPanel'
 import { useChatController } from './useChatController'
+import { inspectChatLink, plainText } from './links'
 import { conversationPlainText, loadChatHistory, type LoadedChatHistory } from './storage'
 import './chat.css'
 
@@ -95,9 +96,16 @@ function ChatView({ api, scope, active, onOpenAccount, history }: ChatScopeProps
   }
   const copyCodeRef = useRef(copyCode)
   copyCodeRef.current = copyCode
+  const copyLink = async (url: string) => {
+    const ticket = owner.current
+    try { await api.copyText(url); if (ticket === owner.current) toast.show('网址已复制，粘贴到浏览器地址栏就能打开', 'ok') }
+    catch { if (ticket === owner.current) setCopyFallback(url) }
+  }
+  const copyLinkRef = useRef(copyLink)
+  copyLinkRef.current = copyLink
   // react-markdown treats each renderer as a component type, so a new function
   // every render would remount the code blocks and drop their 已复制 state.
-  const markdownComponents = useMemo<Components>(() => ({ a: ({ href, children }) => <span className="chat-blocked-link" title={href ? `链接不可直接打开：${href}` : undefined}>{children}</span>, img: ({ alt }) => <span>{alt ?? '图片链接'}</span>, pre: ({ children }) => <CodeBlock onCopy={(text) => copyCodeRef.current(text)}>{children}</CodeBlock> }), [])
+  const markdownComponents = useMemo<Components>(() => ({ a: ({ href, children }) => <ChatLinkText href={href} onCopy={(url) => void copyLinkRef.current(url)}>{children}</ChatLinkText>, img: ({ alt }) => <span>{alt ?? '图片链接'}</span>, pre: ({ children }) => <CodeBlock onCopy={(text) => copyCodeRef.current(text)}>{children}</CodeBlock> }), [])
   const saveAsset = async (assetId: string) => {
     const ticket = owner.current
     try { const result = await api.saveAsset(assetId); if (ticket === owner.current && result.saved) chat.setNotice('图片已保存') }
@@ -179,6 +187,14 @@ function ChatView({ api, scope, active, onOpenAccount, history }: ChatScopeProps
 // Commands arrive wrapped in explanation, and pasting the whole reply into a
 // terminal runs the explanation too. Each block copies only its own text, read
 // from the rendered element so whatever markdown put inside stays exact.
+// Links are copied, never opened: model output can point anywhere, and the
+// main process would reject the navigation anyway (I12).
+function ChatLinkText({ href, children, onCopy }: { href?: string; children: ReactNode; onCopy: (url: string) => void }) {
+  const link = inspectChatLink(href, plainText(children))
+  if (!link) return <span className="chat-blocked-link" title={href ? `链接不可直接打开：${href}` : undefined}>{children}</span>
+  return <button type="button" className="chat-link" title="点一下复制网址" onClick={() => onCopy(link.url)} data-testid="chat-link">{children}{link.showHost && <span className="chat-link-host">（{link.host}）</span>}</button>
+}
+
 function CodeBlock({ children, onCopy }: { children: ReactNode; onCopy: (text: string) => Promise<boolean> }) {
   const block = useRef<HTMLPreElement>(null)
   const [copied, setCopied] = useState(false)
