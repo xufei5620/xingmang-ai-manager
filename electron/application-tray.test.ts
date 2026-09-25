@@ -19,6 +19,7 @@ function fixture(overrides: Partial<ApplicationTrayOptions> = {}, runtimeOverrid
     isDestroyed: vi.fn(() => destroyed),
     setToolTip: vi.fn(),
     setContextMenu: vi.fn(),
+    displayBalloon: vi.fn(),
     destroy: vi.fn(() => { destroyed = true }),
   })
   const options: ApplicationTrayOptions = {
@@ -136,6 +137,20 @@ describe('native tray lifecycle', () => {
     expect(mac.options.onOpen).not.toHaveBeenCalled()
     mac.handle.emit('double-click')
     expect(mac.options.onOpen).toHaveBeenCalledOnce()
+  })
+
+  it('shows a balloon only on Windows and only while the tray exists', () => {
+    const windows = fixture()
+    expect(windows.controller.showBalloon('标题', '正文')).toBe(true)
+    expect(windows.handle.displayBalloon).toHaveBeenCalledWith({ iconType: 'info', title: '标题', content: '正文', noSound: true, respectQuietTime: true })
+    windows.handle.displayBalloon.mockImplementationOnce(() => { throw new Error('balloon failed') })
+    expect(windows.controller.showBalloon('标题', '正文')).toBe(false)
+    expect(windows.controller.available).toBe(true)
+    windows.controller.dispose()
+    expect(windows.controller.showBalloon('标题', '正文')).toBe(false)
+    const mac = fixture({ platform: 'darwin' })
+    expect(mac.controller.showBalloon('标题', '正文')).toBe(false)
+    expect(mac.handle.displayBalloon).not.toHaveBeenCalled()
   })
 
   it('keeps a recoverable window when the native tray cannot be created', () => {

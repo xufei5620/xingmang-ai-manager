@@ -1709,6 +1709,39 @@ export function SettingsPage({
     if (requested) setGroup(requested)
   }, [])
   const [pending, setPending] = useState(0)
+  const pendingRef = useRef(0)
+  pendingRef.current = pending
+  // 关闭询问框里勾了「记住我的选择」是主进程直接写的设置。窗口缩到托盘再点开时，
+  // 这一页可能还开着旧的「每次询问」，想改回来点它也没反应，所以回到窗口时重读这一项。
+  useEffect(() => {
+    function refreshCloseBehavior() {
+      if (document.visibilityState !== 'visible') return
+      void api
+        .getSettings()
+        .then((latest) => {
+          if (pendingRef.current > 0) return
+          resource.setData((previous) =>
+            previous &&
+            previous.settings.closeBehavior !== latest.closeBehavior
+              ? {
+                  ...previous,
+                  settings: {
+                    ...previous.settings,
+                    closeBehavior: latest.closeBehavior,
+                  },
+                }
+              : previous,
+          )
+        })
+        .catch(() => undefined)
+    }
+    window.addEventListener('focus', refreshCloseBehavior)
+    document.addEventListener('visibilitychange', refreshCloseBehavior)
+    return () => {
+      window.removeEventListener('focus', refreshCloseBehavior)
+      document.removeEventListener('visibilitychange', refreshCloseBehavior)
+    }
+  }, [api, resource.setData])
   const [saveError, setSaveError] = useState('')
   const [saved, setSaved] = useState('')
   const [legal, setLegal] = useState<Awaited<

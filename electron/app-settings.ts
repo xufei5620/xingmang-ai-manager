@@ -113,6 +113,11 @@ export interface AppSettings {
   uiScale?: Exclude<AppUiScale, 'auto'>
   /** Absent = ask. The host must keep a visible entry when no tray exists. */
   closeBehavior?: Exclude<AppCloseBehavior, 'ask'>
+  /**
+   * 第一次缩到托盘时已经告诉过用户窗口去哪了。只落 true：老版本没有这个字段，
+   * 读出来就是「还没说过」，升级后第一次缩到托盘会说一次。
+   */
+  trayHintShown?: boolean
   windowState?: AppWindowState
 }
 
@@ -155,6 +160,8 @@ export interface AppSettingsUpdate {
   hardwareAcceleration?: boolean
   uiScale?: AppUiScale
   closeBehavior?: AppCloseBehavior
+  /** Only the host sets this; true is sticky and false is ignored. */
+  trayHintShown?: boolean
   /** null explicitly resets saved placement; absence preserves it. */
   windowState?: AppWindowState | null
 }
@@ -310,6 +317,7 @@ function parseSettingsValue(value: unknown): AppSettings {
     ...(value.hardwareAcceleration === false ? { hardwareAcceleration: false as const } : {}),
     ...(uiScale !== undefined ? { uiScale } : {}),
     ...(closeBehavior !== undefined ? { closeBehavior } : {}),
+    ...(value.trayHintShown === true ? { trayHintShown: true as const } : {}),
     ...(windowState !== undefined ? { windowState } : {}),
   }
 }
@@ -460,6 +468,7 @@ export function mergeAppSettings(base: AppSettings, update: AppSettingsUpdate): 
     ...(hardwareAcceleration === false ? { hardwareAcceleration: false as const } : {}),
     ...(uiScale !== undefined ? { uiScale } : {}),
     ...(closeBehavior !== undefined ? { closeBehavior } : {}),
+    ...(update.trayHintShown === true || base.trayHintShown === true ? { trayHintShown: true as const } : {}),
     ...(windowState !== undefined ? { windowState } : {}),
   }
 }
