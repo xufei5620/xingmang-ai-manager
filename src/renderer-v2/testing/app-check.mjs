@@ -29,8 +29,8 @@ async function waitForFixtureReady(page, timeout = fixtureMountSliceMs()) {
   })
 }
 
-// Toasts delete themselves 2400ms after they appear (src/renderer-v2/ui/
-// feedback.tsx), so a locator that only starts looking after that deadline waits
+// Short toasts delete themselves 2400ms after they appear (toastDurationMs in
+// src/renderer-v2/ui/feedback.tsx), so a locator that only starts looking after that deadline waits
 // out its whole budget on an element that is never coming back. A slow Windows
 // runner hit exactly that between the save click and the toast assertion: the
 // grok configuration cases timed out at 30s while their faster siblings passed
