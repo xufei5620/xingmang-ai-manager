@@ -150,6 +150,8 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   const [switchRestartOffer, setSwitchRestartOffer] = useState<AccountSourceTarget | null>(null)
   const [ccSwitchReminder, setCcSwitchReminder] = useState(false)
   const [modelSwap, setModelSwap] = useState<{ offer: ModelSwapOffer; answer: (choice: ModelSwapChoice) => void } | null>(null)
+  /** 换模型弹框还开着时切了账号，要替用户点掉：那是上一个账号的提问（#538）。 */
+  const pendingModelSwap = useRef<((choice: ModelSwapChoice) => void) | null>(null)
   const [chineseDialog, setChineseDialog] = useState(false)
   const chineseDecline = useRef<HTMLButtonElement>(null)
   const [dismissedUpdate, setDismissedUpdate] = useState('')
@@ -189,7 +191,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   const balance = balanceState.balance
   // 换账号等于换了一整套上下文：首页那份「最近」缓存（60 秒）必须当场作废，
   // 否则切过去的头一眼看到的还是上一个账号在的时候读到的列表。
-  useLayoutEffect(() => { accountEpoch.current++; setAccountReadError(null); refreshRecent() }, [scope, session.authenticated, refreshRecent])
+  useLayoutEffect(() => { accountEpoch.current++; pendingModelSwap.current?.('cancel'); setAccountReadError(null); refreshRecent() }, [scope, session.authenticated, refreshRecent])
   const siteId = accountSiteId(session)
   const relaySite = resolveRelaySite(siteId)
   const supportUrl = resolveSupportServiceUrl(session)
@@ -679,11 +681,18 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     if (tool.error) throw new Error(tool.error)
     if (!tool.status.installed) throw new Error('工具尚未安装，请先完成准备。')
     if (!tool.configured) { openToolConfig(id); throw new Error('请先确认账号连接，再打开工具。') }
+    // 核对结果和换模型的提问都只属于发起时那个账号：中途切了号，这次打开作废，免得拿上一个账号的结论去改新账号的默认模型（#538）。
+    const epoch = accountEpoch.current
     const offer = modelSwapOffer(tool.name, await toolsApi.checkModels(id))
+    if (!mounted.current || epoch !== accountEpoch.current) return false
     if (offer) {
-      const choice = await new Promise<ModelSwapChoice>((answer) => setModelSwap({ offer, answer }))
+      const choice = await new Promise<ModelSwapChoice>((answer) => {
+        pendingModelSwap.current = answer
+        setModelSwap({ offer, answer })
+      })
+      pendingModelSwap.current = null
       setModelSwap(null)
-      if (choice === 'cancel') return false
+      if (choice === 'cancel' || !mounted.current || epoch !== accountEpoch.current) return false
       if (choice === 'swap') {
         // 空 Key + merge：只换模型，Key 和这份配置的来源都原样留着（Claude Code 的菜单随之重写）。
         try { await toolsApi.saveManual({ provider: providerFor(id), apiKey: '', model: offer.replacement, mode: 'merge' }) }

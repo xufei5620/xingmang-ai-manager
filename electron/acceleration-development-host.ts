@@ -104,6 +104,14 @@ export const accelerationStartFailureDescriptions: Record<AccelerationStartFailu
   'proxy-enable': '系统代理设置失败',
   unknown: '未归类的失败',
 }
+/**
+ * 系统代理还指着已经不在的本机端口时，整台电脑都上不了网，而开机那一次恢复
+ * （或崩溃后那一次重拉）只要赶上临时目录建不出来、进程被杀毒软件拦一下、
+ * 初始化途中崩掉，就再没有第二次机会，直到用户重开软件（#550）。所以失败后
+ * 按这几个间隔再试，总共约四分钟；有上限，免得一台一直起不来的电脑被反复拉
+ * 起一整份 Electron。
+ */
+export const accelerationProxyRecoveryRetryDelaysMs: readonly number[] = [5_000, 15_000, 30_000, 60_000, 120_000]
 const stopFailureStages: readonly string[] = ['proxy-restore', 'core-stop', 'ledger-write']
 const startFailureStages: readonly string[] = Object.keys(accelerationStartFailureDescriptions)
 
@@ -129,6 +137,11 @@ export function createAccelerationDevelopmentHost(options: {
    * 那个在初始化时把网络设置改回去；`recovered` 就是这一次有没有成功。
    */
   onHelperExited?(recovered: boolean): void
+  /**
+   * 开机恢复或崩溃后重拉那一次没把网络设置改回去，之后按退避自动再试的每一次
+   * 结果。`attempt` 从 1 数起；最多试 accelerationProxyRecoveryRetryDelaysMs 那么多次。
+   */
+  onProxyRecoveryRetry?(attempt: number, recovered: boolean): void
   /**
    * 辅助进程是一整个 Electron（约 100MB），登录后读一次加速状态就会拉起来。
    * 给了这个值，它在这么久没有新请求、且确认没在加速也没在给下载走线路时
@@ -159,6 +172,8 @@ export function createAccelerationDevelopmentHost(options: {
   const leaseWorkers = new WeakSet<ChildProcess>()
   const releasedWorkers = new WeakSet<ChildProcess>()
   const pending = new Map<number, { resolve(value: unknown): void; reject(error: Error): void; timer: ReturnType<typeof setTimeout> }>()
+  let recoveryRetrying = false
+  let recoveryRetryWait: { timer: ReturnType<typeof setTimeout>; resolve(): void } | null = null
 
   function failPending() {
     for (const request of pending.values()) {
@@ -390,7 +405,38 @@ export function createAccelerationDevelopmentHost(options: {
     void ensureReady().then(() => true, () => false).then((recovered) => {
       if (disposed) return
       try { options.onHelperExited?.(recovered) } catch { /* Reporting must not change recovery. */ }
+      if (!recovered) void retryProxyRecovery()
     })
+  }
+
+  function waitForRecoveryRetry(delayMs: number): Promise<void> {
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        recoveryRetryWait = null
+        resolve()
+      }, delayMs)
+      timer.unref?.()
+      recoveryRetryWait = { timer, resolve }
+    })
+  }
+
+  // 每一次都先确认恢复记录还在：失败的辅助进程被要求退出时自己会再还原一次，
+  // 那一次成功了记录就没了，不必再拉。ensureReady 会等上一个失败的辅助进程
+  // 真正退出后才拉新的（在那之前它返回的仍是那次失败），所以不会有两个进程
+  // 同时去抢同一份记录；中途别的请求已经拉起了健康的辅助进程，这里直接复用。
+  async function retryProxyRecovery() {
+    if (recoveryRetrying) return
+    recoveryRetrying = true
+    try {
+      for (const [index, delayMs] of accelerationProxyRecoveryRetryDelaysMs.entries()) {
+        await waitForRecoveryRetry(delayMs)
+        if (disposed || !await hasProxyRecoveryRecords()) return
+        const recovered = await ensureReady().then(() => true, () => false)
+        if (disposed) return
+        try { options.onProxyRecoveryRetry?.(index + 1, recovered) } catch { /* Reporting must not change recovery. */ }
+        if (recovered) return
+      }
+    } finally { recoveryRetrying = false }
   }
 
   async function hasProxyRecoveryRecords(): Promise<boolean> {
@@ -429,7 +475,11 @@ export function createAccelerationDevelopmentHost(options: {
     // because signing in is exactly what the dead proxy prevents.
     async recover() {
       if (!await hasProxyRecoveryRecords()) return
-      await ensureReady()
+      try { await ensureReady() } catch (error) {
+        // 第一次的失败照常交给调用方记日志，重试在后台接着走。
+        if (!disposed) void retryProxyRecovery()
+        throw error
+      }
     },
     getAccelerationState: (scope) => request('get', scope),
     startAcceleration: (scope, mode, lineId, ignoreConflicts) => request('start', scope, mode, lineId, ignoreConflicts),
@@ -468,6 +518,11 @@ export function createAccelerationDevelopmentHost(options: {
       if (disposal) return disposal
       disposed = true
       clearIdleTimer()
+      if (recoveryRetryWait) {
+        clearTimeout(recoveryRetryWait.timer)
+        recoveryRetryWait.resolve()
+        recoveryRetryWait = null
+      }
       disposal = (async () => {
         if (!child) return
         const worker = child

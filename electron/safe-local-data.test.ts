@@ -4,6 +4,7 @@ import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   appendSafeUtf8File,
+  appendSafeUtf8FileSync,
   assertNoReparseComponents,
   findReparseComponent,
   readSafeUtf8File,
@@ -213,5 +214,41 @@ describe('safe local data files', () => {
     await expect(appendSafeUtf8File(filePath, 'new\n', '运行日志')).rejects.toThrow('打开期间发生变化')
     expect(fs.readFileSync(filePath, 'utf8')).toBe('replacement\n')
     expect(fs.readFileSync(displacedPath, 'utf8')).toBe('original\n')
+  })
+
+  it('appends synchronously to a new file and then to the existing one', () => {
+    const directory = temporaryDirectory()
+    const filePath = path.join(directory, 'operations.jsonl')
+
+    appendSafeUtf8FileSync(filePath, 'first\n', '操作日志', { durable: true })
+    appendSafeUtf8FileSync(filePath, 'second\n', '操作日志')
+
+    expect(fs.readFileSync(filePath, 'utf8')).toBe('first\nsecond\n')
+    expect(fs.lstatSync(filePath).nlink).toBe(1)
+  })
+
+  it('refuses to append through a hard link in both the async and sync variants', async () => {
+    const directory = temporaryDirectory()
+    const victim = path.join(directory, 'victim.txt')
+    const filePath = path.join(directory, 'operations.jsonl')
+    fs.writeFileSync(victim, 'victim\n', 'utf8')
+    fs.linkSync(victim, filePath)
+
+    await expect(appendSafeUtf8File(filePath, 'new\n', '操作日志', { durable: true }))
+      .rejects.toThrow('单链接普通文件')
+    expect(() => appendSafeUtf8FileSync(filePath, 'new\n', '操作日志', { durable: true }))
+      .toThrow('单链接普通文件')
+    expect(fs.readFileSync(victim, 'utf8')).toBe('victim\n')
+  })
+
+  it.runIf(process.platform !== 'win32')('refuses a synchronous append through a symbolic link', () => {
+    const directory = temporaryDirectory()
+    const victim = path.join(directory, 'victim.txt')
+    const filePath = path.join(directory, 'operations.jsonl')
+    fs.writeFileSync(victim, 'victim\n', 'utf8')
+    fs.symlinkSync(victim, filePath)
+
+    expect(() => appendSafeUtf8FileSync(filePath, 'new\n', '操作日志')).toThrow('单链接普通文件')
+    expect(fs.readFileSync(victim, 'utf8')).toBe('victim\n')
   })
 })

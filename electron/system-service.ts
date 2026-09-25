@@ -4401,7 +4401,7 @@ export function createSystemService(
     }
     const npmTool = await inspectTool('npm')
     const npmGlobalRoot = await resolveNpmGlobalRoot(npmTool.path, commandEnvironment())
-    const { installation } = await inspectCliTool(provider, npmTool.path, npmGlobalRoot)
+    const { status: installedStatus, installation } = await inspectCliTool(provider, npmTool.path, npmGlobalRoot)
     if (!installation) throw new Error(`未检测到 ${definition.name}，请先安装`)
 
     if (platform === 'win32') {
@@ -4413,7 +4413,10 @@ export function createSystemService(
         }
         await launchCliPowerShell({
           executable: command.executable,
-          argv: cliLaunchArgv(provider, command.argv, mode),
+          argv: cliLaunchArgv(provider, command.argv, mode, {
+            platform,
+            installedVersion: installedStatus.version,
+          }),
           workspace,
           title: `${definition.name} · 星芒AI`,
           // The broker starts this terminal with Start-Process, so it inherits
@@ -5073,8 +5076,8 @@ export function createSystemService(
     },
     listModels: (apiKey) => fetchAvailableModels(apiKey, { bypassCache: true }),
     pickerOutdated: (models, model) => claudeModelPickerNeedsRefresh(models, model, providerRoots),
-    refreshPicker: async (model) => {
-      await saveConfig({ provider: 'claude', apiKey: '', model, mode: 'merge' }, false, undefined, { source: 'account', automatic: true })
+    refreshPicker: async (model, assertCurrent) => {
+      await saveConfig({ provider: 'claude', apiKey: '', model, mode: 'merge' }, false, assertCurrent, { source: 'account', automatic: true })
     },
     log: (level, event, message, detail) => runtimeLog?.log(level, 'config', event, message, detail),
   })

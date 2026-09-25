@@ -66,6 +66,7 @@ import {
   maximumCanvasProjectBytes,
   parseCanvasProjectPackage,
   parseCanvasProjectWorkflow,
+  readCanvasProjectAssetSources,
   remapCanvasProjectWorkflow,
   type ParsedCanvasProjectPackage,
 } from './canvas-project-package'
@@ -932,7 +933,7 @@ export function createCanvasWindowController(
     const parsed = parseCanvasProjectWorkflow(workflowContent)
     const context = await activeAssetContext(event.sender.id, userId)
     const imageStore = context?.images ?? options.aiAssets
-    const sources = await Promise.all(parsed.assetIds.map((assetId) => imageStore.readOwned(userId, assetId)))
+    const sources = await readCanvasProjectAssetSources(parsed.assetIds, (assetId) => imageStore.readOwned(userId, assetId))
     assertCanvasUserUnchanged(userId)
     const projectContent = buildCanvasProjectPackage(workflowContent, sources)
     const parentWindow = BrowserWindow.fromWebContents(event.sender) ?? undefined

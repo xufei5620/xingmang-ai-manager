@@ -48,6 +48,15 @@ describe('managed key replacement store', () => {
     }
   })
 
+  it('does not let a new record overwrite an unreadable file that may hold another tool\'s limits', async () => {
+    const filePath = storeFile()
+    fs.writeFileSync(filePath, '{ not json')
+    const store = createManagedKeyReplacementStore({ filePath })
+    await expect(store.set('solov:42:claude', capped)).rejects.toBeInstanceOf(ManagedKeyReplacementUnreadableError)
+    expect(fs.readFileSync(filePath, 'utf8')).toBe('{ not json')
+    await expect(store.get('solov:42:codex')).rejects.toBeInstanceOf(ManagedKeyReplacementUnreadableError)
+  })
+
   it('reset clears an unreadable file so later reads start empty', async () => {
     const filePath = storeFile()
     fs.writeFileSync(filePath, '{ not json')

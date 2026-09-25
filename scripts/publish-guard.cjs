@@ -10,10 +10,17 @@
 // 否则拒绝：同一个版本号换一批字节，正在下载的人会校验失败，已经装上的人和新装的人
 // 拿到的又不是同一个程序。
 //
+// 另外带上 --status <线上的 service-status.json>（#548）：本次要发的版本已经在撤回
+// 名单里，一律拒绝。回退之后线上清单是旧版本，只比版本号会把「重跑一次坏版本的
+// 发布」当成正常升级放行，清单又指回坏版本，还停在坏版本上的人就没有可退的版本了。
+// 真要让它重新上线，先用 service-status 工作流把它移出撤回名单，再来发。状态文件
+// 读回来看不懂时同样停下：不知道撤回名单里有什么，就不能断定这一版没被撤回。
+//
 // Windows 出包时 release:build:unsigned 自己会拒绝同版本，但 macOS 那条路没有这一步，
 // 只发 Mac 时原来要到最后打 tag 那一步才发现，线上的 Mac 包那时已经被覆盖了。
 const fs = require('node:fs')
 const { compareReleaseVersions, parseLatestMetadata } = require('./update-release-utils.cjs')
+const { parseCurrentStatus } = require('./service-status.cjs')
 
 const MANIFEST_NAMES = new Set(['latest.yml', 'latest-mac.yml'])
 
@@ -43,6 +50,26 @@ function assessPublish(localText, liveText, name) {
   return 'same'
 }
 
+/** statusText 为 null 表示线上没有状态文件（404），也就没有撤回名单。 */
+function assertNotWithdrawn(localText, statusText, name) {
+  if (statusText === null || statusText === undefined) return
+  const version = String(parseLatestMetadata(localText, name).version).replace(/^v/i, '')
+  let status
+  try {
+    status = parseCurrentStatus(statusText)
+  } catch {
+    throw new PublishGuardError('线上的 service-status.json 读回来看不懂，确认不了这一版有没有被撤回，线上什么都没改；过几分钟重跑')
+  }
+  const badVersions = status.badVersions
+  if (badVersions === undefined) return
+  if (!Array.isArray(badVersions)) {
+    throw new PublishGuardError('线上 service-status.json 的撤回名单格式不对，确认不了这一版有没有被撤回，线上什么都没改')
+  }
+  if (badVersions.some((entry) => typeof entry === 'string' && entry.trim().replace(/^v/i, '') === version)) {
+    throw new PublishGuardError(`${version} 已经被撤回，不能再发它的 ${name}：修好的版本请提升版本号再发；真要让它重新上线，先用 service-status 工作流把它移出撤回名单（填 -${version}）`)
+  }
+}
+
 function parseArguments(argv) {
   const options = {}
   for (let index = 0; index < argv.length; index += 2) {
@@ -56,10 +83,12 @@ function parseArguments(argv) {
 function main(argv) {
   const options = parseArguments(argv)
   if (!options.local || !options.name) {
-    throw new PublishGuardError('用法：publish-guard.cjs --local <file> --name <latest.yml|latest-mac.yml> [--live <file>]')
+    throw new PublishGuardError('用法：publish-guard.cjs --local <file> --name <latest.yml|latest-mac.yml> [--live <file>] [--status <file>]')
   }
   const liveText = options.live ? fs.readFileSync(options.live, 'utf8') : null
-  const verdict = assessPublish(fs.readFileSync(options.local, 'utf8'), liveText, options.name)
+  const localText = fs.readFileSync(options.local, 'utf8')
+  const verdict = assessPublish(localText, liveText, options.name)
+  assertNotWithdrawn(localText, options.status ? fs.readFileSync(options.status, 'utf8') : null, options.name)
   const messages = {
     first: `线上还没有 ${options.name}，这是这个平台的第一次发布`,
     upgrade: `${options.name}：线上是旧版本，可以发`,
@@ -77,4 +106,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { PublishGuardError, assessPublish }
+module.exports = { PublishGuardError, assertNotWithdrawn, assessPublish }

@@ -6,6 +6,7 @@ import {
   maximumCanvasProjectAssets,
   parseCanvasProjectPackage,
   parseCanvasProjectWorkflow,
+  readCanvasProjectAssetSources,
   remapCanvasProjectWorkflow,
 } from './canvas-project-package'
 
@@ -35,6 +36,43 @@ describe('canvas project package', () => {
     expect(remapped).not.toContain(assetId)
     expect(remapped).toContain(replacement)
     expect(content).not.toMatch(/apiKey|accessToken|refreshToken|Authorization|[A-Z]:\\/i)
+  })
+
+  it('refuses too many assets before reading any body', async () => {
+    let reads = 0
+    const ids = Array.from({ length: maximumCanvasProjectAssets + 1 }, (_, index) => String(index).padStart(43, 'a'))
+    await expect(readCanvasProjectAssetSources(ids, async (id) => {
+      reads += 1
+      return { asset: { assetId: id, localUrl: `xingmang-asset://image/${id}`, mimeType: 'image/png', fileName: 'x.png' }, bytes: png }
+    })).rejects.toThrow('画布项目资产数量超出安全上限')
+    expect(reads).toBe(0)
+  })
+
+  it('reads with bounded concurrency and stops once the byte budget is exceeded', async () => {
+    let active = 0
+    let maxActive = 0
+    let reads = 0
+    const big = Buffer.alloc(30 * 1024 * 1024)
+    const ids = Array.from({ length: maximumCanvasProjectAssets }, (_, index) => String(index).padStart(43, 'a'))
+    await expect(readCanvasProjectAssetSources(ids, async (id) => {
+      reads += 1
+      active += 1
+      maxActive = Math.max(maxActive, active)
+      await new Promise((resolve) => setTimeout(resolve, 1))
+      active -= 1
+      return { asset: { assetId: id, localUrl: `xingmang-asset://image/${id}`, mimeType: 'image/png', fileName: 'x.png' }, bytes: big }
+    })).rejects.toThrow('画布项目超出 96 MB 安全上限')
+    expect(maxActive).toBeLessThanOrEqual(4)
+    expect(reads).toBeLessThan(10)
+  })
+
+  it('keeps the requested order when every asset fits', async () => {
+    const ids = ['a', 'b', 'c', 'd', 'e', 'f'].map((character) => character.repeat(43))
+    const sources = await readCanvasProjectAssetSources(ids, async (id) => {
+      await new Promise((resolve) => setTimeout(resolve, id.startsWith('a') ? 5 : 0))
+      return { asset: { assetId: id, localUrl: `xingmang-asset://image/${id}`, mimeType: 'image/png', fileName: 'x.png' }, bytes: png }
+    })
+    expect(sources.map((source) => source.asset.assetId)).toEqual(ids)
   })
 
   it('accepts every node data field the renderer schema can serialize', () => {

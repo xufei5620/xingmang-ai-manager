@@ -50,6 +50,7 @@ import { AccountSessionStore } from './account-session-store'
 import { SavedAccountsStore } from './saved-accounts'
 import { AppSettingsStore, readAppSettings, type AppTheme } from './app-settings'
 import { calculateUiZoom, resolveWindowPlacement } from './window-preferences'
+import { attachEditContextMenu } from './context-menu'
 import { recoverOffscreenWindow } from './window-recovery'
 import { createWindowLifecycle } from './window-lifecycle'
 import { hasLoginLaunchArgument, resolveLoginLaunch, shouldRevealInitialWindow, windowsAppUserModelId } from './login-launch'
@@ -407,6 +408,12 @@ function createWindow(
       webviewTag: false,
       navigateOnDragDrop: false,
     },
+  })
+
+  // Electron 默认没有右键菜单，客户手动复制、粘贴只能靠这个。
+  attachEditContextMenu(window.webContents, {
+    popup: (template) => { Menu.buildFromTemplate(template).popup({ window }) },
+    writeText: (text) => { clipboard.writeText(text) },
   })
 
   window.once('ready-to-show', () => {
@@ -2026,6 +2033,8 @@ if (!hasSingleInstanceLock) {
         // 先改回去，这里负责读一次状态让各处跟上，并告诉用户网络现在是什么样。
         onRuntimeExited: () => accelerationInterruption?.runtimeExited(),
         onHelperExited: (recovered) => accelerationInterruption?.helperExited(recovered),
+        onProxyRecoveryRetry: (attempt, recovered) => runtimeLog.log(recovered ? 'info' : 'warn', 'network', 'acceleration.recover.retry',
+          recovered ? '重试后已把网络设置改回去' : '重试仍未能把网络设置改回去', { attempt }),
         // 登录后读一次加速状态就会拉起整份 Electron 辅助进程；从不用加速的人
         // 不该一直背着它。两分钟没人用、又确认没在加速就退，下次用到再拉。
         idleExitMs: 120_000,
