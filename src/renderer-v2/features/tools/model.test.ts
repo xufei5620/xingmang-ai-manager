@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { ProviderConfigSummary, ProviderId } from '../../../../electron/ipc-contract'
-import { accountSwitchTarget, canUninstallTool, ccSwitchLeftoverFor, foreignKeyKind, switchAccountLabel, codexDesktopUpdateKind, configDirectoryMenuItem, connectionReady, externalInstallHint, isExternallyManagedInstall, presentTools, providerFor, recommendedVersionVerb, revertVersion, rollbackVersion, sourceFor, toolAvailability, toolInstallDirectory, toolUpdateOffer, updateCheckFailure, versionSubtitle, type ToolboxSnapshot, type ToolPresentation } from './model'
+import { accountSwitchTarget, canUninstallTool, ccSwitchLeftoverFor, foreignKeyKind, switchAccountLabel, codexDesktopUpdateKind, configDirectoryMenuItem, connectionReady, externalInstallHint, isExternallyManagedInstall, presentTools, providerFor, recommendedVersionVerb, revertVersion, rollbackVersion, sourceFor, subscriptionWarning, toolAvailability, toolInstallDirectory, toolUpdateOffer, updateCheckFailure, versionSubtitle, type ToolboxSnapshot, type ToolPresentation } from './model'
 import {
   writeManualSourceMarker,
   type SourceMarkerStorage,
@@ -610,5 +610,24 @@ describe('foreign key kinds', () => {
     expect(switchAccountLabel('')).toBe('改用当前账号')
     expect(switchAccountLabel('a-very-long-account@example.com')).toBe('改用 a-very-long-acc…')
     expect(switchAccountLabel('星芒用户名字特别特别特别长的账号名字')).toBe('改用 星芒用户名字特别特别特别长的账…')
+  })
+})
+
+describe('renderer subscription warning', () => {
+  const endsAt = new Date(2026, 9, 3, 12).toISOString()
+  const base = { name: null, remainingUsd: 3, endsAt, expiringSoon: false, lowRemaining: false, subscriptionOnly: false }
+
+  it('stays quiet while the wallet can take over or nothing is running out', () => {
+    expect(subscriptionWarning({ ...base, expiringSoon: true }, 12)).toBeNull()
+    expect(subscriptionWarning(base, 0)).toBeNull()
+  })
+
+  it('names the end date or the remaining amount once the wallet is low', () => {
+    expect(subscriptionWarning({ ...base, expiringSoon: true }, 1)).toBe('订阅 10 月 3 日到期，到期后会从余额扣费。')
+    expect(subscriptionWarning({ ...base, lowRemaining: true }, 1)).toBe('订阅只剩 $3.00，用完后会从余额扣费。')
+  })
+
+  it('warns regardless of the wallet when only the subscription is spent', () => {
+    expect(subscriptionWarning({ ...base, expiringSoon: true, subscriptionOnly: true }, 100)).toBe('订阅 10 月 3 日到期，到期后工具就用不了了，续费后可继续使用。')
   })
 })

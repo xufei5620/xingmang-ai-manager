@@ -227,6 +227,8 @@ export interface IpcRegistrationOptions {
    */
   startupQuiet?: { active(): boolean; whenOver(): Promise<void> }
   onAccountBalance?(balance: Awaited<ReturnType<RelayBackendClient['getBalance']>>): void
+  /** 渲染层读到了当前账号的订阅；托盘靠它说「订阅剩余多少」，不自己去读。 */
+  onAccountSubscription?(subscription: Awaited<ReturnType<RelayBackendClient['getSubscriptionSelf']>>): void
   // Opens (or focuses, if already open) the isolated canvas window. Kept as
   // a plain callback -- not a CanvasWindowController -- so this module never
   // has to depend on canvas-window.ts's full surface just to delegate one
@@ -2869,7 +2871,11 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     accountService.transferAffiliateQuota(parseAccountAffiliateTransferInput(input))
   ))
   registerTrustedHandler('account:list-subscription-plans', () => accountService.listSubscriptionPlans())
-  registerTrustedHandler('account:get-subscription-self', () => accountService.getSubscriptionSelf())
+  registerTrustedHandler('account:get-subscription-self', async () => {
+    const subscription = await accountService.getSubscriptionSelf()
+    options.onAccountSubscription?.(subscription)
+    return subscription
+  })
   registerTrustedHandler('account:update-subscription-preference', (_event, preference: unknown) => (
     accountService.updateSubscriptionPreference(parseAccountBillingPreference(preference))
   ))
