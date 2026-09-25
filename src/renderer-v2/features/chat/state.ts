@@ -28,7 +28,7 @@ export interface ChatMessage {
   assets?: AiChatAsset[]
   settings?: ChatSettings
 }
-export interface Conversation { id: string; title: string; createdAt: number; updatedAt: number; draft: string; settings: ChatSettings; messages: ChatMessage[] }
+export interface Conversation { id: string; title: string; createdAt: number; updatedAt: number; draft: string; settings: ChatSettings; messages: ChatMessage[]; lengthNoticeDismissed?: boolean }
 export interface ChatWorkspace { version: 2; owner: string; activeId: string | null; conversations: Conversation[]; draftConversation: Conversation }
 export interface TurnPlan { conversation: Conversation; requestId: string; assistantId: string; settings: ChatSettings; prompt: string; messages: AiChatMessageInput[] }
 
@@ -86,6 +86,48 @@ export function filterConversations(conversations: Conversation[], search: strin
   return conversations.filter((conversation) => conversationSearchText(conversation).includes(keyword))
 }
 
+// 每发一句，这段对话前面的内容都会一起发出去，这里就是那一份。提醒和上限都按它算，
+// 两边口径一致，提醒到七成时离真正拦下还差三成。
+function contextMessages(history: readonly ChatMessage[], settings: ChatSettings): AiChatMessageInput[] {
+  const messages: AiChatMessageInput[] = []
+  if (settings.systemPrompt.trim()) messages.push({ role: 'system', content: settings.systemPrompt.trim() })
+  for (const message of history) if (message.content.trim() && (message.role === 'user' || (!message.assets?.length && message.status !== 'error'))) messages.push({ role: message.role, content: message.content })
+  return messages
+}
+
+export const conversationTooLongMessage = '这段对话太长了，AI 一次读不下。点下面的按钮，你刚写的内容会搬到新对话里，模型和设置不变。'
+export const conversationReplyTooLongMessage = '这段对话里有一条回复太长，AI 读不下。点下面的按钮，你刚写的内容会搬到新对话里，模型和设置不变。'
+export const LENGTH_NOTICE_RATIO = 0.7
+
+/** 看这段对话带出去的内容占了上限的几成，条数和字数哪个先到算哪个。 */
+export function conversationContextShare(conversation: Conversation): number {
+  const messages = contextMessages(conversation.messages, conversation.settings)
+  const characters = messages.reduce((total, message) => total + message.content.length, 0)
+  return Math.max(messages.length / chatLimits.messageCount, characters / chatLimits.totalMessageLength)
+}
+
+/** 快到上限时提醒一次；生图不带前文，客户点过「知道了」也不再出。 */
+export function shouldShowLengthNotice(conversation: Conversation): boolean {
+  if (conversation.settings.mode !== 'text' || conversation.lengthNoticeDismissed) return false
+  return conversationContextShare(conversation) >= LENGTH_NOTICE_RATIO
+}
+
+export function isConversationTooLongMessage(message: string | undefined): boolean {
+  return message === conversationTooLongMessage || message === conversationReplyTooLongMessage
+}
+
+/**
+ * 换到一段新对话接着聊：模型、分组和设置照旧，刚写的话搬过去但不发送。
+ * 从原对话输入框搬走的话要从那边清掉，否则同一段话会在两处各存一份。
+ */
+export function continueInNewConversation(state: ChatWorkspace, sourceId: string, text: string, fromSourceDraft: boolean): ChatWorkspace {
+  const source = state.conversations.find((item) => item.id === sourceId) ?? (state.draftConversation.id === sourceId ? state.draftConversation : null)
+  if (!source) return state
+  const next = { ...createConversation(source.settings), draft: text }
+  const cleared = fromSourceDraft ? changeConversation(state, sourceId, (item) => ({ ...item, draft: '' })) : state
+  return { ...cleared, conversations: [next, ...cleared.conversations], activeId: next.id }
+}
+
 export function planTurn(conversation: Conversation, input: { prompt: string; requestId: string; assistantId: string; userMessageId: string; retryId?: string; editId?: string }): TurnPlan {
   if (isGenerating(conversation)) throw new Error('当前对话仍在生成，请先停止或等待完成')
   let history = conversation.messages.slice()
@@ -109,13 +151,11 @@ export function planTurn(conversation: Conversation, input: { prompt: string; re
   if (!prompt) throw new Error('请先输入消息内容')
   if (prompt.length > chatLimits.messageLength) throw new Error(`单条消息最多 ${chatLimits.messageLength} 个字符`)
   if (!settings.group || !settings.model) throw new Error('请先选择分组和模型')
-  const messages: AiChatMessageInput[] = []
-  if (settings.systemPrompt.trim()) messages.push({ role: 'system', content: settings.systemPrompt.trim() })
-  for (const message of history) if (message.content.trim() && (message.role === 'user' || (!message.assets?.length && message.status !== 'error'))) messages.push({ role: message.role, content: message.content })
+  const messages = contextMessages(history, settings)
   // 用户自己发的每条都在发出前查过长度，超长的只可能是 AI 的某条回复。不在这里拦，
   // 主进程会按单条上限拒掉，落到兜底「请稍后重试」，怎么重试都一样。
-  if (messages.some((message) => message.content.length > chatLimits.messageLength)) throw new Error('这段对话里有一条回复太长，请新建对话后继续')
-  if (messages.length > chatLimits.messageCount || messages.reduce((total, message) => total + message.content.length, 0) > chatLimits.totalMessageLength) throw new Error('这段对话已达到上下文上限，请新建对话后继续')
+  if (messages.some((message) => message.content.length > chatLimits.messageLength)) throw new Error(conversationReplyTooLongMessage)
+  if (messages.length > chatLimits.messageCount || messages.reduce((total, message) => total + message.content.length, 0) > chatLimits.totalMessageLength) throw new Error(conversationTooLongMessage)
   const snapshot = { ...settings, parameters: { ...settings.parameters } }
   const assistant: ChatMessage = { id: assistantId, role: 'assistant', content: '', reasoning: '', status: 'pending', createdAt: Date.now(), requestId: input.requestId, settings: snapshot }
   return { conversation: { ...conversation, title: conversation.messages.length ? conversation.title : prompt.slice(0, 32), updatedAt: Date.now(), draft: input.retryId || input.editId ? conversation.draft : '', messages: [...history, assistant] }, requestId: input.requestId, assistantId, settings: snapshot, prompt, messages }
