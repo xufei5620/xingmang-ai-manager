@@ -186,9 +186,9 @@ export async function switchAccountSource(
   } catch (error) {
     if (error instanceof AccountSourceServiceUnavailableError) {
       deps.log?.('warn', 'account-source.service-unavailable', `${toolName(provider)} 切到当前账号时服务暂时不可用，配置没有改动`, { provider, backupId })
-      throw new Error(`切到当前账号没有完成：${error.message}原来的配置没有改动。`)
+      throw new Error(`改用当前账号没有完成：${error.message}原来的配置没有改动。`)
     }
-    throw failure(`切到当前账号没有完成：${errorText(error)}。`, await rollBack())
+    throw failure(`改用当前账号没有完成：${errorText(error)}。`, await rollBack())
   }
 
   let check: ConnectionCheckResult | null = null
@@ -212,7 +212,7 @@ export async function switchAccountSource(
           : '连接自检没有完成，稍后可以在检查页再测一次。'
   return {
     provider, target, backupId, verified, loginRequired: false,
-    message: `已切到当前账号，${status}${hint}`,
+    message: `已改用当前账号，${status}${hint}`,
     ...(runningTools ? { runningTools } : {}),
   }
 }

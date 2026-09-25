@@ -39,7 +39,7 @@ describe('switchAccountSource', () => {
     const result = await switchAccountSource(deps, 'claude', 'account')
     expect(steps).toEqual(['backup:claude', 'write:account', 'check'])
     expect(result).toMatchObject({ provider: 'claude', target: 'account', backupId: 'backup-1', verified: true, loginRequired: false })
-    expect(result.message).toContain('已切到当前账号，连接自检通过')
+    expect(result.message).toContain('已改用当前账号，连接自检通过')
     expect(result.message).toContain('关掉重开')
   })
 
@@ -51,7 +51,7 @@ describe('switchAccountSource', () => {
 
   it('restores the preference the tool had before, not a guessed one', async () => {
     const { deps, steps } = dependencies({ wasOfficial: () => false, writeAccountConfig: async () => { throw new Error('对应分组 Key 未就绪') } })
-    await expect(switchAccountSource(deps, 'codex', 'account')).rejects.toThrow('切到当前账号没有完成：对应分组 Key 未就绪。已恢复到切换前的配置。')
+    await expect(switchAccountSource(deps, 'codex', 'account')).rejects.toThrow('改用当前账号没有完成：对应分组 Key 未就绪。已恢复到切换前的配置。')
     expect(steps).toContain('preference:false')
   })
 
@@ -75,7 +75,7 @@ describe('switchAccountSource', () => {
   it('leaves the config alone when the service is unavailable while the key is being issued', async () => {
     const { deps, steps } = dependencies({ writeAccountConfig: async () => { throw new AccountSourceServiceUnavailableError() } })
     await expect(switchAccountSource(deps, 'codex', 'account')).rejects.toThrow(
-      '切到当前账号没有完成：服务暂时不可用（维护或线路繁忙），你这边不用做任何改动，稍后再试就行。原来的配置没有改动。',
+      '改用当前账号没有完成：服务暂时不可用（维护或线路繁忙），你这边不用做任何改动，稍后再试就行。原来的配置没有改动。',
     )
     expect(steps).toEqual(['backup:codex'])
   })
@@ -169,7 +169,7 @@ describe('switchAccountSource restart hint', () => {
   it('drops the restart sentence when the tool is not open', async () => {
     const { deps } = dependencies({ inspectRunning: async () => running() })
     const result = await switchAccountSource(deps, 'claude', 'account')
-    expect(result.message).toBe('已切到当前账号，连接自检通过。')
+    expect(result.message).toBe('已改用当前账号，连接自检通过。')
     expect(result.runningTools).toEqual(running())
   })
 
@@ -178,7 +178,7 @@ describe('switchAccountSource restart hint', () => {
     const { deps } = dependencies({ inspectRunning })
     const result = await switchAccountSource(deps, 'codex', 'account')
     expect(inspectRunning).toHaveBeenCalledWith('codex')
-    expect(result.message).toBe('已切到当前账号，连接自检通过。Codex CLI、Codex 桌面端 还开着，要关掉重开才会用上当前账号。')
+    expect(result.message).toBe('已改用当前账号，连接自检通过。Codex CLI、Codex 桌面端 还开着，要关掉重开才会用上当前账号。')
     expect(result.runningTools?.codexDesktopRunning).toBe(true)
   })
 

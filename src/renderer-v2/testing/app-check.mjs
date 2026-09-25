@@ -1191,7 +1191,7 @@ test('restored login repairs missing tool configs without overwriting official o
     await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'configureManagedCliKeys'))
     const input = await page.evaluate(() => window.v2Test.calls.find((entry) => entry.method === 'configureManagedCliKeys').args[0])
     assert.deepEqual(input.providers, ['grok', 'gemini'])
-    await page.getByTestId('tool-row-claude').getByText('用的是别处的配置').waitFor()
+    await page.getByTestId('tool-row-claude').getByText('不是当前账号的 Key').waitFor()
     await page.getByTestId('tool-row-codex').getByText('官方账号', { exact: true }).waitFor()
     await page.getByTestId('tool-row-grok').getByText('已配好').waitFor()
     await page.getByTestId('tool-row-gemini').getByText('已配好').waitFor()
@@ -1272,7 +1272,7 @@ test('read-only account matches respect local manual markers and preserve incomp
 test('read-only account matches remain third-party when the host cannot match an account', async () => {
   const page = await open('readOnlyAccountMatch=1&allInstalled=1&matchedUnavailable=1')
   try {
-    await matchedToolBadges(page, '用的是别处的配置')
+    await matchedToolBadges(page, 'Key 可能不是当前账号的')
     await settleMatchedBootstrap(page)
     await assertNoMatchedKeyOperations(page)
     await clean(page)
@@ -1312,12 +1312,12 @@ for (const transition of ['same-site', 'cross-site']) test(`read-only account ma
       siteId: kind === 'cross-site' ? 'solov-api' : 'solov', realmId: kind === 'cross-site' ? 'api-account' : 'xm-account',
       account: { userId: kind === 'cross-site' ? 17 : 18, username: 'next-user', group: 'default', role: 1, quota: 1_000_000, usedQuota: 0 },
     }), transition)
-    await matchedToolBadges(page, '用的是别处的配置')
+    await matchedToolBadges(page, 'Key 可能不是当前账号的')
     await page.evaluate(async () => {
       window.v2Test.releaseConfigRead()
       await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))
     })
-    await matchedToolBadges(page, '用的是别处的配置')
+    await matchedToolBadges(page, 'Key 可能不是当前账号的')
     for (const id of matchedToolIds) assert.equal(await page.getByTestId(`tool-row-${id}`).getByText('已配好', { exact: true }).count(), 0)
     await assertNoMatchedKeyOperations(page)
     await clean(page)
@@ -1339,12 +1339,13 @@ test('read-only account matches do not survive logout or a late config read when
     await page.getByTestId('welcome-steps').click()
     await page.getByTestId('guide-route-codexDesktop').check()
     for (let step = 0; step < 2; step++) await page.getByTestId('guide-next').click()
-    await page.getByText('你原来的配置已经原样留着。先看看处理步骤，确认哪些设置要留下，再决定怎么连接。', { exact: true }).waitFor()
+    await page.locator('[data-testid="guide-foreign-key"][data-key-state="otherSite"]').waitFor()
+    assert.equal((await page.getByTestId('guide-switch-account').textContent())?.trim(), '登录后改用我的账号')
     await page.evaluate(async () => {
       window.v2Test.releaseConfigRead()
       await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))
     })
-    assert.equal(await page.getByTestId('guide-next').isDisabled(), true)
+    assert.equal(await page.getByTestId('guide-next').count(), 0)
     const summary = await page.evaluate(() => window.xingmang.getConfig())
     assert.ok(Object.values(summary.providers).every(provider => provider.configurationAccountMatched === false))
     await assertNoMatchedKeyOperations(page)
@@ -1352,8 +1353,9 @@ test('read-only account matches do not survive logout or a late config read when
     await page.goto(`${origin}/src/renderer-v2/testing/app.html?readOnlyAccountMatch=1&allInstalled=1&guest=1&existing=1`)
     // 引导进度按未登录作用域记在本机，重开直接回到上面停下的「确认连接」。
     await page.getByTestId('welcome-steps').click()
-    await page.getByText('你原来的配置已经原样留着。先看看处理步骤，确认哪些设置要留下，再决定怎么连接。', { exact: true }).waitFor()
-    assert.equal(await page.getByTestId('guide-next').isDisabled(), true)
+    await page.locator('[data-testid="guide-foreign-key"][data-key-state="otherSite"]').waitFor()
+    assert.equal((await page.getByTestId('guide-switch-account').textContent())?.trim(), '登录后改用我的账号')
+    assert.equal(await page.getByTestId('guide-next').count(), 0)
     await assertNoMatchedKeyOperations(page)
     await clean(page)
   } finally { await page.close() }
@@ -1400,6 +1402,8 @@ test('a slow startup restore opens the home page first and settles ownership aft
     await page.getByText('正在恢复登录').first().waitFor()
     assert.equal(await page.getByText('配置被改过').count(), 0)
     assert.equal(await page.getByText('用的是别处的配置').count(), 0)
+    assert.equal(await page.getByText('不是当前账号的 Key').count(), 0)
+    assert.equal(await page.getByText('Key 可能不是当前账号的').count(), 0)
     assert.equal(await page.getByTestId('tool-claude-rewrite-key').count(), 0)
     assert.equal(await page.getByTestId('welcome-login').count(), 0)
     // 工具列表整块重读（useToolbox.read）才会连带读平台能力；Key 同步那一步自己的
@@ -1572,7 +1576,8 @@ test('read-only account matches switch only explicitly selected CLI providers on
       { providers: ['codex'], preferredModels: { codex: 'fixture-model' }, intent: 'explicit' },
     ])
     for (const tool of ['claude', 'codex', 'codexDesktop']) await page.getByTestId(`tool-row-${tool}`).getByText('已配好', { exact: true }).waitFor()
-    for (const tool of ['gemini', 'grok']) await page.getByTestId(`tool-row-${tool}`).getByText('用的是别处的配置', { exact: true }).waitFor()
+    // 没勾的两个还是上一个账号的 Key：能用，但要提醒用量可能算到别的账号上（方案盘查第 10 条）。
+    for (const tool of ['gemini', 'grok']) await page.getByTestId(`tool-row-${tool}`).getByText('Key 可能不是当前账号的', { exact: true }).waitFor()
     assert.equal(await page.evaluate(() => window.v2Test.calls.some(entry => ['saveConfig', 'saveConfigWithAccountKey', 'revealApiKey', 'revealAccountKey'].includes(entry.method))), false)
     await clean(page)
   } finally { await page.close() }
@@ -2128,12 +2133,44 @@ test('running desktop offers a real restart and official quotas can be refreshed
   } finally { await page.close() }
 })
 
+test('a key from another site is named for the account and switched from the row in one click', async () => {
+  const page = await open('unknown=1')
+  try {
+    const row = page.getByTestId('tool-row-codex')
+    await row.getByText('不是当前账号的 Key', { exact: true }).waitFor()
+    assert.equal(await row.getByText('other.example.test').count(), 0)
+    assert.equal((await page.getByTestId('tool-codex-use-account').textContent())?.trim(), '改用 fixture-user')
+    await page.getByTestId('tool-codex-use-account').click()
+    await waitForToast(page, 'Codex CLI 和 Codex 桌面端共用一份设置，已一起改好。')
+    await row.getByText('已配好', { exact: true }).waitFor()
+    const switched = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'switchAccountSource').map((entry) => entry.args))
+    assert.deepEqual(switched, [['codex', 'account']])
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('the config dialog switches a foreign key in place without the old manual-key buttons', async () => {
+  const page = await open('unknown=1')
+  try {
+    await page.getByTestId('tool-row-codex').getByRole('button', { name: '更多操作' }).click()
+    await page.getByRole('menuitem', { name: '配置', exact: true }).click()
+    await page.getByTestId('tool-foreign-key-note').waitFor()
+    assert.equal(await page.getByTestId('config-dialog').getByRole('button', { name: '填写星芒密钥' }).count(), 0)
+    assert.equal(await page.getByTestId('config-dialog').getByRole('button', { name: '查看处理步骤' }).count(), 0)
+    await page.getByTestId('tool-switch-account').click()
+    await page.getByTestId('config-dialog').getByText('已改用 fixture-user，可以开始用了。').waitFor()
+    assert.equal(await page.getByTestId('config-dialog').isVisible(), true)
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('configuration migration shares Codex drafts and failed saves retain the secret for retry', async () => {
   const page = await open('unknown=1')
   try {
     await page.getByTestId('tool-row-codex').getByRole('button', { name: '更多操作' }).click()
     await page.getByRole('menuitem', { name: '配置', exact: true }).click()
-    await page.getByRole('button', { name: '填写星芒密钥' }).click()
+    await page.getByTestId('tool-config-advanced').locator('summary').click()
+    await page.getByTestId('tool-manual-key').click()
     await page.getByLabel('星芒访问密钥').fill('local-fixture-secret')
     await page.getByRole('tab', { name: 'Codex 桌面端', exact: true }).click()
     assert.equal(await page.getByLabel('星芒访问密钥').inputValue(), 'local-fixture-secret')
@@ -2157,7 +2194,8 @@ test('a manual relay key saved over a third-party config survives the next login
     await enterWorkspaceWithoutAccount(page, 'claude')
     await page.getByTestId('tool-row-codex').getByRole('button', { name: '更多操作' }).click()
     await page.getByRole('menuitem', { name: '配置', exact: true }).click()
-    await page.getByRole('button', { name: '填写星芒密钥' }).click()
+    await page.getByTestId('tool-config-advanced').locator('summary').click()
+    await page.getByTestId('tool-manual-key').click()
     await page.getByLabel('星芒访问密钥').fill('local-fixture-secret')
     await page.getByRole('button', { name: '检测模型', exact: true }).click()
     await page.waitForFunction(() => !document.querySelector('.v2-config-controls').disabled)
@@ -3512,7 +3550,8 @@ for (const source of ['current', 'selected', 'automatic', 'manual', 'official', 
     }
     if (source === 'official') await page.getByRole('button', { name: 'ChatGPT 账号', exact: true }).click()
     if (source === 'manual') {
-      await page.getByRole('button', { name: '自己填写密钥', exact: true }).click()
+      await openConfigAdvanced(page)
+      await page.getByTestId('tool-manual-key').click()
       await page.getByLabel('星芒访问密钥').fill('local-fixture-secret')
       await page.getByTestId('tool-detect-models').click()
       await page.waitForFunction(() => !document.querySelector('.v2-config-controls').disabled)

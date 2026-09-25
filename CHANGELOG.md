@@ -400,6 +400,13 @@
   改成所有平台都跑：交给系统 PowerShell 的参数、可信环境（`NODE_OPTIONS` 被剥掉）、15 秒与 64 KiB 上限、输出解析；读不懂报错、失败原样透出；非 Windows 不问；TokenElevationType=18 与 1/2/3 的映射；here-string 与括号闭合。
 - `external-client-runtime.ts`：找不到可信系统 winget 时，`installHint` 固定为 `externalClientWingetUnavailableHint`，原始原因（如 `realpath` 的 ENOENT）经新增的 `onWingetUnavailable` 回调写进运行日志 `external-client.winget-unavailable`，同一原因只记一次；安装进度与失败文案去掉「winget」字样。`node-runtime.ts` / `python-runtime.ts` 切换到官方安装包时的进度文案同理，`failures` 里的原始原因不变。
 - 新增 `externalClientOfficialDownloadUrls`（`external-client-contract.ts`）与可选状态字段 `officialDownloadUrl`：Windows 上 winget 不可用、又没有腾讯官方包兜底时给出。两条网址逐条并进 `main.ts` 的外链白名单（I12 全等匹配，不放宽规则）；首页 `onOpenExternalDownload` 缺省时仍是「暂不支持」。
+- 别家中转留下的配置一键改用当前账号（引导第 3 步、配置窗口、首页三处，复用 `switchAccountSource`，不加 IPC 通道）：
+  `features/tools/model.ts` 新增 `foreignKeyKind`（来源没确认时按 `matchesRelay` 分 `otherSite` / `otherAccount`）与 `switchAccountLabel`（「改用 <用户名>」，超 16 字截断）；`accountSwitchTarget` 对 `unknown` 也回 `account`。
+  首页新增状态 `otherSiteKey`「不是当前账号的 Key」/ `otherAccountKey`「Key 可能不是当前账号的」和行按钮 `tool-<id>-use-account`；「配置被改过」仍走 `configChanged`，不并进这两类。
+  `StartGuide` 新增 `keyState` / `onSwitchAccount` / `accountName` / `onFailureAction`：`otherSite` 藏掉「下一步」只留一颗主按钮，`otherAccount` / `changed` 放行「下一步」；改完自动进第 4 步并提示备份位置，自检没过不写「已准备好」；没登录时按 `otherSite` 处理，登录后自动接着改。`guideFailureExits` 按错误目录给出口。
+  `ConfigDialog` 去掉「查看处理步骤」「填写星芒密钥」，改用后不关窗；手填入口移进「高级」。`initialKeyChoice` 只在 Key 属于本站时默认「保持当前」。
+  错误目录新增 `toolNotEnabled`（分组不可用 → 找客服）、`switchUndoFailed`（自动恢复失败 → 新动作 `backups` 去备份页）。CC Switch 提醒从 toast 改成对话框；Codex 改用时补一条两端共用配置的提示。
+  主进程 `account-source-switch.ts` / `ipc.ts` 的提示文案由「切到当前账号」统一为「改用当前账号」。
 
 ## 0.2.9 - 2026-09-23
 

@@ -210,7 +210,7 @@ export const tutorialTopics: readonly TutorialTopic[] = [
   {
     id: 'switch-account',
     title: '官方账号和当前账号怎么切换？',
-    lead: '以前用过 Claude 或 ChatGPT 官方账号的，一键就能切到当前账号，也能一键切回去。不用自己备份，也不用重新安装。',
+    lead: '以前用过 Claude 或 ChatGPT 官方账号的，一键就能改用当前账号，也能一键切回去。不用自己备份，也不用重新安装。',
     category: 'start',
     minutes: 2,
     keywords: ['切换', '官方账号', '当前账号', 'ChatGPT', 'Claude 账号', '中转', '切回', '登录', '401', 'Please run /login', '报错', '备份'],
@@ -227,10 +227,10 @@ export const tutorialTopics: readonly TutorialTopic[] = [
       },
       {
         title: '在「…」里点切换',
-        where: '工具箱首页 → 工具行右侧 … → 切到当前账号 / 切回官方账号',
+        where: '工具箱首页 → 工具行右侧 … → 改用（你的账号名） / 切回官方账号',
         detail: '点一下就行，工具箱会替你做完：先备份原来的配置，再把会冲突的旧登录挪到一边，写好新配置，最后自动测一次能不能连上。',
-        bullets: ['切到当前账号前要先登录左下角的账号。', '测下来连不上时会自动恢复原样，并说一句原因。'],
-        expected: '右下角提示「已切到当前账号」或「已切回官方账号」。',
+        bullets: ['改用前要先登录左下角的账号。', '测下来连不上时会自动恢复原样，并说一句原因。'],
+        expected: '右下角提示「已改用当前账号」或「已切回官方账号」。',
         extra: [{ title: '原来的配置去哪了？', detail: '切换前的配置自动放进「备份」页，想退回去可以在那里恢复。挪开的官方登录只是换了个位置，切回官方时会放回原处。' }, { title: 'Gemini 为什么没有「切回官方账号」？', detail: '个人 Google 账号已经不能用于 Gemini CLI。企业版用户可以在「…」→「配置」里选择官方账号。' }],
         action: '去首页切换',
         page: 'home',
@@ -987,7 +987,9 @@ export const tutorialTopics: readonly TutorialTopic[] = [
         expected: '工具使用正确的配置，文件任务在选定的项目内进行。',
         extra: [
           { title: statuses.tool.configChanged[0], detail: '其他程序或手工操作改过配置，当前账号的 Key 可能已不在里面。要用星芒配置就重新写入 Key；如果这是你有意做的修改，在「…」中选择「就用现在这份」。' },
-          { title: statuses.tool.ccSwitch[0], detail: '以前用 CC Switch 配过这个工具，它现在还连着 CC Switch 里选的那一家。点「改用当前账号」会先备份原来的设置（在「备份」里能找回），再换成当前账号；想继续用 CC Switch 的，在「…」中选择「就用现在这份」。不再用 CC Switch 的话请把它退出，免得它又把设置改回去。' },
+          { title: statuses.tool.otherSiteKey[0], detail: '这个工具里的 Key 不是当前账号的，在这里打不开。点工具行上的「改用（你的账号名）」就能用，改之前会先备份原来的设置（在「备份」里能找回）。Codex CLI 和 Codex 桌面端共用一份设置，会一起改。' },
+          { title: statuses.tool.otherAccountKey[0], detail: '工具能用，但认不出这把 Key 是当前账号的，用量可能算到别的账号上（常见于在同一台电脑上换了账号登录）。点「改用（你的账号名）」换成你自己的，改之前会先备份。' },
+          { title: statuses.tool.ccSwitch[0], detail: '以前用 CC Switch 配过这个工具，它现在还连着 CC Switch 里选的那一家。点「改用（你的账号名）」会先备份原来的设置（在「备份」里能找回），再换成当前账号；想继续用 CC Switch 的，在「…」中选择「就用现在这份」。不再用 CC Switch 的话请把它退出，免得它又把设置改回去。' },
           { title: statuses.tool.detectionFailed[0], detail: '检测失败不等于没安装。先查看具体原因，处理后重新检测。' },
           { title: '这个文件夹范围太大', detail: '用户主目录、磁盘根目录、桌面、下载、文档等范围太大，改选具体项目文件夹，或者直接点提示里的「新建一个项目文件夹」。若仍选择这次打开，不会把该目录标为信任，也不会自动生成项目说明。' },
         ],

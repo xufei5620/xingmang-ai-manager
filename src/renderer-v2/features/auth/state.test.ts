@@ -157,6 +157,15 @@ describe('v2 onboarding readiness', () => {
   it('requires confirmed runtime capability and does not overwrite unknown connections', () => {
     expect(resolveGuideReadiness('claude', { id: 'claude', installed: true, configured: true, source: 'account' }, true).prepared).toBe(false)
     expect(resolveGuideReadiness('claude', { id: 'claude', installed: true, configured: true, source: 'unknown', runtimeReady: true }, true).connected).toBe(false)
+    expect(resolveGuideReadiness('claude', { id: 'claude', installed: true, configured: false, source: 'unknown', runtimeReady: true, keyState: 'otherSite' }, true).connected).toBe(false)
+  })
+  it('lets a usable key on the current site through, but never a key from another site', () => {
+    // 同一个站上别的账号的 Key、替当前账号写过又被改动过的配置都还能用（方案盘查第 8、10 条）。
+    const claude = { id: 'claude' as const, installed: true, configured: true, source: 'unknown' as const, runtimeReady: true }
+    expect(resolveGuideReadiness('claude', { ...claude, keyState: 'otherAccount' }, true).connected).toBe(true)
+    expect(resolveGuideReadiness('claude', { ...claude, keyState: 'changed' }, true).connected).toBe(true)
+    expect(resolveGuideReadiness('claude', { ...claude, keyState: 'otherAccount', configured: false }, true).connected).toBe(false)
+    expect(resolveGuideReadiness('claude', { ...claude, keyState: 'otherSite' }, true).connected).toBe(false)
     expect(resolveGuideReadiness('codexDesktop', { id: 'codexDesktop', installed: true, configured: true, source: 'account', supported: false }, true).prepared).toBe(false)
   })
   it('does not call an official Codex connected before ChatGPT has been signed in', () => {

@@ -483,7 +483,7 @@ const methods = {
     }
     config.providers[provider] = { ...config.providers[provider], hasApiKey: true, matchesRelay: true, actualBaseUrl: config.providers[provider].baseUrl,
       configurationOwnership: 'account', ...(provider === 'codex' ? { codexAuthMode: 'apikey' as const } : {}) }
-    return { provider, target, backupId: 'fixture-backup', verified: true, loginRequired: false, message: '已切到当前账号，连接自检通过。',
+    return { provider, target, backupId: 'fixture-backup', verified: true, loginRequired: false, message: '已改用当前账号，连接自检通过。',
       ...(query.has('runningTools') ? { runningTools: fixtureRunningTools([provider]) } : {}) }
   },
   inspectRunningTools: async (providers: ProviderId[]) => query.has('runningTools')

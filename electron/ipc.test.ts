@@ -1598,7 +1598,7 @@ describe('registerIpcHandlers', () => {
     const handler = electronMocks.handlers.get('config:switch-account-source')!
     await expect(handler(trustedEvent(), 'unknown', 'official')).rejects.toThrow('未知的 CLI 类型')
     await expect(handler(trustedEvent(), 'codex', 'erase-all')).rejects.toThrow('未知的账号来源')
-    await expect(handler(trustedEvent(), 'claude', 'account')).rejects.toThrow('请先登录账号，再切到当前账号')
+    await expect(handler(trustedEvent(), 'claude', 'account')).rejects.toThrow('请先登录账号，再改用当前账号')
     expect(service.switchToOfficialAccount).not.toHaveBeenCalled()
   })
 

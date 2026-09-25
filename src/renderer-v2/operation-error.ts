@@ -2,7 +2,7 @@ import { classifyNetworkFailure, networkFailureReasonForMessage } from '../../el
 import { errors } from './registry/errors'
 
 export type OperationErrorKey = keyof typeof errors
-export type OperationActionId = 'retry' | 'log' | 'support' | 'relogin' | 'recharge' | 'network' | 'repair' | 'copyPath'
+export type OperationActionId = 'retry' | 'log' | 'support' | 'relogin' | 'recharge' | 'network' | 'repair' | 'copyPath' | 'backups'
 export interface OperationAction { id: OperationActionId; label: string }
 export interface OperationErrorHint {
   key: Exclude<OperationErrorKey, 'unknown'>
@@ -19,9 +19,16 @@ export interface OperationErrorHint {
  * rule that matches wins, so the narrow, unambiguous tokens come first.
  */
 const rules: Array<{ key: OperationErrorHint['key']; match: (message: string) => boolean }> = [
+  // 一键改用当前账号失败后连恢复也没做成（account-source-switch.ts）。这句里常带着
+  // 网络、权限之类的原因，被下面哪条抢走都会配上一句「不会留下半成品」式的安抚，
+  // 所以排在最前，出口直接是「去备份页」。
+  { key: 'switchUndoFailed', match: (message) => /自动恢复也没有完成/.test(message) },
   // 主进程已经认定是服务那一侧（维护、网关错误、防护层验证页）的，排在最前：
   // 它后面带着的「HTTP 503」之类原文不能再被下面按字面猜成别的事。
   { key: 'serviceUnavailable', match: (message) => networkFailureReasonForMessage(message) === 'serviceUnavailable' },
+  // 账号没开通这个工具（服务端说分组不可用，同 key-sync-failure.ts 的判断）：重试、
+  // 重写都救不了，只能找客服。
+  { key: 'toolNotEnabled', match: (message) => /分组不存在、不可用或名称重复|不可使用分组/.test(message) },
   { key: 'sessionExpired', match: (message) => /(^|\D)401(\D|$)|unauthorized|登录已过期|登录状态已失效|请重新登录/i.test(message) },
   { key: 'tooManyRequests', match: (message) => /(^|\D)429(\D|$)|too many requests|rate limit|请求(太|过于)频繁/i.test(message) },
   { key: 'noBalance', match: (message) => /余额不足|额度不足|insufficient[_ ]quota|余额已用完/i.test(message) },
@@ -121,6 +128,7 @@ const actionIds: Record<string, OperationActionId | undefined> = {
   打开检查页: 'network',
   一键修复: 'repair',
   复制路径: 'copyPath',
+  去备份页: 'backups',
 }
 
 /**

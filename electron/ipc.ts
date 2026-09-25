@@ -1916,7 +1916,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     }
   })
   async function switchAccountSourceOnce(provider: ProviderId, target: 'account' | 'official') {
-    if (target === 'account' && !accountService.getSessionState().account?.userId) throw new Error('请先登录账号，再切到当前账号')
+    if (target === 'account' && !accountService.getSessionState().account?.userId) throw new Error('请先登录账号，再改用当前账号')
     // 与备份页同一套账号上下文：备份里记下哪些 Key 是当前账号签发的，回滚后
     // 恢复出来的配置照样按来源登记，首页不会因此冒出「配置被改过」。
     const identity = currentBackupAccountId()

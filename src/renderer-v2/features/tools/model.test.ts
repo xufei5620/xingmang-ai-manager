@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { ProviderConfigSummary, ProviderId } from '../../../../electron/ipc-contract'
-import { accountSwitchTarget, canUninstallTool, ccSwitchLeftoverFor, codexDesktopUpdateKind, configDirectoryMenuItem, connectionReady, externalInstallHint, isExternallyManagedInstall, presentTools, providerFor, recommendedVersionVerb, rollbackVersion, sourceFor, toolAvailability, toolInstallDirectory, toolUpdateOffer, updateCheckFailure, versionSubtitle, type ToolboxSnapshot, type ToolPresentation } from './model'
+import { accountSwitchTarget, canUninstallTool, ccSwitchLeftoverFor, foreignKeyKind, switchAccountLabel, codexDesktopUpdateKind, configDirectoryMenuItem, connectionReady, externalInstallHint, isExternallyManagedInstall, presentTools, providerFor, recommendedVersionVerb, rollbackVersion, sourceFor, toolAvailability, toolInstallDirectory, toolUpdateOffer, updateCheckFailure, versionSubtitle, type ToolboxSnapshot, type ToolPresentation } from './model'
 import {
   writeManualSourceMarker,
   type SourceMarkerStorage,
@@ -575,9 +575,31 @@ describe('renderer one-click account switch entry', () => {
     }
   })
 
-  it('offers nothing for third-party, missing, or uninstalled tools', () => {
-    expect(accountSwitchTarget({ provider: 'claude', source: 'unknown', status: installed })).toBeNull()
+  it('offers the current account for a key it cannot confirm, but nothing for missing or uninstalled tools', () => {
+    // 别家的 Key、同一个站上别的账号的 Key：一键改用当前账号（方案盘查 2026-09-25）。
+    expect(accountSwitchTarget({ provider: 'claude', source: 'unknown', status: installed })).toBe('account')
     expect(accountSwitchTarget({ provider: 'claude', source: 'missing', status: installed })).toBeNull()
     expect(accountSwitchTarget({ provider: 'claude', source: 'official', status: { installed: false } as ToolPresentation['status'] })).toBeNull()
+    expect(accountSwitchTarget({ provider: 'claude', source: 'unknown', status: { installed: false } as ToolPresentation['status'] })).toBeNull()
+  })
+})
+
+describe('foreign key kinds', () => {
+  it('tells another site apart from another account on the current site, and never blames a changed config', () => {
+    expect(foreignKeyKind({ matchesRelay: false }, 'unknown')).toBe('otherSite')
+    expect(foreignKeyKind({ matchesRelay: true }, 'unknown')).toBe('otherAccount')
+    for (const source of ['account', 'manual', 'official', 'changed', 'missing'] as const) {
+      expect(foreignKeyKind({ matchesRelay: false }, source)).toBeNull()
+      expect(foreignKeyKind({ matchesRelay: true }, source)).toBeNull()
+    }
+  })
+
+  it('names the account on the switch button and shortens long names', () => {
+    expect(switchAccountLabel('peaker')).toBe('改用 peaker')
+    expect(switchAccountLabel('  peaker  ')).toBe('改用 peaker')
+    expect(switchAccountLabel(null)).toBe('改用当前账号')
+    expect(switchAccountLabel('')).toBe('改用当前账号')
+    expect(switchAccountLabel('a-very-long-account@example.com')).toBe('改用 a-very-long-acc…')
+    expect(switchAccountLabel('星芒用户名字特别特别特别长的账号名字')).toBe('改用 星芒用户名字特别特别特别长的账…')
   })
 })
