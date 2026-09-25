@@ -965,7 +965,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
             {(Object.keys(visitedPages) as PageId[]).filter((id) => id !== 'acceleration' && (visitedPages[id] === scope || id === page)).map((id) => <div key={id === 'settings' ? `settings:${settingsRequest}` : id} hidden={page !== id} inert={page !== id}>
               <Suspense fallback={pageLoading}>
                 <BusinessPage api={native} page={id} accountTab={accountTab.value} accountTabRequest={accountTab.sequence} tutorialTopic={tutorialTopic ?? undefined} paymentReturn={paymentReturn} navigate={navigate} openLogin={(target) => { setAuthTarget(target ?? null); setAuth('login') }} openHelp={() => setHelp(true)}
-                  onSessionResumed={refreshRecent}
+                  onSessionsChanged={refreshRecent}
                   onBackupRestored={() => void toolbox.refreshConfig().catch(() => undefined)}
                   onToolConfigSaved={() => void toolbox.refreshConfig().catch(() => undefined)}
                   toolConfigConfirmed={toolConfigConfirmed}

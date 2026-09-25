@@ -24,8 +24,8 @@ export type BusinessPageProps = Omit<BusinessActions, 'navigate'> & {
   /** 教程页要停在哪一章；缺省 = 从第一章开始（旧行为）。 */
   tutorialTopic?: Parameters<typeof TutorialPage>[0]['topic']
   paymentReturn?: { sequence: number; order: string | null }
-  /** 记录页「接着聊」成功后回调，用来作废首页那份「最近」缓存。 */
-  onSessionResumed?: () => void
+  /** 记录页「接着聊」成功、归档或恢复后回调，用来作废并重读首页那份「最近」缓存。 */
+  onSessionsChanged?: () => void
   /** 备份页恢复成功后回调，用来让首页重读这份配置。 */
   onBackupRestored?: Parameters<typeof BackupsPage>[0]['onRestored']
   /** 密钥页「配置到工具」写成功后回调，让首页重读工具配置（#479）。 */
@@ -41,7 +41,7 @@ export function BusinessPage({
   accountTabRequest,
   tutorialTopic,
   paymentReturn,
-  onSessionResumed,
+  onSessionsChanged,
   onBackupRestored,
   onToolConfigSaved,
   toolConfigConfirmed,
@@ -64,7 +64,7 @@ export function BusinessPage({
       />
     )
   if (page === 'sessions')
-    return <SessionsPage api={api} onResumed={onSessionResumed} />
+    return <SessionsPage api={api} onSessionsChanged={onSessionsChanged} />
   if (page === 'mcp') return <ExtensionsPage api={api} kind="mcp" />
   if (page === 'skills') return <ExtensionsPage api={api} kind="skill" />
   if (page === 'plugins') return <ExtensionsPage api={api} kind="plugin" />
