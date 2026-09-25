@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { ProviderConfigSummary, ProviderId } from '../../../../electron/ipc-contract'
-import { accountSwitchTarget, canUninstallTool, ccSwitchLeftoverFor, foreignKeyKind, switchAccountLabel, codexDesktopUpdateKind, configDirectoryMenuItem, connectionReady, externalInstallHint, isExternallyManagedInstall, presentTools, providerFor, recommendedVersionVerb, rollbackVersion, sourceFor, toolAvailability, toolInstallDirectory, toolUpdateOffer, updateCheckFailure, versionSubtitle, type ToolboxSnapshot, type ToolPresentation } from './model'
+import { accountSwitchTarget, canUninstallTool, ccSwitchLeftoverFor, foreignKeyKind, switchAccountLabel, codexDesktopUpdateKind, configDirectoryMenuItem, connectionReady, externalInstallHint, isExternallyManagedInstall, presentTools, providerFor, recommendedVersionVerb, revertVersion, rollbackVersion, sourceFor, toolAvailability, toolInstallDirectory, toolUpdateOffer, updateCheckFailure, versionSubtitle, type ToolboxSnapshot, type ToolPresentation } from './model'
 import {
   writeManualSourceMarker,
   type SourceMarkerStorage,
@@ -324,6 +324,15 @@ describe('renderer CLI version advice', () => {
     expect(rollbackVersion(row(advice, null) as ToolPresentation)).toBeNull()
     expect(rollbackVersion(row(null) as ToolPresentation)).toBeNull()
     expect(rollbackVersion(row({ ...advice, rollbackAvailable: false }) as ToolPresentation)).toBeNull()
+  })
+
+  it('offers the pre-update version only for an installed tool this app manages', () => {
+    const installed = { installed: true, version: '2.1.282', path: '/fixture/claude', installDirectory: '/fixture' } as ToolPresentation['status']
+    expect(revertVersion({ status: installed, revertVersion: '2.1.277' })).toBe('2.1.277')
+    expect(revertVersion({ status: installed, revertVersion: null })).toBeNull()
+    expect(revertVersion({ status: installed })).toBeNull()
+    expect(revertVersion({ status: { ...installed, installed: false }, revertVersion: '2.1.277' })).toBeNull()
+    expect(revertVersion({ status: { ...installed, installSource: 'native' }, revertVersion: '2.1.277' })).toBeNull()
   })
 })
 
