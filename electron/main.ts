@@ -2288,6 +2288,7 @@ if (!hasSingleInstanceLock) {
       systemService,
       providerRoots: rootedOptions.system.providerRoots,
       documentsDirectory: () => app.getPath('documents'),
+      desktopDirectory: () => app.getPath('desktop'),
       accountService,
       paymentWindow,
       accountSessionReady,

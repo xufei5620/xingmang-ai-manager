@@ -142,6 +142,7 @@ function accountServiceStub(): NewApiClientService {
     resetPassword: vi.fn(async () => ({ newPassword: 'stub-generated-password' })),
     register: vi.fn(async () => undefined),
     login: vi.fn() as never,
+    completeTwoFactorLogin: vi.fn() as never,
     logout: vi.fn(),
     endServerSession: vi.fn(async () => undefined),
     endPersistedServerSession: vi.fn(async () => undefined),
@@ -905,6 +906,75 @@ describe('registerIpcHandlers', () => {
     expect(chatHistory.read).toHaveBeenCalledWith('xm-account:7')
     expect(JSON.stringify(runtimeLog.log.mock.calls)).not.toContain('chat body')
     dispose()
+  })
+
+  it('exports portable settings with the renderer conversations and nothing account-bound', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-transfer-ipc-'))
+    try {
+      const service = serviceStub()
+      vi.mocked(service.readStoredConfig).mockReturnValue({ ...stubStoredConfig, workspace: 'D:\\secret-project', officialProviders: ['codex'], theme: 'dark' })
+      const { runtimeLog, dispose } = register(service, 'C:\\app-data\\logs', undefined, accountServiceStub(), undefined, undefined, {}, { desktopDirectory: () => directory })
+      const exportData = electronMocks.handlers.get('data-transfer:export')!
+      await expect(exportData(trustedEvent(), { conversations: 'nope' })).rejects.toThrow('导出的聊天对话格式无效')
+      expect(electronMocks.showSaveDialog).not.toHaveBeenCalled()
+
+      electronMocks.showSaveDialog.mockResolvedValueOnce({ canceled: true })
+      await expect(exportData(trustedEvent(), { conversations: [] })).resolves.toBeNull()
+
+      const outputPath = path.join(directory, 'moving.json')
+      electronMocks.showSaveDialog.mockResolvedValueOnce({ canceled: false, filePath: outputPath })
+      await expect(exportData(trustedEvent(), { conversations: [{ id: 'c1', title: 'chat body' }] })).resolves.toEqual({ outputPath, conversations: 1 })
+      expect(electronMocks.showSaveDialog.mock.calls[1][0].defaultPath.startsWith(directory)).toBe(true)
+      const written = fs.readFileSync(outputPath, 'utf8')
+      expect(JSON.parse(written)).toMatchObject({ format: 'xingmang-data-transfer', version: 1, settings: { theme: 'dark' }, conversations: [{ id: 'c1' }] })
+      expect(written).not.toContain('secret-project')
+      expect(written).not.toContain('officialProviders')
+      expect(JSON.stringify(runtimeLog.log.mock.calls)).not.toContain('chat body')
+      dispose()
+    } finally { fs.rmSync(directory, { recursive: true, force: true }) }
+  })
+
+  it('reads an import file without writing anything and splits the settings to ask about', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-transfer-ipc-'))
+    try {
+      const service = serviceStub()
+      vi.mocked(service.readStoredConfig).mockReturnValue({ ...stubStoredConfig, theme: 'dark' })
+      const { dispose } = register(service)
+      const importData = electronMocks.handlers.get('data-transfer:import')!
+      electronMocks.showOpenDialog.mockResolvedValueOnce({ canceled: true, filePaths: [] })
+      await expect(importData(trustedEvent())).resolves.toBeNull()
+
+      const bad = path.join(directory, 'bad.json')
+      fs.writeFileSync(bad, '{"format":"something-else"}')
+      electronMocks.showOpenDialog.mockResolvedValueOnce({ canceled: false, filePaths: [bad] })
+      await expect(importData(trustedEvent())).rejects.toThrow('不是星芒导出的')
+
+      const good = path.join(directory, 'good.json')
+      fs.writeFileSync(good, JSON.stringify({ format: 'xingmang-data-transfer', version: 1, settings: { theme: 'light', desktopNotifications: false }, conversations: [{ id: 'c1' }] }))
+      electronMocks.showOpenDialog.mockResolvedValueOnce({ canceled: false, filePaths: [good] })
+      await expect(importData(trustedEvent())).resolves.toEqual({
+        conversations: [{ id: 'c1' }],
+        settings: { version: 2, desktopNotifications: false },
+        conflictingSettings: { version: 2, theme: 'light' },
+        conflictLabels: ['主题'],
+      })
+      expect(service.updateStoredConfig).not.toHaveBeenCalled()
+      dispose()
+    } finally { fs.rmSync(directory, { recursive: true, force: true }) }
+  })
+
+  it('saves one conversation as text where the user picks', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-transfer-ipc-'))
+    try {
+      const { dispose } = register(serviceStub(), 'C:\\app-data\\logs', undefined, accountServiceStub(), undefined, undefined, {}, { desktopDirectory: () => directory })
+      const exportText = electronMocks.handlers.get('chat-history:export-text')!
+      const outputPath = path.join(directory, 'chat.txt')
+      electronMocks.showSaveDialog.mockResolvedValueOnce({ canceled: false, filePath: outputPath })
+      await expect(exportText(trustedEvent(), { title: '../周报', text: '我：你好' })).resolves.toEqual({ outputPath })
+      expect(electronMocks.showSaveDialog.mock.calls[0][0].defaultPath).toBe(path.join(directory, '.. 周报.txt'))
+      expect(fs.readFileSync(outputPath, 'utf8')).toBe('我：你好')
+      dispose()
+    } finally { fs.rmSync(directory, { recursive: true, force: true }) }
   })
 
   it('cancels both text and image requests before logging out', async () => {
@@ -1944,6 +2014,19 @@ describe('registerIpcHandlers', () => {
     await expect(handler(trustedEvent(), { username: 'user@example.test', password: 'fixture-password' })).rejects.toThrow()
     const failure = runtimeLog.log.mock.calls.find((call) => call[0] === 'error' && call[2] === 'account:login')
     expect(failure?.[4]).not.toHaveProperty('networkFailure')
+  })
+
+  it('hands a two-factor code to the account service and keeps it out of the runtime log', async () => {
+    const completeTwoFactorLogin = vi.fn(async () => ({ account: { userId: 7 }, siteId: 'solov' }))
+    const { runtimeLog } = register(undefined, undefined, undefined, undefined, undefined, undefined, { realmAccounts: { completeTwoFactorLogin } as never })
+    const handler = electronMocks.handlers.get('account:submit-two-factor-code')!
+    await expect(handler(trustedEvent(), ' 123456 ')).resolves.toMatchObject({ account: { userId: 7 } })
+    expect(completeTwoFactorLogin).toHaveBeenCalledWith('123456')
+    await expect(handler(trustedEvent(), '')).rejects.toThrow('验证码格式错误')
+    await expect(handler(trustedEvent(), 'x'.repeat(65))).rejects.toThrow('验证码格式错误')
+    await expect(handler(trustedEvent(), { code: '123456' })).rejects.toThrow('验证码格式错误')
+    expect(completeTwoFactorLogin).toHaveBeenCalledTimes(1)
+    expect(JSON.stringify(runtimeLog.log.mock.calls)).not.toContain('123456')
   })
 
   it('reads remembered credentials only from the last successful identity without exposing its backend', async () => {
