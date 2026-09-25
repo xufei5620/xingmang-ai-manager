@@ -195,6 +195,14 @@ describe('tutorial topics', () => {
     expect(markup).toContain(topic?.steps[0]?.title ?? '')
   })
 
+  it('carries the text typed in the top search into the tutorial search box', () => {
+    const markup = renderToStaticMarkup(
+      createElement(TutorialPage, { topic: { sequence: 1, id: 'start', query: '充值' } }),
+    )
+    expect(markup).toMatch(/data-testid="tutorial-search"[^>]*value="充值"|value="充值"[^>]*data-testid="tutorial-search"/)
+    expect(markup).toContain('找到')
+  })
+
   it('falls back to the first chapter when the requested one does not exist', () => {
     const markup = renderToStaticMarkup(
       createElement(TutorialPage, { topic: { sequence: 1, id: 'no-such-chapter' } }),
