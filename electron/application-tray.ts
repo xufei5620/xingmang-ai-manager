@@ -38,6 +38,8 @@ export interface ApplicationTrayHandle {
   isDestroyed(): boolean
   setToolTip(label: string): void
   setContextMenu(menu: Menu): void
+  /** Windows only in Electron; optional so test doubles can leave it out. */
+  displayBalloon?(options: { title: string; content: string; iconType?: 'info'; noSound?: boolean; respectQuietTime?: boolean }): void
   on(event: 'click' | 'double-click' | 'right-click', listener: () => void): unknown
   removeAllListeners(): unknown
   destroy(): void
@@ -144,6 +146,11 @@ export interface ApplicationTrayController {
   readonly available: boolean
   getSnapshot(): ApplicationTraySnapshot
   updateSnapshot(snapshot?: ApplicationTraySnapshot): void
+  /**
+   * 系统通知被关掉时的退路：从托盘图标上冒一个气泡。只有 Windows 有；macOS 的
+   * 菜单栏图标一直看得见，用不着。弹没弹出来都不影响托盘本身，所以失败只返回 false。
+   */
+  showBalloon(title: string, content: string): boolean
   dispose(): void
 }
 
@@ -227,6 +234,16 @@ export function createApplicationTray(
     get available() { return checkAvailable() },
     getSnapshot: () => copySnapshot(snapshot),
     updateSnapshot,
+    showBalloon(title, content) {
+      if (platform !== 'win32' || !checkAvailable() || !tray?.displayBalloon) return false
+      try {
+        tray.displayBalloon({ iconType: 'info', title, content, noSound: true, respectQuietTime: true })
+        return true
+      } catch (error) {
+        report(error)
+        return false
+      }
+    },
     dispose() {
       if (disposed) return
       disposed = true

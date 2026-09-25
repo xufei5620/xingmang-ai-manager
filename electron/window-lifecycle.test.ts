@@ -47,6 +47,73 @@ describe('window close coordination', () => {
     expect(lifecycle.isQuitting).toBe(false)
   })
 
+  it('remembers a checked tray choice and tells the host the window went to the tray', async () => {
+    const rememberCloseBehavior = vi.fn(async () => {})
+    const onHiddenToTray = vi.fn()
+    const { options, lifecycle } = fixture({
+      requestCloseDecision: async () => ({ decision: 'hide', remember: true }),
+      rememberCloseBehavior,
+      onHiddenToTray,
+    })
+    expect(await lifecycle.requestClose()).toBe('hidden')
+    expect(rememberCloseBehavior).toHaveBeenCalledWith('tray')
+    expect(options.hide).toHaveBeenCalledOnce()
+    expect(onHiddenToTray).toHaveBeenCalledOnce()
+  })
+
+  it('saves a remembered quit before the process is asked to quit', async () => {
+    const saved = deferred<void>()
+    const rememberCloseBehavior = vi.fn(() => saved.promise)
+    const { options, lifecycle } = fixture({
+      requestCloseDecision: async () => ({ decision: 'quit', remember: true }),
+      rememberCloseBehavior,
+    })
+    const result = lifecycle.requestClose()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(rememberCloseBehavior).toHaveBeenCalledWith('quit')
+    expect(options.quit).not.toHaveBeenCalled()
+    saved.resolve()
+    expect(await result).toBe('quit-requested')
+    expect(options.quit).toHaveBeenCalledOnce()
+  })
+
+  it('never remembers a cancelled or unchecked choice', async () => {
+    const rememberCloseBehavior = vi.fn()
+    const { lifecycle } = fixture({
+      requestCloseDecision: vi.fn<WindowLifecycleOptions['requestCloseDecision']>()
+        .mockResolvedValueOnce({ decision: 'cancel', remember: true })
+        .mockResolvedValueOnce({ decision: 'hide', remember: false })
+        .mockResolvedValueOnce('hide'),
+      rememberCloseBehavior,
+    })
+    expect(await lifecycle.requestClose()).toBe('cancelled')
+    expect(await lifecycle.requestClose()).toBe('hidden')
+    expect(await lifecycle.requestClose()).toBe('hidden')
+    expect(rememberCloseBehavior).not.toHaveBeenCalled()
+  })
+
+  it('still closes as chosen when remembering the choice fails', async () => {
+    const { options, lifecycle } = fixture({
+      requestCloseDecision: async () => ({ decision: 'hide', remember: true }),
+      rememberCloseBehavior: async () => { throw new Error('disk full') },
+    })
+    expect(await lifecycle.requestClose()).toBe('hidden')
+    expect(options.hide).toHaveBeenCalledOnce()
+    expect(options.onError).toHaveBeenCalledOnce()
+  })
+
+  it('tells the host about the tray under the tray preference too, but not when the tray is gone', async () => {
+    const onHiddenToTray = vi.fn(() => { throw new Error('notification failed') })
+    let available = true
+    const { options, lifecycle } = fixture({ readPreference: () => 'tray', trayAvailable: () => available, onHiddenToTray })
+    expect(await lifecycle.requestClose()).toBe('hidden')
+    expect(onHiddenToTray).toHaveBeenCalledOnce()
+    expect(options.onError).toHaveBeenCalledOnce()
+    available = false
+    expect(await lifecycle.requestClose()).toBe('kept-visible')
+    expect(onHiddenToTray).toHaveBeenCalledOnce()
+  })
+
   it('rechecks tray availability immediately before hiding', async () => {
     const flush = deferred<void>()
     let available = true

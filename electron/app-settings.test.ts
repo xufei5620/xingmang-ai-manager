@@ -509,6 +509,18 @@ describe('UI and window preferences', () => {
     expect(readAppSettings(filePath)).toEqual(next)
   })
 
+  it('keeps the tray hint marker once set and ignores anything but true', async () => {
+    const filePath = temporarySettingsPath()
+    await writeAppSettings(filePath, settings())
+    expect(readAppSettings(filePath)).not.toHaveProperty('trayHintShown')
+    await updateAppSettings(filePath, { version: 2, trayHintShown: true })
+    expect(readAppSettings(filePath)).toMatchObject({ trayHintShown: true })
+    await updateAppSettings(filePath, { version: 2, trayHintShown: false, closeBehavior: 'tray' })
+    expect(readAppSettings(filePath)).toMatchObject({ trayHintShown: true, closeBehavior: 'tray' })
+    fs.writeFileSync(filePath, JSON.stringify({ ...settings(), trayHintShown: 'yes' }), 'utf8')
+    expect(readAppSettings(filePath)).not.toHaveProperty('trayHintShown')
+  })
+
   it('migrates old v2 records to the first-run light and mist appearance', async () => {
     const filePath = temporarySettingsPath()
     await writeAppSettings(filePath, settings())

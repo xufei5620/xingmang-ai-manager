@@ -2,6 +2,7 @@ import { EventEmitter } from 'node:events'
 import { describe, expect, it, vi } from 'vitest'
 import {
   createPlatformNotifications,
+  hostNotificationMessage,
   type PlatformNotificationRuntime,
 } from './notifications'
 
@@ -132,6 +133,26 @@ describe('acceleration reminders sent by the main process', () => {
     })
     expect(h.controller.notifyHost('accelerationAutoStarted', 'xm-account:1:t0')).toBe('duplicate')
   })
+  it('says where the window went under the master switch alone, once per key', () => {
+    const h = setup()
+    for (const kind of Object.keys(h.preferences) as Array<keyof typeof h.preferences>) h.preferences[kind] = false
+    expect(h.controller.notifyHost('hiddenToTray', 'first')).toBe('requested')
+    expect(h.runtime.create).toHaveBeenLastCalledWith({
+      title: '星芒AI管理工具还在运行',
+      body: '窗口缩到了右下角的托盘里，点星芒图标就能打开。看不到图标的话，点任务栏右边的小箭头 ^。',
+      silent: true,
+    })
+    expect(h.controller.notifyHost('hiddenToTray', 'first')).toBe('duplicate')
+    expect(h.controller.notifyHost('hiddenToMenuBar', 'first')).toBe('requested')
+    expect(h.runtime.create).toHaveBeenLastCalledWith(expect.objectContaining({ body: '窗口已收起，点屏幕顶部菜单栏里的星芒图标就能打开。' }))
+    h.enable(false)
+    expect(h.controller.notifyHost('hiddenToTray', 'second')).toBe('disabled')
+    expect(hostNotificationMessage('hiddenToTray')).toEqual({
+      title: '星芒AI管理工具还在运行',
+      body: '窗口缩到了右下角的托盘里，点星芒图标就能打开。看不到图标的话，点任务栏右边的小箭头 ^。',
+    })
+  })
+
   it('keeps the copy free of the relay site name, top-up pitch and technical words', () => {
     const h = setup()
     h.controller.notifyHost('accelerationExpiring', 'xm-account:1:t0')

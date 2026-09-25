@@ -31,8 +31,10 @@ export type PlatformHostNotification =
   | 'accelerationInterrupted'
   | 'accelerationInterruptedUnrestored'
   | 'accelerationAutoStarted'
+  | 'hiddenToTray'
+  | 'hiddenToMenuBar'
 
-interface NotificationMessage {
+export interface NotificationMessage {
   title: string
   body: string
 }
@@ -109,9 +111,11 @@ export function buildInstallNotificationMessage(
 // 一条只说「还剩多久」，一条只说「已经断开了」：用户在游戏里看到的就这一行，
 // 多一个字的引导都会把它变成广告。免费时长怎么卖不是这里的事，所以不写价格、
 // 不写充值入口。主语是「当前账号」，不出现站点名。
+// kind 为 null 的通知不归哪一类偏好管，只看总开关：它不是「发生了什么事」，
+// 而是告诉用户窗口去哪了，一台电脑只说一次。
 const hostMessages: Record<
   PlatformHostNotification,
-  NotificationMessage & { kind: PlatformNotificationKind }
+  NotificationMessage & { kind: PlatformNotificationKind | null }
 > = {
   accelerationExpiring: {
     kind: 'acceleration',
@@ -141,6 +145,23 @@ const hostMessages: Record<
     title: '已为 Codex 桌面端连上加速',
     body: '打开桌面端时自动连上的，会计入免费加速时长，不用时可以在托盘或加速页断开。',
   },
+  // Windows 11 默认把新托盘图标收进任务栏右边的 ^ 里，小白找不到窗口会以为软件没了。
+  hiddenToTray: {
+    kind: null,
+    title: '星芒AI管理工具还在运行',
+    body: '窗口缩到了右下角的托盘里，点星芒图标就能打开。看不到图标的话，点任务栏右边的小箭头 ^。',
+  },
+  hiddenToMenuBar: {
+    kind: null,
+    title: '星芒AI管理工具还在运行',
+    body: '窗口已收起，点屏幕顶部菜单栏里的星芒图标就能打开。',
+  },
+}
+
+/** 系统通知发不出去时，宿主改用别的办法（Windows 托盘气泡）说同一句话。 */
+export function hostNotificationMessage(event: PlatformHostNotification): NotificationMessage {
+  const { title, body } = hostMessages[event]
+  return { title, body }
 }
 
 export function createPlatformNotifications(
@@ -162,14 +183,14 @@ export function createPlatformNotifications(
     }
   }
   const present = (
-    kind: PlatformNotificationKind | 'test',
+    kind: PlatformNotificationKind | 'test' | null,
     key: string,
     message: NotificationMessage,
     onClick?: () => void,
   ): PlatformNotificationResult => {
     if (
       !options.readEnabled() ||
-      (kind !== 'test' && !options.readPreferences()[kind])
+      (kind !== 'test' && kind !== null && !options.readPreferences()[kind])
     )
       return 'disabled'
     if (!runtime.supported()) return 'unsupported'

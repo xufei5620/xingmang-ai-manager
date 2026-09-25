@@ -106,6 +106,7 @@ import { guardProcessOutputStreams } from './process-stream-errors'
 import { configureRelocatedFolderAccess } from './relocated-folders'
 import { RuntimeLogStore } from './runtime-log'
 import { hostNotifier } from './platform/host-notification-bridge'
+import { hostNotificationMessage } from './platform/notifications'
 import { attachProxyBypassState } from './platform/proxy-bypass-bridge'
 import { createProxyBypass, networkSettingsTarget, probeDirectConnection } from './proxy-bypass'
 import { attachPlatformAuditLog } from './platform/runtime-log-bridge'
@@ -2451,6 +2452,7 @@ if (!hasSingleInstanceLock) {
       showMainWindow()
       mainWindow.webContents.send(ipcEventChannels.onExternalDeepLink, undefined)
     }
+    let trayHintShown = false
     const lifecycle = createWindowLifecycle({
       readPreference: () => systemService.readStoredConfig().closeBehavior ?? 'ask',
       trayAvailable: () => applicationTray?.available ?? false,
@@ -2461,8 +2463,34 @@ if (!hasSingleInstanceLock) {
           detail: trayReady ? '缩到托盘会保留正在执行的任务。强制退出不等待任务完成，未保存的输入不会保留。' : '系统托盘不可用。强制退出不等待任务完成，未保存的输入不会保留。',
           buttons: trayReady ? ['缩到托盘', '强制退出程序', '返回'] : ['强制退出程序', '返回'],
           defaultId: trayReady ? 0 : 1, cancelId: trayReady ? 2 : 1,
+          // 默认不勾：不勾就和以前一样每次都问。选「返回」时勾了也不记。
+          checkboxLabel: '记住我的选择，以后不再询问（可以在「设置 → 启动与关闭」里改）',
+          checkboxChecked: false,
         })
-        return trayReady ? result.response === 0 ? 'hide' : result.response === 1 ? 'quit' : 'cancel' : result.response === 0 ? 'quit' : 'cancel'
+        const decision = trayReady ? result.response === 0 ? 'hide' : result.response === 1 ? 'quit' : 'cancel' : result.response === 0 ? 'quit' : 'cancel'
+        return { decision, remember: result.checkboxChecked }
+      },
+      rememberCloseBehavior: async (closeBehavior) => {
+        await systemService.updateStoredConfig({ version: 2, closeBehavior })
+        runtimeLog.log('info', 'window', 'close.remembered', closeBehavior === 'tray' ? '以后点关闭直接缩到托盘' : '以后点关闭直接退出')
+      },
+      onHiddenToTray: () => {
+        // 第一次缩到托盘时说一次窗口去哪了。系统通知被关掉时，Windows 退到托盘气泡；
+        // macOS 的菜单栏图标一直看得见，不补。两样都没出来就不记，下次再试。
+        if (trayHintShown || systemService.readStoredConfig().trayHintShown) { trayHintShown = true; return }
+        const event = process.platform === 'darwin' ? 'hiddenToMenuBar' : 'hiddenToTray'
+        let shown = false
+        try { shown = hostNotifier()({ event, eventKey: 'first' }) === 'requested' } catch (cause) { runtimeLog.exception('window', 'tray-hint.notify-failed', cause) }
+        if (!shown) {
+          const { title, body } = hostNotificationMessage(event)
+          shown = applicationTray?.showBalloon(title, body) ?? false
+        }
+        if (!shown) return
+        trayHintShown = true
+        runtimeLog.log('info', 'window', 'tray-hint.shown', '已提示窗口缩到了托盘')
+        void systemService.updateStoredConfig({ version: 2, trayHintShown: true }).catch((cause: unknown) => {
+          runtimeLog.exception('window', 'tray-hint.save-failed', cause)
+        })
       },
       confirmQuit: async () => {
         // 没有安装在跑、也没有装好的更新时这里不做任何 IO，也不弹窗：关窗冒烟

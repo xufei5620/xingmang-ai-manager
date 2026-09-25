@@ -2,12 +2,27 @@ import type { AppCloseBehavior } from './window-preferences'
 
 export type WindowCloseDecision = 'hide' | 'quit' | 'cancel'
 export type QuitConfirmation = 'quit' | 'cancel' | 'install-update'
+/** 询问框里勾了「记住我的选择」时带上 remember；选「返回」不记。 */
+export interface WindowCloseChoice {
+  decision: WindowCloseDecision
+  remember?: boolean
+}
 export type WindowCloseResult = 'hidden' | 'quit-requested' | 'cancelled' | 'kept-visible' | 'failed'
 
 export interface WindowLifecycleOptions {
   readPreference(): AppCloseBehavior
   trayAvailable(): boolean
-  requestCloseDecision(): Promise<WindowCloseDecision>
+  requestCloseDecision(): Promise<WindowCloseDecision | WindowCloseChoice>
+  /**
+   * 把询问框里勾了「记住」的那个选择存成关闭偏好，以后不再问。退出前要等它写完，
+   * 否则进程先没了，选择就丢了；写失败只记一笔，不否决这次关闭。缺省 = 不记。
+   */
+  rememberCloseBehavior?(behavior: 'tray' | 'quit'): void | Promise<void>
+  /**
+   * 窗口刚缩到托盘（询问框里选的，或者偏好本来就是缩到托盘）。宿主用它在第一次
+   * 时告诉用户窗口去哪了。抛错不影响已经完成的隐藏。
+   */
+  onHiddenToTray?(): void
   /**
    * 「直接退出」偏好和托盘 / 菜单「退出」放行前的最后一次确认：有安装正在跑时
    * 拦一下，或者问一句要不要顺手装上已经下载好的更新。缺省 = 旧行为，不确认。
@@ -158,18 +173,27 @@ export function createWindowLifecycle(options: WindowLifecycleOptions): WindowLi
     if (explicitQuit) return confirmedQuit()
     const preference = options.readPreference()
     if (preference === 'quit') return confirmedQuit()
-    const decision = preference === 'ask' ? await options.requestCloseDecision() : 'hide'
+    const choice = preference === 'ask' ? await options.requestCloseDecision() : 'hide'
+    const { decision, remember = false } = typeof choice === 'string' ? { decision: choice } : choice
     if (disposed) return 'cancelled'
-    if (explicitQuit || decision === 'quit') return performQuit()
+    const rememberChoice = remember && decision !== 'cancel' && options.rememberCloseBehavior
+      ? cleanup(() => Promise.resolve(options.rememberCloseBehavior?.(decision === 'quit' ? 'quit' : 'tray')))
+      : Promise.resolve()
+    if (explicitQuit || decision === 'quit') {
+      await rememberChoice
+      return performQuit()
+    }
     if (decision === 'cancel') return cancelled()
-    if (!options.trayAvailable()) { show(); return 'kept-visible' }
-    await cleanup(options.flushWindowState)
+    if (!options.trayAvailable()) { await rememberChoice; show(); return 'kept-visible' }
+    await Promise.all([cleanup(options.flushWindowState), rememberChoice])
     if (disposed) return 'cancelled'
     // A menu Quit arriving during the dialog or flush must not become Hide.
     if (explicitQuit) return performQuit()
     if (!options.trayAvailable()) { show(); return 'kept-visible' }
     options.hide()
-    return explicitQuit ? performQuit() : 'hidden'
+    if (explicitQuit) return performQuit()
+    try { options.onHiddenToTray?.() } catch (error) { reportError(error) }
+    return 'hidden'
   }
   const request = (quit: boolean): Promise<WindowCloseResult> => {
     if (disposed) return Promise.resolve('cancelled')
