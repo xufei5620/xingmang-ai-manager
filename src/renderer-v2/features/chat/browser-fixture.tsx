@@ -84,6 +84,7 @@ const bridge: ChatBridge = {
   showAiChatAssetMenu: async (assetId) => { record('menu-asset', assetId) },
   readAiChatHistory: (scope) => historyFiles(scope),
   writeAiChatHistory: (input) => writeHistoryFiles(input),
+  exportAiChatConversation: async (input) => { record('export-text', input); return query.has('exportCancel') ? null : { outputPath: `C:\\Users\\fixture\\Desktop\\${input.title}.txt` } },
   getAccountSession: async () => ({ authenticated: true, account: { userId, username: `fixture-${userId}`, quota: 10, usedQuota: 0, group: 'default', role: 1 } }),
 }
 declare global {
