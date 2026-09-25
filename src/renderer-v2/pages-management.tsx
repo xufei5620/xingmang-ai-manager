@@ -648,11 +648,14 @@ export function CuratedShelf({
 }
 export function SessionsPage({
   api,
-  onResumed,
+  onSessionsChanged,
 }: {
   api: V2Bridge
-  /** 接着聊成功后通知外层：首页那份「最近」缓存要作废。省略 = 不通知（旧行为）。 */
-  onResumed?: () => void
+  /**
+   * 接着聊成功、归档或恢复之后通知外层：首页那份「最近」缓存要作废并重读。
+   * 省略 = 不通知（旧行为）。
+   */
+  onSessionsChanged?: () => void
 }) {
   const [provider, setProvider] = useState<Provider | 'all'>('all')
   const [query, setQuery] = useState('')
@@ -705,7 +708,9 @@ export function SessionsPage({
         else await api.archiveSession(selected.nativeId)
         setSelected(null)
         // 归档会把记录移出 CLI 自己的目录,那个文件夹的「最近一条」也就变了,
-        // 所以按钮的判断依据要跟着一起重读。
+        // 所以按钮的判断依据要跟着一起重读。首页「最近」缓存着同一份列表，
+        // 不通知它的话一分钟内回首页还看得到刚归档的那条（#544）。
+        onSessionsChanged?.()
         await Promise.all([resource.reload(), latestResource.reload()])
       },
       selected.archived ? '会话已恢复' : '会话已归档',
@@ -730,7 +735,7 @@ export function SessionsPage({
             'resumeLast',
           )
           // 选了「先不打开」就什么都没开，首页那份「最近」也没变。
-          if (!launchDeclined(result)) onResumed?.()
+          if (!launchDeclined(result)) onSessionsChanged?.()
           return result
         } catch (cause) {
           // 列表出来之后目录才被删掉的那一瞬间:按钮还亮着,但已经接不上了。
