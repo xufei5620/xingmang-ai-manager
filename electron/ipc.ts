@@ -1587,7 +1587,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
           'account:get-legal-document', 'account:get-remembered-login', 'account:set-remembered-login',
           'account:register', 'account:send-verification-code', 'account:send-reset-code', 'account:reset-password'])
         const scoped = (channel.startsWith('account:') || channel.startsWith('chat:') || channel === 'canvas:open'
-          || channel.startsWith('models:') || channel.startsWith('config:') || channel === 'external-clients:scan' || channel === 'external-clients:launch' || channel === 'cli:launch' || channel === 'desktop:launch-codex')
+          || channel.startsWith('models:') || channel.startsWith('config:') || channel === 'external-clients:scan' || channel === 'external-clients:launch' || channel === 'cli:launch' || channel === 'desktop:launch-codex' || channel === 'tools:check-models')
           && !publicAccountChannels.has(channel)
         const invoke = () => scoped && options.accountWork
           ? options.accountWork.run(() => handler(event, ...args), { checkRevision: channel !== 'account:change-password' && channel !== 'account:revoke-login-session' }) : handler(event, ...args)

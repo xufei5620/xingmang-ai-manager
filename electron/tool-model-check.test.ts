@@ -85,7 +85,7 @@ describe('tool model check', () => {
   it('quietly refreshes the Claude Code model menu when it no longer matches the account', async () => {
     const { deps, checker } = setup({ pickerOutdated: vi.fn(() => true) })
     await expect(checker.check('claude')).resolves.toEqual({ status: 'ok', pickerRefreshed: true })
-    expect(deps.refreshPicker).toHaveBeenCalledWith('claude-opus-5')
+    expect(deps.refreshPicker).toHaveBeenCalledWith('claude-opus-5', expect.any(Function))
   })
 
   it('only Claude Code has a menu to refresh', async () => {
@@ -99,6 +99,41 @@ describe('tool model check', () => {
     await expect(unreadable.checker.check('claude')).resolves.toEqual({ status: 'ok', pickerRefreshed: false })
     const unwritable = setup({ pickerOutdated: vi.fn(() => true), refreshPicker: vi.fn(async () => { throw new Error('locked') }) })
     await expect(unwritable.checker.check('claude')).resolves.toEqual({ status: 'ok', pickerRefreshed: false })
+  })
+
+  it('drops a result that comes back after the account switched, even when the new account offers the same model', async () => {
+    let finish!: (models: string[]) => void
+    const target = { apiKey: 'sk-account-a', model: 'claude-opus-5', identity: 'site:A:key-a:claude-opus-5' }
+    const { deps, checker } = setup({ listModels: vi.fn(() => new Promise<string[]>((resolve) => { finish = resolve })), pickerOutdated: vi.fn(() => true) }, { claude: target })
+    const pending = checker.check('claude')
+    await Promise.resolve()
+    target.apiKey = 'sk-account-b'
+    target.identity = 'site:B:key-b:claude-opus-5'
+    finish(['claude-opus-5'])
+    await expect(pending).resolves.toEqual({ status: 'skipped' })
+    expect(deps.refreshPicker).not.toHaveBeenCalled()
+    expect(deps.log).toHaveBeenCalledWith('info', 'tool-models.account-changed', expect.any(String), { provider: 'claude' })
+  })
+
+  it('does not ask the new account to swap models because of the old account\'s list', async () => {
+    let finish!: (models: string[]) => void
+    const target = { apiKey: 'sk-account-a', model: 'gpt-5-retired', identity: 'A' }
+    const { checker } = setup({ listModels: vi.fn(() => new Promise<string[]>((resolve) => { finish = resolve })) }, { codex: target })
+    const pending = checker.check('codex')
+    await Promise.resolve()
+    target.identity = 'B'
+    finish(['gpt-6-astra'])
+    await expect(pending).resolves.toEqual({ status: 'skipped' })
+  })
+
+  it('hands the menu writer a guard that fails once the account has moved on', async () => {
+    const target = { apiKey: 'sk-account-a', model: 'claude-opus-5', identity: 'A' }
+    let guard!: () => void
+    const { checker } = setup({ pickerOutdated: vi.fn(() => true), refreshPicker: vi.fn(async (_model: string, assertCurrent: () => void) => { guard = assertCurrent }) }, { claude: target })
+    await checker.check('claude')
+    expect(() => guard()).not.toThrow()
+    target.identity = 'B'
+    expect(() => guard()).toThrow('账号已变化')
   })
 
   it('accepts the Gemini -high spelling the config writer adds', () => {
