@@ -54,6 +54,7 @@ import { currentWindowOs, windowOsFor } from './features/app/window-os'
 import { rememberTourPending, rememberTourSeen, tourReplayPending } from './features/shell/tour-state'
 import { onboardingPreviewEnabled } from './features/app/dev-preview'
 import { deepLinkReadErrorText, supportQrFallbackText } from './features/app/fallback-messages'
+import { SupportIdentity, buildSupportIdentityLine } from './features/app/SupportIdentity'
 import { KeyRewriteSkippedError, bootstrapAccountTools, skippedNamedProviders, describeAccountBootstrapFailure, describeAccountBootstrapResult, type AccountBootstrapLogLine, type AccountBootstrapMode, type AccountBootstrapProgress, type AccountBootstrapResult } from './features/tools/account-bootstrap'
 import { rewritableKeyProviders } from './features/tools/connection-check'
 import { applyManualSourceMarker, getSourceMarkerStorage } from './features/tools/source-marker'
@@ -499,6 +500,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   // 平台能力回来之前沿用挂载前定下的系统，不能先按 Windows 写上去再改：欢迎页和
   // 启动页据此排顶栏，Mac 上那样第一帧就没给红黄绿按钮让位。
   const os = platform ? windowOsFor(platform.platform) : currentWindowOs()
+  const supportIdentity = buildSupportIdentityLine({ signedIn: session.authenticated, account: session.account, version: update?.currentVersion, os })
   useLayoutEffect(() => { document.documentElement.dataset.os = os }, [os])
   useEffect(() => {
     let current = true
@@ -1078,6 +1080,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     </Dialog>}
     {help && <Dialog open title="帮助与客服" onClose={() => setHelp(false)} width={480} footer={<Button onClick={() => { setHelp(false); navigate('tutorial') }}>使用教程</Button>}>
       <div className="v2-support">{qr && <img src={qr} alt="微信客服二维码" />}<h3>微信扫码找客服</h3><p>装不上、付了没到账，都可以问。</p>
+        <SupportIdentity line={supportIdentity} onCopy={() => { void navigator.clipboard.writeText(supportIdentity).then(() => toast.show('已复制，发给客服就行', 'ok'), () => toast.show('没复制上，请手动选中这行文字复制。', 'warn')) }} />
         {qrFallback && <p role="alert" data-testid="support-qr-fallback">{qrFallback}</p>}<Button onClick={() => void perform('打开帮助', () => app.openExternal(supportUrl))}>在浏览器打开</Button><Button onClick={() => { setHelp(false); navigate('feedback') }}>去反馈页</Button></div>
     </Dialog>}
     <StartupNotices notices={startupNotices} onDismiss={dismissStartupNotice}
