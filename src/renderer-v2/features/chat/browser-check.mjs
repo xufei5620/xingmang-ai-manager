@@ -84,7 +84,8 @@ test('long localStorage history migrates into the file store and survives autosa
     const message = (await saved(page)).conversations[0].messages[0]
     assert.equal(message.content, content)
     assert.equal(message.reasoning, reasoning)
-    assert.equal(await page.evaluate((key) => localStorage.getItem(key), storedChatKey), raw)
+    // Once the file store holds it, the old copy is removed so deleted chats do not linger there.
+    assert.equal(await page.evaluate((key) => localStorage.getItem(key), storedChatKey), null)
     await page.reload()
     await page.getByTestId('chat-message-long-history').waitFor()
     assert.equal(await page.locator('.chat-bubble').innerText(), content)
@@ -131,7 +132,7 @@ test('legacy import completes before autosave and preserves long history under S
     const stored = await saved(page)
     assert.equal(stored.conversations[0].messages.length, 120)
     assert.equal(stored.conversations[0].messages.at(-1).content, content)
-    assert.equal(await page.evaluate((key) => localStorage.getItem(key), legacyChatKey), raw)
+    assert.equal(await page.evaluate((key) => localStorage.getItem(key), legacyChatKey), null)
     assert.equal(await page.evaluate((key) => localStorage.getItem(key), storedChatKey), null)
   } finally { await page.close() }
 })

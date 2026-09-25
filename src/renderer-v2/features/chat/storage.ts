@@ -1,8 +1,9 @@
 import type { AiChatAsset, AiChatHistorySnapshot, AiChatHistoryWrite } from '../../../../electron/ipc-contract'
 import { createConversation, createId, createWorkspace, defaultChatSettings, type ChatMessage, type ChatSettings, type ChatWorkspace, type Conversation } from './state'
 
-// 只读：localStorage 现在只是旧版本留下的迁移来源，新记录一律写到主进程的文件里。
-export interface ChatStorage { getItem: (key: string) => string | null }
+// localStorage 现在只是旧版本留下的迁移来源，新记录一律写到主进程的文件里。读迁移来源时只读；
+// 文件里有了这个账号的记录之后，才把旧副本删掉并记一个「已迁移」标记（forgetLegacyHistory）。
+export interface ChatStorage { getItem: (key: string) => string | null; setItem?: (key: string, value: string) => void; removeItem?: (key: string) => void }
 const MAX_CONVERSATIONS = 50
 const HISTORY_VERSION = 3
 const ASSET_ID = /^[A-Za-z0-9_-]{43}$/
@@ -11,6 +12,30 @@ export class ChatStorageError extends Error {}
 const limitMessage = '聊天记录超过本地保存上限（50 个对话），原始记录已保留，未进行截断'
 
 export function historyKey(scope: string): string { return `xingmang-ui-v2:chat:${encodeURIComponent(scope)}` }
+function migratedKey(scope: string): string { return `xingmang-ui-v2:chat-migrated:${encodeURIComponent(scope)}` }
+// Every localStorage key readWorkspace may read for this scope: its own, and for
+// the xm realm the two old site aliases and the v1 key (see importLegacyHistory).
+export function legacyHistoryKeys(scope: string): string[] {
+  const keys = [historyKey(scope)]
+  const xm = /^xm-account:([1-9][0-9]*)$/.exec(scope)
+  if (xm && Number.isSafeInteger(Number(xm[1]))) keys.push(historyKey(`solov:${xm[1]}`), historyKey(`sub2api:${xm[1]}`), `xingmang-ai-chat:v1:${encodeURIComponent(xm[1])}`)
+  return keys
+}
+function hasMigrated(storage: ChatStorage, scope: string): boolean {
+  try { return storage.getItem(migratedKey(scope)) !== null } catch { return false }
+}
+// Called only once the file store holds a record for this account, so the
+// localStorage copies are stale duplicates nothing reads again. Left in place, a
+// conversation deleted in the app would survive there verbatim, and a cleared
+// history folder would bring it back as a fresh migration. The marker goes first
+// so that even a removal that fails can never be read back. Best effort: storage
+// may be disabled or full, and the file store is already authoritative.
+export function forgetLegacyHistory(storage: ChatStorage, scope: string): void {
+  try { storage.setItem?.(migratedKey(scope), '1') } catch { /* The removals below still apply. */ }
+  for (const key of legacyHistoryKeys(scope)) {
+    try { storage.removeItem?.(key) } catch { /* Keep trying the remaining keys. */ }
+  }
+}
 function object(value: unknown): Record<string, unknown> | null { return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null }
 function text(value: unknown): string {
   if (value === undefined || value === null) return ''
@@ -166,7 +191,9 @@ function persistedConversation(conversation: Conversation) {
 // compared by identity: state updates replace only the conversation they
 // touch, so a save rewrites just those files instead of the whole history.
 export interface SavedHistory { index: string; keys: ReadonlyMap<string, string>; conversations: ReadonlyMap<string, Conversation> }
-export interface LoadedChatHistory { state: ChatWorkspace; exists: boolean; warning?: string; saved: SavedHistory | null }
+// afterFirstSave is set only when the state came from localStorage (or from nothing,
+// before any migration): the writer runs it once the first save has succeeded.
+export interface LoadedChatHistory { state: ChatWorkspace; exists: boolean; warning?: string; saved: SavedHistory | null; afterFirstSave?: () => void }
 
 export function planHistoryWrite(state: ChatWorkspace, previous: SavedHistory | null): { write: AiChatHistoryWrite; saved: SavedHistory } | null {
   if (state.conversations.length > MAX_CONVERSATIONS) throw new ChatStorageError(limitMessage)
@@ -222,19 +249,31 @@ export function parseHistorySnapshot(snapshot: AiChatHistorySnapshot, scope: str
 
 // The file store wins once it has a record for this account. Before that the
 // localStorage record of earlier versions (and its account aliases and the v1
-// key) is loaded and becomes the first save, which is the whole migration.
+// key) is loaded and becomes the first save, which is the whole migration. The
+// source keys are removed only after that save succeeded; a failed save keeps
+// them for the next attempt. Once migrated, a missing file store stays empty.
 export async function loadChatHistory(api: { readHistory: (scope: string) => Promise<AiChatHistorySnapshot> }, storage: ChatStorage, scope: string): Promise<LoadedChatHistory> {
   let snapshot: AiChatHistorySnapshot
   try { snapshot = await api.readHistory(scope) } catch { return { state: createWorkspace(scope), exists: true, warning: '本地聊天记录暂时无法读取，原始数据已保留', saved: null } }
-  if (snapshot.index === null) return { ...readWorkspace(storage, scope), saved: null }
-  try { return { ...parseHistorySnapshot(snapshot, scope), exists: true } }
+  if (snapshot.index === null) {
+    if (hasMigrated(storage, scope)) return { state: createWorkspace(scope), exists: false, saved: null }
+    const legacy = readWorkspace(storage, scope)
+    return legacy.warning ? { ...legacy, saved: null } : { ...legacy, saved: null, afterFirstSave: () => forgetLegacyHistory(storage, scope) }
+  }
+  try {
+    const loaded = { ...parseHistorySnapshot(snapshot, scope), exists: true }
+    // Also covers earlier versions, which migrated without removing anything.
+    forgetLegacyHistory(storage, scope)
+    return loaded
+  }
   catch (error) { return { state: createWorkspace(scope), exists: true, warning: error instanceof ChatStorageError ? error.message : '本地聊天记录暂时无法读取，原始数据已保留', saved: null } }
 }
 
 // One save runs at a time; a save requested meanwhile only replaces the
 // pending snapshot, so bursts of edits collapse into the newest one.
-export function createHistoryWriter(api: { writeHistory: (input: AiChatHistoryWrite) => Promise<void> }, saved: SavedHistory | null) {
+export function createHistoryWriter(api: { writeHistory: (input: AiChatHistoryWrite) => Promise<void> }, saved: SavedHistory | null, afterFirstSave?: () => void) {
   let committed = saved
+  let firstSaved = afterFirstSave
   let pending: ChatWorkspace | null = null
   let running: Promise<void> | null = null
   async function drain(): Promise<void> {
@@ -246,6 +285,9 @@ export function createHistoryWriter(api: { writeHistory: (input: AiChatHistoryWr
         if (!plan) continue
         await api.writeHistory(plan.write)
         committed = plan.saved
+        const run = firstSaved
+        firstSaved = undefined
+        run?.()
       }
     } finally { running = null }
   }
