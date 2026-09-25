@@ -25,6 +25,7 @@ import {
 } from './macos-grok'
 import { sameLocalPathIdentity } from './path-identity'
 import { stageVerifiedNativeCli } from './trusted-native-cli'
+import { isNewerVersion } from './versions'
 import type { WindowsCliExecutionMode } from './windows-elevation'
 
 export type CliInstallSource = 'npm' | 'native'
@@ -672,13 +673,46 @@ export function cliResumeLastArgv(provider: ProviderId): string[] {
   }
 }
 
-/** 按启动方式把固定的续接参数接在 CLI 自身入口参数之后,mode 为 new 时原样返回。 */
+export interface CliLaunchArgvOptions {
+  platform?: NodeJS.Platform
+  /** 已装版本(npm 包版本或 --version 的整行输出);读不出来传 null。 */
+  installedVersion?: string | null
+}
+
+// Codex 0.156.0 起有 --no-daemon;0.157.0 把「自动起后台服务」转成默认开。
+// 后台服务在 Windows 上要靠 CREATE_BREAKAWAY_FROM_JOB 脱离启动它的窗口,
+// 宿主外层有不许脱离的 Job Object(安全软件、远程控制、各类启动器都可能加)
+// 时,Codex 直接报「host Job Object prevents daemon detachment」退出。那层
+// Job 不是我们加的,我们也放不开它;管理员身份打开时后台服务同样拒绝启动。
+// 从本软件打开的窗口不需要多窗口共享的后台服务,所以一律按内嵌模式启动。
+// 更早的版本不认这个参数、带上反而起不来,读不出版本时也不带(维持旧行为)。
+const codexNoDaemonMinimumVersion = '0.156.0'
+
+export function codexSupportsNoDaemon(installedVersion: string | null | undefined): boolean {
+  if (typeof installedVersion !== 'string') return false
+  if (!/\bv?\d+\.\d+\.\d+/.test(installedVersion)) return false
+  return !isNewerVersion(installedVersion, codexNoDaemonMinimumVersion)
+}
+
+/**
+ * 按启动方式把固定的续接参数接在 CLI 自身入口参数之后,mode 为 new 时原样返回。
+ * Windows 上的 Codex 另外带 --no-daemon(见上),放在子命令之前,
+ * `codex --no-daemon resume --last` 是上游测试钉住的写法。
+ */
 export function cliLaunchArgv(
   provider: ProviderId,
   argv: readonly string[],
   mode: CliLaunchMode,
+  options: CliLaunchArgvOptions = {},
 ): string[] {
-  return mode === 'resumeLast' ? [...argv, ...cliResumeLastArgv(provider)] : [...argv]
+  const embedded = provider === 'codex'
+    && options.platform === 'win32'
+    && codexSupportsNoDaemon(options.installedVersion)
+    ? ['--no-daemon']
+    : []
+  return mode === 'resumeLast'
+    ? [...argv, ...embedded, ...cliResumeLastArgv(provider)]
+    : [...argv, ...embedded]
 }
 
 export async function resolveCliCommand(
