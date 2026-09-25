@@ -9,7 +9,7 @@
 - Dialog/Drawer 使用原生 showModal 约束背景与焦点，dirty 时遮罩不关闭，Esc/关闭按钮显示保留草稿的放弃确认。业务异步期间必须传入 busy。主动保存成功仍由业务关闭。
 - Menu/Popover 使用原生 manual popover，保留所属 Dialog DOM 和焦点链，支持 Esc、外部关闭与触发器焦点返回。
 - Logo 使用 Vite 静态资源；模型品牌按需导入 lobehub，运行环境使用 simple-icons，功能图标使用 Lucide。
-- Toast 最多 3 条，每条 2.4 秒，使用递增 ID，卸载清理计时器。重要错误仍应留在当前页面。
+- Toast 最多 3 条，使用递增 ID，卸载清理计时器。时长按字数算（`toastDurationMs`：2.4 秒起、超过 12 个字每字加 0.2 秒、最长 10 秒），鼠标放上去暂停；`warn` / `bad` 不自动消失，带 × 手动关。重要错误仍应留在当前页面。
 - 根应用调用 useReducedMotion() 以同步系统减少动画；也支持 data-reduce-motion=1。
 
 当前证据：10 组独立 Playwright 交互检查、4 张 Win/Mac 样式 × 明暗截图、3 项 SSR 契约检查。另有 16 组按钮、卡片、输入和状态材质的原型计算样式比较，差异为 0；不代表所有页面逐像素相同。Tooltip 支持聚焦及 Esc；Coachmark 不指向隐藏目标，可以逐步继续或跳过。按用户“原型优先”的规则，焦点外环采用原型的 --info，输入边框仍按原型使用 --accent。

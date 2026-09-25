@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { networkFailureMessages } from '../../../../electron/network-failure'
-import { isLocalNetworkFailure, isOffline, offlineFailureThreshold } from './online-status'
+import { isLocalNetworkFailure, isOffline, localNetworkFailureReason, offlineBannerTexts, offlineCause, offlineFailureThreshold } from './online-status'
 import { balanceFailureLabel, balanceStatusText } from './balance-status'
 
 describe('renderer-v2 online status', () => {
@@ -27,6 +27,29 @@ describe('renderer-v2 online status', () => {
     }
     expect(isLocalNetworkFailure(new Error('当前登录已失效，请重新登录。'))).toBe(false)
     expect(isLocalNetworkFailure(null)).toBe(false)
+  })
+})
+
+describe('renderer-v2 offline cause', () => {
+  it('keeps the reason of a local network failure', () => {
+    expect(localNetworkFailureReason(new Error(networkFailureMessages.proxy))).toBe('proxy')
+    expect(localNetworkFailureReason('net::ERR_UNSAFE_REDIRECT')).toBe('intercepted')
+    expect(localNetworkFailureReason(new Error(networkFailureMessages.timeout))).toBeNull()
+  })
+
+  it('tells a broken proxy and a sign-in portal apart from a plain outage', () => {
+    expect(offlineCause({ browserOnline: true, networkFailureReason: 'proxy' })).toBe('proxy')
+    expect(offlineCause({ browserOnline: true, networkFailureReason: 'intercepted' })).toBe('portal')
+    expect(offlineCause({ browserOnline: true, networkFailureReason: 'dns' })).toBe('offline')
+    expect(offlineCause({ browserOnline: true })).toBe('offline')
+    // No network card at all wins over whatever the last request said.
+    expect(offlineCause({ browserOnline: false, networkFailureReason: 'proxy' })).toBe('offline')
+  })
+
+  it('never names a site or a technical setting in the banner', () => {
+    for (const text of Object.values(offlineBannerTexts)) {
+      expect(text).not.toMatch(/solov|xm\.|PAC|DNS|HTTP|IP/i)
+    }
   })
 })
 

@@ -77,6 +77,8 @@ import type { CliVersionAdvice as MainCliVersionAdvice } from './cli-verified-ve
 import type { AccountSourceSwitchResult, AccountSourceTarget } from './account-source-switch'
 export type { AccountSourceSwitchResult, AccountSourceTarget } from './account-source-switch'
 import type { RunningToolsReport } from './running-tools'
+import type { NetworkSettingsKind, ProxyBypassOutcome } from './proxy-bypass'
+export type { NetworkSettingsKind, ProxyBypassOutcome } from './proxy-bypass'
 export type { RunningToolsReport } from './running-tools'
 import type { ToolModelCheck } from './tool-model-check'
 export type { ToolModelCheck } from './tool-model-check'
@@ -522,10 +524,29 @@ export interface InstallCancelResult {
   reason: string | null
 }
 
+/**
+ * Which step of a CLI install a progress line belongs to. The renderer shows a
+ * fixed plain-language sentence per stage instead of the main process's own
+ * wording (registry names, SHA-512, package specs, URLs); `raw-output` is npm's
+ * own console text and never replaces the visible line at all.
+ */
+export type InstallProgressStage =
+  | 'version'
+  | 'download'
+  | 'switch-route'
+  | 'verify'
+  | 'install'
+  | 'final-check'
+  | 'raw-output'
+
 export interface InstallProgress {
   provider: ProviderId
   state: 'started' | 'output' | 'success' | 'error'
   message: string
+  /** 缺省 = 旧行为：界面直接显示 message。 */
+  stage?: InstallProgressStage
+  /** 心跳行才有：这一步已经等了多久。 */
+  elapsedMs?: number
   /**
    * Only the few phases that can honestly measure themselves report this --
    * today the signed Grok download. Absent means "no percentage is knowable",
@@ -709,6 +730,10 @@ export interface XingmangInvokeContract {
   takeExternalDeepLink: IpcInvokeDefinition<'navigation:take-deep-link', [], ExternalDeepLink | null>
   replyWindowClose: IpcInvokeDefinition<'window:close-report', [requestId: string, report: WindowCloseReport], boolean>
   openExternal: IpcInvokeDefinition<'external:open', [url: string], boolean>
+  /** 系统代理连不上时，只让星芒自己改走直连试一次；电脑的代理设置不动。 */
+  bypassBrokenProxy: IpcInvokeDefinition<'network:bypass-broken-proxy', [], ProxyBypassOutcome>
+  /** 打开系统的代理设置或上网认证页；地址写死在主进程，渲染层只说要哪一个。 */
+  openNetworkSettings: IpcInvokeDefinition<'network:open-settings', [kind: NetworkSettingsKind], boolean>
   getUpdateState: IpcInvokeDefinition<'update:get-state', [], UpdateSnapshot>
   runStartupUpdate: IpcInvokeDefinition<'update:startup', [], UpdateSnapshot>
   checkForUpdates: IpcInvokeDefinition<'update:check', [], UpdateSnapshot>
@@ -1103,6 +1128,8 @@ export const ipcInvokeChannels = {
   takeExternalDeepLink: 'navigation:take-deep-link',
   replyWindowClose: 'window:close-report',
   openExternal: 'external:open',
+  bypassBrokenProxy: 'network:bypass-broken-proxy',
+  openNetworkSettings: 'network:open-settings',
   getUpdateState: 'update:get-state',
   runStartupUpdate: 'update:startup',
   checkForUpdates: 'update:check',

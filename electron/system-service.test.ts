@@ -2372,9 +2372,10 @@ describe.runIf(process.platform === 'linux')('Same-user npm install prefix', () 
     let installArgv: readonly string[] | null = null
     const runCommand = vi.fn(async (
       spec: { executable: string; argv: readonly string[] },
-      options: { cwd?: string } = {},
+      options: { cwd?: string; onOutput?: (event: { stream: 'stdout' | 'stderr'; text: string }) => void } = {},
     ) => {
       if (spec.executable !== npmExecutable) throw new Error(`Unexpected command: ${spec.executable}`)
+      if (spec.argv[0] === 'ci') options.onOutput?.({ stream: 'stdout', text: 'added 12 packages in 3s\n' })
       if (spec.argv.includes('--package-lock-only')) {
         const cwd = options.cwd
         if (!cwd) throw new Error('Fake npm requires cwd')
@@ -2439,6 +2440,15 @@ describe.runIf(process.platform === 'linux')('Same-user npm install prefix', () 
       'cli:install-progress',
       expect.objectContaining({ state: 'success' }),
     )
+    // 界面按阶段换白话：每一句技术原话都要带阶段，npm 自己的输出标成原始输出。
+    const progress = target.send.mock.calls
+      .filter(([channel]) => channel === 'cli:install-progress')
+      .map(([, event]) => event as { state: string; message: string; stage?: string })
+    expect(progress).toContainEqual(expect.objectContaining({ message: 'added 12 packages in 3s', stage: 'raw-output' }))
+    const stages = progress.flatMap((event) => event.stage && event.stage !== 'raw-output' ? [event.stage] : [])
+    expect(stages.filter((stage, index) => stage !== stages[index - 1]))
+      .toEqual(['version', 'download', 'verify', 'install', 'final-check'])
+    expect(progress.filter((event) => event.state !== 'success' && !event.stage)).toEqual([])
   })
 })
 

@@ -5,6 +5,7 @@ import type { ToolboxSnapshot } from './model'
 import { platformApi } from '../../platform-api'
 import { errorMessage } from '../../business-common'
 import { isWindowInFront, resolveInstallNoticeOutcome, type InstallNoticePlan } from './install-notice'
+import { installProgressLabel } from './install-stage-text'
 
 export interface ToolJob {
   label: string
@@ -174,15 +175,25 @@ export function useToolbox(bridge: XingmangApi | null, enabled: boolean, scope: 
   }, [enabled, load, refreshExternal])
   useEffect(() => {
     if (!bridge) return
-    const update = (key: string, label: string, percent?: number) => setJobs((current) => {
+    const update = (key: string, label: string, percent?: number, logLine = label) => setJobs((current) => {
       const job = current[key]
       // 展开原来的 job：进度事件不能把「能不能取消」「正在取消」这两个标记洗掉，
       // 否则安装一有输出，取消按钮就消失了。
       if (!job) return current
-      return { ...current, [key]: { ...job, label, percent, log: [...job.log, label].slice(-200) } }
+      return { ...current, [key]: { ...job, label, percent, log: [...job.log, logLine].slice(-200) } }
+    })
+    const appendLog = (key: string, line: string) => setJobs((current) => {
+      const job = current[key]
+      if (!job) return current
+      return { ...current, [key]: { ...job, log: [...job.log, line].slice(-200) } }
     })
     const callbacks = [
-      bridge.onInstallProgress((event: InstallProgress) => update(event.provider, event.message, event.percent)),
+      bridge.onInstallProgress((event: InstallProgress) => {
+        // 进度那一行只放白话，主进程原话留在日志里给客服看。
+        const label = installProgressLabel(event)
+        if (label === null) appendLog(event.provider, event.message)
+        else update(event.provider, label, event.percent, event.message)
+      }),
       bridge.onNodeRuntimeInstallProgress((event) => update('node', event.message, event.percent ?? undefined)),
       bridge.onPythonRuntimeInstallProgress((event) => update('python', event.message, event.percent ?? undefined)),
       bridge.onGitRuntimeInstallProgress((event) => update('git', event.message, event.percent ?? undefined)),

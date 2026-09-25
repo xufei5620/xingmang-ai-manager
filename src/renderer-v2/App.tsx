@@ -1,11 +1,11 @@
 import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { RefreshCw } from 'lucide-react'
 import QRCode from 'qrcode'
-import type { AccountSessionState, AccountSourceSwitchResult, AccountSourceTarget, AppSettingsV2, CliLaunchMode, ExternalDeepLink, ExternalToolId, LegalDocumentKind, PlatformCapabilities, ProviderId, UpdateSnapshot, XingmangApi } from '../../electron/ipc-contract'
+import type { AccountSessionState, AccountSourceSwitchResult, AccountSourceTarget, AppSettingsV2, CliLaunchMode, ExternalDeepLink, ExternalToolId, LegalDocumentKind, NetworkSettingsKind, PlatformCapabilities, ProviderId, UpdateSnapshot, XingmangApi } from '../../electron/ipc-contract'
 import { resolveRelaySite, resolveSupportServiceUrl } from '../../electron/relay-sites'
 import { offersCodexDesktopRestart } from '../../electron/running-tools'
 import { Shell as AppFrame } from './features/shell/Shell'
-import { isOffline, offlineActionMessage } from './features/shell/online-status'
+import { isOffline, offlineActionMessage, offlineCause } from './features/shell/online-status'
 import { OnlineStatusContext, useBrowserOnline, type OnlineStatus } from './features/shell/useOnlineStatus'
 import { createAppApi } from './features/app/api'
 import { AuthFlow, LegalDocument, Splash, StartGuide, Welcome, createAuthApi, guideOfficialLoginRequired, type AuthMode, type GuideToolState, type LoginTarget } from './features/auth'
@@ -51,6 +51,7 @@ import { MaintenanceNotice, maintenanceNoticeKey } from './features/app/Maintena
 import { displayCompatNotice, displayRelaunchNotice, settingsSaveNotice, startupCheckFailure, startupCheckLogContext, startupDiagnosticsIssues, updatedNotice, vaultRecoveredNotice, withStartupNotice, withoutStartupNotice, type StartupCheckId, type StartupNotice } from './features/app/startup-notice'
 import { readLocalPreference, writeLocalPreference } from './features/app/preferences'
 import { currentWindowOs, windowOsFor } from './features/app/window-os'
+import { nextUiScale, uiScaleShortcutFor, type UiScaleShortcut } from './features/app/ui-scale-shortcut'
 import { rememberTourPending, rememberTourSeen, tourReplayPending } from './features/shell/tour-state'
 import { onboardingPreviewEnabled } from './features/app/dev-preview'
 import { deepLinkReadErrorText, supportQrFallbackText } from './features/app/fallback-messages'
@@ -202,12 +203,44 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   useEffect(() => {
     if (browserOnline && session.authenticated && balanceStore.getSnapshot().networkFailures > 0) void balanceStore.refresh('manual')
   }, [browserOnline, balanceStore, session.authenticated])
+  const onlineCause = offline ? offlineCause({ browserOnline, networkFailureReason: balanceState.networkFailureReason }) : undefined
+  // 代理连不上时，星芒先替用户试一次直连（只改自己的连接，下次打开软件照旧跟随系统）。
+  // 自动只试一次；之后点「重新检测」再试。
+  const proxyBypassTried = useRef(false)
+  const [proxyBypassNotice, setProxyBypassNotice] = useState(false)
+  const tryProxyBypass = useCallback(async () => {
+    proxyBypassTried.current = true
+    const outcome = await Promise.resolve().then(() => native.bypassBrokenProxy()).catch(() => 'unavailable' as const)
+    if (outcome === 'direct' && mounted.current) setProxyBypassNotice(true)
+    return outcome === 'direct'
+  }, [native])
+  useEffect(() => {
+    if (onlineCause !== 'proxy' || proxyBypassTried.current) return
+    void tryProxyBypass().then((direct) => { if (direct) void balanceStore.refresh('manual') })
+  }, [onlineCause, tryProxyBypass, balanceStore])
   const recheckOnline = useCallback(() => {
     if (!navigator.onLine || !session.authenticated) return
     setOnlineChecking(true)
-    void balanceStore.refresh('manual').finally(() => { if (mounted.current) setOnlineChecking(false) })
-  }, [balanceStore, session.authenticated])
-  const onlineStatus = useMemo<OnlineStatus>(() => ({ offline, checking: onlineChecking, recheck: recheckOnline }), [offline, onlineChecking, recheckOnline])
+    const bypass = onlineCause === 'proxy' ? tryProxyBypass() : Promise.resolve(false)
+    void bypass.then(() => balanceStore.refresh('manual')).finally(() => { if (mounted.current) setOnlineChecking(false) })
+  }, [balanceStore, session.authenticated, onlineCause, tryProxyBypass])
+  const openNetworkSettings = useCallback((kind: NetworkSettingsKind) => {
+    void Promise.resolve().then(() => native.openNetworkSettings(kind)).then((opened) => {
+      if (!opened) throw new Error('not-opened')
+    }).catch(() => {
+      toast.show(kind === 'proxy' ? '没能打开系统代理设置，请在系统设置里找「代理」。' : '没能打开认证页，请打开浏览器随便访问一个网页。', 'warn')
+    })
+  }, [native, toast])
+  const dismissProxyBypassNotice = useCallback(() => setProxyBypassNotice(false), [])
+  const onlineStatus = useMemo<OnlineStatus>(() => ({
+    offline,
+    cause: onlineCause,
+    proxyBypassNotice: !offline && proxyBypassNotice,
+    checking: onlineChecking,
+    recheck: recheckOnline,
+    openNetworkSettings,
+    dismissProxyBypassNotice,
+  }), [offline, onlineCause, proxyBypassNotice, onlineChecking, recheckOnline, openNetworkSettings, dismissProxyBypassNotice])
   // 换账号等于换了一整套上下文：首页那份「最近」缓存（60 秒）必须当场作废，
   // 否则切过去的头一眼看到的还是上一个账号在的时候读到的列表。
   useLayoutEffect(() => { accountEpoch.current++; pendingModelSwap.current?.('cancel'); setAccountReadError(null); refreshRecent() }, [scope, session.authenticated, refreshRecent])
@@ -457,6 +490,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     document.documentElement.dataset.theme = settings.theme
     document.documentElement.dataset.skin = settings.uiSkin ?? 'mist'
     document.documentElement.dataset.reducedMotion = String(settings.reducedMotion === true)
+    document.documentElement.dataset.largeText = String(settings.largeText === true)
     document.documentElement.style.colorScheme = settings.theme
   }, [settings])
   useEffect(() => {
@@ -532,6 +566,17 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     if (choice === 'restore') noteStartupCheck(displayRelaunchNotice())
     else toast.show('以后都用兼容方式显示。想改回来，到「设置」的「外观」里打开「用显卡加速显示」。', 'ok')
   }), [app, noteStartupCheck, perform, toast])
+  // 连按几下 Ctrl 加号时，保存还没回来，下一下要接着上一下算，不能都从旧设置起步。
+  const uiScaleRef = useRef<AppSettingsV2['uiScale']>(undefined)
+  useEffect(() => { uiScaleRef.current = settings?.uiScale }, [settings?.uiScale])
+  const changeUiScale = useCallback((shortcut: UiScaleShortcut) => {
+    const step = nextUiScale(uiScaleRef.current, shortcut, os)
+    toast.show(step.message)
+    const next = step.next
+    if (next === null) return
+    uiScaleRef.current = next === 'auto' ? undefined : next
+    void perform('保存界面缩放', async () => setSettings(await app.savePreferences({ version: 2, uiScale: next })))
+  }, [app, os, perform, toast])
   const navigate = useCallback((target: PageId, section?: string) => {
     if (target === 'canvas') { void perform('打开画布', app.openCanvas); return }
     if ((target === 'account' || target === 'chat') && restoring) {
@@ -883,6 +928,13 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   }, [native, toolbox.jobs, confirmBusy, accountBootstrap, scope])
   useEffect(() => {
     function onShortcut(event: KeyboardEvent) {
+      // 放大缩小对整个窗口都有效，弹窗开着也照样能调；Mac 上这里拦下后菜单里的「放大」就不会再动一遍。
+      const zoom = uiScaleShortcutFor(event)
+      if (zoom) {
+        event.preventDefault()
+        if (settings) changeUiScale(zoom)
+        return
+      }
       if (event.isComposing || event.altKey || !(event.ctrlKey || event.metaKey) || document.querySelector('dialog[open]')) return
       if (event.key === ',') { event.preventDefault(); navigate('settings') }
       if (/^[1-5]$/.test(event.key)) {
@@ -892,7 +944,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     }
     document.addEventListener('keydown', onShortcut)
     return () => document.removeEventListener('keydown', onShortcut)
-  }, [navigate, os, toolbox.snapshot, session.authenticated])
+  }, [navigate, os, toolbox.snapshot, session.authenticated, settings, changeUiScale])
   const guideTools: GuideToolState[] = toolbox.snapshot ? presentTools(toolbox.snapshot).map((tool) => ({
     id: tool.id, installed: tool.status.installed, configured: tool.configured, source: guideSource(tool.source),
     version: tool.currentVersion ?? undefined, model: tool.model, detectionError: Boolean(tool.error),
@@ -1010,7 +1062,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
                   onBackupRestored={() => void toolbox.refreshConfig().catch(() => undefined)}
                   onToolConfigSaved={() => void toolbox.refreshConfig().catch(() => undefined)}
                   toolConfigConfirmed={toolConfigConfirmed}
-                  onAccountChanged={() => void perform('刷新账号', reloadAccount)} onSettingsChanged={setSettings} openConfig={openToolConfig}
+                  onAccountChanged={() => void perform('刷新账号', reloadAccount)} onSettingsChanged={setSettings} uiScale={settings ? settings.uiScale ?? 'auto' : undefined} openConfig={openToolConfig}
                   openGuide={() => setGuide(true)} replayTour={replayTour}
                   onToolsChanged={(tool) => syncAfterToolInstalled(tool).catch((cause) => {
                     if (mounted.current) toast.show(errorMessage(cause, '工具已安装，但最新状态没有读到。请回到首页重新检测。'), 'warn')

@@ -18,6 +18,7 @@ import {
   detachHostNotifier,
   type HostNotifier,
 } from './host-notification-bridge'
+import { proxyBypassActive } from './proxy-bypass-bridge'
 import {
   createPlatformNotifications,
   type PlatformNotificationRuntime,
@@ -139,6 +140,7 @@ export function installPlatformSystemApi(
           packaged: options.app.isPackaged,
           executablePath: process.execPath,
           relaySiteId: () => existing.read().relaySiteId,
+          proxyBypassed: proxyBypassActive,
           resolveProxy: (url) => {
             if (!owner || owner.isDestroyed()) throw new Error('主窗口已关闭。')
             return owner.session.resolveProxy(url)
