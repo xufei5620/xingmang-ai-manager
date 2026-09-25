@@ -373,6 +373,12 @@ export async function removeSafeDataFile(requestedPath: string, label: string): 
   await fs.promises.rm(filePath)
 }
 
+export function removeSafeDataFileSync(requestedPath: string, label: string): void {
+  const filePath = resolveRelocatedPath(requestedPath)
+  if (!assertSafeDataFile(filePath, label)) return
+  fs.rmSync(filePath)
+}
+
 export async function writeAtomicSafeUtf8File(
   filePath: string,
   content: string,

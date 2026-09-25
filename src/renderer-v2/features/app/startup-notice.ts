@@ -1,4 +1,4 @@
-import type { InstalledRelease, SettingsSaveIssue } from '../../../../electron/ipc-contract'
+import type { InstalledRelease, SettingsSaveIssue, WindowCapabilities } from '../../../../electron/ipc-contract'
 import type { PageId } from '../../registry/pages'
 import type { Tone } from '../../ui'
 
@@ -8,18 +8,19 @@ import type { Tone } from '../../ui'
  * （CI 的原生冒烟正是这样被挡住的）。用户自己点「检查更新」「运行检查」时
  * 走的是各页面自己的失败提示，不经过这里，照常报错。
  */
-export type StartupCheckId = 'update' | 'diagnostics' | 'appearance' | 'vault-recovered' | 'updated' | 'settings-save'
+export type StartupCheckId = 'update' | 'diagnostics' | 'appearance' | 'vault-recovered' | 'updated' | 'settings-save' | 'display-compat' | 'display-relaunch'
 /**
- * `vault-recovered`、`updated` 与 `settings-save` 不是应用跑出来的检查，是主进程报上来的
- * 一次性事实，没有「失败」这一面。
+ * `vault-recovered`、`updated`、`settings-save` 与两条显示方式的提示不是应用跑出来的检查，
+ * 是主进程报上来的一次性事实，没有「失败」这一面。
  */
-export type StartupCheckFailureId = Exclude<StartupCheckId, 'vault-recovered' | 'updated' | 'settings-save'>
+export type StartupCheckFailureId = Exclude<StartupCheckId, 'vault-recovered' | 'updated' | 'settings-save' | 'display-compat' | 'display-relaunch'>
 
 /**
  * 有的提示要把人带到某一页，有的要直接把登录弹出来（账号页在未登录时才等价于登录），
  * 有的只是告知一件事，按钮就是「知道了」。
  */
 export type StartupNoticeAction = { label: string; page: PageId } | { label: string; login: true } | { label: string; dismiss: true }
+  | { label: string; displayCompat: 'keep' | 'restore' } | { label: string; relaunch: true }
 
 export interface StartupNotice {
   id: StartupCheckId
@@ -34,6 +35,8 @@ export interface StartupNotice {
   /** 正文下面逐条列出的几项，短句。 */
   items?: readonly string[]
   action?: StartupNoticeAction
+  /** 要用户二选一时的另一颗按钮。有它就不再放关闭叉：关掉等于没选。 */
+  secondaryAction?: StartupNoticeAction
 }
 
 const failureTitles: Record<StartupCheckFailureId, string> = {
@@ -161,6 +164,36 @@ export function settingsSaveNotice(issue: SettingsSaveIssue | null | undefined):
     title: '部分设置可能保存不上',
     body,
     action: { label: '知道了', dismiss: true },
+  }
+}
+
+/**
+ * 显卡接连崩溃后这次自动换成了兼容方式显示。不说一句，用户只会觉得界面变慢了；
+ * 也不替他定死，让他选以后一直这样还是改回去。只用「显卡」「显示」这种说法。
+ */
+export function displayCompatNotice(capabilities: Pick<WindowCapabilities, 'displayCompat'> | null | undefined): StartupNotice | null {
+  if (capabilities?.displayCompat !== 'auto') return null
+  return {
+    id: 'display-compat',
+    failure: false,
+    tone: 'warn',
+    title: '已改用兼容方式显示界面',
+    body: '这台电脑的显卡驱动好像不太稳定，刚才接连出了几次问题，这次星芒换了一种更稳的方式显示界面，个别动画可能慢一点。以后想怎么显示？',
+    action: { label: '一直用兼容方式', displayCompat: 'keep' },
+    secondaryAction: { label: '恢复原来的方式', displayCompat: 'restore' },
+  }
+}
+
+/** 显示方式要重开软件才生效：给一颗现成的「现在重开」，不让用户自己去找退出。 */
+export function displayRelaunchNotice(): StartupNotice {
+  return {
+    id: 'display-relaunch',
+    failure: false,
+    tone: 'neutral',
+    title: '重开软件后生效',
+    body: '显示方式已经改好，重开一次星芒就会用上。',
+    action: { label: '现在重开', relaunch: true },
+    secondaryAction: { label: '稍后', dismiss: true },
   }
 }
 

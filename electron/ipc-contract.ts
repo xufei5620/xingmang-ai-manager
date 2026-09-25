@@ -202,6 +202,8 @@ export interface WindowCapabilities {
   lowEndDevice?: boolean
   // 启动时设置写不进去（磁盘满、被杀毒软件拦住）但软件照常打开了；界面据此提示一句。缺省 = 没出事。
   settingsSaveIssue?: SettingsSaveIssue
+  // 显卡接连崩溃后，这次启动自动改用了兼容方式显示、用户还没选以后怎么办。缺省 = 没出事。
+  displayCompat?: 'auto'
 }
 export interface SettingsSaveIssue {
   kind: 'disk-full' | 'blocked' | 'other'
@@ -702,6 +704,8 @@ export interface XingmangInvokeContract {
   setWindowMode: IpcInvokeDefinition<'window:set-mode', [mode: AppWindowMode], void>
   setWindowTheme: IpcInvokeDefinition<'window:set-theme', [theme: AppTheme], void>
   getWindowCapabilities: IpcInvokeDefinition<'window:get-capabilities', [], WindowCapabilities>
+  /** 重开软件（显示方式要重开才生效）。true = 已经开始退出；用户在退出确认里点了返回则是 false。 */
+  relaunchApp: IpcInvokeDefinition<'window:relaunch', [], boolean>
   takeExternalDeepLink: IpcInvokeDefinition<'navigation:take-deep-link', [], ExternalDeepLink | null>
   replyWindowClose: IpcInvokeDefinition<'window:close-report', [requestId: string, report: WindowCloseReport], boolean>
   openExternal: IpcInvokeDefinition<'external:open', [url: string], boolean>
@@ -1095,6 +1099,7 @@ export const ipcInvokeChannels = {
   setWindowMode: 'window:set-mode',
   setWindowTheme: 'window:set-theme',
   getWindowCapabilities: 'window:get-capabilities',
+  relaunchApp: 'window:relaunch',
   takeExternalDeepLink: 'navigation:take-deep-link',
   replyWindowClose: 'window:close-report',
   openExternal: 'external:open',

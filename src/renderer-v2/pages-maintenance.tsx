@@ -1716,6 +1716,8 @@ export function SettingsPage({
   > | null>(null)
   const [logout, setLogout] = useState(false)
   const [shortcuts, setShortcuts] = useState(false)
+  // 显示方式要重开软件才生效：改完就在这一行下面给「现在重开」「稍后」。
+  const [displayRelaunch, setDisplayRelaunch] = useState(false)
   const onSaved = useRef((settings: AppSettings) => {
     resource.setData((previous) =>
       previous ? { ...previous, settings } : previous,
@@ -1748,8 +1750,10 @@ export function SettingsPage({
     try {
       await writer({ version: 2, ...patch })
       setSaved('已保存')
+      return true
     } catch (error) {
       setSaveError(errorMessage(error))
+      return false
     } finally {
       setPending((value) => value - 1)
     }
@@ -1892,6 +1896,56 @@ export function SettingsPage({
               onChange={(reducedMotion) => void update({ reducedMotion })}
               aria-label="减少动画"
             />,
+          )}
+          {row(
+            '用显卡加速显示',
+            resource.data?.capabilities.displayCompat === 'auto'
+              ? '显卡驱动刚才接连出了几次问题，这次已临时改用兼容方式显示。界面出现黑屏、花屏、闪烁或打开就闪退时关掉它，重启软件后生效。'
+              : '界面出现黑屏、花屏、闪烁或打开就闪退时关掉它，重启软件后生效。',
+            <Switch
+              checked={settings.hardwareAcceleration !== false}
+              onChange={(hardwareAcceleration) =>
+                void update({ hardwareAcceleration }).then((saved) => {
+                  if (saved) setDisplayRelaunch(true)
+                })
+              }
+              aria-label="用显卡加速显示"
+              testId="settings-hardware-acceleration"
+            />,
+          )}
+          {displayRelaunch && (
+            <Notice
+              tone="neutral"
+              title="显示方式已改好"
+              body="重启软件后生效。"
+              testId="settings-display-relaunch"
+              actions={
+                <>
+                  <Button
+                    size="sm"
+                    variant="primary"
+                    testId="settings-display-relaunch-now"
+                    disabled={Boolean(operation.busy)}
+                    onClick={() =>
+                      void operation.execute(
+                        'relaunch',
+                        () => api.relaunchApp(),
+                        (started) => (started ? null : '已取消重开'),
+                      )
+                    }
+                  >
+                    现在重开
+                  </Button>
+                  <Button
+                    size="sm"
+                    testId="settings-display-relaunch-later"
+                    onClick={() => setDisplayRelaunch(false)}
+                  >
+                    稍后
+                  </Button>
+                </>
+              }
+            />
           )}
           {row(
             '语言',

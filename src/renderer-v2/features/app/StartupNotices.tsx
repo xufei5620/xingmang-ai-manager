@@ -18,14 +18,19 @@ export function StartupNotices({ notices, onDismiss, onOpen, leading }: {
     {leading}
     {notices.map((notice) => {
       const action = notice.action
+      const secondary = notice.secondaryAction
       const body = notice.items?.length
         ? <>{notice.body}<ul className="v2-startup-notice-items">{notice.items.map((item, index) => <li key={index}>{item}</li>)}</ul></>
         : notice.body
       return <Notice key={notice.id} tone={notice.tone} title={notice.title} body={body}
         testId={`startup-notice-${notice.id}`}
         // 按钮本身就是「知道了」时不再放一个关闭叉：两颗做同一件事的按钮只会让人犹豫点哪个。
-        onDismiss={action && 'dismiss' in action ? undefined : () => onDismiss(notice.id)}
-        actions={action ? <Button size="sm" onClick={() => onOpen(notice.id, action)}>{action.label}</Button> : undefined} />
+        // 二选一的提示也不放：关掉等于没选。
+        onDismiss={secondary || (action && 'dismiss' in action) ? undefined : () => onDismiss(notice.id)}
+        actions={action ? <>
+          <Button size="sm" variant={secondary ? 'primary' : undefined} testId={secondary ? `startup-notice-${notice.id}-primary` : undefined} onClick={() => onOpen(notice.id, action)}>{action.label}</Button>
+          {secondary && <Button size="sm" testId={`startup-notice-${notice.id}-secondary`} onClick={() => onOpen(notice.id, secondary)}>{secondary.label}</Button>}
+        </> : undefined} />
     })}
   </div>
 }

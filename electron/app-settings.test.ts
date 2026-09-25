@@ -468,6 +468,19 @@ describe('UI and window preferences', () => {
     expect(readAppSettings(filePath)).toEqual(settings({ uiSkin: 'mist' }))
   })
 
+  it('keeps display acceleration on by default and stores only an explicit opt-out', async () => {
+    const filePath = temporarySettingsPath()
+    expect(readAppSettings(filePath)).not.toHaveProperty('hardwareAcceleration')
+    await updateAppSettings(filePath, { version: 2, hardwareAcceleration: false })
+    expect(readAppSettings(filePath).hardwareAcceleration).toBe(false)
+    await updateAppSettings(filePath, { version: 2, theme: 'light' })
+    expect(readAppSettings(filePath).hardwareAcceleration).toBe(false)
+    await updateAppSettings(filePath, { version: 2, hardwareAcceleration: true })
+    expect(readAppSettings(filePath)).not.toHaveProperty('hardwareAcceleration')
+    fs.writeFileSync(filePath, JSON.stringify({ ...settings({ uiSkin: 'mist' }), hardwareAcceleration: 'off' }), 'utf8')
+    expect(readAppSettings(filePath)).toEqual(settings({ uiSkin: 'mist' }))
+  })
+
   it('rejects malformed persisted notification preferences without discarding other settings', () => {
     const filePath = temporarySettingsPath()
     fs.writeFileSync(filePath, JSON.stringify({ ...settings({ uiSkin: 'mist' }), desktopNotifications: 'enabled' }), 'utf8')
