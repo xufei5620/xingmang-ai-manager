@@ -11,6 +11,7 @@ import {
   gitForWindowsTag,
   gitForWindowsVersion,
   gitRuntimeDownloadSources,
+  gitRuntimeMissingAfterInstallMessage,
   installGitRuntimeWith,
   normalizeGitRuntimeArchitecture,
   validateGitRuntimeDownloadUrl,
@@ -216,5 +217,67 @@ describe('git-runtime-install', () => {
       .rejects.toThrow('未经批准的地址')
     expect(fetch).not.toHaveBeenCalledWith('https://evil.example/Git.exe', expect.anything())
     expect(fetch).toHaveBeenCalledWith(mirror.url, expect.anything())
+  })
+  it('reports the version found after install instead of trusting the installer exit code', async () => {
+    const body = installerBytes(4)
+    const digest = createHash('sha256').update(body).digest('hex')
+    const deps = dependencies({
+      fetch: vi.fn(async (url: string) => streamResponse(body, url)) as unknown as typeof globalThis.fetch,
+      expectedSha256: () => digest,
+    })
+    const verifyInstalled = vi.fn(async () => ({ version: '2.55.0' }))
+    const events: GitRuntimeInstallProgress[] = []
+
+    const result = await installGitRuntimeWith('x64', {
+      networkRegion: 'unknown',
+      temporaryDirectoryMode: 'same-user',
+      environment: userEnvironment,
+      verifyInstalled,
+      onProgress: (event) => events.push(event),
+    }, deps)
+
+    expect(verifyInstalled).toHaveBeenCalledTimes(1)
+    expect(result).toMatchObject({ installed: true, action: 'installed', version: '2.55.0' })
+    const phases = events.map((event) => event.phase)
+    expect(phases.lastIndexOf('verifying')).toBeGreaterThan(phases.indexOf('installing'))
+    expect(phases.at(-1)).toBe('complete')
+  })
+
+  it('fails in plain words when the installer exits 0 but Git still cannot be found', async () => {
+    const body = installerBytes(5)
+    const digest = createHash('sha256').update(body).digest('hex')
+    const fetch = vi.fn(async (url: string) => streamResponse(body, url))
+    const deps = dependencies({ fetch: fetch as unknown as typeof globalThis.fetch, expectedSha256: () => digest })
+    const events: GitRuntimeInstallProgress[] = []
+
+    await expect(installGitRuntimeWith('x64', {
+      networkRegion: 'unknown',
+      temporaryDirectoryMode: 'same-user',
+      environment: userEnvironment,
+      verifyInstalled: async () => null,
+      onProgress: (event) => events.push(event),
+    }, deps)).rejects.toThrow(gitRuntimeMissingAfterInstallMessage)
+
+    // 再换一个源重下重装也一样被拦，所以只装一次。
+    expect(deps.plans).toHaveLength(1)
+    expect(events.some((event) => event.phase === 'complete')).toBe(false)
+    expect(events.at(-1)).toMatchObject({ phase: 'error', message: gitRuntimeMissingAfterInstallMessage })
+    expect(gitRuntimeMissingAfterInstallMessage).not.toMatch(/PowerShell|bash|PATH|环境变量/)
+  })
+
+  it('treats a failing recheck the same as Git not being found', async () => {
+    const body = installerBytes(6)
+    const digest = createHash('sha256').update(body).digest('hex')
+    const deps = dependencies({
+      fetch: vi.fn(async (url: string) => streamResponse(body, url)) as unknown as typeof globalThis.fetch,
+      expectedSha256: () => digest,
+    })
+
+    await expect(installGitRuntimeWith('x64', {
+      networkRegion: 'unknown',
+      temporaryDirectoryMode: 'same-user',
+      environment: userEnvironment,
+      verifyInstalled: async () => { throw new Error('probe crashed') },
+    }, deps)).rejects.toThrow(gitRuntimeMissingAfterInstallMessage)
   })
 })

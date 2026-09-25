@@ -83,7 +83,19 @@ export interface InstallGitRuntimeOptions {
   /** 决定当前用户程序目录的环境变量；缺省 process.env，测试用它模拟 Windows。 */
   environment?: NodeJS.ProcessEnv
   dependencies?: Partial<GitRuntimeInstallerDependencies>
+  /**
+   * 安装程序退出 0 之后回查一遍 Git 是否真能找到。返回 null 表示没找到；缺省时不回查，
+   * 按安装程序的退出码算数（只给测试和旧调用方用）。
+   */
+  verifyInstalled?: () => Promise<{ version: string | null } | null>
 }
+
+/**
+ * 安装程序说装完了、回查却找不到 Git 时给客户看的话。多半是安全软件或公司电脑的管理
+ * 规定把安装拦了一半（#549），换下载地址重下也是同样结果，所以不再换源，直接说原因。
+ */
+export const gitRuntimeMissingAfterInstallMessage =
+  'Git 没装上：安装程序已经跑完，但这台电脑上还是找不到 Git，可能被安全软件或公司电脑的管理规定拦下了。可以重启电脑后再点一次「安装 Git」；还不行请联系客服'
 
 const downloadTimeoutMs = 10 * 60_000
 const installerTimeoutMs = 15 * 60_000
@@ -378,6 +390,37 @@ export async function installGitRuntime(options: InstallGitRuntimeOptions): Prom
   return installGitRuntimeWith(architecture, options, dependencies)
 }
 
+async function verifyInstalledGit(
+  source: GitRuntimeSource,
+  architecture: GitRuntimeArchitecture,
+  options: InstallGitRuntimeOptions,
+): Promise<GitRuntimeInstallResult> {
+  let version: string | null = gitForWindowsVersion
+  if (options.verifyInstalled) {
+    report(options, { phase: 'verifying', source, message: '正在确认 Git 能不能用', percent: null })
+    let found: { version: string | null } | null
+    try {
+      found = await options.verifyInstalled()
+    } catch {
+      found = null
+    }
+    if (!found) {
+      report(options, { phase: 'error', source, message: gitRuntimeMissingAfterInstallMessage, percent: null })
+      throw new Error(gitRuntimeMissingAfterInstallMessage)
+    }
+    version = found.version ?? gitForWindowsVersion
+  }
+  report(options, { phase: 'complete', source, message: 'Git 装好了', percent: 100 })
+  return {
+    installed: true,
+    action: 'installed',
+    source,
+    version,
+    architecture,
+    pathRefreshRequired: true,
+  }
+}
+
 /** 与平台无关的主体，测试直接调它，不必伪装成 Windows。 */
 export async function installGitRuntimeWith(
   architecture: GitRuntimeArchitecture,
@@ -399,15 +442,6 @@ export async function installGitRuntimeWith(
       throwIfAborted(options.signal)
       try {
         await installFromSource(source, architecture, temporaryDirectory, options, dependencies)
-        report(options, { phase: 'complete', source: source.id, message: 'Git 装好了', percent: 100 })
-        return {
-          installed: true,
-          action: 'installed',
-          source: source.id,
-          version: gitForWindowsVersion,
-          architecture,
-          pathRefreshRequired: true,
-        }
       } catch (error) {
         if (options.signal?.aborted) throw error
         failures.push(`${source.label}：${errorText(error)}`)
@@ -417,7 +451,9 @@ export async function installGitRuntimeWith(
           message: `${source.label}没下好，正在换一个下载地址`,
           percent: null,
         })
+        continue
       }
+      return await verifyInstalledGit(source.id, architecture, options)
     }
   } finally {
     await dependencies.removeTemporaryDirectory(temporaryDirectory).catch(() => undefined)
