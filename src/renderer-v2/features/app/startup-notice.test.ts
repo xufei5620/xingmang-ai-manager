@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { settingsSaveNotice, startupCheckFailure, startupCheckLogContext, releaseNoteHeadline, startupDiagnosticsIssues, updatedNotice, vaultRecoveredNotice, withStartupNotice, withoutStartupNotice } from './startup-notice'
+import { displayCompatNotice, displayRelaunchNotice, settingsSaveNotice, startupCheckFailure, startupCheckLogContext, releaseNoteHeadline, startupDiagnosticsIssues, updatedNotice, vaultRecoveredNotice, withStartupNotice, withoutStartupNotice } from './startup-notice'
 
 describe('startup check notices', () => {
   it('keeps the backend sentence as the body so support still sees the original wording', () => {
@@ -133,5 +133,34 @@ describe('startup check notices', () => {
   it('stays silent on a normal launch', () => {
     expect(settingsSaveNotice(undefined)).toBeNull()
     expect(settingsSaveNotice(null)).toBeNull()
+  })
+})
+
+describe('displayCompatNotice', () => {
+  it('stays silent unless this launch fell back to the compatible display on its own', () => {
+    expect(displayCompatNotice(undefined)).toBeNull()
+    expect(displayCompatNotice(null)).toBeNull()
+    expect(displayCompatNotice({})).toBeNull()
+  })
+
+  it('asks the user to keep or undo the fallback in plain words', () => {
+    const notice = displayCompatNotice({ displayCompat: 'auto' })
+    expect(notice).toMatchObject({
+      id: 'display-compat',
+      failure: false,
+      action: { label: '一直用兼容方式', displayCompat: 'keep' },
+      secondaryAction: { label: '恢复原来的方式', displayCompat: 'restore' },
+    })
+    const text = `${notice?.title}${notice?.body}`
+    expect(text).toContain('显卡')
+    expect(text).not.toMatch(/GPU|硬件加速|渲染/)
+  })
+
+  it('offers an immediate relaunch or later', () => {
+    expect(displayRelaunchNotice()).toMatchObject({
+      id: 'display-relaunch',
+      action: { label: '现在重开', relaunch: true },
+      secondaryAction: { label: '稍后', dismiss: true },
+    })
   })
 })

@@ -63,6 +63,7 @@ import { createTrayAccelerationCoordinator, type TrayAccelerationCoordinator } f
 import { createExternalDeepLinkInbox } from './external-deep-links'
 import { createDesktopNotificationController } from './desktop-notifications'
 import { inspectDeviceHardware, isLowEndDevice } from './device-profile'
+import { clearDisplayCrashRecord, inspectDisplayLaunch, isDisplayCrash, pruneStaleDisplayCrashRecord, recordDisplayCrash, type DisplayLaunch } from './display-compat'
 import { ConfigBackupStore } from './backups'
 import { crashReportDsn, crashReportSelfTestEnvironmentKey, shouldReportCrashes } from './crash-report'
 import { createCrashReporter } from './crash-reporter'
@@ -691,6 +692,47 @@ const crashReporter = createCrashReporter({
   onSendFailure: (error) => { reportCrashSendFailure?.(error) },
 })
 
+/**
+ * 显卡加速必须在 ready 之前决定：过了 ready 再调 disableHardwareAcceleration 不生效。
+ * 读设置、读崩溃记录都不许挡启动，读不到就照常用显卡加速打开。
+ */
+function resolveDisplayLaunch(): DisplayLaunch | null {
+  try {
+    const dataDirectory = app.getPath('userData')
+    const now = Date.now()
+    const launch = inspectDisplayLaunch({
+      dataDirectory,
+      hardwareAcceleration: appValue(() => readAppSettings(path.join(dataDirectory, 'settings.json')).hardwareAcceleration, undefined),
+      now,
+    })
+    try { pruneStaleDisplayCrashRecord(launch, now) } catch { /* 删不掉旧记录只是文件多几行，下次再删。 */ }
+    return launch
+  } catch {
+    return null
+  }
+}
+
+const displayLaunch = resolveDisplayLaunch()
+if (displayLaunch && displayLaunch.mode !== 'accelerated') app.disableHardwareAcceleration()
+// 这次是自动改的兼容方式、用户还没在提示里选：设置里动过这个开关就算选过了。
+let displayCompatPending = displayLaunch?.mode === 'auto-compat'
+// Set once the runtime log exists; a GPU crash before that is still recorded
+// on disk, it just has no log line.
+let logDisplayCrash: ((details: { reason: string; exitCode: number }, recordError: unknown) => void) | null = null
+app.on('child-process-gone', (_event, details) => {
+  if (!isDisplayCrash(details)) return
+  let recordError: unknown = null
+  try {
+    if (displayLaunch) recordDisplayCrash(displayLaunch.recordPath, Date.now())
+  } catch (error) {
+    recordError = error
+  }
+  logDisplayCrash?.(details, recordError)
+})
+// 「现在重开」：退出流程真的走到 app.quit() 时才拉起新进程；用户在退出确认里点了
+// 返回就撤掉，不然下一次随手关窗会莫名其妙又开一个。
+let relaunchRequested = false
+
 // Flipped once RuntimeLogStore exists; from then on it owns the record and the
 // startup log must stay quiet, or ordinary runtime errors would accumulate in a
 // file whose whole purpose is "the app could not start".
@@ -826,6 +868,16 @@ if (!hasSingleInstanceLock) {
       platform: process.platform,
       arch: process.arch,
     })
+    logDisplayCrash = (details, recordError) => {
+      runtimeLog.log('error', 'display', 'gpu.gone', '显卡进程异常退出', { reason: details.reason, exitCode: details.exitCode })
+      if (recordError) runtimeLog.exception('display', 'gpu.record.failed', recordError)
+    }
+    if (displayLaunch?.readError !== undefined) runtimeLog.exception('display', 'gpu.record.read-failed', displayLaunch.readError)
+    if (displayLaunch?.mode === 'auto-compat') {
+      runtimeLog.log('warn', 'display', 'compat.auto', '显卡进程接连崩溃，这次改用兼容方式显示', { crashes: displayLaunch.crashTimes.length })
+    } else if (displayLaunch?.mode === 'user-disabled') {
+      runtimeLog.log('info', 'display', 'compat.user', '已按设置关闭显卡加速显示')
+    }
     if (manualUninstallVisualFixtureEnabled) {
       runtimeLog.log('warn', 'testing', 'manual-uninstall.fixture', '手动卸载视觉测试状态已启用')
     }
@@ -1211,6 +1263,8 @@ if (!hasSingleInstanceLock) {
     }
     // 窗口生命周期在主窗口建好后才有；更新在那之前不会下载完，这里先占个位。
     let updateQuitHandoff: { prepare(): Promise<void> | undefined; abort(): void } | null = null
+    // 退出流程（窗口生命周期）在 IPC 注册之后才建好，先占个位。
+    let requestRelaunch: (() => Promise<boolean>) | null = null
     const updaterService = createUpdaterService(autoUpdater, {
       installedRelease,
       currentVersion: app.getVersion(),
@@ -2232,8 +2286,21 @@ if (!hasSingleInstanceLock) {
         notifications: desktopNotifications.getCapability().supported,
         lowEndDevice,
         ...(settingsSaveIssue ? { settingsSaveIssue } : {}),
+        ...(displayCompatPending ? { displayCompat: 'auto' as const } : {}),
       }),
-      onSettingsChanged: () => {
+      relaunchApp: () => requestRelaunch?.() ?? Promise.resolve(false),
+      onSettingsChanged: (update) => {
+        if (update.hardwareAcceleration !== undefined) {
+          // 用户对显示方式做了选择（设置页开关，或兼容提示里的两颗按钮）：之前的崩溃
+          // 有了交代，从头再数；这次启动里也不再提示。
+          displayCompatPending = false
+          if (displayLaunch) {
+            void clearDisplayCrashRecord(displayLaunch.recordPath).catch((cause: unknown) => {
+              runtimeLog.exception('display', 'gpu.record.clear-failed', cause)
+            })
+          }
+          runtimeLog.log('info', 'display', 'preference.changed', update.hardwareAcceleration ? '显卡加速显示已打开，重开后生效' : '显卡加速显示已关闭，重开后生效')
+        }
         desktopNotifications.refresh()
         void updaterService.autoUpdateChanged().catch((cause: unknown) => {
           runtimeLog.exception('updater', 'auto.download.failed', cause)
@@ -2395,7 +2462,11 @@ if (!hasSingleInstanceLock) {
       },
       // 更新页那颗「重启并安装」走的是同一条 install()；这里只是把入口挪到了
       // 用户真正会用的那个动作上（关窗 / 托盘退出）。
-      installDownloadedUpdate: () => { updaterService.install() },
+      installDownloadedUpdate: () => {
+        // 安装器装完会自己打开新版本，再拉起一次旧进程会和安装器抢同一个目录。
+        relaunchRequested = false
+        updaterService.install()
+      },
       // 开着加速时系统代理指着本机端口：关机前不还原，下次开机整台电脑上不了网。
       needsShutdownCleanup: () => {
         const hold = acceleration?.hasPossibleSession() === true
@@ -2420,6 +2491,7 @@ if (!hasSingleInstanceLock) {
         for (const window of BrowserWindow.getAllWindows()) {
           if (!window.isDestroyed()) window.webContents.on('will-prevent-unload', (event) => event.preventDefault())
         }
+        if (relaunchRequested) app.relaunch()
         app.quit()
       },
       onError: (cause) => {
@@ -2427,6 +2499,13 @@ if (!hasSingleInstanceLock) {
       },
     })
     lifecycle.attach(mainWindow, app)
+    requestRelaunch = async () => {
+      relaunchRequested = true
+      runtimeLog.log('info', 'window', 'relaunch.requested', '用户要求重开软件')
+      const result = await lifecycle.requestQuit()
+      if (result !== 'quit-requested') relaunchRequested = false
+      return result === 'quit-requested'
+    }
     // 更新页「重启并安装」和 Mac 下载完自动安装都会让安装器发起退出：先把退出前
     // 的清理跑完（断开加速、还原系统代理，安装器会结束安装目录下的所有进程），
     // 再放行，别被当成用户关窗又问一遍「顺手装上吗」。

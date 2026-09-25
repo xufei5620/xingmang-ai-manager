@@ -46,7 +46,7 @@ import { FailureBoundary } from './features/app/FailureBoundary'
 import { OperationErrorDialog, type OperationFailure } from './features/app/OperationErrorDialog'
 import { StartupNotices } from './features/app/StartupNotices'
 import { MaintenanceNotice, maintenanceNoticeKey } from './features/app/MaintenanceNotice'
-import { settingsSaveNotice, startupCheckFailure, startupCheckLogContext, startupDiagnosticsIssues, updatedNotice, vaultRecoveredNotice, withStartupNotice, withoutStartupNotice, type StartupCheckId, type StartupNotice } from './features/app/startup-notice'
+import { displayCompatNotice, displayRelaunchNotice, settingsSaveNotice, startupCheckFailure, startupCheckLogContext, startupDiagnosticsIssues, updatedNotice, vaultRecoveredNotice, withStartupNotice, withoutStartupNotice, type StartupCheckId, type StartupNotice } from './features/app/startup-notice'
 import { readLocalPreference, writeLocalPreference } from './features/app/preferences'
 import { currentWindowOs, windowOsFor } from './features/app/window-os'
 import { rememberTourPending, rememberTourSeen, tourReplayPending } from './features/shell/tour-state'
@@ -234,6 +234,8 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       if (updated) noteStartupCheck(updated)
       const settingsSave = settingsSaveNotice(result.capabilities.settingsSaveIssue)
       if (settingsSave) noteStartupCheck(settingsSave)
+      const displayCompat = displayCompatNotice(result.capabilities)
+      if (displayCompat) noteStartupCheck(displayCompat)
       if (result.settings.checkUpdatesOnStartup && result.update.phase !== 'disabled') {
         void app.startupUpdate().then((checked) => { if (current) setUpdate(checked) }).catch((cause) => {
           if (current) noteStartupCheck(startupCheckFailure('update', errorMessage(cause, '更新检查没有完成')))
@@ -494,6 +496,13 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       setOperationError({ message: errorMessage(cause, `${label}没有完成`), retry: () => void run(label, work, tool), ...(tool ? { tool } : {}) })
     }
   }, [])
+  // 兼容显示提示里的二选一：两颗都写进设置，主进程据此清掉崩溃记录。「一直用」现在
+  // 已经是兼容方式，不用重开；「恢复」要重开才生效，接着给一颗「现在重开」。
+  const chooseDisplayCompat = useCallback((choice: 'keep' | 'restore') => perform('保存显示方式', async () => {
+    setSettings(await app.savePreferences({ version: 2, hardwareAcceleration: choice === 'restore' }))
+    if (choice === 'restore') noteStartupCheck(displayRelaunchNotice())
+    else toast.show('以后都用兼容方式显示。想改回来，到「设置」的「外观」里打开「用显卡加速显示」。', 'ok')
+  }), [app, noteStartupCheck, perform, toast])
   const navigate = useCallback((target: PageId, section?: string) => {
     if (target === 'canvas') { void perform('打开画布', app.openCanvas); return }
     if ((target === 'account' || target === 'chat') && restoring) {
@@ -1012,7 +1021,13 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     </Dialog>}
     <StartupNotices notices={startupNotices} onDismiss={dismissStartupNotice}
       leading={maintenance && maintenanceKey !== dismissedMaintenance ? <MaintenanceNotice maintenance={maintenance} onDismiss={() => setDismissedMaintenance(maintenanceKey)} /> : undefined}
-      onOpen={(id, action) => { dismissStartupNotice(id); if ('login' in action) setAuth('login'); else if ('page' in action) navigate(action.page) }} />
+      onOpen={(id, action) => {
+        dismissStartupNotice(id)
+        if ('login' in action) setAuth('login')
+        else if ('page' in action) navigate(action.page)
+        else if ('displayCompat' in action) void chooseDisplayCompat(action.displayCompat)
+        else if ('relaunch' in action) void perform('重开软件', async () => { await app.relaunch() })
+      }} />
     {operationError && <OperationErrorDialog failure={operationError} installDirectory={toolInstallDirectory(toolbox.snapshot, operationError.tool)} onClose={() => setOperationError(null)} onAction={runOperationAction} />}
     {manualUninstall && <ManualUninstallDialog state={manualUninstall} platform={platform?.platform} onClose={() => setManualUninstall(null)} />}
     {!operationError && session.authenticated && accountReadError?.scope === scope && <Dialog open title="操作没有完成" onClose={() => setAccountReadError(null)} footer={<>

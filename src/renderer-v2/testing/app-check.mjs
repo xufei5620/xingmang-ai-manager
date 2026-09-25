@@ -1841,6 +1841,62 @@ test('the account-store notice can be dismissed and leaves nothing behind', asyn
   } finally { await page.close() }
 })
 
+// 显卡接连崩溃后这次自动改用了兼容方式显示：角落里说一句，并让用户二选一，
+// 不放关闭叉（关掉等于没选）。两个选择都写进设置，「恢复」接着给一颗「现在重开」。
+test('an automatic display fallback explains itself and keeps the fallback when chosen', async () => {
+  const page = await open('displayCompat=1')
+  try {
+    await page.getByTestId('page-home').waitFor()
+    const notice = page.getByTestId('startup-notice-display-compat')
+    await notice.waitFor()
+    await notice.getByText('已改用兼容方式显示界面', { exact: true }).waitFor()
+    assert.equal(await notice.getByRole('button', { name: '关闭', exact: true }).count(), 0)
+    await page.getByTestId('startup-notice-display-compat-primary').click()
+    await expect.poll(() => page.getByTestId('startup-notice-display-compat').count()).toBe(0)
+    const saves = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'saveSettings').map((entry) => entry.args[0]))
+    assert.deepEqual(saves.at(-1), { version: 2, hardwareAcceleration: false })
+    assert.equal(await page.getByTestId('startup-notice-display-relaunch').count(), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('restoring the normal display offers a relaunch from the same corner', async () => {
+  const page = await open('displayCompat=1')
+  try {
+    await page.getByTestId('page-home').waitFor()
+    await page.getByTestId('startup-notice-display-compat-secondary').click()
+    const relaunch = page.getByTestId('startup-notice-display-relaunch')
+    await relaunch.waitFor()
+    const saves = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'saveSettings').map((entry) => entry.args[0]))
+    assert.deepEqual(saves.at(-1), { version: 2, hardwareAcceleration: true })
+    await page.getByTestId('startup-notice-display-relaunch-primary').click()
+    await expect.poll(() => page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'relaunchApp').length)).toBe(1)
+    await expect.poll(() => page.getByTestId('startup-notice-display-relaunch').count()).toBe(0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('turning the display switch off in settings asks for a relaunch, and later just hides the hint', async () => {
+  const page = await open()
+  try {
+    await page.getByTestId('tool-row-claude').waitFor()
+    assert.equal(await page.getByTestId('startup-notice-display-compat').count(), 0)
+    await page.getByTestId('nav-settings').click()
+    const settings = page.getByTestId('page-settings')
+    await settings.waitFor()
+    await settings.getByRole('switch', { name: '用显卡加速显示' }).click()
+    const hint = page.getByTestId('settings-display-relaunch')
+    await hint.waitFor()
+    await hint.getByText('重启软件后生效。', { exact: true }).waitFor()
+    const saves = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'saveSettings').map((entry) => entry.args[0]))
+    assert.deepEqual(saves.at(-1), { version: 2, hardwareAcceleration: false })
+    await page.getByTestId('settings-display-relaunch-later').click()
+    await expect.poll(() => page.getByTestId('settings-display-relaunch').count()).toBe(0)
+    assert.equal(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'relaunchApp').length), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
 // 更新装完重新打开时，软件原来一句话都没有。现在角落里一张轻量卡片说一声已经在新版上、
 // 列前几项改动，只有一颗「知道了」；完整清单在更新页。普通启动什么都不说。
 test('the first launch after an update says which version it is on and lists the bundled changes', async () => {

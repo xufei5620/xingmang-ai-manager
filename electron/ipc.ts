@@ -208,8 +208,10 @@ export interface IpcRegistrationOptions {
   setWindowMode(target: WebContents, mode: AppWindowMode): void
   setWindowTheme(target: WebContents, theme: AppTheme): void
   getWindowCapabilities?(): WindowCapabilities
+  relaunchApp?(): Promise<boolean>
   takeExternalDeepLink?(target: WebContents): ExternalDeepLink | null
-  onSettingsChanged?(): void
+  /** `update` is the parsed request, so a hook can tell which fields the user just changed. */
+  onSettingsChanged?(update: AppSettingsUpdate): void
   /** Renderer-side crashes the host may forward to crash reporting. The
    *  payload is the already-validated one, never the raw IPC value. */
   onRendererError?(error: RendererErrorPayload): void
@@ -356,6 +358,7 @@ function parseSettingsUpdate(value: unknown): AppSettingsUpdate {
   const reducedMotion = optionalBoolean(value.reducedMotion, '减少动画设置')
   const desktopNotifications = optionalBoolean(value.desktopNotifications, '系统通知设置')
   const autoUpdate = optionalBoolean(value.autoUpdate, '自动更新设置')
+  const hardwareAcceleration = optionalBoolean(value.hardwareAcceleration, '显卡加速显示设置')
   const windowState = value.windowState === null ? null : parseWindowState(value.windowState)
   if (value.windowState !== undefined && windowState === undefined) throw new Error('窗口位置格式错误')
   return {
@@ -380,6 +383,7 @@ function parseSettingsUpdate(value: unknown): AppSettingsUpdate {
     ...(reducedMotion !== undefined ? { reducedMotion } : {}),
     ...(desktopNotifications !== undefined ? { desktopNotifications } : {}),
     ...(autoUpdate !== undefined ? { autoUpdate } : {}),
+    ...(hardwareAcceleration !== undefined ? { hardwareAcceleration } : {}),
     ...(windowState !== undefined ? { windowState } : {}),
   }
 }
@@ -2288,6 +2292,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     options.setWindowTheme(event.sender, theme)
   })
   registerTrustedHandler('window:get-capabilities', () => options.getWindowCapabilities?.() ?? { tray: false, notifications: false })
+  registerTrustedHandler('window:relaunch', () => options.relaunchApp?.() ?? false)
   registerTrustedHandler('navigation:take-deep-link', (event) => options.takeExternalDeepLink?.(event.sender) ?? null)
   registerTrustedHandler('window:close-report', (event, requestId: unknown, report: unknown) => (
     options.replyWindowClose?.(event.sender, requiredString(requestId, '退出请求标识', 64), parseWindowCloseReport(report)) ?? false
@@ -2359,13 +2364,14 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   })
   registerTrustedHandler('settings:get', () => service.readStoredConfig())
   registerTrustedHandler('settings:save', async (event, settings: unknown) => {
-    const next = await service.updateStoredConfig(parseSettingsUpdate(settings))
+    const update = parseSettingsUpdate(settings)
+    const next = await service.updateStoredConfig(update)
     // Side effects read the MERGED record, not the raw update: a narrow
     // update (e.g. the sidebar toggle) carries no workspace/theme of its own.
     options.extensionService.setRepositoryContext(next.workspace)
     options.providerExtensionService.setRepositoryRoot(next.workspace)
     options.setWindowTheme(event.sender, next.theme)
-    options.onSettingsChanged?.()
+    options.onSettingsChanged?.(update)
     return next
   })
   registerTrustedHandler('diagnostics:run', (_event, input: unknown) => options.diagnosticsService.run(parseDiagnosticsRunOptions(input)))

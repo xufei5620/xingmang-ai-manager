@@ -18,6 +18,7 @@ export function createAppApi(bridge: XingmangApi) {
     readSettings: () => bridge.getSettings(),
     savePreferences: (patch: Parameters<XingmangApi['saveSettings']>[0]) => bridge.saveSettings(patch),
     startupUpdate: () => bridge.runStartupUpdate(),
+    relaunch: () => bridge.relaunchApp(),
     openCanvas: () => bridge.openCanvasWindow(),
     openExternal: (url: string) => bridge.openExternal(url),
     announcement: (mode?: RelayNoticeReadMode) => mode === undefined ? bridge.getAccountNotice() : bridge.getAccountNotice(mode),

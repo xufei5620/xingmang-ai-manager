@@ -104,6 +104,11 @@ export interface AppSettings {
    * 后台下好，等用户退出或下次打开时装上；关掉就回到「提示一下，由你点」。
    */
   autoUpdate?: boolean
+  /**
+   * 「用显卡加速显示」。缺省 = 开启，和 crashReporting 一样只把用户亲手关掉的 false
+   * 落盘。主进程在 ready 之前读它，改了要重开软件才生效。
+   */
+  hardwareAcceleration?: boolean
   /** Absent = automatic. A pinned percentage multiplies the automatic zoom. */
   uiScale?: Exclude<AppUiScale, 'auto'>
   /** Absent = ask. The host must keep a visible entry when no tray exists. */
@@ -147,6 +152,7 @@ export interface AppSettingsUpdate {
   reducedMotion?: boolean
   desktopNotifications?: boolean
   autoUpdate?: boolean
+  hardwareAcceleration?: boolean
   uiScale?: AppUiScale
   closeBehavior?: AppCloseBehavior
   /** null explicitly resets saved placement; absence preserves it. */
@@ -301,6 +307,7 @@ function parseSettingsValue(value: unknown): AppSettings {
     ...(optionalBoolean(value.reducedMotion, false) ? { reducedMotion: true as const } : {}),
     ...(value.desktopNotifications === false ? { desktopNotifications: false as const } : {}),
     ...(value.autoUpdate === false ? { autoUpdate: false as const } : {}),
+    ...(value.hardwareAcceleration === false ? { hardwareAcceleration: false as const } : {}),
     ...(uiScale !== undefined ? { uiScale } : {}),
     ...(closeBehavior !== undefined ? { closeBehavior } : {}),
     ...(windowState !== undefined ? { windowState } : {}),
@@ -428,6 +435,7 @@ export function mergeAppSettings(base: AppSettings, update: AppSettingsUpdate): 
   const reducedMotion = update.reducedMotion ?? base.reducedMotion
   const desktopNotifications = update.desktopNotifications ?? base.desktopNotifications
   const autoUpdate = update.autoUpdate ?? base.autoUpdate
+  const hardwareAcceleration = update.hardwareAcceleration ?? base.hardwareAcceleration
   const uiScale = update.uiScale === 'auto' ? undefined : parseUiScale(update.uiScale) ?? base.uiScale
   const closeBehavior = update.closeBehavior === 'ask' ? undefined : parseCloseBehavior(update.closeBehavior) ?? base.closeBehavior
   const windowState = update.windowState === null ? undefined : parseWindowState(update.windowState) ?? base.windowState
@@ -449,6 +457,7 @@ export function mergeAppSettings(base: AppSettings, update: AppSettingsUpdate): 
     ...(reducedMotion ? { reducedMotion: true as const } : {}),
     ...(desktopNotifications === false ? { desktopNotifications: false as const } : {}),
     ...(autoUpdate === false ? { autoUpdate: false as const } : {}),
+    ...(hardwareAcceleration === false ? { hardwareAcceleration: false as const } : {}),
     ...(uiScale !== undefined ? { uiScale } : {}),
     ...(closeBehavior !== undefined ? { closeBehavior } : {}),
     ...(windowState !== undefined ? { windowState } : {}),

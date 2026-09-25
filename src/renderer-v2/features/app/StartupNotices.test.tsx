@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { StartupNotices } from './StartupNotices'
-import { startupCheckFailure, startupDiagnosticsIssues, updatedNotice, vaultRecoveredNotice } from './startup-notice'
+import { displayCompatNotice, startupCheckFailure, startupDiagnosticsIssues, updatedNotice, vaultRecoveredNotice } from './startup-notice'
 
 function render(notices: Parameters<typeof StartupNotices>[0]['notices']) {
   return renderToStaticMarkup(<StartupNotices notices={notices} onDismiss={() => undefined} onOpen={() => undefined} />)
@@ -53,5 +53,16 @@ describe('StartupNotices', () => {
     expect(markup.match(/<button/g)).toHaveLength(1)
     expect(markup).not.toContain('aria-label="关闭"')
     expect(markup).not.toContain('aria-modal')
+  })
+
+  it('shows both choices without a close button when the user has to pick one', () => {
+    const notice = displayCompatNotice({ displayCompat: 'auto' })
+    expect(notice).not.toBeNull()
+    const markup = render(notice ? [notice] : [])
+    expect(markup).toContain('startup-notice-display-compat-primary')
+    expect(markup).toContain('startup-notice-display-compat-secondary')
+    expect(markup).toContain('一直用兼容方式')
+    expect(markup).toContain('恢复原来的方式')
+    expect(markup).not.toContain('aria-label="关闭"')
   })
 })
