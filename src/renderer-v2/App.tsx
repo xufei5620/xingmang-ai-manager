@@ -917,7 +917,13 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       setPendingLink(null)
     } else if (!linkPrompted.current) { linkPrompted.current = true; setAuth('login') }
   }, [pendingLink, boot, auth, configTool, confirmation, switcher, restartDialog, session.authenticated, navigate])
-  useEffect(() => native.onNavigate((target) => navigate(target === 'topup' ? 'account' : target, target === 'topup' ? 'recharge' : undefined)), [native, navigate])
+  useEffect(() => native.onNavigate((target) => {
+    // 系统通知点进来：余额去「充值与订阅」，异步任务去个人中心那一栏，公告直接打开公告。
+    if (target === 'topup') navigate('account', 'recharge')
+    else if (target === 'tasks') navigate('account', 'tasks')
+    else if (target === 'announcement') { if (session.authenticated) setAnnouncementOpen(true) }
+    else navigate(target)
+  }), [native, navigate, session.authenticated])
   useEffect(() => native.onLaunchTool((id) => { if (isToolId(id)) requestLaunch(id) }), [native, toolbox.snapshot, session.authenticated])
   useEffect(() => {
     const unsubscribe = native.onWindowCloseRequest(({ requestId }) => {

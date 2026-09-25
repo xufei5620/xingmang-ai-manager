@@ -39,6 +39,17 @@ export interface NotificationMessage {
   body: string
 }
 
+/**
+ * 点通知后主窗口停在哪一页。去处由主进程按通知种类和编号前缀定死，渲染层
+ * 请求通知时没有办法指定页面，所以拿到通知通道的页面也只能把人带到这几处。
+ */
+export type PlatformNotificationTarget =
+  | 'home'
+  | 'chat'
+  | 'tasks'
+  | 'topup'
+  | 'announcement'
+
 const messages = {
   test: { title: '星芒测试通知', body: '这是一条测试通知，可在设置中关闭。' },
   install: {
@@ -65,6 +76,48 @@ const messages = {
     body: '当前账号有一条新公告，回到星芒就能看到。',
   },
 } as const satisfies Record<PlatformActivityKind | 'test', NotificationMessage>
+
+// 聊天和出图也借 task 这一类的偏好开关，但人不是去「异步任务」里看结果，
+// 所以按编号前缀换成自己的说法。前缀由星芒自己的聊天页写死（chat: / image:）。
+const chatMessages = {
+  chat: { title: 'AI 回复好了', body: '回到星芒的「聊天」查看。' },
+  image: { title: '图片生成好了', body: '回到星芒的「聊天」查看。' },
+} as const satisfies Record<string, NotificationMessage>
+
+function chatNoticeKind(eventKey: string): keyof typeof chatMessages | null {
+  if (eventKey.startsWith('chat:')) return 'chat'
+  if (eventKey.startsWith('image:')) return 'image'
+  return null
+}
+
+export function resolveNotificationTarget(
+  kind: PlatformActivityKind | 'test',
+  eventKey: string,
+): PlatformNotificationTarget | null {
+  switch (kind) {
+    case 'balance':
+      return 'topup'
+    case 'task':
+      return chatNoticeKind(eventKey) ? 'chat' : 'tasks'
+    case 'install':
+    case 'cliUpdate':
+      return 'home'
+    case 'announcement':
+      return 'announcement'
+    case 'test':
+      return null
+  }
+}
+
+export function buildActivityNotificationMessage(
+  kind: PlatformActivityKind | 'test',
+  eventKey: string,
+  install?: PlatformInstallNotice,
+): NotificationMessage {
+  if (kind === 'install' && install) return buildInstallNotificationMessage(install)
+  const chat = kind === 'task' ? chatNoticeKind(eventKey) : null
+  return chat ? chatMessages[chat] : messages[kind]
+}
 
 // 渲染层只给编号，名字在这里定死：拿到这条通道的页面也只能在这份名单里挑，
 // 塞不进任意文字。名单外的编号（以后新加了工具忘了补）就说「工具」，不报错。
@@ -169,6 +222,8 @@ export function createPlatformNotifications(
     readEnabled: () => boolean
     readPreferences: () => PlatformNotificationPreferences
     focusMainWindow: () => void
+    /** 缺省时点通知只把窗口叫出来（旧行为）。 */
+    openPage?: (target: PlatformNotificationTarget) => void
     onError: (error: unknown) => void
   },
   runtime: PlatformNotificationRuntime,
@@ -245,14 +300,16 @@ export function createPlatformNotifications(
       kind: PlatformActivityKind | 'test',
       eventKey: string,
       install?: PlatformInstallNotice,
-    ) =>
-      present(
+    ) => {
+      const target = resolveNotificationTarget(kind, eventKey)
+      const openPage = options.openPage
+      return present(
         kind,
         `${kind}:${eventKey}`,
-        kind === 'install' && install
-          ? buildInstallNotificationMessage(install)
-          : messages[kind],
-      ),
+        buildActivityNotificationMessage(kind, eventKey, install),
+        target && openPage ? () => openPage(target) : undefined,
+      )
+    },
     notifyHost: (
       event: PlatformHostNotification,
       eventKey: string,
