@@ -101,6 +101,11 @@ type SubscriptionPaymentInput = Parameters<
 >[0]
 type AccountTab = (typeof accountTabs)[number]['value']
 type Provider = Parameters<V2Bridge['saveConfigWithAccountKey']>[0]['provider']
+/** 首页那边某个工具的设置已经保存并读回；sequence 每次加一，同一个工具连存两次也认得出。 */
+export interface ToolConfigConfirmation {
+  provider: Provider
+  sequence: number
+}
 // Codex CLI 与 Codex 桌面端共用一份配置，在用的是同一把 Key，所以只说「Codex」。
 function keyToolName(provider: Provider): string {
   if (provider === 'codex') return 'Codex'
@@ -327,6 +332,7 @@ export function AccountPage({
   onRewriteKey,
   onConfigureTool,
   onToolConfigSaved,
+  toolConfigConfirmed,
 }: {
   api: V2Bridge
   initialTab?: AccountTab
@@ -342,6 +348,8 @@ export function AccountPage({
   onConfigureTool?: (provider: Provider) => void
   /** 「配置到工具」写成功后让首页重读配置；缺省 = 不通知（旧行为）。 */
   onToolConfigSaved?: () => void
+  /** 某个工具的设置已保存并读回；每次加一。缺省 = 没有这个信号（旧行为）。 */
+  toolConfigConfirmed?: ToolConfigConfirmation | null
 }) {
   const [tab, setTab] = useState<AccountTab>(initialTab ?? 'overview')
   const { store: balanceStore, snapshot: balanceState } = useSharedAccountBalance()
@@ -519,6 +527,7 @@ export function AccountPage({
                       onRewriteKey={onRewriteKey}
                       onConfigureTool={onConfigureTool}
                       onToolConfigSaved={onToolConfigSaved}
+                      toolConfigConfirmed={toolConfigConfirmed}
                     />
                   )}
                   {panel === 'usage' && (
@@ -880,6 +889,7 @@ function AccountKeys({
   onRewriteKey,
   onConfigureTool,
   onToolConfigSaved,
+  toolConfigConfirmed,
 }: {
   api: V2Bridge
   balance: Balance
@@ -888,6 +898,7 @@ function AccountKeys({
   onRewriteKey?: (provider: Provider) => Promise<boolean>
   onConfigureTool?: (provider: Provider) => void
   onToolConfigSaved?: () => void
+  toolConfigConfirmed?: ToolConfigConfirmation | null
 }) {
   const [page, setPage] = useState(1)
   const [query, setQuery] = useState('')
@@ -935,6 +946,15 @@ function AccountKeys({
   // skipped = 这个工具的配置不归自动流程管（手填、来源没确认等），再换一次也还是跳过，
   // 要给的是「去设置」（#478）。
   const [replaceFailed, setReplaceFailed] = useState<{ provider: Provider; skipped: boolean } | null>(null)
+  // 点「去设置」只是打开了设置窗口，用户可能取消，也可能保存失败，工具手里还是那把撤销掉的
+  // Key。所以警告要等那个工具的设置真的保存、并读回之后才收起（#546）。只认点开之后
+  // 新来的信号，之前留下的那次不算。
+  const confirmedSequence = useRef(toolConfigConfirmed?.sequence ?? 0)
+  useEffect(() => {
+    if (!toolConfigConfirmed || toolConfigConfirmed.sequence === confirmedSequence.current) return
+    confirmedSequence.current = toolConfigConfirmed.sequence
+    setReplaceFailed((current) => current?.provider === toolConfigConfirmed.provider ? null : current)
+  }, [toolConfigConfirmed])
   const [revealed, setRevealed] = useState('')
   const [selected, setSelected] = useState<AccountKey | null>(null)
   const [models, setModels] = useState<string[]>([])
@@ -1099,7 +1119,7 @@ function AccountKeys({
               size="sm"
               icon={KeyRound}
               testId="account-key-replace-configure"
-              onClick={() => { onConfigureTool(replaceFailed.provider); setReplaceFailed(null) }}
+              onClick={() => onConfigureTool(replaceFailed.provider)}
             >
               去设置
             </Button>
@@ -1419,6 +1439,8 @@ function AccountKeys({
                         false,
                       )
                       setSelected(null)
+                      // 这里写进去的是另一把没撤销的 Key，这个工具的撤销警告可以收起了。
+                      setReplaceFailed((current) => current?.provider === provider ? null : current)
                       // 主进程保存这条路不发配置变更事件，首页那份快照得由这里叫它重读，
                       // 否则回到首页还是旧的来源和模型（#479）。
                       onToolConfigSaved?.()

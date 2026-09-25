@@ -29,6 +29,7 @@ import { tools } from './registry/tools'
 import { clientConnections } from './registry/clients'
 import type { PageId } from './registry/pages'
 import type { ToolInstallOutcome } from './pages-maintenance'
+import type { ToolConfigConfirmation } from './pages-account'
 import { BalanceTierProvider, Button, Confirm, Dialog, Notice, Switch, ToastProvider, useToast, useReducedMotion } from './ui'
 import { bridge as getBridge } from './bridge'
 import { errorMessage, pendingBusinessOperations } from './business-common'
@@ -130,6 +131,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   const [authTarget, setAuthTarget] = useState<LoginTarget | null>(null)
   const [legal, setLegal] = useState<LegalDocumentKind | null>(null)
   const [configTool, setConfigTool] = useState<ToolId | null>(null)
+  const [toolConfigConfirmed, setToolConfigConfirmed] = useState<ToolConfigConfirmation | null>(null)
   const [codexModelFilter, setCodexModelFilter] = useState<'all' | 'non-gpt'>('all')
   const [externalClient, setExternalClient] = useState<ExternalToolId | null>(null)
   const openToolConfig = (tool: ToolId) => { setCodexModelFilter('all'); setConfigTool(tool) }
@@ -749,6 +751,16 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       return launch(id)
     }
   }
+  // 设置窗口写进了新 Key：读回配置成功才告诉密钥页，好收起那条「还在用刚撤销的密钥」（#546）。
+  // 读回失败就不收，警告宁可多留一会儿。
+  function confirmToolKeyWritten(tool: ToolId) {
+    const epoch = accountEpoch.current
+    const provider = providerFor(tool)
+    void toolsApi.readConfig().then((config) => {
+      if (!mounted.current || epoch !== accountEpoch.current || config.providers[provider].configurationOwnership === 'missing') return
+      setToolConfigConfirmed((current) => ({ provider, sequence: (current?.sequence ?? 0) + 1 }))
+    }, () => undefined)
+  }
   function finishConfigSave(warning?: string) {
     const epoch = accountEpoch.current
     setConfigTool(null)
@@ -933,7 +945,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
               externalClients={toolbox.externalClients} externalLoading={toolbox.externalLoading} externalError={toolbox.externalError} recentRevision={recentRevision}
               onScan={() => { refreshRecent(); void toolbox.refresh(true).catch(() => undefined); void toolbox.refreshExternal(true).catch(() => undefined) }} onInstall={(id, version) => void perform('安装工具', () => install(id, version), id)} onCancelInstall={(id) => void perform('取消安装', () => cancelInstall(id))} onLaunch={requestLaunch} onLaunchInNewFolder={(id) => requestLaunch(id, undefined, 'new', true)} onConfigure={openToolConfig} onUninstall={requestUninstall}
               onRewriteKey={(id) => void perform('重新写入 Key', () => rewriteAccountKeys([providerFor(id)]), id)} onKeepConfig={(id) => void perform('保留当前配置', () => keepCurrentToolConfig(id))}
-              onSwitchAccount={(id, target) => void perform(target === 'account' ? '改用当前账号' : '切回官方账号', () => switchToolAccount(id, target), id)}
+              onSwitchAccount={(id, target) => void perform(target === 'account' ? '改用当前账号' : '切回官方账号', async () => { if (await switchToolAccount(id, target)) confirmToolKeyWritten(id) }, id)}
               onOpenConfigDirectory={(id) => void perform('打开配置文件夹', () => toolsApi.openConfigDirectory(id))}
               onInstallExternal={(id) => void perform('安装客户端', () => installExternal(id))} onLaunchExternal={(id) => void perform('打开客户端', () => launchExternal(id))} onOpenExternalDownload={(url) => void perform('打开下载页', () => app.openExternal(url))}
               onConfigureExternal={setExternalClient} onCodexModels={() => { setCodexModelFilter('non-gpt'); setConfigTool(platform?.codexDesktop.launch ? 'codexDesktop' : 'codex') }}
@@ -945,6 +957,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
                   onSessionResumed={refreshRecent}
                   onBackupRestored={() => void toolbox.refreshConfig().catch(() => undefined)}
                   onToolConfigSaved={() => void toolbox.refreshConfig().catch(() => undefined)}
+                  toolConfigConfirmed={toolConfigConfirmed}
                   onAccountChanged={() => void perform('刷新账号', reloadAccount)} onSettingsChanged={setSettings} openConfig={openToolConfig}
                   openGuide={() => setGuide(true)} replayTour={replayTour}
                   onToolsChanged={(tool) => syncAfterToolInstalled(tool).catch((cause) => {
@@ -968,7 +981,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     {switcher && <Dialog open title="切换账号" width={480} onClose={() => setSwitcher(false)}><SavedAccounts api={native} onAccountChanged={(result) => { bootstrapEpoch.current++; bootstrapInFlight.current = null; if (result) suppressRestoredBootstrap.current.add(accountScope({ siteId: siteIdForOrigin(result.origin) ?? undefined, account: { userId: result.userId } as AccountSessionState['account'] })); setAccountBootstrap(null); if (!result || !accountSwitchNeedsAttention(result)) setSwitcher(false); setPaymentReturn(undefined); void perform('刷新账号', reloadAccount) }} onLogin={(target) => { setSwitcher(false); setAuthTarget(target ?? null); setAuth('login') }} /></Dialog>}
     {externalClient && <ExternalClientDialog key={`${scope}:${externalClient}`} api={native} tool={externalClient} signedIn={session.authenticated} onClose={() => setExternalClient(null)} onSaved={finishExternalConfigSave} />}
     {configTool && toolbox.snapshot && <ConfigDialog key={`${scope}:${configTool}:${codexModelFilter}`} api={toolsApi} tool={configTool} config={toolbox.snapshot.config} signedIn={session.authenticated} initialModelFilter={codexModelFilter}
-      onClose={() => setConfigTool(null)} onRefresh={() => toolbox.refresh(true)} onSaved={finishConfigSave} onLogin={() => setAuth('login')} onKeys={() => { setConfigTool(null); navigate('account', 'keys') }} onHelp={() => setHelp(true)}
+      onClose={() => setConfigTool(null)} onRefresh={() => toolbox.refresh(true)} onSaved={finishConfigSave} onKeyWritten={confirmToolKeyWritten} onLogin={() => setAuth('login')} onKeys={() => { setConfigTool(null); navigate('account', 'keys') }} onHelp={() => setHelp(true)}
       accountName={session.account?.username ?? null}
       onSwitchAccount={async (id) => {
         const switched: { result: AccountSourceSwitchResult | null } = { result: null }

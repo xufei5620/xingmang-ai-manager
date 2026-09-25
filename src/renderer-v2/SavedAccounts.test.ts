@@ -15,4 +15,8 @@ describe('saved account list labels', () => {
     expect(savedAccountLoginTarget({ origin: 'https://xm.solov.cc', username: 'saved-user' })).toEqual({ siteId: 'solov', identifier: 'saved-user' })
     expect(savedAccountLoginTarget({ origin: 'https://api.solov.cc.evil.com', username: 'x' })).toBeUndefined()
   })
+  it('leaves a legacy account relogin blank when the saved name is a nickname, so the remembered email can fill it', () => {
+    expect(savedAccountLoginTarget({ origin: 'https://api.solov.cc', username: 'fixture-user' })).toEqual({ siteId: 'solov-api', identifier: '' })
+    expect(savedAccountLoginTarget({ origin: 'https://xm.solov.cc', username: 'fixture-user' })).toEqual({ siteId: 'solov', identifier: 'fixture-user' })
+  })
 })

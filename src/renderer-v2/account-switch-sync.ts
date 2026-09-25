@@ -291,9 +291,12 @@ export function accountSwitchRestartHint(result: AccountSwitchSyncResult): strin
   return result.runningTools ? describeRunningTools(result.runningTools, 'account') : ''
 }
 
-/** 这次切换还有要用户看的：有工具没同步好，或有写了新 Key 的工具还开着。 */
+/**
+ * 这次切换还有要用户看的：有工具没同步好、勾了却被跳过，或有写了新 Key 的工具还开着。
+ * 跳过的原因只写在切换框里，框一关用户就看不到那个工具还连着旧账号（#545）。
+ */
 export function accountSwitchNeedsAttention(result: AccountSwitchSyncResult): boolean {
-  return result.failed.length > 0 || accountSwitchRestartHint(result) !== ''
+  return result.failed.length > 0 || result.skipped.length > 0 || accountSwitchRestartHint(result) !== ''
 }
 
 const previousResults = new Map<string, AccountSwitchSyncResult>()

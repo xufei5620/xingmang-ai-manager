@@ -295,7 +295,13 @@ test('revoking a key a hand-configured tool is using never claims a fresh key an
     assert.equal(await page.getByTestId('account-key-replace-retry').count(), 0)
     await page.getByTestId('account-key-replace-configure').click()
     assert.deepEqual((await calls(page)).filter((call) => call.name === 'openConfig').map((call) => call.args), ['claude'])
-    assert.equal(await notice.count(), 0)
+    // 只是打开了设置窗口，用户可能取消或保存失败：警告不能跟着消失（#546）。
+    assert.equal(await notice.count(), 1)
+    // 别的工具存好了也不算。
+    await page.evaluate(() => window.dispatchEvent(new CustomEvent('test-tool-config-confirmed', { detail: 'gemini' })))
+    assert.equal(await notice.count(), 1)
+    await page.evaluate(() => window.dispatchEvent(new CustomEvent('test-tool-config-confirmed', { detail: 'claude' })))
+    await notice.waitFor({ state: 'detached' })
   } finally { await page.close() }
 })
 

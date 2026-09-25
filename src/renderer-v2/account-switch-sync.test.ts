@@ -395,6 +395,18 @@ describe('saved account switch restart hint', () => {
     expect(accountSwitchNeedsAttention(result)).toBe(false)
   })
 
+  it('keeps the dialog open when every selected tool was skipped after the recheck', async () => {
+    const h = setup()
+    h.fresh.configs.claude.matchesRelay = false
+    const inspectRunningTools = vi.fn(async () => running())
+    const result = await switchAccountWithOptionalSync({ ...h.api, inspectRunningTools }, h.target, ['claude'], h.context, h.context.origin, memoryStorage())
+    expect(result.configured).toEqual([])
+    expect(result.failed).toEqual([])
+    expect(result.skipped.map((entry) => entry.provider)).toEqual(['claude'])
+    expect(inspectRunningTools).not.toHaveBeenCalled()
+    expect(accountSwitchNeedsAttention(result)).toBe(true)
+  })
+
   it('stays quiet when the rewritten tools are all closed', async () => {
     const h = setup()
     const result = await switchAccountWithOptionalSync({ ...h.api, inspectRunningTools: async () => running() }, h.target, ['claude'], h.context, h.context.origin, memoryStorage())
