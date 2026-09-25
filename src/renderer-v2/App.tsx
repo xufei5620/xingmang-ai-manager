@@ -1,7 +1,7 @@
 import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { RefreshCw } from 'lucide-react'
 import QRCode from 'qrcode'
-import type { AccountSessionState, AccountSourceTarget, AppSettingsV2, CliLaunchMode, ExternalDeepLink, ExternalToolId, LegalDocumentKind, PlatformCapabilities, ProviderId, UpdateSnapshot, XingmangApi } from '../../electron/ipc-contract'
+import type { AccountSessionState, AccountSourceSwitchResult, AccountSourceTarget, AppSettingsV2, CliLaunchMode, ExternalDeepLink, ExternalToolId, LegalDocumentKind, PlatformCapabilities, ProviderId, UpdateSnapshot, XingmangApi } from '../../electron/ipc-contract'
 import { resolveRelaySite, resolveSupportServiceUrl } from '../../electron/relay-sites'
 import { offersCodexDesktopRestart } from '../../electron/running-tools'
 import { Shell as AppFrame } from './features/shell/Shell'
@@ -15,7 +15,7 @@ import { launchWaitLabel, launchWarning } from './features/tools/launch-notice'
 import { modelSwapOffer, modelSwapQuestion, type ModelSwapChoice, type ModelSwapOffer } from './features/tools/model-check'
 import { chineseRuntimePatchAnswerMissing, shouldAskForChineseRuntimePatch } from './features/tools/chinese-runtime-choice'
 import { cliInstallStageLabel, nodeRuntimeReady, planCliInstall, pythonRuntimeReady, runtimeStageFailureMessage, type InstallRuntimeId } from './features/tools/runtime-readiness'
-import { isToolId, presentTools, providerFor, toolInstallDirectory, toolUpdateOffer, type ToolId, type ToolSource } from './features/tools/model'
+import { foreignKeyKind, isToolId, presentTools, providerFor, toolInstallDirectory, toolUpdateOffer, type ToolId, type ToolSource } from './features/tools/model'
 import { pendingToolUpdates, readAnnouncedToolUpdates, rememberAnnouncedToolUpdates, unannouncedToolUpdates, updateNoticeKey } from './features/tools/update-notice'
 import { isMissingWorkspace } from './features/tools/recent-workspaces'
 import { uninstallHandOffNotice } from './features/tools/uninstall-handoff'
@@ -148,6 +148,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   const [restartDialog, setRestartDialog] = useState(false)
   // 首页一键切换账号来源之后 Codex 桌面端还开着：问一次要不要替用户重开，记下切到了哪边。
   const [switchRestartOffer, setSwitchRestartOffer] = useState<AccountSourceTarget | null>(null)
+  const [ccSwitchReminder, setCcSwitchReminder] = useState(false)
   const [modelSwap, setModelSwap] = useState<{ offer: ModelSwapOffer; answer: (choice: ModelSwapChoice) => void } | null>(null)
   const [chineseDialog, setChineseDialog] = useState(false)
   const chineseDecline = useRef<HTMLButtonElement>(null)
@@ -331,30 +332,36 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
    * 首页「切到当前账号 / 切回官方账号」。主进程一次做完备份、写入、自检和失败
    * 回滚，成功与失败都只说一句话；失败的那句走统一的错误条（perform）。
    */
-  const switchToolAccount = useCallback(async (tool: ToolId, target: AccountSourceTarget) => {
-    if (target === 'account' && (!session.authenticated || !session.account)) { setAuth('login'); return }
+  const switchToolAccount = useCallback(async (tool: ToolId, target: AccountSourceTarget): Promise<AccountSourceSwitchResult | null> => {
+    if (target === 'account' && (!session.authenticated || !session.account)) { setAuth('login'); return null }
     const provider = providerFor(tool)
     // CC Switch 还开着的话，它切供应商、退出时写回接管前的备份，都会把刚写好的配置
-    // 改回去。这里只提醒一句，退不退由用户定。
-    const ccSwitchRunningHint = target === 'account' && toolbox.snapshot?.config.providers[provider].ccSwitchLeftover
-      ? '不再用 CC Switch 的话，请把它退出，免得它又把设置改回去。' : ''
+    // 改回去。一闪而过的提示容易看漏，改完用一个要点「知道了」的框说（方案盘查第 5 条）；
+    // 退不退由用户定。
+    const ccSwitchLeftover = target === 'account' && Boolean(toolbox.snapshot?.config.providers[provider].ccSwitchLeftover)
+    // 引导要按这次的结果决定第 4 步怎么说（自检没通过时不能写「已准备好」）。
+    const outcome: { result?: AccountSourceSwitchResult } = {}
     // 登记成工具行上的任务（全面检测 Q35）：切换要备份、写入、自检，失败还要回滚，
     // 一次得好几秒。以前没有忙态，连点两下就是两次切换叠在一起跑；现在同一个工具
     // 在切的时候行上显示「切换中」、菜单收起，再点也进不来。
-    await toolbox.run(`switch:${tool}`, target === 'account' ? '正在切到当前账号' : '正在切回官方账号', async () => {
+    await toolbox.run(`switch:${tool}`, target === 'account' ? '正在改用当前账号' : '正在切回官方账号', async () => {
       try {
         const result = await toolsApi.switchSource(tool, target)
+        outcome.result = result
         // 与配置对话框保存时一样：换了来源就清掉「自己填写密钥」的本机标记。
         const baseUrl = toolbox.snapshot?.config.providers[provider].baseUrl
         const markerWarning = baseUrl ? applyManualSourceMarker(getSourceMarkerStorage(), baseUrl, provider, false) : ''
         toast.show(result.message, result.loginRequired || (target === 'account' && !result.verified) ? 'warn' : 'ok')
         if (markerWarning) toast.show(markerWarning, 'warn')
-        if (ccSwitchRunningHint) toast.show(ccSwitchRunningHint, 'warn')
+        if (ccSwitchLeftover) setCcSwitchReminder(true)
+        // Codex CLI 与 Codex 桌面端读的是同一份配置：从哪一行点的，两行都一起换了。
+        if (provider === 'codex' && target === 'account') toast.show('Codex CLI 和 Codex 桌面端共用一份设置，已一起改好。', 'neutral')
         if (provider === 'codex' && offersCodexDesktopRestart(result.runningTools)) setSwitchRestartOffer(target)
       } finally {
         await toolbox.refresh(true).catch(() => undefined)
       }
     })
+    return outcome.result ?? null
   }, [session.account, session.authenticated, toast, toolbox.refresh, toolbox.run, toolbox.snapshot, toolsApi])
   // 官方账号与手填密钥重写不动（重写流程本身会跳过它们），所以按钮按当前配置的
   // 来源决定给不给，而不是见到密钥层失败就画一颗出来。
@@ -513,12 +520,24 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     else if (action === 'log') navigate(failure ? operationLogPage(failure) : 'feedback')
     else if (action === 'network') navigate('health')
     else if (action === 'recharge') navigate('account', 'recharge')
+    else if (action === 'backups') navigate('backups')
     else if (action === 'relogin') setAuth('login')
     // 目录里 keyInvalid 的「一键修复」就是这件事：对当前账号把已配置的工具重新
     // 写一次 Key。一次点击只重写一次，连续失败的出口仍旧是「找客服」。
     else if (action === 'repair') void perform('重新写入 Key', () => rewriteAccountKeys())
     else setHelp(true)
   }, [navigate, operationError, perform, rewriteAccountKeys])
+  // 引导里「改用」失败或没能确认能用时的出口：和错误框同一张表，只是没有「再试一次」
+  //（引导自己有）。去充值、去备份页会离开引导，进度照旧留在第 3 步。
+  const runGuideFailureAction = useCallback((action: OperationActionId) => {
+    if (action === 'recharge') navigate('account', 'recharge')
+    else if (action === 'backups') navigate('backups')
+    else if (action === 'log') navigate('feedback')
+    else if (action === 'network') navigate('health')
+    else if (action === 'relogin') setAuth('login')
+    else if (action === 'repair') void perform('重新写入 Key', () => rewriteAccountKeys())
+    else setHelp(true)
+  }, [navigate, perform, rewriteAccountKeys])
   async function install(id: ToolId, version?: string): Promise<ToolInstallOutcome> {
     const state = toolbox.snapshot
     if (!state) throw new Error('请先完成工具检测')
@@ -820,6 +839,9 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     officialLoginRequired: guideOfficialLoginRequired(tool.provider, guideSource(tool.source), toolbox.snapshot!.config.providers[tool.provider]),
     update: toolUpdateOffer(tool),
     installMode: tool.id === 'codexDesktop' ? platform?.codexDesktop.install : platform?.cliInstall[tool.id], workspace: toolbox.snapshot!.config.workspace,
+    // 没登录就没有「当前账号」可比：来源没确认的一律按「不是当前账号的 Key」走，
+    // 引导只给「登录后改用我的账号」，不因 Key 恰好在我们站上就放行（方案盘查第 1 条）。
+    keyState: tool.source === 'changed' ? 'changed' : session.authenticated ? foreignKeyKind(toolbox.snapshot!.config.providers[tool.provider], tool.source) ?? undefined : tool.source === 'unknown' ? 'otherSite' : undefined,
   })) : []
   const balanceAmount = balance && balance.quotaPerUnit > 0 ? balance.quota / balance.quotaPerUnit : null
   const toolUpdates = toolbox.snapshot ? pendingToolUpdates(presentTools(toolbox.snapshot)) : []
@@ -868,6 +890,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   return <AccountBalanceContext.Provider value={balanceStore}><BalanceTierProvider value={balanceAmount === null ? 'neutral' : balanceAmount <= 0 ? 'zero' : balanceAmount < 5 ? 'bad' : balanceAmount < 20 ? 'warn' : 'ok'}>
     {guide ? <StartGuide platform={os} tools={guideTools} signedIn={session.authenticated} busy={Object.keys(toolbox.jobs).length > 0 || accountBootstrapBusy} progress={accountBootstrapBusy && accountBootstrap ? { label: accountBootstrap.label, percent: accountBootstrap.percent } : guideJobProgress(toolbox.jobs)} resumeKey={scope}
       onDetect={() => toolbox.refresh(true)} onInstall={async (id, version) => { await install(id, version) }} onInstallRuntime={() => installRuntime('node')} onInstallPython={() => installRuntime('python')} onConfigure={async (id) => { openToolConfig(id) }} onLogin={() => setAuth('login')}
+      accountName={session.account?.username ?? null} onSwitchAccount={(id) => switchToolAccount(id, 'account')} onFailureAction={runGuideFailureAction}
       onLaunch={async (id, newFolder) => id === 'chat' ? true : launch(id, 'open', undefined, newFolder)}
       onComplete={(id) => { if (!writeLocalPreference(`xingmang-v2-guide:${scope}`, id)) toast.show('工具已准备好，但引导偏好没有保存在本机。', 'warn'); setWorkspaceEntered(true); rememberTourPending(scope); setTourOpen(true); navigate(id === 'chat' ? 'chat' : 'home') }} onBack={() => setGuide(false)} onHelp={() => setHelp(true)} />
       : !session.authenticated && !restoring && !workspaceEntered ? <Welcome platform={os} onLogin={() => setAuth('login')} onRegister={() => setAuth('register')} onSteps={() => setGuide(true)} onHelp={() => setHelp(true)} onLegal={setLegal}
@@ -904,7 +927,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
               externalClients={toolbox.externalClients} externalLoading={toolbox.externalLoading} externalError={toolbox.externalError} recentRevision={recentRevision}
               onScan={() => { refreshRecent(); void toolbox.refresh(true).catch(() => undefined); void toolbox.refreshExternal(true).catch(() => undefined) }} onInstall={(id, version) => void perform('安装工具', () => install(id, version), id)} onCancelInstall={(id) => void perform('取消安装', () => cancelInstall(id))} onLaunch={requestLaunch} onLaunchInNewFolder={(id) => requestLaunch(id, undefined, 'new', true)} onConfigure={openToolConfig} onUninstall={requestUninstall}
               onRewriteKey={(id) => void perform('重新写入 Key', () => rewriteAccountKeys([providerFor(id)]), id)} onKeepConfig={(id) => void perform('保留当前配置', () => keepCurrentToolConfig(id))}
-              onSwitchAccount={(id, target) => void perform(target === 'account' ? '切到当前账号' : '切回官方账号', () => switchToolAccount(id, target), id)}
+              onSwitchAccount={(id, target) => void perform(target === 'account' ? '改用当前账号' : '切回官方账号', () => switchToolAccount(id, target), id)}
               onOpenConfigDirectory={(id) => void perform('打开配置文件夹', () => toolsApi.openConfigDirectory(id))}
               onInstallExternal={(id) => void perform('安装客户端', () => installExternal(id))} onLaunchExternal={(id) => void perform('打开客户端', () => launchExternal(id))} onOpenExternalDownload={(url) => void perform('打开下载页', () => app.openExternal(url))}
               onConfigureExternal={setExternalClient} onCodexModels={() => { setCodexModelFilter('non-gpt'); setConfigTool(platform?.codexDesktop.launch ? 'codexDesktop' : 'codex') }}
@@ -939,7 +962,13 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     {switcher && <Dialog open title="切换账号" width={480} onClose={() => setSwitcher(false)}><SavedAccounts api={native} onAccountChanged={(result) => { bootstrapEpoch.current++; bootstrapInFlight.current = null; if (result) suppressRestoredBootstrap.current.add(accountScope({ siteId: siteIdForOrigin(result.origin) ?? undefined, account: { userId: result.userId } as AccountSessionState['account'] })); setAccountBootstrap(null); if (!result || !accountSwitchNeedsAttention(result)) setSwitcher(false); setPaymentReturn(undefined); void perform('刷新账号', reloadAccount) }} onLogin={(target) => { setSwitcher(false); setAuthTarget(target ?? null); setAuth('login') }} /></Dialog>}
     {externalClient && <ExternalClientDialog key={`${scope}:${externalClient}`} api={native} tool={externalClient} signedIn={session.authenticated} onClose={() => setExternalClient(null)} onSaved={finishExternalConfigSave} />}
     {configTool && toolbox.snapshot && <ConfigDialog key={`${scope}:${configTool}:${codexModelFilter}`} api={toolsApi} tool={configTool} config={toolbox.snapshot.config} signedIn={session.authenticated} initialModelFilter={codexModelFilter}
-      onClose={() => setConfigTool(null)} onRefresh={() => toolbox.refresh(true)} onSaved={finishConfigSave} onLogin={() => setAuth('login')} onKeys={() => { setConfigTool(null); navigate('account', 'keys') }} onHelp={() => setHelp(true)} />}
+      onClose={() => setConfigTool(null)} onRefresh={() => toolbox.refresh(true)} onSaved={finishConfigSave} onLogin={() => setAuth('login')} onKeys={() => { setConfigTool(null); navigate('account', 'keys') }} onHelp={() => setHelp(true)}
+      accountName={session.account?.username ?? null}
+      onSwitchAccount={async (id) => {
+        const switched: { result: AccountSourceSwitchResult | null } = { result: null }
+        await perform('改用当前账号', async () => { switched.result = await switchToolAccount(id, 'account') }, id)
+        return switched.result
+      }} />}
     {accelerationHelp && <Dialog open title="游戏加速使用说明" onClose={() => setAccelerationHelp(false)} width={480}
       footer={<><Button variant="ghost" onClick={() => { setAccelerationHelp(false); setHelp(true) }}>帮助与客服</Button><Button onClick={() => setAccelerationHelp(false)}>知道了</Button></>}>
       <p>选择线路后点击“开始加速”，连接成功后再打开游戏或启动器。“智能分配”会自动测速并选择可用线路，也可以手动选择。</p>
@@ -962,6 +991,10 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
         ? <Button variant="primary" testId="account-read-relogin" onClick={() => { setAccountReadError(null); setAuth('login') }}>重新登录</Button>
         : <Button variant="primary" testId="account-read-retry" onClick={() => { setAccountReadError(null); void reloadAccount() }}>重试</Button>}
     </>}><p role="alert">{accountReadError.message}</p></Dialog>}
+    {ccSwitchReminder && <Dialog open title="请先退出 CC Switch" onClose={() => setCcSwitchReminder(false)} width={480} testId="cc-switch-reminder"
+      footer={<Button variant="primary" onClick={() => setCcSwitchReminder(false)}>知道了</Button>}>
+      <p>这个工具以前用 CC Switch 配过。CC Switch 还开着的话，会把刚改好的设置又改回去。不再用它的话，请把它退出（包括托盘里的图标）。</p>
+    </Dialog>}
     {switchRestartOffer && <Dialog open title="Codex 桌面端还开着" onClose={() => setSwitchRestartOffer(null)} busy={Boolean(toolbox.jobs['launch:codexDesktop'])} footer={<>
       <Button variant="ghost" onClick={() => setSwitchRestartOffer(null)}>先不用</Button>
       <Button variant="primary" testId="switch-restart-codex-desktop" onClick={() => void perform('重开 Codex 桌面端', async () => { await launch('codexDesktop', 'restart'); setSwitchRestartOffer(null) })}>帮我重开</Button>

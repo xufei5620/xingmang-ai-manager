@@ -504,6 +504,40 @@ describe('renderer-v2 home missing runtime guidance on macOS', () => {
     })
   })
 
+  // 来源没确认的 Key（方案盘查 2026-09-25）：只分「不是当前账号的站」和「当前站上认不出
+  // 是谁的」，不显示对方是谁；两种都给一颗写着账号名的「改用」。
+  describe('a tool whose key the current account did not write', () => {
+    function foreignSnapshot(extra: Record<string, unknown>): ToolboxSnapshot {
+      const base = snapshot({ claude: cliStatus, codex: cliStatus, grok: cliStatus, gemini: cliStatus })
+      return {
+        ...base,
+        config: { ...base.config, providers: { ...base.config.providers, claude: { ...providerConfig, configurationOwnership: 'unknown', ...extra } } },
+      } as unknown as ToolboxSnapshot
+    }
+
+    it('says a key from another site is not the current account\'s and offers to switch by name', () => {
+      const markup = render({}, undefined, { snapshot: foreignSnapshot({ matchesRelay: false, actualBaseUrl: 'https://elsewhere.example/v1' }), onSwitchAccount: () => undefined })
+      expect(markup).toContain('不是当前账号的 Key')
+      expect(markup).toContain('在这里打不开，改用你的账号就能用')
+      expect(markup).toContain('data-testid="tool-claude-use-account"')
+      expect(markup).not.toContain('elsewhere.example')
+      expect(markup).not.toContain('用的是别处的配置')
+    })
+
+    it('warns that a key on the current site may bill another account', () => {
+      const markup = render({}, undefined, { snapshot: foreignSnapshot({}), onSwitchAccount: () => undefined })
+      expect(markup).toContain('Key 可能不是当前账号的')
+      expect(markup).toContain('用量可能算到别的账号上')
+      expect(markup).toContain('data-testid="tool-claude-use-account"')
+    })
+
+    it('leaves the switch button out when the host offers no switch action', () => {
+      const markup = render({}, undefined, { snapshot: foreignSnapshot({ matchesRelay: false, actualBaseUrl: 'https://elsewhere.example/v1' }) })
+      expect(markup).toContain('不是当前账号的 Key')
+      expect(markup).not.toContain('data-testid="tool-claude-use-account"')
+    })
+  })
+
   // 开机账号恢复超过启动画面的等待上限时先进首页，这时读到的配置没有账号可比。
   // 恢复完补读之前，一行都不许说「配置被改过」或「用的是别处的配置」。
   describe('while the account is still being restored at startup', () => {
@@ -520,13 +554,14 @@ describe('renderer-v2 home missing runtime guidance on macOS', () => {
       const markup = render({}, undefined, { snapshot: pendingSnapshot(ownership), onRewriteKey: () => undefined, onKeepConfig: () => undefined })
       expect(markup).not.toContain('配置被改过')
       expect(markup).not.toContain('用的是别处的配置')
+      expect(markup).not.toContain('不是当前账号的')
       expect(markup).not.toContain('rewrite-key')
       expect(markup).toContain('已配好')
     })
 
     it('still reports a configuration pointing somewhere else, which no account could claim', () => {
       const markup = render({}, undefined, { snapshot: pendingSnapshot('unknown', { matchesRelay: false, actualBaseUrl: 'https://elsewhere.example/v1' }) })
-      expect(markup).toContain('用的是别处的配置')
+      expect(markup).toContain('不是当前账号的 Key')
     })
 
     it('goes back to the real verdict once the re-read config no longer carries the pending mark', () => {

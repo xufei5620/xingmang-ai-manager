@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { StartGuide, defaultGuideRoute, guideCanSkipConnect, guideInstallErrorMessage, guideStepErrorMessage, type GuideToolState, type StartGuideProps } from './StartGuide'
+import { StartGuide, defaultGuideRoute, guideCanSkipConnect, guideFailureExits, guideInstallErrorMessage, guideStepErrorMessage, type GuideToolState, type StartGuideProps } from './StartGuide'
 
 const resumeKey = 'fixture-scope'
 
@@ -246,5 +246,70 @@ describe('guide connect step skipping', () => {
     expect(render([guideTool()])).toContain('data-testid="guide-connected-note"')
     stubResumedGuide('claude', 'ready')
     expect(render([guideTool({ source: 'official' })])).not.toContain('data-testid="guide-connected-note"')
+  })
+})
+
+describe('guide connect step with a key the current account did not write', () => {
+  afterEach(() => { vi.unstubAllGlobals() })
+  const switchable = { onSwitchAccount: async () => null, accountName: 'peaker' }
+
+  it('offers one button named after the account and hides the grey next button for another site', () => {
+    stubResumedGuide('codexDesktop', 'connect')
+    const markup = render([guideTool({ id: 'codexDesktop', source: 'unknown', configured: false, keyState: 'otherSite' })], switchable)
+    expect(markup).toContain('Codex 桌面端 现在用的不是当前账号的 Key。')
+    expect(markup).toContain('点「改用 peaker」就能接着往下走')
+    expect(markup).toContain('Codex CLI 和 Codex 桌面端共用这份设置，会一起改。')
+    expect(markup).toContain('data-testid="guide-switch-account"')
+    expect(markup).toContain('>改用 peaker<')
+    expect(markup).not.toContain('data-testid="guide-next"')
+    expect(markup).not.toContain('data-testid="guide-config"')
+    // 界面上不说对方是谁。
+    expect(markup).not.toContain('别处')
+  })
+
+  it('asks a signed-out user to sign in first', () => {
+    stubResumedGuide('claude', 'connect')
+    const markup = render([guideTool({ source: 'unknown', configured: false, keyState: 'otherSite' })], { ...switchable, signedIn: false, accountName: null })
+    expect(markup).toContain('>登录后改用我的账号<')
+  })
+
+  it('lets a usable key from another account on this site through, with the switch as a second choice', () => {
+    stubResumedGuide('claude', 'connect')
+    const markup = render([guideTool({ source: 'unknown', keyState: 'otherAccount' })], switchable)
+    expect(markup).toContain('现在用的 Key 可能不是当前账号的')
+    expect(markup).toContain('用量可能算到别的账号上')
+    expect(markup).toContain('data-testid="guide-next"')
+    expect(markup).not.toMatch(/data-testid="guide-next"[^>]*disabled/)
+  })
+
+  it('does not call a changed config somebody else\'s key', () => {
+    stubResumedGuide('claude', 'connect')
+    const markup = render([guideTool({ source: 'unknown', keyState: 'changed' })], switchable)
+    expect(markup).toContain('配置在软件之外被改动过')
+    expect(markup).not.toContain('不是当前账号的')
+  })
+
+  it('names the official account and keeps the switch as a second button', () => {
+    stubResumedGuide('codex', 'connect')
+    const markup = render([guideTool({ id: 'codex', source: 'official' })], switchable)
+    expect(markup).toContain('ChatGPT 账号')
+    expect(markup).toContain('data-testid="guide-switch-account"')
+    expect(markup).toContain('data-testid="guide-next"')
+  })
+
+  it('keeps the old configure path when the caller cannot switch', () => {
+    stubResumedGuide('claude', 'connect')
+    const markup = render([guideTool({ source: 'unknown', configured: false, keyState: 'otherSite' })])
+    expect(markup).toContain('data-testid="guide-config"')
+    expect(markup).not.toContain('data-testid="guide-switch-account"')
+  })
+})
+
+describe('guide switch failure exits', () => {
+  it('sends a tool the account has not opened to support and a failed undo to the backups page', () => {
+    expect(guideFailureExits(new Error('改用当前账号没有完成：分组不存在、不可用或名称重复。已恢复到切换前的配置。')).map((action) => action.id)).toEqual(['support'])
+    expect(guideFailureExits(new Error('改用当前账号没有完成：EPERM。自动恢复也没有完成（EPERM），请到「备份」里恢复切换前那一份。')).map((action) => action.id)).toEqual(['backups', 'support'])
+    expect(guideFailureExits('不过账号余额不足，充值后再试。').map((action) => action.id)).toEqual(['recharge'])
+    expect(guideFailureExits(new Error('something odd'))).toEqual([])
   })
 })

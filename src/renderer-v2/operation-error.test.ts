@@ -9,6 +9,8 @@ import { errors } from './registry/errors'
  */
 const catalogCoverage: Record<OperationErrorKey, { sample: string } | { unreachable: string }> = {
   sessionExpired: { sample: '账号接口返回 401 Unauthorized' },
+  toolNotEnabled: { sample: 'Codex CLI 改用当前账号没有完成：分组不存在、不可用或名称重复。已恢复到切换前的配置。' },
+  switchUndoFailed: { sample: '改用当前账号没有完成：写入失败 EPERM。自动恢复也没有完成（EPERM），请到「备份」里恢复切换前那一份。' },
   keyInvalid: { sample: '模型查询失败，服务返回 403：令牌已失效' },
   noBalance: { sample: '账号余额或 API Key 额度不足，请充值后重试' },
   tooManyRequests: { sample: '星芒服务返回 429 Too Many Requests' },

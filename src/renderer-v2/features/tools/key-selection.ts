@@ -5,7 +5,8 @@ export const AUTOMATIC_KEY = 'automatic'
 export type ConfigKeyMetadata = AccountKeyOptions
 
 export function initialKeyChoice(native: AppConfigSummary['providers'][ProviderId]): string {
-  return native.hasApiKey ? CURRENT_KEY : AUTOMATIC_KEY
+  // 别的站的 Key（接过别家、换了站登录）不能「保持当前」，默认替用户选好自动准备。
+  return native.hasApiKey && native.matchesRelay ? CURRENT_KEY : AUTOMATIC_KEY
 }
 
 // 分组名认得出就带上，方便区分同名密钥；认不出就不写，「分组未确认」对用户只是一句看不懂的话。

@@ -5,7 +5,7 @@ import { presentExternalClients } from './external-model'
 import { useSharedAccountBalance } from '../app/balance-context'
 import { balanceStatusText } from '../shell/balance-status'
 import { BrandIcon, Button, Card, Dialog, Empty, ListRow, Menu, PageHead, Pill, Progress, ToolRow, useToast } from '../../ui'
-import { accountSwitchTarget, balanceTier, canUninstallTool, ccSwitchLeftoverFor, configDirectoryMenuItem, externalInstallHint, greeting, isExternallyManagedInstall, needsManualInstall, ownershipAwaitingAccount, presentTools, providerFor, recommendedVersionVerb, rollbackVersion, versionSubtitle, type ToolboxSnapshot, type ToolId, type ToolPresentation } from './model'
+import { accountSwitchTarget, balanceTier, canUninstallTool, ccSwitchLeftoverFor, foreignKeyKind, switchAccountLabel, configDirectoryMenuItem, externalInstallHint, greeting, isExternallyManagedInstall, needsManualInstall, ownershipAwaitingAccount, presentTools, providerFor, recommendedVersionVerb, rollbackVersion, versionSubtitle, type ToolboxSnapshot, type ToolId, type ToolPresentation } from './model'
 import type { ToolboxPartitionFailure, ToolsApi } from './api'
 import type { ToolJob } from './useToolbox'
 import type { AccountBootstrapProgress, AccountBootstrapResult } from './account-bootstrap'
@@ -110,10 +110,15 @@ const ccSwitchDetails: Record<'proxy' | 'provider', string> = {
   provider: '还在用 CC Switch 里选的连接，没有用当前账号',
 }
 
-const accountSwitchLabels: Record<AccountSourceTarget, string> = {
-  account: '切到当前账号',
-  official: '切回官方账号',
-}
+/**
+ * 来源没确认的两种 Key 各说一句会怎样（方案盘查 2026-09-25）。别家的站认不出也
+ * 用不了，只说不是当前账号的、在这里打不开，不提对方是谁；同一个站上别的账号的
+ * Key 能用，要说清用量算到哪。
+ */
+const foreignKeyDetails = {
+  otherSite: '在这里打不开，改用你的账号就能用',
+  otherAccount: '能用，但用量可能算到别的账号上',
+} as const
 
 function bootstrapErrorText(error: string) {
   return isNetworkFailureText(error) ? offlineBootstrapNotice : `账号 Key 初始化没有完成：${keySyncFailureReason(error)}`
@@ -226,10 +231,12 @@ export function Home(props: HomeProps) {
       && isAccountNotEnabledFailure(entry.message)) === true
     const ownershipPending = snapshot !== null && (Boolean(snapshot.system.cachedAt) || ownershipAwaitingAccount(snapshot.config, tool))
     const ccSwitch = snapshot && !ownershipPending ? ccSwitchLeftoverFor(snapshot.config.providers[tool.provider], tool.provider, tool.source) : null
+    const foreignKey = snapshot && !ownershipPending ? foreignKeyKind(snapshot.config.providers[tool.provider], tool.source) : null
     const status = installJob ? 'installing' : tool.error ? 'detectionFailed' : !tool.status.installed ? 'missing'
       : configUnavailable ? 'configUnavailable'
       : ccSwitch ? 'ccSwitch'
       : tool.source === 'changed' && !ownershipPending ? 'configChanged'
+      : foreignKey === 'otherSite' ? 'otherSiteKey' : foreignKey === 'otherAccount' ? 'otherAccountKey'
       : tool.source === 'unknown' && !ownershipPending ? 'unknownSource' : tool.source === 'official' ? 'official'
         : bootstrapBusy && !tool.configured ? 'configuring'
         : tool.configured ? 'ready' : notEnabled ? 'notEnabled' : 'unconfigured'
@@ -271,14 +278,16 @@ export function Home(props: HomeProps) {
       icon={lastWorkspace ? undefined : tool.status.installed && !bootstrapBusy ? ArrowUpRight : undefined}
       onClick={primary} testId={`tool-${tool.id}-primary`}>{primaryLabel}</Button>
     return <ToolRow key={tool.id} tool={tool.id} status={status}
-      detail={job?.label ?? tool.error ?? (status === 'configChanged' ? configChangedDetail : status === 'ccSwitch' && ccSwitch ? ccSwitchDetails[ccSwitch] : elevationHint ?? undefined)}
+      detail={job?.label ?? tool.error ?? (status === 'configChanged' ? configChangedDetail : status === 'ccSwitch' && ccSwitch ? ccSwitchDetails[ccSwitch] : foreignKey && status !== 'ccSwitch' ? foreignKeyDetails[foreignKey] : elevationHint ?? undefined)}
       version={tool.status.installed ? versionSubtitle(tool) ?? '版本暂未识别' : undefined}
       model={tool.status.installed ? tool.source === 'official' ? '官方账号' : tool.model || undefined : undefined}
       progress={job?.percent}
       extraAction={installJob?.cancellable
         ? <Button variant="ghost" size="sm" icon={X} loading={installJob.cancelling} onClick={() => props.onCancelInstall(tool.id)} testId={`tool-${tool.id}-cancel`}>{installJob.cancelling ? '取消中' : '取消'}</Button>
         : status === 'ccSwitch' && props.onSwitchAccount
-          ? <Button variant="ghost" size="sm" icon={KeyRound} onClick={() => props.onSwitchAccount?.(tool.id, 'account')} testId={`tool-${tool.id}-replace-cc-switch`}>改用当前账号</Button>
+          ? <Button variant="ghost" size="sm" icon={KeyRound} onClick={() => props.onSwitchAccount?.(tool.id, 'account')} testId={`tool-${tool.id}-replace-cc-switch`}>{switchAccountLabel(account?.username)}</Button>
+        : (status === 'otherSiteKey' || status === 'otherAccountKey') && props.onSwitchAccount
+          ? <Button variant="ghost" size="sm" icon={KeyRound} onClick={() => props.onSwitchAccount?.(tool.id, 'account')} testId={`tool-${tool.id}-use-account`}>{switchAccountLabel(account?.username)}</Button>
         : status === 'configChanged' && props.onRewriteKey
           ? <Button variant="ghost" size="sm" icon={KeyRound} onClick={() => props.onRewriteKey?.(tool.id)} testId={`tool-${tool.id}-rewrite-key`}>重新写入 Key</Button>
         : externalManaged
@@ -310,7 +319,7 @@ export function Home(props: HomeProps) {
         // 故意改过配置的人也要有出路，否则那颗黄角标会一直挂着。认下之后这个工具
         // 就按「自己填写的密钥」处理，下次在配置里改回星芒账号时标记自动清掉。
         ...((status === 'configChanged' || status === 'ccSwitch') && props.onKeepConfig ? [{ label: '就用现在这份', testId: `tool-${tool.id}-keep-config`, onSelect: () => props.onKeepConfig?.(tool.id) }] : []),
-        ...(switchTarget && props.onSwitchAccount ? [{ label: accountSwitchLabels[switchTarget], testId: `tool-${tool.id}-switch-${switchTarget}`, onSelect: () => props.onSwitchAccount?.(tool.id, switchTarget) }] : []),
+        ...(switchTarget && props.onSwitchAccount ? [{ label: switchTarget === 'account' ? switchAccountLabel(account?.username) : '切回官方账号', testId: `tool-${tool.id}-switch-${switchTarget}`, onSelect: () => props.onSwitchAccount?.(tool.id, switchTarget) }] : []),
         // 界面上一直只把配置路径写成一行灰字，而 `.` 开头的目录在资源管理器和
         // 访达里默认都看不见，用户和客服只能手敲路径。
         ...(props.onOpenConfigDirectory ? [{

@@ -161,6 +161,37 @@ test('desktop route avoids Node and unknown configuration requires an explicit c
   } finally { await page.close() }
 })
 
+test('a key from another site switches to the signed-in account in one click and moves on', async () => {
+  const page = await open('scenario=guide&installed=1&unknown=1&switchable=1')
+  try {
+    await page.getByTestId('guide-route-codexDesktop').check()
+    await page.getByTestId('guide-next').click()
+    await page.getByTestId('guide-next').click()
+    await page.getByTestId('guide-foreign-key').waitFor()
+    assert.equal(await page.getByTestId('guide-next').count(), 0)
+    assert.equal(await page.getByTestId('guide-config').count(), 0)
+    assert.equal((await page.getByTestId('guide-switch-account').textContent())?.trim(), '改用 peaker')
+    await page.getByTestId('guide-switch-account').click()
+    await page.waitForFunction(() => document.querySelector('[data-testid="start-guide"]')?.getAttribute('data-guide-step') === 'ready')
+    assert.match(await page.getByTestId('guide-switched-note').textContent() ?? '', /原来的设置已备份，在「备份」里能找回/)
+    assert.deepEqual((await calls(page)).map((item) => item.method), ['detect', 'switch'])
+  } finally { await page.close() }
+})
+
+test('a failed switch keeps the step and offers the matching way out', async () => {
+  const page = await open('scenario=guide&installed=1&runtime=1&unknown=1&switchable=1&switchFail=1')
+  try {
+    await page.getByTestId('guide-route-codex').check()
+    await page.getByTestId('guide-next').click()
+    await page.getByTestId('guide-next').click()
+    await page.getByTestId('guide-switch-account').click()
+    await page.getByTestId('guide-error').waitFor()
+    assert.equal(await page.getByTestId('start-guide').getAttribute('data-guide-step'), 'connect')
+    await page.getByTestId('guide-exit-support').click()
+    assert.deepEqual((await calls(page)).map((item) => item.method), ['detect', 'switch', 'exit'])
+  } finally { await page.close() }
+})
+
 test('an official Codex that has not signed in cannot leave the connect step', async () => {
   const page = await open('scenario=guide&installed=1&official=1&runtime=1&officialLoginRequired=1')
   try {

@@ -20,5 +20,7 @@ export const errors = {
   backupIntegrity: { title: '备份文件校验失败', body: '未做任何改动。', actions: ['换一份', '找客服'] },
   unsafeStorage: { title: '这台电脑无法安全保存密码', body: '只保留本次登录。', actions: ['知道了'] },
   noTray: { title: '关闭窗口会直接退出', body: '', actions: ['安装扩展'] },
+  toolNotEnabled: { title: '这个账号还没开通这个工具', body: '原来的设置没有动。找客服开通后再试一次。', actions: ['找客服'] },
+  switchUndoFailed: { title: '没能自动恢复原来的设置', body: '到「备份」里恢复改用之前的那一份就好。', actions: ['去备份页', '找客服'] },
   unknown: { title: '操作没有成功', body: '已自动撤回，不会留下半成品', actions: ['重试', '查看日志', '找客服'] },
 } as const;

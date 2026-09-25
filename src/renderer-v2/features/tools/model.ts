@@ -215,9 +215,36 @@ const oneClickOfficialProviders: ReadonlySet<ProviderId> = new Set<ProviderId>([
  */
 export function accountSwitchTarget(tool: Pick<ToolPresentation, 'provider' | 'source' | 'status'>): AccountSourceTarget | null {
   if (!tool.status.installed) return null
-  if (tool.source === 'official') return 'account'
+  // 来源没确认的（别家的 Key、同一个站上别的账号的 Key）同样一键改用当前账号：
+  // 主进程先备份、再写入、再自检，连不上就恢复原样。
+  if (tool.source === 'official' || tool.source === 'unknown') return 'account'
   if ((tool.source === 'account' || tool.source === 'manual' || tool.source === 'changed') && oneClickOfficialProviders.has(tool.provider)) return 'official'
   return null
+}
+
+/**
+ * 来源没确认的配置，Key 落在哪（方案盘查 2026-09-25 第 8、10 条）：
+ * - otherSite：地址不是当前账号所在的站。别家的站我们认不出、也用不了，界面上
+ *   只说「不是当前账号的 Key」，不显示对方是谁。
+ * - otherAccount：地址是当前账号的站，却认不出这把 Key 是当前账号的（同一个站上
+ *   换了账号登录、旧版本手填的都是这种）。能用，但用量可能算到别的账号上。
+ * 其余来源一律 null，「配置被改过」也是：那是替当前账号写过的配置，不能说成别人的 Key。
+ */
+export type ForeignKeyKind = 'otherSite' | 'otherAccount'
+
+export function foreignKeyKind(config: Pick<ProviderConfigSummary, 'matchesRelay'>, source: ToolSource): ForeignKeyKind | null {
+  if (source !== 'unknown') return null
+  return config.matchesRelay ? 'otherAccount' : 'otherSite'
+}
+
+/**
+ * 「改用 <账号名>」：用户要看见换成的是哪个账号（yoyo 9-25）。名字取首页问候语
+ * 同一个登录名，太长的截断；没登录时说不出名字，退回「当前账号」。
+ */
+export function switchAccountLabel(username: string | null | undefined): string {
+  const name = [...(username?.trim() ?? '')]
+  if (!name.length) return '改用当前账号'
+  return `改用 ${name.length > 16 ? `${name.slice(0, 15).join('')}…` : name.join('')}`
 }
 
 export function connectionReady(

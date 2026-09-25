@@ -1,12 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
-import { ArrowLeft, ArrowRight, Check, CircleCheck, Download, FolderOpen, FolderPlus, LogIn, MessageSquare, RefreshCw, Settings, Terminal } from 'lucide-react'
-import type { ProviderConfigSummary, ProviderId } from '../../../../electron/ipc-contract'
+import { ArrowLeft, ArrowRight, Check, CircleCheck, Download, FolderOpen, FolderPlus, KeyRound, LogIn, MessageSquare, RefreshCw, Settings, Terminal } from 'lucide-react'
+import type { AccountSourceSwitchResult, ProviderConfigSummary, ProviderId } from '../../../../electron/ipc-contract'
 import { BrandIcon, Button, Card, Logo, Pill, Progress } from '../../ui'
-import { guideRecommendedTool, officialAccountNotes, tools as toolRegistry } from '../../registry/tools'
+import { guideRecommendedTool, officialAccountNames, officialAccountNotes, tools as toolRegistry } from '../../registry/tools'
 import { FirstRunSteps } from '../tools/FirstRun'
-import type { ToolUpdateOffer } from '../tools/model'
+import { switchAccountLabel, type ToolUpdateOffer } from '../tools/model'
 import { matchNetworkFailureMessage } from '../../../../electron/network-failure'
-import { classifyOperationError } from '../../operation-error'
+import { classifyOperationError, presentOperationError, type OperationAction, type OperationActionId } from '../../operation-error'
 import { userFacingErrorMessage } from '../../business-common'
 import { errors } from '../../registry/errors'
 import { clearGuideProgress, getGuideStorage, readGuideProgress, writeGuideProgress } from './guide-progress'
@@ -36,6 +36,13 @@ export interface GuideToolState {
   update?: ToolUpdateOffer | null
   model?: string
   workspace?: string
+  /**
+   * 来源没确认（source 为 unknown）时，Key 到底是哪种（方案盘查 2026-09-25）：
+   * otherSite = 不是当前账号所在站的 Key，在这里用不了；otherAccount = 当前账号
+   * 那个站上、却认不出是当前账号的 Key，能用但用量可能算到别的账号上；changed =
+   * 替当前账号写过、之后在软件之外被改动过。缺省 = 按 otherSite 处理（旧行为：拦住）。
+   */
+  keyState?: 'otherSite' | 'otherAccount' | 'changed'
 }
 export interface StartGuideProps {
   platform: 'win' | 'mac' | 'linux'
@@ -50,6 +57,15 @@ export interface StartGuideProps {
   onInstallPython?: () => Promise<void>
   resumeKey?: string
   onConfigure: (route: Exclude<GuideRoute, 'chat'>) => Promise<void>
+  /**
+   * 第 3 步的一键「改用 <账号名>」：主进程先备份、再写入、再自检，连不上自动恢复原样，
+   * 失败时抛错。返回 null = 没切（还没登录，先去登录了）。缺省 = 旧行为，只给「打开配置」。
+   */
+  onSwitchAccount?: (route: Exclude<GuideRoute, 'chat'>) => Promise<AccountSourceSwitchResult | null>
+  /** 按钮上的账号名；没登录为 null。 */
+  accountName?: string | null
+  /** 失败时「找客服」「去充值」「去备份页」这些出口；缺省 = 只给「再试一次」。 */
+  onFailureAction?: (action: OperationActionId) => void
   onLogin: () => void
   /** newFolder：不弹目录选择器，替用户新建一个项目文件夹再打开（只对四家 CLI 有意义）。 */
   onLaunch: (route: GuideRoute, newFolder?: boolean) => Promise<boolean | void>
@@ -115,6 +131,11 @@ export function guideStepErrorMessage(reason: unknown, action: string): string {
   return `${action}没有成功。点「再试一次」，还不行就点「需要帮助」。`
 }
 
+/** 「改用」失败时在「再试一次」之外给的出口；重试已经有自己的按钮，这里不再给。 */
+export function guideFailureExits(reason: unknown): OperationAction[] {
+  return presentOperationError(userFacingErrorMessage(reason))?.actions.filter((action) => action.id !== 'retry' && action.id !== 'copyPath') ?? []
+}
+
 /**
  * 引导第一步默认选中哪一项（第十一批候选 1）。上次停在半路的按上次的来；新来的
  * 直接给推荐项，新手一路「下一步」就能走完。推荐项在当前平台上看不到时（Linux）
@@ -140,14 +161,17 @@ export function guideCanSkipConnect(route: GuideRoute | null, state: GuideToolSt
 export function resolveGuideReadiness(route: GuideRoute | null, state: GuideToolState | undefined, signedIn: boolean) {
   if (!route) return { prepared: false, connected: false }
   if (route === 'chat') return { prepared: true, connected: signedIn }
-  return { prepared: Boolean(state && state.installed && !state.detectionError && state.supported !== false && state.installMode !== 'unavailable' && (route === 'codexDesktop' || state.runtimeReady === true) && (route !== 'gemini' || state.pythonReady === true)), connected: Boolean(state && !state.detectionError && state.source !== 'unknown' && state.source !== 'none' && !state.officialLoginRequired && (state.configured || state.source === 'official')) }
+  return { prepared: Boolean(state && state.installed && !state.detectionError && state.supported !== false && state.installMode !== 'unavailable' && (route === 'codexDesktop' || state.runtimeReady === true) && (route !== 'gemini' || state.pythonReady === true)), connected: Boolean(state && !state.detectionError && state.source !== 'none' && !state.officialLoginRequired
+    // 来源没确认的只放行 Key 就在当前账号那个站上、确实能用的两种；别的站的 Key 在这里用不了。
+    && (state.source !== 'unknown' || state.keyState === 'otherAccount' || state.keyState === 'changed')
+    && (state.configured || state.source === 'official')) }
 }
 
 export function StartGuide(props: StartGuideProps) {
   return <AuthWindow platform={props.platform}><ScopedStartGuide key={`${props.resumeKey ?? 'volatile'}:${props.platform}`} {...props} /></AuthWindow>
 }
 
-function ScopedStartGuide({ platform, tools, signedIn, busy = false, progress, onDetect, onInstall, onInstallRuntime, onInstallPython, resumeKey, onConfigure, onLogin, onLaunch, onComplete, onBack, onHelp }: StartGuideProps) {
+function ScopedStartGuide({ platform, tools, signedIn, busy = false, progress, onDetect, onInstall, onInstallRuntime, onInstallPython, resumeKey, onConfigure, onSwitchAccount, accountName = null, onFailureAction, onLogin, onLaunch, onComplete, onBack, onHelp }: StartGuideProps) {
   const [restored] = useState(() => readGuideProgress(getGuideStorage(), resumeKey, platform))
   const options = toolRegistry.filter((item) => !item.hidden?.(platform)).sort((a, b) => Number(b.id === guideRecommendedTool) - Number(a.id === guideRecommendedTool) || a.shortcutIndex - b.shortcutIndex)
   const [route, setRoute] = useState<GuideRoute | null>(() => defaultGuideRoute(restored?.route, options.map((item) => item.id)))
@@ -156,6 +180,13 @@ function ScopedStartGuide({ platform, tools, signedIn, busy = false, progress, o
   const [error, setError] = useState('')
   // 上一次失败的那一步，留着给「再试一次」原样再跑一遍；以前只有「安装」有这颗按钮。
   const [failed, setFailed] = useState<{ action: string; work: () => Promise<void> } | null>(null)
+  // 「改用」失败时除了「再试一次」还要给的出口（没开通找客服、余额不足去充值、恢复失败去备份页）。
+  const [failureExits, setFailureExits] = useState<OperationAction[]>([])
+  // 这一轮引导里改用过的是哪个工具、结果如何：第 4 步据此说「已改用」还是「没能确认能用」。
+  const [switched, setSwitched] = useState<{ route: GuideRoute; result: AccountSourceSwitchResult } | null>(null)
+  // 改用成功后替用户点「下一步」；还没登录时先去登录，登好了接着改。
+  const advanceAfterSwitch = useRef<GuideRoute | null>(null)
+  const switchAfterLogin = useRef<GuideRoute | null>(null)
   const [storageWarning, setStorageWarning] = useState('')
   const lock = useRef(false)
   // 在「准备工具」这一步点「安装」成功后记下路线；等检测结果跟上来、工具确实
@@ -207,19 +238,44 @@ function ScopedStartGuide({ platform, tools, signedIn, busy = false, progress, o
     setError(''); setFailed(null)
     move(skipConnect ? 'ready' : 'connect')
   }, [step, route, locked, readiness.prepared, skipConnect])
+  useEffect(() => {
+    if (!advanceAfterSwitch.current) return
+    if (step !== 'connect' || route !== advanceAfterSwitch.current) { advanceAfterSwitch.current = null; return }
+    if (locked || !readiness.prepared || !readiness.connected) return
+    advanceAfterSwitch.current = null
+    move('ready')
+  }, [step, route, locked, readiness.prepared, readiness.connected])
+  useEffect(() => {
+    if (!switchAfterLogin.current || !signedIn || locked) return
+    if (step !== 'connect' || route !== switchAfterLogin.current) { switchAfterLogin.current = null; return }
+    switchAfterLogin.current = null
+    switchAccount()
+  }, [signedIn, locked, step, route])
   const move = (nextStep: GuideStep) => { setStep(nextStep); if (route) saveProgress(route, nextStep) }
   const complete = (chosen: GuideRoute) => { clearGuideProgress(getGuideStorage(), resumeKey); onComplete(chosen) }
   const run = async (action: string, work: () => Promise<void>) => {
     if (lock.current || busy) return
     const ticket = owner.current
-    lock.current = true; setPending(action); setError(''); setFailed(null)
+    lock.current = true; setPending(action); setError(''); setFailed(null); setFailureExits([])
     try { await work() }
     catch (reason) {
       if (ticket !== owner.current) return
       setError(action === '安装工具' ? guideInstallErrorMessage(reason, name) : guideStepErrorMessage(reason, action))
       setFailed({ action, work })
+      if (action === '改用当前账号' && onFailureAction) setFailureExits(guideFailureExits(reason))
     }
     finally { if (ticket === owner.current) { lock.current = false; setPending('') } }
+  }
+  const switchAccount = () => {
+    if (!route || route === 'chat' || !onSwitchAccount || locked) return
+    const chosen = route
+    if (!signedIn) { switchAfterLogin.current = chosen; onLogin(); return }
+    void run('改用当前账号', async () => {
+      const result = await onSwitchAccount(chosen)
+      if (!result) return
+      setSwitched({ route: chosen, result })
+      advanceAfterSwitch.current = chosen
+    })
   }
   const next = () => {
     if (locked || !route) return
@@ -242,7 +298,18 @@ function ScopedStartGuide({ platform, tools, signedIn, busy = false, progress, o
   // 保留着官方来源的工具,在这一步也要看到它自己的限制(Gemini 的个人 Google
   // 账号已经登不上去了),否则用户会拿着一份用不了的连接走完引导。
   const officialNote = route && route !== 'chat' && tool?.source === 'official' ? officialAccountNotes[route === 'codexDesktop' ? 'codex' : route] : null
-  const sourceLabel = tool?.source === 'official' ? tool.officialLoginRequired ? '官方账号（未登录）' : '官方账号' : tool?.source === 'account' ? '星芒账号' : tool?.source === 'manual' ? '手动填写密钥' : tool?.source === 'unknown' ? '用的是别处的配置' : '尚未选择连接方式'
+  const officialName = route && route !== 'chat' ? officialAccountNames[route === 'codexDesktop' ? 'codex' : route] ?? '官方账号' : '官方账号'
+  const switchLabel = switchAccountLabel(accountName)
+  // 来源没确认时按 Key 的归属分三种说法；没接「改用」的调用方仍走旧的「打开配置」那条路。
+  const foreign = tool?.source === 'unknown' && onSwitchAccount ? tool.keyState ?? 'otherSite' : null
+  const codexShared = route === 'codex' || route === 'codexDesktop' ? 'Codex CLI 和 Codex 桌面端共用这份设置，会一起改。' : ''
+  const foreignLead = { otherSite: `${name} 现在用的不是当前账号的 Key。`, otherAccount: `${name} 现在用的 Key 可能不是当前账号的。`, changed: `${name} 的配置在软件之外被改动过。` }
+  const switchButton = signedIn ? switchLabel : '登录后改用我的账号'
+  const foreignCallout = { otherSite: `点「${switchButton}」就能接着往下走。改之前会先把现在的设置备份一份。`, otherAccount: `能直接用，但用量可能算到别的账号上。点「${switchButton}」换成你自己的，改之前会先备份。`, changed: `现在还能用。想恢复成你账号的设置，点「${switchButton}」，改之前会先备份。` }
+  // 官方账号本来就能用，「改用」只是旁边一颗次要按钮；没登录时不给，免得点了先弹登录。
+  const offerSwitch = Boolean(onSwitchAccount && (foreign || (tool?.source === 'official' && signedIn)))
+  const switchedHere = switched && switched.route === route ? switched.result : null
+  const sourceLabel = tool?.source === 'official' ? tool.officialLoginRequired ? `${officialName}（未登录）` : officialName : tool?.source === 'account' ? '星芒账号' : tool?.source === 'manual' ? '手动填写密钥' : tool?.source === 'unknown' ? '用的是别处的配置' : '尚未选择连接方式'
   return <main className="auth-guide" data-testid="onboarding-page">
     <div className="auth-guide-frame" data-testid="start-guide" data-guide-step={step} data-guide-route={route ?? ''} aria-busy={locked} data-busy={locked}>
       <Card><div className="auth-guide-brand"><div><Logo kind="micro" height={28} /><Logo kind="wordmark" height={22} /></div><span>第 {currentStep + 1} 步，共 4 步</span></div>
@@ -263,15 +330,15 @@ function ScopedStartGuide({ platform, tools, signedIn, busy = false, progress, o
             <Button icon={RefreshCw} disabled={locked} onClick={() => void run('检测工具', onDetect)} testId="guide-installed-rescan">我已装好，重新检测</Button>
           </>}
           {step === 'connect' && route === 'chat' && <><p className="auth-guide-callout">{signedIn ? '进入聊天后，选择分组和模型，再输入第一个问题。' : '登录星芒账号后即可开始聊天。'}</p>{!signedIn && <Button variant="primary" icon={LogIn} onClick={onLogin} testId="guide-login">登录账号</Button>}</>}
-          {step === 'connect' && route && route !== 'chat' && <><p className="auth-guide-lead">{name} 的连接方式：<strong>{sourceLabel}</strong></p><p className="auth-guide-callout" data-testid={tool?.officialLoginRequired ? 'guide-official-login' : undefined}>{tool?.source === 'unknown' ? '你原来的配置已经原样留着。先看看处理步骤，确认哪些设置要留下，再决定怎么连接。' : tool?.officialLoginRequired ? `当前选的是官方账号，但还没有在 ${name} 里登录。请打开 ${name} 用 ChatGPT 账号登录后回来重新检测，或打开配置改用星芒账号的密钥。` : tool?.source === 'official' ? '保留当前官方来源。官方账号的登录和可用额度，请在工具内确认。' : readiness.connected ? '当前连接已确认。需要换密钥、模型或工作文件夹时，可以打开配置。' : '打开配置选择连接来源、密钥、模型和工作文件夹，确认后保存。'}</p>{officialNote && <p className="auth-hint" data-testid="guide-official-note">{officialNote}</p>}{tool?.model && <p className="auth-hint">模型：{tool.model}</p>}{tool?.workspace && <p className="auth-hint">工作文件夹：{tool.workspace}</p>}<div className="auth-form-actions"><Button icon={Settings} variant={readiness.connected ? 'secondary' : 'primary'} disabled={locked} onClick={() => void run('确认连接', () => onConfigure(route))} testId="guide-config">{tool?.source === 'unknown' ? '查看已有配置处理步骤' : readiness.connected ? '查看连接配置' : '去完成连接配置'}</Button><Button icon={RefreshCw} disabled={locked} onClick={() => void run('检测工具', onDetect)} testId="guide-connection-rescan">重新检测</Button></div></>}
-          {step === 'ready' && <><p className="auth-guide-lead">{route === 'chat' ? '从一个问题开始，慢慢熟悉你的 AI 工作台。' : readiness.prepared && readiness.connected ? `${name} 已准备好。打开工具，即可开始第一次任务。` : '工具或配置状态已变化，请返回复核。'}</p>{skipConnect && <p className="auth-hint auth-guide-connected" data-testid="guide-connected-note">已用当前账号连好。想换密钥或模型，<Button variant="ghost" size="sm" disabled={locked} onClick={() => { if (route && route !== 'chat') void run('确认连接', () => onConfigure(route)) }} testId="guide-connected-config">点这里</Button></p>}{definition?.firstRun && readiness.prepared && readiness.connected && <FirstRunSteps key={route} name={name} firstRun={definition.firstRun} testId="guide-first-run" />}{opensFolder && readiness.prepared && readiness.connected && <div className="auth-guide-check-row" data-testid="guide-folder-hint"><FolderPlus size={20} aria-hidden="true" /><div><strong>选哪个文件夹</strong><p>打开时要选一个项目文件夹。不知道选哪个，就点「新建并打开」，软件替你建好一个空文件夹并直接打开。</p></div><Button icon={FolderPlus} disabled={locked} onClick={() => launch(true)} testId="guide-open-tool-new-folder">新建并打开</Button></div>}<div className="auth-guide-ready"><CircleCheck size={30} aria-hidden="true" /><span>有需要时，可从首页重新打开这份引导。</span></div></>}
+          {step === 'connect' && route && route !== 'chat' && <>{foreign ? <p className="auth-guide-lead" data-testid="guide-foreign-key" data-key-state={foreign}>{foreignLead[foreign]}</p> : <p className="auth-guide-lead">{name} 的连接方式：<strong>{sourceLabel}</strong></p>}<p className="auth-guide-callout" data-testid={tool?.officialLoginRequired ? 'guide-official-login' : undefined}>{foreign ? `${foreignCallout[foreign]}${codexShared}` : tool?.source === 'unknown' ? '你原来的配置已经原样留着。先看看处理步骤，确认哪些设置要留下，再决定怎么连接。' : tool?.officialLoginRequired ? `当前选的是官方账号，但还没有在 ${name} 里登录。请打开 ${name} 用 ChatGPT 账号登录后回来重新检测，或打开配置改用星芒账号的密钥。` : tool?.source === 'official' ? '保留当前官方来源。官方账号的登录和可用额度，请在工具内确认。' : readiness.connected ? '当前连接已确认。需要换密钥、模型或工作文件夹时，可以打开配置。' : '打开配置选择连接来源、密钥、模型和工作文件夹，确认后保存。'}</p>{officialNote && <p className="auth-hint" data-testid="guide-official-note">{officialNote}</p>}{tool?.model && <p className="auth-hint">模型：{tool.model}</p>}{tool?.workspace && <p className="auth-hint">工作文件夹：{tool.workspace}</p>}<div className="auth-form-actions">{offerSwitch && <Button icon={KeyRound} variant={foreign === 'otherSite' ? 'primary' : 'secondary'} loading={pending === '改用当前账号'} disabled={locked} onClick={switchAccount} testId="guide-switch-account">{switchButton}</Button>}{foreign !== 'otherSite' && <><Button icon={Settings} variant={readiness.connected || offerSwitch ? 'secondary' : 'primary'} disabled={locked} onClick={() => void run('确认连接', () => onConfigure(route))} testId="guide-config">{tool?.source === 'unknown' && !foreign ? '查看已有配置处理步骤' : readiness.connected ? '查看连接配置' : '去完成连接配置'}</Button><Button icon={RefreshCw} disabled={locked} onClick={() => void run('检测工具', onDetect)} testId="guide-connection-rescan">重新检测</Button></>}</div></>}
+          {step === 'ready' && <><p className="auth-guide-lead">{route === 'chat' ? '从一个问题开始，慢慢熟悉你的 AI 工作台。' : readiness.prepared && readiness.connected ? switchedHere && !switchedHere.verified ? `${name} 已改用你的账号，但这次没能确认能用。` : `${name} 已准备好。打开工具，即可开始第一次任务。` : '工具或配置状态已变化，请返回复核。'}</p>{switchedHere ? <div className="auth-hint auth-guide-connected" data-testid="guide-switched-note"><p>{switchedHere.verified ? `已${switchLabel}。原来的设置已备份，在「备份」里能找回。` : `${switchedHere.message.replace(/^已改用当前账号[，。]?/, '')}原来的设置已备份，在「备份」里能找回。`}</p>{!switchedHere.verified && onFailureAction && guideFailureExits(switchedHere.message).map((action) => <Button key={action.id} size="sm" disabled={locked} onClick={() => onFailureAction(action.id)} testId={`guide-exit-${action.id}`}>{action.label}</Button>)}</div> : skipConnect && <p className="auth-hint auth-guide-connected" data-testid="guide-connected-note">已用当前账号连好。想换密钥或模型，<Button variant="ghost" size="sm" disabled={locked} onClick={() => { if (route && route !== 'chat') void run('确认连接', () => onConfigure(route)) }} testId="guide-connected-config">点这里</Button></p>}{definition?.firstRun && readiness.prepared && readiness.connected && <FirstRunSteps key={route} name={name} firstRun={definition.firstRun} testId="guide-first-run" />}{opensFolder && readiness.prepared && readiness.connected && <div className="auth-guide-check-row" data-testid="guide-folder-hint"><FolderPlus size={20} aria-hidden="true" /><div><strong>选哪个文件夹</strong><p>打开时要选一个项目文件夹。不知道选哪个，就点「新建并打开」，软件替你建好一个空文件夹并直接打开。</p></div><Button icon={FolderPlus} disabled={locked} onClick={() => launch(true)} testId="guide-open-tool-new-folder">新建并打开</Button></div>}<div className="auth-guide-ready"><CircleCheck size={30} aria-hidden="true" /><span>有需要时，可从首页重新打开这份引导。</span></div></>}
           {(step === 'connect' || step === 'ready') && !readiness.prepared && <p className="auth-error" role="alert">工具或运行环境尚未准备好，请返回准备工具步骤后再继续。</p>}
-          {pending && <p className="auth-hint" role="status">正在{pending}，请稍候</p>}{progress && locked && <Progress value={progress.percent} label={progress.label} testId="guide-progress" />}{error && <p className="auth-error" role="alert" data-testid="guide-error">{error}</p>}{error && failed && <Button icon={RefreshCw} disabled={locked} onClick={() => void run(failed.action, failed.work)} testId="guide-retry">再试一次</Button>}{storageWarning && <p className="auth-hint" role="status">{storageWarning}</p>}
+          {pending && <p className="auth-hint" role="status">正在{pending}，请稍候</p>}{progress && locked && <Progress value={progress.percent} label={progress.label} testId="guide-progress" />}{error && <p className="auth-error" role="alert" data-testid="guide-error">{error}</p>}{error && failed && <Button icon={RefreshCw} disabled={locked} onClick={() => void run(failed.action, failed.work)} testId="guide-retry">再试一次</Button>}{error && onFailureAction && failureExits.map((action) => <Button key={action.id} disabled={locked} onClick={() => onFailureAction(action.id)} testId={`guide-exit-${action.id}`}>{action.label}</Button>)}{storageWarning && <p className="auth-hint" role="status">{storageWarning}</p>}
         </div>
         <footer className="auth-guide-actions start-guide-footer">
           {step !== 'choose' && <Button icon={ArrowLeft} variant="ghost" disabled={locked} onClick={() => { setError(''); move(steps[currentStep - 1].id) }} testId="guide-back">上一步</Button>}
           <span className="auth-footer-spacer" />
-          {step === 'ready' ? <><Button variant="primary" icon={route === 'chat' ? MessageSquare : FolderOpen} loading={pending === '打开工具'} disabled={locked || !readiness.prepared || !readiness.connected} onClick={() => launch()} testId={route === 'chat' ? 'guide-chat' : 'guide-open-tool'}>{route === 'chat' ? '开始聊天' : `打开 ${name}`}</Button><Button disabled={locked || !route || !readiness.prepared || !readiness.connected} onClick={() => { if (route) complete(route) }} testId="guide-home">进入首页</Button></> : <Button variant="primary" iconRight={ArrowRight} disabled={locked || !route || (step === 'prepare' && !readiness.prepared) || (step === 'connect' && (!readiness.prepared || !readiness.connected))} onClick={next} testId="guide-next">下一步</Button>}
+          {step === 'ready' ? <><Button variant="primary" icon={route === 'chat' ? MessageSquare : FolderOpen} loading={pending === '打开工具'} disabled={locked || !readiness.prepared || !readiness.connected} onClick={() => launch()} testId={route === 'chat' ? 'guide-chat' : 'guide-open-tool'}>{route === 'chat' ? '开始聊天' : `打开 ${name}`}</Button><Button disabled={locked || !route || !readiness.prepared || !readiness.connected} onClick={() => { if (route) complete(route) }} testId="guide-home">进入首页</Button></> : step === 'connect' && foreign === 'otherSite' ? null : <Button variant="primary" iconRight={ArrowRight} disabled={locked || !route || (step === 'prepare' && !readiness.prepared) || (step === 'connect' && (!readiness.prepared || !readiness.connected))} onClick={next} testId="guide-next">下一步</Button>}
           {onBack && <Button variant="ghost" disabled={locked} onClick={() => { if (route) saveProgress(route, step); onBack() }} testId="guide-pause">稍后继续</Button>}{onHelp && <Button variant="ghost" disabled={locked} onClick={onHelp} testId="guide-help">需要帮助</Button>}
         </footer>
       </Card>
