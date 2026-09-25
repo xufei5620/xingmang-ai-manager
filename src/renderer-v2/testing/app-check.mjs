@@ -1897,6 +1897,39 @@ test('turning the display switch off in settings asks for a relaunch, and later 
   } finally { await page.close() }
 })
 
+test('large text switch enlarges the small print and Ctrl plus / minus / 0 step the interface scale', async () => {
+  const page = await open()
+  try {
+    await page.getByTestId('tool-row-claude').waitFor()
+    await page.getByTestId('nav-settings').click()
+    const settings = page.getByTestId('page-settings')
+    await settings.waitFor()
+    assert.equal(await page.evaluate(() => document.documentElement.dataset.largeText ?? 'false'), 'false')
+    const before = await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--font-small').trim())
+    await settings.getByRole('switch', { name: '大字' }).click()
+    await expect.poll(() => page.evaluate(() => document.documentElement.dataset.largeText)).toBe('true')
+    const after = await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--font-small').trim())
+    assert.equal(before, '12.5px')
+    assert.equal(after, '13.5px')
+    function saves() { return page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'saveSettings').map((entry) => entry.args[0])) }
+    assert.deepEqual((await saves()).at(-1), { version: 2, largeText: true })
+
+    await page.keyboard.press('Control+Equal')
+    await waitForToast(page, '界面放大到 110%，按 Ctrl 0 恢复')
+    await expect.poll(async () => (await saves()).at(-1)).toEqual({ version: 2, uiScale: '110' })
+    await settings.getByRole('button', { name: '110%', pressed: true }).waitFor()
+    await page.keyboard.press('Control+Equal')
+    await waitForToast(page, '界面已经放到最大的 110%，按 Ctrl 0 恢复')
+    await page.keyboard.press('Control+Minus')
+    await waitForToast(page, '界面缩小到 100%，按 Ctrl 0 恢复')
+    await expect.poll(async () => (await saves()).at(-1)).toEqual({ version: 2, uiScale: '100' })
+    await page.keyboard.press('Control+0')
+    await waitForToast(page, '界面缩放已恢复为自动')
+    await expect.poll(async () => (await saves()).at(-1)).toEqual({ version: 2, uiScale: 'auto' })
+    await clean(page)
+  } finally { await page.close() }
+})
+
 // 更新装完重新打开时，软件原来一句话都没有。现在角落里一张轻量卡片说一声已经在新版上、
 // 列前几项改动，只有一颗「知道了」；完整清单在更新页。普通启动什么都不说。
 test('the first launch after an update says which version it is on and lists the bundled changes', async () => {
