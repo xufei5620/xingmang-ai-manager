@@ -307,6 +307,19 @@ jobs:
           name: macos-release-${{ needs.macos-build.outputs.version }}
           path: release-artifacts
 
+      # 往更新目录写任何东西之前，先给 Windows 清单签名（更新包签名，见
+      # electron/update-package-signature.ts）。Windows 安装包没有 Authenticode 签名，
+      # latest.yml 又和安装包同放在 R2：只凭 SHA-512，拿到上传密钥的人换掉两者照样
+      # 校验通过。签名私钥只在 release 环境里，从不进桶，客户端缺签名或验签失败都拒装。
+      # 放在同版本检查之前：重跑同一次发布时签出的字节一模一样（Ed25519 是确定性的），
+      # 检查照样认得出是同一批文件。脚本会先确认这把私钥对得上客户端内置的公钥。
+      # macOS 不签：Squirrel.Mac 已经按钉住的发布证书验苹果签名，理由见脚本开头。
+      - name: Sign the Windows update manifest
+        if: ${{ needs.windows-build.result == 'success' }}
+        env:
+          XINGMANG_UPDATE_SIGNING_KEY: ${{ secrets.XINGMANG_UPDATE_SIGNING_KEY }}
+        run: node scripts/update-manifest-signature.cjs sign --manifest release-artifacts/latest.yml
+
       - name: List what is about to be published
         run: |
           ls -l release-artifacts
@@ -473,6 +486,16 @@ jobs:
         # 恢复旧的清单。
         if: ${{ needs.windows-build.result == 'success' }}
         run: npm run update:verify-feed -- --platform=windows
+
+      - name: Re-verify the publisher signature on the live Windows manifest
+        # 线上那份必须就是签过名的那份：少了签名，新客户端会全部拒装这一版。
+        if: ${{ needs.windows-build.result == 'success' }}
+        env:
+          PUBLIC_BASE: ${{ steps.feed.outputs.base }}
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error --max-time 60 --output "$RUNNER_TEMP/live-signed-latest.yml" "$PUBLIC_BASE/latest.yml"
+          node scripts/update-manifest-signature.cjs verify --manifest "$RUNNER_TEMP/live-signed-latest.yml"
 
       - name: Re-verify the published macOS update feed end to end
         if: ${{ needs.macos-build.result == 'success' }}

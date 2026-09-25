@@ -150,4 +150,10 @@ test('the rollback workflow fully verifies every backup before it writes anythin
   assert.match(script, /--base "\$PUBLIC_BASE"/)
   // 只 HEAD 一下确认「在」正是 #494 那个缺口，别让它以别的写法回来。
   assert.doesNotMatch(script, /--head/)
+  // 认签名的新客户端只装带签名的 Windows 包：恢复的 latest.yml 必须在写回之前验签，
+  // 或对过 GitHub Release 后补签。
+  const verifyAt = script.indexOf('rollback-release.cjs verify')
+  const signAt = script.indexOf('update-manifest-signature.cjs rollback --manifest "$RUNNER_TEMP/restore/$manifest"')
+  assert.ok(verifyAt >= 0 && signAt > verifyAt)
+  assert.match(script, /gh release download "v\$target"/)
 })

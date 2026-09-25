@@ -71,6 +71,8 @@ jobs:
         env:
           PUBLIC_BASE: ${{ steps.feed.outputs.base }}
           TO_VERSION: ${{ inputs.to_version }}
+          GH_TOKEN: ${{ github.token }}
+          XINGMANG_UPDATE_SIGNING_KEY: ${{ secrets.XINGMANG_UPDATE_SIGNING_KEY }}
         run: |
           set -euo pipefail
           target=$(node -e "console.log(require('./scripts/rollback-release.cjs').requirePlainVersion(process.env.TO_VERSION, '要退回的版本'))")
@@ -94,6 +96,17 @@ jobs:
             # 复核才暴露，那时撤回名单和根目录清单都已经改了。
             node scripts/rollback-release.cjs verify --manifest "$RUNNER_TEMP/restore/$manifest" --name "$manifest" \
               --expect "$target" --live "$live" --base "$PUBLIC_BASE"
+            if [ "$manifest" = latest.yml ]; then
+              # 新客户端只装带发布者签名的 Windows 包。加签名之前发的老版本备份没有签名，
+              # 要和 GitHub Release 上同版本的安装包逐字节对上才补签（见
+              # scripts/update-manifest-signature.cjs）；已经带签名的只验签。下载失败不在
+              # 这里判：备份本来就带签名时用不到它，用得到时脚本会说清楚缺什么。
+              mkdir -p "$RUNNER_TEMP/release-assets"
+              gh release download "v$target" --repo "$GITHUB_REPOSITORY" --pattern '*Setup.exe' \
+                --dir "$RUNNER_TEMP/release-assets" --clobber || echo "::warning::没能从 GitHub Release 下载 v$target 的安装包"
+              node scripts/update-manifest-signature.cjs rollback --manifest "$RUNNER_TEMP/restore/$manifest" \
+                --release-dir "$RUNNER_TEMP/release-assets"
+            fi
             echo "$manifest：线上 $live → 退回 $target"
             withdrawn="$withdrawn $live"
             platforms="$platforms $manifest"
