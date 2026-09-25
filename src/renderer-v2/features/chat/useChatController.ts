@@ -4,6 +4,8 @@ import type { AiChatGroupSummary } from '../../../../electron/ipc-contract'
 import { inspectModel, validateChatRequest, validateImageRequest, type ChatApi } from './api'
 import { activeConversation, applyStreamEvent, changeConversation, chatErrorMessage, completeImages, createConversation, createId, DEFAULT_CHAT_MODEL, DEFAULT_IMAGE_MODEL, isGenerating, planTurn, resolveChatGroup, resolveChatModel, saveConversation, updateRequest, type ChatMode, type ChatSettings, type ChatWorkspace, type Conversation } from './state'
 import { ChatStorageError, createHistoryWriter, type LoadedChatHistory } from './storage'
+import { offlineActionMessage } from '../shell/online-status'
+import { useOnlineStatus } from '../shell/useOnlineStatus'
 
 export interface GroupPreparation { phase: 'loading' | 'ready' | 'error'; models: string[]; error?: string; warning?: string }
 interface PendingRequest { conversationId: string; assistantId: string; mode: ChatMode; epoch: number; cancelRequested?: boolean; failureDuringCancel?: unknown }
@@ -20,6 +22,8 @@ export function useChatController(api: ChatApi, scope: string, initial: LoadedCh
   const [notice, setNotice] = useState('')
   const [storageError, setStorageError] = useState(initial.warning ? `${initial.warning}。当前会话暂未启用保存。` : '')
   const stateRef = useRef(state)
+  const offlineRef = useRef(false)
+  offlineRef.current = useOnlineStatus().offline
   const alive = useRef(false)
   const epoch = useRef(0)
   const requests = useRef(new Map<string, PendingRequest>())
@@ -186,6 +190,8 @@ export function useChatController(api: ChatApi, scope: string, initial: LoadedCh
     const current = activeConversation(stateRef.current)
     const owner = epoch.current
     if (!alive.current || isGenerating(current)) return
+    // 断网时当场说，草稿原样留在输入框里，不先挂一条等超时的消息。
+    if (offlineRef.current) { setError(offlineActionMessage); return }
     if (!stateRef.current.conversations.some((item) => item.id === current.id) && stateRef.current.conversations.length >= 50) { setError('最多保存 50 个对话，请先删除不再需要的对话'); return }
     if (requests.current.size >= 4) { setError('已有 4 个对话正在处理，请等待一个完成后再试'); return }
     try {

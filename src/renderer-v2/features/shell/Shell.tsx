@@ -11,7 +11,10 @@ import type { AvatarIdentity } from '../../local-avatar'
 import { readLocalPreference, writeLocalPreference } from '../app/preferences'
 import type { SystemSnapshot } from '../../../../electron/ipc-contract'
 import { networkLocationLabel } from './network'
-import { balanceStatusText, type BalanceStatusView } from './balance-status'
+import { balanceFailureLabel, balanceStatusText, type BalanceStatusView } from './balance-status'
+import { OfflineBanner } from './OfflineBanner'
+import { offlineActionMessage } from './online-status'
+import { useOnlineStatus } from './useOnlineStatus'
 import { accelerationBonusSeconds, isAccelerationBonusCode, type AccelerationRedemptionResult } from '../../../../electron/acceleration-contract'
 
 interface AccountView extends BalanceStatusView { signedIn: boolean; supportsBilling?: boolean; supportsAnnouncements?: boolean; displayName?: string; email?: string; sourceLabel?: string; balance?: string; identity?: AvatarIdentity }
@@ -56,6 +59,7 @@ interface ShellProps {
 }
 
 export function Shell({ activePage, account, platform, adapter, environment, balance, version, network, networkRefreshing = false, installedCount, updatableCount = 0, unread, banner, notification, tourOpen, onTourClose, children }: ShellProps) {
+  const { offline } = useOnlineStatus()
   const [tourStep, setTourStep] = useState(0)
   useEffect(() => { if (tourOpen) setTourStep(0) }, [tourOpen])
   const [collapsed, setCollapsed] = useState(() => readLocalPreference('xingmang-v2-sidebar') === 'collapsed')
@@ -91,6 +95,7 @@ export function Shell({ activePage, account, platform, adapter, environment, bal
   function closeCommand() { commandEpoch.current++; setCommand(false) }
   async function redeemBonus() {
     if (bonusFlight.current || !isAccelerationBonusCode(query) || !adapter.redeemAccelerationCode) return
+    if (offline) { setBonusFeedback({ error: true, text: offlineActionMessage }); return }
     const flight = {}
     const epoch = commandEpoch.current
     bonusFlight.current = flight
@@ -109,7 +114,7 @@ export function Shell({ activePage, account, platform, adapter, environment, bal
       if (bonusFlight.current === flight) { bonusFlight.current = null; setBonusBusy(false) }
     }
   }
-  const balanceStatus = balanceStatusText(account)
+  const balanceStatus = balanceStatusText({ ...account, offline })
   const balanceTitle = `${account.balance ?? '暂未读到'}；${balanceStatus}`
   const balanceRefresh = account.signedIn && adapter.refreshBalance
     ? <Button size="xs" variant="ghost" icon={RefreshCw} aria-label="刷新余额" title={`刷新余额；${balanceStatus}`} loading={account.balanceLoading} onClick={adapter.refreshBalance} testId="sidebar-balance-refresh" />
@@ -231,7 +236,7 @@ export function Shell({ activePage, account, platform, adapter, environment, bal
               <strong>{account.balance ?? '暂未读到'}</strong>
             </div> : balanceRefresh}
             {account.supportsBilling !== false && <Button size="sm" variant="balance" icon={Zap} aria-label="充值" title="充值" onClick={adapter.topUp}>{collapsed ? undefined : '充值'}</Button>}
-            {!collapsed && account.signedIn && account.balanceError && !account.balanceLoading && <small className="v2-balance-error" role="status" title={balanceStatus}>更新失败</small>}
+            {!collapsed && account.signedIn && account.balanceError && !account.balanceLoading && <small className="v2-balance-error" role="status" title={balanceStatus}>{balanceFailureLabel(offline)}</small>}
           </div>
         </section>
       </aside>
@@ -240,6 +245,7 @@ export function Shell({ activePage, account, platform, adapter, environment, bal
         <header className="v2-topbar" data-testid="shell-topbar"><button type="button" className="v2-command-trigger" onClick={openCommand}><Search size={16} /><span>搜索、打开、跳转…</span><kbd>{platform === 'mac' ? '⌘K' : 'Ctrl K'}</kbd></button>
           <div className="v2-topbar-actions">{account.supportsAnnouncements !== false && <Button size="sm" icon={Bell} onClick={adapter.openAnnouncements} testId="announcement-open">公告{unread && <span className="v2-unread" />}</Button>}<Button size="sm" icon={CircleHelp} onClick={adapter.openHelp}>帮助与客服</Button></div>
         </header>
+        <OfflineBanner />
         {banner}
         <main ref={viewport} id="v2-main" tabIndex={-1} className={`v2-content${activePage === 'chat' ? ' v2-content-chat' : ''}`} data-testid="page-viewport">{children}</main>
         <p className="v2-visually-hidden" role="status" aria-live="polite" data-testid="shell-page-announcement">{pageAnnouncement}</p>
@@ -250,7 +256,7 @@ export function Shell({ activePage, account, platform, adapter, environment, bal
             onClick={adapter.refreshNetwork}>
             <Globe size={14} aria-hidden="true" /><span aria-live="polite">{networkRefreshing ? '正在检测网络位置…' : networkLocationLabel(network)}</span>
           </button><button type="button" onClick={adapter.openAccount}><i className="v2-dot" />{account.signedIn ? `已登录 ${account.displayName}` : '未登录'}</button>
-          {(balance || account.balance) && <button type="button" onClick={adapter.topUp} title={balanceStatus} data-testid="statusbar-balance">余额 {balance ?? account.balance}{account.balanceLoading && <RefreshCw size={12} className="xm-spin" aria-label="正在刷新余额" />}{account.balanceError && !account.balanceLoading && <span className="v2-balance-error">更新失败</span>}</button>}{installedCount !== undefined && <span>{installedCount} 个工具已装</span>}
+          {(balance || account.balance) && <button type="button" onClick={adapter.topUp} title={balanceStatus} data-testid="statusbar-balance">余额 {balance ?? account.balance}{account.balanceLoading && <RefreshCw size={12} className="xm-spin" aria-label="正在刷新余额" />}{account.balanceError && !account.balanceLoading && <span className="v2-balance-error">{balanceFailureLabel(offline)}</span>}</button>}{installedCount !== undefined && <span>{installedCount} 个工具已装</span>}
           <button type="button" className="v2-status-version" onClick={adapter.openUpdates}>{version ? `v${version}` : '版本读取中'}</button>
         </footer>
         {notification && <div className="v2-notification">{notification}</div>}

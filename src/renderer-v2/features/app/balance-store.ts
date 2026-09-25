@@ -1,5 +1,6 @@
 import type { AccountBalance } from '../../../../electron/ipc-contract'
 import { formatAccountReadError } from './account-read-error'
+import { isLocalNetworkFailure } from '../shell/online-status'
 
 export interface AccountBalanceSnapshot {
   scope: string | null
@@ -7,6 +8,12 @@ export interface AccountBalanceSnapshot {
   loading: boolean
   updatedAt: number | null
   error: string | null
+  /**
+   * 连着几次读余额都是本机网络的问题（没网、代理挂了、门户认证没做完）；读成功或
+   * 换成别的失败就归零。余额是唯一定时去服务端拉数据的地方，顶部的断网横幅靠它
+   * 认出 navigator.onLine 看不出来的那几种断网。
+   */
+  networkFailures: number
 }
 
 export type AccountBalanceRefreshReason = 'manual' | 'mutation' | 'foreground' | 'interval'
@@ -39,7 +46,7 @@ export function createAccountBalanceStore({ read, now = Date.now, focused = alwa
   /** Whether the user is looking at the window; decides the refresh pace. */
   focused?: () => boolean
 }): AccountBalanceStore {
-  let snapshot: AccountBalanceSnapshot = { scope: null, balance: null, loading: false, updatedAt: null, error: null }
+  let snapshot: AccountBalanceSnapshot = { scope: null, balance: null, loading: false, updatedAt: null, error: null, networkFailures: 0 }
   const listeners = new Set<() => void>()
   let visible = true
   let disposed = false
@@ -125,10 +132,10 @@ export function createAccountBalanceStore({ read, now = Date.now, focused = alwa
           try {
             const balance = await read()
             if (!current()) return
-            publish({ balance, updatedAt: now(), error: null })
+            publish({ balance, updatedAt: now(), error: null, networkFailures: 0 })
           } catch (cause) {
             if (!current()) return
-            publish({ error: formatAccountReadError(cause, 'balance') })
+            publish({ error: formatAccountReadError(cause, 'balance'), networkFailures: isLocalNetworkFailure(cause) ? snapshot.networkFailures + 1 : 0 })
           }
         } while (flight.repeat)
       } finally {
@@ -157,7 +164,7 @@ export function createAccountBalanceStore({ read, now = Date.now, focused = alwa
       clearActivityTimer()
       activityDueAt = null
       inFlight = null
-      publish({ scope, balance: null, loading: false, updatedAt: null, error: null })
+      publish({ scope, balance: null, loading: false, updatedAt: null, error: null, networkFailures: 0 })
       if (scope) void refresh()
     },
     setVisible(nextVisible) {
@@ -191,7 +198,7 @@ export function createAccountBalanceStore({ read, now = Date.now, focused = alwa
       activityDueAt = null
       inFlight = null
       listeners.clear()
-      snapshot = { scope: null, balance: null, loading: false, updatedAt: null, error: null }
+      snapshot = { scope: null, balance: null, loading: false, updatedAt: null, error: null, networkFailures: 0 }
     },
   }
 }
