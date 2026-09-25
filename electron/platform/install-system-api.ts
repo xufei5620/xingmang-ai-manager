@@ -8,6 +8,7 @@ import type {
   WebContents,
 } from 'electron'
 import { AppSettingsStore } from '../app-settings'
+import { ipcEventChannels, type RendererNavigationTarget } from '../ipc-contract'
 import { isTrustedIpcSenderUrl, type ApplicationUrlPolicy } from '../security'
 import { platformChannels } from './contract'
 import { registerPlatformHandlers, type PlatformIpcLogger } from './ipc'
@@ -126,6 +127,16 @@ export function installPlatformSystemApi(
                 mainWindow.show()
                 mainWindow.focus()
               }
+            },
+            // 主进程只能认主窗口的页面：窗口被换成别处的地址时不发，同状态推送的口径。
+            openPage: (target) => {
+              const page: RendererNavigationTarget = target
+              if (
+                owner &&
+                !owner.isDestroyed() &&
+                isTrustedIpcSenderUrl(owner.getURL(), options.policy())
+              )
+                owner.send(ipcEventChannels.onNavigate, page)
             },
             onError: (error) => options.onError?.(error),
           },

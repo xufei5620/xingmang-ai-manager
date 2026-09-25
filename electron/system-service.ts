@@ -15,6 +15,7 @@ import {
   resolveCliInstallVersion,
   type CliVersionAdvice,
 } from './cli-verified-versions'
+import { buildCliUpdateRecord, CliUpdateHistoryStore, resolveCliRevertVersion } from './cli-update-history'
 import {
   defaultProviderConfigRoots,
   type ProviderConfigRoots,
@@ -305,6 +306,11 @@ export interface CliStatus extends ToolStatus {
    * 这一个字段就能显示「推荐版本」和不兼容提示,不需要自己持有名单。
    */
   versionAdvice?: CliVersionAdvice
+  /**
+   * 本工具最近一次把它更新过、还能退回去的那个旧版本(cli-update-history.ts)。
+   * 缺省 = 没有可退的版本,界面不显示「退回更新前的版本」。
+   */
+  revertVersion?: string
 }
 
 export interface DesktopAppStatus extends ToolStatus, Partial<VersionUpdateStatus> {
@@ -1924,10 +1930,12 @@ export function buildCliStatus(
   installed: ToolStatus,
   latest: LatestVersionProbe,
   versionAdvice?: CliVersionAdvice,
+  revertVersion?: string | null,
 ): CliStatus {
   const base = {
     ...installed,
     ...(versionAdvice ? { versionAdvice } : {}),
+    ...(revertVersion && installed.installed ? { revertVersion } : {}),
     uninstall: installed.uninstall ?? {
       available: false,
       reason: installed.installed ? '未能确认当前安装是否可由本工具安全卸载' : null,
@@ -2240,6 +2248,7 @@ export function createSystemService(
   const configOwnership = new ToolConfigOwnershipStore(path.join(serviceOptions.managerDataDirectory ?? store.dataDirectory, 'tool-config-ownership'))
   const externalOwnership = new ExternalClientOwnershipStore(path.join(serviceOptions.managerDataDirectory ?? store.dataDirectory, 'external-client-ownership'))
   const projectInstructionsState = new ProjectInstructionsStateStore(path.join(serviceOptions.managerDataDirectory ?? store.dataDirectory, 'project-instructions'))
+  const cliUpdateHistory = new CliUpdateHistoryStore(path.join(serviceOptions.managerDataDirectory ?? store.dataDirectory, 'cli-update-history'))
   let configWriteQueue: Promise<unknown> = Promise.resolve()
   function serializeConfigWrite<T>(operation: () => Promise<T>): Promise<T> {
     const next = configWriteQueue.then(operation, operation)
@@ -2865,7 +2874,7 @@ export function createSystemService(
     return buildCliStatus(status, latest, buildCliVersionAdvice(provider, status.version, {
       siteId: settings.relaySiteId,
       alwaysLatest: settings.alwaysInstallLatestCli === true,
-    }))
+    }), resolveCliRevertVersion(provider, cliUpdateHistory.read()[provider], status.version, Date.now(), settings.relaySiteId))
   }
 
   async function inspectOfficialChatGptAccount(forceRefresh: boolean): Promise<OfficialChatGptAccount | null> {
@@ -2995,12 +3004,14 @@ export function createSystemService(
       latestVersionBudget,
     )
     const scanSettings = store.read()
+    const updateHistory = cliUpdateHistory.read()
+    const scannedAt = Date.now()
     const clis = Object.fromEntries(providerIds.map((id, index) => {
       const status = cliResults[index]
       return [id, buildCliStatus(status, latestVersions[index], buildCliVersionAdvice(id, status.version, {
         siteId: scanSettings.relaySiteId,
         alwaysLatest: scanSettings.alwaysInstallLatestCli === true,
-      }))]
+      }), resolveCliRevertVersion(id, updateHistory[id], status.version, scannedAt, scanSettings.relaySiteId))]
     })) as Record<ProviderId, CliStatus>
 
     // A Microsoft Store install is outside the app's installer IPC. Once a
@@ -3412,6 +3423,7 @@ export function createSystemService(
     let preserveManagedNpmTransaction = false
     let occupancyProbeRoot: string | null = null
     let updatingExistingInstall = false
+    let versionBeforeUpdate: string | null = null
     try {
       if (provider === 'grok') {
         if (grokInstallStrategy === 'external') {
@@ -3554,6 +3566,10 @@ export function createSystemService(
         }
         if (occupancyProbeRoot && fs.existsSync(occupancyProbeRoot)) {
           updatingExistingInstall = true
+          versionBeforeUpdate = await readPackageManifestVersion(
+            path.join(occupancyProbeRoot, 'package.json'),
+            `${definition.name} package.json`,
+          )
           const probe = await probeRunningCliProcesses(occupancyProbeRoot)
           runtimeLog?.log(
             probe.status === 'checked' ? 'info' : 'warn',
@@ -3930,6 +3946,22 @@ export function createSystemService(
       }
       // npm 每次安装都会把 .ps1 启动文件重新写回来，所以装完、更新完都要再清一遍。
       if (verification?.installation) await cliTerminalAccess.prepare({ provider, installation: verification.installation }, 'install')
+      const updateRecord = buildCliUpdateRecord(
+        versionBeforeUpdate,
+        verification?.status.version ?? null,
+        versionChoice.source === 'requested',
+        Date.now(),
+      )
+      if (updateRecord) {
+        // 记录只决定首页能不能「退回更新前的版本」,写不进去不该让一次已经
+        // 成功的更新报失败。
+        await cliUpdateHistory.record(provider, updateRecord).catch((error: unknown) => {
+          runtimeLog?.log('warn', 'install', 'cli.update-history.write-failed', `${definition.name} 更新记录没有写入`, {
+            provider,
+            detail: error instanceof Error ? redactHomeDirectory(error.message, providerRoots.userHome) : '未知错误',
+          })
+        })
+      }
       sendInstallProgress(
         target,
         provider,

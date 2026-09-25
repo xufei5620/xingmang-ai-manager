@@ -67,6 +67,18 @@ export function rememberAnnouncedToolUpdates(entries: readonly ToolUpdateEntry[]
   )
 }
 
+/**
+ * 用户主动退回旧版本之后，扫描会重新看到「有新版本」——正是他刚退掉的那一版。
+ * 退回之前先把它记成已提醒过，免得刚退完就弹一条通知劝他再更新回去。上游
+ * 之后再出更新的版本，目标版本变了，照常提醒。
+ */
+export function rememberRevertedToolUpdate(id: ToolId, latestVersion: string | null): boolean {
+  return writeLocalPreference(
+    storageKey,
+    JSON.stringify({ ...readAnnouncedToolUpdates(), [id]: latestVersion ?? unknownVersion }),
+  )
+}
+
 /** 还没提醒过的那几个：同一个工具同一个目标版本只说一次，换了版本再说。 */
 export function unannouncedToolUpdates(
   entries: readonly ToolUpdateEntry[],

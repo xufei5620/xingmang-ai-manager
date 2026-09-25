@@ -180,7 +180,7 @@ export const notificationOptions = [
   {
     value: 'task',
     label: '异步任务完成',
-    description: '已关注的任务完成后提醒你查看结果',
+    description: '聊天回复、图片和异步任务完成时提醒你（正看着窗口时不提醒）',
   },
   {
     value: 'cliUpdate',

@@ -6,6 +6,7 @@ import { activeConversation, applyStreamEvent, changeConversation, chatErrorMess
 import { ChatStorageError, createHistoryWriter, type LoadedChatHistory } from './storage'
 import { offlineActionMessage } from '../shell/online-status'
 import { useOnlineStatus } from '../shell/useOnlineStatus'
+import { isWindowInFront } from '../tools/install-notice'
 
 export interface GroupPreparation { phase: 'loading' | 'ready' | 'error'; models: string[]; error?: string; warning?: string }
 interface PendingRequest { conversationId: string; assistantId: string; mode: ChatMode; epoch: number; cancelRequested?: boolean; failureDuringCancel?: unknown }
@@ -115,7 +116,7 @@ export function useChatController(api: ChatApi, scope: string, initial: LoadedCh
     const unsubscribe = api.subscribe((event) => {
       if (!alive.current || epoch.current !== owner || !requests.current.has(event.requestId)) return
       commit((current) => applyStreamEvent(current, event))
-      if (event.type === 'complete') void platformApi()?.notifyActivity('task', `chat:${event.requestId}`).catch(() => undefined)
+      if (event.type === 'complete' && !isWindowInFront(typeof document === 'undefined' ? undefined : document)) void platformApi()?.notifyActivity('task', `chat:${event.requestId}`).catch(() => undefined)
       if (event.type === 'complete' || event.type === 'error' || event.type === 'canceled') requests.current.delete(event.requestId)
     })
     void refreshGroups()
@@ -213,7 +214,7 @@ export function useChatController(api: ChatApi, scope: string, initial: LoadedCh
           if (alive.current && epoch.current === owner && requests.current.has(plan.requestId)) {
             if (!assets.length) throw new Error('没有收到生成的图片')
             commit((workspace) => completeImages(workspace, plan.requestId, assets))
-            void platformApi()?.notifyActivity('task', `image:${plan.requestId}`).catch(() => undefined)
+            if (!isWindowInFront(typeof document === 'undefined' ? undefined : document)) void platformApi()?.notifyActivity('task', `image:${plan.requestId}`).catch(() => undefined)
             requests.current.delete(plan.requestId)
           }
         } else {

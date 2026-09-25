@@ -1,8 +1,10 @@
 import { EventEmitter } from 'node:events'
 import { describe, expect, it, vi } from 'vitest'
 import {
+  buildActivityNotificationMessage,
   createPlatformNotifications,
   hostNotificationMessage,
+  resolveNotificationTarget,
   type PlatformNotificationRuntime,
 } from './notifications'
 
@@ -27,12 +29,14 @@ function setup() {
     }),
   }
   const focusMainWindow = vi.fn()
+  const openPage = vi.fn()
   const onError = vi.fn()
   const controller = createPlatformNotifications(
     {
       readEnabled: () => enabled,
       readPreferences: () => preferences,
       focusMainWindow,
+      openPage,
       onError,
     },
     runtime,
@@ -43,6 +47,7 @@ function setup() {
     notifications,
     runtime,
     focusMainWindow,
+    openPage,
     onError,
     enable: (value: boolean) => {
       enabled = value
@@ -249,5 +254,69 @@ describe('announcement reminders', () => {
     h.preferences.install = false
     expect(h.controller.notify('install', 'install:claude:installFailed:1', { tool: 'claude', outcome: 'installFailed' })).toBe('disabled')
     expect(h.runtime.create).not.toHaveBeenCalled()
+  })
+})
+
+describe('chat notifications and click destinations', () => {
+  it('uses chat-specific copy for chat and image completions instead of the async task sentence', () => {
+    expect(buildActivityNotificationMessage('task', 'chat:req-1')).toEqual({
+      title: 'AI 回复好了',
+      body: '回到星芒的「聊天」查看。',
+    })
+    expect(buildActivityNotificationMessage('task', 'image:req-1')).toEqual({
+      title: '图片生成好了',
+      body: '回到星芒的「聊天」查看。',
+    })
+    expect(buildActivityNotificationMessage('task', 'xm-account:7:12:0').title).toBe('异步任务已完成')
+    // 前缀只对 task 这一类生效，别的种类照旧用自己的说法。
+    expect(buildActivityNotificationMessage('balance', 'chat:1').title).toBe('余额需要留意')
+  })
+  it('maps every notification kind to a fixed page decided in the main process', () => {
+    expect(resolveNotificationTarget('balance', 'balance:7:1')).toBe('topup')
+    expect(resolveNotificationTarget('task', 'chat:req-1')).toBe('chat')
+    expect(resolveNotificationTarget('task', 'image:req-1')).toBe('chat')
+    expect(resolveNotificationTarget('task', 'xm-account:7:12:0')).toBe('tasks')
+    expect(resolveNotificationTarget('install', 'install:claude:installed:1')).toBe('home')
+    expect(resolveNotificationTarget('cliUpdate', 'claude@2')).toBe('home')
+    expect(resolveNotificationTarget('announcement', 'notice-1')).toBe('announcement')
+    expect(resolveNotificationTarget('test', 'test')).toBeNull()
+  })
+  it('focuses the window before opening the destination page on click', () => {
+    const h = setup()
+    const order: string[] = []
+    h.focusMainWindow.mockImplementation(() => order.push('focus'))
+    h.openPage.mockImplementation((target: string) => order.push(target))
+    h.controller.notify('task', 'chat:req-1')
+    h.controller.notify('balance', 'balance:7:1')
+    h.controller.notify('test', 'test')
+    h.notifications[0].emit('click')
+    h.notifications[1].emit('click')
+    h.notifications[2].emit('click')
+    expect(order).toEqual(['focus', 'chat', 'focus', 'topup', 'focus'])
+  })
+  it('still only focuses the window when no page opener is wired', () => {
+    const notices: EventEmitter[] = []
+    const focusMainWindow = vi.fn()
+    const onError = vi.fn()
+    const controller = createPlatformNotifications(
+      {
+        readEnabled: () => true,
+        readPreferences: () => ({ install: true, balance: true, task: true, cliUpdate: true, announcement: true, acceleration: true }),
+        focusMainWindow,
+        onError,
+      },
+      {
+        supported: () => true,
+        create: () => {
+          const notice = Object.assign(new EventEmitter(), { show: vi.fn(), close: vi.fn() })
+          notices.push(notice)
+          return notice
+        },
+      },
+    )
+    controller.notify('balance', 'balance:7:1')
+    notices[0].emit('click')
+    expect(focusMainWindow).toHaveBeenCalledOnce()
+    expect(onError).not.toHaveBeenCalled()
   })
 })

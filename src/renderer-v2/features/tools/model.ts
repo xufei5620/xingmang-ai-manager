@@ -39,6 +39,8 @@ export interface ToolPresentation {
   latestVersion: string | null
   /** 已验证版本名单(N1)对这一行的建议;Codex 桌面端与没有名单的工具为 null。 */
   versionAdvice: CliVersionAdvice | null
+  /** 本工具最近一次更新前的版本、还能退回去时给出;缺省 = 没有可退的版本。 */
+  revertVersion?: string | null
   error: string | null
 }
 
@@ -307,6 +309,7 @@ export function presentTools(
     const version = id === 'codexDesktop' ? (status as DesktopAppStatus).appVersion ?? status.version : status.version
     // 桌面端走的是镜像分发而不是 npm,名单管不到它,所以这里只取 CLI 的建议。
     const versionAdvice = id === 'codexDesktop' ? null : snapshot.system.clis[id].versionAdvice ?? null
+    const revertVersion = id === 'codexDesktop' ? null : snapshot.system.clis[id].revertVersion ?? null
     // 桌面端只有镜像真的有新包才算「可更新」;官方清单领先商店时按下「更新」什么也装不上。
     const updateAvailable = id === 'codexDesktop'
       ? codexDesktopUpdateKind(status as DesktopAppStatus) === 'installable'
@@ -315,7 +318,7 @@ export function presentTools(
       model: config.model, configured: connectionReady(config, provider, storage),
       configDirectoryReady: config.dataDirectoryExists === true,
       updateAvailable, currentVersion: version,
-      latestVersion: status.latestVersion ?? null, versionAdvice,
+      latestVersion: status.latestVersion ?? null, versionAdvice, revertVersion,
       error: status.detectionFailed ? snapshotErrorMessage(status.detectionError) ?? '工具检测没有完成' : null })
   }
   return result
@@ -377,6 +380,16 @@ export function updateButtonHint(tool: Pick<ToolPresentation, 'versionAdvice'>):
 export function rollbackVersion(tool: Pick<ToolPresentation, 'status' | 'versionAdvice'>): string | null {
   const advice = tool.versionAdvice
   return advice && tool.status.installed && advice.rollbackAvailable ? advice.recommendedVersion : null
+}
+
+/**
+ * 「退回更新前的版本」要装回去的版本;不能退时 null。哪个版本、还在不在期限内、
+ * 那个版本有没有已知问题都由主进程判过(cli-update-history.ts),这里只补两条
+ * 界面上的规矩:没装着就无从退回;别的软件管着的安装不归本工具动。
+ */
+export function revertVersion(tool: Pick<ToolPresentation, 'status' | 'revertVersion'>): string | null {
+  if (!tool.status.installed || !tool.revertVersion || isExternallyManagedInstall(tool.status)) return null
+  return tool.revertVersion
 }
 
 /** 已经装好的工具，建议先换一个版本再用（新手引导「准备工具」那一步）。 */
