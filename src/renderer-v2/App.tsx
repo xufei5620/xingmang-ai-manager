@@ -51,6 +51,7 @@ import { MaintenanceNotice, maintenanceNoticeKey } from './features/app/Maintena
 import { displayCompatNotice, displayRelaunchNotice, settingsSaveNotice, startupCheckFailure, startupCheckLogContext, startupDiagnosticsIssues, updatedNotice, vaultRecoveredNotice, withStartupNotice, withoutStartupNotice, type StartupCheckId, type StartupNotice } from './features/app/startup-notice'
 import { readLocalPreference, writeLocalPreference } from './features/app/preferences'
 import { currentWindowOs, windowOsFor } from './features/app/window-os'
+import { nextUiScale, uiScaleShortcutFor, type UiScaleShortcut } from './features/app/ui-scale-shortcut'
 import { rememberTourPending, rememberTourSeen, tourReplayPending } from './features/shell/tour-state'
 import { onboardingPreviewEnabled } from './features/app/dev-preview'
 import { deepLinkReadErrorText, supportQrFallbackText } from './features/app/fallback-messages'
@@ -456,6 +457,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     document.documentElement.dataset.theme = settings.theme
     document.documentElement.dataset.skin = settings.uiSkin ?? 'mist'
     document.documentElement.dataset.reducedMotion = String(settings.reducedMotion === true)
+    document.documentElement.dataset.largeText = String(settings.largeText === true)
     document.documentElement.style.colorScheme = settings.theme
   }, [settings])
   useEffect(() => {
@@ -530,6 +532,17 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     if (choice === 'restore') noteStartupCheck(displayRelaunchNotice())
     else toast.show('以后都用兼容方式显示。想改回来，到「设置」的「外观」里打开「用显卡加速显示」。', 'ok')
   }), [app, noteStartupCheck, perform, toast])
+  // 连按几下 Ctrl 加号时，保存还没回来，下一下要接着上一下算，不能都从旧设置起步。
+  const uiScaleRef = useRef<AppSettingsV2['uiScale']>(undefined)
+  useEffect(() => { uiScaleRef.current = settings?.uiScale }, [settings?.uiScale])
+  const changeUiScale = useCallback((shortcut: UiScaleShortcut) => {
+    const step = nextUiScale(uiScaleRef.current, shortcut, os)
+    toast.show(step.message)
+    const next = step.next
+    if (next === null) return
+    uiScaleRef.current = next === 'auto' ? undefined : next
+    void perform('保存界面缩放', async () => setSettings(await app.savePreferences({ version: 2, uiScale: next })))
+  }, [app, os, perform, toast])
   const navigate = useCallback((target: PageId, section?: string) => {
     if (target === 'canvas') { void perform('打开画布', app.openCanvas); return }
     if ((target === 'account' || target === 'chat') && restoring) {
@@ -880,6 +893,13 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   }, [native, toolbox.jobs, confirmBusy, accountBootstrap, scope])
   useEffect(() => {
     function onShortcut(event: KeyboardEvent) {
+      // 放大缩小对整个窗口都有效，弹窗开着也照样能调；Mac 上这里拦下后菜单里的「放大」就不会再动一遍。
+      const zoom = uiScaleShortcutFor(event)
+      if (zoom) {
+        event.preventDefault()
+        if (settings) changeUiScale(zoom)
+        return
+      }
       if (event.isComposing || event.altKey || !(event.ctrlKey || event.metaKey) || document.querySelector('dialog[open]')) return
       if (event.key === ',') { event.preventDefault(); navigate('settings') }
       if (/^[1-5]$/.test(event.key)) {
@@ -889,7 +909,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     }
     document.addEventListener('keydown', onShortcut)
     return () => document.removeEventListener('keydown', onShortcut)
-  }, [navigate, os, toolbox.snapshot, session.authenticated])
+  }, [navigate, os, toolbox.snapshot, session.authenticated, settings, changeUiScale])
   const guideTools: GuideToolState[] = toolbox.snapshot ? presentTools(toolbox.snapshot).map((tool) => ({
     id: tool.id, installed: tool.status.installed, configured: tool.configured, source: guideSource(tool.source),
     version: tool.currentVersion ?? undefined, model: tool.model, detectionError: Boolean(tool.error),
@@ -1007,7 +1027,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
                   onBackupRestored={() => void toolbox.refreshConfig().catch(() => undefined)}
                   onToolConfigSaved={() => void toolbox.refreshConfig().catch(() => undefined)}
                   toolConfigConfirmed={toolConfigConfirmed}
-                  onAccountChanged={() => void perform('刷新账号', reloadAccount)} onSettingsChanged={setSettings} openConfig={openToolConfig}
+                  onAccountChanged={() => void perform('刷新账号', reloadAccount)} onSettingsChanged={setSettings} uiScale={settings ? settings.uiScale ?? 'auto' : undefined} openConfig={openToolConfig}
                   openGuide={() => setGuide(true)} replayTour={replayTour}
                   onToolsChanged={(tool) => syncAfterToolInstalled(tool).catch((cause) => {
                     if (mounted.current) toast.show(errorMessage(cause, '工具已安装，但最新状态没有读到。请回到首页重新检测。'), 'warn')

@@ -262,7 +262,7 @@ const methods = {
     return accelerationDemo.redeemAccelerationCode!(scope, code)
   },
   getSettings: async () => ({ ...settings }),
-  saveSettings: async (patch) => { settings = { ...settings, theme: patch.theme ?? settings.theme, reducedMotion: patch.reducedMotion ?? settings.reducedMotion, hardwareAcceleration: patch.hardwareAcceleration ?? settings.hardwareAcceleration, codexDesktopChineseRuntimePatch: patch.codexDesktopChineseRuntimePatch ?? settings.codexDesktopChineseRuntimePatch }; return settings },
+  saveSettings: async (patch) => { settings = { ...settings, theme: patch.theme ?? settings.theme, reducedMotion: patch.reducedMotion ?? settings.reducedMotion, hardwareAcceleration: patch.hardwareAcceleration ?? settings.hardwareAcceleration, largeText: patch.largeText ?? settings.largeText, ...(patch.uiScale === undefined ? {} : { uiScale: patch.uiScale === 'auto' ? undefined : patch.uiScale }), codexDesktopChineseRuntimePatch: patch.codexDesktopChineseRuntimePatch ?? settings.codexDesktopChineseRuntimePatch }; return settings },
   getPlatformCapabilities: async () => capabilities,
   getAccountSession: async () => session,
   getAccountBalance: async () => {

@@ -97,7 +97,7 @@ import {
 } from './features/app/runtime-log-filter'
 import { releaseNotesSection } from './features/app/release-notes'
 import type { V2Bridge, V2Page } from './types'
-import type { InstallCancelResult } from '../../electron/ipc-contract'
+import type { AppSettingsV2Update, InstallCancelResult } from '../../electron/ipc-contract'
 import type {
   PlatformProxyStatus,
   PlatformSystemState,
@@ -166,6 +166,11 @@ export type BusinessActions = {
   onRewriteKey?: (provider: Provider) => Promise<boolean>
   /** 哪几个工具的配置确实来自当前账号——只有它们重写得动（见 rewritableKeyProviders）。 */
   rewritableKeys?: readonly Provider[]
+  /**
+   * App 手里最新的界面缩放（'auto' 表示自动）。在设置页开着时按 Ctrl 加号，设置页那一栏
+   * 要跟着变；缺省 = 不同步，只用设置页自己读到的那份（旧行为）。
+   */
+  uiScale?: NonNullable<AppSettingsV2Update['uiScale']>
 }
 function isProvider(id: string): id is Provider {
   return ['claude', 'codex', 'gemini', 'grok'].includes(id)
@@ -1639,6 +1644,7 @@ export function SettingsPage({
   onSettingsChanged,
   openGuide,
   replayTour,
+  uiScale,
 }: { api: V2Bridge } & BusinessActions) {
   const load = useCallback(async () => {
     const [settings, capabilities, session, update] = await Promise.all([
@@ -1651,6 +1657,16 @@ export function SettingsPage({
     return { settings, capabilities, session, update }
   }, [api])
   const resource = useResource(load)
+  const setResourceData = resource.setData
+  useEffect(() => {
+    if (uiScale === undefined) return
+    const persisted = uiScale === 'auto' ? undefined : uiScale
+    setResourceData((previous) => {
+      if (!previous || previous.settings.uiScale === persisted) return previous
+      const { uiScale: _stale, ...rest } = previous.settings
+      return { ...previous, settings: persisted === undefined ? rest : { ...rest, uiScale: persisted } }
+    })
+  }, [uiScale, setResourceData])
   const operation = useOperation()
   const systemApi = platformApi()
   const [systemState, setSystemState] = useState<PlatformSystemState | null>(
@@ -1733,6 +1749,9 @@ export function SettingsPage({
     document.documentElement.dataset.skin = settings.uiSkin ?? 'mist'
     document.documentElement.dataset.reducedMotion = String(
       Boolean(settings.reducedMotion),
+    )
+    document.documentElement.dataset.largeText = String(
+      Boolean(settings.largeText),
     )
   }
   const writer = useMemo(
@@ -1863,6 +1882,16 @@ export function SettingsPage({
                 )
                   void update({ uiScale })
               }}
+            />,
+          )}
+          {row(
+            '大字',
+            '把说明文字和小字放大一些，看着更轻松',
+            <Switch
+              checked={Boolean(settings.largeText)}
+              onChange={(largeText) => void update({ largeText })}
+              aria-label="大字"
+              testId="settings-large-text"
             />,
           )}
           {row(
@@ -2567,6 +2596,8 @@ export function SettingsPage({
         <ListRow title="命令面板" meta="Ctrl / Command + K" />
         <ListRow title="设置" meta="Ctrl / Command + ," />
         <ListRow title="打开工具" meta="Ctrl / Command + 1–5" />
+        <ListRow title="放大 / 缩小界面" meta="Ctrl / Command + 加号 / 减号" />
+        <ListRow title="界面缩放恢复为自动" meta="Ctrl / Command + 0" />
         <ListRow title="关闭最上层弹窗" meta="Esc" />
       </Dialog>
     </section>
