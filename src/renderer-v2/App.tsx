@@ -5,6 +5,8 @@ import type { AccountSessionState, AccountSourceSwitchResult, AccountSourceTarge
 import { resolveRelaySite, resolveSupportServiceUrl } from '../../electron/relay-sites'
 import { offersCodexDesktopRestart } from '../../electron/running-tools'
 import { Shell as AppFrame } from './features/shell/Shell'
+import { isOffline, offlineActionMessage } from './features/shell/online-status'
+import { OnlineStatusContext, useBrowserOnline, type OnlineStatus } from './features/shell/useOnlineStatus'
 import { createAppApi } from './features/app/api'
 import { AuthFlow, LegalDocument, Splash, StartGuide, Welcome, createAuthApi, guideOfficialLoginRequired, type AuthMode, type GuideToolState, type LoginTarget } from './features/auth'
 import { ConfigDialog } from './features/tools/ConfigDialog'
@@ -173,6 +175,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   const bootstrapAttempts = useRef(new Set<string>())
   const suppressRestoredBootstrap = useRef(new Set<string>())
   const onlineResync = useRef(idleOnlineResync())
+  const resumeOnline = useRef<(() => void) | null>(null)
   const [accountBootstrap, setAccountBootstrap] = useState<AccountBootstrapView | null>(null)
   // 会话变化事件来过几次。启动那次读取可能在事件之后才落地（账号恢复超时先放行
   // 时两者会赛跑），那时手上的会话已经比它新，不能再拿它盖回去。
@@ -191,6 +194,19 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   useEffect(() => { if (page === 'acceleration') void refreshAcceleration() }, [page, refreshAcceleration])
   const { store: balanceStore, snapshot: balanceState } = useAccountBalanceStore(native, session.authenticated ? scope : null)
   const balance = balanceState.balance
+  const browserOnline = useBrowserOnline()
+  const offline = isOffline({ browserOnline, networkFailures: session.authenticated ? balanceState.networkFailures : 0 })
+  const [onlineChecking, setOnlineChecking] = useState(false)
+  // 系统说网回来了，不等下一次定时刷新：马上读一次余额，确认真的通了横幅才收起。
+  useEffect(() => {
+    if (browserOnline && session.authenticated && balanceStore.getSnapshot().networkFailures > 0) void balanceStore.refresh('manual')
+  }, [browserOnline, balanceStore, session.authenticated])
+  const recheckOnline = useCallback(() => {
+    if (!navigator.onLine || !session.authenticated) return
+    setOnlineChecking(true)
+    void balanceStore.refresh('manual').finally(() => { if (mounted.current) setOnlineChecking(false) })
+  }, [balanceStore, session.authenticated])
+  const onlineStatus = useMemo<OnlineStatus>(() => ({ offline, checking: onlineChecking, recheck: recheckOnline }), [offline, onlineChecking, recheckOnline])
   // 换账号等于换了一整套上下文：首页那份「最近」缓存（60 秒）必须当场作废，
   // 否则切过去的头一眼看到的还是上一个账号在的时候读到的列表。
   useLayoutEffect(() => { accountEpoch.current++; pendingModelSwap.current?.('cancel'); setAccountReadError(null); refreshRecent() }, [scope, session.authenticated, refreshRecent])
@@ -411,9 +427,20 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
         void native.reportRendererError({ message: `联网后自动补跑 Key 同步仍未完成：${reason}`, context: 'account-bootstrap-online-resync', level: 'warn' }).catch(() => undefined)
       })
     }
+    resumeOnline.current = resume
     window.addEventListener('online', resume)
-    return () => window.removeEventListener('online', resume)
+    return () => {
+      resumeOnline.current = null
+      window.removeEventListener('online', resume)
+    }
   }, [boot, native, runAccountBootstrap, scope, session.account?.userId, session.authenticated])
+  // 代理恢复、门户认证做完时系统不会发 online 事件，只有请求重新成功才知道网回来了；
+  // 这时同样补跑一次。planOnlineResync 挡住了和 online 事件撞在一起的重复补跑。
+  const wasOffline = useRef(offline)
+  useEffect(() => {
+    if (wasOffline.current && !offline) resumeOnline.current?.()
+    wasOffline.current = offline
+  }, [offline])
   useEffect(() => {
     if (boot !== 'ready' || !session.authenticated || !settings?.runDiagnosticsOnStartup || diagnosticsStarted.current) return
     diagnosticsStarted.current = true
@@ -560,6 +587,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     // 这不是一次失败：macOS 上这几个桌面端本来就要客户自己下载。以前当错误抛出来，
     // 用户会同时看到红色错误框和一个跳到教程首页、又没有对应章节的页面（第七批 3）。
     if (management === 'external') { navigate('tutorial', macDesktopTutorialTopic); toast.show('这个系统要你自己下载安装，教程里是完整步骤。', 'neutral'); return 'skipped' }
+    if (offline) { toast.show(offlineActionMessage, 'warn'); return 'skipped' }
     const definition = tools.find((tool) => tool.id === id)
     const toolName = definition?.name ?? '工具'
     const plan = id === 'codexDesktop'
@@ -639,6 +667,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     await toolbox.refresh(true)
   }
   async function installRuntime(runtime: 'node' | 'python' | 'git') {
+    if (offline) { toast.show(offlineActionMessage, 'warn'); return }
     // Git 按钮只在 Windows 出现（其余平台的装法以文案给出）。以前点了是打开官网让
     // 客户自己下安装包，小白卡在这一步（yoyo 2026-09-24），现在由主进程按当前用户代装。
     if (runtime === 'git') {
@@ -923,7 +952,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   // away and back.
   const renderedChatScope = page === 'chat' ? scope : chatScope
   if (boot !== 'ready') return <Splash platform={os} phase="正在准备星芒 AI" error={bootError || undefined} progress={update?.progress?.percent} onRetry={() => setBootAttempt((value) => value + 1)} />
-  return <AccountBalanceContext.Provider value={balanceStore}><BalanceTierProvider value={balanceAmount === null ? 'neutral' : balanceAmount <= 0 ? 'zero' : balanceAmount < 5 ? 'bad' : balanceAmount < 20 ? 'warn' : 'ok'}>
+  return <AccountBalanceContext.Provider value={balanceStore}><OnlineStatusContext.Provider value={onlineStatus}><BalanceTierProvider value={balanceAmount === null ? 'neutral' : balanceAmount <= 0 ? 'zero' : balanceAmount < 5 ? 'bad' : balanceAmount < 20 ? 'warn' : 'ok'}>
     {guide ? <StartGuide platform={os} tools={guideTools} signedIn={session.authenticated} busy={Object.keys(toolbox.jobs).length > 0 || accountBootstrapBusy} progress={accountBootstrapBusy && accountBootstrap ? { label: accountBootstrap.label, percent: accountBootstrap.percent } : guideJobProgress(toolbox.jobs)} resumeKey={scope}
       onDetect={() => toolbox.refresh(true)} onInstall={async (id, version) => { await install(id, version) }} onInstallRuntime={() => installRuntime('node')} onInstallPython={() => installRuntime('python')} onConfigure={async (id) => { openToolConfig(id) }} onLogin={() => setAuth('login')}
       accountName={session.account?.username ?? null} onSwitchAccount={(id) => switchToolAccount(id, 'account')} onFailureAction={runGuideFailureAction}
@@ -1067,7 +1096,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       confirmationLock.current = true; setConfirmBusy(true)
       void confirmation.work().then(() => setConfirmation(null)).catch((cause) => setOperationError({ message: errorMessage(cause, '操作没有完成'), ...(confirmation.tool ? { tool: confirmation.tool } : {}) })).finally(() => { confirmationLock.current = false; setConfirmBusy(false) })
     }} />}
-  </BalanceTierProvider></AccountBalanceContext.Provider>
+  </BalanceTierProvider></OnlineStatusContext.Provider></AccountBalanceContext.Provider>
 }
 
 export default function RendererV2App({ api, accelerationPreview = false }: { api?: XingmangApi; accelerationPreview?: boolean }) {

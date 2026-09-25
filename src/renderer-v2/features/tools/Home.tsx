@@ -22,6 +22,7 @@ import { gitHostPlatform, gitMissingFirstRunHint, gitMissingHomeNotice } from '.
 import { runtimeButtonLabel, runtimeInstallGuide } from './runtime-install-guide'
 import { RuntimeInstallHint } from './RuntimeInstallHint'
 import { elevatedInstallNotice, elevatedInstallShortNotice } from './elevation-notice'
+import { useOnlineStatus } from '../shell/useOnlineStatus'
 
 export interface HomeProps {
   api: ToolsApi
@@ -127,7 +128,8 @@ function bootstrapErrorText(error: string) {
 export function Home(props: HomeProps) {
   const { snapshot, account, balance, jobs, loading, error } = props
   const { store: balanceStore, snapshot: balanceState } = useSharedAccountBalance()
-  const balanceHint = balanceStatusText({ balanceLoading: balanceState.loading, balanceUpdatedAt: balanceState.updatedAt, balanceError: balanceState.error })
+  const { offline } = useOnlineStatus()
+  const balanceHint = balanceStatusText({ balanceLoading: balanceState.loading, balanceUpdatedAt: balanceState.updatedAt, balanceError: balanceState.error, offline })
   const toast = useToast()
   const [recent, setRecent] = useState<MultiProviderSessionPage | null>(null)
   const [recentError, setRecentError] = useState('')

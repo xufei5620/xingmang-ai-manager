@@ -80,6 +80,8 @@ import { ToolUsage } from './features/account/ToolUsage'
 import type { LoginTarget } from './features/auth/api'
 import { describeLoginDevice } from './features/account/login-device-label'
 import { KeyRewriteSkippedError } from './features/tools/account-bootstrap'
+import { offlineActionMessage } from './features/shell/online-status'
+import { useOnlineStatus } from './features/shell/useOnlineStatus'
 import {
   getSourceMarkerStorage,
   writeManualSourceMarker,
@@ -593,7 +595,8 @@ function AccountOverview({
   session: AccountSessionState
 }) {
   const { store: balanceStore, snapshot: balanceState } = useSharedAccountBalance()
-  const balanceHint = balanceStatusText({ balanceLoading: balanceState.loading, balanceUpdatedAt: balanceState.updatedAt, balanceError: balanceState.error })
+  const { offline } = useOnlineStatus()
+  const balanceHint = balanceStatusText({ balanceLoading: balanceState.loading, balanceUpdatedAt: balanceState.updatedAt, balanceError: balanceState.error, offline })
   const [name, setName] = useState(profile.displayName ?? '')
   const profileNameRef = useRef(profile.displayName ?? '')
   const [passwordOpen, setPasswordOpen] = useState(false)
@@ -1982,6 +1985,7 @@ function AccountRecharge({
   }, [api])
   const resource = useResource(load)
   const operation = useOperation()
+  const { offline } = useOnlineStatus()
   const [amount, setAmount] = useState('10')
   const [method, setMethod] = useState('')
   const [code, setCode] = useState('')
@@ -2057,6 +2061,7 @@ function AccountRecharge({
     void operation.execute(
       'quote',
       async () => {
+        if (offline) throw new Error(offlineActionMessage)
         const value = validateTopupAmount(Number(amount), topupMinimum)
         if (!paymentMethod) throw new Error('暂时没有可用的支付渠道。')
         setQuote(await api.quoteAccountTopupAmount({ amount: value }))
@@ -2184,7 +2189,11 @@ function AccountRecharge({
             disabled={
               !code.trim() || resource.data?.info.redemptionEnabled === false
             }
-            onClick={() => setRedeemOpen(true)}
+            onClick={() => {
+              // 断网时在这里就说，不先弹「确认兑换」再等请求超时。
+              if (offline) void operation.execute('redeem', () => Promise.reject(new Error(offlineActionMessage)))
+              else setRedeemOpen(true)
+            }}
           >
             兑换
           </Button>
