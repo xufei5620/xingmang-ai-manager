@@ -3153,7 +3153,7 @@ async function openConfigAdvanced(page) {
 }
 
 const defaultModelCases = [
-  { tool: 'claude', provider: 'claude', model: 'claude-opus-5' },
+  { tool: 'claude', provider: 'claude', model: 'claude-opus-5-5' },
   { tool: 'codex', provider: 'codex', model: 'gpt-6-astra' },
   { tool: 'codexDesktop', provider: 'codex', model: 'gpt-6-astra' },
   { tool: 'gemini', provider: 'gemini', model: 'gemini-3.8-flash-high' },

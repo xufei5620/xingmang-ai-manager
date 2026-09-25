@@ -16,7 +16,7 @@ import { ExternalClientDialog } from './features/tools/ExternalClientDialog'
 import { Home } from './features/tools/Home'
 import { createToolsApi } from './features/tools/api'
 import { launchWaitLabel, launchWarning } from './features/tools/launch-notice'
-import { modelSwapOffer, modelSwapQuestion, type ModelSwapChoice, type ModelSwapOffer } from './features/tools/model-check'
+import { modelSwapConfirmLabel, modelSwapKeepLabel, modelSwapOffer, modelSwapQuestion, modelSwapTitle, type ModelSwapChoice, type ModelSwapOffer } from './features/tools/model-check'
 import { chineseRuntimePatchAnswerMissing, shouldAskForChineseRuntimePatch } from './features/tools/chinese-runtime-choice'
 import { cliInstallStageLabel, nodeRuntimeReady, planCliInstall, pythonRuntimeReady, runtimeStageFailureMessage, type InstallRuntimeId } from './features/tools/runtime-readiness'
 import { foreignKeyKind, isToolId, presentTools, providerFor, toolInstallDirectory, toolUpdateOffer, type ToolId, type ToolSource } from './features/tools/model'
@@ -1169,10 +1169,10 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       <Button testId="codex-chinese-enable" onClick={() => void perform('启用中文界面', () => answerChineseRuntimePatch('enabled'))}>显示中文</Button>
     </>}><p>选「显示中文」后，星芒每次打开 Codex 时会顺带开一个只有这台电脑自己能连的通道，用来把界面换成中文；关掉 Codex，通道也跟着关上。</p>
       <p>不用也没关系，Codex 照样能用，只是界面是英文。只问这一次，以后想改，随时可以在 Codex 桌面端的配置里打开或关掉。</p></Dialog>}
-    {/* 默认模型换不换由用户点，不替付费客户自动换（第十二批候选 5）；关掉对话框 = 这次先不打开。 */}
-    {modelSwap && <Dialog open title="默认模型用不了了" onClose={() => modelSwap.answer('cancel')} footer={<>
-      <Button testId="model-swap-keep" onClick={() => modelSwap.answer('keep')}>照旧打开</Button>
-      <Button variant="primary" testId="model-swap-confirm" onClick={() => modelSwap.answer('swap')}>换成 {modelSwap.offer.replacement}</Button>
+    {/* 默认模型换不换由用户点，不替付费客户自动换（第十二批候选 5、第十五批 6）；关掉对话框 = 这次先不打开。 */}
+    {modelSwap && <Dialog open title={modelSwapTitle(modelSwap.offer)} onClose={() => modelSwap.answer('cancel')} footer={<>
+      <Button testId="model-swap-keep" onClick={() => modelSwap.answer('keep')}>{modelSwapKeepLabel(modelSwap.offer)}</Button>
+      <Button variant="primary" testId="model-swap-confirm" onClick={() => modelSwap.answer('swap')}>{modelSwapConfirmLabel(modelSwap.offer)}</Button>
     </>}><p data-testid="model-swap-question">{modelSwapQuestion(modelSwap.offer)}</p></Dialog>}
     {runtimeRestart && <RuntimeRestartDialog onClose={() => setRuntimeRestart(false)} restart={toolsApi.restartWindows} />}
     {confirmation && <Confirm title={confirmation.title} body={confirmation.body} danger={confirmation.danger} okLabel={confirmation.label} loading={confirmBusy} onClose={() => setConfirmation(null)} onOk={() => {

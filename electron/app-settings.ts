@@ -123,6 +123,11 @@ export interface AppSettings {
    * 读出来就是「还没说过」，升级后第一次缩到托盘会说一次。
    */
   trayHintShown?: boolean
+  /**
+   * 打开工具前已经问过「要不要换成新一代默认型号」的记录，形如 `claude:claude-opus-5-5`
+   * （tool-model-check.ts）。只增不减：问过一次，不管换没换都不再问（第十五批 6）。
+   */
+  offeredModelUpgrades?: string[]
   windowState?: AppWindowState
 }
 
@@ -168,6 +173,8 @@ export interface AppSettingsUpdate {
   closeBehavior?: AppCloseBehavior
   /** Only the host sets this; true is sticky and false is ignored. */
   trayHintShown?: boolean
+  /** Only the host sets this; entries are added to the stored list, never removed. */
+  offeredModelUpgrades?: string[]
   /** null explicitly resets saved placement; absence preserves it. */
   windowState?: AppWindowState | null
 }
@@ -255,6 +262,18 @@ function parseOfficialProviders(value: unknown): ProviderId[] | undefined {
   return providerIds.filter((provider) => seen.has(provider))
 }
 
+const MAX_OFFERED_MODEL_UPGRADES = 32
+
+function parseOfferedModelUpgrades(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+  const seen = new Set<string>()
+  for (const entry of value) {
+    if (typeof entry !== 'string' || !/^[a-z]+:[A-Za-z0-9._[\]-]{1,120}$/.test(entry)) continue
+    seen.add(entry)
+  }
+  return [...seen].slice(-MAX_OFFERED_MODEL_UPGRADES)
+}
+
 function requireWorkspace(value: unknown): string {
   if (typeof value !== 'string' || !value.trim()) {
     throw new Error('settings.workspace 必须是非空字符串')
@@ -295,6 +314,7 @@ function parseSettingsValue(value: unknown): AppSettings {
   const uiScale = parseUiScale(value.uiScale)
   const closeBehavior = parseCloseBehavior(value.closeBehavior)
   const windowState = parseWindowState(value.windowState)
+  const offeredModelUpgrades = parseOfferedModelUpgrades(value.offeredModelUpgrades)
   return {
     version: 2,
     workspace: requireWorkspace(value.workspace),
@@ -325,6 +345,7 @@ function parseSettingsValue(value: unknown): AppSettings {
     ...(uiScale !== undefined ? { uiScale } : {}),
     ...(closeBehavior !== undefined ? { closeBehavior } : {}),
     ...(value.trayHintShown === true ? { trayHintShown: true as const } : {}),
+    ...(offeredModelUpgrades.length > 0 ? { offeredModelUpgrades } : {}),
     ...(windowState !== undefined ? { windowState } : {}),
   }
 }
@@ -455,6 +476,7 @@ export function mergeAppSettings(base: AppSettings, update: AppSettingsUpdate): 
   const uiScale = update.uiScale === 'auto' ? undefined : parseUiScale(update.uiScale) ?? base.uiScale
   const closeBehavior = update.closeBehavior === 'ask' ? undefined : parseCloseBehavior(update.closeBehavior) ?? base.closeBehavior
   const windowState = update.windowState === null ? undefined : parseWindowState(update.windowState) ?? base.windowState
+  const offeredModelUpgrades = parseOfferedModelUpgrades([...(base.offeredModelUpgrades ?? []), ...(update.offeredModelUpgrades ?? [])])
   return {
     version: 2,
     workspace: update.workspace ?? base.workspace,
@@ -478,6 +500,7 @@ export function mergeAppSettings(base: AppSettings, update: AppSettingsUpdate): 
     ...(uiScale !== undefined ? { uiScale } : {}),
     ...(closeBehavior !== undefined ? { closeBehavior } : {}),
     ...(update.trayHintShown === true || base.trayHintShown === true ? { trayHintShown: true as const } : {}),
+    ...(offeredModelUpgrades.length > 0 ? { offeredModelUpgrades } : {}),
     ...(windowState !== undefined ? { windowState } : {}),
   }
 }

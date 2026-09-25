@@ -23,6 +23,7 @@ const valueImportable = [
   'electron/account-key-quota',
   'electron/ai-chat-protocol',
   'electron/catalog',
+  'electron/claude-model-picker',
   'electron/cli-model-defaults',
   'electron/external-url-blocked',
   'electron/git-runtime',
