@@ -14,6 +14,70 @@ export function isEmail(value: string): boolean {
   return /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(value.trim())
 }
 
+/**
+ * 中文输入法下最常见的邮箱「看着对、其实不对」：全角的＠、句号和首尾空格（含全角空格）。
+ * 这些替用户改掉就行，不值得报一句「请填写正确的邮箱」让他自己去找哪里错了。
+ */
+export function normalizeEmail(value: string): string {
+  return value.replace(/[＠﹫]/g, '@').replace(/[。．｡]/g, '.').replace(/^[\s\u3000]+|[\s\u3000]+$/g, '')
+}
+
+// 国内客户最常用的几家邮箱，按「@ 后面去掉最后一段」的名字和正确后缀记。
+const commonEmailProviders: ReadonlyArray<{ name: string; suffix: string }> = [
+  { name: 'qq', suffix: 'com' }, { name: '163', suffix: 'com' }, { name: '126', suffix: 'com' }, { name: 'sina', suffix: 'com' },
+  { name: 'foxmail', suffix: 'com' }, { name: 'gmail', suffix: 'com' }, { name: 'outlook', suffix: 'com' }, { name: 'hotmail', suffix: 'com' },
+  { name: 'yeah', suffix: 'net' }, { name: '139', suffix: 'com' },
+]
+// 后缀的手滑写法。qq.cn 不是 QQ 邮箱能收信的地址，单独给 qq 算手滑；sina.cn 是真实邮箱，不能一刀切把 .cn 当错。
+const suffixTypos: Readonly<Record<string, readonly string[]>> = {
+  com: ['con', 'cm', 'co', 'cmo', 'ocm', 'om', 'comm', 'cpm', 'vom', 'xom', 'coom'],
+  net: ['ne', 'nte', 'nt', 'met', 'bet', 'nett'],
+}
+const providerOnlySuffixTypos: Readonly<Record<string, readonly string[]>> = { qq: ['cn'] }
+// 离常见邮箱只差一个字、但本身就是真实邮箱的，别去「纠正」。
+const otherRealEmailDomains: readonly string[] = ['mail.com', 'email.com']
+
+/** 相邻两字母对调也只算一步（gmial → gmail），这正是打字最常见的错。 */
+function typoDistance(a: string, b: string): number {
+  const rows = Array.from({ length: a.length + 1 }, (_, i) => Array.from({ length: b.length + 1 }, (_, j) => i === 0 ? j : j === 0 ? i : 0))
+  for (let i = 1; i <= a.length; i++) {
+    for (let j = 1; j <= b.length; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1
+      rows[i][j] = Math.min(rows[i - 1][j] + 1, rows[i][j - 1] + 1, rows[i - 1][j - 1] + cost)
+      if (i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) rows[i][j] = Math.min(rows[i][j], rows[i - 2][j - 2] + 1)
+    }
+  }
+  return rows[a.length][b.length]
+}
+
+function suffixMatches(actual: string, expected: string, name: string): boolean {
+  return actual === expected || (suffixTypos[expected] ?? []).includes(actual) || (providerOnlySuffixTypos[name] ?? []).includes(actual)
+}
+
+/**
+ * 「你是不是想填」的建议：只认常见邮箱的拼写错误，认不出就返回 null。
+ * 只是提示，不拦——服务端对邮箱域名不设限，客户用小众或公司邮箱完全合法。
+ * 数字邮箱（163/126/139）互相只差一两个字，只纠后缀、不纠名字，免得把真 126 改成 163；
+ * 名字太短的（qq）同理。
+ */
+export function suggestEmailCorrection(value: string): string | null {
+  const email = normalizeEmail(value)
+  if (!isEmail(email)) return null
+  const at = email.lastIndexOf('@')
+  const local = email.slice(0, at)
+  const domain = email.slice(at + 1).toLowerCase()
+  const dot = domain.lastIndexOf('.')
+  const name = domain.slice(0, dot)
+  const suffix = domain.slice(dot + 1)
+  if (otherRealEmailDomains.includes(domain) || commonEmailProviders.some((provider) => domain === `${provider.name}.${provider.suffix}`)) return null
+  const sameName = commonEmailProviders.find((provider) => provider.name === name)
+  if (sameName) return suffixMatches(suffix, sameName.suffix, sameName.name) ? `${local}@${sameName.name}.${sameName.suffix}` : null
+  if (!/^[a-z]{4,}$/.test(name)) return null
+  const near = commonEmailProviders.filter((provider) => /^[a-z]{4,}$/.test(provider.name) && typoDistance(name, provider.name) === 1)
+  if (near.length !== 1 || !suffixMatches(suffix, near[0].suffix, near[0].name)) return null
+  return `${local}@${near[0].name}.${near[0].suffix}`
+}
+
 export function parseRecoveryCode(value: string, expectedOrigin?: string): RecoveryCodeResult {
   const text = value.trim()
   if (!text) return { ok: false, error: '请粘贴邮件中的重置码或完整链接' }
@@ -71,7 +135,7 @@ export function validateRegistration(draft: RegistrationDraft, verificationRequi
   const errors: RegistrationErrors = {}
   const username = draft.username.trim()
   const invite = draft.invite.trim()
-  if (!isEmail(draft.email)) errors.email = '请填写正确的邮箱'
+  if (!isEmail(normalizeEmail(draft.email))) errors.email = '请填写正确的邮箱'
   if (!username) errors.username = '请填写用户名'
   else if (Array.from(username).length > maxUsernameLength) errors.username = `用户名不能超过 ${maxUsernameLength} 位`
   if (draft.password.length < minPasswordLength) errors.password = `密码至少 ${minPasswordLength} 位`

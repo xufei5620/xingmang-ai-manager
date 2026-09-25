@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { networkFailureMessages } from '../../../../electron/network-failure'
-import { authErrorMessage, parseInviteCode, parseRecoveryCode, remainingCooldown, usernameFromEmail, validateRegistration, type RegistrationDraft } from './state'
+import { authErrorMessage, normalizeEmail, parseInviteCode, parseRecoveryCode, remainingCooldown, suggestEmailCorrection, usernameFromEmail, validateRegistration, type RegistrationDraft } from './state'
 import { guideOfficialLoginRequired, resolveGuideReadiness } from './StartGuide'
 
 describe('v2 auth recovery boundaries', () => {
@@ -190,5 +190,32 @@ describe('v2 onboarding readiness', () => {
     expect(resolveGuideReadiness('gemini', { ...tool, pythonReady: true }, true).prepared).toBe(true)
     expect(resolveGuideReadiness('gemini', { ...tool, pythonReady: true, runtimeReady: false }, true).prepared).toBe(false)
     expect(resolveGuideReadiness('gemini', { ...tool, pythonReady: true, installed: false }, true).prepared).toBe(false)
+  })
+})
+
+describe('v2 registration email typos', () => {
+  it('turns full-width at signs, full stops and padding into a plain address', () => {
+    expect(normalizeEmail(' 123456＠qq。com ')).toBe('123456@qq.com')
+    expect(normalizeEmail('\u3000abc﹫163．com\u3000')).toBe('abc@163.com')
+    expect(normalizeEmail('a@b｡cn')).toBe('a@b.cn')
+    expect(normalizeEmail('plain@example.test')).toBe('plain@example.test')
+  })
+  it('accepts a full-width address in the registration check once normalized', () => {
+    const draft: RegistrationDraft = { username: 'u', email: '123456＠qq。com', password: 'long-password', confirm: 'long-password', code: '', invite: '', agreed: true }
+    expect(validateRegistration(draft, false)).toEqual({})
+  })
+  it('suggests the common mailbox a customer most likely meant', () => {
+    const cases: Array<[string, string]> = [
+      ['123456@qq.con', '123456@qq.com'], ['123456@qq.cn', '123456@qq.com'], ['abc@163.co', 'abc@163.com'], ['abc@126.cm', 'abc@126.com'],
+      ['abc@gmial.com', 'abc@gmail.com'], ['abc@gamil.com', 'abc@gmail.com'], ['abc@gmai.com', 'abc@gmail.com'], ['abc@gmial.con', 'abc@gmail.com'],
+      ['abc@hotmial.com', 'abc@hotmail.com'], ['abc@outlok.com', 'abc@outlook.com'], ['abc@foxmial.com', 'abc@foxmail.com'], ['abc@yeah.nte', 'abc@yeah.net'],
+      ['ABC@QQ.CON', 'ABC@qq.com'], ['123456＠qq。con', '123456@qq.com'],
+    ]
+    for (const [typed, meant] of cases) expect(suggestEmailCorrection(typed), typed).toBe(meant)
+  })
+  it('leaves real and unfamiliar mailboxes alone', () => {
+    for (const email of ['a@qq.com', 'a@163.com', 'a@126.com', 'a@139.com', 'a@yeah.net', 'a@sina.cn', 'a@vip.qq.com', 'a@mail.com', 'a@email.com', 'a@company.example', 'a@136.com', 'a@sohu.com', 'a@gmail.org', 'not-an-email', '']) {
+      expect(suggestEmailCorrection(email), email).toBeNull()
+    }
   })
 })
