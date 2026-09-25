@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import {
   defaultAppSettings,
   mergeAppSettings,
+  normalizeAppSettings,
   readAppSettings,
   setOfficialProvider,
   updateAppSettings,
@@ -537,5 +538,32 @@ describe('UI and window preferences', () => {
     })).rejects.toThrow('appearance write failed')
     expect(readAppSettings(filePath)).toEqual(previous)
     expect(readAppSettings(`${filePath}.bak`)).toEqual(previous)
+  })
+})
+
+describe('startup settings normalization', () => {
+  it('writes once when the file is missing and leaves an already-normalized file untouched', async () => {
+    const filePath = temporarySettingsPath()
+    const first = await normalizeAppSettings(filePath, 'D:\\Workspace')
+    expect(first.written).toBe(true)
+    expect(first.settings.workspace).toBe('D:\\Workspace')
+    const before = fs.statSync(filePath).mtimeMs
+    const content = fs.readFileSync(filePath, 'utf8')
+
+    const second = await normalizeAppSettings(filePath, 'D:\\Workspace')
+    expect(second.written).toBe(false)
+    expect(second.settings).toEqual(first.settings)
+    expect(fs.readFileSync(filePath, 'utf8')).toBe(content)
+    expect(fs.statSync(filePath).mtimeMs).toBe(before)
+    expect(fs.existsSync(`${filePath}.bak`)).toBe(false)
+  })
+
+  it('rewrites a legacy file into the current shape', async () => {
+    const filePath = temporarySettingsPath()
+    fs.writeFileSync(filePath, JSON.stringify({ version: 1, workspace: 'D:\\Legacy', theme: 'light', scanOnStartup: true }), 'utf8')
+    const result = await normalizeAppSettings(filePath)
+    expect(result.written).toBe(true)
+    expect(JSON.parse(fs.readFileSync(filePath, 'utf8'))).toMatchObject({ version: 2, workspace: 'D:\\Legacy' })
+    expect((await normalizeAppSettings(filePath)).written).toBe(false)
   })
 })

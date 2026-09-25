@@ -1,4 +1,4 @@
-import type { InstalledRelease } from '../../../../electron/ipc-contract'
+import type { InstalledRelease, SettingsSaveIssue } from '../../../../electron/ipc-contract'
 import type { PageId } from '../../registry/pages'
 import type { Tone } from '../../ui'
 
@@ -8,12 +8,12 @@ import type { Tone } from '../../ui'
  * （CI 的原生冒烟正是这样被挡住的）。用户自己点「检查更新」「运行检查」时
  * 走的是各页面自己的失败提示，不经过这里，照常报错。
  */
-export type StartupCheckId = 'update' | 'diagnostics' | 'appearance' | 'vault-recovered' | 'updated'
+export type StartupCheckId = 'update' | 'diagnostics' | 'appearance' | 'vault-recovered' | 'updated' | 'settings-save'
 /**
- * `vault-recovered` 与 `updated` 不是应用跑出来的检查，是主进程报上来的一次性事实，
- * 没有「失败」这一面。
+ * `vault-recovered`、`updated` 与 `settings-save` 不是应用跑出来的检查，是主进程报上来的
+ * 一次性事实，没有「失败」这一面。
  */
-export type StartupCheckFailureId = Exclude<StartupCheckId, 'vault-recovered' | 'updated'>
+export type StartupCheckFailureId = Exclude<StartupCheckId, 'vault-recovered' | 'updated' | 'settings-save'>
 
 /**
  * 有的提示要把人带到某一页，有的要直接把登录弹出来（账号页在未登录时才等价于登录），
@@ -138,6 +138,28 @@ export function updatedNotice(currentVersion: string, release: InstalledRelease 
     title: `已更新到 ${currentVersion}`,
     body,
     ...(items.length > 0 ? { items } : {}),
+    action: { label: '知道了', dismiss: true },
+  }
+}
+
+/**
+ * 启动时设置没写进去，但软件照常打开了（以前这种情况直接打不开）。只说用户能做的
+ * 那件事；「磁盘」「杀毒软件」是用户听得懂的词，文件名、错误原文不上屏，原文在运行日志里。
+ */
+export function settingsSaveNotice(issue: SettingsSaveIssue | null | undefined): StartupNotice | null {
+  if (!issue) return null
+  const drive = issue.drive && /^[A-Z]$/.test(issue.drive) ? `${issue.drive} 盘` : '磁盘'
+  const body = issue.kind === 'disk-full'
+    ? `电脑${drive}空间快满了，部分设置可能保存不上。清理一下${drive}（比如清空回收站、删掉不用的大文件）后重开软件就好。`
+    : issue.kind === 'blocked'
+      ? '软件的设置文件被别的程序（常见是杀毒软件）拦住了，部分设置可能保存不上。把星芒AI管理工具加进杀毒软件的信任名单后重开软件就好。'
+      : '这次打开时设置没保存上，部分设置可能要重新选一次。重开软件一般就好了。'
+  return {
+    id: 'settings-save',
+    failure: false,
+    tone: 'warn',
+    title: '部分设置可能保存不上',
+    body,
     action: { label: '知道了', dismiss: true },
   }
 }

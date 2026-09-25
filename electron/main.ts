@@ -134,7 +134,7 @@ import {
 } from './xingmang-ai-skill'
 import { resolveClaudeStatusLineScriptPath } from './claude-status-line'
 import { resolveProjectInstructionsTemplatePath } from './project-instructions'
-import { ipcEventChannels, type AccountBalance } from './ipc-contract'
+import { ipcEventChannels, type AccountBalance, type SettingsSaveIssue } from './ipc-contract'
 import {
   shouldUseManualUninstallVisualFixture,
   withManualUninstallVisualFixture,
@@ -168,8 +168,8 @@ import {
   applyWindowTheme,
   buildMacApplicationMenuTemplate,
   platformWindowOptions,
-  startupFailureMessage,
 } from './window-presentation'
+import { buildStartupFailureDialog, classifyStorageFailure, dataDriveLetter } from './startup-failure'
 import { installMainWindowFrameNavigationGuard } from './platform/frame-navigation'
 
 guardProcessOutputStreams()
@@ -596,6 +596,47 @@ function recordFatalStartupFailure(phase: string, error: unknown): string | null
   return recordStartupFailure(error, { phase, appVersion: version, packaged }, startupLogLocation())
 }
 
+/**
+ * The fatal-startup dialog. `showErrorBox` offered one button that quit, and
+ * its text was the raw error (English, with the Windows user name in the
+ * path). This one speaks plain Chinese, keeps the raw text behind "copy", and
+ * loops so copying or opening the log folder does not dismiss it.
+ */
+async function presentStartupFailure(error: unknown, logPath: string | null): Promise<void> {
+  const content = buildStartupFailureDialog(error, {
+    platform: process.platform,
+    homeDirectory: os.homedir(),
+    dataDirectory: appValue(() => app.getPath('userData'), null),
+    appVersion: appValue(() => app.getVersion(), null),
+  })
+  const copyLabel = '复制错误信息'
+  const logLabel = '打开日志文件夹'
+  const buttons = logPath ? [copyLabel, logLabel, '退出'] : [copyLabel, '退出']
+  try {
+    // Bounded so a dialog that keeps returning a non-exit answer cannot keep
+    // the process alive forever.
+    for (let round = 0; round < 10; round += 1) {
+      const { response } = await dialog.showMessageBox({
+        type: 'error',
+        title: content.title,
+        message: content.message,
+        detail: content.detail,
+        buttons,
+        defaultId: buttons.length - 1,
+        cancelId: buttons.length - 1,
+        noLink: true,
+      })
+      const choice = buttons[response]
+      if (choice === copyLabel) clipboard.writeText(content.copyText)
+      else if (choice === logLabel && logPath) await shell.openPath(path.dirname(logPath))
+      else return
+    }
+  } catch {
+    // Last resort: the message box itself failed. Still no raw error text.
+    dialog.showErrorBox(content.title, content.message)
+  }
+}
+
 // Set once the runtime log exists. A send failure before that (offline at
 // launch) is simply dropped: the reporter must never become a second source
 // of startup errors.
@@ -869,6 +910,7 @@ if (!hasSingleInstanceLock) {
     }
 
     const settingsStore = new AppSettingsStore(path.join(managerDataDirectory, 'settings.json'))
+    let settingsSaveIssue: SettingsSaveIssue | undefined
     // 加速页上选过的线路与模式单独落一份，不进 settings.json：它是按账号分的
     // 记录，而 settings.json 会整份交给渲染层，没必要把机器上每个账号的记录都
     // 送过去。
@@ -1936,10 +1978,17 @@ if (!hasSingleInstanceLock) {
       },
     })
 
-    // Empty update = read the effective record (file, .bak, or defaults) and
-    // persist it durably -- same normalize-on-startup write as before the
-    // field-wise-merge change, routed through the same serialized queue.
-    await systemService.updateStoredConfig({ version: 2 })
+    // Normalize the effective record (file, .bak, or defaults) through the same
+    // serialized queue as every other settings write, but only touch the disk
+    // when the file actually differs. A full disk or an antivirus lock used to
+    // throw here and end startup before any window existed; now the app opens
+    // on the record it could read and the window tells the user once.
+    try {
+      await settingsStore.normalize()
+    } catch (error) {
+      settingsSaveIssue = { kind: classifyStorageFailure(error) ?? 'other', drive: dataDriveLetter(managerDataDirectory) }
+      runtimeLog.exception('config', 'settings.normalize.failed', error, { kind: settingsSaveIssue.kind })
+    }
     const bundledXingmangAiSkillRoot = resolveXingmangAiBundledSkillRoot(app.getAppPath(), {
       packaged: app.isPackaged,
       resourcesPath: process.resourcesPath,
@@ -2178,7 +2227,12 @@ if (!hasSingleInstanceLock) {
         }
         applicationTray?.updateSnapshot()
       },
-      getWindowCapabilities: () => ({ tray: applicationTray?.available ?? false, notifications: desktopNotifications.getCapability().supported, lowEndDevice }),
+      getWindowCapabilities: () => ({
+        tray: applicationTray?.available ?? false,
+        notifications: desktopNotifications.getCapability().supported,
+        lowEndDevice,
+        ...(settingsSaveIssue ? { settingsSaveIssue } : {}),
+      }),
       onSettingsChanged: () => {
         desktopNotifications.refresh()
         void updaterService.autoUpdateChanged().catch((cause: unknown) => {
@@ -2451,16 +2505,11 @@ if (!hasSingleInstanceLock) {
       showMainWindow()
     })
   }).catch((error) => {
-    const message = startupFailureMessage(error, process.platform)
     console.error('Application startup failed:', error)
     // console output is unreachable in a packaged build and devtools are
     // disabled there, so this file is the only evidence a support case gets.
     const logPath = recordFatalStartupFailure('whenReady', error)
-    dialog.showErrorBox(
-      '星芒AI管理工具启动失败',
-      logPath ? `${message}\n\n诊断日志已保存到：\n${logPath}` : message,
-    )
-    app.quit()
+    void presentStartupFailure(error, logPath).finally(() => app.quit())
   })
 
   app.on('window-all-closed', () => {

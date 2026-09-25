@@ -200,6 +200,13 @@ export interface WindowCapabilities {
   notifications: boolean
   // 主进程按本机内存与 CPU 判断，只用来让界面背景少画一点；缺省 = 旧行为（照常动画）。
   lowEndDevice?: boolean
+  // 启动时设置写不进去（磁盘满、被杀毒软件拦住）但软件照常打开了；界面据此提示一句。缺省 = 没出事。
+  settingsSaveIssue?: SettingsSaveIssue
+}
+export interface SettingsSaveIssue {
+  kind: 'disk-full' | 'blocked' | 'other'
+  /** Windows 盘符字母（如 `C`），只用来说「C 盘」；取不到时不给。 */
+  drive?: string
 }
 export type { ExternalDeepLink } from './external-deep-links'
 export interface FeedbackReportPreview { id: string; text: string; entries: number }

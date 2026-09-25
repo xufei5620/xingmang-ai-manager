@@ -474,6 +474,30 @@ export function updateAppSettings(
 }
 
 /**
+ * 启动时那次「按当前格式整理一遍」。以前每次开软件都无条件重写 settings.json：
+ * C 盘一满、或杀毒软件锁住这个文件，写失败就一路抛到启动兜底，软件直接打不开。
+ * 现在磁盘上的内容已经是整理后的样子就不写；真要写而写不进去，由调用方决定
+ * 要不要拦启动（main.ts 不拦，照常用读到的设置打开）。
+ */
+export function normalizeAppSettings(
+  filePath: string,
+  homeDirectory = os.homedir(),
+): Promise<{ settings: AppSettings; written: boolean }> {
+  return enqueueSettingsOperation(filePath, async () => {
+    const settings = mergeAppSettings(readAppSettings(filePath, homeDirectory), { version: 2 })
+    let current: string | null = null
+    try {
+      current = readSafeUtf8FileSync(filePath, '应用设置文件', MAX_SETTINGS_BYTES)
+    } catch {
+      // Unreadable primary: fall through and rewrite it from the effective record.
+    }
+    if (current === settingsContent(settings)) return { settings, written: false }
+    await performAtomicSettingsWrite(filePath, settings, {})
+    return { settings, written: true }
+  })
+}
+
+/**
  * Serializes a single official-account preference update against the latest
  * on-disk settings. Keeping this as a dedicated queued operation avoids two
  * concurrent provider switches reading the same stale array and losing each
@@ -522,5 +546,9 @@ export class AppSettingsStore {
 
   setOfficialProvider(provider: ProviderId, official: boolean, hooks: AppSettingsWriteHooks = {}): Promise<AppSettings> {
     return setOfficialProvider(this.filePath, provider, official, hooks, this.homeDirectory)
+  }
+
+  normalize(): Promise<{ settings: AppSettings; written: boolean }> {
+    return normalizeAppSettings(this.filePath, this.homeDirectory)
   }
 }

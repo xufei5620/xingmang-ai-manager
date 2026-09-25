@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { startupCheckFailure, startupCheckLogContext, releaseNoteHeadline, startupDiagnosticsIssues, updatedNotice, vaultRecoveredNotice, withStartupNotice, withoutStartupNotice } from './startup-notice'
+import { settingsSaveNotice, startupCheckFailure, startupCheckLogContext, releaseNoteHeadline, startupDiagnosticsIssues, updatedNotice, vaultRecoveredNotice, withStartupNotice, withoutStartupNotice } from './startup-notice'
 
 describe('startup check notices', () => {
   it('keeps the backend sentence as the body so support still sees the original wording', () => {
@@ -110,5 +110,28 @@ describe('startup check notices', () => {
     expect(updatedNotice('0.2.9', { justUpdated: false, previousVersion: '0.2.9', notes: ['一条'] })).toBeNull()
     expect(updatedNotice('0.2.9', null)).toBeNull()
     expect(updatedNotice('0.2.9', undefined)).toBeNull()
+  })
+
+  it('tells the user which drive to clean up when settings could not be saved at startup', () => {
+    const notice = settingsSaveNotice({ kind: 'disk-full', drive: 'C' })
+    expect(notice?.id).toBe('settings-save')
+    expect(notice?.failure).toBe(false)
+    expect(notice?.title).toBe('部分设置可能保存不上')
+    expect(notice?.body).toContain('C 盘空间快满了')
+    expect(notice?.action).toEqual({ label: '知道了', dismiss: true })
+    expect(settingsSaveNotice({ kind: 'disk-full' })?.body).toContain('电脑磁盘空间快满了')
+    expect(settingsSaveNotice({ kind: 'disk-full', drive: 'C:\\Users' })?.body).toContain('磁盘空间')
+  })
+
+  it('names the antivirus case and a generic case without technical words', () => {
+    expect(settingsSaveNotice({ kind: 'blocked' })?.body).toContain('杀毒软件')
+    for (const kind of ['disk-full', 'blocked', 'other'] as const) {
+      expect(settingsSaveNotice({ kind })?.body).not.toMatch(/ENOSPC|EPERM|settings\.json|AppData/)
+    }
+  })
+
+  it('stays silent on a normal launch', () => {
+    expect(settingsSaveNotice(undefined)).toBeNull()
+    expect(settingsSaveNotice(null)).toBeNull()
   })
 })
