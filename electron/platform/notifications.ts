@@ -1,6 +1,7 @@
 import { accelerationExpiryWarningSeconds } from '../acceleration-contract'
 import type {
   PlatformActivityKind,
+  PlatformInstallNotice,
   PlatformNotificationKind,
   PlatformNotificationPreferences,
   PlatformNotificationResult,
@@ -62,6 +63,48 @@ const messages = {
     body: '当前账号有一条新公告，回到星芒就能看到。',
   },
 } as const satisfies Record<PlatformActivityKind | 'test', NotificationMessage>
+
+// 渲染层只给编号，名字在这里定死：拿到这条通道的页面也只能在这份名单里挑，
+// 塞不进任意文字。名单外的编号（以后新加了工具忘了补）就说「工具」，不报错。
+const installToolNames: Record<string, string> = {
+  claude: 'Claude Code',
+  codex: 'Codex CLI',
+  gemini: 'Gemini CLI',
+  grok: 'Grok CLI',
+  codexDesktop: 'Codex 桌面端',
+  node: '运行环境',
+  python: 'Python',
+  git: 'Git',
+  workbuddy: 'WorkBuddy',
+  claudeDesktop: 'Claude Desktop',
+  opencode: 'OpenCode',
+}
+
+export function buildInstallNotificationMessage(
+  notice: PlatformInstallNotice,
+): NotificationMessage {
+  const name = Object.hasOwn(installToolNames, notice.tool)
+    ? installToolNames[notice.tool]!
+    : '工具'
+  // 「Claude Code 装好了」「运行环境装好了」：英文名后面空一格，中文名直接接。
+  const subject = /[A-Za-z]$/.test(name) ? `${name} ` : name
+  switch (notice.outcome) {
+    case 'installed':
+      return { title: `${subject}装好了`, body: '回到星芒就能打开使用。' }
+    case 'updated':
+      return { title: `${subject}已经更新好了`, body: '回到星芒就能接着用。' }
+    case 'installFailed':
+      return {
+        title: `${subject}没装上`,
+        body: '回到星芒看看原因，照提示点一下就能重试。',
+      }
+    case 'updateFailed':
+      return {
+        title: `${subject}没更新好`,
+        body: '回到星芒看看原因，照提示点一下就能重试。',
+      }
+  }
+}
 
 // 一条只说「还剩多久」，一条只说「已经断开了」：用户在游戏里看到的就这一行，
 // 多一个字的引导都会把它变成广告。免费时长怎么卖不是这里的事，所以不写价格、
@@ -177,8 +220,18 @@ export function createPlatformNotifications(
     return 'requested'
   }
   return {
-    notify: (kind: PlatformActivityKind | 'test', eventKey: string) =>
-      present(kind, `${kind}:${eventKey}`, messages[kind]),
+    notify: (
+      kind: PlatformActivityKind | 'test',
+      eventKey: string,
+      install?: PlatformInstallNotice,
+    ) =>
+      present(
+        kind,
+        `${kind}:${eventKey}`,
+        kind === 'install' && install
+          ? buildInstallNotificationMessage(install)
+          : messages[kind],
+      ),
     notifyHost: (
       event: PlatformHostNotification,
       eventKey: string,

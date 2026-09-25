@@ -204,4 +204,29 @@ describe('announcement reminders', () => {
     expect(h.controller.notify('announcement', 'notice-ffffffff')).toBe('disabled')
     expect(h.runtime.create).toHaveBeenCalledTimes(1)
   })
+  it('names the tool and says whether it installed, updated or failed', () => {
+    const h = setup()
+    h.controller.notify('install', 'install:claude:installed:1', { tool: 'claude', outcome: 'installed' })
+    h.controller.notify('install', 'install:codex:updated:2', { tool: 'codex', outcome: 'updated' })
+    h.controller.notify('install', 'install:node:installFailed:3', { tool: 'node', outcome: 'installFailed' })
+    h.controller.notify('install', 'install:gemini:updateFailed:4', { tool: 'gemini', outcome: 'updateFailed' })
+    expect(vi.mocked(h.runtime.create).mock.calls.map(([options]) => options)).toEqual([
+      { title: 'Claude Code 装好了', body: '回到星芒就能打开使用。', silent: true },
+      { title: 'Codex CLI 已经更新好了', body: '回到星芒就能接着用。', silent: true },
+      { title: '运行环境没装上', body: '回到星芒看看原因，照提示点一下就能重试。', silent: true },
+      { title: 'Gemini CLI 没更新好', body: '回到星芒看看原因，照提示点一下就能重试。', silent: true },
+    ])
+  })
+  it('falls back to a generic name for ids outside the fixed list', () => {
+    const h = setup()
+    h.controller.notify('install', 'install:x:1', { tool: 'constructor', outcome: 'installed' })
+    h.controller.notify('install', 'install:y:2', { tool: 'unknownTool', outcome: 'installFailed' })
+    expect(vi.mocked(h.runtime.create).mock.calls.map(([options]) => options.title)).toEqual(['工具装好了', '工具没装上'])
+  })
+  it('keeps install results behind the install switch', () => {
+    const h = setup()
+    h.preferences.install = false
+    expect(h.controller.notify('install', 'install:claude:installFailed:1', { tool: 'claude', outcome: 'installFailed' })).toBe('disabled')
+    expect(h.runtime.create).not.toHaveBeenCalled()
+  })
 })
