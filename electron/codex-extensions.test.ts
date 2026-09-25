@@ -62,14 +62,14 @@ function stdioMcp(name: string, env: Record<string, string> = {}): Record<string
   }
 }
 
-function httpMcp(name: string): Record<string, unknown> {
+function httpMcp(name: string, url = 'https://example.test/mcp'): Record<string, unknown> {
   return {
     name,
     enabled: true,
     disabled_reason: null,
     transport: {
       type: 'streamable_http',
-      url: 'https://example.test/mcp',
+      url,
       bearer_token_env_var: 'MCP_TOKEN',
       http_headers: { Authorization: 'Bearer secret-header', 'X-Key': 'secret-key' },
       env_http_headers: { 'X-Env': 'HEADER_ENV' },
@@ -215,8 +215,46 @@ describe('Codex MCP contract and secret boundary', () => {
       type: 'http',
       name: 'remote',
       url: 'https://example.test/mcp',
+      bearerTokenEnvVar: 'MCP_TOKEN',
     })).resolves.toHaveLength(1)
     expect(calls).toBe(3)
+  })
+
+  it('keeps the add error when a same-named server still points at the old URL', async () => {
+    const home = temporaryDirectory()
+    const invoke: CodexInvoker = async (argv) => {
+      if (argv[0] === 'plugin') return pluginCatalog()
+      if (argv[1] === 'add') throw new Error('config write failed')
+      return mcpList([httpMcp('demo', 'https://old.example.test/mcp')])
+    }
+    const service = new CodexExtensionService({ homeDirectory: home, invoke })
+
+    await expect(service.addMcpServer({
+      type: 'http',
+      name: 'demo',
+      url: 'https://new.example.test/mcp',
+      bearerTokenEnvVar: 'MCP_TOKEN',
+    })).rejects.toThrow('config write failed')
+  })
+
+  it('keeps the add error when a same-named stdio server has different arguments', async () => {
+    const home = temporaryDirectory()
+    const invoke: CodexInvoker = async (argv) => {
+      if (argv[0] === 'plugin') return pluginCatalog()
+      if (argv[1] === 'add') throw new Error('config write failed')
+      return mcpList([stdioMcp('demo')])
+    }
+    const service = new CodexExtensionService({ homeDirectory: home, invoke })
+
+    await expect(service.addMcpServer({
+      type: 'stdio', name: 'demo', command: 'node', args: ['new-server.mjs'],
+    })).rejects.toThrow('config write failed')
+    await expect(service.addMcpServer({
+      type: 'stdio', name: 'demo', command: 'node', args: ['server.mjs'], env: { EXTRA: 'value' },
+    })).rejects.toThrow('config write failed')
+    await expect(service.addMcpServer({
+      type: 'stdio', name: 'demo', command: 'node', args: ['server.mjs'],
+    })).resolves.toHaveLength(1)
   })
 
   it('blocks deleting non-user MCP servers and rejects invalid HTTP/env input', async () => {
@@ -482,6 +520,37 @@ describe('Skill discovery and managed mutations', () => {
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'EPERM') throw error
     }
+  })
+
+  it('rejects hard-linked resources without copying outside content', () => {
+    const home = temporaryDirectory()
+    const sourceRoot = temporaryDirectory()
+    const outsideRoot = temporaryDirectory()
+    const source = path.join(sourceRoot, 'linked-skill')
+    const outside = path.join(outsideRoot, 'outside-secret.txt')
+    write(path.join(source, 'SKILL.md'), '---\nname: Linked\n---\n')
+    write(outside, 'OUTSIDE-MARKER')
+    fs.linkSync(outside, path.join(source, 'resource.txt'))
+    const service = new CodexExtensionService({ homeDirectory: home, invoke: async () => '' })
+
+    expect(() => service.importSkill({ sourcePath: source })).toThrow('硬链接')
+    expect(fs.existsSync(path.join(home, '.agents', 'skills', 'linked-skill'))).toBe(false)
+  })
+
+  it('copies nested skill resources into the managed directory', () => {
+    const home = temporaryDirectory()
+    const sourceRoot = temporaryDirectory()
+    const source = path.join(sourceRoot, 'nested-skill')
+    write(path.join(source, 'SKILL.md'), '---\nname: Nested\n---\n')
+    write(path.join(source, 'scripts', 'deep', 'run.txt'), 'resource-content')
+    fs.mkdirSync(path.join(source, 'empty'))
+    const service = new CodexExtensionService({ homeDirectory: home, invoke: async () => '' })
+
+    service.importSkill({ sourcePath: source })
+
+    const target = path.join(home, '.agents', 'skills', 'nested-skill')
+    expect(fs.readFileSync(path.join(target, 'scripts', 'deep', 'run.txt'), 'utf8')).toBe('resource-content')
+    expect(fs.statSync(path.join(target, 'empty')).isDirectory()).toBe(true)
   })
 
   it('imports user skills and moves uninstall targets into application trash', () => {
