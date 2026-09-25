@@ -191,6 +191,41 @@ export function parseCanvasProjectWorkflow(content: string): { workflow: Record<
   return { workflow: raw, assetIds: [...assetIds] }
 }
 
+const assetReadConcurrency = 4
+
+/**
+ * Reads the exported assets under the package limits. The count is checked
+ * before any body is read and the running byte total after each one, so an
+ * oversized project is refused before every image sits in main-process memory
+ * at once (#543). Base64 inflates each body by 4/3 in the final package.
+ */
+export async function readCanvasProjectAssetSources(
+  assetIds: readonly string[],
+  read: (assetId: string) => Promise<CanvasProjectAssetSource>,
+): Promise<CanvasProjectAssetSource[]> {
+  if (assetIds.length > maximumCanvasProjectAssets) throw new Error('画布项目资产数量超出安全上限')
+  const sources: CanvasProjectAssetSource[] = new Array(assetIds.length)
+  let encodedBytes = 0
+  let next = 0
+  let failed = false
+  async function worker(): Promise<void> {
+    while (!failed && next < assetIds.length) {
+      const index = next
+      next += 1
+      const source = await read(assetIds[index])
+      encodedBytes += Math.ceil(source.bytes.length / 3) * 4
+      if (encodedBytes > maximumCanvasProjectBytes) throw new Error('画布项目超出 96 MB 安全上限')
+      sources[index] = source
+    }
+  }
+  const workers = Array.from({ length: Math.min(assetReadConcurrency, assetIds.length) }, () => worker().catch((error: unknown) => {
+    failed = true
+    throw error
+  }))
+  await Promise.all(workers)
+  return sources
+}
+
 export function buildCanvasProjectPackage(workflowContent: string, sources: readonly CanvasProjectAssetSource[], createdAt = new Date().toISOString()): string {
   const parsed = parseCanvasProjectWorkflow(workflowContent)
   if (!Number.isFinite(Date.parse(createdAt))) throw new Error('画布项目时间格式错误')
