@@ -83,6 +83,10 @@
 .v2-support { display: grid; justify-items: center; gap: 12px; }
 .v2-support img { width: 160px; height: 160px; }
 .v2-support h3, .v2-support p { margin: 0; }
+.v2-support-identity { display: grid; gap: 6px; width: 100%; }
+.v2-support-identity > p { color: var(--text-2); font-size: var(--font-small-compact); }
+.v2-support-identity > div { display: flex; align-items: center; gap: 8px; padding: 6px 6px 6px 10px; border: 1px solid var(--line); border-radius: var(--radius-input); background: var(--panel-2); }
+.v2-support-identity code { flex: 1; min-width: 0; font-family: inherit; overflow-wrap: anywhere; user-select: text; }
 .v2-announcement-banner { display: flex; align-items: center; gap: 10px; height: 36px; flex: none; padding: 0 14px; border-bottom: 1px solid var(--line); color: var(--text-2); background: var(--panel-2); font-size: var(--font-small-compact); }
 .v2-offline-banner { display: flex; align-items: center; gap: 10px; min-height: 36px; flex: none; padding: 4px 14px; border-bottom: 1px solid var(--line); color: var(--warn); background: var(--panel-2); font-size: var(--font-small-compact); }
 .v2-offline-banner > span { flex: 1; color: var(--text-2); }
