@@ -2,6 +2,7 @@ import type { ProgressInfo, UpdateFileInfo, UpdateInfo } from 'builder-util-runt
 import { classifyNetworkFailure, updateNetworkFailureMessages } from './network-failure'
 import { redactSecretQueryParameters, redactSecretShapes } from './redaction-patterns'
 import type { ServiceMaintenance, ServiceRollout, ServiceStatus } from './service-status'
+import type { UpdateSignatureVerdict } from './update-package-signature'
 
 export type UpdatePhase =
   | 'disabled'
@@ -202,6 +203,13 @@ export interface UpdaterRuntime {
    * not be made. Both outcomes reject the package.
    */
   verifyPackageDigest?: (filePath: string, expectedSha512: string) => Promise<boolean>
+  /**
+   * Checks the publisher signature on the manifest entry the package was matched
+   * to (update-package-signature.ts). Runs only after the digest matched, so a
+   * valid signature over that digest vouches for the bytes on disk. Omitting it
+   * keeps the digest-only behaviour; providing it makes a missing signature fatal.
+   */
+  verifyPackageSignature?: (version: string, entry: Readonly<Record<string, unknown>>) => UpdateSignatureVerdict
   installedRelease?: InstalledRelease | null
   /**
    * 每次检查前重读一遍更新目录上的状态文件，撤回名单与分批放量都以最新的为准。
@@ -323,10 +331,13 @@ function manifestFileName(entry: UpdateFileInfo): string {
  * downloaded. Returns null when no digest can be attributed to that file, which
  * the caller treats as a rejection rather than as "nothing to check".
  */
-function manifestPackageDigest(info: UpdateInfo, downloadedFile: string): string | null {
+/**
+ * The `files[]` entry of the manifest that describes the downloaded package, or
+ * null when none can be attributed to it.
+ */
+function manifestPackageEntry(info: UpdateInfo, downloadedFile: string): UpdateFileInfo | null {
   const target = fileNameOf(downloadedFile)
-  const entries = (Array.isArray(info.files) ? info.files : [])
-    .filter((entry): entry is UpdateFileInfo => Boolean(entry))
+  const entries = manifestEntries(info)
   const named = entries.find((entry) => {
     const name = manifestFileName(entry)
     return name.length > 0 && name === target
@@ -334,12 +345,21 @@ function manifestPackageDigest(info: UpdateInfo, downloadedFile: string): string
   // A single-artifact manifest leaves no ambiguity about which digest applies,
   // even when the cached file was renamed on the way to disk. A manifest that
   // does list this file, on the other hand, never borrows another file's digest.
-  const chosen = named ?? (entries.length === 1 ? entries[0] : null)
+  return named ?? (entries.length === 1 ? entries[0] : null)
+}
+
+function manifestEntries(info: UpdateInfo): UpdateFileInfo[] {
+  return (Array.isArray(info.files) ? info.files : [])
+    .filter((entry): entry is UpdateFileInfo => Boolean(entry))
+}
+
+function manifestPackageDigest(info: UpdateInfo, downloadedFile: string): string | null {
+  const chosen = manifestPackageEntry(info, downloadedFile)
   if (chosen) {
     const digest = typeof chosen.sha512 === 'string' ? chosen.sha512.trim() : ''
     return digest || null
   }
-  if (entries.length > 0) return null
+  if (manifestEntries(info).length > 0) return null
   const legacy = typeof info.sha512 === 'string' ? info.sha512.trim() : ''
   return legacy || null
 }
@@ -442,6 +462,7 @@ export function createUpdaterService(
     }
   }
   const verifyPackageDigest = runtime.verifyPackageDigest
+  const verifyPackageSignature = runtime.verifyPackageSignature
   let installWatchdogTimer: NodeJS.Timeout | null = null
   let startupPromise: Promise<UpdateSnapshot> | null = null
   let installRequested = false
@@ -666,7 +687,12 @@ export function createUpdaterService(
   }
 
   const verifyDownloadedUpdate = async (event: DownloadedUpdateEvent) => {
-    if (!verifyPackageDigest) return
+    // A signature only covers the manifest's digest; without recomputing the
+    // digest it would vouch for nothing, so that pairing is refused outright.
+    if (!verifyPackageDigest) {
+      rejectDownloadedUpdate('UPDATE_PACKAGE_DIGEST_FAILED', '安装包完整性校验没有配置，已阻止安装')
+      return
+    }
     const downloadedFile = typeof event.downloadedFile === 'string' ? event.downloadedFile.trim() : ''
     if (!downloadedFile) {
       rejectDownloadedUpdate(
@@ -702,6 +728,19 @@ export function createUpdaterService(
       )
       return
     }
+    if (verifyPackageSignature) {
+      // Windows 安装包没有 Authenticode 签名，清单又和安装包同放一个桶：拿到上传密钥
+      // 的人可以把两者一起换掉，上面的 SHA-512 照样对得上。只有发布者私钥签过的清单项
+      // 才算数，缺签名同样拒装，绝不当成「没签就放行」。
+      const entry = manifestPackageEntry(event, downloadedFile)
+      const verdict = entry
+        ? verifyPackageSignature(String(event.version ?? ''), { ...entry })
+        : { ok: false as const, code: 'UPDATE_SIGNATURE_MISSING' as const, message: '更新清单里没有发布者签名，已阻止安装。请稍后再试，若一直这样请联系客服' }
+      if (!verdict.ok) {
+        rejectDownloadedUpdate(verdict.code, verdict.message)
+        return
+      }
+    }
     acceptDownloadedUpdate(event)
   }
 
@@ -711,7 +750,7 @@ export function createUpdaterService(
     'update-available': (info: UpdateInfo) => applyInfo('available', info),
     'update-downloaded': (event: DownloadedUpdateEvent) => {
       if (disposed) return
-      if (!verifyPackageDigest) {
+      if (!verifyPackageDigest && !verifyPackageSignature) {
         acceptDownloadedUpdate(event)
         return
       }

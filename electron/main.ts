@@ -158,6 +158,7 @@ import {
   type SystemSnapshot,
 } from './system-service'
 import { verifyUpdatePackageDigest } from './update-package-digest'
+import { verifyUpdateEntrySignature } from './update-package-signature'
 import { installStrictUpdateCodeSignatureVerifier } from './update-signature'
 import { createUpdaterService } from './updater'
 import { createLastRunVersionStore, hasPriorRunRecord, readBundledReleaseNotes, resolveInstalledRelease } from './installed-release'
@@ -1180,6 +1181,9 @@ if (!hasSingleInstanceLock) {
       unsignedAutoUpdate: true,
       readAutoUpdate: () => systemService.readStoredConfig().autoUpdate !== false,
       verifyPackageDigest: verifyUpdatePackageDigest,
+      // 未签名通道（Windows）没有 Authenticode，只认发布者 Ed25519 签过的清单项
+      // （update-package-signature.ts）。Mac 的包由 Squirrel.Mac 按钉住的发布证书验签。
+      ...(unsignedChannel ? { verifyPackageSignature: verifyUpdateEntrySignature } : {}),
       // 监视器在更新服务之后才建（它要把结果交回更新服务），这里等真正检查时再取。
       refreshServiceStatus: () => serviceStatusMonitor ? serviceStatusMonitor.refresh() : Promise.resolve(null),
       enableDevelopmentUpdates: process.env.XINGMANG_UPDATE_DEV === '1',

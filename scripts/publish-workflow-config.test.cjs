@@ -26,6 +26,9 @@ const RELEASE_SECRET_NAMES = [
   'XINGMANG_MAC_SIGNING_P12_BASE64',
   'XINGMANG_MAC_SIGNING_P12_PASSWORD',
   'XINGMANG_MAC_SIGNING_SHA256',
+  // 更新包签名私钥（2026-09-25 加）。产品所有者照 docs/RELEASING.md「更新包签名」
+  // 在自己电脑上生成、加进 release 环境；缺了它 Windows 发布会在上传前失败。
+  'XINGMANG_UPDATE_SIGNING_KEY',
 ]
 
 function stepIndex(job, pattern) {
@@ -152,7 +155,7 @@ test('the secrets are only ever bound, never echoed', () => {
       const script = String(step.run || '')
       assert.doesNotMatch(
         script,
-        /echo\s+"?\$(AWS_SECRET_ACCESS_KEY|AWS_ACCESS_KEY_ID|R2_ACCOUNT_ID|XINGMANG_MAC_SIGNING_P12_BASE64|XINGMANG_MAC_SIGNING_P12_PASSWORD)/,
+        /echo\s+"?\$(AWS_SECRET_ACCESS_KEY|AWS_ACCESS_KEY_ID|R2_ACCOUNT_ID|XINGMANG_MAC_SIGNING_P12_BASE64|XINGMANG_MAC_SIGNING_P12_PASSWORD|XINGMANG_UPDATE_SIGNING_KEY)/,
         step.name,
       )
     }
@@ -397,6 +400,27 @@ test('the publish guard runs before the first upload', () => {
   const guard = stepIndex(publishJob, /Refuse to overwrite a version that already shipped/)
   const firstUpload = publishJob.steps.findIndex((step) => /aws s3 cp/.test(String(step.run || '')))
   assert.ok(guard >= 0 && firstUpload > guard, '同版本检查必须排在第一次上传之前')
+})
+
+test('the Windows manifest is signed before anything is checked or uploaded, and re-verified live', () => {
+  // 签名要赶在同版本检查之前：检查比的就是这份要传上去的清单；也要赶在第一次上传
+  // 之前，线上绝不能出现一份没签名的 Windows 清单——新客户端会全部拒装。
+  const sign = stepIndex(publishJob, /update-manifest-signature\.cjs sign/)
+  const guard = stepIndex(publishJob, /Refuse to overwrite a version that already shipped/)
+  const firstUpload = publishJob.steps.findIndex((step) => /aws s3 cp/.test(String(step.run || '')))
+  const manifest = stepIndex(publishJob, /Publish the update manifests/)
+  const live = stepIndex(publishJob, /update-manifest-signature\.cjs verify/)
+  assert.ok(sign >= 0 && sign < guard && sign < firstUpload, '签名必须排在同版本检查与第一次上传之前')
+  assert.ok(live > manifest, '线上清单的签名复核必须排在清单发布之后')
+  const step = publishJob.steps[sign]
+  assert.equal(step.if, "${{ needs.windows-build.result == 'success' }}")
+  assert.match(String(step.run), /--manifest release-artifacts\/latest\.yml$/)
+  // 只签 Windows：macOS 由 Squirrel.Mac 按钉住的发布证书验签。
+  assert.doesNotMatch(String(step.run), /latest-mac/)
+  assert.deepEqual(Object.keys(step.env), ['XINGMANG_UPDATE_SIGNING_KEY'])
+  // 签名私钥只给这一步，别的步骤一个都不许读到。
+  const readers = publishJob.steps.filter((item) => /XINGMANG_UPDATE_SIGNING_KEY/.test(YAML.stringify(item)))
+  assert.deepEqual(readers, [step])
 })
 
 test('the publish guard allows a first release, an upgrade and a rerun of the same build only', () => {

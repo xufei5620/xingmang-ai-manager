@@ -1,6 +1,8 @@
+import { generateKeyPairSync, sign } from 'node:crypto'
 import { EventEmitter } from 'node:events'
 import { describe, expect, it, vi } from 'vitest'
 import { updateNetworkFailureMessages } from './network-failure'
+import { UPDATE_SIGNATURE_FIELD, buildUpdateSignaturePayload, verifyUpdateEntrySignature } from './update-package-signature'
 import { createUpdaterService, decideUpdateOffer, isOlderVersion, type UpdateClient, type UpdaterService } from './updater'
 
 class FakeUpdater extends EventEmitter implements UpdateClient {
@@ -1632,5 +1634,85 @@ describe('auto-update preference', () => {
     await expect(service.scheduledCheck()).resolves.toMatchObject({ phase: 'not-available' })
     expect(client.downloadUpdate).not.toHaveBeenCalled()
     service.dispose()
+  })
+})
+
+describe('downloaded package publisher signature', () => {
+  const downloadedFile = 'C:\\Users\\tester\\AppData\\Local\\xingmang-updater\\XingMang-AI-Manager-1.1.0-Setup.exe'
+  const entry = { url: 'XingMang-AI-Manager-1.1.0-Setup.exe', sha512: 'manifest-digest', size: 42 }
+  const { privateKey, publicKey } = generateKeyPairSync('ed25519')
+  const pinned = [publicKey.export({ format: 'der', type: 'spki' }).toString('base64')]
+  const verifyPackageSignature = (version: string, target: Readonly<Record<string, unknown>>) =>
+    verifyUpdateEntrySignature(version, target, pinned)
+
+  function signedEntry(version = '1.1.0', target: { url: string, sha512: string } = entry): Record<string, unknown> {
+    const payload = buildUpdateSignaturePayload(version, target) ?? ''
+    return { ...entry, ...target, [UPDATE_SIGNATURE_FIELD]: sign(null, Buffer.from(payload, 'utf8'), privateKey).toString('base64') }
+  }
+
+  function downloaded(files: Record<string, unknown>[]) {
+    return { ...updateInfo(), files, downloadedFile }
+  }
+
+  function service(client: FakeUpdater, digestMatches = true) {
+    return createUpdaterService(client, {
+      currentVersion: '1.0.0',
+      isPackaged: true,
+      verifyPackageDigest: async () => digestMatches,
+      verifyPackageSignature,
+    })
+  }
+
+  it('accepts a package whose manifest entry the publisher signed', async () => {
+    const client = new FakeUpdater()
+    const updater = service(client)
+    client.emit('update-downloaded', downloaded([signedEntry()]))
+    await vi.waitFor(() => expect(updater.getState().phase).toBe('downloaded'))
+    updater.dispose()
+  })
+
+  it('refuses an unsigned manifest instead of letting it through', async () => {
+    const client = new FakeUpdater()
+    const updater = service(client)
+    client.emit('update-downloaded', downloaded([{ ...entry }]))
+    await vi.waitFor(() => expect(updater.getState().phase).toBe('error'))
+    expect(updater.getState()).toMatchObject({ failedStep: 'download', error: { code: 'UPDATE_SIGNATURE_MISSING' } })
+    expect(() => updater.install()).toThrow('尚未下载')
+    updater.dispose()
+  })
+
+  it('refuses a signature made for another package or version', async () => {
+    const client = new FakeUpdater()
+    const updater = service(client)
+    client.emit('update-downloaded', downloaded([signedEntry('1.0.5')]))
+    await vi.waitFor(() => expect(updater.getState().phase).toBe('error'))
+    expect(updater.getState().error).toMatchObject({ code: 'UPDATE_SIGNATURE_INVALID' })
+    updater.dispose()
+  })
+
+  it('refuses a manifest with no entry for the downloaded file', async () => {
+    const client = new FakeUpdater()
+    const updater = service(client)
+    client.emit('update-downloaded', { ...updateInfo(), files: [], sha512: 'manifest-digest', downloadedFile })
+    await vi.waitFor(() => expect(updater.getState().phase).toBe('error'))
+    expect(updater.getState().error).toMatchObject({ code: 'UPDATE_SIGNATURE_MISSING' })
+    updater.dispose()
+  })
+
+  it('never lets a valid signature stand in for a digest mismatch', async () => {
+    const client = new FakeUpdater()
+    const updater = service(client, false)
+    client.emit('update-downloaded', downloaded([signedEntry()]))
+    await vi.waitFor(() => expect(updater.getState().phase).toBe('error'))
+    expect(updater.getState().error).toMatchObject({ code: 'UPDATE_PACKAGE_DIGEST_MISMATCH' })
+    updater.dispose()
+  })
+
+  it('refuses a signature check that has no digest check under it', async () => {
+    const client = new FakeUpdater()
+    const updater = createUpdaterService(client, { currentVersion: '1.0.0', isPackaged: true, verifyPackageSignature })
+    client.emit('update-downloaded', downloaded([signedEntry()]))
+    await vi.waitFor(() => expect(updater.getState().phase).toBe('error'))
+    updater.dispose()
   })
 })

@@ -297,7 +297,7 @@ git push origin v0.2.6
 
 1. 打开 **Required reviewers**，把自己加进去。
 2. **Deployment branches** 限制为 `main`。
-3. 加下面八个 secret。**必须放环境级，不要放仓库级**：`workflow_dispatch` 可以指定任意分支，仓库级 secret 对任意分支可见。
+3. 加下面九个 secret。**必须放环境级，不要放仓库级**：`workflow_dispatch` 可以指定任意分支，仓库级 secret 对任意分支可见。
 
 | Secret | 是什么 | 谁用 |
 |---|---|---|
@@ -309,10 +309,37 @@ git push origin v0.2.6
 | `R2_BUCKET` | 桶名 | 上传 |
 | `R2_ACCESS_KEY_ID` | R2 凭据 | 上传 |
 | `R2_SECRET_ACCESS_KEY` | R2 凭据 | 上传 |
+| `XINGMANG_UPDATE_SIGNING_KEY` | 更新包签名私钥（Ed25519，PKCS8 DER 的 base64），生成方法见下面「更新包签名」 | 上传前给 Windows 清单签名、回退时补签 |
 
 R2 凭据的**权限只给 `xingmang-manager/` 前缀的写入**，不要给整桶、不要给删除。
 
 `.p12` 只能从钥匙串里导出、用 GitHub 的 secret 输入框直接粘，**不要经过任何聊天、工单或邮件**：那份私钥泄露等于别人能签出一个客户端会当成「同一发布者」的更新包。`XINGMANG_MAC_SIGNING_SHA256` 填的必须是 2.2 里登记的那张已发布证书的指纹，换一张证书会在签名预检那一步直接失败。
+
+#### 更新包签名
+
+Windows 安装包没有数字签名，`latest.yml` 又和安装包放在同一个 R2 桶里：只凭清单里的 SHA-512，拿到 R2 上传密钥的人把安装包和清单一起换掉，校验照样通过。所以发布时再加一道我们自己的签名：
+
+- `publish` 作业在上传之前用 `XINGMANG_UPDATE_SIGNING_KEY` 给 `latest.yml` 的每个文件签名（`scripts/update-manifest-signature.cjs sign`），签的是「版本号 + 文件地址 + SHA-512」，签名写在该文件那一项的 `xingmangSignature` 字段里。签之前先确认这把私钥对应的公钥在客户端内置名单里（`electron/update-package-signature.ts` 的 `updateSigningPublicKeys`），对不上直接失败，免得发出一版全体新客户端都拒装的包。
+- 客户端（接上验签的那一版起）下载完先核 SHA-512，再核这个签名；缺签名、签名不对、本机没配公钥，一律拒装。老客户端不认这个字段，照旧能升上来。
+- 私钥只在 release 环境的 secret 里，从不进桶。所以就算 R2 上传密钥泄露，别人传上去的包也签不出客户端认的签名。
+- macOS 不签：Squirrel.Mac 已经按已装应用钉住的发布证书验苹果签名，那张证书的私钥同样只在 release 环境里，再加一道挡的是同一件事。
+- 回退（`rollback-release`）时，备份清单本来就带签名的只验签；加签名之前发的老版本备份没有签名，要和 GitHub Release 上同版本的安装包逐字节对上才补签。GitHub Release 上找不到那个安装包时原样退回并给一条黄色提示：老客户端照样退得回去，认签名的新客户端停在被撤回的版本上。
+
+**生成密钥（只做一次，在产品所有者自己的电脑上做）。** 私钥绝不能出现在聊天、工单、邮件或仓库里。
+
+1. 打开 PowerShell（开始菜单搜「PowerShell」），整段粘贴下面这一行回车（要装过 Node）：
+
+   ```
+   node -e "const c=require('crypto'),fs=require('fs'),p=require('path').join(require('os').homedir(),'xingmang-update-signing-key.txt');if(fs.existsSync(p))throw new Error('已经有一把钥匙了：'+p);const k=c.generateKeyPairSync('ed25519');fs.writeFileSync(p,k.privateKey.export({type:'pkcs8',format:'der'}).toString('base64'),{flag:'wx'});console.log('私钥已存到：'+p);console.log('公钥（发给 Claude）：'+k.publicKey.export({type:'spki',format:'der'}).toString('base64'))"
+   ```
+
+   它打印两行：私钥存在哪个文件，以及一行以 `MCowBQYDK2VwAyEA` 开头的公钥。
+2. 公钥那一行可以公开，发给维护的人，写进 `updateSigningPublicKeys`。
+3. 在 PowerShell 里输入 `notepad $HOME\xingmang-update-signing-key.txt` 回车，记事本里 Ctrl+A、Ctrl+C 复制全部内容。
+4. 仓库 **Settings → Environments → release → Environment secrets → Add environment secret**，Name 填 `XINGMANG_UPDATE_SIGNING_KEY`，Value 粘贴，点 **Add secret**。
+5. 把这个文件另存一份到安全的地方（U 盘或密码管理器）。**丢了它，就再也签不出老客户端认的包**，只能先发一版带新公钥的客户端、让所有人手动重装一次。
+
+**换钥匙**：`updateSigningPublicKeys` 可以同时放几把。先把新公钥加进去发一版，等大部分人升上去之后再把 secret 换成新私钥，最后再从名单里删掉旧公钥。
 
 ### Codex Desktop 国内镜像
 
@@ -353,6 +380,7 @@ Windows 首先按当前用户调用 `Add-AppxPackage`。只有错误详情明确
 - 正式包运行期间每 3 小时检查一次。定时检查只报告新版本，不自动下载；用户点击下载后，已校验的下载仍会自动重启安装。
 - 关闭“启动时检查主程序更新”只跳过启动预检，不影响运行期间的 3 小时检查。
 - 开发态默认禁用更新；设置 `XINGMANG_UPDATE_DEV=1` 后只允许检查与下载，安装始终被服务端拒绝。
+- Windows 正式包（无签名通道）下载完先核 SHA-512，再核发布者签名（见 5「更新包签名」），缺签名或签名不对都停在「下载」这一步报错，不会安装。开发态不做这一步，所以第 7 节的本地更新源不用签名。
 
 ## 7. 开发态更新验证
 
