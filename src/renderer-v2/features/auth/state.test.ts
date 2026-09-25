@@ -1,7 +1,31 @@
 import { describe, expect, it } from 'vitest'
 import { networkFailureMessages } from '../../../../electron/network-failure'
-import { authErrorMessage, normalizeEmail, parseInviteCode, parseRecoveryCode, remainingCooldown, suggestEmailCorrection, usernameFromEmail, validateRegistration, type RegistrationDraft } from './state'
+import { authErrorMessage, isTwoFactorChallenge, isTwoFactorExpired, normalizeEmail, parseInviteCode, parseRecoveryCode, parseTwoFactorCode, remainingCooldown, requiresBrowserAuthentication, suggestEmailCorrection, usernameFromEmail, validateRegistration, type RegistrationDraft } from './state'
 import { guideOfficialLoginRequired, resolveGuideReadiness } from './StartGuide'
+
+describe('v2 two-step verification', () => {
+  it('recognises the challenge and expiry that come back through IPC', () => {
+    const challenge = new Error("Error invoking remote method 'account:login': Error: 此账号需要双重验证，请先完成验证")
+    expect(isTwoFactorChallenge(challenge)).toBe(true)
+    expect(isTwoFactorChallenge(new Error('此账号需要双重验证，请先在官方网站完成验证'))).toBe(false)
+    expect(isTwoFactorExpired(new Error('Error: 等太久了，请重新输入密码登录'))).toBe(true)
+    // A challenge the client cannot finish still points to the website.
+    expect(requiresBrowserAuthentication(new Error('此账号需要双重验证，客户端暂不支持这种验证方式'))).toBe(true)
+  })
+  it('tidies authenticator digits but passes a backup code through', () => {
+    expect(parseTwoFactorCode(' 123 456 ', false)).toEqual({ ok: true, code: '123456' })
+    expect(parseTwoFactorCode('１２３４５６', false)).toEqual({ ok: true, code: '123456' })
+    expect(parseTwoFactorCode('12345', false).ok).toBe(false)
+    expect(parseTwoFactorCode('', false).ok).toBe(false)
+    expect(parseTwoFactorCode(' abcd-efgh ', true)).toEqual({ ok: true, code: 'abcd-efgh' })
+    expect(parseTwoFactorCode('  ', true).ok).toBe(false)
+  })
+  it('shows the second-step failures as written instead of the broad code and rate-limit wording', () => {
+    for (const text of ['验证码不对或已过期，请看验证器里最新的数字再试', '试得太频繁了，请过一会儿再试', '等太久了，请重新输入密码登录']) {
+      expect(authErrorMessage(new Error(`Error: ${text}`), '两步验证')).toBe(text)
+    }
+  })
+})
 
 describe('v2 auth recovery boundaries', () => {
   it('extracts only a single nonblank HTTP reset token without opening the link', () => {

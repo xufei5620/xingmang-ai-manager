@@ -142,6 +142,7 @@ function accountServiceStub(): NewApiClientService {
     resetPassword: vi.fn(async () => ({ newPassword: 'stub-generated-password' })),
     register: vi.fn(async () => undefined),
     login: vi.fn() as never,
+    completeTwoFactorLogin: vi.fn() as never,
     logout: vi.fn(),
     endServerSession: vi.fn(async () => undefined),
     endPersistedServerSession: vi.fn(async () => undefined),
@@ -1944,6 +1945,19 @@ describe('registerIpcHandlers', () => {
     await expect(handler(trustedEvent(), { username: 'user@example.test', password: 'fixture-password' })).rejects.toThrow()
     const failure = runtimeLog.log.mock.calls.find((call) => call[0] === 'error' && call[2] === 'account:login')
     expect(failure?.[4]).not.toHaveProperty('networkFailure')
+  })
+
+  it('hands a two-factor code to the account service and keeps it out of the runtime log', async () => {
+    const completeTwoFactorLogin = vi.fn(async () => ({ account: { userId: 7 }, siteId: 'solov' }))
+    const { runtimeLog } = register(undefined, undefined, undefined, undefined, undefined, undefined, { realmAccounts: { completeTwoFactorLogin } as never })
+    const handler = electronMocks.handlers.get('account:submit-two-factor-code')!
+    await expect(handler(trustedEvent(), ' 123456 ')).resolves.toMatchObject({ account: { userId: 7 } })
+    expect(completeTwoFactorLogin).toHaveBeenCalledWith('123456')
+    await expect(handler(trustedEvent(), '')).rejects.toThrow('验证码格式错误')
+    await expect(handler(trustedEvent(), 'x'.repeat(65))).rejects.toThrow('验证码格式错误')
+    await expect(handler(trustedEvent(), { code: '123456' })).rejects.toThrow('验证码格式错误')
+    expect(completeTwoFactorLogin).toHaveBeenCalledTimes(1)
+    expect(JSON.stringify(runtimeLog.log.mock.calls)).not.toContain('123456')
   })
 
   it('reads remembered credentials only from the last successful identity without exposing its backend', async () => {
