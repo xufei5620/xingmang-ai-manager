@@ -1,11 +1,11 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type FocusEvent, type ReactNode } from 'react'
 import { ArrowLeft, ArrowRight, Check, Copy, ExternalLink, Eye, EyeOff, KeyRound, LogIn, Mail, RefreshCw, UserPlus } from 'lucide-react'
 import type { AccountLoginResult, AccountStatus, LegalDocumentKind } from '../../../../electron/ipc-contract'
 import { Button, Dialog, Input, Segment } from '../../ui'
 import { getAuthApi, type AccountSiteId, type AuthApi } from './api'
 import { LegalDocument } from './LegalDocument'
 import { isUsernameTakenError } from './account-errors'
-import { accountSources, authErrorMessage, isEmail, parseInviteCode, parseRecoveryCode, requiresBrowserAuthentication, usernameFromEmail, validateRegistration, type RegistrationDraft, type RegistrationErrors } from './state'
+import { accountSources, authErrorMessage, isEmail, normalizeEmail, parseInviteCode, parseRecoveryCode, requiresBrowserAuthentication, suggestEmailCorrection, usernameFromEmail, validateRegistration, type RegistrationDraft, type RegistrationErrors } from './state'
 import { useCooldown } from './useCooldown'
 import './auth.css'
 
@@ -42,6 +42,10 @@ export function AuthFlow({ api: providedApi, initialMode = 'login', initialIdent
   const [agreed, setAgreed] = useState(false)
   const [registration, setRegistration] = useState<RegistrationDraft>({ email: '', username: '', password: '', confirm: '', code: '', invite: initialInviteCode, agreed: false })
   const [fieldErrors, setFieldErrors] = useState<RegistrationErrors>({})
+  // 邮箱拼错的提示只在离开邮箱框或点按钮之后出，免得边打字边闪「你是不是想填」。
+  const [emailChecked, setEmailChecked] = useState(false)
+  // 看过提示仍坚持用的那个地址：提醒一次，第二次照原样发，不拦死。
+  const [typoConfirmedEmail, setTypoConfirmedEmail] = useState('')
   const [inviteOpen, setInviteOpen] = useState(Boolean(initialInviteCode.trim()))
   // 一次性的聚焦请求：撞名时请求发出去那会儿表单还是禁用的，要等 busy 落下再聚焦。
   const [focusTarget, setFocusTarget] = useState('')
@@ -152,28 +156,48 @@ export function AuthFlow({ api: providedApi, initialMode = 'login', initialIdent
     setRegistration((draft) => ({ ...draft, [key]: value }))
     setFieldErrors((errors) => ({ ...errors, [key]: undefined }))
   }
-  const updateEmail = (value: string) => {
+  const updateEmail = (value: string, checked = false) => {
     const follow = usernameFollowsEmail.current
-    setRegistration((draft) => ({ ...draft, email: value, username: follow ? usernameFromEmail(value) : draft.username }))
+    setRegistration((draft) => ({ ...draft, email: value, username: follow ? usernameFromEmail(normalizeEmail(value)) : draft.username }))
     setFieldErrors((errors) => ({ ...errors, email: undefined, ...(follow ? { username: undefined } : {}) }))
+    setEmailChecked(checked)
+  }
+  const checkEmail = () => {
+    const email = normalizeEmail(registration.email)
+    if (email !== registration.email) updateEmail(email, true)
+    else setEmailChecked(true)
+    return email
+  }
+  // 焦点正落到「获取验证码」「创建账号」上时，交给按钮自己查：提示在按下那一刻冒出来会把弹窗撑高、按钮挪位，
+  // 松手时已不在按钮上，这一下就白点了。
+  const checkEmailOnLeave = (event: FocusEvent<HTMLInputElement>) => {
+    const next = event.relatedTarget instanceof HTMLElement ? event.relatedTarget.dataset.testid : undefined
+    if (next !== 'register-send-code' && next !== 'register-submit') checkEmail()
+  }
+  // 返回 false 表示这次先停下给用户看拼写提示；同一个地址再点一次就放行。
+  const passesTypoCheck = (email: string) => {
+    if (!suggestEmailCorrection(email) || typoConfirmedEmail === email) return true
+    setTypoConfirmedEmail(email)
+    return false
   }
   const updateUsername = (value: string) => {
     usernameFollowsEmail.current = !value.trim()
     updateRegistration('username', value)
   }
   const sendVerification = () => {
-    if (!isEmail(registration.email)) { setFieldErrors((errors) => ({ ...errors, email: '请填写正确的邮箱' })); return }
-    if (registerCooldown.seconds) return
-    void run('发送验证码', async (current) => { await api.sendVerification(registration.email.trim()); if (current()) { registerCooldown.start(); setMessage('验证码已发送，请查看邮箱') } })
+    const email = checkEmail()
+    if (!isEmail(email)) { setFieldErrors((errors) => ({ ...errors, email: '请填写正确的邮箱' })); return }
+    if (registerCooldown.seconds || !passesTypoCheck(email)) return
+    void run('发送验证码', async (current) => { await api.sendVerification(email); if (current()) { registerCooldown.start(); setMessage(`验证码已发到 ${email}。几分钟内没收到的话，看看垃圾邮件。`) } })
   }
   const submitRegistration = () => {
     if (!status) { setError('请先读取注册设置，再创建账号'); return }
     if (!status.registerEnabled || !status.passwordRegisterEnabled) { setError('目前暂未开放账号注册'); return }
     if (status.turnstileCheckEnabled) { setError('服务端需要安全验证，请在浏览器完成注册'); return }
-    const errors = validateRegistration(registration, status.emailVerificationEnabled)
+    const draft = { ...registration, email: checkEmail() }
+    const errors = validateRegistration(draft, status.emailVerificationEnabled)
     setFieldErrors(errors)
-    if (Object.keys(errors).length) return
-    const draft = registration
+    if (Object.keys(errors).length || !passesTypoCheck(draft.email)) return
     void run('创建账号', async (current) => {
       try { await api.register({ email: draft.email.trim(), username: draft.username.trim(), password: draft.password, verificationCode: draft.code.trim(), affCode: parseInviteCode(draft.invite) || undefined }) }
       catch (reason) {
@@ -227,7 +251,8 @@ export function AuthFlow({ api: providedApi, initialMode = 'login', initialIdent
 
   if (legal) return <LegalDocument api={api} kind={legal} onClose={() => setLegal(null)} />
   const agreement = (checked: boolean, onChange: (checked: boolean) => void) => <div className="auth-agreement"><label><input type="checkbox" checked={checked} onChange={(event) => onChange(event.target.checked)} data-testid="auth-agree" disabled={busy} />我已阅读并同意</label><Button size="xs" variant="ghost" disabled={busy} onClick={() => setLegal('user-agreement')} testId="auth-terms">用户协议</Button><Button size="xs" variant="ghost" disabled={busy} onClick={() => setLegal('privacy-policy')} testId="auth-privacy">隐私政策</Button></div>
-  const field = (label: string, id: string, value: string, onChange: (value: string) => void, options: { type?: string; autoComplete?: string; placeholder?: string; error?: string; password?: boolean; maxLength?: number } = {}) => <div className="auth-field" key={id}><Input id={id} label={label} testId={id} value={value} onChange={(event) => onChange(event.target.value)} disabled={busy} aria-label={label} {...options} /></div>
+  const emailSuggestion = emailChecked ? suggestEmailCorrection(registration.email) : null
+  const field = (label: string, id: string, value: string, onChange: (value: string) => void, options: { type?: string; autoComplete?: string; placeholder?: string; error?: string; password?: boolean; maxLength?: number; onBlur?: (event: FocusEvent<HTMLInputElement>) => void } = {}) => <div className="auth-field" key={id}><Input id={id} label={label} testId={id} value={value} onChange={(event) => onChange(event.target.value)} disabled={busy} aria-label={label} {...options} /></div>
   const footer = mode === 'login' ? <>
     <Button variant="ghost" onClick={() => changeMode('recovery')} testId="login-forgot" disabled={busy}>找回密码</Button>
     <Button variant="ghost" onClick={() => changeMode('register')} testId="login-register" disabled={busy}>创建账号</Button>
@@ -261,7 +286,8 @@ export function AuthFlow({ api: providedApi, initialMode = 'login', initialIdent
         {statusError && <div role="alert"><p className="auth-error">{statusError}</p><Button icon={RefreshCw} onClick={() => setStatusRevision((value) => value + 1)} testId="register-status-retry">重新读取</Button></div>}
         {!status && !statusError && <p role="status">正在读取注册设置</p>}
         {status && (!status.registerEnabled || !status.passwordRegisterEnabled) && <p className="auth-error" role="alert">目前暂未开放账号注册</p>}
-        <div className="auth-email-row">{field('邮箱', 'register-email', registration.email, updateEmail, { type: 'email', autoComplete: 'email', placeholder: '常用邮箱（如 QQ 邮箱）', error: fieldErrors.email })}{status?.emailVerificationEnabled && <Button onClick={sendVerification} icon={Mail} disabled={busy || Boolean(registerCooldown.seconds)} testId="register-send-code">{registerCooldown.seconds ? `${registerCooldown.seconds} 秒后重发` : '获取验证码'}</Button>}</div>
+        <div className="auth-email-row">{field('邮箱', 'register-email', registration.email, updateEmail, { type: 'email', autoComplete: 'email', placeholder: '常用邮箱（如 QQ 邮箱）', error: fieldErrors.email, onBlur: checkEmailOnLeave })}{status?.emailVerificationEnabled && <Button onClick={sendVerification} icon={Mail} disabled={busy || Boolean(registerCooldown.seconds)} testId="register-send-code">{registerCooldown.seconds ? `${registerCooldown.seconds} 秒后重发` : '获取验证码'}</Button>}</div>
+        {emailSuggestion && <div className="auth-email-suggestion" role="status" data-testid="register-email-suggestion"><p className="auth-hint">你是不是想填 {emailSuggestion}？{typoConfirmedEmail === normalizeEmail(registration.email) && `没填错的话，再点一次「${status?.emailVerificationEnabled ? '获取验证码' : '创建账号'}」。`}</p><Button size="xs" disabled={busy} onClick={() => updateEmail(emailSuggestion, true)} testId="register-email-fix">改成这个</Button></div>}
         <div className="auth-two-fields">{status?.emailVerificationEnabled && field('验证码', 'register-code', registration.code, (value) => updateRegistration('code', value), { autoComplete: 'one-time-code', error: fieldErrors.code })}{field('用户名', 'register-user', registration.username, updateUsername, { autoComplete: 'username', placeholder: '自动取邮箱 @ 前面的部分', error: fieldErrors.username, maxLength: 20 })}</div>
         <div className="auth-two-fields">{field('密码', 'register-password', registration.password, (value) => updateRegistration('password', value), { password: true, autoComplete: 'new-password', placeholder: '8 至 20 位', maxLength: 20, error: fieldErrors.password })}{field('确认密码', 'register-password-confirm', registration.confirm, (value) => updateRegistration('confirm', value), { password: true, autoComplete: 'new-password', placeholder: '再次输入密码', maxLength: 20, error: fieldErrors.confirm })}</div>
         {inviteOpen ? field('邀请码（选填）', 'register-invite', registration.invite, (value) => updateRegistration('invite', value), { placeholder: '邀请码或邀请链接', error: fieldErrors.invite })

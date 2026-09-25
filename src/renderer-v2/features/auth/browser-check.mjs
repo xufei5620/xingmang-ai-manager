@@ -416,6 +416,54 @@ test('registration fills the username from the email until the user edits it', a
   } finally { await page.close() }
 })
 
+test('a mistyped mailbox is pointed out before the code is sent, and can still be sent on purpose', async () => {
+  const page = await open('scenario=register')
+  try {
+    await page.getByTestId('register-email').fill('123456@qq.con')
+    await page.getByTestId('register-send-code').click()
+    await page.getByTestId('register-email-suggestion').filter({ hasText: '你是不是想填 123456@qq.com？' }).waitFor()
+    assert.deepEqual((await calls(page)).filter((item) => item.method === 'verification'), [])
+    await page.getByTestId('register-email-fix').click()
+    assert.equal(await page.getByTestId('register-email').inputValue(), '123456@qq.com')
+    assert.equal(await page.getByTestId('register-email-suggestion').count(), 0)
+    await page.getByTestId('register-send-code').click()
+    await page.getByTestId('auth-message').filter({ hasText: '验证码已发到 123456@qq.com。几分钟内没收到的话，看看垃圾邮件。' }).waitFor()
+    assert.deepEqual((await calls(page)).filter((item) => item.method === 'verification').map((item) => item.input), ['123456@qq.com'])
+  } finally { await page.close() }
+  const insisting = await open('scenario=register')
+  try {
+    await insisting.getByTestId('register-email').fill('someone@gmial.com')
+    await insisting.getByTestId('register-send-code').click()
+    await insisting.getByTestId('register-email-suggestion').filter({ hasText: '再点一次「获取验证码」' }).waitFor()
+    await insisting.getByTestId('register-send-code').click()
+    await insisting.getByTestId('register-send-code').filter({ hasText: '秒后重发' }).waitFor()
+    assert.deepEqual((await calls(insisting)).filter((item) => item.method === 'verification').map((item) => item.input), ['someone@gmial.com'])
+  } finally { await insisting.close() }
+})
+
+test('leaving the email field points out a mistyped mailbox without sending anything', async () => {
+  const page = await open('scenario=register')
+  try {
+    await page.getByTestId('register-email').fill('abc@163.co')
+    assert.equal(await page.getByTestId('register-email-suggestion').count(), 0)
+    await page.getByTestId('register-password').click()
+    await page.getByTestId('register-email-suggestion').filter({ hasText: '你是不是想填 abc@163.com？' }).waitFor()
+    assert.deepEqual(await calls(page), [])
+  } finally { await page.close() }
+})
+
+test('a full-width at sign and full stop are corrected instead of rejected', async () => {
+  const page = await open('scenario=register')
+  try {
+    await page.getByTestId('register-email').fill(' 123456＠qq。com ')
+    assert.equal(await page.getByTestId('register-user').inputValue(), '123456')
+    await page.getByTestId('register-send-code').click()
+    await page.getByTestId('auth-message').filter({ hasText: '验证码已发到 123456@qq.com' }).waitFor()
+    assert.equal(await page.getByTestId('register-email').inputValue(), '123456@qq.com')
+    assert.equal(await page.getByText('请填写正确的邮箱', { exact: true }).count(), 0)
+  } finally { await page.close() }
+})
+
 test('a taken username points at the username field instead of a generic failure', async () => {
   const page = await open('scenario=register&usernameTaken=1')
   try {

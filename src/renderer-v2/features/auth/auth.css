@@ -85,6 +85,8 @@
 .auth-email-row { display: flex; align-items: end; gap: 8px; }
 .auth-email-row > .auth-field { flex: 1; }
 .auth-email-row > .xm-btn { flex: none; }
+.auth-email-suggestion { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.auth-email-suggestion > .auth-hint { color: var(--text); }
 .auth-two-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 .auth-two-fields > :only-child { grid-column: 1 / -1; }
 .auth-form-actions { display: flex; gap: 8px; align-items: center; }
