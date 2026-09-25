@@ -108,7 +108,8 @@ test('the command palette finds tutorials by the problem and hands unmatched tex
     await page.getByText('没找到相关的页面或设置。').waitFor()
     await page.getByTestId('command-search-tutorial').click()
     await page.getByTestId('page-tutorial').waitFor()
-    assert.equal(await page.getByTestId('tutorial-search').inputValue(), 'qqqq')
+    // 教程页上一步已经开着，页面出现时新的搜索词可能还没落进输入框，要等它落进去。
+    await page.waitForFunction(() => document.querySelector('[data-testid="tutorial-search"]')?.value === 'qqqq')
     await clean(page)
   } finally { await page.close() }
 })
