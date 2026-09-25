@@ -94,6 +94,7 @@ import type { UpdateSnapshot, UpdaterService } from './updater'
 import {
   createNewApiClient,
   validateLoginSessionId,
+  NewApiTwoFactorExpiredError,
   type NewApiAffiliateTransferInput,
   type NewApiAccountKeysQuery,
   type NewApiAccountUsageQuery,
@@ -686,6 +687,15 @@ function parseAccountLoginInput(value: unknown): NewApiLoginInput {
     password: value.password,
     turnstileToken: optionalString(value.turnstileToken, '人机验证 Token', 4_096),
   }
+}
+
+// 验证器的 6 位数字或一次性备用码。格式对不对交给服务端判断（备用码的写法各版不同），
+// 这里只挡掉明显不是验证码的输入，免得白白消耗服务端那份严格的限流。
+function parseTwoFactorCode(value: unknown): string {
+  if (typeof value !== 'string') throw new Error('验证码格式错误')
+  const code = value.trim()
+  if (!code || code.length > 64 || /[\u0000-\u001f\u007f]/.test(code)) throw new Error('验证码格式错误')
+  return code
 }
 
 // null = 用户取消勾选「记住密码」,清除已存凭据。字段上限与登录入参一致。
@@ -1287,6 +1297,7 @@ const ipcOperationLabels: Readonly<Record<string, string>> = {
   'account:get-status': '星芒账号服务状态读取',
   'account:get-legal-document': '星芒账号法律文档读取',
   'account:login': '星芒账号登录',
+  'account:submit-two-factor-code': '星芒账号两步验证登录',
   'account:logout': '星芒账号退出登录',
   'account:get-session': '星芒账号会话状态读取',
   'account:get-balance': '星芒账号余额查询',
@@ -1403,6 +1414,8 @@ const quietIpcSuccessChannels = new Set([
   // reason to keep both fully out of the runtime log.
   'account:get-remembered-login',
   'account:set-remembered-login',
+  // The input is a live one-time code (or a single-use backup code).
+  'account:submit-two-factor-code',
   'chat:list-groups',
   'chat:prepare-group',
   'chat:start',
@@ -1610,7 +1623,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
         throw new Error('已拒绝来自非应用页面的操作请求')
       }
       try {
-        const publicAccountChannels = new Set(['account:login', 'account:logout', 'account:get-session',
+        const publicAccountChannels = new Set(['account:login', 'account:submit-two-factor-code', 'account:logout', 'account:get-session',
           'account:switch-saved', 'account:remove-saved', 'account:list-saved', 'account:get-status',
           'account:get-legal-document', 'account:get-remembered-login', 'account:set-remembered-login',
           'account:register', 'account:send-verification-code', 'account:send-reset-code', 'account:reset-password'])
@@ -2746,6 +2759,13 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     }
     await accountSessionReady
     return options.realmAccounts.login({ ...parsed, siteId })
+  })
+  registerTrustedHandler('account:submit-two-factor-code', async (_event, code: unknown) => {
+    const parsed = parseTwoFactorCode(code)
+    // 待验证的登录只由账号服务那一层保管；没有它就没有可接的第二步。
+    if (!options.realmAccounts) throw new NewApiTwoFactorExpiredError()
+    await accountSessionReady
+    return options.realmAccounts.completeTwoFactorLogin(parsed)
   })
   registerTrustedHandler('account:logout', async () => {
     options.chatService?.cancelAll()

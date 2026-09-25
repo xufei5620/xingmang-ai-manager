@@ -899,6 +899,7 @@ export interface XingmangInvokeContract {
   saveAccelerationPreference: IpcInvokeDefinition<'acceleration:save-preference', [scope: string, update: import('./acceleration-contract').AccelerationPreferenceUpdate], import('./acceleration-contract').AccelerationPreference>
   getLegalDocument: IpcInvokeDefinition<'account:get-legal-document', [kind: LegalDocumentKind, siteId?: AccountSiteId], LegalDocument>
   loginAccount: IpcInvokeDefinition<'account:login', [input: AccountLoginInput], AccountLoginResult>
+  submitTwoFactorCode: IpcInvokeDefinition<'account:submit-two-factor-code', [code: string], AccountLoginResult>
   logoutAccount: IpcInvokeDefinition<'account:logout', [], void>
   getAccountSession: IpcInvokeDefinition<'account:get-session', [], AccountSessionState>
   listSavedAccounts: IpcInvokeDefinition<'account:list-saved', [], SavedAccount[]>
@@ -1232,6 +1233,7 @@ export const ipcInvokeChannels = {
   saveAccelerationPreference: 'acceleration:save-preference',
   getLegalDocument: 'account:get-legal-document',
   loginAccount: 'account:login',
+  submitTwoFactorCode: 'account:submit-two-factor-code',
   logoutAccount: 'account:logout',
   getAccountSession: 'account:get-session',
   listSavedAccounts: 'account:list-saved',

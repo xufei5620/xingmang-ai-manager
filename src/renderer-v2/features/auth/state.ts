@@ -162,6 +162,9 @@ export function authErrorMessage(error: unknown, action: string): string {
   // 用户被叫去重启软件。文案与主进程 realm-account.ts 那句一致（electron 不 import src，有意重复）。
   if (/保存的账号已满/.test(message)) return '这台电脑上保存的账号已满（最多 16 个）。先在「切换账号」里移除一个不用的，再登录。'
   if (/账号安全存储不可用|本地账号存储/.test(message)) return '本地账号安全存储暂不可用，原有数据已保留。请完全退出软件后重试；若仍失败，请联系支持并提供诊断日志。'
+  // 两步验证第二步的几句已经是给用户看的话，原样上屏；不然会被下面「验证码」「频繁」两条宽正则改写。
+  const twoFactor = twoFactorMessages.find((text) => message.includes(text))
+  if (twoFactor) return twoFactor
   if (requiresBrowserAuthentication(error)) return '此账号需要双重验证。客户端暂不支持该验证方式，请前往所选账号官网登录或联系官网客服。'
   // 主进程已经把受限网络下的失败分好类并写好了中文（DNS / 证书被替换 / 门户认证
   // 未完成 / 连接被切断），原样上屏。放在启发式之前：下面那几条正则宽到会把
@@ -183,6 +186,35 @@ export function authErrorMessage(error: unknown, action: string): string {
   if (/timeout|timed.?out|超时|network|fetch|connect|网络/i.test(message)) return '连接星芒服务器超时，请检查网络后重试'
   if (/turnstile|人机/i.test(message)) return '服务端需要完成安全验证，请在浏览器完成后再试'
   return `${action}没有成功，输入已保留，请稍后重试`
+}
+
+// 与 electron/new-api-client.ts 的原文一致（electron 不 import src，有意重复一份）。
+// 这句是主进程已经收下密码、等第二步的信号；旧界面照旧把它当报错显示。
+const twoFactorChallengeMessage = '此账号需要双重验证，请先完成验证'
+const twoFactorExpiredMessage = '等太久了，请重新输入密码登录'
+const twoFactorMessages = [twoFactorExpiredMessage, '验证码不对或已过期，请看验证器里最新的数字再试', '试得太频繁了，请过一会儿再试']
+
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : typeof error === 'string' ? error : ''
+}
+
+export function isTwoFactorChallenge(error: unknown): boolean {
+  return errorText(error).includes(twoFactorChallengeMessage)
+}
+
+export function isTwoFactorExpired(error: unknown): boolean {
+  return errorText(error).includes(twoFactorExpiredMessage)
+}
+
+export type TwoFactorCodeResult = { ok: true; code: string } | { ok: false; error: string }
+
+/** 验证器的数字常被抄成「123 456」或带全角数字，替用户理顺；备用码原样交给服务端判断。 */
+export function parseTwoFactorCode(value: string, backup: boolean): TwoFactorCodeResult {
+  const text = value.trim()
+  if (backup) return text ? { ok: true, code: text } : { ok: false, error: '请输入备用码' }
+  const code = text.replace(/[０-９]/g, (digit) => String.fromCharCode(digit.charCodeAt(0) - 0xfee0)).replace(/[\s\u3000-]/g, '')
+  if (!code) return { ok: false, error: '请输入验证器里的 6 位数字' }
+  return /^\d{6}$/.test(code) ? { ok: true, code } : { ok: false, error: '验证码是 6 位数字，请看验证器里星芒账号那一行' }
 }
 
 export function requiresBrowserAuthentication(error: unknown): boolean {
