@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto'
 import * as TOML from '@iarna/toml'
 import { applyEdits, getNodeValue, modify, parseTree, type Node, type ParseError } from 'jsonc-parser'
 import { providerBaseUrls, type ProviderId } from './catalog'
+import { relaySites } from './relay-sites'
 import { readBoundedUtf8FileSync } from './bounded-file'
 import {
   defaultProviderConfigRoots,
@@ -832,6 +833,13 @@ export function classifyCodexConfigProfile(
   return 'official'
 }
 
+function isKnownCodexRelayBaseUrl(baseUrl: string, siteBaseUrl: string): boolean {
+  if (!baseUrl) return false
+  const normalized = normalizeUrl(baseUrl)
+  return [siteBaseUrl, ...relaySites.map((site) => site.providerBaseUrls.codex)]
+    .some((candidate) => normalized === normalizeUrl(candidate))
+}
+
 function cloneTomlRecord(parsed: Record<string, unknown>): Record<string, unknown> {
   return TOML.parse(TOML.stringify(parsed as Parameters<typeof TOML.stringify>[0]))
 }
@@ -908,6 +916,21 @@ function applyCodexRelayConfig(
   providerName: string,
   siteBaseUrl: string,
 ): void {
+  const previousProvider = typeof parsed.model_provider === 'string' ? parsed.model_provider.trim() : ''
+  const providers = ensureRecord(parsed, 'model_providers')
+  // Older versions wrote a relay into a built-in ID. Migrate only our own
+  // active endpoint. Other reserved definitions are user-owned but invalid:
+  // refuse the merge rather than silently deleting them or claiming success.
+  for (const reserved of reservedCodexProviders) {
+    if (!Object.prototype.hasOwnProperty.call(providers, reserved)) continue
+    const entry = providers[reserved]
+    if (reserved !== previousProvider || !isJsonRecord(entry) || typeof entry.base_url !== 'string'
+      || !isKnownCodexRelayBaseUrl(entry.base_url, siteBaseUrl)) {
+      throw new Error(`现有 Codex 配置占用了内置名称 ${reserved}，无法安全合并。请先备份并移除此同名自定义配置，或选择“重置配置”。`)
+    }
+    providers[providerName] = { ...entry }
+    delete providers[reserved]
+  }
   parsed.model = model
   parsed.review_model = model
   parsed.model_provider = providerName
@@ -1279,6 +1302,7 @@ function tomlTableKey(value: string): string {
 
 /** Codex config.toml 里星芒中转用的 model_provider 名。从没配过 Codex 时写这个，不占用官方 OpenAI 表。 */
 export const defaultCodexRelayProvider = 'XingmangAI'
+const reservedCodexProviders: ReadonlySet<string> = new Set(['openai', 'ollama', 'lmstudio'])
 
 function existingCodexProvider(configPath: string): string {
   const content = requireConfigText(configPath, '现有 Codex config.toml')
@@ -1300,13 +1324,18 @@ function existingCodexProvider(configPath: string): string {
     return defaultCodexRelayProvider
   }
 
-  if (typeof parsed.model_provider === 'string' && parsed.model_provider.trim()) {
+  if (typeof parsed.model_provider === 'string' && parsed.model_provider.trim()
+    && !reservedCodexProviders.has(parsed.model_provider.trim())) {
     return parsed.model_provider.trim()
   }
-  // A provider table without an explicit active selector is ambiguous. Never
-  // hijack the first user-authored entry (Azure/custom relays are common);
-  // use the stable OpenAI entry and let the merge path create it if needed.
-  return 'OpenAI'
+  // Built-in IDs cannot be redefined, and an unselected table is not consent
+  // to overwrite it. Allocate a stable free name while retaining legacy
+  // non-reserved active IDs, which existing sessions may still reference.
+  const providers = isJsonRecord(parsed.model_providers) ? parsed.model_providers : {}
+  for (let suffix = 1; ; suffix += 1) {
+    const candidate = suffix === 1 ? defaultCodexRelayProvider : `${defaultCodexRelayProvider}-${suffix}`
+    if (!Object.prototype.hasOwnProperty.call(providers, candidate)) return candidate
+  }
 }
 
 function jsonContent(value: unknown): string {
