@@ -432,19 +432,74 @@ describe('extension row actions', () => {
 
   it('keeps only the Codex system skills read-only', () => {
     const row = listItem({ provider: 'codex', kind: 'skill', id: '/codex/skills/.system/x/SKILL.md' })
-    expect(extensionRowState(row, nativeSkill({ scope: 'system', managed: false, enabled: true }))).toMatchObject({
+    expect(extensionRowState(row, nativeSkill({ path: row.id, scope: 'system', managed: false, enabled: true }))).toMatchObject({
       readonly: true,
       canToggle: false,
       canUninstall: false,
     })
   })
 
-  it('matches a Codex skill by its path before falling back to its name', () => {
+  it('matches a Codex skill by its path when two installed skills share a name', () => {
     const user = nativeSkill({ path: '/home/me/.agents/skills/dup/SKILL.md', name: 'Dup', scope: 'user' })
     const repo = nativeSkill({ path: '/work/.agents/skills/dup/SKILL.md', name: 'Dup', scope: 'repo' })
     const row = listItem({ provider: 'codex', kind: 'skill', id: repo.path, name: 'Dup' })
 
     expect(findNativeSkill([user, repo], row)).toBe(repo)
+  })
+
+  it.each(['enable', 'disable', 'uninstall'] as const)('refuses to %s a missing path instead of changing the same-named skill', async (action) => {
+    const api = extensionApi()
+    const other = nativeSkill({ path: '/home/me/.agents/skills/b/SKILL.md', name: 'Dup' })
+    const row = listItem({ provider: 'codex', kind: 'skill', id: '/work/.agents/skills/a/SKILL.md', name: 'Dup' })
+    const matched = findNativeSkill([other], row)
+
+    expect(matched).toBeUndefined()
+    expect(extensionRowState(row, matched)).toMatchObject({ canToggle: false, canUninstall: false })
+    await expect(runExtensionAction(api, row, action, matched)).rejects.toThrow('刷新')
+    expect(api.toggleSkill).not.toHaveBeenCalled()
+    expect(api.uninstallSkill).not.toHaveBeenCalled()
+    expect(api.mutateProviderExtension).not.toHaveBeenCalled()
+    expect(other.enabled).toBe(false)
+  })
+
+  it('rejects a mismatched native path even if a stale caller supplies it directly', async () => {
+    const api = extensionApi()
+    const other = nativeSkill({ path: '/home/me/.agents/skills/b/SKILL.md', name: 'Dup' })
+    const row = listItem({ provider: 'codex', kind: 'skill', id: '/work/.agents/skills/a/SKILL.md', name: 'Dup' })
+
+    expect(extensionRowState(row, other)).toMatchObject({ canToggle: false, canUninstall: false })
+    await expect(runExtensionAction(api, row, 'uninstall', other)).rejects.toThrow('刷新')
+    expect(api.uninstallSkill).not.toHaveBeenCalled()
+  })
+
+  it('uses name compatibility only for a pathless legacy id with one candidate', async () => {
+    const api = extensionApi()
+    const user = nativeSkill({ path: '/home/me/.agents/skills/dup/SKILL.md', name: 'Dup' })
+    const repo = nativeSkill({ path: '/work/.agents/skills/dup/SKILL.md', name: 'Dup', scope: 'repo' })
+    const row = listItem({ provider: 'codex', kind: 'skill', id: 'legacy-id', name: 'Dup' })
+
+    expect(findNativeSkill([user], row)).toBe(user)
+    expect(findNativeSkill([user, repo], row)).toBeUndefined()
+    await runExtensionAction(api, row, 'enable', findNativeSkill([user], row))
+    expect(api.toggleSkill).toHaveBeenCalledWith(user.path, true)
+  })
+
+  it.each([
+    ['C:/Users/Me/.agents/skills/demo/SKILL.md', 'c:\\users\\me\\.agents\\skills\\demo\\skill.md'],
+    ['\\\\server\\share\\skills\\demo\\SKILL.md', '//SERVER/share/skills/demo/skill.md'],
+    ['\\\\?\\C:\\Users\\Me\\skills\\demo\\SKILL.md', 'C:/Users/Me/skills/demo/SKILL.md'],
+  ])('preserves Windows path identity across supported spelling differences: %s', (id, nativePath) => {
+    const skill = nativeSkill({ path: nativePath })
+    const row = listItem({ provider: 'codex', kind: 'skill', id, name: skill.name })
+
+    expect(findNativeSkill([skill], row)).toBe(skill)
+  })
+
+  it('does not case-fold POSIX paths into a different same-named skill', () => {
+    const skill = nativeSkill({ path: '/work/alpha/SKILL.md', name: 'Dup' })
+    const row = listItem({ provider: 'codex', kind: 'skill', id: '/work/Alpha/SKILL.md', name: 'Dup' })
+
+    expect(findNativeSkill([skill], row)).toBeUndefined()
   })
 
   it('still treats a built-in row as read-only for the other tools', () => {
