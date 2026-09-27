@@ -287,6 +287,71 @@ test('a failed tool launch in the guide keeps the real reason and can be retried
   } finally { await page.close() }
 })
 
+test('the setup result keeps installation, billing and first-task completion as separate facts', async () => {
+  const page = await open('scenario=guide&installed=1&connected=1&launchFail=1')
+  try {
+    await page.getByTestId('guide-next').click()
+    await page.getByTestId('guide-next').click()
+    await page.getByTestId('guide-result').waitFor()
+    assert.match(await page.getByTestId('guide-result-install').innerText(), /已检测到安装.*版本暂未读到/)
+    assert.match(await page.getByTestId('guide-result-connection').innerText(), /本机配置已识别/)
+    assert.match(await page.getByTestId('guide-result-billing').innerText(), /经这把 Key 发出的模型请求按当前星芒账号规则计费/)
+    assert.match(await page.getByTestId('guide-result-next').innerText(), /打开后发送下面的示例/)
+    assert.equal(await page.getByText('本页检查安装和配置，首次任务需在工具中验证。', { exact: true }).count(), 1)
+    await page.evaluate(() => Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async (value) => { window.copiedFirstTask = value } } }))
+    await page.getByTestId('guide-first-task-copy').click()
+    await page.getByTestId('guide-first-task-copy-status').filter({ hasText: '已复制' }).waitFor()
+    assert.equal(await page.evaluate(() => window.copiedFirstTask), await page.getByTestId('guide-first-task-prompt').innerText())
+    assert.equal((await calls(page)).some((entry) => entry.method === 'launch' || entry.method === 'complete'), false)
+    await page.getByTestId('guide-open-tool').click()
+    await page.getByTestId('guide-error').waitFor()
+    assert.equal(await page.getByTestId('start-guide').getAttribute('data-guide-step'), 'ready')
+    assert.match(await page.getByTestId('guide-result-next').innerText(), /打开后发送下面的示例/)
+    assert.equal((await calls(page)).some((entry) => entry.method === 'complete'), false)
+    await page.getByTestId('guide-retry').click()
+    await page.waitForFunction(() => document.documentElement.dataset.calls?.includes('complete'))
+  } finally { await page.close() }
+})
+
+test('a real backup and limited basic check appear after account switching, and a fresh scan can revoke readiness', async () => {
+  const page = await open('scenario=guide&installed=1&unknown=1&switchable=1')
+  try {
+    await page.getByTestId('guide-next').click()
+    await page.getByTestId('guide-next').click()
+    assert.match(await page.getByTestId('guide-result-billing').innerText(), /账号归属未确认/)
+    await page.getByTestId('guide-switch-account').click()
+    await page.locator('[data-guide-step="ready"]').waitFor()
+    assert.equal(await page.getByTestId('guide-switched-note').getAttribute('data-backup-id'), 'fixture-backup')
+    assert.match(await page.getByTestId('guide-result-connection').innerText(), /连接基础检查通过/)
+    await page.getByTestId('guide-ready-rescan').click()
+    await page.waitForFunction(() => JSON.parse(document.documentElement.dataset.calls || '[]').filter((entry) => entry.method === 'detect').length === 2)
+    await page.evaluate(() => window.authHarness.setTool('codexDesktop', { installed: false }))
+    await page.getByTestId('guide-result-install').filter({ hasText: '尚未检测到安装' }).waitFor()
+    assert.equal(await page.getByTestId('guide-open-tool').isDisabled(), true)
+    assert.equal(await page.getByTestId('guide-home').isDisabled(), true)
+    assert.equal((await calls(page)).some((entry) => entry.method === 'launch'), false)
+  } finally { await page.close() }
+})
+
+test('official login remains pending and a denied first-task copy offers selectable text', async () => {
+  const page = await open('scenario=guide&installed=1&official=1&runtime=1&officialLoginRequired=1')
+  try {
+    await page.getByTestId('guide-next').click()
+    await page.getByTestId('guide-next').click()
+    assert.match(await page.getByTestId('guide-result-connection').innerText(), /待在客户端登录/)
+    assert.match(await page.getByTestId('guide-result-billing').innerText(), /官方账号的额度与计费/)
+    assert.equal(await page.getByTestId('guide-next').isDisabled(), true)
+    await page.getByTestId('guide-config').click()
+    await page.getByTestId('guide-next').click()
+    await page.locator('[data-guide-step="ready"]').waitFor()
+    assert.match(await page.getByTestId('guide-result-billing').innerText(), /星芒账号规则计费/)
+    await page.evaluate(() => Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async () => { throw new Error('denied') } } }))
+    await page.getByTestId('guide-first-task-copy').click()
+    await page.getByTestId('guide-first-task-copy-status').filter({ hasText: '手动选中' }).waitFor()
+    assert.match(await page.getByTestId('guide-first-task-prompt').innerText(), /用中文/)
+  } finally { await page.close() }
+})
+
 // 全面检测 Q50：找到的版本比推荐的旧时不能只说「已经装好」。给一句建议和一颗
 // 「更新」，但「下一步」照常能点；更完留在这一步，让人看到已经换成新版。
 test('an old installed version is flagged with an update button that never blocks the next step', async () => {
