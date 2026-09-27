@@ -4613,6 +4613,32 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
     })
   })
 
+  describe('diagnostics:probe-codex-responses', () => {
+    it('requires explicit billing acknowledgement and never accepts a URL or Key', async () => {
+      const probeCodexResponses = vi.fn(async (_expectedAccountScope: string) => ({
+        ok: true, layer: 'network' as const, verificationLevel: 'responses-tool-json' as const,
+        summary: 'Responses 虚拟工具往返已验证', nextStep: '请在原生客户端内确认',
+        endpoint: 'https://fixture.invalid/v1/responses', model: 'm', detail: null,
+        status: 200, durationMs: 5, checkedAt: '2026-09-28T00:00:00.000Z',
+      }))
+      register(serviceStub(), undefined, undefined, undefined, undefined, undefined, {}, {
+        diagnosticsService: {
+          run: vi.fn(), checkConnection: vi.fn(), checkExternalConnection: vi.fn(),
+          probeCodexResponses, exportLatest: vi.fn(),
+        },
+      })
+      const handler = electronMocks.handlers.get('diagnostics:probe-codex-responses')!
+      expect(() => handler(trustedEvent(), false)).toThrow('可能产生费用')
+      expect(() => handler(trustedEvent(), { key: 'sk-hostile', url: 'https://elsewhere.invalid' })).toThrow('可能产生费用')
+      expect(() => handler(trustedEvent(), true, 'bad-scope')).toThrow('账号作用域无效')
+      expect(probeCodexResponses).not.toHaveBeenCalled()
+      await expect(handler(trustedEvent(), true, 'xm-account:17')).resolves.toMatchObject({
+        ok: true, verificationLevel: 'responses-tool-json',
+      })
+      expect(probeCodexResponses).toHaveBeenCalledExactlyOnceWith('xm-account:17')
+    })
+  })
+
   describe('diagnostics:check-connection on a rejected managed key', () => {
     const rejected = {
       ok: false, layer: 'credential' as const, provider: 'claude' as const, siteId: 'solov',

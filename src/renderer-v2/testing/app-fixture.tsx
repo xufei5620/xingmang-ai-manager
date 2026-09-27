@@ -8,6 +8,7 @@ import { accelerationTrialSeconds } from '../../../electron/acceleration-contrac
 import { getSourceMarkerStorage, writeManualSourceMarker } from '../features/tools/source-marker'
 import { resolveManagedCliKeyProfiles } from '../../../electron/catalog'
 import { ExternalUrlBlockedError } from '../../../electron/external-url-blocked'
+import { sessionScope } from '../account-context'
 import '../styles/tokens.css'
 import '../styles/components.css'
 import '../styles/shell.css'
@@ -179,7 +180,7 @@ if (query.has('uninstallUnavailable')) {
     },
   }
 }
-declare global { interface Window { v2Test: { calls: Array<{ method: string; args: unknown[] }>; unexpected: string[]; errors: string[]; fail: string; failMessage: string; emit(name: string, payload: unknown): void; releaseBootstrap(): void; releaseLaunch(): void; holdNextExternalScan(): void; releaseExternalScan(): void; holdNextConfigRead(): void; releaseConfigRead(): void; holdNextScan(): void; releaseScan(): void; setExternalStatus(tool: ExternalToolId, patch: Partial<ExternalClientStatus>): void; releaseBalance(error?: string): void; holdNextBalance(): void; setBalance(amount: number): void; releaseKeyMetadata(provider: ProviderId): void; releaseNoticeMark(id: string): void; setNotice(value: Awaited<ReturnType<XingmangApi['getAccountNotice']>>): void; timelineFixture(): ReturnType<typeof timelineFixture>; holdNextConfigSave(): void; releaseConfigSave(error?: string): void } } }
+declare global { interface Window { v2Test: { calls: Array<{ method: string; args: unknown[] }>; unexpected: string[]; errors: string[]; fail: string; failMessage: string; emit(name: string, payload: unknown): void; releaseBootstrap(): void; releaseLaunch(): void; holdNextExternalScan(): void; releaseExternalScan(): void; holdNextConfigRead(): void; releaseConfigRead(): void; holdNextScan(): void; releaseScan(): void; setExternalStatus(tool: ExternalToolId, patch: Partial<ExternalClientStatus>): void; releaseBalance(error?: string): void; holdNextBalance(): void; setBalance(amount: number): void; releaseKeyMetadata(provider: ProviderId): void; releaseNoticeMark(id: string): void; setNotice(value: Awaited<ReturnType<XingmangApi['getAccountNotice']>>): void; timelineFixture(): ReturnType<typeof timelineFixture>; holdNextConfigSave(): void; releaseConfigSave(error?: string): void; holdNextResponses(): void; releaseResponses(): void; holdNextAccountSession(): void; releaseAccountSession(): void } } }
 const listeners = new Map<string, Set<(payload: unknown) => void>>()
 let releaseBootstrap: () => void = () => undefined
 let releaseLaunch: () => void = () => undefined
@@ -197,8 +198,12 @@ let balanceOverride: number | null = null
 const keyRewritten = new Set<ProviderId>()
 let nextConfigSaveHeld = false
 let releaseConfigSave: (error?: string) => void = () => undefined
+let nextResponsesHeld = false
+let releaseResponses: () => void = () => undefined
+let nextAccountSessionHeld = false
+let releaseAccountSession: () => void = () => undefined
 const configSaveMethods = new Set(['saveConfig', 'saveConfigWithAccountKey', 'configureManagedCliKeys', 'switchToOfficialAccount', 'switchAccountSource'])
-window.v2Test = { calls: [], unexpected: [], errors: [], fail: '', failMessage: '', emit(name, payload) { if (name === 'onAccountSessionChanged') session = payload as AccountSessionState; listeners.get(name)?.forEach((listener) => listener(payload)) }, releaseBootstrap() { releaseBootstrap() }, releaseLaunch() { releaseLaunch() }, holdNextExternalScan() { holdExternalScan = true }, releaseExternalScan() { releaseExternalScan() }, holdNextConfigRead() { holdConfigRead = true }, releaseConfigRead() { releaseConfigRead() }, holdNextScan() { holdScan = true }, releaseScan() { releaseScan() }, setExternalStatus(tool, patch) { Object.assign(externalStatuses.find((entry) => entry.tool === tool)!, patch) }, releaseBalance(error) { releaseBalance(error) }, holdNextBalance() { nextBalanceHeld = true }, setBalance(amount) { balanceOverride = amount }, releaseKeyMetadata(provider) { pendingKeyMetadata.get(provider)?.(); pendingKeyMetadata.delete(provider) }, releaseNoticeMark(id) { pendingNoticeMarks.get(id)?.(); pendingNoticeMarks.delete(id) }, setNotice(value) { noticeOverride = value }, timelineFixture() { return timelineFixture() }, holdNextConfigSave() { nextConfigSaveHeld = true }, releaseConfigSave(error) { releaseConfigSave(error) } }
+window.v2Test = { calls: [], unexpected: [], errors: [], fail: '', failMessage: '', emit(name, payload) { if (name === 'onAccountSessionChanged') session = payload as AccountSessionState; listeners.get(name)?.forEach((listener) => listener(payload)) }, releaseBootstrap() { releaseBootstrap() }, releaseLaunch() { releaseLaunch() }, holdNextExternalScan() { holdExternalScan = true }, releaseExternalScan() { releaseExternalScan() }, holdNextConfigRead() { holdConfigRead = true }, releaseConfigRead() { releaseConfigRead() }, holdNextScan() { holdScan = true }, releaseScan() { releaseScan() }, setExternalStatus(tool, patch) { Object.assign(externalStatuses.find((entry) => entry.tool === tool)!, patch) }, releaseBalance(error) { releaseBalance(error) }, holdNextBalance() { nextBalanceHeld = true }, setBalance(amount) { balanceOverride = amount }, releaseKeyMetadata(provider) { pendingKeyMetadata.get(provider)?.(); pendingKeyMetadata.delete(provider) }, releaseNoticeMark(id) { pendingNoticeMarks.get(id)?.(); pendingNoticeMarks.delete(id) }, setNotice(value) { noticeOverride = value }, timelineFixture() { return timelineFixture() }, holdNextConfigSave() { nextConfigSaveHeld = true }, releaseConfigSave(error) { releaseConfigSave(error) }, holdNextResponses() { nextResponsesHeld = true }, releaseResponses() { releaseResponses() }, holdNextAccountSession() { nextAccountSessionHeld = true }, releaseAccountSession() { releaseAccountSession() } }
 window.addEventListener('error', (event) => window.v2Test.errors.push(event.message))
 window.addEventListener('unhandledrejection', (event) => window.v2Test.errors.push(String(event.reason)))
 const capabilities = { platform: query.get('os') === 'mac' ? 'macos' : 'windows', architecture: 'x64', isMac: query.get('os') === 'mac', nodeRuntimeInstall: query.has('runtimeExternal') ? 'external' : 'managed', pythonRuntimeInstall: query.has('runtimeExternal') ? 'external' : 'managed', cliInstall: { claude: 'managed', codex: 'managed', gemini: 'managed', grok: 'managed' }, codexDesktop: { install: 'managed', launch: true, uninstall: true, windowsStore: true } } as const
@@ -265,7 +270,13 @@ const methods = {
   getSettings: async () => ({ ...settings }),
   saveSettings: async (patch) => { settings = { ...settings, theme: patch.theme ?? settings.theme, reducedMotion: patch.reducedMotion ?? settings.reducedMotion, hardwareAcceleration: patch.hardwareAcceleration ?? settings.hardwareAcceleration, largeText: patch.largeText ?? settings.largeText, ...(patch.uiScale === undefined ? {} : { uiScale: patch.uiScale === 'auto' ? undefined : patch.uiScale }), codexDesktopChineseRuntimePatch: patch.codexDesktopChineseRuntimePatch ?? settings.codexDesktopChineseRuntimePatch }; return settings },
   getPlatformCapabilities: async () => capabilities,
-  getAccountSession: async () => session,
+  getAccountSession: async () => {
+    if (nextAccountSessionHeld) {
+      nextAccountSessionHeld = false
+      await new Promise<void>((resolve) => { releaseAccountSession = resolve })
+    }
+    return session
+  },
   getAccountBalance: async () => {
     const value = session.siteId === 'solov-api' ? { ...balance, quota: 12.4, quotaPerUnit: 1 } : { ...balance }
     if (session.account?.userId === 18) { value.displayAmount = 24.8; value.quota = 24.8 * value.quotaPerUnit }
@@ -311,7 +322,8 @@ const methods = {
         nextStep: '在首页点这个客户端的「配置」，选好密钥和模型保存一次，再回来自检' }
     }
     return { ...base, ok: true, layer: 'network' as const, status: 200, endpoint: 'https://fixture.invalid/v1/models',
-      model: 'fixture-model', summary: '当前账号的密钥和模型 fixture-model 都可用', nextStep: '无需处理',
+      model: 'fixture-model', verificationLevel: 'model-catalog' as const,
+      summary: '已核对当前密钥的模型清单：fixture-model 可见', nextStep: '无需处理',
       evidence: '已用配置里的密钥核对当前账号的可用模型清单，fixture-model 在其中；客户端里实际发起的对话由客户端自己发出，本机测不到' }
   },
   checkProviderConnection: async (provider) => {
@@ -329,8 +341,26 @@ const methods = {
     }
     if (query.has('connectionUnavailable') && provider === 'codex') throw new Error('自检没能完成')
     return provider === 'codex'
-      ? { ...base, ok: true, layer: 'network' as const, summary: '连接正常，gpt-6-astra 可以直接使用', nextStep: '无需处理', evidence: '已核对当前账号的可用模型清单，gpt-6-astra 在其中', endpoint: 'https://fixture.invalid/v1/models', model: 'gpt-6-astra' }
-      : { ...base, ok: true, layer: 'network' as const, summary: '连接正常，claude-opus-5 可以直接使用', nextStep: '无需处理', evidence: '已用 claude-opus-5 发过一次最小请求', endpoint: 'https://fixture.invalid/v1/messages', model: 'claude-opus-5' }
+      ? { ...base, ok: true, layer: 'network' as const, verificationLevel: 'model-catalog' as const, summary: '已核对模型清单：gpt-6-astra 对当前密钥可见', nextStep: '无需处理', evidence: '已核对当前账号的可用模型清单，gpt-6-astra 在其中；尚未验证生成或工具往返', endpoint: 'https://fixture.invalid/v1/models', model: 'gpt-6-astra' }
+      : { ...base, ok: true, layer: 'network' as const, verificationLevel: 'minimal-generation' as const, summary: '已完成一次 claude-opus-5 最小生成请求', nextStep: '无需处理', evidence: '已用 claude-opus-5 发过一次最小请求', endpoint: 'https://fixture.invalid/v1/messages', model: 'claude-opus-5' }
+  },
+  probeCodexResponses: async (acknowledgeBilling, expectedAccountScope) => {
+    if (!acknowledgeBilling) throw new Error('请先确认可能产生费用')
+    if (expectedAccountScope !== sessionScope(session)) throw new Error('账号已变化，请重新确认可能计费的验证')
+    if (nextResponsesHeld) {
+      nextResponsesHeld = false
+      await new Promise<void>((resolve) => { releaseResponses = resolve })
+    }
+    if (query.has('responsesFailure')) {
+      return { ok: false, layer: 'protocol' as const, summary: 'Responses 未确认工具结果回传',
+        nextStep: '中转的工具结果回传可能未完成，请稍后再试', endpoint: 'https://fixture.invalid/v1/responses',
+        model: 'gpt-6-astra', detail: null, status: 200, durationMs: 15, checkedAt: new Date().toISOString() }
+    }
+    return { ok: true, layer: 'network' as const, verificationLevel: 'responses-tool-json' as const,
+      summary: 'Responses 虚拟工具往返已验证', nextStep: '基础协议已验证；请在原生客户端内确认实际使用体验',
+      evidence: '已验证星芒中转的 Responses JSON 双请求与虚拟工具结果回传；未验证流式、原生桌面进程、搜索、生图或电脑操作',
+      endpoint: 'https://fixture.invalid/v1/responses', model: 'gpt-6-astra',
+      detail: null, status: 200, durationMs: 15, checkedAt: new Date().toISOString() }
   },
   scanSystem: async (_force, options) => {
     // 同主进程：开机首屏先拿上次落盘的结果（Grok 那时还没装），真扫描随后才回来。
