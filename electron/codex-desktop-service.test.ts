@@ -10,6 +10,7 @@ import { windowsPowerShellExecutable } from './windows-elevation'
 import { AppSettingsStore } from './app-settings'
 import { InstallationQueue } from './installation-queue'
 import { CommandRunnerError } from './command-runner'
+import { parseWindowsProcessesJson } from './codex-desktop'
 import type { NativeConfigInspection } from './config-files'
 import {
   buildCodexDesktopDarwinStatus,
@@ -196,6 +197,21 @@ describe('Codex Desktop launch trust', () => {
 })
 
 describe('Codex Desktop update state', () => {
+  it('allows first install when only another Windows account has a running package', () => {
+    const processes = parseWindowsProcessesJson(JSON.stringify({
+      ProcessId: 101,
+      ParentProcessId: 0,
+      Name: 'ChatGPT.exe',
+      ExecutablePath: 'C:\\WindowsApps\\OpenAI.Codex_26.715.0.0_x64__id\\ChatGPT.exe',
+      OwnerSid: 'S-1-5-21-5678',
+      CurrentOwnerSid: 'S-1-5-21-1234',
+      SessionId: 2,
+      CurrentSessionId: 2,
+      PackageFamilyName: 'OpenAI.Codex_id',
+    }))
+    expect(canAttemptCodexDesktopFirstInstallFallback(null, null, processes, true)).toBe(true)
+  })
+
   it('allows historical fallback only when every local install probe is empty', () => {
     expect(canAttemptCodexDesktopFirstInstallFallback(null, null, [])).toBe(true)
     expect(canAttemptCodexDesktopFirstInstallFallback(null, { name: 'Codex', appId: 'OpenAI.Codex!App' }, [])).toBe(false)
@@ -1124,14 +1140,69 @@ describe('Codex Desktop Appx probe script', () => {
     expect(script).toContain('$_.CommandLine')
     expect(script).toContain("@('ChatGPT.exe', 'Codex.exe')")
     expect(script).toContain('WindowsApps\\\\OpenAI.Codex')
-    expect(script).toContain('ExecutablePath = $path')
+    expect(script).toContain('ExecutablePath = $candidate.Path')
+  })
+
+  it('checks owner SID and session before returning a process for termination', () => {
+    const script = buildCodexDesktopProcessProbeScript()
+    const scan = scanPowerShell(script)
+    expect(scan.unterminated).toBe(false)
+    expect(unbalancedBracket(scan.code)).toBeNull()
+    expect(script).toContain('[System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value')
+    expect(script).toContain('[System.Diagnostics.Process]::GetCurrentProcess().SessionId')
+    expect(script).toContain('Get-CimInstance -ClassName Win32_Process -Filter "SessionId=$currentSessionId')
+    expect(script).toContain('Invoke-CimMethod -InputObject $process -MethodName GetOwnerSid -OperationTimeoutSec 5')
+    expect(script).toContain('$owner.ReturnValue -eq 0')
+    expect(script).toContain('$owner.Sid -eq $currentSid')
+    expect(script).toContain('$_.SessionId -eq $currentSessionId')
+    expect(script).toContain('PackageFamilyName = $packageFamilyName')
+  })
+
+  it.runIf(process.platform === 'win32')('checks only roots during scans and each pid before closing', () => {
+    const mocks = String.raw`
+      $script:ownerCalls = 0
+      function Get-CimInstance {
+        param($ClassName, $Filter)
+        $session = [System.Diagnostics.Process]::GetCurrentProcess().SessionId
+        @(
+          [pscustomobject]@{ ProcessId = 101; ParentProcessId = 0; Name = 'ChatGPT.exe'; SessionId = $session; ExecutablePath = 'C:\WindowsApps\OpenAI.Codex_26.715.0.0_x64__id\ChatGPT.exe' }
+          [pscustomobject]@{ ProcessId = 102; ParentProcessId = 101; Name = 'ChatGPT.exe'; SessionId = $session; ExecutablePath = 'C:\WindowsApps\OpenAI.Codex_26.715.0.0_x64__id\ChatGPT.exe' }
+          [pscustomobject]@{ ProcessId = 103; ParentProcessId = 101; Name = 'ChatGPT.exe'; SessionId = $session; ExecutablePath = 'C:\WindowsApps\OpenAI.Codex_26.715.0.0_x64__id\ChatGPT.exe' }
+        )
+      }
+      function Invoke-CimMethod {
+        [CmdletBinding()]
+        param($InputObject, $MethodName, $OperationTimeoutSec)
+        $script:ownerCalls += 1
+        $sid = if ($InputObject.ProcessId -eq 103) { 'S-1-5-21-9999' } else { [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value }
+        [pscustomobject]@{ ReturnValue = 0; Sid = $sid }
+      }
+    `
+    function runMockProbe(scope: 'roots' | 'all'): { calls: number; processIds: number[] } {
+      const script = `${mocks}
+        ${buildCodexDesktopProcessProbeScript(scope)}
+        Write-Output ('CALLS=' + $script:ownerCalls)
+      `
+      const output = execFileSync(windowsPowerShellExecutable(), [
+        '-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script,
+      ], { encoding: 'utf8', windowsHide: true, maxBuffer: 1024 * 1024 })
+      const lines = output.trim().split(/\r?\n/)
+      const calls = Number(lines.pop()?.replace('CALLS=', ''))
+      return {
+        calls,
+        processIds: parseWindowsProcessesJson(lines.join('\n')).map((entry) => entry.processId),
+      }
+    }
+
+    expect(runMockProbe('roots')).toEqual({ calls: 1, processIds: [101] })
+    expect(runMockProbe('all')).toEqual({ calls: 3, processIds: [101, 102] })
   })
 
   it('keeps the three merged segments byte-identical to the standalone probe scripts', () => {
     const combined = buildCodexDesktopCombinedProbeScript()
 
     expect(combined).toContain("Get-StartApps | Where-Object { $_.AppID -like 'OpenAI.Codex*!App' }")
-    expect(combined).toContain('Get-CimInstance Win32_Process')
+    expect(combined).toContain('Get-CimInstance -ClassName Win32_Process')
     expect(combined).toContain("Get-AppxPackage -Name 'OpenAI.Codex*' -ErrorAction Stop")
     expect(combined).not.toContain("Get-AppxPackage -AllUsers")
     // 每段各自 try/catch，任一段失败只写自己的 error 字段
@@ -1195,6 +1266,11 @@ describe('parseCodexDesktopCombinedProbeJson', () => {
     ParentProcessId: 1,
     Name: 'ChatGPT.exe',
     ExecutablePath: 'C:\\Program Files\\WindowsApps\\OpenAI.Codex_26.721.4979.0_x64__abc123\\ChatGPT.exe',
+    OwnerSid: 'S-1-5-21-1234',
+    CurrentOwnerSid: 'S-1-5-21-1234',
+    SessionId: 2,
+    CurrentSessionId: 2,
+    PackageFamilyName: 'OpenAI.Codex_abc123',
   }
 
   function combinedOutput(overrides: Record<string, unknown> = {}): string {
@@ -1223,6 +1299,9 @@ describe('parseCodexDesktopCombinedProbeJson', () => {
       parentProcessId: 1,
       name: 'ChatGPT.exe',
       executablePath: processEntry.ExecutablePath,
+      ownerSid: processEntry.OwnerSid,
+      sessionId: processEntry.SessionId,
+      packageFamilyName: processEntry.PackageFamilyName,
     }])
     expect(probe.packageProbe).toMatchObject({
       value: { name: 'OpenAI.Codex', version: '26.721.4979.0' },

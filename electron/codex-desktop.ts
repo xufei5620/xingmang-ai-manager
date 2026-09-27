@@ -89,6 +89,9 @@ export interface WindowsProcessEntry {
   parentProcessId: number
   name: string
   executablePath: string
+  ownerSid?: string
+  sessionId?: number
+  packageFamilyName?: string
 }
 
 export interface CodexDesktopProcessController {
@@ -241,6 +244,14 @@ export function selectCodexDesktopPackage(
     return right.version.localeCompare(left.version, undefined, { numeric: true })
   })
   return candidates[0] ?? null
+}
+
+export function assertCodexDesktopStableInstallTarget(
+  installedPackage: CodexDesktopPackageEntry | null,
+): void {
+  if (installedPackage && !/^OpenAI\.Codex$/i.test(installedPackage.name)) {
+    throw new Error('当前仅检测到 Codex Beta；星芒安装与更新只支持 Codex 正式版，请在微软商店管理 Beta')
+  }
 }
 
 export function parseCodexDesktopUpdateManifest(
@@ -407,6 +418,11 @@ function asWindowsProcessEntry(value: unknown): WindowsProcessEntry | null {
   const parentProcessId = record.ParentProcessId
   const name = record.Name
   const executablePath = record.ExecutablePath
+  const ownerSid = record.OwnerSid
+  const currentOwnerSid = record.CurrentOwnerSid
+  const sessionId = record.SessionId
+  const currentSessionId = record.CurrentSessionId
+  const packageFamilyName = record.PackageFamilyName
   if (
     typeof processId !== 'number'
     || !Number.isInteger(processId)
@@ -416,10 +432,20 @@ function asWindowsProcessEntry(value: unknown): WindowsProcessEntry | null {
     || parentProcessId < 0
     || typeof name !== 'string'
     || typeof executablePath !== 'string'
+    || typeof ownerSid !== 'string'
+    || !/^S-\d+(?:-\d+)+$/i.test(ownerSid)
+    || ownerSid !== currentOwnerSid
+    || typeof sessionId !== 'number'
+    || !Number.isInteger(sessionId)
+    || sessionId < 0
+    || sessionId !== currentSessionId
+    || typeof packageFamilyName !== 'string'
   ) {
     return null
   }
-  return { processId, parentProcessId, name, executablePath }
+  const packageEntry = parseCodexDesktopPackagePath(executablePath)
+  if (!packageEntry || packageEntry.packageFamilyName.toLowerCase() !== packageFamilyName.toLowerCase()) return null
+  return { processId, parentProcessId, name, executablePath, ownerSid, sessionId, packageFamilyName }
 }
 
 export function isCodexDesktopExecutable(executablePath: string): boolean {
@@ -440,6 +466,19 @@ export function parseWindowsProcessesJson(output: string): WindowsProcessEntry[]
   } catch {
     return []
   }
+}
+
+export function selectCodexDesktopProcessesForPackage(
+  entries: WindowsProcessEntry[],
+  packageFamilyName: string,
+  originalProcessIds?: ReadonlySet<number>,
+): WindowsProcessEntry[] {
+  return entries.filter((entry) => (
+    typeof entry.ownerSid === 'string'
+    && typeof entry.sessionId === 'number'
+    && entry.packageFamilyName?.toLowerCase() === packageFamilyName.toLowerCase()
+    && (originalProcessIds === undefined || originalProcessIds.has(entry.processId))
+  ))
 }
 
 export function selectRootProcessIds(entries: WindowsProcessEntry[]): number[] {
@@ -463,8 +502,9 @@ function remainingProcessSummary(entries: WindowsProcessEntry[]): string {
 }
 
 /**
- * Requests a normal process-tree close first, then force-terminates only the
- * processes that remain after the grace period.
+ * Requests a normal close for each selected PID, then force-terminates only
+ * the original processes that remain after the grace period. New PIDs seen
+ * during the wait are never added to the termination set.
  */
 export async function stopCodexDesktopProcesses(
   entries: WindowsProcessEntry[],
@@ -473,16 +513,29 @@ export async function stopCodexDesktopProcesses(
 ): Promise<void> {
   if (!entries.length) return
 
+  const originalById = new Map(entries.map((entry) => [entry.processId, entry]))
+  function originalProcesses(current: WindowsProcessEntry[]): WindowsProcessEntry[] {
+    return current.filter((entry) => {
+      const original = originalById.get(entry.processId)
+      return original !== undefined
+        && original.ownerSid === entry.ownerSid
+        && original.sessionId === entry.sessionId
+        && original.packageFamilyName?.toLowerCase() === entry.packageFamilyName?.toLowerCase()
+        && original.executablePath.replace(/\//g, '\\').toLowerCase()
+          === entry.executablePath.replace(/\//g, '\\').toLowerCase()
+    })
+  }
+
   const gracefulResults = await Promise.allSettled(
-    selectRootProcessIds(entries).map((processId) => controller.requestClose(processId)),
+    entries.map((entry) => controller.requestClose(entry.processId)),
   )
-  let remaining = await controller.waitUntilStopped(timeouts.gracefulMs)
+  let remaining = originalProcesses(await controller.waitUntilStopped(timeouts.gracefulMs))
   if (!remaining.length) return
 
   const forcedResults = await Promise.allSettled(
-    selectRootProcessIds(remaining).map((processId) => controller.forceClose(processId)),
+    remaining.map((entry) => controller.forceClose(entry.processId)),
   )
-  remaining = await controller.waitUntilStopped(timeouts.forcedMs)
+  remaining = originalProcesses(await controller.waitUntilStopped(timeouts.forcedMs))
   if (!remaining.length) return
 
   const systemErrors = [...gracefulResults, ...forcedResults]
