@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { CommandRunnerError, type CommandErrorCode } from './command-runner'
 import {
   buildMacosCodexAppLaunchPlan,
+  buildMacosCodexAppOpenPlan,
   commandTimeoutMs,
   deepVerificationTimeoutMs,
   inspectMacosCodexApp,
@@ -113,6 +114,13 @@ afterEach(() => {
 })
 
 describe('buildMacosCodexAppLaunchPlan', () => {
+  it('opens the verified app normally without a workspace, config override, or new instance', () => {
+    expect(buildMacosCodexAppOpenPlan('/Applications/ChatGPT.app')).toEqual({
+      executable: '/usr/bin/open', argv: ['-a', '/Applications/ChatGPT.app'],
+    })
+    expect(() => buildMacosCodexAppOpenPlan('ChatGPT.app')).toThrow('应用路径无效')
+  })
+
   it('opens the verified application with a workspace deep link and no CLI dependency', () => {
     const workspace = path.resolve(os.tmpdir(), 'project')
     const plan = buildMacosCodexAppLaunchPlan('/Applications/Codex.app', workspace)

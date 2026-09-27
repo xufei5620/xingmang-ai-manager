@@ -71,7 +71,10 @@ describe('renderer-v2 start guide first run', () => {
 
   it('does not offer a folder for the desktop app, the chat route or a tool that is not ready', () => {
     stubResumedGuide('codexDesktop', 'ready')
-    expect(render([guideTool({ id: 'codexDesktop' })])).not.toContain('data-testid="guide-folder-hint"')
+    const desktop = render([guideTool({ id: 'codexDesktop' })])
+    expect(desktop).not.toContain('data-testid="guide-folder-hint"')
+    expect(desktop).toContain('打开 Codex')
+    expect(desktop).not.toContain('打开 ChatGPT')
     stubResumedGuide('chat', 'ready')
     expect(render([guideTool()])).not.toContain('data-testid="guide-folder-hint"')
     stubResumedGuide('claude', 'ready')
@@ -83,6 +86,19 @@ describe('renderer-v2 start guide first run', () => {
     const markup = render([guideTool()])
     expect(markup).toContain('data-guide-step="connect"')
     expect(markup).not.toContain('data-testid="guide-first-run"')
+  })
+
+  it('offers native opening for an installed desktop awaiting official login without enabling the next step', () => {
+    stubResumedGuide('codexDesktop', 'connect')
+    const markup = render([guideTool({ id: 'codexDesktop', source: 'official', officialLoginRequired: true })], { onOpenDesktopClient: async () => undefined })
+    expect(markup).toContain('data-testid="guide-open-desktop-client"')
+    expect(markup).toContain('打开 ChatGPT 登录')
+    expect(markup).toMatch(/<button(?=[^>]*data-testid="guide-next")(?=[^>]*disabled)[^>]*>/)
+  })
+
+  it.each(['claude', 'codex', 'gemini', 'grok'] as const)('does not offer native opening on the %s route', (id) => {
+    stubResumedGuide(id, 'connect')
+    expect(render([guideTool({ id, source: 'official', officialLoginRequired: true })], { onOpenDesktopClient: async () => undefined })).not.toContain('data-testid="guide-open-desktop-client"')
   })
 
   // 引导里留着官方来源的 Gemini 配置,在 CLI 里已经登不上去了(Google 2026-06-18
@@ -291,7 +307,7 @@ describe('guide connect step with a key the current account did not write', () =
   it('offers one button named after the account and hides the grey next button for another site', () => {
     stubResumedGuide('codexDesktop', 'connect')
     const markup = render([guideTool({ id: 'codexDesktop', source: 'unknown', configured: false, keyState: 'otherSite' })], switchable)
-    expect(markup).toContain('Codex 桌面端 现在用的不是当前账号的 Key。')
+    expect(markup).toContain('Codex 现在用的不是当前账号的 Key。')
     expect(markup).toContain('点「改用 peaker」就能接着往下走')
     expect(markup).toContain('Codex CLI 和 Codex 桌面端共用这份设置，会一起改。')
     expect(markup).toContain('data-testid="guide-switch-account"')

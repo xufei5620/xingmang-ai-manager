@@ -190,6 +190,7 @@ async function createDarwinService(options: {
     resolveCli,
     execute,
     findExecutable,
+    inspectConfig,
     release: resolvedCommand.release,
   }
 }
@@ -3445,6 +3446,21 @@ describe('Darwin Codex Desktop integration', () => {
       },
     })
     expect(target.send).toHaveBeenCalledWith('desktop:codex-status-changed', { phase: 'running', status: result.status })
+  })
+
+  it.each(['relay', 'official', 'unknown'] as const)('opens the ordinary app without inspecting or migrating the %s Codex profile', async (accountMode) => {
+    const fixture = await createDarwinService({ accountMode, workspace: '/missing-project-that-is-not-needed' })
+    fixture.inspectConfig.mockImplementation(() => { throw new Error('普通打开不应读取 Codex 配置') })
+
+    const result = await fixture.service.launchCodexDesktop('app-open', { isDestroyed: () => false, send: vi.fn() })
+
+    expect(fixture.execute).toHaveBeenCalledWith({
+      executable: '/usr/bin/open', argv: ['-a', '/Applications/Codex.app'],
+    }, expect.objectContaining({ timeoutMs: 10_000, maxOutputBytes: 64 * 1024 }))
+    expect(fixture.inspectConfig).not.toHaveBeenCalled()
+    expect(fixture.resolveCli).not.toHaveBeenCalled()
+    expect(result.restarted).toBe(false)
+    expect(fs.existsSync(path.join(fixture.codexEnv.CODEX_HOME!, 'config.toml'))).toBe(false)
   })
 
   it('passes the selected CODEX_HOME through LaunchServices with a sanitized environment', async () => {

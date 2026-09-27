@@ -91,6 +91,57 @@ describe('renderer-v2 home install progress', () => {
 })
 
 describe('renderer-v2 home partial read failures (R-S8)', () => {
+  it.each(['unconfigured', 'signed-out', 'config-read-failed'] as const)('keeps ordinary ChatGPT opening available when %s', (scenario) => {
+    const state = scenario === 'signed-out' ? snapshot({ claude: cliStatus, codex: cliStatus, grok: cliStatus, gemini: cliStatus }) : unreadableConfig()
+    state.platform = { ...state.platform, codexDesktop: { install: 'managed', launch: true, uninstall: true, windowsStore: true } }
+    const markup = render({}, undefined, {
+      snapshot: state, account: null, onOpenClient: () => undefined,
+      failures: scenario === 'config-read-failed' ? configFailure : [],
+    })
+    const primary = markup.match(/<button[^>]*data-testid="tool-codexDesktop-primary"[^>]*>[\s\S]*?<\/button>/)?.[0]
+
+    expect(primary).toContain('打开 ChatGPT')
+    expect(primary).not.toContain('disabled')
+    expect(markup).toContain('data-testid="tool-codexDesktop-task"')
+    expect(markup).toContain('Codex 任务')
+    expect(markup).toContain('data-testid="tool-codex-primary"')
+  })
+
+  it.each([
+    [{ configurationOwnership: 'changed' }, '配置在软件之外被改动过'],
+    [{ configurationOwnership: 'unknown', matchesRelay: false, actualBaseUrl: 'https://other.example/v1', ccSwitchLeftover: 'provider' }, 'CC Switch'],
+    [{ configurationOwnership: 'unknown', matchesRelay: false, actualBaseUrl: 'https://other.example/v1' }, '改用你的账号就能用'],
+  ] as const)('preserves Codex connection warnings beside the independent native opening action: %j', (config, warning) => {
+    const value = snapshot({ claude: cliStatus, codex: cliStatus, grok: cliStatus, gemini: cliStatus })
+    value.platform = { ...value.platform, codexDesktop: { install: 'managed', launch: true, uninstall: true, windowsStore: true } }
+    value.config = { ...value.config, providers: { ...value.config.providers, codex: { ...value.config.providers.codex, ...config } } }
+    const markup = render({}, undefined, { snapshot: value, onOpenClient: () => undefined })
+    const row = markup.split('data-testid="tool-row-codexDesktop"')[1]?.split('class="xm-tool-row"')[0]
+    expect(row).toContain('Codex 连接：')
+    expect(row).toContain(warning)
+    expect(row).toContain('打开 ChatGPT')
+  })
+
+  it('retains the native version and scopes its model summary to Codex', () => {
+    const value = snapshot({ claude: cliStatus, codex: cliStatus, grok: cliStatus, gemini: cliStatus })
+    value.platform = { ...value.platform, codexDesktop: { install: 'managed', launch: true, uninstall: true, windowsStore: true } }
+    const markup = render({}, undefined, { snapshot: value, onOpenClient: () => undefined })
+    const row = markup.split('data-testid="tool-row-codexDesktop"')[1]?.split('class="xm-tool-row"')[0]
+    expect(row).toContain('v1.0.0 · Codex 模型：fixture-model')
+    expect(row).toContain('与 Codex CLI 共用；其他功能在客户端内确认')
+  })
+
+  it('keeps ordinary opening behind the native installation and identity checks', () => {
+    const state = snapshot({ claude: cliStatus, codex: cliStatus, grok: cliStatus, gemini: cliStatus })
+    state.platform = { ...state.platform, codexDesktop: { install: 'managed', launch: true, uninstall: true, windowsStore: true } }
+    state.system.desktopApps.codex = { ...state.system.desktopApps.codex, detectionFailed: true, detectionError: '无法确认应用身份' }
+    const markup = render({}, undefined, { snapshot: state, onOpenClient: () => undefined })
+
+    const primary = markup.match(/<button[^>]*data-testid="tool-codexDesktop-primary"[^>]*>[\s\S]*?<\/button>/)?.[0]
+    expect(primary).toContain('重新检测')
+    expect(primary).not.toContain('打开 ChatGPT')
+  })
+
   it('still lists every tool when only the configuration partition failed', () => {
     const markup = render({}, undefined, { snapshot: unreadableConfig(), failures: configFailure })
     for (const tool of ['claude', 'codex', 'grok', 'gemini']) {

@@ -13,6 +13,11 @@
 .v2-tool-launch > .xm-btn { flex: 1; min-width: 0; }
 .v2-tool-launch > .xm-btn > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .v2-tool-launch .xm-menu .xm-btn { flex: none; width: auto; padding: 0 5px; }
+/* 普通客户端打开与 Codex 任务各有入口；更新或连接修复按钮出现时在次操作列内纵向排列。 */
+.xm-tool-row:has(.v2-desktop-actions) { grid-template-columns: 40px minmax(80px, 1fr) auto minmax(80px, max-content) 132px 32px; column-gap: 8px; }
+.v2-desktop-actions { display: flex; flex-direction: column; align-items: stretch; gap: 4px; max-width: 164px; }
+.v2-desktop-actions .xm-btn { min-width: 0; }
+.v2-desktop-actions .xm-btn > span { overflow: hidden; text-overflow: ellipsis; }
 .v2-runtime-list { padding: 8px 16px; }
 .v2-runtime-row { display: flex; align-items: center; gap: 9px; padding: 9px 0; font-size: var(--font-small); }
 .v2-runtime-row strong { font-weight: 400; }

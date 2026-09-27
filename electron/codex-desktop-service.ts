@@ -47,7 +47,7 @@ import {
   type InstallCancellationHandle,
   type InstallCancellationOutcome,
 } from './install-cancellation'
-import { buildMacosCodexAppLaunchPlan, type inspectMacosCodexApp, type MacosCodexAppInspection } from './macos-codex-app'
+import { buildMacosCodexAppLaunchPlan, buildMacosCodexAppOpenPlan, type inspectMacosCodexApp, type MacosCodexAppInspection } from './macos-codex-app'
 import { resolveSystemWingetExecutable, type SystemWingetResolution } from './node-runtime'
 import { describeProbeFailure } from './probe-failure'
 import { resolveWindowsExplorerExecutable } from './system-shell'
@@ -1760,6 +1760,9 @@ export interface CodexDesktopServiceOptions {
   activateCodexDesktopWithCdp?: typeof activateCodexDesktopWithCdpDefault
   getAvailableLoopbackPort?: typeof getAvailableLoopbackPortDefault
   injectCodexDesktopChineseLocale?: typeof injectCodexDesktopChineseLocaleDefault
+  /** Local-only probe seams; production uses the same trusted Windows probes as normal detection. */
+  probeWindowsDesktop?: () => Promise<CodexDesktopCombinedProbe>
+  waitForDesktopState?: typeof waitForCodexDesktopState
 }
 
 export interface CodexDesktopLaunchOptions {
@@ -1814,6 +1817,8 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
     activateCodexDesktopWithCdp = activateCodexDesktopWithCdpDefault,
     getAvailableLoopbackPort = getAvailableLoopbackPortDefault,
     injectCodexDesktopChineseLocale = injectCodexDesktopChineseLocaleDefault,
+    probeWindowsDesktop = runCodexDesktopCombinedProbe,
+    waitForDesktopState = waitForCodexDesktopState,
   } = options
   let codexDesktopInstalling = false
   const installCancellations = new InstallCancellationRegistry()
@@ -1919,7 +1924,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
     return (await inspectCodexDesktopManifestBundle()).mirror
   }
 
-  async function inspectCodexDesktop(): Promise<DesktopAppStatus> {
+  async function inspectCodexDesktop(includeUpdateDetails = true): Promise<DesktopAppStatus> {
     if (platform === 'darwin') {
       // A local application inspection failure must not block the system
       // scan, but it also must not silently read as "not installed" — see
@@ -1946,8 +1951,8 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
       }
     }
     const [probeResult, mirrorResult] = await Promise.allSettled([
-      runCodexDesktopCombinedProbe(),
-      inspectCodexDesktopMirrorVersion(),
+      probeWindowsDesktop(),
+      includeUpdateDetails ? inspectCodexDesktopMirrorVersion() : Promise.resolve({ version: null, error: null, checkedAt: new Date().toISOString() }),
     ])
     // 开始菜单、进程、Appx 三段现在由一条 PowerShell 脚本一次跑完，段内失败
     // 已经在脚本里各自隔离，所以到这里三段都是「有结果」的；镜像版本仍是
@@ -2003,10 +2008,12 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
     }
     const appId = match?.appId
       ?? (installedPackage ? `${installedPackage.packageFamilyName}!App` : null)
-    const appVersion = installedPackage
+    const appVersion = installedPackage && includeUpdateDetails
       ? await inspectCodexDesktopAppVersion(installedPackage)
       : null
-    const update = installedPackage
+    const update = !includeUpdateDetails
+      ? desktopUpdateFields('skipped', null, null)
+      : installedPackage
       ? buildDesktopUpdateStatus(
           installedPackage.version,
           await inspectCodexDesktopLatestVersion(),
@@ -2534,6 +2541,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
     launchOptions: CodexDesktopLaunchOptions = {},
   ): Promise<CodexDesktopLaunchResult> {
     if (codexDesktopInstalling) throw new Error('Codex 桌面端正在安装、更新或卸载中，请稍后再试')
+    if (mode === 'app-open') return openDesktopClient(target)
     if (platform === 'darwin' && mode === 'restart') {
       throw new Error('macOS 不支持重启 Codex，请使用打开操作唤起现有应用')
     }
@@ -2773,6 +2781,36 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
     return { restarted, status: runningStatus, ...(chineseLocale ? { chineseLocale } : {}) }
   }
 
+  async function openDesktopClient(target: RendererMessageTarget): Promise<CodexDesktopLaunchResult> {
+    if (platform !== 'win32' && platform !== 'darwin') throw new Error('ChatGPT 客户端目前仅支持 Windows 和 macOS')
+    const desktop = await inspectCodexDesktop(false)
+    if (desktop.detectionFailed) throw new Error('ChatGPT 客户端身份尚未确认，请重新检测后再试')
+    if (!desktop.installed || !desktop.path) throw new Error('未检测到 ChatGPT 客户端，请先安装后重新检测')
+
+    if (platform === 'darwin') {
+      await executeCommand(buildMacosCodexAppOpenPlan(desktop.path), {
+        env: trustedCommandEnvironment(),
+        timeoutMs: 10_000,
+        maxOutputBytes: 64 * 1024,
+      })
+      const status = await inspectCodexDesktop(false)
+      if (status.running) sendCodexDesktopStatus(target, 'running', status)
+      return { restarted: false, status }
+    }
+
+    // AppsFolder activates the existing verified package or starts it normally.
+    // Never send task URLs, debugging flags or a terminate request on this path.
+    const plan = buildCodexDesktopLaunchPlan(desktop.path)
+    await spawnDetached(plan.executable, plan.args, {
+      cwd: plan.cwd, env: plan.env, windowsHide: plan.windowsHide,
+    })
+    const running = await waitForDesktopState(true, codexDesktopLaunchFallbackWaitMs)
+    if (!running.length) throw new Error('ChatGPT 客户端启动请求已发送，但未检测到运行进程，请重新检测后再试')
+    const status = { ...desktop, running: true }
+    sendCodexDesktopStatus(target, 'running', status)
+    return { restarted: false, status }
+  }
+
   /**
    * Launching replaces no machine-level directory itself, but it must not run
    * while one is being replaced. The busy flag alone only covers an install
@@ -2788,7 +2826,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
     launchOptions: CodexDesktopLaunchOptions = {},
   ): Promise<CodexDesktopLaunchResult> {
     return installationQueue.enqueue(
-      `desktop:codex:launch:${mode}:${launchOptions.injectChinese ? 'zh-CN' : 'default'}`,
+      `desktop:codex:launch:${mode}:${mode !== 'app-open' && launchOptions.injectChinese ? 'zh-CN' : 'default'}`,
       () => launchCodexDesktopOperation(mode, target, launchOptions),
     )
   }

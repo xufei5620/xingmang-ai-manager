@@ -690,7 +690,7 @@ test('launch and config actions use the original typed desktop and CLI endpoints
     for (let index = 0; index < launches.length; index += 1) {
       assert.ok(calls.indexOf(choices[index]) < calls.indexOf(launches[index]))
     }
-    assert.deepEqual(calls.find((entry) => entry.method === 'launchCodexDesktop').args, ['open'])
+    assert.deepEqual(calls.find((entry) => entry.method === 'launchCodexDesktop').args, ['app-open'])
     await page.getByTestId('tool-row-codex').getByRole('button', { name: '更多操作' }).click()
     await page.getByRole('menuitem', { name: '配置', exact: true }).click()
     const dialog = page.getByTestId('config-dialog')
@@ -706,14 +706,87 @@ test('macOS opens an installed desktop app when Codex CLI and Node are missing',
   try {
     const button = page.getByTestId('tool-codexDesktop-primary')
     await button.waitFor()
-    assert.equal(await button.innerText(), '打开')
+    assert.equal(await button.innerText(), '打开 ChatGPT')
     assert.equal(await button.isEnabled(), true)
     await button.click()
     await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'launchCodexDesktop'))
     const calls = await page.evaluate(() => window.v2Test.calls)
-    assert.deepEqual(calls.filter((entry) => entry.method === 'launchCodexDesktop').map((entry) => entry.args), [['open']])
+    assert.deepEqual(calls.filter((entry) => entry.method === 'launchCodexDesktop').map((entry) => entry.args), [['app-open']])
     assert.equal(calls.some((entry) => ['launchCli', 'installCli', 'installNodeRuntime', 'chooseWorkspace'].includes(entry.method)), false)
     assert.equal(await page.getByRole('dialog', { name: '操作没有完成' }).count(), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+for (const [name, query] of [
+  ['unconfigured', 'missingConfig=1&bootstrapPending=1'],
+  ['signed out', 'guest=1&existing=1'],
+  ['config read failed', 'nativeClientConfigError=1'],
+  ['already running', 'running=1&chineseAsk=1'],
+  ['foreign Codex connection', 'unknown=1'],
+]) test(`ordinary ChatGPT opening is independent of Codex setup: ${name}`, async () => {
+  const page = await open(query, false, recordToasts)
+  try {
+    if (query.includes('guest=1')) await enterWorkspaceWithoutAccount(page)
+    if (query.includes('nativeClientConfigError')) {
+      await page.getByTestId('tool-codexDesktop-primary').waitFor()
+      await page.evaluate(() => { window.v2Test.fail = 'getConfig'; window.v2Test.failMessage = '配置文件暂时无法读取' })
+      await page.getByRole('button', { name: '重新检测', exact: true }).click()
+      await page.getByTestId('home-config-failure').waitFor()
+    }
+    const button = page.getByTestId('tool-codexDesktop-primary')
+    await expect(button).toBeEnabled()
+    assert.equal(await button.evaluate((element) => element.scrollWidth <= element.clientWidth), true, '普通打开按钮的完整标签必须在列内')
+    if (query.includes('unknown=1')) {
+      const row = page.getByTestId('tool-row-codexDesktop')
+      assert.match(await row.innerText(), /Codex 连接：.*改用你的账号/)
+      assert.equal(await row.locator('.xm-tool-extra').evaluate((element) => element.scrollWidth <= element.clientWidth), true, 'Codex 任务和连接修复动作不能重叠主按钮')
+      await page.screenshot({ path: path.join(artifacts, 'native-client-connection-warning.png') })
+    }
+    const before = await page.evaluate(() => window.v2Test.calls.length)
+    await button.click()
+    await waitForToast(page, 'ChatGPT 已打开。')
+    const calls = await page.evaluate((start) => window.v2Test.calls.slice(start), before)
+    assert.deepEqual(calls.filter((entry) => entry.method === 'launchCodexDesktop').map((entry) => entry.args), [['app-open']])
+    assert.equal(calls.some((entry) => ['getConfig', 'checkToolModels', 'chooseWorkspace', 'saveSettings', 'setCodexDesktopLocale', 'saveConfig'].includes(entry.method)), false)
+    assert.equal(await page.getByRole('heading', { name: 'Codex 已在运行' }).count(), 0)
+    assert.equal(await page.getByTestId('codex-chinese-enable').count(), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('ordinary ChatGPT opening reports an unconfirmed launch without claiming the app is running', async () => {
+  const page = await open('os=mac&nativeClientPending=1', false, recordToasts)
+  try {
+    await page.getByTestId('tool-codexDesktop-primary').click()
+    await waitForToast(page, '已发送 ChatGPT 启动请求，请稍后重新检测。')
+    assert.equal(await page.evaluate(() => window.__v2Toasts.entries.some((entry) => entry.text.includes('ChatGPT 已打开。'))), false)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('the guide opens ChatGPT for official login, retries failures and waits for a fresh login check', async () => {
+  const page = await open('guest=1&existing=1&official=1&officialLoginRequired=1', false, recordToasts)
+  try {
+    await page.getByTestId('welcome-steps').click()
+    await page.getByTestId('guide-route-codexDesktop').check()
+    await page.getByTestId('guide-next').click()
+    await expect(page.getByTestId('guide-next')).toBeEnabled()
+    await page.getByTestId('guide-next').click()
+    const guide = page.getByTestId('start-guide')
+    await page.getByTestId('guide-official-login').waitFor()
+    await page.evaluate(() => { window.v2Test.fail = 'launchCodexDesktop'; window.v2Test.failMessage = '客户端暂时无法启动，请重试' })
+    await page.getByTestId('guide-open-desktop-client').click()
+    await page.getByTestId('guide-retry').waitFor()
+    assert.equal(await guide.getAttribute('data-guide-step'), 'connect')
+    await page.evaluate(() => { window.v2Test.fail = '' })
+    await page.getByTestId('guide-retry').click()
+    await waitForToast(page, 'ChatGPT 已打开。')
+    assert.equal(await guide.getAttribute('data-guide-step'), 'connect')
+    await expect(page.getByTestId('guide-next')).toBeDisabled()
+    const launches = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'launchCodexDesktop').map((entry) => entry.args))
+    assert.deepEqual(launches, [['app-open'], ['app-open']])
+    assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => ['launchCli', 'checkToolModels', 'chooseWorkspace', 'saveSettings'].includes(entry.method))), false)
     await clean(page)
   } finally { await page.close() }
 })
@@ -1205,7 +1278,8 @@ test('login synchronizes account Keys, configures installed tools, and route sel
     assert.equal(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'configureManagedCliKeys').length), configurationCount)
     await page.getByTestId('guide-pause').click()
     await page.getByTestId('tool-row-claude').getByText('已配好').waitFor()
-    await page.getByTestId('tool-row-codexDesktop').getByText('已配好').waitFor()
+    await page.getByTestId('tool-row-codex').getByText('已配好').waitFor()
+    await page.getByTestId('tool-row-codexDesktop').getByText('已安装').waitFor()
     await clean(page)
   } finally { await page.close() }
 })
@@ -1247,7 +1321,8 @@ test('restored login preserves a marked manual relay key and displays its source
 
 const matchedToolIds = ['claude', 'codex', 'codexDesktop', 'grok', 'gemini']
 async function matchedToolBadges(page, label) {
-  for (const id of matchedToolIds) await page.getByTestId(`tool-row-${id}`).getByText(label, { exact: true }).waitFor()
+  for (const id of matchedToolIds) await page.getByTestId(`tool-row-${id}`).getByText(id === 'codexDesktop' ? '已安装' : label, { exact: true }).waitFor()
+  if (label === 'Key 可能不是当前账号的') await page.getByTestId('tool-row-codexDesktop').getByText('Codex 连接：能用，但用量可能算到别的账号上', { exact: true }).waitFor()
 }
 async function settleMatchedBootstrap(page) {
   await page.waitForFunction(() => window.v2Test.calls.filter(entry => entry.method === 'getConfig').length >= 4)
@@ -1258,7 +1333,7 @@ async function assertNoMatchedKeyOperations(page, from = 0) {
   assert.equal(calls.some(method => ['configureManagedCliKeys', 'saveConfig', 'saveConfigWithAccountKey', 'switchToOfficialAccount', 'revealApiKey', 'revealAccountKey', 'getAccountKeys', 'getAccountKeyOptions', 'listModels', 'listAccountKeyModels', 'listConfiguredModels'].includes(method)), false)
 }
 
-test('read-only account matches restore all five CLI tool badges without key requests or writes and keep detection read-only', async () => {
+test('read-only account matches restore CLI badges while the native client remains installed, without key requests or writes', async () => {
   const page = await open('readOnlyAccountMatch=1&allInstalled=1')
   try {
     await matchedToolBadges(page, '已配好')
@@ -1283,7 +1358,7 @@ test('read-only account matches respect local manual markers and preserve incomp
   try {
     await page.getByTestId('tool-row-claude').getByText('已配好', { exact: true }).waitFor()
     await page.getByTestId('tool-row-gemini').getByText('还没配 Key', { exact: true }).waitFor()
-    for (const id of ['codex', 'codexDesktop', 'grok']) await page.getByTestId(`tool-row-${id}`).getByText('已配好', { exact: true }).waitFor()
+    for (const id of ['codex', 'codexDesktop', 'grok']) await page.getByTestId(`tool-row-${id}`).getByText(id === 'codexDesktop' ? '已安装' : '已配好', { exact: true }).waitFor()
     await settleMatchedBootstrap(page)
     await assertNoMatchedKeyOperations(page)
     assert.equal((await page.evaluate(() => window.xingmang.getConfig())).providers.gemini.model, '')
@@ -1600,7 +1675,7 @@ test('read-only account matches switch only explicitly selected CLI providers on
       { providers: ['claude'], preferredModels: { claude: 'fixture-model' }, intent: 'explicit' },
       { providers: ['codex'], preferredModels: { codex: 'fixture-model' }, intent: 'explicit' },
     ])
-    for (const tool of ['claude', 'codex', 'codexDesktop']) await page.getByTestId(`tool-row-${tool}`).getByText('已配好', { exact: true }).waitFor()
+    for (const tool of ['claude', 'codex', 'codexDesktop']) await page.getByTestId(`tool-row-${tool}`).getByText(tool === 'codexDesktop' ? '已安装' : '已配好', { exact: true }).waitFor()
     // 没勾的两个还是上一个账号的 Key：能用，但要提醒用量可能算到别的账号上（方案盘查第 10 条）。
     for (const tool of ['gemini', 'grok']) await page.getByTestId(`tool-row-${tool}`).getByText('Key 可能不是当前账号的', { exact: true }).waitFor()
     assert.equal(await page.evaluate(() => window.v2Test.calls.some(entry => ['saveConfig', 'saveConfigWithAccountKey', 'revealApiKey', 'revealAccountKey'].includes(entry.method))), false)
@@ -1709,7 +1784,7 @@ test('macOS guide does not report a failed Codex Desktop verification as not ins
 test('desktop status arriving during the initial scan preserves the full tool snapshot', async () => {
   const page = await open('desktopEvent=1')
   try {
-    await page.getByTestId('tool-row-codexDesktop').getByText('v9.9.9 · fixture-model').waitFor()
+    await page.getByTestId('tool-row-codexDesktop').getByText('v9.9.9 · Codex 模型：fixture-model', { exact: false }).waitFor()
     assert.equal(await page.locator('[data-testid^="tool-row-"]').count(), 8)
     await clean(page)
   } finally { await page.close() }
@@ -2235,7 +2310,7 @@ test('native announcement envelope stays styled and inert inside its sandbox', a
 test('running desktop offers a real restart and official quotas can be refreshed', async () => {
   const page = await open('running=1&official=1')
   try {
-    await page.getByTestId('tool-codexDesktop-primary').click()
+    await page.getByTestId('tool-codexDesktop-task').click()
     await page.getByRole('button', { name: '重启 Codex', exact: true }).click()
     await page.getByRole('heading', { name: 'Codex 已在运行' }).waitFor({ state: 'hidden' })
     assert.deepEqual(await page.evaluate(() => window.v2Test.calls.find((entry) => entry.method === 'launchCodexDesktop').args), ['restart'])
@@ -2286,7 +2361,7 @@ test('configuration migration shares Codex drafts and failed saves retain the se
     await page.getByTestId('tool-config-advanced').locator('summary').click()
     await page.getByTestId('tool-manual-key').click()
     await page.getByLabel('星芒访问密钥').fill('local-fixture-secret')
-    await page.getByRole('tab', { name: 'Codex 桌面端', exact: true }).click()
+    await page.getByRole('tab', { name: 'ChatGPT', exact: true }).click()
     assert.equal(await page.getByLabel('星芒访问密钥').inputValue(), 'local-fixture-secret')
     await page.getByTestId('config-dialog').getByRole('button', { name: '取消', exact: true }).click()
     await page.getByRole('button', { name: '继续编辑', exact: true }).click()
@@ -3137,7 +3212,7 @@ test('explicit historical login uses returned account ownership with customer ac
 
 async function openToolConfiguration(page, provider = 'codex') {
   await page.getByTestId(`tool-row-${provider}`).getByRole('button', { name: '更多操作' }).click()
-  await page.getByRole('menuitem', { name: '配置', exact: true }).click()
+  await page.getByRole('menuitem', { name: provider === 'codexDesktop' ? 'Codex 配置' : '配置', exact: true }).click()
   await page.getByTestId('config-dialog').waitFor()
 }
 
@@ -3263,7 +3338,7 @@ for (const tool of matchedToolIds) test(`read-only account matches retain accoun
     await page.getByTestId('tool-save-config').click()
     await waitForSavedConfiguration(page)
     await matchedToolBadges(page, '已配好')
-    await page.getByTestId(`tool-row-${tool}`).getByText(`v1.2.3 · ${selectedModel}`, { exact: true }).waitFor()
+    await page.getByTestId(`tool-row-${tool}`).getByText(tool === 'codexDesktop' ? `v1.2.3 · Codex 模型：${selectedModel}` : `v1.2.3 · ${selectedModel}`, { exact: tool !== 'codexDesktop' }).waitFor()
     const summary = await page.evaluate(() => window.xingmang.getConfig())
     assert.equal(summary.providers[provider].configurationOwnership, 'unknown')
     assert.equal(summary.providers[provider].configurationAccountMatched, true)
@@ -3293,7 +3368,7 @@ test('selected account key shows its group and survives delayed metadata plus to
     await page.getByRole('tab', { name: 'Claude Code', exact: true }).click()
     assert.equal(await select.inputValue(), 'current')
     assert.match(await page.getByTestId('tool-key-summary').innerText(), /sk-cl••••5678/)
-    await page.getByRole('tab', { name: 'Codex 桌面端', exact: true }).click()
+    await page.getByRole('tab', { name: 'ChatGPT', exact: true }).click()
     assert.equal(await select.inputValue(), '202')
     await page.getByTestId('tool-detect-models').click()
     await page.getByLabel('默认模型').selectOption('fixture-other')
@@ -3398,7 +3473,7 @@ test('Chinese locale can be retried after a runtime failure without mistaking th
   const page = await open('localeRetry=1')
   try {
     await openToolConfiguration(page)
-    await page.getByRole('tab', { name: 'Codex 桌面端', exact: true }).click()
+    await page.getByRole('tab', { name: 'ChatGPT', exact: true }).click()
     await page.getByText('界面语言与文件夹权限', { exact: true }).click()
     await page.getByRole('button', { name: '检查中文界面', exact: true }).click()
     await page.getByText('已保存的语言设置：简体中文。如果仍显示英文，可再次启用中文界面。', { exact: true }).waitFor()
@@ -3416,7 +3491,7 @@ test('Chinese locale can be retried after a runtime failure without mistaking th
 test('asks once before opening Codex with the Chinese runtime patch and remembers the refusal', async () => {
   const page = await open('chineseAsk=1')
   try {
-    await page.getByTestId('tool-codexDesktop-primary').click()
+    await page.getByTestId('tool-codexDesktop-task').click()
     await page.getByRole('heading', { name: '要让 Codex 的界面显示中文吗？' }).waitFor()
     assert.equal(await page.evaluate(() => window.v2Test.calls.filter((call) => call.method === 'launchCodexDesktop').length), 0)
     // 开端口是安全取舍：焦点落在「先不用」，两个按钮都不是主按钮。
@@ -3436,7 +3511,7 @@ test('asks once before opening Codex with the Chinese runtime patch and remember
       .map((call) => call.args[0].codexDesktopChineseRuntimePatch)), ['disabled'])
     await page.getByRole('heading', { name: '要让 Codex 的界面显示中文吗？' }).waitFor({ state: 'hidden' })
 
-    await page.getByTestId('tool-codexDesktop-primary').click()
+    await page.getByTestId('tool-codexDesktop-task').click()
     await page.waitForFunction(() => window.v2Test.calls.filter((call) => call.method === 'launchCodexDesktop').length === 2)
     assert.equal(await page.getByRole('heading', { name: '要让 Codex 的界面显示中文吗？' }).count(), 0)
     await clean(page)
@@ -3446,7 +3521,7 @@ test('asks once before opening Codex with the Chinese runtime patch and remember
 test('turns the Chinese runtime patch on through the locale path when the one-time question is accepted', async () => {
   const page = await open('chineseAsk=1')
   try {
-    await page.getByTestId('tool-codexDesktop-primary').click()
+    await page.getByTestId('tool-codexDesktop-task').click()
     await page.getByRole('button', { name: '显示中文', exact: true }).click()
     await page.waitForFunction(() => window.v2Test.calls.some((call) => call.method === 'launchCodexDesktop'))
     assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((call) => call.method === 'setCodexDesktopLocale').map((call) => call.args)), [['zh-CN']])
@@ -3515,10 +3590,10 @@ test('switching accounts while the model question is open drops it without openi
   } finally { await page.close() }
 })
 
-test('ordinary desktop launch preserves the opened app and exposes a Chinese-locale warning', async () => {
+test('Codex task launch preserves the opened app and exposes a Chinese-locale warning', async () => {
   const page = await open('localeLaunchWarning=1')
   try {
-    await page.getByTestId('tool-codexDesktop-primary').click()
+    await page.getByTestId('tool-codexDesktop-task').click()
     await page.getByText('Codex 已打开，但未确认中文界面生效，请在配置中再次启用。', { exact: true }).waitFor()
     assert.equal(await page.getByRole('dialog', { name: '操作没有完成' }).count(), 0)
     assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((call) => call.method === 'launchCodexDesktop').map((call) => call.args)), [['open']])

@@ -242,6 +242,18 @@ describe('CLI launch mode passthrough', () => {
 })
 
 describe('recent sessions cache', () => {
+  it('opens the native desktop client without reading Codex configuration or selecting a task', async () => {
+    const launchCodexDesktop = vi.fn(async () => ({ restarted: false, status: { running: false } }))
+    const getConfig = vi.fn(async () => { throw new Error('不应读取配置') })
+    const checkToolModels = vi.fn(async () => { throw new Error('不应检查模型') })
+    const api = createToolsApi({ launchCodexDesktop, getConfig, checkToolModels } as unknown as XingmangApi)
+
+    await expect(api.openDesktopClient()).resolves.toMatchObject({ status: { running: false } })
+    expect(launchCodexDesktop).toHaveBeenCalledWith('app-open')
+    expect(getConfig).not.toHaveBeenCalled()
+    expect(checkToolModels).not.toHaveBeenCalled()
+  })
+
   function recentBridge() {
     const listProviderSessions = vi.fn(async () => ({ items: [], total: 0, page: 1, pageSize: 60 }))
     const bridge = {

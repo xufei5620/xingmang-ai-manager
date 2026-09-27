@@ -3578,15 +3578,54 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
   })
 
   describe('parseDesktopLaunchMode (desktop:launch-codex)', () => {
-    it('accepts "open" and "restart"', () => {
+    it.each([false, true])('logs ordinary activation according to its observed running state (%s)', async (running) => {
+      const service = serviceStub()
+      vi.mocked(service.launchCodexDesktop).mockResolvedValue({ restarted: false, status: { running } as never })
+      const { runtimeLog } = register(service)
+
+      await electronMocks.handlers.get('desktop:launch-codex')!(trustedEvent(), 'app-open')
+
+      expect(runtimeLog.log).toHaveBeenCalledWith('info', 'ipc', 'desktop:launch-codex',
+        running ? 'ChatGPT 客户端已打开' : 'ChatGPT 客户端启动请求已发送', expect.any(Object))
+    })
+
+    it('accepts "open", "restart", and the ordinary "app-open" mode', () => {
       const { service } = register()
       const handler = electronMocks.handlers.get('desktop:launch-codex')!
       const event = trustedEvent()
 
       expect(() => handler(event, 'open')).not.toThrow()
       expect(() => handler(event, 'restart')).not.toThrow()
+      expect(() => handler(event, 'app-open')).not.toThrow()
       expect(service.launchCodexDesktop).toHaveBeenNthCalledWith(1, 'open', event.sender)
       expect(service.launchCodexDesktop).toHaveBeenNthCalledWith(2, 'restart', event.sender)
+      expect(service.launchCodexDesktop).toHaveBeenNthCalledWith(3, 'app-open', event.sender)
+    })
+
+    it('does not make ordinary client opening wait for account restoration', () => {
+      const accountWork = createAccountWorkGate({ revision: () => 0, assertReady: () => { throw new Error('switching') } })
+      const service = serviceStub()
+      register(service, undefined, undefined, undefined, undefined, undefined, {
+        realmAccounts: {} as never, accountWork, accountSessionReady: new Promise<void>(() => undefined),
+      })
+      const event = trustedEvent()
+
+      electronMocks.handlers.get('desktop:launch-codex')!(event, 'app-open')
+
+      expect(service.launchCodexDesktop).toHaveBeenCalledWith('app-open', event.sender)
+    })
+
+    it('keeps Codex task and restart operations behind the account work gate', async () => {
+      const accountWork = createAccountWorkGate({ revision: () => 0, assertReady: () => undefined })
+      const run = vi.spyOn(accountWork, 'run')
+      register(undefined, undefined, undefined, undefined, undefined, undefined, { accountWork })
+      const handler = electronMocks.handlers.get('desktop:launch-codex')!
+
+      await handler(trustedEvent(), 'open')
+      await handler(trustedEvent(), 'restart')
+      await handler(trustedEvent(), 'app-open')
+
+      expect(run).toHaveBeenCalledTimes(2)
     })
 
     it('rejects any other value', () => {

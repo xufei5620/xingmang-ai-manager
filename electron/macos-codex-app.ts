@@ -116,11 +116,7 @@ export interface MacosCodexAppInspectionOptions {
  * workspace deep link as the official `codex app` command. The caller must
  * obtain appPath from inspectMacosCodexApp before executing this plan.
  */
-export function buildMacosCodexAppLaunchPlan(
-  appPath: string,
-  workspace: string,
-  codexHome?: string,
-): CommandSpec {
+function assertMacosCodexAppPath(appPath: string): void {
   if (
     !path.posix.isAbsolute(appPath)
     || path.posix.extname(appPath) !== '.app'
@@ -129,6 +125,20 @@ export function buildMacosCodexAppLaunchPlan(
   ) {
     throw new Error('Codex 桌面端应用路径无效，请重新检测')
   }
+}
+
+/** Opens or activates the verified client without choosing a Codex task or profile. */
+export function buildMacosCodexAppOpenPlan(appPath: string): CommandSpec {
+  assertMacosCodexAppPath(appPath)
+  return { executable: '/usr/bin/open', argv: ['-a', appPath] }
+}
+
+export function buildMacosCodexAppLaunchPlan(
+  appPath: string,
+  workspace: string,
+  codexHome?: string,
+): CommandSpec {
+  assertMacosCodexAppPath(appPath)
   if (
     !path.isAbsolute(workspace)
     || workspace.includes('\0')

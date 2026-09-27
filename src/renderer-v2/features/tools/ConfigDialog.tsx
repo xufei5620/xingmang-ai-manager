@@ -317,7 +317,7 @@ export function ConfigDialog({ api, tool, config, signedIn, initialModelFilter =
     : `${usingCurrentKey ? '继续用现在这把密钥' : '用你选的这把密钥'}：${keyDescription.name} · ${keyDescription.preview}`
   const saveSummary = <div data-testid="tool-save-summary">{draft.source === 'official' ? <p>来源：{officialName}</p> : <><p>密钥：{keyDescription.name}</p><p>分组：{keyDescription.group}</p><p>预览：{keyDescription.preview}</p><p>模型：{draft.model || '使用该分组默认模型'}</p></>}</div>
   return <>
-    <Dialog open title={`${definition.name} 配置`} subtitle="选好账号后，保存并打开工具即可开始。" icon={Settings} width={640}
+    <Dialog open title={tab === 'codexDesktop' ? 'Codex 任务配置' : `${definition.name} 配置`} subtitle={tab === 'codexDesktop' ? '这些设置用于 Codex 编程任务，与 Codex CLI 共用。普通打开 ChatGPT 无需在这里配置。' : '选好账号后，保存并打开工具即可开始。'} icon={Settings} width={640}
       onClose={onClose} busy={Boolean(busy)} dirty={Object.values(drafts).some((entry) => entry?.dirty)} testId="config-dialog"
       footer={<><Button variant="ghost" onClick={() => requestExit(onClose)} disabled={Boolean(busy)}>取消</Button><Button variant="primary" icon={Save} loading={Boolean(busy)} disabled={draft.source === 'unknown' || Boolean(nonGptSaveIssue)} aria-describedby={nonGptSaveIssue ? modelFilterStatusId : undefined} onClick={requestSave} testId="tool-save-config">保存配置</Button></>}>
       <fieldset className="v2-config-controls" disabled={Boolean(busy)}>

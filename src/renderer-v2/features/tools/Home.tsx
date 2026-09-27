@@ -55,6 +55,8 @@ export interface HomeProps {
    * mode 省略 = 开新对话;'resumeLast' = 接着这个目录里最近的一条对话(#292)。
    */
   onLaunch(tool: ToolId, workspace?: string, mode?: CliLaunchMode): void
+  /** 只打开原生客户端，不读取或修改 Codex 任务配置。 */
+  onOpenClient?(): void
   /** 不选目录，替用户新建一个项目文件夹再打开；缺省 = 不给这个入口（旧行为）。 */
   onLaunchInNewFolder?(tool: ToolId): void
   onConfigure(tool: ToolId): void
@@ -220,6 +222,8 @@ export function Home(props: HomeProps) {
     && !firstRunDismissed.includes(tool.id) && firstRunOf(tool.id) !== undefined)
   const firstRun = firstRunTool ? firstRunOf(firstRunTool.id) : undefined
   const renderTool = useCallback((tool: ToolPresentation) => {
+    const ordinaryDesktop = tool.id === 'codexDesktop' && props.onOpenClient !== undefined
+    const canOpenClient = ordinaryDesktop && tool.status.installed && !tool.error
     const installJob = jobs[tool.id]
     const launchJob = jobs[`launch:${tool.id}`]
     const switchJob = jobs[`switch:${tool.id}`]
@@ -259,10 +263,10 @@ export function Home(props: HomeProps) {
     const elevationHint = tool.id === 'codexDesktop' && !tool.status.installed
       ? elevatedInstallShortNotice('codexDesktop', snapshot?.platform.platform, snapshot?.platform.codexDesktop.install)
       : null
-    const primaryLabel = launchJob ? '打开中' : switchJob ? '切换中' : installJob ? '安装中' : configUnavailable ? '重新配置'
+    const primaryLabel = launchJob ? '打开中' : switchJob ? '切换中' : installJob ? '安装中' : canOpenClient ? '打开 ChatGPT' : configUnavailable ? '重新配置'
       : bootstrapBusy && !tool.configured ? '配置中' : tool.error ? '重新检测' : !tool.status.installed ? manualInstall ? '安装指南' : '安装'
       : tool.configured ? lastWorkspace ? `打开 ${workspaceButtonLabel(lastWorkspace.name)}` : '打开' : '连接账号'
-    const primary = () => configUnavailable ? props.onConfigure(tool.id) : tool.error ? props.onScan() : !tool.status.installed ? props.onInstall(tool.id)
+    const primary = () => canOpenClient ? props.onOpenClient?.() : configUnavailable ? props.onConfigure(tool.id) : tool.error ? props.onScan() : !tool.status.installed ? props.onInstall(tool.id)
       : tool.configured ? props.onLaunch(tool.id, lastWorkspace?.path) : props.onConfigure(tool.id)
     const rollback = job ? null : rollbackVersion(tool)
     const revert = job ? null : revertVersion(tool)
@@ -278,16 +282,22 @@ export function Home(props: HomeProps) {
     const rollbackVerb = recommendedVersionVerb(tool)
     const rollbackIcon = tool.versionAdvice?.recommendedIsNewer ? Download : RotateCcw
     const primaryButton = <Button size="sm" variant={tool.status.installed ? 'primary' : 'secondary'} loading={Boolean(job)}
-      disabled={loading || launchBusy || bootstrapBusy && !tool.configured && !configUnavailable}
+      disabled={launchBusy || !canOpenClient && (loading || bootstrapBusy && !tool.configured && !configUnavailable)}
       title={lastWorkspace ? `在 ${lastWorkspace.path} 打开` : undefined}
       icon={lastWorkspace ? undefined : tool.status.installed && !bootstrapBusy ? ArrowUpRight : undefined}
       onClick={primary} testId={`tool-${tool.id}-primary`}>{primaryLabel}</Button>
-    return <ToolRow key={tool.id} tool={tool.id} status={status}
-      detail={job?.label ?? tool.error ?? (status === 'configChanged' ? configChangedDetail : status === 'ccSwitch' && ccSwitch ? ccSwitchDetails[ccSwitch] : foreignKey && status !== 'ccSwitch' ? foreignKeyDetails[foreignKey] : elevationHint ?? undefined)}
-      version={tool.status.installed ? versionSubtitle(tool) ?? '版本暂未识别' : undefined}
+    const connectionWarning = status === 'configChanged' ? configChangedDetail : status === 'ccSwitch' && ccSwitch ? ccSwitchDetails[ccSwitch] : foreignKey && status !== 'ccSwitch' ? foreignKeyDetails[foreignKey] : undefined
+    const version = versionSubtitle(tool)
+    const clientVersion = version ? version.startsWith('v') ? version : `v${version}` : '版本暂未识别'
+    const clientSummary = `${clientVersion}${tool.source === 'official' ? ' · Codex 官方账号' : tool.model ? ` · Codex 模型：${tool.model}` : ''}。连接设置用于 Codex，与 Codex CLI 共用；其他功能在客户端内确认。`
+    return <ToolRow key={tool.id} tool={tool.id} status={canOpenClient && !installJob ? 'clientReady' : status}
+      detail={job?.label ?? tool.error ?? (canOpenClient ? connectionWarning ? `Codex 连接：${connectionWarning}` : clientSummary : connectionWarning ?? elevationHint ?? undefined)}
+      version={tool.status.installed ? version ?? '版本暂未识别' : undefined}
       model={tool.status.installed ? tool.source === 'official' ? '官方账号' : tool.model || undefined : undefined}
       progress={job?.percent}
-      extraAction={installJob?.cancellable
+      extraAction={<span className={ordinaryDesktop ? 'v2-desktop-actions' : undefined}>{canOpenClient && !job && <Button variant="ghost" size="sm" disabled={loading || launchBusy || bootstrapBusy && !tool.configured}
+        onClick={() => configUnavailable || !tool.configured ? props.onConfigure(tool.id) : props.onLaunch(tool.id)}
+        testId="tool-codexDesktop-task">Codex 任务</Button>}{installJob?.cancellable
         ? <Button variant="ghost" size="sm" icon={X} loading={installJob.cancelling} onClick={() => props.onCancelInstall(tool.id)} testId={`tool-${tool.id}-cancel`}>{installJob.cancelling ? '取消中' : '取消'}</Button>
         : status === 'ccSwitch' && props.onSwitchAccount
           ? <Button variant="ghost" size="sm" icon={KeyRound} onClick={() => props.onSwitchAccount?.(tool.id, 'account')} testId={`tool-${tool.id}-replace-cc-switch`}>{switchAccountLabel(account?.username)}</Button>
@@ -301,7 +311,7 @@ export function Home(props: HomeProps) {
             : undefined
           : rollback && blocked
             ? <Button variant="ghost" size="sm" icon={rollbackIcon} title={blocked} onClick={() => props.onInstall(tool.id, rollback)} testId={`tool-${tool.id}-rollback`}>{`${rollbackVerb}推荐版本`}</Button>
-            : tool.updateAvailable && !job ? <Button variant="ghost" size="sm" icon={Download} title={updateButtonHint(tool)} onClick={() => props.onInstall(tool.id)}>更新</Button> : undefined}
+            : tool.updateAvailable && !job ? <Button variant="ghost" size="sm" icon={Download} title={updateButtonHint(tool)} onClick={() => props.onInstall(tool.id)}>更新</Button> : undefined}</span>}
       primaryAction={workspaces.length ? <span className="v2-tool-launch" data-testid={`tool-${tool.id}-launch`}>
         {primaryButton}
         {lastWorkspace && <Menu label="换一个目录" testId={`tool-${tool.id}-workspaces`}
@@ -320,7 +330,7 @@ export function Home(props: HomeProps) {
           disabled: loading || launchBusy,
           onSelect: () => props.onLaunchInNewFolder?.(tool.id),
         }] : []),
-        { label: '配置', onSelect: () => props.onConfigure(tool.id) },
+        { label: ordinaryDesktop ? 'Codex 配置' : '配置', onSelect: () => props.onConfigure(tool.id) },
         // 故意改过配置的人也要有出路，否则那颗黄角标会一直挂着。认下之后这个工具
         // 就按「自己填写的密钥」处理，下次在配置里改回星芒账号时标记自动清掉。
         ...((status === 'configChanged' || status === 'ccSwitch') && props.onKeepConfig ? [{ label: '就用现在这份', testId: `tool-${tool.id}-keep-config`, onSelect: () => props.onKeepConfig?.(tool.id) }] : []),
@@ -336,9 +346,9 @@ export function Home(props: HomeProps) {
         // 推荐版本本身在这台电脑上出问题时，「回到推荐版本」帮不上忙：他就在推荐版本上。
         // 与上一项指向同一个版本时不重复给。
         ...(revert && revert !== rollback && props.onRevert ? [{ label: `退回更新前的版本 ${revert}`, testId: `tool-${tool.id}-revert`, onSelect: () => props.onRevert?.(tool.id, revert) }] : []),
-        ...(tool.provider === 'codex' ? [{ label: '换用别家模型', testId: tool.id === 'codex' ? 'home-codex-models' : 'home-codexDesktop-models', onSelect: props.onCodexModels }] : []),
-        { label: '查看记录', onSelect: () => props.onNavigate('sessions') },
-        ...(tool.provider === 'codex' && tool.source === 'official' ? [{ label: '官方账户额度', onSelect: () => { setOfficial(snapshot?.system.officialChatGpt ?? null); setOfficialOpen(true) } }] : []),
+        ...(tool.provider === 'codex' ? [{ label: ordinaryDesktop ? 'Codex：换用别家模型' : '换用别家模型', testId: tool.id === 'codex' ? 'home-codex-models' : 'home-codexDesktop-models', onSelect: props.onCodexModels }] : []),
+        { label: ordinaryDesktop ? 'Codex 任务记录' : '查看记录', onSelect: () => props.onNavigate('sessions') },
+        ...(tool.provider === 'codex' && tool.source === 'official' ? [{ label: ordinaryDesktop ? 'Codex 官方账户额度' : '官方账户额度', onSelect: () => { setOfficial(snapshot?.system.officialChatGpt ?? null); setOfficialOpen(true) } }] : []),
         ...(canUninstallTool(
           tool.status,
           tool.id === 'codexDesktop' && snapshot?.platform.codexDesktop.uninstall === true,

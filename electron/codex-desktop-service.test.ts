@@ -1534,6 +1534,102 @@ describe('Codex Desktop launch queueing', () => {
   })
 })
 
+describe('ordinary desktop client opening', () => {
+  function ordinaryFixture(running = false, installationQueue = new InstallationQueue()) {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-ordinary-desktop-'))
+    temporaryDirectories.push(directory)
+    const processes = [{
+      processId: 4242, parentProcessId: 1, name: 'ChatGPT.exe',
+      executablePath: 'C:\\Program Files\\WindowsApps\\OpenAI.Codex_1.0.0.0_x64__abc123\\app\\ChatGPT.exe',
+    }]
+    const probeWindowsDesktop = vi.fn(async () => parseCodexDesktopCombinedProbeJson(JSON.stringify({
+      startApps: [{ Name: 'ChatGPT', AppID: 'OpenAI.Codex_abc123!App' }],
+      processes: running ? [{ ProcessId: 4242, ParentProcessId: 1, Name: 'ChatGPT.exe', ExecutablePath: processes[0].executablePath }] : [],
+      package: { packages: [{ Name: 'OpenAI.Codex', Version: '1.0.0.0',
+        PackageFullName: 'OpenAI.Codex_1.0.0.0_x64__abc123', PackageFamilyName: 'OpenAI.Codex_abc123',
+        InstallLocation: 'C:\\Program Files\\WindowsApps\\OpenAI.Codex_1.0.0.0_x64__abc123' }],
+      source: 'current-user', confirmedAbsent: false, error: null },
+    })))
+    const store = new AppSettingsStore(path.join(directory, 'settings.json'), directory)
+    const readSettings = vi.spyOn(store, 'read').mockImplementation(() => { throw new Error('普通打开不应读取项目设置') })
+    const inspectNativeProviderConfig = vi.fn((): NativeConfigInspection => { throw new Error('普通打开不应读取 Codex 配置') })
+    const spawnDetached = vi.fn(async () => undefined)
+    const downloadFetch = vi.fn<typeof fetch>(async () => { throw new Error('普通打开不应请求更新清单') })
+    const executeCommand = vi.fn<CodexDesktopServiceOptions['executeCommand']>(async () => { throw new Error('不应执行 CLI 或关闭进程') })
+    const prepareAcceleration = vi.fn(async () => undefined)
+    const activateCodexDesktop = vi.fn(async () => null)
+    const activateCodexDesktopWithCdp = vi.fn(async () => 1)
+    const getAvailableLoopbackPort = vi.fn(async () => 9222)
+    const injectCodexDesktopChineseLocale = vi.fn<NonNullable<CodexDesktopServiceOptions['injectCodexDesktopChineseLocale']>>()
+    const waitForDesktopState = vi.fn(async () => processes)
+    const service = createCodexDesktopService({
+      platform: 'win32', installationQueue, store, codexEnv: { CODEX_HOME: path.join(directory, 'unused-profile') },
+      createInstallTemporaryDirectory: async () => { throw new Error('未使用') },
+      detectMacosCodexApp: async () => { throw new Error('未使用') },
+      executeCommand, inspectNativeProviderConfig, spawnDetached, downloadFetch, prepareAcceleration,
+      activateCodexDesktop, activateCodexDesktopWithCdp, getAvailableLoopbackPort, injectCodexDesktopChineseLocale,
+      probeWindowsDesktop, waitForDesktopState,
+    })
+    return { service, probeWindowsDesktop, readSettings, inspectNativeProviderConfig, spawnDetached, downloadFetch,
+      executeCommand, prepareAcceleration, activateCodexDesktop, activateCodexDesktopWithCdp, getAvailableLoopbackPort,
+      injectCodexDesktopChineseLocale, waitForDesktopState, target: { isDestroyed: () => false, send: vi.fn() } }
+  }
+
+  it.runIf(process.platform === 'win32').each([false, true])('normally activates the verified client without Codex side effects (already running=%s)', async (running) => {
+    const fixture = ordinaryFixture(running)
+
+    const result = await fixture.service.launchCodexDesktop('app-open', fixture.target, {
+      injectChinese: true, repairPermissionModeVisibility: true,
+    })
+
+    expect(result).toMatchObject({ restarted: false, status: { installed: true, running: true } })
+    expect(result.chineseLocale).toBeUndefined()
+    expect(fixture.spawnDetached).toHaveBeenCalledWith(expect.stringMatching(/\\windows\\explorer\.exe$/i),
+      ['shell:AppsFolder\\OpenAI.Codex_abc123!App'], expect.any(Object))
+    for (const unused of [fixture.readSettings, fixture.inspectNativeProviderConfig, fixture.downloadFetch,
+      fixture.executeCommand, fixture.prepareAcceleration, fixture.activateCodexDesktop,
+      fixture.activateCodexDesktopWithCdp, fixture.getAvailableLoopbackPort, fixture.injectCodexDesktopChineseLocale]) {
+      expect(unused).not.toHaveBeenCalled()
+    }
+  })
+
+  it.runIf(process.platform === 'win32')('waits behind installation and coalesces repeated ordinary opens', async () => {
+    const queue = new InstallationQueue()
+    let release = (): void => undefined
+    const installing = queue.enqueue('desktop:codex:install', () => new Promise<void>((resolve) => { release = resolve }))
+    const fixture = ordinaryFixture(false, queue)
+    const first = fixture.service.launchCodexDesktop('app-open', fixture.target)
+    const repeated = fixture.service.launchCodexDesktop('app-open', fixture.target, { injectChinese: true })
+    expect(repeated).toBe(first)
+    expect(fixture.probeWindowsDesktop).not.toHaveBeenCalled()
+    release()
+    await installing
+    await first
+    expect(fixture.spawnDetached).toHaveBeenCalledTimes(1)
+  })
+
+  it.runIf(process.platform === 'win32').each([false, true])('refuses ordinary opening without verified installation evidence (probe failure=%s)', async (failed) => {
+    const fixture = ordinaryFixture()
+    fixture.probeWindowsDesktop.mockResolvedValueOnce(failed
+      ? buildCodexDesktopCombinedProbeFailure(new Error('身份检查失败'))
+      : parseCodexDesktopCombinedProbeJson(JSON.stringify({ startApps: [], processes: [],
+        package: { packages: [], confirmedAbsent: true, error: null } })))
+
+    await expect(fixture.service.launchCodexDesktop('app-open', fixture.target))
+      .rejects.toThrow(failed ? '身份尚未确认' : '未检测到 ChatGPT')
+    expect(fixture.spawnDetached).not.toHaveBeenCalled()
+  })
+
+  it.runIf(process.platform === 'win32')('does not report success when the ordinary activation fails', async () => {
+    const fixture = ordinaryFixture()
+    fixture.spawnDetached.mockRejectedValueOnce(new Error('启动失败'))
+
+    await expect(fixture.service.launchCodexDesktop('app-open', fixture.target)).rejects.toThrow('启动失败')
+    expect(fixture.waitForDesktopState).not.toHaveBeenCalled()
+    expect(fixture.target.send).not.toHaveBeenCalled()
+  })
+})
+
 describe('Codex Desktop launch acceleration', () => {
   function darwinLaunchFixture(prepareAcceleration?: () => Promise<void>) {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-codex-accel-'))

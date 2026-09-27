@@ -512,7 +512,7 @@ export interface RendererMessageTarget {
   send(channel: string, payload: unknown): void
 }
 
-export type CodexDesktopLaunchMode = 'open' | 'restart'
+export type CodexDesktopLaunchMode = 'open' | 'restart' | 'app-open'
 
 /**
  * Every darwin Grok post-install and uninstall codesign verification runs through
@@ -4313,6 +4313,9 @@ export function createSystemService(
     target: RendererMessageTarget,
     launchOptions: { injectChinese?: boolean } = {},
   ): Promise<CodexDesktopLaunchResult> {
+    // Opening the native client does not belong to a Codex profile. Keep it
+    // ahead of all permission, locale and running-state migrations.
+    if (mode === 'app-open') return launchCodexDesktopOperation(mode, target)
     // Configs created before the permission picker was introduced often omit
     // both legacy fields. Add only missing defaults so a mirror-installed
     // Desktop gets the same interactive baseline as a local installation.

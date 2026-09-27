@@ -1,8 +1,18 @@
 import { describe, expect, it } from 'vitest'
-import { launchDeclined, launchWaitLabel, launchWarning, resumeSessionNotice } from './launch-notice'
+import { desktopClientOpenNotice, launchDeclined, launchWaitLabel, launchWarning, resumeSessionNotice } from './launch-notice'
 import type { DesktopAppStatus } from '../../../../electron/ipc-contract'
 
 const status = { installed: true } as DesktopAppStatus
+
+describe('ordinary desktop opening notice', () => {
+  it('only reports an opened client after observing it running', () => {
+    expect(desktopClientOpenNotice({ restarted: false, status: { ...status, running: true } }))
+      .toEqual({ message: 'ChatGPT 已打开。', tone: 'ok' })
+    expect(desktopClientOpenNotice({ restarted: false, status: { ...status, running: false } }))
+      .toEqual({ message: '已发送 ChatGPT 启动请求，请稍后重新检测。', tone: 'neutral' })
+    expect(desktopClientOpenNotice(undefined).tone).toBe('neutral')
+  })
+})
 
 describe('launchWarning', () => {
   it('stays quiet when the launch reports nothing', () => {

@@ -152,7 +152,7 @@ export function createToolsApi(bridge: XingmangApi) {
     // 'new' | 'resumeLast'(#292)。各自只取自己认得的那一个,另一套的值落回本侧
     // 默认,也就是旧行为。以前这里的 CLI 分支根本没把 mode 传下去,首页和记录页
     // 都发不出「接着上次对话」。
-    launch: async (id: ToolId, workspace: string, mode: CodexDesktopLaunchMode | CliLaunchMode = 'open') => {
+    launch: async (id: ToolId, workspace: string, mode: Exclude<CodexDesktopLaunchMode, 'app-open'> | CliLaunchMode = 'open') => {
       const result = await (id === 'codexDesktop'
         ? bridge.launchCodexDesktop(mode === 'restart' ? 'restart' : 'open')
         : mode === 'resumeLast' ? bridge.launchCli(id, workspace, 'resumeLast') : bridge.launchCli(id, workspace))
@@ -160,6 +160,8 @@ export function createToolsApi(bridge: XingmangApi) {
       recentSessions.invalidate()
       return result
     },
+    /** 普通客户端打开不创建 Codex 任务，也不读取配置或使任务记录缓存失效。 */
+    openDesktopClient: () => bridge.launchCodexDesktop('app-open'),
     prepareRuntime: (runtime: 'node' | 'python') => runtime === 'node' ? bridge.installNodeRuntime() : bridge.installPythonRuntime(),
     installGit: () => bridge.installGitRuntime(),
     restartWindows: () => bridge.restartWindows(),

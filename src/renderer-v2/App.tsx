@@ -15,7 +15,7 @@ import { ConfigDialog } from './features/tools/ConfigDialog'
 import { ExternalClientDialog } from './features/tools/ExternalClientDialog'
 import { Home } from './features/tools/Home'
 import { createToolsApi } from './features/tools/api'
-import { launchWaitLabel, launchWarning } from './features/tools/launch-notice'
+import { desktopClientOpenNotice, launchWaitLabel, launchWarning } from './features/tools/launch-notice'
 import { modelSwapOffer, modelSwapQuestion, type ModelSwapChoice, type ModelSwapOffer } from './features/tools/model-check'
 import { chineseRuntimePatchAnswerMissing, shouldAskForChineseRuntimePatch } from './features/tools/chinese-runtime-choice'
 import { cliInstallStageLabel, nodeRuntimeReady, planCliInstall, pythonRuntimeReady, runtimeStageFailureMessage, type InstallRuntimeId } from './features/tools/runtime-readiness'
@@ -765,6 +765,18 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       if (mounted.current && epoch === accountEpoch.current) toast.show('配置已保存，客户端状态尚未读到，请重新检测。', 'warn')
     })
   }
+  async function openDesktopClient() {
+    if (launchRequest.current) return
+    launchRequest.current = true
+    try { await toolbox.run('launch:codexDesktop', '正在打开 ChatGPT', async () => {
+      // Native opening is independent of account/config/model/workspace state.
+      const notice = desktopClientOpenNotice(await toolsApi.openDesktopClient())
+      if (mounted.current) toast.show(notice.message, notice.tone)
+    }) } finally { launchRequest.current = false }
+  }
+  function requestOpenDesktopClient() {
+    void perform('打开 ChatGPT', openDesktopClient)
+  }
   /**
    * mode 走的是 toolsApi.launch 那套「两侧各取自己认得的那个」:codexDesktop 认
    * 'open' | 'restart',四家 CLI 认 'new' | 'resumeLast'(#292)。
@@ -963,7 +975,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       if (event.key === ',') { event.preventDefault(); navigate('settings') }
       if (/^[1-5]$/.test(event.key)) {
         const tool = tools.filter((entry) => !entry.hidden?.(os))[Number(event.key) - 1]
-        if (tool && isToolId(tool.id)) { event.preventDefault(); requestLaunch(tool.id) }
+        if (tool && isToolId(tool.id)) { event.preventDefault(); if (tool.id === 'codexDesktop') requestOpenDesktopClient(); else requestLaunch(tool.id) }
       }
     }
     document.addEventListener('keydown', onShortcut)
@@ -1040,6 +1052,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       onDetect={() => toolbox.refresh(true)} onInstall={async (id, version) => { await install(id, version) }} onInstallRuntime={() => installRuntime('node')} onInstallPython={() => installRuntime('python')} onConfigure={async (id) => { openToolConfig(id) }} onLogin={() => setAuth('login')}
       accountName={session.account?.username ?? null} onSwitchAccount={(id) => switchToolAccount(id, 'account')} onFailureAction={runGuideFailureAction}
       onLaunch={async (id, newFolder) => id === 'chat' ? true : launch(id, 'open', undefined, newFolder)}
+      onOpenDesktopClient={openDesktopClient}
       onComplete={(id) => { if (!writeLocalPreference(`xingmang-v2-guide:${scope}`, id)) toast.show('工具已准备好，但引导偏好没有保存在本机。', 'warn'); setWorkspaceEntered(true); rememberTourPending(scope); setTourOpen(true); navigate(id === 'chat' ? 'chat' : 'home') }} onBack={() => setGuide(false)} onHelp={() => setHelp(true)} />
       : !session.authenticated && !restoring && !workspaceEntered ? <Welcome platform={os} onLogin={() => setAuth('login')} onRegister={() => setAuth('register')} onSteps={() => setGuide(true)} onHelp={() => setHelp(true)} onLegal={setLegal}
         reducedMotion={settings?.reducedMotion} supportQrUrl={qr} onReducedMotionChange={(reducedMotion) => void perform('保存外观', async () => setSettings(await app.savePreferences({ version: 2, reducedMotion })))} />
@@ -1075,7 +1088,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
             </div>}
             {page === 'home' ? <Home api={toolsApi} supportsUsage={accountSupports(session, 'supportsUsage')} supportsBilling={accountSupports(session, 'supportsBilling')} snapshot={toolbox.snapshot} loading={toolbox.loading} error={toolbox.error} failures={toolbox.failures} account={session.account} balance={balance} jobs={toolbox.jobs} bootstrap={accountBootstrap?.scope === scope ? accountBootstrap : null}
               externalClients={toolbox.externalClients} externalLoading={toolbox.externalLoading} externalError={toolbox.externalError} recentRevision={recentRevision}
-              onScan={() => { refreshRecent(); void toolbox.refresh(true).catch(() => undefined); void toolbox.refreshExternal(true).catch(() => undefined) }} onInstall={(id, version) => void perform('安装工具', () => install(id, version), id)} onCancelInstall={(id) => void perform('取消安装', () => cancelInstall(id))} onLaunch={requestLaunch} onLaunchInNewFolder={(id) => requestLaunch(id, undefined, 'new', true)} onConfigure={openToolConfig} onUninstall={requestUninstall} onRevert={requestRevert}
+              onScan={() => { refreshRecent(); void toolbox.refresh(true).catch(() => undefined); void toolbox.refreshExternal(true).catch(() => undefined) }} onInstall={(id, version) => void perform('安装工具', () => install(id, version), id)} onCancelInstall={(id) => void perform('取消安装', () => cancelInstall(id))} onLaunch={requestLaunch} onOpenClient={requestOpenDesktopClient} onLaunchInNewFolder={(id) => requestLaunch(id, undefined, 'new', true)} onConfigure={openToolConfig} onUninstall={requestUninstall} onRevert={requestRevert}
               onRewriteKey={(id) => void perform('重新写入 Key', () => rewriteAccountKeys([providerFor(id)]), id)} onKeepConfig={(id) => void perform('保留当前配置', () => keepCurrentToolConfig(id))}
               onSwitchAccount={(id, target) => void perform(target === 'account' ? '改用当前账号' : '切回官方账号', async () => { if (await switchToolAccount(id, target)) confirmToolKeyWritten(id) }, id)}
               onOpenConfigDirectory={(id) => void perform('打开配置文件夹', () => toolsApi.openConfigDirectory(id))}

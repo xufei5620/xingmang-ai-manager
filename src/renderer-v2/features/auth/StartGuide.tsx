@@ -70,6 +70,8 @@ export interface StartGuideProps {
   onLogin: () => void
   /** newFolder：不弹目录选择器，替用户新建一个项目文件夹再打开（只对四家 CLI 有意义）。 */
   onLaunch: (route: GuideRoute, newFolder?: boolean) => Promise<boolean | void>
+  /** 只打开官方客户端让用户登录，留在当前步骤等待重新检测。 */
+  onOpenDesktopClient?: () => Promise<void>
   onComplete: (route: GuideRoute) => void
   onBack?: () => void
   onHelp?: () => void
@@ -205,7 +207,7 @@ function GuideFirstTaskPrompt({ prompt, disabled }: { prompt: string; disabled: 
   </div>
 }
 
-function ScopedStartGuide({ platform, tools, signedIn, busy = false, progress, onDetect, onInstall, onInstallRuntime, onInstallPython, resumeKey, onConfigure, onSwitchAccount, accountName = null, onFailureAction, onLogin, onLaunch, onComplete, onBack, onHelp }: StartGuideProps) {
+function ScopedStartGuide({ platform, tools, signedIn, busy = false, progress, onDetect, onInstall, onInstallRuntime, onInstallPython, resumeKey, onConfigure, onSwitchAccount, accountName = null, onFailureAction, onLogin, onLaunch, onOpenDesktopClient, onComplete, onBack, onHelp }: StartGuideProps) {
   const [restored] = useState(() => readGuideProgress(getGuideStorage(), resumeKey, platform))
   const options = toolRegistry.filter((item) => !item.hidden?.(platform)).sort((a, b) => Number(b.id === guideRecommendedTool) - Number(a.id === guideRecommendedTool) || a.shortcutIndex - b.shortcutIndex)
   const [route, setRoute] = useState<GuideRoute | null>(() => defaultGuideRoute(restored?.route, options.map((item) => item.id)))
@@ -233,7 +235,7 @@ function ScopedStartGuide({ platform, tools, signedIn, busy = false, progress, o
   useEffect(() => { if (restored && restored.route !== 'chat' && restored.step !== 'choose') void run('检测工具', onDetect) }, [])
   const tool = tools.find((item) => item.id === route)
   const definition = toolRegistry.find((item) => item.id === route)
-  const name = route === 'chat' ? '星芒聊天' : definition?.name ?? ''
+  const name = route === 'chat' ? '星芒聊天' : route === 'codexDesktop' && (step === 'connect' || step === 'ready') ? 'Codex' : definition?.name ?? ''
   const readiness = resolveGuideReadiness(route, tool, signedIn)
   const skipConnect = guideCanSkipConnect(route, tool, signedIn)
   // 工具还没装、缺的运行环境又都能代装时，这一步只剩一颗「安装」：它会先把
@@ -367,6 +369,7 @@ function ScopedStartGuide({ platform, tools, signedIn, busy = false, progress, o
             <Button icon={RefreshCw} disabled={locked} onClick={() => void run('检测工具', onDetect)} testId="guide-installed-rescan">我已装好，重新检测</Button>
           </>}
           {step === 'connect' && route === 'chat' && <><p className="auth-guide-callout">{signedIn ? '进入聊天后，选择分组和模型，再输入第一个问题。' : '登录星芒账号后即可开始聊天。'}</p>{!signedIn && <Button variant="primary" icon={LogIn} onClick={onLogin} testId="guide-login">登录账号</Button>}</>}
+          {step === 'connect' && route === 'codexDesktop' && readiness.prepared && tool?.officialLoginRequired && onOpenDesktopClient && <Button icon={LogIn} loading={pending === '打开 ChatGPT'} disabled={locked} onClick={() => void run('打开 ChatGPT', onOpenDesktopClient)} testId="guide-open-desktop-client">打开 ChatGPT 登录</Button>}
           {step === 'connect' && route && route !== 'chat' && <>{foreign ? <p className="auth-guide-lead" data-testid="guide-foreign-key" data-key-state={foreign}>{foreignLead[foreign]}</p> : <p className="auth-guide-lead">{name} 的连接方式：<strong>{sourceLabel}</strong></p>}<p className="auth-guide-callout" data-testid={tool?.officialLoginRequired ? 'guide-official-login' : undefined}>{foreign ? `${foreignCallout[foreign]}${codexShared}` : tool?.source === 'unknown' ? '你原来的配置已经原样留着。先看看处理步骤，确认哪些设置要留下，再决定怎么连接。' : tool?.officialLoginRequired ? `当前选的是官方账号，但还没有在 ${name} 里登录。请打开 ${name} 用 ChatGPT 账号登录后回来重新检测，或打开配置改用星芒账号的密钥。` : tool?.source === 'official' ? '保留当前官方来源。官方账号的登录和可用额度，请在工具内确认。' : readiness.connected ? '当前连接已确认。需要换密钥、模型或工作文件夹时，可以打开配置。' : '打开配置选择连接来源、密钥、模型和工作文件夹，确认后保存。'}</p>{officialNote && <p className="auth-hint" data-testid="guide-official-note">{officialNote}</p>}{tool?.model && <p className="auth-hint">模型：{tool.model}</p>}{tool?.workspace && <p className="auth-hint">工作文件夹：{tool.workspace}</p>}<div className="auth-form-actions">{offerSwitch && <Button icon={KeyRound} variant={foreign === 'otherSite' ? 'primary' : 'secondary'} loading={pending === '改用当前账号'} disabled={locked} onClick={switchAccount} testId="guide-switch-account">{switchButton}</Button>}{foreign !== 'otherSite' && <><Button icon={Settings} variant={readiness.connected || offerSwitch ? 'secondary' : 'primary'} disabled={locked} onClick={() => void run('确认连接', () => onConfigure(route))} testId="guide-config">{tool?.source === 'unknown' && !foreign ? '查看已有配置处理步骤' : readiness.connected ? '查看连接配置' : '去完成连接配置'}</Button><Button icon={RefreshCw} disabled={locked} onClick={() => void run('检测工具', onDetect)} testId="guide-connection-rescan">重新检测</Button></>}</div></>}
           {(step === 'connect' || step === 'ready') && result && <GuideResultCard result={result} />}
           {step === 'ready' && <>

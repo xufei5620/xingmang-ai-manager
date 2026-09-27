@@ -559,7 +559,7 @@ function parseWorkspace(workspace: unknown, fallback: string): string {
 }
 
 function parseDesktopLaunchMode(mode: unknown): CodexDesktopLaunchMode {
-  if (mode !== 'open' && mode !== 'restart') throw new Error('Codex 桌面端启动方式错误')
+  if (mode !== 'open' && mode !== 'restart' && mode !== 'app-open') throw new Error('Codex 桌面端启动方式错误')
   return mode
 }
 
@@ -1471,6 +1471,8 @@ function ipcSuccessMessage(channel: string, args: unknown[], result: unknown): s
     return `可用模型读取完成，共 ${count} 个`
   }
   if (channel === 'desktop:launch-codex') {
+    if (args[0] === 'app-open') return isRecord(result) && isRecord(result.status) && result.status.running === true
+      ? 'ChatGPT 客户端已打开' : 'ChatGPT 客户端启动请求已发送'
     return args[0] === 'restart' ? 'Codex 桌面端已重启' : 'Codex 桌面端已打开'
   }
   if (channel === 'extensions:mutate' && isRecord(args[0])) {
@@ -1628,7 +1630,8 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
           'account:get-legal-document', 'account:get-remembered-login', 'account:set-remembered-login',
           'account:register', 'account:send-verification-code', 'account:send-reset-code', 'account:reset-password'])
         const scoped = (channel.startsWith('account:') || channel.startsWith('chat:') || channel === 'canvas:open'
-          || channel.startsWith('models:') || channel.startsWith('config:') || channel === 'external-clients:scan' || channel === 'external-clients:launch' || channel === 'cli:launch' || channel === 'desktop:launch-codex' || channel === 'tools:check-models')
+          || channel.startsWith('models:') || channel.startsWith('config:') || channel === 'external-clients:scan' || channel === 'external-clients:launch' || channel === 'cli:launch'
+          || (channel === 'desktop:launch-codex' && args[0] !== 'app-open') || channel === 'tools:check-models')
           && !publicAccountChannels.has(channel)
         const invoke = () => scoped && options.accountWork
           ? options.accountWork.run(() => handler(event, ...args), { checkRevision: channel !== 'account:change-password' && channel !== 'account:revoke-login-session' }) : handler(event, ...args)

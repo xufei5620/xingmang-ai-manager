@@ -17,6 +17,11 @@ describe('renderer-v2 tool registry', () => {
     expect(tools.map(tool => tool.shortcutIndex)).toEqual(tools.map((_, index) => index + 1));
   });
 
+  it('labels the native client ChatGPT while retaining the independent Codex CLI and stable desktop id', () => {
+    expect(tools.find(tool => tool.id === 'codexDesktop')?.name).toBe('ChatGPT');
+    expect(tools.find(tool => tool.id === 'codex')?.name).toBe('Codex CLI');
+  });
+
   it('exposes exactly one CLI entry per catalog provider', () => {
     const cliIds = tools.filter(tool => tool.kind === 'cli').map(tool => tool.id);
     expect([...cliIds].sort()).toEqual([...providerIds].sort());
