@@ -813,12 +813,21 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
         if (choice === 'swap') {
           // Empty key keeps the existing source; an ordinary save failure still
           // opens with the old model, while an account change stops the launch.
-          try { await toolsApi.saveManual({ provider: providerFor(id), apiKey: '', model: offer.replacement, mode: 'merge' }) }
+          let saved = false
+          try {
+            await toolsApi.saveManual({ provider: providerFor(id), apiKey: '', model: offer.replacement, mode: 'merge' })
+            saved = true
+          }
           catch (cause) {
             if (!launchIsCurrent(epoch)) return false
             toast.show(`模型没换成，先照旧打开：${errorMessage(cause)}`, 'warn')
           }
           if (!launchIsCurrent(epoch)) return false
+          if (saved) {
+            const refreshed = await toolbox.refreshSavedConfig(() => launchIsCurrent(epoch))
+            if (!launchIsCurrent(epoch)) return false
+            if (!refreshed) toast.show('模型已保存，但最新配置没有读到；工具列表可能仍显示旧模型。请重新检测，无需重复保存。', 'warn')
+          }
         }
       }
       let workspace = config.workspace
