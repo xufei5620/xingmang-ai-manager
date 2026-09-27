@@ -1,7 +1,8 @@
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
-import { OnboardingSettingRows, TutorialPage, installResultMessage, tutorialTopics, withElevationNotice } from './pages-maintenance'
+import { HealthPage, OnboardingSettingRows, TutorialPage, installResultMessage, tutorialTopics, withElevationNotice } from './pages-maintenance'
+import type { V2Bridge } from './types'
 import { macDesktopTutorialTopic, macRuntimeTutorialTopic } from './registry/business'
 import { clientConnections } from './registry/clients'
 import { pages } from './registry/pages'
@@ -14,6 +15,16 @@ const pageIds = new Set<string>(pages.map((page) => page.id))
 const pageLabels = new Map<string, string>(
   pages.map((page) => [page.id, page.label.replace(' ↗', '')]),
 )
+
+describe('Codex Responses consent in HealthPage', () => {
+  it('starts disabled and explains charges and the unverified native features', () => {
+    const markup = renderToStaticMarkup(createElement(HealthPage, { api: {} as V2Bridge }))
+    expect(markup).toContain('当前 Codex 配置中的密钥和模型发送两次请求，可能产生费用')
+    expect(markup).toContain('不验证流式、原生客户端进程')
+    expect(markup).toMatch(/<button(?=[^>]*data-testid="health-codex-responses-run")(?=[^>]*disabled)[^>]*>/)
+    expect(markup).toContain('data-testid="health-codex-responses-consent"')
+  })
+})
 
 function tutorialText(id: string): string {
   const topic = tutorialTopics.find((entry) => entry.id === id)

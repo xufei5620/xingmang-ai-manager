@@ -76,6 +76,7 @@ import { canUninstallTool, externalInstallHint, isExternallyManagedInstall } fro
 import { elevatedInstallNotice } from './features/tools/elevation-notice'
 import { ToolStatusMeta, ToolStatusReason } from './features/tools/ToolStatusMeta'
 import { connectionCheckView } from './features/tools/connection-check'
+import { sessionScope } from './account-context'
 import { diagnosticDetailRows } from './features/app/diagnostic-details'
 import { requestSettingsGroup, takeSettingsGroup } from './features/app/settings-group-intent'
 import { parseImportedConversations } from './features/chat/storage'
@@ -305,6 +306,24 @@ export function HealthPage({
   const [details, setDetails] = useState<Diagnostic | null>(null)
   const [connections, setConnections] = useState<ConnectionRow[] | null>(null)
   const [connectionBusy, setConnectionBusy] = useState(false)
+  const [responsesConsent, setResponsesConsent] = useState(false)
+  const [responsesBusy, setResponsesBusy] = useState(false)
+  const [responsesResult, setResponsesResult] = useState<Awaited<ReturnType<V2Bridge['probeCodexResponses']>> | null>(null)
+  const [responsesError, setResponsesError] = useState<string | null>(null)
+  const responsesInFlight = useRef(false)
+  const responsesEpoch = useRef(0)
+  useEffect(() => {
+    const unsubscribe = api.onAccountSessionChanged(() => {
+      responsesEpoch.current += 1
+      setResponsesConsent(false)
+      setResponsesResult(null)
+      setResponsesError(null)
+    })
+    return () => {
+      responsesEpoch.current += 1
+      unsubscribe()
+    }
+  }, [api])
   const loadConnections = async () => {
     // 一个工具失败不该把别人的结论吞掉，所以每一条各自收口。
     const [cliRows, clientRows] = await Promise.all([
@@ -340,6 +359,29 @@ export function HealthPage({
       setConnectionBusy(false)
     }
   }
+  const runCodexResponsesProbe = async () => {
+    if (!responsesConsent || responsesInFlight.current) return
+    responsesInFlight.current = true
+    setResponsesBusy(true)
+    setResponsesConsent(false)
+    setResponsesResult(null)
+    setResponsesError(null)
+    const requestEpoch = ++responsesEpoch.current
+    try {
+      const startedScope = sessionScope(await api.getAccountSession())
+      if (requestEpoch !== responsesEpoch.current) return
+      const result = await api.probeCodexResponses(true, startedScope)
+      const currentScope = sessionScope(await api.getAccountSession())
+      if (requestEpoch === responsesEpoch.current && startedScope === currentScope) {
+        setResponsesResult(result)
+      }
+    } catch (error) {
+      if (requestEpoch === responsesEpoch.current) setResponsesError(errorMessage(error))
+    } finally {
+      responsesInFlight.current = false
+      setResponsesBusy(false)
+    }
+  }
   // 重写成功才重测：失败时结果条还停在刚才那条结论上，页头的横幅同时说出主进程
   // 的原话，用户看到的是「没写成，因为……」，而不是一条被刷掉的旧结论。
   const rewriteKey = async (provider: Provider) => {
@@ -367,6 +409,7 @@ export function HealthPage({
     if (target === 'settings') requestSettingsGroup('network')
     navigate?.(target)
   }
+  const responsesView = responsesResult ? connectionCheckView(responsesResult) : null
   return (
     <section
       className="v2-page"
@@ -393,7 +436,7 @@ export function HealthPage({
       />
       <Card
         title="连接自检"
-        meta="用每个工具配置里真正写着的密钥和模型各测一次；装好的外部客户端也一起测。上面的检查只证明网络通，这一条证明你现在能用。"
+        meta="Claude 会发一次最小生成请求；Codex、Grok、Gemini 和外部客户端只核对当前密钥的模型清单。模型可见不等于 Responses 推理或原生客户端已能完成任务。"
         actions={
           <Button
             icon={PlugZap}
@@ -420,6 +463,38 @@ export function HealthPage({
             还没有测过。点「测试连接」，会按工具分别给结论；失败时会直接说是网络、密钥、额度、分组还是模型的问题。装好的 WorkBuddy、Claude Desktop、OpenCode 也会各测一条。
           </p>
         )}
+      </Card>
+      <Card
+        title="Codex 工具调用检查"
+        meta="可选：使用当前 Codex 配置中的密钥和模型，向星芒中转连续发送两次 JSON 请求，验证一个无副作用虚拟工具的结果回传。每轮输出最多 1024 token，费用由该密钥所属服务按模型与用量计算；不验证流式、原生客户端进程、搜索、生图、电脑操作或官方账号权益。"
+        testId="health-codex-responses"
+      >
+        <Switch
+          checked={responsesConsent}
+          onChange={setResponsesConsent}
+          label="我确认使用当前 Codex 配置中的密钥和模型发送两次请求，可能产生费用"
+          description="默认关闭；每次验证都要重新确认。"
+          disabled={responsesBusy}
+          testId="health-codex-responses-consent"
+        />
+        <Button
+          icon={PlugZap}
+          disabled={!responsesConsent || responsesBusy}
+          loading={responsesBusy}
+          onClick={() => void runCodexResponsesProbe()}
+          testId="health-codex-responses-run"
+        >
+          检查 JSON 工具调用
+        </Button>
+        {responsesView && (
+          <Notice
+            tone={responsesView.tone}
+            title={`Codex Responses · ${responsesView.statusLabel}`}
+            body={<><div>{responsesView.title}</div><div>{responsesView.body}</div>{responsesView.detail && <p>{responsesView.detail}</p>}</>}
+            testId="health-codex-responses-result"
+          />
+        )}
+        {responsesError && <Notice tone="bad" title="Codex Responses · 没测成" body={responsesError} testId="health-codex-responses-error" />}
       </Card>
       {resource.data && (
         <Toolbar

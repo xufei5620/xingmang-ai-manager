@@ -140,7 +140,7 @@ import type {
   WindowCapabilities,
 } from './ipc-contract'
 import type { DiagnosticsReport, DiagnosticsRunOptions } from './diagnostics'
-import { isCappedKeyUsedUp, withKeyQuotaExhausted, type ConnectionCheckResult } from './connection-check'
+import { isCappedKeyUsedUp, withKeyQuotaExhausted, type ConnectionCheckResult, type ConnectionProbeReport } from './connection-check'
 import type { RuntimeLogStore } from './runtime-log'
 import { createExternalShellLauncher, type ExternalShellLauncher } from './system-shell'
 import { isNetworkSettingsKind, type NetworkSettingsKind, type ProxyBypassOutcome } from './proxy-bypass'
@@ -171,6 +171,7 @@ export interface IpcRegistrationOptions {
   diagnosticsService: {
     run(options?: DiagnosticsRunOptions): Promise<DiagnosticsReport>
     checkConnection(provider: ProviderId): Promise<ConnectionCheckResult>
+    probeCodexResponses?: (expectedAccountScope: string) => Promise<ConnectionProbeReport>
     checkExternalConnection(tool: ExternalToolId): Promise<ExternalClientCheckResult>
     exportLatest(): string
   }
@@ -1259,6 +1260,7 @@ const ipcOperationLabels: Readonly<Record<string, string>> = {
   'settings:save': '应用设置保存',
   'diagnostics:run': '系统诊断',
   'diagnostics:check-connection': '连接自检',
+  'diagnostics:probe-codex-responses': 'Codex Responses 工具往返验证',
   'diagnostics:check-external-connection': '客户端连接自检',
   'diagnostics:export': '诊断报告导出',
   'runtime-logs:list': '运行日志读取',
@@ -1520,6 +1522,12 @@ function ipcLogDetail(channel: string, args: unknown[], result: unknown, duratio
     detail.layer = result.layer
     detail.ok = result.ok
     detail.siteId = result.siteId
+    detail.status = result.status
+  }
+  if (channel === 'diagnostics:probe-codex-responses' && isRecord(result)) {
+    detail.layer = result.layer
+    detail.ok = result.ok
+    detail.verificationLevel = result.verificationLevel
     detail.status = result.status
   }
   // 外部客户端同理，分辨它们的那一列是 tool。归因层与站点都留，客户端的
@@ -3394,6 +3402,16 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   registerTrustedHandler('diagnostics:check-connection', (_event, provider: unknown) => {
     if (!isProviderId(provider)) throw new Error('未知的 CLI 类型')
     return options.diagnosticsService.checkConnection(provider).then((result) => explainRejectedManagedKey(provider, result))
+  })
+
+  registerTrustedHandler('diagnostics:probe-codex-responses', (_event, acknowledgeBilling: unknown, expectedAccountScope: unknown) => {
+    if (acknowledgeBilling !== true) throw new Error('请先确认这次 Responses 验证可能产生费用')
+    if (typeof expectedAccountScope !== 'string'
+      || !/^(?:xm-account|api-account):(?:guest|[1-9]\d{0,14})$/.test(expectedAccountScope)) {
+      throw new Error('账号作用域无效，请重新确认后再试')
+    }
+    if (!options.diagnosticsService.probeCodexResponses) throw new Error('当前版本未启用 Codex Responses 验证')
+    return options.diagnosticsService.probeCodexResponses(expectedAccountScope)
   })
 
   registerTrustedHandler('diagnostics:check-external-connection', (_event, tool: unknown) => {

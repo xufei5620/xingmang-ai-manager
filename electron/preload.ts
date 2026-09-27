@@ -187,6 +187,7 @@ const ipcInvokeChannels = {
   exportAppData: 'data-transfer:export',
   importAppData: 'data-transfer:import',
   checkProviderConnection: 'diagnostics:check-connection',
+  probeCodexResponses: 'diagnostics:probe-codex-responses',
   checkExternalClientConnection: 'diagnostics:check-external-connection',
   getAccountKeyOptions: 'account:get-key-options',
 } as const satisfies {
@@ -421,6 +422,7 @@ const xingmangApi: XingmangApi = {
   exportAppData: (input) => invoke('exportAppData', input),
   importAppData: () => invoke('importAppData'),
   checkProviderConnection: (provider) => invoke('checkProviderConnection', provider),
+  probeCodexResponses: (acknowledgeBilling, expectedAccountScope) => invoke('probeCodexResponses', acknowledgeBilling, expectedAccountScope),
   checkExternalClientConnection: (tool) => invoke('checkExternalClientConnection', tool),
   getAccountKeyOptions: (provider) => invoke('getAccountKeyOptions', provider),
   onAccountSessionChanged: (listener) => subscribe('onAccountSessionChanged', listener),
