@@ -5,12 +5,11 @@ export function createAppApi(bridge: XingmangApi) {
   return {
     bridge,
     async bootstrap() {
-      const [settings, platform, session, update, capabilities, config] = await Promise.all([
+      const [settings, platform, session, update, capabilities] = await Promise.all([
         bridge.getSettings(), bridge.getPlatformCapabilities(), bridge.getAccountSession(),
         bridge.getUpdateState(), bridge.getWindowCapabilities(),
-        bridge.getConfig(),
       ])
-      return { settings, platform, session, update, capabilities, config }
+      return { settings, platform, session, update, capabilities }
     },
     session: () => bridge.getAccountSession(),
     balance: () => bridge.getAccountBalance(),
