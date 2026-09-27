@@ -1988,8 +1988,9 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
       },
       writeAccountConfig: async (id) => {
         // 用户亲手点的切换：intent 'explicit' 才穿得过「来源未确认不自动改写」那道闸。
+        // 切换来源没有确认丢弃读坏的额度记录；签发仍走保留限制、读坏就停止的入口。
         const outcome = await configureManagedClis(
-          accountService, service, [id], {}, options.previewOnboarding, options.managedCliKeys, 'merge', 'explicit',
+          automaticProvisioning, service, [id], {}, options.previewOnboarding, options.managedCliKeys, 'merge', 'explicit',
         )
         if (outcome.failed.some((item) => item.serviceUnavailable)) throw new AccountSourceServiceUnavailableError()
         if (outcome.failed.length) throw new Error(outcome.failed.map((item) => item.message).join('；'))
