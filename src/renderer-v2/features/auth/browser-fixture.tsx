@@ -44,14 +44,14 @@ const api: AuthApi = {
   openExternal: async (input) => { record('external', input); return true },
   copyPassword: async (input) => { record('copy', input); await waitForRelease('copy'); if (query.has('copyFail')) throw new Error('denied') },
 }
-declare global { interface Window { authHarness: { release: (method: string) => void; reject: (method: string) => void; switchScope: (scope: string) => void; reopen: () => void } } }
+declare global { interface Window { authHarness: { release: (method: string) => void; reject: (method: string) => void; switchScope: (scope: string) => void; reopen: () => void; setTool: (tool: Exclude<GuideRoute, 'chat'>, patch: Partial<GuideToolState>) => void } } }
 function Fixture() {
   const [motion, setMotion] = useState(!query.has('motion'))
   const [signedIn, setSignedIn] = useState(!query.has('loggedOut'))
   const [tools, setTools] = useState<GuideToolState[]>(['claude', 'codex', 'codexDesktop', 'gemini', 'grok'].map((id) => ({ id: id as GuideToolState['id'], installed: query.has('installed'), configured: query.has('connected'), source: query.has('unknown') ? 'unknown' : query.has('official') ? 'official' : 'account', ...(query.has('unknown') && query.has('switchable') ? { keyState: 'otherSite' as const } : {}), runtimeReady: query.has('runtime'), pythonReady: query.has('python'), officialLoginRequired: query.has('officialLoginRequired'), installMode: 'managed', runtimeAutoPrepare: query.has('auto'), pythonAutoPrepare: query.has('auto'), ...(query.has('outdated') && id === 'claude' ? { version: '2.1.42', update: { version: '2.1.277', target: '2.1.277', newer: true, knownIssue: false, manualHint: query.has('outdatedManual') ? '该版本不是通过本工具安装的，更新请用它原本的安装方式' : null } } : {}) })))
   const [resumeScope, setResumeScope] = useState('site:7')
   const [guideVisible, setGuideVisible] = useState(true)
-  window.authHarness = { release: (method) => pending.get(method)?.resolve(), reject: (method) => pending.get(method)?.reject(new Error('fixture failed')), switchScope: setResumeScope, reopen: () => setGuideVisible(true) }
+  window.authHarness = { release: (method) => pending.get(method)?.resolve(), reject: (method) => pending.get(method)?.reject(new Error('fixture failed')), switchScope: setResumeScope, reopen: () => setGuideVisible(true), setTool: (tool, patch) => setTools((items) => items.map((item) => item.id === tool ? { ...item, ...patch } : item)) }
   const scenario = query.get('scenario') ?? 'login'
   const update = (id: GuideRoute, patch: Partial<GuideToolState>) => setTools((items) => items.map((item) => item.id === id ? { ...item, ...patch } : item))
   if (scenario === 'welcome') return <Welcome onLogin={() => record('login-entry')} onRegister={() => record('register-entry')} onSteps={() => record('steps')} onHelp={() => record('help')} onLegal={(kind) => record('legal', kind)} reducedMotion={motion} onReducedMotionChange={setMotion} />

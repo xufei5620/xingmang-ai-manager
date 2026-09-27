@@ -167,6 +167,41 @@ describe('renderer-v2 start guide first run', () => {
   })
 })
 
+describe('guide setup result card', () => {
+  afterEach(() => { vi.unstubAllGlobals() })
+
+  it('shows detected installation and billing separately from an unfinished first task', () => {
+    stubResumedGuide('codexDesktop', 'ready')
+    const markup = render([guideTool({ id: 'codexDesktop', version: '1.2.3' })])
+    expect(markup).toContain('data-testid="guide-result"')
+    expect(markup).toContain('data-testid="guide-result-install"')
+    expect(markup).toContain('已检测到安装 v1.2.3')
+    expect(markup).toContain('data-testid="guide-result-billing"')
+    expect(markup).toContain('当前星芒账号规则计费')
+    expect(markup).toContain('本页检查安装和配置，首次任务需在工具中验证。')
+    expect(markup).toContain('data-testid="guide-first-task-copy"')
+    expect(markup).toContain('data-testid="guide-ready-rescan"')
+    expect(markup).not.toContain('data-testid="guide-switched-note"')
+  })
+
+  it('keeps official login pending and gives no first task when connection is missing', () => {
+    stubResumedGuide('codexDesktop', 'connect')
+    const markup = render([guideTool({ id: 'codexDesktop', source: 'official', officialLoginRequired: true })])
+    expect(markup).toContain('data-testid="guide-result-connection"')
+    expect(markup).toContain('待在客户端登录')
+    expect(markup).toContain('官方账号的额度与计费')
+    expect(markup).not.toContain('data-testid="guide-first-task-copy"')
+  })
+
+  it('takes back readiness when the installed status is no longer confirmed', () => {
+    stubResumedGuide('codexDesktop', 'ready')
+    const markup = render([guideTool({ id: 'codexDesktop', installed: false })])
+    expect(markup).toContain('尚未检测到安装')
+    expect(markup).toMatch(/<button[^>]*data-testid="guide-open-tool"[^>]*disabled/)
+    expect(markup).not.toContain('data-testid="guide-first-task-copy"')
+  })
+})
+
 describe('guide install failure wording', () => {
   it('names the stage that failed and points at the retry button', () => {
     const runtime = guideInstallErrorMessage(new Error('Node.js 运行环境没装上，Claude Code 还没开始安装。下载 Node.js 时 ETIMEDOUT'), 'Claude Code')
