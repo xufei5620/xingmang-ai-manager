@@ -20,6 +20,7 @@ import {
   BrandIcon,
   Button,
   Card,
+  Confirm,
   Dialog,
   Drawer,
   Input,
@@ -716,6 +717,29 @@ export function SessionsPage({
       selected.archived ? '会话已恢复' : '会话已归档',
     )
   }
+  const [confirmDelete, setConfirmDelete] = useState(false)
+  /**
+   * 彻底删除只传会话 id,要删哪些文件由主进程重新找出来并校验。删掉之后和归档
+   * 一样,那个文件夹的「最近一条」变了,首页「最近」也要作废(#544)。
+   */
+  const remove = () => {
+    if (!selected || !capability?.operations.delete) return
+    const target = selected
+    void operation.execute(
+      'delete-session',
+      async () => {
+        try {
+          await api.deleteProviderSession(target.id)
+        } finally {
+          setConfirmDelete(false)
+        }
+        setSelected(null)
+        onSessionsChanged?.()
+        await Promise.all([resource.reload(), latestResource.reload()])
+      },
+      '这条记录已从这台电脑上删掉',
+    )
+  }
   /**
    * 四家 CLI 的续接参数都是「按当前工作目录找最近一条」,不是按会话 id 挑。
    * 所以按钮只长在每个(工具 × 目录)组合最近的那一条上(resumable),点到的
@@ -987,6 +1011,17 @@ export function SessionsPage({
                 {selected?.archived ? '恢复记录' : '归档记录'}
               </Button>
             )}
+            {capability?.operations.delete && (
+              <Button
+                variant="danger"
+                icon={Trash2}
+                disabled={Boolean(operation.busy)}
+                onClick={() => setConfirmDelete(true)}
+                testId="session-detail-delete"
+              >
+                彻底删除
+              </Button>
+            )}
           </>
         }
       >
@@ -1039,6 +1074,25 @@ export function SessionsPage({
           />
         )}
       </Drawer>
+      <Confirm
+        open={confirmDelete && Boolean(selected)}
+        title="彻底删除这条记录？"
+        body={
+          <>
+            <p>
+              会把这条对话从这台电脑上删掉，里面粘贴过的代码、密码和聊天内容会一起消失，删了就找不回来。
+            </p>
+            <p>只删这一条，不影响别的记录和你的项目文件。想留一份的话，先点「导出 Markdown」。</p>
+          </>
+        }
+        okLabel="彻底删除"
+        cancelLabel="先不删"
+        danger
+        loading={operation.busy === 'delete-session'}
+        onClose={() => setConfirmDelete(false)}
+        onOk={remove}
+        testId="session-delete-confirm"
+      />
     </section>
   )
 }

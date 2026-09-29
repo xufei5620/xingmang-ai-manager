@@ -49,6 +49,7 @@ import type {
   SessionArchiveFilter as CodexSessionArchiveFilter,
 } from './codex-sessions'
 import type {
+  ProviderSessionDeleteResult,
   ProviderSessionDetail,
   ProviderSessionExportResult,
   ProviderSessionListQuery,
@@ -231,6 +232,7 @@ export type MultiProviderSessionSummary = ProviderSessionSummary
 export type MultiProviderSessionPage = ProviderSessionPage
 export type MultiProviderSessionDetail = ProviderSessionDetail
 export type MultiProviderSessionExportResult = ProviderSessionExportResult
+export type MultiProviderSessionDeleteResult = ProviderSessionDeleteResult
 export type ToolStatus = MainToolStatus
 export type CliStatus = MainCliStatus
 export type CliVersionAdvice = MainCliVersionAdvice
@@ -810,6 +812,12 @@ export interface XingmangInvokeContract {
     [sessionId: string],
     boolean
   >
+  /** 彻底删除这台电脑上的一条记录。入参只有会话 id：要删的文件由主进程重新找出并校验。 */
+  deleteProviderSession: IpcInvokeDefinition<
+    'provider-sessions:delete',
+    [sessionId: string],
+    MultiProviderSessionDeleteResult
+  >
   getSettings: IpcInvokeDefinition<'settings:get', [], AppSettingsV2>
   saveSettings: IpcInvokeDefinition<'settings:save', [settings: AppSettingsV2Update], AppSettingsV2>
   runDiagnostics: IpcInvokeDefinition<'diagnostics:run', [options?: DiagnosticsRunOptions], DiagnosticsReport>
@@ -1181,6 +1189,7 @@ export const ipcInvokeChannels = {
   getProviderSessionDetail: 'provider-sessions:detail',
   exportProviderSession: 'provider-sessions:export',
   openProviderSessionDirectory: 'provider-sessions:open-directory',
+  deleteProviderSession: 'provider-sessions:delete',
   getSettings: 'settings:get',
   saveSettings: 'settings:save',
   runDiagnostics: 'diagnostics:run',
