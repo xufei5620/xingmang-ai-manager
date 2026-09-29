@@ -110,6 +110,7 @@ function serviceStub(): SystemService {
     getLastExternalClients: vi.fn(() => null),
     checkExternalClientConnection: vi.fn() as never,
     inspectInstallationQueue: vi.fn(() => ({ activeKey: null, pendingKeys: [] })),
+    cleanupInstallLeftovers: vi.fn(async () => ({ removed: 0, freedBytes: 0, failed: 0 })),
     installExternalClient: vi.fn() as never,
     launchExternalClient: vi.fn(async () => undefined),
   }

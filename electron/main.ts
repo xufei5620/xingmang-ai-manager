@@ -53,6 +53,7 @@ import { calculateUiZoom, resolveWindowPlacement } from './window-preferences'
 import { attachEditContextMenu } from './context-menu'
 import { recoverOffscreenWindow } from './window-recovery'
 import { createWindowLifecycle } from './window-lifecycle'
+import { installLeftoverStartupDelayMs, sweepInstallLeftovers } from './install-leftovers'
 import { createLoginQuietPeriod, hasLoginLaunchArgument, loginQuietPeriodMs, resolveLoginLaunch, shouldRevealInitialWindow, windowsAppUserModelId } from './login-launch'
 import { resolveInstallableUpdateOnQuit, resolveInterruptibleInstallTask } from './quit-blocking-tasks'
 import { createPendingUpdateStore, decideLaunchInstall, resolveDownloadedVersionToRecord } from './auto-update-install'
@@ -1117,6 +1118,7 @@ if (!hasSingleInstanceLock) {
       getExternalClientAccountId: () => readExternalClientAccountId(),
       windowsExecutionMode: windowsCliExecutionMode,
       runtimeLog,
+      sweepInstallLeftovers,
       ...(process.platform === 'win32'
         ? { ensureWindowsUserPath: (directory: string) => ensureDirectoryOnWindowsUserPath(directory) }
         : {}),
@@ -2217,6 +2219,11 @@ if (!hasSingleInstanceLock) {
     void startupQuiet.whenOver().then(() => vault.active()).then((saved) => {
       if (saved) void systemService.scanSystem().catch(() => undefined)
     }).catch(() => undefined)
+    // 以前装到一半被关掉留下的下载没人认领，低配电脑的 C 盘会被它慢慢吃掉。安静期过后再
+    // 等一会儿，让开机那一阵的检测先跑完，再在后台清；不弹提示，只记日志。
+    void startupQuiet.whenOver().then(() => new Promise<void>((resolve) => {
+      setTimeout(resolve, installLeftoverStartupDelayMs).unref()
+    })).then(() => systemService.cleanupInstallLeftovers()).catch(() => undefined)
     // 启动画面最多为账号恢复等 3 秒，明确断网就不等（yoyo 2026-09-22 拍板）。
     const accountStartupGate = createAccountStartupGate({
       settled: accountSessionReady,
