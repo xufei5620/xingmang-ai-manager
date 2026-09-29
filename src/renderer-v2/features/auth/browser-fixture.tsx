@@ -1,7 +1,7 @@
 import { StrictMode, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import type { AccountStatus } from '../../../../electron/ipc-contract'
-import { toolCertificateMessages } from '../../../../electron/network-failure'
+import { networkFailureMessages, toolCertificateMessages, type NetworkFailureReason } from '../../../../electron/network-failure'
 import { AuthFlow } from './AuthFlow'
 import { Welcome } from './Welcome'
 import { StartGuide, type GuideRoute, type GuideToolState } from './StartGuide'
@@ -30,8 +30,11 @@ const status: AccountStatus = { systemName: 'Test fixture', version: '1', setupC
 const turnstileSites = (query.get('turnstile') ?? '').split(',').filter(Boolean)
 // Status reads stay out of `calls`: several checks assert that array exactly.
 const statusSites: string[] = []
+// `statusFail` makes the first `statusFailures` (default 1) status reads fail the way the main process reports that reason.
+const statusFail = query.get('statusFail') as NetworkFailureReason | null
+let statusFailuresLeft = Number(query.get('statusFailures') ?? '1')
 const api: AuthApi = {
-  getStatus: async (siteId) => { statusSites.push(siteId); document.documentElement.dataset.statusSites = statusSites.join(','); await waitForRelease(`status-${siteId}`); return { ...status, systemName: `Test fixture ${siteId}`, turnstileCheckEnabled: turnstileSites.includes(siteId) || turnstileSites.includes('1') } },
+  getStatus: async (siteId) => { statusSites.push(siteId); document.documentElement.dataset.statusSites = statusSites.join(','); await waitForRelease(`status-${siteId}`); if (statusFail && statusFailuresLeft > 0) { statusFailuresLeft--; throw new Error(`Error invoking remote method 'account:get-status': Error: ${networkFailureMessages[statusFail]}（账号服务状态查询失败）`) } return { ...status, systemName: `Test fixture ${siteId}`, turnstileCheckEnabled: turnstileSites.includes(siteId) || turnstileSites.includes('1') } },
   getRemembered: async (siteId) => { await waitForRelease(`remembered-${siteId}`); return query.has('remembered') ? { identifier: 'same@example.test', password: `${siteId}-remembered-password` } : null },
   setRemembered: async (input, siteId) => { document.documentElement.dataset.savedSite = siteId ?? '';  record('remember', input) },
   login: async (input) => { record('login', input); await waitForRelease('login'); if (query.has('twoFactor')) throw new Error('此账号需要双重验证，请先在官方网站完成验证'); if (query.has('totp') && input.siteId === 'solov') throw new Error("Error invoking remote method 'account:login': Error: 此账号需要双重验证，请先完成验证"); if (query.has('fail')) throw new Error('invalid password'); return { account: { userId: 7, username: input.username, quota: 0, usedQuota: 0, group: 'default', role: 1 }, accessExpiresAt: null, siteId: input.siteId ?? 'solov' } },

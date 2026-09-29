@@ -67,6 +67,32 @@ test('login preserves drafts through legal documents and only authenticates afte
   } finally { await page.close() }
 })
 
+test('registration status read retries once, names proxy software, and explains the disabled button', async () => {
+  const page = await open('scenario=register&statusFail=timeout&statusFailures=2')
+  try {
+    await page.getByTestId('register-status-loading').filter({ hasText: '正在再试一次' }).waitFor()
+    await page.getByTestId('register-status-error').filter({ hasText: '先把它关掉' }).waitFor()
+    assert.equal(await page.evaluate(() => document.documentElement.dataset.statusSites), 'solov,solov')
+    assert.equal(await page.getByTestId('register-submit').isDisabled(), true)
+    await page.getByTestId('register-submit-hint').filter({ hasText: '要先连上账号服务' }).waitFor()
+    await page.getByTestId('register-status-retry').click()
+    await page.getByTestId('register-send-code').waitFor()
+    assert.equal(await page.getByTestId('register-submit').isDisabled(), false)
+    assert.equal(await page.getByTestId('register-submit-hint').count(), 0)
+  } finally { await page.close() }
+})
+
+test('registration status read says the computer is offline and reloads when the network returns', async () => {
+  const page = await open('scenario=register&statusFail=offline')
+  try {
+    await page.getByTestId('register-status-error').filter({ hasText: '没连上网' }).waitFor()
+    assert.equal(await page.evaluate(() => document.documentElement.dataset.statusSites), 'solov')
+    await page.evaluate(() => window.dispatchEvent(new Event('online')))
+    await page.getByTestId('register-send-code').waitFor()
+    assert.equal(await page.getByTestId('register-status-error').count(), 0)
+  } finally { await page.close() }
+})
+
 test('registration preserves its completed result when the following real login attempt fails', async () => {
   const page = await open('scenario=register&fail=1')
   try {
