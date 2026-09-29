@@ -2248,6 +2248,53 @@ test('native announcement envelope stays styled and inert inside its sandbox', a
   } finally { await page.close() }
 })
 
+test('a pinned recommendation does not turn the home update button into a Codex downgrade', async () => {
+  const page = await open('allInstalled=1')
+  try {
+    await page.evaluate(async () => {
+      const snapshot = await window.xingmang.scanSystem()
+      Object.assign(snapshot.clis.codex, {
+        version: '0.157.0', latestVersion: '0.158.0', updateAvailable: true,
+        versionAdvice: { recommendedVersion: '0.156.1', pinned: true, onRecommended: false, rollbackAvailable: true, blockedReason: null },
+      })
+      window.xingmang.scanSystem = async () => structuredClone(snapshot)
+    })
+    await page.getByTestId('home-rescan').click()
+    const row = page.getByTestId('tool-row-codex')
+    await expect(row).toContainText('0.157.0')
+    assert.equal(await row.getByRole('button', { name: '更新', exact: true }).count(), 0)
+    await row.getByRole('button', { name: '更多操作' }).click()
+    await page.getByRole('menuitem', { name: '回到推荐版本 0.156.1', exact: true }).waitFor()
+    await page.keyboard.press('Escape')
+    assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => entry.method === 'installCli')), false)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+for (const pinned of [true, false]) {
+  test(`the home CLI update installs the shown ${pinned ? 'recommended' : 'latest'} target`, async () => {
+    const page = await open('allInstalled=1')
+    try {
+      await page.evaluate(async (pinned) => {
+        const snapshot = await window.xingmang.scanSystem()
+        Object.assign(snapshot.clis.codex, {
+          version: '0.150.0', latestVersion: '0.158.0', updateAvailable: true,
+          versionAdvice: { recommendedVersion: '0.156.1', pinned, onRecommended: false, rollbackAvailable: pinned, recommendedIsNewer: true, blockedReason: null },
+        })
+        window.xingmang.scanSystem = async () => structuredClone(snapshot)
+      }, pinned)
+      await page.getByTestId('home-rescan').click()
+      const row = page.getByTestId('tool-row-codex')
+      await expect(row).toContainText('0.150.0')
+      await row.getByRole('button', { name: '更新', exact: true }).click()
+      await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'installCli'))
+      assert.deepEqual(await page.evaluate(() => window.v2Test.calls.find((entry) => entry.method === 'installCli').args),
+        ['codex', pinned ? '0.156.1' : '0.158.0'])
+      await clean(page)
+    } finally { await page.close() }
+  })
+}
+
 test('running desktop offers a real restart and official quotas can be refreshed', async () => {
   const page = await open('running=1&official=1')
   try {

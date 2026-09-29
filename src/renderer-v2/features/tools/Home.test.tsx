@@ -248,6 +248,27 @@ describe('renderer-v2 home native install source', () => {
   })
 })
 
+describe('renderer-v2 home pinned update direction', () => {
+  const advice = { recommendedVersion: '0.156.1', blockedReason: null, onRecommended: false, pinned: true, rollbackAvailable: true }
+
+  it('does not render an update button for a Codex version ahead of its pinned recommendation', () => {
+    const markup = render({}, {
+      claude: cliStatus, grok: cliStatus, gemini: cliStatus,
+      codex: { ...cliStatus, version: '0.157.0', latestVersion: '0.158.0', updateAvailable: true, versionAdvice: advice },
+    })
+    expect(markup).not.toContain('>更新<')
+  })
+
+  it('still renders an update for an older pinned Codex version', () => {
+    const markup = render({}, {
+      claude: cliStatus, grok: cliStatus, gemini: cliStatus,
+      codex: { ...cliStatus, version: '0.150.0', latestVersion: '0.158.0', updateAvailable: true,
+        versionAdvice: { ...advice, recommendedIsNewer: true } },
+    })
+    expect(markup).toContain('>更新<')
+  })
+})
+
 
 describe('renderer-v2 home account key bootstrap notice', () => {
   function bootstrapResult(overrides: Partial<AccountBootstrapResult> = {}): AccountBootstrapResult {

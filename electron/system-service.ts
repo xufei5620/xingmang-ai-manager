@@ -111,7 +111,7 @@ import {
   type CliUninstallCapability,
 } from './tool-installation'
 export type { CliLaunchMode } from './tool-installation'
-import { isNewerVersion, nodeVersionStatus, type NodeVersionStatus } from './versions'
+import { isExactCliVersion, isNewerVersion, nodeVersionStatus, type NodeVersionStatus } from './versions'
 import {
   inspectWindowsRestartRequired,
   installNodeRuntime as installNodeRuntimeLts,
@@ -257,7 +257,6 @@ const maximumModelResponseBytes = 1024 * 1024
 const modelAccessCacheMaxEntries = 32
 const maximumRuntimeManifestBytes = 256 * 1024
 const maximumGrokVersionMetadataBytes = 16 * 1024
-const semanticVersionPattern = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z](?:[0-9A-Za-z.-]{0,126})?)?(?:\+[0-9A-Za-z](?:[0-9A-Za-z.-]{0,126})?)?$/
 
 export type UpdateCheckStatus = 'checked' | 'failed' | 'skipped'
 export type UpdateState = 'available' | 'latest' | 'unknown'
@@ -919,11 +918,11 @@ export function parseLatestNpmVersion(output: string): string | null {
       : parsed && typeof parsed === 'object' && !Array.isArray(parsed)
         ? (parsed as Record<string, unknown>).version
         : null
-    return typeof candidate === 'string' && semanticVersionPattern.test(candidate.trim())
+    return typeof candidate === 'string' && isExactCliVersion(candidate.trim())
       ? candidate.trim()
       : null
   } catch {
-    return semanticVersionPattern.test(trimmed) ? trimmed : null
+    return isExactCliVersion(trimmed) ? trimmed : null
   }
 }
 
@@ -934,7 +933,7 @@ export function parseGrokLocalVersion(input: string): string | null {
     const record = parsed as Record<string, unknown>
     for (const key of ['version', 'stable_version']) {
       const value = record[key]
-      if (typeof value === 'string' && semanticVersionPattern.test(value.trim())) {
+      if (typeof value === 'string' && isExactCliVersion(value.trim())) {
         return value.trim()
       }
     }
@@ -1020,7 +1019,7 @@ async function readPackageManifestVersion(filePath: string, label: string): Prom
     )) as unknown
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null
     const version = (parsed as Record<string, unknown>).version
-    return typeof version === 'string' && semanticVersionPattern.test(version.trim())
+    return typeof version === 'string' && isExactCliVersion(version.trim())
       ? version.trim()
       : null
   } catch {
@@ -1421,7 +1420,7 @@ export function parseNpmPackageReleaseMetadata(
   const name = typeof record.name === 'string' ? record.name.trim() : ''
   const version = typeof record.version === 'string' ? record.version.trim() : ''
   const integrity = typeof dist?.integrity === 'string' ? dist.integrity.trim() : ''
-  if (name !== expectedPackageName || !semanticVersionPattern.test(version)) return null
+  if (name !== expectedPackageName || !isExactCliVersion(version)) return null
   const match = integrity.match(/^sha512-([A-Za-z0-9+/]+={0,2})$/)
   if (!match) return null
   try {
@@ -1573,7 +1572,7 @@ function canonicalNpmPackageLock(
     const entryVersion = typeof record.version === 'string' ? record.version.trim() : ''
     const integrity = typeof record.integrity === 'string' ? record.integrity.trim() : ''
     const integrityMatch = integrity.match(/^sha512-([A-Za-z0-9+/]+={0,2})$/)
-    if (!semanticVersionPattern.test(entryVersion) || !integrityMatch) {
+    if (!isExactCliVersion(entryVersion) || !integrityMatch) {
       throw new Error(`npm package-lock.json 包版本或 SHA-512 无效：${location}`)
     }
     if (Buffer.from(integrityMatch[1], 'base64').length !== 64) {
@@ -1792,7 +1791,7 @@ export function buildCliMaintenancePlan(
   if (platform === 'darwin' && provider !== 'grok' && !npmPrefix) {
     throw new Error('macOS 用户级 npm 前缀不能为空')
   }
-  if (version !== 'latest' && !semanticVersionPattern.test(version)) {
+  if (version !== 'latest' && !isExactCliVersion(version)) {
     throw new Error('npm CLI 版本号格式无效')
   }
   if (provider === 'grok') {
@@ -1970,10 +1969,10 @@ export function buildCliStatus(
     }
   }
   if (isNewerVersion(installed.version, latest.version)) {
-    // 名单把安装钉在已装的这个版本上时,npm 上更新的版本不是用户能点的更新:
-    // 点「更新」只会把同一个版本重装一遍。所以这里如实报「已是最新」,
-    // 而 latestVersion 仍然照实带上,不瞒着上游真实进度。
-    if (versionAdvice?.pinned && versionAdvice.onRecommended) {
+    // npm latest 变新并不代表推荐安装目标也变新；同版重装和退回推荐版
+    // 都不是更新。latestVersion 仍保留真实上游版本供界面说明。
+    if (versionAdvice?.pinned && versionAdvice.recommendedVersion
+      && !isNewerVersion(installed.version, versionAdvice.recommendedVersion)) {
       return { ...base, updateAvailable: false, updateState: 'latest', updateError: null }
     }
     return { ...base, updateAvailable: true, updateState: 'available', updateError: null }

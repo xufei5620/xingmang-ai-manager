@@ -33,6 +33,18 @@ describe('buildCliUpdateRecord', () => {
     expect(buildCliUpdateRecord('2.1.277', '2.1.282', false, now)).toEqual({ from: '2.1.277', to: '2.1.282', at: now })
   })
 
+  it('records an explicitly selected upgrade but not an explicit downgrade', () => {
+    expect(buildCliUpdateRecord('0.155.1', '0.156.1', true, now)).toEqual({ from: '0.155.1', to: '0.156.1', at: now })
+    expect(buildCliUpdateRecord('0.156.1', '0.155.1', true, now)).toBeNull()
+  })
+
+  it('keeps exact metadata versions available for reverting a completed update', () => {
+    const record = { from: '0.157.0+build.1', to: '0.158.0-beta.1+build.2', at: now }
+    expect(buildCliUpdateRecord(record.from, record.to, true, now)).toEqual(record)
+    const parsed = parseCliUpdateHistory(JSON.stringify({ version: 1, tools: { codex: record } }))
+    expect(resolveCliRevertVersion('codex', parsed.codex, record.to, now)).toBe(record.from)
+  })
+
   it('skips first installs, reinstalls and versions the user asked for', () => {
     expect(buildCliUpdateRecord(null, '2.1.282', false, now)).toBeNull()
     expect(buildCliUpdateRecord('2.1.282', '2.1.282', false, now)).toBeNull()
