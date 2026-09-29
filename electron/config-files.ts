@@ -60,6 +60,15 @@ export interface NativeConfigInspection {
    * OPENAI_API_KEY, so a Xingmang key with chatgpt mode still uses ChatGPT.
    */
   codexAuthMode?: 'apikey' | 'chatgpt' | null
+  /** Codex config.toml 的 `model_provider`（连接名）；只给 Codex，没写时为 null。 */
+  codexProviderName?: string | null
+  /**
+   * 连接名是 Codex 内置的保留名（openai 等），而那张表写的又是已登记站点的地址：
+   * Codex 会忽略这张表、按内置定义去连官方，带着当前账号的 Key 一跑就 401。
+   * 独立成一个字段而不是改 matchesRelay：切回官方、删我们的表、启动门禁都靠
+   * matchesRelay 认出「这是我们写的中转配置」，那部分判断必须照旧。
+   */
+  codexProviderShadowed?: boolean
   /**
    * `grok login` 留在 ~/.grok/auth.json 里的 `auth_mode`（oidc = 浏览器登录，api_key =
    * 登录时填的 xAI Key）；null = 没登录。只读这一个字段，令牌与 Key 不读。
@@ -908,7 +917,13 @@ function restoreCodexAnalytics(parsed: Record<string, unknown>): void {
 // prevent_idle_sleep 是 0.156.1 的实验开关：只在 Codex 正在跑一轮时不让电脑自动睡，
 // 跑完就放开，屏幕照样会关。笔记本跑长任务睡着了，连接断掉这一轮就白扣了。
 //
-// 两项都只在键缺省时写，用户写过（哪怕写成 false 或 elevated）一律不动；键名以
+// daemon_auto_start 在 0.157.0 转成默认开：客户在自己终端敲 codex 也会拉起一个多窗口
+// 共享用的后台服务，退出 Codex 后它还留着（rust-v0.158.0 app-server-daemon 里没有
+// 空闲自动退出），低配电脑上是一份没人要的常驻开销。关掉它不影响 `codex agents`，
+// 那条命令自己会按需拉起服务（cli/src/main.rs）。0.155.x 及更早不认这个键，只在
+// 日志里记一行 unknown feature key，不影响启动（features/src/lib.rs）。
+//
+// 三项都只在键缺省时写，用户写过（哪怕写成 false 或 elevated）一律不动；键名以
 // rust-v0.156.1 的 core/config.schema.json 为准。
 export function applyCodexRelayMachineDefaults(
   parsed: Record<string, unknown>,
@@ -917,6 +932,9 @@ export function applyCodexRelayMachineDefaults(
   const features = parsed.features === undefined ? ensureRecord(parsed, 'features') : parsed.features
   if (isJsonRecord(features) && features.prevent_idle_sleep === undefined) {
     features.prevent_idle_sleep = true
+  }
+  if (isJsonRecord(features) && features.daemon_auto_start === undefined) {
+    features.daemon_auto_start = false
   }
   if (platform !== 'win32') return
   const windows = parsed.windows === undefined ? ensureRecord(parsed, 'windows') : parsed.windows
@@ -1015,6 +1033,7 @@ function buildCodexRelayConfigTemplate(
     '[features]',
     'goals = true',
     'prevent_idle_sleep = true',
+    'daemon_auto_start = false',
     '',
     ...windowsTable,
     '[analytics]',
@@ -1221,6 +1240,21 @@ function createCodexOfficialAuthPlans(roots: ProviderConfigRoots): FilePlan[] {
   return plans
 }
 
+function readCodexProviderSelection(
+  paths: string[],
+  siteBaseUrl: string,
+): Pick<NativeConfigInspection, 'codexProviderName' | 'codexProviderShadowed'> {
+  const parsed = readToml(paths[0])
+  const name = nestedString(parsed, ['model_provider']).trim()
+  if (!parsed || !name) return { codexProviderName: null, codexProviderShadowed: false }
+  const providers = parsed.model_providers
+  const entry = isJsonRecord(providers) ? providers[name] : null
+  return {
+    codexProviderName: name,
+    codexProviderShadowed: reservedCodexProviders.has(name) && isOwnCodexRelayEntry(entry, siteBaseUrl),
+  }
+}
+
 function readCodexAuthMode(paths: string[]): 'apikey' | 'chatgpt' | null {
   const parsed = readJson(paths[1])
   const kind = classifyCodexAuthProfile(parsed)
@@ -1317,7 +1351,7 @@ export function inspectProviderConfig(
     officialAccountEmail: officialAccount.email,
     officialAccountPlan: officialAccount.planLabel,
     officialAccountRenewsAt: officialAccount.renewsAt,
-    ...(provider === 'codex' ? { codexAuthMode: readCodexAuthMode(paths) } : {}),
+    ...(provider === 'codex' ? { codexAuthMode: readCodexAuthMode(paths), ...readCodexProviderSelection(paths, baseUrl) } : {}),
     ...(provider === 'grok' ? { grokLoginMode: readGrokLogin(path.dirname(paths[0]))?.mode ?? null } : {}),
     dataDirectory,
     dataDirectoryExists: (() => {

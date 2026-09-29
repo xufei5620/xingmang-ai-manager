@@ -54,6 +54,7 @@ import { calculateUiZoom, resolveWindowPlacement } from './window-preferences'
 import { attachEditContextMenu } from './context-menu'
 import { recoverOffscreenWindow } from './window-recovery'
 import { createWindowLifecycle } from './window-lifecycle'
+import { installLeftoverStartupDelayMs, sweepInstallLeftovers } from './install-leftovers'
 import { createLoginQuietPeriod, hasLoginLaunchArgument, loginQuietPeriodMs, resolveLoginLaunch, shouldRevealInitialWindow, windowsAppUserModelId } from './login-launch'
 import { resolveInstallableUpdateOnQuit, resolveInterruptibleInstallTask } from './quit-blocking-tasks'
 import { createPendingUpdateStore, decideLaunchInstall, resolveDownloadedVersionToRecord } from './auto-update-install'
@@ -1121,6 +1122,7 @@ if (!hasSingleInstanceLock) {
       getExternalClientAccountId: () => readExternalClientAccountId(),
       windowsExecutionMode: windowsCliExecutionMode,
       runtimeLog,
+      sweepInstallLeftovers,
       ...(process.platform === 'win32'
         ? { ensureWindowsUserPath: (directory: string) => ensureDirectoryOnWindowsUserPath(directory) }
         : {}),
@@ -1143,6 +1145,9 @@ if (!hasSingleInstanceLock) {
       // the OS proxy or imposing a new Chromium proxy mode.
       reloadNetworkProxyConfig: () => session.defaultSession.forceReloadProxyConfig(),
       downloadFetch,
+      // 查版本也走 Chromium：主进程自带的 Node fetch 不认公司或安全软件装在这台电脑
+      // 上的证书，公司电脑装工具会卡在第一步（system-certificate-trust.ts）。
+      registryFetch: downloadFetch,
       resolveSubprocessProxyEnvironment: async () => {
         // 临时线路本身就是回环端点，直接交给子进程；没有临时线路时仍然沿用
         // 系统代理那条老路（跨提权边界的过滤在 download-proxy.ts 里）。
@@ -1253,6 +1258,7 @@ if (!hasSingleInstanceLock) {
           probeAiOutput: () => assetStore.assertWritable(),
           ...await accelerationBundleStatus.then((status) => status ? { accelerationBundle: status } : {}),
           windowsExecution: windowsCliExecution,
+          windowsProcessor: await systemService.inspectWindowsProcessor(),
           // 报告只装中文结论（它会被导出发给客服），认出失败靠的那段上游原文
           // 留在 runtime.jsonl 里。
           log: (level, event, message, detail) => runtimeLog.log(level, 'diagnostics', event, message, detail),
@@ -2239,6 +2245,11 @@ if (!hasSingleInstanceLock) {
     void startupQuiet.whenOver().then(() => vault.active()).then((saved) => {
       if (saved) void systemService.scanSystem().catch(() => undefined)
     }).catch(() => undefined)
+    // 以前装到一半被关掉留下的下载没人认领，低配电脑的 C 盘会被它慢慢吃掉。安静期过后再
+    // 等一会儿，让开机那一阵的检测先跑完，再在后台清；不弹提示，只记日志。
+    void startupQuiet.whenOver().then(() => new Promise<void>((resolve) => {
+      setTimeout(resolve, installLeftoverStartupDelayMs).unref()
+    })).then(() => systemService.cleanupInstallLeftovers()).catch(() => undefined)
     // 启动画面最多为账号恢复等 3 秒，明确断网就不等（yoyo 2026-09-22 拍板）。
     const accountStartupGate = createAccountStartupGate({
       settled: accountSessionReady,

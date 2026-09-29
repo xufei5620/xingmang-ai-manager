@@ -151,6 +151,11 @@ describe('Node.js installer routing and process plans', () => {
       acceptedExitCodes: [0],
     })
     expect(winget.trustedOnly).toBeUndefined()
+    // An emulated x64 app on an ARM laptop must not leave the pick to winget's own guess.
+    expect(buildNodeRuntimeWingetPlan(
+      'D:\\Program Files\\WindowsApps\\Microsoft.DesktopAppInstaller_1.29.0.0_arm64__8wekyb3d8bbwe\\winget.exe',
+      'arm64',
+    ).argv.slice(-2)).toEqual(['--architecture', 'arm64'])
     expect(() => buildNodeRuntimeWingetPlan('winget.exe')).toThrow('系统级 winget 路径无效')
     expect(plan.signature.executable).toBe(powershell)
     expect(path.win32.isAbsolute(plan.signature.executable)).toBe(true)

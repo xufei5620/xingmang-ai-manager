@@ -4,6 +4,7 @@ import {
   ChevronLeft,
   ChevronRight,
   FolderOpen,
+  HelpCircle,
   RefreshCw,
   Search,
   XCircle,
@@ -256,11 +257,14 @@ export function ResultNotice({
   message,
   revealPath,
   onReveal,
+  onSupport,
 }: {
   error?: string
   message?: string
   revealPath?: string
   onReveal?: (path: string) => Promise<unknown>
+  /** 给了才出「联系客服」：只在目录说这类失败该找客服时出现。 */
+  onSupport?: () => void
 }) {
   // A raw npm/OS failure reaching this banner is unreadable on its own; when
   // the catalog can name it, its wording leads and the backend sentence stays
@@ -280,6 +284,11 @@ export function ResultNotice({
           error
         )}
       </span>
+      {onSupport && hint?.actions.some((action) => action.id === 'support') && (
+        <Button size="sm" icon={HelpCircle} onClick={onSupport} testId="result-notice-support">
+          联系客服
+        </Button>
+      )}
     </div>
   ) : message ? (
     <div className="v2-business-notice" role="status">

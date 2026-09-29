@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { ProviderConfigSummary, ProviderId } from '../../../../electron/ipc-contract'
-import { accountSwitchTarget, canUninstallTool, ccSwitchLeftoverFor, foreignKeyKind, switchAccountLabel, codexDesktopUpdateKind, configDirectoryMenuItem, connectionReady, externalInstallHint, isExternallyManagedInstall, presentTools, providerFor, recommendedVersionVerb, revertVersion, rollbackVersion, sourceFor, subscriptionWarning, toolAvailability, toolInstallDirectory, toolUpdateOffer, updateCheckFailure, updateButtonHint, versionSubtitle, type ToolboxSnapshot, type ToolPresentation } from './model'
+import { accountSwitchTarget, canUninstallTool, ccSwitchLeftoverFor, codexNeedsRepair, readyOnceRepaired, foreignKeyKind, switchAccountLabel, codexDesktopUpdateKind, configDirectoryMenuItem, connectionReady, externalInstallHint, isExternallyManagedInstall, presentTools, providerFor, recommendedVersionVerb, revertVersion, rollbackVersion, sourceFor, subscriptionWarning, toolAvailability, toolInstallDirectory, toolUpdateOffer, updateCheckFailure, updateButtonHint, versionSubtitle, type ToolboxSnapshot, type ToolPresentation } from './model'
 import {
   writeManualSourceMarker,
   type SourceMarkerStorage,
@@ -42,6 +42,19 @@ describe('renderer tool source', () => {
     const blank = { ...relayConfig(), hasApiKey: false, matchesRelay: false, actualBaseUrl: '', exists: true }
     expect(sourceFor(blank, 'grok', storage)).toBe('missing')
     expect(sourceFor({ ...blank, grokLoginMode: 'oidc' }, 'grok', storage)).toBe('official')
+  })
+
+  it('keeps the account source but not readiness when Codex ignores the relay table', () => {
+    const storage = memoryStorage()
+    const shadowed = { ...relayConfig(), configurationOwnership: 'account' as const, codexProviderShadowed: true }
+    expect(sourceFor(shadowed, 'codex', storage)).toBe('account')
+    expect(connectionReady(shadowed, 'codex', storage)).toBe(false)
+    expect(codexNeedsRepair(shadowed, 'codex')).toBe(true)
+    expect(readyOnceRepaired(shadowed, 'codex', storage)).toBe(true)
+    expect(accountSwitchTarget({ provider: 'codex', source: 'account', status: { installed: true } as ToolPresentation['status'] })).toBe('official')
+    expect(codexNeedsRepair(shadowed, 'claude')).toBe(false)
+    expect(readyOnceRepaired({ ...shadowed, model: '' }, 'codex', storage)).toBe(false)
+    expect(readyOnceRepaired({ ...shadowed, codexProviderShadowed: false }, 'codex', storage)).toBe(false)
   })
 
   it('distinguishes marked manual relay keys and keeps them launch-ready', () => {

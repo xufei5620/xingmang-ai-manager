@@ -19,7 +19,7 @@ import { launchWaitLabel, launchWarning } from './features/tools/launch-notice'
 import { modelSwapOffer, modelSwapQuestion, type ModelSwapChoice, type ModelSwapOffer } from './features/tools/model-check'
 import { chineseRuntimePatchAnswerMissing, shouldAskForChineseRuntimePatch } from './features/tools/chinese-runtime-choice'
 import { cliInstallStageLabel, nodeRuntimeReady, planCliInstall, pythonRuntimeReady, runtimeStageFailureMessage, type InstallRuntimeId } from './features/tools/runtime-readiness'
-import { foreignKeyKind, isToolId, presentTools, providerFor, toolInstallDirectory, toolUpdateOffer, type ToolId, type ToolSource } from './features/tools/model'
+import { codexNeedsRepair, foreignKeyKind, isToolId, presentTools, providerFor, readyOnceRepaired, toolInstallDirectory, toolUpdateOffer, type ToolId, type ToolSource } from './features/tools/model'
 import { pendingToolUpdates, readAnnouncedToolUpdates, rememberAnnouncedToolUpdates, rememberRevertedToolUpdate, unannouncedToolUpdates, updateNoticeKey } from './features/tools/update-notice'
 import { isMissingWorkspace } from './features/tools/recent-workspaces'
 import { uninstallHandOffNotice } from './features/tools/uninstall-handoff'
@@ -812,10 +812,20 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       if (!current) throw new Error('请先完成工具检测')
       const config = await toolsApi.readConfig()
       if (!launchIsCurrent(epoch)) return false
-      const tool = presentTools({ ...current, config }).find((entry) => entry.id === id)
+      let tool = presentTools({ ...current, config }).find((entry) => entry.id === id)
       if (!tool) throw new Error('当前平台暂不支持打开这个工具')
       if (tool.error) throw new Error(tool.error)
       if (!tool.status.installed) throw new Error('工具尚未安装，请先完成准备。')
+      // Codex 老配置写在它不认的名字下，照原样打开必然报 Key 无效。修完就能用的，
+      // 先替用户修（和「修好它」同一条路：备份、写入、自检，失败会恢复原样）再打开。
+      if (!tool.configured && readyOnceRepaired(config.providers[tool.provider], tool.provider)) {
+        const repaired = await switchToolAccount(id, 'account')
+        if (!repaired || !launchIsCurrent(epoch)) return false
+        const fresh = await toolsApi.readConfig()
+        if (!launchIsCurrent(epoch)) return false
+        tool = presentTools({ ...current, config: fresh }).find((entry) => entry.id === id) ?? tool
+        if (codexNeedsRepair(fresh.providers[tool.provider], tool.provider)) throw new Error('Codex 的连接设置没修好，已保持原样。请在首页点「修好它」再试一次。')
+      }
       if (!tool.configured) { openToolConfig(id); throw new Error('请先确认账号连接，再打开工具。') }
       // Every awaited step belongs to the account that requested this launch. A
       // later session event must not resume the old request against a new owner.

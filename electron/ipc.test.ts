@@ -86,6 +86,7 @@ function serviceStub(): SystemService {
     refreshOfficialChatGptUsage: vi.fn() as never,
     inspectCodexSetupStatus: vi.fn() as never,
     installNodeRuntime: vi.fn() as never,
+    inspectWindowsProcessor: vi.fn(async () => null),
     restartWindows: vi.fn() as never,
     installPythonRuntime: vi.fn() as never,
     installGitRuntime: vi.fn() as never,
@@ -110,6 +111,7 @@ function serviceStub(): SystemService {
     getLastExternalClients: vi.fn(() => null),
     checkExternalClientConnection: vi.fn() as never,
     inspectInstallationQueue: vi.fn(() => ({ activeKey: null, pendingKeys: [] })),
+    cleanupInstallLeftovers: vi.fn(async () => ({ removed: 0, freedBytes: 0, failed: 0 })),
     installExternalClient: vi.fn() as never,
     launchExternalClient: vi.fn(async () => undefined),
   }

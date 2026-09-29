@@ -89,7 +89,7 @@ export function guideOfficialLoginRequired(provider: ProviderId, source: GuideTo
   return provider === 'codex' && source === 'official' && summary?.codexAuthMode !== 'chatgpt'
 }
 
-const installFailureKeys = new Set<string>(['toolRunning', 'installBlocked', 'downloadTimeout', 'diskFull', 'certDate', 'tlsIntercepted', 'permission'])
+const installFailureKeys = new Set<string>(['toolRunning', 'installBlocked', 'downloadTimeout', 'diskFull', 'certDate', 'tlsIntercepted', 'toolCertOutdatedNode', 'toolCertElevated', 'permission'])
 
 /**
  * 「安装」把运行环境和工具串成一次之后，失败得说清是哪一段没装上，再给一个

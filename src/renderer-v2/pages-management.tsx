@@ -1161,9 +1161,11 @@ function useMcpHealth(api: V2Bridge, provider: Provider, enabled: boolean) {
 export function ExtensionsPage({
   api,
   kind,
+  onOpenHelp,
 }: {
   api: V2Bridge
   kind: ExtensionKind
+  onOpenHelp?: () => void
 }) {
   const page =
     kind === 'skill' ? 'skills' : kind === 'plugin' ? 'plugins' : 'mcp'
@@ -1535,7 +1537,7 @@ export function ExtensionsPage({
           testId={`${page}-scope`}
         />
       )}
-      <ResultNotice {...operation} />
+      <ResultNotice {...operation} onSupport={onOpenHelp} />
       {snapshot?.warnings.map((warning) => (
         <Notice
           key={warning}

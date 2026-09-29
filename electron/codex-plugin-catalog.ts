@@ -6,7 +6,7 @@ import { promisify } from 'node:util'
 import { readBoundedUtf8FileSync } from './bounded-file'
 import { readDirectoryEntriesSync } from './bounded-directory'
 import { readBoundedResponseBytes } from './bounded-response'
-import { assertNoReparseComponents, assertSafeDataFile, writeAtomicSafeUtf8File } from './safe-local-data'
+import { assertNoReparseComponents, assertSafeDataFile, removeSafeDataFile, writeAtomicSafeUtf8File } from './safe-local-data'
 
 /**
  * Codex 的官方插件目录不是从中转拿的：它在 TUI / app-server（桌面端）启动时，
@@ -46,7 +46,13 @@ const maximumEntries = 60_000
 const maximumPathLength = 1024
 const maximumManifestBytes = 4 * 1024 * 1024
 const maximumVersionBytes = 128
+/**
+ * 旧备份删不掉时（被别的程序占着、权限不对）才用得上的硬上限：再往下修只会
+ * 每次多占七十来 MB。正常路径下修完只留最近一份，碰不到它。
+ */
 const maximumRepairBackups = 3
+/** 修复开始前留几份旧备份。修完再清一次，只剩这次刚做的那份。 */
+const retainedBackupsBeforeRepair = 1
 /** Codex 自己每条路只等 30 秒；国内慢网下二十来 MB 要宽得多。 */
 export const CODEX_PLUGIN_CATALOG_TIMEOUT_MS = 5 * 60_000
 /** Codex 在拿不到提交号时写的同一个占位值，它下次联网同步时会自然换掉。 */
@@ -55,6 +61,8 @@ const unknownCatalogVersion = 'export-backup'
 export const codexPluginCatalogNetworkMessage =
   '插件目录要从国外的网站下载，当前网络连不上或太慢。打开加速后再点一次「下载插件目录」，或者换个网络再试。'
 const incompleteCatalogMessage = '下载到的插件目录不完整，请再点一次「下载插件目录」。'
+/** 渲染层 operation-error.ts 按这句归到「插件目录暂时改不动」，改字时两边一起改。 */
+export const codexPluginCatalogBackupStuckMessage = 'Codex 插件目录里的旧备份清不掉，这次没有改动'
 
 const gunzip = promisify(zlib.gunzip)
 
@@ -351,17 +359,94 @@ function catalogPathSnapshot(filePath: string): fs.Stats | null {
   }
 }
 
-function assertCatalogBackupCapacity(paths: CodexPluginCatalogPaths): void {
-  if (!catalogPathSnapshot(paths.directory) && !catalogPathSnapshot(paths.shaFile)) return
-  const parent = path.dirname(paths.directory)
-  assertNoReparseComponents(parent, 'Codex 插件目录')
-  const entries = readDirectoryEntriesSync(parent, maximumEntries, 'Codex 插件目录')
-  const backups = new Set(entries
-    .filter((entry) => /^(plugins-xingmang-backup-[0-9a-f-]{36})(?:\.sha)?$/i.test(entry.name))
-    .map((entry) => entry.name.replace(/\.sha$/i, '')))
-  if (backups.size >= maximumRepairBackups) {
-    throw new Error(`插件目录的修复备份已达到 ${maximumRepairBackups} 份，本次没有改动；请先将 plugins-xingmang-backup- 开头的备份移出 ${parent} 再重试`)
+const catalogBackupName = /^plugins-xingmang-backup-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+interface CatalogBackup {
+  name: string
+  directory: fs.Stats | null
+  version: fs.Stats | null
+}
+
+function listCatalogBackups(parent: string): CatalogBackup[] {
+  const backups = new Map<string, CatalogBackup>()
+  for (const entry of readDirectoryEntriesSync(parent, maximumEntries, 'Codex 插件目录')) {
+    const name = entry.name.replace(/\.sha$/i, '')
+    if (!catalogBackupName.test(name)) continue
+    const backup = backups.get(name) ?? { name, directory: null, version: null }
+    // 读不到属性的（被占着、权限不对）照样算一份，只是清的时候不碰它。
+    let snapshot: fs.Stats | null = null
+    try { snapshot = catalogPathSnapshot(path.join(parent, entry.name)) } catch { snapshot = null }
+    if (entry.name === name) backup.directory = snapshot
+    else backup.version = snapshot
+    backups.set(name, backup)
   }
+  return [...backups.values()]
+}
+
+/**
+ * rename 会刷新被挪动那一项的 ctime，所以 ctime 近似于「这份备份是哪次修复留下的」。
+ * 排错了也只影响留下哪一份旧的，不影响这次修复本身。
+ */
+function catalogBackupTime(backup: CatalogBackup): number {
+  return Math.max(backup.directory?.ctimeMs ?? 0, backup.version?.ctimeMs ?? 0)
+}
+
+/**
+ * Deletes only entries that carry our exact backup name. A backup directory
+ * that is a link or junction, or a version file that is linked elsewhere, is
+ * left in place: removing it could reach outside this user-writable folder
+ * (I8). Deleting a directory through fs.rm never follows links inside it.
+ */
+async function removeCatalogBackup(parent: string, backup: CatalogBackup): Promise<boolean> {
+  const directory = path.join(parent, backup.name)
+  if (!backup.directory && !backup.version) return false
+  try {
+    if (backup.directory) {
+      if (backup.directory.isSymbolicLink() || !backup.directory.isDirectory()) return false
+      assertNoReparseComponents(directory, 'Codex 插件目录')
+      await fs.promises.rm(directory, { recursive: true })
+    }
+    if (backup.version) {
+      if (backup.version.isSymbolicLink() || !backup.version.isFile()) return false
+      await removeSafeDataFile(`${directory}.sha`, 'Codex 插件目录版本')
+    }
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * 旧备份每份七十来 MB，以前满 3 份就再也修不了，还要客户自己去挪文件夹。现在
+ * 按新旧排，只留最新的 `keep` 份（`keepName` 那份一定留），更早的自动删；删不掉的
+ * 照旧留着。返回清完之后还剩几份。
+ */
+async function pruneCatalogBackups(
+  paths: CodexPluginCatalogPaths,
+  keep: number,
+  keepName?: string,
+): Promise<number> {
+  const parent = path.dirname(paths.directory)
+  if (!catalogPathSnapshot(parent)) return 0
+  assertNoReparseComponents(parent, 'Codex 插件目录')
+  const backups = listCatalogBackups(parent)
+    .sort((left, right) => catalogBackupTime(right) - catalogBackupTime(left) || left.name.localeCompare(right.name))
+  const kept = backups.filter((backup) => backup.name === keepName)
+  let remaining = backups.length
+  for (const backup of backups) {
+    if (backup.name === keepName) continue
+    if (kept.length < keep) {
+      kept.push(backup)
+      continue
+    }
+    if (await removeCatalogBackup(parent, backup)) remaining -= 1
+  }
+  return remaining
+}
+
+async function ensureCatalogBackupCapacity(paths: CodexPluginCatalogPaths): Promise<void> {
+  const remaining = await pruneCatalogBackups(paths, retainedBackupsBeforeRepair)
+  if (remaining >= maximumRepairBackups) throw new Error(codexPluginCatalogBackupStuckMessage)
 }
 
 function assertCatalogPathAbsent(filePath: string): void {
@@ -407,8 +492,9 @@ async function moveCatalogEntry(source: string, target: string, expected: fs.Sta
 }
 
 async function publishCatalog(paths: CodexPluginCatalogPaths, staged: string, stagedVersion: string): Promise<void> {
-  assertCatalogBackupCapacity(paths)
-  const backup = path.join(path.dirname(paths.directory), `plugins-xingmang-backup-${randomUUID()}`)
+  await ensureCatalogBackupCapacity(paths)
+  const backupName = `plugins-xingmang-backup-${randomUUID()}`
+  const backup = path.join(path.dirname(paths.directory), backupName)
   assertNoReparseComponents(paths.directory, 'Codex 插件目录')
   assertSafeDataFile(paths.shaFile, 'Codex 插件目录版本')
   const originalDirectory = catalogPathSnapshot(paths.directory)
@@ -470,8 +556,10 @@ async function publishCatalog(paths: CodexPluginCatalogPaths, staged: string, st
     const detail = error instanceof Error ? error.message : '未知错误'
     throw new Error(`插件目录未更新，原文件保持不变：${detail}`)
   }
-  // Keep successful-repair backups too: a corrupt manifest does not mean the
-  // other files in this user-writable catalog were disposable.
+  // Keep the backup this repair just made: a corrupt manifest does not mean
+  // the other files in this user-writable catalog were disposable. Older ones
+  // go, otherwise every repair keeps another copy of the whole catalog.
+  await pruneCatalogBackups(paths, 1, backupName).catch(() => undefined)
 }
 
 export interface EnsureCodexPluginCatalogOptions {
@@ -494,7 +582,8 @@ export async function ensureCodexPluginCatalog(
   if (inspectCodexPluginCatalog(codexHome).present) return 'present'
   const paths = codexPluginCatalogPaths(codexHome)
   const parent = path.dirname(paths.directory)
-  assertCatalogBackupCapacity(paths)
+  // 先清再下：清不掉就不必让客户白等一次二十来 MB 的下载。
+  await ensureCatalogBackupCapacity(paths)
 
   let compressed: Buffer
   try {
