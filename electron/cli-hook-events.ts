@@ -33,8 +33,7 @@ const EVENT_FILE_PATTERN = /^\d{1,16}-\d{1,10}-[0-9a-f]{8}\.(json|tmp)$/
  */
 export type CliHookEventKind = 'started' | 'finished' | 'failed' | 'waiting' | 'cancelled' | 'ended'
 
-/** Grok 的记录也进这个目录，但目前只用来挡睡眠，通知那张表里没有它。 */
-export type CliHookTool = TerminalNotice['tool'] | 'grok'
+export type CliHookTool = TerminalNotice['tool']
 
 export interface CliHookEvent {
   tool: CliHookTool
@@ -105,7 +104,7 @@ export function createCliTurnTracker(options: {
   const longTurnMs = options.longTurnMs ?? LONG_TURN_MS
   const failureQuietMs = options.failureQuietMs ?? FAILURE_QUIET_MS
   const waitingQuietMs = options.waitingQuietMs ?? WAITING_QUIET_MS
-  const starts = new Map<string, number>()
+  const starts = new Map<string, { at: number; turn?: string }>()
   const lastShown = new Map<string, number>()
 
   function quiet(key: string, at: number, window: number): boolean {
@@ -115,21 +114,27 @@ export function createCliTurnTracker(options: {
     return false
   }
 
+  // Grok 被打断的报告可能晚于下一轮的开始（#652 里防睡也是这么认的）：带着别的一轮编号的
+  // 结束报告不算这一轮的，不然新开的一轮做完了也不提醒。
+  function staleTurn(turnKey: string, turn: string | undefined): boolean {
+    const current = starts.get(turnKey)?.turn
+    return Boolean(current && turn && current !== turn)
+  }
+
   return {
     observe(event: CliHookEvent): TerminalNotice | null {
-      // Grok 的记录只给防睡用（cli-keep-awake.ts），通知文案还没有它。
-      if (event.tool === 'grok') return null
       const turnKey = `${event.tool}:${event.session}`
       switch (event.event) {
         case 'started':
           if (!event.session) return null
           starts.delete(turnKey)
-          starts.set(turnKey, event.at)
+          starts.set(turnKey, event.turn ? { at: event.at, turn: event.turn } : { at: event.at })
           // 开着一堆终端从不收尾时也只记最近的几十个。
           while (starts.size > 50) starts.delete(starts.keys().next().value!)
           return null
         case 'finished': {
-          const started = event.startedAt ?? (event.session ? starts.get(turnKey) : undefined)
+          if (staleTurn(turnKey, event.turn)) return null
+          const started = event.startedAt ?? (event.session ? starts.get(turnKey)?.at : undefined)
           starts.delete(turnKey)
           if (started === undefined || event.at - started < longTurnMs) return null
           return { tool: event.tool, event: 'finished' }
@@ -139,7 +144,7 @@ export function createCliTurnTracker(options: {
           if (quiet(`waiting:${event.tool}`, event.at, waitingQuietMs)) return null
           return { tool: event.tool, event: 'waiting' }
         case 'failed': {
-          starts.delete(turnKey)
+          if (!staleTurn(turnKey, event.turn)) starts.delete(turnKey)
           if (event.tool === 'codex') return null
           const reason = event.reason ?? 'unknown'
           if (quiet(`failed:${event.tool}:${reason}`, event.at, failureQuietMs)) return null
@@ -147,7 +152,7 @@ export function createCliTurnTracker(options: {
         }
         case 'cancelled':
         case 'ended':
-          starts.delete(turnKey)
+          if (!staleTurn(turnKey, event.turn)) starts.delete(turnKey)
           return null
       }
     },

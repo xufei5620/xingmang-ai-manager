@@ -55,7 +55,7 @@ import {
   resolveSameUserNpmPrefix,
 } from './npm-user-prefix'
 import { buildClaudeStatusLineCommand } from './claude-status-line'
-import { buildCliHookInvocation, cliHookEventsDirectory, cliHookTargetsStale, type CliHookInvocation } from './cli-hooks'
+import { buildCliHookInvocation, cliHookEventsDirectory, cliHookTargetsStale, resolveGrokWindowsShell, type CliHookInvocation } from './cli-hooks'
 import { isCodexDesktopExecutable } from './codex-desktop'
 import {
   createCodexDesktopService,
@@ -3457,6 +3457,28 @@ export function createSystemService(
     if (platform === 'darwin') return installMacGitRuntimeForService(target)
     return installationQueue.enqueue('runtime:git',
       () => withDownloadAcceleration(null, () => installGitRuntimeOperation(target, onProgress)))
+      .then((result) => {
+        if (result.installed && result.action === 'installed') void refreshGrokHooksForShellChange()
+        return result
+      })
+  }
+
+  /**
+   * Windows 版 Grok 找得到 Git Bash 就改用它跑钩子，原来按 PowerShell 写的那几行会每一轮报红。
+   * 所以星芒装好 Git 之后，把 Grok 配置里本软件那几条钩子按新的 shell 重写一遍（只动我们
+   * 写过的那几条，原来没有就不补，同「修好它」那条路）。失败只记日志，不影响装 Git。
+   */
+  async function refreshGrokHooksForShellChange(): Promise<void> {
+    try {
+      const cliHook = await resolveCliHookInvocation()
+      if (!cliHook) return
+      await serializeConfigWrite(async () => {
+        rewriteManagedCliHooks('grok', providerRoots, { cliHook })
+      })
+      runtimeLog?.log('info', 'config', 'grok-hooks.rewritten', '装好 Git 后按新的命令行重写了 Grok 的钩子', { shell: cliHook.grokWindowsShell ?? null })
+    } catch (error) {
+      runtimeLog?.log('warn', 'config', 'grok-hooks.rewrite-failed', '装好 Git 后重写 Grok 钩子没成功', { reason: credentialFailureReason(error) })
+    }
   }
 
   function sendInstallProgress(
@@ -5351,7 +5373,11 @@ export function createSystemService(
     try {
       const nodeExecutable = await findInstalledExecutable('node')
       if (!nodeExecutable) return undefined
-      return buildCliHookInvocation(nodeExecutable, scriptPath, cliHookEventsDirectory(dataDirectory)) ?? undefined
+      const invocation = buildCliHookInvocation(nodeExecutable, scriptPath, cliHookEventsDirectory(dataDirectory), platform)
+      if (!invocation) return undefined
+      // 用星芒自己的环境推：客户从星芒或自己的终端里打开 Grok，拿到的 PATH、GROK_SHELL 都与它同源。
+      if (platform === 'win32') invocation.grokWindowsShell = resolveGrokWindowsShell(process.env, (candidate) => fs.existsSync(candidate))
+      return invocation
     } catch {
       return undefined
     }

@@ -21,6 +21,7 @@ import {
   removeGeminiCliHooks,
   removeGrokCliHooks,
   resolveCliHookScriptPath,
+  resolveGrokWindowsShell,
   splitManagedCommand,
   type CliHookInvocation,
 } from './cli-hooks'
@@ -221,22 +222,99 @@ describe('Grok hooks', () => {
     expect(config.hooks).toEqual({ PreToolUse: [own] })
   })
 
-  it('writes no Grok hook on Windows, where its shell cannot be predicted, but still turns off the Claude compatibility', () => {
+  const windowsInvocation: CliHookInvocation = {
+    nodeExecutable: 'C:\\Program Files\\nodejs\\node.exe',
+    scriptPath: 'C:\\Program Files\\星芒\\resources\\bundled-catalog\\cli-hooks\\xingmang-hook.cjs',
+    eventsDirectory: 'C:\\Users\\张三\\AppData\\Roaming\\xingmang-ai-manager\\cli-events',
+    platform: 'win32',
+  }
+
+  it('writes the PowerShell form on Windows when Grok will use PowerShell', () => {
     const config: Record<string, unknown> = {}
-    applyGrokCliHooks(config, { ...posixInvocation, platform: 'win32' })
-    expect(config).toEqual({ compat: { claude: { hooks: false } } })
+    applyGrokCliHooks(config, { ...windowsInvocation, grokWindowsShell: 'powershell' })
+    const hooks = config.hooks as Record<string, Array<{ hooks: Array<Record<string, unknown>> }>>
+    expect(hooks.UserPromptSubmit[0].hooks[0].command).toBe(
+      "& 'C:\\Program Files\\nodejs\\node.exe' 'C:\\Program Files\\星芒\\resources\\bundled-catalog\\cli-hooks\\xingmang-hook.cjs' grok 'C:\\Users\\张三\\AppData\\Roaming\\xingmang-ai-manager\\cli-events'",
+    )
+  })
+
+  it('writes the sh form on Windows when Grok will use Git Bash and swaps it when the shell changes', () => {
+    const config: Record<string, unknown> = {}
+    applyGrokCliHooks(config, { ...windowsInvocation, grokWindowsShell: 'powershell' })
+    applyGrokCliHooks(config, { ...windowsInvocation, grokWindowsShell: 'bash' })
+    const hooks = config.hooks as Record<string, Array<{ hooks: Array<Record<string, unknown>> }>>
+    expect(hooks.Stop).toHaveLength(1)
+    expect(hooks.Stop[0].hooks[0].command).toBe(
+      "'C:\\Program Files\\nodejs\\node.exe' 'C:\\Program Files\\星芒\\resources\\bundled-catalog\\cli-hooks\\xingmang-hook.cjs' grok 'C:\\Users\\张三\\AppData\\Roaming\\xingmang-ai-manager\\cli-events'",
+    )
+  })
+
+  it('writes no Grok hook on Windows when its shell is unknown or cmd, removes an old one, and still turns off the Claude compatibility', () => {
+    const own = { hooks: [{ type: 'command', command: 'guard.cmd' }] }
+    const config: Record<string, unknown> = { hooks: { PreToolUse: [own] } }
+    applyGrokCliHooks(config, windowsInvocation)
+    expect(config).toEqual({ compat: { claude: { hooks: false } }, hooks: { PreToolUse: [own] } })
+    applyGrokCliHooks(config, { ...windowsInvocation, grokWindowsShell: 'bash' })
+    applyGrokCliHooks(config, { ...windowsInvocation, grokWindowsShell: 'cmd' })
+    expect(config).toEqual({ compat: { claude: { hooks: false } }, hooks: { PreToolUse: [own] } })
   })
 
   it.runIf(process.platform !== 'win32')('runs the hook script through sh from a path with spaces', () => {
     const directory = path.join(temporaryDirectory(), 'events dir')
     const invocation = buildCliHookInvocation(process.execPath, bundledScript, directory, 'linux')
     expect(invocation).not.toBeNull()
-    execFileSync('/bin/sh', ['-c', grokCliHookCommand(invocation as CliHookInvocation)], {
+    execFileSync('/bin/sh', ['-c', grokCliHookCommand(invocation as CliHookInvocation) as string], {
       input: JSON.stringify({ hookEventName: 'user_prompt_submit', hook_event_name: 'UserPromptSubmit', sessionId: 's1', session_id: 's1', promptId: 'p1' }),
       timeout: 5000,
     })
     const [name] = fs.readdirSync(directory)
     expect(JSON.parse(fs.readFileSync(path.join(directory, name), 'utf8'))).toMatchObject({ tool: 'grok', event: 'started', session: 's1', turn: 'p1' })
+  })
+})
+
+describe('resolveGrokWindowsShell', () => {
+  const env = {
+    Path: 'C:\\Windows\\System32;"C:\\Program Files\\nodejs";relative\\dir',
+    ProgramFiles: 'C:\\Program Files',
+    'ProgramFiles(x86)': 'C:\\Program Files (x86)',
+    LOCALAPPDATA: 'C:\\Users\\张三\\AppData\\Local',
+  }
+
+  function existing(...files: string[]) {
+    return (candidate: string) => files.includes(candidate)
+  }
+
+  it('falls back to Windows PowerShell on a plain computer', () => {
+    expect(resolveGrokWindowsShell(env, existing())).toBe('powershell')
+  })
+
+  it('picks Git Bash from any of the three fixed places when there is no PowerShell 7', () => {
+    for (const bash of [
+      'C:\\Program Files\\Git\\bin\\bash.exe',
+      'C:\\Program Files (x86)\\Git\\bin\\bash.exe',
+      'C:\\Users\\张三\\AppData\\Local\\Programs\\Git\\bin\\bash.exe',
+    ]) {
+      expect(resolveGrokWindowsShell(env, existing(bash))).toBe('bash')
+    }
+    expect(resolveGrokWindowsShell(env, existing('D:\\Git\\bin\\bash.exe'))).toBe('powershell')
+  })
+
+  it('prefers PowerShell 7 on PATH over Git Bash, ignoring relative PATH entries', () => {
+    const bash = 'C:\\Program Files\\Git\\bin\\bash.exe'
+    expect(resolveGrokWindowsShell(env, existing(bash, 'C:\\Program Files\\nodejs\\pwsh.exe'))).toBe('powershell')
+    expect(resolveGrokWindowsShell(env, existing(bash, 'relative\\dir\\pwsh.exe'))).toBe('bash')
+  })
+
+  it('follows GROK_SHELL and ignores a value Grok would not recognise', () => {
+    const bash = 'C:\\Program Files\\Git\\bin\\bash.exe'
+    expect(resolveGrokWindowsShell({ ...env, GROK_SHELL: 'bash' }, existing())).toBe('bash')
+    expect(resolveGrokWindowsShell({ ...env, grok_shell: ' PWSH ' }, existing(bash))).toBe('powershell')
+    expect(resolveGrokWindowsShell({ ...env, GROK_SHELL: 'cmd' }, existing())).toBe('cmd')
+    expect(resolveGrokWindowsShell({ ...env, GROK_SHELL: 'fish' }, existing(bash))).toBe('bash')
+  })
+
+  it('treats a probe that throws as missing', () => {
+    expect(resolveGrokWindowsShell(env, () => { throw new Error('denied') })).toBe('powershell')
   })
 })
 
@@ -372,7 +450,11 @@ describe('managed hook targets', () => {
   it('splits back every command form this module writes', () => {
     expect(splitManagedCommand(geminiCliHookCommand(posix))).toEqual([posix.nodeExecutable, posix.scriptPath, 'gemini', posix.eventsDirectory])
     expect(splitManagedCommand(geminiCliHookCommand(windows))).toEqual([windows.nodeExecutable, windows.scriptPath, 'gemini', windows.eventsDirectory])
-    expect(splitManagedCommand(grokCliHookCommand(posix))).toEqual([posix.nodeExecutable, posix.scriptPath, 'grok', posix.eventsDirectory])
+    expect(splitManagedCommand(grokCliHookCommand(posix) as string)).toEqual([posix.nodeExecutable, posix.scriptPath, 'grok', posix.eventsDirectory])
+    for (const grokWindowsShell of ['powershell', 'bash'] as const) {
+      expect(splitManagedCommand(grokCliHookCommand({ ...windows, grokWindowsShell }) as string))
+        .toEqual([windows.nodeExecutable, windows.scriptPath, 'grok', windows.eventsDirectory])
+    }
     expect(splitManagedCommand('"C:\\Program Files\\nodejs\\node.exe" "C:\\a b\\xingmang-statusline.cjs"'))
       .toEqual(['C:\\Program Files\\nodejs\\node.exe', 'C:\\a b\\xingmang-statusline.cjs'])
     expect(splitManagedCommand("'unterminated")).toBeNull()

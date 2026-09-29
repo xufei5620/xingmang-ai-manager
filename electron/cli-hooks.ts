@@ -14,6 +14,7 @@ import { powerShellLiteral } from './windows-elevation'
 //     所以要按平台逐段加引号，并且在执行前它还会把 $GEMINI_CWD 一类的字样替换成别的路径。
 //   * Codex 的 notify 是一个参数数组，同样不经过 shell，它把一段 JSON 追加成最后一个参数。
 //   * Grok 只收一整条 shell 命令，写在它自己的 config.toml 里（见 applyGrokCliHooks）。
+//     Windows 上它自己在 PowerShell 和 Git Bash 之间挑，见 resolveGrokWindowsShell。
 // 路径里出现 `"`、`$`、`` ` ``、`%` 或换行就干脆不写钩子，与状态行同一条规矩：少几条
 // 通知是小事，把用户的安装路径交给 shell 展开不是。
 const UNSAFE_HOOK_PATH_PATTERN = /["`$%\r\n\0]/
@@ -25,12 +26,17 @@ const CLI_HOOK_SCRIPT_RELATIVE = ['bundled-catalog', 'cli-hooks', CLI_HOOK_SCRIP
 
 export type CliHookTool = 'claude' | 'gemini' | 'codex' | 'grok'
 
+/** Windows 版 Grok 跑钩子命令用的 shell；cmd 只在用户自己设了 GROK_SHELL=cmd 时出现。 */
+export type GrokWindowsShell = 'powershell' | 'bash' | 'cmd'
+
 export interface CliHookInvocation {
   nodeExecutable: string
   scriptPath: string
   eventsDirectory: string
   /** 决定 Gemini 那条 shell 命令按 PowerShell 还是 bash 的规矩加引号。 */
   platform: NodeJS.Platform
+  /** 只在 Windows 上有意义；缺省时不写 Grok 钩子（算不出它会用哪个 shell）。 */
+  grokWindowsShell?: GrokWindowsShell
 }
 
 // 选这几类事件的原因见 bundled-catalog/cli-hooks/xingmang-hook.cjs：开始用来算一轮跑了
@@ -83,9 +89,66 @@ function posixShellLiteral(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`
 }
 
-/** Grok 的钩子命令交给 sh 跑：Linux 上 1.0.41 实测路径带空格照样能起；macOS 推测同一套。 */
-export function grokCliHookCommand(invocation: CliHookInvocation): string {
+function environmentValue(env: NodeJS.ProcessEnv, name: string): string {
+  // Windows 的环境变量名不分大小写；测试和别处传进来的普通对象不一定是 process.env。
+  const lower = name.toLowerCase()
+  for (const [key, value] of Object.entries(env)) {
+    if (key.toLowerCase() === lower && typeof value === 'string') return value
+  }
+  return ''
+}
+
+// Windows 版 Grok（1.0.44 程序内的 xai-grok-config/src/shell.rs 字符串）挑 shell 的固定三处
+// Git Bash；不在这三处的 Git（比如自己挑了别的目录装）它不认，我们也不认。
+function gitBashCandidates(env: NodeJS.ProcessEnv): string[] {
+  const roots = [
+    environmentValue(env, 'ProgramFiles') && path.win32.join(environmentValue(env, 'ProgramFiles'), 'Git'),
+    environmentValue(env, 'ProgramFiles(x86)') && path.win32.join(environmentValue(env, 'ProgramFiles(x86)'), 'Git'),
+    environmentValue(env, 'LOCALAPPDATA') && path.win32.join(environmentValue(env, 'LOCALAPPDATA'), 'Programs', 'Git'),
+  ]
+  return roots.filter(Boolean).map((root) => path.win32.join(root, 'bin', 'bash.exe'))
+}
+
+/**
+ * 照 Windows 版 Grok 1.0.44 的顺序推它会拿哪个 shell 跑钩子：GROK_SHELL 指定的优先
+ * （认不出的值它会忽略、接着自动找）→ PATH 上有 pwsh → 三处固定位置有 Git Bash →
+ * 系统自带的 Windows PowerShell。顺序是从程序里的日志字符串推出来的，推测，没在真机核过。
+ * 只看文件在不在，不起任何进程。
+ */
+export function resolveGrokWindowsShell(
+  env: NodeJS.ProcessEnv,
+  exists: (candidate: string) => boolean,
+): GrokWindowsShell {
+  const override = environmentValue(env, 'GROK_SHELL').trim().toLowerCase()
+  if (override === 'pwsh' || override === 'powershell') return 'powershell'
+  if (override === 'bash' || override === 'cmd') return override
+  const probe = (candidate: string) => {
+    try {
+      return exists(candidate)
+    } catch {
+      return false
+    }
+  }
+  const pathEntries = environmentValue(env, 'PATH').split(';')
+    .map((entry) => entry.trim().replace(/^"(.*)"$/, '$1'))
+    .filter((entry) => entry && path.win32.isAbsolute(entry))
+  if (pathEntries.some((entry) => probe(path.win32.join(entry, 'pwsh.exe')))) return 'powershell'
+  if (gitBashCandidates(env).some(probe)) return 'bash'
+  return 'powershell'
+}
+
+/**
+ * Grok 的钩子命令。非 Windows 交给 sh：Linux 上 1.0.41 实测路径带空格照样能起；macOS 推测同一套。
+ * Windows 上按 resolveGrokWindowsShell 推出的 shell 写：PowerShell 用 Gemini 在 Windows 上
+ * 已经在跑的那种写法；Git Bash 用 sh 那种（Grok 起 Git Bash 时关掉了 MSYS 的路径改写，
+ * C:\ 开头的路径原样交给 node，推测，没在真机核过）。cmd 或推不出来就返回 null，不写。
+ */
+export function grokCliHookCommand(invocation: CliHookInvocation): string | null {
   const { nodeExecutable, scriptPath, eventsDirectory } = invocation
+  if (invocation.platform === 'win32' && invocation.grokWindowsShell !== 'bash') {
+    if (invocation.grokWindowsShell !== 'powershell') return null
+    return `& ${powerShellLiteral(nodeExecutable)} ${powerShellLiteral(scriptPath)} grok ${powerShellLiteral(eventsDirectory)}`
+  }
   return `${posixShellLiteral(nodeExecutable)} ${posixShellLiteral(scriptPath)} grok ${posixShellLiteral(eventsDirectory)}`
 }
 
@@ -217,9 +280,10 @@ export function removeCodexCliNotify(config: Record<string, unknown>): void {
  * 把事件 JSON 当脚本喂给它，每一轮都在终端里报一条钩子失败（1.0.41 对本地假接口实测）。
  * 所以接当前账号时关掉 Grok 的 Claude 钩子兼容；用户自己在 [compat.claude] 里设过 hooks 就不动。
  *
- * Grok 自己的钩子只在非 Windows 上写：Windows 版程序里能看到它会在 pwsh / Git Bash /
- * Windows PowerShell 之间挑 shell，同一条命令没法三种都对，真机核过之前宁可不写——少一个
- * 防睡不会出错，写错了却每一轮都报红。
+ * Windows 上同一条命令没法在 PowerShell 和 Git Bash 里都对，所以按推出来的 shell 写一种；
+ * 推不出来（用户指定了 cmd）就把我们以前写的摘掉、不写——少一个防睡和提醒不会出错，
+ * 写错了却每一轮都报红。客户后来装了 Git，Grok 会改用 Git Bash，钩子得跟着重写
+ * （system-service.ts 装好 Git 后会重写一次）。
  */
 export function applyGrokCliHooks(config: Record<string, unknown>, invocation: CliHookInvocation): void {
   if (config.compat === undefined) config.compat = {}
@@ -229,8 +293,11 @@ export function applyGrokCliHooks(config: Record<string, unknown>, invocation: C
     const claude = compat.claude
     if (isRecord(claude) && claude.hooks === undefined) claude.hooks = false
   }
-  if (invocation.platform === 'win32') return
   const command = grokCliHookCommand(invocation)
+  if (command === null) {
+    removeManagedHooks(config)
+    return
+  }
   mergeManagedHooks(config, grokHookEvents, () => ({
     // Grok 的 UserPromptSubmit 和 Stop 是同步的，一次 node 启动的工夫；给个上限免得卡住它。
     hooks: [{ type: 'command', command, timeout: 10 }],

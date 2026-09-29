@@ -143,6 +143,7 @@ Codex 那时 `recommended` 是 `null`，也就是那两天点过「更新」的�
 | Codex 在 Windows 上的沙箱档位 | `~/.codex/config.toml` 的 `[windows] sandbox`（只在 Windows 上写） | 未设：第一次跑命令弹英文沙箱设置，推荐档还要一次管理员确认 | `"unelevated"`（用户写过就不动；切回 ChatGPT 不收回） | `sandbox_mode` 仍是 `workspace-write`，只是换成不需要提权的实现；按 0.156.1 源码（`tui/src/app/platform_actions.rs`）配了档位就不再弹引导，**Windows 真机没验证** |
 | Claude 里别家中转留下的设置 | `~/.claude/settings.json` 的 `env.ANTHROPIC_API_KEY` / `ANTHROPIC_MODEL` / `ANTHROPIC_SMALL_FAST_MODEL` / `ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU}_MODEL` 与顶层 `apiKeyHelper` | 用户自己写的，原样生效 | 接当前账号时挪进 `~/.claude/xingmang-claude-foreign-settings.json`，切回官方原样放回（当时已有同名项就不覆盖） | 它们会顶掉当前账号的 Key 或型号，界面却显示正常（全面检测 Q7） |
 | Grok 的型号名单与附带型号 | `~/.grok/config.toml` 的 `[models] allowed_models` / `session_summary` / `image_description` | 名单不限（内置 grok-4.6、grok-4.5 也在）；标题钉在字面量 `grok-4.6` | 只留中转那一项，标题与看图都用它（用户写过就不动） | 内置型号走 xAI 自己的服务，国内连不上、也不走当前账号；中转型号不叫 grok-4.6 时标题会悄悄失败 |
+| Grok 的钩子（提醒与防睡） | `~/.grok/config.toml` 的 `[compat.claude] hooks` 与 `[[hooks.*]]` | 兼容开：顺手跑 `~/.claude/settings.json` 的钩子；自己没有钩子 | 兼容关（用户写过就不动）；每轮开始 / 结束 / 出错 / 打断 / 等人 / 退出各挂一条起随包脚本的命令。Windows 上按 Grok 会挑的 shell 写 PowerShell 或 sh 写法，推不出来（`GROK_SHELL=cmd`）就不写 | Grok 不认 Claude 钩子的 `args`，兼容开着每轮报错；没有自己的钩子就没有中文提醒、也挡不住睡眠 |
 | Gemini 的使用统计 | `privacy.usageStatisticsEnabled` | 开 | `false`（用户写过就不动；切回 Google 账号时只收回本软件写的那一份） | 开着时每个发给中转的请求都带本机安装 ID 头，统计本身发往国内连不上的 `play.googleapis.com` |
 | Gemini 的记录保留期 | `general.sessionRetention.maxAge` | `"30d"` | `"365d"` | 同上 |
 | Gemini 的 IDE 模式 | `ide.enabled` | 关 | 开 | 装在 IDE 里的客户少一步 |
@@ -234,6 +235,15 @@ Codex 那时 `recommended` 是 `null`，也就是那两天点过「更新」的�
   连 `ab.chatgpt.com`。TUI 退出从约 1.3 秒降到约 0.9 秒。app-server 默认不开统计，只有桌面端这类
   第一方客户端用 `--analytics-default-enabled` 拉起时才开，而 `enabled = false` 能压过这个参数。
   请求体不受影响。
+- **Grok 1.0.44 Windows 版跑钩子用哪个 shell —— 只读了程序里的字符串，没在真机跑过**。源码路径
+  `crates/codegen/xai-grok-config/src/shell.rs`：环境变量 `GROK_SHELL`（`pwsh|powershell|bash|cmd`，
+  认不出的值忽略）优先；否则 PATH 上有 `pwsh` 用它，再否则看 `%ProgramFiles%\Git\bin\bash.exe`、
+  `%ProgramFiles(x86)%\Git\bin\bash.exe`、`%LOCALAPPDATA%\Programs\Git\bin\bash.exe` 三处有没有
+  Git Bash，都没有就用 `System32\WindowsPowerShell\v1.0\powershell.exe`。用 Git Bash 时设了
+  `MSYS_NO_PATHCONV`，参数不改写。`cli-hooks.ts` 的 `resolveGrokWindowsShell` 照这个顺序推，
+  星芒装好 Git 后重写一次 Grok 配置。**抬 Grok 版本时要重新核这段顺序**；真机复核：没装 Git、
+  装了 Git、装了 PowerShell 7 三种电脑各从星芒打开 Grok 跑一个一分钟以上的任务，做完时弹「Grok 做完了」、
+  终端里没有钩子报错即过。
 - **Grok 1.0.40 的型号名单 —— 跑起来看到了**。二进制里的配置表写明 `models.allowed_models` 是
   「Glob allowlist for the model picker, default, and `-m`」，`models.session_summary` 是
   「Model used for session titles and summaries」。不加名单时 `grok models` 列出

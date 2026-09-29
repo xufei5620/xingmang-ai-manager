@@ -244,20 +244,21 @@ const hostMessages: Record<
 }
 
 /**
- * 终端里的命令行工具（Claude Code、Gemini CLI）出了什么事。只有主进程从钩子记录里
+ * 终端里的命令行工具（Claude Code、Gemini CLI、Grok）出了什么事。只有主进程从钩子记录里
  * 读出来的固定类型词，没有任何 CLI 递来的原文，所以通知里的每个字都出自下面这张表。
  */
 export type TerminalFailureReason = 'billing' | 'auth' | 'busy' | 'model' | 'service' | 'unknown'
 export type TerminalNotice =
-  | { tool: 'claude' | 'gemini'; event: 'failed'; reason: TerminalFailureReason }
-  | { tool: 'claude' | 'gemini'; event: 'waiting' }
+  | { tool: 'claude' | 'gemini' | 'grok'; event: 'failed'; reason: TerminalFailureReason }
+  | { tool: 'claude' | 'gemini' | 'grok'; event: 'waiting' }
   // Codex 的 notify 只在一轮顺利做完时调用，出错和等人都没有，所以只有「做完了」。
-  | { tool: 'claude' | 'gemini' | 'codex'; event: 'finished' }
+  | { tool: 'claude' | 'gemini' | 'codex' | 'grok'; event: 'finished' }
 
 const terminalToolNames: Record<TerminalNotice['tool'], string> = {
   claude: 'Claude Code',
   gemini: 'Gemini CLI',
   codex: 'Codex',
+  grok: 'Grok',
 }
 
 // 主语是「当前账号」；订阅客户也会碰到额度用完，所以不说「余额」，只说「额度」。
