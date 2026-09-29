@@ -81,7 +81,7 @@ describe('createStarterWorkspaceWithFallback', () => {
   })
 
   it('moves to the home folder when documents refuses the folder itself', () => {
-    const create = vi.fn((parent: string, guard: StarterWorkspaceLocationContext) => {
+    const create = vi.fn((parent: string, guard: Parameters<typeof createStarterWorkspace>[1]) => {
       if (parent === documents) throw new Error('可能是没有写入权限，或者磁盘已满', { cause: systemError('EPERM') })
       return createStarterWorkspace(parent, guard)
     })
