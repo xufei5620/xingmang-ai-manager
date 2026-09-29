@@ -161,6 +161,21 @@ describe('acceleration reminders sent by the main process', () => {
     })
   })
 
+  it('says a payment settled after its window closed, once per order, without the order number', () => {
+    const h = setup()
+    for (const kind of Object.keys(h.preferences) as Array<keyof typeof h.preferences>) h.preferences[kind] = false
+    expect(h.controller.notifyHost('paymentSettled', 'XM-20260925-1')).toBe('requested')
+    expect(h.runtime.create).toHaveBeenLastCalledWith({
+      title: '付款已到账',
+      body: '刚才那笔订单已到账，余额和订阅已更新。',
+      silent: true,
+    })
+    expect(JSON.stringify((h.runtime.create as ReturnType<typeof vi.fn>).mock.calls)).not.toContain('XM-20260925-1')
+    expect(h.controller.notifyHost('paymentSettled', 'XM-20260925-1')).toBe('duplicate')
+    h.enable(false)
+    expect(h.controller.notifyHost('paymentSettled', 'XM-20260925-2')).toBe('disabled')
+  })
+
   it('keeps the copy free of the relay site name, top-up pitch and technical words', () => {
     const h = setup()
     h.controller.notifyHost('accelerationExpiring', 'xm-account:1:t0')
