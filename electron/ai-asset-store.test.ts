@@ -132,6 +132,24 @@ describe('AiAssetStore base64 and ownership', () => {
     await expect(store.listOwned(42)).resolves.toEqual([expect.objectContaining({ assetId: first.assetId })])
   })
 
+  it('reads a picked file within a caller limit and stores prepared bytes content-addressed', async () => {
+    const sourceRoot = temporaryDirectory()
+    const sourcePath = path.join(sourceRoot, 'screenshot.png')
+    fs.writeFileSync(sourcePath, png(1280, 720))
+    const store = new AiAssetStore(storeOptions())
+
+    const bytes = await store.readLocalFile(sourcePath, 1024)
+    await expect(store.readLocalFile(sourcePath, 10)).rejects.toThrow()
+    await expect(store.readLocalFile('relative.png', 1024)).rejects.toThrow('路径无效')
+    await expect(store.readLocalFile(sourcePath, 0)).rejects.toThrow('上限无效')
+    const first = await store.storeLocalBytes(42, bytes)
+    const second = await store.storeLocalBytes(42, bytes)
+
+    expect(first).toMatchObject({ mimeType: 'image/png', width: 1280, height: 720 })
+    expect(second.assetId).toBe(first.assetId)
+    await expect(store.storeLocalBytes(42, Buffer.from('not an image'))).rejects.toThrow('图片内容无效')
+  })
+
   it('rejects relative paths and files that are not valid images', async () => {
     const sourceRoot = temporaryDirectory()
     const invalidPath = path.join(sourceRoot, 'invalid.png')

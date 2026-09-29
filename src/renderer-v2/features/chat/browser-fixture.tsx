@@ -74,7 +74,7 @@ const bridge: ChatBridge = {
       ? [{ name: 'default', description: '用户分组', ratio: 1 }, { name: query.has('sub2api') ? 'Codex_pro' : 'GPT-中转/订阅', description: 'gpt-image-1 / 1.5 / 2（官方按 token 计费）', ratio: 1 }]
       : [{ name: 'group-a', description: '文本与图片以及一段不应进入选项标题的超长能力说明', ratio: 1 }, { name: 'group-b', description: '另一分组', ratio: 1 }]
   },
-  prepareAiChatGroup: async (group) => { record('prepare', group); if (query.has('deferPreparation') && group === 'group-a') return new Promise<AiChatPreparedGroup>((resolve) => { preparations.push({ group, resolve }) }); const models = query.has('preferredGroup') && group === (query.has('sub2api') ? 'Codex_pro' : 'GPT-中转/订阅') ? ['other-model', 'gpt-5.6-sol'] : group === 'group-a' ? ['gpt-test', 'gpt-image-2', 'gpt-image-1.5', 'gemini-3.1-flash-image'] : ['other-model', 'grok-imagine-image']; return { group, models, keyCreated: false } },
+  prepareAiChatGroup: async (group) => { record('prepare', group); if (query.has('deferPreparation') && group === 'group-a') return new Promise<AiChatPreparedGroup>((resolve) => { preparations.push({ group, resolve }) }); const models = query.has('preferredGroup') && group === (query.has('sub2api') ? 'Codex_pro' : 'GPT-中转/订阅') ? ['other-model', 'gpt-5.6-sol'] : group === 'group-a' ? ['gpt-test', 'gpt-image-2', 'gpt-image-1.5', 'gemini-3.1-flash-image', 'claude-test'] : ['other-model', 'grok-imagine-image']; return { group, models, keyCreated: false } },
   startAiChat: async (input) => { record('start', input); return { accepted: true, requestId: input.requestId } },
   generateAiImage: async (input) => { record('image', input); return new Promise<AiChatAsset[]>((resolve, reject) => { images.set(input.requestId, { resolve, reject }) }) },
   cancelAiChat: async (requestId) => { record('cancel', requestId); if (query.has('cancelReject')) { images.get(requestId)?.reject(new Error('request canceled')); await Promise.resolve() } return { canceled: true, mayStillComplete: images.has(requestId) } },
@@ -82,6 +82,8 @@ const bridge: ChatBridge = {
   copyAiChatAsset: async (assetId) => { record('copy-asset', assetId) },
   saveAiChatAsset: async (assetId) => { record('save-asset', assetId); return { saved: !query.has('saveCancel') } },
   showAiChatAssetMenu: async (assetId) => { record('menu-asset', assetId) },
+  pickAiChatImages: async (remaining) => { record('pick-images', remaining); return query.has('pickCancel') ? [] : [{ ...imageAsset, assetId: `p${String(calls.length).padStart(42, '0')}`, fileName: 'picked.png' }] },
+  pasteAiChatImage: async () => { record('paste-image'); return query.has('emptyClipboard') ? null : { ...imageAsset, assetId: `v${String(calls.length).padStart(42, '0')}`, fileName: 'pasted.png' } },
   readAiChatHistory: (scope) => historyFiles(scope),
   writeAiChatHistory: (input) => writeHistoryFiles(input),
   exportAiChatConversation: async (input) => { record('export-text', input); return query.has('exportCancel') ? null : { outputPath: `C:\\Users\\fixture\\Desktop\\${input.title}.txt` } },

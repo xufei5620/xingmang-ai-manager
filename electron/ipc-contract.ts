@@ -451,6 +451,8 @@ export type AiChatRole = 'system' | 'user' | 'assistant'
 export interface AiChatMessageInput {
   role: AiChatRole
   content: string
+  /** 用户这条消息附带的图片（主进程存好后给的资产标识），只有 user 消息能带。 */
+  images?: string[]
 }
 
 export interface AiChatParametersInput {
@@ -1053,6 +1055,8 @@ export interface XingmangInvokeContract {
   copyAiChatAsset: IpcInvokeDefinition<'chat:copy-asset', [assetId: string], void>
   saveAiChatAsset: IpcInvokeDefinition<'chat:save-asset', [assetId: string], { saved: boolean }>
   showAiChatAssetMenu: IpcInvokeDefinition<'chat:asset-menu', [assetId: string], void>
+  pickAiChatImages: IpcInvokeDefinition<'chat:pick-images', [remaining: number], AiChatAsset[]>
+  pasteAiChatImage: IpcInvokeDefinition<'chat:paste-image', [], AiChatAsset | null>
   readAiChatHistory: IpcInvokeDefinition<'chat-history:read', [scope: string], AiChatHistorySnapshot>
   writeAiChatHistory: IpcInvokeDefinition<'chat-history:write', [input: AiChatHistoryWrite], void>
   exportAiChatConversation: IpcInvokeDefinition<'chat-history:export-text', [input: ChatConversationExportInput], { outputPath: string } | null>
@@ -1321,6 +1325,8 @@ export const ipcInvokeChannels = {
   copyAiChatAsset: 'chat:copy-asset',
   saveAiChatAsset: 'chat:save-asset',
   showAiChatAssetMenu: 'chat:asset-menu',
+  pickAiChatImages: 'chat:pick-images',
+  pasteAiChatImage: 'chat:paste-image',
   readAiChatHistory: 'chat-history:read',
   writeAiChatHistory: 'chat-history:write',
   exportAiChatConversation: 'chat-history:export-text',

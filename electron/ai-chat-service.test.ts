@@ -758,3 +758,90 @@ describe('AI chat time limits for long-thinking models', () => {
     stoppable.dispose()
   })
 })
+
+describe('AI chat attached images', () => {
+  const first = 'A'.repeat(43)
+  const second = 'B'.repeat(43)
+
+  it('reads attached images for the credential account and sends them as image parts', async () => {
+    const bodies: unknown[] = []
+    const fetchImpl = vi.fn<TestFetch>(async (_input, init) => {
+      bodies.push(JSON.parse(String(init?.body)))
+      return sseResponse([encoder.encode('data: [DONE]\n\n')])
+    })
+    const readChatImage = vi.fn(async (_userId: number, assetId: string) => `data:image/png;base64,${assetId.slice(0, 4)}`)
+    const events: AiChatStreamEvent[] = []
+    const service = createAiChatService({ credentialCoordinator: credentialCoordinator(), fetchImpl, readChatImage, emit: (_senderId, event) => events.push(event) })
+
+    service.start({ ...startInput(), messages: [{ role: 'user', content: '这是什么报错', images: [first] }] })
+    await service.whenIdle()
+
+    expect(readChatImage).toHaveBeenCalledWith(7, first)
+    expect(bodies[0]).toMatchObject({
+      messages: [{ role: 'user', content: [
+        { type: 'text', text: '这是什么报错' },
+        { type: 'image_url', image_url: { url: 'data:image/png;base64,AAAA' } },
+      ] }],
+    })
+    expect(events.at(-1)).toMatchObject({ type: 'complete' })
+  })
+
+  it('keeps text-only messages as plain strings', async () => {
+    const bodies: unknown[] = []
+    const fetchImpl = vi.fn<TestFetch>(async (_input, init) => {
+      bodies.push(JSON.parse(String(init?.body)))
+      return sseResponse([encoder.encode('data: [DONE]\n\n')])
+    })
+    const service = createAiChatService({ credentialCoordinator: credentialCoordinator(), fetchImpl, emit: () => undefined })
+    service.start(startInput())
+    await service.whenIdle()
+    expect(bodies[0]).toMatchObject({ messages: [{ role: 'user', content: '你好' }] })
+  })
+
+  it('stops before the paid request when an image on the turn being sent is gone', async () => {
+    const fetchImpl = vi.fn<TestFetch>()
+    const events: AiChatStreamEvent[] = []
+    const service = createAiChatService({
+      credentialCoordinator: credentialCoordinator(),
+      fetchImpl,
+      readChatImage: async () => { throw new Error('missing') },
+      emit: (_senderId, event) => events.push(event),
+    })
+    service.start({ ...startInput(), messages: [{ role: 'user', content: '', images: [first] }] })
+    await service.whenIdle()
+    expect(fetchImpl).not.toHaveBeenCalled()
+    expect(events.at(-1)).toMatchObject({ type: 'error', code: 'image-unavailable', message: expect.stringContaining('没有扣费') })
+  })
+
+  it('turns an image missing from an earlier turn into a sentence instead of failing', async () => {
+    const bodies: Array<{ messages: unknown[] }> = []
+    const fetchImpl = vi.fn<TestFetch>(async (_input, init) => {
+      bodies.push(JSON.parse(String(init?.body)))
+      return sseResponse([encoder.encode('data: [DONE]\n\n')])
+    })
+    const service = createAiChatService({
+      credentialCoordinator: credentialCoordinator(),
+      fetchImpl,
+      readChatImage: async (_userId, assetId) => {
+        if (assetId === first) throw new Error('deleted')
+        return 'data:image/jpeg;base64,BBBB'
+      },
+      emit: () => undefined,
+    })
+    service.start({ ...startInput(), messages: [
+      { role: 'user', content: '', images: [first] },
+      { role: 'assistant', content: '看到了' },
+      { role: 'user', content: '再看这张', images: [second] },
+    ] })
+    await service.whenIdle()
+    expect(bodies[0].messages[0]).toEqual({ role: 'user', content: '（这里原本附了 1 张图片，已经找不到了）' })
+    expect(bodies[0].messages[2]).toMatchObject({ content: [{ type: 'text' }, { type: 'image_url', image_url: { url: 'data:image/jpeg;base64,BBBB' } }] })
+  })
+
+  it('refuses images on the one-shot canvas path', async () => {
+    const fetchImpl = vi.fn<TestFetch>()
+    const service = createAiChatService({ credentialCoordinator: credentialCoordinator(), fetchImpl, emit: () => undefined })
+    await expect(service.completeOnce({ group: 'codex-pro', model: 'gpt-5.4', messages: [{ role: 'user', content: 'x', images: [first] }] })).rejects.toThrow()
+    expect(fetchImpl).not.toHaveBeenCalled()
+  })
+})

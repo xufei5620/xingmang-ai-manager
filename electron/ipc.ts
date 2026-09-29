@@ -150,6 +150,7 @@ import { clearStaleUserProxyVariables, type StaleProxyClearResult } from './stal
 import { validatePaymentForm, validatePaymentQrCode, validatePaymentUrl, type PaymentWindowController } from './payment-window'
 import type { AccountStartupGate } from './account-startup-gate'
 import { parseAiChatHistoryScope, parseAiChatHistoryWrite, type AiChatHistoryStore } from './ai-chat-history-store'
+import type { ChatAttachmentService } from './ai-chat-attachments'
 import { createSensitiveClipboard } from './sensitive-clipboard'
 
 export type AppWindowMode = 'onboarding' | 'dashboard'
@@ -272,6 +273,7 @@ export interface IpcRegistrationOptions {
   imageService?: AiImageService
   aiAssets?: AiAssetStore
   chatHistory?: AiChatHistoryStore
+  chatAttachments?: ChatAttachmentService
   transformSystemSnapshot?: (snapshot: SystemSnapshot) => SystemSnapshot
   // Bundled 星芒AI skill: login copies the template into user skill roots and
   // writes the image-group key into config.json. Optional so existing IPC
@@ -1170,6 +1172,18 @@ function parseAccountChangePasswordInput(value: unknown, sub2Api = false): NewAp
   return { originalPassword: value.originalPassword, newPassword }
 }
 
+function parseAiChatMessageImages(value: unknown, role: unknown): string[] | undefined {
+  if (value === undefined) return undefined
+  if (!Array.isArray(value) || value.length > 4 || (value.length > 0 && role !== 'user')) throw new Error('AI聊天图片格式错误')
+  if (value.length === 0) return undefined
+  const images = value.map((image) => {
+    if (typeof image !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(image)) throw new Error('AI聊天图片格式错误')
+    return image
+  })
+  if (new Set(images).size !== images.length) throw new Error('AI聊天图片格式错误')
+  return images
+}
+
 function parseAiChatStartInput(value: unknown): AiChatStartInput {
   if (!isRecord(value)) throw new Error('AI聊天请求格式错误')
   if (!Array.isArray(value.messages) || value.messages.length === 0 || value.messages.length > 100) {
@@ -1179,9 +1193,12 @@ function parseAiChatStartInput(value: unknown): AiChatStartInput {
     if (!isRecord(message) || !['system', 'user', 'assistant'].includes(String(message.role))) {
       throw new Error('AI聊天消息格式错误')
     }
+    const images = parseAiChatMessageImages(message.images, message.role)
     return {
       role: message.role as 'system' | 'user' | 'assistant',
-      content: requiredString(message.content, 'AI聊天消息', 40_000),
+      // 只带图片、不写字的消息是允许的；其余消息仍然必须有字。
+      content: images && message.content === '' ? '' : requiredString(message.content, 'AI聊天消息', 40_000),
+      ...(images ? { images } : {}),
     }
   })
   if (value.parameters !== undefined && !isRecord(value.parameters)) throw new Error('AI聊天参数格式错误')
@@ -1349,6 +1366,8 @@ const ipcOperationLabels: Readonly<Record<string, string>> = {
   'account:set-remembered-login': '记住的登录凭据更新',
   'account:create-key': '星芒账号 Key 创建',
   'account:update-key': '星芒账号 Key 更新',
+  'chat:pick-images': '聊天图片选择',
+  'chat:paste-image': '聊天截图粘贴',
   'chat-history:read': '聊天记录读取',
   'chat-history:write': '聊天记录保存',
   'chat-history:export-text': '聊天对话导出',
@@ -1451,6 +1470,8 @@ const quietIpcSuccessChannels = new Set([
   'chat:copy-asset',
   'chat:save-asset',
   'chat:asset-menu',
+  'chat:pick-images',
+  'chat:paste-image',
 ])
 
 const quietIpcFailureChannels = new Set([
@@ -3355,6 +3376,18 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
         if (currentChatUserId() !== userId) throw new Error('账号已切换，请重新打开图片菜单')
       },
     )
+  })
+  // The picker and the clipboard are read here, never handed in by the
+  // renderer, so a compromised page cannot make the main process read an
+  // arbitrary path (same reasoning as the canvas' single drop channel).
+  registerTrustedHandler('chat:pick-images', (_event, remaining: unknown) => {
+    if (!options.chatAttachments) throw new Error('聊天图片服务未就绪')
+    if (typeof remaining !== 'number' || !Number.isSafeInteger(remaining)) throw new Error('聊天图片数量格式错误')
+    return options.chatAttachments.pick(currentChatUserId(), remaining)
+  })
+  registerTrustedHandler('chat:paste-image', () => {
+    if (!options.chatAttachments) throw new Error('聊天图片服务未就绪')
+    return options.chatAttachments.paste(currentChatUserId())
   })
   // Deliberately outside the chat: account gate. The window saves the old
   // account's last edits while an account switch is in progress, and history
