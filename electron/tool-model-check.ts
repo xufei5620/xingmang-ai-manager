@@ -1,4 +1,4 @@
-import { resolveDefaultCliModel } from './cli-model-defaults'
+import { resolveCliModelUpgrade, resolveDefaultCliModel } from './cli-model-defaults'
 import type { ProviderId } from './catalog'
 
 /**
@@ -14,6 +14,11 @@ export type ToolModelCheck =
   | { status: 'ok'; pickerRefreshed: boolean }
   /** replacement = null：这个账号一个能替的型号都挑不出来，界面只能照旧打开。 */
   | { status: 'unavailable'; model: string; replacement: string | null }
+  /**
+   * 配置里还是本软件以前写的默认型号，当前账号已经能用新一代默认（第十五批 6）。
+   * 每个新型号只问一次：问过就记下，不管用户换没换。
+   */
+  | { status: 'upgrade'; model: string; replacement: string }
 
 export interface ToolModelCheckTarget {
   apiKey: string
@@ -34,6 +39,10 @@ export interface ToolModelCheckDependencies {
    * 写入那一刻认的必须还是开始核对时那个账号那份配置（#538）。
    */
   refreshPicker(model: string, assertCurrent: () => void): Promise<void>
+  /** 这个工具的这个新型号问没问过（记在应用设置里，重启、换账号都不再问）。缺省 = 不问。 */
+  upgradeOffered?(provider: ProviderId, model: string): boolean
+  /** 记下已经问过；记不下来就这次也不问，免得每次打开都弹。 */
+  markUpgradeOffered?(provider: ProviderId, model: string): Promise<void>
   log?(level: 'info' | 'warn', event: string, message: string, detail?: Record<string, unknown>): void
   /** 模型接口最多等这么久；打开工具的人在等，不能按保存配置时那 12 秒算。 */
   listTimeoutMs?: number
@@ -108,6 +117,8 @@ export function createToolModelChecker(deps: ToolModelCheckDependencies) {
       deps.log?.('warn', 'tool-models.unavailable', '工具里的默认模型当前账号已经用不了', { provider, model: target.model, replacement })
       return { status: 'unavailable', model: target.model, replacement }
     }
+    const upgrade = await offerUpgrade(provider, target.model, models)
+    if (upgrade) return stillCurrent() ? upgrade : staleResult()
     if (provider !== 'claude') return { status: 'ok', pickerRefreshed: false }
     let outdated: boolean
     try {
@@ -127,6 +138,20 @@ export function createToolModelChecker(deps: ToolModelCheckDependencies) {
     }
     deps.log?.('info', 'tool-models.picker-refreshed', 'Claude Code 的模型菜单已按当前账号能用的模型刷新', { models: models.length })
     return { status: 'ok', pickerRefreshed: true }
+  }
+
+  async function offerUpgrade(provider: ProviderId, model: string, models: readonly string[]): Promise<ToolModelCheck | null> {
+    const replacement = resolveCliModelUpgrade(provider, model, models)
+    if (!replacement || !deps.upgradeOffered || !deps.markUpgradeOffered) return null
+    try {
+      if (deps.upgradeOffered(provider, replacement)) return null
+      await deps.markUpgradeOffered(provider, replacement)
+    } catch (error) {
+      deps.log?.('warn', 'tool-models.upgrade-mark-failed', '没能记下「问过换新型号」，这次不问', { provider, reason: errorText(error) })
+      return null
+    }
+    deps.log?.('info', 'tool-models.upgrade-offered', '当前账号能用更新的默认型号，打开前问一次', { provider, model, replacement })
+    return { status: 'upgrade', model, replacement }
   }
 
   return { check }

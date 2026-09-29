@@ -521,6 +521,20 @@ describe('UI and window preferences', () => {
     expect(readAppSettings(filePath)).not.toHaveProperty('trayHintShown')
   })
 
+  it('only ever adds to the offered model upgrade list and drops malformed entries', async () => {
+    const filePath = temporarySettingsPath()
+    await writeAppSettings(filePath, settings())
+    expect(readAppSettings(filePath)).not.toHaveProperty('offeredModelUpgrades')
+    await updateAppSettings(filePath, { version: 2, offeredModelUpgrades: ['claude:claude-opus-5-5'] })
+    await updateAppSettings(filePath, { version: 2, offeredModelUpgrades: ['codex:gpt-7', 'claude:claude-opus-5-5'] })
+    await updateAppSettings(filePath, { version: 2, closeBehavior: 'tray' })
+    expect(readAppSettings(filePath).offeredModelUpgrades).toEqual(['claude:claude-opus-5-5', 'codex:gpt-7'])
+    fs.writeFileSync(filePath, JSON.stringify({ ...settings(), offeredModelUpgrades: ['claude:claude-opus-5-5', 'no colon', 42, '../x:y'] }), 'utf8')
+    expect(readAppSettings(filePath).offeredModelUpgrades).toEqual(['claude:claude-opus-5-5'])
+    fs.writeFileSync(filePath, JSON.stringify({ ...settings(), offeredModelUpgrades: 'claude:claude-opus-5-5' }), 'utf8')
+    expect(readAppSettings(filePath)).not.toHaveProperty('offeredModelUpgrades')
+  })
+
   it('migrates old v2 records to the first-run light and mist appearance', async () => {
     const filePath = temporarySettingsPath()
     await writeAppSettings(filePath, settings())

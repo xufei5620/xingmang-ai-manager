@@ -119,7 +119,7 @@ describe('buildConnectionProbe', () => {
     const build = buildConnectionProbe('claude', xmSite, inspection({ model: '' }))
     expect(build.kind).toBe('probe')
     if (build.kind !== 'probe') return
-    expect(build.plan.model).toBe('claude-opus-5')
+    expect(build.plan.model).toBe('claude-opus-5-5')
   })
 
   it('probes the other three CLIs with the read-only model catalogue their own base URL implies', () => {
