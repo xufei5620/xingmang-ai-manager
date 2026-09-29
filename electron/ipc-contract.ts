@@ -699,6 +699,12 @@ export interface XingmangInvokeContract {
     AccountSourceSwitchResult
   >
   /**
+   * 首页「修好它」（提醒设置要修）：先备份，只把本软件写进这家配置、却指向旧位置的
+   * 钩子与状态行改成这次的路径（这台电脑写不出来就收回），写完再查一遍。Key、模型和
+   * 用户自己写的钩子不动。
+   */
+  repairCliHooks: IpcInvokeDefinition<'config:repair-cli-hooks', [provider: ProviderId], ConfigSaveResult>
+  /**
    * 换账号把 Key 写进这些工具之后，看哪些还开着（Codex 连同桌面端），只对开着的
    * 提醒关掉重开。只读，不改任何东西；检测不出来的归到 unknown，不抛错。
    */
@@ -1178,6 +1184,7 @@ export const ipcInvokeChannels = {
   launchExternalClient: 'external-clients:launch',
   switchToOfficialAccount: 'config:switch-to-official-account',
   switchAccountSource: 'config:switch-account-source',
+  repairCliHooks: 'config:repair-cli-hooks',
   inspectRunningTools: 'tools:inspect-running',
   checkToolModels: 'tools:check-models',
   chooseWorkspace: 'workspace:choose',

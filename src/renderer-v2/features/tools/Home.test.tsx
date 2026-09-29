@@ -556,6 +556,34 @@ describe('renderer-v2 home missing runtime guidance on macOS', () => {
     })
   })
 
+  // 卸载后换了文件夹重装、挪了软件、换装了 Node.js：写进工具里的提醒设置还指着旧位置，每一轮都报一行错。
+  describe('reminder settings that point at an old location', () => {
+    function staleSnapshot(): ToolboxSnapshot {
+      const base = snapshot({ claude: cliStatus, codex: cliStatus, grok: cliStatus, gemini: cliStatus })
+      return {
+        ...base,
+        config: {
+          ...base.config,
+          providers: { ...base.config.providers, claude: { ...providerConfig, configurationOwnership: 'account', cliHooksStale: true } },
+        },
+      } as unknown as ToolboxSnapshot
+    }
+
+    it('says the reminder settings need fixing, offers the fix and still opens the tool', () => {
+      const markup = render({}, undefined, { snapshot: staleSnapshot(), onRepairHooks: () => undefined })
+      expect(markup).toContain('提醒设置要修')
+      expect(markup).toContain('工具里的提醒设置指向了旧位置，每次都会多报一行错')
+      expect(markup).toContain('data-testid="tool-claude-repair-hooks"')
+      expect(markup).toMatch(/data-testid="tool-claude-primary"[^>]*>(?:<[^>]+>)*打开/)
+      expect(markup).not.toContain('data-testid="tool-codex-repair-hooks"')
+    })
+
+    it('shows no fix button when the host offers none', () => {
+      const markup = render({}, undefined, { snapshot: staleSnapshot() })
+      expect(markup).not.toContain('data-testid="tool-claude-repair-hooks"')
+    })
+  })
+
   // 以前用 CC Switch 配过的电脑：登录后软件不改来源没确认的配置，工具还连着以前那家，
   // 以前首页只挂一个中性的「用的是别处的配置」。现在要说清是 CC Switch，并给一颗按钮。
   describe('a tool still configured by CC Switch', () => {

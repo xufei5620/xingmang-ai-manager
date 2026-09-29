@@ -181,7 +181,7 @@
         Return
       ${EndIf}
       Push $R0
-      DetailPrint "正在还原系统代理，并移除开机启动项。"
+      DetailPrint "正在还原系统代理，移除开机启动项，并收回写进 AI 工具里的提醒设置。"
       ClearErrors
       ${If} $xingmangClearLogin == "1"
         DetailPrint "正在清除登录记录。"
@@ -192,7 +192,7 @@
       ${If} ${Errors}
         DetailPrint "卸载清理没能启动，可以忽略，不影响卸载。"
       ${ElseIf} $R0 == 32
-        DetailPrint "这次是用另一个管理员账号卸载的，原来那个账号的开机启动项和登录记录没有动。"
+        DetailPrint "这次是用另一个管理员账号卸载的，原来那个账号的开机启动项、登录记录和工具里的提醒设置都没有动。"
       ${ElseIf} $R0 != 0
         # 退出码只给排查的人看，单独一行，不混进给用户读的那句。
         DetailPrint "卸载清理已完成，有几项没清掉，不影响卸载。"

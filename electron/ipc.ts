@@ -2045,6 +2045,13 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
       if (accountSourceSwitches.get(provider)?.promise === promise) accountSourceSwitches.delete(provider)
     }
   })
+  registerTrustedHandler('config:repair-cli-hooks', async (_event, provider: unknown) => {
+    if (!isProviderId(provider)) throw new Error('未知的 CLI 类型')
+    if (!service.repairCliHooks) throw new Error('这个版本还不能修提醒设置')
+    // 和保存配置同一份备份：「备份」页里能找回改之前的样子。
+    options.backupStore.create(provider, 'pre-save', undefined, await readBackupAccountContext())
+    return service.repairCliHooks(provider)
+  })
   async function switchAccountSourceOnce(provider: ProviderId, target: 'account' | 'official') {
     if (target === 'account' && !accountService.getSessionState().account?.userId) throw new Error('请先登录账号，再改用当前账号')
     // 与备份页同一套账号上下文：备份里记下哪些 Key 是当前账号签发的，回滚后

@@ -55,7 +55,7 @@ import {
   resolveSameUserNpmPrefix,
 } from './npm-user-prefix'
 import { buildClaudeStatusLineCommand } from './claude-status-line'
-import { buildCliHookInvocation, cliHookEventsDirectory, type CliHookInvocation } from './cli-hooks'
+import { buildCliHookInvocation, cliHookEventsDirectory, cliHookTargetsStale, type CliHookInvocation } from './cli-hooks'
 import { isCodexDesktopExecutable } from './codex-desktop'
 import {
   createCodexDesktopService,
@@ -70,11 +70,13 @@ import {
   inspectCodexWorkspacePermissions,
   inspectOfficialLogin,
   claudeModelPickerNeedsRefresh,
+  inspectManagedCliHookTargets,
   inspectProviderConfig,
   managedProviderLaunchBlockedMessage,
   moveClaudeConsoleKeyAside,
   readCodexAuthTokens,
   restoreClaudeConsoleKey,
+  rewriteManagedCliHooks,
   saveProviderConfig,
   switchProviderToOfficialAccount,
   trustCodexWorkspace,
@@ -867,6 +869,11 @@ export interface SystemService {
   restoreOfficialCredentials?(provider: ProviderId): Promise<void>
   /** 这台电脑上是否已有这个 CLI 的官方登录，null = 看不出来；可选 = 旧实现不提供。 */
   inspectOfficialLogin?(provider: ProviderId): boolean | null
+  /**
+   * 首页「修好它」：把本软件写进这家配置、却指向旧位置的钩子与状态行改成这次的路径
+   * （这台电脑写不出来就收回），写完再查一遍；还是旧的就抛中文原因。可选 = 旧实现不提供。
+   */
+  repairCliHooks?(provider: ProviderId): Promise<ReturnType<typeof saveProviderConfig>>
   /** 备份恢复成功之后调用；`isAccountKey` 判断一把 Key 是不是当前账号由本软件签发的。 */
   adoptRestoredConfig(provider: ProviderId, isAccountKey: (apiKey: string) => boolean): Promise<void>
   scanSystem(forceRefresh?: boolean): Promise<SystemSnapshot>
@@ -5234,6 +5241,7 @@ export function createSystemService(
             configurationAccountMatched: Boolean(owner) && current.hasApiKey && current.matchesRelay
               && cachedKeys.some((entry) => entry.provider === id && entry.key === current.apiKey),
             ...ccSwitchLeftoverField(resolveCcSwitchLeftover(current, ccSwitchInstalled)),
+            cliHooksStale: !previewOnboarding && cliHooksStale(id),
           }]
         }),
       ) as Record<ProviderId, NativeConfigSummary>,
@@ -5306,6 +5314,33 @@ export function createSystemService(
     } catch {
       return undefined
     }
+  }
+
+  /** 本软件写进这家配置的钩子、状态行有没有指向旧位置（cli-hooks.ts cliHookTargetsStale）。读不出来按没有算。 */
+  function cliHooksStale(provider: ProviderId): boolean {
+    try {
+      return cliHookTargetsStale(
+        inspectManagedCliHookTargets(provider, providerRoots),
+        [serviceOptions.cliHookScriptPath, serviceOptions.claudeStatusLineScriptPath],
+      )
+    } catch {
+      return false
+    }
+  }
+
+  async function repairCliHooks(provider: ProviderId): Promise<ReturnType<typeof saveProviderConfig>> {
+    // 找 node 要读 PATH，放在排队之前；与 saveConfig 同一个次序。
+    const cliHook = await resolveCliHookInvocation()
+    const claudeStatusLineCommand = await resolveClaudeStatusLineCommand(provider)
+    return serializeConfigWrite(async () => {
+      const result = rewriteManagedCliHooks(provider, providerRoots, { cliHook, claudeStatusLineCommand })
+      if (cliHooksStale(provider)) throw new Error('提醒设置没修好，原来的设置已备份，可以在「备份」里找回')
+      runtimeLog?.log('info', 'config', 'cli-hooks.repaired', '已把工具里的提醒设置改到这次安装的位置', {
+        provider,
+        rewritten: Boolean(cliHook),
+      })
+      return result
+    })
   }
 
   async function saveConfig(
@@ -5512,6 +5547,7 @@ export function createSystemService(
     getConfig: buildConfigSummary,
     revealApiKey,
     saveConfig,
+    repairCliHooks,
     switchToOfficialAccount,
     setOfficialSourcePreference,
     restoreOfficialCredentials,

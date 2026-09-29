@@ -259,6 +259,14 @@ export function codexNeedsRepair(config: Pick<ProviderConfigSummary, 'codexProvi
   return provider === 'codex' && config.codexProviderShadowed === true
 }
 
+/**
+ * 本软件写进这个工具的提醒设置（钩子、状态行）指向了不存在或不是这次安装的程序、脚本
+ * （主进程 cliHooksStale）。只影响终端里多不多报一行错，连不连得上照旧。
+ */
+export function cliHooksNeedRepair(config: Pick<ProviderConfigSummary, 'cliHooksStale'>): boolean {
+  return config.cliHooksStale === true
+}
+
 /** 修好那一处之后能不能直接打开：「打开」前先修只在修完就能用时替用户做。 */
 export function readyOnceRepaired(
   config: ProviderConfigSummary,
