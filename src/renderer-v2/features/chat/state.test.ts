@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { networkFailureMessages } from '../../../../electron/network-failure'
 import { relayQuotaFailureMessages } from '../../../../electron/relay-quota-failure'
-import { activeConversation, applyStreamEvent, chatErrorAction, chatErrorMessage, createConversation, createWorkspace, DEFAULT_CHAT_GROUP, DEFAULT_CHAT_MODEL, DEFAULT_IMAGE_MODEL, defaultChatSettings, filterConversations, planTurn, resolveChatGroup, resolveChatModel, saveConversation, shouldSendOnEnter, type ChatMessage, type ChatWorkspace } from './state'
+import { activeConversation, applyStreamEvent, chatErrorAction, chatErrorMessage, continueInNewConversation, conversationContextShare, conversationReplyTooLongMessage, conversationTooLongMessage, createConversation, createWorkspace, DEFAULT_CHAT_GROUP, DEFAULT_CHAT_MODEL, DEFAULT_IMAGE_MODEL, defaultChatSettings, filterConversations, isConversationTooLongMessage, planTurn, resolveChatGroup, resolveChatModel, saveConversation, shouldSendOnEnter, shouldShowLengthNotice, type ChatMessage, type ChatWorkspace } from './state'
 import { createParameterDraft, parseParameters } from './parameters'
 import { historyKey, importLegacyHistory, parseHistorySnapshot, planHistoryWrite, readWorkspace } from './storage'
 import { chatLimits, inspectModel, validateImageRequest } from './api'
@@ -42,10 +42,52 @@ describe('v2 chat request transitions', () => {
     const long = 'a'.repeat(chatLimits.messageLength + 1)
     const completed = { ...first.conversation, messages: first.conversation.messages.map((message) => message.role === 'assistant' ? { ...message, status: 'complete' as const, content: long } : message) }
     const next = () => planTurn(completed, { prompt: 'next question', requestId: 'request-2', assistantId: 'assistant-2', userMessageId: 'user-2' })
-    expect(next).toThrow('这段对话里有一条回复太长，请新建对话后继续')
+    expect(next).toThrow(conversationReplyTooLongMessage)
     let thrown: unknown
     try { next() } catch (error) { thrown = error }
-    expect(chatErrorMessage(thrown)).toBe('这段对话里有一条回复太长，请新建对话后继续')
+    expect(chatErrorMessage(thrown)).toBe(conversationReplyTooLongMessage)
+    expect(isConversationTooLongMessage(chatErrorMessage(thrown))).toBe(true)
+  })
+  it('stops a conversation past the context limit with a message that offers to move on', () => {
+    const conversation = readyConversation()
+    conversation.messages = Array.from({ length: chatLimits.messageCount }, (_, index): ChatMessage => ({ id: `m-${index}`, role: index % 2 ? 'assistant' : 'user', content: `line ${index}`, reasoning: '', status: 'complete', createdAt: index }))
+    let thrown: unknown
+    try { planTurn(conversation, { prompt: 'one more', requestId: 'r', assistantId: 'a', userMessageId: 'u' }) } catch (error) { thrown = error }
+    expect(chatErrorMessage(thrown)).toBe(conversationTooLongMessage)
+    expect(isConversationTooLongMessage(conversationTooLongMessage)).toBe(true)
+    expect(isConversationTooLongMessage('请求太频繁，请稍候再试')).toBe(false)
+  })
+  it('warns once a text conversation carries seven tenths of either limit and stays quiet after it is dismissed', () => {
+    const conversation = readyConversation()
+    const lines = (count: number) => Array.from({ length: count }, (_, index): ChatMessage => ({ id: `m-${index}`, role: index % 2 ? 'assistant' : 'user', content: 'x', reasoning: '', status: 'complete', createdAt: index }))
+    expect(shouldShowLengthNotice({ ...conversation, messages: lines(69) })).toBe(false)
+    expect(shouldShowLengthNotice({ ...conversation, messages: lines(70) })).toBe(true)
+    const heavy = [{ ...lines(1)[0], content: 'x'.repeat(chatLimits.totalMessageLength * 0.7) }]
+    expect(conversationContextShare({ ...conversation, messages: heavy })).toBeCloseTo(0.7)
+    expect(shouldShowLengthNotice({ ...conversation, messages: heavy })).toBe(true)
+    // Failed replies and generated images are never sent back, so they must not count towards the warning.
+    const failed = lines(80).map((message) => message.role === 'assistant' ? { ...message, status: 'error' as const } : message)
+    expect(shouldShowLengthNotice({ ...conversation, messages: failed })).toBe(false)
+    expect(shouldShowLengthNotice({ ...conversation, messages: lines(70), lengthNoticeDismissed: true })).toBe(false)
+    expect(shouldShowLengthNotice({ ...conversation, settings: { ...conversation.settings, mode: 'image' }, messages: lines(70) })).toBe(false)
+  })
+  it('opens a new conversation with the same settings and moves the unsent text without sending it', () => {
+    const state = createWorkspace('owner')
+    const source = { ...readyConversation(), draft: 'unsent question', messages: [{ id: 'm', role: 'user' as const, content: 'old', reasoning: '', status: 'complete' as const, createdAt: 1 }] }
+    source.settings.parameters = { temperature: 0.3 }
+    state.conversations = [source]
+    state.activeId = source.id
+    const moved = continueInNewConversation(state, source.id, source.draft, true)
+    const next = activeConversation(moved)
+    expect(next.id).not.toBe(source.id)
+    expect(next).toMatchObject({ draft: 'unsent question', messages: [], settings: { group: 'group-a', model: 'gpt-test', parameters: { temperature: 0.3 } } })
+    expect(next.settings.parameters).not.toBe(source.settings.parameters)
+    expect(moved.conversations.find((item) => item.id === source.id)).toMatchObject({ draft: '', messages: source.messages })
+    // Text carried out of the edit dialog leaves the source draft alone.
+    const edited = continueInNewConversation(state, source.id, 'edited text', false)
+    expect(activeConversation(edited).draft).toBe('edited text')
+    expect(edited.conversations.find((item) => item.id === source.id)?.draft).toBe('unsent question')
+    expect(continueInNewConversation(state, 'missing', 'x', true)).toBe(state)
   })
   it('does not append a second user message when retrying and keeps the original model snapshot', () => {
     const first = turn()

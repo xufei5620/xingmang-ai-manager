@@ -84,7 +84,7 @@ function readConversation(value: unknown): Conversation {
   if (!conversation || !Array.isArray(conversation.messages)) throw new ChatStorageError('聊天对话格式无效，原始记录已保留')
   const messages = conversation.messages.map(readMessage)
   assertUniqueIds(messages)
-  return { id: id(conversation.id), title: text(conversation.title) || '新对话', createdAt: timestamp(conversation.createdAt), updatedAt: timestamp(conversation.updatedAt), draft: text(conversation.draft), settings: readSettings(conversation.settings), messages }
+  return { id: id(conversation.id), title: text(conversation.title) || '新对话', createdAt: timestamp(conversation.createdAt), updatedAt: timestamp(conversation.updatedAt), draft: text(conversation.draft), settings: readSettings(conversation.settings), messages, ...(conversation.lengthNoticeDismissed === true ? { lengthNoticeDismissed: true } : {}) }
 }
 function parseWorkspace(raw: string, scope: string): ChatWorkspace {
   const parsed = object(JSON.parse(raw))
