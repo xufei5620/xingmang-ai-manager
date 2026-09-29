@@ -134,6 +134,21 @@ describe('renderer-v2 start guide first run', () => {
     expect(markup).not.toMatch(/Node\.js 和 Python|PATH|LTS/)
   })
 
+  it('warns before installing the Codex desktop app on an account that cannot open store apps', () => {
+    stubResumedGuide('codexDesktop', 'prepare')
+    const markup = render([guideTool({ id: 'codexDesktop', installed: false, configured: false, source: 'none', installMode: 'managed', storeAppLaunchBlock: 'builtInAdministrator' })])
+    expect(markup).toContain('data-testid="guide-store-app-notice"')
+    expect(markup).toContain('「Administrator」账户')
+    // 只提醒，不拦：「安装」照样能点
+    expect(markup).toMatch(/<button[^>]*data-testid="guide-install"(?![^>]*disabled)/)
+  })
+
+  it('says nothing extra for an ordinary account or once the desktop app is installed', () => {
+    stubResumedGuide('codexDesktop', 'prepare')
+    expect(render([guideTool({ id: 'codexDesktop', installed: false, configured: false, source: 'none', installMode: 'managed' })])).not.toContain('data-testid="guide-store-app-notice"')
+    expect(render([guideTool({ id: 'codexDesktop', storeAppLaunchBlock: 'uacDisabled' })])).not.toContain('data-testid="guide-store-app-notice"')
+  })
+
   // 工具已经装了、Node 却太旧：这时没有「安装」可点，运行环境那一行必须留着自己的按钮。
   it('keeps the runtime button when the tool is installed but its runtime is not ready', () => {
     stubResumedGuide('claude', 'prepare')
