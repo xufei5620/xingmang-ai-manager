@@ -38,6 +38,9 @@ function createInstallFixture(options: {
   lease?: Partial<DownloadAccelerationLease>
   acquire?: () => Promise<DownloadAccelerationLease>
   mirrorPolicy?: 'mirror-first' | 'official-first'
+  platform?: NodeJS.Platform
+  subprocessProxy?: NodeJS.ProcessEnv
+  probeLoopbackProxy?: SystemServiceOptions['probeLoopbackProxy']
 } = {}) {
   const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-download-acceleration-'))
   temporaryDirectories.push(temporaryRoot)
@@ -99,12 +102,13 @@ function createInstallFixture(options: {
   const acquire = vi.fn(options.acquire ?? (async () => lease))
   const settingsStore = new AppSettingsStore(path.join(root, 'settings.json'), root)
   const service = createSystemService(settingsStore, {
-    platform: 'linux',
+    platform: options.platform ?? 'linux',
     windowsExecutionMode: 'same-user',
     runCommand: runCommand as unknown as SystemServiceOptions['runCommand'],
     findExecutable: vi.fn(async (command: string) => command === 'npm' ? npmExecutable : null),
-    resolveSubprocessProxyEnvironment: async () => ({ HTTPS_PROXY: 'http://127.0.0.1:7890' }),
+    resolveSubprocessProxyEnvironment: async () => options.subprocessProxy ?? { HTTPS_PROXY: 'http://127.0.0.1:7890' },
     acquireDownloadAcceleration: acquire,
+    probeLoopbackProxy: options.probeLoopbackProxy,
   })
   const target = { isDestroyed: () => false, send: vi.fn() as unknown as (channel: string, payload: unknown) => void }
   return { service, settingsStore, target, registries, subprocessEnvironments, acquire, release }
@@ -162,5 +166,26 @@ describe('installing a CLI with download acceleration', () => {
     const fixture = createInstallFixture()
     await fixture.service.installCli('claude', fixture.target).catch(() => undefined)
     expect(fixture.subprocessEnvironments[0]?.HTTPS_PROXY).toBe('http://127.0.0.1:7890')
+  })
+
+  it('leaves out a proxy setting that points at a closed local port when npm runs on Windows', async () => {
+    vi.stubEnv('HTTPS_PROXY', 'http://127.0.0.1:7899')
+    vi.stubEnv('ALL_PROXY', 'http://127.0.0.1:1080')
+    const probe = vi.fn(async (target: { port: number }) => target.port === 1080)
+    const fixture = createInstallFixture({ platform: 'win32', subprocessProxy: {}, probeLoopbackProxy: probe })
+    await fixture.service.installCli('claude', fixture.target).catch(() => undefined)
+    const env = fixture.subprocessEnvironments[0]
+    expect(env).toBeDefined()
+    expect(Object.keys(env ?? {}).some((key) => key.toUpperCase() === 'HTTPS_PROXY')).toBe(false)
+    expect(env?.ALL_PROXY).toBe('http://127.0.0.1:1080')
+  })
+
+  it('keeps the proxy settings untouched for npm outside Windows', async () => {
+    vi.stubEnv('HTTPS_PROXY', 'http://127.0.0.1:7899')
+    const probe = vi.fn(async () => false)
+    const fixture = createInstallFixture({ subprocessProxy: {}, probeLoopbackProxy: probe })
+    await fixture.service.installCli('claude', fixture.target).catch(() => undefined)
+    expect(fixture.subprocessEnvironments[0]?.HTTPS_PROXY).toBe('http://127.0.0.1:7899')
+    expect(probe).not.toHaveBeenCalled()
   })
 })

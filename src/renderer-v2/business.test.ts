@@ -223,7 +223,8 @@ describe('v2 business boundaries', () => {
   it('routes actionable diagnostic categories to their owning page', () => {
     expect(diagnosticTarget('PROVIDER_CODEX')).toBe('home')
     expect(diagnosticTarget('XINGMANG_NETWORK')).toBe('settings')
-    expect(diagnosticTarget('PROXY_ENVIRONMENT')).toBe('settings')
+    // 设置页没有能处理它的东西；能清的那种在行里直接给按钮。
+    expect(diagnosticTarget('PROXY_ENVIRONMENT')).toBeNull()
     expect(diagnosticTarget('CLASH_VERGE_TUN')).toBe('settings')
     expect(diagnosticTarget('RUNTIME_NODE')).toBe('maintenance')
     expect(diagnosticTarget('RUNTIME_PYTHON')).toBe('maintenance')

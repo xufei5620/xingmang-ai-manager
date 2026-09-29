@@ -33,6 +33,7 @@ import {
   BrandIcon,
   Button,
   Card,
+  Confirm,
   Dialog,
   Drawer,
   Input,
@@ -77,6 +78,7 @@ import { elevatedInstallNotice } from './features/tools/elevation-notice'
 import { ToolStatusMeta, ToolStatusReason } from './features/tools/ToolStatusMeta'
 import { connectionCheckView } from './features/tools/connection-check'
 import { diagnosticDetailRows } from './features/app/diagnostic-details'
+import { canClearStaleProxy, staleProxyClearMessage, staleProxyConfirmBody } from './features/app/stale-proxy'
 import { requestSettingsGroup, takeSettingsGroup } from './features/app/settings-group-intent'
 import { parseImportedConversations } from './features/chat/storage'
 import type { ChatTransfer } from './features/chat/transfer'
@@ -198,9 +200,11 @@ export function withElevationNotice(lead: string, notice: string | null): string
 export function diagnosticTarget(code: string): V2Page | null {
   // 文件夹被搬过没有能在软件里一键修的地方，下一步是导出报告找客服。
   if (code === 'FOLDER_RELOCATED') return 'feedback'
-  // 这三项在「设置」的「网络」组，跳过去时由 diagnosticFix 指定落在那一组。
-  if (code === 'XINGMANG_NETWORK' || code === 'PROXY_ENVIRONMENT' || code === 'CLASH_VERGE_TUN')
+  // 这两项在「设置」的「网络」组，跳过去时由 diagnosticFix 指定落在那一组。
+  if (code === 'XINGMANG_NETWORK' || code === 'CLASH_VERGE_TUN')
     return 'settings'
+  // 电脑里的代理设置在设置页没有能处理它的东西；能清的那种在行里直接给「清掉这条旧设置」。
+  if (code === 'PROXY_ENVIRONMENT') return null
   // 环境变量要用户自己在系统里删，软件里没有对应的开关。
   if (code === 'PROVIDER_ENVIRONMENT_OVERRIDE') return null
   if (
@@ -303,6 +307,7 @@ export function HealthPage({
   const resource = useResource(load)
   const operation = useOperation()
   const [details, setDetails] = useState<Diagnostic | null>(null)
+  const [proxyClearItem, setProxyClearItem] = useState<Diagnostic | null>(null)
   const [connections, setConnections] = useState<ConnectionRow[] | null>(null)
   const [connectionBusy, setConnectionBusy] = useState(false)
   const loadConnections = async () => {
@@ -355,6 +360,16 @@ export function HealthPage({
     } finally {
       setConnectionBusy(false)
     }
+  }
+  // 清掉之后重新检查一遍，那一行立刻变成新的结论；结果那句话留在页头。
+  const clearStaleProxy = async () => {
+    await operation.execute('清掉旧的代理设置', async () => {
+      const result = await api.clearStaleProxySettings()
+      setProxyClearItem(null)
+      void resource.reload()
+      return result
+    }, staleProxyClearMessage)
+    setProxyClearItem(null)
   }
   const fix = (item: Diagnostic) => {
     const provider = item.code.replace('PROVIDER_', '').toLowerCase()
@@ -470,6 +485,16 @@ export function HealthPage({
               desc={item.summary}
               actions={
                 <>
+                  {canClearStaleProxy(item) && (
+                    <Button
+                      size="sm"
+                      icon={Trash2}
+                      onClick={() => setProxyClearItem(item)}
+                      testId="health-clear-stale-proxy"
+                    >
+                      清掉这条旧设置
+                    </Button>
+                  )}
                   {item.state !== 'pass' && diagnosticHasFix(item.code) && (
                     <Button
                       size="sm"
@@ -520,6 +545,16 @@ export function HealthPage({
             导出检查报告
           </Button>
         }
+      />
+      <Confirm
+        open={Boolean(proxyClearItem)}
+        title="清掉这条旧的代理设置？"
+        body={staleProxyConfirmBody(proxyClearItem?.details)}
+        okLabel="清掉"
+        loading={operation.busy === '清掉旧的代理设置'}
+        onOk={() => void clearStaleProxy()}
+        onClose={() => setProxyClearItem(null)}
+        testId="health-clear-stale-proxy-confirm"
       />
       <Drawer
         open={Boolean(details)}

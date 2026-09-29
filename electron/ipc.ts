@@ -146,6 +146,7 @@ import type { RuntimeLogStore } from './runtime-log'
 import { createExternalShellLauncher, type ExternalShellLauncher } from './system-shell'
 import { isNetworkSettingsKind, type NetworkSettingsKind, type ProxyBypassOutcome } from './proxy-bypass'
 import { platformCapabilitiesFor } from './platform-capabilities'
+import { clearStaleUserProxyVariables, type StaleProxyClearResult } from './stale-proxy-environment'
 import { validatePaymentForm, validatePaymentQrCode, validatePaymentUrl, type PaymentWindowController } from './payment-window'
 import type { AccountStartupGate } from './account-startup-gate'
 import { parseAiChatHistoryScope, parseAiChatHistoryWrite, type AiChatHistoryStore } from './ai-chat-history-store'
@@ -179,6 +180,8 @@ export interface IpcRegistrationOptions {
     checkConnection(provider: ProviderId): Promise<ConnectionCheckResult>
     checkExternalConnection(tool: ExternalToolId): Promise<ExternalClientCheckResult>
     exportLatest(): string
+    /** 检查页「清掉这条旧设置」；缺省 = stale-proxy-environment.ts 的真实现。 */
+    clearStaleProxy?(): Promise<StaleProxyClearResult>
   }
   runtimeLog: RuntimeLogStore
   extensionService: CodexExtensionService
@@ -1277,6 +1280,7 @@ const ipcOperationLabels: Readonly<Record<string, string>> = {
   'diagnostics:check-connection': '连接自检',
   'diagnostics:check-external-connection': '客户端连接自检',
   'diagnostics:export': '诊断报告导出',
+  'diagnostics:clear-stale-proxy': '清掉旧的代理设置',
   'runtime-logs:list': '运行日志读取',
   'runtime-logs:copy-feedback': '脱敏反馈文本复制',
   'runtime-logs:export-feedback': '反馈报告导出',
@@ -3445,6 +3449,10 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
         managedCliGroups,
         previewOnboarding: options.previewOnboarding })
     })()
+  })
+  registerTrustedHandler('diagnostics:clear-stale-proxy', () => {
+    const clear = options.diagnosticsService.clearStaleProxy ?? (() => clearStaleUserProxyVariables())
+    return clear()
   })
 
   return () => {
