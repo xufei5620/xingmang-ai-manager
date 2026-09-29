@@ -826,6 +826,7 @@ const fixtureReadinessConsumers = [
   'e2e/ui-interactions.test.mjs',
   'src/renderer-v2/testing/app-check.mjs',
   'src/renderer-v2/features/auth/browser-check.mjs',
+  'src/renderer-v2/features/tools/account-bound-launch.browser-check.mjs',
   'e2e/v2-business.test.mjs',
   'e2e/app-v3-interactions.test.mjs',
   'scripts/audit/renderer-v2-gap-audit.mjs',

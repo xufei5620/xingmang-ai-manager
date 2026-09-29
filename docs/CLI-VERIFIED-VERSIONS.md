@@ -138,6 +138,8 @@ Codex 那时 `recommended` 是 `null`，也就是那两天点过「更新」的�
 | Gemini 后台功能用的型号 | `modelConfigs.customOverrides` | 联网搜索、读网页、压缩、子代理、会话摘要、Auto 各自写死 Google 官方型号名 | 这批官方型号名统一改写成当前配的中转型号（只在星芒来源下写，切回官方删掉） | 中转没有这些型号时，这些功能默默重试几分钟后失败 |
 | Grok 画图与视频工具的地址 | `~/.grok/config.toml` 的 `[endpoints] xai_api_base_url` | `https://api.x.ai/v1` | 与对话同一个中转地址 | 这几个工具带的是同一把 `api_key`，不改就把中转 Key 发给 xAI 官方，国内还要卡 120 秒 |
 | Codex 的使用统计 | `~/.codex/config.toml` 的 `[analytics] enabled` | 开（发往 `ab.chatgpt.com`） | `false`（用户写过就不动；切回 ChatGPT 且没有官方快照时收回） | 国内连不上，`codex exec` 每次退出前要等约 10 秒 |
+| Codex 干活时不让电脑睡 | `~/.codex/config.toml` 的 `[features] prevent_idle_sleep` | 关（0.156.1 实验功能） | `true`（用户写过就不动；切回 ChatGPT 不收回） | 只在一轮进行中生效；笔记本跑长任务睡着，连接断了这一轮就白扣 |
+| Codex 在 Windows 上的沙箱档位 | `~/.codex/config.toml` 的 `[windows] sandbox`（只在 Windows 上写） | 未设：第一次跑命令弹英文沙箱设置，推荐档还要一次管理员确认 | `"unelevated"`（用户写过就不动；切回 ChatGPT 不收回） | `sandbox_mode` 仍是 `workspace-write`，只是换成不需要提权的实现；按 0.156.1 源码（`tui/src/app/platform_actions.rs`）配了档位就不再弹引导，**Windows 真机没验证** |
 | Claude 里别家中转留下的设置 | `~/.claude/settings.json` 的 `env.ANTHROPIC_API_KEY` / `ANTHROPIC_MODEL` / `ANTHROPIC_SMALL_FAST_MODEL` / `ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU}_MODEL` 与顶层 `apiKeyHelper` | 用户自己写的，原样生效 | 接当前账号时挪进 `~/.claude/xingmang-claude-foreign-settings.json`，切回官方原样放回（当时已有同名项就不覆盖） | 它们会顶掉当前账号的 Key 或型号，界面却显示正常（全面检测 Q7） |
 | Grok 的型号名单与附带型号 | `~/.grok/config.toml` 的 `[models] allowed_models` / `session_summary` / `image_description` | 名单不限（内置 grok-4.6、grok-4.5 也在）；标题钉在字面量 `grok-4.6` | 只留中转那一项，标题与看图都用它（用户写过就不动） | 内置型号走 xAI 自己的服务，国内连不上、也不走当前账号；中转型号不叫 grok-4.6 时标题会悄悄失败 |
 | Gemini 的使用统计 | `privacy.usageStatisticsEnabled` | 开 | `false`（用户写过就不动；切回 Google 账号时只收回本软件写的那一份） | 开着时每个发给中转的请求都带本机安装 ID 头，统计本身发往国内连不上的 `play.googleapis.com` |

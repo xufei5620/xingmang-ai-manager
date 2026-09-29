@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { displayCompatNotice, displayRelaunchNotice, settingsSaveNotice, startupCheckFailure, startupCheckLogContext, releaseNoteHeadline, startupDiagnosticsIssues, updatedNotice, vaultRecoveredNotice, withStartupNotice, withoutStartupNotice } from './startup-notice'
+import { crashReportingNotice, displayCompatNotice, displayRelaunchNotice, settingsSaveNotice, startupCheckFailure, startupCheckLogContext, releaseNoteHeadline, startupDiagnosticsIssues, updatedNotice, vaultRecoveredNotice, withStartupNotice, withoutStartupNotice } from './startup-notice'
 
 describe('startup check notices', () => {
   it('keeps the backend sentence as the body so support still sees the original wording', () => {
@@ -162,5 +162,27 @@ describe('displayCompatNotice', () => {
       action: { label: '现在重开', relaunch: true },
       secondaryAction: { label: '稍后', dismiss: true },
     })
+  })
+})
+
+describe('crashReportingNotice', () => {
+  it('tells a signed-in user once, without naming the service, and offers to turn reporting off', () => {
+    const notice = crashReportingNotice({}, true)
+    expect(notice).toMatchObject({
+      id: 'crash-reporting',
+      failure: false,
+      action: { label: '知道了', crashReporting: 'keep' },
+      secondaryAction: { label: '不想发送', crashReporting: 'off' },
+    })
+    expect(notice?.body).toContain('海外的错误收集服务')
+    expect(notice?.body).toContain('不含你的账号、密钥、文件路径和聊天内容')
+    expect(`${notice?.title}${notice?.body}`).not.toMatch(/sentry/i)
+  })
+
+  it('stays quiet before sign-in, once told, or when reporting is already off', () => {
+    expect(crashReportingNotice({}, false)).toBeNull()
+    expect(crashReportingNotice(null, true)).toBeNull()
+    expect(crashReportingNotice({ crashReportingNoticeShown: true }, true)).toBeNull()
+    expect(crashReportingNotice({ crashReporting: false }, true)).toBeNull()
   })
 })

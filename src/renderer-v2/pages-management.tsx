@@ -20,6 +20,7 @@ import {
   BrandIcon,
   Button,
   Card,
+  Confirm,
   Dialog,
   Drawer,
   Input,
@@ -212,20 +213,30 @@ export async function readCodexExtensionMetadata(
 type NativeSkill = CodexExtensionMetadata['skills'][number]
 type RowAction = 'enable' | 'disable' | 'uninstall' | 'update' | 'install'
 
+function nativeSkillPathKey(value: string): string {
+  const windowsPath = /^[A-Za-z]:[\\/]/.test(value) || value.startsWith('\\\\') || value.startsWith('//')
+  if (!windowsPath) return value
+  return value.replaceAll('\\', '/')
+    .replace(/^\/\/\?\/UNC\//i, '//')
+    .replace(/^\/\/\?\//, '')
+    .toLowerCase()
+}
+
 /**
  * 通用列表里的 Codex 技能 ID 是 SKILL.md 的路径；按路径对上原生列表那一条，
- * 对不上才退回按名字找（同名技能在 user 与 repo 各有一份时按名字会对错）。
+ * 对不上就停止，不能把已消失的 A 配成同名的 B（#601）。只有无路径的旧 ID
+ * 才兼容名字，并且整份原生列表里必须只有一个候选。
  */
 export function findNativeSkill(
   skills: readonly NativeSkill[],
   item: ExtensionItem,
 ): NativeSkill | undefined {
-  const id = item.id.toLowerCase()
-  return (
-    skills.find((entry) => entry.path === item.id) ??
-    skills.find((entry) => entry.path.toLowerCase() === id) ??
-    skills.find((entry) => entry.name === item.name)
-  )
+  if (!item.id.trim()) return undefined
+  const hasPath = /[\\/]/.test(item.id) || /^[A-Za-z]:/.test(item.id)
+  const candidates = hasPath
+    ? skills.filter((entry) => nativeSkillPathKey(entry.path) === nativeSkillPathKey(item.id))
+    : skills.filter((entry) => entry.name === item.name)
+  return candidates.length === 1 ? candidates[0] : undefined
 }
 
 export interface ExtensionRowState {
@@ -246,11 +257,15 @@ export function extensionRowState(
   item: ExtensionItem,
   nativeSkill?: NativeSkill,
 ): ExtensionRowState {
-  if (item.provider === 'codex' && item.kind === 'skill' && nativeSkill) {
-    const readonly = !nativeSkill.managed || nativeSkill.scope === 'system'
+  if (item.provider === 'codex' && item.kind === 'skill') {
+    const matched = nativeSkill && findNativeSkill([nativeSkill], item)
+    // Metadata may have been read after this path disappeared. Leave the old
+    // row visible for refresh, but never enable an action on an uncertain target.
+    if (!matched) return { readonly: false, enabled: item.enabled, canToggle: false, canUninstall: false, canUpdate: false }
+    const readonly = !matched.managed || matched.scope === 'system'
     return {
       readonly,
-      enabled: nativeSkill.enabled,
+      enabled: matched.enabled,
       canToggle: !readonly,
       canUninstall: !readonly,
       canUpdate: false,
@@ -288,10 +303,13 @@ export async function runExtensionAction(
   action: RowAction,
   nativeSkill?: NativeSkill,
 ): Promise<void> {
-  if (item.provider === 'codex' && item.kind === 'skill' && nativeSkill) {
+  if (item.provider === 'codex' && item.kind === 'skill') {
+    const matched = nativeSkill && findNativeSkill([nativeSkill], item)
+    if (!matched) throw new Error('这个技能的文件位置已经变化，请刷新列表后再操作。')
+    if (!matched.managed || matched.scope === 'system') throw new Error('这个技能是只读的，不能在这里修改。')
     if (action === 'enable' || action === 'disable')
-      await api.toggleSkill(nativeSkill.path, action === 'enable')
-    else if (action === 'uninstall') await api.uninstallSkill(nativeSkill.path)
+      await api.toggleSkill(matched.path, action === 'enable')
+    else if (action === 'uninstall') await api.uninstallSkill(matched.path)
     else throw new Error('Codex 技能不支持这个操作。')
     return
   }
@@ -716,6 +734,29 @@ export function SessionsPage({
       selected.archived ? '会话已恢复' : '会话已归档',
     )
   }
+  const [confirmDelete, setConfirmDelete] = useState(false)
+  /**
+   * 彻底删除只传会话 id,要删哪些文件由主进程重新找出来并校验。删掉之后和归档
+   * 一样,那个文件夹的「最近一条」变了,首页「最近」也要作废(#544)。
+   */
+  const remove = () => {
+    if (!selected || !capability?.operations.delete) return
+    const target = selected
+    void operation.execute(
+      'delete-session',
+      async () => {
+        try {
+          await api.deleteProviderSession(target.id)
+        } finally {
+          setConfirmDelete(false)
+        }
+        setSelected(null)
+        onSessionsChanged?.()
+        await Promise.all([resource.reload(), latestResource.reload()])
+      },
+      '这条记录已从这台电脑上删掉',
+    )
+  }
   /**
    * 四家 CLI 的续接参数都是「按当前工作目录找最近一条」,不是按会话 id 挑。
    * 所以按钮只长在每个(工具 × 目录)组合最近的那一条上(resumable),点到的
@@ -987,6 +1028,17 @@ export function SessionsPage({
                 {selected?.archived ? '恢复记录' : '归档记录'}
               </Button>
             )}
+            {capability?.operations.delete && (
+              <Button
+                variant="danger"
+                icon={Trash2}
+                disabled={Boolean(operation.busy)}
+                onClick={() => setConfirmDelete(true)}
+                testId="session-detail-delete"
+              >
+                彻底删除
+              </Button>
+            )}
           </>
         }
       >
@@ -1039,6 +1091,25 @@ export function SessionsPage({
           />
         )}
       </Drawer>
+      <Confirm
+        open={confirmDelete && Boolean(selected)}
+        title="彻底删除这条记录？"
+        body={
+          <>
+            <p>
+              会把这条对话从这台电脑上删掉，里面粘贴过的代码、密码和聊天内容会一起消失，删了就找不回来。
+            </p>
+            <p>只删这一条，不影响别的记录和你的项目文件。想留一份的话，先点「导出 Markdown」。</p>
+          </>
+        }
+        okLabel="彻底删除"
+        cancelLabel="先不删"
+        danger
+        loading={operation.busy === 'delete-session'}
+        onClose={() => setConfirmDelete(false)}
+        onOk={remove}
+        testId="session-delete-confirm"
+      />
     </section>
   )
 }

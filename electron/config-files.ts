@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto'
 import * as TOML from '@iarna/toml'
 import { applyEdits, getNodeValue, modify, parseTree, type Node, type ParseError } from 'jsonc-parser'
 import { providerBaseUrls, type ProviderId } from './catalog'
+import { relaySites } from './relay-sites'
 import { readBoundedUtf8FileSync } from './bounded-file'
 import {
   defaultProviderConfigRoots,
@@ -828,8 +829,15 @@ export function classifyCodexConfigProfile(
   const providers = parsed.model_providers
   const entry = providerName && isJsonRecord(providers) ? providers[providerName] : null
   const baseUrl = isJsonRecord(entry) && typeof entry.base_url === 'string' ? entry.base_url : ''
-  if (baseUrl && normalizeUrl(baseUrl) === normalizeUrl(siteBaseUrl)) return 'relay'
+  if (isKnownCodexRelayBaseUrl(baseUrl, siteBaseUrl)) return 'relay'
   return 'official'
+}
+
+function isKnownCodexRelayBaseUrl(baseUrl: string, siteBaseUrl: string): boolean {
+  if (!baseUrl) return false
+  const normalized = normalizeUrl(baseUrl)
+  return [siteBaseUrl, ...relaySites.map((site) => site.providerBaseUrls.codex)]
+    .some((candidate) => normalized === normalizeUrl(candidate))
 }
 
 function cloneTomlRecord(parsed: Record<string, unknown>): Record<string, unknown> {
@@ -881,6 +889,29 @@ function restoreCodexAnalytics(parsed: Record<string, unknown>): void {
   }
 }
 
+// Windows 上 Codex 真正决定「怎么隔离命令」的是 [windows] sandbox，缺省时第一次让 AI
+// 跑命令会弹英文的沙箱设置，选推荐那档还要过一次管理员确认（上游 #40627 / #23712 /
+// #24098 都是反复弹、设置失败）。unelevated 用当前用户权限建沙箱，不弹管理员框；
+// sandbox_mode = "workspace-write" 照旧，所以不是放宽，只是不需要提权。Mac 没有这张表。
+//
+// prevent_idle_sleep 是 0.156.1 的实验开关：只在 Codex 正在跑一轮时不让电脑自动睡，
+// 跑完就放开，屏幕照样会关。笔记本跑长任务睡着了，连接断掉这一轮就白扣了。
+//
+// 两项都只在键缺省时写，用户写过（哪怕写成 false 或 elevated）一律不动；键名以
+// rust-v0.156.1 的 core/config.schema.json 为准。
+export function applyCodexRelayMachineDefaults(
+  parsed: Record<string, unknown>,
+  platform: NodeJS.Platform = process.platform,
+): void {
+  const features = parsed.features === undefined ? ensureRecord(parsed, 'features') : parsed.features
+  if (isJsonRecord(features) && features.prevent_idle_sleep === undefined) {
+    features.prevent_idle_sleep = true
+  }
+  if (platform !== 'win32') return
+  const windows = parsed.windows === undefined ? ensureRecord(parsed, 'windows') : parsed.windows
+  if (isJsonRecord(windows) && windows.sandbox === undefined) windows.sandbox = 'unelevated'
+}
+
 function stripCodexRelayFromConfig(
   parsed: Record<string, unknown>,
   siteBaseUrl: string,
@@ -890,7 +921,7 @@ function stripCodexRelayFromConfig(
   if (providerName && isJsonRecord(providers)) {
     const entry = providers[providerName]
     const entryBaseUrl = isJsonRecord(entry) && typeof entry.base_url === 'string' ? entry.base_url : ''
-    if (entryBaseUrl && normalizeUrl(entryBaseUrl) === normalizeUrl(siteBaseUrl)) {
+    if (isKnownCodexRelayBaseUrl(entryBaseUrl, siteBaseUrl)) {
       delete providers[providerName]
     }
     if (Object.keys(providers).length === 0) delete parsed.model_providers
@@ -927,6 +958,7 @@ function applyCodexRelayConfig(
   // Never override an explicit user policy such as `never`.
   if (parsed.approval_policy === undefined) parsed.approval_policy = 'on-request'
   if (parsed.sandbox_mode === undefined) parsed.sandbox_mode = 'workspace-write'
+  applyCodexRelayMachineDefaults(parsed)
   // With `keyring` or `auto`, Codex reads the OS credential store before
   // auth.json (login/src/auth/storage.rs), so a ChatGPT login kept there would
   // keep winning over the relay key written below and reach the relay as a
@@ -940,8 +972,12 @@ function buildCodexRelayConfigTemplate(
   model: string,
   providerName: string,
   siteBaseUrl: string,
+  platform: NodeJS.Platform = process.platform,
 ): string {
   const providerKey = tomlTableKey(providerName)
+  // Same values as applyCodexRelayMachineDefaults; the template is spelled out
+  // so a fresh install reads top to bottom like the upstream docs.
+  const windowsTable = platform === 'win32' ? ['[windows]', 'sandbox = "unelevated"', ''] : []
   return [
     `model_provider = ${tomlString(providerName)}`,
     `model = ${tomlString(model)}`,
@@ -959,7 +995,9 @@ function buildCodexRelayConfigTemplate(
     '',
     '[features]',
     'goals = true',
+    'prevent_idle_sleep = true',
     '',
+    ...windowsTable,
     '[analytics]',
     'enabled = false',
     '',
@@ -1065,13 +1103,17 @@ function createCodexOfficialConfigPlans(
   }
   if (!currentParsed) return plans
   const storedChatgpt = readStoredCodexConfig(paths.chatgpt, '已保存的 ChatGPT Codex 配置')
-  if (storedChatgpt) {
+  if (storedChatgpt && classifyCodexConfigProfile(TOML.parse(storedChatgpt), siteBaseUrls.codex) === 'official') {
     plans.push({ path: paths.active, content: storedChatgpt })
     return plans
   }
   const cleaned = cloneTomlRecord(currentParsed)
   stripCodexRelayFromConfig(cleaned, siteBaseUrls.codex)
-  plans.push({ path: paths.active, content: tomlContent(cleaned) })
+  const cleanContent = tomlContent(cleaned)
+  // Older versions could have stored another Xingmang site as the official
+  // snapshot. Replace that polluted copy in the same file transaction.
+  if (storedChatgpt) plans.push({ path: paths.chatgpt, content: cleanContent })
+  plans.push({ path: paths.active, content: cleanContent })
   return plans
 }
 
@@ -2484,12 +2526,12 @@ export function switchProviderToOfficialAccount(
   for (const filePath of configuredPaths) assertSafeConfigPath(filePath, providerRoot, 'file')
 
   const inspection = inspectProviderConfig(provider, roots, siteBaseUrlsInput)
-  // Codex 自己的 ChatGPT 登录会把 auth.json 换成令牌、Key 置空，却不动 config.toml：
-  // 看上去已是官方，实际每次请求都把令牌发给当前账号的服务。这正是最需要切回
-  // 官方的半截状态，按「还在中转」处理，config.toml 才会一起换回官方那份。
-  const halfSwitchedCodex = provider === 'codex' && Boolean(inspection.actualBaseUrl)
-    && normalizeUrl(inspection.actualBaseUrl) === normalizeUrl(siteBaseUrlsInput.codex)
-  const mode = halfSwitchedCodex ? 'relay' : providerAccountMode(inspection)
+  // Codex 自己的 ChatGPT 登录会把 auth.json 换成令牌、Key 置空，却不动 config.toml；
+  // 切账号站点也会让现有中转地址不同于当前站点。两种情况都必须按已知中转来源
+  // 切回，才能同时恢复官方 config.toml 与 auth.json。
+  const knownCodexRelay = provider === 'codex'
+    && isKnownCodexRelayBaseUrl(inspection.actualBaseUrl, siteBaseUrlsInput.codex)
+  const mode = knownCodexRelay ? 'relay' : providerAccountMode(inspection)
   if (mode === 'official' && saveMode !== 'reset') throw new Error('当前已经在使用你自己的官方订阅账号，无需切换')
   if (mode === 'unknown') {
     throw new Error('当前配置不是星芒中转（可能是你自己填的第三方地址），为避免改坏配置已取消切换')

@@ -16,6 +16,7 @@ import {
   codexApiKeyAuthSnapshotName,
   codexAuthSnapshotPaths,
   codexChatGptAuthSnapshotName,
+  applyCodexRelayMachineDefaults,
   codexConfigSnapshotPaths,
   defaultCodexRelayProvider,
   ensureCodexPermissionDefaultsInConfigText,
@@ -792,6 +793,56 @@ describe('native CLI configuration files', () => {
     expect(TOML.parse(fs.readFileSync(configPath, 'utf8'))).not.toHaveProperty('analytics')
   })
 
+  it('keeps the computer awake and skips the admin sandbox prompt only where Codex supports it', () => {
+    const windows: Record<string, unknown> = {}
+    applyCodexRelayMachineDefaults(windows, 'win32')
+    expect(windows).toEqual({ features: { prevent_idle_sleep: true }, windows: { sandbox: 'unelevated' } })
+
+    // [windows] is a Windows-only table; macOS has no elevation prompt to avoid.
+    const mac: Record<string, unknown> = {}
+    applyCodexRelayMachineDefaults(mac, 'darwin')
+    expect(mac).toEqual({ features: { prevent_idle_sleep: true } })
+  })
+
+  it('leaves Codex sleep and sandbox choices the user already made', () => {
+    const chosen: Record<string, unknown> = {
+      features: { prevent_idle_sleep: false, goals: true },
+      windows: { sandbox: 'elevated' },
+    }
+    applyCodexRelayMachineDefaults(chosen, 'win32')
+    expect(chosen).toEqual({
+      features: { prevent_idle_sleep: false, goals: true },
+      windows: { sandbox: 'elevated' },
+    })
+
+    // A malformed scalar is the user's problem to see in Codex, not ours to overwrite.
+    const scalar: Record<string, unknown> = { features: 'off', windows: 'x' }
+    applyCodexRelayMachineDefaults(scalar, 'win32')
+    expect(scalar).toEqual({ features: 'off', windows: 'x' })
+  })
+
+  it('writes the Codex sleep and sandbox defaults on both a fresh install and an existing config', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const configPath = codexConfigSnapshotPaths(roots).active
+    const expectedWindows = process.platform === 'win32' ? { sandbox: 'unelevated' } : undefined
+
+    saveProviderConfig('codex', 'sk-relay', testModels.codex, 'reset', roots, {}, providerBaseUrls)
+    const fresh = TOML.parse(fs.readFileSync(configPath, 'utf8'))
+    expect(fresh.features).toEqual({ goals: true, prevent_idle_sleep: true })
+    expect(fresh.windows).toEqual(expectedWindows)
+
+    const existingRoots = providerRoots(temporaryHome())
+    const existingPath = codexConfigSnapshotPaths(existingRoots).active
+    fs.mkdirSync(path.dirname(existingPath), { recursive: true })
+    fs.writeFileSync(existingPath, '[custom_official]\nenabled = true\n', 'utf8')
+    saveProviderConfig('codex', 'sk-relay', testModels.codex, 'merge', existingRoots, {}, providerBaseUrls)
+    const merged = TOML.parse(fs.readFileSync(existingPath, 'utf8'))
+    expect(merged.features).toEqual({ prevent_idle_sleep: true })
+    expect(merged.windows).toEqual(expectedWindows)
+    expect(merged.custom_official).toEqual({ enabled: true })
+  })
+
   it('writes no Codex settings that the recommended version no longer recognizes', () => {
     const home = temporaryHome()
     const roots = providerRoots(home)
@@ -1422,6 +1473,8 @@ describe('native CLI configuration files', () => {
 // 切换绝不能碰官方登录凭据 —— Codex 的 ChatGPT token 就住在同一个
 // auth.json 里,删错一个键用户就要重新走浏览器登录,整个功能也就没意义了。
 describe('switching a provider back to the official subscription account', () => {
+  const historicalCodexBaseUrls = { ...providerBaseUrls, codex: 'https://api.solov.cc/v1' }
+
   function chatGptTokens() {
     return {
       id_token: 'header.payload.signature',
@@ -1441,6 +1494,100 @@ describe('switching a provider back to the official subscription account', () =>
       last_refresh: '2026-08-12T00:00:00Z',
     }, null, 2))
   }
+
+  it.each([
+    ['current then historical', providerBaseUrls, historicalCodexBaseUrls],
+    ['historical then current', historicalCodexBaseUrls, providerBaseUrls],
+  ])('keeps the official snapshot intact across %s relay sites', (_label, firstSite, secondSite) => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const configs = codexConfigSnapshotPaths(roots)
+    const auth = codexAuthSnapshotPaths(roots)
+    const officialConfig = 'approval_policy = "never"\n[custom_official]\nenabled = true\n'
+    const officialAuth = { auth_mode: 'chatgpt', tokens: chatGptTokens() }
+    fs.mkdirSync(roots.codexHome, { recursive: true })
+    fs.writeFileSync(configs.active, officialConfig)
+    fs.writeFileSync(auth.active, JSON.stringify(officialAuth))
+
+    saveProviderConfig('codex', 'sk-first-relay', testModels.codex, 'merge', roots, {}, firstSite)
+    const officialSnapshot = fs.readFileSync(configs.chatgpt, 'utf8')
+    const loginSnapshot = fs.readFileSync(auth.chatgpt, 'utf8')
+    saveProviderConfig('codex', 'sk-second-relay', testModels.codex, 'merge', roots, {}, secondSite)
+
+    expect(fs.readFileSync(configs.chatgpt, 'utf8')).toBe(officialSnapshot)
+    expect(fs.readFileSync(auth.chatgpt, 'utf8')).toBe(loginSnapshot)
+    switchProviderToOfficialAccount('codex', roots, {}, secondSite)
+    expect(fs.readFileSync(configs.active, 'utf8')).toBe(officialConfig)
+    expect(JSON.parse(fs.readFileSync(auth.active, 'utf8'))).toEqual(officialAuth)
+  })
+
+  it('switches a known relay back to official when the selected account site changed first', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const configs = codexConfigSnapshotPaths(roots)
+    fs.mkdirSync(roots.codexHome, { recursive: true })
+    fs.writeFileSync(configs.active, 'approval_policy = "never"\n')
+    saveProviderConfig('codex', 'sk-first-relay', testModels.codex, 'merge', roots, {}, providerBaseUrls)
+
+    switchProviderToOfficialAccount('codex', roots, {}, historicalCodexBaseUrls)
+
+    expect(fs.readFileSync(configs.active, 'utf8')).toBe('approval_policy = "never"\n')
+  })
+
+  it('creates a clean official fallback when no official snapshot exists', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const configs = codexConfigSnapshotPaths(roots)
+    saveProviderConfig('codex', 'sk-first-relay', testModels.codex, 'reset', roots, {}, providerBaseUrls)
+    saveProviderConfig('codex', 'sk-second-relay', testModels.codex, 'merge', roots, {}, historicalCodexBaseUrls)
+
+    switchProviderToOfficialAccount('codex', roots, {}, historicalCodexBaseUrls)
+
+    const active = fs.readFileSync(configs.active, 'utf8')
+    const snapshot = fs.readFileSync(configs.chatgpt, 'utf8')
+    expect(active).not.toContain('https://xm.solov.cc/v1')
+    expect(active).not.toContain('https://api.solov.cc/v1')
+    expect(snapshot).not.toContain('https://xm.solov.cc/v1')
+    expect(snapshot).not.toContain('https://api.solov.cc/v1')
+  })
+
+  it('repairs an already polluted official snapshot instead of restoring a relay route', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const configs = codexConfigSnapshotPaths(roots)
+    saveProviderConfig('codex', 'sk-first-relay', testModels.codex, 'reset', roots, {}, providerBaseUrls)
+    const polluted = fs.readFileSync(configs.active, 'utf8')
+    saveProviderConfig('codex', 'sk-second-relay', testModels.codex, 'merge', roots, {}, historicalCodexBaseUrls)
+    fs.writeFileSync(configs.chatgpt, polluted)
+
+    switchProviderToOfficialAccount('codex', roots, {}, historicalCodexBaseUrls)
+
+    expect(fs.readFileSync(configs.active, 'utf8')).not.toContain('https://xm.solov.cc/v1')
+    expect(fs.readFileSync(configs.active, 'utf8')).not.toContain('https://api.solov.cc/v1')
+    expect(fs.readFileSync(configs.chatgpt, 'utf8')).not.toContain('https://xm.solov.cc/v1')
+  })
+
+  it('rolls back every cross-site snapshot when the official auth commit fails', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const configs = codexConfigSnapshotPaths(roots)
+    const auth = codexAuthSnapshotPaths(roots)
+    fs.mkdirSync(roots.codexHome, { recursive: true })
+    fs.writeFileSync(configs.active, 'approval_policy = "never"\n')
+    fs.writeFileSync(auth.active, JSON.stringify({ auth_mode: 'chatgpt', tokens: chatGptTokens() }))
+    saveProviderConfig('codex', 'sk-first-relay', testModels.codex, 'merge', roots, {}, providerBaseUrls)
+    const polluted = fs.readFileSync(configs.active, 'utf8')
+    saveProviderConfig('codex', 'sk-second-relay', testModels.codex, 'merge', roots, {}, historicalCodexBaseUrls)
+    fs.writeFileSync(configs.chatgpt, polluted)
+    const files = [...Object.values(configs), ...Object.values(auth)]
+    const before = files.map((file) => fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : null)
+
+    expect(() => switchProviderToOfficialAccount('codex', roots, {
+      beforeReplace(file) { if (file === auth.active) throw new Error('fixture auth commit failure') },
+    }, historicalCodexBaseUrls)).toThrow('fixture auth commit failure')
+
+    expect(files.map((file) => fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : null)).toEqual(before)
+  })
 
   it('keeps the ChatGPT login in auth.json and only drops the relay key', () => {
     const home = temporaryHome()

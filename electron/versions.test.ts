@@ -1,10 +1,25 @@
 import { describe, expect, it } from 'vitest'
 import {
+  isExactCliVersion,
   isNewerVersion,
   minimumSupportedNodeVersion,
   nodeVersionStatus,
   parseNodeVersion,
 } from './versions'
+
+describe('exact CLI version targets', () => {
+  it('accepts registry versions with prerelease and build metadata', () => {
+    for (const value of ['0.158.0', '0.158.0-beta.1', '0.158.0+build.1', '0.158.0-beta.1+build.2']) {
+      expect(isExactCliVersion(value)).toBe(true)
+    }
+  })
+
+  it('rejects tags, ranges, whitespace and command fragments', () => {
+    for (const value of ['latest', '^1.2.3', '>=1.2.3', '1.2', '1.2.3+', '1.2.3-x;calc', '1.2.3\n', ' 1.2.3', '--version', null, 123]) {
+      expect(isExactCliVersion(value)).toBe(false)
+    }
+  })
+})
 
 describe('CLI version comparison', () => {
   it('extracts semantic versions from CLI output', () => {

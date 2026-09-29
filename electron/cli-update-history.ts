@@ -1,14 +1,12 @@
 import path from 'node:path'
 import { providerIds, type ProviderId } from './catalog'
 import { findBlockedCliVersion } from './cli-verified-versions'
+import { isExactCliVersion, isNewerVersion } from './versions'
 import { ensureSafeDataDirectory, readSafeUtf8FileSync, writeAtomicSafeUtf8File } from './safe-local-data'
 
 const fileLabel = '工具更新记录'
 const fileName = 'cli-update-history.json'
 const maximumBytes = 8 * 1024
-// 与 ipc.ts 的 parseCliInstallVersion 同一个口径:记下来的版本迟早要原样
-// 交回 cli:install,在这里就挡住任何它不会接受的写法。
-const versionPattern = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z][0-9A-Za-z.-]{0,126})?$/
 
 /** 更新后多久内还给「退回更新前的版本」。过了这段时间出的问题多半与这次更新无关。 */
 export const cliRevertWindowMs = 14 * 24 * 60 * 60 * 1000
@@ -31,8 +29,8 @@ function isProviderKey(value: string): value is ProviderId {
 function parseRecord(value: unknown): CliUpdateRecord | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null
   const record = value as Record<string, unknown>
-  if (typeof record.from !== 'string' || !versionPattern.test(record.from)) return null
-  if (typeof record.to !== 'string' || !versionPattern.test(record.to)) return null
+  if (!isExactCliVersion(record.from)) return null
+  if (!isExactCliVersion(record.to)) return null
   if (typeof record.at !== 'number' || !Number.isSafeInteger(record.at) || record.at <= 0) return null
   return { from: record.from, to: record.to, at: record.at }
 }
@@ -62,8 +60,8 @@ export function parseCliUpdateHistory(content: string | null): CliUpdateHistory 
 
 /**
  * 更新成功后要不要记一笔。只记「本工具把已装的版本换成了另一个版本」:
- * 首次安装没有可退的版本;用户点名装的版本(回到推荐版本、退回本身)不是
- * 一次「更新」,记下来会让「退回」反过来再指向刚退掉的那一版。
+ * 首次安装没有可退的版本；显式升级也要保留退回入口。显式降版不记，
+ * 否则「退回」会反过来再指向刚退掉的那一版。
  */
 export function buildCliUpdateRecord(
   from: string | null,
@@ -71,8 +69,9 @@ export function buildCliUpdateRecord(
   requested: boolean,
   now: number,
 ): CliUpdateRecord | null {
-  if (requested || !from || !to || from === to) return null
-  if (!versionPattern.test(from) || !versionPattern.test(to)) return null
+  if (!from || !to || from === to) return null
+  if (!isExactCliVersion(from) || !isExactCliVersion(to)) return null
+  if (requested && !isNewerVersion(from, to)) return null
   return { from, to, at: now }
 }
 

@@ -9,6 +9,7 @@ import { chatErrorAction, chatErrorMessage, filterConversations, isConversationT
 import { ParametersPanel } from './ParametersPanel'
 import { useChatController } from './useChatController'
 import { inspectChatLink, plainText } from './links'
+import { prepareChatMath, readChatMath, renderChatMath, type ChatMath } from './math'
 import { conversationPlainText, loadChatHistory, type LoadedChatHistory } from './storage'
 import './chat.css'
 
@@ -120,6 +121,8 @@ function ChatView({ api, scope, active, onOpenAccount, history }: ChatScopeProps
   // react-markdown treats each renderer as a component type, so a new function
   // every render would remount the code blocks and drop their 已复制 state.
   const markdownComponents = useMemo<Components>(() => ({ a: ({ href, children }) => <ChatLinkText href={href} onCopy={(url) => void copyLinkRef.current(url)}>{children}</ChatLinkText>, img: ({ alt }) => <span>{alt ?? '图片链接'}</span>, pre: ({ children }) => <CodeBlock onCopy={(text) => copyCodeRef.current(text)}>{children}</CodeBlock> }), [])
+  // Only replies get formulas: what the user typed shows exactly as typed.
+  const replyComponents = useMemo<Components>(() => ({ ...markdownComponents, code: ({ children, className }) => { const math = readChatMath(children); return math ? <ChatFormula math={math} /> : <code className={className}>{children}</code> } }), [markdownComponents])
   const saveAsset = async (assetId: string) => {
     const ticket = owner.current
     try { const result = await api.saveAsset(assetId); if (ticket === owner.current && result.saved) chat.setNotice('图片已保存') }
@@ -175,7 +178,7 @@ function ChatView({ api, scope, active, onOpenAccount, history }: ChatScopeProps
           <span className="chat-avatar">{message.role === 'user' ? <User size={15} aria-hidden="true" /> : <BrandIcon model={message.settings?.model ?? conversation.settings.model} size={18} />}</span>
           <div className="chat-message-main">
             {message.reasoning && <details className="chat-reasoning"><summary>思考过程 <ChevronDown size={13} aria-hidden="true" /></summary><div>{message.reasoning}</div><Button icon={Copy} size="xs" variant="ghost" aria-label="复制思考过程" title="复制思考过程" onClick={() => void copyText(message.reasoning)} /></details>}
-            <div className="chat-bubble">{message.content ? <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>{message.content}</ReactMarkdown> : (message.status === 'pending' || message.status === 'streaming') && <span className="chat-generating" role="status"><RefreshCw size={15} aria-hidden="true" />{message.settings?.mode === 'image' ? '正在生成图片' : message.reasoning ? '正在思考' : '正在生成'}</span>}
+            <div className="chat-bubble">{message.content ? message.role === 'assistant' ? <ReactMarkdown remarkPlugins={[remarkGfm]} components={replyComponents}>{prepareChatMath(message.content)}</ReactMarkdown> : <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>{message.content}</ReactMarkdown> : (message.status === 'pending' || message.status === 'streaming') && <span className="chat-generating" role="status"><RefreshCw size={15} aria-hidden="true" />{message.settings?.mode === 'image' ? '正在生成图片' : message.reasoning ? '正在思考' : '正在生成'}</span>}
               {message.assets?.map((asset) => <div className="chat-asset" key={asset.assetId}><button type="button" className="chat-asset-preview" aria-label={message.role === 'user' ? '查看图片' : '查看生成图片'} onClick={() => setPreview({ asset, mine: message.role === 'user' })} onContextMenu={(event) => { event.preventDefault(); void task(() => api.assetMenu(asset.assetId), '') }}><img src={asset.localUrl} alt={message.role === 'user' ? '你发的图片' : asset.revisedPrompt || '生成的图片'} onError={(event) => { event.currentTarget.dataset.failed = 'true'; event.currentTarget.alt = '预览暂不可用，仍可尝试复制或另存图片' }} /></button><div className="chat-asset-actions"><Button size="xs" icon={Copy} variant="ghost" aria-label="复制图片" title="复制图片" onClick={() => void task(() => api.copyAsset(asset.assetId), '图片已复制')} testId="chat-asset-copy" /><Button size="xs" icon={Download} variant="ghost" aria-label="另存图片" title="另存图片" onClick={() => void saveAsset(asset.assetId)} testId="chat-asset-save" /><Button size="xs" icon={MoreHorizontal} variant="ghost" aria-label="图片更多操作" title="图片更多操作" onClick={() => void task(() => api.assetMenu(asset.assetId), '')} testId="chat-asset-menu" />{asset.width && asset.height && <small>{asset.width} × {asset.height}</small>}</div></div>)}
             </div>
             {message.status === 'error' && <ErrorLine message={message.error} onOpenAccount={onOpenAccount} />}{message.status === 'canceled' && <p className="chat-message-note">{message.mayStillComplete ? '已停止等待，服务端仍可能处理并计费' : '已停止生成，保留已返回的内容'}</p>}
@@ -225,6 +228,15 @@ function CodeBlock({ children, onCopy }: { children: ReactNode; onCopy: (text: s
     if (await onCopy(text)) setCopied(true)
   }
   return <div className="chat-code"><pre ref={block}>{children}</pre><Button size="xs" variant="ghost" icon={copied ? Check : Copy} aria-label={copied ? '已复制' : '复制这段'} title="只复制这一段" onClick={() => void copy()} testId="chat-code-copy">{copied ? '已复制' : '复制'}</Button></div>
+}
+
+// KaTeX escapes every piece of text it emits and, with trust off, emits no
+// links or attributes of its own choosing, so its MathML can go in as markup.
+// A formula it cannot read stays as the text the model wrote.
+function ChatFormula({ math }: { math: ChatMath }) {
+  const html = useMemo(() => renderChatMath(math), [math.tex, math.display])
+  if (html === null) return <code className="chat-math-raw" title="这个公式没能显示，保留原文">{math.source}</code>
+  return <span className={math.display ? 'chat-math chat-math-block' : 'chat-math'} dangerouslySetInnerHTML={{ __html: html }} />
 }
 
 function ErrorLine({ message, onOpenAccount }: { message?: string; onOpenAccount?: ChatPageProps['onOpenAccount'] }) {

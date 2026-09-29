@@ -1,6 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { isProviderId, resolveManagedCliKeyProfiles, type ProviderId } from './catalog'
+import { isManagedCliGroupName } from './managed-cli-groups'
 import type { SafeStorageLike } from './account-session-store'
 import { inspectSafeStorageBackend, safeStoragePlaintextMessage } from './safe-storage-backend'
 import {
@@ -32,6 +33,8 @@ export interface PersistedManagedCliKeyAccount {
 
 export interface PersistedManagedCliKeys {
   version: 2
+  /** Absent in older files, which still require the shipped group names. */
+  siteId?: 'solov' | 'solov-api'
   revision?: number
   accounts: PersistedManagedCliKeyAccount[]
 }
@@ -44,12 +47,16 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
 }
 
-function isStoredManagedCliKey(value: unknown, siteId: 'solov' | 'solov-api'): value is StoredManagedCliKey {
+function isStoredManagedCliKey(
+  value: unknown,
+  siteId: 'solov' | 'solov-api',
+  scoped: boolean,
+): value is StoredManagedCliKey {
   if (!isRecord(value) || !isProviderId(value.provider)) return false
   return typeof value.id === 'number'
     && Number.isInteger(value.id)
     && value.id > 0
-    && value.group === resolveManagedCliKeyProfiles(siteId)[value.provider].group
+    && (scoped ? isManagedCliGroupName(value.group) : value.group === resolveManagedCliKeyProfiles(siteId)[value.provider].group)
     && typeof value.name === 'string'
     && value.name.length > 0
     && value.name.length <= 50
@@ -57,25 +64,30 @@ function isStoredManagedCliKey(value: unknown, siteId: 'solov' | 'solov-api'): v
     && /^sk-\S{8,509}$/.test(value.key)
 }
 
-function isPersistedManagedCliKeyAccount(value: unknown, siteId: 'solov' | 'solov-api'): value is PersistedManagedCliKeyAccount {
+function isPersistedManagedCliKeyAccount(
+  value: unknown,
+  siteId: 'solov' | 'solov-api',
+  scoped: boolean,
+): value is PersistedManagedCliKeyAccount {
   if (!isRecord(value)) return false
   if (typeof value.userId !== 'number' || !Number.isInteger(value.userId) || value.userId <= 0) return false
   if (typeof value.updatedAt !== 'string' || Number.isNaN(Date.parse(value.updatedAt))) return false
-  if (!Array.isArray(value.keys) || value.keys.length > 4 || !value.keys.every((entry) => isStoredManagedCliKey(entry, siteId))) return false
+  if (!Array.isArray(value.keys) || value.keys.length > 4 || !value.keys.every((entry) => isStoredManagedCliKey(entry, siteId, scoped))) return false
   return new Set(value.keys.map((entry) => entry.provider)).size === value.keys.length
 }
 
 function isLegacyPersistedManagedCliKeys(value: unknown): value is LegacyPersistedManagedCliKeys {
-  return isRecord(value) && value.version === 1 && isPersistedManagedCliKeyAccount(value, 'solov')
+  return isRecord(value) && value.version === 1 && isPersistedManagedCliKeyAccount(value, 'solov', false)
 }
 
 export function isPersistedManagedCliKeys(value: unknown, siteId: 'solov' | 'solov-api' = 'solov'): value is PersistedManagedCliKeys {
   if (!isRecord(value) || value.version !== CURRENT_VERSION) return false
+  if (value.siteId !== undefined && value.siteId !== siteId) return false
   if (value.revision !== undefined && (
     typeof value.revision !== 'number' || !Number.isSafeInteger(value.revision) || value.revision < 0
   )) return false
   if (!Array.isArray(value.accounts) || value.accounts.length > MAX_CACHED_ACCOUNTS) return false
-  if (!value.accounts.every((entry) => isPersistedManagedCliKeyAccount(entry, siteId))) return false
+  if (!value.accounts.every((entry) => isPersistedManagedCliKeyAccount(entry, siteId, value.siteId === siteId))) return false
   return new Set(value.accounts.map((entry) => entry.userId)).size === value.accounts.length
 }
 
@@ -126,6 +138,10 @@ export class ManagedCliKeyStore {
     private readonly siteId: 'solov' | 'solov-api' = 'solov',
   ) {}
 
+  getSiteId(): 'solov' | 'solov-api' {
+    return this.siteId
+  }
+
   async read(userId: number): Promise<StoredManagedCliKey[]> {
     this.assertEncryptionAvailable()
     await this.writeQueue.catch(() => undefined)
@@ -163,6 +179,7 @@ export class ManagedCliKeyStore {
       ].slice(0, MAX_CACHED_ACCOUNTS)
       const record: PersistedManagedCliKeys = {
         version: CURRENT_VERSION,
+        siteId: this.siteId,
         revision: this.revision + 1,
         accounts,
       }
@@ -180,6 +197,7 @@ export class ManagedCliKeyStore {
       if (!record || !account?.keys.some((entry) => entry.id === keyId)) return
       const updated: PersistedManagedCliKeys = {
         version: CURRENT_VERSION,
+        siteId: this.siteId,
         revision: this.revision + 1,
         accounts: record.accounts.map((entry) => entry.userId === userId
           ? {

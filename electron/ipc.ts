@@ -18,7 +18,7 @@ import {
   sensitiveWorkspacePolicy,
   type SensitiveWorkspaceKind,
 } from './workspace-guard'
-import { createStarterWorkspace, resolveStarterWorkspaceParent } from './starter-workspace'
+import { createStarterWorkspace, resolveNewProjectParent } from './starter-workspace'
 import { usageDateRange } from './usage-date-range'
 import type { AppSettingsUpdate, AppTheme } from './app-settings'
 import { parseWindowState } from './window-preferences'
@@ -32,6 +32,7 @@ import { parseLocalNoticeReadSync, type AnnouncementReadStore } from './announce
 import type { AccelerationApi, AccelerationMode, AccelerationPreferenceApi } from './acceleration-contract'
 import { accelerationFailureReason } from './acceleration-contract'
 import { cliCatalog, isProviderId, providerIds, resolveManagedCliKeyProfiles, type ProviderId } from './catalog'
+import { isExactCliVersion } from './versions'
 import { accountKeyListTooLongMessage, findAccountKeyById, searchAccountKeys, inheritedKeySettings, inheritedKeyExpiredMessage, isUsedUpKeyLimit, managedKeyQuotaExhaustedMessage } from './account-key-quota'
 import { createMemoryManagedKeyReplacementStore, ManagedKeyReplacementUnreadableError, managedKeyReplacementUnreadableRevokeMessage, type ManagedKeyReplacementStore } from './managed-key-replacement-store'
 import { isInstallCancelledError } from './install-cancellation'
@@ -145,10 +146,12 @@ import type { RuntimeLogStore } from './runtime-log'
 import { createExternalShellLauncher, type ExternalShellLauncher } from './system-shell'
 import { isNetworkSettingsKind, type NetworkSettingsKind, type ProxyBypassOutcome } from './proxy-bypass'
 import { platformCapabilitiesFor } from './platform-capabilities'
+import { clearStaleUserProxyVariables, type StaleProxyClearResult } from './stale-proxy-environment'
 import { validatePaymentForm, validatePaymentQrCode, validatePaymentUrl, type PaymentWindowController } from './payment-window'
 import type { AccountStartupGate } from './account-startup-gate'
 import { parseAiChatHistoryScope, parseAiChatHistoryWrite, type AiChatHistoryStore } from './ai-chat-history-store'
 import type { ChatAttachmentService } from './ai-chat-attachments'
+import { createSensitiveClipboard } from './sensitive-clipboard'
 
 export type AppWindowMode = 'onboarding' | 'dashboard'
 
@@ -160,9 +163,13 @@ export interface IpcRegistrationOptions {
   // 解析各 CLI 配置目录用的根路径（Codex 认 CODEX_HOME）。省略 = 按当前进程
   // 环境推一份，和 system-service 默认拿到的那份一致（旧行为）。
   providerRoots?: ProviderConfigRoots
-  // 「新建一个项目文件夹」优先建在它下面（starter-workspace.ts，被云盘同步时退到主目录）；
+  // Windows 上「新建一个项目文件夹」优先建在它下面（starter-workspace.ts，被云盘同步时退到
+  // 主目录；macOS 一律建在主目录）；
   // main.ts 传系统「文档」目录（app.getPath('documents')）。省略 = 主目录下的 Documents。
   documentsDirectory?: () => string
+  // 新建项目文件夹认的用户主目录（macOS 建在它下面）。省略 = os.homedir()；测试注入，
+  // 免得在跑测试的 Mac 上往真实主目录里建文件夹。
+  homeDirectory?: () => string
   // 「搬到新电脑」和「导出这段对话」的保存框默认落在桌面；main.ts 传 app.getPath('desktop')。
   // 省略 = 主目录下的 Desktop。
   desktopDirectory?: () => string
@@ -174,6 +181,8 @@ export interface IpcRegistrationOptions {
     checkConnection(provider: ProviderId): Promise<ConnectionCheckResult>
     checkExternalConnection(tool: ExternalToolId): Promise<ExternalClientCheckResult>
     exportLatest(): string
+    /** 检查页「清掉这条旧设置」；缺省 = stale-proxy-environment.ts 的真实现。 */
+    clearStaleProxy?(): Promise<StaleProxyClearResult>
   }
   runtimeLog: RuntimeLogStore
   extensionService: CodexExtensionService
@@ -234,6 +243,8 @@ export interface IpcRegistrationOptions {
    */
   startupQuiet?: { active(): boolean; whenOver(): Promise<void> }
   onAccountBalance?(balance: Awaited<ReturnType<RelayBackendClient['getBalance']>>): void
+  /** 渲染层读到了当前账号的订阅；托盘靠它说「订阅剩余多少」，不自己去读。 */
+  onAccountSubscription?(subscription: Awaited<ReturnType<RelayBackendClient['getSubscriptionSelf']>>): void
   // Opens (or focuses, if already open) the isolated canvas window. Kept as
   // a plain callback -- not a CanvasWindowController -- so this module never
   // has to depend on canvas-window.ts's full surface just to delegate one
@@ -287,6 +298,13 @@ function requiredString(value: unknown, label: string, maximum = 4_096): string 
     throw new Error(`${label}格式错误`)
   }
   return value.trim()
+}
+
+// Not requiredString: a generated password is copied byte for byte, so it
+// must not be trimmed on the way to the clipboard.
+function parseResetPasswordToCopy(value: unknown): string {
+  if (typeof value !== 'string' || !value || value.length > 256 || value.includes('\0')) throw new Error('新密码格式错误')
+  return value
 }
 
 function optionalString(value: unknown, label: string, maximum = 4_096): string | undefined {
@@ -363,6 +381,7 @@ function parseSettingsUpdate(value: unknown): AppSettingsUpdate {
   const codexDesktopInstallDisabled = optionalBoolean(value.codexDesktopInstallDisabled, 'Codex 桌面端自动安装偏好')
   const alwaysInstallLatestCli = optionalBoolean(value.alwaysInstallLatestCli, '命令行工具版本偏好')
   const crashReporting = optionalBoolean(value.crashReporting, '崩溃上报设置')
+  const crashReportingNoticeShown = optionalBoolean(value.crashReportingNoticeShown, '错误报告告知记录')
   // Unlike the degrade-don't-throw fields above, an unrecognized value here is
   // rejected: this one decides whether Codex starts with a local debugging
   // port, so a typo must not quietly read as "not asked yet" (E-S3).
@@ -392,6 +411,7 @@ function parseSettingsUpdate(value: unknown): AppSettingsUpdate {
     ...(codexDesktopInstallDisabled !== undefined ? { codexDesktopInstallDisabled } : {}),
     ...(alwaysInstallLatestCli !== undefined ? { alwaysInstallLatestCli } : {}),
     ...(crashReporting !== undefined ? { crashReporting } : {}),
+    ...(crashReportingNoticeShown !== undefined ? { crashReportingNoticeShown } : {}),
     ...(value.codexDesktopChineseRuntimePatch !== undefined
       ? { codexDesktopChineseRuntimePatch: value.codexDesktopChineseRuntimePatch as AppSettingsUpdate['codexDesktopChineseRuntimePatch'] }
       : {}),
@@ -578,12 +598,12 @@ function parseCodexDesktopLocale(locale: unknown): CodexDesktopLocale {
   return locale
 }
 
-// 渲染层只在「回到推荐版本」这一处点名版本,所以这里只接受精确 semver:
+// 更新和回退都提交精确版本，使用与 registry 读取一致的校验：
 // 'latest'、范围表达式(^1.2.3)和 dist-tag 全部拒绝,它们会让 npm 自己去
 // 决定装什么,绕过名单(I5:IPC 入参一律视为敌意输入)。
 function parseCliInstallVersion(value: unknown): string | undefined {
   if (value === undefined || value === null) return undefined
-  if (typeof value !== 'string' || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z][0-9A-Za-z.-]{0,126})?$/.test(value)) {
+  if (!isExactCliVersion(value)) {
     throw new Error('CLI 版本号格式错误')
   }
   return value
@@ -1272,12 +1292,14 @@ const ipcOperationLabels: Readonly<Record<string, string>> = {
   'provider-sessions:detail': 'AI 工具会话详情读取',
   'provider-sessions:export': 'AI 工具会话导出',
   'provider-sessions:open-directory': 'AI 工具会话工作目录打开',
+  'provider-sessions:delete': 'AI 工具会话彻底删除',
   'settings:get': '应用设置读取',
   'settings:save': '应用设置保存',
   'diagnostics:run': '系统诊断',
   'diagnostics:check-connection': '连接自检',
   'diagnostics:check-external-connection': '客户端连接自检',
   'diagnostics:export': '诊断报告导出',
+  'diagnostics:clear-stale-proxy': '清掉旧的代理设置',
   'runtime-logs:list': '运行日志读取',
   'runtime-logs:copy-feedback': '脱敏反馈文本复制',
   'runtime-logs:export-feedback': '反馈报告导出',
@@ -1332,6 +1354,7 @@ const ipcOperationLabels: Readonly<Record<string, string>> = {
   'account:list-groups': '星芒账号可用分组读取',
   'account:revoke-key': '星芒账号 Key 撤销',
   'account:copy-key': '星芒账号 Key 复制',
+  'account:copy-reset-password': '找回密码后的新密码复制',
   'account:reveal-key': '星芒账号 Key 明文读取',
   'account:list-key-models': '星芒账号 Key 可用模型读取',
   'account:configure-cli-with-key': '星芒账号 Key 写入 CLI 配置',
@@ -1417,6 +1440,8 @@ const quietIpcSuccessChannels = new Set([
   'account:list-keys',
   'account:list-groups',
   'account:copy-key',
+  // The input is the plaintext password the reset just produced.
+  'account:copy-reset-password',
   'account:reveal-key',
   'account:list-key-models',
   'account:configure-cli-with-key',
@@ -1587,6 +1612,8 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   const externalShell = options.externalShell ?? createExternalShellLauncher()
   let lastAccelerationStateLogKey: string | null = null
   const revealInFolder = options.revealInFolder ?? ((filePath: string) => shell.showItemInFolder(filePath))
+  // 密钥和新密码 60 秒后自动从剪贴板清掉（第十三批 8）。
+  const sensitiveClipboard = createSensitiveClipboard({ clipboard })
   // 最近几次导出写出来的文件：「打开所在位置」只认这里面的路径。
   const exportedFiles: string[] = []
   const rememberExportedFile = (filePath: string) => {
@@ -1647,7 +1674,8 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
         const publicAccountChannels = new Set(['account:login', 'account:submit-two-factor-code', 'account:logout', 'account:get-session',
           'account:switch-saved', 'account:remove-saved', 'account:list-saved', 'account:get-status',
           'account:get-legal-document', 'account:get-remembered-login', 'account:set-remembered-login',
-          'account:register', 'account:send-verification-code', 'account:send-reset-code', 'account:reset-password'])
+          'account:register', 'account:send-verification-code', 'account:send-reset-code', 'account:reset-password',
+          'account:copy-reset-password'])
         const scoped = (channel.startsWith('account:') || channel.startsWith('chat:') || channel === 'canvas:open'
           || channel.startsWith('models:') || channel.startsWith('config:') || channel === 'external-clients:scan' || channel === 'external-clients:launch' || channel === 'cli:launch' || channel === 'desktop:launch-codex' || channel === 'tools:check-models')
           && !publicAccountChannels.has(channel)
@@ -2009,8 +2037,9 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
       },
       writeAccountConfig: async (id) => {
         // 用户亲手点的切换：intent 'explicit' 才穿得过「来源未确认不自动改写」那道闸。
+        // 切换来源没有确认丢弃读坏的额度记录；签发仍走保留限制、读坏就停止的入口。
         const outcome = await configureManagedClis(
-          accountService, service, [id], {}, options.previewOnboarding, options.managedCliKeys, 'merge', 'explicit',
+          automaticProvisioning, service, [id], {}, options.previewOnboarding, options.managedCliKeys, 'merge', 'explicit',
         )
         if (outcome.failed.some((item) => item.serviceUnavailable)) throw new AccountSourceServiceUnavailableError()
         if (outcome.failed.length) throw new Error(outcome.failed.map((item) => item.message).join('；'))
@@ -2046,15 +2075,15 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     try {
       return options.documentsDirectory()
     } catch {
-      // app.getPath 拿不到「文档」时退到主目录（resolveStarterWorkspaceParent）。
+      // app.getPath 拿不到「文档」时退到主目录（resolveNewProjectParent）。
       return null
     }
   }
   // 建不成就说一句、回到选择器，由用户自己选；返回 null 让外层循环再开一次选择器。
   async function createStarterWorkspaceOrExplain(parentWindow: BrowserWindow | undefined, nextStep: string): Promise<string | null> {
     try {
-      const context = { platform: process.platform, home: os.homedir(), env: process.env }
-      const created = createStarterWorkspace(resolveStarterWorkspaceParent(documentsDirectory(), context), context)
+      const context = { platform: process.platform, home: options.homeDirectory?.() ?? os.homedir(), env: process.env }
+      const created = createStarterWorkspace(resolveNewProjectParent(documentsDirectory(), context), context)
       // 不记路径（I13）：客服要的只是「这个目录是软件替他建的」。
       options.runtimeLog.log('info', 'config', 'workspace.starter.created', '已替用户新建项目文件夹')
       return created
@@ -2431,6 +2460,9 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     await externalShell.openPath(await resolveOpenableSessionWorkspace(workspace))
     return true
   })
+  registerTrustedHandler('provider-sessions:delete', (_event, sessionId: unknown) => (
+    options.providerSessionsService.delete(requiredString(sessionId, '会话 ID', 256))
+  ))
   registerTrustedHandler('settings:get', () => service.readStoredConfig())
   registerTrustedHandler('settings:save', async (event, settings: unknown) => {
     const update = parseSettingsUpdate(settings)
@@ -2920,7 +2952,11 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     accountService.transferAffiliateQuota(parseAccountAffiliateTransferInput(input))
   ))
   registerTrustedHandler('account:list-subscription-plans', () => accountService.listSubscriptionPlans())
-  registerTrustedHandler('account:get-subscription-self', () => accountService.getSubscriptionSelf())
+  registerTrustedHandler('account:get-subscription-self', async () => {
+    const subscription = await accountService.getSubscriptionSelf()
+    options.onAccountSubscription?.(subscription)
+    return subscription
+  })
   registerTrustedHandler('account:update-subscription-preference', (_event, preference: unknown) => (
     accountService.updateSubscriptionPreference(parseAccountBillingPreference(preference))
   ))
@@ -3162,7 +3198,10 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   }
   registerTrustedHandler('account:copy-key', async (_event, id: unknown) => {
     const key = await revealAccountKeySecret(id)
-    clipboard.writeText(key)
+    sensitiveClipboard.write(key)
+  })
+  registerTrustedHandler('account:copy-reset-password', async (_event, value: unknown) => {
+    sensitiveClipboard.write(parseResetPasswordToCopy(value))
   })
   registerTrustedHandler('account:reveal-key', (_event, id: unknown) => revealAccountKeySecret(id))
   registerTrustedHandler('account:list-key-models', async (_event, id: unknown) => {
@@ -3450,9 +3489,14 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
         previewOnboarding: options.previewOnboarding })
     })()
   })
+  registerTrustedHandler('diagnostics:clear-stale-proxy', () => {
+    const clear = options.diagnosticsService.clearStaleProxy ?? (() => clearStaleUserProxyVariables())
+    return clear()
+  })
 
   return () => {
     feedbackPreviews.clear()
+    sensitiveClipboard.dispose()
     unsubscribeUpdates()
     options.chatService?.dispose()
     options.imageService?.cancelAll()

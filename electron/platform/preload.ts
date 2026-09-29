@@ -29,9 +29,9 @@ if (process.isMainFrame) {
     setPrivacyPreference: (kind, enabled) =>
       ipcRenderer.invoke(channels.setPrivacyPreference, kind, enabled),
     testNotification: () => ipcRenderer.invoke(channels.testNotification),
-    notifyActivity: (kind, eventKey, install) =>
-      install
-        ? ipcRenderer.invoke(channels.notifyActivity, kind, eventKey, install)
+    notifyActivity: (kind, eventKey, detail) =>
+      detail
+        ? ipcRenderer.invoke(channels.notifyActivity, kind, eventKey, detail)
         : ipcRenderer.invoke(channels.notifyActivity, kind, eventKey),
     onStateChanged: (listener) => {
       const receive = (

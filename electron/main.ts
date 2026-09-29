@@ -58,7 +58,7 @@ import { resolveInstallableUpdateOnQuit, resolveInterruptibleInstallTask } from 
 import { createPendingUpdateStore, decideLaunchInstall, resolveDownloadedVersionToRecord } from './auto-update-install'
 import { createWindowResponsivenessGuard } from './window-responsiveness'
 import { createRendererCrashRecovery } from './renderer-crash-recovery'
-import { createApplicationTray, type ApplicationTrayController } from './application-tray'
+import { createApplicationTray, traySubscriptionLabel, type ApplicationTrayController } from './application-tray'
 import { createTrayAccelerationCoordinator, type TrayAccelerationCoordinator } from './tray-acceleration'
 import { createExternalDeepLinkInbox } from './external-deep-links'
 import { createDesktopNotificationController } from './desktop-notifications'
@@ -140,7 +140,7 @@ import {
 } from './xingmang-ai-skill'
 import { resolveClaudeStatusLineScriptPath } from './claude-status-line'
 import { resolveProjectInstructionsTemplatePath } from './project-instructions'
-import { ipcEventChannels, type AccountBalance, type SettingsSaveIssue } from './ipc-contract'
+import { ipcEventChannels, type AccountBalance, type AccountSubscriptionSelf, type SettingsSaveIssue } from './ipc-contract'
 import {
   shouldUseManualUninstallVisualFixture,
   withManualUninstallVisualFixture,
@@ -1209,6 +1209,7 @@ if (!hasSingleInstanceLock) {
           // Read fresh on every run rather than captured once at startup, so
           // a settings change is reflected on the very next diagnostics run.
           relaySite: resolveRelaySite(systemService.readStoredConfig().relaySiteId),
+          inspectAccelerationActive: accelerationRunning,
           // 「Claude 命令确认方式」要分清 bypassPermissions 是我们写的还是别人写的。
           // 来源的判定要比对当前登录账号，只有 system-service 那边算得出来。
           readClaudeConfigOwnership: () => systemService.getConfig(false).providers.claude.configurationOwnership ?? null,
@@ -1372,6 +1373,7 @@ if (!hasSingleInstanceLock) {
     let accelerationInterruption: AccelerationInterruptionNotice | null = null
     let latestTraySystem: SystemSnapshot | null = null
     let latestTrayBalance: AccountBalance | null = null
+    let latestTraySubscription: AccountSubscriptionSelf | null = null
     let managedMainWindow: BrowserWindow | null = null
     // 客服收到反馈报告的第一句总是「你的工具是什么版本、怎么装的、配置指向哪」。
     // 这几行就答这三件事：只读上一次扫描留下的快照（latestTraySystem），不为了
@@ -1511,6 +1513,12 @@ if (!hasSingleInstanceLock) {
     })
     let publishedAccountIdentity = ''
     let acceleration: ReturnType<typeof createAccelerationService> | undefined
+    async function accelerationRunning(): Promise<boolean> {
+      const scope = readAccelerationAccountScope()
+      if (!scope || !acceleration) return false
+      const { phase } = await acceleration.getAccelerationState(scope)
+      return phase === 'active' || phase === 'connecting' || phase === 'stopping'
+    }
     const accounts = createRealmAccountService({
       vault,
       createClient: (siteId, onSessionChange): RealmAccountClientHandle => {
@@ -1573,6 +1581,7 @@ if (!hasSingleInstanceLock) {
           business.canvasRuns.shutdown()
         }
         latestTrayBalance = null
+        latestTraySubscription = null
         trayAcceleration?.reset()
         accelerationExpiry?.reset()
         accelerationInterruption?.reset()
@@ -2060,14 +2069,36 @@ if (!hasSingleInstanceLock) {
         }
         runtimeLog.log('warn', 'payment', 'navigation.blocked', '已阻止支付窗口跳转到未授权地址', { origin })
       },
-      onTerminalState: (event) => {
-        runtimeLog.log('info', 'payment', 'window.terminal', '支付窗口已进入终态并自动关闭', {
-          status: event.status,
-          hasTradeNo: Boolean(event.tradeNo),
-        })
+      onTerminalState: (event, context) => {
+        runtimeLog.log('info', 'payment', context.afterClose ? 'order.follow-up' : 'window.terminal',
+          context.afterClose ? '支付窗口关闭后在后台确认到了订单结果' : '支付窗口已进入终态并自动关闭', {
+            status: event.status,
+            hasTradeNo: Boolean(event.tradeNo),
+            ...(event.confirming ? { confirming: true } : {}),
+          })
         for (const window of BrowserWindow.getAllWindows()) {
           if (!window.isDestroyed()) {
             window.webContents.send(ipcEventChannels.onAccountPaymentWindowTerminal, event)
+          }
+        }
+        // 关窗后才到账：人多半已经去干别的了。正看着星芒时界面上那条提示自己会变，不再弹。
+        if (context.afterClose && event.status === 'success' && event.tradeNo) {
+          const main = managedMainWindow
+          const watching = Boolean(main && !main.isDestroyed() && main.isVisible() && !main.isMinimized() && main.isFocused())
+          if (!watching) {
+            try {
+              hostNotifier()({
+                event: 'paymentSettled',
+                eventKey: event.tradeNo,
+                onClick: () => {
+                  if (managedMainWindow && !managedMainWindow.isDestroyed()) {
+                    managedMainWindow.webContents.send(ipcEventChannels.onNavigate, 'topup')
+                  }
+                },
+              })
+            } catch (cause) {
+              runtimeLog.exception('payment', 'settled.notify-failed', cause)
+            }
           }
         }
       },
@@ -2304,12 +2335,7 @@ if (!hasSingleInstanceLock) {
       resolveProxy: (url) => session.defaultSession.resolveProxy(url),
       setProxy: (mode) => session.defaultSession.setProxy({ mode }),
       probe: (url) => probeDirectConnection((input, init) => net.fetch(input, init), url),
-      accelerationActive: async () => {
-        const scope = readAccelerationAccountScope()
-        if (!scope || !acceleration) return false
-        const { phase } = await acceleration.getAccelerationState(scope)
-        return phase === 'active' || phase === 'connecting' || phase === 'stopping'
-      },
+      accelerationActive: accelerationRunning,
       log: (level, event, message, detail) => runtimeLog.log(level, 'network', event, message, detail),
     })
     attachProxyBypassState(() => proxyBypass.active())
@@ -2410,6 +2436,7 @@ if (!hasSingleInstanceLock) {
       onSystemSnapshot: (snapshot) => { latestTraySystem = snapshot; applicationTray?.updateSnapshot() },
       startupQuiet,
       onAccountBalance: (balance) => { latestTrayBalance = balance; applicationTray?.updateSnapshot() },
+      onAccountSubscription: (subscription) => { latestTraySubscription = subscription; applicationTray?.updateSnapshot() },
       setWindowMode,
       setWindowTheme: (contents, theme) => {
         setWindowTheme(contents, theme)
@@ -2651,6 +2678,7 @@ if (!hasSingleInstanceLock) {
         return {
           accountLabel: state.account?.username ?? null,
           balanceUsd: latestTrayBalance && latestTrayBalance.quotaPerUnit > 0 ? latestTrayBalance.quota / latestTrayBalance.quotaPerUnit : null,
+          subscriptionLabel: traySubscriptionLabel(latestTraySubscription, latestTrayBalance?.quotaPerUnit ?? 0, Date.now()),
           installedTools: [
             ...(latestTraySystem?.desktopApps.codex.installed ? [{ id: 'codexDesktop', label: 'Codex 桌面端' }] : []),
             ...providerIds.filter((id) => latestTraySystem?.clis[id].installed).map((id) => ({ id, label: id === 'claude' ? 'Claude Code' : id === 'codex' ? 'Codex CLI' : id === 'gemini' ? 'Gemini CLI' : 'Grok CLI' })),
