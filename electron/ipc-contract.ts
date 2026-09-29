@@ -338,8 +338,11 @@ export interface AccountTopupPaymentResult {
   tradeNo: string | null
 }
 export interface AccountPaymentWindowTerminalEvent {
-  status: 'success' | 'expired' | 'failed' | 'closed'
+  /** unconfirmed：窗口关掉后在后台问满 15 分钟仍没有结果。 */
+  status: 'success' | 'expired' | 'failed' | 'closed' | 'unconfirmed'
   tradeNo: string | null
+  /** 只出现在 closed 上：主进程还在后台确认这笔订单，结果会再发一次本事件。缺省 = 不再确认。 */
+  confirming?: boolean
 }
 export type AccountTopupOrdersQuery = NewApiTopupOrdersQuery
 export type AccountTopupOrdersPage = NewApiTopupOrdersPage
