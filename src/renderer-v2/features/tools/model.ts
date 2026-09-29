@@ -354,6 +354,8 @@ export function recommendedVersionVerb(tool: Pick<ToolPresentation, 'versionAdvi
 /**
  * 工具行副标题里的版本文案。推荐版本与当前版本一致时不出现,避免每一行都
  * 挂一句用户不需要读的话。站点信息永远不出现在这里(双站点对用户无感)。
+ * 推荐版本修了什么(recommendedNote)接在「推荐 x」后面:只写版本号时小白看
+ * 不出这次更新和自己有没有关系,就一直不点。行太窄时靠样式截断,整句在悬停里。
  */
 export function versionSubtitle(tool: Pick<ToolPresentation, 'currentVersion' | 'versionAdvice'>): string | undefined {
   if (!tool.currentVersion) return undefined
@@ -361,7 +363,17 @@ export function versionSubtitle(tool: Pick<ToolPresentation, 'currentVersion' | 
   if (!advice || !advice.recommendedVersion || advice.onRecommended) return tool.currentVersion
   if (advice.blockedReason) return `${tool.currentVersion}（已知问题，建议${recommendedVersionVerb(tool)} ${advice.recommendedVersion}）`
   // 用户选了跟随最新版就别再劝他;有已知问题那一条上面已经先返回了。
-  return advice.pinned ? `${tool.currentVersion}（推荐 ${advice.recommendedVersion}）` : tool.currentVersion
+  if (!advice.pinned) return tool.currentVersion
+  return advice.recommendedNote
+    ? `${tool.currentVersion}（推荐 ${advice.recommendedVersion}：${advice.recommendedNote}）`
+    : `${tool.currentVersion}（推荐 ${advice.recommendedVersion}）`
+}
+
+/** 「更新」按钮的悬停说明:点下去会换到哪一版、修了什么。没写这句话时不给。 */
+export function updateButtonHint(tool: Pick<ToolPresentation, 'versionAdvice'>): string | undefined {
+  const advice = tool.versionAdvice
+  if (!advice?.recommendedVersion || !advice.recommendedNote) return undefined
+  return `更新到 ${advice.recommendedVersion}：${advice.recommendedNote}`
 }
 
 /** 可以一键切回推荐版本时给出那个版本号,否则 null。 */
