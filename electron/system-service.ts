@@ -9,6 +9,12 @@ import { type AppSettings, type AppSettingsUpdate, AppSettingsStore, type Mirror
 import type { RuntimeLogLike } from './account-session-store'
 import type { InstallProgressStage } from './ipc-contract'
 import { redactHomeDirectory } from './startup-log'
+import {
+  bypassClosedLoopbackProxies,
+  describeDroppedProxies,
+  probeLoopbackProxy,
+  type LoopbackProbe,
+} from './stale-proxy-environment'
 import { cliCatalog, providerIds, type ProviderId } from './catalog'
 import {
   buildCliVersionAdvice,
@@ -2117,6 +2123,8 @@ export interface SystemServiceOptions {
   downloadFetch?: typeof fetch
   /** Loopback-only proxy variables handed to package-manager subprocesses. */
   resolveSubprocessProxyEnvironment?: () => Promise<NodeJS.ProcessEnv>
+  /** 试连电脑里代理设置指向的本机端口；缺省 = 真的去连（stale-proxy-environment.ts）。 */
+  probeLoopbackProxy?: LoopbackProbe
   /**
    * 下载期间临时拉起加速（只开本机回环端口，不动系统代理）。缺省 = 不做，
    * 行为与从前一致。真正的路由由宿主实现，这里只需要知道它有没有生效——
@@ -2285,6 +2293,21 @@ export function createSystemService(
   const resolveSubprocessProxyEnvironment = serviceOptions.resolveSubprocessProxyEnvironment
     ?? (async (): Promise<NodeJS.ProcessEnv> => ({}))
   const acquireDownloadAcceleration = serviceOptions.acquireDownloadAcceleration
+  const probeLoopbackProxyForService = serviceOptions.probeLoopbackProxy ?? probeLoopbackProxy
+  /**
+   * 电脑里留着指向本机某个没开的代理的设置时，这一次不带它（第十六批 5）。只减不增：
+   * 开着的、指向别的机器的照旧带上；探测出错时原样返回，不挡住打开和安装。
+   */
+  async function withoutDeadLoopbackProxies(env: NodeJS.ProcessEnv, provider: ProviderId): Promise<NodeJS.ProcessEnv> {
+    const bypass = await bypassClosedLoopbackProxies(env, probeLoopbackProxyForService)
+    if (bypass.dropped.length) {
+      runtimeLog?.log('info', 'network', 'proxy-env.bypassed', '电脑里设的本机代理没开，这一次不带它', {
+        provider,
+        ...describeDroppedProxies(bypass.dropped),
+      })
+    }
+    return bypass.env
+  }
   // 有多少次下载正跑在加速线路上。只用来决定安装源顺序，所以是个计数而不是
   // 布尔：两个工具同时装时，先装完的那个不能把后一个的官方优先撤掉。
   let acceleratedDownloads = 0
@@ -3651,6 +3674,16 @@ export function createSystemService(
         }
         return npmProxyVariables
       }
+      // npm 认 https_proxy / http_proxy：电脑里留着指向没开的本机代理时，没开加速就一样
+      // 装不上。同一次安装只判断一次，日志也只写一条。
+      let npmBaseEnvironment: Promise<NodeJS.ProcessEnv> | null = null
+      const resolveNpmBaseEnvironment = (trustedOnly: boolean): Promise<NodeJS.ProcessEnv> => {
+        if (!npmBaseEnvironment) {
+          const base = trustedOnly ? trustedCommandEnvironment() : commandEnvironment()
+          npmBaseEnvironment = platform === 'win32' ? withoutDeadLoopbackProxies(base, provider) : Promise.resolve(base)
+        }
+        return npmBaseEnvironment
+      }
       const executeNpm = async (
         argv: string[],
         cwd: string,
@@ -3673,7 +3706,7 @@ export function createSystemService(
           windowsPackageManager: 'npm',
         }, {
           env: {
-            ...(trustedOnly ? trustedCommandEnvironment() : commandEnvironment()),
+            ...await resolveNpmBaseEnvironment(trustedOnly),
             ...await resolveNpmProxyVariables(),
           },
           trustedOnly,
@@ -4501,10 +4534,10 @@ export function createSystemService(
           // other injection variables would cross the integrity boundary and
           // run attacker code as administrator. assertTrustedElevatedCliCommand
           // only vets the executable path and cannot see the environment.
-          env: interactiveTerminalEnvironment(
+          env: await withoutDeadLoopbackProxies(interactiveTerminalEnvironment(
             providerEnv,
             windowsExecutionMode === 'trusted-only' ? trustedCommandEnvironment : commandEnvironment,
-          ),
+          ), provider),
         })
       } catch (error) {
         const detail = error instanceof Error ? error.message : String(error)

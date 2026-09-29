@@ -36,6 +36,14 @@ import { redactSecretPatterns } from './redaction-patterns'
 import { relayApiProbeBaseUrl, resolveRelaySite, type RelaySite } from './relay-sites'
 import { findReparseComponent, type ReparseComponent } from './safe-local-data'
 import { resolveRelocatedPath } from './relocated-folders'
+import {
+  inspectProxyVariables,
+  probeLoopbackProxy,
+  readWindowsProxyScopes,
+  type LoopbackProbe,
+  type ProxyVariableFinding,
+  type ProxyVariableScopes,
+} from './stale-proxy-environment'
 import { resolveCliCommand, resolveCliInstallation } from './tool-installation'
 import type { ToolConfigOwnership } from './tool-config-ownership'
 import type { SystemSnapshot } from './system-service'
@@ -137,6 +145,13 @@ export interface DiagnosticsDependencies {
   relaySite?: RelaySite
   fetch?: typeof globalThis.fetch
   clashConfigPaths?: readonly string[]
+  /**
+   * Windows 上「电脑里的代理设置」一项读当前账号与整台电脑各设了哪几条，用来判断
+   * 能不能给「清掉这条旧设置」按钮。缺省 = 起 PowerShell 读（异步）；读不到按不知道处理。
+   */
+  readProxyScopes?: () => Promise<ProxyVariableScopes | null>
+  /** 试连代理设置指向的本机端口；缺省 = 真的去连。 */
+  probeLoopbackProxy?: LoopbackProbe
   /**
    * 软件数据目录（Electron 的 userData）。诊断自己算不出它在哪，宿主给了才把它
    * 算进「磁盘空间」这一项；不给就只看 CLI 落点。
@@ -699,6 +714,63 @@ async function defaultProxyVariables(env: NodeJS.ProcessEnv): Promise<ProxyVaria
     if (match?.[1]?.trim()) result.push({ name, source: 'process' })
   }
   return result
+}
+
+function proxyFindingDetails(findings: readonly ProxyVariableFinding[]): Record<string, string> {
+  return Object.fromEntries(findings.map((finding) => [
+    finding.name,
+    finding.target ? `本机 ${finding.target.port} 端口（${finding.reach === 'open' ? '开着' : '没开'}）` : '别的机器',
+  ]))
+}
+
+/**
+ * 「电脑里的代理设置」（第十六批 5）。看的是本软件自己的环境——从这里打开的工具
+ * 拿到的就是它——再读一次当前账号与整台电脑各设了什么，决定能不能一键清掉。
+ * details 只写变量名和本机端口，不写原值：原值里可能带着代理的用户名和密码。
+ */
+export async function windowsProxySettingsOutcome(
+  env: NodeJS.ProcessEnv,
+  probe: LoopbackProbe,
+  readScopes: () => Promise<ProxyVariableScopes | null>,
+): Promise<Omit<DiagnosticItem, 'code' | 'title' | 'durationMs'>> {
+  const findings = await inspectProxyVariables(env, probe)
+  if (!findings.length) return { state: 'pass', summary: '电脑里没有设代理，工具直接联网' }
+  const closed = findings.filter((finding) => finding.reach === 'closed')
+  const details = proxyFindingDetails(findings)
+  if (closed.length) {
+    const port = closed[0].target?.port
+    const scopes = await readScopes().catch(() => null)
+    const userClosed = scopes ? (await inspectProxyVariables(scopes.user, probe)).some((finding) => finding.reach === 'closed') : false
+    const machineClosed = scopes ? (await inspectProxyVariables(scopes.machine, probe)).some((finding) => finding.reach === 'closed') : false
+    const lead = `电脑里设了一个代理（本机 ${port} 端口），但它现在没开。`
+    if (userClosed) {
+      return {
+        state: 'warn',
+        summary: `${lead}从星芒打开的工具会自动绕开它；你自己开的命令行窗口可能还是连不上。`,
+        details: { ...details, fix: 'clear-user-proxy', port: port ?? null },
+      }
+    }
+    return {
+      state: 'warn',
+      summary: machineClosed
+        ? `${lead}这条设置是给整台电脑设的，要管理员才能改。从星芒打开的工具已经会自动绕开它。`
+        : `${lead}从星芒打开的工具会自动绕开它。`,
+      details,
+    }
+  }
+  const remote = findings.find((finding) => finding.reach === 'remote')
+  if (remote) {
+    return {
+      state: 'warn',
+      summary: '电脑里设了代理，工具会通过它联网。如果工具连不上，先确认这个代理能用。',
+      details,
+    }
+  }
+  return {
+    state: 'pass',
+    summary: `电脑里设了代理（本机 ${findings[0].target?.port} 端口），工具会通过它联网。`,
+    details,
+  }
 }
 
 type EnvironmentOverrideKind = 'baseUrl' | 'secret' | 'directory' | 'model' | 'other'
@@ -1738,7 +1810,15 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
         }
       },
     },
-    {
+    platform === 'win32' ? {
+      code: 'PROXY_ENVIRONMENT',
+      title: '电脑里的代理设置',
+      run: () => windowsProxySettingsOutcome(
+        env,
+        dependencies.probeLoopbackProxy ?? probeLoopbackProxy,
+        dependencies.readProxyScopes ?? (() => readWindowsProxyScopes()),
+      ),
+    } : {
       code: 'PROXY_ENVIRONMENT',
       title: '系统代理环境变量',
       run: async (signal) => {

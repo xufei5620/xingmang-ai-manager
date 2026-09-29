@@ -3,6 +3,8 @@ import type { WindowCloseReport } from './window-close-query'
 import type { AiChatStreamErrorCode as MainAiChatStreamErrorCode } from './ai-chat-service'
 import type { ExternalDeepLink } from './external-deep-links'
 import type { SavedAccountSummary } from './saved-accounts'
+import type { StaleProxyClearResult } from './stale-proxy-environment'
+export type { StaleProxyClearResult } from './stale-proxy-environment'
 import type {
   ConfigBackupPreview as StoredConfigBackupPreview,
   ConfigBackupReason,
@@ -1065,6 +1067,11 @@ export interface XingmangInvokeContract {
     ExternalClientCheckResult
   >
   getAccountKeyOptions: IpcInvokeDefinition<'account:get-key-options', [provider: ProviderId], AccountKeyOptions>
+  /**
+   * 检查页「清掉这条旧设置」：只删当前 Windows 账号下指向没开的本机代理的那几条，
+   * 不碰整台电脑那一份、不提权。没有入参：清哪几条由主进程在点的那一刻重新读、重新试连来定。
+   */
+  clearStaleProxySettings: IpcInvokeDefinition<'diagnostics:clear-stale-proxy', [], StaleProxyClearResult>
 }
 
 export interface XingmangEventContract {
@@ -1295,6 +1302,7 @@ export const ipcInvokeChannels = {
   checkProviderConnection: 'diagnostics:check-connection',
   checkExternalClientConnection: 'diagnostics:check-external-connection',
   getAccountKeyOptions: 'account:get-key-options',
+  clearStaleProxySettings: 'diagnostics:clear-stale-proxy',
 } as const satisfies {
   [Method in keyof XingmangInvokeContract]: XingmangInvokeContract[Method]['channel']
 }
