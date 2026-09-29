@@ -897,7 +897,13 @@ function restoreCodexAnalytics(parsed: Record<string, unknown>): void {
 // prevent_idle_sleep 是 0.156.1 的实验开关：只在 Codex 正在跑一轮时不让电脑自动睡，
 // 跑完就放开，屏幕照样会关。笔记本跑长任务睡着了，连接断掉这一轮就白扣了。
 //
-// 两项都只在键缺省时写，用户写过（哪怕写成 false 或 elevated）一律不动；键名以
+// daemon_auto_start 在 0.157.0 转成默认开：客户在自己终端敲 codex 也会拉起一个多窗口
+// 共享用的后台服务，退出 Codex 后它还留着（rust-v0.158.0 app-server-daemon 里没有
+// 空闲自动退出），低配电脑上是一份没人要的常驻开销。关掉它不影响 `codex agents`，
+// 那条命令自己会按需拉起服务（cli/src/main.rs）。0.155.x 及更早不认这个键，只在
+// 日志里记一行 unknown feature key，不影响启动（features/src/lib.rs）。
+//
+// 三项都只在键缺省时写，用户写过（哪怕写成 false 或 elevated）一律不动；键名以
 // rust-v0.156.1 的 core/config.schema.json 为准。
 export function applyCodexRelayMachineDefaults(
   parsed: Record<string, unknown>,
@@ -906,6 +912,9 @@ export function applyCodexRelayMachineDefaults(
   const features = parsed.features === undefined ? ensureRecord(parsed, 'features') : parsed.features
   if (isJsonRecord(features) && features.prevent_idle_sleep === undefined) {
     features.prevent_idle_sleep = true
+  }
+  if (isJsonRecord(features) && features.daemon_auto_start === undefined) {
+    features.daemon_auto_start = false
   }
   if (platform !== 'win32') return
   const windows = parsed.windows === undefined ? ensureRecord(parsed, 'windows') : parsed.windows
@@ -997,6 +1006,7 @@ function buildCodexRelayConfigTemplate(
     '[features]',
     'goals = true',
     'prevent_idle_sleep = true',
+    'daemon_auto_start = false',
     '',
     ...windowsTable,
     '[analytics]',

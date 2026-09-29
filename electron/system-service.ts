@@ -4563,10 +4563,7 @@ export function createSystemService(
         }
         await launchCliPowerShell({
           executable: command.executable,
-          argv: cliLaunchArgv(provider, command.argv, mode, {
-            platform,
-            installedVersion: installedStatus.version,
-          }),
+          argv: cliLaunchArgv(provider, command.argv, mode, { installedVersion: installedStatus.version }),
           workspace,
           title: `${definition.name} · 星芒AI`,
           // The broker starts this terminal with Start-Process, so it inherits
@@ -4592,7 +4589,10 @@ export function createSystemService(
           darwinStagingRetention: 'retained',
         })
         await launchMacosTerminal(buildDarwinCliLaunchPlan(
-          { ...command, argv: cliLaunchArgv(provider, command.argv, mode) },
+          {
+            ...command,
+            argv: cliLaunchArgv(provider, command.argv, mode, { installedVersion: installedStatus.version }),
+          },
           workspace,
           providerEnv,
         ))
@@ -4605,7 +4605,7 @@ export function createSystemService(
 
     const environment = interactiveTerminalEnvironment(providerEnv)
     const command = await resolveVerifiedCliCommand(provider, providerEnv, windowsExecutionMode)
-    const argv = cliLaunchArgv(provider, command.argv, mode)
+    const argv = cliLaunchArgv(provider, command.argv, mode, { installedVersion: installedStatus.version })
     const terminals = [
       { command: 'x-terminal-emulator', args: ['-e', command.executable, ...argv] },
       { command: 'gnome-terminal', args: ['--', command.executable, ...argv] },
