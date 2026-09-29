@@ -188,3 +188,23 @@ export function relaySiteExternalUrls(sites: readonly RelaySite[]): string[] {
   ])
   return [...new Set(urls)]
 }
+
+/**
+ * Hosts the account's own services live on: login, balance, key issuing and
+ * the relay every CLI calls. The acceleration core routes these DIRECT
+ * (acceleration-clash-config.ts), so switching a line on never detours our
+ * own traffic. Every registered site is included, not just the signed-in
+ * one: switching accounts while accelerated does not restart the core.
+ * Lowercased and deduplicated; non-https URLs are skipped.
+ */
+export function relayDirectHosts(sites: readonly RelaySite[] = relaySites): string[] {
+  const hosts = new Set<string>()
+  for (const site of sites) {
+    for (const url of [...Object.values(site.providerBaseUrls), site.accountBaseUrl, site.websiteUrl, site.keysPageUrl]) {
+      if (!url) continue
+      const parsed = new URL(url)
+      if (parsed.protocol === 'https:') hosts.add(parsed.hostname.toLowerCase())
+    }
+  }
+  return [...hosts]
+}
