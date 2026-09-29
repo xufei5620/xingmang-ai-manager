@@ -31,6 +31,7 @@ const valueImportable = [
   'electron/relay-quota-failure',
   'electron/relay-sites',
   'electron/running-tools',
+  'electron/subscription-summary',
   'electron/usage-date-range',
   'electron/versions',
 ]
