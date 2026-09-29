@@ -33,6 +33,10 @@ import {
   buildDesktopUpdateStatus,
   canAttemptCodexDesktopFirstInstallFallback,
   describeCodexDesktopLaunchFailure,
+  codexDesktopNotStartedPrefix,
+  processExistsFromSignalError,
+  buildCodexDesktopSessionProcessProbeScript,
+  parseCodexDesktopSessionProcessIds,
   buildCodexDesktopStoreInstallCommand,
   describeCodexDesktopDownloadAttempt,
   describeCodexDesktopStoreFailure,
@@ -130,17 +134,50 @@ describe('Codex Desktop AppModel launch diagnostics', () => {
     })
   })
 
-  it('gives built-in Administrator users actionable AppModel guidance', () => {
+  it('tells a built-in Administrator user to sign in with an ordinary account', () => {
     const message = describeCodexDesktopLaunchFailure({
       userSid: 'S-1-5-21-1-2-3-500',
       isBuiltInAdministrator: true,
       uacEnabled: false,
       filterAdministratorToken: false,
     })
-    expect(message).toContain('0xC0EA0001')
-    expect(message).toContain('内置 Administrator')
-    expect(message).toContain('wsreset.exe')
-    expect(message).toContain('普通 Windows 账户')
+    expect(message.startsWith(codexDesktopNotStartedPrefix)).toBe(true)
+    expect(message).toContain('「Administrator」账户')
+    expect(message).toContain('换一个普通账户登录电脑')
+  })
+
+  it('names turned-off account control and otherwise gives the three steps a customer can take', () => {
+    const uacOff = describeCodexDesktopLaunchFailure({
+      userSid: 'S-1-5-21-1-2-3-1001', isBuiltInAdministrator: false, uacEnabled: false, filterAdministratorToken: null,
+    })
+    expect(uacOff.startsWith(codexDesktopNotStartedPrefix)).toBe(true)
+    expect(uacOff).toContain('「用户账户控制」')
+    expect(uacOff).toContain('联系客服')
+
+    const generic = describeCodexDesktopLaunchFailure({
+      userSid: null, isBuiltInAdministrator: false, uacEnabled: null, filterAdministratorToken: null,
+    })
+    expect(generic.startsWith(codexDesktopNotStartedPrefix)).toBe(true)
+    expect(generic).toContain('点「重试」')
+    expect(generic).toContain('开始菜单里搜「Codex」')
+    expect(generic).toContain('联系客服')
+  })
+
+  it('keeps Windows internals out of every sentence a customer can see', () => {
+    const contexts = [
+      { userSid: 'S-1-5-21-1-2-3-500', isBuiltInAdministrator: true, uacEnabled: false, filterAdministratorToken: false },
+      { userSid: 'S-1-5-21-1-2-3-1001', isBuiltInAdministrator: false, uacEnabled: false, filterAdministratorToken: null },
+      { userSid: null, isBuiltInAdministrator: false, uacEnabled: null, filterAdministratorToken: null },
+    ]
+    for (const context of contexts) {
+      expect(describeCodexDesktopLaunchFailure(context)).not.toMatch(/wsreset|AppModel|AppX|Appx|UAC|0x[0-9A-F]{8}|SID|Microsoft Store|反馈与诊断/i)
+    }
+  })
+
+  it('counts a process that refuses the liveness probe as still running', () => {
+    expect(processExistsFromSignalError(Object.assign(new Error('denied'), { code: 'EPERM' }))).toBe(true)
+    expect(processExistsFromSignalError(Object.assign(new Error('gone'), { code: 'ESRCH' }))).toBe(false)
+    expect(processExistsFromSignalError(null)).toBe(false)
   })
 })
 
@@ -1237,6 +1274,58 @@ describe('Codex Desktop Appx probe script', () => {
     // The mock ignores -Filter, so this pins the package-path check: a helper
     // from the package is closed, an unrelated child of the app is not.
     expect(runMockProbe('all')).toEqual({ calls: 4, processIds: [101, 102, 104] })
+  })
+
+  it('finds a launched window by session and package path alone, without the owner check the close paths need', () => {
+    const script = buildCodexDesktopSessionProcessProbeScript()
+    const scan = scanPowerShell(script)
+    expect(scan.unterminated).toBe(false)
+    expect(unbalancedBracket(scan.code)).toBeNull()
+    expect(script).toContain('Get-CimInstance -ClassName Win32_Process -Filter "SessionId=$currentSessionId"')
+    expect(script).toContain('$_.SessionId -eq $currentSessionId')
+    expect(script).toContain('$_.CommandLine')
+    // Opening never closes anything, so it must not drop a window whose owner
+    // WMI cannot confirm, and it must not be limited to today's exe names.
+    expect(script).not.toContain('GetOwnerSid')
+    expect(script).not.toContain("Name='ChatGPT.exe'")
+  })
+
+  it('reduces the launch probe to PIDs of the expected package only', () => {
+    const stable = String.raw`C:\Program Files\WindowsApps\OpenAI.Codex_26.715.0.0_x64__2p2nqsd0c76g0\app\ChatGPT.exe`
+    const beta = String.raw`C:\Program Files\WindowsApps\OpenAI.CodexBeta_26.716.0.0_x64__2p2nqsd0c76g0\app\ChatGPT.exe`
+    const output = JSON.stringify([
+      { ProcessId: 101, ExecutablePath: stable },
+      { ProcessId: 102, ExecutablePath: beta },
+      { ProcessId: 103, ExecutablePath: String.raw`C:\Tools\ChatGPT.exe` },
+      { ProcessId: -1, ExecutablePath: stable },
+      { ProcessId: 104 },
+    ])
+    expect(parseCodexDesktopSessionProcessIds(output, 'OpenAI.Codex_2p2nqsd0c76g0')).toEqual([101])
+    expect(parseCodexDesktopSessionProcessIds(output, null)).toEqual([101, 102])
+    expect(parseCodexDesktopSessionProcessIds(JSON.stringify({ ProcessId: 101, ExecutablePath: stable }), null)).toEqual([101])
+    expect(parseCodexDesktopSessionProcessIds('', null)).toEqual([])
+    expect(parseCodexDesktopSessionProcessIds('WARNING: not json', null)).toEqual([])
+  })
+
+  it.runIf(process.platform === 'win32')('runs the launch probe against mocked WMI and keeps windows whose owner is unknown', () => {
+    const mocks = String.raw`
+      function Get-CimInstance {
+        param($ClassName, $Filter)
+        $session = [System.Diagnostics.Process]::GetCurrentProcess().SessionId
+        @(
+          [pscustomobject]@{ ProcessId = 201; Name = 'ChatGPT.exe'; SessionId = $session; ExecutablePath = 'C:\WindowsApps\OpenAI.Codex_26.715.0.0_x64__id\app\ChatGPT.exe' }
+          [pscustomobject]@{ ProcessId = 202; Name = 'ChatGPT.exe'; SessionId = $session; ExecutablePath = $null; CommandLine = '"C:\WindowsApps\OpenAI.Codex_26.715.0.0_x64__id\app\ChatGPT.exe" --type=renderer' }
+          [pscustomobject]@{ ProcessId = 203; Name = 'ChatGPT.exe'; SessionId = ($session + 1); ExecutablePath = 'C:\WindowsApps\OpenAI.Codex_26.715.0.0_x64__id\app\ChatGPT.exe' }
+          [pscustomobject]@{ ProcessId = 204; Name = 'git.exe'; SessionId = $session; ExecutablePath = 'C:\Program Files\Git\cmd\git.exe' }
+        )
+      }
+      function Invoke-CimMethod { throw 'the launch probe must not ask for owners' }
+    `
+    const output = execFileSync(windowsPowerShellExecutable(), [
+      '-NoLogo', '-NoProfile', '-NonInteractive', '-Command', `${mocks}
+        ${buildCodexDesktopSessionProcessProbeScript()}`,
+    ], { encoding: 'utf8', windowsHide: true, maxBuffer: 1024 * 1024 })
+    expect(parseCodexDesktopSessionProcessIds(output, 'OpenAI.Codex_id')).toEqual([201, 202])
   })
 
   it('keeps the three merged segments byte-identical to the standalone probe scripts', () => {

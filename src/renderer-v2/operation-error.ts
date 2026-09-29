@@ -23,6 +23,11 @@ const rules: Array<{ key: OperationErrorHint['key']; match: (message: string) =>
   // 网络、权限之类的原因，被下面哪条抢走都会配上一句「不会留下半成品」式的安抚，
   // 所以排在最前，出口直接是「去备份页」。
   { key: 'switchUndoFailed', match: (message) => /自动恢复也没有完成/.test(message) },
+  // Codex 桌面端叫了、等了将近一分钟也没起来（主进程 codex-desktop-service.ts 的
+  // codexDesktopNotStartedPrefix，两边字面量要一致）。那句话后半截已经写好下一步，
+  // 这里只给按钮；排在前面是因为它会提到「用户账户控制」「Administrator」，不能被
+  // 下面的 permission 抢走、把客户送去看安装目录。
+  { key: 'codexDesktopNotStarted', match: (message) => /Codex 桌面端没有打开/.test(message) },
   // Codex 插件目录的旧备份自动清不掉（主进程 codex-plugin-catalog.ts 的
   // codexPluginCatalogBackupStuckMessage）。以前这句带着文件夹路径叫客户自己去挪，
   // 现在只剩「重启再试、不行找客服」。
