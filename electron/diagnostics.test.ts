@@ -82,6 +82,7 @@ function dependencies(home: string, apiKey = 'sk-super-secret-value'): Diagnosti
     timeoutMs: 100,
     inspectAdministrator: async () => false,
     inspectElevationCapability: async () => 'unknown' as const,
+    inspectStoreAppLaunchContext: async () => ({ userSid: null, isBuiltInAdministrator: false, uacEnabled: null, filterAdministratorToken: null }),
     inspectPowerShell: async () => ({
       installed: true,
       version: '5.1.26100.1',
@@ -1122,6 +1123,76 @@ describe('diagnostics', () => {
     })
     expect(item?.summary).toContain('不用处理')
     expect(item?.summary).not.toMatch(/普通启动|双击|UAC|用户账户控制|提权|Administrator/)
+  })
+
+  it('warns ahead of a store install on the built-in Administrator account', async () => {
+    const home = temporaryHome()
+    const input = dependencies(home)
+    input.windowsExecution = { mode: 'same-user', elapsedMs: 120 }
+    input.inspectAdministrator = async () => true
+    input.inspectStoreAppLaunchContext = async () => ({
+      userSid: 'S-1-5-21-1-2-3-500', isBuiltInAdministrator: true, uacEnabled: true, filterAdministratorToken: false,
+    })
+
+    const item = (await runDiagnostics(input)).items.find((entry) => entry.code === 'ADMINISTRATOR')
+
+    expect(item).toMatchObject({
+      state: 'warn',
+      details: { elevated: true, alwaysElevated: true, storeAppLaunchBlock: 'builtInAdministrator' },
+    })
+    expect(item?.summary).toContain('Administrator')
+    expect(item?.summary).toContain('Codex 桌面端')
+    expect(item?.summary).toContain('普通账户')
+    expect(item?.summary).not.toMatch(/UAC|AppX|Appx|MSIX|令牌|SID/)
+  })
+
+  it('warns ahead of a store install when the consent prompt is turned off', async () => {
+    const home = temporaryHome()
+    const input = dependencies(home)
+    input.windowsExecution = { mode: 'same-user', elapsedMs: 120 }
+    input.inspectAdministrator = async () => true
+    input.inspectStoreAppLaunchContext = async () => ({
+      userSid: 'S-1-5-21-1-2-3-1001', isBuiltInAdministrator: false, uacEnabled: false, filterAdministratorToken: null,
+    })
+
+    const item = (await runDiagnostics(input)).items.find((entry) => entry.code === 'ADMINISTRATOR')
+
+    expect(item).toMatchObject({ state: 'warn', details: { storeAppLaunchBlock: 'uacDisabled' } })
+    expect(item?.summary).toContain('用户账户控制')
+    expect(item?.summary).not.toMatch(/UAC|AppX|Appx|令牌/)
+  })
+
+  it('keeps the calm answer when the store-app probe cannot tell', async () => {
+    const home = temporaryHome()
+    const input = dependencies(home)
+    input.windowsExecution = { mode: 'same-user', elapsedMs: 120 }
+    input.inspectAdministrator = async () => true
+    input.inspectStoreAppLaunchContext = async () => {
+      throw new Error('powershell unavailable')
+    }
+
+    expect((await runDiagnostics(input)).items.find((entry) => entry.code === 'ADMINISTRATOR')).toMatchObject({
+      state: 'pass',
+      details: { alwaysElevated: true },
+    })
+  })
+
+  it('does not ask about store apps on an ordinary or explicitly elevated start', async () => {
+    const home = temporaryHome()
+    const probe = vi.fn(async () => ({
+      userSid: 'S-1-5-21-1-2-3-500', isBuiltInAdministrator: true, uacEnabled: false, filterAdministratorToken: null,
+    }))
+    const ordinary = dependencies(home)
+    ordinary.windowsExecution = { mode: 'same-user', elapsedMs: 120 }
+    ordinary.inspectStoreAppLaunchContext = probe
+    await runDiagnostics(ordinary)
+    const elevated = dependencies(home)
+    elevated.windowsExecution = { mode: 'trusted-only', elapsedMs: 120 }
+    elevated.inspectAdministrator = async () => true
+    elevated.inspectStoreAppLaunchContext = probe
+    await runDiagnostics(elevated)
+
+    expect(probe).not.toHaveBeenCalled()
   })
 
   it('still advises a normal start when the app was explicitly elevated', async () => {

@@ -1111,6 +1111,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     // 没登录就没有「当前账号」可比：来源没确认的一律按「不是当前账号的 Key」走，
     // 引导只给「登录后改用我的账号」，不因 Key 恰好在我们站上就放行（方案盘查第 1 条）。
     keyState: tool.source === 'changed' ? 'changed' : session.authenticated ? foreignKeyKind(toolbox.snapshot!.config.providers[tool.provider], tool.source) ?? undefined : tool.source === 'unknown' ? 'otherSite' : undefined,
+    storeAppLaunchBlock: tool.id === 'codexDesktop' ? toolbox.snapshot!.system.desktopApps.codex.storeAppLaunchBlock : undefined,
   })) : []
   const balanceAmount = balance && balance.quotaPerUnit > 0 ? balance.quota / balance.quotaPerUnit : null
   const toolUpdates = toolbox.snapshot ? pendingToolUpdates(presentTools(toolbox.snapshot)) : []
