@@ -20,6 +20,8 @@ import {
   parseWindowsProcessesJson,
   selectCodexDesktopApp,
   selectCodexDesktopPackage,
+  selectCodexDesktopProcessesForPackage,
+  stableInstallFamilyName,
   stopCodexDesktopProcesses,
   type CodexDesktopMirrorRelease,
   type CodexDesktopPackageEntry,
@@ -1137,8 +1139,37 @@ export async function findCodexDesktopStartApp(): Promise<StartAppEntry | null> 
   }
 }
 
-function codexDesktopProcessQuery(): string {
-  return String.raw`@(Get-CimInstance Win32_Process | ForEach-Object {
+type CodexDesktopProcessScope = 'roots' | 'all'
+
+interface CodexDesktopProcessListOptions {
+  processIds?: ReadonlySet<number>
+  // Only paths that are about to terminate processes (install, update,
+  // uninstall, restart) must fail closed. Status and launch paths keep the
+  // old "nothing found" answer so a slow WMI query never breaks 打开.
+  strict?: boolean
+}
+
+function codexDesktopProcessQuery(scope: CodexDesktopProcessScope, processIds?: ReadonlySet<number>): string {
+  const targetIds = processIds
+    ? `@(${[...processIds].filter((id) => Number.isSafeInteger(id) && id > 0).join(',')})`
+    : '$null'
+  // The close paths also take helpers that run from the same package
+  // directory (bundled CLI, command runner, ripgrep). Without taskkill /T
+  // they would otherwise keep files in the package open during replacement.
+  const nameFilter = scope === 'roots' ? " AND (Name='ChatGPT.exe' OR Name='Codex.exe')" : ''
+  const ownerTargets = scope === 'roots'
+    ? String.raw`$pidFamilies = @{}
+      foreach ($candidate in $candidates) { $pidFamilies[[int]$candidate.Process.ProcessId] = $candidate.PackageFamilyName }
+      $toCheck = @($candidates | Where-Object {
+        (-not $pidFamilies.ContainsKey([int]$_.Process.ParentProcessId)) -or
+          ($pidFamilies[[int]$_.Process.ParentProcessId] -ne $_.PackageFamilyName)
+      })`
+    : '$toCheck = $candidates'
+  return String.raw`& {
+    $currentSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    $currentSessionId = [System.Diagnostics.Process]::GetCurrentProcess().SessionId
+    $targetIds = ${targetIds}
+    $candidates = @(Get-CimInstance -ClassName Win32_Process -Filter "SessionId=$currentSessionId${nameFilter}" | ForEach-Object {
       $path = [string]$_.ExecutablePath
       # WMI can omit ExecutablePath for a normal user. The packaged app's
       # command line still carries the immutable WindowsApps path, so recover
@@ -1148,26 +1179,62 @@ function codexDesktopProcessQuery(): string {
         $candidate = [regex]::Match($commandLine, '(?i)"(?<path>[^"]*\\WindowsApps\\OpenAI.Codex(?:Beta)?_[^"]+\\[^"]+.exe)"')
         if ($candidate.Success) { $path = $candidate.Groups['path'].Value }
       }
-      if ($path -match '(?i)\\WindowsApps\\OpenAI.Codex(?:Beta)?_\d+(?:\.\d+){3}_(?:x64|arm64|neutral)__[A-Za-z0-9.]+\\') {
-        [pscustomobject]@{ ProcessId = $_.ProcessId; ParentProcessId = $_.ParentProcessId; Name = $_.Name; ExecutablePath = $path }
+      $package = [regex]::Match($path, '(?i)\\WindowsApps\\(?<name>OpenAI\.Codex(?:Beta)?)_\d+(?:\.\d+){3}_(?:x64|arm64|neutral)__(?<publisher>[A-Za-z0-9.]+)\\')
+      if ($package.Success -and $null -ne $_.SessionId -and $_.SessionId -eq $currentSessionId -and ($null -eq $targetIds -or ($targetIds -contains [int]$_.ProcessId))) {
+        $packageFamilyName = $package.Groups['name'].Value + '_' + $package.Groups['publisher'].Value
+        [pscustomobject]@{ Process = $_; Path = $path; PackageFamilyName = $packageFamilyName }
       }
-    })`
+    })
+    ${ownerTargets}
+    @($toCheck | ForEach-Object {
+      $candidate = $_
+      $process = $candidate.Process
+      if ($null -ne $process) {
+        $owner = $null
+        try { $owner = Invoke-CimMethod -InputObject $process -MethodName GetOwnerSid -OperationTimeoutSec 5 -ErrorAction Stop } catch {}
+        # Unknown ownership must never become a taskkill target.
+        if ($null -ne $owner -and $owner.ReturnValue -eq 0 -and $owner.Sid -eq $currentSid) {
+          [pscustomobject]@{ ProcessId = $process.ProcessId; ParentProcessId = $process.ParentProcessId; Name = $process.Name; ExecutablePath = $candidate.Path; OwnerSid = $owner.Sid; CurrentOwnerSid = $currentSid; SessionId = $process.SessionId; CurrentSessionId = $currentSessionId; PackageFamilyName = $candidate.PackageFamilyName }
+        }
+      }
+    })
+  }`
 }
 
-export function buildCodexDesktopProcessProbeScript(): string {
+export const codexDesktopProcessCheckFailedMessage = '没能确认哪些 Codex 桌面端窗口需要先关掉，请稍等片刻再试'
+
+export function buildCodexDesktopProcessProbeScript(
+  scope: CodexDesktopProcessScope = 'roots',
+  processIds?: ReadonlySet<number>,
+): string {
   return [
     codexDesktopProbeScriptHeader,
-    `$items = ${codexDesktopProcessQuery()}`,
+    `$items = ${codexDesktopProcessQuery(scope, processIds)}`,
     '$items | ConvertTo-Json -Compress',
   ].join('; ')
 }
 
-export async function listCodexDesktopProcesses(): Promise<WindowsProcessEntry[]> {
+export async function collectCodexDesktopProcesses(
+  runProbe: (script: string, timeoutMs: number) => Promise<string>,
+  scope: CodexDesktopProcessScope,
+  options: CodexDesktopProcessListOptions,
+): Promise<WindowsProcessEntry[]> {
+  const script = buildCodexDesktopProcessProbeScript(scope, options.processIds)
+  try {
+    return parseWindowsProcessesJson(await runProbe(script, scope === 'roots' ? 8_000 : 60_000))
+  } catch {
+    if (options.strict) throw new Error(codexDesktopProcessCheckFailedMessage)
+    return []
+  }
+}
+
+export async function listCodexDesktopProcesses(
+  scope: CodexDesktopProcessScope = 'roots',
+  options: CodexDesktopProcessListOptions = {},
+): Promise<WindowsProcessEntry[]> {
   if (process.platform !== 'win32') return []
 
-  const script = buildCodexDesktopProcessProbeScript()
-
-  try {
+  return collectCodexDesktopProcesses(async (script, timeoutMs) => {
     const { stdout } = await execFileAsync(resolveWindowsPowerShellExecutable(), [
       '-NoLogo',
       '-NoProfile',
@@ -1177,13 +1244,11 @@ export async function listCodexDesktopProcesses(): Promise<WindowsProcessEntry[]
     ], {
       env: trustedCommandEnvironment(),
       windowsHide: true,
-      timeout: 8_000,
+      timeout: timeoutMs,
       maxBuffer: 1024 * 1024,
     })
-    return parseWindowsProcessesJson(stdout)
-  } catch {
-    return []
-  }
+    return stdout
+  }, scope, options)
 }
 
 function codexDesktopPackageProbeStatements(): string[] {
@@ -1234,7 +1299,7 @@ export function buildCodexDesktopCombinedProbeScript(): string {
     `try { $startApps = ${codexDesktopStartAppsQuery()} } catch { $startAppsError = $_.Exception.Message }`,
     '$processes = $null',
     '$processesError = $null',
-    `try { $processes = ${codexDesktopProcessQuery()} } catch { $processesError = $_.Exception.Message }`,
+    `try { $processes = ${codexDesktopProcessQuery('roots')} } catch { $processesError = $_.Exception.Message }`,
     '$packageProbe = $null',
     '$packageError = $null',
     'try {',
@@ -1333,7 +1398,7 @@ export function buildCodexDesktopCombinedProbeFailure(reason: unknown): CodexDes
 
 /**
  * 三段串在一条脚本里跑，总预算不能再按单段的 8 秒算：一次冷启动加
- * Get-StartApps、Win32_Process 全枚举、Get-AppxPackage 三段串起来，低配机上
+ * Get-StartApps、Win32_Process 查询、Get-AppxPackage 三段串起来，低配机上
  * 比任何单段都慢。取三段旧预算之和，谁都不比合并前更紧 —— 宁可极端情况下多
  * 等，也不要把装好的 Codex 桌面端误判成没装。
  */
@@ -1496,19 +1561,36 @@ async function inspectCodexDesktopWindowsLaunchContext(): Promise<CodexDesktopWi
 export async function waitForCodexDesktopState(
   running: boolean,
   timeoutMs: number,
+  packageFamilyName: string | null,
+  originalProcessIds?: ReadonlySet<number>,
 ): Promise<WindowsProcessEntry[]> {
   const deadline = Date.now() + timeoutMs
-  let processes = await listCodexDesktopProcesses()
+  // Waiting for selected PIDs to exit belongs to a close path; waiting for a
+  // launch to appear does not.
+  async function list(): Promise<WindowsProcessEntry[]> {
+    const listed = originalProcessIds === undefined
+      ? await listCodexDesktopProcesses('roots')
+      : await listCodexDesktopProcesses('all', { processIds: originalProcessIds, strict: true })
+    return selectCodexDesktopProcessesForPackage(listed, packageFamilyName, originalProcessIds)
+  }
+  let processes = await list()
   while ((processes.length > 0) !== running && Date.now() < deadline) {
     await delay(250)
-    processes = await listCodexDesktopProcesses()
+    processes = await list()
   }
   return processes
 }
 
-export async function terminateCodexDesktopProcesses(processes: WindowsProcessEntry[]): Promise<void> {
+export async function terminateCodexDesktopProcesses(
+  processes: WindowsProcessEntry[],
+  packageFamilyName: string,
+): Promise<void> {
+  const targetProcesses = selectCodexDesktopProcessesForPackage(processes, packageFamilyName)
+  const originalProcessIds = new Set(targetProcesses.map((entry) => entry.processId))
   const taskkill = async (processId: number, force: boolean): Promise<void> => {
-    const args = ['/PID', String(processId), '/T']
+    // /T would also terminate descendants that have not passed the owner,
+    // session and package checks above.
+    const args = ['/PID', String(processId)]
     if (force) args.push('/F')
     await execFileAsync(windowsSystemExecutable('taskkill.exe'), args, {
       env: trustedCommandEnvironment(),
@@ -1517,10 +1599,12 @@ export async function terminateCodexDesktopProcesses(processes: WindowsProcessEn
     })
   }
 
-  await stopCodexDesktopProcesses(processes, {
+  await stopCodexDesktopProcesses(targetProcesses, {
     requestClose: (processId) => taskkill(processId, false),
     forceClose: (processId) => taskkill(processId, true),
-    waitUntilStopped: (timeoutMs) => waitForCodexDesktopState(false, timeoutMs),
+    waitUntilStopped: (timeoutMs) => waitForCodexDesktopState(
+      false, timeoutMs, packageFamilyName, originalProcessIds,
+    ),
   })
 }
 
@@ -1979,14 +2063,18 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
       { status: 'fulfilled', value: combinedProbe.packageProbe },
       mirrorResult,
     )
-    const processPackage = processes
-      .map((entry) => parseCodexDesktopPackagePath(entry.executablePath))
-      .find((entry): entry is CodexDesktopPackageEntry => entry !== null) ?? null
-    // A running packaged app is conclusive evidence even when AppX
-    // enumeration is scoped to another user. Prefer registered metadata, but
-    // recover the same identity from WindowsApps' immutable path as fallback.
+    const processPackage = selectCodexDesktopPackage(
+      processes
+        .map((entry) => parseCodexDesktopPackagePath(entry.executablePath))
+        .filter((entry): entry is CodexDesktopPackageEntry => entry !== null),
+    )
+    // A process with a verified current-user SID and session remains useful
+    // evidence when AppX enumeration fails. Prefer registered metadata.
     const processPackageAllowed = packageProbe.confirmedAbsent !== true
     const installedPackage = packageProbe.value ?? (processPackageAllowed ? processPackage : null)
+    const targetProcesses = installedPackage
+      ? selectCodexDesktopProcessesForPackage(processes, installedPackage.packageFamilyName)
+      : []
     // A successful current-user AppX probe with no package is authoritative.
     // Windows may keep a stale StartApps registration after uninstalling the
     // package or when another account owns it; treating that entry as a valid
@@ -2002,7 +2090,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
         mirrorError: mirrorProbe.error,
         path: null,
         installDirectory: null,
-        running: processes.length > 0,
+        running: false,
         detectionFailed,
         detectionError,
         ...desktopUpdateFields(
@@ -2041,7 +2129,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
       mirrorError: mirrorProbe.error,
       path: appId,
       installDirectory: installedPackage?.installLocation || null,
-      running: processes.length > 0,
+      running: targetProcesses.length > 0,
       detectionFailed,
       detectionError,
       ...update,
@@ -2062,6 +2150,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
   async function installCodexDesktopFromStore(
     target: RendererMessageTarget,
     previousVersion: string | null,
+    packageFamilyName: string | null,
     cancellation?: InstallCancellationHandle,
   ): Promise<{ installed: CodexDesktopPackageEntry } | { failure: string }> {
     sendCodexDesktopInstallProgress(target, {
@@ -2078,16 +2167,18 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
     } catch {
       return { failure: '这台电脑上的微软商店安装组件用不了' }
     }
-    if (previousVersion) {
+    if (previousVersion && packageFamilyName) {
       // 商店更新一个正开着的桌面端会失败或卡住；镜像那一路也是装之前先关。
-      const processes = await listCodexDesktopProcesses()
+      const processes = selectCodexDesktopProcessesForPackage(
+        await listCodexDesktopProcesses('all', { strict: true }), packageFamilyName,
+      )
       if (processes.length) {
         sendCodexDesktopInstallProgress(target, {
           phase: 'closing',
           percent: null,
           message: '正在关闭运行中的 Codex Desktop',
         })
-        await terminateCodexDesktopProcesses(processes)
+        await terminateCodexDesktopProcesses(processes, packageFamilyName)
       }
     }
     let commandFailure: string | null = null
@@ -2187,7 +2278,9 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
     const manifestBundle = await inspectCodexDesktopManifestBundle()
     cancellation?.throwIfCancelled()
     if (!previousVersion || shouldTryCodexDesktopStoreUpdate(previousVersion, manifestBundle.latest.version)) {
-      const storeResult = await installCodexDesktopFromStore(target, previousVersion, cancellation)
+      const storeResult = await installCodexDesktopFromStore(
+        target, previousVersion, stableInstallFamilyName(currentPackage), cancellation,
+      )
       if ('installed' in storeResult) {
         invalidateCodexDesktopManifestCache()
         const installedVersion = storeResult.installed.version
@@ -2372,14 +2465,19 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
       // 从这里开始就会动这台机器上的 Codex Desktop：先关掉正在跑的进程，
       // 再交给 Add-AppxPackage。中途中断会留下一个装了一半的包，所以封存。
       cancellation?.seal(codexDesktopInstallSealReason)
-      const processes = await listCodexDesktopProcesses()
+      const packageFamilyName = stableInstallFamilyName(currentPackage)
+      const processes = packageFamilyName
+        ? selectCodexDesktopProcessesForPackage(
+          await listCodexDesktopProcesses('all', { strict: true }), packageFamilyName,
+        )
+        : []
       if (processes.length) {
         sendCodexDesktopInstallProgress(target, {
           phase: 'closing',
           percent: null,
           message: '正在关闭运行中的 Codex Desktop',
         })
-        await terminateCodexDesktopProcesses(processes)
+        if (packageFamilyName) await terminateCodexDesktopProcesses(processes, packageFamilyName)
       }
       sendCodexDesktopInstallProgress(target, {
         phase: 'installing',
@@ -2476,15 +2574,25 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
     if (codexDesktopInstalling) throw new Error('Codex 桌面端正在安装、更新或卸载中')
     codexDesktopInstalling = true
     try {
-      const processes = await listCodexDesktopProcesses()
       const probe = await inspectCodexDesktopPackage()
+      if (probe.confirmedAbsent === true && !probe.error) {
+        return { outcome: 'not-installed', previousVersion: null }
+      }
+      const processes = await listCodexDesktopProcesses('all', { strict: true })
       if (probe.error && !processes.length) throw new Error(probe.error)
-      const processPackage = processes
-        .map((entry) => parseCodexDesktopPackagePath(entry.executablePath))
-        .find((entry): entry is CodexDesktopPackageEntry => entry !== null) ?? null
+      const processPackage = selectCodexDesktopPackage(
+        processes
+          .map((entry) => parseCodexDesktopPackagePath(entry.executablePath))
+          .filter((entry): entry is CodexDesktopPackageEntry => entry !== null),
+      )
       const installedPackage = probe.value ?? processPackage
       if (!installedPackage) return { outcome: 'not-installed', previousVersion: null }
-      if (processes.length) await terminateCodexDesktopProcesses(processes)
+      const targetProcesses = selectCodexDesktopProcessesForPackage(
+        processes, installedPackage.packageFamilyName,
+      )
+      if (targetProcesses.length) {
+        await terminateCodexDesktopProcesses(targetProcesses, installedPackage.packageFamilyName)
+      }
       const script = [
         '$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)',
         '$ErrorActionPreference = "Stop"',
@@ -2584,6 +2692,16 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
       throw new Error('未检测到 Codex 桌面端，请先安装后重新检测')
     }
     const desktopAppPath = desktopApp.path
+    const installedFamilyName = desktopApp.installDirectory
+      ? parseCodexDesktopPackagePath(desktopApp.installDirectory)?.packageFamilyName ?? null
+      : null
+    const appIdFamilyName = /^(OpenAI\.Codex(?:Beta)?_[A-Za-z0-9.]+)!App$/i.exec(desktopAppPath)?.[1] ?? null
+    const packageFamilyName = installedFamilyName ?? appIdFamilyName
+    // Opening never closes anything, so an unknown family only widens which
+    // of the user's own Codex windows count as "already running".
+    if (!packageFamilyName && mode === 'restart') {
+      throw new Error('没能确认要重启的是哪一个 Codex 桌面端，请重新检测后再试')
+    }
     await connectAccelerationBeforeLaunch()
     const workspace = store.read().workspace
     let workspaceUrl: string | null = null
@@ -2595,7 +2713,12 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
       // the workspace is configured.
     }
 
-    const existingProcesses = await listCodexDesktopProcesses()
+    const existingProcesses = selectCodexDesktopProcessesForPackage(
+      mode === 'restart'
+        ? await listCodexDesktopProcesses('all', { strict: true })
+        : await listCodexDesktopProcesses('roots'),
+      packageFamilyName,
+    )
     const restarted = mode === 'restart' && existingProcesses.length > 0
     const repairPermissionState = async (): Promise<void> => {
       if (!launchOptions.repairPermissionModeVisibility || !codexEnv.CODEX_HOME) return
@@ -2609,7 +2732,8 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
     }
     if (mode === 'restart') {
       try {
-        await terminateCodexDesktopProcesses(existingProcesses)
+        // Restart without a known family already stopped above.
+        if (packageFamilyName) await terminateCodexDesktopProcesses(existingProcesses, packageFamilyName)
       } catch (error) {
         const currentStatus = await inspectCodexDesktop()
         sendCodexDesktopStatus(
@@ -2724,6 +2848,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
       activatedViaAppModel || workspaceLaunchDelivered
         ? codexDesktopLaunchInitialWaitMs
         : codexDesktopLaunchFallbackWaitMs,
+      packageFamilyName,
     )
 
     const processFromActivationPid = async (): Promise<WindowsProcessEntry[]> => {
@@ -2748,7 +2873,9 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
       cdpActivationProcessId = null
       try {
         await launchWithExplorer()
-        startedProcesses = await waitForCodexDesktopState(true, codexDesktopLaunchFallbackWaitMs)
+        startedProcesses = await waitForCodexDesktopState(
+          true, codexDesktopLaunchFallbackWaitMs, packageFamilyName,
+        )
       } catch {
         // The common error below includes the same actionable launch context.
       }
