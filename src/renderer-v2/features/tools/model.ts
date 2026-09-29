@@ -250,6 +250,24 @@ export function switchAccountLabel(username: string | null | undefined): string 
   return `改用 ${name.length > 16 ? `${name.slice(0, 15).join('')}…` : name.join('')}`
 }
 
+/**
+ * Codex 老配置把当前账号的服务写在 openai 这类内置名下，Codex 不认那张表，打开
+ * 就连不上（主进程 codexProviderShadowed）。只影响「连没连上」，来源判定照旧：
+ * 「…」菜单里「切回官方账号」还要靠它认出这是当前账号的配置。
+ */
+export function codexNeedsRepair(config: Pick<ProviderConfigSummary, 'codexProviderShadowed'>, provider: ProviderId): boolean {
+  return provider === 'codex' && config.codexProviderShadowed === true
+}
+
+/** 修好那一处之后能不能直接打开：「打开」前先修只在修完就能用时替用户做。 */
+export function readyOnceRepaired(
+  config: ProviderConfigSummary,
+  provider: ProviderId,
+  storage: SourceMarkerStorage | null = getSourceMarkerStorage(),
+): boolean {
+  return codexNeedsRepair(config, provider) && connectionReady({ ...config, codexProviderShadowed: false }, provider, storage)
+}
+
 export function connectionReady(
   config: ProviderConfigSummary,
   provider: ProviderId,
@@ -257,6 +275,7 @@ export function connectionReady(
 ): boolean {
   const source = sourceFor(config, provider, storage)
   if (source === 'official') return true
+  if (codexNeedsRepair(config, provider)) return false
   if ((source !== 'account' && source !== 'manual' && !((source === 'unknown' || source === 'changed') && config.hasApiKey && config.matchesRelay)) || !config.model.trim()) return false
   return provider !== 'gemini' || config.authType === 'gemini-api-key'
 }

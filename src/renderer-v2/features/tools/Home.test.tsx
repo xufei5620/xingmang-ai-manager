@@ -524,6 +524,38 @@ describe('renderer-v2 home missing runtime guidance on macOS', () => {
     })
   })
 
+  // Codex 老配置把当前账号写在它不认的 openai 名下：原来首页照样显示已配好，打开才报 Key 无效。
+  describe('a Codex configuration Codex itself ignores', () => {
+    function shadowedSnapshot(): ToolboxSnapshot {
+      const base = snapshot({ claude: cliStatus, codex: cliStatus, grok: cliStatus, gemini: cliStatus })
+      return {
+        ...base,
+        config: {
+          ...base.config,
+          providers: { ...base.config.providers, codex: { ...providerConfig, configurationOwnership: 'account', codexProviderShadowed: true } },
+        },
+      } as unknown as ToolboxSnapshot
+    }
+
+    it('stops calling the row ready and offers to fix it', () => {
+      const markup = render({}, undefined, { snapshot: shadowedSnapshot(), onSwitchAccount: () => undefined })
+      expect(markup).toContain('连接设置要修')
+      expect(markup).toContain('这份配置里有一处 Codex 认不出，打开会连不上')
+      expect(markup).toContain('data-testid="tool-codex-repair-codex"')
+      expect(markup).toContain('修好它')
+      // 修完就能用，「打开」照旧给，点下去先修再打开。
+      expect(markup).toMatch(/data-testid="tool-codex-primary"[^>]*>(?:<[^>]+>)*打开/)
+      // 来源仍是当前账号，「切回官方账号」那一项不能丢。
+      expect(markup).not.toContain('solov')
+    })
+
+    it('leaves Claude Code on its usual state', () => {
+      const markup = render({}, undefined, { snapshot: shadowedSnapshot(), onSwitchAccount: () => undefined })
+      expect(markup).not.toContain('data-testid="tool-claude-repair-codex"')
+      expect(markup).toContain('已配好')
+    })
+  })
+
   // 以前用 CC Switch 配过的电脑：登录后软件不改来源没确认的配置，工具还连着以前那家，
   // 以前首页只挂一个中性的「用的是别处的配置」。现在要说清是 CC Switch，并给一颗按钮。
   describe('a tool still configured by CC Switch', () => {

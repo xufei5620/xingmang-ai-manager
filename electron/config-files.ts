@@ -58,6 +58,15 @@ export interface NativeConfigInspection {
    * OPENAI_API_KEY, so a Xingmang key with chatgpt mode still uses ChatGPT.
    */
   codexAuthMode?: 'apikey' | 'chatgpt' | null
+  /** Codex config.toml 的 `model_provider`（连接名）；只给 Codex，没写时为 null。 */
+  codexProviderName?: string | null
+  /**
+   * 连接名是 Codex 内置的保留名（openai 等），而那张表写的又是已登记站点的地址：
+   * Codex 会忽略这张表、按内置定义去连官方，带着当前账号的 Key 一跑就 401。
+   * 独立成一个字段而不是改 matchesRelay：切回官方、删我们的表、启动门禁都靠
+   * matchesRelay 认出「这是我们写的中转配置」，那部分判断必须照旧。
+   */
+  codexProviderShadowed?: boolean
   /**
    * `grok login` 留在 ~/.grok/auth.json 里的 `auth_mode`（oidc = 浏览器登录，api_key =
    * 登录时填的 xAI Key）；null = 没登录。只读这一个字段，令牌与 Key 不读。
@@ -1229,6 +1238,21 @@ function createCodexOfficialAuthPlans(roots: ProviderConfigRoots): FilePlan[] {
   return plans
 }
 
+function readCodexProviderSelection(
+  paths: string[],
+  siteBaseUrl: string,
+): Pick<NativeConfigInspection, 'codexProviderName' | 'codexProviderShadowed'> {
+  const parsed = readToml(paths[0])
+  const name = nestedString(parsed, ['model_provider']).trim()
+  if (!parsed || !name) return { codexProviderName: null, codexProviderShadowed: false }
+  const providers = parsed.model_providers
+  const entry = isJsonRecord(providers) ? providers[name] : null
+  return {
+    codexProviderName: name,
+    codexProviderShadowed: reservedCodexProviders.has(name) && isOwnCodexRelayEntry(entry, siteBaseUrl),
+  }
+}
+
 function readCodexAuthMode(paths: string[]): 'apikey' | 'chatgpt' | null {
   const parsed = readJson(paths[1])
   const kind = classifyCodexAuthProfile(parsed)
@@ -1325,7 +1349,7 @@ export function inspectProviderConfig(
     officialAccountEmail: officialAccount.email,
     officialAccountPlan: officialAccount.planLabel,
     officialAccountRenewsAt: officialAccount.renewsAt,
-    ...(provider === 'codex' ? { codexAuthMode: readCodexAuthMode(paths) } : {}),
+    ...(provider === 'codex' ? { codexAuthMode: readCodexAuthMode(paths), ...readCodexProviderSelection(paths, baseUrl) } : {}),
     ...(provider === 'grok' ? { grokLoginMode: readGrokLogin(path.dirname(paths[0]))?.mode ?? null } : {}),
     dataDirectory,
     dataDirectoryExists: (() => {

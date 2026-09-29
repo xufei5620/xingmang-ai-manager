@@ -42,6 +42,16 @@ describe('buildFeedbackEnvironmentLines', () => {
     expect(lines[0]).toBe('Claude Code: 已安装 2.1.277（应用托管）；配置：指向当前账号，模型 claude-opus-5')
   })
 
+  it('names the Codex connection and flags one Codex ignores', () => {
+    const codexLine = (config: FeedbackCliConfig) => buildFeedbackEnvironmentLines({
+      clis: statusesWith(),
+      readConfig: (provider) => provider === 'codex' ? config : pointingAtAccount,
+    }).find((line) => line.startsWith('Codex CLI'))
+    expect(codexLine({ ...pointingAtAccount, codexProviderName: 'XingmangAI', codexProviderShadowed: false })).toMatch(/，连接名 XingmangAI$/)
+    expect(codexLine({ ...pointingAtAccount, codexProviderName: 'openai', codexProviderShadowed: true })).toMatch(/，连接名 openai（Codex 不认，要修）$/)
+    expect(codexLine({ ...pointingAtAccount, codexProviderName: 'bad\nname"x', codexProviderShadowed: false })).toMatch(/，连接名 badnamex$/)
+  })
+
   it('labels the other install sources and leaves Grok unlabelled', () => {
     const lines = buildFeedbackEnvironmentLines({
       clis: statusesWith({
