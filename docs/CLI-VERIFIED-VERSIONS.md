@@ -269,7 +269,8 @@ Codex 那时 `recommended` 是 `null`，也就是那两天点过「更新」的�
 1. 读上游 changelog（Claude Code 是 `https://raw.githubusercontent.com/anthropics/claude-code/main/CHANGELOG.md`），找与 `ANTHROPIC_BASE_URL` / 第三方端点 / 网关相关的修复与回归。
 2. 有新的回归窗口 → 往 `blocked` 里加一条，`introduced` 写 changelog 明说的引入版本，`fixed` 写修复版本，`reason` 用一句用户读得懂的中文。
 3. 实测新版本可用 → 更新 `recommended`：`version` 填确切版本号，`verifiedAt` 填验证日期，`verifiedSites` 填实测过的站点 id（没实测就留空数组并在 `note` 里说明依据）。
-4. `npm test` 会验证：名单覆盖全部 provider、版本号是精确 semver、**推荐版本不落在自己的 `blocked` 区间里**、每条推荐都有验证日期和中文备注。
+4. 抬 `recommended` 时**同时改写 `userNote`**：一句给客户看的话，说换到这一版他碰到的哪个现象好了（如「修好了一个会让每次提问都失败的问题」），不写 npm、400、中转、网关、base URL 这类词。它会接在首页工具行的「推荐 x」后面，也是「更新」按钮的悬停说明；只在推荐版本比已装的新、且没开「总是装最新版」时出现。说不清修了什么就删掉这一行，界面只写版本号——别把上一版的话留给新版本。
+5. `npm test` 会验证：名单覆盖全部 provider、版本号是精确 semver、**推荐版本不落在自己的 `blocked` 区间里**、每条推荐都有验证日期和中文备注、`userNote` 与 `reason` 里没有技术词。
 
 ### 名单今天覆盖到哪
 
