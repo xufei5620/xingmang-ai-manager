@@ -3813,6 +3813,22 @@ describe('CLI latest version state', () => {
     })
   })
 
+  it('does not advertise a Codex downgrade as an update when npm has an even newer version', () => {
+    const recommended = recommendedCodexVersion()
+    const current = versionAboveRecommended(recommended)
+    const newest = versionAboveRecommended(current)
+    const installed = { installed: true, version: current, path: 'codex.cmd', installDirectory: null }
+
+    expect(buildCliStatus(installed, latest(newest), buildCliVersionAdvice('codex', current))).toMatchObject({
+      latestVersion: newest, updateAvailable: false, updateState: 'latest', updateError: null,
+    })
+    expect(buildCliStatus(installed, latest(newest), buildCliVersionAdvice('codex', current, { alwaysLatest: true })))
+      .toMatchObject({ latestVersion: newest, updateAvailable: true, updateState: 'available' })
+    const older = { ...installed, version: '0.0.0' }
+    expect(buildCliStatus(older, latest(newest), buildCliVersionAdvice('codex', older.version)))
+      .toMatchObject({ updateAvailable: true, updateState: 'available' })
+  })
+
   it('omits the advice field entirely when no list applies', () => {
     expect(buildCliStatus({
       installed: true,

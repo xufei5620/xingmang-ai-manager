@@ -2306,9 +2306,16 @@ describe('registerIpcHandlers', () => {
     await handler(trustedEvent(), 'claude')
     expect(service.installCli).toHaveBeenLastCalledWith('claude', expect.anything(), undefined)
 
-    for (const rejected of ['latest', '^2.1.277', '2.1', 'next', '', '2.1.277; rm -rf /']) {
+    for (const rejected of ['latest', '^2.1.277', '2.1', 'next', '', '2.1.277; rm -rf /', '2.1.277+meta;calc', '2.1.277\n']) {
       await expect(handler(trustedEvent(), 'claude', rejected)).rejects.toThrow('CLI 版本号格式错误')
     }
+  })
+
+  it('accepts an exact CLI update target containing build metadata', async () => {
+    const service = serviceStub()
+    register(service)
+    await electronMocks.handlers.get('cli:install')!(trustedEvent(), 'codex', '0.158.0-beta.1+build.2')
+    expect(service.installCli).toHaveBeenCalledWith('codex', expect.anything(), '0.158.0-beta.1+build.2')
   })
 
   it('checks and uninstalls only the requested CLI', async () => {
