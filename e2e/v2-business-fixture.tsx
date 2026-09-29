@@ -310,6 +310,7 @@ const systemSnapshot: Awaited<ReturnType<V2Bridge['scanSystem']>> = {
 const apiMethods = {
   onInstallProgress: () => () => undefined,
   onCodexDesktopInstallProgress: () => () => undefined,
+  onCodexDesktopLaunchProgress: () => () => undefined,
   getAccountSession: async () => ({
     authenticated: true,
     ...(query.has('sub2apiReliability') ? { siteId: 'solov-api' as const, realmId: 'api-account' as const, capabilities: {
