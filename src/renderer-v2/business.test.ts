@@ -254,6 +254,14 @@ describe('v2 business boundaries', () => {
     }
     expect(diagnosticHasFix('CODEX_DOTENV')).toBe(true)
   })
+  it('sends only the outdated Node.js certificate verdict to the install page', () => {
+    expect(diagnosticTarget('CERTIFICATE_TRUST', { verdict: 'outdatedNode' })).toBe('maintenance')
+    expect(diagnosticHasFix('CERTIFICATE_TRUST', { verdict: 'outdatedNode' })).toBe(true)
+    for (const verdict of ['untrusted', 'elevated', 'direct', 'systemTrusted', 'unknown']) {
+      expect(diagnosticHasFix('CERTIFICATE_TRUST', { verdict })).toBe(false)
+    }
+    expect(diagnosticHasFix('CERTIFICATE_TRUST')).toBe(false)
+  })
   it('tells the account page why the server refused instead of asking for a retry', () => {
     expect(errorMessage(new Error('Original password is incorrect'))).toBe(
       '原密码错误，请重新输入',
