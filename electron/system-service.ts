@@ -157,7 +157,12 @@ import {
   resolveWindowsPowerShellExecutable,
   type WindowsCliExecutionMode,
 } from './windows-elevation'
-import { createTrustedTemporaryDirectory } from './trusted-temp'
+import { createTrustedTemporaryDirectory, trustedInstallerCacheRoot } from './trusted-temp'
+import {
+  buildInstallLeftoverLocations,
+  type InstallLeftoverLocation,
+  type InstallLeftoverSweepResult,
+} from './install-leftovers'
 import { resolveWindowsMachinePaths } from './windows-machine-paths'
 import { createCliTerminalAccess, type UserPathOutcome } from './windows-cli-shell-access'
 import { createManagedNpmCache, ensureManagedNpmLayout, type ManagedNpmLayout } from './managed-cli'
@@ -905,6 +910,11 @@ export interface SystemService {
   launchExternalClient(tool: ExternalToolId): Promise<void>
   /** 安装队列当前的状态，退出前判断有没有安装正在跑时用。 */
   inspectInstallationQueue(): InstallationQueueSnapshot
+  /**
+   * 清掉以前中途被打断的安装留下的临时下载目录（见 install-leftovers.ts）。排在安装
+   * 队列里，不会和正在进行的安装撞上；从不抛错。
+   */
+  cleanupInstallLeftovers(): Promise<InstallLeftoverSweepResult>
 }
 
 function firstOutputLine(stdout: string, stderr: string): string | null {
@@ -2164,6 +2174,11 @@ export interface SystemServiceOptions {
    * 敲工具名。缺省 = 不改（测试与旧行为），只有 main.ts 接真实现。
    */
   ensureWindowsUserPath?: (directory: string) => Promise<UserPathOutcome>
+  /**
+   * 真正去删安装残留的那一步。缺省 = 不清（测试与旧行为），只有 main.ts 接真实现，
+   * 免得单测装一次工具就去扫开发机的临时目录。
+   */
+  sweepInstallLeftovers?: (locations: readonly InstallLeftoverLocation[]) => Promise<InstallLeftoverSweepResult>
 }
 
 export function providerCommandEnvironment(
@@ -4083,6 +4098,9 @@ export function createSystemService(
       key,
       () => installCliOperation(provider, target, version, cancellation),
     ).finally(() => cancellation.release())
+    // 装好一次顺手清掉以前中途被打断的残留：这次自己的临时目录已经在 finally 里删了，
+    // 剩下的只会是更早的。排在队列末尾，不拖慢这次安装的完成提示。
+    void finished.then(() => cleanupInstallLeftovers(), () => undefined)
     // Windows 上 Claude Code 靠 Git 自带的 bash 跑技能和插件里的命令。Claude Code 自己
     // 那一项出队之后才排 Git：队列是全局串行的，在队列任务里再入队会互相等死。
     if (provider !== 'claude' || platform !== 'win32') return finished
@@ -4091,6 +4109,44 @@ export function createSystemService(
         target, provider, 'output', progress.message, progress.percent ?? undefined)),
       (message) => sendInstallProgress(target, provider, 'output', message),
     ))
+  }
+
+  function resolveInstallLeftoverLocations(): InstallLeftoverLocation[] {
+    let trustedCacheRoot: string | null = null
+    try {
+      trustedCacheRoot = trustedInstallerCacheRoot(process.env, platform)
+    } catch {
+      // ProgramData 解析不出来时安装本身也用不了那里，没有残留可清。
+    }
+    return buildInstallLeftoverLocations({
+      platform,
+      windowsExecutionMode,
+      temporaryDirectory: os.tmpdir(),
+      trustedCacheRoot,
+    })
+  }
+
+  function cleanupInstallLeftovers(): Promise<InstallLeftoverSweepResult> {
+    const sweep = serviceOptions.sweepInstallLeftovers
+    const empty: InstallLeftoverSweepResult = { removed: 0, freedBytes: 0, failed: 0 }
+    if (!sweep) return Promise.resolve(empty)
+    // 走安装队列（I11）：清理和安装、卸载互相等，谁也看不到对方做了一半的目录。
+    return installationQueue.enqueue('maintenance:install-leftovers', async () => {
+      const result = await sweep(resolveInstallLeftoverLocations())
+      if (result.removed || result.failed) {
+        runtimeLog?.log('info', 'install', 'install-leftovers.swept', `清掉以前没装完留下的下载 ${result.removed} 份，约 ${Math.round(result.freedBytes / 1024 / 1024)} MB`, {
+          removed: result.removed,
+          freedBytes: result.freedBytes,
+          failed: result.failed,
+        })
+      }
+      return result
+    }).catch((error: unknown) => {
+      runtimeLog?.log('warn', 'install', 'install-leftovers.failed', '清理以前没装完留下的下载时出错，下次再试', {
+        error: error instanceof Error ? error.message : String(error),
+      })
+      return empty
+    })
   }
 
   function cancelCliInstall(provider: ProviderId): InstallCancellationOutcome {
@@ -5403,5 +5459,6 @@ export function createSystemService(
     installExternalClient,
     launchExternalClient,
     inspectInstallationQueue: () => installationQueue.snapshot(),
+    cleanupInstallLeftovers,
   }
 }
