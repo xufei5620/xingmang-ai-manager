@@ -59,6 +59,15 @@ const providerPlatforms: Record<ProviderId, readonly string[]> = {
 const maximumGroupNameLength = 128
 const maximumPlatformLength = 64
 
+/** The same bounded name may be returned by the backend and stored for offline key reuse. */
+export function isManagedCliGroupName(value: unknown): value is string {
+  return typeof value === 'string'
+    && value.length > 0
+    && value.length <= maximumGroupNameLength
+    && value.trim() === value
+    && !/[\u0000-\u001f\u007f]/.test(value)
+}
+
 interface NormalizedGroup {
   name: string
   platform?: string
@@ -97,8 +106,7 @@ function normalizeGroups(groups: readonly ManagedCliGroupCandidate[]): Normalize
   const normalized: NormalizedGroup[] = []
   for (const group of groups) {
     const name = typeof group?.name === 'string' ? group.name.trim() : ''
-    if (!name || name.length > maximumGroupNameLength || seen.has(name)) continue
-    if (/[\u0000-\u001f\u007f]/.test(name)) continue
+    if (!isManagedCliGroupName(name) || seen.has(name)) continue
     seen.add(name)
     const platform = typeof group.platform === 'string' ? group.platform.trim().toLowerCase() : ''
     normalized.push(platform && platform.length <= maximumPlatformLength ? { name, platform } : { name })
