@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { networkFailureMessages } from '../../../../electron/network-failure'
-import { authErrorMessage, isTwoFactorChallenge, isTwoFactorExpired, normalizeEmail, parseInviteCode, parseRecoveryCode, parseTwoFactorCode, registrationOfflineMessage, registrationStatusFailure, registrationUnreachableMessage, remainingCooldown, requiresBrowserAuthentication, suggestEmailCorrection, usernameFromEmail, validateNewPassword, validateRegistration, type RegistrationDraft } from './state'
+import { authErrorMessage, authFailure, authOfflineMessage, authUnreachableMessage, isTwoFactorChallenge, isTwoFactorExpired, normalizeEmail, parseInviteCode, parseRecoveryCode, parseTwoFactorCode, registrationOfflineMessage, registrationStatusFailure, registrationUnreachableMessage, remainingCooldown, requiresBrowserAuthentication, suggestEmailCorrection, usernameFromEmail, validateNewPassword, validateRegistration, type RegistrationDraft } from './state'
 import { guideOfficialLoginRequired, resolveGuideReadiness } from './StartGuide'
 
 describe('v2 two-step verification', () => {
@@ -119,7 +119,7 @@ describe('v2 auth recovery boundaries', () => {
   })
   it('does not expose raw server error text to the interface', () => {
     expect(authErrorMessage(new Error('GET https://example.test 500 internal stack trace'), '登录')).toBe('登录没有成功，输入已保留，请稍后重试')
-    expect(authErrorMessage(new Error('ETIMEDOUT'), '登录')).toContain('网络')
+    expect(authErrorMessage(new Error('ETIMEDOUT'), '登录')).toBe(authUnreachableMessage)
     expect(authErrorMessage(new Error('TWO_FACTOR_REQUIRED'), '登录')).toContain('双重验证')
     expect(authErrorMessage(new Error('此账号需要双重验证，请先完成验证'), '登录')).toContain('所选账号官网')
   })
@@ -127,9 +127,42 @@ describe('v2 auth recovery boundaries', () => {
   // 门户认证没做，界面却只说「请稍后重试」，于是他一遍遍重输密码。
   it('keeps the reason the main process worked out for a restricted network', () => {
     for (const reason of Object.keys(networkFailureMessages) as (keyof typeof networkFailureMessages)[]) {
+      if (reason === 'offline' || reason === 'timeout' || reason === 'refused') continue
       const wrapped = `Error invoking remote method 'account:login': Error: ${networkFailureMessages[reason]}（账号登录请求失败）`
-      expect(authErrorMessage(new Error(wrapped), '登录')).toBe(networkFailureMessages[reason])
+      expect(authFailure(new Error(wrapped), '登录')).toEqual({ message: networkFailureMessages[reason], kind: 'network' })
     }
+  })
+  // 第二十批 4：没网和连不上要分开说，连不上时提醒最常见的真实原因（加速器 / 翻墙 / 代理），和注册窗读设置同一套说法。
+  it('tells a machine without network apart from an unreachable account service', () => {
+    const wrap = (text: string) => new Error(`Error invoking remote method 'account:login': Error: ${text}（账号登录请求失败）`)
+    expect(authFailure(wrap(networkFailureMessages.offline), '登录')).toEqual({ message: authOfflineMessage, kind: 'offline' })
+    expect(authFailure(wrap(networkFailureMessages.timeout), '登录')).toEqual({ message: authUnreachableMessage, kind: 'unreachable' })
+    expect(authFailure(wrap(networkFailureMessages.refused), '登录')).toEqual({ message: authUnreachableMessage, kind: 'unreachable' })
+    expect(authFailure(new Error('ECONNREFUSED 127.0.0.1:443'), '登录').kind).toBe('unreachable')
+    expect(authFailure(wrap(networkFailureMessages.timeout), '登录', false)).toEqual({ message: authOfflineMessage, kind: 'offline' })
+    expect(authUnreachableMessage).toContain('加速器')
+    for (const text of [authOfflineMessage, authUnreachableMessage, authFailure(new Error('Failed to fetch'), '登录').message]) {
+      expect(text).not.toContain('超时')
+      expect(text).not.toContain('星芒服务器')
+    }
+    expect(authFailure(new Error('Failed to fetch'), '登录')).toEqual({ message: '连不上账号服务，请检查网络后再试一次。', kind: 'unreachable' })
+  })
+  it('sorts account-service failures by what the customer can do next', () => {
+    expect(authFailure(new Error('Username or password is incorrect'), '登录').kind).toBe('credentials')
+    expect(authFailure(new Error('invalid password'), '登录').kind).toBe('credentials')
+    expect(authFailure(new Error('Verification code is incorrect'), '创建账号').kind).toBe('code')
+    expect(authFailure(new Error('Password reset link is invalid or has expired'), '重置密码').kind).toBe('code')
+    expect(authFailure(new Error('Email address is already in use'), '创建账号').kind).toBe('taken')
+    expect(authFailure(new Error('User has been banned'), '登录').kind).toBe('support')
+    expect(authFailure(new Error('New user registration has been disabled by administrator'), '创建账号').kind).toBe('support')
+    expect(authFailure(new Error('登录太频繁了，请过一会儿再试。'), '登录').kind).toBe('wait')
+    expect(authFailure(new Error('Database error, please contact the administrator'), '登录').kind).toBe('unknown')
+  })
+  it('keeps a plain Chinese reason in the fallback instead of throwing it away', () => {
+    expect(authFailure(new Error("Error invoking remote method 'account:login': Error: 账号服务正在升级，请半小时后再来"), '登录')).toEqual({ message: '登录没有成功：账号服务正在升级，请半小时后再来。', kind: 'unknown' })
+    // 带英文字母的多半是地址、堆栈或错误码，客户看不懂，照旧只说没成功。
+    expect(authErrorMessage(new Error('服务返回 HTTP 502'), '登录')).toBe('登录没有成功，输入已保留，请稍后重试')
+    expect(authErrorMessage(new Error(`账号服务说：${'很长的原因'.repeat(20)}`), '登录')).toBe('登录没有成功，输入已保留，请稍后重试')
   })
   it('does not let the broad network heuristics call a replaced certificate a timeout', () => {
     expect(authErrorMessage(new Error(networkFailureMessages.tls), '登录')).toBe(networkFailureMessages.tls)

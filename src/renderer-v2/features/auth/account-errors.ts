@@ -16,9 +16,16 @@
 // This resolves only what the table knows. Unmatched messages return null so
 // the caller keeps its own fallback: unlike the legacy shell, renderer-v2 never
 // puts raw server text on screen.
+/**
+ * What the customer can do about it, so the login box can put the matching way
+ * out under the red text. Unset means "nothing more specific than try again".
+ */
+export type AccountErrorKind = 'credentials' | 'code' | 'taken' | 'support' | 'wait'
+
 interface AccountErrorPattern {
   test: RegExp
   friendly: string
+  kind?: AccountErrorKind
 }
 
 // i18n key user.exists -- register-time username collision. Shared with
@@ -29,6 +36,7 @@ const accountErrorPatterns: readonly AccountErrorPattern[] = [
   {
     test: usernameTakenPattern,
     friendly: '该用户名已被注册，请更换用户名，或点击“已有账号，登录”',
+    kind: 'taken',
   },
   {
     // The server's optional email-domain whitelist / alias restriction, hit on
@@ -45,17 +53,20 @@ const accountErrorPatterns: readonly AccountErrorPattern[] = [
     // i18n key user.email_already_taken -- register-time email collision.
     test: /email(\s+address)?\s+is\s+already\s+in\s+use|邮箱地址已被占用|该邮箱已注册/i,
     friendly: '该邮箱已被注册，请直接登录，或更换邮箱后重试',
+    kind: 'taken',
   },
   {
     // i18n key user.verification_code_error
     test: /verification\s+code.*(incorrect|invalid|expired)|验证码(错误|不正确|已过期|已失效)/i,
     friendly: '验证码错误或已过期，请重新获取验证码',
+    kind: 'code',
   },
   {
     // i18n key user.password_reset_link_invalid -- wrong, already-used or
     // expired reset token submitted to account:reset-password.
     test: /password reset link is invalid or has expired|重置链接(非法|无效)(或已过期)?/i,
     friendly: '重置码错误或已过期，请重新获取重置邮件',
+    kind: 'code',
   },
   {
     // i18n key user.email_verification_required -- submitted without an email
@@ -71,22 +82,26 @@ const accountErrorPatterns: readonly AccountErrorPattern[] = [
     // behavior of never confirming which half was wrong.
     test: /username or password is incorrect|user does not exist|no such user|account does not exist|用户名或密码错误|用户不存在/i,
     friendly: '用户名或密码错误',
+    kind: 'credentials',
   },
   {
     // i18n key auth.user_banned, standalone (the login path folds this into the
     // generic message above, but other paths can surface it alone).
     test: /user has been banned|用户已被封禁/i,
     friendly: '该账号已被封禁，请联系客服',
+    kind: 'support',
   },
   {
     // i18n keys user.register_disabled / user.password_register_disabled
     test: /registration has been disabled|注册(功能)?已(关闭|禁用)/i,
     friendly: '当前暂未开放注册，请联系客服',
+    kind: 'support',
   },
   {
     // i18n key user.password_login_disabled
     test: /password login has been disabled|密码登录已(关闭|禁用)/i,
     friendly: '当前暂不支持密码登录，请联系客服',
+    kind: 'support',
   },
   {
     // rc.24 login: 409 AUTH_SESSION_LIMIT once 50 login sessions are live. The
@@ -96,16 +111,19 @@ const accountErrorPatterns: readonly AccountErrorPattern[] = [
     // the same limit, so the way out is a device that is still signed in.
     test: /AUTH_SESSION_LIMIT\b|同时登录的设备太多/,
     friendly: '这个账号同时登录的设备太多了，暂时登不上。如果别的电脑或浏览器上还登着这个账号，请在那里的个人中心「登录设备」里退出几个不用的，再回来登录；都登不上的话请联系客服。',
+    kind: 'support',
   },
   {
     // rc.24 login: 429 AUTH_SESSION_ISSUANCE_LIMIT, 100 new sessions per 24 hours.
     test: /AUTH_SESSION_ISSUANCE_LIMIT|登录的次数太多/,
     friendly: '这个账号最近一天里登录的次数太多了，请过几个小时再试。',
+    kind: 'wait',
   },
   {
     // rc.24 login: bare 429 from the route's CriticalRateLimit (keyed by IP).
     test: /登录太频繁/,
     friendly: '登录太频繁了，请过一会儿再试。',
+    kind: 'wait',
   },
   {
     // i18n key common.database_error
@@ -128,10 +146,15 @@ const accountErrorPatterns: readonly AccountErrorPattern[] = [
   },
 ]
 
-export function matchAccountErrorMessage(message: unknown): string | null {
+export function matchAccountError(message: unknown): { friendly: string; kind?: AccountErrorKind } | null {
   const text = typeof message === 'string' ? message.trim() : message instanceof Error ? message.message.trim() : ''
   if (!text) return null
-  return accountErrorPatterns.find((pattern) => pattern.test.test(text))?.friendly ?? null
+  const pattern = accountErrorPatterns.find((entry) => entry.test.test(text))
+  return pattern ? { friendly: pattern.friendly, kind: pattern.kind } : null
+}
+
+export function matchAccountErrorMessage(message: unknown): string | null {
+  return matchAccountError(message)?.friendly ?? null
 }
 
 export function isUsernameTakenError(error: unknown): boolean {

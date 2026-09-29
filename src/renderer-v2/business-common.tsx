@@ -13,6 +13,7 @@ import { Button, Empty, Pill } from './ui'
 import { errors } from './registry/errors'
 import { presentOperationError } from './operation-error'
 import { matchAccountErrorMessage } from './features/auth/account-errors'
+import { redactSecretPatterns } from '../../electron/redaction-patterns'
 
 const pendingOperations = new Map<symbol, string>()
 export function pendingBusinessOperations() {
@@ -118,6 +119,23 @@ export function dollars(amount: number | null | undefined) {
   return typeof amount === 'number' && Number.isFinite(amount)
     ? `$${amount.toFixed(2)}`
     : '暂未读到'
+}
+/**
+ * 一次按钮操作失败后交给错误框的两样东西：上屏的那句（`message`，同 `errorMessage`），
+ * 以及被兜底句换掉的原话（`detail`）。以前认不出的英文原话（`spawn EPERM`、`ENOSPC`
+ * 这类）整句丢掉，错误框只剩「打开 Codex 桌面端没有完成」，客户和客服都不知道原因。
+ *
+ * 只有真的落到兜底句时才留 `detail`：401、限流、超时和账号服务那张表都已经换成了
+ * 说清原因的中文，再附原话就成了两套说法。原话先脱路径（userFacingErrorMessage），
+ * 再过日志和反馈报告同一张 Key 打码表（redaction-patterns.ts），只留前 160 字。
+ */
+export function operationFailureFrom(error: unknown, action?: string): { message: string; detail?: string } {
+  const fallback = action ? `${action}没有完成` : '操作没有完成'
+  const message = errorMessage(error, fallback)
+  if (message !== fallback) return { message }
+  const raw = redactSecretPatterns(userFacingErrorMessage(error))
+  if (!raw || raw === message) return { message }
+  return { message, detail: raw.length > 160 ? `${raw.slice(0, 159)}…` : raw }
 }
 export function useResource<T>(load: () => Promise<T>) {
   const [data, setData] = useState<T | null>(null)

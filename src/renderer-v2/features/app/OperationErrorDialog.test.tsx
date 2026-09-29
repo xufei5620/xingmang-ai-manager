@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import { toolCertificateMessages } from '../../../../electron/network-failure'
-import { OperationErrorDialog, operationErrorActions } from './OperationErrorDialog'
+import { OperationErrorDialog, operationErrorActions, supportFailureOf } from './OperationErrorDialog'
 
 describe('renderer-v2 operation error dialog', () => {
   it('leads with the catalog heading and keeps the backend sentence underneath', () => {
@@ -92,5 +92,47 @@ describe('renderer-v2 operation error dialog', () => {
     // 换 Node.js 才是出路，它当主按钮，重试退到次要。
     expect(markup).toMatch(/xm-btn-primary[^>]*data-testid="operation-error-replaceNode"/)
     expect(markup).toMatch(/xm-btn-secondary[^>]*data-testid="operation-error-retry"/)
+  })
+
+  it('turns a swallowed English original into the catalog reason and folds the original away', () => {
+    const markup = renderToStaticMarkup(
+      <OperationErrorDialog failure={{ message: '打开 Codex 桌面端没有完成', action: '打开 Codex 桌面端', detail: 'EBUSY: resource busy or locked' }}
+        onClose={() => undefined} onAction={() => undefined} />,
+    )
+    expect(markup).toContain('工具正在运行')
+    expect(markup).toContain('文件被占用')
+    expect(markup).toContain('给客服看的原话')
+    expect(markup).not.toMatch(/<details open/)
+  })
+
+  it('keeps a reason line and opens the original when nothing recognises it', () => {
+    const markup = renderToStaticMarkup(
+      <OperationErrorDialog failure={{ message: '打开 Codex 桌面端没有完成', detail: 'spawn ENOSYS' }}
+        onClose={() => undefined} onAction={() => undefined} />,
+    )
+    expect(markup).toContain('操作没有完成')
+    expect(markup).toContain('operation-error-reason')
+    expect(markup).toContain('原因：')
+    expect(markup).toMatch(/<details open=""[^>]*data-testid="operation-error-raw"/)
+    expect(markup).toContain('spawn ENOSYS')
+    // 目录里 unknown 那句「已自动撤回」从没验证过，不许再上屏。
+    expect(markup).not.toContain('已自动撤回')
+  })
+
+  it('puts 复制给客服 right before 找客服 once the caller knows who the user is', () => {
+    const support = { signedIn: true, account: { userId: 7, username: 'peaker' }, version: '0.2.11', os: 'win' as const }
+    const markup = renderToStaticMarkup(
+      <OperationErrorDialog failure={{ message: '打开 Codex 桌面端没有完成', detail: 'spawn ENOSYS' }} support={support}
+        onClose={() => undefined} onAction={() => undefined} />,
+    )
+    expect(markup).toMatch(/operation-error-copySupport[\s\S]*operation-error-support"/)
+    expect(renderToStaticMarkup(<OperationErrorDialog failure={{ message: 'x' }} onClose={() => undefined} onAction={() => undefined} />))
+      .not.toContain('operation-error-copySupport')
+  })
+
+  it('builds the support failure from the recognised heading', () => {
+    const at = new Date(2026, 8, 29, 14, 37)
+    expect(supportFailureOf({ message: '打开 Codex 桌面端没有完成', action: '打开 Codex 桌面端', detail: 'ENOSPC' }, at))
+      .toEqual({ at, action: '打开 Codex 桌面端', message: '打开 Codex 桌面端没有完成', reason: '磁盘空间不够', detail: 'ENOSPC' })
   })
 })
