@@ -778,7 +778,10 @@ describe('ProviderSessionsService.delete', () => {
     writeJsonLines(path.join(outer, 'inner', 'chat_history.jsonl'), [{ type: 'user', content: '内层' }])
     const sessions = service(data)
     const page = await sessions.list({ provider: 'grok', pageSize: 100 })
-    const target = page.items.find((item) => path.dirname(item.sourcePath) === fs.realpathSync(outer))
+    // Compare by folder name: on Windows the discovered path is the long-name
+    // realpath while tmpdir() may be an 8.3 short path, so full paths differ.
+    const target = page.items.find((item) => path.basename(path.dirname(item.sourcePath)) === 'outer')
+    expect(target).toBeDefined()
 
     await sessions.delete(target!.id)
 
