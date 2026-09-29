@@ -70,6 +70,28 @@ describe('renderer-v2 start guide first run', () => {
     expect(markup).toContain('data-testid="guide-open-tool-new-folder"')
   })
 
+  // 客服远程装好的客户走完引导也不知道要充值、去哪充（2026-09-29 yoyo 反馈）。
+  it('points a new customer to top-up on the last step when the tool spends the current account', () => {
+    stubResumedGuide('claude', 'ready')
+    const markup = render([guideTool()], { onFailureAction: () => undefined })
+    expect(markup).toContain('data-testid="guide-recharge"')
+    expect(markup).toContain('data-testid="guide-recharge-button"')
+    expect(markup).toContain('去充值')
+    expect(markup).toContain('左下角余额旁边的「充值」')
+    stubResumedGuide('chat', 'ready')
+    expect(render([guideTool()], { onFailureAction: () => undefined })).toContain('data-testid="guide-recharge"')
+  })
+
+  it('does not send people to top up when the tool spends someone else\'s quota or the host has no way there', () => {
+    stubResumedGuide('claude', 'ready')
+    expect(render([guideTool({ source: 'official' })], { onFailureAction: () => undefined })).not.toContain('data-testid="guide-recharge"')
+    expect(render([guideTool({ source: 'manual' })], { onFailureAction: () => undefined })).not.toContain('data-testid="guide-recharge"')
+    expect(render([guideTool({ configured: false, source: 'none' })], { onFailureAction: () => undefined })).not.toContain('data-testid="guide-recharge"')
+    expect(render([guideTool()])).not.toContain('data-testid="guide-recharge"')
+    stubResumedGuide('claude', 'connect')
+    expect(render([guideTool()], { onFailureAction: () => undefined })).not.toContain('data-testid="guide-recharge"')
+  })
+
   it('does not offer a folder for the desktop app, the chat route or a tool that is not ready', () => {
     stubResumedGuide('codexDesktop', 'ready')
     expect(render([guideTool({ id: 'codexDesktop' })])).not.toContain('data-testid="guide-folder-hint"')
