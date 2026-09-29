@@ -199,7 +199,10 @@ export function withElevationNotice(lead: string, notice: string | null): string
  * 系统里的代理和环境变量、项目文件夹里的设置……）就不给按钮：结论里已经说了怎么办，
  * 以前统一兜底到「安装卸载」，用户点过去什么也找不到。
  */
-export function diagnosticTarget(code: string): V2Page | null {
+export function diagnosticTarget(code: string, details?: Diagnostic['details']): V2Page | null {
+  // 「安全证书」只有「Node.js 太旧」这一种能在软件里处理：去「安装卸载」换新版。
+  // 电脑自己也不认、以管理员身份打开这两种，结论里已经说了怎么办。
+  if (code === 'CERTIFICATE_TRUST') return details?.verdict === 'outdatedNode' ? 'maintenance' : null
   // 文件夹被搬过没有能在软件里一键修的地方，下一步是导出报告找客服。
   if (code === 'FOLDER_RELOCATED') return 'feedback'
   // 加速文件坏了：加速页上有「重新检查」和「联系客服」。
@@ -224,8 +227,8 @@ export function diagnosticTarget(code: string): V2Page | null {
   return null
 }
 
-export function diagnosticHasFix(code: string): boolean {
-  return diagnosticTarget(code) !== null
+export function diagnosticHasFix(code: string, details?: Diagnostic['details']): boolean {
+  return diagnosticTarget(code, details) !== null
 }
 
 /**
@@ -447,7 +450,7 @@ export function HealthPage({
       openConfig(provider)
       return
     }
-    const target = diagnosticTarget(item.code)
+    const target = diagnosticTarget(item.code, item.details)
     if (!target) return
     if (target === 'settings') requestSettingsGroup('network')
     navigate?.(target)
@@ -608,7 +611,7 @@ export function HealthPage({
                       打开文件夹
                     </Button>
                   )}
-                  {item.state !== 'pass' && diagnosticHasFix(item.code) && (
+                  {item.state !== 'pass' && diagnosticHasFix(item.code, item.details) && (
                     <Button
                       size="sm"
                       icon={Wrench}

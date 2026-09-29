@@ -235,6 +235,13 @@ describe('buildFeedbackRuntimeLines', () => {
     ])
   })
 
+  it('adds the latest certificate conclusion right after the network location', () => {
+    const lines = buildFeedbackRuntimeLines(runtimeInput({ certificateTrust: '这台电脑装了公司或安全软件的证书。' }))
+
+    expect(lines[lines.indexOf('网络位置: 中国大陆') + 1]).toBe('安全证书: 这台电脑装了公司或安全软件的证书。')
+    expect(buildFeedbackRuntimeLines(runtimeInput()).some((line) => line.startsWith('安全证书'))).toBe(false)
+  })
+
   it('never carries the public IP or country code from the scan into the report', () => {
     const scanned = {
       checkedAt: '2026-09-22T10:00:00.000Z',

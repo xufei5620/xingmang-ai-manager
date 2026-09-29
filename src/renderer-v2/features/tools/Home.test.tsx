@@ -777,3 +777,27 @@ describe('renderer-v2 home balance for subscription customers', () => {
     expect(markup).not.toContain('余额只剩')
   })
 })
+
+describe('renderer-v2 home runtime card', () => {
+  function withNpm(npm: Record<string, unknown>): ToolboxSnapshot {
+    const base = snapshot({ claude: cliStatus, codex: cliStatus, grok: cliStatus, gemini: cliStatus })
+    return { ...base, system: { ...base.system, runtime: { ...base.system.runtime, npm } } } as unknown as ToolboxSnapshot
+  }
+
+  it('does not list npm as its own row', () => {
+    const markup = render({})
+    expect(markup).toContain('data-testid="home-runtime-row-node"')
+    expect(markup).not.toContain('data-testid="home-runtime-row-npm"')
+    expect(markup).not.toContain('<strong>npm</strong>')
+  })
+
+  it('says on the Node.js row when the part that installs tools is missing', () => {
+    const markup = render({}, undefined, { snapshot: withNpm({ installed: false, version: null, detectionFailed: false }) })
+    expect(markup).toContain('22.0.0 · 少了装工具用的组件，重装一次 Node.js 就好')
+  })
+
+  it('stays quiet when the check itself failed rather than the part being missing', () => {
+    const markup = render({}, undefined, { snapshot: withNpm({ installed: false, version: null, detectionFailed: true }) })
+    expect(markup).not.toContain('少了装工具用的组件')
+  })
+})

@@ -134,6 +134,13 @@ const foreignKeyDetails = {
   otherAccount: '能用，但用量可能算到别的账号上',
 } as const
 
+const nodeInstallerPartMissingNote = '少了装工具用的组件，重装一次 Node.js 就好'
+
+/** npm 是随 Node.js 一起装的：Node.js 在、它却确实不在（不是没查出来）才算缺。 */
+export function nodeInstallerPartMissing(runtime: ToolboxSnapshot['system']['runtime'] | undefined) {
+  return Boolean(runtime?.node.installed && runtime.npm && !runtime.npm.installed && !runtime.npm.detectionFailed)
+}
+
 function bootstrapErrorText(error: string) {
   return isNetworkFailureText(error) ? offlineBootstrapNotice : `账号 Key 初始化没有完成：${keySyncFailureReason(error)}`
 }
@@ -456,11 +463,14 @@ export function Home(props: HomeProps) {
       </div>
       <aside className="v2-home-aside">
         <Card title="运行环境" padding="none" meta={snapshot ? new Date(snapshot.system.checkedAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) : '等待检查'}>
-          <div className="v2-runtime-list">{(['node', 'npm', 'python', 'git'] as const).map((id) => {
+          <div className="v2-runtime-list">{(['node', 'python', 'git'] as const).map((id) => {
             const status = snapshot?.system.runtime[id]
             const optional = id === 'python' || id === 'git'
-            return <div key={id} className="v2-runtime-row"><i className={`v2-dot ${status?.installed ? 'is-ok' : optional ? '' : 'is-warn'}`} /><BrandIcon tool={id} size={16} variant="xs" /><strong>{id === 'node' ? 'Node.js' : id === 'python' ? 'Python' : id === 'git' ? 'Git' : 'npm'}</strong>
-              <span>{jobs[id]?.label ?? (loading ? '检测中' : status?.detectionFailed ? '检测失败' : status?.version ?? (optional ? '可选 · 未装' : '未安装'))}</span>
+            // 装工具用的那个组件（npm）是 Node.js 自带的，不单列一行，缺了才在 Node.js 这一行说。
+            const partMissing = id === 'node' && nodeInstallerPartMissing(snapshot?.system.runtime)
+            const text = jobs[id]?.label ?? (loading ? '检测中' : status?.detectionFailed ? '检测失败' : status?.version ?? (optional ? '可选 · 未装' : '未安装'))
+            return <div key={id} className="v2-runtime-row" data-testid={`home-runtime-row-${id}`}><i className={`v2-dot ${status?.installed && !partMissing ? 'is-ok' : optional ? '' : 'is-warn'}`} /><BrandIcon tool={id} size={16} variant="xs" /><strong>{id === 'node' ? 'Node.js' : id === 'python' ? 'Python' : 'Git'}</strong>
+              <span>{partMissing && !jobs[id] && !loading ? `${text} · ${nodeInstallerPartMissingNote}` : text}</span>
             </div>
           })}</div>
           {gitMissing && !jobs.git && <p className="v2-runtime-hint" data-testid="home-runtime-git-hint">{gitMissingHomeNotice(gitHost)}</p>}

@@ -250,7 +250,7 @@ export const tutorialTopics: readonly TutorialTopic[] = [
         detail: '这台电脑没登录过官方账号时，切回后要在工具里登录一次。',
         bullets: ['Claude Code：打开后输入 /login，按提示登录 Claude 账号。', 'Codex：打开后按提示用 ChatGPT 账号登录。', '提示「refresh token has expired」时，在 Codex 里退出后重新登录。'],
         expected: '工具里显示已登录，能正常回复。',
-        extra: [{ title: '切完还是报 401 或「Please run /login」？', detail: '到「检查」页重新检查一次，看「环境变量覆盖」有没有提示：系统里设过的 ANTHROPIC_API_KEY 这类变量会盖过工具箱写的配置。' }],
+        extra: [{ title: '切完还是报 401 或「Please run /login」？', detail: '到「检查」页重新检查一次，看「电脑里另外设过的工具地址或密钥」有没有提示：电脑里另外设过的 Key 会盖过当前账号的设置。' }],
         action: '去检查页',
         page: 'health',
       },
