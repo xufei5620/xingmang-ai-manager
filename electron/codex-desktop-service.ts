@@ -471,6 +471,44 @@ export function describeCodexDesktopStoreFailure(error: unknown): string {
   return `错误码 0x${exitCode.toString(16)}`
 }
 
+/**
+ * 商店那一路常常几分钟没有一行输出，进度条停在原地和卡死看上去一模一样。
+ * 心跳按这个间隔把「已经等了多久」说出来，用户才知道该等还是该关。
+ */
+export const codexDesktopStoreHeartbeatMs = 15_000
+// 离超时只剩这么久时改口成「最多再等 X 分钟」，让用户知道等待是有头的。
+const codexDesktopStoreDeadlineNoticeMs = 3 * 60_000
+
+// system-service 已经 import 本模块，反过来 import 它的 formatElapsedDuration
+// 会成环，所以这里留一份同样写法的。
+function formatCodexDesktopStoreElapsed(elapsedMs: number): string {
+  const seconds = Math.max(0, Math.round(elapsedMs / 1000))
+  if (seconds < 60) return `${seconds} 秒`
+  return `${Math.floor(seconds / 60)} 分 ${String(seconds % 60).padStart(2, '0')} 秒`
+}
+
+/**
+ * 商店安装期间给用户看的那一行。只说大白话：不出现商店安装组件、软件源这些名字。
+ * 超时后会自动换国内下载线路，所以临近超时时说「最多再等」而不是「失败」。
+ */
+export function buildCodexDesktopStoreWaitMessage(
+  elapsedMs: number,
+  percent: number | null,
+  timeoutMs: number = codexDesktopStoreInstallTimeoutMs,
+): string {
+  const progress = percent === null ? '' : `（${percent}%）`
+  if (elapsedMs < codexDesktopStoreHeartbeatMs) {
+    return `正在从微软商店下载安装 Codex 桌面端${progress}，要等几分钟，请别关窗口`
+  }
+  const remainingMs = timeoutMs - elapsedMs
+  if (remainingMs <= codexDesktopStoreDeadlineNoticeMs) {
+    const minutes = Math.max(1, Math.ceil(remainingMs / 60_000))
+    return `还在等微软商店${progress}，最多再等 ${minutes} 分钟；还不行星芒会自动换国内下载线路接着装，请别关窗口`
+  }
+  return `正在从微软商店下载安装 Codex 桌面端${progress}，已经等了 ${formatCodexDesktopStoreElapsed(elapsedMs)}。`
+    + '商店有时要十来分钟，不用管它，请别关窗口'
+}
+
 /** 商店输出的进度条里带百分比时取最后一个，取不到就返回 null。 */
 export function parseCodexDesktopStoreProgress(text: string): number | null {
   const matches = [...text.matchAll(/(\d{1,3})\s*%/g)]
@@ -2267,10 +2305,11 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
     packageFamilyName: string | null,
     cancellation?: InstallCancellationHandle,
   ): Promise<{ installed: CodexDesktopPackageEntry } | { failure: string }> {
+    const storeStartedAt = Date.now()
     sendCodexDesktopInstallProgress(target, {
       phase: 'downloading',
-      percent: 0,
-      message: '正在通过微软商店安装 Codex 桌面端（0%）',
+      percent: null,
+      message: buildCodexDesktopStoreWaitMessage(0, null),
     })
     const resolution = await resolveStoreInstaller(cancellation?.signal)
     cancellation?.throwIfCancelled()
@@ -2296,6 +2335,15 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
       }
     }
     let commandFailure: string | null = null
+    let lastPercent: number | null = null
+    function sendStoreWait(): void {
+      sendCodexDesktopInstallProgress(target, {
+        phase: 'downloading',
+        percent: lastPercent,
+        message: buildCodexDesktopStoreWaitMessage(Date.now() - storeStartedAt, lastPercent),
+      })
+    }
+    const heartbeat = setInterval(sendStoreWait, codexDesktopStoreHeartbeatMs)
     try {
       await executeCommand(command, {
         // 解析器已经核过 App Installer 的包身份与真实目录（同 node-runtime、
@@ -2309,17 +2357,16 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
         ...(cancellation ? { signal: cancellation.signal } : {}),
         onOutput: (event) => {
           const percent = parseCodexDesktopStoreProgress(event.text)
-          if (percent === null) return
-          sendCodexDesktopInstallProgress(target, {
-            phase: 'downloading',
-            percent,
-            message: `正在通过微软商店安装 Codex 桌面端（${percent}%）`,
-          })
+          if (percent === null || percent === lastPercent) return
+          lastPercent = percent
+          sendStoreWait()
         },
       })
     } catch (error) {
       cancellation?.throwIfCancelled()
       commandFailure = describeCodexDesktopStoreFailure(error)
+    } finally {
+      clearInterval(heartbeat)
     }
     // 不只看退出码：商店偶尔报错却已经装好，也可能报成功却没换版本。以本机实际
     // 装着的包为准（包身份与发布者由 selectCodexDesktopPackage 核过）。
