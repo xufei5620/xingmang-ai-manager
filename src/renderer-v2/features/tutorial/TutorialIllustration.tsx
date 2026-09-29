@@ -16,7 +16,7 @@ const illustrationDescriptions: Record<TutorialIllustrationId, { title: string; 
   launch: { title: '在自己的文件夹里开始', description: '点击工具行的打开，按提示选择工作文件夹。CLI 会在这个文件夹打开，随后在工具窗口中输入自己的任务。', hint: '先用测试文件夹练习，再让 AI 处理正式项目。' },
   chat: { title: '不打开终端，也能直接提问', description: '左侧选择聊天，在输入框上方选择文本对话、分组和模型，输入具体问题，再点击输入框右侧的发送消息。', hint: '先确认分组和模型，再描述你希望完成的事。' },
   canvas: { title: '把提示词连到图像节点', description: '在画布中添加提示词和图像节点，连接两个节点，检查生成配置，再运行此节点。图中未执行生成。', hint: '连接节点后再运行；保存工作流不等于生成图片。' },
-  acceleration: { title: '选线路，再开始加速', description: '在游戏加速页面选择加速线路，可以选智能分配；TUN 模式可用时按需开启，连接后须先停止加速再切换。不使用时点击停止加速。', hint: '连接后才计时；用完点击「停止加速」。' },
+  acceleration: { title: '选线路，再开始加速', description: '在游戏加速页面选择加速线路，可以选智能分配，再点击开始加速；加速只改这台电脑的系统代理，连接后要换线路须先停止加速。不使用时点击停止加速。', hint: '连接后才计时；用完点击「停止加速」。' },
   extensions: { title: '先选工具，再添加能力', description: '在外接工具页面先选择要配置的 AI 工具，再点添加连接。技能和插件分别在自己的页面管理。', hint: '扩展按工具分别管理，先确认当前选中的是哪个工具。' },
   skills: { title: '技能要导入到对应的工具', description: '在技能页面先选择工具，例如 Codex CLI，再点击导入技能。列表可查看技能的来源与范围；系统内置技能只能查看。', hint: '不同工具的导入能力不同；先选工具，再看可用操作。' },
   plugins: { title: '在插件页面选择工具和来源', description: '在插件页面选择要使用插件的工具，再点击添加插件；已安装和市场是两个不同页签，市场能力以当前工具实际支持为准。', hint: '先确认插件适用的工具，再按作者提供的来源添加。' },
@@ -136,7 +136,7 @@ function Diagram({ kind }: { kind: TutorialIllustrationId }) {
     case 'acceleration':
       return <div className="tutorial-illustration-acceleration">
         <Pane title={<><Globe2 size={18} />加速线路</>}><div className="tutorial-illustration-row"><Marker>1</Marker><strong>智能分配</strong><ChevronDown size={16} /></div><p className="tutorial-illustration-note">也可选择线路并检测 Ping</p></Pane>
-        <div className="tutorial-illustration-acceleration-actions"><div className="tutorial-illustration-row"><strong>TUN 模式</strong><span className="tutorial-illustration-muted">可用时按需开启</span></div><Control primary><Marker>2</Marker><Zap size={16} />开始加速</Control><small>不用时记得停止加速</small></div>
+        <div className="tutorial-illustration-acceleration-actions"><div className="tutorial-illustration-row"><strong>加速范围</strong><span className="tutorial-illustration-muted">只改这台电脑的系统代理</span></div><Control primary><Marker>2</Marker><Zap size={16} />开始加速</Control><small>不用时记得停止加速</small></div>
       </div>
     case 'extensions':
       return <div className="tutorial-illustration-extensions">
