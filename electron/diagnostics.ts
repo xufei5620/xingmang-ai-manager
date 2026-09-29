@@ -74,6 +74,13 @@ import {
   type WindowsElevationCapability,
 } from './windows-elevation'
 import {
+  describeStoreAppLaunchBlock,
+  emptyWindowsStoreAppLaunchContext,
+  inspectWindowsStoreAppLaunchContext,
+  resolveStoreAppLaunchBlock,
+  type WindowsStoreAppLaunchContext,
+} from './windows-store-app-launch'
+import {
   describeOverride,
   inspectWorkspaceConfigOverrides,
   summarizeWorkspaceOverrides,
@@ -133,6 +140,11 @@ export interface DiagnosticsDependencies {
   inspectAdministrator?: (signal: AbortSignal) => Promise<boolean>
   /** 当前 Windows 账号能不能自己提权（不是「现在是不是管理员」，见 windows-elevation.ts）。 */
   inspectElevationCapability?: (signal: AbortSignal) => Promise<WindowsElevationCapability>
+  /**
+   * 这个账户能不能打开从应用商店装的软件（Codex 桌面端是其中之一）。只在令牌本身
+   * 就是高权限、启动时又确认了不是专门提权打开的那一种电脑上才问，见 windows-store-app-launch.ts。
+   */
+  inspectStoreAppLaunchContext?: (signal: AbortSignal) => Promise<WindowsStoreAppLaunchContext>
   inspectPowerShell?: (signal: AbortSignal) => Promise<DiagnosticToolStatus>
   inspectTool?: (tool: DiagnosticToolId, signal: AbortSignal) => Promise<DiagnosticToolStatus>
   inspectCodexDesktop?: (signal: AbortSignal) => Promise<DiagnosticToolStatus>
@@ -1596,6 +1608,8 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
   const inspectAdmin = dependencies.inspectAdministrator ?? defaultInspectAdministrator
   const inspectElevation = dependencies.inspectElevationCapability
     ?? ((signal) => inspectWindowsElevationCapability({ timeoutMs: 3_000, signal }))
+  const inspectStoreAppLaunch = dependencies.inspectStoreAppLaunchContext
+    ?? ((signal) => inspectWindowsStoreAppLaunchContext({ timeoutMs: 4_000, signal }))
   const fetchImpl = dependencies.fetch ?? globalThis.fetch
   const paths = dependencies.clashConfigPaths ?? clashCandidates(userHome, env)
   const inspectProxy = dependencies.inspectProxyVariables ?? ((signal) => defaultProxyVariables(env))
@@ -1686,6 +1700,20 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
           // 系统自带的 Administrator 账号，或整台电脑关了授权弹窗。这就是这个账号平常的
           // 权限，没有「普通启动」可选，软件也已按普通方式做事。国内很多装机版系统默认
           // 登这个账号，一直挂着「建议普通启动」只会让客户以为软件坏了（0.2.8 起就这样）。
+          // 但这两种电脑上 Windows 常常不让打开从应用商店装的软件，Codex 桌面端就是。
+          // 以前要等客户装完、打开失败再等将近一分钟才说（#658），这里提前说一句，
+          // 只是「需留意」，不拦安装。没问出来就照旧，不猜。
+          const block = resolveStoreAppLaunchBlock(
+            await Promise.resolve(inspectStoreAppLaunch(signal)).catch(() => null)
+              ?? emptyWindowsStoreAppLaunchContext,
+          )
+          if (block) {
+            return {
+              state: 'warn',
+              summary: describeStoreAppLaunchBlock(block),
+              details: { elevated, required: false, alwaysElevated: true, storeAppLaunchBlock: block },
+            }
+          }
           return {
             state: 'pass',
             summary: '这台电脑登录的账号本身就带管理员权限，软件每次都是这样打开的，已按平常方式运行，不用处理',

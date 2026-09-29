@@ -462,6 +462,23 @@ describe('renderer-v2 home missing runtime guidance on macOS', () => {
     expect(markup).toContain('安装时需要管理员授权')
   })
 
+  it('tells a built-in Administrator account before install that store apps may not open', () => {
+    const base = runtimeSnapshot('windows', {})
+    const builtInAdministrator = {
+      ...base,
+      platform: { ...base.platform, codexDesktop: { ...base.platform.codexDesktop, launch: true, install: 'managed' } },
+      system: {
+        ...base.system,
+        desktopApps: { codex: { installed: false, detectionFailed: false, appVersion: null, storeAppLaunchBlock: 'builtInAdministrator' } },
+      },
+    } as unknown as ToolboxSnapshot
+    const markup = render({}, undefined, { snapshot: builtInAdministrator })
+    expect(markup).toContain('「Administrator」账户，装完可能打不开')
+    expect(markup).not.toContain('安装时需要管理员授权')
+    // 只提醒，不拦：「安装」照样在
+    expect(markup).toContain('data-testid="tool-codexDesktop-primary"')
+  })
+
   it('keeps the elevation notice off macOS, where nothing here elevates', () => {
     const markup = render({}, undefined, { snapshot: runtimeSnapshot('macos', { node: true }) })
     expect(markup).not.toContain('data-testid="home-runtime-node-elevation"')

@@ -54,12 +54,12 @@ import {
   fetchCodexDesktopPreviousManifestCandidates,
   inspectCodexDesktopPackageFile,
   parseCodexDesktopCombinedProbeJson,
-  parseCodexDesktopWindowsLaunchContext,
   validateCodexDesktopResourceUrl,
   type CodexDesktopManifestCandidate,
   type CodexDesktopServiceOptions,
   type CodexDesktopWindowsProbes,
 } from './codex-desktop-service'
+import { parseWindowsStoreAppLaunchContext } from './windows-store-app-launch'
 
 // Windows CI 上六个作业共用一台机器，Defender 在场时 PowerShell 冷启一次可以
 // 超过一分钟；起作用的是 execFile 这一层的预算，不是 vitest 的用例超时。
@@ -118,7 +118,7 @@ function testMirrorCandidate(
 
 describe('Codex Desktop AppModel launch diagnostics', () => {
   it('recognizes the built-in Administrator SID and numeric UAC values', () => {
-    expect(parseCodexDesktopWindowsLaunchContext(
+    expect(parseWindowsStoreAppLaunchContext(
       '{"sid":"S-1-5-21-2548096332-2102100343-2330258446-500","uacEnabled":0,"filterAdministratorToken":0}\n',
     )).toEqual({
       userSid: 'S-1-5-21-2548096332-2102100343-2330258446-500',
@@ -129,7 +129,7 @@ describe('Codex Desktop AppModel launch diagnostics', () => {
   })
 
   it('degrades malformed PowerShell output without exposing arbitrary text', () => {
-    expect(parseCodexDesktopWindowsLaunchContext('warning\nnot-json\n')).toEqual({
+    expect(parseWindowsStoreAppLaunchContext('warning\nnot-json\n')).toEqual({
       userSid: null,
       isBuiltInAdministrator: false,
       uacEnabled: null,
@@ -1342,6 +1342,8 @@ describe('Codex Desktop Appx probe script', () => {
     expect(combined).toContain('catch { $startAppsError = $_.Exception.Message }')
     expect(combined).toContain('catch { $processesError = $_.Exception.Message }')
     expect(combined).toContain('catch { $packageError = $_.Exception.Message }')
+    expect(combined).toContain('storeAppLaunch = $storeAppLaunchContext')
+    expect(combined).toContain('WindowsIdentity]::GetCurrent()')
     // 嵌套一层后默认的 Depth 2 会把包条目压成字符串
     expect(combined).toContain('ConvertTo-Json -Compress -Depth 6')
   })
@@ -1375,6 +1377,8 @@ describe('Codex Desktop Appx probe script', () => {
     expect(Object.prototype.hasOwnProperty.call(parsed, 'startApps')).toBe(true)
     expect(Object.prototype.hasOwnProperty.call(parsed, 'processes')).toBe(true)
     expect(parsed.package).toBeTruthy()
+    // 账户那一段也要真的在 Windows 上读得出当前用户，首页装之前的提醒靠它
+    expect(String((parsed.storeAppLaunch as Record<string, unknown> | null)?.sid ?? '')).toMatch(/^S-1-\d+(?:-\d+)+$/)
     // Appx 段在任何账户下都必须给出结论：要么有包、要么确认没有、要么报错
     const probe = parseCodexDesktopCombinedProbeJson(output)
     expect(
@@ -1519,6 +1523,27 @@ describe('parseCodexDesktopCombinedProbeJson', () => {
     })
     expect(probe.match).toEqual({ name: 'ChatGPT', appId: 'OpenAI.Codex_stable!App' })
     expect(probe.processes).toHaveLength(1)
+  })
+
+  it('flags an account that Windows will not let open store apps', () => {
+    expect(parseCodexDesktopCombinedProbeJson(combinedOutput({
+      storeAppLaunch: { sid: 'S-1-5-21-1-2-3-500', uacEnabled: 1, filterAdministratorToken: 0 },
+    })).storeAppLaunchBlock).toBe('builtInAdministrator')
+    expect(parseCodexDesktopCombinedProbeJson(combinedOutput({
+      storeAppLaunch: { sid: 'S-1-5-21-1-2-3-1001', uacEnabled: 0, filterAdministratorToken: null },
+    })).storeAppLaunchBlock).toBe('uacDisabled')
+  })
+
+  it('leaves the store-app flag out for ordinary accounts and missing segments', () => {
+    for (const storeAppLaunch of [
+      { sid: 'S-1-5-21-1-2-3-1001', uacEnabled: 1, filterAdministratorToken: null },
+      { sid: 'S-1-5-21-1-2-3-500', uacEnabled: 1, filterAdministratorToken: 1 },
+      null,
+      'garbage',
+    ]) {
+      expect(parseCodexDesktopCombinedProbeJson(combinedOutput({ storeAppLaunch }))).not.toHaveProperty('storeAppLaunchBlock')
+    }
+    expect(parseCodexDesktopCombinedProbeJson(combinedOutput())).not.toHaveProperty('storeAppLaunchBlock')
   })
 
   it('isolates a failed start-menu segment', () => {
