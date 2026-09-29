@@ -1147,7 +1147,7 @@ export function AnnouncementCenter({ scope, read, refreshTick, markRemoteRead, s
   }
   // 首页卡片已经在显示这条活动时，细横条不再重复说一遍。
   const bannerShown = unseen && !open && announcement && attentionKeys.some((key) => !seenKeys.includes(key) && !(promoCardShown && key === `entry:${promo?.id}`))
-  const unreadEntries = entries?.filter((entry) => !entry.read)
+  const unreadEntries = entries?.filter((entry) => !entry.read && !(promoCardShown && entry.id === promo?.id))
   const preview = (unreadEntries?.find((entry) => !seenKeys.includes(`entry:${entry.id}`)) ?? unreadEntries?.[0])?.title ?? announcement?.text ?? ''
   return <>
     {!open && error && announcement && <p className="v2-announcement-error" role="alert">{error.message}</p>}
