@@ -190,25 +190,26 @@ export function parseCodexDesktopWindowsLaunchContext(
   }
 }
 
+// 客户会原样看到这几句话（失败对话框把后端原话放在最下面），所以只说他看得懂、
+// 做得到的事。以前这里写着 wsreset.exe、AppModel、AppX、UAC，客户既不知道那是
+// 什么，照着跑 wsreset 也几乎从来没用——它只清应用商店的缓存，不管已经装好的
+// 程序为什么没起来。渲染层按开头那半句归类（operation-error.ts 的
+// codexDesktopNotStarted），改开头要两边一起改。
+export const codexDesktopNotStartedPrefix = 'Codex 桌面端没有打开'
+
 export function describeCodexDesktopLaunchFailure(
   context: CodexDesktopWindowsLaunchContext,
 ): string {
-  const hints: string[] = []
   if (context.isBuiltInAdministrator) {
-    hints.push('当前 Windows 账户是内置 Administrator（SID 以 -500 结尾）')
+    return `${codexDesktopNotStartedPrefix}：这台电脑正用 Windows 自带的「Administrator」账户登录，`
+      + 'Windows 常常不让这个账户打开从应用商店装的软件。换一个普通账户登录电脑，再从星芒打开 Codex。'
   }
-  if (context.uacEnabled === false) hints.push('UAC 已关闭')
-  if (hints.length) {
-    return [
-      'Windows 无法创建 Codex Desktop 进程（AppModel 常见错误 0xC0EA0001）',
-      `${hints.join('，')}。`,
-      '请先运行 wsreset.exe，再使用普通 Windows 账户重新安装或启动 Codex Desktop。',
-    ].join('；')
+  if (context.uacEnabled === false) {
+    return `${codexDesktopNotStartedPrefix}：这台电脑关掉了 Windows 的「用户账户控制」，`
+      + 'Windows 在这种设置下常常打不开从应用商店装的软件。请联系客服，帮你把它打开后再试。'
   }
-  return [
-    'Windows 已接受 Codex Desktop 启动请求，但 AppModel 没有创建进程。',
-    '这通常与 Microsoft Store 授权、AppX 状态或 UAC 策略有关，请先运行 wsreset.exe 后重试；如果仍失败，请使用反馈与诊断中的启动日志。',
-  ].join('')
+  return `${codexDesktopNotStartedPrefix}：等了将近一分钟，没有等到它的窗口。`
+    + '先关掉所有 Codex 窗口，再点「重试」；还是不行，就在开始菜单里搜「Codex」直接点开，也打不开的话请联系客服。'
 }
 
 export interface CodexDesktopPackageProbe {
@@ -1251,6 +1252,105 @@ export async function listCodexDesktopProcesses(
   }, scope, options)
 }
 
+/**
+ * 「打开」只需要知道 Codex 的窗口在不在这个登录会话里，它从不关任何进程。
+ *
+ * The owner-checked probe above exists so a termination can never reach a
+ * process we do not own; it pays one GetOwnerSid call per window and drops
+ * every process whose owner cannot be confirmed. Launch detection inherited
+ * that filter in #640, and a window that WMI would not attribute to us
+ * (slow WMI, an elevated built-in Administrator token) then counted as
+ * "nothing started" even while Codex sat on screen. Opening only needs
+ * "some process of this package runs in my session": the session boundary
+ * already keeps other signed-in users out, and the result is reduced to PIDs
+ * so it cannot be handed to a close path by mistake.
+ */
+function codexDesktopSessionProcessQuery(): string {
+  return String.raw`& {
+    $currentSessionId = [System.Diagnostics.Process]::GetCurrentProcess().SessionId
+    @(Get-CimInstance -ClassName Win32_Process -Filter "SessionId=$currentSessionId" | ForEach-Object {
+      $path = [string]$_.ExecutablePath
+      if (-not $path -and @('ChatGPT.exe', 'Codex.exe') -contains ([string]$_.Name)) {
+        $commandLine = [string]$_.CommandLine
+        $candidate = [regex]::Match($commandLine, '(?i)"(?<path>[^"]*\\WindowsApps\\OpenAI.Codex(?:Beta)?_[^"]+\\[^"]+.exe)"')
+        if ($candidate.Success) { $path = $candidate.Groups['path'].Value }
+      }
+      if ($null -ne $_.SessionId -and $_.SessionId -eq $currentSessionId -and $path -match '(?i)\\WindowsApps\\OpenAI\.Codex(?:Beta)?_\d+(?:\.\d+){3}_(?:x64|arm64|neutral)__[A-Za-z0-9.]+\\') {
+        [pscustomobject]@{ ProcessId = $_.ProcessId; ExecutablePath = $path }
+      }
+    })
+  }`
+}
+
+export function buildCodexDesktopSessionProcessProbeScript(): string {
+  return [
+    codexDesktopProbeScriptHeader,
+    `$items = ${codexDesktopSessionProcessQuery()}`,
+    '$items | ConvertTo-Json -Compress',
+  ].join('; ')
+}
+
+/** PIDs of this package's processes in the current session; see the query above. */
+export function parseCodexDesktopSessionProcessIds(
+  output: string,
+  packageFamilyName: string | null,
+): number[] {
+  const trimmed = output.trim().replace(/^﻿/, '')
+  if (!trimmed) return []
+  let parsed: unknown
+  try { parsed = JSON.parse(trimmed) } catch { return [] }
+  const values = Array.isArray(parsed) ? parsed : [parsed]
+  const processIds: number[] = []
+  for (const value of values) {
+    if (!value || typeof value !== 'object') continue
+    const record = value as Record<string, unknown>
+    const processId = record.ProcessId
+    const executablePath = record.ExecutablePath
+    if (typeof processId !== 'number' || !Number.isSafeInteger(processId) || processId <= 0) continue
+    if (typeof executablePath !== 'string') continue
+    const entry = parseCodexDesktopPackagePath(executablePath)
+    if (!entry) continue
+    if (packageFamilyName !== null && entry.packageFamilyName.toLowerCase() !== packageFamilyName.toLowerCase()) continue
+    processIds.push(processId)
+  }
+  return processIds
+}
+
+async function listCodexDesktopSessionProcessIds(packageFamilyName: string | null): Promise<number[]> {
+  if (process.platform !== 'win32') return []
+  try {
+    const { stdout } = await execFileAsync(resolveWindowsPowerShellExecutable(), [
+      '-NoLogo',
+      '-NoProfile',
+      '-NonInteractive',
+      '-Command',
+      buildCodexDesktopSessionProcessProbeScript(),
+    ], {
+      env: trustedCommandEnvironment(),
+      windowsHide: true,
+      timeout: 8_000,
+      maxBuffer: 1024 * 1024,
+    })
+    return parseCodexDesktopSessionProcessIds(stdout, packageFamilyName)
+  } catch {
+    // Same contract as the status probe: a slow WMI never breaks 打开.
+    return []
+  }
+}
+
+async function waitForCodexDesktopSessionProcesses(
+  timeoutMs: number,
+  packageFamilyName: string | null,
+): Promise<number[]> {
+  const deadline = Date.now() + timeoutMs
+  let processIds = await listCodexDesktopSessionProcessIds(packageFamilyName)
+  while (!processIds.length && Date.now() < deadline) {
+    await delay(250)
+    processIds = await listCodexDesktopSessionProcessIds(packageFamilyName)
+  }
+  return processIds
+}
+
 function codexDesktopPackageProbeStatements(): string[] {
   return [
     '$currentPackages = @()',
@@ -1509,12 +1609,23 @@ function delay(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds))
 }
 
+/**
+ * Signal 0 only asks whether the PID exists. On Windows libuv opens the
+ * process with terminate rights to answer, so a packaged app that denies us
+ * those rights reports EPERM while it is very much alive. Only ESRCH means
+ * the process is gone.
+ */
+export function processExistsFromSignalError(error: unknown): boolean {
+  const code = (error as { code?: unknown } | null)?.code
+  return code === 'EPERM'
+}
+
 function isProcessAlive(processId: number): boolean {
   try {
     process.kill(processId, 0)
     return true
-  } catch {
-    return false
+  } catch (error) {
+    return processExistsFromSignalError(error)
   }
 }
 
@@ -1549,7 +1660,10 @@ async function inspectCodexDesktopWindowsLaunchContext(): Promise<CodexDesktopWi
     ], {
       env: trustedCommandEnvironment(),
       windowsHide: true,
-      timeout: 3_000,
+      // A cold PowerShell start alone often takes longer than 3 seconds on the
+      // slow machines this path is for; a timed-out probe silently dropped the
+      // built-in Administrator explanation and showed the generic sentence.
+      timeout: 10_000,
       maxBuffer: 64 * 1024,
     })
     return parseCodexDesktopWindowsLaunchContext(stdout)
@@ -2713,12 +2827,17 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
       // the workspace is configured.
     }
 
-    const existingProcesses = selectCodexDesktopProcessesForPackage(
-      mode === 'restart'
-        ? await listCodexDesktopProcesses('all', { strict: true })
-        : await listCodexDesktopProcesses('roots'),
-      packageFamilyName,
-    )
+    // Restart closes what it finds, so it keeps the owner-checked, fail-closed
+    // list. Open closes nothing and only asks whether a window already runs.
+    const existingProcesses = mode === 'restart'
+      ? selectCodexDesktopProcessesForPackage(
+        await listCodexDesktopProcesses('all', { strict: true }),
+        packageFamilyName,
+      )
+      : []
+    const alreadyRunning = mode === 'restart'
+      ? existingProcesses.length > 0
+      : (await listCodexDesktopSessionProcessIds(packageFamilyName)).length > 0
     const restarted = mode === 'restart' && existingProcesses.length > 0
     const repairPermissionState = async (): Promise<void> => {
       if (!launchOptions.repairPermissionModeVisibility || !codexEnv.CODEX_HOME) return
@@ -2798,7 +2917,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
     // started with the flag, so keep that PID out of the later reassignment.
     let cdpActivationProcessId: number | null = null
     let activatedViaAppModel = false
-    const needsFreshActivation = mode === 'restart' || existingProcesses.length === 0
+    const needsFreshActivation = mode === 'restart' || !alreadyRunning
     const shouldInjectChinese = Boolean(launchOptions.injectChinese)
       && needsFreshActivation
     let chineseLocale: CodexDesktopLaunchResult['chineseLocale'] = launchOptions.injectChinese
@@ -2843,24 +2962,16 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
       }
     }
 
-    let startedProcesses = await waitForCodexDesktopState(
-      true,
+    let startedProcesses = await waitForCodexDesktopSessionProcesses(
       activatedViaAppModel || workspaceLaunchDelivered
         ? codexDesktopLaunchInitialWaitMs
         : codexDesktopLaunchFallbackWaitMs,
       packageFamilyName,
     )
 
-    const processFromActivationPid = async (): Promise<WindowsProcessEntry[]> => {
+    const processFromActivationPid = async (): Promise<number[]> => {
       if (activationProcessId === null || !await waitForProcessId(activationProcessId, 2_000)) return []
-      return [{
-        processId: activationProcessId,
-        parentProcessId: 0,
-        name: 'ChatGPT.exe',
-        executablePath: desktopApp.installDirectory
-          ? path.join(desktopApp.installDirectory, 'app', 'ChatGPT.exe')
-          : '',
-      }]
+      return [activationProcessId]
     }
     if (!startedProcesses.length) startedProcesses = await processFromActivationPid()
 
@@ -2873,8 +2984,8 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
       cdpActivationProcessId = null
       try {
         await launchWithExplorer()
-        startedProcesses = await waitForCodexDesktopState(
-          true, codexDesktopLaunchFallbackWaitMs, packageFamilyName,
+        startedProcesses = await waitForCodexDesktopSessionProcesses(
+          codexDesktopLaunchFallbackWaitMs, packageFamilyName,
         )
       } catch {
         // The common error below includes the same actionable launch context.
