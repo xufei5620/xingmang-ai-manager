@@ -192,6 +192,22 @@ describe('acceleration-service', () => {
     await service.dispose()
   })
 
+  it('says the unavailable state comes from a damaged bundle and rechecks it on request', async () => {
+    const recheck = vi.fn(async () => 'repaired' as const)
+    const service = createAccelerationService({ getAccountScope: () => scope, bundleDamaged: { recheck } })
+    expect(await service.getAccelerationState(scope)).toMatchObject({ phase: 'unavailable', unavailableReason: 'bundle-damaged' })
+    await expect(service.recheckAccelerationBundle?.()).resolves.toBe('repaired')
+    expect(recheck).toHaveBeenCalledTimes(1)
+    await service.dispose()
+  })
+
+  it('offers no bundle recheck when the bundle was never found damaged', async () => {
+    const service = createAccelerationService({ getAccountScope: () => scope })
+    expect(await service.getAccelerationState(scope)).not.toHaveProperty('unavailableReason')
+    expect(service.recheckAccelerationBundle).toBeUndefined()
+    await service.dispose()
+  })
+
   it.each(['', 'xm-account:0', 'xm-account:-1', 'xm-account:01', 'xm-account:1/../2', 'api-account:1.1', 'xm-account:9007199254740992', 'other:42'])('rejects malformed scopes: %s', async (invalidScope) => {
     const backend = createBackend()
     const service = createAccelerationService({ getAccountScope: () => invalidScope, backend })
