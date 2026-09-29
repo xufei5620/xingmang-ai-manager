@@ -143,27 +143,33 @@ export function useToolbox(bridge: XingmangApi | null, enabled: boolean, scope: 
     }
   }, [bridge])
   const refresh = useCallback((force = false) => load(force, false), [load])
-  /**
-   * 账号 Key 写完之后的刷新入口。只重读配置，不重跑环境探测、不清主进程缓存：
-   * 用户看到的还是那份「已连接当前账号」，但开机不用再把整轮扫描走第二遍。
-   * 手动「重新检测」仍走 refresh(true)，行为不变。
-   */
-  const refreshConfig = useCallback(async () => {
-    if (!bridge) return
+  // A saved model needs a confirmed config read: a failed read cannot be
+  // reported as a failed save, and an older account cannot commit the result.
+  const refreshSavedConfig = useCallback(async (isRequestCurrent: () => boolean): Promise<boolean> => {
+    if (!bridge) return false
     const requestScope = currentScope.current
-    if (planConfigRefresh({ hasSnapshot: snapshotRef.current !== null, scansInFlight: scansInFlight.current > 0 }) === 'rescan') {
-      await refresh().catch(() => undefined)
-      return
-    }
     const { config, failure } = await createToolsApi(bridge).readConfigPartition()
-    if (!active.current || currentScope.current !== requestScope) return
+    if (!active.current || currentScope.current !== requestScope || !isRequestCurrent()) return false
     if (config) {
       configRevision.current++
       latestConfig.current = config
       setSnapshot((current) => withToolboxConfig(current, config))
     }
     setFailures((current) => withConfigFailure(current, failure))
-  }, [bridge, refresh])
+    return config !== null
+  }, [bridge])
+  /**
+   * 账号 Key 写完之后的刷新入口。只重读配置，不重跑环境探测、不清主进程缓存：
+   * 用户看到的还是那份「已连接当前账号」，但开机不用再把整轮扫描走第二遍。
+   * 手动「重新检测」仍走 refresh(true)，行为不变。
+   */
+  const refreshConfig = useCallback(async () => {
+    if (planConfigRefresh({ hasSnapshot: snapshotRef.current !== null, scansInFlight: scansInFlight.current > 0 }) === 'rescan') {
+      await refresh().catch(() => undefined)
+      return
+    }
+    await refreshSavedConfig(() => true)
+  }, [refresh, refreshSavedConfig])
   useEffect(() => { snapshotRef.current = snapshot }, [snapshot])
   useEffect(() => {
     active.current = true
@@ -268,5 +274,5 @@ export function useToolbox(bridge: XingmangApi | null, enabled: boolean, scope: 
     }
     return outcome
   }, [markCancelling])
-  return { snapshot, loading, error, failures, refresh, refreshConfig, externalClients, externalLoading, externalError, refreshExternal, jobs, run, cancel, setSnapshot }
+  return { snapshot, loading, error, failures, refresh, refreshConfig, refreshSavedConfig, externalClients, externalLoading, externalError, refreshExternal, jobs, run, cancel, setSnapshot }
 }
