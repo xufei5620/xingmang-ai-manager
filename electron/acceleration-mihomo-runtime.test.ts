@@ -340,9 +340,41 @@ describe('createMihomoRuntime', () => {
   it('does not report connected when the real proxy request fails', async () => {
     settings.tlsStatus = 502
     const value = runtime()
-    await expect(value.start(profile())).rejects.toThrow('代理连通性验证失败')
+    await expect(value.start(profile())).rejects.toThrow(/^加速线路连通性验证失败$/)
     expect(value.isRunning()).toBe(false)
     expect(await remainingSessions()).toEqual([])
+  })
+
+  it('says the system refused to run the core instead of a generic start failure', async () => {
+    mocks.spawn.mockReset().mockImplementation(() => {
+      const child = new FakeChild()
+      Object.assign(child, { pid: undefined })
+      children.push(child)
+      queueMicrotask(() => child.emit('error', Object.assign(new Error('spawn EPERM'), { code: 'EPERM' })))
+      return child as unknown as ChildProcess
+    })
+    const value = runtime()
+    await expect(value.start(profile())).rejects.toThrow(/^加速内核未能运行$/)
+    expect(value.isRunning()).toBe(false)
+    expect(await remainingSessions()).toEqual([])
+  })
+
+  it('tells an early exit apart from a core that never ran', async () => {
+    mocks.spawn.mockReset().mockImplementation(() => {
+      const child = new FakeChild()
+      children.push(child)
+      queueMicrotask(() => { void child.exit() })
+      return child as unknown as ChildProcess
+    })
+    const value = runtime()
+    await expect(value.start(profile())).rejects.toThrow(/^加速内核(启动后退出|意外退出)$/)
+    expect(await remainingSessions()).toEqual([])
+  })
+
+  it('keeps the chosen line being unreachable as a line problem rather than a core failure', async () => {
+    settings.failDelays = true
+    const value = runtime()
+    await expect(value.start(profile(), 'line-1')).rejects.toThrow(/^所选加速线路不可用$/)
   })
 
   it('notifies once and removes credentials after an unexpected confirmed exit', async () => {

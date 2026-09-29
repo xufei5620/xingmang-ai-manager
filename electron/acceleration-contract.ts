@@ -101,8 +101,10 @@ export interface AccelerationFailure extends Error {
   accelerationReason: AccelerationFailureReason
 }
 
-export function accelerationFailure(reason: AccelerationFailureReason): AccelerationFailure {
-  return withAccelerationReason(new Error(accelerationFailureMessages[reason]), reason)
+/** `message` lets a caller word the same reason for its own action (for example
+ *  a redemption rather than a connect) while the tray still reads the reason. */
+export function accelerationFailure(reason: AccelerationFailureReason, message = accelerationFailureMessages[reason]): AccelerationFailure {
+  return withAccelerationReason(new Error(message), reason)
 }
 
 /** Tags an error the host already worded for its own callers, so the service

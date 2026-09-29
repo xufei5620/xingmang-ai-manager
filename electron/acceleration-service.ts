@@ -87,6 +87,20 @@ function backendFailure(error: unknown): Error {
   return accelerationFailure(accelerationFailureReason(error) ?? 'unknown')
 }
 
+const REDEMPTION_FAILURE = '加速时长这次没有加上，请稍后再输一次口令；还不行就联系客服。'
+
+/**
+ * 口令不对、已经领过是正常结果（见 projectRedemption），走到这里的都是本机没办成：
+ * 时长记录写不进去、加速组件没起来之类。原来一律「兑换失败，请稍后重试」，客户以为
+ * 是网络，反复重试也不会好。归类由下层给出，这里只挑句子，错误原文照旧不上屏（I13）。
+ */
+function redemptionFailure(error: unknown): Error {
+  const reason = accelerationFailureReason(error)
+  if (reason === 'local-data') return accelerationFailure(reason, '加速时长这次没有加上：本机的时长记录写不进去。请检查磁盘剩余空间后再输一次口令。')
+  if (!reason || reason === 'unknown') return new Error(REDEMPTION_FAILURE)
+  return accelerationFailure(reason, `加速时长这次没有加上：${accelerationFailureMessages[reason]}`)
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
 }
@@ -332,9 +346,9 @@ export function createAccelerationService(options: AccelerationServiceOptions): 
         if (!backend?.redeemAccelerationCode) throw new Error(SERVICE_UNAVAILABLE)
         let result: AccelerationRedemptionResult
         try { result = projectRedemption(await backend.redeemAccelerationCode(scope, code), scope) }
-        catch {
+        catch (error) {
           assertCurrent(scope, expectedRevision)
-          throw new Error('加速口令兑换失败，请稍后重试。')
+          throw redemptionFailure(error)
         }
         assertCurrent(scope, expectedRevision)
         track(result.state)

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { AccelerationApi, AccelerationMode, AccelerationRedemptionResult, AccelerationState } from './acceleration-contract'
-import { accelerationBonusCode, accelerationBonusSeconds, accelerationConflictNotice, accelerationFailureMessages, accelerationTrialSeconds, withAccelerationReason } from './acceleration-contract'
+import { accelerationBonusCode, accelerationBonusSeconds, accelerationConflictNotice, accelerationFailureMessages, accelerationFailureReason, accelerationTrialSeconds, withAccelerationReason } from './acceleration-contract'
 import { createAccelerationService } from './acceleration-service'
 
 const scope = 'xm-account:42'
@@ -98,7 +98,7 @@ describe('acceleration-service', () => {
     const backend = createBackend()
     backend.redeemAccelerationCode = vi.fn(async () => response as AccelerationRedemptionResult)
     const service = createAccelerationService({ getAccountScope: () => scope, backend })
-    await expect(service.redeemAccelerationCode(scope, accelerationBonusCode)).rejects.toThrow('加速口令兑换失败')
+    await expect(service.redeemAccelerationCode(scope, accelerationBonusCode)).rejects.toThrow('加速时长这次没有加上')
   })
 
   it('rejects a queued redemption after an account epoch changes without crediting the backend', async () => {
@@ -137,7 +137,21 @@ describe('acceleration-service', () => {
     const backend = createBackend()
     backend.redeemAccelerationCode = vi.fn(async () => { throw new Error('private-proxy-token') })
     const service = createAccelerationService({ getAccountScope: () => scope, backend })
-    await expect(service.redeemAccelerationCode(scope, accelerationBonusCode)).rejects.toThrow(/^加速口令兑换失败，请稍后重试。$/)
+    await expect(service.redeemAccelerationCode(scope, accelerationBonusCode)).rejects.toThrow(/^加速时长这次没有加上，请稍后再输一次口令；还不行就联系客服。$/)
+  })
+
+  it('says why a redemption did not go through when the helper classified it', async () => {
+    const backend = createBackend()
+    backend.redeemAccelerationCode = vi.fn(async () => { throw withAccelerationReason(new Error('private-path'), 'local-data') })
+    const service = createAccelerationService({ getAccountScope: () => scope, backend })
+    const failure = await service.redeemAccelerationCode(scope, accelerationBonusCode).catch((error: unknown) => error)
+    expect(failure).toBeInstanceOf(Error)
+    expect((failure as Error).message).toBe('加速时长这次没有加上：本机的时长记录写不进去。请检查磁盘剩余空间后再输一次口令。')
+    // 托盘和日志仍然认得出是哪一类。
+    expect(accelerationFailureReason(failure)).toBe('local-data')
+
+    backend.redeemAccelerationCode = vi.fn(async () => { throw withAccelerationReason(new Error('private-path'), 'helper-launch') })
+    await expect(service.redeemAccelerationCode(scope, accelerationBonusCode)).rejects.toThrow(`加速时长这次没有加上：${accelerationFailureMessages['helper-launch']}`)
   })
 
   it.each(['local-device', 'local-development', 'server'] as const)('preserves the explicit %s entitlement source across IPC', async (entitlementSource) => {
