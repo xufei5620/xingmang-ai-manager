@@ -2106,21 +2106,23 @@ function AccountRecharge({
   const paymentRef = useRef(payment)
   const openingPayment = useRef<AccountPaymentWindowTerminalEvent[] | null>(null)
   // 窗口关了、主进程还在后台确认的那笔订单号。结果晚到时即使提示已经收起，也要把结果摆出来。
-  const followUpTradeNo = useRef<string | null>(null)
+  const followUp = useRef<{ tradeNo: string; kind: 'topup' | 'subscription' } | null>(null)
   const acceptPaymentTerminal = (event: AccountPaymentWindowTerminalEvent) => {
     const current = paymentRef.current
     if (!current) {
-      if (!event.tradeNo || event.tradeNo !== followUpTradeNo.current || event.status === 'closed') return
-      followUpTradeNo.current = null
-      setPaymentTerminal(event)
+      const pending = followUp.current
+      if (!pending || !event.tradeNo || event.tradeNo !== pending.tradeNo || event.status === 'closed') return
+      followUp.current = null
+      setPaymentTerminal({ ...event, kind: pending.kind })
       changed()
       void resource.reload()
+      if (event.status === 'success' && pending.kind === 'subscription') applySubscriptionRef.current()
       return
     }
     if (event.status === 'success' && (!event.tradeNo || event.tradeNo !== current.tradeNo)) return
     if (event.tradeNo && current.tradeNo && event.tradeNo !== current.tradeNo) return
     paymentRef.current = null
-    followUpTradeNo.current = event.status === 'closed' && event.confirming ? event.tradeNo : null
+    followUp.current = event.status === 'closed' && event.confirming && event.tradeNo ? { tradeNo: event.tradeNo, kind: current.kind } : null
     setPayment(null)
     setPaymentTerminal({ ...event, kind: current.kind })
     changed()
@@ -2138,7 +2140,7 @@ function AccountRecharge({
     const buffered = openingPayment.current ?? []
     openingPayment.current = null
     paymentRef.current = result
-    followUpTradeNo.current = null
+    followUp.current = null
     setPaymentTerminal(null)
     setSubscriptionTools(null)
     setPayment(result)
