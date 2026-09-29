@@ -86,6 +86,14 @@ export function autoUpdateBubbleBody(phase: UpdateOfferState['phase'], autoUpdat
   if (phase === 'downloaded') return '已经下好了，关掉软件或下次打开时自动装上，不打断你现在用。';
   return '正在后台下载，下好后关掉软件或下次打开时自动装上。';
 }
+// 更新页顶上那句。自动更新开着时软件确实会在退出或下次打开时自己装，再写「不会自己
+// 重启」就是在说反话。
+export function updatesPageLead(autoUpdate: boolean): string {
+  return autoUpdate
+    ? '新版本会在后台下好，等你关掉软件或下次打开时自动装上，不打断你正在用的。'
+    : '新版本什么时候安装由你决定，不会自己重启。';
+}
+export const updateInstallNote = '装之前先保存工具里没做完的东西。有工具正在安装时，不会打断它，会先问你或者等下次再装。';
 export function withdrawnVersionAdvice(update: UpdateOfferState): string {
   const next = update.availableVersion
   if (next && update.rollback) return `发布者撤回了 ${update.currentVersion}。建议装回 ${next}：先下载，再点「重启安装」。`

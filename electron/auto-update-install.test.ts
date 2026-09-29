@@ -4,8 +4,12 @@ import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
   LAUNCH_INSTALL_WINDOW_MS,
+  buildAutoInstallNotice,
   createPendingUpdateStore,
   decideLaunchInstall,
+  decideQuitInstall,
+  previousAutoInstallFailureMessage,
+  resolvePreviousAutoInstallFailure,
   emptyPendingUpdateRecord,
   parsePendingUpdateRecord,
   resolveDownloadedVersionToRecord,
@@ -92,7 +96,9 @@ describe('pending update store', () => {
     const store = createPendingUpdateStore({ filePath })
     expect(store.read()).toEqual(emptyPendingUpdateRecord)
     await store.write({ downloadedVersion: '0.2.12', attemptedVersion: '0.2.12' })
-    expect(store.read()).toEqual({ downloadedVersion: '0.2.12', attemptedVersion: '0.2.12' })
+    expect(store.read()).toEqual({ downloadedVersion: '0.2.12', attemptedVersion: '0.2.12', quitAttemptedVersion: null })
+    await store.write({ downloadedVersion: '0.2.12', attemptedVersion: null, quitAttemptedVersion: '0.2.12' })
+    expect(store.read()).toEqual({ downloadedVersion: '0.2.12', attemptedVersion: null, quitAttemptedVersion: '0.2.12' })
   })
 
   it('treats a damaged or foreign record as no record', () => {
@@ -104,5 +110,72 @@ describe('pending update store', () => {
 
   it('refuses a relative path', () => {
     expect(() => createPendingUpdateStore({ filePath: 'pending-update.json' })).toThrow()
+  })
+})
+
+describe('quit-time auto install', () => {
+  const record = { downloadedVersion: '0.2.12', attemptedVersion: null }
+
+  it('installs on quit once per version, then goes back to asking', () => {
+    expect(decideQuitInstall({ autoUpdate: true, version: '0.2.12', record })).toBe('install')
+    expect(decideQuitInstall({ autoUpdate: true, version: '0.2.12', record: { ...record, quitAttemptedVersion: '0.2.12' } })).toBe('ask')
+    expect(decideQuitInstall({ autoUpdate: true, version: '0.2.13', record: { ...record, quitAttemptedVersion: '0.2.12' } })).toBe('install')
+  })
+
+  it('asks when auto-update is off or the version is unreadable', () => {
+    expect(decideQuitInstall({ autoUpdate: false, version: '0.2.12', record })).toBe('ask')
+    expect(decideQuitInstall({ autoUpdate: true, version: null, record })).toBe('ask')
+    expect(decideQuitInstall({ autoUpdate: true, version: '../x', record })).toBe('ask')
+  })
+
+  it('does not retry at launch a version already tried on quit', () => {
+    expect(decideLaunchInstall(input({ recordAtLaunch: { ...record, quitAttemptedVersion: '0.2.12' } }))).toBeNull()
+  })
+})
+
+describe('resolvePreviousAutoInstallFailure', () => {
+  it('recognises a version that was auto-installed but is still pending', () => {
+    expect(resolvePreviousAutoInstallFailure('0.2.12', '0.2.11', { downloadedVersion: '0.2.12', attemptedVersion: null, quitAttemptedVersion: '0.2.12' })).toBe('0.2.12')
+    expect(resolvePreviousAutoInstallFailure('0.2.12', '0.2.11', { downloadedVersion: '0.2.12', attemptedVersion: '0.2.12' })).toBe('0.2.12')
+  })
+
+  it('stays quiet when nothing was tried, a different version was tried, or the install worked', () => {
+    expect(resolvePreviousAutoInstallFailure('0.2.12', '0.2.11', { downloadedVersion: '0.2.12', attemptedVersion: null })).toBeNull()
+    expect(resolvePreviousAutoInstallFailure('0.2.13', '0.2.11', { downloadedVersion: '0.2.12', attemptedVersion: '0.2.12' })).toBeNull()
+    expect(resolvePreviousAutoInstallFailure('0.2.12', '0.2.12', { downloadedVersion: '0.2.12', attemptedVersion: '0.2.12' })).toBeNull()
+    expect(resolvePreviousAutoInstallFailure('bad', '0.2.11', { downloadedVersion: null, attemptedVersion: null })).toBeNull()
+  })
+})
+
+describe('auto install wording', () => {
+  it('warns Windows users about the consent window before either install moment', () => {
+    for (const moment of ['quit', 'launch'] as const) {
+      const notice = buildAutoInstallNotice('0.2.12', moment, 'win32')
+      expect(notice.body).toContain('0.2.12')
+      expect(notice.body).toContain('授权窗口')
+      expect(notice.body).toContain('「是」')
+      expect(notice.body).toContain('自动打开')
+    }
+  })
+
+  it('leaves the consent window out on macOS', () => {
+    expect(buildAutoInstallNotice('0.2.12', 'quit', 'darwin').body).not.toContain('授权')
+    expect(buildAutoInstallNotice('0.2.12', 'launch', 'darwin').body).toContain('先关掉')
+    expect(previousAutoInstallFailureMessage('darwin')).not.toContain('授权')
+  })
+
+  it('names the retry button and the likely cause after a failed auto install', () => {
+    const message = previousAutoInstallFailureMessage('win32')
+    expect(message).toContain('授权窗口')
+    expect(message).toContain('「重新安装」')
+  })
+
+  it('uses no technical words', () => {
+    const texts = [
+      ...(['quit', 'launch'] as const).flatMap((moment) => (['win32', 'darwin'] as const).map((platform) => buildAutoInstallNotice('0.2.12', moment, platform))).flatMap((notice) => [notice.title, notice.body]),
+      previousAutoInstallFailureMessage('win32'),
+      previousAutoInstallFailureMessage('darwin'),
+    ]
+    for (const text of texts) expect(text).not.toMatch(/UAC|NSIS|installer|updater|管理员权限|用户账户控制/i)
   })
 })

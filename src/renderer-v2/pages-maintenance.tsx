@@ -69,6 +69,8 @@ import {
   skinOptions,
   updateFailureLabel,
   updateCardTitle,
+  updateInstallNote,
+  updatesPageLead,
   withdrawnVersionAdvice,
 } from './registry/business'
 import { tools } from './registry/tools'
@@ -1046,16 +1048,31 @@ export function UpdatesPage({
   const operation = useOperation()
   const [confirm, setConfirm] = useState(false)
   const [isMac, setIsMac] = useState(false)
+  const [isWindows, setIsWindows] = useState(false)
+  const [autoUpdateSetting, setAutoUpdateSetting] = useState(false)
   useEffect(() => api.onUpdateState(resource.setData), [api, resource.setData])
   useEffect(() => {
     let current = true
     // 读不到平台就不提示：多说一句对 Windows 客户是噪音，少说一句只是回到原来的样子。
     void api.getPlatformCapabilities()
-      .then((capability) => { if (current) setIsMac(capability.platform === 'macos') })
+      .then((capability) => {
+        if (!current) return
+        setIsMac(capability.platform === 'macos')
+        setIsWindows(capability.platform === 'windows')
+      })
+      .catch(() => undefined)
+    return () => { current = false }
+  }, [api])
+  useEffect(() => {
+    let current = true
+    // 读不到设置就按关着说：多承诺一句「会自动装」比少说一句更糟。
+    void api.getSettings()
+      .then((settings) => { if (current) setAutoUpdateSetting(settings.autoUpdate !== false) })
       .catch(() => undefined)
     return () => { current = false }
   }, [api])
   const update = resource.data
+  const autoUpdateOn = Boolean(update?.autoUpdateSupported && autoUpdateSetting)
   const check = () =>
     void operation.execute(
       'check',
@@ -1122,7 +1139,7 @@ export function UpdatesPage({
       data-page-id="updates"
       data-testid="page-updates"
     >
-      <PageHead title="更新" lead="新版本什么时候安装由你决定，不会自己重启。" />
+      <PageHead title="更新" lead={updatesPageLead(autoUpdateOn)} />
       <ResultNotice
         error={resource.error || operation.error}
         message={operation.message}
@@ -1214,9 +1231,7 @@ export function UpdatesPage({
           )}
           <details>
             <summary>安装前需要知道</summary>
-            <p>
-              先保存工具中尚未完成的内容。关闭保护会检查未保存任务，确认后再安装。
-            </p>
+            <p>{updateInstallNote}</p>
           </details>
         </Card>
       </div>
@@ -1249,6 +1264,7 @@ export function UpdatesPage({
       >
         <p>请先保存当前工作。安装完成后重新打开工具箱。</p>
         {isMac && <p data-testid="updates-mac-keychain-hint">{macKeychainUpdateHint}</p>}
+        {isWindows && <p data-testid="updates-windows-consent-hint">{windowsConsentUpdateHint}</p>}
         <ResultNotice error={operation.error} />
       </Dialog>
     </section>
@@ -1257,6 +1273,8 @@ export function UpdatesPage({
 
 // 为什么 Mac 每换一版都会问一次钥匙串密码，见 registry/tutorials.ts 的
 // macKeychainTutorialDetail。重启前说一句，客户就不会慌着点「拒绝」。
+// 安装包装在「所有用户」的程序目录下，Windows 会弹一次授权窗口；点了「否」就装不上。
+export const windowsConsentUpdateHint = 'Windows 会弹出一个授权窗口问要不要允许更改，点「是」就好；点了「否」这次就装不上。'
 export const macKeychainUpdateHint = '重启后 Mac 可能弹出钥匙串密码框，输入这台 Mac 的开机密码，点「始终允许」就好。'
 
 export function installResultMessage(result: ToolInstallOutcome | 'cancelled'): string {

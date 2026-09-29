@@ -2113,7 +2113,7 @@ test('the updates page names the step that failed and offers that step again', a
 
 // Mac 自签包每换一版，第一次读登录信息都会弹「登录」钥匙串密码框；重启确认框里
 // 先打招呼，Windows 没有这回事，不许多这一句。
-test('the restart-to-install dialog warns about the keychain prompt on Mac only', async () => {
+test('the restart-to-install dialog warns about the keychain prompt on Mac and the consent window on Windows', async () => {
   for (const [query, expected] of [['os=mac', 1], ['', 0]]) {
     const page = await open(query)
     try {
@@ -2130,6 +2130,9 @@ test('the restart-to-install dialog warns about the keychain prompt on Mac only'
       await dialog.waitFor()
       if (expected) await dialog.getByTestId('updates-mac-keychain-hint').getByText('始终允许', { exact: false }).waitFor()
       assert.equal(await dialog.getByTestId('updates-mac-keychain-hint').count(), expected, query || 'windows')
+      // 反过来，Windows 要提醒的是授权窗口点「是」，Mac 上没有这个窗口。
+      if (!expected) await dialog.getByTestId('updates-windows-consent-hint').getByText('点「是」', { exact: false }).waitFor()
+      assert.equal(await dialog.getByTestId('updates-windows-consent-hint').count(), expected ? 0 : 1, query || 'windows')
       await clean(page)
     } finally { await page.close() }
   }
