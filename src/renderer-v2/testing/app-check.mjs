@@ -769,7 +769,12 @@ test('the home recent card resumes the last conversation of that folder (#292)',
     const resume = page.getByTestId('home-recent-resume-claude:1')
     await resume.waitFor()
     assert.equal(await resume.innerText(), '接着聊')
-    assert.equal(await resume.getAttribute('title'), '接着 C:\\work\\my-app 里最近的一条对话')
+    assert.equal(await resume.getAttribute('title'), '用 Claude Code 接着 my-app 里最近的一条对话')
+    // 下面一行写「工具 · 文件夹名」，完整路径放小提示；时间写清是哪天（夹具的时间在 1970 年前后，随时区落在哪天不一定）。
+    const row = page.getByTestId('home-recent-row-claude:1')
+    assert.equal(await row.locator('.xm-row-desc').innerText(), 'Claude Code · my-app')
+    assert.equal(await row.locator('.xm-row-desc span').getAttribute('title'), 'C:\\work\\my-app')
+    assert.match(await row.locator('.xm-row-meta').innerText(), /^19(69|70)年\d{1,2}月\d{1,2}日$/)
     assert.equal(await page.getByTestId('home-recent-resume-claude:2').count(), 1)
     assert.equal(await page.getByTestId('home-recent-resume-claude:3').count(), 0)
     // 没有按钮的那一行仍然能跳去记录页,和以前一样。
