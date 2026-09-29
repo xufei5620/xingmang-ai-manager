@@ -11,6 +11,7 @@ import {
   type RunCommandOptions,
 } from './command-runner'
 import { createTrustedTemporaryDirectory } from './trusted-temp'
+import { downloadWithResume } from './download-retry'
 import { isRegisteredTrustedManagedWindowsPath } from './managed-path-trust'
 import {
   isTrustedWindowsMachinePath,
@@ -119,6 +120,8 @@ export interface WindowsRestartStatus {
 
 export interface NodeRuntimeInstallerDependencies {
   fetch: typeof globalThis.fetch
+  /** 测试接缝：下载断了以后等多久再在同一条线路上接着下，缺省按真实时间等。 */
+  waitBeforeResume?(milliseconds: number, signal?: AbortSignal): Promise<void>
   runProcess(plan: NodeRuntimeProcessPlan, signal?: AbortSignal): Promise<CommandResult>
   resolveWingetExecutable(signal?: AbortSignal): Promise<SystemWingetResolution>
   inspectInstalledNodeRuntime(signal?: AbortSignal): Promise<InstalledNodeRuntimeInspection>
@@ -1135,64 +1138,63 @@ async function fetchLimitedText(
 }
 
 async function downloadMsi(
-  dependencies: Pick<NodeRuntimeInstallerDependencies, 'fetch'>,
+  dependencies: Pick<NodeRuntimeInstallerDependencies, 'fetch' | 'waitBeforeResume'>,
   url: string,
   targetPath: string,
   options: Pick<InstallNodeRuntimeOptions, 'signal' | 'onProgress'>,
   source: NodeRuntimeDownloadSource,
 ): Promise<{ sha256: string; size: number }> {
-  let size = 0
-  const hash = createHash('sha256')
   const controller = new AbortController()
   const abort = () => controller.abort(options.signal?.reason)
   options.signal?.addEventListener('abort', abort, { once: true })
   const timeout = setTimeout(() => controller.abort(new Error('安装包下载超时')), downloadTimeoutMs)
+  const percentOf = (size: number, total: number | null) => total ? Math.min(99, (size / total) * 100) : null
   try {
     throwIfAborted(options.signal)
-    const response = await fetchTrustedNodeResource(url, {
-      method: 'GET',
+    const download = await downloadWithResume({
+      targetPath,
+      maximumBytes: maximumMsiBytes,
+      oversizeMessage: '安装包超过 160 MB 安全限制',
       signal: controller.signal,
-      headers: { Accept: 'application/octet-stream' },
-    }, dependencies.fetch)
-    if (!response.ok) throw new Error(`HTTP ${response.status}`)
-    if (!response.body) throw new Error('服务器没有返回安装包内容')
-    const declaredLengthHeader = response.headers.get('content-length')
-    const declaredLength = declaredLengthHeader === null ? null : Number(declaredLengthHeader)
-    if (declaredLength !== null && (!Number.isSafeInteger(declaredLength) || declaredLength < minimumMsiBytes)) {
-      throw new Error('服务器返回的安装包大小无效')
-    }
-    if (declaredLength !== null && declaredLength > maximumMsiBytes) {
-      throw new Error('安装包超过 160 MB 安全限制')
-    }
-    const file = await fs.promises.open(targetPath, 'wx')
-    const reader = response.body.getReader()
-    try {
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-        if (!value) continue
-        size += value.byteLength
-        if (size > maximumMsiBytes) {
-          await reader.cancel()
+      ...(dependencies.waitBeforeResume ? { wait: dependencies.waitBeforeResume } : {}),
+      request: (headers, signal) => fetchTrustedNodeResource(url, {
+        method: 'GET',
+        signal,
+        headers: { Accept: 'application/octet-stream', ...headers },
+      }, dependencies.fetch),
+      acceptResponse: (response) => {
+        if (!response.ok) throw new Error(`HTTP ${response.status}`)
+        if (!response.body) throw new Error('服务器没有返回安装包内容')
+        const declaredLengthHeader = response.headers.get('content-length')
+        const declaredLength = declaredLengthHeader === null ? null : Number(declaredLengthHeader)
+        if (declaredLength !== null && (!Number.isSafeInteger(declaredLength) || declaredLength < minimumMsiBytes)) {
+          throw new Error('服务器返回的安装包大小无效')
+        }
+        if (declaredLength !== null && declaredLength > maximumMsiBytes) {
           throw new Error('安装包超过 160 MB 安全限制')
         }
-        hash.update(value)
-        await file.writeFile(value)
-        report(options, {
-          phase: 'downloading',
-          source: source.id,
-          message: `正在从${source.label}下载 Node.js LTS`,
-          percent: declaredLength ? Math.min(99, (size / declaredLength) * 100) : null,
-          transferredBytes: size,
-          totalBytes: declaredLength,
-        })
-      }
-    } finally {
-      await file.close()
-    }
-    if (size < minimumMsiBytes) throw new Error('下载的安装包内容过小')
-    if (declaredLength !== null && size !== declaredLength) throw new Error('安装包下载不完整')
-    return { sha256: hash.digest('hex'), size }
+        return declaredLength
+      },
+      onProgress: (size, total) => report(options, {
+        phase: 'downloading',
+        source: source.id,
+        message: `正在从${source.label}下载 Node.js LTS`,
+        percent: percentOf(size, total),
+        transferredBytes: size,
+        totalBytes: total,
+      }),
+      onResume: (size, total) => report(options, {
+        phase: 'downloading',
+        source: source.id,
+        message: `网络断了一下，正在从${source.label}接着下载 Node.js LTS`,
+        percent: percentOf(size, total),
+        transferredBytes: size,
+        totalBytes: total,
+      }),
+    })
+    if (download.size < minimumMsiBytes) throw new Error('下载的安装包内容过小')
+    if (download.total !== null && download.size !== download.total) throw new Error('安装包下载不完整')
+    return { sha256: download.sha256.toString('hex'), size: download.size }
   } finally {
     clearTimeout(timeout)
     options.signal?.removeEventListener('abort', abort)
@@ -1224,8 +1226,9 @@ export function downloadNodeRuntimePackage(
   targetPath: string,
   options: Pick<InstallNodeRuntimeOptions, 'signal' | 'onProgress'>,
   source: NodeRuntimeDownloadSource,
+  waitBeforeResume?: NodeRuntimeInstallerDependencies['waitBeforeResume'],
 ): Promise<{ sha256: string; size: number }> {
-  return downloadMsi({ fetch: fetchImplementation }, url, targetPath, options, source)
+  return downloadMsi({ fetch: fetchImplementation, waitBeforeResume }, url, targetPath, options, source)
 }
 
 export function nodeRuntimeSourceUrl(baseUrl: string, relativePath: string): string {

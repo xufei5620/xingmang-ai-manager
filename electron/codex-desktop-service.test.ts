@@ -751,6 +751,70 @@ describe('Codex Desktop update state', () => {
     expect(progress.every((value) => value >= 0 && value <= 100)).toBe(true)
   })
 
+  it('continues a dropped mirror download from where it stopped and keeps the progress going', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-msix-resume-'))
+    temporaryDirectories.push(directory)
+    const destination = path.join(directory, 'Codex.msix')
+    const bytes = Buffer.alloc(10 * 1024 * 1024, 0x42)
+    const cut = 4 * 1024 * 1024
+    const url = 'https://mirror.example.cn/Codex.msix'
+    const ranges: Array<string | null> = []
+    const fetchMock = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+      const range = new Headers(init?.headers).get('range')
+      ranges.push(range)
+      let sent = false
+      const response = range
+        ? new Response(new Uint8Array(bytes.subarray(cut)), {
+          status: 206,
+          headers: {
+            'Content-Type': 'application/vnd.ms-appx',
+            'Content-Range': `bytes ${cut}-${bytes.byteLength - 1}/${bytes.byteLength}`,
+          },
+        })
+        : new Response(new ReadableStream<Uint8Array>({
+          pull(controller) {
+            if (sent) {
+              controller.error(new TypeError('fetch failed'))
+              return
+            }
+            sent = true
+            controller.enqueue(new Uint8Array(bytes.subarray(0, cut)))
+          },
+        }), {
+          headers: {
+            'Content-Type': 'application/vnd.ms-appx',
+            'Content-Length': String(bytes.byteLength),
+            ETag: '"msix"',
+          },
+        })
+      Object.defineProperty(response, 'url', { value: url })
+      return response
+    })
+    const progress: Array<{ percent: number; resuming?: boolean }> = []
+
+    const result = await downloadCodexDesktopPackage(
+      {
+        label: '测试镜像',
+        url,
+        expectedContentLength: bytes.byteLength,
+        expectedSha256Base64: createHash('sha256').update(bytes).digest('base64'),
+      },
+      destination,
+      ({ percent, resuming }) => progress.push({ percent, resuming }),
+      fetchMock,
+      undefined,
+      { wait: async () => undefined },
+    )
+
+    expect(ranges).toEqual([null, `bytes=${cut}-`])
+    expect(result.transferred).toBe(bytes.byteLength)
+    expect(fs.readFileSync(destination).equals(bytes)).toBe(true)
+    expect(progress).toContainEqual({ percent: 40, resuming: true })
+    const percents = progress.map((entry) => entry.percent)
+    expect(percents.every((value, index) => index === 0 || value >= percents[index - 1])).toBe(true)
+    expect(percents.at(-1)).toBe(100)
+  })
+
   it('rejects a package whose Content-Length differs from the mirror manifest', async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-msix-download-'))
     temporaryDirectories.push(directory)
