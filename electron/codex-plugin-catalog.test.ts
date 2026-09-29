@@ -5,6 +5,7 @@ import zlib from 'node:zlib'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   CODEX_PLUGIN_CATALOG_URL,
+  codexPluginCatalogBackupStuckMessage,
   codexPluginCatalogNetworkMessage,
   codexPluginCatalogPaths,
   ensureCodexPluginCatalog,
@@ -86,6 +87,11 @@ function catalogEntries(extra: readonly TarEntry[] = []): TarEntry[] {
 
 function gzipCatalog(extra: readonly TarEntry[] = []): Buffer {
   return zlib.gzipSync(tar(catalogEntries(extra)))
+}
+
+function backupNames(parent: string): string[] {
+  return fs.readdirSync(parent).filter((name) => name.startsWith('plugins-xingmang-backup-') && !name.endsWith('.sha')
+    && name !== 'plugins-xingmang-backup-notes')
 }
 
 function servingFetch(body: Buffer, calls: string[] = []): typeof fetch {
@@ -280,28 +286,77 @@ describe('ensureCodexPluginCatalog', () => {
     expect(fs.readdirSync(path.dirname(paths.directory)).sort()).toEqual(['plugins', 'plugins.sha'])
   })
 
-  it('bounds repeated repair backups without deleting originals or blocking a healthy catalog', async () => {
+  it('keeps only the latest repair backup so repeated repairs never get stuck', async () => {
     const codexHome = temporaryCodexHome()
     await ensureCodexPluginCatalog({ codexHome, fetch: servingFetch(gzipCatalog()) })
     const paths = codexPluginCatalogPaths(codexHome)
     const manifest = path.join(paths.directory, '.agents/plugins/api_marketplace.json')
-    for (let index = 0; index < 3; index += 1) {
+    for (let index = 0; index < 5; index += 1) {
       fs.writeFileSync(manifest, `{broken-${index}`)
-      await ensureCodexPluginCatalog({ codexHome, fetch: servingFetch(gzipCatalog()) })
+      await expect(ensureCodexPluginCatalog({ codexHome, fetch: servingFetch(gzipCatalog()) }))
+        .resolves.toBe('downloaded')
     }
+
+    const parent = path.dirname(paths.directory)
+    const backups = backupNames(parent)
+    expect(backups).toHaveLength(1)
+    const backup = path.join(parent, backups[0])
+    expect(fs.readFileSync(path.join(backup, '.agents/plugins/api_marketplace.json'), 'utf8')).toBe('{broken-4')
+    expect(fs.readFileSync(`${backup}.sha`, 'utf8')).toBe(`${commit}\n`)
+    expect(fs.readdirSync(parent).filter((name) => name.endsWith('.sha')).sort())
+      .toEqual([`${backups[0]}.sha`, 'plugins.sha'].sort())
+  })
+
+  it('clears backups left by older versions before repairing, keeping the newest one', async () => {
+    const codexHome = temporaryCodexHome()
+    await ensureCodexPluginCatalog({ codexHome, fetch: servingFetch(gzipCatalog()) })
+    const paths = codexPluginCatalogPaths(codexHome)
+    const parent = path.dirname(paths.directory)
+    const legacy = [1, 2, 3].map((index) => {
+      const name = `plugins-xingmang-backup-0000000${index}-0000-4000-8000-000000000000`
+      fs.mkdirSync(path.join(parent, name))
+      fs.writeFileSync(path.join(parent, name, 'marker.txt'), `${index}`)
+      fs.writeFileSync(path.join(parent, `${name}.sha`), `${commit}\n`)
+      return name
+    })
+    const unrelated = path.join(parent, 'plugins-xingmang-backup-notes')
+    fs.mkdirSync(unrelated)
+    fs.writeFileSync(path.join(paths.directory, '.agents/plugins/api_marketplace.json'), '{fourth-broken-catalog')
     const calls: string[] = []
-    await expect(ensureCodexPluginCatalog({ codexHome, fetch: servingFetch(gzipCatalog(), calls) }))
-      .resolves.toBe('present')
-    fs.writeFileSync(manifest, '{fourth-broken-catalog')
 
     await expect(ensureCodexPluginCatalog({ codexHome, fetch: servingFetch(gzipCatalog(), calls) }))
-      .rejects.toThrow('修复备份已达到 3 份')
+      .resolves.toBe('downloaded')
+
+    expect(calls).toEqual([CODEX_PLUGIN_CATALOG_URL])
+    expect(inspectCodexPluginCatalog(codexHome).present).toBe(true)
+    const remaining = backupNames(parent)
+    expect(remaining).toHaveLength(1)
+    expect(legacy).not.toContain(remaining[0])
+    expect(fs.existsSync(unrelated)).toBe(true)
+  })
+
+  it.runIf(process.platform !== 'win32')('never deletes a linked backup and stops without downloading when too many cannot be cleared', async () => {
+    const codexHome = temporaryCodexHome()
+    await ensureCodexPluginCatalog({ codexHome, fetch: servingFetch(gzipCatalog()) })
+    const paths = codexPluginCatalogPaths(codexHome)
+    const parent = path.dirname(paths.directory)
+    const outside = path.join(path.dirname(codexHome), 'outside')
+    fs.mkdirSync(outside)
+    fs.writeFileSync(path.join(outside, 'precious.txt'), 'keep')
+    for (const index of [1, 2, 3]) {
+      fs.symlinkSync(outside, path.join(parent, `plugins-xingmang-backup-0000000${index}-0000-4000-8000-000000000000`))
+    }
+    const manifest = path.join(paths.directory, '.agents/plugins/api_marketplace.json')
+    fs.writeFileSync(manifest, '{broken-catalog')
+    const calls: string[] = []
+
+    await expect(ensureCodexPluginCatalog({ codexHome, fetch: servingFetch(gzipCatalog(), calls) }))
+      .rejects.toThrow(codexPluginCatalogBackupStuckMessage)
 
     expect(calls).toEqual([])
-    expect(fs.readFileSync(manifest, 'utf8')).toBe('{fourth-broken-catalog')
-    const backups = fs.readdirSync(path.dirname(paths.directory), { withFileTypes: true })
-      .filter((entry) => entry.isDirectory() && entry.name.startsWith('plugins-xingmang-backup-'))
-    expect(backups).toHaveLength(3)
+    expect(fs.readFileSync(manifest, 'utf8')).toBe('{broken-catalog')
+    expect(fs.readFileSync(path.join(outside, 'precious.txt'), 'utf8')).toBe('keep')
+    expect(backupNames(parent)).toHaveLength(3)
   })
 
   it('restores the original catalog if publishing its new version file fails', async () => {
