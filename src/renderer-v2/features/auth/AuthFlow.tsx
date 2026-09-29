@@ -1,17 +1,30 @@
 import { useEffect, useRef, useState, type FocusEvent, type ReactNode } from 'react'
-import { ArrowLeft, ArrowRight, Check, Copy, ExternalLink, Eye, EyeOff, KeyRound, LogIn, Mail, RefreshCw, ShieldCheck, UserPlus } from 'lucide-react'
+import { ArrowLeft, ArrowRight, Check, Copy, ExternalLink, Eye, EyeOff, Headset, KeyRound, LogIn, Mail, RefreshCw, ShieldCheck, UserPlus } from 'lucide-react'
 import type { AccountLoginResult, AccountStatus, LegalDocumentKind } from '../../../../electron/ipc-contract'
 import { Button, Dialog, Input, Segment } from '../../ui'
 import { getAuthApi, type AccountSiteId, type AuthApi } from './api'
 import { LegalDocument } from './LegalDocument'
 import { isUsernameTakenError } from './account-errors'
-import { accountSources, authErrorMessage, isEmail, isTwoFactorChallenge, isTwoFactorExpired, normalizeEmail, parseInviteCode, parseRecoveryCode, parseTwoFactorCode, registrationStatusFailure, requiresBrowserAuthentication, suggestEmailCorrection, usernameFromEmail, validateNewPassword, validateRegistration, type RegistrationDraft, type RegistrationErrors } from './state'
+import { accountSources, authErrorMessage, authFailure, authOfflineMessage, isEmail, isTwoFactorChallenge, isTwoFactorExpired, normalizeEmail, parseInviteCode, parseRecoveryCode, parseTwoFactorCode, registrationStatusFailure, requiresBrowserAuthentication, suggestEmailCorrection, usernameFromEmail, validateNewPassword, validateRegistration, type AuthFailureKind, type RegistrationDraft, type RegistrationErrors } from './state'
 import { useCooldown } from './useCooldown'
 import './auth.css'
 
 export type AuthMode = 'login' | 'register' | 'recovery'
 // 读注册设置第一次没读到时，隔这么久自动再试一次。单次请求的 10 秒超时不动，只多给一次机会。
 const statusRetryDelayMs = 2_000
+// 这几步失败后可以原样再点一次；其余（两步验证的验证码已经用掉、设新密码失败后临时密码已亮出）没有「再试一次」。
+const retryableActions = ['登录', '发送验证码', '创建账号', '发送重置邮件', '重置密码'] as const
+type RetryableAction = typeof retryableActions[number]
+function isRetryableAction(action: string): action is RetryableAction {
+  return (retryableActions as readonly string[]).includes(action)
+}
+/** 红字下面那排出口按什么给：哪一步、为什么失败；没网那种等网络回来后红字换成提示，出口留着。 */
+interface FailureExit {
+  action: string
+  kind: AuthFailureKind
+  message: string
+  reconnected?: boolean
+}
 /** 一次登录要交的东西；newPassword 只在找回密码那条路上有：登上之后立刻把临时密码换成它。 */
 interface LoginAttempt {
   username: string
@@ -75,6 +88,7 @@ export function AuthFlow({ api: providedApi, initialMode = 'login', initialIdent
   const [copyFallback, setCopyFallback] = useState(false)
   const [error, setError] = useState('')
   const [message, setMessage] = useState('')
+  const [failure, setFailure] = useState<FailureExit | null>(null)
   const [browserAuthentication, setBrowserAuthentication] = useState(false)
   // 密码已经对了、还差验证器里那 6 位数字（或备用码）。flow token 留在主进程，这里只记是哪种输入。
   const [twoFactor, setTwoFactor] = useState<{ backup: boolean } | null>(null)
@@ -137,6 +151,18 @@ export function AuthFlow({ api: providedApi, initialMode = 'login', initialIdent
     window.addEventListener('online', reload)
     return () => window.removeEventListener('online', reload)
   }, [statusOffline])
+  // 登录、注册这些是客户自己点的，网络回来了不替他再点一次，只把「没连上网」换成一句提示。
+  const offlineFailure = failure?.kind === 'offline' && !failure.reconnected
+  useEffect(() => {
+    if (!offlineFailure) return
+    function reconnected() {
+      setFailure((current) => current?.kind === 'offline' ? { ...current, reconnected: true } : current)
+      setError((current) => current === authOfflineMessage ? '' : current)
+      setMessage('网络回来了，点下面的「再试一次」就行。')
+    }
+    window.addEventListener('online', reconnected)
+    return () => window.removeEventListener('online', reconnected)
+  }, [offlineFailure])
   useEffect(() => {
     if (mode !== 'login') return
     let active = true
@@ -155,7 +181,7 @@ export function AuthFlow({ api: providedApi, initialMode = 'login', initialIdent
   const changeSource = (value: string) => {
     if (locked.current || (value !== 'solov' && value !== 'solov-api') || value === siteId) return
     epoch.current++
-    setSiteId(value); setPassword(''); setRemember(false); setError(''); setMessage(''); setBrowserAuthentication(false); leaveTwoFactor()
+    setSiteId(value); setPassword(''); setRemember(false); setError(''); setMessage(''); setFailure(null); setBrowserAuthentication(false); leaveTwoFactor()
     setRecoveryStep(1); setRecoveryText(''); clearRecoveredPassword()
     loginTouched.current = false
   }
@@ -168,7 +194,7 @@ export function AuthFlow({ api: providedApi, initialMode = 'login', initialIdent
   const changeMode = (next: AuthMode, nextIdentifier?: string) => {
     if (locked.current) return
     epoch.current++
-    setMode(next); setError(''); setMessage(''); setBrowserAuthentication(false); setFieldErrors({}); leaveTwoFactor(); clearRecoveredPassword()
+    setMode(next); setError(''); setMessage(''); setFailure(null); setBrowserAuthentication(false); setFieldErrors({}); leaveTwoFactor(); clearRecoveredPassword()
     if (next === 'register') { setSiteId('solov'); setPassword(''); setRemember(false) }
     if (nextIdentifier !== undefined) { setIdentifier(nextIdentifier); setPassword(''); loginTouched.current = true }
     if (next === 'recovery') { setRecoveryStep(1); if (isEmail(identifier)) setRecoveryEmail(identifier) }
@@ -178,12 +204,16 @@ export function AuthFlow({ api: providedApi, initialMode = 'login', initialIdent
     if (recovered) { continueWithTempPassword(); return }
     epoch.current++; setPassword(''); clearRecoveredPassword(); leaveTwoFactor(); onClose()
   }
+  const showFailure = (reason: unknown, action: string) => {
+    const result = authFailure(reason, action, navigator.onLine)
+    setError(result.message); setFailure({ action, kind: result.kind, message: result.message }); setBrowserAuthentication(requiresBrowserAuthentication(reason))
+  }
   const run = async (action: string, work: (isCurrent: () => boolean) => Promise<void>) => {
     if (locked.current) return
     const owner = epoch.current
     const current = () => epoch.current === owner
-    locked.current = true; setBusy(true); setError(''); setMessage('')
-    try { await work(current) } catch (reason) { if (current()) { setError(authErrorMessage(reason, action)); setBrowserAuthentication(requiresBrowserAuthentication(reason)) } }
+    locked.current = true; setBusy(true); setError(''); setMessage(''); setFailure(null)
+    try { await work(current) } catch (reason) { if (current()) showFailure(reason, action) }
     finally { if (current()) { locked.current = false; setBusy(false) } }
   }
   const submitLogin = () => {
@@ -309,8 +339,7 @@ export function AuthFlow({ api: providedApi, initialMode = 'login', initialIdent
           setMode('login'); setIdentifier(draft.username.trim()); setPassword(''); setAgreed(draft.agreed); loginTouched.current = true
           setRegistration((previous) => ({ ...previous, password: '', confirm: '', code: '' }))
           setMessage('账号已创建，自动登录没有完成，请输入密码继续')
-          setError(authErrorMessage(reason, '自动登录'))
-          setBrowserAuthentication(requiresBrowserAuthentication(reason))
+          showFailure(reason, '自动登录')
         }
         return
       }
@@ -377,6 +406,29 @@ export function AuthFlow({ api: providedApi, initialMode = 'login', initialIdent
   const openAccountWebsite = () => void run('打开账号官网', async () => {
     if (!await api.openExternal(source.website)) throw new Error('Open external failed')
   })
+
+  const retryFailure = (action: RetryableAction) => {
+    if (action === '登录') submitLogin()
+    else if (action === '发送验证码') sendVerification()
+    else if (action === '创建账号') submitRegistration()
+    else if (action === '发送重置邮件') sendReset()
+    else submitReset()
+  }
+  const goRecovery = (email: string) => {
+    changeMode('recovery')
+    if (isEmail(email)) setRecoveryEmail(email)
+  }
+  // 红字一出现，下面就给能点的出口；客户改了输入、换了一步或又出了别的提示，出口跟着红字一起消失。
+  const exitsVisible = Boolean(failure && (failure.reconnected ? !error : error === failure.message))
+  const exits = failure && exitsVisible ? <>
+    {['offline', 'unreachable', 'network', 'unknown'].includes(failure.kind) && isRetryableAction(failure.action) && <Button size="xs" icon={RefreshCw} disabled={busy} onClick={() => { if (isRetryableAction(failure.action)) retryFailure(failure.action) }} testId="auth-exit-retry">再试一次</Button>}
+    {failure.kind === 'credentials' && mode === 'login' && !twoFactor && source.supportsPasswordReset && <Button size="xs" icon={KeyRound} disabled={busy} onClick={() => goRecovery(identifier.trim())} testId="auth-exit-forgot">找回密码</Button>}
+    {failure.kind === 'credentials' && mode === 'login' && !twoFactor && <Button size="xs" icon={UserPlus} disabled={busy} onClick={() => changeMode('register')} testId="auth-exit-register">还没有账号，去注册</Button>}
+    {failure.kind === 'code' && mode === 'register' && status?.emailVerificationEnabled && <Button size="xs" icon={Mail} disabled={busy || Boolean(registerCooldown.seconds)} onClick={sendVerification} testId="auth-exit-code">{registerCooldown.seconds ? `${registerCooldown.seconds} 秒后重新获取` : '重新获取验证码'}</Button>}
+    {failure.kind === 'taken' && mode === 'register' && <Button size="xs" icon={LogIn} disabled={busy} onClick={() => changeMode('login', normalizeEmail(registration.email))} testId="auth-exit-login">用这个邮箱去登录</Button>}
+    {failure.kind === 'taken' && mode === 'register' && <Button size="xs" icon={KeyRound} disabled={busy} onClick={() => goRecovery(normalizeEmail(registration.email))} testId="auth-exit-forgot">找回密码</Button>}
+    {onHelp && <Button size="xs" variant="ghost" icon={Headset} disabled={busy} onClick={onHelp} testId="auth-exit-help">找客服</Button>}
+  </> : null
 
   if (legal) return <LegalDocument api={api} kind={legal} onClose={() => setLegal(null)} />
   const agreement = (checked: boolean, onChange: (checked: boolean) => void) => <div className="auth-agreement"><label><input type="checkbox" checked={checked} onChange={(event) => onChange(event.target.checked)} data-testid="auth-agree" disabled={busy} />我已阅读并同意</label><Button size="xs" variant="ghost" disabled={busy} onClick={() => setLegal('user-agreement')} testId="auth-terms">用户协议</Button><Button size="xs" variant="ghost" disabled={busy} onClick={() => setLegal('privacy-policy')} testId="auth-privacy">隐私政策</Button></div>
@@ -456,8 +508,9 @@ export function AuthFlow({ api: providedApi, initialMode = 'login', initialIdent
       {mode !== 'register' && !sourceVisible && !twoFactor && (mode === 'login' || recoveryStep === 1) && <div className="auth-more"><Button size="xs" variant="ghost" disabled={busy} onClick={openHistorySource} testId="auth-source-expand">{mode === 'login' ? '用历史账号登录' : '找回历史账号的密码'}</Button></div>}
       {message && <p className="auth-message" role="status" data-testid="auth-message">{message}</p>}
       {error && <p className="auth-error" role="alert" data-testid="auth-error">{error}</p>}
+      {exits && <div className="auth-form-actions auth-exits" data-testid="auth-exits">{exits}</div>}
       {browserAuthentication && <Button variant="ghost" icon={ExternalLink} onClick={openAccountWebsite} disabled={busy} testId="auth-open-website">前往{source.label}官网</Button>}
-      {mode !== 'recovery' && status?.turnstileCheckEnabled && onHelp && <Button variant="ghost" onClick={onHelp} testId="auth-verification-help">打开帮助</Button>}
+      {mode !== 'recovery' && status?.turnstileCheckEnabled && onHelp && !exitsVisible && <Button variant="ghost" onClick={onHelp} testId="auth-verification-help">打开帮助</Button>}
     </div>
   </Dialog>
 }

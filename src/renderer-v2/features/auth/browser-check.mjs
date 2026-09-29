@@ -725,6 +725,74 @@ test('an invitation link opens the registration with the invitation field alread
   } finally { await page.close() }
 })
 
+// 第二十批 4：红字说清原因，下面给能点的出口。
+test('a network failure on login names proxy software and offers retry and support', async () => {
+  const page = await open('loginFail=timeout')
+  try {
+    await page.getByTestId('login-account').fill('fixture-member')
+    await page.getByTestId('login-password').fill('fixture-password')
+    await page.getByTestId('auth-agree').check()
+    await page.getByTestId('login-submit').click()
+    await page.getByTestId('auth-error').filter({ hasText: '连不上账号服务。电脑上开着加速器、翻墙或代理软件的话，先把它关掉，再试一次。' }).waitFor()
+    assert.equal(await page.getByTestId('auth-exit-forgot').count(), 0)
+    await page.getByTestId('auth-exit-help').click()
+    assert.equal((await calls(page)).filter((item) => item.method === 'help').length, 1)
+    await page.getByTestId('auth-exit-retry').click()
+    await page.waitForFunction(() => document.documentElement.dataset.calls?.includes('authenticated'))
+    assert.deepEqual((await calls(page)).map((item) => item.method), ['login', 'help', 'login', 'remember', 'authenticated'])
+  } finally { await page.close() }
+})
+
+test('a login without network waits for the network and then says to try again', async () => {
+  const page = await open('loginFail=offline')
+  try {
+    await page.getByTestId('login-account').fill('fixture-member')
+    await page.getByTestId('login-password').fill('fixture-password')
+    await page.getByTestId('auth-agree').check()
+    await page.getByTestId('login-submit').click()
+    await page.getByTestId('auth-error').filter({ hasText: '这台电脑现在没连上网。连上网后再试一次。' }).waitFor()
+    await page.context().setOffline(true)
+    await page.context().setOffline(false)
+    await page.getByTestId('auth-message').filter({ hasText: '网络回来了' }).waitFor()
+    assert.equal(await page.getByTestId('auth-error').count(), 0)
+    await page.getByTestId('auth-exit-retry').click()
+    await page.waitForFunction(() => document.documentElement.dataset.calls?.includes('authenticated'))
+  } finally { await page.close() }
+})
+
+test('a wrong password offers password recovery and registration under the red text', async () => {
+  const page = await open('fail=1')
+  try {
+    await page.getByTestId('login-account').fill('person@example.test')
+    await page.getByTestId('login-password').fill('fixture-password')
+    await page.getByTestId('auth-agree').check()
+    await page.getByTestId('login-submit').click()
+    await page.getByTestId('auth-error').filter({ hasText: '账号或密码不正确' }).waitFor()
+    assert.equal(await page.getByTestId('auth-exit-retry').count(), 0)
+    await page.getByTestId('auth-exit-register').waitFor()
+    await page.getByTestId('auth-exit-forgot').click()
+    await page.getByTestId('forgot-password-dialog').waitFor()
+    assert.equal(await page.getByTestId('forgot-email').inputValue(), 'person@example.test')
+    assert.equal(await page.getByTestId('auth-exits').count(), 0)
+  } finally { await page.close() }
+})
+
+test('an email that is already registered offers to log in with it', async () => {
+  const page = await open('scenario=register&emailTaken=1')
+  try {
+    await page.getByTestId('register-email').fill('fixture@example.test')
+    await page.getByTestId('register-code').fill('123456')
+    await page.getByTestId('register-password').fill('fixture-password')
+    await page.getByTestId('register-password-confirm').fill('fixture-password')
+    await page.getByTestId('auth-agree').check()
+    await page.getByTestId('register-submit').click()
+    await page.getByTestId('auth-error').filter({ hasText: '该邮箱已被注册' }).waitFor()
+    await page.getByTestId('auth-exit-login').click()
+    await page.getByTestId('login-dialog').waitFor()
+    assert.equal(await page.getByTestId('login-account').inputValue(), 'fixture@example.test')
+  } finally { await page.close() }
+})
+
 test('pending registration blocks close and mode changes then focuses the password on return to login', async () => {
   const page = await open('scenario=register&pending=register&fail=1')
   try {
