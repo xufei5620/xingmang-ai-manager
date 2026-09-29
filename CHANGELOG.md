@@ -18,6 +18,9 @@
 
 ## 0.2.11 - 2026-09-29
 
+- 第二十批 4：`features/auth/state.ts` 新增 `authFailure`，按 `classifyNetworkFailure` 与账号服务错误表（`account-errors.ts` 补 `kind`）给出原因类别；超时 / 被切断沿用 #660 注册窗那句加速器提醒，没网单独一句；兜底在服务端原话为纯中文时带上原话。`AuthFlow.tsx` 在红字下按类别给出口，没网时监听 `online` 清红字。浏览器回归覆盖网络失败重试、没网恢复、密码错误、邮箱已注册四条路。
+- 第二十批 2、3：`operationFailureFrom` 在 `errorMessage` 落到兜底句时把脱敏打码后的原话留在 `OperationFailure.detail`；`presentOperationFailure` 认不出上屏句时再拿原话分类；`buildSupportBundle` / `buildLastFailureLine` 复用 `electron/redaction-patterns.ts`（已登记进渲染层可值导入名单）。`errors.unknown` 标题统一为「操作没有完成」，删掉从未上屏的「已自动撤回」。
+
 - 第二十批 6、7。`auto-update-install.ts`：记录新增可选 `quitAttemptedVersion`，`decideQuitInstall` 让退出时自动装每个版本只试一次，之后回到「顺手装上吗」那一问；`decideLaunchInstall` 也跳过退出时试过的版本。`resolvePreviousAutoInstallFailure` 在下次启动时从记录认出「上次自动装过、还是旧版本」，`updater.ts` 新增 runtime 选项 `previousAutoInstallFailure`，下载完成时把该版本停在 `failedStep: 'install'`（code `UPDATE_PREVIOUS_AUTO_INSTALL_FAILED`），只留按钮不再自动装。
 - 自动装前的预告：`buildAutoInstallNotice` 出文案，`desktop-notifications.ts` 新增 `announce`（不看通知开关，理由见注释）；退出时发完等 1.2 秒再交给安装器，启动时发完等 5 秒并复核开关、队列和版本再装。
 - `updateDesktopNotification` 多收 `autoUpdate`，开着时改说「后台下载 / 关掉软件时自动装上」。更新页导语按开关分两句（`registry/business.ts` 的 `updatesPageLead`），「安装前需要知道」去掉「关闭保护」，重启确认框在 Windows 上提醒授权窗口点「是」。
