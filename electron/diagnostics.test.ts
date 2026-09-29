@@ -1668,6 +1668,78 @@ describe('runDiagnostics AI output location', () => {
   })
 })
 
+describe('runDiagnostics documents folder', () => {
+  it('says where AI works went after documents refused them, with an open-folder hint', async () => {
+    const report = await runDiagnostics({
+      ...dependencies(temporaryHome()),
+      probeAiOutput: async () => undefined,
+      aiOutputPlacement: () => ({ movedFromDocuments: true, earlierWorksLeftInDocuments: true }),
+    })
+
+    const item = report.items.find((entry) => entry.code === 'AI_OUTPUT')
+    expect(item).toMatchObject({ state: 'pass', details: { openFolder: 'ai-output' } })
+    expect(item?.summary).toContain('个人文件夹里的 XingmangAI')
+    expect(item?.summary).toContain('以前的作品还在')
+  })
+
+  it('checks the documents folder only on Windows and only when the host passes it', async () => {
+    const home = temporaryHome()
+    const inspectDocuments = vi.fn(() => ({ state: 'writable' as const }))
+    const linux = await runDiagnostics({ ...dependencies(home), platform: 'linux', documentsDirectory: path.join(home, 'Documents'), inspectDocuments })
+    const unset = await runDiagnostics({ ...dependencies(home), platform: 'win32', inspectDocuments })
+
+    expect(linux.items.some((entry) => entry.code === 'DOCUMENTS_WRITABLE')).toBe(false)
+    expect(unset.items.some((entry) => entry.code === 'DOCUMENTS_WRITABLE')).toBe(false)
+    expect(inspectDocuments).not.toHaveBeenCalled()
+  })
+
+  it('explains a refused documents folder in plain words, logs the raw reason and offers the projects folder', async () => {
+    const home = temporaryHome()
+    const log = vi.fn()
+    const report = await runDiagnostics({
+      ...dependencies(home),
+      platform: 'win32',
+      log,
+      documentsDirectory: 'C:\\Users\\peaker\\Documents',
+      inspectDocuments: () => ({ state: 'denied', reason: 'EPERM: operation not permitted, open \'C:\\Users\\peaker\\Documents\\.write-check.tmp\'' }),
+    })
+
+    const item = report.items.find((entry) => entry.code === 'DOCUMENTS_WRITABLE')
+    expect(item).toMatchObject({ state: 'warn', title: '「文档」文件夹能不能写', details: { openFolder: 'projects' } })
+    expect(item?.summary).toContain('受控文件夹访问')
+    expect(item?.summary).not.toMatch(/EPERM|权限位|%USERPROFILE%/)
+    expect(log).toHaveBeenCalledWith('warn', 'diagnostics.documents.unwritable', expect.any(String), expect.objectContaining({
+      kind: 'denied',
+      raw: expect.stringContaining('EPERM'),
+    }))
+  })
+
+  it('does not offer to move for a full disk', async () => {
+    const report = await runDiagnostics({
+      ...dependencies(temporaryHome()),
+      platform: 'win32',
+      documentsDirectory: 'C:\\Users\\peaker\\Documents',
+      inspectDocuments: () => ({ state: 'failed', reason: 'ENOSPC' }),
+    })
+
+    const item = report.items.find((entry) => entry.code === 'DOCUMENTS_WRITABLE')
+    expect(item?.state).toBe('warn')
+    expect(item?.summary).toContain('磁盘满')
+    expect(item?.details?.openFolder).toBeUndefined()
+  })
+
+  it('probes documents for real through the default inspector', async () => {
+    const home = temporaryHome()
+    const documents = path.join(home, 'Documents')
+    fs.mkdirSync(documents, { recursive: true })
+    const report = await runDiagnostics({ ...dependencies(home), platform: 'win32', documentsDirectory: documents })
+
+    // 测试机上的临时目录可写；Windows 路径规则下它不含 OneDrive，所以真的去写了一次。
+    expect(report.items.find((entry) => entry.code === 'DOCUMENTS_WRITABLE')?.state).toBe('pass')
+    expect(fs.readdirSync(documents)).toEqual([])
+  })
+})
+
 describe('runDiagnostics acceleration bundle', () => {
   it('only reports the acceleration bundle when the installed app ships one', async () => {
     const report = await runDiagnostics(dependencies(temporaryHome()))

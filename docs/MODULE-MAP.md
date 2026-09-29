@@ -62,7 +62,7 @@
 - `canvas-request-parser.ts` / `canvas-run-contract.ts` / `canvas-run-engine.ts` / `canvas-node-executors.ts` — 入参白名单校验、运行契约、DAG 运行引擎与节点执行器（**都在主进程**）
 - `canvas-account-lifecycle.ts` / `canvas-fingerprint.ts` — 账号切换隔离与画布指纹
 - `canvas-project-package.ts` / `canvas-prompt-preset-store.ts` — 项目导入导出（导出会清理凭据/本机路径/远端 URL）与提示词预设
-- `ai-chat-service.ts` (930) / `ai-image-service.ts` (494) / `ai-chat-protocol.ts` / `ai-asset-store.ts` / `ai-output-location.ts` — 主进程侧的聊天流式、图像生成（`/v1/images/generations` 与 multipart 的 `/v1/images/edits`）、协议校验与产物落盘（保存位置在「文档/XingmangAI」，启动时把老版本安装目录旁 output 里的作品搬过来）
+- `ai-chat-service.ts` (930) / `ai-image-service.ts` (494) / `ai-chat-protocol.ts` / `ai-asset-store.ts` / `ai-output-location.ts` — 主进程侧的聊天流式、图像生成（`/v1/images/generations` 与 multipart 的 `/v1/images/edits`）、协议校验与产物落盘（保存位置在「文档/XingmangAI」，「文档」不让写时启动即改用主目录下的 XingmangAI（`chooseAiOutputRoot`，试写与权限判定在 `documents-fallback.ts`）；启动时把老版本安装目录旁 output 里的作品搬过来）
 - `ai-chat-history-store.ts` — AI 聊天记录的文件存储（`userData/chat-history/<scope 的 sha256 前 32 位>/`，一个对话一个文件 + `index.json`）。渲染层负责脱敏与格式校验，这里只做入参校验、按账号串行的原子写入和大小上限
 - `ai-chat-attachments.ts` — AI 聊天里附带的图片：只从系统选文件框和剪贴板在主进程里取，太大的用 nativeImage 压到长边 2048、2 MB 以内，存进本账号的图片资产目录；发送时按账号读回转成 data URI（`chat:pick-images` / `chat:paste-image`）
 - `chat-credential-coordinator.ts` (211) — **按分组按需签发并缓存 Key**（`xingmang-chat-*`）：命中缓存先验、失效自愈（被吊销就重签）、账号切换即失效。这是 2026-08-12 画布 503（令牌分组下无可用渠道）的根治方案

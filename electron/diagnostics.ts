@@ -36,6 +36,8 @@ import { redactSecretPatterns } from './redaction-patterns'
 import { relayApiProbeBaseUrl, resolveRelaySite, type RelaySite } from './relay-sites'
 import { findReparseComponent, type ReparseComponent } from './safe-local-data'
 import { resolveRelocatedPath } from './relocated-folders'
+import { inspectDocumentsWritability, type DocumentsWritability } from './documents-fallback'
+import type { StarterWorkspaceLocationContext } from './starter-workspace'
 import {
   inspectProxyVariables,
   probeLoopbackProxy,
@@ -176,6 +178,18 @@ export interface DiagnosticsDependencies {
    * 宿主真写一个小文件再删掉，resolve 就是写得进，reject 就是写不进。
    */
   probeAiOutput?: () => Promise<void>
+  /**
+   * 启动时 AI 作品位置是不是因为「文档」不让写改到了个人文件夹（ai-output-location.ts
+   * 的 chooseAiOutputRoot）。给了且换过，「AI 作品保存位置」一项照实说作品在哪。
+   */
+  aiOutputPlacement?: () => { movedFromDocuments: boolean, earlierWorksLeftInDocuments: boolean } | null
+  /**
+   * 系统「文档」目录（app.getPath('documents')）；拿不到传 null。给了（含 null）才在
+   * Windows 上有「「文档」文件夹能不能写」这一项。
+   */
+  documentsDirectory?: string | null
+  /** 测试用：模拟「文档」能写、不让写、写不进。 */
+  inspectDocuments?: (documentsDirectory: string | null, context: StarterWorkspaceLocationContext) => DocumentsWritability
   /**
    * 正式安装包自带的加速文件启动时读没读通。只有安装包本来就带加速文件时宿主才给，
    * 给了才有「加速功能」这一项；开发时和不带加速的包都没有这一项。
@@ -1292,6 +1306,52 @@ function relocatedFolderTargets(
 }
 
 /**
+ * 检查页上「打开文件夹」按钮打开哪一个：由主进程按这个名字自己找到路径，
+ * 渲染层给不出任何路径（I5）。
+ */
+export type DiagnosticFolderTarget = 'projects' | 'ai-output'
+
+export function isDiagnosticFolderTarget(value: unknown): value is DiagnosticFolderTarget {
+  return value === 'projects' || value === 'ai-output'
+}
+
+export function documentsWritabilityOutcome(
+  result: DocumentsWritability,
+  log: DiagnosticsDependencies['log'],
+  sanitizeText: (value: string) => string,
+): CheckOutcome {
+  if (result.state === 'writable') {
+    return { state: 'pass', summary: '能正常写入，新项目和 AI 作品放在「文档」里' }
+  }
+  if (result.state === 'not-used') {
+    return {
+      state: 'pass',
+      summary: result.why === 'cloud'
+        ? '「文档」在 OneDrive 同步里，新项目和 AI 作品放在个人文件夹里，免得拖慢电脑'
+        : '没找到「文档」文件夹，新项目和 AI 作品放在个人文件夹里',
+    }
+  }
+  // 原因原文（EPERM 之类，带着路径）只进日志，报告里只有中文结论。
+  log?.('warn', 'diagnostics.documents.unwritable', '「文档」文件夹写不进去', {
+    kind: result.state,
+    raw: sanitizeText(result.reason),
+  })
+  if (result.state === 'denied') {
+    return {
+      state: 'warn',
+      summary: '「文档」文件夹不让本软件写入，常见原因是 Windows 安全中心开了「受控文件夹访问」，'
+        + '或者安全软件开了文档保护。新建的项目和 AI 作品已经改放在个人文件夹里，照常能用。',
+      details: { openFolder: 'projects' },
+    }
+  }
+  return {
+    state: 'warn',
+    summary: '「文档」文件夹这次没写进去，可能是磁盘满了或者文件夹是只读的。'
+      + '新建项目和保存 AI 作品可能会失败，清理一些空间后再点「重新检测」。',
+  }
+}
+
+/**
  * 「电脑芯片」一项的结论。面向小白：只说「ARM 芯片」「ARM 版」「普通电脑用的版本」，
  * 不出现 arm64 / x64 / 模拟层这些词。
  */
@@ -1773,6 +1833,18 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
         }
       },
     },
+    // 受控文件夹访问、安全软件的文档保护会让「文档」只读，新项目和 AI 作品默认都在
+    // 它下面。只在 Windows 上查：Mac 的新项目本来就放个人文件夹（#587），往「文稿」里
+    // 试写还会平白弹一次系统的访问询问。
+    ...(platform === 'win32' && dependencies.documentsDirectory !== undefined ? [{
+      code: 'DOCUMENTS_WRITABLE',
+      title: '「文档」文件夹能不能写',
+      run: (): CheckOutcome => {
+        const inspect = dependencies.inspectDocuments ?? inspectDocumentsWritability
+        const result = inspect(dependencies.documentsDirectory ?? null, { platform, home: userHome, env })
+        return documentsWritabilityOutcome(result, log, sanitize)
+      },
+    }] : []),
     // 写不进时生成前就会拦下、不会扣费，而且只影响用 AI 生图、生视频的人，所以这里
     // 标「需留意」而不是「待处理」：不为它在每次开机时弹提示，检查页照实标黄。
     ...(probeAiOutput ? [{
@@ -1789,6 +1861,15 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
             state: 'warn',
             summary: '保存位置写不进去。用 AI 生成图片或视频时，软件会在扣费前先拦下来；'
               + '可以在画布里新建一个项目、给它选一个自己的文件夹，在那里生成就能存下来。',
+          }
+        }
+        const placement = dependencies.aiOutputPlacement?.() ?? null
+        if (placement?.movedFromDocuments) {
+          return {
+            state: 'pass',
+            summary: '「文档」文件夹不让写，AI 生成的图片和视频改存在个人文件夹里的 XingmangAI'
+              + (placement.earlierWorksLeftInDocuments ? '。以前的作品还在「文档」里的 XingmangAI，没有搬动' : ''),
+            details: { openFolder: 'ai-output' },
           }
         }
         return { state: 'pass', summary: 'AI 生成的图片和视频能正常保存' }

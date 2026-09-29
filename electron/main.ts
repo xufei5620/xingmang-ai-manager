@@ -31,7 +31,7 @@ import { accelerationStartFailureDescriptions, createAccelerationDevelopmentHost
 import { readBundledAccelerationConfig } from './acceleration-bundled-config'
 import { AiAssetStore } from './ai-asset-store'
 import { createAiChatHistoryStore } from './ai-chat-history-store'
-import { migrateLegacyAiOutput, resolveAiOutputRoot, resolveLegacyAiOutputRoot } from './ai-output-location'
+import { chooseAiOutputRoot, migrateLegacyAiOutput, resolveLegacyAiOutputRoot } from './ai-output-location'
 import { AI_CHAT_STREAM_LIMITS, createAiChatService } from './ai-chat-service'
 import { createAiImageService } from './ai-image-service'
 import { AiVideoAssetStore } from './ai-video-asset-store'
@@ -292,7 +292,7 @@ function readDocumentsDirectory(): string | null {
   try {
     return app.getPath('documents')
   } catch {
-    // 拿不到「文档」时由 resolveAiOutputRoot 退到用户主目录。
+    // 拿不到「文档」时由 resolveAiOutputRoot（经 chooseAiOutputRoot）退到用户主目录。
     return null
   }
 }
@@ -1256,6 +1256,9 @@ if (!hasSingleInstanceLock) {
           userDataDirectory: app.getPath('userData'),
           // 跟着当前账号所在的那一套 output 走（历史账号多一层 realms/api-account）。
           probeAiOutput: () => assetStore.assertWritable(),
+          aiOutputPlacement: () => currentBusiness().aiOutputPlacement,
+          // 「文档文件夹能不能写」一项（Windows）：新项目与 AI 作品默认都放在它下面。
+          documentsDirectory: readDocumentsDirectory(),
           ...await accelerationBundleStatus.then((status) => status ? { accelerationBundle: status } : {}),
           windowsExecution: windowsCliExecution,
           windowsProcessor: await systemService.inspectWindowsProcessor(),
@@ -1723,12 +1726,20 @@ if (!hasSingleInstanceLock) {
       const managedCliKeyStore = new ManagedCliKeyStore(roots.managedCliKeysFile, safeStorage, siteId)
       const chatKeyStore = new ChatKeyStore(roots.chatKeysFile, safeStorage)
       const chatCredentials = createChatCredentialCoordinator({ accountService, modelService: systemService, keyStore: chatKeyStore })
-      const aiOutputRoot = roots.assetOutputDirectory(resolveAiOutputRoot({
+      // 「文档」不让写时改存到主目录下（ai-output-location.ts），检查页照实说。
+      const aiOutputPlacement = chooseAiOutputRoot({
         isPackaged: app.isPackaged,
         projectRoot: path.join(__dirname, '..'),
         documentsDirectory: readDocumentsDirectory(),
         location: { platform: process.platform, home: os.homedir(), env: process.env },
-      }))
+        scope: (root) => roots.assetOutputDirectory(root),
+      })
+      const aiOutputRoot = aiOutputPlacement.root
+      if (aiOutputPlacement.movedFromDocuments) {
+        runtimeLog.log('warn', 'ai-chat', 'asset.output-directory.moved-from-documents', '「文档」不让写，AI 作品改存到个人文件夹', {
+          earlierWorksLeftInDocuments: aiOutputPlacement.earlierWorksLeftInDocuments,
+        })
+      }
       const assetStore = new AiAssetStore({
         outputRoot: aiOutputRoot,
         // 全局保存位置在「文档」里，写不进多半是整个文档出了状况，用户自己能绕开的是
@@ -2051,7 +2062,7 @@ if (!hasSingleInstanceLock) {
       })
       return { accountCredentialStore, managedCliKeyStore, chatKeyStore, chatCredentials, assetStore, videoAssets,
         audioAssets, mediaAssets, canvasPromptPresets, canvasProjects, canvasProjectAssets,
-        chatService, imageService, canvasImageService, videoService, canvasRuns, assetProtocol, chatAttachments }
+        chatService, imageService, canvasImageService, videoService, canvasRuns, assetProtocol, chatAttachments, aiOutputPlacement }
     }
     const businesses = new Map<RealmAccountSiteId, ReturnType<typeof createBusiness>>()
     type CanvasRunListener = Parameters<ReturnType<typeof createCanvasRunService>['subscribe']>[0]
@@ -2446,6 +2457,7 @@ if (!hasSingleInstanceLock) {
       systemService,
       providerRoots: rootedOptions.system.providerRoots,
       documentsDirectory: () => app.getPath('documents'),
+      aiOutputDirectory: () => currentBusiness().aiOutputPlacement.root,
       desktopDirectory: () => app.getPath('desktop'),
       accountService,
       paymentWindow,
