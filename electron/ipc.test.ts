@@ -56,7 +56,7 @@ vi.mock('electron', () => ({
   clipboard: { writeText: electronMocks.writeText, readText: electronMocks.readText, clear: electronMocks.clearClipboard },
 }))
 
-import { accelerationStateLogKey, parseDiagnosticsRunOptions, parseRunningToolsProviders, registerIpcHandlers } from './ipc'
+import { accelerationStateLogKey, parseDiagnosticsRunOptions, parseNodeRuntimeInstallRequest, parseRunningToolsProviders, registerIpcHandlers } from './ipc'
 
 const stubStoredConfig: AppSettings = {
   version: 2,
@@ -1951,6 +1951,22 @@ describe('registerIpcHandlers', () => {
     expect(() => handler(trustedEvent(), 'reuse')).toThrow('诊断参数格式错误')
     expect(parseDiagnosticsRunOptions({ reuseRecentScan: false })).toEqual({})
     expect(run).toHaveBeenCalledTimes(2)
+  })
+
+  it('passes a confirmed Node.js replacement through and rejects anything else', async () => {
+    const service = serviceStub()
+    const installNodeRuntime = vi.fn(async () => ({ installed: true }) as never)
+    service.installNodeRuntime = installNodeRuntime
+    register(service)
+    const handler = electronMocks.handlers.get('runtime:install-node')!
+    await handler(trustedEvent())
+    await handler(trustedEvent(), { reason: 'certificate' })
+    expect(installNodeRuntime.mock.calls.map((call: unknown[]) => call[1])).toEqual([{}, { reason: 'certificate' }])
+    await expect(handler(trustedEvent(), { reason: 'always' })).rejects.toThrow('安装 Node.js 的参数无效')
+    await expect(handler(trustedEvent(), { reason: 'certificate', force: true })).rejects.toThrow('安装 Node.js 的参数无效')
+    await expect(handler(trustedEvent(), 'certificate')).rejects.toThrow('安装 Node.js 的参数无效')
+    expect(parseNodeRuntimeInstallRequest({})).toEqual({})
+    expect(installNodeRuntime).toHaveBeenCalledTimes(2)
   })
 
   describe('bootstrap reads under the startup account gate', () => {

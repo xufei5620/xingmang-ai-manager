@@ -270,7 +270,7 @@ const xingmangApi: XingmangApi = {
   listConfiguredModels: (provider) => invoke('listConfiguredModels', provider),
   chooseWorkspace: (options) => options === undefined ? invoke('chooseWorkspace') : invoke('chooseWorkspace', options),
   getRepositoryContext: () => invoke('getRepositoryContext'),
-  installNodeRuntime: () => invoke('installNodeRuntime'),
+  installNodeRuntime: (request) => request === undefined ? invoke('installNodeRuntime') : invoke('installNodeRuntime', request),
   restartWindows: () => invoke('restartWindows'),
   installPythonRuntime: () => invoke('installPythonRuntime'),
   installGitRuntime: () => invoke('installGitRuntime'),

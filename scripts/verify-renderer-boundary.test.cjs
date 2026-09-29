@@ -32,6 +32,8 @@ const valueImportable = [
   'electron/relay-sites',
   'electron/running-tools',
   'electron/subscription-summary',
+  // 「换成新版 Node.js」要和主进程用同一把尺子判断 Node.js 认不认证书（第十八批 4）。
+  'electron/system-certificate-trust',
   'electron/usage-date-range',
   'electron/versions',
 ]

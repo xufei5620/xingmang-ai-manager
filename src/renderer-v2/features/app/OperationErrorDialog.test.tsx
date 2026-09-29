@@ -1,5 +1,6 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
+import { toolCertificateMessages } from '../../../../electron/network-failure'
 import { OperationErrorDialog, operationErrorActions } from './OperationErrorDialog'
 
 describe('renderer-v2 operation error dialog', () => {
@@ -75,5 +76,21 @@ describe('renderer-v2 operation error dialog', () => {
     expect(operationErrorActions({ message: permission }).map((action) => action.id)).toEqual(['log'])
     expect(operationErrorActions({ message: permission }, '/tmp/npm/@anthropic-ai/claude-code').map((action) => action.id))
       .toEqual(['copyPath', 'log'])
+  })
+
+  it('offers to replace an outdated Node.js as the way out, and 找客服 where it cannot', () => {
+    const raw = `Claude Code 安装失败：npm 官方源：SELF_SIGNED_CERT_IN_CHAIN。${toolCertificateMessages.outdatedNode}`
+    const failure = { message: raw, retry: () => undefined }
+    expect(operationErrorActions(failure, null, true).map((action) => action.id)).toEqual(['replaceNode', 'retry', 'log'])
+    // Mac 上换不了：重试只会撞同一个错，出口是找客服，不能是一颗按了没用的按钮。
+    expect(operationErrorActions(failure, null, false).map((action) => action.id)).toEqual(['retry', 'log', 'support'])
+    const markup = renderToStaticMarkup(
+      <OperationErrorDialog failure={failure} canReplaceNode onClose={() => undefined} onAction={() => undefined} />,
+    )
+    expect(markup).toContain('换成新版 Node.js')
+    expect(markup).not.toContain('安装卸载')
+    // 换 Node.js 才是出路，它当主按钮，重试退到次要。
+    expect(markup).toMatch(/xm-btn-primary[^>]*data-testid="operation-error-replaceNode"/)
+    expect(markup).toMatch(/xm-btn-secondary[^>]*data-testid="operation-error-retry"/)
   })
 })

@@ -2,7 +2,7 @@ import { classifyNetworkFailure, networkFailureReasonForMessage, toolCertificate
 import { errors } from './registry/errors'
 
 export type OperationErrorKey = keyof typeof errors
-export type OperationActionId = 'retry' | 'log' | 'support' | 'relogin' | 'recharge' | 'network' | 'repair' | 'copyPath' | 'backups'
+export type OperationActionId = 'retry' | 'log' | 'support' | 'relogin' | 'recharge' | 'network' | 'repair' | 'copyPath' | 'backups' | 'replaceNode'
 export interface OperationAction { id: OperationActionId; label: string }
 export interface OperationErrorHint {
   key: Exclude<OperationErrorKey, 'unknown'>
@@ -138,6 +138,10 @@ const actionIds: Record<string, OperationActionId | undefined> = {
   一键修复: 'repair',
   复制路径: 'copyPath',
   去备份页: 'backups',
+  // 公司电脑的证书要新版 Node.js 才认（system-certificate-trust.ts）。以前这里只有「重试」，
+  // 提示叫人去「安装卸载」页点「安装」，那边一看 Node.js 够装工具就回「无需重复安装」，
+  // 客户来回转圈（第十八批 4）。只有 Windows 换得了：调用方按平台决定留不留它。
+  '换成新版 Node.js': 'replaceNode',
 }
 
 /**
