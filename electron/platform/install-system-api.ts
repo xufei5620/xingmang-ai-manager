@@ -47,12 +47,16 @@ export function installPlatformSystemApi(
   let notifications: ReturnType<typeof createPlatformNotifications> | null =
     null
   // main.ts 与这里互不 import，加速那两条通知靠这个转接口过来。
-  const hostNotifier: HostNotifier = (request) =>
-    notifications?.notifyHost(
+  const hostNotifier: HostNotifier = (request) => {
+    if (!notifications) return 'unsupported'
+    if ('terminal' in request)
+      return notifications.notifyTerminal(request.terminal, request.eventKey)
+    return notifications.notifyHost(
       request.event,
       request.eventKey,
       request.onClick,
-    ) ?? 'unsupported'
+    )
+  }
   const registrations = new Map<Session, string>()
   const extraPreload = path.resolve(
     options.platformPreloadPath ?? path.join(__dirname, 'preload.js'),
@@ -120,6 +124,8 @@ export function installPlatformSystemApi(
               announcement: true,
               spend: true,
               acceleration: true,
+              cliTrouble: true,
+              cliTurn: true,
               ...store.read().notifications,
             }),
             focusMainWindow: () => {
