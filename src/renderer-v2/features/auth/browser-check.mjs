@@ -127,7 +127,9 @@ async function reachNewPasswordStep(page, email = 'person@example.test') {
   await page.getByTestId('forgot-send').click()
   await page.getByTestId('forgot-token').fill('a-valid-reset-token')
   await page.getByTestId('forgot-reset').click()
-  await page.getByTestId('forgot-set-password').waitFor()
+  // The step focuses its first field one frame after the request settles. Filling before
+  // that lets the late focus pull the second field's text into the first one.
+  await page.waitForFunction(() => document.activeElement?.id === 'forgot-set-password')
 }
 
 test('recovery lets the user set their own password and signs in without ever showing the temporary one', async () => {
