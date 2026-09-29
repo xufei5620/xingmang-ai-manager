@@ -59,6 +59,10 @@ describe('redactSecretShapes', () => {
 })
 
 describe('redactSecretFields', () => {
+  it('redacts a two-step login flow token in JSON and key=value form', () => {
+    const text = redactSecretFields('{"flow_token":"test-flow-abc"} flow_token=test-flow-abc flowToken: test-flow-abc')
+    expect(text).not.toContain('test-flow-abc')
+  })
   it('redacts the x-api-key and x-goog-api-key request headers', () => {
     expect(redactSecretFields('x-api-key: plain-fake-value')).toBe('x-api-key: [REDACTED]')
     expect(redactSecretFields('X-Goog-Api-Key: plain-fake-value')).toBe('X-Goog-Api-Key: [REDACTED]')

@@ -12,6 +12,13 @@ import {
   NewApiAuthenticationError,
   NewApiLoginRejectedError,
   NewApiNetworkError,
+  NewApiTwoFactorExpiredError,
+  NewApiTwoFactorRequiredError,
+  parseTwoFactorChallenge,
+  twoFactorFlowTtlMs,
+  twoFactorInvalidCodeMessage,
+  twoFactorRateLimitedMessage,
+  twoFactorUnsupportedMessage,
   parseAccountKey,
   parseAccountKeysPage,
   parseAccountProfile,
@@ -704,6 +711,107 @@ describe('login', () => {
     expect(String(error)).not.toContain('private-flow-token')
   })
 
+  it('carries the flow token only in a private field of the 2FA challenge', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>().mockResolvedValue(jsonResponse({ success: true,
+      data: { require_2fa: true, flow_token: 'private-flow-token', expires_at: 4_102_444_800 } }))
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl })
+    const error = await client.login({ username: 'tester', password: 'private-password' }).catch((reason: unknown) => reason)
+    expect(error).toBeInstanceOf(NewApiTwoFactorRequiredError)
+    const challenge = error as NewApiTwoFactorRequiredError
+    expect(challenge.flowToken).toBe('private-flow-token')
+    expect(JSON.stringify(challenge)).not.toContain('private-flow-token')
+    expect(Object.keys(challenge)).not.toContain('flowToken')
+    expect(structuredClone(challenge)).not.toHaveProperty('flowToken', 'private-flow-token')
+    expect(client.isAuthenticated()).toBe(false)
+  })
+})
+
+describe('parseTwoFactorChallenge', () => {
+  const now = 1_000_000_000_000
+  it('caps the flow lifetime at five minutes and honours a sooner expires_at', () => {
+    const late = parseTwoFactorChallenge({ require_2fa: true, flow_token: 'flow', expires_at: now / 1000 + 3600 }, now)
+    expect(late).toBeInstanceOf(NewApiTwoFactorRequiredError)
+    expect((late as NewApiTwoFactorRequiredError).expiresAt).toBe(now + twoFactorFlowTtlMs)
+    const soon = parseTwoFactorChallenge({ require_2fa: true, flow_token: 'flow', expires_at: now / 1000 + 60 }, now)
+    expect((soon as NewApiTwoFactorRequiredError).expiresAt).toBe(now + 60_000)
+  })
+
+  it('accepts the renamed require_verification challenge when it offers 2fa', () => {
+    expect(parseTwoFactorChallenge({ require_verification: true, flow_token: 'flow',
+      methods: [{ method: 'passkey', available: true }, { method: '2fa', available: true }] }, now)).toBeInstanceOf(NewApiTwoFactorRequiredError)
+    expect(parseTwoFactorChallenge({ require_verification: true, flow_token: 'flow' }, now)).toBeInstanceOf(NewApiTwoFactorRequiredError)
+  })
+
+  it.each([
+    [{ require_verification: true, flow_token: 'flow', methods: [{ method: 'passkey', available: true }] }],
+    [{ require_verification: true, flow_token: 'flow', methods: [{ method: '2fa', available: false }] }],
+    [{ require_2fa: true }],
+    [{ require_2fa: true, flow_token: 'has space' }],
+  ])('falls back to the website hint for a challenge the client cannot finish: %j', (data) => {
+    const error = parseTwoFactorChallenge(data, now)
+    expect(error).not.toBeInstanceOf(NewApiTwoFactorRequiredError)
+    expect(error?.message).toBe(twoFactorUnsupportedMessage)
+  })
+
+  it('ignores ordinary login data', () => {
+    expect(parseTwoFactorChallenge({ access_token: 'token' }, now)).toBeNull()
+    expect(parseTwoFactorChallenge(null, now)).toBeNull()
+  })
+})
+
+describe('completeTwoFactorLogin', () => {
+  it('posts the code with the flow token and signs in like a password login', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>().mockResolvedValue(loginResponse())
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl })
+    const result = await client.completeTwoFactorLogin({ flowToken: 'private-flow-token', code: ' 123456 ' })
+    expect(result.account.userId).toBe(42)
+    expect(JSON.stringify(result)).not.toContain('test-access-token-abc')
+    expect(client.isAuthenticated()).toBe(true)
+    expect(client.getPersistableSession()).toMatchObject({ userId: 42, cookies: ['refresh_token=cookie-value-1'] })
+    const [url, init] = fetchImpl.mock.calls[0]
+    expect(String(url)).toBe(`${testBaseUrl}/api/user/login/2fa`)
+    expect(init?.method).toBe('POST')
+    expect(JSON.parse(String(init?.body))).toEqual({ code: '123456', flow_token: 'private-flow-token' })
+  })
+
+  // Messages copied from rc.24 controller/twofa.go Verify2FALogin and model/twofa.go.
+  it.each([
+    ['验证码或备用码错误，请重试', 200, twoFactorInvalidCodeMessage],
+    ['验证码或备用码不正确', 200, twoFactorInvalidCodeMessage],
+    ['账户已被锁定，请在2026-09-25 12:00:00后重试', 200, twoFactorRateLimitedMessage],
+    ['', 429, twoFactorRateLimitedMessage],
+  ] as const)('explains the failure %s (HTTP %s) in plain words', async (message, status, expected) => {
+    const fetchImpl = vi.fn<NewApiFetch>().mockResolvedValue(failureResponse(message, status))
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl })
+    const error = await client.completeTwoFactorLogin({ flowToken: 'flow', code: '123456' }).catch((reason: unknown) => reason)
+    expect(error).toMatchObject({ message: expected })
+    expect(error).not.toBeInstanceOf(NewApiTwoFactorExpiredError)
+    expect(client.isAuthenticated()).toBe(false)
+  })
+
+  it('ends the second step when the server no longer knows the flow', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>().mockResolvedValue(failureResponse('会话已过期，请重新登录'))
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl })
+    await expect(client.completeTwoFactorLogin({ flowToken: 'flow', code: '123456' })).rejects.toBeInstanceOf(NewApiTwoFactorExpiredError)
+  })
+
+  it('keeps the code and flow token out of an unrecognised server message', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>().mockResolvedValue(failureResponse('rejected 654321 for private-flow'))
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl })
+    const error = await client.completeTwoFactorLogin({ flowToken: 'private-flow', code: '654321' }).catch((reason: unknown) => reason)
+    expect(String(error)).not.toContain('654321')
+    expect(String(error)).not.toContain('private-flow')
+  })
+
+  it('refuses an empty code without a network call', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl })
+    await expect(client.completeTwoFactorLogin({ flowToken: 'flow', code: '  ' })).rejects.toThrow(twoFactorInvalidCodeMessage)
+    expect(fetchImpl).not.toHaveBeenCalled()
+  })
+})
+
+describe('login failures', () => {
   it.each([new Error('network disconnected'), new DOMException('request aborted', 'AbortError')])('does not classify a network failure as rejected credentials', async (failure) => {
     const fetchImpl = vi.fn<NewApiFetch>().mockRejectedValue(failure)
     const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl })

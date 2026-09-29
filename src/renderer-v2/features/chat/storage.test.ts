@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { AiChatHistorySnapshot, AiChatHistoryWrite } from '../../../../electron/ipc-contract'
 import { createConversation, createWorkspace, type ChatMessage, type ChatWorkspace } from './state'
-import { ChatStorageError, createHistoryWriter, historyKey, importLegacyHistory, legacyHistoryKeys, loadChatHistory, parseHistorySnapshot, planHistoryWrite, readWorkspace, redactPersistentChatText } from './storage'
+import { ChatStorageError, conversationPlainText, createHistoryWriter, exportableConversations, historyKey, importConversationsIntoHistory, mergeImportedConversations, parseImportedConversations, settleHistoryWrites, importLegacyHistory, legacyHistoryKeys, loadChatHistory, parseHistorySnapshot, planHistoryWrite, readWorkspace, redactPersistentChatText } from './storage'
 
 const scope = 'xm-account:7'
 const legacyKey = 'xingmang-ai-chat:v1:7'
@@ -464,5 +464,98 @@ describe('complete legacy and account-alias migration', () => {
     expect(files.raw()).toBeNull()
     expect(storage.getItem(legacyKey)).toBe(raw)
     expect((await loadChatHistory(files.api, storage, scope)).state.conversations[0].messages[0].content).toHaveLength(80_000)
+  })
+})
+
+describe('moving history to another computer', () => {
+  const asset = { assetId: 'a'.repeat(43), localUrl: `xingmang-asset://image/${'a'.repeat(43)}`, mimeType: 'image/png' as const, fileName: 'x.png' }
+  it('exports conversations without images, request state or pasted keys', () => {
+    const state = workspace(scope, 1)
+    state.conversations[0].messages = [message(0, { content: 'key sk-abcdefghijklmnop', mayStillComplete: true, requestId: 'r1' } as Partial<ChatMessage>), message(1, { content: '', assets: [asset] })]
+    const exported = JSON.stringify(exportableConversations(state))
+    expect(exported).not.toContain('sk-abcdefghijklmnop')
+    expect(exported).not.toContain('assetId')
+    expect(exported).not.toContain('mayStillComplete')
+    expect(exported).not.toContain('requestId')
+    expect(exported).toContain('[图片没有一起搬过来]')
+  })
+
+  it('round-trips exported conversations through the strict import parser', () => {
+    const state = workspace(scope, 3)
+    const parsed = parseImportedConversations(JSON.parse(JSON.stringify(exportableConversations(state))))
+    expect(parsed.map((conversation) => conversation.id)).toEqual(state.conversations.map((conversation) => conversation.id))
+  })
+
+  it('rejects the whole import when one conversation is malformed', () => {
+    const exported = JSON.parse(JSON.stringify(exportableConversations(workspace(scope, 2))))
+    exported[1].messages[0].role = 'system'
+    expect(() => parseImportedConversations(exported)).toThrow('没有导入任何内容')
+    expect(() => parseImportedConversations([exported[0], exported[0]])).toThrow('没有导入任何内容')
+    expect(() => parseImportedConversations(Array.from({ length: 51 }, () => exported[0]))).toThrow(ChatStorageError)
+  })
+
+  it('keeps existing conversations and the 50 most recent overall', () => {
+    const state = workspace(scope, 49)
+    state.conversations.forEach((conversation, index) => { conversation.updatedAt = 1000 + index })
+    const same = { ...state.conversations[0], title: 'imported copy' }
+    const newer = { ...createConversation(undefined, 'new-1'), updatedAt: 5000 }
+    const older = { ...createConversation(undefined, 'old-1'), updatedAt: 1 }
+    const merged = mergeImportedConversations(state, [same, newer, older])
+    expect(merged.added).toBe(1)
+    expect(merged.state.conversations).toHaveLength(50)
+    expect(merged.state.conversations[0].id).toBe('new-1')
+    expect(merged.state.conversations.find((conversation) => conversation.id === state.conversations[0].id)?.title).not.toBe('imported copy')
+    expect(merged.state.conversations.some((conversation) => conversation.id === 'old-1')).toBe(false)
+  })
+
+  it('gives an imported conversation a new id when it collides with the draft', () => {
+    const state = workspace(scope, 0)
+    const merged = mergeImportedConversations(state, [{ ...createConversation(undefined, state.draftConversation.id), messages: [message()] }])
+    expect(merged.added).toBe(1)
+    expect(merged.state.conversations[0].id).not.toBe(state.draftConversation.id)
+  })
+
+  it('merges into the saved files and survives a reopen', async () => {
+    const files = memoryFiles()
+    await createHistoryWriter(files.api, null).save(workspace(scope, 2))
+    const imported = parseImportedConversations(JSON.parse(JSON.stringify(exportableConversations(workspace('xm-account:9', 0)))))
+    expect(await importConversationsIntoHistory(files.api, memoryStorage(), scope, imported)).toBe(0)
+    const other = { ...createConversation(undefined, 'from-old-computer'), updatedAt: Date.now() + 1000, messages: [message()] }
+    expect(await importConversationsIntoHistory(files.api, memoryStorage(), scope, [other])).toBe(1)
+    expect(await importConversationsIntoHistory(files.api, memoryStorage(), scope, [other])).toBe(0)
+    const reopened = await loadChatHistory(files.api, memoryStorage(), scope)
+    expect(reopened.state.conversations.map((conversation) => conversation.id)).toEqual(['from-old-computer', 'conversation-0', 'conversation-1'])
+  })
+
+  it('refuses to import over a record it cannot read', async () => {
+    const files = memoryFiles()
+    files.stores.set(scope, { index: 'not json', conversations: [] })
+    await expect(importConversationsIntoHistory(files.api, memoryStorage(), scope, [createConversation()])).rejects.toThrow('没有导入对话')
+    expect(files.api.writeHistory).not.toHaveBeenCalled()
+  })
+
+  it('waits for saves still in flight, including one started as the page goes away', async () => {
+    let release: () => void = () => undefined
+    const api = { writeHistory: vi.fn(() => new Promise<void>((resolve) => { release = resolve })) }
+    void createHistoryWriter(api, null).save(workspace(scope, 1))
+    let settled = false
+    const waiting = settleHistoryWrites().then(() => { settled = true })
+    await Promise.resolve(); await Promise.resolve()
+    expect(api.writeHistory).toHaveBeenCalledOnce()
+    expect(settled).toBe(false)
+    release()
+    await waiting
+    expect(settled).toBe(true)
+  })
+
+  it('formats one conversation as plain text without keys', () => {
+    const conversation = { ...createConversation(undefined, 'c'), title: '周报', messages: [message(0, { content: 'token=abcdef123456', createdAt: 1_700_000_000_000 }), message(1, { content: '好的', assets: [asset] }), message(3, { status: 'error', content: '', error: '网络断了' })] }
+    const text = conversationPlainText(conversation)
+    expect(text.startsWith('周报\n')).toBe(true)
+    expect(text).toContain('我（')
+    expect(text).toContain('AI（')
+    expect(text).not.toContain('abcdef123456')
+    expect(text).toContain('[1 张图片，没有放进这个文件]')
+    expect(text).toContain('[没有回复成功：网络断了]')
   })
 })

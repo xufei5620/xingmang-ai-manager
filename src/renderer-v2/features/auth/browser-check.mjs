@@ -687,6 +687,56 @@ test('a pending explicit login locks its source and 2FA retains its source witho
   } finally { await page.close() }
 })
 
+test('a current account with two-step verification finishes login with the code from its authenticator', async () => {
+  const page = await open('totp=1')
+  try {
+    await page.getByTestId('login-account').fill('totp@example.test')
+    await page.getByTestId('login-password').fill('test-password')
+    await page.getByTestId('login-remember').check()
+    await page.getByTestId('auth-agree').check()
+    await page.getByTestId('login-submit').click()
+    await page.getByTestId('login-2fa-hint').filter({ hasText: '6 位数字' }).waitFor()
+    assert.equal(await page.getByTestId('auth-error').count(), 0)
+    assert.equal(await page.getByTestId('auth-open-website').count(), 0)
+    assert.equal(await page.getByTestId('login-password').count(), 0)
+    await page.waitForFunction(() => document.activeElement?.id === 'login-2fa-code')
+    await page.getByTestId('login-2fa-code').fill('12345')
+    await page.getByTestId('login-2fa-submit').click()
+    await page.getByTestId('auth-error').filter({ hasText: '6 位数字' }).waitFor()
+    await page.getByTestId('login-2fa-code').fill('111111')
+    await page.keyboard.press('Enter')
+    await page.getByTestId('auth-error').filter({ hasText: '验证码不对或已过期' }).waitFor()
+    assert.equal(await page.getByTestId('login-2fa-code').inputValue(), '')
+    await page.getByTestId('login-2fa-code').fill('123 456')
+    await page.getByTestId('login-2fa-submit').click()
+    await page.waitForFunction(() => document.documentElement.dataset.calls?.includes('authenticated'))
+    const recorded = await calls(page)
+    assert.deepEqual(recorded.filter((entry) => entry.method === 'two-factor').map((entry) => entry.input), ['111111', '123456'])
+    assert.deepEqual(recorded.find((entry) => entry.method === 'remember').input, { identifier: 'totp@example.test', password: 'test-password' })
+    assert.equal(recorded.filter((entry) => entry.method === 'login').length, 1)
+  } finally { await page.close() }
+})
+
+test('two-step verification offers a backup code and sends the user back to the password once the wait is too long', async () => {
+  const page = await open('totp=1&totpExpired=1')
+  try {
+    await page.getByTestId('login-account').fill('totp@example.test')
+    await page.getByTestId('login-password').fill('test-password')
+    await page.getByTestId('auth-agree').check()
+    await page.getByTestId('login-submit').click()
+    await page.getByTestId('login-2fa-switch').click()
+    await page.getByTestId('login-2fa-hint').filter({ hasText: '备用码' }).waitFor()
+    assert.equal(await page.getByTestId('login-2fa-code').getAttribute('placeholder'), '备用码')
+    await page.getByTestId('login-2fa-code').fill('abcd-efgh')
+    await page.getByTestId('login-2fa-submit').click()
+    await page.getByTestId('auth-error').filter({ hasText: '等太久了，请重新输入密码登录' }).waitFor()
+    await page.getByTestId('login-password').waitFor()
+    assert.equal(await page.getByTestId('login-password').inputValue(), '')
+    assert.equal(await page.getByTestId('login-account').inputValue(), 'totp@example.test')
+    assert.equal((await calls(page)).find((entry) => entry.method === 'two-factor').input, 'abcd-efgh')
+  } finally { await page.close() }
+})
+
 test('historical account recovery opens its official source and never sends a reset to the primary source', async () => {
   const page = await open()
   try {

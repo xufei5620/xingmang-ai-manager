@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { ArrowUp, ArrowUpRight, Check, ChevronDown, Copy, Download, Image as ImageIcon, MessageSquare, MoreHorizontal, Pencil, Plus, RefreshCw, Search, SlidersHorizontal, Square, Trash2, User, X } from 'lucide-react'
+import { ArrowUp, ArrowUpRight, Check, ChevronDown, Copy, Download, FileText, Image as ImageIcon, MessageSquare, MoreHorizontal, Pencil, Plus, RefreshCw, Search, SlidersHorizontal, Square, Trash2, User, X } from 'lucide-react'
 import ReactMarkdown, { type Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import type { AiChatAsset, XingmangApi } from '../../../../electron/ipc-contract'
@@ -8,7 +8,7 @@ import { createChatApi, inspectModel, type ChatApi } from './api'
 import { chatErrorAction, chatErrorMessage, filterConversations, isGenerating, shouldSendOnEnter, type ChatMessage, type ChatMode } from './state'
 import { ParametersPanel } from './ParametersPanel'
 import { useChatController } from './useChatController'
-import { loadChatHistory, type LoadedChatHistory } from './storage'
+import { conversationPlainText, loadChatHistory, type LoadedChatHistory } from './storage'
 import './chat.css'
 
 export interface ChatPageProps { bridge: XingmangApi; accountScope: string; active?: boolean; onOpenAccount?: (tab: 'recharge' | 'keys') => void }
@@ -103,6 +103,15 @@ function ChatView({ api, scope, active, onOpenAccount, history }: ChatScopeProps
     try { const result = await api.saveAsset(assetId); if (ticket === owner.current && result.saved) chat.setNotice('图片已保存') }
     catch { if (ticket === owner.current) chat.setError('图片没有保存成功，可以重试') }
   }
+  const exportConversation = async (id: string) => {
+    const item = chat.state.conversations.find((candidate) => candidate.id === id)
+    if (!item) return
+    const ticket = owner.current
+    try {
+      const result = await api.exportText({ title: item.title, text: conversationPlainText(item) })
+      if (ticket === owner.current && result) chat.setNotice('这段对话已存成文本文件')
+    } catch { if (ticket === owner.current) chat.setError('这段对话没有导出成功，可以重试') }
+  }
   const stop = async () => { const ticket = owner.current; setStopping(true); await chat.stop(); if (owner.current === ticket) setStopping(false) }
   const confirmAction = () => {
     const action = confirmation
@@ -133,7 +142,7 @@ function ChatView({ api, scope, active, onOpenAccount, history }: ChatScopeProps
     <aside className="chat-conversations" aria-label="聊天会话">
       <div className="chat-conversations-top"><Button icon={Plus} onClick={chat.newConversation} testId="chat-conversation-new">新对话</Button></div>
       {(chat.state.conversations.length > 4 || search) && <div className="chat-conversation-search"><SearchInput value={search} onChange={setSearch} placeholder="搜索对话" testId="chat-conversation-search" /></div>}
-      <nav className="chat-conversation-list" aria-label="已保存的对话">{candidates.map((item) => <div key={item.id} className="chat-conversation-item" data-active={item.id === chat.state.activeId}><button type="button" className="chat-conversation-select" onClick={() => switchConversation(item.id)} aria-current={item.id === chat.state.activeId ? 'page' : undefined} title={item.title} data-testid={`chat-conversation-${item.id}`}><strong>{item.title}</strong><span>{isGenerating(item) ? '正在生成' : new Date(item.updatedAt).toLocaleDateString('zh-CN')} · {item.messages.length} 条</span></button><Menu label="对话操作" anchor={<Button variant="ghost" size="xs" icon={MoreHorizontal} aria-label={`管理对话 ${item.title}`} title="对话操作" />} items={[{ label: '删除对话', icon: Trash2, danger: true, disabled: isGenerating(item), onSelect: () => setConfirmation({ kind: 'delete-conversation', id: item.id }) }]} /></div>)}{candidates.length === 0 && <Empty icon={search ? Search : MessageSquare} title={search ? '没找到相关对话' : '还没有对话'} description={search ? '换个词再试试' : ''} />}</nav>
+      <nav className="chat-conversation-list" aria-label="已保存的对话">{candidates.map((item) => <div key={item.id} className="chat-conversation-item" data-active={item.id === chat.state.activeId}><button type="button" className="chat-conversation-select" onClick={() => switchConversation(item.id)} aria-current={item.id === chat.state.activeId ? 'page' : undefined} title={item.title} data-testid={`chat-conversation-${item.id}`}><strong>{item.title}</strong><span>{isGenerating(item) ? '正在生成' : new Date(item.updatedAt).toLocaleDateString('zh-CN')} · {item.messages.length} 条</span></button><Menu label="对话操作" anchor={<Button variant="ghost" size="xs" icon={MoreHorizontal} aria-label={`管理对话 ${item.title}`} title="对话操作" />} items={[{ label: '导出这段对话', icon: FileText, disabled: isGenerating(item) || !item.messages.length, onSelect: () => void exportConversation(item.id) }, { label: '删除对话', icon: Trash2, danger: true, disabled: isGenerating(item), onSelect: () => setConfirmation({ kind: 'delete-conversation', id: item.id }) }]} /></div>)}{candidates.length === 0 && <Empty icon={search ? Search : MessageSquare} title={search ? '没找到相关对话' : '还没有对话'} description={search ? '换个词再试试' : ''} />}</nav>
     </aside>
     <div className="chat-conversation">
       <header className="chat-bar"><strong title={conversation.title}>{chat.state.activeId ? conversation.title : '聊天'}</strong><div className="chat-bar-actions">{active && <Popover label="参数设置" title="参数设置" anchor={<Button icon={SlidersHorizontal} variant="ghost" size="sm" aria-label="参数设置" title="参数设置" testId="chat-parameters-open" />}><ParametersPanel key={conversation.id} settings={conversation.settings} onChange={chat.changeSettings} /></Popover>}<Button icon={Trash2} variant="ghost" size="sm" aria-label="清空对话" title="清空对话" disabled={pending || !conversation.messages.length} onClick={() => setConfirmation({ kind: 'clear' })} testId="chat-conversation-clear" /></div></header>

@@ -269,6 +269,14 @@ export async function loadChatHistory(api: { readHistory: (scope: string) => Pro
   catch (error) { return { state: createWorkspace(scope), exists: true, warning: error instanceof ChatStorageError ? error.message : '本地聊天记录暂时无法读取，原始数据已保留', saved: null } }
 }
 
+// Saves still on their way to the file store, from every writer including
+// ones whose chat page has just unmounted (its last save runs after unmount).
+// Importing waits on these so an older snapshot cannot land on top of it.
+const inFlightSaves = new Set<Promise<void>>()
+export async function settleHistoryWrites(): Promise<void> {
+  while (inFlightSaves.size) await Promise.allSettled([...inFlightSaves])
+}
+
 // One save runs at a time; a save requested meanwhile only replaces the
 // pending snapshot, so bursts of edits collapse into the newest one.
 export function createHistoryWriter(api: { writeHistory: (input: AiChatHistoryWrite) => Promise<void> }, saved: SavedHistory | null, afterFirstSave?: () => void) {
@@ -295,7 +303,12 @@ export function createHistoryWriter(api: { writeHistory: (input: AiChatHistoryWr
     save(state: ChatWorkspace): Promise<void> {
       pending = state
       // Start on a microtask so `running` is assigned before drain can clear it.
-      if (!running) running = Promise.resolve().then(drain)
+      if (!running) {
+        const started = Promise.resolve().then(drain)
+        running = started
+        inFlightSaves.add(started)
+        void started.catch(() => undefined).then(() => { inFlightSaves.delete(started) })
+      }
       return running
     },
   }
@@ -322,4 +335,101 @@ export function importLegacyHistory(storage: ChatStorage, scope: string, userId:
     const conversation = { ...createConversation(settings), title: '之前的聊天', messages }
     return { ...createWorkspace(scope), conversations: [conversation], activeId: conversation.id }
   } catch (error) { throw error instanceof ChatStorageError ? error : new ChatStorageError('之前的聊天记录暂时无法读取，原始数据已保留') }
+}
+
+// ---- 搬到新电脑 ----
+const transferInvalidMessage = '这个文件不是星芒导出的，或者已经损坏，没有导入任何内容。'
+const imageLeftBehind = '[图片没有一起搬过来]'
+
+function portableMessage(message: ReturnType<typeof persistedMessage>) {
+  // 图片文件只在这台电脑上，带过去也打不开；留一句说明代替。还在等的请求到了新电脑上
+  // 也不会再回来，不带「可能还会完成」。
+  const { assets, requestId: _requestId, mayStillComplete: _pending, ...rest } = message
+  if (!assets?.length) return rest
+  return { ...rest, content: rest.content ? `${rest.content}\n\n${imageLeftBehind}` : imageLeftBehind }
+}
+
+/** 导出给新电脑的对话：和存盘时一样去掉密钥样的文字，再去掉图片和运行时字段。 */
+export function exportableConversations(state: ChatWorkspace): unknown[] {
+  return state.conversations.map((conversation) => {
+    const persisted = persistedConversation(conversation)
+    return { ...persisted, messages: persisted.messages.map(portableMessage) }
+  })
+}
+
+// 文件是用户随便选来的：每个对话都按读本机记录的同一套规则严格校验，有一个不对就
+// 整份不导入，不写一半（I5）。
+export function parseImportedConversations(values: unknown[]): Conversation[] {
+  if (values.length > MAX_CONVERSATIONS) throw new ChatStorageError(transferInvalidMessage)
+  try {
+    const conversations = values.map(readConversation).map((conversation) => ({
+      ...conversation,
+      messages: conversation.messages.map(({ mayStillComplete: _pending, ...message }) => message),
+    }))
+    assertUniqueIds(conversations)
+    return conversations
+  } catch { throw new ChatStorageError(transferInvalidMessage) }
+}
+
+/**
+ * 已有的对话不覆盖（同一个对话导两次不会多出一份）；合起来超过 50 个时按最后修改时间
+ * 留最近的 50 个。added 是真正留下来的新对话数。
+ */
+export function mergeImportedConversations(state: ChatWorkspace, imported: Conversation[]): { state: ChatWorkspace; added: number } {
+  const present = new Set(state.conversations.map((conversation) => conversation.id))
+  const fresh = imported
+    .filter((conversation) => !present.has(conversation.id))
+    .map((conversation) => conversation.id === state.draftConversation.id ? { ...conversation, id: createId() } : conversation)
+  const conversations = [...state.conversations, ...fresh]
+    .sort((left, right) => right.updatedAt - left.updatedAt)
+    .slice(0, MAX_CONVERSATIONS)
+  const kept = new Set(conversations.map((conversation) => conversation.id))
+  const added = fresh.filter((conversation) => kept.has(conversation.id)).length
+  const activeId = state.activeId && kept.has(state.activeId) ? state.activeId : null
+  return { state: { ...state, conversations, activeId }, added }
+}
+
+/**
+ * Reads this account's record the same way the chat page does, merges the
+ * imported conversations and saves once. The caller unmounts the chat page and
+ * waits on settleHistoryWrites first, so nothing else writes this account's
+ * history in between.
+ */
+export async function importConversationsIntoHistory(
+  api: { readHistory: (scope: string) => Promise<AiChatHistorySnapshot>; writeHistory: (input: AiChatHistoryWrite) => Promise<void> },
+  storage: ChatStorage,
+  scope: string,
+  imported: Conversation[],
+): Promise<number> {
+  const loaded = await loadChatHistory(api, storage, scope)
+  if (loaded.warning) throw new ChatStorageError('这台电脑上的聊天记录现在读不出来，为了不弄丢它，这次没有导入对话')
+  const merged = mergeImportedConversations(loaded.state, imported)
+  if (!merged.added) return 0
+  const plan = planHistoryWrite(merged.state, loaded.saved)
+  if (plan) await api.writeHistory(plan.write)
+  loaded.afterFirstSave?.()
+  return merged.added
+}
+
+function timeText(value: number): string {
+  if (!value) return ''
+  const date = new Date(value)
+  const pad = (part: number) => String(part).padStart(2, '0')
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`
+}
+
+/** 「导出这段对话」的纯文本：标题、每条消息谁说的和什么时候，图片只留一句说明。 */
+export function conversationPlainText(conversation: Conversation): string {
+  const lines = [conversation.title || '新对话', '']
+  for (const message of conversation.messages) {
+    const who = message.role === 'user' ? '我' : 'AI'
+    const when = timeText(message.createdAt)
+    lines.push(when ? `${who}（${when}）：` : `${who}：`)
+    const content = redactPersistentChatText(message.content)
+    if (content) lines.push(content)
+    if (message.assets?.length) lines.push(`[${message.assets.length} 张图片，没有放进这个文件]`)
+    if (message.status === 'error' && message.error) lines.push(`[没有回复成功：${redactPersistentChatText(message.error)}]`)
+    lines.push('')
+  }
+  return lines.join('\n')
 }
