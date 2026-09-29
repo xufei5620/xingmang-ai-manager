@@ -37,6 +37,12 @@ describe('v2 auth IPC adapter', () => {
     await expect(api.reset({ email: 'm@example.test', token: 'opaque-code' }, 'solov')).resolves.toEqual({ newPassword: 'generated-by-server' })
     expect(resetPassword).toHaveBeenCalledExactlyOnceWith({ email: 'm@example.test', token: 'opaque-code' }, 'solov')
   })
+  it('changes the password only through the dedicated account channel', async () => {
+    const changeAccountPassword = vi.fn().mockResolvedValue({ changed: true })
+    const api = createAuthApi({ changeAccountPassword } as unknown as AuthBridge)
+    await expect(api.changePassword({ originalPassword: 'generated-by-server', newPassword: 'my-own-password' })).resolves.toEqual({ changed: true })
+    expect(changeAccountPassword).toHaveBeenCalledExactlyOnceWith({ originalPassword: 'generated-by-server', newPassword: 'my-own-password' })
+  })
   it('binds recovery mail to the selected account source', async () => {
     const sendPasswordResetCode = vi.fn().mockResolvedValue(undefined)
     const api = createAuthApi({ sendPasswordResetCode } as unknown as AuthBridge)

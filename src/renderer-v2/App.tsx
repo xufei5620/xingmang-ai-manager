@@ -1107,6 +1107,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       suppressRestoredBootstrap.current.add(authenticatedScope)
       setAuth(null); setAuthTarget(null); setSession({ ...result, authenticated: true }); setGuide(!readLocalPreference(`xingmang-v2-guide:${authenticatedScope}`))
       void runAccountBootstrap(result.account.userId, 'login', true, undefined, accountSiteId(result))
+      if (options?.notice) toast.show(options.notice, 'ok')
       if (options?.rememberError) toast.show(options.rememberError, 'warn')
     }} />}
     {legal && <LegalDocument api={authApi} kind={legal} onClose={() => setLegal(null)} />}
