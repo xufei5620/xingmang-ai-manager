@@ -18,6 +18,53 @@
 
 ## 0.2.11 - 2026-09-29
 
+- 第二十批 6、7。`auto-update-install.ts`：记录新增可选 `quitAttemptedVersion`，`decideQuitInstall` 让退出时自动装每个版本只试一次，之后回到「顺手装上吗」那一问；`decideLaunchInstall` 也跳过退出时试过的版本。`resolvePreviousAutoInstallFailure` 在下次启动时从记录认出「上次自动装过、还是旧版本」，`updater.ts` 新增 runtime 选项 `previousAutoInstallFailure`，下载完成时把该版本停在 `failedStep: 'install'`（code `UPDATE_PREVIOUS_AUTO_INSTALL_FAILED`），只留按钮不再自动装。
+- 自动装前的预告：`buildAutoInstallNotice` 出文案，`desktop-notifications.ts` 新增 `announce`（不看通知开关，理由见注释）；退出时发完等 1.2 秒再交给安装器，启动时发完等 5 秒并复核开关、队列和版本再装。
+- `updateDesktopNotification` 多收 `autoUpdate`，开着时改说「后台下载 / 关掉软件时自动装上」。更新页导语按开关分两句（`registry/business.ts` 的 `updatesPageLead`），「安装前需要知道」去掉「关闭保护」，重启确认框在 Windows 上提醒授权窗口点「是」。
+- `safeError` 认不出的英文原话经 `describeUnrecognizedUpdateFailure` 按磁盘满 / 权限占用 / 文件没了或校验不过 / 其它四类说人话，脱敏原话放进可选的 `error.detail`，随 `update/state.changed` 进 runtime.jsonl；中文原话照旧。安装器没起来那句改成指向「更新」页的「重新安装」。
+- 授权窗口是否真的弹出、点「否」之后 electron-updater 的实际表现没在 Windows 真机上演过。
+- `acceleration-mihomo-runtime.ts` 不再把起不来的原因一刀切成「加速内核启动失败」：系统拒绝运行（spawn 报错、无 pid）、启动后退出、本地端口分配失败、所选线路测速 503/504 各给自己的内部说法；启动失败阶段新增 `core-blocked` / `core-exited` / `core-port` / `line-unreachable`，`加速内核未能及时启动` 等从 `core-storage` 改归 `core-launch`。
+- 开发加速后端按阶段挑界面文案（`accelerationStartFailureMessages`，穷尽表），原文照旧不跨进程；口令兑换失败按下层给的原因挑句子，原因标签保留给托盘。
+- 加速页去掉对错误文案的「代理→网络连接」机械替换。
+- 新增 `electron/codex-desktop-install-failure.ts`（无 Node 依赖，渲染层可值导入）：安装 / 更新失败按 blocked / damaged / unreachable / unavailable / unknown 归类，统一以「Codex 桌面端没装上：」开头；原话（SHA-256、Content-Type、商店退出码）挂在 `CodexDesktopInstallFailure` 的自有字段上随 IPC 失败日志进 runtime.jsonl，cause 保留原始错误。
+- 渲染层新增错误类 `codexDesktopInstallFailed` 与动作 `openStore`；`CodexDesktopInstallResult` 新增可选 `storeNewerVersion`；`main.ts` 外链白名单的商店链接改用共享常量（值不变）。
+- 打开 Codex 桌面端时判断「窗口起没起来」改用只按登录会话和安装包路径的探测（`buildCodexDesktopSessionProcessProbeScript`），不再沿用 #640 给关闭路径加的属主核对；重启、更新、卸载要关进程时仍走带属主核对、失败即停的那一套。
+- 激活返回的 PID 探活把 `EPERM` 当作「还活着」；启动环境探测超时由 3 秒放宽到 10 秒，免得冷启动的 PowerShell 超时后丢掉内置 Administrator 的判断。
+- 启动失败文案改为以「Codex 桌面端没有打开」开头的三句大白话，渲染层新增 `codexDesktopNotStarted` 归类（重试 / 找客服）。
+- `codex-desktop-service.ts` 商店安装那一路加 15 秒心跳（`buildCodexDesktopStoreWaitMessage`，纯函数有单测）：没有百分比时进度条不再固定发 `0%`，离 15 分钟超时剩 3 分钟起改说「最多再等 X 分钟」。只动等待提示，装不上时的报错文案不在这条里（第十九批第 ⑤ 条）。
+- 新增 `electron/certificate-trust-probe.ts` 与检查项 `CERTIFICATE_TRUST`：用跑工具的那个 Node 起两次 `node -e` 只做 TLS 握手连当前账号状态地址（去掉 / 强制 `NODE_USE_SYSTEM_CA=1` 各一次，5 秒超时，只打印固定标记），得出 direct / systemTrusted / outdatedNode / untrusted / elevated / unknown；管理员身份不起进程；「星芒 AI 网络」同时失败时改指向那一项。`CheckOutcome.omit` 让没装 Node 时不出这一行。`diagnosticTarget` 按 `details.verdict` 只给 outdatedNode「去处理」。检查项的 `code` 全部不变，只改 `title` / `summary`。
+- 第十九批 2：`cli-hooks.ts` 的 `ManagedCliHookTarget` 带上命令写法（`form`: PowerShell / sh），新增
+  `grokCliHookShellChanged` 比对「Grok 现在该用的 shell」与写下去的写法；`system-service.ts` 的钩子复核
+  （首页 `cliHooksStale`，新增可选字段 `cliHooksShellChanged` 让首页小字说「Grok 换了命令行」）与 `repairCliHooks`
+  都按它判断。`launchProviderOperation` 打开 Grok 前对不上就先 `repairCliHooks('grok')`，修不好只记日志
+  （`grok-hooks.shell-changed` / `grok-hooks.repair-before-launch-failed`），不挡打开。
+- 新增 `windows-live-path.ts`：异步起 System32 的 reg.exe 读整台电脑 + 当前账号的 PATH，补在启动时快照后面，
+  推 Grok 的 shell 与从星芒打开 Grok 的环境用同一份，星芒开着时装的 PowerShell 7 也看得见。不做开机静默重写（等第十八批 1b）。
+- `cli-hooks.ts` 新增 `resolveGrokWindowsShell`：照 Grok 1.0.44 Windows 版的顺序（`GROK_SHELL` →
+  PATH 上的 `pwsh` → 三处固定位置的 Git Bash → Windows PowerShell）推它会用哪个 shell 跑钩子，
+  只看文件在不在、不起进程；`CliHookInvocation` 新增可选的 `grokWindowsShell`。Windows 上
+  PowerShell 用 Gemini 那种 `& '…'` 写法，Git Bash 用 sh 写法，`cmd` 或推不出来就摘掉我们的钩子
+  不写。顺序出自程序内字符串，推测，Windows 真机没演过（复核办法见 `docs/CLI-VERIFIED-VERSIONS.md`）。
+- 星芒装好 Git（Windows）后，用 #654 的 `rewriteManagedCliHooks` 把 Grok 配置里本软件那几条钩子
+  按新的 shell 重写一次（只动我们写过的，不联网）。客户自己装 Git / PowerShell 7 的，要等下次写配置。
+- 通知：`TerminalNotice` 三类都加 `grok`（名字「Grok」），`createCliTurnTracker` 不再丢 Grok 的
+  记录；晚到的上一轮打断 / 结束报告按 `turn` 认出来，不吞掉新一轮的开始。
+- `StartGuide` 的安装类失败（安装、更新、准备环境、准备 Python）复用错误框的出口表（新增 `guideInstallExits`），`replaceNode` 按 `canReplaceNode` 过滤、换不了时补「找客服」；`onFailureAction` 多一个可选的 `retry`，App 的 `runGuideFailureAction` 新增 `replaceNode` 分支，换完重跑引导里失败的那一步。
+- `guide-result.ts` 多 `usesAccountBalance`（聊天已登录、或当前账号来源且已连好时为 true）；`StartGuide.tsx` 只在 ready 步且花的是当前账号余额时给「去充值」，点了先 `complete` 再走 `onFailureAction('recharge')`，免得下次登录引导又从头弹出。没动 App.tsx。
+- `Home.tsx` 抽出 `lowBalanceText`，余额 ≤ 0 换说法；低余额提示加 `data-testid="home-low-balance"`，订阅相关测试改按 testid 断言。
+- `registry/shell.ts` 导览第 3 步文案。
+- 第十八批 4：`runtime:install-node` 加可选参数 `{ reason: 'certificate' }`（ipc-contract / preload / ipc 三处同改，`parseNodeRuntimeInstallRequest` 白名单校验）。Windows 上带它且当前 Node.js 低于 22.19 / 24.6 时不再走「无需重复安装」，照常装最新 LTS；装完仍读到旧版（被另一份排在前面）直接报错说明，不假装换好。Mac 不换（代下的那份排在 PATH 最后），错误框出口改为「找客服」。
+- 渲染层：错误目录 `toolCertOutdatedNode` 加「换成新版 Node.js」动作（`replaceNode`，有它时当主按钮）；新增 `features/tools/node-replace.ts` 与 `NodeReplaceDialog`，错误框与「安装卸载」页共用；`toolCertificateMessages.outdatedNode` 不再指向「安装卸载」页。
+- 注册窗读 `account:get-status` 失败时按 `network-failure.ts` 的原因处理：timeout / refused / dns 隔 2 秒自动重试一次；offline 或 `navigator.onLine` 为 false 时改说没网并监听 `online` 事件重读；timeout / refused 换成注册窗专用文案（全局那张表不动）。新纯函数 `registrationStatusFailure`（`features/auth/state.ts`）带单测，浏览器回归覆盖重试与断网恢复。
+- 第十八批候选 1（1、3 退一步的方案；开机自动改路径 1b 待 yoyo 点头，本次不做）。
+- `cli-hooks.ts` 新增 `splitManagedCommand` / `managedCliHookTargets` / `cliHookTargetsStale`：把我们写的钩子、状态行、Codex notify 拆回「程序 + 脚本」，程序或脚本不存在、或脚本不是这次安装带的那份（同名比对，Windows 不分大小写）即判为旧位置。
+- `config-files.ts` 新增 `inspectManagedCliHookTargets`、`rewriteManagedCliHooks`（只改我们那几条；写不出钩子时收回）、`removeManagedCliHooks`（卸载用），写入仍是两阶段提交 + `.bak`；原来没有我们那几条的配置一个字不动。
+- `NativeConfigSummary.cliHooksStale`；新 IPC `config:repair-cli-hooks`（先建「备份」页可见的 pre-save 备份，再改，再复查，没修好抛中文原因）。首页状态 `cliHooksStale`「提醒设置要修」+「修好它」，优先级排在来源类提示之后；「打开」不受影响。
+- 卸载清理 `runUninstallCleanup` 加 `removeCliHooks` 一步（退出码位 64 `cliHooksRemain`，失败不拦卸载；别的账号卸载时不动）。以管理员身份跑，Codex 目录刻意不读 `CODEX_HOME`。
+- 「这个账户能不能打开商店应用」的判断从 `codex-desktop-service.ts` 抽到新模块 `electron/windows-store-app-launch.ts`（`resolveStoreAppLaunchBlock`），打开失败后的解释（#658）和装之前的提醒共用这一份。内置 Administrator 开了「管理审批模式」（`FilterAdministratorToken = 1`）时不再算作打不开。
+- Codex 桌面端首页那条合并探测脚本顺路读当前账户和那条策略键，未安装时 `DesktopAppStatus.storeAppLaunchBlock` 带上结果，首页不为它另起 PowerShell。
+- 检查页 `ADMINISTRATOR` 在令牌本身高权限（`alwaysElevated`）时多问一次（4 秒上限，可经 `inspectStoreAppLaunchContext` 注入），认出来改为 warn，`details.storeAppLaunchBlock` 标明是哪一种；没问出来照旧 pass。
+
 - 修复 #475 的来源切换补签入口，复用限额继承服务并保留显式配置写入意图；回归覆盖限额、耗尽、过期、重启恢复和损坏记录。
 - 将 Codex 消息的预览裁剪移到详情收集阶段，Markdown 导出保留通过 JSONL 行上限校验的完整正文；保留预览条数、文本长度和单行读取上限，裁剪预览时如实设置 messagesTruncated（#600）。
 - 增加用户与助手长消息的端到端导出回归，核对完整正文、尾部标记及预览与导出的不同完整性标志。
