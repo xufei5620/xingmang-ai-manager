@@ -435,6 +435,20 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     })
     return outcome.result ?? null
   }, [session.account, session.authenticated, toast, toolbox.refresh, toolbox.run, toolbox.snapshot, toolsApi])
+  /**
+   * 首页「提醒设置要修」的「修好它」。主进程先备份、只改钩子与状态行、再查一遍；
+   * 没修好会抛中文原因，走统一的错误条（perform）。
+   */
+  const repairToolHooks = useCallback(async (tool: ToolId) => {
+    await toolbox.run(`repair-hooks:${tool}`, '正在修提醒设置', async () => {
+      try {
+        await toolsApi.repairHooks(tool)
+        toast.show('提醒设置已改好，原来的设置已备份。', 'ok')
+      } finally {
+        await toolbox.refreshConfig().catch(() => undefined)
+      }
+    })
+  }, [toast, toolbox.refreshConfig, toolbox.run, toolsApi])
   // 官方账号与手填密钥重写不动（重写流程本身会跳过它们），所以按钮按当前配置的
   // 来源决定给不给，而不是见到密钥层失败就画一颗出来。
   const rewritableKeys = useMemo(
@@ -1187,6 +1201,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
               onScan={() => { refreshRecent(); void toolbox.refresh(true).catch(() => undefined); void toolbox.refreshExternal(true).catch(() => undefined) }} onInstall={(id, version) => void perform('安装工具', () => install(id, version), id)} onCancelInstall={(id) => void perform('取消安装', () => cancelInstall(id))} onLaunch={requestLaunch} onLaunchInNewFolder={(id) => requestLaunch(id, undefined, 'new', true)} onConfigure={openToolConfig} onUninstall={requestUninstall} onRevert={requestRevert}
               onRewriteKey={(id) => void perform('重新写入 Key', () => rewriteAccountKeys([providerFor(id)]), id)} onKeepConfig={(id) => void perform('保留当前配置', () => keepCurrentToolConfig(id))}
               onSwitchAccount={(id, target) => void perform(target === 'account' ? '改用当前账号' : '切回官方账号', async () => { if (await switchToolAccount(id, target)) confirmToolKeyWritten(id) }, id)}
+              onRepairHooks={(id) => void perform('修提醒设置', () => repairToolHooks(id), id)}
               onOpenConfigDirectory={(id) => void perform('打开配置文件夹', () => toolsApi.openConfigDirectory(id))}
               onInstallExternal={(id) => void perform('安装客户端', () => installExternal(id))} onLaunchExternal={(id) => void perform('打开客户端', () => launchExternal(id))} onOpenExternalDownload={(url) => void perform('打开下载页', () => app.openExternal(url))}
               onConfigureExternal={setExternalClient} onCodexModels={() => { setCodexModelFilter('non-gpt'); setConfigTool(platform?.codexDesktop.launch ? 'codexDesktop' : 'codex') }}

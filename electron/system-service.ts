@@ -55,7 +55,7 @@ import {
   resolveSameUserNpmPrefix,
 } from './npm-user-prefix'
 import { buildClaudeStatusLineCommand } from './claude-status-line'
-import { buildCliHookInvocation, cliHookEventsDirectory, resolveGrokWindowsShell, type CliHookInvocation } from './cli-hooks'
+import { buildCliHookInvocation, cliHookEventsDirectory, cliHookTargetsStale, resolveGrokWindowsShell, type CliHookInvocation } from './cli-hooks'
 import { isCodexDesktopExecutable } from './codex-desktop'
 import {
   createCodexDesktopService,
@@ -70,11 +70,13 @@ import {
   inspectCodexWorkspacePermissions,
   inspectOfficialLogin,
   claudeModelPickerNeedsRefresh,
+  inspectManagedCliHookTargets,
   inspectProviderConfig,
   managedProviderLaunchBlockedMessage,
   moveClaudeConsoleKeyAside,
   readCodexAuthTokens,
   restoreClaudeConsoleKey,
+  rewriteManagedCliHooks,
   saveProviderConfig,
   switchProviderToOfficialAccount,
   trustCodexWorkspace,
@@ -867,6 +869,11 @@ export interface SystemService {
   restoreOfficialCredentials?(provider: ProviderId): Promise<void>
   /** 这台电脑上是否已有这个 CLI 的官方登录，null = 看不出来；可选 = 旧实现不提供。 */
   inspectOfficialLogin?(provider: ProviderId): boolean | null
+  /**
+   * 首页「修好它」：把本软件写进这家配置、却指向旧位置的钩子与状态行改成这次的路径
+   * （这台电脑写不出来就收回），写完再查一遍；还是旧的就抛中文原因。可选 = 旧实现不提供。
+   */
+  repairCliHooks?(provider: ProviderId): Promise<ReturnType<typeof saveProviderConfig>>
   /** 备份恢复成功之后调用；`isAccountKey` 判断一把 Key 是不是当前账号由本软件签发的。 */
   adoptRestoredConfig(provider: ProviderId, isAccountKey: (apiKey: string) => boolean): Promise<void>
   scanSystem(forceRefresh?: boolean): Promise<SystemSnapshot>
@@ -3417,20 +3424,17 @@ export function createSystemService(
 
   /**
    * Windows 版 Grok 找得到 Git Bash 就改用它跑钩子，原来按 PowerShell 写的那几行会每一轮报红。
-   * 所以星芒装好 Git 之后，把本软件用当前账号写的 Grok 配置按原样重写一遍（钩子跟着换写法）。
-   * 走 saveConfig 的自动写入那道闸：官方账号、手填、被改动过的都不碰；失败只记日志，不影响装 Git。
+   * 所以星芒装好 Git 之后，把 Grok 配置里本软件那几条钩子按新的 shell 重写一遍（只动我们
+   * 写过的那几条，原来没有就不补，同「修好它」那条路）。失败只记日志，不影响装 Git。
    */
   async function refreshGrokHooksForShellChange(): Promise<void> {
     try {
-      if (store.read().officialProviders?.includes('grok')) return
-      const owner = serviceOptions.getExternalClientAccountId?.() ?? null
-      if (!owner) return
-      const config = inspectNativeProviderConfig('grok')
-      const model = config.model.trim()
-      if (!config.hasApiKey || !config.matchesRelay || !model) return
-      if (configOwnership.read('grok', config, owner) !== 'account') return
-      await saveConfig({ provider: 'grok', apiKey: '', model, mode: 'merge' }, false, undefined, { source: 'account', automatic: true })
-      runtimeLog?.log('info', 'config', 'grok-hooks.rewritten', '装好 Git 后按新的命令行重写了 Grok 的钩子')
+      const cliHook = await resolveCliHookInvocation()
+      if (!cliHook) return
+      await serializeConfigWrite(async () => {
+        rewriteManagedCliHooks('grok', providerRoots, { cliHook })
+      })
+      runtimeLog?.log('info', 'config', 'grok-hooks.rewritten', '装好 Git 后按新的命令行重写了 Grok 的钩子', { shell: cliHook.grokWindowsShell ?? null })
     } catch (error) {
       runtimeLog?.log('warn', 'config', 'grok-hooks.rewrite-failed', '装好 Git 后重写 Grok 钩子没成功', { reason: credentialFailureReason(error) })
     }
@@ -5259,6 +5263,7 @@ export function createSystemService(
             configurationAccountMatched: Boolean(owner) && current.hasApiKey && current.matchesRelay
               && cachedKeys.some((entry) => entry.provider === id && entry.key === current.apiKey),
             ...ccSwitchLeftoverField(resolveCcSwitchLeftover(current, ccSwitchInstalled)),
+            cliHooksStale: !previewOnboarding && cliHooksStale(id),
           }]
         }),
       ) as Record<ProviderId, NativeConfigSummary>,
@@ -5335,6 +5340,33 @@ export function createSystemService(
     } catch {
       return undefined
     }
+  }
+
+  /** 本软件写进这家配置的钩子、状态行有没有指向旧位置（cli-hooks.ts cliHookTargetsStale）。读不出来按没有算。 */
+  function cliHooksStale(provider: ProviderId): boolean {
+    try {
+      return cliHookTargetsStale(
+        inspectManagedCliHookTargets(provider, providerRoots),
+        [serviceOptions.cliHookScriptPath, serviceOptions.claudeStatusLineScriptPath],
+      )
+    } catch {
+      return false
+    }
+  }
+
+  async function repairCliHooks(provider: ProviderId): Promise<ReturnType<typeof saveProviderConfig>> {
+    // 找 node 要读 PATH，放在排队之前；与 saveConfig 同一个次序。
+    const cliHook = await resolveCliHookInvocation()
+    const claudeStatusLineCommand = await resolveClaudeStatusLineCommand(provider)
+    return serializeConfigWrite(async () => {
+      const result = rewriteManagedCliHooks(provider, providerRoots, { cliHook, claudeStatusLineCommand })
+      if (cliHooksStale(provider)) throw new Error('提醒设置没修好，原来的设置已备份，可以在「备份」里找回')
+      runtimeLog?.log('info', 'config', 'cli-hooks.repaired', '已把工具里的提醒设置改到这次安装的位置', {
+        provider,
+        rewritten: Boolean(cliHook),
+      })
+      return result
+    })
   }
 
   async function saveConfig(
@@ -5541,6 +5573,7 @@ export function createSystemService(
     getConfig: buildConfigSummary,
     revealApiKey,
     saveConfig,
+    repairCliHooks,
     switchToOfficialAccount,
     setOfficialSourcePreference,
     restoreOfficialCredentials,

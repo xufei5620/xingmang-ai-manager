@@ -307,3 +307,132 @@ export function applyGrokCliHooks(config: Record<string, unknown>, invocation: C
 export function removeGrokCliHooks(config: Record<string, unknown>): void {
   removeManagedHooks(config)
 }
+
+// ---------------------------------------------------------------------------
+// 写下去的路径还活着吗
+//
+// 钩子、状态行、Codex 的 notify 里写的都是绝对路径，只在保存配置那一刻算一次。卸载后
+// 换个文件夹重装、Mac 上把 app 挪了位置、换装了 Node.js，这些路径就指向不存在的文件，
+// 工具每一轮都在终端里报一条红字。下面这几个函数只负责把我们那几条命令拆回「哪个程序、
+// 哪个脚本」，判断和重写在 config-files.ts 与 system-service.ts。
+// ---------------------------------------------------------------------------
+
+/** 本软件写进配置的一条命令指向的程序和脚本。拆不开时两项都是空串，按「坏了」算。 */
+export interface ManagedCliHookTarget {
+  nodeExecutable: string
+  scriptPath: string
+}
+
+/**
+ * 把本软件自己写出来的命令拆回一段段参数。只认这里写得出来的几种引号：POSIX 的 '…'
+ * （内部单引号写成 '\''）、PowerShell 的 '…'（内部写成 ''，开头带 & 调用符）、状态行的
+ * "…"（不安全字符根本不会写进去，所以不处理转义）。引号没闭合返回 null。
+ */
+export function splitManagedCommand(command: string): string[] | null {
+  let text = command.trim()
+  if (text.startsWith('& ')) text = text.slice(2)
+  const words: string[] = []
+  let current = ''
+  let inWord = false
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index]
+    if (char === "'" || char === '"') {
+      inWord = true
+      let closed = false
+      for (index += 1; index < text.length; index += 1) {
+        if (text[index] !== char) {
+          current += text[index]
+          continue
+        }
+        if (char === "'" && text[index + 1] === "'") {
+          current += "'"
+          index += 1
+          continue
+        }
+        closed = true
+        break
+      }
+      if (!closed) return null
+    } else if (char === '\\') {
+      if (index + 1 >= text.length) return null
+      index += 1
+      current += text[index]
+      inWord = true
+    } else if (/\s/.test(char)) {
+      if (inWord) words.push(current)
+      current = ''
+      inWord = false
+    } else {
+      current += char
+      inWord = true
+    }
+  }
+  if (inWord) words.push(current)
+  return words
+}
+
+function targetFromWords(words: readonly unknown[] | null): ManagedCliHookTarget {
+  const [node, script] = words ?? []
+  return {
+    nodeExecutable: typeof node === 'string' ? node : '',
+    scriptPath: typeof script === 'string' ? script : '',
+  }
+}
+
+function hookTarget(hook: Record<string, unknown>): ManagedCliHookTarget {
+  // Claude Code 的 exec 形式：command 是程序，args[0] 是脚本。
+  if (Array.isArray(hook.args)) return targetFromWords([hook.command, hook.args[0]])
+  return targetFromWords(typeof hook.command === 'string' ? splitManagedCommand(hook.command) : null)
+}
+
+/** 某家配置里本软件那几条钩子（Codex 是 notify）各自指向哪里；用户自己写的不在其内。 */
+export function managedCliHookTargets(tool: CliHookTool, config: Record<string, unknown>): ManagedCliHookTarget[] {
+  if (tool === 'codex') return isManagedCodexNotify(config.notify) ? [targetFromWords(config.notify as unknown[])] : []
+  const hooks = config.hooks
+  if (!isRecord(hooks)) return []
+  const targets: ManagedCliHookTarget[] = []
+  for (const groups of Object.values(hooks)) {
+    if (!Array.isArray(groups)) continue
+    for (const group of groups) {
+      if (!isRecord(group) || !Array.isArray(group.hooks)) continue
+      for (const hook of group.hooks) {
+        if (isManagedCliHook(hook)) targets.push(hookTarget(hook as Record<string, unknown>))
+      }
+    }
+  }
+  return targets
+}
+
+function comparablePath(value: string, platform: NodeJS.Platform): string {
+  const pathApi = platform === 'win32' ? path.win32 : path.posix
+  const resolved = pathApi.normalize(value)
+  return platform === 'win32' ? resolved.toLowerCase() : resolved
+}
+
+/**
+ * 这几条命令里有没有指向旧位置的：程序或脚本不在了，或者脚本不是这次安装带的那一份
+ * （换了文件夹重装、旧目录还没删干净时，旧脚本还在，但下次卸载就没了，也按旧的算）。
+ * currentScripts 是这次安装带的脚本，缺省或找不到时只看文件在不在。
+ */
+export function cliHookTargetsStale(
+  targets: readonly ManagedCliHookTarget[],
+  currentScripts: readonly (string | null | undefined)[] = [],
+  options: { exists?: (file: string) => boolean; platform?: NodeJS.Platform } = {},
+): boolean {
+  const platform = options.platform ?? process.platform
+  const pathApi = platform === 'win32' ? path.win32 : path.posix
+  const exists = options.exists ?? ((file: string) => {
+    try {
+      return fs.existsSync(file)
+    } catch {
+      return false
+    }
+  })
+  const current = currentScripts.filter((script): script is string => Boolean(script))
+  return targets.some(({ nodeExecutable, scriptPath }) => {
+    if (!nodeExecutable || !scriptPath || !pathApi.isAbsolute(nodeExecutable) || !pathApi.isAbsolute(scriptPath)) return true
+    if (!exists(nodeExecutable) || !exists(scriptPath)) return true
+    const sameName = current.find((script) => pathApi.basename(script).toLowerCase() === pathApi.basename(scriptPath).toLowerCase())
+    return sameName !== undefined && comparablePath(sameName, platform) !== comparablePath(scriptPath, platform)
+  })
+}

@@ -11,15 +11,18 @@ import {
   applyGeminiCliHooks,
   applyGrokCliHooks,
   buildCliHookInvocation,
+  cliHookTargetsStale,
   geminiCliHookCommand,
   grokCliHookCommand,
   isManagedCliHook,
+  managedCliHookTargets,
   removeClaudeCliHooks,
   removeCodexCliNotify,
   removeGeminiCliHooks,
   removeGrokCliHooks,
   resolveCliHookScriptPath,
   resolveGrokWindowsShell,
+  splitManagedCommand,
   type CliHookInvocation,
 } from './cli-hooks'
 
@@ -426,5 +429,74 @@ describe('bundled hook script', () => {
       input: JSON.stringify({ hook_event_name: 'Stop' }),
     })
     expect(output.toString()).toBe('')
+  })
+})
+
+describe('managed hook targets', () => {
+  const posix: CliHookInvocation = {
+    nodeExecutable: "/Users/o'brien/node 22/bin/node",
+    scriptPath: '/Applications/星芒 AI.app/Contents/Resources/bundled-catalog/cli-hooks/xingmang-hook.cjs',
+    eventsDirectory: '/Users/me/Library/Application Support/xingmang-ai-manager/cli-events',
+    platform: 'darwin',
+  }
+  const windows: CliHookInvocation = {
+    nodeExecutable: "C:\\Program Files\\nodejs\\node.exe",
+    scriptPath: "D:\\星芒 o'k\\resources\\bundled-catalog\\cli-hooks\\xingmang-hook.cjs",
+    eventsDirectory: 'C:\\Users\\me\\AppData\\Roaming\\xingmang-ai-manager\\cli-events',
+    platform: 'win32',
+  }
+  const expected = (invocation: CliHookInvocation) => ({ nodeExecutable: invocation.nodeExecutable, scriptPath: invocation.scriptPath })
+
+  it('splits back every command form this module writes', () => {
+    expect(splitManagedCommand(geminiCliHookCommand(posix))).toEqual([posix.nodeExecutable, posix.scriptPath, 'gemini', posix.eventsDirectory])
+    expect(splitManagedCommand(geminiCliHookCommand(windows))).toEqual([windows.nodeExecutable, windows.scriptPath, 'gemini', windows.eventsDirectory])
+    expect(splitManagedCommand(grokCliHookCommand(posix) as string)).toEqual([posix.nodeExecutable, posix.scriptPath, 'grok', posix.eventsDirectory])
+    for (const grokWindowsShell of ['powershell', 'bash'] as const) {
+      expect(splitManagedCommand(grokCliHookCommand({ ...windows, grokWindowsShell }) as string))
+        .toEqual([windows.nodeExecutable, windows.scriptPath, 'grok', windows.eventsDirectory])
+    }
+    expect(splitManagedCommand('"C:\\Program Files\\nodejs\\node.exe" "C:\\a b\\xingmang-statusline.cjs"'))
+      .toEqual(['C:\\Program Files\\nodejs\\node.exe', 'C:\\a b\\xingmang-statusline.cjs'])
+    expect(splitManagedCommand("'unterminated")).toBeNull()
+  })
+
+  it('reads the node and script of our hooks in every tool and skips the user ones', () => {
+    const own = { hooks: [{ type: 'command', command: 'afplay /System/Library/Sounds/Glass.aiff' }] }
+    const claude: Record<string, unknown> = { hooks: { Stop: [own] } }
+    applyClaudeCliHooks(claude, posix)
+    expect(managedCliHookTargets('claude', claude)).toEqual(Array(5).fill(expected(posix)))
+    const gemini: Record<string, unknown> = {}
+    applyGeminiCliHooks(gemini, windows)
+    expect(managedCliHookTargets('gemini', gemini)).toEqual(Array(4).fill(expected(windows)))
+    const grok: Record<string, unknown> = {}
+    applyGrokCliHooks(grok, posix)
+    expect(managedCliHookTargets('grok', grok)).toEqual(Array(6).fill(expected(posix)))
+    const codex: Record<string, unknown> = {}
+    applyCodexCliNotify(codex, windows)
+    expect(managedCliHookTargets('codex', codex)).toEqual([expected(windows)])
+    expect(managedCliHookTargets('codex', { notify: ['notify-send', 'done'] })).toEqual([])
+    expect(managedCliHookTargets('claude', { hooks: { Stop: [own] } })).toEqual([])
+  })
+
+  it('calls the targets stale when a file is gone or the script is not the one this install ships', () => {
+    const present = new Set([posix.nodeExecutable, posix.scriptPath])
+    const exists = (file: string) => present.has(file)
+    const target = expected(posix)
+    expect(cliHookTargetsStale([], [], { exists, platform: 'darwin' })).toBe(false)
+    expect(cliHookTargetsStale([target], [posix.scriptPath], { exists, platform: 'darwin' })).toBe(false)
+    expect(cliHookTargetsStale([target], [], { exists, platform: 'darwin' })).toBe(false)
+    // The app was moved: the old script still resolves but is no longer ours.
+    expect(cliHookTargetsStale([target], ['/Applications/星芒AI管理工具.app/Contents/Resources/bundled-catalog/cli-hooks/xingmang-hook.cjs'], { exists, platform: 'darwin' })).toBe(true)
+    // Only a script with the same name is compared: the status line script says nothing about hooks.
+    expect(cliHookTargetsStale([target], ['/elsewhere/xingmang-statusline.cjs'], { exists, platform: 'darwin' })).toBe(false)
+    expect(cliHookTargetsStale([{ ...target, nodeExecutable: '/old/node' }], [], { exists, platform: 'darwin' })).toBe(true)
+    expect(cliHookTargetsStale([{ nodeExecutable: '', scriptPath: '' }], [], { exists, platform: 'darwin' })).toBe(true)
+    expect(cliHookTargetsStale([{ ...target, scriptPath: 'relative/xingmang-hook.cjs' }], [], { exists: () => true, platform: 'darwin' })).toBe(true)
+  })
+
+  it('compares Windows script paths without case', () => {
+    const target = expected(windows)
+    expect(cliHookTargetsStale([target], [windows.scriptPath.toUpperCase()], { exists: () => true, platform: 'win32' })).toBe(false)
+    expect(cliHookTargetsStale([target], ['C:\\Program Files\\xingmang-ai-manager\\resources\\bundled-catalog\\cli-hooks\\xingmang-hook.cjs'], { exists: () => true, platform: 'win32' })).toBe(true)
   })
 })

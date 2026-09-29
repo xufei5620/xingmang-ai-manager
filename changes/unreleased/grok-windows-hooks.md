@@ -11,7 +11,7 @@
   只看文件在不在、不起进程；`CliHookInvocation` 新增可选的 `grokWindowsShell`。Windows 上
   PowerShell 用 Gemini 那种 `& '…'` 写法，Git Bash 用 sh 写法，`cmd` 或推不出来就摘掉我们的钩子
   不写。顺序出自程序内字符串，推测，Windows 真机没演过（复核办法见 `docs/CLI-VERIFIED-VERSIONS.md`）。
-- 星芒装好 Git（Windows）后，本软件用当前账号写的 Grok 配置按原样重写一次（走 `saveConfig`
-  的自动写入闸），钩子跟着换成 Git Bash 写法。客户自己装 Git / PowerShell 7 的，要等下次写配置。
+- 星芒装好 Git（Windows）后，用 #654 的 `rewriteManagedCliHooks` 把 Grok 配置里本软件那几条钩子
+  按新的 shell 重写一次（只动我们写过的，不联网）。客户自己装 Git / PowerShell 7 的，要等下次写配置。
 - 通知：`TerminalNotice` 三类都加 `grok`（名字「Grok」），`createCliTurnTracker` 不再丢 Grok 的
   记录；晚到的上一轮打断 / 结束报告按 `turn` 认出来，不吞掉新一轮的开始。
