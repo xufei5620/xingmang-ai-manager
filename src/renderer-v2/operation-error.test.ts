@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { classifyOperationError, operationFallbackActions, operationLogPage, presentOperationError, type OperationErrorKey } from './operation-error'
 import { networkFailureMessages, toolCertificateMessages } from '../../electron/network-failure'
 import { errors } from './registry/errors'
+import { buildCodexDesktopInstallFailureMessage, codexDesktopInstallFailureReasons, type CodexDesktopInstallFailureReason } from '../../electron/codex-desktop-install-failure'
 
 /**
  * 目录里的 16 条都要有交代：要么给出一句真的会到达渲染层的后端原话，要么写明
@@ -14,6 +15,8 @@ const catalogCoverage: Record<OperationErrorKey, { sample: string } | { unreacha
   pluginCatalogStuck: { sample: 'Codex 插件目录里的旧备份清不掉，这次没有改动' },
   // 主进程 codex-desktop-service.ts 的 describeCodexDesktopLaunchFailure。
   codexDesktopNotStarted: { sample: 'Codex 桌面端没有打开：等了将近一分钟，没有等到它的窗口。先关掉所有 Codex 窗口，再点「重试」；还是不行，就在开始菜单里搜「Codex」直接点开，也打不开的话请联系客服。' },
+  // 主进程 codex-desktop-install-failure.ts 的 buildCodexDesktopInstallFailureMessage。
+  codexDesktopInstallFailed: { sample: 'Codex 桌面端没装上：微软商店这次没装上，国内下载线路这会儿连不上。' },
   keyInvalid: { sample: '模型查询失败，服务返回 403：令牌已失效' },
   noBalance: { sample: '账号余额或 API Key 额度不足，请充值后重试' },
   tooManyRequests: { sample: '星芒服务返回 429 Too Many Requests' },
@@ -171,6 +174,25 @@ describe('renderer-v2 operation error classification', () => {
       const hint = presentOperationError(message)
       expect(hint?.key).toBe('codexDesktopNotStarted')
       expect(hint?.actions.map((action) => action.id)).toEqual(['retry', 'support'])
+    }
+  })
+
+  it('gives every Codex Desktop install failure a retry, the Microsoft Store, the log and support', () => {
+    // 这几句里有「连不上」「Windows 拒绝了这次安装」，不能被 timeout、permission 抢走。
+    for (const reason of Object.keys(codexDesktopInstallFailureReasons) as CodexDesktopInstallFailureReason[]) {
+      for (const storeTried of [true, false]) {
+        const message = buildCodexDesktopInstallFailureMessage(reason, { storeTried, updating: storeTried })
+        const hint = presentOperationError(message)
+        expect([message, hint?.key]).toEqual([message, 'codexDesktopInstallFailed'])
+        expect(hint?.actions).toEqual([
+          { id: 'retry', label: '重试' },
+          { id: 'openStore', label: '去微软商店装' },
+          { id: 'log', label: '查看日志' },
+          { id: 'support', label: '找客服' },
+        ])
+        // 「查看日志」要落到运行日志：原话（SHA-256、退出码）只记在那里。
+        expect(operationLogPage({ message, tool: 'codexDesktop' })).toBe('feedback')
+      }
     }
   })
 

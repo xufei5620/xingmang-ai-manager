@@ -183,6 +183,7 @@ import {
 } from './window-presentation'
 import { buildStartupFailureDialog, classifyStorageFailure, dataDriveLetter } from './startup-failure'
 import { installMainWindowFrameNavigationGuard } from './platform/frame-navigation'
+import { codexDesktopStoreUrl } from './codex-desktop-install-failure'
 
 guardProcessOutputStreams()
 
@@ -200,7 +201,8 @@ const nonSiteExternalUrlAllowlist = [
   // 缺少系统 winget 时首页 Claude Desktop、OpenCode 两行的「去官网下载」（逐条全等）。
   ...Object.values(externalClientOfficialDownloadUrls),
   'https://chatgpt.com/download/',
-  'ms-windows-store://pdp/?ProductId=9PLM9XGG6VKS',
+  // Codex 桌面端装不上时错误框里的「去微软商店装」（第十九批 5）。
+  codexDesktopStoreUrl,
 ] as const
 
 // Every relay site's own destinations (marketing and keys pages) is derived
