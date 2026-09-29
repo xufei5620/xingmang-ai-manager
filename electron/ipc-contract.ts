@@ -1070,6 +1070,16 @@ export interface XingmangInvokeContract {
     ConnectionCheckResult
   >
   /**
+   * 「Codex 干活检查」：会花当前账号一点额度，所以只有用户勾选确认后才发两次
+   * Responses 请求（第一次让模型调用无副作用的测试工具，第二次把结果交回去）。
+   * 本通道不在配置保存、账号切换或普通连接自检中调用。
+   */
+  probeCodexResponses: IpcInvokeDefinition<
+    'diagnostics:probe-codex-responses',
+    [acknowledgeBilling: true, expectedAccountScope: string],
+    ConnectionProbeReport
+  >
+  /**
    * 外部客户端（WorkBuddy / Claude Desktop / OpenCode）的连接自检。与上面那条
    * 分成两条通道而不是合成一个联合入参：这一条的密钥来自客户端自己的配置文件、
    * 由主进程读出，渲染层既给不了也不该给（I3）；结论形状相同，身份换成客户端 id。
@@ -1315,6 +1325,7 @@ export const ipcInvokeChannels = {
   exportAppData: 'data-transfer:export',
   importAppData: 'data-transfer:import',
   checkProviderConnection: 'diagnostics:check-connection',
+  probeCodexResponses: 'diagnostics:probe-codex-responses',
   checkExternalClientConnection: 'diagnostics:check-external-connection',
   getAccountKeyOptions: 'account:get-key-options',
   clearStaleProxySettings: 'diagnostics:clear-stale-proxy',

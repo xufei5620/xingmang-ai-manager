@@ -4033,6 +4033,93 @@ test('the connection self-check reports every CLI on its own, and an unconfigure
   } finally { await page.close() }
 })
 
+test('the paid Codex tool-call check requires fresh consent and drops an old-account result', async () => {
+  const page = await open()
+  try {
+    await page.getByTestId('nav-more').click()
+    await page.getByTestId('nav-health').click()
+    const consent = page.getByTestId('health-codex-responses-consent').getByRole('switch')
+    const run = page.getByTestId('health-codex-responses-run')
+    await expect(run).toBeDisabled()
+    assert.equal(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'probeCodexResponses').length), 0)
+    await page.evaluate(() => window.v2Test.holdNextResponses())
+    await consent.click()
+    await run.click()
+    await page.waitForFunction(() => window.v2Test.calls.filter((entry) => entry.method === 'probeCodexResponses').length === 1)
+    await expect(run).toBeDisabled()
+    await page.evaluate(async () => {
+      const current = await window.xingmang.getAccountSession()
+      window.v2Test.emit('onAccountSessionChanged', {
+        ...current, account: { ...current.account, userId: 18 },
+      })
+      window.v2Test.releaseResponses()
+    })
+    await expect(consent).toBeEnabled()
+    assert.equal(await page.getByTestId('health-codex-responses-result').count(), 0)
+    await expect(run).toBeDisabled()
+
+    await consent.click()
+    await run.click()
+    await page.getByTestId('health-codex-responses-result').getByText('Codex 干活检查 · 正常', { exact: true }).waitFor()
+    const calls = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'probeCodexResponses'))
+    assert.equal(calls.length, 2)
+    assert.deepEqual(calls.map((entry) => entry.args), [[true, 'xm-account:17'], [true, 'xm-account:18']])
+    await expect(run).toBeDisabled()
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('account switch during session read prevents the paid Codex check IPC entirely', async () => {
+  const page = await open()
+  try {
+    await page.getByTestId('nav-more').click()
+    await page.getByTestId('nav-health').click()
+    const consent = page.getByTestId('health-codex-responses-consent').getByRole('switch')
+    const run = page.getByTestId('health-codex-responses-run')
+    const previousReads = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'getAccountSession').length)
+    await page.evaluate(() => window.v2Test.holdNextAccountSession())
+    await consent.click()
+    await run.click()
+    await page.waitForFunction((count) => window.v2Test.calls.filter((entry) => entry.method === 'getAccountSession').length > count, previousReads)
+    await page.evaluate(async () => {
+      const current = { authenticated: true, account: {
+        userId: 18, username: 'new-user', group: 'default', role: 1, quota: 0, usedQuota: 0,
+      } }
+      window.v2Test.emit('onAccountSessionChanged', current)
+      window.v2Test.releaseAccountSession()
+    })
+    await expect(consent).toBeEnabled()
+    await expect(run).toBeDisabled()
+    assert.equal(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'probeCodexResponses').length), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('the paid Codex check waits for startup account restore instead of reporting a changed account', async () => {
+  const page = await open('restoring=1')
+  try {
+    await page.getByTestId('nav-more').click()
+    await page.getByTestId('nav-health').click()
+    await page.getByTestId('health-codex-responses-consent').getByRole('switch').click()
+    await page.getByTestId('health-codex-responses-run').click()
+    await page.getByTestId('health-codex-responses-error').getByText('账号还在登录中，请等几秒再检查', { exact: true }).waitFor()
+    assert.equal(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'probeCodexResponses').length), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('the paid Codex check stays hidden when Codex is not installed', async () => {
+  const page = await open('codexMissing=1')
+  try {
+    await page.getByTestId('nav-more').click()
+    await page.getByTestId('nav-health').click()
+    await page.getByTestId('health-connection-run').waitFor()
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'scanSystem'))
+    assert.equal(await page.getByTestId('health-codex-responses').count(), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('a self-check failure is attributed per tool and never takes the other tools down with it', async () => {
   const page = await open('connectionFailure=1&connectionUnavailable=1')
   try {

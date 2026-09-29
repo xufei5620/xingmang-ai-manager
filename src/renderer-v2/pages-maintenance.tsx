@@ -77,6 +77,7 @@ import { canUninstallTool, externalInstallHint, isExternallyManagedInstall } fro
 import { elevatedInstallNotice } from './features/tools/elevation-notice'
 import { ToolStatusMeta, ToolStatusReason } from './features/tools/ToolStatusMeta'
 import { connectionCheckView } from './features/tools/connection-check'
+import { accountScope, sessionRestoring } from './account-context'
 import { diagnosticDetailRows } from './features/app/diagnostic-details'
 import { canClearStaleProxy, staleProxyClearMessage, staleProxyConfirmBody } from './features/app/stale-proxy'
 import { requestSettingsGroup, takeSettingsGroup } from './features/app/settings-group-intent'
@@ -310,6 +311,33 @@ export function HealthPage({
   const [proxyClearItem, setProxyClearItem] = useState<Diagnostic | null>(null)
   const [connections, setConnections] = useState<ConnectionRow[] | null>(null)
   const [connectionBusy, setConnectionBusy] = useState(false)
+  const [responsesConsent, setResponsesConsent] = useState(false)
+  const [responsesBusy, setResponsesBusy] = useState(false)
+  const [responsesResult, setResponsesResult] = useState<Awaited<ReturnType<V2Bridge['probeCodexResponses']>> | null>(null)
+  const [responsesError, setResponsesError] = useState<string | null>(null)
+  const responsesInFlight = useRef(false)
+  const responsesEpoch = useRef(0)
+  // 这张卡只对装了 Codex 的人有意义；没读到装没装时先不显示，免得没装的人看到一个点了只会报错的按钮。
+  const [codexInstalled, setCodexInstalled] = useState(false)
+  useEffect(() => {
+    let current = true
+    api.scanSystem(false)
+      .then((snapshot) => { if (current) setCodexInstalled(snapshot.clis.codex.installed === true) })
+      .catch(() => { if (current) setCodexInstalled(false) })
+    return () => { current = false }
+  }, [api])
+  useEffect(() => {
+    const unsubscribe = api.onAccountSessionChanged(() => {
+      responsesEpoch.current += 1
+      setResponsesConsent(false)
+      setResponsesResult(null)
+      setResponsesError(null)
+    })
+    return () => {
+      responsesEpoch.current += 1
+      unsubscribe()
+    }
+  }, [api])
   const loadConnections = async () => {
     // 一个工具失败不该把别人的结论吞掉，所以每一条各自收口。
     const [cliRows, clientRows] = await Promise.all([
@@ -343,6 +371,37 @@ export function HealthPage({
       await loadConnections()
     } finally {
       setConnectionBusy(false)
+    }
+  }
+  const runCodexResponsesProbe = async () => {
+    if (!responsesConsent || responsesInFlight.current) return
+    responsesInFlight.current = true
+    setResponsesBusy(true)
+    setResponsesConsent(false)
+    setResponsesResult(null)
+    setResponsesError(null)
+    const requestEpoch = ++responsesEpoch.current
+    try {
+      const started = await api.getAccountSession()
+      if (requestEpoch !== responsesEpoch.current) return
+      // 开机恢复账号的那几秒里，界面已按「正在恢复的账号」显示，主进程却还当成未登录；
+      // 这时发出去一定被判成「账号变了」，所以先请用户等恢复完。
+      if (sessionRestoring(started)) {
+        setResponsesError('账号还在登录中，请等几秒再检查')
+        return
+      }
+      // 与主进程的计费作用域同一算法：只认已登录的账号，否则是访客。
+      const startedScope = accountScope(started)
+      const result = await api.probeCodexResponses(true, startedScope)
+      const currentScope = accountScope(await api.getAccountSession())
+      if (requestEpoch === responsesEpoch.current && startedScope === currentScope) {
+        setResponsesResult(result)
+      }
+    } catch (error) {
+      if (requestEpoch === responsesEpoch.current) setResponsesError(errorMessage(error))
+    } finally {
+      responsesInFlight.current = false
+      setResponsesBusy(false)
     }
   }
   // 重写成功才重测：失败时结果条还停在刚才那条结论上，页头的横幅同时说出主进程
@@ -382,6 +441,7 @@ export function HealthPage({
     if (target === 'settings') requestSettingsGroup('network')
     navigate?.(target)
   }
+  const responsesView = responsesResult ? connectionCheckView(responsesResult) : null
   return (
     <section
       className="v2-page"
@@ -436,6 +496,38 @@ export function HealthPage({
           </p>
         )}
       </Card>
+      {codexInstalled && <Card
+        title="Codex 干活检查"
+        meta="上面的连接自检只确认能连上。这里让 Codex 用的模型真的做一件小事：调用一个什么都不改的测试工具，再把结果读回来。会用当前账号的额度发两次请求，花费很少，但不是零；不会碰你电脑上的文件。"
+        testId="health-codex-responses"
+      >
+        <Switch
+          checked={responsesConsent}
+          onChange={setResponsesConsent}
+          label="我知道这次检查会用当前账号的一点额度"
+          description="每次检查前都要重新勾选。"
+          disabled={responsesBusy}
+          testId="health-codex-responses-consent"
+        />
+        <Button
+          icon={PlugZap}
+          disabled={!responsesConsent || responsesBusy}
+          loading={responsesBusy}
+          onClick={() => void runCodexResponsesProbe()}
+          testId="health-codex-responses-run"
+        >
+          开始检查
+        </Button>
+        {responsesView && (
+          <Notice
+            tone={responsesView.tone}
+            title={`Codex 干活检查 · ${responsesView.statusLabel}`}
+            body={<><div>{responsesView.title}</div><div>{responsesView.body}</div>{responsesView.detail && <p>{responsesView.detail}</p>}</>}
+            testId="health-codex-responses-result"
+          />
+        )}
+        {responsesError && <Notice tone="bad" title="Codex 干活检查 · 没测成" body={responsesError} testId="health-codex-responses-error" />}
+      </Card>}
       {resource.data && (
         <Toolbar
           left={

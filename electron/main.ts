@@ -130,7 +130,8 @@ import {
   type DiagnosticsReport,
   type DiagnosticsRunOptions,
 } from './diagnostics'
-import { runConnectionCheck } from './connection-check'
+import { buildConnectionProbe, runConnectionCheck } from './connection-check'
+import { createCodexResponsesProbeService } from './codex-responses-probe'
 import type { ExternalToolId } from './external-tool-config'
 import { registerIpcHandlers, type AppWindowMode } from './ipc'
 import {
@@ -1003,6 +1004,7 @@ if (!hasSingleInstanceLock) {
     }
     let readAccountSiteId: () => string = () => 'solov'
     let readExternalClientAccountId: () => string | null = () => null
+    let readBillingAccountScope: () => string = () => 'xm-account:guest'
     // 下载专用的网络分区：它的代理只在装 CLI / 下 Node 的那几分钟里被设成加速
     // 内核的回环端口，默认 session 一行不动，所以账号、中转与画布流量不受
     // 影响。非 persist: 前缀 = 内存分区，不落盘。
@@ -1158,6 +1160,31 @@ if (!hasSingleInstanceLock) {
     // 最近一次连接自检的结论，只留进报告的那几项（没有 Key、没有地址、没有站
     // 点名）。键是四个工具，所以天然有界。
     const latestConnectionChecks = new Map<ProviderId, FeedbackConnectionRecord>()
+    function codexProbeContext() {
+      const site = resolveRelaySite(systemService.readStoredConfig().relaySiteId)
+      const inspection = inspectProviderConfig(
+        'codex', rootedOptions.system.providerRoots, site.providerBaseUrls,
+      )
+      return { site, inspection }
+    }
+    const codexResponsesProbe = createCodexResponsesProbeService(
+      () => {
+        const { site, inspection } = codexProbeContext()
+        return buildConnectionProbe('codex', site, inspection)
+      },
+      {
+        fetch: relayFetch,
+        // The Key stays in main-process memory. Re-reading it after the first
+        // response prevents a second paid request after account/source changes.
+        currentScope: () => {
+          const { site, inspection } = codexProbeContext()
+          return JSON.stringify([
+            readBillingAccountScope(), site.id, inspection.actualBaseUrl,
+            inspection.apiKey, inspection.model, inspection.matchesRelay,
+          ])
+        },
+      },
+    )
     // 诊断导出与反馈报告都要把本机真正写着的那几把 Key 当敏感值剔掉。
     const sensitiveKeyValues = () => providerIds
       .map((provider) => inspectProviderConfig(provider, rootedOptions.system.providerRoots).apiKey)
@@ -1217,6 +1244,12 @@ if (!hasSingleInstanceLock) {
           checkedAt: result.checkedAt,
         })
         return result
+      },
+      probeCodexResponses: (expectedAccountScope: string) => {
+        if (expectedAccountScope !== readBillingAccountScope()) {
+          throw new Error('当前账号变了，请重新勾选确认后再检查')
+        }
+        return codexResponsesProbe.run()
       },
       // 外部客户端的自检由 system-service 出面：Key、地址与归属都只有它算得出
       // 来，主进程这一层只负责把它接到通道上。
@@ -1582,6 +1615,11 @@ if (!hasSingleInstanceLock) {
     })
     readAccountSiteId = () => accounts.getSiteId()
     const accountService = accounts.client
+    readBillingAccountScope = () => {
+      const state = accountService.getSessionState()
+      const realm = accounts.getSiteId() === 'solov-api' ? 'api-account' : 'xm-account'
+      return `${realm}:${state.authenticated && state.account ? state.account.userId : 'guest'}`
+    }
     readExternalClientAccountId = () => {
       const state = accountService.getSessionState()
       return state.authenticated && state.account ? JSON.stringify([accounts.getSiteId(), state.account.userId]) : null
