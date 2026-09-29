@@ -912,6 +912,7 @@ export interface XingmangInvokeContract {
   redeemAccelerationCode: IpcInvokeDefinition<'acceleration:redeem-code', [scope: string, code: string], import('./acceleration-contract').AccelerationRedemptionResult>
   getAccelerationPreference: IpcInvokeDefinition<'acceleration:get-preference', [scope: string], import('./acceleration-contract').AccelerationPreference>
   saveAccelerationPreference: IpcInvokeDefinition<'acceleration:save-preference', [scope: string, update: import('./acceleration-contract').AccelerationPreferenceUpdate], import('./acceleration-contract').AccelerationPreference>
+  recheckAccelerationBundle: IpcInvokeDefinition<'acceleration:recheck-bundle', [], import('./acceleration-contract').AccelerationBundleCheck>
   getLegalDocument: IpcInvokeDefinition<'account:get-legal-document', [kind: LegalDocumentKind, siteId?: AccountSiteId], LegalDocument>
   loginAccount: IpcInvokeDefinition<'account:login', [input: AccountLoginInput], AccountLoginResult>
   submitTwoFactorCode: IpcInvokeDefinition<'account:submit-two-factor-code', [code: string], AccountLoginResult>
@@ -1070,6 +1071,16 @@ export interface XingmangInvokeContract {
     'diagnostics:check-connection',
     [provider: ProviderId],
     ConnectionCheckResult
+  >
+  /**
+   * 「Codex 干活检查」：会花当前账号一点额度，所以只有用户勾选确认后才发两次
+   * Responses 请求（第一次让模型调用无副作用的测试工具，第二次把结果交回去）。
+   * 本通道不在配置保存、账号切换或普通连接自检中调用。
+   */
+  probeCodexResponses: IpcInvokeDefinition<
+    'diagnostics:probe-codex-responses',
+    [acknowledgeBilling: true, expectedAccountScope: string],
+    ConnectionProbeReport
   >
   /**
    * 外部客户端（WorkBuddy / Claude Desktop / OpenCode）的连接自检。与上面那条
@@ -1259,6 +1270,7 @@ export const ipcInvokeChannels = {
   redeemAccelerationCode: 'acceleration:redeem-code',
   getAccelerationPreference: 'acceleration:get-preference',
   saveAccelerationPreference: 'acceleration:save-preference',
+  recheckAccelerationBundle: 'acceleration:recheck-bundle',
   getLegalDocument: 'account:get-legal-document',
   loginAccount: 'account:login',
   submitTwoFactorCode: 'account:submit-two-factor-code',
@@ -1322,6 +1334,7 @@ export const ipcInvokeChannels = {
   exportAppData: 'data-transfer:export',
   importAppData: 'data-transfer:import',
   checkProviderConnection: 'diagnostics:check-connection',
+  probeCodexResponses: 'diagnostics:probe-codex-responses',
   checkExternalClientConnection: 'diagnostics:check-external-connection',
   getAccountKeyOptions: 'account:get-key-options',
   clearStaleProxySettings: 'diagnostics:clear-stale-proxy',
