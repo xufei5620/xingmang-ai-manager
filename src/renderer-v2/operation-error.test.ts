@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { classifyOperationError, operationFallbackActions, operationLogPage, presentOperationError, type OperationErrorKey } from './operation-error'
+import { classifyOperationError, operationFallbackActions, operationLogPage, presentOperationError, presentOperationFailure, type OperationErrorKey } from './operation-error'
 import { networkFailureMessages, toolCertificateMessages } from '../../electron/network-failure'
 import { errors } from './registry/errors'
 import { buildCodexDesktopInstallFailureMessage, codexDesktopInstallFailureReasons, type CodexDesktopInstallFailureReason } from '../../electron/codex-desktop-install-failure'
@@ -345,5 +345,19 @@ describe('renderer-v2 operation error classification', () => {
       { id: 'log', label: '查看日志' },
       { id: 'support', label: '找客服' },
     ])
+  })
+})
+
+describe('presentOperationFailure', () => {
+  it('reads the cause from the kept original when the message is only the fallback', () => {
+    expect(presentOperationFailure({ message: '打开 Codex 桌面端没有完成', detail: 'ENOSPC: no space left on device' })?.key).toBe('diskFull')
+    expect(presentOperationFailure({ message: '重新写入 Key没有完成', detail: 'EBUSY: resource busy or locked' })?.key).toBe('toolRunning')
+    expect(presentOperationFailure({ message: '打开 Codex 桌面端没有完成', detail: 'spawn ENOSYS' })).toBeNull()
+    expect(presentOperationFailure({ message: '打开 Codex 桌面端没有完成' })).toBeNull()
+  })
+
+  it('lets the log page follow the original too', () => {
+    expect(operationLogPage({ message: '安装没有完成', detail: 'Defender 已被隔离', tool: 'claude' })).toBe('maintenance')
+    expect(operationLogPage({ message: '安装没有完成', detail: 'ENOSPC', tool: 'claude' })).toBe('feedback')
   })
 })

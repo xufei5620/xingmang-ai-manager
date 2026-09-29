@@ -30,6 +30,8 @@ const valueImportable = [
   'electron/git-runtime',
   'electron/ipc-contract',
   'electron/network-failure',
+  // 错误框「给客服看的原话」和「复制给客服」要和日志、反馈报告用同一张 Key 打码表（第二十批 2、3）。
+  'electron/redaction-patterns',
   'electron/relay-quota-failure',
   'electron/relay-sites',
   'electron/running-tools',
