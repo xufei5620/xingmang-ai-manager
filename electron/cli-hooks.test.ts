@@ -14,6 +14,7 @@ import {
   cliHookTargetsStale,
   geminiCliHookCommand,
   grokCliHookCommand,
+  grokCliHookShellChanged,
   isManagedCliHook,
   managedCliHookTargets,
   removeClaudeCliHooks,
@@ -467,10 +468,10 @@ describe('managed hook targets', () => {
     expect(managedCliHookTargets('claude', claude)).toEqual(Array(5).fill(expected(posix)))
     const gemini: Record<string, unknown> = {}
     applyGeminiCliHooks(gemini, windows)
-    expect(managedCliHookTargets('gemini', gemini)).toEqual(Array(4).fill(expected(windows)))
+    expect(managedCliHookTargets('gemini', gemini)).toEqual(Array(4).fill({ ...expected(windows), form: 'powershell' }))
     const grok: Record<string, unknown> = {}
     applyGrokCliHooks(grok, posix)
-    expect(managedCliHookTargets('grok', grok)).toEqual(Array(6).fill(expected(posix)))
+    expect(managedCliHookTargets('grok', grok)).toEqual(Array(6).fill({ ...expected(posix), form: 'posix' }))
     const codex: Record<string, unknown> = {}
     applyCodexCliNotify(codex, windows)
     expect(managedCliHookTargets('codex', codex)).toEqual([expected(windows)])
@@ -492,6 +493,34 @@ describe('managed hook targets', () => {
     expect(cliHookTargetsStale([{ ...target, nodeExecutable: '/old/node' }], [], { exists, platform: 'darwin' })).toBe(true)
     expect(cliHookTargetsStale([{ nodeExecutable: '', scriptPath: '' }], [], { exists, platform: 'darwin' })).toBe(true)
     expect(cliHookTargetsStale([{ ...target, scriptPath: 'relative/xingmang-hook.cjs' }], [], { exists: () => true, platform: 'darwin' })).toBe(true)
+  })
+
+  it('tells which shell each written Grok command was written for', () => {
+    for (const [grokWindowsShell, form] of [['powershell', 'powershell'], ['bash', 'posix']] as const) {
+      const grok: Record<string, unknown> = {}
+      applyGrokCliHooks(grok, { ...windows, grokWindowsShell })
+      expect(managedCliHookTargets('grok', grok)).toEqual(Array(6).fill({ ...expected(windows), form }))
+    }
+  })
+
+  it('calls Grok hooks stale when Grok now picks another shell than the one they were written for', () => {
+    const targetsFor = (grokWindowsShell: 'powershell' | 'bash') => {
+      const grok: Record<string, unknown> = {}
+      applyGrokCliHooks(grok, { ...windows, grokWindowsShell })
+      return managedCliHookTargets('grok', grok)
+    }
+    const powershell = targetsFor('powershell')
+    const bash = targetsFor('bash')
+    expect(grokCliHookShellChanged(powershell, 'powershell')).toBe(false)
+    expect(grokCliHookShellChanged(bash, 'bash')).toBe(false)
+    // The customer installed Git for Windows themselves: Grok moves from Windows PowerShell to Git Bash.
+    expect(grokCliHookShellChanged(powershell, 'bash')).toBe(true)
+    // PowerShell 7 on PATH (or Git removed) moves it back.
+    expect(grokCliHookShellChanged(bash, 'powershell')).toBe(true)
+    // GROK_SHELL=cmd: none of ours may stay.
+    expect(grokCliHookShellChanged(powershell, 'cmd')).toBe(true)
+    expect(grokCliHookShellChanged([], 'cmd')).toBe(false)
+    expect(grokCliHookShellChanged([], 'bash')).toBe(false)
   })
 
   it('compares Windows script paths without case', () => {

@@ -582,6 +582,22 @@ describe('renderer-v2 home missing runtime guidance on macOS', () => {
       const markup = render({}, undefined, { snapshot: staleSnapshot() })
       expect(markup).not.toContain('data-testid="tool-claude-repair-hooks"')
     })
+
+    // 客户自己装了 Git 或 PowerShell 7，Windows 版 Grok 换了命令行，写下去的那种写法跑不起来了。
+    it('says Grok switched its command line when that is why the hooks need fixing', () => {
+      const base = snapshot({ claude: cliStatus, codex: cliStatus, grok: cliStatus, gemini: cliStatus })
+      const shellChanged = {
+        ...base,
+        config: {
+          ...base.config,
+          providers: { ...base.config.providers, grok: { ...providerConfig, configurationOwnership: 'account', cliHooksStale: true, cliHooksShellChanged: true } },
+        },
+      } as unknown as ToolboxSnapshot
+      const markup = render({}, undefined, { snapshot: shellChanged, onRepairHooks: () => undefined })
+      expect(markup).toContain('Grok 换了命令行，星芒写的提醒设置要跟着改一下，不然每次都会多报一行错')
+      expect(markup).not.toContain('工具里的提醒设置指向了旧位置')
+      expect(markup).toContain('data-testid="tool-grok-repair-hooks"')
+    })
   })
 
   // 以前用 CC Switch 配过的电脑：登录后软件不改来源没确认的配置，工具还连着以前那家，

@@ -100,6 +100,11 @@ export interface NativeConfigSummary extends Omit<NativeConfigInspection, 'apiKe
    * （卸载后换目录重装、挪了 app、换装了 Node.js）。首页据此给「修好它」。缺省 = 没发现。
    */
   cliHooksStale?: boolean
+  /**
+   * 只给 Windows 上的 Grok：钩子路径都对，但客户后来装了或卸了 Git、PowerShell 7，Grok 换了
+   * 命令行，我们写下去的那种写法在新命令行里跑不起来。为真时 cliHooksStale 也为真，只多一句说明。
+   */
+  cliHooksShellChanged?: boolean
 }
 
 export function apiKeyPreview(apiKey: string): string | null {

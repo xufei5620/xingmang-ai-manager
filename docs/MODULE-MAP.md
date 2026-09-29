@@ -27,6 +27,7 @@
 - `security.ts` (179) — URL 策略。外链白名单要求 `href` **全等**匹配
 - `windows-elevation.ts` (462) — 提权模式判定、可信命令断言、PowerShell 启动计划
 - `windows-machine-paths.ts` (532) — 从注册表推导真实系统根 + ACL 校验
+- `windows-live-path.ts` — 读注册表里整台电脑 + 当前账号的 PATH（异步 reg.exe），只给推 Grok 跑钩子的 shell 与从星芒打开 Grok 用，不进提权路径解析
 - `trusted-temp.ts` (494) — 受 ACL 保护的临时目录
 - `managed-path-trust.ts` / `system-shell.ts`
 

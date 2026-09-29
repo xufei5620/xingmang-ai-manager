@@ -2909,9 +2909,9 @@ describe('hooks and status line pointing at an old location', () => {
     expect(claude).toHaveLength(6)
     expect(claude.slice(0, 5)).toEqual(Array(5).fill(oldTargets))
     expect(claude[5]).toEqual({ nodeExecutable: '/managed/node/bin/node', scriptPath: '/opt/app/resources/bundled-catalog/cli-status-line/xingmang-statusline.cjs' })
-    expect(inspectManagedCliHookTargets('gemini', roots)).toEqual(Array(4).fill(oldTargets))
+    expect(inspectManagedCliHookTargets('gemini', roots)).toEqual(Array(4).fill({ ...oldTargets, form: 'posix' }))
     expect(inspectManagedCliHookTargets('codex', roots)).toEqual([oldTargets])
-    expect(inspectManagedCliHookTargets('grok', roots)).toEqual(Array(6).fill(oldTargets))
+    expect(inspectManagedCliHookTargets('grok', roots)).toEqual(Array(6).fill({ ...oldTargets, form: 'posix' }))
   })
 
   it('rewrites only our entries to the new location and keeps keys, models and user hooks', () => {
