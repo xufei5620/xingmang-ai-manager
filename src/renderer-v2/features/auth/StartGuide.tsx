@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { ArrowLeft, ArrowRight, Check, CircleCheck, Copy, Download, FolderOpen, FolderPlus, KeyRound, LogIn, MessageSquare, RefreshCw, Settings, Terminal } from 'lucide-react'
+import { ArrowLeft, ArrowRight, Check, CircleCheck, Copy, Download, FolderOpen, FolderPlus, KeyRound, LogIn, MessageSquare, RefreshCw, Settings, Terminal, Zap } from 'lucide-react'
 import type { AccountSourceSwitchResult, ProviderConfigSummary, ProviderId } from '../../../../electron/ipc-contract'
 import { BrandIcon, Button, Card, Logo, Pill, Progress } from '../../ui'
 import { guideRecommendedTool, officialAccountNames, officialAccountNotes, tools as toolRegistry } from '../../registry/tools'
@@ -172,7 +172,11 @@ export function StartGuide(props: StartGuideProps) {
   return <AuthWindow platform={props.platform}><ScopedStartGuide key={`${props.resumeKey ?? 'volatile'}:${props.platform}`} {...props} /></AuthWindow>
 }
 
-function GuideResultCard({ result }: { result: GuideSetupResult }) {
+/**
+ * 很多客户是客服远程装好的，走完引导也没人告诉他钱从哪来、没钱了去哪充。
+ * onRecharge 只在最后一步、而且花的确实是当前账号的余额时才给。
+ */
+function GuideResultCard({ result, onRecharge, disabled = false }: { result: GuideSetupResult; onRecharge?: () => void; disabled?: boolean }) {
   return <section className="auth-guide-result" aria-label="安装与连接结果" data-testid="guide-result">
     {([
       ['install', '安装情况', result.install],
@@ -182,6 +186,7 @@ function GuideResultCard({ result }: { result: GuideSetupResult }) {
       <strong>{label}</strong><div><Pill tone={row.tone}>{row.value}</Pill><p>{row.detail}</p></div>
     </div>)}
     <p className="auth-guide-result-billing" data-testid="guide-result-billing">费用：{result.billing}</p>
+    {onRecharge && result.usesAccountBalance && <div className="auth-guide-check-row" data-testid="guide-recharge"><Zap size={20} aria-hidden="true" /><div><strong>还没充值的话先充值</strong><p>点「去充值」在软件里付款，付完马上能用，不用重新设置。以后余额用完了，点左下角余额旁边的「充值」就行。</p></div><Button variant="balance" size="sm" icon={Zap} disabled={disabled} onClick={onRecharge} testId="guide-recharge-button">去充值</Button></div>}
   </section>
 }
 
@@ -287,6 +292,8 @@ function ScopedStartGuide({ platform, tools, signedIn, busy = false, progress, o
   }, [signedIn, locked, step, route])
   const move = (nextStep: GuideStep) => { setStep(nextStep); if (route) saveProgress(route, nextStep) }
   const complete = (chosen: GuideRoute) => { clearGuideProgress(getGuideStorage(), resumeKey); onComplete(chosen) }
+  // 去充值就算走完引导：否则下次登录引导又从头弹出来，客户以为刚才没弄好。
+  const recharge = (chosen: GuideRoute) => { if (locked) return; complete(chosen); onFailureAction?.('recharge') }
   const run = async (action: string, work: () => Promise<void>) => {
     if (lock.current || busy) return
     const ticket = owner.current
@@ -375,7 +382,7 @@ function ScopedStartGuide({ platform, tools, signedIn, busy = false, progress, o
           </>}
           {step === 'connect' && route === 'chat' && <><p className="auth-guide-callout">{signedIn ? '进入聊天后，选择分组和模型，再输入第一个问题。' : '登录星芒账号后即可开始聊天。'}</p>{!signedIn && <Button variant="primary" icon={LogIn} onClick={onLogin} testId="guide-login">登录账号</Button>}</>}
           {step === 'connect' && route && route !== 'chat' && <>{foreign ? <p className="auth-guide-lead" data-testid="guide-foreign-key" data-key-state={foreign}>{foreignLead[foreign]}</p> : <p className="auth-guide-lead">{name} 的连接方式：<strong>{sourceLabel}</strong></p>}<p className="auth-guide-callout" data-testid={tool?.officialLoginRequired ? 'guide-official-login' : undefined}>{foreign ? `${foreignCallout[foreign]}${codexShared}` : tool?.source === 'unknown' ? '你原来的配置已经原样留着。先看看处理步骤，确认哪些设置要留下，再决定怎么连接。' : tool?.officialLoginRequired ? `当前选的是官方账号，但还没有在 ${name} 里登录。请打开 ${name} 用 ChatGPT 账号登录后回来重新检测，或打开配置改用星芒账号的密钥。` : tool?.source === 'official' ? '保留当前官方来源。官方账号的登录和可用额度，请在工具内确认。' : readiness.connected ? '当前连接已确认。需要换密钥、模型或工作文件夹时，可以打开配置。' : '打开配置选择连接来源、密钥、模型和工作文件夹，确认后保存。'}</p>{officialNote && <p className="auth-hint" data-testid="guide-official-note">{officialNote}</p>}{tool?.model && <p className="auth-hint">模型：{tool.model}</p>}{tool?.workspace && <p className="auth-hint">工作文件夹：{tool.workspace}</p>}<div className="auth-form-actions">{offerSwitch && <Button icon={KeyRound} variant={foreign === 'otherSite' ? 'primary' : 'secondary'} loading={pending === '改用当前账号'} disabled={locked} onClick={switchAccount} testId="guide-switch-account">{switchButton}</Button>}{foreign !== 'otherSite' && <><Button icon={Settings} variant={readiness.connected || offerSwitch ? 'secondary' : 'primary'} disabled={locked} onClick={() => void run('确认连接', () => onConfigure(route))} testId="guide-config">{tool?.source === 'unknown' && !foreign ? '查看已有配置处理步骤' : readiness.connected ? '查看连接配置' : '去完成连接配置'}</Button><Button icon={RefreshCw} disabled={locked} onClick={() => void run('检测工具', onDetect)} testId="guide-connection-rescan">重新检测</Button></>}</div></>}
-          {(step === 'connect' || step === 'ready') && result && <GuideResultCard result={result} />}
+          {(step === 'connect' || step === 'ready') && result && <GuideResultCard result={result} disabled={locked} onRecharge={step === 'ready' && onFailureAction && route && readiness.prepared && readiness.connected ? () => recharge(route) : undefined} />}
           {step === 'ready' && <>
             <p className="auth-guide-lead">{route === 'chat' ? '从一个问题开始，慢慢熟悉你的 AI 工作台。' : readiness.prepared && readiness.connected ? switchedHere?.target === 'account' && !switchedHere.verified ? `${name} 已改用你的账号，但这次没能确认能用。` : `${name} 已准备好。打开工具，即可开始第一次任务。` : '工具或配置状态已变化，请返回复核。'}</p>
             {switchedHere ? <div className="auth-hint auth-guide-connected" data-testid="guide-switched-note" data-backup-id={switchedHere.backupId.trim() || undefined}><p>{switchReceipt(switchedHere)}</p>{switchedHere.target === 'account' && !switchedHere.verified && onFailureAction && guideFailureExits(switchedHere.message).map((action) => <Button key={action.id} size="sm" disabled={locked} onClick={() => onFailureAction(action.id)} testId={`guide-exit-${action.id}`}>{action.label}</Button>)}</div> : skipConnect && <p className="auth-hint auth-guide-connected" data-testid="guide-connected-note">已用当前账号连好。想换密钥或模型，<Button variant="ghost" size="sm" disabled={locked} onClick={() => { if (route && route !== 'chat') void run('确认连接', () => onConfigure(route)) }} testId="guide-connected-config">点这里</Button></p>}
