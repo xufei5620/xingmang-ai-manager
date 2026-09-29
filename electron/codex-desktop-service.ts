@@ -1429,6 +1429,17 @@ export async function verifyInstalledCodexDesktop(
   return installedProbe.value
 }
 
+export function assertCodexDesktopUninstalled(
+  previousPackageFullName: string,
+  remaining: CodexDesktopPackageProbe,
+): void {
+  if (!remaining.error && remaining.confirmedAbsent === true && !remaining.value) return
+  if (remaining.value?.packageFullName === previousPackageFullName) {
+    throw new Error('Windows 仍报告 Codex 桌面端 Appx 包存在，卸载未完成')
+  }
+  throw new Error('卸载命令已执行，但未能确认 Codex 桌面端已经移除。请重新检测安装状态后再试')
+}
+
 function delay(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds))
 }
@@ -2492,9 +2503,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
         maxBuffer: 4 * 1024 * 1024,
       })
       const remaining = await inspectCodexDesktopPackage()
-      if (remaining.value?.packageFullName === installedPackage.packageFullName) {
-        throw new Error('Windows 仍报告 Codex 桌面端 Appx 包存在，卸载未完成')
-      }
+      assertCodexDesktopUninstalled(installedPackage.packageFullName, remaining)
       invalidateCodexDesktopManifestCache()
       return { outcome: 'uninstalled', previousVersion: installedPackage.version }
     } finally {

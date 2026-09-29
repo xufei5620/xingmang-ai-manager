@@ -10,7 +10,7 @@ import {
 
 function setup() {
   let enabled = true
-  const preferences = { install: true, balance: true, task: true, cliUpdate: true, announcement: true, acceleration: true }
+  const preferences = { install: true, balance: true, task: true, cliUpdate: true, announcement: true, spend: true, acceleration: true }
   const notifications: Array<
     EventEmitter & {
       show: ReturnType<typeof vi.fn>
@@ -158,6 +158,21 @@ describe('acceleration reminders sent by the main process', () => {
     })
   })
 
+  it('says a payment settled after its window closed, once per order, without the order number', () => {
+    const h = setup()
+    for (const kind of Object.keys(h.preferences) as Array<keyof typeof h.preferences>) h.preferences[kind] = false
+    expect(h.controller.notifyHost('paymentSettled', 'XM-20260925-1')).toBe('requested')
+    expect(h.runtime.create).toHaveBeenLastCalledWith({
+      title: '付款已到账',
+      body: '刚才那笔订单已到账，余额和订阅已更新。',
+      silent: true,
+    })
+    expect(JSON.stringify((h.runtime.create as ReturnType<typeof vi.fn>).mock.calls)).not.toContain('XM-20260925-1')
+    expect(h.controller.notifyHost('paymentSettled', 'XM-20260925-1')).toBe('duplicate')
+    h.enable(false)
+    expect(h.controller.notifyHost('paymentSettled', 'XM-20260925-2')).toBe('disabled')
+  })
+
   it('keeps the copy free of the relay site name, top-up pitch and technical words', () => {
     const h = setup()
     h.controller.notifyHost('accelerationExpiring', 'xm-account:1:t0')
@@ -257,6 +272,32 @@ describe('announcement reminders', () => {
   })
 })
 
+describe('spend spike reminders', () => {
+  it('writes the amount and multiple in a fixed format built in the main process', () => {
+    expect(buildActivityNotificationMessage('spend', 'spend:7:1', { cents: 1240, multiple: 8 })).toEqual({
+      title: '这一小时花得比平时多',
+      body: '过去一小时用掉了 $12.40，大约是平时的 8 倍。如果不是你在用，回星芒看看是哪个工具。',
+    })
+    expect(buildActivityNotificationMessage('spend', 'spend:7:1', { cents: 505, multiple: null }).body)
+      .toBe('过去一小时用掉了 $5.05，比平时多很多。如果不是你在用，回星芒看看是哪个工具。')
+  })
+  it('can be switched off on its own and opens the usage page on click', () => {
+    const h = setup()
+    h.openPage.mockImplementation(() => undefined)
+    h.preferences.spend = false
+    expect(h.controller.notify('spend', 'spend:7:1', { cents: 1240, multiple: 8 })).toBe('disabled')
+    h.preferences.spend = true
+    expect(h.controller.notify('spend', 'spend:7:1', { cents: 1240, multiple: 8 })).toBe('requested')
+    expect(h.controller.notify('spend', 'spend:7:1', { cents: 1240, multiple: 8 })).toBe('duplicate')
+    h.notifications[0].emit('click')
+    expect(h.openPage).toHaveBeenCalledWith('usage')
+  })
+  it('never names the relay site', () => {
+    const { title, body } = buildActivityNotificationMessage('spend', 'spend:7:1', { cents: 1240, multiple: 8 })
+    expect(`${title} ${body}`).not.toMatch(/solov|new-api|relay|sub2api|API/i)
+  })
+})
+
 describe('chat notifications and click destinations', () => {
   it('uses chat-specific copy for chat and image completions instead of the async task sentence', () => {
     expect(buildActivityNotificationMessage('task', 'chat:req-1')).toEqual({
@@ -279,6 +320,7 @@ describe('chat notifications and click destinations', () => {
     expect(resolveNotificationTarget('install', 'install:claude:installed:1')).toBe('home')
     expect(resolveNotificationTarget('cliUpdate', 'claude@2')).toBe('home')
     expect(resolveNotificationTarget('announcement', 'notice-1')).toBe('announcement')
+    expect(resolveNotificationTarget('spend', 'spend:7:1')).toBe('usage')
     expect(resolveNotificationTarget('test', 'test')).toBeNull()
   })
   it('focuses the window before opening the destination page on click', () => {
@@ -301,7 +343,7 @@ describe('chat notifications and click destinations', () => {
     const controller = createPlatformNotifications(
       {
         readEnabled: () => true,
-        readPreferences: () => ({ install: true, balance: true, task: true, cliUpdate: true, announcement: true, acceleration: true }),
+        readPreferences: () => ({ install: true, balance: true, task: true, cliUpdate: true, announcement: true, spend: true, acceleration: true }),
         focusMainWindow,
         onError,
       },

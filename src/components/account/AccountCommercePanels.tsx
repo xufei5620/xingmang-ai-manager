@@ -237,6 +237,8 @@ export function AccountCommercePanels({
   useEffect(() => { pendingSubscriptionPaymentRef.current = pendingSubscriptionPayment }, [pendingSubscriptionPayment])
 
   useEffect(() => window.xingmang.onAccountPaymentWindowTerminal((event: AccountPaymentWindowTerminalEvent) => {
+    // 契约新增的「后台问满仍没结果」只给新界面用；旧界面冻结，照旧不认识就不处理。
+    if (event.status === 'unconfirmed') return
     const pendingTopup = pendingPaymentRef.current
     const matchesTopup = pendingTopup
       && (!event.tradeNo || !pendingTopup.tradeNo || event.tradeNo === pendingTopup.tradeNo)

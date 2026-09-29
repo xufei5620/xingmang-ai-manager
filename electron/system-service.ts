@@ -9,6 +9,12 @@ import { type AppSettings, type AppSettingsUpdate, AppSettingsStore, type Mirror
 import type { RuntimeLogLike } from './account-session-store'
 import type { InstallProgressStage } from './ipc-contract'
 import { redactHomeDirectory } from './startup-log'
+import {
+  bypassClosedLoopbackProxies,
+  describeDroppedProxies,
+  probeLoopbackProxy,
+  type LoopbackProbe,
+} from './stale-proxy-environment'
 import { cliCatalog, providerIds, type ProviderId } from './catalog'
 import {
   buildCliVersionAdvice,
@@ -111,7 +117,7 @@ import {
   type CliUninstallCapability,
 } from './tool-installation'
 export type { CliLaunchMode } from './tool-installation'
-import { isNewerVersion, nodeVersionStatus, type NodeVersionStatus } from './versions'
+import { isExactCliVersion, isNewerVersion, nodeVersionStatus, type NodeVersionStatus } from './versions'
 import {
   inspectWindowsRestartRequired,
   installNodeRuntime as installNodeRuntimeLts,
@@ -247,7 +253,6 @@ const maximumModelResponseBytes = 1024 * 1024
 const modelAccessCacheMaxEntries = 32
 const maximumRuntimeManifestBytes = 256 * 1024
 const maximumGrokVersionMetadataBytes = 16 * 1024
-const semanticVersionPattern = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z](?:[0-9A-Za-z.-]{0,126})?)?(?:\+[0-9A-Za-z](?:[0-9A-Za-z.-]{0,126})?)?$/
 
 export type UpdateCheckStatus = 'checked' | 'failed' | 'skipped'
 export type UpdateState = 'available' | 'latest' | 'unknown'
@@ -909,11 +914,11 @@ export function parseLatestNpmVersion(output: string): string | null {
       : parsed && typeof parsed === 'object' && !Array.isArray(parsed)
         ? (parsed as Record<string, unknown>).version
         : null
-    return typeof candidate === 'string' && semanticVersionPattern.test(candidate.trim())
+    return typeof candidate === 'string' && isExactCliVersion(candidate.trim())
       ? candidate.trim()
       : null
   } catch {
-    return semanticVersionPattern.test(trimmed) ? trimmed : null
+    return isExactCliVersion(trimmed) ? trimmed : null
   }
 }
 
@@ -924,7 +929,7 @@ export function parseGrokLocalVersion(input: string): string | null {
     const record = parsed as Record<string, unknown>
     for (const key of ['version', 'stable_version']) {
       const value = record[key]
-      if (typeof value === 'string' && semanticVersionPattern.test(value.trim())) {
+      if (typeof value === 'string' && isExactCliVersion(value.trim())) {
         return value.trim()
       }
     }
@@ -1010,7 +1015,7 @@ async function readPackageManifestVersion(filePath: string, label: string): Prom
     )) as unknown
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null
     const version = (parsed as Record<string, unknown>).version
-    return typeof version === 'string' && semanticVersionPattern.test(version.trim())
+    return typeof version === 'string' && isExactCliVersion(version.trim())
       ? version.trim()
       : null
   } catch {
@@ -1411,7 +1416,7 @@ export function parseNpmPackageReleaseMetadata(
   const name = typeof record.name === 'string' ? record.name.trim() : ''
   const version = typeof record.version === 'string' ? record.version.trim() : ''
   const integrity = typeof dist?.integrity === 'string' ? dist.integrity.trim() : ''
-  if (name !== expectedPackageName || !semanticVersionPattern.test(version)) return null
+  if (name !== expectedPackageName || !isExactCliVersion(version)) return null
   const match = integrity.match(/^sha512-([A-Za-z0-9+/]+={0,2})$/)
   if (!match) return null
   try {
@@ -1563,7 +1568,7 @@ function canonicalNpmPackageLock(
     const entryVersion = typeof record.version === 'string' ? record.version.trim() : ''
     const integrity = typeof record.integrity === 'string' ? record.integrity.trim() : ''
     const integrityMatch = integrity.match(/^sha512-([A-Za-z0-9+/]+={0,2})$/)
-    if (!semanticVersionPattern.test(entryVersion) || !integrityMatch) {
+    if (!isExactCliVersion(entryVersion) || !integrityMatch) {
       throw new Error(`npm package-lock.json 包版本或 SHA-512 无效：${location}`)
     }
     if (Buffer.from(integrityMatch[1], 'base64').length !== 64) {
@@ -1782,7 +1787,7 @@ export function buildCliMaintenancePlan(
   if (platform === 'darwin' && provider !== 'grok' && !npmPrefix) {
     throw new Error('macOS 用户级 npm 前缀不能为空')
   }
-  if (version !== 'latest' && !semanticVersionPattern.test(version)) {
+  if (version !== 'latest' && !isExactCliVersion(version)) {
     throw new Error('npm CLI 版本号格式无效')
   }
   if (provider === 'grok') {
@@ -1960,10 +1965,10 @@ export function buildCliStatus(
     }
   }
   if (isNewerVersion(installed.version, latest.version)) {
-    // 名单把安装钉在已装的这个版本上时,npm 上更新的版本不是用户能点的更新:
-    // 点「更新」只会把同一个版本重装一遍。所以这里如实报「已是最新」,
-    // 而 latestVersion 仍然照实带上,不瞒着上游真实进度。
-    if (versionAdvice?.pinned && versionAdvice.onRecommended) {
+    // npm latest 变新并不代表推荐安装目标也变新；同版重装和退回推荐版
+    // 都不是更新。latestVersion 仍保留真实上游版本供界面说明。
+    if (versionAdvice?.pinned && versionAdvice.recommendedVersion
+      && !isNewerVersion(installed.version, versionAdvice.recommendedVersion)) {
       return { ...base, updateAvailable: false, updateState: 'latest', updateError: null }
     }
     return { ...base, updateAvailable: true, updateState: 'available', updateError: null }
@@ -2117,6 +2122,8 @@ export interface SystemServiceOptions {
   downloadFetch?: typeof fetch
   /** Loopback-only proxy variables handed to package-manager subprocesses. */
   resolveSubprocessProxyEnvironment?: () => Promise<NodeJS.ProcessEnv>
+  /** 试连电脑里代理设置指向的本机端口；缺省 = 真的去连（stale-proxy-environment.ts）。 */
+  probeLoopbackProxy?: LoopbackProbe
   /**
    * 下载期间临时拉起加速（只开本机回环端口，不动系统代理）。缺省 = 不做，
    * 行为与从前一致。真正的路由由宿主实现，这里只需要知道它有没有生效——
@@ -2285,6 +2292,21 @@ export function createSystemService(
   const resolveSubprocessProxyEnvironment = serviceOptions.resolveSubprocessProxyEnvironment
     ?? (async (): Promise<NodeJS.ProcessEnv> => ({}))
   const acquireDownloadAcceleration = serviceOptions.acquireDownloadAcceleration
+  const probeLoopbackProxyForService = serviceOptions.probeLoopbackProxy ?? probeLoopbackProxy
+  /**
+   * 电脑里留着指向本机某个没开的代理的设置时，这一次不带它（第十六批 5）。只减不增：
+   * 开着的、指向别的机器的照旧带上；探测出错时原样返回，不挡住打开和安装。
+   */
+  async function withoutDeadLoopbackProxies(env: NodeJS.ProcessEnv, provider: ProviderId): Promise<NodeJS.ProcessEnv> {
+    const bypass = await bypassClosedLoopbackProxies(env, probeLoopbackProxyForService)
+    if (bypass.dropped.length) {
+      runtimeLog?.log('info', 'network', 'proxy-env.bypassed', '电脑里设的本机代理没开，这一次不带它', {
+        provider,
+        ...describeDroppedProxies(bypass.dropped),
+      })
+    }
+    return bypass.env
+  }
   // 有多少次下载正跑在加速线路上。只用来决定安装源顺序，所以是个计数而不是
   // 布尔：两个工具同时装时，先装完的那个不能把后一个的官方优先撤掉。
   let acceleratedDownloads = 0
@@ -3651,6 +3673,16 @@ export function createSystemService(
         }
         return npmProxyVariables
       }
+      // npm 认 https_proxy / http_proxy：电脑里留着指向没开的本机代理时，没开加速就一样
+      // 装不上。同一次安装只判断一次，日志也只写一条。
+      let npmBaseEnvironment: Promise<NodeJS.ProcessEnv> | null = null
+      const resolveNpmBaseEnvironment = (trustedOnly: boolean): Promise<NodeJS.ProcessEnv> => {
+        if (!npmBaseEnvironment) {
+          const base = trustedOnly ? trustedCommandEnvironment() : commandEnvironment()
+          npmBaseEnvironment = platform === 'win32' ? withoutDeadLoopbackProxies(base, provider) : Promise.resolve(base)
+        }
+        return npmBaseEnvironment
+      }
       const executeNpm = async (
         argv: string[],
         cwd: string,
@@ -3673,7 +3705,7 @@ export function createSystemService(
           windowsPackageManager: 'npm',
         }, {
           env: {
-            ...(trustedOnly ? trustedCommandEnvironment() : commandEnvironment()),
+            ...await resolveNpmBaseEnvironment(trustedOnly),
             ...await resolveNpmProxyVariables(),
           },
           trustedOnly,
@@ -4501,10 +4533,10 @@ export function createSystemService(
           // other injection variables would cross the integrity boundary and
           // run attacker code as administrator. assertTrustedElevatedCliCommand
           // only vets the executable path and cannot see the environment.
-          env: interactiveTerminalEnvironment(
+          env: await withoutDeadLoopbackProxies(interactiveTerminalEnvironment(
             providerEnv,
             windowsExecutionMode === 'trusted-only' ? trustedCommandEnvironment : commandEnvironment,
-          ),
+          ), provider),
         })
       } catch (error) {
         const detail = error instanceof Error ? error.message : String(error)

@@ -6,6 +6,7 @@ import type { SystemService, SystemSnapshot } from './system-service'
 import type { UpdaterService } from './updater'
 import { mergeAppSettings, type AppSettings, type AppSettingsUpdate } from './app-settings'
 import type { NativeConfigSaveResult } from './config-files'
+import type { ConnectionCheckResult } from './connection-check'
 import type { NewApiClientService } from './new-api-client'
 import { ipcInvokeChannels, type AccountKeysPage } from './ipc-contract'
 import { providerSessionProviders } from './provider-sessions'
@@ -31,6 +32,8 @@ const electronMocks = vi.hoisted(() => ({
   openExternal: vi.fn(),
   openPath: vi.fn(),
   writeText: vi.fn(),
+  readText: vi.fn(() => ''),
+  clearClipboard: vi.fn(),
 }))
 
 vi.mock('electron', () => ({
@@ -50,7 +53,7 @@ vi.mock('electron', () => ({
     fromWebContents: electronMocks.browserWindowFromWebContents,
   },
   shell: { openExternal: electronMocks.openExternal, openPath: electronMocks.openPath },
-  clipboard: { writeText: electronMocks.writeText },
+  clipboard: { writeText: electronMocks.writeText, readText: electronMocks.readText, clear: electronMocks.clearClipboard },
 }))
 
 import { accelerationStateLogKey, parseDiagnosticsRunOptions, parseRunningToolsProviders, registerIpcHandlers } from './ipc'
@@ -384,6 +387,9 @@ beforeEach(() => {
   electronMocks.openPath.mockReset()
   electronMocks.openPath.mockResolvedValue('')
   electronMocks.writeText.mockReset()
+  electronMocks.readText.mockReset()
+  electronMocks.readText.mockReturnValue('')
+  electronMocks.clearClipboard.mockReset()
   electronMocks.browserWindowFromWebContents.mockReset()
   electronMocks.browserWindowFromWebContents.mockReturnValue(undefined)
 })
@@ -1106,6 +1112,7 @@ describe('registerIpcHandlers', () => {
       electronMocks.showMessageBox.mockResolvedValueOnce({ response: 0 })
       const { service, runtimeLog, extensionService } = register(undefined, undefined, undefined, undefined, undefined, undefined, {}, {
         documentsDirectory: () => documents,
+        homeDirectory: () => documents,
       })
       const expected = path.join(documents, 'XingmangProjects', 'my-project')
 
@@ -1140,6 +1147,7 @@ describe('registerIpcHandlers', () => {
         .mockResolvedValueOnce({ response: 0 })
       const { service, runtimeLog } = register(undefined, undefined, undefined, undefined, undefined, undefined, {}, {
         documentsDirectory: () => documents,
+        homeDirectory: () => documents,
       })
 
       await expect(electronMocks.handlers.get('workspace:choose')!(trustedEvent())).resolves.toBe(project)
@@ -1164,6 +1172,7 @@ describe('registerIpcHandlers', () => {
     try {
       const { service, providerExtensionService } = register(undefined, undefined, undefined, undefined, undefined, undefined, {}, {
         documentsDirectory: () => documents,
+        homeDirectory: () => documents,
       })
       const expected = path.join(documents, 'XingmangProjects', 'my-project')
 
@@ -1185,6 +1194,7 @@ describe('registerIpcHandlers', () => {
     try {
       const { service } = register(undefined, undefined, undefined, undefined, undefined, undefined, {}, {
         documentsDirectory: () => documents,
+        homeDirectory: () => documents,
       })
 
       await expect(electronMocks.handlers.get('workspace:choose')!(trustedEvent(), { createStarter: true })).resolves.toBeNull()
@@ -1280,6 +1290,7 @@ describe('registerIpcHandlers', () => {
       electronMocks.showMessageBox.mockResolvedValueOnce({ response: 0 })
       const { service } = register(undefined, undefined, undefined, undefined, undefined, undefined, {}, {
         documentsDirectory: () => documents,
+        homeDirectory: () => documents,
       })
       const expected = path.join(documents, 'XingmangProjects', 'my-project')
 
@@ -2305,9 +2316,16 @@ describe('registerIpcHandlers', () => {
     await handler(trustedEvent(), 'claude')
     expect(service.installCli).toHaveBeenLastCalledWith('claude', expect.anything(), undefined)
 
-    for (const rejected of ['latest', '^2.1.277', '2.1', 'next', '', '2.1.277; rm -rf /']) {
+    for (const rejected of ['latest', '^2.1.277', '2.1', 'next', '', '2.1.277; rm -rf /', '2.1.277+meta;calc', '2.1.277\n']) {
       await expect(handler(trustedEvent(), 'claude', rejected)).rejects.toThrow('CLI 版本号格式错误')
     }
+  })
+
+  it('accepts an exact CLI update target containing build metadata', async () => {
+    const service = serviceStub()
+    register(service)
+    await electronMocks.handlers.get('cli:install')!(trustedEvent(), 'codex', '0.158.0-beta.1+build.2')
+    expect(service.installCli).toHaveBeenCalledWith('codex', expect.anything(), '0.158.0-beta.1+build.2')
   })
 
   it('checks and uninstalls only the requested CLI', async () => {
@@ -2682,6 +2700,17 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       const { service } = register()
       const handler = electronMocks.handlers.get('settings:save')!
       await expect(handler(trustedEvent(), { version: 2, ...fields })).rejects.toThrow()
+      expect(service.updateStoredConfig).not.toHaveBeenCalled()
+    })
+
+    it('carries the crash reporting notice marker and rejects a non-boolean one', async () => {
+      const { service } = register()
+      const handler = electronMocks.handlers.get('settings:save')!
+
+      await handler(trustedEvent(), { version: 2, crashReportingNoticeShown: true, crashReporting: false })
+      expect(service.updateStoredConfig).toHaveBeenCalledWith({ version: 2, crashReportingNoticeShown: true, crashReporting: false })
+      vi.mocked(service.updateStoredConfig).mockClear()
+      await expect(handler(trustedEvent(), { version: 2, crashReportingNoticeShown: 'yes' })).rejects.toThrow('错误报告告知记录')
       expect(service.updateStoredConfig).not.toHaveBeenCalled()
     })
 
@@ -4841,7 +4870,12 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
         accessedAt: null,
         ...overrides,
       })
-      function setup(key: AccountKeysPage['keys'][number] | Error, keyReplacements?: ManagedKeyReplacementStore, cached = true) {
+      function setup(
+        key: AccountKeysPage['keys'][number] | Error,
+        keyReplacements?: ManagedKeyReplacementStore,
+        cached = true,
+        extraOptions: Partial<Parameters<typeof registerIpcHandlers>[0]> = {},
+      ) {
         const service = serviceStub()
         const accountService = accountServiceStub()
         vi.mocked(accountService.getSessionState).mockReturnValue({ authenticated: true, account })
@@ -4864,13 +4898,114 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
             { id: 7, provider: 'codex', group: codex.group, name: codex.keyName, key: 'sk-old' },
           ])
         }
-        register(service, 'C:\\app-data\\logs', undefined, accountService, undefined, managedCliKeys, {}, keyReplacements ? { keyReplacements } : {})
+        register(service, 'C:\\app-data\\logs', undefined, accountService, undefined, managedCliKeys, {}, {
+          ...extraOptions,
+          ...(keyReplacements ? { keyReplacements } : {}),
+        })
         return { accountService, service, managedCliKeys }
       }
       const configureCodex = () => electronMocks.handlers.get('account:configure-managed-clis')!(
         trustedEvent(),
         { providers: ['codex'], preferredModels: {}, intent: 'explicit', mode: 'merge' },
       )
+
+      function sourceSwitchOptions(): Partial<Parameters<typeof registerIpcHandlers>[0]> {
+        return {
+          backupStore: {
+            create: vi.fn(() => ({ id: 'before-source-switch' })),
+            restore: vi.fn(() => ({ provider: 'codex', restoredBackupId: 'before-source-switch', preRestoreBackupId: 'before-restore' })),
+          } as never,
+          diagnosticsService: {
+            run: vi.fn(),
+            exportLatest: vi.fn(),
+            checkExternalConnection: vi.fn(),
+            checkConnection: vi.fn(async (): Promise<ConnectionCheckResult> => ({
+              provider: 'codex', siteId: 'solov', ok: true, layer: 'network',
+              summary: '模型清单检查通过', nextStep: '', endpoint: null, model: 'gpt-5.6-sol',
+              detail: null, status: 200, durationMs: 1, checkedAt: '2026-09-28T00:00:00.000Z',
+            })),
+          },
+        }
+      }
+
+      const switchCodexToAccount = () => electronMocks.handlers.get('config:switch-account-source')!(
+        trustedEvent(), 'codex', 'account',
+      )
+
+      it('inherits revoked key limits when switching the tool to the current account', async () => {
+        const { accountService, service } = setup(accountKey({}), undefined, true, sourceSwitchOptions())
+        await electronMocks.handlers.get('account:revoke-key')!(trustedEvent(), 7)
+
+        await expect(switchCodexToAccount()).resolves.toMatchObject({ target: 'account', verified: true })
+
+        expect(accountService.provisionCliKey).toHaveBeenCalledWith({
+          name: codex.keyName, group: codex.group, remainQuota: 5_000, unlimitedQuota: false,
+          expiredTime: Math.floor(Date.parse('2099-01-01T00:00:00.000Z') / 1000), fresh: true,
+        })
+        expect(service.saveConfig).toHaveBeenCalledWith(
+          expect.objectContaining({ provider: 'codex' }), false, expect.any(Function),
+          { source: 'account', automatic: false },
+        )
+      })
+
+      it('does not lift a used-up key cap through the account source switch', async () => {
+        const { accountService, service } = setup(accountKey({ remainQuota: 0, status: 4 }), undefined, true, sourceSwitchOptions())
+        await electronMocks.handlers.get('account:revoke-key')!(trustedEvent(), 7)
+
+        await expect(switchCodexToAccount()).rejects.toThrow(managedKeyQuotaExhaustedMessage)
+
+        expect(accountService.provisionCliKey).toHaveBeenCalledWith(expect.objectContaining({
+          name: codex.keyName, remainQuota: 1, unlimitedQuota: false, fresh: true,
+        }))
+        expect(service.saveConfig).not.toHaveBeenCalled()
+      })
+
+      it('does not silently replace an expired key through the account source switch', async () => {
+        const { accountService, service } = setup(accountKey({ expiredAt: '2020-01-01T00:00:00.000Z' }), undefined, true, sourceSwitchOptions())
+        await electronMocks.handlers.get('account:revoke-key')!(trustedEvent(), 7)
+
+        await expect(switchCodexToAccount()).rejects.toThrow('原来那把密钥已经到期了')
+
+        expect(accountService.provisionCliKey).not.toHaveBeenCalledWith(expect.objectContaining({ name: codex.keyName }))
+        expect(service.saveConfig).not.toHaveBeenCalled()
+      })
+
+      it('keeps pending key limits across a restart before switching account source', async () => {
+        const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-key-source-switch-'))
+        const filePath = path.join(directory, 'managed-key-replacements.json')
+        try {
+          setup(accountKey({}), createManagedKeyReplacementStore({ filePath }))
+          await electronMocks.handlers.get('account:revoke-key')!(trustedEvent(), 7)
+          electronMocks.handlers.clear()
+          const { accountService } = setup(accountKey({}), createManagedKeyReplacementStore({ filePath }), false, sourceSwitchOptions())
+
+          await expect(switchCodexToAccount()).resolves.toMatchObject({ verified: true })
+
+          expect(accountService.provisionCliKey).toHaveBeenCalledWith(expect.objectContaining({
+            name: codex.keyName, remainQuota: 5_000, unlimitedQuota: false, fresh: true,
+          }))
+          expect(JSON.parse(fs.readFileSync(filePath, 'utf8'))).toEqual({ version: 1, entries: {} })
+        } finally {
+          fs.rmSync(directory, { recursive: true, force: true })
+        }
+      })
+
+      it('does not discard unreadable limits when the user only switches account source', async () => {
+        const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-key-source-switch-'))
+        const filePath = path.join(directory, 'managed-key-replacements.json')
+        try {
+          fs.writeFileSync(filePath, '{ invalid limits')
+          const { accountService, service } = setup(accountKey({}), createManagedKeyReplacementStore({ filePath }), false, sourceSwitchOptions())
+
+          await expect(switchCodexToAccount()).rejects.toThrow('没读到这个工具原来的额度设置')
+
+          expect(accountService.provisionCliKey).not.toHaveBeenCalled()
+          expect(service.saveConfig).not.toHaveBeenCalled()
+          expect(fs.readFileSync(filePath, 'utf8')).toBe('{ invalid limits')
+        } finally {
+          fs.rmSync(directory, { recursive: true, force: true })
+        }
+      })
 
       it('gives the replacement the revoked key\'s remaining cap and expiry instead of an unlimited key', async () => {
         const { accountService } = setup(accountKey({}))
@@ -5724,6 +5859,25 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
     })
   })
 
+  describe('account:copy-reset-password', () => {
+    it('writes the new password to the clipboard verbatim, without logging it or requiring a session', async () => {
+      const { runtimeLog } = register()
+      const password = ' Xm-reset-Secret9 '
+      await expect(electronMocks.handlers.get('account:copy-reset-password')!(trustedEvent(), password)).resolves.toBeUndefined()
+      expect(electronMocks.writeText).toHaveBeenCalledWith(password)
+      expect(JSON.stringify(runtimeLog.log.mock.calls)).not.toContain('Xm-reset-Secret9')
+    })
+
+    it('rejects anything that is not a short non-empty string', async () => {
+      register()
+      const handler = electronMocks.handlers.get('account:copy-reset-password')!
+      for (const value of ['', 'a'.repeat(257), 'a\0b', 42, undefined]) {
+        await expect(handler(trustedEvent(), value)).rejects.toThrow('新密码格式错误')
+      }
+      expect(electronMocks.writeText).not.toHaveBeenCalled()
+    })
+  })
+
   describe('account:copy-key', () => {
     it('uses the encrypted managed-key cache for both copy and reveal without contacting the server', async () => {
       const accountService = accountServiceStub()
@@ -5782,6 +5936,30 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       expect(accountService.revealKey).toHaveBeenCalledWith(42)
       expect(electronMocks.writeText).toHaveBeenCalledWith(plaintextKey)
       expect(JSON.stringify(runtimeLog.log.mock.calls)).not.toContain(plaintextKey)
+    })
+
+    it('clears the copied key from the clipboard after sixty seconds unless the user copied something else', async () => {
+      vi.useFakeTimers()
+      try {
+        const { accountService } = register()
+        const plaintextKey = 'sk-ipc-auto-clear'
+        vi.mocked(accountService.revealKey).mockResolvedValue(plaintextKey)
+        electronMocks.readText.mockReturnValue(plaintextKey)
+        await electronMocks.handlers.get('account:copy-key')!(trustedEvent(), 42)
+
+        vi.advanceTimersByTime(59_999)
+        expect(electronMocks.clearClipboard).not.toHaveBeenCalled()
+        vi.advanceTimersByTime(1)
+        expect(electronMocks.clearClipboard).toHaveBeenCalledTimes(1)
+
+        electronMocks.clearClipboard.mockClear()
+        await electronMocks.handlers.get('account:copy-key')!(trustedEvent(), 42)
+        electronMocks.readText.mockReturnValue('something the user copied')
+        vi.advanceTimersByTime(60_000)
+        expect(electronMocks.clearClipboard).not.toHaveBeenCalled()
+      } finally {
+        vi.useRealTimers()
+      }
     })
 
     it('falls back to the server for an ordinary key that is absent from the managed cache', async () => {

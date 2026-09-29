@@ -75,6 +75,7 @@ const ipcInvokeChannels = {
   getProviderSessionDetail: 'provider-sessions:detail',
   exportProviderSession: 'provider-sessions:export',
   openProviderSessionDirectory: 'provider-sessions:open-directory',
+  deleteProviderSession: 'provider-sessions:delete',
   getSettings: 'settings:get',
   saveSettings: 'settings:save',
   runDiagnostics: 'diagnostics:run',
@@ -162,6 +163,7 @@ const ipcInvokeChannels = {
   getAccountUsableGroups: 'account:list-groups',
   revokeAccountKey: 'account:revoke-key',
   copyAccountKey: 'account:copy-key',
+  copyResetPassword: 'account:copy-reset-password',
   revealAccountKey: 'account:reveal-key',
   listAccountKeyModels: 'account:list-key-models',
   saveConfigWithAccountKey: 'account:configure-cli-with-key',
@@ -190,6 +192,7 @@ const ipcInvokeChannels = {
   checkProviderConnection: 'diagnostics:check-connection',
   checkExternalClientConnection: 'diagnostics:check-external-connection',
   getAccountKeyOptions: 'account:get-key-options',
+  clearStaleProxySettings: 'diagnostics:clear-stale-proxy',
 } as const satisfies {
   [Method in keyof XingmangInvokeContract]: XingmangInvokeContract[Method]['channel']
 }
@@ -304,6 +307,7 @@ const xingmangApi: XingmangApi = {
   getProviderSessionDetail: (sessionId) => invoke('getProviderSessionDetail', sessionId),
   exportProviderSession: (sessionId) => invoke('exportProviderSession', sessionId),
   openProviderSessionDirectory: (sessionId) => invoke('openProviderSessionDirectory', sessionId),
+  deleteProviderSession: (sessionId) => invoke('deleteProviderSession', sessionId),
   getSettings: () => invoke('getSettings'),
   saveSettings: (settings) => invoke('saveSettings', settings),
   runDiagnostics: (options) => invoke('runDiagnostics', options),
@@ -397,6 +401,7 @@ const xingmangApi: XingmangApi = {
   getAccountUsableGroups: () => invoke('getAccountUsableGroups'),
   revokeAccountKey: (id) => invoke('revokeAccountKey', id),
   copyAccountKey: (id) => invoke('copyAccountKey', id),
+  copyResetPassword: (password) => invoke('copyResetPassword', password),
   revealAccountKey: (id) => invoke('revealAccountKey', id),
   listAccountKeyModels: (id) => invoke('listAccountKeyModels', id),
   saveConfigWithAccountKey: (input) => invoke('saveConfigWithAccountKey', input),
@@ -425,6 +430,7 @@ const xingmangApi: XingmangApi = {
   checkProviderConnection: (provider) => invoke('checkProviderConnection', provider),
   checkExternalClientConnection: (tool) => invoke('checkExternalClientConnection', tool),
   getAccountKeyOptions: (provider) => invoke('getAccountKeyOptions', provider),
+  clearStaleProxySettings: () => invoke('clearStaleProxySettings'),
   onAccountSessionChanged: (listener) => subscribe('onAccountSessionChanged', listener),
   onExternalClientInstallProgress: (listener) => subscribe('onExternalClientInstallProgress', listener),
   onAccountUsageChanged: (listener) => subscribe('onAccountUsageChanged', listener),
