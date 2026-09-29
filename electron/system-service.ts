@@ -164,6 +164,12 @@ import {
   type InstallLeftoverSweepResult,
 } from './install-leftovers'
 import { resolveWindowsMachinePaths } from './windows-machine-paths'
+import {
+  chooseNodeRuntimeArchitecture,
+  inspectWindowsExecutableMachine,
+  inspectWindowsProcessorArchitecture,
+  type WindowsProcessorArchitecture,
+} from './windows-processor'
 import { createCliTerminalAccess, type UserPathOutcome } from './windows-cli-shell-access'
 import { createManagedNpmCache, ensureManagedNpmLayout, type ManagedNpmLayout } from './managed-cli'
 import { managedCliRoot, managedNativeProviderRoot, managedNpmPrefix } from './managed-cli-paths'
@@ -864,6 +870,8 @@ export interface SystemService {
   refreshOfficialChatGptUsage(): Promise<OfficialChatGptAccount | null>
   inspectCodexSetupStatus(): Promise<CodexSetupStatus>
   installNodeRuntime(target: RendererMessageTarget): Promise<NodeRuntimeInstallResult>
+  /** 这台 Windows 电脑真实的芯片（星芒在 ARM 电脑上是模拟运行的，process.arch 不作数）；认不出或不是 Windows 为 null。 */
+  inspectWindowsProcessor(): Promise<WindowsProcessorArchitecture | null>
   restartWindows(): Promise<void>
   installPythonRuntime(target: RendererMessageTarget): Promise<PythonRuntimeInstallResult>
   installGitRuntime(target: RendererMessageTarget): Promise<GitRuntimeInstallResult>
@@ -2128,6 +2136,10 @@ export interface SystemServiceOptions {
   inspectInstalledPythonRuntime?: typeof inspectInstalledPythonRuntime
   inspectWindowsRestartRequired?: typeof inspectWindowsRestartRequired
   installNodeRuntime?: typeof installNodeRuntimeLts
+  /** Test seam: the real probe reads HKLM through reg.exe. */
+  inspectWindowsProcessor?: () => Promise<WindowsProcessorArchitecture | null>
+  /** Test seam: the real probe reads the PE header of the installed node.exe. */
+  inspectExecutableMachine?: typeof inspectWindowsExecutableMachine
   installGitRuntime?: typeof installGitForWindows
   /** Test seam: the macOS path would otherwise run the real xcode-select --install. */
   installMacGitRuntime?: typeof installMacGitRuntime
@@ -2352,6 +2364,8 @@ export function createSystemService(
     onWingetUnavailable: (reason) => runtimeLog?.log('warn', 'install', 'external-client.winget-unavailable', '桌面客户端无法一键安装：系统 winget 不可用', { reason }),
   })
   let nodeRuntimeInstalling = false
+  let windowsProcessor: Promise<WindowsProcessorArchitecture | null> | null = null
+  const inspectExecutableMachine = serviceOptions.inspectExecutableMachine ?? inspectWindowsExecutableMachine
   // 苹果的安装窗口一次只该弹一个：连点两下「安装 Git」拿到的是同一次等待。
   let macGitInstall: Promise<GitRuntimeInstallResult> | null = null
   let pythonRuntimeInstalling = false
@@ -3172,7 +3186,23 @@ export function createSystemService(
           throw new Error(message)
         }
       }
+      const architecture = platform === 'win32'
+        ? chooseNodeRuntimeArchitecture({
+          processor: await inspectWindowsProcessor(),
+          existingNodeMachine: node.installed && node.path ? await inspectExecutableMachine(node.path) : null,
+          nodeInstalled: node.installed,
+        })
+        : undefined
+      if (architecture === 'arm64' && process.arch !== 'arm64' && !target.isDestroyed()) {
+        target.send('runtime:node-install-progress', {
+          phase: 'checking',
+          source: null,
+          message: '这台电脑是 ARM 芯片，会装 ARM 版 Node.js，工具跑起来更快、更省电',
+          percent: null,
+        })
+      }
       return await installNodeRuntimeForService({
+        ...(architecture ? { architecture } : {}),
         networkRegion: await inspectNetworkRegion(),
         temporaryDirectoryMode: windowsExecutionMode,
         dependencies: { fetch: downloadFetch },
@@ -3183,6 +3213,14 @@ export function createSystemService(
     } finally {
       nodeRuntimeInstalling = false
     }
+  }
+
+  function inspectWindowsProcessor(): Promise<WindowsProcessorArchitecture | null> {
+    // 芯片开机后不会变，一次启动只问一次；问失败也记住「不知道」，不反复起 reg.exe。
+    windowsProcessor ??= (serviceOptions.inspectWindowsProcessor
+      ?? (() => inspectWindowsProcessorArchitecture({ platform, machinePaths: () => resolveWindowsMachinePathsForService() })))()
+      .catch(() => null)
+    return windowsProcessor
   }
 
   function installNodeRuntime(target: RendererMessageTarget): Promise<NodeRuntimeInstallResult> {
@@ -5431,6 +5469,7 @@ export function createSystemService(
     refreshOfficialChatGptUsage,
     inspectCodexSetupStatus,
     installNodeRuntime,
+    inspectWindowsProcessor,
     restartWindows,
     installPythonRuntime,
     installGitRuntime,
