@@ -250,11 +250,14 @@ const hostMessages: Record<
 export type TerminalFailureReason = 'billing' | 'auth' | 'busy' | 'model' | 'service' | 'unknown'
 export type TerminalNotice =
   | { tool: 'claude' | 'gemini'; event: 'failed'; reason: TerminalFailureReason }
-  | { tool: 'claude' | 'gemini'; event: 'waiting' | 'finished' }
+  | { tool: 'claude' | 'gemini'; event: 'waiting' }
+  // Codex 的 notify 只在一轮顺利做完时调用，出错和等人都没有，所以只有「做完了」。
+  | { tool: 'claude' | 'gemini' | 'codex'; event: 'finished' }
 
 const terminalToolNames: Record<TerminalNotice['tool'], string> = {
   claude: 'Claude Code',
   gemini: 'Gemini CLI',
+  codex: 'Codex',
 }
 
 // 主语是「当前账号」；订阅客户也会碰到额度用完，所以不说「余额」，只说「额度」。

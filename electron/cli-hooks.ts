@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { powerShellLiteral } from './windows-elevation'
 
-// 终端里的 Claude Code / Gemini CLI 出错、做完或停下来等人时，由它们自己的钩子起一次
+// 终端里的 Claude Code / Gemini CLI 出错、做完或停下来等人时，以及 Codex 做完一轮时，由它们自己的钩子起一次
 // 随包脚本（bundled-catalog/cli-hooks/），脚本往星芒数据目录里丢一个小文件，主进程
 // （cli-hook-events.ts）读到后弹系统通知。这个文件只管「往 CLI 配置里写哪几行」。
 //
@@ -11,6 +11,7 @@ import { powerShellLiteral } from './windows-elevation'
 //     有空格、中文、引号都不用转义。2.1.150 起就有这个字段（本仓已核 2.1.150/2.1.277/2.1.282）。
 //   * Gemini CLI 只收一整条 shell 命令：Windows 上交给 PowerShell，其余系统交给 bash。
 //     所以要按平台逐段加引号，并且在执行前它还会把 $GEMINI_CWD 一类的字样替换成别的路径。
+//   * Codex 的 notify 是一个参数数组，同样不经过 shell，它把一段 JSON 追加成最后一个参数。
 // 路径里出现 `"`、`$`、`` ` ``、`%` 或换行就干脆不写钩子，与状态行同一条规矩：少几条
 // 通知是小事，把用户的安装路径交给 shell 展开不是。
 const UNSAFE_HOOK_PATH_PATTERN = /["`$%\r\n\0]/
@@ -20,7 +21,7 @@ export const CLI_HOOK_EVENTS_DIRECTORY_NAME = 'cli-events'
 
 const CLI_HOOK_SCRIPT_RELATIVE = ['bundled-catalog', 'cli-hooks', CLI_HOOK_SCRIPT_NAME] as const
 
-export type CliHookTool = 'claude' | 'gemini'
+export type CliHookTool = 'claude' | 'gemini' | 'codex'
 
 export interface CliHookInvocation {
   nodeExecutable: string
@@ -179,4 +180,21 @@ export function applyGeminiCliHooks(settings: Record<string, unknown>, invocatio
 
 export function removeGeminiCliHooks(settings: Record<string, unknown>): void {
   removeManagedHooks(settings)
+}
+
+function isManagedCodexNotify(value: unknown): boolean {
+  return Array.isArray(value) && value.some((arg) => typeof arg === 'string' && arg.includes(CLI_HOOK_SCRIPT_NAME))
+}
+
+/**
+ * Codex 的 notify 只能有一条。用户自己设过（桌面提醒脚本之类）就不动，这台电脑上 Codex
+ * 做完不提醒就是了；是我们写的就换成这次的路径（软件换了安装位置或升级后路径会变）。
+ */
+export function applyCodexCliNotify(config: Record<string, unknown>, invocation: CliHookInvocation): void {
+  if (config.notify !== undefined && !isManagedCodexNotify(config.notify)) return
+  config.notify = [invocation.nodeExecutable, invocation.scriptPath, 'codex', invocation.eventsDirectory]
+}
+
+export function removeCodexCliNotify(config: Record<string, unknown>): void {
+  if (isManagedCodexNotify(config.notify)) delete config.notify
 }

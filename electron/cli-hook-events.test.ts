@@ -37,12 +37,23 @@ describe('parseCliHookEvent', () => {
     expect(parsed).toEqual({ tool: 'claude', event: 'failed', reason: 'auth', session: 'a', at: 5 })
   })
 
+  it('keeps the start time a Codex finished record carries', () => {
+    expect(parseCliHookEvent(JSON.stringify({ version: 1, tool: 'codex', event: 'finished', session: 't', at: 90, startedAt: 30 })))
+      .toEqual({ tool: 'codex', event: 'finished', session: 't', at: 90, startedAt: 30 })
+    expect(parseCliHookEvent(JSON.stringify({ version: 1, tool: 'codex', event: 'finished', session: 't', at: 90 })))
+      .toEqual({ tool: 'codex', event: 'finished', session: 't', at: 90 })
+  })
+
   it('rejects anything outside the fixed vocabulary', () => {
     for (const value of [
       'nope',
       '[]',
       { version: 2, tool: 'claude', event: 'finished', session: '', at: 1 },
-      { version: 1, tool: 'codex', event: 'finished', session: '', at: 1 },
+      { version: 1, tool: 'grok', event: 'finished', session: '', at: 1 },
+      { version: 1, tool: 'codex', event: 'failed', reason: 'auth', session: '', at: 1 },
+      { version: 1, tool: 'codex', event: 'waiting', session: '', at: 1 },
+      { version: 1, tool: 'claude', event: 'finished', session: '', at: 10, startedAt: 11 },
+      { version: 1, tool: 'claude', event: 'finished', session: '', at: 10, startedAt: '1' },
       { version: 1, tool: 'claude', event: 'exploded', session: '', at: 1 },
       { version: 1, tool: 'claude', event: 'failed', reason: '<b>free money</b>', session: '', at: 1 },
       { version: 1, tool: 'claude', event: 'finished', session: '../../x', at: 1 },
@@ -89,6 +100,13 @@ describe('createCliTurnTracker', () => {
     expect(tracker.observe(event({ event: 'waiting', at: WAITING_QUIET_MS - 1 }))).toBeNull()
     expect(tracker.observe(event({ tool: 'gemini', event: 'waiting', at: 1 }))).toEqual({ tool: 'gemini', event: 'waiting' })
     expect(tracker.observe(event({ event: 'waiting', at: WAITING_QUIET_MS }))).toEqual({ tool: 'claude', event: 'waiting' })
+  })
+
+  it('measures a Codex turn from the start time it carries', () => {
+    const tracker = createCliTurnTracker()
+    expect(tracker.observe(event({ tool: 'codex', event: 'finished', startedAt: 0, at: LONG_TURN_MS - 1 }))).toBeNull()
+    expect(tracker.observe(event({ tool: 'codex', event: 'finished', startedAt: 0, at: LONG_TURN_MS }))).toEqual({ tool: 'codex', event: 'finished' })
+    expect(tracker.observe(event({ tool: 'codex', event: 'finished', at: LONG_TURN_MS * 5 }))).toBeNull()
   })
 
   it('does not call a failed turn finished afterwards', () => {

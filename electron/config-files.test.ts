@@ -703,15 +703,48 @@ describe('native CLI configuration files', () => {
     expect('hooks' in official).toBe(false)
   })
 
+  it('writes the Codex notify command into a fresh config, refreshes our own and takes it back on the official account', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const [configPath] = providerConfigPaths('codex', roots)
+    const expected = [cliHook.nodeExecutable, cliHook.scriptPath, 'codex', cliHook.eventsDirectory]
+
+    saveProviderConfig('codex', 'sk-relay', testModels.codex, 'reset', roots, {}, providerBaseUrls, undefined, undefined, cliHook)
+    expect(TOML.parse(fs.readFileSync(configPath, 'utf8')).notify).toEqual(expected)
+
+    const moved = { ...cliHook, scriptPath: '/new/place/bundled-catalog/cli-hooks/xingmang-hook.cjs' }
+    saveProviderConfig('codex', 'sk-relay', testModels.codex, 'merge', roots, {}, providerBaseUrls, undefined, undefined, moved)
+    expect(TOML.parse(fs.readFileSync(configPath, 'utf8')).notify).toEqual([moved.nodeExecutable, moved.scriptPath, 'codex', moved.eventsDirectory])
+
+    switchProviderToOfficialAccount('codex', roots, {}, providerBaseUrls)
+    expect('notify' in TOML.parse(fs.readFileSync(configPath, 'utf8'))).toBe(false)
+  })
+
+  it('leaves a notify command the user set for Codex alone', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const [configPath] = providerConfigPaths('codex', roots)
+    fs.mkdirSync(path.dirname(configPath), { recursive: true })
+    fs.writeFileSync(configPath, 'notify = ["notify-send", "Codex"]\n', 'utf8')
+
+    saveProviderConfig('codex', 'sk-relay', testModels.codex, 'merge', roots, {}, providerBaseUrls, undefined, undefined, cliHook)
+    expect(TOML.parse(fs.readFileSync(configPath, 'utf8')).notify).toEqual(['notify-send', 'Codex'])
+
+    switchProviderToOfficialAccount('codex', roots, {}, providerBaseUrls)
+    expect(TOML.parse(fs.readFileSync(configPath, 'utf8')).notify).toEqual(['notify-send', 'Codex'])
+  })
+
   it('writes no hooks at all when none are given', () => {
     const home = temporaryHome()
     const roots = providerRoots(home)
     saveProviderConfig('claude', 'sk-relay', testModels.claude, 'reset', roots, {}, providerBaseUrls)
     saveProviderConfig('gemini', 'sk-relay', testModels.gemini, 'reset', roots, {}, providerBaseUrls)
+    saveProviderConfig('codex', 'sk-relay', testModels.codex, 'reset', roots, {}, providerBaseUrls)
     for (const provider of ['claude', 'gemini'] as const) {
       const settings = JSON.parse(fs.readFileSync(providerConfigPaths(provider, roots)[0], 'utf8')) as Record<string, unknown>
       expect('hooks' in settings).toBe(false)
     }
+    expect('notify' in TOML.parse(fs.readFileSync(providerConfigPaths('codex', roots)[0], 'utf8'))).toBe(false)
   })
 
   it('keeps the Claude retention period and language after switching back to the official account', () => {

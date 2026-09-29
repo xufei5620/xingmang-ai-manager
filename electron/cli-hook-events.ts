@@ -35,6 +35,8 @@ export interface CliHookEvent {
   reason?: TerminalFailureReason
   session: string
   at: number
+  /** Codex 没有「开始」事件，钩子脚本从 turn-id 里解出这一轮的开始时刻一起带来。 */
+  startedAt?: number
 }
 
 const failureReasons: ReadonlySet<string> = new Set<TerminalFailureReason>(['billing', 'auth', 'busy', 'model', 'service', 'unknown'])
@@ -52,11 +54,18 @@ export function parseCliHookEvent(text: string): CliHookEvent | null {
     return null
   }
   if (!isRecord(value) || value.version !== 1) return null
-  const { tool, event, reason, session, at } = value
-  if (tool !== 'claude' && tool !== 'gemini') return null
+  const { tool, event, reason, session, at, startedAt } = value
+  if (tool !== 'claude' && tool !== 'gemini' && tool !== 'codex') return null
   if (event !== 'started' && event !== 'finished' && event !== 'failed' && event !== 'waiting') return null
+  // Codex 的 notify 只报「做完」，其余几类出现就是伪造的。
+  if (tool === 'codex' && event !== 'finished') return null
   if (typeof at !== 'number' || !Number.isSafeInteger(at) || at <= 0) return null
   if (typeof session !== 'string' || !/^[A-Za-z0-9_.:-]{0,100}$/.test(session)) return null
+  if (event === 'finished' && startedAt !== undefined) {
+    if (typeof startedAt !== 'number' || !Number.isSafeInteger(startedAt) || startedAt <= 0 || startedAt > at) return null
+    return { tool, event, session, at, startedAt }
+  }
+  if (tool === 'codex') return { tool, event: 'finished', session, at }
   if (event === 'failed') {
     if (typeof reason !== 'string' || !failureReasons.has(reason)) return null
     return { tool, event, reason: reason as TerminalFailureReason, session, at }
@@ -100,16 +109,18 @@ export function createCliTurnTracker(options: {
           while (starts.size > 50) starts.delete(starts.keys().next().value!)
           return null
         case 'finished': {
-          const started = event.session ? starts.get(turnKey) : undefined
+          const started = event.startedAt ?? (event.session ? starts.get(turnKey) : undefined)
           starts.delete(turnKey)
           if (started === undefined || event.at - started < longTurnMs) return null
           return { tool: event.tool, event: 'finished' }
         }
         case 'waiting':
+          if (event.tool === 'codex') return null
           if (quiet(`waiting:${event.tool}`, event.at, waitingQuietMs)) return null
           return { tool: event.tool, event: 'waiting' }
         case 'failed': {
           starts.delete(turnKey)
+          if (event.tool === 'codex') return null
           const reason = event.reason ?? 'unknown'
           if (quiet(`failed:${event.tool}:${reason}`, event.at, failureQuietMs)) return null
           return { tool: event.tool, event: 'failed', reason }

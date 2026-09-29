@@ -5072,7 +5072,7 @@ export function createSystemService(
    * 托管 Node、脚本没随包、路径带 shell 元字符）都只是这次不写，配置照写。
    */
   async function resolveCliHookInvocation(provider: ProviderId): Promise<CliHookInvocation | undefined> {
-    if (provider !== 'claude' && provider !== 'gemini') return undefined
+    if (provider === 'grok') return undefined
     const scriptPath = serviceOptions.cliHookScriptPath
     const dataDirectory = serviceOptions.managerDataDirectory
     if (!scriptPath || !dataDirectory) return undefined

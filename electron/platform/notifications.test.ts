@@ -378,6 +378,7 @@ describe('terminal tool reminders', () => {
     expect(buildTerminalNotificationMessage({ tool: 'claude', event: 'failed', reason: 'billing' }).body).toContain('当前账号的额度不够了')
     expect(buildTerminalNotificationMessage({ tool: 'gemini', event: 'waiting' }).title).toBe('Gemini CLI 在等你')
     expect(buildTerminalNotificationMessage({ tool: 'claude', event: 'finished' }).title).toBe('Claude Code 做完了')
+    expect(buildTerminalNotificationMessage({ tool: 'codex', event: 'finished' }).title).toBe('Codex 做完了')
   })
 
   it('sends billing trouble to top-up, other trouble to the check page and turn reminders nowhere', () => {

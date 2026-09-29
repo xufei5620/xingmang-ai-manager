@@ -14,7 +14,15 @@ import {
 import { identityFromCodexAuthTokens } from './official-account-identity'
 import { removeCodexContextLimits } from './codex-context-limits'
 import { applyClaudeStatusLine, claudeStatusLineSetting } from './claude-status-line'
-import { applyClaudeCliHooks, applyGeminiCliHooks, removeClaudeCliHooks, removeGeminiCliHooks, type CliHookInvocation } from './cli-hooks'
+import {
+  applyClaudeCliHooks,
+  applyCodexCliNotify,
+  applyGeminiCliHooks,
+  removeClaudeCliHooks,
+  removeCodexCliNotify,
+  removeGeminiCliHooks,
+  type CliHookInvocation,
+} from './cli-hooks'
 import { applyClaudeRelayModelPicker, claudeRelayModelPickerOutdated, removeClaudeRelayModelPicker } from './claude-model-picker'
 import { assertNoReparseComponents, ensureSafeDataDirectory, readSafeUtf8FileSync } from './safe-local-data'
 import { resolveRelocatedPath } from './relocated-folders'
@@ -930,6 +938,7 @@ function stripCodexRelayFromConfig(
   delete parsed.model_provider
   delete parsed.model
   delete parsed.review_model
+  removeCodexCliNotify(parsed)
   restoreCodexAnalytics(parsed)
   dropDeprecatedCodexConfigKeys(parsed)
 }
@@ -973,9 +982,14 @@ function buildCodexRelayConfigTemplate(
   model: string,
   providerName: string,
   siteBaseUrl: string,
+  cliHook?: CliHookInvocation,
   platform: NodeJS.Platform = process.platform,
 ): string {
   const providerKey = tomlTableKey(providerName)
+  // Same argv as applyCodexCliNotify. It must stay above the first table.
+  const notifyLine = cliHook
+    ? [`notify = [${[cliHook.nodeExecutable, cliHook.scriptPath, 'codex', cliHook.eventsDirectory].map(tomlString).join(', ')}]`]
+    : []
   // Same values as applyCodexRelayMachineDefaults; the template is spelled out
   // so a fresh install reads top to bottom like the upstream docs.
   const windowsTable = platform === 'win32' ? ['[windows]', 'sandbox = "unelevated"', ''] : []
@@ -987,6 +1001,7 @@ function buildCodexRelayConfigTemplate(
     'approval_policy = "on-request"',
     'sandbox_mode = "workspace-write"',
     'check_for_update_on_startup = false',
+    ...notifyLine,
     '',
     `[model_providers.${providerKey}]`,
     `name = ${tomlString(providerName)}`,
@@ -1035,6 +1050,7 @@ function createCodexRelayConfigPlans(
   roots: ProviderConfigRoots,
   siteBaseUrls: Record<ProviderId, string>,
   mode: NativeConfigSaveMode,
+  cliHook?: CliHookInvocation,
 ): FilePlan[] {
   const paths = codexConfigSnapshotPaths(roots)
   const plans: FilePlan[] = []
@@ -1063,16 +1079,18 @@ function createCodexRelayConfigPlans(
     ? readStoredCodexConfig(paths.relay, '已保存的星芒 Codex 配置') : null
   let nextContent: string
   if (mode === 'reset') {
-    nextContent = buildCodexRelayConfigTemplate(model, existingCodexProvider(paths.active), siteBaseUrls.codex)
+    nextContent = buildCodexRelayConfigTemplate(model, existingCodexProvider(paths.active), siteBaseUrls.codex, cliHook)
   } else if (storedRelay) {
     const stored = TOML.parse(storedRelay)
     applyCodexRelayConfig(stored, model, existingCodexProvider(paths.relay), siteBaseUrls.codex)
+    if (cliHook) applyCodexCliNotify(stored, cliHook)
     nextContent = tomlContent(stored)
   } else if (currentParsed) {
     applyCodexRelayConfig(currentParsed, model, existingCodexProvider(paths.active), siteBaseUrls.codex)
+    if (cliHook) applyCodexCliNotify(currentParsed, cliHook)
     nextContent = tomlContent(currentParsed)
   } else {
-    nextContent = buildCodexRelayConfigTemplate(model, defaultCodexRelayProvider, siteBaseUrls.codex)
+    nextContent = buildCodexRelayConfigTemplate(model, defaultCodexRelayProvider, siteBaseUrls.codex, cliHook)
   }
 
   plans.push({ path: paths.relay, content: nextContent })
@@ -1755,7 +1773,7 @@ function createPlans(
   switch (provider) {
     case 'codex':
       return [
-        ...createCodexRelayConfigPlans(model, roots, siteBaseUrls, 'reset'),
+        ...createCodexRelayConfigPlans(model, roots, siteBaseUrls, 'reset', cliHook),
         ...createCodexRelayAuthPlans(apiKey, roots),
       ]
     case 'claude': {
@@ -1865,7 +1883,7 @@ function createMergePlans(
   switch (provider) {
     case 'codex':
       return [
-        ...createCodexRelayConfigPlans(model, roots, siteBaseUrls, 'merge'),
+        ...createCodexRelayConfigPlans(model, roots, siteBaseUrls, 'merge', cliHook),
         ...createCodexRelayAuthPlans(apiKey, roots),
       ]
     case 'claude': {

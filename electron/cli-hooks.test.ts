@@ -7,11 +7,13 @@ import { afterEach, describe, expect, it } from 'vitest'
 import {
   CLI_HOOK_SCRIPT_NAME,
   applyClaudeCliHooks,
+  applyCodexCliNotify,
   applyGeminiCliHooks,
   buildCliHookInvocation,
   geminiCliHookCommand,
   isManagedCliHook,
   removeClaudeCliHooks,
+  removeCodexCliNotify,
   removeGeminiCliHooks,
   resolveCliHookScriptPath,
   type CliHookInvocation,
@@ -189,6 +191,24 @@ describe('Gemini CLI hooks', () => {
   })
 })
 
+describe('Codex notify', () => {
+  it('sets our argv when notify is unset or ours, and leaves a user command alone', () => {
+    const expected = [posixInvocation.nodeExecutable, posixInvocation.scriptPath, 'codex', posixInvocation.eventsDirectory]
+    const fresh: Record<string, unknown> = {}
+    applyCodexCliNotify(fresh, posixInvocation)
+    expect(fresh.notify).toEqual(expected)
+    const stale: Record<string, unknown> = { notify: ['/old/node', '/old/bundled-catalog/cli-hooks/xingmang-hook.cjs', 'codex', '/old/events'] }
+    applyCodexCliNotify(stale, posixInvocation)
+    expect(stale.notify).toEqual(expected)
+    const user: Record<string, unknown> = { notify: ['notify-send', 'Codex'] }
+    applyCodexCliNotify(user, posixInvocation)
+    removeCodexCliNotify(user)
+    expect(user.notify).toEqual(['notify-send', 'Codex'])
+    removeCodexCliNotify(fresh)
+    expect('notify' in fresh).toBe(false)
+  })
+})
+
 describe('bundled hook script', () => {
   const { buildRecord } = createRequire(__filename)(bundledScript) as {
     buildRecord: (tool: string, input: string, now: number) => Record<string, unknown> | null
@@ -214,9 +234,44 @@ describe('bundled hook script', () => {
   it('maps Gemini events and ignores unknown tools or malformed input', () => {
     expect(buildRecord('gemini', JSON.stringify({ hook_event_name: 'BeforeAgent' }), 1)?.event).toBe('started')
     expect(buildRecord('gemini', JSON.stringify({ hook_event_name: 'Notification', notification_type: 'ToolPermission' }), 1)?.event).toBe('waiting')
-    expect(buildRecord('codex', JSON.stringify({ hook_event_name: 'Stop' }), 1)).toBeNull()
+    expect(buildRecord('grok', JSON.stringify({ hook_event_name: 'Stop' }), 1)).toBeNull()
     expect(buildRecord('claude', 'not json', 1)).toBeNull()
     expect(buildRecord('claude', '[]', 1)).toBeNull()
+  })
+
+  it('turns a Codex turn-complete payload into a finished record with the turn start time', () => {
+    // Real payload shape from Codex 0.156.1; the ids are UUIDv7.
+    const payload = {
+      type: 'agent-turn-complete',
+      'thread-id': '01a0eb04-9389-7470-bb18-abf69dcd9556',
+      'turn-id': '01a0eb04-93a2-7470-8b1f-548fbd2cbc24',
+      cwd: '/work',
+      client: 'codex_exec',
+      'input-messages': ['private prompt'],
+      'last-assistant-message': 'private text',
+    }
+    const startedAt = 0x01a0eb0493a2
+    expect(buildRecord('codex', JSON.stringify(payload), startedAt + 90_000)).toEqual({
+      version: 1,
+      tool: 'codex',
+      event: 'finished',
+      startedAt,
+      session: '01a0eb04-9389-7470-bb18-abf69dcd9556',
+      at: startedAt + 90_000,
+    })
+    // A turn id from the future or not a UUIDv7 gives no start time.
+    expect(buildRecord('codex', JSON.stringify(payload), startedAt - 1)).not.toHaveProperty('startedAt')
+    expect(buildRecord('codex', JSON.stringify({ ...payload, 'turn-id': 'turn-1' }), startedAt)).not.toHaveProperty('startedAt')
+    expect(buildRecord('codex', JSON.stringify({ ...payload, type: 'approval-requested' }), startedAt)).toBeNull()
+  })
+
+  it('reads the Codex payload from its last argument without waiting for stdin', () => {
+    const directory = temporaryDirectory()
+    const payload = JSON.stringify({ type: 'agent-turn-complete', 'thread-id': 't1', 'turn-id': 'x' })
+    execFileSync(process.execPath, [bundledScript, 'codex', directory, payload], { timeout: 3000 })
+    const [name] = fs.readdirSync(directory)
+    expect(name).toMatch(/\.json$/)
+    expect(JSON.parse(fs.readFileSync(path.join(directory, name), 'utf8'))).toMatchObject({ tool: 'codex', event: 'finished', session: 't1' })
   })
 
   it('prints nothing and exits cleanly even when it cannot write', () => {
