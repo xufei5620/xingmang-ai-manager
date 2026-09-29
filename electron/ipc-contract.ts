@@ -131,6 +131,7 @@ import type {
   RuntimeLogSnapshot as MainRuntimeLogSnapshot,
 } from './runtime-log'
 import type { PlatformCapabilities as MainPlatformCapabilities } from './platform-capabilities'
+import type { StoreAppLaunchBlock as MainStoreAppLaunchBlock } from './windows-store-app-launch'
 import type {
   NewApiAccountKey,
   NewApiAccountKeyCreateInput,
@@ -304,6 +305,7 @@ export type PythonRuntimeInstallResult = MainPythonRuntimeInstallResult
 export type GitRuntimeInstallProgress = MainGitRuntimeInstallProgress
 export type GitRuntimeInstallResult = MainGitRuntimeInstallResult
 export type PlatformCapabilities = MainPlatformCapabilities
+export type StoreAppLaunchBlock = MainStoreAppLaunchBlock
 export type AccountStatus = NewApiAccountStatus
 export type AccountProfile = NewApiAccountProfile
 export type AccountSiteId = 'solov' | 'solov-api'

@@ -73,6 +73,14 @@ import { powerShellLiteral, resolveWindowsPowerShellExecutable } from './windows
 import { resolveWindowsMachinePaths } from './windows-machine-paths'
 import { repairCodexDesktopGlobalState } from './codex-desktop-state'
 import { addCodexDesktopPackage } from './codex-desktop-appx'
+import {
+  inspectWindowsStoreAppLaunchContext,
+  readWindowsStoreAppLaunchContext,
+  resolveStoreAppLaunchBlock,
+  windowsStoreAppLaunchContextStatements,
+  type StoreAppLaunchBlock,
+  type WindowsStoreAppLaunchContext,
+} from './windows-store-app-launch'
 
 const execFileAsync = promisify(execFile)
 
@@ -144,51 +152,8 @@ export interface CodexDesktopLaunchPlan {
   windowsHide: boolean
 }
 
-export interface CodexDesktopWindowsLaunchContext {
-  userSid: string | null
-  isBuiltInAdministrator: boolean
-  uacEnabled: boolean | null
-  filterAdministratorToken: boolean | null
-}
-
-const emptyCodexDesktopWindowsLaunchContext: CodexDesktopWindowsLaunchContext = {
-  userSid: null,
-  isBuiltInAdministrator: false,
-  uacEnabled: null,
-  filterAdministratorToken: null,
-}
-
-/**
- * Parses the small JSON probe used after AppX activation fails. Keep this
- * parser tolerant because PowerShell may add a trailing newline or warning
- * text when a policy value is unavailable.
- */
-export function parseCodexDesktopWindowsLaunchContext(
-  output: string,
-): CodexDesktopWindowsLaunchContext {
-  const lines = output.trim().split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
-  const jsonLine = [...lines].reverse().find((line) => line.startsWith('{') && line.endsWith('}'))
-  if (!jsonLine) return { ...emptyCodexDesktopWindowsLaunchContext }
-  try {
-    const value = JSON.parse(jsonLine) as Record<string, unknown>
-    const userSid = typeof value.sid === 'string' && /^S-1-\d+(?:-\d+)+$/.test(value.sid)
-      ? value.sid
-      : null
-    const parseBoolean = (candidate: unknown): boolean | null => {
-      if (candidate === true || candidate === 1 || candidate === '1') return true
-      if (candidate === false || candidate === 0 || candidate === '0') return false
-      return null
-    }
-    return {
-      userSid,
-      isBuiltInAdministrator: userSid?.endsWith('-500') ?? false,
-      uacEnabled: parseBoolean(value.uacEnabled),
-      filterAdministratorToken: parseBoolean(value.filterAdministratorToken),
-    }
-  } catch {
-    return { ...emptyCodexDesktopWindowsLaunchContext }
-  }
-}
+// 判断本身在 windows-store-app-launch.ts，装之前的提醒（检查页、首页）用的是同一份。
+export type CodexDesktopWindowsLaunchContext = WindowsStoreAppLaunchContext
 
 // 客户会原样看到这几句话（失败对话框把后端原话放在最下面），所以只说他看得懂、
 // 做得到的事。以前这里写着 wsreset.exe、AppModel、AppX、UAC，客户既不知道那是
@@ -200,11 +165,12 @@ export const codexDesktopNotStartedPrefix = 'Codex 桌面端没有打开'
 export function describeCodexDesktopLaunchFailure(
   context: CodexDesktopWindowsLaunchContext,
 ): string {
-  if (context.isBuiltInAdministrator) {
+  const block = resolveStoreAppLaunchBlock(context)
+  if (block === 'builtInAdministrator') {
     return `${codexDesktopNotStartedPrefix}：这台电脑正用 Windows 自带的「Administrator」账户登录，`
       + 'Windows 常常不让这个账户打开从应用商店装的软件。换一个普通账户登录电脑，再从星芒打开 Codex。'
   }
-  if (context.uacEnabled === false) {
+  if (block === 'uacDisabled') {
     return `${codexDesktopNotStartedPrefix}：这台电脑关掉了 Windows 的「用户账户控制」，`
       + 'Windows 在这种设置下常常打不开从应用商店装的软件。请联系客服，帮你把它打开后再试。'
   }
@@ -1438,6 +1404,10 @@ export function buildCodexDesktopCombinedProbeScript(): string {
     '$processes = $null',
     '$processesError = $null',
     `try { $processes = ${codexDesktopProcessQuery('roots')} } catch { $processesError = $_.Exception.Message }`,
+    // 装之前提醒「这个账户打不开商店应用」（第十九批 6）要的就是这几样，顺路读掉，
+    // 首页不必为它再起一次 PowerShell。只读当前身份和一条策略键。
+    '$storeAppLaunchContext = $null',
+    `try { ${windowsStoreAppLaunchContextStatements().join('; ')} } catch { $storeAppLaunchContext = $null }`,
     '$packageProbe = $null',
     '$packageError = $null',
     'try {',
@@ -1447,7 +1417,7 @@ export function buildCodexDesktopCombinedProbeScript(): string {
     '$ErrorActionPreference = "Stop"',
     ...codexDesktopPackageProbeStatements(),
     '} catch { $packageError = $_.Exception.Message }',
-    '[pscustomobject]@{ startApps = $startApps; startAppsError = $startAppsError; processes = $processes; processesError = $processesError; package = $packageProbe; packageError = $packageError } | ConvertTo-Json -Compress -Depth 6',
+    '[pscustomobject]@{ startApps = $startApps; startAppsError = $startAppsError; processes = $processes; processesError = $processesError; package = $packageProbe; packageError = $packageError; storeAppLaunch = $storeAppLaunchContext } | ConvertTo-Json -Compress -Depth 6',
   ].join('\n')
 }
 
@@ -1455,6 +1425,8 @@ export interface CodexDesktopCombinedProbe {
   match: StartAppEntry | null
   processes: WindowsProcessEntry[]
   packageProbe: CodexDesktopPackageProbe
+  /** 只在认出这个账户打不开商店应用时才有；没认出、没读到都不带。 */
+  storeAppLaunchBlock?: StoreAppLaunchBlock
 }
 
 function codexDesktopProbeSegmentError(value: unknown): string | null {
@@ -1511,7 +1483,9 @@ export function parseCodexDesktopCombinedProbeJson(output: string): CodexDesktop
   const startAppsError = codexDesktopProbeSegmentError(record.startAppsError)
   const processesError = codexDesktopProbeSegmentError(record.processesError)
   const packageError = codexDesktopProbeSegmentError(record.packageError)
+  const storeAppLaunchBlock = resolveStoreAppLaunchBlock(readWindowsStoreAppLaunchContext(record.storeAppLaunch))
   return {
+    ...(storeAppLaunchBlock ? { storeAppLaunchBlock } : {}),
     match: startAppsError
       ? null
       : selectCodexDesktopApp(parseStartAppsJson(codexDesktopProbeSegmentJson(record.startApps))),
@@ -1674,40 +1648,6 @@ async function waitForProcessId(processId: number, timeoutMs: number): Promise<b
     await delay(250)
   }
   return isProcessAlive(processId)
-}
-
-async function inspectCodexDesktopWindowsLaunchContext(): Promise<CodexDesktopWindowsLaunchContext> {
-  if (process.platform !== 'win32') return { ...emptyCodexDesktopWindowsLaunchContext }
-  const script = [
-    '$ErrorActionPreference = "SilentlyContinue"',
-    '$identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()',
-    '$policy = Get-ItemProperty -LiteralPath "HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System"',
-    '$uacEnabled = $null',
-    '$filterAdministratorToken = $null',
-    'if ($null -ne $policy.EnableLUA) { $uacEnabled = [int]$policy.EnableLUA }',
-    'if ($null -ne $policy.FilterAdministratorToken) { $filterAdministratorToken = [int]$policy.FilterAdministratorToken }',
-    '[pscustomobject]@{ sid = [string]$identity.User.Value; uacEnabled = $uacEnabled; filterAdministratorToken = $filterAdministratorToken } | ConvertTo-Json -Compress',
-  ].join('; ')
-  try {
-    const { stdout } = await execFileAsync(resolveWindowsPowerShellExecutable(), [
-      '-NoLogo',
-      '-NoProfile',
-      '-NonInteractive',
-      '-Command',
-      script,
-    ], {
-      env: trustedCommandEnvironment(),
-      windowsHide: true,
-      // A cold PowerShell start alone often takes longer than 3 seconds on the
-      // slow machines this path is for; a timed-out probe silently dropped the
-      // built-in Administrator explanation and showed the generic sentence.
-      timeout: 10_000,
-      maxBuffer: 64 * 1024,
-    })
-    return parseCodexDesktopWindowsLaunchContext(stdout)
-  } catch {
-    return { ...emptyCodexDesktopWindowsLaunchContext }
-  }
 }
 
 export async function waitForCodexDesktopState(
@@ -2245,6 +2185,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
         running: false,
         detectionFailed,
         detectionError,
+        ...(combinedProbe.storeAppLaunchBlock ? { storeAppLaunchBlock: combinedProbe.storeAppLaunchBlock } : {}),
         ...desktopUpdateFields(
           packageProbe.error && !processPackage ? 'failed' : 'skipped',
           packageProbe.error && !processPackage ? packageProbe.error : null,
@@ -3044,7 +2985,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
     // process was still crossing the AppModel boundary at the first check.
     if (!startedProcesses.length) startedProcesses = await processFromActivationPid()
     if (!startedProcesses.length) {
-      const launchContext = await inspectCodexDesktopWindowsLaunchContext()
+      const launchContext = await inspectWindowsStoreAppLaunchContext()
       throw new Error(describeCodexDesktopLaunchFailure(launchContext))
     }
     if (cdpPort !== null) {

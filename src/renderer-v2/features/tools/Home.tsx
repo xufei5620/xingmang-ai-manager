@@ -23,7 +23,7 @@ import { isNetworkFailureText } from './online-resync'
 import { gitHostPlatform, gitMacInstallWaitingHint, gitMissingFirstRunHint, gitMissingHomeNotice } from '../../../../electron/git-runtime'
 import { managedRuntimeNotice, runtimeButtonLabel, runtimeInstallGuide } from './runtime-install-guide'
 import { RuntimeInstallHint } from './RuntimeInstallHint'
-import { elevatedInstallNotice, elevatedInstallShortNotice } from './elevation-notice'
+import { elevatedInstallNotice, elevatedInstallShortNotice, storeAppLaunchShortNotice } from './elevation-notice'
 import { useOnlineStatus } from '../shell/useOnlineStatus'
 
 export interface HomeProps {
@@ -297,8 +297,10 @@ export function Home(props: HomeProps) {
     // macOS 上 Codex 桌面端归客户自己装，这颗按钮只能把人带到教程：写「安装」就是骗人。
     const manualInstall = !tool.status.installed && needsManualInstall(snapshot, tool.id)
     // Codex 桌面端在 Windows 上是 Appx，装它要提权；四个 CLI 走 npm，不提权。
+    // 这个账户本来就打不开商店应用时，先说这件更要紧的（只提醒，照样能点「安装」）。
     const elevationHint = tool.id === 'codexDesktop' && !tool.status.installed
-      ? elevatedInstallShortNotice('codexDesktop', snapshot?.platform.platform, snapshot?.platform.codexDesktop.install)
+      ? storeAppLaunchShortNotice(snapshot?.system.desktopApps.codex.storeAppLaunchBlock)
+        ?? elevatedInstallShortNotice('codexDesktop', snapshot?.platform.platform, snapshot?.platform.codexDesktop.install)
       : null
     const primaryLabel = launchJob ? '打开中' : switchJob ? '切换中' : repairJob ? '修复中' : installJob ? '安装中' : configUnavailable ? '重新配置'
       : bootstrapBusy && !tool.configured ? '配置中' : tool.error ? '重新检测' : !tool.status.installed ? manualInstall ? '安装指南' : '安装'
