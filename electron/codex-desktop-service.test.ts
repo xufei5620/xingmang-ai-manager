@@ -12,6 +12,7 @@ import { InstallationQueue } from './installation-queue'
 import { CommandRunnerError } from './command-runner'
 import type { NativeConfigInspection } from './config-files'
 import {
+  assertCodexDesktopUninstalled,
   buildCodexDesktopDarwinStatus,
   createCodexDesktopService,
   buildCodexDesktopLaunchPlan,
@@ -1179,6 +1180,44 @@ describe('Codex Desktop Appx probe script', () => {
       || probe.packageProbe.error !== null,
     ).toBe(true)
   }, 180_000)
+})
+
+describe('Codex Desktop uninstall verification', () => {
+  const packageFullName = 'OpenAI.Codex_26.721.4979.0_x64__abc123'
+  const installed = {
+    name: 'OpenAI.Codex',
+    version: '26.721.4979.0',
+    packageFullName,
+    packageFamilyName: 'OpenAI.Codex_abc123',
+    installLocation: 'C:\\Program Files\\WindowsApps\\OpenAI.Codex_26.721.4979.0_x64__abc123',
+  }
+
+  it('accepts only a successful current-user absence probe', () => {
+    expect(() => assertCodexDesktopUninstalled(packageFullName, {
+      value: null, error: null, confirmedAbsent: true,
+    })).not.toThrow()
+  })
+
+  it('rejects when the same package is still registered', () => {
+    expect(() => assertCodexDesktopUninstalled(packageFullName, {
+      value: installed, error: null, confirmedAbsent: false,
+    })).toThrow('卸载未完成')
+  })
+
+  it('does not call a failed probe a confirmed uninstall', () => {
+    expect(() => assertCodexDesktopUninstalled(packageFullName, {
+      value: null, error: 'AppX probe failed', confirmedAbsent: false,
+    })).toThrow('未能确认')
+  })
+
+  it('does not call an inconclusive or different package a confirmed uninstall', () => {
+    for (const probe of [
+      { value: null, error: null, confirmedAbsent: false },
+      { value: { ...installed, packageFullName: 'OpenAI.CodexBeta_26.721.4979.0_x64__abc123' }, error: null, confirmedAbsent: false },
+    ]) {
+      expect(() => assertCodexDesktopUninstalled(packageFullName, probe)).toThrow('未能确认')
+    }
+  })
 })
 
 describe('parseCodexDesktopCombinedProbeJson', () => {

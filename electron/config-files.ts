@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto'
 import * as TOML from '@iarna/toml'
 import { applyEdits, getNodeValue, modify, parseTree, type Node, type ParseError } from 'jsonc-parser'
 import { providerBaseUrls, type ProviderId } from './catalog'
+import { relaySites } from './relay-sites'
 import { readBoundedUtf8FileSync } from './bounded-file'
 import {
   defaultProviderConfigRoots,
@@ -828,8 +829,15 @@ export function classifyCodexConfigProfile(
   const providers = parsed.model_providers
   const entry = providerName && isJsonRecord(providers) ? providers[providerName] : null
   const baseUrl = isJsonRecord(entry) && typeof entry.base_url === 'string' ? entry.base_url : ''
-  if (baseUrl && normalizeUrl(baseUrl) === normalizeUrl(siteBaseUrl)) return 'relay'
+  if (isKnownCodexRelayBaseUrl(baseUrl, siteBaseUrl)) return 'relay'
   return 'official'
+}
+
+function isKnownCodexRelayBaseUrl(baseUrl: string, siteBaseUrl: string): boolean {
+  if (!baseUrl) return false
+  const normalized = normalizeUrl(baseUrl)
+  return [siteBaseUrl, ...relaySites.map((site) => site.providerBaseUrls.codex)]
+    .some((candidate) => normalized === normalizeUrl(candidate))
 }
 
 function cloneTomlRecord(parsed: Record<string, unknown>): Record<string, unknown> {
@@ -890,7 +898,7 @@ function stripCodexRelayFromConfig(
   if (providerName && isJsonRecord(providers)) {
     const entry = providers[providerName]
     const entryBaseUrl = isJsonRecord(entry) && typeof entry.base_url === 'string' ? entry.base_url : ''
-    if (entryBaseUrl && normalizeUrl(entryBaseUrl) === normalizeUrl(siteBaseUrl)) {
+    if (isKnownCodexRelayBaseUrl(entryBaseUrl, siteBaseUrl)) {
       delete providers[providerName]
     }
     if (Object.keys(providers).length === 0) delete parsed.model_providers
@@ -1065,13 +1073,17 @@ function createCodexOfficialConfigPlans(
   }
   if (!currentParsed) return plans
   const storedChatgpt = readStoredCodexConfig(paths.chatgpt, '已保存的 ChatGPT Codex 配置')
-  if (storedChatgpt) {
+  if (storedChatgpt && classifyCodexConfigProfile(TOML.parse(storedChatgpt), siteBaseUrls.codex) === 'official') {
     plans.push({ path: paths.active, content: storedChatgpt })
     return plans
   }
   const cleaned = cloneTomlRecord(currentParsed)
   stripCodexRelayFromConfig(cleaned, siteBaseUrls.codex)
-  plans.push({ path: paths.active, content: tomlContent(cleaned) })
+  const cleanContent = tomlContent(cleaned)
+  // Older versions could have stored another Xingmang site as the official
+  // snapshot. Replace that polluted copy in the same file transaction.
+  if (storedChatgpt) plans.push({ path: paths.chatgpt, content: cleanContent })
+  plans.push({ path: paths.active, content: cleanContent })
   return plans
 }
 
@@ -2484,12 +2496,12 @@ export function switchProviderToOfficialAccount(
   for (const filePath of configuredPaths) assertSafeConfigPath(filePath, providerRoot, 'file')
 
   const inspection = inspectProviderConfig(provider, roots, siteBaseUrlsInput)
-  // Codex 自己的 ChatGPT 登录会把 auth.json 换成令牌、Key 置空，却不动 config.toml：
-  // 看上去已是官方，实际每次请求都把令牌发给当前账号的服务。这正是最需要切回
-  // 官方的半截状态，按「还在中转」处理，config.toml 才会一起换回官方那份。
-  const halfSwitchedCodex = provider === 'codex' && Boolean(inspection.actualBaseUrl)
-    && normalizeUrl(inspection.actualBaseUrl) === normalizeUrl(siteBaseUrlsInput.codex)
-  const mode = halfSwitchedCodex ? 'relay' : providerAccountMode(inspection)
+  // Codex 自己的 ChatGPT 登录会把 auth.json 换成令牌、Key 置空，却不动 config.toml；
+  // 切账号站点也会让现有中转地址不同于当前站点。两种情况都必须按已知中转来源
+  // 切回，才能同时恢复官方 config.toml 与 auth.json。
+  const knownCodexRelay = provider === 'codex'
+    && isKnownCodexRelayBaseUrl(inspection.actualBaseUrl, siteBaseUrlsInput.codex)
+  const mode = knownCodexRelay ? 'relay' : providerAccountMode(inspection)
   if (mode === 'official' && saveMode !== 'reset') throw new Error('当前已经在使用你自己的官方订阅账号，无需切换')
   if (mode === 'unknown') {
     throw new Error('当前配置不是星芒中转（可能是你自己填的第三方地址），为避免改坏配置已取消切换')
