@@ -212,20 +212,30 @@ export async function readCodexExtensionMetadata(
 type NativeSkill = CodexExtensionMetadata['skills'][number]
 type RowAction = 'enable' | 'disable' | 'uninstall' | 'update' | 'install'
 
+function nativeSkillPathKey(value: string): string {
+  const windowsPath = /^[A-Za-z]:[\\/]/.test(value) || value.startsWith('\\\\') || value.startsWith('//')
+  if (!windowsPath) return value
+  return value.replaceAll('\\', '/')
+    .replace(/^\/\/\?\/UNC\//i, '//')
+    .replace(/^\/\/\?\//, '')
+    .toLowerCase()
+}
+
 /**
  * 通用列表里的 Codex 技能 ID 是 SKILL.md 的路径；按路径对上原生列表那一条，
- * 对不上才退回按名字找（同名技能在 user 与 repo 各有一份时按名字会对错）。
+ * 对不上就停止，不能把已消失的 A 配成同名的 B（#601）。只有无路径的旧 ID
+ * 才兼容名字，并且整份原生列表里必须只有一个候选。
  */
 export function findNativeSkill(
   skills: readonly NativeSkill[],
   item: ExtensionItem,
 ): NativeSkill | undefined {
-  const id = item.id.toLowerCase()
-  return (
-    skills.find((entry) => entry.path === item.id) ??
-    skills.find((entry) => entry.path.toLowerCase() === id) ??
-    skills.find((entry) => entry.name === item.name)
-  )
+  if (!item.id.trim()) return undefined
+  const hasPath = /[\\/]/.test(item.id) || /^[A-Za-z]:/.test(item.id)
+  const candidates = hasPath
+    ? skills.filter((entry) => nativeSkillPathKey(entry.path) === nativeSkillPathKey(item.id))
+    : skills.filter((entry) => entry.name === item.name)
+  return candidates.length === 1 ? candidates[0] : undefined
 }
 
 export interface ExtensionRowState {
@@ -246,11 +256,15 @@ export function extensionRowState(
   item: ExtensionItem,
   nativeSkill?: NativeSkill,
 ): ExtensionRowState {
-  if (item.provider === 'codex' && item.kind === 'skill' && nativeSkill) {
-    const readonly = !nativeSkill.managed || nativeSkill.scope === 'system'
+  if (item.provider === 'codex' && item.kind === 'skill') {
+    const matched = nativeSkill && findNativeSkill([nativeSkill], item)
+    // Metadata may have been read after this path disappeared. Leave the old
+    // row visible for refresh, but never enable an action on an uncertain target.
+    if (!matched) return { readonly: false, enabled: item.enabled, canToggle: false, canUninstall: false, canUpdate: false }
+    const readonly = !matched.managed || matched.scope === 'system'
     return {
       readonly,
-      enabled: nativeSkill.enabled,
+      enabled: matched.enabled,
       canToggle: !readonly,
       canUninstall: !readonly,
       canUpdate: false,
@@ -288,10 +302,13 @@ export async function runExtensionAction(
   action: RowAction,
   nativeSkill?: NativeSkill,
 ): Promise<void> {
-  if (item.provider === 'codex' && item.kind === 'skill' && nativeSkill) {
+  if (item.provider === 'codex' && item.kind === 'skill') {
+    const matched = nativeSkill && findNativeSkill([nativeSkill], item)
+    if (!matched) throw new Error('这个技能的文件位置已经变化，请刷新列表后再操作。')
+    if (!matched.managed || matched.scope === 'system') throw new Error('这个技能是只读的，不能在这里修改。')
     if (action === 'enable' || action === 'disable')
-      await api.toggleSkill(nativeSkill.path, action === 'enable')
-    else if (action === 'uninstall') await api.uninstallSkill(nativeSkill.path)
+      await api.toggleSkill(matched.path, action === 'enable')
+    else if (action === 'uninstall') await api.uninstallSkill(matched.path)
     else throw new Error('Codex 技能不支持这个操作。')
     return
   }

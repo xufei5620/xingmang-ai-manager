@@ -45,6 +45,7 @@ export interface ManagedCliKeyStoreLike {
   save(userId: number, keys: readonly StoredManagedCliKey[], expectedRevision?: number): Promise<void | boolean>
   remove(userId: number, keyId: number): Promise<void>
   captureRevision?: () => number
+  getSiteId?: () => string
 }
 
 interface ResolvedManagedCliKeys {
@@ -139,19 +140,32 @@ async function resolveManagedCliKeys(
     const cacheRevision = keyStore?.captureRevision?.()
     assertSameAuthenticatedUser(accountService, capture)
     const profiles = resolveManagedCliKeyProfiles(accountService.getActiveSiteId?.())
-    // 本机四把 Key 全在缓存里、且分组名都还对得上时一次网络请求都不发——
-    // 离线启动的行为与加入动态识别之前完全一致。只有真要去签 Key 才去问
-    // 服务端现在有哪些分组。
+    const activeSiteId = accountService.getActiveSiteId?.()
+    const cacheSiteId = keyStore?.getSiteId?.()
+    const foreignCache = cacheSiteId !== undefined && activeSiteId !== undefined && cacheSiteId !== activeSiteId
+    const scopedCache = activeSiteId !== undefined && cacheSiteId === activeSiteId
+    // Old/unscoped stores only prove their shipped names. The realm-bound
+    // encrypted store may also prove a renamed group without going online.
+    const usableCache = foreignCache ? [] : scopedCache ? cached : cached.filter((entry) => (
+      entry.group === profiles[entry.provider].group
+    ))
     const everyKeyCached = providerIds.every((provider) => (
-      cached.some((entry) => entry.provider === provider && entry.group === profiles[provider].group)
+      usableCache.some((entry) => entry.provider === provider)
     ))
     const resolvedGroups = everyKeyCached ? null : await loadManagedCliGroups(accountService)
     assertSameAuthenticatedUser(accountService, capture)
-    const groupFor = (provider: ProviderId): string => resolvedGroups?.[provider].group ?? profiles[provider].group
+    const groupFor = (provider: ProviderId): string => {
+      const resolved = resolvedGroups?.[provider]
+      // A fallback means the listing did not identify a new owner. It does
+      // not invalidate a group already confirmed when this key was issued.
+      return (resolved?.source !== 'fallback' ? resolved?.group : undefined)
+        ?? usableCache.find((entry) => entry.provider === provider)?.group
+        ?? profiles[provider].group
+    }
     // A group rename on the account backend must invalidate the old local
     // entry. Otherwise a cached secret from the previous production config
     // would bypass provisioning and keep writing requests to a stale group.
-    const keys = new Map(cached.flatMap((entry) => {
+    const keys = new Map(usableCache.flatMap((entry) => {
       const profile = profiles[entry.provider]
       return profile && groupFor(entry.provider) === entry.group ? [[entry.provider, entry] as const] : []
     }))
@@ -284,11 +298,12 @@ export async function configureManagedClis(
         if (keyStore) await keyStore.remove(userId, managedKey.id)
         assertSameAuthenticatedUser(accountService, capture)
         const profile = resolveManagedCliKeyProfiles(accountService.getActiveSiteId?.())[provider]
-        // 走到这里说明缓存里那把 Key 已经被服务端判失效，正是分组可能已经改名的时机：
-        // 重签之前先问一次服务端现在有哪些分组，问不到再退回写死名单。
+        // 失效也可能是分组改名；重签前先问服务端。组列表暂不可用时沿用
+        // 原 Key 已确认过的组名，不把动态组误换成出厂组名。
         const resolved = await loadManagedCliGroups(accountService)
         assertSameAuthenticatedUser(accountService, capture)
-        const group = resolved?.[provider].group ?? profile.group
+        const group = (resolved?.[provider].source !== 'fallback' ? resolved?.[provider].group : undefined)
+          ?? managedKey.group
         const replacement = await accountService.provisionCliKey({ name: profile.keyName, group })
         assertSameAuthenticatedUser(accountService, capture)
         managedKey = {

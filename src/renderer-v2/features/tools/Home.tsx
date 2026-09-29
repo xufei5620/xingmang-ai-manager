@@ -5,7 +5,7 @@ import { presentExternalClients } from './external-model'
 import { useSharedAccountBalance } from '../app/balance-context'
 import { balanceStatusText } from '../shell/balance-status'
 import { BrandIcon, Button, Card, Dialog, Empty, ListRow, Menu, PageHead, Pill, Progress, ToolRow, useToast } from '../../ui'
-import { accountSwitchTarget, balanceTier, subscriptionWarning, canUninstallTool, ccSwitchLeftoverFor, foreignKeyKind, switchAccountLabel, configDirectoryMenuItem, externalInstallHint, greeting, isExternallyManagedInstall, needsManualInstall, ownershipAwaitingAccount, presentTools, providerFor, recommendedVersionVerb, revertVersion, rollbackVersion, updateButtonHint, versionSubtitle, type ToolboxSnapshot, type ToolId, type ToolPresentation } from './model'
+import { accountSwitchTarget, balanceTier, subscriptionWarning, canUninstallTool, ccSwitchLeftoverFor, foreignKeyKind, switchAccountLabel, configDirectoryMenuItem, externalInstallHint, greeting, isExternallyManagedInstall, needsManualInstall, ownershipAwaitingAccount, presentTools, providerFor, recommendedVersionVerb, revertVersion, rollbackVersion, toolUpdateOffer, updateButtonHint, versionSubtitle, type ToolboxSnapshot, type ToolId, type ToolPresentation } from './model'
 import type { ToolboxPartitionFailure, ToolsApi } from './api'
 import type { ToolJob } from './useToolbox'
 import type { AccountBootstrapProgress, AccountBootstrapResult } from './account-bootstrap'
@@ -273,6 +273,7 @@ export function Home(props: HomeProps) {
       : tool.configured ? props.onLaunch(tool.id, lastWorkspace?.path) : props.onConfigure(tool.id)
     const rollback = job ? null : rollbackVersion(tool)
     const revert = job ? null : revertVersion(tool)
+    const update = job ? null : toolUpdateOffer(tool)
     // 配置那一块没读到时来源是未知的，不给切换，免得在一份没读到的配置上做决定。
     // 账号还在恢复时来源同样没判定（见 ownershipAwaitingAccount），等恢复完再给。
     const switchTarget = configUnavailable || tool.error || ownershipPending ? null : accountSwitchTarget(tool)
@@ -308,7 +309,7 @@ export function Home(props: HomeProps) {
             : undefined
           : rollback && blocked
             ? <Button variant="ghost" size="sm" icon={rollbackIcon} title={blocked} onClick={() => props.onInstall(tool.id, rollback)} testId={`tool-${tool.id}-rollback`}>{`${rollbackVerb}推荐版本`}</Button>
-            : tool.updateAvailable && !job ? <Button variant="ghost" size="sm" icon={Download} title={updateButtonHint(tool)} onClick={() => props.onInstall(tool.id)}>更新</Button> : undefined}
+            : update?.newer ? <Button variant="ghost" size="sm" icon={Download} title={updateButtonHint(tool)} onClick={() => props.onInstall(tool.id, update.version ?? update.target ?? undefined)}>更新</Button> : undefined}
       primaryAction={workspaces.length ? <span className="v2-tool-launch" data-testid={`tool-${tool.id}-launch`}>
         {primaryButton}
         {lastWorkspace && <Menu label="换一个目录" testId={`tool-${tool.id}-workspaces`}

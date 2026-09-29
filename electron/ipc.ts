@@ -32,6 +32,7 @@ import { parseLocalNoticeReadSync, type AnnouncementReadStore } from './announce
 import type { AccelerationApi, AccelerationMode, AccelerationPreferenceApi } from './acceleration-contract'
 import { accelerationFailureReason } from './acceleration-contract'
 import { cliCatalog, isProviderId, providerIds, resolveManagedCliKeyProfiles, type ProviderId } from './catalog'
+import { isExactCliVersion } from './versions'
 import { accountKeyListTooLongMessage, findAccountKeyById, searchAccountKeys, inheritedKeySettings, inheritedKeyExpiredMessage, isUsedUpKeyLimit, managedKeyQuotaExhaustedMessage } from './account-key-quota'
 import { createMemoryManagedKeyReplacementStore, ManagedKeyReplacementUnreadableError, managedKeyReplacementUnreadableRevokeMessage, type ManagedKeyReplacementStore } from './managed-key-replacement-store'
 import { isInstallCancelledError } from './install-cancellation'
@@ -578,12 +579,12 @@ function parseCodexDesktopLocale(locale: unknown): CodexDesktopLocale {
   return locale
 }
 
-// 渲染层只在「回到推荐版本」这一处点名版本,所以这里只接受精确 semver:
+// 更新和回退都提交精确版本，使用与 registry 读取一致的校验：
 // 'latest'、范围表达式(^1.2.3)和 dist-tag 全部拒绝,它们会让 npm 自己去
 // 决定装什么,绕过名单(I5:IPC 入参一律视为敌意输入)。
 function parseCliInstallVersion(value: unknown): string | undefined {
   if (value === undefined || value === null) return undefined
-  if (typeof value !== 'string' || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z][0-9A-Za-z.-]{0,126})?$/.test(value)) {
+  if (!isExactCliVersion(value)) {
     throw new Error('CLI 版本号格式错误')
   }
   return value
@@ -1990,8 +1991,9 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
       },
       writeAccountConfig: async (id) => {
         // 用户亲手点的切换：intent 'explicit' 才穿得过「来源未确认不自动改写」那道闸。
+        // 切换来源没有确认丢弃读坏的额度记录；签发仍走保留限制、读坏就停止的入口。
         const outcome = await configureManagedClis(
-          accountService, service, [id], {}, options.previewOnboarding, options.managedCliKeys, 'merge', 'explicit',
+          automaticProvisioning, service, [id], {}, options.previewOnboarding, options.managedCliKeys, 'merge', 'explicit',
         )
         if (outcome.failed.some((item) => item.serviceUnavailable)) throw new AccountSourceServiceUnavailableError()
         if (outcome.failed.length) throw new Error(outcome.failed.map((item) => item.message).join('；'))

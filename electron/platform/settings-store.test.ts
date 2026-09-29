@@ -59,6 +59,7 @@ describe('isolated platform-settings.json', () => {
       task: true,
       cliUpdate: true,
       announcement: true,
+      spend: true,
       acceleration: true,
     })
   })

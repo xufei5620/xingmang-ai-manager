@@ -50,6 +50,7 @@ export function parsePlatformPreferences(value: unknown): PlatformPreferences {
     task: true,
     cliUpdate: true,
     announcement: true,
+    spend: true,
     acceleration: true,
   })
   // 老文件里的 crashReports 会在这里被丢掉：键不在清单里就不会被读出，
