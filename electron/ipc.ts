@@ -1256,6 +1256,7 @@ const ipcOperationLabels: Readonly<Record<string, string>> = {
   'provider-sessions:detail': 'AI 工具会话详情读取',
   'provider-sessions:export': 'AI 工具会话导出',
   'provider-sessions:open-directory': 'AI 工具会话工作目录打开',
+  'provider-sessions:delete': 'AI 工具会话彻底删除',
   'settings:get': '应用设置读取',
   'settings:save': '应用设置保存',
   'diagnostics:run': '系统诊断',
@@ -2412,6 +2413,9 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     await externalShell.openPath(await resolveOpenableSessionWorkspace(workspace))
     return true
   })
+  registerTrustedHandler('provider-sessions:delete', (_event, sessionId: unknown) => (
+    options.providerSessionsService.delete(requiredString(sessionId, '会话 ID', 256))
+  ))
   registerTrustedHandler('settings:get', () => service.readStoredConfig())
   registerTrustedHandler('settings:save', async (event, settings: unknown) => {
     const update = parseSettingsUpdate(settings)

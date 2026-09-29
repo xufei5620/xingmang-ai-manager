@@ -210,7 +210,8 @@ function fixtureRunningTools(providers: readonly ProviderId[]) {
 /** ?sessionArchive：Claude 的记录也能归档 / 恢复，用来盯住记录页归档后首页「最近」跟着重读（#544）。 */
 function sessionCapability(provider: ProviderId): MultiProviderSessionPage['capabilities'][ProviderId] {
   const mutable = query.has('sessionArchive') && provider === 'claude'
-  return { provider, available: true, readable: true, readonly: !mutable, source: 'jsonl', reason: '', operations: { list: true, detail: true, exportMarkdown: true, archive: mutable, restore: mutable } }
+  const deletable = query.has('sessionDelete') && provider === 'claude'
+  return { provider, available: true, readable: true, readonly: !mutable, source: 'jsonl', reason: '', operations: { list: true, detail: true, exportMarkdown: true, archive: mutable, restore: mutable, delete: deletable } }
 }
 // 首页「打开」的最近目录是从会话记录里的 cwd 推出来的（N7），所以这里要有带目录的记录。
 // 同一个目录两条记录，用来盯住去重。
@@ -432,6 +433,12 @@ const methods = {
   },
   archiveSession: async (nativeId: string) => fixtureSetArchived(nativeId, true),
   restoreSession: async (nativeId: string) => fixtureSetArchived(nativeId, false),
+  deleteProviderSession: async (id: string) => {
+    const index = recentWorkspaceSessions.findIndex((entry) => entry.id === id)
+    if (index < 0) throw new Error('会话不存在。')
+    const [item] = recentWorkspaceSessions.splice(index, 1)
+    return { id, provider: item.provider, deletedFiles: 1 }
+  },
   exportDiagnostics: async () => ({ outputPath: 'C:\\Fixture\\xingmang-diagnostics.txt' }),
   revealExportedFile: async () => true,
   launchCli: async () => query.has('launchPending') ? new Promise<{}>((resolve) => { releaseLaunch = () => resolve({}) }) : query.has('launchOverride') ? { configOverrideNotice: '这个项目文件夹里有自己的设置，会让 Claude Code 不用当前账号，余额和用量会对不上。不是你有意这样设的话，换一个文件夹打开就好。' } : {},
