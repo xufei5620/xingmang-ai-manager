@@ -3,7 +3,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { cliExitHintLines, macosFolderAccessHintLines } from './cli-exit-hint'
-import { managedNpmBinDirectory } from './managed-cli-paths'
+import { managedNodeRuntimeBinDirectory, managedNpmBinDirectory } from './managed-cli-paths'
 import type { CommandSpec, RunCommandOptions } from './command-runner'
 
 export interface MacosTerminalScriptPlan {
@@ -196,6 +196,9 @@ export function darwinCommandPathCandidates(
     '/opt/homebrew/bin',
     '/usr/local/bin',
     ...inheritedPath.split(path.delimiter),
+    // 本软件代下的 Node.js 排在最后：客户自己装过（Homebrew、官网安装包、nvm）
+    // 的那份永远先被找到，这一份只在他什么都没有时才顶上（第十六批 2）。
+    managedNodeRuntimeBinDirectory({ ...baseEnv, HOME: homeDirectory }, 'darwin'),
   ]
 }
 

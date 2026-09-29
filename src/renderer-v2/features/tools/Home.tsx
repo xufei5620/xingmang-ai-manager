@@ -20,8 +20,8 @@ import { latestSessionIdsByWorkspace, newWorkspaceLabel, recentWorkspaces, works
 import { errorMessage } from '../../business-common'
 import { subscriptionSummaryText, type UsableSubscription } from '../../../../electron/subscription-summary'
 import { isNetworkFailureText } from './online-resync'
-import { gitHostPlatform, gitMissingFirstRunHint, gitMissingHomeNotice } from '../../../../electron/git-runtime'
-import { runtimeButtonLabel, runtimeInstallGuide } from './runtime-install-guide'
+import { gitHostPlatform, gitMacInstallWaitingHint, gitMissingFirstRunHint, gitMissingHomeNotice } from '../../../../electron/git-runtime'
+import { managedRuntimeNotice, runtimeButtonLabel, runtimeInstallGuide } from './runtime-install-guide'
 import { RuntimeInstallHint } from './RuntimeInstallHint'
 import { elevatedInstallNotice, elevatedInstallShortNotice } from './elevation-notice'
 import { useOnlineStatus } from '../shell/useOnlineStatus'
@@ -203,13 +203,15 @@ export function Home(props: HomeProps) {
   const gitHost = gitHostPlatform(snapshot?.platform.platform ?? 'other')
   const gitStatus = snapshot?.system.runtime.git
   const gitMissing = Boolean(gitStatus && !gitStatus.installed && !gitStatus.detectionFailed)
-  // macOS 上 Node / Python 归客户自己装（platform.nodeRuntimeInstall === 'external'）：
+  // macOS 上 Python 归客户自己装（platform.pythonRuntimeInstall === 'external'）：
   // 按钮点下去只是开网页，所以这里补一段中文步骤，别让人以为应用正在替他装。
+  // Node.js 在 Mac 上由应用准备（第十六批 2），只在点之前说一句会发生什么。
   // 探测失败时不给这段：那时候并不知道它装没装，「没有找到」是假话（同 Git 那一行 A4）。
   const nodeMissing = Boolean(snapshot && !snapshot.system.runtime.node.installed && !snapshot.system.runtime.node.detectionFailed)
   const pythonMissing = Boolean(snapshot && !snapshot.system.runtime.python.installed && !snapshot.system.runtime.python.detectionFailed)
   const nodeGuide = nodeMissing ? runtimeInstallGuide('node', snapshot?.platform.platform, snapshot?.platform.nodeRuntimeInstall) : null
   const pythonGuide = pythonMissing ? runtimeInstallGuide('python', snapshot?.platform.platform, snapshot?.platform.pythonRuntimeInstall) : null
+  const nodeManagedNotice = nodeMissing ? managedRuntimeNotice('node', snapshot?.platform.platform, snapshot?.platform.nodeRuntimeInstall) : null
   // Windows 上 Node.js 是机器级 MSI，点「准备 Node.js」必然弹一次 UAC。说在点之前，
   // 不是弹窗跳出来之后（Python 按当前用户装，没有这句）。
   const nodeElevationNotice = nodeMissing
@@ -448,13 +450,15 @@ export function Home(props: HomeProps) {
             </div>
           })}</div>
           {gitMissing && !jobs.git && <p className="v2-runtime-hint" data-testid="home-runtime-git-hint">{gitMissingHomeNotice(gitHost)}</p>}
+          {gitHost === 'macos' && jobs.git && <p className="v2-runtime-hint" data-testid="home-runtime-git-waiting">{gitMacInstallWaitingHint}</p>}
           {nodeElevationNotice && <p className="v2-runtime-hint" data-testid="home-runtime-node-elevation">{nodeElevationNotice}</p>}
+          {nodeManagedNotice && !jobs.node && <p className="v2-runtime-hint" data-testid="home-runtime-node-managed">{nodeManagedNotice}</p>}
           {nodeGuide && <RuntimeInstallHint runtime="node" guide={nodeGuide} />}
           {pythonGuide && <RuntimeInstallHint runtime="python" guide={pythonGuide} />}
           <div className="v2-runtime-actions">{!snapshot?.system.runtime.node.installed && <Button variant="ghost" size="sm" icon={Download} onClick={() => props.onRuntime('node')} testId="home-runtime-node">{runtimeButtonLabel('node', snapshot?.platform.nodeRuntimeInstall)}</Button>}
             {!snapshot?.system.runtime.python.installed && <Button variant="ghost" size="sm" icon={Download} onClick={() => props.onRuntime('python')} testId="home-runtime-python">{runtimeButtonLabel('python', snapshot?.platform.pythonRuntimeInstall)}</Button>}
             {(nodeGuide || pythonGuide) && <Button variant="ghost" size="sm" icon={BookOpen} onClick={() => props.onNavigate('tutorial', macRuntimeTutorialTopic)} testId="home-runtime-tutorial">看教程</Button>}
-            {gitMissing && gitHost === 'windows' && <Button variant="ghost" size="sm" icon={Download} loading={Boolean(jobs.git)} disabled={Boolean(jobs.git)} onClick={() => props.onRuntime('git')} testId="home-runtime-git">安装 Git</Button>}</div>
+            {gitMissing && gitHost !== 'other' && <Button variant="ghost" size="sm" icon={Download} loading={Boolean(jobs.git)} disabled={Boolean(jobs.git)} onClick={() => props.onRuntime('git')} testId="home-runtime-git">安装 Git</Button>}</div>
         </Card>
         <Card title="账户余额" padding="none" actions={<Pill tone={connectedCount ? 'ok' : 'neutral'}>{connectedCount ? `${connectedCount} 个工具已连接` : '等待连接'}</Pill>}>
           <div className={`v2-balance-body tone-${tier}`}><div title={balanceHint}><strong data-testid="home-balance">{dollars === null ? '暂未读到' : `$${dollars.toFixed(2)}`}</strong><small>可用余额 · 美元</small>{balanceStore && account && <Button variant="ghost" size="xs" icon={RefreshCw} loading={balanceState.loading} aria-label="刷新账户余额" title={balanceHint} onClick={() => void balanceStore.refresh('manual')} testId="home-balance-refresh" />}</div>

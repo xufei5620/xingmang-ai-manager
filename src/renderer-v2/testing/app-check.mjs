@@ -1146,6 +1146,22 @@ test('a failed Git install keeps the button so the customer can simply try again
     await clean(page)
   } finally { await page.close() }
 })
+// 第十六批 2：Mac 上「安装 Git」弹苹果自己的安装窗口；客户在那里点了取消，首页说一句、按钮留着。
+test('a Mac customer who cancels the Apple installer is told so and can press Install Git again', async () => {
+  const page = await open('os=mac&gitMissing=1&gitCancel=1')
+  try {
+    await page.getByTestId('page-home').waitFor()
+    const hint = page.getByTestId('home-runtime-git-hint')
+    await hint.waitFor()
+    assert.match(await hint.innerText(), /苹果自己的安装窗口/)
+    assert.doesNotMatch(await hint.innerText(), /终端|xcode-select|brew/)
+    await page.getByTestId('home-runtime-git').click()
+    await page.getByText('没有装 Git。需要时再点一次「安装 Git」就行。').first().waitFor()
+    await page.getByTestId('home-runtime-git').waitFor()
+    assert.equal(await page.getByTestId('home-runtime-git').isEnabled(), true)
+    await clean(page)
+  } finally { await page.close() }
+})
 test('the home runtime card shows the Git version and no warning when Git is present', async () => {
   const page = await open('')
   try {
