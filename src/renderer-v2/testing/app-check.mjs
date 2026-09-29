@@ -963,6 +963,40 @@ test('archiving a session on the sessions page refreshes the home recent card ri
   } finally { await page.close() }
 })
 
+test('deleting a session asks first, then removes it from the list and the home recent card', async () => {
+  const page = await open('allInstalled=1&recentWorkspaces=1&sessionDelete=1')
+  try {
+    await page.getByTestId('home-recent-resume-claude:1').waitFor()
+    await page.getByTestId('nav-sessions').click()
+    // 只有能删的那家才给按钮：Gemini 这条在夹具里没开删除。
+    await page.getByTestId('sessions-view-gemini:5').click()
+    assert.equal(await page.getByTestId('session-detail-delete').count(), 0)
+    await page.getByTestId('session-detail-drawer').getByRole('button', { name: '关闭' }).first().click()
+
+    await page.getByTestId('sessions-view-claude:1').click()
+    await page.getByTestId('session-detail-delete').click()
+    const confirm = page.getByTestId('session-delete-confirm')
+    await confirm.waitFor()
+    assert.match(await confirm.textContent(), /删了就找不回来/)
+    // 「先不删」什么都不动。
+    await confirm.getByRole('button', { name: '先不删' }).click()
+    assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => entry.method === 'deleteProviderSession')), false)
+
+    await page.getByTestId('session-detail-delete').click()
+    await page.getByTestId('session-delete-confirm').getByRole('button', { name: '彻底删除' }).click()
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'deleteProviderSession'))
+    const calls = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'deleteProviderSession'))
+    assert.deepEqual(calls.map((entry) => entry.args), [['claude:1']])
+    await page.waitForFunction(() => !document.querySelector('[data-testid="sessions-row-claude:1"]'))
+
+    await page.getByTestId('nav-home').click()
+    await page.getByTestId('home-recent-card').waitFor()
+    await page.waitForFunction(() => !document.querySelector('[data-testid="home-recent-resume-claude:1"]'))
+    await page.getByTestId('home-recent-resume-claude:3').waitFor()
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('a new user can open a CLI in a folder the app creates, without the directory picker', async () => {
   const page = await open('allInstalled=1')
   try {
@@ -1837,6 +1871,46 @@ test('the account-store notice can be dismissed and leaves nothing behind', asyn
     await notice.getByRole('button', { name: '关闭', exact: true }).click()
     await expect.poll(() => page.getByTestId('startup-notice-vault-recovered').count()).toBe(0)
     assert.equal(await page.getByTestId('startup-notices').count(), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// 错误报告发到海外这件事，登录进来后说一次；两颗按钮都记下「已告知」，
+// 「不想发送」同时关掉上报。没登录时不说。
+test('the crash reporting notice appears once after login and records the choice', async () => {
+  const page = await open('crashNotice=1')
+  try {
+    await page.getByTestId('page-home').waitFor()
+    const notice = page.getByTestId('startup-notice-crash-reporting')
+    await notice.waitFor()
+    await notice.getByText('软件出错时会发送错误报告', { exact: true }).waitFor()
+    assert.match(await notice.textContent(), /海外的错误收集服务/)
+    assert.equal(await notice.getByRole('button', { name: '关闭', exact: true }).count(), 0)
+    await page.getByTestId('startup-notice-crash-reporting-secondary').click()
+    await expect.poll(() => page.getByTestId('startup-notice-crash-reporting').count()).toBe(0)
+    const saves = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'saveSettings').map((entry) => entry.args[0]))
+    assert.deepEqual(saves.at(-1), { version: 2, crashReportingNoticeShown: true, crashReporting: false })
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('acknowledging the crash reporting notice keeps reporting on', async () => {
+  const page = await open('crashNotice=1')
+  try {
+    await page.getByTestId('page-home').waitFor()
+    await page.getByTestId('startup-notice-crash-reporting-primary').click()
+    await expect.poll(() => page.getByTestId('startup-notice-crash-reporting').count()).toBe(0)
+    const saves = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'saveSettings').map((entry) => entry.args[0]))
+    assert.deepEqual(saves.at(-1), { version: 2, crashReportingNoticeShown: true })
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('the crash reporting notice waits until the user is signed in', async () => {
+  const page = await open('crashNotice=1&guest=1')
+  try {
+    await page.getByTestId('welcome-page').waitFor()
+    assert.equal(await page.getByTestId('startup-notice-crash-reporting').count(), 0)
     await clean(page)
   } finally { await page.close() }
 })

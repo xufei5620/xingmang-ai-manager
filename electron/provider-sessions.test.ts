@@ -188,6 +188,7 @@ function codexReader(items = [codexSummary()], writable = true): CodexSessionRea
       messagesTruncated: false,
     })),
     exportMarkdown: vi.fn(async (sessionId: string, outputPath: string) => ({ sessionId, outputPath, messages: 1 })),
+    delete: vi.fn(async (sessionId: string) => ({ sessionId, deletedFiles: 1 })),
   }
 }
 
@@ -712,5 +713,167 @@ describe('ProviderSessionsService', () => {
     const page = await service(data, codexReader([codexSummary()], false)).list({ provider: 'codex' })
     expect(page.items[0].readonly).toBe(true)
     expect(page.capabilities.codex.operations).toMatchObject({ archive: false, restore: false })
+  })
+})
+
+describe('ProviderSessionsService.delete', () => {
+  async function idOf(sessions: ProviderSessionsService, provider: 'claude' | 'gemini' | 'grok'): Promise<string> {
+    const page = await sessions.list({ provider, pageSize: 100 })
+    expect(page.items).toHaveLength(1)
+    return page.items[0].id
+  }
+
+  it('offers deletion for every provider whose records are writable', async () => {
+    const data = fixture()
+    const capabilities = (await service(data).list()).capabilities
+    expect(capabilities.claude.operations.delete).toBe(true)
+    expect(capabilities.gemini.operations.delete).toBe(true)
+    expect(capabilities.grok.operations.delete).toBe(true)
+    expect(capabilities.codex.operations.delete).toBe(true)
+    expect(service(data, codexReader([codexSummary()], false)).capabilities().codex.operations.delete).toBe(false)
+  })
+
+  it('removes a claude transcript and its companion folder but nothing else', async () => {
+    const data = fixture()
+    seedExternalSessions(data)
+    const companion = path.join(data.claude, 'project-a', 'claude-session', 'subagents')
+    fs.mkdirSync(companion, { recursive: true })
+    fs.writeFileSync(path.join(companion, 'agent-1.jsonl'), '{}\n')
+    const neighbour = path.join(data.claude, 'project-a', 'notes.txt')
+    fs.writeFileSync(neighbour, 'keep')
+    const sessions = service(data)
+    const page = await sessions.list({ provider: 'claude', pageSize: 100 })
+    const target = page.items.find((item) => item.nativeId === 'claude-native')
+    expect(target).toBeDefined()
+
+    const result = await sessions.delete(target!.id)
+
+    expect(result).toEqual({ id: target!.id, provider: 'claude', deletedFiles: 2 })
+    expect(fs.existsSync(path.join(data.claude, 'project-a', 'claude-session.jsonl'))).toBe(false)
+    expect(fs.existsSync(path.join(data.claude, 'project-a', 'claude-session'))).toBe(false)
+    expect(fs.readFileSync(neighbour, 'utf8')).toBe('keep')
+    expect((await sessions.list({ provider: 'claude', pageSize: 100 })).items).toHaveLength(0)
+  })
+
+  it('removes a gemini session file and a grok session folder', async () => {
+    const data = fixture()
+    seedExternalSessions(data)
+    const sessions = service(data)
+
+    await sessions.delete(await idOf(sessions, 'gemini'))
+    const grok = await sessions.delete(await idOf(sessions, 'grok'))
+
+    expect(fs.existsSync(path.join(data.gemini, 'project-b', 'chats', 'session-gemini.json'))).toBe(false)
+    expect(fs.existsSync(path.join(data.gemini, 'project-b', 'chats'))).toBe(true)
+    expect(fs.existsSync(path.join(data.grok, 'grok-native'))).toBe(false)
+    expect(fs.existsSync(data.grok)).toBe(true)
+    expect(grok.deletedFiles).toBe(2)
+    expect((await sessions.list({ pageSize: 100 })).stats.byProvider).toMatchObject({ gemini: 0, grok: 0 })
+  })
+
+  it('keeps a grok folder that also holds another session and deletes only the target files', async () => {
+    const data = fixture()
+    const outer = path.join(data.grok, 'outer')
+    writeJsonLines(path.join(outer, 'chat_history.jsonl'), [{ type: 'user', content: '外层' }])
+    writeJsonLines(path.join(outer, 'inner', 'chat_history.jsonl'), [{ type: 'user', content: '内层' }])
+    const sessions = service(data)
+    const page = await sessions.list({ provider: 'grok', pageSize: 100 })
+    // Compare by folder name: on Windows the discovered path is the long-name
+    // realpath while tmpdir() may be an 8.3 short path, so full paths differ.
+    const target = page.items.find((item) => path.basename(path.dirname(item.sourcePath)) === 'outer')
+    expect(target).toBeDefined()
+
+    await sessions.delete(target!.id)
+
+    expect(fs.existsSync(path.join(outer, 'chat_history.jsonl'))).toBe(false)
+    expect(fs.existsSync(path.join(outer, 'inner', 'chat_history.jsonl'))).toBe(true)
+  })
+
+  it('refuses unknown ids without touching any file', async () => {
+    const data = fixture()
+    seedExternalSessions(data)
+    const sessions = service(data)
+    await expect(sessions.delete('claude:../../etc/passwd')).rejects.toThrow('没找到这条记录')
+    await expect(sessions.delete('unknown:abc')).rejects.toThrow()
+    await expect(sessions.delete('codex:../../x')).rejects.toThrow('会话 ID 格式错误')
+    expect((await sessions.list({ pageSize: 100 })).stats.byProvider).toMatchObject({ claude: 1, gemini: 1, grok: 1 })
+  })
+
+  it.runIf(process.platform !== 'win32')('never follows a linked companion folder out of the root', async () => {
+    const data = fixture()
+    seedExternalSessions(data)
+    const outside = path.join(data.root, 'outside')
+    fs.mkdirSync(outside)
+    fs.writeFileSync(path.join(outside, 'precious.txt'), 'keep')
+    fs.symlinkSync(outside, path.join(data.claude, 'project-a', 'claude-session'))
+    const sessions = service(data)
+    const id = (await sessions.list({ provider: 'claude', pageSize: 100 })).items[0].id
+
+    await sessions.delete(id)
+
+    expect(fs.readFileSync(path.join(outside, 'precious.txt'), 'utf8')).toBe('keep')
+    expect(fs.lstatSync(path.join(data.claude, 'project-a', 'claude-session')).isSymbolicLink()).toBe(true)
+  })
+
+  it('refuses a transcript that gained a second hard link after listing', async () => {
+    const data = fixture()
+    seedExternalSessions(data)
+    const sessions = service(data)
+    const id = await idOf(sessions, 'gemini')
+    const source = path.join(data.gemini, 'project-b', 'chats', 'session-gemini.json')
+    fs.linkSync(source, path.join(data.root, 'hard-link.json'))
+
+    await expect(sessions.delete(id)).rejects.toThrow()
+    expect(fs.existsSync(source)).toBe(true)
+  })
+
+  it('routes codex ids to the codex store', async () => {
+    const data = fixture()
+    const codex = codexReader()
+    const id = '019a0000-0000-7000-8000-000000000001'
+    const result = await service(data, codex).delete(`codex:${id}`)
+    expect(codex.delete).toHaveBeenCalledWith(id)
+    expect(result).toEqual({ id: `codex:${id}`, provider: 'codex', deletedFiles: 1 })
+  })
+
+  it('deletes a real codex thread row and its rollout', async () => {
+    const data = fixture()
+    const id = '019a0000-0000-7000-8000-000000000002'
+    seedCodexSession(data.codexHome, id, '要删的 Codex 对话')
+    const codex = new CodexSessionsService({ codexHome: data.codexHome, managerDataDirectory: path.join(data.root, 'manager') })
+
+    const result = await service(data, codex).delete(`codex:${id}`)
+
+    expect(result.deletedFiles).toBe(1)
+    expect(fs.existsSync(path.join(data.codexHome, 'sessions', `${id}.jsonl`))).toBe(false)
+    expect(codex.list().total).toBe(0)
+    expect(fs.existsSync(path.join(data.root, 'manager', 'backups'))).toBe(false)
+  })
+
+  it('still removes a codex index row whose rollout is already gone', async () => {
+    const data = fixture()
+    const id = '019a0000-0000-7000-8000-000000000003'
+    seedCodexSession(data.codexHome, id, '原文已丢')
+    fs.rmSync(path.join(data.codexHome, 'sessions', `${id}.jsonl`))
+    const codex = new CodexSessionsService({ codexHome: data.codexHome, managerDataDirectory: path.join(data.root, 'manager') })
+
+    await expect(codex.delete(id)).resolves.toEqual({ sessionId: id, deletedFiles: 0 })
+    expect(codex.list().total).toBe(0)
+  })
+
+  it('refuses a codex rollout that points outside CODEX_HOME and keeps the row', async () => {
+    const data = fixture()
+    const id = '019a0000-0000-7000-8000-000000000004'
+    seedCodexSession(data.codexHome, id, '越界')
+    const outside = path.join(data.root, 'outside.jsonl')
+    fs.writeFileSync(outside, 'keep')
+    const database = new DatabaseSync(path.join(data.codexHome, 'state_5.sqlite'))
+    database.prepare('UPDATE threads SET rollout_path = ? WHERE id = ?').run(outside, id)
+    database.close()
+    const codex = new CodexSessionsService({ codexHome: data.codexHome, managerDataDirectory: path.join(data.root, 'manager') })
+
+    await expect(codex.delete(id)).rejects.toThrow('不在 CODEX_HOME 内')
+    expect(fs.readFileSync(outside, 'utf8')).toBe('keep')
+    expect(codex.list().total).toBe(1)
   })
 })

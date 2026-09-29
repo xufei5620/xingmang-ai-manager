@@ -215,6 +215,25 @@ export function createToolsApi(bridge: XingmangApi) {
       ])
       return { monthQuota: month.stats.quota, weekQuota: week.stats.quota }
     },
+    /**
+     * 「花费突然变多」核账用：最近一小时和最近七天各花了多少。只在余额一小时里掉了
+     * $5 以上时才读一次（features/app/spend-spike.ts），不是又一处定时拉取。按日期查
+     * 用量的账号读不出一小时，hourQuota 为 null，那边改用余额的差。
+     */
+    async spendBaseline(): Promise<{ hourQuota: number | null; weekQuota: number }> {
+      const now = new Date()
+      const session = await bridge.getAccountSession()
+      if (session.siteId === 'solov-api' || session.realmId === 'api-account') {
+        const week = await bridge.getAccountUsage({ ...usageDateRange({}, now), page: 1, pageSize: 1 })
+        return { hourQuota: null, weekQuota: week.stats.quota }
+      }
+      const endTimestamp = Math.floor(now.getTime() / 1000)
+      const [hour, week] = await Promise.all([
+        bridge.getAccountUsage({ type: 2, page: 1, pageSize: 1, startTimestamp: endTimestamp - 3600, endTimestamp }),
+        bridge.getAccountUsage({ type: 2, page: 1, pageSize: 1, startTimestamp: endTimestamp - 7 * 86400, endTimestamp }),
+      ])
+      return { hourQuota: hour.stats.quota, weekQuota: week.stats.quota }
+    },
   }
 }
 
