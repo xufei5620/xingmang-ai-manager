@@ -1096,7 +1096,7 @@ describe('resume-last launch arguments', () => {
 
     expect(cliLaunchArgv('codex', entry, 'resumeLast', { resumeSessionId: '0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b' }))
       .toEqual([...entry, 'resume', '0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b'])
-    expect(cliLaunchArgv('codex', entry, 'resumeLast', { platform: 'win32', installedVersion: '0.156.1', resumeSessionId: '0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b' }))
+    expect(cliLaunchArgv('codex', entry, 'resumeLast', { installedVersion: '0.156.1', resumeSessionId: '0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b' }))
       .toEqual([...entry, '--no-daemon', 'resume', '0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b'])
     expect(cliLaunchArgv('codex', entry, 'resumeLast', { resumeSessionId: null }))
       .toEqual([...entry, 'resume', '--last'])
@@ -1125,23 +1125,27 @@ describe('resume-last launch arguments', () => {
     expect(launched).not.toBe(argv)
   })
 
-  // 0.157.0 默认自动起后台服务,宿主有不许脱离的 Job Object 时直接报错退出。
-  it('starts Windows Codex without the background server when the version supports it', () => {
+  // 0.157.0 默认自动起后台服务,宿主有不许脱离的 Job Object 时直接报错退出;
+  // macOS 上不报错,但退出 Codex 后服务照样常驻。
+  it('starts Codex without the background server when the version supports it', () => {
     const entry = ['C:\\npm\\node_modules\\@openai\\codex\\bin\\codex.js']
 
-    expect(cliLaunchArgv('codex', entry, 'new', { platform: 'win32', installedVersion: '0.157.0' }))
+    expect(cliLaunchArgv('codex', entry, 'new', { installedVersion: '0.157.0' }))
       .toEqual([...entry, '--no-daemon'])
-    expect(cliLaunchArgv('codex', entry, 'resumeLast', { platform: 'win32', installedVersion: 'codex-cli 0.156.1' }))
+    expect(cliLaunchArgv('codex', entry, 'resumeLast', { installedVersion: 'codex-cli 0.156.1' }))
       .toEqual([...entry, '--no-daemon', 'resume', '--last'])
+    // macOS 的独立版 Codex 没有入口脚本,参数直接跟在可执行文件后面。
+    expect(cliLaunchArgv('codex', [], 'resumeLast', { installedVersion: 'codex-cli 0.158.0' }))
+      .toEqual(['--no-daemon', 'resume', '--last'])
   })
 
   it('keeps the upstream launch where --no-daemon is unknown or unnecessary', () => {
     const entry = ['/managed/codex/bin/codex.js']
 
-    expect(cliLaunchArgv('codex', entry, 'new', { platform: 'win32', installedVersion: '0.155.1' })).toEqual(entry)
-    expect(cliLaunchArgv('codex', entry, 'new', { platform: 'win32', installedVersion: null })).toEqual(entry)
-    expect(cliLaunchArgv('codex', entry, 'new', { platform: 'darwin', installedVersion: '0.157.0' })).toEqual(entry)
-    expect(cliLaunchArgv('claude', entry, 'new', { platform: 'win32', installedVersion: '2.1.277' })).toEqual(entry)
+    expect(cliLaunchArgv('codex', entry, 'new', { installedVersion: '0.155.1' })).toEqual(entry)
+    expect(cliLaunchArgv('codex', entry, 'new', { installedVersion: null })).toEqual(entry)
+    expect(cliLaunchArgv('codex', entry, 'new')).toEqual(entry)
+    expect(cliLaunchArgv('claude', entry, 'new', { installedVersion: '2.1.277' })).toEqual(entry)
   })
 
   it('recognizes the first Codex release that accepts --no-daemon', () => {

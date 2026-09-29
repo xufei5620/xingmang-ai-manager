@@ -674,7 +674,6 @@ export function cliResumeLastArgv(provider: ProviderId): string[] {
 }
 
 export interface CliLaunchArgvOptions {
-  platform?: NodeJS.Platform
   /** 已装版本(npm 包版本或 --version 的整行输出);读不出来传 null。 */
   installedVersion?: string | null
   /**
@@ -711,7 +710,8 @@ function cliResumeArgv(provider: ProviderId, resumeSessionId: string | null | un
 // 宿主外层有不许脱离的 Job Object(安全软件、远程控制、各类启动器都可能加)
 // 时,Codex 直接报「host Job Object prevents daemon detachment」退出。那层
 // Job 不是我们加的,我们也放不开它;管理员身份打开时后台服务同样拒绝启动。
-// 从本软件打开的窗口不需要多窗口共享的后台服务,所以一律按内嵌模式启动。
+// 在 macOS 上它不报错,但 Codex 退出后后台服务照样常驻。从本软件打开的窗口
+// 不需要多窗口共享的后台服务,所以各平台一律按内嵌模式启动。
 // 更早的版本不认这个参数、带上反而起不来,读不出版本时也不带(维持旧行为)。
 const codexNoDaemonMinimumVersion = '0.156.0'
 
@@ -723,7 +723,7 @@ export function codexSupportsNoDaemon(installedVersion: string | null | undefine
 
 /**
  * 按启动方式把固定的续接参数接在 CLI 自身入口参数之后,mode 为 new 时原样返回。
- * Windows 上的 Codex 另外带 --no-daemon(见上),放在子命令之前,
+ * Codex 另外带 --no-daemon(见上),放在子命令之前,
  * `codex --no-daemon resume --last` 是上游测试钉住的写法。
  */
 export function cliLaunchArgv(
@@ -732,9 +732,7 @@ export function cliLaunchArgv(
   mode: CliLaunchMode,
   options: CliLaunchArgvOptions = {},
 ): string[] {
-  const embedded = provider === 'codex'
-    && options.platform === 'win32'
-    && codexSupportsNoDaemon(options.installedVersion)
+  const embedded = provider === 'codex' && codexSupportsNoDaemon(options.installedVersion)
     ? ['--no-daemon']
     : []
   return mode === 'resumeLast'

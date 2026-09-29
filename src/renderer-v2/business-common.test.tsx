@@ -36,6 +36,20 @@ describe('renderer-v2 result notice', () => {
     )).not.toContain('打开所在位置')
   })
 
+  it('offers support in plain words when the plugin catalog backups cannot be cleared', () => {
+    const raw = 'Codex 插件目录里的旧备份清不掉，这次没有改动'
+    const markup = renderToStaticMarkup(<ResultNotice error={raw} onSupport={() => undefined} />)
+    expect(markup).toContain('插件目录暂时改不动')
+    expect(markup).toContain('重启电脑后再试一次')
+    expect(markup).toContain('data-testid="result-notice-support"')
+    expect(markup).not.toContain('plugins-xingmang-backup')
+    // A page that cannot open help, or a failure support cannot help with: no button.
+    expect(renderToStaticMarkup(<ResultNotice error={raw} />)).not.toContain('result-notice-support')
+    expect(renderToStaticMarkup(
+      <ResultNotice error="Grok CLI 安装失败：EBUSY: resource busy or locked" onSupport={() => undefined} />,
+    )).not.toContain('result-notice-support')
+  })
+
   it('still renders success on its own', () => {
     const markup = renderToStaticMarkup(<ResultNotice message="工具已卸载" />)
     expect(markup).toContain('工具已卸载')

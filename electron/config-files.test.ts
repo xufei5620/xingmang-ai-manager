@@ -883,25 +883,28 @@ describe('native CLI configuration files', () => {
     expect(TOML.parse(fs.readFileSync(configPath, 'utf8'))).not.toHaveProperty('analytics')
   })
 
-  it('keeps the computer awake and skips the admin sandbox prompt only where Codex supports it', () => {
+  it('keeps the computer awake, leaves no background server and skips the admin sandbox prompt', () => {
     const windows: Record<string, unknown> = {}
     applyCodexRelayMachineDefaults(windows, 'win32')
-    expect(windows).toEqual({ features: { prevent_idle_sleep: true }, windows: { sandbox: 'unelevated' } })
+    expect(windows).toEqual({
+      features: { prevent_idle_sleep: true, daemon_auto_start: false },
+      windows: { sandbox: 'unelevated' },
+    })
 
     // [windows] is a Windows-only table; macOS has no elevation prompt to avoid.
     const mac: Record<string, unknown> = {}
     applyCodexRelayMachineDefaults(mac, 'darwin')
-    expect(mac).toEqual({ features: { prevent_idle_sleep: true } })
+    expect(mac).toEqual({ features: { prevent_idle_sleep: true, daemon_auto_start: false } })
   })
 
   it('leaves Codex sleep and sandbox choices the user already made', () => {
     const chosen: Record<string, unknown> = {
-      features: { prevent_idle_sleep: false, goals: true },
+      features: { prevent_idle_sleep: false, daemon_auto_start: true, goals: true },
       windows: { sandbox: 'elevated' },
     }
     applyCodexRelayMachineDefaults(chosen, 'win32')
     expect(chosen).toEqual({
-      features: { prevent_idle_sleep: false, goals: true },
+      features: { prevent_idle_sleep: false, daemon_auto_start: true, goals: true },
       windows: { sandbox: 'elevated' },
     })
 
@@ -919,7 +922,7 @@ describe('native CLI configuration files', () => {
 
     saveProviderConfig('codex', 'sk-relay', testModels.codex, 'reset', roots, {}, providerBaseUrls)
     const fresh = TOML.parse(fs.readFileSync(configPath, 'utf8'))
-    expect(fresh.features).toEqual({ goals: true, prevent_idle_sleep: true })
+    expect(fresh.features).toEqual({ goals: true, prevent_idle_sleep: true, daemon_auto_start: false })
     expect(fresh.windows).toEqual(expectedWindows)
 
     const existingRoots = providerRoots(temporaryHome())
@@ -928,7 +931,7 @@ describe('native CLI configuration files', () => {
     fs.writeFileSync(existingPath, '[custom_official]\nenabled = true\n', 'utf8')
     saveProviderConfig('codex', 'sk-relay', testModels.codex, 'merge', existingRoots, {}, providerBaseUrls)
     const merged = TOML.parse(fs.readFileSync(existingPath, 'utf8'))
-    expect(merged.features).toEqual({ prevent_idle_sleep: true })
+    expect(merged.features).toEqual({ prevent_idle_sleep: true, daemon_auto_start: false })
     expect(merged.windows).toEqual(expectedWindows)
     expect(merged.custom_official).toEqual({ enabled: true })
   })
