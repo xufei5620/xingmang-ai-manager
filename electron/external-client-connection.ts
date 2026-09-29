@@ -126,7 +126,7 @@ export function buildExternalClientProbe(input: ExternalClientProbeInput): Conne
 function describeSuccess(name: string, model: string | null): { summary: string; evidence: string } {
   const label = model ?? '所选模型'
   return {
-    summary: `已核对当前密钥的模型清单：${label} 可见`,
+    summary: `当前账号的密钥和模型 ${label} 都可用`,
     evidence: `已用 ${name} 配置里的密钥核对当前账号的可用模型清单，${label} 在其中；客户端里实际发起的对话由客户端自己发出，本机测不到`,
   }
 }

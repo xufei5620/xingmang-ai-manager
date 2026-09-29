@@ -3970,12 +3970,12 @@ test('the connection self-check reports every CLI on its own, and an unconfigure
     // 每个工具一条结论，按注册表的展示顺序。
     const claude = page.getByTestId('health-connection-result-claude')
     await claude.waitFor()
-    await claude.getByText('Claude Code · 最小请求已验证', { exact: true }).waitFor()
+    await claude.getByText('Claude Code · 正常', { exact: true }).waitFor()
     await claude.getByText('已用 claude-opus-5 发过一次最小请求', { exact: true }).waitFor()
     const codex = page.getByTestId('health-connection-result-codex')
-    await codex.getByText('Codex CLI · 模型清单可见', { exact: true }).waitFor()
+    await codex.getByText('Codex CLI · 正常', { exact: true }).waitFor()
     // 只读探测的结论要如实说出来，不能照 Claude 那句「发过一次最小请求」套。
-    await codex.getByText('已核对当前账号的可用模型清单，gpt-6-astra 在其中；尚未验证生成或工具往返', { exact: true }).waitFor()
+    await codex.getByText('已核对当前账号的可用模型清单，gpt-6-astra 在其中', { exact: true }).waitFor()
     for (const provider of ['gemini', 'grok']) {
       const row = page.getByTestId(`health-connection-result-${provider}`)
       await row.getByText('未配置', { exact: false }).waitFor()
@@ -3988,7 +3988,7 @@ test('the connection self-check reports every CLI on its own, and an unconfigure
   } finally { await page.close() }
 })
 
-test('Codex Responses JSON check requires fresh billing consent and drops an old-account result', async () => {
+test('the paid Codex tool-call check requires fresh consent and drops an old-account result', async () => {
   const page = await open()
   try {
     await page.getByTestId('nav-more').click()
@@ -4015,7 +4015,7 @@ test('Codex Responses JSON check requires fresh billing consent and drops an old
 
     await consent.click()
     await run.click()
-    await page.getByTestId('health-codex-responses-result').getByText('JSON 工具往返已验证', { exact: false }).waitFor()
+    await page.getByTestId('health-codex-responses-result').getByText('Codex 干活检查 · 正常', { exact: true }).waitFor()
     const calls = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'probeCodexResponses'))
     assert.equal(calls.length, 2)
     assert.deepEqual(calls.map((entry) => entry.args), [[true, 'xm-account:17'], [true, 'xm-account:18']])
@@ -4024,7 +4024,7 @@ test('Codex Responses JSON check requires fresh billing consent and drops an old
   } finally { await page.close() }
 })
 
-test('account switch during session read prevents the paid Responses IPC entirely', async () => {
+test('account switch during session read prevents the paid Codex check IPC entirely', async () => {
   const page = await open()
   try {
     await page.getByTestId('nav-more').click()
@@ -4046,6 +4046,31 @@ test('account switch during session read prevents the paid Responses IPC entirel
     await expect(consent).toBeEnabled()
     await expect(run).toBeDisabled()
     assert.equal(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'probeCodexResponses').length), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('the paid Codex check waits for startup account restore instead of reporting a changed account', async () => {
+  const page = await open('restoring=1')
+  try {
+    await page.getByTestId('nav-more').click()
+    await page.getByTestId('nav-health').click()
+    await page.getByTestId('health-codex-responses-consent').getByRole('switch').click()
+    await page.getByTestId('health-codex-responses-run').click()
+    await page.getByTestId('health-codex-responses-error').getByText('账号还在登录中，请等几秒再检查', { exact: true }).waitFor()
+    assert.equal(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'probeCodexResponses').length), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('the paid Codex check stays hidden when Codex is not installed', async () => {
+  const page = await open('codexMissing=1')
+  try {
+    await page.getByTestId('nav-more').click()
+    await page.getByTestId('nav-health').click()
+    await page.getByTestId('health-connection-run').waitFor()
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'scanSystem'))
+    assert.equal(await page.getByTestId('health-codex-responses').count(), 0)
     await clean(page)
   } finally { await page.close() }
 })
@@ -4090,7 +4115,7 @@ test('the self-check key layer rewrites the current account Key in place and re-
     const calls = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'configureManagedCliKeys'))
     assert.deepEqual(calls.at(-1).args[0].providers, ['claude'])
     // 写完自己再测一遍：用户不用回到页头再点一次「测试连接」。
-    await claude.getByText('Claude Code · 最小请求已验证', { exact: true }).waitFor()
+    await claude.getByText('Claude Code · 正常', { exact: true }).waitFor()
     await clean(page)
   } finally { await page.close() }
 })

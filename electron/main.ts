@@ -1246,7 +1246,7 @@ if (!hasSingleInstanceLock) {
       },
       probeCodexResponses: (expectedAccountScope: string) => {
         if (expectedAccountScope !== readBillingAccountScope()) {
-          throw new Error('账号已变化，请重新确认这次可能计费的验证')
+          throw new Error('当前账号变了，请重新勾选确认后再检查')
         }
         return codexResponsesProbe.run()
       },

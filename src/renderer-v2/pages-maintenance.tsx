@@ -76,7 +76,7 @@ import { canUninstallTool, externalInstallHint, isExternallyManagedInstall } fro
 import { elevatedInstallNotice } from './features/tools/elevation-notice'
 import { ToolStatusMeta, ToolStatusReason } from './features/tools/ToolStatusMeta'
 import { connectionCheckView } from './features/tools/connection-check'
-import { sessionScope } from './account-context'
+import { accountScope, sessionRestoring } from './account-context'
 import { diagnosticDetailRows } from './features/app/diagnostic-details'
 import { requestSettingsGroup, takeSettingsGroup } from './features/app/settings-group-intent'
 import { parseImportedConversations } from './features/chat/storage'
@@ -312,6 +312,15 @@ export function HealthPage({
   const [responsesError, setResponsesError] = useState<string | null>(null)
   const responsesInFlight = useRef(false)
   const responsesEpoch = useRef(0)
+  // 这张卡只对装了 Codex 的人有意义；没读到装没装时先不显示，免得没装的人看到一个点了只会报错的按钮。
+  const [codexInstalled, setCodexInstalled] = useState(false)
+  useEffect(() => {
+    let current = true
+    api.scanSystem(false)
+      .then((snapshot) => { if (current) setCodexInstalled(snapshot.clis.codex.installed === true) })
+      .catch(() => { if (current) setCodexInstalled(false) })
+    return () => { current = false }
+  }, [api])
   useEffect(() => {
     const unsubscribe = api.onAccountSessionChanged(() => {
       responsesEpoch.current += 1
@@ -368,10 +377,18 @@ export function HealthPage({
     setResponsesError(null)
     const requestEpoch = ++responsesEpoch.current
     try {
-      const startedScope = sessionScope(await api.getAccountSession())
+      const started = await api.getAccountSession()
       if (requestEpoch !== responsesEpoch.current) return
+      // 开机恢复账号的那几秒里，界面已按「正在恢复的账号」显示，主进程却还当成未登录；
+      // 这时发出去一定被判成「账号变了」，所以先请用户等恢复完。
+      if (sessionRestoring(started)) {
+        setResponsesError('账号还在登录中，请等几秒再检查')
+        return
+      }
+      // 与主进程的计费作用域同一算法：只认已登录的账号，否则是访客。
+      const startedScope = accountScope(started)
       const result = await api.probeCodexResponses(true, startedScope)
-      const currentScope = sessionScope(await api.getAccountSession())
+      const currentScope = accountScope(await api.getAccountSession())
       if (requestEpoch === responsesEpoch.current && startedScope === currentScope) {
         setResponsesResult(result)
       }
@@ -436,7 +453,7 @@ export function HealthPage({
       />
       <Card
         title="连接自检"
-        meta="Claude 会发一次最小生成请求；Codex、Grok、Gemini 和外部客户端只核对当前密钥的模型清单。模型可见不等于 Responses 推理或原生客户端已能完成任务。"
+        meta="用每个工具配置里真正写着的密钥和模型各测一次；装好的外部客户端也一起测。上面的检查只证明网络通，这一条证明你现在能用。"
         actions={
           <Button
             icon={PlugZap}
@@ -464,16 +481,16 @@ export function HealthPage({
           </p>
         )}
       </Card>
-      <Card
-        title="Codex 工具调用检查"
-        meta="可选：使用当前 Codex 配置中的密钥和模型，向星芒中转连续发送两次 JSON 请求，验证一个无副作用虚拟工具的结果回传。每轮输出最多 1024 token，费用由该密钥所属服务按模型与用量计算；不验证流式、原生客户端进程、搜索、生图、电脑操作或官方账号权益。"
+      {codexInstalled && <Card
+        title="Codex 干活检查"
+        meta="上面的连接自检只确认能连上。这里让 Codex 用的模型真的做一件小事：调用一个什么都不改的测试工具，再把结果读回来。会用当前账号的额度发两次请求，花费很少，但不是零；不会碰你电脑上的文件。"
         testId="health-codex-responses"
       >
         <Switch
           checked={responsesConsent}
           onChange={setResponsesConsent}
-          label="我确认使用当前 Codex 配置中的密钥和模型发送两次请求，可能产生费用"
-          description="默认关闭；每次验证都要重新确认。"
+          label="我知道这次检查会用当前账号的一点额度"
+          description="每次检查前都要重新勾选。"
           disabled={responsesBusy}
           testId="health-codex-responses-consent"
         />
@@ -484,18 +501,18 @@ export function HealthPage({
           onClick={() => void runCodexResponsesProbe()}
           testId="health-codex-responses-run"
         >
-          检查 JSON 工具调用
+          开始检查
         </Button>
         {responsesView && (
           <Notice
             tone={responsesView.tone}
-            title={`Codex Responses · ${responsesView.statusLabel}`}
+            title={`Codex 干活检查 · ${responsesView.statusLabel}`}
             body={<><div>{responsesView.title}</div><div>{responsesView.body}</div>{responsesView.detail && <p>{responsesView.detail}</p>}</>}
             testId="health-codex-responses-result"
           />
         )}
-        {responsesError && <Notice tone="bad" title="Codex Responses · 没测成" body={responsesError} testId="health-codex-responses-error" />}
-      </Card>
+        {responsesError && <Notice tone="bad" title="Codex 干活检查 · 没测成" body={responsesError} testId="health-codex-responses-error" />}
+      </Card>}
       {resource.data && (
         <Toolbar
           left={

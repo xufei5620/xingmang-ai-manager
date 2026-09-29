@@ -93,13 +93,7 @@ export function connectionCheckView(
   if (result.ok) {
     return {
       tone: 'ok',
-      statusLabel: result.verificationLevel === 'model-catalog'
-        ? '模型清单可见'
-        : result.verificationLevel === 'responses-tool-json'
-          ? 'JSON 工具往返已验证'
-          : result.verificationLevel === 'minimal-generation'
-            ? '最小请求已验证'
-            : '正常',
+      statusLabel: '正常',
       title: result.summary,
       // evidence 由主进程给：四个工具的探测形态不同（生成一次 vs 核对模型
       // 清单），渲染层照 provider 猜会在加第五个工具时悄悄说错。

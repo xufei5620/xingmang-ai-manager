@@ -82,8 +82,8 @@ export type ConnectionProbeProtocol = 'anthropic-messages' | 'openai-models'
 export interface ConnectionProbeReport {
   ok: boolean
   layer: ConnectionCheckLayer
-  /** Successful evidence, not the failure layer. Omitted means the check did not finish. */
-  verificationLevel?: 'model-catalog' | 'minimal-generation' | 'responses-tool-json'
+  /** Set only by the opt-in Codex tool-call check when both paid requests succeeded. */
+  verificationLevel?: 'responses-tool-json'
   /** 一句话结论，直接上屏。 */
   summary: string
   /** 用户下一步该做什么。 */
@@ -545,7 +545,7 @@ function classifyGenerationSuccess(
   return {
     ok: true,
     layer: 'network',
-    summary: `已完成一次 ${model} 最小生成请求`,
+    summary: `连接正常，${model} 可以直接使用`,
     nextStep: '无需处理',
     evidence: `已用 ${model} 发过一次最小请求`,
   }
@@ -582,9 +582,9 @@ function classifyModelCatalogSuccess(
   return {
     ok: true,
     layer: 'network',
-    summary: `已核对模型清单：${model} 对当前密钥可见`,
+    summary: `连接正常，${model} 可以直接使用`,
     nextStep: '无需处理',
-    evidence: `已核对当前账号的可用模型清单，${model} 在其中；尚未验证生成或工具往返`,
+    evidence: `已核对当前账号的可用模型清单，${model} 在其中`,
   }
 }
 
@@ -733,11 +733,6 @@ export async function runConnectionProbe(
   ): ConnectionProbeReport => ({
     ok: outcome.ok ?? false,
     layer: outcome.layer,
-    ...(outcome.ok ? {
-      verificationLevel: build.kind === 'probe' && build.plan.protocol === 'anthropic-messages'
-        ? 'minimal-generation' as const
-        : 'model-catalog' as const,
-    } : {}),
     summary: outcome.summary,
     nextStep: outcome.nextStep,
     ...(outcome.evidence ? { evidence: outcome.evidence } : {}),

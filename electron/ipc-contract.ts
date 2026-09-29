@@ -1052,7 +1052,7 @@ export interface XingmangInvokeContract {
   importAppData: IpcInvokeDefinition<'data-transfer:import', [], DataTransferImportPreview | null>
   /**
    * 连接自检：用该工具配置文件里真正写着的 Key、服务地址和模型，向星芒服务
-   * 发一次基础请求，把失败归到网络 / 密钥 / 额度 / 分组 / 模型 / 协议中的
+   * 发一次最小请求，把失败归到网络 / 密钥 / 额度 / 分组 / 模型 / 协议中的
    * 一层；没配过的工具归到「未配置」，不算失败。diagnostics:run 的
    * XINGMANG_NETWORK 只读一次不用登录的状态接口，证明网络通不证明能用，所以这条单独成通道、
    * 只在用户点按钮时才跑。一次调用只测一个工具，结果页按工具各调一次。
@@ -1063,8 +1063,9 @@ export interface XingmangInvokeContract {
     ConnectionCheckResult
   >
   /**
-   * 单独的付费探测：只有用户明确确认后才对 Codex 中转发两次 Responses
-   * JSON 请求。本通道不在配置保存、账号切换或普通连接自检中调用。
+   * 「Codex 干活检查」：会花当前账号一点额度，所以只有用户勾选确认后才发两次
+   * Responses 请求（第一次让模型调用无副作用的测试工具，第二次把结果交回去）。
+   * 本通道不在配置保存、账号切换或普通连接自检中调用。
    */
   probeCodexResponses: IpcInvokeDefinition<
     'diagnostics:probe-codex-responses',

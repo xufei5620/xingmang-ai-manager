@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import { buildConnectionProbe } from './connection-check'
 import {
@@ -83,7 +85,8 @@ describe('Codex Responses tool roundtrip', () => {
       ok: true, layer: 'network', verificationLevel: 'responses-tool-json',
       endpoint, model, status: 200,
     })
-    expect(result.evidence).toContain('未验证流式')
+    expect(result.summary).toBe(`${model} 能正常调用工具`)
+    expect(result.evidence).toContain('测试工具')
     expect(JSON.stringify(result)).not.toContain(key)
     expect(mock.calls).toHaveLength(2)
     for (const call of mock.calls) {
@@ -152,12 +155,12 @@ describe('Codex Responses tool roundtrip', () => {
     const first = mockReplies(reply(incomplete))
     const firstResult = await runCodexResponsesProbe(build(), { fetch: first.fetch })
     expect(firstResult).toMatchObject({ ok: false, layer: 'protocol' })
-    expect(firstResult.summary).toContain('输出上限')
+    expect(firstResult.summary).toBe('模型没答完就停了')
     expect(first.calls).toHaveLength(1)
 
     const second = mockReplies(reply(functionCall()), reply({ ...finalAnswer(), status: 'incomplete' }))
     const secondResult = await runCodexResponsesProbe(build(), { fetch: second.fetch, markerFactory: () => marker })
-    expect(secondResult.summary).toContain('输出上限')
+    expect(secondResult.summary).toBe('模型没答完就停了')
     expect(second.calls).toHaveLength(2)
   })
 
@@ -220,11 +223,11 @@ describe('Codex Responses tool roundtrip', () => {
     })
     const pending = service.run()
     scope = 'solov:user-2:key-b'
-    await expect(service.run()).rejects.toThrow('配置已变化')
+    await expect(service.run()).rejects.toThrow('设置变了')
     releaseFirst(reply(functionCall()))
     const result = await pending
     expect(result).toMatchObject({ ok: false, layer: 'config' })
-    expect(result.summary).toContain('已停止第二次付费请求')
+    expect(result.summary).toContain('第二次请求没有发')
     expect(calls).toHaveLength(1)
   })
 
@@ -248,5 +251,13 @@ describe('Codex Responses tool roundtrip', () => {
     expect(result).toMatchObject({ ok: false, layer: 'network' })
     expect(result.summary).toContain('超时')
     expect(fetch).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps every on-screen result free of protocol jargon and site names', () => {
+    const source = readFileSync(join(__dirname, 'codex-responses-probe.ts'), 'utf8')
+    const shown = [...source.matchAll(/finish\(\s*'[a-z]+',\s*(['`][^'`]*['`]),\s*(['`][^'`]*['`])/g)]
+      .flatMap((match) => [match[1], match[2]])
+    expect(shown.length).toBeGreaterThanOrEqual(24)
+    for (const text of shown) expect(text).not.toMatch(/JSON|token|Responses|虚拟|流式|星芒|中转|协议/i)
   })
 })

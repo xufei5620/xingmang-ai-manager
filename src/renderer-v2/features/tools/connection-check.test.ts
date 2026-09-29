@@ -83,15 +83,6 @@ describe('connectionCheckView', () => {
     expect(view.body).toBe('已核对当前账号的可用模型清单，gpt-6-astra 在其中')
   })
 
-  it('labels model visibility separately from a billed Responses tool roundtrip', () => {
-    expect(connectionCheckView(result({
-      ok: true, verificationLevel: 'model-catalog',
-    })).statusLabel).toBe('模型清单可见')
-    expect(connectionCheckView(result({
-      ok: true, verificationLevel: 'responses-tool-json',
-    })).statusLabel).toBe('JSON 工具往返已验证')
-  })
-
   it('sends each failure layer to the page that can fix it', () => {
     expect(connectionCheckView(result({ layer: 'credential' })).target).toBe('account')
     expect(connectionCheckView(result({ layer: 'quota' })).target).toBe('account')

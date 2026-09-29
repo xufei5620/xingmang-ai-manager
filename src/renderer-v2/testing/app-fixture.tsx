@@ -8,7 +8,7 @@ import { accelerationTrialSeconds } from '../../../electron/acceleration-contrac
 import { getSourceMarkerStorage, writeManualSourceMarker } from '../features/tools/source-marker'
 import { resolveManagedCliKeyProfiles } from '../../../electron/catalog'
 import { ExternalUrlBlockedError } from '../../../electron/external-url-blocked'
-import { sessionScope } from '../account-context'
+import { accountScope } from '../account-context'
 import '../styles/tokens.css'
 import '../styles/components.css'
 import '../styles/shell.css'
@@ -116,7 +116,7 @@ if (query.has('readOnlyAccountMatch')) {
 const system: SystemSnapshot = { checkedAt: '2026-09-07T01:00:00Z',
   network: { region: 'unknown', publicIp: null, countryCode: null, checkedAt: '2026-09-07T01:00:00Z', error: null },
   runtime: { node: { ...status, version: 'v24.0.0' }, npm: { ...status, version: '11.0.0' }, python: { ...status, version: '3.12.0' }, git: { ...status, version: '2.43.0' } },
-  clis: { claude: { ...status }, codex: { ...status }, gemini: { ...status, installed: query.has('allInstalled') }, grok: { ...status, installed: query.has('allInstalled') } },
+  clis: { claude: { ...status }, codex: { ...status, installed: !query.has('codexMissing') }, gemini: { ...status, installed: query.has('allInstalled') }, grok: { ...status, installed: query.has('allInstalled') } },
   desktopApps: { codex: { ...status, appVersion: '1.2.3', mirrorVersion: null, mirrorUpdateAvailable: false, mirrorError: null, running: query.has('running') } },
 }
 // 版本串解析不出来的 Node（自编译 / 魔改）：tooOld 仍是 false，只有
@@ -322,8 +322,7 @@ const methods = {
         nextStep: '在首页点这个客户端的「配置」，选好密钥和模型保存一次，再回来自检' }
     }
     return { ...base, ok: true, layer: 'network' as const, status: 200, endpoint: 'https://fixture.invalid/v1/models',
-      model: 'fixture-model', verificationLevel: 'model-catalog' as const,
-      summary: '已核对当前密钥的模型清单：fixture-model 可见', nextStep: '无需处理',
+      model: 'fixture-model', summary: '当前账号的密钥和模型 fixture-model 都可用', nextStep: '无需处理',
       evidence: '已用配置里的密钥核对当前账号的可用模型清单，fixture-model 在其中；客户端里实际发起的对话由客户端自己发出，本机测不到' }
   },
   checkProviderConnection: async (provider) => {
@@ -341,24 +340,24 @@ const methods = {
     }
     if (query.has('connectionUnavailable') && provider === 'codex') throw new Error('自检没能完成')
     return provider === 'codex'
-      ? { ...base, ok: true, layer: 'network' as const, verificationLevel: 'model-catalog' as const, summary: '已核对模型清单：gpt-6-astra 对当前密钥可见', nextStep: '无需处理', evidence: '已核对当前账号的可用模型清单，gpt-6-astra 在其中；尚未验证生成或工具往返', endpoint: 'https://fixture.invalid/v1/models', model: 'gpt-6-astra' }
-      : { ...base, ok: true, layer: 'network' as const, verificationLevel: 'minimal-generation' as const, summary: '已完成一次 claude-opus-5 最小生成请求', nextStep: '无需处理', evidence: '已用 claude-opus-5 发过一次最小请求', endpoint: 'https://fixture.invalid/v1/messages', model: 'claude-opus-5' }
+      ? { ...base, ok: true, layer: 'network' as const, summary: '连接正常，gpt-6-astra 可以直接使用', nextStep: '无需处理', evidence: '已核对当前账号的可用模型清单，gpt-6-astra 在其中', endpoint: 'https://fixture.invalid/v1/models', model: 'gpt-6-astra' }
+      : { ...base, ok: true, layer: 'network' as const, summary: '连接正常，claude-opus-5 可以直接使用', nextStep: '无需处理', evidence: '已用 claude-opus-5 发过一次最小请求', endpoint: 'https://fixture.invalid/v1/messages', model: 'claude-opus-5' }
   },
   probeCodexResponses: async (acknowledgeBilling, expectedAccountScope) => {
-    if (!acknowledgeBilling) throw new Error('请先确认可能产生费用')
-    if (expectedAccountScope !== sessionScope(session)) throw new Error('账号已变化，请重新确认可能计费的验证')
+    if (!acknowledgeBilling) throw new Error('请先勾选确认：这次检查会用当前账号的一点额度')
+    if (expectedAccountScope !== accountScope(session)) throw new Error('当前账号变了，请重新勾选确认后再检查')
     if (nextResponsesHeld) {
       nextResponsesHeld = false
       await new Promise<void>((resolve) => { releaseResponses = resolve })
     }
     if (query.has('responsesFailure')) {
-      return { ok: false, layer: 'protocol' as const, summary: 'Responses 未确认工具结果回传',
-        nextStep: '中转的工具结果回传可能未完成，请稍后再试', endpoint: 'https://fixture.invalid/v1/responses',
+      return { ok: false, layer: 'protocol' as const, summary: '模型没把测试工具的结果读回来',
+        nextStep: '稍后再试，一直这样请联系客服', endpoint: 'https://fixture.invalid/v1/responses',
         model: 'gpt-6-astra', detail: null, status: 200, durationMs: 15, checkedAt: new Date().toISOString() }
     }
     return { ok: true, layer: 'network' as const, verificationLevel: 'responses-tool-json' as const,
-      summary: 'Responses 虚拟工具往返已验证', nextStep: '基础协议已验证；请在原生客户端内确认实际使用体验',
-      evidence: '已验证星芒中转的 Responses JSON 双请求与虚拟工具结果回传；未验证流式、原生桌面进程、搜索、生图或电脑操作',
+      summary: 'gpt-6-astra 能正常调用工具', nextStep: '无需处理',
+      evidence: 'gpt-6-astra 调用了一次什么都不改的测试工具，并把结果正确读了回来；在 Codex 里实际干活时仍以实际使用为准',
       endpoint: 'https://fixture.invalid/v1/responses', model: 'gpt-6-astra',
       detail: null, status: 200, durationMs: 15, checkedAt: new Date().toISOString() }
   },

@@ -129,7 +129,7 @@ export function buildCodexResponsesRequest(
   const input: unknown[] = [{ role: 'user', content: prompt }]
   if (previous) {
     if (!resultMarker || !/^XINGMANG_[a-f0-9]{24}$/.test(resultMarker)) {
-      throw new Error('Responses 验证标记无效')
+      throw new Error('检查用的标记无效')
     }
     input.push(...previous.output, {
       type: 'function_call_output',
@@ -189,7 +189,7 @@ export async function runCodexResponsesProbe(
       nextStep,
       ...(ok ? { verificationLevel: 'responses-tool-json' as const } : {}),
       evidence: ok
-        ? '已验证星芒中转的 Responses JSON 双请求与虚拟工具结果回传；未验证流式、原生桌面进程、搜索、生图或电脑操作'
+        ? `${plan.model} 调用了一次什么都不改的测试工具，并把结果正确读了回来；在 Codex 里实际干活时仍以实际使用为准`
         : undefined,
       endpoint: url?.href ?? null,
       model: plan.model,
@@ -201,13 +201,13 @@ export async function runCodexResponsesProbe(
   }
 
   if (!url || url.origin !== plan.origin) {
-    return finish('config', '无法确认 Codex Responses 的星芒服务地址', '在首页重新写入一次 Codex 配置后再试')
+    return finish('config', '没找到 Codex 该连的服务地址', '在首页重新准备一次 Codex 后再试')
   }
   if (dependencies.isCurrent?.() === false) {
-    return finish('config', '账号或 Codex 配置已变化，验证已停止', '请确认当前账号与配置后重新发起')
+    return finish('config', '当前账号或 Codex 设置变了，检查已停下', '确认一下当前账号，再重新勾选检查')
   }
   const fetchImpl = dependencies.fetch ?? globalThis.fetch
-  if (!fetchImpl) return finish('unknown', '当前运行时不支持连接验证', '请重启客户端后再试')
+  if (!fetchImpl) return finish('unknown', '这次没法检查', '重新打开本软件再试')
   const endpoint = url.href
 
   const controller = new AbortController()
@@ -227,21 +227,21 @@ export async function runCodexResponsesProbe(
       let responseOrigin: string | null = null
       try { responseOrigin = new URL(response.url).origin } catch { /* Invalid URL is rejected below. */ }
       if (responseOrigin !== plan.origin) {
-        return finish('protocol', 'Responses 请求跳转到了其他服务，已拒绝', '请重新写入 Codex 配置后再试', response.status)
+        return finish('protocol', '服务把请求转到了别的地址，已拒绝', '在首页重新准备一次 Codex 后再试', response.status)
       }
     }
     if (redirectStatuses.has(response.status)) {
-      return finish('protocol', 'Responses 服务要求跳转，已拒绝继续请求', '请稍后再试，持续出现时联系支持', response.status)
+      return finish('protocol', '服务要求转到别的地址，检查已停下', '稍后再试，一直这样请联系客服', response.status)
     }
     let bodyText: string
     try {
       bodyText = await readBoundedResponseText(
         response,
         dependencies.maxResponseBytes ?? maximumResponseBytes,
-        'Codex Responses 验证',
+        'Codex 干活检查',
       )
     } catch {
-      return finish('protocol', 'Responses 返回内容过大或无法读取', '请稍后再试，持续出现时联系支持', response.status)
+      return finish('protocol', '服务返回的内容太大或读不出来', '稍后再试，一直这样请联系客服', response.status)
     }
     let payload: unknown = null
     try { payload = JSON.parse(bodyText) } catch { /* Malformed JSON fails below. */ }
@@ -269,31 +269,31 @@ export async function runCodexResponsesProbe(
     const first = await request(buildCodexResponsesRequest(plan.model))
     if ('ok' in first) return first
     if (asRecord(first.payload)?.status === 'incomplete') {
-      return finish('protocol', 'Responses 首次请求未完成，可能达到输出上限', '这不表示密钥失效；请换模型或稍后重试', first.status)
+      return finish('protocol', '模型没答完就停了', '这不代表账号有问题，换个模型或稍后再试', first.status)
     }
     const call = inspectCodexResponsesFunctionCall(first.payload)
     if (!call) {
-      return finish('protocol', 'Responses 未返回约定的虚拟工具调用', '模型可能不支持此协议或中转尚未接通工具调用', first.status)
+      return finish('protocol', '模型没有按要求调用测试工具', '这个模型可能用不了工具，Codex 干活时也可能出错；换个模型再试，或联系客服', first.status)
     }
     if (dependencies.isCurrent?.() === false) {
-      return finish('config', '账号或 Codex 配置已变化，已停止第二次付费请求', '请确认当前账号与配置后重新发起', first.status)
+      return finish('config', '当前账号或 Codex 设置变了，第二次请求没有发', '确认一下当前账号，再重新勾选检查', first.status)
     }
     const resultMarker = dependencies.markerFactory?.() ?? `XINGMANG_${randomBytes(12).toString('hex')}`
     const second = await request(buildCodexResponsesRequest(plan.model, call, resultMarker))
     if ('ok' in second) return second
     if (asRecord(second.payload)?.status === 'incomplete') {
-      return finish('protocol', 'Responses 第二次请求未完成，可能达到输出上限', '这不表示密钥失效；请换模型或稍后重试', second.status)
+      return finish('protocol', '模型没答完就停了', '这不代表账号有问题，换个模型或稍后再试', second.status)
     }
     if (!inspectCodexResponsesFinalAnswer(second.payload, resultMarker)) {
-      return finish('protocol', 'Responses 未确认工具结果回传', '中转的工具结果回传可能未完成，请稍后再试', second.status)
+      return finish('protocol', '模型没把测试工具的结果读回来', '稍后再试，一直这样请联系客服', second.status)
     }
     if (dependencies.isCurrent?.() === false) {
-      return finish('config', '账号或 Codex 配置已变化，旧结果已丢弃', '请确认当前账号与配置后重新发起', second.status)
+      return finish('config', '当前账号或 Codex 设置变了，这次结果不算', '确认一下当前账号，再重新勾选检查', second.status)
     }
     return finish(
       'network',
-      'Responses 虚拟工具往返已验证',
-      '基础协议已验证；请在原生客户端内确认实际使用体验',
+      `${plan.model} 能正常调用工具`,
+      '无需处理',
       second.status,
       null,
       true,
@@ -320,7 +320,7 @@ export function createCodexResponsesProbeService(
     if (inFlight) {
       return inFlightScope === scope
         ? inFlight
-        : Promise.reject(new Error('账号或 Codex 配置已变化，请等上次验证结束后再试'))
+        : Promise.reject(new Error('当前账号或 Codex 设置变了，请等上一次检查结束后再试'))
     }
     const current = runCodexResponsesProbe(build(), {
       ...dependencies,

@@ -1262,7 +1262,7 @@ const ipcOperationLabels: Readonly<Record<string, string>> = {
   'settings:save': '应用设置保存',
   'diagnostics:run': '系统诊断',
   'diagnostics:check-connection': '连接自检',
-  'diagnostics:probe-codex-responses': 'Codex Responses 工具往返验证',
+  'diagnostics:probe-codex-responses': 'Codex 干活检查',
   'diagnostics:check-external-connection': '客户端连接自检',
   'diagnostics:export': '诊断报告导出',
   'runtime-logs:list': '运行日志读取',
@@ -3411,12 +3411,12 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   })
 
   registerTrustedHandler('diagnostics:probe-codex-responses', (_event, acknowledgeBilling: unknown, expectedAccountScope: unknown) => {
-    if (acknowledgeBilling !== true) throw new Error('请先确认这次 Responses 验证可能产生费用')
+    if (acknowledgeBilling !== true) throw new Error('请先勾选确认：这次检查会用当前账号的一点额度')
     if (typeof expectedAccountScope !== 'string'
       || !/^(?:xm-account|api-account):(?:guest|[1-9]\d{0,14})$/.test(expectedAccountScope)) {
-      throw new Error('账号作用域无效，请重新确认后再试')
+      throw new Error('账号信息不对，请重新勾选确认后再检查')
     }
-    if (!options.diagnosticsService.probeCodexResponses) throw new Error('当前版本未启用 Codex Responses 验证')
+    if (!options.diagnosticsService.probeCodexResponses) throw new Error('这个版本还不能做 Codex 干活检查')
     return options.diagnosticsService.probeCodexResponses(expectedAccountScope)
   })
 
