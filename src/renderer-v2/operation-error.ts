@@ -23,6 +23,10 @@ const rules: Array<{ key: OperationErrorHint['key']; match: (message: string) =>
   // 网络、权限之类的原因，被下面哪条抢走都会配上一句「不会留下半成品」式的安抚，
   // 所以排在最前，出口直接是「去备份页」。
   { key: 'switchUndoFailed', match: (message) => /自动恢复也没有完成/.test(message) },
+  // Codex 插件目录的旧备份自动清不掉（主进程 codex-plugin-catalog.ts 的
+  // codexPluginCatalogBackupStuckMessage）。以前这句带着文件夹路径叫客户自己去挪，
+  // 现在只剩「重启再试、不行找客服」。
+  { key: 'pluginCatalogStuck', match: (message) => /插件目录里的旧备份清不掉/.test(message) },
   // 主进程已经认定是服务那一侧（维护、网关错误、防护层验证页）的，排在最前：
   // 它后面带着的「HTTP 503」之类原文不能再被下面按字面猜成别的事。
   { key: 'serviceUnavailable', match: (message) => networkFailureReasonForMessage(message) === 'serviceUnavailable' },
