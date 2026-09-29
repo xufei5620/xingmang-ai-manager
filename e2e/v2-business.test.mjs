@@ -209,7 +209,7 @@ test('account exposes the exact nine tabs and keeps server orders and keys visib
     await page.getByRole('tab', { name: '密钥', exact: true }).click()
     await page.getByText('Test key').waitFor()
     await page.getByRole('button', { name: '复制', exact: true }).click()
-    await page.getByText('密钥已复制', { exact: true }).waitFor()
+    await page.getByText('密钥已复制。为了安全，1 分钟后会从剪贴板里清掉', { exact: true }).waitFor()
     assert.deepEqual(
       (await calls(page)).find((call) => call.name === 'copy-key').args,
       1,
