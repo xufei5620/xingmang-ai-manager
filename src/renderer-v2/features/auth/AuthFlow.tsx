@@ -5,11 +5,13 @@ import { Button, Dialog, Input, Segment } from '../../ui'
 import { getAuthApi, type AccountSiteId, type AuthApi } from './api'
 import { LegalDocument } from './LegalDocument'
 import { isUsernameTakenError } from './account-errors'
-import { accountSources, authErrorMessage, isEmail, isTwoFactorChallenge, isTwoFactorExpired, normalizeEmail, parseInviteCode, parseRecoveryCode, parseTwoFactorCode, requiresBrowserAuthentication, suggestEmailCorrection, usernameFromEmail, validateNewPassword, validateRegistration, type RegistrationDraft, type RegistrationErrors } from './state'
+import { accountSources, authErrorMessage, isEmail, isTwoFactorChallenge, isTwoFactorExpired, normalizeEmail, parseInviteCode, parseRecoveryCode, parseTwoFactorCode, registrationStatusFailure, requiresBrowserAuthentication, suggestEmailCorrection, usernameFromEmail, validateNewPassword, validateRegistration, type RegistrationDraft, type RegistrationErrors } from './state'
 import { useCooldown } from './useCooldown'
 import './auth.css'
 
 export type AuthMode = 'login' | 'register' | 'recovery'
+// 读注册设置第一次没读到时，隔这么久自动再试一次。单次请求的 10 秒超时不动，只多给一次机会。
+const statusRetryDelayMs = 2_000
 /** 一次登录要交的东西；newPassword 只在找回密码那条路上有：登上之后立刻把临时密码换成它。 */
 interface LoginAttempt {
   username: string
@@ -44,6 +46,8 @@ export function AuthFlow({ api: providedApi, initialMode = 'login', initialIdent
   const [status, setStatus] = useState<AccountStatus | null>(null)
   const [statusError, setStatusError] = useState('')
   const [statusRevision, setStatusRevision] = useState(0)
+  const [statusRetrying, setStatusRetrying] = useState(false)
+  const [statusOffline, setStatusOffline] = useState(false)
   const [identifier, setIdentifier] = useState(initialIdentifier)
   const [password, setPassword] = useState('')
   const [remember, setRemember] = useState(false)
@@ -111,12 +115,28 @@ export function AuthFlow({ api: providedApi, initialMode = 'login', initialIdent
   }, [focusTarget, busy])
   useEffect(() => {
     let active = true
-    setStatusError(''); setStatus(null)
+    let timer: number | undefined
+    setStatusError(''); setStatusRetrying(false); setStatusOffline(false); setStatus(null)
     // Turnstile and the site name differ per account source, so the snapshot must follow siteId.
     // Registration is main-account only (the flow pins siteId there), so its flags stay correct.
-    void api.getStatus(siteId).then((value) => { if (active) setStatus(value) }, (reason: unknown) => { if (active) setStatusError(authErrorMessage(reason, '读取账号设置')) })
-    return () => { active = false }
+    function attempt(retried: boolean) {
+      void api.getStatus(siteId).then((value) => { if (active) { setStatusRetrying(false); setStatus(value) } }, (reason: unknown) => {
+        if (!active) return
+        const failure = registrationStatusFailure(reason, navigator.onLine)
+        if (failure.retry && !retried) { setStatusRetrying(true); timer = window.setTimeout(() => attempt(true), statusRetryDelayMs); return }
+        setStatusRetrying(false); setStatusOffline(failure.offline); setStatusError(failure.message)
+      })
+    }
+    attempt(false)
+    return () => { active = false; window.clearTimeout(timer) }
   }, [api, siteId, statusRevision])
+  // 没网时不叫客户去点「重新读取」：系统报网络回来了就自己重读。
+  useEffect(() => {
+    if (!statusOffline) return
+    function reload() { setStatusRevision((value) => value + 1) }
+    window.addEventListener('online', reload)
+    return () => window.removeEventListener('online', reload)
+  }, [statusOffline])
   useEffect(() => {
     if (mode !== 'login') return
     let active = true
@@ -266,7 +286,7 @@ export function AuthFlow({ api: providedApi, initialMode = 'login', initialIdent
     void run('发送验证码', async (current) => { await api.sendVerification(email); if (current()) { registerCooldown.start(); setMessage(`验证码已发到 ${email}。几分钟内没收到的话，看看垃圾邮件。`) } })
   }
   const submitRegistration = () => {
-    if (!status) { setError('请先读取注册设置，再创建账号'); return }
+    if (!status) { setError('注册还没准备好，请稍等，或点「重新读取」后再创建账号'); return }
     if (!status.registerEnabled || !status.passwordRegisterEnabled) { setError('目前暂未开放账号注册'); return }
     if (status.turnstileCheckEnabled) { setError('服务端需要安全验证，请在浏览器完成注册'); return }
     const draft = { ...registration, email: checkEmail() }
@@ -406,8 +426,8 @@ export function AuthFlow({ api: providedApi, initialMode = 'login', initialIdent
         {agreement(agreed, setAgreed)}
       </>}
       {mode === 'register' && <>
-        {statusError && <div role="alert"><p className="auth-error">{statusError}</p><Button icon={RefreshCw} onClick={() => setStatusRevision((value) => value + 1)} testId="register-status-retry">重新读取</Button></div>}
-        {!status && !statusError && <p role="status">正在读取注册设置</p>}
+        {statusError && <div role="alert"><p className="auth-error" data-testid="register-status-error">{statusError}</p><Button icon={RefreshCw} onClick={() => setStatusRevision((value) => value + 1)} testId="register-status-retry">重新读取</Button></div>}
+        {!status && !statusError && <p role="status" data-testid="register-status-loading">{statusRetrying ? '网络有点慢，正在再试一次…' : '正在准备注册…'}</p>}
         {status && (!status.registerEnabled || !status.passwordRegisterEnabled) && <p className="auth-error" role="alert">目前暂未开放账号注册</p>}
         <div className="auth-email-row">{field('邮箱', 'register-email', registration.email, updateEmail, { type: 'email', autoComplete: 'email', placeholder: '常用邮箱（如 QQ 邮箱）', error: fieldErrors.email, onBlur: checkEmailOnLeave })}{status?.emailVerificationEnabled && <Button onClick={sendVerification} icon={Mail} disabled={busy || Boolean(registerCooldown.seconds)} testId="register-send-code">{registerCooldown.seconds ? `${registerCooldown.seconds} 秒后重发` : '获取验证码'}</Button>}</div>
         {emailSuggestion && <div className="auth-email-suggestion" role="status" data-testid="register-email-suggestion"><p className="auth-hint">你是不是想填 {emailSuggestion}？{typoConfirmedEmail === normalizeEmail(registration.email) && `没填错的话，再点一次「${status?.emailVerificationEnabled ? '获取验证码' : '创建账号'}」。`}</p><Button size="xs" disabled={busy} onClick={() => updateEmail(emailSuggestion, true)} testId="register-email-fix">改成这个</Button></div>}
@@ -416,6 +436,8 @@ export function AuthFlow({ api: providedApi, initialMode = 'login', initialIdent
         {inviteOpen ? field('邀请码（选填）', 'register-invite', registration.invite, (value) => updateRegistration('invite', value), { placeholder: '邀请码或邀请链接', error: fieldErrors.invite })
           : <div className="auth-more"><Button size="xs" variant="ghost" disabled={busy} onClick={() => { setInviteOpen(true); setFocusTarget('register-invite') }} testId="register-invite-toggle">有邀请码？</Button></div>}
         {agreement(registration.agreed, (value) => updateRegistration('agreed', value))}{fieldErrors.agreed && <p role="alert" className="auth-field-error">{fieldErrors.agreed}</p>}
+        {/* 按钮灰着却不说为什么，客户只会一遍遍去点。 */}
+        {!status && <p className="auth-hint" data-testid="register-submit-hint">{statusError ? '要先连上账号服务，「创建账号」才能点。' : '准备好之后就能点「创建账号」。'}</p>}
       </>}
       {mode === 'recovery' && !source.supportsPasswordReset && <p className="auth-hint" data-testid="forgot-official-help">历史账号暂不支持在客户端重置密码。请前往历史账号官网使用找回入口；若官网未提供入口，请联系官网客服恢复访问。</p>}
       {mode === 'recovery' && source.supportsPasswordReset && !twoFactor && <>

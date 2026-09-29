@@ -1,4 +1,4 @@
-import { matchNetworkFailureMessage } from '../../../../electron/network-failure'
+import { matchNetworkFailureMessage, networkFailureReasonForMessage } from '../../../../electron/network-failure'
 import { matchAccountErrorMessage } from './account-errors'
 
 export interface RegistrationDraft { email: string; username: string; password: string; confirm: string; code: string; invite: string; agreed: boolean }
@@ -196,6 +196,33 @@ export function authErrorMessage(error: unknown, action: string): string {
   if (/timeout|timed.?out|超时|network|fetch|connect|网络/i.test(message)) return '连接星芒服务器超时，请检查网络后重试'
   if (/turnstile|人机/i.test(message)) return '服务端需要完成安全验证，请在浏览器完成后再试'
   return `${action}没有成功，输入已保留，请稍后重试`
+}
+
+/**
+ * 创建账号窗口一打开就要先读一次注册设置（要不要邮箱验证码），读不到「创建账号」就点不了。
+ * 读不到时怎么说、要不要自动再试，集中在这里：
+ * - 这台电脑本身没网：直说没网，等系统报「网络回来了」再自动重读，不叫人去点按钮；
+ * - 超时 / 被切断 / 域名解析不到：多半是一时的，先自动再试一次再报红；
+ * - 超时、被切断这两种最常见的真实原因是客户开着加速器或翻墙软件，所以只在注册窗里
+ *   多说一句「先关掉它」。network-failure.ts 那张表是全局共用的，不在那里改。
+ */
+export const registrationOfflineMessage = '这台电脑现在没连上网。连上网后会自动重新读取。'
+export const registrationUnreachableMessage = '连不上账号服务。电脑上开着加速器、翻墙或代理软件的话，先把它关掉，再点「重新读取」。'
+
+export interface RegistrationStatusFailure {
+  message: string
+  /** 第一次失败时值得自动再试一次。 */
+  retry: boolean
+  /** 电脑本身没网：等 online 事件自动重读。 */
+  offline: boolean
+}
+
+export function registrationStatusFailure(error: unknown, online: boolean): RegistrationStatusFailure {
+  const reason = networkFailureReasonForMessage(errorText(error))
+  if (!online || reason === 'offline') return { message: registrationOfflineMessage, retry: false, offline: true }
+  const retry = reason === 'timeout' || reason === 'refused' || reason === 'dns'
+  if (reason === 'timeout' || reason === 'refused') return { message: registrationUnreachableMessage, retry, offline: false }
+  return { message: authErrorMessage(error, '读取账号设置'), retry, offline: false }
 }
 
 // 与 electron/new-api-client.ts 的原文一致（electron 不 import src，有意重复一份）。
