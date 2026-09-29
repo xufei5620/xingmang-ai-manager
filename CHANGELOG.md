@@ -18,6 +18,9 @@
 
 ## 0.2.11 - 2026-09-29
 
+- 新增 `src/renderer-v2/features/shell/promo-announcements.ts`：按约定从账号服务时间线公告（`GET /api/status` 的 `announcements`）里认出充值活动（标题含「充值」、有发布时间），从正文或附加说明的「截止：…」或「…-…」日期区间读结束时间，没写按发布后 7 天；「知道了」「今天不再提醒」「今天已提醒」三份本机记录。不加新请求，跟着余额刷新那次读取走；没有发布时间的旧系统公告不会变成卡片。
+- `Announcement.tsx` 加首页 `PromoCard`（只在首页显示，别的页面仍是细横条），活动期间铃铛红点常亮；`electron/platform/notifications.ts` 按 `promo:` / `promo-daily:` 前缀给出活动通知文案，点开去首页，仍受「公告」通知开关管。
+
 - 新增事件通道 `desktop:codex-launch-progress`（`onCodexDesktopLaunchProgress`，载荷 `CodexDesktopLaunchProgress`）：Windows 打开 / 重启桌面端时由 `startCodexDesktopLaunchHeartbeat` 每 5 秒发一次，分「准备」「等窗口」两段文案（`describeCodexDesktopLaunchWait`），渲染层把它写进 `launch:codexDesktop` 那个任务的进度句。等待时长与启动逻辑不变。
 - `describeCodexDesktopLaunchFailure` 多一个可选的 `{ waitedSeconds, processSeen }`：带上时按激活有没有交回进程号分两句，并附开始菜单自查法；开头仍是 `codexDesktopNotStartedPrefix`，渲染层归类不变。
 - `runtime-logs:copy-feedback` / `runtime-logs:export-feedback` 收到过期或被新预览顶掉的报告标识时，就地重跑 `captureFeedbackReport` 生成新预览（仍受 8 份与 2MB 上限约束），返回值多带可选的 `regenerated`（新预览的 id/text/entries），渲染层据此替换对话框文本并改提示语；只有重生成本身失败才报错。不加通道，脱敏沿用 `captureFeedbackReport`。legacy 界面已冻结，未跟进提示语。
