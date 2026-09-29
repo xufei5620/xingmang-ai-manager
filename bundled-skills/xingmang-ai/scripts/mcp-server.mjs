@@ -170,7 +170,10 @@ async function generateImage(argumentsValue) {
     throw new Error(typeof message === 'string' ? message.slice(0, 500) : `图片服务返回 HTTP ${response.status}`)
   }
   const encoded = payload?.data?.[0]?.b64_json
-  if (typeof encoded !== 'string' || !encoded) throw new Error('图片服务没有返回图片')
+  if (typeof encoded !== 'string' || !encoded || encoded.length > MAX_RESPONSE_BYTES
+    || !/^[A-Za-z0-9+/]+={0,2}$/.test(encoded)) {
+    throw new Error('图片服务没有返回有效图片')
+  }
   return {
     content: [
       { type: 'image', data: encoded, mimeType: 'image/png' },
