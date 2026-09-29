@@ -1112,6 +1112,7 @@ describe('registerIpcHandlers', () => {
       electronMocks.showMessageBox.mockResolvedValueOnce({ response: 0 })
       const { service, runtimeLog, extensionService } = register(undefined, undefined, undefined, undefined, undefined, undefined, {}, {
         documentsDirectory: () => documents,
+        homeDirectory: () => documents,
       })
       const expected = path.join(documents, 'XingmangProjects', 'my-project')
 
@@ -1146,6 +1147,7 @@ describe('registerIpcHandlers', () => {
         .mockResolvedValueOnce({ response: 0 })
       const { service, runtimeLog } = register(undefined, undefined, undefined, undefined, undefined, undefined, {}, {
         documentsDirectory: () => documents,
+        homeDirectory: () => documents,
       })
 
       await expect(electronMocks.handlers.get('workspace:choose')!(trustedEvent())).resolves.toBe(project)
@@ -1170,6 +1172,7 @@ describe('registerIpcHandlers', () => {
     try {
       const { service, providerExtensionService } = register(undefined, undefined, undefined, undefined, undefined, undefined, {}, {
         documentsDirectory: () => documents,
+        homeDirectory: () => documents,
       })
       const expected = path.join(documents, 'XingmangProjects', 'my-project')
 
@@ -1191,6 +1194,7 @@ describe('registerIpcHandlers', () => {
     try {
       const { service } = register(undefined, undefined, undefined, undefined, undefined, undefined, {}, {
         documentsDirectory: () => documents,
+        homeDirectory: () => documents,
       })
 
       await expect(electronMocks.handlers.get('workspace:choose')!(trustedEvent(), { createStarter: true })).resolves.toBeNull()
@@ -1286,6 +1290,7 @@ describe('registerIpcHandlers', () => {
       electronMocks.showMessageBox.mockResolvedValueOnce({ response: 0 })
       const { service } = register(undefined, undefined, undefined, undefined, undefined, undefined, {}, {
         documentsDirectory: () => documents,
+        homeDirectory: () => documents,
       })
       const expected = path.join(documents, 'XingmangProjects', 'my-project')
 
@@ -4626,6 +4631,32 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
 
       expect(() => handler(trustedEvent(), { pageSize: 999 })).toThrow()
       expect(accountService.listKeys).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('diagnostics:probe-codex-responses', () => {
+    it('requires explicit billing acknowledgement and never accepts a URL or Key', async () => {
+      const probeCodexResponses = vi.fn(async (_expectedAccountScope: string) => ({
+        ok: true, layer: 'network' as const, verificationLevel: 'responses-tool-json' as const,
+        summary: 'm 能正常调用工具', nextStep: '无需处理',
+        endpoint: 'https://fixture.invalid/v1/responses', model: 'm', detail: null,
+        status: 200, durationMs: 5, checkedAt: '2026-09-28T00:00:00.000Z',
+      }))
+      register(serviceStub(), undefined, undefined, undefined, undefined, undefined, {}, {
+        diagnosticsService: {
+          run: vi.fn(), checkConnection: vi.fn(), checkExternalConnection: vi.fn(),
+          probeCodexResponses, exportLatest: vi.fn(),
+        },
+      })
+      const handler = electronMocks.handlers.get('diagnostics:probe-codex-responses')!
+      expect(() => handler(trustedEvent(), false)).toThrow('请先勾选确认')
+      expect(() => handler(trustedEvent(), { key: 'sk-hostile', url: 'https://elsewhere.invalid' })).toThrow('请先勾选确认')
+      expect(() => handler(trustedEvent(), true, 'bad-scope')).toThrow('账号信息不对')
+      expect(probeCodexResponses).not.toHaveBeenCalled()
+      await expect(handler(trustedEvent(), true, 'xm-account:17')).resolves.toMatchObject({
+        ok: true, verificationLevel: 'responses-tool-json',
+      })
+      expect(probeCodexResponses).toHaveBeenCalledExactlyOnceWith('xm-account:17')
     })
   })
 

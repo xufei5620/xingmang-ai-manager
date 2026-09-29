@@ -385,6 +385,86 @@ test('a failed tool launch in the guide keeps the real reason and can be retried
   } finally { await page.close() }
 })
 
+test('the setup result keeps installation, billing and first-task completion as separate facts', async () => {
+  const page = await open('scenario=guide&installed=1&connected=1&launchFail=1')
+  try {
+    await page.getByTestId('guide-next').click()
+    await page.getByTestId('guide-next').click()
+    await page.getByTestId('guide-result').waitFor()
+    assert.match(await page.getByTestId('guide-result-install').innerText(), /已装好/)
+    assert.match(await page.getByTestId('guide-result-connection').innerText(), /当前账号[\s\S]*设置已读到/)
+    assert.match(await page.getByTestId('guide-result-billing').innerText(), /花的是当前账号的余额/)
+    assert.match(await page.getByTestId('guide-result-next').innerText(), /打开后把下面这句话发给它试试/)
+    await page.evaluate(() => Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async (value) => { window.copiedFirstTask = value } } }))
+    await page.getByTestId('guide-first-task-copy').click()
+    await page.getByTestId('guide-first-task-copy-status').filter({ hasText: '已复制' }).waitFor()
+    assert.equal(await page.evaluate(() => window.copiedFirstTask), await page.getByTestId('guide-first-task-prompt').innerText())
+    assert.equal((await calls(page)).some((entry) => entry.method === 'launch' || entry.method === 'complete'), false)
+    await page.getByTestId('guide-open-tool').click()
+    await page.getByTestId('guide-error').waitFor()
+    assert.equal(await page.getByTestId('start-guide').getAttribute('data-guide-step'), 'ready')
+    assert.match(await page.getByTestId('guide-result-next').innerText(), /打开后把下面这句话发给它试试/)
+    assert.equal((await calls(page)).some((entry) => entry.method === 'complete'), false)
+    await page.getByTestId('guide-retry').click()
+    await page.waitForFunction(() => document.documentElement.dataset.calls?.includes('complete'))
+  } finally { await page.close() }
+})
+
+test('a real backup and a verified switch appear after account switching, and a fresh scan can revoke readiness', async () => {
+  const page = await open('scenario=guide&installed=1&unknown=1&switchable=1')
+  try {
+    await page.getByTestId('guide-next').click()
+    await page.getByTestId('guide-next').click()
+    assert.match(await page.getByTestId('guide-result-billing').innerText(), /可能不扣当前账号的余额/)
+    await page.getByTestId('guide-switch-account').click()
+    await page.locator('[data-guide-step="ready"]').waitFor()
+    assert.equal(await page.getByTestId('guide-switched-note').getAttribute('data-backup-id'), 'fixture-backup')
+    assert.match(await page.getByTestId('guide-result-connection').innerText(), /当前账号 peaker[\s\S]*能连上/)
+    assert.match(await page.getByTestId('guide-switched-note').innerText(), /已改用 peaker。原来的设置已备份/)
+    await page.getByTestId('guide-ready-rescan').click()
+    await page.waitForFunction(() => JSON.parse(document.documentElement.dataset.calls || '[]').filter((entry) => entry.method === 'detect').length === 2)
+    await page.evaluate(() => window.authHarness.setTool('codexDesktop', { installed: false }))
+    await page.getByTestId('guide-result-install').filter({ hasText: '还没装好' }).waitFor()
+    assert.equal(await page.getByTestId('guide-open-tool').isDisabled(), true)
+    assert.equal(await page.getByTestId('guide-home').isDisabled(), true)
+    assert.equal((await calls(page)).some((entry) => entry.method === 'launch'), false)
+  } finally { await page.close() }
+})
+
+// #622 接手时的回归：切换后没试通，原因（余额不足、网络不通）必须留在回执里。
+test('an unverified switch still shows why it could not be confirmed', async () => {
+  const page = await open('scenario=guide&installed=1&unknown=1&switchable=1&switchUnverified=1')
+  try {
+    await page.getByTestId('guide-route-codexDesktop').check()
+    await page.getByTestId('guide-next').click()
+    await page.getByTestId('guide-next').click()
+    await page.getByTestId('guide-switch-account').click()
+    await page.locator('[data-guide-step="ready"]').waitFor()
+    assert.match(await page.locator('.auth-guide-lead').first().innerText(), /已改用你的账号，但这次没能确认能用/)
+    assert.match(await page.getByTestId('guide-switched-note').innerText(), /当前账号余额不足，充值后就能用。原来的设置已备份/)
+    assert.match(await page.getByTestId('guide-result-connection').innerText(), /没试通/)
+  } finally { await page.close() }
+})
+
+test('official login remains pending and a denied first-task copy offers selectable text', async () => {
+  const page = await open('scenario=guide&installed=1&official=1&runtime=1&officialLoginRequired=1')
+  try {
+    await page.getByTestId('guide-next').click()
+    await page.getByTestId('guide-next').click()
+    assert.match(await page.getByTestId('guide-result-connection').innerText(), /ChatGPT 账号，还没登录/)
+    assert.match(await page.getByTestId('guide-result-billing').innerText(), /不扣当前账号的余额/)
+    assert.equal(await page.getByTestId('guide-next').isDisabled(), true)
+    await page.getByTestId('guide-config').click()
+    await page.getByTestId('guide-next').click()
+    await page.locator('[data-guide-step="ready"]').waitFor()
+    assert.match(await page.getByTestId('guide-result-billing').innerText(), /花的是当前账号的余额/)
+    await page.evaluate(() => Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async () => { throw new Error('denied') } } }))
+    await page.getByTestId('guide-first-task-copy').click()
+    await page.getByTestId('guide-first-task-copy-status').filter({ hasText: '手动选中' }).waitFor()
+    assert.match(await page.getByTestId('guide-first-task-prompt').innerText(), /用中文/)
+  } finally { await page.close() }
+})
+
 // 全面检测 Q50：找到的版本比推荐的旧时不能只说「已经装好」。给一句建议和一颗
 // 「更新」，但「下一步」照常能点；更完留在这一步，让人看到已经换成新版。
 test('an old installed version is flagged with an update button that never blocks the next step', async () => {

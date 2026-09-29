@@ -36,6 +36,14 @@ import { redactSecretPatterns } from './redaction-patterns'
 import { relayApiProbeBaseUrl, resolveRelaySite, type RelaySite } from './relay-sites'
 import { findReparseComponent, type ReparseComponent } from './safe-local-data'
 import { resolveRelocatedPath } from './relocated-folders'
+import {
+  inspectProxyVariables,
+  probeLoopbackProxy,
+  readWindowsProxyScopes,
+  type LoopbackProbe,
+  type ProxyVariableFinding,
+  type ProxyVariableScopes,
+} from './stale-proxy-environment'
 import { resolveCliCommand, resolveCliInstallation } from './tool-installation'
 import type { ToolConfigOwnership } from './tool-config-ownership'
 import type { SystemSnapshot } from './system-service'
@@ -135,8 +143,21 @@ export interface DiagnosticsDependencies {
   resolvePowerShellExecutable?: () => string
   /** Which relay site's connectivity to probe (XINGMANG_NETWORK). Defaults to the default site. */
   relaySite?: RelaySite
+  /**
+   * 加速开着没有。开着时星芒自己的服务按加速规则直接连（acceleration-clash-config.ts
+   * 的 relayDirectHosts），「星芒 AI 网络」一项顺带说一句，免得用户以为这项量的是加速线路。
+   * 缺省 = 不提（旧行为）。
+   */
+  inspectAccelerationActive?: () => Promise<boolean>
   fetch?: typeof globalThis.fetch
   clashConfigPaths?: readonly string[]
+  /**
+   * Windows 上「电脑里的代理设置」一项读当前账号与整台电脑各设了哪几条，用来判断
+   * 能不能给「清掉这条旧设置」按钮。缺省 = 起 PowerShell 读（异步）；读不到按不知道处理。
+   */
+  readProxyScopes?: () => Promise<ProxyVariableScopes | null>
+  /** 试连代理设置指向的本机端口；缺省 = 真的去连。 */
+  probeLoopbackProxy?: LoopbackProbe
   /**
    * 软件数据目录（Electron 的 userData）。诊断自己算不出它在哪，宿主给了才把它
    * 算进「磁盘空间」这一项；不给就只看 CLI 落点。
@@ -150,6 +171,11 @@ export interface DiagnosticsDependencies {
    * 宿主真写一个小文件再删掉，resolve 就是写得进，reject 就是写不进。
    */
   probeAiOutput?: () => Promise<void>
+  /**
+   * 正式安装包自带的加速文件启动时读没读通。只有安装包本来就带加速文件时宿主才给，
+   * 给了才有「加速功能」这一项；开发时和不带加速的包都没有这一项。
+   */
+  accelerationBundle?: 'intact' | 'damaged'
   /**
    * 启动时那次「是不是管理员」探测的结果（`resolveWindowsCliExecutionModeDetailed`）。
    * 只读、不重跑：执行模式在启动时就定死了，检查页要说的是「这次启动被怎么处理了」。
@@ -232,6 +258,8 @@ interface CheckDefinition {
 }
 
 const DEFAULT_CHECK_TIMEOUT_MS = 8_000
+const accelerationBundleDamagedSummary = '加速用的文件被删掉或改动了，多半是杀毒软件拦的。'
+  + '打开杀毒软件的「隔离区」或「恢复区」把星芒的文件恢复，并把星芒加入信任；也可以重新安装一次星芒，装在原来的位置就行。'
 /**
  * 差多少才值得说。证书校验本身有容差，本机时钟与服务器差几十秒也是常态，
  * 阈值定低了就是每次检查都亮一条没人能处理的黄灯。
@@ -699,6 +727,63 @@ async function defaultProxyVariables(env: NodeJS.ProcessEnv): Promise<ProxyVaria
     if (match?.[1]?.trim()) result.push({ name, source: 'process' })
   }
   return result
+}
+
+function proxyFindingDetails(findings: readonly ProxyVariableFinding[]): Record<string, string> {
+  return Object.fromEntries(findings.map((finding) => [
+    finding.name,
+    finding.target ? `本机 ${finding.target.port} 端口（${finding.reach === 'open' ? '开着' : '没开'}）` : '别的机器',
+  ]))
+}
+
+/**
+ * 「电脑里的代理设置」（第十六批 5）。看的是本软件自己的环境——从这里打开的工具
+ * 拿到的就是它——再读一次当前账号与整台电脑各设了什么，决定能不能一键清掉。
+ * details 只写变量名和本机端口，不写原值：原值里可能带着代理的用户名和密码。
+ */
+export async function windowsProxySettingsOutcome(
+  env: NodeJS.ProcessEnv,
+  probe: LoopbackProbe,
+  readScopes: () => Promise<ProxyVariableScopes | null>,
+): Promise<Omit<DiagnosticItem, 'code' | 'title' | 'durationMs'>> {
+  const findings = await inspectProxyVariables(env, probe)
+  if (!findings.length) return { state: 'pass', summary: '电脑里没有设代理，工具直接联网' }
+  const closed = findings.filter((finding) => finding.reach === 'closed')
+  const details = proxyFindingDetails(findings)
+  if (closed.length) {
+    const port = closed[0].target?.port
+    const scopes = await readScopes().catch(() => null)
+    const userClosed = scopes ? (await inspectProxyVariables(scopes.user, probe)).some((finding) => finding.reach === 'closed') : false
+    const machineClosed = scopes ? (await inspectProxyVariables(scopes.machine, probe)).some((finding) => finding.reach === 'closed') : false
+    const lead = `电脑里设了一个代理（本机 ${port} 端口），但它现在没开。`
+    if (userClosed) {
+      return {
+        state: 'warn',
+        summary: `${lead}从星芒打开的工具会自动绕开它；你自己开的命令行窗口可能还是连不上。`,
+        details: { ...details, fix: 'clear-user-proxy', port: port ?? null },
+      }
+    }
+    return {
+      state: 'warn',
+      summary: machineClosed
+        ? `${lead}这条设置是给整台电脑设的，要管理员才能改。从星芒打开的工具已经会自动绕开它。`
+        : `${lead}从星芒打开的工具会自动绕开它。`,
+      details,
+    }
+  }
+  const remote = findings.find((finding) => finding.reach === 'remote')
+  if (remote) {
+    return {
+      state: 'warn',
+      summary: '电脑里设了代理，工具会通过它联网。如果工具连不上，先确认这个代理能用。',
+      details,
+    }
+  }
+  return {
+    state: 'pass',
+    summary: `电脑里设了代理（本机 ${findings[0].target?.port} 端口），工具会通过它联网。`,
+    details,
+  }
 }
 
 type EnvironmentOverrideKind = 'baseUrl' | 'secret' | 'directory' | 'model' | 'other'
@@ -1577,11 +1662,12 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
             details: { endpoint, status: response.status, clockSkewMinutes: Math.round(skewMs / 60_000) },
           }
         }
+        const accelerating = await dependencies.inspectAccelerationActive?.().catch(() => false) ?? false
         return {
           state: 'pass',
           // 状态码留在 details 里给导出报告，结论只说人话。
-          summary: '能连上星芒服务',
-          details: { endpoint, status: response.status },
+          summary: accelerating ? '能连上星芒服务（开着加速时也直接连，不绕加速线路）' : '能连上星芒服务',
+          details: accelerating ? { endpoint, status: response.status, route: 'direct' } : { endpoint, status: response.status },
         }
       },
     },
@@ -1655,6 +1741,16 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
         }
         return { state: 'pass', summary: 'AI 生成的图片和视频能正常保存' }
       },
+    }] : []),
+    // 杀毒软件隔离了加速内核时，加速页以前只写「线路准备中」，客户会一直等下去。
+    // 这里说同一句话；读文件是启动时做的，这一项只报告结果、不再读一遍几十 MB 的内核。
+    // 标黄不标红（同 AI_OUTPUT）：只影响用加速的人，不为它在每次开机时弹「需要处理」。
+    ...(dependencies.accelerationBundle ? [{
+      code: 'ACCELERATION_BUNDLE',
+      title: '加速功能',
+      run: (): CheckOutcome => dependencies.accelerationBundle === 'damaged'
+        ? { state: 'warn', summary: accelerationBundleDamagedSummary }
+        : { state: 'pass', summary: '加速用的文件完好' },
     }] : []),
     {
       // 「C 盘搬家」工具或 mklink /J 把用户文件夹、软件数据文件夹挪到别的盘之后，
@@ -1738,7 +1834,15 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
         }
       },
     },
-    {
+    platform === 'win32' ? {
+      code: 'PROXY_ENVIRONMENT',
+      title: '电脑里的代理设置',
+      run: () => windowsProxySettingsOutcome(
+        env,
+        dependencies.probeLoopbackProxy ?? probeLoopbackProxy,
+        dependencies.readProxyScopes ?? (() => readWindowsProxyScopes()),
+      ),
+    } : {
       code: 'PROXY_ENVIRONMENT',
       title: '系统代理环境变量',
       run: async (signal) => {

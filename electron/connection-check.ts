@@ -82,6 +82,8 @@ export type ConnectionProbeProtocol = 'anthropic-messages' | 'openai-models'
 export interface ConnectionProbeReport {
   ok: boolean
   layer: ConnectionCheckLayer
+  /** Set only by the opt-in Codex tool-call check when both paid requests succeeded. */
+  verificationLevel?: 'responses-tool-json'
   /** 一句话结论，直接上屏。 */
   summary: string
   /** 用户下一步该做什么。 */

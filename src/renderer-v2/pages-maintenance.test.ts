@@ -1,7 +1,8 @@
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
-import { OnboardingSettingRows, TutorialPage, installResultMessage, tutorialTopics, withElevationNotice } from './pages-maintenance'
+import { HealthPage, OnboardingSettingRows, TutorialPage, installResultMessage, tutorialTopics, withElevationNotice } from './pages-maintenance'
+import type { V2Bridge } from './types'
 import { macDesktopTutorialTopic, macRuntimeTutorialTopic } from './registry/business'
 import { clientConnections } from './registry/clients'
 import { pages } from './registry/pages'
@@ -14,6 +15,14 @@ const pageIds = new Set<string>(pages.map((page) => page.id))
 const pageLabels = new Map<string, string>(
   pages.map((page) => [page.id, page.label.replace(' ↗', '')]),
 )
+
+describe('paid Codex check in HealthPage', () => {
+  it('stays hidden until the page knows Codex is installed and leaves the self-check wording alone', () => {
+    const markup = renderToStaticMarkup(createElement(HealthPage, { api: {} as V2Bridge }))
+    expect(markup).not.toContain('health-codex-responses')
+    expect(markup).toContain('这一条证明你现在能用')
+  })
+})
 
 function tutorialText(id: string): string {
   const topic = tutorialTopics.find((entry) => entry.id === id)

@@ -18,7 +18,7 @@ import { useOnlineStatus } from './useOnlineStatus'
 import { commandGroupLabels, searchCommands, type CommandResult } from './command-search'
 import { accelerationBonusSeconds, isAccelerationBonusCode, type AccelerationRedemptionResult } from '../../../../electron/acceleration-contract'
 
-interface AccountView extends BalanceStatusView { signedIn: boolean; supportsBilling?: boolean; supportsAnnouncements?: boolean; displayName?: string; email?: string; sourceLabel?: string; balance?: string; identity?: AvatarIdentity }
+interface AccountView extends BalanceStatusView { signedIn: boolean; supportsBilling?: boolean; supportsAnnouncements?: boolean; displayName?: string; email?: string; sourceLabel?: string; balance?: string; /** 「订阅：剩余 $X · M 月 D 日到期」；没有能用的订阅时缺省。 */ subscription?: string; identity?: AvatarIdentity }
 interface Adapter {
   /** section 是那一页里要落的分页、分组或教程主题；缺省 = 只跳页。 */
   navigate?(page: PageId, section?: string): void
@@ -132,7 +132,7 @@ export function Shell({ activePage, account, platform, adapter, environment, bal
     }
   }
   const balanceStatus = balanceStatusText({ ...account, offline })
-  const balanceTitle = `${account.balance ?? '暂未读到'}；${balanceStatus}`
+  const balanceTitle = `${account.balance ?? '暂未读到'}；${account.subscription ? `${account.subscription}；` : ''}${balanceStatus}`
   const balanceRefresh = account.signedIn && adapter.refreshBalance
     ? <Button size="xs" variant="ghost" icon={RefreshCw} aria-label="刷新余额" title={`刷新余额；${balanceStatus}`} loading={account.balanceLoading} onClick={adapter.refreshBalance} testId="sidebar-balance-refresh" />
     : null
@@ -251,6 +251,7 @@ export function Shell({ activePage, account, platform, adapter, environment, bal
             {!collapsed ? <div className="v2-account-balance-summary" title={balanceTitle}>
               <div className="v2-account-balance-label"><small>余额</small>{balanceRefresh}</div>
               <strong>{account.balance ?? '暂未读到'}</strong>
+              {account.subscription && <small className="v2-account-balance-subscription" data-testid="sidebar-subscription">{account.subscription}</small>}
             </div> : balanceRefresh}
             {account.supportsBilling !== false && <Button size="sm" variant="balance" icon={Zap} aria-label="充值" title="充值" onClick={adapter.topUp}>{collapsed ? undefined : '充值'}</Button>}
             {!collapsed && account.signedIn && account.balanceError && !account.balanceLoading && <small className="v2-balance-error" role="status" title={balanceStatus}>{balanceFailureLabel(offline)}</small>}
@@ -273,7 +274,7 @@ export function Shell({ activePage, account, platform, adapter, environment, bal
             onClick={adapter.refreshNetwork}>
             <Globe size={14} aria-hidden="true" /><span aria-live="polite">{networkRefreshing ? '正在检测网络位置…' : networkLocationLabel(network)}</span>
           </button><button type="button" onClick={adapter.openAccount}><i className="v2-dot" />{account.signedIn ? `已登录 ${account.displayName}` : '未登录'}</button>
-          {(balance || account.balance) && <button type="button" onClick={adapter.topUp} title={balanceStatus} data-testid="statusbar-balance">余额 {balance ?? account.balance}{account.balanceLoading && <RefreshCw size={12} className="xm-spin" aria-label="正在刷新余额" />}{account.balanceError && !account.balanceLoading && <span className="v2-balance-error">{balanceFailureLabel(offline)}</span>}</button>}{installedCount !== undefined && <span>{installedCount} 个工具已装</span>}
+          {(balance || account.balance) && <button type="button" onClick={adapter.topUp} title={account.subscription ? `${account.subscription}；${balanceStatus}` : balanceStatus} data-testid="statusbar-balance">余额 {balance ?? account.balance}{account.balanceLoading && <RefreshCw size={12} className="xm-spin" aria-label="正在刷新余额" />}{account.balanceError && !account.balanceLoading && <span className="v2-balance-error">{balanceFailureLabel(offline)}</span>}</button>}{installedCount !== undefined && <span>{installedCount} 个工具已装</span>}
           <button type="button" className="v2-status-version" onClick={adapter.openUpdates}>{version ? `v${version}` : '版本读取中'}</button>
         </footer>
         {notification && <div className="v2-notification">{notification}</div>}

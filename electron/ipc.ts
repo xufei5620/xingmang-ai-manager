@@ -18,7 +18,7 @@ import {
   sensitiveWorkspacePolicy,
   type SensitiveWorkspaceKind,
 } from './workspace-guard'
-import { createStarterWorkspace, resolveStarterWorkspaceParent } from './starter-workspace'
+import { createStarterWorkspace, resolveNewProjectParent } from './starter-workspace'
 import { usageDateRange } from './usage-date-range'
 import type { AppSettingsUpdate, AppTheme } from './app-settings'
 import { parseWindowState } from './window-preferences'
@@ -141,11 +141,12 @@ import type {
   WindowCapabilities,
 } from './ipc-contract'
 import type { DiagnosticsReport, DiagnosticsRunOptions } from './diagnostics'
-import { isCappedKeyUsedUp, withKeyQuotaExhausted, type ConnectionCheckResult } from './connection-check'
+import { isCappedKeyUsedUp, withKeyQuotaExhausted, type ConnectionCheckResult, type ConnectionProbeReport } from './connection-check'
 import type { RuntimeLogStore } from './runtime-log'
 import { createExternalShellLauncher, type ExternalShellLauncher } from './system-shell'
 import { isNetworkSettingsKind, type NetworkSettingsKind, type ProxyBypassOutcome } from './proxy-bypass'
 import { platformCapabilitiesFor } from './platform-capabilities'
+import { clearStaleUserProxyVariables, type StaleProxyClearResult } from './stale-proxy-environment'
 import { validatePaymentForm, validatePaymentQrCode, validatePaymentUrl, type PaymentWindowController } from './payment-window'
 import type { AccountStartupGate } from './account-startup-gate'
 import { parseAiChatHistoryScope, parseAiChatHistoryWrite, type AiChatHistoryStore } from './ai-chat-history-store'
@@ -161,9 +162,13 @@ export interface IpcRegistrationOptions {
   // 解析各 CLI 配置目录用的根路径（Codex 认 CODEX_HOME）。省略 = 按当前进程
   // 环境推一份，和 system-service 默认拿到的那份一致（旧行为）。
   providerRoots?: ProviderConfigRoots
-  // 「新建一个项目文件夹」优先建在它下面（starter-workspace.ts，被云盘同步时退到主目录）；
+  // Windows 上「新建一个项目文件夹」优先建在它下面（starter-workspace.ts，被云盘同步时退到
+  // 主目录；macOS 一律建在主目录）；
   // main.ts 传系统「文档」目录（app.getPath('documents')）。省略 = 主目录下的 Documents。
   documentsDirectory?: () => string
+  // 新建项目文件夹认的用户主目录（macOS 建在它下面）。省略 = os.homedir()；测试注入，
+  // 免得在跑测试的 Mac 上往真实主目录里建文件夹。
+  homeDirectory?: () => string
   // 「搬到新电脑」和「导出这段对话」的保存框默认落在桌面；main.ts 传 app.getPath('desktop')。
   // 省略 = 主目录下的 Desktop。
   desktopDirectory?: () => string
@@ -173,8 +178,11 @@ export interface IpcRegistrationOptions {
   diagnosticsService: {
     run(options?: DiagnosticsRunOptions): Promise<DiagnosticsReport>
     checkConnection(provider: ProviderId): Promise<ConnectionCheckResult>
+    probeCodexResponses?: (expectedAccountScope: string) => Promise<ConnectionProbeReport>
     checkExternalConnection(tool: ExternalToolId): Promise<ExternalClientCheckResult>
     exportLatest(): string
+    /** 检查页「清掉这条旧设置」；缺省 = stale-proxy-environment.ts 的真实现。 */
+    clearStaleProxy?(): Promise<StaleProxyClearResult>
   }
   runtimeLog: RuntimeLogStore
   extensionService: CodexExtensionService
@@ -235,6 +243,8 @@ export interface IpcRegistrationOptions {
    */
   startupQuiet?: { active(): boolean; whenOver(): Promise<void> }
   onAccountBalance?(balance: Awaited<ReturnType<RelayBackendClient['getBalance']>>): void
+  /** 渲染层读到了当前账号的订阅；托盘靠它说「订阅剩余多少」，不自己去读。 */
+  onAccountSubscription?(subscription: Awaited<ReturnType<RelayBackendClient['getSubscriptionSelf']>>): void
   // Opens (or focuses, if already open) the isolated canvas window. Kept as
   // a plain callback -- not a CanvasWindowController -- so this module never
   // has to depend on canvas-window.ts's full surface just to delegate one
@@ -1271,8 +1281,10 @@ const ipcOperationLabels: Readonly<Record<string, string>> = {
   'settings:save': '应用设置保存',
   'diagnostics:run': '系统诊断',
   'diagnostics:check-connection': '连接自检',
+  'diagnostics:probe-codex-responses': 'Codex 干活检查',
   'diagnostics:check-external-connection': '客户端连接自检',
   'diagnostics:export': '诊断报告导出',
+  'diagnostics:clear-stale-proxy': '清掉旧的代理设置',
   'runtime-logs:list': '运行日志读取',
   'runtime-logs:copy-feedback': '脱敏反馈文本复制',
   'runtime-logs:export-feedback': '反馈报告导出',
@@ -1535,6 +1547,12 @@ function ipcLogDetail(channel: string, args: unknown[], result: unknown, duratio
     detail.layer = result.layer
     detail.ok = result.ok
     detail.siteId = result.siteId
+    detail.status = result.status
+  }
+  if (channel === 'diagnostics:probe-codex-responses' && isRecord(result)) {
+    detail.layer = result.layer
+    detail.ok = result.ok
+    detail.verificationLevel = result.verificationLevel
     detail.status = result.status
   }
   // 外部客户端同理，分辨它们的那一列是 tool。归因层与站点都留，客户端的
@@ -2044,15 +2062,15 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     try {
       return options.documentsDirectory()
     } catch {
-      // app.getPath 拿不到「文档」时退到主目录（resolveStarterWorkspaceParent）。
+      // app.getPath 拿不到「文档」时退到主目录（resolveNewProjectParent）。
       return null
     }
   }
   // 建不成就说一句、回到选择器，由用户自己选；返回 null 让外层循环再开一次选择器。
   async function createStarterWorkspaceOrExplain(parentWindow: BrowserWindow | undefined, nextStep: string): Promise<string | null> {
     try {
-      const context = { platform: process.platform, home: os.homedir(), env: process.env }
-      const created = createStarterWorkspace(resolveStarterWorkspaceParent(documentsDirectory(), context), context)
+      const context = { platform: process.platform, home: options.homeDirectory?.() ?? os.homedir(), env: process.env }
+      const created = createStarterWorkspace(resolveNewProjectParent(documentsDirectory(), context), context)
       // 不记路径（I13）：客服要的只是「这个目录是软件替他建的」。
       options.runtimeLog.log('info', 'config', 'workspace.starter.created', '已替用户新建项目文件夹')
       return created
@@ -2768,6 +2786,12 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
       ...(update.mode !== undefined ? { mode: update.mode as AccelerationMode } : {}),
     })
   })
+  // 不收参数：读的是安装包里那几个固定文件名，渲染层给不出任何路径（I5）。
+  registerTrustedHandler('acceleration:recheck-bundle', () => {
+    const service = accelerationService()
+    if (!service.recheckAccelerationBundle) throw new Error('加速文件现在不用检查，请刷新一下加速页。')
+    return service.recheckAccelerationBundle()
+  })
   registerTrustedHandler('account:get-legal-document', (_event, kind: unknown, siteId: unknown) => (
     (options.realmAccounts ? options.realmAccounts.getPublicClient(siteId === undefined
       ? options.realmAccounts.getSiteId() : parseAccountSiteId(siteId)) : accountService).getLegalDocument(parseLegalDocumentKind(kind))
@@ -2921,7 +2945,11 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     accountService.transferAffiliateQuota(parseAccountAffiliateTransferInput(input))
   ))
   registerTrustedHandler('account:list-subscription-plans', () => accountService.listSubscriptionPlans())
-  registerTrustedHandler('account:get-subscription-self', () => accountService.getSubscriptionSelf())
+  registerTrustedHandler('account:get-subscription-self', async () => {
+    const subscription = await accountService.getSubscriptionSelf()
+    options.onAccountSubscription?.(subscription)
+    return subscription
+  })
   registerTrustedHandler('account:update-subscription-preference', (_event, preference: unknown) => (
     accountService.updateSubscriptionPreference(parseAccountBillingPreference(preference))
   ))
@@ -3421,6 +3449,16 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     return options.diagnosticsService.checkConnection(provider).then((result) => explainRejectedManagedKey(provider, result))
   })
 
+  registerTrustedHandler('diagnostics:probe-codex-responses', (_event, acknowledgeBilling: unknown, expectedAccountScope: unknown) => {
+    if (acknowledgeBilling !== true) throw new Error('请先勾选确认：这次检查会用当前账号的一点额度')
+    if (typeof expectedAccountScope !== 'string'
+      || !/^(?:xm-account|api-account):(?:guest|[1-9]\d{0,14})$/.test(expectedAccountScope)) {
+      throw new Error('账号信息不对，请重新勾选确认后再检查')
+    }
+    if (!options.diagnosticsService.probeCodexResponses) throw new Error('这个版本还不能做 Codex 干活检查')
+    return options.diagnosticsService.probeCodexResponses(expectedAccountScope)
+  })
+
   registerTrustedHandler('diagnostics:check-external-connection', (_event, tool: unknown) => {
     if (!isExternalToolId(tool)) throw new Error('未知的外部客户端类型')
     return options.diagnosticsService.checkExternalConnection(tool)
@@ -3441,6 +3479,10 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
         managedCliGroups,
         previewOnboarding: options.previewOnboarding })
     })()
+  })
+  registerTrustedHandler('diagnostics:clear-stale-proxy', () => {
+    const clear = options.diagnosticsService.clearStaleProxy ?? (() => clearStaleUserProxyVariables())
+    return clear()
   })
 
   return () => {
