@@ -1143,6 +1143,9 @@ if (!hasSingleInstanceLock) {
       // the OS proxy or imposing a new Chromium proxy mode.
       reloadNetworkProxyConfig: () => session.defaultSession.forceReloadProxyConfig(),
       downloadFetch,
+      // 查版本也走 Chromium：主进程自带的 Node fetch 不认公司或安全软件装在这台电脑
+      // 上的证书，公司电脑装工具会卡在第一步（system-certificate-trust.ts）。
+      registryFetch: downloadFetch,
       resolveSubprocessProxyEnvironment: async () => {
         // 临时线路本身就是回环端点，直接交给子进程；没有临时线路时仍然沿用
         // 系统代理那条老路（跨提权边界的过滤在 download-proxy.ts 里）。

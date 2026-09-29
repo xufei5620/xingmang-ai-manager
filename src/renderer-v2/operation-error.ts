@@ -1,4 +1,4 @@
-import { classifyNetworkFailure, networkFailureReasonForMessage } from '../../electron/network-failure'
+import { classifyNetworkFailure, networkFailureReasonForMessage, toolCertificateFailureForMessage } from '../../electron/network-failure'
 import { errors } from './registry/errors'
 
 export type OperationErrorKey = keyof typeof errors
@@ -68,6 +68,11 @@ const rules: Array<{ key: OperationErrorHint['key']; match: (message: string) =>
   // 正则的话，迟早一边认得出、另一边认不出同一句话。
   // 这两条都必须排在 timeout 之前：那条的 network / 连接失败 会把证书失败吞成
   //「检查网络」，用户于是反复检查一个本来就通的网络。
+  // 工具那一侧（npm 这些 Node 程序）认不了证书、而主进程已经说清是哪一种的（电脑上的
+  // Node.js 太旧、星芒按管理员身份在处理），排在 tlsIntercepted 之前：那两种换网络
+  // 都没用，下一步是换 Node.js 或正常打开星芒（system-certificate-trust.ts）。
+  { key: 'toolCertOutdatedNode', match: (message) => toolCertificateFailureForMessage(message) === 'outdatedNode' },
+  { key: 'toolCertElevated', match: (message) => toolCertificateFailureForMessage(message) === 'elevated' },
   { key: 'tlsIntercepted', match: (message) => classifyNetworkFailure(message) === 'tls' },
   // safe-local-data 的写入校验（I8）拒绝经过目录联接的路径：「C 盘搬家」工具把
   // 用户文件夹或软件数据文件夹挪走之后，写 Key、存设置都会撞上这句。它看起来像

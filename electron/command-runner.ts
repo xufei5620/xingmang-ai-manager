@@ -251,6 +251,10 @@ export function trustedCommandEnvironment(
     'node_options',
     'node_path',
     'node_extra_ca_certs',
+    // Adds the OS trust store to Node's roots. The current user's certificate
+    // store is writable from medium integrity, so an elevated npm must not
+    // learn to trust it through an inherited variable either.
+    'node_use_system_ca',
     'openssl_conf',
     'ssl_cert_file',
     'ssl_cert_dir',
