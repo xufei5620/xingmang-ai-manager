@@ -2,7 +2,7 @@ import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { accelerationShutdownRetryDelayMs, classifyAccelerationStartFailure, classifyAccelerationWorkerFailure, createAccelerationDevelopmentBackend } from './acceleration-development-backend'
+import { accelerationShutdownRetryDelayMs, accelerationStartFailureMessages, classifyAccelerationStartFailure, classifyAccelerationWorkerFailure, createAccelerationDevelopmentBackend } from './acceleration-development-backend'
 import { accelerationBonusCode, accelerationBonusSeconds, accelerationConflictNotice, accelerationTrialSeconds, type AccelerationConflictKind } from './acceleration-contract'
 import * as safe from './safe-local-data'
 
@@ -875,9 +875,16 @@ describe('acceleration start failure classification', () => {
     ['加速内核 Mach-O 结构不完整。', 'core-integrity'],
     ['加速内核不是可执行程序。', 'core-integrity'],
     ['加速内核启动失败', 'core-launch'],
-    ['加速内核已退出', 'core-launch'],
-    ['加速内核意外退出', 'core-launch'],
+    ['加速内核未能及时启动', 'core-launch'],
+    ['加速内核控制请求失败', 'core-launch'],
+    ['加速内核未能运行', 'core-blocked'],
+    ['加速内核启动后退出', 'core-exited'],
+    ['加速内核意外退出', 'core-exited'],
+    ['加速内核本地端口分配失败', 'core-port'],
     ['暂无可用加速线路，请稍后重试。', 'line-unavailable'],
+    ['加速线路连通性验证失败', 'line-unreachable'],
+    ['所选加速线路不可用', 'line-unreachable'],
+    ['加速线路切换失败', 'line-unreachable'],
     ['加速运行目录必须是普通目录', 'core-storage'],
     ['加速连接配置写入被系统占用，请稍后重试', 'core-storage'],
     ['本机加速进程通信失败。', 'unknown'],
@@ -899,18 +906,49 @@ describe('acceleration start failure classification', () => {
     }
   })
 
+  it('keeps every start failure sentence plain and short enough to cross into the page', () => {
+    for (const [stage, message] of Object.entries(accelerationStartFailureMessages)) {
+      // 加速只接管系统的网络设置，界面上不讲「代理」「端口」「内核」这些词，也不改口说开了 TUN。
+      expect([stage, /代理|端口|内核|TUN|mihomo|\//i.test(message)]).toEqual([stage, false])
+      expect([stage, message.length <= 300]).toEqual([stage, true])
+    }
+  })
+
   it('reports a non-Error rejection as unclassified rather than forwarding it', () => {
     expect(classifyAccelerationStartFailure('私密路径', 'runtime')).toBe('unknown')
   })
 })
 
 describe('acceleration start failure reporting', () => {
-  it('reports the stage when the core never starts, while the user still sees one sentence', async () => {
+  it('reports the stage when the core never starts and tells the user what held it up', async () => {
     const test = await setup()
     test.runtime.start.mockRejectedValueOnce(new Error('加速内核启动失败'))
     const state = await test.backend.startAcceleration(scope, 'system-proxy')
-    expect(state).toMatchObject({ phase: 'error', error: '加速连接失败，请检查线路和网络连接后重试。' })
+    expect(state).toMatchObject({ phase: 'error', error: accelerationStartFailureMessages['core-launch'] })
     expect(test.onStartDiagnostic.mock.calls).toEqual([['core-launch']])
+  })
+
+  it.each([
+    ['加速内核未能运行', '安全软件'],
+    ['加速内核启动后退出', '刚启动就被关掉了'],
+    ['加速内核本地端口分配失败', '被别的程序占满了'],
+    ['加速线路连通性验证失败', '换一条线路'],
+    ['暂无可用加速线路，请稍后重试。', '没有能连通的线路'],
+  ])('words a start that failed with %s by its cause', async (message, phrase) => {
+    const test = await setup()
+    test.runtime.start.mockRejectedValueOnce(new Error(message))
+    const state = await test.backend.startAcceleration(scope, 'system-proxy')
+    expect(state.phase).toBe('error')
+    expect(state.error).toContain(phrase)
+    // 原文不上屏：界面上那句话里不许出现内部说法。
+    expect(state.error).not.toContain(message)
+  })
+
+  it('says the system refused the network settings change rather than blaming the line', async () => {
+    const test = await setup()
+    test.proxy.enable.mockRejectedValueOnce(new Error('设置系统代理失败'))
+    const state = await test.backend.startAcceleration(scope, 'system-proxy')
+    expect(state.error).toBe(accelerationStartFailureMessages['proxy-enable'])
   })
 
   it('separates a system proxy failure from a core failure', async () => {

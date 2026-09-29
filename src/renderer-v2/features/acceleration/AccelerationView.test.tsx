@@ -69,7 +69,7 @@ describe('acceleration conflict notice', () => {
   })
 
   it('leaves an ordinary failure with its own strip and no override button', () => {
-    const markup = render(state({ phase: 'error', error: '加速连接失败，请检查线路和网络连接后重试。' }))
+    const markup = render(state({ phase: 'error', error: '加速没能打开：这条线路现在连不通。点「选择加速线路」换一条线路试试。' }))
     expect(markup).toContain('acceleration-error')
     expect(markup).not.toContain('data-testid="acceleration-conflict"')
   })
@@ -102,10 +102,30 @@ describe('acceleration error strip', () => {
 
   it('names the cause rather than one sentence for every failure', () => {
     for (const reason of ['helper-temp', 'proxy-owned', 'proxy-locked', 'local-data'] as const) {
-      // 这几句里都没有「代理」二字，所以不会被红条那两条替换规则改写。
       const message = accelerationFailureMessages[reason]
       expect([reason, render(null, { error: message }).includes(message)]).toEqual([reason, true])
     }
+  })
+})
+
+describe('acceleration error wording', () => {
+  it('shows the host sentence as written instead of rewriting words inside it', () => {
+    // 原来把「代理」机械换成「网络连接」，造出过「加速网络连接连通性验证失败」。
+    const markup = render(null, { error: '检测到其他代理或 VPN 正在运行' })
+    expect(markup).toContain('检测到其他代理或 VPN 正在运行')
+    expect(markup).not.toContain('网络连接或 VPN')
+  })
+
+  it('offers customer support beside a failed start', () => {
+    const markup = render(state({ phase: 'error', error: '加速没能打开：加速组件刚要运行就被拦下了。' }), { onViewLog: () => undefined })
+    expect(markup).toContain('data-testid="acceleration-error-support"')
+    expect(markup).toContain('data-testid="acceleration-error-log"')
+    expect(markup).toContain('重新检查')
+  })
+
+  it('keeps the support button off a strip that is not a failed start', () => {
+    const markup = render(null, { error: accelerationFailureMessages['helper-temp'] })
+    expect(markup).not.toContain('data-testid="acceleration-error-support"')
   })
 })
 

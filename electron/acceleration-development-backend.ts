@@ -15,8 +15,12 @@ export type AccelerationStartFailureStage =
   | 'core-architecture'
   | 'core-integrity'
   | 'core-launch'
+  | 'core-blocked'
+  | 'core-exited'
+  | 'core-port'
   | 'core-storage'
   | 'line-unavailable'
+  | 'line-unreachable'
   | 'runtime-invalid'
   | 'ledger-write'
   | 'proxy-authorization'
@@ -144,12 +148,33 @@ function accountTotalMs(entry: AccountUsage): number {
 const legacyVersion1MaximumUsedMs = 3_600_000
 const ledgerLabel = '本机免费加速时长账本'
 const ledgerFailure = '本机测试时长无法读取或保存，请检查本地数据目录后重试。'
-const startFailure = '加速连接失败，请检查线路和网络连接后重试。'
-function connectionFailure(error: unknown): string {
-  if (error instanceof Error && 'code' in error && error.code === 'MACOS_PROXY_AUTHORIZATION') {
-    return 'macOS 网络设置授权未完成，请允许系统授权后重试。'
-  }
-  return startFailure
+const startFailure = '加速没能打开，请再点「开始加速」试一次；还不行就点「查看日志」，把日志发给客服。'
+
+/**
+ * 加速页上开不了加速时只有这一行字，所以每句都说清「卡在哪」和「客户自己能做的下一步」。
+ * 刻意不带端口号、文件路径、错误原文：这句话会跨进程送到界面，还会进托盘菜单（I13），
+ * 细节只留在日志的阶段名里。加速只接管系统的网络设置、不开 TUN，文案里也不许改口。
+ */
+export const accelerationStartFailureMessages: Record<AccelerationStartFailureStage, string> = {
+  'core-architecture': '加速没能打开：加速组件和这台电脑的系统不匹配。请到官网下载适合这台电脑的安装包重新安装。',
+  'core-integrity': '加速没能打开：本机的加速组件不完整或被改动过，常见是安全软件动过它。请重新安装一次星芒；还不行就联系客服。',
+  'core-launch': '加速没能打开：加速组件没有按时启动。请再点「开始加速」试一次；反复这样就完全退出软件（含托盘图标）后重新打开。',
+  'core-blocked': '加速没能打开：加速组件刚要运行就被拦下了，常见是安全软件拦的。到安全软件的拦截记录里把星芒的文件恢复或加入信任，再点「开始加速」。',
+  'core-exited': '加速没能打开：加速组件刚启动就被关掉了，常见是安全软件拦的，或别的加速器占着它要用的位置。放行星芒、关掉别的加速器后，再点「开始加速」。',
+  'core-port': '加速没能打开：这台电脑上加速要用的本机通道被别的程序占满了。关掉别的加速器或下载工具后，再点「开始加速」。',
+  'core-storage': '加速没能打开：本机的加速文件没通过安全检查。请完全退出软件（含托盘图标）后重新打开；还不行就联系客服。',
+  'line-unavailable': '加速没能打开：现在没有能连通的线路。请检查这台电脑能不能正常上网，稍后再点「开始加速」。',
+  'line-unreachable': '加速没能打开：这条线路现在连不通。点「选择加速线路」换一条线路试试。',
+  'runtime-invalid': startFailure,
+  'ledger-write': startFailure,
+  'proxy-authorization': 'macOS 网络设置授权未完成，请允许系统授权后重试。',
+  'proxy-helper': '加速没能打开：改网络设置用的组件不见了，常见是安全软件删了它。请重新安装一次星芒；还不行就联系客服。',
+  'proxy-enable': '加速没能打开：系统不让改网络设置，可能是安全软件或公司电脑的管理规定拦着。放行星芒后再点「开始加速」；公司电脑请找管理员。',
+  unknown: startFailure,
+}
+
+function connectionFailure(error: unknown, phase: AccelerationStartFailurePhase): string {
+  return accelerationStartFailureMessages[classifyAccelerationStartFailure(error, phase)]
 }
 const stopFailure = '加速尚未完全停止，正在保留恢复状态，请再次点击停止。'
 const exitFailure = '加速意外断开了，网络已恢复正常，可以重新连接。'
@@ -199,8 +224,12 @@ export function classifyAccelerationStartFailure(
   if (phase === 'verify') return 'runtime-invalid'
   if (/架构/.test(message)) return 'core-architecture'
   if (/校验失败|Mach-O|不是可执行程序/.test(message)) return 'core-integrity'
-  if (/内核启动失败|内核已退出|内核意外退出/.test(message)) return 'core-launch'
+  if (message === '加速内核未能运行') return 'core-blocked'
+  if (/^加速内核(启动后退出|意外退出)/.test(message)) return 'core-exited'
+  if (message === '加速内核本地端口分配失败') return 'core-port'
+  if (/^加速内核(启动失败|未能及时启动|控制|返回了无效状态|端口校验失败)/.test(message)) return 'core-launch'
   if (/^暂无可用加速线路/.test(message)) return 'line-unavailable'
+  if (/^(所选加速线路|加速线路)/.test(message)) return 'line-unreachable'
   if (/^加速(运行目录|内核|连接配置)/.test(message)) return 'core-storage'
   return 'unknown'
 }
@@ -570,7 +599,7 @@ export function createAccelerationDevelopmentBackend(options: AccelerationDevelo
           return state(scope)
         } catch (error) {
           reportStartFailure(error, phase)
-          try { await stopSession(); lastErrors.set(scope, connectionFailure(error)) }
+          try { await stopSession(); lastErrors.set(scope, connectionFailure(error, phase)) }
           catch { arm(5000) }
           return state(scope)
         }
