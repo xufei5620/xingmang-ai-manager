@@ -431,6 +431,15 @@ describe('account managed Key bootstrap', () => {
     expect(accountBootstrapPlan(system(['claude']), current, settings, 'restore').targets).toEqual(['claude'])
   })
 
+  it('repairs an owned Codex config that Codex ignores on session restore, but not an unowned one', () => {
+    const current = config()
+    current.providers.codex = { ...current.providers.codex, exists: true, hasApiKey: true, matchesRelay: true, actualBaseUrl: current.providers.codex.baseUrl, model: 'gpt-model', configurationOwnership: 'account', codexProviderShadowed: true }
+    expect(accountBootstrapPlan(system(['codex']), current, settings, 'restore').targets).toEqual(['codex'])
+    // 没有归属记录的老配置要老板点头才自动改，这次照旧只在首页给按钮。
+    current.providers.codex = { ...current.providers.codex, configurationOwnership: 'unknown', configurationAccountMatched: true }
+    expect(accountBootstrapPlan(system(['codex']), current, settings, 'restore').targets).toEqual([])
+  })
+
   it.each(['login', 'restore'] as const)('does not rewrite read-only matched keys during %s, even when their model or Gemini auth mode is incomplete', (mode) => {
     const current = config()
     const providers = ['claude', 'codex', 'grok', 'gemini'] as const

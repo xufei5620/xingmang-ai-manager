@@ -5101,6 +5101,8 @@ export function createSystemService(
         officialAccountPlan: null,
         officialAccountRenewsAt: null,
         codexAuthMode: null,
+        codexProviderName: null,
+        codexProviderShadowed: false,
         model: '',
         updatedAt: null,
         files: result.providers.codex.files.map((file) => ({ ...file, exists: false })),
