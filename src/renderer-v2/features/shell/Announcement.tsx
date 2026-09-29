@@ -1,13 +1,14 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ElementType, type ReactNode } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { ArrowLeft, Bell, ChevronRight, ExternalLink, X } from 'lucide-react'
+import { ArrowLeft, Bell, ChevronRight, ExternalLink, Gift, X } from 'lucide-react'
 import { Button, Dialog } from '../../ui'
 import { userFacingErrorMessage } from '../../business-common'
 import { BlockedLinkHint, openExternalOrCopy, type BlockedLinkNotice } from '../../external-link-fallback'
 import { writeLocalPreference } from '../app/preferences'
 import type { RelayNotice, RelayNoticeReadMode } from '../../../../electron/relay-backend'
 import { formatTimelineDate, readTimelineMigrated, rememberTimelineMigrated, timelineEntries, timelineMigrationReadIds, timelineTypeLabels, withMarkdownLineBreaks, type LocalAnnouncementEntry, type TimelineMeta, announcementAttentionKeys, announcementNotificationKey, legacyAnnouncementReadId, markLocalAnnouncementRead, parseNewApiAnnouncementCollection, readLegacyAnnouncementId, readLocalAnnouncementIds, readNotifiedAnnouncementKeys, readSeenAnnouncementKeys, rememberLocalAnnouncementIds, rememberNotifiedAnnouncementKeys, rememberSeenAnnouncementKeys, sameAnnouncementSnapshot } from './newapi-announcements'
+import { activeRechargePromos, formatPromoDeadline, localDayKey, nextPromoReminder, readAcknowledgedPromos, readRemindedPromos, readSnoozedPromos, rememberAcknowledgedPromo, rememberRemindedPromo, rememberSnoozedPromo, visiblePromo } from './promo-announcements'
 
 interface AnnouncementEntry { id: string; title: string; text: string; read: boolean; timeline?: TimelineMeta }
 type Announcement = Omit<RelayNotice, 'entries'> & { localEntries?: boolean; entries?: AnnouncementEntry[] }
@@ -31,6 +32,10 @@ interface Props {
   noticeUrl?: string
   /** Asks the host for one system notification; the host owns the wording. */
   notify?(eventKey: string): void
+  /** 充值活动卡片只挂在首页；别的页面仍是原来那条细横条。 */
+  promoVisible?: boolean
+  /** 当前账号能在软件里充值时才给：卡片上的「去充值」进「个人中心 → 充值与订阅」。 */
+  onTopUp?(): void
 }
 
 // 公告要及时到用户眼前，但不能自己再开一个定时器去拉：定时检查跟着余额刷新走
@@ -861,7 +866,35 @@ export function formatAnnouncementError(cause: unknown): AnnouncementError {
     : { responseTooLarge: false, message: message || '公告读取失败' }
 }
 
-export function AnnouncementCenter({ scope, read, refreshTick, markRemoteRead, syncLocalReads, open, onClose, onOpen, onUnread, openExternal, noticeUrl, notify }: Props) {
+interface PromoCardProps {
+  title: string
+  preview: string
+  deadline: string | null
+  onTopUp?(): void
+  onDetail(): void
+  onDismiss(): void
+  onSnooze(): void
+}
+
+/** 首页最上面的充值活动卡片。「知道了」只收起卡片，公告还在公告列表里。 */
+export function PromoCard({ title, preview, deadline, onTopUp, onDetail, onDismiss, onSnooze }: PromoCardProps) {
+  return <section className="v2-promo-card" data-testid="announcement-promo-card" aria-label="充值活动">
+    <span className="v2-promo-card-icon" aria-hidden="true"><Gift size={20} /></span>
+    <div className="v2-promo-card-body">
+      <p className="v2-promo-card-eyebrow">充值活动{deadline && <span data-testid="announcement-promo-deadline"> · {deadline}</span>}</p>
+      <h2 className="v2-promo-card-title">{title}</h2>
+      {preview && <p className="v2-promo-card-text">{preview}</p>}
+      <div className="v2-promo-card-actions">
+        {onTopUp && <Button size="sm" variant="primary" onClick={onTopUp} testId="announcement-promo-topup">去充值</Button>}
+        <Button size="sm" onClick={onDetail} testId="announcement-promo-detail">查看详情</Button>
+        <Button size="sm" variant="ghost" onClick={onDismiss} testId="announcement-promo-dismiss">知道了</Button>
+        <Button size="sm" variant="ghost" onClick={onSnooze} testId="announcement-promo-snooze">今天不再提醒</Button>
+      </div>
+    </div>
+  </section>
+}
+
+export function AnnouncementCenter({ scope, read, refreshTick, markRemoteRead, syncLocalReads, open, onClose, onOpen, onUnread, openExternal, noticeUrl, notify, promoVisible = false, onTopUp }: Props) {
   const [announcement, setAnnouncement] = useState<Announcement | null>(null)
   const [error, setError] = useState<AnnouncementError | null>(null)
   const [loading, setLoading] = useState(true)
@@ -876,6 +909,8 @@ export function AnnouncementCenter({ scope, read, refreshTick, markRemoteRead, s
   const detailHeading = useRef<HTMLHeadingElement>(null)
   const returnToRow = useRef<string | null>(null)
   const [readId, setReadId] = useState(() => readLegacyAnnouncementId(scope))
+  // 活动卡片上点「查看详情」：公告窗口打开、读完列表后直接进这一条。
+  const pendingDetail = useRef<string | null>(null)
   useEffect(() => {
     setSelectedId(null)
     setBlockedLink(null)
@@ -981,7 +1016,17 @@ export function AnnouncementCenter({ scope, read, refreshTick, markRemoteRead, s
   // 一条公告只提醒一次：打开过公告或关掉过横条，就不再占一整行、铃铛也不再亮红点，
   // 直到服务端出现新的一条。列表里每条的已读/未读照旧。
   const unseen = attentionKeys.some((key) => !seenKeys.includes(key))
-  useEffect(() => { onUnread(unseen) }, [unseen, onUnread])
+  // 充值活动：只认账号服务时间线里带发布时间、标题有「充值」、还没结束的那几条。
+  // 时间跟着余额刷新重新算（这里每次重绘都取当前时间），过了截止时间卡片和红点自己消失。
+  const now = Date.now()
+  const today = localDayKey(now)
+  const promos = useMemo(() => activeRechargePromos(entries, now), [entries, today, refreshTick])
+  const [acknowledgedPromos, setAcknowledgedPromos] = useState(() => readAcknowledgedPromos(scope))
+  const [snoozedPromos, setSnoozedPromos] = useState(() => readSnoozedPromos(scope))
+  const promo = visiblePromo(promos, acknowledgedPromos, snoozedPromos, today)
+  const promoCardShown = Boolean(promoVisible && promo && !open)
+  // 活动没结束前铃铛一直留着红点，点过「知道了」也一样，免得客户找不回活动。
+  useEffect(() => { onUnread(unseen || promos.length > 0) }, [unseen, promos.length, onUnread])
   const acknowledge = useCallback(() => {
     if (attentionKeys.length) setSeenKeys(rememberSeenAnnouncementKeys(scope, attentionKeys))
   }, [attentionKeys, scope])
@@ -990,11 +1035,50 @@ export function AnnouncementCenter({ scope, read, refreshTick, markRemoteRead, s
   useEffect(() => {
     if (!notify || !unseen || (document.visibilityState === 'visible' && document.hasFocus())) return
     const notified = readNotifiedAnnouncementKeys(scope)
-    const fresh = attentionKeys.filter((key) => !seenKeys.includes(key) && !notified.includes(key))
+    // 充值活动由下面单独提醒，这里不重复弹一条「有新公告」。
+    const promoKeys = promos.map((item) => `entry:${item.id}`)
+    const fresh = attentionKeys.filter((key) => !seenKeys.includes(key) && !notified.includes(key) && !promoKeys.includes(key))
     if (!fresh.length) return
     rememberNotifiedAnnouncementKeys(scope, fresh)
     notify(announcementNotificationKey(fresh))
-  }, [notify, unseen, attentionKeys, seenKeys, scope])
+  }, [notify, unseen, attentionKeys, seenKeys, scope, promos])
+  // 新活动到了弹一次「有新的充值活动」；之后活动没结束，每天第一次读到时再提一次，
+  // 窗口在前台就只靠首页卡片，不另弹通知。不另开定时器：跟着余额刷新那次读取走。
+  useEffect(() => {
+    if (!promos.length) return
+    const reminder = nextPromoReminder({
+      promos, acknowledged: acknowledgedPromos, snoozed: snoozedPromos, reminded: readRemindedPromos(scope),
+      readIds: (entries ?? []).filter((entry) => entry.read).map((entry) => entry.id), today,
+      foreground: document.visibilityState === 'visible' && document.hasFocus(),
+    })
+    if (!reminder) return
+    rememberRemindedPromo(scope, reminder.promo.id, today)
+    if (!reminder.notify || !notify) return
+    const key = announcementNotificationKey([reminder.promo.id])
+    notify(reminder.kind === 'arrival' ? `promo:${key}` : `promo-daily:${key}:${today}`)
+  }, [promos, acknowledgedPromos, snoozedPromos, entries, today, scope, notify])
+  const acknowledgePromoEntry = useCallback((id: string) => {
+    setSeenKeys(rememberSeenAnnouncementKeys(scope, [`entry:${id}`]))
+  }, [scope])
+  function dismissPromo(id: string) {
+    setAcknowledgedPromos(rememberAcknowledgedPromo(scope, id))
+    acknowledgePromoEntry(id)
+  }
+  function snoozePromo(id: string) {
+    setSnoozedPromos(rememberSnoozedPromo(scope, id, today))
+    acknowledgePromoEntry(id)
+  }
+  function openPromoDetail(id: string) {
+    pendingDetail.current = id
+    onOpen()
+  }
+  useEffect(() => {
+    const id = pendingDetail.current
+    if (!open || loading || !id) return
+    pendingDetail.current = null
+    const entry = entries?.find((item) => item.id === id)
+    if (entry) openEntry(entry)
+  }, [open, loading, entries])
 
   async function markEntryRead(entry: NonNullable<Announcement['entries']>[number]) {
     if (!announcement || entry.read) return
@@ -1061,11 +1145,16 @@ export function AnnouncementCenter({ scope, read, refreshTick, markRemoteRead, s
     if (!noticeUrl) return
     void openLink(noticeUrl).catch((cause) => setError(formatAnnouncementError(cause)))
   }
-  const unreadEntries = entries?.filter((entry) => !entry.read)
+  // 首页卡片已经在显示这条活动时，细横条不再重复说一遍。
+  const bannerShown = unseen && !open && announcement && attentionKeys.some((key) => !seenKeys.includes(key) && !(promoCardShown && key === `entry:${promo?.id}`))
+  const unreadEntries = entries?.filter((entry) => !entry.read && !(promoCardShown && entry.id === promo?.id))
   const preview = (unreadEntries?.find((entry) => !seenKeys.includes(`entry:${entry.id}`)) ?? unreadEntries?.[0])?.title ?? announcement?.text ?? ''
   return <>
     {!open && error && announcement && <p className="v2-announcement-error" role="alert">{error.message}</p>}
-    {unseen && !open && announcement && <div className="v2-announcement-banner" data-testid="announcement-banner">
+    {promoCardShown && promo && <PromoCard title={promo.title} preview={announcementTextPreview(promo.text)} deadline={formatPromoDeadline(promo, now)}
+      onTopUp={onTopUp ? () => { acknowledgePromoEntry(promo.id); onTopUp() } : undefined} onDetail={() => openPromoDetail(promo.id)}
+      onDismiss={() => dismissPromo(promo.id)} onSnooze={() => snoozePromo(promo.id)} />}
+    {bannerShown && <div className="v2-announcement-banner" data-testid="announcement-banner">
       <Bell size={15} /><strong>公告</strong><span>{announcementTextPreview(preview) || '有一条新公告'}</span>
       <Button size="xs" variant="ghost" onClick={onOpen}>查看</Button>
       <Button size="xs" variant="ghost" icon={X} aria-label="关闭公告提示" title="关闭，有新公告时再提醒" onClick={acknowledge} testId="announcement-banner-close" />

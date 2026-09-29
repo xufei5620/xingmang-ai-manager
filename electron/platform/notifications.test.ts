@@ -248,6 +248,24 @@ describe('announcement reminders', () => {
     expect(h.controller.notify('announcement', 'notice-ffffffff')).toBe('disabled')
     expect(h.runtime.create).toHaveBeenCalledTimes(1)
   })
+  it('words recharge promos on their own, once per promo and once per day, under the announcement switch', () => {
+    const h = setup()
+    expect(h.controller.notify('announcement', 'promo:notice-0a1b2c3d')).toBe('requested')
+    expect(h.runtime.create).toHaveBeenLastCalledWith({
+      title: '有新的充值活动',
+      body: '当前账号有一个充值活动，回到星芒首页看看，点「去充值」就能参加。',
+      silent: true,
+    })
+    expect(h.controller.notify('announcement', 'promo:notice-0a1b2c3d')).toBe('duplicate')
+    expect(h.controller.notify('announcement', 'promo-daily:notice-0a1b2c3d:20260930')).toBe('requested')
+    expect(h.runtime.create).toHaveBeenLastCalledWith({
+      title: '充值活动还在进行',
+      body: '当前账号的充值活动还没结束，回到星芒首页看看。',
+      silent: true,
+    })
+    h.preferences.announcement = false
+    expect(h.controller.notify('announcement', 'promo-daily:notice-0a1b2c3d:20261001')).toBe('disabled')
+  })
   it('names the tool and says whether it installed, updated or failed', () => {
     const h = setup()
     h.controller.notify('install', 'install:claude:installed:1', { tool: 'claude', outcome: 'installed' })
@@ -323,6 +341,8 @@ describe('chat notifications and click destinations', () => {
     expect(resolveNotificationTarget('install', 'install:claude:installed:1')).toBe('home')
     expect(resolveNotificationTarget('cliUpdate', 'claude@2')).toBe('home')
     expect(resolveNotificationTarget('announcement', 'notice-1')).toBe('announcement')
+    expect(resolveNotificationTarget('announcement', 'promo:notice-1')).toBe('home')
+    expect(resolveNotificationTarget('announcement', 'promo-daily:notice-1:20260930')).toBe('home')
     expect(resolveNotificationTarget('spend', 'spend:7:1')).toBe('usage')
     expect(resolveNotificationTarget('test', 'test')).toBeNull()
   })
