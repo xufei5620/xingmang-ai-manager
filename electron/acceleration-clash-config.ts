@@ -40,6 +40,12 @@ export interface IsolatedMihomoOptions {
   nodeId?: string
   controllerPort?: number
   controllerSecret?: string
+  /**
+   * Hosts routed DIRECT ahead of the catch-all line rule (relayDirectHosts in
+   * relay-sites.ts). Kept as an input so this parser stays free of app
+   * modules; the staging script loads it on its own.
+   */
+  directHosts?: readonly string[]
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -196,6 +202,16 @@ export function buildIsolatedMihomoConfig(profile: AccelerationClashProfile, opt
   if (mixedPort === 0 && options.controllerPort === undefined) throw new Error('关闭代理监听时必须设置加速内核控制端口')
   const selected = options.nodeId === undefined ? profile.nodes : profile.nodes.filter((node) => node.id === options.nodeId)
   if (!selected.length) throw new Error('所选加速线路不存在')
+  const directHosts = [...new Set((options.directHosts ?? []).map((host) => {
+    // IP literals would need IP-CIDR; a rule line is also a YAML string, so
+    // anything beyond a plain DNS name is refused rather than escaped.
+    if (typeof host !== 'string' || host.length > 253 || isIP(host)
+      || !host.split('.').every((label) => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(label))) {
+      throw new Error('加速直连地址无效')
+    }
+    return host
+  }))]
+  if (directHosts.length > 32) throw new Error('加速直连地址过多')
   if (selected.length > MAX_NODE_COUNT || new Set(selected.map((node) => node.id)).size !== selected.length) {
     throw new Error('加速线路列表无效')
   }
@@ -219,7 +235,9 @@ export function buildIsolatedMihomoConfig(profile: AccelerationClashProfile, opt
     sniffer: { enable: false },
     proxies,
     'proxy-groups': [{ name: 'XINGMANG', type: 'select', proxies: proxies.map((proxy) => proxy.name) }],
-    rules: ['MATCH,XINGMANG'],
+    // 星芒自己的服务不绕加速线路：绕一圈只会更慢、出口也忽东忽西。Claude / Gemini 本来就不认
+    // 系统代理，这样四个工具和本软件自己连中转都是同一条直连的路。
+    rules: [...directHosts.map((host) => `DOMAIN,${host},DIRECT`), 'MATCH,XINGMANG'],
   }
   if (options.controllerPort !== undefined) {
     const controllerPort = requirePort(options.controllerPort, true)
