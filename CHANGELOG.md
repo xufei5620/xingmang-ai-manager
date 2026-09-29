@@ -18,6 +18,11 @@
 
 ## 0.2.11 - 2026-09-29
 
+- 新增事件通道 `desktop:codex-launch-progress`（`onCodexDesktopLaunchProgress`，载荷 `CodexDesktopLaunchProgress`）：Windows 打开 / 重启桌面端时由 `startCodexDesktopLaunchHeartbeat` 每 5 秒发一次，分「准备」「等窗口」两段文案（`describeCodexDesktopLaunchWait`），渲染层把它写进 `launch:codexDesktop` 那个任务的进度句。等待时长与启动逻辑不变。
+- `describeCodexDesktopLaunchFailure` 多一个可选的 `{ waitedSeconds, processSeen }`：带上时按激活有没有交回进程号分两句，并附开始菜单自查法；开头仍是 `codexDesktopNotStartedPrefix`，渲染层归类不变。
+- `runtime-logs:copy-feedback` / `runtime-logs:export-feedback` 收到过期或被新预览顶掉的报告标识时，就地重跑 `captureFeedbackReport` 生成新预览（仍受 8 份与 2MB 上限约束），返回值多带可选的 `regenerated`（新预览的 id/text/entries），渲染层据此替换对话框文本并改提示语；只有重生成本身失败才报错。不加通道，脱敏沿用 `captureFeedbackReport`。legacy 界面已冻结，未跟进提示语。
+- 第二十一批 1：`StartGuide` 的失败从一句字符串扩成 `GuideFailure { message, reason, detail }`（`guideInstallFailure` / `guideStepFailure`，替掉原来的 `guideInstallErrorMessage` / `guideStepErrorMessage`）；原话走 `business-common.tsx` 新导出的 `supportDetailOf`（`operationFailureFrom` 同用这一份）。新增 `support`、`onFailure` 两个 prop，App 传 `supportInput` 与 `setLastFailure`；复制内容复用 `buildSupportBundle`。原样上屏的中文原因现在也过 Key 打码表。
+
 - 第二十批 4：`features/auth/state.ts` 新增 `authFailure`，按 `classifyNetworkFailure` 与账号服务错误表（`account-errors.ts` 补 `kind`）给出原因类别；超时 / 被切断沿用 #660 注册窗那句加速器提醒，没网单独一句；兜底在服务端原话为纯中文时带上原话。`AuthFlow.tsx` 在红字下按类别给出口，没网时监听 `online` 清红字。浏览器回归覆盖网络失败重试、没网恢复、密码错误、邮箱已注册四条路。
 - 第二十批 2、3：`operationFailureFrom` 在 `errorMessage` 落到兜底句时把脱敏打码后的原话留在 `OperationFailure.detail`；`presentOperationFailure` 认不出上屏句时再拿原话分类；`buildSupportBundle` / `buildLastFailureLine` 复用 `electron/redaction-patterns.ts`（已登记进渲染层可值导入名单）。`errors.unknown` 标题统一为「操作没有完成」，删掉从未上屏的「已自动撤回」。
 
