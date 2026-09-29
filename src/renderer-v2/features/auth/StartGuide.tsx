@@ -8,7 +8,9 @@ import { storeAppLaunchNotice } from '../tools/elevation-notice'
 import { switchAccountLabel, type ToolUpdateOffer } from '../tools/model'
 import { matchNetworkFailureMessage } from '../../../../electron/network-failure'
 import { classifyOperationError, presentOperationError, type OperationAction, type OperationActionId } from '../../operation-error'
-import { userFacingErrorMessage } from '../../business-common'
+import { supportDetailOf, userFacingErrorMessage } from '../../business-common'
+import { redactSecretPatterns } from '../../../../electron/redaction-patterns'
+import { buildSupportBundle, type SupportFailure, type SupportIdentityInput } from '../app/SupportIdentity'
 import { errors } from '../../registry/errors'
 import { clearGuideProgress, getGuideStorage, readGuideProgress, writeGuideProgress } from './guide-progress'
 import { buildGuideSetupResult, type GuideSetupResult } from './guide-result'
@@ -81,6 +83,10 @@ export interface StartGuideProps {
   onComplete: (route: GuideRoute) => void
   onBack?: () => void
   onHelp?: () => void
+  /** 账号、版本、系统；给了才在红字旁出「复制给客服」（和错误框同一份内容）。 */
+  support?: SupportIdentityInput
+  /** 引导里的失败也记进帮助框的「最近一次出错」；缺省 = 不记。 */
+  onFailure?: (failure: SupportFailure) => void
 }
 
 const steps: readonly { id: GuideStep; title: string }[] = [{ id: 'choose', title: '选一种开始方式' }, { id: 'prepare', title: '准备工具' }, { id: 'connect', title: '确认连接' }, { id: 'ready', title: '开始使用' }]
@@ -100,21 +106,49 @@ export function guideOfficialLoginRequired(provider: ProviderId, source: GuideTo
 const installFailureKeys = new Set<string>(['toolRunning', 'installBlocked', 'downloadTimeout', 'diskFull', 'certDate', 'tlsIntercepted', 'toolCertOutdatedNode', 'toolCertElevated', 'permission'])
 
 /**
+ * 引导红字的三样东西，和错误框一个规矩（#670）：上屏那句、认出来的原因（认不出为空）、
+ * 给客服看的原话（脱路径、打码，和上屏那句一样时不留）。
+ */
+export interface GuideFailure {
+  message: string
+  reason?: string
+  detail?: string
+}
+
+const unrecognized = '（没认出是哪一类问题，原话在下面）'
+
+/** 认不出原因时往哪儿指：有「复制给客服」就让他复制，没有才说「需要帮助」。 */
+function guideFailureTail(unknown: boolean, copyable: boolean): string {
+  return unknown && copyable ? '点「再试一次」，还不行就点「复制给客服」发给客服。' : '点「再试一次」，还不行就点「需要帮助」。'
+}
+
+function guideDetail(error: unknown, shown: string): string | undefined {
+  const raw = supportDetailOf(error)
+  return raw && raw !== shown ? raw : undefined
+}
+
+/**
  * 「安装」把运行环境和工具串成一次之后，失败得说清是哪一段没装上，再给一个
  * 能点的出口；authErrorMessage 是为登录写的，会把下载超时说成「连接星芒服务器
- * 超时」、再补一句「输入已保留」，放在这里全是错的。
+ * 超时」、再补一句「输入已保留」，放在这里全是错的。认不出原因时原话不再丢掉
+ * （第二十一批 1）：红字说一句「原话在下面」，原话折在下面给客服看。
  */
-export function guideInstallErrorMessage(reason: unknown, name: string, canReplaceNode = false): string {
-  const message = reason instanceof Error ? reason.message : typeof reason === 'string' ? reason : ''
-  if (/运行环境正在准备/.test(message)) return '运行环境还在准备，等它装完再点「再试一次」。'
+export function guideInstallFailure(error: unknown, name: string, canReplaceNode = false, copyable = false): GuideFailure {
+  const message = error instanceof Error ? error.message : typeof error === 'string' ? error : ''
+  if (/运行环境正在准备/.test(message)) return { message: '运行环境还在准备，等它装完再点「再试一次」。' }
   const key = classifyOperationError(message)
   // 这一类重试只会撞同一个错，出路是换 Node.js（第十九批 1）；换完引导接着装。
-  if (key === 'toolCertOutdatedNode' && canReplaceNode) return `${name} 没装上：这台电脑上的 Node.js 太旧，认不了公司电脑装的证书。点「换成新版 Node.js」，换好后星芒会接着装。`
+  if (key === 'toolCertOutdatedNode' && canReplaceNode) {
+    const shown = `${name} 没装上：这台电脑上的 Node.js 太旧，认不了公司电脑装的证书。点「换成新版 Node.js」，换好后星芒会接着装。`
+    return { message: shown, reason: errors[key].title, detail: guideDetail(error, shown) }
+  }
   // 目录里「超时」那条的标题写的是「连不上星芒服务器」，安装走的是下载源，
   // 照搬会把人指错方向；账号、计费那几类在安装里不会出现，也不借。
-  const why = key === 'timeout' ? '（网络连不上）' : installFailureKeys.has(key) ? `（${errors[key].title}）` : ''
+  const reason = key === 'timeout' ? '网络连不上' : installFailureKeys.has(key) ? errors[key].title : undefined
+  const detail = guideDetail(error, '')
+  const why = reason ? `（${reason}）` : detail ? unrecognized : ''
   const what = /运行环境没装上/.test(message) ? `运行环境没装上${why}，${name} 还没开始装` : `${name} 没装上${why}`
-  return `${what}。点「再试一次」，还不行就点「需要帮助」。`
+  return { message: `${what}。${guideFailureTail(!reason && Boolean(detail), copyable)}`, reason, detail }
 }
 
 /**
@@ -123,23 +157,33 @@ export function guideInstallErrorMessage(reason: unknown, name: string, canRepla
  * 于是「Node.js 下载超时」成了「连接星芒服务器超时」，主进程写好的中文原因
  * （「请先确认账号连接，再打开工具。」）被换成「输入已保留，请稍后重试」。
  * 现在按统一的操作失败分类说出是哪一类；分不出类的中文原话本身就是给人看的，
- * 原样留着（先脱敏，I13）；只有分不出类的英文原文才落到兜底那句。
+ * 原样留着（先脱路径再打码，I13）；分不出类的英文原文不再丢，折在红字下面。
  */
-export function guideStepErrorMessage(reason: unknown, action: string): string {
-  const message = userFacingErrorMessage(reason)
+export function guideStepFailure(error: unknown, action: string, copyable = false): GuideFailure {
+  const message = userFacingErrorMessage(error)
   // 主进程已经按受限网络的几种情形写好了中文（DNS、证书被替换、门户认证没做完），原样上屏。
   const network = matchNetworkFailureMessage(message)
-  if (network) return network
+  if (network) return { message: network, reason: network, detail: guideDetail(error, network) }
   const key = classifyOperationError(message)
   // 目录里「超时」那条的标题是「连不上星芒服务器」，这几步多半连的是下载源或本机，
   // 照搬会把人指错方向。
-  if (key === 'timeout') return `${action}没有成功：网络连不上。检查网络后点「再试一次」。`
+  if (key === 'timeout') return { message: `${action}没有成功：网络连不上。检查网络后点「再试一次」。`, reason: '网络连不上', detail: guideDetail(error, '') }
   if (key !== 'unknown') {
     const { title, body } = errors[key]
-    return `${action}没有成功：${title}。${body ? body.replace(/。?$/, '。') : ''}`
+    return { message: `${action}没有成功：${title}。${body ? body.replace(/。?$/, '。') : ''}`, reason: title, detail: guideDetail(error, '') }
   }
-  if (/[\u3400-\u9fff]/.test(message)) return message
-  return `${action}没有成功。点「再试一次」，还不行就点「需要帮助」。`
+  if (/[\u3400-\u9fff]/.test(message)) return { message: redactSecretPatterns(message) }
+  const detail = guideDetail(error, '')
+  return { message: `${action}没有成功${detail ? unrecognized : ''}。${guideFailureTail(Boolean(detail), copyable)}`, detail }
+}
+
+/** 「复制给客服」里「做什么」那一行：说清是引导里的哪一步、哪个工具。 */
+export function guideSupportAction(action: string, name: string): string {
+  if (action === '安装工具') return `新手引导 · 安装 ${name}`
+  if (action === '更新工具') return `新手引导 · 更新 ${name}`
+  if (action === '打开工具') return `新手引导 · 打开 ${name}`
+  if (action === '改用当前账号') return `新手引导 · ${name} 改用当前账号`
+  return `新手引导 · ${action}`
 }
 
 /** 「改用」失败时在「再试一次」之外给的出口；重试已经有自己的按钮，这里不再给。 */
@@ -234,7 +278,7 @@ function GuideFirstTaskPrompt({ prompt, disabled }: { prompt: string; disabled: 
   </div>
 }
 
-function ScopedStartGuide({ platform, tools, signedIn, busy = false, progress, onDetect, onInstall, onInstallRuntime, onInstallPython, resumeKey, onConfigure, onSwitchAccount, accountName = null, onFailureAction, canReplaceNode = false, onLogin, onLaunch, onComplete, onBack, onHelp }: StartGuideProps) {
+function ScopedStartGuide({ platform, tools, signedIn, busy = false, progress, onDetect, onInstall, onInstallRuntime, onInstallPython, resumeKey, onConfigure, onSwitchAccount, accountName = null, onFailureAction, canReplaceNode = false, onLogin, onLaunch, onComplete, onBack, onHelp, support, onFailure }: StartGuideProps) {
   const [restored] = useState(() => readGuideProgress(getGuideStorage(), resumeKey, platform))
   const options = toolRegistry.filter((item) => !item.hidden?.(platform)).sort((a, b) => Number(b.id === guideRecommendedTool) - Number(a.id === guideRecommendedTool) || a.shortcutIndex - b.shortcutIndex)
   const [route, setRoute] = useState<GuideRoute | null>(() => defaultGuideRoute(restored?.route, options.map((item) => item.id)))
@@ -245,6 +289,9 @@ function ScopedStartGuide({ platform, tools, signedIn, busy = false, progress, o
   const [failed, setFailed] = useState<{ action: string; work: () => Promise<void> } | null>(null)
   // 「改用」失败时除了「再试一次」还要给的出口（没开通找客服、余额不足去充值、恢复失败去备份页）。
   const [failureExits, setFailureExits] = useState<OperationAction[]>([])
+  // 这次失败交给客服的那份（原因、原话、哪一步）；复制的是出错那一刻的内容。
+  const [failureNote, setFailureNote] = useState<SupportFailure | null>(null)
+  const [supportCopy, setSupportCopy] = useState<{ state: 'ok' | 'failed'; text: string } | null>(null)
   // 这一轮引导里改用过的是哪个工具、结果如何：第 4 步据此说「已改用」还是「没能确认能用」。
   const [switched, setSwitched] = useState<{ route: GuideRoute; result: AccountSourceSwitchResult } | null>(null)
   // 改用成功后替用户点「下一步」；还没登录时先去登录，登好了接着改。
@@ -324,16 +371,31 @@ function ScopedStartGuide({ platform, tools, signedIn, busy = false, progress, o
   const run = async (action: string, work: () => Promise<void>) => {
     if (lock.current || busy) return
     const ticket = owner.current
-    lock.current = true; setPending(action); setError(''); setFailed(null); setFailureExits([])
+    lock.current = true; setPending(action); setError(''); setFailed(null); setFailureExits([]); setFailureNote(null); setSupportCopy(null)
     try { await work() }
     catch (reason) {
       if (ticket !== owner.current) return
-      setError(action === '安装工具' ? guideInstallErrorMessage(reason, name, canReplaceNode) : guideStepErrorMessage(reason, action))
+      const failure = action === '安装工具' ? guideInstallFailure(reason, name, canReplaceNode, Boolean(support)) : guideStepFailure(reason, action, Boolean(support))
+      const note: SupportFailure = { at: new Date(), action: guideSupportAction(action, name), message: failure.message, reason: failure.reason, detail: failure.detail }
+      setError(failure.message)
+      setFailureNote(note)
+      onFailure?.(note)
       setFailed({ action, work })
       if (action === '改用当前账号' && onFailureAction) setFailureExits(guideFailureExits(reason))
       else if (guideInstallActions.has(action) && onFailureAction) setFailureExits(guideInstallExits(reason, canReplaceNode))
     }
     finally { if (ticket === owner.current) { lock.current = false; setPending('') } }
+  }
+  const copySupport = () => {
+    if (!support || !failureNote) return
+    const text = buildSupportBundle(support, failureNote)
+    const ticket = owner.current
+    // 剪贴板写不进时把同一份摆出来让他自己选中，和错误框一个处理。
+    if (!navigator.clipboard?.writeText) { setSupportCopy({ state: 'failed', text }); return }
+    void navigator.clipboard.writeText(text).then(
+      () => { if (ticket === owner.current) setSupportCopy({ state: 'ok', text }) },
+      () => { if (ticket === owner.current) setSupportCopy({ state: 'failed', text }) },
+    )
   }
   const switchAccount = () => {
     if (!route || route === 'chat' || !onSwitchAccount || locked) return
@@ -423,7 +485,7 @@ function ScopedStartGuide({ platform, tools, signedIn, busy = false, progress, o
             <div className="auth-guide-ready"><CircleCheck size={30} aria-hidden="true" /><span>有需要时，可从首页重新打开这份引导。</span></div>
           </>}
           {(step === 'connect' || step === 'ready') && !readiness.prepared && <p className="auth-error" role="alert">工具或运行环境尚未准备好，请返回准备工具步骤后再继续。</p>}
-          {pending && <p className="auth-hint" role="status">正在{pending}，请稍候</p>}{progress && locked && <Progress value={progress.percent} label={progress.label} testId="guide-progress" />}{error && <p className="auth-error" role="alert" data-testid="guide-error">{error}</p>}{error && replaceFirst && failed && <Button variant="primary" disabled={locked} onClick={() => onFailureAction?.('replaceNode', () => void run(failed.action, failed.work))} testId="guide-exit-replaceNode">换成新版 Node.js</Button>}{error && failed && <Button icon={RefreshCw} disabled={locked} onClick={() => void run(failed.action, failed.work)} testId="guide-retry">再试一次</Button>}{error && onFailureAction && failureExits.filter((action) => action.id !== 'replaceNode').map((action) => <Button key={action.id} disabled={locked} onClick={() => onFailureAction(action.id)} testId={`guide-exit-${action.id}`}>{action.label}</Button>)}{storageWarning && <p className="auth-hint" role="status">{storageWarning}</p>}
+          {pending && <p className="auth-hint" role="status">正在{pending}，请稍候</p>}{progress && locked && <Progress value={progress.percent} label={progress.label} testId="guide-progress" />}{error && <p className="auth-error" role="alert" data-testid="guide-error">{error}</p>}{error && failureNote?.detail && <details className="auth-guide-raw" open={!failureNote.reason} data-testid="guide-error-raw"><summary>给客服看的原话</summary><pre>{failureNote.detail}</pre></details>}{error && replaceFirst && failed && <Button variant="primary" disabled={locked} onClick={() => onFailureAction?.('replaceNode', () => void run(failed.action, failed.work))} testId="guide-exit-replaceNode">换成新版 Node.js</Button>}{error && failed && <Button icon={RefreshCw} disabled={locked} onClick={() => void run(failed.action, failed.work)} testId="guide-retry">再试一次</Button>}{error && support && failureNote && <Button icon={Copy} disabled={locked} onClick={copySupport} testId="guide-copy-support">复制给客服</Button>}{error && onFailureAction && failureExits.filter((action) => action.id !== 'replaceNode').map((action) => <Button key={action.id} disabled={locked} onClick={() => onFailureAction(action.id)} testId={`guide-exit-${action.id}`}>{action.label}</Button>)}{error && supportCopy && <p className="auth-hint" role="status" data-testid="guide-copy-support-status">{supportCopy.state === 'ok' ? '已复制，发给客服就行' : '没能写进剪贴板，手动选中下面这几行复制就行'}</p>}{error && supportCopy?.state === 'failed' && <pre className="auth-guide-support-text" data-testid="guide-copy-support-text">{supportCopy.text}</pre>}{storageWarning && <p className="auth-hint" role="status">{storageWarning}</p>}
         </div>
         <footer className="auth-guide-actions start-guide-footer">
           {step !== 'choose' && <Button icon={ArrowLeft} variant="ghost" disabled={locked} onClick={() => { setError(''); move(steps[currentStep - 1].id) }} testId="guide-back">上一步</Button>}

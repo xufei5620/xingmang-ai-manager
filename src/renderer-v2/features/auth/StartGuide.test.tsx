@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { toolCertificateMessages } from '../../../../electron/network-failure'
-import { StartGuide, defaultGuideRoute, guideCanSkipConnect, guideFailureExits, guideInstallErrorMessage, guideInstallExits, guideStepErrorMessage, type GuideToolState, type StartGuideProps } from './StartGuide'
+import { StartGuide, defaultGuideRoute, guideCanSkipConnect, guideFailureExits, guideInstallFailure, guideInstallExits, guideStepFailure, guideSupportAction, type GuideToolState, type StartGuideProps } from './StartGuide'
 
 const resumeKey = 'fixture-scope'
 
@@ -242,18 +242,18 @@ describe('guide setup result card', () => {
 
 describe('guide install failure wording', () => {
   it('names the stage that failed and points at the retry button', () => {
-    const runtime = guideInstallErrorMessage(new Error('Node.js 运行环境没装上，Claude Code 还没开始安装。下载 Node.js 时 ETIMEDOUT'), 'Claude Code')
+    const runtime = guideInstallFailure(new Error('Node.js 运行环境没装上，Claude Code 还没开始安装。下载 Node.js 时 ETIMEDOUT'), 'Claude Code').message
     expect(runtime).toBe('运行环境没装上（下载超时），Claude Code 还没开始装。点「再试一次」，还不行就点「需要帮助」。')
-    const tool = guideInstallErrorMessage(new Error('Claude Code 安装失败：ENOSPC: no space left on device'), 'Claude Code')
+    const tool = guideInstallFailure(new Error('Claude Code 安装失败：ENOSPC: no space left on device'), 'Claude Code').message
     expect(tool).toBe('Claude Code 没装上（磁盘空间不够）。点「再试一次」，还不行就点「需要帮助」。')
-    expect(guideInstallErrorMessage(new Error('something odd'), 'Codex')).toBe('Codex 没装上。点「再试一次」，还不行就点「需要帮助」。')
+    expect(guideInstallFailure(new Error('something odd'), 'Codex').message).toBe('Codex 没装上（没认出是哪一类问题，原话在下面）。点「再试一次」，还不行就点「需要帮助」。')
   })
 
   it('never borrows the login wording about the Xingmang server or kept input', () => {
-    const message = guideInstallErrorMessage(new Error('fetch failed'), 'Codex')
+    const message = guideInstallFailure(new Error('fetch failed'), 'Codex').message
     expect(message).not.toMatch(/星芒服务器|输入已保留/)
     expect(message).toContain('网络连不上')
-    expect(guideInstallErrorMessage(new Error('HTTP 401 unauthorized'), 'Codex')).toBe('Codex 没装上。点「再试一次」，还不行就点「需要帮助」。')
+    expect(guideInstallFailure(new Error('HTTP 401 unauthorized'), 'Codex').message).toBe('Codex 没装上（没认出是哪一类问题，原话在下面）。点「再试一次」，还不行就点「需要帮助」。')
   })
 })
 
@@ -262,12 +262,12 @@ describe('guide install failure exits', () => {
 
   it('offers the Node.js replacement where this app can do it and says the guide carries on', () => {
     expect(guideInstallExits(outdatedNode, true).map((action) => action.id)).toEqual(['replaceNode', 'log'])
-    expect(guideInstallErrorMessage(outdatedNode, 'Claude Code', true)).toBe('Claude Code 没装上：这台电脑上的 Node.js 太旧，认不了公司电脑装的证书。点「换成新版 Node.js」，换好后星芒会接着装。')
+    expect(guideInstallFailure(outdatedNode, 'Claude Code', true).message).toBe('Claude Code 没装上：这台电脑上的 Node.js 太旧，认不了公司电脑装的证书。点「换成新版 Node.js」，换好后星芒会接着装。')
   })
 
   it('falls back to support where the replacement is out of reach', () => {
     expect(guideInstallExits(outdatedNode, false).map((action) => action.id)).toEqual(['log', 'support'])
-    expect(guideInstallErrorMessage(outdatedNode, 'Claude Code', false)).toContain('点「再试一次」，还不行就点「需要帮助」')
+    expect(guideInstallFailure(outdatedNode, 'Claude Code', false).message).toContain('点「再试一次」，还不行就点「需要帮助」')
   })
 
   it('borrows the error dialog exits for the other install failures', () => {
@@ -282,22 +282,57 @@ describe('guide install failure exits', () => {
 
 describe('guide step failure wording', () => {
   it('names the kind of failure instead of blaming the Xingmang server', () => {
-    const runtime = guideStepErrorMessage(new Error('Node.js 下载超时，请检查网络后重试'), '准备环境')
+    const runtime = guideStepFailure(new Error('Node.js 下载超时，请检查网络后重试'), '准备环境').message
     expect(runtime).toBe('准备环境没有成功：下载超时。下载没有完成，已安装的工具不受影响。')
-    expect(guideStepErrorMessage(new Error('ETIMEDOUT'), '检测工具')).toBe('检测工具没有成功：网络连不上。检查网络后点「再试一次」。')
-    expect(guideStepErrorMessage(new Error('EPERM: operation not permitted'), '准备 Python')).toContain('写不进安装目录')
+    expect(guideStepFailure(new Error('ETIMEDOUT'), '检测工具').message).toBe('检测工具没有成功：网络连不上。检查网络后点「再试一次」。')
+    expect(guideStepFailure(new Error('EPERM: operation not permitted'), '准备 Python').message).toContain('写不进安装目录')
   })
 
   it('keeps a Chinese reason the main process already wrote, with paths redacted', () => {
-    expect(guideStepErrorMessage(new Error('请先确认账号连接，再打开工具。'), '打开工具')).toBe('请先确认账号连接，再打开工具。')
-    expect(guideStepErrorMessage(new Error('找不到 C:\\Users\\alice\\.codex\\config.toml'), '确认连接')).not.toContain('alice')
+    expect(guideStepFailure(new Error('请先确认账号连接，再打开工具。'), '打开工具').message).toBe('请先确认账号连接，再打开工具。')
+    expect(guideStepFailure(new Error('找不到 C:\\Users\\alice\\.codex\\config.toml'), '确认连接').message).not.toContain('alice')
   })
 
   it('never borrows the login wording', () => {
     for (const reason of ['fetch failed', 'something odd', 'Node.js 下载超时，请检查网络后重试', '请先确认账号连接，再打开工具。']) {
-      expect(guideStepErrorMessage(new Error(reason), '打开工具')).not.toMatch(/星芒服务器|输入已保留/)
+      expect(guideStepFailure(new Error(reason), '打开工具').message).not.toMatch(/星芒服务器|输入已保留/)
     }
-    expect(guideStepErrorMessage(new Error('something odd'), '打开工具')).toBe('打开工具没有成功。点「再试一次」，还不行就点「需要帮助」。')
+    expect(guideStepFailure(new Error('something odd'), '打开工具').message).toBe('打开工具没有成功（没认出是哪一类问题，原话在下面）。点「再试一次」，还不行就点「需要帮助」。')
+  })
+})
+
+describe('guide failure reason and raw text for support', () => {
+  it('keeps the raw text when the reason is not recognised and points at copying it for support', () => {
+    const failure = guideInstallFailure(new Error('npm ERR! code E999 weird thing'), 'Claude Code', false, true)
+    expect(failure.message).toBe('Claude Code 没装上（没认出是哪一类问题，原话在下面）。点「再试一次」，还不行就点「复制给客服」发给客服。')
+    expect(failure.reason).toBeUndefined()
+    expect(failure.detail).toBe('npm ERR! code E999 weird thing')
+  })
+
+  it('keeps the raw text folded behind a recognised reason', () => {
+    const failure = guideInstallFailure(new Error('Claude Code 安装失败：ENOSPC: no space left on device'), 'Claude Code', false, true)
+    expect(failure.reason).toBe('磁盘空间不够')
+    expect(failure.detail).toContain('ENOSPC')
+    expect(failure.message).toContain('还不行就点「需要帮助」')
+  })
+
+  it('drops nothing on the step failures either and masks keys', () => {
+    const failure = guideStepFailure(new Error('helper said no for sk-abcdefghijklmnopqrstuvwxyz0123456789'), '改用当前账号', true)
+    expect(failure.message).toContain('（没认出是哪一类问题，原话在下面）')
+    expect(failure.message).toContain('点「复制给客服」发给客服')
+    expect(failure.detail).toBe('helper said no for [REDACTED]')
+  })
+
+  it('masks keys in a Chinese reason shown as is and keeps no duplicate raw text', () => {
+    const failure = guideStepFailure(new Error('写入失败，密钥 sk-abcdefghijklmnopqrstuvwxyz0123456789 不对'), '确认连接', true)
+    expect(failure.message).not.toContain('abcdefghijklmnopqrstuvwxyz')
+    expect(failure.detail).toBeUndefined()
+  })
+
+  it('names the guide step and tool for the support bundle', () => {
+    expect(guideSupportAction('安装工具', 'Claude Code')).toBe('新手引导 · 安装 Claude Code')
+    expect(guideSupportAction('改用当前账号', 'Codex CLI')).toBe('新手引导 · Codex CLI 改用当前账号')
+    expect(guideSupportAction('准备环境', 'Gemini CLI')).toBe('新手引导 · 准备环境')
   })
 })
 
