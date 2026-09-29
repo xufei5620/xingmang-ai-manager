@@ -313,7 +313,7 @@ describe('chooseAiOutputRoot', () => {
     return {
       isPackaged: true,
       documentsDirectory: path.join(home, 'Documents'),
-      location: { platform: 'linux' as const, home, env: {} },
+      location: { platform: process.platform === 'win32' ? 'win32' as const : 'linux' as const, home, env: {} },
       probe,
     }
   }
