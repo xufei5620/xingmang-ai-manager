@@ -61,6 +61,8 @@ describe('isolated platform-settings.json', () => {
       announcement: true,
       spend: true,
       acceleration: true,
+      cliTrouble: true,
+      cliTurn: true,
     })
   })
   it('still rejects a switch whose value is not a boolean', () => {

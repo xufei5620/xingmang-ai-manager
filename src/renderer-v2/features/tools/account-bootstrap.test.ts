@@ -548,12 +548,15 @@ describe('account managed Key bootstrap', () => {
   it('rejects the same numeric user id when its platform changes during Key preparation', async () => {
     let reads = 0
     const configure = vi.fn()
+    const sync = vi.fn(async () => ({ ready: [], failed: [] }))
     const api = {
       getAccountSession: vi.fn(async () => ({ authenticated: true, siteId: ++reads === 1 ? 'solov' : 'solov-api', account: { userId: 17 } })),
-      syncManagedCliKeys: vi.fn(async () => ({ ready: [], failed: [] })),
+      getConfig: vi.fn(async () => config()),
+      syncManagedCliKeys: sync,
       configureManagedCliKeys: configure,
     } as unknown as AccountBootstrapBridge
     await expect(bootstrapAccountTools(api, 17)).rejects.toThrow('账号已变化')
+    expect(sync).not.toHaveBeenCalled()
     expect(configure).not.toHaveBeenCalled()
   })
 })
@@ -626,5 +629,57 @@ describe('named key rewrite outcome', () => {
     const error = new KeyRewriteSkippedError([skipped[0]])
     expect(error).toBeInstanceOf(Error)
     expect(error.message).toBe('Claude Code 保留手动填写的密钥')
+  })
+})
+
+describe('account bootstrap configuration preflight', () => {
+  it('does not issue managed Keys or change local tool config when the current config cannot be read', async () => {
+    const syncManagedCliKeys = vi.fn(async () => ({ ready: [], failed: [] }))
+    const configureManagedCliKeys = vi.fn(async () => ({ configured: [], failed: [] }))
+    const scanSystem = vi.fn(async () => system(['claude']))
+    const api: AccountBootstrapBridge = {
+      getAccountSession: vi.fn(async () => ({ authenticated: true, account: { userId: 17, username: 'member', quota: 0, usedQuota: 0, group: 'default', role: 1 } })),
+      getConfig: vi.fn(async () => { throw new Error('本机配置暂时无法读取') }),
+      getSettings: vi.fn(async () => settings), scanSystem,
+      syncManagedCliKeys, configureManagedCliKeys,
+    }
+    await expect(bootstrapAccountTools(api, 17, undefined, 'restore', undefined, null)).rejects.toThrow('本机配置暂时无法读取')
+    expect(syncManagedCliKeys).not.toHaveBeenCalled()
+    expect(configureManagedCliKeys).not.toHaveBeenCalled()
+    expect(scanSystem).not.toHaveBeenCalled()
+  })
+
+  it('checks the account again after the preflight read before syncing Keys', async () => {
+    let accountRead = 0
+    const syncManagedCliKeys = vi.fn(async () => ({ ready: [], failed: [] }))
+    const api: AccountBootstrapBridge = {
+      getAccountSession: vi.fn(async () => ({ authenticated: true, account: { userId: ++accountRead === 1 ? 17 : 18, username: 'member', quota: 0, usedQuota: 0, group: 'default', role: 1 } })),
+      getConfig: vi.fn(async () => config()), getSettings: vi.fn(async () => settings),
+      scanSystem: vi.fn(async () => system(['claude'])), syncManagedCliKeys,
+      configureManagedCliKeys: vi.fn(async () => ({ configured: [], failed: [] })),
+    }
+    await expect(bootstrapAccountTools(api, 17, undefined, 'restore', undefined, null)).rejects.toThrow('账号已变化')
+    expect(syncManagedCliKeys).not.toHaveBeenCalled()
+  })
+
+  it('uses a fresh config read after Key sync when deciding whether to write a tool', async () => {
+    const before = config()
+    const after = config()
+    after.providers.claude = { ...after.providers.claude, exists: true, hasApiKey: true, matchesRelay: true,
+      actualBaseUrl: after.providers.claude.baseUrl, model: 'manual-model', configurationOwnership: 'manual' }
+    const getConfig = vi.fn()
+      .mockResolvedValueOnce(before)
+      .mockResolvedValueOnce(after)
+      .mockResolvedValueOnce(after)
+    const configureManagedCliKeys = vi.fn(async () => ({ configured: [], failed: [] }))
+    const api: AccountBootstrapBridge = {
+      getAccountSession: vi.fn(async () => ({ authenticated: true, account: { userId: 17, username: 'member', quota: 0, usedQuota: 0, group: 'default', role: 1 } })),
+      getConfig, getSettings: vi.fn(async () => settings), scanSystem: vi.fn(async () => system(['claude'])),
+      syncManagedCliKeys: vi.fn(async () => ({ ready: [{ provider: 'claude' as ProviderId, group: 'group', name: 'claude' }], failed: [] })),
+      configureManagedCliKeys,
+    }
+    await bootstrapAccountTools(api, 17, undefined, 'restore', undefined, null)
+    expect(getConfig).toHaveBeenCalledTimes(3)
+    expect(configureManagedCliKeys).not.toHaveBeenCalled()
   })
 })

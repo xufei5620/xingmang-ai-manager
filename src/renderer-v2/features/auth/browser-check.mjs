@@ -107,6 +107,7 @@ test('recovery validates reset links and keeps the generated password available 
     assert.deepEqual((await calls(page)).map((item) => item.method), ['send-reset'])
     await page.getByTestId('forgot-token').fill('https://xm.solov.cc/reset?token=one%2Btwo')
     await page.getByTestId('forgot-reset').click()
+    await page.getByTestId('forgot-use-temp').click()
     await page.getByTestId('forgot-new-password').waitFor()
     assert.equal(await page.getByTestId('forgot-new-password').getAttribute('type'), 'password')
     await page.getByTestId('forgot-copy-password').click()
@@ -118,6 +119,103 @@ test('recovery validates reset links and keeps the generated password available 
     assert.equal(await page.getByTestId('login-password').inputValue(), '')
     assert.equal(await page.getByTestId('forgot-new-password').count(), 0)
     assert.deepEqual((await calls(page)).find((item) => item.method === 'reset').input, { email: 'person@gmail.com', token: 'one+two', siteId: 'solov' })
+  } finally { await page.close() }
+})
+
+async function reachNewPasswordStep(page, email = 'person@example.test') {
+  await page.getByTestId('forgot-email').fill(email)
+  await page.getByTestId('forgot-send').click()
+  await page.getByTestId('forgot-token').fill('a-valid-reset-token')
+  await page.getByTestId('forgot-reset').click()
+  // The step focuses its first field one frame after the request settles. Filling before
+  // that lets the late focus pull the second field's text into the first one.
+  await page.waitForFunction(() => document.activeElement?.id === 'forgot-set-password')
+}
+
+test('recovery lets the user set their own password and signs in without ever showing the temporary one', async () => {
+  const page = await open('scenario=recovery')
+  try {
+    await reachNewPasswordStep(page)
+    assert.equal(await page.getByTestId('forgot-new-password').count(), 0)
+    assert.equal(await page.getByTestId('forgot-back-login').count(), 0)
+    await page.getByTestId('forgot-set-password').fill('short')
+    await page.getByTestId('forgot-set-confirm').fill('short')
+    await page.getByTestId('forgot-set-submit').click()
+    await page.getByText('新密码至少 8 位').waitFor()
+    await page.getByTestId('forgot-set-password').fill('my-own-password')
+    await page.getByTestId('forgot-set-confirm').fill('my-own-passwor')
+    await page.getByTestId('forgot-set-submit').click()
+    await page.getByText('两次输入的新密码不一样').waitFor()
+    assert.deepEqual((await calls(page)).map((item) => item.method), ['send-reset', 'reset'])
+    await page.getByTestId('forgot-set-confirm').fill('my-own-password')
+    await page.getByTestId('forgot-remember').check()
+    await page.getByTestId('forgot-set-confirm').press('Enter')
+    await page.waitForFunction(() => JSON.parse(document.documentElement.dataset.calls || '[]').some((item) => item.method === 'notice'))
+    const recorded = await calls(page)
+    assert.deepEqual(recorded.map((item) => item.method), ['send-reset', 'reset', 'login', 'change-password', 'remember', 'authenticated', 'notice'])
+    assert.deepEqual(recorded.find((item) => item.method === 'login').input, { username: 'person@example.test', password: 'new-test-password', siteId: 'solov' })
+    assert.deepEqual(recorded.find((item) => item.method === 'change-password').input, { originalPassword: 'new-test-password', newPassword: 'my-own-password' })
+    assert.deepEqual(recorded.find((item) => item.method === 'remember').input, { identifier: 'person@example.test', password: 'my-own-password' })
+    assert.equal(recorded.find((item) => item.method === 'notice').input, '密码已改好，已经登录')
+  } finally { await page.close() }
+})
+
+test('recovery shows the temporary password when the change fails after signing in, and continuing still completes the login', async () => {
+  const page = await open('scenario=recovery&changeFail=1')
+  try {
+    await reachNewPasswordStep(page)
+    await page.getByTestId('forgot-set-password').fill('my-own-password')
+    await page.getByTestId('forgot-set-confirm').fill('my-own-password')
+    await page.getByTestId('forgot-set-submit').click()
+    await page.getByTestId('forgot-new-password').waitFor()
+    assert.equal(await page.getByTestId('forgot-new-password').inputValue(), 'new-test-password')
+    await page.getByTestId('auth-message').filter({ hasText: '新密码没设上' }).waitFor()
+    assert.equal(await page.getByTestId('forgot-finish').count(), 0)
+    assert.equal(await page.getByTestId('forgot-back-login').count(), 0)
+    assert.deepEqual((await calls(page)).map((item) => item.method), ['send-reset', 'reset', 'login', 'change-password'])
+    await page.getByTestId('forgot-continue').click()
+    await page.waitForFunction(() => JSON.parse(document.documentElement.dataset.calls || '[]').some((item) => item.method === 'authenticated'))
+    const recorded = await calls(page)
+    assert.deepEqual(recorded.map((item) => item.method), ['send-reset', 'reset', 'login', 'change-password', 'remember', 'authenticated'])
+    assert.equal(recorded.find((item) => item.method === 'remember').input, null)
+  } finally { await page.close() }
+})
+
+test('recovery falls back to the temporary password and the login page when signing in with it fails', async () => {
+  const page = await open('scenario=recovery&fail=1')
+  try {
+    await reachNewPasswordStep(page)
+    await page.getByTestId('forgot-set-password').fill('my-own-password')
+    await page.getByTestId('forgot-set-confirm').fill('my-own-password')
+    await page.getByTestId('forgot-set-submit').click()
+    await page.getByTestId('forgot-new-password').waitFor()
+    await page.getByTestId('auth-error').waitFor()
+    await page.getByTestId('auth-message').filter({ hasText: '复制它去登录' }).waitFor()
+    assert.deepEqual((await calls(page)).map((item) => item.method), ['send-reset', 'reset', 'login'])
+    await page.getByTestId('forgot-finish').click()
+    assert.equal(await page.getByTestId('login-account').inputValue(), 'person@example.test')
+  } finally { await page.close() }
+})
+
+test('recovery on an account with two-step verification asks for the code before changing the password', async () => {
+  const page = await open('scenario=recovery&totp=1')
+  try {
+    await reachNewPasswordStep(page)
+    await page.getByTestId('forgot-set-password').fill('my-own-password')
+    await page.getByTestId('forgot-set-confirm').fill('my-own-password')
+    await page.getByTestId('forgot-set-submit').click()
+    await page.getByTestId('login-2fa-code').waitFor()
+    assert.deepEqual((await calls(page)).map((item) => item.method), ['send-reset', 'reset', 'login'])
+    assert.equal(await page.getByTestId('login-cancel').count(), 0)
+    await page.getByTestId('login-2fa-back').click()
+    await page.getByTestId('forgot-set-password').waitFor()
+    await page.getByTestId('forgot-set-submit').click()
+    await page.getByTestId('login-2fa-code').fill('123456')
+    await page.getByTestId('login-2fa-submit').click()
+    await page.waitForFunction(() => JSON.parse(document.documentElement.dataset.calls || '[]').some((item) => item.method === 'notice'))
+    const recorded = await calls(page)
+    assert.deepEqual(recorded.map((item) => item.method), ['send-reset', 'reset', 'login', 'login', 'two-factor', 'change-password', 'remember', 'authenticated', 'notice'])
+    assert.deepEqual(recorded.find((item) => item.method === 'change-password').input, { originalPassword: 'new-test-password', newPassword: 'my-own-password' })
   } finally { await page.close() }
 })
 
@@ -628,6 +726,8 @@ test('recovery requests block closing and focus each next field only after compl
     assert.equal(await page.getByTestId('forgot-change-email').isDisabled(), true)
     assert.equal(await page.getByTestId('forgot-back-login').isDisabled(), true)
     await page.evaluate(() => window.authHarness.release('reset'))
+    await page.waitForFunction(() => document.activeElement?.id === 'forgot-set-password')
+    await page.getByTestId('forgot-use-temp').click()
     await page.waitForFunction(() => document.activeElement?.id === 'forgot-new-password')
     await page.getByTestId('forgot-copy-password').click()
     assert.equal(await page.getByTestId('forgot-finish').isDisabled(), true)

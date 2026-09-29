@@ -24,7 +24,10 @@ export type PlatformActivityDetail = PlatformInstallNotice | PlatformSpendNotice
 // 加速那两条（快用完、已断开）是主进程自己发的：窗口缩到托盘之后渲染层的计时
 // 与轮询都停着，而「时长用完」恰恰只在那时候发生。渲染层不能请求这一类，但用户
 // 要能在设置页单独关掉它，所以它进偏好集合、不进 PlatformActivityKind。
-export type PlatformNotificationKind = PlatformActivityKind | 'acceleration'
+// 终端里那两类（出错、做完或等你）同理：只有主进程读到 CLI 钩子留下的记录才会发，
+// 渲染层没有通道能冒充它们。
+export type PlatformNotificationKind =
+  PlatformActivityKind | 'acceleration' | 'cliTrouble' | 'cliTurn'
 // 崩溃上报不再是这里的偏好：它现在是 AppSettings.crashReporting（settings.json），
 // 因为主进程要在窗口和这套系统界面服务存在之前就决定上不上报。
 export type PlatformPrivacyPreference = 'anonymousUsage'
@@ -38,6 +41,9 @@ export interface PlatformNotificationPreferences {
   // 同上，老文件缺这一项时按默认开启补齐。
   spend: boolean
   acceleration: boolean
+  // 下面两项 0.2.11 之后才有，老文件缺时同样按默认开启补齐。
+  cliTrouble: boolean
+  cliTurn: boolean
 }
 export type PlatformNotificationResult =
   'requested' | 'disabled' | 'unsupported' | 'duplicate'

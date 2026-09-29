@@ -55,6 +55,7 @@ import {
   resolveSameUserNpmPrefix,
 } from './npm-user-prefix'
 import { buildClaudeStatusLineCommand } from './claude-status-line'
+import { buildCliHookInvocation, cliHookEventsDirectory, type CliHookInvocation } from './cli-hooks'
 import { isCodexDesktopExecutable } from './codex-desktop'
 import {
   createCodexDesktopService,
@@ -2166,6 +2167,8 @@ export interface SystemServiceOptions {
   projectInstructionsTemplatePath?: string
   /** 随包的 Claude Code 状态行脚本路径；缺省则不给 Claude Code 写 statusLine。 */
   claudeStatusLineScriptPath?: string
+  /** 随包的命令行工具钩子脚本路径；缺省则不给 Claude Code / Gemini CLI 写通知钩子。 */
+  cliHookScriptPath?: string
   /** 安装前那次磁盘剩余空间预检的读取口，测试用它造「够 / 不够 / 读不到」三种盘。 */
   readDiskSpace?: typeof readDiskSpace
   /**
@@ -5176,6 +5179,24 @@ export function createSystemService(
     }
   }
 
+  /**
+   * 终端里出错、做完、等人时通知星芒的钩子。与状态行同一个口径：哪一环不成立（没有
+   * 托管 Node、脚本没随包、路径带 shell 元字符）都只是这次不写，配置照写。
+   */
+  async function resolveCliHookInvocation(provider: ProviderId): Promise<CliHookInvocation | undefined> {
+    if (provider === 'grok') return undefined
+    const scriptPath = serviceOptions.cliHookScriptPath
+    const dataDirectory = serviceOptions.managerDataDirectory
+    if (!scriptPath || !dataDirectory) return undefined
+    try {
+      const nodeExecutable = await findInstalledExecutable('node')
+      if (!nodeExecutable) return undefined
+      return buildCliHookInvocation(nodeExecutable, scriptPath, cliHookEventsDirectory(dataDirectory)) ?? undefined
+    } catch {
+      return undefined
+    }
+  }
+
   async function saveConfig(
     payload: ConfigSavePayload,
     previewOnboarding: boolean,
@@ -5219,6 +5240,7 @@ export function createSystemService(
       if (!availableModels.includes(model)) throw new Error(`当前 API Key 不支持模型 ${model}，请重新检测并选择可用模型`)
       // 在 assertUnchanged 之前解析：找 node 要读 PATH，不该夹在「校验没变」和写入之间。
       const statusLineCommand = await resolveClaudeStatusLineCommand(payload.provider)
+      const cliHook = await resolveCliHookInvocation(payload.provider)
       if (previewOnboarding && payload.provider === 'codex') return { backups: [], files: [] }
       assertUnchanged()
       // Invalidate previous consent before a write, including same-key manual
@@ -5232,7 +5254,7 @@ export function createSystemService(
       const movedConsoleKey = payload.provider === 'claude' && moveOfficialCredentialsAside()
       let result: ReturnType<typeof saveProviderConfig>
       try {
-        result = saveProviderConfig(payload.provider, apiKey, payload.model, payload.mode, providerRoots, {}, activeSite.providerBaseUrls, statusLineCommand, availableModels)
+        result = saveProviderConfig(payload.provider, apiKey, payload.model, payload.mode, providerRoots, {}, activeSite.providerBaseUrls, statusLineCommand, availableModels, cliHook)
       } catch (error) {
         if (movedConsoleKey) throw withCredentialUndo(error, restoreOfficialCredentialsNow, '原来登录留下的官方 Key 暂时收在一边，切回官方账号时会放回')
         throw error

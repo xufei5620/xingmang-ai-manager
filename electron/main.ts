@@ -140,6 +140,8 @@ import {
   resolveXingmangAiBundledSkillRoot,
 } from './xingmang-ai-skill'
 import { resolveClaudeStatusLineScriptPath } from './claude-status-line'
+import { cliHookEventsDirectory, resolveCliHookScriptPath } from './cli-hooks'
+import { createCliHookEventMonitor } from './cli-hook-events'
 import { resolveProjectInstructionsTemplatePath } from './project-instructions'
 import { ipcEventChannels, type AccountBalance, type AccountSubscriptionSelf, type SettingsSaveIssue } from './ipc-contract'
 import {
@@ -1128,6 +1130,10 @@ if (!hasSingleInstanceLock) {
         packaged: app.isPackaged,
         resourcesPath: process.resourcesPath,
       }) ?? undefined,
+      cliHookScriptPath: resolveCliHookScriptPath(app.getAppPath(), {
+        packaged: app.isPackaged,
+        resourcesPath: process.resourcesPath,
+      }) ?? undefined,
       ...rootedOptions.system,
       relayFetch,
       networkLocationFetch: (input, init) => net.fetch(input instanceof URL ? input.href : input, init),
@@ -1419,6 +1425,14 @@ if (!hasSingleInstanceLock) {
     let applicationTray: ApplicationTrayController | null = null
     let trayAcceleration: TrayAccelerationCoordinator | null = null
     let accelerationExpiry: AccelerationExpiryNotice | null = null
+    // 终端里的 Claude Code / Gemini CLI 出错、做完、等人时由钩子留下记录，这里读出来发
+    // 系统通知。窗口没开着也照读：人走开的时候恰恰是最需要提醒的时候。
+    const cliHookEvents = createCliHookEventMonitor({
+      directory: cliHookEventsDirectory(managerDataDirectory),
+      notify: (terminal, eventKey) => { hostNotifier()({ terminal, eventKey }) },
+      log: (level, event, message, detail) => runtimeLog.log(level, 'config', event, message, detail),
+    })
+    cliHookEvents.start()
     let accelerationInterruption: AccelerationInterruptionNotice | null = null
     let latestTraySystem: SystemSnapshot | null = null
     let latestTrayBalance: AccountBalance | null = null
@@ -2522,6 +2536,7 @@ if (!hasSingleInstanceLock) {
         : {}),
     })
     app.once('will-quit', () => {
+      cliHookEvents.dispose()
       accelerationExpiry?.dispose()
       accelerationInterruption?.dispose()
       void acceleration?.dispose().catch((error) => runtimeLog.exception('network', 'acceleration.shutdown.failed', error))
