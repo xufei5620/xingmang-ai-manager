@@ -204,6 +204,8 @@ export function useToolbox(bridge: XingmangApi | null, enabled: boolean, scope: 
       bridge.onPythonRuntimeInstallProgress((event) => update('python', event.message, event.percent ?? undefined)),
       bridge.onGitRuntimeInstallProgress((event) => update('git', event.message, event.percent ?? undefined)),
       bridge.onCodexDesktopInstallProgress((event) => update('codexDesktop', event.message, event.percent ?? undefined)),
+      // 打开桌面端最长要等近一分钟，这句「等了多久」替掉工具行上的「正在打开」。
+      bridge.onCodexDesktopLaunchProgress((event) => update('launch:codexDesktop', event.message)),
       bridge.onExternalClientInstallProgress((event) => update(event.tool, event.message, event.percent ?? undefined)),
       bridge.onCodexDesktopStatus((event) => {
         desktopRevision.current++

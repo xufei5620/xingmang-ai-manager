@@ -33,6 +33,9 @@ import {
   buildDesktopUpdateStatus,
   canAttemptCodexDesktopFirstInstallFallback,
   describeCodexDesktopLaunchFailure,
+  describeCodexDesktopLaunchWait,
+  startCodexDesktopLaunchHeartbeat,
+  codexDesktopLaunchHeartbeatIntervalMs,
   codexDesktopNotStartedPrefix,
   processExistsFromSignalError,
   buildCodexDesktopSessionProcessProbeScript,
@@ -166,6 +169,61 @@ describe('Codex Desktop AppModel launch diagnostics', () => {
     expect(generic).toContain('联系客服')
   })
 
+  it('says how long it waited and gives a start-menu check the customer can do alone', () => {
+    const context = { userSid: null, isBuiltInAdministrator: false, uacEnabled: null, filterAdministratorToken: null }
+    const noWindow = describeCodexDesktopLaunchFailure(context, { waitedSeconds: 47, processSeen: true })
+    expect(noWindow.startsWith(codexDesktopNotStartedPrefix)).toBe(true)
+    expect(noWindow).toContain('等了 47 秒')
+    expect(noWindow).toContain('Codex 已经启动，但它的窗口一直没出来')
+    expect(noWindow).toContain('开始菜单里搜「Codex」直接点开')
+    expect(noWindow).toContain('Codex 这一版自己的问题，不是星芒')
+    expect(noWindow).toContain('联系客服')
+
+    const notStarted = describeCodexDesktopLaunchFailure(context, { waitedSeconds: 45, processSeen: false })
+    expect(notStarted).toContain('等了 45 秒，Codex 没有启动起来')
+    expect(notStarted).not.toContain('窗口一直没出来')
+  })
+
+  it('keeps the account-specific advice when the wait outcome is known', () => {
+    const message = describeCodexDesktopLaunchFailure(
+      { userSid: 'S-1-5-21-1-2-3-500', isBuiltInAdministrator: true, uacEnabled: false, filterAdministratorToken: false },
+      { waitedSeconds: 45, processSeen: false },
+    )
+    expect(message).toContain('「Administrator」账户')
+  })
+
+  it('describes the launch wait in plain words and adds the start-menu hint after twenty seconds', () => {
+    expect(describeCodexDesktopLaunchWait('preparing', 5)).toBe('正在准备打开 Codex 桌面端，已经等了 5 秒。')
+    expect(describeCodexDesktopLaunchWait('waiting-window', 15)).toBe('正在等 Codex 桌面端的窗口出现，已经等了 15 秒。Codex 第一次打开有时要一分钟。')
+    expect(describeCodexDesktopLaunchWait('waiting-window', 20)).toBe('正在等 Codex 桌面端的窗口出现，已经等了 20 秒。Codex 第一次打开有时要一分钟，可以先去开始菜单看看它有没有弹出来。')
+    for (const stage of ['preparing', 'waiting-window'] as const) {
+      expect(describeCodexDesktopLaunchWait(stage, 30)).not.toMatch(/PowerShell|AppModel|AppX|进程|PID/i)
+    }
+  })
+
+  it('reports elapsed time every interval and stays silent once stopped', () => {
+    vi.useFakeTimers()
+    try {
+      let clock = 0
+      const reports: Array<{ elapsedSeconds: number; message: string }> = []
+      const heartbeat = startCodexDesktopLaunchHeartbeat((progress) => reports.push(progress), { now: () => clock })
+      clock = codexDesktopLaunchHeartbeatIntervalMs
+      vi.advanceTimersByTime(codexDesktopLaunchHeartbeatIntervalMs)
+      expect(reports).toEqual([{ elapsedSeconds: 5, message: describeCodexDesktopLaunchWait('preparing', 5) }])
+      heartbeat.setStage('waiting-window')
+      clock = 4 * codexDesktopLaunchHeartbeatIntervalMs
+      vi.advanceTimersByTime(codexDesktopLaunchHeartbeatIntervalMs)
+      expect(reports[1]).toEqual({ elapsedSeconds: 20, message: describeCodexDesktopLaunchWait('waiting-window', 20) })
+      expect(heartbeat.elapsedSeconds()).toBe(20)
+      heartbeat.stop()
+      clock = 10 * codexDesktopLaunchHeartbeatIntervalMs
+      vi.advanceTimersByTime(5 * codexDesktopLaunchHeartbeatIntervalMs)
+      expect(reports).toHaveLength(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('keeps Windows internals out of every sentence a customer can see', () => {
     const contexts = [
       { userSid: 'S-1-5-21-1-2-3-500', isBuiltInAdministrator: true, uacEnabled: false, filterAdministratorToken: false },
@@ -173,6 +231,9 @@ describe('Codex Desktop AppModel launch diagnostics', () => {
       { userSid: null, isBuiltInAdministrator: false, uacEnabled: null, filterAdministratorToken: null },
     ]
     for (const context of contexts) {
+      for (const processSeen of [true, false]) {
+        expect(describeCodexDesktopLaunchFailure(context, { waitedSeconds: 45, processSeen })).not.toMatch(/wsreset|AppModel|AppX|Appx|UAC|0x[0-9A-F]{8}|SID|Microsoft Store|反馈与诊断/i)
+      }
       expect(describeCodexDesktopLaunchFailure(context)).not.toMatch(/wsreset|AppModel|AppX|Appx|UAC|0x[0-9A-F]{8}|SID|Microsoft Store|反馈与诊断/i)
     }
   })

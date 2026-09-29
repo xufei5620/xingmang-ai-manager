@@ -170,8 +170,19 @@ export type CodexDesktopWindowsLaunchContext = WindowsStoreAppLaunchContext
 // codexDesktopNotStarted），改开头要两边一起改。
 export const codexDesktopNotStartedPrefix = 'Codex 桌面端没有打开'
 
+/**
+ * 失败时这一次到底等了多久、Codex 有没有被 Windows 拉起来过。缺省 = 旧的那句
+ * 「等了将近一分钟」（调用方拿不到计时时照旧）。
+ */
+export interface CodexDesktopLaunchWaitOutcome {
+  waitedSeconds: number
+  /** Windows 交回过 Codex 的进程号，说明它起过、只是没等到窗口。 */
+  processSeen: boolean
+}
+
 export function describeCodexDesktopLaunchFailure(
   context: CodexDesktopWindowsLaunchContext,
+  outcome?: CodexDesktopLaunchWaitOutcome,
 ): string {
   const block = resolveStoreAppLaunchBlock(context)
   if (block === 'builtInAdministrator') {
@@ -182,8 +193,83 @@ export function describeCodexDesktopLaunchFailure(
     return `${codexDesktopNotStartedPrefix}：这台电脑关掉了 Windows 的「用户账户控制」，`
       + 'Windows 在这种设置下常常打不开从应用商店装的软件。请联系客服，帮你把它打开后再试。'
   }
-  return `${codexDesktopNotStartedPrefix}：等了将近一分钟，没有等到它的窗口。`
-    + '先关掉所有 Codex 窗口，再点「重试」；还是不行，就在开始菜单里搜「Codex」直接点开，也打不开的话请联系客服。'
+  if (!outcome) {
+    return `${codexDesktopNotStartedPrefix}：等了将近一分钟，没有等到它的窗口。`
+      + '先关掉所有 Codex 窗口，再点「重试」；还是不行，就在开始菜单里搜「Codex」直接点开，也打不开的话请联系客服。'
+  }
+  // 客户自己分不清是 Codex 起不来还是星芒没叫动它，只会一直点重试或找客服。
+  // 从开始菜单直接开一次就能分清：那边也起不来，就是 Codex 这一版自己的问题。
+  const what = outcome.processSeen
+    ? 'Codex 已经启动，但它的窗口一直没出来'
+    : 'Codex 没有启动起来'
+  return `${codexDesktopNotStartedPrefix}：等了 ${outcome.waitedSeconds} 秒，${what}。`
+    + '先关掉所有 Codex 窗口，再点「重试」。想知道是不是 Codex 自己的问题：在开始菜单里搜「Codex」直接点开，'
+    + '也起不来的话就是 Codex 这一版自己的问题，不是星芒，可以等微软商店更新它，或先用 Codex CLI；'
+    + '开始菜单里能打开、从星芒打不开，请联系客服。'
+}
+
+/** 等窗口满这么久还没出来，就多提一句「先去开始菜单看看」。 */
+const codexDesktopLaunchStartMenuHintSeconds = 20
+
+/**
+ * 打开桌面端途中每隔几秒给客户看的那句话。以前这段最长近一分钟，界面上只有
+ * 「打开中」三个字，客户不知道在等什么、还要等多久。
+ */
+export function describeCodexDesktopLaunchWait(
+  stage: CodexDesktopLaunchWaitStage,
+  elapsedSeconds: number,
+): string {
+  if (stage === 'preparing') return `正在准备打开 Codex 桌面端，已经等了 ${elapsedSeconds} 秒。`
+  const head = `正在等 Codex 桌面端的窗口出现，已经等了 ${elapsedSeconds} 秒。Codex 第一次打开有时要一分钟`
+  return elapsedSeconds >= codexDesktopLaunchStartMenuHintSeconds
+    ? `${head}，可以先去开始菜单看看它有没有弹出来。`
+    : `${head}。`
+}
+
+export type CodexDesktopLaunchWaitStage = 'preparing' | 'waiting-window'
+
+export interface CodexDesktopLaunchProgress {
+  elapsedSeconds: number
+  message: string
+}
+
+export interface CodexDesktopLaunchHeartbeat {
+  setStage: (stage: CodexDesktopLaunchWaitStage) => void
+  elapsedSeconds: () => number
+  stop: () => void
+}
+
+export const codexDesktopLaunchHeartbeatIntervalMs = 5_000
+
+/**
+ * 打开途中按固定间隔报一次「等了多久」。只报进度，不碰超时本身；stop 之后
+ * 再也不发，免得失败框弹出来之后工具行又冒出一句「还在等」。
+ */
+export function startCodexDesktopLaunchHeartbeat(
+  report: (progress: CodexDesktopLaunchProgress) => void,
+  options: { intervalMs?: number; now?: () => number } = {},
+): CodexDesktopLaunchHeartbeat {
+  const now = options.now ?? Date.now
+  const startedAt = now()
+  let stage: CodexDesktopLaunchWaitStage = 'preparing'
+  let stopped = false
+  function elapsedSeconds(): number {
+    return Math.max(0, Math.round((now() - startedAt) / 1000))
+  }
+  const timer = setInterval(() => {
+    if (stopped) return
+    const elapsed = elapsedSeconds()
+    report({ elapsedSeconds: elapsed, message: describeCodexDesktopLaunchWait(stage, elapsed) })
+  }, options.intervalMs ?? codexDesktopLaunchHeartbeatIntervalMs)
+  timer.unref?.()
+  return {
+    setStage(next) { stage = next },
+    elapsedSeconds,
+    stop() {
+      stopped = true
+      clearInterval(timer)
+    },
+  }
 }
 
 export interface CodexDesktopPackageProbe {
@@ -2792,6 +2878,13 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
     )
   }
 
+  function sendCodexDesktopLaunchProgress(
+    target: RendererMessageTarget,
+    progress: CodexDesktopLaunchProgress,
+  ): void {
+    if (!target.isDestroyed()) target.send('desktop:codex-launch-progress', progress)
+  }
+
   function sendCodexDesktopStatus(
     target: RendererMessageTarget,
     phase: 'stopped' | 'running',
@@ -2815,6 +2908,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
     mode: CodexDesktopLaunchMode,
     target: RendererMessageTarget,
     launchOptions: CodexDesktopLaunchOptions = {},
+    heartbeat?: CodexDesktopLaunchHeartbeat,
   ): Promise<CodexDesktopLaunchResult> {
     if (codexDesktopInstalling) throw new Error('Codex 桌面端正在安装、更新或卸载中，请稍后再试')
     if (platform === 'darwin' && mode === 'restart') {
@@ -3014,6 +3108,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
       }
     }
 
+    heartbeat?.setStage('waiting-window')
     let startedProcesses = await waitForCodexDesktopSessionProcesses(
       activatedViaAppModel || workspaceLaunchDelivered
         ? codexDesktopLaunchInitialWaitMs
@@ -3049,8 +3144,14 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
     // process was still crossing the AppModel boundary at the first check.
     if (!startedProcesses.length) startedProcesses = await processFromActivationPid()
     if (!startedProcesses.length) {
+      // 先停心跳再去探测账户设置：失败框弹出之前工具行不该再冒一句「还在等」。
+      const waitedSeconds = heartbeat?.elapsedSeconds()
+      heartbeat?.stop()
       const launchContext = await inspectWindowsStoreAppLaunchContext()
-      throw new Error(describeCodexDesktopLaunchFailure(launchContext))
+      throw new Error(describeCodexDesktopLaunchFailure(
+        launchContext,
+        waitedSeconds === undefined ? undefined : { waitedSeconds, processSeen: activationProcessId !== null },
+      ))
     }
     if (cdpPort !== null) {
       try {
@@ -3088,7 +3189,17 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
   ): Promise<CodexDesktopLaunchResult> {
     return installationQueue.enqueue(
       `desktop:codex:launch:${mode}:${launchOptions.injectChinese ? 'zh-CN' : 'default'}`,
-      () => launchCodexDesktopOperation(mode, target, launchOptions),
+      async () => {
+        // 只有 Windows 这一路会等窗口等到近一分钟；macOS 交给系统打开，几秒就回来。
+        const heartbeat = platform === 'win32'
+          ? startCodexDesktopLaunchHeartbeat((progress) => sendCodexDesktopLaunchProgress(target, progress))
+          : undefined
+        try {
+          return await launchCodexDesktopOperation(mode, target, launchOptions, heartbeat)
+        } finally {
+          heartbeat?.stop()
+        }
+      },
     )
   }
 
