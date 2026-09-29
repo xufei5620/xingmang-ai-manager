@@ -15,6 +15,7 @@ import {
   UserRound,
   Users,
   Zap,
+  HelpCircle,
 } from 'lucide-react'
 import {
   BrandIcon,
@@ -189,29 +190,52 @@ export function buildSubscriptionPaymentInput(
 
 export function paymentTerminalPresentation(
   status: AccountPaymentWindowTerminalEvent['status'],
+  confirming = false,
 ): { tone: 'neutral' | 'warn' | 'bad' | 'ok'; title: string; body: string } {
   if (status === 'success') return {
-    tone: 'ok', title: '充值成功', body: '服务端已确认到账，支付窗口已关闭，正在刷新账户余额。',
+    tone: 'ok', title: '充值成功', body: '服务端已确认到账，余额已更新。',
   }
   if (status === 'expired') {
     return {
       tone: 'warn',
       title: '支付已超时',
-      body: '支付窗口已过期，订单没有自动取消。请刷新订单状态后再决定是否重新支付。',
+      body: '这笔订单没有付成功，也不会再扣钱。要充值的话重新下一单；如果手机上显示已经扣款，点「查看我的订单」核对。',
     }
   }
   if (status === 'failed') {
     return {
       tone: 'bad',
       title: '支付没有完成',
-      body: '支付渠道返回失败，订单状态请以订单页为准。',
+      body: '支付渠道返回没有付成功。可以重新充值；如果手机上显示已经扣款，点「查看我的订单」核对。',
     }
   }
-  return {
-    tone: 'neutral',
-    title: '支付窗口已关闭',
-    body: '关闭支付窗口不会取消订单，请刷新订单状态确认结果。',
+  if (status === 'unconfirmed') {
+    return {
+      tone: 'warn',
+      title: '还没查到这笔订单到账',
+      body: '如果手机上已经显示付款成功，可能是支付渠道慢了，稍后在「我的订单」里看。超过 30 分钟还没到账，请联系客服，并告诉客服订单号。',
+    }
   }
+  return confirming
+    ? {
+      tone: 'neutral',
+      title: '支付窗口已关闭',
+      body: '如果已经付过款，不用做什么：星芒还在确认到账，到了会自动更新余额。还没付的话，这笔订单放着就行，不会扣钱。',
+    }
+    : {
+      tone: 'neutral',
+      title: '支付窗口已关闭',
+      body: '关闭支付窗口不会取消订单。付过款的话，到账后余额会自动更新，也可以点「查看我的订单」核对。',
+    }
+}
+
+/** 提示正文：订单号跟在后面；后台还在确认时订单号放在下面那行「正在确认…」里。 */
+export function paymentTerminalBody(event: AccountPaymentWindowTerminalEvent): string {
+  const presentation = paymentTerminalPresentation(event.status, event.confirming)
+  if (!event.tradeNo) return presentation.body
+  if (event.status === 'success') return `订单 ${event.tradeNo} 已到账，余额已更新。`
+  if (event.status === 'closed' && event.confirming) return presentation.body
+  return `${presentation.body} 订单号 ${event.tradeNo}。`
 }
 
 export function validateTopupAmount(value: number, minimum: number): number {
@@ -335,6 +359,7 @@ export function AccountPage({
   onConfigureTool,
   onToolConfigSaved,
   toolConfigConfirmed,
+  onOpenHelp,
 }: {
   api: V2Bridge
   initialTab?: AccountTab
@@ -352,8 +377,20 @@ export function AccountPage({
   onToolConfigSaved?: () => void
   /** 某个工具的设置已保存并读回；每次加一。缺省 = 没有这个信号（旧行为）。 */
   toolConfigConfirmed?: ToolConfigConfirmation | null
+  /** 打开「联系客服」；缺省 = 不给这个按钮。 */
+  onOpenHelp?: () => void
 }) {
   const [tab, setTab] = useState<AccountTab>(initialTab ?? 'overview')
+  // 「我的订单」按哪个订单号打开：外面付款回跳（paymentReturn）和充值页的「查看我的订单」
+  // 共用一个递增编号，同一个订单号再点一次也会重新查。
+  const [orderRequest, setOrderRequest] = useState(paymentReturn)
+  useEffect(() => {
+    if (paymentReturn) setOrderRequest((current) => ({ sequence: (current?.sequence ?? 0) + 1, order: paymentReturn.order }))
+  }, [paymentReturn?.sequence])
+  function openOrders(order: string | null) {
+    setOrderRequest((current) => ({ sequence: (current?.sequence ?? 0) + 1, order }))
+    setTab('orders')
+  }
   const { store: balanceStore, snapshot: balanceState } = useSharedAccountBalance()
   const [visited, setVisited] = useState<AccountTab[]>([
     initialTab ?? 'overview',
@@ -549,10 +586,12 @@ export function AccountPage({
                       session={account.session}
                       changed={changed}
                       refresh={refreshAccount}
+                      openOrders={openOrders}
+                      openHelp={onOpenHelp}
                     />
                   )}
                   {panel === 'orders' && (
-                    <AccountOrders api={api} paymentReturn={paymentReturn} />
+                    <AccountOrders api={api} paymentReturn={orderRequest} />
                   )}
                   {panel === 'invite' && (
                     <AccountInvite
@@ -1208,7 +1247,7 @@ function AccountKeys({
                         void operation.execute(
                           'copy',
                           () => api.copyAccountKey(key.id),
-                          '密钥已复制',
+                          '密钥已复制。为了安全，1 分钟后会从剪贴板里清掉',
                         )
                       }
                     >
@@ -1968,12 +2007,16 @@ function AccountRecharge({
   session,
   changed,
   refresh,
+  openOrders,
+  openHelp,
 }: {
   api: V2Bridge
   balance: Balance
   session: AccountSessionState
   changed: () => void
   refresh: () => void
+  openOrders?: (order: string | null) => void
+  openHelp?: () => void
 }) {
   const load = useCallback(async () => {
     const [info, plans, subscriptions] = await Promise.all([
@@ -2005,12 +2048,22 @@ function AccountRecharge({
     useState<AccountPaymentWindowTerminalEvent | null>(null)
   const paymentRef = useRef(payment)
   const openingPayment = useRef<AccountPaymentWindowTerminalEvent[] | null>(null)
+  // 窗口关了、主进程还在后台确认的那笔订单号。结果晚到时即使提示已经收起，也要把结果摆出来。
+  const followUpTradeNo = useRef<string | null>(null)
   const acceptPaymentTerminal = (event: AccountPaymentWindowTerminalEvent) => {
     const current = paymentRef.current
-    if (!current) return
+    if (!current) {
+      if (!event.tradeNo || event.tradeNo !== followUpTradeNo.current || event.status === 'closed') return
+      followUpTradeNo.current = null
+      setPaymentTerminal(event)
+      changed()
+      void resource.reload()
+      return
+    }
     if (event.status === 'success' && (!event.tradeNo || event.tradeNo !== current.tradeNo)) return
     if (event.tradeNo && current.tradeNo && event.tradeNo !== current.tradeNo) return
     paymentRef.current = null
+    followUpTradeNo.current = event.status === 'closed' && event.confirming ? event.tradeNo : null
     setPayment(null)
     setPaymentTerminal(event)
     changed()
@@ -2027,6 +2080,7 @@ function AccountRecharge({
     const buffered = openingPayment.current ?? []
     openingPayment.current = null
     paymentRef.current = result
+    followUpTradeNo.current = null
     setPaymentTerminal(null)
     setPayment(result)
     for (const event of buffered) acceptPaymentTerminal(event)
@@ -2202,23 +2256,41 @@ function AccountRecharge({
       </div>
       {(payment || paymentTerminal) && (
         <Notice
-          tone={paymentTerminal ? paymentTerminalPresentation(paymentTerminal.status).tone : 'neutral'}
-          title={paymentTerminal ? paymentTerminalPresentation(paymentTerminal.status).title : '等待支付结果'}
+          tone={paymentTerminal ? paymentTerminalPresentation(paymentTerminal.status, paymentTerminal.confirming).tone : 'neutral'}
+          title={paymentTerminal ? paymentTerminalPresentation(paymentTerminal.status, paymentTerminal.confirming).title : '等待支付结果'}
           body={paymentTerminal
-            ? `${paymentTerminalPresentation(paymentTerminal.status).body}${paymentTerminal.tradeNo ? ` 订单 ${paymentTerminal.tradeNo}。` : ''}`
+            ? <>
+              {paymentTerminalBody(paymentTerminal)}
+              {paymentTerminal.status === 'closed' && paymentTerminal.confirming && paymentTerminal.tradeNo && (
+                <small className="v2-business-payment-confirming">正在确认订单 {paymentTerminal.tradeNo} 是否到账…</small>
+              )}
+            </>
             : `${payment?.kind === 'subscription' ? '订阅订单' : '订单'} ${payment?.tradeNo || '待生成'}。到账后将自动关闭支付窗口并刷新余额。`}
+          testId="account-payment-notice"
           actions={
             <>
-              <Button
-                size="sm"
-                icon={RefreshCw}
-                onClick={() => {
-                  refresh()
-                  void resource.reload()
-                }}
-              >
-                刷新余额与订阅
-              </Button>
+              {(!paymentTerminal || paymentTerminal.status === 'success') && (
+                <Button
+                  size="sm"
+                  icon={RefreshCw}
+                  onClick={() => {
+                    refresh()
+                    void resource.reload()
+                  }}
+                >
+                  刷新余额与订阅
+                </Button>
+              )}
+              {paymentTerminal && paymentTerminal.status !== 'success' && openOrders && (
+                <Button size="sm" onClick={() => openOrders(paymentTerminal.tradeNo)} testId="account-payment-orders">
+                  查看我的订单
+                </Button>
+              )}
+              {paymentTerminal?.status === 'unconfirmed' && openHelp && (
+                <Button size="sm" icon={HelpCircle} onClick={openHelp}>
+                  联系客服
+                </Button>
+              )}
               {payment ? (
                 <Button
                   size="sm"
