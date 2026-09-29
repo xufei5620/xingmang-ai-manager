@@ -67,6 +67,32 @@ test('login preserves drafts through legal documents and only authenticates afte
   } finally { await page.close() }
 })
 
+test('registration status read retries once, names proxy software, and explains the disabled button', async () => {
+  const page = await open('scenario=register&statusFail=timeout&statusFailures=2')
+  try {
+    await page.getByTestId('register-status-loading').filter({ hasText: '正在再试一次' }).waitFor()
+    await page.getByTestId('register-status-error').filter({ hasText: '先把它关掉' }).waitFor()
+    assert.equal(await page.evaluate(() => document.documentElement.dataset.statusSites), 'solov,solov')
+    assert.equal(await page.getByTestId('register-submit').isDisabled(), true)
+    await page.getByTestId('register-submit-hint').filter({ hasText: '要先连上账号服务' }).waitFor()
+    await page.getByTestId('register-status-retry').click()
+    await page.getByTestId('register-send-code').waitFor()
+    assert.equal(await page.getByTestId('register-submit').isDisabled(), false)
+    assert.equal(await page.getByTestId('register-submit-hint').count(), 0)
+  } finally { await page.close() }
+})
+
+test('registration status read says the computer is offline and reloads when the network returns', async () => {
+  const page = await open('scenario=register&statusFail=offline')
+  try {
+    await page.getByTestId('register-status-error').filter({ hasText: '没连上网' }).waitFor()
+    assert.equal(await page.evaluate(() => document.documentElement.dataset.statusSites), 'solov')
+    await page.evaluate(() => window.dispatchEvent(new Event('online')))
+    await page.getByTestId('register-send-code').waitFor()
+    assert.equal(await page.getByTestId('register-status-error').count(), 0)
+  } finally { await page.close() }
+})
+
 test('registration preserves its completed result when the following real login attempt fails', async () => {
   const page = await open('scenario=register&fail=1')
   try {
@@ -287,6 +313,35 @@ test('a failed switch keeps the step and offers the matching way out', async () 
     assert.equal(await page.getByTestId('start-guide').getAttribute('data-guide-step'), 'connect')
     await page.getByTestId('guide-exit-support').click()
     assert.deepEqual((await calls(page)).map((item) => item.method), ['detect', 'switch', 'exit'])
+  } finally { await page.close() }
+})
+
+// 第十九批 1：引导里装工具失败也要有出口。Node.js 太旧认不了证书时，「换成新版 Node.js」
+// 当主按钮，换完引导接着装刚才那个工具；换不了（Mac）时只给「找客服」这类出口。
+test('an install that fails on an outdated Node.js offers the replacement and carries on', async () => {
+  const page = await open('scenario=guide&auto=1&switchable=1&certFail=1&replaceNode=1')
+  try {
+    await page.getByTestId('guide-route-claude').check()
+    await page.getByTestId('guide-next').click()
+    await page.getByTestId('guide-install').click()
+    await page.getByTestId('guide-error').filter({ hasText: '点「换成新版 Node.js」，换好后星芒会接着装' }).waitFor()
+    assert.match(await page.getByTestId('guide-exit-replaceNode').getAttribute('class') ?? '', /primary/)
+    await page.getByTestId('guide-exit-replaceNode').click()
+    await page.locator('[data-guide-step="connect"]').waitFor()
+    assert.deepEqual((await calls(page)).map((item) => item.method), ['detect', 'install', 'exit', 'install'])
+  } finally { await page.close() }
+})
+
+test('an install failure without a Node.js replacement still leaves a way out', async () => {
+  const page = await open('scenario=guide&auto=1&switchable=1&certFail=1')
+  try {
+    await page.getByTestId('guide-route-claude').check()
+    await page.getByTestId('guide-next').click()
+    await page.getByTestId('guide-install').click()
+    await page.getByTestId('guide-error').waitFor()
+    assert.equal(await page.getByTestId('guide-exit-replaceNode').count(), 0)
+    await page.getByTestId('guide-exit-support').click()
+    assert.deepEqual((await calls(page)).map((item) => item.method), ['detect', 'install', 'exit'])
   } finally { await page.close() }
 })
 

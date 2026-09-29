@@ -101,7 +101,9 @@ export function AccelerationView({ state, mode, busy, signedIn, error, preview, 
   const tunAvailable = state?.supportedModes?.includes('tun') ?? true
   const conflicts = state?.conflicts ?? []
   // 冲突有自己的提示块（带「仍然连接」），不要再在下面重复一条通用错误。
-  const notice = conflicts.length ? null : (error || state?.error)?.replaceAll('系统代理', '网络设置').replaceAll('代理', '网络连接')
+  // 主进程给的每一句都已经是写给客户看的话，这里原样显示；原来把「代理」机械换成
+  // 「网络连接」，造出过「加速网络连接连通性验证失败」这种读不通的句子。
+  const notice = conflicts.length ? null : error || state?.error
   const stopRetry = phase === 'stopping' && Boolean(notice) && !busy
   const active = phase === 'active'
   // 软件替他连上的（打开 Codex 桌面端时）：关掉桌面端不会跟着断开，这里要说清楚。
@@ -208,7 +210,7 @@ export function AccelerationView({ state, mode, busy, signedIn, error, preview, 
       {onContactSupport && <Button variant="ghost" size="sm" icon={ArrowUpRight} onClick={onContactSupport} testId="acceleration-bundle-support">联系客服</Button>}
     </div>}
 
-    {notice && <div className="acceleration-error" role="alert"><CircleHelp size={16} aria-hidden="true" /><span>{notice}</span>{onViewLog && operationLogPage({ message: notice }) === 'feedback' && <Button variant="ghost" size="sm" icon={ScrollText} onClick={onViewLog} testId="acceleration-error-log">查看日志</Button>}<Button variant="ghost" size="sm" icon={RefreshCw} onClick={onRefresh} disabled={busy}>重新检查</Button></div>}
+    {notice && <div className="acceleration-error" role="alert"><CircleHelp size={16} aria-hidden="true" /><span>{notice}</span>{onViewLog && operationLogPage({ message: notice }) === 'feedback' && <Button variant="ghost" size="sm" icon={ScrollText} onClick={onViewLog} testId="acceleration-error-log">查看日志</Button>}<Button variant="ghost" size="sm" icon={RefreshCw} onClick={onRefresh} disabled={busy}>重新检查</Button>{phase === 'error' && onContactSupport && <Button variant="ghost" size="sm" icon={ArrowUpRight} onClick={onContactSupport} testId="acceleration-error-support">联系客服</Button>}</div>}
 
     <div className="acceleration-details" aria-label="加速使用信息">
       <div><span className="acceleration-detail-icon"><Timer size={19} aria-hidden="true" /></span><div><span>本次连接</span><strong data-testid="acceleration-session-duration">{formatDuration(signedIn && state ? state.sessionSeconds : null)}</strong></div><small>{active ? '已连接时长' : '连接后开始计时'}</small></div>

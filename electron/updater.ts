@@ -48,7 +48,11 @@ export interface UpdateSnapshot {
     transferred: number
     total: number
   } | null
-  error: { code: string; message: string } | null
+  /**
+   * `message` 是给用户看的中文；认不出的英文原话脱敏后放在可选的 `detail` 里，只为
+   * 进 runtime.jsonl 给客服排查，界面不显示。
+   */
+  error: { code: string; message: string; detail?: string } | null
   /**
    * 与 `error` 同生共死：有错才有步骤，错误被清掉时一并回到 null。可选是为了
    * 向后兼容（AGENTS.md §6「缺省 = 旧行为」）——旧快照没有这个字段，界面照旧
@@ -208,6 +212,13 @@ export interface UpdaterRuntime {
    * 读不到返回 null（当作没有那份文件），不能抛错。
    */
   refreshServiceStatus?: () => Promise<ServiceStatus | null>
+  /**
+   * 下载好（或命中本地缓存）一个版本时问一句：上次运行是不是已经自动装过它、却没装上
+   * （见 auto-update-install.ts 的 resolvePreviousAutoInstallFailure）。返回给用户看的
+   * 那句话时，这个版本停在「安装失败」，只留「重新安装」按钮，不再自动装；返回 null
+   * 照常。不传＝旧行为。
+   */
+  previousAutoInstallFailure?: (version: string) => string | null
 }
 
 function versionParts(version: string): number[] | null {
@@ -362,7 +373,7 @@ function hasChannelManifestUrl(description: string, channelFile: string): boolea
   }
 }
 
-function safeError(error: unknown, platform: NodeJS.Platform): { code: string; message: string } {
+function safeError(error: unknown, platform: NodeJS.Platform): { code: string; message: string; detail?: string } {
   const candidate = error as {
     code?: unknown
     message?: unknown
@@ -394,8 +405,29 @@ function safeError(error: unknown, platform: NodeJS.Platform): { code: string; m
       : `更新服务器尚未发布更新清单 ${channelFile}，请联系发布者补齐更新文件`
     : /<!doctype\s+html|<html|text\/html|unexpected\s+token\s+["']?</i.test(source)
       ? `更新服务器返回了网页而不是 ${channelFile}，请检查静态更新目录配置`
-      : redacted
-  return { code, message: message || '更新操作失败' }
+      : null
+  if (message) return { code, message }
+  const translated = describeUnrecognizedUpdateFailure(redacted)
+  return translated === redacted
+    ? { code, message: translated || '更新操作失败' }
+    : { code, message: translated, ...(redacted ? { detail: redacted } : {}) }
+}
+
+/**
+ * electron-updater 与 Node 的原话几乎都是英文（`ENOENT: no such file or directory…`），
+ * 直接上屏客户看不懂。认得出的按原因说人话，认不出的也不贴原文，只说原话记进日志了；
+ * 本来就是中文的（主进程自己抛的那些）原样保留。原话放在 detail 里进 runtime.jsonl。
+ */
+export function describeUnrecognizedUpdateFailure(source: string): string {
+  if (!source || /[\u4e00-\u9fff]/.test(source)) return source
+  if (/\bENOSPC\b|no space left/i.test(source)) return '电脑的磁盘空间不够了，清出一些空间后再试。'
+  if (/\b(?:EPERM|EACCES|EBUSY)\b|operation not permitted|permission denied|resource busy/i.test(source)) {
+    return '新版本的安装包写不进去或被占用了，常见是安全软件拦了。重开软件再试；还不行请找客服。'
+  }
+  if (/\bENOENT\b|no such file|sha512|checksum/i.test(source)) {
+    return '下载好的安装包不完整或被删掉了，常见是安全软件拦了。重新下载一次就好。'
+  }
+  return '更新没有完成，详细原因已经记进日志，点「查看日志」可以发给客服。'
 }
 
 function cloneInstalledRelease(release: InstalledRelease | null | undefined): InstalledRelease | null {
@@ -513,7 +545,7 @@ export function createUpdaterService(
     for (const listener of listeners) listener(value)
   }
 
-  const applyInfo = (phase: UpdatePhase, info: UpdateInfo) => {
+  const applyInfo = (phase: UpdatePhase, info: UpdateInfo, extra: Partial<UpdateSnapshot> = {}) => {
     emit({
       phase,
       availableVersion: phase === 'not-available' ? null : info.version,
@@ -523,6 +555,7 @@ export function createUpdaterService(
       checkedAt: now().toISOString(),
       progress: null,
       error: null,
+      ...extra,
     })
   }
 
@@ -632,7 +665,9 @@ export function createUpdaterService(
       if (!installRequested || disposed) return
       reportInstallFailure({
         code: 'UPDATE_INSTALL_LAUNCH_TIMEOUT',
-        message: '更新程序未能启动，已继续打开主程序；可在“检查更新”页重试安装',
+        message: platform === 'win32'
+          ? '新版本没装上：安装程序没起来，可能是 Windows 的授权窗口被关掉了。软件照常能用，到「更新」页点「重新安装」再试一次，授权窗口弹出来时点「是」。'
+          : '新版本没装上：安装程序没起来。软件照常能用，到「更新」页点「重新安装」再试一次。',
       })
     }, installLaunchTimeoutMs)
     installWatchdogTimer.unref?.()
@@ -649,7 +684,11 @@ export function createUpdaterService(
       withdrawOffer()
       return
     }
-    applyInfo('downloaded', info)
+    let previousFailure: string | null = null
+    try { previousFailure = runtime.previousAutoInstallFailure?.(info.version) ?? null } catch { previousFailure = null }
+    applyInfo('downloaded', info, previousFailure
+      ? { error: { code: 'UPDATE_PREVIOUS_AUTO_INSTALL_FAILED', message: previousFailure }, failedStep: 'install' }
+      : {})
   }
 
   // 安装包校验不过时要重来的是下载，不是安装：本地这一份已经不可信了。

@@ -32,6 +32,17 @@ import {
 } from './macos-command-line-tools'
 import { managedCliRoot } from './managed-cli-paths'
 import { classifyNetworkFailure, networkFailureMessages } from './network-failure'
+import {
+  buildNodeTlsProbeScript,
+  certificateTrustNetworkFailedSummary,
+  certificateTrustSummaries,
+  certificateTrustVerdict,
+  nodeTlsProbeEnvironment,
+  nodeTlsProbeTimeoutMs,
+  parseNodeTlsProbeOutput,
+  type CertificateTrustVerdict,
+  type NodeTlsProbeResult,
+} from './certificate-trust-probe'
 import { redactSecretPatterns } from './redaction-patterns'
 import { relayApiProbeBaseUrl, resolveRelaySite, type RelaySite } from './relay-sites'
 import { findReparseComponent, type ReparseComponent } from './safe-local-data'
@@ -62,6 +73,13 @@ import {
   type WindowsCliExecutionModeResolution,
   type WindowsElevationCapability,
 } from './windows-elevation'
+import {
+  describeStoreAppLaunchBlock,
+  emptyWindowsStoreAppLaunchContext,
+  inspectWindowsStoreAppLaunchContext,
+  resolveStoreAppLaunchBlock,
+  type WindowsStoreAppLaunchContext,
+} from './windows-store-app-launch'
 import {
   describeOverride,
   inspectWorkspaceConfigOverrides,
@@ -122,6 +140,11 @@ export interface DiagnosticsDependencies {
   inspectAdministrator?: (signal: AbortSignal) => Promise<boolean>
   /** 当前 Windows 账号能不能自己提权（不是「现在是不是管理员」，见 windows-elevation.ts）。 */
   inspectElevationCapability?: (signal: AbortSignal) => Promise<WindowsElevationCapability>
+  /**
+   * 这个账户能不能打开从应用商店装的软件（Codex 桌面端是其中之一）。只在令牌本身
+   * 就是高权限、启动时又确认了不是专门提权打开的那一种电脑上才问，见 windows-store-app-launch.ts。
+   */
+  inspectStoreAppLaunchContext?: (signal: AbortSignal) => Promise<WindowsStoreAppLaunchContext>
   inspectPowerShell?: (signal: AbortSignal) => Promise<DiagnosticToolStatus>
   inspectTool?: (tool: DiagnosticToolId, signal: AbortSignal) => Promise<DiagnosticToolStatus>
   inspectCodexDesktop?: (signal: AbortSignal) => Promise<DiagnosticToolStatus>
@@ -165,6 +188,11 @@ export interface DiagnosticsDependencies {
   readProxyScopes?: () => Promise<ProxyVariableScopes | null>
   /** 试连代理设置指向的本机端口；缺省 = 真的去连。 */
   probeLoopbackProxy?: LoopbackProbe
+  /**
+   * 「安全证书」一项用电脑上的 Node.js 做一次 TLS 握手（certificate-trust-probe.ts）。
+   * 缺省 = 真的起 `node -e`；测试用它造「公司证书」「Node 太旧」这些情况。
+   */
+  probeNodeTls?: (input: NodeTlsProbeInput, signal: AbortSignal) => Promise<NodeTlsProbeResult>
   /**
    * 软件数据目录（Electron 的 userData）。诊断自己算不出它在哪，宿主给了才把它
    * 算进「磁盘空间」这一项；不给就只看 CLI 落点。
@@ -273,6 +301,16 @@ interface CheckOutcome {
   state: DiagnosticState
   summary: string
   details?: Record<string, boolean | number | string | null>
+  /** 这一项这台电脑上不用出（比如没装 Node.js 时的「安全证书」）。 */
+  omit?: boolean
+}
+
+export interface NodeTlsProbeInput {
+  nodePath: string
+  host: string
+  port: number
+  /** true = 带上 NODE_USE_SYSTEM_CA=1；false = 只用 Node 自带的根证书。 */
+  useSystemRoots: boolean
 }
 
 interface CheckDefinition {
@@ -296,6 +334,12 @@ const MAX_CLAUDE_SETTINGS_BYTES = 256 * 1024
 /** 两个站的状态接口都只回几 KB 的 JSON；门户页再大也用不着读完才认出来。 */
 const MAX_NETWORK_PROBE_BYTES = 256 * 1024
 const MAX_YAML_ALIAS_COUNT = 20
+const runtimeCheckTitles: Readonly<Record<'node' | 'npm' | 'python', string>> = {
+  node: 'Node.js',
+  // npm 是 Node.js 自带的，客户不需要认识这个名字。
+  npm: 'Node.js 自带的安装组件',
+  python: 'Python',
+}
 const PROXY_NAMES = ['HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY', 'FTP_PROXY'] as const
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -938,8 +982,8 @@ function environmentOverrideOutcome(matches: readonly EnvironmentOverrideMatch[]
     return {
       state: 'pass',
       summary: matches.length
-        ? '检测到的环境变量都指向当前账号，不会盖过写入的配置'
-        : '没有会盖过当前账号配置的环境变量',
+        ? '电脑里另外设的工具地址也指向当前账号，不影响使用'
+        : '没有另外设过工具地址或密钥',
       details,
     }
   }
@@ -950,7 +994,7 @@ function environmentOverrideOutcome(matches: readonly EnvironmentOverrideMatch[]
       // 这几个变量实测会让 CLI 绕开写入的配置（见 breaksAccount），用户在终端里
       // 跑就连不上当前账号，所以是「待处理」。本程序仍然不替他删。
       state: 'fail',
-      summary: `系统环境变量里设置了 ${namesOf(breaking)}，会让 ${tools} 不用当前账号写入的配置，删掉后重新打开终端即可`,
+      summary: `电脑里另外设了 ${namesOf(breaking)}，会让 ${tools} 不用当前账号的设置。删掉它们再重新打开工具就好；不会删请在「反馈」页导出报告发给客服`,
       details,
     }
   }
@@ -959,7 +1003,7 @@ function environmentOverrideOutcome(matches: readonly EnvironmentOverrideMatch[]
     // 账号（见 breaksAccount）。仍提一句，是因为用户换个方式跑（项目里的配置、别的
     // 启动器）时它们可能生效；文案因此用「可能」。
     state: 'warn',
-    summary: `系统环境变量里设置了 ${namesOf(overriding)}，可能会盖过当前账号写入的配置`,
+    summary: `电脑里另外设了 ${namesOf(overriding)}，可能会盖过当前账号的设置`,
     details,
   }
 }
@@ -1086,7 +1130,7 @@ function withIgnoredCodexHome(outcome: CheckOutcome, finding: IgnoredCodexHomeFi
     details[`variable${index + 1}`] = label
   })
   const effect = finding.blocking ? '，但在软件外面打开 Codex 会连不上当前账号' : ''
-  const others = outcome.state === 'pass' ? '' : `；另外${outcome.summary}`
+  const others = outcome.state === 'pass' ? '' : `；${outcome.summary}`
   // 连不上当前账号才算「待处理」（开机横幅只数这一档）；软件里打开的 Codex 本来
   // 就不受影响，其余情况只是提醒。其它变量已经判出更重的一档时不往下拉。
   const state = finding.blocking || outcome.state === 'fail' ? 'fail' : 'warn'
@@ -1108,11 +1152,105 @@ function providerOutcome(provider: ProviderId, inspection: NativeConfigInspectio
     details[`file${index + 1}`] = pathForDisplay(file.path, roots)
   })
   if (inspection.matchesRelay && inspection.hasApiKey) {
-    return { state: 'pass', summary: '已配置星芒 AI', details }
+    return { state: 'pass', summary: '已连到当前账号', details }
   }
-  if (!inspection.exists) return { state: 'warn', summary: '未找到配置文件', details }
-  if (!inspection.hasApiKey) return { state: 'fail', summary: '配置中未检测到 API Key', details }
-  return { state: 'fail', summary: '当前中转地址不是星芒 AI', details }
+  if (!inspection.exists) return { state: 'warn', summary: '还没有连接设置', details }
+  if (!inspection.hasApiKey) return { state: 'fail', summary: '连接设置里没有 Key', details }
+  return { state: 'fail', summary: '连接地址不是当前账号的', details }
+}
+
+async function defaultProbeNodeTls(
+  input: NodeTlsProbeInput,
+  signal: AbortSignal,
+  env: NodeJS.ProcessEnv,
+): Promise<NodeTlsProbeResult> {
+  try {
+    // 普通权限那条路（system-service 的 sameUserTerminalEnvironment）同样是
+    // commandEnvironment：量的就是装工具、打开工具时真实会用到的那个 Node。
+    const result = await runCommand({
+      executable: input.nodePath,
+      argv: ['-e', buildNodeTlsProbeScript(), input.host, String(input.port)],
+    }, {
+      env: nodeTlsProbeEnvironment(commandEnvironment(env), input.useSystemRoots),
+      timeoutMs: nodeTlsProbeTimeoutMs + 2_000,
+      maxOutputBytes: 4 * 1024,
+      signal,
+    })
+    return parseNodeTlsProbeOutput(result.stdout)
+  } catch {
+    return { outcome: 'other', version: null }
+  }
+}
+
+/** 探测地址拆成握手用的主机和端口；不是 https 就不探。 */
+export function certificateProbeTarget(endpoint: string): { host: string, port: number } | null {
+  try {
+    const url = new URL(endpoint)
+    if (url.protocol !== 'https:' || !url.hostname) return null
+    return { host: url.hostname.replace(/^\[|\]$/g, ''), port: url.port ? Number(url.port) : 443 }
+  } catch {
+    return null
+  }
+}
+
+export function certificateTrustOutcome(input: {
+  verdict: CertificateTrustVerdict
+  nodeVersion: string | null
+  defaultRoots: NodeTlsProbeResult['outcome'] | null
+  systemRoots: NodeTlsProbeResult['outcome'] | null
+  elevated: boolean
+}): CheckOutcome {
+  const state: DiagnosticState = input.verdict === 'outdatedNode' || input.verdict === 'untrusted'
+    ? 'fail'
+    : input.verdict === 'elevated' ? 'warn' : 'pass'
+  return {
+    state,
+    summary: certificateTrustSummaries[input.verdict],
+    details: {
+      verdict: input.verdict,
+      nodeVersion: input.nodeVersion,
+      defaultRoots: input.defaultRoots,
+      systemRoots: input.systemRoots,
+      elevated: input.elevated,
+    },
+  }
+}
+
+/**
+ * 「安全证书」说「电脑自己也不认」时，若同一次检查里「星芒 AI 网络」也失败了，
+ * 根子多半在网络那一项（门户、公司网关拦截、断网），不在这里再怪一次证书。
+ */
+export function reconcileCertificateTrustWithNetwork(items: DiagnosticItem[]): DiagnosticItem[] {
+  const networkFailed = items.some((item) => item.code === 'XINGMANG_NETWORK' && item.state === 'fail')
+  if (!networkFailed) return items
+  return items.map((item) => item.code === 'CERTIFICATE_TRUST' && item.details?.verdict === 'untrusted'
+    ? { ...item, summary: certificateTrustNetworkFailedSummary }
+    : item)
+}
+
+/**
+ * 「操作系统」一项的结论说人话：Windows 11（64 位）、macOS 15（Apple 芯片）。
+ * Windows 11 的内核号仍是 10.0，只能按版本号 22000 起算；macOS 从 Darwin 20
+ * （macOS 11）起主版本号差 9，Darwin 25 起苹果跳到 26。认不出就原样给。
+ */
+export function operatingSystemSummary(platform: NodeJS.Platform, release: string, arch: string): string {
+  if (platform === 'win32') {
+    const match = release.match(/^(\d+)\.(\d+)\.(\d+)/)
+    if (match && match[1] === '10' && match[2] === '0') {
+      const name = Number(match[3]) >= 22_000 ? 'Windows 11' : 'Windows 10'
+      const bits = arch === 'arm64' ? 'ARM 芯片' : arch === 'ia32' ? '32 位' : '64 位'
+      return `${name}（${bits}）`
+    }
+  }
+  if (platform === 'darwin') {
+    const darwinMajor = Number(release.match(/^(\d+)\./)?.[1])
+    if (Number.isInteger(darwinMajor) && darwinMajor >= 20) {
+      const version = darwinMajor >= 25 ? darwinMajor + 1 : darwinMajor - 9
+      const chip = arch === 'arm64' ? 'Apple 芯片' : 'Intel 芯片'
+      return `macOS ${version}（${chip}）`
+    }
+  }
+  return `${platform} ${release} (${arch})`
 }
 
 function countStates(items: DiagnosticItem[]): Record<DiagnosticState, number> {
@@ -1126,7 +1264,7 @@ async function runIsolatedCheck(
   check: CheckDefinition,
   timeoutMs: number,
   sanitize: (value: string) => string,
-): Promise<DiagnosticItem> {
+): Promise<DiagnosticItem | null> {
   const controller = new AbortController()
   const startedAt = Date.now()
   let timer: NodeJS.Timeout | undefined
@@ -1140,7 +1278,8 @@ async function runIsolatedCheck(
       }, timeoutMs)
       timer.unref()
     })
-    const outcome = await Promise.race([Promise.resolve(check.run(controller.signal)), timeout])
+    const { omit, ...outcome } = await Promise.race([Promise.resolve(check.run(controller.signal)), timeout])
+    if (omit) return null
     const details = outcome.details
       ? Object.fromEntries(Object.entries(outcome.details).map(([name, detail]) => [
           name,
@@ -1191,7 +1330,7 @@ async function runIsolatedCheck(
  */
 function readClaudeBypass(homeDirectory: string, ownership: ToolConfigOwnership | null): CheckOutcome {
   const configPath = path.join(homeDirectory, '.claude', 'settings.json')
-  if (!fs.existsSync(configPath)) return { state: 'pass', summary: '未检测到 Claude 权限绕过配置' }
+  if (!fs.existsSync(configPath)) return { state: 'pass', summary: '跑命令前会先问你' }
   const parsed = JSON.parse(readBoundedUtf8FileSync(
     configPath,
     MAX_CLAUDE_SETTINGS_BYTES,
@@ -1199,17 +1338,17 @@ function readClaudeBypass(homeDirectory: string, ownership: ToolConfigOwnership 
   )) as unknown
   const permissions = isRecord(parsed) && isRecord(parsed.permissions) ? parsed.permissions : null
   const bypass = permissions?.defaultMode === 'bypassPermissions'
-  if (!bypass) return { state: 'pass', summary: 'Claude 未跳过命令执行确认', details: { bypass, managed: false } }
+  if (!bypass) return { state: 'pass', summary: '跑命令前会先问你', details: { bypass, managed: false } }
   if (ownership === 'account') {
     return {
       state: 'pass',
-      summary: '按当前账号的配置，Claude 执行命令时不再逐条确认',
+      summary: '按当前账号的设置，跑命令前不再逐条问你',
       details: { bypass, managed: true },
     }
   }
   return {
     state: 'warn',
-    summary: 'Claude 已开启 bypassPermissions，命令执行将跳过确认',
+    summary: '被设成了跑命令前不问你，这个设置不是星芒写的。留意它会直接执行命令',
     details: { bypass, managed: false },
   }
 }
@@ -1469,6 +1608,8 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
   const inspectAdmin = dependencies.inspectAdministrator ?? defaultInspectAdministrator
   const inspectElevation = dependencies.inspectElevationCapability
     ?? ((signal) => inspectWindowsElevationCapability({ timeoutMs: 3_000, signal }))
+  const inspectStoreAppLaunch = dependencies.inspectStoreAppLaunchContext
+    ?? ((signal) => inspectWindowsStoreAppLaunchContext({ timeoutMs: 4_000, signal }))
   const fetchImpl = dependencies.fetch ?? globalThis.fetch
   const paths = dependencies.clashConfigPaths ?? clashCandidates(userHome, env)
   const inspectProxy = dependencies.inspectProxyVariables ?? ((signal) => defaultProxyVariables(env))
@@ -1482,7 +1623,7 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
   const checks: CheckDefinition[] = [
     {
       code: 'APP_RUNTIME',
-      title: '应用运行时',
+      title: '星芒版本',
       run: () => ({
         state: 'pass',
         summary: `${dependencies.app.name} ${dependencies.app.version}`,
@@ -1494,7 +1635,7 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
       title: '操作系统',
       run: () => ({
         state: supportedPlatform ? 'pass' : 'warn',
-        summary: `${platform} ${release} (${arch})`,
+        summary: operatingSystemSummary(platform, release, arch),
         details: { supported: supportedPlatform },
       }),
     },
@@ -1559,6 +1700,20 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
           // 系统自带的 Administrator 账号，或整台电脑关了授权弹窗。这就是这个账号平常的
           // 权限，没有「普通启动」可选，软件也已按普通方式做事。国内很多装机版系统默认
           // 登这个账号，一直挂着「建议普通启动」只会让客户以为软件坏了（0.2.8 起就这样）。
+          // 但这两种电脑上 Windows 常常不让打开从应用商店装的软件，Codex 桌面端就是。
+          // 以前要等客户装完、打开失败再等将近一分钟才说（#658），这里提前说一句，
+          // 只是「需留意」，不拦安装。没问出来就照旧，不猜。
+          const block = resolveStoreAppLaunchBlock(
+            await Promise.resolve(inspectStoreAppLaunch(signal)).catch(() => null)
+              ?? emptyWindowsStoreAppLaunchContext,
+          )
+          if (block) {
+            return {
+              state: 'warn',
+              summary: describeStoreAppLaunchBlock(block),
+              details: { elevated, required: false, alwaysElevated: true, storeAppLaunchBlock: block },
+            }
+          }
           return {
             state: 'pass',
             summary: '这台电脑登录的账号本身就带管理员权限，软件每次都是这样打开的，已按平常方式运行，不用处理',
@@ -1598,12 +1753,12 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
     },
     {
       code: 'SYSTEM_POWERSHELL',
-      title: 'PowerShell 启动环境',
+      title: '打开工具用的命令窗口',
       run: async (signal) => {
         if (platform !== 'win32') {
           return {
             state: 'pass',
-            summary: '当前平台不使用 Windows PowerShell 启动 CLI',
+            summary: 'Mac 不需要这一项',
             details: { required: false, installed: null, path: null },
           }
         }
@@ -1611,8 +1766,8 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
         return {
           state: status.installed ? 'pass' : 'fail',
           summary: status.installed
-            ? `可用${status.version ? `（${status.version}）` : ''}`
-            : '未找到可用的 Windows PowerShell 5.1 或 PowerShell 7',
+            ? '可用'
+            : '这台电脑上找不到打开工具要用的系统命令窗口，工具没法从星芒打开。请在「反馈」页导出报告发给客服',
           details: {
             required: true,
             installed: status.installed,
@@ -1623,7 +1778,7 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
     },
     ...(['node', 'npm', 'python'] as const).map<CheckDefinition>((tool) => ({
       code: `RUNTIME_${tool.toUpperCase()}`,
-      title: `${tool === 'python' ? 'Python' : tool} 环境`,
+      title: runtimeCheckTitles[tool],
       run: async (signal) => {
         const status = await inspectTool(tool, signal)
         const required = tool !== 'python'
@@ -1642,7 +1797,7 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
       // 把它判成待处理会让一个用不到 bash 的客户以为软件装坏了。要说的是
       // 「缺了会怎样」，文案在 git-runtime.ts（与插件市场那条共用）。
       code: 'RUNTIME_GIT',
-      title: 'Git 环境',
+      title: 'Git',
       run: async (signal) => {
         const status = await inspectTool('git', signal)
         return {
@@ -1664,7 +1819,7 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
     },
     ...providerIds.map<CheckDefinition>((provider) => ({
       code: `CLI_${provider.toUpperCase()}`,
-      title: `${cliCatalog[provider].name} 环境`,
+      title: cliCatalog[provider].name,
       run: async (signal) => {
         const status = await inspectTool(provider, signal)
         return {
@@ -1692,7 +1847,7 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
     },
     ...providerIds.map<CheckDefinition>((provider) => ({
       code: `PROVIDER_${provider.toUpperCase()}`,
-      title: `${cliCatalog[provider].name} 中转配置`,
+      title: `${cliCatalog[provider].name} 连接设置`,
       run: () => {
         const inspection = providerInspections.get(provider) ?? inspectProvider(provider, providerRoots)
         return providerOutcome(provider, inspection, displayRoots)
@@ -1781,6 +1936,52 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
           summary: accelerating ? '能连上星芒服务（开着加速时也直接连，不绕加速线路）' : '能连上星芒服务',
           details: accelerating ? { endpoint, status: response.status, route: 'direct' } : { endpoint, status: response.status },
         }
+      },
+    },
+    {
+      // 公司的上网审计、安全软件的网页扫描会换掉所有网页的证书。星芒自己走 Chromium
+      // 不受影响（上面那一项永远是绿的），工具那一侧走 Node.js，要看它认不认。
+      // 只做说明、不决定软件行为，所以超时不亮红灯。
+      code: 'CERTIFICATE_TRUST',
+      title: '安全证书',
+      timeoutOutcome: {
+        state: 'pass',
+        summary: '电脑这会儿比较忙，安全证书这一项没来得及查完，稍后点「重新检测」再看一次。',
+        details: { timedOut: true },
+      },
+      run: async (signal): Promise<CheckOutcome> => {
+        const node = await inspectTool('node', signal)
+        if (!node.installed || !node.path) return { state: 'pass', summary: '', omit: true }
+        // 以管理员身份打开时工具那一侧刻意不带这个开关（trustedCommandEnvironment），
+        // 也就不替它起进程去量：结论只有一个。
+        if (platform === 'win32' && dependencies.windowsExecution?.mode === 'trusted-only') {
+          return certificateTrustOutcome({
+            verdict: 'elevated',
+            nodeVersion: node.version,
+            defaultRoots: null,
+            systemRoots: null,
+            elevated: true,
+          })
+        }
+        const target = certificateProbeTarget(relayStatusProbeUrl(relaySite))
+        if (!target) return { state: 'pass', summary: '', omit: true }
+        const probe = dependencies.probeNodeTls ?? ((input, probeSignal) => defaultProbeNodeTls(input, probeSignal, env))
+        const [withoutSwitch, withSwitch] = await Promise.all([
+          probe({ nodePath: node.path, ...target, useSystemRoots: false }, signal),
+          probe({ nodePath: node.path, ...target, useSystemRoots: true }, signal),
+        ])
+        const nodeVersion = withoutSwitch.version ?? withSwitch.version ?? node.version
+        return certificateTrustOutcome({
+          verdict: certificateTrustVerdict({
+            defaultRoots: withoutSwitch.outcome,
+            systemRoots: withSwitch.outcome,
+            nodeVersion,
+          }),
+          nodeVersion,
+          defaultRoots: withoutSwitch.outcome,
+          systemRoots: withSwitch.outcome,
+          elevated: false,
+        })
       },
     },
     {
@@ -1941,7 +2142,7 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
     },
     {
       code: 'CLASH_VERGE_TUN',
-      title: 'Clash Verge Rev TUN 模式',
+      title: '代理软件的全局接管模式',
       run: () => {
         let detectedPath: string | null = null
         for (const candidate of paths) {
@@ -1955,14 +2156,14 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
           if (enabled) {
             return {
               state: 'warn',
-              summary: '检测到 TUN 模式已开启',
+              summary: 'Clash Verge Rev 开着全局接管模式，可能让工具连不上。用不到时先把它关掉',
               details: { enabled: true, path: pathForDisplay(candidate, displayRoots) },
             }
           }
         }
         return {
           state: 'pass',
-          summary: detectedPath ? 'TUN 模式未开启' : '未找到 Clash Verge Rev 配置',
+          summary: detectedPath ? 'Clash Verge Rev 没开全局接管模式' : '没发现 Clash Verge Rev',
           details: { enabled: false, path: pathForDisplay(detectedPath, displayRoots) },
         }
       },
@@ -1977,21 +2178,21 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
       ),
     } : {
       code: 'PROXY_ENVIRONMENT',
-      title: '系统代理环境变量',
+      title: '电脑里的代理设置',
       run: async (signal) => {
         const variables = await inspectProxy(signal)
         const unique = [...new Map(variables.map((item) => [`${item.name}:${item.source}`, item])).values()]
           .sort((left, right) => left.name.localeCompare(right.name) || left.source.localeCompare(right.source))
         return {
           state: unique.length ? 'warn' : 'pass',
-          summary: unique.length ? `检测到 ${unique.length} 项代理环境变量` : '未检测到代理环境变量',
+          summary: unique.length ? `电脑里另外设了 ${unique.length} 处代理，详情里能看到` : '没有另外设过代理',
           details: Object.fromEntries(unique.map((item, index) => [`variable${index + 1}`, `${item.name} (${item.source})`])),
         }
       },
     },
     {
       code: 'PROVIDER_ENVIRONMENT_OVERRIDE',
-      title: '环境变量覆盖',
+      title: '电脑里另外设过的工具地址或密钥',
       run: () => withIgnoredCodexHome(
         environmentOverrideOutcome(collectEnvironmentOverrides(env, relaySite.providerBaseUrls, userHome)),
         inspectIgnoredCodexHome(dependencies.ignoredCodexHome, providerRoots, providerInspections.get('codex')),
@@ -2004,25 +2205,28 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
     },
     {
       code: 'CODEX_DOTENV',
-      title: 'Codex .env 冲突',
+      title: 'Codex 文件夹里的额外设置',
       run: () => {
         const envPath = path.join(codexHome, '.env')
         const exists = fs.existsSync(envPath)
         return {
           state: exists ? 'warn' : 'pass',
-          summary: exists ? '检测到 .codex/.env，可能覆盖当前中转配置' : '未检测到 .codex/.env 冲突',
+          summary: exists ? 'Codex 文件夹里有一份额外设置，可能盖过当前账号的连接' : 'Codex 文件夹里没有额外设置',
           details: { exists, path: pathForDisplay(envPath, displayRoots) },
         }
       },
     },
     {
       code: 'CLAUDE_BYPASS_PERMISSIONS',
-      title: 'Claude 命令确认方式',
+      title: 'Claude Code 跑命令前要不要先问你',
       run: () => readClaudeBypass(userHome, dependencies.readClaudeConfigOwnership?.() ?? null),
     },
   ]
 
-  const items = await Promise.all(checks.map((check) => runIsolatedCheck(check, timeoutMs, sanitize)))
+  const items = reconcileCertificateTrustWithNetwork(
+    (await Promise.all(checks.map((check) => runIsolatedCheck(check, timeoutMs, sanitize))))
+      .filter((item): item is DiagnosticItem => item !== null),
+  )
   return {
     version: 1,
     generatedAt: now().toISOString(),

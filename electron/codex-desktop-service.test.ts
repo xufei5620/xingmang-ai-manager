@@ -33,10 +33,17 @@ import {
   buildDesktopUpdateStatus,
   canAttemptCodexDesktopFirstInstallFallback,
   describeCodexDesktopLaunchFailure,
+  codexDesktopNotStartedPrefix,
+  processExistsFromSignalError,
+  buildCodexDesktopSessionProcessProbeScript,
+  parseCodexDesktopSessionProcessIds,
   buildCodexDesktopStoreInstallCommand,
   describeCodexDesktopDownloadAttempt,
   describeCodexDesktopStoreFailure,
+  codexDesktopStoreExitCode,
   parseCodexDesktopStoreProgress,
+  buildCodexDesktopStoreWaitMessage,
+  codexDesktopStoreHeartbeatMs,
   shouldTryCodexDesktopStoreUpdate,
   describeCodexDesktopPrimaryMirrorSkip,
   desktopMirrorUpdateAvailable,
@@ -47,12 +54,12 @@ import {
   fetchCodexDesktopPreviousManifestCandidates,
   inspectCodexDesktopPackageFile,
   parseCodexDesktopCombinedProbeJson,
-  parseCodexDesktopWindowsLaunchContext,
   validateCodexDesktopResourceUrl,
   type CodexDesktopManifestCandidate,
   type CodexDesktopServiceOptions,
   type CodexDesktopWindowsProbes,
 } from './codex-desktop-service'
+import { parseWindowsStoreAppLaunchContext } from './windows-store-app-launch'
 
 // Windows CI 上六个作业共用一台机器，Defender 在场时 PowerShell 冷启一次可以
 // 超过一分钟；起作用的是 execFile 这一层的预算，不是 vitest 的用例超时。
@@ -111,7 +118,7 @@ function testMirrorCandidate(
 
 describe('Codex Desktop AppModel launch diagnostics', () => {
   it('recognizes the built-in Administrator SID and numeric UAC values', () => {
-    expect(parseCodexDesktopWindowsLaunchContext(
+    expect(parseWindowsStoreAppLaunchContext(
       '{"sid":"S-1-5-21-2548096332-2102100343-2330258446-500","uacEnabled":0,"filterAdministratorToken":0}\n',
     )).toEqual({
       userSid: 'S-1-5-21-2548096332-2102100343-2330258446-500',
@@ -122,7 +129,7 @@ describe('Codex Desktop AppModel launch diagnostics', () => {
   })
 
   it('degrades malformed PowerShell output without exposing arbitrary text', () => {
-    expect(parseCodexDesktopWindowsLaunchContext('warning\nnot-json\n')).toEqual({
+    expect(parseWindowsStoreAppLaunchContext('warning\nnot-json\n')).toEqual({
       userSid: null,
       isBuiltInAdministrator: false,
       uacEnabled: null,
@@ -130,17 +137,50 @@ describe('Codex Desktop AppModel launch diagnostics', () => {
     })
   })
 
-  it('gives built-in Administrator users actionable AppModel guidance', () => {
+  it('tells a built-in Administrator user to sign in with an ordinary account', () => {
     const message = describeCodexDesktopLaunchFailure({
       userSid: 'S-1-5-21-1-2-3-500',
       isBuiltInAdministrator: true,
       uacEnabled: false,
       filterAdministratorToken: false,
     })
-    expect(message).toContain('0xC0EA0001')
-    expect(message).toContain('内置 Administrator')
-    expect(message).toContain('wsreset.exe')
-    expect(message).toContain('普通 Windows 账户')
+    expect(message.startsWith(codexDesktopNotStartedPrefix)).toBe(true)
+    expect(message).toContain('「Administrator」账户')
+    expect(message).toContain('换一个普通账户登录电脑')
+  })
+
+  it('names turned-off account control and otherwise gives the three steps a customer can take', () => {
+    const uacOff = describeCodexDesktopLaunchFailure({
+      userSid: 'S-1-5-21-1-2-3-1001', isBuiltInAdministrator: false, uacEnabled: false, filterAdministratorToken: null,
+    })
+    expect(uacOff.startsWith(codexDesktopNotStartedPrefix)).toBe(true)
+    expect(uacOff).toContain('「用户账户控制」')
+    expect(uacOff).toContain('联系客服')
+
+    const generic = describeCodexDesktopLaunchFailure({
+      userSid: null, isBuiltInAdministrator: false, uacEnabled: null, filterAdministratorToken: null,
+    })
+    expect(generic.startsWith(codexDesktopNotStartedPrefix)).toBe(true)
+    expect(generic).toContain('点「重试」')
+    expect(generic).toContain('开始菜单里搜「Codex」')
+    expect(generic).toContain('联系客服')
+  })
+
+  it('keeps Windows internals out of every sentence a customer can see', () => {
+    const contexts = [
+      { userSid: 'S-1-5-21-1-2-3-500', isBuiltInAdministrator: true, uacEnabled: false, filterAdministratorToken: false },
+      { userSid: 'S-1-5-21-1-2-3-1001', isBuiltInAdministrator: false, uacEnabled: false, filterAdministratorToken: null },
+      { userSid: null, isBuiltInAdministrator: false, uacEnabled: null, filterAdministratorToken: null },
+    ]
+    for (const context of contexts) {
+      expect(describeCodexDesktopLaunchFailure(context)).not.toMatch(/wsreset|AppModel|AppX|Appx|UAC|0x[0-9A-F]{8}|SID|Microsoft Store|反馈与诊断/i)
+    }
+  })
+
+  it('counts a process that refuses the liveness probe as still running', () => {
+    expect(processExistsFromSignalError(Object.assign(new Error('denied'), { code: 'EPERM' }))).toBe(true)
+    expect(processExistsFromSignalError(Object.assign(new Error('gone'), { code: 'ESRCH' }))).toBe(false)
+    expect(processExistsFromSignalError(null)).toBe(false)
   })
 })
 
@@ -1239,6 +1279,58 @@ describe('Codex Desktop Appx probe script', () => {
     expect(runMockProbe('all')).toEqual({ calls: 4, processIds: [101, 102, 104] })
   })
 
+  it('finds a launched window by session and package path alone, without the owner check the close paths need', () => {
+    const script = buildCodexDesktopSessionProcessProbeScript()
+    const scan = scanPowerShell(script)
+    expect(scan.unterminated).toBe(false)
+    expect(unbalancedBracket(scan.code)).toBeNull()
+    expect(script).toContain('Get-CimInstance -ClassName Win32_Process -Filter "SessionId=$currentSessionId"')
+    expect(script).toContain('$_.SessionId -eq $currentSessionId')
+    expect(script).toContain('$_.CommandLine')
+    // Opening never closes anything, so it must not drop a window whose owner
+    // WMI cannot confirm, and it must not be limited to today's exe names.
+    expect(script).not.toContain('GetOwnerSid')
+    expect(script).not.toContain("Name='ChatGPT.exe'")
+  })
+
+  it('reduces the launch probe to PIDs of the expected package only', () => {
+    const stable = String.raw`C:\Program Files\WindowsApps\OpenAI.Codex_26.715.0.0_x64__2p2nqsd0c76g0\app\ChatGPT.exe`
+    const beta = String.raw`C:\Program Files\WindowsApps\OpenAI.CodexBeta_26.716.0.0_x64__2p2nqsd0c76g0\app\ChatGPT.exe`
+    const output = JSON.stringify([
+      { ProcessId: 101, ExecutablePath: stable },
+      { ProcessId: 102, ExecutablePath: beta },
+      { ProcessId: 103, ExecutablePath: String.raw`C:\Tools\ChatGPT.exe` },
+      { ProcessId: -1, ExecutablePath: stable },
+      { ProcessId: 104 },
+    ])
+    expect(parseCodexDesktopSessionProcessIds(output, 'OpenAI.Codex_2p2nqsd0c76g0')).toEqual([101])
+    expect(parseCodexDesktopSessionProcessIds(output, null)).toEqual([101, 102])
+    expect(parseCodexDesktopSessionProcessIds(JSON.stringify({ ProcessId: 101, ExecutablePath: stable }), null)).toEqual([101])
+    expect(parseCodexDesktopSessionProcessIds('', null)).toEqual([])
+    expect(parseCodexDesktopSessionProcessIds('WARNING: not json', null)).toEqual([])
+  })
+
+  it.runIf(process.platform === 'win32')('runs the launch probe against mocked WMI and keeps windows whose owner is unknown', () => {
+    const mocks = String.raw`
+      function Get-CimInstance {
+        param($ClassName, $Filter)
+        $session = [System.Diagnostics.Process]::GetCurrentProcess().SessionId
+        @(
+          [pscustomobject]@{ ProcessId = 201; Name = 'ChatGPT.exe'; SessionId = $session; ExecutablePath = 'C:\WindowsApps\OpenAI.Codex_26.715.0.0_x64__id\app\ChatGPT.exe' }
+          [pscustomobject]@{ ProcessId = 202; Name = 'ChatGPT.exe'; SessionId = $session; ExecutablePath = $null; CommandLine = '"C:\WindowsApps\OpenAI.Codex_26.715.0.0_x64__id\app\ChatGPT.exe" --type=renderer' }
+          [pscustomobject]@{ ProcessId = 203; Name = 'ChatGPT.exe'; SessionId = ($session + 1); ExecutablePath = 'C:\WindowsApps\OpenAI.Codex_26.715.0.0_x64__id\app\ChatGPT.exe' }
+          [pscustomobject]@{ ProcessId = 204; Name = 'git.exe'; SessionId = $session; ExecutablePath = 'C:\Program Files\Git\cmd\git.exe' }
+        )
+      }
+      function Invoke-CimMethod { throw 'the launch probe must not ask for owners' }
+    `
+    const output = execFileSync(windowsPowerShellExecutable(), [
+      '-NoLogo', '-NoProfile', '-NonInteractive', '-Command', `${mocks}
+        ${buildCodexDesktopSessionProcessProbeScript()}`,
+    ], { encoding: 'utf8', windowsHide: true, maxBuffer: 1024 * 1024 })
+    expect(parseCodexDesktopSessionProcessIds(output, 'OpenAI.Codex_id')).toEqual([201, 202])
+  })
+
   it('keeps the three merged segments byte-identical to the standalone probe scripts', () => {
     const combined = buildCodexDesktopCombinedProbeScript()
 
@@ -1250,6 +1342,8 @@ describe('Codex Desktop Appx probe script', () => {
     expect(combined).toContain('catch { $startAppsError = $_.Exception.Message }')
     expect(combined).toContain('catch { $processesError = $_.Exception.Message }')
     expect(combined).toContain('catch { $packageError = $_.Exception.Message }')
+    expect(combined).toContain('storeAppLaunch = $storeAppLaunchContext')
+    expect(combined).toContain('WindowsIdentity]::GetCurrent()')
     // 嵌套一层后默认的 Depth 2 会把包条目压成字符串
     expect(combined).toContain('ConvertTo-Json -Compress -Depth 6')
   })
@@ -1283,6 +1377,8 @@ describe('Codex Desktop Appx probe script', () => {
     expect(Object.prototype.hasOwnProperty.call(parsed, 'startApps')).toBe(true)
     expect(Object.prototype.hasOwnProperty.call(parsed, 'processes')).toBe(true)
     expect(parsed.package).toBeTruthy()
+    // 账户那一段也要真的在 Windows 上读得出当前用户，首页装之前的提醒靠它
+    expect(String((parsed.storeAppLaunch as Record<string, unknown> | null)?.sid ?? '')).toMatch(/^S-1-\d+(?:-\d+)+$/)
     // Appx 段在任何账户下都必须给出结论：要么有包、要么确认没有、要么报错
     const probe = parseCodexDesktopCombinedProbeJson(output)
     expect(
@@ -1427,6 +1523,27 @@ describe('parseCodexDesktopCombinedProbeJson', () => {
     })
     expect(probe.match).toEqual({ name: 'ChatGPT', appId: 'OpenAI.Codex_stable!App' })
     expect(probe.processes).toHaveLength(1)
+  })
+
+  it('flags an account that Windows will not let open store apps', () => {
+    expect(parseCodexDesktopCombinedProbeJson(combinedOutput({
+      storeAppLaunch: { sid: 'S-1-5-21-1-2-3-500', uacEnabled: 1, filterAdministratorToken: 0 },
+    })).storeAppLaunchBlock).toBe('builtInAdministrator')
+    expect(parseCodexDesktopCombinedProbeJson(combinedOutput({
+      storeAppLaunch: { sid: 'S-1-5-21-1-2-3-1001', uacEnabled: 0, filterAdministratorToken: null },
+    })).storeAppLaunchBlock).toBe('uacDisabled')
+  })
+
+  it('leaves the store-app flag out for ordinary accounts and missing segments', () => {
+    for (const storeAppLaunch of [
+      { sid: 'S-1-5-21-1-2-3-1001', uacEnabled: 1, filterAdministratorToken: null },
+      { sid: 'S-1-5-21-1-2-3-500', uacEnabled: 1, filterAdministratorToken: 1 },
+      null,
+      'garbage',
+    ]) {
+      expect(parseCodexDesktopCombinedProbeJson(combinedOutput({ storeAppLaunch }))).not.toHaveProperty('storeAppLaunchBlock')
+    }
+    expect(parseCodexDesktopCombinedProbeJson(combinedOutput())).not.toHaveProperty('storeAppLaunchBlock')
   })
 
   it('isolates a failed start-menu segment', () => {
@@ -1784,7 +1901,8 @@ describe('Codex Desktop Microsoft Store install', () => {
     expect(describeCodexDesktopStoreFailure(storeError({ exitCode: 0x8a15002b | 0 }))).toBe('商店里暂时还没有更新的版本')
     expect(describeCodexDesktopStoreFailure(storeError({ exitCode: 0x8a150014 | 0 }))).toBe('商店里没找到 Codex 桌面端')
     expect(describeCodexDesktopStoreFailure(storeError({ code: 'TIMED_OUT', exitCode: null }))).toBe('等了很久还没装完')
-    expect(describeCodexDesktopStoreFailure(storeError({ exitCode: 0x8a150084 | 0 }))).toBe('错误码 0x8a150084')
+    expect(describeCodexDesktopStoreFailure(storeError({ exitCode: 0x8a150084 | 0 }))).toBe('商店那边没说原因')
+    expect(codexDesktopStoreExitCode(storeError({ exitCode: 0x8a150084 | 0 }))).toBe('0x8a150084')
     expect(describeCodexDesktopStoreFailure(new Error('spawn failed'))).toBe('安装没有完成')
   })
 
@@ -1792,6 +1910,32 @@ describe('Codex Desktop Microsoft Store install', () => {
     expect(parseCodexDesktopStoreProgress('  ██████      12%\r  ████████████  48%')).toBe(48)
     expect(parseCodexDesktopStoreProgress('已找到 Codex [9PLM9XGG6VKS]')).toBeNull()
     expect(parseCodexDesktopStoreProgress('999%')).toBeNull()
+  })
+
+  it('tells the user how long the Store install has been waiting', () => {
+    expect(buildCodexDesktopStoreWaitMessage(0, null)).toBe('正在从微软商店下载安装 Codex 桌面端，要等几分钟，请别关窗口')
+    expect(buildCodexDesktopStoreWaitMessage(3 * 60_000 + 5_000, null))
+      .toBe('正在从微软商店下载安装 Codex 桌面端，已经等了 3 分 05 秒。商店有时要十来分钟，不用管它，请别关窗口')
+    expect(buildCodexDesktopStoreWaitMessage(codexDesktopStoreHeartbeatMs, 42)).toContain('（42%），已经等了 15 秒')
+  })
+
+  it('says how much longer the Store gets before switching to the fallback download', () => {
+    const timeoutMs = 15 * 60_000
+    expect(buildCodexDesktopStoreWaitMessage(12 * 60_000, null, timeoutMs))
+      .toBe('还在等微软商店，最多再等 3 分钟；还不行星芒会自动换国内下载线路接着装，请别关窗口')
+    expect(buildCodexDesktopStoreWaitMessage(14 * 60_000 + 30_000, 90, timeoutMs)).toContain('（90%），最多再等 1 分钟')
+    expect(buildCodexDesktopStoreWaitMessage(timeoutMs + 5_000, null, timeoutMs)).toContain('最多再等 1 分钟')
+    expect(buildCodexDesktopStoreWaitMessage(11 * 60_000, null, timeoutMs)).toContain('已经等了 11 分 00 秒')
+  })
+
+  it('keeps install jargon out of the Store wait messages', () => {
+    const samples = [0, 20_000, 5 * 60_000, 13 * 60_000].flatMap((elapsed) => [
+      buildCodexDesktopStoreWaitMessage(elapsed, null),
+      buildCodexDesktopStoreWaitMessage(elapsed, 50),
+    ])
+    for (const message of samples) {
+      expect(message).not.toMatch(/winget|msstore|appx|msix|app installer|powershell/i)
+    }
   })
 
   it('tries the Store for an update unless the official feed says nothing newer exists', () => {

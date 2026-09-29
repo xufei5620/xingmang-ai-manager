@@ -57,7 +57,7 @@ import { createWindowLifecycle } from './window-lifecycle'
 import { installLeftoverStartupDelayMs, sweepInstallLeftovers } from './install-leftovers'
 import { createLoginQuietPeriod, hasLoginLaunchArgument, loginQuietPeriodMs, resolveLoginLaunch, shouldRevealInitialWindow, windowsAppUserModelId } from './login-launch'
 import { resolveInstallableUpdateOnQuit, resolveInterruptibleInstallTask } from './quit-blocking-tasks'
-import { createPendingUpdateStore, decideLaunchInstall, resolveDownloadedVersionToRecord } from './auto-update-install'
+import { LAUNCH_INSTALL_NOTICE_MS, QUIT_INSTALL_NOTICE_MS, buildAutoInstallNotice, createPendingUpdateStore, decideLaunchInstall, decideQuitInstall, previousAutoInstallFailureMessage, resolveDownloadedVersionToRecord, resolvePreviousAutoInstallFailure } from './auto-update-install'
 import { createWindowResponsivenessGuard } from './window-responsiveness'
 import { createRendererCrashRecovery } from './renderer-crash-recovery'
 import { createApplicationTray, traySubscriptionLabel, type ApplicationTrayController } from './application-tray'
@@ -183,6 +183,7 @@ import {
 } from './window-presentation'
 import { buildStartupFailureDialog, classifyStorageFailure, dataDriveLetter } from './startup-failure'
 import { installMainWindowFrameNavigationGuard } from './platform/frame-navigation'
+import { codexDesktopStoreUrl } from './codex-desktop-install-failure'
 
 guardProcessOutputStreams()
 
@@ -200,7 +201,8 @@ const nonSiteExternalUrlAllowlist = [
   // 缺少系统 winget 时首页 Claude Desktop、OpenCode 两行的「去官网下载」（逐条全等）。
   ...Object.values(externalClientOfficialDownloadUrls),
   'https://chatgpt.com/download/',
-  'ms-windows-store://pdp/?ProductId=9PLM9XGG6VKS',
+  // Codex 桌面端装不上时错误框里的「去微软商店装」（第十九批 5）。
+  codexDesktopStoreUrl,
 ] as const
 
 // Every relay site's own destinations (marketing and keys pages) is derived
@@ -1354,6 +1356,12 @@ if (!hasSingleInstanceLock) {
     let updateQuitHandoff: { prepare(): Promise<void> | undefined; abort(): void } | null = null
     // 退出流程（窗口生命周期）在 IPC 注册之后才建好，先占个位。
     let requestRelaunch: (() => Promise<boolean>) | null = null
+    // 自动更新的落盘记录（见 auto-update-install.ts）。要在更新服务之前读好：下载完成
+    // 那一刻就要用它认出「上次自动装过却没装上」的版本。
+    const pendingUpdateStore = createPendingUpdateStore({ filePath: path.join(managerDataDirectory, 'pending-update.json') })
+    const pendingUpdateAtLaunch = pendingUpdateStore.read()
+    let pendingUpdateRecord = { ...pendingUpdateAtLaunch }
+    let previousAutoInstallFailureReported = false
     const updaterService = createUpdaterService(autoUpdater, {
       installedRelease,
       currentVersion: app.getVersion(),
@@ -1364,6 +1372,15 @@ if (!hasSingleInstanceLock) {
       // 同意「Windows 也自动更新」。撤回名单、分批放量、SHA-512 复核照旧生效。
       unsignedAutoUpdate: true,
       readAutoUpdate: () => systemService.readStoredConfig().autoUpdate !== false,
+      // 每次运行只认一次：用户点「重新安装」后又重新下载同一版时，不该再被判成上次失败。
+      previousAutoInstallFailure: (version) => {
+        if (previousAutoInstallFailureReported) return null
+        const failed = resolvePreviousAutoInstallFailure(version, app.getVersion(), pendingUpdateAtLaunch)
+        if (!failed) return null
+        previousAutoInstallFailureReported = true
+        runtimeLog.log('warn', 'updater', 'install.auto.previous-failed', `上次自动安装 ${failed} 没有装上，这次不再自动装`)
+        return previousAutoInstallFailureMessage(process.platform)
+      },
       verifyPackageDigest: verifyUpdatePackageDigest,
       // 监视器在更新服务之后才建（它要把结果交回更新服务），这里等真正检查时再取。
       refreshServiceStatus: () => serviceStatusMonitor ? serviceStatusMonitor.refresh() : Promise.resolve(null),
@@ -1487,6 +1504,7 @@ if (!hasSingleInstanceLock) {
         platform: process.platform,
         executionMode: process.platform === 'win32' ? windowsCliExecutionMode : null,
         executionProbeFailure: windowsCliExecution.probeFailure?.reason ?? null,
+        certificateTrust: latestDiagnostics?.items.find((item) => item.code === 'CERTIFICATE_TRUST')?.summary ?? null,
         appDirectory: path.dirname(app.getPath('exe')),
         dataDirectory: managerDataDirectory,
         managedDirectory,
@@ -1521,13 +1539,11 @@ if (!hasSingleInstanceLock) {
       },
       onError: (error) => runtimeLog.exception('window', 'notification.failed', error),
       iconPath: path.join(app.getAppPath(), 'assets', 'brand', 'v3', 'app-icon.png'),
+      readAutoUpdate: () => updaterService.autoUpdateEnabled(),
     })
     const unsubscribeDesktopNotifications = updaterService.subscribe((state) => desktopNotifications.handleUpdate(state))
     // 自动更新：上一次运行已经下好的版本，这次一打开就装上（见 auto-update-install.ts）。
     const launchedAt = Date.now()
-    const pendingUpdateStore = createPendingUpdateStore({ filePath: path.join(managerDataDirectory, 'pending-update.json') })
-    const pendingUpdateAtLaunch = pendingUpdateStore.read()
-    let pendingUpdateRecord = { ...pendingUpdateAtLaunch }
     let launchInstallTried = false
     const unsubscribeAutoUpdateInstall = updaterService.subscribe((state) => {
       const downloaded = resolveDownloadedVersionToRecord(state, pendingUpdateRecord)
@@ -1550,8 +1566,19 @@ if (!hasSingleInstanceLock) {
       launchInstallTried = true
       runtimeLog.log('info', 'updater', 'install.on-launch', `上次已下载好 ${version}，启动时自动安装`)
       pendingUpdateRecord = { ...pendingUpdateRecord, attemptedVersion: version }
-      // 先把「试过了」写稳再装：安装器起不来时，下次打开不会再试同一个版本。
-      void pendingUpdateStore.write(pendingUpdateRecord).then(() => {
+      // 先把「试过了」写稳再装：安装器起不来时，下次打开不会再试同一个版本。装之前先发
+      // 一条系统通知、等几秒：窗口刚出来就自己关掉、再凭空弹出授权窗口，看着像闪退中毒。
+      void pendingUpdateStore.write(pendingUpdateRecord).then(async () => {
+        desktopNotifications.announce(buildAutoInstallNotice(version, 'launch', process.platform))
+        await new Promise((resolve) => { setTimeout(resolve, LAUNCH_INSTALL_NOTICE_MS).unref() })
+        // 等的这几秒里用户可能关了自动更新、开始装工具，或者这个版本被撤回了。
+        const still = updaterService.autoUpdateEnabled()
+          && resolveInstallableUpdateOnQuit(updaterService.getState())?.version === version
+          && resolveInterruptibleInstallTask(systemService.inspectInstallationQueue()) === null
+        if (!still) {
+          runtimeLog.log('info', 'updater', 'install.on-launch.skipped', `启动时自动安装 ${version} 前情况变了，留到退出时再装`)
+          return
+        }
         updaterService.install()
       }).catch((cause: unknown) => {
         runtimeLog.exception('updater', 'install.on-launch.failed', cause)
@@ -2692,7 +2719,7 @@ if (!hasSingleInstanceLock) {
         let update = resolveInstallableUpdateOnQuit(updaterService.getState())
         if (!update) return 'quit'
         if (updaterService.autoUpdateEnabled()) {
-          // 自动更新开着就不再问，直接装。装之前再看一眼撤回名单：下载之后才被撤回
+          // 自动更新开着、这一版还没在退出时自动试过，就不再问，直接装。装之前再看一眼撤回名单：下载之后才被撤回
           // 的版本会在这里被收回，最多等几秒，读不到就按上次读到的算。
           await Promise.race([
             serviceStatusMonitor?.refresh().catch(() => null),
@@ -2700,7 +2727,19 @@ if (!hasSingleInstanceLock) {
           ])
           update = resolveInstallableUpdateOnQuit(updaterService.getState())
           if (!update) return 'quit'
-          runtimeLog.log('info', 'window', 'quit.update-auto-install', `退出时自动安装更新：${update.version ?? '版本未知'}`)
+        }
+        const version = update.version
+        if (version && decideQuitInstall({ autoUpdate: updaterService.autoUpdateEnabled(), version, record: pendingUpdateRecord }) === 'install') {
+          runtimeLog.log('info', 'window', 'quit.update-auto-install', `退出时自动安装更新：${version}`)
+          // 退出时同一个版本只自动装一次：授权窗被点了「否」时软件已经退了，下次打开要从
+          // 这条记录认出「没装上」，不再每次退出都弹授权窗口。写不进去也照装，最多多问一次。
+          pendingUpdateRecord = { ...pendingUpdateRecord, quitAttemptedVersion: version }
+          await pendingUpdateStore.write(pendingUpdateRecord).catch((cause: unknown) => {
+            runtimeLog.exception('updater', 'pending.record-failed', cause)
+          })
+          desktopNotifications.announce(buildAutoInstallNotice(version, 'quit', process.platform))
+          // 给系统一点时间把通知摆出来，再让安装器接手退出。
+          await new Promise((resolve) => { setTimeout(resolve, QUIT_INSTALL_NOTICE_MS).unref() })
           return 'install-update'
         }
         runtimeLog.log('info', 'window', 'quit.update-downloaded', `退出前确认安装更新：${update.version ?? '版本未知'}`)

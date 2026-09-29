@@ -250,7 +250,7 @@ export const tutorialTopics: readonly TutorialTopic[] = [
         detail: '这台电脑没登录过官方账号时，切回后要在工具里登录一次。',
         bullets: ['Claude Code：打开后输入 /login，按提示登录 Claude 账号。', 'Codex：打开后按提示用 ChatGPT 账号登录。', '提示「refresh token has expired」时，在 Codex 里退出后重新登录。'],
         expected: '工具里显示已登录，能正常回复。',
-        extra: [{ title: '切完还是报 401 或「Please run /login」？', detail: '到「检查」页重新检查一次，看「环境变量覆盖」有没有提示：系统里设过的 ANTHROPIC_API_KEY 这类变量会盖过工具箱写的配置。' }],
+        extra: [{ title: '切完还是报 401 或「Please run /login」？', detail: '到「检查」页重新检查一次，看「电脑里另外设过的工具地址或密钥」有没有提示：电脑里另外设过的 Key 会盖过当前账号的设置。' }],
         action: '去检查页',
         page: 'health',
       },
@@ -997,6 +997,7 @@ export const tutorialTopics: readonly TutorialTopic[] = [
         extra: [
           { title: statuses.tool.configChanged[0], detail: '其他程序或手工操作改过配置，当前账号的 Key 可能已不在里面。要用星芒配置就重新写入 Key；如果这是你有意做的修改，在「…」中选择「就用现在这份」。' },
           { title: statuses.tool.codexShadowed[0], detail: '以前的 Codex 设置里有一处 Codex 自己认不出，看着连好了，打开却会报 Key 无效。点工具行上的「修好它」，或者直接点「打开」，软件会先备份原来的设置（在「备份」里能找回），再改好。Codex CLI 和 Codex 桌面端共用一份设置，会一起改。' },
+          { title: statuses.tool.cliHooksStale[0], detail: '软件写进工具里的提醒设置（做完、出错时弹通知，干活时不让电脑睡着）还指着以前的位置，常见于卸载后换了文件夹重装、挪过软件或重新装过 Node.js。工具照样能用，只是每次都多报一行错。点工具行上的「修好它」，软件会先备份原来的设置（在「备份」里能找回），再只改这几行。' },
           { title: statuses.tool.otherSiteKey[0], detail: '这个工具里的 Key 不是当前账号的，在这里打不开。点工具行上的「改用（你的账号名）」就能用，改之前会先备份原来的设置（在「备份」里能找回）。Codex CLI 和 Codex 桌面端共用一份设置，会一起改。' },
           { title: statuses.tool.otherAccountKey[0], detail: '工具能用，但认不出这把 Key 是当前账号的，用量可能算到别的账号上（常见于在同一台电脑上换了账号登录）。点「改用（你的账号名）」换成你自己的，改之前会先备份。' },
           { title: statuses.tool.ccSwitch[0], detail: '以前用 CC Switch 配过这个工具，它现在还连着 CC Switch 里选的那一家。点「改用（你的账号名）」会先备份原来的设置（在「备份」里能找回），再换成当前账号；想继续用 CC Switch 的，在「…」中选择「就用现在这份」。不再用 CC Switch 的话请把它退出，免得它又把设置改回去。' },

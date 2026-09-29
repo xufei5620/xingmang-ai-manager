@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { networkFailureMessages } from '../../../../electron/network-failure'
-import { authErrorMessage, isTwoFactorChallenge, isTwoFactorExpired, normalizeEmail, parseInviteCode, parseRecoveryCode, parseTwoFactorCode, remainingCooldown, requiresBrowserAuthentication, suggestEmailCorrection, usernameFromEmail, validateNewPassword, validateRegistration, type RegistrationDraft } from './state'
+import { authErrorMessage, isTwoFactorChallenge, isTwoFactorExpired, normalizeEmail, parseInviteCode, parseRecoveryCode, parseTwoFactorCode, registrationOfflineMessage, registrationStatusFailure, registrationUnreachableMessage, remainingCooldown, requiresBrowserAuthentication, suggestEmailCorrection, usernameFromEmail, validateNewPassword, validateRegistration, type RegistrationDraft } from './state'
 import { guideOfficialLoginRequired, resolveGuideReadiness } from './StartGuide'
 
 describe('v2 two-step verification', () => {
@@ -252,5 +252,34 @@ describe('recovery new password', () => {
     expect(validateNewPassword('my-own-password', 'my-own-passwor').confirm).toBe('两次输入的新密码不一样')
     // Passwords are forwarded exactly as typed, so surrounding spaces count toward the length.
     expect(validateNewPassword(' 1234567', ' 1234567')).toEqual({})
+  })
+})
+
+describe('registration status failures', () => {
+  function ipcError(text: string) { return new Error(`Error invoking remote method 'account:get-status': Error: ${text}（账号服务状态查询请求超时）`) }
+
+  it('retries once and names proxy software when the service times out or is cut off', () => {
+    for (const reason of ['timeout', 'refused'] as const) {
+      expect(registrationStatusFailure(ipcError(networkFailureMessages[reason]), true)).toEqual({ message: registrationUnreachableMessage, retry: true, offline: false })
+    }
+  })
+
+  it('retries DNS failures but keeps the shared explanation', () => {
+    expect(registrationStatusFailure(ipcError(networkFailureMessages.dns), true)).toEqual({ message: networkFailureMessages.dns, retry: true, offline: false })
+  })
+
+  it('says the computer is offline instead of timing out and waits for the network', () => {
+    expect(registrationStatusFailure(ipcError(networkFailureMessages.timeout), false)).toEqual({ message: registrationOfflineMessage, retry: false, offline: true })
+    expect(registrationStatusFailure(ipcError(networkFailureMessages.offline), true)).toEqual({ message: registrationOfflineMessage, retry: false, offline: true })
+  })
+
+  it('does not retry failures a second attempt cannot fix', () => {
+    expect(registrationStatusFailure(ipcError(networkFailureMessages.tls), true)).toEqual({ message: networkFailureMessages.tls, retry: false, offline: false })
+    expect(registrationStatusFailure(ipcError(networkFailureMessages.serviceUnavailable), true)).toEqual({ message: networkFailureMessages.serviceUnavailable, retry: false, offline: false })
+    expect(registrationStatusFailure(new Error('boom'), true)).toEqual({ message: '读取账号设置没有成功，输入已保留，请稍后重试', retry: false, offline: false })
+  })
+
+  it('keeps technical words and site names out of the registration-only copy', () => {
+    for (const text of [registrationOfflineMessage, registrationUnreachableMessage]) expect(text).not.toMatch(/solov|星芒|DNS|proxy|超时|PATH/i)
   })
 })

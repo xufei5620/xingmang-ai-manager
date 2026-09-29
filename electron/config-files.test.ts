@@ -13,6 +13,7 @@ import {
   claudeForeignSettingsSnapshotName,
   moveClaudeForeignSettingsAside,
   restoreClaudeForeignSettings,
+  rewriteManagedCliHooks,
   codexApiKeyAuthSnapshotName,
   codexAuthSnapshotPaths,
   codexChatGptAuthSnapshotName,
@@ -22,6 +23,7 @@ import {
   ensureCodexPermissionDefaultsInConfigText,
   ensureGeminiContextFilenamesInSettingsText,
   ensureGeminiProjectContextFiles,
+  inspectManagedCliHookTargets,
   inspectOfficialLogin,
   inspectProviderConfig,
   inspectCodexWorkspacePermissionsText,
@@ -30,6 +32,7 @@ import {
   moveClaudeConsoleKeyAsideTexts,
   providerAccountMode,
   providerConfigPaths,
+  removeManagedCliHooks,
   restoreClaudeConsoleKey,
   restoreClaudeConsoleKeyTexts,
   saveProviderConfig,
@@ -2883,5 +2886,96 @@ describe('telling whether an official login already exists on this computer', ()
     fs.writeFileSync(path.join(home, '.gemini', 'oauth_creds.json'), '{"refresh_token":"x"}')
     expect(inspectOfficialLogin('gemini', roots)).toBe(true)
     expect(inspectOfficialLogin('grok', roots)).toBe(false)
+  })
+})
+
+describe('hooks and status line pointing at an old location', () => {
+  const moved: CliHookInvocation = { ...cliHook, scriptPath: '/new/place/bundled-catalog/cli-hooks/xingmang-hook.cjs' }
+  const movedStatusLine = '"/managed/node/bin/node" "/new/place/bundled-catalog/cli-status-line/xingmang-statusline.cjs"'
+  const oldTargets = { nodeExecutable: cliHook.nodeExecutable, scriptPath: cliHook.scriptPath }
+
+  function writeAll(roots: ReturnType<typeof providerRoots>): void {
+    for (const provider of ['claude', 'gemini', 'codex'] as const) {
+      saveProviderConfig(provider, 'sk-relay', testModels[provider], 'reset', roots, {}, providerBaseUrls, provider === 'claude' ? statusLineCommand : undefined, undefined, cliHook)
+    }
+    saveProviderConfig('grok', 'sk-relay', testModels.grok, 'reset', roots, {}, providerBaseUrls, undefined, undefined, { ...cliHook, platform: 'linux' })
+  }
+
+  it('reads back where our hooks, status line and notify point', () => {
+    const roots = providerRoots(temporaryHome())
+    expect(inspectManagedCliHookTargets('claude', roots)).toEqual([])
+    writeAll(roots)
+    const claude = inspectManagedCliHookTargets('claude', roots)
+    expect(claude).toHaveLength(6)
+    expect(claude.slice(0, 5)).toEqual(Array(5).fill(oldTargets))
+    expect(claude[5]).toEqual({ nodeExecutable: '/managed/node/bin/node', scriptPath: '/opt/app/resources/bundled-catalog/cli-status-line/xingmang-statusline.cjs' })
+    expect(inspectManagedCliHookTargets('gemini', roots)).toEqual(Array(4).fill({ ...oldTargets, form: 'posix' }))
+    expect(inspectManagedCliHookTargets('codex', roots)).toEqual([oldTargets])
+    expect(inspectManagedCliHookTargets('grok', roots)).toEqual(Array(6).fill({ ...oldTargets, form: 'posix' }))
+  })
+
+  it('rewrites only our entries to the new location and keeps keys, models and user hooks', () => {
+    const roots = providerRoots(temporaryHome())
+    writeAll(roots)
+    const [claudePath] = providerConfigPaths('claude', roots)
+    const withUserHook = JSON.parse(fs.readFileSync(claudePath, 'utf8')) as { hooks: Record<string, unknown[]> }
+    const own = { hooks: [{ type: 'command', command: 'say done' }] }
+    withUserHook.hooks.Stop.unshift(own)
+    fs.writeFileSync(claudePath, `${JSON.stringify(withUserHook, null, 2)}\n`, 'utf8')
+
+    const result = rewriteManagedCliHooks('claude', roots, { cliHook: moved, claudeStatusLineCommand: movedStatusLine })
+    expect(result.files).toEqual([claudePath])
+    expect(result.backups).toHaveLength(1)
+    const claude = JSON.parse(fs.readFileSync(claudePath, 'utf8')) as { env: Record<string, string>, model: string, statusLine: { command: string }, hooks: Record<string, unknown[]> }
+    expect(claude.env.ANTHROPIC_AUTH_TOKEN).toBe('sk-relay')
+    expect(claude.model).toBe(testModels.claude)
+    expect(claude.statusLine.command).toBe(movedStatusLine)
+    expect(claude.hooks.Stop[0]).toEqual(own)
+    expect(inspectManagedCliHookTargets('claude', roots).slice(0, 5)).toEqual(Array(5).fill({ nodeExecutable: moved.nodeExecutable, scriptPath: moved.scriptPath }))
+
+    for (const provider of ['gemini', 'codex', 'grok'] as const) {
+      rewriteManagedCliHooks(provider, roots, { cliHook: provider === 'grok' ? { ...moved, platform: 'linux' } : moved })
+      expect(new Set(inspectManagedCliHookTargets(provider, roots).map((target) => target.scriptPath))).toEqual(new Set([moved.scriptPath]))
+    }
+    expect(inspectProviderConfig('codex', roots).apiKey).toBe('sk-relay')
+    expect(inspectProviderConfig('gemini', roots).apiKey).toBe('sk-relay')
+    expect(inspectProviderConfig('grok', roots).apiKey).toBe('sk-relay')
+  })
+
+  it('takes our entries back when this computer cannot write them any more', () => {
+    const roots = providerRoots(temporaryHome())
+    writeAll(roots)
+    rewriteManagedCliHooks('claude', roots, {})
+    const claude = JSON.parse(fs.readFileSync(providerConfigPaths('claude', roots)[0], 'utf8')) as Record<string, unknown>
+    expect('hooks' in claude).toBe(false)
+    expect('statusLine' in claude).toBe(false)
+    expect(inspectManagedCliHookTargets('claude', roots)).toEqual([])
+  })
+
+  it('does not add hooks to a config that never had ours and leaves a user status line alone', () => {
+    const roots = providerRoots(temporaryHome())
+    const [claudePath] = providerConfigPaths('claude', roots)
+    fs.mkdirSync(path.dirname(claudePath), { recursive: true })
+    const user = { statusLine: { type: 'command', command: '~/.claude/line.sh' }, hooks: { Stop: [{ hooks: [{ type: 'command', command: 'say done' }] }] } }
+    fs.writeFileSync(claudePath, `${JSON.stringify(user, null, 2)}\n`, 'utf8')
+    const before = fs.readFileSync(claudePath, 'utf8')
+    expect(rewriteManagedCliHooks('claude', roots, { cliHook: moved, claudeStatusLineCommand: movedStatusLine })).toEqual({ backups: [], files: [] })
+    expect(removeManagedCliHooks('claude', roots)).toEqual({ backups: [], files: [] })
+    expect(fs.readFileSync(claudePath, 'utf8')).toBe(before)
+    for (const provider of ['gemini', 'codex', 'grok'] as const) {
+      expect(removeManagedCliHooks(provider, roots)).toEqual({ backups: [], files: [] })
+    }
+  })
+
+  it('removes our hooks, status line and notify on uninstall but keeps the keys and user settings', () => {
+    const roots = providerRoots(temporaryHome())
+    writeAll(roots)
+    for (const provider of ['claude', 'gemini', 'codex', 'grok'] as const) removeManagedCliHooks(provider, roots)
+    for (const provider of ['claude', 'gemini', 'codex', 'grok'] as const) {
+      expect(inspectManagedCliHookTargets(provider, roots)).toEqual([])
+      expect(inspectProviderConfig(provider, roots).apiKey).toBe('sk-relay')
+    }
+    const grok = TOML.parse(fs.readFileSync(providerConfigPaths('grok', roots)[0], 'utf8')) as unknown as GrokConfigShape
+    expect(grok.compat).toEqual({ claude: { hooks: false } })
   })
 })

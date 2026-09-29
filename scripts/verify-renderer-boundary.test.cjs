@@ -23,6 +23,8 @@ const valueImportable = [
   'electron/account-key-quota',
   'electron/ai-chat-protocol',
   'electron/catalog',
+  // Codex 桌面端装不上那句话的开头和微软商店链接，主进程与错误框共用一份（第十九批 5）。
+  'electron/codex-desktop-install-failure',
   'electron/cli-model-defaults',
   'electron/external-url-blocked',
   'electron/git-runtime',
@@ -32,6 +34,8 @@ const valueImportable = [
   'electron/relay-sites',
   'electron/running-tools',
   'electron/subscription-summary',
+  // 「换成新版 Node.js」要和主进程用同一把尺子判断 Node.js 认不认证书（第十八批 4）。
+  'electron/system-certificate-trust',
   'electron/usage-date-range',
   'electron/versions',
 ]

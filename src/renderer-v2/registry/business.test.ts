@@ -9,6 +9,8 @@ import {
   updateFailureFallback,
   updateFailureLabel,
   updateFailureLabels,
+  updateInstallNote,
+  updatesPageLead,
   withdrawnVersionAdvice,
 } from './business';
 
@@ -102,5 +104,18 @@ describe('renderer-v2 auto-update bubble wording', () => {
     expect(autoUpdateBubbleBody('downloaded', true)).toContain('关掉软件或下次打开时自动装上');
     expect(autoUpdateBubbleBody('downloading', true)).toContain('正在后台下载');
     expect(autoUpdateBubbleBody('downloaded', false)).toBe('查看更新内容和安装状态。');
+  });
+});
+
+describe('renderer-v2 updates page wording', () => {
+  it('does not promise the user decides when auto-update is on', () => {
+    expect(updatesPageLead(true)).toContain('自动装上');
+    expect(updatesPageLead(true)).not.toContain('不会自己重启');
+    expect(updatesPageLead(false)).toBe('新版本什么时候安装由你决定，不会自己重启。');
+  });
+
+  it('explains what to do before installing without internal jargon', () => {
+    expect(updateInstallNote).not.toContain('关闭保护');
+    expect(updateInstallNote).toContain('保存');
   });
 });

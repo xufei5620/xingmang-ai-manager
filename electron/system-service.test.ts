@@ -35,6 +35,7 @@ import {
   assertNpmReleaseMatchesOfficialLock,
   buildCliLaunchQueueKey,
   buildCliStatus,
+  cliHooksSummaryFields,
   externalCliInstallRefusal,
   buildCliMaintenancePlan,
   buildCliToolStatusFromSettled,
@@ -51,6 +52,8 @@ import {
   offlineLatestVersionBudgetMs,
   settleLatestVersionProbes,
   createSystemService,
+  nodeStillOutdatedAfterReplaceMessage,
+  shouldReplaceNodeForCertificates,
   DarwinGrokRetainedPathsError,
   inspectVerifiedDarwinGrokPostInstall,
   interactiveTerminalEnvironment,
@@ -2964,6 +2967,81 @@ describe('npm install progress reporting', () => {
     )
   })
 
+  it('replaces a working Node.js only when the customer asked for it because of company certificates on Windows', () => {
+    const old = { installed: true, version: 'v20.11.1' }
+    const certificate = { reason: 'certificate' as const }
+    expect(shouldReplaceNodeForCertificates({ platform: 'win32', request: certificate, node: old })).toBe(true)
+    expect(shouldReplaceNodeForCertificates({ platform: 'win32', request: certificate, node: { installed: true, version: 'v22.18.0' } })).toBe(true)
+    // 缺省请求就是旧行为：够装工具就不动。
+    expect(shouldReplaceNodeForCertificates({ platform: 'win32', request: {}, node: old })).toBe(false)
+    // 已经认得证书的、读不出版本的、没装的，都不换。
+    expect(shouldReplaceNodeForCertificates({ platform: 'win32', request: certificate, node: { installed: true, version: 'v22.19.0' } })).toBe(false)
+    expect(shouldReplaceNodeForCertificates({ platform: 'win32', request: certificate, node: { installed: true, version: null } })).toBe(false)
+    expect(shouldReplaceNodeForCertificates({ platform: 'win32', request: certificate, node: { installed: false, version: null } })).toBe(false)
+    // Mac 上代下的那份排在客户自己的后面，换了也用不上。
+    expect(shouldReplaceNodeForCertificates({ platform: 'darwin', request: certificate, node: old })).toBe(false)
+  })
+
+  function outdatedNodeService(directory: string, versions: string[], installNodeRuntime: () => Promise<NodeRuntimeInstallResult>) {
+    const nodeExecutable = 'C:\\Program Files\\nodejs\\node.exe'
+    const npmExecutable = 'C:\\Program Files\\nodejs\\npm.cmd'
+    let nodeReads = 0
+    const runCommand = vi.fn(async (spec: { executable: string; argv: readonly string[] }) => {
+      const stdout = spec.executable === nodeExecutable
+        ? `${versions[Math.min(nodeReads++, versions.length - 1)]}\n`
+        : '10.9.3\n'
+      return { executable: spec.executable, argv: [...spec.argv], exitCode: 0, signal: null, stdout, stderr: '', outputBytes: 10, durationMs: 1 }
+    })
+    return createSystemService(
+      new AppSettingsStore(path.join(directory, 'settings.json'), directory),
+      {
+        platform: 'win32',
+        windowsExecutionMode: 'same-user',
+        findExecutable: async (command) => command === 'node' ? nodeExecutable : command === 'npm' ? npmExecutable : null,
+        runCommand,
+        inspectWindowsRestartRequired: async () => ({ required: false, reasons: [] }),
+        inspectWindowsProcessor: async () => 'x64',
+        inspectExecutableMachine: async () => 'x64',
+        installNodeRuntime,
+      },
+    )
+  }
+
+  const installedLts: NodeRuntimeInstallResult = {
+    installed: true,
+    action: 'installed',
+    method: 'msi',
+    source: 'official',
+    version: 'v24.19.0',
+    architecture: 'x64',
+    pathRefreshRequired: true,
+    systemRestartRequired: false,
+  }
+
+  it('installs a new Node.js over one that cannot read company certificates once the customer confirmed', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-node-certificate-replace-'))
+    temporaryDirectories.push(directory)
+    const target = { isDestroyed: () => false, send: vi.fn() }
+    const installNodeRuntime = vi.fn(async () => installedLts)
+
+    // 没说原因：还是那句「无需重复安装」，行为不变。
+    await expect(outdatedNodeService(directory, ['v20.11.1'], installNodeRuntime).installNodeRuntime(target))
+      .resolves.toMatchObject({ action: 'unchanged' })
+    expect(installNodeRuntime).not.toHaveBeenCalled()
+
+    await expect(outdatedNodeService(directory, ['v20.11.1', 'v24.19.0'], installNodeRuntime).installNodeRuntime(target, { reason: 'certificate' }))
+      .resolves.toMatchObject({ action: 'installed', version: 'v24.19.0' })
+    expect(installNodeRuntime).toHaveBeenCalledTimes(1)
+  })
+
+  it('says so when an older Node.js still wins after the replacement', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-node-certificate-shadowed-'))
+    temporaryDirectories.push(directory)
+    const target = { isDestroyed: () => false, send: vi.fn() }
+    const service = outdatedNodeService(directory, ['v20.11.1'], vi.fn(async () => installedLts))
+    await expect(service.installNodeRuntime(target, { reason: 'certificate' })).rejects.toThrow(nodeStillOutdatedAfterReplaceMessage)
+  })
+
   it('separates the resolution budget from the download budget', () => {
     // Sharing one budget let a slow official resolution eat the time the
     // download still needed, and killed a slow-but-working resolution at 5min.
@@ -3218,6 +3296,91 @@ describe('Darwin CLI launch planning', () => {
       workspace: '/Users/tester/project',
       env,
     })
+  })
+})
+
+describe('reminder settings pointing at an old location', () => {
+  it('flags a Codex notify whose script is gone and takes it back when no hook can be written here', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-stale-hooks-'))
+    temporaryDirectories.push(directory)
+    const codexHome = path.join(directory, '.codex')
+    fs.mkdirSync(codexHome)
+    const gone = path.join(directory, 'old install', 'bundled-catalog', 'cli-hooks', 'xingmang-hook.cjs')
+    fs.writeFileSync(path.join(codexHome, 'config.toml'), `model = "gpt-5.5"\nnotify = [${JSON.stringify(process.execPath)}, ${JSON.stringify(gone)}, "codex", ${JSON.stringify(directory)}]\n`, 'utf8')
+    const service = createService({ providerRoots: { userHome: directory, codexHome } })
+
+    expect(service.getConfig(false).providers.codex.cliHooksStale).toBe(true)
+    expect(service.getConfig(false).providers.claude.cliHooksStale).toBe(false)
+    expect(service.getConfig(true).providers.codex.cliHooksStale).toBe(false)
+
+    const result = await service.repairCliHooks!('codex')
+    expect(result.backups).toHaveLength(1)
+    const config = fs.readFileSync(path.join(codexHome, 'config.toml'), 'utf8')
+    expect(config).not.toContain('notify')
+    expect(config).toContain('gpt-5.5')
+    expect(service.getConfig(false).providers.codex.cliHooksStale).toBe(false)
+  })
+})
+
+describe('Grok hooks after the customer installs Git or PowerShell 7 themselves', () => {
+  function grokHookToml(command: string): string {
+    const events = ['UserPromptSubmit', 'Stop', 'StopFailure', 'StopCancelled', 'Notification', 'SessionEnd']
+    return ['[compat.claude]', 'hooks = false', ...events.flatMap((event) => [
+      '', `[[hooks.${event}]]`, '', `[[hooks.${event}.hooks]]`, 'type = "command"', `command = ${JSON.stringify(command)}`, 'timeout = 10',
+    ])].join('\n') + '\n'
+  }
+
+  it('flags Grok hooks written for Git Bash once Grok would run them in PowerShell, and fixes them', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-grok-shell-'))
+    temporaryDirectories.push(directory)
+    const script = path.join(directory, 'bundled-catalog', 'cli-hooks', 'xingmang-hook.cjs')
+    fs.mkdirSync(path.dirname(script), { recursive: true })
+    fs.writeFileSync(script, '', 'utf8')
+    const grokHome = path.join(directory, '.grok')
+    fs.mkdirSync(grokHome)
+    const configPath = path.join(grokHome, 'config.toml')
+    // Written in the Git Bash form; this runner has no Git Bash at Grok's three fixed places, so Grok would pick PowerShell.
+    fs.writeFileSync(configPath, grokHookToml(`'${process.execPath}' '${script}' grok '${directory}'`), 'utf8')
+    const readWindowsLivePath = vi.fn(async () => 'C:\\Windows\\System32')
+    const service = createService({
+      platform: 'win32',
+      providerRoots: { userHome: directory, codexHome: path.join(directory, '.codex') },
+      readWindowsLivePath,
+      resolveWindowsMachinePaths: () => ({ system32: 'C:\\Windows\\System32' }) as ReturnType<NonNullable<SystemServiceOptions['resolveWindowsMachinePaths']>>,
+    })
+
+    expect(service.getConfig(false).providers.grok).toMatchObject({ cliHooksStale: true, cliHooksShellChanged: true })
+    expect(service.getConfig(true).providers.grok.cliHooksStale).toBe(false)
+    expect(service.getConfig(false).providers.claude.cliHooksShellChanged).toBeUndefined()
+
+    // No hook can be written here (no bundled script configured), so the repair takes ours back instead of leaving them red.
+    const result = await service.repairCliHooks!('grok')
+    expect(result.backups).toHaveLength(1)
+    expect(readWindowsLivePath).toHaveBeenCalledWith('C:\\Windows\\System32', process.env)
+    expect(fs.readFileSync(configPath, 'utf8')).not.toContain('xingmang-hook.cjs')
+    expect(service.getConfig(false).providers.grok).toMatchObject({ cliHooksStale: false })
+    expect(service.getConfig(false).providers.grok.cliHooksShellChanged).toBeUndefined()
+  })
+
+  it('leaves Grok hooks alone when they are written for the shell Grok will use', () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-grok-shell-'))
+    temporaryDirectories.push(directory)
+    const script = path.join(directory, 'xingmang-hook.cjs')
+    fs.writeFileSync(script, '', 'utf8')
+    fs.mkdirSync(path.join(directory, '.grok'))
+    fs.writeFileSync(path.join(directory, '.grok', 'config.toml'), grokHookToml(`& '${process.execPath}' '${script}' grok '${directory}'`), 'utf8')
+    const service = createService({ platform: 'win32', providerRoots: { userHome: directory, codexHome: path.join(directory, '.codex') } })
+    expect(service.getConfig(false).providers.grok.cliHooksStale).toBe(false)
+    expect(service.getConfig(false).providers.grok.cliHooksShellChanged).toBeUndefined()
+  })
+})
+
+describe('cliHooksSummaryFields', () => {
+  it('only adds the shell-changed flag when the shell really changed', () => {
+    expect(cliHooksSummaryFields(null)).toEqual({ cliHooksStale: false })
+    expect(cliHooksSummaryFields({ stale: false, shellChanged: false })).toEqual({ cliHooksStale: false })
+    expect(cliHooksSummaryFields({ stale: true, shellChanged: false })).toEqual({ cliHooksStale: true })
+    expect(cliHooksSummaryFields({ stale: true, shellChanged: true })).toEqual({ cliHooksStale: true, cliHooksShellChanged: true })
   })
 })
 

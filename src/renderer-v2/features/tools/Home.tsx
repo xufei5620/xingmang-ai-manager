@@ -5,7 +5,7 @@ import { presentExternalClients } from './external-model'
 import { useSharedAccountBalance } from '../app/balance-context'
 import { balanceStatusText } from '../shell/balance-status'
 import { BrandIcon, Button, Card, Dialog, Empty, ListRow, Menu, PageHead, Pill, Progress, ToolRow, useToast } from '../../ui'
-import { accountSwitchTarget, balanceTier, codexNeedsRepair, readyOnceRepaired, subscriptionWarning, canUninstallTool, ccSwitchLeftoverFor, foreignKeyKind, switchAccountLabel, configDirectoryMenuItem, externalInstallHint, greeting, isExternallyManagedInstall, needsManualInstall, ownershipAwaitingAccount, presentTools, providerFor, recommendedVersionVerb, revertVersion, rollbackVersion, toolUpdateOffer, updateButtonHint, versionSubtitle, type ToolboxSnapshot, type ToolId, type ToolPresentation } from './model'
+import { accountSwitchTarget, balanceTier, cliHooksNeedRepair, codexNeedsRepair, readyOnceRepaired, subscriptionWarning, canUninstallTool, ccSwitchLeftoverFor, foreignKeyKind, switchAccountLabel, configDirectoryMenuItem, externalInstallHint, greeting, isExternallyManagedInstall, needsManualInstall, ownershipAwaitingAccount, presentTools, providerFor, recommendedVersionVerb, revertVersion, rollbackVersion, toolUpdateOffer, updateButtonHint, versionSubtitle, type ToolboxSnapshot, type ToolId, type ToolPresentation } from './model'
 import type { ToolboxPartitionFailure, ToolsApi } from './api'
 import type { ToolJob } from './useToolbox'
 import type { AccountBootstrapProgress, AccountBootstrapResult } from './account-bootstrap'
@@ -23,7 +23,7 @@ import { isNetworkFailureText } from './online-resync'
 import { gitHostPlatform, gitMacInstallWaitingHint, gitMissingFirstRunHint, gitMissingHomeNotice } from '../../../../electron/git-runtime'
 import { managedRuntimeNotice, runtimeButtonLabel, runtimeInstallGuide } from './runtime-install-guide'
 import { RuntimeInstallHint } from './RuntimeInstallHint'
-import { elevatedInstallNotice, elevatedInstallShortNotice } from './elevation-notice'
+import { elevatedInstallNotice, elevatedInstallShortNotice, storeAppLaunchShortNotice } from './elevation-notice'
 import { useOnlineStatus } from '../shell/useOnlineStatus'
 
 export interface HomeProps {
@@ -72,6 +72,8 @@ export interface HomeProps {
    * 备份、写入、自检、失败回滚都由主进程一次做完，这里只负责把人送过去。
    */
   onSwitchAccount?(tool: ToolId, target: AccountSourceTarget): void
+  /** 提醒设置指向旧位置时改成这次的路径（先备份再改再自检）；缺省 = 不给这颗按钮（旧行为）。 */
+  onRepairHooks?(tool: ToolId): void
   /** 在资源管理器 / 访达里打开这个工具的配置文件夹；缺省 = 不给这个菜单项（旧行为）。 */
   onOpenConfigDirectory?(tool: ToolId): void
   onConfigureExternal(tool: ExternalToolId): void
@@ -129,10 +131,33 @@ const ccSwitchDetails: Record<'proxy' | 'provider', string> = {
  */
 const codexShadowedDetail = '这份配置里有一处 Codex 认不出，打开会连不上'
 
+/**
+ * 本软件写进工具里的提醒设置（做完、出错时弹通知，干活时不让电脑睡）指向了旧位置：
+ * 卸载后换了文件夹重装、挪了软件、换装了 Node.js 都会这样。工具照样能用，只是每一轮
+ * 都多报一行错。「修好它」只改这几行，先备份。
+ */
+const cliHooksStaleDetail = '工具里的提醒设置指向了旧位置，每次都会多报一行错'
+const cliHooksShellChangedDetail = 'Grok 换了命令行，星芒写的提醒设置要跟着改一下，不然每次都会多报一行错'
+
 const foreignKeyDetails = {
   otherSite: '在这里打不开，改用你的账号就能用',
   otherAccount: '能用，但用量可能算到别的账号上',
 } as const
+
+const nodeInstallerPartMissingNote = '少了装工具用的组件，重装一次 Node.js 就好'
+
+/** npm 是随 Node.js 一起装的：Node.js 在、它却确实不在（不是没查出来）才算缺。 */
+export function nodeInstallerPartMissing(runtime: ToolboxSnapshot['system']['runtime'] | undefined) {
+  return Boolean(runtime?.node.installed && runtime.npm && !runtime.npm.installed && !runtime.npm.detectionFailed)
+}
+
+/**
+ * 新账号的余额本来就是 0，「余额只剩 $0.00」读起来像是用光了，客户不知道要先充值才能用；
+ * 客服远程装好以后，这一行往往是客户看到的第一句跟钱有关的话。
+ */
+export function lowBalanceText(dollars: number) {
+  return dollars <= 0 ? '当前账号余额是 $0，充值后 AI 工具才能用。付完马上生效，不用重新设置。' : `余额只剩 $${dollars.toFixed(2)}，充值后可继续使用。`
+}
 
 function bootstrapErrorText(error: string) {
   return isNetworkFailureText(error) ? offlineBootstrapNotice : `账号 Key 初始化没有完成：${keySyncFailureReason(error)}`
@@ -240,7 +265,8 @@ export function Home(props: HomeProps) {
     const installJob = jobs[tool.id]
     const launchJob = jobs[`launch:${tool.id}`]
     const switchJob = jobs[`switch:${tool.id}`]
-    const job = launchJob ?? switchJob ?? installJob
+    const repairJob = jobs[`repair-hooks:${tool.id}`]
+    const job = launchJob ?? switchJob ?? repairJob ?? installJob
     // 配置那一块没读到时，连接状态是未知而不是「还没配 Key」，
     // 否则用户会以为自己的配置丢了。工具本身的安装、卸载不受影响。
     const configUnavailable = !tool.error && tool.status.installed
@@ -257,13 +283,16 @@ export function Home(props: HomeProps) {
     // 修完就能用的，「打开」照旧给：点下去先修再打开（App 的 launch），不让人先去配置里绕一圈。
     const repairLaunch = shadowed && snapshot !== null && readyOnceRepaired(snapshot.config.providers[tool.provider], tool.provider)
     const openable = tool.configured || repairLaunch
+    const hooksStale = snapshot !== null && !ownershipPending && cliHooksNeedRepair(snapshot.config.providers[tool.provider])
+    const hooksDetail = snapshot?.config.providers[tool.provider].cliHooksShellChanged ? cliHooksShellChangedDetail : cliHooksStaleDetail
     const status = installJob ? 'installing' : tool.error ? 'detectionFailed' : !tool.status.installed ? 'missing'
       : configUnavailable ? 'configUnavailable'
       : ccSwitch ? 'ccSwitch'
       : shadowed ? 'codexShadowed'
       : tool.source === 'changed' && !ownershipPending ? 'configChanged'
       : foreignKey === 'otherSite' ? 'otherSiteKey' : foreignKey === 'otherAccount' ? 'otherAccountKey'
-      : tool.source === 'unknown' && !ownershipPending ? 'unknownSource' : tool.source === 'official' ? 'official'
+      : tool.source === 'unknown' && !ownershipPending ? 'unknownSource'
+      : hooksStale ? 'cliHooksStale' : tool.source === 'official' ? 'official'
         : bootstrapBusy && !tool.configured ? 'configuring'
         : tool.configured ? 'ready' : notEnabled ? 'notEnabled' : 'unconfigured'
     // 「打开」以前每次都要重新选一遍目录。会话记录里本来就存着用过的目录，
@@ -278,10 +307,12 @@ export function Home(props: HomeProps) {
     // macOS 上 Codex 桌面端归客户自己装，这颗按钮只能把人带到教程：写「安装」就是骗人。
     const manualInstall = !tool.status.installed && needsManualInstall(snapshot, tool.id)
     // Codex 桌面端在 Windows 上是 Appx，装它要提权；四个 CLI 走 npm，不提权。
+    // 这个账户本来就打不开商店应用时，先说这件更要紧的（只提醒，照样能点「安装」）。
     const elevationHint = tool.id === 'codexDesktop' && !tool.status.installed
-      ? elevatedInstallShortNotice('codexDesktop', snapshot?.platform.platform, snapshot?.platform.codexDesktop.install)
+      ? storeAppLaunchShortNotice(snapshot?.system.desktopApps.codex.storeAppLaunchBlock)
+        ?? elevatedInstallShortNotice('codexDesktop', snapshot?.platform.platform, snapshot?.platform.codexDesktop.install)
       : null
-    const primaryLabel = launchJob ? '打开中' : switchJob ? '切换中' : installJob ? '安装中' : configUnavailable ? '重新配置'
+    const primaryLabel = launchJob ? '打开中' : switchJob ? '切换中' : repairJob ? '修复中' : installJob ? '安装中' : configUnavailable ? '重新配置'
       : bootstrapBusy && !tool.configured ? '配置中' : tool.error ? '重新检测' : !tool.status.installed ? manualInstall ? '安装指南' : '安装'
       : openable ? lastWorkspace ? `打开 ${workspaceButtonLabel(lastWorkspace.name)}` : '打开' : '连接账号'
     const primary = () => configUnavailable ? props.onConfigure(tool.id) : tool.error ? props.onScan() : !tool.status.installed ? props.onInstall(tool.id)
@@ -306,7 +337,7 @@ export function Home(props: HomeProps) {
       icon={lastWorkspace ? undefined : tool.status.installed && !bootstrapBusy ? ArrowUpRight : undefined}
       onClick={primary} testId={`tool-${tool.id}-primary`}>{primaryLabel}</Button>
     return <ToolRow key={tool.id} tool={tool.id} status={status}
-      detail={job?.label ?? tool.error ?? (status === 'configChanged' ? configChangedDetail : status === 'codexShadowed' ? codexShadowedDetail : status === 'ccSwitch' && ccSwitch ? ccSwitchDetails[ccSwitch] : foreignKey && status !== 'ccSwitch' ? foreignKeyDetails[foreignKey] : elevationHint ?? undefined)}
+      detail={job?.label ?? tool.error ?? (status === 'configChanged' ? configChangedDetail : status === 'codexShadowed' ? codexShadowedDetail : status === 'cliHooksStale' ? hooksDetail : status === 'ccSwitch' && ccSwitch ? ccSwitchDetails[ccSwitch] : foreignKey && status !== 'ccSwitch' ? foreignKeyDetails[foreignKey] : elevationHint ?? undefined)}
       version={tool.status.installed ? versionSubtitle(tool) ?? '版本暂未识别' : undefined}
       model={tool.status.installed ? tool.source === 'official' ? '官方账号' : tool.model || undefined : undefined}
       progress={job?.percent}
@@ -316,6 +347,8 @@ export function Home(props: HomeProps) {
           ? <Button variant="ghost" size="sm" icon={KeyRound} onClick={() => props.onSwitchAccount?.(tool.id, 'account')} testId={`tool-${tool.id}-replace-cc-switch`}>{switchAccountLabel(account?.username)}</Button>
         : status === 'codexShadowed' && props.onSwitchAccount
           ? <Button variant="ghost" size="sm" icon={KeyRound} title="改之前会先备份原来的设置" onClick={() => props.onSwitchAccount?.(tool.id, 'account')} testId={`tool-${tool.id}-repair-codex`}>修好它</Button>
+        : status === 'cliHooksStale' && props.onRepairHooks
+          ? <Button variant="ghost" size="sm" icon={KeyRound} title="改之前会先备份原来的设置" onClick={() => props.onRepairHooks?.(tool.id)} testId={`tool-${tool.id}-repair-hooks`}>修好它</Button>
         : (status === 'otherSiteKey' || status === 'otherAccountKey') && props.onSwitchAccount
           ? <Button variant="ghost" size="sm" icon={KeyRound} onClick={() => props.onSwitchAccount?.(tool.id, 'account')} testId={`tool-${tool.id}-use-account`}>{switchAccountLabel(account?.username)}</Button>
         : status === 'configChanged' && props.onRewriteKey
@@ -415,7 +448,7 @@ export function Home(props: HomeProps) {
     {error && <div role="alert" className="v2-callout is-bad"><span>{error}</span><Button size="xs" onClick={props.onScan}>重新检测</Button></div>}
     {props.externalError && <div role="alert" className="v2-callout is-bad"><span>客户端状态暂未读到：{props.externalError}</span><Button size="xs" onClick={props.onScan}>重新检测</Button></div>}
     {snapshot && configFailure && <div role="alert" className="v2-callout is-bad" data-testid="home-config-failure"><span>工具配置暂未读到：{configFailure.message}工具列表、安装和卸载照常可用；点工具行的“重新配置”可以重新写入。</span><Button size="xs" onClick={props.onScan}>重新检测</Button></div>}
-    {props.supportsBilling !== false && dollars !== null && dollars < 5 && !subscription && <div role="status" className="v2-callout is-bad"><Zap size={18} /><span>余额只剩 ${dollars.toFixed(2)}，充值后可继续使用。</span><Button size="sm" variant="balance" onClick={() => props.onNavigate('account', 'recharge')}>马上充值</Button></div>}
+    {props.supportsBilling !== false && dollars !== null && dollars < 5 && !subscription && <div role="status" className="v2-callout is-bad" data-testid="home-low-balance"><Zap size={18} /><span>{lowBalanceText(dollars)}</span><Button size="sm" variant="balance" onClick={() => props.onNavigate('account', 'recharge')}>马上充值</Button></div>}
     {props.supportsBilling !== false && subscriptionNotice && <div role="status" className="v2-callout is-bad" data-testid="home-subscription-warning"><Zap size={18} /><span>{subscriptionNotice}</span><Button size="sm" variant="balance" onClick={() => props.onNavigate('account', 'recharge')}>去续费</Button></div>}
     {loading && snapshot?.system.cachedAt && <div className="v2-loading-inline" role="status" data-testid="home-cached-scan">正在检查本机工具，先显示上次的结果。</div>}
     <div className="v2-home-grid">
@@ -456,11 +489,14 @@ export function Home(props: HomeProps) {
       </div>
       <aside className="v2-home-aside">
         <Card title="运行环境" padding="none" meta={snapshot ? new Date(snapshot.system.checkedAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) : '等待检查'}>
-          <div className="v2-runtime-list">{(['node', 'npm', 'python', 'git'] as const).map((id) => {
+          <div className="v2-runtime-list">{(['node', 'python', 'git'] as const).map((id) => {
             const status = snapshot?.system.runtime[id]
             const optional = id === 'python' || id === 'git'
-            return <div key={id} className="v2-runtime-row"><i className={`v2-dot ${status?.installed ? 'is-ok' : optional ? '' : 'is-warn'}`} /><BrandIcon tool={id} size={16} variant="xs" /><strong>{id === 'node' ? 'Node.js' : id === 'python' ? 'Python' : id === 'git' ? 'Git' : 'npm'}</strong>
-              <span>{jobs[id]?.label ?? (loading ? '检测中' : status?.detectionFailed ? '检测失败' : status?.version ?? (optional ? '可选 · 未装' : '未安装'))}</span>
+            // 装工具用的那个组件（npm）是 Node.js 自带的，不单列一行，缺了才在 Node.js 这一行说。
+            const partMissing = id === 'node' && nodeInstallerPartMissing(snapshot?.system.runtime)
+            const text = jobs[id]?.label ?? (loading ? '检测中' : status?.detectionFailed ? '检测失败' : status?.version ?? (optional ? '可选 · 未装' : '未安装'))
+            return <div key={id} className="v2-runtime-row" data-testid={`home-runtime-row-${id}`}><i className={`v2-dot ${status?.installed && !partMissing ? 'is-ok' : optional ? '' : 'is-warn'}`} /><BrandIcon tool={id} size={16} variant="xs" /><strong>{id === 'node' ? 'Node.js' : id === 'python' ? 'Python' : 'Git'}</strong>
+              <span>{partMissing && !jobs[id] && !loading ? `${text} · ${nodeInstallerPartMissingNote}` : text}</span>
             </div>
           })}</div>
           {gitMissing && !jobs.git && <p className="v2-runtime-hint" data-testid="home-runtime-git-hint">{gitMissingHomeNotice(gitHost)}</p>}

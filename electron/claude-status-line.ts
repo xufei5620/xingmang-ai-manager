@@ -1,5 +1,6 @@
 import fs from 'node:fs'
 import path from 'node:path'
+import { splitManagedCommand, type ManagedCliHookTarget } from './cli-hooks'
 
 // Claude Code 的 statusLine 是「一条命令」：CLI 每隔几百毫秒起一次这个命令，把会话信息
 // 从 stdin 递进去，把它打印的内容显示在输入框下面。本软件随包带一个只读 stdin 的小脚本
@@ -90,4 +91,11 @@ export function applyClaudeStatusLine(parsed: Record<string, unknown>, command: 
   if (!isManagedClaudeStatusLine(existing)) return
   const managed = existing as Record<string, unknown>
   managed.command = command
+}
+
+/** 本软件写的状态行指向哪个程序、哪个脚本；不是我们写的返回 null。拆不开两项都是空串。 */
+export function managedClaudeStatusLineTarget(settings: Record<string, unknown>): ManagedCliHookTarget | null {
+  if (!isManagedClaudeStatusLine(settings.statusLine)) return null
+  const words = splitManagedCommand((settings.statusLine as { command: string }).command) ?? []
+  return { nodeExecutable: words[0] ?? '', scriptPath: words[1] ?? '' }
 }

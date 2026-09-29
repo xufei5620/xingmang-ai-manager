@@ -13,7 +13,7 @@ import {
 } from './codex-home'
 import { identityFromCodexAuthTokens } from './official-account-identity'
 import { removeCodexContextLimits } from './codex-context-limits'
-import { applyClaudeStatusLine, claudeStatusLineSetting } from './claude-status-line'
+import { applyClaudeStatusLine, claudeStatusLineSetting, managedClaudeStatusLineTarget } from './claude-status-line'
 import {
   applyClaudeCliHooks,
   applyCodexCliNotify,
@@ -22,8 +22,10 @@ import {
   removeClaudeCliHooks,
   removeCodexCliNotify,
   removeGeminiCliHooks,
+  managedCliHookTargets,
   removeGrokCliHooks,
   type CliHookInvocation,
+  type ManagedCliHookTarget,
 } from './cli-hooks'
 import { applyClaudeRelayModelPicker, claudeRelayModelPickerOutdated, removeClaudeRelayModelPicker } from './claude-model-picker'
 import { assertNoReparseComponents, ensureSafeDataDirectory, readSafeUtf8FileSync } from './safe-local-data'
@@ -93,6 +95,16 @@ export interface NativeConfigSummary extends Omit<NativeConfigInspection, 'apiKe
    * 渲染层只在来源没确认或被改过时才用。缺省 = 没看出来。
    */
   ccSwitchLeftover?: 'proxy' | 'provider'
+  /**
+   * 本软件写进这份配置的钩子或状态行指向了不存在的程序、脚本，或不是这次安装带的那份
+   * （卸载后换目录重装、挪了 app、换装了 Node.js）。首页据此给「修好它」。缺省 = 没发现。
+   */
+  cliHooksStale?: boolean
+  /**
+   * 只给 Windows 上的 Grok：钩子路径都对，但客户后来装了或卸了 Git、PowerShell 7，Grok 换了
+   * 命令行，我们写下去的那种写法在新命令行里跑不起来。为真时 cliHooksStale 也为真，只多一句说明。
+   */
+  cliHooksShellChanged?: boolean
 }
 
 export function apiKeyPreview(apiKey: string): string | null {
@@ -2489,6 +2501,125 @@ export function ensureCodexPermissionDefaults(
   ensureSafeDataDirectory(providerRoot, 'Provider 配置根目录')
   const saved = executeFilePlans([{ path: configPath, content: next.content }], {}, providerRoot)
   return { ...saved, changed: true }
+}
+
+// ---------------------------------------------------------------------------
+// 钩子与状态行指向旧位置
+//
+// 卸载后换个文件夹重装、Mac 上挪了 app、换装了 Node.js，写在配置里的绝对路径就失效了
+// （cli-hooks.ts 那段说明）。这里只读出、只重写、只收回本软件那几条，Key、模型和用户
+// 自己写的钩子一个字不动；写入照旧两阶段提交 + .bak（I9）。
+// ---------------------------------------------------------------------------
+
+/** 某家配置里本软件的钩子、状态行、Codex notify 各自指向哪里。读不出来就当没有。 */
+export function inspectManagedCliHookTargets(
+  provider: ProviderId,
+  rootsInput: ProviderConfigRoots = defaultProviderConfigRoots(),
+): ManagedCliHookTarget[] {
+  const configPath = providerConfigPaths(provider, rootsInput)[0]
+  const parsed = provider === 'gemini' ? readGeminiJson(configPath)
+    : provider === 'claude' ? readJson(configPath)
+    : readToml(configPath)
+  if (!parsed) return []
+  const targets = managedCliHookTargets(provider, parsed)
+  if (provider === 'claude') {
+    const statusLine = managedClaudeStatusLineTarget(parsed)
+    if (statusLine) targets.push(statusLine)
+  }
+  return targets
+}
+
+export interface ManagedCliHookRewrite {
+  /** 缺省 = 这台电脑现在写不出钩子（没有 Node.js 之类），那就把我们那几条收回，不再报错。 */
+  cliHook?: CliHookInvocation
+  /** 同上，只给 Claude Code。 */
+  claudeStatusLineCommand?: string
+}
+
+/**
+ * 只动本软件那几条：原来有才改，改成这次的路径；这次写不出来就收回。原来没有的
+ * 不补——那是「没写过」而不是「指向旧位置」，补不补归保存配置那条路管。
+ */
+function managedCliHookPlan(
+  provider: ProviderId,
+  roots: ProviderConfigRoots,
+  rewrite: ManagedCliHookRewrite | null,
+): FilePlan | null {
+  const configPath = providerConfigPaths(provider, roots)[0]
+  switch (provider) {
+    case 'claude': {
+      const original = requireConfigText(configPath, '现有 Claude settings.json')
+      if (original === null) return null
+      const parsed = requireJson(configPath, '现有 Claude settings.json')
+      let changed = false
+      if (managedCliHookTargets('claude', parsed).length > 0) {
+        removeClaudeCliHooks(parsed)
+        if (rewrite?.cliHook) applyClaudeCliHooks(parsed, rewrite.cliHook)
+        changed = true
+      }
+      if (managedClaudeStatusLineTarget(parsed)) {
+        if (rewrite?.claudeStatusLineCommand) applyClaudeStatusLine(parsed, rewrite.claudeStatusLineCommand)
+        else delete parsed.statusLine
+        changed = true
+      }
+      return changed ? { path: configPath, content: jsonContent(parsed) } : null
+    }
+    case 'gemini': {
+      const { parsed, original } = requireGeminiJson(configPath, '现有 Gemini settings.json')
+      if (original === null || managedCliHookTargets('gemini', parsed).length === 0) return null
+      removeGeminiCliHooks(parsed)
+      if (rewrite?.cliHook) applyGeminiCliHooks(parsed, rewrite.cliHook)
+      return { path: configPath, content: geminiJsonContent(original, parsed) }
+    }
+    case 'codex': {
+      if (requireConfigText(configPath, '现有 Codex config.toml') === null) return null
+      const parsed = requireToml(configPath, '现有 Codex config.toml')
+      if (managedCliHookTargets('codex', parsed).length === 0) return null
+      if (rewrite?.cliHook) applyCodexCliNotify(parsed, rewrite.cliHook)
+      else removeCodexCliNotify(parsed)
+      return { path: configPath, content: tomlContent(parsed) }
+    }
+    case 'grok': {
+      if (requireConfigText(configPath, '现有 Grok config.toml') === null) return null
+      const parsed = requireToml(configPath, '现有 Grok config.toml')
+      if (managedCliHookTargets('grok', parsed).length === 0) return null
+      removeGrokCliHooks(parsed)
+      if (rewrite?.cliHook) applyGrokCliHooks(parsed, rewrite.cliHook)
+      return { path: configPath, content: tomlContent(parsed) }
+    }
+  }
+}
+
+function executeManagedCliHookPlan(
+  provider: ProviderId,
+  rootsInput: ProviderConfigRoots,
+  rewrite: ManagedCliHookRewrite | null,
+): NativeConfigSaveResult {
+  const roots = normalizeProviderConfigRoots(rootsInput)
+  const providerRoot = providerConfigRoot(provider, roots)
+  for (const filePath of providerConfigPaths(provider, roots)) assertSafeConfigPath(filePath, providerRoot, 'file')
+  const plan = managedCliHookPlan(provider, roots, rewrite)
+  if (!plan) return { backups: [], files: [] }
+  assertNoReparseComponents(path.dirname(providerRoot), 'Provider 配置根目录')
+  ensureSafeDataDirectory(providerRoot, 'Provider 配置根目录')
+  return executeFilePlans([plan], {}, providerRoot)
+}
+
+/** 首页「修好它」：把本软件那几条改成这次的路径（写不出来就收回），其余原样。 */
+export function rewriteManagedCliHooks(
+  provider: ProviderId,
+  rootsInput: ProviderConfigRoots,
+  rewrite: ManagedCliHookRewrite,
+): NativeConfigSaveResult {
+  return executeManagedCliHookPlan(provider, rootsInput, rewrite)
+}
+
+/** 卸载时收回本软件写进这家配置的钩子与状态行。Key 和其余设置留着，卸了星芒工具照样能用。 */
+export function removeManagedCliHooks(
+  provider: ProviderId,
+  rootsInput: ProviderConfigRoots = defaultProviderConfigRoots(),
+): NativeConfigSaveResult {
+  return executeManagedCliHookPlan(provider, rootsInput, null)
 }
 
 // ---------------------------------------------------------------------------

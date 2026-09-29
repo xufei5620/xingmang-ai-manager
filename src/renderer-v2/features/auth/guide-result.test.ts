@@ -36,6 +36,7 @@ describe('guide setup result', () => {
     expect(result.connection.detail).toBe('刚才改用时试连过，能连上。')
     expect(result.connection.tone).toBe('ok')
     expect(result.billing).toBe('花的是当前账号的余额。')
+    expect(result.usesAccountBalance).toBe(true)
   })
 
   it('uses the switch result when the detected source has not caught up yet', () => {
@@ -47,6 +48,7 @@ describe('guide setup result', () => {
     const toOfficial = buildGuideSetupResult({ route: 'codexDesktop', tool: codex, signedIn: true, readiness: ready, name: 'Codex 桌面端', officialName: 'ChatGPT 账号', switched: { ...switched, target: 'official', verified: false, loginRequired: true } })
     expect(toOfficial.connection.value).toBe('ChatGPT 账号，还没登录')
     expect(toOfficial.billing).toContain('不扣当前账号的余额')
+    expect(toOfficial.usesAccountBalance).toBe(false)
   })
 
   it('keeps an official account pending its own login', () => {

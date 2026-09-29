@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { Home, type HomeProps } from './Home'
+import { Home, lowBalanceText, type HomeProps } from './Home'
 import type { ToolboxSnapshot } from './model'
 import type { ToolboxPartitionFailure, ToolsApi } from './api'
 import type { ToolJob } from './useToolbox'
@@ -462,6 +462,23 @@ describe('renderer-v2 home missing runtime guidance on macOS', () => {
     expect(markup).toContain('安装时需要管理员授权')
   })
 
+  it('tells a built-in Administrator account before install that store apps may not open', () => {
+    const base = runtimeSnapshot('windows', {})
+    const builtInAdministrator = {
+      ...base,
+      platform: { ...base.platform, codexDesktop: { ...base.platform.codexDesktop, launch: true, install: 'managed' } },
+      system: {
+        ...base.system,
+        desktopApps: { codex: { installed: false, detectionFailed: false, appVersion: null, storeAppLaunchBlock: 'builtInAdministrator' } },
+      },
+    } as unknown as ToolboxSnapshot
+    const markup = render({}, undefined, { snapshot: builtInAdministrator })
+    expect(markup).toContain('「Administrator」账户，装完可能打不开')
+    expect(markup).not.toContain('安装时需要管理员授权')
+    // 只提醒，不拦：「安装」照样在
+    expect(markup).toContain('data-testid="tool-codexDesktop-primary"')
+  })
+
   it('keeps the elevation notice off macOS, where nothing here elevates', () => {
     const markup = render({}, undefined, { snapshot: runtimeSnapshot('macos', { node: true }) })
     expect(markup).not.toContain('data-testid="home-runtime-node-elevation"')
@@ -553,6 +570,50 @@ describe('renderer-v2 home missing runtime guidance on macOS', () => {
       const markup = render({}, undefined, { snapshot: shadowedSnapshot(), onSwitchAccount: () => undefined })
       expect(markup).not.toContain('data-testid="tool-claude-repair-codex"')
       expect(markup).toContain('已配好')
+    })
+  })
+
+  // 卸载后换了文件夹重装、挪了软件、换装了 Node.js：写进工具里的提醒设置还指着旧位置，每一轮都报一行错。
+  describe('reminder settings that point at an old location', () => {
+    function staleSnapshot(): ToolboxSnapshot {
+      const base = snapshot({ claude: cliStatus, codex: cliStatus, grok: cliStatus, gemini: cliStatus })
+      return {
+        ...base,
+        config: {
+          ...base.config,
+          providers: { ...base.config.providers, claude: { ...providerConfig, configurationOwnership: 'account', cliHooksStale: true } },
+        },
+      } as unknown as ToolboxSnapshot
+    }
+
+    it('says the reminder settings need fixing, offers the fix and still opens the tool', () => {
+      const markup = render({}, undefined, { snapshot: staleSnapshot(), onRepairHooks: () => undefined })
+      expect(markup).toContain('提醒设置要修')
+      expect(markup).toContain('工具里的提醒设置指向了旧位置，每次都会多报一行错')
+      expect(markup).toContain('data-testid="tool-claude-repair-hooks"')
+      expect(markup).toMatch(/data-testid="tool-claude-primary"[^>]*>(?:<[^>]+>)*打开/)
+      expect(markup).not.toContain('data-testid="tool-codex-repair-hooks"')
+    })
+
+    it('shows no fix button when the host offers none', () => {
+      const markup = render({}, undefined, { snapshot: staleSnapshot() })
+      expect(markup).not.toContain('data-testid="tool-claude-repair-hooks"')
+    })
+
+    // 客户自己装了 Git 或 PowerShell 7，Windows 版 Grok 换了命令行，写下去的那种写法跑不起来了。
+    it('says Grok switched its command line when that is why the hooks need fixing', () => {
+      const base = snapshot({ claude: cliStatus, codex: cliStatus, grok: cliStatus, gemini: cliStatus })
+      const shellChanged = {
+        ...base,
+        config: {
+          ...base.config,
+          providers: { ...base.config.providers, grok: { ...providerConfig, configurationOwnership: 'account', cliHooksStale: true, cliHooksShellChanged: true } },
+        },
+      } as unknown as ToolboxSnapshot
+      const markup = render({}, undefined, { snapshot: shellChanged, onRepairHooks: () => undefined })
+      expect(markup).toContain('Grok 换了命令行，星芒写的提醒设置要跟着改一下，不然每次都会多报一行错')
+      expect(markup).not.toContain('工具里的提醒设置指向了旧位置')
+      expect(markup).toContain('data-testid="tool-grok-repair-hooks"')
     })
   })
 
@@ -759,13 +820,21 @@ describe('renderer-v2 home balance for subscription customers', () => {
 
   it('keeps the low-balance warning for wallet-only customers', () => {
     const markup = render({}, undefined, { balance: empty })
-    expect(markup).toContain('余额只剩 $0.00，充值后可继续使用。')
+    expect(markup).toContain('data-testid="home-low-balance"')
+    expect(markup).toContain('当前账号余额是 $0，充值后 AI 工具才能用。')
+    expect(markup).not.toContain('余额只剩')
     expect(markup).not.toContain('home-subscription')
+  })
+
+  it('tells a brand-new account to top up first instead of saying the balance ran low', () => {
+    expect(lowBalanceText(0)).toBe('当前账号余额是 $0，充值后 AI 工具才能用。付完马上生效，不用重新设置。')
+    expect(lowBalanceText(-0.2)).toMatch(/^当前账号余额是 \$0/)
+    expect(lowBalanceText(3.456)).toBe('余额只剩 $3.46，充值后可继续使用。')
   })
 
   it('drops the empty-wallet warning and shows the subscription while one is usable', () => {
     const markup = render({}, undefined, { balance: empty, subscription })
-    expect(markup).not.toContain('余额只剩')
+    expect(markup).not.toContain('home-low-balance')
     expect(markup).toContain('订阅：月卡 · 剩余 $8.00 · 10 月 3 日到期')
     expect(markup).not.toContain('tone-bad')
   })
@@ -774,6 +843,30 @@ describe('renderer-v2 home balance for subscription customers', () => {
     const markup = render({}, undefined, { balance: empty, subscription: { ...subscription, expiringSoon: true } })
     expect(markup).toContain('订阅 10 月 3 日到期，到期后会从余额扣费。')
     expect(markup).toContain('去续费')
-    expect(markup).not.toContain('余额只剩')
+    expect(markup).not.toContain('home-low-balance')
+  })
+})
+
+describe('renderer-v2 home runtime card', () => {
+  function withNpm(npm: Record<string, unknown>): ToolboxSnapshot {
+    const base = snapshot({ claude: cliStatus, codex: cliStatus, grok: cliStatus, gemini: cliStatus })
+    return { ...base, system: { ...base.system, runtime: { ...base.system.runtime, npm } } } as unknown as ToolboxSnapshot
+  }
+
+  it('does not list npm as its own row', () => {
+    const markup = render({})
+    expect(markup).toContain('data-testid="home-runtime-row-node"')
+    expect(markup).not.toContain('data-testid="home-runtime-row-npm"')
+    expect(markup).not.toContain('<strong>npm</strong>')
+  })
+
+  it('says on the Node.js row when the part that installs tools is missing', () => {
+    const markup = render({}, undefined, { snapshot: withNpm({ installed: false, version: null, detectionFailed: false }) })
+    expect(markup).toContain('22.0.0 · 少了装工具用的组件，重装一次 Node.js 就好')
+  })
+
+  it('stays quiet when the check itself failed rather than the part being missing', () => {
+    const markup = render({}, undefined, { snapshot: withNpm({ installed: false, version: null, detectionFailed: true }) })
+    expect(markup).not.toContain('少了装工具用的组件')
   })
 })

@@ -379,6 +379,9 @@ describe('terminal tool reminders', () => {
     expect(buildTerminalNotificationMessage({ tool: 'gemini', event: 'waiting' }).title).toBe('Gemini CLI 在等你')
     expect(buildTerminalNotificationMessage({ tool: 'claude', event: 'finished' }).title).toBe('Claude Code 做完了')
     expect(buildTerminalNotificationMessage({ tool: 'codex', event: 'finished' }).title).toBe('Codex 做完了')
+    expect(buildTerminalNotificationMessage({ tool: 'grok', event: 'failed', reason: 'auth' }).title).toBe('Grok 刚才没回上')
+    expect(buildTerminalNotificationMessage({ tool: 'grok', event: 'waiting' }).title).toBe('Grok 在等你')
+    expect(buildTerminalNotificationMessage({ tool: 'grok', event: 'finished' }).title).toBe('Grok 做完了')
   })
 
   it('sends billing trouble to top-up, other trouble to the check page and turn reminders nowhere', () => {

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { classifyOperationError, operationFallbackActions, operationLogPage, presentOperationError, type OperationErrorKey } from './operation-error'
 import { networkFailureMessages, toolCertificateMessages } from '../../electron/network-failure'
 import { errors } from './registry/errors'
+import { buildCodexDesktopInstallFailureMessage, codexDesktopInstallFailureReasons, type CodexDesktopInstallFailureReason } from '../../electron/codex-desktop-install-failure'
 
 /**
  * 目录里的 16 条都要有交代：要么给出一句真的会到达渲染层的后端原话，要么写明
@@ -12,6 +13,10 @@ const catalogCoverage: Record<OperationErrorKey, { sample: string } | { unreacha
   toolNotEnabled: { sample: 'Codex CLI 改用当前账号没有完成：分组不存在、不可用或名称重复。已恢复到切换前的配置。' },
   switchUndoFailed: { sample: '改用当前账号没有完成：写入失败 EPERM。自动恢复也没有完成（EPERM），请到「备份」里恢复切换前那一份。' },
   pluginCatalogStuck: { sample: 'Codex 插件目录里的旧备份清不掉，这次没有改动' },
+  // 主进程 codex-desktop-service.ts 的 describeCodexDesktopLaunchFailure。
+  codexDesktopNotStarted: { sample: 'Codex 桌面端没有打开：等了将近一分钟，没有等到它的窗口。先关掉所有 Codex 窗口，再点「重试」；还是不行，就在开始菜单里搜「Codex」直接点开，也打不开的话请联系客服。' },
+  // 主进程 codex-desktop-install-failure.ts 的 buildCodexDesktopInstallFailureMessage。
+  codexDesktopInstallFailed: { sample: 'Codex 桌面端没装上：微软商店这次没装上，国内下载线路这会儿连不上。' },
   keyInvalid: { sample: '模型查询失败，服务返回 403：令牌已失效' },
   noBalance: { sample: '账号余额或 API Key 额度不足，请充值后重试' },
   tooManyRequests: { sample: '星芒服务返回 429 Too Many Requests' },
@@ -159,6 +164,36 @@ describe('renderer-v2 operation error classification', () => {
     expect(JSON.stringify(errors)).not.toContain('以管理员身份重试')
     expect(presentOperationError('安装失败：EACCES permission denied')?.actions
       .some((action) => action.label.includes('管理员'))).toBe(false)
+  })
+
+  it('gives a Codex window that never appeared a retry and a way to support, even when it names Windows settings', () => {
+    for (const message of [
+      'Codex 桌面端没有打开：这台电脑正用 Windows 自带的「Administrator」账户登录，Windows 常常不让这个账户打开从应用商店装的软件。换一个普通账户登录电脑，再从星芒打开 Codex。',
+      'Codex 桌面端没有打开：这台电脑关掉了 Windows 的「用户账户控制」，Windows 在这种设置下常常打不开从应用商店装的软件。请联系客服，帮你把它打开后再试。',
+    ]) {
+      const hint = presentOperationError(message)
+      expect(hint?.key).toBe('codexDesktopNotStarted')
+      expect(hint?.actions.map((action) => action.id)).toEqual(['retry', 'support'])
+    }
+  })
+
+  it('gives every Codex Desktop install failure a retry, the Microsoft Store, the log and support', () => {
+    // 这几句里有「连不上」「Windows 拒绝了这次安装」，不能被 timeout、permission 抢走。
+    for (const reason of Object.keys(codexDesktopInstallFailureReasons) as CodexDesktopInstallFailureReason[]) {
+      for (const storeTried of [true, false]) {
+        const message = buildCodexDesktopInstallFailureMessage(reason, { storeTried, updating: storeTried })
+        const hint = presentOperationError(message)
+        expect([message, hint?.key]).toEqual([message, 'codexDesktopInstallFailed'])
+        expect(hint?.actions).toEqual([
+          { id: 'retry', label: '重试' },
+          { id: 'openStore', label: '去微软商店装' },
+          { id: 'log', label: '查看日志' },
+          { id: 'support', label: '找客服' },
+        ])
+        // 「查看日志」要落到运行日志：原话（SHA-256、退出码）只记在那里。
+        expect(operationLogPage({ message, tool: 'codexDesktop' })).toBe('feedback')
+      }
+    }
   })
 
   it('sends a relocated folder to the check page instead of blaming permissions', () => {

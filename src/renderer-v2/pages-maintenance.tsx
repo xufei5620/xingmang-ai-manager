@@ -69,12 +69,14 @@ import {
   skinOptions,
   updateFailureLabel,
   updateCardTitle,
+  updateInstallNote,
+  updatesPageLead,
   withdrawnVersionAdvice,
 } from './registry/business'
 import { tools } from './registry/tools'
 import { clientConnections } from './registry/clients'
 import { canUninstallTool, externalInstallHint, isExternallyManagedInstall } from './features/tools/model'
-import { elevatedInstallNotice } from './features/tools/elevation-notice'
+import { elevatedInstallNotice, storeAppLaunchNotice } from './features/tools/elevation-notice'
 import { ToolStatusMeta, ToolStatusReason } from './features/tools/ToolStatusMeta'
 import { connectionCheckView } from './features/tools/connection-check'
 import { accountScope, sessionRestoring } from './account-context'
@@ -90,6 +92,8 @@ import { rememberedLoginAction, rememberedLoginForgottenMessage } from './featur
 import { maintenanceFailureNotice, readMaintenanceStatus } from './features/tools/maintenance-status'
 import { ManualUninstallDialog, type ManualUninstallState } from './features/tools/ManualUninstall'
 import { RuntimeRestartDialog } from './features/tools/RuntimeRestartDialog'
+import { NodeReplaceDialog } from './features/tools/NodeReplaceDialog'
+import { describeNodeReplaceOutcome, nodeReplaceOffered } from './features/tools/node-replace'
 import { uninstallHandOffNotice } from './features/tools/uninstall-handoff'
 import { describeRuntimeInstallOutcome } from './features/tools/runtime-install-outcome'
 import {
@@ -199,7 +203,10 @@ export function withElevationNotice(lead: string, notice: string | null): string
  * 系统里的代理和环境变量、项目文件夹里的设置……）就不给按钮：结论里已经说了怎么办，
  * 以前统一兜底到「安装卸载」，用户点过去什么也找不到。
  */
-export function diagnosticTarget(code: string): V2Page | null {
+export function diagnosticTarget(code: string, details?: Diagnostic['details']): V2Page | null {
+  // 「安全证书」只有「Node.js 太旧」这一种能在软件里处理：去「安装卸载」换新版。
+  // 电脑自己也不认、以管理员身份打开这两种，结论里已经说了怎么办。
+  if (code === 'CERTIFICATE_TRUST') return details?.verdict === 'outdatedNode' ? 'maintenance' : null
   // 文件夹被搬过没有能在软件里一键修的地方，下一步是导出报告找客服。
   if (code === 'FOLDER_RELOCATED') return 'feedback'
   // 加速文件坏了：加速页上有「重新检查」和「联系客服」。
@@ -224,8 +231,8 @@ export function diagnosticTarget(code: string): V2Page | null {
   return null
 }
 
-export function diagnosticHasFix(code: string): boolean {
-  return diagnosticTarget(code) !== null
+export function diagnosticHasFix(code: string, details?: Diagnostic['details']): boolean {
+  return diagnosticTarget(code, details) !== null
 }
 
 /**
@@ -447,7 +454,7 @@ export function HealthPage({
       openConfig(provider)
       return
     }
-    const target = diagnosticTarget(item.code)
+    const target = diagnosticTarget(item.code, item.details)
     if (!target) return
     if (target === 'settings') requestSettingsGroup('network')
     navigate?.(target)
@@ -608,7 +615,7 @@ export function HealthPage({
                       打开文件夹
                     </Button>
                   )}
-                  {item.state !== 'pass' && diagnosticHasFix(item.code) && (
+                  {item.state !== 'pass' && diagnosticHasFix(item.code, item.details) && (
                     <Button
                       size="sm"
                       icon={Wrench}
@@ -1041,16 +1048,31 @@ export function UpdatesPage({
   const operation = useOperation()
   const [confirm, setConfirm] = useState(false)
   const [isMac, setIsMac] = useState(false)
+  const [isWindows, setIsWindows] = useState(false)
+  const [autoUpdateSetting, setAutoUpdateSetting] = useState(false)
   useEffect(() => api.onUpdateState(resource.setData), [api, resource.setData])
   useEffect(() => {
     let current = true
     // 读不到平台就不提示：多说一句对 Windows 客户是噪音，少说一句只是回到原来的样子。
     void api.getPlatformCapabilities()
-      .then((capability) => { if (current) setIsMac(capability.platform === 'macos') })
+      .then((capability) => {
+        if (!current) return
+        setIsMac(capability.platform === 'macos')
+        setIsWindows(capability.platform === 'windows')
+      })
+      .catch(() => undefined)
+    return () => { current = false }
+  }, [api])
+  useEffect(() => {
+    let current = true
+    // 读不到设置就按关着说：多承诺一句「会自动装」比少说一句更糟。
+    void api.getSettings()
+      .then((settings) => { if (current) setAutoUpdateSetting(settings.autoUpdate !== false) })
       .catch(() => undefined)
     return () => { current = false }
   }, [api])
   const update = resource.data
+  const autoUpdateOn = Boolean(update?.autoUpdateSupported && autoUpdateSetting)
   const check = () =>
     void operation.execute(
       'check',
@@ -1117,7 +1139,7 @@ export function UpdatesPage({
       data-page-id="updates"
       data-testid="page-updates"
     >
-      <PageHead title="更新" lead="新版本什么时候安装由你决定，不会自己重启。" />
+      <PageHead title="更新" lead={updatesPageLead(autoUpdateOn)} />
       <ResultNotice
         error={resource.error || operation.error}
         message={operation.message}
@@ -1209,9 +1231,7 @@ export function UpdatesPage({
           )}
           <details>
             <summary>安装前需要知道</summary>
-            <p>
-              先保存工具中尚未完成的内容。关闭保护会检查未保存任务，确认后再安装。
-            </p>
+            <p>{updateInstallNote}</p>
           </details>
         </Card>
       </div>
@@ -1244,6 +1264,7 @@ export function UpdatesPage({
       >
         <p>请先保存当前工作。安装完成后重新打开工具箱。</p>
         {isMac && <p data-testid="updates-mac-keychain-hint">{macKeychainUpdateHint}</p>}
+        {isWindows && <p data-testid="updates-windows-consent-hint">{windowsConsentUpdateHint}</p>}
         <ResultNotice error={operation.error} />
       </Dialog>
     </section>
@@ -1252,6 +1273,8 @@ export function UpdatesPage({
 
 // 为什么 Mac 每换一版都会问一次钥匙串密码，见 registry/tutorials.ts 的
 // macKeychainTutorialDetail。重启前说一句，客户就不会慌着点「拒绝」。
+// 安装包装在「所有用户」的程序目录下，Windows 会弹一次授权窗口；点了「否」就装不上。
+export const windowsConsentUpdateHint = 'Windows 会弹出一个授权窗口问要不要允许更改，点「是」就好；点了「否」这次就装不上。'
 export const macKeychainUpdateHint = '重启后 Mac 可能弹出钥匙串密码框，输入这台 Mac 的开机密码，点「始终允许」就好。'
 
 export function installResultMessage(result: ToolInstallOutcome | 'cancelled'): string {
@@ -1286,6 +1309,7 @@ export function MaintenancePage({
   const cancelRequested = useRef(new Set<string>())
   const [manualUninstall, setManualUninstall] = useState<ManualUninstallState | null>(null)
   const [runtimeRestart, setRuntimeRestart] = useState(false)
+  const [nodeReplaceOpen, setNodeReplaceOpen] = useState(false)
   useEffect(() => {
     const stopCli = api.onInstallProgress((event) =>
       setLogs((previous) => [...previous.slice(-199), event.message]),
@@ -1462,7 +1486,8 @@ export function MaintenancePage({
                   lead={withElevationNotice(
                     tool.vendor,
                     externalHint ?? (id === 'codexDesktop' && !status?.installed && !rescan
-                      ? elevatedInstallNotice('codexDesktop', capability?.platform, capability?.codexDesktop.install)
+                      ? storeAppLaunchNotice(snapshot?.desktopApps.codex.storeAppLaunchBlock)
+                        ?? elevatedInstallNotice('codexDesktop', capability?.platform, capability?.codexDesktop.install)
                       : null),
                   )}
                   status={status}
@@ -1559,6 +1584,15 @@ export function MaintenancePage({
             id === 'node'
               ? capability?.nodeRuntimeInstall === 'managed'
               : capability?.pythonRuntimeInstall === 'managed'
+          // 装着、却认不了公司证书的 Node.js：「安装」只会回「无需重复安装」，
+          // 按钮改成「换成新版」，点了先确认再换（第十八批 4）。
+          const replace =
+            id === 'node' &&
+            nodeReplaceOffered({
+              platform: capability?.platform,
+              nodeRuntimeInstall: capability?.nodeRuntimeInstall,
+              node: status,
+            })
           return (
             <ListRow
               key={id}
@@ -1593,8 +1627,11 @@ export function MaintenancePage({
                   size="sm"
                   icon={Download}
                   disabled={Boolean(operation.busy)}
+                  testId={'maintenance-runtime-action-' + id}
                   onClick={() =>
-                    managed
+                    replace
+                      ? setNodeReplaceOpen(true)
+                      : managed
                       ? void operation.execute(
                           id,
                           async () => {
@@ -1613,7 +1650,7 @@ export function MaintenancePage({
                       : navigate?.('tutorial')
                   }
                 >
-                  {managed ? '安装' : '安装指南'}
+                  {replace ? '换成新版' : managed ? '安装' : '安装指南'}
                 </Button>
               }
             />
@@ -1706,6 +1743,27 @@ export function MaintenancePage({
           state={manualUninstall}
           platform={capability?.platform}
           onClose={() => setManualUninstall(null)}
+        />
+      )}
+      {nodeReplaceOpen && (
+        <NodeReplaceDialog
+          version={snapshot?.runtime.node.version}
+          onClose={() => setNodeReplaceOpen(false)}
+          onConfirm={() => {
+            setNodeReplaceOpen(false)
+            void operation.execute(
+              'node',
+              async () => {
+                const result = await api.installNodeRuntime({ reason: 'certificate' })
+                await resource.reload()
+                return describeNodeReplaceOutcome(result)
+              },
+              (outcome) => {
+                if (outcome.restartRequired) setRuntimeRestart(true)
+                return outcome.message
+              },
+            )
+          }}
         />
       )}
       {runtimeRestart && (

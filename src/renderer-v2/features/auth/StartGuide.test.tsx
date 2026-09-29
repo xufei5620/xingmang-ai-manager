@@ -1,6 +1,7 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { StartGuide, defaultGuideRoute, guideCanSkipConnect, guideFailureExits, guideInstallErrorMessage, guideStepErrorMessage, type GuideToolState, type StartGuideProps } from './StartGuide'
+import { toolCertificateMessages } from '../../../../electron/network-failure'
+import { StartGuide, defaultGuideRoute, guideCanSkipConnect, guideFailureExits, guideInstallErrorMessage, guideInstallExits, guideStepErrorMessage, type GuideToolState, type StartGuideProps } from './StartGuide'
 
 const resumeKey = 'fixture-scope'
 
@@ -69,6 +70,28 @@ describe('renderer-v2 start guide first run', () => {
     expect(markup).toContain('data-testid="guide-open-tool-new-folder"')
   })
 
+  // 客服远程装好的客户走完引导也不知道要充值、去哪充（2026-09-29 yoyo 反馈）。
+  it('points a new customer to top-up on the last step when the tool spends the current account', () => {
+    stubResumedGuide('claude', 'ready')
+    const markup = render([guideTool()], { onFailureAction: () => undefined })
+    expect(markup).toContain('data-testid="guide-recharge"')
+    expect(markup).toContain('data-testid="guide-recharge-button"')
+    expect(markup).toContain('去充值')
+    expect(markup).toContain('左下角余额旁边的「充值」')
+    stubResumedGuide('chat', 'ready')
+    expect(render([guideTool()], { onFailureAction: () => undefined })).toContain('data-testid="guide-recharge"')
+  })
+
+  it('does not send people to top up when the tool spends someone else\'s quota or the host has no way there', () => {
+    stubResumedGuide('claude', 'ready')
+    expect(render([guideTool({ source: 'official' })], { onFailureAction: () => undefined })).not.toContain('data-testid="guide-recharge"')
+    expect(render([guideTool({ source: 'manual' })], { onFailureAction: () => undefined })).not.toContain('data-testid="guide-recharge"')
+    expect(render([guideTool({ configured: false, source: 'none' })], { onFailureAction: () => undefined })).not.toContain('data-testid="guide-recharge"')
+    expect(render([guideTool()])).not.toContain('data-testid="guide-recharge"')
+    stubResumedGuide('claude', 'connect')
+    expect(render([guideTool()], { onFailureAction: () => undefined })).not.toContain('data-testid="guide-recharge"')
+  })
+
   it('does not offer a folder for the desktop app, the chat route or a tool that is not ready', () => {
     stubResumedGuide('codexDesktop', 'ready')
     expect(render([guideTool({ id: 'codexDesktop' })])).not.toContain('data-testid="guide-folder-hint"')
@@ -109,6 +132,21 @@ describe('renderer-v2 start guide first run', () => {
     expect(markup).toContain('点「安装」时会一并装好')
     expect(markup).toMatch(/<button[^>]*data-testid="guide-install"(?![^>]*disabled)/)
     expect(markup).not.toMatch(/Node\.js 和 Python|PATH|LTS/)
+  })
+
+  it('warns before installing the Codex desktop app on an account that cannot open store apps', () => {
+    stubResumedGuide('codexDesktop', 'prepare')
+    const markup = render([guideTool({ id: 'codexDesktop', installed: false, configured: false, source: 'none', installMode: 'managed', storeAppLaunchBlock: 'builtInAdministrator' })])
+    expect(markup).toContain('data-testid="guide-store-app-notice"')
+    expect(markup).toContain('「Administrator」账户')
+    // 只提醒，不拦：「安装」照样能点
+    expect(markup).toMatch(/<button[^>]*data-testid="guide-install"(?![^>]*disabled)/)
+  })
+
+  it('says nothing extra for an ordinary account or once the desktop app is installed', () => {
+    stubResumedGuide('codexDesktop', 'prepare')
+    expect(render([guideTool({ id: 'codexDesktop', installed: false, configured: false, source: 'none', installMode: 'managed' })])).not.toContain('data-testid="guide-store-app-notice"')
+    expect(render([guideTool({ id: 'codexDesktop', storeAppLaunchBlock: 'uacDisabled' })])).not.toContain('data-testid="guide-store-app-notice"')
   })
 
   // 工具已经装了、Node 却太旧：这时没有「安装」可点，运行环境那一行必须留着自己的按钮。
@@ -216,6 +254,29 @@ describe('guide install failure wording', () => {
     expect(message).not.toMatch(/星芒服务器|输入已保留/)
     expect(message).toContain('网络连不上')
     expect(guideInstallErrorMessage(new Error('HTTP 401 unauthorized'), 'Codex')).toBe('Codex 没装上。点「再试一次」，还不行就点「需要帮助」。')
+  })
+})
+
+describe('guide install failure exits', () => {
+  const outdatedNode = new Error(`Claude Code 安装失败：npm 官方源：SELF_SIGNED_CERT_IN_CHAIN。${toolCertificateMessages.outdatedNode}`)
+
+  it('offers the Node.js replacement where this app can do it and says the guide carries on', () => {
+    expect(guideInstallExits(outdatedNode, true).map((action) => action.id)).toEqual(['replaceNode', 'log'])
+    expect(guideInstallErrorMessage(outdatedNode, 'Claude Code', true)).toBe('Claude Code 没装上：这台电脑上的 Node.js 太旧，认不了公司电脑装的证书。点「换成新版 Node.js」，换好后星芒会接着装。')
+  })
+
+  it('falls back to support where the replacement is out of reach', () => {
+    expect(guideInstallExits(outdatedNode, false).map((action) => action.id)).toEqual(['log', 'support'])
+    expect(guideInstallErrorMessage(outdatedNode, 'Claude Code', false)).toContain('点「再试一次」，还不行就点「需要帮助」')
+  })
+
+  it('borrows the error dialog exits for the other install failures', () => {
+    expect(guideInstallExits(new Error('Claude Code 安装失败：ENOSPC: no space left on device')).length).toBeGreaterThan(0)
+    expect(guideInstallExits(new Error('Claude Code 安装失败：ENOSPC: no space left on device')).map((action) => action.id)).not.toContain('retry')
+  })
+
+  it('always leaves at least a way to reach support', () => {
+    expect(guideInstallExits(new Error('something odd'))).toEqual([{ id: 'support', label: '找客服' }])
   })
 })
 

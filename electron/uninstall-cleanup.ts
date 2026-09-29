@@ -1,9 +1,13 @@
 import { execFile } from 'node:child_process'
 import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import { promisify } from 'node:util'
 import type { App } from 'electron'
 import { accelerationProxyJournalPath } from './acceleration-development-host'
+import { providerIds, type ProviderId } from './catalog'
+import { defaultProviderConfigRoots, type ProviderConfigRoots } from './codex-home'
+import { removeManagedCliHooks } from './config-files'
 import { trustedCommandEnvironment } from './command-runner'
 import { windowsAppUserModelId } from './login-launch'
 import { removeWindowsLoginItem } from './platform/system-service'
@@ -30,6 +34,8 @@ export const uninstallCleanupExitCodes = {
   loginRecordsRemain: 16,
   // 跑卸载的不是桌面上登录着的那个人，什么都没动（#498）。
   otherAccount: 32,
+  // 有哪家工具配置里的提醒设置（钩子、状态行）没收回来。
+  cliHooksRemain: 64,
 } as const
 
 // 单次 PowerShell 放宽到 90 秒：卸载时 PowerShell 往往是冷启动，第一次编译
@@ -246,12 +252,44 @@ export async function inspectUninstallAccount(
   }
 }
 
+// 本软件写进四家工具配置的钩子、状态行指向安装目录里的脚本，软件卸掉以后每一轮都在
+// 终端里报一行错。卸载时只收回这几行（认脚本文件名，用户自己写的不动）；Key 和其余
+// 设置留着，卸了星芒工具照样能用——跟退出登录保留本机 Key 一个口径，不看勾选框。
+//
+// Codex 的位置刻意不读 CODEX_HOME：这一支带着管理员身份，而那个环境变量是普通权限
+// 就能改的，不该由它决定这里去改哪个目录下的文件。设了 CODEX_HOME 的人很少，他们的
+// Codex 提醒设置留着，首页下次会提示「修好它」（如果重装回来）。
+export function uninstallProviderConfigRoots(userHome = os.homedir()): ProviderConfigRoots {
+  return defaultProviderConfigRoots(userHome, {})
+}
+
+export function removeCliHooksFromConfigs(
+  roots: ProviderConfigRoots = uninstallProviderConfigRoots(),
+  report?: (line: string) => void,
+  remove: (provider: ProviderId, roots: ProviderConfigRoots) => unknown = removeManagedCliHooks,
+): boolean {
+  let removed = true
+  // 一家失败不耽误下一家。写入走两阶段提交与 I8 的路径检查：卸载程序带着管理员身份，
+  // 配置目录被换成链接时照样拒绝，而不是跟着改到别处去。
+  for (const provider of providerIds) {
+    try {
+      remove(provider, roots)
+    } catch (error) {
+      removed = false
+      try { report?.(`cli hooks (${provider}): ${describeCleanupFailure(error)}`) } catch { /* Reporting must not change the result. */ }
+    }
+  }
+  return removed
+}
+
 export interface UninstallCleanupDependencies {
   dataDirectory: string
   // 缺省 = 不问，照旧清理。
   inspectAccount?: () => Promise<UninstallAccountMatch>
   recoverProxy(journalPath: string): Promise<void>
   removeLoginItem(): boolean
+  // 收回写进四家工具配置的提醒设置；缺省 = 不动（旧行为，测试里用）。
+  removeCliHooks?: () => boolean
   // 只有卸载页勾了「同时清除登录记录和聊天记录」才给；缺省 = 两样都保留，跟以前一样。
   clearLoginRecords?: () => Promise<boolean>
   proxyRecordsExist?: (journalPath: string) => boolean
@@ -295,6 +333,15 @@ export async function runUninstallCleanup(dependencies: UninstallCleanupDependen
     code |= codes.loginItemRemains
     try { dependencies.report?.(`login item: ${describeCleanupFailure(error)}`) } catch { /* Reporting must not change the result. */ }
   }
+  // 同样是几次本地文件写入，排在可能一直等到超时的代理还原前面。
+  if (dependencies.removeCliHooks) {
+    try {
+      if (!dependencies.removeCliHooks()) code |= codes.cliHooksRemain
+    } catch (error) {
+      code |= codes.cliHooksRemain
+      try { dependencies.report?.(`cli hooks: ${describeCleanupFailure(error)}`) } catch { /* Reporting must not change the result. */ }
+    }
+  }
   // 也排在代理还原前面：还原可能一直等到超时，删登录记录不该跟着被跳过。
   if (dependencies.clearLoginRecords) {
     try {
@@ -333,6 +380,8 @@ export function startUninstallCleanup(
   report?: (line: string) => void,
   argv: readonly string[] = process.argv,
   inspectAccount: () => Promise<UninstallAccountMatch> = () => inspectUninstallAccount(process.platform, report),
+  // 测试替换成临时目录，免得改到跑测试这台电脑上真实的工具配置。
+  removeCliHooks: () => boolean = () => removeCliHooksFromConfigs(uninstallProviderConfigRoots(), report),
 ): void {
   // A development build shares the login item's name with the installed app,
   // so running this from a checkout would switch off the real one's autostart.
@@ -349,6 +398,7 @@ export function startUninstallCleanup(
     inspectAccount,
     recoverProxy: (journalPath) => createWindowsSystemProxy({ journalPath, commandTimeoutMs: proxyCommandTimeoutMs }).recover(),
     removeLoginItem: () => removeWindowsLoginItem({ app, executablePath: process.execPath }),
+    removeCliHooks,
     clearLoginRecords: argv.includes(uninstallClearLoginArgument) ? () => clearLoginAndChatRecords(dataDirectory, report) : undefined,
     report,
   }).then(exit, () => exit(uninstallCleanupExitCodes.proxyNotRestored))

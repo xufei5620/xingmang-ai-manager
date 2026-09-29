@@ -177,6 +177,11 @@ export interface FeedbackRuntimeInput {
    * （这时按哪种方式处理看 executionMode）。
    */
   executionProbeFailure?: WindowsExecutionProbeFailureReason | null
+  /**
+   * 「检查」页最近一次「安全证书」那一项的结论（没检查过、或这台电脑没装 Node.js
+   * 没出这一项时缺省）。只读已有结果，生成报告不为它起进程。
+   */
+  certificateTrust?: string | null
   /** 软件主程序所在目录。 */
   appDirectory: string | null
   dataDirectory: string | null
@@ -263,6 +268,7 @@ export function buildFeedbackRuntimeLines(input: FeedbackRuntimeInput): string[]
   }
   lines.push(`Codex 桌面端: ${snapshot ? codexDesktopText(snapshot.codexDesktop) : unreadable}`)
   lines.push(`网络位置: ${snapshot ? regionLabels[snapshot.region] : unreadable}`)
+  if (input.certificateTrust?.trim()) lines.push(`安全证书: ${input.certificateTrust.trim()}`)
   if (input.platform === 'win32' && input.executionMode) {
     lines.push(`运行权限: ${executionModeText(input.executionMode, input.executionProbeFailure)}`)
   }

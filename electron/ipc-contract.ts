@@ -131,6 +131,7 @@ import type {
   RuntimeLogSnapshot as MainRuntimeLogSnapshot,
 } from './runtime-log'
 import type { PlatformCapabilities as MainPlatformCapabilities } from './platform-capabilities'
+import type { StoreAppLaunchBlock as MainStoreAppLaunchBlock } from './windows-store-app-launch'
 import type {
   NewApiAccountKey,
   NewApiAccountKeyCreateInput,
@@ -259,6 +260,15 @@ export type RepositoryContext = CodexRepositoryContext
 export interface ChooseWorkspaceOptions {
   createStarter?: boolean
 }
+
+/**
+ * `runtime:install-node` 的可选参数。缺省 = 旧行为：装着能用的 Node.js 就不动。
+ * reason 'certificate'：电脑上的 Node.js 认不了这台电脑装的证书（公司电脑），
+ * 客户已经确认要换成新版，这时即使它够装工具也照样装一份新的。
+ */
+export interface NodeRuntimeInstallRequest {
+  reason?: 'certificate'
+}
 export type DiagnosticState = MainDiagnosticState
 export type DiagnosticsReport = MainDiagnosticsReport
 export type DiagnosticFolderTarget = MainDiagnosticFolderTarget
@@ -295,6 +305,7 @@ export type PythonRuntimeInstallResult = MainPythonRuntimeInstallResult
 export type GitRuntimeInstallProgress = MainGitRuntimeInstallProgress
 export type GitRuntimeInstallResult = MainGitRuntimeInstallResult
 export type PlatformCapabilities = MainPlatformCapabilities
+export type StoreAppLaunchBlock = MainStoreAppLaunchBlock
 export type AccountStatus = NewApiAccountStatus
 export type AccountProfile = NewApiAccountProfile
 export type AccountSiteId = 'solov' | 'solov-api'
@@ -614,6 +625,8 @@ export interface CodexDesktopInstallResult {
   action: 'installed' | 'updated' | 'unchanged'
   previousVersion: string | null
   installedVersion: string | null
+  /** 国内下载线路比微软商店慢一步、这次没更新到商店最新版时，商店那一版的版本号。 */
+  storeNewerVersion?: string
 }
 
 export interface IpcInvokeDefinition<
@@ -699,6 +712,12 @@ export interface XingmangInvokeContract {
     AccountSourceSwitchResult
   >
   /**
+   * 首页「修好它」（提醒设置要修）：先备份，只把本软件写进这家配置、却指向旧位置的
+   * 钩子与状态行改成这次的路径（这台电脑写不出来就收回），写完再查一遍。Key、模型和
+   * 用户自己写的钩子不动。
+   */
+  repairCliHooks: IpcInvokeDefinition<'config:repair-cli-hooks', [provider: ProviderId], ConfigSaveResult>
+  /**
    * 换账号把 Key 写进这些工具之后，看哪些还开着（Codex 连同桌面端），只对开着的
    * 提醒关掉重开。只读，不改任何东西；检测不出来的归到 unknown，不抛错。
    */
@@ -717,7 +736,7 @@ export interface XingmangInvokeContract {
   /** options 省略 = 弹目录选择器；createStarter = 不弹选择器，直接替用户新建一个项目文件夹。 */
   chooseWorkspace: IpcInvokeDefinition<'workspace:choose', [options?: ChooseWorkspaceOptions], string | null>
   getRepositoryContext: IpcInvokeDefinition<'repository:get-context', [], RepositoryContext>
-  installNodeRuntime: IpcInvokeDefinition<'runtime:install-node', [], NodeRuntimeInstallResult>
+  installNodeRuntime: IpcInvokeDefinition<'runtime:install-node', [request?: NodeRuntimeInstallRequest], NodeRuntimeInstallResult>
   restartWindows: IpcInvokeDefinition<'runtime:restart-windows', [], void>
   installPythonRuntime: IpcInvokeDefinition<'runtime:install-python', [], PythonRuntimeInstallResult>
   /** Windows 上按当前用户静默安装钉死版本的 Git for Windows；其余平台直接报错。 */
@@ -1178,6 +1197,7 @@ export const ipcInvokeChannels = {
   launchExternalClient: 'external-clients:launch',
   switchToOfficialAccount: 'config:switch-to-official-account',
   switchAccountSource: 'config:switch-account-source',
+  repairCliHooks: 'config:repair-cli-hooks',
   inspectRunningTools: 'tools:inspect-running',
   checkToolModels: 'tools:check-models',
   chooseWorkspace: 'workspace:choose',

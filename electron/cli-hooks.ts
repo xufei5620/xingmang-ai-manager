@@ -14,6 +14,7 @@ import { powerShellLiteral } from './windows-elevation'
 //     所以要按平台逐段加引号，并且在执行前它还会把 $GEMINI_CWD 一类的字样替换成别的路径。
 //   * Codex 的 notify 是一个参数数组，同样不经过 shell，它把一段 JSON 追加成最后一个参数。
 //   * Grok 只收一整条 shell 命令，写在它自己的 config.toml 里（见 applyGrokCliHooks）。
+//     Windows 上它自己在 PowerShell 和 Git Bash 之间挑，见 resolveGrokWindowsShell。
 // 路径里出现 `"`、`$`、`` ` ``、`%` 或换行就干脆不写钩子，与状态行同一条规矩：少几条
 // 通知是小事，把用户的安装路径交给 shell 展开不是。
 const UNSAFE_HOOK_PATH_PATTERN = /["`$%\r\n\0]/
@@ -25,12 +26,17 @@ const CLI_HOOK_SCRIPT_RELATIVE = ['bundled-catalog', 'cli-hooks', CLI_HOOK_SCRIP
 
 export type CliHookTool = 'claude' | 'gemini' | 'codex' | 'grok'
 
+/** Windows 版 Grok 跑钩子命令用的 shell；cmd 只在用户自己设了 GROK_SHELL=cmd 时出现。 */
+export type GrokWindowsShell = 'powershell' | 'bash' | 'cmd'
+
 export interface CliHookInvocation {
   nodeExecutable: string
   scriptPath: string
   eventsDirectory: string
   /** 决定 Gemini 那条 shell 命令按 PowerShell 还是 bash 的规矩加引号。 */
   platform: NodeJS.Platform
+  /** 只在 Windows 上有意义；缺省时不写 Grok 钩子（算不出它会用哪个 shell）。 */
+  grokWindowsShell?: GrokWindowsShell
 }
 
 // 选这几类事件的原因见 bundled-catalog/cli-hooks/xingmang-hook.cjs：开始用来算一轮跑了
@@ -83,9 +89,66 @@ function posixShellLiteral(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`
 }
 
-/** Grok 的钩子命令交给 sh 跑：Linux 上 1.0.41 实测路径带空格照样能起；macOS 推测同一套。 */
-export function grokCliHookCommand(invocation: CliHookInvocation): string {
+function environmentValue(env: NodeJS.ProcessEnv, name: string): string {
+  // Windows 的环境变量名不分大小写；测试和别处传进来的普通对象不一定是 process.env。
+  const lower = name.toLowerCase()
+  for (const [key, value] of Object.entries(env)) {
+    if (key.toLowerCase() === lower && typeof value === 'string') return value
+  }
+  return ''
+}
+
+// Windows 版 Grok（1.0.44 程序内的 xai-grok-config/src/shell.rs 字符串）挑 shell 的固定三处
+// Git Bash；不在这三处的 Git（比如自己挑了别的目录装）它不认，我们也不认。
+function gitBashCandidates(env: NodeJS.ProcessEnv): string[] {
+  const roots = [
+    environmentValue(env, 'ProgramFiles') && path.win32.join(environmentValue(env, 'ProgramFiles'), 'Git'),
+    environmentValue(env, 'ProgramFiles(x86)') && path.win32.join(environmentValue(env, 'ProgramFiles(x86)'), 'Git'),
+    environmentValue(env, 'LOCALAPPDATA') && path.win32.join(environmentValue(env, 'LOCALAPPDATA'), 'Programs', 'Git'),
+  ]
+  return roots.filter(Boolean).map((root) => path.win32.join(root, 'bin', 'bash.exe'))
+}
+
+/**
+ * 照 Windows 版 Grok 1.0.44 的顺序推它会拿哪个 shell 跑钩子：GROK_SHELL 指定的优先
+ * （认不出的值它会忽略、接着自动找）→ PATH 上有 pwsh → 三处固定位置有 Git Bash →
+ * 系统自带的 Windows PowerShell。顺序是从程序里的日志字符串推出来的，推测，没在真机核过。
+ * 只看文件在不在，不起任何进程。
+ */
+export function resolveGrokWindowsShell(
+  env: NodeJS.ProcessEnv,
+  exists: (candidate: string) => boolean,
+): GrokWindowsShell {
+  const override = environmentValue(env, 'GROK_SHELL').trim().toLowerCase()
+  if (override === 'pwsh' || override === 'powershell') return 'powershell'
+  if (override === 'bash' || override === 'cmd') return override
+  const probe = (candidate: string) => {
+    try {
+      return exists(candidate)
+    } catch {
+      return false
+    }
+  }
+  const pathEntries = environmentValue(env, 'PATH').split(';')
+    .map((entry) => entry.trim().replace(/^"(.*)"$/, '$1'))
+    .filter((entry) => entry && path.win32.isAbsolute(entry))
+  if (pathEntries.some((entry) => probe(path.win32.join(entry, 'pwsh.exe')))) return 'powershell'
+  if (gitBashCandidates(env).some(probe)) return 'bash'
+  return 'powershell'
+}
+
+/**
+ * Grok 的钩子命令。非 Windows 交给 sh：Linux 上 1.0.41 实测路径带空格照样能起；macOS 推测同一套。
+ * Windows 上按 resolveGrokWindowsShell 推出的 shell 写：PowerShell 用 Gemini 在 Windows 上
+ * 已经在跑的那种写法；Git Bash 用 sh 那种（Grok 起 Git Bash 时关掉了 MSYS 的路径改写，
+ * C:\ 开头的路径原样交给 node，推测，没在真机核过）。cmd 或推不出来就返回 null，不写。
+ */
+export function grokCliHookCommand(invocation: CliHookInvocation): string | null {
   const { nodeExecutable, scriptPath, eventsDirectory } = invocation
+  if (invocation.platform === 'win32' && invocation.grokWindowsShell !== 'bash') {
+    if (invocation.grokWindowsShell !== 'powershell') return null
+    return `& ${powerShellLiteral(nodeExecutable)} ${powerShellLiteral(scriptPath)} grok ${powerShellLiteral(eventsDirectory)}`
+  }
   return `${posixShellLiteral(nodeExecutable)} ${posixShellLiteral(scriptPath)} grok ${posixShellLiteral(eventsDirectory)}`
 }
 
@@ -217,9 +280,10 @@ export function removeCodexCliNotify(config: Record<string, unknown>): void {
  * 把事件 JSON 当脚本喂给它，每一轮都在终端里报一条钩子失败（1.0.41 对本地假接口实测）。
  * 所以接当前账号时关掉 Grok 的 Claude 钩子兼容；用户自己在 [compat.claude] 里设过 hooks 就不动。
  *
- * Grok 自己的钩子只在非 Windows 上写：Windows 版程序里能看到它会在 pwsh / Git Bash /
- * Windows PowerShell 之间挑 shell，同一条命令没法三种都对，真机核过之前宁可不写——少一个
- * 防睡不会出错，写错了却每一轮都报红。
+ * Windows 上同一条命令没法在 PowerShell 和 Git Bash 里都对，所以按推出来的 shell 写一种；
+ * 推不出来（用户指定了 cmd）就把我们以前写的摘掉、不写——少一个防睡和提醒不会出错，
+ * 写错了却每一轮都报红。客户后来装了 Git，Grok 会改用 Git Bash，钩子得跟着重写
+ * （system-service.ts 装好 Git 后会重写一次）。
  */
 export function applyGrokCliHooks(config: Record<string, unknown>, invocation: CliHookInvocation): void {
   if (config.compat === undefined) config.compat = {}
@@ -229,8 +293,11 @@ export function applyGrokCliHooks(config: Record<string, unknown>, invocation: C
     const claude = compat.claude
     if (isRecord(claude) && claude.hooks === undefined) claude.hooks = false
   }
-  if (invocation.platform === 'win32') return
   const command = grokCliHookCommand(invocation)
+  if (command === null) {
+    removeManagedHooks(config)
+    return
+  }
   mergeManagedHooks(config, grokHookEvents, () => ({
     // Grok 的 UserPromptSubmit 和 Stop 是同步的，一次 node 启动的工夫；给个上限免得卡住它。
     hooks: [{ type: 'command', command, timeout: 10 }],
@@ -239,4 +306,151 @@ export function applyGrokCliHooks(config: Record<string, unknown>, invocation: C
 
 export function removeGrokCliHooks(config: Record<string, unknown>): void {
   removeManagedHooks(config)
+}
+
+// ---------------------------------------------------------------------------
+// 写下去的路径还活着吗
+//
+// 钩子、状态行、Codex 的 notify 里写的都是绝对路径，只在保存配置那一刻算一次。卸载后
+// 换个文件夹重装、Mac 上把 app 挪了位置、换装了 Node.js，这些路径就指向不存在的文件，
+// 工具每一轮都在终端里报一条红字。下面这几个函数只负责把我们那几条命令拆回「哪个程序、
+// 哪个脚本」，判断和重写在 config-files.ts 与 system-service.ts。
+// ---------------------------------------------------------------------------
+
+/** 一整条 shell 命令是按哪种 shell 的规矩写的；Claude Code 的 exec 形式、Codex 的 notify 不经过 shell，没有这一项。 */
+export type ManagedCliHookCommandForm = 'powershell' | 'posix'
+
+/** 本软件写进配置的一条命令指向的程序和脚本。拆不开时两项都是空串，按「坏了」算。 */
+export interface ManagedCliHookTarget {
+  nodeExecutable: string
+  scriptPath: string
+  form?: ManagedCliHookCommandForm
+}
+
+/**
+ * 把本软件自己写出来的命令拆回一段段参数。只认这里写得出来的几种引号：POSIX 的 '…'
+ * （内部单引号写成 '\''）、PowerShell 的 '…'（内部写成 ''，开头带 & 调用符）、状态行的
+ * "…"（不安全字符根本不会写进去，所以不处理转义）。引号没闭合返回 null。
+ */
+export function splitManagedCommand(command: string): string[] | null {
+  let text = command.trim()
+  if (text.startsWith('& ')) text = text.slice(2)
+  const words: string[] = []
+  let current = ''
+  let inWord = false
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index]
+    if (char === "'" || char === '"') {
+      inWord = true
+      let closed = false
+      for (index += 1; index < text.length; index += 1) {
+        if (text[index] !== char) {
+          current += text[index]
+          continue
+        }
+        if (char === "'" && text[index + 1] === "'") {
+          current += "'"
+          index += 1
+          continue
+        }
+        closed = true
+        break
+      }
+      if (!closed) return null
+    } else if (char === '\\') {
+      if (index + 1 >= text.length) return null
+      index += 1
+      current += text[index]
+      inWord = true
+    } else if (/\s/.test(char)) {
+      if (inWord) words.push(current)
+      current = ''
+      inWord = false
+    } else {
+      current += char
+      inWord = true
+    }
+  }
+  if (inWord) words.push(current)
+  return words
+}
+
+function targetFromWords(words: readonly unknown[] | null): ManagedCliHookTarget {
+  const [node, script] = words ?? []
+  return {
+    nodeExecutable: typeof node === 'string' ? node : '',
+    scriptPath: typeof script === 'string' ? script : '',
+  }
+}
+
+function hookTarget(hook: Record<string, unknown>): ManagedCliHookTarget {
+  // Claude Code 的 exec 形式：command 是程序，args[0] 是脚本。
+  if (Array.isArray(hook.args)) return targetFromWords([hook.command, hook.args[0]])
+  if (typeof hook.command !== 'string') return targetFromWords(null)
+  // 只有 PowerShell 写法以 & 调用符开头（grokCliHookCommand / geminiCliHookCommand）。
+  const form: ManagedCliHookCommandForm = hook.command.trim().startsWith('& ') ? 'powershell' : 'posix'
+  return { ...targetFromWords(splitManagedCommand(hook.command)), form }
+}
+
+/** 某家配置里本软件那几条钩子（Codex 是 notify）各自指向哪里；用户自己写的不在其内。 */
+export function managedCliHookTargets(tool: CliHookTool, config: Record<string, unknown>): ManagedCliHookTarget[] {
+  if (tool === 'codex') return isManagedCodexNotify(config.notify) ? [targetFromWords(config.notify as unknown[])] : []
+  const hooks = config.hooks
+  if (!isRecord(hooks)) return []
+  const targets: ManagedCliHookTarget[] = []
+  for (const groups of Object.values(hooks)) {
+    if (!Array.isArray(groups)) continue
+    for (const group of groups) {
+      if (!isRecord(group) || !Array.isArray(group.hooks)) continue
+      for (const hook of group.hooks) {
+        if (isManagedCliHook(hook)) targets.push(hookTarget(hook as Record<string, unknown>))
+      }
+    }
+  }
+  return targets
+}
+
+function comparablePath(value: string, platform: NodeJS.Platform): string {
+  const pathApi = platform === 'win32' ? path.win32 : path.posix
+  const resolved = pathApi.normalize(value)
+  return platform === 'win32' ? resolved.toLowerCase() : resolved
+}
+
+/**
+ * 这几条命令里有没有指向旧位置的：程序或脚本不在了，或者脚本不是这次安装带的那一份
+ * （换了文件夹重装、旧目录还没删干净时，旧脚本还在，但下次卸载就没了，也按旧的算）。
+ * currentScripts 是这次安装带的脚本，缺省或找不到时只看文件在不在。
+ */
+export function cliHookTargetsStale(
+  targets: readonly ManagedCliHookTarget[],
+  currentScripts: readonly (string | null | undefined)[] = [],
+  options: { exists?: (file: string) => boolean; platform?: NodeJS.Platform } = {},
+): boolean {
+  const platform = options.platform ?? process.platform
+  const pathApi = platform === 'win32' ? path.win32 : path.posix
+  const exists = options.exists ?? ((file: string) => {
+    try {
+      return fs.existsSync(file)
+    } catch {
+      return false
+    }
+  })
+  const current = currentScripts.filter((script): script is string => Boolean(script))
+  return targets.some(({ nodeExecutable, scriptPath }) => {
+    if (!nodeExecutable || !scriptPath || !pathApi.isAbsolute(nodeExecutable) || !pathApi.isAbsolute(scriptPath)) return true
+    if (!exists(nodeExecutable) || !exists(scriptPath)) return true
+    const sameName = current.find((script) => pathApi.basename(script).toLowerCase() === pathApi.basename(scriptPath).toLowerCase())
+    return sameName !== undefined && comparablePath(sameName, platform) !== comparablePath(scriptPath, platform)
+  })
+}
+
+/**
+ * Windows 版 Grok 现在会拿哪个 shell 跑钩子，和我们写下去的写法对不上没有。两种写法互不兼容：
+ * bash 里以 & 开头是语法错，PowerShell 里以引号开头是字符串表达式、后面跟参数报错，Grok 每一轮
+ * 都会在终端里多报一行红字。cmd 下我们一条都不该有（applyGrokCliHooks 推到 cmd 就摘掉）。
+ * 客户自己装了或卸了 Git、PowerShell 7 之后就会对不上。
+ */
+export function grokCliHookShellChanged(targets: readonly ManagedCliHookTarget[], shell: GrokWindowsShell): boolean {
+  const expected: ManagedCliHookCommandForm | null = shell === 'bash' ? 'posix' : shell === 'powershell' ? 'powershell' : null
+  return targets.some((target) => target.form !== expected)
 }
