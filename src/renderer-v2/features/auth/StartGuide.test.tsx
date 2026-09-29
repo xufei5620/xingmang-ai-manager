@@ -1,6 +1,7 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { StartGuide, defaultGuideRoute, guideCanSkipConnect, guideFailureExits, guideInstallErrorMessage, guideStepErrorMessage, type GuideToolState, type StartGuideProps } from './StartGuide'
+import { toolCertificateMessages } from '../../../../electron/network-failure'
+import { StartGuide, defaultGuideRoute, guideCanSkipConnect, guideFailureExits, guideInstallErrorMessage, guideInstallExits, guideStepErrorMessage, type GuideToolState, type StartGuideProps } from './StartGuide'
 
 const resumeKey = 'fixture-scope'
 
@@ -216,6 +217,29 @@ describe('guide install failure wording', () => {
     expect(message).not.toMatch(/星芒服务器|输入已保留/)
     expect(message).toContain('网络连不上')
     expect(guideInstallErrorMessage(new Error('HTTP 401 unauthorized'), 'Codex')).toBe('Codex 没装上。点「再试一次」，还不行就点「需要帮助」。')
+  })
+})
+
+describe('guide install failure exits', () => {
+  const outdatedNode = new Error(`Claude Code 安装失败：npm 官方源：SELF_SIGNED_CERT_IN_CHAIN。${toolCertificateMessages.outdatedNode}`)
+
+  it('offers the Node.js replacement where this app can do it and says the guide carries on', () => {
+    expect(guideInstallExits(outdatedNode, true).map((action) => action.id)).toEqual(['replaceNode', 'log'])
+    expect(guideInstallErrorMessage(outdatedNode, 'Claude Code', true)).toBe('Claude Code 没装上：这台电脑上的 Node.js 太旧，认不了公司电脑装的证书。点「换成新版 Node.js」，换好后星芒会接着装。')
+  })
+
+  it('falls back to support where the replacement is out of reach', () => {
+    expect(guideInstallExits(outdatedNode, false).map((action) => action.id)).toEqual(['log', 'support'])
+    expect(guideInstallErrorMessage(outdatedNode, 'Claude Code', false)).toContain('点「再试一次」，还不行就点「需要帮助」')
+  })
+
+  it('borrows the error dialog exits for the other install failures', () => {
+    expect(guideInstallExits(new Error('Claude Code 安装失败：ENOSPC: no space left on device')).length).toBeGreaterThan(0)
+    expect(guideInstallExits(new Error('Claude Code 安装失败：ENOSPC: no space left on device')).map((action) => action.id)).not.toContain('retry')
+  })
+
+  it('always leaves at least a way to reach support', () => {
+    expect(guideInstallExits(new Error('something odd'))).toEqual([{ id: 'support', label: '找客服' }])
   })
 })
 

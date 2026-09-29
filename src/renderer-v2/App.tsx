@@ -670,10 +670,12 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     else if (action === 'replaceNode') setNodeReplace(failure?.retry ? { retry: failure.retry } : {})
     else setHelp(true)
   }, [navigate, operationError, perform, rewriteAccountKeys])
-  // 引导里「改用」失败或没能确认能用时的出口：和错误框同一张表，只是没有「再试一次」
-  //（引导自己有）。去充值、去备份页会离开引导，进度照旧留在第 3 步。
-  const runGuideFailureAction = useCallback((action: OperationActionId) => {
-    if (action === 'recharge') navigate('account', 'recharge')
+  // 引导里「改用」或安装失败时的出口：和错误框同一张表，只是没有「再试一次」
+  //（引导自己有）。去充值、去备份页会离开引导，进度照旧留着；换 Node.js 不离开，
+  // 换完接着重跑引导里失败的那一步。
+  const runGuideFailureAction = useCallback((action: OperationActionId, retry?: () => void) => {
+    if (action === 'replaceNode') setNodeReplace(retry ? { retry } : {})
+    else if (action === 'recharge') navigate('account', 'recharge')
     else if (action === 'backups') navigate('backups')
     else if (action === 'log') navigate('feedback')
     else if (action === 'network') navigate('health')
@@ -1177,7 +1179,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   return <AccountBalanceContext.Provider value={balanceStore}><OnlineStatusContext.Provider value={onlineStatus}><BalanceTierProvider value={subscription ? 'ok' : balanceAmount === null ? 'neutral' : balanceAmount <= 0 ? 'zero' : balanceAmount < 5 ? 'bad' : balanceAmount < 20 ? 'warn' : 'ok'}>
     {guide ? <StartGuide platform={os} tools={guideTools} signedIn={session.authenticated} busy={Object.keys(toolbox.jobs).length > 0 || accountBootstrapBusy} progress={accountBootstrapBusy && accountBootstrap ? { label: accountBootstrap.label, percent: accountBootstrap.percent } : guideJobProgress(toolbox.jobs)} resumeKey={scope}
       onDetect={() => toolbox.refresh(true)} onInstall={async (id, version) => { await install(id, version) }} onInstallRuntime={() => installRuntime('node')} onInstallPython={() => installRuntime('python')} onConfigure={async (id) => { openToolConfig(id) }} onLogin={() => setAuth('login')}
-      accountName={session.account?.username ?? null} onSwitchAccount={(id) => switchToolAccount(id, 'account')} onFailureAction={runGuideFailureAction}
+      accountName={session.account?.username ?? null} onSwitchAccount={(id) => switchToolAccount(id, 'account')} onFailureAction={runGuideFailureAction} canReplaceNode={canReplaceNode({ platform: platform?.platform, nodeRuntimeInstall: platform?.nodeRuntimeInstall })}
       onLaunch={async (id, newFolder) => id === 'chat' ? true : launch(id, 'open', undefined, newFolder)}
       onComplete={(id) => { if (!writeLocalPreference(`xingmang-v2-guide:${scope}`, id)) toast.show('工具已准备好，但引导偏好没有保存在本机。', 'warn'); setWorkspaceEntered(true); rememberTourPending(scope); setTourOpen(true); navigate(id === 'chat' ? 'chat' : 'home') }} onBack={() => setGuide(false)} onHelp={() => setHelp(true)} />
       : !session.authenticated && !restoring && !workspaceEntered ? <Welcome platform={os} onLogin={() => setAuth('login')} onRegister={() => setAuth('register')} onSteps={() => setGuide(true)} onHelp={() => setHelp(true)} onLegal={setLegal}

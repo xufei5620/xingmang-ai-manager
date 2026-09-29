@@ -290,6 +290,35 @@ test('a failed switch keeps the step and offers the matching way out', async () 
   } finally { await page.close() }
 })
 
+// 第十九批 1：引导里装工具失败也要有出口。Node.js 太旧认不了证书时，「换成新版 Node.js」
+// 当主按钮，换完引导接着装刚才那个工具；换不了（Mac）时只给「找客服」这类出口。
+test('an install that fails on an outdated Node.js offers the replacement and carries on', async () => {
+  const page = await open('scenario=guide&auto=1&switchable=1&certFail=1&replaceNode=1')
+  try {
+    await page.getByTestId('guide-route-claude').check()
+    await page.getByTestId('guide-next').click()
+    await page.getByTestId('guide-install').click()
+    await page.getByTestId('guide-error').filter({ hasText: '点「换成新版 Node.js」，换好后星芒会接着装' }).waitFor()
+    assert.match(await page.getByTestId('guide-exit-replaceNode').getAttribute('class') ?? '', /primary/)
+    await page.getByTestId('guide-exit-replaceNode').click()
+    await page.locator('[data-guide-step="connect"]').waitFor()
+    assert.deepEqual((await calls(page)).map((item) => item.method), ['detect', 'install', 'exit', 'install'])
+  } finally { await page.close() }
+})
+
+test('an install failure without a Node.js replacement still leaves a way out', async () => {
+  const page = await open('scenario=guide&auto=1&switchable=1&certFail=1')
+  try {
+    await page.getByTestId('guide-route-claude').check()
+    await page.getByTestId('guide-next').click()
+    await page.getByTestId('guide-install').click()
+    await page.getByTestId('guide-error').waitFor()
+    assert.equal(await page.getByTestId('guide-exit-replaceNode').count(), 0)
+    await page.getByTestId('guide-exit-support').click()
+    assert.deepEqual((await calls(page)).map((item) => item.method), ['detect', 'install', 'exit'])
+  } finally { await page.close() }
+})
+
 test('an official Codex that has not signed in cannot leave the connect step', async () => {
   const page = await open('scenario=guide&installed=1&official=1&runtime=1&officialLoginRequired=1')
   try {
