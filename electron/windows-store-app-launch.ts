@@ -104,7 +104,7 @@ export function buildWindowsStoreAppLaunchContextScript(): string {
     '$ErrorActionPreference = "SilentlyContinue"',
     ...windowsStoreAppLaunchContextStatements(),
     '$storeAppLaunchContext | ConvertTo-Json -Compress',
-  ].join('; ')
+  ].join('\n')
 }
 
 export interface WindowsStoreAppLaunchProbeOptions {
@@ -119,7 +119,7 @@ export async function inspectWindowsStoreAppLaunchContext(
 ): Promise<WindowsStoreAppLaunchContext> {
   if ((options.platform ?? process.platform) !== 'win32') return { ...emptyWindowsStoreAppLaunchContext }
   try {
-    const { stdout } = await execFileAsync(resolveWindowsPowerShellExecutable(), [
+    const pending = execFileAsync(resolveWindowsPowerShellExecutable(), [
       '-NoLogo',
       '-NoProfile',
       '-NonInteractive',
@@ -135,6 +135,12 @@ export async function inspectWindowsStoreAppLaunchContext(
       maxBuffer: 64 * 1024,
       signal: options.signal,
     })
+    // Nothing is ever piped in. Close stdin up front so a console host that
+    // waits for input can never hold the probe until the timeout (seen once
+    // on a CI runner: the standalone probe ran the full budget and returned
+    // nothing, while the same statements inside the Codex probe answered).
+    pending.child.stdin?.end()
+    const { stdout } = await pending
     return parseWindowsStoreAppLaunchContext(stdout)
   } catch {
     return { ...emptyWindowsStoreAppLaunchContext }
