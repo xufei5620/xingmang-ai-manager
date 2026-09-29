@@ -37,6 +37,7 @@ button, input, select, textarea { font: inherit; }
 .v2-account-balance-summary { min-width: 0; }
 .v2-account-balance-label { display: flex; align-items: center; gap: 4px; min-height: var(--control-xs); }
 .v2-account-balance strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 600 var(--font-h2) var(--mono); }
+.v2-account-balance-subscription { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .v2-account-balance > .v2-balance-error { grid-column: 1 / -1; }
 .v2-account-balance .v2-balance-error, .v2-statusbar .v2-balance-error { color: var(--warn); }
 .sidebar-collapsed .v2-sidebar { padding-inline: 8px; }

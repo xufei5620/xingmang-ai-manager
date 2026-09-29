@@ -281,7 +281,7 @@ export function AuthFlow({ api: providedApi, initialMode = 'login', initialIdent
     })
   }
   const copyPassword = () => void run('复制新密码', async (current) => {
-    try { await api.copyPassword(newPassword); if (current()) setMessage('新密码已复制') }
+    try { await api.copyPassword(newPassword); if (current()) setMessage('新密码已复制，1 分钟后会从剪贴板里清掉，请尽快粘贴') }
     catch { if (current()) { setCopyFallback(true); setReveal(true); setError('无法访问剪贴板，请选中新密码后手动复制'); window.setTimeout(() => { const input = document.getElementById('forgot-new-password'); if (input instanceof HTMLInputElement) { input.focus(); input.select() } }, 0) } }
   })
   const openAccountWebsite = () => void run('打开账号官网', async () => {

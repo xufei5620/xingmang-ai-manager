@@ -17,7 +17,7 @@ if (search.get('desktop') === 'true') snapshot.desktopApps.codex = { ...snapshot
 const emptyConfig = { exists: false, hasApiKey: false, matchesRelay: false, model: '', baseUrl: 'https://xm.solov.cc', actualBaseUrl: '', dataDirectory: 'C:\\fixture', dataDirectoryExists: true, files: [], updatedAt: null, apiKeyPreview: null } satisfies ProviderConfigSummary
 const config: AppConfigSummary = { workspace: 'C:\\fixture', providers: { codex: { ...emptyConfig }, claude: { ...emptyConfig }, gemini: { ...emptyConfig }, grok: { ...emptyConfig } } }
 if (search.get('desktop') === 'true') config.providers.codex = { ...emptyConfig, exists: true, hasApiKey: true, matchesRelay: true, model: 'fixture-model' }
-let settings: AppSettingsV2 = { version: 2, workspace: 'C:\\fixture', theme: 'dark', checkUpdatesOnStartup: false, runDiagnosticsOnStartup: false }
+let settings: AppSettingsV2 = { version: 2, workspace: 'C:\\fixture', theme: 'dark', checkUpdatesOnStartup: false, runDiagnosticsOnStartup: false, crashReportingNoticeShown: true }
 function profile(id = 1): AccountProfile { return { userId: id, username: id === 1 ? 'account-a' : 'account-b', group: 'default', role: 1, quota: 2_000_000, usedQuota: 0 } }
 let current: AccountSessionState = search.get('logged') === 'true' ? { authenticated: true, account: profile() } : { authenticated: false, account: null }
 const update: UpdateSnapshot = { phase: 'disabled', currentVersion: '0.1.31', availableVersion: null, releaseName: null, releaseNotesText: null, checkedAt: null, progress: null, error: null, development: true }

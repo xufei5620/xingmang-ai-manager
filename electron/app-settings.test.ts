@@ -521,6 +521,20 @@ describe('UI and window preferences', () => {
     expect(readAppSettings(filePath)).not.toHaveProperty('trayHintShown')
   })
 
+  it('keeps the crash reporting notice marker once set without touching the reporting switch', async () => {
+    const filePath = temporarySettingsPath()
+    await writeAppSettings(filePath, settings())
+    expect(readAppSettings(filePath)).not.toHaveProperty('crashReportingNoticeShown')
+    await updateAppSettings(filePath, { version: 2, crashReportingNoticeShown: true })
+    const shown = readAppSettings(filePath)
+    expect(shown).toMatchObject({ crashReportingNoticeShown: true })
+    expect(shown).not.toHaveProperty('crashReporting')
+    await updateAppSettings(filePath, { version: 2, crashReportingNoticeShown: false, crashReporting: false })
+    expect(readAppSettings(filePath)).toMatchObject({ crashReportingNoticeShown: true, crashReporting: false })
+    fs.writeFileSync(filePath, JSON.stringify({ ...settings(), crashReportingNoticeShown: 'yes' }), 'utf8')
+    expect(readAppSettings(filePath)).not.toHaveProperty('crashReportingNoticeShown')
+  })
+
   it('migrates old v2 records to the first-run light and mist appearance', async () => {
     const filePath = temporarySettingsPath()
     await writeAppSettings(filePath, settings())

@@ -1,10 +1,12 @@
 import { accelerationExpiryWarningSeconds } from '../acceleration-contract'
 import type {
+  PlatformActivityDetail,
   PlatformActivityKind,
   PlatformInstallNotice,
   PlatformNotificationKind,
   PlatformNotificationPreferences,
   PlatformNotificationResult,
+  PlatformSpendNotice,
 } from './contract'
 
 export interface PlatformNotificationHandle {
@@ -33,6 +35,7 @@ export type PlatformHostNotification =
   | 'accelerationAutoStarted'
   | 'hiddenToTray'
   | 'hiddenToMenuBar'
+  | 'paymentSettled'
 
 export interface NotificationMessage {
   title: string
@@ -49,6 +52,7 @@ export type PlatformNotificationTarget =
   | 'tasks'
   | 'topup'
   | 'announcement'
+  | 'usage'
 
 const messages = {
   test: { title: '星芒测试通知', body: '这是一条测试通知，可在设置中关闭。' },
@@ -74,6 +78,11 @@ const messages = {
   announcement: {
     title: '有新公告',
     body: '当前账号有一条新公告，回到星芒就能看到。',
+  },
+  // 正常总会带着金额（ipc.ts 不放行空的）；这句只是类型上的兜底。
+  spend: {
+    title: '这一小时花得比平时多',
+    body: '如果不是你在用，回星芒看看是哪个工具。',
   },
 } as const satisfies Record<PlatformActivityKind | 'test', NotificationMessage>
 
@@ -104,6 +113,8 @@ export function resolveNotificationTarget(
       return 'home'
     case 'announcement':
       return 'announcement'
+    case 'spend':
+      return 'usage'
     case 'test':
       return null
   }
@@ -112,11 +123,24 @@ export function resolveNotificationTarget(
 export function buildActivityNotificationMessage(
   kind: PlatformActivityKind | 'test',
   eventKey: string,
-  install?: PlatformInstallNotice,
+  detail?: PlatformActivityDetail,
 ): NotificationMessage {
-  if (kind === 'install' && install) return buildInstallNotificationMessage(install)
+  if (kind === 'install' && detail && 'tool' in detail) return buildInstallNotificationMessage(detail)
+  if (kind === 'spend' && detail && 'cents' in detail) return buildSpendNotificationMessage(detail)
   const chat = kind === 'task' ? chatNoticeKind(eventKey) : null
   return chat ? chatMessages[chat] : messages[kind]
+}
+
+// 金额按美元两位小数写，同余额的写法；倍数只给整数，「大约」已经说明是估的。
+export function buildSpendNotificationMessage(
+  notice: PlatformSpendNotice,
+): NotificationMessage {
+  const amount = `$${Math.floor(notice.cents / 100)}.${String(notice.cents % 100).padStart(2, '0')}`
+  const compared = notice.multiple === null ? '比平时多很多' : `大约是平时的 ${notice.multiple} 倍`
+  return {
+    title: messages.spend.title,
+    body: `过去一小时用掉了 ${amount}，${compared}。${messages.spend.body}`,
+  }
 }
 
 // 渲染层只给编号，名字在这里定死：拿到这条通道的页面也只能在这份名单里挑，
@@ -209,6 +233,13 @@ const hostMessages: Record<
     title: '星芒AI管理工具还在运行',
     body: '窗口已收起，点屏幕顶部菜单栏里的星芒图标就能打开。',
   },
+  // 客户关了支付窗口以后才确认到账。钱是他自己刚付的，不归「余额不足」那类提醒管，
+  // 只看总开关。订单号不写进通知：通知中心谁都看得见，点进来「充值与订阅」页写着。
+  paymentSettled: {
+    kind: null,
+    title: '付款已到账',
+    body: '刚才那笔订单已到账，余额和订阅已更新。',
+  },
 }
 
 /** 系统通知发不出去时，宿主改用别的办法（Windows 托盘气泡）说同一句话。 */
@@ -299,14 +330,14 @@ export function createPlatformNotifications(
     notify: (
       kind: PlatformActivityKind | 'test',
       eventKey: string,
-      install?: PlatformInstallNotice,
+      detail?: PlatformActivityDetail,
     ) => {
       const target = resolveNotificationTarget(kind, eventKey)
       const openPage = options.openPage
       return present(
         kind,
         `${kind}:${eventKey}`,
-        buildActivityNotificationMessage(kind, eventKey, install),
+        buildActivityNotificationMessage(kind, eventKey, detail),
         target && openPage ? () => openPage(target) : undefined,
       )
     },

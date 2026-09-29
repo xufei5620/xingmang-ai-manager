@@ -545,3 +545,9 @@
 .v2-business-release-notes-list li + li {
   margin-top: 6px;
 }
+
+.v2-business-payment-confirming {
+  display: block;
+  margin-top: 4px;
+  color: var(--text-2);
+}

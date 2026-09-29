@@ -54,6 +54,7 @@ function timelineFixture() {
 // ordinary launch must not be interrupted by the one-time question, which
 // `chineseAsk` exercises on its own.
 let settings: AppSettingsV2 = { version: 2, workspace: 'C:\\Fixture', theme: query.get('theme') === 'dark' ? 'dark' : 'light', runDiagnosticsOnStartup: query.has('diagnostics'), checkUpdatesOnStartup: query.has('startupUpdate'),
+  ...(query.has('crashNotice') ? {} : { crashReportingNoticeShown: true as const }),
   ...(query.has('chineseAsk') ? {} : { codexDesktopChineseRuntimePatch: 'enabled' as const }) }
 const account = { userId: 17, username: 'fixture-user', group: 'default', role: 1, quota: 6_200_000, usedQuota: 0 }
 let session: AccountSessionState = { authenticated: query.get('guest') !== '1', account: query.get('guest') === '1' ? null : account }
@@ -210,7 +211,8 @@ function fixtureRunningTools(providers: readonly ProviderId[]) {
 /** ?sessionArchive：Claude 的记录也能归档 / 恢复，用来盯住记录页归档后首页「最近」跟着重读（#544）。 */
 function sessionCapability(provider: ProviderId): MultiProviderSessionPage['capabilities'][ProviderId] {
   const mutable = query.has('sessionArchive') && provider === 'claude'
-  return { provider, available: true, readable: true, readonly: !mutable, source: 'jsonl', reason: '', operations: { list: true, detail: true, exportMarkdown: true, archive: mutable, restore: mutable } }
+  const deletable = query.has('sessionDelete') && provider === 'claude'
+  return { provider, available: true, readable: true, readonly: !mutable, source: 'jsonl', reason: '', operations: { list: true, detail: true, exportMarkdown: true, archive: mutable, restore: mutable, delete: deletable } }
 }
 // 首页「打开」的最近目录是从会话记录里的 cwd 推出来的（N7），所以这里要有带目录的记录。
 // 同一个目录两条记录，用来盯住去重。
@@ -262,7 +264,7 @@ const methods = {
     return accelerationDemo.redeemAccelerationCode!(scope, code)
   },
   getSettings: async () => ({ ...settings }),
-  saveSettings: async (patch) => { settings = { ...settings, theme: patch.theme ?? settings.theme, reducedMotion: patch.reducedMotion ?? settings.reducedMotion, hardwareAcceleration: patch.hardwareAcceleration ?? settings.hardwareAcceleration, largeText: patch.largeText ?? settings.largeText, ...(patch.uiScale === undefined ? {} : { uiScale: patch.uiScale === 'auto' ? undefined : patch.uiScale }), codexDesktopChineseRuntimePatch: patch.codexDesktopChineseRuntimePatch ?? settings.codexDesktopChineseRuntimePatch }; return settings },
+  saveSettings: async (patch) => { settings = { ...settings, theme: patch.theme ?? settings.theme, reducedMotion: patch.reducedMotion ?? settings.reducedMotion, hardwareAcceleration: patch.hardwareAcceleration ?? settings.hardwareAcceleration, largeText: patch.largeText ?? settings.largeText, ...(patch.uiScale === undefined ? {} : { uiScale: patch.uiScale === 'auto' ? undefined : patch.uiScale }), codexDesktopChineseRuntimePatch: patch.codexDesktopChineseRuntimePatch ?? settings.codexDesktopChineseRuntimePatch, crashReporting: patch.crashReporting ?? settings.crashReporting, crashReportingNoticeShown: patch.crashReportingNoticeShown || settings.crashReportingNoticeShown }; return settings },
   getPlatformCapabilities: async () => capabilities,
   getAccountSession: async () => session,
   getAccountBalance: async () => {
@@ -432,6 +434,12 @@ const methods = {
   },
   archiveSession: async (nativeId: string) => fixtureSetArchived(nativeId, true),
   restoreSession: async (nativeId: string) => fixtureSetArchived(nativeId, false),
+  deleteProviderSession: async (id: string) => {
+    const index = recentWorkspaceSessions.findIndex((entry) => entry.id === id)
+    if (index < 0) throw new Error('会话不存在。')
+    const [item] = recentWorkspaceSessions.splice(index, 1)
+    return { id, provider: item.provider, deletedFiles: 1 }
+  },
   exportDiagnostics: async () => ({ outputPath: 'C:\\Fixture\\xingmang-diagnostics.txt' }),
   revealExportedFile: async () => true,
   launchCli: async () => query.has('launchPending') ? new Promise<{}>((resolve) => { releaseLaunch = () => resolve({}) }) : query.has('launchOverride') ? { configOverrideNotice: '这个项目文件夹里有自己的设置，会让 Claude Code 不用当前账号，余额和用量会对不上。不是你有意这样设的话，换一个文件夹打开就好。' } : {},

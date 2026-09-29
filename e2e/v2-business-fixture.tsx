@@ -140,6 +140,7 @@ let settings: Awaited<ReturnType<V2Bridge['getSettings']>> = {
   reducedMotion: query.has('evidence'),
   checkUpdatesOnStartup: true,
   runDiagnosticsOnStartup: false,
+  crashReportingNoticeShown: true,
 }
 const capabilities = {
   available: true,
@@ -1043,6 +1044,7 @@ if (query.has('system')) {
             task: true,
             cliUpdate: true,
             announcement: true,
+            spend: true,
             acceleration: true,
             ...systemState.preferences.notifications,
             [kind]: enabled,
