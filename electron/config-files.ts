@@ -14,6 +14,15 @@ import {
 import { identityFromCodexAuthTokens } from './official-account-identity'
 import { removeCodexContextLimits } from './codex-context-limits'
 import { applyClaudeStatusLine, claudeStatusLineSetting } from './claude-status-line'
+import {
+  applyClaudeCliHooks,
+  applyCodexCliNotify,
+  applyGeminiCliHooks,
+  removeClaudeCliHooks,
+  removeCodexCliNotify,
+  removeGeminiCliHooks,
+  type CliHookInvocation,
+} from './cli-hooks'
 import { applyClaudeRelayModelPicker, claudeRelayModelPickerOutdated, removeClaudeRelayModelPicker } from './claude-model-picker'
 import { assertNoReparseComponents, ensureSafeDataDirectory, readSafeUtf8FileSync } from './safe-local-data'
 import { resolveRelocatedPath } from './relocated-folders'
@@ -929,6 +938,7 @@ function stripCodexRelayFromConfig(
   delete parsed.model_provider
   delete parsed.model
   delete parsed.review_model
+  removeCodexCliNotify(parsed)
   restoreCodexAnalytics(parsed)
   dropDeprecatedCodexConfigKeys(parsed)
 }
@@ -973,9 +983,14 @@ function buildCodexRelayConfigTemplate(
   model: string,
   providerName: string,
   siteBaseUrl: string,
+  cliHook?: CliHookInvocation,
   platform: NodeJS.Platform = process.platform,
 ): string {
   const providerKey = tomlTableKey(providerName)
+  // Same argv as applyCodexCliNotify. It must stay above the first table.
+  const notifyLine = cliHook
+    ? [`notify = [${[cliHook.nodeExecutable, cliHook.scriptPath, 'codex', cliHook.eventsDirectory].map(tomlString).join(', ')}]`]
+    : []
   // Same values as applyCodexRelayMachineDefaults; the template is spelled out
   // so a fresh install reads top to bottom like the upstream docs.
   const windowsTable = platform === 'win32' ? ['[windows]', 'sandbox = "unelevated"', ''] : []
@@ -987,6 +1002,7 @@ function buildCodexRelayConfigTemplate(
     'approval_policy = "on-request"',
     'sandbox_mode = "workspace-write"',
     'check_for_update_on_startup = false',
+    ...notifyLine,
     '',
     `[model_providers.${providerKey}]`,
     `name = ${tomlString(providerName)}`,
@@ -1035,6 +1051,7 @@ function createCodexRelayConfigPlans(
   roots: ProviderConfigRoots,
   siteBaseUrls: Record<ProviderId, string>,
   mode: NativeConfigSaveMode,
+  cliHook?: CliHookInvocation,
 ): FilePlan[] {
   const paths = codexConfigSnapshotPaths(roots)
   const plans: FilePlan[] = []
@@ -1063,16 +1080,18 @@ function createCodexRelayConfigPlans(
     ? readStoredCodexConfig(paths.relay, '已保存的星芒 Codex 配置') : null
   let nextContent: string
   if (mode === 'reset') {
-    nextContent = buildCodexRelayConfigTemplate(model, existingCodexProvider(paths.active, siteBaseUrls.codex), siteBaseUrls.codex)
+    nextContent = buildCodexRelayConfigTemplate(model, existingCodexProvider(paths.active, siteBaseUrls.codex), siteBaseUrls.codex, cliHook)
   } else if (storedRelay) {
     const stored = TOML.parse(storedRelay)
     applyCodexRelayConfig(stored, model, codexRelayProviderFor(stored, siteBaseUrls.codex), siteBaseUrls.codex)
+    if (cliHook) applyCodexCliNotify(stored, cliHook)
     nextContent = tomlContent(stored)
   } else if (currentParsed) {
     applyCodexRelayConfig(currentParsed, model, codexRelayProviderFor(currentParsed, siteBaseUrls.codex), siteBaseUrls.codex)
+    if (cliHook) applyCodexCliNotify(currentParsed, cliHook)
     nextContent = tomlContent(currentParsed)
   } else {
-    nextContent = buildCodexRelayConfigTemplate(model, defaultCodexRelayProvider, siteBaseUrls.codex)
+    nextContent = buildCodexRelayConfigTemplate(model, defaultCodexRelayProvider, siteBaseUrls.codex, cliHook)
   }
 
   plans.push({ path: paths.relay, content: nextContent })
@@ -1798,12 +1817,13 @@ function createPlans(
   siteBaseUrls: Record<ProviderId, string>,
   claudeStatusLineCommand?: string,
   availableModels?: readonly string[],
+  cliHook?: CliHookInvocation,
 ): FilePlan[] {
   const paths = providerConfigPaths(provider, roots)
   switch (provider) {
     case 'codex':
       return [
-        ...createCodexRelayConfigPlans(model, roots, siteBaseUrls, 'reset'),
+        ...createCodexRelayConfigPlans(model, roots, siteBaseUrls, 'reset', cliHook),
         ...createCodexRelayAuthPlans(apiKey, roots),
       ]
     case 'claude': {
@@ -1824,25 +1844,28 @@ function createPlans(
         ...(claudeStatusLineCommand ? { statusLine: claudeStatusLineSetting(claudeStatusLineCommand) } : {}),
       }
       if (availableModels) applyClaudeRelayModelPicker(settings, env, availableModels, model)
+      if (cliHook) applyClaudeCliHooks(settings, cliHook)
       // 原文件读不出来时照旧重建（reset 本来就是给配置坏了的人用的），只是没东西可挪。
       const aside = claudeForeignSettingsAsidePlans(settings, readJson(paths[0]) ?? {}, roots, apiKey)
       return [...aside, { path: paths[0], content: jsonContent(settings) }]
     }
-    case 'gemini':
+    case 'gemini': {
+      const settings: Record<string, unknown> = {
+        general: {
+          enableAutoUpdate: false,
+          enableAutoUpdateNotification: false,
+          sessionRetention: { maxAge: MANAGED_GEMINI_SESSION_MAX_AGE },
+        },
+        ide: { enabled: true },
+        privacy: { usageStatisticsEnabled: false },
+        security: { auth: { selectedType: 'gemini-api-key' } },
+        modelConfigs: { customOverrides: buildGeminiRelayModelOverrides(geminiCliCompatibleModel(model)) },
+      }
+      if (cliHook) applyGeminiCliHooks(settings, cliHook)
       return [
         {
           path: paths[0],
-          content: jsonContent({
-            general: {
-              enableAutoUpdate: false,
-              enableAutoUpdateNotification: false,
-              sessionRetention: { maxAge: MANAGED_GEMINI_SESSION_MAX_AGE },
-            },
-            ide: { enabled: true },
-            privacy: { usageStatisticsEnabled: false },
-            security: { auth: { selectedType: 'gemini-api-key' } },
-            modelConfigs: { customOverrides: buildGeminiRelayModelOverrides(geminiCliCompatibleModel(model)) },
-          }),
+          content: jsonContent(settings),
         },
         {
           path: paths[1],
@@ -1854,6 +1877,7 @@ function createPlans(
           ].join('\n'),
         },
       ]
+    }
     case 'grok':
       return [{
         path: paths[0],
@@ -1893,10 +1917,11 @@ function createMergePlans(
   siteBaseUrls: Record<ProviderId, string>,
   claudeStatusLineCommand?: string,
   availableModels?: readonly string[],
+  cliHook?: CliHookInvocation,
 ): FilePlan[] {
   const paths = providerConfigPaths(provider, roots)
   const initialPlans = new Map(
-    createPlans(provider, apiKey, model, roots, siteBaseUrls, claudeStatusLineCommand, availableModels)
+    createPlans(provider, apiKey, model, roots, siteBaseUrls, claudeStatusLineCommand, availableModels, cliHook)
       .map((plan) => [plan.path, plan]),
   )
   const initial = (filePath: string): FilePlan => {
@@ -1908,7 +1933,7 @@ function createMergePlans(
   switch (provider) {
     case 'codex':
       return [
-        ...createCodexRelayConfigPlans(model, roots, siteBaseUrls, 'merge'),
+        ...createCodexRelayConfigPlans(model, roots, siteBaseUrls, 'merge', cliHook),
         ...createCodexRelayAuthPlans(apiKey, roots),
       ]
     case 'claude': {
@@ -1923,6 +1948,7 @@ function createMergePlans(
       ensureClaudeResponseLanguage(parsed)
       extendClaudeSessionRetention(parsed)
       if (claudeStatusLineCommand) applyClaudeStatusLine(parsed, claudeStatusLineCommand)
+      if (cliHook) applyClaudeCliHooks(parsed, cliHook)
       if (availableModels) applyClaudeRelayModelPicker(parsed, env, availableModels, model)
       parsed.model = model
       const aside = claudeForeignSettingsAsidePlans(parsed, null, roots, apiKey)
@@ -1943,6 +1969,7 @@ function createMergePlans(
         extendGeminiSessionRetention(parsed)
         applyGeminiRelayModelOverrides(parsed, geminiCliCompatibleModel(model))
         disableGeminiRelayUsageStatistics(parsed)
+        if (cliHook) applyGeminiCliHooks(parsed, cliHook)
         plans.push({ path: paths[0], content: geminiJsonContent(original, parsed) })
       }
       // 读取失败必须中止保存，静默当空文件会把用户已有环境变量覆盖掉。
@@ -2310,6 +2337,9 @@ export function saveProviderConfig(
   // 当前 Key 可用的模型清单。Claude Code 用它把 /model 菜单换成账号实际能用的型号
   // （见 claude-model-picker.ts）；缺省 = 不动菜单。
   availableModels?: readonly string[],
+  // 终端里出错、做完、等人时通知星芒的钩子（见 cli-hooks.ts）。缺省 = 不写，与从前一致；
+  // 只有 Claude Code 与 Gemini CLI 用得上，其余工具传了也不看。
+  cliHook?: CliHookInvocation,
 ): NativeConfigSaveResult {
   const apiKey = apiKeyInput.trim()
   const model = modelInput.trim()
@@ -2326,8 +2356,8 @@ export function saveProviderConfig(
   const statusLineCommand = claudeStatusLineCommand?.trim() || undefined
   if (statusLineCommand && /\r|\n/.test(statusLineCommand)) throw new Error('状态行命令不能包含换行符')
   const plans = mode === 'merge'
-    ? createMergePlans(provider, apiKey, model, roots, siteBaseUrlsInput, statusLineCommand, availableModels)
-    : createPlans(provider, apiKey, model, roots, siteBaseUrlsInput, statusLineCommand, availableModels)
+    ? createMergePlans(provider, apiKey, model, roots, siteBaseUrlsInput, statusLineCommand, availableModels, cliHook)
+    : createPlans(provider, apiKey, model, roots, siteBaseUrlsInput, statusLineCommand, availableModels, cliHook)
 
   assertNoReparseComponents(path.dirname(providerRoot), 'Provider 配置根目录')
   ensureSafeDataDirectory(providerRoot, 'Provider 配置根目录')
@@ -2506,6 +2536,8 @@ function createOfficialAccountPlans(
         removeClaudeRelayModelPicker(parsed, null)
       }
       allowClaudeRelayTool(parsed)
+      // 通知里说的是「当前账号」，官方账号出错时那些话都不对，钩子跟着收回。
+      removeClaudeCliHooks(parsed)
       delete parsed.skipWebFetchPreflight
       delete parsed.model
       const restore = claudeForeignSettingsRestorePlans(parsed, roots)
@@ -2535,6 +2567,7 @@ function createOfficialAccountPlans(
         auth.selectedType = 'oauth-personal'
         removeGeminiRelayModelOverrides(parsed)
         restoreGeminiUsageStatistics(parsed)
+        removeGeminiCliHooks(parsed)
         plans.push({ path: paths[0], content: geminiJsonContent(original, parsed) })
       }
       const envContent = requireConfigText(paths[1], '现有 Gemini .env')

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { networkFailureMessages } from '../../../../electron/network-failure'
-import { authErrorMessage, isTwoFactorChallenge, isTwoFactorExpired, normalizeEmail, parseInviteCode, parseRecoveryCode, parseTwoFactorCode, remainingCooldown, requiresBrowserAuthentication, suggestEmailCorrection, usernameFromEmail, validateRegistration, type RegistrationDraft } from './state'
+import { authErrorMessage, isTwoFactorChallenge, isTwoFactorExpired, normalizeEmail, parseInviteCode, parseRecoveryCode, parseTwoFactorCode, remainingCooldown, requiresBrowserAuthentication, suggestEmailCorrection, usernameFromEmail, validateNewPassword, validateRegistration, type RegistrationDraft } from './state'
 import { guideOfficialLoginRequired, resolveGuideReadiness } from './StartGuide'
 
 describe('v2 two-step verification', () => {
@@ -241,5 +241,16 @@ describe('v2 registration email typos', () => {
     for (const email of ['a@qq.com', 'a@163.com', 'a@126.com', 'a@139.com', 'a@yeah.net', 'a@sina.cn', 'a@vip.qq.com', 'a@mail.com', 'a@email.com', 'a@company.example', 'a@136.com', 'a@sohu.com', 'a@gmail.org', 'not-an-email', '']) {
       expect(suggestEmailCorrection(email), email).toBeNull()
     }
+  })
+})
+describe('recovery new password', () => {
+  it('applies the registration length rule and requires a matching confirmation', () => {
+    expect(validateNewPassword('my-own-password', 'my-own-password')).toEqual({})
+    expect(validateNewPassword('short', 'short').password).toBe('新密码至少 8 位')
+    expect(validateNewPassword('a'.repeat(21), 'a'.repeat(21)).password).toBe('新密码不能超过 20 位')
+    expect(validateNewPassword('my-own-password', '').confirm).toBe('请再输一次新密码')
+    expect(validateNewPassword('my-own-password', 'my-own-passwor').confirm).toBe('两次输入的新密码不一样')
+    // Passwords are forwarded exactly as typed, so surrounding spaces count toward the length.
+    expect(validateNewPassword(' 1234567', ' 1234567')).toEqual({})
   })
 })
