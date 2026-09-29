@@ -677,6 +677,33 @@ export interface CliLaunchArgvOptions {
   platform?: NodeJS.Platform
   /** 已装版本(npm 包版本或 --version 的整行输出);读不出来传 null。 */
   installedVersion?: string | null
+  /**
+   * 只对 Codex 的 resumeLast 生效:主进程已经在 Codex 的记录里核对过、就在这个
+   * 文件夹里的那条会话的 id(裸 UUID,不带 `codex:` 前缀)。缺省 = 按目录找最近一条。
+   */
+  resumeSessionId?: string | null
+}
+
+const codexSessionUuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+export function isCodexSessionUuid(value: unknown): value is string {
+  return typeof value === 'string' && codexSessionUuidPattern.test(value)
+}
+
+/**
+ * Codex 的 `resume --last` 在上游是按「工作目录 + 当前连接名(model_provider)」
+ * 一起过滤的,一条都没有就不声不响开新对话;`resume <UUID>` 走 thread/read,
+ * 不看连接名(codex-rs/tui/src/lib.rs 的 latest_session_lookup_params 与
+ * lookup_session_target_with_app_server,rust-v0.156.1 与 main 一致)。我们切
+ * 官方 ⇄ 当前账号、重置、搬老配置都会换连接名,所以记录里有 id 时一律按 id 接。
+ * 其余三家按目录找最近一条不看账号,仍用 cliResumeLastArgv。
+ */
+function cliResumeArgv(provider: ProviderId, resumeSessionId: string | null | undefined): string[] {
+  if (provider === 'codex' && resumeSessionId !== undefined && resumeSessionId !== null) {
+    if (!isCodexSessionUuid(resumeSessionId)) throw new Error('会话 ID 格式错误')
+    return ['resume', resumeSessionId]
+  }
+  return cliResumeLastArgv(provider)
 }
 
 // Codex 0.156.0 起有 --no-daemon;0.157.0 把「自动起后台服务」转成默认开。
@@ -711,7 +738,7 @@ export function cliLaunchArgv(
     ? ['--no-daemon']
     : []
   return mode === 'resumeLast'
-    ? [...argv, ...embedded, ...cliResumeLastArgv(provider)]
+    ? [...argv, ...embedded, ...cliResumeArgv(provider, options.resumeSessionId)]
     : [...argv, ...embedded]
 }
 

@@ -66,6 +66,7 @@ import type { NativeConfigSaveMode } from './config-files'
 import { AccountSourceServiceUnavailableError, switchAccountSource } from './account-source-switch'
 import { emptyRunningToolsReport } from './running-tools'
 import { redactHomeDirectory } from './startup-log'
+import { isCodexSessionUuid } from './tool-installation'
 import { isExternalToolId, parseExternalClientConfigRequest } from './external-client-contract'
 import type { ExternalToolId } from './external-tool-config'
 import type { ExternalClientCheckResult } from './external-client-connection'
@@ -592,6 +593,26 @@ function parseCliLaunchMode(mode: unknown): CliLaunchMode {
   if (mode === undefined || mode === null) return 'new'
   if (mode !== 'new' && mode !== 'resumeLast') throw new Error('CLI 启动方式错误')
   return mode
+}
+
+// 第四个参数只收 Codex 记录页 / 首页那条记录自己的 id(`codex:<UUID>`),别的工具、
+// 别的启动方式带了它都算错。id 只拿来在主进程自己读出的 Codex 记录里查找,查到后
+// 交给 argv 的也是重新校验过形状的 UUID,渲染层的字符串不会原样进命令行(I5)。
+function parseCodexResumeRecordId(provider: ProviderId, mode: CliLaunchMode, recordId: unknown): string | null {
+  if (recordId === undefined || recordId === null) return null
+  if (provider !== 'codex' || mode !== 'resumeLast') throw new Error('CLI 启动方式错误')
+  if (typeof recordId !== 'string' || !recordId.startsWith('codex:') || !isCodexSessionUuid(recordId.slice('codex:'.length))) {
+    throw new Error('会话 ID 格式错误')
+  }
+  return recordId
+}
+
+function sameLaunchWorkspace(left: string, right: string): boolean {
+  const a = path.resolve(left)
+  const b = path.resolve(right)
+  return process.platform === 'win32' || process.platform === 'darwin'
+    ? a.toLowerCase() === b.toLowerCase()
+    : a === b
 }
 
 function parseCodexDesktopLocale(locale: unknown): CodexDesktopLocale {
@@ -2318,14 +2339,50 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   })
   registerTrustedHandler('desktop:uninstall-codex', () => service.uninstallCodexDesktop())
   registerTrustedHandler('desktop:check-update-codex', () => service.inspectCodexDesktopUpdate(true))
-  registerTrustedHandler('cli:launch', (event, provider: unknown, workspace: unknown, mode: unknown) => {
+  /**
+   * 记录这边核对一遍再交给 Codex:记录还在、而且就在要打开的这个文件夹里,才按
+   * id 接;查不到(刚被删、数据库暂时读不了)或文件夹对不上,就退回按目录找最近
+   * 一条 —— 也就是加这个参数之前的行为,不会因此打不开。
+   */
+  async function verifiedCodexResumeSessionId(recordId: string, workspace: string): Promise<string | null> {
+    try {
+      const recorded = await options.providerSessionsService.resolveWorkspace(recordId)
+      if (!recorded || !sameLaunchWorkspace(recorded, workspace)) return null
+      return recordId.slice('codex:'.length)
+    } catch {
+      return null
+    }
+  }
+  function launchProviderWith(provider: ProviderId, target: string, launchMode: CliLaunchMode, resumeSessionId: string | null) {
+    return resumeSessionId === null
+      ? service.launchProvider(provider, target, launchMode)
+      : service.launchProvider(provider, target, launchMode, resumeSessionId)
+  }
+  registerTrustedHandler('cli:launch', (event, provider: unknown, workspace: unknown, mode: unknown, recordId: unknown) => {
     if (!isProviderId(provider)) throw new Error('未知的 CLI 类型')
     const stored = service.readStoredConfig()
     const target = parseWorkspace(workspace, stored.workspace)
     const launchMode = parseCliLaunchMode(mode)
+    const resumeRecordId = parseCodexResumeRecordId(provider, launchMode, recordId)
+    if (resumeRecordId === null) return launchCliInWorkspace(event, provider, target, launchMode, null)
+    return (async () => launchCliInWorkspace(
+      event,
+      provider,
+      target,
+      launchMode,
+      await verifiedCodexResumeSessionId(resumeRecordId, target),
+    ))()
+  })
+  function launchCliInWorkspace(
+    event: IpcMainInvokeEvent,
+    provider: ProviderId,
+    target: string,
+    launchMode: CliLaunchMode,
+    resumeSessionId: string | null,
+  ) {
     const sensitivity = classifyLocalWorkspace(target)
     if (!sensitivity || sensitiveWorkspacePolicy(sensitivity) !== 'every-time' || consumeConfirmedEveryTimeWorkspace(target)) {
-      return service.launchProvider(provider, target, launchMode)
+      return launchProviderWith(provider, target, launchMode, resumeSessionId)
     }
     // 最近记录、记录页「接着上次对话」、老版本记住的目录都不经过选择器，
     // 所以「每次都提醒」的目录在这里再问一次。续接对话换了目录就接不上，
@@ -2334,7 +2391,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
       const parentWindow = BrowserWindow.fromWebContents(event.sender) ?? undefined
       const allowChooseAnother = launchMode === 'new'
       const decision = await askAboutSensitiveWorkspace(parentWindow, sensitivity, allowChooseAnother)
-      if (decision === 'continue') return service.launchProvider(provider, target, launchMode)
+      if (decision === 'continue') return launchProviderWith(provider, target, launchMode, resumeSessionId)
       let replacement: string | null = null
       if (decision === 'create') {
         replacement = await createStarterWorkspaceOrExplain(parentWindow, '接下来会重新打开文件夹选择窗口，可以在里面自己新建一个文件夹再选它。')
@@ -2352,7 +2409,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
       await rememberWorkspace(replacement)
       return service.launchProvider(provider, replacement, launchMode)
     })()
-  })
+  }
   registerTrustedHandler('desktop:codex-status', () => service.inspectCodexDesktop())
   registerTrustedHandler('desktop:codex-locale-status', () => service.inspectCodexDesktopLocale())
   registerTrustedHandler('desktop:codex-permissions-status', () => service.inspectCodexWorkspacePermissions())

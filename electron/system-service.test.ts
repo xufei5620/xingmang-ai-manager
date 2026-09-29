@@ -3083,6 +3083,11 @@ describe('CLI launch queue key', () => {
     expect(buildCliLaunchQueueKey('codex', first, 'new')).not.toBe(buildCliLaunchQueueKey('codex', path.join(os.tmpdir(), 'project-b'), 'new'))
     expect(buildCliLaunchQueueKey('codex', first, 'new')).not.toBe(buildCliLaunchQueueKey('codex', first, 'resumeLast'))
     expect(buildCliLaunchQueueKey('codex', first, 'new')).not.toBe(buildCliLaunchQueueKey('claude', first, 'new'))
+    // 同一文件夹里按 id 接两条不同的 Codex 对话，是两次打开。
+    expect(buildCliLaunchQueueKey('codex', first, 'resumeLast', '0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b'))
+      .not.toBe(buildCliLaunchQueueKey('codex', first, 'resumeLast', '1a2b3c4d-0000-4000-8000-000000000000'))
+    expect(buildCliLaunchQueueKey('codex', first, 'resumeLast', '0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b')).not.toBe(buildCliLaunchQueueKey('codex', first, 'resumeLast'))
+    expect(buildCliLaunchQueueKey('codex', first, 'resumeLast', null)).toBe(buildCliLaunchQueueKey('codex', first, 'resumeLast'))
 
     const queue = new InstallationQueue()
     const ran: string[] = []

@@ -383,8 +383,10 @@ export function interactiveTerminalEnvironment(
  * 要排在后面各自执行，不能被前一个吞掉、再拿到前一个的结果（#482）。
  * 前缀保持 `cli:launch:`，退出拦截（quit-blocking-tasks.ts）按前缀认它不是安装。
  */
-export function buildCliLaunchQueueKey(provider: ProviderId, workspace: string, mode: CliLaunchMode): string {
-  return `cli:launch:${provider}:${mode}:${path.resolve(workspace)}`
+export function buildCliLaunchQueueKey(provider: ProviderId, workspace: string, mode: CliLaunchMode, resumeSessionId?: string | null): string {
+  // 同一目录里按 id 接两条不同的 Codex 对话也是两件事，不能合并。
+  const resumed = mode === 'resumeLast' && resumeSessionId ? `${mode}=${resumeSessionId}` : mode
+  return `cli:launch:${provider}:${resumed}:${path.resolve(workspace)}`
 }
 
 /**
@@ -869,7 +871,8 @@ export interface SystemService {
   cancelCodexDesktopInstall(): InstallCancellationOutcome
   uninstallCodexDesktop(): Promise<ToolUninstallResult>
   inspectCodexDesktopUpdate(forceRefresh?: boolean): Promise<DesktopAppStatus>
-  launchProvider(provider: ProviderId, workspace: string, mode?: CliLaunchMode): Promise<CliLaunchResult>
+  /** resumeSessionId 只在 Codex 续接时由 ipc.ts 核对过后传入，见 cliLaunchArgv。 */
+  launchProvider(provider: ProviderId, workspace: string, mode?: CliLaunchMode, resumeSessionId?: string | null): Promise<CliLaunchResult>
   inspectCodexDesktop(): Promise<DesktopAppStatus>
   inspectCodexDesktopLocale(): Promise<CodexDesktopLocaleStatus>
   inspectCodexWorkspacePermissions(): CodexWorkspacePermissionStatus
@@ -4451,6 +4454,7 @@ export function createSystemService(
     provider: ProviderId,
     workspace: string,
     mode: CliLaunchMode,
+    resumeSessionId: string | null,
   ): Promise<CliLaunchResult> {
     const nativeConfig = inspectNativeProviderConfig(provider)
     if (!canLaunchManagedProvider(nativeConfig)) {
@@ -4566,6 +4570,7 @@ export function createSystemService(
           argv: cliLaunchArgv(provider, command.argv, mode, {
             platform,
             installedVersion: installedStatus.version,
+            resumeSessionId,
           }),
           workspace,
           title: `${definition.name} · 星芒AI`,
@@ -4592,7 +4597,7 @@ export function createSystemService(
           darwinStagingRetention: 'retained',
         })
         await launchMacosTerminal(buildDarwinCliLaunchPlan(
-          { ...command, argv: cliLaunchArgv(provider, command.argv, mode) },
+          { ...command, argv: cliLaunchArgv(provider, command.argv, mode, { resumeSessionId }) },
           workspace,
           providerEnv,
         ))
@@ -4605,7 +4610,7 @@ export function createSystemService(
 
     const environment = interactiveTerminalEnvironment(providerEnv)
     const command = await resolveVerifiedCliCommand(provider, providerEnv, windowsExecutionMode)
-    const argv = cliLaunchArgv(provider, command.argv, mode)
+    const argv = cliLaunchArgv(provider, command.argv, mode, { resumeSessionId })
     const terminals = [
       { command: 'x-terminal-emulator', args: ['-e', command.executable, ...argv] },
       { command: 'gnome-terminal', args: ['--', command.executable, ...argv] },
@@ -4670,10 +4675,11 @@ export function createSystemService(
     provider: ProviderId,
     workspace: string,
     mode: CliLaunchMode = 'new',
+    resumeSessionId: string | null = null,
   ): Promise<CliLaunchResult> {
     return installationQueue.enqueue(
-      buildCliLaunchQueueKey(provider, workspace, mode),
-      () => launchProviderOperation(provider, workspace, mode),
+      buildCliLaunchQueueKey(provider, workspace, mode, resumeSessionId),
+      () => launchProviderOperation(provider, workspace, mode, resumeSessionId),
     )
   }
 

@@ -9,6 +9,7 @@ import {
   classifyCliInstallDisplaySource,
   cliLaunchArgv,
   cliResumeLastArgv,
+  isCodexSessionUuid,
   codexSupportsNoDaemon,
   cliUninstallCapability,
   nativeInstallBinDirectories,
@@ -1087,6 +1088,32 @@ describe('resume-last launch arguments', () => {
     expect(cliLaunchArgv('codex', ['/managed/codex/bin/codex.js'], 'resumeLast'))
       .toEqual(['/managed/codex/bin/codex.js', 'resume', '--last'])
     expect(cliLaunchArgv('claude', [], 'resumeLast')).toEqual(['--continue'])
+  })
+
+  // resume --last 在上游还按连接名过滤,切过账号就找不到;按 id 接不看连接名。
+  it('resumes a verified Codex record by id instead of the latest one under the current connection', () => {
+    const entry = ['/managed/codex/bin/codex.js']
+
+    expect(cliLaunchArgv('codex', entry, 'resumeLast', { resumeSessionId: '0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b' }))
+      .toEqual([...entry, 'resume', '0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b'])
+    expect(cliLaunchArgv('codex', entry, 'resumeLast', { platform: 'win32', installedVersion: '0.156.1', resumeSessionId: '0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b' }))
+      .toEqual([...entry, '--no-daemon', 'resume', '0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b'])
+    expect(cliLaunchArgv('codex', entry, 'resumeLast', { resumeSessionId: null }))
+      .toEqual([...entry, 'resume', '--last'])
+  })
+
+  it('ignores a session id for a new conversation and for the other three tools', () => {
+    const entry = ['/managed/cli.js']
+
+    expect(cliLaunchArgv('codex', entry, 'new', { resumeSessionId: '0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b' })).toEqual(entry)
+    expect(cliLaunchArgv('claude', entry, 'resumeLast', { resumeSessionId: '0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b' })).toEqual([...entry, '--continue'])
+  })
+
+  it('refuses a Codex session id that is not a bare UUID', () => {
+    for (const bad of ['--last', 'codex:0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b', '0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b --yolo', '../../etc', '']) {
+      expect(() => cliLaunchArgv('codex', [], 'resumeLast', { resumeSessionId: bad })).toThrow('会话 ID 格式错误')
+    }
+    expect(isCodexSessionUuid('0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b'.toUpperCase())).toBe(true)
   })
 
   it('leaves the entry argv untouched for a new conversation', () => {
