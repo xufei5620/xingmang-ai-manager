@@ -6,6 +6,7 @@ import type { SystemService, SystemSnapshot } from './system-service'
 import type { UpdaterService } from './updater'
 import { mergeAppSettings, type AppSettings, type AppSettingsUpdate } from './app-settings'
 import type { NativeConfigSaveResult } from './config-files'
+import type { ConnectionCheckResult } from './connection-check'
 import type { NewApiClientService } from './new-api-client'
 import { ipcInvokeChannels, type AccountKeysPage } from './ipc-contract'
 import { providerSessionProviders } from './provider-sessions'
@@ -4841,7 +4842,12 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
         accessedAt: null,
         ...overrides,
       })
-      function setup(key: AccountKeysPage['keys'][number] | Error, keyReplacements?: ManagedKeyReplacementStore, cached = true) {
+      function setup(
+        key: AccountKeysPage['keys'][number] | Error,
+        keyReplacements?: ManagedKeyReplacementStore,
+        cached = true,
+        extraOptions: Partial<Parameters<typeof registerIpcHandlers>[0]> = {},
+      ) {
         const service = serviceStub()
         const accountService = accountServiceStub()
         vi.mocked(accountService.getSessionState).mockReturnValue({ authenticated: true, account })
@@ -4864,13 +4870,114 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
             { id: 7, provider: 'codex', group: codex.group, name: codex.keyName, key: 'sk-old' },
           ])
         }
-        register(service, 'C:\\app-data\\logs', undefined, accountService, undefined, managedCliKeys, {}, keyReplacements ? { keyReplacements } : {})
+        register(service, 'C:\\app-data\\logs', undefined, accountService, undefined, managedCliKeys, {}, {
+          ...extraOptions,
+          ...(keyReplacements ? { keyReplacements } : {}),
+        })
         return { accountService, service, managedCliKeys }
       }
       const configureCodex = () => electronMocks.handlers.get('account:configure-managed-clis')!(
         trustedEvent(),
         { providers: ['codex'], preferredModels: {}, intent: 'explicit', mode: 'merge' },
       )
+
+      function sourceSwitchOptions(): Partial<Parameters<typeof registerIpcHandlers>[0]> {
+        return {
+          backupStore: {
+            create: vi.fn(() => ({ id: 'before-source-switch' })),
+            restore: vi.fn(() => ({ provider: 'codex', restoredBackupId: 'before-source-switch', preRestoreBackupId: 'before-restore' })),
+          } as never,
+          diagnosticsService: {
+            run: vi.fn(),
+            exportLatest: vi.fn(),
+            checkExternalConnection: vi.fn(),
+            checkConnection: vi.fn(async (): Promise<ConnectionCheckResult> => ({
+              provider: 'codex', siteId: 'solov', ok: true, layer: 'network',
+              summary: '模型清单检查通过', nextStep: '', endpoint: null, model: 'gpt-5.6-sol',
+              detail: null, status: 200, durationMs: 1, checkedAt: '2026-09-28T00:00:00.000Z',
+            })),
+          },
+        }
+      }
+
+      const switchCodexToAccount = () => electronMocks.handlers.get('config:switch-account-source')!(
+        trustedEvent(), 'codex', 'account',
+      )
+
+      it('inherits revoked key limits when switching the tool to the current account', async () => {
+        const { accountService, service } = setup(accountKey({}), undefined, true, sourceSwitchOptions())
+        await electronMocks.handlers.get('account:revoke-key')!(trustedEvent(), 7)
+
+        await expect(switchCodexToAccount()).resolves.toMatchObject({ target: 'account', verified: true })
+
+        expect(accountService.provisionCliKey).toHaveBeenCalledWith({
+          name: codex.keyName, group: codex.group, remainQuota: 5_000, unlimitedQuota: false,
+          expiredTime: Math.floor(Date.parse('2099-01-01T00:00:00.000Z') / 1000), fresh: true,
+        })
+        expect(service.saveConfig).toHaveBeenCalledWith(
+          expect.objectContaining({ provider: 'codex' }), false, expect.any(Function),
+          { source: 'account', automatic: false },
+        )
+      })
+
+      it('does not lift a used-up key cap through the account source switch', async () => {
+        const { accountService, service } = setup(accountKey({ remainQuota: 0, status: 4 }), undefined, true, sourceSwitchOptions())
+        await electronMocks.handlers.get('account:revoke-key')!(trustedEvent(), 7)
+
+        await expect(switchCodexToAccount()).rejects.toThrow(managedKeyQuotaExhaustedMessage)
+
+        expect(accountService.provisionCliKey).toHaveBeenCalledWith(expect.objectContaining({
+          name: codex.keyName, remainQuota: 1, unlimitedQuota: false, fresh: true,
+        }))
+        expect(service.saveConfig).not.toHaveBeenCalled()
+      })
+
+      it('does not silently replace an expired key through the account source switch', async () => {
+        const { accountService, service } = setup(accountKey({ expiredAt: '2020-01-01T00:00:00.000Z' }), undefined, true, sourceSwitchOptions())
+        await electronMocks.handlers.get('account:revoke-key')!(trustedEvent(), 7)
+
+        await expect(switchCodexToAccount()).rejects.toThrow('原来那把密钥已经到期了')
+
+        expect(accountService.provisionCliKey).not.toHaveBeenCalledWith(expect.objectContaining({ name: codex.keyName }))
+        expect(service.saveConfig).not.toHaveBeenCalled()
+      })
+
+      it('keeps pending key limits across a restart before switching account source', async () => {
+        const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-key-source-switch-'))
+        const filePath = path.join(directory, 'managed-key-replacements.json')
+        try {
+          setup(accountKey({}), createManagedKeyReplacementStore({ filePath }))
+          await electronMocks.handlers.get('account:revoke-key')!(trustedEvent(), 7)
+          electronMocks.handlers.clear()
+          const { accountService } = setup(accountKey({}), createManagedKeyReplacementStore({ filePath }), false, sourceSwitchOptions())
+
+          await expect(switchCodexToAccount()).resolves.toMatchObject({ verified: true })
+
+          expect(accountService.provisionCliKey).toHaveBeenCalledWith(expect.objectContaining({
+            name: codex.keyName, remainQuota: 5_000, unlimitedQuota: false, fresh: true,
+          }))
+          expect(JSON.parse(fs.readFileSync(filePath, 'utf8'))).toEqual({ version: 1, entries: {} })
+        } finally {
+          fs.rmSync(directory, { recursive: true, force: true })
+        }
+      })
+
+      it('does not discard unreadable limits when the user only switches account source', async () => {
+        const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-key-source-switch-'))
+        const filePath = path.join(directory, 'managed-key-replacements.json')
+        try {
+          fs.writeFileSync(filePath, '{ invalid limits')
+          const { accountService, service } = setup(accountKey({}), createManagedKeyReplacementStore({ filePath }), false, sourceSwitchOptions())
+
+          await expect(switchCodexToAccount()).rejects.toThrow('没读到这个工具原来的额度设置')
+
+          expect(accountService.provisionCliKey).not.toHaveBeenCalled()
+          expect(service.saveConfig).not.toHaveBeenCalled()
+          expect(fs.readFileSync(filePath, 'utf8')).toBe('{ invalid limits')
+        } finally {
+          fs.rmSync(directory, { recursive: true, force: true })
+        }
+      })
 
       it('gives the replacement the revoked key\'s remaining cap and expiry instead of an unlimited key', async () => {
         const { accountService } = setup(accountKey({}))
