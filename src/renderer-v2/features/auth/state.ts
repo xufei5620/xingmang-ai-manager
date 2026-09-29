@@ -152,6 +152,16 @@ export function validateRegistration(draft: RegistrationDraft, verificationRequi
   return errors
 }
 
+/** 找回密码第 3 步客户自己设的新密码：长度规则与注册同一套，账号服务那边也是 8 到 20 位。 */
+export function validateNewPassword(password: string, confirm: string): { password?: string; confirm?: string } {
+  const errors: { password?: string; confirm?: string } = {}
+  if (password.length < minPasswordLength) errors.password = `新密码至少 ${minPasswordLength} 位`
+  else if (password.length > maxPasswordLength) errors.password = `新密码不能超过 ${maxPasswordLength} 位`
+  if (!confirm) errors.confirm = '请再输一次新密码'
+  else if (password !== confirm) errors.confirm = '两次输入的新密码不一样'
+  return errors
+}
+
 export function remainingCooldown(deadline: number, now = Date.now()): number {
   return Math.max(0, Math.ceil((deadline - now) / 1000))
 }

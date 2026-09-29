@@ -1047,6 +1047,8 @@ if (query.has('system')) {
             announcement: true,
             spend: true,
             acceleration: true,
+            cliTrouble: true,
+            cliTurn: true,
             ...systemState.preferences.notifications,
             [kind]: enabled,
           },

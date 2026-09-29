@@ -167,6 +167,8 @@ module.exports = {
     'bundled-catalog/project-instructions/**/*',
     // Claude Code 状态行脚本。只读 CLI 从 stdin 递来的会话信息，不出网、不读 Key。
     'bundled-catalog/cli-status-line/**/*',
+    // Claude Code / Gemini CLI 钩子脚本。只把事件类型写进星芒数据目录，不出网、不读 Key。
+    'bundled-catalog/cli-hooks/**/*',
     'package.json',
   ],
   extraResources: [
@@ -185,6 +187,12 @@ module.exports = {
     {
       from: 'bundled-catalog/cli-status-line',
       to: 'bundled-catalog/cli-status-line',
+      filter: ['**/*'],
+    },
+    // 同上：钩子命令由 CLI 起的外部 node 执行。
+    {
+      from: 'bundled-catalog/cli-hooks',
+      to: 'bundled-catalog/cli-hooks',
       filter: ['**/*'],
     },
     ...accelerationBundle.resources,
