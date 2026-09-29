@@ -64,16 +64,34 @@ describe('Codex relay provider isolation', () => {
     })
   })
 
-  it.each(['openai', 'custom'])('rejects foreign reserved tables without modifying the %s profile', (active) => {
-    const original = `model_provider = "${active}"\n[model_providers.openai]\nbase_url = "https://private.example/v1"\nenv_key = "PRIVATE_KEY"\n`
+  it.each(['openai', 'azure'])('keeps a foreign built-in table untouched and still saves with %s active', (active) => {
+    const userTable = '[model_providers.openai]\nbase_url = "https://api.openai.com/v1"\nenv_key = "PRIVATE_KEY"\n'
+    const original = `model_provider = "${active}"\n[model_providers.azure]\nbase_url = "https://azure.example.com"\n${userTable}`
     const { roots, config } = fixture(original)
-    expect(() => saveProviderConfig('codex', 'fixture-key', 'fixture-model', 'merge', roots, {}, providerBaseUrls))
-      .toThrow('占用了内置名称 openai')
-    expect(fs.readFileSync(config, 'utf8')).toBe(original)
-    expect(fs.existsSync(codexConfigSnapshotPaths(roots).chatgpt)).toBe(false)
-    const reset = saveProviderConfig('codex', 'fixture-key', 'fixture-model', 'reset', roots, {}, providerBaseUrls)
-    expect(reset.backups.some((backup) => fs.readFileSync(backup, 'utf8') === original)).toBe(true)
-    expect((readConfig(config).model_providers as Record<string, unknown>).openai).toBeUndefined()
+    saveProviderConfig('codex', 'fixture-key', 'fixture-model', 'merge', roots, {}, providerBaseUrls)
+    const parsed = readConfig(config)
+    const providers = parsed.model_providers as Record<string, Record<string, unknown>>
+    expect(providers.openai).toEqual({ base_url: 'https://api.openai.com/v1', env_key: 'PRIVATE_KEY' })
+    const selected = active === 'openai' ? 'XingmangAI' : 'azure'
+    expect(parsed.model_provider).toBe(selected)
+    expect(providers[selected]).toEqual(expect.objectContaining({ base_url: providerBaseUrls.codex }))
+  })
+
+  it.each(['OpenAI', 'XingmangAI', 'existing'])('keeps the active %s name so earlier chats stay in the resume list', (active) => {
+    const { roots, config } = fixture(`model_provider = "${active}"\n[model_providers.${active}]\nbase_url = "https://xm.solov.cc/v1"\n`)
+    saveProviderConfig('codex', 'fixture-key', 'fixture-model', 'merge', roots, {}, providerBaseUrls)
+    expect(readConfig(config).model_provider).toBe(active)
+  })
+
+  it('keeps the legacy OpenAI name when no provider is selected', () => {
+    const { roots, config } = fixture('[model_providers.azure]\nbase_url = "https://azure.example.com"\n')
+    saveProviderConfig('codex', 'fixture-key', 'fixture-model', 'merge', roots, {}, providerBaseUrls)
+    const parsed = readConfig(config)
+    expect(parsed.model_provider).toBe('OpenAI')
+    expect(parsed.model_providers).toEqual({
+      azure: { base_url: 'https://azure.example.com' },
+      OpenAI: expect.objectContaining({ base_url: providerBaseUrls.codex }),
+    })
   })
 
   it('backs up a reserved profile before an explicit reset', () => {

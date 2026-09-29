@@ -1054,9 +1054,9 @@ describe('native CLI configuration files', () => {
     saveProviderConfig('codex', 'new-key', testModels.codex, 'merge', roots, {}, providerBaseUrls)
 
     const parsed = asRecord(TOML.parse(fs.readFileSync(configPath, 'utf8')))!
-    expect(parsed.model_provider).toBe('XingmangAI')
+    expect(parsed.model_provider).toBe('OpenAI')
     expect(asRecord(parsed.model_providers)?.azure).toMatchObject({ base_url: 'https://azure.example.com' })
-    expect(asRecord(parsed.model_providers)?.XingmangAI).toMatchObject({ base_url: 'https://xm.solov.cc/v1' })
+    expect(asRecord(parsed.model_providers)?.OpenAI).toMatchObject({ base_url: 'https://xm.solov.cc/v1' })
   })
 
   it('rolls back every Codex file at a custom external root when its hook fails', () => {

@@ -916,21 +916,7 @@ function applyCodexRelayConfig(
   providerName: string,
   siteBaseUrl: string,
 ): void {
-  const previousProvider = typeof parsed.model_provider === 'string' ? parsed.model_provider.trim() : ''
-  const providers = ensureRecord(parsed, 'model_providers')
-  // Older versions wrote a relay into a built-in ID. Migrate only our own
-  // active endpoint. Other reserved definitions are user-owned but invalid:
-  // refuse the merge rather than silently deleting them or claiming success.
-  for (const reserved of reservedCodexProviders) {
-    if (!Object.prototype.hasOwnProperty.call(providers, reserved)) continue
-    const entry = providers[reserved]
-    if (reserved !== previousProvider || !isJsonRecord(entry) || typeof entry.base_url !== 'string'
-      || !isKnownCodexRelayBaseUrl(entry.base_url, siteBaseUrl)) {
-      throw new Error(`现有 Codex 配置占用了内置名称 ${reserved}，无法安全合并。请先备份并移除此同名自定义配置，或选择“重置配置”。`)
-    }
-    providers[providerName] = { ...entry }
-    delete providers[reserved]
-  }
+  migrateOwnReservedCodexProvider(parsed, providerName, siteBaseUrl)
   parsed.model = model
   parsed.review_model = model
   parsed.model_provider = providerName
@@ -1047,13 +1033,13 @@ function createCodexRelayConfigPlans(
     ? readStoredCodexConfig(paths.relay, '已保存的星芒 Codex 配置') : null
   let nextContent: string
   if (mode === 'reset') {
-    nextContent = buildCodexRelayConfigTemplate(model, existingCodexProvider(paths.active), siteBaseUrls.codex)
+    nextContent = buildCodexRelayConfigTemplate(model, existingCodexProvider(paths.active, siteBaseUrls.codex), siteBaseUrls.codex)
   } else if (storedRelay) {
     const stored = TOML.parse(storedRelay)
-    applyCodexRelayConfig(stored, model, existingCodexProvider(paths.relay), siteBaseUrls.codex)
+    applyCodexRelayConfig(stored, model, codexRelayProviderFor(stored, siteBaseUrls.codex), siteBaseUrls.codex)
     nextContent = tomlContent(stored)
   } else if (currentParsed) {
-    applyCodexRelayConfig(currentParsed, model, existingCodexProvider(paths.active), siteBaseUrls.codex)
+    applyCodexRelayConfig(currentParsed, model, codexRelayProviderFor(currentParsed, siteBaseUrls.codex), siteBaseUrls.codex)
     nextContent = tomlContent(currentParsed)
   } else {
     nextContent = buildCodexRelayConfigTemplate(model, defaultCodexRelayProvider, siteBaseUrls.codex)
@@ -1308,7 +1294,7 @@ function tomlTableKey(value: string): string {
 export const defaultCodexRelayProvider = 'XingmangAI'
 const reservedCodexProviders: ReadonlySet<string> = new Set(['openai', 'ollama', 'lmstudio'])
 
-function existingCodexProvider(configPath: string): string {
+function existingCodexProvider(configPath: string, siteBaseUrl: string): string {
   const content = requireConfigText(configPath, '现有 Codex config.toml')
   if (content === null) return defaultCodexRelayProvider
   let parsed: Record<string, unknown>
@@ -1328,18 +1314,61 @@ function existingCodexProvider(configPath: string): string {
     return defaultCodexRelayProvider
   }
 
-  if (typeof parsed.model_provider === 'string' && parsed.model_provider.trim()
-    && !reservedCodexProviders.has(parsed.model_provider.trim())) {
-    return parsed.model_provider.trim()
-  }
-  // Built-in IDs cannot be redefined, and an unselected table is not consent
-  // to overwrite it. Allocate a stable free name while retaining legacy
-  // non-reserved active IDs, which existing sessions may still reference.
+  return codexRelayProviderFor(parsed, siteBaseUrl)
+}
+
+/**
+ * Codex merges user tables into its built-in providers with `or_insert`
+ * (codex-rs/model-provider-info merge_configured_model_providers), so a table
+ * named after a built-in ID is silently ignored and the relay written there
+ * never takes effect. The IDs are case-sensitive: `OpenAI` is an ordinary
+ * user-definable name, which is why older releases could use it safely.
+ */
+function codexRelayProviderFor(parsed: Record<string, unknown>, siteBaseUrl: string): string {
+  const active = typeof parsed.model_provider === 'string' ? parsed.model_provider.trim() : ''
+  // Keep a usable active name as is: Codex's resume picker filters sessions by
+  // model_provider, so renaming it would hide the customer's earlier chats.
+  if (active && !reservedCodexProviders.has(active)) return active
   const providers = isJsonRecord(parsed.model_providers) ? parsed.model_providers : {}
+  function isFree(candidate: string): boolean {
+    return !Object.prototype.hasOwnProperty.call(providers, candidate)
+      || isOwnCodexRelayEntry(providers[candidate], siteBaseUrl)
+  }
+  // Without a selector, older releases picked `OpenAI`; keep that for the same
+  // resume-list reason, but never take over a table someone else wrote.
+  if (!active && isFree('OpenAI')) return 'OpenAI'
   for (let suffix = 1; ; suffix += 1) {
     const candidate = suffix === 1 ? defaultCodexRelayProvider : `${defaultCodexRelayProvider}-${suffix}`
-    if (!Object.prototype.hasOwnProperty.call(providers, candidate)) return candidate
+    if (isFree(candidate)) return candidate
   }
+}
+
+function isOwnCodexRelayEntry(entry: unknown, siteBaseUrl: string): boolean {
+  return isJsonRecord(entry) && typeof entry.base_url === 'string'
+    && isKnownCodexRelayBaseUrl(entry.base_url, siteBaseUrl)
+}
+
+/**
+ * Older releases wrote the relay into the active built-in table. Move only
+ * that table of ours to the new name, keeping options such as retries. A
+ * built-in-named table someone else wrote stays untouched: Codex ignores it
+ * anyway, and refusing to save over it would turn a working switch into an
+ * error.
+ */
+function migrateOwnReservedCodexProvider(
+  parsed: Record<string, unknown>,
+  providerName: string,
+  siteBaseUrl: string,
+): void {
+  const active = typeof parsed.model_provider === 'string' ? parsed.model_provider.trim() : ''
+  if (!reservedCodexProviders.has(active) || active === providerName) return
+  const providers = parsed.model_providers
+  if (!isJsonRecord(providers)) return
+  const entry = providers[active]
+  if (!isJsonRecord(entry) || !isOwnCodexRelayEntry(entry, siteBaseUrl)) return
+  const existing = providers[providerName]
+  providers[providerName] = { ...entry, ...(isJsonRecord(existing) ? existing : {}) }
+  delete providers[active]
 }
 
 function jsonContent(value: unknown): string {
