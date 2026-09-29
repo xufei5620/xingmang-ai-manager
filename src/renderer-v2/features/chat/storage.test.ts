@@ -66,6 +66,13 @@ describe('lossless chat history files', () => {
     expect(planHistoryWrite(restored.state, restored.saved)).toBeNull()
   })
 
+  it('remembers that the long-conversation warning was dismissed', async () => {
+    const state = workspace()
+    state.conversations[0].lengthNoticeDismissed = true
+    const restored = await saveAndReopen(state)
+    expect(restored.state.conversations[0].lengthNoticeDismissed).toBe(true)
+    expect(restored.state).toEqual(state)
+  })
   it('preserves all 350 messages and all asset references without reusing request limits for stored history', async () => {
     const state = workspace()
     state.conversations[0].messages = Array.from({ length: 350 }, (_, index) => message(index))
