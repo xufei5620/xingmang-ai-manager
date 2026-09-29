@@ -120,10 +120,25 @@ describe('createCliTurnTracker', () => {
     expect(tracker.observe(event({ tool: 'codex', event: 'finished', at: LONG_TURN_MS * 5 }))).toBeNull()
   })
 
-  it('never notifies about Grok and forgets a turn that was cancelled or ended', () => {
+  it('notifies about Grok like Claude Code', () => {
     const tracker = createCliTurnTracker()
-    expect(tracker.observe(event({ tool: 'grok', event: 'failed', reason: 'auth' }))).toBeNull()
-    expect(tracker.observe(event({ tool: 'grok', event: 'waiting' }))).toBeNull()
+    expect(tracker.observe(event({ tool: 'grok', event: 'failed', reason: 'auth' }))).toEqual({ tool: 'grok', event: 'failed', reason: 'auth' })
+    expect(tracker.observe(event({ tool: 'grok', event: 'waiting' }))).toEqual({ tool: 'grok', event: 'waiting' })
+    tracker.observe(event({ tool: 'grok', event: 'started', turn: 'p-1', at: 0 }))
+    expect(tracker.observe(event({ tool: 'grok', event: 'finished', turn: 'p-1', at: LONG_TURN_MS }))).toEqual({ tool: 'grok', event: 'finished' })
+  })
+
+  it('ignores a late Grok cancel report from an earlier turn', () => {
+    const tracker = createCliTurnTracker()
+    tracker.observe(event({ tool: 'grok', event: 'started', turn: 'p-1', at: 0 }))
+    tracker.observe(event({ tool: 'grok', event: 'started', turn: 'p-2', at: 10 }))
+    expect(tracker.observe(event({ tool: 'grok', event: 'cancelled', turn: 'p-1', at: 20 }))).toBeNull()
+    expect(tracker.observe(event({ tool: 'grok', event: 'finished', turn: 'p-1', at: LONG_TURN_MS * 2 }))).toBeNull()
+    expect(tracker.observe(event({ tool: 'grok', event: 'finished', turn: 'p-2', at: LONG_TURN_MS + 10 }))).toEqual({ tool: 'grok', event: 'finished' })
+  })
+
+  it('forgets a turn that was cancelled or ended', () => {
+    const tracker = createCliTurnTracker()
     tracker.observe(event({ event: 'started', at: 0 }))
     expect(tracker.observe(event({ event: 'ended', at: 1 }))).toBeNull()
     expect(tracker.observe(event({ event: 'finished', at: LONG_TURN_MS * 2 }))).toBeNull()
