@@ -4,6 +4,7 @@ import {
   isMissingWorkspace,
   latestSessionIdsByWorkspace,
   recentWorkspaces,
+  resumeLaunchChoice,
   workspaceButtonLabel,
   workspaceChoices,
   workspaceName,
@@ -196,5 +197,15 @@ describe('latestSessionIdsByWorkspace', () => {
   it('offers nothing for a record with no folder', () => {
     expect([...latestSessionIdsByWorkspace([session({ id: 'claude:blank', cwd: '   ' })])])
       .toEqual([])
+  })
+})
+
+describe('resumeLaunchChoice', () => {
+  // Codex 自己按目录找最近一条时还看连接名,切过账号就找不到,所以带上这条记录的 id。
+  it('resumes Codex by the record id and the other tools by folder', () => {
+    expect(resumeLaunchChoice({ id: 'codex:0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b', provider: 'codex' })).toEqual({ resumeSessionId: 'codex:0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b' })
+    expect(resumeLaunchChoice({ id: 'claude:1', provider: 'claude' })).toBe('resumeLast')
+    expect(resumeLaunchChoice({ id: 'gemini:1', provider: 'gemini' })).toBe('resumeLast')
+    expect(resumeLaunchChoice({ id: 'grok:1', provider: 'grok' })).toBe('resumeLast')
   })
 })

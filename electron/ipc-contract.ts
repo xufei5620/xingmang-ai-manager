@@ -732,10 +732,14 @@ export interface XingmangInvokeContract {
   cancelCodexDesktopInstall: IpcInvokeDefinition<'desktop:cancel-install-codex', [], InstallCancelResult>
   uninstallCodexDesktop: IpcInvokeDefinition<'desktop:uninstall-codex', [], ToolUninstallResult>
   checkCodexDesktopUpdate: IpcInvokeDefinition<'desktop:check-update-codex', [], DesktopAppStatus>
-  /** mode 省略 = 开新对话(旧行为);resumeLast 由主进程按工具映射成固定参数。 */
+  /**
+   * mode 省略 = 开新对话(旧行为);resumeLast 由主进程按工具映射成固定参数。
+   * sessionId 只给 Codex 的 resumeLast:那条记录自己的 id(`codex:<UUID>`),主进程在
+   * 记录里核对过、且就在 workspace 里才按 id 接,否则照旧按目录找最近一条。
+   */
   launchCli: IpcInvokeDefinition<
     'cli:launch',
-    [provider: ProviderId, workspace: string, mode?: CliLaunchMode],
+    [provider: ProviderId, workspace: string, mode?: CliLaunchMode, sessionId?: string],
     CliLaunchResult
   >
   getCodexDesktopStatus: IpcInvokeDefinition<'desktop:codex-status', [], DesktopAppStatus>

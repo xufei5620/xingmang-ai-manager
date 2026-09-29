@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { ArrowRight, ArrowUpRight, BookOpen, ChevronDown, Download, FolderOpen, History, KeyRound, MessageSquare, Plug, RefreshCw, RotateCcw, X, Zap } from 'lucide-react'
-import type { AccountBalance, AccountProfile, AccountSourceTarget, CliLaunchMode, ExternalClientStatus, ExternalToolId, MultiProviderSessionPage, OfficialChatGptAccount } from '../../../../electron/ipc-contract'
+import type { AccountBalance, AccountProfile, AccountSourceTarget, ExternalClientStatus, ExternalToolId, MultiProviderSessionPage, OfficialChatGptAccount } from '../../../../electron/ipc-contract'
 import { presentExternalClients } from './external-model'
 import { useSharedAccountBalance } from '../app/balance-context'
 import { balanceStatusText } from '../shell/balance-status'
@@ -16,7 +16,7 @@ import { FirstRunSteps } from './FirstRun'
 import { isAccountNotEnabledFailure, keySyncFailureReason, keySyncFailureText } from './key-sync-failure'
 import { dismissFirstRun, getFirstRunStorage, readFirstRunDismissals } from './first-run-dismissal'
 import { formatRecentTime, recentResumeHint, recentSessionSubtitle } from './recent-display'
-import { latestSessionIdsByWorkspace, newWorkspaceLabel, recentWorkspaces, workspaceButtonLabel, workspaceChoices } from './recent-workspaces'
+import { latestSessionIdsByWorkspace, newWorkspaceLabel, recentWorkspaces, resumeLaunchChoice, workspaceButtonLabel, workspaceChoices, type CliLaunchChoice } from './recent-workspaces'
 import { errorMessage } from '../../business-common'
 import { subscriptionSummaryText, type UsableSubscription } from '../../../../electron/subscription-summary'
 import { isNetworkFailureText } from './online-resync'
@@ -56,9 +56,10 @@ export interface HomeProps {
   onCancelInstall(tool: ToolId): void
   /**
    * workspace 省略 = 弹目录选择器(旧行为);点名 = 直接用记住的目录打开(N7)。
-   * mode 省略 = 开新对话;'resumeLast' = 接着这个目录里最近的一条对话(#292)。
+   * mode 省略 = 开新对话;'resumeLast' = 接着这个目录里最近的一条对话(#292);
+   * { resumeSessionId } = Codex 接着这一条记录(见 resumeLaunchChoice)。
    */
-  onLaunch(tool: ToolId, workspace?: string, mode?: CliLaunchMode): void
+  onLaunch(tool: ToolId, workspace?: string, mode?: CliLaunchChoice): void
   /** 不选目录，替用户新建一个项目文件夹再打开；缺省 = 不给这个入口（旧行为）。 */
   onLaunchInNewFolder?(tool: ToolId): void
   onConfigure(tool: ToolId): void
@@ -443,7 +444,7 @@ export function Home(props: HomeProps) {
                 badge={session.cwdExists === false ? <Pill tone="warn" testId={`home-recent-missing-${session.id}`}>文件夹已不存在</Pill> : undefined}
                 actions={<>
                   {resumable.has(session.id) && !session.archived && <Button size="xs" disabled={loading || launchBusy || session.cwdExists === false}
-                    onClick={() => props.onLaunch(session.provider, session.cwd, 'resumeLast')}
+                    onClick={() => props.onLaunch(session.provider, session.cwd, resumeLaunchChoice(session))}
                     title={recentResumeHint(session)} testId={`home-recent-resume-${session.id}`}>接着聊</Button>}
                   {Boolean(session.cwd) && <Button size="xs" variant="ghost" icon={FolderOpen} disabled={session.cwdExists === false}
                     aria-label="打开文件夹" title={session.cwdExists === false ? '这个文件夹已经不在了，打不开' : `在文件管理器里打开 ${session.cwd}`}

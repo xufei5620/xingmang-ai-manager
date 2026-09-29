@@ -59,7 +59,7 @@ import {
   type CuratedExtension,
 } from './registry/curated-extensions'
 import { tools } from './registry/tools'
-import { isMissingWorkspace, latestSessionIdsByWorkspace } from './features/tools/recent-workspaces'
+import { isMissingWorkspace, latestSessionIdsByWorkspace, resumeLaunchChoice } from './features/tools/recent-workspaces'
 import { launchDeclined, resumeSessionNotice } from './features/tools/launch-notice'
 import { runtimeHomebrewCommand } from './features/tools/runtime-install-guide'
 import { backupKeyView } from './features/tools/backup-key'
@@ -760,7 +760,8 @@ export function SessionsPage({
   /**
    * 四家 CLI 的续接参数都是「按当前工作目录找最近一条」,不是按会话 id 挑。
    * 所以按钮只长在每个(工具 × 目录)组合最近的那一条上(resumable),点到的
-   * 就是接上的。按会话 id 精确挑选另算一步。归档过的记录已经被移出 CLI
+   * 就是接上的。Codex 另外带上这条记录的 id:它自己按目录找时还按连接名过滤,
+   * 切过账号就找不到(resumeLaunchChoice)。归档过的记录已经被移出 CLI
    * 自己的目录,它找不到,所以对归档记录置灰。
    */
   const resume = (session: Session) => {
@@ -770,11 +771,10 @@ export function SessionsPage({
       'resume',
       async () => {
         try {
-          const result = await api.launchCli(
-            session.provider,
-            session.cwd,
-            'resumeLast',
-          )
+          const choice = resumeLaunchChoice(session)
+          const result = await (typeof choice === 'object'
+            ? api.launchCli(session.provider, session.cwd, 'resumeLast', choice.resumeSessionId)
+            : api.launchCli(session.provider, session.cwd, 'resumeLast'))
           // 选了「先不打开」就什么都没开，首页那份「最近」也没变。
           if (!launchDeclined(result)) onSessionsChanged?.()
           return result

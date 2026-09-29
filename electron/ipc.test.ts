@@ -3608,6 +3608,44 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
     })
   })
 
+  // Codex 的 resume --last 还按连接名过滤,切过账号就接不上;按记录 id 接。
+  describe('Codex resume by record id (cli:launch fourth argument)', () => {
+    it('resumes by the bare id once the record is found in the same folder', async () => {
+      const { service, providerSessionsService } = register()
+      providerSessionsService.resolveWorkspace.mockResolvedValueOnce('C:\\projects\\demo')
+
+      await electronMocks.handlers.get('cli:launch')!(trustedEvent(), 'codex', 'C:\\projects\\demo', 'resumeLast', 'codex:0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b')
+
+      expect(providerSessionsService.resolveWorkspace).toHaveBeenCalledWith('codex:0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b')
+      expect(service.launchProvider).toHaveBeenCalledWith('codex', 'C:\\projects\\demo', 'resumeLast', '0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b')
+    })
+
+    it('falls back to the latest one in the folder when the record is gone or elsewhere', async () => {
+      const { service, providerSessionsService } = register()
+      const handler = electronMocks.handlers.get('cli:launch')!
+      providerSessionsService.resolveWorkspace.mockRejectedValueOnce(new Error('未找到这条记录'))
+      await handler(trustedEvent(), 'codex', 'C:\\projects\\demo', 'resumeLast', 'codex:0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b')
+      expect(service.launchProvider).toHaveBeenLastCalledWith('codex', 'C:\\projects\\demo', 'resumeLast')
+
+      providerSessionsService.resolveWorkspace.mockResolvedValueOnce('C:\\projects\\other')
+      await handler(trustedEvent(), 'codex', 'C:\\projects\\demo', 'resumeLast', 'codex:0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b')
+      expect(service.launchProvider).toHaveBeenLastCalledWith('codex', 'C:\\projects\\demo', 'resumeLast')
+    })
+
+    it('rejects a record id for another tool, a new conversation or a malformed id', () => {
+      const { service, providerSessionsService } = register()
+      const handler = electronMocks.handlers.get('cli:launch')!
+
+      expect(() => handler(trustedEvent(), 'claude', 'C:\\w', 'resumeLast', 'codex:0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b')).toThrow('CLI 启动方式错误')
+      expect(() => handler(trustedEvent(), 'codex', 'C:\\w', 'new', 'codex:0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b')).toThrow('CLI 启动方式错误')
+      for (const bad of ['0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b', 'codex:--last', 'codex:0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b --yolo', 'claude:0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b', ['codex:0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b']]) {
+        expect(() => handler(trustedEvent(), 'codex', 'C:\\w', 'resumeLast', bad)).toThrow('会话 ID 格式错误')
+      }
+      expect(providerSessionsService.resolveWorkspace).not.toHaveBeenCalled()
+      expect(service.launchProvider).not.toHaveBeenCalled()
+    })
+  })
+
   describe('parseDesktopLaunchMode (desktop:launch-codex)', () => {
     it('accepts "open" and "restart"', () => {
       const { service } = register()
