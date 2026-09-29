@@ -1245,6 +1245,7 @@ if (!hasSingleInstanceLock) {
           probeAiOutput: () => assetStore.assertWritable(),
           ...await accelerationBundleStatus.then((status) => status ? { accelerationBundle: status } : {}),
           windowsExecution: windowsCliExecution,
+          windowsProcessor: await systemService.inspectWindowsProcessor(),
           // 报告只装中文结论（它会被导出发给客服），认出失败靠的那段上游原文
           // 留在 runtime.jsonl 里。
           log: (level, event, message, detail) => runtimeLog.log(level, 'diagnostics', event, message, detail),

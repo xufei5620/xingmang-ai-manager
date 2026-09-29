@@ -9,6 +9,7 @@ import { networkFailureMessages, type NetworkFailureReason } from './network-fai
 import { relaySites } from './relay-sites'
 import {
   clockSkewMs,
+  buildWindowsArmSummary,
   clockSyncGuidance,
   createDiagnosticsExport,
   describeRelocationTarget,
@@ -125,6 +126,38 @@ describe('diagnostics', () => {
       details: { required: false, installed: null, path: null },
     })
     expect(inspectPowerShell).not.toHaveBeenCalled()
+  })
+
+  it('explains an ARM laptop in plain words only when the chip is ARM', async () => {
+    const home = temporaryHome()
+    const input = dependencies(home)
+    expect((await runDiagnostics(input)).items.some((item) => item.code === 'WINDOWS_ARM')).toBe(false)
+    input.windowsProcessor = 'x64'
+    expect((await runDiagnostics(input)).items.some((item) => item.code === 'WINDOWS_ARM')).toBe(false)
+
+    input.windowsProcessor = 'arm64'
+    const inspectExecutableMachine = vi.fn(async () => 'arm64' as const)
+    input.inspectExecutableMachine = inspectExecutableMachine
+    const item = (await runDiagnostics(input)).items.find((entry) => entry.code === 'WINDOWS_ARM')
+    expect(item).toMatchObject({ title: '电脑芯片', state: 'pass', details: { nodeMachine: 'arm64', appArch: 'x64' } })
+    expect(item?.summary).toContain('Node.js 已是 ARM 版')
+    expect(item?.summary).toContain('星芒本身暂时只有普通电脑版')
+    expect(item?.summary).not.toMatch(/arm64|x64|x86|模拟/i)
+    expect(inspectExecutableMachine).toHaveBeenCalledWith(path.join(home, 'bin', 'node.exe'))
+
+    input.platform = 'darwin'
+    expect((await runDiagnostics(input)).items.some((entry) => entry.code === 'WINDOWS_ARM')).toBe(false)
+  })
+
+  it('words the ARM notice for a missing, an emulated and an unknown Node.js', () => {
+    expect(buildWindowsArmSummary({ nodeInstalled: false, nodeMachine: null, appArch: 'arm64' }))
+      .toBe('这台电脑是 ARM 芯片，装 Node.js 时会自动装 ARM 版，之后装的工具跑起来更快、更省电')
+    expect(buildWindowsArmSummary({ nodeInstalled: true, nodeMachine: 'x64', appArch: 'arm64' }))
+      .toContain('现有的 Node.js 是给普通电脑用的版本，工具能正常用')
+    expect(buildWindowsArmSummary({ nodeInstalled: true, nodeMachine: null, appArch: 'arm64' })).toBe('这台电脑是 ARM 芯片')
+    for (const nodeMachine of [null, 'x64', 'arm64', 'x86'] as const) {
+      expect(buildWindowsArmSummary({ nodeInstalled: true, nodeMachine, appArch: 'x64' })).not.toMatch(/arm64|x64|x86/i)
+    }
   })
 
   it('continues to mark unrecognized operating systems as unsupported', async () => {

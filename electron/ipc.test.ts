@@ -86,6 +86,7 @@ function serviceStub(): SystemService {
     refreshOfficialChatGptUsage: vi.fn() as never,
     inspectCodexSetupStatus: vi.fn() as never,
     installNodeRuntime: vi.fn() as never,
+    inspectWindowsProcessor: vi.fn(async () => null),
     restartWindows: vi.fn() as never,
     installPythonRuntime: vi.fn() as never,
     installGitRuntime: vi.fn() as never,

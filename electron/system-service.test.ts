@@ -18,6 +18,7 @@ import {
   type runCommand as productionRunCommand,
 } from './command-runner'
 import type { WindowsMachinePaths } from './windows-machine-paths'
+import type { NodeRuntimeInstallResult } from './node-runtime'
 import { codexAuthSnapshotPaths, codexConfigSnapshotPaths, inspectProviderConfig, providerConfigPaths, saveProviderConfig } from './config-files'
 import type { MacosCodexAppInspection } from './macos-codex-app'
 import { managedCliPackageDirectory } from './cli-process-probe'
@@ -2873,6 +2874,93 @@ describe('npm install progress reporting', () => {
     expect(target.send).toHaveBeenCalledWith(
       'runtime:node-install-progress',
       expect.objectContaining({ phase: 'error', message: expect.stringContaining('请先重启电脑') }),
+    )
+  })
+
+  it.runIf(process.platform === 'win32')('installs the ARM Node.js on an ARM laptop that has none yet', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-arm-node-runtime-'))
+    temporaryDirectories.push(directory)
+    const target = { isDestroyed: () => false, send: vi.fn() }
+    const installNodeRuntime = vi.fn(async (): Promise<NodeRuntimeInstallResult> => ({
+      installed: true,
+      action: 'installed',
+      method: 'msi',
+      source: 'official',
+      version: 'v24.19.0',
+      architecture: 'arm64',
+      pathRefreshRequired: true,
+      systemRestartRequired: false,
+    }))
+    const inspectWindowsProcessor = vi.fn(async () => 'arm64' as const)
+    const service = createSystemService(
+      new AppSettingsStore(path.join(directory, 'settings.json'), directory),
+      {
+        platform: 'win32',
+        windowsExecutionMode: 'same-user',
+        findExecutable: async () => null,
+        inspectWindowsRestartRequired: async () => ({ required: false, reasons: [] }),
+        inspectWindowsProcessor,
+        installNodeRuntime,
+      },
+    )
+
+    await service.installNodeRuntime(target)
+    expect(installNodeRuntime).toHaveBeenCalledWith(expect.objectContaining({ architecture: 'arm64' }))
+    if (process.arch !== 'arm64') {
+      expect(target.send).toHaveBeenCalledWith(
+        'runtime:node-install-progress',
+        expect.objectContaining({ message: expect.stringContaining('这台电脑是 ARM 芯片') }),
+      )
+    }
+    await service.inspectWindowsProcessor()
+    expect(inspectWindowsProcessor).toHaveBeenCalledTimes(1)
+  })
+
+  it.runIf(process.platform === 'win32')('keeps an outdated Node.js on its own build when replacing it on an ARM laptop', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-arm-old-node-runtime-'))
+    temporaryDirectories.push(directory)
+    const nodeExecutable = 'D:\\nodejs\\node.exe'
+    const target = { isDestroyed: () => false, send: vi.fn() }
+    const installNodeRuntime = vi.fn(async (): Promise<NodeRuntimeInstallResult> => ({
+      installed: true,
+      action: 'installed',
+      method: 'msi',
+      source: 'official',
+      version: 'v24.19.0',
+      architecture: 'x64',
+      pathRefreshRequired: true,
+      systemRestartRequired: false,
+    }))
+    const inspectExecutableMachine = vi.fn(async () => 'x64' as const)
+    const service = createSystemService(
+      new AppSettingsStore(path.join(directory, 'settings.json'), directory),
+      {
+        platform: 'win32',
+        windowsExecutionMode: 'same-user',
+        findExecutable: async (command) => command === 'node' ? nodeExecutable : null,
+        runCommand: vi.fn(async (spec: { executable: string; argv: readonly string[] }) => ({
+          executable: spec.executable,
+          argv: [...spec.argv],
+          exitCode: 0,
+          signal: null,
+          stdout: 'v16.20.2\n',
+          stderr: '',
+          outputBytes: 10,
+          durationMs: 1,
+        })),
+        inspectWindowsRestartRequired: async () => ({ required: false, reasons: [] }),
+        inspectWindowsProcessor: async () => 'arm64',
+        inspectExecutableMachine,
+        installNodeRuntime,
+      },
+    )
+
+    await service.installNodeRuntime(target)
+    expect(inspectExecutableMachine).toHaveBeenCalledWith(nodeExecutable)
+    expect(installNodeRuntime).toHaveBeenCalledWith(expect.objectContaining({ architecture: 'x64' }))
+    expect(target.send).not.toHaveBeenCalledWith(
+      'runtime:node-install-progress',
+      expect.objectContaining({ message: expect.stringContaining('ARM 芯片') }),
     )
   })
 

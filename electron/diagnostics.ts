@@ -48,6 +48,11 @@ import { resolveCliCommand, resolveCliInstallation } from './tool-installation'
 import type { ToolConfigOwnership } from './tool-config-ownership'
 import type { SystemSnapshot } from './system-service'
 import {
+  inspectWindowsExecutableMachine,
+  type WindowsExecutableMachine,
+  type WindowsProcessorArchitecture,
+} from './windows-processor'
+import {
   describeWindowsExecutionProbeFailure,
   inspectCurrentWindowsProcessHighIntegrity,
   inspectWindowsElevationCapability,
@@ -182,6 +187,13 @@ export interface DiagnosticsDependencies {
    * 缺省按探测成功处理，只看当前令牌。
    */
   windowsExecution?: WindowsCliExecutionModeResolution | null
+  /**
+   * 这台 Windows 电脑真实的芯片（system-service 的 inspectWindowsProcessor，一次启动只问一次）。
+   * 是 ARM 才有「电脑芯片」这一项；缺省 = 不知道，不出这一项。
+   */
+  windowsProcessor?: WindowsProcessorArchitecture | null
+  /** 「电脑芯片」一项读 node.exe 的文件头看它是哪一版；测试用它造两种 Node.js。 */
+  inspectExecutableMachine?: (filePath: string) => Promise<WindowsExecutableMachine | null>
   /** 「文件夹位置」一项逐级找被重定向的那一级；测试用它造「搬过家」的目录。 */
   findReparseComponent?: (target: string) => ReparseComponent | null
   /** 按当前放行规则把「搬过家」的文件夹换成实际位置；测试用它模拟放行。 */
@@ -1279,6 +1291,28 @@ function relocatedFolderTargets(
   return targets
 }
 
+/**
+ * 「电脑芯片」一项的结论。面向小白：只说「ARM 芯片」「ARM 版」「普通电脑用的版本」，
+ * 不出现 arm64 / x64 / 模拟层这些词。
+ */
+export function buildWindowsArmSummary(input: {
+  nodeInstalled: boolean
+  nodeMachine: WindowsExecutableMachine | null
+  appArch: string
+}): string {
+  const node = !input.nodeInstalled
+    ? '这台电脑是 ARM 芯片，装 Node.js 时会自动装 ARM 版，之后装的工具跑起来更快、更省电'
+    : input.nodeMachine === 'arm64'
+      ? '这台电脑是 ARM 芯片，Node.js 已是 ARM 版，用它装的工具也按 ARM 版运行'
+      : input.nodeMachine === 'x64' || input.nodeMachine === 'x86'
+        ? '这台电脑是 ARM 芯片，现有的 Node.js 是给普通电脑用的版本，工具能正常用，只是会慢一些、更费电'
+        : '这台电脑是 ARM 芯片'
+  const app = input.appArch === 'arm64'
+    ? ''
+    : '。星芒本身暂时只有普通电脑版，在这台电脑上靠系统转换运行，打开时会慢一点'
+  return `${node}${app}`
+}
+
 export async function runDiagnostics(dependencies: DiagnosticsDependencies): Promise<DiagnosticsReport> {
   const startedAt = Date.now()
   const env = dependencies.env ?? process.env
@@ -1404,6 +1438,24 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
         details: { supported: supportedPlatform },
       }),
     },
+    ...(platform === 'win32' && dependencies.windowsProcessor === 'arm64' ? [{
+      // 星芒自己只出 x64 安装包，在 ARM 笔记本上靠系统模拟运行；Node.js 和经它装的
+      // 工具是哪一版，要看 node.exe 自己，不能看本进程。这一项只做说明，不算故障。
+      code: 'WINDOWS_ARM',
+      title: '电脑芯片',
+      timeoutOutcome: { state: 'pass', summary: '这台电脑是 ARM 芯片' },
+      run: async (signal: AbortSignal): Promise<CheckOutcome> => {
+        const node = await inspectTool('node', signal)
+        const nodeMachine = node.installed && node.path
+          ? await (dependencies.inspectExecutableMachine ?? inspectWindowsExecutableMachine)(node.path)
+          : null
+        return {
+          state: 'pass',
+          summary: buildWindowsArmSummary({ nodeInstalled: node.installed, nodeMachine, appArch: arch }),
+          details: { nodeInstalled: node.installed, nodeMachine, appArch: arch },
+        }
+      },
+    } satisfies CheckDefinition] : []),
     {
       // 这一项问两件事。一是「现在是不是管理员在跑」——是的话仍然建议普通启动。
       // 二是「这个账号需要时能不能提权」：Node.js 是机器级 MSI、Codex 桌面端是

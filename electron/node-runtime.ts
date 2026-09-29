@@ -697,7 +697,10 @@ export function buildNodeRuntimeInstallPlan(
   }
 }
 
-export function buildNodeRuntimeWingetPlan(executable: string): NodeRuntimeProcessPlan {
+export function buildNodeRuntimeWingetPlan(
+  executable: string,
+  architecture?: NodeRuntimeArchitecture,
+): NodeRuntimeProcessPlan {
   if (
     !path.win32.isAbsolute(executable)
     || path.win32.basename(executable).toLowerCase() !== 'winget.exe'
@@ -718,15 +721,21 @@ export function buildNodeRuntimeWingetPlan(executable: string): NodeRuntimeProce
       '--accept-package-agreements',
       '--accept-source-agreements',
       '--disable-interactivity',
+      // 只在调用方认准了芯片时才钉住：星芒在 ARM 电脑上是模拟运行的，不钉的话装哪一版
+      // 由 winget 自己猜，和后面安装包那条路挑的可能不是同一版。
+      ...(architecture ? ['--architecture', architecture] : []),
     ],
     timeoutMs: wingetTimeoutMs,
     acceptedExitCodes: [0],
   }
 }
 
-function verifiedNodeRuntimeWingetPlan(executable: string): NodeRuntimeProcessPlan {
+function verifiedNodeRuntimeWingetPlan(
+  executable: string,
+  architecture?: NodeRuntimeArchitecture,
+): NodeRuntimeProcessPlan {
   return {
-    ...buildNodeRuntimeWingetPlan(executable),
+    ...buildNodeRuntimeWingetPlan(executable, architecture),
     // The resolver immediately above this call validated the App Installer
     // package identity, real install root, canonical executable and basename.
     // Run it as the current user so WindowsApps ACL probing is not repeated by
@@ -1368,7 +1377,10 @@ export async function installNodeRuntime(
       })
     } else {
       try {
-        await dependencies.runProcess(verifiedNodeRuntimeWingetPlan(winget.executable), options.signal)
+        await dependencies.runProcess(
+          verifiedNodeRuntimeWingetPlan(winget.executable, options.architecture ? architecture : undefined),
+          options.signal,
+        )
         const installedRuntime = await dependencies.inspectInstalledNodeRuntime(options.signal)
         const result: NodeRuntimeInstallResult = {
           installed: true,
