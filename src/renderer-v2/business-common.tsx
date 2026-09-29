@@ -133,9 +133,17 @@ export function operationFailureFrom(error: unknown, action?: string): { message
   const fallback = action ? `${action}没有完成` : '操作没有完成'
   const message = errorMessage(error, fallback)
   if (message !== fallback) return { message }
-  const raw = redactSecretPatterns(userFacingErrorMessage(error))
+  const raw = supportDetailOf(error)
   if (!raw || raw === message) return { message }
-  return { message, detail: raw.length > 160 ? `${raw.slice(0, 159)}…` : raw }
+  return { message, detail: raw }
+}
+/**
+ * 「给客服看的原话」：先脱路径，再过 Key 打码表，只留前 160 字；空串 = 没有原话。
+ * 错误框和新手引导的红字共用这一份，别各写一套打码。
+ */
+export function supportDetailOf(error: unknown): string {
+  const raw = redactSecretPatterns(userFacingErrorMessage(error))
+  return raw.length > 160 ? `${raw.slice(0, 159)}…` : raw
 }
 export function useResource<T>(load: () => Promise<T>) {
   const [data, setData] = useState<T | null>(null)
