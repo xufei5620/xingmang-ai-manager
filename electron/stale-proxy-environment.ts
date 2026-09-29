@@ -69,13 +69,23 @@ export function parseLoopbackProxyTarget(value: string | undefined): LoopbackPro
   return { host: url.hostname.replace(/^\[(.*)\]$/, '$1').toLowerCase(), port }
 }
 
-/** 只有在限定时间内真的连上才算开着；拒绝、超时、任何错误都算没开。 */
-export function probeLoopbackProxy(
+/**
+ * 只有在限定时间内真的连上才算开着；拒绝、超时、任何错误都算没开。localhost 两个
+ * 地址一起试：代理多半只听 127.0.0.1，而按名字解析时先试 ::1，在 Windows 上被拒要
+ * 等上一阵，会把本来开着的代理拖过时限。
+ */
+export async function probeLoopbackProxy(
   target: LoopbackProxyTarget,
   timeoutMs = loopbackProxyProbeTimeoutMs,
 ): Promise<boolean> {
+  const hosts = target.host === 'localhost' ? ['127.0.0.1', '::1'] : [target.host]
+  const results = await Promise.all(hosts.map((host) => probeLoopbackAddress(host, target.port, timeoutMs)))
+  return results.some(Boolean)
+}
+
+function probeLoopbackAddress(host: string, port: number, timeoutMs: number): Promise<boolean> {
   return new Promise((resolve) => {
-    const socket = net.connect({ host: target.host, port: target.port })
+    const socket = net.connect({ host, port })
     let settled = false
     const finish = (open: boolean) => {
       if (settled) return

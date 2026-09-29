@@ -146,6 +146,7 @@ describe('probeLoopbackProxy', () => {
   it('reports a listening port as open and a closed one as closed', async () => {
     expect(await probeLoopbackProxy({ host: '127.0.0.1', port: await listeningPort() })).toBe(true)
     expect(await probeLoopbackProxy({ host: '127.0.0.1', port: await closedPort() })).toBe(false)
+    expect(await probeLoopbackProxy({ host: 'localhost', port: await listeningPort() })).toBe(true)
   })
 })
 
