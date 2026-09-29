@@ -11,6 +11,8 @@ export interface GuideSetupResult {
   install: GuideResultRow
   connection: GuideResultRow
   billing: string
+  /** 花的就是当前账号的余额：最后一步据此告诉新用户去哪充值；别处的额度不提。 */
+  usesAccountBalance: boolean
   next: GuideResultRow
   prompt: string | null
 }
@@ -49,11 +51,11 @@ function installationResult(route: GuideRoute, tool: GuideToolState | undefined,
   return { value: version ? `已装好（版本 ${version}）` : '已装好', detail, tone: !prepared || update ? 'warn' : 'ok' }
 }
 
-function connectionResult(input: GuideSetupInput): { row: GuideResultRow; billing: string } {
+function connectionResult(input: GuideSetupInput): { row: GuideResultRow; billing: string; usesAccountBalance?: boolean } {
   const { route, tool, signedIn, readiness, name, officialName, accountName, switched } = input
   const current = currentAccountLabel(accountName)
   if (route === 'chat') return signedIn
-    ? { row: { value: current, detail: '进聊天就能提问。', tone: 'ok' }, billing: '聊天花的是当前账号的余额。' }
+    ? { row: { value: current, detail: '进聊天就能提问。', tone: 'ok' }, billing: '聊天花的是当前账号的余额。', usesAccountBalance: true }
     : { row: { value: '还没登录', detail: '登录后就能聊天。', tone: 'warn' }, billing: '还没开始用，不花钱。' }
   if (!tool || tool.detectionError) return { row: { value: '暂时没读到', detail: '点「重新检测」再看一次。', tone: 'warn' }, billing: '读到设置后才能说清。' }
   // 刚在引导里切过来源时，以这次切换的结果为准：检测快照可能还没跟上，
@@ -90,6 +92,7 @@ function connectionResult(input: GuideSetupInput): { row: GuideResultRow; billin
       row: { value: signedIn ? current : '还没登录', detail, tone: !readiness.connected || (switched && !switched.verified) ? 'warn' : verified ? 'ok' : 'neutral' },
       billing: !readiness.connected ? '设好之后才开始花当前账号的余额。'
         : signedIn ? '花的是当前账号的余额。' : '花的是这把密钥所在账号的余额，登录后能核对。',
+      usesAccountBalance: readiness.connected && signedIn,
     }
   }
   return { row: { value: '还没设好', detail: '选好账号后保存一次。', tone: 'warn' }, billing: '设好之前不会花钱。' }
@@ -112,6 +115,7 @@ export function buildGuideSetupResult(input: GuideSetupInput): GuideSetupResult 
     install: installationResult(route, input.tool, readiness.prepared),
     connection: connection.row,
     billing: connection.billing,
+    usesAccountBalance: connection.usesAccountBalance ?? false,
     next,
     prompt,
   }
