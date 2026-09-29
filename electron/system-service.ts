@@ -55,7 +55,8 @@ import {
   resolveSameUserNpmPrefix,
 } from './npm-user-prefix'
 import { buildClaudeStatusLineCommand } from './claude-status-line'
-import { buildCliHookInvocation, cliHookEventsDirectory, cliHookTargetsStale, resolveGrokWindowsShell, type CliHookInvocation } from './cli-hooks'
+import { buildCliHookInvocation, cliHookEventsDirectory, cliHookTargetsStale, grokCliHookShellChanged, resolveGrokWindowsShell, type CliHookInvocation, type GrokWindowsShell } from './cli-hooks'
+import { readWindowsLivePath, withAppendedWindowsPath } from './windows-live-path'
 import { isCodexDesktopExecutable } from './codex-desktop'
 import {
   createCodexDesktopService,
@@ -2171,6 +2172,8 @@ export interface SystemServiceOptions {
   installMacGitRuntime?: typeof installMacGitRuntime
   /** Test seam for Windows-only operations exercised on non-Windows CI runners. */
   resolveWindowsMachinePaths?: typeof resolveWindowsMachinePaths
+  /** Test seam: the real read runs reg.exe for the machine and user PATH. */
+  readWindowsLivePath?: (system32: string, env: NodeJS.ProcessEnv) => Promise<string | null>
   /** Test seam so scanSystem never talks to chatgpt.com under vitest. */
   fetchOfficialChatGptUsage?: typeof fetchOfficialChatGptUsage
   /** Relay traffic uses Electron's proxy-aware network stack in the desktop host. */
@@ -2316,6 +2319,14 @@ export function planRestoredConfigOwnership(input: {
 /** 看不出来就不带这个字段，旧的快照与测试夹具不用跟着改。 */
 export function ccSwitchLeftoverField(leftover: CcSwitchLeftover | null): { ccSwitchLeftover?: CcSwitchLeftover } {
   return leftover ? { ccSwitchLeftover: leftover } : {}
+}
+
+/** 首页「提醒设置要修」那两项；「换了命令行」只在真换了时才带，旧快照和测试夹具不用跟着改。null = 引导预览，一律不报。 */
+export function cliHooksSummaryFields(
+  state: { stale: boolean; shellChanged: boolean } | null,
+): { cliHooksStale: boolean; cliHooksShellChanged?: true } {
+  if (!state) return { cliHooksStale: false }
+  return state.shellChanged ? { cliHooksStale: true, cliHooksShellChanged: true } : { cliHooksStale: state.stale }
 }
 
 /**
@@ -4682,6 +4693,7 @@ export function createSystemService(
     if (!fs.existsSync(workspace) || !fs.statSync(workspace).isDirectory()) {
       throw new Error('工作目录不存在，请重新选择')
     }
+    if (provider === 'grok') await repairGrokHooksBeforeLaunch()
 
     const definition = cliCatalog[provider]
     // 主目录、盘根、桌面、系统目录、四家工具的配置目录等敏感目录不写信任、也不生成 AGENTS.md：
@@ -4762,7 +4774,11 @@ export function createSystemService(
       }
     }
     const launchResult = inspectLaunchConfigOverrides(provider, workspace, nativeConfig)
-    const providerEnv = providerEnvironment(provider)
+    // Grok 按 PATH 挑跑钩子的 shell：补上注册表里新加的那几段，与 expectedGrokWindowsShell 推的是同一份 PATH。
+    // 只在不跨提权边界时补；trusted-only 的终端 PATH 由 trustedCommandEnvironment 重建，不收用户可写的目录（I2）。
+    const providerEnv = provider === 'grok' && platform === 'win32' && windowsExecutionMode === 'same-user'
+      ? withAppendedWindowsPath(providerEnvironment(provider), windowsLivePath)
+      : providerEnvironment(provider)
     if (provider === 'gemini') {
       // Gemini CLI 0.59 may skip ~/.gemini/.env for an untrusted workspace,
       // and it never overwrites conflicting parent-process variables. Pass the
@@ -5310,7 +5326,7 @@ export function createSystemService(
             configurationAccountMatched: Boolean(owner) && current.hasApiKey && current.matchesRelay
               && cachedKeys.some((entry) => entry.provider === id && entry.key === current.apiKey),
             ...ccSwitchLeftoverField(resolveCcSwitchLeftover(current, ccSwitchInstalled)),
-            cliHooksStale: !previewOnboarding && cliHooksStale(id),
+            ...cliHooksSummaryFields(previewOnboarding ? null : managedCliHooksState(id)),
           }]
         }),
       ) as Record<ProviderId, NativeConfigSummary>,
@@ -5381,28 +5397,93 @@ export function createSystemService(
       if (!nodeExecutable) return undefined
       const invocation = buildCliHookInvocation(nodeExecutable, scriptPath, cliHookEventsDirectory(dataDirectory), platform)
       if (!invocation) return undefined
-      // 用星芒自己的环境推：客户从星芒或自己的终端里打开 Grok，拿到的 PATH、GROK_SHELL 都与它同源。
-      if (platform === 'win32') invocation.grokWindowsShell = resolveGrokWindowsShell(process.env, (candidate) => fs.existsSync(candidate))
+      if (platform === 'win32') {
+        await refreshWindowsLivePath()
+        invocation.grokWindowsShell = expectedGrokWindowsShell()
+      }
       return invocation
     } catch {
       return undefined
     }
   }
 
-  /** 本软件写进这家配置的钩子、状态行有没有指向旧位置（cli-hooks.ts cliHookTargetsStale）。读不出来按没有算。 */
-  function cliHooksStale(provider: ProviderId): boolean {
+  // 注册表里整台电脑 + 当前账号的 PATH，最近读到的那一份；读不到时是 null，只看星芒启动时的快照。
+  let windowsLivePath: string | null = null
+  let windowsLivePathRead: Promise<void> | null = null
+  let windowsLivePathReadAt = 0
+
+  /**
+   * 星芒开着的时候客户装了 PowerShell 7，启动时的快照里没有它，新开的终端里却有（windows-live-path.ts）。
+   * 异步起 reg.exe，同一时刻只读一次，几秒内读过的不再读（修一次钩子会先后问两遍）；读不到就留着上一次的。
+   */
+  function refreshWindowsLivePath(): Promise<void> {
+    if (platform !== 'win32' || Date.now() - windowsLivePathReadAt < 5_000) return Promise.resolve()
+    windowsLivePathRead ??= (async () => {
+      try {
+        const system32 = resolveWindowsMachinePathsForService().system32
+        const value = await (serviceOptions.readWindowsLivePath ?? readWindowsLivePath)(system32, process.env)
+        if (value) windowsLivePath = value
+      } catch {
+        // 读不到只是少看见新装的那几段，照旧用快照推。
+      } finally {
+        windowsLivePathReadAt = Date.now()
+        windowsLivePathRead = null
+      }
+    })()
+    return windowsLivePathRead
+  }
+
+  /**
+   * Windows 版 Grok 现在会拿哪个 shell 跑钩子。PATH 用启动时快照再补上注册表里新加的那几段：
+   * 客户新开的终端看得到的，这里也要看得到；从星芒打开 Grok 时也补上同样几段（launchProviderOperation），
+   * 两边推出来的是同一个 shell。Git Bash 那三处本来就是实时看文件在不在。
+   */
+  function expectedGrokWindowsShell(): GrokWindowsShell {
+    return resolveGrokWindowsShell(withAppendedWindowsPath(process.env, windowsLivePath), (candidate) => fs.existsSync(candidate))
+  }
+
+  /** 本软件写进这家配置的钩子、状态行要不要重写：指向旧位置（cliHookTargetsStale），或 Windows 上 Grok 换了 shell。读不出来按不用算。 */
+  function managedCliHooksState(provider: ProviderId): { stale: boolean; shellChanged: boolean } {
     try {
-      return cliHookTargetsStale(
-        inspectManagedCliHookTargets(provider, providerRoots),
-        [serviceOptions.cliHookScriptPath, serviceOptions.claudeStatusLineScriptPath],
-      )
+      const targets = inspectManagedCliHookTargets(provider, providerRoots)
+      const shellChanged = provider === 'grok' && platform === 'win32' && grokCliHookShellChanged(targets, expectedGrokWindowsShell())
+      const moved = cliHookTargetsStale(targets, [serviceOptions.cliHookScriptPath, serviceOptions.claudeStatusLineScriptPath])
+      return { stale: moved || shellChanged, shellChanged }
     } catch {
-      return false
+      return { stale: false, shellChanged: false }
+    }
+  }
+
+  function cliHooksStale(provider: ProviderId): boolean {
+    return managedCliHooksState(provider).stale
+  }
+
+  /**
+   * 打开 Grok 之前复核一遍星芒写的那几条钩子：Grok 换了 shell、或指向旧位置，就先修好再开，
+   * 与 Codex「打开前先修」同一个路数。这是客户点了「打开」才做的，不是开机静默改文件；
+   * 修不好只记日志，不挡打开。
+   */
+  async function repairGrokHooksBeforeLaunch(): Promise<void> {
+    await refreshWindowsLivePath()
+    const state = managedCliHooksState('grok')
+    if (!state.stale) return
+    const shell = platform === 'win32' ? expectedGrokWindowsShell() : null
+    try {
+      await repairCliHooks('grok')
+      runtimeLog?.log('info', 'config', state.shellChanged ? 'grok-hooks.shell-changed' : 'grok-hooks.repaired-before-launch',
+        state.shellChanged ? 'Grok 换了命令行，打开前按新的命令行重写了钩子' : '打开 Grok 前把指向旧位置的钩子改好了', { shell })
+    } catch (error) {
+      runtimeLog?.log('warn', 'config', 'grok-hooks.repair-before-launch-failed', '打开 Grok 前修钩子没成功，照常打开', {
+        shellChanged: state.shellChanged,
+        shell,
+        reason: credentialFailureReason(error),
+      })
     }
   }
 
   async function repairCliHooks(provider: ProviderId): Promise<ReturnType<typeof saveProviderConfig>> {
-    // 找 node 要读 PATH，放在排队之前；与 saveConfig 同一个次序。
+    // 找 node 要读 PATH，放在排队之前；与 saveConfig 同一个次序。修完的复核也按最新的 PATH 推 Grok 的 shell。
+    await refreshWindowsLivePath()
     const cliHook = await resolveCliHookInvocation()
     const claudeStatusLineCommand = await resolveClaudeStatusLineCommand(provider)
     return serializeConfigWrite(async () => {

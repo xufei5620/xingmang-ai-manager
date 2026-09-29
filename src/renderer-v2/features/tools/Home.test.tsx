@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { Home, type HomeProps } from './Home'
+import { Home, lowBalanceText, type HomeProps } from './Home'
 import type { ToolboxSnapshot } from './model'
 import type { ToolboxPartitionFailure, ToolsApi } from './api'
 import type { ToolJob } from './useToolbox'
@@ -599,6 +599,22 @@ describe('renderer-v2 home missing runtime guidance on macOS', () => {
       const markup = render({}, undefined, { snapshot: staleSnapshot() })
       expect(markup).not.toContain('data-testid="tool-claude-repair-hooks"')
     })
+
+    // 客户自己装了 Git 或 PowerShell 7，Windows 版 Grok 换了命令行，写下去的那种写法跑不起来了。
+    it('says Grok switched its command line when that is why the hooks need fixing', () => {
+      const base = snapshot({ claude: cliStatus, codex: cliStatus, grok: cliStatus, gemini: cliStatus })
+      const shellChanged = {
+        ...base,
+        config: {
+          ...base.config,
+          providers: { ...base.config.providers, grok: { ...providerConfig, configurationOwnership: 'account', cliHooksStale: true, cliHooksShellChanged: true } },
+        },
+      } as unknown as ToolboxSnapshot
+      const markup = render({}, undefined, { snapshot: shellChanged, onRepairHooks: () => undefined })
+      expect(markup).toContain('Grok 换了命令行，星芒写的提醒设置要跟着改一下，不然每次都会多报一行错')
+      expect(markup).not.toContain('工具里的提醒设置指向了旧位置')
+      expect(markup).toContain('data-testid="tool-grok-repair-hooks"')
+    })
   })
 
   // 以前用 CC Switch 配过的电脑：登录后软件不改来源没确认的配置，工具还连着以前那家，
@@ -804,13 +820,21 @@ describe('renderer-v2 home balance for subscription customers', () => {
 
   it('keeps the low-balance warning for wallet-only customers', () => {
     const markup = render({}, undefined, { balance: empty })
-    expect(markup).toContain('余额只剩 $0.00，充值后可继续使用。')
+    expect(markup).toContain('data-testid="home-low-balance"')
+    expect(markup).toContain('当前账号余额是 $0，充值后 AI 工具才能用。')
+    expect(markup).not.toContain('余额只剩')
     expect(markup).not.toContain('home-subscription')
+  })
+
+  it('tells a brand-new account to top up first instead of saying the balance ran low', () => {
+    expect(lowBalanceText(0)).toBe('当前账号余额是 $0，充值后 AI 工具才能用。付完马上生效，不用重新设置。')
+    expect(lowBalanceText(-0.2)).toMatch(/^当前账号余额是 \$0/)
+    expect(lowBalanceText(3.456)).toBe('余额只剩 $3.46，充值后可继续使用。')
   })
 
   it('drops the empty-wallet warning and shows the subscription while one is usable', () => {
     const markup = render({}, undefined, { balance: empty, subscription })
-    expect(markup).not.toContain('余额只剩')
+    expect(markup).not.toContain('home-low-balance')
     expect(markup).toContain('订阅：月卡 · 剩余 $8.00 · 10 月 3 日到期')
     expect(markup).not.toContain('tone-bad')
   })
@@ -819,7 +843,7 @@ describe('renderer-v2 home balance for subscription customers', () => {
     const markup = render({}, undefined, { balance: empty, subscription: { ...subscription, expiringSoon: true } })
     expect(markup).toContain('订阅 10 月 3 日到期，到期后会从余额扣费。')
     expect(markup).toContain('去续费')
-    expect(markup).not.toContain('余额只剩')
+    expect(markup).not.toContain('home-low-balance')
   })
 })
 

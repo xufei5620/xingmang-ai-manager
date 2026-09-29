@@ -317,10 +317,14 @@ export function removeGrokCliHooks(config: Record<string, unknown>): void {
 // 哪个脚本」，判断和重写在 config-files.ts 与 system-service.ts。
 // ---------------------------------------------------------------------------
 
+/** 一整条 shell 命令是按哪种 shell 的规矩写的；Claude Code 的 exec 形式、Codex 的 notify 不经过 shell，没有这一项。 */
+export type ManagedCliHookCommandForm = 'powershell' | 'posix'
+
 /** 本软件写进配置的一条命令指向的程序和脚本。拆不开时两项都是空串，按「坏了」算。 */
 export interface ManagedCliHookTarget {
   nodeExecutable: string
   scriptPath: string
+  form?: ManagedCliHookCommandForm
 }
 
 /**
@@ -382,7 +386,10 @@ function targetFromWords(words: readonly unknown[] | null): ManagedCliHookTarget
 function hookTarget(hook: Record<string, unknown>): ManagedCliHookTarget {
   // Claude Code 的 exec 形式：command 是程序，args[0] 是脚本。
   if (Array.isArray(hook.args)) return targetFromWords([hook.command, hook.args[0]])
-  return targetFromWords(typeof hook.command === 'string' ? splitManagedCommand(hook.command) : null)
+  if (typeof hook.command !== 'string') return targetFromWords(null)
+  // 只有 PowerShell 写法以 & 调用符开头（grokCliHookCommand / geminiCliHookCommand）。
+  const form: ManagedCliHookCommandForm = hook.command.trim().startsWith('& ') ? 'powershell' : 'posix'
+  return { ...targetFromWords(splitManagedCommand(hook.command)), form }
 }
 
 /** 某家配置里本软件那几条钩子（Codex 是 notify）各自指向哪里；用户自己写的不在其内。 */
@@ -435,4 +442,15 @@ export function cliHookTargetsStale(
     const sameName = current.find((script) => pathApi.basename(script).toLowerCase() === pathApi.basename(scriptPath).toLowerCase())
     return sameName !== undefined && comparablePath(sameName, platform) !== comparablePath(scriptPath, platform)
   })
+}
+
+/**
+ * Windows 版 Grok 现在会拿哪个 shell 跑钩子，和我们写下去的写法对不上没有。两种写法互不兼容：
+ * bash 里以 & 开头是语法错，PowerShell 里以引号开头是字符串表达式、后面跟参数报错，Grok 每一轮
+ * 都会在终端里多报一行红字。cmd 下我们一条都不该有（applyGrokCliHooks 推到 cmd 就摘掉）。
+ * 客户自己装了或卸了 Git、PowerShell 7 之后就会对不上。
+ */
+export function grokCliHookShellChanged(targets: readonly ManagedCliHookTarget[], shell: GrokWindowsShell): boolean {
+  const expected: ManagedCliHookCommandForm | null = shell === 'bash' ? 'posix' : shell === 'powershell' ? 'powershell' : null
+  return targets.some((target) => target.form !== expected)
 }

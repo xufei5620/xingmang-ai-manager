@@ -35,6 +35,7 @@ import {
   assertNpmReleaseMatchesOfficialLock,
   buildCliLaunchQueueKey,
   buildCliStatus,
+  cliHooksSummaryFields,
   externalCliInstallRefusal,
   buildCliMaintenancePlan,
   buildCliToolStatusFromSettled,
@@ -3318,6 +3319,68 @@ describe('reminder settings pointing at an old location', () => {
     expect(config).not.toContain('notify')
     expect(config).toContain('gpt-5.5')
     expect(service.getConfig(false).providers.codex.cliHooksStale).toBe(false)
+  })
+})
+
+describe('Grok hooks after the customer installs Git or PowerShell 7 themselves', () => {
+  function grokHookToml(command: string): string {
+    const events = ['UserPromptSubmit', 'Stop', 'StopFailure', 'StopCancelled', 'Notification', 'SessionEnd']
+    return ['[compat.claude]', 'hooks = false', ...events.flatMap((event) => [
+      '', `[[hooks.${event}]]`, '', `[[hooks.${event}.hooks]]`, 'type = "command"', `command = ${JSON.stringify(command)}`, 'timeout = 10',
+    ])].join('\n') + '\n'
+  }
+
+  it('flags Grok hooks written for Git Bash once Grok would run them in PowerShell, and fixes them', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-grok-shell-'))
+    temporaryDirectories.push(directory)
+    const script = path.join(directory, 'bundled-catalog', 'cli-hooks', 'xingmang-hook.cjs')
+    fs.mkdirSync(path.dirname(script), { recursive: true })
+    fs.writeFileSync(script, '', 'utf8')
+    const grokHome = path.join(directory, '.grok')
+    fs.mkdirSync(grokHome)
+    const configPath = path.join(grokHome, 'config.toml')
+    // Written in the Git Bash form; this runner has no Git Bash at Grok's three fixed places, so Grok would pick PowerShell.
+    fs.writeFileSync(configPath, grokHookToml(`'${process.execPath}' '${script}' grok '${directory}'`), 'utf8')
+    const readWindowsLivePath = vi.fn(async () => 'C:\\Windows\\System32')
+    const service = createService({
+      platform: 'win32',
+      providerRoots: { userHome: directory, codexHome: path.join(directory, '.codex') },
+      readWindowsLivePath,
+      resolveWindowsMachinePaths: () => ({ system32: 'C:\\Windows\\System32' }) as ReturnType<NonNullable<SystemServiceOptions['resolveWindowsMachinePaths']>>,
+    })
+
+    expect(service.getConfig(false).providers.grok).toMatchObject({ cliHooksStale: true, cliHooksShellChanged: true })
+    expect(service.getConfig(true).providers.grok.cliHooksStale).toBe(false)
+    expect(service.getConfig(false).providers.claude.cliHooksShellChanged).toBeUndefined()
+
+    // No hook can be written here (no bundled script configured), so the repair takes ours back instead of leaving them red.
+    const result = await service.repairCliHooks!('grok')
+    expect(result.backups).toHaveLength(1)
+    expect(readWindowsLivePath).toHaveBeenCalledWith('C:\\Windows\\System32', process.env)
+    expect(fs.readFileSync(configPath, 'utf8')).not.toContain('xingmang-hook.cjs')
+    expect(service.getConfig(false).providers.grok).toMatchObject({ cliHooksStale: false })
+    expect(service.getConfig(false).providers.grok.cliHooksShellChanged).toBeUndefined()
+  })
+
+  it('leaves Grok hooks alone when they are written for the shell Grok will use', () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-grok-shell-'))
+    temporaryDirectories.push(directory)
+    const script = path.join(directory, 'xingmang-hook.cjs')
+    fs.writeFileSync(script, '', 'utf8')
+    fs.mkdirSync(path.join(directory, '.grok'))
+    fs.writeFileSync(path.join(directory, '.grok', 'config.toml'), grokHookToml(`& '${process.execPath}' '${script}' grok '${directory}'`), 'utf8')
+    const service = createService({ platform: 'win32', providerRoots: { userHome: directory, codexHome: path.join(directory, '.codex') } })
+    expect(service.getConfig(false).providers.grok.cliHooksStale).toBe(false)
+    expect(service.getConfig(false).providers.grok.cliHooksShellChanged).toBeUndefined()
+  })
+})
+
+describe('cliHooksSummaryFields', () => {
+  it('only adds the shell-changed flag when the shell really changed', () => {
+    expect(cliHooksSummaryFields(null)).toEqual({ cliHooksStale: false })
+    expect(cliHooksSummaryFields({ stale: false, shellChanged: false })).toEqual({ cliHooksStale: false })
+    expect(cliHooksSummaryFields({ stale: true, shellChanged: false })).toEqual({ cliHooksStale: true })
+    expect(cliHooksSummaryFields({ stale: true, shellChanged: true })).toEqual({ cliHooksStale: true, cliHooksShellChanged: true })
   })
 })
 

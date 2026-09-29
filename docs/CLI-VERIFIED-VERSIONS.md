@@ -244,6 +244,14 @@ Codex 那时 `recommended` 是 `null`，也就是那两天点过「更新」的�
   星芒装好 Git 后重写一次 Grok 配置。**抬 Grok 版本时要重新核这段顺序**；真机复核：没装 Git、
   装了 Git、装了 PowerShell 7 三种电脑各从星芒打开 Grok 跑一个一分钟以上的任务，做完时弹「Grok 做完了」、
   终端里没有钩子报错即过。
+  客户自己装或卸 Git、PowerShell 7 之后：首页 Grok 那行按「现在该用哪个 shell」和「钩子是哪种写法」比对，
+  对不上就出「提醒设置要修」（小字「Grok 换了命令行…」），从星芒打开 Grok 前也会先静默改好（日志
+  `grok-hooks.shell-changed`）。推 shell 时 PATH 用启动时快照再补上注册表里整台电脑 + 当前账号的 PATH
+  （`windows-live-path.ts`），从星芒打开 Grok 时补同样几段，星芒开着时装的 PowerShell 7 也看得见。
+  真机复核（没演过）：①没装 Git 的电脑先从星芒打开 Grok 一次，关掉星芒自己装 Git for Windows（默认目录），
+  重开星芒，首页 Grok 出「提醒设置要修」，点「修好它」后再打开 Grok 跑一轮不报红；②同上但不点「修好它」、
+  直接点「打开」，终端里不报红、日志有 `grok-hooks.shell-changed`；③装了 Git 的电脑，**星芒开着**时装
+  PowerShell 7，不重开星芒直接打开 Grok，一轮做完不报红；④卸掉 Git 后再打开一次，同样不报红。
 - **Grok 1.0.40 的型号名单 —— 跑起来看到了**。二进制里的配置表写明 `models.allowed_models` 是
   「Glob allowlist for the model picker, default, and `-m`」，`models.session_summary` 是
   「Model used for session titles and summaries」。不加名单时 `grok models` 列出
