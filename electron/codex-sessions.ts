@@ -466,7 +466,7 @@ function extractMessage(value: unknown): CodexSessionMessage | null {
   if (!text) return null
   return {
     role,
-    text: text.length > DETAIL_TEXT_LIMIT ? `${text.slice(0, DETAIL_TEXT_LIMIT)}\n…` : text,
+    text,
     timestamp: typeof entry.timestamp === 'string' ? entry.timestamp : null,
   }
 }
@@ -936,8 +936,15 @@ export class CodexSessionsService {
     if (!schema.status.readable) throw new Error(schema.status.reason)
     const rolloutPath = await validateRollout(this.codexHome, row.rolloutPath, row.id)
     const messages: CodexSessionMessage[] = []
+    let textTruncated = false
     const messageStats = await streamMessages(rolloutPath, this.maxJsonLineBytes, (message) => {
-      messages.push(message)
+      // 预览上限只约束 IPC 返回内容；导出复用解析器，不能在解析阶段丢掉正文（#600）。
+      if (message.text.length > DETAIL_TEXT_LIMIT) {
+        textTruncated = true
+        messages.push({ ...message, text: `${message.text.slice(0, DETAIL_TEXT_LIMIT)}\n…` })
+      } else {
+        messages.push(message)
+      }
       if (messages.length > DETAIL_MESSAGE_LIMIT) messages.shift()
     })
     return {
@@ -945,7 +952,7 @@ export class CodexSessionsService {
       messages,
       messageStats,
       // 跳过的坏行也是看不到的内容（#491），和只留最近若干条一样算「不完整」。
-      messagesTruncated: messageStats.total > messages.length || messageStats.invalidLines > 0,
+      messagesTruncated: textTruncated || messageStats.total > messages.length || messageStats.invalidLines > 0,
     }
   }
 
