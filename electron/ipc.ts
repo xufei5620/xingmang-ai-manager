@@ -141,7 +141,7 @@ import type {
   WindowCapabilities,
 } from './ipc-contract'
 import type { DiagnosticsReport, DiagnosticsRunOptions } from './diagnostics'
-import { isCappedKeyUsedUp, withKeyQuotaExhausted, type ConnectionCheckResult } from './connection-check'
+import { isCappedKeyUsedUp, withKeyQuotaExhausted, type ConnectionCheckResult, type ConnectionProbeReport } from './connection-check'
 import type { RuntimeLogStore } from './runtime-log'
 import { createExternalShellLauncher, type ExternalShellLauncher } from './system-shell'
 import { isNetworkSettingsKind, type NetworkSettingsKind, type ProxyBypassOutcome } from './proxy-bypass'
@@ -178,6 +178,7 @@ export interface IpcRegistrationOptions {
   diagnosticsService: {
     run(options?: DiagnosticsRunOptions): Promise<DiagnosticsReport>
     checkConnection(provider: ProviderId): Promise<ConnectionCheckResult>
+    probeCodexResponses?: (expectedAccountScope: string) => Promise<ConnectionProbeReport>
     checkExternalConnection(tool: ExternalToolId): Promise<ExternalClientCheckResult>
     exportLatest(): string
     /** 检查页「清掉这条旧设置」；缺省 = stale-proxy-environment.ts 的真实现。 */
@@ -1280,6 +1281,7 @@ const ipcOperationLabels: Readonly<Record<string, string>> = {
   'settings:save': '应用设置保存',
   'diagnostics:run': '系统诊断',
   'diagnostics:check-connection': '连接自检',
+  'diagnostics:probe-codex-responses': 'Codex 干活检查',
   'diagnostics:check-external-connection': '客户端连接自检',
   'diagnostics:export': '诊断报告导出',
   'diagnostics:clear-stale-proxy': '清掉旧的代理设置',
@@ -1545,6 +1547,12 @@ function ipcLogDetail(channel: string, args: unknown[], result: unknown, duratio
     detail.layer = result.layer
     detail.ok = result.ok
     detail.siteId = result.siteId
+    detail.status = result.status
+  }
+  if (channel === 'diagnostics:probe-codex-responses' && isRecord(result)) {
+    detail.layer = result.layer
+    detail.ok = result.ok
+    detail.verificationLevel = result.verificationLevel
     detail.status = result.status
   }
   // 外部客户端同理，分辨它们的那一列是 tool。归因层与站点都留，客户端的
@@ -2778,6 +2786,12 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
       ...(update.mode !== undefined ? { mode: update.mode as AccelerationMode } : {}),
     })
   })
+  // 不收参数：读的是安装包里那几个固定文件名，渲染层给不出任何路径（I5）。
+  registerTrustedHandler('acceleration:recheck-bundle', () => {
+    const service = accelerationService()
+    if (!service.recheckAccelerationBundle) throw new Error('加速文件现在不用检查，请刷新一下加速页。')
+    return service.recheckAccelerationBundle()
+  })
   registerTrustedHandler('account:get-legal-document', (_event, kind: unknown, siteId: unknown) => (
     (options.realmAccounts ? options.realmAccounts.getPublicClient(siteId === undefined
       ? options.realmAccounts.getSiteId() : parseAccountSiteId(siteId)) : accountService).getLegalDocument(parseLegalDocumentKind(kind))
@@ -3433,6 +3447,16 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   registerTrustedHandler('diagnostics:check-connection', (_event, provider: unknown) => {
     if (!isProviderId(provider)) throw new Error('未知的 CLI 类型')
     return options.diagnosticsService.checkConnection(provider).then((result) => explainRejectedManagedKey(provider, result))
+  })
+
+  registerTrustedHandler('diagnostics:probe-codex-responses', (_event, acknowledgeBilling: unknown, expectedAccountScope: unknown) => {
+    if (acknowledgeBilling !== true) throw new Error('请先勾选确认：这次检查会用当前账号的一点额度')
+    if (typeof expectedAccountScope !== 'string'
+      || !/^(?:xm-account|api-account):(?:guest|[1-9]\d{0,14})$/.test(expectedAccountScope)) {
+      throw new Error('账号信息不对，请重新勾选确认后再检查')
+    }
+    if (!options.diagnosticsService.probeCodexResponses) throw new Error('这个版本还不能做 Codex 干活检查')
+    return options.diagnosticsService.probeCodexResponses(expectedAccountScope)
   })
 
   registerTrustedHandler('diagnostics:check-external-connection', (_event, tool: unknown) => {

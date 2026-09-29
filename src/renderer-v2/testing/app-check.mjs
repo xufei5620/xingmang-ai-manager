@@ -769,7 +769,12 @@ test('the home recent card resumes the last conversation of that folder (#292)',
     const resume = page.getByTestId('home-recent-resume-claude:1')
     await resume.waitFor()
     assert.equal(await resume.innerText(), '接着聊')
-    assert.equal(await resume.getAttribute('title'), '接着 C:\\work\\my-app 里最近的一条对话')
+    assert.equal(await resume.getAttribute('title'), '用 Claude Code 接着 my-app 里最近的一条对话')
+    // 下面一行写「工具 · 文件夹名」，完整路径放小提示；时间写清是哪天（夹具的时间在 1970 年前后，随时区落在哪天不一定）。
+    const row = page.getByTestId('home-recent-row-claude:1')
+    assert.equal(await row.locator('.xm-row-desc').innerText(), 'Claude Code · my-app')
+    assert.equal(await row.locator('.xm-row-desc span').getAttribute('title'), 'C:\\work\\my-app')
+    assert.match(await row.locator('.xm-row-meta').innerText(), /^19(69|70)年\d{1,2}月\d{1,2}日$/)
     assert.equal(await page.getByTestId('home-recent-resume-claude:2').count(), 1)
     assert.equal(await page.getByTestId('home-recent-resume-claude:3').count(), 0)
     // 没有按钮的那一行仍然能跳去记录页,和以前一样。
@@ -4024,6 +4029,93 @@ test('the connection self-check reports every CLI on its own, and an unconfigure
       await row.getByRole('button', { name: '去处理', exact: true }).waitFor()
     }
     assert.equal(await page.getByTestId('health-connection-idle').count(), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('the paid Codex tool-call check requires fresh consent and drops an old-account result', async () => {
+  const page = await open()
+  try {
+    await page.getByTestId('nav-more').click()
+    await page.getByTestId('nav-health').click()
+    const consent = page.getByTestId('health-codex-responses-consent').getByRole('switch')
+    const run = page.getByTestId('health-codex-responses-run')
+    await expect(run).toBeDisabled()
+    assert.equal(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'probeCodexResponses').length), 0)
+    await page.evaluate(() => window.v2Test.holdNextResponses())
+    await consent.click()
+    await run.click()
+    await page.waitForFunction(() => window.v2Test.calls.filter((entry) => entry.method === 'probeCodexResponses').length === 1)
+    await expect(run).toBeDisabled()
+    await page.evaluate(async () => {
+      const current = await window.xingmang.getAccountSession()
+      window.v2Test.emit('onAccountSessionChanged', {
+        ...current, account: { ...current.account, userId: 18 },
+      })
+      window.v2Test.releaseResponses()
+    })
+    await expect(consent).toBeEnabled()
+    assert.equal(await page.getByTestId('health-codex-responses-result').count(), 0)
+    await expect(run).toBeDisabled()
+
+    await consent.click()
+    await run.click()
+    await page.getByTestId('health-codex-responses-result').getByText('Codex 干活检查 · 正常', { exact: true }).waitFor()
+    const calls = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'probeCodexResponses'))
+    assert.equal(calls.length, 2)
+    assert.deepEqual(calls.map((entry) => entry.args), [[true, 'xm-account:17'], [true, 'xm-account:18']])
+    await expect(run).toBeDisabled()
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('account switch during session read prevents the paid Codex check IPC entirely', async () => {
+  const page = await open()
+  try {
+    await page.getByTestId('nav-more').click()
+    await page.getByTestId('nav-health').click()
+    const consent = page.getByTestId('health-codex-responses-consent').getByRole('switch')
+    const run = page.getByTestId('health-codex-responses-run')
+    const previousReads = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'getAccountSession').length)
+    await page.evaluate(() => window.v2Test.holdNextAccountSession())
+    await consent.click()
+    await run.click()
+    await page.waitForFunction((count) => window.v2Test.calls.filter((entry) => entry.method === 'getAccountSession').length > count, previousReads)
+    await page.evaluate(async () => {
+      const current = { authenticated: true, account: {
+        userId: 18, username: 'new-user', group: 'default', role: 1, quota: 0, usedQuota: 0,
+      } }
+      window.v2Test.emit('onAccountSessionChanged', current)
+      window.v2Test.releaseAccountSession()
+    })
+    await expect(consent).toBeEnabled()
+    await expect(run).toBeDisabled()
+    assert.equal(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'probeCodexResponses').length), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('the paid Codex check waits for startup account restore instead of reporting a changed account', async () => {
+  const page = await open('restoring=1')
+  try {
+    await page.getByTestId('nav-more').click()
+    await page.getByTestId('nav-health').click()
+    await page.getByTestId('health-codex-responses-consent').getByRole('switch').click()
+    await page.getByTestId('health-codex-responses-run').click()
+    await page.getByTestId('health-codex-responses-error').getByText('账号还在登录中，请等几秒再检查', { exact: true }).waitFor()
+    assert.equal(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'probeCodexResponses').length), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('the paid Codex check stays hidden when Codex is not installed', async () => {
+  const page = await open('codexMissing=1')
+  try {
+    await page.getByTestId('nav-more').click()
+    await page.getByTestId('nav-health').click()
+    await page.getByTestId('health-connection-run').waitFor()
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'scanSystem'))
+    assert.equal(await page.getByTestId('health-codex-responses').count(), 0)
     await clean(page)
   } finally { await page.close() }
 })

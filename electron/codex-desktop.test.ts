@@ -12,9 +12,11 @@ import {
   parseCodexDesktopUpdateManifest,
   parseStartAppsJson,
   parseWindowsProcessesJson,
+  selectCodexDesktopProcessesForPackage,
   selectCodexDesktopApp,
   selectCodexDesktopPackage,
   selectRootProcessIds,
+  stableInstallFamilyName,
   stopCodexDesktopProcesses,
 } from './codex-desktop'
 
@@ -27,6 +29,25 @@ const validPackageMetadata = {
 }
 
 describe('Codex desktop app discovery', () => {
+  it('updates Stable when Stable and Beta coexist, and never closes Beta for a Stable install', () => {
+    const stable = {
+      name: 'OpenAI.Codex', version: '26.715.0.0',
+      packageFullName: 'OpenAI.Codex_26.715.0.0_x64__id',
+      packageFamilyName: 'OpenAI.Codex_id', installLocation: 'C:\\WindowsApps\\OpenAI.Codex_26.715.0.0_x64__id',
+    }
+    const beta = {
+      ...stable, name: 'OpenAI.CodexBeta',
+      packageFullName: 'OpenAI.CodexBeta_26.715.0.0_x64__id',
+      packageFamilyName: 'OpenAI.CodexBeta_id',
+      installLocation: 'C:\\WindowsApps\\OpenAI.CodexBeta_26.715.0.0_x64__id',
+    }
+    expect(selectCodexDesktopPackage([beta, stable])).toEqual(stable)
+    expect(stableInstallFamilyName(selectCodexDesktopPackage([beta, stable]))).toBe('OpenAI.Codex_id')
+    // Beta-only machines still install Stable like before; nothing of Beta is closed.
+    expect(stableInstallFamilyName(selectCodexDesktopPackage([beta]))).toBeNull()
+    expect(stableInstallFamilyName(null)).toBeNull()
+  })
+
   it('reconstructs package metadata from a running WindowsApps path', () => {
     expect(parseCodexDesktopPackagePath(
       'C:\\Program Files\\WindowsApps\\OpenAI.Codex_26.721.4979.0_x64__2p2nqsd0c76g0\\app\\ChatGPT.exe',
@@ -322,20 +343,30 @@ describe('Codex desktop app discovery', () => {
   })
 
   it('parses Codex desktop process JSON and finds the process-tree root', () => {
+    const identity = {
+      OwnerSid: 'S-1-5-21-1234',
+      CurrentOwnerSid: 'S-1-5-21-1234',
+      SessionId: 2,
+      CurrentSessionId: 2,
+      PackageFamilyName: 'OpenAI.Codex_id',
+    }
     const processes = parseWindowsProcessesJson(JSON.stringify([
       {
+        ...identity,
         ProcessId: 120,
         ParentProcessId: 80,
         Name: 'ChatGPT.exe',
         ExecutablePath: 'C:\\Program Files\\WindowsApps\\OpenAI.Codex_26.715.0.0_x64__id\\app\\ChatGPT.exe',
       },
       {
+        ...identity,
         ProcessId: 121,
         ParentProcessId: 120,
         Name: 'codex.exe',
         ExecutablePath: 'C:\\Program Files\\WindowsApps\\OpenAI.Codex_26.715.0.0_x64__id\\app\\resources\\codex.exe',
       },
       {
+        ...identity,
         ProcessId: 500,
         ParentProcessId: 80,
         Name: 'ChatGPT.exe',
@@ -345,6 +376,44 @@ describe('Codex desktop app discovery', () => {
 
     expect(processes.map((entry) => entry.processId)).toEqual([120, 121])
     expect(selectRootProcessIds(processes)).toEqual([120])
+  })
+
+  it('drops another account, session, unknown owner and mismatched package identity', () => {
+    const stablePath = 'C:\\Program Files\\WindowsApps\\OpenAI.Codex_26.715.0.0_x64__id\\app\\ChatGPT.exe'
+    const own = {
+      ProcessId: 120, ParentProcessId: 80, Name: 'ChatGPT.exe', ExecutablePath: stablePath,
+      OwnerSid: 'S-1-5-21-1234', CurrentOwnerSid: 'S-1-5-21-1234',
+      SessionId: 2, CurrentSessionId: 2, PackageFamilyName: 'OpenAI.Codex_id',
+    }
+    const processes = parseWindowsProcessesJson(JSON.stringify([
+      own,
+      { ...own, ProcessId: 121, OwnerSid: 'S-1-5-21-5678' },
+      { ...own, ProcessId: 122, SessionId: 3 },
+      { ...own, ProcessId: 123, OwnerSid: null },
+      { ...own, ProcessId: 124, PackageFamilyName: 'OpenAI.CodexBeta_id' },
+      { ...own, ProcessId: 125, SessionId: null },
+    ]))
+    expect(processes.map((entry) => entry.processId)).toEqual([120])
+  })
+
+  it('selects only the target package family and original process ids', () => {
+    const identity = {
+      OwnerSid: 'S-1-5-21-1234', CurrentOwnerSid: 'S-1-5-21-1234',
+      SessionId: 2, CurrentSessionId: 2,
+    }
+    const stable = {
+      ...identity, ProcessId: 120, ParentProcessId: 0, Name: 'ChatGPT.exe',
+      ExecutablePath: 'C:\\WindowsApps\\OpenAI.Codex_26.715.0.0_x64__id\\ChatGPT.exe',
+      PackageFamilyName: 'OpenAI.Codex_id',
+    }
+    const beta = {
+      ...identity, ProcessId: 121, ParentProcessId: 0, Name: 'ChatGPT.exe',
+      ExecutablePath: 'C:\\WindowsApps\\OpenAI.CodexBeta_26.715.0.0_x64__id\\ChatGPT.exe',
+      PackageFamilyName: 'OpenAI.CodexBeta_id',
+    }
+    const processes = parseWindowsProcessesJson(JSON.stringify([stable, beta, { ...stable, ProcessId: 122 }]))
+    expect(selectCodexDesktopProcessesForPackage(processes, 'OpenAI.Codex_id').map((entry) => entry.processId)).toEqual([120, 122])
+    expect(selectCodexDesktopProcessesForPackage(processes, 'OpenAI.Codex_id', new Set([120])).map((entry) => entry.processId)).toEqual([120])
   })
 
   it('requests a normal close and does not force processes that exit in time', async () => {
@@ -394,11 +463,71 @@ describe('Codex desktop app discovery', () => {
       waitUntilStopped,
     })
 
-    expect(requestClose).toHaveBeenCalledTimes(1)
+    expect(requestClose).toHaveBeenCalledTimes(2)
     expect(requestClose).toHaveBeenCalledWith(120)
-    expect(forceClose).toHaveBeenCalledTimes(1)
+    expect(requestClose).toHaveBeenCalledWith(121)
+    expect(forceClose).toHaveBeenCalledTimes(2)
     expect(forceClose).toHaveBeenCalledWith(120)
+    expect(forceClose).toHaveBeenCalledWith(121)
     expect(waitUntilStopped).toHaveBeenNthCalledWith(2, 4_000)
+  })
+
+  it('never force-closes a process that appeared after the initial close request', async () => {
+    const original = {
+      processId: 120, parentProcessId: 0, name: 'ChatGPT.exe',
+      executablePath: 'C:\\WindowsApps\\OpenAI.Codex_26.715.0.0_x64__id\\ChatGPT.exe',
+      ownerSid: 'S-1-5-21-1234', sessionId: 2, packageFamilyName: 'OpenAI.Codex_id',
+    }
+    const newlyStarted = { ...original, processId: 121 }
+    const requestClose = vi.fn().mockResolvedValue(undefined)
+    const forceClose = vi.fn().mockResolvedValue(undefined)
+    await stopCodexDesktopProcesses([original], {
+      requestClose,
+      forceClose,
+      waitUntilStopped: vi.fn().mockResolvedValue([newlyStarted]),
+    })
+    expect(requestClose).toHaveBeenCalledExactlyOnceWith(120)
+    expect(forceClose).not.toHaveBeenCalled()
+  })
+
+  it('force-closes an original child left after its parent exits', async () => {
+    const root = {
+      processId: 120, parentProcessId: 0, name: 'ChatGPT.exe',
+      executablePath: 'C:\\WindowsApps\\OpenAI.Codex_26.715.0.0_x64__id\\ChatGPT.exe',
+    }
+    const child = {
+      ...root, processId: 121, parentProcessId: 120, name: 'Codex.exe',
+    }
+    const forceClose = vi.fn().mockResolvedValue(undefined)
+    await stopCodexDesktopProcesses([root, child], {
+      requestClose: vi.fn().mockResolvedValue(undefined),
+      forceClose,
+      waitUntilStopped: vi.fn()
+        .mockResolvedValueOnce([child])
+        .mockResolvedValueOnce([]),
+    })
+    expect(forceClose).toHaveBeenCalledTimes(1)
+    expect(forceClose).toHaveBeenCalledWith(121)
+  })
+
+  it('does not force-close a reused pid when its package identity changes', async () => {
+    const original = {
+      processId: 120, parentProcessId: 0, name: 'ChatGPT.exe',
+      executablePath: 'C:\\WindowsApps\\OpenAI.Codex_26.715.0.0_x64__id\\ChatGPT.exe',
+      ownerSid: 'S-1-5-21-1234', sessionId: 2, packageFamilyName: 'OpenAI.Codex_id',
+    }
+    const replacement = {
+      ...original,
+      executablePath: 'C:\\WindowsApps\\OpenAI.CodexBeta_26.715.0.0_x64__id\\ChatGPT.exe',
+      packageFamilyName: 'OpenAI.CodexBeta_id',
+    }
+    const forceClose = vi.fn().mockResolvedValue(undefined)
+    await stopCodexDesktopProcesses([original], {
+      requestClose: vi.fn().mockResolvedValue(undefined),
+      forceClose,
+      waitUntilStopped: vi.fn().mockResolvedValue([replacement]),
+    })
+    expect(forceClose).not.toHaveBeenCalled()
   })
 
   it('reports remaining process ids and the last system error', async () => {
