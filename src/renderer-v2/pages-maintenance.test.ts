@@ -1,7 +1,7 @@
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
-import { HealthPage, OnboardingSettingRows, TutorialPage, installResultMessage, tutorialTopics, withElevationNotice } from './pages-maintenance'
+import { HealthPage, OnboardingSettingRows, TutorialPage, feedbackCopyNotice, feedbackExportNotice, installResultMessage, tutorialTopics, withElevationNotice } from './pages-maintenance'
 import type { V2Bridge } from './types'
 import { macDesktopTutorialTopic, macRuntimeTutorialTopic } from './registry/business'
 import { clientConnections } from './registry/clients'
@@ -21,6 +21,27 @@ describe('paid Codex check in HealthPage', () => {
     const markup = renderToStaticMarkup(createElement(HealthPage, { api: {} as V2Bridge }))
     expect(markup).not.toContain('health-codex-responses')
     expect(markup).toContain('这一条证明你现在能用')
+  })
+})
+
+describe('feedback report notices', () => {
+  const fresh = { id: 'report-2', text: 'fresh report\n', entries: 3 }
+
+  it('keeps the plain wording when the previewed report was still current', () => {
+    expect(feedbackCopyNotice({ entries: 3 })).toBe('报告已复制')
+    expect(feedbackExportNotice({ outputPath: 'C:/r.txt' })).toEqual({ text: '反馈报告已导出：C:/r.txt', revealPath: 'C:/r.txt' })
+  })
+
+  it('tells the user the report was refreshed after the preview expired', () => {
+    expect(feedbackCopyNotice({ entries: 3, regenerated: fresh })).toBe('报告已更新到最新日志并复制，发给客服就行')
+    expect(feedbackExportNotice({ outputPath: 'C:/r.txt', regenerated: fresh })).toEqual({
+      text: '报告已更新到最新日志并导出：C:/r.txt',
+      revealPath: 'C:/r.txt',
+    })
+  })
+
+  it('claims nothing when the save dialog was dismissed', () => {
+    expect(feedbackExportNotice(null)).toBeNull()
   })
 })
 
