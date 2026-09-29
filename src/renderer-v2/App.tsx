@@ -723,12 +723,17 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   }
   async function installRuntime(runtime: 'node' | 'python' | 'git') {
     if (offline) { toast.show(offlineActionMessage, 'warn'); return }
-    // Git 按钮只在 Windows 出现（其余平台的装法以文案给出）。以前点了是打开官网让
-    // 客户自己下安装包，小白卡在这一步（yoyo 2026-09-24），现在由主进程按当前用户代装。
+    // Git 按钮在 Windows 和 macOS 出现。以前点了是打开官网让客户自己下安装包，小白卡在
+    // 这一步（yoyo 2026-09-24）。Windows 由主进程按当前用户代装；Mac 弹苹果自己的安装
+    // 窗口，客户可能在那里点取消，那时主进程带回 installed: false 和要说的那句话（第十六批 2）。
     if (runtime === 'git') {
-      const done = await toolbox.run('git', '正在准备安装 Git', () => toolsApi.installGit(), { notice: {} })
+      const outcome: { message?: string } = {}
+      const done = await toolbox.run('git', '正在准备安装 Git', async () => {
+        const result = await toolsApi.installGit()
+        if (!result.installed) outcome.message = result.message ?? '没有装 Git。需要时再点一次「安装 Git」就行。'
+      }, { notice: { unfinished: () => Boolean(outcome.message) } })
       await toolbox.refresh(true)
-      if (done && mounted.current) toast.show('Git 装好了。', 'ok')
+      if (done && mounted.current) toast.show(outcome.message ?? 'Git 装好了。', outcome.message ? 'warn' : 'ok')
       return
     }
     const mode = runtime === 'node' ? platform?.nodeRuntimeInstall : platform?.pythonRuntimeInstall

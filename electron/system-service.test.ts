@@ -22,6 +22,7 @@ import { codexAuthSnapshotPaths, codexConfigSnapshotPaths, inspectProviderConfig
 import type { MacosCodexAppInspection } from './macos-codex-app'
 import { managedCliPackageDirectory } from './cli-process-probe'
 import { managedNpmCacheRoot, managedNpmPrefix } from './managed-cli-paths'
+import type { installMacGitRuntime as installMacGitRuntimeType } from './macos-git-install'
 import {
   resolveCliCommand as resolveVerifiedToolCommand,
   resolveCliInstallation as resolveCliInstallationForTest,
@@ -2645,17 +2646,40 @@ describe('Git runtime installation', () => {
     expect(notes[0]).toContain('「安装 Git」')
   })
 
-  it('refuses to install Git outside Windows', async () => {
-    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-mac-git-runtime-'))
+  it('refuses to install Git outside Windows and macOS', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-linux-git-runtime-'))
     temporaryDirectories.push(directory)
     const installGitRuntime = gitInstaller()
+    const installMacGitRuntime = vi.fn()
     const service = createSystemService(
       new AppSettingsStore(path.join(directory, 'settings.json'), directory),
-      { platform: 'darwin', findExecutable: async () => null, installGitRuntime },
+      { platform: 'linux', findExecutable: async () => null, installGitRuntime, installMacGitRuntime },
     )
 
     await expect(service.installGitRuntime({ isDestroyed: () => false, send: vi.fn() }))
       .rejects.toThrow('仅支持 Windows')
+    expect(installGitRuntime).not.toHaveBeenCalled()
+    expect(installMacGitRuntime).not.toHaveBeenCalled()
+  })
+
+  it('hands macOS to the Apple installer path and shares one wait between double clicks', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-mac-git-runtime-'))
+    temporaryDirectories.push(directory)
+    const installGitRuntime = gitInstaller()
+    let finish: (value: Awaited<ReturnType<typeof installMacGitRuntimeType>>) => void = () => undefined
+    const installMacGitRuntime = vi.fn(() => new Promise<Awaited<ReturnType<typeof installMacGitRuntimeType>>>((resolve) => { finish = resolve }))
+    const service = createSystemService(
+      new AppSettingsStore(path.join(directory, 'settings.json'), directory),
+      { platform: 'darwin', findExecutable: async () => null, installGitRuntime, installMacGitRuntime },
+    )
+    const target = { isDestroyed: () => false, send: vi.fn() }
+
+    const first = service.installGitRuntime(target)
+    const second = service.installGitRuntime(target)
+    finish({ installed: false, action: 'cancelled', source: null, version: null, architecture: 'arm64', pathRefreshRequired: false, message: '没有装 Git。' })
+    await expect(first).resolves.toMatchObject({ installed: false, action: 'cancelled' })
+    await expect(second).resolves.toMatchObject({ installed: false, action: 'cancelled' })
+    expect(installMacGitRuntime).toHaveBeenCalledTimes(1)
     expect(installGitRuntime).not.toHaveBeenCalled()
   })
 })

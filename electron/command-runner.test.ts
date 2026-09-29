@@ -336,6 +336,8 @@ describe('secure command runner', () => {
       `${os.homedir()}/Library/pnpm`,
       '/opt/homebrew/bin',
       '/custom/inherited',
+      // The app-downloaded Node.js comes last so any runtime the user installed wins.
+      `${os.homedir()}/Library/Application Support/XingMangAI/Runtime/node/bin`,
     ])
   })
 

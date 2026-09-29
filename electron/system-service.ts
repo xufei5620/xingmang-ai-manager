@@ -118,6 +118,7 @@ import {
   type NodeRuntimeInstallResult,
   type WindowsRestartStatus,
 } from './node-runtime'
+import { installDarwinNodeRuntime } from './macos-node-runtime'
 import {
   inspectInstalledPythonRuntime,
   installPythonRuntime as installPythonRuntime312,
@@ -188,7 +189,16 @@ import {
   verifyDarwinGrokUninstallPlan,
 } from './macos-grok'
 import { inspectMacosCodexApp, type MacosCodexAppInfo } from './macos-codex-app'
-import { isCommandLineToolsShimBacked, isMacOsCommandLineToolsShim } from './macos-command-line-tools'
+import {
+  inspectCommandLineToolsShim,
+  isCommandLineToolsShimBacked,
+  isMacOsCommandLineToolsShim,
+} from './macos-command-line-tools'
+import {
+  installMacGitRuntime,
+  requestMacCommandLineToolsInstall,
+  waitForMacCommandLineTools,
+} from './macos-git-install'
 import { uninstallVerifiedNativeCliFiles } from './native-cli-uninstall'
 import {
   buildClaudeRetainedVersionFilesCommand,
@@ -2001,7 +2011,7 @@ function safeVersionCheckError(error: unknown, operation = 'npm latest'): string
  * 只留一句中文说明，首页运行环境那行的「安装 Git」按钮照旧在，客户想重试点它就行。
  */
 export async function installGitAlongsideClaude(
-  install: () => Promise<{ action: 'installed' | 'unchanged' }>,
+  install: () => Promise<{ action: GitRuntimeInstallResult['action'] }>,
   note: (message: string) => void,
 ): Promise<void> {
   try {
@@ -2103,6 +2113,8 @@ export interface SystemServiceOptions {
   inspectWindowsRestartRequired?: typeof inspectWindowsRestartRequired
   installNodeRuntime?: typeof installNodeRuntimeLts
   installGitRuntime?: typeof installGitForWindows
+  /** Test seam: the macOS path would otherwise run the real xcode-select --install. */
+  installMacGitRuntime?: typeof installMacGitRuntime
   /** Test seam for Windows-only operations exercised on non-Windows CI runners. */
   resolveWindowsMachinePaths?: typeof resolveWindowsMachinePaths
   /** Test seam so scanSystem never talks to chatgpt.com under vitest. */
@@ -2277,8 +2289,11 @@ export function createSystemService(
   const installPythonRuntimeForService = serviceOptions.installPythonRuntime ?? installPythonRuntime312
   const inspectInstalledPythonRuntimeForService = serviceOptions.inspectInstalledPythonRuntime ?? inspectInstalledPythonRuntime
   const inspectWindowsRestartRequiredForService = serviceOptions.inspectWindowsRestartRequired ?? inspectWindowsRestartRequired
-  const installNodeRuntimeForService = serviceOptions.installNodeRuntime ?? installNodeRuntimeLts
+  // macOS 上不跑 Windows 那套 winget / MSI：把官方压缩包解进本软件自己的文件夹（第十六批 2）。
+  const installNodeRuntimeForService = serviceOptions.installNodeRuntime
+    ?? (platform === 'darwin' ? installDarwinNodeRuntime : installNodeRuntimeLts)
   const installGitRuntimeForService = serviceOptions.installGitRuntime ?? installGitForWindows
+  const installMacGitRuntimeWith = serviceOptions.installMacGitRuntime ?? installMacGitRuntime
   // 安装下载曾经完全无视机器上的代理：产物下载走 Node 自带网络栈、npm 子进程
   // 没有任何代理变量，于是开着加速也一样直连。这两个注入点把下载接回系统代理。
   const downloadFetch = serviceOptions.downloadFetch ?? fetch
@@ -2297,6 +2312,8 @@ export function createSystemService(
     onWingetUnavailable: (reason) => runtimeLog?.log('warn', 'install', 'external-client.winget-unavailable', '桌面客户端无法一键安装：系统 winget 不可用', { reason }),
   })
   let nodeRuntimeInstalling = false
+  // 苹果的安装窗口一次只该弹一个：连点两下「安装 Git」拿到的是同一次等待。
+  let macGitInstall: Promise<GitRuntimeInstallResult> | null = null
   let pythonRuntimeInstalling = false
   const npmLatestCache = new Map<string, { expiresAt: number; value: LatestVersionProbe }>()
   // 失效时递增，让失效前发起的在途查询放弃回写过期结果
@@ -3200,7 +3217,7 @@ export function createSystemService(
     target: RendererMessageTarget,
     onProgress?: (progress: GitRuntimeInstallProgress) => void,
   ): Promise<GitRuntimeInstallResult> {
-    if (platform !== 'win32') throw new Error('Git 自动安装当前仅支持 Windows')
+    if (platform !== 'win32') throw new Error('Git 自动安装当前仅支持 Windows 和 macOS')
     const git = buildToolStatusFromSettled((await Promise.allSettled([inspectGit()]))[0])
     if (git.detectionFailed) throw new Error(git.detectionError ?? 'Git 检测失败，请重新检测后再试')
     const architecture = process.arch === 'arm64' ? 'arm64' : 'x64'
@@ -3239,10 +3256,34 @@ export function createSystemService(
     })
   }
 
+  /**
+   * macOS 上的 Git 交给苹果自己的安装窗口（第十六批 2）。只有「弹窗口」这一下进安装队列；
+   * 之后客户在苹果窗口里下载安装可能要十几分钟，这段等待不能占着队列，否则别的工具
+   * 全都装不了。
+   */
+  function installMacGitRuntimeForService(target: RendererMessageTarget): Promise<GitRuntimeInstallResult> {
+    macGitInstall ??= installMacGitRuntimeWith({
+      inspectInstalled: async () => {
+        const git = await inspectGit()
+        return git.installed ? { version: git.version } : null
+      },
+      inspectShim: () => inspectCommandLineToolsShim('/usr/bin/git'),
+      request: () => installationQueue.enqueue('runtime:git', () => requestMacCommandLineToolsInstall()),
+      wait: () => waitForMacCommandLineTools(),
+      onProgress: (progress) => {
+        if (!target.isDestroyed()) target.send('runtime:git-install-progress', progress)
+      },
+    }, process.arch === 'arm64' ? 'arm64' : 'x64').finally(() => {
+      macGitInstall = null
+    })
+    return macGitInstall
+  }
+
   function installGitRuntime(
     target: RendererMessageTarget,
     onProgress?: (progress: GitRuntimeInstallProgress) => void,
   ): Promise<GitRuntimeInstallResult> {
+    if (platform === 'darwin') return installMacGitRuntimeForService(target)
     return installationQueue.enqueue('runtime:git',
       () => withDownloadAcceleration(null, () => installGitRuntimeOperation(target, onProgress)))
   }

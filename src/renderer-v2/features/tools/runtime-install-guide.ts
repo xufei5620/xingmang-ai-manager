@@ -6,13 +6,14 @@ type InstallManagement = PlatformCapabilities['nodeRuntimeInstall']
 type PlatformFamily = PlatformCapabilities['platform']
 
 /**
- * Windows 上 Node.js 和 Python 由应用代装（platform-capabilities 的 'managed'），
- * macOS 上是 'external'：本程序从不提权、也不代跑终端命令，只能把装法讲清楚。
- * 原来那颗按钮在 Mac 上直接把人丢到 nodejs.org 的英文首页——客户既不知道该下哪个
- * 包，也不知道装完要回哪儿点一下，卡在这一步就退款了。
+ * Windows 上 Node.js 和 Python 由应用代装（platform-capabilities 的 'managed'）。
+ * macOS 上 Node.js 从第十六批 2 起也由应用准备（官方压缩包解进本软件自己的文件夹，
+ * 不提权），Python 仍是 'external'：本程序从不提权、也不代跑终端命令，只能把装法讲清楚。
+ * 原来那颗按钮在 Mac 上直接把人丢到官网的英文首页——客户既不知道该下哪个包，也不
+ * 知道装完要回哪儿点一下，卡在这一步就退款了。
  *
  * 这份文案是首页运行环境卡与教程页共用的唯一来源，口径与 git-runtime.ts 一致：
- * 只给步骤和可复制的命令，不代装、不代跑、不提权。
+ * 'external' 的平台只给步骤和可复制的命令，不代装、不代跑、不提权。
  */
 
 export type ManagedRuntimeId = 'node' | 'python'
@@ -53,6 +54,20 @@ function whyNeeded(runtime: ManagedRuntimeId): string {
 
 function verifyStep(runtime: ManagedRuntimeId): string {
   return `装完回到首页点右上角「重新检测」，这张卡的 ${runtimeDisplayName(runtime)} 一行显示出版本号就算好了。`
+}
+
+/**
+ * 由应用准备、又不必弹任何系统窗口的那种（macOS 上的 Node.js）：点之前先说一句
+ * 会发生什么，免得客户担心要输开机密码、会不会动到电脑上别的软件。Windows 那边
+ * 要弹管理员授权，另有 elevation-notice.ts 那一句，这里不重复。
+ */
+export function managedRuntimeNotice(
+  runtime: ManagedRuntimeId,
+  platform: PlatformFamily | undefined,
+  management: InstallManagement | undefined,
+): string | null {
+  if (runtime !== 'node' || platform !== 'macos' || management !== 'managed') return null
+  return `这台 Mac 上还没有 Node.js，${whyNeeded('node')}。点「${runtimeButtonLabel('node', 'managed')}」，星芒会下载官方版本放在自己的文件夹里，不用输开机密码，也不影响电脑上别的软件。`
 }
 
 /**

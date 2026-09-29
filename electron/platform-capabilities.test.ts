@@ -31,7 +31,7 @@ describe('platformCapabilitiesFor', () => {
       platform: 'macos',
       architecture: 'arm64',
       isMac: true,
-      nodeRuntimeInstall: 'external',
+      nodeRuntimeInstall: 'managed',
       pythonRuntimeInstall: 'external',
       cliInstall: {
         claude: 'managed',

@@ -854,7 +854,8 @@ describe('diagnostics', () => {
     const python = report.items.find((item) => item.code === 'RUNTIME_PYTHON')
     expect(git).toMatchObject({ state: 'warn', details: { installed: false } })
     expect(git?.summary).toContain('macOS 自带的 git 只是个空壳')
-    expect(git?.summary).toContain('xcode-select --install')
+    expect(git?.summary).toContain('「安装 Git」')
+    expect(git?.summary).not.toContain('终端')
     // PowerShell 那句只在 Windows 成立。
     expect(git?.summary).not.toContain('PowerShell')
     expect(python).toMatchObject({ state: 'warn' })

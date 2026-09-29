@@ -1225,7 +1225,7 @@ describe('Claude Code official marketplace', () => {
 
   it('names a platform-appropriate way to install Git', () => {
     expect(claudeMarketplaceGitMissingMessage('win32')).toContain('「安装 Git」')
-    expect(claudeMarketplaceGitMissingMessage('darwin')).toContain('xcode-select --install')
+    expect(claudeMarketplaceGitMissingMessage('darwin')).toContain('「安装 Git」')
     expect(claudeMarketplaceGitMissingMessage('linux')).toContain('包管理器')
     for (const platform of ['win32', 'darwin', 'linux'] as const) {
       expect(claudeMarketplaceGitMissingMessage(platform)).toContain('Git')
@@ -1457,7 +1457,7 @@ describe('official marketplace as a standalone action', () => {
 
     const message = claudeMarketplaceGitMissingMessage('darwin', { commandLineToolsShim: true })
     expect(message).toContain('空壳')
-    expect(message).toContain('xcode-select --install')
+    expect(message).toContain('「安装 Git」')
     await expect(service.ensureMarketplace('claude')).rejects.toThrow(message)
     expect(calls.some((argv) => argv.includes('add'))).toBe(false)
   })

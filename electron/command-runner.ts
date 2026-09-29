@@ -5,7 +5,7 @@ import { StringDecoder } from 'node:string_decoder'
 import { promisify } from 'node:util'
 import { isDarwinForeignWritablePath } from './darwin-path-trust'
 import { darwinCommandPathCandidates } from './macos-platform'
-import { managedNativeProviderRoot, managedNpmBinDirectory } from './managed-cli-paths'
+import { managedNativeProviderRoot, managedNodeRuntimeBinDirectory, managedNpmBinDirectory } from './managed-cli-paths'
 import { isRegisteredTrustedManagedWindowsPath } from './managed-path-trust'
 import { redactSecretPatterns } from './redaction-patterns'
 import {
@@ -374,15 +374,19 @@ export function trustedCommandEnvironment(
     // support: any world-writable or foreign-owned entry survived into it.
     const inheritedPath = baseEnv.PATH ?? baseEnv.Path ?? baseEnv.path ?? ''
     let managedBin: string | null = null
+    let managedNodeBin: string | null = null
     try {
       managedBin = managedNpmBinDirectory(baseEnv, 'darwin')
+      managedNodeBin = managedNodeRuntimeBinDirectory(baseEnv, 'darwin')
     } catch {
       // No usable HOME. The fixed system directories below still give a working PATH.
     }
     const machineEntries = [managedBin, '/usr/bin', '/bin', '/usr/sbin', '/sbin']
     const trustedEntries: string[] = []
     const seenEntries = new Set<string>()
-    for (const candidate of [...machineEntries, ...inheritedPath.split(path.posix.delimiter)]) {
+    // The app-downloaded Node.js goes last, after whatever the caller inherited, so a
+    // runtime the user installed themselves always wins (same order as commandEnvironment).
+    for (const candidate of [...machineEntries, ...inheritedPath.split(path.posix.delimiter), managedNodeBin]) {
       const entry = candidate?.trim()
       if (!entry || !path.posix.isAbsolute(entry)) continue
       const key = path.posix.normalize(entry)

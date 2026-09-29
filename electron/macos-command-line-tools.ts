@@ -138,6 +138,11 @@ export async function isCommandLineToolsShimBacked(
  * 说给客户听的：他在访达里能看见 /usr/bin/git，却被告知没装，得说清为什么。
  */
 export function commandLineToolsShimNotice(command: 'git' | 'python3'): string {
+  // git 那一句指向首页的「安装 Git」按钮：点了由本软件弹出苹果的安装窗口（第十六批 2），
+  // 不用再叫客户开终端。python3 没有按钮，装法照旧。
+  if (command === 'git') {
+    return 'macOS 自带的 git 只是个空壳，要先装苹果的「命令行开发者工具」才能用：点首页「运行环境」里的「安装 Git」，Mac 会弹出苹果自己的安装窗口'
+  }
   return `macOS 自带的 ${command} 只是个空壳，要先装「命令行开发者工具」才能用：在「终端」里运行 xcode-select --install，或者用 Homebrew 另装一份`
 }
 
