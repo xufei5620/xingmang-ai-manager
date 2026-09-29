@@ -4,6 +4,8 @@ import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { accelerationProxyJournalPath } from './acceleration-development-host'
 import { windowsAppUserModelId } from './login-launch'
+import { providerBaseUrls } from './catalog'
+import { inspectManagedCliHookTargets, inspectProviderConfig, saveProviderConfig } from './config-files'
 import { uninstallCleanupArgument, uninstallClearLoginArgument } from './uninstall-cleanup-entry'
 import {
   chatHistoryDirectoryNames,
@@ -14,9 +16,11 @@ import {
   inspectUninstallAccount,
   loginRecordFiles,
   parseUninstallAccountProbe,
+  removeCliHooksFromConfigs,
   runUninstallCleanup,
   startUninstallCleanup,
   uninstallCleanupExitCodes as codes,
+  uninstallProviderConfigRoots,
 } from './uninstall-cleanup'
 
 const temporaryDirectories: string[] = []
@@ -24,6 +28,11 @@ const temporaryDirectories: string[] = []
 // Without this the real probe starts PowerShell on the Windows shard.
 async function sameAccount(): Promise<'same'> {
   return 'same'
+}
+
+// Keeps the real cleanup away from the tool configs of the machine running the tests.
+function noConfigs(): boolean {
+  return true
 }
 
 function temporaryDataDirectory(): string {
@@ -145,7 +154,7 @@ describe('uninstall cleanup', () => {
       getLoginItemSettings: vi.fn(() => ({ openAtLogin: false })),
       setLoginItemSettings: vi.fn((value: { openAtLogin: boolean }) => { calls.push(`login:${value.openAtLogin}`) }),
     }
-    const exited = new Promise<number>((resolve) => startUninstallCleanup(app as never, resolve, undefined, undefined, sameAccount))
+    const exited = new Promise<number>((resolve) => startUninstallCleanup(app as never, resolve, undefined, undefined, sameAccount, noConfigs))
     await expect(exited).resolves.toBe(0)
     expect(app.getPath).toHaveBeenCalledWith('userData')
     expect(calls).toEqual([`aumid:${windowsAppUserModelId}`, 'login:false'])
@@ -315,7 +324,7 @@ describe('uninstall cleanup', () => {
         getLoginItemSettings: vi.fn(() => ({ openAtLogin: false })),
         setLoginItemSettings: vi.fn(),
       }
-      const exited = new Promise<number>((resolve) => startUninstallCleanup(app as never, resolve, undefined, argv, sameAccount))
+      const exited = new Promise<number>((resolve) => startUninstallCleanup(app as never, resolve, undefined, argv, sameAccount, noConfigs))
       await expect(exited).resolves.toBe(0)
       expect(fs.existsSync(path.join(dataDirectory, 'account-session.dat'))).toBe(remains)
       expect(fs.existsSync(path.join(dataDirectory, 'chat-history'))).toBe(remains)
@@ -409,5 +418,63 @@ describe('uninstall cleanup', () => {
     await expect(exited).resolves.toBe(codes.otherAccount)
     expect(app.setLoginItemSettings).not.toHaveBeenCalled()
     expect(fs.existsSync(path.join(dataDirectory, 'account-session.dat'))).toBe(true)
+  })
+})
+
+describe('taking our CLI hooks back on uninstall', () => {
+  const cliHook = {
+    nodeExecutable: '/managed/node/bin/node',
+    scriptPath: '/opt/app/resources/bundled-catalog/cli-hooks/xingmang-hook.cjs',
+    eventsDirectory: '/home/me/.config/xingmang-ai-manager/cli-events',
+    platform: 'linux' as const,
+  }
+
+  it('removes our hooks from every tool config and keeps the keys', () => {
+    const roots = uninstallProviderConfigRoots(temporaryDataDirectory())
+    saveProviderConfig('claude', 'sk-relay', 'claude-opus-4-6', 'reset', roots, {}, providerBaseUrls,
+      '"/managed/node/bin/node" "/opt/app/resources/bundled-catalog/cli-status-line/xingmang-statusline.cjs"', undefined, cliHook)
+    saveProviderConfig('gemini', 'sk-relay', 'gemini-3.5-flash', 'reset', roots, {}, providerBaseUrls, undefined, undefined, cliHook)
+    expect(inspectManagedCliHookTargets('claude', roots)).not.toEqual([])
+    expect(removeCliHooksFromConfigs(roots)).toBe(true)
+    for (const provider of ['claude', 'gemini', 'codex', 'grok'] as const) expect(inspectManagedCliHookTargets(provider, roots)).toEqual([])
+    expect(inspectProviderConfig('claude', roots).apiKey).toBe('sk-relay')
+    expect(inspectProviderConfig('gemini', roots).apiKey).toBe('sk-relay')
+  })
+
+  it('ignores CODEX_HOME, which a process without administrator rights can set', () => {
+    const home = temporaryDataDirectory()
+    expect(uninstallProviderConfigRoots(home)).toEqual({ userHome: path.resolve(home), codexHome: path.join(path.resolve(home), '.codex') })
+  })
+
+  it('keeps going after one tool fails and reports it', () => {
+    const report = vi.fn()
+    const tried: string[] = []
+    const removed = removeCliHooksFromConfigs(uninstallProviderConfigRoots(temporaryDataDirectory()), report, (provider) => {
+      tried.push(provider)
+      if (provider === 'gemini') throw new Error('配置路径越过 Provider 根目录')
+    })
+    expect(removed).toBe(false)
+    expect([...tried].sort()).toEqual(['claude', 'codex', 'gemini', 'grok'])
+    expect(report).toHaveBeenCalledWith(expect.stringContaining('cli hooks (gemini)'))
+  })
+
+  it('records a failed hook removal without stopping the rest of the cleanup', async () => {
+    const removeLoginItem = vi.fn(() => true)
+    await expect(runUninstallCleanup({
+      dataDirectory: temporaryDataDirectory(), recoverProxy: async () => undefined, removeLoginItem, removeCliHooks: () => false,
+    })).resolves.toBe(codes.cliHooksRemain)
+    await expect(runUninstallCleanup({
+      dataDirectory: temporaryDataDirectory(), recoverProxy: async () => undefined, removeLoginItem, removeCliHooks: () => { throw new Error('x') },
+    })).resolves.toBe(codes.cliHooksRemain)
+    expect(removeLoginItem).toHaveBeenCalledTimes(2)
+  })
+
+  it('touches no tool config when another account runs the uninstaller', async () => {
+    const removeCliHooks = vi.fn(() => true)
+    await expect(runUninstallCleanup({
+      dataDirectory: temporaryDataDirectory(), inspectAccount: async () => 'other', recoverProxy: async () => undefined,
+      removeLoginItem: () => true, removeCliHooks,
+    })).resolves.toBe(codes.otherAccount)
+    expect(removeCliHooks).not.toHaveBeenCalled()
   })
 })

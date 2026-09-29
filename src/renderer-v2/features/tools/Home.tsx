@@ -5,7 +5,7 @@ import { presentExternalClients } from './external-model'
 import { useSharedAccountBalance } from '../app/balance-context'
 import { balanceStatusText } from '../shell/balance-status'
 import { BrandIcon, Button, Card, Dialog, Empty, ListRow, Menu, PageHead, Pill, Progress, ToolRow, useToast } from '../../ui'
-import { accountSwitchTarget, balanceTier, codexNeedsRepair, readyOnceRepaired, subscriptionWarning, canUninstallTool, ccSwitchLeftoverFor, foreignKeyKind, switchAccountLabel, configDirectoryMenuItem, externalInstallHint, greeting, isExternallyManagedInstall, needsManualInstall, ownershipAwaitingAccount, presentTools, providerFor, recommendedVersionVerb, revertVersion, rollbackVersion, toolUpdateOffer, updateButtonHint, versionSubtitle, type ToolboxSnapshot, type ToolId, type ToolPresentation } from './model'
+import { accountSwitchTarget, balanceTier, cliHooksNeedRepair, codexNeedsRepair, readyOnceRepaired, subscriptionWarning, canUninstallTool, ccSwitchLeftoverFor, foreignKeyKind, switchAccountLabel, configDirectoryMenuItem, externalInstallHint, greeting, isExternallyManagedInstall, needsManualInstall, ownershipAwaitingAccount, presentTools, providerFor, recommendedVersionVerb, revertVersion, rollbackVersion, toolUpdateOffer, updateButtonHint, versionSubtitle, type ToolboxSnapshot, type ToolId, type ToolPresentation } from './model'
 import type { ToolboxPartitionFailure, ToolsApi } from './api'
 import type { ToolJob } from './useToolbox'
 import type { AccountBootstrapProgress, AccountBootstrapResult } from './account-bootstrap'
@@ -72,6 +72,8 @@ export interface HomeProps {
    * 备份、写入、自检、失败回滚都由主进程一次做完，这里只负责把人送过去。
    */
   onSwitchAccount?(tool: ToolId, target: AccountSourceTarget): void
+  /** 提醒设置指向旧位置时改成这次的路径（先备份再改再自检）；缺省 = 不给这颗按钮（旧行为）。 */
+  onRepairHooks?(tool: ToolId): void
   /** 在资源管理器 / 访达里打开这个工具的配置文件夹；缺省 = 不给这个菜单项（旧行为）。 */
   onOpenConfigDirectory?(tool: ToolId): void
   onConfigureExternal(tool: ExternalToolId): void
@@ -128,6 +130,13 @@ const ccSwitchDetails: Record<'proxy' | 'provider', string> = {
  * 怎样，旁边「修好它」走和「改用当前账号」同一条路（先备份、再写、再自检）。
  */
 const codexShadowedDetail = '这份配置里有一处 Codex 认不出，打开会连不上'
+
+/**
+ * 本软件写进工具里的提醒设置（做完、出错时弹通知，干活时不让电脑睡）指向了旧位置：
+ * 卸载后换了文件夹重装、挪了软件、换装了 Node.js 都会这样。工具照样能用，只是每一轮
+ * 都多报一行错。「修好它」只改这几行，先备份。
+ */
+const cliHooksStaleDetail = '工具里的提醒设置指向了旧位置，每次都会多报一行错'
 
 const foreignKeyDetails = {
   otherSite: '在这里打不开，改用你的账号就能用',
@@ -240,7 +249,8 @@ export function Home(props: HomeProps) {
     const installJob = jobs[tool.id]
     const launchJob = jobs[`launch:${tool.id}`]
     const switchJob = jobs[`switch:${tool.id}`]
-    const job = launchJob ?? switchJob ?? installJob
+    const repairJob = jobs[`repair-hooks:${tool.id}`]
+    const job = launchJob ?? switchJob ?? repairJob ?? installJob
     // 配置那一块没读到时，连接状态是未知而不是「还没配 Key」，
     // 否则用户会以为自己的配置丢了。工具本身的安装、卸载不受影响。
     const configUnavailable = !tool.error && tool.status.installed
@@ -257,13 +267,15 @@ export function Home(props: HomeProps) {
     // 修完就能用的，「打开」照旧给：点下去先修再打开（App 的 launch），不让人先去配置里绕一圈。
     const repairLaunch = shadowed && snapshot !== null && readyOnceRepaired(snapshot.config.providers[tool.provider], tool.provider)
     const openable = tool.configured || repairLaunch
+    const hooksStale = snapshot !== null && !ownershipPending && cliHooksNeedRepair(snapshot.config.providers[tool.provider])
     const status = installJob ? 'installing' : tool.error ? 'detectionFailed' : !tool.status.installed ? 'missing'
       : configUnavailable ? 'configUnavailable'
       : ccSwitch ? 'ccSwitch'
       : shadowed ? 'codexShadowed'
       : tool.source === 'changed' && !ownershipPending ? 'configChanged'
       : foreignKey === 'otherSite' ? 'otherSiteKey' : foreignKey === 'otherAccount' ? 'otherAccountKey'
-      : tool.source === 'unknown' && !ownershipPending ? 'unknownSource' : tool.source === 'official' ? 'official'
+      : tool.source === 'unknown' && !ownershipPending ? 'unknownSource'
+      : hooksStale ? 'cliHooksStale' : tool.source === 'official' ? 'official'
         : bootstrapBusy && !tool.configured ? 'configuring'
         : tool.configured ? 'ready' : notEnabled ? 'notEnabled' : 'unconfigured'
     // 「打开」以前每次都要重新选一遍目录。会话记录里本来就存着用过的目录，
@@ -281,7 +293,7 @@ export function Home(props: HomeProps) {
     const elevationHint = tool.id === 'codexDesktop' && !tool.status.installed
       ? elevatedInstallShortNotice('codexDesktop', snapshot?.platform.platform, snapshot?.platform.codexDesktop.install)
       : null
-    const primaryLabel = launchJob ? '打开中' : switchJob ? '切换中' : installJob ? '安装中' : configUnavailable ? '重新配置'
+    const primaryLabel = launchJob ? '打开中' : switchJob ? '切换中' : repairJob ? '修复中' : installJob ? '安装中' : configUnavailable ? '重新配置'
       : bootstrapBusy && !tool.configured ? '配置中' : tool.error ? '重新检测' : !tool.status.installed ? manualInstall ? '安装指南' : '安装'
       : openable ? lastWorkspace ? `打开 ${workspaceButtonLabel(lastWorkspace.name)}` : '打开' : '连接账号'
     const primary = () => configUnavailable ? props.onConfigure(tool.id) : tool.error ? props.onScan() : !tool.status.installed ? props.onInstall(tool.id)
@@ -306,7 +318,7 @@ export function Home(props: HomeProps) {
       icon={lastWorkspace ? undefined : tool.status.installed && !bootstrapBusy ? ArrowUpRight : undefined}
       onClick={primary} testId={`tool-${tool.id}-primary`}>{primaryLabel}</Button>
     return <ToolRow key={tool.id} tool={tool.id} status={status}
-      detail={job?.label ?? tool.error ?? (status === 'configChanged' ? configChangedDetail : status === 'codexShadowed' ? codexShadowedDetail : status === 'ccSwitch' && ccSwitch ? ccSwitchDetails[ccSwitch] : foreignKey && status !== 'ccSwitch' ? foreignKeyDetails[foreignKey] : elevationHint ?? undefined)}
+      detail={job?.label ?? tool.error ?? (status === 'configChanged' ? configChangedDetail : status === 'codexShadowed' ? codexShadowedDetail : status === 'cliHooksStale' ? cliHooksStaleDetail : status === 'ccSwitch' && ccSwitch ? ccSwitchDetails[ccSwitch] : foreignKey && status !== 'ccSwitch' ? foreignKeyDetails[foreignKey] : elevationHint ?? undefined)}
       version={tool.status.installed ? versionSubtitle(tool) ?? '版本暂未识别' : undefined}
       model={tool.status.installed ? tool.source === 'official' ? '官方账号' : tool.model || undefined : undefined}
       progress={job?.percent}
@@ -316,6 +328,8 @@ export function Home(props: HomeProps) {
           ? <Button variant="ghost" size="sm" icon={KeyRound} onClick={() => props.onSwitchAccount?.(tool.id, 'account')} testId={`tool-${tool.id}-replace-cc-switch`}>{switchAccountLabel(account?.username)}</Button>
         : status === 'codexShadowed' && props.onSwitchAccount
           ? <Button variant="ghost" size="sm" icon={KeyRound} title="改之前会先备份原来的设置" onClick={() => props.onSwitchAccount?.(tool.id, 'account')} testId={`tool-${tool.id}-repair-codex`}>修好它</Button>
+        : status === 'cliHooksStale' && props.onRepairHooks
+          ? <Button variant="ghost" size="sm" icon={KeyRound} title="改之前会先备份原来的设置" onClick={() => props.onRepairHooks?.(tool.id)} testId={`tool-${tool.id}-repair-hooks`}>修好它</Button>
         : (status === 'otherSiteKey' || status === 'otherAccountKey') && props.onSwitchAccount
           ? <Button variant="ghost" size="sm" icon={KeyRound} onClick={() => props.onSwitchAccount?.(tool.id, 'account')} testId={`tool-${tool.id}-use-account`}>{switchAccountLabel(account?.username)}</Button>
         : status === 'configChanged' && props.onRewriteKey

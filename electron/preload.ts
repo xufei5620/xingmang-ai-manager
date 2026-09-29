@@ -26,6 +26,7 @@ const ipcInvokeChannels = {
   launchExternalClient: 'external-clients:launch',
   switchToOfficialAccount: 'config:switch-to-official-account',
   switchAccountSource: 'config:switch-account-source',
+  repairCliHooks: 'config:repair-cli-hooks',
   inspectRunningTools: 'tools:inspect-running',
   checkToolModels: 'tools:check-models',
   listModels: 'models:list',
@@ -262,6 +263,7 @@ const xingmangApi: XingmangApi = {
     ? invoke('switchToOfficialAccount', provider)
     : invoke('switchToOfficialAccount', provider, mode),
   switchAccountSource: (provider, target) => invoke('switchAccountSource', provider, target),
+  repairCliHooks: (provider) => invoke('repairCliHooks', provider),
   inspectRunningTools: (providers) => invoke('inspectRunningTools', providers),
   checkToolModels: (provider) => invoke('checkToolModels', provider),
   listModels: (apiKey) => invoke('listModels', apiKey),

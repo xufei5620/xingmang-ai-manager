@@ -3221,6 +3221,29 @@ describe('Darwin CLI launch planning', () => {
   })
 })
 
+describe('reminder settings pointing at an old location', () => {
+  it('flags a Codex notify whose script is gone and takes it back when no hook can be written here', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-stale-hooks-'))
+    temporaryDirectories.push(directory)
+    const codexHome = path.join(directory, '.codex')
+    fs.mkdirSync(codexHome)
+    const gone = path.join(directory, 'old install', 'bundled-catalog', 'cli-hooks', 'xingmang-hook.cjs')
+    fs.writeFileSync(path.join(codexHome, 'config.toml'), `model = "gpt-5.5"\nnotify = [${JSON.stringify(process.execPath)}, ${JSON.stringify(gone)}, "codex", ${JSON.stringify(directory)}]\n`, 'utf8')
+    const service = createService({ providerRoots: { userHome: directory, codexHome } })
+
+    expect(service.getConfig(false).providers.codex.cliHooksStale).toBe(true)
+    expect(service.getConfig(false).providers.claude.cliHooksStale).toBe(false)
+    expect(service.getConfig(true).providers.codex.cliHooksStale).toBe(false)
+
+    const result = await service.repairCliHooks!('codex')
+    expect(result.backups).toHaveLength(1)
+    const config = fs.readFileSync(path.join(codexHome, 'config.toml'), 'utf8')
+    expect(config).not.toContain('notify')
+    expect(config).toContain('gpt-5.5')
+    expect(service.getConfig(false).providers.codex.cliHooksStale).toBe(false)
+  })
+})
+
 describe('Darwin Codex Desktop integration', () => {
   it('detects the installed desktop independently of missing or manually created Codex configuration files', async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-darwin-no-config-'))

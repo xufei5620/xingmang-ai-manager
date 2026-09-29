@@ -191,6 +191,8 @@ export function createToolsApi(bridge: XingmangApi) {
     official: (tool: ToolId, mode: 'merge' | 'reset' = 'merge') => bridge.switchToOfficialAccount(providerFor(tool), mode),
     // 首页的一键切换：备份、写入、自检、失败回滚都在主进程一次做完。
     switchSource: (tool: ToolId, target: AccountSourceTarget) => bridge.switchAccountSource(providerFor(tool), target),
+    // 提醒设置指向旧位置时的「修好它」：备份、只改那几行、再查一遍都在主进程。
+    repairHooks: (tool: ToolId) => bridge.repairCliHooks(providerFor(tool)),
     /** 打开前的模型核对（第十二批候选 5）。核对本身出错也绝不挡住打开，一律当没核。 */
     async checkModels(tool: ToolId): Promise<ToolModelCheck> {
       try { return await bridge.checkToolModels(providerFor(tool)) }
