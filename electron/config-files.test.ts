@@ -44,9 +44,16 @@ import {
   toNativeConfigSummary,
 } from './config-files'
 import { providerBaseUrls, type ProviderId } from './catalog'
+import type { CliHookInvocation } from './cli-hooks'
 
 const temporaryHomes: string[] = []
 const statusLineCommand = '"/managed/node/bin/node" "/opt/app/resources/bundled-catalog/cli-status-line/xingmang-statusline.cjs"'
+const cliHook: CliHookInvocation = {
+  nodeExecutable: '/managed/node/bin/node',
+  scriptPath: '/opt/app/resources/bundled-catalog/cli-hooks/xingmang-hook.cjs',
+  eventsDirectory: '/home/me/.config/xingmang-ai-manager/cli-events',
+  platform: 'linux',
+}
 const testModels: Record<ProviderId, string> = {
   claude: 'claude-opus-4-6',
   codex: 'gpt-5.5',
@@ -654,6 +661,56 @@ describe('native CLI configuration files', () => {
       'claude', 'sk-relay', testModels.claude, 'reset', providerRoots(home), {}, providerBaseUrls,
       `${statusLineCommand}\nrm -rf /`,
     )).toThrow('状态行命令不能包含换行符')
+  })
+
+  it('writes the terminal notification hooks next to the user hooks and takes only ours back on the official account', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const [settingsPath] = providerConfigPaths('claude', roots)
+    const own = { hooks: [{ type: 'command', command: 'say done' }] }
+    fs.mkdirSync(path.dirname(settingsPath), { recursive: true })
+    fs.writeFileSync(settingsPath, `${JSON.stringify({ hooks: { Stop: [own] } }, null, 2)}\n`, 'utf8')
+
+    saveProviderConfig('claude', 'sk-relay', testModels.claude, 'merge', roots, {}, providerBaseUrls, undefined, undefined, cliHook)
+    saveProviderConfig('claude', 'sk-relay', testModels.claude, 'merge', roots, {}, providerBaseUrls, undefined, undefined, cliHook)
+
+    const merged = JSON.parse(fs.readFileSync(settingsPath, 'utf8')) as { hooks: Record<string, unknown[]> }
+    expect(merged.hooks.Stop).toEqual([own, { hooks: [expect.objectContaining({ command: cliHook.nodeExecutable, args: [cliHook.scriptPath, 'claude', cliHook.eventsDirectory] })] }])
+    expect(merged.hooks.StopFailure).toHaveLength(1)
+
+    switchProviderToOfficialAccount('claude', roots, {}, providerBaseUrls)
+    const official = JSON.parse(fs.readFileSync(settingsPath, 'utf8')) as Record<string, unknown>
+    expect(official.hooks).toEqual({ Stop: [own] })
+  })
+
+  it('writes the terminal notification hooks into fresh and merged Gemini settings and removes them for the official account', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const [settingsPath] = providerConfigPaths('gemini', roots)
+
+    saveProviderConfig('gemini', 'sk-relay', testModels.gemini, 'reset', roots, {}, providerBaseUrls, undefined, undefined, cliHook)
+    const fresh = JSON.parse(fs.readFileSync(settingsPath, 'utf8')) as { hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>> }
+    expect(Object.keys(fresh.hooks).sort()).toEqual(['AfterAgent', 'BeforeAgent', 'Notification'])
+    expect(fresh.hooks.AfterAgent[0].hooks[0].command).toContain('xingmang-hook.cjs')
+
+    saveProviderConfig('gemini', 'sk-relay', testModels.gemini, 'merge', roots, {}, providerBaseUrls, undefined, undefined, cliHook)
+    const merged = JSON.parse(fs.readFileSync(settingsPath, 'utf8')) as { hooks: Record<string, unknown[]> }
+    expect(merged.hooks.AfterAgent).toHaveLength(1)
+
+    switchProviderToOfficialAccount('gemini', roots, {}, providerBaseUrls)
+    const official = JSON.parse(fs.readFileSync(settingsPath, 'utf8')) as Record<string, unknown>
+    expect('hooks' in official).toBe(false)
+  })
+
+  it('writes no hooks at all when none are given', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    saveProviderConfig('claude', 'sk-relay', testModels.claude, 'reset', roots, {}, providerBaseUrls)
+    saveProviderConfig('gemini', 'sk-relay', testModels.gemini, 'reset', roots, {}, providerBaseUrls)
+    for (const provider of ['claude', 'gemini'] as const) {
+      const settings = JSON.parse(fs.readFileSync(providerConfigPaths(provider, roots)[0], 'utf8')) as Record<string, unknown>
+      expect('hooks' in settings).toBe(false)
+    }
   })
 
   it('keeps the Claude retention period and language after switching back to the official account', () => {

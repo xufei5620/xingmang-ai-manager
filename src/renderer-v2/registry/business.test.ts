@@ -23,6 +23,8 @@ describe('renderer-v2 notification settings registry', () => {
       cliUpdate: true,
       announcement: true,
       acceleration: true,
+      cliTrouble: true,
+      cliTurn: true,
     };
     expect([...notificationOptions.map(option => option.value)].sort())
       .toEqual(Object.keys(expected).sort());

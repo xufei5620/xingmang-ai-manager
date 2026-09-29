@@ -2,15 +2,18 @@ import { EventEmitter } from 'node:events'
 import { describe, expect, it, vi } from 'vitest'
 import {
   buildActivityNotificationMessage,
+  buildTerminalNotificationMessage,
   createPlatformNotifications,
   hostNotificationMessage,
   resolveNotificationTarget,
+  resolveTerminalNotificationTarget,
   type PlatformNotificationRuntime,
+  type TerminalFailureReason,
 } from './notifications'
 
 function setup() {
   let enabled = true
-  const preferences = { install: true, balance: true, task: true, cliUpdate: true, announcement: true, acceleration: true }
+  const preferences = { install: true, balance: true, task: true, cliUpdate: true, announcement: true, acceleration: true, cliTrouble: true, cliTurn: true }
   const notifications: Array<
     EventEmitter & {
       show: ReturnType<typeof vi.fn>
@@ -301,7 +304,7 @@ describe('chat notifications and click destinations', () => {
     const controller = createPlatformNotifications(
       {
         readEnabled: () => true,
-        readPreferences: () => ({ install: true, balance: true, task: true, cliUpdate: true, announcement: true, acceleration: true }),
+        readPreferences: () => ({ install: true, balance: true, task: true, cliUpdate: true, announcement: true, acceleration: true, cliTrouble: true, cliTurn: true }),
         focusMainWindow,
         onError,
       },
@@ -318,5 +321,44 @@ describe('chat notifications and click destinations', () => {
     notices[0].emit('click')
     expect(focusMainWindow).toHaveBeenCalledOnce()
     expect(onError).not.toHaveBeenCalled()
+  })
+})
+
+describe('terminal tool reminders', () => {
+  const reasons: TerminalFailureReason[] = ['billing', 'auth', 'busy', 'model', 'service', 'unknown']
+
+  it('names the tool and gives a fixed reason without the word balance or site names', () => {
+    for (const reason of reasons) {
+      const message = buildTerminalNotificationMessage({ tool: 'claude', event: 'failed', reason })
+      expect(message.title).toBe('Claude Code 刚才没回上')
+      expect(message.body).not.toMatch(/余额|solov|Sub2API|API|npm|PATH/)
+    }
+    expect(buildTerminalNotificationMessage({ tool: 'claude', event: 'failed', reason: 'billing' }).body).toContain('当前账号的额度不够了')
+    expect(buildTerminalNotificationMessage({ tool: 'gemini', event: 'waiting' }).title).toBe('Gemini CLI 在等你')
+    expect(buildTerminalNotificationMessage({ tool: 'claude', event: 'finished' }).title).toBe('Claude Code 做完了')
+  })
+
+  it('sends billing trouble to top-up, other trouble to the check page and turn reminders nowhere', () => {
+    expect(resolveTerminalNotificationTarget({ tool: 'claude', event: 'failed', reason: 'billing' })).toBe('topup')
+    for (const reason of reasons.filter((value) => value !== 'billing')) {
+      expect(resolveTerminalNotificationTarget({ tool: 'claude', event: 'failed', reason })).toBe('health')
+    }
+    expect(resolveTerminalNotificationTarget({ tool: 'claude', event: 'waiting' })).toBeNull()
+    expect(resolveTerminalNotificationTarget({ tool: 'gemini', event: 'finished' })).toBeNull()
+  })
+
+  it('follows its own two switches and opens the fixed page on click', () => {
+    const { controller, preferences, notifications, openPage } = setup()
+    expect(controller.notifyTerminal({ tool: 'claude', event: 'failed', reason: 'billing' }, 'a')).toBe('requested')
+    notifications[0].emit('click')
+    expect(openPage).toHaveBeenCalledWith('topup')
+    expect(controller.notifyTerminal({ tool: 'claude', event: 'failed', reason: 'billing' }, 'a')).toBe('duplicate')
+    preferences.cliTrouble = false
+    expect(controller.notifyTerminal({ tool: 'claude', event: 'failed', reason: 'auth' }, 'b')).toBe('disabled')
+    expect(controller.notifyTerminal({ tool: 'claude', event: 'waiting' }, 'c')).toBe('requested')
+    notifications[1].emit('click')
+    expect(openPage).toHaveBeenCalledTimes(1)
+    preferences.cliTurn = false
+    expect(controller.notifyTerminal({ tool: 'claude', event: 'finished' }, 'd')).toBe('disabled')
   })
 })

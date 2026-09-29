@@ -197,4 +197,14 @@ export const notificationOptions = [
     label: '加速提醒',
     description: '免费加速还剩 5 分钟、用完自动断开、加速意外断开，以及软件替你自动连上加速时各提醒一次',
   },
+  {
+    value: 'cliTrouble',
+    label: '终端里没回上',
+    description: '终端里的 Claude Code、Gemini CLI 因为额度、Key 或服务问题没回上时，告诉你原因和怎么办（同一原因半小时内只提醒一次）',
+  },
+  {
+    value: 'cliTurn',
+    label: '终端里的 AI 做完或在等你',
+    description: '终端里的 AI 一轮跑了一分钟以上做完时，或停下来等你确认时提醒你',
+  },
 ] as const

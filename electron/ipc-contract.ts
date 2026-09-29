@@ -404,7 +404,7 @@ export interface AccountKeyCliConfigurationInput {
 export type AccountChangePasswordInput = NewApiChangePasswordInput
 export type AccountChangePasswordResult = NewApiChangePasswordResult
 // home / chat / tasks / announcement 只由系统通知的点击发出（platform/notifications.ts）。
-export type RendererNavigationTarget = 'settings' | 'updates' | 'topup' | 'acceleration' | 'home' | 'chat' | 'tasks' | 'announcement'
+export type RendererNavigationTarget = 'settings' | 'updates' | 'topup' | 'acceleration' | 'home' | 'chat' | 'tasks' | 'announcement' | 'health'
 
 export interface AccountManagedCliConfigurationInput {
   providers: ProviderId[]
