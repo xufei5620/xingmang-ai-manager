@@ -130,6 +130,7 @@
 .auth-guide-result-billing { margin: 9px 0 0; color: var(--text-2); font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
 .auth-guide-first-task { display: grid; gap: 8px; padding: 12px 14px; border: 1px solid var(--line); border-radius: var(--radius-input); }
 .auth-guide-first-task > strong { font-size: 13px; }.auth-guide-first-task p { margin: 0; color: var(--text-2); font-size: 12px; line-height: 1.6; }.auth-guide-first-task > div { display: flex; align-items: center; gap: 10px; }.auth-guide-first-task code { flex: 1; min-width: 0; user-select: text; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text); font-size: 12px; }.auth-guide-first-task .xm-btn { flex: none; }
+.auth-guide-raw { color: var(--text-2); font-size: 12px; }.auth-guide-raw summary { cursor: pointer; }.auth-guide-raw pre, .auth-guide-support-text { margin: 6px 0 0; padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--radius-input); white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; max-height: 200px; overflow: auto; font: 12px/1.65 var(--mono); color: var(--text-2); }
 .auth-guide-ready { display: flex; align-items: center; gap: 12px; padding: 18px 0; font-size: 13px; }.auth-guide-ready > svg { color: var(--ok); }
 .auth-guide-actions { display: flex; align-items: center; gap: 8px; margin-top: 22px; }
 .auth-guide-actions .xm-btn { font-size: 12px; }

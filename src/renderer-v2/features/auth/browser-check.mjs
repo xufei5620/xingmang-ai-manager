@@ -345,6 +345,49 @@ test('an install failure without a Node.js replacement still leaves a way out', 
   } finally { await page.close() }
 })
 
+// 第二十一批 1：引导里认不出原因的失败也留原话、能「复制给客服」，和错误框一个待遇，
+// 并记进帮助框的「最近一次出错」。
+test('an unrecognised install failure keeps the raw text and copies it for support', async () => {
+  const page = await open('scenario=guide&auto=1&switchable=1&oddFail=1')
+  try {
+    await page.evaluate(() => Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async (value) => { window.copiedSupport = value } } }))
+    await page.getByTestId('guide-route-claude').check()
+    await page.getByTestId('guide-next').click()
+    await page.getByTestId('guide-install').click()
+    await page.getByTestId('guide-error').filter({ hasText: 'Claude Code 没装上（没认出是哪一类问题，原话在下面）。点「再试一次」，还不行就点「复制给客服」发给客服。' }).waitFor()
+    const raw = page.getByTestId('guide-error-raw')
+    assert.equal(await raw.getAttribute('open'), '')
+    assert.match(await raw.textContent() ?? '', /给客服看的原话.*E999/)
+    assert.doesNotMatch(await raw.textContent() ?? '', /abcdefghijklmnop/)
+    const failure = JSON.parse(await page.evaluate(() => document.documentElement.dataset.guideFailure ?? '{}'))
+    assert.equal(failure.action, '新手引导 · 安装 Claude Code')
+    await page.getByTestId('guide-copy-support').click()
+    await page.getByTestId('guide-copy-support-status').filter({ hasText: '已复制，发给客服就行' }).waitFor()
+    const copied = await page.evaluate(() => window.copiedSupport)
+    assert.match(copied, /^星芒AI管理工具 · 给客服的信息\n账号 peaker（ID 7）/)
+    assert.match(copied, /做什么：新手引导 · 安装 Claude Code/)
+    assert.match(copied, /原因：没认出是哪一类问题，原话在下面/)
+    assert.match(copied, /原话：npm ERR! code E999/)
+    assert.doesNotMatch(copied, /abcdefghijklmnop/)
+    await page.getByTestId('guide-retry').click()
+    await page.locator('[data-guide-step="connect"]').waitFor()
+    assert.equal(await page.getByTestId('guide-copy-support').count(), 0)
+  } finally { await page.close() }
+})
+
+test('a support copy that cannot reach the clipboard lays the lines out to select', async () => {
+  const page = await open('scenario=guide&auto=1&switchable=1&oddFail=1')
+  try {
+    await page.evaluate(() => Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async () => { throw new Error('denied') } } }))
+    await page.getByTestId('guide-route-claude').check()
+    await page.getByTestId('guide-next').click()
+    await page.getByTestId('guide-install').click()
+    await page.getByTestId('guide-copy-support').click()
+    await page.getByTestId('guide-copy-support-status').filter({ hasText: '没能写进剪贴板，手动选中下面这几行复制就行' }).waitFor()
+    assert.match(await page.getByTestId('guide-copy-support-text').textContent() ?? '', /做什么：新手引导 · 安装 Claude Code/)
+  } finally { await page.close() }
+})
+
 test('an official Codex that has not signed in cannot leave the connect step', async () => {
   const page = await open('scenario=guide&installed=1&official=1&runtime=1&officialLoginRequired=1')
   try {
