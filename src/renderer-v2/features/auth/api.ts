@@ -1,7 +1,7 @@
 import { bridge as getBridge } from '../../bridge'
 import type { AccountLoginInput, AccountRegisterInput, AccountResetPasswordInput, LegalDocumentKind, RememberedAccountLogin, XingmangApi } from '../../../../electron/ipc-contract'
 
-export type AuthBridge = Pick<XingmangApi, 'getAccountStatus' | 'getRememberedAccountLogin' | 'setRememberedAccountLogin' | 'loginAccount' | 'submitTwoFactorCode' | 'registerAccount' | 'sendVerificationCode' | 'sendPasswordResetCode' | 'resetPassword' | 'getLegalDocument' | 'openExternal'>
+export type AuthBridge = Pick<XingmangApi, 'getAccountStatus' | 'getRememberedAccountLogin' | 'setRememberedAccountLogin' | 'loginAccount' | 'submitTwoFactorCode' | 'registerAccount' | 'sendVerificationCode' | 'sendPasswordResetCode' | 'resetPassword' | 'getLegalDocument' | 'openExternal' | 'copyResetPassword'>
 export type AccountSiteId = 'solov' | 'solov-api'
 /** 打开登录框时预先选好的来源和账号，给「重新登录这个账号」用（#480）。 */
 export interface LoginTarget {
@@ -22,7 +22,8 @@ export function createAuthApi(bridge: AuthBridge) {
     reset: (input: AccountResetPasswordInput, siteId: AccountSiteId) => bridge.resetPassword(input, siteId),
     getLegal: (kind: LegalDocumentKind) => bridge.getLegalDocument(kind, 'solov'),
     openExternal: (url: string) => bridge.openExternal(url),
-    copyPassword: async (value: string) => { await navigator.clipboard.writeText(value) },
+    // 走主进程写剪贴板：那边 60 秒后会把它清掉，渲染层的剪贴板接口做不到。
+    copyPassword: (value: string) => bridge.copyResetPassword(value),
   }
 }
 

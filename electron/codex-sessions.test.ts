@@ -437,6 +437,38 @@ describe('CodexSessionsService', () => {
     expect(fs.readFileSync(outputPath, 'utf8')).not.toContain('不完整')
   })
 
+  it.each(['user', 'assistant'] as const)('exports the complete long %s message while bounding its preview', async (role) => {
+    const data = fixture('session-1')
+    const tail = `END_OF_LONG_${role.toUpperCase()}_MESSAGE`
+    const text = `长消息\n${'代码🙂'.repeat(7_000)}\n${tail}`
+    fs.appendFileSync(data.rolloutPath, `${JSON.stringify({
+      type: 'response_item',
+      payload: {
+        type: 'message',
+        role,
+        content: [{ type: role === 'user' ? 'input_text' : 'output_text', text }],
+      },
+    })}\n`, 'utf8')
+    const database = createThreadsDatabase(data.databasePath)
+    insertThread(database, { id: 'session-1', rolloutPath: data.rolloutPath })
+    database.close()
+    const sessions = service(data)
+
+    const detail = await sessions.detail('session-1')
+    const outputPath = path.join(data.root, 'exports', 'long-message.md')
+    const exported = await sessions.exportMarkdown('session-1', outputPath)
+    const markdown = fs.readFileSync(outputPath, 'utf8')
+
+    expect(markdown.includes(text)).toBe(true)
+    expect(markdown).toContain(tail)
+    expect(exported).toMatchObject({ messages: 3, truncated: false })
+    expect(markdown).not.toContain('不完整')
+    expect(detail.messageStats).toMatchObject({ total: 3, invalidLines: 0 })
+    expect(detail.messages.at(-1)?.text.length).toBeLessThanOrEqual(24_002)
+    expect(detail.messages.at(-1)?.text).not.toContain(tail)
+    expect(detail.messagesTruncated).toBe(true)
+  })
+
   it('creates an online SQLite backup before archive and restores the original active path', async () => {
     const data = fixture('session-1')
     const database = createThreadsDatabase(data.databasePath, true)

@@ -4,6 +4,7 @@ import {
   buildAccountInviteLink,
   buildSubscriptionPaymentInput,
   passwordFormDirty,
+  paymentTerminalBody,
   paymentTerminalPresentation,
   resetTopupQuoteForMethod,
   validateTopupAmount,
@@ -93,6 +94,18 @@ describe('v2 business boundaries', () => {
       tone: 'bad',
       title: '支付没有完成',
     })
+  })
+
+  it('tells the user what happens after the payment window closes and where to check', () => {
+    expect(paymentTerminalPresentation('closed', true).body).toContain('星芒还在确认到账')
+    expect(paymentTerminalPresentation('closed').body).toContain('查看我的订单')
+    expect(paymentTerminalPresentation('unconfirmed')).toMatchObject({ tone: 'warn', title: '还没查到这笔订单到账' })
+    expect(paymentTerminalPresentation('unconfirmed').body).toContain('联系客服')
+    expect(paymentTerminalPresentation('failed').body).toContain('查看我的订单')
+    expect(paymentTerminalBody({ status: 'success', tradeNo: 'XM-1' })).toBe('订单 XM-1 已到账，余额已更新。')
+    expect(paymentTerminalBody({ status: 'closed', tradeNo: 'XM-1', confirming: true })).not.toContain('XM-1')
+    expect(paymentTerminalBody({ status: 'unconfirmed', tradeNo: 'XM-1' })).toContain('订单号 XM-1')
+    expect(paymentTerminalBody({ status: 'closed', tradeNo: null })).not.toContain('订单号')
   })
 
   it('validates recharge amounts against the integer IPC contract and channel minimum', () => {

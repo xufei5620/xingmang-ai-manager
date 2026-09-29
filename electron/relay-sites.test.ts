@@ -4,6 +4,7 @@ import {
   defaultRelaySiteId,
   privacyPolicyUrl,
   relayApiProbeBaseUrl,
+  relayDirectHosts,
   relaySiteExternalUrls,
   relaySites,
   resolveRelaySite,
@@ -178,5 +179,20 @@ describe('relay site registry', () => {
         expect(new URL(url).origin).toBe('https://xm.solov.cc')
       }
     })
+  })
+
+  it('lists every host a relay site sends account or CLI traffic to, once each', () => {
+    const hosts = relayDirectHosts()
+    expect(hosts).toEqual(['xm.solov.cc', 'api.solov.cc'])
+    for (const site of relaySites) {
+      for (const url of [...Object.values(site.providerBaseUrls), site.accountBaseUrl, site.websiteUrl, site.keysPageUrl]) {
+        if (url) expect(hosts).toContain(new URL(url).hostname)
+      }
+    }
+  })
+
+  it('skips non-https URLs when listing direct hosts', () => {
+    expect(relayDirectHosts([{ ...relaySites[0], websiteUrl: 'http://plain.example.com', keysPageUrl: 'https://Keys.Example.com/keys' }]))
+      .toEqual(['xm.solov.cc', 'keys.example.com'])
   })
 })

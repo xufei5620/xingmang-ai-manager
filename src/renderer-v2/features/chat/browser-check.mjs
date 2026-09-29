@@ -409,6 +409,38 @@ test('each code block copies only its own text and inline code gets no button', 
   } finally { await page.close() }
 })
 
+test('formulas in replies render as math while money, code and the user message stay as written', async () => {
+  const page = await open('copyFail=1')
+  try {
+    const request = await send(page, 'what is $x^2$')
+    const reply = '面积是 $\\frac{a}{b}$，余额只剩 $5，充 $10。\n\n$$\n\\sum_{i=1}^{n} i\n$$\n\n写错的 $\\frac{a$ 保留。\n\n```\necho $HOME$\n```'
+    await emit(page, { type: 'content', requestId: request.requestId, content: reply })
+    await emit(page, { type: 'complete', requestId: request.requestId })
+    const assistant = page.locator('.chat-message[data-role=assistant]')
+    await assistant.locator('math').first().waitFor()
+    assert.equal(await assistant.locator('.chat-math math').count(), 2)
+    assert.equal(await assistant.locator('.chat-math-block math[display=block]').count(), 1)
+    assert.ok(await assistant.locator('mfrac').count() >= 1)
+    assert.match((await assistant.locator('.chat-bubble').textContent()) ?? '', /余额只剩 \$5，充 \$10/)
+    const broken = assistant.locator('.chat-math-raw')
+    assert.equal((await broken.textContent())?.trim(), '$\\frac{a$')
+    assert.equal(await broken.getAttribute('title'), '这个公式没能显示，保留原文')
+    const size = await assistant.locator('.chat-math-block').evaluate((element) => element.getBoundingClientRect().height)
+    assert.ok(size > 20, `display formula should be laid out as math, got ${size}px`)
+    await assistant.getByTestId('chat-code-copy').click()
+    await page.getByTestId('chat-copy-fallback').waitFor()
+    assert.equal(await page.getByTestId('chat-copy-fallback').getByRole('textbox').inputValue(), 'echo $HOME$')
+    await page.getByLabel('关闭', { exact: true }).click()
+    await page.getByTestId('chat-copy-fallback').waitFor({ state: 'detached' })
+    await assistant.getByRole('button', { name: '复制内容', exact: true }).click()
+    await page.getByTestId('chat-copy-fallback').waitFor()
+    assert.equal(await page.getByTestId('chat-copy-fallback').getByRole('textbox').inputValue(), reply)
+    const user = page.locator('.chat-message[data-role=user]')
+    assert.equal(await user.locator('math').count(), 0)
+    assert.match((await user.textContent()) ?? '', /what is \$x\^2\$/)
+  } finally { await page.close() }
+})
+
 test('code block copy falls back to manual copy when the clipboard is unavailable', async () => {
   const page = await open('copyFail=1')
   try {

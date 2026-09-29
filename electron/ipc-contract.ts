@@ -51,6 +51,7 @@ import type {
   SessionArchiveFilter as CodexSessionArchiveFilter,
 } from './codex-sessions'
 import type {
+  ProviderSessionDeleteResult,
   ProviderSessionDetail,
   ProviderSessionExportResult,
   ProviderSessionListQuery,
@@ -233,6 +234,7 @@ export type MultiProviderSessionSummary = ProviderSessionSummary
 export type MultiProviderSessionPage = ProviderSessionPage
 export type MultiProviderSessionDetail = ProviderSessionDetail
 export type MultiProviderSessionExportResult = ProviderSessionExportResult
+export type MultiProviderSessionDeleteResult = ProviderSessionDeleteResult
 export type ToolStatus = MainToolStatus
 export type CliStatus = MainCliStatus
 export type CliVersionAdvice = MainCliVersionAdvice
@@ -338,8 +340,11 @@ export interface AccountTopupPaymentResult {
   tradeNo: string | null
 }
 export interface AccountPaymentWindowTerminalEvent {
-  status: 'success' | 'expired' | 'failed' | 'closed'
+  /** unconfirmed：窗口关掉后在后台问满 15 分钟仍没有结果。 */
+  status: 'success' | 'expired' | 'failed' | 'closed' | 'unconfirmed'
   tradeNo: string | null
+  /** 只出现在 closed 上：主进程还在后台确认这笔订单，结果会再发一次本事件。缺省 = 不再确认。 */
+  confirming?: boolean
 }
 export type AccountTopupOrdersQuery = NewApiTopupOrdersQuery
 export type AccountTopupOrdersPage = NewApiTopupOrdersPage
@@ -405,8 +410,8 @@ export interface AccountKeyCliConfigurationInput {
 }
 export type AccountChangePasswordInput = NewApiChangePasswordInput
 export type AccountChangePasswordResult = NewApiChangePasswordResult
-// home / chat / tasks / announcement 只由系统通知的点击发出（platform/notifications.ts）。
-export type RendererNavigationTarget = 'settings' | 'updates' | 'topup' | 'acceleration' | 'home' | 'chat' | 'tasks' | 'announcement'
+// home / chat / tasks / announcement / usage 只由系统通知的点击发出（platform/notifications.ts）。
+export type RendererNavigationTarget = 'settings' | 'updates' | 'topup' | 'acceleration' | 'home' | 'chat' | 'tasks' | 'announcement' | 'usage'
 
 export interface AccountManagedCliConfigurationInput {
   providers: ProviderId[]
@@ -812,6 +817,12 @@ export interface XingmangInvokeContract {
     [sessionId: string],
     boolean
   >
+  /** 彻底删除这台电脑上的一条记录。入参只有会话 id：要删的文件由主进程重新找出并校验。 */
+  deleteProviderSession: IpcInvokeDefinition<
+    'provider-sessions:delete',
+    [sessionId: string],
+    MultiProviderSessionDeleteResult
+  >
   getSettings: IpcInvokeDefinition<'settings:get', [], AppSettingsV2>
   saveSettings: IpcInvokeDefinition<'settings:save', [settings: AppSettingsV2Update], AppSettingsV2>
   runDiagnostics: IpcInvokeDefinition<'diagnostics:run', [options?: DiagnosticsRunOptions], DiagnosticsReport>
@@ -999,6 +1010,8 @@ export interface XingmangInvokeContract {
   getAccountUsableGroups: IpcInvokeDefinition<'account:list-groups', [], AccountUsableGroup[]>
   revokeAccountKey: IpcInvokeDefinition<'account:revoke-key', [id: number], void>
   copyAccountKey: IpcInvokeDefinition<'account:copy-key', [id: number], void>
+  /** 找回密码后复制新密码：走主进程写剪贴板，60 秒后自动清掉。 */
+  copyResetPassword: IpcInvokeDefinition<'account:copy-reset-password', [password: string], void>
   revealAccountKey: IpcInvokeDefinition<'account:reveal-key', [id: number], string>
   listAccountKeyModels: IpcInvokeDefinition<'account:list-key-models', [id: number], string[]>
   saveConfigWithAccountKey: IpcInvokeDefinition<
@@ -1188,6 +1201,7 @@ export const ipcInvokeChannels = {
   getProviderSessionDetail: 'provider-sessions:detail',
   exportProviderSession: 'provider-sessions:export',
   openProviderSessionDirectory: 'provider-sessions:open-directory',
+  deleteProviderSession: 'provider-sessions:delete',
   getSettings: 'settings:get',
   saveSettings: 'settings:save',
   runDiagnostics: 'diagnostics:run',
@@ -1274,6 +1288,7 @@ export const ipcInvokeChannels = {
   getAccountUsableGroups: 'account:list-groups',
   revokeAccountKey: 'account:revoke-key',
   copyAccountKey: 'account:copy-key',
+  copyResetPassword: 'account:copy-reset-password',
   revealAccountKey: 'account:reveal-key',
   listAccountKeyModels: 'account:list-key-models',
   saveConfigWithAccountKey: 'account:configure-cli-with-key',

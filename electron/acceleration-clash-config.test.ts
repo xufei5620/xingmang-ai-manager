@@ -216,4 +216,19 @@ describe('buildIsolatedMihomoConfig', () => {
     expect(config.proxies[0]).not.toHaveProperty('dialer-proxy')
     expect(config.proxies[0].name).toBe('line-1')
   })
+
+  it('routes the given hosts direct ahead of the catch-all line rule', () => {
+    const profile = parseClashAccelerationProfile(source())
+    const config = parse(buildIsolatedMihomoConfig(profile, { mixedPort: 27901, directHosts: ['xm.solov.cc', 'api.solov.cc', 'xm.solov.cc'] }))
+    expect(config.rules).toEqual(['DOMAIN,xm.solov.cc,DIRECT', 'DOMAIN,api.solov.cc,DIRECT', 'MATCH,XINGMANG'])
+  })
+
+  it('refuses direct hosts that are not plain lowercase DNS names', () => {
+    const profile = parseClashAccelerationProfile(source())
+    for (const host of ['127.0.0.1', 'bad_host.example.com', 'a.com,DIRECT\n- MATCH', 'Xm.Solov.cc', '']) {
+      expect(() => buildIsolatedMihomoConfig(profile, { mixedPort: 27901, directHosts: [host] })).toThrow('加速直连地址无效')
+    }
+    const many = Array.from({ length: 33 }, (_, index) => `h${index}.example.com`)
+    expect(() => buildIsolatedMihomoConfig(profile, { mixedPort: 27901, directHosts: many })).toThrow('加速直连地址过多')
+  })
 })

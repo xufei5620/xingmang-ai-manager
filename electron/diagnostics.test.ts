@@ -336,6 +336,32 @@ describe('diagnostics', () => {
       expect(fetchImpl.mock.calls[0][0]).toBe('https://xm.solov.cc/api/status')
     })
 
+    it('says the relay is reached directly while acceleration is on', async () => {
+      const input = dependencies(temporaryHome())
+      input.fetch = vi.fn(async () => statusJson())
+      input.inspectAccelerationActive = async () => true
+
+      const report = await runDiagnostics(input)
+
+      expect(report.items.find((item) => item.code === 'XINGMANG_NETWORK')).toMatchObject({
+        state: 'pass',
+        summary: '能连上星芒服务（开着加速时也直接连，不绕加速线路）',
+        details: { route: 'direct' },
+      })
+    })
+
+    it('keeps the plain verdict when the acceleration state cannot be read', async () => {
+      const input = dependencies(temporaryHome())
+      input.fetch = vi.fn(async () => statusJson())
+      input.inspectAccelerationActive = async () => { throw new Error('not ready') }
+
+      const report = await runDiagnostics(input)
+
+      const network = report.items.find((item) => item.code === 'XINGMANG_NETWORK')
+      expect(network).toMatchObject({ state: 'pass', summary: '能连上星芒服务' })
+      expect(network?.details).not.toHaveProperty('route')
+    })
+
     it('treats a login page served in place of the status endpoint as interception', async () => {
       const home = temporaryHome()
       const input = dependencies(home)

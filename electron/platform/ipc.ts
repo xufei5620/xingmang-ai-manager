@@ -8,6 +8,7 @@ import type {
   PlatformNotificationKind,
   PlatformNotificationResult,
   PlatformPrivacyPreference,
+  PlatformSpendNotice,
 } from './contract'
 import { isPlatformTheme } from './settings-store'
 import type { PlatformSystemService } from './system-service'
@@ -49,7 +50,8 @@ function isActivityKind(value: unknown): value is PlatformActivityKind {
     value === 'balance' ||
     value === 'task' ||
     value === 'cliUpdate' ||
-    value === 'announcement'
+    value === 'announcement' ||
+    value === 'spend'
   )
 }
 
@@ -94,6 +96,19 @@ function readInstallNotice(value: unknown): PlatformInstallNotice | null {
   const { tool, outcome } = value as Record<string, unknown>
   if (!isInstallTool(tool) || !isInstallOutcome(outcome)) return null
   return { tool, outcome }
+}
+
+// 上限只挡明显不是真账的数：一小时十万美元、十万倍都已经远超任何真实用量。
+function isBoundedInteger(value: unknown, max: number): value is number {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 1 && value <= max
+}
+
+function readSpendNotice(value: unknown): PlatformSpendNotice | null {
+  if (typeof value !== 'object' || value === null) return null
+  const { cents, multiple } = value as Record<string, unknown>
+  if (!isBoundedInteger(cents, 10_000_000)) return null
+  if (multiple !== null && !isBoundedInteger(multiple, 100_000)) return null
+  return { cents, multiple }
 }
 
 function isNotificationResult(
@@ -279,7 +294,16 @@ export function registerPlatformHandlers(options: {
     // 「亲眼看着连上」那层判断去弹一条「加速已断开」。
     if (!isActivityKind(kind)) throw new Error('未知的通知类型。')
     if (!isActivityKey(key)) throw new Error('通知事件编号无效。')
-    if (detail === undefined) return options.service().notifyActivity(kind, key)
+    if (detail === undefined) {
+      // 花费通知的正文全靠这两个数，没有就不发一条空话。
+      if (kind === 'spend') throw new Error('通知内容无效。')
+      return options.service().notifyActivity(kind, key)
+    }
+    if (kind === 'spend') {
+      const spend = readSpendNotice(detail)
+      if (!spend) throw new Error('通知内容无效。')
+      return options.service().notifyActivity(kind, key, spend)
+    }
     const install = readInstallNotice(detail)
     if (kind !== 'install' || !install) throw new Error('通知内容无效。')
     return options.service().notifyActivity(kind, key, install)

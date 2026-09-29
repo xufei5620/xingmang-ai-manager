@@ -3,6 +3,12 @@ interface ParsedVersion {
   prerelease: string | null
 }
 
+/** Exact registry versions, never npm ranges, tags or command-line options. */
+export function isExactCliVersion(value: unknown): value is string {
+  return typeof value === 'string' && value.trim() === value
+    && /^\d+\.\d+\.\d+(?:-[0-9A-Za-z][0-9A-Za-z.-]{0,126})?(?:\+[0-9A-Za-z][0-9A-Za-z.-]{0,126})?$/.test(value)
+}
+
 /** Supported CLI packages require Node.js 20 or newer. */
 export const minimumSupportedNodeVersion = Object.freeze({ major: 20, minor: 0, patch: 0 })
 

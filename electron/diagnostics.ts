@@ -143,6 +143,12 @@ export interface DiagnosticsDependencies {
   resolvePowerShellExecutable?: () => string
   /** Which relay site's connectivity to probe (XINGMANG_NETWORK). Defaults to the default site. */
   relaySite?: RelaySite
+  /**
+   * 加速开着没有。开着时星芒自己的服务按加速规则直接连（acceleration-clash-config.ts
+   * 的 relayDirectHosts），「星芒 AI 网络」一项顺带说一句，免得用户以为这项量的是加速线路。
+   * 缺省 = 不提（旧行为）。
+   */
+  inspectAccelerationActive?: () => Promise<boolean>
   fetch?: typeof globalThis.fetch
   clashConfigPaths?: readonly string[]
   /**
@@ -1649,11 +1655,12 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
             details: { endpoint, status: response.status, clockSkewMinutes: Math.round(skewMs / 60_000) },
           }
         }
+        const accelerating = await dependencies.inspectAccelerationActive?.().catch(() => false) ?? false
         return {
           state: 'pass',
           // 状态码留在 details 里给导出报告，结论只说人话。
-          summary: '能连上星芒服务',
-          details: { endpoint, status: response.status },
+          summary: accelerating ? '能连上星芒服务（开着加速时也直接连，不绕加速线路）' : '能连上星芒服务',
+          details: accelerating ? { endpoint, status: response.status, route: 'direct' } : { endpoint, status: response.status },
         }
       },
     },
