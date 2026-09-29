@@ -1112,6 +1112,7 @@ describe('registerIpcHandlers', () => {
       electronMocks.showMessageBox.mockResolvedValueOnce({ response: 0 })
       const { service, runtimeLog, extensionService } = register(undefined, undefined, undefined, undefined, undefined, undefined, {}, {
         documentsDirectory: () => documents,
+        homeDirectory: () => documents,
       })
       const expected = path.join(documents, 'XingmangProjects', 'my-project')
 
@@ -1146,6 +1147,7 @@ describe('registerIpcHandlers', () => {
         .mockResolvedValueOnce({ response: 0 })
       const { service, runtimeLog } = register(undefined, undefined, undefined, undefined, undefined, undefined, {}, {
         documentsDirectory: () => documents,
+        homeDirectory: () => documents,
       })
 
       await expect(electronMocks.handlers.get('workspace:choose')!(trustedEvent())).resolves.toBe(project)
@@ -1170,6 +1172,7 @@ describe('registerIpcHandlers', () => {
     try {
       const { service, providerExtensionService } = register(undefined, undefined, undefined, undefined, undefined, undefined, {}, {
         documentsDirectory: () => documents,
+        homeDirectory: () => documents,
       })
       const expected = path.join(documents, 'XingmangProjects', 'my-project')
 
@@ -1191,6 +1194,7 @@ describe('registerIpcHandlers', () => {
     try {
       const { service } = register(undefined, undefined, undefined, undefined, undefined, undefined, {}, {
         documentsDirectory: () => documents,
+        homeDirectory: () => documents,
       })
 
       await expect(electronMocks.handlers.get('workspace:choose')!(trustedEvent(), { createStarter: true })).resolves.toBeNull()
@@ -1286,6 +1290,7 @@ describe('registerIpcHandlers', () => {
       electronMocks.showMessageBox.mockResolvedValueOnce({ response: 0 })
       const { service } = register(undefined, undefined, undefined, undefined, undefined, undefined, {}, {
         documentsDirectory: () => documents,
+        homeDirectory: () => documents,
       })
       const expected = path.join(documents, 'XingmangProjects', 'my-project')
 

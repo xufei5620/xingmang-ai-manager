@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { cliExitHintLines } from './cli-exit-hint'
+import { cliExitHintLines, macosFolderAccessHintLines } from './cli-exit-hint'
 import { managedNpmBinDirectory } from './managed-cli-paths'
 import type { CommandSpec, RunCommandOptions } from './command-runner'
 
@@ -240,7 +240,17 @@ export function buildMacosTerminalScript(plan: MacosTerminalScriptPlan): string 
     'set -eu',
     `rm -f -- ${quotePosixArgument(plan.launcherPath)}`,
     `rmdir -- ${quotePosixArgument(path.dirname(plan.launcherPath))} 2>/dev/null || true`,
-    `cd -- ${quotePosixArgument(plan.workspace)}`,
+    // cd 失败时 set -e 只会留下一句英文就结束；受保护文件夹通常能进、读不出，所以进去后
+    // 再用 ls 试读一次，读不到就说清楚去哪开权限，不启动工具（启动了也什么都看不到）。
+    // ls 写绝对路径：这时 PATH 还没导出。只输出固定文案，不引入外部输入。
+    `if ! cd -- ${quotePosixArgument(plan.workspace)} 2>/dev/null; then`,
+    ...macosFolderAccessHintLines.unreachable.map((line) => `  print -r -- ${quotePosixArgument(line)}`),
+    '  exit 1',
+    'fi',
+    'if ! /bin/ls -A -- . >/dev/null 2>&1; then',
+    ...macosFolderAccessHintLines.unreadable.map((line) => `  print -r -- ${quotePosixArgument(line)}`),
+    '  exit 1',
+    'fi',
     ...environmentExports,
     // 不再 exec：工具退出后还要留在这个脚本里补一句中文，告诉用户下一步。
     // set -e 下工具非零退出会直接结束脚本，所以用 || 接住退出码。trap 让 zsh
