@@ -193,6 +193,11 @@ export const notificationOptions = [
     description: '软件在后台时有新公告，提醒一次',
   },
   {
+    value: 'spend',
+    label: '花费突然变多',
+    description: '一小时里用掉的钱比平时多很多时提醒你',
+  },
+  {
     value: 'acceleration',
     label: '加速提醒',
     description: '免费加速还剩 5 分钟、用完自动断开、加速意外断开，以及软件替你自动连上加速时各提醒一次',
