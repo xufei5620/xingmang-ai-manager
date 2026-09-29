@@ -50,7 +50,9 @@ async function readConfig() {
   }
   const value = parsed
   const baseUrl = typeof value.baseUrl === 'string' ? value.baseUrl.trim() : ''
-  const apiKey = typeof value.apiKey === 'string' ? value.apiKey.trim() : ''
+  const imageKey = typeof value.apiKey === 'string' ? value.apiKey.trim() : ''
+  const codexKey = typeof value.codexApiKey === 'string' ? value.codexApiKey.trim() : ''
+  const apiKey = imageKey || codexKey
   if (!baseUrl || !apiKey) throw new Error('星芒图片 MCP 缺少图片分组 Key')
   let origin
   try {
