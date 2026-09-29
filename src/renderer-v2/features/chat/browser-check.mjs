@@ -228,17 +228,37 @@ test('streams text and reasoning, stops without losing output, and ignores late 
   } finally { await page.close() }
 })
 
-test('links in model output render as inert markers instead of clicks the main process must reject', async () => {
+test('web links in model output copy their address instead of opening, and other links stay inert', async () => {
   const page = await open()
   try {
     const request = await send(page, 'Give me a link')
-    await emit(page, { type: 'content', requestId: request.requestId, content: 'See [the docs](https://example.com/guide).' })
+    await emit(page, { type: 'content', requestId: request.requestId, content: 'See [the docs](https://example.com/guide), https://example.org/x and [mail](mailto:a@example.com).' })
     await emit(page, { type: 'complete', requestId: request.requestId })
-    const marker = page.getByText('the docs', { exact: true })
-    await marker.waitFor()
+    const link = page.getByTestId('chat-link').first()
+    await link.waitFor()
     assert.equal(await page.locator('.chat-bubble a').count(), 0)
-    assert.equal(await marker.evaluate((element) => element.tagName), 'SPAN')
-    assert.equal(await marker.getAttribute('title'), '链接不可直接打开：https://example.com/guide')
+    assert.equal(await link.evaluate((element) => element.tagName), 'BUTTON')
+    assert.equal((await link.textContent())?.trim(), 'the docs（example.com）')
+    assert.equal(await link.getAttribute('title'), '点一下复制网址')
+    assert.equal((await page.getByTestId('chat-link').nth(1).textContent())?.trim(), 'https://example.org/x')
+    const mail = page.getByText('mail', { exact: true })
+    assert.equal(await mail.evaluate((element) => element.tagName), 'SPAN')
+    assert.equal(await mail.getAttribute('title'), '链接不可直接打开：mailto:a@example.com')
+    await link.click()
+    await page.getByText('网址已复制，粘贴到浏览器地址栏就能打开').waitFor()
+    assert.equal(await page.evaluate(() => window.__copied), 'https://example.com/guide')
+  } finally { await page.close() }
+})
+
+test('link copy falls back to manual copy when the clipboard is unavailable', async () => {
+  const page = await open('copyFail=1')
+  try {
+    const request = await send(page, 'Give me a link')
+    await emit(page, { type: 'content', requestId: request.requestId, content: '[docs](https://example.com/guide)' })
+    await emit(page, { type: 'complete', requestId: request.requestId })
+    await page.getByTestId('chat-link').click()
+    await page.getByTestId('chat-copy-fallback').waitFor()
+    assert.equal(await page.getByTestId('chat-copy-fallback').getByRole('textbox').inputValue(), 'https://example.com/guide')
   } finally { await page.close() }
 })
 
