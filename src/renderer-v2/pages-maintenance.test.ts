@@ -160,15 +160,18 @@ describe('tutorial topics', () => {
     expect(text).toContain('藏着让 AI 去做别的事的指令')
   })
 
-  it('tells a Mac customer how to install Node.js and Python by hand', () => {
-    // 候选 10：macOS 上这两样应用不代装，首页给摘要、教程给完整步骤。
+  it('tells a Mac customer to let the app prepare Node.js and how to install both by hand', () => {
+    // 候选 10：macOS 上 Python 应用不代装，首页给摘要、教程给完整步骤。第十六批 2 起
+    // Node.js 由应用准备，手动装法留给想自己装的人。
     const topic = tutorialTopics.find((entry) => entry.id === macRuntimeTutorialTopic)
     expect(topic, '缺少 macOS 运行环境教程章节').toBeDefined()
     const text = tutorialText(macRuntimeTutorialTopic)
     // 两条命令与首页那段提示必须是同一个字符串，否则两处文案会各走各的。
     expect(text).toContain(runtimeHomebrewCommand('node'))
     expect(text).toContain(runtimeHomebrewCommand('python'))
-    expect(text).toContain(runtimeButtonLabel('node', 'external'))
+    expect(text).toContain(runtimeButtonLabel('node', 'managed'))
+    expect(text).toContain(runtimeButtonLabel('python', 'external'))
+    expect(text).toContain('不用输开机密码')
     expect(text).toContain('.pkg')
     // 不代装、不提权这条口径要写在教程里，和运行环境卡一致。
     expect(text).toContain('星芒不会替你跑这条命令')

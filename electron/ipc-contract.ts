@@ -412,8 +412,8 @@ export interface AccountKeyCliConfigurationInput {
 }
 export type AccountChangePasswordInput = NewApiChangePasswordInput
 export type AccountChangePasswordResult = NewApiChangePasswordResult
-// home / chat / tasks / announcement / usage 只由系统通知的点击发出（platform/notifications.ts）。
-export type RendererNavigationTarget = 'settings' | 'updates' | 'topup' | 'acceleration' | 'home' | 'chat' | 'tasks' | 'announcement' | 'usage'
+// home / chat / tasks / announcement / usage / health 只由系统通知的点击发出（platform/notifications.ts）。
+export type RendererNavigationTarget = 'settings' | 'updates' | 'topup' | 'acceleration' | 'home' | 'chat' | 'tasks' | 'announcement' | 'usage' | 'health'
 
 export interface AccountManagedCliConfigurationInput {
   providers: ProviderId[]
@@ -453,6 +453,8 @@ export type AiChatRole = 'system' | 'user' | 'assistant'
 export interface AiChatMessageInput {
   role: AiChatRole
   content: string
+  /** 用户这条消息附带的图片（主进程存好后给的资产标识），只有 user 消息能带。 */
+  images?: string[]
 }
 
 export interface AiChatParametersInput {
@@ -732,10 +734,14 @@ export interface XingmangInvokeContract {
   cancelCodexDesktopInstall: IpcInvokeDefinition<'desktop:cancel-install-codex', [], InstallCancelResult>
   uninstallCodexDesktop: IpcInvokeDefinition<'desktop:uninstall-codex', [], ToolUninstallResult>
   checkCodexDesktopUpdate: IpcInvokeDefinition<'desktop:check-update-codex', [], DesktopAppStatus>
-  /** mode 省略 = 开新对话(旧行为);resumeLast 由主进程按工具映射成固定参数。 */
+  /**
+   * mode 省略 = 开新对话(旧行为);resumeLast 由主进程按工具映射成固定参数。
+   * sessionId 只给 Codex 的 resumeLast:那条记录自己的 id(`codex:<UUID>`),主进程在
+   * 记录里核对过、且就在 workspace 里才按 id 接,否则照旧按目录找最近一条。
+   */
   launchCli: IpcInvokeDefinition<
     'cli:launch',
-    [provider: ProviderId, workspace: string, mode?: CliLaunchMode],
+    [provider: ProviderId, workspace: string, mode?: CliLaunchMode, sessionId?: string],
     CliLaunchResult
   >
   getCodexDesktopStatus: IpcInvokeDefinition<'desktop:codex-status', [], DesktopAppStatus>
@@ -1055,6 +1061,8 @@ export interface XingmangInvokeContract {
   copyAiChatAsset: IpcInvokeDefinition<'chat:copy-asset', [assetId: string], void>
   saveAiChatAsset: IpcInvokeDefinition<'chat:save-asset', [assetId: string], { saved: boolean }>
   showAiChatAssetMenu: IpcInvokeDefinition<'chat:asset-menu', [assetId: string], void>
+  pickAiChatImages: IpcInvokeDefinition<'chat:pick-images', [remaining: number], AiChatAsset[]>
+  pasteAiChatImage: IpcInvokeDefinition<'chat:paste-image', [], AiChatAsset | null>
   readAiChatHistory: IpcInvokeDefinition<'chat-history:read', [scope: string], AiChatHistorySnapshot>
   writeAiChatHistory: IpcInvokeDefinition<'chat-history:write', [input: AiChatHistoryWrite], void>
   exportAiChatConversation: IpcInvokeDefinition<'chat-history:export-text', [input: ChatConversationExportInput], { outputPath: string } | null>
@@ -1328,6 +1336,8 @@ export const ipcInvokeChannels = {
   copyAiChatAsset: 'chat:copy-asset',
   saveAiChatAsset: 'chat:save-asset',
   showAiChatAssetMenu: 'chat:asset-menu',
+  pickAiChatImages: 'chat:pick-images',
+  pasteAiChatImage: 'chat:paste-image',
   readAiChatHistory: 'chat-history:read',
   writeAiChatHistory: 'chat-history:write',
   exportAiChatConversation: 'chat-history:export-text',

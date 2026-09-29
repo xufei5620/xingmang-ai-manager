@@ -18,11 +18,12 @@ describe('git-runtime shared copy', () => {
     expect(gitHostPlatform('linux')).toBe('other')
   })
 
-  it('points Windows at the in-app installer and macOS at xcode-select / Homebrew', () => {
+  it('points Windows and macOS at the in-app Install Git button', () => {
     expect(gitInstallGuidance('win32')).toContain('「安装 Git」')
     expect(gitInstallGuidance('win32')).not.toContain(gitWindowsDownloadUrl)
-    expect(gitInstallGuidance('darwin')).toContain('xcode-select --install')
-    expect(gitInstallGuidance('darwin')).toContain('brew install git')
+    expect(gitInstallGuidance('darwin')).toContain('「安装 Git」')
+    expect(gitInstallGuidance('darwin')).toContain('苹果自己的安装窗口')
+    expect(gitInstallGuidance('darwin')).not.toMatch(/终端|xcode-select|brew/)
     expect(gitInstallGuidance('linux')).toContain('包管理器')
   })
 
@@ -47,9 +48,12 @@ describe('git-runtime shared copy', () => {
     expect(hint).toContain('安装 Git')
   })
 
-  it('tells Windows home-card readers to press the button right below', () => {
+  it('tells Windows and macOS home-card readers to press the Install Git button', () => {
     expect(gitMissingHomeNotice('win32')).toContain('点下面的「安装 Git」')
     expect(gitMissingHomeNotice('win32')).not.toMatch(/PowerShell|bash|PATH|git-scm/)
-    expect(gitMissingHomeNotice('darwin')).toBe(gitMissingNotice('darwin'))
+    expect(gitMissingHomeNotice('darwin')).toContain('点「安装 Git」')
+    expect(gitMissingHomeNotice('darwin')).toContain('这台 Mac')
+    expect(gitMissingHomeNotice('darwin')).not.toMatch(/终端|xcode-select|brew|PowerShell|bash|PATH/)
+    expect(gitMissingHomeNotice('linux')).toBe(gitMissingNotice('linux'))
   })
 })

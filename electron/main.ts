@@ -53,6 +53,7 @@ import { calculateUiZoom, resolveWindowPlacement } from './window-preferences'
 import { attachEditContextMenu } from './context-menu'
 import { recoverOffscreenWindow } from './window-recovery'
 import { createWindowLifecycle } from './window-lifecycle'
+import { installLeftoverStartupDelayMs, sweepInstallLeftovers } from './install-leftovers'
 import { createLoginQuietPeriod, hasLoginLaunchArgument, loginQuietPeriodMs, resolveLoginLaunch, shouldRevealInitialWindow, windowsAppUserModelId } from './login-launch'
 import { resolveInstallableUpdateOnQuit, resolveInterruptibleInstallTask } from './quit-blocking-tasks'
 import { createPendingUpdateStore, decideLaunchInstall, resolveDownloadedVersionToRecord } from './auto-update-install'
@@ -79,6 +80,7 @@ import { CanvasPromptPresetStore } from './canvas-prompt-preset-store'
 import { CanvasProjectStore } from './canvas-project-store'
 import { CanvasProjectAssetManager, createCanvasProjectAssetContext } from './canvas-project-asset-manager'
 import { createAiAssetProtocolHandler } from './ai-asset-protocol'
+import { createChatAttachmentService, type ChatImageCodec } from './ai-chat-attachments'
 import { resolveCodexHomeContext } from './codex-home'
 import { runCodexContextLimitsMigration } from './codex-config-migration'
 import { runWithTrustedWindowsProcessEnvironment } from './command-runner'
@@ -139,6 +141,8 @@ import {
   resolveXingmangAiBundledSkillRoot,
 } from './xingmang-ai-skill'
 import { resolveClaudeStatusLineScriptPath } from './claude-status-line'
+import { cliHookEventsDirectory, resolveCliHookScriptPath } from './cli-hooks'
+import { createCliHookEventMonitor } from './cli-hook-events'
 import { resolveProjectInstructionsTemplatePath } from './project-instructions'
 import { ipcEventChannels, type AccountBalance, type AccountSubscriptionSelf, type SettingsSaveIssue } from './ipc-contract'
 import {
@@ -351,6 +355,24 @@ function createNativeThumbnailRenderer(): AssetThumbnailRenderer {
       }
     },
   }
+}
+
+// Screenshots pasted into the chat are shrunk here, in the main process, before
+// anything is stored or sent. nativeImage decodes PNG and JPEG on every
+// platform; a WebP it cannot read comes back empty and is reported as such.
+const nativeChatImageCodec: ChatImageCodec = {
+  decode(bytes, maxEdge) {
+    let image = nativeImage.createFromBuffer(bytes)
+    if (image.isEmpty()) return null
+    const size = image.getSize()
+    const longest = Math.max(size.width, size.height)
+    if (longest > maxEdge) {
+      const scale = maxEdge / longest
+      image = image.resize({ width: Math.max(1, Math.round(size.width * scale)), height: Math.max(1, Math.round(size.height * scale)), quality: 'good' })
+    }
+    const resized = image.getSize()
+    return { width: resized.width, height: resized.height, png: () => image.toPNG(), jpeg: (quality) => image.toJPEG(quality) }
+  },
 }
 
 function windowForContents(contents: WebContents): BrowserWindow {
@@ -1098,6 +1120,7 @@ if (!hasSingleInstanceLock) {
       getExternalClientAccountId: () => readExternalClientAccountId(),
       windowsExecutionMode: windowsCliExecutionMode,
       runtimeLog,
+      sweepInstallLeftovers,
       ...(process.platform === 'win32'
         ? { ensureWindowsUserPath: (directory: string) => ensureDirectoryOnWindowsUserPath(directory) }
         : {}),
@@ -1109,6 +1132,10 @@ if (!hasSingleInstanceLock) {
         packaged: app.isPackaged,
         resourcesPath: process.resourcesPath,
       }) ?? undefined,
+      cliHookScriptPath: resolveCliHookScriptPath(app.getAppPath(), {
+        packaged: app.isPackaged,
+        resourcesPath: process.resourcesPath,
+      }) ?? undefined,
       ...rootedOptions.system,
       relayFetch,
       networkLocationFetch: (input, init) => net.fetch(input instanceof URL ? input.href : input, init),
@@ -1116,6 +1143,9 @@ if (!hasSingleInstanceLock) {
       // the OS proxy or imposing a new Chromium proxy mode.
       reloadNetworkProxyConfig: () => session.defaultSession.forceReloadProxyConfig(),
       downloadFetch,
+      // 查版本也走 Chromium：主进程自带的 Node fetch 不认公司或安全软件装在这台电脑
+      // 上的证书，公司电脑装工具会卡在第一步（system-certificate-trust.ts）。
+      registryFetch: downloadFetch,
       resolveSubprocessProxyEnvironment: async () => {
         // 临时线路本身就是回环端点，直接交给子进程；没有临时线路时仍然沿用
         // 系统代理那条老路（跨提权边界的过滤在 download-proxy.ts 里）。
@@ -1229,6 +1259,7 @@ if (!hasSingleInstanceLock) {
           documentsDirectory: readDocumentsDirectory(),
           ...await accelerationBundleStatus.then((status) => status ? { accelerationBundle: status } : {}),
           windowsExecution: windowsCliExecution,
+          windowsProcessor: await systemService.inspectWindowsProcessor(),
           // 报告只装中文结论（它会被导出发给客服），认出失败靠的那段上游原文
           // 留在 runtime.jsonl 里。
           log: (level, event, message, detail) => runtimeLog.log(level, 'diagnostics', event, message, detail),
@@ -1402,6 +1433,14 @@ if (!hasSingleInstanceLock) {
     let applicationTray: ApplicationTrayController | null = null
     let trayAcceleration: TrayAccelerationCoordinator | null = null
     let accelerationExpiry: AccelerationExpiryNotice | null = null
+    // 终端里的 Claude Code / Gemini CLI 出错、做完、等人时由钩子留下记录，这里读出来发
+    // 系统通知。窗口没开着也照读：人走开的时候恰恰是最需要提醒的时候。
+    const cliHookEvents = createCliHookEventMonitor({
+      directory: cliHookEventsDirectory(managerDataDirectory),
+      notify: (terminal, eventKey) => { hostNotifier()({ terminal, eventKey }) },
+      log: (level, event, message, detail) => runtimeLog.log(level, 'config', event, message, detail),
+    })
+    cliHookEvents.start()
     let accelerationInterruption: AccelerationInterruptionNotice | null = null
     let latestTraySystem: SystemSnapshot | null = null
     let latestTrayBalance: AccountBalance | null = null
@@ -1878,6 +1917,22 @@ if (!hasSingleInstanceLock) {
           { assetId, reason },
         ),
       })
+      const chatAttachments = createChatAttachmentService({
+        store: assetStore,
+        codec: nativeChatImageCodec,
+        pickFiles: async () => {
+          const result = await dialog.showOpenDialog({
+            title: '选择要发给 AI 的图片',
+            properties: ['openFile', 'multiSelections'],
+            filters: [{ name: '图片', extensions: ['png', 'jpg', 'jpeg', 'webp'] }],
+          })
+          return result.canceled ? [] : result.filePaths
+        },
+        readClipboardImage: () => {
+          const image = clipboard.readImage()
+          return image.isEmpty() ? null : image.toPNG()
+        },
+      })
       const assetProtocol = createAiAssetProtocolHandler({
         assets: canvasProjectAssets,
         identities: createActiveIdentityReader(definition, { getSessionState: () => accountService.getSessionState(),
@@ -1886,6 +1941,7 @@ if (!hasSingleInstanceLock) {
       })
       const chatService = createAiChatService({
         onRequestStarted: onAiRequestStarted,
+        readChatImage: (userId, assetId) => chatAttachments.readDataUri(userId, assetId),
         baseUrl: definition.aiBaseUrl,
         credentialCoordinator: chatCredentials,
         fetchImpl: relayFetch,
@@ -1998,7 +2054,7 @@ if (!hasSingleInstanceLock) {
       })
       return { accountCredentialStore, managedCliKeyStore, chatKeyStore, chatCredentials, assetStore, videoAssets,
         audioAssets, mediaAssets, canvasPromptPresets, canvasProjects, canvasProjectAssets,
-        chatService, imageService, canvasImageService, videoService, canvasRuns, assetProtocol, aiOutputPlacement }
+        chatService, imageService, canvasImageService, videoService, canvasRuns, assetProtocol, chatAttachments, aiOutputPlacement }
     }
     const businesses = new Map<RealmAccountSiteId, ReturnType<typeof createBusiness>>()
     type CanvasRunListener = Parameters<ReturnType<typeof createCanvasRunService>['subscribe']>[0]
@@ -2028,6 +2084,7 @@ if (!hasSingleInstanceLock) {
     const chatKeyStore = createRealmServiceDispatch(() => currentBusiness().chatKeyStore)
     const chatCredentials = createRealmServiceDispatch(() => currentBusiness().chatCredentials)
     const assetStore = createRealmServiceDispatch(() => currentBusiness().assetStore)
+    const chatAttachments = createRealmServiceDispatch(() => currentBusiness().chatAttachments)
     const videoAssets = createRealmServiceDispatch(() => currentBusiness().videoAssets)
     const audioAssets = createRealmServiceDispatch(() => currentBusiness().audioAssets)
     const mediaAssets = createRealmServiceDispatch(() => currentBusiness().mediaAssets)
@@ -2191,6 +2248,11 @@ if (!hasSingleInstanceLock) {
     void startupQuiet.whenOver().then(() => vault.active()).then((saved) => {
       if (saved) void systemService.scanSystem().catch(() => undefined)
     }).catch(() => undefined)
+    // 以前装到一半被关掉留下的下载没人认领，低配电脑的 C 盘会被它慢慢吃掉。安静期过后再
+    // 等一会儿，让开机那一阵的检测先跑完，再在后台清；不弹提示，只记日志。
+    void startupQuiet.whenOver().then(() => new Promise<void>((resolve) => {
+      setTimeout(resolve, installLeftoverStartupDelayMs).unref()
+    })).then(() => systemService.cleanupInstallLeftovers()).catch(() => undefined)
     // 启动画面最多为账号恢复等 3 秒，明确断网就不等（yoyo 2026-09-22 拍板）。
     const accountStartupGate = createAccountStartupGate({
       settled: accountSessionReady,
@@ -2402,6 +2464,7 @@ if (!hasSingleInstanceLock) {
       chatService,
       imageService,
       aiAssets: assetStore,
+      chatAttachments,
       chatHistory: chatHistoryStore,
       sessionsService,
       providerSessionsService,
@@ -2495,6 +2558,7 @@ if (!hasSingleInstanceLock) {
         : {}),
     })
     app.once('will-quit', () => {
+      cliHookEvents.dispose()
       accelerationExpiry?.dispose()
       accelerationInterruption?.dispose()
       void acceleration?.dispose().catch((error) => runtimeLog.exception('network', 'acceleration.shutdown.failed', error))

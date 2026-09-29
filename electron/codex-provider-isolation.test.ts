@@ -4,7 +4,7 @@ import path from 'node:path'
 import * as TOML from '@iarna/toml'
 import { afterEach, describe, expect, it } from 'vitest'
 import { providerBaseUrls } from './catalog'
-import { codexConfigSnapshotPaths, saveProviderConfig } from './config-files'
+import { codexConfigSnapshotPaths, inspectProviderConfig, saveProviderConfig, switchProviderToOfficialAccount } from './config-files'
 
 const homes: string[] = []
 
@@ -110,5 +110,54 @@ describe('Codex relay provider isolation', () => {
     }, providerBaseUrls)).toThrow('fixture failure')
     expect(fs.readFileSync(config, 'utf8')).toBe(original)
     expect(fs.existsSync(codexConfigSnapshotPaths(roots).chatgpt)).toBe(false)
+  })
+})
+
+describe('Codex shadowed relay inspection', () => {
+  const shadowed = 'model_provider = "openai"\nmodel = "fixture-model"\n[model_providers.openai]\nbase_url = "https://xm.solov.cc/v1"\n'
+
+  function withKey(content: string) {
+    const created = fixture(content)
+    fs.writeFileSync(path.join(created.roots.codexHome, 'auth.json'), JSON.stringify({ OPENAI_API_KEY: 'fixture-key', auth_mode: 'apikey' }))
+    return created
+  }
+
+  it('flags a relay table written under a built-in name without changing matchesRelay', () => {
+    const { roots } = withKey(shadowed)
+    const inspection = inspectProviderConfig('codex', roots, providerBaseUrls)
+    expect(inspection.codexProviderShadowed).toBe(true)
+    expect(inspection.codexProviderName).toBe('openai')
+    expect(inspection.matchesRelay).toBe(true)
+  })
+
+  it.each([
+    ['a user-owned built-in table', 'model_provider = "openai"\n[model_providers.openai]\nbase_url = "https://api.openai.com/v1"\n', 'openai'],
+    ['an ordinary relay name', 'model_provider = "XingmangAI"\n[model_providers.XingmangAI]\nbase_url = "https://xm.solov.cc/v1"\n', 'XingmangAI'],
+    ['the case-sensitive OpenAI name', 'model_provider = "OpenAI"\n[model_providers.OpenAI]\nbase_url = "https://xm.solov.cc/v1"\n', 'OpenAI'],
+  ])('does not flag %s', (_label, content, name) => {
+    const { roots } = withKey(content)
+    const inspection = inspectProviderConfig('codex', roots, providerBaseUrls)
+    expect(inspection.codexProviderShadowed).toBe(false)
+    expect(inspection.codexProviderName).toBe(name)
+  })
+
+  it('reports no provider for other tools or an empty Codex config', () => {
+    const { roots } = fixture('')
+    expect(inspectProviderConfig('codex', roots, providerBaseUrls)).toMatchObject({ codexProviderName: null, codexProviderShadowed: false })
+    expect(inspectProviderConfig('claude', roots, providerBaseUrls)).not.toHaveProperty('codexProviderShadowed')
+  })
+
+  it('clears the flag once a save moves the table to the relay name', () => {
+    const { roots } = withKey(shadowed)
+    saveProviderConfig('codex', 'fixture-key', 'fixture-model', 'merge', roots, {}, providerBaseUrls)
+    expect(inspectProviderConfig('codex', roots, providerBaseUrls)).toMatchObject({ codexProviderName: 'XingmangAI', codexProviderShadowed: false, matchesRelay: true })
+  })
+
+  it('still switches a shadowed config back to the official account', () => {
+    const { roots, config } = withKey(shadowed)
+    switchProviderToOfficialAccount('codex', roots, {}, providerBaseUrls)
+    const parsed = readConfig(config)
+    expect((parsed.model_providers as Record<string, unknown> | undefined)?.openai).toBeUndefined()
+    expect(inspectProviderConfig('codex', roots, providerBaseUrls).codexProviderShadowed).toBe(false)
   })
 })

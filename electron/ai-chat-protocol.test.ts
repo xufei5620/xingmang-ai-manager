@@ -9,6 +9,8 @@ import {
   isImageModel,
   resolveAiModelCapability,
   selectAiChatModelsForGroup,
+  supportsChatImageInput,
+  toChatCompletionsWireBody,
   validateAiChatGroup,
 } from './ai-chat-protocol'
 
@@ -385,5 +387,50 @@ describe('shared input validation', () => {
     })
     expect(() => validateAiChatGroup({ id: 'bad\nname', label: 'bad' }))
       .toThrowError(expect.objectContaining({ code: 'invalid-group' }))
+  })
+})
+
+describe('chat image input', () => {
+  const image = 'A'.repeat(43)
+
+  it('recognises only models known to read images', () => {
+    for (const model of ['claude-opus-5-5', 'claude-sonnet-4-5-20250929', 'gpt-5.6-sol', 'gpt-4o-mini', 'gpt-4.1', 'gemini-2.5-pro', 'grok-4', 'qwen2.5-vl-72b-instruct', 'o3', 'o4-mini']) {
+      expect(supportsChatImageInput(model), model).toBe(true)
+    }
+    for (const model of ['gpt-3.5-turbo', 'gpt-4', 'gpt-oss-120b', 'deepseek-chat', 'claude-2.1', 'claude-instant-1', 'o3-mini', 'o1-mini', 'grok-3', 'gpt-image-2', 'grok-imagine-video', 'gpt-50x']) {
+      expect(supportsChatImageInput(model), model).toBe(false)
+    }
+  })
+
+  it('accepts image-only user messages for a model that reads images', () => {
+    const body = buildChatCompletionsRequest({ model: 'claude-opus-5-5', messages: [{ role: 'user', content: '', images: [image] }] })
+    expect(body.messages).toEqual([{ role: 'user', content: '', images: [image] }])
+  })
+
+  it('refuses images for a model that cannot read them', () => {
+    expect(() => buildChatCompletionsRequest({ model: 'deepseek-chat', messages: [{ role: 'user', content: '看图', images: [image] }] }))
+      .toThrow(expect.objectContaining({ code: 'model-no-image-input' }))
+  })
+
+  it('refuses malformed, repeated, misplaced and excessive images', () => {
+    const build = (messages: Parameters<typeof buildChatCompletionsRequest>[0]['messages']) => () => buildChatCompletionsRequest({ model: 'gpt-5.6-sol', messages })
+    expect(build([{ role: 'user', content: 'x', images: ['../../etc'] }])).toThrow(AiChatProtocolError)
+    expect(build([{ role: 'user', content: 'x', images: [image, image] }])).toThrow(AiChatProtocolError)
+    expect(build([{ role: 'assistant', content: 'x', images: [image] }])).toThrow(AiChatProtocolError)
+    const five = ['A', 'B', 'C', 'D', 'E'].map((letter) => letter.repeat(43))
+    expect(build([{ role: 'user', content: 'x', images: five }])).toThrow(expect.objectContaining({ code: 'input-limit-exceeded' }))
+    const perMessage = (letters: string[]) => ({ role: 'user' as const, content: 'x', images: letters.map((letter) => letter.repeat(43)) })
+    expect(build([perMessage(['A', 'B', 'C', 'D']), perMessage(['E', 'F', 'G', 'H']), perMessage(['I'])])).toThrow(expect.objectContaining({ code: 'input-limit-exceeded' }))
+    expect(AI_CHAT_LIMITS.imagesPerRequest).toBe(8)
+  })
+
+  it('replaces image ids with data URIs only on the wire', () => {
+    const body = buildChatCompletionsRequest({ model: 'gpt-5.6-sol', messages: [{ role: 'system', content: 's' }, { role: 'user', content: 'hi', images: [image] }] })
+    expect(toChatCompletionsWireBody(body, new Map([[image, 'data:image/png;base64,AA==']])).messages).toEqual([
+      { role: 'system', content: 's' },
+      { role: 'user', content: [{ type: 'text', text: 'hi' }, { type: 'image_url', image_url: { url: 'data:image/png;base64,AA==' } }] },
+    ])
+    expect(() => toChatCompletionsWireBody(body, new Map())).toThrow(AiChatProtocolError)
+    expect(() => toChatCompletionsWireBody(body, new Map([[image, 'https://example.com/a.png']]))).toThrow(AiChatProtocolError)
   })
 })

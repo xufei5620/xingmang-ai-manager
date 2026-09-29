@@ -18,10 +18,12 @@ import {
   type runCommand as productionRunCommand,
 } from './command-runner'
 import type { WindowsMachinePaths } from './windows-machine-paths'
+import type { NodeRuntimeInstallResult } from './node-runtime'
 import { codexAuthSnapshotPaths, codexConfigSnapshotPaths, inspectProviderConfig, providerConfigPaths, saveProviderConfig } from './config-files'
 import type { MacosCodexAppInspection } from './macos-codex-app'
 import { managedCliPackageDirectory } from './cli-process-probe'
 import { managedNpmCacheRoot, managedNpmPrefix } from './managed-cli-paths'
+import type { installMacGitRuntime as installMacGitRuntimeType } from './macos-git-install'
 import {
   resolveCliCommand as resolveVerifiedToolCommand,
   resolveCliInstallation as resolveCliInstallationForTest,
@@ -2645,17 +2647,40 @@ describe('Git runtime installation', () => {
     expect(notes[0]).toContain('「安装 Git」')
   })
 
-  it('refuses to install Git outside Windows', async () => {
-    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-mac-git-runtime-'))
+  it('refuses to install Git outside Windows and macOS', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-linux-git-runtime-'))
     temporaryDirectories.push(directory)
     const installGitRuntime = gitInstaller()
+    const installMacGitRuntime = vi.fn()
     const service = createSystemService(
       new AppSettingsStore(path.join(directory, 'settings.json'), directory),
-      { platform: 'darwin', findExecutable: async () => null, installGitRuntime },
+      { platform: 'linux', findExecutable: async () => null, installGitRuntime, installMacGitRuntime },
     )
 
     await expect(service.installGitRuntime({ isDestroyed: () => false, send: vi.fn() }))
       .rejects.toThrow('仅支持 Windows')
+    expect(installGitRuntime).not.toHaveBeenCalled()
+    expect(installMacGitRuntime).not.toHaveBeenCalled()
+  })
+
+  it('hands macOS to the Apple installer path and shares one wait between double clicks', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-mac-git-runtime-'))
+    temporaryDirectories.push(directory)
+    const installGitRuntime = gitInstaller()
+    let finish: (value: Awaited<ReturnType<typeof installMacGitRuntimeType>>) => void = () => undefined
+    const installMacGitRuntime = vi.fn(() => new Promise<Awaited<ReturnType<typeof installMacGitRuntimeType>>>((resolve) => { finish = resolve }))
+    const service = createSystemService(
+      new AppSettingsStore(path.join(directory, 'settings.json'), directory),
+      { platform: 'darwin', findExecutable: async () => null, installGitRuntime, installMacGitRuntime },
+    )
+    const target = { isDestroyed: () => false, send: vi.fn() }
+
+    const first = service.installGitRuntime(target)
+    const second = service.installGitRuntime(target)
+    finish({ installed: false, action: 'cancelled', source: null, version: null, architecture: 'arm64', pathRefreshRequired: false, message: '没有装 Git。' })
+    await expect(first).resolves.toMatchObject({ installed: false, action: 'cancelled' })
+    await expect(second).resolves.toMatchObject({ installed: false, action: 'cancelled' })
+    expect(installMacGitRuntime).toHaveBeenCalledTimes(1)
     expect(installGitRuntime).not.toHaveBeenCalled()
   })
 })
@@ -2849,6 +2874,93 @@ describe('npm install progress reporting', () => {
     expect(target.send).toHaveBeenCalledWith(
       'runtime:node-install-progress',
       expect.objectContaining({ phase: 'error', message: expect.stringContaining('请先重启电脑') }),
+    )
+  })
+
+  it.runIf(process.platform === 'win32')('installs the ARM Node.js on an ARM laptop that has none yet', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-arm-node-runtime-'))
+    temporaryDirectories.push(directory)
+    const target = { isDestroyed: () => false, send: vi.fn() }
+    const installNodeRuntime = vi.fn(async (): Promise<NodeRuntimeInstallResult> => ({
+      installed: true,
+      action: 'installed',
+      method: 'msi',
+      source: 'official',
+      version: 'v24.19.0',
+      architecture: 'arm64',
+      pathRefreshRequired: true,
+      systemRestartRequired: false,
+    }))
+    const inspectWindowsProcessor = vi.fn(async () => 'arm64' as const)
+    const service = createSystemService(
+      new AppSettingsStore(path.join(directory, 'settings.json'), directory),
+      {
+        platform: 'win32',
+        windowsExecutionMode: 'same-user',
+        findExecutable: async () => null,
+        inspectWindowsRestartRequired: async () => ({ required: false, reasons: [] }),
+        inspectWindowsProcessor,
+        installNodeRuntime,
+      },
+    )
+
+    await service.installNodeRuntime(target)
+    expect(installNodeRuntime).toHaveBeenCalledWith(expect.objectContaining({ architecture: 'arm64' }))
+    if (process.arch !== 'arm64') {
+      expect(target.send).toHaveBeenCalledWith(
+        'runtime:node-install-progress',
+        expect.objectContaining({ message: expect.stringContaining('这台电脑是 ARM 芯片') }),
+      )
+    }
+    await service.inspectWindowsProcessor()
+    expect(inspectWindowsProcessor).toHaveBeenCalledTimes(1)
+  })
+
+  it.runIf(process.platform === 'win32')('keeps an outdated Node.js on its own build when replacing it on an ARM laptop', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-arm-old-node-runtime-'))
+    temporaryDirectories.push(directory)
+    const nodeExecutable = 'D:\\nodejs\\node.exe'
+    const target = { isDestroyed: () => false, send: vi.fn() }
+    const installNodeRuntime = vi.fn(async (): Promise<NodeRuntimeInstallResult> => ({
+      installed: true,
+      action: 'installed',
+      method: 'msi',
+      source: 'official',
+      version: 'v24.19.0',
+      architecture: 'x64',
+      pathRefreshRequired: true,
+      systemRestartRequired: false,
+    }))
+    const inspectExecutableMachine = vi.fn(async () => 'x64' as const)
+    const service = createSystemService(
+      new AppSettingsStore(path.join(directory, 'settings.json'), directory),
+      {
+        platform: 'win32',
+        windowsExecutionMode: 'same-user',
+        findExecutable: async (command) => command === 'node' ? nodeExecutable : null,
+        runCommand: vi.fn(async (spec: { executable: string; argv: readonly string[] }) => ({
+          executable: spec.executable,
+          argv: [...spec.argv],
+          exitCode: 0,
+          signal: null,
+          stdout: 'v16.20.2\n',
+          stderr: '',
+          outputBytes: 10,
+          durationMs: 1,
+        })),
+        inspectWindowsRestartRequired: async () => ({ required: false, reasons: [] }),
+        inspectWindowsProcessor: async () => 'arm64',
+        inspectExecutableMachine,
+        installNodeRuntime,
+      },
+    )
+
+    await service.installNodeRuntime(target)
+    expect(inspectExecutableMachine).toHaveBeenCalledWith(nodeExecutable)
+    expect(installNodeRuntime).toHaveBeenCalledWith(expect.objectContaining({ architecture: 'x64' }))
+    expect(target.send).not.toHaveBeenCalledWith(
+      'runtime:node-install-progress',
+      expect.objectContaining({ message: expect.stringContaining('ARM 芯片') }),
     )
   })
 
@@ -3059,6 +3171,11 @@ describe('CLI launch queue key', () => {
     expect(buildCliLaunchQueueKey('codex', first, 'new')).not.toBe(buildCliLaunchQueueKey('codex', path.join(os.tmpdir(), 'project-b'), 'new'))
     expect(buildCliLaunchQueueKey('codex', first, 'new')).not.toBe(buildCliLaunchQueueKey('codex', first, 'resumeLast'))
     expect(buildCliLaunchQueueKey('codex', first, 'new')).not.toBe(buildCliLaunchQueueKey('claude', first, 'new'))
+    // 同一文件夹里按 id 接两条不同的 Codex 对话，是两次打开。
+    expect(buildCliLaunchQueueKey('codex', first, 'resumeLast', '0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b'))
+      .not.toBe(buildCliLaunchQueueKey('codex', first, 'resumeLast', '1a2b3c4d-0000-4000-8000-000000000000'))
+    expect(buildCliLaunchQueueKey('codex', first, 'resumeLast', '0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b')).not.toBe(buildCliLaunchQueueKey('codex', first, 'resumeLast'))
+    expect(buildCliLaunchQueueKey('codex', first, 'resumeLast', null)).toBe(buildCliLaunchQueueKey('codex', first, 'resumeLast'))
 
     const queue = new InstallationQueue()
     const ran: string[] = []

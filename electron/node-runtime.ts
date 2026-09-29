@@ -58,7 +58,8 @@ export interface NodeRuntimeInstallProgress {
 export interface NodeRuntimeInstallResult {
   installed: true
   action: 'installed' | 'unchanged'
-  method: 'winget' | 'msi' | null
+  /** 'archive' = macOS 上把官方压缩包解到本软件自己的文件夹（macos-node-runtime.ts）。 */
+  method: 'winget' | 'msi' | 'archive' | null
   source: NodeRuntimeSource | null
   version: string | null
   architecture: NodeRuntimeArchitecture
@@ -366,7 +367,7 @@ export async function resolveSystemWingetExecutable(
 }
 
 function report(
-  options: InstallNodeRuntimeOptions,
+  options: Pick<InstallNodeRuntimeOptions, 'onProgress'>,
   progress: NodeRuntimeInstallProgress,
 ): void {
   options.onProgress?.(progress)
@@ -438,15 +439,32 @@ export function nodeRuntimeDownloadSources(
     : [sources.npmmirror, sources.official]
 }
 
+/**
+ * index.json 里每个版本的 files 列出它发布了哪些包：Windows 认 MSI，macOS 认
+ * tar 压缩包（`osx-arm64-tar` → `node-vX-darwin-arm64.tar.gz`）。
+ */
+export type NodeRuntimePackageKind = 'windows-msi' | 'darwin-archive'
+
+export function nodeRuntimePackageFileName(
+  version: string,
+  architecture: NodeRuntimeArchitecture,
+  kind: NodeRuntimePackageKind,
+): string {
+  return kind === 'darwin-archive'
+    ? `node-${version}-darwin-${architecture}.tar.gz`
+    : `node-${version}-${architecture}.msi`
+}
+
 export function parseNodeReleaseIndex(
   input: string,
   architecture: NodeRuntimeArchitecture,
+  kind: NodeRuntimePackageKind = 'windows-msi',
 ): NodeRuntimeRelease | null {
   if (!input.trim() || Buffer.byteLength(input, 'utf8') > maximumIndexBytes) return null
   try {
     const value = JSON.parse(input) as unknown
     if (!Array.isArray(value)) return null
-    const requiredFile = `win-${architecture}-msi`
+    const requiredFile = kind === 'darwin-archive' ? `osx-${architecture}-tar` : `win-${architecture}-msi`
     const releases: NodeRuntimeRelease[] = []
     for (const entry of value) {
       if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue
@@ -464,7 +482,7 @@ export function parseNodeReleaseIndex(
         version: record.version,
         lts: record.lts.trim(),
         architecture,
-        fileName: `node-${record.version}-${architecture}.msi`,
+        fileName: nodeRuntimePackageFileName(record.version, architecture, kind),
       })
     }
     releases.sort((left, right) => compareVersions(right.version, left.version))
@@ -679,7 +697,10 @@ export function buildNodeRuntimeInstallPlan(
   }
 }
 
-export function buildNodeRuntimeWingetPlan(executable: string): NodeRuntimeProcessPlan {
+export function buildNodeRuntimeWingetPlan(
+  executable: string,
+  architecture?: NodeRuntimeArchitecture,
+): NodeRuntimeProcessPlan {
   if (
     !path.win32.isAbsolute(executable)
     || path.win32.basename(executable).toLowerCase() !== 'winget.exe'
@@ -700,15 +721,21 @@ export function buildNodeRuntimeWingetPlan(executable: string): NodeRuntimeProce
       '--accept-package-agreements',
       '--accept-source-agreements',
       '--disable-interactivity',
+      // 只在调用方认准了芯片时才钉住：星芒在 ARM 电脑上是模拟运行的，不钉的话装哪一版
+      // 由 winget 自己猜，和后面安装包那条路挑的可能不是同一版。
+      ...(architecture ? ['--architecture', architecture] : []),
     ],
     timeoutMs: wingetTimeoutMs,
     acceptedExitCodes: [0],
   }
 }
 
-function verifiedNodeRuntimeWingetPlan(executable: string): NodeRuntimeProcessPlan {
+function verifiedNodeRuntimeWingetPlan(
+  executable: string,
+  architecture?: NodeRuntimeArchitecture,
+): NodeRuntimeProcessPlan {
   return {
-    ...buildNodeRuntimeWingetPlan(executable),
+    ...buildNodeRuntimeWingetPlan(executable, architecture),
     // The resolver immediately above this call validated the App Installer
     // package identity, real install root, canonical executable and basename.
     // Run it as the current user so WindowsApps ACL probing is not repeated by
@@ -1092,7 +1119,7 @@ async function responseTextWithLimit(response: Response, maximumBytes: number): 
 }
 
 async function fetchLimitedText(
-  dependencies: NodeRuntimeInstallerDependencies,
+  dependencies: Pick<NodeRuntimeInstallerDependencies, 'fetch'>,
   url: string,
   maximumBytes: number,
   signal?: AbortSignal,
@@ -1108,10 +1135,10 @@ async function fetchLimitedText(
 }
 
 async function downloadMsi(
-  dependencies: NodeRuntimeInstallerDependencies,
+  dependencies: Pick<NodeRuntimeInstallerDependencies, 'fetch'>,
   url: string,
   targetPath: string,
-  options: InstallNodeRuntimeOptions,
+  options: Pick<InstallNodeRuntimeOptions, 'signal' | 'onProgress'>,
   source: NodeRuntimeDownloadSource,
 ): Promise<{ sha256: string; size: number }> {
   let size = 0
@@ -1170,6 +1197,39 @@ async function downloadMsi(
     clearTimeout(timeout)
     options.signal?.removeEventListener('abort', abort)
   }
+}
+
+/**
+ * macOS 那一路（macos-node-runtime.ts）复用同一套下载：只认 nodejs.org 与 npmmirror、
+ * 手动跟随重定向、限时限大小、边下边算 SHA-256。两个平台的包都在 50~160 MB 以内，
+ * 大小上下限不用分开。
+ */
+export function fetchNodeRuntimeText(
+  fetchImplementation: typeof globalThis.fetch,
+  url: string,
+  kind: 'index' | 'checksums',
+  signal?: AbortSignal,
+): Promise<string> {
+  return fetchLimitedText(
+    { fetch: fetchImplementation },
+    url,
+    kind === 'index' ? maximumIndexBytes : maximumChecksumsBytes,
+    signal,
+  )
+}
+
+export function downloadNodeRuntimePackage(
+  fetchImplementation: typeof globalThis.fetch,
+  url: string,
+  targetPath: string,
+  options: Pick<InstallNodeRuntimeOptions, 'signal' | 'onProgress'>,
+  source: NodeRuntimeDownloadSource,
+): Promise<{ sha256: string; size: number }> {
+  return downloadMsi({ fetch: fetchImplementation }, url, targetPath, options, source)
+}
+
+export function nodeRuntimeSourceUrl(baseUrl: string, relativePath: string): string {
+  return sourceUrl(baseUrl, relativePath)
 }
 
 async function hashFileSha256(filePath: string): Promise<string> {
@@ -1317,7 +1377,10 @@ export async function installNodeRuntime(
       })
     } else {
       try {
-        await dependencies.runProcess(verifiedNodeRuntimeWingetPlan(winget.executable), options.signal)
+        await dependencies.runProcess(
+          verifiedNodeRuntimeWingetPlan(winget.executable, options.architecture ? architecture : undefined),
+          options.signal,
+        )
         const installedRuntime = await dependencies.inspectInstalledNodeRuntime(options.signal)
         const result: NodeRuntimeInstallResult = {
           installed: true,

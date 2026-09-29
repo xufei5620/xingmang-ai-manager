@@ -51,12 +51,18 @@ export interface GitRuntimeInstallProgress {
 }
 
 export interface GitRuntimeInstallResult {
-  installed: true
-  action: 'installed' | 'unchanged'
+  /**
+   * 只有 macOS 那一路会是 false：Git 交给苹果自己的安装窗口装（macos-git-install.ts），
+   * 客户在窗口里点了取消（'cancelled'），或者等了很久还没装完（'pending'）。
+   */
+  installed: boolean
+  action: 'installed' | 'unchanged' | 'cancelled' | 'pending'
   source: GitRuntimeSource | null
   version: string | null
   architecture: GitRuntimeArchitecture
   pathRefreshRequired: boolean
+  /** 给首页那一句话；只有 installed 为 false 时带。 */
+  message?: string
 }
 
 export interface GitRuntimeDownloadSource {

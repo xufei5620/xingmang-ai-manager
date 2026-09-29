@@ -45,9 +45,16 @@ import {
   toNativeConfigSummary,
 } from './config-files'
 import { providerBaseUrls, type ProviderId } from './catalog'
+import type { CliHookInvocation } from './cli-hooks'
 
 const temporaryHomes: string[] = []
 const statusLineCommand = '"/managed/node/bin/node" "/opt/app/resources/bundled-catalog/cli-status-line/xingmang-statusline.cjs"'
+const cliHook: CliHookInvocation = {
+  nodeExecutable: '/managed/node/bin/node',
+  scriptPath: '/opt/app/resources/bundled-catalog/cli-hooks/xingmang-hook.cjs',
+  eventsDirectory: '/home/me/.config/xingmang-ai-manager/cli-events',
+  platform: 'linux',
+}
 const testModels: Record<ProviderId, string> = {
   claude: 'claude-opus-4-6',
   codex: 'gpt-5.5',
@@ -657,6 +664,89 @@ describe('native CLI configuration files', () => {
     )).toThrow('状态行命令不能包含换行符')
   })
 
+  it('writes the terminal notification hooks next to the user hooks and takes only ours back on the official account', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const [settingsPath] = providerConfigPaths('claude', roots)
+    const own = { hooks: [{ type: 'command', command: 'say done' }] }
+    fs.mkdirSync(path.dirname(settingsPath), { recursive: true })
+    fs.writeFileSync(settingsPath, `${JSON.stringify({ hooks: { Stop: [own] } }, null, 2)}\n`, 'utf8')
+
+    saveProviderConfig('claude', 'sk-relay', testModels.claude, 'merge', roots, {}, providerBaseUrls, undefined, undefined, cliHook)
+    saveProviderConfig('claude', 'sk-relay', testModels.claude, 'merge', roots, {}, providerBaseUrls, undefined, undefined, cliHook)
+
+    const merged = JSON.parse(fs.readFileSync(settingsPath, 'utf8')) as { hooks: Record<string, unknown[]> }
+    expect(merged.hooks.Stop).toEqual([own, { hooks: [expect.objectContaining({ command: cliHook.nodeExecutable, args: [cliHook.scriptPath, 'claude', cliHook.eventsDirectory] })] }])
+    expect(merged.hooks.StopFailure).toHaveLength(1)
+
+    switchProviderToOfficialAccount('claude', roots, {}, providerBaseUrls)
+    const official = JSON.parse(fs.readFileSync(settingsPath, 'utf8')) as Record<string, unknown>
+    expect(official.hooks).toEqual({ Stop: [own] })
+  })
+
+  it('writes the terminal notification hooks into fresh and merged Gemini settings and removes them for the official account', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const [settingsPath] = providerConfigPaths('gemini', roots)
+
+    saveProviderConfig('gemini', 'sk-relay', testModels.gemini, 'reset', roots, {}, providerBaseUrls, undefined, undefined, cliHook)
+    const fresh = JSON.parse(fs.readFileSync(settingsPath, 'utf8')) as { hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>> }
+    expect(Object.keys(fresh.hooks).sort()).toEqual(['AfterAgent', 'BeforeAgent', 'Notification'])
+    expect(fresh.hooks.AfterAgent[0].hooks[0].command).toContain('xingmang-hook.cjs')
+
+    saveProviderConfig('gemini', 'sk-relay', testModels.gemini, 'merge', roots, {}, providerBaseUrls, undefined, undefined, cliHook)
+    const merged = JSON.parse(fs.readFileSync(settingsPath, 'utf8')) as { hooks: Record<string, unknown[]> }
+    expect(merged.hooks.AfterAgent).toHaveLength(1)
+
+    switchProviderToOfficialAccount('gemini', roots, {}, providerBaseUrls)
+    const official = JSON.parse(fs.readFileSync(settingsPath, 'utf8')) as Record<string, unknown>
+    expect('hooks' in official).toBe(false)
+  })
+
+  it('writes the Codex notify command into a fresh config, refreshes our own and takes it back on the official account', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const [configPath] = providerConfigPaths('codex', roots)
+    const expected = [cliHook.nodeExecutable, cliHook.scriptPath, 'codex', cliHook.eventsDirectory]
+
+    saveProviderConfig('codex', 'sk-relay', testModels.codex, 'reset', roots, {}, providerBaseUrls, undefined, undefined, cliHook)
+    expect(TOML.parse(fs.readFileSync(configPath, 'utf8')).notify).toEqual(expected)
+
+    const moved = { ...cliHook, scriptPath: '/new/place/bundled-catalog/cli-hooks/xingmang-hook.cjs' }
+    saveProviderConfig('codex', 'sk-relay', testModels.codex, 'merge', roots, {}, providerBaseUrls, undefined, undefined, moved)
+    expect(TOML.parse(fs.readFileSync(configPath, 'utf8')).notify).toEqual([moved.nodeExecutable, moved.scriptPath, 'codex', moved.eventsDirectory])
+
+    switchProviderToOfficialAccount('codex', roots, {}, providerBaseUrls)
+    expect('notify' in TOML.parse(fs.readFileSync(configPath, 'utf8'))).toBe(false)
+  })
+
+  it('leaves a notify command the user set for Codex alone', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const [configPath] = providerConfigPaths('codex', roots)
+    fs.mkdirSync(path.dirname(configPath), { recursive: true })
+    fs.writeFileSync(configPath, 'notify = ["notify-send", "Codex"]\n', 'utf8')
+
+    saveProviderConfig('codex', 'sk-relay', testModels.codex, 'merge', roots, {}, providerBaseUrls, undefined, undefined, cliHook)
+    expect(TOML.parse(fs.readFileSync(configPath, 'utf8')).notify).toEqual(['notify-send', 'Codex'])
+
+    switchProviderToOfficialAccount('codex', roots, {}, providerBaseUrls)
+    expect(TOML.parse(fs.readFileSync(configPath, 'utf8')).notify).toEqual(['notify-send', 'Codex'])
+  })
+
+  it('writes no hooks at all when none are given', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    saveProviderConfig('claude', 'sk-relay', testModels.claude, 'reset', roots, {}, providerBaseUrls)
+    saveProviderConfig('gemini', 'sk-relay', testModels.gemini, 'reset', roots, {}, providerBaseUrls)
+    saveProviderConfig('codex', 'sk-relay', testModels.codex, 'reset', roots, {}, providerBaseUrls)
+    for (const provider of ['claude', 'gemini'] as const) {
+      const settings = JSON.parse(fs.readFileSync(providerConfigPaths(provider, roots)[0], 'utf8')) as Record<string, unknown>
+      expect('hooks' in settings).toBe(false)
+    }
+    expect('notify' in TOML.parse(fs.readFileSync(providerConfigPaths('codex', roots)[0], 'utf8'))).toBe(false)
+  })
+
   it('keeps the Claude retention period and language after switching back to the official account', () => {
     const home = temporaryHome()
     const roots = providerRoots(home)
@@ -793,25 +883,28 @@ describe('native CLI configuration files', () => {
     expect(TOML.parse(fs.readFileSync(configPath, 'utf8'))).not.toHaveProperty('analytics')
   })
 
-  it('keeps the computer awake and skips the admin sandbox prompt only where Codex supports it', () => {
+  it('keeps the computer awake, leaves no background server and skips the admin sandbox prompt', () => {
     const windows: Record<string, unknown> = {}
     applyCodexRelayMachineDefaults(windows, 'win32')
-    expect(windows).toEqual({ features: { prevent_idle_sleep: true }, windows: { sandbox: 'unelevated' } })
+    expect(windows).toEqual({
+      features: { prevent_idle_sleep: true, daemon_auto_start: false },
+      windows: { sandbox: 'unelevated' },
+    })
 
     // [windows] is a Windows-only table; macOS has no elevation prompt to avoid.
     const mac: Record<string, unknown> = {}
     applyCodexRelayMachineDefaults(mac, 'darwin')
-    expect(mac).toEqual({ features: { prevent_idle_sleep: true } })
+    expect(mac).toEqual({ features: { prevent_idle_sleep: true, daemon_auto_start: false } })
   })
 
   it('leaves Codex sleep and sandbox choices the user already made', () => {
     const chosen: Record<string, unknown> = {
-      features: { prevent_idle_sleep: false, goals: true },
+      features: { prevent_idle_sleep: false, daemon_auto_start: true, goals: true },
       windows: { sandbox: 'elevated' },
     }
     applyCodexRelayMachineDefaults(chosen, 'win32')
     expect(chosen).toEqual({
-      features: { prevent_idle_sleep: false, goals: true },
+      features: { prevent_idle_sleep: false, daemon_auto_start: true, goals: true },
       windows: { sandbox: 'elevated' },
     })
 
@@ -829,7 +922,7 @@ describe('native CLI configuration files', () => {
 
     saveProviderConfig('codex', 'sk-relay', testModels.codex, 'reset', roots, {}, providerBaseUrls)
     const fresh = TOML.parse(fs.readFileSync(configPath, 'utf8'))
-    expect(fresh.features).toEqual({ goals: true, prevent_idle_sleep: true })
+    expect(fresh.features).toEqual({ goals: true, prevent_idle_sleep: true, daemon_auto_start: false })
     expect(fresh.windows).toEqual(expectedWindows)
 
     const existingRoots = providerRoots(temporaryHome())
@@ -838,7 +931,7 @@ describe('native CLI configuration files', () => {
     fs.writeFileSync(existingPath, '[custom_official]\nenabled = true\n', 'utf8')
     saveProviderConfig('codex', 'sk-relay', testModels.codex, 'merge', existingRoots, {}, providerBaseUrls)
     const merged = TOML.parse(fs.readFileSync(existingPath, 'utf8'))
-    expect(merged.features).toEqual({ prevent_idle_sleep: true })
+    expect(merged.features).toEqual({ prevent_idle_sleep: true, daemon_auto_start: false })
     expect(merged.windows).toEqual(expectedWindows)
     expect(merged.custom_official).toEqual({ enabled: true })
   })

@@ -82,6 +82,19 @@ describe('macOS terminal launcher', () => {
     expect(fs.existsSync(launcher)).toBe(false)
   })
 
+  it('carries the system certificate trust switch into the terminal', () => {
+    const script = buildMacosTerminalScript({
+      executable: '/usr/local/bin/claude',
+      argv: [],
+      workspace: '/workspace',
+      launcherPath: '/tmp/launcher',
+      env: { HOME: '/Users/tester', PATH: '/usr/bin', NODE_USE_SYSTEM_CA: '1', NODE_OPTIONS: '--require=/tmp/x.js' },
+    })
+    expect(script).toContain("export NODE_USE_SYSTEM_CA='1'")
+    // 放行的只是这一项，名单外的仍然不导出。
+    expect(script).not.toContain('export NODE_OPTIONS=')
+  })
+
   it('stays in the launcher after the CLI exits to tell the user what to do next', () => {
     const script = buildMacosTerminalScript({
       executable: '/usr/local/bin/codex',

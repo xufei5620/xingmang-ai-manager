@@ -336,6 +336,8 @@ describe('secure command runner', () => {
       `${os.homedir()}/Library/pnpm`,
       '/opt/homebrew/bin',
       '/custom/inherited',
+      // The app-downloaded Node.js comes last so any runtime the user installed wins.
+      `${os.homedir()}/Library/Application Support/XingMangAI/Runtime/node/bin`,
     ])
   })
 
@@ -423,6 +425,7 @@ describe('secure command runner', () => {
       npm_config_script_shell: 'C:\\Users\\tester\\evil.cmd',
       npm_lifecycle_script: 'C:\\Users\\tester\\payload.js',
       NODE_EXTRA_CA_CERTS: 'C:\\Users\\tester\\fake-ca.pem',
+      Node_Use_System_CA: '1',
       COMSPEC: 'C:\\Users\\tester\\evil.cmd',
       PSModulePath: 'C:\\Users\\tester\\Documents\\WindowsPowerShell\\Modules',
       PSModuleAnalysisCachePath: 'C:\\Users\\tester\\module-cache',
@@ -464,6 +467,7 @@ describe('secure command runner', () => {
     expect(environment.npm_config_script_shell).toBeUndefined()
     expect(environment.npm_lifecycle_script).toBeUndefined()
     expect(environment.NODE_EXTRA_CA_CERTS).toBeUndefined()
+    expect(environment.Node_Use_System_CA).toBeUndefined()
     expect(environment.COMSPEC).toBeUndefined()
     expect(environment.PSModuleAnalysisCachePath).toBeUndefined()
     expect(environment.PSExecutionPolicyPreference).toBeUndefined()

@@ -55,9 +55,14 @@ function isActivityKind(value: unknown): value is PlatformActivityKind {
   )
 }
 
-// 偏好开关比活动通知多一类：加速那两条由主进程发出，用户仍然要能关掉它。
+// 偏好开关比活动通知多几类：加速和终端里那几条由主进程发出，用户仍然要能关掉它们。
 function isNotificationKind(value: unknown): value is PlatformNotificationKind {
-  return isActivityKind(value) || value === 'acceleration'
+  return (
+    isActivityKind(value) ||
+    value === 'acceleration' ||
+    value === 'cliTrouble' ||
+    value === 'cliTurn'
+  )
 }
 
 function isPrivacyPreference(

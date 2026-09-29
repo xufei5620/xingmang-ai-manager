@@ -674,9 +674,35 @@ export function cliResumeLastArgv(provider: ProviderId): string[] {
 }
 
 export interface CliLaunchArgvOptions {
-  platform?: NodeJS.Platform
   /** 已装版本(npm 包版本或 --version 的整行输出);读不出来传 null。 */
   installedVersion?: string | null
+  /**
+   * 只对 Codex 的 resumeLast 生效:主进程已经在 Codex 的记录里核对过、就在这个
+   * 文件夹里的那条会话的 id(裸 UUID,不带 `codex:` 前缀)。缺省 = 按目录找最近一条。
+   */
+  resumeSessionId?: string | null
+}
+
+const codexSessionUuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+export function isCodexSessionUuid(value: unknown): value is string {
+  return typeof value === 'string' && codexSessionUuidPattern.test(value)
+}
+
+/**
+ * Codex 的 `resume --last` 在上游是按「工作目录 + 当前连接名(model_provider)」
+ * 一起过滤的,一条都没有就不声不响开新对话;`resume <UUID>` 走 thread/read,
+ * 不看连接名(codex-rs/tui/src/lib.rs 的 latest_session_lookup_params 与
+ * lookup_session_target_with_app_server,rust-v0.156.1 与 main 一致)。我们切
+ * 官方 ⇄ 当前账号、重置、搬老配置都会换连接名,所以记录里有 id 时一律按 id 接。
+ * 其余三家按目录找最近一条不看账号,仍用 cliResumeLastArgv。
+ */
+function cliResumeArgv(provider: ProviderId, resumeSessionId: string | null | undefined): string[] {
+  if (provider === 'codex' && resumeSessionId !== undefined && resumeSessionId !== null) {
+    if (!isCodexSessionUuid(resumeSessionId)) throw new Error('会话 ID 格式错误')
+    return ['resume', resumeSessionId]
+  }
+  return cliResumeLastArgv(provider)
 }
 
 // Codex 0.156.0 起有 --no-daemon;0.157.0 把「自动起后台服务」转成默认开。
@@ -684,7 +710,8 @@ export interface CliLaunchArgvOptions {
 // 宿主外层有不许脱离的 Job Object(安全软件、远程控制、各类启动器都可能加)
 // 时,Codex 直接报「host Job Object prevents daemon detachment」退出。那层
 // Job 不是我们加的,我们也放不开它;管理员身份打开时后台服务同样拒绝启动。
-// 从本软件打开的窗口不需要多窗口共享的后台服务,所以一律按内嵌模式启动。
+// 在 macOS 上它不报错,但 Codex 退出后后台服务照样常驻。从本软件打开的窗口
+// 不需要多窗口共享的后台服务,所以各平台一律按内嵌模式启动。
 // 更早的版本不认这个参数、带上反而起不来,读不出版本时也不带(维持旧行为)。
 const codexNoDaemonMinimumVersion = '0.156.0'
 
@@ -696,7 +723,7 @@ export function codexSupportsNoDaemon(installedVersion: string | null | undefine
 
 /**
  * 按启动方式把固定的续接参数接在 CLI 自身入口参数之后,mode 为 new 时原样返回。
- * Windows 上的 Codex 另外带 --no-daemon(见上),放在子命令之前,
+ * Codex 另外带 --no-daemon(见上),放在子命令之前,
  * `codex --no-daemon resume --last` 是上游测试钉住的写法。
  */
 export function cliLaunchArgv(
@@ -705,13 +732,11 @@ export function cliLaunchArgv(
   mode: CliLaunchMode,
   options: CliLaunchArgvOptions = {},
 ): string[] {
-  const embedded = provider === 'codex'
-    && options.platform === 'win32'
-    && codexSupportsNoDaemon(options.installedVersion)
+  const embedded = provider === 'codex' && codexSupportsNoDaemon(options.installedVersion)
     ? ['--no-daemon']
     : []
   return mode === 'resumeLast'
-    ? [...argv, ...embedded, ...cliResumeLastArgv(provider)]
+    ? [...argv, ...embedded, ...cliResumeArgv(provider, options.resumeSessionId)]
     : [...argv, ...embedded]
 }
 

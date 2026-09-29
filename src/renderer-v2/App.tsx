@@ -2,7 +2,7 @@ import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRe
 import { RefreshCw } from 'lucide-react'
 import { flushSync } from 'react-dom'
 import QRCode from 'qrcode'
-import type { AccountSessionState, AccountSourceSwitchResult, AccountSourceTarget, AppSettingsV2, CliLaunchMode, ExternalDeepLink, ExternalToolId, LegalDocumentKind, NetworkSettingsKind, PlatformCapabilities, ProviderId, UpdateSnapshot, XingmangApi } from '../../electron/ipc-contract'
+import type { AccountSessionState, AccountSourceSwitchResult, AccountSourceTarget, AppSettingsV2, ExternalDeepLink, ExternalToolId, LegalDocumentKind, NetworkSettingsKind, PlatformCapabilities, ProviderId, UpdateSnapshot, XingmangApi } from '../../electron/ipc-contract'
 import { resolveRelaySite, resolveSupportServiceUrl } from '../../electron/relay-sites'
 import { offersCodexDesktopRestart } from '../../electron/running-tools'
 import { Shell as AppFrame } from './features/shell/Shell'
@@ -19,9 +19,9 @@ import { launchWaitLabel, launchWarning } from './features/tools/launch-notice'
 import { modelSwapOffer, modelSwapQuestion, type ModelSwapChoice, type ModelSwapOffer } from './features/tools/model-check'
 import { chineseRuntimePatchAnswerMissing, shouldAskForChineseRuntimePatch } from './features/tools/chinese-runtime-choice'
 import { cliInstallStageLabel, nodeRuntimeReady, planCliInstall, pythonRuntimeReady, runtimeStageFailureMessage, type InstallRuntimeId } from './features/tools/runtime-readiness'
-import { foreignKeyKind, isToolId, presentTools, providerFor, toolInstallDirectory, toolUpdateOffer, type ToolId, type ToolSource } from './features/tools/model'
+import { codexNeedsRepair, foreignKeyKind, isToolId, presentTools, providerFor, readyOnceRepaired, toolInstallDirectory, toolUpdateOffer, type ToolId, type ToolSource } from './features/tools/model'
 import { pendingToolUpdates, readAnnouncedToolUpdates, rememberAnnouncedToolUpdates, rememberRevertedToolUpdate, unannouncedToolUpdates, updateNoticeKey } from './features/tools/update-notice'
-import { isMissingWorkspace } from './features/tools/recent-workspaces'
+import { isMissingWorkspace, type CliLaunchChoice } from './features/tools/recent-workspaces'
 import { uninstallHandOffNotice } from './features/tools/uninstall-handoff'
 import { describeRuntimeInstallOutcome, type RuntimeInstallOutcome } from './features/tools/runtime-install-outcome'
 import { RuntimeRestartDialog } from './features/tools/RuntimeRestartDialog'
@@ -751,12 +751,17 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   }
   async function installRuntime(runtime: 'node' | 'python' | 'git') {
     if (offline) { toast.show(offlineActionMessage, 'warn'); return }
-    // Git 按钮只在 Windows 出现（其余平台的装法以文案给出）。以前点了是打开官网让
-    // 客户自己下安装包，小白卡在这一步（yoyo 2026-09-24），现在由主进程按当前用户代装。
+    // Git 按钮在 Windows 和 macOS 出现。以前点了是打开官网让客户自己下安装包，小白卡在
+    // 这一步（yoyo 2026-09-24）。Windows 由主进程按当前用户代装；Mac 弹苹果自己的安装
+    // 窗口，客户可能在那里点取消，那时主进程带回 installed: false 和要说的那句话（第十六批 2）。
     if (runtime === 'git') {
-      const done = await toolbox.run('git', '正在准备安装 Git', () => toolsApi.installGit(), { notice: {} })
+      const outcome: { message?: string } = {}
+      const done = await toolbox.run('git', '正在准备安装 Git', async () => {
+        const result = await toolsApi.installGit()
+        if (!result.installed) outcome.message = result.message ?? '没有装 Git。需要时再点一次「安装 Git」就行。'
+      }, { notice: { unfinished: () => Boolean(outcome.message) } })
       await toolbox.refresh(true)
-      if (done && mounted.current) toast.show('Git 装好了。', 'ok')
+      if (done && mounted.current) toast.show(outcome.message ?? 'Git 装好了。', outcome.message ? 'warn' : 'ok')
       return
     }
     const mode = runtime === 'node' ? platform?.nodeRuntimeInstall : platform?.pythonRuntimeInstall
@@ -795,22 +800,32 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   }
   /**
    * mode 走的是 toolsApi.launch 那套「两侧各取自己认得的那个」:codexDesktop 认
-   * 'open' | 'restart',四家 CLI 认 'new' | 'resumeLast'(#292)。
+   * 'open' | 'restart',四家 CLI 认 'new' | 'resumeLast'(#292),Codex 接着聊另带记录 id。
    */
   function launchIsCurrent(epoch: number): boolean {
     return mounted.current && accountEpoch.current === epoch
   }
-  async function launch(id: ToolId, mode: 'open' | 'restart' | CliLaunchMode = 'open', remembered?: string, newFolder = false, epoch = accountEpoch.current): Promise<boolean> {
+  async function launch(id: ToolId, mode: 'open' | 'restart' | CliLaunchChoice = 'open', remembered?: string, newFolder = false, epoch = accountEpoch.current): Promise<boolean> {
     try {
       if (!launchIsCurrent(epoch)) return false
       const current = toolbox.snapshot
       if (!current) throw new Error('请先完成工具检测')
       const config = await toolsApi.readConfig()
       if (!launchIsCurrent(epoch)) return false
-      const tool = presentTools({ ...current, config }).find((entry) => entry.id === id)
+      let tool = presentTools({ ...current, config }).find((entry) => entry.id === id)
       if (!tool) throw new Error('当前平台暂不支持打开这个工具')
       if (tool.error) throw new Error(tool.error)
       if (!tool.status.installed) throw new Error('工具尚未安装，请先完成准备。')
+      // Codex 老配置写在它不认的名字下，照原样打开必然报 Key 无效。修完就能用的，
+      // 先替用户修（和「修好它」同一条路：备份、写入、自检，失败会恢复原样）再打开。
+      if (!tool.configured && readyOnceRepaired(config.providers[tool.provider], tool.provider)) {
+        const repaired = await switchToolAccount(id, 'account')
+        if (!repaired || !launchIsCurrent(epoch)) return false
+        const fresh = await toolsApi.readConfig()
+        if (!launchIsCurrent(epoch)) return false
+        tool = presentTools({ ...current, config: fresh }).find((entry) => entry.id === id) ?? tool
+        if (codexNeedsRepair(fresh.providers[tool.provider], tool.provider)) throw new Error('Codex 的连接设置没修好，已保持原样。请在首页点「修好它」再试一次。')
+      }
       if (!tool.configured) { openToolConfig(id); throw new Error('请先确认账号连接，再打开工具。') }
       // Every awaited step belongs to the account that requested this launch. A
       // later session event must not resume the old request against a new owner.
@@ -900,7 +915,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       if (launchIsCurrent(epoch)) throw cause
     }
   }
-  function requestLaunch(id: ToolId, remembered?: string, mode: CliLaunchMode = 'new', newFolder = false) {
+  function requestLaunch(id: ToolId, remembered?: string, mode: CliLaunchChoice = 'new', newFolder = false) {
     const request = { epoch: accountEpoch.current }
     if (launchRequest.current?.epoch === request.epoch) return
     launchRequest.current = request
@@ -925,7 +940,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
    * 记住的目录随时可能被删掉或改名。那种情况下退回目录选择器，用户点一次
    * 「打开」仍然能走到底，而不是只收到一条错误（N7）。
    */
-  async function launchRemembered(id: ToolId, remembered: string, mode: CliLaunchMode = 'new', epoch = accountEpoch.current): Promise<boolean> {
+  async function launchRemembered(id: ToolId, remembered: string, mode: CliLaunchChoice = 'new', epoch = accountEpoch.current): Promise<boolean> {
     try { return await launch(id, mode, remembered, false, epoch) }
     catch (cause) {
       if (!launchIsCurrent(epoch)) return false
@@ -1201,6 +1216,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       suppressRestoredBootstrap.current.add(authenticatedScope)
       setAuth(null); setAuthTarget(null); setSession({ ...result, authenticated: true }); setGuide(!readLocalPreference(`xingmang-v2-guide:${authenticatedScope}`))
       void runAccountBootstrap(result.account.userId, 'login', true, undefined, accountSiteId(result))
+      if (options?.notice) toast.show(options.notice, 'ok')
       if (options?.rememberError) toast.show(options.rememberError, 'warn')
     }} />}
     {legal && <LegalDocument api={authApi} kind={legal} onClose={() => setLegal(null)} />}

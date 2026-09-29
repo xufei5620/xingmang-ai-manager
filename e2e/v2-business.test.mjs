@@ -541,7 +541,8 @@ test('session detail shows transcript and archives the native id after a user ac
 
 // 记录页的 lead 一直写着「继续之前的对话」,但页面只有导出和归档。这条钉住
 // 兑现之后的行为:按钮把记录里的工作目录和固定的 resumeLast 一起交给主进程,
-// 续接参数本身永远不从渲染层来。
+// 续接参数本身永远不从渲染层来。Codex 另带这条记录的 id,由主进程核对后按 id
+// 接(它自己按目录找时还看连接名,切过账号就找不到)。
 test('records page resumes the most recent conversation in the folder on the row', async () => {
   const page = await fixture('page=sessions')
   try {
@@ -549,7 +550,7 @@ test('records page resumes the most recent conversation in the folder on the row
     await page.getByText('已打开Codex CLI，接着 C:/test-project 里最近的一条对话').waitFor()
     assert.deepEqual(
       (await calls(page)).find((call) => call.name === 'launch-cli').args,
-      { provider: 'codex', workspace: 'C:/test-project', mode: 'resumeLast' },
+      { provider: 'codex', workspace: 'C:/test-project', mode: 'resumeLast', sessionId: 'codex:session-1' },
     )
   } finally {
     await page.close()
