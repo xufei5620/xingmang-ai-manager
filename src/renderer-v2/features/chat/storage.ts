@@ -86,7 +86,7 @@ function readConversation(value: unknown): Conversation {
   assertUniqueIds(messages)
   if (conversation.draftImages !== undefined && !Array.isArray(conversation.draftImages)) throw new ChatStorageError('聊天图片列表无效，原始记录已保留')
   const draftImages = (conversation.draftImages ?? []).map(readAsset)
-  return { id: id(conversation.id), title: text(conversation.title) || '新对话', createdAt: timestamp(conversation.createdAt), updatedAt: timestamp(conversation.updatedAt), draft: text(conversation.draft), ...(draftImages.length ? { draftImages } : {}), settings: readSettings(conversation.settings), messages }
+  return { id: id(conversation.id), title: text(conversation.title) || '新对话', createdAt: timestamp(conversation.createdAt), updatedAt: timestamp(conversation.updatedAt), draft: text(conversation.draft), ...(draftImages.length ? { draftImages } : {}), settings: readSettings(conversation.settings), messages, ...(conversation.lengthNoticeDismissed === true ? { lengthNoticeDismissed: true } : {}) }
 }
 function parseWorkspace(raw: string, scope: string): ChatWorkspace {
   const parsed = object(JSON.parse(raw))

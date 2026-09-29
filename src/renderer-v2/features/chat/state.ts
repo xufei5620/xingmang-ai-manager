@@ -29,7 +29,7 @@ export interface ChatMessage {
   settings?: ChatSettings
 }
 // draftImages 是输入框里已经加上、还没发出去的图片；发出去以后挂在那条用户消息的 assets 上。
-export interface Conversation { id: string; title: string; createdAt: number; updatedAt: number; draft: string; draftImages?: AiChatAsset[]; settings: ChatSettings; messages: ChatMessage[] }
+export interface Conversation { id: string; title: string; createdAt: number; updatedAt: number; draft: string; draftImages?: AiChatAsset[]; settings: ChatSettings; messages: ChatMessage[]; lengthNoticeDismissed?: boolean }
 export interface ChatWorkspace { version: 2; owner: string; activeId: string | null; conversations: Conversation[]; draftConversation: Conversation }
 export interface TurnPlan { conversation: Conversation; requestId: string; assistantId: string; settings: ChatSettings; prompt: string; messages: AiChatMessageInput[] }
 
@@ -93,7 +93,9 @@ export const noImageModelMessage = '当前模型看不了图片，请换一个�
 // 换成一句话，让 AI 知道那里原本有图。
 function earlierImagesNote(count: number): string { return `（这里附过 ${count} 张图片，这次没有再发给 AI）` }
 
-function userMessageInputs(history: ChatMessage[], settings: ChatSettings): AiChatMessageInput[] {
+// 每发一句，这段对话前面的内容都会一起发出去，这里就是那一份。提醒和上限都按它算，
+// 两边口径一致，提醒到七成时离真正拦下还差三成。
+function contextMessages(history: readonly ChatMessage[], settings: ChatSettings): AiChatMessageInput[] {
   const vision = canReadImages(settings.model)
   let budget = chatLimits.imagesPerRequest
   const sendImages = new Set<string>()
@@ -104,6 +106,7 @@ function userMessageInputs(history: ChatMessage[], settings: ChatSettings): AiCh
     sendImages.add(message.id)
   }
   const messages: AiChatMessageInput[] = []
+  if (settings.systemPrompt.trim()) messages.push({ role: 'system', content: settings.systemPrompt.trim() })
   for (const message of history) {
     if (message.role === 'user') {
       const images = message.assets?.map((asset) => asset.assetId) ?? []
@@ -113,6 +116,40 @@ function userMessageInputs(history: ChatMessage[], settings: ChatSettings): AiCh
     } else if (message.content.trim() && !message.assets?.length && message.status !== 'error') messages.push({ role: message.role, content: message.content })
   }
   return messages
+}
+
+export const conversationTooLongMessage = '这段对话太长了，AI 一次读不下。点下面的按钮，你刚写的内容会搬到新对话里，模型和设置不变。'
+export const conversationReplyTooLongMessage = '这段对话里有一条回复太长，AI 读不下。点下面的按钮，你刚写的内容会搬到新对话里，模型和设置不变。'
+export const LENGTH_NOTICE_RATIO = 0.7
+
+/** 看这段对话带出去的内容占了上限的几成，条数和字数哪个先到算哪个。 */
+export function conversationContextShare(conversation: Conversation): number {
+  const messages = contextMessages(conversation.messages, conversation.settings)
+  const characters = messages.reduce((total, message) => total + message.content.length, 0)
+  return Math.max(messages.length / chatLimits.messageCount, characters / chatLimits.totalMessageLength)
+}
+
+/** 快到上限时提醒一次；生图不带前文，客户点过「知道了」也不再出。 */
+export function shouldShowLengthNotice(conversation: Conversation): boolean {
+  if (conversation.settings.mode !== 'text' || conversation.lengthNoticeDismissed) return false
+  return conversationContextShare(conversation) >= LENGTH_NOTICE_RATIO
+}
+
+export function isConversationTooLongMessage(message: string | undefined): boolean {
+  return message === conversationTooLongMessage || message === conversationReplyTooLongMessage
+}
+
+/**
+ * 换到一段新对话接着聊：模型、分组和设置照旧，刚写的话搬过去但不发送。
+ * 从原对话输入框搬走的话要从那边清掉，否则同一段话会在两处各存一份。
+ */
+export function continueInNewConversation(state: ChatWorkspace, sourceId: string, text: string, fromSourceDraft: boolean): ChatWorkspace {
+  const source = state.conversations.find((item) => item.id === sourceId) ?? (state.draftConversation.id === sourceId ? state.draftConversation : null)
+  if (!source) return state
+  const images = fromSourceDraft ? source.draftImages ?? [] : []
+  const next = { ...createConversation(source.settings), draft: text, ...(images.length ? { draftImages: images } : {}) }
+  const cleared = fromSourceDraft ? changeConversation(state, sourceId, (item) => { const { draftImages: _moved, ...rest } = item; return { ...rest, draft: '' } }) : state
+  return { ...cleared, conversations: [next, ...cleared.conversations], activeId: next.id }
 }
 
 export function planTurn(conversation: Conversation, input: { prompt: string; requestId: string; assistantId: string; userMessageId: string; retryId?: string; editId?: string; images?: AiChatAsset[] }): TurnPlan {
@@ -145,13 +182,11 @@ export function planTurn(conversation: Conversation, input: { prompt: string; re
   if (!settings.group || !settings.model) throw new Error('请先选择分组和模型')
   if (images.length && settings.mode === 'image') throw new Error('生成图片时还不能带图片，请先把图片去掉')
   if (images.length && !canReadImages(settings.model)) throw new Error(noImageModelMessage)
-  const messages: AiChatMessageInput[] = []
-  if (settings.systemPrompt.trim()) messages.push({ role: 'system', content: settings.systemPrompt.trim() })
-  messages.push(...userMessageInputs(history, settings))
+  const messages = contextMessages(history, settings)
   // 用户自己发的每条都在发出前查过长度，超长的只可能是 AI 的某条回复。不在这里拦，
   // 主进程会按单条上限拒掉，落到兜底「请稍后重试」，怎么重试都一样。
-  if (messages.some((message) => message.content.length > chatLimits.messageLength)) throw new Error('这段对话里有一条回复太长，请新建对话后继续')
-  if (messages.length > chatLimits.messageCount || messages.reduce((total, message) => total + message.content.length, 0) > chatLimits.totalMessageLength) throw new Error('这段对话已达到上下文上限，请新建对话后继续')
+  if (messages.some((message) => message.content.length > chatLimits.messageLength)) throw new Error(conversationReplyTooLongMessage)
+  if (messages.length > chatLimits.messageCount || messages.reduce((total, message) => total + message.content.length, 0) > chatLimits.totalMessageLength) throw new Error(conversationTooLongMessage)
   const snapshot = { ...settings, parameters: { ...settings.parameters } }
   const assistant: ChatMessage = { id: assistantId, role: 'assistant', content: '', reasoning: '', status: 'pending', createdAt: Date.now(), requestId: input.requestId, settings: snapshot }
   const fresh = !input.retryId && !input.editId
