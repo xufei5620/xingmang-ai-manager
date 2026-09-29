@@ -287,6 +287,7 @@ export interface IpcRegistrationOptions {
   xingmangAiSkill?: {
     bundledRoot: string
     userHome: string
+    syncImageMcp?: (input: { configPath: string; scriptPath: string }) => Promise<void>
   }
 }
 
@@ -3119,6 +3120,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
         bundledRoot: options.xingmangAiSkill.bundledRoot,
         userHome: options.xingmangAiSkill.userHome,
         officialCodex: (service.readStoredConfig().officialProviders ?? []).includes('codex'),
+        syncImageMcp: options.xingmangAiSkill.syncImageMcp,
       })
       for (const warning of skill.directoryWarnings ?? []) {
         options.runtimeLog.log('warn', 'account', 'xingmang-ai-skill.sync', warning)
