@@ -122,6 +122,7 @@ export function installPlatformSystemApi(
               task: true,
               cliUpdate: true,
               announcement: true,
+              spend: true,
               acceleration: true,
               cliTrouble: true,
               cliTurn: true,
@@ -163,8 +164,8 @@ export function installPlatformSystemApi(
             return owner.session.resolveProxy(url)
           },
           onError: options.onError,
-          notify: (kind, key, install) =>
-            notifications?.notify(kind, key, install) ?? 'unsupported',
+          notify: (kind, key, detail) =>
+            notifications?.notify(kind, key, detail) ?? 'unsupported',
         })
         unsubscribe = service.subscribe((state) => {
           if (

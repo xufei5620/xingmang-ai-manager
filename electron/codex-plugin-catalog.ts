@@ -4,8 +4,9 @@ import zlib from 'node:zlib'
 import { randomUUID } from 'node:crypto'
 import { promisify } from 'node:util'
 import { readBoundedUtf8FileSync } from './bounded-file'
+import { readDirectoryEntriesSync } from './bounded-directory'
 import { readBoundedResponseBytes } from './bounded-response'
-import { assertNoReparseComponents, writeAtomicSafeUtf8File } from './safe-local-data'
+import { assertNoReparseComponents, assertSafeDataFile, writeAtomicSafeUtf8File } from './safe-local-data'
 
 /**
  * Codex 的官方插件目录不是从中转拿的：它在 TUI / app-server（桌面端）启动时，
@@ -43,6 +44,9 @@ const maximumCompressedBytes = 150 * 1024 * 1024
 const maximumExtractedBytes = 600 * 1024 * 1024
 const maximumEntries = 60_000
 const maximumPathLength = 1024
+const maximumManifestBytes = 4 * 1024 * 1024
+const maximumVersionBytes = 128
+const maximumRepairBackups = 3
 /** Codex 自己每条路只等 30 秒；国内慢网下二十来 MB 要宽得多。 */
 export const CODEX_PLUGIN_CATALOG_TIMEOUT_MS = 5 * 60_000
 /** Codex 在拿不到提交号时写的同一个占位值，它下次联网同步时会自然换掉。 */
@@ -66,24 +70,46 @@ export function codexPluginCatalogPaths(codexHome: string): CodexPluginCatalogPa
   }
 }
 
-function isFile(filePath: string): boolean {
-  try {
-    return fs.statSync(filePath).isFile()
-  } catch {
-    return false
+function assertMarketplaceManifest(source: string, name: string): void {
+  let parsed: unknown
+  try { parsed = JSON.parse(source) } catch { throw new Error(incompleteCatalogMessage) }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error(incompleteCatalogMessage)
+  const manifest = parsed as Record<string, unknown>
+  if (manifest.name !== name || !Array.isArray(manifest.plugins)
+    || !manifest.plugins.every((plugin: unknown) => {
+      if (!plugin || typeof plugin !== 'object' || Array.isArray(plugin)) return false
+      const entry = plugin as Record<string, unknown>
+      if (typeof entry.name !== 'string' || !entry.name.trim()
+        || !entry.source || typeof entry.source !== 'object' || Array.isArray(entry.source)) return false
+      const source = entry.source as Record<string, unknown>
+      return typeof source.source === 'string' && source.source.trim().length > 0
+        && (source.source !== 'local' || (typeof source.path === 'string' && source.path.trim().length > 0))
+    })) throw new Error(incompleteCatalogMessage)
+}
+
+function assertCatalogManifests(directory: string): void {
+  for (const [relativePath, name] of [
+    [marketplaceManifest, 'openai-curated'],
+    [apiMarketplaceManifest, CODEX_API_CURATED_MARKETPLACE_NAME],
+  ]) {
+    assertMarketplaceManifest(readBoundedUtf8FileSync(
+      path.join(directory, relativePath), maximumManifestBytes, 'Codex 插件目录清单',
+    ), name)
   }
 }
 
 /**
- * 与 Codex 的 has_local_curated_plugins_snapshot 判断同一件事，再多要一份
- * api_marketplace.json：Key 登录时读的是它，缺了列表照样是空的。
+ * Codex 的快照布局同时需要两份清单和版本标记。只看文件存在会把空文件或损坏
+ * JSON 当成就绪，之后每次修复又提前返回（#604），所以这里有界校验实际内容。
  */
 export function inspectCodexPluginCatalog(codexHome: string): { present: boolean } {
   const paths = codexPluginCatalogPaths(codexHome)
-  return {
-    present: isFile(path.join(paths.directory, marketplaceManifest))
-      && isFile(path.join(paths.directory, apiMarketplaceManifest))
-      && isFile(paths.shaFile),
+  try {
+    assertCatalogManifests(paths.directory)
+    const version = readBoundedUtf8FileSync(paths.shaFile, maximumVersionBytes, 'Codex 插件目录版本').trim()
+    return { present: /^[0-9a-f]{40}$/i.test(version) || version === unknownCatalogVersion }
+  } catch {
+    return { present: false }
   }
 }
 
@@ -252,6 +278,14 @@ export function parseCodexPluginCatalogTar(tar: Buffer): CodexPluginCatalogArchi
     || !manifests.has(apiMarketplaceManifest.split(path.sep).join('/'))) {
     throw new Error(incompleteCatalogMessage)
   }
+  for (const [relativePath, name] of [
+    [marketplaceManifest, 'openai-curated'],
+    [apiMarketplaceManifest, CODEX_API_CURATED_MARKETPLACE_NAME],
+  ]) {
+    const file = files.find((entry) => entry.path === relativePath.split(path.sep).join('/'))!
+    if (file.data.length > maximumManifestBytes) throw new Error(incompleteCatalogMessage)
+    assertMarketplaceManifest(file.data.toString('utf8'), name)
+  }
   return { commit, directories: [...directories], files }
 }
 
@@ -300,6 +334,146 @@ async function removeQuietly(target: string): Promise<void> {
   await fs.promises.rm(target, { recursive: true, force: true }).catch(() => undefined)
 }
 
+interface CatalogPublicationEntry {
+  target: string
+  staged: string
+  backup: string
+  stagedSnapshot: fs.Stats
+  originalSnapshot: fs.Stats | null
+  backedUp: boolean
+  installed: boolean
+}
+
+function catalogPathSnapshot(filePath: string): fs.Stats | null {
+  try { return fs.lstatSync(filePath) } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
+    throw error
+  }
+}
+
+function assertCatalogBackupCapacity(paths: CodexPluginCatalogPaths): void {
+  if (!catalogPathSnapshot(paths.directory) && !catalogPathSnapshot(paths.shaFile)) return
+  const parent = path.dirname(paths.directory)
+  assertNoReparseComponents(parent, 'Codex 插件目录')
+  const entries = readDirectoryEntriesSync(parent, maximumEntries, 'Codex 插件目录')
+  const backups = new Set(entries
+    .filter((entry) => /^(plugins-xingmang-backup-[0-9a-f-]{36})(?:\.sha)?$/i.test(entry.name))
+    .map((entry) => entry.name.replace(/\.sha$/i, '')))
+  if (backups.size >= maximumRepairBackups) {
+    throw new Error(`插件目录的修复备份已达到 ${maximumRepairBackups} 份，本次没有改动；请先将 plugins-xingmang-backup- 开头的备份移出 ${parent} 再重试`)
+  }
+}
+
+function assertCatalogPathAbsent(filePath: string): void {
+  assertNoReparseComponents(filePath, 'Codex 插件目录')
+  if (catalogPathSnapshot(filePath)) throw new Error('Codex 插件目录在更新期间发生变化，请重试')
+}
+
+function assertCatalogPathMatches(filePath: string, expected: fs.Stats, expectedLinks = expected.nlink): void {
+  assertNoReparseComponents(filePath, 'Codex 插件目录')
+  const current = catalogPathSnapshot(filePath)
+  if (!current || current.isSymbolicLink() || current.dev !== expected.dev || current.ino !== expected.ino
+    || current.isDirectory() !== expected.isDirectory() || current.nlink !== expectedLinks
+    || current.size !== expected.size || current.mtimeMs !== expected.mtimeMs) {
+    throw new Error('Codex 插件目录在更新期间发生变化，请重试')
+  }
+}
+
+async function moveCatalogEntry(source: string, target: string, expected: fs.Stats): Promise<void> {
+  assertCatalogPathMatches(source, expected)
+  assertCatalogPathAbsent(target)
+  if (expected.isDirectory()) {
+    await fs.promises.rename(source, target)
+    return
+  }
+  // rename can replace a file planted after the absence check, including on
+  // Windows. link atomically refuses an existing target; the same rule is
+  // needed for rollback so restoring our old version cannot clobber Codex's.
+  await fs.promises.link(source, target)
+  try {
+    assertCatalogPathMatches(source, expected, expected.nlink + 1)
+    assertCatalogPathMatches(target, expected, expected.nlink + 1)
+    await fs.promises.unlink(source)
+  } catch (error) {
+    try {
+      assertCatalogPathMatches(target, expected, expected.nlink + 1)
+      await fs.promises.unlink(target)
+    } catch {
+      // Leave a locked or replaced target untouched. The original backup
+      // remains available and publication reports the unresolved rollback.
+    }
+    throw error
+  }
+}
+
+async function publishCatalog(paths: CodexPluginCatalogPaths, staged: string, stagedVersion: string): Promise<void> {
+  assertCatalogBackupCapacity(paths)
+  const backup = path.join(path.dirname(paths.directory), `plugins-xingmang-backup-${randomUUID()}`)
+  assertNoReparseComponents(paths.directory, 'Codex 插件目录')
+  assertSafeDataFile(paths.shaFile, 'Codex 插件目录版本')
+  const originalDirectory = catalogPathSnapshot(paths.directory)
+  if (originalDirectory && !originalDirectory.isDirectory()) throw new Error('Codex 插件目录必须是普通目录')
+  const entries: CatalogPublicationEntry[] = [
+    { target: paths.directory, staged, backup, stagedSnapshot: fs.lstatSync(staged),
+      originalSnapshot: originalDirectory, backedUp: false, installed: false },
+    { target: paths.shaFile, staged: stagedVersion, backup: `${backup}.sha`, stagedSnapshot: fs.lstatSync(stagedVersion),
+      originalSnapshot: catalogPathSnapshot(paths.shaFile), backedUp: false, installed: false },
+  ]
+  try {
+    // Both replacements are already validated. Keep the old pair until all
+    // renames succeed; a directory may also contain the user's local edits.
+    for (const entry of entries) {
+      if (!entry.originalSnapshot) continue
+      assertCatalogPathMatches(entry.target, entry.originalSnapshot)
+      assertCatalogPathAbsent(entry.backup)
+      await moveCatalogEntry(entry.target, entry.backup, entry.originalSnapshot)
+      entry.backedUp = true
+      assertCatalogPathMatches(entry.backup, entry.originalSnapshot)
+    }
+    for (const entry of entries) {
+      assertCatalogPathAbsent(entry.target)
+      assertCatalogPathMatches(entry.staged, entry.stagedSnapshot)
+      await moveCatalogEntry(entry.staged, entry.target, entry.stagedSnapshot)
+      entry.installed = true
+      assertCatalogPathMatches(entry.target, entry.stagedSnapshot)
+    }
+    // Codex may replace the directory while the version file is being
+    // published. A completed pair must still belong to this operation.
+    for (const entry of entries) assertCatalogPathMatches(entry.target, entry.stagedSnapshot)
+  } catch (error) {
+    const failures: string[] = []
+    for (const entry of [...entries].reverse()) {
+      if (!entry.installed) continue
+      try {
+        // Do not remove a catalog another process installed in the meantime.
+        assertCatalogPathMatches(entry.target, entry.stagedSnapshot)
+        assertCatalogPathAbsent(entry.staged)
+        await moveCatalogEntry(entry.target, entry.staged, entry.stagedSnapshot)
+        entry.installed = false
+      } catch { failures.push(entry.backup) }
+    }
+    for (const entry of entries) {
+      if (!entry.backedUp || !entry.originalSnapshot) continue
+      try {
+        assertCatalogPathAbsent(entry.target)
+        assertCatalogPathMatches(entry.backup, entry.originalSnapshot)
+        await moveCatalogEntry(entry.backup, entry.target, entry.originalSnapshot)
+        entry.backedUp = false
+      } catch { failures.push(entry.backup) }
+    }
+    if (failures.length) {
+      const retained = entries.filter((entry) => entry.backedUp).map((entry) => entry.backup)
+      throw new Error(retained.length
+        ? `插件目录更新没有完成，原文件已保留在 ${retained.join('、')}，请先保留这些文件再重试`
+        : '插件目录在更新期间发生变化，已保留现有文件，请刷新后重试')
+    }
+    const detail = error instanceof Error ? error.message : '未知错误'
+    throw new Error(`插件目录未更新，原文件保持不变：${detail}`)
+  }
+  // Keep successful-repair backups too: a corrupt manifest does not mean the
+  // other files in this user-writable catalog were disposable.
+}
+
 export interface EnsureCodexPluginCatalogOptions {
   codexHome: string
   fetch: typeof fetch
@@ -310,7 +484,8 @@ export type EnsureCodexPluginCatalogResult = 'present' | 'downloaded'
 
 /**
  * 快照已完整就什么都不做。否则下载、解到 `.tmp` 下的随机目录，再一次改名放到位。
- * 改名撞上 Codex 刚好也同步完了，就用它那份，丢掉自己这份。
+ * 提交前 Codex 刚好同步完了，就用它那份；提交中发生冲突则保留原文件，绝不覆盖
+ * 无法确认归属的并发变更。
  */
 export async function ensureCodexPluginCatalog(
   options: EnsureCodexPluginCatalogOptions,
@@ -319,6 +494,7 @@ export async function ensureCodexPluginCatalog(
   if (inspectCodexPluginCatalog(codexHome).present) return 'present'
   const paths = codexPluginCatalogPaths(codexHome)
   const parent = path.dirname(paths.directory)
+  assertCatalogBackupCapacity(paths)
 
   let compressed: Buffer
   try {
@@ -341,25 +517,17 @@ export async function ensureCodexPluginCatalog(
   assertNoReparseComponents(parent, 'Codex 插件目录')
   await fs.promises.mkdir(parent, { recursive: true })
   assertNoReparseComponents(parent, 'Codex 插件目录')
-  const staged = path.join(parent, `plugins-xingmang-${randomUUID()}`)
+  const staged = path.join(parent, `plugins-xingmang-stage-${randomUUID()}`)
+  const stagedVersion = `${staged}.sha`
   try {
     await writeCatalogDirectory(staged, archive)
+    assertCatalogManifests(staged)
+    await writeAtomicSafeUtf8File(stagedVersion, `${archive.commit ?? unknownCatalogVersion}\n`, 'Codex 插件目录版本')
     if (inspectCodexPluginCatalog(codexHome).present) return 'present'
-    // 目录在、提交号文件不在：Codex 自己也当它不存在，会整份重下，这里同样换掉。
-    if (fs.existsSync(paths.directory)) {
-      const stale = path.join(parent, `plugins-xingmang-stale-${randomUUID()}`)
-      await fs.promises.rename(paths.directory, stale)
-      await removeQuietly(stale)
-    }
-    try {
-      await fs.promises.rename(staged, paths.directory)
-    } catch (error) {
-      if (fs.existsSync(paths.directory)) return 'present'
-      throw error
-    }
-    await writeAtomicSafeUtf8File(paths.shaFile, `${archive.commit ?? unknownCatalogVersion}\n`, 'Codex 插件目录版本')
+    await publishCatalog(paths, staged, stagedVersion)
     return 'downloaded'
   } finally {
     await removeQuietly(staged)
+    await removeQuietly(stagedVersion)
   }
 }

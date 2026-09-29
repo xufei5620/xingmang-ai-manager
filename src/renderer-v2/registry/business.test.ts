@@ -22,6 +22,7 @@ describe('renderer-v2 notification settings registry', () => {
       task: true,
       cliUpdate: true,
       announcement: true,
+      spend: true,
       acceleration: true,
       cliTrouble: true,
       cliTurn: true,

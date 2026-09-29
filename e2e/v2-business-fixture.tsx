@@ -1043,6 +1043,7 @@ if (query.has('system')) {
             task: true,
             cliUpdate: true,
             announcement: true,
+            spend: true,
             acceleration: true,
             cliTrouble: true,
             cliTurn: true,
