@@ -25,6 +25,8 @@ import {
   buildCodexDesktopPackageInspectionScript,
   buildCodexDesktopPackageProbeScript,
   buildCodexDesktopProcessProbeScript,
+  codexDesktopProcessCheckFailedMessage,
+  collectCodexDesktopProcesses,
   buildCodexDesktopWorkspaceLaunchPlan,
   buildCodexDesktopWorkspaceUrl,
   buildCodexDesktopWindowsProbes,
@@ -1159,6 +1161,40 @@ describe('Codex Desktop Appx probe script', () => {
     expect(script).toContain('PackageFamilyName = $packageFamilyName')
   })
 
+  it('keeps status and launch scans quiet when the process check fails', async () => {
+    const failingProbe = async (): Promise<string> => { throw new Error('WMI timed out') }
+    await expect(collectCodexDesktopProcesses(failingProbe, 'roots', {})).resolves.toEqual([])
+    await expect(collectCodexDesktopProcesses(failingProbe, 'all', {})).resolves.toEqual([])
+  })
+
+  it('refuses to close anything when the process check fails on a close path', async () => {
+    const failingProbe = async (): Promise<string> => { throw new Error('WMI timed out') }
+    await expect(collectCodexDesktopProcesses(failingProbe, 'all', { strict: true }))
+      .rejects.toThrow(codexDesktopProcessCheckFailedMessage)
+    expect(codexDesktopProcessCheckFailedMessage).not.toContain('星芒')
+  })
+
+  it('gives the close scan a longer budget than the status scan', async () => {
+    const budgets: number[] = []
+    const probe = async (_script: string, timeoutMs: number): Promise<string> => {
+      budgets.push(timeoutMs)
+      return ''
+    }
+    await collectCodexDesktopProcesses(probe, 'roots', {})
+    await collectCodexDesktopProcesses(probe, 'all', { strict: true })
+    expect(budgets).toEqual([8_000, 60_000])
+  })
+
+  it('limits status scans to the app executables but lets close scans see helpers from the package', () => {
+    expect(buildCodexDesktopProcessProbeScript('roots'))
+      .toContain(`-Filter "SessionId=$currentSessionId AND (Name='ChatGPT.exe' OR Name='Codex.exe')"`)
+    const closeScript = buildCodexDesktopProcessProbeScript('all')
+    expect(closeScript).toContain('-Filter "SessionId=$currentSessionId"')
+    expect(closeScript).not.toContain("Name='ChatGPT.exe'")
+    // Helpers are still admitted only from a Codex WindowsApps package path.
+    expect(closeScript).toContain(String.raw`\\WindowsApps\\(?<name>OpenAI\.Codex(?:Beta)?)_`)
+  })
+
   it.runIf(process.platform === 'win32')('checks only roots during scans and each pid before closing', () => {
     const mocks = String.raw`
       $script:ownerCalls = 0
@@ -1169,6 +1205,8 @@ describe('Codex Desktop Appx probe script', () => {
           [pscustomobject]@{ ProcessId = 101; ParentProcessId = 0; Name = 'ChatGPT.exe'; SessionId = $session; ExecutablePath = 'C:\WindowsApps\OpenAI.Codex_26.715.0.0_x64__id\ChatGPT.exe' }
           [pscustomobject]@{ ProcessId = 102; ParentProcessId = 101; Name = 'ChatGPT.exe'; SessionId = $session; ExecutablePath = 'C:\WindowsApps\OpenAI.Codex_26.715.0.0_x64__id\ChatGPT.exe' }
           [pscustomobject]@{ ProcessId = 103; ParentProcessId = 101; Name = 'ChatGPT.exe'; SessionId = $session; ExecutablePath = 'C:\WindowsApps\OpenAI.Codex_26.715.0.0_x64__id\ChatGPT.exe' }
+          [pscustomobject]@{ ProcessId = 104; ParentProcessId = 102; Name = 'rg.exe'; SessionId = $session; ExecutablePath = 'C:\WindowsApps\OpenAI.Codex_26.715.0.0_x64__id\app\resources\rg.exe' }
+          [pscustomobject]@{ ProcessId = 105; ParentProcessId = 102; Name = 'git.exe'; SessionId = $session; ExecutablePath = 'C:\Program Files\Git\cmd\git.exe' }
         )
       }
       function Invoke-CimMethod {
@@ -1196,7 +1234,9 @@ describe('Codex Desktop Appx probe script', () => {
     }
 
     expect(runMockProbe('roots')).toEqual({ calls: 1, processIds: [101] })
-    expect(runMockProbe('all')).toEqual({ calls: 3, processIds: [101, 102] })
+    // The mock ignores -Filter, so this pins the package-path check: a helper
+    // from the package is closed, an unrelated child of the app is not.
+    expect(runMockProbe('all')).toEqual({ calls: 4, processIds: [101, 102, 104] })
   })
 
   it('keeps the three merged segments byte-identical to the standalone probe scripts', () => {

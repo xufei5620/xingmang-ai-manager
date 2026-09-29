@@ -1,6 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
-  assertCodexDesktopStableInstallTarget,
   codexDesktopPackageValidationError,
   compareWindowsPackageVersions,
   isCodexDesktopExecutable,
@@ -17,6 +16,7 @@ import {
   selectCodexDesktopApp,
   selectCodexDesktopPackage,
   selectRootProcessIds,
+  stableInstallFamilyName,
   stopCodexDesktopProcesses,
 } from './codex-desktop'
 
@@ -29,7 +29,7 @@ const validPackageMetadata = {
 }
 
 describe('Codex desktop app discovery', () => {
-  it('updates Stable when Stable and Beta coexist, and rejects Beta-only updates', () => {
+  it('updates Stable when Stable and Beta coexist, and never closes Beta for a Stable install', () => {
     const stable = {
       name: 'OpenAI.Codex', version: '26.715.0.0',
       packageFullName: 'OpenAI.Codex_26.715.0.0_x64__id',
@@ -42,8 +42,10 @@ describe('Codex desktop app discovery', () => {
       installLocation: 'C:\\WindowsApps\\OpenAI.CodexBeta_26.715.0.0_x64__id',
     }
     expect(selectCodexDesktopPackage([beta, stable])).toEqual(stable)
-    expect(() => assertCodexDesktopStableInstallTarget(selectCodexDesktopPackage([beta, stable]))).not.toThrow()
-    expect(() => assertCodexDesktopStableInstallTarget(selectCodexDesktopPackage([beta]))).toThrow('仅检测到 Codex Beta')
+    expect(stableInstallFamilyName(selectCodexDesktopPackage([beta, stable]))).toBe('OpenAI.Codex_id')
+    // Beta-only machines still install Stable like before; nothing of Beta is closed.
+    expect(stableInstallFamilyName(selectCodexDesktopPackage([beta]))).toBeNull()
+    expect(stableInstallFamilyName(null)).toBeNull()
   })
 
   it('reconstructs package metadata from a running WindowsApps path', () => {

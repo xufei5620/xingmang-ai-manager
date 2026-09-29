@@ -246,12 +246,16 @@ export function selectCodexDesktopPackage(
   return candidates[0] ?? null
 }
 
-export function assertCodexDesktopStableInstallTarget(
+/**
+ * Installing or updating always targets the stable package. Only a stable
+ * package's own windows need closing first: a Beta-only machine gets the
+ * stable app installed next to it and its Beta keeps running (#598).
+ */
+export function stableInstallFamilyName(
   installedPackage: CodexDesktopPackageEntry | null,
-): void {
-  if (installedPackage && !/^OpenAI\.Codex$/i.test(installedPackage.name)) {
-    throw new Error('当前仅检测到 Codex Beta；星芒安装与更新只支持 Codex 正式版，请在微软商店管理 Beta')
-  }
+): string | null {
+  if (!installedPackage || !/^OpenAI\.Codex$/i.test(installedPackage.name)) return null
+  return installedPackage.packageFamilyName
 }
 
 export function parseCodexDesktopUpdateManifest(
@@ -470,13 +474,15 @@ export function parseWindowsProcessesJson(output: string): WindowsProcessEntry[]
 
 export function selectCodexDesktopProcessesForPackage(
   entries: WindowsProcessEntry[],
-  packageFamilyName: string,
+  packageFamilyName: string | null,
   originalProcessIds?: ReadonlySet<number>,
 ): WindowsProcessEntry[] {
   return entries.filter((entry) => (
     typeof entry.ownerSid === 'string'
     && typeof entry.sessionId === 'number'
-    && entry.packageFamilyName?.toLowerCase() === packageFamilyName.toLowerCase()
+    // null means "any verified Codex window"; only the open path passes it.
+    && (packageFamilyName === null
+      || entry.packageFamilyName?.toLowerCase() === packageFamilyName.toLowerCase())
     && (originalProcessIds === undefined || originalProcessIds.has(entry.processId))
   ))
 }
