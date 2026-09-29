@@ -41,6 +41,8 @@ import {
   describeCodexDesktopDownloadAttempt,
   describeCodexDesktopStoreFailure,
   parseCodexDesktopStoreProgress,
+  buildCodexDesktopStoreWaitMessage,
+  codexDesktopStoreHeartbeatMs,
   shouldTryCodexDesktopStoreUpdate,
   describeCodexDesktopPrimaryMirrorSkip,
   desktopMirrorUpdateAvailable,
@@ -1881,6 +1883,32 @@ describe('Codex Desktop Microsoft Store install', () => {
     expect(parseCodexDesktopStoreProgress('  ██████      12%\r  ████████████  48%')).toBe(48)
     expect(parseCodexDesktopStoreProgress('已找到 Codex [9PLM9XGG6VKS]')).toBeNull()
     expect(parseCodexDesktopStoreProgress('999%')).toBeNull()
+  })
+
+  it('tells the user how long the Store install has been waiting', () => {
+    expect(buildCodexDesktopStoreWaitMessage(0, null)).toBe('正在从微软商店下载安装 Codex 桌面端，要等几分钟，请别关窗口')
+    expect(buildCodexDesktopStoreWaitMessage(3 * 60_000 + 5_000, null))
+      .toBe('正在从微软商店下载安装 Codex 桌面端，已经等了 3 分 05 秒。商店有时要十来分钟，不用管它，请别关窗口')
+    expect(buildCodexDesktopStoreWaitMessage(codexDesktopStoreHeartbeatMs, 42)).toContain('（42%），已经等了 15 秒')
+  })
+
+  it('says how much longer the Store gets before switching to the fallback download', () => {
+    const timeoutMs = 15 * 60_000
+    expect(buildCodexDesktopStoreWaitMessage(12 * 60_000, null, timeoutMs))
+      .toBe('还在等微软商店，最多再等 3 分钟；还不行星芒会自动换国内下载线路接着装，请别关窗口')
+    expect(buildCodexDesktopStoreWaitMessage(14 * 60_000 + 30_000, 90, timeoutMs)).toContain('（90%），最多再等 1 分钟')
+    expect(buildCodexDesktopStoreWaitMessage(timeoutMs + 5_000, null, timeoutMs)).toContain('最多再等 1 分钟')
+    expect(buildCodexDesktopStoreWaitMessage(11 * 60_000, null, timeoutMs)).toContain('已经等了 11 分 00 秒')
+  })
+
+  it('keeps install jargon out of the Store wait messages', () => {
+    const samples = [0, 20_000, 5 * 60_000, 13 * 60_000].flatMap((elapsed) => [
+      buildCodexDesktopStoreWaitMessage(elapsed, null),
+      buildCodexDesktopStoreWaitMessage(elapsed, 50),
+    ])
+    for (const message of samples) {
+      expect(message).not.toMatch(/winget|msstore|appx|msix|app installer|powershell/i)
+    }
   })
 
   it('tries the Store for an update unless the official feed says nothing newer exists', () => {
