@@ -78,6 +78,10 @@ import { ToolStatusMeta, ToolStatusReason } from './features/tools/ToolStatusMet
 import { connectionCheckView } from './features/tools/connection-check'
 import { diagnosticDetailRows } from './features/app/diagnostic-details'
 import { requestSettingsGroup, takeSettingsGroup } from './features/app/settings-group-intent'
+import { parseImportedConversations } from './features/chat/storage'
+import type { ChatTransfer } from './features/chat/transfer'
+import type { Conversation } from './features/chat/state'
+import { dataTransferExportMessage, dataTransferImportMessage, settingsPatchFrom } from './features/app/data-transfer'
 import { rememberedLoginAction, rememberedLoginForgottenMessage } from './features/app/remembered-login'
 import { maintenanceFailureNotice, readMaintenanceStatus } from './features/tools/maintenance-status'
 import { ManualUninstallDialog, type ManualUninstallState } from './features/tools/ManualUninstall'
@@ -97,7 +101,7 @@ import {
 } from './features/app/runtime-log-filter'
 import { releaseNotesSection } from './features/app/release-notes'
 import type { V2Bridge, V2Page } from './types'
-import type { AppSettingsV2Update, InstallCancelResult } from '../../electron/ipc-contract'
+import type { AppSettingsV2Update, DataTransferImportPreview, InstallCancelResult } from '../../electron/ipc-contract'
 import type {
   PlatformProxyStatus,
   PlatformSystemState,
@@ -171,6 +175,8 @@ export type BusinessActions = {
    * 要跟着变；缺省 = 不同步，只用设置页自己读到的那份（旧行为）。
    */
   uiScale?: NonNullable<AppSettingsV2Update['uiScale']>
+  /** 设置页「搬到新电脑」里聊天记录那一半；没登录时没有（聊天记录按账号分开存）。 */
+  chatTransfer?: ChatTransfer
 }
 function isProvider(id: string): id is Provider {
   return ['claude', 'codex', 'gemini', 'grok'].includes(id)
@@ -1645,6 +1651,7 @@ export function SettingsPage({
   openGuide,
   replayTour,
   uiScale,
+  chatTransfer,
 }: { api: V2Bridge } & BusinessActions) {
   const load = useCallback(async () => {
     const [settings, capabilities, session, update] = await Promise.all([
@@ -1810,6 +1817,79 @@ export function SettingsPage({
       setPending((value) => value - 1)
     }
   }
+  // 「搬到新电脑」导入：先整份校验，再在这台电脑上改过的设置要被换掉时问一句。
+  const [importAsk, setImportAsk] = useState<{
+    preview: DataTransferImportPreview
+    conversations: Conversation[]
+  } | null>(null)
+  // 对话先导入：它更可能出错，出错时设置还没动。
+  const applyImport = async (
+    preview: DataTransferImportPreview,
+    conversations: Conversation[],
+    overwrite: boolean,
+  ) => {
+    const added = chatTransfer
+      ? await chatTransfer.importConversations(conversations)
+      : 0
+    const patch = overwrite
+      ? settingsPatchFrom(preview.settings, preview.conflictingSettings)
+      : settingsPatchFrom(preview.settings)
+    if (patch && !(await update(patch))) {
+      throw new Error(
+        added
+          ? `导入了 ${added} 个对话，设置没有保存成功，可以再点一次「导入」`
+          : '设置没有保存成功，可以再点一次「导入」',
+      )
+    }
+    return dataTransferImportMessage({
+      fileConversations: conversations.length,
+      added,
+      signedIn: Boolean(chatTransfer),
+      settingsChanged: Boolean(patch),
+    })
+  }
+  const startImport = () =>
+    void operation.execute(
+      'transfer-import',
+      async () => {
+        const preview = await api.importAppData()
+        if (!preview) return null
+        const conversations = parseImportedConversations(preview.conversations)
+        if (preview.conflictLabels.length) {
+          setImportAsk({ preview, conversations })
+          return null
+        }
+        return applyImport(preview, conversations, false)
+      },
+      (message) => message,
+    )
+  const finishImport = (overwrite: boolean) => {
+    const ask = importAsk
+    setImportAsk(null)
+    if (!ask) return
+    void operation.execute(
+      'transfer-import',
+      () => applyImport(ask.preview, ask.conversations, overwrite),
+      (message) => message,
+    )
+  }
+  const startExport = () =>
+    void operation.execute(
+      'transfer-export',
+      async () =>
+        api.exportAppData({
+          conversations: chatTransfer
+            ? await chatTransfer.exportConversations()
+            : [],
+        }),
+      (result) =>
+        result
+          ? {
+              text: dataTransferExportMessage(result),
+              revealPath: result.outputPath,
+            }
+          : null,
+    )
   const settings = resource.data?.settings
   const rememberedLogin = rememberedLoginAction(resource.data?.session)
   const row = (title: string, description: string, control: ReactNode) => (
@@ -2425,6 +2505,32 @@ export function SettingsPage({
             </>,
           )}
           {row(
+            '搬到新电脑',
+            chatTransfer
+              ? '把软件里的聊天记录和设置存成一个文件，在新电脑上导入。文件里没有密码和 Key，新电脑上登录一下就行'
+              : '把软件里的设置存成一个文件，在新电脑上导入。登录后再导出，会连当前账号的聊天记录一起带上',
+            <>
+              <Button
+                size="sm"
+                icon={Download}
+                disabled={Boolean(operation.busy)}
+                onClick={startExport}
+                testId="settings-transfer-export"
+              >
+                导出
+              </Button>
+              <Button
+                size="sm"
+                icon={FolderOpen}
+                disabled={Boolean(operation.busy)}
+                onClick={startImport}
+                testId="settings-transfer-import"
+              >
+                导入
+              </Button>
+            </>,
+          )}
+          {row(
             '以前的设置',
             '升级后沿用你以前的设置和工具配置，不用重新设置',
             <Pill>已沿用</Pill>,
@@ -2531,6 +2637,8 @@ export function SettingsPage({
       <ResultNotice
         error={resource.error || saveError || systemError || operation.error}
         message={operation.message || saved}
+        revealPath={operation.message ? operation.revealPath : undefined}
+        onReveal={(path) => api.revealExportedFile(path)}
       />
       <div className="v2-business-settings-grid">
         <nav
@@ -2612,6 +2720,35 @@ export function SettingsPage({
         }
       >
         <p>工具中已写入的配置继续保留。</p>
+      </Dialog>
+      <Dialog
+        open={Boolean(importAsk)}
+        title="要换成文件里的设置吗？"
+        onClose={() => setImportAsk(null)}
+        footer={
+          <>
+            <Button onClick={() => setImportAsk(null)}>取消导入</Button>
+            <Button
+              onClick={() => finishImport(false)}
+              testId="settings-transfer-keep"
+            >
+              保留这台电脑的
+            </Button>
+            <Button
+              variant="primary"
+              onClick={() => finishImport(true)}
+              testId="settings-transfer-overwrite"
+            >
+              换成文件里的
+            </Button>
+          </>
+        }
+      >
+        <p>
+          这台电脑上你已经改过这几项，和文件里的不一样：
+          {importAsk?.preview.conflictLabels.join('、')}。
+        </p>
+        <p>其他设置和聊天记录照常导入，不受这个选择影响。</p>
       </Dialog>
       <Dialog
         open={Boolean(legal)}

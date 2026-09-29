@@ -4,7 +4,7 @@ import { createRealmAccountVault, type RealmVaultStorage } from './realm-account
 import { parseRealmSavedAccount, RealmAccountError, type RealmSavedAccount } from './realm-account'
 import type { RelayBackendCapabilities, RelayBackendClient } from './relay-backend'
 import type { NewApiLoginInput, NewApiSessionState } from './new-api-client'
-import { NewApiLoginRejectedError } from './new-api-client'
+import { NewApiLoginRejectedError, NewApiTwoFactorExpiredError, NewApiTwoFactorRequiredError } from './new-api-client'
 import { savedAccountId } from './saved-accounts'
 
 function deferred<T>() {
@@ -83,7 +83,14 @@ function fixture(overrides: Partial<RealmAccountServiceOptions> = {}) {
       login: vi.fn(async (input: NewApiLoginInput) => {
         authenticationPolicy(siteId, input)
         if (item.failLogin || input.password === 'bad') throw new RealmAccountError('UNAUTHORIZED')
+        if (input.password === 'needs-2fa') throw new NewApiTwoFactorRequiredError(`flow-${siteId}`, Date.now() + 300_000)
         emit(saved(siteId, input.username === '8' ? '8' : '7', loginToken))
+        return { account: state().account!, accessExpiresAt: null }
+      }),
+      completeTwoFactorLogin: vi.fn(async ({ code }: { flowToken: string; code: string }) => {
+        if (code === 'wrong') throw new Error('验证码不对或已过期，请看验证器里最新的数字再试')
+        if (code === 'expired') throw new NewApiTwoFactorExpiredError()
+        emit(saved(siteId, '7', loginToken))
         return { account: state().account!, accessExpiresAt: null }
       }),
       logout: vi.fn(() => emit(null)),
@@ -185,6 +192,46 @@ describe('realm account service', () => {
     expect(f.service.getSiteId()).toBe('solov')
     expect(f.clients[1].client.logout).not.toHaveBeenCalled()
     expect(f.clients[2].client.logout).toHaveBeenCalledOnce()
+  })
+  it('finishes a two-factor login with the flow token it kept in memory', async () => {
+    const f = fixture()
+    await expect(f.service.login({ ...login, password: 'needs-2fa' })).rejects.toBeInstanceOf(NewApiTwoFactorRequiredError)
+    expect(await f.vault.active()).toBeNull()
+    await expect(f.service.completeTwoFactorLogin('wrong')).rejects.toThrow('验证码不对')
+    const result = await f.service.completeTwoFactorLogin('123456')
+    expect(result).toMatchObject({ siteId: 'solov', realmId: 'xm-account', account: { userId: 7 } })
+    const second = f.clients[f.clients.length - 1]
+    expect(second.client.completeTwoFactorLogin).toHaveBeenLastCalledWith({ flowToken: 'flow-solov', code: '123456' })
+    expect(f.service.client.getSessionState().account?.userId).toBe(7)
+    expect((await f.vault.active())?.credential).toEqual(saved().credential)
+    expect(await f.service.latestLoginHint()).toMatchObject({ identifier: login.username })
+    // One challenge, one login: the flow is gone once it has been used.
+    await expect(f.service.completeTwoFactorLogin('123456')).rejects.toBeInstanceOf(NewApiTwoFactorExpiredError)
+  })
+  it('asks for the password again when no challenge is waiting or the server expired it', async () => {
+    const f = fixture()
+    await expect(f.service.completeTwoFactorLogin('123456')).rejects.toBeInstanceOf(NewApiTwoFactorExpiredError)
+    await expect(f.service.login({ ...login, password: 'needs-2fa' })).rejects.toBeInstanceOf(NewApiTwoFactorRequiredError)
+    await expect(f.service.completeTwoFactorLogin('expired')).rejects.toBeInstanceOf(NewApiTwoFactorExpiredError)
+    await expect(f.service.completeTwoFactorLogin('123456')).rejects.toBeInstanceOf(NewApiTwoFactorExpiredError)
+    expect(await f.vault.active()).toBeNull()
+  })
+  it('drops a waiting challenge when a later password login fails', async () => {
+    const f = fixture()
+    await expect(f.service.login({ ...login, password: 'needs-2fa' })).rejects.toBeInstanceOf(NewApiTwoFactorRequiredError)
+    await expect(f.service.login({ ...login, password: 'bad' })).rejects.toMatchObject({ code: 'UNAUTHORIZED' })
+    await expect(f.service.completeTwoFactorLogin('123456')).rejects.toBeInstanceOf(NewApiTwoFactorExpiredError)
+  })
+  it('drops a challenge after its five minutes even without asking the server', async () => {
+    vi.useFakeTimers({ now: 1_000_000 })
+    try {
+      const f = fixture()
+      await expect(f.service.login({ ...login, password: 'needs-2fa' })).rejects.toBeInstanceOf(NewApiTwoFactorRequiredError)
+      vi.setSystemTime(1_000_000 + 300_001)
+      const calls = f.clients.length
+      await expect(f.service.completeTwoFactorLogin('123456')).rejects.toBeInstanceOf(NewApiTwoFactorExpiredError)
+      expect(f.clients.length).toBe(calls)
+    } finally { vi.useRealTimers() }
   })
   it('does not silently route historical account recovery to the primary account', async () => {
     const f = fixture()

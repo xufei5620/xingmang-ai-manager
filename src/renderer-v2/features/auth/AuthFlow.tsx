@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState, type FocusEvent, type ReactNode } from 'react'
-import { ArrowLeft, ArrowRight, Check, Copy, ExternalLink, Eye, EyeOff, KeyRound, LogIn, Mail, RefreshCw, UserPlus } from 'lucide-react'
+import { ArrowLeft, ArrowRight, Check, Copy, ExternalLink, Eye, EyeOff, KeyRound, LogIn, Mail, RefreshCw, ShieldCheck, UserPlus } from 'lucide-react'
 import type { AccountLoginResult, AccountStatus, LegalDocumentKind } from '../../../../electron/ipc-contract'
 import { Button, Dialog, Input, Segment } from '../../ui'
 import { getAuthApi, type AccountSiteId, type AuthApi } from './api'
 import { LegalDocument } from './LegalDocument'
 import { isUsernameTakenError } from './account-errors'
-import { accountSources, authErrorMessage, isEmail, normalizeEmail, parseInviteCode, parseRecoveryCode, requiresBrowserAuthentication, suggestEmailCorrection, usernameFromEmail, validateRegistration, type RegistrationDraft, type RegistrationErrors } from './state'
+import { accountSources, authErrorMessage, isEmail, isTwoFactorChallenge, isTwoFactorExpired, normalizeEmail, parseInviteCode, parseRecoveryCode, parseTwoFactorCode, requiresBrowserAuthentication, suggestEmailCorrection, usernameFromEmail, validateRegistration, type RegistrationDraft, type RegistrationErrors } from './state'
 import { useCooldown } from './useCooldown'
 import './auth.css'
 
@@ -58,6 +58,11 @@ export function AuthFlow({ api: providedApi, initialMode = 'login', initialIdent
   const [error, setError] = useState('')
   const [message, setMessage] = useState('')
   const [browserAuthentication, setBrowserAuthentication] = useState(false)
+  // 密码已经对了、还差验证器里那 6 位数字（或备用码）。flow token 留在主进程，这里只记是哪种输入。
+  const [twoFactor, setTwoFactor] = useState<{ backup: boolean } | null>(null)
+  const [twoFactorCode, setTwoFactorCode] = useState('')
+  // 第二步成功后才按「记住密码」落盘，所以把第一步交出去的那份账号密码留到那时。
+  const twoFactorLogin = useRef<{ username: string; password: string; siteId: AccountSiteId; remember: boolean } | null>(null)
   const [busy, setBusy] = useState(false)
   const locked = useRef(false)
   const epoch = useRef(0)
@@ -71,15 +76,15 @@ export function AuthFlow({ api: providedApi, initialMode = 'login', initialIdent
   useEffect(() => {
     if (legal) { focusedStep.current = ''; return }
     if (busy) return
-    const stepKey = `${siteId}:${mode}:${mode === 'recovery' ? recoveryStep : ''}`
+    const stepKey = `${siteId}:${mode}:${mode === 'recovery' ? recoveryStep : ''}:${twoFactor ? twoFactor.backup ? 'backup' : 'code' : ''}`
     if (focusedStep.current === stepKey) return
-    const id = mode === 'login' ? identifier.trim() ? 'login-password' : 'login-account' : mode === 'register' ? 'register-email' : recoveryStep === 1 ? 'forgot-email' : recoveryStep === 2 ? 'forgot-token' : 'forgot-new-password'
+    const id = mode === 'login' ? twoFactor ? 'login-2fa-code' : identifier.trim() ? 'login-password' : 'login-account' : mode === 'register' ? 'register-email' : recoveryStep === 1 ? 'forgot-email' : recoveryStep === 2 ? 'forgot-token' : 'forgot-new-password'
     const frame = window.requestAnimationFrame(() => {
       const input = document.getElementById(id)
       if (input instanceof HTMLInputElement && !input.disabled) { input.focus(); focusedStep.current = stepKey }
     })
     return () => window.cancelAnimationFrame(frame)
-  }, [siteId, mode, recoveryStep, legal, busy, identifier])
+  }, [siteId, mode, recoveryStep, legal, busy, identifier, twoFactor])
   useEffect(() => {
     if (!focusTarget || busy) return
     const frame = window.requestAnimationFrame(() => {
@@ -105,10 +110,14 @@ export function AuthFlow({ api: providedApi, initialMode = 'login', initialIdent
     return () => { active = false }
   }, [api, siteId, mode])
 
+  const leaveTwoFactor = () => {
+    setTwoFactor(null); setTwoFactorCode(''); twoFactorLogin.current = null
+  }
+
   const changeSource = (value: string) => {
     if (locked.current || (value !== 'solov' && value !== 'solov-api') || value === siteId) return
     epoch.current++
-    setSiteId(value); setPassword(''); setRemember(false); setError(''); setMessage(''); setBrowserAuthentication(false)
+    setSiteId(value); setPassword(''); setRemember(false); setError(''); setMessage(''); setBrowserAuthentication(false); leaveTwoFactor()
     setRecoveryStep(1); setRecoveryText(''); setNewPassword(''); setReveal(false); setCopyFallback(false)
     loginTouched.current = false
   }
@@ -121,14 +130,14 @@ export function AuthFlow({ api: providedApi, initialMode = 'login', initialIdent
   const changeMode = (next: AuthMode, nextIdentifier?: string) => {
     if (locked.current) return
     epoch.current++
-    setMode(next); setError(''); setMessage(''); setBrowserAuthentication(false); setFieldErrors({}); setNewPassword(''); setReveal(false); setCopyFallback(false)
+    setMode(next); setError(''); setMessage(''); setBrowserAuthentication(false); setFieldErrors({}); leaveTwoFactor(); setNewPassword(''); setReveal(false); setCopyFallback(false)
     if (next === 'register') { setSiteId('solov'); setPassword(''); setRemember(false) }
     if (nextIdentifier !== undefined) { setIdentifier(nextIdentifier); setPassword(''); loginTouched.current = true }
     if (next === 'recovery') { setRecoveryStep(1); if (isEmail(identifier)) setRecoveryEmail(identifier) }
   }
   const close = () => {
     if (locked.current) { setMessage('正在处理，请稍候'); return }
-    epoch.current++; setPassword(''); setNewPassword(''); onClose()
+    epoch.current++; setPassword(''); setNewPassword(''); leaveTwoFactor(); onClose()
   }
   const run = async (action: string, work: (isCurrent: () => boolean) => Promise<void>) => {
     if (locked.current) return
@@ -144,13 +153,43 @@ export function AuthFlow({ api: providedApi, initialMode = 'login', initialIdent
     if (siteId === 'solov-api' && !isEmail(identifier)) { setError('历史账号请使用注册邮箱登录'); return }
     const login = { username: identifier.trim(), password, siteId }
     void run('登录', async (current) => {
-      const result = await api.login(login)
-      if (!current()) return
-      let rememberError: string | undefined
-      try { await api.setRemembered(remember ? { identifier: login.username, password: login.password } : null, login.siteId) }
-      catch { rememberError = '已登录，但记住密码的设置没有保存成功' }
-      if (current()) { setPassword(''); onAuthenticated(result, { rememberError }) }
+      let result: AccountLoginResult
+      try { result = await api.login(login) }
+      catch (reason) {
+        // 只有当前账号能在客户端里接着输验证码；历史账号那边照旧指去官网。
+        if (!isTwoFactorChallenge(reason) || login.siteId !== 'solov') throw reason
+        if (current()) { twoFactorLogin.current = { ...login, remember }; setTwoFactorCode(''); setTwoFactor({ backup: false }) }
+        return
+      }
+      if (current()) await finishLogin(result, { ...login, remember }, current)
     })
+  }
+  const finishLogin = async (result: AccountLoginResult, login: { username: string; password: string; siteId: AccountSiteId; remember: boolean }, current: () => boolean) => {
+    let rememberError: string | undefined
+    try { await api.setRemembered(login.remember ? { identifier: login.username, password: login.password } : null, login.siteId) }
+    catch { rememberError = '已登录，但记住密码的设置没有保存成功' }
+    if (current()) { setPassword(''); leaveTwoFactor(); onAuthenticated(result, { rememberError }) }
+  }
+  const submitTwoFactor = () => {
+    const login = twoFactorLogin.current
+    if (!twoFactor || !login) return
+    const parsed = parseTwoFactorCode(twoFactorCode, twoFactor.backup)
+    if (!parsed.ok) { setError(parsed.error); return }
+    void run('两步验证', async (current) => {
+      let result: AccountLoginResult
+      try { result = await api.submitTwoFactor(parsed.code) }
+      catch (reason) {
+        // 超过 5 分钟服务端就不认这次登录了：回到输密码那一步，账号名留着。
+        if (isTwoFactorExpired(reason) && current()) { leaveTwoFactor(); setPassword(''); focusedStep.current = '' }
+        else if (current()) setTwoFactorCode('')
+        throw reason
+      }
+      if (current()) await finishLogin(result, login, current)
+    })
+  }
+  const switchTwoFactorInput = () => {
+    if (locked.current || !twoFactor) return
+    setTwoFactor({ backup: !twoFactor.backup }); setTwoFactorCode(''); setError('')
   }
   const updateRegistration = <K extends keyof RegistrationDraft>(key: K, value: RegistrationDraft[K]) => {
     setRegistration((draft) => ({ ...draft, [key]: value }))
@@ -253,7 +292,12 @@ export function AuthFlow({ api: providedApi, initialMode = 'login', initialIdent
   const agreement = (checked: boolean, onChange: (checked: boolean) => void) => <div className="auth-agreement"><label><input type="checkbox" checked={checked} onChange={(event) => onChange(event.target.checked)} data-testid="auth-agree" disabled={busy} />我已阅读并同意</label><Button size="xs" variant="ghost" disabled={busy} onClick={() => setLegal('user-agreement')} testId="auth-terms">用户协议</Button><Button size="xs" variant="ghost" disabled={busy} onClick={() => setLegal('privacy-policy')} testId="auth-privacy">隐私政策</Button></div>
   const emailSuggestion = emailChecked ? suggestEmailCorrection(registration.email) : null
   const field = (label: string, id: string, value: string, onChange: (value: string) => void, options: { type?: string; autoComplete?: string; placeholder?: string; error?: string; password?: boolean; maxLength?: number; onBlur?: (event: FocusEvent<HTMLInputElement>) => void } = {}) => <div className="auth-field" key={id}><Input id={id} label={label} testId={id} value={value} onChange={(event) => onChange(event.target.value)} disabled={busy} aria-label={label} {...options} /></div>
-  const footer = mode === 'login' ? <>
+  const footer = mode === 'login' && twoFactor ? <>
+    <Button variant="ghost" icon={ArrowLeft} onClick={() => { if (locked.current) return; leaveTwoFactor(); setPassword(''); setError(''); setMessage('') }} disabled={busy} testId="login-2fa-back">返回</Button>
+    <span className="auth-footer-spacer" />
+    <Button variant="ghost" onClick={close} disabled={busy} testId="login-cancel">取消</Button>
+    <Button variant="primary" icon={ShieldCheck} loading={busy} onClick={submitTwoFactor} testId="login-2fa-submit">验证并登录</Button>
+  </> : mode === 'login' ? <>
     <Button variant="ghost" onClick={() => changeMode('recovery')} testId="login-forgot" disabled={busy}>找回密码</Button>
     <Button variant="ghost" onClick={() => changeMode('register')} testId="login-register" disabled={busy}>创建账号</Button>
     <span className="auth-footer-spacer" />
@@ -272,11 +316,16 @@ export function AuthFlow({ api: providedApi, initialMode = 'login', initialIdent
       : recoveryStep === 2 ? <Button variant="primary" icon={KeyRound} loading={busy} onClick={submitReset} testId="forgot-reset">重置密码</Button>
         : <Button variant="primary" icon={ArrowRight} disabled={busy} onClick={() => changeMode('login', recoveryEmail.trim())} testId="forgot-finish">前往登录</Button>}
   </>
-  return <Dialog open title={mode === 'login' ? `登录${source.label}` : mode === 'register' ? '创建星芒账号' : `找回${source.label}密码`} subtitle={mode === 'login' ? '登录后继续你的工作台' : mode === 'register' ? '注册成功后登录并继续新手引导' : source.supportsPasswordReset ? `第 ${recoveryStep} 步，共 3 步` : '通过历史账号官网恢复访问'} icon={mode === 'login' ? LogIn : mode === 'register' ? UserPlus : KeyRound} width={480} onClose={close} busy={busy} dirty={Boolean(password || registration.password || recoveryText)} testId={`${mode === 'recovery' ? 'forgot-password' : mode}-dialog`} footer={footer}>
-    <div className="auth-form" aria-busy={busy} data-busy={busy} onKeyDown={(event) => { if (event.key !== 'Enter' || event.nativeEvent.isComposing || event.target instanceof HTMLButtonElement || event.target instanceof HTMLTextAreaElement || busy) return; event.preventDefault(); if (mode === 'login') submitLogin(); else if (mode === 'register') submitRegistration(); else if (recoveryStep === 1) sendReset(); else if (recoveryStep === 2) submitReset() }}>
+  return <Dialog open title={mode === 'login' ? `登录${source.label}` : mode === 'register' ? '创建星芒账号' : `找回${source.label}密码`} subtitle={mode === 'login' ? twoFactor ? '还差一步：两步验证' : '登录后继续你的工作台' : mode === 'register' ? '注册成功后登录并继续新手引导' : source.supportsPasswordReset ? `第 ${recoveryStep} 步，共 3 步` : '通过历史账号官网恢复访问'} icon={mode === 'login' ? LogIn : mode === 'register' ? UserPlus : KeyRound} width={480} onClose={close} busy={busy} dirty={Boolean(password || registration.password || recoveryText || twoFactorCode)} testId={`${mode === 'recovery' ? 'forgot-password' : mode}-dialog`} footer={footer}>
+    <div className="auth-form" aria-busy={busy} data-busy={busy} onKeyDown={(event) => { if (event.key !== 'Enter' || event.nativeEvent.isComposing || event.target instanceof HTMLButtonElement || event.target instanceof HTMLTextAreaElement || busy) return; event.preventDefault(); if (mode === 'login') { if (twoFactor) submitTwoFactor(); else submitLogin() } else if (mode === 'register') submitRegistration(); else if (recoveryStep === 1) sendReset(); else if (recoveryStep === 2) submitReset() }}>
       {notice}
-      {mode !== 'register' && sourceVisible && <div className="auth-source"><span className="auth-source-label">账号来源</span><Segment label="账号来源" value={siteId} onChange={changeSource} testId="auth-source" options={Object.entries(accountSources).map(([value, entry]) => ({ value, label: entry.label, disabled: busy }))} /></div>}
-      {mode === 'login' && <>
+      {mode !== 'register' && sourceVisible && !twoFactor && <div className="auth-source"><span className="auth-source-label">账号来源</span><Segment label="账号来源" value={siteId} onChange={changeSource} testId="auth-source" options={Object.entries(accountSources).map(([value, entry]) => ({ value, label: entry.label, disabled: busy }))} /></div>}
+      {mode === 'login' && twoFactor && <>
+        <p className="auth-hint" data-testid="login-2fa-hint">{twoFactor.backup ? '输入开两步验证时保存的备用码，每个只能用一次。' : '这个账号开了两步验证。打开手机上的验证器 App，输入星芒账号那一行显示的 6 位数字。'}</p>
+        {field(twoFactor.backup ? '备用码' : '验证码', 'login-2fa-code', twoFactorCode, setTwoFactorCode, { autoComplete: twoFactor.backup ? 'off' : 'one-time-code', placeholder: twoFactor.backup ? '备用码' : '6 位验证码', maxLength: 64 })}
+        <div className="auth-more"><Button size="xs" variant="ghost" disabled={busy} onClick={switchTwoFactorInput} testId="login-2fa-switch">{twoFactor.backup ? '改用验证器里的 6 位数字' : '手机不在身边？用备用码登录'}</Button></div>
+      </>}
+      {mode === 'login' && !twoFactor && <>
         {field(siteId === 'solov-api' ? '注册邮箱' : '用户名或邮箱', 'login-account', identifier, (value) => { loginTouched.current = true; setIdentifier(value) }, { autoComplete: 'username', placeholder: siteId === 'solov-api' ? '输入历史账号的注册邮箱' : '输入用户名或邮箱' })}
         {field('密码', 'login-password', password, (value) => { loginTouched.current = true; setPassword(value) }, { password: true, autoComplete: 'current-password', placeholder: '输入密码' })}
         <label className="auth-checkbox"><input type="checkbox" checked={remember} onChange={(event) => setRemember(event.target.checked)} disabled={busy} data-testid="login-remember" />记住密码</label>
@@ -301,7 +350,7 @@ export function AuthFlow({ api: providedApi, initialMode = 'login', initialIdent
         {recoveryStep === 2 && <><p className="auth-hint">邮箱：{recoveryEmail}</p>{field('重置码或邮件链接', 'forgot-token', recoveryText, setRecoveryText, { placeholder: '粘贴重置码或邮件中的完整链接', autoComplete: 'off' })}<div className="auth-form-actions"><Button variant="ghost" icon={ArrowLeft} disabled={busy} onClick={() => { setRecoveryStep(1); setError('') }} testId="forgot-change-email">修改邮箱</Button><Button variant="ghost" icon={RefreshCw} disabled={busy || Boolean(resetCooldown.seconds)} onClick={sendReset} testId="forgot-resend">{resetCooldown.seconds ? `${resetCooldown.seconds} 秒后重发` : '重新发送'}</Button></div></>}
         {recoveryStep === 3 && <><div className="auth-reset-success"><Check size={22} aria-hidden="true" /><strong>密码已重置</strong></div><div className="auth-field"><label htmlFor="forgot-new-password">新密码</label><div className="auth-password-result"><Input id="forgot-new-password" testId="forgot-new-password" readOnly type={reveal ? 'text' : 'password'} value={newPassword} aria-label="新密码" mono /><Button variant="ghost" icon={reveal ? EyeOff : Eye} onClick={() => setReveal(!reveal)} testId="forgot-show-password">{reveal ? '隐藏' : '显示'}</Button><Button icon={Copy} onClick={copyPassword} disabled={busy} testId="forgot-copy-password">复制</Button></div>{copyFallback && <p className="auth-hint">选中新密码后使用系统复制操作，再返回登录。</p>}</div></>}
       </>}
-      {mode !== 'register' && !sourceVisible && (mode === 'login' || recoveryStep === 1) && <div className="auth-more"><Button size="xs" variant="ghost" disabled={busy} onClick={openHistorySource} testId="auth-source-expand">{mode === 'login' ? '用历史账号登录' : '找回历史账号的密码'}</Button></div>}
+      {mode !== 'register' && !sourceVisible && !twoFactor && (mode === 'login' || recoveryStep === 1) && <div className="auth-more"><Button size="xs" variant="ghost" disabled={busy} onClick={openHistorySource} testId="auth-source-expand">{mode === 'login' ? '用历史账号登录' : '找回历史账号的密码'}</Button></div>}
       {message && <p className="auth-message" role="status" data-testid="auth-message">{message}</p>}
       {error && <p className="auth-error" role="alert" data-testid="auth-error">{error}</p>}
       {browserAuthentication && <Button variant="ghost" icon={ExternalLink} onClick={openAccountWebsite} disabled={busy} testId="auth-open-website">前往{source.label}官网</Button>}

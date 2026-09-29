@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { ProviderConfigSummary, ProviderId } from '../../../../electron/ipc-contract'
-import { accountSwitchTarget, canUninstallTool, ccSwitchLeftoverFor, foreignKeyKind, switchAccountLabel, codexDesktopUpdateKind, configDirectoryMenuItem, connectionReady, externalInstallHint, isExternallyManagedInstall, presentTools, providerFor, recommendedVersionVerb, revertVersion, rollbackVersion, sourceFor, toolAvailability, toolInstallDirectory, toolUpdateOffer, updateCheckFailure, versionSubtitle, type ToolboxSnapshot, type ToolPresentation } from './model'
+import { accountSwitchTarget, canUninstallTool, ccSwitchLeftoverFor, foreignKeyKind, switchAccountLabel, codexDesktopUpdateKind, configDirectoryMenuItem, connectionReady, externalInstallHint, isExternallyManagedInstall, presentTools, providerFor, recommendedVersionVerb, revertVersion, rollbackVersion, sourceFor, toolAvailability, toolInstallDirectory, toolUpdateOffer, updateCheckFailure, updateButtonHint, versionSubtitle, type ToolboxSnapshot, type ToolPresentation } from './model'
 import {
   writeManualSourceMarker,
   type SourceMarkerStorage,
@@ -295,6 +295,14 @@ describe('renderer CLI version advice', () => {
   it('names the recommended version when the installed one merely differs', () => {
     expect(versionSubtitle(row({ recommendedVersion: '2.1.277', blockedReason: null, onRecommended: false, pinned: true, rollbackAvailable: true })))
       .toBe('2.1.276（推荐 2.1.277）')
+  })
+
+  it('says what the recommended version fixes next to its number and on the update button', () => {
+    const advice = { recommendedVersion: '2.1.277', blockedReason: null, onRecommended: false, pinned: true, rollbackAvailable: true, recommendedIsNewer: true, recommendedNote: '修好了一个会让每次提问都失败的问题' }
+    expect(versionSubtitle(row(advice))).toBe('2.1.276（推荐 2.1.277：修好了一个会让每次提问都失败的问题）')
+    expect(updateButtonHint(row(advice))).toBe('更新到 2.1.277：修好了一个会让每次提问都失败的问题')
+    expect(updateButtonHint(row({ ...advice, recommendedNote: undefined }))).toBeUndefined()
+    expect(updateButtonHint(row(null))).toBeUndefined()
   })
 
   it('stops recommending once the user chose to follow the latest release', () => {
