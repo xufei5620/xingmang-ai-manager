@@ -2611,27 +2611,39 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     return options.runtimeLog.snapshot(limit as number | undefined)
   })
   const feedbackPreviews = new Map<number, { id: string; text: string; entries: number; expiresAt: number }>()
-  const getFeedbackPreview = (senderId: number, id: unknown) => {
-    const reportId = requiredString(id, '反馈报告标识', 64)
-    const preview = feedbackPreviews.get(senderId)
-    if (!preview || preview.id !== reportId || preview.expiresAt < Date.now()) throw new Error('报告预览已过期，请重新生成')
-    return preview
-  }
-  registerTrustedHandler('runtime-logs:preview-feedback', async (event) => {
+  const captureFeedbackPreview = async (senderId: number) => {
     const report = await options.runtimeLog.captureFeedbackReport(600, FEEDBACK_REPORT_MAX_LENGTH)
     // captureFeedbackReport already trims the oldest log lines to fit; this
     // only guards a runtime log implementation that ignored the budget.
     if (report.text.length > FEEDBACK_REPORT_MAX_LENGTH) throw new Error('反馈报告超过大小上限，请在反馈页点「打开日志目录」，把日志文件直接发给客服')
     const preview = { id: randomUUID(), ...report, expiresAt: Date.now() + 30 * 60 * 1_000 }
-    feedbackPreviews.set(event.sender.id, preview)
+    feedbackPreviews.delete(senderId)
+    feedbackPreviews.set(senderId, preview)
     if (feedbackPreviews.size > 8) feedbackPreviews.delete(feedbackPreviews.keys().next().value!)
-    return { id: preview.id, text: preview.text, entries: preview.entries }
+    return preview
+  }
+  // 预览开着去截图、问客服，回来超过 30 分钟再点复制/导出，以前只给一句「请重新生成」，
+  // 小白不知道去哪生成。现在过期或被新预览顶掉的标识就地按最新日志重生成一份，
+  // 连同新文本一起交回去让对话框换掉旧内容；只有重生成本身失败才报错。
+  const resolveFeedbackPreview = async (senderId: number, id: unknown) => {
+    const reportId = requiredString(id, '反馈报告标识', 64)
+    const preview = feedbackPreviews.get(senderId)
+    if (preview && preview.id === reportId && preview.expiresAt >= Date.now()) return { preview, regenerated: false }
+    return { preview: await captureFeedbackPreview(senderId), regenerated: true }
+  }
+  const publicFeedbackPreview = (preview: { id: string; text: string; entries: number }) => (
+    { id: preview.id, text: preview.text, entries: preview.entries }
+  )
+  registerTrustedHandler('runtime-logs:preview-feedback', async (event) => {
+    return publicFeedbackPreview(await captureFeedbackPreview(event.sender.id))
   })
   registerTrustedHandler('runtime-logs:copy-feedback', async (event, reportId?: unknown) => {
     if (reportId !== undefined) {
-      const report = getFeedbackPreview(event.sender.id, reportId)
-      clipboard.writeText(report.text)
-      return { entries: report.entries }
+      const { preview, regenerated } = await resolveFeedbackPreview(event.sender.id, reportId)
+      clipboard.writeText(preview.text)
+      return regenerated
+        ? { entries: preview.entries, regenerated: publicFeedbackPreview(preview) }
+        : { entries: preview.entries }
     }
     const [report, snapshot] = await Promise.all([
       options.runtimeLog.feedbackReport(),
@@ -2641,7 +2653,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     return { entries: snapshot.total }
   })
   registerTrustedHandler('runtime-logs:export-feedback', async (event, reportId?: unknown) => {
-    const captured = reportId !== undefined ? getFeedbackPreview(event.sender.id, reportId).text : undefined
+    const captured = reportId !== undefined ? await resolveFeedbackPreview(event.sender.id, reportId) : undefined
     const result = await dialog.showSaveDialog({
       title: '导出反馈与诊断',
       defaultPath: `xingmang-feedback-${new Date().toISOString().slice(0, 10)}.txt`,
@@ -2650,11 +2662,13 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     if (result.canceled || !result.filePath) return null
     await writeAtomicSafeUtf8File(
       result.filePath,
-      captured ?? await options.runtimeLog.feedbackReport(),
+      captured?.preview.text ?? await options.runtimeLog.feedbackReport(),
       '反馈报告导出文件',
     )
     rememberExportedFile(result.filePath)
-    return { outputPath: result.filePath }
+    return captured?.regenerated
+      ? { outputPath: result.filePath, regenerated: publicFeedbackPreview(captured.preview) }
+      : { outputPath: result.filePath }
   })
   registerTrustedHandler('exports:reveal-file', async (_event, filePath: unknown) => {
     const target = requiredString(filePath, '导出文件路径', 4_096)

@@ -219,6 +219,10 @@ export interface SettingsSaveIssue {
 }
 export type { ExternalDeepLink } from './external-deep-links'
 export interface FeedbackReportPreview { id: string; text: string; entries: number }
+// Present only when the previewed report had expired or been superseded and
+// the main process captured a fresh one; the renderer swaps its dialog text.
+export interface FeedbackReportCopyResult { entries: number; regenerated?: FeedbackReportPreview }
+export interface FeedbackReportExportResult { outputPath: string; regenerated?: FeedbackReportPreview }
 export type UpdatePhase = MainUpdatePhase
 export type UpdateFailedStep = MainUpdateFailedStep
 export type InstalledRelease = MainInstalledRelease
@@ -856,8 +860,8 @@ export interface XingmangInvokeContract {
   exportDiagnostics: IpcInvokeDefinition<'diagnostics:export', [], { outputPath: string } | null>
   getRuntimeLogs: IpcInvokeDefinition<'runtime-logs:list', [limit?: number], RuntimeLogSnapshot>
   getFeedbackReport: IpcInvokeDefinition<'runtime-logs:preview-feedback', [], FeedbackReportPreview>
-  copyFeedbackReport: IpcInvokeDefinition<'runtime-logs:copy-feedback', [reportId?: string], { entries: number }>
-  exportFeedbackReport: IpcInvokeDefinition<'runtime-logs:export-feedback', [reportId?: string], { outputPath: string } | null>
+  copyFeedbackReport: IpcInvokeDefinition<'runtime-logs:copy-feedback', [reportId?: string], FeedbackReportCopyResult>
+  exportFeedbackReport: IpcInvokeDefinition<'runtime-logs:export-feedback', [reportId?: string], FeedbackReportExportResult | null>
   /** 只认本次运行里导出过的文件路径（主进程记着），渲染层给别的路径会被拒。 */
   revealExportedFile: IpcInvokeDefinition<'exports:reveal-file', [filePath: string], boolean>
   openRuntimeLogDirectory: IpcInvokeDefinition<'runtime-logs:open-directory', [], boolean>

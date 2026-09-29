@@ -756,20 +756,62 @@ describe('registerIpcHandlers', () => {
       } finally { fs.rmSync(directory, { recursive: true, force: true }) }
     })
 
-    it('isolates previews by sender and rejects an expired or superseded report before any output', async () => {
+    it('isolates previews by sender and regenerates an expired or superseded report instead of failing', async () => {
       const clock = vi.spyOn(Date, 'now').mockReturnValue(100_000)
+      const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-feedback-ipc-'))
       try {
-        register()
+        const { runtimeLog } = register()
+        runtimeLog.captureFeedbackReport
+          .mockResolvedValueOnce({ text: 'owner first\n', entries: 1 })
+          .mockResolvedValueOnce({ text: 'other sender own\n', entries: 2 })
+          .mockResolvedValueOnce({ text: 'owner current\n', entries: 3 })
+          .mockResolvedValueOnce({ text: 'owner after superseded\n', entries: 4 })
+          .mockResolvedValueOnce({ text: 'owner after expiry\n', entries: 5 })
+          .mockResolvedValueOnce({ text: 'owner export after expiry\n', entries: 6 })
         const owner = trustedEvent()
         const getPreview = electronMocks.handlers.get('runtime-logs:preview-feedback')!
         const copy = electronMocks.handlers.get('runtime-logs:copy-feedback')!
         const first = await getPreview(owner) as { id: string }
-        await expect(copy(trustedEvent(undefined, 102), first.id)).rejects.toThrow('已过期')
+        // Another window presenting the owner's id never receives the owner's text.
+        const foreign = await copy(trustedEvent(undefined, 102), first.id) as { regenerated: { text: string } }
+        expect(foreign.regenerated.text).toBe('other sender own\n')
+        expect(electronMocks.writeText).toHaveBeenLastCalledWith('other sender own\n')
         const current = await getPreview(owner) as { id: string }
-        await expect(copy(owner, first.id)).rejects.toThrow('已过期')
+        const superseded = await copy(owner, first.id) as { entries: number; regenerated: { id: string; text: string; entries: number } }
+        expect(superseded).toEqual({ entries: 4, regenerated: { id: expect.any(String), text: 'owner after superseded\n', entries: 4 } })
+        expect(superseded.regenerated.id).not.toBe(current.id)
         clock.mockReturnValue(100_000 + 30 * 60 * 1_000 + 1)
-        await expect(copy(owner, current.id)).rejects.toThrow('已过期')
-        await expect(electronMocks.handlers.get('runtime-logs:export-feedback')!(owner, current.id)).rejects.toThrow('已过期')
+        const expired = await copy(owner, superseded.regenerated.id) as { regenerated: { id: string; text: string } }
+        expect(expired.regenerated.text).toBe('owner after expiry\n')
+        expect(electronMocks.writeText).toHaveBeenLastCalledWith('owner after expiry\n')
+        // The regenerated report is itself a live preview: copying it again reuses it.
+        await expect(copy(owner, expired.regenerated.id)).resolves.toEqual({ entries: 5 })
+        clock.mockReturnValue(100_000 + 61 * 60 * 1_000)
+        const outputPath = path.join(directory, 'report.txt')
+        electronMocks.showSaveDialog.mockResolvedValueOnce({ canceled: false, filePath: outputPath })
+        await expect(electronMocks.handlers.get('runtime-logs:export-feedback')!(owner, expired.regenerated.id)).resolves.toEqual({
+          outputPath,
+          regenerated: { id: expect.any(String), text: 'owner export after expiry\n', entries: 6 },
+        })
+        expect(fs.readFileSync(outputPath, 'utf8')).toBe('owner export after expiry\n')
+        expect(runtimeLog.feedbackReport).not.toHaveBeenCalled()
+      } finally {
+        clock.mockRestore()
+        fs.rmSync(directory, { recursive: true, force: true })
+      }
+    })
+
+    it('reports a failed regeneration without copying or opening the save dialog', async () => {
+      const clock = vi.spyOn(Date, 'now').mockReturnValue(100_000)
+      try {
+        const { runtimeLog } = register()
+        const owner = trustedEvent()
+        const preview = await electronMocks.handlers.get('runtime-logs:preview-feedback')!(owner) as { id: string }
+        clock.mockReturnValue(100_000 + 30 * 60 * 1_000 + 1)
+        runtimeLog.captureFeedbackReport.mockRejectedValue(new Error('日志读取失败'))
+        await expect(electronMocks.handlers.get('runtime-logs:copy-feedback')!(owner, preview.id)).rejects.toThrow('日志读取失败')
+        await expect(electronMocks.handlers.get('runtime-logs:export-feedback')!(owner, preview.id)).rejects.toThrow('日志读取失败')
+        await expect(electronMocks.handlers.get('runtime-logs:copy-feedback')!(owner, 'x'.repeat(65))).rejects.toThrow('反馈报告标识')
         expect(electronMocks.writeText).not.toHaveBeenCalled()
         expect(electronMocks.showSaveDialog).not.toHaveBeenCalled()
       } finally { clock.mockRestore() }

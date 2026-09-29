@@ -59,6 +59,7 @@ import {
   errorMessage,
   ListState,
   ResultNotice,
+  type OperationNotice,
   useOperation,
   useResource,
   userFacingErrorMessage,
@@ -109,7 +110,13 @@ import {
 } from './features/app/runtime-log-filter'
 import { releaseNotesSection } from './features/app/release-notes'
 import type { V2Bridge, V2Page } from './types'
-import type { AppSettingsV2Update, DataTransferImportPreview, InstallCancelResult } from '../../electron/ipc-contract'
+import type {
+  AppSettingsV2Update,
+  DataTransferImportPreview,
+  FeedbackReportCopyResult,
+  FeedbackReportExportResult,
+  InstallCancelResult,
+} from '../../electron/ipc-contract'
 import type {
   PlatformProxyStatus,
   PlatformSystemState,
@@ -703,6 +710,25 @@ const runtimeLogLevelLabels: Readonly<Record<string, string>> = {
   debug: '调试',
 }
 
+// 预览过了 30 分钟，主进程会按最新日志重生成再复制/导出；提示要让客户知道拿到的是新的那份。
+export function feedbackCopyNotice(result: FeedbackReportCopyResult) {
+  return result.regenerated
+    ? '报告已更新到最新日志并复制，发给客服就行'
+    : '报告已复制'
+}
+
+export function feedbackExportNotice(
+  result: FeedbackReportExportResult | null,
+): OperationNotice | null {
+  if (!result) return null
+  return {
+    text: result.regenerated
+      ? `报告已更新到最新日志并导出：${result.outputPath}`
+      : `反馈报告已导出：${result.outputPath}`,
+    revealPath: result.outputPath,
+  }
+}
+
 export function FeedbackPage({
   api,
   openHelp,
@@ -920,8 +946,12 @@ export function FeedbackPage({
                 report &&
                 void operation.execute(
                   'copy',
-                  () => api.copyFeedbackReport(report.id),
-                  '报告已复制',
+                  async () => {
+                    const result = await api.copyFeedbackReport(report.id)
+                    if (result.regenerated) setReport(result.regenerated)
+                    return result
+                  },
+                  feedbackCopyNotice,
                 )
               }
             >
@@ -934,14 +964,12 @@ export function FeedbackPage({
                 report &&
                 void operation.execute(
                   'export',
-                  () => api.exportFeedbackReport(report.id),
-                  (result) =>
-                    result
-                      ? {
-                          text: `反馈报告已导出：${result.outputPath}`,
-                          revealPath: result.outputPath,
-                        }
-                      : null,
+                  async () => {
+                    const result = await api.exportFeedbackReport(report.id)
+                    if (result?.regenerated) setReport(result.regenerated)
+                    return result
+                  },
+                  feedbackExportNotice,
                 )
               }
             >
