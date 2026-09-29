@@ -1121,6 +1121,47 @@ test('confirmed topup completion refreshes balance and cached orders and clears 
   }
 })
 
+test('a payment window closed before settlement keeps confirming and points to the order', async () => {
+  const page = await fixture('page=account')
+  try {
+    await page.getByRole('tab', { name: '充值与订阅', exact: true }).click()
+    await page.getByTestId('account-recharge-submit').click()
+    await page.getByRole('dialog', { name: '确认充值报价' }).getByRole('button', { name: '打开支付窗口' }).click()
+    await page.getByText('等待支付结果', { exact: true }).waitFor()
+    await page.evaluate(() => window.emitPaymentWindowTerminal({ status: 'closed', tradeNo: 'XM-VISUAL-TOPUP', confirming: true }))
+    const notice = page.getByTestId('account-payment-notice')
+    await notice.getByText('星芒还在确认到账', { exact: false }).waitFor()
+    await notice.getByText('正在确认订单 XM-VISUAL-TOPUP 是否到账…', { exact: true }).waitFor()
+    assert.equal(await notice.getByRole('button', { name: '查看我的订单', exact: true }).count(), 1)
+
+    // 收起了提示也要把晚到的结果摆出来；别的订单的结果不算。
+    await notice.getByRole('button', { name: '收起提示', exact: true }).click()
+    await page.evaluate(() => window.emitPaymentWindowTerminal({ status: 'success', tradeNo: 'OTHER-ORDER' }))
+    assert.equal(await page.getByTestId('account-payment-notice').count(), 0)
+    await page.evaluate(() => window.emitPaymentWindowTerminal({ status: 'success', tradeNo: 'XM-VISUAL-TOPUP' }))
+    await page.getByText('订单 XM-VISUAL-TOPUP 已到账，余额已更新。', { exact: true }).waitFor()
+    await page.getByText('当前余额 $14.00', { exact: true }).waitFor()
+  } finally { await page.close() }
+})
+
+test('an unconfirmed payment opens my orders with its order number', async () => {
+  const page = await fixture('page=account')
+  try {
+    await page.getByRole('tab', { name: '充值与订阅', exact: true }).click()
+    await page.getByTestId('account-recharge-submit').click()
+    await page.getByRole('dialog', { name: '确认充值报价' }).getByRole('button', { name: '打开支付窗口' }).click()
+    await page.getByText('等待支付结果', { exact: true }).waitFor()
+    await page.evaluate(() => {
+      window.emitPaymentWindowTerminal({ status: 'closed', tradeNo: 'XM-VISUAL-TOPUP', confirming: true })
+      window.emitPaymentWindowTerminal({ status: 'unconfirmed', tradeNo: 'XM-VISUAL-TOPUP' })
+    })
+    await page.getByText('还没查到这笔订单到账', { exact: true }).waitFor()
+    await page.getByTestId('account-payment-orders').click()
+    await page.getByRole('tab', { name: '我的订单', exact: true, selected: true }).waitFor()
+    await page.waitForFunction(() => JSON.parse(document.documentElement.dataset.calls || '[]').some((call) => call.name === 'query-orders' && call.args.keyword === 'XM-VISUAL-TOPUP'))
+  } finally { await page.close() }
+})
+
 test('native preferences use the independent bridge while proxy remains a read-only query', async () => {
   const page = await fixture('page=settings&system=1')
   try {

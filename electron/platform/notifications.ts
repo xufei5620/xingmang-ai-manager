@@ -33,6 +33,7 @@ export type PlatformHostNotification =
   | 'accelerationAutoStarted'
   | 'hiddenToTray'
   | 'hiddenToMenuBar'
+  | 'paymentSettled'
 
 export interface NotificationMessage {
   title: string
@@ -208,6 +209,13 @@ const hostMessages: Record<
     kind: null,
     title: '星芒AI管理工具还在运行',
     body: '窗口已收起，点屏幕顶部菜单栏里的星芒图标就能打开。',
+  },
+  // 客户关了支付窗口以后才确认到账。钱是他自己刚付的，不归「余额不足」那类提醒管，
+  // 只看总开关。订单号不写进通知：通知中心谁都看得见，点进来「充值与订阅」页写着。
+  paymentSettled: {
+    kind: null,
+    title: '付款已到账',
+    body: '刚才那笔订单已到账，余额和订阅已更新。',
   },
 }
 

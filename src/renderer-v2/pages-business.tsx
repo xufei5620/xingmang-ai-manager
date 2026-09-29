@@ -61,6 +61,7 @@ export function BusinessPage({
         onConfigureTool={actions.openConfig}
         onToolConfigSaved={onToolConfigSaved}
         toolConfigConfirmed={toolConfigConfirmed}
+        onOpenHelp={actions.openHelp}
       />
     )
   if (page === 'sessions')

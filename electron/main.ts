@@ -2023,14 +2023,36 @@ if (!hasSingleInstanceLock) {
         }
         runtimeLog.log('warn', 'payment', 'navigation.blocked', '已阻止支付窗口跳转到未授权地址', { origin })
       },
-      onTerminalState: (event) => {
-        runtimeLog.log('info', 'payment', 'window.terminal', '支付窗口已进入终态并自动关闭', {
-          status: event.status,
-          hasTradeNo: Boolean(event.tradeNo),
-        })
+      onTerminalState: (event, context) => {
+        runtimeLog.log('info', 'payment', context.afterClose ? 'order.follow-up' : 'window.terminal',
+          context.afterClose ? '支付窗口关闭后在后台确认到了订单结果' : '支付窗口已进入终态并自动关闭', {
+            status: event.status,
+            hasTradeNo: Boolean(event.tradeNo),
+            ...(event.confirming ? { confirming: true } : {}),
+          })
         for (const window of BrowserWindow.getAllWindows()) {
           if (!window.isDestroyed()) {
             window.webContents.send(ipcEventChannels.onAccountPaymentWindowTerminal, event)
+          }
+        }
+        // 关窗后才到账：人多半已经去干别的了。正看着星芒时界面上那条提示自己会变，不再弹。
+        if (context.afterClose && event.status === 'success' && event.tradeNo) {
+          const main = managedMainWindow
+          const watching = Boolean(main && !main.isDestroyed() && main.isVisible() && !main.isMinimized() && main.isFocused())
+          if (!watching) {
+            try {
+              hostNotifier()({
+                event: 'paymentSettled',
+                eventKey: event.tradeNo,
+                onClick: () => {
+                  if (managedMainWindow && !managedMainWindow.isDestroyed()) {
+                    managedMainWindow.webContents.send(ipcEventChannels.onNavigate, 'topup')
+                  }
+                },
+              })
+            } catch (cause) {
+              runtimeLog.exception('payment', 'settled.notify-failed', cause)
+            }
           }
         }
       },
