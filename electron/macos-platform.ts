@@ -64,6 +64,8 @@ const persistedTerminalEnvironmentKeys = new Set([
   'GEMINI_API_KEY',
   'GOOGLE_GEMINI_BASE_URL',
   'GEMINI_MODEL',
+  // 让 Claude Code / Gemini CLI 也认公司或安全软件装进钥匙串的证书（system-certificate-trust.ts）。
+  'NODE_USE_SYSTEM_CA',
   'LANG',
   'LANGUAGE',
   'LC_ALL',

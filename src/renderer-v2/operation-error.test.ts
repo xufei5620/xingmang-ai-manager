@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { classifyOperationError, operationFallbackActions, operationLogPage, presentOperationError, type OperationErrorKey } from './operation-error'
-import { networkFailureMessages } from '../../electron/network-failure'
+import { networkFailureMessages, toolCertificateMessages } from '../../electron/network-failure'
 import { errors } from './registry/errors'
 
 /**
@@ -28,6 +28,9 @@ const catalogCoverage: Record<OperationErrorKey, { sample: string } | { unreacha
   diskFull: { sample: 'Claude Code 安装失败：npm 官方源：ENOSPC: no space left on device, write' },
   certDate: { sample: '账号接口请求失败：net::ERR_CERT_DATE_INVALID' },
   tlsIntercepted: { sample: 'Codex CLI 安装失败：npm 官方源：request to https://registry.npmjs.org failed, reason: self signed certificate in certificate chain' },
+  // 主进程（system-service.ts 的 withToolCertificateHint）把说明接在 npm 原文后面。
+  toolCertOutdatedNode: { sample: `Claude Code 安装失败：npm 官方源：SELF_SIGNED_CERT_IN_CHAIN。${toolCertificateMessages.outdatedNode}` },
+  toolCertElevated: { sample: `Claude Code 安装失败：npm 官方源：SELF_SIGNED_CERT_IN_CHAIN。${toolCertificateMessages.elevated}` },
   updateIntegrity: { sample: 'Claude Code 更新失败：SHA-512 完整性校验不一致' },
   backupIntegrity: { sample: '备份文件已损坏或被篡改' },
   unsafeStorage: { sample: '当前系统没有可用的密钥环，安全存储只能以明文保存，已拒绝写入托管 API Key。' },
@@ -234,6 +237,20 @@ describe('renderer-v2 operation error classification', () => {
     const hint = presentOperationError('Gemini CLI 安装失败：unable to get local issuer certificate')
     expect(hint?.title).toBe('连接被证书拦截')
     expect(hint?.actions).toEqual([{ id: 'retry', label: '重试' }, { id: 'log', label: '查看日志' }])
+  })
+
+  it('tells an outdated Node.js or an elevated app apart from a certificate the machine itself rejects', () => {
+    const raw = 'Claude Code 安装失败：npm 官方源：request to https://registry.npmjs.org failed, reason: self signed certificate in certificate chain'
+    const outdated = presentOperationError(`${raw}。${toolCertificateMessages.outdatedNode}`)
+    expect(outdated?.key).toBe('toolCertOutdatedNode')
+    expect(outdated?.body).toContain('Node.js')
+    expect(outdated?.body).not.toContain('换一个网络')
+    const elevated = presentOperationError(`${raw}。${toolCertificateMessages.elevated}`)
+    expect(elevated?.key).toBe('toolCertElevated')
+    expect(elevated?.body).toContain('正常打开')
+    // 没有主进程那句说明时，仍是「这台电脑也不认」的那条。
+    expect(presentOperationError(raw)?.key).toBe('tlsIntercepted')
+    expect(errors.tlsIntercepted.body).toContain('网络管理员')
   })
 
   it('blames the system clock when the certificate dates do not line up', () => {

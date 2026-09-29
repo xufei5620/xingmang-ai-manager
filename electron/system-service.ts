@@ -118,6 +118,7 @@ import {
 } from './tool-installation'
 export type { CliLaunchMode } from './tool-installation'
 import { isExactCliVersion, isNewerVersion, nodeVersionStatus, type NodeVersionStatus } from './versions'
+import { toolCertificateFailureKind, withSystemCertificateTrust } from './system-certificate-trust'
 import {
   inspectWindowsRestartRequired,
   installNodeRuntime as installNodeRuntimeLts,
@@ -232,7 +233,7 @@ import { createClaudeDesktopConfigService } from './claude-desktop-config'
 import { resolveClaudeDesktopPaths } from './claude-desktop-paths'
 import { inspectClaudeDesktopStoreVirtualization } from './claude-desktop-manifest'
 import { assertClaudeDesktopUnmanaged } from './claude-desktop-policy'
-import { isServiceUnavailableResponse, networkFailureMessages, parsesAsJsonObject } from './network-failure'
+import { classifyNetworkFailure, isServiceUnavailableResponse, networkFailureMessages, parsesAsJsonObject, toolCertificateMessages } from './network-failure'
 import { NewApiNetworkError } from './new-api-client'
 import { createSystemSnapshotCache } from './system-snapshot-cache'
 import { BoundedOperationQueue } from './bounded-operation-queue'
@@ -375,6 +376,15 @@ export function interactiveTerminalEnvironment(
   env.CLICOLOR = '1'
   env.CLICOLOR_FORCE = '1'
   return env
+}
+
+/**
+ * 普通权限打开工具时的基底：在 commandEnvironment 之上让 Claude Code、Gemini CLI
+ * 也信任这台电脑装的证书（公司上网审计、安全软件的网页扫描）。管理员身份那条路
+ * 用 trustedCommandEnvironment，不经过这里。
+ */
+export function sameUserTerminalEnvironment(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  return withSystemCertificateTrust(commandEnvironment(env))
 }
 
 /**
@@ -2132,6 +2142,12 @@ export interface SystemServiceOptions {
   reloadNetworkProxyConfig?: () => Promise<void>
   /** Artifact downloads follow the same proxy a browser would; see download-proxy.ts. */
   downloadFetch?: typeof fetch
+  /**
+   * 查 npm 包版本与完整性元数据用的 fetch。缺省 = 主进程自带的 Node fetch，行为与
+   * 从前一致；宿主接 Chromium 那条（net.fetch），它认这台电脑装的证书，公司电脑上
+   * 装工具才不会第一步就卡在「校验版本」。管理员身份时不用它，见 registryMetadataFetch。
+   */
+  registryFetch?: typeof fetch
   /** Loopback-only proxy variables handed to package-manager subprocesses. */
   resolveSubprocessProxyEnvironment?: () => Promise<NodeJS.ProcessEnv>
   /** 试连电脑里代理设置指向的本机端口；缺省 = 真的去连（stale-proxy-environment.ts）。 */
@@ -2304,6 +2320,16 @@ export function createSystemService(
   // 安装下载曾经完全无视机器上的代理：产物下载走 Node 自带网络栈、npm 子进程
   // 没有任何代理变量，于是开着加速也一样直连。这两个注入点把下载接回系统代理。
   const downloadFetch = serviceOptions.downloadFetch ?? fetch
+  /**
+   * 管理员身份时照旧用 Node 自带的根证书：当前用户的证书库普通权限就写得进，不能
+   * 让它决定管理员的安装信任哪张证书（与 trustedCommandEnvironment 剥掉
+   * NODE_USE_SYSTEM_CA 同一个理由）。取 fetch 放在调用时，测试替换全局 fetch 才生效。
+   */
+  const registryMetadataFetch: typeof fetch = (input, init) => (
+    serviceOptions.registryFetch && !(platform === 'win32' && windowsExecutionMode === 'trusted-only')
+      ? serviceOptions.registryFetch(input, init)
+      : fetch(input, init)
+  )
   const resolveSubprocessProxyEnvironment = serviceOptions.resolveSubprocessProxyEnvironment
     ?? (async (): Promise<NodeJS.ProcessEnv> => ({}))
   const acquireDownloadAcceleration = serviceOptions.acquireDownloadAcceleration
@@ -2525,6 +2551,22 @@ export function createSystemService(
     }
   }
 
+  /**
+   * npm 报「证书被换掉」时，说清是哪一种（system-certificate-trust.ts）。npm 已经带着
+   * 「也信任这台电脑的证书」去跑、仍然失败的，原文不动，交给渲染层「连接被证书拦截」
+   * 那条。Node 版本读 PATH 上的 node：npm 就是由它跑起来的。读不出版本就不下结论。
+   */
+  async function withToolCertificateHint(message: string): Promise<string> {
+    if (classifyNetworkFailure(message) !== 'tls') return message
+    const trustedOnly = process.platform === 'win32' && windowsExecutionMode === 'trusted-only'
+    let nodeVersion: string | null = null
+    if (!trustedOnly) {
+      try { nodeVersion = (await inspectTool('node')).version } catch { nodeVersion = null }
+    }
+    const kind = toolCertificateFailureKind({ trustedOnly, nodeVersion })
+    return kind ? `${message}。${toolCertificateMessages[kind]}` : message
+  }
+
   async function inspectNode(): Promise<ToolStatus> {
     const status = await inspectTool('node')
     if (!status.installed) return { ...status, tooOld: false, versionStatus: 'unknown' }
@@ -2706,7 +2748,7 @@ export function createSystemService(
       const controller = new AbortController()
       const timeout = setTimeout(() => controller.abort(), npmLatestQueryTimeoutMs)
       try {
-        const response = await fetch(npmPackageLatestUrl(registry, packageName), {
+        const response = await registryMetadataFetch(npmPackageLatestUrl(registry, packageName), {
           headers: { Accept: 'application/json' },
           redirect: 'error',
           signal: controller.signal,
@@ -2779,7 +2821,7 @@ export function createSystemService(
     const probe = (async (): Promise<LatestVersionProbe> => {
       const checkedAt = new Date().toISOString()
       try {
-        const result = await fetchGrokStableVersion({ abandonedSignal: budgetSignal })
+        const result = await fetchGrokStableVersion({ abandonedSignal: budgetSignal, fetchImpl: registryMetadataFetch })
         return {
           status: 'checked',
           version: result.version,
@@ -3669,8 +3711,10 @@ export function createSystemService(
       )
       const trustedRelease = await resolveCliInstallRelease(provider, grokInstallStrategy, {
         version: versionChoice.version,
-        fetchGrokStableVersion,
-        fetchNpmRelease: fetchNpmPackageReleaseMetadata,
+        fetchGrokStableVersion: () => fetchGrokStableVersion({ fetchImpl: registryMetadataFetch }),
+        fetchNpmRelease: (registry, packageName, version) => (
+          fetchNpmPackageReleaseMetadata(registry, packageName, version, registryMetadataFetch)
+        ),
       })
       if (!npmExecutable) throw new Error('未检测到 npm，请先安装 Node.js')
       const networkRegion = await inspectNetworkRegion()
@@ -3719,7 +3763,9 @@ export function createSystemService(
       let npmBaseEnvironment: Promise<NodeJS.ProcessEnv> | null = null
       const resolveNpmBaseEnvironment = (trustedOnly: boolean): Promise<NodeJS.ProcessEnv> => {
         if (!npmBaseEnvironment) {
-          const base = trustedOnly ? trustedCommandEnvironment() : commandEnvironment()
+          // 公司或安全软件装在这台电脑上的证书，npm 默认不认（system-certificate-trust.ts）。
+          // 管理员身份那条路不加：trustedCommandEnvironment 会把它剥掉，这里也不补回去。
+          const base = trustedOnly ? trustedCommandEnvironment() : withSystemCertificateTrust(commandEnvironment())
           npmBaseEnvironment = platform === 'win32' ? withoutDeadLoopbackProxies(base, provider) : Promise.resolve(base)
         }
         return npmBaseEnvironment
@@ -3824,7 +3870,7 @@ export function createSystemService(
       } catch (error) {
         if (isInstallCancelledError(error)) throw error
         cancellation?.throwIfCancelled()
-        throw new Error(`${definition.name} 安装失败：npm 官方源：${describeNpmCommandFailure(error)}`)
+        throw new Error(await withToolCertificateHint(`${definition.name} 安装失败：npm 官方源：${describeNpmCommandFailure(error)}`))
       }
       const officialLock = await readBoundedUtf8File(
         path.join(officialResolution, 'package-lock.json'),
@@ -3940,7 +3986,7 @@ export function createSystemService(
         // npm 替换正在运行的工具时报的是 EBUSY / EPERM,两者的原文都读不出「谁
         // 占着这个文件」。这里重新数一遍进程,数到了才改写成「文件被占用」。
         const occupied = await describeOccupiedCliFailure(provider, detail, detail, occupancyProbeRoot, updatingExistingInstall)
-        throw new Error(occupied ?? `${definition.name} 安装失败：${detail}`)
+        throw new Error(occupied ?? await withToolCertificateHint(`${definition.name} 安装失败：${detail}`))
       }
       sendInstallProgress(target, provider, 'output', `${definition.name} 已安装，正在检查安装结果`, undefined, { stage: 'final-check' })
       invalidateCliUpdateCache(provider)
@@ -4576,7 +4622,7 @@ export function createSystemService(
           // only vets the executable path and cannot see the environment.
           env: await withoutDeadLoopbackProxies(interactiveTerminalEnvironment(
             providerEnv,
-            windowsExecutionMode === 'trusted-only' ? trustedCommandEnvironment : commandEnvironment,
+            windowsExecutionMode === 'trusted-only' ? trustedCommandEnvironment : sameUserTerminalEnvironment,
           ), provider),
         })
       } catch (error) {
@@ -4594,7 +4640,7 @@ export function createSystemService(
         await launchMacosTerminal(buildDarwinCliLaunchPlan(
           { ...command, argv: cliLaunchArgv(provider, command.argv, mode) },
           workspace,
-          providerEnv,
+          withSystemCertificateTrust(providerEnv),
         ))
       } catch (error) {
         const detail = error instanceof Error ? error.message : String(error)
@@ -4603,7 +4649,7 @@ export function createSystemService(
       return launchResult
     }
 
-    const environment = interactiveTerminalEnvironment(providerEnv)
+    const environment = interactiveTerminalEnvironment(providerEnv, sameUserTerminalEnvironment)
     const command = await resolveVerifiedCliCommand(provider, providerEnv, windowsExecutionMode)
     const argv = cliLaunchArgv(provider, command.argv, mode)
     const terminals = [
