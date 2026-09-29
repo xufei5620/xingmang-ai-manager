@@ -131,8 +131,9 @@ export function createStarterWorkspace(parentDirectory: string, context: Workspa
     }
   } catch (error) {
     // 系统错误（没权限、盘满、只读）的原文是英文，换成一句能上屏的中文；
-    // 自己抛的中文校验错误原样上屏。
-    if (isSystemError(error)) throw new Error('可能是没有写入权限，或者磁盘已满')
+    // 自己抛的中文校验错误原样上屏。原始错误挂在 cause 上，「文档」不让写时
+    // 换地方（documents-fallback.ts）靠它认出是权限问题。
+    if (isSystemError(error)) throw new Error('可能是没有写入权限，或者磁盘已满', { cause: error })
     throw error
   }
   throw new Error(`「${starterWorkspaceContainerName}」里的同名文件夹太多了`)

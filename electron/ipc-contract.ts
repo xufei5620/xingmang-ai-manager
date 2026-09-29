@@ -72,6 +72,7 @@ import type {
   CodexDesktopLocaleStatus as MainCodexDesktopLocaleStatus,
 } from './codex-desktop-locale'
 import type {
+  DiagnosticFolderTarget as MainDiagnosticFolderTarget,
   DiagnosticState as MainDiagnosticState,
   DiagnosticsReport as MainDiagnosticsReport,
   DiagnosticsRunOptions as MainDiagnosticsRunOptions,
@@ -260,6 +261,7 @@ export interface ChooseWorkspaceOptions {
 }
 export type DiagnosticState = MainDiagnosticState
 export type DiagnosticsReport = MainDiagnosticsReport
+export type DiagnosticFolderTarget = MainDiagnosticFolderTarget
 export type DiagnosticsRunOptions = MainDiagnosticsRunOptions
 export type ConnectionCheckLayer = MainConnectionCheckLayer
 export type ConnectionCheckResult = MainConnectionCheckResult
@@ -1085,6 +1087,11 @@ export interface XingmangInvokeContract {
    * 不碰整台电脑那一份、不提权。没有入参：清哪几条由主进程在点的那一刻重新读、重新试连来定。
    */
   clearStaleProxySettings: IpcInvokeDefinition<'diagnostics:clear-stale-proxy', [], StaleProxyClearResult>
+  /**
+   * 检查页「打开文件夹」：「文档」不让写时，新项目或 AI 作品改放的那个文件夹。
+   * 入参只是「哪一个」，路径由主进程自己算（I5）。返回 false = 没打开。
+   */
+  openDiagnosticFolder: IpcInvokeDefinition<'diagnostics:open-folder', [target: DiagnosticFolderTarget], boolean>
 }
 
 export interface XingmangEventContract {
@@ -1318,6 +1325,7 @@ export const ipcInvokeChannels = {
   checkExternalClientConnection: 'diagnostics:check-external-connection',
   getAccountKeyOptions: 'account:get-key-options',
   clearStaleProxySettings: 'diagnostics:clear-stale-proxy',
+  openDiagnosticFolder: 'diagnostics:open-folder',
 } as const satisfies {
   [Method in keyof XingmangInvokeContract]: XingmangInvokeContract[Method]['channel']
 }

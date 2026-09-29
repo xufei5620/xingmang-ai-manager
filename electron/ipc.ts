@@ -18,7 +18,8 @@ import {
   sensitiveWorkspacePolicy,
   type SensitiveWorkspaceKind,
 } from './workspace-guard'
-import { createStarterWorkspace, resolveNewProjectParent } from './starter-workspace'
+import { resolveStarterWorkspaceContainer } from './starter-workspace'
+import { buildDocumentsFallbackPrompt, createStarterWorkspaceWithFallback } from './documents-fallback'
 import { usageDateRange } from './usage-date-range'
 import type { AppSettingsUpdate, AppTheme } from './app-settings'
 import { parseWindowState } from './window-preferences'
@@ -140,7 +141,7 @@ import type {
   ToolModelCheck,
   WindowCapabilities,
 } from './ipc-contract'
-import type { DiagnosticsReport, DiagnosticsRunOptions } from './diagnostics'
+import { isDiagnosticFolderTarget, type DiagnosticFolderTarget, type DiagnosticsReport, type DiagnosticsRunOptions } from './diagnostics'
 import { isCappedKeyUsedUp, withKeyQuotaExhausted, type ConnectionCheckResult } from './connection-check'
 import type { RuntimeLogStore } from './runtime-log'
 import { createExternalShellLauncher, type ExternalShellLauncher } from './system-shell'
@@ -169,6 +170,9 @@ export interface IpcRegistrationOptions {
   // 新建项目文件夹认的用户主目录（macOS 建在它下面）。省略 = os.homedir()；测试注入，
   // 免得在跑测试的 Mac 上往真实主目录里建文件夹。
   homeDirectory?: () => string
+  // 当前账号的 AI 作品实际存在哪（「文档」不让写时是主目录下的 XingmangAI）；检查页
+  // 「打开文件夹」用。main.ts 传启动时定下的位置；省略 = 这颗按钮打不开 AI 作品那一个。
+  aiOutputDirectory?: () => string
   // 「搬到新电脑」和「导出这段对话」的保存框默认落在桌面；main.ts 传 app.getPath('desktop')。
   // 省略 = 主目录下的 Desktop。
   desktopDirectory?: () => string
@@ -1281,6 +1285,7 @@ const ipcOperationLabels: Readonly<Record<string, string>> = {
   'diagnostics:check-external-connection': '客户端连接自检',
   'diagnostics:export': '诊断报告导出',
   'diagnostics:clear-stale-proxy': '清掉旧的代理设置',
+  'diagnostics:open-folder': '检查页打开文件夹',
   'runtime-logs:list': '运行日志读取',
   'runtime-logs:copy-feedback': '脱敏反馈文本复制',
   'runtime-logs:export-feedback': '反馈报告导出',
@@ -2060,10 +2065,13 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   async function createStarterWorkspaceOrExplain(parentWindow: BrowserWindow | undefined, nextStep: string): Promise<string | null> {
     try {
       const context = { platform: process.platform, home: options.homeDirectory?.() ?? os.homedir(), env: process.env }
-      const created = createStarterWorkspace(resolveNewProjectParent(documentsDirectory(), context), context)
-      // 不记路径（I13）：客服要的只是「这个目录是软件替他建的」。
-      options.runtimeLog.log('info', 'config', 'workspace.starter.created', '已替用户新建项目文件夹')
-      return created
+      const placement = createStarterWorkspaceWithFallback(documentsDirectory(), context)
+      // 不记路径（I13）：客服要的只是「这个目录是软件替他建的」和它是不是换过地方。
+      options.runtimeLog.log('info', 'config', 'workspace.starter.created', '已替用户新建项目文件夹', {
+        movedFromDocuments: placement.movedFromDocuments,
+      })
+      if (placement.movedFromDocuments) await explainDocumentsFallback(parentWindow, placement.directory)
+      return placement.directory
     } catch (error) {
       options.runtimeLog.exception('config', 'workspace.starter.failed', error)
       const errorBoxOptions = {
@@ -2078,6 +2086,28 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
       else await dialog.showMessageBox(errorBoxOptions)
       return null
     }
+  }
+  // 「文档」不让写、项目改建在主目录下：照实说项目在哪，给一颗「打开文件夹」。
+  // 这是本机弹框、不进日志，完整路径照样显示，用户才找得到。
+  async function explainDocumentsFallback(parentWindow: BrowserWindow | undefined, directory: string): Promise<void> {
+    const prompt = buildDocumentsFallbackPrompt(directory, process.platform)
+    const messageBoxOptions = {
+      type: 'info' as const,
+      title: prompt.title,
+      message: prompt.message,
+      detail: prompt.detail,
+      buttons: [...prompt.buttons],
+      defaultId: 0,
+      cancelId: 0,
+      noLink: true,
+    }
+    const answer = parentWindow
+      ? await dialog.showMessageBox(parentWindow, messageBoxOptions)
+      : await dialog.showMessageBox(messageBoxOptions)
+    if (answer.response !== prompt.openFolderIndex) return
+    await externalShell.openPath(directory).catch((error) => {
+      options.runtimeLog.exception('config', 'workspace.starter.open-folder-failed', error)
+    })
   }
   // 选到「每次都提醒」的目录（系统目录、四家工具存密钥的目录）时，选择器里已经
   // 问过一次；紧接着的那次打开不再重复问。只认同一个路径、只用一次、两分钟内有效，
@@ -3454,6 +3484,20 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     const clear = options.diagnosticsService.clearStaleProxy ?? (() => clearStaleUserProxyVariables())
     return clear()
   })
+  registerTrustedHandler('diagnostics:open-folder', async (_event, rawTarget: unknown) => {
+    if (!isDiagnosticFolderTarget(rawTarget)) throw new Error('不认识要打开的文件夹')
+    const directory = resolveDiagnosticFolder(rawTarget)
+    if (directory === null) return false
+    // 新项目那个容器可能还没建过（还没点过新建）：建一个空的再打开，和日志目录一样
+    // 先过 I8 的检查，路径上被换成联接的会在这里被拒。
+    ensureSafeDataDirectory(directory, rawTarget === 'projects' ? '项目文件夹' : 'AI 作品保存位置')
+    await externalShell.openPath(directory)
+    return true
+  })
+  function resolveDiagnosticFolder(target: DiagnosticFolderTarget): string | null {
+    if (target === 'ai-output') return options.aiOutputDirectory?.() ?? null
+    return resolveStarterWorkspaceContainer(options.homeDirectory?.() ?? os.homedir(), process.platform)
+  }
 
   return () => {
     feedbackPreviews.clear()

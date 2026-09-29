@@ -79,6 +79,7 @@ import { ToolStatusMeta, ToolStatusReason } from './features/tools/ToolStatusMet
 import { connectionCheckView } from './features/tools/connection-check'
 import { diagnosticDetailRows } from './features/app/diagnostic-details'
 import { canClearStaleProxy, staleProxyClearMessage, staleProxyConfirmBody } from './features/app/stale-proxy'
+import { diagnosticFolderTarget, diagnosticFolderUnavailableMessage } from './features/app/diagnostic-folder'
 import { requestSettingsGroup, takeSettingsGroup } from './features/app/settings-group-intent'
 import { parseImportedConversations } from './features/chat/storage'
 import type { ChatTransfer } from './features/chat/transfer'
@@ -371,6 +372,14 @@ export function HealthPage({
     }, staleProxyClearMessage)
     setProxyClearItem(null)
   }
+  // 「文档」不让写时那一行给的「打开文件夹」：打开了就不必再说什么。
+  const openDiagnosticFolder = (item: Diagnostic) => {
+    const target = diagnosticFolderTarget(item)
+    if (!target) return
+    void operation.execute('打开文件夹', async () => {
+      if (!(await api.openDiagnosticFolder(target))) throw new Error(diagnosticFolderUnavailableMessage)
+    }, () => null)
+  }
   const fix = (item: Diagnostic) => {
     const provider = item.code.replace('PROVIDER_', '').toLowerCase()
     if (item.code.startsWith('PROVIDER_') && isProvider(provider) && openConfig) {
@@ -493,6 +502,16 @@ export function HealthPage({
                       testId="health-clear-stale-proxy"
                     >
                       清掉这条旧设置
+                    </Button>
+                  )}
+                  {diagnosticFolderTarget(item) && (
+                    <Button
+                      size="sm"
+                      icon={FolderOpen}
+                      onClick={() => openDiagnosticFolder(item)}
+                      testId={`health-open-folder-${item.code}`}
+                    >
+                      打开文件夹
                     </Button>
                   )}
                   {item.state !== 'pass' && diagnosticHasFix(item.code) && (

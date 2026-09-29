@@ -4,6 +4,7 @@ import { randomBytes as nodeRandomBytes } from 'node:crypto'
 import { assertNoReparseComponents, ensureSafeDataDirectory, readSafeUtf8File } from './safe-local-data'
 import { AiAssetMetadataStore, aiAssetMetadataFileName, aiAssetMetadataMaximumBytes } from './ai-asset-metadata-store'
 import { resolveStarterWorkspaceParent, type StarterWorkspaceLocationContext } from './starter-workspace'
+import { isWritePermissionError, probeDirectoryWritableSync } from './documents-fallback'
 
 /**
  * AI 生成的图片、视频、音频放在「文档」下的这个文件夹里。
@@ -34,6 +35,62 @@ export function resolveAiOutputRoot(options: ResolveAiOutputRootOptions): string
   if (!options.isPackaged) return path.join(path.resolve(options.projectRoot ?? process.cwd()), 'output')
   const impl = options.location.platform === 'win32' ? path.win32 : path.posix
   return impl.join(resolveStarterWorkspaceParent(options.documentsDirectory, options.location), aiOutputFolderName)
+}
+
+export interface AiOutputPlacement {
+  root: string
+  /** 「文档」不让写，改存到了用户主目录下。检查页照实告诉用户作品在哪。 */
+  movedFromDocuments: boolean
+  /** 改存之后「文档」那边还有以前的作品：没有搬（多半也删不掉），检查页提一句。 */
+  earlierWorksLeftInDocuments: boolean
+}
+
+export interface ChooseAiOutputRootOptions extends ResolveAiOutputRootOptions {
+  /** 把位置换成当前账号那一套（realm-data-roots.ts 的 assetOutputDirectory）；缺省原样。 */
+  scope?: (root: string) => string
+  /** 建目录并试写一次；缺省真的写。测试用它模拟「文档」不让写。 */
+  probe?: (directory: string) => void
+}
+
+/**
+ * 启动时定下 AI 作品存在哪：照 resolveAiOutputRoot 放「文档」，「文档」不让写
+ * （受控文件夹访问、安全软件的文档保护、Mac 上点过不允许）就改存到用户主目录下的
+ * XingmangAI，和云盘那条退路同一个地方。
+ *
+ * 在启动时定、不在生成时换：图片、视频、音频、元数据几个 store 共用一个位置，
+ * 中途换会让刚存的作品在别的 store 里找不到。生成前那次试写（AiAssetStore.assertWritable）
+ * 照旧在扣费前拦下，所以运行中途才被拦的也不会白扣费，下次启动就换过来了。
+ * 别的原因写不进（磁盘满、只读盘）不换地方，照原来的提示。
+ */
+export function chooseAiOutputRoot(options: ChooseAiOutputRootOptions): AiOutputPlacement {
+  const scope = options.scope ?? ((root: string) => root)
+  const preferred = scope(resolveAiOutputRoot(options))
+  const unchanged: AiOutputPlacement = { root: preferred, movedFromDocuments: false, earlierWorksLeftInDocuments: false }
+  if (!options.isPackaged) return unchanged
+  const impl = options.location.platform === 'win32' ? path.win32 : path.posix
+  const fallback = scope(impl.join(options.location.home, aiOutputFolderName))
+  if (fallback === preferred) return unchanged
+  try {
+    (options.probe ?? probeAiOutputDirectory)(preferred)
+    return unchanged
+  } catch (error) {
+    if (!isWritePermissionError(error)) return unchanged
+  }
+  return { root: fallback, movedFromDocuments: true, earlierWorksLeftInDocuments: hasAccountFolders(preferred) }
+}
+
+function probeAiOutputDirectory(directory: string): void {
+  ensureSafeDataDirectory(directory, LABEL)
+  probeDirectoryWritableSync(directory)
+}
+
+function hasAccountFolders(directory: string): boolean {
+  try {
+    return fs.readdirSync(directory, { withFileTypes: true })
+      .some((entry) => entry.isDirectory() && userDirectoryPattern.test(entry.name))
+  } catch {
+    return false
+  }
 }
 
 /** 老版本的保存位置：可执行文件旁边的 output。开发环境没有老位置可搬。 */

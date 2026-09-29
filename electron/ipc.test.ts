@@ -1126,7 +1126,7 @@ describe('registerIpcHandlers', () => {
       expect(electronMocks.showOpenDialog).toHaveBeenCalledTimes(1)
       expect(service.updateStoredConfig).toHaveBeenCalledWith({ version: 2, workspace: expected })
       expect(extensionService.setRepositoryContext).toHaveBeenCalledWith(expected)
-      expect(runtimeLog.log).toHaveBeenCalledWith('info', 'config', 'workspace.starter.created', expect.any(String))
+      expect(runtimeLog.log).toHaveBeenCalledWith('info', 'config', 'workspace.starter.created', expect.any(String), { movedFromDocuments: false })
       expect(JSON.stringify(runtimeLog.log.mock.calls)).not.toContain(documents)
     } finally {
       fs.rmSync(documents, { recursive: true, force: true })
@@ -1625,6 +1625,38 @@ describe('registerIpcHandlers', () => {
       trustedEvent(),
       'ms-windows-store://pdp/?ProductId=OTHER',
     )).rejects.toThrow('不允许打开该链接')
+  })
+
+  it('opens the check page folders by name only, never by a renderer path', async () => {
+    const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-ipc-folder-home-')))
+    try {
+      const aiOutput = path.join(home, 'XingmangAI')
+      fs.mkdirSync(aiOutput)
+      register(undefined, undefined, undefined, undefined, undefined, undefined, {}, {
+        homeDirectory: () => home,
+        aiOutputDirectory: () => aiOutput,
+      })
+      const handler = electronMocks.handlers.get(ipcInvokeChannels.openDiagnosticFolder)!
+
+      await expect(handler(trustedEvent(), 'projects')).resolves.toBe(true)
+      // 还没新建过项目时先建出空容器再打开。
+      expect(fs.statSync(path.join(home, 'XingmangProjects')).isDirectory()).toBe(true)
+      await expect(handler(trustedEvent(), 'ai-output')).resolves.toBe(true)
+      expect(electronMocks.openPath.mock.calls).toEqual([[path.join(home, 'XingmangProjects')], [aiOutput]])
+
+      await expect(handler(trustedEvent(), 'C:\\Windows')).rejects.toThrow('不认识要打开的文件夹')
+      await expect(handler(trustedEvent(), { target: 'projects' })).rejects.toThrow('不认识要打开的文件夹')
+      expect(electronMocks.openPath).toHaveBeenCalledTimes(2)
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true })
+    }
+  })
+
+  it('reports the AI works folder as unavailable when the host did not say where it is', async () => {
+    register()
+
+    await expect(electronMocks.handlers.get(ipcInvokeChannels.openDiagnosticFolder)!(trustedEvent(), 'ai-output')).resolves.toBe(false)
+    expect(electronMocks.openPath).not.toHaveBeenCalled()
   })
 
   it('opens the validated runtime log directory through the external shell proxy', async () => {
