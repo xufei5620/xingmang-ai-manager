@@ -115,7 +115,7 @@ import { createProxyBypass, networkSettingsTarget, probeDirectConnection } from 
 import { attachPlatformAuditLog } from './platform/runtime-log-bridge'
 import { migrateLegacyWindowsLoginItem } from './platform/system-service'
 import { recordStartupFailure, redactHomeDirectory } from './startup-log'
-import { inspectProviderConfig } from './config-files'
+import { inspectProviderConfig, syncXingmangImageMcpConfigs } from './config-files'
 import { buildFeedbackEnvironmentLines, buildFeedbackRuntimeLines, pickFeedbackRuntimeSnapshot } from './feedback-environment'
 import { managedCliRoot } from './managed-cli-paths'
 import { buildFeedbackSelfCheckLines, type FeedbackConnectionRecord } from './feedback-self-check'
@@ -141,7 +141,7 @@ import {
   installXingmangAiSkillFiles,
   resolveXingmangAiBundledSkillRoot,
 } from './xingmang-ai-skill'
-import { syncXingmangImageMcp } from './xingmang-ai-mcp'
+import { buildXingmangImageMcpInvocation } from './xingmang-ai-mcp'
 import { resolveClaudeStatusLineScriptPath } from './claude-status-line'
 import { cliHookEventsDirectory, resolveCliHookScriptPath } from './cli-hooks'
 import { createCliHookEventMonitor } from './cli-hook-events'
@@ -2586,12 +2586,11 @@ if (!hasSingleInstanceLock) {
         userHome: os.homedir(),
         syncImageMcp: async (input) => {
           const nodeExecutable = await findExecutable('node', { env: process.env })
-          if (!nodeExecutable) throw new Error('没有找到可运行星芒图片 MCP 的 Node.js')
-          await syncXingmangImageMcp({
-            extensionService,
-            nodeExecutable,
-            ...input,
-          })
+          if (!nodeExecutable) return ['这台电脑上没有找到 Node.js']
+          const invocation = buildXingmangImageMcpInvocation(nodeExecutable, input.skillDirectory)
+          return syncXingmangImageMcpConfigs(rootedOptions.system.providerRoots, invocation, {
+            codex: !input.officialCodex,
+          }).warnings
         },
       },
       ...(manualUninstallVisualFixtureEnabled

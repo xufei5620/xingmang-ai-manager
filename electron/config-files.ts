@@ -30,6 +30,12 @@ import {
 import { applyClaudeRelayModelPicker, claudeRelayModelPickerOutdated, removeClaudeRelayModelPicker } from './claude-model-picker'
 import { assertNoReparseComponents, ensureSafeDataDirectory, readSafeUtf8FileSync } from './safe-local-data'
 import { resolveRelocatedPath } from './relocated-folders'
+import {
+  applyXingmangImageMcpToJson,
+  applyXingmangImageMcpToToml,
+  applyXingmangImagePermissionToClaudeSettings,
+  type XingmangImageMcpInvocation,
+} from './xingmang-ai-mcp'
 
 const MAX_NATIVE_CONFIG_BYTES = 2 * 1024 * 1024
 // ~/.claude.json 会随会话历史一起长，2MB 上限会误伤正常用户。
@@ -1810,6 +1816,132 @@ export function ensureGeminiProjectContextFiles(
     ...executeFilePlans([{ path: configPath, content: next.content }], {}, providerRoot),
     changed: true,
   }
+}
+
+// ---------------------------------------------------------------------------
+// 星芒画图工具（MCP）
+//
+// 登录同步后替四家工具登记同一个 xingmang-image。Codex 与 Grok 直接写 config.toml，
+// 不走 `codex mcp add`：只装了 Codex 桌面端的客户没有命令行版，照样要能用上。
+// 每家只在它的配置目录已经存在时才写，没装过的工具不会被凭空建出目录。
+
+export interface XingmangImageMcpSyncOptions {
+  /** Codex 用官方 ChatGPT 登录时它自带画图，不再重复登记。 */
+  codex: boolean
+}
+
+export interface XingmangImageMcpSyncResult {
+  changed: ProviderId[]
+  warnings: string[]
+}
+
+function existingDirectory(directory: string): boolean {
+  try {
+    const info = fs.lstatSync(directory)
+    return info.isDirectory() && !info.isSymbolicLink()
+  } catch {
+    return false
+  }
+}
+
+function parseTomlForMcp(content: string, label: string): Record<string, unknown> {
+  try {
+    return TOML.parse(content)
+  } catch (error) {
+    throw new Error(`${label} 无法解析${tomlErrorLocation(error)}，未执行修改`)
+  }
+}
+
+function syncXingmangImageMcpToml(
+  provider: 'codex' | 'grok',
+  configPath: string,
+  providerRoot: string,
+  invocation: XingmangImageMcpInvocation,
+): boolean {
+  assertSafeConfigPath(configPath, providerRoot, 'file')
+  const label = provider === 'codex' ? '现有 Codex config.toml' : '现有 Grok config.toml'
+  const current = requireConfigText(configPath, label)
+  if (current === null) return false
+  const parsed = parseTomlForMcp(current, label)
+  if (!applyXingmangImageMcpToToml(parsed, invocation, provider)) return false
+  assertNoReparseComponents(path.dirname(providerRoot), 'Provider 配置根目录')
+  executeFilePlans([{ path: configPath, content: tomlContent(parsed) }], {}, providerRoot)
+  return true
+}
+
+function syncXingmangImageMcpClaude(roots: ProviderConfigRoots, invocation: XingmangImageMcpInvocation): boolean {
+  const root = roots.userHome
+  const claudeRoot = providerConfigRoot('claude', roots)
+  const rootConfigPath = path.join(root, '.claude.json')
+  const settingsPath = path.join(claudeRoot, 'settings.json')
+  assertSafeConfigPath(rootConfigPath, root, 'file')
+  assertSafeConfigPath(settingsPath, root, 'file')
+  const rootLabel = '现有 Claude Code ~/.claude.json'
+  const rootCurrent = requireConfigText(rootConfigPath, rootLabel, MAX_CLAUDE_ROOT_CONFIG_BYTES)
+  const rootParsed = requireWorkspaceTrustJson(rootCurrent, rootLabel)
+  const plans: FilePlan[] = []
+  if (applyXingmangImageMcpToJson(rootParsed, invocation, 'claude')) {
+    plans.push({ path: rootConfigPath, content: jsonContent(rootParsed) })
+  }
+  const settingsLabel = '现有 Claude Code settings.json'
+  const settingsCurrent = requireConfigText(settingsPath, settingsLabel)
+  if (settingsCurrent !== null) {
+    const settingsParsed = requireWorkspaceTrustJson(settingsCurrent, settingsLabel)
+    if (applyXingmangImagePermissionToClaudeSettings(settingsParsed)) {
+      plans.push({ path: settingsPath, content: jsonContent(settingsParsed) })
+    }
+  }
+  if (plans.length === 0) return false
+  assertNoReparseComponents(path.dirname(root), '用户主目录')
+  // 两份文件一起提交：只登记了服务器、没放行调用，客户每次都会被问一遍。
+  executeFilePlans(plans, {}, root)
+  return true
+}
+
+function syncXingmangImageMcpGemini(roots: ProviderConfigRoots, invocation: XingmangImageMcpInvocation): boolean {
+  const providerRoot = providerConfigRoot('gemini', roots)
+  const configPath = path.join(providerRoot, 'settings.json')
+  assertSafeConfigPath(configPath, providerRoot, 'file')
+  const label = '现有 Gemini CLI settings.json'
+  const current = requireConfigText(configPath, label)
+  const parsed = requireGeminiWorkspaceJson(current, label)
+  if (!applyXingmangImageMcpToJson(parsed, invocation, 'gemini')) return false
+  assertNoReparseComponents(path.dirname(providerRoot), 'Provider 配置根目录')
+  executeFilePlans([{ path: configPath, content: geminiJsonContent(current, parsed) }], {}, providerRoot)
+  return true
+}
+
+/** 每家单独提交、单独失败：一家的配置读不懂，不该拖累另外三家。 */
+export function syncXingmangImageMcpConfigs(
+  rootsInput: ProviderConfigRoots,
+  invocation: XingmangImageMcpInvocation,
+  options: XingmangImageMcpSyncOptions,
+): XingmangImageMcpSyncResult {
+  const roots = normalizeProviderConfigRoots(rootsInput)
+  const changed: ProviderId[] = []
+  const warnings: string[] = []
+  const steps: Array<[ProviderId, () => boolean]> = [
+    ['codex', () => options.codex
+      && existingDirectory(roots.codexHome)
+      && syncXingmangImageMcpToml('codex', codexConfigSnapshotPaths(roots).active, roots.codexHome, invocation)],
+    ['claude', () => existingDirectory(providerConfigRoot('claude', roots))
+      && syncXingmangImageMcpClaude(roots, invocation)],
+    ['gemini', () => existingDirectory(providerConfigRoot('gemini', roots))
+      && syncXingmangImageMcpGemini(roots, invocation)],
+    ['grok', () => {
+      const providerRoot = providerConfigRoot('grok', roots)
+      return existingDirectory(providerRoot)
+        && syncXingmangImageMcpToml('grok', path.join(providerRoot, 'config.toml'), providerRoot, invocation)
+    }],
+  ]
+  for (const [provider, step] of steps) {
+    try {
+      if (step()) changed.push(provider)
+    } catch (error) {
+      warnings.push(`${provider}：${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+  return { changed, warnings }
 }
 
 /**

@@ -287,7 +287,7 @@ export interface IpcRegistrationOptions {
   xingmangAiSkill?: {
     bundledRoot: string
     userHome: string
-    syncImageMcp?: (input: { configPath: string; scriptPath: string }) => Promise<void>
+    syncImageMcp?: (input: { skillDirectory: string; officialCodex: boolean }) => Promise<string[]>
   }
 }
 

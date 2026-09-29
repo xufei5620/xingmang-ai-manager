@@ -1,20 +1,36 @@
-# 中转账号的桌面端图片能力
+# 星芒画图工具（xingmang-image MCP）
 
-星芒登录的普通 API Key 不能启用 Codex Desktop 内置的 ChatGPT `image_gen.imagegen` 执行器。该执行器在当前 Codex 运行时还要求 Codex backend 认证；仅配置 `base_url`、`OPENAI_API_KEY` 和 `requires_openai_auth` 不满足这个条件。
+## 为什么不是原生画图
 
-本项目现在提供一个受管 MCP 连接 `xingmang-image` 作为兼容路径：账号同步成功后，星芒会把 MCP 服务器写入用户的 Codex `config.toml`。用户在桌面端直接说“画一张图”，模型可以调用 `generate_image`；服务器经星芒图片中转请求 `/v1/images/generations`，再通过 MCP image content 把图片返回到当前对话。
+Codex 自带的 `image_gen.imagegen` 只对 ChatGPT 登录开放：`codex-rs/core/src/tools/spec_plan.rs` 的 `image_generation_available` 要求 `requires_openai_auth` **且** `AuthManager::current_auth_uses_codex_backend`，星芒写给客户的是 API Key，从 0.156.1 到上游最新都过不了这道门（2026-09-29 读 rust-v0.156.1 / v0.159.1 源码核实）。绕开只能伪造 ChatGPT 登录，不做。Claude Code 本身不出图。
 
-这个路径的用户体验是：
+原来的生图技能是让 AI 在终端里跑 `node generate.mjs`，这条命令受 Codex 沙箱管：星芒给 Codex 写的是 `sandbox_mode = "workspace-write"`、不放行联网，所以在 Codex 里画图或改图会被断网或自动审核拦下。
 
-- 不需要安装或手动输入星芒 Skill 命令。
-- 图片会在 Codex 对话中显示，并使用桌面端通用图片查看、复制和下载能力。
-- 图片模型由调用参数选择，默认 `gpt-image-2`，也支持当前中转已验证的 `gpt-image-2.5-flare` 与 `gpt-image-2.5-sunburst`。
+## 现在怎么做
 
-它仍然与官方内置 `image_gen` 有边界：MCP 结果属于 generic image content，不会自动进入官方 `generated-image` 画廊、原生图片编辑历史或官方图片额度展示。原生 ChatGPT 登录不安装这条 MCP，避免和官方执行器重复。
+登录同步后，星芒把同一个 stdio MCP 服务器 `xingmang-image` 写进四家工具的配置。MCP 服务器由工具本身在命令沙箱之外启动，不需要放宽沙箱：
 
-安全边界：
+| 工具 | 写到哪里 | 调用时限 | 免确认 |
+|---|---|---|---|
+| Codex（桌面端与命令行共用） | `$CODEX_HOME/config.toml` 的 `[mcp_servers.xingmang-image]` | `tool_timeout_sec = 300` | `[mcp_servers.xingmang-image.tools.generate_image] approval_mode = "approve"` |
+| Claude Code | `~/.claude.json` 的 `mcpServers` | 缺省即可 | `~/.claude/settings.json` 的 `permissions.allow` 加 `mcp__xingmang-image__generate_image` |
+| Gemini CLI | `~/.gemini/settings.json` 的 `mcpServers` | `timeout = 300000` | `trust = true`（只作用于这一个服务器） |
+| Grok | `~/.grok/config.toml` 的 `[mcp_servers.xingmang-image]` | `tool_timeout_sec = 300` | 未找到对应配置，待真机 |
 
-- API Key 只留在星芒 Skill 配置文件，由 MCP 子进程按路径读取；不会写入 MCP 的 TOML `env` 值。
-- MCP 只允许 HTTPS 中转地址、受限图片模型、固定 `/v1/images/generations` 路径，拒绝重定向并限制响应大小和超时。
-- 账号同步发现已有同名 MCP 时不覆盖用户配置；需要替换时由用户在 MCP 页面手动处理。
-- 退出账号只清除 Skill 配置中的 Key，保留 MCP 条目；调用时会返回“缺少图片分组 Key”，不会使用旧凭据。
+- 直接写文件，不调各家 `mcp add`：只装了 Codex 桌面端的客户没有命令行版，照样能用。写入走 `executeFilePlans`（两阶段提交 + 备份 + 回滚）。
+- 只写已存在的配置目录；Codex 用官方 ChatGPT 登录时不写（它有原生画图）。
+- 同名条目只有「启动的是 星芒AI 技能目录下 `scripts/mcp-server.mjs`」才算本软件的，才会改写（例如 Node 换了位置）；别的一律不动。用户关掉过（`enabled = false`）就保持关着。
+- 工具说明和 `SKILL.md` 都让 AI 优先用这个工具，技能脚本留作没有工具时的兜底。
+
+## 安全边界
+
+- Key 不写进任何工具的配置，只通过环境变量 `XINGMANG_IMAGE_CONFIG_PATH` 告诉脚本 `config.json` 在哪；脚本先用 Codex Key，401/403/429/503 时换生图分组 Key。上游报错里的 `sk-…`、`Bearer …` 打码。
+- 只连 `https://xm.solov.cc` / `https://api.solov.cc` 的 `/v1/images/generations` 与 `/v1/images/edits`，拒绝重定向，300 秒超时，响应 32MB 上限，模型白名单。
+- 改图读取的原图：必须是绝对路径、单个普通文件（拒符号链接，lstat 与 fstat 同一文件）、不超过 20MB、按文件头判定为 PNG/JPEG/WebP，最多 4 张。被提示词注入要求「改一下 ~/.ssh/id_rsa」时，内容校验会拒绝上传。
+- 退出账号只清 Key，工具条目保留；调用时会提示重新登录，不会用旧凭据。
+
+## 待真机确认
+
+- Codex 桌面端第一次调用是否还会弹「允许吗」（源码 `mcp_tool_call.rs` 里 `approve` 直接跳过确认，但桌面端的自动审核有没有另一道没实测）。
+- 没装 Node 的电脑：登记会跳过并在日志里写「这台电脑上没有找到 Node.js」，工具不会出现。
+- Grok 调 MCP 工具时是否要确认。

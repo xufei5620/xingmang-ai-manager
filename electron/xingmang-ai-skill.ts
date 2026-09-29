@@ -77,8 +77,11 @@ export interface XingmangAiSkillSyncOptions {
   baseUrl?: string
   officialCodex?: boolean
   codexHome?: string
-  /** Registers the no-Skill MCP image bridge after the shared config is ready. */
-  syncImageMcp?: (input: { configPath: string; scriptPath: string }) => Promise<void>
+  /**
+   * Registers the 星芒画图 MCP tool once a skill directory holds both the fresh
+   * config and the bundled server script. Returns warnings to surface in the log.
+   */
+  syncImageMcp?: (input: { skillDirectory: string; officialCodex: boolean }) => Promise<string[]>
 }
 
 export interface XingmangAiSkillInstallOptions {
@@ -575,10 +578,14 @@ export async function syncXingmangAiSkill(
   }
 
   let configured = 0
+  let mcpDirectory: string | null = null
   for (const directory of skillDirectoriesForConfig(options.userHome)) {
     try {
       await writeSkillConfig(directory, config)
       configured += 1
+      if (!mcpDirectory && bundledSkillFileExists(path.join(directory, 'scripts', 'mcp-server.mjs'))) {
+        mcpDirectory = directory
+      }
     } catch (error) {
       warnings.push(directoryFailureMessage(error))
     }
@@ -593,15 +600,16 @@ export async function syncXingmangAiSkill(
       ...(warnings.length ? { directoryWarnings: warnings } : {}),
     }
   }
-  if (options.syncImageMcp && options.officialCodex !== true) {
-    const sharedDirectory = resolveXingmangAiSkillDirectories(options.userHome)[0]
+  // 工具读的 config.json 必须是这次真写成功的那一份，所以只从刚写过的目录里挑。
+  if (options.syncImageMcp && mcpDirectory) {
     try {
-      await options.syncImageMcp({
-        configPath: path.join(sharedDirectory, XINGMANG_AI_CONFIG_FILE),
-        scriptPath: path.join(sharedDirectory, 'scripts', 'mcp-server.mjs'),
+      const mcpWarnings = await options.syncImageMcp({
+        skillDirectory: mcpDirectory,
+        officialCodex: options.officialCodex === true,
       })
+      warnings.push(...mcpWarnings.map((warning) => `星芒画图工具未登记：${warning}`))
     } catch (error) {
-      warnings.push(`原生图片 MCP 未配置：${directoryFailureMessage(error)}`)
+      warnings.push(`星芒画图工具未登记：${directoryFailureMessage(error)}`)
     }
   }
   return {
