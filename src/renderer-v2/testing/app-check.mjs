@@ -4502,3 +4502,53 @@ test('tutorial installation guides open the Mac desktop chapter and clear previo
     await clean(page)
   } finally { await page.close() }
 })
+
+// #623: a bad tool config is a recoverable toolbox partition, not a reason to
+// trap the whole application on Splash. The account path must fail before it
+// can issue a managed Key or rewrite any local configuration.
+test('startup configuration failure opens the signed-in toolbox without issuing Keys or overwriting tools', async () => {
+  const page = await open('startupConfigFail=1&allInstalled=1')
+  try {
+    await page.getByTestId('page-home').waitFor()
+    const failure = page.getByTestId('home-config-failure')
+    await failure.waitFor()
+    assert.match(await failure.innerText(), /工具配置暂未读到：本地测试操作失败/)
+    assert.equal(await page.getByTestId('tool-row-codex').getByText('未安装', { exact: true }).count(), 0)
+    const written = await page.evaluate(() => window.v2Test.calls.filter((entry) => ['syncManagedCliKeys', 'configureManagedCliKeys', 'saveConfig', 'saveConfigWithAccountKey', 'createAccountKey', 'switchAccountSource'].includes(entry.method)))
+    assert.deepEqual(written, [])
+    await page.getByTestId('nav-more').click()
+    await page.getByTestId('nav-health').click()
+    await page.getByTestId('page-health').waitFor()
+    await page.getByTestId('nav-backups').click()
+    await page.getByTestId('page-backups').waitFor()
+    await page.getByTestId('nav-home').click()
+    await page.evaluate(() => { window.v2Test.fail = '' })
+    await failure.getByRole('button', { name: '重新检测' }).click()
+    await failure.waitFor({ state: 'detached' })
+    await page.getByTestId('tool-row-codex').getByText('已配好').waitFor()
+    assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((entry) => ['syncManagedCliKeys', 'configureManagedCliKeys', 'saveConfig', 'saveConfigWithAccountKey', 'createAccountKey', 'switchAccountSource'].includes(entry.method))), [])
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('startup configuration failure lets a guest log in and reach recovery pages without creating Keys', async () => {
+  const page = await open('guest=1&existing=1&startupConfigFail=1&allInstalled=1')
+  try {
+    await page.getByTestId('welcome-page').waitFor()
+    await page.getByTestId('welcome-login').click()
+    await page.getByTestId('login-account').fill('fixture-user')
+    await page.getByTestId('login-password').fill('fixture-password')
+    await page.getByTestId('auth-agree').check()
+    await page.getByTestId('login-submit').click()
+    await page.getByTestId('guide-pause').click()
+    await page.getByTestId('page-home').waitFor()
+    await page.getByTestId('home-config-failure').waitFor()
+    await page.getByTestId('nav-more').click()
+    await page.getByTestId('nav-health').click()
+    await page.getByTestId('page-health').waitFor()
+    await page.getByTestId('nav-backups').click()
+    await page.getByTestId('page-backups').waitFor()
+    assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((entry) => ['syncManagedCliKeys', 'configureManagedCliKeys', 'saveConfig', 'saveConfigWithAccountKey', 'createAccountKey', 'switchAccountSource'].includes(entry.method))), [])
+    await clean(page)
+  } finally { await page.close() }
+})

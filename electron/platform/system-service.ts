@@ -277,6 +277,8 @@ export class PlatformSystemService {
           announcement: true,
           spend: true,
           acceleration: true,
+          cliTrouble: true,
+          cliTurn: true,
           ...current.notifications,
           [kind]: enabled,
         },
