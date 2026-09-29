@@ -12,7 +12,6 @@ export interface GuideSetupResult {
   connection: GuideResultRow
   billing: string
   next: GuideResultRow
-  backupId: string | null
   prompt: string | null
 }
 
@@ -21,79 +20,99 @@ interface GuideSetupInput {
   tool?: GuideToolState
   signedIn: boolean
   readiness: { prepared: boolean; connected: boolean }
+  /** 引导里的工具名，比如「Codex 桌面端」。 */
+  name: string
   officialName: string
+  /** 右上角显示的账号名；没有就只说「当前账号」。 */
+  accountName?: string | null
   switched?: AccountSourceSwitchResult | null
 }
 
+// 和「改用 xxx」按钮用同一种截断，免得同一个名字在两处长短不一。
+function currentAccountLabel(accountName: string | null | undefined): string {
+  const name = [...(accountName?.trim() ?? '')]
+  if (!name.length) return '当前账号'
+  return `当前账号 ${name.length > 16 ? `${name.slice(0, 15).join('')}…` : name.join('')}`
+}
+
 function installationResult(route: GuideRoute, tool: GuideToolState | undefined, prepared: boolean): GuideResultRow {
-  if (route === 'chat') return { value: '无需另装工具', detail: '星芒聊天已在本软件内，可直接从问题开始。', tone: 'ok' }
-  if (!tool || tool.detectionError) return { value: '安装状态暂未读到', detail: '请重新检测后再判断是否需要安装。', tone: 'warn' }
-  if (!tool.installed) return { value: '尚未检测到安装', detail: '安装操作结束后仍需由本机检测确认。', tone: 'warn' }
-  const version = tool.version ? ` v${tool.version.replace(/^v/i, '')}` : '，版本暂未读到'
+  if (route === 'chat') return { value: '不用另装', detail: '聊天就在本软件里，直接提问就行。', tone: 'ok' }
+  if (!tool || tool.detectionError) return { value: '暂时没读到', detail: '点「重新检测」再看一次。', tone: 'warn' }
+  if (!tool.installed) return { value: '还没装好', detail: '回到上一步把它装好。', tone: 'warn' }
+  const version = tool.version?.replace(/^v/i, '')
   const update = tool.update
-  const detail = !prepared ? '工具已找到，请继续处理运行环境或平台支持状态。'
-    : update?.knownIssue ? `这个版本有已知问题，建议${update.manualHint ? '用原安装方式更新' : '更新'}到 ${update.target || update.version}。`
-      : update ? `建议${update.manualHint ? '用原安装方式更新' : '更新'}到 ${update.target || update.version}；不影响继续准备。`
-        : '已找到本机安装，接下来确认连接方式。'
-  return { value: `已检测到安装${version}`, detail, tone: !prepared || update || !tool.version ? 'warn' : 'ok' }
+  const how = update?.manualHint ? '用它原来的安装方式更新' : '更新'
+  const detail = !prepared ? '还差一点准备工作，回到上一步按提示补齐。'
+    : update?.knownIssue ? `这一版有已知问题，建议${how}到 ${update.target || update.version}。`
+      : update ? `有更新的版本 ${update.target || update.version}，可以以后再${how}，不影响现在用。`
+        : '可以直接用。'
+  return { value: version ? `已装好（版本 ${version}）` : '已装好', detail, tone: !prepared || update ? 'warn' : 'ok' }
 }
 
 function connectionResult(input: GuideSetupInput): { row: GuideResultRow; billing: string } {
-  const { route, tool, signedIn, readiness, officialName, switched } = input
+  const { route, tool, signedIn, readiness, name, officialName, accountName, switched } = input
+  const current = currentAccountLabel(accountName)
   if (route === 'chat') return signedIn
-    ? { row: { value: '已登录星芒账号', detail: '进入聊天后发送第一句话。', tone: 'ok' }, billing: '在星芒聊天发送请求后，按所选模型和当前账号规则计费。' }
-    : { row: { value: '等待登录星芒账号', detail: '登录后才能开始聊天。', tone: 'warn' }, billing: '尚未发起请求，不会产生本次任务用量。' }
-  if (!tool || tool.detectionError) return { row: { value: '连接状态暂未读到', detail: '请重新检测本机配置。', tone: 'warn' }, billing: '配置未读到，暂不能判断计费归属。' }
-  if (tool.source === 'official') return {
-    row: tool.officialLoginRequired
-      ? { value: `${officialName} 待在客户端登录`, detail: '本机尚未检测到该客户端的官方登录。', tone: 'warn' }
-      : { value: `${officialName} 官方来源`, detail: '请在客户端确认登录状态与可用功能。', tone: 'neutral' },
-    billing: '官方账号的额度与计费以客户端显示为准，星芒余额不代表官方额度。',
-  }
-  if (tool.source === 'manual') return {
-    row: { value: '手动填写密钥', detail: readiness.connected ? '本机配置已识别，可打开工具尝试。' : '请核对密钥和模型。', tone: readiness.connected ? 'neutral' : 'warn' },
-    billing: '请求按这把密钥所属服务的规则计费，账号归属需自行核对。',
-  }
-  if (tool.source === 'unknown') return {
-    row: { value: '现有配置，归属待确认', detail: tool.keyState === 'otherAccount' ? '这把 Key 可能属于同站其他账号。' : '本机无法确认这份配置属于哪个账号。', tone: 'warn' },
-    billing: '密钥的账号归属未确认，请先核对再判断用量与费用。',
-  }
-  if (tool.source === 'account') {
-    const switchedHere = switched?.target === 'account' ? switched : null
-    const detail = switchedHere?.verified && readiness.connected
-      ? '切换时的连接基础检查通过。'
-      : switchedHere && !switchedHere.verified
-        ? '配置已切换，连接基础检查尚未完成。'
-        : readiness.connected ? '本机配置已识别，可打开工具尝试。' : '请核对本机配置和登录状态。'
+    ? { row: { value: current, detail: '进聊天就能提问。', tone: 'ok' }, billing: '聊天花的是当前账号的余额。' }
+    : { row: { value: '还没登录', detail: '登录后就能聊天。', tone: 'warn' }, billing: '还没开始用，不花钱。' }
+  if (!tool || tool.detectionError) return { row: { value: '暂时没读到', detail: '点「重新检测」再看一次。', tone: 'warn' }, billing: '读到设置后才能说清。' }
+  // 刚在引导里切过来源时，以这次切换的结果为准：检测快照可能还没跟上，
+  // 不能让刚点完的人看不到任何回执。
+  const source = switched ? switched.target : tool.source
+  if (source === 'official') {
+    const loginRequired = switched?.target === 'official' ? switched.loginRequired : tool.officialLoginRequired
     return {
-      row: { value: !readiness.connected ? '星芒账号来源待配置' : signedIn ? '当前星芒账号 Key' : '本机星芒账号 Key', detail, tone: readiness.connected && switchedHere?.verified ? 'ok' : readiness.connected ? 'neutral' : 'warn' },
-      billing: !readiness.connected ? '密钥尚未确认写入，请先完成配置再判断计费来源。' : signedIn
-        ? '经这把 Key 发出的模型请求按当前星芒账号规则计费；客户端其他功能另依其官方账号规则。'
-        : '经这把 Key 发出的请求按密钥归属计费；请登录后核对是否属于当前账号。',
+      row: loginRequired
+        ? { value: `${officialName}，还没登录`, detail: `打开 ${name}，用 ${officialName}登录一次。`, tone: 'warn' }
+        : { value: officialName, detail: `能用多少，在 ${name} 里看。`, tone: 'neutral' },
+      billing: `花的是 ${officialName}自己的额度，不扣当前账号的余额。`,
     }
   }
-  return { row: { value: '连接未设置', detail: '请选择账号或密钥并保存配置。', tone: 'warn' }, billing: '尚未连接，暂不能判断计费归属。' }
+  if (source === 'manual') return {
+    row: { value: '自己填的密钥', detail: readiness.connected ? '设置已读到，打开工具试一次。' : '请检查填的密钥和模型。', tone: readiness.connected ? 'neutral' : 'warn' },
+    billing: '花的是这把密钥所在账号的余额，不一定是当前账号。',
+  }
+  if (source === 'unknown') return {
+    // 别家的站认不出来，只说是不是当前账号的，不说对方是谁（和第 3 步的提示一致）。
+    row: tool.keyState === 'otherAccount' ? { value: '可能不是当前账号的密钥', detail: '能用，但用量可能算到别的账号上。', tone: 'warn' }
+      : tool.keyState === 'changed' ? { value: '设置被改过', detail: '在本软件之外被改过，现在还能用。', tone: 'warn' }
+        : tool.keyState === 'otherSite' ? { value: '不是当前账号的密钥', detail: '换成当前账号就能接着用。', tone: 'warn' }
+          : { value: '别处的配置', detail: '原来的配置原样留着，先看看怎么处理。', tone: 'warn' },
+    billing: '可能不扣当前账号的余额。改用当前账号后，就花当前账号的。',
+  }
+  if (source === 'account') {
+    const detail = switched?.target === 'account'
+      ? switched.verified ? '刚才改用时试连过，能连上。' : '已经改好，但这次没试通，原因看下面。'
+      : !readiness.connected ? '还没设好，点「去完成连接配置」保存一次。'
+        : signedIn ? '设置已读到，打开工具试一次。' : '设置已读到，登录后能核对是不是你的账号。'
+    const verified = switched?.target === 'account' && switched.verified
+    return {
+      row: { value: signedIn ? current : '还没登录', detail, tone: !readiness.connected || (switched && !switched.verified) ? 'warn' : verified ? 'ok' : 'neutral' },
+      billing: !readiness.connected ? '设好之后才开始花当前账号的余额。'
+        : signedIn ? '花的是当前账号的余额。' : '花的是这把密钥所在账号的余额，登录后能核对。',
+    }
+  }
+  return { row: { value: '还没设好', detail: '选好账号后保存一次。', tone: 'warn' }, billing: '设好之前不会花钱。' }
 }
 
 export function buildGuideSetupResult(input: GuideSetupInput): GuideSetupResult {
-  const { route, tool, readiness, switched } = input
+  const { route, readiness } = input
   const connection = connectionResult(input)
-  const backupId = route !== 'chat' && tool?.source === 'account' && switched?.target === 'account' && switched.backupId.trim()
-    ? switched.backupId : null
-  const next: GuideResultRow = !readiness.prepared
-    ? { value: '请返回准备工具', detail: '完成安装或运行环境后重新检测。', tone: 'warn' }
-    : !readiness.connected
-      ? { value: '请核对连接', detail: '保存配置或在客户端登录后重新检测。', tone: 'warn' }
-      : { value: route === 'chat' ? '可以开始聊天' : '可以尝试打开工具', detail: '打开后发送下面的示例。', tone: 'neutral' }
   const prompt = route === 'codexDesktop'
     ? '请用中文先阅读当前项目，概述目标，并列出开始实现前需要确认的三个问题；先不要修改文件。'
     : route === 'chat' ? '请先问我想解决的问题和限制，然后给我一个今天就能做的第一步。' : null
+  const next: GuideResultRow = !readiness.prepared
+    ? { value: '先回上一步', detail: '把工具准备好后，点「重新检测」。', tone: 'warn' }
+    : !readiness.connected
+      ? { value: '先把账号设好', detail: '保存设置或在工具里登录后，点「重新检测」。', tone: 'warn' }
+      : route === 'chat'
+        ? { value: '可以开始聊天', detail: '把下面这句话发出去试试。', tone: 'neutral' }
+        : { value: '打开工具试一次', detail: prompt ? '打开后把下面这句话发给它试试。' : '打开后随便问它一个问题试试。', tone: 'neutral' }
   return {
-    install: installationResult(route, tool, readiness.prepared),
+    install: installationResult(route, input.tool, readiness.prepared),
     connection: connection.row,
     billing: connection.billing,
     next,
-    backupId,
     prompt,
   }
 }
