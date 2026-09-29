@@ -171,7 +171,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   const accountEpoch = useRef(0)
   const mounted = useRef(true)
   const confirmationLock = useRef(false)
-  const launchRequest = useRef(false)
+  const launchRequest = useRef<{ epoch: number } | null>(null)
   const diagnosticsStarted = useRef(false)
   const previousBalance = useRef<{ scope: string; value: number } | null>(null)
   const bootstrapEpoch = useRef(0)
@@ -189,6 +189,14 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   // 恢复结束再补读一次配置（见 onAccountSessionChanged）。
   const restoring = sessionRestoring(session)
   const restoreRetrying = sessionRestoreRetrying(session)
+  function cancelPendingLaunchDialogs() {
+    pendingModelSwap.current?.('cancel')
+    pendingModelSwap.current = null
+    setModelSwap(null)
+    setRestartDialog(false)
+    setSwitchRestartOffer(null)
+    setChineseDialog(false)
+  }
   const toolbox = useToolbox(native, boot === 'ready' && (session.authenticated || restoring || guide || workspaceEntered), scope)
   const accelerationApi = useMemo(() => createAccelerationApi(native), [native])
   const acceleration = useAcceleration(accelerationApi, session.authenticated ? scope : null)
@@ -245,7 +253,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   }), [offline, onlineCause, proxyBypassNotice, onlineChecking, recheckOnline, openNetworkSettings, dismissProxyBypassNotice])
   // 换账号等于换了一整套上下文：首页那份「最近」缓存（60 秒）必须当场作废，
   // 否则切过去的头一眼看到的还是上一个账号在的时候读到的列表。
-  useLayoutEffect(() => { accountEpoch.current++; pendingModelSwap.current?.('cancel'); setAccountReadError(null); refreshRecent() }, [scope, session.authenticated, refreshRecent])
+  useLayoutEffect(() => { accountEpoch.current++; cancelPendingLaunchDialogs(); setAccountReadError(null); refreshRecent() }, [scope, session.authenticated, refreshRecent])
   const siteId = accountSiteId(session)
   const relaySite = resolveRelaySite(siteId)
   const supportUrl = resolveSupportServiceUrl(session)
@@ -525,6 +533,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   }, [supportUrl])
   const reloadAccount = useCallback(async () => {
     const id = ++accountEpoch.current
+    cancelPendingLaunchDialogs()
     let next: AccountSessionState
     try { next = await app.session() }
     catch (cause) {
@@ -542,6 +551,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   useEffect(() => native.onAccountSessionChanged?.((next) => {
     sessionEvents.current++
     accountEpoch.current++
+    cancelPendingLaunchDialogs()
     bootstrapEpoch.current++
     bootstrapInFlight.current = null
     setSession(next); setAccountReadError(null); setUnread(false); setConfigTool(null); setExternalClient(null); setPaymentReturn(undefined)
@@ -779,45 +789,67 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
    * mode 走的是 toolsApi.launch 那套「两侧各取自己认得的那个」:codexDesktop 认
    * 'open' | 'restart',四家 CLI 认 'new' | 'resumeLast'(#292)。
    */
-  async function launch(id: ToolId, mode: 'open' | 'restart' | CliLaunchMode = 'open', remembered?: string, newFolder = false): Promise<boolean> {
-    const current = toolbox.snapshot
-    if (!current) throw new Error('请先完成工具检测')
-    const config = await toolsApi.readConfig()
-    const tool = presentTools({ ...current, config }).find((entry) => entry.id === id)
-    if (!tool) throw new Error('当前平台暂不支持打开这个工具')
-    if (tool.error) throw new Error(tool.error)
-    if (!tool.status.installed) throw new Error('工具尚未安装，请先完成准备。')
-    if (!tool.configured) { openToolConfig(id); throw new Error('请先确认账号连接，再打开工具。') }
-    // 核对结果和换模型的提问都只属于发起时那个账号：中途切了号，这次打开作废，免得拿上一个账号的结论去改新账号的默认模型（#538）。
-    const epoch = accountEpoch.current
-    const offer = modelSwapOffer(tool.name, await toolsApi.checkModels(id))
-    if (!mounted.current || epoch !== accountEpoch.current) return false
-    if (offer) {
-      const choice = await new Promise<ModelSwapChoice>((answer) => {
-        pendingModelSwap.current = answer
-        setModelSwap({ offer, answer })
-      })
-      pendingModelSwap.current = null
-      setModelSwap(null)
-      if (choice === 'cancel' || !mounted.current || epoch !== accountEpoch.current) return false
-      if (choice === 'swap') {
-        // 空 Key + merge：只换模型，Key 和这份配置的来源都原样留着（Claude Code 的菜单随之重写）。
-        try { await toolsApi.saveManual({ provider: providerFor(id), apiKey: '', model: offer.replacement, mode: 'merge' }) }
-        catch (cause) { if (mounted.current) toast.show(`模型没换成，先照旧打开：${errorMessage(cause)}`, 'warn') }
+  function launchIsCurrent(epoch: number): boolean {
+    return mounted.current && accountEpoch.current === epoch
+  }
+  async function launch(id: ToolId, mode: 'open' | 'restart' | CliLaunchMode = 'open', remembered?: string, newFolder = false, epoch = accountEpoch.current): Promise<boolean> {
+    try {
+      if (!launchIsCurrent(epoch)) return false
+      const current = toolbox.snapshot
+      if (!current) throw new Error('请先完成工具检测')
+      const config = await toolsApi.readConfig()
+      if (!launchIsCurrent(epoch)) return false
+      const tool = presentTools({ ...current, config }).find((entry) => entry.id === id)
+      if (!tool) throw new Error('当前平台暂不支持打开这个工具')
+      if (tool.error) throw new Error(tool.error)
+      if (!tool.status.installed) throw new Error('工具尚未安装，请先完成准备。')
+      if (!tool.configured) { openToolConfig(id); throw new Error('请先确认账号连接，再打开工具。') }
+      // Every awaited step belongs to the account that requested this launch. A
+      // later session event must not resume the old request against a new owner.
+      const offer = modelSwapOffer(tool.name, await toolsApi.checkModels(id))
+      if (!launchIsCurrent(epoch)) return false
+      if (offer) {
+        let answerCurrent: (choice: ModelSwapChoice) => void = () => undefined
+        const choice = await new Promise<ModelSwapChoice>((answer) => {
+          answerCurrent = answer
+          pendingModelSwap.current = answer
+          setModelSwap({ offer, answer })
+        })
+        if (pendingModelSwap.current === answerCurrent) {
+          pendingModelSwap.current = null
+          setModelSwap(null)
+        }
+        if (choice === 'cancel' || !launchIsCurrent(epoch)) return false
+        if (choice === 'swap') {
+          // Empty key keeps the existing source; an ordinary save failure still
+          // opens with the old model, while an account change stops the launch.
+          try { await toolsApi.saveManual({ provider: providerFor(id), apiKey: '', model: offer.replacement, mode: 'merge' }) }
+          catch (cause) {
+            if (!launchIsCurrent(epoch)) return false
+            toast.show(`模型没换成，先照旧打开：${errorMessage(cause)}`, 'warn')
+          }
+          if (!launchIsCurrent(epoch)) return false
+        }
       }
+      let workspace = config.workspace
+      if (id !== 'codexDesktop') {
+        // newFolder：不弹选择器，主进程在「文档」下替用户建一个空的项目文件夹。
+        const selectedWorkspace = remembered ?? await toolsApi.chooseWorkspace(newFolder ? { createStarter: true } : undefined)
+        if (!launchIsCurrent(epoch) || !selectedWorkspace) return false
+        workspace = selectedWorkspace
+      }
+      if (!launchIsCurrent(epoch)) return false
+      const waitLabel = launchWaitLabel(toolbox.jobs, (key) => tools.find((tool) => tool.id === key)?.name ?? clientConnections.find((client) => client.id === key)?.name)
+      const started = await toolbox.run(`launch:${id}`, waitLabel, async () => {
+        if (!launchIsCurrent(epoch)) return
+        const warning = launchWarning(await toolsApi.launch(id, workspace, mode))
+        if (launchIsCurrent(epoch) && warning) toast.show(warning, 'warn')
+      })
+      return launchIsCurrent(epoch) && started
+    } catch (cause) {
+      if (!launchIsCurrent(epoch)) return false
+      throw cause
     }
-    let workspace = config.workspace
-    if (id !== 'codexDesktop') {
-      // newFolder：不弹选择器，主进程在「文档」下替用户建一个空的项目文件夹。
-      const selectedWorkspace = remembered ?? await toolsApi.chooseWorkspace(newFolder ? { createStarter: true } : undefined)
-      if (!selectedWorkspace) return false
-      workspace = selectedWorkspace
-    }
-    const waitLabel = launchWaitLabel(toolbox.jobs, (key) => tools.find((tool) => tool.id === key)?.name ?? clientConnections.find((client) => client.id === key)?.name)
-    return toolbox.run(`launch:${id}`, waitLabel, async () => {
-      const warning = launchWarning(await toolsApi.launch(id, workspace, mode))
-      if (mounted.current && warning) toast.show(warning, 'warn')
-    })
   }
   /**
    * The Chinese runtime patch is what makes Codex start with a local debugging
@@ -825,44 +857,65 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
    * where it was always on would lose Chinese without noticing, so the first
    * launch with no stored answer asks, and the answer is stored either way.
    */
-  async function askForChineseRuntimePatch(): Promise<boolean> {
+  async function askForChineseRuntimePatch(epoch = accountEpoch.current): Promise<boolean> {
     const storedChoice = settings?.codexDesktopChineseRuntimePatch
     if (!chineseRuntimePatchAnswerMissing(platform, storedChoice)) return false
     const locale = await toolsApi.getLocale().catch(() => null)
+    if (!launchIsCurrent(epoch)) return false
     if (!shouldAskForChineseRuntimePatch({ platform, storedChoice, locale })) return false
     setChineseDialog(true)
     return true
   }
   async function answerChineseRuntimePatch(choice: 'enabled' | 'disabled'): Promise<void> {
+    const epoch = accountEpoch.current
     // 'enabled' goes through setCodexDesktopLocale, the one path that owns both
     // config.toml and the stored answer; only the refusal is written directly.
-    if (choice === 'enabled') await toolsApi.setLocale('zh-CN')
-    else await app.savePreferences({ version: 2, codexDesktopChineseRuntimePatch: 'disabled' })
-    setSettings(await app.readSettings())
-    setChineseDialog(false)
-    await launch('codexDesktop')
+    try {
+      if (choice === 'enabled') await toolsApi.setLocale('zh-CN')
+      else await app.savePreferences({ version: 2, codexDesktopChineseRuntimePatch: 'disabled' })
+      if (!launchIsCurrent(epoch)) return
+      const nextSettings = await app.readSettings()
+      if (!launchIsCurrent(epoch)) return
+      setSettings(nextSettings)
+      setChineseDialog(false)
+      await launch('codexDesktop', 'open', undefined, false, epoch)
+    } catch (cause) {
+      if (launchIsCurrent(epoch)) throw cause
+    }
   }
   function requestLaunch(id: ToolId, remembered?: string, mode: CliLaunchMode = 'new', newFolder = false) {
-    if (launchRequest.current) return
-    launchRequest.current = true
+    const request = { epoch: accountEpoch.current }
+    if (launchRequest.current?.epoch === request.epoch) return
+    launchRequest.current = request
     void perform('打开工具', async () => {
-      if (id === 'codexDesktop' && (await native.getCodexDesktopStatus()).running) setRestartDialog(true)
-      else if (id === 'codexDesktop' && await askForChineseRuntimePatch()) return
-      else if (remembered) await launchRemembered(id, remembered, mode)
-      else await launch(id, mode, undefined, newFolder)
-    }).finally(() => { launchRequest.current = false })
+      try {
+        if (!launchIsCurrent(request.epoch)) return
+        if (id === 'codexDesktop') {
+          const status = await native.getCodexDesktopStatus()
+          if (!launchIsCurrent(request.epoch)) return
+          if (status.running) { setRestartDialog(true); return }
+          const asking = await askForChineseRuntimePatch(request.epoch)
+          if (!launchIsCurrent(request.epoch) || asking) return
+        }
+        if (remembered) await launchRemembered(id, remembered, mode, request.epoch)
+        else await launch(id, mode, undefined, newFolder, request.epoch)
+      } catch (cause) {
+        if (launchIsCurrent(request.epoch)) throw cause
+      }
+    }).finally(() => { if (launchRequest.current === request) launchRequest.current = null })
   }
   /**
    * 记住的目录随时可能被删掉或改名。那种情况下退回目录选择器，用户点一次
    * 「打开」仍然能走到底，而不是只收到一条错误（N7）。
    */
-  async function launchRemembered(id: ToolId, remembered: string, mode: CliLaunchMode = 'new'): Promise<boolean> {
-    try { return await launch(id, mode, remembered) }
+  async function launchRemembered(id: ToolId, remembered: string, mode: CliLaunchMode = 'new', epoch = accountEpoch.current): Promise<boolean> {
+    try { return await launch(id, mode, remembered, false, epoch) }
     catch (cause) {
+      if (!launchIsCurrent(epoch)) return false
       if (!isMissingWorkspace(cause)) throw cause
       // 目录没了就没有「上次那条对话」可接,退回选择器开新的,总比只甩一条错误强。
       toast.show('上次用的目录已经找不到了，请重新选择。', 'warn')
-      return launch(id)
+      return launch(id, 'open', undefined, false, epoch)
     }
   }
   // 设置窗口写进了新 Key：读回配置成功才告诉密钥页，好收起那条「还在用刚撤销的密钥」（#546）。

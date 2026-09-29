@@ -1497,8 +1497,8 @@ describe('official marketplace as a standalone action', () => {
 
 describe('Codex official plugin catalog', () => {
   function seedCatalog(codexHome: string): void {
-    write(path.join(codexHome, '.tmp', 'plugins', '.agents', 'plugins', 'marketplace.json'), '{}')
-    write(path.join(codexHome, '.tmp', 'plugins', '.agents', 'plugins', 'api_marketplace.json'), '{}')
+    write(path.join(codexHome, '.tmp', 'plugins', '.agents', 'plugins', 'marketplace.json'), '{"name":"openai-curated","plugins":[]}')
+    write(path.join(codexHome, '.tmp', 'plugins', '.agents', 'plugins', 'api_marketplace.json'), '{"name":"openai-api-curated","plugins":[]}')
     write(path.join(codexHome, '.tmp', 'plugins.sha'), 'export-backup\n')
   }
 
