@@ -84,7 +84,7 @@ import { createAiAssetProtocolHandler } from './ai-asset-protocol'
 import { createChatAttachmentService, type ChatImageCodec } from './ai-chat-attachments'
 import { resolveCodexHomeContext } from './codex-home'
 import { runCodexContextLimitsMigration } from './codex-config-migration'
-import { runWithTrustedWindowsProcessEnvironment } from './command-runner'
+import { findExecutable, runWithTrustedWindowsProcessEnvironment } from './command-runner'
 import { CodexExtensionService } from './codex-extensions'
 import { CodexSessionsService } from './codex-sessions'
 import { createNewApiClient } from './new-api-client'
@@ -141,6 +141,7 @@ import {
   installXingmangAiSkillFiles,
   resolveXingmangAiBundledSkillRoot,
 } from './xingmang-ai-skill'
+import { syncXingmangImageMcp } from './xingmang-ai-mcp'
 import { resolveClaudeStatusLineScriptPath } from './claude-status-line'
 import { cliHookEventsDirectory, resolveCliHookScriptPath } from './cli-hooks'
 import { createCliHookEventMonitor } from './cli-hook-events'
@@ -2557,6 +2558,15 @@ if (!hasSingleInstanceLock) {
       xingmangAiSkill: {
         bundledRoot: bundledXingmangAiSkillRoot,
         userHome: os.homedir(),
+        syncImageMcp: async (input) => {
+          const nodeExecutable = await findExecutable('node', { env: process.env })
+          if (!nodeExecutable) throw new Error('没有找到可运行星芒图片 MCP 的 Node.js')
+          await syncXingmangImageMcp({
+            extensionService,
+            nodeExecutable,
+            ...input,
+          })
+        },
       },
       ...(manualUninstallVisualFixtureEnabled
         ? {

@@ -39,6 +39,7 @@ export const XINGMANG_AI_BUNDLED_FILES = [
   'SKILL.md',
   'references.md',
   path.join('scripts', 'generate.mjs'),
+  path.join('scripts', 'mcp-server.mjs'),
 ] as const
 
 export interface XingmangAiSkillConfig {
@@ -76,6 +77,8 @@ export interface XingmangAiSkillSyncOptions {
   baseUrl?: string
   officialCodex?: boolean
   codexHome?: string
+  /** Registers the no-Skill MCP image bridge after the shared config is ready. */
+  syncImageMcp?: (input: { configPath: string; scriptPath: string }) => Promise<void>
 }
 
 export interface XingmangAiSkillInstallOptions {
@@ -588,6 +591,17 @@ export async function syncXingmangAiSkill(
       configured,
       reason: warnings[0] || '星芒AI Skill 配置未能写入本机',
       ...(warnings.length ? { directoryWarnings: warnings } : {}),
+    }
+  }
+  if (options.syncImageMcp && options.officialCodex !== true) {
+    const sharedDirectory = resolveXingmangAiSkillDirectories(options.userHome)[0]
+    try {
+      await options.syncImageMcp({
+        configPath: path.join(sharedDirectory, XINGMANG_AI_CONFIG_FILE),
+        scriptPath: path.join(sharedDirectory, 'scripts', 'mcp-server.mjs'),
+      })
+    } catch (error) {
+      warnings.push(`原生图片 MCP 未配置：${directoryFailureMessage(error)}`)
     }
   }
   return {
