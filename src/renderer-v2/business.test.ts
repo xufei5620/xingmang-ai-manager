@@ -4,6 +4,7 @@ import {
   buildAccountInviteLink,
   buildSubscriptionPaymentInput,
   passwordFormDirty,
+  paymentTerminalBody,
   paymentTerminalPresentation,
   resetTopupQuoteForMethod,
   subscriptionToolsNotice,
@@ -97,8 +98,9 @@ describe('v2 business boundaries', () => {
   })
 
   it('says a paid subscription is open instead of calling it a top-up', () => {
-    expect(paymentTerminalPresentation('success', 'subscription')).toMatchObject({ tone: 'ok', title: '订阅已开通' })
-    expect(paymentTerminalPresentation('failed', 'subscription')).toMatchObject({ title: '支付没有完成' })
+    expect(paymentTerminalPresentation('success', false, 'subscription')).toMatchObject({ tone: 'ok', title: '订阅已开通' })
+    expect(paymentTerminalPresentation('failed', false, 'subscription')).toMatchObject({ title: '支付没有完成' })
+    expect(paymentTerminalBody({ status: 'success', tradeNo: 'XM-2' }, 'subscription')).toBe('订单 XM-2 已付款，订阅已开通，正在刷新订阅。')
   })
 
   it('tells the customer whether their tools now draw on the subscription', () => {
@@ -110,6 +112,18 @@ describe('v2 business boundaries', () => {
     expect(subscriptionToolsNotice({ followsPreference: false, error: '网络连接失败。' })).toMatchObject({
       tone: 'warn', body: expect.stringContaining('重新写入 Key'),
     })
+  })
+
+  it('tells the user what happens after the payment window closes and where to check', () => {
+    expect(paymentTerminalPresentation('closed', true).body).toContain('星芒还在确认到账')
+    expect(paymentTerminalPresentation('closed').body).toContain('查看我的订单')
+    expect(paymentTerminalPresentation('unconfirmed')).toMatchObject({ tone: 'warn', title: '还没查到这笔订单到账' })
+    expect(paymentTerminalPresentation('unconfirmed').body).toContain('联系客服')
+    expect(paymentTerminalPresentation('failed').body).toContain('查看我的订单')
+    expect(paymentTerminalBody({ status: 'success', tradeNo: 'XM-1' })).toBe('订单 XM-1 已到账，余额已更新。')
+    expect(paymentTerminalBody({ status: 'closed', tradeNo: 'XM-1', confirming: true })).not.toContain('XM-1')
+    expect(paymentTerminalBody({ status: 'unconfirmed', tradeNo: 'XM-1' })).toContain('订单号 XM-1')
+    expect(paymentTerminalBody({ status: 'closed', tradeNo: null })).not.toContain('订单号')
   })
 
   it('validates recharge amounts against the integer IPC contract and channel minimum', () => {
@@ -227,7 +241,8 @@ describe('v2 business boundaries', () => {
   it('routes actionable diagnostic categories to their owning page', () => {
     expect(diagnosticTarget('PROVIDER_CODEX')).toBe('home')
     expect(diagnosticTarget('XINGMANG_NETWORK')).toBe('settings')
-    expect(diagnosticTarget('PROXY_ENVIRONMENT')).toBe('settings')
+    // 设置页没有能处理它的东西；能清的那种在行里直接给按钮。
+    expect(diagnosticTarget('PROXY_ENVIRONMENT')).toBeNull()
     expect(diagnosticTarget('CLASH_VERGE_TUN')).toBe('settings')
     expect(diagnosticTarget('RUNTIME_NODE')).toBe('maintenance')
     expect(diagnosticTarget('RUNTIME_PYTHON')).toBe('maintenance')

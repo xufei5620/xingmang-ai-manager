@@ -34,6 +34,7 @@ export type BusinessPageProps = Omit<BusinessActions, 'navigate'> & {
   toolConfigConfirmed?: Parameters<typeof AccountPage>[0]['toolConfigConfirmed']
   /** 订阅开通后把用得上它的工具换过去；缺省 = 不换（旧行为）。 */
   onSubscriptionActivated?: Parameters<typeof AccountPage>[0]['onSubscriptionActivated']
+  onSubscriptionPurchased?: () => void
 }
 
 export function BusinessPage({
@@ -48,6 +49,7 @@ export function BusinessPage({
   onToolConfigSaved,
   toolConfigConfirmed,
   onSubscriptionActivated,
+  onSubscriptionPurchased,
   ...actions
 }: BusinessPageProps) {
   if (page === 'account')
@@ -65,6 +67,8 @@ export function BusinessPage({
         onToolConfigSaved={onToolConfigSaved}
         toolConfigConfirmed={toolConfigConfirmed}
         onSubscriptionActivated={onSubscriptionActivated}
+        onSubscriptionPurchased={onSubscriptionPurchased}
+        onOpenHelp={actions.openHelp}
       />
     )
   if (page === 'sessions')
