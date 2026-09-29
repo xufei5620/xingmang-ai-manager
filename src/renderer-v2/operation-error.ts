@@ -203,9 +203,11 @@ export type OperationLogPage = 'maintenance' | 'feedback'
 
 const installLogKeys: ReadonlySet<OperationErrorKey> = new Set<OperationErrorKey>(['installBlocked', 'updateIntegrity', 'unknown'])
 
-export function operationLogPage(failure: { message: string; tool?: string | undefined }): OperationLogPage {
+export function operationLogPage(failure: { message: string; detail?: string | undefined; tool?: string | undefined }): OperationLogPage {
   if (!failure.tool) return 'feedback'
-  return installLogKeys.has(classifyOperationError(failure.message)) ? 'maintenance' : 'feedback'
+  const key = classifyOperationError(failure.message)
+  const resolved = key === 'unknown' && failure.detail ? classifyOperationError(failure.detail) : key
+  return installLogKeys.has(resolved) ? 'maintenance' : 'feedback'
 }
 
 export function presentOperationError(message: string): OperationErrorHint | null {
@@ -229,4 +231,13 @@ export function presentOperationError(message: string): OperationErrorHint | nul
     // the dialog from ending on a dead end.
     actions: actions.length ? actions : [{ id: 'support', label: '找客服' }],
   }
+}
+
+/**
+ * 上屏那句被换成「{动作}没有完成」时，能认出原因的记号（EBUSY、ENOSPC、EPERM……）
+ * 只留在原话 `detail` 里。先看上屏那句（主进程自己写好的中文以它为准），认不出再拿
+ * 原话去认，这张规则表才对纯英文的失败也起作用。
+ */
+export function presentOperationFailure(failure: { message: string; detail?: string | undefined }): OperationErrorHint | null {
+  return presentOperationError(failure.message) ?? (failure.detail ? presentOperationError(failure.detail) : null)
 }

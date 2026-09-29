@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { errorMessage, overflowedPage, rawErrorMessage, snapshotErrorMessage, userFacingErrorMessage } from './business-common'
+import { errorMessage, operationFailureFrom, overflowedPage, rawErrorMessage, snapshotErrorMessage, userFacingErrorMessage } from './business-common'
 
 describe('rawErrorMessage', () => {
   it('strips the Electron IPC prefix that would otherwise expose channel names', () => {
@@ -178,5 +178,31 @@ describe('overflowedPage', () => {
     expect(overflowedPage(1, 0)).toBeNull()
     expect(overflowedPage(3, 0)).toBe(1)
     expect(overflowedPage(5, 41, 20)).toBe(3)
+  })
+})
+
+describe('operationFailureFrom', () => {
+  it('keeps the swallowed English original as detail instead of dropping it', () => {
+    expect(operationFailureFrom(new Error('spawn EPERM'), '打开 Codex 桌面端'))
+      .toEqual({ message: '打开 Codex 桌面端没有完成', detail: 'spawn EPERM' })
+  })
+
+  it('leaves no detail when the message already explains the cause', () => {
+    expect(operationFailureFrom(new Error('配置文件写入失败：磁盘只读'), '保存')).toEqual({ message: '配置文件写入失败：磁盘只读' })
+    expect(operationFailureFrom(new Error('fetch failed'), '刷新')).toEqual({ message: '连不上星芒服务器，请检查网络后重试。' })
+  })
+
+  it('masks keys in the original before it reaches the screen', () => {
+    const failure = operationFailureFrom(new Error('EBUSY: resource busy Bearer sk-abcdefghijklmnop api_key=abc123'), '重新写入 Key')
+    expect(failure.detail).toBeDefined()
+    expect(failure.detail).not.toMatch(/sk-abcdef|abcdefghijklmnop|abc123/)
+    expect(failure.detail).toContain('EBUSY')
+  })
+
+  it('caps the original at 160 characters and falls back to 操作没有完成 without an action', () => {
+    const failure = operationFailureFrom(new Error('x'.repeat(400)))
+    expect(failure.message).toBe('操作没有完成')
+    expect(failure.detail).toHaveLength(160)
+    expect(operationFailureFrom(new Error(''))).toEqual({ message: '操作没有完成' })
   })
 })

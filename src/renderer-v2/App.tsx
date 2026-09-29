@@ -37,7 +37,7 @@ import type { ToolInstallOutcome } from './pages-maintenance'
 import type { ToolConfigConfirmation } from './pages-account'
 import { BalanceTierProvider, Button, Confirm, Dialog, Notice, Switch, ToastProvider, useToast, useReducedMotion } from './ui'
 import { bridge as getBridge } from './bridge'
-import { errorMessage, pendingBusinessOperations } from './business-common'
+import { errorMessage, operationFailureFrom, pendingBusinessOperations } from './business-common'
 import { SavedAccounts } from './SavedAccounts'
 import { accountSwitchNeedsAttention } from './account-switch-sync'
 import { accountSources } from './features/auth/state'
@@ -48,7 +48,7 @@ import { useNetworkLocation } from './features/shell/useNetworkLocation'
 import { latestNetworkLocation } from './features/shell/network'
 import { bindPlatformAppearance, platformApi } from './platform-api'
 import { FailureBoundary } from './features/app/FailureBoundary'
-import { OperationErrorDialog, type OperationFailure } from './features/app/OperationErrorDialog'
+import { OperationErrorDialog, supportFailureOf, type OperationFailure } from './features/app/OperationErrorDialog'
 import { NodeReplaceDialog } from './features/tools/NodeReplaceDialog'
 import { canReplaceNode, describeNodeReplaceOutcome } from './features/tools/node-replace'
 import { StartupNotices } from './features/app/StartupNotices'
@@ -60,7 +60,7 @@ import { nextUiScale, uiScaleShortcutFor, type UiScaleShortcut } from './feature
 import { rememberTourPending, rememberTourSeen, tourReplayPending } from './features/shell/tour-state'
 import { onboardingPreviewEnabled } from './features/app/dev-preview'
 import { deepLinkReadErrorText, supportQrFallbackText } from './features/app/fallback-messages'
-import { SupportIdentity, buildSupportIdentityLine } from './features/app/SupportIdentity'
+import { SupportIdentity, buildLastFailureLine, buildSupportIdentityLine, type SupportFailure } from './features/app/SupportIdentity'
 import { KeyRewriteSkippedError, bootstrapAccountTools, skippedNamedProviders, describeAccountBootstrapFailure, describeAccountBootstrapResult, type AccountBootstrapLogLine, type AccountBootstrapMode, type AccountBootstrapProgress, type AccountBootstrapResult } from './features/tools/account-bootstrap'
 import { rewritableKeyProviders } from './features/tools/connection-check'
 import { applyManualSourceMarker, getSourceMarkerStorage } from './features/tools/source-marker'
@@ -169,6 +169,8 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   const chineseDecline = useRef<HTMLButtonElement>(null)
   const [dismissedUpdate, setDismissedUpdate] = useState('')
   const [operationError, setOperationError] = useState<OperationFailure | null>(null)
+  // 帮助框「最近一次出错」：错误框关掉以后客户才想起来找客服，那时错误已经不在屏上了。
+  const [lastFailure, setLastFailure] = useState<SupportFailure | null>(null)
   // 错误框里点了「换成新版 Node.js」：先问一次，确认后换完接着重做刚才失败的那一步。
   const [nodeReplace, setNodeReplace] = useState<{ retry?: () => void } | null>(null)
   // 国内下载线路还没跟上微软商店时，这次「更新」其实没换版本：说一句，并给出去商店的按钮。
@@ -537,7 +539,10 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   // 平台能力回来之前沿用挂载前定下的系统，不能先按 Windows 写上去再改：欢迎页和
   // 启动页据此排顶栏，Mac 上那样第一帧就没给红黄绿按钮让位。
   const os = platform ? windowOsFor(platform.platform) : currentWindowOs()
-  const supportIdentity = buildSupportIdentityLine({ signedIn: session.authenticated, account: session.account, version: update?.currentVersion, os })
+  const supportInput = { signedIn: session.authenticated, account: session.account, version: update?.currentVersion, os }
+  const supportIdentity = buildSupportIdentityLine(supportInput)
+  const lastFailureLine = lastFailure ? buildLastFailureLine(lastFailure) : undefined
+  useEffect(() => { if (operationError) setLastFailure(supportFailureOf(operationError, new Date())) }, [operationError])
   useLayoutEffect(() => { document.documentElement.dataset.os = os }, [os])
   useEffect(() => {
     let current = true
@@ -593,7 +598,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     setOperationError(null)
     try { await work() }
     catch (cause) {
-      setOperationError({ message: errorMessage(cause, `${label}没有完成`), retry: () => void run(label, work, tool), ...(tool ? { tool } : {}) })
+      setOperationError({ ...operationFailureFrom(cause, label), action: label, retry: () => void run(label, work, tool), ...(tool ? { tool } : {}) })
     }
   }, [])
   // 兼容显示提示里的二选一：两颗都写进设置，主进程据此清掉崩溃记录。「一直用」现在
@@ -1287,7 +1292,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     </Dialog>}
     {help && <Dialog open title="帮助与客服" onClose={() => setHelp(false)} width={480} footer={<Button onClick={() => { setHelp(false); navigate('tutorial') }}>使用教程</Button>}>
       <div className="v2-support">{qr && <img src={qr} alt="微信客服二维码" />}<h3>微信扫码找客服</h3><p>装不上、付了没到账，都可以问。</p>
-        <SupportIdentity line={supportIdentity} onCopy={() => { void navigator.clipboard.writeText(supportIdentity).then(() => toast.show('已复制，发给客服就行', 'ok'), () => toast.show('没复制上，请手动选中这行文字复制。', 'warn')) }} />
+        <SupportIdentity line={supportIdentity} lastFailure={lastFailureLine} onCopy={() => { void navigator.clipboard.writeText(lastFailureLine ? `${supportIdentity}\n${lastFailureLine}` : supportIdentity).then(() => toast.show('已复制，发给客服就行', 'ok'), () => toast.show('没复制上，请手动选中这行文字复制。', 'warn')) }} />
         {qrFallback && <p role="alert" data-testid="support-qr-fallback">{qrFallback}</p>}<Button onClick={() => void perform('打开帮助', () => app.openExternal(supportUrl))}>在浏览器打开</Button><Button onClick={() => { setHelp(false); navigate('feedback') }}>去反馈页</Button></div>
     </Dialog>}
     <StartupNotices notices={startupNotices} onDismiss={dismissStartupNotice}
@@ -1300,7 +1305,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
         else if ('crashReporting' in action) void chooseCrashReporting(action.crashReporting)
         else if ('relaunch' in action) void perform('重开软件', async () => { await app.relaunch() })
       }} />
-    {operationError && <OperationErrorDialog failure={operationError} installDirectory={toolInstallDirectory(toolbox.snapshot, operationError.tool)} canReplaceNode={canReplaceNode({ platform: platform?.platform, nodeRuntimeInstall: platform?.nodeRuntimeInstall })} onClose={() => setOperationError(null)} onAction={runOperationAction} />}
+    {operationError && <OperationErrorDialog failure={operationError} installDirectory={toolInstallDirectory(toolbox.snapshot, operationError.tool)} canReplaceNode={canReplaceNode({ platform: platform?.platform, nodeRuntimeInstall: platform?.nodeRuntimeInstall })} support={supportInput} onClose={() => setOperationError(null)} onAction={runOperationAction} />}
     {nodeReplace && <NodeReplaceDialog version={toolbox.snapshot?.system.runtime.node.version} onClose={() => setNodeReplace(null)} onConfirm={() => {
       const retry = nodeReplace.retry
       setNodeReplace(null)
@@ -1346,7 +1351,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     {confirmation && <Confirm title={confirmation.title} body={confirmation.body} danger={confirmation.danger} okLabel={confirmation.label} loading={confirmBusy} onClose={() => setConfirmation(null)} onOk={() => {
       if (confirmationLock.current) return
       confirmationLock.current = true; setConfirmBusy(true)
-      void confirmation.work().then(() => setConfirmation(null)).catch((cause) => setOperationError({ message: errorMessage(cause, '操作没有完成'), ...(confirmation.tool ? { tool: confirmation.tool } : {}) })).finally(() => { confirmationLock.current = false; setConfirmBusy(false) })
+      void confirmation.work().then(() => setConfirmation(null)).catch((cause) => setOperationError({ ...operationFailureFrom(cause), ...(confirmation.tool ? { tool: confirmation.tool } : {}) })).finally(() => { confirmationLock.current = false; setConfirmBusy(false) })
     }} />}
   </BalanceTierProvider></OnlineStatusContext.Provider></AccountBalanceContext.Provider>
 }
