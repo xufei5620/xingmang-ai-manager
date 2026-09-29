@@ -3,6 +3,8 @@ import type { WindowCloseReport } from './window-close-query'
 import type { AiChatStreamErrorCode as MainAiChatStreamErrorCode } from './ai-chat-service'
 import type { ExternalDeepLink } from './external-deep-links'
 import type { SavedAccountSummary } from './saved-accounts'
+import type { StaleProxyClearResult } from './stale-proxy-environment'
+export type { StaleProxyClearResult } from './stale-proxy-environment'
 import type {
   ConfigBackupPreview as StoredConfigBackupPreview,
   ConfigBackupReason,
@@ -908,6 +910,7 @@ export interface XingmangInvokeContract {
   redeemAccelerationCode: IpcInvokeDefinition<'acceleration:redeem-code', [scope: string, code: string], import('./acceleration-contract').AccelerationRedemptionResult>
   getAccelerationPreference: IpcInvokeDefinition<'acceleration:get-preference', [scope: string], import('./acceleration-contract').AccelerationPreference>
   saveAccelerationPreference: IpcInvokeDefinition<'acceleration:save-preference', [scope: string, update: import('./acceleration-contract').AccelerationPreferenceUpdate], import('./acceleration-contract').AccelerationPreference>
+  recheckAccelerationBundle: IpcInvokeDefinition<'acceleration:recheck-bundle', [], import('./acceleration-contract').AccelerationBundleCheck>
   getLegalDocument: IpcInvokeDefinition<'account:get-legal-document', [kind: LegalDocumentKind, siteId?: AccountSiteId], LegalDocument>
   loginAccount: IpcInvokeDefinition<'account:login', [input: AccountLoginInput], AccountLoginResult>
   submitTwoFactorCode: IpcInvokeDefinition<'account:submit-two-factor-code', [code: string], AccountLoginResult>
@@ -1068,6 +1071,16 @@ export interface XingmangInvokeContract {
     ConnectionCheckResult
   >
   /**
+   * 「Codex 干活检查」：会花当前账号一点额度，所以只有用户勾选确认后才发两次
+   * Responses 请求（第一次让模型调用无副作用的测试工具，第二次把结果交回去）。
+   * 本通道不在配置保存、账号切换或普通连接自检中调用。
+   */
+  probeCodexResponses: IpcInvokeDefinition<
+    'diagnostics:probe-codex-responses',
+    [acknowledgeBilling: true, expectedAccountScope: string],
+    ConnectionProbeReport
+  >
+  /**
    * 外部客户端（WorkBuddy / Claude Desktop / OpenCode）的连接自检。与上面那条
    * 分成两条通道而不是合成一个联合入参：这一条的密钥来自客户端自己的配置文件、
    * 由主进程读出，渲染层既给不了也不该给（I3）；结论形状相同，身份换成客户端 id。
@@ -1078,6 +1091,11 @@ export interface XingmangInvokeContract {
     ExternalClientCheckResult
   >
   getAccountKeyOptions: IpcInvokeDefinition<'account:get-key-options', [provider: ProviderId], AccountKeyOptions>
+  /**
+   * 检查页「清掉这条旧设置」：只删当前 Windows 账号下指向没开的本机代理的那几条，
+   * 不碰整台电脑那一份、不提权。没有入参：清哪几条由主进程在点的那一刻重新读、重新试连来定。
+   */
+  clearStaleProxySettings: IpcInvokeDefinition<'diagnostics:clear-stale-proxy', [], StaleProxyClearResult>
 }
 
 export interface XingmangEventContract {
@@ -1245,6 +1263,7 @@ export const ipcInvokeChannels = {
   redeemAccelerationCode: 'acceleration:redeem-code',
   getAccelerationPreference: 'acceleration:get-preference',
   saveAccelerationPreference: 'acceleration:save-preference',
+  recheckAccelerationBundle: 'acceleration:recheck-bundle',
   getLegalDocument: 'account:get-legal-document',
   loginAccount: 'account:login',
   submitTwoFactorCode: 'account:submit-two-factor-code',
@@ -1308,8 +1327,10 @@ export const ipcInvokeChannels = {
   exportAppData: 'data-transfer:export',
   importAppData: 'data-transfer:import',
   checkProviderConnection: 'diagnostics:check-connection',
+  probeCodexResponses: 'diagnostics:probe-codex-responses',
   checkExternalClientConnection: 'diagnostics:check-external-connection',
   getAccountKeyOptions: 'account:get-key-options',
+  clearStaleProxySettings: 'diagnostics:clear-stale-proxy',
 } as const satisfies {
   [Method in keyof XingmangInvokeContract]: XingmangInvokeContract[Method]['channel']
 }

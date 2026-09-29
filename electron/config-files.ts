@@ -949,6 +949,7 @@ function applyCodexRelayConfig(
   providerName: string,
   siteBaseUrl: string,
 ): void {
+  migrateOwnReservedCodexProvider(parsed, providerName, siteBaseUrl)
   parsed.model = model
   parsed.review_model = model
   parsed.model_provider = providerName
@@ -1079,14 +1080,14 @@ function createCodexRelayConfigPlans(
     ? readStoredCodexConfig(paths.relay, '已保存的星芒 Codex 配置') : null
   let nextContent: string
   if (mode === 'reset') {
-    nextContent = buildCodexRelayConfigTemplate(model, existingCodexProvider(paths.active), siteBaseUrls.codex, cliHook)
+    nextContent = buildCodexRelayConfigTemplate(model, existingCodexProvider(paths.active, siteBaseUrls.codex), siteBaseUrls.codex, cliHook)
   } else if (storedRelay) {
     const stored = TOML.parse(storedRelay)
-    applyCodexRelayConfig(stored, model, existingCodexProvider(paths.relay), siteBaseUrls.codex)
+    applyCodexRelayConfig(stored, model, codexRelayProviderFor(stored, siteBaseUrls.codex), siteBaseUrls.codex)
     if (cliHook) applyCodexCliNotify(stored, cliHook)
     nextContent = tomlContent(stored)
   } else if (currentParsed) {
-    applyCodexRelayConfig(currentParsed, model, existingCodexProvider(paths.active), siteBaseUrls.codex)
+    applyCodexRelayConfig(currentParsed, model, codexRelayProviderFor(currentParsed, siteBaseUrls.codex), siteBaseUrls.codex)
     if (cliHook) applyCodexCliNotify(currentParsed, cliHook)
     nextContent = tomlContent(currentParsed)
   } else {
@@ -1340,8 +1341,9 @@ function tomlTableKey(value: string): string {
 
 /** Codex config.toml 里星芒中转用的 model_provider 名。从没配过 Codex 时写这个，不占用官方 OpenAI 表。 */
 export const defaultCodexRelayProvider = 'XingmangAI'
+const reservedCodexProviders: ReadonlySet<string> = new Set(['openai', 'ollama', 'lmstudio'])
 
-function existingCodexProvider(configPath: string): string {
+function existingCodexProvider(configPath: string, siteBaseUrl: string): string {
   const content = requireConfigText(configPath, '现有 Codex config.toml')
   if (content === null) return defaultCodexRelayProvider
   let parsed: Record<string, unknown>
@@ -1361,13 +1363,61 @@ function existingCodexProvider(configPath: string): string {
     return defaultCodexRelayProvider
   }
 
-  if (typeof parsed.model_provider === 'string' && parsed.model_provider.trim()) {
-    return parsed.model_provider.trim()
+  return codexRelayProviderFor(parsed, siteBaseUrl)
+}
+
+/**
+ * Codex merges user tables into its built-in providers with `or_insert`
+ * (codex-rs/model-provider-info merge_configured_model_providers), so a table
+ * named after a built-in ID is silently ignored and the relay written there
+ * never takes effect. The IDs are case-sensitive: `OpenAI` is an ordinary
+ * user-definable name, which is why older releases could use it safely.
+ */
+function codexRelayProviderFor(parsed: Record<string, unknown>, siteBaseUrl: string): string {
+  const active = typeof parsed.model_provider === 'string' ? parsed.model_provider.trim() : ''
+  // Keep a usable active name as is: Codex's resume picker filters sessions by
+  // model_provider, so renaming it would hide the customer's earlier chats.
+  if (active && !reservedCodexProviders.has(active)) return active
+  const providers = isJsonRecord(parsed.model_providers) ? parsed.model_providers : {}
+  function isFree(candidate: string): boolean {
+    return !Object.prototype.hasOwnProperty.call(providers, candidate)
+      || isOwnCodexRelayEntry(providers[candidate], siteBaseUrl)
   }
-  // A provider table without an explicit active selector is ambiguous. Never
-  // hijack the first user-authored entry (Azure/custom relays are common);
-  // use the stable OpenAI entry and let the merge path create it if needed.
-  return 'OpenAI'
+  // Without a selector, older releases picked `OpenAI`; keep that for the same
+  // resume-list reason, but never take over a table someone else wrote.
+  if (!active && isFree('OpenAI')) return 'OpenAI'
+  for (let suffix = 1; ; suffix += 1) {
+    const candidate = suffix === 1 ? defaultCodexRelayProvider : `${defaultCodexRelayProvider}-${suffix}`
+    if (isFree(candidate)) return candidate
+  }
+}
+
+function isOwnCodexRelayEntry(entry: unknown, siteBaseUrl: string): boolean {
+  return isJsonRecord(entry) && typeof entry.base_url === 'string'
+    && isKnownCodexRelayBaseUrl(entry.base_url, siteBaseUrl)
+}
+
+/**
+ * Older releases wrote the relay into the active built-in table. Move only
+ * that table of ours to the new name, keeping options such as retries. A
+ * built-in-named table someone else wrote stays untouched: Codex ignores it
+ * anyway, and refusing to save over it would turn a working switch into an
+ * error.
+ */
+function migrateOwnReservedCodexProvider(
+  parsed: Record<string, unknown>,
+  providerName: string,
+  siteBaseUrl: string,
+): void {
+  const active = typeof parsed.model_provider === 'string' ? parsed.model_provider.trim() : ''
+  if (!reservedCodexProviders.has(active) || active === providerName) return
+  const providers = parsed.model_providers
+  if (!isJsonRecord(providers)) return
+  const entry = providers[active]
+  if (!isJsonRecord(entry) || !isOwnCodexRelayEntry(entry, siteBaseUrl)) return
+  const existing = providers[providerName]
+  providers[providerName] = { ...entry, ...(isJsonRecord(existing) ? existing : {}) }
+  delete providers[active]
 }
 
 function jsonContent(value: unknown): string {

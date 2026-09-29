@@ -50,6 +50,8 @@ export function useAcceleration(api: AccelerationClient, scope: string | null, a
     start: (lineId?: string, ignoreConflicts?: boolean) => linesController.getSnapshot().busy ? Promise.resolve() : controller.start(lineId, ignoreConflicts),
     stop: controller.stop,
     redeem: controller.redeem,
+    // 只有加速文件坏了的那次运行主进程才给这个方法；没有时按「还是坏的」回答。
+    recheckBundle: () => api.recheckAccelerationBundle ? api.recheckAccelerationBundle() : Promise.resolve('damaged' as const),
     setMode: controller.setMode,
     lines: lineSnapshot.scope === scope ? lineSnapshot.lines : [],
     selectedLineId: lineSnapshot.scope === scope ? lineSnapshot.selectedLineId : null,

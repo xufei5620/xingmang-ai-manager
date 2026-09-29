@@ -17,6 +17,7 @@ import {
   redactDiagnosticText,
   relayStatusProbeUrl,
   runDiagnostics,
+  windowsProxySettingsOutcome,
   type DiagnosticsScanSnapshot,
   type DiagnosticToolId,
   type DiagnosticsDependencies,
@@ -1633,6 +1634,27 @@ describe('runDiagnostics AI output location', () => {
   })
 })
 
+describe('runDiagnostics acceleration bundle', () => {
+  it('only reports the acceleration bundle when the installed app ships one', async () => {
+    const report = await runDiagnostics(dependencies(temporaryHome()))
+    expect(report.items.some((entry) => entry.code === 'ACCELERATION_BUNDLE')).toBe(false)
+  })
+
+  it('passes when the bundle read intact at startup', async () => {
+    const report = await runDiagnostics({ ...dependencies(temporaryHome()), accelerationBundle: 'intact' })
+    expect(report.items.find((entry) => entry.code === 'ACCELERATION_BUNDLE')).toMatchObject({ title: '加速功能', state: 'pass' })
+  })
+
+  it('names antivirus quarantine in plain words when the bundle is damaged', async () => {
+    const report = await runDiagnostics({ ...dependencies(temporaryHome()), accelerationBundle: 'damaged' })
+    const item = report.items.find((entry) => entry.code === 'ACCELERATION_BUNDLE')
+    // warn, not fail: only people who use acceleration are affected, same as AI_OUTPUT.
+    expect(item?.state).toBe('warn')
+    expect(item?.summary).toContain('多半是杀毒软件拦的')
+    expect(item?.summary).not.toMatch(/mihomo|内核|manifest|profile|聊天记录/)
+  })
+})
+
 describe('parseClashTunConfig', () => {
   it('reads supported top-level and nested TUN switches', () => {
     expect(parseClashTunConfig('enable_tun_mode: true\n')).toBe(true)
@@ -1707,3 +1729,67 @@ describe('diagnostics reusing the home page scan', () => {
   })
 })
 
+
+describe('windowsProxySettingsOutcome', () => {
+  const closedOnly = async () => false
+  const openOnly = async () => true
+  const noScopes = async () => null
+
+  it('passes when no proxy is set', async () => {
+    expect(await windowsProxySettingsOutcome({ PATH: 'C:\\Windows' }, closedOnly, noScopes))
+      .toEqual({ state: 'pass', summary: '电脑里没有设代理，工具直接联网' })
+  })
+
+  it('offers to clear a current-user proxy that points at a closed local port', async () => {
+    const outcome = await windowsProxySettingsOutcome(
+      { HTTPS_PROXY: 'http://user:secret@127.0.0.1:7890' },
+      closedOnly,
+      async () => ({ user: { HTTPS_PROXY: 'http://user:secret@127.0.0.1:7890' }, machine: {} }),
+    )
+    expect(outcome).toEqual({
+      state: 'warn',
+      summary: '电脑里设了一个代理（本机 7890 端口），但它现在没开。从星芒打开的工具会自动绕开它；你自己开的命令行窗口可能还是连不上。',
+      details: { HTTPS_PROXY: '本机 7890 端口（没开）', fix: 'clear-user-proxy', port: 7890 },
+    })
+    // The value may carry proxy credentials and is never copied into the report.
+    expect(JSON.stringify(outcome)).not.toContain('secret')
+  })
+
+  it('explains that a machine-wide setting needs an administrator and offers no button', async () => {
+    const outcome = await windowsProxySettingsOutcome(
+      { HTTPS_PROXY: 'http://127.0.0.1:7890' },
+      closedOnly,
+      async () => ({ user: {}, machine: { HTTPS_PROXY: 'http://127.0.0.1:7890' } }),
+    )
+    expect(outcome.state).toBe('warn')
+    expect(outcome.summary).toContain('这条设置是给整台电脑设的，要管理员才能改')
+    expect(outcome.details).not.toHaveProperty('fix')
+  })
+
+  it('still reports a closed proxy when the settings cannot be read', async () => {
+    const outcome = await windowsProxySettingsOutcome(
+      { HTTPS_PROXY: 'http://127.0.0.1:7890' },
+      closedOnly,
+      async () => { throw new Error('powershell missing') },
+    )
+    expect(outcome.summary).toBe('电脑里设了一个代理（本机 7890 端口），但它现在没开。从星芒打开的工具会自动绕开它。')
+    expect(outcome.details).not.toHaveProperty('fix')
+  })
+
+  it('passes when the local proxy is running', async () => {
+    expect(await windowsProxySettingsOutcome({ HTTP_PROXY: 'http://127.0.0.1:7890' }, openOnly, noScopes)).toEqual({
+      state: 'pass',
+      summary: '电脑里设了代理（本机 7890 端口），工具会通过它联网。',
+      details: { HTTP_PROXY: '本机 7890 端口（开着）' },
+    })
+  })
+
+  it('warns gently about a proxy on another machine without echoing its address', async () => {
+    const outcome = await windowsProxySettingsOutcome({ HTTPS_PROXY: 'http://proxy.corp.example:8080' }, closedOnly, noScopes)
+    expect(outcome).toEqual({
+      state: 'warn',
+      summary: '电脑里设了代理，工具会通过它联网。如果工具连不上，先确认这个代理能用。',
+      details: { HTTPS_PROXY: '别的机器' },
+    })
+  })
+})

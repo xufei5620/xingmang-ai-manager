@@ -24,7 +24,7 @@ import { createAccelerationExpiryNotice, type AccelerationExpiryNotice } from '.
 import { createAccelerationInterruptionNotice, type AccelerationInterruptionNotice } from './acceleration-interruption-notice'
 import { createAccelerationPower } from './acceleration-power'
 import { createAccelerationService } from './acceleration-service'
-import { accelerationConflictDescriptions, accelerationFailureMessages, type AccelerationMode, type AccelerationState } from './acceleration-contract'
+import { accelerationConflictDescriptions, accelerationFailureMessages, type AccelerationBundleCheck, type AccelerationMode, type AccelerationState } from './acceleration-contract'
 import { accelerationStartRequest, createAccelerationPreferenceStore, defaultAccelerationPreference } from './acceleration-preference-store'
 import { accelerationStartFailureDescriptions, createAccelerationDevelopmentHost, readAccelerationDevelopmentConfig, type AccelerationDevelopmentHost } from './acceleration-development-host'
 import { readBundledAccelerationConfig } from './acceleration-bundled-config'
@@ -58,7 +58,7 @@ import { resolveInstallableUpdateOnQuit, resolveInterruptibleInstallTask } from 
 import { createPendingUpdateStore, decideLaunchInstall, resolveDownloadedVersionToRecord } from './auto-update-install'
 import { createWindowResponsivenessGuard } from './window-responsiveness'
 import { createRendererCrashRecovery } from './renderer-crash-recovery'
-import { createApplicationTray, type ApplicationTrayController } from './application-tray'
+import { createApplicationTray, traySubscriptionLabel, type ApplicationTrayController } from './application-tray'
 import { createTrayAccelerationCoordinator, type TrayAccelerationCoordinator } from './tray-acceleration'
 import { createExternalDeepLinkInbox } from './external-deep-links'
 import { createDesktopNotificationController } from './desktop-notifications'
@@ -130,7 +130,8 @@ import {
   type DiagnosticsReport,
   type DiagnosticsRunOptions,
 } from './diagnostics'
-import { runConnectionCheck } from './connection-check'
+import { buildConnectionProbe, runConnectionCheck } from './connection-check'
+import { createCodexResponsesProbeService } from './codex-responses-probe'
 import type { ExternalToolId } from './external-tool-config'
 import { registerIpcHandlers, type AppWindowMode } from './ipc'
 import {
@@ -141,7 +142,7 @@ import { resolveClaudeStatusLineScriptPath } from './claude-status-line'
 import { cliHookEventsDirectory, resolveCliHookScriptPath } from './cli-hooks'
 import { createCliHookEventMonitor } from './cli-hook-events'
 import { resolveProjectInstructionsTemplatePath } from './project-instructions'
-import { ipcEventChannels, type AccountBalance, type SettingsSaveIssue } from './ipc-contract'
+import { ipcEventChannels, type AccountBalance, type AccountSubscriptionSelf, type SettingsSaveIssue } from './ipc-contract'
 import {
   shouldUseManualUninstallVisualFixture,
   withManualUninstallVisualFixture,
@@ -839,6 +840,20 @@ if (!hasSingleInstanceLock) {
         bundledMetadata: applicationPackage.xingmangAccelerationBundle })
       : readAccelerationDevelopmentConfig({ isPackaged: false, platform: process.platform, dataDirectory: managerDataDirectory })
     ).then((config) => ({ ok: true as const, config }), (error: unknown) => ({ ok: false as const, error }))
+    // 正式安装包自带的加速文件读不通：多半被杀毒软件隔离或改动了。开发时没带加速
+    // 文件照旧是「线路准备中」，只有安装包里本该有、却读坏了才这样说（第十六批 6）。
+    const accelerationBundleStatus = accelerationConfigRead.then((read): 'intact' | 'damaged' | null => (
+      !app.isPackaged ? null : !read.ok ? 'damaged' : read.config ? 'intact' : null
+    ))
+    // 「重新检查」连点几下只读一遍：内核文件有几十 MB。
+    let accelerationBundleRecheck: Promise<AccelerationBundleCheck> | null = null
+    function recheckAccelerationBundle(): Promise<AccelerationBundleCheck> {
+      accelerationBundleRecheck ??= readBundledAccelerationConfig({ isPackaged: true, platform: process.platform,
+        resourcesPath: process.resourcesPath, bundledMetadata: applicationPackage.xingmangAccelerationBundle })
+        .then((config): AccelerationBundleCheck => config ? 'repaired' : 'damaged', (): AccelerationBundleCheck => 'damaged')
+        .finally(() => { accelerationBundleRecheck = null })
+      return accelerationBundleRecheck
+    }
     const codexContext = resolveCodexHomeContext({
       isPackaged: app.isPackaged,
       env: process.env,
@@ -1005,6 +1020,7 @@ if (!hasSingleInstanceLock) {
     }
     let readAccountSiteId: () => string = () => 'solov'
     let readExternalClientAccountId: () => string | null = () => null
+    let readBillingAccountScope: () => string = () => 'xm-account:guest'
     // 下载专用的网络分区：它的代理只在装 CLI / 下 Node 的那几分钟里被设成加速
     // 内核的回环端口，默认 session 一行不动，所以账号、中转与画布流量不受
     // 影响。非 persist: 前缀 = 内存分区，不落盘。
@@ -1164,6 +1180,31 @@ if (!hasSingleInstanceLock) {
     // 最近一次连接自检的结论，只留进报告的那几项（没有 Key、没有地址、没有站
     // 点名）。键是四个工具，所以天然有界。
     const latestConnectionChecks = new Map<ProviderId, FeedbackConnectionRecord>()
+    function codexProbeContext() {
+      const site = resolveRelaySite(systemService.readStoredConfig().relaySiteId)
+      const inspection = inspectProviderConfig(
+        'codex', rootedOptions.system.providerRoots, site.providerBaseUrls,
+      )
+      return { site, inspection }
+    }
+    const codexResponsesProbe = createCodexResponsesProbeService(
+      () => {
+        const { site, inspection } = codexProbeContext()
+        return buildConnectionProbe('codex', site, inspection)
+      },
+      {
+        fetch: relayFetch,
+        // The Key stays in main-process memory. Re-reading it after the first
+        // response prevents a second paid request after account/source changes.
+        currentScope: () => {
+          const { site, inspection } = codexProbeContext()
+          return JSON.stringify([
+            readBillingAccountScope(), site.id, inspection.actualBaseUrl,
+            inspection.apiKey, inspection.model, inspection.matchesRelay,
+          ])
+        },
+      },
+    )
     // 诊断导出与反馈报告都要把本机真正写着的那几把 Key 当敏感值剔掉。
     const sensitiveKeyValues = () => providerIds
       .map((provider) => inspectProviderConfig(provider, rootedOptions.system.providerRoots).apiKey)
@@ -1189,6 +1230,7 @@ if (!hasSingleInstanceLock) {
           userDataDirectory: app.getPath('userData'),
           // 跟着当前账号所在的那一套 output 走（历史账号多一层 realms/api-account）。
           probeAiOutput: () => assetStore.assertWritable(),
+          ...await accelerationBundleStatus.then((status) => status ? { accelerationBundle: status } : {}),
           windowsExecution: windowsCliExecution,
           // 报告只装中文结论（它会被导出发给客服），认出失败靠的那段上游原文
           // 留在 runtime.jsonl 里。
@@ -1223,6 +1265,12 @@ if (!hasSingleInstanceLock) {
           checkedAt: result.checkedAt,
         })
         return result
+      },
+      probeCodexResponses: (expectedAccountScope: string) => {
+        if (expectedAccountScope !== readBillingAccountScope()) {
+          throw new Error('当前账号变了，请重新勾选确认后再检查')
+        }
+        return codexResponsesProbe.run()
       },
       // 外部客户端的自检由 system-service 出面：Key、地址与归属都只有它算得出
       // 来，主进程这一层只负责把它接到通道上。
@@ -1368,6 +1416,7 @@ if (!hasSingleInstanceLock) {
     let accelerationInterruption: AccelerationInterruptionNotice | null = null
     let latestTraySystem: SystemSnapshot | null = null
     let latestTrayBalance: AccountBalance | null = null
+    let latestTraySubscription: AccountSubscriptionSelf | null = null
     let managedMainWindow: BrowserWindow | null = null
     // 客服收到反馈报告的第一句总是「你的工具是什么版本、怎么装的、配置指向哪」。
     // 这几行就答这三件事：只读上一次扫描留下的快照（latestTraySystem），不为了
@@ -1575,6 +1624,7 @@ if (!hasSingleInstanceLock) {
           business.canvasRuns.shutdown()
         }
         latestTrayBalance = null
+        latestTraySubscription = null
         trayAcceleration?.reset()
         accelerationExpiry?.reset()
         accelerationInterruption?.reset()
@@ -1594,6 +1644,11 @@ if (!hasSingleInstanceLock) {
     })
     readAccountSiteId = () => accounts.getSiteId()
     const accountService = accounts.client
+    readBillingAccountScope = () => {
+      const state = accountService.getSessionState()
+      const realm = accounts.getSiteId() === 'solov-api' ? 'api-account' : 'xm-account'
+      return `${realm}:${state.authenticated && state.account ? state.account.userId : 'guest'}`
+    }
     readExternalClientAccountId = () => {
       const state = accountService.getSessionState()
       return state.authenticated && state.account ? JSON.stringify([accounts.getSiteId(), state.account.userId]) : null
@@ -2164,9 +2219,14 @@ if (!hasSingleInstanceLock) {
       }
     })
     let developmentAcceleration: ReturnType<typeof createAccelerationDevelopmentHost> | undefined
+    // 只看读文件这一步：后面建加速服务失败不是文件坏了，不能叫客户去翻杀毒软件。
+    let accelerationBundleDamaged = false
     try {
       const read = await accelerationConfigRead
-      if (!read.ok) throw read.error
+      if (!read.ok) {
+        accelerationBundleDamaged = app.isPackaged
+        throw read.error
+      }
       const accelerationConfig = read.config
       if (accelerationConfig) developmentAcceleration = createAccelerationDevelopmentHost({
         config: accelerationConfig, dataDirectory: managerDataDirectory, packaged: app.isPackaged,
@@ -2255,6 +2315,12 @@ if (!hasSingleInstanceLock) {
     acceleration = createAccelerationService({
       backend: developmentAcceleration,
       preferences: accelerationPreferences,
+      ...(accelerationBundleDamaged ? { bundleDamaged: { recheck: async () => {
+        const result = await recheckAccelerationBundle()
+        runtimeLog.log(result === 'repaired' ? 'info' : 'warn', 'network', 'acceleration.config.recheck',
+          result === 'repaired' ? '本机加速资源已恢复，重新打开软件后生效' : '本机加速资源仍未通过校验', { result })
+        return result
+      } } } : {}),
       getAccountScope: () => readAccelerationAccountScope(),
       onState: (state) => {
         trayAcceleration?.observe(state)
@@ -2410,6 +2476,7 @@ if (!hasSingleInstanceLock) {
       onSystemSnapshot: (snapshot) => { latestTraySystem = snapshot; applicationTray?.updateSnapshot() },
       startupQuiet,
       onAccountBalance: (balance) => { latestTrayBalance = balance; applicationTray?.updateSnapshot() },
+      onAccountSubscription: (subscription) => { latestTraySubscription = subscription; applicationTray?.updateSnapshot() },
       setWindowMode,
       setWindowTheme: (contents, theme) => {
         setWindowTheme(contents, theme)
@@ -2652,6 +2719,7 @@ if (!hasSingleInstanceLock) {
         return {
           accountLabel: state.account?.username ?? null,
           balanceUsd: latestTrayBalance && latestTrayBalance.quotaPerUnit > 0 ? latestTrayBalance.quota / latestTrayBalance.quotaPerUnit : null,
+          subscriptionLabel: traySubscriptionLabel(latestTraySubscription, latestTrayBalance?.quotaPerUnit ?? 0, Date.now()),
           installedTools: [
             ...(latestTraySystem?.desktopApps.codex.installed ? [{ id: 'codexDesktop', label: 'Codex 桌面端' }] : []),
             ...providerIds.filter((id) => latestTraySystem?.clis[id].installed).map((id) => ({ id, label: id === 'claude' ? 'Claude Code' : id === 'codex' ? 'Codex CLI' : id === 'gemini' ? 'Gemini CLI' : 'Grok CLI' })),

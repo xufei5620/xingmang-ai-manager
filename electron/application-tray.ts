@@ -1,9 +1,13 @@
 import { Menu, Tray, nativeImage, type MenuItemConstructorOptions, type NativeImage } from 'electron'
 import type { TrayAccelerationEntry } from './tray-acceleration'
+import type { NewApiSubscriptionSelf } from './new-api-client'
+import { resolveUsableSubscription, subscriptionSummaryText } from './subscription-summary'
 
 export interface ApplicationTraySnapshot {
   accountLabel?: string | null
   balanceUsd?: number | null
+  /** 「剩余 USD 12.30 · 10 月 3 日到期」；没有能用的订阅时缺省，菜单就不多这一行。 */
+  subscriptionLabel?: string | null
   installedTools: readonly { id: string; label: string; enabled?: boolean }[]
   updateAvailable?: boolean
   updateVersion?: string | null
@@ -76,6 +80,12 @@ export function trayBalanceLabel(balance: number | null | undefined): string {
     : '\u2014'
 }
 
+/** 托盘那一行订阅；和首页用同一个「能不能用」的判断，没有能用的订阅时 null。 */
+export function traySubscriptionLabel(self: NewApiSubscriptionSelf | null, quotaPerUnit: number, now: number): string | null {
+  const subscription = resolveUsableSubscription(self, { now, quotaPerUnit })
+  return subscription ? subscriptionSummaryText(subscription, trayBalanceLabel) : null
+}
+
 function copySnapshot(snapshot: ApplicationTraySnapshot): ApplicationTraySnapshot {
   return {
     ...snapshot,
@@ -117,6 +127,7 @@ export function buildApplicationTrayMenu(
     { type: 'separator' },
     { label: menuLabel(snapshot.accountLabel, '未登录'), enabled: false },
     { label: `余额：${trayBalanceLabel(snapshot.balanceUsd)}`, enabled: false },
+    ...(snapshot.subscriptionLabel ? [{ label: `订阅：${menuLabel(snapshot.subscriptionLabel, '')}`, enabled: false }] : []),
     { type: 'separator' },
     {
       label: '已安装的工具',
@@ -204,7 +215,7 @@ export function createApplicationTray(
     try {
       snapshot = copySnapshot(next ?? options.getSnapshot())
       if (!checkAvailable() || !tray) return
-      tray.setToolTip(`${appName}\n余额：${trayBalanceLabel(snapshot.balanceUsd)}`)
+      tray.setToolTip(`${appName}\n余额：${trayBalanceLabel(snapshot.balanceUsd)}${snapshot.subscriptionLabel ? `\n订阅：${snapshot.subscriptionLabel}` : ''}`)
       tray.setContextMenu(runtime.buildMenu(buildApplicationTrayMenu(snapshot, options, run, appName)))
     } catch (error) { unavailable(error) }
   }
