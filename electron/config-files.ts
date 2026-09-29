@@ -18,9 +18,11 @@ import {
   applyClaudeCliHooks,
   applyCodexCliNotify,
   applyGeminiCliHooks,
+  applyGrokCliHooks,
   removeClaudeCliHooks,
   removeCodexCliNotify,
   removeGeminiCliHooks,
+  removeGrokCliHooks,
   type CliHookInvocation,
 } from './cli-hooks'
 import { applyClaudeRelayModelPicker, claudeRelayModelPickerOutdated, removeClaudeRelayModelPicker } from './claude-model-picker'
@@ -1904,9 +1906,17 @@ function createPlans(
           '[endpoints]',
           `xai_api_base_url = ${tomlString(siteBaseUrls.grok)}`,
           '',
-        ].join('\n'),
+        ].join('\n') + grokCliHookTemplate(cliHook),
       }]
   }
+}
+
+// 初始模板里没有 compat / hooks 两张表，接在末尾不会撞上。
+function grokCliHookTemplate(cliHook: CliHookInvocation | undefined): string {
+  if (!cliHook) return ''
+  const extra: Record<string, unknown> = {}
+  applyGrokCliHooks(extra, cliHook)
+  return `\n${tomlContent(extra)}`
 }
 
 function createMergePlans(
@@ -2007,6 +2017,7 @@ function createMergePlans(
       disableGrokSelfUpdate(parsed)
       pointGrokXaiApiAtRelay(parsed, siteBaseUrls.grok)
       pinGrokModelsToRelay(parsed, defaultModel)
+      if (cliHook) applyGrokCliHooks(parsed, cliHook)
       return [{ path: paths[0], content: tomlContent(parsed) }]
     }
   }
@@ -2585,6 +2596,8 @@ function createOfficialAccountPlans(
       const parsed = requireToml(paths[0], '现有 Grok config.toml')
       removeGrokRelayConfig(parsed, siteBaseUrls.grok)
       disableGrokSelfUpdate(parsed)
+      // 与 Claude / Gemini 同理钩子跟着收回；[compat.claude] 那一行留着，Claude Code 可能还接着当前账号。
+      removeGrokCliHooks(parsed)
       return [{ path: paths[0], content: tomlContent(parsed) }]
     }
   }

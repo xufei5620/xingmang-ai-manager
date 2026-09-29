@@ -9,12 +9,15 @@ import {
   applyClaudeCliHooks,
   applyCodexCliNotify,
   applyGeminiCliHooks,
+  applyGrokCliHooks,
   buildCliHookInvocation,
   geminiCliHookCommand,
+  grokCliHookCommand,
   isManagedCliHook,
   removeClaudeCliHooks,
   removeCodexCliNotify,
   removeGeminiCliHooks,
+  removeGrokCliHooks,
   resolveCliHookScriptPath,
   type CliHookInvocation,
 } from './cli-hooks'
@@ -125,7 +128,7 @@ describe('Claude Code hooks', () => {
     const settings: Record<string, unknown> = {}
     applyClaudeCliHooks(settings, posixInvocation)
     const hooks = settings.hooks as Record<string, Array<{ hooks: unknown[] }>>
-    expect(Object.keys(hooks).sort()).toEqual(['Notification', 'Stop', 'StopFailure', 'UserPromptSubmit'])
+    expect(Object.keys(hooks).sort()).toEqual(['Notification', 'SessionEnd', 'Stop', 'StopFailure', 'UserPromptSubmit'])
     expect(hooks.StopFailure).toEqual([{
       hooks: [{
         type: 'command',
@@ -179,7 +182,7 @@ describe('Gemini CLI hooks', () => {
     const settings: Record<string, unknown> = { hooks: { BeforeTool: [{ hooks: [{ type: 'command', command: 'lint' }] }] } }
     applyGeminiCliHooks(settings, posixInvocation)
     const hooks = settings.hooks as Record<string, Array<{ hooks: Array<Record<string, unknown>> }>>
-    expect(Object.keys(hooks).sort()).toEqual(['AfterAgent', 'BeforeAgent', 'BeforeTool', 'Notification'])
+    expect(Object.keys(hooks).sort()).toEqual(['AfterAgent', 'BeforeAgent', 'BeforeTool', 'Notification', 'SessionEnd'])
     expect(hooks.AfterAgent[0].hooks[0]).toEqual({
       name: 'xingmang-notify',
       type: 'command',
@@ -188,6 +191,49 @@ describe('Gemini CLI hooks', () => {
     })
     removeGeminiCliHooks(settings)
     expect(settings.hooks).toEqual({ BeforeTool: [{ hooks: [{ type: 'command', command: 'lint' }] }] })
+  })
+})
+
+describe('Grok hooks', () => {
+  it('turns off the Claude hook compatibility and adds one shell hook per turn event', () => {
+    const config: Record<string, unknown> = {}
+    applyGrokCliHooks(config, posixInvocation)
+    expect(config.compat).toEqual({ claude: { hooks: false } })
+    const hooks = config.hooks as Record<string, Array<{ hooks: Array<Record<string, unknown>> }>>
+    expect(Object.keys(hooks).sort()).toEqual(['Notification', 'SessionEnd', 'Stop', 'StopCancelled', 'StopFailure', 'UserPromptSubmit'])
+    expect(hooks.Stop[0].hooks[0]).toEqual({ type: 'command', command: grokCliHookCommand(posixInvocation), timeout: 10 })
+    expect(grokCliHookCommand(posixInvocation)).toBe(
+      `'/managed/node/bin/node' '/opt/app/resources/bundled-catalog/cli-hooks/xingmang-hook.cjs' grok '/home/me/.config/xingmang-ai-manager/cli-events'`,
+    )
+  })
+
+  it('keeps a compatibility switch the user set and the user own hooks', () => {
+    const own = { matcher: 'Bash', hooks: [{ type: 'command', command: '/opt/guard.sh' }] }
+    const config: Record<string, unknown> = { compat: { claude: { hooks: true, skills: false } }, hooks: { PreToolUse: [own] } }
+    applyGrokCliHooks(config, posixInvocation)
+    expect(config.compat).toEqual({ claude: { hooks: true, skills: false } })
+    applyGrokCliHooks(config, { ...posixInvocation, scriptPath: '/moved/bundled-catalog/cli-hooks/xingmang-hook.cjs' })
+    expect((config.hooks as Record<string, unknown[]>).Stop).toHaveLength(1)
+    removeGrokCliHooks(config)
+    expect(config.hooks).toEqual({ PreToolUse: [own] })
+  })
+
+  it('writes no Grok hook on Windows, where its shell cannot be predicted, but still turns off the Claude compatibility', () => {
+    const config: Record<string, unknown> = {}
+    applyGrokCliHooks(config, { ...posixInvocation, platform: 'win32' })
+    expect(config).toEqual({ compat: { claude: { hooks: false } } })
+  })
+
+  it.runIf(process.platform !== 'win32')('runs the hook script through sh from a path with spaces', () => {
+    const directory = path.join(temporaryDirectory(), 'events dir')
+    const invocation = buildCliHookInvocation(process.execPath, bundledScript, directory, 'linux')
+    expect(invocation).not.toBeNull()
+    execFileSync('/bin/sh', ['-c', grokCliHookCommand(invocation as CliHookInvocation)], {
+      input: JSON.stringify({ hookEventName: 'user_prompt_submit', hook_event_name: 'UserPromptSubmit', sessionId: 's1', session_id: 's1', promptId: 'p1' }),
+      timeout: 5000,
+    })
+    const [name] = fs.readdirSync(directory)
+    expect(JSON.parse(fs.readFileSync(path.join(directory, name), 'utf8'))).toMatchObject({ tool: 'grok', event: 'started', session: 's1', turn: 'p1' })
   })
 })
 
@@ -227,16 +273,39 @@ describe('bundled hook script', () => {
     expect(buildRecord('claude', JSON.stringify({ hook_event_name: 'StopFailure', error: 'server_error' }), 1)?.reason).toBe('service')
     expect(buildRecord('claude', JSON.stringify({ hook_event_name: 'StopFailure', error: 'max_output_tokens' }), 1)).toBeNull()
     expect(buildRecord('claude', JSON.stringify({ hook_event_name: 'Notification', notification_type: 'permission_prompt' }), 1)?.event).toBe('waiting')
-    expect(buildRecord('claude', JSON.stringify({ hook_event_name: 'Notification', notification_type: 'idle_prompt' }), 1)).toBeNull()
+    // Idle at the prompt means the turn is over (an Esc-interrupted turn never sends Stop).
+    expect(buildRecord('claude', JSON.stringify({ hook_event_name: 'Notification', notification_type: 'idle_prompt' }), 1)?.event).toBe('ended')
+    expect(buildRecord('claude', JSON.stringify({ hook_event_name: 'Notification', notification_type: 'auth_success' }), 1)).toBeNull()
+    expect(buildRecord('claude', JSON.stringify({ hook_event_name: 'SessionEnd', session_id: 's', reason: 'exit' }), 1)).toEqual({ version: 1, tool: 'claude', event: 'ended', session: 's', at: 1 })
     expect(buildRecord('claude', JSON.stringify({ hook_event_name: 'UserPromptSubmit', session_id: '../x' }), 1)).toMatchObject({ event: 'started', session: '' })
   })
 
   it('maps Gemini events and ignores unknown tools or malformed input', () => {
     expect(buildRecord('gemini', JSON.stringify({ hook_event_name: 'BeforeAgent' }), 1)?.event).toBe('started')
     expect(buildRecord('gemini', JSON.stringify({ hook_event_name: 'Notification', notification_type: 'ToolPermission' }), 1)?.event).toBe('waiting')
-    expect(buildRecord('grok', JSON.stringify({ hook_event_name: 'Stop' }), 1)).toBeNull()
+    expect(buildRecord('gemini', JSON.stringify({ hook_event_name: 'SessionEnd', reason: 'exit' }), 1)?.event).toBe('ended')
+    expect(buildRecord('cursor', JSON.stringify({ hook_event_name: 'Stop' }), 1)).toBeNull()
     expect(buildRecord('claude', 'not json', 1)).toBeNull()
     expect(buildRecord('claude', '[]', 1)).toBeNull()
+  })
+
+  it('maps Grok turn events and tags them with the prompt id', () => {
+    // Payload shapes seen from Grok 1.0.41 against a local fake API.
+    const base = { sessionId: 'g1', session_id: 'g1', promptId: 'p1', cwd: '/work', permissionMode: 'default' }
+    expect(buildRecord('grok', JSON.stringify({ ...base, hookEventName: 'user_prompt_submit', hook_event_name: 'UserPromptSubmit', prompt: 'private' }), 5))
+      .toEqual({ version: 1, tool: 'grok', event: 'started', session: 'g1', turn: 'p1', at: 5 })
+    expect(buildRecord('grok', JSON.stringify({ ...base, hook_event_name: 'StopCancelled', reason: 'user_interrupt' }), 5))
+      .toMatchObject({ event: 'cancelled', turn: 'p1' })
+    expect(buildRecord('grok', JSON.stringify({ ...base, hook_event_name: 'StopFailure', error: 'rate_limit' }), 5))
+      .toMatchObject({ event: 'failed', reason: 'busy', turn: 'p1' })
+    // Session-level reports carry no prompt id.
+    expect(buildRecord('grok', JSON.stringify({ sessionId: 'g1', session_id: 'g1', hook_event_name: 'Stop', reason: 'shutdown' }), 5))
+      .toEqual({ version: 1, tool: 'grok', event: 'finished', session: 'g1', at: 5 })
+    expect(buildRecord('grok', JSON.stringify({ sessionId: 'g1', session_id: 'g1', hook_event_name: 'SessionEnd', reason: 'shutdown' }), 5)?.event).toBe('ended')
+    // A subagent's own stop is not the session's.
+    expect(buildRecord('grok', JSON.stringify({ ...base, hook_event_name: 'StopCancelled', subagentType: 'explore' }), 5)).toBeNull()
+    expect(buildRecord('grok', JSON.stringify({ ...base, hook_event_name: 'PreToolUse' }), 5)).toBeNull()
+    expect(buildRecord('grok', JSON.stringify({ ...base, promptId: '../p', hook_event_name: 'Stop' }), 5)).not.toHaveProperty('turn')
   })
 
   it('turns a Codex turn-complete payload into a finished record with the turn start time', () => {

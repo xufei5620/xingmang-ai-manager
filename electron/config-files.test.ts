@@ -55,6 +55,11 @@ const cliHook: CliHookInvocation = {
   eventsDirectory: '/home/me/.config/xingmang-ai-manager/cli-events',
   platform: 'linux',
 }
+interface GrokConfigShape {
+  compat?: unknown
+  hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>>
+  model: Record<string, { api_key?: string }>
+}
 const testModels: Record<ProviderId, string> = {
   claude: 'claude-opus-4-6',
   codex: 'gpt-5.5',
@@ -691,7 +696,7 @@ describe('native CLI configuration files', () => {
 
     saveProviderConfig('gemini', 'sk-relay', testModels.gemini, 'reset', roots, {}, providerBaseUrls, undefined, undefined, cliHook)
     const fresh = JSON.parse(fs.readFileSync(settingsPath, 'utf8')) as { hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>> }
-    expect(Object.keys(fresh.hooks).sort()).toEqual(['AfterAgent', 'BeforeAgent', 'Notification'])
+    expect(Object.keys(fresh.hooks).sort()).toEqual(['AfterAgent', 'BeforeAgent', 'Notification', 'SessionEnd'])
     expect(fresh.hooks.AfterAgent[0].hooks[0].command).toContain('xingmang-hook.cjs')
 
     saveProviderConfig('gemini', 'sk-relay', testModels.gemini, 'merge', roots, {}, providerBaseUrls, undefined, undefined, cliHook)
@@ -701,6 +706,45 @@ describe('native CLI configuration files', () => {
     switchProviderToOfficialAccount('gemini', roots, {}, providerBaseUrls)
     const official = JSON.parse(fs.readFileSync(settingsPath, 'utf8')) as Record<string, unknown>
     expect('hooks' in official).toBe(false)
+  })
+
+  it('writes the Grok turn hooks into fresh and merged configs, turns off its Claude hook compatibility and takes the hooks back on the official account', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const [configPath] = providerConfigPaths('grok', roots)
+    const posixHook = { ...cliHook, platform: 'linux' as const }
+
+    saveProviderConfig('grok', 'sk-relay', testModels.grok, 'reset', roots, {}, providerBaseUrls, undefined, undefined, posixHook)
+    const fresh = TOML.parse(fs.readFileSync(configPath, 'utf8')) as unknown as GrokConfigShape
+    expect(fresh.compat).toEqual({ claude: { hooks: false } })
+    expect(Object.keys(fresh.hooks).sort()).toEqual(['Notification', 'SessionEnd', 'Stop', 'StopCancelled', 'StopFailure', 'UserPromptSubmit'])
+    expect(fresh.hooks.Stop[0].hooks[0].command).toContain(' grok ')
+    expect(fresh.model.grok.api_key).toBe('sk-relay')
+
+    fs.writeFileSync(configPath, `${fs.readFileSync(configPath, 'utf8')}\n[[hooks.PreToolUse]]\nmatcher = "Bash"\nhooks = [{ type = "command", command = "/opt/guard.sh" }]\n`, 'utf8')
+    saveProviderConfig('grok', 'sk-relay', testModels.grok, 'merge', roots, {}, providerBaseUrls, undefined, undefined, posixHook)
+    const merged = TOML.parse(fs.readFileSync(configPath, 'utf8')) as unknown as GrokConfigShape
+    expect(merged.hooks.Stop).toHaveLength(1)
+    expect(merged.hooks.PreToolUse).toHaveLength(1)
+
+    switchProviderToOfficialAccount('grok', roots, {}, providerBaseUrls)
+    const official = TOML.parse(fs.readFileSync(configPath, 'utf8')) as unknown as GrokConfigShape
+    expect(Object.keys(official.hooks)).toEqual(['PreToolUse'])
+    expect(official.compat).toEqual({ claude: { hooks: false } })
+  })
+
+  it('leaves the Grok Claude compatibility switch the user set alone and writes no Grok hook on Windows', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const [configPath] = providerConfigPaths('grok', roots)
+    saveProviderConfig('grok', 'sk-relay', testModels.grok, 'reset', roots, {}, providerBaseUrls, undefined, undefined, { ...cliHook, platform: 'win32' })
+    const fresh = TOML.parse(fs.readFileSync(configPath, 'utf8')) as unknown as GrokConfigShape
+    expect(fresh.compat).toEqual({ claude: { hooks: false } })
+    expect('hooks' in fresh).toBe(false)
+
+    fs.writeFileSync(configPath, fs.readFileSync(configPath, 'utf8').replace('hooks = false', 'hooks = true'), 'utf8')
+    saveProviderConfig('grok', 'sk-relay', testModels.grok, 'merge', roots, {}, providerBaseUrls, undefined, undefined, { ...cliHook, platform: 'linux' })
+    expect((TOML.parse(fs.readFileSync(configPath, 'utf8')) as unknown as GrokConfigShape).compat).toEqual({ claude: { hooks: true } })
   })
 
   it('writes the Codex notify command into a fresh config, refreshes our own and takes it back on the official account', () => {

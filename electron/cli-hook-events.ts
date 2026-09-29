@@ -27,16 +27,31 @@ export const WAITING_QUIET_MS = 2 * 60_000
 
 const EVENT_FILE_PATTERN = /^\d{1,16}-\d{1,10}-[0-9a-f]{8}\.(json|tmp)$/
 
-export type CliHookEventKind = 'started' | 'finished' | 'failed' | 'waiting'
+/**
+ * cancelled：这一轮被打断或拒绝授权（只有 Grok 报）；ended：会话不在干活了（退出、
+ * 停在输入框没人理）。这两类只用来放开睡眠，不弹通知。
+ */
+export type CliHookEventKind = 'started' | 'finished' | 'failed' | 'waiting' | 'cancelled' | 'ended'
+
+/** Grok 的记录也进这个目录，但目前只用来挡睡眠，通知那张表里没有它。 */
+export type CliHookTool = TerminalNotice['tool'] | 'grok'
 
 export interface CliHookEvent {
-  tool: TerminalNotice['tool']
+  tool: CliHookTool
   event: CliHookEventKind
   reason?: TerminalFailureReason
   session: string
   at: number
   /** Codex 没有「开始」事件，钩子脚本从 turn-id 里解出这一轮的开始时刻一起带来。 */
   startedAt?: number
+  /** Grok 每一轮的编号：打断的报告可能晚于下一轮的开始，靠它别把新的一轮当成结束了。 */
+  turn?: string
+}
+
+const eventKinds: ReadonlySet<string> = new Set<CliHookEventKind>(['started', 'finished', 'failed', 'waiting', 'cancelled', 'ended'])
+
+function isEventKind(value: unknown): value is CliHookEventKind {
+  return typeof value === 'string' && eventKinds.has(value)
 }
 
 const failureReasons: ReadonlySet<string> = new Set<TerminalFailureReason>(['billing', 'auth', 'busy', 'model', 'service', 'unknown'])
@@ -54,23 +69,26 @@ export function parseCliHookEvent(text: string): CliHookEvent | null {
     return null
   }
   if (!isRecord(value) || value.version !== 1) return null
-  const { tool, event, reason, session, at, startedAt } = value
-  if (tool !== 'claude' && tool !== 'gemini' && tool !== 'codex') return null
-  if (event !== 'started' && event !== 'finished' && event !== 'failed' && event !== 'waiting') return null
-  // Codex 的 notify 只报「做完」，其余几类出现就是伪造的。
-  if (tool === 'codex' && event !== 'finished') return null
+  const { tool, event: kind, reason, session, at, startedAt, turn } = value
+  if (tool !== 'claude' && tool !== 'gemini' && tool !== 'codex' && tool !== 'grok') return null
+  if (!isEventKind(kind)) return null
+  // Codex 的 notify 只报「做完」，其余几类出现就是伪造的；打断只有 Grok 报。
+  if (tool === 'codex' && kind !== 'finished') return null
+  if (kind === 'cancelled' && tool !== 'grok') return null
   if (typeof at !== 'number' || !Number.isSafeInteger(at) || at <= 0) return null
   if (typeof session !== 'string' || !/^[A-Za-z0-9_.:-]{0,100}$/.test(session)) return null
-  if (event === 'finished' && startedAt !== undefined) {
+  if (turn !== undefined && (tool !== 'grok' || typeof turn !== 'string' || !/^[A-Za-z0-9_.:-]{1,100}$/.test(turn))) return null
+  const turnField = typeof turn === 'string' ? { turn } : {}
+  if (kind === 'finished' && startedAt !== undefined) {
     if (typeof startedAt !== 'number' || !Number.isSafeInteger(startedAt) || startedAt <= 0 || startedAt > at) return null
-    return { tool, event, session, at, startedAt }
+    return { tool, event: kind, session, at, startedAt, ...turnField }
   }
   if (tool === 'codex') return { tool, event: 'finished', session, at }
-  if (event === 'failed') {
+  if (kind === 'failed') {
     if (typeof reason !== 'string' || !failureReasons.has(reason)) return null
-    return { tool, event, reason: reason as TerminalFailureReason, session, at }
+    return { tool, event: kind, reason: reason as TerminalFailureReason, session, at, ...turnField }
   }
-  return { tool, event, session, at }
+  return { tool, event: kind, session, at, ...turnField }
 }
 
 /**
@@ -99,6 +117,8 @@ export function createCliTurnTracker(options: {
 
   return {
     observe(event: CliHookEvent): TerminalNotice | null {
+      // Grok 的记录只给防睡用（cli-keep-awake.ts），通知文案还没有它。
+      if (event.tool === 'grok') return null
       const turnKey = `${event.tool}:${event.session}`
       switch (event.event) {
         case 'started':
@@ -125,6 +145,10 @@ export function createCliTurnTracker(options: {
           if (quiet(`failed:${event.tool}:${reason}`, event.at, failureQuietMs)) return null
           return { tool: event.tool, event: 'failed', reason }
         }
+        case 'cancelled':
+        case 'ended':
+          starts.delete(turnKey)
+          return null
       }
     },
   }
@@ -133,6 +157,8 @@ export function createCliTurnTracker(options: {
 export interface CliHookEventMonitorOptions {
   directory: string
   notify: (notice: TerminalNotice, eventKey: string) => void
+  /** 每一条通过校验、不陈旧的记录都交一份出去（防睡用），通知弹不弹与它无关。 */
+  onEvent?: (event: CliHookEvent) => void
   now?: () => number
   log?: (level: 'info' | 'warn', event: string, message: string, detail?: Record<string, unknown>) => void
   /** 测试注入；缺省用 fs.watch。 */
@@ -184,6 +210,7 @@ export function createCliHookEventMonitor(options: CliHookEventMonitorOptions) {
     const event = text === null ? null : parseCliHookEvent(text)
     if (!event) return
     if (current - event.at > STALE_EVENT_MS || event.at - current > STALE_EVENT_MS) return
+    options.onEvent?.(event)
     const notice = tracker.observe(event)
     if (!notice) return
     options.log?.('info', 'cli-hook.notice', '终端里的工具有事要告诉用户', { tool: notice.tool, event: notice.event, ...(notice.event === 'failed' ? { reason: notice.reason } : {}) })

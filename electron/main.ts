@@ -10,6 +10,7 @@ import {
   nativeImage,
   net,
   powerMonitor,
+  powerSaveBlocker,
   protocol,
   safeStorage,
   screen,
@@ -142,6 +143,7 @@ import {
 import { resolveClaudeStatusLineScriptPath } from './claude-status-line'
 import { cliHookEventsDirectory, resolveCliHookScriptPath } from './cli-hooks'
 import { createCliHookEventMonitor } from './cli-hook-events'
+import { createCliKeepAwake } from './cli-keep-awake'
 import { resolveProjectInstructionsTemplatePath } from './project-instructions'
 import { ipcEventChannels, type AccountBalance, type AccountSubscriptionSelf, type SettingsSaveIssue } from './ipc-contract'
 import {
@@ -1426,9 +1428,15 @@ if (!hasSingleInstanceLock) {
     let accelerationExpiry: AccelerationExpiryNotice | null = null
     // 终端里的 Claude Code / Gemini CLI 出错、做完、等人时由钩子留下记录，这里读出来发
     // 系统通知。窗口没开着也照读：人走开的时候恰恰是最需要提醒的时候。
+    // 同一份记录也用来在工具干活时挡住自动睡眠，做完、出错、退出就放开。
+    const cliKeepAwake = createCliKeepAwake({
+      blocker: powerSaveBlocker,
+      log: (level, event, message, detail) => runtimeLog.log(level, 'config', event, message, detail),
+    })
     const cliHookEvents = createCliHookEventMonitor({
       directory: cliHookEventsDirectory(managerDataDirectory),
       notify: (terminal, eventKey) => { hostNotifier()({ terminal, eventKey }) },
+      onEvent: (event) => cliKeepAwake.observe(event),
       log: (level, event, message, detail) => runtimeLog.log(level, 'config', event, message, detail),
     })
     cliHookEvents.start()
@@ -2536,6 +2544,7 @@ if (!hasSingleInstanceLock) {
     })
     app.once('will-quit', () => {
       cliHookEvents.dispose()
+      cliKeepAwake.dispose()
       accelerationExpiry?.dispose()
       accelerationInterruption?.dispose()
       void acceleration?.dispose().catch((error) => runtimeLog.exception('network', 'acceleration.shutdown.failed', error))

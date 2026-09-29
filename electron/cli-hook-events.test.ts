@@ -44,12 +44,23 @@ describe('parseCliHookEvent', () => {
       .toEqual({ tool: 'codex', event: 'finished', session: 't', at: 90 })
   })
 
+  it('accepts the Grok turn id and the release-only kinds', () => {
+    expect(parseCliHookEvent(JSON.stringify({ version: 1, tool: 'grok', event: 'cancelled', session: 'g', turn: 'p-1', at: 5 })))
+      .toEqual({ tool: 'grok', event: 'cancelled', session: 'g', turn: 'p-1', at: 5 })
+    expect(parseCliHookEvent(JSON.stringify({ version: 1, tool: 'gemini', event: 'ended', session: '', at: 5 })))
+      .toEqual({ tool: 'gemini', event: 'ended', session: '', at: 5 })
+  })
+
   it('rejects anything outside the fixed vocabulary', () => {
     for (const value of [
       'nope',
       '[]',
       { version: 2, tool: 'claude', event: 'finished', session: '', at: 1 },
-      { version: 1, tool: 'grok', event: 'finished', session: '', at: 1 },
+      { version: 1, tool: 'cursor', event: 'finished', session: '', at: 1 },
+      { version: 1, tool: 'claude', event: 'cancelled', session: '', at: 1 },
+      { version: 1, tool: 'codex', event: 'ended', session: '', at: 1 },
+      { version: 1, tool: 'claude', event: 'started', session: 's', turn: 't', at: 1 },
+      { version: 1, tool: 'grok', event: 'started', session: 's', turn: '../t', at: 1 },
       { version: 1, tool: 'codex', event: 'failed', reason: 'auth', session: '', at: 1 },
       { version: 1, tool: 'codex', event: 'waiting', session: '', at: 1 },
       { version: 1, tool: 'claude', event: 'finished', session: '', at: 10, startedAt: 11 },
@@ -109,6 +120,15 @@ describe('createCliTurnTracker', () => {
     expect(tracker.observe(event({ tool: 'codex', event: 'finished', at: LONG_TURN_MS * 5 }))).toBeNull()
   })
 
+  it('never notifies about Grok and forgets a turn that was cancelled or ended', () => {
+    const tracker = createCliTurnTracker()
+    expect(tracker.observe(event({ tool: 'grok', event: 'failed', reason: 'auth' }))).toBeNull()
+    expect(tracker.observe(event({ tool: 'grok', event: 'waiting' }))).toBeNull()
+    tracker.observe(event({ event: 'started', at: 0 }))
+    expect(tracker.observe(event({ event: 'ended', at: 1 }))).toBeNull()
+    expect(tracker.observe(event({ event: 'finished', at: LONG_TURN_MS * 2 }))).toBeNull()
+  })
+
   it('does not call a failed turn finished afterwards', () => {
     const tracker = createCliTurnTracker()
     tracker.observe(event({ event: 'started', at: 0 }))
@@ -127,15 +147,29 @@ describe('createCliHookEventMonitor', () => {
   function setup(now: number) {
     const directory = path.join(temporaryDirectory(), 'cli-events')
     const notices: Array<{ notice: TerminalNotice, key: string }> = []
+    const events: CliHookEvent[] = []
     const monitor = createCliHookEventMonitor({
       directory,
       now: () => now,
       notify: (notice, key) => { notices.push({ notice, key }) },
+      onEvent: (value) => { events.push(value) },
       watch: () => ({ close: vi.fn() }),
     })
     monitor.start()
-    return { directory, notices, monitor }
+    return { directory, notices, events, monitor }
   }
+
+  it('hands every accepted record to the keep-awake listener, notice or not', () => {
+    const now = 20_000_000
+    const { directory, notices, events, monitor } = setup(now)
+    write(directory, now - 2, { version: 1, tool: 'grok', event: 'started', session: 'g', turn: 'p', at: now - 2 })
+    write(directory, now - 1, { version: 1, tool: 'claude', event: 'started', session: 's', at: now - 1 })
+    write(directory, now - 11 * 60_000, { version: 1, tool: 'gemini', event: 'started', session: '', at: now - 11 * 60_000 })
+    monitor.sweep()
+    expect(events.map(({ tool, event: kind }) => `${tool}:${kind}`)).toEqual(['grok:started', 'claude:started'])
+    expect(notices).toEqual([])
+    monitor.dispose()
+  })
 
   it('creates the directory, turns records into notices in time order and deletes what it read', () => {
     const now = 10_000_000

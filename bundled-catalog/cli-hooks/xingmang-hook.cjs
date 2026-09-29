@@ -1,8 +1,9 @@
 // 星芒AI管理工具随包发布的命令行工具钩子脚本。
 //
-// Claude Code / Gemini CLI 在一轮开始、结束、出错或停下来等人时起一次这个脚本，把一段
-// JSON 从 stdin 递进来；Codex 的 notify 只在一轮做完时起它，JSON 放在最后一个参数里。脚本只做一件事：挑出「哪个工具、发生了哪一类事」写成一个几十字节
-// 的小文件，放进星芒自己的数据目录，由星芒主进程读出来再决定弹不弹系统通知。
+// Claude Code / Gemini CLI / Grok 在一轮开始、结束、出错、停下来等人或退出时起一次这个
+// 脚本，把一段 JSON 从 stdin 递进来；Codex 的 notify 只在一轮做完时起它，JSON 放在最后
+// 一个参数里。脚本只做一件事：挑出「哪个工具、发生了哪一类事」写成一个几十字节的小文件，
+// 放进星芒自己的数据目录，由星芒主进程读出来再决定弹不弹系统通知、要不要挡住电脑睡眠。
 //
 // 刻意的边界：
 //   * 不出网、不读任何配置文件、不碰 API Key；
@@ -13,7 +14,7 @@
 //   * 永远以 0 退出，永不抛错：少一条通知是小事，让终端里蹦出红字或拦住 AI 不是。
 //
 // 参数：argv[2] 是工具编号，argv[3] 是事件目录（主进程写配置时给的绝对路径），Codex
-// 另有 argv[4]。
+// 另有 argv[4]。Grok 的钩子是一整条 shell 命令，参数由它的 shell 拆开，到这里是一样的。
 
 'use strict'
 
@@ -26,7 +27,7 @@ const crypto = require('node:crypto')
 const MAX_INPUT_BYTES = 2 * 1024 * 1024
 // stdin 一直不关（上游改了调用方式）也要自己退出，不能挂着一个 node 进程。
 const INPUT_TIMEOUT_MS = 5000
-const TOOLS = new Set(['claude', 'gemini', 'codex'])
+const TOOLS = new Set(['claude', 'gemini', 'codex', 'grok'])
 
 // Claude Code StopFailure 的 error 取值（2.1.282 的钩子说明里列着）。只把能对客户说清楚
 // 的几类单独拎出来。2.1.282 对本地假接口实测：401 → authentication_failed、429 → rate_limit、
@@ -87,9 +88,13 @@ function record(value) {
   return value && typeof value === 'object' && !Array.isArray(value) ? value : null
 }
 
-// 会话编号只用来把「开始」和「结束」配成一对，算这一轮跑了多久。
+// 会话编号只用来把「开始」和「结束」配成一对，算这一轮跑了多久、这一轮还在不在跑。
 function sessionId(payload) {
   const value = payload.session_id
+  return typeof value === 'string' && /^[A-Za-z0-9_.:-]{1,100}$/.test(value) ? value : ''
+}
+
+function turnId(value) {
   return typeof value === 'string' && /^[A-Za-z0-9_.:-]{1,100}$/.test(value) ? value : ''
 }
 
@@ -109,7 +114,12 @@ function claudeEvent(payload) {
       return { event: 'failed', reason }
     }
     case 'Notification':
-      return CLAUDE_WAITING_TYPES.has(payload.notification_type) ? { event: 'waiting' } : null
+      if (CLAUDE_WAITING_TYPES.has(payload.notification_type)) return { event: 'waiting' }
+      // 停在输入框一阵子没人理：这一轮肯定已经结束了。被打断的那一轮大概不报 Stop
+      // （推测，Grok 照抄的这套钩子明写了不报），靠这一条让星芒放开睡眠。
+      return payload.notification_type === 'idle_prompt' ? { event: 'ended' } : null
+    case 'SessionEnd':
+      return { event: 'ended' }
     default:
       return null
   }
@@ -125,9 +135,23 @@ function geminiEvent(payload) {
       return { event: 'finished' }
     case 'Notification':
       return payload.notification_type === 'ToolPermission' ? { event: 'waiting' } : null
+    // 接口出错时 AfterAgent 不来（0.61.0 对本地假接口实测），退出时这一条还会来。
+    case 'SessionEnd':
+      return { event: 'ended' }
     default:
       return null
   }
+}
+
+// Grok 1.0.41 的钩子仿 Claude Code，载荷里同时带 hook_event_name / session_id 两个 Claude
+// 式字段（本地假接口实测）。多出来的：打断、拒绝授权时报 StopCancelled；每一轮有 promptId，
+// 打断的报告可能晚于下一轮的开始，主进程靠它认出是哪一轮。子代理自己的结束不算整个会话的。
+function grokEvent(payload) {
+  if (payload.subagentType !== undefined) return null
+  const turn = turnId(payload.promptId)
+  const withTurn = (found) => (found && turn ? { ...found, turn } : found)
+  if (payload.hook_event_name === 'StopCancelled') return withTurn({ event: 'cancelled' })
+  return withTurn(claudeEvent(payload))
 }
 
 // Codex 的 turn-id 是 UUIDv7，开头 48 位就是这一轮开始的毫秒时刻（0.156.1 实测：
@@ -158,7 +182,8 @@ function buildRecord(tool, input, now) {
   if (!payload) return null
   const found = tool === 'claude' ? claudeEvent(payload)
     : tool === 'gemini' ? geminiEvent(payload)
-      : codexEvent(payload, now)
+      : tool === 'grok' ? grokEvent(payload)
+        : codexEvent(payload, now)
   if (!found) return null
   const session = sessionId(tool === 'codex' ? { session_id: payload['thread-id'] } : payload)
   return { version: 1, tool, ...found, session, at: now }

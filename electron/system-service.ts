@@ -5145,8 +5145,7 @@ export function createSystemService(
    * 终端里出错、做完、等人时通知星芒的钩子。与状态行同一个口径：哪一环不成立（没有
    * 托管 Node、脚本没随包、路径带 shell 元字符）都只是这次不写，配置照写。
    */
-  async function resolveCliHookInvocation(provider: ProviderId): Promise<CliHookInvocation | undefined> {
-    if (provider === 'grok') return undefined
+  async function resolveCliHookInvocation(): Promise<CliHookInvocation | undefined> {
     const scriptPath = serviceOptions.cliHookScriptPath
     const dataDirectory = serviceOptions.managerDataDirectory
     if (!scriptPath || !dataDirectory) return undefined
@@ -5202,7 +5201,7 @@ export function createSystemService(
       if (!availableModels.includes(model)) throw new Error(`当前 API Key 不支持模型 ${model}，请重新检测并选择可用模型`)
       // 在 assertUnchanged 之前解析：找 node 要读 PATH，不该夹在「校验没变」和写入之间。
       const statusLineCommand = await resolveClaudeStatusLineCommand(payload.provider)
-      const cliHook = await resolveCliHookInvocation(payload.provider)
+      const cliHook = await resolveCliHookInvocation()
       if (previewOnboarding && payload.provider === 'codex') return { backups: [], files: [] }
       assertUnchanged()
       // Invalidate previous consent before a write, including same-key manual
