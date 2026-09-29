@@ -136,6 +136,7 @@ import type {
   AccountManagedCliConfigurationInput,
   ChooseWorkspaceOptions,
   LegalDocumentKind,
+  NodeRuntimeInstallRequest,
   RememberedAccountLogin,
   RendererErrorPayload,
   RendererLogLevel,
@@ -577,6 +578,15 @@ function parseChooseWorkspaceOptions(value: unknown): ChooseWorkspaceOptions {
   if (keys.some((key) => key !== 'createStarter')) throw new Error('选择工作目录的参数无效')
   if (value.createStarter !== undefined && typeof value.createStarter !== 'boolean') throw new Error('选择工作目录的参数无效')
   return value.createStarter === undefined ? {} : { createStarter: value.createStarter }
+}
+
+export function parseNodeRuntimeInstallRequest(value: unknown): NodeRuntimeInstallRequest {
+  if (value === undefined) return {}
+  if (!isRecord(value)) throw new Error('安装 Node.js 的参数无效')
+  if (Object.keys(value).some((key) => key !== 'reason')) throw new Error('安装 Node.js 的参数无效')
+  if (value.reason === undefined) return {}
+  if (value.reason !== 'certificate') throw new Error('安装 Node.js 的参数无效')
+  return { reason: 'certificate' }
 }
 
 function parseWorkspace(workspace: unknown, fallback: string): string {
@@ -2252,10 +2262,11 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     return workspace
   })
   registerTrustedHandler('repository:get-context', () => options.extensionService.getRepositoryContext())
-  registerTrustedHandler('runtime:install-node', async (event) => {
-    options.runtimeLog.log('info', 'maintenance', 'runtime.node.install.started', '开始自动安装 Node.js LTS')
+  registerTrustedHandler('runtime:install-node', async (event, rawRequest: unknown) => {
+    const request = parseNodeRuntimeInstallRequest(rawRequest)
+    options.runtimeLog.log('info', 'maintenance', 'runtime.node.install.started', '开始自动安装 Node.js LTS', request.reason ? { reason: request.reason } : undefined)
     try {
-      const result = await service.installNodeRuntime(event.sender)
+      const result = await service.installNodeRuntime(event.sender, request)
       options.runtimeLog.log('info', 'maintenance', 'runtime.node.install.completed', 'Node.js LTS 自动安装完成', {
         method: result.method,
         source: result.source,

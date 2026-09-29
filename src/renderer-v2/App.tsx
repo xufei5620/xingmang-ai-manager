@@ -48,6 +48,8 @@ import { latestNetworkLocation } from './features/shell/network'
 import { bindPlatformAppearance, platformApi } from './platform-api'
 import { FailureBoundary } from './features/app/FailureBoundary'
 import { OperationErrorDialog, type OperationFailure } from './features/app/OperationErrorDialog'
+import { NodeReplaceDialog } from './features/tools/NodeReplaceDialog'
+import { canReplaceNode, describeNodeReplaceOutcome } from './features/tools/node-replace'
 import { StartupNotices } from './features/app/StartupNotices'
 import { MaintenanceNotice, maintenanceNoticeKey } from './features/app/MaintenanceNotice'
 import { crashReportingNotice, displayCompatNotice, displayRelaunchNotice, settingsSaveNotice, startupCheckFailure, startupCheckLogContext, startupDiagnosticsIssues, updatedNotice, vaultRecoveredNotice, withStartupNotice, withoutStartupNotice, type StartupCheckId, type StartupNotice } from './features/app/startup-notice'
@@ -166,6 +168,8 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   const chineseDecline = useRef<HTMLButtonElement>(null)
   const [dismissedUpdate, setDismissedUpdate] = useState('')
   const [operationError, setOperationError] = useState<OperationFailure | null>(null)
+  // 错误框里点了「换成新版 Node.js」：先问一次，确认后换完接着重做刚才失败的那一步。
+  const [nodeReplace, setNodeReplace] = useState<{ retry?: () => void } | null>(null)
   const [startupNotices, setStartupNotices] = useState<readonly StartupNotice[]>([])
   const [manualUninstall, setManualUninstall] = useState<ManualUninstallState | null>(null)
   const [accountReadError, setAccountReadError] = useState<{ scope: string; message: string } | null>(null)
@@ -649,6 +653,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     // 目录里 keyInvalid 的「一键修复」就是这件事：对当前账号把已配置的工具重新
     // 写一次 Key。一次点击只重写一次，连续失败的出口仍旧是「找客服」。
     else if (action === 'repair') void perform('重新写入 Key', () => rewriteAccountKeys())
+    else if (action === 'replaceNode') setNodeReplace(failure?.retry ? { retry: failure.retry } : {})
     else setHelp(true)
   }, [navigate, operationError, perform, rewriteAccountKeys])
   // 引导里「改用」失败或没能确认能用时的出口：和错误框同一张表，只是没有「再试一次」
@@ -775,6 +780,18 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     if (!done.outcome || !mounted.current) return
     if (done.outcome.restartRequired) setRuntimeRestart(true)
     else toast.show(done.outcome.message, done.outcome.tone)
+  }
+  async function replaceNode(retry?: () => void) {
+    if (offline) { toast.show(offlineActionMessage, 'warn'); return }
+    const done: { outcome?: RuntimeInstallOutcome } = {}
+    await toolbox.run('node', '正在换成新版 Node.js', async () => {
+      done.outcome = describeNodeReplaceOutcome(await toolsApi.replaceNode(), Boolean(retry))
+    }, { notice: { unfinished: () => Boolean(done.outcome?.restartRequired) } })
+    await toolbox.refresh(true)
+    if (!done.outcome || !mounted.current) return
+    if (done.outcome.restartRequired) { setRuntimeRestart(true); return }
+    toast.show(done.outcome.message, done.outcome.tone)
+    retry?.()
   }
   async function installExternal(id: ExternalToolId) {
     const epoch = accountEpoch.current
@@ -1252,7 +1269,12 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
         else if ('crashReporting' in action) void chooseCrashReporting(action.crashReporting)
         else if ('relaunch' in action) void perform('重开软件', async () => { await app.relaunch() })
       }} />
-    {operationError && <OperationErrorDialog failure={operationError} installDirectory={toolInstallDirectory(toolbox.snapshot, operationError.tool)} onClose={() => setOperationError(null)} onAction={runOperationAction} />}
+    {operationError && <OperationErrorDialog failure={operationError} installDirectory={toolInstallDirectory(toolbox.snapshot, operationError.tool)} canReplaceNode={canReplaceNode({ platform: platform?.platform, nodeRuntimeInstall: platform?.nodeRuntimeInstall })} onClose={() => setOperationError(null)} onAction={runOperationAction} />}
+    {nodeReplace && <NodeReplaceDialog version={toolbox.snapshot?.system.runtime.node.version} onClose={() => setNodeReplace(null)} onConfirm={() => {
+      const retry = nodeReplace.retry
+      setNodeReplace(null)
+      void perform('换成新版 Node.js', () => replaceNode(retry))
+    }} />}
     {manualUninstall && <ManualUninstallDialog state={manualUninstall} platform={platform?.platform} onClose={() => setManualUninstall(null)} />}
     {!operationError && session.authenticated && accountReadError?.scope === scope && <Dialog open title="操作没有完成" onClose={() => setAccountReadError(null)} footer={<>
       <Button onClick={() => setAccountReadError(null)}>返回</Button>

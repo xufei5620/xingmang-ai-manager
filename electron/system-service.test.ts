@@ -51,6 +51,8 @@ import {
   offlineLatestVersionBudgetMs,
   settleLatestVersionProbes,
   createSystemService,
+  nodeStillOutdatedAfterReplaceMessage,
+  shouldReplaceNodeForCertificates,
   DarwinGrokRetainedPathsError,
   inspectVerifiedDarwinGrokPostInstall,
   interactiveTerminalEnvironment,
@@ -2962,6 +2964,81 @@ describe('npm install progress reporting', () => {
       'runtime:node-install-progress',
       expect.objectContaining({ message: expect.stringContaining('ARM 芯片') }),
     )
+  })
+
+  it('replaces a working Node.js only when the customer asked for it because of company certificates on Windows', () => {
+    const old = { installed: true, version: 'v20.11.1' }
+    const certificate = { reason: 'certificate' as const }
+    expect(shouldReplaceNodeForCertificates({ platform: 'win32', request: certificate, node: old })).toBe(true)
+    expect(shouldReplaceNodeForCertificates({ platform: 'win32', request: certificate, node: { installed: true, version: 'v22.18.0' } })).toBe(true)
+    // 缺省请求就是旧行为：够装工具就不动。
+    expect(shouldReplaceNodeForCertificates({ platform: 'win32', request: {}, node: old })).toBe(false)
+    // 已经认得证书的、读不出版本的、没装的，都不换。
+    expect(shouldReplaceNodeForCertificates({ platform: 'win32', request: certificate, node: { installed: true, version: 'v22.19.0' } })).toBe(false)
+    expect(shouldReplaceNodeForCertificates({ platform: 'win32', request: certificate, node: { installed: true, version: null } })).toBe(false)
+    expect(shouldReplaceNodeForCertificates({ platform: 'win32', request: certificate, node: { installed: false, version: null } })).toBe(false)
+    // Mac 上代下的那份排在客户自己的后面，换了也用不上。
+    expect(shouldReplaceNodeForCertificates({ platform: 'darwin', request: certificate, node: old })).toBe(false)
+  })
+
+  function outdatedNodeService(directory: string, versions: string[], installNodeRuntime: () => Promise<NodeRuntimeInstallResult>) {
+    const nodeExecutable = 'C:\\Program Files\\nodejs\\node.exe'
+    const npmExecutable = 'C:\\Program Files\\nodejs\\npm.cmd'
+    let nodeReads = 0
+    const runCommand = vi.fn(async (spec: { executable: string; argv: readonly string[] }) => {
+      const stdout = spec.executable === nodeExecutable
+        ? `${versions[Math.min(nodeReads++, versions.length - 1)]}\n`
+        : '10.9.3\n'
+      return { executable: spec.executable, argv: [...spec.argv], exitCode: 0, signal: null, stdout, stderr: '', outputBytes: 10, durationMs: 1 }
+    })
+    return createSystemService(
+      new AppSettingsStore(path.join(directory, 'settings.json'), directory),
+      {
+        platform: 'win32',
+        windowsExecutionMode: 'same-user',
+        findExecutable: async (command) => command === 'node' ? nodeExecutable : command === 'npm' ? npmExecutable : null,
+        runCommand,
+        inspectWindowsRestartRequired: async () => ({ required: false, reasons: [] }),
+        inspectWindowsProcessor: async () => 'x64',
+        inspectExecutableMachine: async () => 'x64',
+        installNodeRuntime,
+      },
+    )
+  }
+
+  const installedLts: NodeRuntimeInstallResult = {
+    installed: true,
+    action: 'installed',
+    method: 'msi',
+    source: 'official',
+    version: 'v24.19.0',
+    architecture: 'x64',
+    pathRefreshRequired: true,
+    systemRestartRequired: false,
+  }
+
+  it('installs a new Node.js over one that cannot read company certificates once the customer confirmed', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-node-certificate-replace-'))
+    temporaryDirectories.push(directory)
+    const target = { isDestroyed: () => false, send: vi.fn() }
+    const installNodeRuntime = vi.fn(async () => installedLts)
+
+    // 没说原因：还是那句「无需重复安装」，行为不变。
+    await expect(outdatedNodeService(directory, ['v20.11.1'], installNodeRuntime).installNodeRuntime(target))
+      .resolves.toMatchObject({ action: 'unchanged' })
+    expect(installNodeRuntime).not.toHaveBeenCalled()
+
+    await expect(outdatedNodeService(directory, ['v20.11.1', 'v24.19.0'], installNodeRuntime).installNodeRuntime(target, { reason: 'certificate' }))
+      .resolves.toMatchObject({ action: 'installed', version: 'v24.19.0' })
+    expect(installNodeRuntime).toHaveBeenCalledTimes(1)
+  })
+
+  it('says so when an older Node.js still wins after the replacement', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-node-certificate-shadowed-'))
+    temporaryDirectories.push(directory)
+    const target = { isDestroyed: () => false, send: vi.fn() }
+    const service = outdatedNodeService(directory, ['v20.11.1'], vi.fn(async () => installedLts))
+    await expect(service.installNodeRuntime(target, { reason: 'certificate' })).rejects.toThrow(nodeStillOutdatedAfterReplaceMessage)
   })
 
   it('separates the resolution budget from the download budget', () => {

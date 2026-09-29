@@ -14,7 +14,7 @@ export const errors = {
   diskFull: { title: '磁盘空间不够', body: '安装目录所在的磁盘没有空间了。请清理后再试。', actions: ['复制路径', '重试', '查看日志'] },
   certDate: { title: '证书日期对不上', body: '多半是这台电脑的系统时间不准——证书有没有过期是拿本机时钟比出来的。请把系统时间设为自动同步并确认时区，再重试；确认时间没问题，再换个网络。', actions: ['重试', '查看日志'] },
   tlsIntercepted: { title: '连接被证书拦截', body: '网络里有设备替换了证书，这台电脑也不认它（常见于公司网络或安全软件）。公司电脑请找网络管理员处理；自己的电脑请换个网络，或关掉安全软件的网页扫描后重试。', actions: ['重试', '查看日志'] },
-  toolCertOutdatedNode: { title: 'Node.js 太旧，认不了这台电脑的证书', body: toolCertificateMessages.outdatedNode, actions: ['重试', '查看日志'] },
+  toolCertOutdatedNode: { title: 'Node.js 太旧，认不了这台电脑的证书', body: toolCertificateMessages.outdatedNode, actions: ['换成新版 Node.js', '重试', '查看日志'] },
   toolCertElevated: { title: '管理员身份下工具不认这台电脑的证书', body: toolCertificateMessages.elevated, actions: ['重试', '查看日志'] },
   folderRelocated: { title: '文件夹被搬到了别的位置', body: '为了安全，软件不往被搬过的文件夹里写东西。打开「检查」页能看到是哪个文件夹；把它搬回原来的位置就能恢复。', actions: ['打开检查页', '找客服'] },
   permission: { title: '写不进安装目录', body: '本工具按普通权限运行，不会提权。请检查安装目录的写入权限，或杀毒软件是否拦了它。', actions: ['复制路径', '查看日志'] },

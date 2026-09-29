@@ -90,6 +90,8 @@ import { rememberedLoginAction, rememberedLoginForgottenMessage } from './featur
 import { maintenanceFailureNotice, readMaintenanceStatus } from './features/tools/maintenance-status'
 import { ManualUninstallDialog, type ManualUninstallState } from './features/tools/ManualUninstall'
 import { RuntimeRestartDialog } from './features/tools/RuntimeRestartDialog'
+import { NodeReplaceDialog } from './features/tools/NodeReplaceDialog'
+import { describeNodeReplaceOutcome, nodeReplaceOffered } from './features/tools/node-replace'
 import { uninstallHandOffNotice } from './features/tools/uninstall-handoff'
 import { describeRuntimeInstallOutcome } from './features/tools/runtime-install-outcome'
 import {
@@ -1286,6 +1288,7 @@ export function MaintenancePage({
   const cancelRequested = useRef(new Set<string>())
   const [manualUninstall, setManualUninstall] = useState<ManualUninstallState | null>(null)
   const [runtimeRestart, setRuntimeRestart] = useState(false)
+  const [nodeReplaceOpen, setNodeReplaceOpen] = useState(false)
   useEffect(() => {
     const stopCli = api.onInstallProgress((event) =>
       setLogs((previous) => [...previous.slice(-199), event.message]),
@@ -1559,6 +1562,15 @@ export function MaintenancePage({
             id === 'node'
               ? capability?.nodeRuntimeInstall === 'managed'
               : capability?.pythonRuntimeInstall === 'managed'
+          // 装着、却认不了公司证书的 Node.js：「安装」只会回「无需重复安装」，
+          // 按钮改成「换成新版」，点了先确认再换（第十八批 4）。
+          const replace =
+            id === 'node' &&
+            nodeReplaceOffered({
+              platform: capability?.platform,
+              nodeRuntimeInstall: capability?.nodeRuntimeInstall,
+              node: status,
+            })
           return (
             <ListRow
               key={id}
@@ -1593,8 +1605,11 @@ export function MaintenancePage({
                   size="sm"
                   icon={Download}
                   disabled={Boolean(operation.busy)}
+                  testId={'maintenance-runtime-action-' + id}
                   onClick={() =>
-                    managed
+                    replace
+                      ? setNodeReplaceOpen(true)
+                      : managed
                       ? void operation.execute(
                           id,
                           async () => {
@@ -1613,7 +1628,7 @@ export function MaintenancePage({
                       : navigate?.('tutorial')
                   }
                 >
-                  {managed ? '安装' : '安装指南'}
+                  {replace ? '换成新版' : managed ? '安装' : '安装指南'}
                 </Button>
               }
             />
@@ -1706,6 +1721,27 @@ export function MaintenancePage({
           state={manualUninstall}
           platform={capability?.platform}
           onClose={() => setManualUninstall(null)}
+        />
+      )}
+      {nodeReplaceOpen && (
+        <NodeReplaceDialog
+          version={snapshot?.runtime.node.version}
+          onClose={() => setNodeReplaceOpen(false)}
+          onConfirm={() => {
+            setNodeReplaceOpen(false)
+            void operation.execute(
+              'node',
+              async () => {
+                const result = await api.installNodeRuntime({ reason: 'certificate' })
+                await resource.reload()
+                return describeNodeReplaceOutcome(result)
+              },
+              (outcome) => {
+                if (outcome.restartRequired) setRuntimeRestart(true)
+                return outcome.message
+              },
+            )
+          }}
         />
       )}
       {runtimeRestart && (

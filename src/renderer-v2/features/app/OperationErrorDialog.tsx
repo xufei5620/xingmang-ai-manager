@@ -20,24 +20,34 @@ export interface OperationFailure {
  * 归不进任何一类时也要给出下一步。目录里 errors.unknown 的按钮正是为这一格
  * 写的；「重试」只有在这次失败真的可重试时才留得住，「复制路径」只有在真的
  * 知道是哪个目录时才留得住，否则都是按了没反应的按钮。
+ *
+ * 「换成新版 Node.js」只有 Windows 做得到（Mac 上本软件代下的那份排在客户自己的
+ * 后面，装了也用不上）。换不了的时候重试只会撞同一个错，出口换成「找客服」。
  */
-export function operationErrorActions(failure: OperationFailure, installDirectory?: string | null): OperationAction[] {
+export function operationErrorActions(failure: OperationFailure, installDirectory?: string | null, canReplaceNode = false): OperationAction[] {
   const hint = presentOperationError(failure.message)
-  return (hint?.actions ?? operationFallbackActions())
+  const actions = (hint?.actions ?? operationFallbackActions())
     .filter((action) => action.id !== 'retry' || Boolean(failure.retry))
     .filter((action) => action.id !== 'copyPath' || Boolean(installDirectory))
+  if (canReplaceNode || !actions.some((action) => action.id === 'replaceNode')) return actions
+  const rest = actions.filter((action) => action.id !== 'replaceNode')
+  return rest.some((action) => action.id === 'support') ? rest : [...rest, { id: 'support', label: '找客服' }]
 }
 
-export function OperationErrorDialog({ failure, installDirectory, onClose, onAction }: {
+export function OperationErrorDialog({ failure, installDirectory, canReplaceNode = false, onClose, onAction }: {
   failure: OperationFailure
   /** 这次失败牵涉到的安装目录；缺省或为 null 时不出「复制路径」。 */
   installDirectory?: string | null
+  /** 这台电脑能不能由本软件把 Node.js 换成新版（只有 Windows）。 */
+  canReplaceNode?: boolean
   onClose(): void
   onAction(action: OperationActionId): void
 }) {
   const [copied, setCopied] = useState<'ok' | 'failed' | null>(null)
   const hint = presentOperationError(failure.message)
-  const actions = operationErrorActions(failure, installDirectory)
+  const actions = operationErrorActions(failure, installDirectory, canReplaceNode)
+  // 有「换成新版 Node.js」时它才是出路，重试只会撞同一个错，所以它当主按钮。
+  const primary = actions.some((action) => action.id === 'replaceNode') ? 'replaceNode' : 'retry'
   const showPath = actions.some((action) => action.id === 'copyPath')
   return <Dialog open title={hint?.title ?? '操作没有完成'} onClose={onClose} testId="operation-error" footer={<>
     <Button onClick={onClose}>返回</Button>
@@ -47,7 +57,7 @@ export function OperationErrorDialog({ failure, installDirectory, onClose, onAct
         void navigator.clipboard.writeText(installDirectory ?? '')
           .then(() => setCopied('ok')).catch(() => setCopied('failed'))
       }}>{action.label}</Button>
-      : <Button key={action.id} variant={action.id === 'retry' ? 'primary' : 'secondary'}
+      : <Button key={action.id} variant={action.id === primary ? 'primary' : 'secondary'}
         testId={`operation-error-${action.id}`} onClick={() => onAction(action.id)}>{action.label}</Button>)}
   </>}>
     {hint && <p data-testid="operation-error-body">{hint.body}</p>}

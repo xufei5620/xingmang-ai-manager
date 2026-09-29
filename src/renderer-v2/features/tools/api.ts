@@ -163,6 +163,8 @@ export function createToolsApi(bridge: XingmangApi) {
       return result
     },
     prepareRuntime: (runtime: 'node' | 'python') => runtime === 'node' ? bridge.installNodeRuntime() : bridge.installPythonRuntime(),
+    // 客户确认过要换：电脑上的 Node.js 够装工具、却认不了公司证书时照样装新版（第十八批 4）。
+    replaceNode: () => bridge.installNodeRuntime({ reason: 'certificate' }),
     installGit: () => bridge.installGitRuntime(),
     restartWindows: () => bridge.restartWindows(),
     chooseWorkspace: (options?: ChooseWorkspaceOptions) => options === undefined ? bridge.chooseWorkspace() : bridge.chooseWorkspace(options),

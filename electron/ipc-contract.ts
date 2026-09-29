@@ -259,6 +259,15 @@ export type RepositoryContext = CodexRepositoryContext
 export interface ChooseWorkspaceOptions {
   createStarter?: boolean
 }
+
+/**
+ * `runtime:install-node` 的可选参数。缺省 = 旧行为：装着能用的 Node.js 就不动。
+ * reason 'certificate'：电脑上的 Node.js 认不了这台电脑装的证书（公司电脑），
+ * 客户已经确认要换成新版，这时即使它够装工具也照样装一份新的。
+ */
+export interface NodeRuntimeInstallRequest {
+  reason?: 'certificate'
+}
 export type DiagnosticState = MainDiagnosticState
 export type DiagnosticsReport = MainDiagnosticsReport
 export type DiagnosticFolderTarget = MainDiagnosticFolderTarget
@@ -717,7 +726,7 @@ export interface XingmangInvokeContract {
   /** options 省略 = 弹目录选择器；createStarter = 不弹选择器，直接替用户新建一个项目文件夹。 */
   chooseWorkspace: IpcInvokeDefinition<'workspace:choose', [options?: ChooseWorkspaceOptions], string | null>
   getRepositoryContext: IpcInvokeDefinition<'repository:get-context', [], RepositoryContext>
-  installNodeRuntime: IpcInvokeDefinition<'runtime:install-node', [], NodeRuntimeInstallResult>
+  installNodeRuntime: IpcInvokeDefinition<'runtime:install-node', [request?: NodeRuntimeInstallRequest], NodeRuntimeInstallResult>
   restartWindows: IpcInvokeDefinition<'runtime:restart-windows', [], void>
   installPythonRuntime: IpcInvokeDefinition<'runtime:install-python', [], PythonRuntimeInstallResult>
   /** Windows 上按当前用户静默安装钉死版本的 Git for Windows；其余平台直接报错。 */

@@ -80,7 +80,7 @@ export const updateNetworkFailureMessages: Readonly<Record<NetworkFailureReason,
 export type ToolCertificateFailureKind = 'outdatedNode' | 'elevated'
 
 export const toolCertificateMessages: Readonly<Record<ToolCertificateFailureKind, string>> = {
-  outdatedNode: '工具下载时这次连接的安全证书被换掉了，公司电脑和安全软件常见。电脑上的 Node.js 版本较旧，认不了装在这台电脑上的证书。请到「安装卸载」页 Node.js 那一行点「安装」换成新版，再重试。',
+  outdatedNode: '工具下载时这次连接的安全证书被换掉了，公司电脑和安全软件常见。电脑上的 Node.js 版本较旧，认不了装在这台电脑上的证书，换成新版就能装上。',
   elevated: '工具下载时这次连接的安全证书被换掉了，公司电脑和安全软件常见。星芒现在是以管理员身份打开的，为了安全，这时不让工具信任电脑上另外装的证书。请关掉星芒，直接双击正常打开，再重试。',
 }
 
