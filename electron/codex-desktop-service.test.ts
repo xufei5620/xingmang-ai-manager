@@ -40,6 +40,7 @@ import {
   buildCodexDesktopStoreInstallCommand,
   describeCodexDesktopDownloadAttempt,
   describeCodexDesktopStoreFailure,
+  codexDesktopStoreExitCode,
   parseCodexDesktopStoreProgress,
   buildCodexDesktopStoreWaitMessage,
   codexDesktopStoreHeartbeatMs,
@@ -1900,7 +1901,8 @@ describe('Codex Desktop Microsoft Store install', () => {
     expect(describeCodexDesktopStoreFailure(storeError({ exitCode: 0x8a15002b | 0 }))).toBe('商店里暂时还没有更新的版本')
     expect(describeCodexDesktopStoreFailure(storeError({ exitCode: 0x8a150014 | 0 }))).toBe('商店里没找到 Codex 桌面端')
     expect(describeCodexDesktopStoreFailure(storeError({ code: 'TIMED_OUT', exitCode: null }))).toBe('等了很久还没装完')
-    expect(describeCodexDesktopStoreFailure(storeError({ exitCode: 0x8a150084 | 0 }))).toBe('错误码 0x8a150084')
+    expect(describeCodexDesktopStoreFailure(storeError({ exitCode: 0x8a150084 | 0 }))).toBe('商店那边没说原因')
+    expect(codexDesktopStoreExitCode(storeError({ exitCode: 0x8a150084 | 0 }))).toBe('0x8a150084')
     expect(describeCodexDesktopStoreFailure(new Error('spawn failed'))).toBe('安装没有完成')
   })
 
