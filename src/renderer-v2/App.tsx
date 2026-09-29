@@ -664,9 +664,10 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     setTourOpen(true)
   }, [navigate, scope])
   // 商店链接在主进程外链白名单里（全等匹配）。系统没接住时说清楚自己去哪儿找，
-  // 不留一颗按了没反应的按钮。
+  // 不留一颗按了没反应的按钮。打不开多半是这台电脑没有商店（第二十一批 2），
+  // 那就别再叫人去开始菜单里找它，回星芒重装会直接走国内线路。
   const openCodexDesktopStore = useCallback(async () => {
-    if (!await app.openExternal(codexDesktopStoreUrl)) throw new Error('没能打开微软商店。请在开始菜单里打开「Microsoft Store」，搜索「Codex」装好，再回星芒点「重新检测」。')
+    if (!await app.openExternal(codexDesktopStoreUrl)) throw new Error('没能打开微软商店，这台电脑可能没有它。回星芒再点一次安装，星芒会用国内线路装；还不行就找客服。')
   }, [app])
   const runOperationAction = useCallback((action: OperationActionId) => {
     const failure = operationError
