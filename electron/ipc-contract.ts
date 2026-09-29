@@ -623,6 +623,8 @@ export interface CodexDesktopInstallResult {
   action: 'installed' | 'updated' | 'unchanged'
   previousVersion: string | null
   installedVersion: string | null
+  /** 国内下载线路比微软商店慢一步、这次没更新到商店最新版时，商店那一版的版本号。 */
+  storeNewerVersion?: string
 }
 
 export interface IpcInvokeDefinition<

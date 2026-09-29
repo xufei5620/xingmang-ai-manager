@@ -5,6 +5,7 @@ import QRCode from 'qrcode'
 import type { AccountSessionState, AccountSourceSwitchResult, AccountSourceTarget, AppSettingsV2, ExternalDeepLink, ExternalToolId, LegalDocumentKind, NetworkSettingsKind, PlatformCapabilities, ProviderId, UpdateSnapshot, XingmangApi } from '../../electron/ipc-contract'
 import { resolveRelaySite, resolveSupportServiceUrl } from '../../electron/relay-sites'
 import { offersCodexDesktopRestart } from '../../electron/running-tools'
+import { codexDesktopStoreUrl } from '../../electron/codex-desktop-install-failure'
 import { Shell as AppFrame } from './features/shell/Shell'
 import { createChatTransfer } from './features/chat/transfer'
 import { isOffline, offlineActionMessage, offlineCause } from './features/shell/online-status'
@@ -170,6 +171,8 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   const [operationError, setOperationError] = useState<OperationFailure | null>(null)
   // 错误框里点了「换成新版 Node.js」：先问一次，确认后换完接着重做刚才失败的那一步。
   const [nodeReplace, setNodeReplace] = useState<{ retry?: () => void } | null>(null)
+  // 国内下载线路还没跟上微软商店时，这次「更新」其实没换版本：说一句，并给出去商店的按钮。
+  const [storeNewerVersion, setStoreNewerVersion] = useState<string | null>(null)
   const [startupNotices, setStartupNotices] = useState<readonly StartupNotice[]>([])
   const [manualUninstall, setManualUninstall] = useState<ManualUninstallState | null>(null)
   const [accountReadError, setAccountReadError] = useState<{ scope: string; message: string } | null>(null)
@@ -655,6 +658,11 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     navigate('home')
     setTourOpen(true)
   }, [navigate, scope])
+  // 商店链接在主进程外链白名单里（全等匹配）。系统没接住时说清楚自己去哪儿找，
+  // 不留一颗按了没反应的按钮。
+  const openCodexDesktopStore = useCallback(async () => {
+    if (!await app.openExternal(codexDesktopStoreUrl)) throw new Error('没能打开微软商店。请在开始菜单里打开「Microsoft Store」，搜索「Codex」装好，再回星芒点「重新检测」。')
+  }, [app])
   const runOperationAction = useCallback((action: OperationActionId) => {
     const failure = operationError
     setOperationError(null)
@@ -668,8 +676,9 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     // 写一次 Key。一次点击只重写一次，连续失败的出口仍旧是「找客服」。
     else if (action === 'repair') void perform('重新写入 Key', () => rewriteAccountKeys())
     else if (action === 'replaceNode') setNodeReplace(failure?.retry ? { retry: failure.retry } : {})
+    else if (action === 'openStore') void perform('打开微软商店', openCodexDesktopStore)
     else setHelp(true)
-  }, [navigate, operationError, perform, rewriteAccountKeys])
+  }, [navigate, openCodexDesktopStore, operationError, perform, rewriteAccountKeys])
   // 引导里「改用」或安装失败时的出口：和错误框同一张表，只是没有「再试一次」
   //（引导自己有）。去充值、去备份页会离开引导，进度照旧留着；换 Node.js 不离开，
   // 换完接着重跑引导里失败的那一步。
@@ -681,8 +690,9 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     else if (action === 'network') navigate('health')
     else if (action === 'relogin') setAuth('login')
     else if (action === 'repair') void perform('重新写入 Key', () => rewriteAccountKeys())
+    else if (action === 'openStore') void perform('打开微软商店', openCodexDesktopStore)
     else setHelp(true)
-  }, [navigate, perform, rewriteAccountKeys])
+  }, [navigate, openCodexDesktopStore, perform, rewriteAccountKeys])
   async function install(id: ToolId, version?: string): Promise<ToolInstallOutcome> {
     const state = toolbox.snapshot
     if (!state) throw new Error('请先完成工具检测')
@@ -721,7 +731,10 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       }
       preparing = false
       if (plan.prepare.length > 0) report(cliInstallStageLabel('tool', total - 1, total, toolName))
-      try { await toolsApi.install(id, version) }
+      try {
+        const result = await toolsApi.install(id, version)
+        if (id === 'codexDesktop' && result && 'storeNewerVersion' in result && result.storeNewerVersion && mounted.current) setStoreNewerVersion(result.storeNewerVersion)
+      }
       catch (cause) {
         // 环境已经装好、工具没装上：刷新一次，下次再点只剩装工具这一段。
         if (plan.prepare.length > 0) void toolbox.refresh(true).catch(() => undefined)
@@ -1292,6 +1305,10 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       setNodeReplace(null)
       void perform('换成新版 Node.js', () => replaceNode(retry))
     }} />}
+    {storeNewerVersion && <Dialog open title="微软商店里有更新的一版" onClose={() => setStoreNewerVersion(null)} width={480} testId="codex-desktop-store-newer" footer={<>
+      <Button onClick={() => setStoreNewerVersion(null)}>先不用</Button>
+      <Button variant="primary" testId="codex-desktop-store-newer-open" onClick={() => { setStoreNewerVersion(null); void perform('打开微软商店', openCodexDesktopStore) }}>去微软商店装</Button>
+    </>}><p>国内下载线路还没跟上，这台电脑上的 Codex 桌面端这次没有变。微软商店里已经有 {storeNewerVersion}，想用最新版就去商店点「更新」或「获取」。</p></Dialog>}
     {manualUninstall && <ManualUninstallDialog state={manualUninstall} platform={platform?.platform} onClose={() => setManualUninstall(null)} />}
     {!operationError && session.authenticated && accountReadError?.scope === scope && <Dialog open title="操作没有完成" onClose={() => setAccountReadError(null)} footer={<>
       <Button onClick={() => setAccountReadError(null)}>返回</Button>

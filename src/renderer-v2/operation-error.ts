@@ -1,8 +1,9 @@
+import { isCodexDesktopInstallFailureMessage } from '../../electron/codex-desktop-install-failure'
 import { classifyNetworkFailure, networkFailureReasonForMessage, toolCertificateFailureForMessage } from '../../electron/network-failure'
 import { errors } from './registry/errors'
 
 export type OperationErrorKey = keyof typeof errors
-export type OperationActionId = 'retry' | 'log' | 'support' | 'relogin' | 'recharge' | 'network' | 'repair' | 'copyPath' | 'backups' | 'replaceNode'
+export type OperationActionId = 'retry' | 'log' | 'support' | 'relogin' | 'recharge' | 'network' | 'repair' | 'copyPath' | 'backups' | 'replaceNode' | 'openStore'
 export interface OperationAction { id: OperationActionId; label: string }
 export interface OperationErrorHint {
   key: Exclude<OperationErrorKey, 'unknown'>
@@ -28,6 +29,11 @@ const rules: Array<{ key: OperationErrorHint['key']; match: (message: string) =>
   // 这里只给按钮；排在前面是因为它会提到「用户账户控制」「Administrator」，不能被
   // 下面的 permission 抢走、把客户送去看安装目录。
   { key: 'codexDesktopNotStarted', match: (message) => /Codex 桌面端没有打开/.test(message) },
+  // Codex 桌面端装不上 / 更新不了（主进程 codex-desktop-install-failure.ts 写好的整句，
+  // 开头直接取那边的常量）。那句话后半截已经说了是哪一种原因，这里只配按钮，其中
+  //「去微软商店装」是这一类才有的出口。排在前面是因为它会说到「连不上」「Windows
+  // 拒绝了这次安装」，不能被下面的 timeout、permission 抢走。
+  { key: 'codexDesktopInstallFailed', match: (message) => isCodexDesktopInstallFailureMessage(message) },
   // Codex 插件目录的旧备份自动清不掉（主进程 codex-plugin-catalog.ts 的
   // codexPluginCatalogBackupStuckMessage）。以前这句带着文件夹路径叫客户自己去挪，
   // 现在只剩「重启再试、不行找客服」。
@@ -147,6 +153,9 @@ const actionIds: Record<string, OperationActionId | undefined> = {
   // 提示叫人去「安装卸载」页点「安装」，那边一看 Node.js 够装工具就回「无需重复安装」，
   // 客户来回转圈（第十八批 4）。只有 Windows 换得了：调用方按平台决定留不留它。
   '换成新版 Node.js': 'replaceNode',
+  // 只有 Codex 桌面端装不上那一类会出这颗，而那句话只有 Windows 的安装路径写得出来，
+  // Mac 上自然不会出现。
+  去微软商店装: 'openStore',
 }
 
 /**
