@@ -32,6 +32,12 @@ const {
 const { parseWindowsProcessesJson } = compiled('codex-desktop')
 const { windowsExternalClientInventoryScript } = compiled('external-client-runtime')
 const { encodeWindowsPowerShellCommand, resolveWindowsPowerShellExecutable } = compiled('windows-elevation')
+const { trustedCommandEnvironment } = compiled('command-runner')
+const {
+  buildWindowsStoreAppLaunchContextScript,
+  inspectWindowsStoreAppLaunchContext,
+  parseWindowsStoreAppLaunchContext,
+} = compiled('windows-store-app-launch')
 
 // One budget per probe, not per step: the first call also pays the cold start,
 // and its duration is printed so a slow runner is visible in the log instead of
@@ -39,10 +45,10 @@ const { encodeWindowsPowerShellCommand, resolveWindowsPowerShellExecutable } = c
 const probeBudgetMs = 90_000
 const powershell = resolveWindowsPowerShellExecutable()
 
-function runPowerShell(argv) {
+function runPowerShell(argv, env = process.env) {
   return new Promise((resolve, reject) => {
     const child = execFile(powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', ...argv], {
-      encoding: 'utf8', windowsHide: true, maxBuffer: 1024 * 1024, timeout: probeBudgetMs,
+      env, encoding: 'utf8', windowsHide: true, maxBuffer: 1024 * 1024, timeout: probeBudgetMs,
     }, (error, stdout, stderr) => {
       if (error) reject(new Error(`${error.message}${error.killed ? ` (killed after ${probeBudgetMs}ms)` : ''}\n${stderr}`))
       else resolve(stdout)
@@ -169,6 +175,30 @@ function Get-AppxPackage { @() }
   }],
 ]
 
+checks.push(['store app launch script reads the current account', async () => {
+  const context = parseWindowsStoreAppLaunchContext(await runScript(buildWindowsStoreAppLaunchContextScript()))
+  assert.match(context.userSid ?? '', /^S-1-\d+(?:-\d+)+$/)
+}])
+
+// Not a check: evidence for why the standalone probe used to run out its whole
+// budget on CI (the old unit test failed there with an empty SID at ~90s) while
+// the same statements inside the Codex merged probe answer in about a second.
+// The same script is run once more under the environment the app gives it, and
+// once through the shipped function itself; both only print what they saw.
+async function reportStoreAppLaunchProductionPath() {
+  const trustedStartedAt = Date.now()
+  try {
+    const output = await runPowerShell(['-Command', buildWindowsStoreAppLaunchContextScript()], trustedCommandEnvironment())
+    console.log(`info store app launch script under the trusted environment: sid=${parseWindowsStoreAppLaunchContext(output).userSid ?? 'none'} (${Date.now() - trustedStartedAt}ms)`)
+  } catch (error) {
+    console.log(`::warning::store app launch script under the trusted environment failed after ${Date.now() - trustedStartedAt}ms: ${String(error?.message ?? error).split('\n')[0]}`)
+  }
+  const shippedStartedAt = Date.now()
+  const context = await inspectWindowsStoreAppLaunchContext({ timeoutMs: probeBudgetMs })
+  const line = `inspectWindowsStoreAppLaunchContext: sid=${context.userSid ?? 'none'} (${Date.now() - shippedStartedAt}ms)`
+  console.log(context.userSid ? `info ${line}` : `::warning::${line}`)
+}
+
 const failures = []
 for (const [name, check] of checks) {
   const startedAt = Date.now()
@@ -180,6 +210,7 @@ for (const [name, check] of checks) {
     console.error(`FAIL ${name} (${Date.now() - startedAt}ms)\n${error?.stack ?? error}`)
   }
 }
+await reportStoreAppLaunchProductionPath()
 if (failures.length) {
   console.error(`${failures.length} of ${checks.length} PowerShell probe checks failed`)
   process.exit(1)
