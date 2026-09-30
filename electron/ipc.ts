@@ -159,6 +159,7 @@ import { isNetworkSettingsKind, type NetworkSettingsKind, type ProxyBypassOutcom
 import { platformCapabilitiesFor } from './platform-capabilities'
 import { clearStaleUserProxyVariables, type StaleProxyClearResult } from './stale-proxy-environment'
 import type { UserWideCertificateTrustResult } from './user-certificate-trust'
+import { isDiagnosticFixKind, type DiagnosticFixKind, type DiagnosticFixResult } from './diagnostic-fixes'
 import { validatePaymentForm, validatePaymentQrCode, validatePaymentUrl, type PaymentWindowController } from './payment-window'
 import type { AccountStartupGate } from './account-startup-gate'
 import { parseAiChatHistoryScope, parseAiChatHistoryWrite, type AiChatHistoryStore } from './ai-chat-history-store'
@@ -204,6 +205,8 @@ export interface IpcRegistrationOptions {
     clearStaleProxy?(): Promise<StaleProxyClearResult>
     /** 检查页「让这台电脑上所有终端都信任」；宿主不给就是这台电脑上不提供。 */
     trustCertificatesUserWide?(): Promise<UserWideCertificateTrustResult>
+    /** 检查页「挪开这份设置」「删掉这几项设置」；缺省 = 不支持，点了报一句中文（旧行为无此按钮）。 */
+    fix?(kind: DiagnosticFixKind): Promise<DiagnosticFixResult>
   }
   runtimeLog: RuntimeLogStore
   extensionService: CodexExtensionService
@@ -1366,6 +1369,8 @@ const ipcOperationLabels: Readonly<Record<string, string>> = {
   'diagnostics:clear-stale-proxy': '清掉旧的代理设置',
   'diagnostics:trust-certificates-user-wide': '让所有终端信任证书',
   'diagnostics:open-folder': '检查页打开文件夹',
+  'diagnostics:fix': '检查页一键处理',
+  'extensions:choose-directory': '外接工具选择文件夹',
   'runtime-logs:list': '运行日志读取',
   'runtime-logs:copy-feedback': '脱敏反馈文本复制',
   'runtime-logs:export-feedback': '反馈报告导出',
@@ -1817,6 +1822,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     getSessionRevision: accountService.getSessionRevision?.bind(accountService),
     getActiveSiteId: accountService.getActiveSiteId?.bind(accountService),
     listUsableGroups: accountService.listUsableGroups.bind(accountService),
+    getSubscriptionSelf: accountService.getSubscriptionSelf.bind(accountService),
     provisionCliKey: async (input = {}) => {
       const userId = accountService.getSessionState().account?.userId
       const siteId = accountService.getActiveSiteId?.()
@@ -3197,7 +3203,12 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     const parent = BrowserWindow.fromWebContents(event.sender) ?? undefined
     return accountService.createSubscriptionPayment(parsed).then(async (checkout) => {
       if (checkout.kind === 'form') await options.paymentWindow.open(checkout.form, parent)
-      else await options.paymentWindow.openUrl(checkout.url, parent, checkout.tradeNo)
+      else if (checkout.kind === 'qrcode') {
+        // 同充值那条：二维码内容先按白名单校验，再交给支付窗口。
+        const validated = validatePaymentQrCode(checkout)
+        if (!options.paymentWindow.openQrCode) throw new Error('当前版本不支持二维码支付')
+        await options.paymentWindow.openQrCode(validated, parent)
+      } else await options.paymentWindow.openUrl(checkout.url, parent, checkout.tradeNo)
       return {
         opened: true as const,
         tradeNo: checkout.tradeNo,
@@ -3749,6 +3760,23 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     ensureSafeDataDirectory(directory, rawTarget === 'projects' ? '项目文件夹' : 'AI 作品保存位置')
     await externalShell.openPath(directory)
     return true
+  })
+  registerTrustedHandler('diagnostics:fix', async (_event, rawKind: unknown) => {
+    if (!isDiagnosticFixKind(rawKind)) throw new Error('不认识要处理的是哪一项')
+    const fix = options.diagnosticsService.fix
+    if (!fix) throw new Error('这一项暂时不能在这里处理，请在「反馈」页导出报告发给客服')
+    return fix(rawKind)
+  })
+  registerTrustedHandler('extensions:choose-directory', async (event) => {
+    const parentWindow = BrowserWindow.fromWebContents(event.sender) ?? undefined
+    const dialogOptions: OpenDialogOptions = {
+      title: '选择允许 AI 读写的文件夹',
+      properties: ['openDirectory', 'createDirectory'],
+    }
+    const result = parentWindow
+      ? await dialog.showOpenDialog(parentWindow, dialogOptions)
+      : await dialog.showOpenDialog(dialogOptions)
+    return result.canceled || !result.filePaths[0] ? null : result.filePaths[0]
   })
   function resolveDiagnosticFolder(target: DiagnosticFolderTarget): string | null {
     if (target === 'ai-output') return options.aiOutputDirectory?.() ?? null

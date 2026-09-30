@@ -103,7 +103,7 @@ export function AccelerationView({ state, busy, signedIn, error, preview, onStar
   const notice = conflicts.length ? null : error || state?.error
   const stopRetry = phase === 'stopping' && Boolean(notice) && !busy
   const active = phase === 'active'
-  // 软件替他连上的（打开 Codex 桌面端时）：关掉桌面端不会跟着断开，这里要说清楚。
+  // 软件替他连上的（打开 Codex 桌面端时）：不扣时长、关掉桌面端就断开，这里要说清楚。
   const autoStarted = active && state?.autoStartedBy === 'codex-desktop'
   const transitioning = phase === 'connecting' || (phase === 'stopping' && !stopRetry)
   const unavailable = phase === 'unavailable'
@@ -142,7 +142,7 @@ export function AccelerationView({ state, busy, signedIn, error, preview, onStar
   const phaseLabel = bundleDamaged ? '加速文件损坏' : describePhase(phase, signedIn)
   const actionLabel = !signedIn ? '登录领取免费体验' : stopRetry ? '重试停止' : active ? '停止加速' : phase === 'connecting' ? '正在连接…' : phase === 'stopping' ? '正在停止…' : exhausted ? '免费体验已用完' : bundleDamaged ? '暂时开不了加速' : unavailable ? '线路准备中' : !state ? '正在读取状态…' : '开始加速'
   const actionDisabled = signedIn && (busy || transitioning || unavailable || exhausted || !state)
-  const quotaNote = !signedIn ? '每个账号可领取 20 分钟免费体验' : active ? '按实际连接时长计时，停止后保留剩余额度' : exhausted ? '感谢体验，了解后续服务请联系帮助与客服' : bundleDamaged ? '修好之前不计时' : unavailable ? '服务准备完成后即可开启，当前不消耗时长' : '连接成功才计时，随时停止，剩余下次继续'
+  const quotaNote = !signedIn ? '每个账号可领取 20 分钟免费体验' : autoStarted ? '自动连接不扣免费时长，剩余额度原样保留' : active ? '按实际连接时长计时，停止后保留剩余额度' : exhausted ? '感谢体验，了解后续服务请联系帮助与客服' : bundleDamaged ? '修好之前不计时' : unavailable ? '服务准备完成后即可开启，当前不消耗时长' : '连接成功才计时，随时停止，剩余下次继续'
 
   return <section className="acceleration-page" data-testid="acceleration-page" data-phase={phase ?? 'loading'} data-motion={visible ? 'running' : 'paused'}>
     <header className="acceleration-heading">
@@ -153,7 +153,7 @@ export function AccelerationView({ state, busy, signedIn, error, preview, onStar
     <div className="acceleration-workbench">
       <section className="acceleration-stage" aria-label="网络连接状态">
         <div className="acceleration-stage-top"><span className="acceleration-eyebrow"><Globe2 size={15} aria-hidden="true" /> GAME CONNECT</span></div>
-        <div className="acceleration-stage-title"><h2>连接热爱，准备开局。</h2><p>{autoStarted ? <span data-testid="acceleration-auto-started">打开 Codex 桌面端时自动连上的，关掉桌面端不会跟着断开，不用时点「停止加速」。</span> : active ? '加速连接已就绪，返回游戏继续体验。' : '从这里出发，连接你的游戏世界。'}</p></div>
+        <div className="acceleration-stage-title"><h2>连接热爱，准备开局。</h2><p>{autoStarted ? <span data-testid="acceleration-auto-started">打开 Codex 桌面端时自动连上的，不扣免费时长，关掉桌面端后会自动断开。</span> : active ? '加速连接已就绪，返回游戏继续体验。' : '从这里出发，连接你的游戏世界。'}</p></div>
         <div className="acceleration-orb"><Globe /></div>
         <div className="acceleration-route-info">
           <div className="acceleration-route-icon"><Route size={18} aria-hidden="true" /></div>

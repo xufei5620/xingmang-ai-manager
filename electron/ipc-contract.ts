@@ -4,9 +4,11 @@ import type { AiChatStreamErrorCode as MainAiChatStreamErrorCode } from './ai-ch
 import type { ExternalDeepLink } from './external-deep-links'
 import type { SavedAccountSummary } from './saved-accounts'
 import type { StaleProxyClearResult } from './stale-proxy-environment'
+import type { DiagnosticFixKind, DiagnosticFixResult } from './diagnostic-fixes'
 export type { StaleProxyClearResult } from './stale-proxy-environment'
 import type { UserWideCertificateTrustResult } from './user-certificate-trust'
 export type { UserWideCertificateTrustResult } from './user-certificate-trust'
+export type { DiagnosticFixKind, DiagnosticFixResult } from './diagnostic-fixes'
 import type {
   ConfigBackupPreview as StoredConfigBackupPreview,
   ConfigBackupReason,
@@ -213,6 +215,14 @@ export interface WindowCapabilities {
   settingsSaveIssue?: SettingsSaveIssue
   // 显卡接连崩溃后，这次启动自动改用了兼容方式显示、用户还没选以后怎么办。缺省 = 没出事。
   displayCompat?: 'auto'
+  // 上次主进程意外退出（没接住的异常），这次打开要说一句。缺省 = 没出事。
+  unexpectedExit?: UnexpectedExitNotice
+}
+export interface UnexpectedExitNotice {
+  /** 最近那次退出后是否自动重开了；10 分钟内第二次就不再重开。 */
+  relaunched: boolean
+  /** 最近几次退出，时间为毫秒时间戳，error 已在主进程打码。 */
+  exits: Array<{ at: number; error: string }>
 }
 /** 设置里「卸载星芒」（目前只有 Mac）。两项都默认不勾。 */
 export interface AppUninstallRequest {
@@ -1164,6 +1174,17 @@ export interface XingmangInvokeContract {
    * 入参只是「哪一个」，路径由主进程自己算（I5）。返回 false = 没打开。
    */
   openDiagnosticFolder: IpcInvokeDefinition<'diagnostics:open-folder', [target: DiagnosticFolderTarget], boolean>
+  /**
+   * 检查页里两颗「点这里就好」：挪开 Codex 文件夹里那份额外设置，或删掉当前 Windows
+   * 账号下盖过当前账号的工具地址、密钥。入参只是「哪一种」，要动的文件和名字由主进程
+   * 在点的那一刻自己算（I5）。
+   */
+  fixDiagnostic: IpcInvokeDefinition<'diagnostics:fix', [kind: DiagnosticFixKind], DiagnosticFixResult>
+  /**
+   * 外接工具精选里「允许 AI 读写的文件夹」那一项的「选择文件夹」：弹原生选择框，
+   * 返回用户选的文件夹，取消返回 null。选到的路径照旧随添加请求过主进程的参数校验。
+   */
+  chooseExtensionDirectory: IpcInvokeDefinition<'extensions:choose-directory', [], string | null>
 }
 
 export interface XingmangEventContract {
@@ -1409,6 +1430,8 @@ export const ipcInvokeChannels = {
   clearStaleProxySettings: 'diagnostics:clear-stale-proxy',
   trustCertificatesUserWide: 'diagnostics:trust-certificates-user-wide',
   openDiagnosticFolder: 'diagnostics:open-folder',
+  fixDiagnostic: 'diagnostics:fix',
+  chooseExtensionDirectory: 'extensions:choose-directory',
 } as const satisfies {
   [Method in keyof XingmangInvokeContract]: XingmangInvokeContract[Method]['channel']
 }

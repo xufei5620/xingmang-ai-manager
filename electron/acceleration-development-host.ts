@@ -1,7 +1,7 @@
 import path from 'node:path'
 import { lstat } from 'node:fs/promises'
 import { fork, spawn, type ChildProcess, type ForkOptions } from 'node:child_process'
-import type { AccelerationApi, AccelerationConflictKind, AccelerationFailureReason, AccelerationState } from './acceleration-contract'
+import type { AccelerationApi, AccelerationConflictKind, AccelerationFailureReason, AccelerationMode, AccelerationState } from './acceleration-contract'
 import { accelerationFailureReason, isAccelerationConflictKind, isAccelerationFailureReason, withAccelerationReason } from './acceleration-contract'
 import { trustedCommandEnvironment } from './command-runner'
 import { readSafeUtf8File } from './safe-local-data'
@@ -19,6 +19,8 @@ export interface AccelerationDevelopmentConfig {
 }
 
 export interface AccelerationDevelopmentHost extends AccelerationApi {
+  /** 软件替用户连的那种，不扣免费时长（见 backend 的同名方法）。不进 AccelerationApi。 */
+  startAutomaticAcceleration(scope: string, mode: AccelerationMode, lineId?: string): Promise<AccelerationState>
   /** Replays a system-proxy lease left behind by a crash, without an account. */
   recover(): Promise<void>
   /**
@@ -465,7 +467,7 @@ export function createAccelerationDevelopmentHost(options: {
 
   async function request(operation: string, scope: string, mode?: string, lineId?: string, ignoreConflicts?: boolean): Promise<AccelerationState> {
     await ensureReady()
-    if (operation === 'start' && child) leaseWorkers.add(child)
+    if ((operation === 'start' || operation === 'start-automatic') && child) leaseWorkers.add(child)
     // The service above this adapter validates and projects every returned field.
     return await rpc(operation, {
       scope, ...(mode ? { mode } : {}), ...(lineId ? { lineId } : {}), ...(ignoreConflicts ? { ignoreConflicts: true } : {}),
@@ -487,6 +489,7 @@ export function createAccelerationDevelopmentHost(options: {
     },
     getAccelerationState: (scope) => request('get', scope),
     startAcceleration: (scope, mode, lineId, ignoreConflicts) => request('start', scope, mode, lineId, ignoreConflicts),
+    startAutomaticAcceleration: (scope, mode, lineId) => request('start-automatic', scope, mode, lineId),
     stopAcceleration: (scope) => request('stop', scope),
     redeemAccelerationCode: async (scope, code) => {
       await ensureReady()

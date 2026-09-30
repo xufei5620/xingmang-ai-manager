@@ -87,7 +87,7 @@ export function resolveCliRevertVersion(
   now: number,
   siteId?: string | null,
 ): string | null {
-  if (!record || provider === 'grok') return null
+  if (!record) return null
   if (installedVersion?.trim() !== record.to) return null
   if (record.at > now || now - record.at > cliRevertWindowMs) return null
   if (findBlockedCliVersion(provider, record.from, siteId)) return null

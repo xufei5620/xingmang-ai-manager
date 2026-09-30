@@ -57,7 +57,9 @@ export interface CliVersionCompatibility {
  * 维护说明见 docs/CLI-VERIFIED-VERSIONS.md。首版只维护 Claude Code,
  * 2026-09-21 扩到 Codex 与 Gemini —— 扩它们的直接原因是 Codex 0.155.0
  * 那次回归:那两天点过「更新」的客户装到的就是它,而名单管不到 Codex。
- * Grok 仍然留空,行为与今天完全一致(装 latest)。
+ * 2026-09-30 扩到 Grok:它两周发了十几版,而接当前账号的几项配置(出图地址、型号
+ * 名单、标题用的型号)都挂在它的配置键名上,哪一版改了键名,Key 就会悄悄发去 xAI 官方。
+ * Grok 的两条官方安装路径都以 xAI stable 为上限(resolveGrokInstallVersion)。
  */
 export const cliVerifiedVersions: Record<ProviderId, CliVersionCompatibility> = {
   claude: {
@@ -97,7 +99,16 @@ export const cliVerifiedVersions: Record<ProviderId, CliVersionCompatibility> = 
       },
     ],
   },
-  grok: { recommended: null, blocked: [] },
+  grok: {
+    recommended: {
+      version: '1.0.44',
+      verifiedAt: '2026-09-30',
+      verifiedSites: [],
+      note: '当前 npm latest 与 xAI stable;本地假接口上核过出图地址、型号名单、标题型号与钩子四项配置仍然生效',
+      userNote: '画图、起标题都走当前账号，用法不变',
+    },
+    blocked: [],
+  },
   gemini: {
     recommended: {
       version: '0.60.0',

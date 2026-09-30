@@ -13,6 +13,8 @@ export interface AccountSubscriptionCache {
   subscribe(listener: () => void): () => void
   /** 换了账号，或上次读过超过 maxAge 才真去读；其余时候什么都不做。 */
   refreshIfStale(scope: string | null): Promise<void>
+  /** 刚买好订阅：不等 maxAge，读完手上这一次（它可能是付款前发出的）再读一次。 */
+  refreshNow(scope: string | null): Promise<void>
   dispose(): void
 }
 
@@ -70,6 +72,13 @@ export function createAccountSubscriptionCache({ readSelf, readPlanNames, now = 
     return flight.promise
   }
 
+  async function refreshNow(scope: string | null): Promise<void> {
+    if (!scope || scope !== snapshot.scope) return refreshIfStale(scope)
+    if (inFlight?.scope === scope) await inFlight.promise
+    attemptedAt = null
+    return refreshIfStale(scope)
+  }
+
   return {
     getSnapshot: () => snapshot,
     subscribe(listener) {
@@ -77,6 +86,7 @@ export function createAccountSubscriptionCache({ readSelf, readPlanNames, now = 
       return () => { listeners.delete(listener) }
     },
     refreshIfStale,
+    refreshNow,
     dispose() {
       disposed = true
       listeners.clear()

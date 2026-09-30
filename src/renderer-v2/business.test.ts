@@ -8,6 +8,7 @@ import {
   paymentTerminalPresentation,
   buildTopupBonus,
   resetTopupQuoteForMethod,
+  subscriptionToolsNotice,
   validateTopupAmount,
   subscriptionPaymentMethods,
 } from './pages-account'
@@ -94,6 +95,23 @@ describe('v2 business boundaries', () => {
     expect(paymentTerminalPresentation('failed')).toMatchObject({
       tone: 'bad',
       title: '支付没有完成',
+    })
+  })
+
+  it('says a paid subscription is open instead of calling it a top-up', () => {
+    expect(paymentTerminalPresentation('success', false, 'subscription')).toMatchObject({ tone: 'ok', title: '订阅已开通' })
+    expect(paymentTerminalPresentation('failed', false, 'subscription')).toMatchObject({ title: '支付没有完成' })
+    expect(paymentTerminalBody({ status: 'success', tradeNo: 'XM-2' }, 'subscription')).toBe('订单 XM-2 已付款，订阅已开通，正在刷新订阅。')
+  })
+
+  it('tells the customer whether their tools now draw on the subscription', () => {
+    expect(subscriptionToolsNotice({ followsPreference: true }).body).toContain('扣费偏好')
+    expect(subscriptionToolsNotice({ followsPreference: false, switched: ['Claude Code', 'Codex'] })).toMatchObject({
+      tone: 'ok', title: '工具已改用订阅额度', body: expect.stringContaining('Claude Code、Codex'),
+    })
+    expect(subscriptionToolsNotice({ followsPreference: false, switched: [] }).title).toBe('工具不用重新设置')
+    expect(subscriptionToolsNotice({ followsPreference: false, error: '网络连接失败。' })).toMatchObject({
+      tone: 'warn', body: expect.stringContaining('重新写入 Key'),
     })
   })
 
@@ -241,10 +259,8 @@ describe('v2 business boundaries', () => {
   })
   it('routes actionable diagnostic categories to their owning page', () => {
     expect(diagnosticTarget('PROVIDER_CODEX')).toBe('home')
-    expect(diagnosticTarget('XINGMANG_NETWORK')).toBe('settings')
     // 设置页没有能处理它的东西；能清的那种在行里直接给按钮。
     expect(diagnosticTarget('PROXY_ENVIRONMENT')).toBeNull()
-    expect(diagnosticTarget('CLASH_VERGE_TUN')).toBe('settings')
     expect(diagnosticTarget('RUNTIME_NODE')).toBe('maintenance')
     expect(diagnosticTarget('RUNTIME_PYTHON')).toBe('maintenance')
     expect(diagnosticTarget('CLI_CLAUDE')).toBe('maintenance')
@@ -260,6 +276,11 @@ describe('v2 business boundaries', () => {
     for (const code of [
       'WORKSPACE_CONFIG_OVERRIDE',
       'PROVIDER_ENVIRONMENT_OVERRIDE',
+      // 以前跳「设置 → 网络」或首页，那里都没有能处理它们的东西，点了只会绕一圈。
+      'XINGMANG_NETWORK',
+      'CLASH_VERGE_TUN',
+      'CODEX_DOTENV',
+      'CLAUDE_BYPASS_PERMISSIONS',
       'DISK_SPACE',
       'ADMINISTRATOR',
       'OPERATING_SYSTEM',
@@ -271,7 +292,6 @@ describe('v2 business boundaries', () => {
       expect(diagnosticTarget(code)).toBeNull()
       expect(diagnosticHasFix(code)).toBe(false)
     }
-    expect(diagnosticHasFix('CODEX_DOTENV')).toBe(true)
   })
   it('sends only the outdated Node.js certificate verdict to the install page', () => {
     expect(diagnosticTarget('CERTIFICATE_TRUST', { verdict: 'outdatedNode' })).toBe('maintenance')

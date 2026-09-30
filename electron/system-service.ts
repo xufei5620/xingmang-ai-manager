@@ -94,7 +94,7 @@ import {
   ensureProjectInstructions,
   readProjectInstructionsTemplate,
 } from './project-instructions'
-import { classifyWorkspace, sensitiveWorkspaceLabel } from './workspace-guard'
+import { classifyWorkspace, resolveRememberedWorkspace, sensitiveWorkspaceLabel } from './workspace-guard'
 import {
   describeOverride,
   inspectWorkspaceConfigOverrides,
@@ -195,7 +195,7 @@ import {
   inspectCodexDesktopGlobalState,
   type CodexDesktopGlobalStateStatus,
 } from './codex-desktop-state'
-import { fetchGrokStableVersion } from './grok-update'
+import { fetchGrokStableVersion, resolveGrokInstallVersion } from './grok-update'
 import { createNetworkLocationCache, reloadNetworkProxyConfiguration } from './network-location-cache'
 import { readBoundedUtf8File } from './bounded-file'
 import { readBoundedResponseText } from './bounded-response'
@@ -497,6 +497,11 @@ export interface CliLaunchResult {
    * 没有启动。界面据此不说「已打开」。缺省 = 打开了，老调用方照旧。
    */
   declined?: boolean
+  /**
+   * 打开后「上次选的文件夹」是哪个（同 AppConfigSummary.rememberedWorkspace，null = 没有）。
+   * 首页据此直接换按钮，不必为这一个字段再读一遍整份配置。缺省 = 没带，界面照旧。
+   */
+  rememberedWorkspace?: string | null
 }
 
 export type ToolUninstallResult =
@@ -542,6 +547,11 @@ export interface ConfigSavePayload {
 
 export interface AppConfigSummary {
   workspace: string
+  /**
+   * 首页「打开」在这个工具还没有会话记录时直接用的文件夹：用户上次在本软件里选过、
+   * 且不是主目录或其他敏感目录的那个（resolveRememberedWorkspace）。缺省 = 没有，照旧弹选择器。
+   */
+  rememberedWorkspace?: string
   providers: Record<ProviderId, NativeConfigSummary>
   /**
    * 账号还在恢复时读到的配置：「是不是当前账号写的」这一问还答不上来，
@@ -1781,7 +1791,7 @@ export function cliInstallTargetDirectory(
 }
 
 export interface CliInstallReleaseOptions {
-  /** 要安装的版本,'latest' 表示不钉版本。Grok 的官方稳定版路径不受它影响。 */
+  /** 要安装的版本,'latest' 表示不钉版本。Grok 的官方稳定版路径以 xAI stable 为上限。 */
   version?: string
   fetchGrokStableVersion: () => Promise<{ version: string }>
   fetchNpmRelease: (
@@ -1808,13 +1818,14 @@ export async function resolveCliInstallRelease(
     )
   }
   const stable = await options.fetchGrokStableVersion()
+  const version = resolveGrokInstallVersion(options.version, stable.version)
   const release = await options.fetchNpmRelease(
     npmOfficialRegistry,
     cliCatalog.grok.packageName,
-    stable.version,
+    version,
   )
-  if (release.version !== stable.version) {
-    throw new Error('Grok npm 发布版本与 xAI 官方稳定版本不一致')
+  if (release.version !== version) {
+    throw new Error('Grok npm 发布版本与要安装的 xAI 官方版本不一致')
   }
   return release
 }
@@ -3660,6 +3671,32 @@ export function createSystemService(
     if (refusal) throw new Error(refusal)
   }
 
+  async function readInstalledCliVersion(provider: ProviderId): Promise<string | null> {
+    try {
+      return (await inspectCliTool(provider, null, null)).status.version ?? null
+    } catch {
+      return null
+    }
+  }
+
+  async function recordCliUpdate(
+    provider: ProviderId,
+    from: string | null,
+    to: string | null,
+    requested: boolean,
+  ): Promise<void> {
+    const updateRecord = buildCliUpdateRecord(from, to, requested, Date.now())
+    if (!updateRecord) return
+    // 记录只决定首页能不能「退回更新前的版本」,写不进去不该让一次已经
+    // 成功的更新报失败。
+    await cliUpdateHistory.record(provider, updateRecord).catch((error: unknown) => {
+      runtimeLog?.log('warn', 'install', 'cli.update-history.write-failed', `${cliCatalog[provider].name} 更新记录没有写入`, {
+        provider,
+        detail: error instanceof Error ? redactHomeDirectory(error.message, providerRoots.userHome) : '未知错误',
+      })
+    })
+  }
+
   async function runCliInstall(
     provider: ProviderId,
     target: RendererMessageTarget,
@@ -3681,7 +3718,17 @@ export function createSystemService(
     let updatingExistingInstall = false
     let versionBeforeUpdate: string | null = null
     try {
+      // 装哪个版本由主进程决定:调用方点名(回滚)优先,其次看设置里的
+      // 「总是安装最新版」,再次才是名单里的推荐版本。名单为空的工具落回
+      // latest,行为与从前一致。Grok 两条官方安装路径都以 xAI stable 为上限。
+      const versionChoice = resolveCliInstallVersion(provider, {
+        requested: requestedVersion,
+        alwaysLatest: store.read().alwaysInstallLatestCli === true,
+      })
       if (provider === 'grok') {
+        // Grok 不走下面按 npm 目录读 package.json 的那一套,更新前的版本只能问它自己。
+        // 读不出来就不记这一笔,「退回」只是不出现,不影响这次更新。
+        versionBeforeUpdate = await readInstalledCliVersion(provider)
         if (grokInstallStrategy === 'external') {
           throw new Error('当前平台不支持 Grok CLI 一键安装')
         }
@@ -3715,6 +3762,7 @@ export function createSystemService(
           try {
             downloadedGrokBinary = await downloadLatestGrokBinary({
               fetchImpl: downloadFetch,
+              ...(versionChoice.source === 'latest' ? {} : { version: versionChoice.version }),
               ...(cancellation ? { signal: cancellation.signal } : {}),
               createTemporaryDirectory: () => createInstallTemporaryDirectory('grok-binary'),
               onProgress: ({ percent, transferred, total }) => {
@@ -3762,6 +3810,7 @@ export function createSystemService(
           ) {
             throw new Error('Grok CLI 安装后验证失败：未识别到托管可执行文件或版本不一致')
           }
+          await recordCliUpdate(provider, versionBeforeUpdate, installed.version, versionChoice.source === 'requested')
           sendInstallProgress(
             target,
             provider,
@@ -3843,13 +3892,6 @@ export function createSystemService(
           if (warning) sendInstallProgress(target, provider, 'output', warning)
         }
       }
-      // 装哪个版本由主进程决定:调用方点名(回滚)优先,其次看设置里的
-      // 「总是安装最新版」,再次才是名单里的推荐版本。名单为空的工具落回
-      // latest,行为与从前一致。
-      const versionChoice = resolveCliInstallVersion(provider, {
-        requested: requestedVersion,
-        alwaysLatest: store.read().alwaysInstallLatestCli === true,
-      })
       sendInstallProgress(
         target,
         provider,
@@ -4216,22 +4258,7 @@ export function createSystemService(
       }
       // npm 每次安装都会把 .ps1 启动文件重新写回来，所以装完、更新完都要再清一遍。
       if (verification?.installation) await cliTerminalAccess.prepare({ provider, installation: verification.installation }, 'install')
-      const updateRecord = buildCliUpdateRecord(
-        versionBeforeUpdate,
-        verification?.status.version ?? null,
-        versionChoice.source === 'requested',
-        Date.now(),
-      )
-      if (updateRecord) {
-        // 记录只决定首页能不能「退回更新前的版本」,写不进去不该让一次已经
-        // 成功的更新报失败。
-        await cliUpdateHistory.record(provider, updateRecord).catch((error: unknown) => {
-          runtimeLog?.log('warn', 'install', 'cli.update-history.write-failed', `${definition.name} 更新记录没有写入`, {
-            provider,
-            detail: error instanceof Error ? redactHomeDirectory(error.message, providerRoots.userHome) : '未知错误',
-          })
-        })
-      }
+      await recordCliUpdate(provider, versionBeforeUpdate, verification?.status.version ?? null, versionChoice.source === 'requested')
       sendInstallProgress(
         target,
         provider,
@@ -4921,7 +4948,10 @@ export function createSystemService(
   ): Promise<CliLaunchResult> {
     return installationQueue.enqueue(
       buildCliLaunchQueueKey(provider, workspace, mode, resumeSessionId),
-      () => launchProviderOperation(provider, workspace, mode, resumeSessionId),
+      async () => ({
+        ...await launchProviderOperation(provider, workspace, mode, resumeSessionId),
+        rememberedWorkspace: rememberedWorkspaceFor(store.read().workspace),
+      }),
     )
   }
 
@@ -5317,12 +5347,22 @@ export function createSystemService(
     return task
   }
 
+  function rememberedWorkspaceFor(workspace: string): string | null {
+    return resolveRememberedWorkspace(workspace, {
+      platform,
+      home: providerRoots.userHome,
+      defaultWorkspace: os.homedir(),
+    })
+  }
+
   function buildConfigSummary(previewOnboarding: boolean, cachedKeys: readonly StoredManagedCliKey[] = []): AppConfigSummary {
     const stored = store.read()
     const owner = serviceOptions.getExternalClientAccountId?.() ?? null
     const ccSwitchInstalled = inspectCcSwitchInstalled(providerRoots.userHome)
+    const rememberedWorkspace = rememberedWorkspaceFor(stored.workspace)
     const result = {
       workspace: stored.workspace,
+      ...(rememberedWorkspace ? { rememberedWorkspace } : {}),
       providers: Object.fromEntries(
         providerIds.map((id) => {
           const current = inspectNativeProviderConfig(id)

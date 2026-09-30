@@ -64,6 +64,22 @@ export function recentWorkspaces(
 }
 
 /**
+ * 「打开」按钮用的目录：先看这个工具自己的会话记录；一条都没有时（刚装好、或者
+ * 上次打开没聊就关了），退回用户上次在本软件里选过的文件夹。四个工具因此只问一次。
+ * remembered 由主进程给出，已经排除了主目录和其他敏感目录。
+ */
+export function launchWorkspaces(
+  sessions: readonly SessionSummary[],
+  provider: ProviderId,
+  remembered?: string | null,
+): RecentWorkspace[] {
+  const recent = recentWorkspaces(sessions, provider)
+  if (recent.length || !remembered?.trim()) return recent
+  const path = remembered.trim()
+  return [{ path, name: workspaceName(path) }]
+}
+
+/**
  * 下拉里的条目：最近用过的目录，最后永远留「选择其他目录…」和「新建项目文件夹」。
  * 后者给不知道该选哪个文件夹的新手，一步到位，不用再起名、再选。
  */
