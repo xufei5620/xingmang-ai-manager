@@ -26,7 +26,7 @@ import { pendingToolUpdates, readAnnouncedToolUpdates, rememberAnnouncedToolUpda
 import { isMissingWorkspace, type CliLaunchChoice } from './features/tools/recent-workspaces'
 import { uninstallHandOffNotice } from './features/tools/uninstall-handoff'
 import { describeRuntimeInstallOutcome, type RuntimeInstallOutcome } from './features/tools/runtime-install-outcome'
-import { RuntimeRestartDialog } from './features/tools/RuntimeRestartDialog'
+import { RestartReminder, RuntimeRestartDialog } from './features/tools/RuntimeRestartDialog'
 import { guideJobProgress, installedToolSyncLabel, useToolbox } from './features/tools/useToolbox'
 import { ManualUninstallDialog, type ManualUninstallState } from './features/tools/ManualUninstall'
 import { operationLogPage, type OperationActionId } from './operation-error'
@@ -483,6 +483,11 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     () => rewritableKeyProviders(session.authenticated ? toolbox.snapshot?.config : null),
     [session.authenticated, toolbox.snapshot?.config],
   )
+  // 扩展三页按它挑默认显示哪个工具。还没检测完时给 undefined，页面先按旧行为选 Claude。
+  const installedProviders = useMemo(() => {
+    const clis = toolbox.snapshot?.system.clis
+    return clis ? (Object.keys(clis) as Array<keyof typeof clis>).filter((id) => clis[id].installed) : undefined
+  }, [toolbox.snapshot?.system.clis])
   useEffect(() => {
     if (boot === 'ready' && !auth && session.authenticated && session.account) {
       const restoredScope = accountScope(session)
@@ -1248,9 +1253,9 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
           updatableCount={toolUpdates.length}
           network={latestNetworkLocation(toolbox.snapshot?.system.network, networkLocation.snapshot.network)}
           networkRefreshing={networkLocation.snapshot.busy}
-          banner={session.authenticated && <AnnouncementCenter key={scope} scope={scope} read={app.announcement} refreshTick={balanceState.updatedAt} markRemoteRead={app.markAnnouncementRead} syncLocalReads={app.syncLocalNoticeReads} open={announcementOpen} onClose={() => setAnnouncementOpen(false)} onOpen={() => setAnnouncementOpen(true)} onUnread={setUnread} openExternal={app.openExternal} noticeUrl={relaySite.websiteUrl} notify={notifyAnnouncement}
+          banner={<><RestartReminder restart={toolsApi.restartWindows} />{session.authenticated && <AnnouncementCenter key={scope} scope={scope} read={app.announcement} refreshTick={balanceState.updatedAt} markRemoteRead={app.markAnnouncementRead} syncLocalReads={app.syncLocalNoticeReads} open={announcementOpen} onClose={() => setAnnouncementOpen(false)} onOpen={() => setAnnouncementOpen(true)} onUnread={setUnread} openExternal={app.openExternal} noticeUrl={relaySite.websiteUrl} notify={notifyAnnouncement}
             promoVisible={page === 'home'} onTopUp={accountSupports(session, 'supportsBilling') ? (amount) => navigate('account', 'recharge', amount) : undefined}
-            readTopupOffers={accountSupports(session, 'supportsBilling') ? () => native.getAccountTopupInfo() : undefined} />}
+            readTopupOffers={accountSupports(session, 'supportsBilling') ? () => native.getAccountTopupInfo() : undefined} />}</>}
           notification={showUpdate && <Notice tone={update.error ? 'bad' : 'accent'} title={update.error ? updateFailureLabel(update.failedStep).title : updateBubbleTitle(update)}
             body={update.error?.message ?? autoUpdateBubbleBody(update.phase, autoUpdateOn)} progress={update.progress?.percent} onDismiss={() => setDismissedUpdate(updateKey)}
             actions={<><Button size="sm" onClick={() => navigate('updates')}>查看更新</Button>
@@ -1292,6 +1297,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
                   onBackupRestored={() => void toolbox.refreshConfig().catch(() => undefined)}
                   onToolConfigSaved={() => void toolbox.refreshConfig().catch(() => undefined)}
                   toolConfigConfirmed={toolConfigConfirmed}
+                  installedProviders={installedProviders}
                   onAccountChanged={() => void perform('刷新账号', reloadAccount)} onSettingsChanged={setSettings} uiScale={settings ? settings.uiScale ?? 'auto' : undefined} openConfig={openToolConfig}
                   openGuide={() => setGuide(true)} replayTour={replayTour} chatTransfer={chatTransfer}
                   onToolsChanged={(tool) => syncAfterToolInstalled(tool).catch((cause) => {
