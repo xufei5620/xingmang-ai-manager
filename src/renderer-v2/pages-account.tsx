@@ -251,6 +251,27 @@ export function validateTopupAmount(value: number, minimum: number): number {
   return value
 }
 
+export interface TopupBonus {
+  bonus: number
+  percent: number
+}
+
+// 后台「充值金额选项 + 充值折扣」里，折扣是「付款 = 到账 × 比例」：到账不变，
+// 少付的那部分就是送的。换成客户熟悉的「充 100 送 10」：送多少按到账单位算，
+// 百分比按实付算，这样不需要知道后台的计价单价和币种。
+export function buildTopupBonus(
+  amount: number,
+  discounts: Record<string, number> | undefined,
+): TopupBonus | null {
+  if (!Number.isFinite(amount) || amount <= 0) return null
+  const ratio = discounts?.[String(amount)]
+  if (typeof ratio !== 'number' || !Number.isFinite(ratio) || ratio <= 0 || ratio >= 1) return null
+  const bonus = Math.round(amount * (1 - ratio) * 100) / 100
+  const percent = Math.round(((1 - ratio) / ratio) * 100)
+  if (bonus <= 0 || percent <= 0) return null
+  return { bonus, percent }
+}
+
 export function resetTopupQuoteForMethod(
   amount: string,
   method: Pick<PaymentMethod, 'minTopup'>,
@@ -2111,6 +2132,8 @@ function AccountRecharge({
     resource.data?.info.minTopup ?? 1,
     paymentMethod?.minTopup ?? 0,
   )
+  const amountBonus = buildTopupBonus(Number(amount), resource.data?.info.discounts)
+  const quoteBonus = quote ? buildTopupBonus(quote.amount, resource.data?.info.discounts) : null
   const quoteTopup = () =>
     void operation.execute(
       'quote',
@@ -2183,9 +2206,20 @@ function AccountRecharge({
         >
           <div className="v2-business-suggestions-label">快捷金额</div>
           <div className="v2-business-suggestions">
-            {(resource.data?.info.amountOptions ?? [10, 20, 50, 100, 200, 500, 1000, 2000, 5000]).map((value) => (
-              <Button size="sm" key={value} onClick={() => { setAmount(String(value)); setQuote(null) }}>{value}</Button>
-            ))}
+            {(resource.data?.info.amountOptions ?? [10, 20, 50, 100, 200, 500, 1000, 2000, 5000]).map((value) => {
+              const optionBonus = buildTopupBonus(value, resource.data?.info.discounts)
+              return (
+                <Button
+                  size="sm"
+                  key={value}
+                  aria-label={optionBonus ? `${value}，送 ${optionBonus.percent}%` : undefined}
+                  onClick={() => { setAmount(String(value)); setQuote(null) }}
+                >
+                  {value}
+                  {optionBonus && <span className="v2-business-topup-bonus">送 {optionBonus.percent}%</span>}
+                </Button>
+              )
+            })}
           </div>
           <Input
             label="自定义金额"
@@ -2199,6 +2233,11 @@ function AccountRecharge({
               setQuote(null)
             }}
           />
+          {amountBonus && (
+            <p className="v2-business-topup-bonus-note" data-testid="account-recharge-bonus">
+              到账 {Number(amount)}，其中活动赠送 {amountBonus.bonus}（多送 {amountBonus.percent}%）。
+            </p>
+          )}
           <PaymentOptions
             methods={methods}
             value={paymentMethod?.type ?? ''}
@@ -2432,6 +2471,11 @@ function AccountRecharge({
         }
       >
         <p>充值数量：{quote?.amount}</p>
+        {quoteBonus && (
+          <p data-testid="account-recharge-quote-bonus">
+            活动赠送：{quoteBonus.bonus}（多送 {quoteBonus.percent}%），到账 {quote?.amount}
+          </p>
+        )}
         <p>
           应付金额：{quote?.payableAmount.toFixed(2)}
           （支付渠道币种以支付页面为准）

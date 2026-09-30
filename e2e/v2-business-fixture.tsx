@@ -36,6 +36,11 @@ const initialSkin = requestedSkin === 'dawn' || requestedSkin === 'obsidian' || 
   : 'mist'
 const fail = query.get('fail')
 const empty = query.has('empty')
+
+// 只有带 topupBonus 的用例给「20」这一档配 8 折，其余用例的充值页保持原样。
+function fixtureTopupDiscounts(): Record<string, number> {
+  return query.has('topupBonus') ? { 20: 0.8 } : {}
+}
 const calls: Array<{ name: string; args: unknown }> = []
 const record = (name: string, args?: unknown) => {
   calls.push({ name, args })
@@ -544,12 +549,15 @@ const apiMethods = {
         ],
     minTopup: 1,
     amountOptions: [10, 20],
-    discounts: {},
+    discounts: fixtureTopupDiscounts(),
     topupLink: null,
   }),
   quoteAccountTopupAmount: async (
     input: Parameters<V2Bridge['quoteAccountTopupAmount']>[0],
-  ) => ({ amount: input.amount, payableAmount: input.amount }),
+  ) => ({
+    amount: input.amount,
+    payableAmount: query.has('topupBonus') && input.amount === 20 ? 16 : input.amount,
+  }),
   createAccountTopupPayment: async (
     input: Parameters<V2Bridge['createAccountTopupPayment']>[0],
   ) => {
