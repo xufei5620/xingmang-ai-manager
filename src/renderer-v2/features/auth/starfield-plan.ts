@@ -23,8 +23,13 @@ export interface StarfieldMotionInput {
   lowEndDevice: boolean
 }
 
-// 30 帧对「星星闪一闪」这种慢变化已经看不出区别，却能把重画次数砍掉一半。
+// 流星划过那一段要 30 帧才顺；星星闪烁一次要好几秒，每秒 10 帧已经看不出台阶。
+// 登录后的背景一直开着，按 30 帧重画整个窗口实测要占掉小半个 CPU 核
+// （1280×820，软件绘制：30 帧 45%、10 帧 18%），所以只在流星出现时才提到 30 帧。
 export const starfieldFrameIntervalMs = 1000 / 30
+export const starfieldTwinkleIntervalMs = 1000 / 10
+export const starfieldMeteorCycleMs = 11_000
+export const starfieldMeteorPassageMs = 1400
 // requestAnimationFrame 的时间戳会有 1~2 毫秒抖动；不留余量的话 60Hz 屏幕上
 // 有一半「该画」的帧会被判成早到，实际掉到 20 帧。
 const frameJitterMs = 4
@@ -38,8 +43,14 @@ export function starfieldAnimates(input: StarfieldMotionInput) {
   return !input.paused && !input.reducedMotion && !input.systemReducedMotion && !input.lowEndDevice
 }
 
+export function starfieldMeteorVisible(time: number) {
+  return time % starfieldMeteorCycleMs < starfieldMeteorPassageMs
+}
+
 export function starfieldFrameDue(time: number, lastPainted: number | null) {
-  return lastPainted === null || time - lastPainted >= starfieldFrameIntervalMs - frameJitterMs
+  if (lastPainted === null) return true
+  const interval = starfieldMeteorVisible(time) ? starfieldFrameIntervalMs : starfieldTwinkleIntervalMs
+  return time - lastPainted >= interval - frameJitterMs
 }
 
 export function starfieldPixelRatio(devicePixelRatio: number, width: number, height: number) {
