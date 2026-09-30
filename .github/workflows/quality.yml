@@ -103,18 +103,24 @@ jobs:
           - shard: renderer-v2
             command: npm run test:v2:vitest
             timeout: 10
-          # Deliberately NOT split further, even though app-check.mjs is half
-          # of it on its own. Every file here builds a Vite dev server with the
-          # same `configFile: false` root, so they share one on-disk
-          # node_modules/.vite dependency cache and the earlier files warm it
-          # for the later ones — app-check.mjs runs last and inherits all of
-          # it. Splitting them across runners gave app-check a cold cache, and
-          # a mid-run re-optimisation then blew the 90s fixture mount budget on
-          # the NewAPI announcement-collection test (run 35420361508). The
-          # suite is ~10 minutes whole, which still clears the target.
+          # Split along the one seam that does not touch the shared Vite
+          # dependency cache. The configFile:false browser-checks build their
+          # dev servers on one root and share node_modules/.vite, and the
+          # earlier files warm it for app-check.mjs, which runs last and is
+          # half the suite on its own. Splitting *those* across runners gave
+          # app-check a cold cache, and a mid-run re-optimisation then blew
+          # the 90s fixture mount budget on the NewAPI announcement-collection
+          # test (run 35420361508) — so they stay together, in their order.
+          # The two e2e suites load vite.config.ts with a cacheDir of their
+          # own, never read or warm that cache, and run on their own runner.
+          # The whole suite had grown to 17m18s on #712 and ran out its 18
+          # minutes twice on #714 with every test up to that point passing.
           - shard: renderer-v2-browser
-            command: npm run test:v2:browser
+            command: npm run test:v2:browser:fixture
             timeout: 18
+          - shard: renderer-v2-e2e
+            command: npm run test:v2:browser:e2e
+            timeout: 10
     name: windows-test (${{ matrix.shard }})
     steps:
       - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0

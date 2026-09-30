@@ -236,17 +236,32 @@ test('splitting the Windows job did not drop a suite it used to run', () => {
   assert.equal(scripts['test:vitest:1'], 'npm run test:vitest -- --shard=1/2')
   assert.equal(scripts['test:vitest:2'], 'npm run test:vitest -- --shard=2/2')
 
-  // test:v2:browser is dispatched whole, and must stay that way. Its files each
-  // build a Vite dev server on the same `configFile: false` root, so they share
-  // one on-disk node_modules/.vite dependency cache that the earlier files warm
-  // for the later ones. Split across runners, app-check.mjs — which runs last
-  // and benefits most — got a cold cache and blew its 90s fixture mount budget
-  // on a mid-run re-optimisation.
-  assert.ok(shardCommands.includes('npm run test:v2:browser'), 'the matrix must dispatch test:v2:browser whole')
-  assert.equal(scripts['test:v2:browser:1'], undefined, 'test:v2:browser must not be split across runners')
-  assert.match(scripts['test:v2:browser'], /--test-concurrency=1/, 'the browser suites must stay serialised')
-  assert.ok(scripts['test:v2:browser'].split(/\s+/).filter((token) => /\.mjs$/.test(token)).length > 0,
-    'test:v2:browser must still name its suites')
+  // test:v2:browser is dispatched as two runners, split only along the seam
+  // that leaves the shared Vite dependency cache alone. Its configFile:false
+  // files each build a dev server on the same root and share one on-disk
+  // node_modules/.vite cache that the earlier files warm for the later ones.
+  // Split across runners, app-check.mjs — which runs last and benefits most —
+  // got a cold cache and blew its 90s fixture mount budget on a mid-run
+  // re-optimisation. So those stay on one runner in their original order, and
+  // only suites that bring a cacheDir of their own may leave.
+  const suites = (script) => scripts[script].split(/\s+/).filter((token) => /\.mjs$/.test(token))
+  for (const script of ['test:v2:browser', 'test:v2:browser:fixture', 'test:v2:browser:e2e']) {
+    assert.match(scripts[script], /^node --test --test-concurrency=1 /, `${script} must stay serialised`)
+    assert.ok(suites(script).length > 0, `${script} must still name its suites`)
+  }
+  assert.ok(shardCommands.includes('npm run test:v2:browser:fixture'), 'the matrix must dispatch test:v2:browser:fixture')
+  assert.ok(shardCommands.includes('npm run test:v2:browser:e2e'), 'the matrix must dispatch test:v2:browser:e2e')
+  assert.ok(!shardCommands.includes('npm run test:v2:browser'), 'test:v2:browser must not also run whole in CI')
+  const whole = suites('test:v2:browser')
+  const fixture = suites('test:v2:browser:fixture')
+  const e2e = suites('test:v2:browser:e2e')
+  assert.deepEqual([...fixture, ...e2e].sort(), [...whole].sort(), 'the two runners must add up to exactly test:v2:browser')
+  assert.deepEqual(fixture, whole.filter((file) => fixture.includes(file)), 'the fixture runner must keep the original order')
+  assert.equal(fixture.at(-1), 'src/renderer-v2/testing/app-check.mjs', 'app-check.mjs must run last, after the files that warm its cache')
+  for (const file of e2e) {
+    assert.match(fs.readFileSync(path.join(root, file), 'utf8'), /cacheDir: 'node_modules\/\.vite-[\w-]+'/,
+      `${file} may only leave the fixture runner because it brings its own Vite cacheDir`)
+  }
 
   // T-B6: the matrix has to cover exactly the leaves `npm test` runs, so a
   // leaf added later that no shard dispatches fails here instead of silently
