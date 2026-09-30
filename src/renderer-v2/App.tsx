@@ -267,9 +267,9 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     openNetworkSettings,
     dismissProxyBypassNotice,
   }), [offline, onlineCause, proxyBypassNotice, onlineChecking, recheckOnline, openNetworkSettings, dismissProxyBypassNotice])
-  // 换账号等于换了一整套上下文：首页那份「最近」缓存（60 秒）必须当场作废，
-  // 否则切过去的头一眼看到的还是上一个账号在的时候读到的列表。
-  useLayoutEffect(() => { accountEpoch.current++; cancelPendingLaunchDialogs(); setAccountReadError(null); refreshRecent() }, [scope, session.authenticated, refreshRecent])
+  // 换账号等于换了一整套上下文：首页那份「最近」和余额卡用量两份缓存（各 60 秒）
+  // 必须当场作废，否则切过去的头一眼看到的还是上一个账号在的时候读到的东西。
+  useLayoutEffect(() => { accountEpoch.current++; cancelPendingLaunchDialogs(); setAccountReadError(null); refreshRecent(); toolsApi.invalidateBalanceUsage() }, [scope, session.authenticated, refreshRecent, toolsApi])
   const siteId = accountSiteId(session)
   const relaySite = resolveRelaySite(siteId)
   const supportUrl = resolveSupportServiceUrl(session)
@@ -1274,7 +1274,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
                   onContactSupport={() => setHelp(true)} onRelaunch={() => void perform('重开软件', async () => { await app.relaunch() })} />
               </Suspense>
             </div>}
-            {page === 'home' ? <Home api={toolsApi} supportsUsage={accountSupports(session, 'supportsUsage')} supportsBilling={accountSupports(session, 'supportsBilling')} snapshot={toolbox.snapshot} loading={toolbox.loading} error={toolbox.error} failures={toolbox.failures} account={session.account} balance={balance} subscription={subscription} jobs={toolbox.jobs} bootstrap={accountBootstrap?.scope === scope ? accountBootstrap : null}
+            {page === 'home' ? <Home api={toolsApi} accountScope={scope} supportsUsage={accountSupports(session, 'supportsUsage')} supportsBilling={accountSupports(session, 'supportsBilling')} snapshot={toolbox.snapshot} loading={toolbox.loading} error={toolbox.error} failures={toolbox.failures} account={session.account} balance={balance} subscription={subscription} jobs={toolbox.jobs} bootstrap={accountBootstrap?.scope === scope ? accountBootstrap : null}
               externalClients={toolbox.externalClients} externalLoading={toolbox.externalLoading} externalError={toolbox.externalError} recentRevision={recentRevision}
               onScan={() => { refreshRecent(); void toolbox.refresh(true).catch(() => undefined); void toolbox.refreshExternal(true).catch(() => undefined) }} onInstall={(id, version) => void perform('安装工具', () => install(id, version), id)} onCancelInstall={(id) => void perform('取消安装', () => cancelInstall(id))} onLaunch={requestLaunch} onLaunchInNewFolder={(id) => requestLaunch(id, undefined, 'new', true)} onConfigure={openToolConfig} onUninstall={requestUninstall} onRevert={requestRevert}
               onRewriteKey={(id) => void perform('重新写入 Key', () => rewriteAccountKeys([providerFor(id)]), id)} onKeepConfig={(id) => void perform('保留当前配置', () => keepCurrentToolConfig(id))}
