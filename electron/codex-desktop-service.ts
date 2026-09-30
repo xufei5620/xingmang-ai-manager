@@ -49,7 +49,7 @@ import {
   type InstallCancellationHandle,
   type InstallCancellationOutcome,
 } from './install-cancellation'
-import { buildMacosCodexAppLaunchPlan, type inspectMacosCodexApp, type MacosCodexAppInspection } from './macos-codex-app'
+import { buildMacosCodexAppLaunchPlan, probeMacosCodexRunning, type inspectMacosCodexApp, type MacosCodexAppInspection } from './macos-codex-app'
 import { resolveSystemWingetExecutable, type SystemWingetResolution } from './node-runtime'
 import { describeProbeFailure } from './probe-failure'
 import { downloadWithResume, DownloadStalledError, type ResumableDownloadOptions } from './download-retry'
@@ -1419,6 +1419,45 @@ export function parseCodexDesktopSessionProcessIds(
     processIds.push(processId)
   }
   return processIds
+}
+
+/**
+ * 桌面端在这个登录会话里还有没有进程：true / false / null（查不出来）。
+ *
+ * 打开桌面端时软件替用户连上的加速不扣免费时长，所以桌面端一关就要断开，
+ * 否则等于白送一条不限时的线路（codex-desktop-acceleration.ts 定时来问）。
+ * 与上面那条「打开」用的探测不同，这里失败不能折成「没在跑」：一次 WMI 超时
+ * 就把正在用的人断掉，比晚断一两分钟糟得多。
+ */
+export async function probeCodexDesktopRunning(platform: NodeJS.Platform = process.platform): Promise<boolean | null> {
+  if (platform === 'darwin') return probeMacosCodexRunning()
+  if (platform !== 'win32') return null
+  let stdout: string
+  try {
+    ({ stdout } = await execFileAsync(resolveWindowsPowerShellExecutable(), [
+      '-NoLogo',
+      '-NoProfile',
+      '-NonInteractive',
+      '-Command',
+      buildCodexDesktopSessionProcessProbeScript(),
+    ], {
+      env: trustedCommandEnvironment(),
+      windowsHide: true,
+      timeout: 8_000,
+      maxBuffer: 1024 * 1024,
+    }))
+  } catch {
+    return null
+  }
+  return codexDesktopRunningFromProbeOutput(stdout)
+}
+
+/** 空输出就是一个都没有；读不懂的输出算「查不出来」。 */
+export function codexDesktopRunningFromProbeOutput(output: string): boolean | null {
+  const trimmed = output.trim().replace(/^\uFEFF/, '')
+  if (!trimmed) return false
+  try { JSON.parse(trimmed) } catch { return null }
+  return parseCodexDesktopSessionProcessIds(trimmed, null).length > 0
 }
 
 async function listCodexDesktopSessionProcessIds(packageFamilyName: string | null): Promise<number[]> {

@@ -40,6 +40,7 @@ import {
   processExistsFromSignalError,
   buildCodexDesktopSessionProcessProbeScript,
   parseCodexDesktopSessionProcessIds,
+  codexDesktopRunningFromProbeOutput,
   buildCodexDesktopStoreInstallCommand,
   describeCodexDesktopDownloadAttempt,
   describeCodexDesktopStoreNotice,
@@ -1481,6 +1482,15 @@ describe('Codex Desktop Appx probe script', () => {
     expect(parseCodexDesktopSessionProcessIds(JSON.stringify({ ProcessId: 101, ExecutablePath: stable }), null)).toEqual([101])
     expect(parseCodexDesktopSessionProcessIds('', null)).toEqual([])
     expect(parseCodexDesktopSessionProcessIds('WARNING: not json', null)).toEqual([])
+  })
+
+  it('tells an unreadable exit probe apart from a closed desktop app', () => {
+    const stable = String.raw`C:\Program Files\WindowsApps\OpenAI.Codex_26.715.0.0_x64__2p2nqsd0c76g0\app\ChatGPT.exe`
+    expect(codexDesktopRunningFromProbeOutput(JSON.stringify({ ProcessId: 101, ExecutablePath: stable }))).toBe(true)
+    expect(codexDesktopRunningFromProbeOutput(JSON.stringify([{ ProcessId: 103, ExecutablePath: String.raw`C:\Tools\ChatGPT.exe` }]))).toBe(false)
+    expect(codexDesktopRunningFromProbeOutput('  \r\n')).toBe(false)
+    // 读不懂的输出不能当「已经关了」：那会把正在用的人断掉。
+    expect(codexDesktopRunningFromProbeOutput('WARNING: not json')).toBeNull()
   })
 
   it.runIf(process.platform === 'win32')('runs the launch probe against mocked WMI and keeps windows whose owner is unknown', () => {

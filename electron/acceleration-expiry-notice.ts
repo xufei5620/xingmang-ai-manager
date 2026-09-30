@@ -168,6 +168,12 @@ export function createAccelerationExpiryNotice(options: AccelerationExpiryNotice
   return {
     observe(state) {
       if (disposed) return
+      // 软件替他连的那种不扣时长，也就不会用完；什么时候断由桌面端退出决定。
+      if (state.autoStartedBy) {
+        tracked = null
+        clearTimer()
+        return
+      }
       if (state.phase === 'active' && state.remainingSeconds !== null && state.remainingSeconds > 0) {
         follow(state, state.remainingSeconds)
         return

@@ -632,6 +632,22 @@ describe('acceleration started by the app', () => {
     expect((await service.getAccelerationState(scope)).autoStartedBy).toBeUndefined()
   })
 
+  it('asks the backend for a free connection and accepts one running on a used-up allowance', async () => {
+    const backend = createBackend()
+    const free = active({ remainingSeconds: 0, autoStartedBy: 'codex-desktop' })
+    const startAutomaticAcceleration = vi.fn(async () => free)
+    const service = createAccelerationService({ getAccountScope: () => scope, backend: { ...backend, startAutomaticAcceleration } })
+    expect(await service.startAutomaticAcceleration(scope, 'codex-desktop', 'system-proxy', 'line-1'))
+      .toMatchObject({ phase: 'active', remainingSeconds: 0, autoStartedBy: 'codex-desktop' })
+    expect(startAutomaticAcceleration).toHaveBeenCalledWith(scope, 'system-proxy', 'line-1')
+    expect(backend.startAcceleration).not.toHaveBeenCalled()
+    // 用户自己的会话剩 0 还说连着，仍然是坏数据。
+    vi.mocked(backend.getAccelerationState).mockResolvedValueOnce(active({ remainingSeconds: 0 }))
+    await expect(service.getAccelerationState(scope)).rejects.toThrow()
+    vi.mocked(backend.getAccelerationState).mockResolvedValueOnce(state({ autoStartedBy: 'codex-desktop' }))
+    await expect(service.getAccelerationState(scope)).rejects.toThrow()
+  })
+
   it('drops the mark when a later read shows a different session', async () => {
     const backend = createBackend()
     const service = createAccelerationService({ getAccountScope: () => scope, backend })
