@@ -196,7 +196,9 @@ checks.push(['store availability probe answers without throwing', async () => {
 // process on this runner (#714), so the account probe ran past its own 10 s
 // limit and the home screen silently lost the "this account cannot open store
 // apps" warning. The account probe is a real check at its shipped limit; the
-// other two only print their timing, for the next person reading this log.
+// other two only print their timing. The Codex merged probe still took 23 s of
+// its 24 s budget here even with the common modules imported up front, so it
+// was left unchanged; its number is printed for that follow-up.
 checks.push(['store app launch probe answers inside its own limit under the trusted environment', async () => {
   const context = await inspectWindowsStoreAppLaunchContext()
   assert.match(context.userSid ?? '', /^S-1-5-/)

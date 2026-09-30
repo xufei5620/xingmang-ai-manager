@@ -85,7 +85,6 @@ import {
 } from './codex-desktop-install-failure'
 import { codexDesktopKnownIssueLaunchSentence, resolveCodexDesktopKnownIssue } from './codex-desktop-known-issues'
 import {
-  buildPowerShellModuleImportStatement,
   inspectWindowsStoreAppLaunchContext,
   inspectWindowsStoreAvailability,
   readWindowsStoreAppLaunchContext,
@@ -1539,9 +1538,6 @@ export function buildCodexDesktopPackageProbeScript(): string {
 export function buildCodexDesktopCombinedProbeScript(): string {
   return [
     codexDesktopProbeScriptHeader,
-    // Runs under trustedCommandEnvironment(); see buildPowerShellModuleImportStatement
-    // for why autoloading there cost about 20 s of the 24 s budget.
-    buildPowerShellModuleImportStatement(['Microsoft.PowerShell.Management', 'Microsoft.PowerShell.Utility', 'CimCmdlets', 'StartLayout']),
     '$startApps = $null',
     '$startAppsError = $null',
     `try { $startApps = ${codexDesktopStartAppsQuery()} } catch { $startAppsError = $_.Exception.Message }`,

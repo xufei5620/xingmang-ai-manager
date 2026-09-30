@@ -1455,10 +1455,6 @@ describe('Codex Desktop Appx probe script', () => {
 
     expect(combined).toContain("Get-StartApps | Where-Object { $_.AppID -like 'OpenAI.Codex*!App' }")
     expect(combined).toContain('Get-CimInstance -ClassName Win32_Process')
-    // Under trustedCommandEnvironment() autoloading cost most of the 24 s budget (#714).
-    expect(combined.indexOf("Import-Module -Name 'Microsoft.PowerShell.Management'")).toBeGreaterThanOrEqual(0)
-    expect(combined.indexOf("Import-Module -Name 'Microsoft.PowerShell.Management', 'Microsoft.PowerShell.Utility', 'CimCmdlets', 'StartLayout'"))
-      .toBeLessThan(combined.indexOf('Get-StartApps'))
     expect(combined).toContain("Get-AppxPackage -Name 'OpenAI.Codex*' -ErrorAction Stop")
     expect(combined).not.toContain("Get-AppxPackage -AllUsers")
     // 每段各自 try/catch，任一段失败只写自己的 error 字段
