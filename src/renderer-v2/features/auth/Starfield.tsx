@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react'
-import { starfieldAnimates, starfieldFrameDue, starfieldLinks, starfieldPixelRatio, type StarfieldLink } from './starfield-plan'
+import { starfieldAnimates, starfieldFrameDue, starfieldLinks, starfieldMeteorPassageMs, starfieldMeteorCycleMs, starfieldMeteorVisible, starfieldPixelRatio, type StarfieldLink } from './starfield-plan'
 
 export function Starfield({ paused, quiet = false }: { paused: boolean; quiet?: boolean }) {
   const ref = useRef<HTMLCanvasElement>(null)
@@ -60,9 +60,8 @@ export function Starfield({ paused, quiet = false }: { paused: boolean; quiet?: 
         context.stroke()
       }
       if (!reduce) {
-        const passage = time % 11_000
-        if (passage < 1400) {
-          const progress = passage / 1400
+        if (starfieldMeteorVisible(time)) {
+          const progress = (time % starfieldMeteorCycleMs) / starfieldMeteorPassageMs
           const x = width * (.86 - progress * .32), y = height * (.12 + progress * .22)
           const tail = context.createLinearGradient(x, y, x + 80, y - 28)
           tail.addColorStop(0, accent); tail.addColorStop(1, 'transparent')
