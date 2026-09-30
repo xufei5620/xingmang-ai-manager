@@ -34,6 +34,8 @@ import {
   canAttemptCodexDesktopFirstInstallFallback,
   describeCodexDesktopLaunchFailure,
   describeCodexDesktopLaunchWait,
+  buildCodexDesktopResetScript,
+  describeCodexDesktopResetFailure,
   startCodexDesktopLaunchHeartbeat,
   codexDesktopLaunchHeartbeatIntervalMs,
   codexDesktopNotStartedPrefix,
@@ -141,6 +143,26 @@ describe('Codex Desktop AppModel launch diagnostics', () => {
       uacEnabled: null,
       filterAdministratorToken: null,
     })
+  })
+
+  it('resets only the probed package, passing its name as a PowerShell literal', () => {
+    const script = buildCodexDesktopResetScript("OpenAI.Codex_26.917.6896.0_x64__2p2nqsd0c76g0'; Remove-Item C:\\")
+    expect(script).toContain("Reset-AppxPackage -Package 'OpenAI.Codex_26.917.6896.0_x64__2p2nqsd0c76g0''; Remove-Item C:\\'")
+    expect(script).not.toMatch(/Remove-AppxPackage/)
+    const scan = scanPowerShell(script)
+    expect(scan.unterminated).toBe(false)
+    expect(unbalancedBracket(scan.code)).toBeNull()
+    expect(scan.code).not.toContain('Remove-Item')
+  })
+
+  it('points a failed reset at the same button in Windows settings, in plain words', () => {
+    const generic = describeCodexDesktopResetFailure(new Error('Reset-AppxPackage : The term is not recognized'))
+    const slow = describeCodexDesktopResetFailure(Object.assign(new Error('timeout'), { killed: true }))
+    for (const message of [generic, slow]) {
+      expect(message).toContain('「高级选项」→「重置」')
+      expect(message).not.toMatch(/Reset-AppxPackage|PowerShell|AppX|Appx|0x[0-9A-F]{8}/i)
+    }
+    expect(slow).toContain('两分钟')
   })
 
   it('tells a built-in Administrator user to sign in with an ordinary account', () => {

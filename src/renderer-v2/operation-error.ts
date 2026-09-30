@@ -4,7 +4,7 @@ import { classifyNetworkFailure, networkFailureReasonForMessage, toolCertificate
 import { errors } from './registry/errors'
 
 export type OperationErrorKey = keyof typeof errors
-export type OperationActionId = 'retry' | 'log' | 'support' | 'relogin' | 'recharge' | 'network' | 'repair' | 'copyPath' | 'backups' | 'replaceNode' | 'openStore' | 'useCodexCli'
+export type OperationActionId = 'retry' | 'log' | 'support' | 'relogin' | 'recharge' | 'network' | 'repair' | 'copyPath' | 'backups' | 'replaceNode' | 'openStore' | 'resetCodexDesktop' | 'useCodexCli'
 export interface OperationAction { id: OperationActionId; label: string }
 export interface OperationErrorHint {
   key: Exclude<OperationErrorKey, 'unknown'>
@@ -164,6 +164,8 @@ const actionIds: Record<string, OperationActionId | undefined> = {
   // 只有 Codex 桌面端装不上那一类会出这颗，而那句话只有 Windows 的安装路径写得出来，
   // Mac 上自然不会出现。
   去微软商店装: 'openStore',
+  // Codex 桌面端打不开时的出口，和 Windows 设置里「高级选项 → 重置」是同一件事。
+  '重置 Codex': 'resetCodexDesktop',
   // 只有 Codex 桌面端装着已知打不开的那一版时才出这颗（第十九批 7）。
   '改用 Codex 命令行版': 'useCodexCli',
 }
@@ -220,6 +222,17 @@ export function operationLogPage(failure: { message: string; detail?: string | u
   return installLogKeys.has(resolved) ? 'maintenance' : 'feedback'
 }
 
+/**
+ * 系统自带的 Administrator 账户、关掉了「用户账户控制」的电脑，是 Windows 不让打开
+ * 商店装的软件（主进程 describeCodexDesktopLaunchFailure 的前两种说法），重置 Codex
+ * 自己的数据改变不了这一点，所以这两种不给「重置 Codex」。
+ */
+function codexDesktopBlockedByAccount(message: string): boolean {
+  return /Administrator|用户账户控制/.test(message)
+}
+
+const codexDesktopBlockedBody = '先照下面这句话做；还不行就点「找客服」，把这句话发给客服。'
+
 export function presentOperationError(message: string): OperationErrorHint | null {
   const text = message.trim()
   if (!text) return null
@@ -231,6 +244,9 @@ export function presentOperationError(message: string): OperationErrorHint | nul
   // account layer reuses this wording). Repeating it as a heading above the
   // very same line reads as a bug, so leave those untouched.
   if (text.includes(entry.title)) return null
+  if (key === 'codexDesktopNotStarted' && codexDesktopBlockedByAccount(text)) {
+    return { key, title: entry.title, body: codexDesktopBlockedBody, actions: honourableActions(entry.actions).filter((action) => action.id !== 'resetCodexDesktop') }
+  }
   const actions = honourableActions(entry.actions)
   return {
     key,

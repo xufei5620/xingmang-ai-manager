@@ -918,6 +918,7 @@ export interface SystemService {
   installCodexDesktop(target: RendererMessageTarget): Promise<CodexDesktopInstallResult>
   cancelCodexDesktopInstall(): InstallCancellationOutcome
   uninstallCodexDesktop(): Promise<ToolUninstallResult>
+  resetCodexDesktop(): Promise<void>
   inspectCodexDesktopUpdate(forceRefresh?: boolean): Promise<DesktopAppStatus>
   /** resumeSessionId 只在 Codex 续接时由 ipc.ts 核对过后传入，见 cliLaunchArgv。 */
   launchProvider(provider: ProviderId, workspace: string, mode?: CliLaunchMode, resumeSessionId?: string | null): Promise<CliLaunchResult>
@@ -4627,6 +4628,7 @@ export function createSystemService(
     installCodexDesktop: installCodexDesktopOperation,
     cancelCodexDesktopInstall,
     uninstallCodexDesktop: uninstallCodexDesktopOperation,
+    resetCodexDesktop,
     launchCodexDesktop: launchCodexDesktopOperation,
   } = createCodexDesktopService({
     platform,
@@ -5793,6 +5795,7 @@ export function createSystemService(
     installCodexDesktop,
     cancelCodexDesktopInstall,
     uninstallCodexDesktop,
+    resetCodexDesktop,
     inspectCodexDesktopUpdate,
     launchProvider,
     inspectCodexDesktop,
