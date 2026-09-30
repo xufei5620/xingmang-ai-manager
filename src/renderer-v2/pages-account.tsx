@@ -76,6 +76,7 @@ import type { AvatarIdentity } from './local-avatar'
 import { useSharedAccountBalance } from './features/app/balance-context'
 import { balanceStatusText } from './features/shell/balance-status'
 import { UsageDetails } from './features/account/UsageDetails'
+import { buildTopupBonus } from './features/account/topup-bonus'
 import { ToolKeyLimits } from './features/account/ToolKeyLimits'
 import { ToolUsage } from './features/account/ToolUsage'
 import type { LoginTarget } from './features/auth/api'
@@ -251,6 +252,8 @@ export function validateTopupAmount(value: number, minimum: number): number {
   return value
 }
 
+export { buildTopupBonus, type TopupBonus } from './features/account/topup-bonus'
+
 export function resetTopupQuoteForMethod(
   amount: string,
   method: Pick<PaymentMethod, 'minTopup'>,
@@ -351,6 +354,7 @@ export function AccountPage({
   api,
   initialTab,
   tabRequest,
+  rechargeAmount,
   paymentReturn,
   onLogin,
   onAccountChanged,
@@ -365,6 +369,8 @@ export function AccountPage({
   initialTab?: AccountTab
   /** 每次从外面点名要切到某个分页就加一；同一个分页再点一次也得切回去（Q29）。 */
   tabRequest?: number
+  /** 从活动卡片点某一档进来时要选好的充值金额，跟着 tabRequest 一起变。缺省 = 默认金额。 */
+  rechargeAmount?: number
   paymentReturn?: { sequence: number; order: string | null }
   onLogin?: (target?: LoginTarget) => void
   onAccountChanged?: () => void
@@ -588,6 +594,8 @@ export function AccountPage({
                       refresh={refreshAccount}
                       openOrders={openOrders}
                       openHelp={onOpenHelp}
+                      presetAmount={rechargeAmount}
+                      presetRequest={tabRequest}
                     />
                   )}
                   {panel === 'orders' && (
@@ -2009,6 +2017,8 @@ function AccountRecharge({
   refresh,
   openOrders,
   openHelp,
+  presetAmount,
+  presetRequest,
 }: {
   api: V2Bridge
   balance: Balance
@@ -2017,6 +2027,8 @@ function AccountRecharge({
   refresh: () => void
   openOrders?: (order: string | null) => void
   openHelp?: () => void
+  presetAmount?: number
+  presetRequest?: number
 }) {
   const load = useCallback(async () => {
     const [info, plans, subscriptions] = await Promise.all([
@@ -2029,7 +2041,13 @@ function AccountRecharge({
   const resource = useResource(load)
   const operation = useOperation()
   const { offline } = useOnlineStatus()
-  const [amount, setAmount] = useState('10')
+  const [amount, setAmount] = useState(() => presetAmount ? String(presetAmount) : '10')
+  // 已经停在充值页时再从活动卡片点另一档，也要换成那一档。
+  useEffect(() => {
+    if (!presetAmount) return
+    setAmount(String(presetAmount))
+    setQuote(null)
+  }, [presetAmount, presetRequest])
   const [method, setMethod] = useState('')
   const [code, setCode] = useState('')
   const [quote, setQuote] = useState<Awaited<
@@ -2111,6 +2129,8 @@ function AccountRecharge({
     resource.data?.info.minTopup ?? 1,
     paymentMethod?.minTopup ?? 0,
   )
+  const amountBonus = buildTopupBonus(Number(amount), resource.data?.info.discounts)
+  const quoteBonus = quote ? buildTopupBonus(quote.amount, resource.data?.info.discounts) : null
   const quoteTopup = () =>
     void operation.execute(
       'quote',
@@ -2183,9 +2203,20 @@ function AccountRecharge({
         >
           <div className="v2-business-suggestions-label">快捷金额</div>
           <div className="v2-business-suggestions">
-            {(resource.data?.info.amountOptions ?? [10, 20, 50, 100, 200, 500, 1000, 2000, 5000]).map((value) => (
-              <Button size="sm" key={value} onClick={() => { setAmount(String(value)); setQuote(null) }}>{value}</Button>
-            ))}
+            {(resource.data?.info.amountOptions ?? [10, 20, 50, 100, 200, 500, 1000, 2000, 5000]).map((value) => {
+              const optionBonus = buildTopupBonus(value, resource.data?.info.discounts)
+              return (
+                <Button
+                  size="sm"
+                  key={value}
+                  aria-label={optionBonus ? `${value}，送 ${optionBonus.percent}%` : undefined}
+                  onClick={() => { setAmount(String(value)); setQuote(null) }}
+                >
+                  {value}
+                  {optionBonus && <span className="v2-business-topup-bonus">送 {optionBonus.percent}%</span>}
+                </Button>
+              )
+            })}
           </div>
           <Input
             label="自定义金额"
@@ -2199,6 +2230,11 @@ function AccountRecharge({
               setQuote(null)
             }}
           />
+          {amountBonus && (
+            <p className="v2-business-topup-bonus-note" data-testid="account-recharge-bonus">
+              到账 {Number(amount)}，其中活动赠送 {amountBonus.bonus}（多送 {amountBonus.percent}%）。
+            </p>
+          )}
           <PaymentOptions
             methods={methods}
             value={paymentMethod?.type ?? ''}
@@ -2432,6 +2468,11 @@ function AccountRecharge({
         }
       >
         <p>充值数量：{quote?.amount}</p>
+        {quoteBonus && (
+          <p data-testid="account-recharge-quote-bonus">
+            活动赠送：{quoteBonus.bonus}（多送 {quoteBonus.percent}%），到账 {quote?.amount}
+          </p>
+        )}
         <p>
           应付金额：{quote?.payableAmount.toFixed(2)}
           （支付渠道币种以支付页面为准）

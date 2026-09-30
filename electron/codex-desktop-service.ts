@@ -52,6 +52,7 @@ import {
 import { buildMacosCodexAppLaunchPlan, type inspectMacosCodexApp, type MacosCodexAppInspection } from './macos-codex-app'
 import { resolveSystemWingetExecutable, type SystemWingetResolution } from './node-runtime'
 import { describeProbeFailure } from './probe-failure'
+import { downloadWithResume, DownloadStalledError, type ResumableDownloadOptions } from './download-retry'
 import { resolveWindowsExplorerExecutable } from './system-shell'
 import {
   activateCodexDesktop as activateCodexDesktopDefault,
@@ -76,6 +77,7 @@ import { addCodexDesktopPackage } from './codex-desktop-appx'
 import {
   buildCodexDesktopInstallFailureMessage,
   classifyCodexDesktopInstallFailure,
+  codexDesktopNoStoreNotice,
   codexDesktopTechnicalWords,
   isCodexDesktopInstallFailureMessage,
   isPlainCodexDesktopInstallMessage,
@@ -83,6 +85,7 @@ import {
 } from './codex-desktop-install-failure'
 import {
   inspectWindowsStoreAppLaunchContext,
+  inspectWindowsStoreAvailability,
   readWindowsStoreAppLaunchContext,
   resolveStoreAppLaunchBlock,
   windowsStoreAppLaunchContextStatements,
@@ -352,6 +355,8 @@ export interface CodexDesktopDownloadProgress {
   transferred: number
   total: number
   percent: number
+  /** 网络断了一下、正要在同一条线路上接着下时为 true。 */
+  resuming?: boolean
 }
 
 export interface CodexDesktopDownloadResult {
@@ -639,9 +644,9 @@ export function describeCodexDesktopDownloadAttempt(
   attemptIndex: number,
   previousFailure: string | null,
   probeErrors: readonly string[],
-  storeFailure: string | null = null,
+  store: string | null | Pick<CodexDesktopInstallAttempt, 'storeFailure' | 'storeUnavailable' | 'storeInstallerMissing'> = null,
 ): string {
-  const storeNotice = storeFailure ? `微软商店这次没装上（${storeFailure}），` : ''
+  const storeNotice = describeCodexDesktopStoreNotice(typeof store === 'string' || store === null ? { storeFailure: store } : store)
   if (attemptIndex > 0 && previousFailure) return `${storeNotice}前一路镜像未通过校验，已改从${packageSource.label}下载`
   const primaryMirrorSkip = attemptIndex === 0
     ? describeCodexDesktopPrimaryMirrorSkip(packageSource, probeErrors)
@@ -925,104 +930,88 @@ export async function downloadCodexDesktopPackage(
   onProgress: (progress: CodexDesktopDownloadProgress) => void,
   fetchImplementation: typeof fetch,
   cancelSignal?: AbortSignal,
+  resumeOptions: Pick<ResumableDownloadOptions, 'wait' | 'idleTimeoutMs'> = {},
 ): Promise<CodexDesktopDownloadResult> {
-  const controller = new AbortController()
-  const responseTimeout = setTimeout(() => controller.abort(), 20_000)
-  // 取消和超时都会中止这次请求，但用户看到的原因必须分得开：
-  // 下面的 catch 靠 cancelSignal 判断，而不是把两者都说成「下载超时」。
-  const abortOnCancel = () => controller.abort(cancelSignal?.reason)
-  if (cancelSignal?.aborted) abortOnCancel()
-  cancelSignal?.addEventListener('abort', abortOnCancel, { once: true })
-  let file: fs.promises.FileHandle | null = null
+  let total = 0
+  let lastPercent = -1
+  const percentOf = (transferred: number) => Math.min(100, Math.floor((transferred / total) * 100))
   try {
-    const response = await fetchTrustedCodexDesktopResource(source.url, {
-      headers: { Accept: 'application/vnd.ms-appx, application/octet-stream' },
-      signal: controller.signal,
-    }, fetchImplementation)
-    clearTimeout(responseTimeout)
-    if (!response.ok) throw new Error(`${source.label}返回 HTTP ${response.status}`)
-
-    const contentType = response.headers.get('content-type')?.toLowerCase() ?? ''
-    if (
-      !contentType.includes('application/vnd.ms-appx')
-      && !contentType.includes('application/octet-stream')
-      && !contentType.includes('binary/octet-stream')
-    ) {
-      throw new Error(`${source.label}返回的不是 MSIX 文件（Content-Type: ${contentType || '缺失'}）`)
-    }
-
-    const total = Number(response.headers.get('content-length'))
-    if (!Number.isSafeInteger(total) || total < minimumCodexDesktopPackageBytes) {
-      throw new Error(`${source.label}返回的安装包大小无效`)
-    }
-    if (total > maximumCodexDesktopPackageBytes) {
-      throw new Error(`${source.label}返回的安装包超过 1.5 GB 安全上限`)
-    }
-    if (
-      source.expectedContentLength !== undefined
-      && total !== source.expectedContentLength
-    ) {
-      throw new Error(
-        `${source.label}返回的 Content-Length 与镜像清单不一致：应为 ${source.expectedContentLength} 字节，实际 ${total} 字节`,
-      )
-    }
-    if (!response.body) throw new Error(`${source.label}未返回安装包内容`)
-
-    file = await fs.promises.open(destination, 'wx', 0o600)
-    const reader = response.body.getReader()
-    const sha256 = createHash('sha256')
-    let transferred = 0
-    let lastPercent = -1
-    while (true) {
-      const idleTimeout = setTimeout(() => controller.abort(), 45_000)
-      let chunk: ReadableStreamReadResult<Uint8Array>
-      try {
-        chunk = await reader.read()
-      } finally {
-        clearTimeout(idleTimeout)
-      }
-      if (chunk.done) break
-      if (!chunk.value?.byteLength) continue
-      transferred += chunk.value.byteLength
-      if (transferred > total || transferred > maximumCodexDesktopPackageBytes) {
-        throw new Error(`${source.label}返回的数据超过声明的安装包大小`)
-      }
-      sha256.update(chunk.value)
-      await file.write(chunk.value)
-      const percent = Math.min(100, Math.floor((transferred / total) * 100))
-      if (percent !== lastPercent) {
+    const download = await downloadWithResume({
+      targetPath: destination,
+      fileMode: 0o600,
+      maximumBytes: maximumCodexDesktopPackageBytes,
+      oversizeMessage: `${source.label}返回的数据超过声明的安装包大小`,
+      signal: cancelSignal,
+      responseTimeoutMs: 20_000,
+      idleTimeoutMs: 45_000,
+      ...resumeOptions,
+      request: (headers, signal) => fetchTrustedCodexDesktopResource(source.url, {
+        headers: { Accept: 'application/vnd.ms-appx, application/octet-stream', ...headers },
+        signal,
+      }, fetchImplementation),
+      acceptResponse: (response) => {
+        if (!response.ok) throw new Error(`${source.label}返回 HTTP ${response.status}`)
+        const contentType = response.headers.get('content-type')?.toLowerCase() ?? ''
+        if (
+          !contentType.includes('application/vnd.ms-appx')
+          && !contentType.includes('application/octet-stream')
+          && !contentType.includes('binary/octet-stream')
+        ) {
+          throw new Error(`${source.label}返回的不是 MSIX 文件（Content-Type: ${contentType || '缺失'}）`)
+        }
+        const declared = Number(response.headers.get('content-length'))
+        if (!Number.isSafeInteger(declared) || declared < minimumCodexDesktopPackageBytes) {
+          throw new Error(`${source.label}返回的安装包大小无效`)
+        }
+        if (declared > maximumCodexDesktopPackageBytes) {
+          throw new Error(`${source.label}返回的安装包超过 1.5 GB 安全上限`)
+        }
+        if (
+          source.expectedContentLength !== undefined
+          && declared !== source.expectedContentLength
+        ) {
+          throw new Error(
+            `${source.label}返回的 Content-Length 与镜像清单不一致：应为 ${source.expectedContentLength} 字节，实际 ${declared} 字节`,
+          )
+        }
+        if (!response.body) throw new Error(`${source.label}未返回安装包内容`)
+        total = declared
+        return declared
+      },
+      onProgress: (transferred) => {
+        const percent = percentOf(transferred)
+        if (percent === lastPercent) return
         lastPercent = percent
         onProgress({ transferred, total, percent })
-      }
+      },
+      onResume: (transferred) => {
+        onProgress({ transferred, total, percent: percentOf(transferred), resuming: true })
+      },
+    })
+    if (download.size !== total) {
+      throw new Error(`${source.label}下载不完整：应为 ${total} 字节，实际 ${download.size} 字节`)
     }
-    if (transferred !== total) {
-      throw new Error(`${source.label}下载不完整：应为 ${total} 字节，实际 ${transferred} 字节`)
-    }
-    const sha256Base64 = sha256.digest('base64')
+    const sha256Base64 = download.sha256.toString('base64')
     if (
       source.expectedSha256Base64 !== undefined
       && sha256Base64 !== source.expectedSha256Base64
     ) {
       throw new Error(`${source.label}安装包 SHA-256 与镜像清单不一致，文件可能已损坏`)
     }
-    await file.sync()
-    return { transferred, total, sha256Base64 }
+    return { transferred: download.size, total, sha256Base64 }
   } catch (error) {
-    // reason 兜一层:本函数是导出的,调用方给的信号不一定带 reason,
-    // 少了这一层就会 throw undefined,上层只能报一句没有内容的失败。
-    const cause = cancelSignal?.aborted
-      ? cancelSignal.reason ?? new InstallCancelledError()
-      : error instanceof Error && error.name === 'AbortError'
-        ? new Error(`${source.label}连接或下载超时`)
-        : error
-    await file?.close().catch(() => undefined)
-    file = null
     await fs.promises.rm(destination, { force: true }).catch(() => undefined)
-    throw cause
-  } finally {
-    clearTimeout(responseTimeout)
-    cancelSignal?.removeEventListener('abort', abortOnCancel)
-    await file?.close().catch(() => undefined)
+    // 取消和超时都会中止这次请求，但用户看到的原因必须分得开：靠 cancelSignal
+    // 判断，而不是把两者都说成「下载超时」。reason 兜一层：本函数是导出的，调用方
+    // 给的信号不一定带 reason，少了这一层就会 throw undefined。
+    if (cancelSignal?.aborted) throw cancelSignal.reason ?? new InstallCancelledError()
+    if (
+      error instanceof DownloadStalledError
+      || (error instanceof Error && error.name === 'AbortError')
+    ) {
+      throw new Error(`${source.label}连接或下载超时`)
+    }
+    throw error
   }
 }
 
@@ -1855,6 +1844,22 @@ export interface CodexDesktopInstallAttempt {
   storeFailure: string | null
   storeExitCode: string | null
   updating: boolean
+  /** 这台电脑没有微软商店，这次没走商店。缺省 = 有商店或没查出来。 */
+  storeUnavailable?: boolean
+  /** 商店在，但装东西要用的那个系统组件不在（老 Windows 10 常见，推测）。 */
+  storeInstallerMissing?: boolean
+}
+
+/**
+ * 进度提示开头交代商店那一路怎么了的半句话。三种情形各说各的：没有商店就别再
+ * 说「这次没装上」，那听起来像是还能再试。
+ */
+export function describeCodexDesktopStoreNotice(
+  attempt: Pick<CodexDesktopInstallAttempt, 'storeFailure' | 'storeUnavailable' | 'storeInstallerMissing'>,
+): string {
+  if (attempt.storeUnavailable) return `${codexDesktopNoStoreNotice}，直接用国内线路装：`
+  if (attempt.storeInstallerMissing) return '微软商店少一个安装组件，先用国内线路装：'
+  return attempt.storeFailure ? `微软商店这次没装上（${attempt.storeFailure}），` : ''
 }
 
 /**
@@ -1883,9 +1888,15 @@ export function toCodexDesktopInstallFailure(error: unknown, attempt: CodexDeskt
     return error instanceof Error ? error : new Error(raw)
   }
   const reason = classifyCodexDesktopInstallFailure(raw)
-  const detail = attempt.storeFailure ? `微软商店这次没装上（${attempt.storeFailure}），国内镜像也没装上：${raw}` : raw
+  const detail = attempt.storeUnavailable
+    ? `${codexDesktopNoStoreNotice}，国内镜像也没装上：${raw}`
+    : attempt.storeFailure ? `微软商店这次没装上（${attempt.storeFailure}），国内镜像也没装上：${raw}` : raw
   return new CodexDesktopInstallFailure(
-    buildCodexDesktopInstallFailureMessage(reason, { storeTried: attempt.storeFailure !== null, updating: attempt.updating }),
+    buildCodexDesktopInstallFailureMessage(reason, {
+      storeTried: attempt.storeFailure !== null,
+      storeUnavailable: attempt.storeUnavailable === true,
+      updating: attempt.updating,
+    }),
     { detail, reason, storeExitCode: attempt.storeExitCode, cause: error },
   )
 }
@@ -2086,6 +2097,11 @@ export interface CodexDesktopServiceOptions {
   prepareAcceleration?: () => Promise<void>
   /** 找系统自带的 winget（微软商店那一路用）。缺省 = 校验过包身份与目录的系统解析器。 */
   resolveStoreInstaller?: (signal?: AbortSignal) => Promise<SystemWingetResolution>
+  /**
+   * 这台电脑有没有微软商店：false 才跳过商店、直接走国内线路；null（没查出来）
+   * 照旧先走商店。缺省 = windows-store-app-launch.ts 那条异步探测。
+   */
+  inspectStoreAvailability?: (signal?: AbortSignal) => Promise<boolean | null>
   /** Optional seams used by tests; production uses the constrained CDP module. */
   activateCodexDesktop?: typeof activateCodexDesktopDefault
   activateCodexDesktopWithCdp?: typeof activateCodexDesktopWithCdpDefault
@@ -2141,6 +2157,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
     prepareAcceleration,
     assertInstallDiskSpace,
     resolveStoreInstaller = resolveSystemWingetExecutable,
+    inspectStoreAvailability = (signal?: AbortSignal) => inspectWindowsStoreAvailability(signal ? { signal } : {}),
     activateCodexDesktop = activateCodexDesktopDefault,
     activateCodexDesktopWithCdp = activateCodexDesktopWithCdpDefault,
     getAvailableLoopbackPort = getAvailableLoopbackPortDefault,
@@ -2389,7 +2406,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
     previousVersion: string | null,
     packageFamilyName: string | null,
     cancellation?: InstallCancellationHandle,
-  ): Promise<{ installed: CodexDesktopPackageEntry } | { failure: string; exitCode?: string | null }> {
+  ): Promise<{ installed: CodexDesktopPackageEntry } | { failure: string; exitCode?: string | null; installerMissing?: boolean }> {
     const storeStartedAt = Date.now()
     sendCodexDesktopInstallProgress(target, {
       phase: 'downloading',
@@ -2398,12 +2415,12 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
     })
     const resolution = await resolveStoreInstaller(cancellation?.signal)
     cancellation?.throwIfCancelled()
-    if (!resolution.executable) return { failure: '这台电脑上的微软商店安装组件用不了' }
+    if (!resolution.executable) return { failure: '这台电脑上的微软商店安装组件用不了', installerMissing: true }
     let command: CommandSpec
     try {
       command = buildCodexDesktopStoreInstallCommand(resolution.executable)
     } catch {
-      return { failure: '这台电脑上的微软商店安装组件用不了' }
+      return { failure: '这台电脑上的微软商店安装组件用不了', installerMissing: true }
     }
     if (previousVersion && packageFamilyName) {
       // 商店更新一个正开着的桌面端会失败或卡住；镜像那一路也是装之前先关。
@@ -2499,11 +2516,15 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
       : null
     if (!architecture) throw new Error(`Codex 桌面端不支持当前处理器架构 ${process.arch}`)
 
-    const [currentProbe, startApp, runningProcesses] = await Promise.all([
+    const [currentProbe, startApp, runningProcesses, storeAvailable] = await Promise.all([
       inspectCodexDesktopPackage(),
       findCodexDesktopStartApp(),
       listCodexDesktopProcesses(),
+      // 探测自己吞掉错误；这里再兜一层，查不出来就当不知道，照旧先走商店。
+      inspectStoreAvailability(cancellation?.signal).catch(() => null),
     ])
+    cancellation?.throwIfCancelled()
+    attempt.storeUnavailable = storeAvailable === false
     if (currentProbe.error) throw new Error(currentProbe.error)
     const currentPackage = currentProbe.value
     const firstInstall = canAttemptCodexDesktopFirstInstallFallback(
@@ -2525,7 +2546,14 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
     invalidateCodexDesktopManifestCache()
     const manifestBundle = await inspectCodexDesktopManifestBundle()
     cancellation?.throwIfCancelled()
-    if (!previousVersion || shouldTryCodexDesktopStoreUpdate(previousVersion, manifestBundle.latest.version)) {
+    if (attempt.storeUnavailable) {
+      // 商店为主、镜像备用的规矩不变；只是这台电脑根本没有商店，空等那一步没有意义。
+      sendCodexDesktopInstallProgress(target, {
+        phase: 'downloading',
+        percent: null,
+        message: `${codexDesktopNoStoreNotice}，直接用国内线路${previousVersion ? '更新' : '装'} Codex 桌面端。`,
+      })
+    } else if (!previousVersion || shouldTryCodexDesktopStoreUpdate(previousVersion, manifestBundle.latest.version)) {
       const storeResult = await installCodexDesktopFromStore(
         target, previousVersion, stableInstallFamilyName(currentPackage), cancellation,
       )
@@ -2547,6 +2575,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
       }
       attempt.storeFailure = storeResult.failure
       attempt.storeExitCode = storeResult.exitCode ?? null
+      attempt.storeInstallerMissing = storeResult.installerMissing === true
     }
     const mirrorCandidates = manifestBundle.mirrorCandidates
     const mirrorCandidate = mirrorCandidates[0] ?? null
@@ -2595,7 +2624,8 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
         const latestComparison = latest.version
           ? compareWindowsPackageVersions(newestRelease.version, latest.version)
           : null
-        const storeNewerVersion = latestComparison === -1 && latest.version ? latest.version : null
+        // 没有商店的电脑上不提「去微软商店更新」：那颗按钮在这里打不开。
+        const storeNewerVersion = !attempt.storeUnavailable && latestComparison === -1 && latest.version ? latest.version : null
         // 渲染层看到 storeNewerVersion 会给一颗「去微软商店装」按钮，这里只说清楚现状。
         const mirrorLagNotice = storeNewerVersion
           ? `；微软商店里已经有 ${storeNewerVersion}，国内下载线路还没跟上，可以去微软商店更新`
@@ -2638,7 +2668,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
             attemptIndex,
             previousFailure,
             probeErrors,
-            attempt.storeFailure,
+            attempt,
           )
           sendCodexDesktopInstallProgress(target, {
             phase: 'downloading',
@@ -2646,14 +2676,16 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
             message: `${attemptNotice} Codex 桌面端 ${release.version}（0%）`,
           })
         },
-        onProgress: (candidate, { percent }) => {
+        onProgress: (candidate, { percent, resuming }) => {
           const release = candidate.release
           const source = candidate.packageSource
           if (!release || !source) return
           sendCodexDesktopInstallProgress(target, {
             phase: 'downloading',
             percent,
-            message: `${attemptNotice ?? `正在从${source.label}下载`} Codex 桌面端 ${release.version}（${percent}%）`,
+            message: resuming
+              ? `网络断了一下，正在从${source.label}接着下载 Codex 桌面端 ${release.version}（已下 ${percent}%）`
+              : `${attemptNotice ?? `正在从${source.label}下载`} Codex 桌面端 ${release.version}（${percent}%）`,
           })
         },
         validatePackage: async (candidate) => {

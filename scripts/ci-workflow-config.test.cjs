@@ -122,27 +122,28 @@ test('the Linux job bounds and retries the apt install of Chromium system librar
   assert.equal(commands.some((command) => /--with-deps/.test(command)), false,
     'the apt install must not ride along with the unbounded browser download')
 
-  const depsIndex = steps.findIndex((step) => /playwright install-deps chromium/.test(String(step.run || '')))
+  const depsIndex = steps.findIndex((step) => /scripts\/ci-install-chromium-deps\.sh/.test(String(step.run || '')))
   assert.notEqual(depsIndex, -1, 'linux-test must install Chromium system libraries')
   assert.ok(depsIndex < steps.findIndex((step) => step.run === 'npm test'),
     'system libraries must be installed before npm test')
 
   const depsStep = steps[depsIndex]
-  const script = String(depsStep.run)
   assert.equal(typeof depsStep['timeout-minutes'], 'number', 'the apt step must carry its own bound')
-  assert.ok(depsStep['timeout-minutes'] <= 10, 'a wedged mirror must not eat a third of the job')
+  assert.ok(depsStep['timeout-minutes'] <= 13, 'a wedged mirror must not eat the time the tests need')
   assert.ok(depsStep['timeout-minutes'] < job['timeout-minutes'])
+  assert.match(String(depsStep.run), /Acquire::https?::Timeout/)
 
-  const attempt = script.match(/timeout --kill-after=\d+s (\d+)m npx --no-install playwright install-deps chromium/)
-  assert.ok(attempt, 'each attempt must be killed from outside apt, which never gives up on its own')
-  const attempts = script.match(/for attempt in ([\d ]+); do/)
-  assert.ok(attempts, 'the apt install must retry')
-  const attemptCount = attempts[1].trim().split(/\s+/).length
-  assert.equal(attemptCount, 2, 'one retry, matching the project rule of at most one re-run')
-  // Leave room for the kill-after grace and dpkg recovery between attempts.
-  assert.ok(Number(attempt[1]) * attemptCount < depsStep['timeout-minutes'],
-    'both bounded attempts must fit inside the step bound')
-  assert.match(script, /Acquire::https?::Timeout/)
+  // The script's own worst case — every attempt, each one's kill grace, and the
+  // lock wait between them — has to fit under the step cap, or the cap fires
+  // mid-retry and the job reports a cancellation instead of a named failure.
+  const installer = fs.readFileSync(path.join(root, 'scripts', 'ci-install-chromium-deps.sh'), 'utf8')
+  const attempts = installer.match(/CI_APT_ATTEMPT_SECONDS:-([\d ]+)\}/)[1].trim().split(/\s+/).map(Number)
+  const lockWait = Number(installer.match(/CI_APT_LOCK_WAIT_SECONDS:-(\d+)\}/)[1])
+  const killGrace = Number(installer.match(/timeout --kill-after=(\d+)s/)[1])
+  assert.equal(attempts.length, 2, 'one retry, matching the project rule of at most one re-run')
+  const worstCaseSeconds = attempts.reduce((sum, limit) => sum + limit + killGrace, 0) + lockWait
+  assert.ok(worstCaseSeconds + 60 < depsStep['timeout-minutes'] * 60,
+    `the installer's ${worstCaseSeconds}s worst case must fit inside the step bound with a minute to spare`)
 })
 
 test('the Windows job enables unprivileged symlink creation before security tests', () => {

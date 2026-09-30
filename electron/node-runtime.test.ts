@@ -1,12 +1,14 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { createHash } from 'node:crypto'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   buildNodeRuntimeElevatedInstallScript,
   buildNodeRuntimeInstallPlan,
   buildNodeRuntimeUacBrokerScript,
   buildNodeRuntimeWingetPlan,
+  downloadNodeRuntimePackage,
   fetchTrustedNodeResource,
   installNodeRuntime,
   nodeRuntimeDownloadSources,
@@ -600,5 +602,65 @@ describe('Node.js MSI fallback without administrator rights (E-S7)', () => {
     // 探测不出来时保持原来的说法，不吓唬本来就有权限的用户。
     expect(nodeRuntimeElevationFailureMessage(1223)).not.toContain('不在管理员组')
     expect(nodeRuntimeElevationFailureMessage(13, 'standard')).toContain('签名校验失败')
+  })
+})
+
+describe('Node.js package download after a dropped connection', () => {
+  function brokenAfter(bytes: Buffer, cut: number): ReadableStream<Uint8Array> {
+    let sent = false
+    return new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (sent) {
+          controller.error(new TypeError('fetch failed'))
+          return
+        }
+        sent = true
+        controller.enqueue(new Uint8Array(bytes.subarray(0, cut)))
+      },
+    })
+  }
+
+  it('continues on the same source from where it stopped instead of starting over', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-node-resume-'))
+    const target = path.join(directory, 'node.msi')
+    const bytes = Buffer.alloc(2 * 1024 * 1024, 7)
+    const cut = 700 * 1024
+    const url = 'https://nodejs.org/dist/v22.17.0/node-v22.17.0-x64.msi'
+    const ranges: Array<string | null> = []
+    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const range = new Headers(init?.headers).get('range')
+      ranges.push(range)
+      const response = range
+        ? new Response(new Uint8Array(bytes.subarray(cut)), {
+          status: 206,
+          headers: { 'content-range': `bytes ${cut}-${bytes.byteLength - 1}/${bytes.byteLength}` },
+        })
+        : new Response(brokenAfter(bytes, cut), {
+          status: 200,
+          headers: { 'content-length': String(bytes.byteLength), etag: '"node"' },
+        })
+      Object.defineProperty(response, 'url', { value: String(input) })
+      return response
+    }) as unknown as typeof fetch
+    const messages: string[] = []
+    const percents: number[] = []
+
+    try {
+      const result = await downloadNodeRuntimePackage(fetchMock, url, target, {
+        onProgress: (event) => {
+          messages.push(event.message)
+          if (typeof event.percent === 'number') percents.push(event.percent)
+        },
+      }, nodeRuntimeDownloadSources('outside-mainland-china')[0], async () => undefined)
+
+      expect(ranges).toEqual([null, `bytes=${cut}-`])
+      expect(result).toEqual({ sha256: createHash('sha256').update(bytes).digest('hex'), size: bytes.byteLength })
+      expect(fs.readFileSync(target).equals(bytes)).toBe(true)
+      expect(messages.some((message) => message.startsWith('网络断了一下，正在从') && message.includes('接着下载'))).toBe(true)
+      expect(percents.every((value, index) => index === 0 || value >= percents[index - 1])).toBe(true)
+      expect(messages.every((message) => !/Range|HTTP/.test(message))).toBe(true)
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true })
+    }
   })
 })

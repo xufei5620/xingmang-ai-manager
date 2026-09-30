@@ -6,6 +6,7 @@ import {
   passwordFormDirty,
   paymentTerminalBody,
   paymentTerminalPresentation,
+  buildTopupBonus,
   resetTopupQuoteForMethod,
   validateTopupAmount,
   subscriptionPaymentMethods,
@@ -113,6 +114,24 @@ describe('v2 business boundaries', () => {
     expect(() => validateTopupAmount(10.5, 5)).toThrow('整数')
     expect(() => validateTopupAmount(4, 5)).toThrow('不能低于')
     expect(() => validateTopupAmount(10, Number.NaN)).toThrow('最低充值金额无效')
+  })
+
+  it('turns a backend topup discount into a bonus measured against what the customer pays', () => {
+    const discounts = { 110: 100 / 110, 650: 500 / 650, 1600: 0.625, 4000: 0.5, 20: 1 }
+    expect(buildTopupBonus(110, discounts)).toEqual({ bonus: 10, percent: 10 })
+    expect(buildTopupBonus(650, discounts)).toEqual({ bonus: 150, percent: 30 })
+    expect(buildTopupBonus(1600, discounts)).toEqual({ bonus: 600, percent: 60 })
+    expect(buildTopupBonus(4000, discounts)).toEqual({ bonus: 2000, percent: 100 })
+  })
+
+  it('shows no bonus for full-price, missing, or malformed discounts', () => {
+    expect(buildTopupBonus(20, { 20: 1 })).toBeNull()
+    expect(buildTopupBonus(20, { 20: 1.2 })).toBeNull()
+    expect(buildTopupBonus(20, { 20: 0 })).toBeNull()
+    expect(buildTopupBonus(30, { 20: 0.8 })).toBeNull()
+    expect(buildTopupBonus(20, undefined)).toBeNull()
+    expect(buildTopupBonus(Number.NaN, { 20: 0.8 })).toBeNull()
+    expect(buildTopupBonus(20, {})).toBeNull()
   })
 
   it('invalidates a quote and raises the amount when the payment channel changes', () => {
