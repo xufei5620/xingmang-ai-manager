@@ -209,7 +209,7 @@ describe('CodexSessionsService', () => {
     expect(sessions.codexHome).toBe(path.join(os.homedir(), '.codex'))
   })
 
-  it('uses the live WAL threads table as the authoritative paged and searchable index', () => {
+  it('uses the live WAL threads table as the authoritative paged and searchable index', async () => {
     const data = fixture('session-1')
     fs.writeFileSync(
       path.join(data.codexHome, 'session_index.jsonl'),
@@ -232,17 +232,17 @@ describe('CodexSessionsService', () => {
       id: 'session-3', rolloutPath: thirdRollout, title: '其他会话', cwd: 'C:/pay', updatedAt: 100, tokens: 40,
     })
 
-    const firstPage = service(data).list({ page: 1, pageSize: 2 })
+    const firstPage = await service(data).list({ page: 1, pageSize: 2 })
     expect(firstPage.items.map((item) => item.id)).toEqual(['session-1', 'session-2'])
     expect(firstPage).toMatchObject({ total: 3, page: 1, pageSize: 2, pages: 2 })
     expect(firstPage.stats).toEqual({ total: 3, active: 2, archived: 1, projects: 2, tokensUsed: 90 })
     expect(firstPage.schema.mutationsAllowed).toBe(true)
 
-    const searched = service(data).list({ search: '支付', archive: 'active' })
+    const searched = await service(data).list({ search: '支付', archive: 'active' })
     expect(searched.items.map((item) => item.id)).toEqual(['session-1'])
   })
 
-  it('does not fall back to session_index.jsonl when the authoritative SQLite database is missing', () => {
+  it('does not fall back to session_index.jsonl when the authoritative SQLite database is missing', async () => {
     const data = fixture('session-1')
     fs.writeFileSync(
       path.join(data.codexHome, 'session_index.jsonl'),
@@ -250,27 +250,27 @@ describe('CodexSessionsService', () => {
       'utf8',
     )
 
-    expect(service(data).list()).toMatchObject({
+    expect(await service(data).list()).toMatchObject({
       items: [],
       total: 0,
       schema: { kind: 'missing', readable: false, mutationsAllowed: false },
     })
   })
 
-  it('does not open an authoritative SQLite database with multiple hard links', () => {
+  it('does not open an authoritative SQLite database with multiple hard links', async () => {
     const data = fixture('session-1')
     const database = createThreadsDatabase(data.databasePath)
     insertThread(database, { id: 'session-1', rolloutPath: data.rolloutPath })
     database.close()
     fs.linkSync(data.databasePath, path.join(data.codexHome, 'state-linked.sqlite'))
 
-    expect(service(data).list()).toMatchObject({
+    expect(await service(data).list()).toMatchObject({
       items: [],
       schema: { kind: 'missing', readable: false, mutationsAllowed: false },
     })
   })
 
-  it('falls back to second timestamps when nullable millisecond columns are empty', () => {
+  it('falls back to second timestamps when nullable millisecond columns are empty', async () => {
     const data = fixture('session-1')
     const database = createThreadsDatabase(data.databasePath)
     insertThread(database, {
@@ -280,11 +280,28 @@ describe('CodexSessionsService', () => {
     database.prepare('UPDATE threads SET created_at_ms = NULL, updated_at_ms = NULL WHERE id = ?').run('session-1')
     database.close()
 
-    expect(service(data).list().items[0]).toMatchObject({
+    expect((await service(data).list()).items[0]).toMatchObject({
       id: 'session-1',
       createdAt: 221_000,
       updatedAt: 321_000,
     })
+  })
+
+  it('checks rollout files without blocking the main process', async () => {
+    const data = fixture('session-1')
+    const database = createThreadsDatabase(data.databasePath)
+    insertThread(database, { id: 'session-1', rolloutPath: data.rolloutPath })
+    database.close()
+    const sessions = service(data)
+    let yielded = false
+    setImmediate(() => { yielded = true })
+
+    const pending = sessions.list()
+    expect(yielded).toBe(false)
+    const page = await pending
+
+    expect(yielded).toBe(true)
+    expect(page.items).toMatchObject([{ id: 'session-1', rolloutAvailable: true }])
   })
 
   it('accepts Codex Windows namespace rollout paths as paths inside CODEX_HOME', async () => {
@@ -295,7 +312,7 @@ describe('CodexSessionsService', () => {
     database.close()
 
     const sessions = service(data)
-    expect(sessions.list().items[0].rolloutAvailable).toBe(true)
+    expect((await sessions.list()).items[0].rolloutAvailable).toBe(true)
     await expect(sessions.detail('session-1')).resolves.toMatchObject({
       session: { id: 'session-1', rolloutAvailable: true },
     })
@@ -308,7 +325,7 @@ describe('CodexSessionsService', () => {
     database.close()
 
     const sessions = service(data)
-    const page = sessions.list()
+    const page = await sessions.list()
     expect(page.schema).toMatchObject({ kind: 'unsupported', readable: false, mutationsAllowed: false })
     await expect(sessions.archive('session-1')).rejects.toThrow('schema')
   })
@@ -355,7 +372,7 @@ describe('CodexSessionsService', () => {
     database.close()
 
     const sessions = service(data)
-    expect(sessions.list().items[0].rolloutAvailable).toBe(false)
+    expect((await sessions.list()).items[0].rolloutAvailable).toBe(false)
     await expect(sessions.detail('session-1')).rejects.toThrow('单链接普通文件')
   })
 
@@ -518,7 +535,7 @@ describe('CodexSessionsService', () => {
     expect(fs.readFileSync(directTarget, 'utf8')).toBe('existing archive')
   })
 
-  it('recovers a JSONL move when the process stopped before the SQLite transaction committed', () => {
+  it('recovers a JSONL move when the process stopped before the SQLite transaction committed', async () => {
     const data = fixture('session-1')
     const database = createThreadsDatabase(data.databasePath)
     insertThread(database, { id: 'session-1', rolloutPath: data.rolloutPath })
@@ -546,10 +563,10 @@ describe('CodexSessionsService', () => {
     expect(fs.existsSync(data.rolloutPath)).toBe(true)
     expect(fs.existsSync(targetPath)).toBe(false)
     expect(fs.readFileSync(sessions.operationJournalPath, 'utf8')).toContain('启动时已恢复未提交操作')
-    expect(sessions.list().items[0]).toMatchObject({ archived: false, rolloutAvailable: true })
+    expect((await sessions.list()).items[0]).toMatchObject({ archived: false, rolloutAvailable: true })
   })
 
-  it('recovers duplicate hard links left by a crash between link and unlink', () => {
+  it('recovers duplicate hard links left by a crash between link and unlink', async () => {
     const data = fixture('session-1')
     const database = createThreadsDatabase(data.databasePath)
     insertThread(database, { id: 'session-1', rolloutPath: data.rolloutPath })
@@ -574,7 +591,7 @@ describe('CodexSessionsService', () => {
     expect(fs.existsSync(data.rolloutPath)).toBe(true)
     expect(fs.existsSync(targetPath)).toBe(false)
     expect(fs.readFileSync(sessions.operationJournalPath, 'utf8')).toContain('"state":"rolled-back"')
-    expect(sessions.list().items[0]).toMatchObject({ archived: false, rolloutAvailable: true })
+    expect((await sessions.list()).items[0]).toMatchObject({ archived: false, rolloutAvailable: true })
   })
 
   it('keeps refusing recovery when source and target are different files', () => {
@@ -650,7 +667,7 @@ describe('CodexSessionsService', () => {
     expect(fs.existsSync(archived.backupPath)).toBe(true)
   })
 
-  it('finalizes a ready journal entry when SQLite and JSONL were already committed', () => {
+  it('finalizes a ready journal entry when SQLite and JSONL were already committed', async () => {
     const data = fixture('session-1')
     const targetPath = path.join(data.codexHome, 'archived_sessions', path.basename(data.rolloutPath))
     fs.mkdirSync(path.dirname(targetPath), { recursive: true })
@@ -676,10 +693,10 @@ describe('CodexSessionsService', () => {
 
     const sessions = service(data)
     expect(fs.readFileSync(sessions.operationJournalPath, 'utf8')).toContain('"state":"committed"')
-    expect(sessions.list().items[0]).toMatchObject({ archived: true, rolloutAvailable: true })
+    expect((await sessions.list()).items[0]).toMatchObject({ archived: true, rolloutAvailable: true })
   })
 
-  it('reports journal read failures without blocking session startup', () => {
+  it('reports journal read failures without blocking session startup', async () => {
     const data = fixture('session-1')
     const database = createThreadsDatabase(data.databasePath)
     insertThread(database, { id: 'session-1', rolloutPath: data.rolloutPath })
@@ -695,7 +712,7 @@ describe('CodexSessionsService', () => {
       onRecoveryWarning: (warning) => warnings.push(warning),
     })
 
-    expect(sessions.list().items).toHaveLength(1)
+    expect((await sessions.list()).items).toHaveLength(1)
     expect(warnings).toEqual([{
       code: 'journal-read-failed',
       message: 'Codex 会话操作日志读取失败，已跳过启动恢复',
@@ -765,7 +782,7 @@ describe('CodexSessionsService', () => {
     expect(fs.lstatSync(sessions.operationJournalPath).nlink).toBe(1)
   })
 
-  it('warns for malformed journal records but ignores only a clearly truncated final line', () => {
+  it('warns for malformed journal records but ignores only a clearly truncated final line', async () => {
     const data = fixture('session-1')
     const database = createThreadsDatabase(data.databasePath)
     insertThread(database, { id: 'session-1', rolloutPath: data.rolloutPath })
@@ -785,7 +802,7 @@ describe('CodexSessionsService', () => {
       onRecoveryWarning: (warning) => warnings.push(warning),
     })
 
-    expect(sessions.list().items).toHaveLength(1)
+    expect((await sessions.list()).items).toHaveLength(1)
     expect(warnings).toMatchObject([
       { code: 'journal-invalid-line', detail: { lineNumber: 1, errorCode: 'SyntaxError' } },
       { code: 'journal-invalid-line', detail: { lineNumber: 2, errorCode: 'INVALID_RECORD' } },
@@ -864,7 +881,7 @@ describe('CodexSessionsService', () => {
     })).not.toThrow()
   })
 
-  it('reports one failed recovery without blocking readable sessions or exposing paths', () => {
+  it('reports one failed recovery without blocking readable sessions or exposing paths', async () => {
     const data = fixture('session-1')
     const database = createThreadsDatabase(data.databasePath)
     insertThread(database, { id: 'session-1', rolloutPath: data.rolloutPath })
@@ -890,7 +907,7 @@ describe('CodexSessionsService', () => {
       onRecoveryWarning: (warning) => warnings.push(warning),
     })
 
-    expect(sessions.list().items).toHaveLength(1)
+    expect((await sessions.list()).items).toHaveLength(1)
     expect(warnings).toEqual([{
       code: 'operation-recovery-failed',
       message: 'Codex 会话中断操作自动恢复失败，已保留现状和备份',
@@ -950,7 +967,7 @@ describe('CodexSessionsService', () => {
     const restore = refuseUnlink([data.rolloutPath, targetPath])
     await expect(failing.archive('session-1')).rejects.toThrow()
     restore()
-    expect(failing.list().items[0]).toMatchObject({ rolloutAvailable: false })
+    expect((await failing.list()).items[0]).toMatchObject({ rolloutAvailable: false })
 
     // The scanner released the file; starting the app again must self-heal.
     const recovered = service(data)
@@ -958,7 +975,7 @@ describe('CodexSessionsService', () => {
     expect(fs.existsSync(data.rolloutPath)).toBe(true)
     expect(fs.existsSync(targetPath)).toBe(false)
     expect(lastJournalEntry(recovered.operationJournalPath).state).toBe('rolled-back')
-    expect(recovered.list().items[0]).toMatchObject({ archived: false, rolloutAvailable: true })
+    expect((await recovered.list()).items[0]).toMatchObject({ archived: false, rolloutAvailable: true })
   })
 
   it('records a real rollback when the extra hard link can still be dropped', async () => {
@@ -979,7 +996,7 @@ describe('CodexSessionsService', () => {
     expect(fs.existsSync(data.rolloutPath)).toBe(true)
     expect(fs.existsSync(targetPath)).toBe(false)
     expect(lastJournalEntry(sessions.operationJournalPath).state).toBe('rolled-back')
-    expect(sessions.list().items[0]).toMatchObject({ archived: false, rolloutAvailable: true })
+    expect((await sessions.list()).items[0]).toMatchObject({ archived: false, rolloutAvailable: true })
   })
 })
 
@@ -1022,7 +1039,7 @@ describe('CodexSessionsService on a relocated profile', () => {
     setRelocatedFolderPolicy({ homeDirectories: [home], acceptsTarget: () => true })
     const sessions = service(data)
 
-    expect(sessions.list().items[0].rolloutAvailable).toBe(true)
+    expect((await sessions.list()).items[0].rolloutAvailable).toBe(true)
     await expect(sessions.detail('session-1')).resolves.toMatchObject({
       session: { id: 'session-1', rolloutAvailable: true },
       messages: [expect.objectContaining({ text: '请检查项目' }), expect.objectContaining({ text: '检查完成' })],
@@ -1038,7 +1055,7 @@ describe('CodexSessionsService on a relocated profile', () => {
     const { data } = relocatedProfileFixture('session-1')
     const sessions = service(data)
 
-    expect(sessions.list().items[0].rolloutAvailable).toBe(false)
+    expect((await sessions.list()).items[0].rolloutAvailable).toBe(false)
     await expect(sessions.detail('session-1')).rejects.toThrow('不在 CODEX_HOME 内')
   })
 
@@ -1047,7 +1064,7 @@ describe('CodexSessionsService on a relocated profile', () => {
     setRelocatedFolderPolicy({ homeDirectories: [path.join(data.root, 'Users', 'bob')], acceptsTarget: () => true })
     const sessions = service(data)
 
-    expect(sessions.list().items[0].rolloutAvailable).toBe(false)
+    expect((await sessions.list()).items[0].rolloutAvailable).toBe(false)
     await expect(sessions.detail('session-1')).rejects.toThrow('不在 CODEX_HOME 内')
   })
 })

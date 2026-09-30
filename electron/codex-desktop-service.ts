@@ -49,7 +49,7 @@ import {
   type InstallCancellationHandle,
   type InstallCancellationOutcome,
 } from './install-cancellation'
-import { buildMacosCodexAppLaunchPlan, type inspectMacosCodexApp, type MacosCodexAppInspection } from './macos-codex-app'
+import { buildMacosCodexAppLaunchPlan, probeMacosCodexRunning, type inspectMacosCodexApp, type MacosCodexAppInspection } from './macos-codex-app'
 import { resolveSystemWingetExecutable, type SystemWingetResolution } from './node-runtime'
 import { describeProbeFailure } from './probe-failure'
 import { downloadWithResume, DownloadStalledError, type ResumableDownloadOptions } from './download-retry'
@@ -83,6 +83,7 @@ import {
   isPlainCodexDesktopInstallMessage,
   type CodexDesktopInstallFailureReason,
 } from './codex-desktop-install-failure'
+import { codexDesktopKnownIssueLaunchSentence, resolveCodexDesktopKnownIssue } from './codex-desktop-known-issues'
 import {
   inspectWindowsStoreAppLaunchContext,
   inspectWindowsStoreAvailability,
@@ -186,6 +187,7 @@ export interface CodexDesktopLaunchWaitOutcome {
 export function describeCodexDesktopLaunchFailure(
   context: CodexDesktopWindowsLaunchContext,
   outcome?: CodexDesktopLaunchWaitOutcome,
+  knownIssueVersion?: string | null,
 ): string {
   const block = resolveStoreAppLaunchBlock(context)
   if (block === 'builtInAdministrator') {
@@ -195,6 +197,14 @@ export function describeCodexDesktopLaunchFailure(
   if (block === 'uacDisabled') {
     return `${codexDesktopNotStartedPrefix}：这台电脑关掉了 Windows 的「用户账户控制」，`
       + 'Windows 在这种设置下常常打不开从应用商店装的软件。请联系客服，帮你把它打开后再试。'
+  }
+  // 装着的正是已知打不开的那一版：不用再叫客户去开始菜单自己分辨是谁的问题，
+  // 直接说清楚，并给命令行版这条路（第十九批 7）。账户设置那两种更具体，先说它们。
+  if (knownIssueVersion) {
+    const waited = outcome
+      ? `等了 ${outcome.waitedSeconds} 秒，${outcome.processSeen ? 'Codex 已经启动，但它的窗口一直没出来' : 'Codex 没有启动起来'}。`
+      : '等了将近一分钟，没有等到它的窗口。'
+    return `${codexDesktopNotStartedPrefix}：${waited}${codexDesktopKnownIssueLaunchSentence(knownIssueVersion)}`
   }
   if (!outcome) {
     return `${codexDesktopNotStartedPrefix}：等了将近一分钟，没有等到它的窗口。`
@@ -1409,6 +1419,45 @@ export function parseCodexDesktopSessionProcessIds(
     processIds.push(processId)
   }
   return processIds
+}
+
+/**
+ * 桌面端在这个登录会话里还有没有进程：true / false / null（查不出来）。
+ *
+ * 打开桌面端时软件替用户连上的加速不扣免费时长，所以桌面端一关就要断开，
+ * 否则等于白送一条不限时的线路（codex-desktop-acceleration.ts 定时来问）。
+ * 与上面那条「打开」用的探测不同，这里失败不能折成「没在跑」：一次 WMI 超时
+ * 就把正在用的人断掉，比晚断一两分钟糟得多。
+ */
+export async function probeCodexDesktopRunning(platform: NodeJS.Platform = process.platform): Promise<boolean | null> {
+  if (platform === 'darwin') return probeMacosCodexRunning()
+  if (platform !== 'win32') return null
+  let stdout: string
+  try {
+    ({ stdout } = await execFileAsync(resolveWindowsPowerShellExecutable(), [
+      '-NoLogo',
+      '-NoProfile',
+      '-NonInteractive',
+      '-Command',
+      buildCodexDesktopSessionProcessProbeScript(),
+    ], {
+      env: trustedCommandEnvironment(),
+      windowsHide: true,
+      timeout: 8_000,
+      maxBuffer: 1024 * 1024,
+    }))
+  } catch {
+    return null
+  }
+  return codexDesktopRunningFromProbeOutput(stdout)
+}
+
+/** 空输出就是一个都没有；读不懂的输出算「查不出来」。 */
+export function codexDesktopRunningFromProbeOutput(output: string): boolean | null {
+  const trimmed = output.trim().replace(/^\uFEFF/, '')
+  if (!trimmed) return false
+  try { JSON.parse(trimmed) } catch { return null }
+  return parseCodexDesktopSessionProcessIds(trimmed, null).length > 0
 }
 
 async function listCodexDesktopSessionProcessIds(packageFamilyName: string | null): Promise<number[]> {
@@ -3183,6 +3232,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
       throw new Error(describeCodexDesktopLaunchFailure(
         launchContext,
         waitedSeconds === undefined ? undefined : { waitedSeconds, processSeen: activationProcessId !== null },
+        resolveCodexDesktopKnownIssue([desktopApp.version, desktopApp.appVersion]),
       ))
     }
     if (cdpPort !== null) {

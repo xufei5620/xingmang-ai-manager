@@ -879,6 +879,7 @@ interface EnvironmentOverrideVariable {
 interface EnvironmentOverrideMatch {
   name: string
   provider: ProviderId
+  kind: EnvironmentOverrideKind
   /** false = 用户确实设了它，但它指的就是当前账号，不会把请求带去别处。 */
   overriding: boolean
   /** overriding 且这个变量会让 CLI 连不上当前账号（见 breaksAccount）。 */
@@ -963,11 +964,36 @@ function collectEnvironmentOverrides(
     matches.push({
       name: variable.name,
       provider: variable.provider,
+      kind: variable.kind,
       overriding,
       breaking: overriding && variable.breaksAccount,
     })
   }
   return matches
+}
+
+/**
+ * 检查页「删掉这几项设置」能替用户删的那几个名字：盖过当前账号的地址、密钥、模型。
+ * 指向别的文件夹的那两个（CLAUDE_CONFIG_DIR、CODEX_HOME）不删：它们指着用户自己的
+ * 一整份配置，删了等于把他原来的设置、记录换了个地方，这个得他自己决定。
+ */
+export function clearableEnvironmentOverrides(
+  env: NodeJS.ProcessEnv,
+  providerBaseUrls: RelaySite['providerBaseUrls'],
+  userHome: string,
+): string[] {
+  return collectEnvironmentOverrides(env, providerBaseUrls, userHome)
+    .filter((match) => match.overriding && match.kind !== 'directory')
+    .map((match) => match.name)
+}
+
+/** 名单外的名字一律不碰；清除脚本那一侧再对照一遍。 */
+export const environmentOverrideNames: readonly string[] = ENVIRONMENT_OVERRIDE_VARIABLES.map((variable) => variable.name)
+
+/** Windows 上有能删的，就在结论里挂上「删掉这几项设置」（details.fix，详情抽屉不显示它）。 */
+function withEnvironmentOverrideFix(outcome: CheckOutcome, clearable: boolean): CheckOutcome {
+  if (!clearable || outcome.state === 'pass') return outcome
+  return { ...outcome, details: { ...outcome.details, fix: 'clear-user-overrides' } }
 }
 
 function namesOf(matches: readonly EnvironmentOverrideMatch[]): string {
@@ -2221,7 +2247,10 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
       code: 'PROVIDER_ENVIRONMENT_OVERRIDE',
       title: '电脑里另外设过的工具地址或密钥',
       run: () => withIgnoredCodexHome(
-        environmentOverrideOutcome(collectEnvironmentOverrides(env, relaySite.providerBaseUrls, userHome)),
+        withEnvironmentOverrideFix(
+          environmentOverrideOutcome(collectEnvironmentOverrides(env, relaySite.providerBaseUrls, userHome)),
+          platform === 'win32' && clearableEnvironmentOverrides(env, relaySite.providerBaseUrls, userHome).length > 0,
+        ),
         inspectIgnoredCodexHome(dependencies.ignoredCodexHome, providerRoots, providerInspections.get('codex')),
       ),
     },
@@ -2236,10 +2265,13 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
       run: () => {
         const envPath = path.join(codexHome, '.env')
         const exists = fs.existsSync(envPath)
+        const details: Record<string, boolean | number | string | null> = { exists, path: pathForDisplay(envPath, displayRoots) }
+        // 有这份文件时给「挪开这份设置」：改个名留在原处，不删（diagnostic-fixes.ts）。
+        if (exists) details.fix = 'set-aside-codex-dotenv'
         return {
           state: exists ? 'warn' : 'pass',
           summary: exists ? 'Codex 文件夹里有一份额外设置，可能盖过当前账号的连接' : 'Codex 文件夹里没有额外设置',
-          details: { exists, path: pathForDisplay(envPath, displayRoots) },
+          details,
         }
       },
     },

@@ -1,3 +1,5 @@
+import { isNewerVersion } from './versions'
+
 const grokStablePrimaryUrl = 'https://x.ai/cli/stable'
 const grokStableFallbackUrl = 'https://storage.googleapis.com/grok-build-public-artifacts/cli/stable'
 const allowedGrokStableUrls = new Set([grokStablePrimaryUrl, grokStableFallbackUrl])
@@ -56,6 +58,17 @@ export function parseGrokStableVersion(value: string): string | null {
     && /^\d+\.\d+\.\d+(?:-[0-9A-Za-z](?:[0-9A-Za-z.-]{0,62})?)?$/.test(version)
     ? version
     : null
+}
+
+// 已验证版本名单与「退回更新前的版本」会点名一个 Grok 版本。xAI 的 stable 清单仍是
+// 上限：点名的版本比它新时装 stable，不装一个 xAI 还没放到稳定通道的版本；比它旧时
+// 照装——旧版本的二进制仍在同一个官方下载目录里，签名校验一步不少。只收 x.y.z：
+// 预发布号在比较里排在正式版前面，带后缀的版本会从这个上限底下钻过去。
+export function resolveGrokInstallVersion(requested: string | null | undefined, stableVersion: string): string {
+  const wanted = requested?.trim()
+  if (!wanted || wanted === 'latest') return stableVersion
+  if (!/^\d{1,6}\.\d{1,6}\.\d{1,6}$/.test(wanted)) throw new Error('指定的 Grok 版本号无效')
+  return isNewerVersion(stableVersion, wanted) ? stableVersion : wanted
 }
 
 async function readBoundedText(response: Response): Promise<string> {

@@ -50,6 +50,28 @@ describe('account subscription cache', () => {
     expect(cache.getSnapshot()).toMatchObject({ scope: null, self: null })
   })
 
+  it('reads again right after a purchase instead of waiting out the few minutes', async () => {
+    const { cache, readSelf } = fixture()
+    await cache.refreshIfStale('a')
+    const bought = { ...named, activeSubscriptions: [{ ...named.activeSubscriptions[0], id: 2 }] }
+    readSelf.mockResolvedValueOnce(bought)
+    await cache.refreshNow('a')
+    expect(readSelf).toHaveBeenCalledTimes(2)
+    expect(cache.getSnapshot().self).toBe(bought)
+  })
+
+  it('does not trust a read that was already in flight when the purchase landed', async () => {
+    const { cache, readSelf } = fixture()
+    let release: (value: AccountSubscriptionSelf) => void = () => undefined
+    readSelf.mockImplementationOnce(() => new Promise((resolve) => { release = resolve }))
+    const before = cache.refreshIfStale('a')
+    const after = cache.refreshNow('a')
+    release({ ...named, activeSubscriptions: [] })
+    await Promise.all([before, after])
+    expect(readSelf).toHaveBeenCalledTimes(2)
+    expect(cache.getSnapshot().self).toBe(named)
+  })
+
   it('keeps the last good read when a later read fails', async () => {
     const { cache, readSelf, advance } = fixture()
     await cache.refreshIfStale('a')

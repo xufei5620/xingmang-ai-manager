@@ -110,13 +110,13 @@ afterEach(() => {
 })
 
 describe('Codex MCP contract and secret boundary', () => {
-  it('rejects an oversized config before parsing extension state', () => {
+  it('rejects an oversized config before parsing extension state', async () => {
     const home = temporaryDirectory()
     const configPath = path.join(home, '.codex', 'config.toml')
     write(configPath, 'x'.repeat(2 * 1024 * 1024 + 1))
     const service = new CodexExtensionService({ homeDirectory: home, invoke: async () => '[]' })
 
-    expect(() => service.listSkills()).toThrow('2048 KB 安全上限')
+    await expect(service.listSkills()).rejects.toThrow('2048 KB 安全上限')
   })
 
   it('uses list/get JSON contracts and removes env/header values from DTOs', async () => {
@@ -378,7 +378,7 @@ describe('Skill discovery and managed mutations', () => {
     expect(await service.listMcpServers()).toEqual([
       expect.objectContaining({ name: 'custom', origin: 'user', editable: true }),
     ])
-    expect(service.listSkills().map((item) => item.name)).toEqual(expect.arrayContaining([
+    expect((await service.listSkills()).map((item) => item.name)).toEqual(expect.arrayContaining([
       'Codex User',
       'Agents User',
       'Codex Project',
@@ -388,7 +388,7 @@ describe('Skill discovery and managed mutations', () => {
     expect(fs.existsSync(path.join(userHome, '.codex'))).toBe(false)
   })
 
-  it('skips a Skill root that is a directory junction', () => {
+  it('skips a Skill root that is a directory junction', async () => {
     const home = temporaryDirectory()
     const outside = temporaryDirectory()
     write(path.join(outside, 'linked-skill', 'SKILL.md'), '---\nname: Linked\n---\n')
@@ -396,10 +396,27 @@ describe('Skill discovery and managed mutations', () => {
     fs.symlinkSync(outside, path.join(home, '.agents', 'skills'), 'junction')
     const service = new CodexExtensionService({ homeDirectory: home, invoke: async () => '' })
 
-    expect(service.listSkills()).toEqual([])
+    expect(await service.listSkills()).toEqual([])
   })
 
-  it('treats the home directory as no repository and updates repository context at runtime', () => {
+  it('yields to the event loop while discovering Skills instead of blocking the main process', async () => {
+    const home = temporaryDirectory()
+    for (const name of ['alpha', 'beta', 'gamma']) {
+      write(path.join(home, '.agents', 'skills', name, 'SKILL.md'), `---\nname: ${name}\n---\n`)
+    }
+    const service = new CodexExtensionService({ homeDirectory: home, invoke: async () => '' })
+    let yielded = false
+    setImmediate(() => { yielded = true })
+
+    const pending = service.listSkills()
+    expect(yielded).toBe(false)
+    const skills = await pending
+
+    expect(yielded).toBe(true)
+    expect(skills.map((skill) => skill.name)).toEqual(['alpha', 'beta', 'gamma'])
+  })
+
+  it('treats the home directory as no repository and updates repository context at runtime', async () => {
     const home = temporaryDirectory()
     const repository = temporaryDirectory()
     write(path.join(home, '.agents', 'skills', 'user-skill', 'SKILL.md'), '---\nname: User\n---\n')
@@ -411,21 +428,21 @@ describe('Skill discovery and managed mutations', () => {
     })
 
     expect(service.getRepositoryContext()).toEqual({ repositoryRoot: null })
-    expect(service.listSkills()).toEqual([
+    expect(await service.listSkills()).toEqual([
       expect.objectContaining({ name: 'User', scope: 'user' }),
     ])
 
     expect(service.setRepositoryContext(repository)).toEqual({ repositoryRoot: path.resolve(repository) })
-    expect(service.listSkills()).toEqual(expect.arrayContaining([
+    expect(await service.listSkills()).toEqual(expect.arrayContaining([
       expect.objectContaining({ name: 'User', scope: 'user' }),
       expect.objectContaining({ name: 'Repo', scope: 'repo' }),
     ]))
 
     expect(service.setRepositoryContext(home)).toEqual({ repositoryRoot: null })
-    expect(service.listSkills().some((skill) => skill.scope === 'repo')).toBe(false)
+    expect((await service.listSkills()).some((skill) => skill.scope === 'repo')).toBe(false)
   })
 
-  it('scans agents and legacy roots, parses frontmatter, and applies skills.config', () => {
+  it('scans agents and legacy roots, parses frontmatter, and applies skills.config', async () => {
     const home = temporaryDirectory()
     const first = path.join(home, '.agents', 'skills', 'alpha', 'SKILL.md')
     const second = path.join(home, '.codex', 'skills', 'legacy', 'SKILL.md')
@@ -442,7 +459,7 @@ describe('Skill discovery and managed mutations', () => {
     ].join('\n'))
     const service = new CodexExtensionService({ homeDirectory: home, invoke: async () => '' })
 
-    const skills = service.listSkills()
+    const skills = await service.listSkills()
 
     expect(skills).toHaveLength(3)
     expect(skills.find((skill) => skill.name === 'Alpha Skill')).toMatchObject({
@@ -504,25 +521,25 @@ describe('Skill discovery and managed mutations', () => {
     expect(fs.readFileSync(path.join(outside, 'config.toml'), 'utf8')).toBe('model = "outside"\n')
   })
 
-  it('rejects relative traversal and symlink imports', () => {
+  it('rejects relative traversal and symlink imports', async () => {
     const home = temporaryDirectory()
     const sourceRoot = temporaryDirectory()
     const source = path.join(sourceRoot, 'source-skill')
     write(path.join(source, 'SKILL.md'), '---\nname: Source\n---\n')
     const service = new CodexExtensionService({ homeDirectory: home, invoke: async () => '' })
 
-    expect(() => service.importSkill({ sourcePath: '..\\outside' })).toThrow('绝对路径')
+    await expect(service.importSkill({ sourcePath: '..\\outside' })).rejects.toThrow('绝对路径')
 
     const linked = path.join(source, 'linked.md')
     try {
       fs.symlinkSync(path.join(source, 'SKILL.md'), linked, 'file')
-      expect(() => service.importSkill({ sourcePath: source })).toThrow('符号链接')
+      await expect(service.importSkill({ sourcePath: source })).rejects.toThrow('符号链接')
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'EPERM') throw error
     }
   })
 
-  it('rejects hard-linked resources without copying outside content', () => {
+  it('rejects hard-linked resources without copying outside content', async () => {
     const home = temporaryDirectory()
     const sourceRoot = temporaryDirectory()
     const outsideRoot = temporaryDirectory()
@@ -533,11 +550,11 @@ describe('Skill discovery and managed mutations', () => {
     fs.linkSync(outside, path.join(source, 'resource.txt'))
     const service = new CodexExtensionService({ homeDirectory: home, invoke: async () => '' })
 
-    expect(() => service.importSkill({ sourcePath: source })).toThrow('硬链接')
+    await expect(service.importSkill({ sourcePath: source })).rejects.toThrow('硬链接')
     expect(fs.existsSync(path.join(home, '.agents', 'skills', 'linked-skill'))).toBe(false)
   })
 
-  it('copies nested skill resources into the managed directory', () => {
+  it('copies nested skill resources into the managed directory', async () => {
     const home = temporaryDirectory()
     const sourceRoot = temporaryDirectory()
     const source = path.join(sourceRoot, 'nested-skill')
@@ -546,14 +563,14 @@ describe('Skill discovery and managed mutations', () => {
     fs.mkdirSync(path.join(source, 'empty'))
     const service = new CodexExtensionService({ homeDirectory: home, invoke: async () => '' })
 
-    service.importSkill({ sourcePath: source })
+    await service.importSkill({ sourcePath: source })
 
     const target = path.join(home, '.agents', 'skills', 'nested-skill')
     expect(fs.readFileSync(path.join(target, 'scripts', 'deep', 'run.txt'), 'utf8')).toBe('resource-content')
     expect(fs.statSync(path.join(target, 'empty')).isDirectory()).toBe(true)
   })
 
-  it('imports user skills and moves uninstall targets into application trash', () => {
+  it('imports user skills and moves uninstall targets into application trash', async () => {
     const home = temporaryDirectory()
     const sourceRoot = temporaryDirectory()
     const source = path.join(sourceRoot, 'portable-skill')
@@ -565,8 +582,8 @@ describe('Skill discovery and managed mutations', () => {
       invoke: async () => '',
     })
 
-    const imported = service.importSkill({ sourcePath: source })
-    const result = service.uninstallSkill(imported[0].path)
+    const imported = await service.importSkill({ sourcePath: source })
+    const result = await service.uninstallSkill(imported[0].path)
 
     expect(result.skills).toEqual([])
     expect(fs.existsSync(path.join(result.trashPath, 'SKILL.md'))).toBe(true)

@@ -5,8 +5,8 @@ const os = require('node:os')
 const path = require('node:path')
 const test = require('node:test')
 const { gzipSync } = require('node:zlib')
-const asar = require('@electron/asar')
 const YAML = require('yaml')
+const { createSettledPackage } = require('./asar-fixture.test-support.cjs')
 const { publishedSigningCertificateSha256 } = require('./macos-published-signing-identity.cjs')
 
 // 夹具直接用仓库登记的那张已发布证书，好让跨版本连续性核对在每条用例里都真的跑
@@ -229,7 +229,7 @@ async function createInspectableZipFixture(t, {
     version: packageVersion,
     xingmangLocalBuild,
   }))
-  await asar.createPackage(asarSource, path.join(resourcesDirectory, 'app.asar'))
+  await createSettledPackage(asarSource, path.join(resourcesDirectory, 'app.asar'))
 
   const certificate = Buffer.from('fixture self-signed certificate')
   const zipPath = path.join(root, 'fixture.zip')

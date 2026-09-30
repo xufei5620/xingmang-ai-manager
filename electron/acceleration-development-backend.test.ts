@@ -586,6 +586,68 @@ describe('local development acceleration backend', () => {
   })
 })
 
+describe('automatic acceleration started for the Codex desktop app', () => {
+  async function usedMs(test: Awaited<ReturnType<typeof setup>>) {
+    try { return (await test.readLedger()).accounts[scope]?.usedMs ?? 0 }
+    catch { return 0 }
+  }
+
+  it('connects the same way but never draws on the free allowance', async () => {
+    const test = await setup()
+    expect(await test.backend.startAutomaticAcceleration(scope, 'system-proxy')).toMatchObject({
+      phase: 'active', remainingSeconds: accelerationTrialSeconds, autoStartedBy: 'codex-desktop',
+    })
+    expect(test.events.slice(-2)).toEqual(['runtime:start', 'proxy:enable'])
+    // 没有到点这回事：不定到期，时长也不往下走。
+    expect(test.scheduled.size).toBe(0)
+    await test.advance(2 * accelerationTrialSeconds * 1000)
+    expect(await test.backend.getAccelerationState(scope)).toMatchObject({
+      phase: 'active', remainingSeconds: accelerationTrialSeconds, sessionSeconds: accelerationTrialSeconds, autoStartedBy: 'codex-desktop',
+    })
+    const stopped = await test.backend.stopAcceleration(scope)
+    expect(stopped).toMatchObject({ phase: 'idle', remainingSeconds: accelerationTrialSeconds })
+    expect(stopped.autoStartedBy).toBeUndefined()
+    expect(await usedMs(test)).toBe(0)
+  })
+
+  it('still connects once the free allowance is used up, and settles back to exhausted', async () => {
+    const test = await setup()
+    await fs.writeFile(test.ledgerPath, JSON.stringify({ version: 2, accounts: { [scope]: { usedMs: accelerationTrialSeconds * 1000, startedAt: null } } }))
+    expect((await test.backend.startAcceleration(scope, 'system-proxy')).phase).toBe('exhausted')
+    expect(test.runtime.start).not.toHaveBeenCalled()
+    expect(await test.backend.startAutomaticAcceleration(scope, 'system-proxy')).toMatchObject({
+      phase: 'active', remainingSeconds: 0, autoStartedBy: 'codex-desktop',
+    })
+    await test.advance(60_000)
+    expect((await test.backend.getAccelerationState(scope)).phase).toBe('active')
+    expect((await test.backend.stopAcceleration(scope)).phase).toBe('exhausted')
+    expect((await test.readLedger()).accounts[scope]).toEqual({ usedMs: accelerationTrialSeconds * 1000, startedAt: null })
+  })
+
+  it('charges nothing for an automatic session cut short by a crash', async () => {
+    const test = await setup()
+    await test.backend.startAutomaticAcceleration(scope, 'system-proxy')
+    test.elapse(600_000)
+    const restarted = await setup(test.ledgerPath)
+    restarted.setWall(epoch + 600_000)
+    await restarted.backend.recover()
+    expect(restarted.proxy.restore).toHaveBeenCalled()
+    expect((await restarted.backend.getAccelerationState(scope)).remainingSeconds).toBe(accelerationTrialSeconds)
+  })
+
+  it('keeps the automatic session when the user presses start on it, and bills the next manual one', async () => {
+    const test = await setup()
+    await test.backend.startAutomaticAcceleration(scope, 'system-proxy')
+    expect((await test.backend.startAcceleration(scope, 'system-proxy')).autoStartedBy).toBe('codex-desktop')
+    expect(test.runtime.start).toHaveBeenCalledOnce()
+    await test.backend.stopAcceleration(scope)
+    await test.backend.startAcceleration(scope, 'system-proxy')
+    test.elapse(30_000)
+    const stopped = await test.backend.stopAcceleration(scope)
+    expect(stopped.remainingSeconds).toBe(accelerationTrialSeconds - 30)
+  })
+})
+
 describe('device-local acceleration bonus redemption', () => {
   const extendedSeconds = accelerationTrialSeconds + accelerationBonusSeconds
 
