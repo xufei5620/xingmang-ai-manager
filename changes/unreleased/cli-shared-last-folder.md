@@ -5,5 +5,5 @@
 ## 开发
 
 - `workspace-guard.ts` 新增 `resolveRememberedWorkspace`：设置里存的 `workspace` 不是主目录（从没选过时的默认值，另按 `os.homedir()` 再核一遍）、也不是任何敏感目录时才算「记住的文件夹」。`AppConfigSummary` 新增可选字段 `rememberedWorkspace`（`config:get` 带出，不加通道）。
-- 渲染层 `recent-workspaces.ts` 新增 `launchWorkspaces`：这个工具有会话记录时照旧用记录，一条都没有时退回 `rememberedWorkspace`。首页按钮与下拉改用它；`App.tsx` 在目录选择器选完后重读一次配置，按钮马上换成新文件夹。
+- 渲染层 `recent-workspaces.ts` 新增 `launchWorkspaces`：这个工具有会话记录时照旧用记录，一条都没有时退回 `rememberedWorkspace`。首页按钮与下拉改用它。`CliLaunchResult` 新增可选 `rememberedWorkspace`，打开后随结果带回，`App.tsx` 直接写进快照，按钮马上换成新文件夹，不为这一个字段再读整份配置。
 - 记住的文件夹后来被删掉时，沿用 N7 的退路：提示「上次用的目录已经找不到了」并弹选择器。

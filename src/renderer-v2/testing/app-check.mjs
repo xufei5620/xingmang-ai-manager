@@ -1024,6 +1024,22 @@ test('a new user can open a CLI in a folder the app creates, without the directo
   } finally { await page.close() }
 })
 
+test('a folder picked for one CLI opens the others there without asking again', async () => {
+  const page = await open('launchRemembers=1')
+  try {
+    await page.getByTestId('tool-codex-primary').click()
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'launchCli'))
+    const claude = page.getByTestId('tool-claude-primary')
+    await page.waitForFunction(() => document.querySelector('[data-testid="tool-claude-primary"]')?.textContent?.includes('打开 Selected P'))
+    await claude.click()
+    await page.waitForFunction(() => window.v2Test.calls.filter((entry) => entry.method === 'launchCli').length === 2)
+    const calls = await page.evaluate(() => window.v2Test.calls)
+    assert.equal(calls.filter((entry) => entry.method === 'chooseWorkspace').length, 1)
+    assert.deepEqual(calls.filter((entry) => entry.method === 'launchCli').map((entry) => entry.args.slice(0, 2)), [['codex', 'C:\\Selected Project'], ['claude', 'C:\\Selected Project']])
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('canceling the CLI workspace picker keeps the tool closed without an error dialog', async () => {
   const page = await open('workspaceCancel=1')
   try {
