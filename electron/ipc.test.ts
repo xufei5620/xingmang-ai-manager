@@ -56,7 +56,7 @@ vi.mock('electron', () => ({
   clipboard: { writeText: electronMocks.writeText, readText: electronMocks.readText, clear: electronMocks.clearClipboard },
 }))
 
-import { accelerationStateLogKey, parseAppUninstallRequest, parseDiagnosticsRunOptions, parseNodeRuntimeInstallRequest, parseRunningToolsProviders, registerIpcHandlers } from './ipc'
+import { accelerationStateLogKey, parseAppUninstallRequest, parseDiagnosticsRunOptions, parseUpdateDownloadOptions, parseNodeRuntimeInstallRequest, parseRunningToolsProviders, registerIpcHandlers } from './ipc'
 
 const stubStoredConfig: AppSettings = {
   version: 2,
@@ -2157,6 +2157,15 @@ describe('registerIpcHandlers', () => {
     expect(() => handler(trustedEvent(), 'reuse')).toThrow('诊断参数格式错误')
     expect(parseDiagnosticsRunOptions({ reuseRecentScan: false })).toEqual({})
     expect(run).toHaveBeenCalledTimes(2)
+  })
+
+  it('only lets the update download skip the disk check when asked in exactly that shape', () => {
+    expect(parseUpdateDownloadOptions(undefined)).toEqual({})
+    expect(parseUpdateDownloadOptions({ ignoreDiskSpace: true })).toEqual({ ignoreDiskSpace: true })
+    expect(parseUpdateDownloadOptions({ ignoreDiskSpace: false })).toEqual({})
+    expect(() => parseUpdateDownloadOptions({ ignoreDiskSpace: 'yes' })).toThrow('下载参数格式错误')
+    expect(() => parseUpdateDownloadOptions({ ignoreDiskSpace: true, url: 'https://example.invalid' })).toThrow('下载参数格式错误')
+    expect(() => parseUpdateDownloadOptions('force')).toThrow('下载参数格式错误')
   })
 
   it('passes a confirmed Node.js replacement through and rejects anything else', async () => {

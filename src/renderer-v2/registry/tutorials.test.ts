@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { accountTabs, settingsGroups, updateFailureLabels, updateLabels } from './business';
-import { macKeychainTutorialTitle, tutorialTopics, type TutorialStep } from './tutorials';
+import { accountTabs, settingsGroups, updateFailureLabels, updateLabels, updatesTutorialTopic } from './business';
+import { macKeychainTutorialTitle, tutorialTopics, updateDiskCleanupDetail, updateDiskCleanupTitle, type TutorialStep } from './tutorials';
 
 function step(topicId: string, action: string): TutorialStep {
   const found = tutorialTopics.find((topic) => topic.id === topicId)?.steps.find((entry) => entry.action === action);
@@ -59,6 +59,14 @@ describe('mac keychain prompt help', () => {
     expect(entry?.detail).toContain('xingmang-ai-manager Safe Storage');
     expect(entry?.detail).toContain('始终允许');
     expect(tutorialTopics.find((topic) => topic.id === 'safety')?.keywords).toContain('钥匙串');
+  });
+
+  it('tells a full-disk user where to clean up next to the toolbox update step', () => {
+    const extra = step(updatesTutorialTopic, '打开工具箱更新').extra ?? [];
+    const entry = extra.find((item) => item.title === updateDiskCleanupTitle);
+    expect(entry?.detail).toBe(updateDiskCleanupDetail);
+    expect(updateDiskCleanupDetail).toContain('系统设置 → 通用 → 储存空间');
+    expect(updateDiskCleanupDetail).toContain('设置 → 系统 → 存储');
   });
 });
 

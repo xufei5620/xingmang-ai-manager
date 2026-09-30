@@ -66,8 +66,18 @@ function createCancellableInstallFixture() {
     throw new Error(`Unexpected fetch: ${url}`)
   }))
 
-  const downloadStarted = deferred<void>()
   const downloadAttempts: string[] = []
+  const downloadWaiters: Array<{ count: number, resolve: () => void }> = []
+  // 等「第 N 次 npm ci 已经起来」这件事本身，而不是隔一段墙钟去轮询计数：
+  // 从 installCli 到 npm ci 中间要过磁盘检查、建临时目录、写 package.json、
+  // 生成并核对 lockfile 这一串真实文件 I/O，Windows runner 忙的时候一秒走不完
+  // （PR #653 在 69ea566 上就是这样红的）。
+  function downloadAttemptStarted(count: number): Promise<void> {
+    if (downloadAttempts.length >= count) return Promise.resolve()
+    const waiter = deferred<void>()
+    downloadWaiters.push({ count, resolve: waiter.resolve })
+    return waiter.promise
+  }
   const runCommand = vi.fn(async (spec: CommandSpecLike, options: CommandOptionsLike = {}) => {
     if (spec.argv.includes('--package-lock-only')) {
       const cwd = options.cwd
@@ -90,7 +100,9 @@ function createCancellableInstallFixture() {
     } else if (spec.argv[0] === 'ci') {
       const registry = spec.argv.find((argument) => argument.startsWith('--registry=')) ?? ''
       downloadAttempts.push(registry)
-      downloadStarted.resolve()
+      for (const waiter of downloadWaiters) {
+        if (downloadAttempts.length >= waiter.count) waiter.resolve()
+      }
       // 真实的 npm ci 会跑好几分钟；这里只等取消信号，等到了就照 execFile
       // 被中止时的样子抛错。
       await new Promise((_, reject) => {
@@ -123,7 +135,7 @@ function createCancellableInstallFixture() {
       findExecutable: vi.fn(async (command: string) => command === 'npm' ? npmExecutable : null),
     },
   )
-  return { service, target, runCommand, downloadStarted, downloadAttempts }
+  return { service, target, runCommand, downloadAttemptStarted, downloadAttempts }
 }
 
 describe('cancelling a CLI install', () => {
@@ -138,7 +150,7 @@ describe('cancelling a CLI install', () => {
     const fixture = createCancellableInstallFixture()
     const install = fixture.service.installCli('claude', fixture.target)
     const settled = install.catch((error: unknown) => error)
-    await fixture.downloadStarted.promise
+    await fixture.downloadAttemptStarted(1)
 
     expect(fixture.service.cancelCliInstall('claude')).toEqual({ cancelled: true, reason: null })
     const error = await settled
@@ -156,7 +168,7 @@ describe('cancelling a CLI install', () => {
     const fixture = createCancellableInstallFixture()
     const install = fixture.service.installCli('claude', fixture.target)
     const settled = install.catch(() => undefined)
-    await fixture.downloadStarted.promise
+    await fixture.downloadAttemptStarted(1)
     fixture.service.cancelCliInstall('claude')
     await settled
 
@@ -168,13 +180,23 @@ describe('cancelling a CLI install', () => {
   it('lets a second install start after the cancelled one unwound', async () => {
     const fixture = createCancellableInstallFixture()
     const settled = fixture.service.installCli('claude', fixture.target).catch(() => undefined)
-    await fixture.downloadStarted.promise
+    await fixture.downloadAttemptStarted(1)
     fixture.service.cancelCliInstall('claude')
     await settled
 
     const retry = fixture.service.installCli('claude', fixture.target).catch((error: unknown) => error)
-    // 第二次能起来就说明登记表和 installing 集合都已经放开了。
-    await vi.waitFor(() => expect(fixture.downloadAttempts).toHaveLength(2))
+    // 第二次能起来就说明登记表和 installing 集合都已经放开了。第二次要是
+    // 在走到下载之前就失败了（比如还被当成「正在安装中」），立刻带着原因红，
+    // 不要干等到用例超时。
+    await Promise.race([
+      fixture.downloadAttemptStarted(2),
+      retry.then((outcome) => {
+        // 走到下载之后被取消也会落到这里，那时不能再抛，否则就是一条没人接的拒绝。
+        if (fixture.downloadAttempts.length >= 2) return
+        throw new Error(`第二次安装没走到下载就结束了：${outcome instanceof Error ? outcome.message : String(outcome)}`)
+      }),
+    ])
+    expect(fixture.downloadAttempts).toHaveLength(2)
     expect(fixture.service.cancelCliInstall('claude').cancelled).toBe(true)
     expect(((await retry) as Error).message).toContain('安装已取消')
   })

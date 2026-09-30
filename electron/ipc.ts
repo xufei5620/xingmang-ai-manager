@@ -99,7 +99,7 @@ import { assertOpenableConfigDirectory } from './config-directory'
 import { resolveOpenableSessionWorkspace } from './session-workspace'
 import { resolveRevealableExportedFile } from './exported-file'
 import { defaultProviderConfigRoots, providerConfigRoot, type ProviderConfigRoots } from './codex-home'
-import type { UpdateSnapshot, UpdaterService } from './updater'
+import type { UpdateDownloadOptions, UpdateSnapshot, UpdaterService } from './updater'
 import {
   createNewApiClient,
   validateLoginSessionId,
@@ -309,6 +309,7 @@ export interface IpcRegistrationOptions {
   xingmangAiSkill?: {
     bundledRoot: string
     userHome: string
+    syncImageMcp?: (input: { skillDirectory: string; officialCodex: boolean }) => Promise<string[]>
   }
 }
 
@@ -366,6 +367,13 @@ export function parseDiagnosticsRunOptions(value: unknown): DiagnosticsRunOption
   if (!isRecord(value) || Object.keys(value).some((key) => key !== 'reuseRecentScan')
     || (value.reuseRecentScan !== undefined && typeof value.reuseRecentScan !== 'boolean')) throw new Error('诊断参数格式错误')
   return value.reuseRecentScan === true ? { reuseRecentScan: true } : {}
+}
+
+export function parseUpdateDownloadOptions(value: unknown): UpdateDownloadOptions {
+  if (value === undefined) return {}
+  if (!isRecord(value) || Object.keys(value).some((key) => key !== 'ignoreDiskSpace')
+    || (value.ignoreDiskSpace !== undefined && typeof value.ignoreDiskSpace !== 'boolean')) throw new Error('下载参数格式错误')
+  return value.ignoreDiskSpace === true ? { ignoreDiskSpace: true } : {}
 }
 
 export function parseSystemScanOptions(value: unknown): SystemScanOptions {
@@ -2633,7 +2641,9 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   })
   // 从界面来的检查都是用户自己点的：分批放量不拦主动来要新版本的人。
   registerTrustedHandler('update:check', () => options.updaterService.check({ manual: true }))
-  registerTrustedHandler('update:download', () => options.updaterService.download())
+  registerTrustedHandler('update:download', (_event, downloadOptions: unknown) => (
+    options.updaterService.download(parseUpdateDownloadOptions(downloadOptions))
+  ))
   registerTrustedHandler('update:install', () => options.updaterService.install())
   registerTrustedHandler('sessions:list', (_event, query: unknown) => (
     options.sessionsService.list(parseSessionListQuery(query))
@@ -3235,6 +3245,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
         bundledRoot: options.xingmangAiSkill.bundledRoot,
         userHome: options.xingmangAiSkill.userHome,
         officialCodex: (service.readStoredConfig().officialProviders ?? []).includes('codex'),
+        syncImageMcp: options.xingmangAiSkill.syncImageMcp,
       })
       for (const warning of skill.directoryWarnings ?? []) {
         options.runtimeLog.log('warn', 'account', 'xingmang-ai-skill.sync', warning)

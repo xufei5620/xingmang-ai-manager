@@ -114,6 +114,8 @@ import type {
 } from './system-service'
 import type {
   InstalledRelease as MainInstalledRelease,
+  UpdateDiskShortfall as MainUpdateDiskShortfall,
+  UpdateDownloadOptions as MainUpdateDownloadOptions,
   UpdateFailedStep as MainUpdateFailedStep,
   UpdatePhase as MainUpdatePhase,
   UpdateSnapshot as MainUpdateSnapshot,
@@ -251,6 +253,8 @@ export interface FeedbackReportCopyResult { entries: number; regenerated?: Feedb
 export interface FeedbackReportExportResult { outputPath: string; regenerated?: FeedbackReportPreview }
 export type UpdatePhase = MainUpdatePhase
 export type UpdateFailedStep = MainUpdateFailedStep
+export type UpdateDiskShortfall = MainUpdateDiskShortfall
+export type UpdateDownloadOptions = MainUpdateDownloadOptions
 export type InstalledRelease = MainInstalledRelease
 export type UpdateSnapshot = MainUpdateSnapshot
 export type SessionArchiveFilter = CodexSessionArchiveFilter
@@ -844,7 +848,7 @@ export interface XingmangInvokeContract {
   getUpdateState: IpcInvokeDefinition<'update:get-state', [], UpdateSnapshot>
   runStartupUpdate: IpcInvokeDefinition<'update:startup', [], UpdateSnapshot>
   checkForUpdates: IpcInvokeDefinition<'update:check', [], UpdateSnapshot>
-  downloadUpdate: IpcInvokeDefinition<'update:download', [], UpdateSnapshot>
+  downloadUpdate: IpcInvokeDefinition<'update:download', [options?: UpdateDownloadOptions], UpdateSnapshot>
   installUpdate: IpcInvokeDefinition<'update:install', [], { accepted: true }>
   listSessions: IpcInvokeDefinition<'sessions:list', [query: SessionListQuery], SessionPageResult>
   getSessionDetail: IpcInvokeDefinition<'sessions:detail', [sessionId: string], SessionDetailResult>

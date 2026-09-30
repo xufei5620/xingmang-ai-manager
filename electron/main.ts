@@ -85,7 +85,7 @@ import { createAiAssetProtocolHandler } from './ai-asset-protocol'
 import { createChatAttachmentService, type ChatImageCodec } from './ai-chat-attachments'
 import { resolveCodexHomeContext } from './codex-home'
 import { runCodexContextLimitsMigration } from './codex-config-migration'
-import { runWithTrustedWindowsProcessEnvironment } from './command-runner'
+import { findExecutable, runWithTrustedWindowsProcessEnvironment } from './command-runner'
 import { CodexExtensionService } from './codex-extensions'
 import { CodexSessionsService } from './codex-sessions'
 import { createNewApiClient } from './new-api-client'
@@ -116,7 +116,7 @@ import { createProxyBypass, networkSettingsTarget, probeDirectConnection } from 
 import { attachPlatformAuditLog } from './platform/runtime-log-bridge'
 import { migrateLegacyWindowsLoginItem } from './platform/system-service'
 import { recordStartupFailure, redactHomeDirectory } from './startup-log'
-import { inspectProviderConfig } from './config-files'
+import { inspectProviderConfig, syncXingmangImageMcpConfigs } from './config-files'
 import { buildFeedbackEnvironmentLines, buildFeedbackRuntimeLines, pickFeedbackRuntimeSnapshot } from './feedback-environment'
 import { managedCliRoot } from './managed-cli-paths'
 import { buildFeedbackSelfCheckLines, type FeedbackConnectionRecord } from './feedback-self-check'
@@ -149,6 +149,7 @@ import {
   installXingmangAiSkillFiles,
   resolveXingmangAiBundledSkillRoot,
 } from './xingmang-ai-skill'
+import { buildXingmangImageMcpInvocation } from './xingmang-ai-mcp'
 import { resolveClaudeStatusLineScriptPath } from './claude-status-line'
 import { cliHookEventsDirectory, resolveCliHookScriptPath } from './cli-hooks'
 import { createCliHookEventMonitor } from './cli-hook-events'
@@ -182,6 +183,7 @@ import {
 import { verifyUpdatePackageDigest } from './update-package-digest'
 import { installStrictUpdateCodeSignatureVerifier } from './update-signature'
 import { createUpdaterService } from './updater'
+import { readDiskSpace, tightestDiskSpace, updateDownloadProbeTargets } from './disk-space'
 import { createLastRunVersionStore, hasPriorRunRecord, readBundledReleaseNotes, resolveInstalledRelease } from './installed-release'
 import { appReleaseDownloadUrl } from './app-download-page'
 import { createServiceStatusMonitor, locateServiceStatusUrl, readServiceStatus } from './service-status'
@@ -1463,6 +1465,22 @@ if (!hasSingleInstanceLock) {
         return previousAutoInstallFailureMessage(process.platform)
       },
       verifyPackageDigest: verifyUpdatePackageDigest,
+      // 盘快满的电脑上别每 3 小时下一次注定失败的安装包（第二十二批 2）。
+      readFreeDiskBytes: async () => {
+        const targets = updateDownloadProbeTargets(process.platform, {
+          localAppData: process.env.LOCALAPPDATA,
+          home: app.getPath('home'),
+          temp: app.getPath('temp'),
+        })
+        const tightest = tightestDiskSpace(await Promise.all(targets.map((target) => readDiskSpace(target))))
+        return tightest ? tightest.availableBytes : null
+      },
+      diskShortfallSkipped: (shortfall, version) => {
+        runtimeLog.log('warn', 'updater', 'download.skipped.disk', `磁盘空间不够，先不下载 ${version ?? '新版本'}`, {
+          neededBytes: shortfall.neededBytes,
+          freeBytes: shortfall.freeBytes,
+        })
+      },
       // 监视器在更新服务之后才建（它要把结果交回更新服务），这里等真正检查时再取。
       refreshServiceStatus: () => serviceStatusMonitor ? serviceStatusMonitor.refresh() : Promise.resolve(null),
       enableDevelopmentUpdates: process.env.XINGMANG_UPDATE_DEV === '1',
@@ -2686,6 +2704,14 @@ if (!hasSingleInstanceLock) {
       xingmangAiSkill: {
         bundledRoot: bundledXingmangAiSkillRoot,
         userHome: os.homedir(),
+        syncImageMcp: async (input) => {
+          const nodeExecutable = await findExecutable('node', { env: process.env })
+          if (!nodeExecutable) return ['这台电脑上没有找到 Node.js']
+          const invocation = buildXingmangImageMcpInvocation(nodeExecutable, input.skillDirectory)
+          return syncXingmangImageMcpConfigs(rootedOptions.system.providerRoots, invocation, {
+            codex: !input.officialCodex,
+          }).warnings
+        },
       },
       ...(manualUninstallVisualFixtureEnabled
         ? {
