@@ -1,6 +1,6 @@
 import { useEffect, useState, type KeyboardEvent } from 'react'
-import { ArrowUpRight, Check, CircleHelp, Clock3, Globe2, Laptop, Pause, Power, RefreshCw, Route, ScrollText, ShieldAlert, ShieldCheck, Timer, Zap } from 'lucide-react'
-import { accelerationConflictDescriptions, accelerationConflictNotice, accelerationTrialSeconds, type AccelerationBundleCheck, type AccelerationMode, type AccelerationPhase, type AccelerationState } from '../../../../electron/acceleration-contract'
+import { ArrowUpRight, Check, CircleHelp, Clock3, Globe2, Pause, Power, RefreshCw, Route, ScrollText, ShieldAlert, ShieldCheck, Timer, Zap } from 'lucide-react'
+import { accelerationConflictDescriptions, accelerationConflictNotice, accelerationTrialSeconds, type AccelerationBundleCheck, type AccelerationPhase, type AccelerationState } from '../../../../electron/acceleration-contract'
 import { Button, Switch } from '../../ui'
 // 落点规则只有 operationLogPage 一份：加速这条线没有 tool，按它的口径永远落
 // 「反馈」页的运行日志，而不是「安装卸载」页那张只装当次安装进度的卡。
@@ -10,12 +10,10 @@ import './acceleration.css'
 
 interface AccelerationViewProps {
   state: AccelerationState | null
-  mode: AccelerationMode
   busy: boolean
   signedIn: boolean
   error: string | null
   preview?: boolean
-  onModeChange(mode: AccelerationMode): void
   onStart(): void
   /** 用户看过冲突提示后仍要连接：同一次连接，只是跳过检测。 */
   onStartAnyway(): void
@@ -85,7 +83,7 @@ function describePhase(phase: AccelerationPhase | undefined, signedIn: boolean) 
   }
 }
 
-export function AccelerationView({ state, mode, busy, signedIn, error, preview, onModeChange, onStart, onStartAnyway, onStop, onRefresh, onLogin, onHelp, onViewLog, lines, selectedLineId, rememberedLine, linesBusy, linesError, onSelectLine, onPingLine, onRefreshLines, bundleCheck, onRecheckBundle, onContactSupport, onRelaunch }: AccelerationViewProps) {
+export function AccelerationView({ state, busy, signedIn, error, preview, onStart, onStartAnyway, onStop, onRefresh, onLogin, onHelp, onViewLog, lines, selectedLineId, rememberedLine, linesBusy, linesError, onSelectLine, onPingLine, onRefreshLines, bundleCheck, onRecheckBundle, onContactSupport, onRelaunch }: AccelerationViewProps) {
   const [visible, setVisible] = useState(() => typeof document === 'undefined' || !document.hidden)
   const [linePickerOpen, setLinePickerOpen] = useState(false)
   const [lineFocus, setLineFocus] = useState<string | null | undefined>(undefined)
@@ -98,7 +96,6 @@ export function AccelerationView({ state, mode, busy, signedIn, error, preview, 
   const phase = state?.phase
   const localDevelopment = state?.entitlementSource === 'local-development'
   const localDevice = state?.entitlementSource === 'local-device'
-  const tunAvailable = state?.supportedModes?.includes('tun') ?? true
   const conflicts = state?.conflicts ?? []
   // 冲突有自己的提示块（带「仍然连接」），不要再在下面重复一条通用错误。
   // 主进程给的每一句都已经是写给客户看的话，这里原样显示；原来把「代理」机械换成
@@ -114,7 +111,6 @@ export function AccelerationView({ state, mode, busy, signedIn, error, preview, 
   const bundleDamaged = signedIn && unavailable && state?.unavailableReason === 'bundle-damaged'
   const damagedNotice = bundleDamaged ? bundleDamagedNotice(bundleCheck) : null
   const exhausted = phase === 'exhausted'
-  const modeLocked = active || phase === 'stopping' || transitioning || busy || !tunAvailable
   const lineLocked = active || phase === 'connecting' || phase === 'stopping' || busy
   const lineOptionIds: Array<string | null> = [null, ...lines.map(line => line.id)]
   // 只有一行留在 Tab 序列里（roving tabindex）：默认是选中的那行；选中的线路已不在列表里时退回「智能分配」。
@@ -138,7 +134,6 @@ export function AccelerationView({ state, mode, busy, signedIn, error, preview, 
     return { tabIndex: focusableLine === lineId ? 0 : -1, 'aria-disabled': lineLocked || undefined, onKeyDown: (event: KeyboardEvent<HTMLDivElement>) => lineOptionKeys(event, lineId), onFocus: () => setLineFocus(lineId) }
   }
   const displayLine = active || phase === 'stopping' ? state?.line : lines.find(line => line.id === selectedLineId)
-  const effectiveMode = (active || transitioning) && state ? state.mode : mode
   const remaining = signedIn ? state?.remainingSeconds ?? null : null
   const total = state?.totalSeconds ?? accelerationTrialSeconds
   const totalMinutes = total / 60
@@ -157,7 +152,7 @@ export function AccelerationView({ state, mode, busy, signedIn, error, preview, 
 
     <div className="acceleration-workbench">
       <section className="acceleration-stage" aria-label="网络连接状态">
-        <div className="acceleration-stage-top"><span className="acceleration-eyebrow"><Globe2 size={15} aria-hidden="true" /> GAME CONNECT</span><span className="acceleration-stage-scope"><Laptop size={14} aria-hidden="true" />{effectiveMode === 'tun' ? '增强模式' : '标准模式'}</span></div>
+        <div className="acceleration-stage-top"><span className="acceleration-eyebrow"><Globe2 size={15} aria-hidden="true" /> GAME CONNECT</span></div>
         <div className="acceleration-stage-title"><h2>连接热爱，准备开局。</h2><p>{autoStarted ? <span data-testid="acceleration-auto-started">打开 Codex 桌面端时自动连上的，不扣免费时长，关掉桌面端后会自动断开。</span> : active ? '加速连接已就绪，返回游戏继续体验。' : '从这里出发，连接你的游戏世界。'}</p></div>
         <div className="acceleration-orb"><Globe /></div>
         <div className="acceleration-route-info">
@@ -185,7 +180,6 @@ export function AccelerationView({ state, mode, busy, signedIn, error, preview, 
         </div>
         <div className="acceleration-primary-action"><Button variant={active || stopRetry ? 'secondary' : 'primary'} icon={active || stopRetry ? Pause : Power} loading={signedIn && (busy || transitioning)} disabled={actionDisabled} onClick={!signedIn ? onLogin : active || stopRetry ? onStop : onStart} testId={active || stopRetry ? 'acceleration-session-stop' : 'acceleration-session-start'}>{actionLabel}</Button></div>
         <p className="acceleration-quota-note">{quotaNote}</p>
-        <div className="acceleration-mode"><div><strong>TUN 模式</strong><p>{!tunAvailable ? '暂未开放' : modeLocked ? '停止加速后可切换模式' : mode === 'tun' ? '扩展游戏与应用的连接范围' : '开启后可扩展连接范围'}</p></div><Switch checked={effectiveMode === 'tun'} onChange={checked => onModeChange(checked ? 'tun' : 'system-proxy')} disabled={modeLocked} aria-label="TUN 模式" testId="acceleration-mode-toggle" /></div>
       </section>
     </div>
 

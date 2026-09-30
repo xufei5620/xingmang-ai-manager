@@ -1739,6 +1739,10 @@ if (!hasSingleInstanceLock) {
       const realm = accounts.getSiteId() === 'solov-api' ? 'api-account' : 'xm-account'
       return `${realm}:${state.authenticated && state.account ? state.account.userId : 'guest'}`
     }
+    runtimeLog.attachAccountDescriber(() => {
+      const state = accountService.getSessionState()
+      return { authenticated: state.authenticated && Boolean(state.account), userId: state.account?.userId }
+    })
     readExternalClientAccountId = () => {
       const state = accountService.getSessionState()
       return state.authenticated && state.account ? JSON.stringify([accounts.getSiteId(), state.account.userId]) : null

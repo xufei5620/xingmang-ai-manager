@@ -2645,6 +2645,37 @@ test('a new timeline entry shows up with the next balance refresh without anothe
   } finally { await page.close() }
 })
 
+test('recharge activity card lists bonus tiers and an activity bar stays on top after it is dismissed', async () => {
+  const page = await open('', true, () => { document.hasFocus = () => true })
+  try {
+    await page.getByTestId('tool-row-codex').waitFor()
+    await page.evaluate(() => {
+      const hour = 60 * 60 * 1000
+      const recharge = { id: `newapi-${'e'.repeat(64)}`, type: 'ongoing', publishedAt: new Date(Date.now() - hour).toISOString(), extra: '活动截止：2026-09-20 23:59', content: '**国庆礼遇 · 中秋同庆｜充值满赠**\nxm.solov.cc · 单笔充值最高送 100%' }
+      const invite = { id: `newapi-${'f'.repeat(64)}`, type: 'ongoing', publishedAt: new Date(Date.now() - 2 * hour).toISOString(), extra: '', content: '**国庆礼遇 · 中秋同庆｜邀请有礼**\n邀请好友一起用' }
+      window.v2Test.setNotice({ id: 'newapi-promo-fixture', text: '', bulletins: [recharge, invite] })
+    })
+    await page.clock.fastForward(60_000)
+    const card = page.getByTestId('announcement-promo-card')
+    await card.waitFor()
+    await card.getByTestId('announcement-promo-tier-4000').waitFor()
+    assert.equal(await card.getByTestId('announcement-promo-tier-10').count(), 0)
+    assert.equal((await card.textContent()).includes('solov'), false)
+    await card.getByTestId('announcement-promo-others').getByText('邀请有礼', { exact: false }).waitFor()
+    // 大卡片在说活动时，首页不挂活动条，也不再出灰条。
+    assert.equal(await page.getByTestId('announcement-promo-bar').count(), 0)
+    assert.equal(await page.getByTestId('announcement-banner').count(), 0)
+    await card.getByTestId('announcement-promo-dismiss').click()
+    const bar = page.getByTestId('announcement-promo-bar')
+    await bar.waitFor()
+    assert.deepEqual(await bar.locator('.v2-promo-bar-item').allTextContents(), ['充值满赠9月20日截止，还剩 8 天', '邀请有礼'])
+    await page.getByTestId('announcement-promo-bar-close').click()
+    await bar.waitFor({ state: 'hidden' })
+    assert.equal(await card.count(), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('NewAPI read states survive collection updates and stay isolated between accounts', async () => {
   const page = await open('noticeCollection=1')
   const makeNotice = (firstBody) => ({ id: `collection-${firstBody}`, text: `<div data-newapi-collection="v1">
