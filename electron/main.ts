@@ -145,6 +145,7 @@ import { resolveClaudeStatusLineScriptPath } from './claude-status-line'
 import { cliHookEventsDirectory, resolveCliHookScriptPath } from './cli-hooks'
 import { createCliHookEventMonitor } from './cli-hook-events'
 import { createCliKeepAwake } from './cli-keep-awake'
+import { createInstallKeepAwake } from './install-keep-awake'
 import { resolveProjectInstructionsTemplatePath } from './project-instructions'
 import { ipcEventChannels, type AccountBalance, type AccountSubscriptionSelf, type SettingsSaveIssue } from './ipc-contract'
 import {
@@ -1466,6 +1467,15 @@ if (!hasSingleInstanceLock) {
       log: (level, event, message, detail) => runtimeLog.log(level, 'config', event, message, detail),
     })
     cliHookEvents.start()
+    // 装工具、装 Codex 桌面端、后台下载新版本时同样挡住自动睡眠，装完、失败、取消就放开。
+    const installKeepAwake = createInstallKeepAwake({
+      blocker: powerSaveBlocker,
+      log: (level, event, message, detail) => runtimeLog.log(level, 'main', event, message, detail),
+    })
+    const unsubscribeInstallKeepAwakeQueue = systemService.onInstallationQueueChange((snapshot) => installKeepAwake.observeQueue(snapshot))
+    installKeepAwake.observeQueue(systemService.inspectInstallationQueue())
+    const unsubscribeInstallKeepAwakeUpdate = updaterService.subscribe((state) => installKeepAwake.observeUpdate(state))
+    installKeepAwake.observeUpdate(updaterService.getState())
     let accelerationInterruption: AccelerationInterruptionNotice | null = null
     let latestTraySystem: SystemSnapshot | null = null
     let latestTrayBalance: AccountBalance | null = null
@@ -2595,6 +2605,9 @@ if (!hasSingleInstanceLock) {
     app.once('will-quit', () => {
       cliHookEvents.dispose()
       cliKeepAwake.dispose()
+      unsubscribeInstallKeepAwakeQueue()
+      unsubscribeInstallKeepAwakeUpdate()
+      installKeepAwake.dispose()
       accelerationExpiry?.dispose()
       accelerationInterruption?.dispose()
       void acceleration?.dispose().catch((error) => runtimeLog.exception('network', 'acceleration.shutdown.failed', error))

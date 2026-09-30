@@ -76,7 +76,7 @@ export const tutorialTopics: readonly TutorialTopic[] = [
         bullets: ['Windows：点「安装」，等进度结束。', 'Mac：先在应用外装好官方 Codex App，再回首页点「重新检测」。'],
         expected: 'Codex 桌面端显示已安装版本。',
         illustration: 'desktop-install',
-        extra: [{ title: '下载完还不算装好？', detail: 'Mac 按安装包说明完成安装；要求拖入「应用程序」时要完成这一步。Windows 安装报错时按提示处理，详细步骤见「Codex 桌面端怎么安装？」。桌面端不用先装 Codex CLI、Node.js 或 Python。' }],
+        extra: [{ title: '下载完还不算装好？', detail: 'Mac 按安装包说明完成安装；要求拖入「应用程序」时要完成这一步。Windows 安装报错时按提示处理，详细步骤见「Codex 桌面端怎么安装？」。桌面端不用先装 Codex CLI、Node.js 或 Python。' }, { title: '装的时候能走开吗？', detail: '可以。装工具、装 Codex 桌面端和下载新版本的时候，电脑不会自动睡着（屏幕照样会按你的设置关），装完就恢复平常的睡眠设置。合上笔记本盖子还是会睡，别合盖。' }],
         action: '去首页找 Codex 桌面端',
         page: 'home',
       },

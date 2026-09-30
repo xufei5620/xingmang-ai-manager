@@ -945,6 +945,8 @@ export interface SystemService {
   launchExternalClient(tool: ExternalToolId): Promise<void>
   /** 安装队列当前的状态，退出前判断有没有安装正在跑时用。 */
   inspectInstallationQueue(): InstallationQueueSnapshot
+  /** 安装队列每有一项开始或结束就回调一次；装东西时挡住自动睡眠用。 */
+  onInstallationQueueChange(listener: (snapshot: InstallationQueueSnapshot) => void): () => void
   /**
    * 清掉以前中途被打断的安装留下的临时下载目录（见 install-leftovers.ts）。排在安装
    * 队列里，不会和正在进行的安装撞上；从不抛错。
@@ -5744,6 +5746,7 @@ export function createSystemService(
     installExternalClient,
     launchExternalClient,
     inspectInstallationQueue: () => installationQueue.snapshot(),
+    onInstallationQueueChange: (listener) => installationQueue.onChange(listener),
     cleanupInstallLeftovers,
   }
 }
