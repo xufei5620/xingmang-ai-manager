@@ -38,6 +38,7 @@ import {
   processExistsFromSignalError,
   buildCodexDesktopSessionProcessProbeScript,
   parseCodexDesktopSessionProcessIds,
+  codexDesktopRunningFromProbeOutput,
   buildCodexDesktopStoreInstallCommand,
   describeCodexDesktopDownloadAttempt,
   describeCodexDesktopStoreNotice,
@@ -62,6 +63,7 @@ import {
   type CodexDesktopWindowsProbes,
 } from './codex-desktop-service'
 import { parseWindowsStoreAppLaunchContext } from './windows-store-app-launch'
+import { codexDesktopKnownIssueMarker } from './codex-desktop-known-issues'
 
 const temporaryDirectories: string[] = []
 
@@ -185,6 +187,32 @@ describe('Codex Desktop AppModel launch diagnostics', () => {
       { waitedSeconds: 45, processSeen: false },
     )
     expect(message).toContain('「Administrator」账户')
+  })
+
+  it('names the known-broken version and points to the command-line Codex instead of the start-menu check', () => {
+    const context = { userSid: null, isBuiltInAdministrator: false, uacEnabled: null, filterAdministratorToken: null }
+    const message = describeCodexDesktopLaunchFailure(context, { waitedSeconds: 51, processSeen: false }, '26.924.2738.0')
+    expect(message.startsWith(codexDesktopNotStartedPrefix)).toBe(true)
+    expect(message).toContain('等了 51 秒，Codex 没有启动起来')
+    expect(message).toContain('你装的这一版（26.924.2738.0）')
+    expect(message).toContain(codexDesktopKnownIssueMarker)
+    expect(message).toContain('「改用 Codex 命令行版」')
+    expect(message).not.toContain('开始菜单里搜「Codex」')
+    expect(message).not.toMatch(/wsreset|AppModel|AppX|Appx|UAC|0x[0-9A-F]{8}|SID|Microsoft Store/i)
+
+    const noOutcome = describeCodexDesktopLaunchFailure(context, undefined, '26.924.2738.0')
+    expect(noOutcome).toContain('等了将近一分钟')
+    expect(noOutcome).toContain(codexDesktopKnownIssueMarker)
+
+    const admin = describeCodexDesktopLaunchFailure(
+      { userSid: 'S-1-5-21-1-2-3-500', isBuiltInAdministrator: true, uacEnabled: false, filterAdministratorToken: false },
+      { waitedSeconds: 45, processSeen: false },
+      '26.924.2738.0',
+    )
+    expect(admin).toContain('「Administrator」账户')
+    expect(admin).not.toContain(codexDesktopKnownIssueMarker)
+
+    expect(describeCodexDesktopLaunchFailure(context, { waitedSeconds: 45, processSeen: false }, null)).not.toContain(codexDesktopKnownIssueMarker)
   })
 
   it('describes the launch wait in plain words and adds the start-menu hint after twenty seconds', () => {
@@ -1404,6 +1432,15 @@ describe('Codex Desktop Appx probe script', () => {
     expect(parseCodexDesktopSessionProcessIds(JSON.stringify({ ProcessId: 101, ExecutablePath: stable }), null)).toEqual([101])
     expect(parseCodexDesktopSessionProcessIds('', null)).toEqual([])
     expect(parseCodexDesktopSessionProcessIds('WARNING: not json', null)).toEqual([])
+  })
+
+  it('tells an unreadable exit probe apart from a closed desktop app', () => {
+    const stable = String.raw`C:\Program Files\WindowsApps\OpenAI.Codex_26.715.0.0_x64__2p2nqsd0c76g0\app\ChatGPT.exe`
+    expect(codexDesktopRunningFromProbeOutput(JSON.stringify({ ProcessId: 101, ExecutablePath: stable }))).toBe(true)
+    expect(codexDesktopRunningFromProbeOutput(JSON.stringify([{ ProcessId: 103, ExecutablePath: String.raw`C:\Tools\ChatGPT.exe` }]))).toBe(false)
+    expect(codexDesktopRunningFromProbeOutput('  \r\n')).toBe(false)
+    // 读不懂的输出不能当「已经关了」：那会把正在用的人断掉。
+    expect(codexDesktopRunningFromProbeOutput('WARNING: not json')).toBeNull()
   })
 
   it('keeps the three merged segments byte-identical to the standalone probe scripts', () => {

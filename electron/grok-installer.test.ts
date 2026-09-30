@@ -107,6 +107,36 @@ describe('Grok signed binary installer', () => {
     expect(fetchImpl).toHaveBeenCalledTimes(2)
   })
 
+  it('downloads the named version instead of the stable one when it is not newer', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-grok-download-'))
+    temporaryDirectories.push(directory)
+    const binary = Buffer.alloc(1024 * 1024, 0x5a)
+    const artifactUrl = 'https://x.ai/cli/grok-0.2.110-windows-x86_64.exe'
+    const fetchImpl = vi.fn<GrokVersionFetch>()
+      .mockResolvedValueOnce(responseWithUrl('0.2.112\n', {
+        status: 200,
+        headers: { 'Content-Type': 'text/plain' },
+      }, 'https://x.ai/cli/stable'))
+      .mockResolvedValueOnce(responseWithUrl(binary, {
+        status: 200,
+        headers: {
+          'Content-Type': 'application/octet-stream',
+          'Content-Length': String(binary.length),
+        },
+      }, artifactUrl))
+
+    const result = await downloadLatestGrokBinary({
+      fetchImpl,
+      architecture: 'x64',
+      createTemporaryDirectory: async () => directory,
+      verifyBinary: fakeVerification,
+      version: '0.2.110',
+    })
+
+    expect(result).toMatchObject({ version: '0.2.110', sourceUrl: artifactUrl })
+    expect(String(fetchImpl.mock.calls[1][0])).toBe(artifactUrl)
+  })
+
   it('installs verified grok/agent binaries and local version metadata in a protected root', async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-grok-install-'))
     temporaryDirectories.push(directory)

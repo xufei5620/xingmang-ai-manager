@@ -17,6 +17,7 @@ import { errorMessage } from '../../business-common'
 import { createTtlCache } from './ttl-cache'
 import type { CliLaunchChoice } from './recent-workspaces'
 import { usageCalendarDate, usageDateRange } from '../../../../electron/usage-date-range'
+import { accountScope } from '../../account-context'
 
 /** 工具页一次读取里互相独立的三块。 */
 export type ToolboxPartition = 'system' | 'config' | 'platform'
@@ -86,11 +87,47 @@ function placeholderConfig(): AppConfigSummary {
  */
 export const recentSessionsTtlMs = 60_000
 
+/**
+ * 首页余额卡上「本月已用 / 约还能用 N 天」的缓存有效期。首页离开就卸载，以前每回来
+ * 一次就对账号后端发两次用量查询（本月、最近 7 天），那一栏也先空着等网络。一分钟内
+ * 直接复用；过了一分钟先摆上一次的数，后台再查。换账号时整份作废（见 App 的 scope）。
+ */
+export const balanceUsageTtlMs = 60_000
+
+export interface BalanceUsage {
+  monthQuota: number
+  weekQuota: number
+}
+
+/** 用量缓存里记着是哪个账号查的：换账号那一帧不能把上一个账号的数摆出来。 */
+interface OwnedBalanceUsage {
+  scope: string
+  usage: BalanceUsage
+}
+
+async function loadBalanceUsage(bridge: XingmangApi): Promise<OwnedBalanceUsage> {
+  const now = new Date()
+  const session = await bridge.getAccountSession()
+  const calendar = session.siteId === 'solov-api' || session.realmId === 'api-account'
+  const dates = usageDateRange({}, now)
+  const monthDate = `${usageCalendarDate(now, dates.timezone).slice(0, 7)}-01`
+  const endTimestamp = Math.floor(now.getTime() / 1000)
+  const monthStart = Math.floor(new Date(now.getFullYear(), now.getMonth(), 1).getTime() / 1000)
+  const [month, week] = await Promise.all([
+    bridge.getAccountUsage(calendar ? { ...dates, startDate: monthDate, page: 1, pageSize: 1 }
+      : { type: 2, page: 1, pageSize: 1, startTimestamp: monthStart, endTimestamp }),
+    bridge.getAccountUsage(calendar ? { ...dates, page: 1, pageSize: 1 }
+      : { type: 2, page: 1, pageSize: 1, startTimestamp: endTimestamp - 7 * 86400, endTimestamp }),
+  ])
+  return { scope: accountScope(session), usage: { monthQuota: month.stats.quota, weekQuota: week.stats.quota } }
+}
+
 export function createToolsApi(bridge: XingmangApi) {
   const recentSessions = createTtlCache({
     ttlMs: recentSessionsTtlMs,
     load: () => bridge.listProviderSessions({ page: 1, pageSize: 60 }),
   })
+  const usageCache = createTtlCache({ ttlMs: balanceUsageTtlMs, load: () => loadBalanceUsage(bridge) })
   return {
     /**
      * 三块分开结算（对照 legacy 的 runCoordinatedScan）。一份损坏的
@@ -205,22 +242,23 @@ export function createToolsApi(bridge: XingmangApi) {
     getPermissions: () => bridge.inspectCodexWorkspacePermissions(),
     trustWorkspace: () => bridge.trustCodexWorkspace(),
     officialUsage: () => bridge.refreshOfficialChatGptUsage(),
-    async balanceUsage() {
-      const now = new Date()
-      const session = await bridge.getAccountSession()
-      const calendar = session.siteId === 'solov-api' || session.realmId === 'api-account'
-      const dates = usageDateRange({}, now)
-      const monthDate = `${usageCalendarDate(now, dates.timezone).slice(0, 7)}-01`
-      const endTimestamp = Math.floor(now.getTime() / 1000)
-      const monthStart = Math.floor(new Date(now.getFullYear(), now.getMonth(), 1).getTime() / 1000)
-      const [month, week] = await Promise.all([
-        bridge.getAccountUsage(calendar ? { ...dates, startDate: monthDate, page: 1, pageSize: 1 }
-          : { type: 2, page: 1, pageSize: 1, startTimestamp: monthStart, endTimestamp }),
-        bridge.getAccountUsage(calendar ? { ...dates, page: 1, pageSize: 1 }
-          : { type: 2, page: 1, pageSize: 1, startTimestamp: endTimestamp - 7 * 86400, endTimestamp }),
-      ])
-      return { monthQuota: month.stats.quota, weekQuota: week.stats.quota }
+    /**
+     * 当前账号本月与最近 7 天的用量。一分钟内复用上一次的结果；scope 传了而缓存
+     * 不是这个账号查的（换账号那一瞬间），作废后重查。
+     */
+    async balanceUsage(scope?: string): Promise<BalanceUsage> {
+      const owned = await usageCache.read()
+      if (scope === undefined || owned.scope === scope) return owned.usage
+      usageCache.invalidate()
+      return (await usageCache.read()).usage
     },
+    /** 上一次查到的用量，过期了也给；不是 scope 这个账号的就当没有。 */
+    peekBalanceUsage(scope: string): BalanceUsage | null {
+      const owned = usageCache.peek()
+      return owned && owned.scope === scope ? owned.usage : null
+    },
+    /** 让用量缓存立刻作废：换账号时调。 */
+    invalidateBalanceUsage: () => usageCache.invalidate(),
     /**
      * 「花费突然变多」核账用：最近一小时和最近七天各花了多少。只在余额一小时里掉了
      * $5 以上时才读一次（features/app/spend-spike.ts），不是又一处定时拉取。按日期查

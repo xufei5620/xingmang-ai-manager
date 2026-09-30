@@ -943,6 +943,31 @@ test('home reuses the recent list instead of rescanning session folders on every
   } finally { await page.close() }
 })
 
+test('home shows the last usage right away instead of asking the account backend on every visit', async () => {
+  const page = await open('allInstalled=1')
+  const usageReads = () => page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'getAccountUsage').length)
+  const usageLine = page.locator('.v2-balance-usage p')
+  try {
+    await expect(usageLine).toContainText('约还能用')
+    // 本月、最近 7 天各一次；开发模式的 StrictMode 挂载两遍也只落到这一次。
+    assert.equal(await usageReads(), 2)
+
+    // 首页离开就卸载，以前每回来一次就再查两次、那一栏先显示「正在读取用量」。
+    await page.evaluate(() => {
+      window.__usageBlank = false
+      new MutationObserver(() => {
+        if (document.querySelector('.v2-balance-usage p')?.textContent?.includes('正在读取用量')) window.__usageBlank = true
+      }).observe(document.body, { childList: true, subtree: true, characterData: true })
+    })
+    await page.getByTestId('nav-sessions').click()
+    await page.getByTestId('nav-home').click()
+    await expect(usageLine).toContainText('约还能用')
+    assert.equal(await page.evaluate(() => window.__usageBlank), false)
+    assert.equal(await usageReads(), 2)
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('archiving a session on the sessions page refreshes the home recent card right away', async () => {
   const page = await open('allInstalled=1&recentWorkspaces=1&sessionArchive=1')
   const homeReads = () => page.evaluate(() => window.v2Test.calls
@@ -1020,6 +1045,22 @@ test('a new user can open a CLI in a folder the app creates, without the directo
     await page.getByTestId('tool-row-codexDesktop').getByRole('button', { name: '更多操作' }).click()
     assert.equal(await page.getByTestId('tool-codexDesktop-new-workspace').count(), 0)
     await page.keyboard.press('Escape')
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('a folder picked for one CLI opens the others there without asking again', async () => {
+  const page = await open('launchRemembers=1')
+  try {
+    await page.getByTestId('tool-codex-primary').click()
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'launchCli'))
+    const claude = page.getByTestId('tool-claude-primary')
+    await page.waitForFunction(() => document.querySelector('[data-testid="tool-claude-primary"]')?.textContent?.includes('打开 Selected P'))
+    await claude.click()
+    await page.waitForFunction(() => window.v2Test.calls.filter((entry) => entry.method === 'launchCli').length === 2)
+    const calls = await page.evaluate(() => window.v2Test.calls)
+    assert.equal(calls.filter((entry) => entry.method === 'chooseWorkspace').length, 1)
+    assert.deepEqual(calls.filter((entry) => entry.method === 'launchCli').map((entry) => entry.args.slice(0, 2)), [['codex', 'C:\\Selected Project'], ['claude', 'C:\\Selected Project']])
     await clean(page)
   } finally { await page.close() }
 })
@@ -1622,7 +1663,7 @@ test('an updated tool row stays on the running install until the rescan lands', 
   } finally { await page.close() }
 })
 
-test('saved-account switching keeps CLI synchronization opt-in', async () => {
+test('saved-account switching leaves tools without an account key untouched', async () => {
   const page = await open('savedAccount=1')
   try {
     await page.getByTestId('tool-row-claude').waitFor()
@@ -1643,11 +1684,12 @@ test('read-only account matches switch only explicitly selected CLI providers on
     await settleMatchedBootstrap(page)
     await page.getByRole('button', { name: '切换账号', exact: true }).click()
     const saved = page.getByTestId('saved-accounts-list')
-    await saved.getByText('同步到工具（可选）', { exact: true }).click()
-    await page.getByTestId('account-sync-claude').check()
-    await page.getByTestId('account-sync-codex').check()
-    assert.equal(await page.getByTestId('account-sync-gemini').isChecked(), false)
-    assert.equal(await page.getByTestId('account-sync-grok').isChecked(), false)
+    // 原本就在用账号密钥的工具默认勾上；这里取消两个，确认只写勾着的。
+    await page.getByTestId('account-sync-grok').waitFor()
+    assert.equal(await page.getByTestId('account-sync-claude').isChecked(), true)
+    assert.equal(await page.getByTestId('account-sync-codex').isChecked(), true)
+    await page.getByTestId('account-sync-gemini').uncheck()
+    await page.getByTestId('account-sync-grok').uncheck()
     await saved.getByRole('button', { name: '切换', exact: true }).click()
     await page.getByRole('button', { name: '打开个人中心 saved-user', exact: true }).waitFor()
     const writes = await page.evaluate(() => window.v2Test.calls.filter(entry => entry.method === 'configureManagedCliKeys').map(entry => entry.args[0]))
@@ -1670,9 +1712,9 @@ test('saved-account switching names the rewritten tools that are still open and 
     await settleMatchedBootstrap(page)
     await page.getByRole('button', { name: '切换账号', exact: true }).click()
     const saved = page.getByTestId('saved-accounts-list')
-    await saved.getByText('同步到工具（可选）', { exact: true }).click()
-    await page.getByTestId('account-sync-claude').check()
-    await page.getByTestId('account-sync-codex').check()
+    await page.getByTestId('account-sync-grok').waitFor()
+    await page.getByTestId('account-sync-gemini').uncheck()
+    await page.getByTestId('account-sync-grok').uncheck()
     await saved.getByRole('button', { name: '切换', exact: true }).click()
     // 有工具还开着时切换框不自己关掉，提示和按钮要让用户看得到。
     await page.getByTestId('account-sync-restart-hint')
@@ -4422,8 +4464,9 @@ test('tutorial actions land on the account tab or settings group the step descri
   } finally { await page.close() }
 })
 
-// 同一个毛病的另一头：检查页网络项的「去处理」以前只在设置页第一次打开时落到「网络」。
-test('the health network fix lands on the network settings group even when settings was already open', async () => {
+// 检查页网络项以前的「去处理」跳到「设置 → 网络」，那里没有能处理它的东西、「去检查」又跳回来，
+// 等于绕一圈（新手引导梳理 9-25 第 2 条）。现在这一行只给结论，不再带人去设置页兜圈。
+test('the health network row no longer sends the user around through settings', async () => {
   const page = await open()
   try {
     await page.evaluate(() => {
@@ -4431,12 +4474,9 @@ test('the health network fix lands on the network settings group even when setti
         counts: { pass: 0, warn: 0, fail: 1, error: 0 },
         items: [{ code: 'XINGMANG_NETWORK', title: '星芒服务连接', state: 'fail', summary: '连不上星芒服务', durationMs: 1 }] })
     })
-    await page.getByTestId('nav-settings').click()
-    await page.getByTestId('page-settings').getByRole('tab', { name: '关于', exact: true }).click()
     await page.getByTestId('nav-health').click()
-    await page.getByTestId('health-fix-XINGMANG_NETWORK').click()
-    await expect(page.getByTestId('page-settings')).toBeVisible()
-    await expect(page.getByTestId('page-settings').getByRole('tab', { name: '网络', exact: true })).toHaveAttribute('aria-selected', 'true')
+    await expect(page.getByTestId('page-health').getByText('连不上星芒服务')).toBeVisible()
+    await expect(page.getByTestId('health-fix-XINGMANG_NETWORK')).toHaveCount(0)
     assert.deepEqual(await page.evaluate(() => window.v2Test.errors), [])
   } finally { await page.close() }
 })

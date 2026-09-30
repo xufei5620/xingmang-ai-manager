@@ -9,6 +9,11 @@ export interface TtlCacheOptions<T> {
 
 export interface TtlCache<T> {
   read(): Promise<T>
+  /**
+   * 上一次读到的结果，过期了也照给；从没读成功过或刚作废时为 null。给「先把上次的
+   * 摆出来、后台再刷新」用：页面重新挂载的第一帧就有东西，不必先空一下。
+   */
+  peek(): T | null
   /** 丢掉缓存，并让此刻还在飞的那一趟作废（它的结果不再写回缓存）。 */
   invalidate(): void
 }
@@ -49,11 +54,15 @@ export function createTtlCache<T>(options: TtlCacheOptions<T>): TtlCache<T> {
     return promise
   }
 
+  function peek(): T | null {
+    return entry ? entry.value : null
+  }
+
   function invalidate() {
     generation += 1
     entry = null
     inFlight = null
   }
 
-  return { read, invalidate }
+  return { read, peek, invalidate }
 }

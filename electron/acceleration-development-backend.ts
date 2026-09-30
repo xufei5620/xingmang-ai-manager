@@ -73,6 +73,13 @@ export interface AccelerationDevelopmentBackendOptions {
 
 export interface AccelerationDevelopmentBackend extends AccelerationApi {
   /**
+   * 软件替用户发起的连接（打开 Codex 桌面端时）。与 startAcceleration 同一条路，
+   * 只是这次会话不扣免费时长、免费时长用完也照样连，也就没有到点断开这回事；
+   * 什么时候断由宿主决定（桌面端退出时）。状态里带 `autoStartedBy`。
+   * 刻意不进 AccelerationApi：渲染层没有通道能要到一次不计时的连接。
+   */
+  startAutomaticAcceleration(scope: string, mode: AccelerationState['mode'], lineId?: string): Promise<AccelerationState>
+  /**
    * 下载专用线路：起内核、只交出本机回环端口，**不碰系统代理**，所以它既不
    * 出现在界面的加速状态里，也不需要用户点「连接」。按持有数计数，多个下载
    * 共用同一个内核（见 download-acceleration.ts）。
@@ -118,6 +125,8 @@ interface Session {
   pausedMono: number | null
   /** 已经扣掉的睡眠时长，不计入免费时长。 */
   pausedMs: number
+  /** false = 软件替用户连的：不扣免费时长，也不到点断开。 */
+  billed: boolean
   error: string | null
 }
 
@@ -295,6 +304,21 @@ export function createAccelerationDevelopmentBackend(options: AccelerationDevelo
     const end = current.stoppedMono ?? current.pausedMono ?? monotonicNow()
     return Math.max(0, Math.floor(end - current.startedMono - current.pausedMs))
   }
+  /** 这次会话从免费时长里扣掉的部分：不计时的会话一分不扣。 */
+  function billedElapsed(current: Session): number {
+    return current.billed ? elapsed(current) : 0
+  }
+  /** 这次会话还能连多久：只有计时的会话会到点，不计时的没有上限。 */
+  function sessionLeftMs(current: Session): number {
+    if (!current.billed) return Number.POSITIVE_INFINITY
+    const entry = usage(current.scope)
+    return accountTotalMs(entry) - entry.usedMs - elapsed(current)
+  }
+  /** 计时的会话按剩余时长定到期；不计时的不定，免得一个无限长的定时器。 */
+  function armExpiry(current: Session) {
+    if (current.billed) arm(sessionLeftMs(current))
+    else clearTimer()
+  }
   /**
    * 睡眠那段一律不计时，不管单调钟在睡眠里走不走：Windows 的单调钟跨睡眠照走，
    * macOS 的停表，而「从睡前那一刻到醒来这一刻」按单调钟量出来的差，在两边都
@@ -369,22 +393,23 @@ export function createAccelerationDevelopmentBackend(options: AccelerationDevelo
     const entry = usage(scope)
     const totalMs = accountTotalMs(entry)
     const totalSeconds = totalMs / 1000
-    const spent = current ? elapsed(current) : needsRecovery && entry.startedAt !== null ? crashElapsed(entry.startedAt, totalMs) : 0
+    const spent = current ? billedElapsed(current) : needsRecovery && entry.startedAt !== null ? crashElapsed(entry.startedAt, totalMs) : 0
     const remainingMs = Math.max(0, totalMs - entry.usedMs - spent)
     const error = current?.error ?? recoveryError ?? lastErrors.get(scope) ?? null
     const conflicts = current ? [] : lastConflicts.get(scope) ?? []
     const pendingRecovery = needsRecovery && entry.startedAt !== null
-    const phase = current ? current.phase === 'active' && remainingMs === 0 ? 'stopping' : current.phase
+    const phase = current ? current.phase === 'active' && current.billed && remainingMs === 0 ? 'stopping' : current.phase
       : pendingRecovery ? 'stopping' : remainingMs === 0 ? 'exhausted' : error ? 'error' : 'idle'
     const result: AccelerationState = {
       scope, phase, mode: 'system-proxy', totalSeconds,
       remainingSeconds: Math.ceil(remainingMs / 1000),
-      sessionSeconds: current ? Math.min(totalSeconds, Math.floor(spent / 1000)) : lastSessionSeconds.get(scope) ?? 0,
+      sessionSeconds: current ? Math.min(totalSeconds, Math.floor(elapsed(current) / 1000)) : lastSessionSeconds.get(scope) ?? 0,
       measuredAt: new Date(now()).toISOString(),
       connectedAt: current?.connectedAt ?? (pendingRecovery ? new Date(entry.startedAt!).toISOString() : null),
       line: current?.line ?? null, error,
       entitlementSource, supportedModes: ['system-proxy'],
       ...(conflicts.length ? { conflicts } : {}),
+      ...(current && !current.billed ? { autoStartedBy: 'codex-desktop' as const } : {}),
     }
     return result
   }
@@ -470,11 +495,14 @@ export function createAccelerationDevelopmentBackend(options: AccelerationDevelo
         await stopCore()
         current.stoppedMono = monotonicNow()
       }
-      const spent = elapsed(current)
+      const spent = billedElapsed(current)
       const totalMs = accountTotalMs(usage(current.scope))
-      await stopStage('ledger-write', () => saveAccount(current.scope,
-        { usedMs: Math.min(totalMs, usage(current.scope).usedMs + spent), startedAt: null }))
-      lastSessionSeconds.set(current.scope, Math.min(totalMs / 1000, Math.floor(spent / 1000)))
+      // 不计时的会话从没写过 startedAt，账本也就没什么要结算的。
+      if (current.billed) {
+        await stopStage('ledger-write', () => saveAccount(current.scope,
+          { usedMs: Math.min(totalMs, usage(current.scope).usedMs + spent), startedAt: null }))
+      }
+      lastSessionSeconds.set(current.scope, Math.min(totalMs / 1000, Math.floor(elapsed(current) / 1000)))
       lastErrors.delete(current.scope)
       lastConflicts.delete(current.scope)
       session = null
@@ -493,8 +521,7 @@ export function createAccelerationDevelopmentBackend(options: AccelerationDevelo
     if (!current || current.pausedMono === null) return
     foldPause(current)
     if (current.phase !== 'active' || !options.runtime.isRunning()) return
-    const entry = usage(current.scope)
-    arm(accountTotalMs(entry) - entry.usedMs - elapsed(current))
+    armExpiry(current)
   }
   async function inspect(scope: string) {
     try { await recover() } catch {
@@ -502,8 +529,7 @@ export function createAccelerationDevelopmentBackend(options: AccelerationDevelo
       return state(scope)
     }
     wakeSession()
-    if (session && (session.phase === 'active' && !options.runtime.isRunning()
-      || usage(session.scope).usedMs + elapsed(session) >= accountTotalMs(usage(session.scope)))) {
+    if (session && (session.phase === 'active' && !options.runtime.isRunning() || sessionLeftMs(session) <= 0)) {
       const oldScope = session.scope
       const exited = !options.runtime.isRunning()
       try {
@@ -515,6 +541,71 @@ export function createAccelerationDevelopmentBackend(options: AccelerationDevelo
     return state(scope)
   }
 
+  function startSession(scope: string, mode: AccelerationState['mode'], lineId: string | undefined, ignoreConflicts: boolean | undefined, billed: boolean): Promise<AccelerationState> {
+    assertScope(scope)
+    if (lineId !== undefined) assertLineId(lineId)
+    if (ignoreConflicts !== undefined && typeof ignoreConflicts !== 'boolean') throw new Error('加速冲突确认参数无效。')
+    return enqueue(async () => {
+      if (closing || disposed) throw new Error('本机加速服务正在关闭。')
+      if (mode !== 'system-proxy') throw new Error('本机开发加速暂不支持 TUN，请关闭 TUN 后重试。')
+      try { await recover() } catch { if (!ledger) throw new Error(ledgerFailure); return state(scope) }
+      if (probeNeedsCleanup) await stopSession()
+      if (session) {
+        if (session.scope === scope && session.phase === 'active' && options.runtime.isRunning()) return state(scope)
+        try { await stopSession() } catch { throw new Error(stopFailure) }
+      }
+      lastErrors.delete(scope)
+      lastConflicts.delete(scope)
+      // 软件替用户连的不扣时长，时长用完也照样连（yoyo 2026-09-30 定）。
+      if (billed && usage(scope).usedMs >= accountTotalMs(usage(scope))) return state(scope)
+      if (await detectConflicts(scope, ignoreConflicts === true)) return state(scope)
+      // 下载专用线路已经把内核跑起来了：同一条线路直接接管，不重起内核，
+      // 正在进行的下载因此不会断在半路。用户点名了另一条线路才必须重起。
+      let adopted: { port: number; line: AccelerationLine } | null = null
+      if (downloadRoute && options.runtime.isRunning() && (!lineId || lineId === downloadRoute.line.id)) {
+        adopted = downloadRoute
+      } else if (downloadRoute) {
+        downloadRoute = null
+        downloadHolders = 0
+        try { await options.runtime.stop() } catch { /* 下面的 start 会把失败重新报出来。 */ }
+      }
+      // Persist intent before touching OS state. A crash in the startup gap
+      // is conservatively billed; an ordinary failed start clears it unpaid.
+      // An unbilled session never records intent, so a crash charges it nothing;
+      // proxy restoration on recovery does not depend on the ledger.
+      if (billed) {
+        try { await saveAccount(scope, { usedMs: usage(scope).usedMs, startedAt: now() }) }
+        catch (error) { reportStartFailure(error, 'ledger'); lastErrors.set(scope, ledgerFailure); return state(scope) }
+      }
+      session = { scope, phase: 'connecting', line: null, connectedAt: null, startedMono: null, stoppedMono: null, pausedMono: null, pausedMs: 0, billed, error: null }
+      // The user-facing text below collapses every cause into one sentence on
+      // purpose. `phase` is what survives that collapse for the log.
+      let phase: AccelerationStartFailurePhase = 'runtime'
+      try {
+        const result = adopted ? { line: adopted.line, proxyPort: adopted.port } : await options.runtime.start(lineId)
+        phase = 'verify'
+        if (!Number.isInteger(result.proxyPort) || result.proxyPort < 1 || result.proxyPort > 65535 || !options.runtime.isRunning()) throw new Error(startFailure)
+        session.line = { id: result.line.id, name: result.line.name, region: result.line.region, latencyMs: result.line.latencyMs }
+        phase = 'proxy'
+        await options.proxy.enable(result.proxyPort)
+        phase = 'verify'
+        if (!options.runtime.isRunning()) throw new Error(startFailure)
+        session.startedMono = monotonicNow()
+        const startedAt = now()
+        session.connectedAt = new Date(startedAt).toISOString()
+        phase = 'ledger'
+        if (billed) await saveAccount(scope, { usedMs: usage(scope).usedMs, startedAt })
+        session.phase = 'active'
+        armExpiry(session)
+        return state(scope)
+      } catch (error) {
+        reportStartFailure(error, phase)
+        try { await stopSession(); lastErrors.set(scope, connectionFailure(error, phase)) }
+        catch { arm(5000) }
+        return state(scope)
+      }
+    })
+  }
   return {
     getAccelerationState(scope) {
       assertScope(scope)
@@ -539,71 +630,17 @@ export function createAccelerationDevelopmentBackend(options: AccelerationDevelo
         // Publish the mark and allowance together only after the atomic write.
         // Failed writes leave both the in-memory balance and expiry untouched.
         await saveAccount(scope, { ...entry, bonusRedeemed: true })
-        if (session?.scope === scope && session.phase === 'active' && options.runtime.isRunning()) {
-          arm(accountTotalMs(usage(scope)) - usage(scope).usedMs - elapsed(session))
+        if (session?.scope === scope && session.phase === 'active' && session.billed && options.runtime.isRunning()) {
+          armExpiry(session)
         }
         return { status: 'redeemed', addedSeconds: accelerationBonusSeconds, state: state(scope) }
       })
     },
     startAcceleration(scope, mode, lineId, ignoreConflicts) {
-      assertScope(scope)
-      if (lineId !== undefined) assertLineId(lineId)
-      if (ignoreConflicts !== undefined && typeof ignoreConflicts !== 'boolean') throw new Error('加速冲突确认参数无效。')
-      return enqueue(async () => {
-        if (closing || disposed) throw new Error('本机加速服务正在关闭。')
-        if (mode !== 'system-proxy') throw new Error('本机开发加速暂不支持 TUN，请关闭 TUN 后重试。')
-        try { await recover() } catch { if (!ledger) throw new Error(ledgerFailure); return state(scope) }
-        if (probeNeedsCleanup) await stopSession()
-        if (session) {
-          if (session.scope === scope && session.phase === 'active' && options.runtime.isRunning()) return state(scope)
-          try { await stopSession() } catch { throw new Error(stopFailure) }
-        }
-        lastErrors.delete(scope)
-        lastConflicts.delete(scope)
-        if (usage(scope).usedMs >= accountTotalMs(usage(scope))) return state(scope)
-        if (await detectConflicts(scope, ignoreConflicts === true)) return state(scope)
-        // 下载专用线路已经把内核跑起来了：同一条线路直接接管，不重起内核，
-        // 正在进行的下载因此不会断在半路。用户点名了另一条线路才必须重起。
-        let adopted: { port: number; line: AccelerationLine } | null = null
-        if (downloadRoute && options.runtime.isRunning() && (!lineId || lineId === downloadRoute.line.id)) {
-          adopted = downloadRoute
-        } else if (downloadRoute) {
-          downloadRoute = null
-          downloadHolders = 0
-          try { await options.runtime.stop() } catch { /* 下面的 start 会把失败重新报出来。 */ }
-        }
-        // Persist intent before touching OS state. A crash in the startup gap
-        // is conservatively billed; an ordinary failed start clears it unpaid.
-        try { await saveAccount(scope, { usedMs: usage(scope).usedMs, startedAt: now() }) }
-        catch (error) { reportStartFailure(error, 'ledger'); lastErrors.set(scope, ledgerFailure); return state(scope) }
-        session = { scope, phase: 'connecting', line: null, connectedAt: null, startedMono: null, stoppedMono: null, pausedMono: null, pausedMs: 0, error: null }
-        // The user-facing text below collapses every cause into one sentence on
-        // purpose. `phase` is what survives that collapse for the log.
-        let phase: AccelerationStartFailurePhase = 'runtime'
-        try {
-          const result = adopted ? { line: adopted.line, proxyPort: adopted.port } : await options.runtime.start(lineId)
-          phase = 'verify'
-          if (!Number.isInteger(result.proxyPort) || result.proxyPort < 1 || result.proxyPort > 65535 || !options.runtime.isRunning()) throw new Error(startFailure)
-          session.line = { id: result.line.id, name: result.line.name, region: result.line.region, latencyMs: result.line.latencyMs }
-          phase = 'proxy'
-          await options.proxy.enable(result.proxyPort)
-          phase = 'verify'
-          if (!options.runtime.isRunning()) throw new Error(startFailure)
-          session.startedMono = monotonicNow()
-          const startedAt = now()
-          session.connectedAt = new Date(startedAt).toISOString()
-          phase = 'ledger'
-          await saveAccount(scope, { usedMs: usage(scope).usedMs, startedAt })
-          session.phase = 'active'
-          arm(accountTotalMs(usage(scope)) - usage(scope).usedMs - elapsed(session))
-          return state(scope)
-        } catch (error) {
-          reportStartFailure(error, phase)
-          try { await stopSession(); lastErrors.set(scope, connectionFailure(error, phase)) }
-          catch { arm(5000) }
-          return state(scope)
-        }
-      })
+      return startSession(scope, mode, lineId, ignoreConflicts, true)
+    },
+    startAutomaticAcceleration(scope, mode, lineId) {
+      return startSession(scope, mode, lineId, false, false)
     },
     listAccelerationLines(scope) {
       assertScope(scope)

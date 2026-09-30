@@ -3,7 +3,7 @@ import path from 'node:path'
 import zlib from 'node:zlib'
 import { randomUUID } from 'node:crypto'
 import { promisify } from 'node:util'
-import { readBoundedUtf8FileSync } from './bounded-file'
+import { readBoundedUtf8File, readBoundedUtf8FileSync } from './bounded-file'
 import { readDirectoryEntriesSync } from './bounded-directory'
 import { readBoundedResponseBytes } from './bounded-response'
 import { assertNoReparseComponents, assertSafeDataFile, removeSafeDataFile, writeAtomicSafeUtf8File } from './safe-local-data'
@@ -134,14 +134,14 @@ function interfaceText(value: unknown): string | null {
  * `codex plugin list --json` 只给插件的内部名，不给说明，市场页一排英文短名用户
  * 看不出是干什么的。说明就在快照里每个插件自己的 plugin.json，读不到就算了。
  */
-export function readCodexCatalogPluginInterface(
+export async function readCodexCatalogPluginInterface(
   codexHome: string,
   pluginName: string,
-): CodexCatalogPluginInterface | null {
+): Promise<CodexCatalogPluginInterface | null> {
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(pluginName) || pluginName.includes('..')) return null
   const manifest = path.join(codexPluginCatalogPaths(codexHome).directory, 'plugins', pluginName, '.codex-plugin', 'plugin.json')
   try {
-    const parsed: unknown = JSON.parse(readBoundedUtf8FileSync(manifest, 256 * 1024, 'Codex 插件说明'))
+    const parsed: unknown = JSON.parse(await readBoundedUtf8File(manifest, 256 * 1024, 'Codex 插件说明'))
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null
     const face = (parsed as Record<string, unknown>).interface
     if (!face || typeof face !== 'object' || Array.isArray(face)) return null

@@ -3,7 +3,12 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { readBoundedUtf8File } from './bounded-file'
 import { sameLocalPathIdentity } from './path-identity'
-import { fetchGrokStableVersion, parseGrokStableVersion, type GrokVersionFetch } from './grok-update'
+import {
+  fetchGrokStableVersion,
+  parseGrokStableVersion,
+  resolveGrokInstallVersion,
+  type GrokVersionFetch,
+} from './grok-update'
 import {
   managedCliRoot,
   managedNativeProviderRoot,
@@ -59,6 +64,8 @@ export interface DownloadLatestGrokOptions {
   onProgress?: (progress: GrokDownloadProgress) => void
   /** 用户点「取消」后中止下载,并且不再换下一条镜像重试。 */
   signal?: AbortSignal
+  /** 名单或「退回」点名的版本;缺省 = xAI 当前 stable。不会超过 stable,见 resolveGrokInstallVersion。 */
+  version?: string
 }
 
 export interface InstallDownloadedGrokOptions {
@@ -259,13 +266,14 @@ export async function downloadLatestGrokBinary(
   const architecture = options.architecture ?? process.arch
   const verifyBinary = options.verifyBinary ?? verifyOfficialNativeCliFile
   const stable = await fetchGrokStableVersion({ fetchImpl })
+  const version = resolveGrokInstallVersion(options.version, stable.version)
   const directory = await (options.createTemporaryDirectory
     ? options.createTemporaryDirectory()
     : createTrustedTemporaryDirectory('grok-binary'))
   const binaryPath = path.join(directory, 'grok-download.exe')
   const errors: string[] = []
   try {
-    for (const url of buildGrokArtifactUrls(stable.version, architecture, stable.sourceUrl)) {
+    for (const url of buildGrokArtifactUrls(version, architecture, stable.sourceUrl)) {
       // 取消之后不许再试下一条镜像:否则点了取消,下载只是换了个地址继续。
       options.signal?.throwIfAborted()
       try {
@@ -283,7 +291,7 @@ export async function downloadLatestGrokBinary(
         return {
           directory,
           binaryPath,
-          version: stable.version,
+          version,
           sourceUrl: url,
           size: downloaded.size,
           sha256Hex: downloaded.sha256Hex,
