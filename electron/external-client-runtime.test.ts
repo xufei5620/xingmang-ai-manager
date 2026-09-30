@@ -5,7 +5,6 @@ import type { ExternalClientInstallProgress } from './external-client-contract'
 import { buildExternalClientWingetInstall, createExternalClientRuntime, externalClientWingetUnavailableHint, verifyExternalClientPath, windowsExternalClientInventoryScript, type ExternalClientRuntimeOptions } from './external-client-runtime'
 import type { ExternalToolId } from './external-tool-config'
 import { InstallationQueue } from './installation-queue'
-import { encodeWindowsPowerShellCommand, resolveWindowsPowerShellExecutable } from './windows-elevation'
 import * as pathIdentity from './path-identity'
 import * as safeLocalData from './safe-local-data'
 
@@ -67,43 +66,19 @@ function fixture(overrides: ExternalClientRuntimeOptions = {}) {
 }
 
 describe('external desktop client lifecycle', () => {
-  it.runIf(process.platform === 'win32')('keeps verified AppX results when an unrelated uninstall key is unreadable', async () => {
-    const prelude = String.raw`
-function Test-Path { param([string]$LiteralPath) return $true }
-function Get-ChildItem { param([string]$LiteralPath) [pscustomobject]@{ PSPath='unrelated-unreadable-key' } }
-function Get-ItemProperty { param([string]$LiteralPath) throw 'Access denied to unrelated registry item' }
-function Get-Process { @() }
-function Get-AppxPackage {
-  [pscustomobject]@{ PackageFamilyName='Claude_pzs8sxrjxfjjc'; InstallLocation='C:\Program Files\WindowsApps\Claude_2.110.1.0_x64__pzs8sxrjxfjjc'; Version='2.110.1.0'; Publisher='CN="Anthropic, PBC", O="Anthropic, PBC", C=US' }
-}
-`
-    const result = await runCommand({ executable: resolveWindowsPowerShellExecutable(), argv: ['-NoProfile', '-NonInteractive', '-EncodedCommand', encodeWindowsPowerShellCommand(prelude + windowsExternalClientInventoryScript())] }, { timeoutMs: 15000, windowsHide: true })
-    const data = JSON.parse(result.stdout.trim())
-    expect(data.clients).toHaveLength(1)
-    expect(data.clients[0]).toMatchObject({ tool: 'claudeDesktop', version: '2.110.1.0' })
+  it('keeps verified AppX results when an unrelated uninstall key is unreadable', async () => {
+    // What the inventory script prints when an unrelated uninstall key throws but
+    // the current-user AppX query answers. The Windows packaging job runs that
+    // script against the same mocks for real (e2e/windows-powershell-probes-smoke.mjs)
+    // and checks it still prints this shape; here only the runtime's reading of it.
+    const registryIncomplete = '部分软件安装记录无法读取，暂时不能确认客户端是否未安装，请重试检测'
     const f = fixture()
-    f.setInventory(data.clients, data.errors)
+    f.setInventory([appx({ running: false })], { workbuddy: registryIncomplete, claudeDesktop: registryIncomplete, opencode: registryIncomplete })
     const statuses = await f.runtime.scan()
     expect(statuses[1]).toMatchObject({ installed: true, launchSupported: true, detectionError: null })
     expect(statuses[0].detectionError).toContain('部分软件安装记录')
     await expect(f.runtime.install('workbuddy')).rejects.toThrow('不能确认')
     expect(f.execute.mock.calls.some(([spec]) => spec.executable === winget)).toBe(false)
-  })
-
-  it.runIf(process.platform === 'win32')('decodes every remembered signature in Windows PowerShell', async () => {
-    const prelude = String.raw`
-function Test-Path { param([string]$LiteralPath) return $false }
-function Get-Process { @() }
-function Get-AppxPackage { @() }
-`
-    const known = [
-      { path: 'C:\\Users\\Tester\\AppData\\Local\\WorkBuddy\\WorkBuddy.exe', stamp: '1:2:3', status: 'Valid', subject: subjects.workbuddy },
-      { path: "C:\\Users\\Tester\\AppData\\Local\\Open'Code\\OpenCode.exe", stamp: '4:5:6', status: 'Valid', subject: subjects.opencode },
-    ]
-    const script = prelude + windowsExternalClientInventoryScript(known) + "\n'KNOWN:' + (@($knownSignatures.Keys | Sort-Object) -join '|')"
-    const result = await runCommand({ executable: resolveWindowsPowerShellExecutable(), argv: ['-NoProfile', '-NonInteractive', '-EncodedCommand', encodeWindowsPowerShellCommand(script)] }, { timeoutMs: 15000, windowsHide: true })
-    const line = result.stdout.split(/\r?\n/).find((entry) => entry.startsWith('KNOWN:'))
-    expect(line).toBe(`KNOWN:${known.map((entry) => entry.path).sort().join('|')}`)
   })
 
   it('detects signed installed desktop applications and current-user Claude Store without executing their binaries', async () => {

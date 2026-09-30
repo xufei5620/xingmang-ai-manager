@@ -238,6 +238,17 @@ jobs:
         # fifteen seconds.
         timeout-minutes: 5
         run: node e2e/renderer-v2-native-close-race.mjs
+      # The one place the main process's PowerShell probes run for real. They
+      # used to run inside the vitest shards, where a cold PowerShell start on a
+      # busy runner could use up the whole budget, return nothing and fail an
+      # unrelated pull request. The unit tests now check the generated scripts
+      # and the parsers without starting a process; this step proves the
+      # compiled scripts still run and still print what the parsers read.
+      - name: Run the PowerShell probes against this runner once
+        # Each probe carries its own bound and the script prints how long each
+        # took; this is the backstop for a hang that outlives them.
+        timeout-minutes: 6
+        run: node e2e/windows-powershell-probes-smoke.mjs
       - run: npm run build:win:ci
       - run: node scripts/verify-packaged-hardening.cjs release/win-unpacked
       - run: node e2e/packaged-hardening-smoke.mjs "release/win-unpacked/星芒AI管理工具.exe"
