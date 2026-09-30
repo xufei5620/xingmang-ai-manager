@@ -6,6 +6,7 @@ import {
   notificationOptions,
   updateBubbleTitle,
   updateCardTitle,
+  updateDiskShortfallText,
   updateFailureFallback,
   updateFailureLabel,
   updateFailureLabels,
@@ -117,5 +118,22 @@ describe('renderer-v2 updates page wording', () => {
   it('explains what to do before installing without internal jargon', () => {
     expect(updateInstallNote).not.toContain('关闭保护');
     expect(updateInstallNote).toContain('保存');
+  });
+});
+
+describe('renderer-v2 update disk shortfall wording', () => {
+  const MB = 1024 ** 2;
+  const blocked = { phase: 'available', currentVersion: '0.2.10', availableVersion: '0.2.11', rollback: false, currentVersionWithdrawn: false, diskShortfall: { neededBytes: 600 * MB, freeBytes: 380 * MB } } as const;
+
+  it('says how much is missing and whether it will download on its own', () => {
+    expect(updateBubbleTitle(blocked)).toBe('新版本先不下载');
+    expect(updateDiskShortfallText(blocked, true)).toBe('新版本先不下载：电脑磁盘只剩 380 MB，装更新大约要 600 MB，还要再清出 220 MB。清出来以后会自动下载，不用你再点。');
+    expect(updateDiskShortfallText(blocked, false)).toContain('现在下载多半会失败');
+  });
+
+  it('stays silent when nothing is blocked or the phase moved on', () => {
+    expect(updateDiskShortfallText({ ...blocked, diskShortfall: null }, true)).toBeNull();
+    expect(updateDiskShortfallText({ ...blocked, phase: 'downloading' }, true)).toBeNull();
+    expect(updateDiskShortfallText(null, true)).toBeNull();
   });
 });

@@ -70,11 +70,13 @@ import {
   skinOptions,
   updateFailureLabel,
   updateCardTitle,
+  updateDiskShortfallText,
   updateInstallNote,
   updatesPageLead,
   withdrawnVersionAdvice,
 } from './registry/business'
 import { tools } from './registry/tools'
+import { updateDiskCleanupDetail } from './registry/tutorials'
 import { clientConnections } from './registry/clients'
 import { canUninstallTool, externalInstallHint, isExternallyManagedInstall } from './features/tools/model'
 import { elevatedInstallNotice, storeAppLaunchNotice } from './features/tools/elevation-notice'
@@ -1078,6 +1080,7 @@ export function UpdatesPage({
   const [isMac, setIsMac] = useState(false)
   const [isWindows, setIsWindows] = useState(false)
   const [autoUpdateSetting, setAutoUpdateSetting] = useState(false)
+  const [diskCleanupOpen, setDiskCleanupOpen] = useState(false)
   useEffect(() => api.onUpdateState(resource.setData), [api, resource.setData])
   useEffect(() => {
     let current = true
@@ -1113,6 +1116,14 @@ export function UpdatesPage({
       async () => resource.setData(await api.downloadUpdate()),
       '',
     )
+  // 空间不够时不拦死：估算是估的，他清出了一点、或者就想试一次，由他决定。
+  const downloadAnyway = () =>
+    void operation.execute(
+      'download',
+      async () => resource.setData(await api.downloadUpdate({ ignoreDiskSpace: true })),
+      '',
+    )
+  const diskShortfallText = updateDiskShortfallText(update, autoUpdateOn)
   // A rejected package leaves the updater in the error phase, where downloadUpdate
   // alone would fail: the retry has to re-check before it has anything to fetch.
   const redownload = () =>
@@ -1214,6 +1225,40 @@ export function UpdatesPage({
             <Progress
               value={update.progress.percent}
               label={`${update.progress.percent.toFixed(0)}%`}
+            />
+          )}
+          {diskShortfallText && (
+            <Notice
+              tone="warn"
+              title="磁盘空间不够，新版本先不下载"
+              body={
+                <>
+                  <p>{diskShortfallText}</p>
+                  {diskCleanupOpen && (
+                    <p data-testid="updates-disk-cleanup">{updateDiskCleanupDetail}</p>
+                  )}
+                </>
+              }
+              testId="updates-disk-shortfall"
+              actions={
+                <>
+                  <Button
+                    size="sm"
+                    icon={BookOpen}
+                    onClick={() => setDiskCleanupOpen((open) => !open)}
+                  >
+                    {diskCleanupOpen ? '收起' : '怎么清理'}
+                  </Button>
+                  <Button
+                    size="sm"
+                    icon={Download}
+                    loading={operation.busy === 'download'}
+                    onClick={downloadAnyway}
+                  >
+                    仍要下载
+                  </Button>
+                </>
+              }
             />
           )}
           {update?.error && (

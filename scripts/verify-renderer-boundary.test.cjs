@@ -26,6 +26,8 @@ const valueImportable = [
   // Codex 桌面端装不上那句话的开头和微软商店链接，主进程与错误框共用一份（第十九批 5）。
   'electron/codex-desktop-install-failure',
   'electron/cli-model-defaults',
+  // 更新因磁盘空间不够没下时那句话，系统通知与首页气泡、更新页共用一份（第二十二批 2）。
+  'electron/disk-space-copy',
   'electron/external-url-blocked',
   'electron/git-runtime',
   'electron/ipc-contract',

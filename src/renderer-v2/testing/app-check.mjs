@@ -2111,6 +2111,34 @@ test('the updates page names the step that failed and offers that step again', a
   } finally { await page.close() }
 })
 
+// 磁盘快满时新版本先不下：更新页和首页气泡都说清差多少，「怎么清理」就地展开步骤，
+//「仍要下载」跳过这一次的空间预检。
+test('the updates page explains a full disk and still lets the user download', async () => {
+  const page = await open('updateCheckFail=1')
+  try {
+    await page.getByTestId('nav-more').click()
+    await page.getByTestId('nav-updates').click()
+    const updates = page.getByTestId('page-updates')
+    await updates.waitFor()
+    await page.evaluate(() => window.v2Test.emit('onUpdateState', {
+      phase: 'available', currentVersion: '0.1.31', availableVersion: '0.1.32', releaseName: null, releaseNotesText: null,
+      checkedAt: new Date().toISOString(), progress: null, error: null, failedStep: null, development: true,
+      diskShortfall: { neededBytes: 600 * 1024 ** 2, freeBytes: 380 * 1024 ** 2 },
+    }))
+    const notice = updates.getByTestId('updates-disk-shortfall')
+    await notice.waitFor()
+    await notice.getByText('还要再清出 220 MB', { exact: false }).waitFor()
+    await page.getByRole('status').getByText('新版本先不下载', { exact: true }).waitFor()
+    await notice.getByRole('button', { name: '怎么清理', exact: true }).click()
+    await notice.getByTestId('updates-disk-cleanup').waitFor()
+    await notice.getByRole('button', { name: '仍要下载', exact: true }).click()
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'downloadUpdate'))
+    const calls = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'downloadUpdate'))
+    assert.deepEqual(calls.at(-1).args, [{ ignoreDiskSpace: true }])
+    await clean(page)
+  } finally { await page.close() }
+})
+
 // Mac 自签包每换一版，第一次读登录信息都会弹「登录」钥匙串密码框；重启确认框里
 // 先打招呼，Windows 没有这回事，不许多这一句。
 test('the restart-to-install dialog warns about the keychain prompt on Mac and the consent window on Windows', async () => {
