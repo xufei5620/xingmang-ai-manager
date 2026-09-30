@@ -14,8 +14,9 @@ before(async () => {
 })
 after(async () => { await browser?.close(); await server?.close() })
 
-async function open(query = 'accelerationPreview=1') {
+async function open(query = 'accelerationPreview=1', { initScript } = {}) {
   const page = await browser.newPage({ viewport: { width: 1280, height: 860 } })
+  if (initScript) await page.addInitScript(initScript)
   await page.clock.install({ time: new Date('2026-09-14T00:00:00Z') })
   await page.clock.pauseAt(new Date('2026-09-14T00:00:01Z'))
   await page.route('**/*', route => route.request().url().startsWith(origin + '/') ? route.continue() : route.abort())
@@ -200,6 +201,41 @@ test('acceleration trial counts only connected time, survives navigation, pauses
     await page.getByTestId('acceleration-session-start').waitFor()
     assert.equal(await remaining(page).innerText(), '00:19:35')
     assert.equal(await page.locator('.acceleration-preview').innerText(), '交互预览')
+    await clean(page)
+  } finally { if (!page.isClosed()) await page.close() }
+})
+
+// React 找得到这个钩子就会在每次提交后调一次 onCommitFiberRoot（React DevTools 用的
+// 就是它），数它就知道界面这段时间重画了几回。
+function countReactCommits() {
+  window.__reactCommits = 0
+  window.__REACT_DEVTOOLS_GLOBAL_HOOK__ = {
+    supportsFiber: true, renderers: new Map(),
+    inject(renderer) { const id = this.renderers.size + 1; this.renderers.set(id, renderer); return id },
+    onCommitFiberRoot() { window.__reactCommits++ },
+    onCommitFiberUnmount() {}, onPostCommitFiberRoot() {}, checkDCE() {},
+  }
+}
+
+test('a running session does not re-render the app every second while another page is open', async () => {
+  const page = await open('accelerationPreview=1', { initScript: countReactCommits })
+  try {
+    await page.getByTestId('acceleration-session-start').click()
+    await page.getByTestId('acceleration-session-stop').waitFor()
+    await page.clock.runFor(3000)
+    const onPage = await page.evaluate(() => window.__reactCommits)
+    await page.clock.runFor(5000)
+    // 加速页自己还是每秒走表，确认钩子确实数得到提交。
+    assert.ok(await page.evaluate(() => window.__reactCommits) - onPage >= 4)
+    await page.getByTestId('nav-home').click()
+    await page.clock.runFor(1000)
+    const onHome = await page.evaluate(() => window.__reactCommits)
+    await page.clock.runFor(10_000)
+    assert.equal(await page.evaluate(() => window.__reactCommits) - onHome, 0)
+    await page.getByTestId('nav-acceleration').click()
+    assert.equal(await remaining(page).innerText(), '00:19:41')
+    await page.getByTestId('acceleration-session-stop').click()
+    await page.getByTestId('acceleration-session-start').waitFor()
     await clean(page)
   } finally { if (!page.isClosed()) await page.close() }
 })
