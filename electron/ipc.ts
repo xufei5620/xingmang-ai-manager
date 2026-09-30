@@ -1991,6 +1991,9 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
       // create keys, call a model, or establish automatic overwrite consent.
       let keys: Awaited<ReturnType<ManagedCliKeyStoreLike['read']>> = []
       try { keys = await options.managedCliKeys!.read(userId) } catch { /* Unknown ownership stays protected. */ }
+      // 开机后第一次读到本账号的配置时，先把指向旧位置的提醒设置改好再报（修不好首页照旧给「修好它」）。
+      // 放在下面的会话复核之前：改的时候换了账号，这次读取照样作废。
+      await service.autoRepairStaleCliHooks?.().catch(() => [])
       const current = accountService.getSessionState()
       if (!current.authenticated || current.account?.userId !== userId || activeSite() !== siteId
         || accountService.getSessionRevision?.() !== revision) throw new Error('账号会话已变更，请重新检测工具配置')

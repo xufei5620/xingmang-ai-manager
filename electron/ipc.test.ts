@@ -2094,6 +2094,25 @@ describe('registerIpcHandlers', () => {
     await expect(result).resolves.toMatchObject({ providers: {} })
   })
 
+  it('fixes stale reminder settings before reading a signed-in account\'s config, and still reads when that fails', async () => {
+    const accountService = accountServiceStub()
+    vi.mocked(accountService.getSessionState).mockReturnValue({ authenticated: true, account: { userId: 7 } } as never)
+    const managedCliKeys: NonNullable<Parameters<typeof registerIpcHandlers>[0]['managedCliKeys']> = {
+      read: vi.fn(async () => []), save: vi.fn(async () => undefined), remove: vi.fn(async () => undefined),
+    }
+    const order: string[] = []
+    const service = serviceStub()
+    const autoRepairStaleCliHooks = vi.fn(async () => { order.push('repair'); return ['codex' as const] })
+    Object.assign(service, { autoRepairStaleCliHooks })
+    vi.mocked(service.getConfig).mockImplementation(() => { order.push('read'); return { providers: {} } as never })
+    register(service, undefined, undefined, accountService, undefined, managedCliKeys)
+    await electronMocks.handlers.get('config:get')!(trustedEvent())
+    expect(order).toEqual(['repair', 'read'])
+
+    autoRepairStaleCliHooks.mockRejectedValueOnce(new Error('disk full'))
+    await expect(electronMocks.handlers.get('config:get')!(trustedEvent())).resolves.toEqual({ providers: {} })
+  })
+
   it('passes the Mac uninstall request through with a per-tool backup and rejects anything else', async () => {
     const create = vi.fn((provider: string) => {
       if (provider === 'codex') throw new Error('没有配置')

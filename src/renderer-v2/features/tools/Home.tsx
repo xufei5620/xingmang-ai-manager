@@ -5,7 +5,7 @@ import { presentExternalClients } from './external-model'
 import { useSharedAccountBalance } from '../app/balance-context'
 import { balanceStatusText } from '../shell/balance-status'
 import { BrandIcon, Button, Card, Dialog, Empty, ListRow, Menu, PageHead, Pill, Progress, ToolRow, useToast } from '../../ui'
-import { accountSwitchTarget, balanceTier, cliHooksNeedRepair, codexNeedsRepair, readyOnceRepaired, subscriptionWarning, canUninstallTool, ccSwitchLeftoverFor, foreignKeyKind, switchAccountLabel, configDirectoryMenuItem, externalInstallHint, greeting, isExternallyManagedInstall, needsManualInstall, ownershipAwaitingAccount, presentTools, providerFor, recommendedVersionVerb, revertVersion, rollbackVersion, toolUpdateOffer, updateButtonHint, versionSubtitle, type ToolboxSnapshot, type ToolId, type ToolPresentation } from './model'
+import { accountSwitchTarget, balanceTier, cliHooksNeedRepair, cliHooksWereAutoRepaired, codexNeedsRepair, readyOnceRepaired, subscriptionWarning, canUninstallTool, ccSwitchLeftoverFor, foreignKeyKind, switchAccountLabel, configDirectoryMenuItem, externalInstallHint, greeting, isExternallyManagedInstall, needsManualInstall, ownershipAwaitingAccount, presentTools, providerFor, recommendedVersionVerb, revertVersion, rollbackVersion, toolUpdateOffer, updateButtonHint, versionSubtitle, type ToolboxSnapshot, type ToolId, type ToolPresentation } from './model'
 import type { BalanceUsage, ToolboxPartitionFailure, ToolsApi } from './api'
 import type { ToolJob } from './useToolbox'
 import type { AccountBootstrapProgress, AccountBootstrapResult } from './account-bootstrap'
@@ -142,6 +142,8 @@ const codexShadowedDetail = '这份配置里有一处 Codex 认不出，打开�
  * 都多报一行错。「修好它」只改这几行，先备份。
  */
 const cliHooksStaleDetail = '工具里的提醒设置指向了旧位置，每次都会多报一行错'
+/** 打开软件时已经替用户改好了：只说一句，原来的设置在「备份」里。 */
+const cliHooksAutoRepairedDetail = '提醒设置指向了旧位置，打开软件时已经自动改好，原来的设置在「备份」里'
 const cliHooksShellChangedDetail = 'Grok 换了命令行，星芒写的提醒设置要跟着改一下，不然每次都会多报一行错'
 
 const foreignKeyDetails = {
@@ -297,6 +299,7 @@ export function Home(props: HomeProps) {
     const openable = tool.configured || repairLaunch
     const hooksStale = snapshot !== null && !ownershipPending && cliHooksNeedRepair(snapshot.config.providers[tool.provider])
     const hooksDetail = snapshot?.config.providers[tool.provider].cliHooksShellChanged ? cliHooksShellChangedDetail : cliHooksStaleDetail
+    const hooksAutoRepaired = snapshot !== null && !ownershipPending && cliHooksWereAutoRepaired(snapshot.config.providers[tool.provider])
     const status = installJob ? 'installing' : tool.error ? 'detectionFailed' : !tool.status.installed ? 'missing'
       : configUnavailable ? 'configUnavailable'
       : ccSwitch ? 'ccSwitch'
@@ -352,7 +355,7 @@ export function Home(props: HomeProps) {
       icon={lastWorkspace ? undefined : tool.status.installed && !bootstrapBusy ? ArrowUpRight : undefined}
       onClick={primary} testId={`tool-${tool.id}-primary`}>{primaryLabel}</Button>
     return <ToolRow key={tool.id} tool={tool.id} status={status}
-      detail={job?.label ?? tool.error ?? (status === 'configChanged' ? configChangedDetail : status === 'codexShadowed' ? codexShadowedDetail : status === 'cliHooksStale' ? hooksDetail : status === 'ccSwitch' && ccSwitch ? ccSwitchDetails[ccSwitch] : foreignKey && status !== 'ccSwitch' ? foreignKeyDetails[foreignKey] : elevationHint ?? desktopKnownIssue ?? undefined)}
+      detail={job?.label ?? tool.error ?? (status === 'configChanged' ? configChangedDetail : status === 'codexShadowed' ? codexShadowedDetail : status === 'cliHooksStale' ? hooksDetail : status === 'ccSwitch' && ccSwitch ? ccSwitchDetails[ccSwitch] : foreignKey && status !== 'ccSwitch' ? foreignKeyDetails[foreignKey] : status === 'ready' && hooksAutoRepaired ? cliHooksAutoRepairedDetail : elevationHint ?? desktopKnownIssue ?? undefined)}
       version={tool.status.installed ? versionSubtitle(tool) ?? '版本暂未识别' : undefined}
       model={tool.status.installed ? tool.source === 'official' ? '官方账号' : tool.model || undefined : undefined}
       progress={job?.percent}
