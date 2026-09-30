@@ -1287,7 +1287,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     {accelerationHelp && <Dialog open title="游戏加速使用说明" onClose={() => setAccelerationHelp(false)} width={480}
       footer={<><Button variant="ghost" onClick={() => { setAccelerationHelp(false); setHelp(true) }}>帮助与客服</Button><Button onClick={() => setAccelerationHelp(false)}>知道了</Button></>}>
       <p>选择线路后点击“开始加速”，连接成功后再打开游戏或启动器。“智能分配”会自动测速并选择可用线路，也可以手动选择。</p>
-      <p>当前适用于部分游戏、启动器和下载场景，实际连接效果以应用内表现为准。TUN 模式暂未开放。</p>
+      <p>当前适用于部分游戏、启动器和下载场景，实际连接效果以应用内表现为准。加速只改这台电脑的系统代理，不接管整台电脑的网络。</p>
       <p>每个账号在本机累计享有 20 分钟免费体验。连接成功后才开始计时，停止后保留剩余时长，下次继续使用，不会每天重置。当前时长在本机保存，设备之间不同步。</p>
       <p>切换页面、缩到托盘或退出游戏都不会停止加速。点击“停止加速”或退出本软件才会断开；免费时长用完后自动停止。</p>
     </Dialog>}
