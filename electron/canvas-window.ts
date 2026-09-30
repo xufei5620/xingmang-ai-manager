@@ -210,6 +210,15 @@ export function createCanvasWindowController(
     packagedBaseUrl: canvasPackagedBaseUrl,
   }
   const externalShell = options.externalShell ?? createExternalShellLauncher()
+  // The popup / navigation hooks cannot await, and a browser that fails to
+  // start (no default browser, association broken) must not surface as an
+  // unhandled rejection. The link itself was already checked against the
+  // allowlist, so the runtime log is the only record support needs.
+  function openExternalInBackground(url: string): void {
+    externalShell.openExternal(url).catch((error: unknown) => {
+      options.runtimeLog.exception('canvas', 'external.open.failed', error)
+    })
+  }
   const handleChannels: string[] = []
   let canvasWindow: BrowserWindow | null = null
   let pendingOpen: Promise<void> | null = null
@@ -1089,7 +1098,7 @@ export function createCanvasWindowController(
     // always denied.
     window.webContents.setWindowOpenHandler(({ url }) => {
       if (isAllowedExternalUrl(url, options.externalUrlAllowlist)) {
-        void externalShell.openExternal(url)
+        openExternalInBackground(url)
       }
       return { action: 'deny' }
     })
@@ -1097,7 +1106,7 @@ export function createCanvasWindowController(
       if (isAllowedAppNavigationUrl(targetUrl, policy)) return
       event.preventDefault()
       if (isAllowedExternalUrl(targetUrl, options.externalUrlAllowlist)) {
-        void externalShell.openExternal(targetUrl)
+        openExternalInBackground(targetUrl)
       }
     })
     // Electron emits this when the sandboxed preload cannot be read or

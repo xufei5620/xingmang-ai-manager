@@ -1,5 +1,5 @@
 # 改更新目录上的 service-status.json：打开或关闭「服务正在维护」提示、撤回坏版本、
-# 分批放量。要把线上退回旧版本，用 rollback-release 工作流（它会顺带在这里撤回）。
+# 分批放量、最低版本（强制更新）。要把线上退回旧版本，用 rollback-release 工作流（它会顺带在这里撤回）。
 # 客户端怎么读见 electron/service-status.ts，一步步的操作见 docs/SERVICE-STATUS.md。
 #
 # 只改这次选了或填了的那几项，其余字段照线上原样保留。凭据与正式发布共用
@@ -31,6 +31,10 @@ on:
         required: false
       rollout:
         description: 分批放量（留空不改；写「0.2.11 20」表示先给两成电脑，none 表示全部放开）
+        type: string
+        required: false
+      minimum_version:
+        description: 最低版本（留空不改；写 0.2.12 表示低于它的必须先更新，none 取消；不能高于线上正在发的版本）
         type: string
         required: false
 
@@ -96,6 +100,33 @@ jobs:
             *) echo "::error::读取线上状态文件失败（HTTP $code），为免覆盖别的开关，这次不改"; exit 1 ;;
           esac
 
+      # 最低版本不许高于线上正在发的版本，否则低于它的人找不到可装的新版本、被挡在门外。
+      # 只在这次要设最低版本时读两份更新清单；读到的版本号交给脚本比较。
+      - name: Read the versions the feed is publishing now
+        id: published
+        env:
+          STATUS_URL: ${{ steps.feed.outputs.url }}
+          MINIMUM_VERSION: ${{ inputs.minimum_version }}
+        run: |
+          set -euo pipefail
+          versions=""
+          trimmed=$(printf '%s' "$MINIMUM_VERSION" | tr -d '[:space:]')
+          if [ -n "$trimmed" ] && [ "$(printf '%s' "$trimmed" | tr '[:upper:]' '[:lower:]')" != "none" ]; then
+            base="${STATUS_URL%/*}"
+            for manifest in latest.yml latest-mac.yml; do
+              code=$(curl --silent --show-error --max-time 30 --output "$RUNNER_TEMP/$manifest" --write-out '%{http_code}' "$base/$manifest")
+              case "$code" in
+                200)
+                  version=$(sed -n 's/^version:[[:space:]]*//p' "$RUNNER_TEMP/$manifest" | head -n 1 | tr -d "'\"[:space:]")
+                  echo "线上 $manifest 的版本：$version"
+                  versions="$versions $version" ;;
+                404) echo "线上没有 $manifest，跳过这个平台" ;;
+                *) echo "::error::读取线上 $manifest 失败（HTTP $code），为免把客户挡在门外，这次不改"; exit 1 ;;
+              esac
+            done
+          fi
+          echo "versions=$versions" >> "$GITHUB_OUTPUT"
+
       # 输入一律经环境变量传给脚本，不拼进命令行：「给用户看的一句话」是自由文本。
       - name: Build the new status file
         env:
@@ -104,6 +135,8 @@ jobs:
           MAINTENANCE_UNTIL: ${{ inputs.until }}
           BAD_VERSIONS: ${{ inputs.bad_versions }}
           ROLLOUT: ${{ inputs.rollout }}
+          MINIMUM_VERSION: ${{ inputs.minimum_version }}
+          PUBLISHED_VERSIONS: ${{ steps.published.outputs.versions }}
         run: |
           set -euo pipefail
           node scripts/service-status.cjs \
@@ -113,7 +146,9 @@ jobs:
             --message "$MAINTENANCE_MESSAGE" \
             --until "$MAINTENANCE_UNTIL" \
             --bad-versions "$BAD_VERSIONS" \
-            --rollout "$ROLLOUT"
+            --rollout "$ROLLOUT" \
+            --minimum-version "$MINIMUM_VERSION" \
+            --published-versions "$PUBLISHED_VERSIONS"
           echo "将要发布："
           cat "$RUNNER_TEMP/service-status.json"
 

@@ -6,7 +6,9 @@ import {
   passwordFormDirty,
   paymentTerminalBody,
   paymentTerminalPresentation,
+  buildTopupBonus,
   resetTopupQuoteForMethod,
+  subscriptionToolsNotice,
   validateTopupAmount,
   subscriptionPaymentMethods,
 } from './pages-account'
@@ -96,6 +98,23 @@ describe('v2 business boundaries', () => {
     })
   })
 
+  it('says a paid subscription is open instead of calling it a top-up', () => {
+    expect(paymentTerminalPresentation('success', false, 'subscription')).toMatchObject({ tone: 'ok', title: '订阅已开通' })
+    expect(paymentTerminalPresentation('failed', false, 'subscription')).toMatchObject({ title: '支付没有完成' })
+    expect(paymentTerminalBody({ status: 'success', tradeNo: 'XM-2' }, 'subscription')).toBe('订单 XM-2 已付款，订阅已开通，正在刷新订阅。')
+  })
+
+  it('tells the customer whether their tools now draw on the subscription', () => {
+    expect(subscriptionToolsNotice({ followsPreference: true }).body).toContain('扣费偏好')
+    expect(subscriptionToolsNotice({ followsPreference: false, switched: ['Claude Code', 'Codex'] })).toMatchObject({
+      tone: 'ok', title: '工具已改用订阅额度', body: expect.stringContaining('Claude Code、Codex'),
+    })
+    expect(subscriptionToolsNotice({ followsPreference: false, switched: [] }).title).toBe('工具不用重新设置')
+    expect(subscriptionToolsNotice({ followsPreference: false, error: '网络连接失败。' })).toMatchObject({
+      tone: 'warn', body: expect.stringContaining('重新写入 Key'),
+    })
+  })
+
   it('tells the user what happens after the payment window closes and where to check', () => {
     expect(paymentTerminalPresentation('closed', true).body).toContain('星芒还在确认到账')
     expect(paymentTerminalPresentation('closed').body).toContain('查看我的订单')
@@ -113,6 +132,24 @@ describe('v2 business boundaries', () => {
     expect(() => validateTopupAmount(10.5, 5)).toThrow('整数')
     expect(() => validateTopupAmount(4, 5)).toThrow('不能低于')
     expect(() => validateTopupAmount(10, Number.NaN)).toThrow('最低充值金额无效')
+  })
+
+  it('turns a backend topup discount into a bonus measured against what the customer pays', () => {
+    const discounts = { 110: 100 / 110, 650: 500 / 650, 1600: 0.625, 4000: 0.5, 20: 1 }
+    expect(buildTopupBonus(110, discounts)).toEqual({ bonus: 10, percent: 10 })
+    expect(buildTopupBonus(650, discounts)).toEqual({ bonus: 150, percent: 30 })
+    expect(buildTopupBonus(1600, discounts)).toEqual({ bonus: 600, percent: 60 })
+    expect(buildTopupBonus(4000, discounts)).toEqual({ bonus: 2000, percent: 100 })
+  })
+
+  it('shows no bonus for full-price, missing, or malformed discounts', () => {
+    expect(buildTopupBonus(20, { 20: 1 })).toBeNull()
+    expect(buildTopupBonus(20, { 20: 1.2 })).toBeNull()
+    expect(buildTopupBonus(20, { 20: 0 })).toBeNull()
+    expect(buildTopupBonus(30, { 20: 0.8 })).toBeNull()
+    expect(buildTopupBonus(20, undefined)).toBeNull()
+    expect(buildTopupBonus(Number.NaN, { 20: 0.8 })).toBeNull()
+    expect(buildTopupBonus(20, {})).toBeNull()
   })
 
   it('invalidates a quote and raises the amount when the payment channel changes', () => {

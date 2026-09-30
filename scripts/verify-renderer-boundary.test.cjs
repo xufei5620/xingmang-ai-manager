@@ -20,6 +20,8 @@ const projectRoot = path.resolve(__dirname, '..')
 // promoting one to a value import has to be a deliberate edit of this file.
 const valueImportable = [
   'electron/acceleration-contract',
+  // 「必须更新」那层提示的「打开下载页」，与主进程外链白名单共用一条网址。
+  'electron/app-download-page',
   'electron/account-key-quota',
   'electron/ai-chat-protocol',
   'electron/catalog',
