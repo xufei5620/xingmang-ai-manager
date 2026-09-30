@@ -222,6 +222,9 @@ async function bisectTrustedEnvironmentSlowness() {
   console.log(`info trusted environment removes: ${removed.join(', ') || '-'}`)
   console.log(`info trusted environment changes: ${changed.join(', ') || '-'}`)
   console.log(`info trusted environment adds: ${added.join(', ') || '-'}`)
+  console.log(`info inherited PSModulePath: ${inherited('psmodulepath')}`)
+  console.log(`info trusted PSModulePath: ${trusted.PSModulePath}`)
+  console.log(`info inherited PSModuleAnalysisCachePath: ${inherited('psmoduleanalysiscachepath')}`)
   function withKey(env, name, value) {
     const next = Object.fromEntries(Object.entries(env).filter(([key]) => key.toLowerCase() !== name.toLowerCase()))
     if (value !== undefined) next[name] = value
@@ -232,16 +235,31 @@ async function bisectTrustedEnvironmentSlowness() {
     ['inherited', process.env],
     ['trusted', trusted],
     ['trusted + inherited PSModulePath', withKey(trusted, 'PSModulePath', inherited('psmodulepath'))],
-    ['trusted without PSModulePath', withKey(trusted, 'PSModulePath', undefined)],
-    ['trusted + inherited PATH', withKey(trusted, 'Path', inherited('path'))],
+    ['trusted + inherited PSModuleAnalysisCachePath', withKey(trusted, 'PSModuleAnalysisCachePath', inherited('psmoduleanalysiscachepath'))],
     ['inherited + trusted PSModulePath', withKey(process.env, 'PSModulePath', trusted.PSModulePath)],
-    ['inherited + trusted PATH', withKey(process.env, 'Path', trusted.PATH)],
-    ['trusted, second run', trusted],
+    ['inherited without PSModuleAnalysisCachePath', withKey(process.env, 'PSModuleAnalysisCachePath', undefined)],
   ]
+  const script = buildWindowsStoreAppLaunchContextScript()
+  const scripts = [
+    ['nothing but startup', 'Write-Output 1'],
+    ['identity only', '[System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value'],
+    ['Get-ItemProperty only', '$p = Get-ItemProperty -LiteralPath "HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System" -ErrorAction SilentlyContinue; Write-Output 1'],
+    ['ConvertTo-Json only', '@{ a = 1 } | ConvertTo-Json -Compress'],
+    ['explicit Import-Module first', 'Import-Module Microsoft.PowerShell.Management, Microsoft.PowerShell.Utility\n' + script],
+  ]
+  for (const [label, body] of scripts) {
+    const startedAt = Date.now()
+    try {
+      const output = await runPowerShell(['-Command', body], trusted)
+      console.log(`info trusted script "${label}": ${JSON.stringify(output.trim().slice(0, 80))} (${Date.now() - startedAt}ms)`)
+    } catch (error) {
+      console.log(`info trusted script "${label}": failed after ${Date.now() - startedAt}ms: ${String(error?.message ?? error).split('\n')[0]}`)
+    }
+  }
   for (const [label, env] of variants) {
     const startedAt = Date.now()
     try {
-      const output = await runPowerShell(['-Command', buildWindowsStoreAppLaunchContextScript()], env)
+      const output = await runPowerShell(['-Command', script], env)
       console.log(`info env variant "${label}": sid=${parseWindowsStoreAppLaunchContext(output).userSid ? 'yes' : 'none'} (${Date.now() - startedAt}ms)`)
     } catch (error) {
       console.log(`info env variant "${label}": failed after ${Date.now() - startedAt}ms: ${String(error?.message ?? error).split('\n')[0]}`)
