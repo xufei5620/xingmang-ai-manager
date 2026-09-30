@@ -115,6 +115,15 @@ describe('RuntimeLogStore', () => {
     expect(redacted.match(/%USERPROFILE%/g)).toHaveLength(3)
   })
 
+  it('resolves idle only after every queued entry has reached the file', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-runtime-log-'))
+    temporaryDirectories.push(directory)
+    const store = new RuntimeLogStore({ directory, appName: '星芒AI管理工具', appVersion: '1.0.0', packaged: false })
+    store.log('error', 'main', 'app.unexpected-exit.relaunched', 'last words')
+    await store.idle()
+    expect(fs.readFileSync(store.filePath, 'utf8')).toContain('app.unexpected-exit.relaunched')
+  })
+
   it('adopts a pre-startup failure record so it reaches feedback and diagnostics', async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-runtime-log-'))
     temporaryDirectories.push(directory)

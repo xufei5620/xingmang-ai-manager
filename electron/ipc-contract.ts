@@ -211,6 +211,14 @@ export interface WindowCapabilities {
   settingsSaveIssue?: SettingsSaveIssue
   // 显卡接连崩溃后，这次启动自动改用了兼容方式显示、用户还没选以后怎么办。缺省 = 没出事。
   displayCompat?: 'auto'
+  // 上次主进程意外退出（没接住的异常），这次打开要说一句。缺省 = 没出事。
+  unexpectedExit?: UnexpectedExitNotice
+}
+export interface UnexpectedExitNotice {
+  /** 最近那次退出后是否自动重开了；10 分钟内第二次就不再重开。 */
+  relaunched: boolean
+  /** 最近几次退出，时间为毫秒时间戳，error 已在主进程打码。 */
+  exits: Array<{ at: number; error: string }>
 }
 export interface SettingsSaveIssue {
   kind: 'disk-full' | 'blocked' | 'other'

@@ -429,6 +429,11 @@ export class RuntimeLogStore {
     })
   }
 
+  /** 已排队的日志都写完（或写失败）时兑现；进程马上要退出时用，免得最后几条留在半路。 */
+  idle(): Promise<void> {
+    return this.runExclusive(() => Promise.resolve())
+  }
+
   private archivePath(index: number): string {
     return `${this.filePath}.${index}`
   }

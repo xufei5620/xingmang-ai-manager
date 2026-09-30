@@ -65,6 +65,7 @@ import { createTrayAccelerationCoordinator, type TrayAccelerationCoordinator } f
 import { createExternalDeepLinkInbox } from './external-deep-links'
 import { createDesktopNotificationController } from './desktop-notifications'
 import { inspectDeviceHardware, isLowEndDevice } from './device-profile'
+import { buildUnexpectedExitRelaunchArgs, describeUnexpectedExitError, recordUnexpectedExit, takeUnexpectedExitNotice, unexpectedExitRecordPath } from './unexpected-exit'
 import { clearDisplayCrashRecord, inspectDisplayLaunch, isDisplayCrash, pruneStaleDisplayCrashRecord, recordDisplayCrash, type DisplayLaunch } from './display-compat'
 import { ConfigBackupStore } from './backups'
 import { crashReportDsn, crashReportSelfTestEnvironmentKey, shouldReportCrashes } from './crash-report'
@@ -146,7 +147,7 @@ import { cliHookEventsDirectory, resolveCliHookScriptPath } from './cli-hooks'
 import { createCliHookEventMonitor } from './cli-hook-events'
 import { createCliKeepAwake } from './cli-keep-awake'
 import { resolveProjectInstructionsTemplatePath } from './project-instructions'
-import { ipcEventChannels, type AccountBalance, type AccountSubscriptionSelf, type SettingsSaveIssue } from './ipc-contract'
+import { ipcEventChannels, type AccountBalance, type AccountSubscriptionSelf, type SettingsSaveIssue, type UnexpectedExitNotice } from './ipc-contract'
 import {
   shouldUseManualUninstallVisualFixture,
   withManualUninstallVisualFixture,
@@ -897,6 +898,19 @@ if (!hasSingleInstanceLock) {
       packaged: app.isPackaged,
     })
     markRuntimeLoggingActive()
+    // 上次是不是意外退出的：读完就记成「说过了」，这次启动里一直挂在窗口能力上，界面据此说一句。
+    let unexpectedExit: UnexpectedExitNotice | null = null
+    try {
+      unexpectedExit = takeUnexpectedExitNotice(unexpectedExitRecordPath(managerDataDirectory), Date.now())
+    } catch (error) {
+      runtimeLog.exception('main', 'app.unexpected-exit.read-failed', error)
+    }
+    if (unexpectedExit) {
+      runtimeLog.log('warn', 'main', 'app.unexpected-exit.previous', unexpectedExit.relaunched ? '上次意外退出后已自动重开' : '上次意外退出，没有自动重开', {
+        relaunched: unexpectedExit.relaunched,
+        exits: unexpectedExit.exits.length,
+      })
+    }
     // desktop-entry registers the platform handlers before this store exists,
     // so their audit entries buffer in the bridge until it is handed over.
     attachPlatformAuditLog((level, source, event, message, detail) => {
@@ -2530,6 +2544,7 @@ if (!hasSingleInstanceLock) {
         lowEndDevice,
         ...(settingsSaveIssue ? { settingsSaveIssue } : {}),
         ...(displayCompatPending ? { displayCompat: 'auto' as const } : {}),
+        ...(unexpectedExit ? { unexpectedExit } : {}),
       }),
       relaunchApp: () => requestRelaunch?.() ?? Promise.resolve(false),
       bypassBrokenProxy: () => proxyBypass.tryBypass(),
@@ -2798,6 +2813,51 @@ if (!hasSingleInstanceLock) {
       const result = await lifecycle.requestQuit()
       if (result !== 'quit-requested') relaunchRequested = false
       return result === 'quit-requested'
+    }
+    // 运行中没人接住的异常：不让 Electron 弹那个英文框、带着坏状态接着跑，而是记一笔、
+    // 收拾好加速和聊天记录后退出，10 分钟内头一次就自动重开（见 unexpected-exit.ts）。
+    // 注册了自己的 uncaughtException 监听，Electron 自带的那个弹框就不再出现。
+    let unexpectedExitStarted = false
+    let appWillQuit = false
+    app.once('will-quit', () => { appWillQuit = true })
+    const onUnexpectedException = (error: Error) => {
+      // 用户自己在退出的路上出的错不重开；同一次退出里再出错也只处理第一次。
+      if (unexpectedExitStarted || appWillQuit) return
+      unexpectedExitStarted = true
+      const windowVisible = !mainWindow.isDestroyed() && mainWindow.isVisible()
+      let relaunch = false
+      try {
+        relaunch = recordUnexpectedExit(unexpectedExitRecordPath(managerDataDirectory), {
+          now: Date.now(),
+          error: describeUnexpectedExitError(error, os.homedir()),
+        }).relaunch
+      } catch (cause) {
+        runtimeLog.exception('main', 'app.unexpected-exit.record-failed', cause)
+      }
+      runtimeLog.log('error', 'main', relaunch ? 'app.unexpected-exit.relaunched' : 'app.unexpected-exit.suppressed',
+        relaunch ? '主进程意外出错，退出后自动重开' : '主进程意外出错，10 分钟内已重开过，这次不再重开', { windowVisible })
+      // 开着加速时系统代理指着本机端口，不断开就退，整台电脑上不了网；错误报告也等它发完。
+      // 限时 3 秒：坏掉的状态可能让这些永远等不完。
+      const settle = Promise.allSettled([
+        crashReporter.flush(),
+        acceleration?.stopAll(),
+        chatHistoryStore.idle(),
+      ]).then(() => runtimeLog.idle())
+      void Promise.race([settle, new Promise((resolve) => { setTimeout(resolve, 3_000).unref() })]).finally(() => {
+        try {
+          if (relaunch) app.relaunch({ args: buildUnexpectedExitRelaunchArgs(process.argv.slice(1), windowVisible) })
+        } finally {
+          app.exit(1)
+        }
+      })
+    }
+    process.on('uncaughtException', onUnexpectedException)
+    app.once('will-quit', () => { process.off('uncaughtException', onUnexpectedException) })
+    // 真机上演「意外退出」用：打包版也认，设了它启动 30 秒后主进程抛一次没人接的异常。
+    // 重开出来的进程带着同一个环境变量，会再退一次，正好演「10 分钟内第二次不再重开」。
+    if (process.env.XINGMANG_SIMULATE_MAIN_CRASH === '1') {
+      runtimeLog.log('warn', 'main', 'app.unexpected-exit.simulate', '已设置模拟意外退出，30 秒后触发')
+      setTimeout(() => { throw new Error('模拟的主进程意外退出（XINGMANG_SIMULATE_MAIN_CRASH）') }, 30_000).unref()
     }
     // 更新页「重启并安装」和 Mac 下载完自动安装都会让安装器发起退出：先把退出前
     // 的清理跑完（断开加速、还原系统代理，安装器会结束安装目录下的所有进程），

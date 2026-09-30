@@ -53,14 +53,14 @@ import { NodeReplaceDialog } from './features/tools/NodeReplaceDialog'
 import { canReplaceNode, describeNodeReplaceOutcome } from './features/tools/node-replace'
 import { StartupNotices } from './features/app/StartupNotices'
 import { MaintenanceNotice, maintenanceNoticeKey } from './features/app/MaintenanceNotice'
-import { crashReportingNotice, displayCompatNotice, displayRelaunchNotice, settingsSaveNotice, startupCheckFailure, startupCheckLogContext, startupDiagnosticsIssues, updatedNotice, vaultRecoveredNotice, withStartupNotice, withoutStartupNotice, type StartupCheckId, type StartupNotice } from './features/app/startup-notice'
+import { crashReportingNotice, displayCompatNotice, displayRelaunchNotice, settingsSaveNotice, startupCheckFailure, startupCheckLogContext, startupDiagnosticsIssues, unexpectedExitNotice, updatedNotice, vaultRecoveredNotice, withStartupNotice, withoutStartupNotice, type StartupCheckId, type StartupNotice } from './features/app/startup-notice'
 import { readLocalPreference, writeLocalPreference } from './features/app/preferences'
 import { currentWindowOs, windowOsFor } from './features/app/window-os'
 import { nextUiScale, uiScaleShortcutFor, type UiScaleShortcut } from './features/app/ui-scale-shortcut'
 import { rememberTourPending, rememberTourSeen, tourReplayPending } from './features/shell/tour-state'
 import { onboardingPreviewEnabled } from './features/app/dev-preview'
 import { deepLinkReadErrorText, supportQrFallbackText } from './features/app/fallback-messages'
-import { SupportIdentity, buildLastFailureLine, buildSupportIdentityLine, type SupportFailure } from './features/app/SupportIdentity'
+import { SupportIdentity, buildLastFailureLine, buildSupportBundle, buildSupportIdentityLine, type SupportFailure } from './features/app/SupportIdentity'
 import { KeyRewriteSkippedError, bootstrapAccountTools, skippedNamedProviders, describeAccountBootstrapFailure, describeAccountBootstrapResult, type AccountBootstrapLogLine, type AccountBootstrapMode, type AccountBootstrapProgress, type AccountBootstrapResult } from './features/tools/account-bootstrap'
 import { rewritableKeyProviders } from './features/tools/connection-check'
 import { applyManualSourceMarker, getSourceMarkerStorage } from './features/tools/source-marker'
@@ -309,6 +309,12 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       if (settingsSave) noteStartupCheck(settingsSave)
       const displayCompat = displayCompatNotice(result.capabilities)
       if (displayCompat) noteStartupCheck(displayCompat)
+      const unexpectedExit = unexpectedExitNotice(result.capabilities)
+      if (unexpectedExit) {
+        noteStartupCheck(unexpectedExit)
+        // 帮助框的「最近一次出错」也记上这一次：他没点卡片、直接去找客服时同样带得上。
+        if (unexpectedExit.action && 'supportFailure' in unexpectedExit.action) setLastFailure(unexpectedExit.action.supportFailure)
+      }
       if (result.settings.checkUpdatesOnStartup && result.update.phase !== 'disabled') {
         void app.startupUpdate().then((checked) => { if (current) setUpdate(checked) }).catch((cause) => {
           if (current) noteStartupCheck(startupCheckFailure('update', errorMessage(cause, '更新检查没有完成')))
@@ -1299,6 +1305,14 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     <StartupNotices notices={startupNotices} onDismiss={dismissStartupNotice}
       leading={maintenance && maintenanceKey !== dismissedMaintenance ? <MaintenanceNotice maintenance={maintenance} onDismiss={() => setDismissedMaintenance(maintenanceKey)} /> : undefined}
       onOpen={(id, action) => {
+        if ('supportFailure' in action) {
+          // 复制上了才收起卡片；没复制上就打开帮助框，那里的文字能手动选中复制。
+          const text = buildSupportBundle(supportInput, action.supportFailure)
+          const copied = navigator.clipboard?.writeText ? navigator.clipboard.writeText(text) : Promise.reject(new Error('clipboard unavailable'))
+          void copied.then(() => { dismissStartupNotice(id); toast.show('已复制，发给客服就行', 'ok') },
+            () => { setHelp(true); toast.show('没复制上，请在「帮助与客服」里手动选中文字复制。', 'warn') })
+          return
+        }
         dismissStartupNotice(id)
         if ('login' in action) setAuth('login')
         else if ('page' in action) navigate(action.page)
