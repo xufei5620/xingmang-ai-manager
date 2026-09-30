@@ -52,6 +52,7 @@ import {
 import { buildMacosCodexAppLaunchPlan, type inspectMacosCodexApp, type MacosCodexAppInspection } from './macos-codex-app'
 import { resolveSystemWingetExecutable, type SystemWingetResolution } from './node-runtime'
 import { describeProbeFailure } from './probe-failure'
+import { downloadWithResume, DownloadStalledError, type ResumableDownloadOptions } from './download-retry'
 import { resolveWindowsExplorerExecutable } from './system-shell'
 import {
   activateCodexDesktop as activateCodexDesktopDefault,
@@ -82,6 +83,7 @@ import {
   isPlainCodexDesktopInstallMessage,
   type CodexDesktopInstallFailureReason,
 } from './codex-desktop-install-failure'
+import { codexDesktopKnownIssueLaunchSentence, resolveCodexDesktopKnownIssue } from './codex-desktop-known-issues'
 import {
   inspectWindowsStoreAppLaunchContext,
   inspectWindowsStoreAvailability,
@@ -185,6 +187,7 @@ export interface CodexDesktopLaunchWaitOutcome {
 export function describeCodexDesktopLaunchFailure(
   context: CodexDesktopWindowsLaunchContext,
   outcome?: CodexDesktopLaunchWaitOutcome,
+  knownIssueVersion?: string | null,
 ): string {
   const block = resolveStoreAppLaunchBlock(context)
   if (block === 'builtInAdministrator') {
@@ -194,6 +197,14 @@ export function describeCodexDesktopLaunchFailure(
   if (block === 'uacDisabled') {
     return `${codexDesktopNotStartedPrefix}：这台电脑关掉了 Windows 的「用户账户控制」，`
       + 'Windows 在这种设置下常常打不开从应用商店装的软件。请联系客服，帮你把它打开后再试。'
+  }
+  // 装着的正是已知打不开的那一版：不用再叫客户去开始菜单自己分辨是谁的问题，
+  // 直接说清楚，并给命令行版这条路（第十九批 7）。账户设置那两种更具体，先说它们。
+  if (knownIssueVersion) {
+    const waited = outcome
+      ? `等了 ${outcome.waitedSeconds} 秒，${outcome.processSeen ? 'Codex 已经启动，但它的窗口一直没出来' : 'Codex 没有启动起来'}。`
+      : '等了将近一分钟，没有等到它的窗口。'
+    return `${codexDesktopNotStartedPrefix}：${waited}${codexDesktopKnownIssueLaunchSentence(knownIssueVersion)}`
   }
   if (!outcome) {
     return `${codexDesktopNotStartedPrefix}：等了将近一分钟，没有等到它的窗口。`
@@ -383,6 +394,8 @@ export interface CodexDesktopDownloadProgress {
   transferred: number
   total: number
   percent: number
+  /** 网络断了一下、正要在同一条线路上接着下时为 true。 */
+  resuming?: boolean
 }
 
 export interface CodexDesktopDownloadResult {
@@ -956,104 +969,88 @@ export async function downloadCodexDesktopPackage(
   onProgress: (progress: CodexDesktopDownloadProgress) => void,
   fetchImplementation: typeof fetch,
   cancelSignal?: AbortSignal,
+  resumeOptions: Pick<ResumableDownloadOptions, 'wait' | 'idleTimeoutMs'> = {},
 ): Promise<CodexDesktopDownloadResult> {
-  const controller = new AbortController()
-  const responseTimeout = setTimeout(() => controller.abort(), 20_000)
-  // 取消和超时都会中止这次请求，但用户看到的原因必须分得开：
-  // 下面的 catch 靠 cancelSignal 判断，而不是把两者都说成「下载超时」。
-  const abortOnCancel = () => controller.abort(cancelSignal?.reason)
-  if (cancelSignal?.aborted) abortOnCancel()
-  cancelSignal?.addEventListener('abort', abortOnCancel, { once: true })
-  let file: fs.promises.FileHandle | null = null
+  let total = 0
+  let lastPercent = -1
+  const percentOf = (transferred: number) => Math.min(100, Math.floor((transferred / total) * 100))
   try {
-    const response = await fetchTrustedCodexDesktopResource(source.url, {
-      headers: { Accept: 'application/vnd.ms-appx, application/octet-stream' },
-      signal: controller.signal,
-    }, fetchImplementation)
-    clearTimeout(responseTimeout)
-    if (!response.ok) throw new Error(`${source.label}返回 HTTP ${response.status}`)
-
-    const contentType = response.headers.get('content-type')?.toLowerCase() ?? ''
-    if (
-      !contentType.includes('application/vnd.ms-appx')
-      && !contentType.includes('application/octet-stream')
-      && !contentType.includes('binary/octet-stream')
-    ) {
-      throw new Error(`${source.label}返回的不是 MSIX 文件（Content-Type: ${contentType || '缺失'}）`)
-    }
-
-    const total = Number(response.headers.get('content-length'))
-    if (!Number.isSafeInteger(total) || total < minimumCodexDesktopPackageBytes) {
-      throw new Error(`${source.label}返回的安装包大小无效`)
-    }
-    if (total > maximumCodexDesktopPackageBytes) {
-      throw new Error(`${source.label}返回的安装包超过 1.5 GB 安全上限`)
-    }
-    if (
-      source.expectedContentLength !== undefined
-      && total !== source.expectedContentLength
-    ) {
-      throw new Error(
-        `${source.label}返回的 Content-Length 与镜像清单不一致：应为 ${source.expectedContentLength} 字节，实际 ${total} 字节`,
-      )
-    }
-    if (!response.body) throw new Error(`${source.label}未返回安装包内容`)
-
-    file = await fs.promises.open(destination, 'wx', 0o600)
-    const reader = response.body.getReader()
-    const sha256 = createHash('sha256')
-    let transferred = 0
-    let lastPercent = -1
-    while (true) {
-      const idleTimeout = setTimeout(() => controller.abort(), 45_000)
-      let chunk: ReadableStreamReadResult<Uint8Array>
-      try {
-        chunk = await reader.read()
-      } finally {
-        clearTimeout(idleTimeout)
-      }
-      if (chunk.done) break
-      if (!chunk.value?.byteLength) continue
-      transferred += chunk.value.byteLength
-      if (transferred > total || transferred > maximumCodexDesktopPackageBytes) {
-        throw new Error(`${source.label}返回的数据超过声明的安装包大小`)
-      }
-      sha256.update(chunk.value)
-      await file.write(chunk.value)
-      const percent = Math.min(100, Math.floor((transferred / total) * 100))
-      if (percent !== lastPercent) {
+    const download = await downloadWithResume({
+      targetPath: destination,
+      fileMode: 0o600,
+      maximumBytes: maximumCodexDesktopPackageBytes,
+      oversizeMessage: `${source.label}返回的数据超过声明的安装包大小`,
+      signal: cancelSignal,
+      responseTimeoutMs: 20_000,
+      idleTimeoutMs: 45_000,
+      ...resumeOptions,
+      request: (headers, signal) => fetchTrustedCodexDesktopResource(source.url, {
+        headers: { Accept: 'application/vnd.ms-appx, application/octet-stream', ...headers },
+        signal,
+      }, fetchImplementation),
+      acceptResponse: (response) => {
+        if (!response.ok) throw new Error(`${source.label}返回 HTTP ${response.status}`)
+        const contentType = response.headers.get('content-type')?.toLowerCase() ?? ''
+        if (
+          !contentType.includes('application/vnd.ms-appx')
+          && !contentType.includes('application/octet-stream')
+          && !contentType.includes('binary/octet-stream')
+        ) {
+          throw new Error(`${source.label}返回的不是 MSIX 文件（Content-Type: ${contentType || '缺失'}）`)
+        }
+        const declared = Number(response.headers.get('content-length'))
+        if (!Number.isSafeInteger(declared) || declared < minimumCodexDesktopPackageBytes) {
+          throw new Error(`${source.label}返回的安装包大小无效`)
+        }
+        if (declared > maximumCodexDesktopPackageBytes) {
+          throw new Error(`${source.label}返回的安装包超过 1.5 GB 安全上限`)
+        }
+        if (
+          source.expectedContentLength !== undefined
+          && declared !== source.expectedContentLength
+        ) {
+          throw new Error(
+            `${source.label}返回的 Content-Length 与镜像清单不一致：应为 ${source.expectedContentLength} 字节，实际 ${declared} 字节`,
+          )
+        }
+        if (!response.body) throw new Error(`${source.label}未返回安装包内容`)
+        total = declared
+        return declared
+      },
+      onProgress: (transferred) => {
+        const percent = percentOf(transferred)
+        if (percent === lastPercent) return
         lastPercent = percent
         onProgress({ transferred, total, percent })
-      }
+      },
+      onResume: (transferred) => {
+        onProgress({ transferred, total, percent: percentOf(transferred), resuming: true })
+      },
+    })
+    if (download.size !== total) {
+      throw new Error(`${source.label}下载不完整：应为 ${total} 字节，实际 ${download.size} 字节`)
     }
-    if (transferred !== total) {
-      throw new Error(`${source.label}下载不完整：应为 ${total} 字节，实际 ${transferred} 字节`)
-    }
-    const sha256Base64 = sha256.digest('base64')
+    const sha256Base64 = download.sha256.toString('base64')
     if (
       source.expectedSha256Base64 !== undefined
       && sha256Base64 !== source.expectedSha256Base64
     ) {
       throw new Error(`${source.label}安装包 SHA-256 与镜像清单不一致，文件可能已损坏`)
     }
-    await file.sync()
-    return { transferred, total, sha256Base64 }
+    return { transferred: download.size, total, sha256Base64 }
   } catch (error) {
-    // reason 兜一层:本函数是导出的,调用方给的信号不一定带 reason,
-    // 少了这一层就会 throw undefined,上层只能报一句没有内容的失败。
-    const cause = cancelSignal?.aborted
-      ? cancelSignal.reason ?? new InstallCancelledError()
-      : error instanceof Error && error.name === 'AbortError'
-        ? new Error(`${source.label}连接或下载超时`)
-        : error
-    await file?.close().catch(() => undefined)
-    file = null
     await fs.promises.rm(destination, { force: true }).catch(() => undefined)
-    throw cause
-  } finally {
-    clearTimeout(responseTimeout)
-    cancelSignal?.removeEventListener('abort', abortOnCancel)
-    await file?.close().catch(() => undefined)
+    // 取消和超时都会中止这次请求，但用户看到的原因必须分得开：靠 cancelSignal
+    // 判断，而不是把两者都说成「下载超时」。reason 兜一层：本函数是导出的，调用方
+    // 给的信号不一定带 reason，少了这一层就会 throw undefined。
+    if (cancelSignal?.aborted) throw cancelSignal.reason ?? new InstallCancelledError()
+    if (
+      error instanceof DownloadStalledError
+      || (error instanceof Error && error.name === 'AbortError')
+    ) {
+      throw new Error(`${source.label}连接或下载超时`)
+    }
+    throw error
   }
 }
 
@@ -2720,14 +2717,16 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
             message: `${attemptNotice} Codex 桌面端 ${release.version}（0%）`,
           })
         },
-        onProgress: (candidate, { percent }) => {
+        onProgress: (candidate, { percent, resuming }) => {
           const release = candidate.release
           const source = candidate.packageSource
           if (!release || !source) return
           sendCodexDesktopInstallProgress(target, {
             phase: 'downloading',
             percent,
-            message: `${attemptNotice ?? `正在从${source.label}下载`} Codex 桌面端 ${release.version}（${percent}%）`,
+            message: resuming
+              ? `网络断了一下，正在从${source.label}接着下载 Codex 桌面端 ${release.version}（已下 ${percent}%）`
+              : `${attemptNotice ?? `正在从${source.label}下载`} Codex 桌面端 ${release.version}（${percent}%）`,
           })
         },
         validatePackage: async (candidate) => {
@@ -3276,6 +3275,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
       throw new Error(describeCodexDesktopLaunchFailure(
         launchContext,
         waitedSeconds === undefined ? undefined : { waitedSeconds, processSeen: activationProcessId !== null },
+        resolveCodexDesktopKnownIssue([desktopApp.version, desktopApp.appVersion]),
       ))
     }
     if (cdpPort !== null) {

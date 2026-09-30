@@ -21,6 +21,8 @@ export type BusinessPageProps = Omit<BusinessActions, 'navigate'> & {
   refresh?: () => void
   accountTab?: Parameters<typeof AccountPage>[0]['initialTab']
   accountTabRequest?: number
+  /** 从活动卡片点某一档进来时要选好的充值金额；缺省 = 充值页照常从默认金额开始。 */
+  accountRechargeAmount?: number
   /** 教程页要停在哪一章；缺省 = 从第一章开始（旧行为）。 */
   tutorialTopic?: Parameters<typeof TutorialPage>[0]['topic']
   paymentReturn?: { sequence: number; order: string | null }
@@ -32,6 +34,9 @@ export type BusinessPageProps = Omit<BusinessActions, 'navigate'> & {
   onToolConfigSaved?: () => void
   /** 工具设置窗口保存成功并读回之后的信号，用来收起密钥页「还在用刚撤销的密钥」（#546）。 */
   toolConfigConfirmed?: Parameters<typeof AccountPage>[0]['toolConfigConfirmed']
+  /** 订阅开通后把用得上它的工具换过去；缺省 = 不换（旧行为）。 */
+  onSubscriptionActivated?: Parameters<typeof AccountPage>[0]['onSubscriptionActivated']
+  onSubscriptionPurchased?: () => void
 }
 
 export function BusinessPage({
@@ -39,12 +44,15 @@ export function BusinessPage({
   page,
   accountTab,
   accountTabRequest,
+  accountRechargeAmount,
   tutorialTopic,
   paymentReturn,
   onSessionsChanged,
   onBackupRestored,
   onToolConfigSaved,
   toolConfigConfirmed,
+  onSubscriptionActivated,
+  onSubscriptionPurchased,
   ...actions
 }: BusinessPageProps) {
   if (page === 'account')
@@ -53,6 +61,7 @@ export function BusinessPage({
         api={api}
         initialTab={accountTab}
         tabRequest={accountTabRequest}
+        rechargeAmount={accountRechargeAmount}
         paymentReturn={paymentReturn}
         onLogin={actions.openLogin}
         onAccountChanged={actions.onAccountChanged ?? actions.refresh}
@@ -61,6 +70,8 @@ export function BusinessPage({
         onConfigureTool={actions.openConfig}
         onToolConfigSaved={onToolConfigSaved}
         toolConfigConfirmed={toolConfigConfirmed}
+        onSubscriptionActivated={onSubscriptionActivated}
+        onSubscriptionPurchased={onSubscriptionPurchased}
         onOpenHelp={actions.openHelp}
       />
     )

@@ -65,6 +65,7 @@ import { createTrayAccelerationCoordinator, type TrayAccelerationCoordinator } f
 import { createExternalDeepLinkInbox } from './external-deep-links'
 import { createDesktopNotificationController } from './desktop-notifications'
 import { inspectDeviceHardware, isLowEndDevice } from './device-profile'
+import { buildUnexpectedExitRelaunchArgs, describeUnexpectedExitError, recordUnexpectedExit, takeUnexpectedExitNotice, unexpectedExitRecordPath } from './unexpected-exit'
 import { clearDisplayCrashRecord, inspectDisplayLaunch, isDisplayCrash, pruneStaleDisplayCrashRecord, recordDisplayCrash, type DisplayLaunch } from './display-compat'
 import { ConfigBackupStore } from './backups'
 import { crashReportDsn, crashReportSelfTestEnvironmentKey, shouldReportCrashes } from './crash-report'
@@ -120,7 +121,10 @@ import { buildFeedbackEnvironmentLines, buildFeedbackRuntimeLines, pickFeedbackR
 import { managedCliRoot } from './managed-cli-paths'
 import { buildFeedbackSelfCheckLines, type FeedbackConnectionRecord } from './feedback-self-check'
 import { rootedMainServiceOptions } from './main-service-options'
-import { buildMacosInstallLocationNotice, inspectMacosInstallLocation } from './macos-install-location'
+import {
+  buildMacosInstallLocationNotice, buildMacosMoveFailureNotice, inspectMacosInstallLocation,
+  moveMacosAppToApplications, type MacosInstallLocationChoice, type MacosInstallLocationNotice,
+} from './macos-install-location'
 import { privacyPolicyUrl, relaySiteExternalUrls, relaySites, resolveRelaySite, sub2ApiSupportServiceUrl, supportServiceUrl, userAgreementUrl } from './relay-sites'
 import { createPaymentWindowController } from './payment-window'
 import { createPaymentOrderStatusReader } from './payment-status-reader'
@@ -148,7 +152,7 @@ import { cliHookEventsDirectory, resolveCliHookScriptPath } from './cli-hooks'
 import { createCliHookEventMonitor } from './cli-hook-events'
 import { createCliKeepAwake } from './cli-keep-awake'
 import { resolveProjectInstructionsTemplatePath } from './project-instructions'
-import { ipcEventChannels, type AccountBalance, type AccountSubscriptionSelf, type AppUninstallRequest, type SettingsSaveIssue } from './ipc-contract'
+import { ipcEventChannels, type AccountBalance, type AccountSubscriptionSelf, type AppUninstallRequest, type SettingsSaveIssue, type UnexpectedExitNotice } from './ipc-contract'
 import {
   shouldUseManualUninstallVisualFixture,
   withManualUninstallVisualFixture,
@@ -611,6 +615,20 @@ if (app.isPackaged && hasDisallowedPackagedDebugSwitch(process.argv)) {
   process.exit(1)
 }
 
+// cancelId 指向的按钮也在 choices 里，所以按 Esc 和点那颗按钮走同一条路。
+function askMacosInstallLocation(notice: MacosInstallLocationNotice): MacosInstallLocationChoice {
+  const answer = dialog.showMessageBoxSync({
+    type: 'warning',
+    title: notice.title,
+    message: notice.message,
+    detail: notice.detail,
+    buttons: [...notice.buttons],
+    defaultId: notice.defaultId,
+    cancelId: notice.cancelId,
+  })
+  return notice.choices[answer] ?? 'quit'
+}
+
 /** Resolved once, up front, so recording a failure never depends on a step that
  *  might itself be the thing that failed. */
 function startupLogLocation(): { userDataDirectory: string | null } {
@@ -918,6 +936,19 @@ if (!hasSingleInstanceLock) {
     }
     process.on('uncaughtExceptionMonitor', onUncaughtException)
     process.on('unhandledRejection', onUnhandledRejection)
+    // 上次是不是意外退出的：读完就记成「说过了」，这次启动里一直挂在窗口能力上，界面据此说一句。
+    let unexpectedExit: UnexpectedExitNotice | null = null
+    try {
+      unexpectedExit = takeUnexpectedExitNotice(unexpectedExitRecordPath(managerDataDirectory), Date.now())
+    } catch (error) {
+      runtimeLog.exception('main', 'app.unexpected-exit.read-failed', error)
+    }
+    if (unexpectedExit) {
+      runtimeLog.log('warn', 'main', 'app.unexpected-exit.previous', unexpectedExit.relaunched ? '上次意外退出后已自动重开' : '上次意外退出，没有自动重开', {
+        relaunched: unexpectedExit.relaunched,
+        exits: unexpectedExit.exits.length,
+      })
+    }
     // desktop-entry registers the platform handlers before this store exists,
     // so their audit entries buffer in the bridge until it is handed over.
     attachPlatformAuditLog((level, source, event, message, detail) => {
@@ -970,16 +1001,28 @@ if (!hasSingleInstanceLock) {
         location: installLocation,
         appPath: app.getAppPath(),
       })
-      const answer = dialog.showMessageBoxSync({
-        type: 'warning',
-        title: notice.title,
-        message: notice.message,
-        detail: notice.detail,
-        buttons: [...notice.buttons],
-        defaultId: notice.defaultId,
-        cancelId: notice.cancelId,
-      })
-      if (answer === notice.cancelId) {
+      const choice = askMacosInstallLocation(notice)
+      let proceed = choice === 'continue'
+      if (choice === 'move') {
+        const outcome = moveMacosAppToApplications((options) => app.moveToApplicationsFolder(options))
+        if (outcome.kind === 'moved') {
+          // Electron 已经复制好，正在退出并从「应用程序」里重新打开，这一份不能再往下启动。
+          runtimeLog.log('info', 'main', 'app.install-location.moved', '已移到「应用程序」，正在重新打开', {
+            location: installLocation,
+            conflict: outcome.conflict,
+          })
+          return
+        }
+        if (outcome.kind === 'failed') {
+          runtimeLog.exception('main', 'app.install-location.move-failed', outcome.error)
+        } else {
+          runtimeLog.log('warn', 'main', 'app.install-location.move-cancelled', '移到「应用程序」时取消了授权', {
+            conflict: outcome.conflict,
+          })
+        }
+        proceed = askMacosInstallLocation(buildMacosMoveFailureNotice(installLocation, outcome)) === 'continue'
+      }
+      if (!proceed) {
         runtimeLog.log('info', 'main', 'app.install-location.quit', '用户选择退出以移动程序位置')
         app.quit()
         return
@@ -1733,6 +1776,10 @@ if (!hasSingleInstanceLock) {
       const realm = accounts.getSiteId() === 'solov-api' ? 'api-account' : 'xm-account'
       return `${realm}:${state.authenticated && state.account ? state.account.userId : 'guest'}`
     }
+    runtimeLog.attachAccountDescriber(() => {
+      const state = accountService.getSessionState()
+      return { authenticated: state.authenticated && Boolean(state.account), userId: state.account?.userId }
+    })
     readExternalClientAccountId = () => {
       const state = accountService.getSessionState()
       return state.authenticated && state.account ? JSON.stringify([accounts.getSiteId(), state.account.userId]) : null
@@ -2551,6 +2598,7 @@ if (!hasSingleInstanceLock) {
         lowEndDevice,
         ...(settingsSaveIssue ? { settingsSaveIssue } : {}),
         ...(displayCompatPending ? { displayCompat: 'auto' as const } : {}),
+        ...(unexpectedExit ? { unexpectedExit } : {}),
       }),
       relaunchApp: () => requestRelaunch?.() ?? Promise.resolve(false),
       ...(process.platform === 'darwin'
@@ -2826,6 +2874,56 @@ if (!hasSingleInstanceLock) {
       const result = await lifecycle.requestQuit()
       if (result !== 'quit-requested') relaunchRequested = false
       return result === 'quit-requested'
+    }
+    // 运行中没人接住的异常：不让 Electron 弹那个英文框、带着坏状态接着跑，而是记一笔、
+    // 收拾好加速和聊天记录后退出，10 分钟内头一次就自动重开（见 unexpected-exit.ts）。
+    // 注册了自己的 uncaughtException 监听，Electron 自带的那个弹框就不再出现。
+    const simulateUnexpectedExit = process.env.XINGMANG_SIMULATE_MAIN_CRASH === '1'
+    let unexpectedExitStarted = false
+    let appWillQuit = false
+    app.once('will-quit', () => { appWillQuit = true })
+    const onUnexpectedException = (error: Error) => {
+      // 用户自己在退出的路上出的错不重开；同一次退出里再出错也只处理第一次。
+      if (unexpectedExitStarted || appWillQuit) return
+      unexpectedExitStarted = true
+      const windowVisible = !mainWindow.isDestroyed() && mainWindow.isVisible()
+      let relaunch = false
+      try {
+        relaunch = recordUnexpectedExit(unexpectedExitRecordPath(managerDataDirectory), {
+          now: Date.now(),
+          error: describeUnexpectedExitError(error, os.homedir()),
+          // 开发态和自动化冒烟里不重开：测试框架看得到退出就够了，再拉起一个进程只会留下没人管的窗口。
+          // 设了模拟开关的开发态照样重开，方便不打包也能演一遍。
+          allowRelaunch: app.isPackaged || simulateUnexpectedExit,
+        }).relaunch
+      } catch (cause) {
+        runtimeLog.exception('main', 'app.unexpected-exit.record-failed', cause)
+      }
+      runtimeLog.log('error', 'main', relaunch ? 'app.unexpected-exit.relaunched' : 'app.unexpected-exit.suppressed',
+        relaunch ? '主进程意外出错，退出后自动重开' : '主进程意外出错，这次不自动重开（10 分钟内已重开过，或不是打包版）', { windowVisible })
+      // 开着加速时系统代理指着本机端口，不断开就退，整台电脑上不了网；错误报告也等它发完。
+      // 限时 3 秒：坏掉的状态可能让这些永远等不完。
+      // 每一步都包进 then：坏掉的状态下哪一步同步抛错，也不能拦住后面的退出。
+      const settle = Promise.allSettled([
+        Promise.resolve().then(() => crashReporter.flush()),
+        Promise.resolve().then(() => acceleration?.stopAll()),
+        Promise.resolve().then(() => chatHistoryStore.idle()),
+      ]).then(() => runtimeLog.idle())
+      void Promise.race([settle, new Promise((resolve) => { setTimeout(resolve, 3_000).unref() })]).finally(() => {
+        try {
+          if (relaunch) app.relaunch({ args: buildUnexpectedExitRelaunchArgs(process.argv.slice(1), windowVisible) })
+        } finally {
+          app.exit(1)
+        }
+      })
+    }
+    process.on('uncaughtException', onUnexpectedException)
+    app.once('will-quit', () => { process.off('uncaughtException', onUnexpectedException) })
+    // 真机上演「意外退出」用：打包版也认，设了它启动 30 秒后主进程抛一次没人接的异常。
+    // 重开出来的进程带着同一个环境变量，会再退一次，正好演「10 分钟内第二次不再重开」。
+    if (simulateUnexpectedExit) {
+      runtimeLog.log('warn', 'main', 'app.unexpected-exit.simulate', '已设置模拟意外退出，30 秒后触发')
+      setTimeout(() => { throw new Error('模拟的主进程意外退出（XINGMANG_SIMULATE_MAIN_CRASH）') }, 30_000).unref()
     }
     // Mac 上「卸载星芒」：退出前的清理和「重启并安装」同一条（断开加速、还原系统代理、
     // 聊天记录写完盘），在挪程序之前跑；跑完才清登录记录，否则会被写回来。

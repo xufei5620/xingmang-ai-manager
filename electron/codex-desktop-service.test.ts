@@ -66,6 +66,7 @@ import {
   type CodexDesktopWindowsProbes,
 } from './codex-desktop-service'
 import { parseWindowsStoreAppLaunchContext } from './windows-store-app-launch'
+import { codexDesktopKnownIssueMarker } from './codex-desktop-known-issues'
 
 // Windows CI 上六个作业共用一台机器，Defender 在场时 PowerShell 冷启一次可以
 // 超过一分钟；起作用的是 execFile 这一层的预算，不是 vitest 的用例超时。
@@ -213,6 +214,32 @@ describe('Codex Desktop AppModel launch diagnostics', () => {
       { waitedSeconds: 45, processSeen: false },
     )
     expect(message).toContain('「Administrator」账户')
+  })
+
+  it('names the known-broken version and points to the command-line Codex instead of the start-menu check', () => {
+    const context = { userSid: null, isBuiltInAdministrator: false, uacEnabled: null, filterAdministratorToken: null }
+    const message = describeCodexDesktopLaunchFailure(context, { waitedSeconds: 51, processSeen: false }, '26.924.2738.0')
+    expect(message.startsWith(codexDesktopNotStartedPrefix)).toBe(true)
+    expect(message).toContain('等了 51 秒，Codex 没有启动起来')
+    expect(message).toContain('你装的这一版（26.924.2738.0）')
+    expect(message).toContain(codexDesktopKnownIssueMarker)
+    expect(message).toContain('「改用 Codex 命令行版」')
+    expect(message).not.toContain('开始菜单里搜「Codex」')
+    expect(message).not.toMatch(/wsreset|AppModel|AppX|Appx|UAC|0x[0-9A-F]{8}|SID|Microsoft Store/i)
+
+    const noOutcome = describeCodexDesktopLaunchFailure(context, undefined, '26.924.2738.0')
+    expect(noOutcome).toContain('等了将近一分钟')
+    expect(noOutcome).toContain(codexDesktopKnownIssueMarker)
+
+    const admin = describeCodexDesktopLaunchFailure(
+      { userSid: 'S-1-5-21-1-2-3-500', isBuiltInAdministrator: true, uacEnabled: false, filterAdministratorToken: false },
+      { waitedSeconds: 45, processSeen: false },
+      '26.924.2738.0',
+    )
+    expect(admin).toContain('「Administrator」账户')
+    expect(admin).not.toContain(codexDesktopKnownIssueMarker)
+
+    expect(describeCodexDesktopLaunchFailure(context, { waitedSeconds: 45, processSeen: false }, null)).not.toContain(codexDesktopKnownIssueMarker)
   })
 
   it('describes the launch wait in plain words and adds the start-menu hint after twenty seconds', () => {
@@ -772,6 +799,70 @@ describe('Codex Desktop update state', () => {
     })
     expect(progress.at(-1)).toBe(100)
     expect(progress.every((value) => value >= 0 && value <= 100)).toBe(true)
+  })
+
+  it('continues a dropped mirror download from where it stopped and keeps the progress going', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-msix-resume-'))
+    temporaryDirectories.push(directory)
+    const destination = path.join(directory, 'Codex.msix')
+    const bytes = Buffer.alloc(10 * 1024 * 1024, 0x42)
+    const cut = 4 * 1024 * 1024
+    const url = 'https://mirror.example.cn/Codex.msix'
+    const ranges: Array<string | null> = []
+    const fetchMock = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+      const range = new Headers(init?.headers).get('range')
+      ranges.push(range)
+      let sent = false
+      const response = range
+        ? new Response(new Uint8Array(bytes.subarray(cut)), {
+          status: 206,
+          headers: {
+            'Content-Type': 'application/vnd.ms-appx',
+            'Content-Range': `bytes ${cut}-${bytes.byteLength - 1}/${bytes.byteLength}`,
+          },
+        })
+        : new Response(new ReadableStream<Uint8Array>({
+          pull(controller) {
+            if (sent) {
+              controller.error(new TypeError('fetch failed'))
+              return
+            }
+            sent = true
+            controller.enqueue(new Uint8Array(bytes.subarray(0, cut)))
+          },
+        }), {
+          headers: {
+            'Content-Type': 'application/vnd.ms-appx',
+            'Content-Length': String(bytes.byteLength),
+            ETag: '"msix"',
+          },
+        })
+      Object.defineProperty(response, 'url', { value: url })
+      return response
+    })
+    const progress: Array<{ percent: number; resuming?: boolean }> = []
+
+    const result = await downloadCodexDesktopPackage(
+      {
+        label: '测试镜像',
+        url,
+        expectedContentLength: bytes.byteLength,
+        expectedSha256Base64: createHash('sha256').update(bytes).digest('base64'),
+      },
+      destination,
+      ({ percent, resuming }) => progress.push({ percent, resuming }),
+      fetchMock,
+      undefined,
+      { wait: async () => undefined },
+    )
+
+    expect(ranges).toEqual([null, `bytes=${cut}-`])
+    expect(result.transferred).toBe(bytes.byteLength)
+    expect(fs.readFileSync(destination).equals(bytes)).toBe(true)
+    expect(progress).toContainEqual({ percent: 40, resuming: true })
+    const percents = progress.map((entry) => entry.percent)
+    expect(percents.every((value, index) => index === 0 || value >= percents[index - 1])).toBe(true)
+    expect(percents.at(-1)).toBe(100)
   })
 
   it('rejects a package whose Content-Length differs from the mirror manifest', async () => {

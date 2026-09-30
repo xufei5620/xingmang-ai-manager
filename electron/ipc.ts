@@ -19,7 +19,13 @@ import {
   type SensitiveWorkspaceKind,
 } from './workspace-guard'
 import { resolveStarterWorkspaceContainer } from './starter-workspace'
-import { buildDocumentsFallbackPrompt, createStarterWorkspaceWithFallback } from './documents-fallback'
+import {
+  buildDocumentsFallbackPrompt,
+  buildWorkspaceNotWritablePrompt,
+  createStarterWorkspaceWithFallback,
+  inspectWorkspaceWritable,
+  shouldCheckWorkspaceWritable,
+} from './documents-fallback'
 import { usageDateRange } from './usage-date-range'
 import type { AppSettingsUpdate, AppTheme } from './app-settings'
 import { parseWindowState } from './window-preferences'
@@ -176,6 +182,9 @@ export interface IpcRegistrationOptions {
   // 新建项目文件夹认的用户主目录（macOS 建在它下面）。省略 = os.homedir()；测试注入，
   // 免得在跑测试的 Mac 上往真实主目录里建文件夹。
   homeDirectory?: () => string
+  // 打开工具前试写选中的文件夹（documents-fallback.ts）。省略 = 按当前平台、真去试写；
+  // 测试注入，免得只有 Windows 上才走得到这一步。
+  workspaceWriteCheck?: { platform: NodeJS.Platform; probe: (directory: string) => Promise<void> }
   // 当前账号的 AI 作品实际存在哪（「文档」不让写时是主目录下的 XingmangAI）；检查页
   // 「打开文件夹」用。main.ts 传启动时定下的位置；省略 = 这颗按钮打不开 AI 作品那一个。
   aiOutputDirectory?: () => string
@@ -1810,6 +1819,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     getSessionRevision: accountService.getSessionRevision?.bind(accountService),
     getActiveSiteId: accountService.getActiveSiteId?.bind(accountService),
     listUsableGroups: accountService.listUsableGroups.bind(accountService),
+    getSubscriptionSelf: accountService.getSubscriptionSelf.bind(accountService),
     provisionCliKey: async (input = {}) => {
       const userId = accountService.getSessionState().account?.userId
       const siteId = accountService.getActiveSiteId?.()
@@ -2452,7 +2462,11 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   ) {
     const sensitivity = classifyLocalWorkspace(target)
     if (!sensitivity || sensitiveWorkspacePolicy(sensitivity) !== 'every-time' || consumeConfirmedEveryTimeWorkspace(target)) {
-      return launchProviderWith(provider, target, launchMode, resumeSessionId)
+      const writeCheckPlatform = options.workspaceWriteCheck?.platform ?? process.platform
+      if (!shouldCheckWorkspaceWritable(sensitivity, writeCheckPlatform)) {
+        return launchProviderWith(provider, target, launchMode, resumeSessionId)
+      }
+      return launchIfWritable(event, provider, target, launchMode, resumeSessionId)
     }
     // 最近记录、记录页「接着上次对话」、老版本记住的目录都不经过选择器，
     // 所以「每次都提醒」的目录在这里再问一次。续接对话换了目录就接不上，
@@ -2479,6 +2493,56 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
       await rememberWorkspace(replacement)
       return service.launchProvider(provider, replacement, launchMode)
     })()
+  }
+  // 受控文件夹访问、安全软件的文档保护开着时，工具照样起得来，但 AI 一改文件就是一串
+  // 英文 EPERM，客户只看到「说改了但文件没变」。以前写信任、生成 AGENTS.md 失败只记一条
+  // warn（system-service.ts），这里在打开前先试写一次，写不进就先说一句。
+  async function launchIfWritable(
+    event: IpcMainInvokeEvent,
+    provider: ProviderId,
+    target: string,
+    launchMode: CliLaunchMode,
+    resumeSessionId: string | null,
+  ) {
+    const startedAt = Date.now()
+    const writability = await inspectWorkspaceWritable(target, options.workspaceWriteCheck ? { probe: options.workspaceWriteCheck.probe } : {})
+    // 不记路径（I13）：客服要的是结果和耗时。
+    options.runtimeLog.log(writability === 'denied' ? 'warn' : 'info', 'config', 'workspace.write-check', writability === 'denied'
+      ? '选中的文件夹不让写入，打开前先提醒'
+      : '打开前试写了选中的文件夹', { provider, result: writability, durationMs: Date.now() - startedAt })
+    if (writability !== 'denied') return launchProviderWith(provider, target, launchMode, resumeSessionId)
+    const parentWindow = BrowserWindow.fromWebContents(event.sender) ?? undefined
+    const prompt = buildWorkspaceNotWritablePrompt({ allowCreate: launchMode === 'new' })
+    const messageBoxOptions = {
+      type: 'warning' as const,
+      title: prompt.title,
+      message: prompt.message,
+      detail: prompt.detail,
+      buttons: [...prompt.buttons],
+      defaultId: prompt.defaultIndex,
+      cancelId: prompt.cancelIndex,
+      noLink: true,
+    }
+    const answer = parentWindow
+      ? await dialog.showMessageBox(parentWindow, messageBoxOptions)
+      : await dialog.showMessageBox(messageBoxOptions)
+    if (answer.response === prompt.continueIndex) {
+      options.runtimeLog.log('info', 'config', 'workspace.write-check.continued', '文件夹不让写入，用户仍然照常打开', { provider })
+      return launchProviderWith(provider, target, launchMode, resumeSessionId)
+    }
+    let replacement: string | null = null
+    if (answer.response === prompt.createIndex) {
+      replacement = await createStarterWorkspaceOrExplain(parentWindow, '接下来会重新打开文件夹选择窗口，可以自己选一个能写的文件夹。')
+      if (replacement === null) replacement = await pickWorkspace(parentWindow)
+    }
+    if (replacement === null) {
+      options.runtimeLog.log('info', 'config', 'workspace.write-check.declined', '文件夹不让写入，用户没有打开工具', { provider })
+      const declined: CliLaunchResult = { declined: true }
+      return declined
+    }
+    consumeConfirmedEveryTimeWorkspace(replacement)
+    await rememberWorkspace(replacement)
+    return service.launchProvider(provider, replacement, launchMode)
   }
   registerTrustedHandler('desktop:codex-status', () => service.inspectCodexDesktop())
   registerTrustedHandler('desktop:codex-locale-status', () => service.inspectCodexDesktopLocale())
@@ -3137,7 +3201,12 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     const parent = BrowserWindow.fromWebContents(event.sender) ?? undefined
     return accountService.createSubscriptionPayment(parsed).then(async (checkout) => {
       if (checkout.kind === 'form') await options.paymentWindow.open(checkout.form, parent)
-      else await options.paymentWindow.openUrl(checkout.url, parent, checkout.tradeNo)
+      else if (checkout.kind === 'qrcode') {
+        // 同充值那条：二维码内容先按白名单校验，再交给支付窗口。
+        const validated = validatePaymentQrCode(checkout)
+        if (!options.paymentWindow.openQrCode) throw new Error('当前版本不支持二维码支付')
+        await options.paymentWindow.openQrCode(validated, parent)
+      } else await options.paymentWindow.openUrl(checkout.url, parent, checkout.tradeNo)
       return {
         opened: true as const,
         tradeNo: checkout.tradeNo,

@@ -55,14 +55,14 @@ import { canReplaceNode, describeNodeReplaceOutcome } from './features/tools/nod
 import { StartupNotices } from './features/app/StartupNotices'
 import { RequiredUpdateGate } from './features/app/RequiredUpdateGate'
 import { MaintenanceNotice, maintenanceNoticeKey } from './features/app/MaintenanceNotice'
-import { crashReportingNotice, displayCompatNotice, displayRelaunchNotice, settingsSaveNotice, startupCheckFailure, startupCheckLogContext, startupDiagnosticsIssues, updatedNotice, vaultRecoveredNotice, withStartupNotice, withoutStartupNotice, type StartupCheckId, type StartupNotice } from './features/app/startup-notice'
+import { crashReportingNotice, displayCompatNotice, displayRelaunchNotice, settingsSaveNotice, startupCheckFailure, startupCheckLogContext, startupDiagnosticsIssues, unexpectedExitNotice, updatedNotice, vaultRecoveredNotice, withStartupNotice, withoutStartupNotice, type StartupCheckId, type StartupNotice } from './features/app/startup-notice'
 import { readLocalPreference, writeLocalPreference } from './features/app/preferences'
 import { currentWindowOs, windowOsFor } from './features/app/window-os'
 import { nextUiScale, uiScaleShortcutFor, type UiScaleShortcut } from './features/app/ui-scale-shortcut'
 import { rememberTourPending, rememberTourSeen, tourReplayPending } from './features/shell/tour-state'
 import { onboardingPreviewEnabled } from './features/app/dev-preview'
 import { deepLinkReadErrorText, supportQrFallbackText } from './features/app/fallback-messages'
-import { SupportIdentity, buildLastFailureLine, buildSupportIdentityLine, type SupportFailure } from './features/app/SupportIdentity'
+import { SupportIdentity, buildLastFailureLine, buildSupportBundle, buildSupportIdentityLine, type SupportFailure } from './features/app/SupportIdentity'
 import { KeyRewriteSkippedError, bootstrapAccountTools, skippedNamedProviders, describeAccountBootstrapFailure, describeAccountBootstrapResult, type AccountBootstrapLogLine, type AccountBootstrapMode, type AccountBootstrapProgress, type AccountBootstrapResult } from './features/tools/account-bootstrap'
 import { rewritableKeyProviders } from './features/tools/connection-check'
 import { applyManualSourceMarker, getSourceMarkerStorage } from './features/tools/source-marker'
@@ -129,7 +129,8 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   const [visitedPages, setVisitedPages] = useState<Partial<Record<PageId, string>>>({})
   // 带序号：已经停在「我的订单」时再点「充值」，值还是上次那个 'wallet'，
   // 光比值 React 不会重新切过去（全面检测 Q29），同 tutorialTopic。
-  const [accountTab, setAccountTab] = useState<{ sequence: number; value: AccountTab }>({ sequence: 0, value: 'overview' })
+  // rechargeAmount：从活动卡片点某一档进充值页时带上，充值页直接选好这一档。
+  const [accountTab, setAccountTab] = useState<{ sequence: number; value: AccountTab; rechargeAmount?: number }>({ sequence: 0, value: 'overview' })
   // 教程页停在哪一章。页面挂上之后只是 hidden 不会重新挂载，所以每次跳转都换一个
   // sequence，教程页才接得住第二次、第三次跳过来。
   const [tutorialTopic, setTutorialTopic] = useState<{ sequence: number; id: string; query?: string } | null>(null)
@@ -220,7 +221,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   const { store: balanceStore, snapshot: balanceState } = useAccountBalanceStore(native, session.authenticated ? scope : null)
   const balance = balanceState.balance
   // 买了订阅的客户钱包常是 0，请求扣的却是订阅：有能用的订阅时不再按钱包喊「余额不足」。
-  const subscription = useUsableSubscription(native, session.authenticated && accountSupports(session, 'supportsSubscriptions') ? scope : null, balanceState)
+  const { subscription, refresh: refreshSubscription } = useUsableSubscription(native, session.authenticated && accountSupports(session, 'supportsSubscriptions') ? scope : null, balanceState)
   const browserOnline = useBrowserOnline()
   const offline = isOffline({ browserOnline, networkFailures: session.authenticated ? balanceState.networkFailures : 0 })
   const [onlineChecking, setOnlineChecking] = useState(false)
@@ -311,6 +312,12 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       if (settingsSave) noteStartupCheck(settingsSave)
       const displayCompat = displayCompatNotice(result.capabilities)
       if (displayCompat) noteStartupCheck(displayCompat)
+      const unexpectedExit = unexpectedExitNotice(result.capabilities)
+      if (unexpectedExit) {
+        noteStartupCheck(unexpectedExit)
+        // 帮助框的「最近一次出错」也记上这一次：他没点卡片、直接去找客服时同样带得上。
+        if (unexpectedExit.action && 'supportFailure' in unexpectedExit.action) setLastFailure(unexpectedExit.action.supportFailure)
+      }
       if (result.settings.checkUpdatesOnStartup && result.update.phase !== 'disabled') {
         void app.startupUpdate().then((checked) => { if (current) setUpdate(checked) }).catch((cause) => {
           if (current) noteStartupCheck(startupCheckFailure('update', errorMessage(cause, '更新检查没有完成')))
@@ -396,6 +403,16 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     const skipped = skippedNamedProviders(outcome?.result, providers)
     if (skipped.length) throw new KeyRewriteSkippedError(skipped)
     return true
+  }, [runAccountBootstrap, session.account, session.authenticated])
+  /**
+   * 订阅开通之后把用得上它的工具换过去。走的是开机恢复那一档：主进程这一轮发现哪家
+   * 工具的 Key 换进了订阅分组，就只改写那几家，其余已连好的工具不碰。
+   */
+  const applySubscriptionToTools = useCallback(async (): Promise<ProviderId[]> => {
+    if (!session.authenticated || !session.account) return []
+    const outcome = await runAccountBootstrap(session.account.userId, 'restore', true)
+    if (outcome?.error) throw new Error(outcome.error)
+    return outcome?.result?.regrouped ?? []
   }, [runAccountBootstrap, session.account, session.authenticated])
   /**
    * 首页「就用现在这份」：用户自己改过配置又不想被提醒时，把这个工具记成手动来源。
@@ -635,14 +652,14 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     uiScaleRef.current = next === 'auto' ? undefined : next
     void perform('保存界面缩放', async () => setSettings(await app.savePreferences({ version: 2, uiScale: next })))
   }, [app, os, perform, toast])
-  const navigate = useCallback((target: PageId, section?: string) => {
+  const navigate = useCallback((target: PageId, section?: string, rechargeAmount?: number) => {
     if (target === 'canvas') { void perform('打开画布', app.openCanvas); return }
     if ((target === 'account' || target === 'chat') && restoring) {
       toast.show(restoreRetrying ? '暂时连不上服务，登录还在，连上后会自动恢复，不用重新登录。' : '正在恢复上次的登录，稍等一下再试。')
       return
     }
     if ((target === 'account' || target === 'chat') && !session.authenticated) { setAuth('login'); return }
-    if (target === 'account') setAccountTab((current) => ({ sequence: current.sequence + 1, value: accountTabs.find((entry) => entry.value === section)?.value ?? 'overview' }))
+    if (target === 'account') setAccountTab((current) => ({ sequence: current.sequence + 1, value: accountTabs.find((entry) => entry.value === section)?.value ?? 'overview', rechargeAmount }))
     if (target === 'tutorial' && section) setTutorialTopic((current) => ({ sequence: (current?.sequence ?? 0) + 1, id: section }))
     if (target === 'settings') {
       const group = settingsGroups.find((entry) => entry.value === section)?.value
@@ -695,6 +712,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     else if (action === 'replaceNode') setNodeReplace(failure?.retry ? { retry: failure.retry } : {})
     else if (action === 'openStore') void perform('打开微软商店', openCodexDesktopStore)
     else if (action === 'resetCodexDesktop') requestCodexDesktopReset(failure?.retry)
+    else if (action === 'useCodexCli') switchToCodexCli()
     else setHelp(true)
   }, [navigate, openCodexDesktopStore, operationError, perform, requestCodexDesktopReset, rewriteAccountKeys])
   // 引导里「改用」或安装失败时的出口：和错误框同一张表，只是没有「再试一次」
@@ -710,8 +728,16 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     else if (action === 'repair') void perform('重新写入 Key', () => rewriteAccountKeys())
     else if (action === 'openStore') void perform('打开微软商店', openCodexDesktopStore)
     else if (action === 'resetCodexDesktop') requestCodexDesktopReset(retry)
+    else if (action === 'useCodexCli') switchToCodexCli()
     else setHelp(true)
   }, [navigate, openCodexDesktopStore, perform, requestCodexDesktopReset, rewriteAccountKeys])
+  // Codex 桌面端这一版已知打不开时的「改用 Codex 命令行版」：回到首页 Codex 那一行；
+  // 还没装就直接开始装，装好了由客户自己点「打开」（第十九批 7）。
+  function switchToCodexCli() {
+    navigate('home')
+    if (toolbox.snapshot?.system.clis.codex.installed) toast.show('Codex 命令行版在首页，点它那一行的「打开」就能用。', 'neutral')
+    else void perform('安装工具', () => install('codex'), 'codex')
+  }
   async function install(id: ToolId, version?: string): Promise<ToolInstallOutcome> {
     const state = toolbox.snapshot
     if (!state) throw new Error('请先完成工具检测')
@@ -1226,7 +1252,8 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
           network={latestNetworkLocation(toolbox.snapshot?.system.network, networkLocation.snapshot.network)}
           networkRefreshing={networkLocation.snapshot.busy}
           banner={session.authenticated && <AnnouncementCenter key={scope} scope={scope} read={app.announcement} refreshTick={balanceState.updatedAt} markRemoteRead={app.markAnnouncementRead} syncLocalReads={app.syncLocalNoticeReads} open={announcementOpen} onClose={() => setAnnouncementOpen(false)} onOpen={() => setAnnouncementOpen(true)} onUnread={setUnread} openExternal={app.openExternal} noticeUrl={relaySite.websiteUrl} notify={notifyAnnouncement}
-            promoVisible={page === 'home'} onTopUp={accountSupports(session, 'supportsBilling') ? () => navigate('account', 'recharge') : undefined} />}
+            promoVisible={page === 'home'} onTopUp={accountSupports(session, 'supportsBilling') ? (amount) => navigate('account', 'recharge', amount) : undefined}
+            readTopupOffers={accountSupports(session, 'supportsBilling') ? () => native.getAccountTopupInfo() : undefined} />}
           notification={showUpdate && <Notice tone={update.error ? 'bad' : 'accent'} title={update.error ? updateFailureLabel(update.failedStep).title : updateBubbleTitle(update)}
             body={update.error?.message ?? autoUpdateBubbleBody(update.phase, autoUpdateOn)} progress={update.progress?.percent} onDismiss={() => setDismissedUpdate(updateKey)}
             actions={<><Button size="sm" onClick={() => navigate('updates')}>查看更新</Button>
@@ -1263,7 +1290,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
               : null}
             {(Object.keys(visitedPages) as PageId[]).filter((id) => id !== 'acceleration' && (visitedPages[id] === scope || id === page)).map((id) => <div key={id === 'settings' ? `settings:${settingsRequest}` : id} hidden={page !== id} inert={page !== id}>
               <Suspense fallback={pageLoading}>
-                <BusinessPage api={native} page={id} accountTab={accountTab.value} accountTabRequest={accountTab.sequence} tutorialTopic={tutorialTopic ?? undefined} paymentReturn={paymentReturn} navigate={navigate} openLogin={(target) => { setAuthTarget(target ?? null); setAuth('login') }} openHelp={() => setHelp(true)}
+                <BusinessPage api={native} page={id} accountTab={accountTab.value} accountTabRequest={accountTab.sequence} accountRechargeAmount={accountTab.rechargeAmount} tutorialTopic={tutorialTopic ?? undefined} paymentReturn={paymentReturn} navigate={navigate} openLogin={(target) => { setAuthTarget(target ?? null); setAuth('login') }} openHelp={() => setHelp(true)}
                   onSessionsChanged={refreshRecent}
                   onBackupRestored={() => void toolbox.refreshConfig().catch(() => undefined)}
                   onToolConfigSaved={() => void toolbox.refreshConfig().catch(() => undefined)}
@@ -1274,7 +1301,8 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
                     if (mounted.current) toast.show(errorMessage(cause, '工具已安装，但最新状态没有读到。请回到首页重新检测。'), 'warn')
                   })}
                   installTool={install} cancelToolInstall={(tool) => toolbox.cancel(tool)}
-                  onRewriteKey={(provider) => rewriteAccountKeys([provider])} rewritableKeys={rewritableKeys} />
+                  onRewriteKey={(provider) => rewriteAccountKeys([provider])} rewritableKeys={rewritableKeys}
+                  onSubscriptionActivated={applySubscriptionToTools} onSubscriptionPurchased={() => void refreshSubscription()} />
               </Suspense>
             </div>)}
           </div>
@@ -1302,7 +1330,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     {accelerationHelp && <Dialog open title="游戏加速使用说明" onClose={() => setAccelerationHelp(false)} width={480}
       footer={<><Button variant="ghost" onClick={() => { setAccelerationHelp(false); setHelp(true) }}>帮助与客服</Button><Button onClick={() => setAccelerationHelp(false)}>知道了</Button></>}>
       <p>选择线路后点击“开始加速”，连接成功后再打开游戏或启动器。“智能分配”会自动测速并选择可用线路，也可以手动选择。</p>
-      <p>当前适用于部分游戏、启动器和下载场景，实际连接效果以应用内表现为准。TUN 模式暂未开放。</p>
+      <p>当前适用于部分游戏、启动器和下载场景，实际连接效果以应用内表现为准。加速只改这台电脑的系统代理，不接管整台电脑的网络。</p>
       <p>每个账号在本机累计享有 20 分钟免费体验。连接成功后才开始计时，停止后保留剩余时长，下次继续使用，不会每天重置。当前时长在本机保存，设备之间不同步。</p>
       <p>切换页面、缩到托盘或退出游戏都不会停止加速。点击“停止加速”或退出本软件才会断开；免费时长用完后自动停止。</p>
     </Dialog>}
@@ -1318,6 +1346,14 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     <StartupNotices notices={startupNotices} onDismiss={dismissStartupNotice}
       leading={maintenance && maintenanceKey !== dismissedMaintenance ? <MaintenanceNotice maintenance={maintenance} onDismiss={() => setDismissedMaintenance(maintenanceKey)} /> : undefined}
       onOpen={(id, action) => {
+        if ('supportFailure' in action) {
+          // 复制上了才收起卡片；没复制上就打开帮助框，那里的文字能手动选中复制。
+          const text = buildSupportBundle(supportInput, action.supportFailure)
+          const copied = navigator.clipboard?.writeText ? navigator.clipboard.writeText(text) : Promise.reject(new Error('clipboard unavailable'))
+          void copied.then(() => { dismissStartupNotice(id); toast.show('已复制，发给客服就行', 'ok') },
+            () => { setHelp(true); toast.show('没复制上，请在「帮助与客服」里手动选中文字复制。', 'warn') })
+          return
+        }
         dismissStartupNotice(id)
         if ('login' in action) setAuth('login')
         else if ('page' in action) navigate(action.page)
