@@ -77,9 +77,11 @@ export function createAccelerationController(api: AccelerationClient, { now = ()
     // No wall clock or interval accumulation: delayed callbacks and clock changes
     // cannot grant extra time. The next host read corrects sleep/transport drift.
     const elapsed = Math.max(0, now() - measuredAt) / 1000
+    // 软件替他连的（打开 Codex 桌面端时）不扣时长，剩余时长不往下走。
+    const billed = !source.autoStartedBy
     return {
       ...source,
-      remainingSeconds: source.remainingSeconds === null ? null : Math.max(0, source.remainingSeconds - elapsed),
+      remainingSeconds: source.remainingSeconds === null || !billed ? source.remainingSeconds : Math.max(0, source.remainingSeconds - elapsed),
       sessionSeconds: source.sessionSeconds + elapsed,
     }
   }
@@ -108,7 +110,7 @@ export function createAccelerationController(api: AccelerationClient, { now = ()
     cancelExpiry?.()
     cancelExpiry = undefined
     const state = projected()
-    if (!disposed && !mutation && !expiryRequested && state?.phase === 'active' && state.remainingSeconds !== null) {
+    if (!disposed && !mutation && !expiryRequested && state?.phase === 'active' && !state.autoStartedBy && state.remainingSeconds !== null) {
       cancelExpiry = schedule(() => { cancelExpiry = undefined; tick() }, Math.max(0, state.remainingSeconds * 1000))
     }
   }
@@ -117,7 +119,7 @@ export function createAccelerationController(api: AccelerationClient, { now = ()
     if (disposed) return
     const state = projected()
     if (state !== snapshot.state) publish({ state })
-    if (!mutation && !expiryRequested && state?.phase === 'active' && state.remainingSeconds === 0) {
+    if (!mutation && !expiryRequested && state?.phase === 'active' && !state.autoStartedBy && state.remainingSeconds === 0) {
       expiryRequested = true
       void stop()
     }

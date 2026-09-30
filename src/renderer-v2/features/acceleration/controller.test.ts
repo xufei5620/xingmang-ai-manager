@@ -87,6 +87,20 @@ describe('acceleration controller', () => {
     expect(controller.getSnapshot().state).toMatchObject({ remainingSeconds: accelerationTrialSeconds - 8, sessionSeconds: 3 })
   })
 
+  it('does not count down or stop a free automatic session, even with nothing left', async () => {
+    const { controller, api } = create(state({
+      phase: 'active', remainingSeconds: 0, connectedAt: 'auto:0', autoStartedBy: 'codex-desktop',
+    }))
+    api.getAccelerationState.mockImplementation(async () => state({
+      phase: 'active', remainingSeconds: 0, connectedAt: 'auto:0', autoStartedBy: 'codex-desktop',
+    }))
+    controller.setScope('new-api:1')
+    await controller.refresh()
+    await advance(30_000)
+    expect(controller.getSnapshot().state).toMatchObject({ phase: 'active', remainingSeconds: 0, autoStartedBy: 'codex-desktop' })
+    expect(api.stopAcceleration).not.toHaveBeenCalled()
+  })
+
   it('does not count connecting time or allow a duplicate start', async () => {
     const { controller, api } = create()
     controller.setScope('new-api:1')

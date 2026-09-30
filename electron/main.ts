@@ -164,6 +164,7 @@ import {
 } from './download-proxy'
 import { createDownloadAccelerationCoordinator } from './download-acceleration'
 import { createCodexDesktopAccelerationCoordinator } from './codex-desktop-acceleration'
+import { probeCodexDesktopRunning } from './codex-desktop-service'
 import {
   createSystemService,
   type SystemService,
@@ -1095,6 +1096,11 @@ if (!hasSingleInstanceLock) {
         if (!acceleration) throw new Error('加速服务尚未就绪。')
         return acceleration.startAutomaticAcceleration(scope, 'codex-desktop', ...await accelerationStartArguments(scope, state))
       },
+      // 自动连的不扣免费时长，所以桌面端一关就断开，否则就是一条白送的不限时线路。
+      isDesktopRunning: () => probeCodexDesktopRunning(),
+      disconnect: (scope) => acceleration
+        ? acceleration.stopAcceleration(scope)
+        : Promise.reject(new Error('加速服务尚未就绪。')),
       // 连上之后不会自动断开（那是之前定过的），所以连上的那一刻必须让用户知道：
       // 加速开着、在计免费时长、在哪里能断开。同一次连接只提醒一次。
       onAutoConnected: (state) => hostNotifier()({
@@ -2596,6 +2602,7 @@ if (!hasSingleInstanceLock) {
       cliHookEvents.dispose()
       cliKeepAwake.dispose()
       accelerationExpiry?.dispose()
+      codexDesktopAcceleration.dispose()
       accelerationInterruption?.dispose()
       void acceleration?.dispose().catch((error) => runtimeLog.exception('network', 'acceleration.shutdown.failed', error))
       void developmentAcceleration?.dispose().catch(() => undefined)

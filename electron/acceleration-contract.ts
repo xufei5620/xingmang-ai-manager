@@ -177,6 +177,9 @@ export interface AccelerationState {
   /**
    * 这次连接不是用户亲手点的，而是软件替他连上的（目前只有打开 Codex 桌面端
    * 那一处）。只在这次会话还在跑时出现；缺省即旧行为，也就是用户自己连的。
+   * 带着它的会话不扣免费时长（yoyo 2026-09-30 定），`remainingSeconds` 在会话
+   * 期间保持不变，免费时长用完（为 0）也照样能连着；桌面端退出后由主进程断开
+   * （codex-desktop-acceleration.ts）。
    */
   autoStartedBy?: 'codex-desktop'
   /** 只随 `phase: 'unavailable'` 出现；缺省 = 线路准备中（旧行为）。 */
