@@ -214,6 +214,20 @@ export interface WindowCapabilities {
   // 显卡接连崩溃后，这次启动自动改用了兼容方式显示、用户还没选以后怎么办。缺省 = 没出事。
   displayCompat?: 'auto'
 }
+/** 设置里「卸载星芒」（目前只有 Mac）。两项都默认不勾。 */
+export interface AppUninstallRequest {
+  /** 同时清除登录记录和聊天记录（和 Windows 卸载页那一项同一口径）。 */
+  clearLoginRecords: boolean
+  /** 连同星芒替你装的命令行工具一起删。 */
+  removeManagedTools: boolean
+}
+export type AppUninstallLeftover = 'cli-hooks' | 'login-item' | 'tools' | 'records'
+export interface AppUninstallResult {
+  /** true = 已移到废纸篓、正在退出；false = 程序还在，界面提示他自己拖。 */
+  trashed: boolean
+  /** 没收拾干净的几样，界面据此多说一句。 */
+  leftovers: AppUninstallLeftover[]
+}
 export interface SettingsSaveIssue {
   kind: 'disk-full' | 'blocked' | 'other'
   /** Windows 盘符字母（如 `C`），只用来说「C 盘」；取不到时不给。 */
@@ -806,6 +820,8 @@ export interface XingmangInvokeContract {
   getWindowCapabilities: IpcInvokeDefinition<'window:get-capabilities', [], WindowCapabilities>
   /** 重开软件（显示方式要重开才生效）。true = 已经开始退出；用户在退出确认里点了返回则是 false。 */
   relaunchApp: IpcInvokeDefinition<'window:relaunch', [], boolean>
+  /** Mac 上卸载星芒：收回写进工具里的提醒设置，再把星芒移到废纸篓并退出。 */
+  uninstallApp: IpcInvokeDefinition<'window:uninstall-app', [request: AppUninstallRequest], AppUninstallResult>
   takeExternalDeepLink: IpcInvokeDefinition<'navigation:take-deep-link', [], ExternalDeepLink | null>
   replyWindowClose: IpcInvokeDefinition<'window:close-report', [requestId: string, report: WindowCloseReport], boolean>
   openExternal: IpcInvokeDefinition<'external:open', [url: string], boolean>
@@ -1250,6 +1266,7 @@ export const ipcInvokeChannels = {
   setWindowTheme: 'window:set-theme',
   getWindowCapabilities: 'window:get-capabilities',
   relaunchApp: 'window:relaunch',
+  uninstallApp: 'window:uninstall-app',
   takeExternalDeepLink: 'navigation:take-deep-link',
   replyWindowClose: 'window:close-report',
   openExternal: 'external:open',
