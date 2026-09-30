@@ -84,6 +84,22 @@ export type RuntimeSelfCheckDescriber = () => Promise<readonly string[]>
  */
 export type RuntimeHostDescriber = () => Promise<readonly string[]>
 
+/**
+ * 当前登录的是哪个账号，由 main.ts 接上。只要数字 ID：客服查「付了没到账」
+ * 最需要它，而这份报告是用户自己发到客服群里的，所以不带邮箱、用户名和站点。
+ */
+export type RuntimeAccountDescriber = () => { authenticated: boolean; userId: number | null | undefined }
+
+/**
+ * 报告开头的「账号 ID」一行。已登录但拿不到正整数 ID（历史账号个别情况）时
+ * 不出这一行，不拿 0 或 NaN 冒充。
+ */
+export function buildFeedbackAccountLine(state: ReturnType<RuntimeAccountDescriber>): string | null {
+  if (!state.authenticated) return '账号 ID: 未登录'
+  const id = state.userId
+  return typeof id === 'number' && Number.isSafeInteger(id) && id > 0 ? `账号 ID: ${id}` : null
+}
+
 const ENVIRONMENT_TIMEOUT_MS = 2_000
 const ENVIRONMENT_UNREADABLE = '未能读取'
 // A field named exactly `key` (Gemini's `?key=` parameter parsed into an object,
@@ -301,6 +317,7 @@ export class RuntimeLogStore {
   private describeEnvironment: RuntimeEnvironmentDescriber | null = null
   private describeSelfCheck: RuntimeSelfCheckDescriber | null = null
   private describeHost: RuntimeHostDescriber | null = null
+  private describeAccount: RuntimeAccountDescriber | null = null
   private writeQueue: Promise<void> = Promise.resolve()
   // 每个日志文件一份解析结果，键是文件路径，所以最多 archiveCount + 1 份，天然有界。
   private readonly parsedFiles = new Map<string, { fingerprint: string; summary: RuntimeLogFileSummary }>()
@@ -338,6 +355,11 @@ export class RuntimeLogStore {
   /** 同上，接上「运行环境」那段。 */
   attachHostDescriber(describe: RuntimeHostDescriber): void {
     this.describeHost = describe
+  }
+
+  /** 同上，接上报告开头的「账号 ID」。账号服务比本模块晚起来。 */
+  attachAccountDescriber(describe: RuntimeAccountDescriber): void {
+    this.describeAccount = describe
   }
 
   /**
@@ -595,10 +617,12 @@ export class RuntimeLogStore {
     const writeFailure = this.writeFailure
     const home = os.homedir()
     const scrubHome = (value: string) => redactHomeDirectory(value, home)
+    const accountLine = this.readAccountLine()
     const headLines = (attached: number, sizeTrimmed: boolean) => [
       `${this.appName} 反馈与诊断`,
       `生成时间: ${snapshot.generatedAt}`,
       `应用版本: ${this.appVersion}`,
+      ...(accountLine ? [accountLine] : []),
       `运行模式: ${this.packaged ? 'packaged' : 'development'}`,
       `系统: ${process.platform} ${os.release()} ${process.arch}`,
       `Electron: ${process.versions.electron ?? 'unknown'}`,
@@ -655,6 +679,16 @@ export class RuntimeLogStore {
    * 总预算，超时或抛错都退回一行说明，报告照常生成。每段各自计时，一段超时不
    * 影响另一段。
    */
+  private readAccountLine(): string | null {
+    if (!this.describeAccount) return null
+    try {
+      return buildFeedbackAccountLine(this.describeAccount())
+    } catch {
+      // 读不到登录态时这一行不出，报告照常生成。
+      return null
+    }
+  }
+
   private async describeSectionLines(describe: RuntimeEnvironmentDescriber | null): Promise<string[]> {
     if (!describe) return []
     let timer: NodeJS.Timeout | undefined

@@ -431,6 +431,16 @@ describe('account managed Key bootstrap', () => {
     expect(accountBootstrapPlan(system(['claude']), current, settings, 'restore').targets).toEqual(['claude'])
   })
 
+  it('rewrites a verified config on restore only when its key just moved to another group', () => {
+    const current = config()
+    current.providers.claude = { ...current.providers.claude, exists: true, hasApiKey: true, matchesRelay: true, actualBaseUrl: current.providers.claude.baseUrl, model: 'claude-model', configurationOwnership: 'account' }
+    current.providers.codex = { ...current.providers.codex, exists: true, hasApiKey: true, matchesRelay: true, actualBaseUrl: current.providers.codex.baseUrl, model: 'codex-model', configurationOwnership: 'account' }
+    const plan = accountBootstrapPlan(system(['claude', 'codex']), current, settings, 'restore', undefined, ['claude'])
+    expect(plan.targets).toEqual(['claude'])
+    expect(plan.preferredModels).toEqual({ claude: 'claude-model' })
+    expect(plan.skipped).toEqual(expect.arrayContaining([expect.objectContaining({ provider: 'codex', reason: 'configured' })]))
+  })
+
   it('repairs an owned Codex config that Codex ignores on session restore', () => {
     const current = config()
     current.providers.codex = { ...current.providers.codex, exists: true, hasApiKey: true, matchesRelay: true, actualBaseUrl: current.providers.codex.baseUrl, model: 'gpt-model', configurationOwnership: 'account', codexProviderShadowed: true }

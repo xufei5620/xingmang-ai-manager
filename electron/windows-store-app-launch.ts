@@ -148,6 +148,85 @@ export async function inspectWindowsStoreAppLaunchContext(
 }
 
 /**
+ * 这台电脑有没有微软商店（第二十一批 2）。LTSC、网上的「精简版」系统里根本没有
+ * 这个应用；公司也可能用组策略把它关掉。这两种电脑上先走商店只是空等一步，
+ * 装不上时再给一颗「去微软商店装」也打不开。
+ *
+ * Only a definite answer turns the store route off: `false` when the current
+ * user has no Microsoft.WindowsStore package or a RemoveWindowsStore policy is
+ * set, `true` when the package is there, `null` for anything the probe could
+ * not read - and `null` keeps the old store-first behaviour.
+ */
+export function readWindowsStoreAvailability(value: unknown): boolean | null {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return null
+  const record = value as Record<string, unknown>
+  if (parseFlag(record.removedByPolicy) === true) return false
+  return parseFlag(record.installed)
+}
+
+export function parseWindowsStoreAvailability(output: string): boolean | null {
+  const lines = output.trim().split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
+  const jsonLine = [...lines].reverse().find((line) => line.startsWith('{') && line.endsWith('}'))
+  if (!jsonLine) return null
+  try {
+    return readWindowsStoreAvailability(JSON.parse(jsonLine))
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Read-only: one current-user package query and the two policy keys the
+ * "Turn off the Store application" group policy writes. A failed package
+ * query stays `$null` rather than reading as "not installed".
+ */
+export function buildWindowsStoreAvailabilityScript(): string {
+  return [
+    '$ErrorActionPreference = "SilentlyContinue"',
+    '$storeInstalled = $null',
+    'try { $storeInstalled = [bool](@(Get-AppxPackage -Name "Microsoft.WindowsStore" -ErrorAction Stop).Count -gt 0) } catch { $storeInstalled = $null }',
+    '$storeRemovedByPolicy = $false',
+    'foreach ($storePolicyPath in @("HKLM:\\SOFTWARE\\Policies\\Microsoft\\WindowsStore", "HKCU:\\SOFTWARE\\Policies\\Microsoft\\WindowsStore")) {',
+    '  $storePolicy = Get-ItemProperty -LiteralPath $storePolicyPath -ErrorAction SilentlyContinue',
+    '  if ($null -ne $storePolicy -and $null -ne $storePolicy.RemoveWindowsStore -and [int]$storePolicy.RemoveWindowsStore -eq 1) { $storeRemovedByPolicy = $true }',
+    '}',
+    '[pscustomobject]@{ installed = $storeInstalled; removedByPolicy = $storeRemovedByPolicy } | ConvertTo-Json -Compress',
+  ].join('\n')
+}
+
+/**
+ * Never throws: a failed or timed-out probe answers `null`, which keeps the
+ * store-first route. Runs asynchronously so it never blocks the main thread.
+ */
+export async function inspectWindowsStoreAvailability(
+  options: WindowsStoreAppLaunchProbeOptions = {},
+): Promise<boolean | null> {
+  if ((options.platform ?? process.platform) !== 'win32') return null
+  try {
+    const pending = execFileAsync(resolveWindowsPowerShellExecutable(), [
+      '-NoLogo',
+      '-NoProfile',
+      '-NonInteractive',
+      '-Command',
+      buildWindowsStoreAvailabilityScript(),
+    ], {
+      env: trustedCommandEnvironment(),
+      windowsHide: true,
+      timeout: options.timeoutMs ?? 10_000,
+      maxBuffer: 64 * 1024,
+      signal: options.signal,
+    })
+    // Same reason as the launch-context probe: never let a console host wait
+    // on stdin until the timeout.
+    pending.child.stdin?.end()
+    const { stdout } = await pending
+    return parseWindowsStoreAvailability(stdout)
+  } catch {
+    return null
+  }
+}
+
+/**
  * 检查页「运行权限」那一行在装之前就说的话。客户会原样看到，所以不出现
  * UAC、Appx、SID 这类词；「用户账户控制」是 Windows 设置里的原名，可以用。
  * 渲染层首页那句短的在 elevation-notice.ts，有意各写一份（electron 不给渲染层值导出，见 I6）。

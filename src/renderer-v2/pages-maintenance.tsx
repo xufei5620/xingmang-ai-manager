@@ -23,6 +23,7 @@ import {
   PlugZap,
   RefreshCw,
   Settings,
+  ShieldCheck,
   Trash2,
   UserRound,
   Wrench,
@@ -81,8 +82,15 @@ import { elevatedInstallNotice, storeAppLaunchNotice } from './features/tools/el
 import { ToolStatusMeta, ToolStatusReason } from './features/tools/ToolStatusMeta'
 import { connectionCheckView } from './features/tools/connection-check'
 import { accountScope, sessionRestoring } from './account-context'
+import { AppUninstallRow } from './features/app/AppUninstall'
 import { diagnosticDetailRows } from './features/app/diagnostic-details'
 import { canClearStaleProxy, staleProxyClearMessage, staleProxyConfirmBody } from './features/app/stale-proxy'
+import {
+  canTrustCertificatesUserWide,
+  certificateTrustConfirmBody,
+  certificateTrustConfirmTitle,
+  certificateTrustMessage,
+} from './features/app/certificate-trust'
 import { diagnosticFolderTarget, diagnosticFolderUnavailableMessage } from './features/app/diagnostic-folder'
 import { requestSettingsGroup, takeSettingsGroup } from './features/app/settings-group-intent'
 import { parseImportedConversations } from './features/chat/storage'
@@ -326,6 +334,7 @@ export function HealthPage({
   const operation = useOperation()
   const [details, setDetails] = useState<Diagnostic | null>(null)
   const [proxyClearItem, setProxyClearItem] = useState<Diagnostic | null>(null)
+  const [certificateTrustOpen, setCertificateTrustOpen] = useState(false)
   const [connections, setConnections] = useState<ConnectionRow[] | null>(null)
   const [connectionBusy, setConnectionBusy] = useState(false)
   const [responsesConsent, setResponsesConsent] = useState(false)
@@ -446,6 +455,16 @@ export function HealthPage({
       return result
     }, staleProxyClearMessage)
     setProxyClearItem(null)
+  }
+  // 写好之后重新检查一遍，那一行的按钮就没了；结果那句话留在页头。
+  const trustCertificatesUserWide = async () => {
+    await operation.execute('让所有终端信任证书', async () => {
+      const result = await api.trustCertificatesUserWide()
+      setCertificateTrustOpen(false)
+      void resource.reload()
+      return result
+    }, certificateTrustMessage)
+    setCertificateTrustOpen(false)
   }
   // 「文档」不让写时那一行给的「打开文件夹」：打开了就不必再说什么。
   const openDiagnosticFolder = (item: Diagnostic) => {
@@ -612,6 +631,16 @@ export function HealthPage({
                       清掉这条旧设置
                     </Button>
                   )}
+                  {canTrustCertificatesUserWide(item) && (
+                    <Button
+                      size="sm"
+                      icon={ShieldCheck}
+                      onClick={() => setCertificateTrustOpen(true)}
+                      testId="health-trust-certificates"
+                    >
+                      让这台电脑上所有终端都信任
+                    </Button>
+                  )}
                   {diagnosticFolderTarget(item) && (
                     <Button
                       size="sm"
@@ -682,6 +711,16 @@ export function HealthPage({
         onOk={() => void clearStaleProxy()}
         onClose={() => setProxyClearItem(null)}
         testId="health-clear-stale-proxy-confirm"
+      />
+      <Confirm
+        open={certificateTrustOpen}
+        title={certificateTrustConfirmTitle}
+        body={certificateTrustConfirmBody}
+        okLabel="信任"
+        loading={operation.busy === '让所有终端信任证书'}
+        onOk={() => void trustCertificatesUserWide()}
+        onClose={() => setCertificateTrustOpen(false)}
+        testId="health-trust-certificates-confirm"
       />
       <Drawer
         open={Boolean(details)}
@@ -1915,6 +1954,17 @@ export function SettingsPage({
   )
   const [systemError, setSystemError] = useState('')
   const [proxy, setProxy] = useState<PlatformProxyStatus | null>(null)
+  const [isMac, setIsMac] = useState(false)
+  useEffect(() => {
+    let current = true
+    // 读不到平台就照旧显示工具的安装卸载，不出「卸载星芒」。
+    void api.getPlatformCapabilities()
+      .then((capability) => {
+        if (current) setIsMac(capability.platform === 'macos')
+      })
+      .catch(() => undefined)
+    return () => { current = false }
+  }, [api])
   useEffect(() => {
     if (!systemApi) return
     let active = true
@@ -2842,17 +2892,11 @@ export function SettingsPage({
               </Button>
             </>,
           )}
-          {row(
-            '卸载',
-            '可选择卸载工具并保留配置',
-            <Button
-              size="sm"
-              icon={Trash2}
-              onClick={() => navigate?.('maintenance')}
-            >
-              查看安装卸载
-            </Button>,
-          )}
+          <AppUninstallRow
+            api={api}
+            isMac={isMac}
+            openMaintenance={() => navigate?.('maintenance')}
+          />
         </>
       ),
     }
