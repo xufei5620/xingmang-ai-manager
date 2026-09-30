@@ -20,6 +20,7 @@ import {
   buildCodexDesktopPackageSources,
   buildCodexDesktopCombinedProbeFailure,
   buildCodexDesktopCombinedProbeScript,
+  codexDesktopCombinedProbeModules,
   buildCodexDesktopPackageInspectionScript,
   buildCodexDesktopPackageProbeScript,
   buildCodexDesktopProcessProbeScript,
@@ -1487,6 +1488,35 @@ describe('Codex Desktop Appx probe script', () => {
     expect(combined).toContain('WindowsIdentity]::GetCurrent()')
     // 嵌套一层后默认的 Depth 2 会把包条目压成字符串
     expect(combined).toContain('ConvertTo-Json -Compress -Depth 6')
+  })
+
+  it('imports the module of every cmdlet the merged probe calls before the first one runs', () => {
+    const combined = buildCodexDesktopCombinedProbeScript()
+    // Under trustedCommandEnvironment() a single autoloaded cmdlet costs the
+    // whole module analysis (#714), so one module left out is as slow as none.
+    const cmdletModules: Record<string, string | null> = {
+      'Where-Object': null,
+      'ForEach-Object': null,
+      'Import-Module': null,
+      'Get-ItemProperty': 'Microsoft.PowerShell.Management',
+      'Select-Object': 'Microsoft.PowerShell.Utility',
+      'ConvertTo-Json': 'Microsoft.PowerShell.Utility',
+      'Get-CimInstance': 'CimCmdlets',
+      'Invoke-CimMethod': 'CimCmdlets',
+      'Get-StartApps': 'StartLayout',
+      'Get-AppxPackage': 'Appx',
+    }
+    const used = [...new Set(combined.match(/\b[A-Z][A-Za-z]+-[A-Z][A-Za-z]+\b/g) ?? [])]
+    for (const cmdlet of used) {
+      expect(Object.keys(cmdletModules), `${cmdlet} needs a module entry`).toContain(cmdlet)
+      const module = cmdletModules[cmdlet]
+      if (module) expect(codexDesktopCombinedProbeModules).toContain(module)
+    }
+    const importAt = combined.indexOf(`Import-Module -Name ${codexDesktopCombinedProbeModules.map((name) => `'${name}'`).join(', ')} -ErrorAction SilentlyContinue`)
+    expect(importAt).toBeGreaterThan(0)
+    for (const cmdlet of used.filter((name) => cmdletModules[name])) {
+      expect(combined.indexOf(cmdlet)).toBeGreaterThan(importAt)
+    }
   })
 })
 
