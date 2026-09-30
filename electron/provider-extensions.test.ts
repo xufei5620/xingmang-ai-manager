@@ -587,8 +587,13 @@ describe('ProviderExtensionService list facade', () => {
     write(path.join(home, '.claude', 'skills', 'first', 'SKILL.md'), '---\nname: First\n---\n')
     write(path.join(home, '.claude', 'skills', 'second', 'SKILL.md'), '---\nname: Second\n---\n')
     const service = new ProviderExtensionService({ homeDirectory: home, invoke: async () => '[]' })
-    const syncCalls = (['lstatSync', 'statSync', 'realpathSync', 'existsSync', 'openSync', 'opendirSync'] as const)
-      .map((method) => vi.spyOn(fs, method))
+    // On Windows the shared single-link check in bounded-file (path-identity.ts)
+    // still stats each path component synchronously for the files actually read;
+    // opening, listing and reading the files must be asynchronous everywhere.
+    const methods = process.platform === 'win32'
+      ? ['openSync', 'opendirSync', 'readFileSync'] as const
+      : ['lstatSync', 'statSync', 'realpathSync', 'existsSync', 'openSync', 'opendirSync', 'readFileSync'] as const
+    const syncCalls = methods.map((method) => vi.spyOn(fs, method))
 
     try {
       const snapshot = await service.list('claude')
