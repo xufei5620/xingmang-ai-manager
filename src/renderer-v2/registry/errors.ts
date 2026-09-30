@@ -26,6 +26,7 @@ export const errors = {
   noTray: { title: '关闭窗口会直接退出', body: '', actions: ['安装扩展'] },
   toolNotEnabled: { title: '这个账号还没开通这个工具', body: '原来的设置没有动。找客服开通后再试一次。', actions: ['找客服'] },
   codexDesktopInstallFailed: { title: '没能装好 Codex 桌面端', body: '先点「重试」；还不行就点「去微软商店装」，在商店里点「获取」装好，再回星芒点「重新检测」。', actions: ['重试', '去微软商店装', '查看日志', '找客服'] },
+  codexDesktopKnownIssue: { title: 'Codex 这一版打不开', body: '这是 Codex 这一版自己的问题，不是星芒，等微软商店出新版会自动好。急用先点「改用 Codex 命令行版」。', actions: ['重试', '改用 Codex 命令行版', '找客服'] },
   codexDesktopNotStarted: { title: 'Codex 没能打开', body: '先点「重试」；还不行就点「找客服」，把下面这句话发给客服。', actions: ['重试', '找客服'] },
   pluginCatalogStuck: { title: '插件目录暂时改不动', body: '重启电脑后再试一次；还不行请联系客服。', actions: ['重试', '找客服'] },
   switchUndoFailed: { title: '没能自动恢复原来的设置', body: '到「备份」里恢复改用之前的那一份就好。', actions: ['去备份页', '找客服'] },

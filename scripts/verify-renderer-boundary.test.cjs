@@ -25,6 +25,7 @@ const valueImportable = [
   'electron/catalog',
   // Codex 桌面端装不上那句话的开头和微软商店链接，主进程与错误框共用一份（第十九批 5）。
   'electron/codex-desktop-install-failure',
+  'electron/codex-desktop-known-issues',
   'electron/cli-model-defaults',
   'electron/external-url-blocked',
   'electron/git-runtime',

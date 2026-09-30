@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { classifyOperationError, operationFallbackActions, operationLogPage, presentOperationError, presentOperationFailure, type OperationErrorKey } from './operation-error'
 import { networkFailureMessages, toolCertificateMessages } from '../../electron/network-failure'
 import { errors } from './registry/errors'
+import { codexDesktopKnownIssueLaunchSentence } from '../../electron/codex-desktop-known-issues'
 import { buildCodexDesktopInstallFailureMessage, codexDesktopInstallFailureReasons, type CodexDesktopInstallFailureReason } from '../../electron/codex-desktop-install-failure'
 
 /**
@@ -15,6 +16,8 @@ const catalogCoverage: Record<OperationErrorKey, { sample: string } | { unreacha
   pluginCatalogStuck: { sample: 'Codex 插件目录里的旧备份清不掉，这次没有改动' },
   // 主进程 codex-desktop-service.ts 的 describeCodexDesktopLaunchFailure。
   codexDesktopNotStarted: { sample: 'Codex 桌面端没有打开：等了将近一分钟，没有等到它的窗口。先关掉所有 Codex 窗口，再点「重试」；还是不行，就在开始菜单里搜「Codex」直接点开，也打不开的话请联系客服。' },
+  // 同一个函数在装着已知打不开的那一版时（codex-desktop-known-issues.ts）。
+  codexDesktopKnownIssue: { sample: `Codex 桌面端没有打开：等了 51 秒，Codex 没有启动起来。${codexDesktopKnownIssueLaunchSentence('26.924.2738.0')}` },
   // 主进程 codex-desktop-install-failure.ts 的 buildCodexDesktopInstallFailureMessage。
   codexDesktopInstallFailed: { sample: 'Codex 桌面端没装上：微软商店这次没装上，国内下载线路这会儿连不上。' },
   keyInvalid: { sample: '模型查询失败，服务返回 403：令牌已失效' },
@@ -175,6 +178,19 @@ describe('renderer-v2 operation error classification', () => {
       expect(hint?.key).toBe('codexDesktopNotStarted')
       expect(hint?.actions.map((action) => action.id)).toEqual(['retry', 'support'])
     }
+  })
+
+  it('offers the command-line Codex when the installed desktop version is known not to start', () => {
+    const message = `Codex 桌面端没有打开：等了 51 秒，Codex 没有启动起来。${codexDesktopKnownIssueLaunchSentence('26.924.2738.0')}`
+    const hint = presentOperationError(message)
+    expect(hint?.key).toBe('codexDesktopKnownIssue')
+    expect(hint?.actions).toEqual([
+      { id: 'retry', label: '重试' },
+      { id: 'useCodexCli', label: '改用 Codex 命令行版' },
+      { id: 'support', label: '找客服' },
+    ])
+    // 没带那半句的照旧只有重试和找客服。
+    expect(presentOperationError('Codex 桌面端没有打开：等了 45 秒，Codex 没有启动起来。')?.key).toBe('codexDesktopNotStarted')
   })
 
   it('gives every Codex Desktop install failure a retry, the Microsoft Store, the log and support', () => {
