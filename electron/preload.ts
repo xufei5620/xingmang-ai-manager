@@ -197,6 +197,7 @@ const ipcInvokeChannels = {
   checkExternalClientConnection: 'diagnostics:check-external-connection',
   getAccountKeyOptions: 'account:get-key-options',
   clearStaleProxySettings: 'diagnostics:clear-stale-proxy',
+  trustCertificatesUserWide: 'diagnostics:trust-certificates-user-wide',
   openDiagnosticFolder: 'diagnostics:open-folder',
 } as const satisfies {
   [Method in keyof XingmangInvokeContract]: XingmangInvokeContract[Method]['channel']
@@ -441,6 +442,7 @@ const xingmangApi: XingmangApi = {
   checkExternalClientConnection: (tool) => invoke('checkExternalClientConnection', tool),
   getAccountKeyOptions: (provider) => invoke('getAccountKeyOptions', provider),
   clearStaleProxySettings: () => invoke('clearStaleProxySettings'),
+  trustCertificatesUserWide: () => invoke('trustCertificatesUserWide'),
   openDiagnosticFolder: (target) => invoke('openDiagnosticFolder', target),
   onAccountSessionChanged: (listener) => subscribe('onAccountSessionChanged', listener),
   onExternalClientInstallProgress: (listener) => subscribe('onExternalClientInstallProgress', listener),

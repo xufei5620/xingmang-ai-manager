@@ -150,6 +150,7 @@ import { createExternalShellLauncher, type ExternalShellLauncher } from './syste
 import { isNetworkSettingsKind, type NetworkSettingsKind, type ProxyBypassOutcome } from './proxy-bypass'
 import { platformCapabilitiesFor } from './platform-capabilities'
 import { clearStaleUserProxyVariables, type StaleProxyClearResult } from './stale-proxy-environment'
+import type { UserWideCertificateTrustResult } from './user-certificate-trust'
 import { validatePaymentForm, validatePaymentQrCode, validatePaymentUrl, type PaymentWindowController } from './payment-window'
 import type { AccountStartupGate } from './account-startup-gate'
 import { parseAiChatHistoryScope, parseAiChatHistoryWrite, type AiChatHistoryStore } from './ai-chat-history-store'
@@ -190,6 +191,8 @@ export interface IpcRegistrationOptions {
     exportLatest(): string
     /** 检查页「清掉这条旧设置」；缺省 = stale-proxy-environment.ts 的真实现。 */
     clearStaleProxy?(): Promise<StaleProxyClearResult>
+    /** 检查页「让这台电脑上所有终端都信任」；宿主不给就是这台电脑上不提供。 */
+    trustCertificatesUserWide?(): Promise<UserWideCertificateTrustResult>
   }
   runtimeLog: RuntimeLogStore
   extensionService: CodexExtensionService
@@ -1337,6 +1340,7 @@ const ipcOperationLabels: Readonly<Record<string, string>> = {
   'diagnostics:check-external-connection': '客户端连接自检',
   'diagnostics:export': '诊断报告导出',
   'diagnostics:clear-stale-proxy': '清掉旧的代理设置',
+  'diagnostics:trust-certificates-user-wide': '让所有终端信任证书',
   'diagnostics:open-folder': '检查页打开文件夹',
   'runtime-logs:list': '运行日志读取',
   'runtime-logs:copy-feedback': '脱敏反馈文本复制',
@@ -3635,6 +3639,11 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   registerTrustedHandler('diagnostics:clear-stale-proxy', () => {
     const clear = options.diagnosticsService.clearStaleProxy ?? (() => clearStaleUserProxyVariables())
     return clear()
+  })
+  registerTrustedHandler('diagnostics:trust-certificates-user-wide', () => {
+    const trust = options.diagnosticsService.trustCertificatesUserWide
+    if (!trust) throw new Error('这台电脑上不能在这里设置')
+    return trust()
   })
   registerTrustedHandler('diagnostics:open-folder', async (_event, rawTarget: unknown) => {
     if (!isDiagnosticFolderTarget(rawTarget)) throw new Error('不认识要打开的文件夹')

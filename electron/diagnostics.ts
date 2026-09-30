@@ -60,6 +60,7 @@ import {
 import { resolveCliCommand, resolveCliInstallation } from './tool-installation'
 import type { ToolConfigOwnership } from './tool-config-ownership'
 import type { SystemSnapshot } from './system-service'
+import type { UserWideCertificateTrustState } from './user-certificate-trust'
 import {
   inspectWindowsExecutableMachine,
   type WindowsExecutableMachine,
@@ -193,6 +194,11 @@ export interface DiagnosticsDependencies {
    * 缺省 = 真的起 `node -e`；测试用它造「公司证书」「Node 太旧」这些情况。
    */
   probeNodeTls?: (input: NodeTlsProbeInput, signal: AbortSignal) => Promise<NodeTlsProbeResult>
+  /**
+   * 「安全证书」查出公司证书时，客户自己开的终端是不是也已经信任它
+   * （user-certificate-trust.ts）。宿主给了才在 Windows 上多一颗按钮；缺省 = 不提。
+   */
+  inspectUserWideCertificateTrust?: () => UserWideCertificateTrustState
   /**
    * 软件数据目录（Electron 的 userData）。诊断自己算不出它在哪，宿主给了才把它
    * 算进「磁盘空间」这一项；不给就只看 CLI 落点。
@@ -1199,21 +1205,37 @@ export function certificateTrustOutcome(input: {
   defaultRoots: NodeTlsProbeResult['outcome'] | null
   systemRoots: NodeTlsProbeResult['outcome'] | null
   elevated: boolean
+  /** 只在 systemTrusted 时有意义；缺省 = 不提客户自己开的窗口。 */
+  userWide?: UserWideCertificateTrustState
 }): CheckOutcome {
   const state: DiagnosticState = input.verdict === 'outdatedNode' || input.verdict === 'untrusted'
     ? 'fail'
     : input.verdict === 'elevated' ? 'warn' : 'pass'
+  const userWide = input.verdict === 'systemTrusted' ? input.userWide : undefined
   return {
     state,
-    summary: certificateTrustSummaries[input.verdict],
+    summary: input.verdict === 'systemTrusted'
+      ? systemTrustedSummary(userWide)
+      : certificateTrustSummaries[input.verdict],
     details: {
       verdict: input.verdict,
       nodeVersion: input.nodeVersion,
       defaultRoots: input.defaultRoots,
       systemRoots: input.systemRoots,
       elevated: input.elevated,
+      ...(userWide ? { userWide } : {}),
     },
   }
+}
+
+// 客户自己开的终端、VS Code 里的 Gemini 拿不到星芒给工具加的那一条（第十八批 7）。
+function systemTrustedSummary(userWide: UserWideCertificateTrustState | undefined): string {
+  const base = certificateTrustSummaries.systemTrusted
+  if (userWide === 'available') {
+    return `${base}你自己开的终端、VS Code 里的 Gemini 还不认它，可以点「让这台电脑上所有终端都信任」。`
+  }
+  if (userWide === 'applied') return `${base}你自己开的终端也已经设好，新开的终端就能用。`
+  return base
 }
 
 /**
@@ -1971,16 +1993,21 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
           probe({ nodePath: node.path, ...target, useSystemRoots: true }, signal),
         ])
         const nodeVersion = withoutSwitch.version ?? withSwitch.version ?? node.version
+        const verdict = certificateTrustVerdict({
+          defaultRoots: withoutSwitch.outcome,
+          systemRoots: withSwitch.outcome,
+          nodeVersion,
+        })
+        const userWide = verdict === 'systemTrusted' && platform === 'win32'
+          ? dependencies.inspectUserWideCertificateTrust?.()
+          : undefined
         return certificateTrustOutcome({
-          verdict: certificateTrustVerdict({
-            defaultRoots: withoutSwitch.outcome,
-            systemRoots: withSwitch.outcome,
-            nodeVersion,
-          }),
+          verdict,
           nodeVersion,
           defaultRoots: withoutSwitch.outcome,
           systemRoots: withSwitch.outcome,
           elevated: false,
+          userWide,
         })
       },
     },
