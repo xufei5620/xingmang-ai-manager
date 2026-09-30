@@ -18,6 +18,11 @@
 
 ## 0.2.11 - 2026-09-29
 
+- Claude Desktop 第三方推理配置的 `inferenceModels` 以前只写所选的一个型号，Desktop 的型号菜单因此只剩这一项。
+  现在由 `claude-desktop-config.ts` 的 `buildClaudeDesktopModelList` 写入当前 Key 可用的全部 `claude-*` 型号
+  （所选的排第一，检测结果仍按第一项显示；别家型号不写；最多 20 个）。
+- 依赖锁文件把 brace-expansion 从 1.1.18 / 2.1.4 / 5.0.9 升到 1.1.21 / 2.1.7 / 5.0.12、fast-uri 从 3.1.7 升到 3.1.8（都是 electron-builder 与 @electron/asar 的间接依赖，纯开发依赖，不进安装包），修掉新公告 GHSA-6j4f-fj2g-mc7p、GHSA-qhr7-859c-m2p7、GHSA-q2hr-2g5m-vwhr（brace-expansion）与 GHSA-hrr3-gc8f-f4qj（fast-uri）让 CI 的 npm audit 报红。
+
 - 新增 `src/renderer-v2/features/shell/promo-announcements.ts`：按约定从账号服务时间线公告（`GET /api/status` 的 `announcements`）里认出充值活动（标题含「充值」、有发布时间），从正文或附加说明的「截止：…」或「…-…」日期区间读结束时间，没写按发布后 7 天；「知道了」「今天不再提醒」「今天已提醒」三份本机记录。不加新请求，跟着余额刷新那次读取走；没有发布时间的旧系统公告不会变成卡片。
 - `Announcement.tsx` 加首页 `PromoCard`（只在首页显示，别的页面仍是细横条），活动期间铃铛红点常亮；`electron/platform/notifications.ts` 按 `promo:` / `promo-daily:` 前缀给出活动通知文案，点开去首页，仍受「公告」通知开关管。
 
