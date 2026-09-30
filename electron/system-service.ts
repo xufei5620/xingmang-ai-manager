@@ -918,6 +918,7 @@ export interface SystemService {
   installCodexDesktop(target: RendererMessageTarget): Promise<CodexDesktopInstallResult>
   cancelCodexDesktopInstall(): InstallCancellationOutcome
   uninstallCodexDesktop(): Promise<ToolUninstallResult>
+  resetCodexDesktop(): Promise<void>
   inspectCodexDesktopUpdate(forceRefresh?: boolean): Promise<DesktopAppStatus>
   /** resumeSessionId 只在 Codex 续接时由 ipc.ts 核对过后传入，见 cliLaunchArgv。 */
   launchProvider(provider: ProviderId, workspace: string, mode?: CliLaunchMode, resumeSessionId?: string | null): Promise<CliLaunchResult>
@@ -955,6 +956,8 @@ export interface SystemService {
   launchExternalClient(tool: ExternalToolId): Promise<void>
   /** 安装队列当前的状态，退出前判断有没有安装正在跑时用。 */
   inspectInstallationQueue(): InstallationQueueSnapshot
+  /** 安装队列每有一项开始或结束就回调一次；装东西时挡住自动睡眠用。 */
+  onInstallationQueueChange(listener: (snapshot: InstallationQueueSnapshot) => void): () => void
   /**
    * 清掉以前中途被打断的安装留下的临时下载目录（见 install-leftovers.ts）。排在安装
    * 队列里，不会和正在进行的安装撞上；从不抛错。
@@ -2325,6 +2328,24 @@ export function planRestoredConfigOwnership(input: {
   if (!input.hasApiKey) return null
   if (input.current === 'account' || input.current === 'manual') return null
   return input.owner && input.matchesRelay && input.isAccountKey ? 'account' : 'manual'
+}
+
+/**
+ * 老版本写下的 Codex 配置把当前账号的服务放在 openai 这类内置名下，Codex 不认那张表，
+ * 一打开就 401；这种配置往往没有归属记录，平常会被「来源未经确认就不自动改写」挡住。
+ * 只在三件事都对得上时让开机那一轮自动修（yoyo 9-30 同意第十七批 1b）：地址是当前站、
+ * 配置里的 Key 正是这次要写入的当前账号 Key、写入只把那张表搬到我们自己的连接名下。
+ * 「被改过」（changed）和手动来源不在其列：那是用户动过的配置，照旧只给按钮。
+ */
+export function permitsShadowedCodexRepair(
+  provider: ProviderId,
+  before: Pick<NativeConfigInspection, 'hasApiKey' | 'matchesRelay' | 'apiKey' | 'codexProviderShadowed'>,
+  previousOwnership: ToolConfigOwnership,
+  apiKey: string,
+): boolean {
+  const key = apiKey.trim()
+  return provider === 'codex' && previousOwnership === 'unknown' && before.codexProviderShadowed === true
+    && before.hasApiKey && before.matchesRelay && key.length > 0 && before.apiKey === key
 }
 
 /** 看不出来就不带这个字段，旧的快照与测试夹具不用跟着改。 */
@@ -4607,6 +4628,7 @@ export function createSystemService(
     installCodexDesktop: installCodexDesktopOperation,
     cancelCodexDesktopInstall,
     uninstallCodexDesktop: uninstallCodexDesktopOperation,
+    resetCodexDesktop,
     launchCodexDesktop: launchCodexDesktopOperation,
   } = createCodexDesktopService({
     platform,
@@ -5561,7 +5583,8 @@ export function createSystemService(
       const previousOwnership = configOwnership.read(payload.provider, before, owner)
       // `changed`（我们写过、之后被改动）同样不在放行之列：自动写入永远不覆盖
       // 用户或工具自己改出来的配置，首页只会提示，改不改由用户点。
-      if (ownership?.automatic && previousOwnership !== 'account' && previousOwnership !== 'missing') {
+      const shadowRepair = ownership?.automatic === true && permitsShadowedCodexRepair(payload.provider, before, previousOwnership, payload.apiKey)
+      if (ownership?.automatic && previousOwnership !== 'account' && previousOwnership !== 'missing' && !shadowRepair) {
         throw new Error('已有工具配置的来源未经确认，已保留原配置；请在工具配置中明确选择账号密钥')
       }
       if (ownership?.automatic && store.read().officialProviders?.includes(payload.provider)) {
@@ -5606,6 +5629,7 @@ export function createSystemService(
         throw error
       }
       await configOwnership.write(payload.provider, inspectNativeProviderConfig(payload.provider), source, owner)
+      if (shadowRepair) runtimeLog?.log('info', 'config', 'codex-provider.auto-repaired', '开机时把 Codex 认不出的连接设置改好了，原来的设置已备份', { provider: payload.provider })
       assertOwner()
       await store.setOfficialProvider(payload.provider, false)
       if (payload.provider === 'codex') await applyXingmangAiSkillForCodexAccount(false)
@@ -5771,6 +5795,7 @@ export function createSystemService(
     installCodexDesktop,
     cancelCodexDesktopInstall,
     uninstallCodexDesktop,
+    resetCodexDesktop,
     inspectCodexDesktopUpdate,
     launchProvider,
     inspectCodexDesktop,
@@ -5789,6 +5814,7 @@ export function createSystemService(
     installExternalClient,
     launchExternalClient,
     inspectInstallationQueue: () => installationQueue.snapshot(),
+    onInstallationQueueChange: (listener) => installationQueue.onChange(listener),
     cleanupInstallLeftovers,
   }
 }

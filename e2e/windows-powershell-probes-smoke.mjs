@@ -35,8 +35,10 @@ const { encodeWindowsPowerShellCommand, resolveWindowsPowerShellExecutable } = c
 const { trustedCommandEnvironment } = compiled('command-runner')
 const {
   buildWindowsStoreAppLaunchContextScript,
+  buildWindowsStoreAvailabilityScript,
   inspectWindowsStoreAppLaunchContext,
   parseWindowsStoreAppLaunchContext,
+  parseWindowsStoreAvailability,
 } = compiled('windows-store-app-launch')
 
 // One budget per probe, not per step: the first call also pays the cold start,
@@ -178,6 +180,14 @@ function Get-AppxPackage { @() }
 checks.push(['store app launch script reads the current account', async () => {
   const context = parseWindowsStoreAppLaunchContext(await runScript(buildWindowsStoreAppLaunchContextScript()))
   assert.match(context.userSid ?? '', /^S-1-\d+(?:-\d+)+$/)
+}])
+
+checks.push(['store availability probe answers without throwing', async () => {
+  // A runner image may or may not carry the Store; the probe must still reach a
+  // reading its parser accepts, and "could not tell" (null) is a legal answer.
+  const available = parseWindowsStoreAvailability(await runScript(buildWindowsStoreAvailabilityScript()))
+  assert.ok([true, false, null].includes(available))
+  console.log(`info store availability on this runner: ${available}`)
 }])
 
 // Not a check: evidence for why the standalone probe used to run out its whole

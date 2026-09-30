@@ -1328,6 +1328,7 @@ const ipcOperationLabels: Readonly<Record<string, string>> = {
   'setup:codex-status': 'Codex 初始化状态检测',
   'desktop:install-codex': 'Codex 桌面端安装',
   'desktop:uninstall-codex': 'Codex 桌面端卸载',
+  'desktop:reset-codex': 'Codex 桌面端重置',
   'desktop:check-update-codex': 'Codex 桌面端更新检查',
   'cli:launch': 'CLI 终端启动',
   'desktop:codex-status': 'Codex 桌面端运行状态检测',
@@ -1584,6 +1585,7 @@ function ipcSuccessMessage(channel: string, args: unknown[], result: unknown): s
   if (channel === 'cli:uninstall' && provider) return `${provider} 卸载已完成`
   if (channel === 'cli:check-update' && provider) return `${provider} 更新检查已完成`
   if (channel === 'desktop:uninstall-codex') return 'Codex 桌面端卸载已完成'
+  if (channel === 'desktop:reset-codex') return 'Codex 桌面端重置已完成'
   if (channel === 'cli:launch' && provider) return `${provider} 终端已打开`
   if ((channel === 'models:list' || channel === 'models:list-configured') && count !== null) {
     return `可用模型读取完成，共 ${count} 个`
@@ -2421,6 +2423,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     return outcome
   })
   registerTrustedHandler('desktop:uninstall-codex', () => service.uninstallCodexDesktop())
+  registerTrustedHandler('desktop:reset-codex', () => service.resetCodexDesktop())
   registerTrustedHandler('desktop:check-update-codex', () => service.inspectCodexDesktopUpdate(true))
   /**
    * 记录这边核对一遍再交给 Codex:记录还在、而且就在要打开的这个文件夹里,才按

@@ -506,7 +506,10 @@ test('real PowerShell runs once in the packaging job, never in the unit test sha
     for (const entry of fs.readdirSync(path.join(root, directory), { recursive: true })) {
       const relative = path.join(directory, String(entry))
       if (!/\.test\.tsx?$/.test(relative)) continue
-      if (startsPowerShell.test(fs.readFileSync(path.join(root, relative), 'utf8'))) offenders.push(relative)
+      const source = fs.readFileSync(path.join(root, relative), 'utf8')
+      // The cold-start budget only ever existed for tests that ran a probe for
+      // real through the shipped function, which the pattern above cannot see.
+      if (startsPowerShell.test(source) || source.includes('XINGMANG_POWERSHELL_TEST_TIMEOUT_MS')) offenders.push(relative)
     }
   }
   assert.deepEqual(offenders, [])

@@ -178,8 +178,21 @@ describe('renderer-v2 operation error classification', () => {
     ]) {
       const hint = presentOperationError(message)
       expect(hint?.key).toBe('codexDesktopNotStarted')
+      // 这两种是 Windows 不让这个账户打开商店软件，重置 Codex 帮不上忙，正文也不能提它。
       expect(hint?.actions.map((action) => action.id)).toEqual(['retry', 'support'])
+      expect(hint?.body).not.toContain('重置')
     }
+  })
+
+  it('offers 重置 Codex between retry and support when the Codex window simply never appeared', () => {
+    const hint = presentOperationError('Codex 桌面端没有打开：等了 45 秒，Codex 没有启动起来。先关掉所有 Codex 窗口，再点「重试」。')
+    expect(hint?.key).toBe('codexDesktopNotStarted')
+    expect(hint?.actions).toEqual([
+      { id: 'retry', label: '重试' },
+      { id: 'resetCodexDesktop', label: '重置 Codex' },
+      { id: 'support', label: '找客服' },
+    ])
+    expect(hint?.body).toContain('重置 Codex')
   })
 
   it('offers the command-line Codex when the installed desktop version is known not to start', () => {
@@ -191,7 +204,7 @@ describe('renderer-v2 operation error classification', () => {
       { id: 'useCodexCli', label: '改用 Codex 命令行版' },
       { id: 'support', label: '找客服' },
     ])
-    // 没带那半句的照旧只有重试和找客服。
+    // 没带那半句的照旧按普通「没能打开」处理。
     expect(presentOperationError('Codex 桌面端没有打开：等了 45 秒，Codex 没有启动起来。')?.key).toBe('codexDesktopNotStarted')
   })
 

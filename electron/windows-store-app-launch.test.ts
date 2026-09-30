@@ -12,10 +12,6 @@ import {
   resolveStoreAppLaunchBlock,
 } from './windows-store-app-launch'
 
-// 与 codex-desktop-service.test.ts 里真起 PowerShell 的用例用同一个预算：CI 的 Windows
-// 机器冷启动 PowerShell 本来就慢。
-const powerShellStartupTimeoutMs = Number(process.env.XINGMANG_POWERSHELL_TEST_TIMEOUT_MS ?? 90_000)
-
 describe('windows store app launch context', () => {
   it('flags the built-in Administrator only while its approval mode is off', () => {
     const builtIn = readWindowsStoreAppLaunchContext({ sid: 'S-1-5-21-9-8-7-500', uacEnabled: 1, filterAdministratorToken: 0 })
@@ -115,8 +111,10 @@ describe('windows store availability', () => {
     await expect(inspectWindowsStoreAvailability({ platform: 'linux' })).resolves.toBeNull()
   })
 
-  it.runIf(process.platform === 'win32')('answers without throwing on Windows', async () => {
-    const available = await inspectWindowsStoreAvailability({ timeoutMs: powerShellStartupTimeoutMs })
-    expect([true, false, null]).toContain(available)
-  }, powerShellStartupTimeoutMs * 2)
+  // Run for real once in the Windows packaging job's PowerShell probe smoke.
+  it('builds a store probe PowerShell can parse', () => {
+    const scan = scanPowerShell(buildWindowsStoreAvailabilityScript())
+    expect(scan.unterminated).toBe(false)
+    expect(unbalancedBracket(scan.code)).toBeNull()
+  })
 })
