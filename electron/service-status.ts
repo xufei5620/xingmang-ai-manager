@@ -38,9 +38,14 @@ export interface ServiceStatus {
   badVersions?: readonly string[]
   /** 分批放量；没有就是 null。 */
   rollout?: ServiceRollout | null
+  /**
+   * 最低可用版本：本机低于它时，界面盖一层「更新后才能继续用」，只留更新和找客服。
+   * 没写、写错一律是 null（不拦任何人）。只有 0.2.11 及以后的客户端认这一项。
+   */
+  minimumVersion?: string | null
 }
 
-export const emptyServiceStatus: ServiceStatus = Object.freeze({ maintenance: null, badVersions: [], rollout: null })
+export const emptyServiceStatus: ServiceStatus = Object.freeze({ maintenance: null, badVersions: [], rollout: null, minimumVersion: null })
 
 // 一份只写着几个开关的 JSON 远用不到这么大；上限是给「这个地址被换成了别的东西」
 // 准备的，免得把一整张网页读进内存再去解析。
@@ -148,6 +153,13 @@ function readRollout(value: unknown): ServiceRollout | null {
   return { version, percent: Math.min(100, Math.max(0, percent)) }
 }
 
+// 最低版本会把人挡在门外，所以比撤回名单读得更严：只认纯 x.y.z，带预发布后缀的
+// 一律当没写——「0.2.12-beta」该不该算低于 0.2.12，客户端和发布者很容易想得不一样。
+function readMinimumVersion(value: unknown): string | null {
+  const version = readVersion(value)
+  return version && /^\d{1,5}\.\d{1,5}\.\d{1,5}$/.test(version) ? version : null
+}
+
 /** 解析状态文件；格式不对的部分一律按「没有」处理，永不抛错。 */
 export function parseServiceStatus(text: string, now: Date): ServiceStatus {
   let parsed: unknown
@@ -161,6 +173,7 @@ export function parseServiceStatus(text: string, now: Date): ServiceStatus {
     maintenance: readMaintenance(parsed.maintenance, now),
     badVersions: readBadVersions(parsed.badVersions),
     rollout: readRollout(parsed.rollout),
+    minimumVersion: readMinimumVersion(parsed.minimumVersion),
   }
 }
 
