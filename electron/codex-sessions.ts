@@ -383,11 +383,14 @@ function mapThreadRow(row: Record<string, SQLOutputValue>): ThreadRow {
   }
 }
 
-function toSummary(row: ThreadRow, codexHome: string): CodexSessionSummary {
+// One lstat per listed thread. It runs asynchronously because the Records page
+// reads every Codex thread, and on Windows a few hundred synchronous stats
+// (each one inspected by antivirus) would freeze the whole window.
+async function toSummary(row: ThreadRow, codexHome: string): Promise<CodexSessionSummary> {
   let rolloutAvailable = false
   if (row.rolloutPath && isInside(codexHome, row.rolloutPath)) {
     try {
-      const info = fs.lstatSync(row.rolloutPath)
+      const info = await fs.promises.lstat(row.rolloutPath)
       rolloutAvailable = info.isFile() && info.nlink <= 1 && !info.isSymbolicLink()
     } catch {
       rolloutAvailable = false
@@ -876,7 +879,7 @@ export class CodexSessionsService {
     }
   }
 
-  list(query: CodexSessionListQuery = {}): CodexSessionPage {
+  async list(query: CodexSessionListQuery = {}): Promise<CodexSessionPage> {
     const page = positiveInteger(query.page, 1)
     const pageSize = positiveInteger(query.pageSize, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE)
     if (!databaseExists(this.databasePath)) {
@@ -887,6 +890,7 @@ export class CodexSessionsService {
       }
     }
 
+    let snapshot: Omit<CodexSessionPage, 'items'> & { rows: ThreadRow[] }
     const database = openReadOnly(this.databasePath)
     try {
       const schema = inspectSchema(database)
@@ -918,8 +922,8 @@ export class CodexSessionsService {
           ${schema.columns.has('tokens_used') ? 'COALESCE(SUM(tokens_used), 0)' : '0'} AS tokens_used
          FROM threads`,
       ).get() as Record<string, SQLOutputValue>
-      return {
-        items: rows.map((row) => toSummary(row, this.codexHome)),
+      snapshot = {
+        rows,
         total,
         page: safePage,
         pageSize,
@@ -935,6 +939,13 @@ export class CodexSessionsService {
       }
     } finally {
       database.close()
+    }
+    // Close the database before awaiting the rollout checks so no read-only
+    // handle stays open across the event loop while Codex writes to it.
+    const { rows, ...summary } = snapshot
+    return {
+      ...summary,
+      items: await Promise.all(rows.map((row) => toSummary(row, this.codexHome))),
     }
   }
 
@@ -955,7 +966,7 @@ export class CodexSessionsService {
       if (messages.length > DETAIL_MESSAGE_LIMIT) messages.shift()
     })
     return {
-      session: toSummary(row, this.codexHome),
+      session: await toSummary(row, this.codexHome),
       messages,
       messageStats,
       // 跳过的坏行也是看不到的内容（#491），和只留最近若干条一样算「不完整」。
