@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { crashReportingNotice, displayCompatNotice, displayRelaunchNotice, settingsSaveNotice, startupCheckFailure, startupCheckLogContext, releaseNoteHeadline, startupDiagnosticsIssues, updatedNotice, vaultRecoveredNotice, withStartupNotice, withoutStartupNotice } from './startup-notice'
+import { crashReportingNotice, displayCompatNotice, displayRelaunchNotice, settingsSaveNotice, startupCheckFailure, startupCheckLogContext, releaseNoteHeadline, startupDiagnosticsIssues, unexpectedExitNotice, updatedNotice, vaultRecoveredNotice, withStartupNotice, withoutStartupNotice } from './startup-notice'
 
 describe('startup check notices', () => {
   it('keeps the backend sentence as the body so support still sees the original wording', () => {
@@ -184,5 +184,52 @@ describe('crashReportingNotice', () => {
     expect(crashReportingNotice(null, true)).toBeNull()
     expect(crashReportingNotice({ crashReportingNoticeShown: true }, true)).toBeNull()
     expect(crashReportingNotice({ crashReporting: false }, true)).toBeNull()
+  })
+})
+
+describe('unexpectedExitNotice', () => {
+  const at = new Date(2026, 8, 30, 14, 37).getTime()
+
+  it('stays silent when the last run did not end unexpectedly', () => {
+    expect(unexpectedExitNotice(undefined)).toBeNull()
+    expect(unexpectedExitNotice({})).toBeNull()
+    expect(unexpectedExitNotice({ unexpectedExit: { relaunched: true, exits: [] } })).toBeNull()
+  })
+
+  it('says the app came back by itself and offers a copy for support', () => {
+    const notice = unexpectedExitNotice({ unexpectedExit: { relaunched: true, exits: [{ at, error: 'TypeError: x is undefined' }] } })
+    expect(notice?.id).toBe('unexpected-exit')
+    expect(notice?.failure).toBe(false)
+    expect(notice?.body).toBe('星芒刚才意外退出了，已经重新打开。错误信息已经记下来，点「复制给客服」发给客服就行。')
+    expect(notice?.secondaryAction).toEqual({ label: '知道了', dismiss: true })
+    const action = notice?.action
+    if (!action || !('supportFailure' in action)) throw new Error('expected a support copy action')
+    expect(action.label).toBe('复制给客服')
+    expect(action.supportFailure).toEqual({
+      at: new Date(at),
+      action: '星芒自己意外退出',
+      message: '已自动重新打开',
+      detail: '14:37 TypeError: x is undefined',
+    })
+  })
+
+  it('switches wording and carries every recent exit when it did not relaunch again', () => {
+    const notice = unexpectedExitNotice({ unexpectedExit: { relaunched: false, exits: [
+      { at, error: 'Error: first' },
+      { at: at + 3 * 60_000, error: 'Error: second' },
+    ] } })
+    expect(notice?.title).toBe('星芒刚才又意外退出了')
+    expect(notice?.body).toBe('星芒刚才又意外退出了一次，这次没有自动重开。点「复制给客服」，把这几次的信息发给客服。')
+    const action = notice?.action
+    if (!action || !('supportFailure' in action)) throw new Error('expected a support copy action')
+    expect(action.supportFailure.detail).toBe('14:37 Error: first；14:40 Error: second')
+    expect(action.supportFailure.at).toEqual(new Date(at + 3 * 60_000))
+  })
+
+  it('uses no technical words in what the customer reads', () => {
+    for (const relaunched of [true, false]) {
+      const notice = unexpectedExitNotice({ unexpectedExit: { relaunched, exits: [{ at, error: 'Error: boom' }] } })
+      expect(`${notice?.title}${notice?.body}`).not.toMatch(/主进程|异常|Electron|崩溃|exception/i)
+    }
   })
 })

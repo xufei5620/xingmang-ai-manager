@@ -55,4 +55,20 @@ describe('InstallationQueue', () => {
     await expect(queue.enqueue('cli:claude', async () => { throw new Error('install failed') })).rejects.toThrow('install failed')
     expect(queue.revision).toBe(beforeFailure + 2)
   })
+  it('notifies listeners when entries start and finish without an idle gap between queued entries', async () => {
+    const queue = new InstallationQueue()
+    const seen: Array<string | null> = []
+    const stop = queue.onChange((snapshot) => {
+      seen.push(snapshot.activeKey)
+      throw new Error('listener failure must not break the queue')
+    })
+    const first = queue.enqueue('runtime:node', async () => 'node')
+    const second = queue.enqueue('cli:install:claude', async () => 'claude')
+    await expect(first).resolves.toBe('node')
+    await expect(second).resolves.toBe('claude')
+    expect(seen).toEqual(['runtime:node', 'cli:install:claude', null])
+    stop()
+    await queue.enqueue('runtime:python', async () => undefined)
+    expect(seen).toHaveLength(3)
+  })
 })

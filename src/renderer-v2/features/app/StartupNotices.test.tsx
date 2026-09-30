@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { StartupNotices } from './StartupNotices'
-import { displayCompatNotice, startupCheckFailure, startupDiagnosticsIssues, updatedNotice, vaultRecoveredNotice } from './startup-notice'
+import { displayCompatNotice, startupCheckFailure, startupDiagnosticsIssues, unexpectedExitNotice, updatedNotice, vaultRecoveredNotice } from './startup-notice'
 
 function render(notices: Parameters<typeof StartupNotices>[0]['notices']) {
   return renderToStaticMarkup(<StartupNotices notices={notices} onDismiss={() => undefined} onOpen={() => undefined} />)
@@ -20,6 +20,18 @@ describe('StartupNotices', () => {
     expect(markup).toContain('aria-label="关闭"')
     expect(markup).not.toContain('aria-modal')
     expect(markup).not.toContain('<dialog')
+  })
+
+  it('offers copying for support after an unexpected exit, with no extra close button', () => {
+    const notice = unexpectedExitNotice({ unexpectedExit: { relaunched: true, exits: [{ at: Date.UTC(2026, 8, 30), error: 'Error: boom' }] } })
+    if (!notice) throw new Error('expected a notice')
+    const markup = render([notice])
+    expect(markup).toContain('startup-notice-unexpected-exit-primary')
+    expect(markup).toContain('复制给客服')
+    expect(markup).toContain('知道了')
+    expect(markup).not.toContain('aria-label="关闭"')
+    // The raw error stays in the copied text; the card only speaks plain words.
+    expect(markup).not.toContain('Error: boom')
   })
 
   it('omits the action button for a check with no useful destination', () => {

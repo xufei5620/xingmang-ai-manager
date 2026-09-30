@@ -219,7 +219,7 @@ describe('diagnostics', () => {
     expect(inspected.every(({ roots }) => roots === providerRoots)).toBe(true)
     expect(report.items.find((item) => item.code === 'CODEX_DOTENV')).toMatchObject({
       state: 'warn',
-      details: { exists: true, path: '[CODEX_HOME]/.env' },
+      details: { exists: true, path: '[CODEX_HOME]/.env', fix: 'set-aside-codex-dotenv' },
     })
     expect(report.items.find((item) => item.code === 'PROVIDER_CODEX')?.details?.file1)
       .toBe('[CODEX_HOME]/.codex/config.toml')
@@ -642,6 +642,18 @@ describe('diagnostics', () => {
         summary: '没有另外设过工具地址或密钥',
         details: { count: 0 },
       })
+    })
+
+    it('offers the one-click clear only on Windows and only while something clearable remains', async () => {
+      const home = temporaryHome()
+      const input = dependencies(home)
+      input.env = { ANTHROPIC_API_KEY: 'sk-must-not-leak' }
+      expect(overrideItem(await runDiagnostics({ ...input, platform: 'win32' }))?.details?.fix).toBe('clear-user-overrides')
+      expect(overrideItem(await runDiagnostics({ ...input, platform: 'darwin' }))?.details?.fix).toBeUndefined()
+      input.env = { CLAUDE_CONFIG_DIR: path.join(home, 'elsewhere') }
+      const folderOnly = overrideItem(await runDiagnostics({ ...input, platform: 'win32' }))
+      expect(folderOnly?.state).not.toBe('pass')
+      expect(folderOnly?.details?.fix).toBeUndefined()
     })
 
     it('names the variables it found without ever reading their values', async () => {
@@ -2014,6 +2026,41 @@ describe('CERTIFICATE_TRUST', () => {
     const { input } = withProbe({ plain: 'cert', system: 'ok' })
     input.platform = 'darwin'
     expect(await certificateItem(input)).toMatchObject({ details: { verdict: 'systemTrusted' } })
+  })
+
+  it('offers the user-wide switch on Windows only when a company certificate was found', async () => {
+    const { input } = withProbe({ plain: 'cert', system: 'ok' })
+    input.platform = 'win32'
+    const inspect = vi.fn(() => 'available' as const)
+    input.inspectUserWideCertificateTrust = inspect
+    expect(await certificateItem(input)).toMatchObject({
+      state: 'pass',
+      summary: expect.stringContaining('可以点「让这台电脑上所有终端都信任」'),
+      details: { verdict: 'systemTrusted', userWide: 'available' },
+    })
+
+    input.inspectUserWideCertificateTrust = () => 'applied'
+    expect(await certificateItem(input)).toMatchObject({
+      summary: expect.stringContaining('你自己开的终端也已经设好'),
+      details: { userWide: 'applied' },
+    })
+
+    const direct = withProbe({ plain: 'ok', system: 'ok' })
+    direct.input.platform = 'win32'
+    const unused = vi.fn(() => 'available' as const)
+    direct.input.inspectUserWideCertificateTrust = unused
+    const item = await certificateItem(direct.input)
+    expect(item?.details).not.toHaveProperty('userWide')
+    expect(unused).not.toHaveBeenCalled()
+  })
+
+  it('does not mention the user-wide switch on macOS', async () => {
+    const { input } = withProbe({ plain: 'cert', system: 'ok' })
+    input.platform = 'darwin'
+    input.inspectUserWideCertificateTrust = () => 'available'
+    const item = await certificateItem(input)
+    expect(item?.details).not.toHaveProperty('userWide')
+    expect(item?.summary).not.toContain('所有终端')
   })
 })
 

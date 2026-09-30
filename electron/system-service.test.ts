@@ -1960,7 +1960,7 @@ describe('npm registry metadata', () => {
         version: '0.2.119',
         integrity,
       }),
-    })).rejects.toThrow('官方稳定版本')
+    })).rejects.toThrow('要安装的 xAI 官方版本')
   })
 
   it('keeps other npm providers on their latest npm release selector', async () => {
@@ -1994,18 +1994,41 @@ describe('npm registry metadata', () => {
     expect(requestedVersions).toEqual(['2.1.277'])
   })
 
-  it('ignores a requested version on the Darwin Grok path, which the xAI manifest owns', async () => {
+  it('installs a named Darwin Grok version that is not newer than the xAI stable manifest', async () => {
     const requestedVersions: string[] = []
-    await resolveCliInstallRelease('grok', 'darwin-official-npm', {
+    const release = await resolveCliInstallRelease('grok', 'darwin-official-npm', {
       version: '0.2.100',
       fetchGrokStableVersion: async () => ({ version: '0.2.118', sourceUrl: 'https://x.ai/cli/stable' }),
       fetchNpmRelease: async (_registry, _packageName, version) => {
         requestedVersions.push(version)
-        return { name: '@xai-official/grok', version: '0.2.118', integrity }
+        return { name: '@xai-official/grok', version, integrity }
+      },
+    })
+
+    expect(requestedVersions).toEqual(['0.2.100'])
+    expect(release.version).toBe('0.2.100')
+  })
+
+  it('caps a named Darwin Grok version at the xAI stable manifest', async () => {
+    const requestedVersions: string[] = []
+    await resolveCliInstallRelease('grok', 'darwin-official-npm', {
+      version: '0.2.119',
+      fetchGrokStableVersion: async () => ({ version: '0.2.118', sourceUrl: 'https://x.ai/cli/stable' }),
+      fetchNpmRelease: async (_registry, _packageName, version) => {
+        requestedVersions.push(version)
+        return { name: '@xai-official/grok', version, integrity }
       },
     })
 
     expect(requestedVersions).toEqual(['0.2.118'])
+  })
+
+  it('rejects a Darwin Grok npm response that differs from the named version', async () => {
+    await expect(resolveCliInstallRelease('grok', 'darwin-official-npm', {
+      version: '0.2.100',
+      fetchGrokStableVersion: async () => ({ version: '0.2.118', sourceUrl: 'https://x.ai/cli/stable' }),
+      fetchNpmRelease: async () => ({ name: '@xai-official/grok', version: '0.2.118', integrity }),
+    })).rejects.toThrow('要安装的 xAI 官方版本')
   })
 
   it('requires exact package identity, semantic version and SHA-512 integrity metadata', () => {

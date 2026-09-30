@@ -1,15 +1,16 @@
 import { describe, expect, it } from 'vitest'
+import { scanPowerShell, unbalancedBracket } from './powershell-script-scan.test-support'
 import {
   buildWindowsStoreAppLaunchContextScript,
+  buildWindowsStoreAvailabilityScript,
   describeStoreAppLaunchBlock,
   inspectWindowsStoreAppLaunchContext,
+  inspectWindowsStoreAvailability,
+  parseWindowsStoreAppLaunchContext,
+  parseWindowsStoreAvailability,
   readWindowsStoreAppLaunchContext,
   resolveStoreAppLaunchBlock,
 } from './windows-store-app-launch'
-
-// 与 codex-desktop-service.test.ts 里真起 PowerShell 的用例用同一个预算：CI 的 Windows
-// 机器冷启动 PowerShell 本来就慢。
-const powerShellStartupTimeoutMs = Number(process.env.XINGMANG_POWERSHELL_TEST_TIMEOUT_MS ?? 90_000)
 
 describe('windows store app launch context', () => {
   it('flags the built-in Administrator only while its approval mode is off', () => {
@@ -64,8 +65,56 @@ describe('windows store app launch context', () => {
     expect(describeStoreAppLaunchBlock('uacDisabled')).toContain('用户账户控制')
   })
 
-  it.runIf(process.platform === 'win32')('reads the current account on Windows', async () => {
-    const context = await inspectWindowsStoreAppLaunchContext({ timeoutMs: powerShellStartupTimeoutMs })
-    expect(context.userSid ?? '').toMatch(/^S-1-\d+(?:-\d+)+$/)
-  }, powerShellStartupTimeoutMs * 2)
+  // The real run of this script is the Windows packaging job's PowerShell probe
+  // smoke (e2e/windows-powershell-probes-smoke.mjs). Started from a vitest shard
+  // it kept running out its whole budget on a busy runner and failing unrelated
+  // pull requests, so here only its text and the reading of its output.
+  it('builds a script PowerShell can parse and reads its output past warning lines', () => {
+    const scan = scanPowerShell(buildWindowsStoreAppLaunchContextScript())
+    expect(scan.unterminated).toBe(false)
+    expect(unbalancedBracket(scan.code)).toBeNull()
+    const output = 'WARNING: policy value unavailable\r\n{"sid":"S-1-5-21-9-8-7-500","uacEnabled":1,"filterAdministratorToken":null}\r\n'
+    expect(parseWindowsStoreAppLaunchContext(output)).toEqual({
+      userSid: 'S-1-5-21-9-8-7-500', isBuiltInAdministrator: true, uacEnabled: true, filterAdministratorToken: null,
+    })
+    for (const unreadable of ['', 'WARNING: only a warning', '{broken}']) {
+      expect(parseWindowsStoreAppLaunchContext(unreadable)).toEqual({
+        userSid: null, isBuiltInAdministrator: false, uacEnabled: null, filterAdministratorToken: null,
+      })
+    }
+  })
+})
+
+describe('windows store availability', () => {
+  it('turns the store route off only on a definite answer', () => {
+    expect(parseWindowsStoreAvailability('{"installed":false,"removedByPolicy":false}')).toBe(false)
+    expect(parseWindowsStoreAvailability('{"installed":true,"removedByPolicy":false}')).toBe(true)
+    // 公司策略关掉商店时应用可能还在，但打不开，也装不了东西。
+    expect(parseWindowsStoreAvailability('{"installed":true,"removedByPolicy":true}')).toBe(false)
+    expect(parseWindowsStoreAvailability('WARNING: something\r\n{"installed":false,"removedByPolicy":false}\r\n')).toBe(false)
+  })
+
+  it('keeps the store-first route when the probe could not tell', () => {
+    for (const output of ['', 'garbage', '{"installed":null,"removedByPolicy":false}', '[1]', '{"installed":"maybe"}', '{broken}']) {
+      expect([output, parseWindowsStoreAvailability(output)]).toEqual([output, null])
+    }
+  })
+
+  it('only reads the package list and the store policy keys', () => {
+    const script = buildWindowsStoreAvailabilityScript()
+    expect(script).toContain('Get-AppxPackage -Name "Microsoft.WindowsStore" -ErrorAction Stop')
+    expect(script).toContain('RemoveWindowsStore')
+    expect(script).not.toMatch(/Set-ItemProperty|Remove-|New-Item|Add-AppxPackage|Start-Process/i)
+  })
+
+  it('answers unknown off Windows without starting a process', async () => {
+    await expect(inspectWindowsStoreAvailability({ platform: 'linux' })).resolves.toBeNull()
+  })
+
+  // Run for real once in the Windows packaging job's PowerShell probe smoke.
+  it('builds a store probe PowerShell can parse', () => {
+    const scan = scanPowerShell(buildWindowsStoreAvailabilityScript())
+    expect(scan.unterminated).toBe(false)
+    expect(unbalancedBracket(scan.code)).toBeNull()
+  })
 })

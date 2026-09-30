@@ -300,9 +300,46 @@ Codex 那时 `recommended` 是 `null`，也就是那两天点过「更新」的�
 | Claude Code | `2.1.277`（2026-09-18） | `[2.1.265, 2.1.268)`、`[2.1.275, 2.1.277)` | 上游 changelog 两条网关回归 |
 | Codex CLI | `0.156.1`（2026-09-23） | `[0.155.0, 0.155.1)` | 上游 release note 与 PR #46467（见上一节）；抬到 0.156.1 的依据见下一段 |
 | Gemini CLI | `0.60.0`（2026-09-21） | 无 | 当前 npm `latest`；0.57~0.60 四个正式版全是安全加固，未发现与第三方 base URL 相关的回归 |
-| Grok CLI | 无 | 无 | 还没有遇到过需要挡的版本，行为与从前一致（装 npm `latest`） |
+| Grok CLI | `1.0.44`（2026-09-30） | 无 | 当前 npm `latest` 且是 xAI stable；本地假接口核过接当前账号的四项配置（见下文） |
 
-三条 `recommended` 的 `verifiedSites` 目前都是空数组：中转实测所需的仓库 secret 还没配（见下文），所以这三个版本都还**没有**在任何站点上跑过真实请求。跑通之后把站点 id 填进去。
+四条 `recommended` 的 `verifiedSites` 目前都是空数组：中转实测所需的仓库 secret 还没配（见下文），所以这几个版本都还**没有**在任何站点上跑过真实请求。跑通之后把站点 id 填进去。
+
+**Grok 进名单（2026-09-30）：它发版太密，而接当前账号靠的几项配置都挂在它的键名上。**
+npm 上 9-15 到 9-29 两周发了 1.0.32 → 1.0.45 十几版（1.0.45 只打了 `alpha`），名单为空时客户每点一次
+「更新」就装到一个没人看过的版本、也没有退路。更要紧的是出图工具的地址、型号名单、起标题用的型号这几项
+（见上面「本软件替用户改了哪些 CLI 默认值」）：哪一版改了键名，出图就又带着当前账号的 Key 去连 `api.x.ai`，
+而且没人知道。
+
+Grok 不走普通的 npm 安装：Windows 从 xAI 官方下载目录取已签名的 `grok-<版本>-windows-<架构>.exe`，
+Mac 从 npm 装 `@xai-official/grok` 再核二进制签名。两条路原先都只装 xAI stable 清单
+（`https://x.ai/cli/stable`，备用 `storage.googleapis.com/grok-build-public-artifacts/cli/stable`）上写的那一版，
+名单和「退回」点名的版本都被忽略，所以这次一并改成**点名的版本不超过 stable 就装它，超过了照旧装 stable**
+（`grok-update.ts` 的 `resolveGrokInstallVersion`，只收 `x.y.z`，预发布号会从「不超过」底下钻过去）。
+签名校验一步没少；旧版本的二进制仍在同一个官方目录里（2026-09-30 抽查 1.0.40、1.0.41、1.0.44 的
+Windows x64 / ARM 两种包都在）。「总是装最新版」打开时装的就是 stable。
+更新前的版本号改为装之前问一次 Grok 自己（它没有 npm 目录可读），记下来供「退回更新前的版本」用。
+
+**验证依据**（沙箱，2026-09-30，`@xai-official/grok@1.0.44`，一次性 HOME，按 `config-files.ts` 的 Grok 模板写配置，
+base URL 指本地假接口，型号名故意起成内置目录里没有的 `relay-x`，出网代理记录并拒掉一切去外面的连接）：
+
+- **型号名单（K3）—— 跑起来看到了**。有 `allowed_models = ["grok"]` 时 `grok models` 只列中转那一项；
+  去掉它就又出现 `grok-4.6`、`grok-4.5`。
+- **起标题的型号（K4）—— 跑起来看到了**。`grok -p` 一轮共 3 次 `/v1/responses`：写了
+  `session_summary = "grok"` 时三次都是 `relay-x`；去掉后起标题那次变回字面量 `grok-4.6`。
+- **出图地址（K1）—— 跑起来看到了**。假接口让模型调一次 `image_gen`（`--always-approve`）：写了
+  `[endpoints] xai_api_base_url` 时请求打到本地的 `POST /v1/images/generations`（型号
+  `grok-imagine-image-quality`，带 `Authorization`），出网代理一条记录都没有；去掉这一项后出网代理
+  记下 `CONNECT api.x.ai:443`——Key 外流那条路仍然只靠这个键堵着。
+- **钩子 —— 跑起来看到了**。`[compat.claude] hooks = false` 加六类 `[[hooks.*]]` 时，一轮 `-p` 触发了
+  `UserPromptSubmit`、`Stop`、`SessionEnd`，配置无解析错误。
+- **Windows 上挑哪个 shell —— 只读了程序里的字符串**。1.0.44 Windows 版里 `GROK_SHELL` 覆盖、`pwsh`、
+  三处 Git Bash、`System32\WindowsPowerShell\v1.0\powershell.exe` 兜底的字样与顺序和上面记的一致。
+- 没做的：中转上的真实请求（`scripts/probe-cli-relay.cjs` 还没有 Grok 的探测，名单里的 Grok 条目会被它跳过）；
+  `[cli] auto_update = false` 前后在 `-p` 下看不出差别，仍停在「配置被接受」。
+
+**维护节奏**：Grok 一周能发好几版，名单一旦有它就得跟着看，最少每周一次，否则等于把客户钉在老版本上。
+抬版本前按上面五条在沙箱里重跑一遍（假接口脚本思路：本地 HTTP 服务回 Responses 流、另起一个只记录不放行的
+出网代理），挑一个**同时是 npm `latest` 和 xAI stable** 的版本——只打 `alpha` 或没打 `latest` 的不选。
 
 **Codex 0.155.1 → 0.156.1（2026-09-23）：为了 GPT-6 Sol / Luna。** OpenAI 9 月 22 日发布
 `gpt-6-sol` 与 `gpt-6-luna`。Codex 按自带的模型目录（`codex-rs/models-manager/models.json`）决定
@@ -337,7 +374,7 @@ Codex 那时 `recommended` 是 `null`，也就是那两天点过「更新」的�
 
 - **Codex 最该扩**。它现在几乎每天发 alpha、正式版每周一发，0.155.0 那次回归的窗口只有一天——每周看一次仍会漏，但至少名单不会一直停在几个月前。上游看 `https://github.com/openai/codex/releases`（`rust-v*` tag），关注的关键词是 reasoning summary、wire API、`requires_openai_auth`、third-party provider。
 - **Gemini 一并扩，但频次可以低**。它一周一个正式版，0.57~0.60 都是安全加固；要盯的是 `GOOGLE_GEMINI_BASE_URL` 与 `security.auth.selectedType` 这两处——上游已经把带 base URL 的情形单独识别成 `AuthType.GATEWAY`，哪天它把 `gateway` 做成正式的 `selectedType`，本产品写的 `gemini-api-key` 就要跟着改。
-- **Grok 暂不扩**：名单里没有它的条目，巡检也没有可比的基准。
+- **Grok 也要扩**（2026-09-30 起名单里有它）：比 npm `latest` 与 xAI stable 两处，两者一致且比名单新才考虑抬；抬之前在沙箱重核上一节那五条配置。
 - 扩之后那条 routine 的判据不变：只看 npm `latest`（`stable` 这个 dist-tag 不可信，它曾经指向 blocked 区间里的版本），比对上游 changelog，开草稿 PR，不自合。
 
 npm 上的 `stable` 这个 dist-tag **不能用作判断依据**：它曾经指向 `2.1.267`，而那个版本正落在名单里 2.1.265–2.1.268 那条不兼容区间内。只看 `latest`。
@@ -367,3 +404,13 @@ npm 上的 `stable` 这个 dist-tag **不能用作判断依据**：它曾经指�
 
 - 不要把 `recommended` 写成 `latest`、`^2.1.0` 这类范围或 dist-tag。IPC 侧只接受精确 semver（`ipc.ts` 的 `parseCliInstallVersion`），范围表达式会让 npm 自己去决定装什么，等于绕过名单。
 - 不要为了「让用户拿到新功能」把过期的 `recommended` 留着不动——名单越旧，默认装的版本离上游越远。上游发了新版就跑一次验证。
+
+## Codex 桌面端的已知问题表
+
+桌面端从微软商店 / 镜像装，装哪一版不归星芒定，所以没有「推荐版本」，只有一张已知打不开的版本表：
+`electron/codex-desktop-known-issues.ts` 的 `codexDesktopKnownBrokenVersions`。命中时首页桌面端那一行、
+打开失败的提示框都会说「这一版已知在一些电脑上打不开」，并给「改用 Codex 命令行版」。
+
+- 加一行：上游确认（或真机复现）某一版在 Windows 上自己起不来时，写商店包的四段版本号，注释里写上游 issue 号。
+- 删一行：商店出了新版、真机核过能打开之后，下一版把旧版那一行删掉。不删也不会误报新版，只是多留一行死数据。
+- 不做「退回上一版」：商店会把退回去的版本自动更新回来，镜像的上一版是哪一版也核不了（第十九批 7）。

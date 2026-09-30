@@ -113,9 +113,11 @@ describe('cliVerifiedVersions coverage', () => {
     expect(cliVerifiedVersions.gemini.blocked).toEqual([])
   })
 
-  it('leaves Grok on npm latest, which is the behaviour it had before any list existed', () => {
-    expect(cliVerifiedVersions.grok.recommended).toBeNull()
-    expect(resolveCliInstallVersion('grok')).toEqual({ version: 'latest', source: 'latest' })
+  it('pins Grok to a release that is both npm latest and the xAI stable channel', () => {
+    expect(cliVerifiedVersions.grok.recommended?.version).toBe('1.0.44')
+    expect(cliVerifiedVersions.grok.blocked).toEqual([])
+    expect(resolveCliInstallVersion('grok')).toEqual({ version: '1.0.44', source: 'recommended' })
+    expect(resolveCliInstallVersion('grok', { alwaysLatest: true })).toEqual({ version: 'latest', source: 'latest' })
   })
 })
 
@@ -219,7 +221,7 @@ describe('buildCliVersionAdvice', () => {
     expect(buildCliVersionAdvice('claude', '2.1.280', { list }).recommendedIsNewer).toBeUndefined()
     expect(buildCliVersionAdvice('claude', '2.1.277', { list }).recommendedIsNewer).toBeUndefined()
     // Nothing to compare against: no list, not installed, or an unparsable line.
-    expect(buildCliVersionAdvice('grok', '1.0.0').recommendedIsNewer).toBeUndefined()
+    expect(buildCliVersionAdvice('grok', '1.0.0', { list }).recommendedIsNewer).toBeUndefined()
     expect(buildCliVersionAdvice('claude', null, { list }).recommendedIsNewer).toBeUndefined()
     expect(buildCliVersionAdvice('claude', '版本读取失败', { list }).recommendedIsNewer).toBeUndefined()
   })

@@ -1,6 +1,7 @@
-import type { AppSettingsV2, InstalledRelease, SettingsSaveIssue, WindowCapabilities } from '../../../../electron/ipc-contract'
+import type { AppSettingsV2, InstalledRelease, SettingsSaveIssue, UnexpectedExitNotice, WindowCapabilities } from '../../../../electron/ipc-contract'
 import type { PageId } from '../../registry/pages'
 import type { Tone } from '../../ui'
+import type { SupportFailure } from './SupportIdentity'
 
 /**
  * 启动时应用自己跑的后台检查。用户没有点任何东西，所以它们的坏消息不许挡路：
@@ -8,12 +9,12 @@ import type { Tone } from '../../ui'
  * （CI 的原生冒烟正是这样被挡住的）。用户自己点「检查更新」「运行检查」时
  * 走的是各页面自己的失败提示，不经过这里，照常报错。
  */
-export type StartupCheckId = 'update' | 'diagnostics' | 'appearance' | 'vault-recovered' | 'updated' | 'settings-save' | 'display-compat' | 'display-relaunch' | 'crash-reporting'
+export type StartupCheckId = 'update' | 'diagnostics' | 'appearance' | 'vault-recovered' | 'updated' | 'settings-save' | 'display-compat' | 'display-relaunch' | 'crash-reporting' | 'unexpected-exit'
 /**
  * `vault-recovered`、`updated`、`settings-save`、两条显示方式的提示与错误报告告知不是应用
  * 跑出来的检查，是一次性要告诉用户的事，没有「失败」这一面。
  */
-export type StartupCheckFailureId = Exclude<StartupCheckId, 'vault-recovered' | 'updated' | 'settings-save' | 'display-compat' | 'display-relaunch' | 'crash-reporting'>
+export type StartupCheckFailureId = Exclude<StartupCheckId, 'vault-recovered' | 'updated' | 'settings-save' | 'display-compat' | 'display-relaunch' | 'crash-reporting' | 'unexpected-exit'>
 
 /**
  * 有的提示要把人带到某一页，有的要直接把登录弹出来（账号页在未登录时才等价于登录），
@@ -21,7 +22,7 @@ export type StartupCheckFailureId = Exclude<StartupCheckId, 'vault-recovered' | 
  */
 export type StartupNoticeAction = { label: string; page: PageId } | { label: string; login: true } | { label: string; dismiss: true }
   | { label: string; displayCompat: 'keep' | 'restore' } | { label: string; relaunch: true }
-  | { label: string; crashReporting: 'keep' | 'off' }
+  | { label: string; crashReporting: 'keep' | 'off' } | { label: string; supportFailure: SupportFailure }
 
 export interface StartupNotice {
   id: StartupCheckId
@@ -213,6 +214,39 @@ export function crashReportingNotice(settings: Pick<AppSettingsV2, 'crashReporti
     body: '软件出错时，会自动把一份错误报告发到海外的错误收集服务，帮我们更快修好问题。报告里不含你的账号、密钥、文件路径和聊天内容。以后想改，可以在「设置」的「隐私与数据」里关掉。',
     action: { label: '知道了', crashReporting: 'keep' },
     secondaryAction: { label: '不想发送', crashReporting: 'off' },
+  }
+}
+
+function clockTime(at: Date): string {
+  return `${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}`
+}
+
+/**
+ * 上次星芒自己意外退出了（主进程没接住的异常）。以前是一个英文报错框，现在自动重开一次，
+ * 这里说一句发生了什么，并给「复制给客服」：客户答不上「出了什么错」，复制的内容里有。
+ * 10 分钟内第二次时没有自动重开，换一种说法，复制的内容带上这几次。
+ */
+export function unexpectedExitNotice(capabilities: Pick<WindowCapabilities, 'unexpectedExit'> | null | undefined): StartupNotice | null {
+  const notice: UnexpectedExitNotice | undefined = capabilities?.unexpectedExit
+  const exits = notice?.exits.filter((exit) => Number.isFinite(exit.at) && exit.at > 0) ?? []
+  if (!notice || exits.length === 0) return null
+  const latest = new Date(exits[exits.length - 1].at)
+  const supportFailure: SupportFailure = {
+    at: latest,
+    action: '星芒自己意外退出',
+    message: notice.relaunched ? '已自动重新打开' : '10 分钟内又退出了一次，没有自动重开',
+    detail: exits.map((exit) => `${clockTime(new Date(exit.at))} ${exit.error}`).join('；'),
+  }
+  return {
+    id: 'unexpected-exit',
+    failure: false,
+    tone: 'warn',
+    title: notice.relaunched ? '星芒刚才意外退出了' : '星芒刚才又意外退出了',
+    body: notice.relaunched
+      ? '星芒刚才意外退出了，已经重新打开。错误信息已经记下来，点「复制给客服」发给客服就行。'
+      : '星芒刚才又意外退出了一次，这次没有自动重开。点「复制给客服」，把这几次的信息发给客服。',
+    action: { label: '复制给客服', supportFailure },
+    secondaryAction: { label: '知道了', dismiss: true },
   }
 }
 

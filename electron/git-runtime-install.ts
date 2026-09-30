@@ -10,6 +10,7 @@ import {
 } from './command-runner'
 import type { NodeRuntimeNetworkRegion, NodeRuntimeProcessPlan } from './node-runtime'
 import { createTrustedTemporaryDirectory } from './trusted-temp'
+import { downloadWithResume } from './download-retry'
 import { resolveWindowsMachinePaths, type WindowsMachinePaths } from './windows-machine-paths'
 
 /**
@@ -73,6 +74,8 @@ export interface GitRuntimeDownloadSource {
 
 export interface GitRuntimeInstallerDependencies {
   fetch: typeof globalThis.fetch
+  /** 测试接缝：下载断了以后等多久再在同一条线路上接着下，缺省按真实时间等。 */
+  waitBeforeResume?(milliseconds: number, signal?: AbortSignal): Promise<void>
   /** 测试接缝：真实摘要属于真实安装包，合成的下载内容永远对不上。 */
   expectedSha256(architecture: GitRuntimeArchitecture): string
   runProcess(plan: NodeRuntimeProcessPlan, signal?: AbortSignal): Promise<CommandResult>
@@ -224,55 +227,52 @@ async function downloadInstaller(
   const abort = () => controller.abort(options.signal?.reason)
   options.signal?.addEventListener('abort', abort, { once: true })
   const timeout = setTimeout(() => controller.abort(new Error('下载超时')), downloadTimeoutMs)
-  const hash = createHash('sha256')
-  let size = 0
-  let file: fs.promises.FileHandle | null = null
+  const percentOf = (size: number, total: number | null) => total ? Math.min(99, (size / total) * 100) : null
   try {
     throwIfAborted(options.signal)
-    const response = await fetchTrustedGitResource(source.url, {
-      method: 'GET',
+    const download = await downloadWithResume({
+      targetPath,
+      maximumBytes: maximumInstallerBytes,
+      oversizeMessage: '安装包超过 200 MB 安全限制',
       signal: controller.signal,
-      headers: { Accept: 'application/octet-stream' },
-    }, dependencies.fetch)
-    if (!response.ok) throw new Error(`HTTP ${response.status}`)
-    if (!response.body) throw new Error('服务器没有返回安装包内容')
-    const declaredHeader = response.headers.get('content-length')
-    const declared = declaredHeader === null ? null : Number(declaredHeader)
-    if (declared !== null && (!Number.isSafeInteger(declared) || declared < minimumInstallerBytes)) {
-      throw new Error('服务器返回的安装包大小无效')
-    }
-    if (declared !== null && declared > maximumInstallerBytes) throw new Error('安装包超过 200 MB 安全限制')
-    file = await fs.promises.open(targetPath, 'wx')
-    const reader = response.body.getReader()
-    while (true) {
-      throwIfAborted(options.signal)
-      const { done, value } = await reader.read()
-      if (done) break
-      if (!value) continue
-      size += value.byteLength
-      if (size > maximumInstallerBytes) {
-        await reader.cancel()
-        throw new Error('安装包超过 200 MB 安全限制')
-      }
-      hash.update(value)
-      await file.write(value)
-      report(options, {
+      ...(dependencies.waitBeforeResume ? { wait: dependencies.waitBeforeResume } : {}),
+      request: (headers, signal) => fetchTrustedGitResource(source.url, {
+        method: 'GET',
+        signal,
+        headers: { Accept: 'application/octet-stream', ...headers },
+      }, dependencies.fetch),
+      acceptResponse: (response) => {
+        if (!response.ok) throw new Error(`HTTP ${response.status}`)
+        if (!response.body) throw new Error('服务器没有返回安装包内容')
+        const declaredHeader = response.headers.get('content-length')
+        const declared = declaredHeader === null ? null : Number(declaredHeader)
+        if (declared !== null && (!Number.isSafeInteger(declared) || declared < minimumInstallerBytes)) {
+          throw new Error('服务器返回的安装包大小无效')
+        }
+        if (declared !== null && declared > maximumInstallerBytes) throw new Error('安装包超过 200 MB 安全限制')
+        return declared
+      },
+      onProgress: (size, total) => report(options, {
         phase: 'downloading',
         source: source.id,
         message: `正在从${source.label}下载 Git`,
-        percent: declared ? Math.min(99, (size / declared) * 100) : null,
+        percent: percentOf(size, total),
         transferredBytes: size,
-        totalBytes: declared,
-      })
-    }
-    await file.sync()
-    await file.close()
-    file = null
-    if (size < minimumInstallerBytes) throw new Error('下载的安装包内容过小')
-    if (declared !== null && size !== declared) throw new Error('安装包下载不完整')
-    return { sha256: hash.digest('hex'), size }
+        totalBytes: total,
+      }),
+      onResume: (size, total) => report(options, {
+        phase: 'downloading',
+        source: source.id,
+        message: `网络断了一下，正在从${source.label}接着下载 Git`,
+        percent: percentOf(size, total),
+        transferredBytes: size,
+        totalBytes: total,
+      }),
+    })
+    if (download.size < minimumInstallerBytes) throw new Error('下载的安装包内容过小')
+    if (download.total !== null && download.size !== download.total) throw new Error('安装包下载不完整')
+    return { sha256: download.sha256.toString('hex'), size: download.size }
   } catch (error) {
-    await file?.close().catch(() => undefined)
     await fs.promises.rm(targetPath, { force: true }).catch(() => undefined)
     throw error
   } finally {

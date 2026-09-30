@@ -16,7 +16,6 @@
 .acceleration-stage::before { position: absolute; inset: 0; z-index: -1; background-image: radial-gradient(circle, var(--acceleration-stage-line) .65px, transparent .75px); background-size: 20px 20px; opacity: .35; content: ''; }
 .acceleration-stage-top { display: flex; justify-content: space-between; align-items: center; gap: var(--space-2); }
 .acceleration-eyebrow { display: inline-flex; align-items: center; gap: var(--space-2); color: var(--xm-gold); font: 500 var(--font-micro) var(--mono); letter-spacing: 1.4px; }
-.acceleration-stage-scope { display: inline-flex; align-items: center; gap: 6px; color: var(--acceleration-stage-muted); font-size: var(--font-small-compact); }
 .acceleration-stage-title { margin-top: var(--space-6); }
 .acceleration-stage-title h2 { margin: 0; color: var(--acceleration-stage-text); font-size: var(--font-h1); font-weight: 600; letter-spacing: .4px; }
 .acceleration-stage-title p { margin: var(--space-2) 0 0; color: var(--acceleration-stage-muted); font-size: var(--font-small); }
@@ -71,11 +70,6 @@
 .acceleration-page[data-phase="active"] .acceleration-quota-label small { color: var(--ok); }
 .acceleration-primary-action > .xm-btn { width: 100%; min-height: 46px; height: auto; border-radius: var(--radius-button); font-size: var(--font-body); }
 .acceleration-quota-note { min-height: 34px; margin: var(--space-2) 0 0; text-align: center; color: var(--text-2); font-size: var(--font-small-compact); line-height: var(--line-body); }
-.acceleration-mode { display: flex; justify-content: space-between; align-items: center; gap: var(--space-4); margin-top: var(--space-3); padding-top: var(--space-3); border-top: 1px solid var(--line); }
-.acceleration-mode > div:first-child { flex: 1; min-width: 0; }
-.acceleration-mode strong { font-size: var(--font-small); font-weight: 600; }
-.acceleration-mode p { margin: var(--space-1) 0 0; color: var(--text-3); font-size: var(--font-small-compact); line-height: var(--line-body); }
-.acceleration-mode .xm-switch-wrap { flex: none; }
 .acceleration-details { display: grid; grid-template-columns: .94fr .94fr 1.35fr; border: 1px solid var(--line); border-radius: var(--radius-card); background: var(--panel); }
 .acceleration-details > div { display: flex; position: relative; flex-wrap: wrap; align-items: center; gap: var(--space-1) var(--space-3); min-width: 0; padding: var(--space-3) var(--space-5); }
 .acceleration-details > div + div { border-left: 1px solid var(--line); }

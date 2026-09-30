@@ -20,11 +20,14 @@ const projectRoot = path.resolve(__dirname, '..')
 // promoting one to a value import has to be a deliberate edit of this file.
 const valueImportable = [
   'electron/acceleration-contract',
+  // 「必须更新」那层提示的「打开下载页」，与主进程外链白名单共用一条网址。
+  'electron/app-download-page',
   'electron/account-key-quota',
   'electron/ai-chat-protocol',
   'electron/catalog',
   // Codex 桌面端装不上那句话的开头和微软商店链接，主进程与错误框共用一份（第十九批 5）。
   'electron/codex-desktop-install-failure',
+  'electron/codex-desktop-known-issues',
   'electron/cli-model-defaults',
   'electron/external-url-blocked',
   'electron/git-runtime',
