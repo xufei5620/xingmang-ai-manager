@@ -94,7 +94,7 @@ import {
   ensureProjectInstructions,
   readProjectInstructionsTemplate,
 } from './project-instructions'
-import { classifyWorkspace, sensitiveWorkspaceLabel } from './workspace-guard'
+import { classifyWorkspace, resolveRememberedWorkspace, sensitiveWorkspaceLabel } from './workspace-guard'
 import {
   describeOverride,
   inspectWorkspaceConfigOverrides,
@@ -542,6 +542,11 @@ export interface ConfigSavePayload {
 
 export interface AppConfigSummary {
   workspace: string
+  /**
+   * 首页「打开」在这个工具还没有会话记录时直接用的文件夹：用户上次在本软件里选过、
+   * 且不是主目录或其他敏感目录的那个（resolveRememberedWorkspace）。缺省 = 没有，照旧弹选择器。
+   */
+  rememberedWorkspace?: string
   providers: Record<ProviderId, NativeConfigSummary>
   /**
    * 账号还在恢复时读到的配置：「是不是当前账号写的」这一问还答不上来，
@@ -5316,8 +5321,14 @@ export function createSystemService(
     const stored = store.read()
     const owner = serviceOptions.getExternalClientAccountId?.() ?? null
     const ccSwitchInstalled = inspectCcSwitchInstalled(providerRoots.userHome)
+    const rememberedWorkspace = resolveRememberedWorkspace(stored.workspace, {
+      platform,
+      home: providerRoots.userHome,
+      defaultWorkspace: os.homedir(),
+    })
     const result = {
       workspace: stored.workspace,
+      ...(rememberedWorkspace ? { rememberedWorkspace } : {}),
       providers: Object.fromEntries(
         providerIds.map((id) => {
           const current = inspectNativeProviderConfig(id)

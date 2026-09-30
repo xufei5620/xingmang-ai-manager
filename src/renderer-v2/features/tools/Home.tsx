@@ -16,7 +16,7 @@ import { FirstRunSteps } from './FirstRun'
 import { isAccountNotEnabledFailure, keySyncFailureReason, keySyncFailureText } from './key-sync-failure'
 import { dismissFirstRun, getFirstRunStorage, readFirstRunDismissals } from './first-run-dismissal'
 import { formatRecentTime, recentResumeHint, recentSessionSubtitle } from './recent-display'
-import { latestSessionIdsByWorkspace, newWorkspaceLabel, recentWorkspaces, resumeLaunchChoice, workspaceButtonLabel, workspaceChoices, type CliLaunchChoice } from './recent-workspaces'
+import { latestSessionIdsByWorkspace, launchWorkspaces, newWorkspaceLabel, resumeLaunchChoice, workspaceButtonLabel, workspaceChoices, type CliLaunchChoice } from './recent-workspaces'
 import { errorMessage } from '../../business-common'
 import { subscriptionSummaryText, type UsableSubscription } from '../../../../electron/subscription-summary'
 import { isNetworkFailureText } from './online-resync'
@@ -297,10 +297,11 @@ export function Home(props: HomeProps) {
         : tool.configured ? 'ready' : notEnabled ? 'notEnabled' : 'unconfigured'
     // 「打开」以前每次都要重新选一遍目录。会话记录里本来就存着用过的目录，
     // 拿它当主按钮的默认值，旁边的下拉再给最近几个和原来的选择器（N7）。
+    // 这个工具还没有记录时用上次在本软件里选过的文件夹，四个工具只问一次。
     // Codex 桌面端自己管工作区，不走这条路。
     const opensWorkspace = !configUnavailable && !tool.error && tool.status.installed
       && openable && tool.id !== 'codexDesktop'
-    const workspaces = opensWorkspace ? recentWorkspaces(recent?.items ?? [], tool.provider) : []
+    const workspaces = opensWorkspace ? launchWorkspaces(recent?.items ?? [], tool.provider, snapshot?.config.rememberedWorkspace) : []
     // 正在跑的那一行按钮写的是「打开中」「安装中」，这时不给下拉，但外面那层还在，
     // 按钮列的宽度就不会跟着一起跳。
     const lastWorkspace = job ? null : workspaces[0] ?? null

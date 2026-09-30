@@ -920,6 +920,8 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
         const selectedWorkspace = remembered ?? await toolsApi.chooseWorkspace(newFolder ? { createStarter: true } : undefined)
         if (!launchIsCurrent(epoch) || !selectedWorkspace) return false
         workspace = selectedWorkspace
+        // 刚选的文件夹主进程已经记下，读回来首页按钮才会写「打开 它」，其余工具下次也不再问。
+        if (!remembered) void toolbox.refreshConfig().catch(() => undefined)
       }
       if (!launchIsCurrent(epoch)) return false
       const waitLabel = launchWaitLabel(toolbox.jobs, (key) => tools.find((tool) => tool.id === key)?.name ?? clientConnections.find((client) => client.id === key)?.name)
