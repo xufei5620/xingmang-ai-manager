@@ -360,6 +360,9 @@ function register(
     setWindowMode: vi.fn(),
     setWindowTheme: vi.fn(),
     openCanvasWindow: vi.fn(async () => undefined),
+    // 打开前试写只在 Windows 上跑，有自己的一组用例（write check before launching）；
+    // 其余用例不碰真磁盘，cli:launch 在各平台上都照旧同步交给 launchProvider。
+    workspaceWriteCheck: { platform: 'darwin', probe: async () => undefined },
     ...({ transformSystemSnapshot } as object),
     ...extraOptions,
   })
