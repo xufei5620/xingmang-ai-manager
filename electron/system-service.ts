@@ -2153,6 +2153,8 @@ export interface SystemServiceOptions {
   getRelaySiteId?: () => string
   /** Stable realm + user identity; null while logged out. Never inferred from the relay URL. */
   getExternalClientAccountId?: () => string | null
+  /** 开机补模板缺省项前问「哪些工具开着」的那一步；缺省 = 真去查进程，测试里替换掉。 */
+  inspectRunningToolsForTemplateFill?: (providers: readonly ProviderId[]) => Promise<RunningToolsReport>
   /** Defaults to the restrictive mode so tests and non-main callers fail closed. */
   windowsExecutionMode?: WindowsCliExecutionMode
   platform?: NodeJS.Platform
@@ -5622,7 +5624,7 @@ export function createSystemService(
     if (!due.length) return { filled }
     let report: RunningToolsReport
     try {
-      report = await inspectRunningTools(due)
+      report = await (serviceOptions.inspectRunningToolsForTemplateFill ?? inspectRunningTools)(due)
     } catch {
       return { filled }
     }

@@ -19,6 +19,8 @@ function fixture() {
   const makeService = () => createSystemService(new AppSettingsStore(path.join(data, 'settings.json'), root), {
     providerRoots: roots, managerDataDirectory: data, relayFetch: fetch,
     getExternalClientAccountId: () => owner,
+    // 真去查进程在 Windows CI 上会因为找不到 npm 落到「看不出开没开」，补缺省项那条路就一律跳过。
+    inspectRunningToolsForTemplateFill: async () => ({ running: [], unknown: [], codexDesktopRunning: false, canRestartCodexDesktop: false }),
   })
   const payload = { provider: 'codex' as const, apiKey: 'sk-fixture-user-secret', model: 'fixture-model', mode: 'merge' as const }
   const ownership = new ToolConfigOwnershipStore(path.join(data, 'tool-config-ownership'))
@@ -463,5 +465,41 @@ describe('filling template defaults into older account configs at startup', () =
 
     expect(fs.readFileSync(configPath, 'utf8')).toBe(before)
     expect(f.ownership.templateRevision('codex', f.current())).toBe(0)
+  })
+})
+
+describe('filling template defaults while a tool may be running', () => {
+  it.each([
+    ['running', { running: ['codex' as const], unknown: [], codexDesktopRunning: false }],
+    ['undetectable', { running: [], unknown: ['codex' as const], codexDesktopRunning: false }],
+    ['open as the desktop app', { running: [], unknown: [], codexDesktopRunning: true }],
+    ['possibly open as the desktop app', { running: [], unknown: [], codexDesktopRunning: null }],
+  ])('leaves a %s tool for the next start', async (_label, report) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-config-ownership-'))
+    directories.push(root)
+    const roots = { userHome: root, codexHome: path.join(root, '.codex') }
+    const data = path.join(root, 'manager')
+    const fetch = vi.fn<typeof globalThis.fetch>(async () => new Response(JSON.stringify({ data: [{ id: 'fixture-model' }] }), { status: 200 }))
+    const service = createSystemService(new AppSettingsStore(path.join(data, 'settings.json'), root), {
+      providerRoots: roots, managerDataDirectory: data, relayFetch: fetch,
+      getExternalClientAccountId: () => JSON.stringify(['solov', 36]),
+      inspectRunningToolsForTemplateFill: async () => ({ ...report, canRestartCodexDesktop: false }),
+    })
+    await service.saveConfig({ provider: 'codex', apiKey: 'sk-fixture-user-secret', model: 'fixture-model', mode: 'merge' }, false, undefined, { source: 'account', automatic: false })
+    const ownerDirectory = path.join(data, 'tool-config-ownership')
+    const ownerFile = path.join(ownerDirectory, fs.readdirSync(ownerDirectory)[0])
+    const record = JSON.parse(fs.readFileSync(ownerFile, 'utf8'))
+    delete record.templateRevision
+    fs.writeFileSync(ownerFile, JSON.stringify(record), 'utf8')
+    const configPath = codexConfigSnapshotPaths(roots).active
+    fs.writeFileSync(configPath, fs.readFileSync(configPath, 'utf8').replace('check_for_update_on_startup = false\n', ''), 'utf8')
+    const before = fs.readFileSync(configPath, 'utf8')
+    const backups: string[] = []
+
+    expect(await service.fillToolTemplateDefaults!((provider) => { backups.push(provider) })).toEqual({ filled: [] })
+
+    expect(backups).toEqual([])
+    expect(fs.readFileSync(configPath, 'utf8')).toBe(before)
+    expect(JSON.parse(fs.readFileSync(ownerFile, 'utf8')).templateRevision).toBeUndefined()
   })
 })
