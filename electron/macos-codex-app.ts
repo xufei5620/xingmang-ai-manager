@@ -389,6 +389,19 @@ async function inspectCandidate(
   }
 }
 
+/**
+ * 与下面的 isCodexRunning 同一个问法，只是把「查不出来」单独交出来（null），不当成
+ * 「没在跑」：拿它决定要不要断开加速的调用方，不能因为一次查询失败就把人断掉。
+ */
+export async function probeMacosCodexRunning(command: SystemCommandRunner = runSystemCommand): Promise<boolean | null> {
+  try {
+    const output = (await command('/usr/bin/osascript', ['-e', 'application id "com.openai.codex" is running'])).trim()
+    return output === 'true' ? true : output === 'false' ? false : null
+  } catch {
+    return null
+  }
+}
+
 async function isCodexRunning(command: SystemCommandRunner): Promise<boolean> {
   try {
     return (await command('/usr/bin/osascript', [

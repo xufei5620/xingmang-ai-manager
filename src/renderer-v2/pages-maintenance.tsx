@@ -23,6 +23,7 @@ import {
   PlugZap,
   RefreshCw,
   Settings,
+  ShieldCheck,
   Trash2,
   UserRound,
   Wrench,
@@ -70,21 +71,31 @@ import {
   skinOptions,
   updateFailureLabel,
   updateCardTitle,
+  updateDiskShortfallText,
   updateInstallNote,
   updatesPageLead,
   withdrawnVersionAdvice,
 } from './registry/business'
 import { tools } from './registry/tools'
+import { updateDiskCleanupDetail } from './registry/tutorials'
 import { clientConnections } from './registry/clients'
 import { canUninstallTool, externalInstallHint, isExternallyManagedInstall } from './features/tools/model'
 import { elevatedInstallNotice, storeAppLaunchNotice } from './features/tools/elevation-notice'
 import { ToolStatusMeta, ToolStatusReason } from './features/tools/ToolStatusMeta'
 import { connectionCheckView } from './features/tools/connection-check'
 import { accountScope, sessionRestoring } from './account-context'
+import { AppUninstallRow } from './features/app/AppUninstall'
 import { diagnosticDetailRows } from './features/app/diagnostic-details'
 import { canClearStaleProxy, staleProxyClearMessage, staleProxyConfirmBody } from './features/app/stale-proxy'
+import {
+  canTrustCertificatesUserWide,
+  certificateTrustConfirmBody,
+  certificateTrustConfirmTitle,
+  certificateTrustMessage,
+} from './features/app/certificate-trust'
 import { diagnosticFolderTarget, diagnosticFolderUnavailableMessage } from './features/app/diagnostic-folder'
-import { requestSettingsGroup, takeSettingsGroup } from './features/app/settings-group-intent'
+import { takeSettingsGroup } from './features/app/settings-group-intent'
+import { diagnosticFixConfirm, diagnosticFixKind, diagnosticFixLabel, diagnosticFixLabels, diagnosticFixMessage } from './features/app/diagnostic-fix'
 import { parseImportedConversations } from './features/chat/storage'
 import type { ChatTransfer } from './features/chat/transfer'
 import type { Conversation } from './features/chat/state'
@@ -113,6 +124,7 @@ import type { V2Bridge, V2Page } from './types'
 import type {
   AppSettingsV2Update,
   DataTransferImportPreview,
+  DiagnosticFixKind,
   FeedbackReportCopyResult,
   FeedbackReportExportResult,
   InstallCancelResult,
@@ -218,17 +230,19 @@ export function diagnosticTarget(code: string, details?: Diagnostic['details']):
   if (code === 'FOLDER_RELOCATED') return 'feedback'
   // 加速文件坏了：加速页上有「重新检查」和「联系客服」。
   if (code === 'ACCELERATION_BUNDLE') return 'acceleration'
-  // 这两项在「设置」的「网络」组，跳过去时由 diagnosticFix 指定落在那一组。
-  if (code === 'XINGMANG_NETWORK' || code === 'CLASH_VERGE_TUN')
-    return 'settings'
+  // 网络和代理软件这两项以前跳「设置 → 网络」，那一组里没有能处理它们的东西，
+  // 「去检查」又跳回这一页，等于绕一圈（新手引导梳理 9-25 第 2 条）。结论里已经
+  // 写了该怎么做，不再给「去处理」。
+  if (code === 'XINGMANG_NETWORK' || code === 'CLASH_VERGE_TUN') return null
   // 电脑里的代理设置在设置页没有能处理它的东西；能清的那种在行里直接给「清掉这条旧设置」。
   if (code === 'PROXY_ENVIRONMENT') return null
-  // 环境变量要用户自己在系统里删，软件里没有对应的开关。
+  // 能删的（Windows 上当前账号那一份）在行里直接给「删掉这几项设置」。
   if (code === 'PROVIDER_ENVIRONMENT_OVERRIDE') return null
+  // Codex 的额外设置在行里直接给「挪开这份设置」；Claude 跑命令前问不问是用户自己的
+  // 选择，结论里说清楚就够了。两项以前都跳首页，首页上没有能处理它们的地方。
+  if (code === 'CODEX_DOTENV' || code === 'CLAUDE_BYPASS_PERMISSIONS') return null
   if (
     code.startsWith('PROVIDER_') ||
-    code === 'CODEX_DOTENV' ||
-    code === 'CLAUDE_BYPASS_PERMISSIONS' ||
     // Git 的安装指引挂在首页的「运行环境」里，「安装卸载」页没有它那一行。
     code === 'RUNTIME_GIT'
   )
@@ -326,6 +340,8 @@ export function HealthPage({
   const operation = useOperation()
   const [details, setDetails] = useState<Diagnostic | null>(null)
   const [proxyClearItem, setProxyClearItem] = useState<Diagnostic | null>(null)
+  const [certificateTrustOpen, setCertificateTrustOpen] = useState(false)
+  const [fixing, setFixing] = useState<DiagnosticFixKind | null>(null)
   const [connections, setConnections] = useState<ConnectionRow[] | null>(null)
   const [connectionBusy, setConnectionBusy] = useState(false)
   const [responsesConsent, setResponsesConsent] = useState(false)
@@ -447,6 +463,26 @@ export function HealthPage({
     }, staleProxyClearMessage)
     setProxyClearItem(null)
   }
+  // 写好之后重新检查一遍，那一行的按钮就没了；结果那句话留在页头。
+  const trustCertificatesUserWide = async () => {
+    await operation.execute('让所有终端信任证书', async () => {
+      const result = await api.trustCertificatesUserWide()
+      setCertificateTrustOpen(false)
+      void resource.reload()
+      return result
+    }, certificateTrustMessage)
+    setCertificateTrustOpen(false)
+  }
+  // 挪开 Codex 的额外设置 / 删掉盖过当前账号的设置：做完重新检查，那一行立刻变成新结论。
+  const runFix = async (kind: DiagnosticFixKind) => {
+    await operation.execute(diagnosticFixLabels[kind], async () => {
+      const result = await api.fixDiagnostic(kind)
+      setFixing(null)
+      void resource.reload()
+      return result
+    }, diagnosticFixMessage)
+    setFixing(null)
+  }
   // 「文档」不让写时那一行给的「打开文件夹」：打开了就不必再说什么。
   const openDiagnosticFolder = (item: Diagnostic) => {
     const target = diagnosticFolderTarget(item)
@@ -463,7 +499,6 @@ export function HealthPage({
     }
     const target = diagnosticTarget(item.code, item.details)
     if (!target) return
-    if (target === 'settings') requestSettingsGroup('network')
     navigate?.(target)
   }
   const responsesView = responsesResult ? connectionCheckView(responsesResult) : null
@@ -612,6 +647,26 @@ export function HealthPage({
                       清掉这条旧设置
                     </Button>
                   )}
+                  {canTrustCertificatesUserWide(item) && (
+                    <Button
+                      size="sm"
+                      icon={ShieldCheck}
+                      onClick={() => setCertificateTrustOpen(true)}
+                      testId="health-trust-certificates"
+                    >
+                      让这台电脑上所有终端都信任
+                    </Button>
+                  )}
+                  {diagnosticFixKind(item) && (
+                    <Button
+                      size="sm"
+                      icon={Wrench}
+                      onClick={() => setFixing(diagnosticFixKind(item))}
+                      testId={`health-fix-inline-${item.code}`}
+                    >
+                      {diagnosticFixLabel(item)}
+                    </Button>
+                  )}
                   {diagnosticFolderTarget(item) && (
                     <Button
                       size="sm"
@@ -674,6 +729,16 @@ export function HealthPage({
         }
       />
       <Confirm
+        open={Boolean(fixing)}
+        title={fixing ? diagnosticFixConfirm[fixing].title : ''}
+        body={fixing ? diagnosticFixConfirm[fixing].body : ''}
+        okLabel={fixing ? diagnosticFixConfirm[fixing].ok : ''}
+        loading={Boolean(fixing) && operation.busy === (fixing ? diagnosticFixLabels[fixing] : '')}
+        onOk={() => { if (fixing) void runFix(fixing) }}
+        onClose={() => setFixing(null)}
+        testId="health-fix-confirm"
+      />
+      <Confirm
         open={Boolean(proxyClearItem)}
         title="清掉这条旧的代理设置？"
         body={staleProxyConfirmBody(proxyClearItem?.details)}
@@ -682,6 +747,16 @@ export function HealthPage({
         onOk={() => void clearStaleProxy()}
         onClose={() => setProxyClearItem(null)}
         testId="health-clear-stale-proxy-confirm"
+      />
+      <Confirm
+        open={certificateTrustOpen}
+        title={certificateTrustConfirmTitle}
+        body={certificateTrustConfirmBody}
+        okLabel="信任"
+        loading={operation.busy === '让所有终端信任证书'}
+        onOk={() => void trustCertificatesUserWide()}
+        onClose={() => setCertificateTrustOpen(false)}
+        testId="health-trust-certificates-confirm"
       />
       <Drawer
         open={Boolean(details)}
@@ -1078,6 +1153,7 @@ export function UpdatesPage({
   const [isMac, setIsMac] = useState(false)
   const [isWindows, setIsWindows] = useState(false)
   const [autoUpdateSetting, setAutoUpdateSetting] = useState(false)
+  const [diskCleanupOpen, setDiskCleanupOpen] = useState(false)
   useEffect(() => api.onUpdateState(resource.setData), [api, resource.setData])
   useEffect(() => {
     let current = true
@@ -1113,6 +1189,14 @@ export function UpdatesPage({
       async () => resource.setData(await api.downloadUpdate()),
       '',
     )
+  // 空间不够时不拦死：估算是估的，他清出了一点、或者就想试一次，由他决定。
+  const downloadAnyway = () =>
+    void operation.execute(
+      'download',
+      async () => resource.setData(await api.downloadUpdate({ ignoreDiskSpace: true })),
+      '',
+    )
+  const diskShortfallText = updateDiskShortfallText(update, autoUpdateOn)
   // A rejected package leaves the updater in the error phase, where downloadUpdate
   // alone would fail: the retry has to re-check before it has anything to fetch.
   const redownload = () =>
@@ -1214,6 +1298,40 @@ export function UpdatesPage({
             <Progress
               value={update.progress.percent}
               label={`${update.progress.percent.toFixed(0)}%`}
+            />
+          )}
+          {diskShortfallText && (
+            <Notice
+              tone="warn"
+              title="磁盘空间不够，新版本先不下载"
+              body={
+                <>
+                  <p>{diskShortfallText}</p>
+                  {diskCleanupOpen && (
+                    <p data-testid="updates-disk-cleanup">{updateDiskCleanupDetail}</p>
+                  )}
+                </>
+              }
+              testId="updates-disk-shortfall"
+              actions={
+                <>
+                  <Button
+                    size="sm"
+                    icon={BookOpen}
+                    onClick={() => setDiskCleanupOpen((open) => !open)}
+                  >
+                    {diskCleanupOpen ? '收起' : '怎么清理'}
+                  </Button>
+                  <Button
+                    size="sm"
+                    icon={Download}
+                    loading={operation.busy === 'download'}
+                    onClick={downloadAnyway}
+                  >
+                    仍要下载
+                  </Button>
+                </>
+              }
             />
           )}
           {update?.error && (
@@ -1631,7 +1749,9 @@ export function MaintenancePage({
                 <ToolStatusReason
                   lead={withElevationNotice(
                     id === 'node'
-                      ? '命令行工具需要的运行环境'
+                      ? managed
+                        ? '命令行工具需要的运行环境；装工具时会自动准备，一般不用单独点'
+                        : '命令行工具需要的运行环境'
                       : '部分工具需要的可选运行环境',
                     id === 'node' && !status?.installed && !statusUnknown && !status?.detectionFailed
                       ? elevatedInstallNotice('node', capability?.platform, capability?.nodeRuntimeInstall)
@@ -1651,7 +1771,9 @@ export function MaintenancePage({
                 />
               }
               actions={
-                <Button
+                // 已经装好的不再给「安装」：点了只会回一句「本来就装好了」，新手反而
+                // 以为没装好、反复点（新手引导梳理 9-25 第 4 条）。要换新版的照旧给按钮。
+                status?.installed && !statusUnknown && !replace ? undefined : <Button
                   size="sm"
                   icon={Download}
                   disabled={Boolean(operation.busy)}
@@ -1915,6 +2037,17 @@ export function SettingsPage({
   )
   const [systemError, setSystemError] = useState('')
   const [proxy, setProxy] = useState<PlatformProxyStatus | null>(null)
+  const [isMac, setIsMac] = useState(false)
+  useEffect(() => {
+    let current = true
+    // 读不到平台就照旧显示工具的安装卸载，不出「卸载星芒」。
+    void api.getPlatformCapabilities()
+      .then((capability) => {
+        if (current) setIsMac(capability.platform === 'macos')
+      })
+      .catch(() => undefined)
+    return () => { current = false }
+  }, [api])
   useEffect(() => {
     if (!systemApi) return
     let active = true
@@ -2842,17 +2975,11 @@ export function SettingsPage({
               </Button>
             </>,
           )}
-          {row(
-            '卸载',
-            '可选择卸载工具并保留配置',
-            <Button
-              size="sm"
-              icon={Trash2}
-              onClick={() => navigate?.('maintenance')}
-            >
-              查看安装卸载
-            </Button>,
-          )}
+          <AppUninstallRow
+            api={api}
+            isMac={isMac}
+            openMaintenance={() => navigate?.('maintenance')}
+          />
         </>
       ),
     }

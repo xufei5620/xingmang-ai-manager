@@ -6,12 +6,19 @@ import {
   codexDesktopInstallFailureReasons,
   codexDesktopTechnicalWords,
   isCodexDesktopInstallFailureMessage,
+  isCodexDesktopNoStoreInstallFailure,
+  isCodexDesktopUnsupportedInstallFailure,
   type CodexDesktopInstallFailureReason,
 } from './codex-desktop-install-failure'
 import { CodexDesktopInstallFailure, describeCodexDesktopPrimaryMirrorSkip, toCodexDesktopInstallFailure } from './codex-desktop-service'
 
 // 每一类都用 codex-desktop-service.ts / codex-desktop-appx.ts 真会抛出的原话。
 const samples: Record<CodexDesktopInstallFailureReason, string[]> = {
+  // 推测的原话：安装包要求的系统版本比这台电脑高时 Windows 的报法（真机待核）。
+  unsupported: [
+    'Add-AppxPackage 安装失败：部署失败，HRESULT: 0x80073CFD，无法满足安装的先决条件。Windows cannot install package OpenAI.Codex because this package is not compatible with the device. The package requires OS version 10.0.19041.0 or higher on the Windows.Desktop device family.',
+    'Add-AppxPackage 安装失败：部署失败，原因是 HRESULT: 0x80073CFD，此程序包要求 Windows.Desktop 设备系列上的 OS 版本 10.0.19041.0 或更高版本。',
+  ],
   blocked: [
     'Add-AppxPackage 安装失败：部署失败，HRESULT: 0x80073CF3，程序包无法进行更新、相关性或冲突验证。',
     'Codex 桌面端管理员安装失败（退出码 1），请检查 Windows 应用部署事件日志后重试。',
@@ -50,9 +57,9 @@ describe('Codex Desktop install failure wording', () => {
 
   it('never shows a customer the technical words the raw failure is full of', () => {
     for (const reason of Object.keys(codexDesktopInstallFailureReasons) as CodexDesktopInstallFailureReason[]) {
-      for (const storeTried of [true, false]) {
+      for (const [storeTried, storeUnavailable] of [[true, false], [false, false], [false, true]]) {
         for (const updating of [true, false]) {
-          const message = buildCodexDesktopInstallFailureMessage(reason, { storeTried, updating })
+          const message = buildCodexDesktopInstallFailureMessage(reason, { storeTried, storeUnavailable, updating })
           expect(message.startsWith(`${codexDesktopInstallFailedPrefix}：`)).toBe(true)
           expect(isCodexDesktopInstallFailureMessage(message)).toBe(true)
           expect(message).not.toMatch(codexDesktopTechnicalWords)
@@ -80,6 +87,26 @@ describe('Codex Desktop install failure wording', () => {
     const logged = failure as CodexDesktopInstallFailure
     expect(logged.detail).toBe(`微软商店这次没装上（商店那边没说原因），国内镜像也没装上：${samples.damaged[0]}`)
     expect(logged.storeExitCode).toBe('0x8a150049')
+  })
+
+  it('says the store is missing rather than that it failed when this computer has none', () => {
+    const failure = toCodexDesktopInstallFailure(new Error(samples.unreachable[0]), {
+      storeFailure: null, storeExitCode: null, updating: false, storeUnavailable: true,
+    })
+    expect(failure.message).toBe('Codex 桌面端没装上：这台电脑没有微软商店，国内下载线路这会儿连不上。')
+    expect(isCodexDesktopNoStoreInstallFailure(failure.message)).toBe(true)
+    expect((failure as CodexDesktopInstallFailure).detail).toBe(`这台电脑没有微软商店，国内镜像也没装上：${samples.unreachable[0]}`)
+    const withStore = buildCodexDesktopInstallFailureMessage('unreachable', { storeTried: true, updating: false })
+    expect(isCodexDesktopNoStoreInstallFailure(withStore)).toBe(false)
+  })
+
+  it('tells a too-old Windows apart from a Windows that refused the install', () => {
+    const message = buildCodexDesktopInstallFailureMessage('unsupported', { storeTried: true, updating: false })
+    expect(message).toBe('Codex 桌面端没装上：微软商店这次没装上，这台电脑的 Windows 版本太旧，装不了 Codex 桌面端。可以先用 Codex CLI，或者把 Windows 更新到最新。')
+    expect(isCodexDesktopUnsupportedInstallFailure(message)).toBe(true)
+    expect(isCodexDesktopUnsupportedInstallFailure(buildCodexDesktopInstallFailureMessage('blocked', { storeTried: true, updating: false }))).toBe(false)
+    // 其它 0x80073Cxx 仍然是「Windows 拒绝了这次安装」。
+    expect(classifyCodexDesktopInstallFailure('Add-AppxPackage 安装失败：HRESULT: 0x80073CF3')).toBe('blocked')
   })
 
   it('lets sentences already written for customers through untouched', () => {

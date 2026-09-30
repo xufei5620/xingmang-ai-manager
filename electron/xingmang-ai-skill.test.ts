@@ -286,6 +286,19 @@ describe('xingmang-ai-skill', () => {
     }
   })
 
+  it('registers the image tool from a directory whose config was just written', async () => {
+    const userHome = await temporaryHome()
+    const { accountService } = loggedInAccount()
+    const syncImageMcp = vi.fn(async (_input: { skillDirectory: string; officialCodex: boolean }) => ['grok：配置读不懂'])
+
+    const result = await syncXingmangAiSkill({ accountService, bundledRoot, userHome, syncImageMcp })
+
+    const shared = resolveXingmangAiSkillDirectories(userHome)[0]
+    expect(syncImageMcp).toHaveBeenCalledWith({ skillDirectory: shared, officialCodex: false })
+    expect(await readFile(path.join(shared, 'scripts', 'mcp-server.mjs'), 'utf8')).toContain('generate_image')
+    expect(result.directoryWarnings).toEqual(['星芒画图工具未登记：grok：配置读不懂'])
+  })
+
   it('still writes the Codex key when the account has no image group', async () => {
     const userHome = await temporaryHome()
     const { accountService, provisionCliKey } = loggedInAccount({

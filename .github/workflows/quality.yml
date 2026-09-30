@@ -238,6 +238,17 @@ jobs:
         # fifteen seconds.
         timeout-minutes: 5
         run: node e2e/renderer-v2-native-close-race.mjs
+      # The one place the main process's PowerShell probes run for real. They
+      # used to run inside the vitest shards, where a cold PowerShell start on a
+      # busy runner could use up the whole budget, return nothing and fail an
+      # unrelated pull request. The unit tests now check the generated scripts
+      # and the parsers without starting a process; this step proves the
+      # compiled scripts still run and still print what the parsers read.
+      - name: Run the PowerShell probes against this runner once
+        # Each probe carries its own bound and the script prints how long each
+        # took; this is the backstop for a hang that outlives them.
+        timeout-minutes: 6
+        run: node e2e/windows-powershell-probes-smoke.mjs
       - run: npm run build:win:ci
       - run: node scripts/verify-packaged-hardening.cjs release/win-unpacked
       - run: node e2e/packaged-hardening-smoke.mjs "release/win-unpacked/星芒AI管理工具.exe"
@@ -430,10 +441,27 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci --registry=https://registry.npmjs.org/
-      # --with-deps (Linux-only flag) installs Chromium's shared-library
-      # dependencies via apt; the hosted Windows/macOS runners don't need it
-      # because those OSes ship the libraries Chromium links against.
-      - run: npx --no-install playwright install --with-deps chromium
+      # The browser download and its apt-installed system libraries are two
+      # steps, because only the second one has ever hung. On #653 (runs
+      # 36728268598 attempts 1 and 2) `playwright install --with-deps` went
+      # silent right after `apt-get update` fetched noble-security InRelease
+      # (the Azure Ubuntu mirror had already timed out) and sat there until
+      # the job's 30-minute cap cancelled it with no test run; the same step
+      # took 25 seconds on other runners in the same hour. apt never gave up
+      # on its own, so the bound has to come from outside it.
+      - run: npx --no-install playwright install chromium
+      - name: Install Chromium's system libraries
+        # Hosted Windows/macOS runners ship the libraries Chromium links
+        # against; ubuntu-latest needs them (and the CJK fonts the renderer
+        # tests lay text out with) from apt. The script bounds each attempt,
+        # clears whatever apt left running and waits out the dpkg locks
+        # before its one retry (#695 lost both attempts to a surviving
+        # apt-get); this cap is the backstop over its own budget.
+        timeout-minutes: 13
+        run: |
+          printf '%s\n' 'Acquire::Retries "3";' 'Acquire::http::Timeout "30";' 'Acquire::https::Timeout "30";' \
+            | sudo tee /etc/apt/apt.conf.d/99ci-network-timeouts > /dev/null
+          bash scripts/ci-install-chromium-deps.sh
       - run: npm run typecheck
       - run: npm test
       # The renderer v2 browser suites are plain Chromium, so they need no

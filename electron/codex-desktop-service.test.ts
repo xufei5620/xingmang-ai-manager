@@ -2,11 +2,9 @@ import fs from 'node:fs'
 import { createHash } from 'node:crypto'
 import os from 'node:os'
 import path from 'node:path'
-import { execFileSync } from 'node:child_process'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { MacosCodexAppInspection } from './macos-codex-app'
 import { scanPowerShell, unbalancedBracket } from './powershell-script-scan.test-support'
-import { windowsPowerShellExecutable } from './windows-elevation'
 import { AppSettingsStore } from './app-settings'
 import { InstallationQueue } from './installation-queue'
 import { CommandRunnerError } from './command-runner'
@@ -34,14 +32,18 @@ import {
   canAttemptCodexDesktopFirstInstallFallback,
   describeCodexDesktopLaunchFailure,
   describeCodexDesktopLaunchWait,
+  buildCodexDesktopResetScript,
+  describeCodexDesktopResetFailure,
   startCodexDesktopLaunchHeartbeat,
   codexDesktopLaunchHeartbeatIntervalMs,
   codexDesktopNotStartedPrefix,
   processExistsFromSignalError,
   buildCodexDesktopSessionProcessProbeScript,
   parseCodexDesktopSessionProcessIds,
+  codexDesktopRunningFromProbeOutput,
   buildCodexDesktopStoreInstallCommand,
   describeCodexDesktopDownloadAttempt,
+  describeCodexDesktopStoreNotice,
   describeCodexDesktopStoreFailure,
   codexDesktopStoreExitCode,
   parseCodexDesktopStoreProgress,
@@ -63,10 +65,7 @@ import {
   type CodexDesktopWindowsProbes,
 } from './codex-desktop-service'
 import { parseWindowsStoreAppLaunchContext } from './windows-store-app-launch'
-
-// Windows CI 上六个作业共用一台机器，Defender 在场时 PowerShell 冷启一次可以
-// 超过一分钟；起作用的是 execFile 这一层的预算，不是 vitest 的用例超时。
-const powerShellStartupTimeoutMs = Number(process.env.XINGMANG_POWERSHELL_TEST_TIMEOUT_MS ?? 90_000)
+import { codexDesktopKnownIssueMarker } from './codex-desktop-known-issues'
 
 const temporaryDirectories: string[] = []
 
@@ -140,6 +139,26 @@ describe('Codex Desktop AppModel launch diagnostics', () => {
     })
   })
 
+  it('resets only the probed package, passing its name as a PowerShell literal', () => {
+    const script = buildCodexDesktopResetScript("OpenAI.Codex_26.917.6896.0_x64__2p2nqsd0c76g0'; Remove-Item C:\\")
+    expect(script).toContain("Reset-AppxPackage -Package 'OpenAI.Codex_26.917.6896.0_x64__2p2nqsd0c76g0''; Remove-Item C:\\'")
+    expect(script).not.toMatch(/Remove-AppxPackage/)
+    const scan = scanPowerShell(script)
+    expect(scan.unterminated).toBe(false)
+    expect(unbalancedBracket(scan.code)).toBeNull()
+    expect(scan.code).not.toContain('Remove-Item')
+  })
+
+  it('points a failed reset at the same button in Windows settings, in plain words', () => {
+    const generic = describeCodexDesktopResetFailure(new Error('Reset-AppxPackage : The term is not recognized'))
+    const slow = describeCodexDesktopResetFailure(Object.assign(new Error('timeout'), { killed: true }))
+    for (const message of [generic, slow]) {
+      expect(message).toContain('「高级选项」→「重置」')
+      expect(message).not.toMatch(/Reset-AppxPackage|PowerShell|AppX|Appx|0x[0-9A-F]{8}/i)
+    }
+    expect(slow).toContain('两分钟')
+  })
+
   it('tells a built-in Administrator user to sign in with an ordinary account', () => {
     const message = describeCodexDesktopLaunchFailure({
       userSid: 'S-1-5-21-1-2-3-500',
@@ -190,6 +209,32 @@ describe('Codex Desktop AppModel launch diagnostics', () => {
       { waitedSeconds: 45, processSeen: false },
     )
     expect(message).toContain('「Administrator」账户')
+  })
+
+  it('names the known-broken version and points to the command-line Codex instead of the start-menu check', () => {
+    const context = { userSid: null, isBuiltInAdministrator: false, uacEnabled: null, filterAdministratorToken: null }
+    const message = describeCodexDesktopLaunchFailure(context, { waitedSeconds: 51, processSeen: false }, '26.924.2738.0')
+    expect(message.startsWith(codexDesktopNotStartedPrefix)).toBe(true)
+    expect(message).toContain('等了 51 秒，Codex 没有启动起来')
+    expect(message).toContain('你装的这一版（26.924.2738.0）')
+    expect(message).toContain(codexDesktopKnownIssueMarker)
+    expect(message).toContain('「改用 Codex 命令行版」')
+    expect(message).not.toContain('开始菜单里搜「Codex」')
+    expect(message).not.toMatch(/wsreset|AppModel|AppX|Appx|UAC|0x[0-9A-F]{8}|SID|Microsoft Store/i)
+
+    const noOutcome = describeCodexDesktopLaunchFailure(context, undefined, '26.924.2738.0')
+    expect(noOutcome).toContain('等了将近一分钟')
+    expect(noOutcome).toContain(codexDesktopKnownIssueMarker)
+
+    const admin = describeCodexDesktopLaunchFailure(
+      { userSid: 'S-1-5-21-1-2-3-500', isBuiltInAdministrator: true, uacEnabled: false, filterAdministratorToken: false },
+      { waitedSeconds: 45, processSeen: false },
+      '26.924.2738.0',
+    )
+    expect(admin).toContain('「Administrator」账户')
+    expect(admin).not.toContain(codexDesktopKnownIssueMarker)
+
+    expect(describeCodexDesktopLaunchFailure(context, { waitedSeconds: 45, processSeen: false }, null)).not.toContain(codexDesktopKnownIssueMarker)
   })
 
   it('describes the launch wait in plain words and adds the start-menu hint after twenty seconds', () => {
@@ -751,6 +796,70 @@ describe('Codex Desktop update state', () => {
     expect(progress.every((value) => value >= 0 && value <= 100)).toBe(true)
   })
 
+  it('continues a dropped mirror download from where it stopped and keeps the progress going', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-msix-resume-'))
+    temporaryDirectories.push(directory)
+    const destination = path.join(directory, 'Codex.msix')
+    const bytes = Buffer.alloc(10 * 1024 * 1024, 0x42)
+    const cut = 4 * 1024 * 1024
+    const url = 'https://mirror.example.cn/Codex.msix'
+    const ranges: Array<string | null> = []
+    const fetchMock = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+      const range = new Headers(init?.headers).get('range')
+      ranges.push(range)
+      let sent = false
+      const response = range
+        ? new Response(new Uint8Array(bytes.subarray(cut)), {
+          status: 206,
+          headers: {
+            'Content-Type': 'application/vnd.ms-appx',
+            'Content-Range': `bytes ${cut}-${bytes.byteLength - 1}/${bytes.byteLength}`,
+          },
+        })
+        : new Response(new ReadableStream<Uint8Array>({
+          pull(controller) {
+            if (sent) {
+              controller.error(new TypeError('fetch failed'))
+              return
+            }
+            sent = true
+            controller.enqueue(new Uint8Array(bytes.subarray(0, cut)))
+          },
+        }), {
+          headers: {
+            'Content-Type': 'application/vnd.ms-appx',
+            'Content-Length': String(bytes.byteLength),
+            ETag: '"msix"',
+          },
+        })
+      Object.defineProperty(response, 'url', { value: url })
+      return response
+    })
+    const progress: Array<{ percent: number; resuming?: boolean }> = []
+
+    const result = await downloadCodexDesktopPackage(
+      {
+        label: '测试镜像',
+        url,
+        expectedContentLength: bytes.byteLength,
+        expectedSha256Base64: createHash('sha256').update(bytes).digest('base64'),
+      },
+      destination,
+      ({ percent, resuming }) => progress.push({ percent, resuming }),
+      fetchMock,
+      undefined,
+      { wait: async () => undefined },
+    )
+
+    expect(ranges).toEqual([null, `bytes=${cut}-`])
+    expect(result.transferred).toBe(bytes.byteLength)
+    expect(fs.readFileSync(destination).equals(bytes)).toBe(true)
+    expect(progress).toContainEqual({ percent: 40, resuming: true })
+    const percents = progress.map((entry) => entry.percent)
+    expect(percents.every((value, index) => index === 0 || value >= percents[index - 1])).toBe(true)
+    expect(percents.at(-1)).toBe(100)
+  })
+
   it('rejects a package whose Content-Length differs from the mirror manifest', async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-msix-download-'))
     temporaryDirectories.push(directory)
@@ -1028,6 +1137,26 @@ describe('Codex Desktop mirror fallback disclosure', () => {
       .toBe('前一路镜像未通过校验，已改从镜像备用源下载')
   })
 
+  it('says the store is missing instead of that it failed, on every mirror attempt', () => {
+    const primary = { label: '国内镜像', url: 'https://codexapp.agentsmirror.com/latest/win-x64' }
+    const fallback = { label: '镜像备用源', url: 'https://codexapp-r2.agentsmirror.com/latest/win-x64' }
+    const noStore = { storeFailure: null, storeUnavailable: true }
+    expect(describeCodexDesktopDownloadAttempt(primary, 0, null, [], noStore))
+      .toBe('这台电脑没有微软商店，直接用国内线路装：正在从国内镜像下载')
+    expect(describeCodexDesktopDownloadAttempt(fallback, 1, '国内镜像：SHA-256 不一致', [], noStore))
+      .toBe('这台电脑没有微软商店，直接用国内线路装：前一路镜像未通过校验，已改从镜像备用源下载')
+    expect(describeCodexDesktopDownloadAttempt(primary, 0, null, [], noStore)).not.toContain('没装上')
+  })
+
+  it('names a missing store installer as a missing part, not a store failure', () => {
+    const primary = { label: '国内镜像', url: 'https://codexapp.agentsmirror.com/latest/win-x64' }
+    expect(describeCodexDesktopDownloadAttempt(primary, 0, null, [], {
+      storeFailure: '这台电脑上的微软商店安装组件用不了',
+      storeInstallerMissing: true,
+    })).toBe('微软商店少一个安装组件，先用国内线路装：正在从国内镜像下载')
+    expect(describeCodexDesktopStoreNotice({ storeFailure: null })).toBe('')
+  })
+
   it('keeps the Microsoft Store failure in front of every mirror attempt', () => {
     const primary = { label: '国内镜像', url: 'https://codexapp.agentsmirror.com/latest/win-x64' }
     expect(describeCodexDesktopDownloadAttempt(primary, 0, null, [], '连不上微软商店'))
@@ -1296,50 +1425,6 @@ describe('Codex Desktop Appx probe script', () => {
     expect(closeScript).toContain(String.raw`\\WindowsApps\\(?<name>OpenAI\.Codex(?:Beta)?)_`)
   })
 
-  it.runIf(process.platform === 'win32')('checks only roots during scans and each pid before closing', () => {
-    const mocks = String.raw`
-      $script:ownerCalls = 0
-      function Get-CimInstance {
-        param($ClassName, $Filter)
-        $session = [System.Diagnostics.Process]::GetCurrentProcess().SessionId
-        @(
-          [pscustomobject]@{ ProcessId = 101; ParentProcessId = 0; Name = 'ChatGPT.exe'; SessionId = $session; ExecutablePath = 'C:\WindowsApps\OpenAI.Codex_26.715.0.0_x64__id\ChatGPT.exe' }
-          [pscustomobject]@{ ProcessId = 102; ParentProcessId = 101; Name = 'ChatGPT.exe'; SessionId = $session; ExecutablePath = 'C:\WindowsApps\OpenAI.Codex_26.715.0.0_x64__id\ChatGPT.exe' }
-          [pscustomobject]@{ ProcessId = 103; ParentProcessId = 101; Name = 'ChatGPT.exe'; SessionId = $session; ExecutablePath = 'C:\WindowsApps\OpenAI.Codex_26.715.0.0_x64__id\ChatGPT.exe' }
-          [pscustomobject]@{ ProcessId = 104; ParentProcessId = 102; Name = 'rg.exe'; SessionId = $session; ExecutablePath = 'C:\WindowsApps\OpenAI.Codex_26.715.0.0_x64__id\app\resources\rg.exe' }
-          [pscustomobject]@{ ProcessId = 105; ParentProcessId = 102; Name = 'git.exe'; SessionId = $session; ExecutablePath = 'C:\Program Files\Git\cmd\git.exe' }
-        )
-      }
-      function Invoke-CimMethod {
-        [CmdletBinding()]
-        param($InputObject, $MethodName, $OperationTimeoutSec)
-        $script:ownerCalls += 1
-        $sid = if ($InputObject.ProcessId -eq 103) { 'S-1-5-21-9999' } else { [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value }
-        [pscustomobject]@{ ReturnValue = 0; Sid = $sid }
-      }
-    `
-    function runMockProbe(scope: 'roots' | 'all'): { calls: number; processIds: number[] } {
-      const script = `${mocks}
-        ${buildCodexDesktopProcessProbeScript(scope)}
-        Write-Output ('CALLS=' + $script:ownerCalls)
-      `
-      const output = execFileSync(windowsPowerShellExecutable(), [
-        '-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script,
-      ], { encoding: 'utf8', windowsHide: true, maxBuffer: 1024 * 1024 })
-      const lines = output.trim().split(/\r?\n/)
-      const calls = Number(lines.pop()?.replace('CALLS=', ''))
-      return {
-        calls,
-        processIds: parseWindowsProcessesJson(lines.join('\n')).map((entry) => entry.processId),
-      }
-    }
-
-    expect(runMockProbe('roots')).toEqual({ calls: 1, processIds: [101] })
-    // The mock ignores -Filter, so this pins the package-path check: a helper
-    // from the package is closed, an unrelated child of the app is not.
-    expect(runMockProbe('all')).toEqual({ calls: 4, processIds: [101, 102, 104] })
-  })
-
   it('finds a launched window by session and package path alone, without the owner check the close paths need', () => {
     const script = buildCodexDesktopSessionProcessProbeScript()
     const scan = scanPowerShell(script)
@@ -1371,29 +1456,24 @@ describe('Codex Desktop Appx probe script', () => {
     expect(parseCodexDesktopSessionProcessIds('WARNING: not json', null)).toEqual([])
   })
 
-  it.runIf(process.platform === 'win32')('runs the launch probe against mocked WMI and keeps windows whose owner is unknown', () => {
-    const mocks = String.raw`
-      function Get-CimInstance {
-        param($ClassName, $Filter)
-        $session = [System.Diagnostics.Process]::GetCurrentProcess().SessionId
-        @(
-          [pscustomobject]@{ ProcessId = 201; Name = 'ChatGPT.exe'; SessionId = $session; ExecutablePath = 'C:\WindowsApps\OpenAI.Codex_26.715.0.0_x64__id\app\ChatGPT.exe' }
-          [pscustomobject]@{ ProcessId = 202; Name = 'ChatGPT.exe'; SessionId = $session; ExecutablePath = $null; CommandLine = '"C:\WindowsApps\OpenAI.Codex_26.715.0.0_x64__id\app\ChatGPT.exe" --type=renderer' }
-          [pscustomobject]@{ ProcessId = 203; Name = 'ChatGPT.exe'; SessionId = ($session + 1); ExecutablePath = 'C:\WindowsApps\OpenAI.Codex_26.715.0.0_x64__id\app\ChatGPT.exe' }
-          [pscustomobject]@{ ProcessId = 204; Name = 'git.exe'; SessionId = $session; ExecutablePath = 'C:\Program Files\Git\cmd\git.exe' }
-        )
-      }
-      function Invoke-CimMethod { throw 'the launch probe must not ask for owners' }
-    `
-    const output = execFileSync(windowsPowerShellExecutable(), [
-      '-NoLogo', '-NoProfile', '-NonInteractive', '-Command', `${mocks}
-        ${buildCodexDesktopSessionProcessProbeScript()}`,
-    ], { encoding: 'utf8', windowsHide: true, maxBuffer: 1024 * 1024 })
-    expect(parseCodexDesktopSessionProcessIds(output, 'OpenAI.Codex_id')).toEqual([201, 202])
+  it('tells an unreadable exit probe apart from a closed desktop app', () => {
+    const stable = String.raw`C:\Program Files\WindowsApps\OpenAI.Codex_26.715.0.0_x64__2p2nqsd0c76g0\app\ChatGPT.exe`
+    expect(codexDesktopRunningFromProbeOutput(JSON.stringify({ ProcessId: 101, ExecutablePath: stable }))).toBe(true)
+    expect(codexDesktopRunningFromProbeOutput(JSON.stringify([{ ProcessId: 103, ExecutablePath: String.raw`C:\Tools\ChatGPT.exe` }]))).toBe(false)
+    expect(codexDesktopRunningFromProbeOutput('  \r\n')).toBe(false)
+    // 读不懂的输出不能当「已经关了」：那会把正在用的人断掉。
+    expect(codexDesktopRunningFromProbeOutput('WARNING: not json')).toBeNull()
   })
 
   it('keeps the three merged segments byte-identical to the standalone probe scripts', () => {
     const combined = buildCodexDesktopCombinedProbeScript()
+    // The real run of this script is the Windows packaging job's PowerShell
+    // probe smoke (e2e/windows-powershell-probes-smoke.mjs); here only its text.
+    for (const script of [combined, buildCodexDesktopProcessProbeScript('all')]) {
+      const scan = scanPowerShell(script)
+      expect(scan.unterminated).toBe(false)
+      expect(unbalancedBracket(scan.code)).toBeNull()
+    }
 
     expect(combined).toContain("Get-StartApps | Where-Object { $_.AppID -like 'OpenAI.Codex*!App' }")
     expect(combined).toContain('Get-CimInstance -ClassName Win32_Process')
@@ -1408,46 +1488,6 @@ describe('Codex Desktop Appx probe script', () => {
     // 嵌套一层后默认的 Depth 2 会把包条目压成字符串
     expect(combined).toContain('ConvertTo-Json -Compress -Depth 6')
   })
-
-  it.runIf(process.platform === 'win32')('executes the process probe on Windows and emits bounded JSON', () => {
-    const output = execFileSync(windowsPowerShellExecutable(), [
-      '-NoLogo',
-      '-NoProfile',
-      '-NonInteractive',
-      '-Command',
-      buildCodexDesktopProcessProbeScript(),
-    ], { encoding: 'utf8', windowsHide: true, maxBuffer: 1024 * 1024 })
-    if (output.trim()) expect(() => JSON.parse(output)).not.toThrow()
-  })
-
-  it.runIf(process.platform === 'win32')('executes the merged probe on Windows and emits the three segments', () => {
-    const output = execFileSync(windowsPowerShellExecutable(), [
-      '-NoLogo',
-      '-NoProfile',
-      '-NonInteractive',
-      '-Command',
-      buildCodexDesktopCombinedProbeScript(),
-    ], {
-      encoding: 'utf8',
-      windowsHide: true,
-      maxBuffer: 1024 * 1024,
-      timeout: powerShellStartupTimeoutMs,
-    })
-
-    const parsed = JSON.parse(output.trim()) as Record<string, unknown>
-    expect(Object.prototype.hasOwnProperty.call(parsed, 'startApps')).toBe(true)
-    expect(Object.prototype.hasOwnProperty.call(parsed, 'processes')).toBe(true)
-    expect(parsed.package).toBeTruthy()
-    // 账户那一段也要真的在 Windows 上读得出当前用户，首页装之前的提醒靠它
-    expect(String((parsed.storeAppLaunch as Record<string, unknown> | null)?.sid ?? '')).toMatch(/^S-1-\d+(?:-\d+)+$/)
-    // Appx 段在任何账户下都必须给出结论：要么有包、要么确认没有、要么报错
-    const probe = parseCodexDesktopCombinedProbeJson(output)
-    expect(
-      probe.packageProbe.value !== null
-      || probe.packageProbe.confirmedAbsent === true
-      || probe.packageProbe.error !== null,
-    ).toBe(true)
-  }, 180_000)
 })
 
 describe('Codex Desktop uninstall verification', () => {

@@ -5,7 +5,8 @@ import path from 'node:path'
 import { createRequire } from 'node:module'
 
 const require = createRequire(import.meta.url)
-const { createPackage, extractAll } = require('@electron/asar')
+const { extractAll } = require('@electron/asar')
+const { createSettledPackage } = require('../scripts/asar-fixture.test-support.cjs')
 const sourceDirectory = path.resolve(process.argv[2] || 'release/win-unpacked')
 
 function delay(milliseconds) {
@@ -67,7 +68,9 @@ try {
 
   const mainScript = path.join(extractedDirectory, 'dist-electron', 'main.js')
   await fs.appendFile(mainScript, '\n// deliberate integrity-test modification\n', 'utf8')
-  await createPackage(extractedDirectory, rebuiltAsar)
+  // A truncated copy would also be rejected, which would hide a real integrity
+  // regression, so copy only the fully written archive.
+  await createSettledPackage(extractedDirectory, rebuiltAsar)
   await fs.copyFile(rebuiltAsar, asarPath)
 
   application = spawn(path.join(tamperedDirectory, '星芒AI管理工具.exe'), [

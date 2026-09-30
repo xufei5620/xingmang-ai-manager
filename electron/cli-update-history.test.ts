@@ -83,8 +83,8 @@ describe('resolveCliRevertVersion', () => {
     expect(resolveCliRevertVersion('claude', { from: blocked.introduced, to: '9.9.9', at: now }, '9.9.9', now)).toBeNull()
   })
 
-  it('does not apply to Grok CLI', () => {
-    expect(resolveCliRevertVersion('grok', { from: '1.0.39', to: '1.0.40', at: now }, '1.0.40', now)).toBeNull()
+  it('applies to Grok CLI now that both of its install paths honour a named version', () => {
+    expect(resolveCliRevertVersion('grok', { from: '1.0.43', to: '1.0.44', at: now }, '1.0.44', now)).toBe('1.0.43')
   })
 })
 

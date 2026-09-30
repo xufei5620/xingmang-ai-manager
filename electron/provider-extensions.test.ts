@@ -581,6 +581,34 @@ describe('ProviderExtensionService list facade', () => {
     expect(snapshot.items.some((item) => item.kind === 'mcp' && item.name === 'alive')).toBe(true)
   })
 
+  it('reads MCP config and scans Skills without synchronous filesystem calls', async () => {
+    const home = temporaryDirectory()
+    write(path.join(home, '.claude.json'), JSON.stringify({ mcpServers: { local: { command: 'node' } } }))
+    write(path.join(home, '.claude', 'skills', 'first', 'SKILL.md'), '---\nname: First\n---\n')
+    write(path.join(home, '.claude', 'skills', 'second', 'SKILL.md'), '---\nname: Second\n---\n')
+    const service = new ProviderExtensionService({ homeDirectory: home, invoke: async () => '[]' })
+    // On Windows the shared single-link check in bounded-file (path-identity.ts)
+    // still stats each path component synchronously for the files actually read;
+    // opening, listing and reading the files must be asynchronous everywhere.
+    const methods = process.platform === 'win32'
+      ? ['openSync', 'opendirSync', 'readFileSync'] as const
+      : ['lstatSync', 'statSync', 'realpathSync', 'existsSync', 'openSync', 'opendirSync', 'readFileSync'] as const
+    const syncCalls = methods.map((method) => vi.spyOn(fs, method))
+
+    try {
+      const snapshot = await service.list('claude')
+
+      const touchedHome = syncCalls
+        .flatMap((spy) => spy.mock.calls)
+        .filter(([target]) => typeof target === 'string' && target.startsWith(home))
+      expect(touchedHome).toEqual([])
+      expect(snapshot.items.filter((item) => item.kind === 'skill').map((item) => item.name).sort()).toEqual(['First', 'Second'])
+      expect(snapshot.items.some((item) => item.kind === 'mcp' && item.name === 'local')).toBe(true)
+    } finally {
+      for (const spy of syncCalls) spy.mockRestore()
+    }
+  })
+
   it('allows ~/.claude.json beyond 2MB up to the relaxed limit', async () => {
     const home = temporaryDirectory()
     write(path.join(home, '.claude.json'), JSON.stringify({

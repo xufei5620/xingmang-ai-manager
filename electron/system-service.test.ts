@@ -7,6 +7,7 @@ import { classifyNetworkFailure } from './network-failure'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AppSettingsStore, defaultAppSettings } from './app-settings'
 import { InstallationQueue } from './installation-queue'
+import { ToolConfigOwnershipStore } from './tool-config-ownership'
 import { resolveInterruptibleInstallTask } from './quit-blocking-tasks'
 import { providerBaseUrls, type ProviderId } from './catalog'
 import { providerConfigRoot, type ProviderConfigRoots } from './codex-home'
@@ -35,7 +36,9 @@ import {
   assertNpmReleaseMatchesOfficialLock,
   buildCliLaunchQueueKey,
   buildCliStatus,
+  cliHooksAutoRepairedField,
   cliHooksSummaryFields,
+  shouldAutoRepairCliHooks,
   externalCliInstallRefusal,
   buildCliMaintenancePlan,
   buildCliToolStatusFromSettled,
@@ -1960,7 +1963,7 @@ describe('npm registry metadata', () => {
         version: '0.2.119',
         integrity,
       }),
-    })).rejects.toThrow('官方稳定版本')
+    })).rejects.toThrow('要安装的 xAI 官方版本')
   })
 
   it('keeps other npm providers on their latest npm release selector', async () => {
@@ -1994,18 +1997,41 @@ describe('npm registry metadata', () => {
     expect(requestedVersions).toEqual(['2.1.277'])
   })
 
-  it('ignores a requested version on the Darwin Grok path, which the xAI manifest owns', async () => {
+  it('installs a named Darwin Grok version that is not newer than the xAI stable manifest', async () => {
     const requestedVersions: string[] = []
-    await resolveCliInstallRelease('grok', 'darwin-official-npm', {
+    const release = await resolveCliInstallRelease('grok', 'darwin-official-npm', {
       version: '0.2.100',
       fetchGrokStableVersion: async () => ({ version: '0.2.118', sourceUrl: 'https://x.ai/cli/stable' }),
       fetchNpmRelease: async (_registry, _packageName, version) => {
         requestedVersions.push(version)
-        return { name: '@xai-official/grok', version: '0.2.118', integrity }
+        return { name: '@xai-official/grok', version, integrity }
+      },
+    })
+
+    expect(requestedVersions).toEqual(['0.2.100'])
+    expect(release.version).toBe('0.2.100')
+  })
+
+  it('caps a named Darwin Grok version at the xAI stable manifest', async () => {
+    const requestedVersions: string[] = []
+    await resolveCliInstallRelease('grok', 'darwin-official-npm', {
+      version: '0.2.119',
+      fetchGrokStableVersion: async () => ({ version: '0.2.118', sourceUrl: 'https://x.ai/cli/stable' }),
+      fetchNpmRelease: async (_registry, _packageName, version) => {
+        requestedVersions.push(version)
+        return { name: '@xai-official/grok', version, integrity }
       },
     })
 
     expect(requestedVersions).toEqual(['0.2.118'])
+  })
+
+  it('rejects a Darwin Grok npm response that differs from the named version', async () => {
+    await expect(resolveCliInstallRelease('grok', 'darwin-official-npm', {
+      version: '0.2.100',
+      fetchGrokStableVersion: async () => ({ version: '0.2.118', sourceUrl: 'https://x.ai/cli/stable' }),
+      fetchNpmRelease: async () => ({ name: '@xai-official/grok', version: '0.2.118', integrity }),
+    })).rejects.toThrow('要安装的 xAI 官方版本')
   })
 
   it('requires exact package identity, semantic version and SHA-512 integrity metadata', () => {
@@ -3319,6 +3345,95 @@ describe('reminder settings pointing at an old location', () => {
     expect(config).not.toContain('notify')
     expect(config).toContain('gpt-5.5')
     expect(service.getConfig(false).providers.codex.cliHooksStale).toBe(false)
+  })
+})
+
+// 第十八批 1b：开机后第一次读配置时，本账号写的旧钩子不等客户点就改好。
+describe('reminder settings fixed on their own after startup', () => {
+  async function staleCodexFixture(options: { owner: string | null; recordOwnership: boolean }) {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-auto-hooks-'))
+    temporaryDirectories.push(directory)
+    const codexHome = path.join(directory, '.codex')
+    fs.mkdirSync(codexHome)
+    const gone = path.join(directory, 'old install', 'bundled-catalog', 'cli-hooks', 'xingmang-hook.cjs')
+    const configPath = path.join(codexHome, 'config.toml')
+    fs.writeFileSync(configPath, `model = "gpt-5.5"\nnotify = [${JSON.stringify(process.execPath)}, ${JSON.stringify(gone)}, "codex", ${JSON.stringify(directory)}]\n`, 'utf8')
+    const roots = { userHome: directory, codexHome }
+    const managerDataDirectory = path.join(directory, 'manager')
+    // Ownership is keyed on the key and endpoint; pretend every tool carries a key so the record can bind to it.
+    const inspect: NonNullable<SystemServiceOptions['inspectProviderConfig']> = (provider, providerRoots, urls) => ({
+      ...inspectProviderConfig(provider, providerRoots, urls), hasApiKey: true, apiKey: 'sk-auto-hooks',
+    })
+    if (options.recordOwnership) {
+      await new ToolConfigOwnershipStore(path.join(managerDataDirectory, 'tool-config-ownership'))
+        .write('codex', inspect('codex', roots, providerBaseUrls), 'account', 'user-1')
+    }
+    const runtimeLog = { log: vi.fn(), exception: vi.fn() }
+    const service = createService({
+      providerRoots: roots,
+      managerDataDirectory,
+      inspectProviderConfig: inspect,
+      getExternalClientAccountId: () => options.owner,
+      runtimeLog: runtimeLog as unknown as SystemServiceOptions['runtimeLog'],
+    })
+    return { service, configPath, runtimeLog }
+  }
+
+  it('fixes the account\'s own stale hooks once and says so in the summary', async () => {
+    const { service, configPath, runtimeLog } = await staleCodexFixture({ owner: 'user-1', recordOwnership: true })
+    expect(service.getConfig(false).providers.codex.cliHooksStale).toBe(true)
+    expect(service.getConfig(false).providers.codex.cliHooksAutoRepaired).toBeUndefined()
+
+    expect(await service.autoRepairStaleCliHooks!()).toEqual(['codex'])
+    expect(fs.readFileSync(configPath, 'utf8')).not.toContain('notify')
+    expect(fs.readFileSync(configPath, 'utf8')).toContain('gpt-5.5')
+    expect(service.getConfig(false).providers.codex).toMatchObject({ cliHooksStale: false, cliHooksAutoRepaired: true })
+    expect(service.getConfig(false).providers.claude.cliHooksAutoRepaired).toBeUndefined()
+    expect(service.getConfig(true).providers.codex.cliHooksAutoRepaired).toBeUndefined()
+    expect(runtimeLog.log).toHaveBeenCalledWith('info', 'config', 'cli-hooks.auto-repaired', expect.any(String), { provider: 'codex' })
+
+    // Only once per launch: a later read does not touch the files again.
+    expect(await service.autoRepairStaleCliHooks!()).toEqual([])
+  })
+
+  it('leaves hooks alone when nobody is signed in', async () => {
+    const { service, configPath } = await staleCodexFixture({ owner: null, recordOwnership: true })
+    expect(await service.autoRepairStaleCliHooks!()).toEqual([])
+    expect(fs.readFileSync(configPath, 'utf8')).toContain('notify')
+    expect(service.getConfig(false).providers.codex.cliHooksStale).toBe(true)
+  })
+
+  it('leaves hooks alone in a config the current account did not write, so the home page still offers the fix', async () => {
+    const { service, configPath } = await staleCodexFixture({ owner: 'user-1', recordOwnership: false })
+    expect(await service.autoRepairStaleCliHooks!()).toEqual([])
+    expect(fs.readFileSync(configPath, 'utf8')).toContain('notify')
+    expect(service.getConfig(false).providers.codex).toMatchObject({ cliHooksStale: true })
+    expect(service.getConfig(false).providers.codex.cliHooksAutoRepaired).toBeUndefined()
+  })
+
+  it('serializes concurrent calls so the same file is fixed only once', async () => {
+    const { service } = await staleCodexFixture({ owner: 'user-1', recordOwnership: true })
+    const [first, second] = await Promise.all([service.autoRepairStaleCliHooks!(), service.autoRepairStaleCliHooks!()])
+    expect([...first, ...second]).toEqual(['codex'])
+  })
+})
+
+describe('shouldAutoRepairCliHooks', () => {
+  it('only fixes stale hooks in the account\'s own config that were not tried yet this launch', () => {
+    expect(shouldAutoRepairCliHooks({ stale: true, ownership: 'account', attempted: false })).toBe(true)
+    expect(shouldAutoRepairCliHooks({ stale: false, ownership: 'account', attempted: false })).toBe(false)
+    expect(shouldAutoRepairCliHooks({ stale: true, ownership: 'account', attempted: true })).toBe(false)
+    for (const ownership of ['manual', 'unknown', 'missing', 'changed'] as const) {
+      expect(shouldAutoRepairCliHooks({ stale: true, ownership, attempted: false })).toBe(false)
+    }
+  })
+})
+
+describe('cliHooksAutoRepairedField', () => {
+  it('only reports a fix that still holds', () => {
+    expect(cliHooksAutoRepairedField(true, false)).toEqual({ cliHooksAutoRepaired: true })
+    expect(cliHooksAutoRepairedField(true, true)).toEqual({})
+    expect(cliHooksAutoRepairedField(false, false)).toEqual({})
   })
 })
 

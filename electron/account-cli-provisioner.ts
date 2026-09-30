@@ -1,7 +1,7 @@
 import { resolveManagedCliKeyProfiles, providerIds, type ProviderId } from './catalog'
 import { resolveDefaultCliModel } from './cli-model-defaults'
 import { isKeyQuotaExhaustedMessage, managedKeyQuotaExhaustedMessage } from './account-key-quota'
-import { loadManagedCliGroups } from './managed-cli-groups'
+import { loadManagedCliGroups, subscriptionsBindKeyGroups } from './managed-cli-groups'
 import type { StoredManagedCliKey } from './managed-cli-key-store'
 import { NewApiNetworkError } from './new-api-client'
 import { RealmAccountError } from './realm-account'
@@ -25,6 +25,12 @@ export interface ManagedCliKeyFailure {
 export interface ManagedCliKeySyncSummary {
   ready: ManagedCliKeyStatus[]
   failed: ManagedCliKeyFailure[]
+  /**
+   * 这一轮 Key 换了分组的工具（买了订阅换进订阅分组、订阅到期换回来、分组改名）。
+   * 已连好的工具开机时本不重写，这几家例外：配置里那把旧 Key 已经不扣该扣的额度了。
+   * 缺省 = 没有。
+   */
+  regrouped?: ProviderId[]
   storageWarning?: string
   imageSkillWarning?: string
 }
@@ -51,11 +57,13 @@ export interface ManagedCliKeyStoreLike {
 interface ResolvedManagedCliKeys {
   keys: StoredManagedCliKey[]
   failed: ManagedCliKeyFailure[]
+  regrouped: ProviderId[]
   storageWarning?: string
 }
 
 type ManagedKeyAccountService = Pick<RelayBackendClient,
   'getSessionState' | 'provisionCliKey' | 'getSessionRevision' | 'getActiveSiteId' | 'listUsableGroups'>
+  & Partial<Pick<RelayBackendClient, 'getSubscriptionSelf'>>
 
 class AccountSessionChangedError extends Error {
   constructor() {
@@ -149,7 +157,9 @@ async function resolveManagedCliKeys(
     const usableCache = foreignCache ? [] : scopedCache ? cached : cached.filter((entry) => (
       entry.group === profiles[entry.provider].group
     ))
-    const everyKeyCached = providerIds.every((provider) => (
+    // 历史账号例外：订阅是在服务端买、在服务端到期的，本机缓存看不出来，
+    // 每次都得问一次，否则买了订阅工具也还在扣余额。
+    const everyKeyCached = !subscriptionsBindKeyGroups(accountService) && providerIds.every((provider) => (
       usableCache.some((entry) => entry.provider === provider)
     ))
     const resolvedGroups = everyKeyCached ? null : await loadManagedCliGroups(accountService)
@@ -158,6 +168,8 @@ async function resolveManagedCliKeys(
       const resolved = resolvedGroups?.[provider]
       // A fallback means the listing did not identify a new owner. It does
       // not invalidate a group already confirmed when this key was issued.
+      // 历史账号订阅到期也走这条：服务端还给得出这家工具的普通分组时会认出来、
+      // 换回去；认不出时换去写死的名字只会签 Key 失败，配置里仍是这把旧 Key。
       return (resolved?.source !== 'fallback' ? resolved?.group : undefined)
         ?? usableCache.find((entry) => entry.provider === provider)?.group
         ?? profiles[provider].group
@@ -170,11 +182,13 @@ async function resolveManagedCliKeys(
       return profile && groupFor(entry.provider) === entry.group ? [[entry.provider, entry] as const] : []
     }))
     const failed: ManagedCliKeyFailure[] = []
+    const regrouped: ProviderId[] = []
     let fetchedFromServer = false
 
     for (const provider of providerIds) {
       if (keys.has(provider)) continue
       const group = groupFor(provider)
+      const previousGroup = usableCache.find((entry) => entry.provider === provider)?.group
       try {
         assertSameAuthenticatedUser(accountService, capture)
         const result = await accountService.provisionCliKey({
@@ -189,6 +203,7 @@ async function resolveManagedCliKeys(
           name: result.name,
           key: result.key,
         })
+        if (previousGroup !== undefined && previousGroup !== group) regrouped.push(provider)
         fetchedFromServer = true
       } catch (error) {
         rethrowAccountSessionChange(error)
@@ -227,6 +242,7 @@ async function resolveManagedCliKeys(
         return entry ? [entry] : []
       }),
       failed,
+      regrouped,
       ...(storageWarning ? { storageWarning } : {}),
     }
   })()
@@ -250,6 +266,7 @@ export async function syncManagedCliKeySummary(
   return {
     ready: result.keys.map(({ provider, group, name }) => ({ provider, group, name })),
     failed: result.failed,
+    ...(result.regrouped.length ? { regrouped: result.regrouped } : {}),
     ...(result.storageWarning ? { storageWarning: result.storageWarning } : {}),
   }
 }

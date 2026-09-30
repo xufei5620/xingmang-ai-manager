@@ -7,6 +7,7 @@ import {
   mergeSameDeviceReadings,
   readDiskSpace,
   tightestDiskSpace,
+  updateDownloadProbeTargets,
   type DiskSpaceReading,
 } from './disk-space'
 
@@ -137,5 +138,16 @@ describe('merging readings that point at the same disk', () => {
     ])
 
     expect(merged).toHaveLength(4)
+  })
+})
+
+describe('where an app update lands', () => {
+  it('measures the updater cache folder and the temp folder the installer unpacks into', () => {
+    expect(updateDownloadProbeTargets('win32', { localAppData: 'C:\\Users\\a\\AppData\\Local', home: 'C:\\Users\\a', temp: 'C:\\Temp' }))
+      .toEqual(['C:\\Users\\a\\AppData\\Local', 'C:\\Temp'])
+    expect(updateDownloadProbeTargets('win32', { localAppData: '  ', home: '/h', temp: '/t' }))
+      .toEqual([path.join('/h', 'AppData', 'Local'), '/t'])
+    expect(updateDownloadProbeTargets('darwin', { home: '/Users/a', temp: '/tmp' }))
+      .toEqual([path.join('/Users/a', 'Library', 'Caches'), '/tmp'])
   })
 })

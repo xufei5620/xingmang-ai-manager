@@ -19,7 +19,13 @@ import {
   type SensitiveWorkspaceKind,
 } from './workspace-guard'
 import { resolveStarterWorkspaceContainer } from './starter-workspace'
-import { buildDocumentsFallbackPrompt, createStarterWorkspaceWithFallback } from './documents-fallback'
+import {
+  buildDocumentsFallbackPrompt,
+  buildWorkspaceNotWritablePrompt,
+  createStarterWorkspaceWithFallback,
+  inspectWorkspaceWritable,
+  shouldCheckWorkspaceWritable,
+} from './documents-fallback'
 import { usageDateRange } from './usage-date-range'
 import type { AppSettingsUpdate, AppTheme } from './app-settings'
 import { parseWindowState } from './window-preferences'
@@ -93,7 +99,7 @@ import { assertOpenableConfigDirectory } from './config-directory'
 import { resolveOpenableSessionWorkspace } from './session-workspace'
 import { resolveRevealableExportedFile } from './exported-file'
 import { defaultProviderConfigRoots, providerConfigRoot, type ProviderConfigRoots } from './codex-home'
-import type { UpdateSnapshot, UpdaterService } from './updater'
+import type { UpdateDownloadOptions, UpdateSnapshot, UpdaterService } from './updater'
 import {
   createNewApiClient,
   validateLoginSessionId,
@@ -142,6 +148,8 @@ import type {
   RendererLogLevel,
   ToolModelCheck,
   WindowCapabilities,
+  AppUninstallRequest,
+  AppUninstallResult,
 } from './ipc-contract'
 import { isDiagnosticFolderTarget, type DiagnosticFolderTarget, type DiagnosticsReport, type DiagnosticsRunOptions } from './diagnostics'
 import { isCappedKeyUsedUp, withKeyQuotaExhausted, type ConnectionCheckResult, type ConnectionProbeReport } from './connection-check'
@@ -150,6 +158,8 @@ import { createExternalShellLauncher, type ExternalShellLauncher } from './syste
 import { isNetworkSettingsKind, type NetworkSettingsKind, type ProxyBypassOutcome } from './proxy-bypass'
 import { platformCapabilitiesFor } from './platform-capabilities'
 import { clearStaleUserProxyVariables, type StaleProxyClearResult } from './stale-proxy-environment'
+import type { UserWideCertificateTrustResult } from './user-certificate-trust'
+import { isDiagnosticFixKind, type DiagnosticFixKind, type DiagnosticFixResult } from './diagnostic-fixes'
 import { validatePaymentForm, validatePaymentQrCode, validatePaymentUrl, type PaymentWindowController } from './payment-window'
 import type { AccountStartupGate } from './account-startup-gate'
 import { parseAiChatHistoryScope, parseAiChatHistoryWrite, type AiChatHistoryStore } from './ai-chat-history-store'
@@ -173,6 +183,9 @@ export interface IpcRegistrationOptions {
   // 新建项目文件夹认的用户主目录（macOS 建在它下面）。省略 = os.homedir()；测试注入，
   // 免得在跑测试的 Mac 上往真实主目录里建文件夹。
   homeDirectory?: () => string
+  // 打开工具前试写选中的文件夹（documents-fallback.ts）。省略 = 按当前平台、真去试写；
+  // 测试注入，免得只有 Windows 上才走得到这一步。
+  workspaceWriteCheck?: { platform: NodeJS.Platform; probe: (directory: string) => Promise<void> }
   // 当前账号的 AI 作品实际存在哪（「文档」不让写时是主目录下的 XingmangAI）；检查页
   // 「打开文件夹」用。main.ts 传启动时定下的位置；省略 = 这颗按钮打不开 AI 作品那一个。
   aiOutputDirectory?: () => string
@@ -190,6 +203,10 @@ export interface IpcRegistrationOptions {
     exportLatest(): string
     /** 检查页「清掉这条旧设置」；缺省 = stale-proxy-environment.ts 的真实现。 */
     clearStaleProxy?(): Promise<StaleProxyClearResult>
+    /** 检查页「让这台电脑上所有终端都信任」；宿主不给就是这台电脑上不提供。 */
+    trustCertificatesUserWide?(): Promise<UserWideCertificateTrustResult>
+    /** 检查页「挪开这份设置」「删掉这几项设置」；缺省 = 不支持，点了报一句中文（旧行为无此按钮）。 */
+    fix?(kind: DiagnosticFixKind): Promise<DiagnosticFixResult>
   }
   runtimeLog: RuntimeLogStore
   extensionService: CodexExtensionService
@@ -236,6 +253,11 @@ export interface IpcRegistrationOptions {
   bypassBrokenProxy?(): Promise<ProxyBypassOutcome>
   openNetworkSettings?(kind: NetworkSettingsKind): Promise<boolean>
   relaunchApp?(): Promise<boolean>
+  /**
+   * Mac 上「卸载星芒」。backupCliConfigs 由这里给：备份要用本模块里的账号上下文，和
+   * 「修好它」同一份。不传 = 这台电脑不支持在星芒里卸载。
+   */
+  uninstallApp?(request: AppUninstallRequest, backupCliConfigs: () => Promise<void>): Promise<AppUninstallResult>
   takeExternalDeepLink?(target: WebContents): ExternalDeepLink | null
   /** `update` is the parsed request, so a hook can tell which fields the user just changed. */
   onSettingsChanged?(update: AppSettingsUpdate): void
@@ -287,6 +309,7 @@ export interface IpcRegistrationOptions {
   xingmangAiSkill?: {
     bundledRoot: string
     userHome: string
+    syncImageMcp?: (input: { skillDirectory: string; officialCodex: boolean }) => Promise<string[]>
   }
 }
 
@@ -331,11 +354,26 @@ function stringArray(value: unknown, label: string, maximumItems = 128): string[
   return value.map((entry) => requiredString(entry, label))
 }
 
+export function parseAppUninstallRequest(value: unknown): AppUninstallRequest {
+  if (!isRecord(value)) throw new Error('卸载选项格式错误')
+  return {
+    clearLoginRecords: optionalBoolean(value.clearLoginRecords, '卸载选项') ?? false,
+    removeManagedTools: optionalBoolean(value.removeManagedTools, '卸载选项') ?? false,
+  }
+}
+
 export function parseDiagnosticsRunOptions(value: unknown): DiagnosticsRunOptions {
   if (value === undefined) return {}
   if (!isRecord(value) || Object.keys(value).some((key) => key !== 'reuseRecentScan')
     || (value.reuseRecentScan !== undefined && typeof value.reuseRecentScan !== 'boolean')) throw new Error('诊断参数格式错误')
   return value.reuseRecentScan === true ? { reuseRecentScan: true } : {}
+}
+
+export function parseUpdateDownloadOptions(value: unknown): UpdateDownloadOptions {
+  if (value === undefined) return {}
+  if (!isRecord(value) || Object.keys(value).some((key) => key !== 'ignoreDiskSpace')
+    || (value.ignoreDiskSpace !== undefined && typeof value.ignoreDiskSpace !== 'boolean')) throw new Error('下载参数格式错误')
+  return value.ignoreDiskSpace === true ? { ignoreDiskSpace: true } : {}
 }
 
 export function parseSystemScanOptions(value: unknown): SystemScanOptions {
@@ -1297,6 +1335,7 @@ const ipcOperationLabels: Readonly<Record<string, string>> = {
   'setup:codex-status': 'Codex 初始化状态检测',
   'desktop:install-codex': 'Codex 桌面端安装',
   'desktop:uninstall-codex': 'Codex 桌面端卸载',
+  'desktop:reset-codex': 'Codex 桌面端重置',
   'desktop:check-update-codex': 'Codex 桌面端更新检查',
   'cli:launch': 'CLI 终端启动',
   'desktop:codex-status': 'Codex 桌面端运行状态检测',
@@ -1337,7 +1376,10 @@ const ipcOperationLabels: Readonly<Record<string, string>> = {
   'diagnostics:check-external-connection': '客户端连接自检',
   'diagnostics:export': '诊断报告导出',
   'diagnostics:clear-stale-proxy': '清掉旧的代理设置',
+  'diagnostics:trust-certificates-user-wide': '让所有终端信任证书',
   'diagnostics:open-folder': '检查页打开文件夹',
+  'diagnostics:fix': '检查页一键处理',
+  'extensions:choose-directory': '外接工具选择文件夹',
   'runtime-logs:list': '运行日志读取',
   'runtime-logs:copy-feedback': '脱敏反馈文本复制',
   'runtime-logs:export-feedback': '反馈报告导出',
@@ -1550,6 +1592,7 @@ function ipcSuccessMessage(channel: string, args: unknown[], result: unknown): s
   if (channel === 'cli:uninstall' && provider) return `${provider} 卸载已完成`
   if (channel === 'cli:check-update' && provider) return `${provider} 更新检查已完成`
   if (channel === 'desktop:uninstall-codex') return 'Codex 桌面端卸载已完成'
+  if (channel === 'desktop:reset-codex') return 'Codex 桌面端重置已完成'
   if (channel === 'cli:launch' && provider) return `${provider} 终端已打开`
   if ((channel === 'models:list' || channel === 'models:list-configured') && count !== null) {
     return `可用模型读取完成，共 ${count} 个`
@@ -1789,6 +1832,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     getSessionRevision: accountService.getSessionRevision?.bind(accountService),
     getActiveSiteId: accountService.getActiveSiteId?.bind(accountService),
     listUsableGroups: accountService.listUsableGroups.bind(accountService),
+    getSubscriptionSelf: accountService.getSubscriptionSelf.bind(accountService),
     provisionCliKey: async (input = {}) => {
       const userId = accountService.getSessionState().account?.userId
       const siteId = accountService.getActiveSiteId?.()
@@ -1955,6 +1999,9 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
       // create keys, call a model, or establish automatic overwrite consent.
       let keys: Awaited<ReturnType<ManagedCliKeyStoreLike['read']>> = []
       try { keys = await options.managedCliKeys!.read(userId) } catch { /* Unknown ownership stays protected. */ }
+      // 开机后第一次读到本账号的配置时，先把指向旧位置的提醒设置改好再报（修不好首页照旧给「修好它」）。
+      // 放在下面的会话复核之前：改的时候换了账号，这次读取照样作废。
+      await service.autoRepairStaleCliHooks?.().catch(() => [])
       const current = accountService.getSessionState()
       if (!current.authenticated || current.account?.userId !== userId || activeSite() !== siteId
         || accountService.getSessionRevision?.() !== revision) throw new Error('账号会话已变更，请重新检测工具配置')
@@ -2386,6 +2433,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     return outcome
   })
   registerTrustedHandler('desktop:uninstall-codex', () => service.uninstallCodexDesktop())
+  registerTrustedHandler('desktop:reset-codex', () => service.resetCodexDesktop())
   registerTrustedHandler('desktop:check-update-codex', () => service.inspectCodexDesktopUpdate(true))
   /**
    * 记录这边核对一遍再交给 Codex:记录还在、而且就在要打开的这个文件夹里,才按
@@ -2430,7 +2478,11 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   ) {
     const sensitivity = classifyLocalWorkspace(target)
     if (!sensitivity || sensitiveWorkspacePolicy(sensitivity) !== 'every-time' || consumeConfirmedEveryTimeWorkspace(target)) {
-      return launchProviderWith(provider, target, launchMode, resumeSessionId)
+      const writeCheckPlatform = options.workspaceWriteCheck?.platform ?? process.platform
+      if (!shouldCheckWorkspaceWritable(sensitivity, writeCheckPlatform)) {
+        return launchProviderWith(provider, target, launchMode, resumeSessionId)
+      }
+      return launchIfWritable(event, provider, target, launchMode, resumeSessionId)
     }
     // 最近记录、记录页「接着上次对话」、老版本记住的目录都不经过选择器，
     // 所以「每次都提醒」的目录在这里再问一次。续接对话换了目录就接不上，
@@ -2457,6 +2509,56 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
       await rememberWorkspace(replacement)
       return service.launchProvider(provider, replacement, launchMode)
     })()
+  }
+  // 受控文件夹访问、安全软件的文档保护开着时，工具照样起得来，但 AI 一改文件就是一串
+  // 英文 EPERM，客户只看到「说改了但文件没变」。以前写信任、生成 AGENTS.md 失败只记一条
+  // warn（system-service.ts），这里在打开前先试写一次，写不进就先说一句。
+  async function launchIfWritable(
+    event: IpcMainInvokeEvent,
+    provider: ProviderId,
+    target: string,
+    launchMode: CliLaunchMode,
+    resumeSessionId: string | null,
+  ) {
+    const startedAt = Date.now()
+    const writability = await inspectWorkspaceWritable(target, options.workspaceWriteCheck ? { probe: options.workspaceWriteCheck.probe } : {})
+    // 不记路径（I13）：客服要的是结果和耗时。
+    options.runtimeLog.log(writability === 'denied' ? 'warn' : 'info', 'config', 'workspace.write-check', writability === 'denied'
+      ? '选中的文件夹不让写入，打开前先提醒'
+      : '打开前试写了选中的文件夹', { provider, result: writability, durationMs: Date.now() - startedAt })
+    if (writability !== 'denied') return launchProviderWith(provider, target, launchMode, resumeSessionId)
+    const parentWindow = BrowserWindow.fromWebContents(event.sender) ?? undefined
+    const prompt = buildWorkspaceNotWritablePrompt({ allowCreate: launchMode === 'new' })
+    const messageBoxOptions = {
+      type: 'warning' as const,
+      title: prompt.title,
+      message: prompt.message,
+      detail: prompt.detail,
+      buttons: [...prompt.buttons],
+      defaultId: prompt.defaultIndex,
+      cancelId: prompt.cancelIndex,
+      noLink: true,
+    }
+    const answer = parentWindow
+      ? await dialog.showMessageBox(parentWindow, messageBoxOptions)
+      : await dialog.showMessageBox(messageBoxOptions)
+    if (answer.response === prompt.continueIndex) {
+      options.runtimeLog.log('info', 'config', 'workspace.write-check.continued', '文件夹不让写入，用户仍然照常打开', { provider })
+      return launchProviderWith(provider, target, launchMode, resumeSessionId)
+    }
+    let replacement: string | null = null
+    if (answer.response === prompt.createIndex) {
+      replacement = await createStarterWorkspaceOrExplain(parentWindow, '接下来会重新打开文件夹选择窗口，可以自己选一个能写的文件夹。')
+      if (replacement === null) replacement = await pickWorkspace(parentWindow)
+    }
+    if (replacement === null) {
+      options.runtimeLog.log('info', 'config', 'workspace.write-check.declined', '文件夹不让写入，用户没有打开工具', { provider })
+      const declined: CliLaunchResult = { declined: true }
+      return declined
+    }
+    consumeConfirmedEveryTimeWorkspace(replacement)
+    await rememberWorkspace(replacement)
+    return service.launchProvider(provider, replacement, launchMode)
   }
   registerTrustedHandler('desktop:codex-status', () => service.inspectCodexDesktop())
   registerTrustedHandler('desktop:codex-locale-status', () => service.inspectCodexDesktopLocale())
@@ -2496,6 +2598,23 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   })
   registerTrustedHandler('window:get-capabilities', () => options.getWindowCapabilities?.() ?? { tray: false, notifications: false })
   registerTrustedHandler('window:relaunch', () => options.relaunchApp?.() ?? false)
+  registerTrustedHandler('window:uninstall-app', async (_event, raw: unknown) => {
+    const request = parseAppUninstallRequest(raw)
+    if (!options.uninstallApp) throw new Error('这台电脑上请用系统自带的方式卸载星芒')
+    options.runtimeLog.log('info', 'maintenance', 'app.uninstall.started', '开始卸载星芒', { ...request })
+    const result = await options.uninstallApp(request, async () => {
+      const context = await readBackupAccountContext()
+      for (const provider of providerIds) {
+        // 没配过的工具没有东西可备份，一家失败不耽误下一家。
+        try { options.backupStore.create(provider, 'pre-save', undefined, context) } catch { /* 见上 */ }
+      }
+    })
+    options.runtimeLog.log(result.trashed ? 'info' : 'warn', 'maintenance', 'app.uninstall.finished', result.trashed ? '星芒已移到废纸篓，正在退出' : '星芒没能移到废纸篓', {
+      trashed: result.trashed,
+      leftovers: result.leftovers.join(','),
+    })
+    return result
+  })
   registerTrustedHandler('navigation:take-deep-link', (event) => options.takeExternalDeepLink?.(event.sender) ?? null)
   registerTrustedHandler('window:close-report', (event, requestId: unknown, report: unknown) => (
     options.replyWindowClose?.(event.sender, requiredString(requestId, '退出请求标识', 64), parseWindowCloseReport(report)) ?? false
@@ -2522,7 +2641,9 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   })
   // 从界面来的检查都是用户自己点的：分批放量不拦主动来要新版本的人。
   registerTrustedHandler('update:check', () => options.updaterService.check({ manual: true }))
-  registerTrustedHandler('update:download', () => options.updaterService.download())
+  registerTrustedHandler('update:download', (_event, downloadOptions: unknown) => (
+    options.updaterService.download(parseUpdateDownloadOptions(downloadOptions))
+  ))
   registerTrustedHandler('update:install', () => options.updaterService.install())
   registerTrustedHandler('sessions:list', (_event, query: unknown) => (
     options.sessionsService.list(parseSessionListQuery(query))
@@ -3098,7 +3219,12 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     const parent = BrowserWindow.fromWebContents(event.sender) ?? undefined
     return accountService.createSubscriptionPayment(parsed).then(async (checkout) => {
       if (checkout.kind === 'form') await options.paymentWindow.open(checkout.form, parent)
-      else await options.paymentWindow.openUrl(checkout.url, parent, checkout.tradeNo)
+      else if (checkout.kind === 'qrcode') {
+        // 同充值那条：二维码内容先按白名单校验，再交给支付窗口。
+        const validated = validatePaymentQrCode(checkout)
+        if (!options.paymentWindow.openQrCode) throw new Error('当前版本不支持二维码支付')
+        await options.paymentWindow.openQrCode(validated, parent)
+      } else await options.paymentWindow.openUrl(checkout.url, parent, checkout.tradeNo)
       return {
         opened: true as const,
         tradeNo: checkout.tradeNo,
@@ -3119,6 +3245,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
         bundledRoot: options.xingmangAiSkill.bundledRoot,
         userHome: options.xingmangAiSkill.userHome,
         officialCodex: (service.readStoredConfig().officialProviders ?? []).includes('codex'),
+        syncImageMcp: options.xingmangAiSkill.syncImageMcp,
       })
       for (const warning of skill.directoryWarnings ?? []) {
         options.runtimeLog.log('warn', 'account', 'xingmang-ai-skill.sync', warning)
@@ -3636,6 +3763,11 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     const clear = options.diagnosticsService.clearStaleProxy ?? (() => clearStaleUserProxyVariables())
     return clear()
   })
+  registerTrustedHandler('diagnostics:trust-certificates-user-wide', () => {
+    const trust = options.diagnosticsService.trustCertificatesUserWide
+    if (!trust) throw new Error('这台电脑上不能在这里设置')
+    return trust()
+  })
   registerTrustedHandler('diagnostics:open-folder', async (_event, rawTarget: unknown) => {
     if (!isDiagnosticFolderTarget(rawTarget)) throw new Error('不认识要打开的文件夹')
     const directory = resolveDiagnosticFolder(rawTarget)
@@ -3645,6 +3777,23 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     ensureSafeDataDirectory(directory, rawTarget === 'projects' ? '项目文件夹' : 'AI 作品保存位置')
     await externalShell.openPath(directory)
     return true
+  })
+  registerTrustedHandler('diagnostics:fix', async (_event, rawKind: unknown) => {
+    if (!isDiagnosticFixKind(rawKind)) throw new Error('不认识要处理的是哪一项')
+    const fix = options.diagnosticsService.fix
+    if (!fix) throw new Error('这一项暂时不能在这里处理，请在「反馈」页导出报告发给客服')
+    return fix(rawKind)
+  })
+  registerTrustedHandler('extensions:choose-directory', async (event) => {
+    const parentWindow = BrowserWindow.fromWebContents(event.sender) ?? undefined
+    const dialogOptions: OpenDialogOptions = {
+      title: '选择允许 AI 读写的文件夹',
+      properties: ['openDirectory', 'createDirectory'],
+    }
+    const result = parentWindow
+      ? await dialog.showOpenDialog(parentWindow, dialogOptions)
+      : await dialog.showOpenDialog(dialogOptions)
+    return result.canceled || !result.filePaths[0] ? null : result.filePaths[0]
   })
   function resolveDiagnosticFolder(target: DiagnosticFolderTarget): string | null {
     if (target === 'ai-output') return options.aiOutputDirectory?.() ?? null

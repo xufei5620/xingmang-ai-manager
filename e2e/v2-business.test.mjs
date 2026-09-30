@@ -787,7 +787,8 @@ test('a curated entry that needs a folder prefills the form instead of installin
     await page.getByTestId('curated-confirm-submit').click()
     const notice = page.getByTestId('curated-input-directory')
     await notice.waitFor()
-    await notice.getByText(/「参数」里的 \{\{directory\}\}/).waitFor()
+    await notice.getByText(/点「选择文件夹」挑一个/).waitFor()
+    await notice.getByTestId('curated-choose-directory').waitFor()
     assert.equal(
       (await calls(page)).some((call) => call.name === 'extension'),
       false,
@@ -1073,6 +1074,46 @@ test('the payment terminal listener survives re-renders and still resolves a pen
   }
 })
 
+test('recharge presets show the configured bonus and the quote dialog spells it out', async () => {
+  const page = await fixture('page=account&topupBonus=1')
+  try {
+    await page.getByRole('tab', { name: '充值与订阅', exact: true }).click()
+    assert.equal(await page.getByRole('button', { name: '10', exact: true }).count(), 1)
+    await page.getByRole('button', { name: '20，送 25%', exact: true }).click()
+    assert.equal(
+      await page.getByTestId('account-recharge-bonus').textContent(),
+      '到账 20，其中活动赠送 4（多送 25%）。',
+    )
+    await page.getByRole('button', { name: '10', exact: true }).click()
+    assert.equal(await page.getByTestId('account-recharge-bonus').count(), 0)
+    await page.getByRole('button', { name: '20，送 25%', exact: true }).click()
+    await page.getByTestId('account-recharge-submit').click()
+    const quote = page.getByRole('dialog', { name: '确认充值报价' })
+    await quote.waitFor()
+    assert.equal(
+      await quote.getByTestId('account-recharge-quote-bonus').textContent(),
+      '活动赠送：4（多送 25%），到账 20',
+    )
+    await quote.getByText('应付金额：16.00', { exact: false }).waitFor()
+  } finally {
+    await page.close()
+  }
+})
+
+test('a tier picked on the home activity card arrives preselected on the recharge page', async () => {
+  const page = await fixture('page=account&accountTab=recharge&rechargeAmount=20&topupBonus=1')
+  try {
+    await page.getByTestId('account-recharge-bonus').waitFor()
+    assert.equal(await page.getByLabel('自定义金额').inputValue(), '20')
+    assert.equal(
+      await page.getByTestId('account-recharge-bonus').textContent(),
+      '到账 20，其中活动赠送 4（多送 25%）。',
+    )
+  } finally {
+    await page.close()
+  }
+})
+
 test('changing the recharge channel invalidates the previous quote', async () => {
   const page = await fixture('page=account&multiPayment=1')
   try {
@@ -1216,23 +1257,26 @@ test('native preference errors retain the saved switch state', async () => {
   }
 })
 
-test('saved accounts default to no CLI sync and expose only eligible choices', async () => {
+test('saved accounts switch tools already on the account key by default and expose only eligible choices', async () => {
   const page = await fixture('page=account&sync=1')
   try {
-    await page.getByText('同步到工具（可选）', { exact: true }).click()
+    await page.getByTestId('account-sync-gemini').waitFor()
     assert.equal(
       await page.getByTestId('account-sync-claude').isChecked(),
-      false,
+      true,
     )
     assert.equal(
       await page.getByTestId('account-sync-gemini').isChecked(),
-      false,
+      true,
     )
     assert.equal(
       await page.getByTestId('account-sync-codex').isDisabled(),
       true,
     )
     assert.equal(await page.getByTestId('account-sync-grok').isDisabled(), true)
+    // 取消勾选就不同步：用户说了算。
+    await page.getByTestId('account-sync-claude').uncheck()
+    await page.getByTestId('account-sync-gemini').uncheck()
     await page
       .getByRole('button', { name: '切换', exact: true, disabled: false })
       .click()
@@ -1249,7 +1293,7 @@ test('saved accounts default to no CLI sync and expose only eligible choices', a
 test('explicit CLI sync retains partial failure details after account refresh', async () => {
   const page = await fixture('page=account&sync=1&partial=1')
   try {
-    await page.getByText('同步到工具（可选）', { exact: true }).click()
+    await page.getByTestId('account-sync-claude').waitFor()
     await page.getByTestId('account-sync-claude').check()
     await page.getByTestId('account-sync-gemini').check()
     await page
@@ -1284,7 +1328,7 @@ test('explicit CLI sync retains partial failure details after account refresh', 
 test('failed saved-account verification never writes selected CLI config', async () => {
   const page = await fixture('page=account&sync=1&fail=switch')
   try {
-    await page.getByText('同步到工具（可选）', { exact: true }).click()
+    await page.getByTestId('account-sync-claude').waitFor()
     await page.getByTestId('account-sync-claude').check()
     await page
       .getByRole('button', { name: '切换', exact: true, disabled: false })

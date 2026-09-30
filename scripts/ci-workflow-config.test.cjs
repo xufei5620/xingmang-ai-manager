@@ -85,9 +85,9 @@ test('the common test suite excludes Darwin filesystem and signing fixtures', ()
 test('browser-backed tests install Chromium first on every job that runs npm test', () => {
   for (const [jobName, testCommand, installCommand] of [
     ['macos-test', 'npm test', 'npx --no-install playwright install chromium'],
-    // Linux-only: --with-deps also apt-installs the shared libraries Chromium
-    // links against, which (unlike Windows/macOS) a bare runner image lacks.
-    ['linux-test', 'npm test', 'npx --no-install playwright install --with-deps chromium'],
+    // Linux also needs Chromium's apt libraries; that half is its own bounded
+    // step, pinned by the test below.
+    ['linux-test', 'npm test', 'npx --no-install playwright install chromium'],
   ]) {
     const commands = runSteps(jobName)
     const installIndex = commands.indexOf(installCommand)
@@ -108,6 +108,42 @@ test('browser-backed tests install Chromium first on every job that runs npm tes
   assert.notEqual(installIndex, -1, 'the Windows shards must install Chromium')
   assert.notEqual(shardStepIndex(), -1, 'the Windows shards must run their matrix command')
   assert.ok(installIndex < shardStepIndex(), 'Chromium must be installed before any shard runs')
+})
+
+// #653 lost two whole linux-test runs to `playwright install --with-deps`
+// sitting in a wedged `apt-get update` until the 30-minute job cap cancelled
+// it. The apt half now carries its own bound, and each attempt a shorter one,
+// so a bad mirror ends in a retry and then a named failure.
+test('the Linux job bounds and retries the apt install of Chromium system libraries', () => {
+  const job = workflow.jobs['linux-test']
+  const steps = job.steps
+  const commands = runSteps('linux-test')
+
+  assert.equal(commands.some((command) => /--with-deps/.test(command)), false,
+    'the apt install must not ride along with the unbounded browser download')
+
+  const depsIndex = steps.findIndex((step) => /scripts\/ci-install-chromium-deps\.sh/.test(String(step.run || '')))
+  assert.notEqual(depsIndex, -1, 'linux-test must install Chromium system libraries')
+  assert.ok(depsIndex < steps.findIndex((step) => step.run === 'npm test'),
+    'system libraries must be installed before npm test')
+
+  const depsStep = steps[depsIndex]
+  assert.equal(typeof depsStep['timeout-minutes'], 'number', 'the apt step must carry its own bound')
+  assert.ok(depsStep['timeout-minutes'] <= 13, 'a wedged mirror must not eat the time the tests need')
+  assert.ok(depsStep['timeout-minutes'] < job['timeout-minutes'])
+  assert.match(String(depsStep.run), /Acquire::https?::Timeout/)
+
+  // The script's own worst case — every attempt, each one's kill grace, and the
+  // lock wait between them — has to fit under the step cap, or the cap fires
+  // mid-retry and the job reports a cancellation instead of a named failure.
+  const installer = fs.readFileSync(path.join(root, 'scripts', 'ci-install-chromium-deps.sh'), 'utf8')
+  const attempts = installer.match(/CI_APT_ATTEMPT_SECONDS:-([\d ]+)\}/)[1].trim().split(/\s+/).map(Number)
+  const lockWait = Number(installer.match(/CI_APT_LOCK_WAIT_SECONDS:-(\d+)\}/)[1])
+  const killGrace = Number(installer.match(/timeout --kill-after=(\d+)s/)[1])
+  assert.equal(attempts.length, 2, 'one retry, matching the project rule of at most one re-run')
+  const worstCaseSeconds = attempts.reduce((sum, limit) => sum + limit + killGrace, 0) + lockWait
+  assert.ok(worstCaseSeconds + 60 < depsStep['timeout-minutes'] * 60,
+    `the installer's ${worstCaseSeconds}s worst case must fit inside the step bound with a minute to spare`)
 })
 
 test('the Windows job enables unprivileged symlink creation before security tests', () => {
@@ -449,6 +485,34 @@ test('the Windows packaging job runs every smoke that has no other home', () => 
     // consume the whole job cap and report nothing about which step hung.
     assert.ok(step['timeout-minutes'] > 0, `${smoke} must carry its own step bound`)
   }
+})
+
+test('real PowerShell runs once in the packaging job, never in the unit test shards', () => {
+  const commands = runSteps('windows-package')
+  const packageSteps = workflow.jobs['windows-package'].steps
+  const smoke = 'node e2e/windows-powershell-probes-smoke.mjs'
+  const index = commands.indexOf(smoke)
+  assert.notEqual(index, -1, `${smoke} must run somewhere in CI`)
+  assert.ok(index > commands.indexOf('npm run compile'), `${smoke} drives the compiled probe scripts`)
+  assert.ok(packageSteps.find((entry) => entry.run === smoke)['timeout-minutes'] > 0, `${smoke} must carry its own step bound`)
+
+  // A cold Windows PowerShell start on a busy runner kept outlasting the unit
+  // test budgets (#458, #514, #517, #523 and the probes this smoke took over).
+  // Unit tests check the generated script text instead; a test that starts
+  // powershell.exe itself belongs in the smoke above.
+  const startsPowerShell = /(?:execFileSync|execFile|spawnSync|spawn|runCommand)\(\s*(?:\{\s*executable:\s*)?(?:windowsPowerShellExecutable|resolveWindowsPowerShellExecutable)\(\)/
+  const offenders = []
+  for (const directory of ['electron', 'src']) {
+    for (const entry of fs.readdirSync(path.join(root, directory), { recursive: true })) {
+      const relative = path.join(directory, String(entry))
+      if (!/\.test\.tsx?$/.test(relative)) continue
+      const source = fs.readFileSync(path.join(root, relative), 'utf8')
+      // The cold-start budget only ever existed for tests that ran a probe for
+      // real through the shipped function, which the pattern above cannot see.
+      if (startsPowerShell.test(source) || source.includes('XINGMANG_POWERSHELL_TEST_TIMEOUT_MS')) offenders.push(relative)
+    }
+  }
+  assert.deepEqual(offenders, [])
 })
 
 // T-G5: these two were the last never-wired smokes. The first used to pin CI to

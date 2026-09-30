@@ -20,6 +20,7 @@ export class InstallationQueue {
   private active: QueueEntry<unknown> | null = null
   private readonly pending: QueueEntry<unknown>[] = []
   private changes = 0
+  private readonly listeners = new Set<(snapshot: InstallationQueueSnapshot) => void>()
 
   enqueue<T>(key: string, task: () => Promise<T> | T): Promise<T> {
     if (!key.trim()) throw new TypeError('安装队列操作名不能为空')
@@ -53,6 +54,14 @@ export class InstallationQueue {
     return this.changes
   }
 
+  /**
+   * 每有一项开始或结束就通知一次，带上那一刻的快照。监听方出错不影响队列本身。
+   */
+  onChange(listener: (snapshot: InstallationQueueSnapshot) => void): () => void {
+    this.listeners.add(listener)
+    return () => { this.listeners.delete(listener) }
+  }
+
   get busy(): boolean {
     return this.active !== null || this.pending.length > 0
   }
@@ -69,6 +78,7 @@ export class InstallationQueue {
     const entry = this.active
     if (!entry) return
     this.changes++
+    this.notify()
     try {
       entry.resolve(await entry.task())
     } catch (error) {
@@ -76,7 +86,21 @@ export class InstallationQueue {
     } finally {
       this.changes++
       this.active = null
+      // 先接上下一项再通知：一项接一项排着装时，中间不会出现一瞬间的「空了」。
       void this.pump()
+      if (!this.active) this.notify()
+    }
+  }
+
+  private notify(): void {
+    if (this.listeners.size === 0) return
+    const snapshot = this.snapshot()
+    for (const listener of this.listeners) {
+      try {
+        listener(snapshot)
+      } catch {
+        // 监听方只是旁观，它的错误不能让安装本身失败。
+      }
     }
   }
 }

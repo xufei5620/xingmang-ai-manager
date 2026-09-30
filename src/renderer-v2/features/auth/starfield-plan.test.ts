@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { starfieldAnimates, starfieldFrameDue, starfieldFrameIntervalMs, starfieldLinks, starfieldPixelRatio } from './starfield-plan'
+import { starfieldAnimates, starfieldFrameDue, starfieldFrameIntervalMs, starfieldLinks, starfieldMeteorCycleMs, starfieldMeteorPassageMs, starfieldMeteorVisible, starfieldPixelRatio } from './starfield-plan'
 
 const calm = { paused: false, reducedMotion: false, systemReducedMotion: false, lowEndDevice: false }
 
@@ -37,6 +37,44 @@ describe('starfieldFrameDue', () => {
       if (starfieldFrameDue(time, last)) { last = time; painted++ }
     }
     expect(painted).toBe(30)
+  })
+
+  // 60Hz 屏幕上从 start 起连续跑 durationMs，数实际重画了几帧。
+  function paintedFrames(start: number, durationMs: number) {
+    let last: number | null = null
+    let painted = 0
+    for (let time = start; time < start + durationMs; time += 1000 / 60) {
+      if (starfieldFrameDue(time, last)) { last = time; painted++ }
+    }
+    return painted
+  }
+
+  it('drops to ten frames a second while only the stars twinkle', () => {
+    const start = starfieldMeteorPassageMs + 500
+    expect(starfieldMeteorVisible(start)).toBe(false)
+    // 首帧立即画，末尾那一帧可能恰好落在区间内，所以允许多一帧。
+    expect(paintedFrames(start, 1000)).toBeGreaterThanOrEqual(10)
+    expect(paintedFrames(start, 1000)).toBeLessThanOrEqual(11)
+  })
+
+  it('returns to thirty frames a second for the whole meteor passage', () => {
+    const start = starfieldMeteorCycleMs * 3
+    const expected = Math.round(starfieldMeteorPassageMs / starfieldFrameIntervalMs)
+    expect(paintedFrames(start, starfieldMeteorPassageMs)).toBeGreaterThanOrEqual(expected)
+    expect(paintedFrames(start, starfieldMeteorPassageMs)).toBeLessThanOrEqual(expected + 1)
+  })
+
+  it('paints the first meteor frame within one fast frame of it appearing', () => {
+    let last: number | null = starfieldMeteorCycleMs - 5
+    let first: number | null = null
+    for (let time = starfieldMeteorCycleMs - 5; first === null; time += 1000 / 60) {
+      if (starfieldFrameDue(time, last)) { last = time; if (starfieldMeteorVisible(time)) first = time }
+    }
+    expect(first - starfieldMeteorCycleMs).toBeLessThanOrEqual(starfieldFrameIntervalMs)
+  })
+
+  it('spends far fewer frames on a whole cycle than a constant thirty', () => {
+    expect(paintedFrames(0, starfieldMeteorCycleMs)).toBeLessThan(starfieldMeteorCycleMs / starfieldFrameIntervalMs / 2)
   })
 })
 

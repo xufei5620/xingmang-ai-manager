@@ -120,7 +120,7 @@ export interface ProviderSessionDeleteResult {
 
 export interface CodexSessionReader {
   capabilities(): CodexSessionsCapabilities
-  list(query?: { archive?: 'all' | 'active' | 'archived'; page?: number; pageSize?: number }): CodexSessionPage
+  list(query?: { archive?: 'all' | 'active' | 'archived'; page?: number; pageSize?: number }): Promise<CodexSessionPage>
   detail(sessionId: string): Promise<CodexSessionDetail>
   exportMarkdown(sessionId: string, destinationPath: string): Promise<{
     sessionId: string
@@ -348,15 +348,6 @@ export async function annotateWorkspaceExistence(
     }
     return { ...item, cwdExists: await pending }
   }))
-}
-
-function existingDirectorySync(root: string): boolean {
-  try {
-    const info = fs.lstatSync(root)
-    return info.isDirectory() && !info.isSymbolicLink()
-  } catch {
-    return false
-  }
 }
 
 async function safeRegularFileStat(filePath: string): Promise<fs.Stats> {
@@ -932,7 +923,7 @@ export class ProviderSessionsService {
     })
   }
 
-  capabilities(): Record<ProviderSessionProvider, ProviderSessionCapability> {
+  async capabilities(): Promise<Record<ProviderSessionProvider, ProviderSessionCapability>> {
     const codex = this.codexService.capabilities()
     const codexReadable = codex.schema.readable
     const codexWritable = codex.schema.mutationsAllowed
@@ -953,21 +944,21 @@ export class ProviderSessionsService {
           delete: codexWritable,
         },
       },
-      claude: this.externalCapability('claude', 'jsonl'),
-      gemini: this.externalCapability('gemini', 'json-jsonl'),
-      grok: this.externalCapability('grok', 'json-jsonl'),
+      claude: await this.externalCapability('claude', 'jsonl'),
+      gemini: await this.externalCapability('gemini', 'json-jsonl'),
+      grok: await this.externalCapability('grok', 'json-jsonl'),
     }
   }
 
   async list(query: ProviderSessionListQuery = {}): Promise<ProviderSessionPage> {
     const provider = query.provider ?? 'all'
     const selected = provider === 'all' ? [...providerSessionProviders] : [provider]
-    const capabilities = this.capabilities()
+    const capabilities = await this.capabilities()
     const items: ProviderSessionSummary[] = []
     for (const current of selected) {
       try {
         const providerItems = current === 'codex'
-          ? this.listCodexSessions()
+          ? await this.listCodexSessions()
           : await this.listExternalSessions(current)
         items.push(...providerItems)
         if (current !== 'codex') {
@@ -1063,7 +1054,7 @@ export class ProviderSessionsService {
   async resolveWorkspace(id: string): Promise<string> {
     const provider = providerFromId(id)
     if (provider === 'codex') {
-      const session = this.listCodexSessions().find((item) => item.id === id)
+      const session = (await this.listCodexSessions()).find((item) => item.id === id)
       if (!session) throw new Error('未找到这条记录')
       return session.cwd
     }
@@ -1165,11 +1156,11 @@ export class ProviderSessionsService {
     return { id, provider, deletedFiles }
   }
 
-  private externalCapability(
+  private async externalCapability(
     provider: Exclude<ProviderSessionProvider, 'codex'>,
     source: ProviderSessionCapability['source'],
-  ): ProviderSessionCapability {
-    const available = existingDirectorySync(this.roots[provider])
+  ): Promise<ProviderSessionCapability> {
+    const available = await existingDirectory(this.roots[provider])
     return {
       provider,
       available,
@@ -1188,18 +1179,18 @@ export class ProviderSessionsService {
     }
   }
 
-  private listCodexSessions(): ProviderSessionSummary[] {
+  private async listCodexSessions(): Promise<ProviderSessionSummary[]> {
     let stable = new Map<string, CodexSessionPage['items'][number]>()
     for (let attempt = 0; attempt < 3; attempt += 1) {
-      const first = this.codexService.list({ archive: 'all', page: 1, pageSize: 100 })
+      const first = await this.codexService.list({ archive: 'all', page: 1, pageSize: 100 })
       const items = new Map(first.items.map((item) => [item.id, item]))
       for (let page = 2; page <= first.pages; page += 1) {
-        for (const item of this.codexService.list({ archive: 'all', page, pageSize: 100 }).items) {
+        for (const item of (await this.codexService.list({ archive: 'all', page, pageSize: 100 })).items) {
           items.set(item.id, item)
         }
       }
       stable = items
-      const finalTotal = this.codexService.list({ archive: 'all', page: 1, pageSize: 1 }).total
+      const finalTotal = (await this.codexService.list({ archive: 'all', page: 1, pageSize: 1 })).total
       if (items.size === finalTotal) break
     }
     const readonly = !this.codexService.capabilities().schema.mutationsAllowed
