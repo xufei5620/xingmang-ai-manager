@@ -222,15 +222,15 @@ async function bisectTrustedEnvironmentSlowness() {
   console.log(`info trusted environment removes: ${removed.join(', ') || '-'}`)
   console.log(`info trusted environment changes: ${changed.join(', ') || '-'}`)
   console.log(`info trusted environment adds: ${added.join(', ') || '-'}`)
-  console.log(`info inherited PSModulePath: ${inherited('psmodulepath')}`)
-  console.log(`info trusted PSModulePath: ${trusted.PSModulePath}`)
-  console.log(`info inherited PSModuleAnalysisCachePath: ${inherited('psmoduleanalysiscachepath')}`)
   function withKey(env, name, value) {
     const next = Object.fromEntries(Object.entries(env).filter(([key]) => key.toLowerCase() !== name.toLowerCase()))
     if (value !== undefined) next[name] = value
     return next
   }
   const inherited = (name) => base.get(name.toLowerCase())?.[1]
+  console.log(`info inherited PSModulePath: ${inherited('psmodulepath')}`)
+  console.log(`info trusted PSModulePath: ${trusted.PSModulePath}`)
+  console.log(`info inherited PSModuleAnalysisCachePath: ${inherited('psmoduleanalysiscachepath')}`)
   const variants = [
     ['inherited', process.env],
     ['trusted', trusted],
@@ -246,6 +246,7 @@ async function bisectTrustedEnvironmentSlowness() {
     ['Get-ItemProperty only', '$p = Get-ItemProperty -LiteralPath "HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System" -ErrorAction SilentlyContinue; Write-Output 1'],
     ['ConvertTo-Json only', '@{ a = 1 } | ConvertTo-Json -Compress'],
     ['explicit Import-Module first', 'Import-Module Microsoft.PowerShell.Management, Microsoft.PowerShell.Utility\n' + script],
+    ['autoloading off, explicit Import-Module', '$PSModuleAutoLoadingPreference = "None"\nImport-Module Microsoft.PowerShell.Management, Microsoft.PowerShell.Utility\n' + script],
   ]
   for (const [label, body] of scripts) {
     const startedAt = Date.now()
@@ -279,7 +280,11 @@ for (const [name, check] of checks) {
   }
 }
 await reportStoreAppLaunchProductionPath()
-await bisectTrustedEnvironmentSlowness()
+try {
+  await bisectTrustedEnvironmentSlowness()
+} catch (error) {
+  console.log(`info environment bisect stopped: ${error?.stack ?? error}`)
+}
 if (failures.length) {
   console.error(`${failures.length} of ${checks.length} PowerShell probe checks failed`)
   process.exit(1)
