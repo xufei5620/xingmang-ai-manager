@@ -97,6 +97,7 @@ function serviceStub(): SystemService {
     installCodexDesktop: vi.fn() as never,
     cancelCodexDesktopInstall: vi.fn(() => ({ cancelled: true, reason: null })) as never,
     uninstallCodexDesktop: vi.fn() as never,
+    resetCodexDesktop: vi.fn() as never,
     inspectCodexDesktopUpdate: vi.fn() as never,
     launchProvider: vi.fn() as never,
     inspectCodexDesktop: vi.fn() as never,
@@ -111,6 +112,7 @@ function serviceStub(): SystemService {
     getLastExternalClients: vi.fn(() => null),
     checkExternalClientConnection: vi.fn() as never,
     inspectInstallationQueue: vi.fn(() => ({ activeKey: null, pendingKeys: [] })),
+    onInstallationQueueChange: vi.fn(() => () => undefined),
     cleanupInstallLeftovers: vi.fn(async () => ({ removed: 0, freedBytes: 0, failed: 0 })),
     installExternalClient: vi.fn() as never,
     launchExternalClient: vi.fn(async () => undefined),
@@ -360,6 +362,9 @@ function register(
     setWindowMode: vi.fn(),
     setWindowTheme: vi.fn(),
     openCanvasWindow: vi.fn(async () => undefined),
+    // 打开前试写只在 Windows 上跑，有自己的一组用例（write check before launching）；
+    // 其余用例不碰真磁盘，cli:launch 在各平台上都照旧同步交给 launchProvider。
+    workspaceWriteCheck: { platform: 'darwin', probe: async () => undefined },
     ...({ transformSystemSnapshot } as object),
     ...extraOptions,
   })
@@ -1359,6 +1364,116 @@ describe('registerIpcHandlers', () => {
     expect(electronMocks.showMessageBox).toHaveBeenCalledWith(expect.objectContaining({
       buttons: ['先不打开', '仍然打开'],
     }))
+  })
+
+  describe('write check before launching', () => {
+    function denied(): Promise<void> {
+      return Promise.reject(Object.assign(new Error('EPERM: operation not permitted'), { code: 'EPERM' }))
+    }
+
+    it('launches straight away when the folder takes the probe', async () => {
+      const probe = vi.fn(async () => undefined)
+      const { service, runtimeLog } = register(undefined, undefined, undefined, undefined, undefined, undefined, {}, {
+        workspaceWriteCheck: { platform: 'win32', probe },
+      })
+
+      await electronMocks.handlers.get('cli:launch')!(trustedEvent(), 'claude', 'C:\\projects\\demo')
+      expect(probe).toHaveBeenCalledWith('C:\\projects\\demo')
+      expect(electronMocks.showMessageBox).not.toHaveBeenCalled()
+      expect(service.launchProvider).toHaveBeenCalledWith('claude', 'C:\\projects\\demo', 'new')
+      expect(runtimeLog.log).toHaveBeenCalledWith('info', 'config', 'workspace.write-check', expect.any(String), expect.objectContaining({
+        result: 'writable',
+        durationMs: expect.any(Number),
+      }))
+      expect(JSON.stringify(runtimeLog.log.mock.calls)).not.toContain('demo')
+    })
+
+    it('does not probe outside Windows', async () => {
+      const probe = vi.fn(denied)
+      const { service } = register(undefined, undefined, undefined, undefined, undefined, undefined, {}, {
+        workspaceWriteCheck: { platform: 'darwin', probe },
+      })
+
+      await electronMocks.handlers.get('cli:launch')!(trustedEvent(), 'claude', '/Users/alex/demo')
+      expect(probe).not.toHaveBeenCalled()
+      expect(service.launchProvider).toHaveBeenCalledWith('claude', '/Users/alex/demo', 'new')
+    })
+
+    it('still launches when the probe fails for a reason other than permissions', async () => {
+      const probe = vi.fn(async () => { throw Object.assign(new Error('ENOSPC'), { code: 'ENOSPC' }) })
+      const { service } = register(undefined, undefined, undefined, undefined, undefined, undefined, {}, {
+        workspaceWriteCheck: { platform: 'win32', probe },
+      })
+
+      await electronMocks.handlers.get('cli:launch')!(trustedEvent(), 'claude', 'C:\\projects\\demo')
+      expect(electronMocks.showMessageBox).not.toHaveBeenCalled()
+      expect(service.launchProvider).toHaveBeenCalledWith('claude', 'C:\\projects\\demo', 'new')
+    })
+
+    it('opens anyway when the user says so', async () => {
+      electronMocks.showMessageBox.mockResolvedValueOnce({ response: 1 })
+      const { service } = register(undefined, undefined, undefined, undefined, undefined, undefined, {}, {
+        workspaceWriteCheck: { platform: 'win32', probe: denied },
+      })
+
+      await electronMocks.handlers.get('cli:launch')!(trustedEvent(), 'codex', 'C:\\projects\\demo')
+      expect(electronMocks.showMessageBox).toHaveBeenCalledWith(expect.objectContaining({
+        title: '这个文件夹不让写入',
+        buttons: ['换到能写的位置', '照常打开', '先不打开'],
+        defaultId: 0,
+        cancelId: 2,
+      }))
+      expect(service.launchProvider).toHaveBeenCalledWith('codex', 'C:\\projects\\demo', 'new')
+      expect(service.updateStoredConfig).not.toHaveBeenCalled()
+    })
+
+    it('moves to a new project folder that can be written to', async () => {
+      const documents = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-ipc-documents-')))
+      try {
+        electronMocks.showMessageBox.mockResolvedValueOnce({ response: 0 })
+        const { service } = register(undefined, undefined, undefined, undefined, undefined, undefined, {}, {
+          documentsDirectory: () => documents,
+          homeDirectory: () => documents,
+          workspaceWriteCheck: { platform: 'win32', probe: denied },
+        })
+        const expected = path.join(documents, 'XingmangProjects', 'my-project')
+
+        await electronMocks.handlers.get('cli:launch')!(trustedEvent(), 'claude', 'C:\\projects\\demo')
+        expect(service.launchProvider).toHaveBeenCalledTimes(1)
+        expect(service.launchProvider).toHaveBeenCalledWith('claude', expected, 'new')
+        expect(service.updateStoredConfig).toHaveBeenCalledWith({ version: 2, workspace: expected })
+        expect(electronMocks.showOpenDialog).not.toHaveBeenCalled()
+      } finally {
+        fs.rmSync(documents, { recursive: true, force: true })
+      }
+    })
+
+    it('reports a declined launch when the user keeps the folder closed', async () => {
+      electronMocks.showMessageBox.mockResolvedValueOnce({ response: 2 })
+      const { service, runtimeLog } = register(undefined, undefined, undefined, undefined, undefined, undefined, {}, {
+        workspaceWriteCheck: { platform: 'win32', probe: denied },
+      })
+
+      await expect(electronMocks.handlers.get('cli:launch')!(trustedEvent(), 'claude', 'C:\\projects\\demo'))
+        .resolves.toEqual({ declined: true })
+      expect(service.launchProvider).not.toHaveBeenCalled()
+      expect(runtimeLog.log).toHaveBeenCalledWith('info', 'config', 'workspace.write-check.declined', expect.any(String), { provider: 'claude' })
+    })
+
+    it('only offers to open anyway or not when resuming a conversation', async () => {
+      electronMocks.showMessageBox.mockResolvedValueOnce({ response: 1 })
+      const { service } = register(undefined, undefined, undefined, undefined, undefined, undefined, {}, {
+        workspaceWriteCheck: { platform: 'win32', probe: denied },
+      })
+
+      await electronMocks.handlers.get('cli:launch')!(trustedEvent(), 'claude', 'C:\\projects\\demo', 'resumeLast')
+      expect(electronMocks.showMessageBox).toHaveBeenCalledWith(expect.objectContaining({
+        buttons: ['先不打开', '照常打开'],
+        defaultId: 1,
+        cancelId: 0,
+      }))
+      expect(service.launchProvider).toHaveBeenCalledWith('claude', 'C:\\projects\\demo', 'resumeLast')
+    })
   })
 
   it('rejects calls from a sender outside the application URL policy', () => {

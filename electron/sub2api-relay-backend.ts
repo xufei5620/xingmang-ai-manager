@@ -3,7 +3,7 @@ import type {
   NewApiAccountKeyCreateInput, NewApiAccountProfile, NewApiAccountProfileDetail,
   NewApiCliKeyResult, NewApiProvisionCliKeyInput,
   NewApiTopupInfo, NewApiTopupOrdersPage, NewApiTopupOrder,
-  NewApiSubscriptionPlan, NewApiSubscriptionSelf, NewApiSubscription,
+  NewApiSubscriptionPlan, NewApiSubscriptionSelf, NewApiSubscription, NewApiSubscriptionCheckout,
   NewApiAccountUsagePage, NewApiAccountUsageRecord, NewApiAccountDashboardData,
   NewApiAccountUsageQuery, NewApiAffiliateTransferInput, SubscriptionQuotaPeriod,
 } from './new-api-client'
@@ -37,7 +37,7 @@ export const sub2ApiRelayCapabilities: Readonly<RelayBackendCapabilities> = Obje
   supportsRegistration: false, supportsPasswordReset: false,
   supportsKeyManagement: true, supportsUsage: true, supportsBilling: true,
   supportsSubscriptions: true, supportsProfileUpdate: true,
-  supportsSubscriptionPreference: false, supportsSubscriptionPayment: false, supportsSubscriptionBalancePurchase: false,
+  supportsSubscriptionPreference: false, supportsSubscriptionPayment: true, supportsSubscriptionBalancePurchase: false,
   supportsDashboard: true, supportsDashboardTrends: false, supportsTasks: false,
   supportsSessionManagement: false, supportsAutoKeyProvision: true, supportsAccountSession: true,
 })
@@ -135,6 +135,17 @@ function parseTopupInfo(payload: unknown): NewApiTopupInfo {
   const rawOptions = Array.isArray(p.amount_options) ? p.amount_options.filter((v): v is number => typeof v === 'number' && Number.isFinite(v) && v > 0) : []
   const amountOptions = rawOptions.length ? rawOptions.slice(0, 12) : [10, 20, 50, 100, 200, 500, 1000, 2000, 5000]
   return { onlineTopupEnabled: Boolean(p.payment_enabled ?? paymentMethods.length), stripeTopupEnabled: false, creemTopupEnabled: false, waffoPancakeTopupEnabled: false, redemptionEnabled: true, paymentComplianceConfirmed: true, paymentComplianceTermsVersion: null, paymentMethods, minTopup: num(p.global_min ?? p.min_amount), amountOptions, discounts: {}, topupLink: null }
+}
+// 充值和订阅走同一张下单接口，回来的也是同一种支付信息。
+function orderCheckout(payload: Record<string, unknown>, requestedAmount: number): Extract<NewApiSubscriptionCheckout, { kind: 'url' | 'qrcode' }> {
+  const tradeNo = str(payload.out_trade_no) || null
+  const expiresAt = iso(payload.expires_at) || null
+  const payUrl = str(payload.pay_url)
+  if (payUrl) return { kind: 'url', url: payUrl, tradeNo, expiresAt }
+  const qrCode = str(payload.qr_code)
+  if (qrCode) return { kind: 'qrcode', code: qrCode, tradeNo, expiresAt,
+    amount: num(payload.pay_amount ?? payload.amount, requestedAmount), currency: str(payload.currency, 'CNY') }
+  throw new Error('账号服务未返回支付地址，请稍后重试或联系客服')
 }
 function orderStatus(value: unknown): NewApiTopupOrder['status'] {
   const raw = str(value).toUpperCase()
@@ -508,14 +519,7 @@ export function createSub2ApiRelayBackend(options: Sub2ApiRelayBackendOptions): 
       // Sub2API applies its balance multiplier and fee when creating the order.
       // Send the user's amount unchanged and keep this write in the captured account.
       const payload = record(await call(scope, (saved, abort) => native.createPaymentOrder(saved, { amount, payment_type: paymentMethod, order_type: 'balance', is_mobile: false }, abort), true))
-      const tradeNo = str(payload.out_trade_no) || null
-      const expiresAt = iso(payload.expires_at) || null
-      const payUrl = str(payload.pay_url)
-      if (payUrl) return { kind: 'url', url: payUrl, tradeNo, expiresAt }
-      const qrCode = str(payload.qr_code)
-      if (qrCode) return { kind: 'qrcode', code: qrCode, tradeNo, expiresAt,
-        amount: num(payload.pay_amount ?? payload.amount, amount), currency: str(payload.currency, 'CNY') }
-      throw new Error('账号服务未返回支付地址，请稍后重试或联系客服')
+      return orderCheckout(payload, amount)
     },
     listTopupOrders: async (input = {}) => parseOrders(await call(capture(), (saved, abort) => native.listPaymentOrders(saved, { page: input.page, page_size: input.pageSize, keyword: input.keyword }, abort))),
     getTopupOrderStatus: async (tradeNo) => {
@@ -544,7 +548,17 @@ export function createSub2ApiRelayBackend(options: Sub2ApiRelayBackendOptions): 
     listSubscriptionPlans: async () => parsePlans(await call(capture(), (saved, abort) => native.listSubscriptionPlans(saved, abort))),
     getSubscriptionSelf: async () => parseSubscriptionSelf(await call(capture(), (saved, abort) => native.getSubscriptions(saved, 'all', abort))),
     updateSubscriptionPreference: unsupported,
-    createSubscriptionPayment: unsupported, purchaseSubscriptionWithBalance: unsupported,
+    createSubscriptionPayment: async (input) => {
+      // 历史账号只有一种在线支付（与充值同一张下单接口，按 order_type 区分），
+      // 价格由服务端按套餐算，所以这里只带套餐和支付方式，不带金额。
+      if (!Number.isSafeInteger(input.planId) || input.planId <= 0 || input.provider !== 'epay'
+        || typeof input.paymentMethod !== 'string' || !input.paymentMethod.trim()) throw new RealmAccountError('INVALID')
+      const planId = input.planId
+      const paymentMethod = input.paymentMethod.trim()
+      const payload = record(await call(capture(), (saved, abort) => native.createPaymentOrder(saved, { plan_id: planId, payment_type: paymentMethod, order_type: 'subscription', is_mobile: false }, abort), true))
+      return orderCheckout(payload, 0)
+    },
+    purchaseSubscriptionWithBalance: unsupported,
     getUsage: async (input = {}) => {
       const scope = capture()
       const { query, dateRange } = usageQuery(input, now())

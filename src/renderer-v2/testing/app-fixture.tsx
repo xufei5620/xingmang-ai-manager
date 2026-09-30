@@ -425,6 +425,9 @@ const methods = {
     if (query.has('deepLinkFail')) throw new Error('回跳参数已过期')
     return null
   },
+  // 首页活动卡片按它列档位：110 付 100、240 付 200、4000 付 2000。
+  getAccountTopupInfo: async () => ({ onlineTopupEnabled: true, stripeTopupEnabled: false, creemTopupEnabled: false, waffoPancakeTopupEnabled: false, redemptionEnabled: true, paymentComplianceConfirmed: true, paymentComplianceTermsVersion: '1',
+    paymentMethods: [], minTopup: 1, amountOptions: [10, 110, 240, 4000], discounts: { 110: 100 / 110, 240: 200 / 240, 4000: 0.5 }, topupLink: null }),
   getAccountNotice: async () => {
     if (noticeOverride) return noticeOverride
     if (query.has('noticeTimeline')) return { id: 'newapi-timeline-fixture', text: query.has('noticeCollection') ? collectionFixture : '', bulletins: timelineFixture() }
@@ -475,7 +478,7 @@ const methods = {
   listBackups: async () => [],
   exportDiagnostics: async () => ({ outputPath: 'C:\\Fixture\\xingmang-diagnostics.txt' }),
   revealExportedFile: async () => true,
-  launchCli: async () => query.has('launchPending') ? new Promise<{}>((resolve) => { releaseLaunch = () => resolve({}) }) : query.has('launchOverride') ? { configOverrideNotice: '这个项目文件夹里有自己的设置，会让 Claude Code 不用当前账号，余额和用量会对不上。不是你有意这样设的话，换一个文件夹打开就好。' } : {},
+  launchCli: async () => query.has('launchRemembers') ? { rememberedWorkspace: config.workspace } : query.has('launchPending') ? new Promise<{}>((resolve) => { releaseLaunch = () => resolve({}) }) : query.has('launchOverride') ? { configOverrideNotice: '这个项目文件夹里有自己的设置，会让 Claude Code 不用当前账号，余额和用量会对不上。不是你有意这样设的话，换一个文件夹打开就好。' } : {},
   launchCodexDesktop: async () => ({ restarted: false, status: system.desktopApps.codex, ...(query.has('localeLaunchWarning') ? { chineseLocale: { status: 'failed' as const, message: 'Codex 已打开，但未确认中文界面生效，请在配置中再次启用。' } } : {}) }),
   inspectCodexDesktopLocale: async () => ({ installed: true, version: 'fixture', running: true, configPath: 'C:\\Fixture\\config.toml', configuredLocale: 'zh-CN', effectiveLocale: 'zh-CN', chineseResources: { available: true, frontendChunk: true, menuLocale: true, pakLocale: true, resourceRoot: 'C:\\Fixture' }, needsRestart: true, error: null }),
   setCodexDesktopLocale: async (locale) => {

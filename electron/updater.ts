@@ -111,6 +111,11 @@ export interface UpdateSnapshot {
    * 可选＝旧快照，界面照旧。
    */
   diskShortfall?: UpdateDiskShortfall | null
+  /**
+   * 状态文件定了最低版本、而本机低于它时，这里是那个最低版本；否则 null。界面据此
+   * 盖一层「更新后才能继续用」（见 required-update.ts）。可选＝旧快照，不拦。
+   */
+  requiredVersion?: string | null
 }
 
 export interface UpdateCheckOptions {
@@ -222,6 +227,12 @@ export interface UpdaterRuntime {
    */
   readAutoUpdate?: () => boolean
   /**
+   * 后台下载（启动检查超时后补下、开发环境不等下载）没人 await，被拒绝时交给这里记日志。
+   * 真正的下载失败 download() 自己会发 error 快照给界面；走到这里的多半是状态已被别处推进。
+   * 不传＝静默丢弃（只为测试夹具保持旧签名）。
+   */
+  reportBackgroundError?: (error: unknown) => void
+  /**
    * Recomputes the downloaded package digest and compares it with the manifest
    * value. Resolving false means a mismatch; throwing means the comparison could
    * not be made. Both outcomes reject the package.
@@ -305,6 +316,15 @@ export function isOlderVersion(candidate: string, current: string): boolean {
     if (left[index] !== right[index]) return left[index] < right[index]
   }
   return false
+}
+
+/**
+ * 本机低于状态文件里的最低版本时返回那个最低版本，否则 null。任何一边的版本号认不出
+ * 都当作不低于：这一项会把人挡在门外，拿不准就不拦。
+ */
+export function resolveRequiredVersion(currentVersion: string, minimumVersion: string | null | undefined): string | null {
+  if (!minimumVersion || !versionParts(minimumVersion) || !versionParts(currentVersion)) return null
+  return isOlderVersion(currentVersion, minimumVersion) ? minimumVersion : null
 }
 
 /**
@@ -573,6 +593,7 @@ export function createUpdaterService(
     currentVersionWithdrawn: false,
     rollback: false,
     diskShortfall: null,
+    requiredVersion: null,
   }
 
   client.autoDownload = false
@@ -597,7 +618,8 @@ export function createUpdaterService(
       currentVersion: runtime.currentVersion,
       badVersions: serviceStatus?.badVersions ?? [],
       rollout: serviceStatus?.rollout ?? null,
-      manual: manualCheck,
+      // 被要求必须更新的电脑不受分批放量限制：放量挡住它，它就只能停在要淘汰的版本上。
+      manual: manualCheck || Boolean(snapshot.requiredVersion),
     })
     if (!decision.offer) return false
     if (!defaultRolloutCheck) return true
@@ -660,7 +682,18 @@ export function createUpdaterService(
     }
     const withdrawn = isWithdrawn(runtime.currentVersion)
     if (withdrawn !== (snapshot.currentVersionWithdrawn === true)) patch.currentVersionWithdrawn = withdrawn
+    // 开发态装不了更新，拦下来只会把人困住。
+    const required = enabled && !development ? resolveRequiredVersion(runtime.currentVersion, status?.minimumVersion) : null
+    const previouslyRequired = snapshot.requiredVersion ?? null
+    if (required !== previouslyRequired) patch.requiredVersion = required
     if (Object.keys(patch).length) emit(patch)
+    // 最低版本是软件开着时才定下的：上一次检查可能已经说过「没有新版本」，界面据此不拦。
+    // 刚变成「必须更新」时补查一次，免得要等到三小时后的例行检查。
+    if (
+      required
+      && required !== previouslyRequired
+      && (snapshot.phase === 'idle' || snapshot.phase === 'not-available' || snapshot.phase === 'error')
+    ) void check().catch(() => undefined)
     if (
       !installRequested
       && isWithdrawn(snapshot.availableVersion)
@@ -1006,6 +1039,10 @@ export function createUpdaterService(
     return cloneSnapshot(snapshot)
   }
 
+  function downloadInBackground(): void {
+    download().catch((error: unknown) => runtime.reportBackgroundError?.(error))
+  }
+
   return {
     getState: () => cloneSnapshot(snapshot),
     startup() {
@@ -1030,7 +1067,7 @@ export function createUpdaterService(
             const eventSnapshot = cloneSnapshot(snapshot)
             if (eventSnapshot.phase === 'available' && autoDownload()) {
               if (development) {
-                void download()
+                downloadInBackground()
                 return eventSnapshot
               }
               return download()
@@ -1041,8 +1078,8 @@ export function createUpdaterService(
           // alive so a slow network can still download the discovered release.
           if (autoDownload()) {
             void checkPromise.then((lateSnapshot) => {
-              if (lateSnapshot.phase === 'available') void download()
-            })
+              if (lateSnapshot.phase === 'available') downloadInBackground()
+            }, (error: unknown) => runtime.reportBackgroundError?.(error))
           }
           emit({
             phase: 'error',
@@ -1058,7 +1095,7 @@ export function createUpdaterService(
         }
         if (checked.value.phase !== 'available' || !autoDownload()) return checked.value
         if (development) {
-          void download()
+          downloadInBackground()
           return checked.value
         }
         return download()

@@ -17,6 +17,7 @@ import {
   sameAccountOrigin,
   switchAccountWithOptionalSync,
   type AccountSwitchSyncResult,
+  type AccountSyncCandidate,
 } from './account-switch-sync'
 import { tools } from './registry/tools'
 import { keySyncFailureText } from './features/tools/key-sync-failure'
@@ -49,26 +50,20 @@ export function SavedAccounts({
   const operation = useOperation()
   const syncLoad = useCallback(() => readAccountSyncContext(api), [api])
   const sync = useResource(syncLoad)
-  const [selected, setSelected] = useState<
-    Array<
-      Parameters<V2Bridge['configureManagedCliKeys']>[0]['providers'][number]
-    >
-  >([])
+  // 切换账号时，原本就在用账号密钥的工具默认一起换过去，不然切完工具还在花上一个
+  // 账号的钱（新手引导梳理 9-25 第 1 条）。自己填的密钥默认不动，要换就手动勾上。
+  // 记的是用户改过的那几项，勾选框的值由候选列表现算，检测结果晚到也不会丢默认勾选。
+  const [choices, setChoices] = useState<Partial<Record<SyncProvider, boolean>>>({})
   const [result, setResult] = useState<AccountSwitchSyncResult | null>(null)
   const restartHint = result ? accountSwitchRestartHint(result) : ''
   const candidates = sync.data ? accountSyncCandidates(sync.data) : []
+  const selected = defaultSyncSelection(candidates, choices)
   useEffect(() => {
-    setSelected([])
+    setChoices({})
     const userId = resource.data?.session.account?.userId
     if (userId && resource.data)
       setResult(previousAccountSwitchResult(resource.data.origin, userId))
   }, [resource.data?.origin, resource.data?.session.account?.userId])
-  useEffect(() => {
-    const allowed = new Set(
-      candidates.filter((item) => item.eligible).map((item) => item.provider),
-    )
-    setSelected((values) => values.filter((value) => allowed.has(value)))
-  }, [sync.data])
   const [remove, setRemove] = useState<string | null>(null)
   // 切过去才发现登录已失效的那一个保存账号（全面检测 Q12）：当前账号没变，
   // 这一行给个「重新登录这个账号」，不然用户只看到一句失败、不知道下一步。
@@ -173,7 +168,7 @@ export function SavedAccounts({
                           })
                           preserveAccountSwitchResult(outcome)
                           setResult(outcome)
-                          setSelected([])
+                          setChoices({})
                           await resource.reload()
                           await sync.reload()
                           onAccountChanged?.(outcome)
@@ -215,9 +210,9 @@ export function SavedAccounts({
           )
         })}
       </ListState>
-      <details className="v2-business-account-sync">
-        <summary>同步到工具（可选）</summary>
-        <p>只有勾选的工具会改用目标账号的星芒密钥。</p>
+      <details className="v2-business-account-sync" open>
+        <summary>同步到工具</summary>
+        <p>勾上的工具会一起换成要切过去的账号，不勾的保持原样。</p>
         <ResultNotice error={sync.error} />
         {sync.loading && <p role="status">正在检查工具配置…</p>}
         {candidates.map((candidate) => (
@@ -234,11 +229,10 @@ export function SavedAccounts({
             }
             testId={`account-sync-${candidate.provider}`}
             onChange={(event) =>
-              setSelected((values) =>
-                event.target.checked
-                  ? [...new Set([...values, candidate.provider])]
-                  : values.filter((value) => value !== candidate.provider),
-              )
+              setChoices((values) => ({
+                ...values,
+                [candidate.provider]: event.target.checked,
+              }))
             }
           />
         ))}
@@ -247,7 +241,7 @@ export function SavedAccounts({
         <Button icon={Plus} onClick={() => onLogin?.()} testId="account-add">
           添加另一个账号
         </Button>
-        <p>登录状态失效时需要重新登录。未勾选的工具保持原配置。</p>
+        <p>登录状态失效时需要重新登录。</p>
       </div>
       <Dialog
         open={Boolean(remove)}
@@ -283,6 +277,21 @@ export function SavedAccounts({
       </Dialog>
     </div>
   )
+}
+
+type SyncProvider = AccountSyncCandidate['provider']
+
+/**
+ * 切换账号时哪些工具要一起换。没动过的按默认：原本就是账号密钥的勾上，自己填的、
+ * 官方账号、别处的配置都不勾；动过的听用户的。不能换的一律不算。
+ */
+export function defaultSyncSelection(
+  candidates: readonly AccountSyncCandidate[],
+  choices: Partial<Record<SyncProvider, boolean>>,
+): SyncProvider[] {
+  return candidates
+    .filter((candidate) => candidate.eligible && (choices[candidate.provider] ?? candidate.reason === '星芒密钥'))
+    .map((candidate) => candidate.provider)
 }
 
 /**

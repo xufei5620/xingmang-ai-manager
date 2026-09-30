@@ -45,6 +45,7 @@ const ipcInvokeChannels = {
   installCodexDesktop: 'desktop:install-codex',
   cancelCodexDesktopInstall: 'desktop:cancel-install-codex',
   uninstallCodexDesktop: 'desktop:uninstall-codex',
+  resetCodexDesktop: 'desktop:reset-codex',
   checkCodexDesktopUpdate: 'desktop:check-update-codex',
   launchCli: 'cli:launch',
   getCodexDesktopStatus: 'desktop:codex-status',
@@ -200,6 +201,8 @@ const ipcInvokeChannels = {
   clearStaleProxySettings: 'diagnostics:clear-stale-proxy',
   trustCertificatesUserWide: 'diagnostics:trust-certificates-user-wide',
   openDiagnosticFolder: 'diagnostics:open-folder',
+  fixDiagnostic: 'diagnostics:fix',
+  chooseExtensionDirectory: 'extensions:choose-directory',
 } as const satisfies {
   [Method in keyof XingmangInvokeContract]: XingmangInvokeContract[Method]['channel']
 }
@@ -285,6 +288,7 @@ const xingmangApi: XingmangApi = {
   installCodexDesktop: () => invoke('installCodexDesktop'),
   cancelCodexDesktopInstall: () => invoke('cancelCodexDesktopInstall'),
   uninstallCodexDesktop: () => invoke('uninstallCodexDesktop'),
+  resetCodexDesktop: () => invoke('resetCodexDesktop'),
   checkCodexDesktopUpdate: () => invoke('checkCodexDesktopUpdate'),
   launchCli: (provider, workspace, mode, sessionId) => invoke('launchCli', provider, workspace, mode, sessionId),
   getCodexDesktopStatus: () => invoke('getCodexDesktopStatus'),
@@ -446,6 +450,8 @@ const xingmangApi: XingmangApi = {
   clearStaleProxySettings: () => invoke('clearStaleProxySettings'),
   trustCertificatesUserWide: () => invoke('trustCertificatesUserWide'),
   openDiagnosticFolder: (target) => invoke('openDiagnosticFolder', target),
+  fixDiagnostic: (kind) => invoke('fixDiagnostic', kind),
+  chooseExtensionDirectory: () => invoke('chooseExtensionDirectory'),
   onAccountSessionChanged: (listener) => subscribe('onAccountSessionChanged', listener),
   onExternalClientInstallProgress: (listener) => subscribe('onExternalClientInstallProgress', listener),
   onAccountUsageChanged: (listener) => subscribe('onAccountUsageChanged', listener),

@@ -1,6 +1,7 @@
 import type { AccountSourceTarget, AppConfigSummary, CliStatus, CliVersionAdvice, DesktopAppStatus, PlatformCapabilities, ProviderConfigSummary, ProviderId, SystemSnapshot, ToolStatus } from '../../../../electron/ipc-contract'
 import { snapshotErrorMessage } from '../../business-common'
 import { subscriptionEndDate, type UsableSubscription } from '../../../../electron/subscription-summary'
+import { codexDesktopKnownIssueNotice, resolveCodexDesktopKnownIssue } from '../../../../electron/codex-desktop-known-issues'
 import { tools } from '../../registry/tools'
 import {
   getSourceMarkerStorage,
@@ -321,6 +322,18 @@ export function codexDesktopUpdateKind(
   return status.mirrorUpdateAvailable === false ? 'store-current' : 'unknown'
 }
 
+/**
+ * Codex 桌面端的版本建议：只有「这一版已知打不开」一种（第十九批 7）。桌面端装哪一版
+ * 由微软商店决定，所以不给推荐版本、不给退回，只把原因放进 blockedReason，首页那一行
+ * 照原样显示。
+ */
+export function codexDesktopVersionAdvice(status: Pick<DesktopAppStatus, 'installed' | 'version' | 'appVersion'>): CliVersionAdvice | null {
+  if (!status.installed) return null
+  const version = resolveCodexDesktopKnownIssue([status.version, status.appVersion])
+  if (!version) return null
+  return { recommendedVersion: null, blockedReason: codexDesktopKnownIssueNotice(version), onRecommended: false, pinned: false, rollbackAvailable: false }
+}
+
 export function presentTools(
   snapshot: ToolboxSnapshot,
   storage: SourceMarkerStorage | null = getSourceMarkerStorage(),
@@ -335,8 +348,8 @@ export function presentTools(
     const status = id === 'codexDesktop' ? snapshot.system.desktopApps.codex : snapshot.system.clis[id]
     const source = sourceFor(config, provider, storage)
     const version = id === 'codexDesktop' ? (status as DesktopAppStatus).appVersion ?? status.version : status.version
-    // 桌面端走的是镜像分发而不是 npm,名单管不到它,所以这里只取 CLI 的建议。
-    const versionAdvice = id === 'codexDesktop' ? null : snapshot.system.clis[id].versionAdvice ?? null
+    // 桌面端走的是商店 / 镜像分发而不是 npm,名单管不到它的安装,只查已知问题表。
+    const versionAdvice = id === 'codexDesktop' ? codexDesktopVersionAdvice(status as DesktopAppStatus) : snapshot.system.clis[id].versionAdvice ?? null
     const revertVersion = id === 'codexDesktop' ? null : snapshot.system.clis[id].revertVersion ?? null
     // 桌面端只有镜像真的有新包才算「可更新」;官方清单领先商店时按下「更新」什么也装不上。
     const updateAvailable = id === 'codexDesktop'

@@ -7,9 +7,13 @@ import {
   curatedRuntimeCommand,
   curatedVersionText,
   extensionRowState,
+  fillCuratedPlaceholders,
   findNativeSkill,
   mcpCommandRuntime,
   mcpHealthView,
+  preferredExtensionProvider,
+  parseCommandArguments,
+  parseEnvironmentVariables,
   mcpRuntimeNotice,
   officialMarketplaceNotice,
   runExtensionAction,
@@ -509,5 +513,34 @@ describe('extension row actions', () => {
       canUninstall: false,
       canUpdate: false,
     })
+  })
+})
+
+describe('extension page default tool', () => {
+  it('opens on the first installed command-line tool in navigation order', () => {
+    expect(preferredExtensionProvider(['grok', 'codex'])).toBe('codex')
+    expect(preferredExtensionProvider(['gemini'])).toBe('gemini')
+  })
+  it('falls back to Claude when nothing is installed or detection has not finished', () => {
+    expect(preferredExtensionProvider([])).toBe('claude')
+    expect(preferredExtensionProvider(undefined)).toBe('claude')
+    expect(preferredExtensionProvider(['codexDesktop'])).toBe('claude')
+  })
+})
+
+describe('curated folder placeholders', () => {
+  it('fills the chosen folder into parsed arguments and environment without JSON escaping', () => {
+    const folder = 'C:\\Users\\张三\\项目'
+    expect(fillCuratedPlaceholders(['-y', 'pkg', '{{directory}}'], { MEMORY_FILE_PATH: '{{directory}}/ai-memory.jsonl' }, { directory: folder })).toEqual({
+      args: ['-y', 'pkg', folder],
+      env: { MEMORY_FILE_PATH: `${folder}/ai-memory.jsonl` },
+    })
+  })
+  it('leaves a placeholder in place until a folder is chosen', () => {
+    expect(fillCuratedPlaceholders(['{{directory}}'], {}, { directory: '  ' }).args).toEqual(['{{directory}}'])
+  })
+  it('explains a pasted Windows path in Chinese instead of surfacing the JSON parser error', () => {
+    expect(() => parseCommandArguments('["C:\\Users"]')).toThrow('选择文件夹')
+    expect(() => parseEnvironmentVariables('{"A": "C:\\x"}')).toThrow('环境变量的格式不对')
   })
 })
