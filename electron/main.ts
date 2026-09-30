@@ -85,7 +85,7 @@ import { createAiAssetProtocolHandler } from './ai-asset-protocol'
 import { createChatAttachmentService, type ChatImageCodec } from './ai-chat-attachments'
 import { resolveCodexHomeContext } from './codex-home'
 import { runCodexContextLimitsMigration } from './codex-config-migration'
-import { runWithTrustedWindowsProcessEnvironment } from './command-runner'
+import { findExecutable, runWithTrustedWindowsProcessEnvironment } from './command-runner'
 import { CodexExtensionService } from './codex-extensions'
 import { CodexSessionsService } from './codex-sessions'
 import { createNewApiClient } from './new-api-client'
@@ -116,7 +116,7 @@ import { createProxyBypass, networkSettingsTarget, probeDirectConnection } from 
 import { attachPlatformAuditLog } from './platform/runtime-log-bridge'
 import { migrateLegacyWindowsLoginItem } from './platform/system-service'
 import { recordStartupFailure, redactHomeDirectory } from './startup-log'
-import { inspectProviderConfig } from './config-files'
+import { inspectProviderConfig, syncXingmangImageMcpConfigs } from './config-files'
 import { buildFeedbackEnvironmentLines, buildFeedbackRuntimeLines, pickFeedbackRuntimeSnapshot } from './feedback-environment'
 import { managedCliRoot } from './managed-cli-paths'
 import { buildFeedbackSelfCheckLines, type FeedbackConnectionRecord } from './feedback-self-check'
@@ -149,6 +149,7 @@ import {
   installXingmangAiSkillFiles,
   resolveXingmangAiBundledSkillRoot,
 } from './xingmang-ai-skill'
+import { buildXingmangImageMcpInvocation } from './xingmang-ai-mcp'
 import { resolveClaudeStatusLineScriptPath } from './claude-status-line'
 import { cliHookEventsDirectory, resolveCliHookScriptPath } from './cli-hooks'
 import { createCliHookEventMonitor } from './cli-hook-events'
@@ -2686,6 +2687,14 @@ if (!hasSingleInstanceLock) {
       xingmangAiSkill: {
         bundledRoot: bundledXingmangAiSkillRoot,
         userHome: os.homedir(),
+        syncImageMcp: async (input) => {
+          const nodeExecutable = await findExecutable('node', { env: process.env })
+          if (!nodeExecutable) return ['这台电脑上没有找到 Node.js']
+          const invocation = buildXingmangImageMcpInvocation(nodeExecutable, input.skillDirectory)
+          return syncXingmangImageMcpConfigs(rootedOptions.system.providerRoots, invocation, {
+            codex: !input.officialCodex,
+          }).warnings
+        },
       },
       ...(manualUninstallVisualFixtureEnabled
         ? {
