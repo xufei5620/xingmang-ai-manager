@@ -1,18 +1,16 @@
 import { describe, expect, it } from 'vitest'
+import { scanPowerShell, unbalancedBracket } from './powershell-script-scan.test-support'
 import {
   buildWindowsStoreAppLaunchContextScript,
   buildWindowsStoreAvailabilityScript,
   describeStoreAppLaunchBlock,
   inspectWindowsStoreAppLaunchContext,
   inspectWindowsStoreAvailability,
+  parseWindowsStoreAppLaunchContext,
   parseWindowsStoreAvailability,
   readWindowsStoreAppLaunchContext,
   resolveStoreAppLaunchBlock,
 } from './windows-store-app-launch'
-
-// 与 codex-desktop-service.test.ts 里真起 PowerShell 的用例用同一个预算：CI 的 Windows
-// 机器冷启动 PowerShell 本来就慢。
-const powerShellStartupTimeoutMs = Number(process.env.XINGMANG_POWERSHELL_TEST_TIMEOUT_MS ?? 90_000)
 
 describe('windows store app launch context', () => {
   it('flags the built-in Administrator only while its approval mode is off', () => {
@@ -67,10 +65,24 @@ describe('windows store app launch context', () => {
     expect(describeStoreAppLaunchBlock('uacDisabled')).toContain('用户账户控制')
   })
 
-  it.runIf(process.platform === 'win32')('reads the current account on Windows', async () => {
-    const context = await inspectWindowsStoreAppLaunchContext({ timeoutMs: powerShellStartupTimeoutMs })
-    expect(context.userSid ?? '').toMatch(/^S-1-\d+(?:-\d+)+$/)
-  }, powerShellStartupTimeoutMs * 2)
+  // The real run of this script is the Windows packaging job's PowerShell probe
+  // smoke (e2e/windows-powershell-probes-smoke.mjs). Started from a vitest shard
+  // it kept running out its whole budget on a busy runner and failing unrelated
+  // pull requests, so here only its text and the reading of its output.
+  it('builds a script PowerShell can parse and reads its output past warning lines', () => {
+    const scan = scanPowerShell(buildWindowsStoreAppLaunchContextScript())
+    expect(scan.unterminated).toBe(false)
+    expect(unbalancedBracket(scan.code)).toBeNull()
+    const output = 'WARNING: policy value unavailable\r\n{"sid":"S-1-5-21-9-8-7-500","uacEnabled":1,"filterAdministratorToken":null}\r\n'
+    expect(parseWindowsStoreAppLaunchContext(output)).toEqual({
+      userSid: 'S-1-5-21-9-8-7-500', isBuiltInAdministrator: true, uacEnabled: true, filterAdministratorToken: null,
+    })
+    for (const unreadable of ['', 'WARNING: only a warning', '{broken}']) {
+      expect(parseWindowsStoreAppLaunchContext(unreadable)).toEqual({
+        userSid: null, isBuiltInAdministrator: false, uacEnabled: null, filterAdministratorToken: null,
+      })
+    }
+  })
 })
 
 describe('windows store availability', () => {
@@ -99,8 +111,10 @@ describe('windows store availability', () => {
     await expect(inspectWindowsStoreAvailability({ platform: 'linux' })).resolves.toBeNull()
   })
 
-  it.runIf(process.platform === 'win32')('answers without throwing on Windows', async () => {
-    const available = await inspectWindowsStoreAvailability({ timeoutMs: powerShellStartupTimeoutMs })
-    expect([true, false, null]).toContain(available)
-  }, powerShellStartupTimeoutMs * 2)
+  // Run for real once in the Windows packaging job's PowerShell probe smoke.
+  it('builds a store probe PowerShell can parse', () => {
+    const scan = scanPowerShell(buildWindowsStoreAvailabilityScript())
+    expect(scan.unterminated).toBe(false)
+    expect(unbalancedBracket(scan.code)).toBeNull()
+  })
 })

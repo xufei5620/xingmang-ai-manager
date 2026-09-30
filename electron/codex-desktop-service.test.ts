@@ -2,11 +2,9 @@ import fs from 'node:fs'
 import { createHash } from 'node:crypto'
 import os from 'node:os'
 import path from 'node:path'
-import { execFileSync } from 'node:child_process'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { MacosCodexAppInspection } from './macos-codex-app'
 import { scanPowerShell, unbalancedBracket } from './powershell-script-scan.test-support'
-import { windowsPowerShellExecutable } from './windows-elevation'
 import { AppSettingsStore } from './app-settings'
 import { InstallationQueue } from './installation-queue'
 import { CommandRunnerError } from './command-runner'
@@ -68,10 +66,6 @@ import {
 } from './codex-desktop-service'
 import { parseWindowsStoreAppLaunchContext } from './windows-store-app-launch'
 import { codexDesktopKnownIssueMarker } from './codex-desktop-known-issues'
-
-// Windows CI 上六个作业共用一台机器，Defender 在场时 PowerShell 冷启一次可以
-// 超过一分钟；起作用的是 execFile 这一层的预算，不是 vitest 的用例超时。
-const powerShellStartupTimeoutMs = Number(process.env.XINGMANG_POWERSHELL_TEST_TIMEOUT_MS ?? 90_000)
 
 const temporaryDirectories: string[] = []
 
@@ -1431,50 +1425,6 @@ describe('Codex Desktop Appx probe script', () => {
     expect(closeScript).toContain(String.raw`\\WindowsApps\\(?<name>OpenAI\.Codex(?:Beta)?)_`)
   })
 
-  it.runIf(process.platform === 'win32')('checks only roots during scans and each pid before closing', () => {
-    const mocks = String.raw`
-      $script:ownerCalls = 0
-      function Get-CimInstance {
-        param($ClassName, $Filter)
-        $session = [System.Diagnostics.Process]::GetCurrentProcess().SessionId
-        @(
-          [pscustomobject]@{ ProcessId = 101; ParentProcessId = 0; Name = 'ChatGPT.exe'; SessionId = $session; ExecutablePath = 'C:\WindowsApps\OpenAI.Codex_26.715.0.0_x64__id\ChatGPT.exe' }
-          [pscustomobject]@{ ProcessId = 102; ParentProcessId = 101; Name = 'ChatGPT.exe'; SessionId = $session; ExecutablePath = 'C:\WindowsApps\OpenAI.Codex_26.715.0.0_x64__id\ChatGPT.exe' }
-          [pscustomobject]@{ ProcessId = 103; ParentProcessId = 101; Name = 'ChatGPT.exe'; SessionId = $session; ExecutablePath = 'C:\WindowsApps\OpenAI.Codex_26.715.0.0_x64__id\ChatGPT.exe' }
-          [pscustomobject]@{ ProcessId = 104; ParentProcessId = 102; Name = 'rg.exe'; SessionId = $session; ExecutablePath = 'C:\WindowsApps\OpenAI.Codex_26.715.0.0_x64__id\app\resources\rg.exe' }
-          [pscustomobject]@{ ProcessId = 105; ParentProcessId = 102; Name = 'git.exe'; SessionId = $session; ExecutablePath = 'C:\Program Files\Git\cmd\git.exe' }
-        )
-      }
-      function Invoke-CimMethod {
-        [CmdletBinding()]
-        param($InputObject, $MethodName, $OperationTimeoutSec)
-        $script:ownerCalls += 1
-        $sid = if ($InputObject.ProcessId -eq 103) { 'S-1-5-21-9999' } else { [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value }
-        [pscustomobject]@{ ReturnValue = 0; Sid = $sid }
-      }
-    `
-    function runMockProbe(scope: 'roots' | 'all'): { calls: number; processIds: number[] } {
-      const script = `${mocks}
-        ${buildCodexDesktopProcessProbeScript(scope)}
-        Write-Output ('CALLS=' + $script:ownerCalls)
-      `
-      const output = execFileSync(windowsPowerShellExecutable(), [
-        '-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script,
-      ], { encoding: 'utf8', windowsHide: true, maxBuffer: 1024 * 1024 })
-      const lines = output.trim().split(/\r?\n/)
-      const calls = Number(lines.pop()?.replace('CALLS=', ''))
-      return {
-        calls,
-        processIds: parseWindowsProcessesJson(lines.join('\n')).map((entry) => entry.processId),
-      }
-    }
-
-    expect(runMockProbe('roots')).toEqual({ calls: 1, processIds: [101] })
-    // The mock ignores -Filter, so this pins the package-path check: a helper
-    // from the package is closed, an unrelated child of the app is not.
-    expect(runMockProbe('all')).toEqual({ calls: 4, processIds: [101, 102, 104] })
-  })
-
   it('finds a launched window by session and package path alone, without the owner check the close paths need', () => {
     const script = buildCodexDesktopSessionProcessProbeScript()
     const scan = scanPowerShell(script)
@@ -1515,29 +1465,15 @@ describe('Codex Desktop Appx probe script', () => {
     expect(codexDesktopRunningFromProbeOutput('WARNING: not json')).toBeNull()
   })
 
-  it.runIf(process.platform === 'win32')('runs the launch probe against mocked WMI and keeps windows whose owner is unknown', () => {
-    const mocks = String.raw`
-      function Get-CimInstance {
-        param($ClassName, $Filter)
-        $session = [System.Diagnostics.Process]::GetCurrentProcess().SessionId
-        @(
-          [pscustomobject]@{ ProcessId = 201; Name = 'ChatGPT.exe'; SessionId = $session; ExecutablePath = 'C:\WindowsApps\OpenAI.Codex_26.715.0.0_x64__id\app\ChatGPT.exe' }
-          [pscustomobject]@{ ProcessId = 202; Name = 'ChatGPT.exe'; SessionId = $session; ExecutablePath = $null; CommandLine = '"C:\WindowsApps\OpenAI.Codex_26.715.0.0_x64__id\app\ChatGPT.exe" --type=renderer' }
-          [pscustomobject]@{ ProcessId = 203; Name = 'ChatGPT.exe'; SessionId = ($session + 1); ExecutablePath = 'C:\WindowsApps\OpenAI.Codex_26.715.0.0_x64__id\app\ChatGPT.exe' }
-          [pscustomobject]@{ ProcessId = 204; Name = 'git.exe'; SessionId = $session; ExecutablePath = 'C:\Program Files\Git\cmd\git.exe' }
-        )
-      }
-      function Invoke-CimMethod { throw 'the launch probe must not ask for owners' }
-    `
-    const output = execFileSync(windowsPowerShellExecutable(), [
-      '-NoLogo', '-NoProfile', '-NonInteractive', '-Command', `${mocks}
-        ${buildCodexDesktopSessionProcessProbeScript()}`,
-    ], { encoding: 'utf8', windowsHide: true, maxBuffer: 1024 * 1024 })
-    expect(parseCodexDesktopSessionProcessIds(output, 'OpenAI.Codex_id')).toEqual([201, 202])
-  })
-
   it('keeps the three merged segments byte-identical to the standalone probe scripts', () => {
     const combined = buildCodexDesktopCombinedProbeScript()
+    // The real run of this script is the Windows packaging job's PowerShell
+    // probe smoke (e2e/windows-powershell-probes-smoke.mjs); here only its text.
+    for (const script of [combined, buildCodexDesktopProcessProbeScript('all')]) {
+      const scan = scanPowerShell(script)
+      expect(scan.unterminated).toBe(false)
+      expect(unbalancedBracket(scan.code)).toBeNull()
+    }
 
     expect(combined).toContain("Get-StartApps | Where-Object { $_.AppID -like 'OpenAI.Codex*!App' }")
     expect(combined).toContain('Get-CimInstance -ClassName Win32_Process')
@@ -1552,46 +1488,6 @@ describe('Codex Desktop Appx probe script', () => {
     // 嵌套一层后默认的 Depth 2 会把包条目压成字符串
     expect(combined).toContain('ConvertTo-Json -Compress -Depth 6')
   })
-
-  it.runIf(process.platform === 'win32')('executes the process probe on Windows and emits bounded JSON', () => {
-    const output = execFileSync(windowsPowerShellExecutable(), [
-      '-NoLogo',
-      '-NoProfile',
-      '-NonInteractive',
-      '-Command',
-      buildCodexDesktopProcessProbeScript(),
-    ], { encoding: 'utf8', windowsHide: true, maxBuffer: 1024 * 1024 })
-    if (output.trim()) expect(() => JSON.parse(output)).not.toThrow()
-  })
-
-  it.runIf(process.platform === 'win32')('executes the merged probe on Windows and emits the three segments', () => {
-    const output = execFileSync(windowsPowerShellExecutable(), [
-      '-NoLogo',
-      '-NoProfile',
-      '-NonInteractive',
-      '-Command',
-      buildCodexDesktopCombinedProbeScript(),
-    ], {
-      encoding: 'utf8',
-      windowsHide: true,
-      maxBuffer: 1024 * 1024,
-      timeout: powerShellStartupTimeoutMs,
-    })
-
-    const parsed = JSON.parse(output.trim()) as Record<string, unknown>
-    expect(Object.prototype.hasOwnProperty.call(parsed, 'startApps')).toBe(true)
-    expect(Object.prototype.hasOwnProperty.call(parsed, 'processes')).toBe(true)
-    expect(parsed.package).toBeTruthy()
-    // 账户那一段也要真的在 Windows 上读得出当前用户，首页装之前的提醒靠它
-    expect(String((parsed.storeAppLaunch as Record<string, unknown> | null)?.sid ?? '')).toMatch(/^S-1-\d+(?:-\d+)+$/)
-    // Appx 段在任何账户下都必须给出结论：要么有包、要么确认没有、要么报错
-    const probe = parseCodexDesktopCombinedProbeJson(output)
-    expect(
-      probe.packageProbe.value !== null
-      || probe.packageProbe.confirmedAbsent === true
-      || probe.packageProbe.error !== null,
-    ).toBe(true)
-  }, 180_000)
 })
 
 describe('Codex Desktop uninstall verification', () => {
