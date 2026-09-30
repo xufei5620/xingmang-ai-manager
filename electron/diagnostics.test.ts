@@ -219,7 +219,7 @@ describe('diagnostics', () => {
     expect(inspected.every(({ roots }) => roots === providerRoots)).toBe(true)
     expect(report.items.find((item) => item.code === 'CODEX_DOTENV')).toMatchObject({
       state: 'warn',
-      details: { exists: true, path: '[CODEX_HOME]/.env' },
+      details: { exists: true, path: '[CODEX_HOME]/.env', fix: 'set-aside-codex-dotenv' },
     })
     expect(report.items.find((item) => item.code === 'PROVIDER_CODEX')?.details?.file1)
       .toBe('[CODEX_HOME]/.codex/config.toml')
@@ -642,6 +642,18 @@ describe('diagnostics', () => {
         summary: '没有另外设过工具地址或密钥',
         details: { count: 0 },
       })
+    })
+
+    it('offers the one-click clear only on Windows and only while something clearable remains', async () => {
+      const home = temporaryHome()
+      const input = dependencies(home)
+      input.env = { ANTHROPIC_API_KEY: 'sk-must-not-leak' }
+      expect(overrideItem(await runDiagnostics({ ...input, platform: 'win32' }))?.details?.fix).toBe('clear-user-overrides')
+      expect(overrideItem(await runDiagnostics({ ...input, platform: 'darwin' }))?.details?.fix).toBeUndefined()
+      input.env = { CLAUDE_CONFIG_DIR: path.join(home, 'elsewhere') }
+      const folderOnly = overrideItem(await runDiagnostics({ ...input, platform: 'win32' }))
+      expect(folderOnly?.state).not.toBe('pass')
+      expect(folderOnly?.details?.fix).toBeUndefined()
     })
 
     it('names the variables it found without ever reading their values', async () => {

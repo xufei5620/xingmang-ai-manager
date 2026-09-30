@@ -49,7 +49,7 @@ import {
   type InstallCancellationHandle,
   type InstallCancellationOutcome,
 } from './install-cancellation'
-import { buildMacosCodexAppLaunchPlan, type inspectMacosCodexApp, type MacosCodexAppInspection } from './macos-codex-app'
+import { buildMacosCodexAppLaunchPlan, probeMacosCodexRunning, type inspectMacosCodexApp, type MacosCodexAppInspection } from './macos-codex-app'
 import { resolveSystemWingetExecutable, type SystemWingetResolution } from './node-runtime'
 import { describeProbeFailure } from './probe-failure'
 import { downloadWithResume, DownloadStalledError, type ResumableDownloadOptions } from './download-retry'
@@ -219,6 +219,35 @@ export function describeCodexDesktopLaunchFailure(
     + '先关掉所有 Codex 窗口，再点「重试」。想知道是不是 Codex 自己的问题：在开始菜单里搜「Codex」直接点开，'
     + '也起不来的话就是 Codex 这一版自己的问题，不是星芒，可以等微软商店更新它，或先用 Codex CLI；'
     + '开始菜单里能打开、从星芒打不开，请联系客服。'
+}
+
+// 一键重置做不成时，客户自己在系统设置里点的是同一个按钮。
+const codexDesktopResetManualHint = '没能自动重置 Codex 桌面端。可以自己重置：打开 Windows「设置 → 应用 → 已安装的应用」，'
+  + '找到 Codex，点右边的「…」→「高级选项」→「重置」，再回星芒打开。'
+
+/**
+ * Reset-AppxPackage is the cmdlet behind Settings' "Reset" button: it deletes
+ * the package's own per-user data (LocalState, caches) and leaves the install
+ * and everything outside the package folder — ~/.codex, where the relay
+ * configuration lives — untouched. The package name comes from the verified
+ * Get-AppxPackage probe and is still passed as a literal, never interpolated.
+ */
+export function buildCodexDesktopResetScript(packageFullName: string): string {
+  return [
+    '$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)',
+    '$ErrorActionPreference = "Stop"',
+    `Reset-AppxPackage -Package ${powerShellLiteral(packageFullName)}`,
+  ].join('; ')
+}
+
+/**
+ * 重置失败时客户能做的只有一件事：去系统设置里点同一个按钮。Windows 10 2004 以前
+ * 没有 Reset-AppxPackage，那种电脑的设置里也有「重置」，所以两种失败给同一个出口。
+ */
+export function describeCodexDesktopResetFailure(error: unknown): string {
+  const record = error && typeof error === 'object' ? error as { killed?: unknown } : {}
+  if (record.killed === true) return `重置 Codex 桌面端等了两分钟还没做完。${codexDesktopResetManualHint}`
+  return codexDesktopResetManualHint
 }
 
 /** 等窗口满这么久还没出来，就多提一句「先去开始菜单看看」。 */
@@ -1421,6 +1450,45 @@ export function parseCodexDesktopSessionProcessIds(
   return processIds
 }
 
+/**
+ * 桌面端在这个登录会话里还有没有进程：true / false / null（查不出来）。
+ *
+ * 打开桌面端时软件替用户连上的加速不扣免费时长，所以桌面端一关就要断开，
+ * 否则等于白送一条不限时的线路（codex-desktop-acceleration.ts 定时来问）。
+ * 与上面那条「打开」用的探测不同，这里失败不能折成「没在跑」：一次 WMI 超时
+ * 就把正在用的人断掉，比晚断一两分钟糟得多。
+ */
+export async function probeCodexDesktopRunning(platform: NodeJS.Platform = process.platform): Promise<boolean | null> {
+  if (platform === 'darwin') return probeMacosCodexRunning()
+  if (platform !== 'win32') return null
+  let stdout: string
+  try {
+    ({ stdout } = await execFileAsync(resolveWindowsPowerShellExecutable(), [
+      '-NoLogo',
+      '-NoProfile',
+      '-NonInteractive',
+      '-Command',
+      buildCodexDesktopSessionProcessProbeScript(),
+    ], {
+      env: trustedCommandEnvironment(),
+      windowsHide: true,
+      timeout: 8_000,
+      maxBuffer: 1024 * 1024,
+    }))
+  } catch {
+    return null
+  }
+  return codexDesktopRunningFromProbeOutput(stdout)
+}
+
+/** 空输出就是一个都没有；读不懂的输出算「查不出来」。 */
+export function codexDesktopRunningFromProbeOutput(output: string): boolean | null {
+  const trimmed = output.trim().replace(/^\uFEFF/, '')
+  if (!trimmed) return false
+  try { JSON.parse(trimmed) } catch { return null }
+  return parseCodexDesktopSessionProcessIds(trimmed, null).length > 0
+}
+
 async function listCodexDesktopSessionProcessIds(packageFamilyName: string | null): Promise<number[]> {
   if (process.platform !== 'win32') return []
   try {
@@ -2136,6 +2204,8 @@ export interface CodexDesktopService {
   /** 中止正在进行的安装或更新;已经开始装 MSIX 时会被拒绝并给出原因。 */
   cancelCodexDesktopInstall(): InstallCancellationOutcome
   uninstallCodexDesktop(): Promise<ToolUninstallResult>
+  /** 和 Windows「设置 → 应用 → 高级选项 → 重置」同一件事：只清 Codex 桌面端自己的应用数据。 */
+  resetCodexDesktop(): Promise<void>
   launchCodexDesktop(
     mode: CodexDesktopLaunchMode,
     target: RendererMessageTarget,
@@ -2920,6 +2990,57 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
     )
   }
 
+  async function resetCodexDesktopOperation(): Promise<void> {
+    if (platform !== 'win32') throw new Error('只有 Windows 上的 Codex 桌面端可以一键重置')
+    if (codexDesktopInstalling) throw new Error('Codex 桌面端正在安装、更新或卸载中')
+    codexDesktopInstalling = true
+    try {
+      const probe = await inspectCodexDesktopPackage()
+      const installedPackage = probe.value
+      if (!installedPackage) {
+        throw new Error(probe.confirmedAbsent === true
+          ? '这台电脑上没找到 Codex 桌面端，先在首页点「安装」装好它。'
+          : codexDesktopResetManualHint)
+      }
+      // Reset-AppxPackage stops the app itself, but a window that is still
+      // closing can keep files in LocalState open and make the reset fail
+      // half-way. Close the package's own processes first, the same way
+      // uninstall does.
+      const processes = await listCodexDesktopProcesses('all', { strict: true })
+      const targetProcesses = selectCodexDesktopProcessesForPackage(
+        processes, installedPackage.packageFamilyName,
+      )
+      if (targetProcesses.length) {
+        await terminateCodexDesktopProcesses(targetProcesses, installedPackage.packageFamilyName)
+      }
+      try {
+        await execFileAsync(resolveWindowsPowerShellExecutable(), [
+          '-NoLogo',
+          '-NoProfile',
+          '-NonInteractive',
+          '-Command',
+          buildCodexDesktopResetScript(installedPackage.packageFullName),
+        ], {
+          env: trustedCommandEnvironment(),
+          windowsHide: true,
+          timeout: 2 * 60_000,
+          maxBuffer: 4 * 1024 * 1024,
+        })
+      } catch (error) {
+        throw new Error(describeCodexDesktopResetFailure(error))
+      }
+    } finally {
+      codexDesktopInstalling = false
+    }
+  }
+
+  function resetCodexDesktop(): Promise<void> {
+    return installationQueue.enqueue(
+      'desktop:codex:reset',
+      () => resetCodexDesktopOperation(),
+    )
+  }
+
   function sendCodexDesktopLaunchProgress(
     target: RendererMessageTarget,
     progress: CodexDesktopLaunchProgress,
@@ -3252,6 +3373,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
     installCodexDesktop,
     cancelCodexDesktopInstall,
     uninstallCodexDesktop,
+    resetCodexDesktop,
     launchCodexDesktop,
   }
 }

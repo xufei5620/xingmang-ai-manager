@@ -131,12 +131,12 @@ describe('acceleration reminders sent by the main process', () => {
     h.preferences.acceleration = false
     expect(h.controller.notifyHost('accelerationInterrupted', 'xm-account:1:t2')).toBe('disabled')
   })
-  it('says an automatic connection is on, is billed and where to turn it off', () => {
+  it('says an automatic connection is on, is free of charge and when it turns itself off', () => {
     const h = setup()
     expect(h.controller.notifyHost('accelerationAutoStarted', 'xm-account:1:t0')).toBe('requested')
     expect(h.runtime.create).toHaveBeenLastCalledWith({
       title: '已为 Codex 桌面端连上加速',
-      body: '打开桌面端时自动连上的，会计入免费加速时长，不用时可以在托盘或加速页断开。',
+      body: '打开桌面端时自动连上的，不扣免费加速时长，关掉桌面端后会自动断开。',
       silent: true,
     })
     expect(h.controller.notifyHost('accelerationAutoStarted', 'xm-account:1:t0')).toBe('duplicate')

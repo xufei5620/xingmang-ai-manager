@@ -58,6 +58,17 @@ function fixture(reads: AccelerationState[] = []) {
 }
 
 describe('acceleration expiry reminders', () => {
+  it('stays quiet about a free automatic session, even on a used-up allowance', async () => {
+    const h = fixture([])
+    h.notice.observe(state('active', 1200))
+    expect(h.live()).toHaveLength(1)
+    h.notice.observe(state('active', 0, { autoStartedBy: 'codex-desktop' }))
+    h.notice.observe(state('active', 120, { autoStartedBy: 'codex-desktop' }))
+    expect(h.live()).toHaveLength(0)
+    h.notice.observe(state('exhausted', 0))
+    expect(h.notices).toEqual([])
+  })
+
   it('waits until five minutes are left before the first reminder', async () => {
     const h = fixture([state('active', 300)])
     h.notice.observe(state('active', 1200))

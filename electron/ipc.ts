@@ -159,6 +159,7 @@ import { isNetworkSettingsKind, type NetworkSettingsKind, type ProxyBypassOutcom
 import { platformCapabilitiesFor } from './platform-capabilities'
 import { clearStaleUserProxyVariables, type StaleProxyClearResult } from './stale-proxy-environment'
 import type { UserWideCertificateTrustResult } from './user-certificate-trust'
+import { isDiagnosticFixKind, type DiagnosticFixKind, type DiagnosticFixResult } from './diagnostic-fixes'
 import { validatePaymentForm, validatePaymentQrCode, validatePaymentUrl, type PaymentWindowController } from './payment-window'
 import type { AccountStartupGate } from './account-startup-gate'
 import { parseAiChatHistoryScope, parseAiChatHistoryWrite, type AiChatHistoryStore } from './ai-chat-history-store'
@@ -204,6 +205,8 @@ export interface IpcRegistrationOptions {
     clearStaleProxy?(): Promise<StaleProxyClearResult>
     /** 检查页「让这台电脑上所有终端都信任」；宿主不给就是这台电脑上不提供。 */
     trustCertificatesUserWide?(): Promise<UserWideCertificateTrustResult>
+    /** 检查页「挪开这份设置」「删掉这几项设置」；缺省 = 不支持，点了报一句中文（旧行为无此按钮）。 */
+    fix?(kind: DiagnosticFixKind): Promise<DiagnosticFixResult>
   }
   runtimeLog: RuntimeLogStore
   extensionService: CodexExtensionService
@@ -1324,6 +1327,7 @@ const ipcOperationLabels: Readonly<Record<string, string>> = {
   'setup:codex-status': 'Codex 初始化状态检测',
   'desktop:install-codex': 'Codex 桌面端安装',
   'desktop:uninstall-codex': 'Codex 桌面端卸载',
+  'desktop:reset-codex': 'Codex 桌面端重置',
   'desktop:check-update-codex': 'Codex 桌面端更新检查',
   'cli:launch': 'CLI 终端启动',
   'desktop:codex-status': 'Codex 桌面端运行状态检测',
@@ -1366,6 +1370,8 @@ const ipcOperationLabels: Readonly<Record<string, string>> = {
   'diagnostics:clear-stale-proxy': '清掉旧的代理设置',
   'diagnostics:trust-certificates-user-wide': '让所有终端信任证书',
   'diagnostics:open-folder': '检查页打开文件夹',
+  'diagnostics:fix': '检查页一键处理',
+  'extensions:choose-directory': '外接工具选择文件夹',
   'runtime-logs:list': '运行日志读取',
   'runtime-logs:copy-feedback': '脱敏反馈文本复制',
   'runtime-logs:export-feedback': '反馈报告导出',
@@ -1578,6 +1584,7 @@ function ipcSuccessMessage(channel: string, args: unknown[], result: unknown): s
   if (channel === 'cli:uninstall' && provider) return `${provider} 卸载已完成`
   if (channel === 'cli:check-update' && provider) return `${provider} 更新检查已完成`
   if (channel === 'desktop:uninstall-codex') return 'Codex 桌面端卸载已完成'
+  if (channel === 'desktop:reset-codex') return 'Codex 桌面端重置已完成'
   if (channel === 'cli:launch' && provider) return `${provider} 终端已打开`
   if ((channel === 'models:list' || channel === 'models:list-configured') && count !== null) {
     return `可用模型读取完成，共 ${count} 个`
@@ -2418,6 +2425,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     return outcome
   })
   registerTrustedHandler('desktop:uninstall-codex', () => service.uninstallCodexDesktop())
+  registerTrustedHandler('desktop:reset-codex', () => service.resetCodexDesktop())
   registerTrustedHandler('desktop:check-update-codex', () => service.inspectCodexDesktopUpdate(true))
   /**
    * 记录这边核对一遍再交给 Codex:记录还在、而且就在要打开的这个文件夹里,才按
@@ -3758,6 +3766,23 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     ensureSafeDataDirectory(directory, rawTarget === 'projects' ? '项目文件夹' : 'AI 作品保存位置')
     await externalShell.openPath(directory)
     return true
+  })
+  registerTrustedHandler('diagnostics:fix', async (_event, rawKind: unknown) => {
+    if (!isDiagnosticFixKind(rawKind)) throw new Error('不认识要处理的是哪一项')
+    const fix = options.diagnosticsService.fix
+    if (!fix) throw new Error('这一项暂时不能在这里处理，请在「反馈」页导出报告发给客服')
+    return fix(rawKind)
+  })
+  registerTrustedHandler('extensions:choose-directory', async (event) => {
+    const parentWindow = BrowserWindow.fromWebContents(event.sender) ?? undefined
+    const dialogOptions: OpenDialogOptions = {
+      title: '选择允许 AI 读写的文件夹',
+      properties: ['openDirectory', 'createDirectory'],
+    }
+    const result = parentWindow
+      ? await dialog.showOpenDialog(parentWindow, dialogOptions)
+      : await dialog.showOpenDialog(dialogOptions)
+    return result.canceled || !result.filePaths[0] ? null : result.filePaths[0]
   })
   function resolveDiagnosticFolder(target: DiagnosticFolderTarget): string | null {
     if (target === 'ai-output') return options.aiOutputDirectory?.() ?? null

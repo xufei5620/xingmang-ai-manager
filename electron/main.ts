@@ -129,6 +129,7 @@ import { privacyPolicyUrl, relaySiteExternalUrls, relaySites, resolveRelaySite, 
 import { createPaymentWindowController } from './payment-window'
 import { createPaymentOrderStatusReader } from './payment-status-reader'
 import {
+  clearableEnvironmentOverrides,
   createDiagnosticsExport,
   redactDiagnosticText,
   diagnosticsScanReuseMs,
@@ -138,6 +139,7 @@ import {
   type DiagnosticsRunOptions,
 } from './diagnostics'
 import { buildConnectionProbe, runConnectionCheck } from './connection-check'
+import { clearUserProviderOverrides, setAsideCodexDotenv, type DiagnosticFixKind } from './diagnostic-fixes'
 import { createCodexResponsesProbeService } from './codex-responses-probe'
 import type { ExternalToolId } from './external-tool-config'
 import { registerIpcHandlers, type AppWindowMode, type IpcRegistrationOptions } from './ipc'
@@ -151,6 +153,7 @@ import { resolveClaudeStatusLineScriptPath } from './claude-status-line'
 import { cliHookEventsDirectory, resolveCliHookScriptPath } from './cli-hooks'
 import { createCliHookEventMonitor } from './cli-hook-events'
 import { createCliKeepAwake } from './cli-keep-awake'
+import { createInstallKeepAwake } from './install-keep-awake'
 import { resolveProjectInstructionsTemplatePath } from './project-instructions'
 import { ipcEventChannels, type AccountBalance, type AccountSubscriptionSelf, type AppUninstallRequest, type SettingsSaveIssue, type UnexpectedExitNotice } from './ipc-contract'
 import {
@@ -170,6 +173,7 @@ import {
 } from './download-proxy'
 import { createDownloadAccelerationCoordinator } from './download-acceleration'
 import { createCodexDesktopAccelerationCoordinator } from './codex-desktop-acceleration'
+import { probeCodexDesktopRunning } from './codex-desktop-service'
 import {
   createSystemService,
   type SystemService,
@@ -1147,6 +1151,11 @@ if (!hasSingleInstanceLock) {
         if (!acceleration) throw new Error('加速服务尚未就绪。')
         return acceleration.startAutomaticAcceleration(scope, 'codex-desktop', ...await accelerationStartArguments(scope, state))
       },
+      // 自动连的不扣免费时长，所以桌面端一关就断开，否则就是一条白送的不限时线路。
+      isDesktopRunning: () => probeCodexDesktopRunning(),
+      disconnect: (scope) => acceleration
+        ? acceleration.stopAcceleration(scope)
+        : Promise.reject(new Error('加速服务尚未就绪。')),
       // 连上之后不会自动断开（那是之前定过的），所以连上的那一刻必须让用户知道：
       // 加速开着、在计免费时长、在哪里能断开。同一次连接只提醒一次。
       onAutoConnected: (state) => hostNotifier()({
@@ -1331,6 +1340,15 @@ if (!hasSingleInstanceLock) {
           inspectUserWideCertificateTrust: () => inspectUserWideCertificateTrust({ executionMode: windowsCliExecutionMode }),
         })
         return latestDiagnostics
+      },
+      // 检查页两颗一键处理。要删哪几项在点的那一刻按当前环境和当前站点重算，
+      // 不信渲染层给的任何名字或路径（I5）。
+      fix: async (kind: DiagnosticFixKind) => {
+        if (kind === 'set-aside-codex-dotenv') return setAsideCodexDotenv(codexContext.codexHome)
+        const site = resolveRelaySite(systemService.readStoredConfig().relaySiteId)
+        return clearUserProviderOverrides({
+          names: clearableEnvironmentOverrides(process.env, site.providerBaseUrls, codexContext.userHome),
+        })
       },
       // 自检跟着用户当前所在的站点走，探测和对账读同一个 RelaySite ——
       // 与 system-service.ts 的 inspectNativeProviderConfig 同参，否则换过
@@ -1530,6 +1548,15 @@ if (!hasSingleInstanceLock) {
       log: (level, event, message, detail) => runtimeLog.log(level, 'config', event, message, detail),
     })
     cliHookEvents.start()
+    // 装工具、装 Codex 桌面端、后台下载新版本时同样挡住自动睡眠，装完、失败、取消就放开。
+    const installKeepAwake = createInstallKeepAwake({
+      blocker: powerSaveBlocker,
+      log: (level, event, message, detail) => runtimeLog.log(level, 'main', event, message, detail),
+    })
+    const unsubscribeInstallKeepAwakeQueue = systemService.onInstallationQueueChange((snapshot) => installKeepAwake.observeQueue(snapshot))
+    installKeepAwake.observeQueue(systemService.inspectInstallationQueue())
+    const unsubscribeInstallKeepAwakeUpdate = updaterService.subscribe((state) => installKeepAwake.observeUpdate(state))
+    installKeepAwake.observeUpdate(updaterService.getState())
     let accelerationInterruption: AccelerationInterruptionNotice | null = null
     let latestTraySystem: SystemSnapshot | null = null
     let latestTrayBalance: AccountBalance | null = null
@@ -2671,7 +2698,11 @@ if (!hasSingleInstanceLock) {
     app.once('will-quit', () => {
       cliHookEvents.dispose()
       cliKeepAwake.dispose()
+      unsubscribeInstallKeepAwakeQueue()
+      unsubscribeInstallKeepAwakeUpdate()
+      installKeepAwake.dispose()
       accelerationExpiry?.dispose()
+      codexDesktopAcceleration.dispose()
       accelerationInterruption?.dispose()
       void acceleration?.dispose().catch((error) => runtimeLog.exception('network', 'acceleration.shutdown.failed', error))
       void developmentAcceleration?.dispose().catch(() => undefined)

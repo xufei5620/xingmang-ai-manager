@@ -184,6 +184,8 @@ export function createToolsApi(bridge: XingmangApi) {
       recentSessions.invalidate()
       return result
     },
+    /** 只有 Codex 桌面端有这一步，见错误框里的「重置 Codex」。 */
+    resetCodexDesktop: () => bridge.resetCodexDesktop(),
     checkUpdate: (id: ToolId) => id === 'codexDesktop' ? bridge.checkCodexDesktopUpdate() : bridge.checkCliUpdate(id),
     // mode 是两套互不相干的取值:codexDesktop 认 'open' | 'restart',四家 CLI 认
     // 'new' | 'resumeLast'(#292)。各自只取自己认得的那一个,另一套的值落回本侧

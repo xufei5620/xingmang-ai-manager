@@ -259,10 +259,8 @@ describe('v2 business boundaries', () => {
   })
   it('routes actionable diagnostic categories to their owning page', () => {
     expect(diagnosticTarget('PROVIDER_CODEX')).toBe('home')
-    expect(diagnosticTarget('XINGMANG_NETWORK')).toBe('settings')
     // 设置页没有能处理它的东西；能清的那种在行里直接给按钮。
     expect(diagnosticTarget('PROXY_ENVIRONMENT')).toBeNull()
-    expect(diagnosticTarget('CLASH_VERGE_TUN')).toBe('settings')
     expect(diagnosticTarget('RUNTIME_NODE')).toBe('maintenance')
     expect(diagnosticTarget('RUNTIME_PYTHON')).toBe('maintenance')
     expect(diagnosticTarget('CLI_CLAUDE')).toBe('maintenance')
@@ -278,6 +276,11 @@ describe('v2 business boundaries', () => {
     for (const code of [
       'WORKSPACE_CONFIG_OVERRIDE',
       'PROVIDER_ENVIRONMENT_OVERRIDE',
+      // 以前跳「设置 → 网络」或首页，那里都没有能处理它们的东西，点了只会绕一圈。
+      'XINGMANG_NETWORK',
+      'CLASH_VERGE_TUN',
+      'CODEX_DOTENV',
+      'CLAUDE_BYPASS_PERMISSIONS',
       'DISK_SPACE',
       'ADMINISTRATOR',
       'OPERATING_SYSTEM',
@@ -289,7 +292,6 @@ describe('v2 business boundaries', () => {
       expect(diagnosticTarget(code)).toBeNull()
       expect(diagnosticHasFix(code)).toBe(false)
     }
-    expect(diagnosticHasFix('CODEX_DOTENV')).toBe(true)
   })
   it('sends only the outdated Node.js certificate verdict to the install page', () => {
     expect(diagnosticTarget('CERTIFICATE_TRUST', { verdict: 'outdatedNode' })).toBe('maintenance')
