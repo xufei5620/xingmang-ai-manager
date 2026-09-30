@@ -81,6 +81,7 @@ import { elevatedInstallNotice, storeAppLaunchNotice } from './features/tools/el
 import { ToolStatusMeta, ToolStatusReason } from './features/tools/ToolStatusMeta'
 import { connectionCheckView } from './features/tools/connection-check'
 import { accountScope, sessionRestoring } from './account-context'
+import { AppUninstallRow } from './features/app/AppUninstall'
 import { diagnosticDetailRows } from './features/app/diagnostic-details'
 import { canClearStaleProxy, staleProxyClearMessage, staleProxyConfirmBody } from './features/app/stale-proxy'
 import { diagnosticFolderTarget, diagnosticFolderUnavailableMessage } from './features/app/diagnostic-folder'
@@ -1915,6 +1916,17 @@ export function SettingsPage({
   )
   const [systemError, setSystemError] = useState('')
   const [proxy, setProxy] = useState<PlatformProxyStatus | null>(null)
+  const [isMac, setIsMac] = useState(false)
+  useEffect(() => {
+    let current = true
+    // 读不到平台就照旧显示工具的安装卸载，不出「卸载星芒」。
+    void api.getPlatformCapabilities()
+      .then((capability) => {
+        if (current) setIsMac(capability.platform === 'macos')
+      })
+      .catch(() => undefined)
+    return () => { current = false }
+  }, [api])
   useEffect(() => {
     if (!systemApi) return
     let active = true
@@ -2842,17 +2854,11 @@ export function SettingsPage({
               </Button>
             </>,
           )}
-          {row(
-            '卸载',
-            '可选择卸载工具并保留配置',
-            <Button
-              size="sm"
-              icon={Trash2}
-              onClick={() => navigate?.('maintenance')}
-            >
-              查看安装卸载
-            </Button>,
-          )}
+          <AppUninstallRow
+            api={api}
+            isMac={isMac}
+            openMaintenance={() => navigate?.('maintenance')}
+          />
         </>
       ),
     }
