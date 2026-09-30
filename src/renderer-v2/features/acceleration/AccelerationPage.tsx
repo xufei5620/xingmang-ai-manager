@@ -17,7 +17,7 @@ export function AccelerationPage({ connection, scope, live = true, onLogin, onHe
   onViewLog?(): void
   preview?: boolean
 }) {
-  const { snapshot, refresh, start, stop, setMode, lines, selectedLineId, rememberedLine, setSelectedLineId, linesBusy, linesError, refreshLines, pingLine, recheckBundle } = connection
+  const { snapshot, refresh, start, stop, lines, selectedLineId, rememberedLine, setSelectedLineId, linesBusy, linesError, refreshLines, pingLine, recheckBundle } = connection
   const state = useLiveAccelerationState(connection, live)
   const [bundleCheck, setBundleCheck] = useState<AccelerationBundleCheck | 'checking' | null>(null)
   function recheck() {
@@ -26,7 +26,7 @@ export function AccelerationPage({ connection, scope, live = true, onLogin, onHe
     void recheckBundle().catch((): AccelerationBundleCheck => 'damaged').then(setBundleCheck)
   }
   return <AccelerationView state={state} busy={snapshot.busy} error={snapshot.error}
-    signedIn={scope !== null} mode={snapshot.mode} onModeChange={setMode}
+    signedIn={scope !== null}
     lines={lines} selectedLineId={selectedLineId} rememberedLine={rememberedLine} linesBusy={linesBusy} linesError={linesError} onSelectLine={setSelectedLineId} onPingLine={pingLine} onRefreshLines={() => { void refreshLines() }}
     onStart={() => { void start(selectedLineId ?? undefined) }} onStartAnyway={() => { void start(selectedLineId ?? undefined, true) }}
     onStop={() => { void stop() }} onRefresh={() => { void refresh() }}

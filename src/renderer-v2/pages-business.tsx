@@ -21,6 +21,8 @@ export type BusinessPageProps = Omit<BusinessActions, 'navigate'> & {
   refresh?: () => void
   accountTab?: Parameters<typeof AccountPage>[0]['initialTab']
   accountTabRequest?: number
+  /** 从活动卡片点某一档进来时要选好的充值金额；缺省 = 充值页照常从默认金额开始。 */
+  accountRechargeAmount?: number
   /** 教程页要停在哪一章；缺省 = 从第一章开始（旧行为）。 */
   tutorialTopic?: Parameters<typeof TutorialPage>[0]['topic']
   paymentReturn?: { sequence: number; order: string | null }
@@ -34,6 +36,9 @@ export type BusinessPageProps = Omit<BusinessActions, 'navigate'> & {
   toolConfigConfirmed?: Parameters<typeof AccountPage>[0]['toolConfigConfirmed']
   /** 装好的命令行工具，扩展三页用它挑默认显示哪个；缺省 = 默认 Claude（旧行为）。 */
   installedProviders?: readonly string[]
+  /** 订阅开通后把用得上它的工具换过去；缺省 = 不换（旧行为）。 */
+  onSubscriptionActivated?: Parameters<typeof AccountPage>[0]['onSubscriptionActivated']
+  onSubscriptionPurchased?: () => void
 }
 
 export function BusinessPage({
@@ -41,6 +46,7 @@ export function BusinessPage({
   page,
   accountTab,
   accountTabRequest,
+  accountRechargeAmount,
   tutorialTopic,
   paymentReturn,
   onSessionsChanged,
@@ -48,6 +54,8 @@ export function BusinessPage({
   onToolConfigSaved,
   toolConfigConfirmed,
   installedProviders,
+  onSubscriptionActivated,
+  onSubscriptionPurchased,
   ...actions
 }: BusinessPageProps) {
   if (page === 'account')
@@ -56,6 +64,7 @@ export function BusinessPage({
         api={api}
         initialTab={accountTab}
         tabRequest={accountTabRequest}
+        rechargeAmount={accountRechargeAmount}
         paymentReturn={paymentReturn}
         onLogin={actions.openLogin}
         onAccountChanged={actions.onAccountChanged ?? actions.refresh}
@@ -64,6 +73,8 @@ export function BusinessPage({
         onConfigureTool={actions.openConfig}
         onToolConfigSaved={onToolConfigSaved}
         toolConfigConfirmed={toolConfigConfirmed}
+        onSubscriptionActivated={onSubscriptionActivated}
+        onSubscriptionPurchased={onSubscriptionPurchased}
         onOpenHelp={actions.openHelp}
       />
     )

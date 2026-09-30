@@ -42,6 +42,7 @@ import {
   parseCodexDesktopSessionProcessIds,
   buildCodexDesktopStoreInstallCommand,
   describeCodexDesktopDownloadAttempt,
+  describeCodexDesktopStoreNotice,
   describeCodexDesktopStoreFailure,
   codexDesktopStoreExitCode,
   parseCodexDesktopStoreProgress,
@@ -751,6 +752,70 @@ describe('Codex Desktop update state', () => {
     expect(progress.every((value) => value >= 0 && value <= 100)).toBe(true)
   })
 
+  it('continues a dropped mirror download from where it stopped and keeps the progress going', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-msix-resume-'))
+    temporaryDirectories.push(directory)
+    const destination = path.join(directory, 'Codex.msix')
+    const bytes = Buffer.alloc(10 * 1024 * 1024, 0x42)
+    const cut = 4 * 1024 * 1024
+    const url = 'https://mirror.example.cn/Codex.msix'
+    const ranges: Array<string | null> = []
+    const fetchMock = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+      const range = new Headers(init?.headers).get('range')
+      ranges.push(range)
+      let sent = false
+      const response = range
+        ? new Response(new Uint8Array(bytes.subarray(cut)), {
+          status: 206,
+          headers: {
+            'Content-Type': 'application/vnd.ms-appx',
+            'Content-Range': `bytes ${cut}-${bytes.byteLength - 1}/${bytes.byteLength}`,
+          },
+        })
+        : new Response(new ReadableStream<Uint8Array>({
+          pull(controller) {
+            if (sent) {
+              controller.error(new TypeError('fetch failed'))
+              return
+            }
+            sent = true
+            controller.enqueue(new Uint8Array(bytes.subarray(0, cut)))
+          },
+        }), {
+          headers: {
+            'Content-Type': 'application/vnd.ms-appx',
+            'Content-Length': String(bytes.byteLength),
+            ETag: '"msix"',
+          },
+        })
+      Object.defineProperty(response, 'url', { value: url })
+      return response
+    })
+    const progress: Array<{ percent: number; resuming?: boolean }> = []
+
+    const result = await downloadCodexDesktopPackage(
+      {
+        label: '测试镜像',
+        url,
+        expectedContentLength: bytes.byteLength,
+        expectedSha256Base64: createHash('sha256').update(bytes).digest('base64'),
+      },
+      destination,
+      ({ percent, resuming }) => progress.push({ percent, resuming }),
+      fetchMock,
+      undefined,
+      { wait: async () => undefined },
+    )
+
+    expect(ranges).toEqual([null, `bytes=${cut}-`])
+    expect(result.transferred).toBe(bytes.byteLength)
+    expect(fs.readFileSync(destination).equals(bytes)).toBe(true)
+    expect(progress).toContainEqual({ percent: 40, resuming: true })
+    const percents = progress.map((entry) => entry.percent)
+    expect(percents.every((value, index) => index === 0 || value >= percents[index - 1])).toBe(true)
+    expect(percents.at(-1)).toBe(100)
+  })
+
   it('rejects a package whose Content-Length differs from the mirror manifest', async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-msix-download-'))
     temporaryDirectories.push(directory)
@@ -1026,6 +1091,26 @@ describe('Codex Desktop mirror fallback disclosure', () => {
       .toBe('正在从镜像备用源下载')
     expect(describeCodexDesktopDownloadAttempt(fallback, 1, '国内镜像（26.917.9434.0）：SHA-256 不一致', ['国内镜像：查询超时']))
       .toBe('前一路镜像未通过校验，已改从镜像备用源下载')
+  })
+
+  it('says the store is missing instead of that it failed, on every mirror attempt', () => {
+    const primary = { label: '国内镜像', url: 'https://codexapp.agentsmirror.com/latest/win-x64' }
+    const fallback = { label: '镜像备用源', url: 'https://codexapp-r2.agentsmirror.com/latest/win-x64' }
+    const noStore = { storeFailure: null, storeUnavailable: true }
+    expect(describeCodexDesktopDownloadAttempt(primary, 0, null, [], noStore))
+      .toBe('这台电脑没有微软商店，直接用国内线路装：正在从国内镜像下载')
+    expect(describeCodexDesktopDownloadAttempt(fallback, 1, '国内镜像：SHA-256 不一致', [], noStore))
+      .toBe('这台电脑没有微软商店，直接用国内线路装：前一路镜像未通过校验，已改从镜像备用源下载')
+    expect(describeCodexDesktopDownloadAttempt(primary, 0, null, [], noStore)).not.toContain('没装上')
+  })
+
+  it('names a missing store installer as a missing part, not a store failure', () => {
+    const primary = { label: '国内镜像', url: 'https://codexapp.agentsmirror.com/latest/win-x64' }
+    expect(describeCodexDesktopDownloadAttempt(primary, 0, null, [], {
+      storeFailure: '这台电脑上的微软商店安装组件用不了',
+      storeInstallerMissing: true,
+    })).toBe('微软商店少一个安装组件，先用国内线路装：正在从国内镜像下载')
+    expect(describeCodexDesktopStoreNotice({ storeFailure: null })).toBe('')
   })
 
   it('keeps the Microsoft Store failure in front of every mirror attempt', () => {

@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useLayoutEffect, useMemo, useSyncExternalStore } from 'react'
+import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useSyncExternalStore } from 'react'
 import type { XingmangApi } from '../../../../electron/ipc-contract'
 import { createAccountBalanceStore, type AccountBalanceSnapshot, type AccountBalanceStore } from './balance-store'
 import { createAccountSubscriptionCache } from './subscription-cache'
@@ -51,7 +51,11 @@ export function useAccountBalanceStore(api: XingmangApi, scope: string | null) {
  * 当前账号能用的订阅（第十五批 2）。不另起定时器：跟着余额的每次读回顺带看一眼，
  * 几分钟内读过就不读（subscription-cache.ts）。账号不支持订阅时恒为 null。
  */
-export function useUsableSubscription(api: XingmangApi, scope: string | null, balance: AccountBalanceSnapshot): UsableSubscription | null {
+export function useUsableSubscription(api: XingmangApi, scope: string | null, balance: AccountBalanceSnapshot): {
+  subscription: UsableSubscription | null
+  /** 付款到账、兑换成订阅之后调：首页那行订阅马上跟着变，不等几分钟。 */
+  refresh: () => Promise<void>
+} {
   const cache = useMemo(() => createAccountSubscriptionCache({
     readSelf: () => api.getAccountSubscriptionSelf(),
     async readPlanNames() { return new Map((await api.getAccountSubscriptionPlans()).map((plan) => [plan.id, plan.title])) },
@@ -62,6 +66,10 @@ export function useUsableSubscription(api: XingmangApi, scope: string | null, ba
     if (!scope) { void cache.refreshIfStale(null); return }
     if (balance.updatedAt !== null) void cache.refreshIfStale(scope)
   }, [cache, scope, balance.updatedAt])
-  if (!scope || snapshot.scope !== scope) return null
-  return resolveUsableSubscription(snapshot.self, { now: Date.now(), quotaPerUnit: balance.balance?.quotaPerUnit ?? 0, planNames: snapshot.planNames })
+  const refresh = useCallback(() => cache.refreshNow(scope), [cache, scope])
+  if (!scope || snapshot.scope !== scope) return { subscription: null, refresh }
+  return {
+    subscription: resolveUsableSubscription(snapshot.self, { now: Date.now(), quotaPerUnit: balance.balance?.quotaPerUnit ?? 0, planNames: snapshot.planNames }),
+    refresh,
+  }
 }
