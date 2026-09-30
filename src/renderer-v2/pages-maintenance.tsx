@@ -59,6 +59,7 @@ import {
   errorMessage,
   ListState,
   ResultNotice,
+  type OperationNotice,
   useOperation,
   useResource,
   userFacingErrorMessage,
@@ -69,16 +70,20 @@ import {
   skinOptions,
   updateFailureLabel,
   updateCardTitle,
+  updateInstallNote,
+  updatesPageLead,
   withdrawnVersionAdvice,
 } from './registry/business'
 import { tools } from './registry/tools'
 import { clientConnections } from './registry/clients'
 import { canUninstallTool, externalInstallHint, isExternallyManagedInstall } from './features/tools/model'
-import { elevatedInstallNotice } from './features/tools/elevation-notice'
+import { elevatedInstallNotice, storeAppLaunchNotice } from './features/tools/elevation-notice'
 import { ToolStatusMeta, ToolStatusReason } from './features/tools/ToolStatusMeta'
 import { connectionCheckView } from './features/tools/connection-check'
+import { accountScope, sessionRestoring } from './account-context'
 import { diagnosticDetailRows } from './features/app/diagnostic-details'
 import { canClearStaleProxy, staleProxyClearMessage, staleProxyConfirmBody } from './features/app/stale-proxy'
+import { diagnosticFolderTarget, diagnosticFolderUnavailableMessage } from './features/app/diagnostic-folder'
 import { requestSettingsGroup, takeSettingsGroup } from './features/app/settings-group-intent'
 import { parseImportedConversations } from './features/chat/storage'
 import type { ChatTransfer } from './features/chat/transfer'
@@ -88,6 +93,8 @@ import { rememberedLoginAction, rememberedLoginForgottenMessage } from './featur
 import { maintenanceFailureNotice, readMaintenanceStatus } from './features/tools/maintenance-status'
 import { ManualUninstallDialog, type ManualUninstallState } from './features/tools/ManualUninstall'
 import { RuntimeRestartDialog } from './features/tools/RuntimeRestartDialog'
+import { NodeReplaceDialog } from './features/tools/NodeReplaceDialog'
+import { describeNodeReplaceOutcome, nodeReplaceOffered } from './features/tools/node-replace'
 import { uninstallHandOffNotice } from './features/tools/uninstall-handoff'
 import { describeRuntimeInstallOutcome } from './features/tools/runtime-install-outcome'
 import {
@@ -103,7 +110,13 @@ import {
 } from './features/app/runtime-log-filter'
 import { releaseNotesSection } from './features/app/release-notes'
 import type { V2Bridge, V2Page } from './types'
-import type { AppSettingsV2Update, DataTransferImportPreview, InstallCancelResult } from '../../electron/ipc-contract'
+import type {
+  AppSettingsV2Update,
+  DataTransferImportPreview,
+  FeedbackReportCopyResult,
+  FeedbackReportExportResult,
+  InstallCancelResult,
+} from '../../electron/ipc-contract'
 import type {
   PlatformProxyStatus,
   PlatformSystemState,
@@ -197,9 +210,14 @@ export function withElevationNotice(lead: string, notice: string | null): string
  * 系统里的代理和环境变量、项目文件夹里的设置……）就不给按钮：结论里已经说了怎么办，
  * 以前统一兜底到「安装卸载」，用户点过去什么也找不到。
  */
-export function diagnosticTarget(code: string): V2Page | null {
+export function diagnosticTarget(code: string, details?: Diagnostic['details']): V2Page | null {
+  // 「安全证书」只有「Node.js 太旧」这一种能在软件里处理：去「安装卸载」换新版。
+  // 电脑自己也不认、以管理员身份打开这两种，结论里已经说了怎么办。
+  if (code === 'CERTIFICATE_TRUST') return details?.verdict === 'outdatedNode' ? 'maintenance' : null
   // 文件夹被搬过没有能在软件里一键修的地方，下一步是导出报告找客服。
   if (code === 'FOLDER_RELOCATED') return 'feedback'
+  // 加速文件坏了：加速页上有「重新检查」和「联系客服」。
+  if (code === 'ACCELERATION_BUNDLE') return 'acceleration'
   // 这两项在「设置」的「网络」组，跳过去时由 diagnosticFix 指定落在那一组。
   if (code === 'XINGMANG_NETWORK' || code === 'CLASH_VERGE_TUN')
     return 'settings'
@@ -220,8 +238,8 @@ export function diagnosticTarget(code: string): V2Page | null {
   return null
 }
 
-export function diagnosticHasFix(code: string): boolean {
-  return diagnosticTarget(code) !== null
+export function diagnosticHasFix(code: string, details?: Diagnostic['details']): boolean {
+  return diagnosticTarget(code, details) !== null
 }
 
 /**
@@ -310,6 +328,33 @@ export function HealthPage({
   const [proxyClearItem, setProxyClearItem] = useState<Diagnostic | null>(null)
   const [connections, setConnections] = useState<ConnectionRow[] | null>(null)
   const [connectionBusy, setConnectionBusy] = useState(false)
+  const [responsesConsent, setResponsesConsent] = useState(false)
+  const [responsesBusy, setResponsesBusy] = useState(false)
+  const [responsesResult, setResponsesResult] = useState<Awaited<ReturnType<V2Bridge['probeCodexResponses']>> | null>(null)
+  const [responsesError, setResponsesError] = useState<string | null>(null)
+  const responsesInFlight = useRef(false)
+  const responsesEpoch = useRef(0)
+  // 这张卡只对装了 Codex 的人有意义；没读到装没装时先不显示，免得没装的人看到一个点了只会报错的按钮。
+  const [codexInstalled, setCodexInstalled] = useState(false)
+  useEffect(() => {
+    let current = true
+    api.scanSystem(false)
+      .then((snapshot) => { if (current) setCodexInstalled(snapshot.clis.codex.installed === true) })
+      .catch(() => { if (current) setCodexInstalled(false) })
+    return () => { current = false }
+  }, [api])
+  useEffect(() => {
+    const unsubscribe = api.onAccountSessionChanged(() => {
+      responsesEpoch.current += 1
+      setResponsesConsent(false)
+      setResponsesResult(null)
+      setResponsesError(null)
+    })
+    return () => {
+      responsesEpoch.current += 1
+      unsubscribe()
+    }
+  }, [api])
   const loadConnections = async () => {
     // 一个工具失败不该把别人的结论吞掉，所以每一条各自收口。
     const [cliRows, clientRows] = await Promise.all([
@@ -345,6 +390,37 @@ export function HealthPage({
       setConnectionBusy(false)
     }
   }
+  const runCodexResponsesProbe = async () => {
+    if (!responsesConsent || responsesInFlight.current) return
+    responsesInFlight.current = true
+    setResponsesBusy(true)
+    setResponsesConsent(false)
+    setResponsesResult(null)
+    setResponsesError(null)
+    const requestEpoch = ++responsesEpoch.current
+    try {
+      const started = await api.getAccountSession()
+      if (requestEpoch !== responsesEpoch.current) return
+      // 开机恢复账号的那几秒里，界面已按「正在恢复的账号」显示，主进程却还当成未登录；
+      // 这时发出去一定被判成「账号变了」，所以先请用户等恢复完。
+      if (sessionRestoring(started)) {
+        setResponsesError('账号还在登录中，请等几秒再检查')
+        return
+      }
+      // 与主进程的计费作用域同一算法：只认已登录的账号，否则是访客。
+      const startedScope = accountScope(started)
+      const result = await api.probeCodexResponses(true, startedScope)
+      const currentScope = accountScope(await api.getAccountSession())
+      if (requestEpoch === responsesEpoch.current && startedScope === currentScope) {
+        setResponsesResult(result)
+      }
+    } catch (error) {
+      if (requestEpoch === responsesEpoch.current) setResponsesError(errorMessage(error))
+    } finally {
+      responsesInFlight.current = false
+      setResponsesBusy(false)
+    }
+  }
   // 重写成功才重测：失败时结果条还停在刚才那条结论上，页头的横幅同时说出主进程
   // 的原话，用户看到的是「没写成，因为……」，而不是一条被刷掉的旧结论。
   const rewriteKey = async (provider: Provider) => {
@@ -371,17 +447,26 @@ export function HealthPage({
     }, staleProxyClearMessage)
     setProxyClearItem(null)
   }
+  // 「文档」不让写时那一行给的「打开文件夹」：打开了就不必再说什么。
+  const openDiagnosticFolder = (item: Diagnostic) => {
+    const target = diagnosticFolderTarget(item)
+    if (!target) return
+    void operation.execute('打开文件夹', async () => {
+      if (!(await api.openDiagnosticFolder(target))) throw new Error(diagnosticFolderUnavailableMessage)
+    }, () => null)
+  }
   const fix = (item: Diagnostic) => {
     const provider = item.code.replace('PROVIDER_', '').toLowerCase()
     if (item.code.startsWith('PROVIDER_') && isProvider(provider) && openConfig) {
       openConfig(provider)
       return
     }
-    const target = diagnosticTarget(item.code)
+    const target = diagnosticTarget(item.code, item.details)
     if (!target) return
     if (target === 'settings') requestSettingsGroup('network')
     navigate?.(target)
   }
+  const responsesView = responsesResult ? connectionCheckView(responsesResult) : null
   return (
     <section
       className="v2-page"
@@ -436,6 +521,38 @@ export function HealthPage({
           </p>
         )}
       </Card>
+      {codexInstalled && <Card
+        title="Codex 干活检查"
+        meta="上面的连接自检只确认能连上。这里让 Codex 用的模型真的做一件小事：调用一个什么都不改的测试工具，再把结果读回来。会用当前账号的额度发两次请求，花费很少，但不是零；不会碰你电脑上的文件。"
+        testId="health-codex-responses"
+      >
+        <Switch
+          checked={responsesConsent}
+          onChange={setResponsesConsent}
+          label="我知道这次检查会用当前账号的一点额度"
+          description="每次检查前都要重新勾选。"
+          disabled={responsesBusy}
+          testId="health-codex-responses-consent"
+        />
+        <Button
+          icon={PlugZap}
+          disabled={!responsesConsent || responsesBusy}
+          loading={responsesBusy}
+          onClick={() => void runCodexResponsesProbe()}
+          testId="health-codex-responses-run"
+        >
+          开始检查
+        </Button>
+        {responsesView && (
+          <Notice
+            tone={responsesView.tone}
+            title={`Codex 干活检查 · ${responsesView.statusLabel}`}
+            body={<><div>{responsesView.title}</div><div>{responsesView.body}</div>{responsesView.detail && <p>{responsesView.detail}</p>}</>}
+            testId="health-codex-responses-result"
+          />
+        )}
+        {responsesError && <Notice tone="bad" title="Codex 干活检查 · 没测成" body={responsesError} testId="health-codex-responses-error" />}
+      </Card>}
       {resource.data && (
         <Toolbar
           left={
@@ -495,7 +612,17 @@ export function HealthPage({
                       清掉这条旧设置
                     </Button>
                   )}
-                  {item.state !== 'pass' && diagnosticHasFix(item.code) && (
+                  {diagnosticFolderTarget(item) && (
+                    <Button
+                      size="sm"
+                      icon={FolderOpen}
+                      onClick={() => openDiagnosticFolder(item)}
+                      testId={`health-open-folder-${item.code}`}
+                    >
+                      打开文件夹
+                    </Button>
+                  )}
+                  {item.state !== 'pass' && diagnosticHasFix(item.code, item.details) && (
                     <Button
                       size="sm"
                       icon={Wrench}
@@ -581,6 +708,25 @@ const runtimeLogLevelLabels: Readonly<Record<string, string>> = {
   warn: '提醒',
   info: '信息',
   debug: '调试',
+}
+
+// 预览过了 30 分钟，主进程会按最新日志重生成再复制/导出；提示要让客户知道拿到的是新的那份。
+export function feedbackCopyNotice(result: FeedbackReportCopyResult) {
+  return result.regenerated
+    ? '报告已更新到最新日志并复制，发给客服就行'
+    : '报告已复制'
+}
+
+export function feedbackExportNotice(
+  result: FeedbackReportExportResult | null,
+): OperationNotice | null {
+  if (!result) return null
+  return {
+    text: result.regenerated
+      ? `报告已更新到最新日志并导出：${result.outputPath}`
+      : `反馈报告已导出：${result.outputPath}`,
+    revealPath: result.outputPath,
+  }
 }
 
 export function FeedbackPage({
@@ -800,8 +946,12 @@ export function FeedbackPage({
                 report &&
                 void operation.execute(
                   'copy',
-                  () => api.copyFeedbackReport(report.id),
-                  '报告已复制',
+                  async () => {
+                    const result = await api.copyFeedbackReport(report.id)
+                    if (result.regenerated) setReport(result.regenerated)
+                    return result
+                  },
+                  feedbackCopyNotice,
                 )
               }
             >
@@ -814,14 +964,12 @@ export function FeedbackPage({
                 report &&
                 void operation.execute(
                   'export',
-                  () => api.exportFeedbackReport(report.id),
-                  (result) =>
-                    result
-                      ? {
-                          text: `反馈报告已导出：${result.outputPath}`,
-                          revealPath: result.outputPath,
-                        }
-                      : null,
+                  async () => {
+                    const result = await api.exportFeedbackReport(report.id)
+                    if (result?.regenerated) setReport(result.regenerated)
+                    return result
+                  },
+                  feedbackExportNotice,
                 )
               }
             >
@@ -928,16 +1076,31 @@ export function UpdatesPage({
   const operation = useOperation()
   const [confirm, setConfirm] = useState(false)
   const [isMac, setIsMac] = useState(false)
+  const [isWindows, setIsWindows] = useState(false)
+  const [autoUpdateSetting, setAutoUpdateSetting] = useState(false)
   useEffect(() => api.onUpdateState(resource.setData), [api, resource.setData])
   useEffect(() => {
     let current = true
     // 读不到平台就不提示：多说一句对 Windows 客户是噪音，少说一句只是回到原来的样子。
     void api.getPlatformCapabilities()
-      .then((capability) => { if (current) setIsMac(capability.platform === 'macos') })
+      .then((capability) => {
+        if (!current) return
+        setIsMac(capability.platform === 'macos')
+        setIsWindows(capability.platform === 'windows')
+      })
+      .catch(() => undefined)
+    return () => { current = false }
+  }, [api])
+  useEffect(() => {
+    let current = true
+    // 读不到设置就按关着说：多承诺一句「会自动装」比少说一句更糟。
+    void api.getSettings()
+      .then((settings) => { if (current) setAutoUpdateSetting(settings.autoUpdate !== false) })
       .catch(() => undefined)
     return () => { current = false }
   }, [api])
   const update = resource.data
+  const autoUpdateOn = Boolean(update?.autoUpdateSupported && autoUpdateSetting)
   const check = () =>
     void operation.execute(
       'check',
@@ -1004,7 +1167,7 @@ export function UpdatesPage({
       data-page-id="updates"
       data-testid="page-updates"
     >
-      <PageHead title="更新" lead="新版本什么时候安装由你决定，不会自己重启。" />
+      <PageHead title="更新" lead={updatesPageLead(autoUpdateOn)} />
       <ResultNotice
         error={resource.error || operation.error}
         message={operation.message}
@@ -1096,9 +1259,7 @@ export function UpdatesPage({
           )}
           <details>
             <summary>安装前需要知道</summary>
-            <p>
-              先保存工具中尚未完成的内容。关闭保护会检查未保存任务，确认后再安装。
-            </p>
+            <p>{updateInstallNote}</p>
           </details>
         </Card>
       </div>
@@ -1131,6 +1292,7 @@ export function UpdatesPage({
       >
         <p>请先保存当前工作。安装完成后重新打开工具箱。</p>
         {isMac && <p data-testid="updates-mac-keychain-hint">{macKeychainUpdateHint}</p>}
+        {isWindows && <p data-testid="updates-windows-consent-hint">{windowsConsentUpdateHint}</p>}
         <ResultNotice error={operation.error} />
       </Dialog>
     </section>
@@ -1139,6 +1301,8 @@ export function UpdatesPage({
 
 // 为什么 Mac 每换一版都会问一次钥匙串密码，见 registry/tutorials.ts 的
 // macKeychainTutorialDetail。重启前说一句，客户就不会慌着点「拒绝」。
+// 安装包装在「所有用户」的程序目录下，Windows 会弹一次授权窗口；点了「否」就装不上。
+export const windowsConsentUpdateHint = 'Windows 会弹出一个授权窗口问要不要允许更改，点「是」就好；点了「否」这次就装不上。'
 export const macKeychainUpdateHint = '重启后 Mac 可能弹出钥匙串密码框，输入这台 Mac 的开机密码，点「始终允许」就好。'
 
 export function installResultMessage(result: ToolInstallOutcome | 'cancelled'): string {
@@ -1173,6 +1337,7 @@ export function MaintenancePage({
   const cancelRequested = useRef(new Set<string>())
   const [manualUninstall, setManualUninstall] = useState<ManualUninstallState | null>(null)
   const [runtimeRestart, setRuntimeRestart] = useState(false)
+  const [nodeReplaceOpen, setNodeReplaceOpen] = useState(false)
   useEffect(() => {
     const stopCli = api.onInstallProgress((event) =>
       setLogs((previous) => [...previous.slice(-199), event.message]),
@@ -1349,7 +1514,8 @@ export function MaintenancePage({
                   lead={withElevationNotice(
                     tool.vendor,
                     externalHint ?? (id === 'codexDesktop' && !status?.installed && !rescan
-                      ? elevatedInstallNotice('codexDesktop', capability?.platform, capability?.codexDesktop.install)
+                      ? storeAppLaunchNotice(snapshot?.desktopApps.codex.storeAppLaunchBlock)
+                        ?? elevatedInstallNotice('codexDesktop', capability?.platform, capability?.codexDesktop.install)
                       : null),
                   )}
                   status={status}
@@ -1446,6 +1612,15 @@ export function MaintenancePage({
             id === 'node'
               ? capability?.nodeRuntimeInstall === 'managed'
               : capability?.pythonRuntimeInstall === 'managed'
+          // 装着、却认不了公司证书的 Node.js：「安装」只会回「无需重复安装」，
+          // 按钮改成「换成新版」，点了先确认再换（第十八批 4）。
+          const replace =
+            id === 'node' &&
+            nodeReplaceOffered({
+              platform: capability?.platform,
+              nodeRuntimeInstall: capability?.nodeRuntimeInstall,
+              node: status,
+            })
           return (
             <ListRow
               key={id}
@@ -1480,8 +1655,11 @@ export function MaintenancePage({
                   size="sm"
                   icon={Download}
                   disabled={Boolean(operation.busy)}
+                  testId={'maintenance-runtime-action-' + id}
                   onClick={() =>
-                    managed
+                    replace
+                      ? setNodeReplaceOpen(true)
+                      : managed
                       ? void operation.execute(
                           id,
                           async () => {
@@ -1500,7 +1678,7 @@ export function MaintenancePage({
                       : navigate?.('tutorial')
                   }
                 >
-                  {managed ? '安装' : '安装指南'}
+                  {replace ? '换成新版' : managed ? '安装' : '安装指南'}
                 </Button>
               }
             />
@@ -1593,6 +1771,27 @@ export function MaintenancePage({
           state={manualUninstall}
           platform={capability?.platform}
           onClose={() => setManualUninstall(null)}
+        />
+      )}
+      {nodeReplaceOpen && (
+        <NodeReplaceDialog
+          version={snapshot?.runtime.node.version}
+          onClose={() => setNodeReplaceOpen(false)}
+          onConfirm={() => {
+            setNodeReplaceOpen(false)
+            void operation.execute(
+              'node',
+              async () => {
+                const result = await api.installNodeRuntime({ reason: 'certificate' })
+                await resource.reload()
+                return describeNodeReplaceOutcome(result)
+              },
+              (outcome) => {
+                if (outcome.restartRequired) setRuntimeRestart(true)
+                return outcome.message
+              },
+            )
+          }}
         />
       )}
       {runtimeRestart && (

@@ -310,6 +310,7 @@ const systemSnapshot: Awaited<ReturnType<V2Bridge['scanSystem']>> = {
 const apiMethods = {
   onInstallProgress: () => () => undefined,
   onCodexDesktopInstallProgress: () => () => undefined,
+  onCodexDesktopLaunchProgress: () => () => undefined,
   getAccountSession: async () => ({
     authenticated: true,
     ...(query.has('sub2apiReliability') ? { siteId: 'solov-api' as const, realmId: 'api-account' as const, capabilities: {
@@ -688,8 +689,9 @@ const apiMethods = {
     provider: Parameters<V2Bridge['launchCli']>[0],
     workspace: string,
     mode?: Parameters<V2Bridge['launchCli']>[2],
+    sessionId?: Parameters<V2Bridge['launchCli']>[3],
   ) => {
-    record('launch-cli', { provider, workspace, mode })
+    record('launch-cli', sessionId === undefined ? { provider, workspace, mode } : { provider, workspace, mode, sessionId })
     return {}
   },
   listProviderExtensions: async (
@@ -1046,6 +1048,8 @@ if (query.has('system')) {
             announcement: true,
             spend: true,
             acceleration: true,
+            cliTrouble: true,
+            cliTurn: true,
             ...systemState.preferences.notifications,
             [kind]: enabled,
           },

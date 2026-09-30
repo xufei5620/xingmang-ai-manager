@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import { classifyOperationError, operationFallbackActions, operationLogPage, presentOperationError, type OperationErrorKey } from './operation-error'
-import { networkFailureMessages } from '../../electron/network-failure'
+import { classifyOperationError, operationFallbackActions, operationLogPage, presentOperationError, presentOperationFailure, type OperationErrorKey } from './operation-error'
+import { networkFailureMessages, toolCertificateMessages } from '../../electron/network-failure'
 import { errors } from './registry/errors'
+import { buildCodexDesktopInstallFailureMessage, codexDesktopInstallFailureReasons, type CodexDesktopInstallFailureReason } from '../../electron/codex-desktop-install-failure'
 
 /**
  * 目录里的 16 条都要有交代：要么给出一句真的会到达渲染层的后端原话，要么写明
@@ -11,6 +12,11 @@ const catalogCoverage: Record<OperationErrorKey, { sample: string } | { unreacha
   sessionExpired: { sample: '账号接口返回 401 Unauthorized' },
   toolNotEnabled: { sample: 'Codex CLI 改用当前账号没有完成：分组不存在、不可用或名称重复。已恢复到切换前的配置。' },
   switchUndoFailed: { sample: '改用当前账号没有完成：写入失败 EPERM。自动恢复也没有完成（EPERM），请到「备份」里恢复切换前那一份。' },
+  pluginCatalogStuck: { sample: 'Codex 插件目录里的旧备份清不掉，这次没有改动' },
+  // 主进程 codex-desktop-service.ts 的 describeCodexDesktopLaunchFailure。
+  codexDesktopNotStarted: { sample: 'Codex 桌面端没有打开：等了将近一分钟，没有等到它的窗口。先关掉所有 Codex 窗口，再点「重试」；还是不行，就在开始菜单里搜「Codex」直接点开，也打不开的话请联系客服。' },
+  // 主进程 codex-desktop-install-failure.ts 的 buildCodexDesktopInstallFailureMessage。
+  codexDesktopInstallFailed: { sample: 'Codex 桌面端没装上：微软商店这次没装上，国内下载线路这会儿连不上。' },
   keyInvalid: { sample: '模型查询失败，服务返回 403：令牌已失效' },
   noBalance: { sample: '账号余额或 API Key 额度不足，请充值后重试' },
   tooManyRequests: { sample: '星芒服务返回 429 Too Many Requests' },
@@ -28,6 +34,9 @@ const catalogCoverage: Record<OperationErrorKey, { sample: string } | { unreacha
   diskFull: { sample: 'Claude Code 安装失败：npm 官方源：ENOSPC: no space left on device, write' },
   certDate: { sample: '账号接口请求失败：net::ERR_CERT_DATE_INVALID' },
   tlsIntercepted: { sample: 'Codex CLI 安装失败：npm 官方源：request to https://registry.npmjs.org failed, reason: self signed certificate in certificate chain' },
+  // 主进程（system-service.ts 的 withToolCertificateHint）把说明接在 npm 原文后面。
+  toolCertOutdatedNode: { sample: `Claude Code 安装失败：npm 官方源：SELF_SIGNED_CERT_IN_CHAIN。${toolCertificateMessages.outdatedNode}` },
+  toolCertElevated: { sample: `Claude Code 安装失败：npm 官方源：SELF_SIGNED_CERT_IN_CHAIN。${toolCertificateMessages.elevated}` },
   updateIntegrity: { sample: 'Claude Code 更新失败：SHA-512 完整性校验不一致' },
   backupIntegrity: { sample: '备份文件已损坏或被篡改' },
   unsafeStorage: { sample: '当前系统没有可用的密钥环，安全存储只能以明文保存，已拒绝写入托管 API Key。' },
@@ -157,6 +166,36 @@ describe('renderer-v2 operation error classification', () => {
       .some((action) => action.label.includes('管理员'))).toBe(false)
   })
 
+  it('gives a Codex window that never appeared a retry and a way to support, even when it names Windows settings', () => {
+    for (const message of [
+      'Codex 桌面端没有打开：这台电脑正用 Windows 自带的「Administrator」账户登录，Windows 常常不让这个账户打开从应用商店装的软件。换一个普通账户登录电脑，再从星芒打开 Codex。',
+      'Codex 桌面端没有打开：这台电脑关掉了 Windows 的「用户账户控制」，Windows 在这种设置下常常打不开从应用商店装的软件。请联系客服，帮你把它打开后再试。',
+    ]) {
+      const hint = presentOperationError(message)
+      expect(hint?.key).toBe('codexDesktopNotStarted')
+      expect(hint?.actions.map((action) => action.id)).toEqual(['retry', 'support'])
+    }
+  })
+
+  it('gives every Codex Desktop install failure a retry, the Microsoft Store, the log and support', () => {
+    // 这几句里有「连不上」「Windows 拒绝了这次安装」，不能被 timeout、permission 抢走。
+    for (const reason of Object.keys(codexDesktopInstallFailureReasons) as CodexDesktopInstallFailureReason[]) {
+      for (const storeTried of [true, false]) {
+        const message = buildCodexDesktopInstallFailureMessage(reason, { storeTried, updating: storeTried })
+        const hint = presentOperationError(message)
+        expect([message, hint?.key]).toEqual([message, 'codexDesktopInstallFailed'])
+        expect(hint?.actions).toEqual([
+          { id: 'retry', label: '重试' },
+          { id: 'openStore', label: '去微软商店装' },
+          { id: 'log', label: '查看日志' },
+          { id: 'support', label: '找客服' },
+        ])
+        // 「查看日志」要落到运行日志：原话（SHA-256、退出码）只记在那里。
+        expect(operationLogPage({ message, tool: 'codexDesktop' })).toBe('feedback')
+      }
+    }
+  })
+
   it('sends a relocated folder to the check page instead of blaming permissions', () => {
     // 同一句里带着 EPERM 也不能被 permission 抢走：改权限、关杀毒都修不好它。
     const hint = presentOperationError('写入失败：应用设置目录不能经过符号链接或目录联接（EPERM）')
@@ -236,6 +275,20 @@ describe('renderer-v2 operation error classification', () => {
     expect(hint?.actions).toEqual([{ id: 'retry', label: '重试' }, { id: 'log', label: '查看日志' }])
   })
 
+  it('tells an outdated Node.js or an elevated app apart from a certificate the machine itself rejects', () => {
+    const raw = 'Claude Code 安装失败：npm 官方源：request to https://registry.npmjs.org failed, reason: self signed certificate in certificate chain'
+    const outdated = presentOperationError(`${raw}。${toolCertificateMessages.outdatedNode}`)
+    expect(outdated?.key).toBe('toolCertOutdatedNode')
+    expect(outdated?.body).toContain('Node.js')
+    expect(outdated?.body).not.toContain('换一个网络')
+    const elevated = presentOperationError(`${raw}。${toolCertificateMessages.elevated}`)
+    expect(elevated?.key).toBe('toolCertElevated')
+    expect(elevated?.body).toContain('正常打开')
+    // 没有主进程那句说明时，仍是「这台电脑也不认」的那条。
+    expect(presentOperationError(raw)?.key).toBe('tlsIntercepted')
+    expect(errors.tlsIntercepted.body).toContain('网络管理员')
+  })
+
   it('blames the system clock when the certificate dates do not line up', () => {
     for (const dated of [
       '账号接口请求失败：net::ERR_CERT_DATE_INVALID',
@@ -292,5 +345,19 @@ describe('renderer-v2 operation error classification', () => {
       { id: 'log', label: '查看日志' },
       { id: 'support', label: '找客服' },
     ])
+  })
+})
+
+describe('presentOperationFailure', () => {
+  it('reads the cause from the kept original when the message is only the fallback', () => {
+    expect(presentOperationFailure({ message: '打开 Codex 桌面端没有完成', detail: 'ENOSPC: no space left on device' })?.key).toBe('diskFull')
+    expect(presentOperationFailure({ message: '重新写入 Key没有完成', detail: 'EBUSY: resource busy or locked' })?.key).toBe('toolRunning')
+    expect(presentOperationFailure({ message: '打开 Codex 桌面端没有完成', detail: 'spawn ENOSYS' })).toBeNull()
+    expect(presentOperationFailure({ message: '打开 Codex 桌面端没有完成' })).toBeNull()
+  })
+
+  it('lets the log page follow the original too', () => {
+    expect(operationLogPage({ message: '安装没有完成', detail: 'Defender 已被隔离', tool: 'claude' })).toBe('maintenance')
+    expect(operationLogPage({ message: '安装没有完成', detail: 'ENOSPC', tool: 'claude' })).toBe('feedback')
   })
 })

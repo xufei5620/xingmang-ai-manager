@@ -13,7 +13,20 @@ import {
 } from './codex-home'
 import { identityFromCodexAuthTokens } from './official-account-identity'
 import { removeCodexContextLimits } from './codex-context-limits'
-import { applyClaudeStatusLine, claudeStatusLineSetting } from './claude-status-line'
+import { applyClaudeStatusLine, claudeStatusLineSetting, managedClaudeStatusLineTarget } from './claude-status-line'
+import {
+  applyClaudeCliHooks,
+  applyCodexCliNotify,
+  applyGeminiCliHooks,
+  applyGrokCliHooks,
+  removeClaudeCliHooks,
+  removeCodexCliNotify,
+  removeGeminiCliHooks,
+  managedCliHookTargets,
+  removeGrokCliHooks,
+  type CliHookInvocation,
+  type ManagedCliHookTarget,
+} from './cli-hooks'
 import { applyClaudeRelayModelPicker, claudeRelayModelPickerOutdated, removeClaudeRelayModelPicker } from './claude-model-picker'
 import { assertNoReparseComponents, ensureSafeDataDirectory, readSafeUtf8FileSync } from './safe-local-data'
 import { resolveRelocatedPath } from './relocated-folders'
@@ -49,6 +62,15 @@ export interface NativeConfigInspection {
    * OPENAI_API_KEY, so a Xingmang key with chatgpt mode still uses ChatGPT.
    */
   codexAuthMode?: 'apikey' | 'chatgpt' | null
+  /** Codex config.toml 的 `model_provider`（连接名）；只给 Codex，没写时为 null。 */
+  codexProviderName?: string | null
+  /**
+   * 连接名是 Codex 内置的保留名（openai 等），而那张表写的又是已登记站点的地址：
+   * Codex 会忽略这张表、按内置定义去连官方，带着当前账号的 Key 一跑就 401。
+   * 独立成一个字段而不是改 matchesRelay：切回官方、删我们的表、启动门禁都靠
+   * matchesRelay 认出「这是我们写的中转配置」，那部分判断必须照旧。
+   */
+  codexProviderShadowed?: boolean
   /**
    * `grok login` 留在 ~/.grok/auth.json 里的 `auth_mode`（oidc = 浏览器登录，api_key =
    * 登录时填的 xAI Key）；null = 没登录。只读这一个字段，令牌与 Key 不读。
@@ -73,6 +95,16 @@ export interface NativeConfigSummary extends Omit<NativeConfigInspection, 'apiKe
    * 渲染层只在来源没确认或被改过时才用。缺省 = 没看出来。
    */
   ccSwitchLeftover?: 'proxy' | 'provider'
+  /**
+   * 本软件写进这份配置的钩子或状态行指向了不存在的程序、脚本，或不是这次安装带的那份
+   * （卸载后换目录重装、挪了 app、换装了 Node.js）。首页据此给「修好它」。缺省 = 没发现。
+   */
+  cliHooksStale?: boolean
+  /**
+   * 只给 Windows 上的 Grok：钩子路径都对，但客户后来装了或卸了 Git、PowerShell 7，Grok 换了
+   * 命令行，我们写下去的那种写法在新命令行里跑不起来。为真时 cliHooksStale 也为真，只多一句说明。
+   */
+  cliHooksShellChanged?: boolean
 }
 
 export function apiKeyPreview(apiKey: string): string | null {
@@ -897,7 +929,13 @@ function restoreCodexAnalytics(parsed: Record<string, unknown>): void {
 // prevent_idle_sleep 是 0.156.1 的实验开关：只在 Codex 正在跑一轮时不让电脑自动睡，
 // 跑完就放开，屏幕照样会关。笔记本跑长任务睡着了，连接断掉这一轮就白扣了。
 //
-// 两项都只在键缺省时写，用户写过（哪怕写成 false 或 elevated）一律不动；键名以
+// daemon_auto_start 在 0.157.0 转成默认开：客户在自己终端敲 codex 也会拉起一个多窗口
+// 共享用的后台服务，退出 Codex 后它还留着（rust-v0.158.0 app-server-daemon 里没有
+// 空闲自动退出），低配电脑上是一份没人要的常驻开销。关掉它不影响 `codex agents`，
+// 那条命令自己会按需拉起服务（cli/src/main.rs）。0.155.x 及更早不认这个键，只在
+// 日志里记一行 unknown feature key，不影响启动（features/src/lib.rs）。
+//
+// 三项都只在键缺省时写，用户写过（哪怕写成 false 或 elevated）一律不动；键名以
 // rust-v0.156.1 的 core/config.schema.json 为准。
 export function applyCodexRelayMachineDefaults(
   parsed: Record<string, unknown>,
@@ -906,6 +944,9 @@ export function applyCodexRelayMachineDefaults(
   const features = parsed.features === undefined ? ensureRecord(parsed, 'features') : parsed.features
   if (isJsonRecord(features) && features.prevent_idle_sleep === undefined) {
     features.prevent_idle_sleep = true
+  }
+  if (isJsonRecord(features) && features.daemon_auto_start === undefined) {
+    features.daemon_auto_start = false
   }
   if (platform !== 'win32') return
   const windows = parsed.windows === undefined ? ensureRecord(parsed, 'windows') : parsed.windows
@@ -929,6 +970,7 @@ function stripCodexRelayFromConfig(
   delete parsed.model_provider
   delete parsed.model
   delete parsed.review_model
+  removeCodexCliNotify(parsed)
   restoreCodexAnalytics(parsed)
   dropDeprecatedCodexConfigKeys(parsed)
 }
@@ -939,6 +981,7 @@ function applyCodexRelayConfig(
   providerName: string,
   siteBaseUrl: string,
 ): void {
+  migrateOwnReservedCodexProvider(parsed, providerName, siteBaseUrl)
   parsed.model = model
   parsed.review_model = model
   parsed.model_provider = providerName
@@ -972,9 +1015,14 @@ function buildCodexRelayConfigTemplate(
   model: string,
   providerName: string,
   siteBaseUrl: string,
+  cliHook?: CliHookInvocation,
   platform: NodeJS.Platform = process.platform,
 ): string {
   const providerKey = tomlTableKey(providerName)
+  // Same argv as applyCodexCliNotify. It must stay above the first table.
+  const notifyLine = cliHook
+    ? [`notify = [${[cliHook.nodeExecutable, cliHook.scriptPath, 'codex', cliHook.eventsDirectory].map(tomlString).join(', ')}]`]
+    : []
   // Same values as applyCodexRelayMachineDefaults; the template is spelled out
   // so a fresh install reads top to bottom like the upstream docs.
   const windowsTable = platform === 'win32' ? ['[windows]', 'sandbox = "unelevated"', ''] : []
@@ -986,6 +1034,7 @@ function buildCodexRelayConfigTemplate(
     'approval_policy = "on-request"',
     'sandbox_mode = "workspace-write"',
     'check_for_update_on_startup = false',
+    ...notifyLine,
     '',
     `[model_providers.${providerKey}]`,
     `name = ${tomlString(providerName)}`,
@@ -996,6 +1045,7 @@ function buildCodexRelayConfigTemplate(
     '[features]',
     'goals = true',
     'prevent_idle_sleep = true',
+    'daemon_auto_start = false',
     '',
     ...windowsTable,
     '[analytics]',
@@ -1034,6 +1084,7 @@ function createCodexRelayConfigPlans(
   roots: ProviderConfigRoots,
   siteBaseUrls: Record<ProviderId, string>,
   mode: NativeConfigSaveMode,
+  cliHook?: CliHookInvocation,
 ): FilePlan[] {
   const paths = codexConfigSnapshotPaths(roots)
   const plans: FilePlan[] = []
@@ -1062,16 +1113,18 @@ function createCodexRelayConfigPlans(
     ? readStoredCodexConfig(paths.relay, '已保存的星芒 Codex 配置') : null
   let nextContent: string
   if (mode === 'reset') {
-    nextContent = buildCodexRelayConfigTemplate(model, existingCodexProvider(paths.active), siteBaseUrls.codex)
+    nextContent = buildCodexRelayConfigTemplate(model, existingCodexProvider(paths.active, siteBaseUrls.codex), siteBaseUrls.codex, cliHook)
   } else if (storedRelay) {
     const stored = TOML.parse(storedRelay)
-    applyCodexRelayConfig(stored, model, existingCodexProvider(paths.relay), siteBaseUrls.codex)
+    applyCodexRelayConfig(stored, model, codexRelayProviderFor(stored, siteBaseUrls.codex), siteBaseUrls.codex)
+    if (cliHook) applyCodexCliNotify(stored, cliHook)
     nextContent = tomlContent(stored)
   } else if (currentParsed) {
-    applyCodexRelayConfig(currentParsed, model, existingCodexProvider(paths.active), siteBaseUrls.codex)
+    applyCodexRelayConfig(currentParsed, model, codexRelayProviderFor(currentParsed, siteBaseUrls.codex), siteBaseUrls.codex)
+    if (cliHook) applyCodexCliNotify(currentParsed, cliHook)
     nextContent = tomlContent(currentParsed)
   } else {
-    nextContent = buildCodexRelayConfigTemplate(model, defaultCodexRelayProvider, siteBaseUrls.codex)
+    nextContent = buildCodexRelayConfigTemplate(model, defaultCodexRelayProvider, siteBaseUrls.codex, cliHook)
   }
 
   plans.push({ path: paths.relay, content: nextContent })
@@ -1199,6 +1252,21 @@ function createCodexOfficialAuthPlans(roots: ProviderConfigRoots): FilePlan[] {
   return plans
 }
 
+function readCodexProviderSelection(
+  paths: string[],
+  siteBaseUrl: string,
+): Pick<NativeConfigInspection, 'codexProviderName' | 'codexProviderShadowed'> {
+  const parsed = readToml(paths[0])
+  const name = nestedString(parsed, ['model_provider']).trim()
+  if (!parsed || !name) return { codexProviderName: null, codexProviderShadowed: false }
+  const providers = parsed.model_providers
+  const entry = isJsonRecord(providers) ? providers[name] : null
+  return {
+    codexProviderName: name,
+    codexProviderShadowed: reservedCodexProviders.has(name) && isOwnCodexRelayEntry(entry, siteBaseUrl),
+  }
+}
+
 function readCodexAuthMode(paths: string[]): 'apikey' | 'chatgpt' | null {
   const parsed = readJson(paths[1])
   const kind = classifyCodexAuthProfile(parsed)
@@ -1295,7 +1363,7 @@ export function inspectProviderConfig(
     officialAccountEmail: officialAccount.email,
     officialAccountPlan: officialAccount.planLabel,
     officialAccountRenewsAt: officialAccount.renewsAt,
-    ...(provider === 'codex' ? { codexAuthMode: readCodexAuthMode(paths) } : {}),
+    ...(provider === 'codex' ? { codexAuthMode: readCodexAuthMode(paths), ...readCodexProviderSelection(paths, baseUrl) } : {}),
     ...(provider === 'grok' ? { grokLoginMode: readGrokLogin(path.dirname(paths[0]))?.mode ?? null } : {}),
     dataDirectory,
     dataDirectoryExists: (() => {
@@ -1321,8 +1389,9 @@ function tomlTableKey(value: string): string {
 
 /** Codex config.toml 里星芒中转用的 model_provider 名。从没配过 Codex 时写这个，不占用官方 OpenAI 表。 */
 export const defaultCodexRelayProvider = 'XingmangAI'
+const reservedCodexProviders: ReadonlySet<string> = new Set(['openai', 'ollama', 'lmstudio'])
 
-function existingCodexProvider(configPath: string): string {
+function existingCodexProvider(configPath: string, siteBaseUrl: string): string {
   const content = requireConfigText(configPath, '现有 Codex config.toml')
   if (content === null) return defaultCodexRelayProvider
   let parsed: Record<string, unknown>
@@ -1342,13 +1411,61 @@ function existingCodexProvider(configPath: string): string {
     return defaultCodexRelayProvider
   }
 
-  if (typeof parsed.model_provider === 'string' && parsed.model_provider.trim()) {
-    return parsed.model_provider.trim()
+  return codexRelayProviderFor(parsed, siteBaseUrl)
+}
+
+/**
+ * Codex merges user tables into its built-in providers with `or_insert`
+ * (codex-rs/model-provider-info merge_configured_model_providers), so a table
+ * named after a built-in ID is silently ignored and the relay written there
+ * never takes effect. The IDs are case-sensitive: `OpenAI` is an ordinary
+ * user-definable name, which is why older releases could use it safely.
+ */
+function codexRelayProviderFor(parsed: Record<string, unknown>, siteBaseUrl: string): string {
+  const active = typeof parsed.model_provider === 'string' ? parsed.model_provider.trim() : ''
+  // Keep a usable active name as is: Codex's resume picker filters sessions by
+  // model_provider, so renaming it would hide the customer's earlier chats.
+  if (active && !reservedCodexProviders.has(active)) return active
+  const providers = isJsonRecord(parsed.model_providers) ? parsed.model_providers : {}
+  function isFree(candidate: string): boolean {
+    return !Object.prototype.hasOwnProperty.call(providers, candidate)
+      || isOwnCodexRelayEntry(providers[candidate], siteBaseUrl)
   }
-  // A provider table without an explicit active selector is ambiguous. Never
-  // hijack the first user-authored entry (Azure/custom relays are common);
-  // use the stable OpenAI entry and let the merge path create it if needed.
-  return 'OpenAI'
+  // Without a selector, older releases picked `OpenAI`; keep that for the same
+  // resume-list reason, but never take over a table someone else wrote.
+  if (!active && isFree('OpenAI')) return 'OpenAI'
+  for (let suffix = 1; ; suffix += 1) {
+    const candidate = suffix === 1 ? defaultCodexRelayProvider : `${defaultCodexRelayProvider}-${suffix}`
+    if (isFree(candidate)) return candidate
+  }
+}
+
+function isOwnCodexRelayEntry(entry: unknown, siteBaseUrl: string): boolean {
+  return isJsonRecord(entry) && typeof entry.base_url === 'string'
+    && isKnownCodexRelayBaseUrl(entry.base_url, siteBaseUrl)
+}
+
+/**
+ * Older releases wrote the relay into the active built-in table. Move only
+ * that table of ours to the new name, keeping options such as retries. A
+ * built-in-named table someone else wrote stays untouched: Codex ignores it
+ * anyway, and refusing to save over it would turn a working switch into an
+ * error.
+ */
+function migrateOwnReservedCodexProvider(
+  parsed: Record<string, unknown>,
+  providerName: string,
+  siteBaseUrl: string,
+): void {
+  const active = typeof parsed.model_provider === 'string' ? parsed.model_provider.trim() : ''
+  if (!reservedCodexProviders.has(active) || active === providerName) return
+  const providers = parsed.model_providers
+  if (!isJsonRecord(providers)) return
+  const entry = providers[active]
+  if (!isJsonRecord(entry) || !isOwnCodexRelayEntry(entry, siteBaseUrl)) return
+  const existing = providers[providerName]
+  providers[providerName] = { ...entry, ...(isJsonRecord(existing) ? existing : {}) }
+  delete providers[active]
 }
 
 function jsonContent(value: unknown): string {
@@ -1748,12 +1865,13 @@ function createPlans(
   siteBaseUrls: Record<ProviderId, string>,
   claudeStatusLineCommand?: string,
   availableModels?: readonly string[],
+  cliHook?: CliHookInvocation,
 ): FilePlan[] {
   const paths = providerConfigPaths(provider, roots)
   switch (provider) {
     case 'codex':
       return [
-        ...createCodexRelayConfigPlans(model, roots, siteBaseUrls, 'reset'),
+        ...createCodexRelayConfigPlans(model, roots, siteBaseUrls, 'reset', cliHook),
         ...createCodexRelayAuthPlans(apiKey, roots),
       ]
     case 'claude': {
@@ -1774,25 +1892,28 @@ function createPlans(
         ...(claudeStatusLineCommand ? { statusLine: claudeStatusLineSetting(claudeStatusLineCommand) } : {}),
       }
       if (availableModels) applyClaudeRelayModelPicker(settings, env, availableModels, model)
+      if (cliHook) applyClaudeCliHooks(settings, cliHook)
       // 原文件读不出来时照旧重建（reset 本来就是给配置坏了的人用的），只是没东西可挪。
       const aside = claudeForeignSettingsAsidePlans(settings, readJson(paths[0]) ?? {}, roots, apiKey)
       return [...aside, { path: paths[0], content: jsonContent(settings) }]
     }
-    case 'gemini':
+    case 'gemini': {
+      const settings: Record<string, unknown> = {
+        general: {
+          enableAutoUpdate: false,
+          enableAutoUpdateNotification: false,
+          sessionRetention: { maxAge: MANAGED_GEMINI_SESSION_MAX_AGE },
+        },
+        ide: { enabled: true },
+        privacy: { usageStatisticsEnabled: false },
+        security: { auth: { selectedType: 'gemini-api-key' } },
+        modelConfigs: { customOverrides: buildGeminiRelayModelOverrides(geminiCliCompatibleModel(model)) },
+      }
+      if (cliHook) applyGeminiCliHooks(settings, cliHook)
       return [
         {
           path: paths[0],
-          content: jsonContent({
-            general: {
-              enableAutoUpdate: false,
-              enableAutoUpdateNotification: false,
-              sessionRetention: { maxAge: MANAGED_GEMINI_SESSION_MAX_AGE },
-            },
-            ide: { enabled: true },
-            privacy: { usageStatisticsEnabled: false },
-            security: { auth: { selectedType: 'gemini-api-key' } },
-            modelConfigs: { customOverrides: buildGeminiRelayModelOverrides(geminiCliCompatibleModel(model)) },
-          }),
+          content: jsonContent(settings),
         },
         {
           path: paths[1],
@@ -1804,6 +1925,7 @@ function createPlans(
           ].join('\n'),
         },
       ]
+    }
     case 'grok':
       return [{
         path: paths[0],
@@ -1830,9 +1952,17 @@ function createPlans(
           '[endpoints]',
           `xai_api_base_url = ${tomlString(siteBaseUrls.grok)}`,
           '',
-        ].join('\n'),
+        ].join('\n') + grokCliHookTemplate(cliHook),
       }]
   }
+}
+
+// 初始模板里没有 compat / hooks 两张表，接在末尾不会撞上。
+function grokCliHookTemplate(cliHook: CliHookInvocation | undefined): string {
+  if (!cliHook) return ''
+  const extra: Record<string, unknown> = {}
+  applyGrokCliHooks(extra, cliHook)
+  return `\n${tomlContent(extra)}`
 }
 
 function createMergePlans(
@@ -1843,10 +1973,11 @@ function createMergePlans(
   siteBaseUrls: Record<ProviderId, string>,
   claudeStatusLineCommand?: string,
   availableModels?: readonly string[],
+  cliHook?: CliHookInvocation,
 ): FilePlan[] {
   const paths = providerConfigPaths(provider, roots)
   const initialPlans = new Map(
-    createPlans(provider, apiKey, model, roots, siteBaseUrls, claudeStatusLineCommand, availableModels)
+    createPlans(provider, apiKey, model, roots, siteBaseUrls, claudeStatusLineCommand, availableModels, cliHook)
       .map((plan) => [plan.path, plan]),
   )
   const initial = (filePath: string): FilePlan => {
@@ -1858,7 +1989,7 @@ function createMergePlans(
   switch (provider) {
     case 'codex':
       return [
-        ...createCodexRelayConfigPlans(model, roots, siteBaseUrls, 'merge'),
+        ...createCodexRelayConfigPlans(model, roots, siteBaseUrls, 'merge', cliHook),
         ...createCodexRelayAuthPlans(apiKey, roots),
       ]
     case 'claude': {
@@ -1873,6 +2004,7 @@ function createMergePlans(
       ensureClaudeResponseLanguage(parsed)
       extendClaudeSessionRetention(parsed)
       if (claudeStatusLineCommand) applyClaudeStatusLine(parsed, claudeStatusLineCommand)
+      if (cliHook) applyClaudeCliHooks(parsed, cliHook)
       if (availableModels) applyClaudeRelayModelPicker(parsed, env, availableModels, model)
       parsed.model = model
       const aside = claudeForeignSettingsAsidePlans(parsed, null, roots, apiKey)
@@ -1893,6 +2025,7 @@ function createMergePlans(
         extendGeminiSessionRetention(parsed)
         applyGeminiRelayModelOverrides(parsed, geminiCliCompatibleModel(model))
         disableGeminiRelayUsageStatistics(parsed)
+        if (cliHook) applyGeminiCliHooks(parsed, cliHook)
         plans.push({ path: paths[0], content: geminiJsonContent(original, parsed) })
       }
       // 读取失败必须中止保存，静默当空文件会把用户已有环境变量覆盖掉。
@@ -1930,6 +2063,7 @@ function createMergePlans(
       disableGrokSelfUpdate(parsed)
       pointGrokXaiApiAtRelay(parsed, siteBaseUrls.grok)
       pinGrokModelsToRelay(parsed, defaultModel)
+      if (cliHook) applyGrokCliHooks(parsed, cliHook)
       return [{ path: paths[0], content: tomlContent(parsed) }]
     }
   }
@@ -2260,6 +2394,9 @@ export function saveProviderConfig(
   // 当前 Key 可用的模型清单。Claude Code 用它把 /model 菜单换成账号实际能用的型号
   // （见 claude-model-picker.ts）；缺省 = 不动菜单。
   availableModels?: readonly string[],
+  // 终端里出错、做完、等人时通知星芒的钩子（见 cli-hooks.ts）。缺省 = 不写，与从前一致；
+  // 只有 Claude Code 与 Gemini CLI 用得上，其余工具传了也不看。
+  cliHook?: CliHookInvocation,
 ): NativeConfigSaveResult {
   const apiKey = apiKeyInput.trim()
   const model = modelInput.trim()
@@ -2276,8 +2413,8 @@ export function saveProviderConfig(
   const statusLineCommand = claudeStatusLineCommand?.trim() || undefined
   if (statusLineCommand && /\r|\n/.test(statusLineCommand)) throw new Error('状态行命令不能包含换行符')
   const plans = mode === 'merge'
-    ? createMergePlans(provider, apiKey, model, roots, siteBaseUrlsInput, statusLineCommand, availableModels)
-    : createPlans(provider, apiKey, model, roots, siteBaseUrlsInput, statusLineCommand, availableModels)
+    ? createMergePlans(provider, apiKey, model, roots, siteBaseUrlsInput, statusLineCommand, availableModels, cliHook)
+    : createPlans(provider, apiKey, model, roots, siteBaseUrlsInput, statusLineCommand, availableModels, cliHook)
 
   assertNoReparseComponents(path.dirname(providerRoot), 'Provider 配置根目录')
   ensureSafeDataDirectory(providerRoot, 'Provider 配置根目录')
@@ -2364,6 +2501,125 @@ export function ensureCodexPermissionDefaults(
   ensureSafeDataDirectory(providerRoot, 'Provider 配置根目录')
   const saved = executeFilePlans([{ path: configPath, content: next.content }], {}, providerRoot)
   return { ...saved, changed: true }
+}
+
+// ---------------------------------------------------------------------------
+// 钩子与状态行指向旧位置
+//
+// 卸载后换个文件夹重装、Mac 上挪了 app、换装了 Node.js，写在配置里的绝对路径就失效了
+// （cli-hooks.ts 那段说明）。这里只读出、只重写、只收回本软件那几条，Key、模型和用户
+// 自己写的钩子一个字不动；写入照旧两阶段提交 + .bak（I9）。
+// ---------------------------------------------------------------------------
+
+/** 某家配置里本软件的钩子、状态行、Codex notify 各自指向哪里。读不出来就当没有。 */
+export function inspectManagedCliHookTargets(
+  provider: ProviderId,
+  rootsInput: ProviderConfigRoots = defaultProviderConfigRoots(),
+): ManagedCliHookTarget[] {
+  const configPath = providerConfigPaths(provider, rootsInput)[0]
+  const parsed = provider === 'gemini' ? readGeminiJson(configPath)
+    : provider === 'claude' ? readJson(configPath)
+    : readToml(configPath)
+  if (!parsed) return []
+  const targets = managedCliHookTargets(provider, parsed)
+  if (provider === 'claude') {
+    const statusLine = managedClaudeStatusLineTarget(parsed)
+    if (statusLine) targets.push(statusLine)
+  }
+  return targets
+}
+
+export interface ManagedCliHookRewrite {
+  /** 缺省 = 这台电脑现在写不出钩子（没有 Node.js 之类），那就把我们那几条收回，不再报错。 */
+  cliHook?: CliHookInvocation
+  /** 同上，只给 Claude Code。 */
+  claudeStatusLineCommand?: string
+}
+
+/**
+ * 只动本软件那几条：原来有才改，改成这次的路径；这次写不出来就收回。原来没有的
+ * 不补——那是「没写过」而不是「指向旧位置」，补不补归保存配置那条路管。
+ */
+function managedCliHookPlan(
+  provider: ProviderId,
+  roots: ProviderConfigRoots,
+  rewrite: ManagedCliHookRewrite | null,
+): FilePlan | null {
+  const configPath = providerConfigPaths(provider, roots)[0]
+  switch (provider) {
+    case 'claude': {
+      const original = requireConfigText(configPath, '现有 Claude settings.json')
+      if (original === null) return null
+      const parsed = requireJson(configPath, '现有 Claude settings.json')
+      let changed = false
+      if (managedCliHookTargets('claude', parsed).length > 0) {
+        removeClaudeCliHooks(parsed)
+        if (rewrite?.cliHook) applyClaudeCliHooks(parsed, rewrite.cliHook)
+        changed = true
+      }
+      if (managedClaudeStatusLineTarget(parsed)) {
+        if (rewrite?.claudeStatusLineCommand) applyClaudeStatusLine(parsed, rewrite.claudeStatusLineCommand)
+        else delete parsed.statusLine
+        changed = true
+      }
+      return changed ? { path: configPath, content: jsonContent(parsed) } : null
+    }
+    case 'gemini': {
+      const { parsed, original } = requireGeminiJson(configPath, '现有 Gemini settings.json')
+      if (original === null || managedCliHookTargets('gemini', parsed).length === 0) return null
+      removeGeminiCliHooks(parsed)
+      if (rewrite?.cliHook) applyGeminiCliHooks(parsed, rewrite.cliHook)
+      return { path: configPath, content: geminiJsonContent(original, parsed) }
+    }
+    case 'codex': {
+      if (requireConfigText(configPath, '现有 Codex config.toml') === null) return null
+      const parsed = requireToml(configPath, '现有 Codex config.toml')
+      if (managedCliHookTargets('codex', parsed).length === 0) return null
+      if (rewrite?.cliHook) applyCodexCliNotify(parsed, rewrite.cliHook)
+      else removeCodexCliNotify(parsed)
+      return { path: configPath, content: tomlContent(parsed) }
+    }
+    case 'grok': {
+      if (requireConfigText(configPath, '现有 Grok config.toml') === null) return null
+      const parsed = requireToml(configPath, '现有 Grok config.toml')
+      if (managedCliHookTargets('grok', parsed).length === 0) return null
+      removeGrokCliHooks(parsed)
+      if (rewrite?.cliHook) applyGrokCliHooks(parsed, rewrite.cliHook)
+      return { path: configPath, content: tomlContent(parsed) }
+    }
+  }
+}
+
+function executeManagedCliHookPlan(
+  provider: ProviderId,
+  rootsInput: ProviderConfigRoots,
+  rewrite: ManagedCliHookRewrite | null,
+): NativeConfigSaveResult {
+  const roots = normalizeProviderConfigRoots(rootsInput)
+  const providerRoot = providerConfigRoot(provider, roots)
+  for (const filePath of providerConfigPaths(provider, roots)) assertSafeConfigPath(filePath, providerRoot, 'file')
+  const plan = managedCliHookPlan(provider, roots, rewrite)
+  if (!plan) return { backups: [], files: [] }
+  assertNoReparseComponents(path.dirname(providerRoot), 'Provider 配置根目录')
+  ensureSafeDataDirectory(providerRoot, 'Provider 配置根目录')
+  return executeFilePlans([plan], {}, providerRoot)
+}
+
+/** 首页「修好它」：把本软件那几条改成这次的路径（写不出来就收回），其余原样。 */
+export function rewriteManagedCliHooks(
+  provider: ProviderId,
+  rootsInput: ProviderConfigRoots,
+  rewrite: ManagedCliHookRewrite,
+): NativeConfigSaveResult {
+  return executeManagedCliHookPlan(provider, rootsInput, rewrite)
+}
+
+/** 卸载时收回本软件写进这家配置的钩子与状态行。Key 和其余设置留着，卸了星芒工具照样能用。 */
+export function removeManagedCliHooks(
+  provider: ProviderId,
+  rootsInput: ProviderConfigRoots = defaultProviderConfigRoots(),
+): NativeConfigSaveResult {
+  return executeManagedCliHookPlan(provider, rootsInput, null)
 }
 
 // ---------------------------------------------------------------------------
@@ -2456,6 +2712,8 @@ function createOfficialAccountPlans(
         removeClaudeRelayModelPicker(parsed, null)
       }
       allowClaudeRelayTool(parsed)
+      // 通知里说的是「当前账号」，官方账号出错时那些话都不对，钩子跟着收回。
+      removeClaudeCliHooks(parsed)
       delete parsed.skipWebFetchPreflight
       delete parsed.model
       const restore = claudeForeignSettingsRestorePlans(parsed, roots)
@@ -2485,6 +2743,7 @@ function createOfficialAccountPlans(
         auth.selectedType = 'oauth-personal'
         removeGeminiRelayModelOverrides(parsed)
         restoreGeminiUsageStatistics(parsed)
+        removeGeminiCliHooks(parsed)
         plans.push({ path: paths[0], content: geminiJsonContent(original, parsed) })
       }
       const envContent = requireConfigText(paths[1], '现有 Gemini .env')
@@ -2502,6 +2761,8 @@ function createOfficialAccountPlans(
       const parsed = requireToml(paths[0], '现有 Grok config.toml')
       removeGrokRelayConfig(parsed, siteBaseUrls.grok)
       disableGrokSelfUpdate(parsed)
+      // 与 Claude / Gemini 同理钩子跟着收回；[compat.claude] 那一行留着，Claude Code 可能还接着当前账号。
+      removeGrokCliHooks(parsed)
       return [{ path: paths[0], content: tomlContent(parsed) }]
     }
   }

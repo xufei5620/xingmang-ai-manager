@@ -2,6 +2,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import {
   AnnouncementContent,
+  PromoCard,
   announcementTextPreview,
   formatAnnouncementError,
   isSafeNativeAnnouncementCssValue,
@@ -101,5 +102,23 @@ describe('renderer-v2 announcement error mapping', () => {
     expect(isSafeNativeAnnouncementCssValue('url("data:text/html;base64,PHNjcmlwdD4=")')).toBe(false)
     expect(isSafeNativeAnnouncementCssValue('expression(alert(1))')).toBe(false)
     expect(isSafeNativeAnnouncementCssValue(String.raw`\75\72\6c(\68\74\74\70\73\3a//attacker.invalid/p.png)`)).toBe(false)
+  })
+})
+
+describe('renderer-v2 recharge promo card', () => {
+  it('offers top-up, details, dismiss and snooze with the deadline in plain words', () => {
+    const html = renderToStaticMarkup(<PromoCard title="国庆充值活动" preview="充值满 100 送 20" deadline="10月7日 23:59 结束，还剩 8 天"
+      onTopUp={() => undefined} onDetail={() => undefined} onDismiss={() => undefined} onSnooze={() => undefined} />)
+    expect(html).toContain('data-testid="announcement-promo-card"')
+    expect(html).toContain('国庆充值活动')
+    expect(html).toContain('10月7日 23:59 结束，还剩 8 天')
+    for (const label of ['去充值', '查看详情', '知道了', '今天不再提醒']) expect(html).toContain(label)
+  })
+
+  it('leaves out the top-up button when the account cannot recharge in the app', () => {
+    const html = renderToStaticMarkup(<PromoCard title="充值活动" preview="" deadline={null}
+      onDetail={() => undefined} onDismiss={() => undefined} onSnooze={() => undefined} />)
+    expect(html).not.toContain('announcement-promo-topup')
+    expect(html).not.toContain('announcement-promo-deadline')
   })
 })

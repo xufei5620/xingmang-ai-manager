@@ -4,6 +4,7 @@ import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
   aiOutputFolderName,
+  chooseAiOutputRoot,
   migrateLegacyAiOutput,
   resolveAiOutputRoot,
   resolveLegacyAiOutputRoot,
@@ -304,5 +305,78 @@ describe('migrateLegacyAiOutput', () => {
     await migrateLegacyAiOutput(from, to)
     expect(await migrateLegacyAiOutput(from, to)).toEqual(empty)
     expect(listFiles(to)).toEqual(['user-1/a.png', 'user-2/b.png'])
+  })
+})
+
+describe('chooseAiOutputRoot', () => {
+  function placementOptions(home: string, probe: (directory: string) => void) {
+    return {
+      isPackaged: true,
+      documentsDirectory: path.join(home, 'Documents'),
+      location: { platform: process.platform === 'win32' ? 'win32' as const : 'linux' as const, home, env: {} },
+      probe,
+    }
+  }
+
+  function denied(): never {
+    throw Object.assign(new Error('EPERM: operation not permitted'), { code: 'EPERM' })
+  }
+
+  it('keeps works in documents when it can be written', () => {
+    const home = temporaryDirectory()
+    fs.mkdirSync(path.join(home, 'Documents'))
+
+    expect(chooseAiOutputRoot(placementOptions(home, () => undefined))).toEqual({
+      root: path.join(home, 'Documents', aiOutputFolderName),
+      movedFromDocuments: false,
+      earlierWorksLeftInDocuments: false,
+    })
+  })
+
+  it('moves to the home folder when documents refuses writes, and says whether earlier works stay behind', () => {
+    const home = temporaryDirectory()
+    const preferred = path.join(home, 'Documents', aiOutputFolderName)
+    fs.mkdirSync(path.join(preferred, 'user-7'), { recursive: true })
+
+    expect(chooseAiOutputRoot(placementOptions(home, denied))).toEqual({
+      root: path.join(home, aiOutputFolderName),
+      movedFromDocuments: true,
+      earlierWorksLeftInDocuments: true,
+    })
+  })
+
+  it('applies the account scope to both locations', () => {
+    const home = temporaryDirectory()
+    fs.mkdirSync(path.join(home, 'Documents'))
+    const probed: string[] = []
+
+    const placement = chooseAiOutputRoot({
+      ...placementOptions(home, (directory) => { probed.push(directory); denied() }),
+      scope: (root) => path.join(root, 'realms', 'api-account'),
+    })
+
+    expect(probed).toEqual([path.join(home, 'Documents', aiOutputFolderName, 'realms', 'api-account')])
+    expect(placement.root).toBe(path.join(home, aiOutputFolderName, 'realms', 'api-account'))
+    expect(placement.earlierWorksLeftInDocuments).toBe(false)
+  })
+
+  it('stays put for a full disk so the usual message still explains it', () => {
+    const home = temporaryDirectory()
+    fs.mkdirSync(path.join(home, 'Documents'))
+    const full = () => { throw Object.assign(new Error('ENOSPC'), { code: 'ENOSPC' }) }
+
+    expect(chooseAiOutputRoot(placementOptions(home, full)).movedFromDocuments).toBe(false)
+  })
+
+  it('never probes in development or when the location is already the home folder', () => {
+    const home = temporaryDirectory()
+    const probed: string[] = []
+    const probe = (directory: string) => { probed.push(directory) }
+
+    expect(chooseAiOutputRoot({ ...placementOptions(home, probe), isPackaged: false, projectRoot: home }).root)
+      .toBe(path.join(home, 'output'))
+    // 没有 Documents 目录：本来就放在主目录下。
+    expect(chooseAiOutputRoot(placementOptions(home, probe)).root).toBe(path.join(home, aiOutputFolderName))
+    expect(probed).toEqual([])
   })
 })

@@ -53,6 +53,7 @@ export type PlatformNotificationTarget =
   | 'topup'
   | 'announcement'
   | 'usage'
+  | 'health'
 
 const messages = {
   test: { title: '星芒测试通知', body: '这是一条测试通知，可在设置中关闭。' },
@@ -93,6 +94,19 @@ const chatMessages = {
   image: { title: '图片生成好了', body: '回到星芒的「聊天」查看。' },
 } as const satisfies Record<string, NotificationMessage>
 
+// 充值活动也借「公告」这一类的偏好开关，说法换成活动自己的。编号前缀由首页的活动卡片写死
+// （promo: 活动开始，promo-daily: 每天第一次提醒）。活动的标题和正文不进通知：点开回到首页看卡片。
+const promoMessages = {
+  arrival: { title: '有新的充值活动', body: '当前账号有一个充值活动，回到星芒首页看看，点「去充值」就能参加。' },
+  daily: { title: '充值活动还在进行', body: '当前账号的充值活动还没结束，回到星芒首页看看。' },
+} as const satisfies Record<string, NotificationMessage>
+
+function promoNoticeKind(eventKey: string): keyof typeof promoMessages | null {
+  if (eventKey.startsWith('promo:')) return 'arrival'
+  if (eventKey.startsWith('promo-daily:')) return 'daily'
+  return null
+}
+
 function chatNoticeKind(eventKey: string): keyof typeof chatMessages | null {
   if (eventKey.startsWith('chat:')) return 'chat'
   if (eventKey.startsWith('image:')) return 'image'
@@ -112,7 +126,7 @@ export function resolveNotificationTarget(
     case 'cliUpdate':
       return 'home'
     case 'announcement':
-      return 'announcement'
+      return promoNoticeKind(eventKey) ? 'home' : 'announcement'
     case 'spend':
       return 'usage'
     case 'test':
@@ -128,7 +142,9 @@ export function buildActivityNotificationMessage(
   if (kind === 'install' && detail && 'tool' in detail) return buildInstallNotificationMessage(detail)
   if (kind === 'spend' && detail && 'cents' in detail) return buildSpendNotificationMessage(detail)
   const chat = kind === 'task' ? chatNoticeKind(eventKey) : null
-  return chat ? chatMessages[chat] : messages[kind]
+  if (chat) return chatMessages[chat]
+  const promo = kind === 'announcement' ? promoNoticeKind(eventKey) : null
+  return promo ? promoMessages[promo] : messages[kind]
 }
 
 // 金额按美元两位小数写，同余额的写法；倍数只给整数，「大约」已经说明是估的。
@@ -242,6 +258,72 @@ const hostMessages: Record<
   },
 }
 
+/**
+ * 终端里的命令行工具（Claude Code、Gemini CLI、Grok）出了什么事。只有主进程从钩子记录里
+ * 读出来的固定类型词，没有任何 CLI 递来的原文，所以通知里的每个字都出自下面这张表。
+ */
+export type TerminalFailureReason = 'billing' | 'auth' | 'busy' | 'model' | 'service' | 'unknown'
+export type TerminalNotice =
+  | { tool: 'claude' | 'gemini' | 'grok'; event: 'failed'; reason: TerminalFailureReason }
+  | { tool: 'claude' | 'gemini' | 'grok'; event: 'waiting' }
+  // Codex 的 notify 只在一轮顺利做完时调用，出错和等人都没有，所以只有「做完了」。
+  | { tool: 'claude' | 'gemini' | 'codex' | 'grok'; event: 'finished' }
+
+const terminalToolNames: Record<TerminalNotice['tool'], string> = {
+  claude: 'Claude Code',
+  gemini: 'Gemini CLI',
+  codex: 'Codex',
+  grok: 'Grok',
+}
+
+// 主语是「当前账号」；订阅客户也会碰到额度用完，所以不说「余额」，只说「额度」。
+const terminalFailureBodies: Record<TerminalFailureReason, string> = {
+  billing: '当前账号的额度不够了，点这里去充值或续订，弄好后回终端再发一次。',
+  auth: '当前账号的 Key 用不了了，点这里回星芒检查，照提示点一下就能重新连上。',
+  busy: '现在用的人太多，服务一时忙不过来。等一两分钟再在终端里发一次就行。',
+  model: '现在选的型号用不了，点这里回星芒检查，换一个能用的型号。',
+  service: '服务暂时出了问题，可能在维护。稍等几分钟再试，一直不好就点这里检查一下。',
+  // 工具自己也说不清原因（额度用完常常落在这一类），就不猜，请用户回来查一下。
+  unknown: '点这里回星芒检查一下，看看是额度、Key 还是服务的问题，照提示点一下就好。',
+}
+
+export function buildTerminalNotificationMessage(
+  notice: TerminalNotice,
+): NotificationMessage {
+  const name = terminalToolNames[notice.tool]
+  switch (notice.event) {
+    case 'failed':
+      return {
+        title: `${name} 刚才没回上`,
+        body: terminalFailureBodies[notice.reason],
+      }
+    case 'waiting':
+      return {
+        title: `${name} 在等你`,
+        body: '它停下来等你确认，回到终端窗口看一眼就能接着干。',
+      }
+    case 'finished':
+      return {
+        title: `${name} 做完了`,
+        body: '这一轮跑了一分多钟，已经做完了，回到终端窗口看看结果。',
+      }
+  }
+}
+
+/** 额度不够去充值；其余出错去检查页。做完和等人要回的是终端，星芒这边不换页。 */
+export function resolveTerminalNotificationTarget(
+  notice: TerminalNotice,
+): PlatformNotificationTarget | null {
+  if (notice.event !== 'failed') return null
+  return notice.reason === 'billing' ? 'topup' : 'health'
+}
+
+function terminalNotificationKind(
+  notice: TerminalNotice,
+): PlatformNotificationKind {
+  return notice.event === 'failed' ? 'cliTrouble' : 'cliTurn'
+}
+
 /** 系统通知发不出去时，宿主改用别的办法（Windows 托盘气泡）说同一句话。 */
 export function hostNotificationMessage(event: PlatformHostNotification): NotificationMessage {
   const { title, body } = hostMessages[event]
@@ -349,6 +431,16 @@ export function createPlatformNotifications(
       // 只把标题与正文交给系统通知：kind 是偏好开关的键，不该出现在通知参数里。
       const { kind, title, body } = hostMessages[event]
       return present(kind, `${event}:${eventKey}`, { title, body }, onClick)
+    },
+    notifyTerminal: (notice: TerminalNotice, eventKey: string) => {
+      const target = resolveTerminalNotificationTarget(notice)
+      const openPage = options.openPage
+      return present(
+        terminalNotificationKind(notice),
+        `terminal:${eventKey}`,
+        buildTerminalNotificationMessage(notice),
+        target && openPage ? () => openPage(target) : undefined,
+      )
     },
     dispose: () => {
       for (const notification of active) {

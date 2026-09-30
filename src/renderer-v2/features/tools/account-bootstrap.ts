@@ -278,6 +278,11 @@ export async function bootstrapAccountTools(
   storage: SourceMarkerStorage | null = getSourceMarkerStorage(),
 ): Promise<AccountBootstrapResult> {
   const expectedSiteId = await assertAccount(api, expectedUserId)
+  // Key sync may issue server tokens and update the bundled Skill. If the
+  // existing config cannot be read, stop before either side effect; discard
+  // this preview and read again after sync when planning local writes.
+  await api.getConfig()
+  await assertAccount(api, expectedUserId, expectedSiteId)
   onProgress({ phase: 'syncing', label: '正在同步账号专属 Key', percent: 15 })
 
   let synchronized: Awaited<ReturnType<AccountBootstrapBridge['syncManagedCliKeys']>> | null = null

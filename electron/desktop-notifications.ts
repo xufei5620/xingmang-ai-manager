@@ -37,6 +37,8 @@ export interface DesktopNotificationControllerOptions {
   onOpenUpdates?(): unknown | Promise<unknown>
   onError(error: unknown): void
   iconPath?: string
+  /** 「自动更新」这时是否真的在起作用。不传＝关着，通知照旧说「可在更新页面重启安装」。 */
+  readAutoUpdate?(): boolean
 }
 
 export type DesktopNotificationResult = 'ignored' | 'unsupported' | 'duplicate' | 'requested' | 'failed'
@@ -46,10 +48,16 @@ export interface DesktopNotificationController {
   handleUpdate(snapshot: UpdateSnapshot): DesktopNotificationResult
   /** Reapplies the saved preference against the last observed update state. */
   refresh(): DesktopNotificationResult
+  /**
+   * 马上要自动装新版本时的那句预告（auto-update-install.ts 的 buildAutoInstallNotice）。
+   * 不看通知开关：装的时候软件会自己关掉、Windows 还会弹授权窗口，这句话是在解释软件
+   * 自己接下来要做的事，不说一声用户会以为闪退、被病毒弹窗。系统不支持通知时照样静默。
+   */
+  announce(notice: { title: string; body: string }): DesktopNotificationResult
   dispose(): void
 }
 
-export function updateDesktopNotification(snapshot: UpdateSnapshot): { key: string; version: string; stage: 'available' | 'downloaded'; title: string; body: string } | null {
+export function updateDesktopNotification(snapshot: UpdateSnapshot, autoUpdate = false): { key: string; version: string; stage: 'available' | 'downloaded'; title: string; body: string } | null {
   if ((snapshot.phase !== 'available' && snapshot.phase !== 'downloaded') || snapshot.error) return null
   const version = snapshot.availableVersion?.trim()
   if (!version || version === snapshot.currentVersion || !/^[a-z0-9][a-z0-9.+_-]{0,79}$/i.test(version)) return null
@@ -58,7 +66,13 @@ export function updateDesktopNotification(snapshot: UpdateSnapshot): { key: stri
     version,
     stage: snapshot.phase,
     title: snapshot.phase === 'downloaded' ? '星芒AI更新已下载' : '星芒AI有可用更新',
-    body: snapshot.phase === 'downloaded' ? `版本 ${version} 已下载，可在更新页面重启安装。` : `版本 ${version} 已可下载。`,
+    // 自动更新开着时后台已经在下、关掉软件就会装，再说「已可下载」「可在更新页面重启
+    // 安装」就是在让用户去点一个用不着点的按钮。
+    body: autoUpdate
+      ? snapshot.phase === 'downloaded'
+        ? `新版 ${version} 已经下好，关掉软件或下次打开时自动装上，不打断你现在用。`
+        : `新版 ${version} 正在后台下载，下好后关掉软件时自动装上。`
+      : snapshot.phase === 'downloaded' ? `版本 ${version} 已下载，可在更新页面重启安装。` : `版本 ${version} 已可下载。`,
   }
 }
 
@@ -82,6 +96,9 @@ export function createDesktopNotificationController(
     try { record.notification.close() } catch (error) { report(error) }
   }
   const closeAll = () => { for (const key of active.keys()) close(key) }
+  const readAutoUpdate = (): boolean => {
+    try { return options.readAutoUpdate?.() === true } catch { return false }
+  }
   const remember = (key: string): boolean => {
     if (seen.has(key)) return false
     seen.add(key)
@@ -93,7 +110,7 @@ export function createDesktopNotificationController(
     latest = { ...snapshot, error: snapshot.error ? { ...snapshot.error } : null, progress: snapshot.progress ? { ...snapshot.progress } : null }
     try {
       if (!options.readEnabled()) { closeAll(); return 'ignored' }
-      const update = updateDesktopNotification(snapshot)
+      const update = updateDesktopNotification(snapshot, readAutoUpdate())
       if (!update) return 'ignored'
       if (!getDesktopNotificationCapability(runtime).supported) return 'unsupported'
       if (seen.has(update.key)) return 'duplicate'
@@ -131,6 +148,19 @@ export function createDesktopNotificationController(
       if (latest) return handleUpdate(latest)
       try { if (!options.readEnabled()) closeAll() } catch (error) { report(error); return 'failed' }
       return 'ignored'
+    },
+    announce(notice) {
+      if (disposed) return 'ignored'
+      try {
+        if (!getDesktopNotificationCapability(runtime).supported) return 'unsupported'
+        const notification = runtime.create({ title: notice.title.slice(0, 80), body: notice.body.slice(0, 240), silent: true, urgency: 'normal', ...(options.iconPath ? { icon: options.iconPath } : {}) })
+        notification.on('failed', (_event, message) => {
+          notification.removeAllListeners()
+          report(new Error(typeof message === 'string' ? message.slice(0, 500) : '系统通知显示失败'))
+        })
+        notification.show()
+        return 'requested'
+      } catch (error) { report(error); return 'failed' }
     },
     dispose() {
       if (disposed) return

@@ -4,6 +4,7 @@ import {
   ChevronLeft,
   ChevronRight,
   FolderOpen,
+  HelpCircle,
   RefreshCw,
   Search,
   XCircle,
@@ -12,6 +13,7 @@ import { Button, Empty, Pill } from './ui'
 import { errors } from './registry/errors'
 import { presentOperationError } from './operation-error'
 import { matchAccountErrorMessage } from './features/auth/account-errors'
+import { redactSecretPatterns } from '../../electron/redaction-patterns'
 
 const pendingOperations = new Map<symbol, string>()
 export function pendingBusinessOperations() {
@@ -117,6 +119,31 @@ export function dollars(amount: number | null | undefined) {
   return typeof amount === 'number' && Number.isFinite(amount)
     ? `$${amount.toFixed(2)}`
     : '暂未读到'
+}
+/**
+ * 一次按钮操作失败后交给错误框的两样东西：上屏的那句（`message`，同 `errorMessage`），
+ * 以及被兜底句换掉的原话（`detail`）。以前认不出的英文原话（`spawn EPERM`、`ENOSPC`
+ * 这类）整句丢掉，错误框只剩「打开 Codex 桌面端没有完成」，客户和客服都不知道原因。
+ *
+ * 只有真的落到兜底句时才留 `detail`：401、限流、超时和账号服务那张表都已经换成了
+ * 说清原因的中文，再附原话就成了两套说法。原话先脱路径（userFacingErrorMessage），
+ * 再过日志和反馈报告同一张 Key 打码表（redaction-patterns.ts），只留前 160 字。
+ */
+export function operationFailureFrom(error: unknown, action?: string): { message: string; detail?: string } {
+  const fallback = action ? `${action}没有完成` : '操作没有完成'
+  const message = errorMessage(error, fallback)
+  if (message !== fallback) return { message }
+  const raw = supportDetailOf(error)
+  if (!raw || raw === message) return { message }
+  return { message, detail: raw }
+}
+/**
+ * 「给客服看的原话」：先脱路径，再过 Key 打码表，只留前 160 字；空串 = 没有原话。
+ * 错误框和新手引导的红字共用这一份，别各写一套打码。
+ */
+export function supportDetailOf(error: unknown): string {
+  const raw = redactSecretPatterns(userFacingErrorMessage(error))
+  return raw.length > 160 ? `${raw.slice(0, 159)}…` : raw
 }
 export function useResource<T>(load: () => Promise<T>) {
   const [data, setData] = useState<T | null>(null)
@@ -256,11 +283,14 @@ export function ResultNotice({
   message,
   revealPath,
   onReveal,
+  onSupport,
 }: {
   error?: string
   message?: string
   revealPath?: string
   onReveal?: (path: string) => Promise<unknown>
+  /** 给了才出「联系客服」：只在目录说这类失败该找客服时出现。 */
+  onSupport?: () => void
 }) {
   // A raw npm/OS failure reaching this banner is unreadable on its own; when
   // the catalog can name it, its wording leads and the backend sentence stays
@@ -280,6 +310,11 @@ export function ResultNotice({
           error
         )}
       </span>
+      {onSupport && hint?.actions.some((action) => action.id === 'support') && (
+        <Button size="sm" icon={HelpCircle} onClick={onSupport} testId="result-notice-support">
+          联系客服
+        </Button>
+      )}
     </div>
   ) : message ? (
     <div className="v2-business-notice" role="status">

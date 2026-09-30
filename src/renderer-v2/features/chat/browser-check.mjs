@@ -711,3 +711,41 @@ test('Sub2API opens with its Codex_pro group and gpt-5.6-sol model', async () =>
     assert.equal(await page.getByTestId('chat-model').inputValue(), 'gpt-5.6-sol')
   } finally { await page.close() }
 })
+
+test('a model that reads images takes picked and pasted screenshots and sends them as references', async () => {
+  const page = await open()
+  try {
+    await ready(page)
+    assert.equal(await page.getByTestId('chat-attach-image').isDisabled(), true, 'gpt-test cannot read images')
+    await page.getByTestId('chat-model').selectOption('claude-test')
+    await page.getByTestId('chat-attach-image').click()
+    await page.locator('.chat-draft-image').first().waitFor()
+    assert.deepEqual((await calls(page, 'pick-images')).map((call) => call.input), [4])
+    await page.getByTestId('chat-composer-input').evaluate((element) => {
+      const data = new DataTransfer()
+      data.items.add(new File([new Uint8Array([1, 2, 3])], 'shot.png', { type: 'image/png' }))
+      element.dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true }))
+    })
+    await page.waitForFunction(() => document.querySelectorAll('.chat-draft-image').length === 2)
+    assert.equal((await calls(page, 'paste-image')).length, 1)
+    assert.equal(await page.getByTestId('chat-send').isDisabled(), false, 'images alone are enough to send')
+    await page.getByTestId('chat-send').click()
+    await page.waitForFunction(() => window.chatHarness.calls.some((item) => item.method === 'start'))
+    const request = (await calls(page, 'start')).at(-1).input
+    assert.equal(request.messages.at(-1).role, 'user')
+    assert.equal(request.messages.at(-1).images.length, 2)
+    assert.equal(await page.locator('.chat-draft-image').count(), 0)
+    await page.locator('[data-role="user"] .chat-asset-preview').first().waitFor()
+    await emit(page, { type: 'complete', requestId: request.requestId })
+    await waitSaved(page, (workspace) => workspace.conversations[0]?.messages[0]?.assets?.length === 2)
+
+    await page.getByTestId('chat-model').selectOption('gpt-test')
+    await page.getByTestId('chat-composer-input').evaluate((element) => {
+      const data = new DataTransfer()
+      data.items.add(new File([new Uint8Array([1])], 'shot.png', { type: 'image/png' }))
+      element.dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true }))
+    })
+    await page.getByText('当前模型看不了图片').first().waitFor()
+    assert.equal((await calls(page, 'paste-image')).length, 1, 'a model that cannot read images never reads the clipboard')
+  } finally { await page.close() }
+})

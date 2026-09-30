@@ -1,4 +1,4 @@
-import type { MultiProviderSessionPage, ProviderId } from '../../../../electron/ipc-contract'
+import type { CliLaunchMode, MultiProviderSessionPage, ProviderId } from '../../../../electron/ipc-contract'
 import { rawErrorMessage } from '../../business-common'
 
 type SessionSummary = MultiProviderSessionPage['items'][number]
@@ -119,4 +119,15 @@ export function latestSessionIdsByWorkspace(
     latest.add(session.id)
   }
   return latest
+}
+
+/**
+ * 「接着聊」交给启动那一层的东西。Codex 自己的 `resume --last` 只在当前连接名下找,
+ * 切过官方 / 当前账号之后会找不到、直接开个新对话;所以 Codex 带上这条记录的 id,
+ * 由主进程核对后按 id 接。其余三家按目录找最近一条本来就找得到,照旧。
+ */
+export type CliLaunchChoice = CliLaunchMode | { resumeSessionId: string }
+
+export function resumeLaunchChoice(session: Pick<SessionSummary, 'id' | 'provider'>): CliLaunchChoice {
+  return session.provider === 'codex' ? { resumeSessionId: session.id } : 'resumeLast'
 }

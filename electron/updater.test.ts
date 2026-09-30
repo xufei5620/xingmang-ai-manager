@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events'
 import { describe, expect, it, vi } from 'vitest'
 import { updateNetworkFailureMessages } from './network-failure'
-import { createUpdaterService, decideUpdateOffer, isOlderVersion, type UpdateClient, type UpdaterService } from './updater'
+import { createUpdaterService, decideUpdateOffer, describeUnrecognizedUpdateFailure, isOlderVersion, type UpdateClient, type UpdaterService } from './updater'
 
 class FakeUpdater extends EventEmitter implements UpdateClient {
   autoDownload = true
@@ -613,7 +613,7 @@ describe('updater service', () => {
 
     expect(service.getState()).toMatchObject({
       phase: 'error',
-      error: { code: 'UPDATE_ERROR', message: error },
+      error: { code: 'UPDATE_ERROR', detail: error },
     })
   })
 
@@ -631,7 +631,7 @@ describe('updater service', () => {
 
     expect(service.getState()).toMatchObject({
       phase: 'error',
-      error: { code: 'UPDATE_ERROR', message: error },
+      error: { code: 'UPDATE_ERROR', detail: error },
     })
   })
 
@@ -690,7 +690,7 @@ describe('updater service', () => {
       clickInstall(service)
       expect(service.getState()).toMatchObject({
         phase: 'downloaded',
-        error: { message: 'installer spawn failed' },
+        error: { detail: 'installer spawn failed' },
       })
       expect(service.install()).toEqual({ accepted: true })
       expect(client.quitAndInstall).toHaveBeenCalledTimes(2)
@@ -718,7 +718,7 @@ describe('updater service', () => {
       clickInstall(service)
       expect(service.getState()).toMatchObject({
         phase: 'downloaded',
-        error: { message: 'installer spawn failed' },
+        error: { detail: 'installer spawn failed' },
       })
 
       await expect(service.check()).resolves.toMatchObject({ phase: 'checking', error: null })
@@ -880,7 +880,7 @@ describe('updater service', () => {
       clickInstall(service)
       expect(service.getState()).toMatchObject({
         phase: 'downloaded',
-        error: { message: 'native check failed' },
+        error: { detail: 'native check failed' },
       })
       expect(client.nativeUpdater.listenerCount('update-downloaded')).toBe(
         baselineNativeDownloadedListeners + 1,
@@ -925,7 +925,7 @@ describe('updater service', () => {
       clickInstall(service)
       expect(service.getState()).toMatchObject({
         phase: 'downloaded',
-        error: { message: 'pre-registration failure' },
+        error: { detail: 'pre-registration failure' },
       })
       expect(client.nativeUpdater.listenerCount('update-downloaded')).toBe(
         baselineNativeDownloadedListeners,
@@ -969,7 +969,7 @@ describe('updater service', () => {
         phase: 'downloaded',
         error: {
           code: 'SQUIRREL_INSTALL_FAILED_AGAIN',
-          message: 'duplicate native install failure',
+          detail: 'duplicate native install failure',
         },
       })
       expect(service.install()).toEqual({ accepted: true })
@@ -998,13 +998,13 @@ describe('updater service', () => {
       clickInstall(service)
       expect(service.getState()).toMatchObject({
         phase: 'downloaded',
-        error: { message: 'installer spawn failed' },
+        error: { detail: 'installer spawn failed' },
       })
 
       client.emit('error', { code: 'UPDATE_ERROR', message: 'updater failed again' })
       expect(service.getState()).toMatchObject({
         phase: 'error',
-        error: { code: 'UPDATE_ERROR', message: 'updater failed again' },
+        error: { code: 'UPDATE_ERROR', detail: 'updater failed again' },
       })
       service.dispose()
     } finally {
@@ -1632,5 +1632,107 @@ describe('auto-update preference', () => {
     await expect(service.scheduledCheck()).resolves.toMatchObject({ phase: 'not-available' })
     expect(client.downloadUpdate).not.toHaveBeenCalled()
     service.dispose()
+  })
+})
+
+describe('plain-language install failures', () => {
+  it('says the Windows installer did not start and points at the retry button', async () => {
+    vi.useFakeTimers()
+    try {
+      const client = new FakeUpdater()
+      const service = createUpdaterService(client, { currentVersion: '1.0.0', isPackaged: true, platform: 'win32', installLaunchTimeoutMs: 25 })
+      client.emit('update-downloaded', updateInfo())
+      clickInstall(service)
+      await vi.advanceTimersByTimeAsync(25)
+      const message = service.getState().error?.message ?? ''
+      expect(message).toContain('授权窗口')
+      expect(message).toContain('「更新」页')
+      expect(message).toContain('「重新安装」')
+      expect(message).not.toContain('检查更新')
+      service.dispose()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('leaves the consent window out of the macOS wording', async () => {
+    vi.useFakeTimers()
+    try {
+      const client = new FakeUpdater()
+      const service = createUpdaterService(client, { currentVersion: '1.0.0', isPackaged: true, platform: 'linux', installLaunchTimeoutMs: 25 })
+      client.emit('update-downloaded', updateInfo())
+      clickInstall(service)
+      await vi.advanceTimersByTimeAsync(25)
+      expect(service.getState().error?.message).not.toContain('授权窗口')
+      service.dispose()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('stops a version that failed to auto-install last time at the install step', () => {
+    const client = new FakeUpdater()
+    const asked: string[] = []
+    const service = createUpdaterService(client, {
+      currentVersion: '1.0.0',
+      isPackaged: true,
+      platform: 'win32',
+      previousAutoInstallFailure: (version) => { asked.push(version); return '新版本上次没装上' },
+    })
+    client.emit('update-downloaded', updateInfo())
+    expect(asked).toEqual(['1.1.0'])
+    expect(service.getState()).toMatchObject({
+      phase: 'downloaded',
+      failedStep: 'install',
+      error: { code: 'UPDATE_PREVIOUS_AUTO_INSTALL_FAILED', message: '新版本上次没装上' },
+    })
+    // 「重新安装」照样能用：点一下就清掉错误、拉起安装器。
+    expect(service.install()).toEqual({ accepted: true })
+    expect(client.quitAndInstall).toHaveBeenCalledTimes(1)
+    service.dispose()
+  })
+
+  it('downloads normally when the previous-failure check says nothing or throws', () => {
+    for (const previousAutoInstallFailure of [() => null, () => { throw new Error('boom') }]) {
+      const client = new FakeUpdater()
+      const service = createUpdaterService(client, { currentVersion: '1.0.0', isPackaged: true, platform: 'win32', previousAutoInstallFailure })
+      client.emit('update-downloaded', updateInfo())
+      expect(service.getState()).toMatchObject({ phase: 'downloaded', error: null, failedStep: null })
+      service.dispose()
+    }
+  })
+
+  it('keeps the raw English error for the log and shows plain words instead', async () => {
+    const client = new FakeUpdater()
+    const raw = "ENOENT: no such file or directory, open 'C:\\\\pending\\\\setup.exe'"
+    client.checkForUpdates.mockRejectedValueOnce(Object.assign(new Error(raw), { code: 'ENOENT' }))
+    const service = createUpdaterService(client, { currentVersion: '1.0.0', isPackaged: true, platform: 'win32' })
+    await service.check()
+    expect(service.getState().error).toEqual({
+      code: 'ENOENT',
+      message: '下载好的安装包不完整或被删掉了，常见是安全软件拦了。重新下载一次就好。',
+      detail: raw,
+    })
+  })
+})
+
+describe('describeUnrecognizedUpdateFailure', () => {
+  it('sorts common English failures into plain words', () => {
+    expect(describeUnrecognizedUpdateFailure('ENOSPC: no space left on device, write')).toContain('磁盘空间不够')
+    expect(describeUnrecognizedUpdateFailure('EPERM: operation not permitted, rename')).toContain('安全软件')
+    expect(describeUnrecognizedUpdateFailure('EBUSY: resource busy or locked')).toContain('被占用')
+    expect(describeUnrecognizedUpdateFailure('sha512 checksum mismatch')).toContain('重新下载')
+    expect(describeUnrecognizedUpdateFailure('Something odd happened')).toContain('查看日志')
+  })
+
+  it('keeps messages that are already Chinese and empty input as they are', () => {
+    expect(describeUnrecognizedUpdateFailure('更新尚未下载并校验完成')).toBe('更新尚未下载并校验完成')
+    expect(describeUnrecognizedUpdateFailure('')).toBe('')
+  })
+
+  it('never puts English letters on screen', () => {
+    for (const source of ['ENOSPC', 'EACCES: permission denied', 'ENOENT', 'weird']) {
+      expect(describeUnrecognizedUpdateFailure(source)).not.toMatch(/[A-Za-z]/)
+    }
   })
 })

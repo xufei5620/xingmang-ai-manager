@@ -35,7 +35,9 @@ export function platformCapabilitiesFor(
     platform: family,
     architecture,
     isMac: macos,
-    nodeRuntimeInstall: windows ? 'managed' : 'external',
+    // macOS 上 Node.js 也由本软件准备：官方压缩包解进自己的文件夹，不提权（第十六批 2）。
+    // Python 仍归客户自己装。
+    nodeRuntimeInstall: windows || macos ? 'managed' : 'external',
     pythonRuntimeInstall: windows ? 'managed' : 'external',
     cliInstall: Object.freeze({
       claude: 'managed',

@@ -3,7 +3,6 @@ import {
   type AccountSourceTarget,
   type AppConfigSummary,
   type ChooseWorkspaceOptions,
-  type CliLaunchMode,
   type CodexDesktopLaunchMode,
   type ExternalToolId,
   type InstallCancelResult,
@@ -16,6 +15,7 @@ import { providerFor, type ToolboxSnapshot, type ToolId } from './model'
 import { readAllAccountKeys } from './key-selection'
 import { errorMessage } from '../../business-common'
 import { createTtlCache } from './ttl-cache'
+import type { CliLaunchChoice } from './recent-workspaces'
 import { usageCalendarDate, usageDateRange } from '../../../../electron/usage-date-range'
 
 /** 工具页一次读取里互相独立的三块。 */
@@ -152,15 +152,19 @@ export function createToolsApi(bridge: XingmangApi) {
     // 'new' | 'resumeLast'(#292)。各自只取自己认得的那一个,另一套的值落回本侧
     // 默认,也就是旧行为。以前这里的 CLI 分支根本没把 mode 传下去,首页和记录页
     // 都发不出「接着上次对话」。
-    launch: async (id: ToolId, workspace: string, mode: CodexDesktopLaunchMode | CliLaunchMode = 'open') => {
+    // 带 resumeSessionId 的是 Codex 按记录 id 接着聊，其余情况与原来一样。
+    launch: async (id: ToolId, workspace: string, mode: CodexDesktopLaunchMode | CliLaunchChoice = 'open') => {
       const result = await (id === 'codexDesktop'
         ? bridge.launchCodexDesktop(mode === 'restart' ? 'restart' : 'open')
-        : mode === 'resumeLast' ? bridge.launchCli(id, workspace, 'resumeLast') : bridge.launchCli(id, workspace))
+        : typeof mode === 'object' ? bridge.launchCli(id, workspace, 'resumeLast', mode.resumeSessionId)
+          : mode === 'resumeLast' ? bridge.launchCli(id, workspace, 'resumeLast') : bridge.launchCli(id, workspace))
       // 打开工具就是在开一条新对话（或接上一条），首页那份「最近」立刻就旧了。
       recentSessions.invalidate()
       return result
     },
     prepareRuntime: (runtime: 'node' | 'python') => runtime === 'node' ? bridge.installNodeRuntime() : bridge.installPythonRuntime(),
+    // 客户确认过要换：电脑上的 Node.js 够装工具、却认不了公司证书时照样装新版（第十八批 4）。
+    replaceNode: () => bridge.installNodeRuntime({ reason: 'certificate' }),
     installGit: () => bridge.installGitRuntime(),
     restartWindows: () => bridge.restartWindows(),
     chooseWorkspace: (options?: ChooseWorkspaceOptions) => options === undefined ? bridge.chooseWorkspace() : bridge.chooseWorkspace(options),
@@ -189,6 +193,8 @@ export function createToolsApi(bridge: XingmangApi) {
     official: (tool: ToolId, mode: 'merge' | 'reset' = 'merge') => bridge.switchToOfficialAccount(providerFor(tool), mode),
     // 首页的一键切换：备份、写入、自检、失败回滚都在主进程一次做完。
     switchSource: (tool: ToolId, target: AccountSourceTarget) => bridge.switchAccountSource(providerFor(tool), target),
+    // 提醒设置指向旧位置时的「修好它」：备份、只改那几行、再查一遍都在主进程。
+    repairHooks: (tool: ToolId) => bridge.repairCliHooks(providerFor(tool)),
     /** 打开前的模型核对（第十二批候选 5）。核对本身出错也绝不挡住打开，一律当没核。 */
     async checkModels(tool: ToolId): Promise<ToolModelCheck> {
       try { return await bridge.checkToolModels(providerFor(tool)) }

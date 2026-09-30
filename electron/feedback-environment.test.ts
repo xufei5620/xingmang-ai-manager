@@ -42,6 +42,16 @@ describe('buildFeedbackEnvironmentLines', () => {
     expect(lines[0]).toBe('Claude Code: 已安装 2.1.277（应用托管）；配置：指向当前账号，模型 claude-opus-5')
   })
 
+  it('names the Codex connection and flags one Codex ignores', () => {
+    const codexLine = (config: FeedbackCliConfig) => buildFeedbackEnvironmentLines({
+      clis: statusesWith(),
+      readConfig: (provider) => provider === 'codex' ? config : pointingAtAccount,
+    }).find((line) => line.startsWith('Codex CLI'))
+    expect(codexLine({ ...pointingAtAccount, codexProviderName: 'XingmangAI', codexProviderShadowed: false })).toMatch(/，连接名 XingmangAI$/)
+    expect(codexLine({ ...pointingAtAccount, codexProviderName: 'openai', codexProviderShadowed: true })).toMatch(/，连接名 openai（Codex 不认，要修）$/)
+    expect(codexLine({ ...pointingAtAccount, codexProviderName: 'bad\nname"x', codexProviderShadowed: false })).toMatch(/，连接名 badnamex$/)
+  })
+
   it('labels the other install sources and leaves Grok unlabelled', () => {
     const lines = buildFeedbackEnvironmentLines({
       clis: statusesWith({
@@ -223,6 +233,13 @@ describe('buildFeedbackRuntimeLines', () => {
       '系统语言与时区: zh-CN，Asia/Shanghai',
       '以上来自 2026-09-22T10:00:00.000Z 的扫描',
     ])
+  })
+
+  it('adds the latest certificate conclusion right after the network location', () => {
+    const lines = buildFeedbackRuntimeLines(runtimeInput({ certificateTrust: '这台电脑装了公司或安全软件的证书。' }))
+
+    expect(lines[lines.indexOf('网络位置: 中国大陆') + 1]).toBe('安全证书: 这台电脑装了公司或安全软件的证书。')
+    expect(buildFeedbackRuntimeLines(runtimeInput()).some((line) => line.startsWith('安全证书'))).toBe(false)
   })
 
   it('never carries the public IP or country code from the scan into the report', () => {

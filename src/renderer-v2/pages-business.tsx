@@ -73,9 +73,12 @@ export function BusinessPage({
     )
   if (page === 'sessions')
     return <SessionsPage api={api} onSessionsChanged={onSessionsChanged} />
-  if (page === 'mcp') return <ExtensionsPage api={api} kind="mcp" />
-  if (page === 'skills') return <ExtensionsPage api={api} kind="skill" />
-  if (page === 'plugins') return <ExtensionsPage api={api} kind="plugin" />
+  if (page === 'mcp')
+    return <ExtensionsPage api={api} kind="mcp" onOpenHelp={actions.openHelp} />
+  if (page === 'skills')
+    return <ExtensionsPage api={api} kind="skill" onOpenHelp={actions.openHelp} />
+  if (page === 'plugins')
+    return <ExtensionsPage api={api} kind="plugin" onOpenHelp={actions.openHelp} />
   if (page === 'backups')
     return (
       <BackupsPage

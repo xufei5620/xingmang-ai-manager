@@ -7,6 +7,8 @@ const CLI_DIRECTORY = 'Cli'
 const NPM_PREFIX_DIRECTORY = 'npm'
 const NPM_CACHE_DIRECTORY = 'npm-cache'
 const NATIVE_DIRECTORY = 'native'
+const RUNTIME_DIRECTORY = 'Runtime'
+const NODE_RUNTIME_DIRECTORY = 'node'
 
 function pathApi(platform: NodeJS.Platform): typeof path.posix | typeof path.win32 {
   return platform === 'win32' ? path.win32 : path.posix
@@ -85,6 +87,28 @@ export function managedNativeRoot(
 ): string {
   const root = managedCliRoot(env, platform, machinePaths)
   return pathApi(platform).join(root, NATIVE_DIRECTORY)
+}
+
+/**
+ * macOS 上缺 Node.js 时由本软件下载官方压缩包放在这里（第十六批 2），和四个工具
+ * 同在产品目录下、同属当前用户，不装进系统目录，也就不用输开机密码。Windows 仍由
+ * 机器级 MSI 安装，不用这个目录。
+ */
+export function managedNodeRuntimeRoot(
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+  machinePaths?: WindowsMachinePaths,
+): string {
+  const root = managedProductRoot(env, platform, machinePaths)
+  return pathApi(platform).join(root, RUNTIME_DIRECTORY, NODE_RUNTIME_DIRECTORY)
+}
+
+export function managedNodeRuntimeBinDirectory(
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+  machinePaths?: WindowsMachinePaths,
+): string {
+  return pathApi(platform).join(managedNodeRuntimeRoot(env, platform, machinePaths), 'bin')
 }
 
 export function managedNativeProviderRoot(

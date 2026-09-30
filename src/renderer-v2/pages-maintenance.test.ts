@@ -1,7 +1,8 @@
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
-import { OnboardingSettingRows, TutorialPage, installResultMessage, tutorialTopics, withElevationNotice } from './pages-maintenance'
+import { HealthPage, OnboardingSettingRows, TutorialPage, feedbackCopyNotice, feedbackExportNotice, installResultMessage, tutorialTopics, withElevationNotice } from './pages-maintenance'
+import type { V2Bridge } from './types'
 import { macDesktopTutorialTopic, macRuntimeTutorialTopic } from './registry/business'
 import { clientConnections } from './registry/clients'
 import { pages } from './registry/pages'
@@ -14,6 +15,35 @@ const pageIds = new Set<string>(pages.map((page) => page.id))
 const pageLabels = new Map<string, string>(
   pages.map((page) => [page.id, page.label.replace(' ↗', '')]),
 )
+
+describe('paid Codex check in HealthPage', () => {
+  it('stays hidden until the page knows Codex is installed and leaves the self-check wording alone', () => {
+    const markup = renderToStaticMarkup(createElement(HealthPage, { api: {} as V2Bridge }))
+    expect(markup).not.toContain('health-codex-responses')
+    expect(markup).toContain('这一条证明你现在能用')
+  })
+})
+
+describe('feedback report notices', () => {
+  const fresh = { id: 'report-2', text: 'fresh report\n', entries: 3 }
+
+  it('keeps the plain wording when the previewed report was still current', () => {
+    expect(feedbackCopyNotice({ entries: 3 })).toBe('报告已复制')
+    expect(feedbackExportNotice({ outputPath: 'C:/r.txt' })).toEqual({ text: '反馈报告已导出：C:/r.txt', revealPath: 'C:/r.txt' })
+  })
+
+  it('tells the user the report was refreshed after the preview expired', () => {
+    expect(feedbackCopyNotice({ entries: 3, regenerated: fresh })).toBe('报告已更新到最新日志并复制，发给客服就行')
+    expect(feedbackExportNotice({ outputPath: 'C:/r.txt', regenerated: fresh })).toEqual({
+      text: '报告已更新到最新日志并导出：C:/r.txt',
+      revealPath: 'C:/r.txt',
+    })
+  })
+
+  it('claims nothing when the save dialog was dismissed', () => {
+    expect(feedbackExportNotice(null)).toBeNull()
+  })
+})
 
 function tutorialText(id: string): string {
   const topic = tutorialTopics.find((entry) => entry.id === id)
@@ -151,15 +181,18 @@ describe('tutorial topics', () => {
     expect(text).toContain('藏着让 AI 去做别的事的指令')
   })
 
-  it('tells a Mac customer how to install Node.js and Python by hand', () => {
-    // 候选 10：macOS 上这两样应用不代装，首页给摘要、教程给完整步骤。
+  it('tells a Mac customer to let the app prepare Node.js and how to install both by hand', () => {
+    // 候选 10：macOS 上 Python 应用不代装，首页给摘要、教程给完整步骤。第十六批 2 起
+    // Node.js 由应用准备，手动装法留给想自己装的人。
     const topic = tutorialTopics.find((entry) => entry.id === macRuntimeTutorialTopic)
     expect(topic, '缺少 macOS 运行环境教程章节').toBeDefined()
     const text = tutorialText(macRuntimeTutorialTopic)
     // 两条命令与首页那段提示必须是同一个字符串，否则两处文案会各走各的。
     expect(text).toContain(runtimeHomebrewCommand('node'))
     expect(text).toContain(runtimeHomebrewCommand('python'))
-    expect(text).toContain(runtimeButtonLabel('node', 'external'))
+    expect(text).toContain(runtimeButtonLabel('node', 'managed'))
+    expect(text).toContain(runtimeButtonLabel('python', 'external'))
+    expect(text).toContain('不用输开机密码')
     expect(text).toContain('.pkg')
     // 不代装、不提权这条口径要写在教程里，和运行环境卡一致。
     expect(text).toContain('星芒不会替你跑这条命令')

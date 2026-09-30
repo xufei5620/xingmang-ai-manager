@@ -769,7 +769,12 @@ test('the home recent card resumes the last conversation of that folder (#292)',
     const resume = page.getByTestId('home-recent-resume-claude:1')
     await resume.waitFor()
     assert.equal(await resume.innerText(), '接着聊')
-    assert.equal(await resume.getAttribute('title'), '接着 C:\\work\\my-app 里最近的一条对话')
+    assert.equal(await resume.getAttribute('title'), '用 Claude Code 接着 my-app 里最近的一条对话')
+    // 下面一行写「工具 · 文件夹名」，完整路径放小提示；时间写清是哪天（夹具的时间在 1970 年前后，随时区落在哪天不一定）。
+    const row = page.getByTestId('home-recent-row-claude:1')
+    assert.equal(await row.locator('.xm-row-desc').innerText(), 'Claude Code · my-app')
+    assert.equal(await row.locator('.xm-row-desc span').getAttribute('title'), 'C:\\work\\my-app')
+    assert.match(await row.locator('.xm-row-meta').innerText(), /^19(69|70)年\d{1,2}月\d{1,2}日$/)
     assert.equal(await page.getByTestId('home-recent-resume-claude:2').count(), 1)
     assert.equal(await page.getByTestId('home-recent-resume-claude:3').count(), 0)
     // 没有按钮的那一行仍然能跳去记录页,和以前一样。
@@ -1136,6 +1141,22 @@ test('a failed Git install keeps the button so the customer can simply try again
     await page.getByTestId('page-home').waitFor()
     await page.getByTestId('home-runtime-git').click()
     await page.getByText(/Git 没装上/).first().waitFor()
+    await page.getByTestId('home-runtime-git').waitFor()
+    assert.equal(await page.getByTestId('home-runtime-git').isEnabled(), true)
+    await clean(page)
+  } finally { await page.close() }
+})
+// 第十六批 2：Mac 上「安装 Git」弹苹果自己的安装窗口；客户在那里点了取消，首页说一句、按钮留着。
+test('a Mac customer who cancels the Apple installer is told so and can press Install Git again', async () => {
+  const page = await open('os=mac&gitMissing=1&gitCancel=1')
+  try {
+    await page.getByTestId('page-home').waitFor()
+    const hint = page.getByTestId('home-runtime-git-hint')
+    await hint.waitFor()
+    assert.match(await hint.innerText(), /苹果自己的安装窗口/)
+    assert.doesNotMatch(await hint.innerText(), /终端|xcode-select|brew/)
+    await page.getByTestId('home-runtime-git').click()
+    await page.getByText('没有装 Git。需要时再点一次「安装 Git」就行。').first().waitFor()
     await page.getByTestId('home-runtime-git').waitFor()
     assert.equal(await page.getByTestId('home-runtime-git').isEnabled(), true)
     await clean(page)
@@ -2092,7 +2113,7 @@ test('the updates page names the step that failed and offers that step again', a
 
 // Mac 自签包每换一版，第一次读登录信息都会弹「登录」钥匙串密码框；重启确认框里
 // 先打招呼，Windows 没有这回事，不许多这一句。
-test('the restart-to-install dialog warns about the keychain prompt on Mac only', async () => {
+test('the restart-to-install dialog warns about the keychain prompt on Mac and the consent window on Windows', async () => {
   for (const [query, expected] of [['os=mac', 1], ['', 0]]) {
     const page = await open(query)
     try {
@@ -2109,6 +2130,9 @@ test('the restart-to-install dialog warns about the keychain prompt on Mac only'
       await dialog.waitFor()
       if (expected) await dialog.getByTestId('updates-mac-keychain-hint').getByText('始终允许', { exact: false }).waitFor()
       assert.equal(await dialog.getByTestId('updates-mac-keychain-hint').count(), expected, query || 'windows')
+      // 反过来，Windows 要提醒的是授权窗口点「是」，Mac 上没有这个窗口。
+      if (!expected) await dialog.getByTestId('updates-windows-consent-hint').getByText('点「是」', { exact: false }).waitFor()
+      assert.equal(await dialog.getByTestId('updates-windows-consent-hint').count(), expected ? 0 : 1, query || 'windows')
       await clean(page)
     } finally { await page.close() }
   }
@@ -4028,6 +4052,93 @@ test('the connection self-check reports every CLI on its own, and an unconfigure
   } finally { await page.close() }
 })
 
+test('the paid Codex tool-call check requires fresh consent and drops an old-account result', async () => {
+  const page = await open()
+  try {
+    await page.getByTestId('nav-more').click()
+    await page.getByTestId('nav-health').click()
+    const consent = page.getByTestId('health-codex-responses-consent').getByRole('switch')
+    const run = page.getByTestId('health-codex-responses-run')
+    await expect(run).toBeDisabled()
+    assert.equal(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'probeCodexResponses').length), 0)
+    await page.evaluate(() => window.v2Test.holdNextResponses())
+    await consent.click()
+    await run.click()
+    await page.waitForFunction(() => window.v2Test.calls.filter((entry) => entry.method === 'probeCodexResponses').length === 1)
+    await expect(run).toBeDisabled()
+    await page.evaluate(async () => {
+      const current = await window.xingmang.getAccountSession()
+      window.v2Test.emit('onAccountSessionChanged', {
+        ...current, account: { ...current.account, userId: 18 },
+      })
+      window.v2Test.releaseResponses()
+    })
+    await expect(consent).toBeEnabled()
+    assert.equal(await page.getByTestId('health-codex-responses-result').count(), 0)
+    await expect(run).toBeDisabled()
+
+    await consent.click()
+    await run.click()
+    await page.getByTestId('health-codex-responses-result').getByText('Codex 干活检查 · 正常', { exact: true }).waitFor()
+    const calls = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'probeCodexResponses'))
+    assert.equal(calls.length, 2)
+    assert.deepEqual(calls.map((entry) => entry.args), [[true, 'xm-account:17'], [true, 'xm-account:18']])
+    await expect(run).toBeDisabled()
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('account switch during session read prevents the paid Codex check IPC entirely', async () => {
+  const page = await open()
+  try {
+    await page.getByTestId('nav-more').click()
+    await page.getByTestId('nav-health').click()
+    const consent = page.getByTestId('health-codex-responses-consent').getByRole('switch')
+    const run = page.getByTestId('health-codex-responses-run')
+    const previousReads = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'getAccountSession').length)
+    await page.evaluate(() => window.v2Test.holdNextAccountSession())
+    await consent.click()
+    await run.click()
+    await page.waitForFunction((count) => window.v2Test.calls.filter((entry) => entry.method === 'getAccountSession').length > count, previousReads)
+    await page.evaluate(async () => {
+      const current = { authenticated: true, account: {
+        userId: 18, username: 'new-user', group: 'default', role: 1, quota: 0, usedQuota: 0,
+      } }
+      window.v2Test.emit('onAccountSessionChanged', current)
+      window.v2Test.releaseAccountSession()
+    })
+    await expect(consent).toBeEnabled()
+    await expect(run).toBeDisabled()
+    assert.equal(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'probeCodexResponses').length), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('the paid Codex check waits for startup account restore instead of reporting a changed account', async () => {
+  const page = await open('restoring=1')
+  try {
+    await page.getByTestId('nav-more').click()
+    await page.getByTestId('nav-health').click()
+    await page.getByTestId('health-codex-responses-consent').getByRole('switch').click()
+    await page.getByTestId('health-codex-responses-run').click()
+    await page.getByTestId('health-codex-responses-error').getByText('账号还在登录中，请等几秒再检查', { exact: true }).waitFor()
+    assert.equal(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'probeCodexResponses').length), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('the paid Codex check stays hidden when Codex is not installed', async () => {
+  const page = await open('codexMissing=1')
+  try {
+    await page.getByTestId('nav-more').click()
+    await page.getByTestId('nav-health').click()
+    await page.getByTestId('health-connection-run').waitFor()
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'scanSystem'))
+    assert.equal(await page.getByTestId('health-codex-responses').count(), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('a self-check failure is attributed per tool and never takes the other tools down with it', async () => {
   const page = await open('connectionFailure=1&connectionUnavailable=1')
   try {
@@ -4391,6 +4502,56 @@ test('tutorial installation guides open the Mac desktop chapter and clear previo
       await expect(search).toHaveValue('')
     }
     assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => entry.method === 'installExternalClient')), false)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// #623: a bad tool config is a recoverable toolbox partition, not a reason to
+// trap the whole application on Splash. The account path must fail before it
+// can issue a managed Key or rewrite any local configuration.
+test('startup configuration failure opens the signed-in toolbox without issuing Keys or overwriting tools', async () => {
+  const page = await open('startupConfigFail=1&allInstalled=1')
+  try {
+    await page.getByTestId('page-home').waitFor()
+    const failure = page.getByTestId('home-config-failure')
+    await failure.waitFor()
+    assert.match(await failure.innerText(), /工具配置暂未读到：本地测试操作失败/)
+    assert.equal(await page.getByTestId('tool-row-codex').getByText('未安装', { exact: true }).count(), 0)
+    const written = await page.evaluate(() => window.v2Test.calls.filter((entry) => ['syncManagedCliKeys', 'configureManagedCliKeys', 'saveConfig', 'saveConfigWithAccountKey', 'createAccountKey', 'switchAccountSource'].includes(entry.method)))
+    assert.deepEqual(written, [])
+    await page.getByTestId('nav-more').click()
+    await page.getByTestId('nav-health').click()
+    await page.getByTestId('page-health').waitFor()
+    await page.getByTestId('nav-backups').click()
+    await page.getByTestId('page-backups').waitFor()
+    await page.getByTestId('nav-home').click()
+    await page.evaluate(() => { window.v2Test.fail = '' })
+    await failure.getByRole('button', { name: '重新检测' }).click()
+    await failure.waitFor({ state: 'detached' })
+    await page.getByTestId('tool-row-codex').getByText('已配好').waitFor()
+    assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((entry) => ['syncManagedCliKeys', 'configureManagedCliKeys', 'saveConfig', 'saveConfigWithAccountKey', 'createAccountKey', 'switchAccountSource'].includes(entry.method))), [])
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('startup configuration failure lets a guest log in and reach recovery pages without creating Keys', async () => {
+  const page = await open('guest=1&existing=1&startupConfigFail=1&allInstalled=1')
+  try {
+    await page.getByTestId('welcome-page').waitFor()
+    await page.getByTestId('welcome-login').click()
+    await page.getByTestId('login-account').fill('fixture-user')
+    await page.getByTestId('login-password').fill('fixture-password')
+    await page.getByTestId('auth-agree').check()
+    await page.getByTestId('login-submit').click()
+    await page.getByTestId('guide-pause').click()
+    await page.getByTestId('page-home').waitFor()
+    await page.getByTestId('home-config-failure').waitFor()
+    await page.getByTestId('nav-more').click()
+    await page.getByTestId('nav-health').click()
+    await page.getByTestId('page-health').waitFor()
+    await page.getByTestId('nav-backups').click()
+    await page.getByTestId('page-backups').waitFor()
+    assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((entry) => ['syncManagedCliKeys', 'configureManagedCliKeys', 'saveConfig', 'saveConfigWithAccountKey', 'createAccountKey', 'switchAccountSource'].includes(entry.method))), [])
     await clean(page)
   } finally { await page.close() }
 })

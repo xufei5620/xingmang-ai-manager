@@ -252,6 +252,8 @@ describe('v2 business boundaries', () => {
     expect(diagnosticTarget('RUNTIME_GIT')).toBe('home')
     // 文件夹被搬过没有软件里能一键修的地方，下一步是导出报告。
     expect(diagnosticTarget('FOLDER_RELOCATED')).toBe('feedback')
+    // 加速文件坏了：「重新检查」和「联系客服」都在加速页上。
+    expect(diagnosticTarget('ACCELERATION_BUNDLE')).toBe('acceleration')
   })
   it('offers no fix button where no page in the app can fix it', () => {
     for (const code of [
@@ -269,6 +271,14 @@ describe('v2 business boundaries', () => {
       expect(diagnosticHasFix(code)).toBe(false)
     }
     expect(diagnosticHasFix('CODEX_DOTENV')).toBe(true)
+  })
+  it('sends only the outdated Node.js certificate verdict to the install page', () => {
+    expect(diagnosticTarget('CERTIFICATE_TRUST', { verdict: 'outdatedNode' })).toBe('maintenance')
+    expect(diagnosticHasFix('CERTIFICATE_TRUST', { verdict: 'outdatedNode' })).toBe(true)
+    for (const verdict of ['untrusted', 'elevated', 'direct', 'systemTrusted', 'unknown']) {
+      expect(diagnosticHasFix('CERTIFICATE_TRUST', { verdict })).toBe(false)
+    }
+    expect(diagnosticHasFix('CERTIFICATE_TRUST')).toBe(false)
   })
   it('tells the account page why the server refused instead of asking for a retry', () => {
     expect(errorMessage(new Error('Original password is incorrect'))).toBe(

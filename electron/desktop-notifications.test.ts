@@ -155,3 +155,48 @@ describe('desktop notification lifecycle', () => {
     expect(controller.handleUpdate(update({ availableVersion: '0.3.0' }))).toBe('ignored')
   })
 })
+
+describe('auto-update wording', () => {
+  it('tells the user the update installs itself when auto-update is on', () => {
+    const available = updateDesktopNotification(update(), true)!
+    expect(available.body).toBe('新版 0.2.0 正在后台下载，下好后关掉软件时自动装上。')
+    const downloaded = updateDesktopNotification(update({ phase: 'downloaded' }), true)!
+    expect(downloaded.body).toContain('自动装上')
+    expect(downloaded.body).not.toContain('重启安装')
+  })
+
+  it('keeps the old wording when auto-update is off or cannot be read', () => {
+    expect(updateDesktopNotification(update({ phase: 'downloaded' }))!.body).toBe('版本 0.2.0 已下载，可在更新页面重启安装。')
+    const { controller, runtime } = fixture({ readAutoUpdate: () => { throw new Error('settings unreadable') } })
+    controller.handleUpdate(update())
+    expect(runtime.create).toHaveBeenCalledWith(expect.objectContaining({ body: '版本 0.2.0 已可下载。' }))
+  })
+
+  it('reads the auto-update switch through the controller', () => {
+    const { controller, runtime } = fixture({ readAutoUpdate: () => true })
+    controller.handleUpdate(update({ phase: 'downloaded' }))
+    expect(runtime.create).toHaveBeenCalledWith(expect.objectContaining({ body: expect.stringContaining('自动装上') }))
+  })
+})
+
+describe('install announcement', () => {
+  it('shows the pre-install notice even when update notifications are turned off', () => {
+    const { controller, notifications } = fixture({ readEnabled: () => false })
+    expect(controller.announce({ title: '正在安装星芒AI新版本', body: '正在装新版 0.2.12' })).toBe('requested')
+    expect(notifications[0].show).toHaveBeenCalledOnce()
+  })
+
+  it('stays quiet where the system has no notifications, and after dispose', () => {
+    const unsupported = fixture({}, { isSupported: () => false })
+    expect(unsupported.controller.announce({ title: 't', body: 'b' })).toBe('unsupported')
+    const disposed = fixture()
+    disposed.controller.dispose()
+    expect(disposed.controller.announce({ title: 't', body: 'b' })).toBe('ignored')
+  })
+
+  it('reports a notification that fails to show instead of throwing', () => {
+    const { controller, options } = fixture({}, { create: () => { throw new Error('native failed') } })
+    expect(controller.announce({ title: 't', body: 'b' })).toBe('failed')
+    expect(options.onError).toHaveBeenCalled()
+  })
+})

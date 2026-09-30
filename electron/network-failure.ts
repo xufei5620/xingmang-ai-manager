@@ -41,7 +41,7 @@ const serviceUnavailableText = '服务暂时不可用（维护或线路繁忙）
 export const networkFailureMessages: Readonly<Record<NetworkFailureReason, string>> = {
   offline: '设备当前没有连上网络，请先连接网络再试。',
   dns: '当前网络解析不出账号服务的地址，校园网、公司网常见。换一个网络（例如手机热点）通常就能用。',
-  tls: '当前网络替换了这次连接的安全证书，为保护账号信息已经中止本次请求。请换一个网络再试，不要在这个网络上继续输入密码。',
+  tls: '当前网络替换了这次连接的安全证书，这台电脑也不认它，为保护账号信息已经中止本次请求。公司电脑请找网络管理员处理；自己的电脑请换一个网络再试，不要在这个网络上继续输入密码。',
   certDate: certificateDateMessage,
   proxy: '系统里设置的代理连不上，请检查代理或加速设置后再试。',
   refused: '与账号服务的连接被当前网络切断了，校园网、公司网常见。换一个网络（例如手机热点）再试一次。',
@@ -59,13 +59,37 @@ export const networkFailureMessages: Readonly<Record<NetworkFailureReason, strin
 export const updateNetworkFailureMessages: Readonly<Record<NetworkFailureReason, string>> = {
   offline: '设备当前没有连上网络，请先连接网络再试。',
   dns: '当前网络解析不出更新服务器的地址，校园网、公司网常见。换一个网络（例如手机热点）通常就能用。',
-  tls: '当前网络替换了这次连接的安全证书，为保证安装包来源可信已经中止本次更新。请换一个网络再试。',
+  tls: '当前网络替换了这次连接的安全证书，这台电脑也不认它，为保证安装包来源可信已经中止本次更新。公司电脑请找网络管理员处理；自己的电脑请换一个网络再试。',
   certDate: certificateDateMessage,
   proxy: '系统里设置的代理连不上，请检查代理或加速设置后再试。',
   refused: '与更新服务器的连接被当前网络切断了，校园网、公司网常见。换一个网络（例如手机热点）再试一次。',
   timeout: '连接更新服务器超时，请检查网络后再试。',
   intercepted: '当前网络把这次请求拦到了别的页面，多半是校园网或公共 Wi-Fi 要求先在浏览器完成上网认证。认证之后再试，或者改用手机热点。',
   serviceUnavailable: '更新服务器暂时不可用（维护或线路繁忙），你这边不用做任何改动，稍后再试就行。',
+}
+
+/**
+ * 工具那一侧（npm、Claude Code、Gemini CLI 这些 Node 程序）报「证书被换掉」，而星芒
+ * 自己已经让它们也信任这台电脑装的证书之后，仍然失败的两种可以说清的情况。判断在
+ * 主进程（system-certificate-trust.ts），这里只放那一句话：主进程把它接在安装失败
+ * 的原文后面，渲染层按它认出是哪一种，文案因此只有一份。
+ *
+ * 两句都刻意不叫人换网络：这时网络没问题，换到手机热点也还是同一张证书——公司
+ * 电脑上它本来就该在，安全软件则在哪个网络上都会替换。
+ */
+export type ToolCertificateFailureKind = 'outdatedNode' | 'elevated'
+
+export const toolCertificateMessages: Readonly<Record<ToolCertificateFailureKind, string>> = {
+  outdatedNode: '工具下载时这次连接的安全证书被换掉了，公司电脑和安全软件常见。电脑上的 Node.js 版本较旧，认不了装在这台电脑上的证书，换成新版就能装上。',
+  elevated: '工具下载时这次连接的安全证书被换掉了，公司电脑和安全软件常见。星芒现在是以管理员身份打开的，为了安全，这时不让工具信任电脑上另外装的证书。请关掉星芒，直接双击正常打开，再重试。',
+}
+
+const toolCertificateKinds = Object.keys(toolCertificateMessages) as ToolCertificateFailureKind[]
+
+/** 认出上面那两句里的一句；认不出返回 null。 */
+export function toolCertificateFailureForMessage(text: unknown): ToolCertificateFailureKind | null {
+  if (typeof text !== 'string' || !text) return null
+  return toolCertificateKinds.find((kind) => text.includes(toolCertificateMessages[kind])) ?? null
 }
 
 /**

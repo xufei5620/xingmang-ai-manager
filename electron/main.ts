@@ -10,6 +10,7 @@ import {
   nativeImage,
   net,
   powerMonitor,
+  powerSaveBlocker,
   protocol,
   safeStorage,
   screen,
@@ -24,13 +25,13 @@ import { createAccelerationExpiryNotice, type AccelerationExpiryNotice } from '.
 import { createAccelerationInterruptionNotice, type AccelerationInterruptionNotice } from './acceleration-interruption-notice'
 import { createAccelerationPower } from './acceleration-power'
 import { createAccelerationService } from './acceleration-service'
-import { accelerationConflictDescriptions, accelerationFailureMessages, type AccelerationMode, type AccelerationState } from './acceleration-contract'
+import { accelerationConflictDescriptions, accelerationFailureMessages, type AccelerationBundleCheck, type AccelerationMode, type AccelerationState } from './acceleration-contract'
 import { accelerationStartRequest, createAccelerationPreferenceStore, defaultAccelerationPreference } from './acceleration-preference-store'
 import { accelerationStartFailureDescriptions, createAccelerationDevelopmentHost, readAccelerationDevelopmentConfig, type AccelerationDevelopmentHost } from './acceleration-development-host'
 import { readBundledAccelerationConfig } from './acceleration-bundled-config'
 import { AiAssetStore } from './ai-asset-store'
 import { createAiChatHistoryStore } from './ai-chat-history-store'
-import { migrateLegacyAiOutput, resolveAiOutputRoot, resolveLegacyAiOutputRoot } from './ai-output-location'
+import { chooseAiOutputRoot, migrateLegacyAiOutput, resolveLegacyAiOutputRoot } from './ai-output-location'
 import { AI_CHAT_STREAM_LIMITS, createAiChatService } from './ai-chat-service'
 import { createAiImageService } from './ai-image-service'
 import { AiVideoAssetStore } from './ai-video-asset-store'
@@ -53,9 +54,10 @@ import { calculateUiZoom, resolveWindowPlacement } from './window-preferences'
 import { attachEditContextMenu } from './context-menu'
 import { recoverOffscreenWindow } from './window-recovery'
 import { createWindowLifecycle } from './window-lifecycle'
+import { installLeftoverStartupDelayMs, sweepInstallLeftovers } from './install-leftovers'
 import { createLoginQuietPeriod, hasLoginLaunchArgument, loginQuietPeriodMs, resolveLoginLaunch, shouldRevealInitialWindow, windowsAppUserModelId } from './login-launch'
 import { resolveInstallableUpdateOnQuit, resolveInterruptibleInstallTask } from './quit-blocking-tasks'
-import { createPendingUpdateStore, decideLaunchInstall, resolveDownloadedVersionToRecord } from './auto-update-install'
+import { LAUNCH_INSTALL_NOTICE_MS, QUIT_INSTALL_NOTICE_MS, buildAutoInstallNotice, createPendingUpdateStore, decideLaunchInstall, decideQuitInstall, previousAutoInstallFailureMessage, resolveDownloadedVersionToRecord, resolvePreviousAutoInstallFailure } from './auto-update-install'
 import { createWindowResponsivenessGuard } from './window-responsiveness'
 import { createRendererCrashRecovery } from './renderer-crash-recovery'
 import { createApplicationTray, traySubscriptionLabel, type ApplicationTrayController } from './application-tray'
@@ -79,6 +81,7 @@ import { CanvasPromptPresetStore } from './canvas-prompt-preset-store'
 import { CanvasProjectStore } from './canvas-project-store'
 import { CanvasProjectAssetManager, createCanvasProjectAssetContext } from './canvas-project-asset-manager'
 import { createAiAssetProtocolHandler } from './ai-asset-protocol'
+import { createChatAttachmentService, type ChatImageCodec } from './ai-chat-attachments'
 import { resolveCodexHomeContext } from './codex-home'
 import { runCodexContextLimitsMigration } from './codex-config-migration'
 import { runWithTrustedWindowsProcessEnvironment } from './command-runner'
@@ -130,7 +133,8 @@ import {
   type DiagnosticsReport,
   type DiagnosticsRunOptions,
 } from './diagnostics'
-import { runConnectionCheck } from './connection-check'
+import { buildConnectionProbe, runConnectionCheck } from './connection-check'
+import { createCodexResponsesProbeService } from './codex-responses-probe'
 import type { ExternalToolId } from './external-tool-config'
 import { registerIpcHandlers, type AppWindowMode } from './ipc'
 import {
@@ -138,6 +142,9 @@ import {
   resolveXingmangAiBundledSkillRoot,
 } from './xingmang-ai-skill'
 import { resolveClaudeStatusLineScriptPath } from './claude-status-line'
+import { cliHookEventsDirectory, resolveCliHookScriptPath } from './cli-hooks'
+import { createCliHookEventMonitor } from './cli-hook-events'
+import { createCliKeepAwake } from './cli-keep-awake'
 import { resolveProjectInstructionsTemplatePath } from './project-instructions'
 import { ipcEventChannels, type AccountBalance, type AccountSubscriptionSelf, type SettingsSaveIssue } from './ipc-contract'
 import {
@@ -176,6 +183,7 @@ import {
 } from './window-presentation'
 import { buildStartupFailureDialog, classifyStorageFailure, dataDriveLetter } from './startup-failure'
 import { installMainWindowFrameNavigationGuard } from './platform/frame-navigation'
+import { codexDesktopStoreUrl } from './codex-desktop-install-failure'
 
 guardProcessOutputStreams()
 
@@ -193,7 +201,8 @@ const nonSiteExternalUrlAllowlist = [
   // 缺少系统 winget 时首页 Claude Desktop、OpenCode 两行的「去官网下载」（逐条全等）。
   ...Object.values(externalClientOfficialDownloadUrls),
   'https://chatgpt.com/download/',
-  'ms-windows-store://pdp/?ProductId=9PLM9XGG6VKS',
+  // Codex 桌面端装不上时错误框里的「去微软商店装」（第十九批 5）。
+  codexDesktopStoreUrl,
 ] as const
 
 // Every relay site's own destinations (marketing and keys pages) is derived
@@ -285,7 +294,7 @@ function readDocumentsDirectory(): string | null {
   try {
     return app.getPath('documents')
   } catch {
-    // 拿不到「文档」时由 resolveAiOutputRoot 退到用户主目录。
+    // 拿不到「文档」时由 resolveAiOutputRoot（经 chooseAiOutputRoot）退到用户主目录。
     return null
   }
 }
@@ -350,6 +359,24 @@ function createNativeThumbnailRenderer(): AssetThumbnailRenderer {
       }
     },
   }
+}
+
+// Screenshots pasted into the chat are shrunk here, in the main process, before
+// anything is stored or sent. nativeImage decodes PNG and JPEG on every
+// platform; a WebP it cannot read comes back empty and is reported as such.
+const nativeChatImageCodec: ChatImageCodec = {
+  decode(bytes, maxEdge) {
+    let image = nativeImage.createFromBuffer(bytes)
+    if (image.isEmpty()) return null
+    const size = image.getSize()
+    const longest = Math.max(size.width, size.height)
+    if (longest > maxEdge) {
+      const scale = maxEdge / longest
+      image = image.resize({ width: Math.max(1, Math.round(size.width * scale)), height: Math.max(1, Math.round(size.height * scale)), quality: 'good' })
+    }
+    const resized = image.getSize()
+    return { width: resized.width, height: resized.height, png: () => image.toPNG(), jpeg: (quality) => image.toJPEG(quality) }
+  },
 }
 
 function windowForContents(contents: WebContents): BrowserWindow {
@@ -837,6 +864,20 @@ if (!hasSingleInstanceLock) {
         bundledMetadata: applicationPackage.xingmangAccelerationBundle })
       : readAccelerationDevelopmentConfig({ isPackaged: false, platform: process.platform, dataDirectory: managerDataDirectory })
     ).then((config) => ({ ok: true as const, config }), (error: unknown) => ({ ok: false as const, error }))
+    // 正式安装包自带的加速文件读不通：多半被杀毒软件隔离或改动了。开发时没带加速
+    // 文件照旧是「线路准备中」，只有安装包里本该有、却读坏了才这样说（第十六批 6）。
+    const accelerationBundleStatus = accelerationConfigRead.then((read): 'intact' | 'damaged' | null => (
+      !app.isPackaged ? null : !read.ok ? 'damaged' : read.config ? 'intact' : null
+    ))
+    // 「重新检查」连点几下只读一遍：内核文件有几十 MB。
+    let accelerationBundleRecheck: Promise<AccelerationBundleCheck> | null = null
+    function recheckAccelerationBundle(): Promise<AccelerationBundleCheck> {
+      accelerationBundleRecheck ??= readBundledAccelerationConfig({ isPackaged: true, platform: process.platform,
+        resourcesPath: process.resourcesPath, bundledMetadata: applicationPackage.xingmangAccelerationBundle })
+        .then((config): AccelerationBundleCheck => config ? 'repaired' : 'damaged', (): AccelerationBundleCheck => 'damaged')
+        .finally(() => { accelerationBundleRecheck = null })
+      return accelerationBundleRecheck
+    }
     const codexContext = resolveCodexHomeContext({
       isPackaged: app.isPackaged,
       env: process.env,
@@ -1003,6 +1044,7 @@ if (!hasSingleInstanceLock) {
     }
     let readAccountSiteId: () => string = () => 'solov'
     let readExternalClientAccountId: () => string | null = () => null
+    let readBillingAccountScope: () => string = () => 'xm-account:guest'
     // 下载专用的网络分区：它的代理只在装 CLI / 下 Node 的那几分钟里被设成加速
     // 内核的回环端口，默认 session 一行不动，所以账号、中转与画布流量不受
     // 影响。非 persist: 前缀 = 内存分区，不落盘。
@@ -1082,6 +1124,7 @@ if (!hasSingleInstanceLock) {
       getExternalClientAccountId: () => readExternalClientAccountId(),
       windowsExecutionMode: windowsCliExecutionMode,
       runtimeLog,
+      sweepInstallLeftovers,
       ...(process.platform === 'win32'
         ? { ensureWindowsUserPath: (directory: string) => ensureDirectoryOnWindowsUserPath(directory) }
         : {}),
@@ -1093,6 +1136,10 @@ if (!hasSingleInstanceLock) {
         packaged: app.isPackaged,
         resourcesPath: process.resourcesPath,
       }) ?? undefined,
+      cliHookScriptPath: resolveCliHookScriptPath(app.getAppPath(), {
+        packaged: app.isPackaged,
+        resourcesPath: process.resourcesPath,
+      }) ?? undefined,
       ...rootedOptions.system,
       relayFetch,
       networkLocationFetch: (input, init) => net.fetch(input instanceof URL ? input.href : input, init),
@@ -1100,6 +1147,9 @@ if (!hasSingleInstanceLock) {
       // the OS proxy or imposing a new Chromium proxy mode.
       reloadNetworkProxyConfig: () => session.defaultSession.forceReloadProxyConfig(),
       downloadFetch,
+      // 查版本也走 Chromium：主进程自带的 Node fetch 不认公司或安全软件装在这台电脑
+      // 上的证书，公司电脑装工具会卡在第一步（system-certificate-trust.ts）。
+      registryFetch: downloadFetch,
       resolveSubprocessProxyEnvironment: async () => {
         // 临时线路本身就是回环端点，直接交给子进程；没有临时线路时仍然沿用
         // 系统代理那条老路（跨提权边界的过滤在 download-proxy.ts 里）。
@@ -1158,6 +1208,31 @@ if (!hasSingleInstanceLock) {
     // 最近一次连接自检的结论，只留进报告的那几项（没有 Key、没有地址、没有站
     // 点名）。键是四个工具，所以天然有界。
     const latestConnectionChecks = new Map<ProviderId, FeedbackConnectionRecord>()
+    function codexProbeContext() {
+      const site = resolveRelaySite(systemService.readStoredConfig().relaySiteId)
+      const inspection = inspectProviderConfig(
+        'codex', rootedOptions.system.providerRoots, site.providerBaseUrls,
+      )
+      return { site, inspection }
+    }
+    const codexResponsesProbe = createCodexResponsesProbeService(
+      () => {
+        const { site, inspection } = codexProbeContext()
+        return buildConnectionProbe('codex', site, inspection)
+      },
+      {
+        fetch: relayFetch,
+        // The Key stays in main-process memory. Re-reading it after the first
+        // response prevents a second paid request after account/source changes.
+        currentScope: () => {
+          const { site, inspection } = codexProbeContext()
+          return JSON.stringify([
+            readBillingAccountScope(), site.id, inspection.actualBaseUrl,
+            inspection.apiKey, inspection.model, inspection.matchesRelay,
+          ])
+        },
+      },
+    )
     // 诊断导出与反馈报告都要把本机真正写着的那几把 Key 当敏感值剔掉。
     const sensitiveKeyValues = () => providerIds
       .map((provider) => inspectProviderConfig(provider, rootedOptions.system.providerRoots).apiKey)
@@ -1183,7 +1258,12 @@ if (!hasSingleInstanceLock) {
           userDataDirectory: app.getPath('userData'),
           // 跟着当前账号所在的那一套 output 走（历史账号多一层 realms/api-account）。
           probeAiOutput: () => assetStore.assertWritable(),
+          aiOutputPlacement: () => currentBusiness().aiOutputPlacement,
+          // 「文档文件夹能不能写」一项（Windows）：新项目与 AI 作品默认都放在它下面。
+          documentsDirectory: readDocumentsDirectory(),
+          ...await accelerationBundleStatus.then((status) => status ? { accelerationBundle: status } : {}),
           windowsExecution: windowsCliExecution,
+          windowsProcessor: await systemService.inspectWindowsProcessor(),
           // 报告只装中文结论（它会被导出发给客服），认出失败靠的那段上游原文
           // 留在 runtime.jsonl 里。
           log: (level, event, message, detail) => runtimeLog.log(level, 'diagnostics', event, message, detail),
@@ -1217,6 +1297,12 @@ if (!hasSingleInstanceLock) {
           checkedAt: result.checkedAt,
         })
         return result
+      },
+      probeCodexResponses: (expectedAccountScope: string) => {
+        if (expectedAccountScope !== readBillingAccountScope()) {
+          throw new Error('当前账号变了，请重新勾选确认后再检查')
+        }
+        return codexResponsesProbe.run()
       },
       // 外部客户端的自检由 system-service 出面：Key、地址与归属都只有它算得出
       // 来，主进程这一层只负责把它接到通道上。
@@ -1270,6 +1356,12 @@ if (!hasSingleInstanceLock) {
     let updateQuitHandoff: { prepare(): Promise<void> | undefined; abort(): void } | null = null
     // 退出流程（窗口生命周期）在 IPC 注册之后才建好，先占个位。
     let requestRelaunch: (() => Promise<boolean>) | null = null
+    // 自动更新的落盘记录（见 auto-update-install.ts）。要在更新服务之前读好：下载完成
+    // 那一刻就要用它认出「上次自动装过却没装上」的版本。
+    const pendingUpdateStore = createPendingUpdateStore({ filePath: path.join(managerDataDirectory, 'pending-update.json') })
+    const pendingUpdateAtLaunch = pendingUpdateStore.read()
+    let pendingUpdateRecord = { ...pendingUpdateAtLaunch }
+    let previousAutoInstallFailureReported = false
     const updaterService = createUpdaterService(autoUpdater, {
       installedRelease,
       currentVersion: app.getVersion(),
@@ -1280,6 +1372,15 @@ if (!hasSingleInstanceLock) {
       // 同意「Windows 也自动更新」。撤回名单、分批放量、SHA-512 复核照旧生效。
       unsignedAutoUpdate: true,
       readAutoUpdate: () => systemService.readStoredConfig().autoUpdate !== false,
+      // 每次运行只认一次：用户点「重新安装」后又重新下载同一版时，不该再被判成上次失败。
+      previousAutoInstallFailure: (version) => {
+        if (previousAutoInstallFailureReported) return null
+        const failed = resolvePreviousAutoInstallFailure(version, app.getVersion(), pendingUpdateAtLaunch)
+        if (!failed) return null
+        previousAutoInstallFailureReported = true
+        runtimeLog.log('warn', 'updater', 'install.auto.previous-failed', `上次自动安装 ${failed} 没有装上，这次不再自动装`)
+        return previousAutoInstallFailureMessage(process.platform)
+      },
       verifyPackageDigest: verifyUpdatePackageDigest,
       // 监视器在更新服务之后才建（它要把结果交回更新服务），这里等真正检查时再取。
       refreshServiceStatus: () => serviceStatusMonitor ? serviceStatusMonitor.refresh() : Promise.resolve(null),
@@ -1351,6 +1452,20 @@ if (!hasSingleInstanceLock) {
     let applicationTray: ApplicationTrayController | null = null
     let trayAcceleration: TrayAccelerationCoordinator | null = null
     let accelerationExpiry: AccelerationExpiryNotice | null = null
+    // 终端里的 Claude Code / Gemini CLI 出错、做完、等人时由钩子留下记录，这里读出来发
+    // 系统通知。窗口没开着也照读：人走开的时候恰恰是最需要提醒的时候。
+    // 同一份记录也用来在工具干活时挡住自动睡眠，做完、出错、退出就放开。
+    const cliKeepAwake = createCliKeepAwake({
+      blocker: powerSaveBlocker,
+      log: (level, event, message, detail) => runtimeLog.log(level, 'config', event, message, detail),
+    })
+    const cliHookEvents = createCliHookEventMonitor({
+      directory: cliHookEventsDirectory(managerDataDirectory),
+      notify: (terminal, eventKey) => { hostNotifier()({ terminal, eventKey }) },
+      onEvent: (event) => cliKeepAwake.observe(event),
+      log: (level, event, message, detail) => runtimeLog.log(level, 'config', event, message, detail),
+    })
+    cliHookEvents.start()
     let accelerationInterruption: AccelerationInterruptionNotice | null = null
     let latestTraySystem: SystemSnapshot | null = null
     let latestTrayBalance: AccountBalance | null = null
@@ -1389,6 +1504,7 @@ if (!hasSingleInstanceLock) {
         platform: process.platform,
         executionMode: process.platform === 'win32' ? windowsCliExecutionMode : null,
         executionProbeFailure: windowsCliExecution.probeFailure?.reason ?? null,
+        certificateTrust: latestDiagnostics?.items.find((item) => item.code === 'CERTIFICATE_TRUST')?.summary ?? null,
         appDirectory: path.dirname(app.getPath('exe')),
         dataDirectory: managerDataDirectory,
         managedDirectory,
@@ -1423,13 +1539,11 @@ if (!hasSingleInstanceLock) {
       },
       onError: (error) => runtimeLog.exception('window', 'notification.failed', error),
       iconPath: path.join(app.getAppPath(), 'assets', 'brand', 'v3', 'app-icon.png'),
+      readAutoUpdate: () => updaterService.autoUpdateEnabled(),
     })
     const unsubscribeDesktopNotifications = updaterService.subscribe((state) => desktopNotifications.handleUpdate(state))
     // 自动更新：上一次运行已经下好的版本，这次一打开就装上（见 auto-update-install.ts）。
     const launchedAt = Date.now()
-    const pendingUpdateStore = createPendingUpdateStore({ filePath: path.join(managerDataDirectory, 'pending-update.json') })
-    const pendingUpdateAtLaunch = pendingUpdateStore.read()
-    let pendingUpdateRecord = { ...pendingUpdateAtLaunch }
     let launchInstallTried = false
     const unsubscribeAutoUpdateInstall = updaterService.subscribe((state) => {
       const downloaded = resolveDownloadedVersionToRecord(state, pendingUpdateRecord)
@@ -1452,8 +1566,19 @@ if (!hasSingleInstanceLock) {
       launchInstallTried = true
       runtimeLog.log('info', 'updater', 'install.on-launch', `上次已下载好 ${version}，启动时自动安装`)
       pendingUpdateRecord = { ...pendingUpdateRecord, attemptedVersion: version }
-      // 先把「试过了」写稳再装：安装器起不来时，下次打开不会再试同一个版本。
-      void pendingUpdateStore.write(pendingUpdateRecord).then(() => {
+      // 先把「试过了」写稳再装：安装器起不来时，下次打开不会再试同一个版本。装之前先发
+      // 一条系统通知、等几秒：窗口刚出来就自己关掉、再凭空弹出授权窗口，看着像闪退中毒。
+      void pendingUpdateStore.write(pendingUpdateRecord).then(async () => {
+        desktopNotifications.announce(buildAutoInstallNotice(version, 'launch', process.platform))
+        await new Promise((resolve) => { setTimeout(resolve, LAUNCH_INSTALL_NOTICE_MS).unref() })
+        // 等的这几秒里用户可能关了自动更新、开始装工具，或者这个版本被撤回了。
+        const still = updaterService.autoUpdateEnabled()
+          && resolveInstallableUpdateOnQuit(updaterService.getState())?.version === version
+          && resolveInterruptibleInstallTask(systemService.inspectInstallationQueue()) === null
+        if (!still) {
+          runtimeLog.log('info', 'updater', 'install.on-launch.skipped', `启动时自动安装 ${version} 前情况变了，留到退出时再装`)
+          return
+        }
         updaterService.install()
       }).catch((cause: unknown) => {
         runtimeLog.exception('updater', 'install.on-launch.failed', cause)
@@ -1582,6 +1707,11 @@ if (!hasSingleInstanceLock) {
     })
     readAccountSiteId = () => accounts.getSiteId()
     const accountService = accounts.client
+    readBillingAccountScope = () => {
+      const state = accountService.getSessionState()
+      const realm = accounts.getSiteId() === 'solov-api' ? 'api-account' : 'xm-account'
+      return `${realm}:${state.authenticated && state.account ? state.account.userId : 'guest'}`
+    }
     readExternalClientAccountId = () => {
       const state = accountService.getSessionState()
       return state.authenticated && state.account ? JSON.stringify([accounts.getSiteId(), state.account.userId]) : null
@@ -1623,12 +1753,20 @@ if (!hasSingleInstanceLock) {
       const managedCliKeyStore = new ManagedCliKeyStore(roots.managedCliKeysFile, safeStorage, siteId)
       const chatKeyStore = new ChatKeyStore(roots.chatKeysFile, safeStorage)
       const chatCredentials = createChatCredentialCoordinator({ accountService, modelService: systemService, keyStore: chatKeyStore })
-      const aiOutputRoot = roots.assetOutputDirectory(resolveAiOutputRoot({
+      // 「文档」不让写时改存到主目录下（ai-output-location.ts），检查页照实说。
+      const aiOutputPlacement = chooseAiOutputRoot({
         isPackaged: app.isPackaged,
         projectRoot: path.join(__dirname, '..'),
         documentsDirectory: readDocumentsDirectory(),
         location: { platform: process.platform, home: os.homedir(), env: process.env },
-      }))
+        scope: (root) => roots.assetOutputDirectory(root),
+      })
+      const aiOutputRoot = aiOutputPlacement.root
+      if (aiOutputPlacement.movedFromDocuments) {
+        runtimeLog.log('warn', 'ai-chat', 'asset.output-directory.moved-from-documents', '「文档」不让写，AI 作品改存到个人文件夹', {
+          earlierWorksLeftInDocuments: aiOutputPlacement.earlierWorksLeftInDocuments,
+        })
+      }
       const assetStore = new AiAssetStore({
         outputRoot: aiOutputRoot,
         // 全局保存位置在「文档」里，写不进多半是整个文档出了状况，用户自己能绕开的是
@@ -1814,6 +1952,22 @@ if (!hasSingleInstanceLock) {
           { assetId, reason },
         ),
       })
+      const chatAttachments = createChatAttachmentService({
+        store: assetStore,
+        codec: nativeChatImageCodec,
+        pickFiles: async () => {
+          const result = await dialog.showOpenDialog({
+            title: '选择要发给 AI 的图片',
+            properties: ['openFile', 'multiSelections'],
+            filters: [{ name: '图片', extensions: ['png', 'jpg', 'jpeg', 'webp'] }],
+          })
+          return result.canceled ? [] : result.filePaths
+        },
+        readClipboardImage: () => {
+          const image = clipboard.readImage()
+          return image.isEmpty() ? null : image.toPNG()
+        },
+      })
       const assetProtocol = createAiAssetProtocolHandler({
         assets: canvasProjectAssets,
         identities: createActiveIdentityReader(definition, { getSessionState: () => accountService.getSessionState(),
@@ -1822,6 +1976,7 @@ if (!hasSingleInstanceLock) {
       })
       const chatService = createAiChatService({
         onRequestStarted: onAiRequestStarted,
+        readChatImage: (userId, assetId) => chatAttachments.readDataUri(userId, assetId),
         baseUrl: definition.aiBaseUrl,
         credentialCoordinator: chatCredentials,
         fetchImpl: relayFetch,
@@ -1934,7 +2089,7 @@ if (!hasSingleInstanceLock) {
       })
       return { accountCredentialStore, managedCliKeyStore, chatKeyStore, chatCredentials, assetStore, videoAssets,
         audioAssets, mediaAssets, canvasPromptPresets, canvasProjects, canvasProjectAssets,
-        chatService, imageService, canvasImageService, videoService, canvasRuns, assetProtocol }
+        chatService, imageService, canvasImageService, videoService, canvasRuns, assetProtocol, chatAttachments, aiOutputPlacement }
     }
     const businesses = new Map<RealmAccountSiteId, ReturnType<typeof createBusiness>>()
     type CanvasRunListener = Parameters<ReturnType<typeof createCanvasRunService>['subscribe']>[0]
@@ -1964,6 +2119,7 @@ if (!hasSingleInstanceLock) {
     const chatKeyStore = createRealmServiceDispatch(() => currentBusiness().chatKeyStore)
     const chatCredentials = createRealmServiceDispatch(() => currentBusiness().chatCredentials)
     const assetStore = createRealmServiceDispatch(() => currentBusiness().assetStore)
+    const chatAttachments = createRealmServiceDispatch(() => currentBusiness().chatAttachments)
     const videoAssets = createRealmServiceDispatch(() => currentBusiness().videoAssets)
     const audioAssets = createRealmServiceDispatch(() => currentBusiness().audioAssets)
     const mediaAssets = createRealmServiceDispatch(() => currentBusiness().mediaAssets)
@@ -2127,6 +2283,11 @@ if (!hasSingleInstanceLock) {
     void startupQuiet.whenOver().then(() => vault.active()).then((saved) => {
       if (saved) void systemService.scanSystem().catch(() => undefined)
     }).catch(() => undefined)
+    // 以前装到一半被关掉留下的下载没人认领，低配电脑的 C 盘会被它慢慢吃掉。安静期过后再
+    // 等一会儿，让开机那一阵的检测先跑完，再在后台清；不弹提示，只记日志。
+    void startupQuiet.whenOver().then(() => new Promise<void>((resolve) => {
+      setTimeout(resolve, installLeftoverStartupDelayMs).unref()
+    })).then(() => systemService.cleanupInstallLeftovers()).catch(() => undefined)
     // 启动画面最多为账号恢复等 3 秒，明确断网就不等（yoyo 2026-09-22 拍板）。
     const accountStartupGate = createAccountStartupGate({
       settled: accountSessionReady,
@@ -2152,9 +2313,14 @@ if (!hasSingleInstanceLock) {
       }
     })
     let developmentAcceleration: ReturnType<typeof createAccelerationDevelopmentHost> | undefined
+    // 只看读文件这一步：后面建加速服务失败不是文件坏了，不能叫客户去翻杀毒软件。
+    let accelerationBundleDamaged = false
     try {
       const read = await accelerationConfigRead
-      if (!read.ok) throw read.error
+      if (!read.ok) {
+        accelerationBundleDamaged = app.isPackaged
+        throw read.error
+      }
       const accelerationConfig = read.config
       if (accelerationConfig) developmentAcceleration = createAccelerationDevelopmentHost({
         config: accelerationConfig, dataDirectory: managerDataDirectory, packaged: app.isPackaged,
@@ -2243,6 +2409,12 @@ if (!hasSingleInstanceLock) {
     acceleration = createAccelerationService({
       backend: developmentAcceleration,
       preferences: accelerationPreferences,
+      ...(accelerationBundleDamaged ? { bundleDamaged: { recheck: async () => {
+        const result = await recheckAccelerationBundle()
+        runtimeLog.log(result === 'repaired' ? 'info' : 'warn', 'network', 'acceleration.config.recheck',
+          result === 'repaired' ? '本机加速资源已恢复，重新打开软件后生效' : '本机加速资源仍未通过校验', { result })
+        return result
+      } } } : {}),
       getAccountScope: () => readAccelerationAccountScope(),
       onState: (state) => {
         trayAcceleration?.observe(state)
@@ -2312,6 +2484,7 @@ if (!hasSingleInstanceLock) {
       systemService,
       providerRoots: rootedOptions.system.providerRoots,
       documentsDirectory: () => app.getPath('documents'),
+      aiOutputDirectory: () => currentBusiness().aiOutputPlacement.root,
       desktopDirectory: () => app.getPath('desktop'),
       accountService,
       paymentWindow,
@@ -2326,6 +2499,7 @@ if (!hasSingleInstanceLock) {
       chatService,
       imageService,
       aiAssets: assetStore,
+      chatAttachments,
       chatHistory: chatHistoryStore,
       sessionsService,
       providerSessionsService,
@@ -2419,6 +2593,8 @@ if (!hasSingleInstanceLock) {
         : {}),
     })
     app.once('will-quit', () => {
+      cliHookEvents.dispose()
+      cliKeepAwake.dispose()
       accelerationExpiry?.dispose()
       accelerationInterruption?.dispose()
       void acceleration?.dispose().catch((error) => runtimeLog.exception('network', 'acceleration.shutdown.failed', error))
@@ -2543,7 +2719,7 @@ if (!hasSingleInstanceLock) {
         let update = resolveInstallableUpdateOnQuit(updaterService.getState())
         if (!update) return 'quit'
         if (updaterService.autoUpdateEnabled()) {
-          // 自动更新开着就不再问，直接装。装之前再看一眼撤回名单：下载之后才被撤回
+          // 自动更新开着、这一版还没在退出时自动试过，就不再问，直接装。装之前再看一眼撤回名单：下载之后才被撤回
           // 的版本会在这里被收回，最多等几秒，读不到就按上次读到的算。
           await Promise.race([
             serviceStatusMonitor?.refresh().catch(() => null),
@@ -2551,7 +2727,19 @@ if (!hasSingleInstanceLock) {
           ])
           update = resolveInstallableUpdateOnQuit(updaterService.getState())
           if (!update) return 'quit'
-          runtimeLog.log('info', 'window', 'quit.update-auto-install', `退出时自动安装更新：${update.version ?? '版本未知'}`)
+        }
+        const version = update.version
+        if (version && decideQuitInstall({ autoUpdate: updaterService.autoUpdateEnabled(), version, record: pendingUpdateRecord }) === 'install') {
+          runtimeLog.log('info', 'window', 'quit.update-auto-install', `退出时自动安装更新：${version}`)
+          // 退出时同一个版本只自动装一次：授权窗被点了「否」时软件已经退了，下次打开要从
+          // 这条记录认出「没装上」，不再每次退出都弹授权窗口。写不进去也照装，最多多问一次。
+          pendingUpdateRecord = { ...pendingUpdateRecord, quitAttemptedVersion: version }
+          await pendingUpdateStore.write(pendingUpdateRecord).catch((cause: unknown) => {
+            runtimeLog.exception('updater', 'pending.record-failed', cause)
+          })
+          desktopNotifications.announce(buildAutoInstallNotice(version, 'quit', process.platform))
+          // 给系统一点时间把通知摆出来，再让安装器接手退出。
+          await new Promise((resolve) => { setTimeout(resolve, QUIT_INSTALL_NOTICE_MS).unref() })
           return 'install-update'
         }
         runtimeLog.log('info', 'window', 'quit.update-downloaded', `退出前确认安装更新：${update.version ?? '版本未知'}`)

@@ -1,8 +1,9 @@
-import { classifyNetworkFailure, networkFailureReasonForMessage } from '../../electron/network-failure'
+import { isCodexDesktopInstallFailureMessage } from '../../electron/codex-desktop-install-failure'
+import { classifyNetworkFailure, networkFailureReasonForMessage, toolCertificateFailureForMessage } from '../../electron/network-failure'
 import { errors } from './registry/errors'
 
 export type OperationErrorKey = keyof typeof errors
-export type OperationActionId = 'retry' | 'log' | 'support' | 'relogin' | 'recharge' | 'network' | 'repair' | 'copyPath' | 'backups'
+export type OperationActionId = 'retry' | 'log' | 'support' | 'relogin' | 'recharge' | 'network' | 'repair' | 'copyPath' | 'backups' | 'replaceNode' | 'openStore'
 export interface OperationAction { id: OperationActionId; label: string }
 export interface OperationErrorHint {
   key: Exclude<OperationErrorKey, 'unknown'>
@@ -23,6 +24,20 @@ const rules: Array<{ key: OperationErrorHint['key']; match: (message: string) =>
   // 网络、权限之类的原因，被下面哪条抢走都会配上一句「不会留下半成品」式的安抚，
   // 所以排在最前，出口直接是「去备份页」。
   { key: 'switchUndoFailed', match: (message) => /自动恢复也没有完成/.test(message) },
+  // Codex 桌面端叫了、等了将近一分钟也没起来（主进程 codex-desktop-service.ts 的
+  // codexDesktopNotStartedPrefix，两边字面量要一致）。那句话后半截已经写好下一步，
+  // 这里只给按钮；排在前面是因为它会提到「用户账户控制」「Administrator」，不能被
+  // 下面的 permission 抢走、把客户送去看安装目录。
+  { key: 'codexDesktopNotStarted', match: (message) => /Codex 桌面端没有打开/.test(message) },
+  // Codex 桌面端装不上 / 更新不了（主进程 codex-desktop-install-failure.ts 写好的整句，
+  // 开头直接取那边的常量）。那句话后半截已经说了是哪一种原因，这里只配按钮，其中
+  //「去微软商店装」是这一类才有的出口。排在前面是因为它会说到「连不上」「Windows
+  // 拒绝了这次安装」，不能被下面的 timeout、permission 抢走。
+  { key: 'codexDesktopInstallFailed', match: (message) => isCodexDesktopInstallFailureMessage(message) },
+  // Codex 插件目录的旧备份自动清不掉（主进程 codex-plugin-catalog.ts 的
+  // codexPluginCatalogBackupStuckMessage）。以前这句带着文件夹路径叫客户自己去挪，
+  // 现在只剩「重启再试、不行找客服」。
+  { key: 'pluginCatalogStuck', match: (message) => /插件目录里的旧备份清不掉/.test(message) },
   // 主进程已经认定是服务那一侧（维护、网关错误、防护层验证页）的，排在最前：
   // 它后面带着的「HTTP 503」之类原文不能再被下面按字面猜成别的事。
   { key: 'serviceUnavailable', match: (message) => networkFailureReasonForMessage(message) === 'serviceUnavailable' },
@@ -64,6 +79,11 @@ const rules: Array<{ key: OperationErrorHint['key']; match: (message: string) =>
   // 正则的话，迟早一边认得出、另一边认不出同一句话。
   // 这两条都必须排在 timeout 之前：那条的 network / 连接失败 会把证书失败吞成
   //「检查网络」，用户于是反复检查一个本来就通的网络。
+  // 工具那一侧（npm 这些 Node 程序）认不了证书、而主进程已经说清是哪一种的（电脑上的
+  // Node.js 太旧、星芒按管理员身份在处理），排在 tlsIntercepted 之前：那两种换网络
+  // 都没用，下一步是换 Node.js 或正常打开星芒（system-certificate-trust.ts）。
+  { key: 'toolCertOutdatedNode', match: (message) => toolCertificateFailureForMessage(message) === 'outdatedNode' },
+  { key: 'toolCertElevated', match: (message) => toolCertificateFailureForMessage(message) === 'elevated' },
   { key: 'tlsIntercepted', match: (message) => classifyNetworkFailure(message) === 'tls' },
   // safe-local-data 的写入校验（I8）拒绝经过目录联接的路径：「C 盘搬家」工具把
   // 用户文件夹或软件数据文件夹挪走之后，写 Key、存设置都会撞上这句。它看起来像
@@ -129,6 +149,13 @@ const actionIds: Record<string, OperationActionId | undefined> = {
   一键修复: 'repair',
   复制路径: 'copyPath',
   去备份页: 'backups',
+  // 公司电脑的证书要新版 Node.js 才认（system-certificate-trust.ts）。以前这里只有「重试」，
+  // 提示叫人去「安装卸载」页点「安装」，那边一看 Node.js 够装工具就回「无需重复安装」，
+  // 客户来回转圈（第十八批 4）。只有 Windows 换得了：调用方按平台决定留不留它。
+  '换成新版 Node.js': 'replaceNode',
+  // 只有 Codex 桌面端装不上那一类会出这颗，而那句话只有 Windows 的安装路径写得出来，
+  // Mac 上自然不会出现。
+  去微软商店装: 'openStore',
 }
 
 /**
@@ -176,9 +203,11 @@ export type OperationLogPage = 'maintenance' | 'feedback'
 
 const installLogKeys: ReadonlySet<OperationErrorKey> = new Set<OperationErrorKey>(['installBlocked', 'updateIntegrity', 'unknown'])
 
-export function operationLogPage(failure: { message: string; tool?: string | undefined }): OperationLogPage {
+export function operationLogPage(failure: { message: string; detail?: string | undefined; tool?: string | undefined }): OperationLogPage {
   if (!failure.tool) return 'feedback'
-  return installLogKeys.has(classifyOperationError(failure.message)) ? 'maintenance' : 'feedback'
+  const key = classifyOperationError(failure.message)
+  const resolved = key === 'unknown' && failure.detail ? classifyOperationError(failure.detail) : key
+  return installLogKeys.has(resolved) ? 'maintenance' : 'feedback'
 }
 
 export function presentOperationError(message: string): OperationErrorHint | null {
@@ -202,4 +231,13 @@ export function presentOperationError(message: string): OperationErrorHint | nul
     // the dialog from ending on a dead end.
     actions: actions.length ? actions : [{ id: 'support', label: '找客服' }],
   }
+}
+
+/**
+ * 上屏那句被换成「{动作}没有完成」时，能认出原因的记号（EBUSY、ENOSPC、EPERM……）
+ * 只留在原话 `detail` 里。先看上屏那句（主进程自己写好的中文以它为准），认不出再拿
+ * 原话去认，这张规则表才对纯英文的失败也起作用。
+ */
+export function presentOperationFailure(failure: { message: string; detail?: string | undefined }): OperationErrorHint | null {
+  return presentOperationError(failure.message) ?? (failure.detail ? presentOperationError(failure.detail) : null)
 }

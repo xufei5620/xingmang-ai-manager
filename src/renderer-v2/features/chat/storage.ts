@@ -84,7 +84,9 @@ function readConversation(value: unknown): Conversation {
   if (!conversation || !Array.isArray(conversation.messages)) throw new ChatStorageError('聊天对话格式无效，原始记录已保留')
   const messages = conversation.messages.map(readMessage)
   assertUniqueIds(messages)
-  return { id: id(conversation.id), title: text(conversation.title) || '新对话', createdAt: timestamp(conversation.createdAt), updatedAt: timestamp(conversation.updatedAt), draft: text(conversation.draft), settings: readSettings(conversation.settings), messages, ...(conversation.lengthNoticeDismissed === true ? { lengthNoticeDismissed: true } : {}) }
+  if (conversation.draftImages !== undefined && !Array.isArray(conversation.draftImages)) throw new ChatStorageError('聊天图片列表无效，原始记录已保留')
+  const draftImages = (conversation.draftImages ?? []).map(readAsset)
+  return { id: id(conversation.id), title: text(conversation.title) || '新对话', createdAt: timestamp(conversation.createdAt), updatedAt: timestamp(conversation.updatedAt), draft: text(conversation.draft), ...(draftImages.length ? { draftImages } : {}), settings: readSettings(conversation.settings), messages, ...(conversation.lengthNoticeDismissed === true ? { lengthNoticeDismissed: true } : {}) }
 }
 function parseWorkspace(raw: string, scope: string): ChatWorkspace {
   const parsed = object(JSON.parse(raw))
@@ -170,6 +172,9 @@ export function redactPersistentChatText(value: string): string {
 function persistedSettings(settings: ChatSettings): ChatSettings {
   return { ...settings, systemPrompt: redactPersistentChatText(settings.systemPrompt) }
 }
+function persistedAsset({ localUrl: _runtimeUrl, ...asset }: AiChatAsset) {
+  return { ...asset, ...(asset.revisedPrompt === undefined ? {} : { revisedPrompt: redactPersistentChatText(asset.revisedPrompt) }) }
+}
 function persistedMessage(message: ChatMessage) {
   return {
     ...message,
@@ -178,13 +183,11 @@ function persistedMessage(message: ChatMessage) {
     reasoning: redactPersistentChatText(message.reasoning),
     ...(message.error === undefined ? {} : { error: redactPersistentChatText(message.error) }),
     ...(message.settings ? { settings: persistedSettings(message.settings) } : {}),
-    assets: message.assets?.map(({ localUrl: _runtimeUrl, ...asset }) => (
-      { ...asset, ...(asset.revisedPrompt === undefined ? {} : { revisedPrompt: redactPersistentChatText(asset.revisedPrompt) }) }
-    )),
+    assets: message.assets?.map(persistedAsset),
   }
 }
 function persistedConversation(conversation: Conversation) {
-  return { ...conversation, title: redactPersistentChatText(conversation.title), draft: redactPersistentChatText(conversation.draft), settings: persistedSettings(conversation.settings), messages: conversation.messages.map((message) => persistedMessage(message)) }
+  return { ...conversation, title: redactPersistentChatText(conversation.title), draft: redactPersistentChatText(conversation.draft), draftImages: conversation.draftImages?.map(persistedAsset), settings: persistedSettings(conversation.settings), messages: conversation.messages.map((message) => persistedMessage(message)) }
 }
 
 // What the file store holds after the last successful save. Conversations are

@@ -18,7 +18,8 @@ import {
   sensitiveWorkspacePolicy,
   type SensitiveWorkspaceKind,
 } from './workspace-guard'
-import { createStarterWorkspace, resolveNewProjectParent } from './starter-workspace'
+import { resolveStarterWorkspaceContainer } from './starter-workspace'
+import { buildDocumentsFallbackPrompt, createStarterWorkspaceWithFallback } from './documents-fallback'
 import { usageDateRange } from './usage-date-range'
 import type { AppSettingsUpdate, AppTheme } from './app-settings'
 import { parseWindowState } from './window-preferences'
@@ -66,6 +67,7 @@ import type { NativeConfigSaveMode } from './config-files'
 import { AccountSourceServiceUnavailableError, switchAccountSource } from './account-source-switch'
 import { emptyRunningToolsReport } from './running-tools'
 import { redactHomeDirectory } from './startup-log'
+import { isCodexSessionUuid } from './tool-installation'
 import { isExternalToolId, parseExternalClientConfigRequest } from './external-client-contract'
 import type { ExternalToolId } from './external-tool-config'
 import type { ExternalClientCheckResult } from './external-client-connection'
@@ -134,14 +136,15 @@ import type {
   AccountManagedCliConfigurationInput,
   ChooseWorkspaceOptions,
   LegalDocumentKind,
+  NodeRuntimeInstallRequest,
   RememberedAccountLogin,
   RendererErrorPayload,
   RendererLogLevel,
   ToolModelCheck,
   WindowCapabilities,
 } from './ipc-contract'
-import type { DiagnosticsReport, DiagnosticsRunOptions } from './diagnostics'
-import { isCappedKeyUsedUp, withKeyQuotaExhausted, type ConnectionCheckResult } from './connection-check'
+import { isDiagnosticFolderTarget, type DiagnosticFolderTarget, type DiagnosticsReport, type DiagnosticsRunOptions } from './diagnostics'
+import { isCappedKeyUsedUp, withKeyQuotaExhausted, type ConnectionCheckResult, type ConnectionProbeReport } from './connection-check'
 import type { RuntimeLogStore } from './runtime-log'
 import { createExternalShellLauncher, type ExternalShellLauncher } from './system-shell'
 import { isNetworkSettingsKind, type NetworkSettingsKind, type ProxyBypassOutcome } from './proxy-bypass'
@@ -150,6 +153,7 @@ import { clearStaleUserProxyVariables, type StaleProxyClearResult } from './stal
 import { validatePaymentForm, validatePaymentQrCode, validatePaymentUrl, type PaymentWindowController } from './payment-window'
 import type { AccountStartupGate } from './account-startup-gate'
 import { parseAiChatHistoryScope, parseAiChatHistoryWrite, type AiChatHistoryStore } from './ai-chat-history-store'
+import type { ChatAttachmentService } from './ai-chat-attachments'
 import { createSensitiveClipboard } from './sensitive-clipboard'
 
 export type AppWindowMode = 'onboarding' | 'dashboard'
@@ -169,6 +173,9 @@ export interface IpcRegistrationOptions {
   // 新建项目文件夹认的用户主目录（macOS 建在它下面）。省略 = os.homedir()；测试注入，
   // 免得在跑测试的 Mac 上往真实主目录里建文件夹。
   homeDirectory?: () => string
+  // 当前账号的 AI 作品实际存在哪（「文档」不让写时是主目录下的 XingmangAI）；检查页
+  // 「打开文件夹」用。main.ts 传启动时定下的位置；省略 = 这颗按钮打不开 AI 作品那一个。
+  aiOutputDirectory?: () => string
   // 「搬到新电脑」和「导出这段对话」的保存框默认落在桌面；main.ts 传 app.getPath('desktop')。
   // 省略 = 主目录下的 Desktop。
   desktopDirectory?: () => string
@@ -178,6 +185,7 @@ export interface IpcRegistrationOptions {
   diagnosticsService: {
     run(options?: DiagnosticsRunOptions): Promise<DiagnosticsReport>
     checkConnection(provider: ProviderId): Promise<ConnectionCheckResult>
+    probeCodexResponses?: (expectedAccountScope: string) => Promise<ConnectionProbeReport>
     checkExternalConnection(tool: ExternalToolId): Promise<ExternalClientCheckResult>
     exportLatest(): string
     /** 检查页「清掉这条旧设置」；缺省 = stale-proxy-environment.ts 的真实现。 */
@@ -271,6 +279,7 @@ export interface IpcRegistrationOptions {
   imageService?: AiImageService
   aiAssets?: AiAssetStore
   chatHistory?: AiChatHistoryStore
+  chatAttachments?: ChatAttachmentService
   transformSystemSnapshot?: (snapshot: SystemSnapshot) => SystemSnapshot
   // Bundled 星芒AI skill: login copies the template into user skill roots and
   // writes the image-group key into config.json. Optional so existing IPC
@@ -571,6 +580,15 @@ function parseChooseWorkspaceOptions(value: unknown): ChooseWorkspaceOptions {
   return value.createStarter === undefined ? {} : { createStarter: value.createStarter }
 }
 
+export function parseNodeRuntimeInstallRequest(value: unknown): NodeRuntimeInstallRequest {
+  if (value === undefined) return {}
+  if (!isRecord(value)) throw new Error('安装 Node.js 的参数无效')
+  if (Object.keys(value).some((key) => key !== 'reason')) throw new Error('安装 Node.js 的参数无效')
+  if (value.reason === undefined) return {}
+  if (value.reason !== 'certificate') throw new Error('安装 Node.js 的参数无效')
+  return { reason: 'certificate' }
+}
+
 function parseWorkspace(workspace: unknown, fallback: string): string {
   if (typeof workspace === 'string' && workspace.length > 32_767) {
     throw new Error('工作目录格式错误')
@@ -589,6 +607,26 @@ function parseCliLaunchMode(mode: unknown): CliLaunchMode {
   if (mode === undefined || mode === null) return 'new'
   if (mode !== 'new' && mode !== 'resumeLast') throw new Error('CLI 启动方式错误')
   return mode
+}
+
+// 第四个参数只收 Codex 记录页 / 首页那条记录自己的 id(`codex:<UUID>`),别的工具、
+// 别的启动方式带了它都算错。id 只拿来在主进程自己读出的 Codex 记录里查找,查到后
+// 交给 argv 的也是重新校验过形状的 UUID,渲染层的字符串不会原样进命令行(I5)。
+function parseCodexResumeRecordId(provider: ProviderId, mode: CliLaunchMode, recordId: unknown): string | null {
+  if (recordId === undefined || recordId === null) return null
+  if (provider !== 'codex' || mode !== 'resumeLast') throw new Error('CLI 启动方式错误')
+  if (typeof recordId !== 'string' || !recordId.startsWith('codex:') || !isCodexSessionUuid(recordId.slice('codex:'.length))) {
+    throw new Error('会话 ID 格式错误')
+  }
+  return recordId
+}
+
+function sameLaunchWorkspace(left: string, right: string): boolean {
+  const a = path.resolve(left)
+  const b = path.resolve(right)
+  return process.platform === 'win32' || process.platform === 'darwin'
+    ? a.toLowerCase() === b.toLowerCase()
+    : a === b
 }
 
 function parseCodexDesktopLocale(locale: unknown): CodexDesktopLocale {
@@ -1169,6 +1207,18 @@ function parseAccountChangePasswordInput(value: unknown, sub2Api = false): NewAp
   return { originalPassword: value.originalPassword, newPassword }
 }
 
+function parseAiChatMessageImages(value: unknown, role: unknown): string[] | undefined {
+  if (value === undefined) return undefined
+  if (!Array.isArray(value) || value.length > 4 || (value.length > 0 && role !== 'user')) throw new Error('AI聊天图片格式错误')
+  if (value.length === 0) return undefined
+  const images = value.map((image) => {
+    if (typeof image !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(image)) throw new Error('AI聊天图片格式错误')
+    return image
+  })
+  if (new Set(images).size !== images.length) throw new Error('AI聊天图片格式错误')
+  return images
+}
+
 function parseAiChatStartInput(value: unknown): AiChatStartInput {
   if (!isRecord(value)) throw new Error('AI聊天请求格式错误')
   if (!Array.isArray(value.messages) || value.messages.length === 0 || value.messages.length > 100) {
@@ -1178,9 +1228,12 @@ function parseAiChatStartInput(value: unknown): AiChatStartInput {
     if (!isRecord(message) || !['system', 'user', 'assistant'].includes(String(message.role))) {
       throw new Error('AI聊天消息格式错误')
     }
+    const images = parseAiChatMessageImages(message.images, message.role)
     return {
       role: message.role as 'system' | 'user' | 'assistant',
-      content: requiredString(message.content, 'AI聊天消息', 40_000),
+      // 只带图片、不写字的消息是允许的；其余消息仍然必须有字。
+      content: images && message.content === '' ? '' : requiredString(message.content, 'AI聊天消息', 40_000),
+      ...(images ? { images } : {}),
     }
   })
   if (value.parameters !== undefined && !isRecord(value.parameters)) throw new Error('AI聊天参数格式错误')
@@ -1280,9 +1333,11 @@ const ipcOperationLabels: Readonly<Record<string, string>> = {
   'settings:save': '应用设置保存',
   'diagnostics:run': '系统诊断',
   'diagnostics:check-connection': '连接自检',
+  'diagnostics:probe-codex-responses': 'Codex 干活检查',
   'diagnostics:check-external-connection': '客户端连接自检',
   'diagnostics:export': '诊断报告导出',
   'diagnostics:clear-stale-proxy': '清掉旧的代理设置',
+  'diagnostics:open-folder': '检查页打开文件夹',
   'runtime-logs:list': '运行日志读取',
   'runtime-logs:copy-feedback': '脱敏反馈文本复制',
   'runtime-logs:export-feedback': '反馈报告导出',
@@ -1347,6 +1402,8 @@ const ipcOperationLabels: Readonly<Record<string, string>> = {
   'account:set-remembered-login': '记住的登录凭据更新',
   'account:create-key': '星芒账号 Key 创建',
   'account:update-key': '星芒账号 Key 更新',
+  'chat:pick-images': '聊天图片选择',
+  'chat:paste-image': '聊天截图粘贴',
   'chat-history:read': '聊天记录读取',
   'chat-history:write': '聊天记录保存',
   'chat-history:export-text': '聊天对话导出',
@@ -1449,6 +1506,8 @@ const quietIpcSuccessChannels = new Set([
   'chat:copy-asset',
   'chat:save-asset',
   'chat:asset-menu',
+  'chat:pick-images',
+  'chat:paste-image',
 ])
 
 const quietIpcFailureChannels = new Set([
@@ -1545,6 +1604,12 @@ function ipcLogDetail(channel: string, args: unknown[], result: unknown, duratio
     detail.layer = result.layer
     detail.ok = result.ok
     detail.siteId = result.siteId
+    detail.status = result.status
+  }
+  if (channel === 'diagnostics:probe-codex-responses' && isRecord(result)) {
+    detail.layer = result.layer
+    detail.ok = result.ok
+    detail.verificationLevel = result.verificationLevel
     detail.status = result.status
   }
   // 外部客户端同理，分辨它们的那一列是 tool。归因层与站点都留，客户端的
@@ -1991,6 +2056,13 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
       if (accountSourceSwitches.get(provider)?.promise === promise) accountSourceSwitches.delete(provider)
     }
   })
+  registerTrustedHandler('config:repair-cli-hooks', async (_event, provider: unknown) => {
+    if (!isProviderId(provider)) throw new Error('未知的 CLI 类型')
+    if (!service.repairCliHooks) throw new Error('这个版本还不能修提醒设置')
+    // 和保存配置同一份备份：「备份」页里能找回改之前的样子。
+    options.backupStore.create(provider, 'pre-save', undefined, await readBackupAccountContext())
+    return service.repairCliHooks(provider)
+  })
   async function switchAccountSourceOnce(provider: ProviderId, target: 'account' | 'official') {
     if (target === 'account' && !accountService.getSessionState().account?.userId) throw new Error('请先登录账号，再改用当前账号')
     // 与备份页同一套账号上下文：备份里记下哪些 Key 是当前账号签发的，回滚后
@@ -2063,10 +2135,13 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   async function createStarterWorkspaceOrExplain(parentWindow: BrowserWindow | undefined, nextStep: string): Promise<string | null> {
     try {
       const context = { platform: process.platform, home: options.homeDirectory?.() ?? os.homedir(), env: process.env }
-      const created = createStarterWorkspace(resolveNewProjectParent(documentsDirectory(), context), context)
-      // 不记路径（I13）：客服要的只是「这个目录是软件替他建的」。
-      options.runtimeLog.log('info', 'config', 'workspace.starter.created', '已替用户新建项目文件夹')
-      return created
+      const placement = createStarterWorkspaceWithFallback(documentsDirectory(), context)
+      // 不记路径（I13）：客服要的只是「这个目录是软件替他建的」和它是不是换过地方。
+      options.runtimeLog.log('info', 'config', 'workspace.starter.created', '已替用户新建项目文件夹', {
+        movedFromDocuments: placement.movedFromDocuments,
+      })
+      if (placement.movedFromDocuments) await explainDocumentsFallback(parentWindow, placement.directory)
+      return placement.directory
     } catch (error) {
       options.runtimeLog.exception('config', 'workspace.starter.failed', error)
       const errorBoxOptions = {
@@ -2081,6 +2156,28 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
       else await dialog.showMessageBox(errorBoxOptions)
       return null
     }
+  }
+  // 「文档」不让写、项目改建在主目录下：照实说项目在哪，给一颗「打开文件夹」。
+  // 这是本机弹框、不进日志，完整路径照样显示，用户才找得到。
+  async function explainDocumentsFallback(parentWindow: BrowserWindow | undefined, directory: string): Promise<void> {
+    const prompt = buildDocumentsFallbackPrompt(directory, process.platform)
+    const messageBoxOptions = {
+      type: 'info' as const,
+      title: prompt.title,
+      message: prompt.message,
+      detail: prompt.detail,
+      buttons: [...prompt.buttons],
+      defaultId: 0,
+      cancelId: 0,
+      noLink: true,
+    }
+    const answer = parentWindow
+      ? await dialog.showMessageBox(parentWindow, messageBoxOptions)
+      : await dialog.showMessageBox(messageBoxOptions)
+    if (answer.response !== prompt.openFolderIndex) return
+    await externalShell.openPath(directory).catch((error) => {
+      options.runtimeLog.exception('config', 'workspace.starter.open-folder-failed', error)
+    })
   }
   // 选到「每次都提醒」的目录（系统目录、四家工具存密钥的目录）时，选择器里已经
   // 问过一次；紧接着的那次打开不再重复问。只认同一个路径、只用一次、两分钟内有效，
@@ -2173,10 +2270,11 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     return workspace
   })
   registerTrustedHandler('repository:get-context', () => options.extensionService.getRepositoryContext())
-  registerTrustedHandler('runtime:install-node', async (event) => {
-    options.runtimeLog.log('info', 'maintenance', 'runtime.node.install.started', '开始自动安装 Node.js LTS')
+  registerTrustedHandler('runtime:install-node', async (event, rawRequest: unknown) => {
+    const request = parseNodeRuntimeInstallRequest(rawRequest)
+    options.runtimeLog.log('info', 'maintenance', 'runtime.node.install.started', '开始自动安装 Node.js LTS', request.reason ? { reason: request.reason } : undefined)
     try {
-      const result = await service.installNodeRuntime(event.sender)
+      const result = await service.installNodeRuntime(event.sender, request)
       options.runtimeLog.log('info', 'maintenance', 'runtime.node.install.completed', 'Node.js LTS 自动安装完成', {
         method: result.method,
         source: result.source,
@@ -2290,14 +2388,50 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   })
   registerTrustedHandler('desktop:uninstall-codex', () => service.uninstallCodexDesktop())
   registerTrustedHandler('desktop:check-update-codex', () => service.inspectCodexDesktopUpdate(true))
-  registerTrustedHandler('cli:launch', (event, provider: unknown, workspace: unknown, mode: unknown) => {
+  /**
+   * 记录这边核对一遍再交给 Codex:记录还在、而且就在要打开的这个文件夹里,才按
+   * id 接;查不到(刚被删、数据库暂时读不了)或文件夹对不上,就退回按目录找最近
+   * 一条 —— 也就是加这个参数之前的行为,不会因此打不开。
+   */
+  async function verifiedCodexResumeSessionId(recordId: string, workspace: string): Promise<string | null> {
+    try {
+      const recorded = await options.providerSessionsService.resolveWorkspace(recordId)
+      if (!recorded || !sameLaunchWorkspace(recorded, workspace)) return null
+      return recordId.slice('codex:'.length)
+    } catch {
+      return null
+    }
+  }
+  function launchProviderWith(provider: ProviderId, target: string, launchMode: CliLaunchMode, resumeSessionId: string | null) {
+    return resumeSessionId === null
+      ? service.launchProvider(provider, target, launchMode)
+      : service.launchProvider(provider, target, launchMode, resumeSessionId)
+  }
+  registerTrustedHandler('cli:launch', (event, provider: unknown, workspace: unknown, mode: unknown, recordId: unknown) => {
     if (!isProviderId(provider)) throw new Error('未知的 CLI 类型')
     const stored = service.readStoredConfig()
     const target = parseWorkspace(workspace, stored.workspace)
     const launchMode = parseCliLaunchMode(mode)
+    const resumeRecordId = parseCodexResumeRecordId(provider, launchMode, recordId)
+    if (resumeRecordId === null) return launchCliInWorkspace(event, provider, target, launchMode, null)
+    return (async () => launchCliInWorkspace(
+      event,
+      provider,
+      target,
+      launchMode,
+      await verifiedCodexResumeSessionId(resumeRecordId, target),
+    ))()
+  })
+  function launchCliInWorkspace(
+    event: IpcMainInvokeEvent,
+    provider: ProviderId,
+    target: string,
+    launchMode: CliLaunchMode,
+    resumeSessionId: string | null,
+  ) {
     const sensitivity = classifyLocalWorkspace(target)
     if (!sensitivity || sensitiveWorkspacePolicy(sensitivity) !== 'every-time' || consumeConfirmedEveryTimeWorkspace(target)) {
-      return service.launchProvider(provider, target, launchMode)
+      return launchProviderWith(provider, target, launchMode, resumeSessionId)
     }
     // 最近记录、记录页「接着上次对话」、老版本记住的目录都不经过选择器，
     // 所以「每次都提醒」的目录在这里再问一次。续接对话换了目录就接不上，
@@ -2306,7 +2440,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
       const parentWindow = BrowserWindow.fromWebContents(event.sender) ?? undefined
       const allowChooseAnother = launchMode === 'new'
       const decision = await askAboutSensitiveWorkspace(parentWindow, sensitivity, allowChooseAnother)
-      if (decision === 'continue') return service.launchProvider(provider, target, launchMode)
+      if (decision === 'continue') return launchProviderWith(provider, target, launchMode, resumeSessionId)
       let replacement: string | null = null
       if (decision === 'create') {
         replacement = await createStarterWorkspaceOrExplain(parentWindow, '接下来会重新打开文件夹选择窗口，可以在里面自己新建一个文件夹再选它。')
@@ -2324,7 +2458,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
       await rememberWorkspace(replacement)
       return service.launchProvider(provider, replacement, launchMode)
     })()
-  })
+  }
   registerTrustedHandler('desktop:codex-status', () => service.inspectCodexDesktop())
   registerTrustedHandler('desktop:codex-locale-status', () => service.inspectCodexDesktopLocale())
   registerTrustedHandler('desktop:codex-permissions-status', () => service.inspectCodexWorkspacePermissions())
@@ -2478,27 +2612,39 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     return options.runtimeLog.snapshot(limit as number | undefined)
   })
   const feedbackPreviews = new Map<number, { id: string; text: string; entries: number; expiresAt: number }>()
-  const getFeedbackPreview = (senderId: number, id: unknown) => {
-    const reportId = requiredString(id, '反馈报告标识', 64)
-    const preview = feedbackPreviews.get(senderId)
-    if (!preview || preview.id !== reportId || preview.expiresAt < Date.now()) throw new Error('报告预览已过期，请重新生成')
-    return preview
-  }
-  registerTrustedHandler('runtime-logs:preview-feedback', async (event) => {
+  const captureFeedbackPreview = async (senderId: number) => {
     const report = await options.runtimeLog.captureFeedbackReport(600, FEEDBACK_REPORT_MAX_LENGTH)
     // captureFeedbackReport already trims the oldest log lines to fit; this
     // only guards a runtime log implementation that ignored the budget.
     if (report.text.length > FEEDBACK_REPORT_MAX_LENGTH) throw new Error('反馈报告超过大小上限，请在反馈页点「打开日志目录」，把日志文件直接发给客服')
     const preview = { id: randomUUID(), ...report, expiresAt: Date.now() + 30 * 60 * 1_000 }
-    feedbackPreviews.set(event.sender.id, preview)
+    feedbackPreviews.delete(senderId)
+    feedbackPreviews.set(senderId, preview)
     if (feedbackPreviews.size > 8) feedbackPreviews.delete(feedbackPreviews.keys().next().value!)
-    return { id: preview.id, text: preview.text, entries: preview.entries }
+    return preview
+  }
+  // 预览开着去截图、问客服，回来超过 30 分钟再点复制/导出，以前只给一句「请重新生成」，
+  // 小白不知道去哪生成。现在过期或被新预览顶掉的标识就地按最新日志重生成一份，
+  // 连同新文本一起交回去让对话框换掉旧内容；只有重生成本身失败才报错。
+  const resolveFeedbackPreview = async (senderId: number, id: unknown) => {
+    const reportId = requiredString(id, '反馈报告标识', 64)
+    const preview = feedbackPreviews.get(senderId)
+    if (preview && preview.id === reportId && preview.expiresAt >= Date.now()) return { preview, regenerated: false }
+    return { preview: await captureFeedbackPreview(senderId), regenerated: true }
+  }
+  const publicFeedbackPreview = (preview: { id: string; text: string; entries: number }) => (
+    { id: preview.id, text: preview.text, entries: preview.entries }
+  )
+  registerTrustedHandler('runtime-logs:preview-feedback', async (event) => {
+    return publicFeedbackPreview(await captureFeedbackPreview(event.sender.id))
   })
   registerTrustedHandler('runtime-logs:copy-feedback', async (event, reportId?: unknown) => {
     if (reportId !== undefined) {
-      const report = getFeedbackPreview(event.sender.id, reportId)
-      clipboard.writeText(report.text)
-      return { entries: report.entries }
+      const { preview, regenerated } = await resolveFeedbackPreview(event.sender.id, reportId)
+      clipboard.writeText(preview.text)
+      return regenerated
+        ? { entries: preview.entries, regenerated: publicFeedbackPreview(preview) }
+        : { entries: preview.entries }
     }
     const [report, snapshot] = await Promise.all([
       options.runtimeLog.feedbackReport(),
@@ -2508,7 +2654,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     return { entries: snapshot.total }
   })
   registerTrustedHandler('runtime-logs:export-feedback', async (event, reportId?: unknown) => {
-    const captured = reportId !== undefined ? getFeedbackPreview(event.sender.id, reportId).text : undefined
+    const captured = reportId !== undefined ? await resolveFeedbackPreview(event.sender.id, reportId) : undefined
     const result = await dialog.showSaveDialog({
       title: '导出反馈与诊断',
       defaultPath: `xingmang-feedback-${new Date().toISOString().slice(0, 10)}.txt`,
@@ -2517,11 +2663,13 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     if (result.canceled || !result.filePath) return null
     await writeAtomicSafeUtf8File(
       result.filePath,
-      captured ?? await options.runtimeLog.feedbackReport(),
+      captured?.preview.text ?? await options.runtimeLog.feedbackReport(),
       '反馈报告导出文件',
     )
     rememberExportedFile(result.filePath)
-    return { outputPath: result.filePath }
+    return captured?.regenerated
+      ? { outputPath: result.filePath, regenerated: publicFeedbackPreview(captured.preview) }
+      : { outputPath: result.filePath }
   })
   registerTrustedHandler('exports:reveal-file', async (_event, filePath: unknown) => {
     const target = requiredString(filePath, '导出文件路径', 4_096)
@@ -2778,6 +2926,12 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
       ...(update.lineId !== undefined ? { lineId: update.lineId as string | null } : {}),
       ...(update.mode !== undefined ? { mode: update.mode as AccelerationMode } : {}),
     })
+  })
+  // 不收参数：读的是安装包里那几个固定文件名，渲染层给不出任何路径（I5）。
+  registerTrustedHandler('acceleration:recheck-bundle', () => {
+    const service = accelerationService()
+    if (!service.recheckAccelerationBundle) throw new Error('加速文件现在不用检查，请刷新一下加速页。')
+    return service.recheckAccelerationBundle()
   })
   registerTrustedHandler('account:get-legal-document', (_event, kind: unknown, siteId: unknown) => (
     (options.realmAccounts ? options.realmAccounts.getPublicClient(siteId === undefined
@@ -3348,6 +3502,18 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
       },
     )
   })
+  // The picker and the clipboard are read here, never handed in by the
+  // renderer, so a compromised page cannot make the main process read an
+  // arbitrary path (same reasoning as the canvas' single drop channel).
+  registerTrustedHandler('chat:pick-images', (_event, remaining: unknown) => {
+    if (!options.chatAttachments) throw new Error('聊天图片服务未就绪')
+    if (typeof remaining !== 'number' || !Number.isSafeInteger(remaining)) throw new Error('聊天图片数量格式错误')
+    return options.chatAttachments.pick(currentChatUserId(), remaining)
+  })
+  registerTrustedHandler('chat:paste-image', () => {
+    if (!options.chatAttachments) throw new Error('聊天图片服务未就绪')
+    return options.chatAttachments.paste(currentChatUserId())
+  })
   // Deliberately outside the chat: account gate. The window saves the old
   // account's last edits while an account switch is in progress, and history
   // was never tied to the live session (it used to sit in localStorage).
@@ -3441,6 +3607,16 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     return options.diagnosticsService.checkConnection(provider).then((result) => explainRejectedManagedKey(provider, result))
   })
 
+  registerTrustedHandler('diagnostics:probe-codex-responses', (_event, acknowledgeBilling: unknown, expectedAccountScope: unknown) => {
+    if (acknowledgeBilling !== true) throw new Error('请先勾选确认：这次检查会用当前账号的一点额度')
+    if (typeof expectedAccountScope !== 'string'
+      || !/^(?:xm-account|api-account):(?:guest|[1-9]\d{0,14})$/.test(expectedAccountScope)) {
+      throw new Error('账号信息不对，请重新勾选确认后再检查')
+    }
+    if (!options.diagnosticsService.probeCodexResponses) throw new Error('这个版本还不能做 Codex 干活检查')
+    return options.diagnosticsService.probeCodexResponses(expectedAccountScope)
+  })
+
   registerTrustedHandler('diagnostics:check-external-connection', (_event, tool: unknown) => {
     if (!isExternalToolId(tool)) throw new Error('未知的外部客户端类型')
     return options.diagnosticsService.checkExternalConnection(tool)
@@ -3466,6 +3642,20 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     const clear = options.diagnosticsService.clearStaleProxy ?? (() => clearStaleUserProxyVariables())
     return clear()
   })
+  registerTrustedHandler('diagnostics:open-folder', async (_event, rawTarget: unknown) => {
+    if (!isDiagnosticFolderTarget(rawTarget)) throw new Error('不认识要打开的文件夹')
+    const directory = resolveDiagnosticFolder(rawTarget)
+    if (directory === null) return false
+    // 新项目那个容器可能还没建过（还没点过新建）：建一个空的再打开，和日志目录一样
+    // 先过 I8 的检查，路径上被换成联接的会在这里被拒。
+    ensureSafeDataDirectory(directory, rawTarget === 'projects' ? '项目文件夹' : 'AI 作品保存位置')
+    await externalShell.openPath(directory)
+    return true
+  })
+  function resolveDiagnosticFolder(target: DiagnosticFolderTarget): string | null {
+    if (target === 'ai-output') return options.aiOutputDirectory?.() ?? null
+    return resolveStarterWorkspaceContainer(options.homeDirectory?.() ?? os.homedir(), process.platform)
+  }
 
   return () => {
     feedbackPreviews.clear()

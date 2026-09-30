@@ -9,19 +9,23 @@ import { networkFailureMessages, type NetworkFailureReason } from './network-fai
 import { relaySites } from './relay-sites'
 import {
   clockSkewMs,
+  buildWindowsArmSummary,
   clockSyncGuidance,
   createDiagnosticsExport,
   describeRelocationTarget,
   findRelocatedFolders,
   parseClashTunConfig,
   redactDiagnosticText,
+  operatingSystemSummary,
   relayStatusProbeUrl,
   runDiagnostics,
   windowsProxySettingsOutcome,
   type DiagnosticsScanSnapshot,
   type DiagnosticToolId,
   type DiagnosticsDependencies,
+  type NodeTlsProbeInput,
 } from './diagnostics'
+import type { NodeTlsOutcome } from './certificate-trust-probe'
 
 const temporaryDirectories: string[] = []
 
@@ -78,6 +82,7 @@ function dependencies(home: string, apiKey = 'sk-super-secret-value'): Diagnosti
     timeoutMs: 100,
     inspectAdministrator: async () => false,
     inspectElevationCapability: async () => 'unknown' as const,
+    inspectStoreAppLaunchContext: async () => ({ userSid: null, isBuiltInAdministrator: false, uacEnabled: null, filterAdministratorToken: null }),
     inspectPowerShell: async () => ({
       installed: true,
       version: '5.1.26100.1',
@@ -103,6 +108,8 @@ function dependencies(home: string, apiKey = 'sk-super-secret-value'): Diagnosti
     clashConfigPaths: [],
     env: {},
     inspectProxyVariables: async () => [],
+    // 绝不对生产站点真的握手（T12）。
+    probeNodeTls: async () => ({ outcome: 'ok', version: 'v22.19.0' }),
   }
 }
 
@@ -125,6 +132,38 @@ describe('diagnostics', () => {
       details: { required: false, installed: null, path: null },
     })
     expect(inspectPowerShell).not.toHaveBeenCalled()
+  })
+
+  it('explains an ARM laptop in plain words only when the chip is ARM', async () => {
+    const home = temporaryHome()
+    const input = dependencies(home)
+    expect((await runDiagnostics(input)).items.some((item) => item.code === 'WINDOWS_ARM')).toBe(false)
+    input.windowsProcessor = 'x64'
+    expect((await runDiagnostics(input)).items.some((item) => item.code === 'WINDOWS_ARM')).toBe(false)
+
+    input.windowsProcessor = 'arm64'
+    const inspectExecutableMachine = vi.fn(async () => 'arm64' as const)
+    input.inspectExecutableMachine = inspectExecutableMachine
+    const item = (await runDiagnostics(input)).items.find((entry) => entry.code === 'WINDOWS_ARM')
+    expect(item).toMatchObject({ title: '电脑芯片', state: 'pass', details: { nodeMachine: 'arm64', appArch: 'x64' } })
+    expect(item?.summary).toContain('Node.js 已是 ARM 版')
+    expect(item?.summary).toContain('星芒本身暂时只有普通电脑版')
+    expect(item?.summary).not.toMatch(/arm64|x64|x86|模拟/i)
+    expect(inspectExecutableMachine).toHaveBeenCalledWith(path.join(home, 'bin', 'node.exe'))
+
+    input.platform = 'darwin'
+    expect((await runDiagnostics(input)).items.some((entry) => entry.code === 'WINDOWS_ARM')).toBe(false)
+  })
+
+  it('words the ARM notice for a missing, an emulated and an unknown Node.js', () => {
+    expect(buildWindowsArmSummary({ nodeInstalled: false, nodeMachine: null, appArch: 'arm64' }))
+      .toBe('这台电脑是 ARM 芯片，装 Node.js 时会自动装 ARM 版，之后装的工具跑起来更快、更省电')
+    expect(buildWindowsArmSummary({ nodeInstalled: true, nodeMachine: 'x64', appArch: 'arm64' }))
+      .toContain('现有的 Node.js 是给普通电脑用的版本，工具能正常用')
+    expect(buildWindowsArmSummary({ nodeInstalled: true, nodeMachine: null, appArch: 'arm64' })).toBe('这台电脑是 ARM 芯片')
+    for (const nodeMachine of [null, 'x64', 'arm64', 'x86'] as const) {
+      expect(buildWindowsArmSummary({ nodeInstalled: true, nodeMachine, appArch: 'x64' })).not.toMatch(/arm64|x64|x86/i)
+    }
   })
 
   it('continues to mark unrecognized operating systems as unsupported', async () => {
@@ -600,7 +639,7 @@ describe('diagnostics', () => {
 
       expect(overrideItem(report)).toMatchObject({
         state: 'pass',
-        summary: '没有会盖过当前账号配置的环境变量',
+        summary: '没有另外设过工具地址或密钥',
         details: { count: 0 },
       })
     })
@@ -649,7 +688,7 @@ describe('diagnostics', () => {
 
       expect(item).toMatchObject({
         state: 'fail',
-        summary: `系统环境变量里设置了 ${name}，会让 ${tool} 不用当前账号写入的配置，删掉后重新打开终端即可`,
+        summary: `电脑里另外设了 ${name}，会让 ${tool} 不用当前账号的设置。删掉它们再重新打开工具就好；不会删请在「反馈」页导出报告发给客服`,
         details: { count: 1, variable1: `${name}（${tool}，会绕开当前账号）` },
       })
       expect(JSON.stringify(item)).not.toContain('must-not-leak')
@@ -671,7 +710,7 @@ describe('diagnostics', () => {
 
       expect(overrideItem(await runDiagnostics(input))).toMatchObject({
         state: 'warn',
-        summary: `系统环境变量里设置了 ${name}，可能会盖过当前账号写入的配置`,
+        summary: `电脑里另外设了 ${name}，可能会盖过当前账号的设置`,
       })
     })
 
@@ -701,7 +740,7 @@ describe('diagnostics', () => {
 
       expect(overrideItem(await runDiagnostics(input))).toMatchObject({
         state: 'fail',
-        summary: '系统环境变量里设置了 ANTHROPIC_API_KEY、GEMINI_API_KEY，会让 Claude Code、Gemini CLI 不用当前账号写入的配置，删掉后重新打开终端即可',
+        summary: '电脑里另外设了 ANTHROPIC_API_KEY、GEMINI_API_KEY，会让 Claude Code、Gemini CLI 不用当前账号的设置。删掉它们再重新打开工具就好；不会删请在「反馈」页导出报告发给客服',
         details: {
           count: 3,
           variable1: 'ANTHROPIC_BASE_URL（Claude Code）',
@@ -720,7 +759,7 @@ describe('diagnostics', () => {
 
       expect(overrideItem(report)).toMatchObject({
         state: 'pass',
-        summary: '检测到的环境变量都指向当前账号，不会盖过写入的配置',
+        summary: '电脑里另外设的工具地址也指向当前账号，不影响使用',
         details: {
           count: 2,
           variable1: 'ANTHROPIC_BASE_URL（Claude Code，已指向当前账号）',
@@ -808,7 +847,7 @@ describe('diagnostics', () => {
 
       expect(item).toMatchObject({
         state: 'warn',
-        summary: '电脑里有一个 Codex 的设置写得不对，软件已经忽略它；另外系统环境变量里设置了 OPENAI_API_KEY，可能会盖过当前账号写入的配置',
+        summary: '电脑里有一个 Codex 的设置写得不对，软件已经忽略它；电脑里另外设了 OPENAI_API_KEY，可能会盖过当前账号的设置',
         details: {
           count: 2,
           variable1: 'CODEX_HOME（Codex CLI，写得不对，已忽略）',
@@ -881,7 +920,8 @@ describe('diagnostics', () => {
     const python = report.items.find((item) => item.code === 'RUNTIME_PYTHON')
     expect(git).toMatchObject({ state: 'warn', details: { installed: false } })
     expect(git?.summary).toContain('macOS 自带的 git 只是个空壳')
-    expect(git?.summary).toContain('xcode-select --install')
+    expect(git?.summary).toContain('「安装 Git」')
+    expect(git?.summary).not.toContain('终端')
     // PowerShell 那句只在 Windows 成立。
     expect(git?.summary).not.toContain('PowerShell')
     expect(python).toMatchObject({ state: 'warn' })
@@ -930,7 +970,7 @@ describe('diagnostics', () => {
 
     expect(report.items.find((item) => item.code === 'SYSTEM_POWERSHELL')).toMatchObject({
       state: 'fail',
-      summary: expect.stringContaining('PowerShell 5.1'),
+      summary: expect.stringContaining('找不到打开工具要用的系统命令窗口'),
       details: { installed: false, path: null },
     })
   })
@@ -1083,6 +1123,76 @@ describe('diagnostics', () => {
     })
     expect(item?.summary).toContain('不用处理')
     expect(item?.summary).not.toMatch(/普通启动|双击|UAC|用户账户控制|提权|Administrator/)
+  })
+
+  it('warns ahead of a store install on the built-in Administrator account', async () => {
+    const home = temporaryHome()
+    const input = dependencies(home)
+    input.windowsExecution = { mode: 'same-user', elapsedMs: 120 }
+    input.inspectAdministrator = async () => true
+    input.inspectStoreAppLaunchContext = async () => ({
+      userSid: 'S-1-5-21-1-2-3-500', isBuiltInAdministrator: true, uacEnabled: true, filterAdministratorToken: false,
+    })
+
+    const item = (await runDiagnostics(input)).items.find((entry) => entry.code === 'ADMINISTRATOR')
+
+    expect(item).toMatchObject({
+      state: 'warn',
+      details: { elevated: true, alwaysElevated: true, storeAppLaunchBlock: 'builtInAdministrator' },
+    })
+    expect(item?.summary).toContain('Administrator')
+    expect(item?.summary).toContain('Codex 桌面端')
+    expect(item?.summary).toContain('普通账户')
+    expect(item?.summary).not.toMatch(/UAC|AppX|Appx|MSIX|令牌|SID/)
+  })
+
+  it('warns ahead of a store install when the consent prompt is turned off', async () => {
+    const home = temporaryHome()
+    const input = dependencies(home)
+    input.windowsExecution = { mode: 'same-user', elapsedMs: 120 }
+    input.inspectAdministrator = async () => true
+    input.inspectStoreAppLaunchContext = async () => ({
+      userSid: 'S-1-5-21-1-2-3-1001', isBuiltInAdministrator: false, uacEnabled: false, filterAdministratorToken: null,
+    })
+
+    const item = (await runDiagnostics(input)).items.find((entry) => entry.code === 'ADMINISTRATOR')
+
+    expect(item).toMatchObject({ state: 'warn', details: { storeAppLaunchBlock: 'uacDisabled' } })
+    expect(item?.summary).toContain('用户账户控制')
+    expect(item?.summary).not.toMatch(/UAC|AppX|Appx|令牌/)
+  })
+
+  it('keeps the calm answer when the store-app probe cannot tell', async () => {
+    const home = temporaryHome()
+    const input = dependencies(home)
+    input.windowsExecution = { mode: 'same-user', elapsedMs: 120 }
+    input.inspectAdministrator = async () => true
+    input.inspectStoreAppLaunchContext = async () => {
+      throw new Error('powershell unavailable')
+    }
+
+    expect((await runDiagnostics(input)).items.find((entry) => entry.code === 'ADMINISTRATOR')).toMatchObject({
+      state: 'pass',
+      details: { alwaysElevated: true },
+    })
+  })
+
+  it('does not ask about store apps on an ordinary or explicitly elevated start', async () => {
+    const home = temporaryHome()
+    const probe = vi.fn(async () => ({
+      userSid: 'S-1-5-21-1-2-3-500', isBuiltInAdministrator: true, uacEnabled: false, filterAdministratorToken: null,
+    }))
+    const ordinary = dependencies(home)
+    ordinary.windowsExecution = { mode: 'same-user', elapsedMs: 120 }
+    ordinary.inspectStoreAppLaunchContext = probe
+    await runDiagnostics(ordinary)
+    const elevated = dependencies(home)
+    elevated.windowsExecution = { mode: 'trusted-only', elapsedMs: 120 }
+    elevated.inspectAdministrator = async () => true
+    elevated.inspectStoreAppLaunchContext = probe
+    await runDiagnostics(elevated)
+
+    expect(probe).not.toHaveBeenCalled()
   })
 
   it('still advises a normal start when the app was explicitly elevated', async () => {
@@ -1634,6 +1744,99 @@ describe('runDiagnostics AI output location', () => {
   })
 })
 
+describe('runDiagnostics documents folder', () => {
+  it('says where AI works went after documents refused them, with an open-folder hint', async () => {
+    const report = await runDiagnostics({
+      ...dependencies(temporaryHome()),
+      probeAiOutput: async () => undefined,
+      aiOutputPlacement: () => ({ movedFromDocuments: true, earlierWorksLeftInDocuments: true }),
+    })
+
+    const item = report.items.find((entry) => entry.code === 'AI_OUTPUT')
+    expect(item).toMatchObject({ state: 'pass', details: { openFolder: 'ai-output' } })
+    expect(item?.summary).toContain('个人文件夹里的 XingmangAI')
+    expect(item?.summary).toContain('以前的作品还在')
+  })
+
+  it('checks the documents folder only on Windows and only when the host passes it', async () => {
+    const home = temporaryHome()
+    const inspectDocuments = vi.fn(() => ({ state: 'writable' as const }))
+    const linux = await runDiagnostics({ ...dependencies(home), platform: 'linux', documentsDirectory: path.join(home, 'Documents'), inspectDocuments })
+    const unset = await runDiagnostics({ ...dependencies(home), platform: 'win32', inspectDocuments })
+
+    expect(linux.items.some((entry) => entry.code === 'DOCUMENTS_WRITABLE')).toBe(false)
+    expect(unset.items.some((entry) => entry.code === 'DOCUMENTS_WRITABLE')).toBe(false)
+    expect(inspectDocuments).not.toHaveBeenCalled()
+  })
+
+  it('explains a refused documents folder in plain words, logs the raw reason and offers the projects folder', async () => {
+    const home = temporaryHome()
+    const log = vi.fn()
+    const report = await runDiagnostics({
+      ...dependencies(home),
+      platform: 'win32',
+      log,
+      documentsDirectory: 'C:\\Users\\peaker\\Documents',
+      inspectDocuments: () => ({ state: 'denied', reason: 'EPERM: operation not permitted, open \'C:\\Users\\peaker\\Documents\\.write-check.tmp\'' }),
+    })
+
+    const item = report.items.find((entry) => entry.code === 'DOCUMENTS_WRITABLE')
+    expect(item).toMatchObject({ state: 'warn', title: '「文档」文件夹能不能写', details: { openFolder: 'projects' } })
+    expect(item?.summary).toContain('受控文件夹访问')
+    expect(item?.summary).not.toMatch(/EPERM|权限位|%USERPROFILE%/)
+    expect(log).toHaveBeenCalledWith('warn', 'diagnostics.documents.unwritable', expect.any(String), expect.objectContaining({
+      kind: 'denied',
+      raw: expect.stringContaining('EPERM'),
+    }))
+  })
+
+  it('does not offer to move for a full disk', async () => {
+    const report = await runDiagnostics({
+      ...dependencies(temporaryHome()),
+      platform: 'win32',
+      documentsDirectory: 'C:\\Users\\peaker\\Documents',
+      inspectDocuments: () => ({ state: 'failed', reason: 'ENOSPC' }),
+    })
+
+    const item = report.items.find((entry) => entry.code === 'DOCUMENTS_WRITABLE')
+    expect(item?.state).toBe('warn')
+    expect(item?.summary).toContain('磁盘满')
+    expect(item?.details?.openFolder).toBeUndefined()
+  })
+
+  it('probes documents for real through the default inspector', async () => {
+    const home = temporaryHome()
+    const documents = path.join(home, 'Documents')
+    fs.mkdirSync(documents, { recursive: true })
+    const report = await runDiagnostics({ ...dependencies(home), platform: 'win32', documentsDirectory: documents })
+
+    // 测试机上的临时目录可写；Windows 路径规则下它不含 OneDrive，所以真的去写了一次。
+    expect(report.items.find((entry) => entry.code === 'DOCUMENTS_WRITABLE')?.state).toBe('pass')
+    expect(fs.readdirSync(documents)).toEqual([])
+  })
+})
+
+describe('runDiagnostics acceleration bundle', () => {
+  it('only reports the acceleration bundle when the installed app ships one', async () => {
+    const report = await runDiagnostics(dependencies(temporaryHome()))
+    expect(report.items.some((entry) => entry.code === 'ACCELERATION_BUNDLE')).toBe(false)
+  })
+
+  it('passes when the bundle read intact at startup', async () => {
+    const report = await runDiagnostics({ ...dependencies(temporaryHome()), accelerationBundle: 'intact' })
+    expect(report.items.find((entry) => entry.code === 'ACCELERATION_BUNDLE')).toMatchObject({ title: '加速功能', state: 'pass' })
+  })
+
+  it('names antivirus quarantine in plain words when the bundle is damaged', async () => {
+    const report = await runDiagnostics({ ...dependencies(temporaryHome()), accelerationBundle: 'damaged' })
+    const item = report.items.find((entry) => entry.code === 'ACCELERATION_BUNDLE')
+    // warn, not fail: only people who use acceleration are affected, same as AI_OUTPUT.
+    expect(item?.state).toBe('warn')
+    expect(item?.summary).toContain('多半是杀毒软件拦的')
+    expect(item?.summary).not.toMatch(/mihomo|内核|manifest|profile|聊天记录/)
+  })
+})
+
 describe('parseClashTunConfig', () => {
   it('reads supported top-level and nested TUN switches', () => {
     expect(parseClashTunConfig('enable_tun_mode: true\n')).toBe(true)
@@ -1702,12 +1905,132 @@ describe('diagnostics reusing the home page scan', () => {
   it('probes everything itself when no scan is handed in, as a manual re-check does', async () => {
     const p = probes(temporaryHome())
     await runDiagnostics(p.input)
-    expect(p.inspectTool).toHaveBeenCalledTimes(8)
+    // 「安全证书」一项也要问一次 Node.js 在哪（8 + 1）。
+    expect(p.inspectTool).toHaveBeenCalledTimes(9)
     expect(p.inspectPowerShell).toHaveBeenCalledOnce()
     expect(p.inspectCodexDesktop).toHaveBeenCalledOnce()
   })
 })
 
+
+describe('CERTIFICATE_TRUST', () => {
+  function withProbe(outcomes: { plain: NodeTlsOutcome, system: NodeTlsOutcome, version?: string }) {
+    const input = dependencies(temporaryHome())
+    const probeNodeTls = vi.fn(async (probe: NodeTlsProbeInput) => ({
+      outcome: probe.useSystemRoots ? outcomes.system : outcomes.plain,
+      version: outcomes.version ?? 'v22.19.0',
+    }))
+    input.probeNodeTls = probeNodeTls
+    return { input, probeNodeTls }
+  }
+
+  async function certificateItem(input: DiagnosticsDependencies) {
+    return (await runDiagnostics(input)).items.find((item) => item.code === 'CERTIFICATE_TRUST')
+  }
+
+  it('shakes hands once with and once without the switch, against the current account host only', async () => {
+    const { input, probeNodeTls } = withProbe({ plain: 'ok', system: 'ok' })
+    const item = await certificateItem(input)
+
+    expect(item).toMatchObject({
+      title: '安全证书',
+      state: 'pass',
+      summary: '工具用自带的证书就能连上星芒服务，这台电脑没有换过网页证书。',
+      details: { verdict: 'direct', defaultRoots: 'ok', systemRoots: 'ok', elevated: false, nodeVersion: 'v22.19.0' },
+    })
+    const host = new URL(relayStatusProbeUrl(relaySites[0])).hostname
+    expect(probeNodeTls.mock.calls.map(([probe]) => probe.useSystemRoots).sort()).toEqual([false, true])
+    for (const [probe] of probeNodeTls.mock.calls) {
+      expect(probe).toMatchObject({ host, port: 443, nodePath: expect.stringContaining('node') })
+    }
+  })
+
+  it('stays green and says so when only the computer store trusts the certificate', async () => {
+    const { input } = withProbe({ plain: 'cert', system: 'ok' })
+    expect(await certificateItem(input)).toMatchObject({
+      state: 'pass',
+      summary: expect.stringContaining('星芒已经让装工具和从星芒打开的工具信任它'),
+      details: { verdict: 'systemTrusted' },
+    })
+  })
+
+  it('blames an old Node.js and offers the install page when Node cannot read the store', async () => {
+    const { input } = withProbe({ plain: 'cert', system: 'cert', version: 'v22.12.0' })
+    expect(await certificateItem(input)).toMatchObject({
+      state: 'fail',
+      summary: '这台电脑装了公司或安全软件的证书，电脑上的 Node.js 太旧，认不了它。点「去处理」换成新版。',
+      details: { verdict: 'outdatedNode', nodeVersion: 'v22.12.0' },
+    })
+  })
+
+  it('points at the network administrator when even the computer does not trust the certificate', async () => {
+    const { input } = withProbe({ plain: 'cert', system: 'cert', version: 'v24.6.0' })
+    expect(await certificateItem(input)).toMatchObject({
+      state: 'fail',
+      summary: expect.stringContaining('公司电脑请找网络管理员'),
+      details: { verdict: 'untrusted' },
+    })
+  })
+
+  it('defers to the network item instead of blaming the certificate twice', async () => {
+    const { input } = withProbe({ plain: 'cert', system: 'cert', version: 'v24.6.0' })
+    input.fetch = async () => { throw new TypeError('fetch failed', { cause: Object.assign(new Error('getaddrinfo ENOTFOUND'), { code: 'ENOTFOUND' }) }) }
+    const report = await runDiagnostics(input)
+    expect(report.items.find((item) => item.code === 'XINGMANG_NETWORK')?.state).toBe('fail')
+    expect(report.items.find((item) => item.code === 'CERTIFICATE_TRUST')).toMatchObject({
+      state: 'fail',
+      summary: '工具连星芒服务时证书对不上，先看上面「星芒 AI 网络」那一项。',
+    })
+  })
+
+  it('does not guess when the handshake failed for reasons other than the certificate', async () => {
+    const { input } = withProbe({ plain: 'other', system: 'other' })
+    expect(await certificateItem(input)).toMatchObject({ state: 'pass', details: { verdict: 'unknown' } })
+  })
+
+  it('starts no process and asks for a normal start when running as administrator', async () => {
+    const { input, probeNodeTls } = withProbe({ plain: 'ok', system: 'ok' })
+    input.windowsExecution = { mode: 'trusted-only', elapsedMs: 5 }
+    expect(await certificateItem(input)).toMatchObject({
+      state: 'warn',
+      summary: '星芒现在是以管理员身份打开的，这时不让工具信任电脑上另外装的证书。请关掉星芒，直接双击正常打开。',
+      details: { verdict: 'elevated', elevated: true },
+    })
+    expect(probeNodeTls).not.toHaveBeenCalled()
+  })
+
+  it('leaves the row out when Node.js is not installed', async () => {
+    const { input, probeNodeTls } = withProbe({ plain: 'ok', system: 'ok' })
+    const inspectTool = input.inspectTool!
+    input.inspectTool = async (tool, signal) => tool === 'node'
+      ? { installed: false, version: null, path: null }
+      : inspectTool(tool, signal)
+    const report = await runDiagnostics(input)
+    expect(report.items.some((item) => item.code === 'CERTIFICATE_TRUST')).toBe(false)
+    expect(probeNodeTls).not.toHaveBeenCalled()
+  })
+
+  it('applies on macOS as well', async () => {
+    const { input } = withProbe({ plain: 'cert', system: 'ok' })
+    input.platform = 'darwin'
+    expect(await certificateItem(input)).toMatchObject({ details: { verdict: 'systemTrusted' } })
+  })
+})
+
+describe('operatingSystemSummary', () => {
+  it('names the system the way customers know it', () => {
+    expect(operatingSystemSummary('win32', '10.0.22631', 'x64')).toBe('Windows 11（64 位）')
+    expect(operatingSystemSummary('win32', '10.0.19045', 'x64')).toBe('Windows 10（64 位）')
+    expect(operatingSystemSummary('darwin', '24.1.0', 'arm64')).toBe('macOS 15（Apple 芯片）')
+    expect(operatingSystemSummary('darwin', '20.6.0', 'x64')).toBe('macOS 11（Intel 芯片）')
+    expect(operatingSystemSummary('darwin', '25.0.0', 'arm64')).toBe('macOS 26（Apple 芯片）')
+  })
+
+  it('falls back to the raw values it cannot map', () => {
+    expect(operatingSystemSummary('linux', '6.8.0', 'x64')).toBe('linux 6.8.0 (x64)')
+    expect(operatingSystemSummary('win32', '6.3.9600', 'x64')).toBe('win32 6.3.9600 (x64)')
+  })
+})
 
 describe('windowsProxySettingsOutcome', () => {
   const closedOnly = async () => false

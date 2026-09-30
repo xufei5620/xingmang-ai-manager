@@ -1,4 +1,4 @@
-import type { AccelerationApi, AccelerationConflictKind, AccelerationLine, AccelerationMode, AccelerationPhase, AccelerationPreference, AccelerationPreferenceApi, AccelerationPreferenceUpdate, AccelerationRedemptionResult, AccelerationState } from './acceleration-contract'
+import type { AccelerationApi, AccelerationBundleCheck, AccelerationConflictKind, AccelerationLine, AccelerationMode, AccelerationPhase, AccelerationPreference, AccelerationPreferenceApi, AccelerationPreferenceUpdate, AccelerationRedemptionResult, AccelerationState, AccelerationUnavailableReason } from './acceleration-contract'
 import { accelerationBonusSeconds, accelerationConflictKinds, accelerationFailure, accelerationFailureMessages, accelerationFailureReason, accelerationTrialSeconds, isAccelerationConflictKind, isAccelerationLineId } from './acceleration-contract'
 
 export interface AccelerationService extends AccelerationApi, AccelerationPreferenceApi {
@@ -33,6 +33,11 @@ interface AccelerationServiceOptions {
    * 排着的可能是一次十几秒的连接，界面上点一下线路不该等它。
    */
   preferences?: AccelerationPreferenceApi
+  /**
+   * 启动时自带的加速文件就没读通（见 main.ts）。给了就把原因带进「开不了」的状态里，
+   * 并提供「重新检查」；不给就是旧口径的「线路准备中」。
+   */
+  bundleDamaged?: { recheck(): Promise<AccelerationBundleCheck> }
 }
 
 const SERVICE_UNAVAILABLE = '加速线路暂未开通，请稍后再试。'
@@ -80,6 +85,20 @@ function parsePreferenceUpdate(value: unknown): AccelerationPreferenceUpdate {
  */
 function backendFailure(error: unknown): Error {
   return accelerationFailure(accelerationFailureReason(error) ?? 'unknown')
+}
+
+const REDEMPTION_FAILURE = '加速时长这次没有加上，请稍后再输一次口令；还不行就联系客服。'
+
+/**
+ * 口令不对、已经领过是正常结果（见 projectRedemption），走到这里的都是本机没办成：
+ * 时长记录写不进去、加速组件没起来之类。原来一律「兑换失败，请稍后重试」，客户以为
+ * 是网络，反复重试也不会好。归类由下层给出，这里只挑句子，错误原文照旧不上屏（I13）。
+ */
+function redemptionFailure(error: unknown): Error {
+  const reason = accelerationFailureReason(error)
+  if (reason === 'local-data') return accelerationFailure(reason, '加速时长这次没有加上：本机的时长记录写不进去。请检查磁盘剩余空间后再输一次口令。')
+  if (!reason || reason === 'unknown') return new Error(REDEMPTION_FAILURE)
+  return accelerationFailure(reason, `加速时长这次没有加上：${accelerationFailureMessages[reason]}`)
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -170,10 +189,11 @@ function defaultPreference(): AccelerationPreference {
   return { lineId: null, mode: 'system-proxy' }
 }
 
-function unavailableState(scope: string): AccelerationState {
+function unavailableState(scope: string, reason?: AccelerationUnavailableReason): AccelerationState {
   return {
     scope, phase: 'unavailable', mode: 'system-proxy', totalSeconds: accelerationTrialSeconds, remainingSeconds: null,
     sessionSeconds: 0, measuredAt: new Date().toISOString(), connectedAt: null, line: null, error: null,
+    ...(reason ? { unavailableReason: reason } : {}),
   }
 }
 
@@ -188,7 +208,7 @@ function projectRedemption(value: unknown, scope: string): AccelerationRedemptio
 }
 
 export function createAccelerationService(options: AccelerationServiceOptions): AccelerationService {
-  const { backend } = options
+  const { backend, bundleDamaged } = options
   // Track a start before awaiting it: a failed/late response does not prove the tunnel never started.
   const possibleSessions = new Set<string>()
   let queue: Promise<unknown> = Promise.resolve()
@@ -269,7 +289,7 @@ export function createAccelerationService(options: AccelerationServiceOptions): 
       assertCurrent(scope, expectedRevision)
       if (!backend) {
         if (operation === 'start') throw new Error(SERVICE_UNAVAILABLE)
-        return notify(unavailableState(scope))
+        return notify(unavailableState(scope, bundleDamaged ? 'bundle-damaged' : undefined))
       }
       const wasRunning = possibleSessions.has(scope)
       if (operation === 'start') possibleSessions.add(scope)
@@ -326,9 +346,9 @@ export function createAccelerationService(options: AccelerationServiceOptions): 
         if (!backend?.redeemAccelerationCode) throw new Error(SERVICE_UNAVAILABLE)
         let result: AccelerationRedemptionResult
         try { result = projectRedemption(await backend.redeemAccelerationCode(scope, code), scope) }
-        catch {
+        catch (error) {
           assertCurrent(scope, expectedRevision)
-          throw new Error('加速口令兑换失败，请稍后重试。')
+          throw redemptionFailure(error)
         }
         assertCurrent(scope, expectedRevision)
         track(result.state)
@@ -381,6 +401,7 @@ export function createAccelerationService(options: AccelerationServiceOptions): 
       if (!options.preferences) return Promise.reject(new Error('加速线路偏好暂不可用，请稍后重试。'))
       return options.preferences.saveAccelerationPreference(scope, parsed)
     },
+    ...(bundleDamaged ? { recheckAccelerationBundle: () => bundleDamaged.recheck() } : {}),
     hasPossibleSession() {
       return possibleSessions.size > 0
     },

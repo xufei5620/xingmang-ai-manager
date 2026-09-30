@@ -67,6 +67,32 @@ test('login preserves drafts through legal documents and only authenticates afte
   } finally { await page.close() }
 })
 
+test('registration status read retries once, names proxy software, and explains the disabled button', async () => {
+  const page = await open('scenario=register&statusFail=timeout&statusFailures=2')
+  try {
+    await page.getByTestId('register-status-loading').filter({ hasText: '正在再试一次' }).waitFor()
+    await page.getByTestId('register-status-error').filter({ hasText: '先把它关掉' }).waitFor()
+    assert.equal(await page.evaluate(() => document.documentElement.dataset.statusSites), 'solov,solov')
+    assert.equal(await page.getByTestId('register-submit').isDisabled(), true)
+    await page.getByTestId('register-submit-hint').filter({ hasText: '要先连上账号服务' }).waitFor()
+    await page.getByTestId('register-status-retry').click()
+    await page.getByTestId('register-send-code').waitFor()
+    assert.equal(await page.getByTestId('register-submit').isDisabled(), false)
+    assert.equal(await page.getByTestId('register-submit-hint').count(), 0)
+  } finally { await page.close() }
+})
+
+test('registration status read says the computer is offline and reloads when the network returns', async () => {
+  const page = await open('scenario=register&statusFail=offline')
+  try {
+    await page.getByTestId('register-status-error').filter({ hasText: '没连上网' }).waitFor()
+    assert.equal(await page.evaluate(() => document.documentElement.dataset.statusSites), 'solov')
+    await page.evaluate(() => window.dispatchEvent(new Event('online')))
+    await page.getByTestId('register-send-code').waitFor()
+    assert.equal(await page.getByTestId('register-status-error').count(), 0)
+  } finally { await page.close() }
+})
+
 test('registration preserves its completed result when the following real login attempt fails', async () => {
   const page = await open('scenario=register&fail=1')
   try {
@@ -107,6 +133,7 @@ test('recovery validates reset links and keeps the generated password available 
     assert.deepEqual((await calls(page)).map((item) => item.method), ['send-reset'])
     await page.getByTestId('forgot-token').fill('https://xm.solov.cc/reset?token=one%2Btwo')
     await page.getByTestId('forgot-reset').click()
+    await page.getByTestId('forgot-use-temp').click()
     await page.getByTestId('forgot-new-password').waitFor()
     assert.equal(await page.getByTestId('forgot-new-password').getAttribute('type'), 'password')
     await page.getByTestId('forgot-copy-password').click()
@@ -118,6 +145,103 @@ test('recovery validates reset links and keeps the generated password available 
     assert.equal(await page.getByTestId('login-password').inputValue(), '')
     assert.equal(await page.getByTestId('forgot-new-password').count(), 0)
     assert.deepEqual((await calls(page)).find((item) => item.method === 'reset').input, { email: 'person@gmail.com', token: 'one+two', siteId: 'solov' })
+  } finally { await page.close() }
+})
+
+async function reachNewPasswordStep(page, email = 'person@example.test') {
+  await page.getByTestId('forgot-email').fill(email)
+  await page.getByTestId('forgot-send').click()
+  await page.getByTestId('forgot-token').fill('a-valid-reset-token')
+  await page.getByTestId('forgot-reset').click()
+  // The step focuses its first field one frame after the request settles. Filling before
+  // that lets the late focus pull the second field's text into the first one.
+  await page.waitForFunction(() => document.activeElement?.id === 'forgot-set-password')
+}
+
+test('recovery lets the user set their own password and signs in without ever showing the temporary one', async () => {
+  const page = await open('scenario=recovery')
+  try {
+    await reachNewPasswordStep(page)
+    assert.equal(await page.getByTestId('forgot-new-password').count(), 0)
+    assert.equal(await page.getByTestId('forgot-back-login').count(), 0)
+    await page.getByTestId('forgot-set-password').fill('short')
+    await page.getByTestId('forgot-set-confirm').fill('short')
+    await page.getByTestId('forgot-set-submit').click()
+    await page.getByText('新密码至少 8 位').waitFor()
+    await page.getByTestId('forgot-set-password').fill('my-own-password')
+    await page.getByTestId('forgot-set-confirm').fill('my-own-passwor')
+    await page.getByTestId('forgot-set-submit').click()
+    await page.getByText('两次输入的新密码不一样').waitFor()
+    assert.deepEqual((await calls(page)).map((item) => item.method), ['send-reset', 'reset'])
+    await page.getByTestId('forgot-set-confirm').fill('my-own-password')
+    await page.getByTestId('forgot-remember').check()
+    await page.getByTestId('forgot-set-confirm').press('Enter')
+    await page.waitForFunction(() => JSON.parse(document.documentElement.dataset.calls || '[]').some((item) => item.method === 'notice'))
+    const recorded = await calls(page)
+    assert.deepEqual(recorded.map((item) => item.method), ['send-reset', 'reset', 'login', 'change-password', 'remember', 'authenticated', 'notice'])
+    assert.deepEqual(recorded.find((item) => item.method === 'login').input, { username: 'person@example.test', password: 'new-test-password', siteId: 'solov' })
+    assert.deepEqual(recorded.find((item) => item.method === 'change-password').input, { originalPassword: 'new-test-password', newPassword: 'my-own-password' })
+    assert.deepEqual(recorded.find((item) => item.method === 'remember').input, { identifier: 'person@example.test', password: 'my-own-password' })
+    assert.equal(recorded.find((item) => item.method === 'notice').input, '密码已改好，已经登录')
+  } finally { await page.close() }
+})
+
+test('recovery shows the temporary password when the change fails after signing in, and continuing still completes the login', async () => {
+  const page = await open('scenario=recovery&changeFail=1')
+  try {
+    await reachNewPasswordStep(page)
+    await page.getByTestId('forgot-set-password').fill('my-own-password')
+    await page.getByTestId('forgot-set-confirm').fill('my-own-password')
+    await page.getByTestId('forgot-set-submit').click()
+    await page.getByTestId('forgot-new-password').waitFor()
+    assert.equal(await page.getByTestId('forgot-new-password').inputValue(), 'new-test-password')
+    await page.getByTestId('auth-message').filter({ hasText: '新密码没设上' }).waitFor()
+    assert.equal(await page.getByTestId('forgot-finish').count(), 0)
+    assert.equal(await page.getByTestId('forgot-back-login').count(), 0)
+    assert.deepEqual((await calls(page)).map((item) => item.method), ['send-reset', 'reset', 'login', 'change-password'])
+    await page.getByTestId('forgot-continue').click()
+    await page.waitForFunction(() => JSON.parse(document.documentElement.dataset.calls || '[]').some((item) => item.method === 'authenticated'))
+    const recorded = await calls(page)
+    assert.deepEqual(recorded.map((item) => item.method), ['send-reset', 'reset', 'login', 'change-password', 'remember', 'authenticated'])
+    assert.equal(recorded.find((item) => item.method === 'remember').input, null)
+  } finally { await page.close() }
+})
+
+test('recovery falls back to the temporary password and the login page when signing in with it fails', async () => {
+  const page = await open('scenario=recovery&fail=1')
+  try {
+    await reachNewPasswordStep(page)
+    await page.getByTestId('forgot-set-password').fill('my-own-password')
+    await page.getByTestId('forgot-set-confirm').fill('my-own-password')
+    await page.getByTestId('forgot-set-submit').click()
+    await page.getByTestId('forgot-new-password').waitFor()
+    await page.getByTestId('auth-error').waitFor()
+    await page.getByTestId('auth-message').filter({ hasText: '复制它去登录' }).waitFor()
+    assert.deepEqual((await calls(page)).map((item) => item.method), ['send-reset', 'reset', 'login'])
+    await page.getByTestId('forgot-finish').click()
+    assert.equal(await page.getByTestId('login-account').inputValue(), 'person@example.test')
+  } finally { await page.close() }
+})
+
+test('recovery on an account with two-step verification asks for the code before changing the password', async () => {
+  const page = await open('scenario=recovery&totp=1')
+  try {
+    await reachNewPasswordStep(page)
+    await page.getByTestId('forgot-set-password').fill('my-own-password')
+    await page.getByTestId('forgot-set-confirm').fill('my-own-password')
+    await page.getByTestId('forgot-set-submit').click()
+    await page.getByTestId('login-2fa-code').waitFor()
+    assert.deepEqual((await calls(page)).map((item) => item.method), ['send-reset', 'reset', 'login'])
+    assert.equal(await page.getByTestId('login-cancel').count(), 0)
+    await page.getByTestId('login-2fa-back').click()
+    await page.getByTestId('forgot-set-password').waitFor()
+    await page.getByTestId('forgot-set-submit').click()
+    await page.getByTestId('login-2fa-code').fill('123456')
+    await page.getByTestId('login-2fa-submit').click()
+    await page.waitForFunction(() => JSON.parse(document.documentElement.dataset.calls || '[]').some((item) => item.method === 'notice'))
+    const recorded = await calls(page)
+    assert.deepEqual(recorded.map((item) => item.method), ['send-reset', 'reset', 'login', 'login', 'two-factor', 'change-password', 'remember', 'authenticated', 'notice'])
+    assert.deepEqual(recorded.find((item) => item.method === 'change-password').input, { originalPassword: 'new-test-password', newPassword: 'my-own-password' })
   } finally { await page.close() }
 })
 
@@ -189,6 +313,78 @@ test('a failed switch keeps the step and offers the matching way out', async () 
     assert.equal(await page.getByTestId('start-guide').getAttribute('data-guide-step'), 'connect')
     await page.getByTestId('guide-exit-support').click()
     assert.deepEqual((await calls(page)).map((item) => item.method), ['detect', 'switch', 'exit'])
+  } finally { await page.close() }
+})
+
+// 第十九批 1：引导里装工具失败也要有出口。Node.js 太旧认不了证书时，「换成新版 Node.js」
+// 当主按钮，换完引导接着装刚才那个工具；换不了（Mac）时只给「找客服」这类出口。
+test('an install that fails on an outdated Node.js offers the replacement and carries on', async () => {
+  const page = await open('scenario=guide&auto=1&switchable=1&certFail=1&replaceNode=1')
+  try {
+    await page.getByTestId('guide-route-claude').check()
+    await page.getByTestId('guide-next').click()
+    await page.getByTestId('guide-install').click()
+    await page.getByTestId('guide-error').filter({ hasText: '点「换成新版 Node.js」，换好后星芒会接着装' }).waitFor()
+    assert.match(await page.getByTestId('guide-exit-replaceNode').getAttribute('class') ?? '', /primary/)
+    await page.getByTestId('guide-exit-replaceNode').click()
+    await page.locator('[data-guide-step="connect"]').waitFor()
+    assert.deepEqual((await calls(page)).map((item) => item.method), ['detect', 'install', 'exit', 'install'])
+  } finally { await page.close() }
+})
+
+test('an install failure without a Node.js replacement still leaves a way out', async () => {
+  const page = await open('scenario=guide&auto=1&switchable=1&certFail=1')
+  try {
+    await page.getByTestId('guide-route-claude').check()
+    await page.getByTestId('guide-next').click()
+    await page.getByTestId('guide-install').click()
+    await page.getByTestId('guide-error').waitFor()
+    assert.equal(await page.getByTestId('guide-exit-replaceNode').count(), 0)
+    await page.getByTestId('guide-exit-support').click()
+    assert.deepEqual((await calls(page)).map((item) => item.method), ['detect', 'install', 'exit'])
+  } finally { await page.close() }
+})
+
+// 第二十一批 1：引导里认不出原因的失败也留原话、能「复制给客服」，和错误框一个待遇，
+// 并记进帮助框的「最近一次出错」。
+test('an unrecognised install failure keeps the raw text and copies it for support', async () => {
+  const page = await open('scenario=guide&auto=1&switchable=1&oddFail=1')
+  try {
+    await page.evaluate(() => Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async (value) => { window.copiedSupport = value } } }))
+    await page.getByTestId('guide-route-claude').check()
+    await page.getByTestId('guide-next').click()
+    await page.getByTestId('guide-install').click()
+    await page.getByTestId('guide-error').filter({ hasText: 'Claude Code 没装上（没认出是哪一类问题，原话在下面）。点「再试一次」，还不行就点「复制给客服」发给客服。' }).waitFor()
+    const raw = page.getByTestId('guide-error-raw')
+    assert.equal(await raw.getAttribute('open'), '')
+    assert.match(await raw.textContent() ?? '', /给客服看的原话.*E999/)
+    assert.doesNotMatch(await raw.textContent() ?? '', /abcdefghijklmnop/)
+    const failure = JSON.parse(await page.evaluate(() => document.documentElement.dataset.guideFailure ?? '{}'))
+    assert.equal(failure.action, '新手引导 · 安装 Claude Code')
+    await page.getByTestId('guide-copy-support').click()
+    await page.getByTestId('guide-copy-support-status').filter({ hasText: '已复制，发给客服就行' }).waitFor()
+    const copied = await page.evaluate(() => window.copiedSupport)
+    assert.match(copied, /^星芒AI管理工具 · 给客服的信息\n账号 peaker（ID 7）/)
+    assert.match(copied, /做什么：新手引导 · 安装 Claude Code/)
+    assert.match(copied, /原因：没认出是哪一类问题，原话在下面/)
+    assert.match(copied, /原话：npm ERR! code E999/)
+    assert.doesNotMatch(copied, /abcdefghijklmnop/)
+    await page.getByTestId('guide-retry').click()
+    await page.locator('[data-guide-step="connect"]').waitFor()
+    assert.equal(await page.getByTestId('guide-copy-support').count(), 0)
+  } finally { await page.close() }
+})
+
+test('a support copy that cannot reach the clipboard lays the lines out to select', async () => {
+  const page = await open('scenario=guide&auto=1&switchable=1&oddFail=1')
+  try {
+    await page.evaluate(() => Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async () => { throw new Error('denied') } } }))
+    await page.getByTestId('guide-route-claude').check()
+    await page.getByTestId('guide-next').click()
+    await page.getByTestId('guide-install').click()
+    await page.getByTestId('guide-copy-support').click()
+    await page.getByTestId('guide-copy-support-status').filter({ hasText: '没能写进剪贴板，手动选中下面这几行复制就行' }).waitFor()
+    assert.match(await page.getByTestId('guide-copy-support-text').textContent() ?? '', /做什么：新手引导 · 安装 Claude Code/)
   } finally { await page.close() }
 })
 
@@ -284,6 +480,86 @@ test('a failed tool launch in the guide keeps the real reason and can be retried
     await page.getByTestId('guide-retry').click()
     await page.waitForFunction(() => document.documentElement.dataset.calls?.includes('complete'))
     assert.deepEqual((await calls(page)).map((item) => item.method), ['detect', 'launch', 'launch', 'complete'])
+  } finally { await page.close() }
+})
+
+test('the setup result keeps installation, billing and first-task completion as separate facts', async () => {
+  const page = await open('scenario=guide&installed=1&connected=1&launchFail=1')
+  try {
+    await page.getByTestId('guide-next').click()
+    await page.getByTestId('guide-next').click()
+    await page.getByTestId('guide-result').waitFor()
+    assert.match(await page.getByTestId('guide-result-install').innerText(), /已装好/)
+    assert.match(await page.getByTestId('guide-result-connection').innerText(), /当前账号[\s\S]*设置已读到/)
+    assert.match(await page.getByTestId('guide-result-billing').innerText(), /花的是当前账号的余额/)
+    assert.match(await page.getByTestId('guide-result-next').innerText(), /打开后把下面这句话发给它试试/)
+    await page.evaluate(() => Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async (value) => { window.copiedFirstTask = value } } }))
+    await page.getByTestId('guide-first-task-copy').click()
+    await page.getByTestId('guide-first-task-copy-status').filter({ hasText: '已复制' }).waitFor()
+    assert.equal(await page.evaluate(() => window.copiedFirstTask), await page.getByTestId('guide-first-task-prompt').innerText())
+    assert.equal((await calls(page)).some((entry) => entry.method === 'launch' || entry.method === 'complete'), false)
+    await page.getByTestId('guide-open-tool').click()
+    await page.getByTestId('guide-error').waitFor()
+    assert.equal(await page.getByTestId('start-guide').getAttribute('data-guide-step'), 'ready')
+    assert.match(await page.getByTestId('guide-result-next').innerText(), /打开后把下面这句话发给它试试/)
+    assert.equal((await calls(page)).some((entry) => entry.method === 'complete'), false)
+    await page.getByTestId('guide-retry').click()
+    await page.waitForFunction(() => document.documentElement.dataset.calls?.includes('complete'))
+  } finally { await page.close() }
+})
+
+test('a real backup and a verified switch appear after account switching, and a fresh scan can revoke readiness', async () => {
+  const page = await open('scenario=guide&installed=1&unknown=1&switchable=1')
+  try {
+    await page.getByTestId('guide-next').click()
+    await page.getByTestId('guide-next').click()
+    assert.match(await page.getByTestId('guide-result-billing').innerText(), /可能不扣当前账号的余额/)
+    await page.getByTestId('guide-switch-account').click()
+    await page.locator('[data-guide-step="ready"]').waitFor()
+    assert.equal(await page.getByTestId('guide-switched-note').getAttribute('data-backup-id'), 'fixture-backup')
+    assert.match(await page.getByTestId('guide-result-connection').innerText(), /当前账号 peaker[\s\S]*能连上/)
+    assert.match(await page.getByTestId('guide-switched-note').innerText(), /已改用 peaker。原来的设置已备份/)
+    await page.getByTestId('guide-ready-rescan').click()
+    await page.waitForFunction(() => JSON.parse(document.documentElement.dataset.calls || '[]').filter((entry) => entry.method === 'detect').length === 2)
+    await page.evaluate(() => window.authHarness.setTool('codexDesktop', { installed: false }))
+    await page.getByTestId('guide-result-install').filter({ hasText: '还没装好' }).waitFor()
+    assert.equal(await page.getByTestId('guide-open-tool').isDisabled(), true)
+    assert.equal(await page.getByTestId('guide-home').isDisabled(), true)
+    assert.equal((await calls(page)).some((entry) => entry.method === 'launch'), false)
+  } finally { await page.close() }
+})
+
+// #622 接手时的回归：切换后没试通，原因（余额不足、网络不通）必须留在回执里。
+test('an unverified switch still shows why it could not be confirmed', async () => {
+  const page = await open('scenario=guide&installed=1&unknown=1&switchable=1&switchUnverified=1')
+  try {
+    await page.getByTestId('guide-route-codexDesktop').check()
+    await page.getByTestId('guide-next').click()
+    await page.getByTestId('guide-next').click()
+    await page.getByTestId('guide-switch-account').click()
+    await page.locator('[data-guide-step="ready"]').waitFor()
+    assert.match(await page.locator('.auth-guide-lead').first().innerText(), /已改用你的账号，但这次没能确认能用/)
+    assert.match(await page.getByTestId('guide-switched-note').innerText(), /当前账号余额不足，充值后就能用。原来的设置已备份/)
+    assert.match(await page.getByTestId('guide-result-connection').innerText(), /没试通/)
+  } finally { await page.close() }
+})
+
+test('official login remains pending and a denied first-task copy offers selectable text', async () => {
+  const page = await open('scenario=guide&installed=1&official=1&runtime=1&officialLoginRequired=1')
+  try {
+    await page.getByTestId('guide-next').click()
+    await page.getByTestId('guide-next').click()
+    assert.match(await page.getByTestId('guide-result-connection').innerText(), /ChatGPT 账号，还没登录/)
+    assert.match(await page.getByTestId('guide-result-billing').innerText(), /不扣当前账号的余额/)
+    assert.equal(await page.getByTestId('guide-next').isDisabled(), true)
+    await page.getByTestId('guide-config').click()
+    await page.getByTestId('guide-next').click()
+    await page.locator('[data-guide-step="ready"]').waitFor()
+    assert.match(await page.getByTestId('guide-result-billing').innerText(), /花的是当前账号的余额/)
+    await page.evaluate(() => Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async () => { throw new Error('denied') } } }))
+    await page.getByTestId('guide-first-task-copy').click()
+    await page.getByTestId('guide-first-task-copy-status').filter({ hasText: '手动选中' }).waitFor()
+    assert.match(await page.getByTestId('guide-first-task-prompt').innerText(), /用中文/)
   } finally { await page.close() }
 })
 
@@ -492,6 +768,74 @@ test('an invitation link opens the registration with the invitation field alread
   } finally { await page.close() }
 })
 
+// 第二十批 4：红字说清原因，下面给能点的出口。
+test('a network failure on login names proxy software and offers retry and support', async () => {
+  const page = await open('loginFail=timeout')
+  try {
+    await page.getByTestId('login-account').fill('fixture-member')
+    await page.getByTestId('login-password').fill('fixture-password')
+    await page.getByTestId('auth-agree').check()
+    await page.getByTestId('login-submit').click()
+    await page.getByTestId('auth-error').filter({ hasText: '连不上账号服务。电脑上开着加速器、翻墙或代理软件的话，先把它关掉，再试一次。' }).waitFor()
+    assert.equal(await page.getByTestId('auth-exit-forgot').count(), 0)
+    await page.getByTestId('auth-exit-help').click()
+    assert.equal((await calls(page)).filter((item) => item.method === 'help').length, 1)
+    await page.getByTestId('auth-exit-retry').click()
+    await page.waitForFunction(() => document.documentElement.dataset.calls?.includes('authenticated'))
+    assert.deepEqual((await calls(page)).map((item) => item.method), ['login', 'help', 'login', 'remember', 'authenticated'])
+  } finally { await page.close() }
+})
+
+test('a login without network waits for the network and then says to try again', async () => {
+  const page = await open('loginFail=offline')
+  try {
+    await page.getByTestId('login-account').fill('fixture-member')
+    await page.getByTestId('login-password').fill('fixture-password')
+    await page.getByTestId('auth-agree').check()
+    await page.getByTestId('login-submit').click()
+    await page.getByTestId('auth-error').filter({ hasText: '这台电脑现在没连上网。连上网后再试一次。' }).waitFor()
+    await page.context().setOffline(true)
+    await page.context().setOffline(false)
+    await page.getByTestId('auth-message').filter({ hasText: '网络回来了' }).waitFor()
+    assert.equal(await page.getByTestId('auth-error').count(), 0)
+    await page.getByTestId('auth-exit-retry').click()
+    await page.waitForFunction(() => document.documentElement.dataset.calls?.includes('authenticated'))
+  } finally { await page.close() }
+})
+
+test('a wrong password offers password recovery and registration under the red text', async () => {
+  const page = await open('fail=1')
+  try {
+    await page.getByTestId('login-account').fill('person@example.test')
+    await page.getByTestId('login-password').fill('fixture-password')
+    await page.getByTestId('auth-agree').check()
+    await page.getByTestId('login-submit').click()
+    await page.getByTestId('auth-error').filter({ hasText: '账号或密码不正确' }).waitFor()
+    assert.equal(await page.getByTestId('auth-exit-retry').count(), 0)
+    await page.getByTestId('auth-exit-register').waitFor()
+    await page.getByTestId('auth-exit-forgot').click()
+    await page.getByTestId('forgot-password-dialog').waitFor()
+    assert.equal(await page.getByTestId('forgot-email').inputValue(), 'person@example.test')
+    assert.equal(await page.getByTestId('auth-exits').count(), 0)
+  } finally { await page.close() }
+})
+
+test('an email that is already registered offers to log in with it', async () => {
+  const page = await open('scenario=register&emailTaken=1')
+  try {
+    await page.getByTestId('register-email').fill('fixture@example.test')
+    await page.getByTestId('register-code').fill('123456')
+    await page.getByTestId('register-password').fill('fixture-password')
+    await page.getByTestId('register-password-confirm').fill('fixture-password')
+    await page.getByTestId('auth-agree').check()
+    await page.getByTestId('register-submit').click()
+    await page.getByTestId('auth-error').filter({ hasText: '该邮箱已被注册' }).waitFor()
+    await page.getByTestId('auth-exit-login').click()
+    await page.getByTestId('login-dialog').waitFor()
+    assert.equal(await page.getByTestId('login-account').inputValue(), 'fixture@example.test')
+  } finally { await page.close() }
+})
+
 test('pending registration blocks close and mode changes then focuses the password on return to login', async () => {
   const page = await open('scenario=register&pending=register&fail=1')
   try {
@@ -548,6 +892,8 @@ test('recovery requests block closing and focus each next field only after compl
     assert.equal(await page.getByTestId('forgot-change-email').isDisabled(), true)
     assert.equal(await page.getByTestId('forgot-back-login').isDisabled(), true)
     await page.evaluate(() => window.authHarness.release('reset'))
+    await page.waitForFunction(() => document.activeElement?.id === 'forgot-set-password')
+    await page.getByTestId('forgot-use-temp').click()
     await page.waitForFunction(() => document.activeElement?.id === 'forgot-new-password')
     await page.getByTestId('forgot-copy-password').click()
     assert.equal(await page.getByTestId('forgot-finish').isDisabled(), true)

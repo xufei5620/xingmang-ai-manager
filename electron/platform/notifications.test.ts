@@ -2,15 +2,18 @@ import { EventEmitter } from 'node:events'
 import { describe, expect, it, vi } from 'vitest'
 import {
   buildActivityNotificationMessage,
+  buildTerminalNotificationMessage,
   createPlatformNotifications,
   hostNotificationMessage,
   resolveNotificationTarget,
+  resolveTerminalNotificationTarget,
   type PlatformNotificationRuntime,
+  type TerminalFailureReason,
 } from './notifications'
 
 function setup() {
   let enabled = true
-  const preferences = { install: true, balance: true, task: true, cliUpdate: true, announcement: true, spend: true, acceleration: true }
+  const preferences = { install: true, balance: true, task: true, cliUpdate: true, announcement: true, spend: true, acceleration: true, cliTrouble: true, cliTurn: true }
   const notifications: Array<
     EventEmitter & {
       show: ReturnType<typeof vi.fn>
@@ -245,6 +248,24 @@ describe('announcement reminders', () => {
     expect(h.controller.notify('announcement', 'notice-ffffffff')).toBe('disabled')
     expect(h.runtime.create).toHaveBeenCalledTimes(1)
   })
+  it('words recharge promos on their own, once per promo and once per day, under the announcement switch', () => {
+    const h = setup()
+    expect(h.controller.notify('announcement', 'promo:notice-0a1b2c3d')).toBe('requested')
+    expect(h.runtime.create).toHaveBeenLastCalledWith({
+      title: '有新的充值活动',
+      body: '当前账号有一个充值活动，回到星芒首页看看，点「去充值」就能参加。',
+      silent: true,
+    })
+    expect(h.controller.notify('announcement', 'promo:notice-0a1b2c3d')).toBe('duplicate')
+    expect(h.controller.notify('announcement', 'promo-daily:notice-0a1b2c3d:20260930')).toBe('requested')
+    expect(h.runtime.create).toHaveBeenLastCalledWith({
+      title: '充值活动还在进行',
+      body: '当前账号的充值活动还没结束，回到星芒首页看看。',
+      silent: true,
+    })
+    h.preferences.announcement = false
+    expect(h.controller.notify('announcement', 'promo-daily:notice-0a1b2c3d:20261001')).toBe('disabled')
+  })
   it('names the tool and says whether it installed, updated or failed', () => {
     const h = setup()
     h.controller.notify('install', 'install:claude:installed:1', { tool: 'claude', outcome: 'installed' })
@@ -320,6 +341,8 @@ describe('chat notifications and click destinations', () => {
     expect(resolveNotificationTarget('install', 'install:claude:installed:1')).toBe('home')
     expect(resolveNotificationTarget('cliUpdate', 'claude@2')).toBe('home')
     expect(resolveNotificationTarget('announcement', 'notice-1')).toBe('announcement')
+    expect(resolveNotificationTarget('announcement', 'promo:notice-1')).toBe('home')
+    expect(resolveNotificationTarget('announcement', 'promo-daily:notice-1:20260930')).toBe('home')
     expect(resolveNotificationTarget('spend', 'spend:7:1')).toBe('usage')
     expect(resolveNotificationTarget('test', 'test')).toBeNull()
   })
@@ -343,7 +366,7 @@ describe('chat notifications and click destinations', () => {
     const controller = createPlatformNotifications(
       {
         readEnabled: () => true,
-        readPreferences: () => ({ install: true, balance: true, task: true, cliUpdate: true, announcement: true, spend: true, acceleration: true }),
+        readPreferences: () => ({ install: true, balance: true, task: true, cliUpdate: true, announcement: true, spend: true, acceleration: true, cliTrouble: true, cliTurn: true }),
         focusMainWindow,
         onError,
       },
@@ -360,5 +383,48 @@ describe('chat notifications and click destinations', () => {
     notices[0].emit('click')
     expect(focusMainWindow).toHaveBeenCalledOnce()
     expect(onError).not.toHaveBeenCalled()
+  })
+})
+
+describe('terminal tool reminders', () => {
+  const reasons: TerminalFailureReason[] = ['billing', 'auth', 'busy', 'model', 'service', 'unknown']
+
+  it('names the tool and gives a fixed reason without the word balance or site names', () => {
+    for (const reason of reasons) {
+      const message = buildTerminalNotificationMessage({ tool: 'claude', event: 'failed', reason })
+      expect(message.title).toBe('Claude Code 刚才没回上')
+      expect(message.body).not.toMatch(/余额|solov|Sub2API|API|npm|PATH/)
+    }
+    expect(buildTerminalNotificationMessage({ tool: 'claude', event: 'failed', reason: 'billing' }).body).toContain('当前账号的额度不够了')
+    expect(buildTerminalNotificationMessage({ tool: 'gemini', event: 'waiting' }).title).toBe('Gemini CLI 在等你')
+    expect(buildTerminalNotificationMessage({ tool: 'claude', event: 'finished' }).title).toBe('Claude Code 做完了')
+    expect(buildTerminalNotificationMessage({ tool: 'codex', event: 'finished' }).title).toBe('Codex 做完了')
+    expect(buildTerminalNotificationMessage({ tool: 'grok', event: 'failed', reason: 'auth' }).title).toBe('Grok 刚才没回上')
+    expect(buildTerminalNotificationMessage({ tool: 'grok', event: 'waiting' }).title).toBe('Grok 在等你')
+    expect(buildTerminalNotificationMessage({ tool: 'grok', event: 'finished' }).title).toBe('Grok 做完了')
+  })
+
+  it('sends billing trouble to top-up, other trouble to the check page and turn reminders nowhere', () => {
+    expect(resolveTerminalNotificationTarget({ tool: 'claude', event: 'failed', reason: 'billing' })).toBe('topup')
+    for (const reason of reasons.filter((value) => value !== 'billing')) {
+      expect(resolveTerminalNotificationTarget({ tool: 'claude', event: 'failed', reason })).toBe('health')
+    }
+    expect(resolveTerminalNotificationTarget({ tool: 'claude', event: 'waiting' })).toBeNull()
+    expect(resolveTerminalNotificationTarget({ tool: 'gemini', event: 'finished' })).toBeNull()
+  })
+
+  it('follows its own two switches and opens the fixed page on click', () => {
+    const { controller, preferences, notifications, openPage } = setup()
+    expect(controller.notifyTerminal({ tool: 'claude', event: 'failed', reason: 'billing' }, 'a')).toBe('requested')
+    notifications[0].emit('click')
+    expect(openPage).toHaveBeenCalledWith('topup')
+    expect(controller.notifyTerminal({ tool: 'claude', event: 'failed', reason: 'billing' }, 'a')).toBe('duplicate')
+    preferences.cliTrouble = false
+    expect(controller.notifyTerminal({ tool: 'claude', event: 'failed', reason: 'auth' }, 'b')).toBe('disabled')
+    expect(controller.notifyTerminal({ tool: 'claude', event: 'waiting' }, 'c')).toBe('requested')
+    notifications[1].emit('click')
+    expect(openPage).toHaveBeenCalledTimes(1)
+    preferences.cliTurn = false
+    expect(controller.notifyTerminal({ tool: 'claude', event: 'finished' }, 'd')).toBe('disabled')
   })
 })

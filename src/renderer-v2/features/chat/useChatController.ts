@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { platformApi } from '../../platform-api'
-import type { AiChatGroupSummary } from '../../../../electron/ipc-contract'
-import { inspectModel, validateChatRequest, validateImageRequest, type ChatApi } from './api'
-import { activeConversation, applyStreamEvent, changeConversation, chatErrorMessage, completeImages, continueInNewConversation, createConversation, createId, isConversationTooLongMessage, DEFAULT_CHAT_MODEL, DEFAULT_IMAGE_MODEL, isGenerating, planTurn, resolveChatGroup, resolveChatModel, saveConversation, updateRequest, type ChatMode, type ChatSettings, type ChatWorkspace, type Conversation } from './state'
+import type { AiChatAsset, AiChatGroupSummary } from '../../../../electron/ipc-contract'
+import { chatLimits, inspectModel, validateChatRequest, validateImageRequest, type ChatApi } from './api'
+import { activeConversation, addDraftImages, applyStreamEvent, attachmentErrorMessage, changeConversation, chatErrorMessage, completeImages, continueInNewConversation, createConversation, createId, isConversationTooLongMessage, DEFAULT_CHAT_MODEL, DEFAULT_IMAGE_MODEL, isGenerating, planTurn, resolveChatGroup, resolveChatModel, removeDraftImage, saveConversation, updateRequest, type ChatMode, type ChatSettings, type ChatWorkspace, type Conversation } from './state'
 import { ChatStorageError, createHistoryWriter, type LoadedChatHistory } from './storage'
 import { offlineActionMessage } from '../shell/online-status'
 import { useOnlineStatus } from '../shell/useOnlineStatus'
@@ -23,6 +23,8 @@ export function useChatController(api: ChatApi, scope: string, initial: LoadedCh
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const [storageError, setStorageError] = useState(initial.warning ? `${initial.warning}。当前会话暂未启用保存。` : '')
+  const [attaching, setAttaching] = useState(false)
+  const attachingRef = useRef(false)
   const stateRef = useRef(state)
   const offlineRef = useRef(false)
   offlineRef.current = useOnlineStatus().offline
@@ -199,7 +201,7 @@ export function useChatController(api: ChatApi, scope: string, initial: LoadedCh
     if (!stateRef.current.conversations.some((item) => item.id === current.id) && stateRef.current.conversations.length >= 50) { setError('最多保存 50 个对话，请先删除不再需要的对话'); return }
     if (requests.current.size >= 4) { setError('已有 4 个对话正在处理，请等待一个完成后再试'); return }
     try {
-      const plan = planTurn(current, { prompt: options.prompt ?? current.draft, requestId: createId(), assistantId: createId(), userMessageId: createId(), ...options })
+      const plan = planTurn(current, { prompt: options.prompt ?? current.draft, images: current.draftImages, requestId: createId(), assistantId: createId(), userMessageId: createId(), ...options })
       if (!groupsRef.current.some((group) => group.name === plan.settings.group)) { setError('所选分组已不可用，请选择可用分组后再发送'); return }
       const prepared = preparations[plan.settings.group]
       if (prepared?.phase !== 'ready' || !prepared.models.includes(plan.settings.model)) { setError('所选分组或模型尚未准备，请重新准备后再试'); return }
@@ -281,6 +283,30 @@ export function useChatController(api: ChatApi, scope: string, initial: LoadedCh
       }
     }
   }
+  // 选图框和剪贴板都在主进程里读、在那里压缩和保存，回来的只是图片引用。结果放回
+  // 发起时的那个对话，中途切走了也不会贴错地方。
+  const attachImages = async (work: (remaining: number) => Promise<AiChatAsset[]>) => {
+    const current = activeConversation(stateRef.current)
+    const owner = epoch.current
+    const remaining = chatLimits.imagesPerMessage - (current.draftImages?.length ?? 0)
+    if (remaining <= 0) { setError(`一条消息最多带 ${chatLimits.imagesPerMessage} 张图片`); return }
+    if (attachingRef.current) return
+    attachingRef.current = true; setAttaching(true)
+    try {
+      const assets = await work(remaining)
+      if (!alive.current || owner !== epoch.current || !assets.length) return
+      commit((workspace) => changeConversation(workspace, current.id, (item) => addDraftImages(item, assets)))
+      setError('')
+    } catch (reason) {
+      if (alive.current && owner === epoch.current) setError(attachmentErrorMessage(reason))
+    } finally {
+      attachingRef.current = false
+      if (alive.current) setAttaching(false)
+    }
+  }
+  const pickImages = () => attachImages((remaining) => api.pickImages(remaining))
+  const pasteImage = () => attachImages(async () => { const asset = await api.pasteImage(); return asset ? [asset] : [] })
+  const removeImage = (assetId: string) => updateActive((item) => removeDraftImage(item, assetId))
   const removeConversation = (id: string) => {
     const item = stateRef.current.conversations.find((candidate) => candidate.id === id)
     if (item && isGenerating(item)) { setError('请先停止这个对话的请求，再删除记录'); return }
@@ -288,7 +314,7 @@ export function useChatController(api: ChatApi, scope: string, initial: LoadedCh
   }
   const clearConversation = () => { if (!isGenerating(activeConversation(stateRef.current))) updateActive((item) => ({ ...item, messages: [], title: '新对话' })) }
   const deleteFrom = (id: string) => { if (!isGenerating(activeConversation(stateRef.current))) updateActive((item) => { const index = item.messages.findIndex((message) => message.id === id); return index < 0 ? item : { ...item, messages: item.messages.slice(0, index) } }) }
-  return { state, conversation, groups, groupsLoaded, groupLoading, groupError, preparations, error, notice, storageError, setError, setNotice, changeSettings, selectGroup, selectModel, selectMode, refreshGroups, refreshGroupsAndModels, refreshOnInteraction, prepareGroup, newConversation, continueInNew, dismissLengthNotice, openConversation, removeConversation, clearConversation, deleteFrom, send, stop, setDraft: (draft: string) => updateActive((item) => ({ ...item, draft })), updateConversation: updateActive }
+  return { attaching, pickImages, pasteImage, removeImage, state, conversation, groups, groupsLoaded, groupLoading, groupError, preparations, error, notice, storageError, setError, setNotice, changeSettings, selectGroup, selectModel, selectMode, refreshGroups, refreshGroupsAndModels, refreshOnInteraction, prepareGroup, newConversation, continueInNew, dismissLengthNotice, openConversation, removeConversation, clearConversation, deleteFrom, send, stop, setDraft: (draft: string) => updateActive((item) => ({ ...item, draft })), updateConversation: updateActive }
 }
 
 function normalizeModel(settings: ChatSettings): ChatSettings {

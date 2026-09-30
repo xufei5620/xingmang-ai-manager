@@ -96,7 +96,7 @@ describe('platform presentation', () => {
     const openExternal = vi.fn().mockResolvedValue(true)
 
     await expect(performNodeRuntimeAction(
-      platformCapabilitiesFor('darwin', 'arm64'),
+      platformCapabilitiesFor('linux', 'x64'),
       { installNodeRuntime, openExternal },
     )).resolves.toEqual({ kind: 'external' })
 

@@ -216,6 +216,14 @@ describe('CLI launch mode passthrough', () => {
     expect(launchCli).toHaveBeenCalledWith('claude', 'C:\\work\\my-app', 'resumeLast')
   })
 
+  it('passes a Codex record id down with resumeLast', async () => {
+    const launchCli = vi.fn(async () => undefined)
+    const api = createToolsApi({ launchCli } as unknown as XingmangApi)
+
+    await api.launch('codex', 'C:\\work\\my-app', { resumeSessionId: 'codex:0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b' })
+    expect(launchCli).toHaveBeenCalledWith('codex', 'C:\\work\\my-app', 'resumeLast', 'codex:0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b')
+  })
+
   it('keeps the old two-argument call when no CLI mode is named', async () => {
     const launchCli = vi.fn(async () => undefined)
     const api = createToolsApi({ launchCli } as unknown as XingmangApi)

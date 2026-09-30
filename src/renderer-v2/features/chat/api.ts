@@ -1,7 +1,7 @@
 import type { AiChatHistoryWrite, AiChatStartInput, ChatConversationExportInput, AiImageGenerateInput, XingmangApi } from '../../../../electron/ipc-contract'
-import { AI_CHAT_LIMITS, buildChatCompletionsRequest, buildImageGenerationRequest, resolveAiModelCapability } from '../../../../electron/ai-chat-protocol'
+import { AI_CHAT_LIMITS, buildChatCompletionsRequest, buildImageGenerationRequest, resolveAiModelCapability, supportsChatImageInput } from '../../../../electron/ai-chat-protocol'
 
-export type ChatBridge = Pick<XingmangApi, 'listAiChatGroups' | 'prepareAiChatGroup' | 'startAiChat' | 'generateAiImage' | 'cancelAiChat' | 'onAiChatStream' | 'copyAiChatAsset' | 'saveAiChatAsset' | 'showAiChatAssetMenu' | 'readAiChatHistory' | 'writeAiChatHistory' | 'exportAiChatConversation' | 'getAccountSession'>
+export type ChatBridge = Pick<XingmangApi, 'listAiChatGroups' | 'prepareAiChatGroup' | 'startAiChat' | 'generateAiImage' | 'cancelAiChat' | 'onAiChatStream' | 'copyAiChatAsset' | 'saveAiChatAsset' | 'showAiChatAssetMenu' | 'pickAiChatImages' | 'pasteAiChatImage' | 'readAiChatHistory' | 'writeAiChatHistory' | 'exportAiChatConversation' | 'getAccountSession'>
 
 export function createChatApi(bridge: ChatBridge) {
   return {
@@ -14,6 +14,8 @@ export function createChatApi(bridge: ChatBridge) {
     copyAsset: (assetId: string) => bridge.copyAiChatAsset(assetId),
     saveAsset: (assetId: string) => bridge.saveAiChatAsset(assetId),
     assetMenu: (assetId: string) => bridge.showAiChatAssetMenu(assetId),
+    pickImages: (remaining: number) => bridge.pickAiChatImages(remaining),
+    pasteImage: () => bridge.pasteAiChatImage(),
     readHistory: (scope: string) => bridge.readAiChatHistory(scope),
     writeHistory: (input: AiChatHistoryWrite) => bridge.writeAiChatHistory(input),
     exportText: (input: ChatConversationExportInput) => bridge.exportAiChatConversation(input),
@@ -25,5 +27,6 @@ export function createChatApi(bridge: ChatBridge) {
 export type ChatApi = ReturnType<typeof createChatApi>
 export const chatLimits = AI_CHAT_LIMITS
 export const inspectModel = resolveAiModelCapability
+export const canReadImages = supportsChatImageInput
 export const validateChatRequest = buildChatCompletionsRequest
 export const validateImageRequest = buildImageGenerationRequest

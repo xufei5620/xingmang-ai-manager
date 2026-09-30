@@ -27,7 +27,7 @@ export type FeedbackCliStatus = Pick<
 
 export type FeedbackCliConfig = Pick<
   NativeConfigInspection,
-  'exists' | 'hasApiKey' | 'matchesRelay' | 'model'
+  'exists' | 'hasApiKey' | 'matchesRelay' | 'model' | 'codexProviderName' | 'codexProviderShadowed'
 >
 
 /**
@@ -90,7 +90,19 @@ function configText(config: FeedbackCliConfig | null): string {
   if (!config.exists) return '配置：未配置'
   const account = config.matchesRelay ? '指向当前账号' : '未指向当前账号'
   const model = config.model.trim()
-  return model ? `配置：${account}，模型 ${model}` : `配置：${account}`
+  const head = model ? `配置：${account}，模型 ${model}` : `配置：${account}`
+  return `${head}${codexProviderText(config)}`
+}
+
+/**
+ * Codex 的连接名单独写一句：写在 openai 这类内置名下的老配置首页看着「指向当前
+ * 账号」，Codex 却不认那张表，客服只看上一行会被带偏。名字是用户能改的配置项，
+ * 只留字母数字与 ._- 并截短，免得一份报告里混进换行或长串。
+ */
+function codexProviderText(config: FeedbackCliConfig): string {
+  const name = config.codexProviderName?.replace(/[^A-Za-z0-9._-]/g, '').slice(0, 40)
+  if (!name) return ''
+  return config.codexProviderShadowed === true ? `，连接名 ${name}（Codex 不认，要修）` : `，连接名 ${name}`
 }
 
 function readConfigQuietly(
@@ -165,6 +177,11 @@ export interface FeedbackRuntimeInput {
    * （这时按哪种方式处理看 executionMode）。
    */
   executionProbeFailure?: WindowsExecutionProbeFailureReason | null
+  /**
+   * 「检查」页最近一次「安全证书」那一项的结论（没检查过、或这台电脑没装 Node.js
+   * 没出这一项时缺省）。只读已有结果，生成报告不为它起进程。
+   */
+  certificateTrust?: string | null
   /** 软件主程序所在目录。 */
   appDirectory: string | null
   dataDirectory: string | null
@@ -251,6 +268,7 @@ export function buildFeedbackRuntimeLines(input: FeedbackRuntimeInput): string[]
   }
   lines.push(`Codex 桌面端: ${snapshot ? codexDesktopText(snapshot.codexDesktop) : unreadable}`)
   lines.push(`网络位置: ${snapshot ? regionLabels[snapshot.region] : unreadable}`)
+  if (input.certificateTrust?.trim()) lines.push(`安全证书: ${input.certificateTrust.trim()}`)
   if (input.platform === 'win32' && input.executionMode) {
     lines.push(`运行权限: ${executionModeText(input.executionMode, input.executionProbeFailure)}`)
   }

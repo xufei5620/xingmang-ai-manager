@@ -82,6 +82,8 @@ export type ConnectionProbeProtocol = 'anthropic-messages' | 'openai-models'
 export interface ConnectionProbeReport {
   ok: boolean
   layer: ConnectionCheckLayer
+  /** Set only by the opt-in Codex tool-call check when both paid requests succeeded. */
+  verificationLevel?: 'responses-tool-json'
   /** 一句话结论，直接上屏。 */
   summary: string
   /** 用户下一步该做什么。 */
@@ -321,6 +323,15 @@ export function buildConnectionProbe(
       layer: 'config',
       summary: `${name} 当前的配置没有指向星芒服务`,
       nextStep: '自检只会向星芒服务发请求。请先在首页把这个工具重新写入一次星芒 Key',
+    })
+  }
+  // 星芒自己发的请求用的是这张表的地址和 Key，当然通；可 Codex 本体不认写在
+  // 内置名下的表，真打开会带着这把 Key 去连官方。这里不发请求，照实说要修。
+  if (inspection.codexProviderShadowed === true) {
+    return blocked({
+      layer: 'config',
+      summary: `${name} 的配置里有一处它认不出，打开会连不上`,
+      nextStep: '回首页点这一行的「修好它」，改之前会先备份',
     })
   }
   const model = wireModel(provider, inspection.model || defaultCliModels[provider])
