@@ -1631,7 +1631,9 @@ export function MaintenancePage({
                 <ToolStatusReason
                   lead={withElevationNotice(
                     id === 'node'
-                      ? '命令行工具需要的运行环境'
+                      ? managed
+                        ? '命令行工具需要的运行环境；装工具时会自动准备，一般不用单独点'
+                        : '命令行工具需要的运行环境'
                       : '部分工具需要的可选运行环境',
                     id === 'node' && !status?.installed && !statusUnknown && !status?.detectionFailed
                       ? elevatedInstallNotice('node', capability?.platform, capability?.nodeRuntimeInstall)
@@ -1651,7 +1653,9 @@ export function MaintenancePage({
                 />
               }
               actions={
-                <Button
+                // 已经装好的不再给「安装」：点了只会回一句「本来就装好了」，新手反而
+                // 以为没装好、反复点（新手引导梳理 9-25 第 4 条）。要换新版的照旧给按钮。
+                status?.installed && !statusUnknown && !replace ? undefined : <Button
                   size="sm"
                   icon={Download}
                   disabled={Boolean(operation.busy)}

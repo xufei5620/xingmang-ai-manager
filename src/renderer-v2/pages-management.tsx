@@ -329,6 +329,15 @@ function isProvider(id: string): id is Provider {
 const providerOptions = tools
   .filter((tool) => tool.kind === 'cli' && isProvider(tool.id))
   .map((tool) => ({ value: tool.id, label: tool.name }))
+/**
+ * 扩展三页一进来先显示哪个工具：按导航里的顺序挑第一个装好的。以前固定是 Claude，
+ * 只装了 Codex 的人一进来看到的是 Claude 那边读不到的内容（新手引导梳理 9-25 第 3 条）。
+ * 一个都没装或还没检测完时仍是 Claude（旧行为）。
+ */
+export function preferredExtensionProvider(installed: readonly string[] | undefined): Provider {
+  const first = providerOptions.find((option) => installed?.includes(option.value))
+  return first && isProvider(first.value) ? first.value : 'claude'
+}
 function providerName(id: string) {
   return tools.find((tool) => tool.id === id)?.name ?? id
 }
@@ -1162,15 +1171,24 @@ export function ExtensionsPage({
   api,
   kind,
   onOpenHelp,
+  installedProviders,
 }: {
   api: V2Bridge
   kind: ExtensionKind
   onOpenHelp?: () => void
+  /** 这台电脑上装好的命令行工具；缺省 = 不知道，默认选 Claude（旧行为）。 */
+  installedProviders?: readonly string[]
 }) {
   const page =
     kind === 'skill' ? 'skills' : kind === 'plugin' ? 'plugins' : 'mcp'
   const title = kind === 'mcp' ? '外接工具' : kind === 'skill' ? '技能' : '插件'
-  const [provider, setProvider] = useState<Provider>('claude')
+  const [provider, setProvider] = useState<Provider>(() => preferredExtensionProvider(installedProviders))
+  // 检测结果比页面晚到时跟上去；用户自己点过工具之后就不再替他换。
+  const providerTouched = useRef(false)
+  const preferredProvider = preferredExtensionProvider(installedProviders)
+  useEffect(() => {
+    if (!providerTouched.current) setProvider(preferredProvider)
+  }, [preferredProvider])
   const [query, setQuery] = useState('')
   const [scope, setScope] = useState('all')
   const [view, setView] = useState('installed')
@@ -1486,6 +1504,7 @@ export function ExtensionsPage({
             value={provider}
             onChange={(value) => {
               if (value !== 'all') {
+                providerTouched.current = true
                 setProvider(value)
                 setQuery('')
                 setScope('all')

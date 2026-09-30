@@ -16,6 +16,7 @@ import {
   Users,
   Zap,
   HelpCircle,
+  Home,
 } from 'lucide-react'
 import {
   BrandIcon,
@@ -567,6 +568,7 @@ export function AccountPage({
                       onConfigureTool={onConfigureTool}
                       onToolConfigSaved={onToolConfigSaved}
                       toolConfigConfirmed={toolConfigConfirmed}
+                      onGoHome={onBack}
                     />
                   )}
                   {panel === 'usage' && (
@@ -932,11 +934,14 @@ function AccountKeys({
   onConfigureTool,
   onToolConfigSaved,
   toolConfigConfirmed,
+  onGoHome,
 }: {
   api: V2Bridge
   balance: Balance
   providerBaseUrls: Record<Provider, string>
   siteId: AccountSiteId
+  /** 回首页配置工具；缺省 = 不给这颗按钮（旧行为）。 */
+  onGoHome?: () => void
   onRewriteKey?: (provider: Provider) => Promise<boolean>
   onConfigureTool?: (provider: Provider) => void
   onToolConfigSaved?: () => void
@@ -1128,6 +1133,19 @@ function AccountKeys({
   const list = resource.data?.page.keys ?? []
   return (
     <>
+      {/* 工具用的密钥在首页配置工具时会自动准备好，新手不该从这页手动建一把
+          （新手引导梳理 9-25 第 5 条）。说在最前面，并给回首页的路。 */}
+      <Notice
+        tone="neutral"
+        title="工具用的密钥会自动准备好"
+        body="在首页安装或打开工具时，软件会替你生成并填好密钥，一般不用来这里。想给某个工具限额，或者给别的软件单独用一把，再来这页。"
+        testId="account-keys-auto-hint"
+        actions={onGoHome && (
+          <Button size="sm" icon={Home} onClick={onGoHome} testId="account-keys-go-home">
+            去首页配置工具
+          </Button>
+        )}
+      />
       <ToolKeyLimits api={api} balance={balance} siteId={siteId} />
       <Toolbar
         search={
@@ -1140,7 +1158,6 @@ function AccountKeys({
         }
         right={
           <Button
-            variant="primary"
             icon={Plus}
             onClick={() => edit('new')}
             testId="account-key-add"
@@ -1198,9 +1215,16 @@ function AccountKeys({
           retry={() => void resource.reload()}
           clear={() => setQuery('')}
           action={
-            <Button icon={Plus} onClick={() => edit('new')}>
-              新建密钥
-            </Button>
+            <>
+              {onGoHome && (
+                <Button size="sm" variant="primary" icon={Home} onClick={onGoHome} testId="keys-empty-go-home">
+                  去首页配置工具
+                </Button>
+              )}
+              <Button size="sm" icon={Plus} onClick={() => edit('new')}>
+                新建密钥
+              </Button>
+            </>
           }
         >
           {list.map((key) => {
@@ -1366,6 +1390,7 @@ function AccountKeys({
             ]
           }
           value={group}
+          hint="分组决定这把密钥能用哪些模型、按什么价格算；拿不准就用已经选好的。"
           onChange={(event) => setGroup(event.target.value)}
         />
         <Button variant="ghost" size="sm" icon={RefreshCw} testId="account-key-groups-refresh"
@@ -1381,6 +1406,7 @@ function AccountKeys({
             type="number"
             min="0"
             step="0.01"
+            hint="这把密钥最多花这么多，用完它就停，不影响账户余额。"
             value={quota}
             onChange={(event) => setQuota(event.target.value)}
           />

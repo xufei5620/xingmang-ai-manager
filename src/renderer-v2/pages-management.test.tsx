@@ -10,6 +10,7 @@ import {
   findNativeSkill,
   mcpCommandRuntime,
   mcpHealthView,
+  preferredExtensionProvider,
   mcpRuntimeNotice,
   officialMarketplaceNotice,
   runExtensionAction,
@@ -509,5 +510,17 @@ describe('extension row actions', () => {
       canUninstall: false,
       canUpdate: false,
     })
+  })
+})
+
+describe('extension page default tool', () => {
+  it('opens on the first installed command-line tool in navigation order', () => {
+    expect(preferredExtensionProvider(['grok', 'codex'])).toBe('codex')
+    expect(preferredExtensionProvider(['gemini'])).toBe('gemini')
+  })
+  it('falls back to Claude when nothing is installed or detection has not finished', () => {
+    expect(preferredExtensionProvider([])).toBe('claude')
+    expect(preferredExtensionProvider(undefined)).toBe('claude')
+    expect(preferredExtensionProvider(['codexDesktop'])).toBe('claude')
   })
 })

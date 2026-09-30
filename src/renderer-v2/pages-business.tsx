@@ -32,6 +32,8 @@ export type BusinessPageProps = Omit<BusinessActions, 'navigate'> & {
   onToolConfigSaved?: () => void
   /** 工具设置窗口保存成功并读回之后的信号，用来收起密钥页「还在用刚撤销的密钥」（#546）。 */
   toolConfigConfirmed?: Parameters<typeof AccountPage>[0]['toolConfigConfirmed']
+  /** 装好的命令行工具，扩展三页用它挑默认显示哪个；缺省 = 默认 Claude（旧行为）。 */
+  installedProviders?: readonly string[]
 }
 
 export function BusinessPage({
@@ -45,6 +47,7 @@ export function BusinessPage({
   onBackupRestored,
   onToolConfigSaved,
   toolConfigConfirmed,
+  installedProviders,
   ...actions
 }: BusinessPageProps) {
   if (page === 'account')
@@ -67,11 +70,11 @@ export function BusinessPage({
   if (page === 'sessions')
     return <SessionsPage api={api} onSessionsChanged={onSessionsChanged} />
   if (page === 'mcp')
-    return <ExtensionsPage api={api} kind="mcp" onOpenHelp={actions.openHelp} />
+    return <ExtensionsPage api={api} kind="mcp" onOpenHelp={actions.openHelp} installedProviders={installedProviders} />
   if (page === 'skills')
-    return <ExtensionsPage api={api} kind="skill" onOpenHelp={actions.openHelp} />
+    return <ExtensionsPage api={api} kind="skill" onOpenHelp={actions.openHelp} installedProviders={installedProviders} />
   if (page === 'plugins')
-    return <ExtensionsPage api={api} kind="plugin" onOpenHelp={actions.openHelp} />
+    return <ExtensionsPage api={api} kind="plugin" onOpenHelp={actions.openHelp} installedProviders={installedProviders} />
   if (page === 'backups')
     return (
       <BackupsPage

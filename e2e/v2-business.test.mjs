@@ -1216,23 +1216,26 @@ test('native preference errors retain the saved switch state', async () => {
   }
 })
 
-test('saved accounts default to no CLI sync and expose only eligible choices', async () => {
+test('saved accounts switch tools already on the account key by default and expose only eligible choices', async () => {
   const page = await fixture('page=account&sync=1')
   try {
-    await page.getByText('同步到工具（可选）', { exact: true }).click()
+    await page.getByTestId('account-sync-gemini').waitFor()
     assert.equal(
       await page.getByTestId('account-sync-claude').isChecked(),
-      false,
+      true,
     )
     assert.equal(
       await page.getByTestId('account-sync-gemini').isChecked(),
-      false,
+      true,
     )
     assert.equal(
       await page.getByTestId('account-sync-codex').isDisabled(),
       true,
     )
     assert.equal(await page.getByTestId('account-sync-grok').isDisabled(), true)
+    // 取消勾选就不同步：用户说了算。
+    await page.getByTestId('account-sync-claude').uncheck()
+    await page.getByTestId('account-sync-gemini').uncheck()
     await page
       .getByRole('button', { name: '切换', exact: true, disabled: false })
       .click()
@@ -1249,7 +1252,7 @@ test('saved accounts default to no CLI sync and expose only eligible choices', a
 test('explicit CLI sync retains partial failure details after account refresh', async () => {
   const page = await fixture('page=account&sync=1&partial=1')
   try {
-    await page.getByText('同步到工具（可选）', { exact: true }).click()
+    await page.getByTestId('account-sync-claude').waitFor()
     await page.getByTestId('account-sync-claude').check()
     await page.getByTestId('account-sync-gemini').check()
     await page
@@ -1284,7 +1287,7 @@ test('explicit CLI sync retains partial failure details after account refresh', 
 test('failed saved-account verification never writes selected CLI config', async () => {
   const page = await fixture('page=account&sync=1&fail=switch')
   try {
-    await page.getByText('同步到工具（可选）', { exact: true }).click()
+    await page.getByTestId('account-sync-claude').waitFor()
     await page.getByTestId('account-sync-claude').check()
     await page
       .getByRole('button', { name: '切换', exact: true, disabled: false })
