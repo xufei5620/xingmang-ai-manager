@@ -76,6 +76,7 @@ import type { AvatarIdentity } from './local-avatar'
 import { useSharedAccountBalance } from './features/app/balance-context'
 import { balanceStatusText } from './features/shell/balance-status'
 import { UsageDetails } from './features/account/UsageDetails'
+import { buildTopupBonus } from './features/account/topup-bonus'
 import { ToolKeyLimits } from './features/account/ToolKeyLimits'
 import { ToolUsage } from './features/account/ToolUsage'
 import type { LoginTarget } from './features/auth/api'
@@ -251,26 +252,7 @@ export function validateTopupAmount(value: number, minimum: number): number {
   return value
 }
 
-export interface TopupBonus {
-  bonus: number
-  percent: number
-}
-
-// 后台「充值金额选项 + 充值折扣」里，折扣是「付款 = 到账 × 比例」：到账不变，
-// 少付的那部分就是送的。换成客户熟悉的「充 100 送 10」：送多少按到账单位算，
-// 百分比按实付算，这样不需要知道后台的计价单价和币种。
-export function buildTopupBonus(
-  amount: number,
-  discounts: Record<string, number> | undefined,
-): TopupBonus | null {
-  if (!Number.isFinite(amount) || amount <= 0) return null
-  const ratio = discounts?.[String(amount)]
-  if (typeof ratio !== 'number' || !Number.isFinite(ratio) || ratio <= 0 || ratio >= 1) return null
-  const bonus = Math.round(amount * (1 - ratio) * 100) / 100
-  const percent = Math.round(((1 - ratio) / ratio) * 100)
-  if (bonus <= 0 || percent <= 0) return null
-  return { bonus, percent }
-}
+export { buildTopupBonus, type TopupBonus } from './features/account/topup-bonus'
 
 export function resetTopupQuoteForMethod(
   amount: string,
@@ -372,6 +354,7 @@ export function AccountPage({
   api,
   initialTab,
   tabRequest,
+  rechargeAmount,
   paymentReturn,
   onLogin,
   onAccountChanged,
@@ -386,6 +369,8 @@ export function AccountPage({
   initialTab?: AccountTab
   /** 每次从外面点名要切到某个分页就加一；同一个分页再点一次也得切回去（Q29）。 */
   tabRequest?: number
+  /** 从活动卡片点某一档进来时要选好的充值金额，跟着 tabRequest 一起变。缺省 = 默认金额。 */
+  rechargeAmount?: number
   paymentReturn?: { sequence: number; order: string | null }
   onLogin?: (target?: LoginTarget) => void
   onAccountChanged?: () => void
@@ -609,6 +594,8 @@ export function AccountPage({
                       refresh={refreshAccount}
                       openOrders={openOrders}
                       openHelp={onOpenHelp}
+                      presetAmount={rechargeAmount}
+                      presetRequest={tabRequest}
                     />
                   )}
                   {panel === 'orders' && (
@@ -2030,6 +2017,8 @@ function AccountRecharge({
   refresh,
   openOrders,
   openHelp,
+  presetAmount,
+  presetRequest,
 }: {
   api: V2Bridge
   balance: Balance
@@ -2038,6 +2027,8 @@ function AccountRecharge({
   refresh: () => void
   openOrders?: (order: string | null) => void
   openHelp?: () => void
+  presetAmount?: number
+  presetRequest?: number
 }) {
   const load = useCallback(async () => {
     const [info, plans, subscriptions] = await Promise.all([
@@ -2050,7 +2041,13 @@ function AccountRecharge({
   const resource = useResource(load)
   const operation = useOperation()
   const { offline } = useOnlineStatus()
-  const [amount, setAmount] = useState('10')
+  const [amount, setAmount] = useState(() => presetAmount ? String(presetAmount) : '10')
+  // 已经停在充值页时再从活动卡片点另一档，也要换成那一档。
+  useEffect(() => {
+    if (!presetAmount) return
+    setAmount(String(presetAmount))
+    setQuote(null)
+  }, [presetAmount, presetRequest])
   const [method, setMethod] = useState('')
   const [code, setCode] = useState('')
   const [quote, setQuote] = useState<Awaited<
