@@ -136,7 +136,9 @@ import {
 import { buildConnectionProbe, runConnectionCheck } from './connection-check'
 import { createCodexResponsesProbeService } from './codex-responses-probe'
 import type { ExternalToolId } from './external-tool-config'
-import { registerIpcHandlers, type AppWindowMode } from './ipc'
+import { registerIpcHandlers, type AppWindowMode, type IpcRegistrationOptions } from './ipc'
+import { removeMacLoginItem, removeMacManagedTools, runMacUninstall } from './macos-uninstall'
+import { clearLoginAndChatRecords, removeCliHooksFromConfigs } from './uninstall-cleanup'
 import {
   installXingmangAiSkillFiles,
   resolveXingmangAiBundledSkillRoot,
@@ -146,7 +148,7 @@ import { cliHookEventsDirectory, resolveCliHookScriptPath } from './cli-hooks'
 import { createCliHookEventMonitor } from './cli-hook-events'
 import { createCliKeepAwake } from './cli-keep-awake'
 import { resolveProjectInstructionsTemplatePath } from './project-instructions'
-import { ipcEventChannels, type AccountBalance, type AccountSubscriptionSelf, type SettingsSaveIssue } from './ipc-contract'
+import { ipcEventChannels, type AccountBalance, type AccountSubscriptionSelf, type AppUninstallRequest, type SettingsSaveIssue } from './ipc-contract'
 import {
   shouldUseManualUninstallVisualFixture,
   withManualUninstallVisualFixture,
@@ -185,6 +187,7 @@ import {
 import { buildStartupFailureDialog, classifyStorageFailure, dataDriveLetter } from './startup-failure'
 import { installMainWindowFrameNavigationGuard } from './platform/frame-navigation'
 import { codexDesktopStoreUrl } from './codex-desktop-install-failure'
+import { inspectUserWideCertificateTrust, trustCertificatesForUserTerminals } from './user-certificate-trust'
 
 guardProcessOutputStreams()
 
@@ -1277,6 +1280,7 @@ if (!hasSingleInstanceLock) {
           readClaudeConfigOwnership: () => systemService.getConfig(false).providers.claude.configurationOwnership ?? null,
           // 「项目文件夹里的设置」看的是用户最近一次选的项目文件夹，每次检查现读。
           workspace: systemService.readStoredConfig().workspace,
+          inspectUserWideCertificateTrust: () => inspectUserWideCertificateTrust({ executionMode: windowsCliExecutionMode }),
         })
         return latestDiagnostics
       },
@@ -1314,6 +1318,15 @@ if (!hasSingleInstanceLock) {
           ...rootedOptions.diagnosticExport,
           sensitiveValues: sensitiveKeyValues(),
         })
+      },
+      // 只在最近一次检查确实查出公司证书、且这条还没设过时才写：按钮是检查页给的，
+      // 主进程这里再对一次，不因为一条来路不明的调用就去改客户的电脑设置。
+      trustCertificatesUserWide: async () => {
+        const item = latestDiagnostics?.items.find((entry) => entry.code === 'CERTIFICATE_TRUST')
+        if (item?.details?.userWide !== 'available') throw new Error('这台电脑现在不需要这项设置，请先点「重新检测」')
+        const result = await trustCertificatesForUserTerminals({ executionMode: windowsCliExecutionMode })
+        runtimeLog.log('info', 'diagnostics', 'certificate.user-wide.trusted', '当前 Windows 账号的终端已设为信任这台电脑的证书', { result })
+        return result
       },
     }
     if (process.platform === 'win32') {
@@ -1357,6 +1370,7 @@ if (!hasSingleInstanceLock) {
     let updateQuitHandoff: { prepare(): Promise<void> | undefined; abort(): void } | null = null
     // 退出流程（窗口生命周期）在 IPC 注册之后才建好，先占个位。
     let requestRelaunch: (() => Promise<boolean>) | null = null
+    let requestMacUninstall: NonNullable<IpcRegistrationOptions['uninstallApp']> | null = null
     // 自动更新的落盘记录（见 auto-update-install.ts）。要在更新服务之前读好：下载完成
     // 那一刻就要用它认出「上次自动装过却没装上」的版本。
     const pendingUpdateStore = createPendingUpdateStore({ filePath: path.join(managerDataDirectory, 'pending-update.json') })
@@ -2549,6 +2563,13 @@ if (!hasSingleInstanceLock) {
         ...(displayCompatPending ? { displayCompat: 'auto' as const } : {}),
       }),
       relaunchApp: () => requestRelaunch?.() ?? Promise.resolve(false),
+      ...(process.platform === 'darwin'
+        ? {
+            uninstallApp: (request: AppUninstallRequest, backupCliConfigs: () => Promise<void>) => (
+              requestMacUninstall?.(request, backupCliConfigs) ?? Promise.reject(new Error('星芒还没准备好，稍后再试'))
+            ),
+          }
+        : {}),
       bypassBrokenProxy: () => proxyBypass.tryBypass(),
       // 固定地址、不经渲染层：系统设置页和系统自己检测门户用的那个网址。普通权限
       // 运行时直接交给系统打开（同 ms-windows-store 那一条）；按管理员身份处理时不替
@@ -2815,6 +2836,46 @@ if (!hasSingleInstanceLock) {
       const result = await lifecycle.requestQuit()
       if (result !== 'quit-requested') relaunchRequested = false
       return result === 'quit-requested'
+    }
+    // Mac 上「卸载星芒」：退出前的清理和「重启并安装」同一条（断开加速、还原系统代理、
+    // 聊天记录写完盘），在挪程序之前跑；跑完才清登录记录，否则会被写回来。
+    requestMacUninstall = (request, backupCliConfigs) => {
+      const report = (line: string) => runtimeLog.log('warn', 'maintenance', 'app.uninstall.step-failed', line)
+      return runMacUninstall({
+        platform: process.platform,
+        packaged: app.isPackaged,
+        appPath: app.getAppPath(),
+        executablePath: process.execPath,
+        installationBusy: () => {
+          const queue = systemService.inspectInstallationQueue()
+          return queue.activeKey !== null || queue.pendingKeys.length > 0
+        },
+        backupCliConfigs,
+        removeCliHooks: () => removeCliHooksFromConfigs(rootedOptions.system.providerRoots, report),
+        removeLoginItem: () => removeMacLoginItem(app),
+        removeManagedTools: () => removeMacManagedTools(undefined, report),
+        trashItem: (target) => shell.trashItem(target),
+        prepareQuit: async () => { await lifecycle.prepareUpdateQuit() },
+        abortQuit: () => { lifecycle.abortUpdateQuit() },
+        clearLoginRecords: async () => {
+          // 界面的本地存储由 Chromium 开着，先让它自己清，免得退出时把刚删的写回来。
+          await session.defaultSession.clearStorageData({ storages: ['localstorage'] }).catch(() => undefined)
+          return clearLoginAndChatRecords(managerDataDirectory, report)
+        },
+        quit: () => {
+          relaunchRequested = false
+          const forceExitTimer = setTimeout(() => app.exit(0), 2_000)
+          forceExitTimer.unref()
+          try { canvasController.dispose() } catch (cause) { runtimeLog.exception('canvas', 'shutdown.failed', cause) }
+          try { paymentWindow.destroy() } catch (cause) { runtimeLog.exception('payment', 'shutdown.failed', cause) }
+          for (const window of BrowserWindow.getAllWindows()) {
+            if (!window.isDestroyed()) window.webContents.on('will-prevent-unload', (event) => event.preventDefault())
+          }
+          // 先让这次调用的结果回到界面，再退。
+          setTimeout(() => app.quit(), 0)
+        },
+        report,
+      }, request)
     }
     // 更新页「重启并安装」和 Mac 下载完自动安装都会让安装器发起退出：先把退出前
     // 的清理跑完（断开加速、还原系统代理，安装器会结束安装目录下的所有进程），
