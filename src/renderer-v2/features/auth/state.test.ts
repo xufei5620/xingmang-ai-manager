@@ -211,6 +211,11 @@ describe('v2 onboarding readiness', () => {
   it('does not require Node for the desktop route and preserves official connections', () => {
     expect(resolveGuideReadiness('codexDesktop', { id: 'codexDesktop', installed: true, configured: false, source: 'official', runtimeReady: false }, false)).toEqual({ prepared: true, connected: true })
   })
+  it('does not wait for Node when the tool runs without it on this computer', () => {
+    const grok = { id: 'grok' as const, installed: true, configured: true, source: 'account' as const, runtimeReady: false }
+    expect(resolveGuideReadiness('grok', { ...grok, runtimeNotNeeded: true }, true).prepared).toBe(true)
+    expect(resolveGuideReadiness('grok', grok, true).prepared).toBe(false)
+  })
   it('requires confirmed runtime capability and does not overwrite unknown connections', () => {
     expect(resolveGuideReadiness('claude', { id: 'claude', installed: true, configured: true, source: 'account' }, true).prepared).toBe(false)
     expect(resolveGuideReadiness('claude', { id: 'claude', installed: true, configured: true, source: 'unknown', runtimeReady: true }, true).connected).toBe(false)

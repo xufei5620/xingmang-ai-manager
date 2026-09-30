@@ -194,4 +194,74 @@ describe.runIf(process.platform === 'win32')('Python 3.12 installation flow', ()
     expect(fetchMock).toHaveBeenCalledTimes(3)
     expect(runProcess).toHaveBeenCalledTimes(3)
   })
+
+  it('continues a dropped python.org download on the same official address', async () => {
+    const directory = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'xingmang-python-test-'))
+    temporaryDirectories.push(directory)
+    const installerName = 'python-3.12.9-amd64.exe'
+    const installerUrl = `https://www.python.org/ftp/python/3.12.9/${installerName}`
+    const releaseIndex = JSON.stringify([{
+      name: 'Python 3.12.9',
+      resource_uri: 'https://www.python.org/api/v2/downloads/release/1234/',
+      is_published: true,
+      pre_release: false,
+    }])
+    const releaseFiles = JSON.stringify([{
+      name: 'Windows installer (64-bit)',
+      release: 'https://www.python.org/api/v2/downloads/release/1234/',
+      url: installerUrl,
+      filesize: minimumInstallerBytes,
+    }])
+    const cut = 3 * 1024 * 1024
+    const ranges: Array<string | null> = []
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async (input, init) => {
+      const url = String(input)
+      if (url.includes('/release/?')) return response(releaseIndex, url)
+      if (url.includes('/release_file/?')) return response(releaseFiles, url)
+      const range = new Headers(init?.headers).get('range')
+      ranges.push(range)
+      if (range) {
+        const resumed = new Response(new Uint8Array(minimumInstallerBytes - cut), {
+          status: 206,
+          headers: { 'content-range': `bytes ${cut}-${minimumInstallerBytes - 1}/${minimumInstallerBytes}` },
+        })
+        Object.defineProperty(resumed, 'url', { value: installerUrl })
+        return resumed
+      }
+      let sent = false
+      return response(new ReadableStream<Uint8Array>({
+        pull(controller) {
+          if (sent) {
+            controller.error(new TypeError('fetch failed'))
+            return
+          }
+          sent = true
+          controller.enqueue(new Uint8Array(cut))
+        },
+      }), installerUrl)
+    })
+    const runProcess = vi.fn<PythonRuntimeInstallerDependencies['runProcess']>(async (plan) => {
+      if (plan.executable === 'C:/winget.exe') throw new Error('winget unavailable')
+      const stdout = plan.executable.toLowerCase().includes('powershell')
+        ? JSON.stringify({ status: 'Valid', subject: 'CN=Python Software Foundation' })
+        : ''
+      return commandResult(plan.executable, plan.argv, stdout)
+    })
+    const messages: string[] = []
+
+    await expect(installPythonRuntime({
+      onProgress: (event) => messages.push(event.message),
+      dependencies: {
+        fetch: fetchMock,
+        runProcess,
+        resolveWingetExecutable: async () => ({ executable: 'C:/winget.exe', reason: null }),
+        inspectInstalledPythonRuntime: async () => installedInspection(),
+        createTemporaryDirectory: async () => directory,
+        removeTemporaryDirectory: async () => undefined,
+        waitBeforeResume: async () => undefined,
+      },
+    })).resolves.toMatchObject({ method: 'exe', source: 'python-org' })
+    expect(ranges).toEqual([null, `bytes=${cut}-`])
+    expect(messages).toContain('网络断了一下，正在接着下载 Python 3.12.9 官方安装包')
+  })
 })

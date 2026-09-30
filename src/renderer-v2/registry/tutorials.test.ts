@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { accountTabs, settingsGroups } from './business';
+import { accountTabs, settingsGroups, updateFailureLabels, updateLabels } from './business';
 import { macKeychainTutorialTitle, tutorialTopics, type TutorialStep } from './tutorials';
 
 function step(topicId: string, action: string): TutorialStep {
@@ -59,5 +59,25 @@ describe('mac keychain prompt help', () => {
     expect(entry?.detail).toContain('xingmang-ai-manager Safe Storage');
     expect(entry?.detail).toContain('始终允许');
     expect(tutorialTopics.find((topic) => topic.id === 'safety')?.keywords).toContain('钥匙串');
+  });
+});
+
+// 第二十一批 6：教程曾经还在教手动四步更新、一个永远按不动的加速模式开关。
+// 这里把教程里的按钮名钉在界面真正用的那份文案上，改了界面忘改教程会红。
+describe('tutorial wording that follows the current app', () => {
+  it('describes automatic updates with the labels the settings and update page use', () => {
+    const update = step('safety', '打开工具箱更新');
+    const text = JSON.stringify(update);
+    expect(update.detail).toContain('自动装上');
+    expect(text).toContain(`「${settingsGroups.find((group) => group.value === 'startup')?.label}」`);
+    expect(text).toContain('「自动更新」');
+    expect(text).toContain(`「${updateFailureLabels.install.retry}」`);
+    expect(update.expected).toContain(`「${updateLabels['not-available']}」`);
+    expect(text).toContain('「退回更新前的版本」');
+    expect(text).not.toContain('区分两种更新入口');
+  });
+
+  it('never teaches the acceleration mode switch that is not open to customers', () => {
+    expect(JSON.stringify(tutorialTopics)).not.toMatch(/TUN/i);
   });
 });

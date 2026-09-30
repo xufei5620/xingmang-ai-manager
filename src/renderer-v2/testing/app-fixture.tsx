@@ -424,6 +424,9 @@ const methods = {
     if (query.has('deepLinkFail')) throw new Error('回跳参数已过期')
     return null
   },
+  // 首页活动卡片按它列档位：110 付 100、240 付 200、4000 付 2000。
+  getAccountTopupInfo: async () => ({ onlineTopupEnabled: true, stripeTopupEnabled: false, creemTopupEnabled: false, waffoPancakeTopupEnabled: false, redemptionEnabled: true, paymentComplianceConfirmed: true, paymentComplianceTermsVersion: '1',
+    paymentMethods: [], minTopup: 1, amountOptions: [10, 110, 240, 4000], discounts: { 110: 100 / 110, 240: 200 / 240, 4000: 0.5 }, topupLink: null }),
   getAccountNotice: async () => {
     if (noticeOverride) return noticeOverride
     if (query.has('noticeTimeline')) return { id: 'newapi-timeline-fixture', text: query.has('noticeCollection') ? collectionFixture : '', bulletins: timelineFixture() }

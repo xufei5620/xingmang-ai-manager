@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { activeRechargePromos, formatPromoDeadline, isRechargePromoTitle, localDayKey, nextPromoReminder, resolvePromoEndsAt, visiblePromo, type PromoAnnouncement, type PromoSource } from './promo-announcements'
+import { activePromos, activeRechargePromos, buildPromoTiers, formatPromoDeadline, formatPromoShortDeadline, isRechargePromoTitle, promoPreviewLines, promoShortName, resolvePromoKind, stripSiteAddresses, localDayKey, nextPromoReminder, resolvePromoEndsAt, visiblePromo, type PromoAnnouncement, type PromoSource } from './promo-announcements'
 
 const published = new Date(2026, 8, 28, 10, 0).getTime()
 
@@ -82,5 +82,64 @@ describe('recharge promo announcements', () => {
     expect(nextPromoReminder({ ...base, readIds: ['a'], foreground: false })).toMatchObject({ kind: 'daily', notify: true })
     expect(nextPromoReminder({ ...base, acknowledged: ['a'] })).toBeNull()
     expect(nextPromoReminder({ ...base, snoozed: { a: '20260929' } })).toBeNull()
+  })
+})
+
+describe('activity announcements beyond recharge', () => {
+  it('counts invite titles as activities but keeps the big card to recharge ones', () => {
+    expect(resolvePromoKind('国庆礼遇｜充值满赠')).toBe('recharge')
+    expect(resolvePromoKind('国庆礼遇｜邀请有礼')).toBe('invite')
+    expect(resolvePromoKind('系统维护通知')).toBeNull()
+    const now = new Date(2026, 8, 29, 12, 0).getTime()
+    const entries = [entry('国庆礼遇｜充值满赠', '截止 10月8日'), { ...entry('国庆礼遇｜邀请有礼', '邀请好友'), id: 'invite' }]
+    expect(activePromos(entries, now).map((item) => item.kind).sort()).toEqual(['invite', 'recharge'])
+    expect(activeRechargePromos(entries, now).map((item) => item.kind)).toEqual(['recharge'])
+  })
+
+  it('ends an invite without a written deadline seven days after publishing', () => {
+    const [invite] = activePromos([entry('邀请有礼', '邀请好友一起用')], published)
+    expect(invite.endsExplicitly).toBe(false)
+    expect(invite.endsAt).toBe(published + 7 * 86_400_000)
+    expect(activePromos([entry('邀请有礼', '邀请好友一起用')], published + 7 * 86_400_000)).toEqual([])
+  })
+
+  it('writes short deadlines for the activity bar and hides estimated ones', () => {
+    const now = new Date(2026, 8, 30, 10, 0).getTime()
+    const endsAt = new Date(2026, 9, 8, 23, 59, 59).getTime()
+    expect(formatPromoShortDeadline({ endsAt, endsExplicitly: true }, now, true)).toBe('10月8日截止，还剩 8 天')
+    expect(formatPromoShortDeadline({ endsAt, endsExplicitly: true }, now, false)).toBe('10月8日截止')
+    expect(formatPromoShortDeadline({ endsAt: new Date(2026, 8, 30, 23, 59).getTime(), endsExplicitly: true }, now, true)).toBe('今天 23:59 截止')
+    expect(formatPromoShortDeadline({ endsAt, endsExplicitly: false }, now, true)).toBeNull()
+  })
+
+  it('shortens titles to the part after the vertical bar', () => {
+    expect(promoShortName('国庆礼遇 · 中秋同庆｜充值满赠')).toBe('充值满赠')
+    expect(promoShortName('国庆充值活动')).toBe('国庆充值活动')
+  })
+})
+
+describe('promo card text', () => {
+  it('drops site addresses and the separators they leave behind', () => {
+    expect(stripSiteAddresses('xm.solov.cc · 2026年10月1日—10月8日')).toBe('2026年10月1日—10月8日')
+    expect(stripSiteAddresses('详见 https://example.com/topup?x=1 页面')).toBe('详见 页面')
+    expect(stripSiteAddresses('需要 Node.js 18 以上，版本 v0.2.11，单价 1.5')).toBe('需要 Node.js 18 以上，版本 v0.2.11，单价 1.5')
+  })
+
+  it('keeps the first three body lines with their breaks instead of one long run', () => {
+    const body = 'xm.solov.cc · 2026年10月1日—10月8日\n**单笔充值，最高赠送100%：**\n- 充¥100，送10%，到账$110\n- 充¥200，送20%，到账$240'
+    expect(promoPreviewLines(body)).toEqual(['2026年10月1日—10月8日', '单笔充值，最高赠送100%：', '充¥100，送10%，到账$110…'])
+    expect(promoPreviewLines('只有一行')).toEqual(['只有一行'])
+    expect(promoPreviewLines('<style>.x{color:red}</style><p>活动说明</p>')).toEqual(['活动说明'])
+  })
+
+  it('builds bonus tiers from the top-up discounts, smallest first, skipping tiers without a bonus', () => {
+    const discounts = { '110': 100 / 110, '240': 200 / 240, '4000': 0.5, '50': 1 }
+    expect(buildPromoTiers([4000, 10, 50, 110, 240], discounts)).toEqual([
+      { amount: 110, pay: 100, percent: 10 },
+      { amount: 240, pay: 200, percent: 20 },
+      { amount: 4000, pay: 2000, percent: 100 },
+    ])
+    expect(buildPromoTiers([10, 20], {})).toEqual([])
+    expect(buildPromoTiers(undefined, discounts)).toEqual([])
   })
 })
