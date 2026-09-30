@@ -245,7 +245,7 @@ import type { StoreAppLaunchBlock } from './windows-store-app-launch'
 import { createExternalClientRuntime } from './external-client-runtime'
 import { inspectExternalToolConnection, resolveExternalToolProbeCredential, type ExternalToolProbeCredential } from './external-tool-config'
 import { runExternalClientCheck, type ExternalClientCheckResult } from './external-client-connection'
-import { createClaudeDesktopConfigService } from './claude-desktop-config'
+import { buildClaudeDesktopModelList, createClaudeDesktopConfigService } from './claude-desktop-config'
 import { resolveClaudeDesktopPaths } from './claude-desktop-paths'
 import { inspectClaudeDesktopStoreVirtualization } from './claude-desktop-manifest'
 import { assertClaudeDesktopUnmanaged } from './claude-desktop-policy'
@@ -5279,7 +5279,8 @@ export function createSystemService(
         assertContext()
         if (!status?.installed) throw new Error('请先安装 Claude Desktop，再保存第三方推理配置')
         const gateway = await claudeDesktopConfig(status, assertContext)
-        const input = { baseUrl: activeSite.providerBaseUrls.claude, apiKey, authScheme: 'bearer' as const, models: [model] }
+        const input = { baseUrl: activeSite.providerBaseUrls.claude, apiKey, authScheme: 'bearer' as const,
+          models: buildClaudeDesktopModelList(models, model) }
         const result = await gateway.saveGateway(input)
         assertContext()
         if (owner) await externalOwnership.write(tool, owner, activeSite.providerBaseUrls.claude, apiKey)
