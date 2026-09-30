@@ -1073,6 +1073,46 @@ test('the payment terminal listener survives re-renders and still resolves a pen
   }
 })
 
+test('recharge presets show the configured bonus and the quote dialog spells it out', async () => {
+  const page = await fixture('page=account&topupBonus=1')
+  try {
+    await page.getByRole('tab', { name: '充值与订阅', exact: true }).click()
+    assert.equal(await page.getByRole('button', { name: '10', exact: true }).count(), 1)
+    await page.getByRole('button', { name: '20，送 25%', exact: true }).click()
+    assert.equal(
+      await page.getByTestId('account-recharge-bonus').textContent(),
+      '到账 20，其中活动赠送 4（多送 25%）。',
+    )
+    await page.getByRole('button', { name: '10', exact: true }).click()
+    assert.equal(await page.getByTestId('account-recharge-bonus').count(), 0)
+    await page.getByRole('button', { name: '20，送 25%', exact: true }).click()
+    await page.getByTestId('account-recharge-submit').click()
+    const quote = page.getByRole('dialog', { name: '确认充值报价' })
+    await quote.waitFor()
+    assert.equal(
+      await quote.getByTestId('account-recharge-quote-bonus').textContent(),
+      '活动赠送：4（多送 25%），到账 20',
+    )
+    await quote.getByText('应付金额：16.00', { exact: false }).waitFor()
+  } finally {
+    await page.close()
+  }
+})
+
+test('a tier picked on the home activity card arrives preselected on the recharge page', async () => {
+  const page = await fixture('page=account&accountTab=recharge&rechargeAmount=20&topupBonus=1')
+  try {
+    await page.getByTestId('account-recharge-bonus').waitFor()
+    assert.equal(await page.getByLabel('自定义金额').inputValue(), '20')
+    assert.equal(
+      await page.getByTestId('account-recharge-bonus').textContent(),
+      '到账 20，其中活动赠送 4（多送 25%）。',
+    )
+  } finally {
+    await page.close()
+  }
+})
+
 test('changing the recharge channel invalidates the previous quote', async () => {
   const page = await fixture('page=account&multiPayment=1')
   try {

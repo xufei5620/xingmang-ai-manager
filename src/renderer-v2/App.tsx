@@ -129,7 +129,8 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   const [visitedPages, setVisitedPages] = useState<Partial<Record<PageId, string>>>({})
   // 带序号：已经停在「我的订单」时再点「充值」，值还是上次那个 'wallet'，
   // 光比值 React 不会重新切过去（全面检测 Q29），同 tutorialTopic。
-  const [accountTab, setAccountTab] = useState<{ sequence: number; value: AccountTab }>({ sequence: 0, value: 'overview' })
+  // rechargeAmount：从活动卡片点某一档进充值页时带上，充值页直接选好这一档。
+  const [accountTab, setAccountTab] = useState<{ sequence: number; value: AccountTab; rechargeAmount?: number }>({ sequence: 0, value: 'overview' })
   // 教程页停在哪一章。页面挂上之后只是 hidden 不会重新挂载，所以每次跳转都换一个
   // sequence，教程页才接得住第二次、第三次跳过来。
   const [tutorialTopic, setTutorialTopic] = useState<{ sequence: number; id: string; query?: string } | null>(null)
@@ -220,7 +221,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   const { store: balanceStore, snapshot: balanceState } = useAccountBalanceStore(native, session.authenticated ? scope : null)
   const balance = balanceState.balance
   // 买了订阅的客户钱包常是 0，请求扣的却是订阅：有能用的订阅时不再按钱包喊「余额不足」。
-  const subscription = useUsableSubscription(native, session.authenticated && accountSupports(session, 'supportsSubscriptions') ? scope : null, balanceState)
+  const { subscription, refresh: refreshSubscription } = useUsableSubscription(native, session.authenticated && accountSupports(session, 'supportsSubscriptions') ? scope : null, balanceState)
   const browserOnline = useBrowserOnline()
   const offline = isOffline({ browserOnline, networkFailures: session.authenticated ? balanceState.networkFailures : 0 })
   const [onlineChecking, setOnlineChecking] = useState(false)
@@ -396,6 +397,16 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     const skipped = skippedNamedProviders(outcome?.result, providers)
     if (skipped.length) throw new KeyRewriteSkippedError(skipped)
     return true
+  }, [runAccountBootstrap, session.account, session.authenticated])
+  /**
+   * 订阅开通之后把用得上它的工具换过去。走的是开机恢复那一档：主进程这一轮发现哪家
+   * 工具的 Key 换进了订阅分组，就只改写那几家，其余已连好的工具不碰。
+   */
+  const applySubscriptionToTools = useCallback(async (): Promise<ProviderId[]> => {
+    if (!session.authenticated || !session.account) return []
+    const outcome = await runAccountBootstrap(session.account.userId, 'restore', true)
+    if (outcome?.error) throw new Error(outcome.error)
+    return outcome?.result?.regrouped ?? []
   }, [runAccountBootstrap, session.account, session.authenticated])
   /**
    * 首页「就用现在这份」：用户自己改过配置又不想被提醒时，把这个工具记成手动来源。
@@ -635,14 +646,14 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     uiScaleRef.current = next === 'auto' ? undefined : next
     void perform('保存界面缩放', async () => setSettings(await app.savePreferences({ version: 2, uiScale: next })))
   }, [app, os, perform, toast])
-  const navigate = useCallback((target: PageId, section?: string) => {
+  const navigate = useCallback((target: PageId, section?: string, rechargeAmount?: number) => {
     if (target === 'canvas') { void perform('打开画布', app.openCanvas); return }
     if ((target === 'account' || target === 'chat') && restoring) {
       toast.show(restoreRetrying ? '暂时连不上服务，登录还在，连上后会自动恢复，不用重新登录。' : '正在恢复上次的登录，稍等一下再试。')
       return
     }
     if ((target === 'account' || target === 'chat') && !session.authenticated) { setAuth('login'); return }
-    if (target === 'account') setAccountTab((current) => ({ sequence: current.sequence + 1, value: accountTabs.find((entry) => entry.value === section)?.value ?? 'overview' }))
+    if (target === 'account') setAccountTab((current) => ({ sequence: current.sequence + 1, value: accountTabs.find((entry) => entry.value === section)?.value ?? 'overview', rechargeAmount }))
     if (target === 'tutorial' && section) setTutorialTopic((current) => ({ sequence: (current?.sequence ?? 0) + 1, id: section }))
     if (target === 'settings') {
       const group = settingsGroups.find((entry) => entry.value === section)?.value
@@ -1215,7 +1226,8 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
           network={latestNetworkLocation(toolbox.snapshot?.system.network, networkLocation.snapshot.network)}
           networkRefreshing={networkLocation.snapshot.busy}
           banner={session.authenticated && <AnnouncementCenter key={scope} scope={scope} read={app.announcement} refreshTick={balanceState.updatedAt} markRemoteRead={app.markAnnouncementRead} syncLocalReads={app.syncLocalNoticeReads} open={announcementOpen} onClose={() => setAnnouncementOpen(false)} onOpen={() => setAnnouncementOpen(true)} onUnread={setUnread} openExternal={app.openExternal} noticeUrl={relaySite.websiteUrl} notify={notifyAnnouncement}
-            promoVisible={page === 'home'} onTopUp={accountSupports(session, 'supportsBilling') ? () => navigate('account', 'recharge') : undefined} />}
+            promoVisible={page === 'home'} onTopUp={accountSupports(session, 'supportsBilling') ? (amount) => navigate('account', 'recharge', amount) : undefined}
+            readTopupOffers={accountSupports(session, 'supportsBilling') ? () => native.getAccountTopupInfo() : undefined} />}
           notification={showUpdate && <Notice tone={update.error ? 'bad' : 'accent'} title={update.error ? updateFailureLabel(update.failedStep).title : updateBubbleTitle(update)}
             body={update.error?.message ?? autoUpdateBubbleBody(update.phase, autoUpdateOn)} progress={update.progress?.percent} onDismiss={() => setDismissedUpdate(updateKey)}
             actions={<><Button size="sm" onClick={() => navigate('updates')}>查看更新</Button>
@@ -1252,7 +1264,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
               : null}
             {(Object.keys(visitedPages) as PageId[]).filter((id) => id !== 'acceleration' && (visitedPages[id] === scope || id === page)).map((id) => <div key={id === 'settings' ? `settings:${settingsRequest}` : id} hidden={page !== id} inert={page !== id}>
               <Suspense fallback={pageLoading}>
-                <BusinessPage api={native} page={id} accountTab={accountTab.value} accountTabRequest={accountTab.sequence} tutorialTopic={tutorialTopic ?? undefined} paymentReturn={paymentReturn} navigate={navigate} openLogin={(target) => { setAuthTarget(target ?? null); setAuth('login') }} openHelp={() => setHelp(true)}
+                <BusinessPage api={native} page={id} accountTab={accountTab.value} accountTabRequest={accountTab.sequence} accountRechargeAmount={accountTab.rechargeAmount} tutorialTopic={tutorialTopic ?? undefined} paymentReturn={paymentReturn} navigate={navigate} openLogin={(target) => { setAuthTarget(target ?? null); setAuth('login') }} openHelp={() => setHelp(true)}
                   onSessionsChanged={refreshRecent}
                   onBackupRestored={() => void toolbox.refreshConfig().catch(() => undefined)}
                   onToolConfigSaved={() => void toolbox.refreshConfig().catch(() => undefined)}
@@ -1263,7 +1275,8 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
                     if (mounted.current) toast.show(errorMessage(cause, '工具已安装，但最新状态没有读到。请回到首页重新检测。'), 'warn')
                   })}
                   installTool={install} cancelToolInstall={(tool) => toolbox.cancel(tool)}
-                  onRewriteKey={(provider) => rewriteAccountKeys([provider])} rewritableKeys={rewritableKeys} />
+                  onRewriteKey={(provider) => rewriteAccountKeys([provider])} rewritableKeys={rewritableKeys}
+                  onSubscriptionActivated={applySubscriptionToTools} onSubscriptionPurchased={() => void refreshSubscription()} />
               </Suspense>
             </div>)}
           </div>
@@ -1291,7 +1304,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     {accelerationHelp && <Dialog open title="游戏加速使用说明" onClose={() => setAccelerationHelp(false)} width={480}
       footer={<><Button variant="ghost" onClick={() => { setAccelerationHelp(false); setHelp(true) }}>帮助与客服</Button><Button onClick={() => setAccelerationHelp(false)}>知道了</Button></>}>
       <p>选择线路后点击“开始加速”，连接成功后再打开游戏或启动器。“智能分配”会自动测速并选择可用线路，也可以手动选择。</p>
-      <p>当前适用于部分游戏、启动器和下载场景，实际连接效果以应用内表现为准。TUN 模式暂未开放。</p>
+      <p>当前适用于部分游戏、启动器和下载场景，实际连接效果以应用内表现为准。加速只改这台电脑的系统代理，不接管整台电脑的网络。</p>
       <p>每个账号在本机累计享有 20 分钟免费体验。连接成功后才开始计时，停止后保留剩余时长，下次继续使用，不会每天重置。当前时长在本机保存，设备之间不同步。</p>
       <p>切换页面、缩到托盘或退出游戏都不会停止加速。点击“停止加速”或退出本软件才会断开；免费时长用完后自动停止。</p>
     </Dialog>}

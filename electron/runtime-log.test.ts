@@ -3,6 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
+  buildFeedbackAccountLine,
   describeRuntimeLogWriteFailure,
   redactHomeDirectory,
   RuntimeLogStore,
@@ -344,6 +345,34 @@ describe('RuntimeLogStore', () => {
     expect(report.text).not.toContain(os.homedir())
     expect(report.text.indexOf('运行环境:')).toBeLessThan(report.text.indexOf('工具与配置:'))
     expect(report.text.indexOf('工具与配置:')).toBeLessThan(report.text.indexOf('最近一次自检:'))
+  })
+
+  it('puts only the numeric account id right under the app version', async () => {
+    const store = createStore()
+    store.attachAccountDescriber(() => ({ authenticated: true, userId: 10086 }))
+    const report = await store.captureFeedbackReport()
+    const lines = report.text.split('\n')
+
+    expect(lines[lines.findIndex((line) => line.startsWith('应用版本:')) + 1]).toBe('账号 ID: 10086')
+  })
+
+  it('says not signed in, and leaves the line out when no id or no reader is available', async () => {
+    const signedOut = createStore()
+    signedOut.attachAccountDescriber(() => ({ authenticated: false, userId: null }))
+    expect((await signedOut.captureFeedbackReport()).text).toContain('账号 ID: 未登录')
+
+    const unreadable = createStore()
+    unreadable.attachAccountDescriber(() => { throw new Error('not ready') })
+    expect((await unreadable.captureFeedbackReport()).text).not.toContain('账号 ID')
+
+    expect((await createStore().captureFeedbackReport()).text).not.toContain('账号 ID')
+  })
+
+  it('never invents an account id', () => {
+    for (const userId of [0, -1, 1.5, Number.NaN, null, undefined]) {
+      expect(buildFeedbackAccountLine({ authenticated: true, userId })).toBeNull()
+    }
+    expect(buildFeedbackAccountLine({ authenticated: true, userId: 7 })).toBe('账号 ID: 7')
   })
 
   it('labels the bundled Node so it is not mistaken for the system one', async () => {
