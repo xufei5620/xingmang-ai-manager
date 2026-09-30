@@ -3142,7 +3142,12 @@ export function createSystemService(
       return probe.status === 'fulfilled' && probe.value.installation
         ? [{ provider, installation: probe.value.installation }]
         : []
-    }))
+    })).catch((error: unknown) => {
+      // 没人等它，出错也不该变成进程级的未处理 Promise；留一行日志就够，下次打开软件会再清。
+      runtimeLog?.log('warn', 'install', 'cli.powershell-shim.sweep-failed', '打开软件后顺手清理旧启动文件没有完成', {
+        reason: credentialFailureReason(error),
+      })
+    })
     const networkRegion = network.region
 
     // 离线时四家探测会一个个耗满超时，首屏本地信息早就齐了却还在等；

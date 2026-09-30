@@ -8,7 +8,7 @@ import { BlockedLinkHint, openExternalOrCopy, type BlockedLinkNotice } from '../
 import { writeLocalPreference } from '../app/preferences'
 import type { RelayNotice, RelayNoticeReadMode } from '../../../../electron/relay-backend'
 import { formatTimelineDate, readTimelineMigrated, rememberTimelineMigrated, timelineEntries, timelineMigrationReadIds, timelineTypeLabels, withMarkdownLineBreaks, type LocalAnnouncementEntry, type TimelineMeta, announcementAttentionKeys, announcementNotificationKey, legacyAnnouncementReadId, markLocalAnnouncementRead, parseNewApiAnnouncementCollection, readLegacyAnnouncementId, readLocalAnnouncementIds, readNotifiedAnnouncementKeys, readSeenAnnouncementKeys, rememberLocalAnnouncementIds, rememberNotifiedAnnouncementKeys, rememberSeenAnnouncementKeys, sameAnnouncementSnapshot } from './newapi-announcements'
-import { activeRechargePromos, formatPromoDeadline, localDayKey, nextPromoReminder, readAcknowledgedPromos, readRemindedPromos, readSnoozedPromos, rememberAcknowledgedPromo, rememberRemindedPromo, rememberSnoozedPromo, visiblePromo } from './promo-announcements'
+import { activePromos, buildPromoTiers, formatPromoDeadline, formatPromoShortDeadline, localDayKey, nextPromoReminder, promoPreviewLines, promoShortName, readAcknowledgedPromos, readPromoBarHiddenDay, readRemindedPromos, readSnoozedPromos, rememberAcknowledgedPromo, rememberPromoBarHiddenDay, rememberRemindedPromo, rememberSnoozedPromo, stripSiteAddresses, visiblePromo, type PromoTier } from './promo-announcements'
 
 interface AnnouncementEntry { id: string; title: string; text: string; read: boolean; timeline?: TimelineMeta }
 type Announcement = Omit<RelayNotice, 'entries'> & { localEntries?: boolean; entries?: AnnouncementEntry[] }
@@ -34,9 +34,19 @@ interface Props {
   notify?(eventKey: string): void
   /** 充值活动卡片只挂在首页；别的页面仍是原来那条细横条。 */
   promoVisible?: boolean
-  /** 当前账号能在软件里充值时才给：卡片上的「去充值」进「个人中心 → 充值与订阅」。 */
-  onTopUp?(): void
+  /**
+   * 当前账号能在软件里充值时才给：卡片和活动条上的「去充值」进「个人中心 → 充值与订阅」。
+   * 带金额时充值页直接选好这一档。
+   */
+  onTopUp?(amount?: number): void
+  /** 读当前账号的充值优惠设置（和充值页同一份），卡片按它列档位；缺省 = 不列档位，显示正文前三行。 */
+  readTopupOffers?(): Promise<TopupOffers>
 }
+
+export interface TopupOffers { amountOptions: number[]; discounts: Record<string, number> }
+
+// 充值优惠设置很少改，活动期间最多十分钟重读一次，不跟着每分钟的余额刷新走。
+const topupOffersReuseMs = 10 * 60 * 1000
 
 // 公告要及时到用户眼前，但不能自己再开一个定时器去拉：定时检查跟着余额刷新走
 // （看着软件时每分钟、后台时每 10 分钟）。星芒账号的时间线就在余额那次请求里，
@@ -868,33 +878,87 @@ export function formatAnnouncementError(cause: unknown): AnnouncementError {
 
 interface PromoCardProps {
   title: string
-  preview: string
   deadline: string | null
-  onTopUp?(): void
+  /** 按充值优惠设置算出的档位；空 = 没配优惠，改显示正文前几行。 */
+  tiers: PromoTier[]
+  lines: string[]
+  /** 同时进行的其他活动（比如邀请有礼），收进卡片底部一行。 */
+  others: Array<{ id: string; title: string }>
+  onTopUp?(amount?: number): void
   onDetail(): void
   onDismiss(): void
   onSnooze(): void
+  onOpenOther(id: string | null): void
 }
 
-/** 首页最上面的充值活动卡片。「知道了」只收起卡片，公告还在公告列表里。 */
-export function PromoCard({ title, preview, deadline, onTopUp, onDetail, onDismiss, onSnooze }: PromoCardProps) {
+function formatPromoAmount(value: number): string {
+  return value.toLocaleString('en-US', { maximumFractionDigits: 2 })
+}
+
+/** 首页最上面的充值活动卡片：一档一格，点哪格去充值页并选好那档。收起只收卡片，公告还在公告列表里。 */
+export function PromoCard({ title, deadline, tiers, lines, others, onTopUp, onDetail, onDismiss, onSnooze, onOpenOther }: PromoCardProps) {
+  const bestPercent = tiers.length > 1 ? Math.max(...tiers.map((tier) => tier.percent)) : null
+  const bestAmount = bestPercent === null ? null : tiers.find((tier) => tier.percent === bestPercent)?.amount
   return <section className="v2-promo-card" data-testid="announcement-promo-card" aria-label="充值活动">
     <span className="v2-promo-card-icon" aria-hidden="true"><Gift size={20} /></span>
     <div className="v2-promo-card-body">
       <p className="v2-promo-card-eyebrow">充值活动{deadline && <span data-testid="announcement-promo-deadline"> · {deadline}</span>}</p>
       <h2 className="v2-promo-card-title">{title}</h2>
-      {preview && <p className="v2-promo-card-text">{preview}</p>}
+      {tiers.length ? <>
+        <p className="v2-promo-card-text">每笔充值单独算，充得越多送得越多，送的额度和充值一起进当前账号余额。{onTopUp && '点一档直接去付款。'}</p>
+        <ul className="v2-promo-tiers" data-testid="announcement-promo-tiers" aria-label="充值档位">
+          {tiers.map((tier) => {
+            const best = tier.amount === bestAmount
+            const content = <>
+              {best && <span className="v2-promo-tier-badge">送得最多</span>}
+              <span className="v2-promo-tier-pay">充 {formatPromoAmount(tier.pay)}</span>
+              <span className="v2-promo-tier-gift">送 {tier.percent}%</span>
+              <span className="v2-promo-tier-get">到账 <strong>{formatPromoAmount(tier.amount)}</strong></span>
+            </>
+            return <li key={tier.amount} className={best ? 'is-best' : undefined}>
+              {onTopUp
+                ? <button type="button" className="v2-promo-tier" data-testid={`announcement-promo-tier-${tier.amount}`} onClick={() => onTopUp(tier.amount)}
+                  aria-label={`充 ${formatPromoAmount(tier.pay)} 送 ${tier.percent}%，到账 ${formatPromoAmount(tier.amount)}，去充值`}>{content}</button>
+                : <div className="v2-promo-tier" data-testid={`announcement-promo-tier-${tier.amount}`}>{content}</div>}
+            </li>
+          })}
+        </ul>
+      </> : lines.length > 0 && <div className="v2-promo-card-text" data-testid="announcement-promo-lines">
+        {lines.map((line, index) => <p key={index}>{line}</p>)}
+      </div>}
       <div className="v2-promo-card-actions">
-        {onTopUp && <Button size="sm" variant="primary" onClick={onTopUp} testId="announcement-promo-topup">去充值</Button>}
-        <Button size="sm" onClick={onDetail} testId="announcement-promo-detail">查看详情</Button>
-        <Button size="sm" variant="ghost" onClick={onDismiss} testId="announcement-promo-dismiss">知道了</Button>
-        <Button size="sm" variant="ghost" onClick={onSnooze} testId="announcement-promo-snooze">今天不再提醒</Button>
+        {onTopUp && <Button size="sm" variant="primary" onClick={() => onTopUp()} testId="announcement-promo-topup">去充值</Button>}
+        <Button size="sm" onClick={onDetail} testId="announcement-promo-detail">活动详情</Button>
+        <span className="v2-promo-card-spacer" />
+        <Button size="sm" variant="ghost" onClick={onSnooze} testId="announcement-promo-snooze" title="今天先收起，明天打开还会出现">今天不再提醒</Button>
+        <Button size="sm" variant="ghost" onClick={onDismiss} testId="announcement-promo-dismiss" title="这张大卡片以后不再出现，顶上的活动条留到活动结束">这个活动不再提醒</Button>
       </div>
+      {others.length > 0 && <div className="v2-promo-card-more" data-testid="announcement-promo-others">
+        <Bell size={14} aria-hidden="true" />
+        <span>还有 {others.length} 条活动：{others.map((other) => other.title).join('、')}</span>
+        <Button size="xs" variant="ghost" onClick={() => onOpenOther(others.length === 1 ? others[0].id : null)} testId="announcement-promo-others-open">查看</Button>
+      </div>}
     </div>
   </section>
 }
 
-export function AnnouncementCenter({ scope, read, refreshTick, markRemoteRead, syncLocalReads, open, onClose, onOpen, onUnread, openExternal, noticeUrl, notify, promoVisible = false, onTopUp }: Props) {
+interface PromoBarItem { id: string; name: string; deadline: string | null; onOpen(): void }
+
+/** 活动还没截止时挂在顶栏下面的一行（所有页面），点过 × 只收起当天，活动一截止自己消失。 */
+export function PromoBar({ items, onTopUp, onHide }: { items: PromoBarItem[]; onTopUp?(): void; onHide(): void }) {
+  return <div className="v2-promo-bar" data-testid="announcement-promo-bar" role="region" aria-label="进行中的活动">
+    <span className="v2-promo-bar-tag">活动</span>
+    <span className="v2-promo-bar-items">
+      {items.map((item) => <button type="button" key={item.id} className="v2-promo-bar-item" onClick={item.onOpen} data-testid={`announcement-promo-bar-item-${item.id}`}>
+        {item.name}{item.deadline && <small>{item.deadline}</small>}
+      </button>)}
+    </span>
+    {onTopUp && <Button size="xs" variant="primary" onClick={onTopUp} testId="announcement-promo-bar-topup">去充值</Button>}
+    <Button size="xs" variant="ghost" icon={X} aria-label="今天先收起活动提醒" title="今天先收起，明天打开还会提醒" onClick={onHide} testId="announcement-promo-bar-close" />
+  </div>
+}
+
+export function AnnouncementCenter({ scope, read, refreshTick, markRemoteRead, syncLocalReads, open, onClose, onOpen, onUnread, openExternal, noticeUrl, notify, promoVisible = false, onTopUp, readTopupOffers }: Props) {
   const [announcement, setAnnouncement] = useState<Announcement | null>(null)
   const [error, setError] = useState<AnnouncementError | null>(null)
   const [loading, setLoading] = useState(true)
@@ -1016,17 +1080,34 @@ export function AnnouncementCenter({ scope, read, refreshTick, markRemoteRead, s
   // 一条公告只提醒一次：打开过公告或关掉过横条，就不再占一整行、铃铛也不再亮红点，
   // 直到服务端出现新的一条。列表里每条的已读/未读照旧。
   const unseen = attentionKeys.some((key) => !seenKeys.includes(key))
-  // 充值活动：只认账号服务时间线里带发布时间、标题有「充值」、还没结束的那几条。
-  // 时间跟着余额刷新重新算（这里每次重绘都取当前时间），过了截止时间卡片和红点自己消失。
+  // 活动：只认账号服务时间线里带发布时间、标题有「充值」或「邀请」、还没结束的那几条。
+  // 大卡片和每日提醒只跟充值活动走；顶部活动条两种都列。
+  // 时间跟着余额刷新重新算（这里每次重绘都取当前时间），过了截止时间卡片、活动条和红点自己消失。
   const now = Date.now()
   const today = localDayKey(now)
-  const promos = useMemo(() => activeRechargePromos(entries, now), [entries, today, refreshTick])
+  const allPromos = useMemo(() => activePromos(entries, now), [entries, today, refreshTick])
+  const promos = useMemo(() => allPromos.filter((item) => item.kind === 'recharge'), [allPromos])
   const [acknowledgedPromos, setAcknowledgedPromos] = useState(() => readAcknowledgedPromos(scope))
   const [snoozedPromos, setSnoozedPromos] = useState(() => readSnoozedPromos(scope))
   const promo = visiblePromo(promos, acknowledgedPromos, snoozedPromos, today)
   const promoCardShown = Boolean(promoVisible && promo && !open)
-  // 活动没结束前铃铛一直留着红点，点过「知道了」也一样，免得客户找不回活动。
-  useEffect(() => { onUnread(unseen || promos.length > 0) }, [unseen, promos.length, onUnread])
+  const [barHiddenDay, setBarHiddenDay] = useState(() => readPromoBarHiddenDay(scope))
+  // 首页大卡片已经在说活动时不再挂活动条；卡片收起后（不管点的哪个按钮）和别的页面都挂，
+  // 点过 × 只收起当天。没有永久关掉的按钮：活动一截止自己消失。
+  const promoBarShown = !open && allPromos.length > 0 && barHiddenDay !== today && !promoCardShown
+  // 活动没结束前铃铛一直留着红点，点过「这个活动不再提醒」也一样，免得客户找不回活动。
+  useEffect(() => { onUnread(unseen || allPromos.length > 0) }, [unseen, allPromos.length, onUnread])
+  const [topupOffers, setTopupOffers] = useState<TopupOffers | null>(null)
+  const topupOffersLoadedAt = useRef(0)
+  const hasRechargePromo = promos.length > 0
+  useEffect(() => {
+    if (!readTopupOffers || !hasRechargePromo || Date.now() - topupOffersLoadedAt.current < topupOffersReuseMs) return
+    topupOffersLoadedAt.current = Date.now()
+    readTopupOffers().then((value) => setTopupOffers({ amountOptions: value.amountOptions, discounts: value.discounts }))
+      // 读不到就先按正文显示，下次余额刷新再试。
+      .catch(() => { topupOffersLoadedAt.current = 0 })
+  }, [readTopupOffers, hasRechargePromo, refreshTick])
+  const promoTiers = useMemo(() => buildPromoTiers(topupOffers?.amountOptions, topupOffers?.discounts), [topupOffers])
   const acknowledge = useCallback(() => {
     if (attentionKeys.length) setSeenKeys(rememberSeenAnnouncementKeys(scope, attentionKeys))
   }, [attentionKeys, scope])
@@ -1071,6 +1152,17 @@ export function AnnouncementCenter({ scope, read, refreshTick, markRemoteRead, s
   function openPromoDetail(id: string) {
     pendingDetail.current = id
     onOpen()
+  }
+  function hidePromoBar() {
+    setBarHiddenDay(rememberPromoBarHiddenDay(scope, today))
+  }
+  function openPromoFromBar(id: string, kind: string | undefined) {
+    if (kind === 'recharge' && onTopUp) {
+      acknowledgePromoEntry(id)
+      onTopUp()
+      return
+    }
+    openPromoDetail(id)
   }
   useEffect(() => {
     const id = pendingDetail.current
@@ -1145,15 +1237,28 @@ export function AnnouncementCenter({ scope, read, refreshTick, markRemoteRead, s
     if (!noticeUrl) return
     void openLink(noticeUrl).catch((cause) => setError(formatAnnouncementError(cause)))
   }
-  // 首页卡片已经在显示这条活动时，细横条不再重复说一遍。
-  const bannerShown = unseen && !open && announcement && attentionKeys.some((key) => !seenKeys.includes(key) && !(promoCardShown && key === `entry:${promo?.id}`))
-  const unreadEntries = entries?.filter((entry) => !entry.read && !(promoCardShown && entry.id === promo?.id))
+  // 首页卡片或活动条已经在说的活动，细横条不再重复说一遍。
+  const coveredPromoIds = promoCardShown || promoBarShown ? allPromos.map((item) => item.id) : []
+  const bannerShown = unseen && !open && announcement && attentionKeys.some((key) => !seenKeys.includes(key) && !coveredPromoIds.some((id) => key === `entry:${id}`))
+  const unreadEntries = entries?.filter((entry) => !entry.read && !coveredPromoIds.includes(entry.id))
+  const promoOthers = promoCardShown && promo ? allPromos.filter((item) => item.id !== promo.id).map((item) => ({ id: item.id, title: stripSiteAddresses(item.title) || '活动' })) : []
+  const soonestExplicitEnd = Math.min(...allPromos.filter((item) => item.endsExplicitly).map((item) => item.endsAt))
+  const promoBarItems = promoBarShown ? allPromos.map((item) => ({
+    id: item.id,
+    name: promoShortName(item.title) || '活动',
+    deadline: formatPromoShortDeadline(item, now, item.endsAt === soonestExplicitEnd),
+    onOpen: () => openPromoFromBar(item.id, item.kind),
+  })) : []
   const preview = (unreadEntries?.find((entry) => !seenKeys.includes(`entry:${entry.id}`)) ?? unreadEntries?.[0])?.title ?? announcement?.text ?? ''
   return <>
     {!open && error && announcement && <p className="v2-announcement-error" role="alert">{error.message}</p>}
-    {promoCardShown && promo && <PromoCard title={promo.title} preview={announcementTextPreview(promo.text)} deadline={formatPromoDeadline(promo, now)}
-      onTopUp={onTopUp ? () => { acknowledgePromoEntry(promo.id); onTopUp() } : undefined} onDetail={() => openPromoDetail(promo.id)}
-      onDismiss={() => dismissPromo(promo.id)} onSnooze={() => snoozePromo(promo.id)} />}
+    {promoBarShown && <PromoBar items={promoBarItems} onHide={hidePromoBar}
+      onTopUp={onTopUp && promos.length ? () => { promos.forEach((item) => acknowledgePromoEntry(item.id)); onTopUp() } : undefined} />}
+    {promoCardShown && promo && <PromoCard title={stripSiteAddresses(promo.title) || '充值活动'} deadline={formatPromoDeadline(promo, now)}
+      tiers={promoTiers} lines={promoTiers.length ? [] : promoPreviewLines(promo.text)} others={promoOthers}
+      onTopUp={onTopUp ? (amount) => { acknowledgePromoEntry(promo.id); onTopUp(amount) } : undefined} onDetail={() => openPromoDetail(promo.id)}
+      onDismiss={() => dismissPromo(promo.id)} onSnooze={() => snoozePromo(promo.id)}
+      onOpenOther={(id) => id ? openPromoDetail(id) : onOpen()} />}
     {bannerShown && <div className="v2-announcement-banner" data-testid="announcement-banner">
       <Bell size={15} /><strong>公告</strong><span>{announcementTextPreview(preview) || '有一条新公告'}</span>
       <Button size="xs" variant="ghost" onClick={onOpen}>查看</Button>

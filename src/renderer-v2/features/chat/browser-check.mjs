@@ -16,8 +16,9 @@ before(async () => {
   browser = await chromium.launch({ headless: true, executablePath: process.env.XINGMANG_E2E_CHROMIUM || undefined })
 })
 after(async () => { await browser?.close(); await server?.close() })
-async function open(query = '', stored = {}) {
+async function open(query = '', stored = {}, init) {
   const page = await browser.newPage({ viewport: { width: 1064, height: 708 } })
+  if (init) await page.addInitScript(init)
   if (Object.keys(stored).length) await page.addInitScript((records) => {
     if (sessionStorage.getItem('chat-storage-fixture-seeded')) return
     for (const [key, value] of Object.entries(records)) localStorage.setItem(key, value)
@@ -747,5 +748,39 @@ test('a model that reads images takes picked and pasted screenshots and sends th
     })
     await page.getByText('当前模型看不了图片').first().waitFor()
     assert.equal((await calls(page, 'paste-image')).length, 1, 'a model that cannot read images never reads the clipboard')
+  } finally { await page.close() }
+})
+
+// A long conversation used to re-parse every message's markdown on each key
+// typed into the composer. Counting renders instead of timing them keeps this
+// steady on a slow runner: React's development build stamps actualStartTime on
+// every fiber that runs in a commit, so a row that skipped leaves no stamp.
+test('typing in the composer does not re-render the markdown of existing messages', async () => {
+  const state = storedWorkspace()
+  state.conversations[0].messages = Array.from({ length: 40 }, (_, index) => index % 2
+    ? { id: `m${index}`, role: 'assistant', content: `**回复 ${index}**\n\n- 一\n- 二\n\n\`\`\`bash\necho ${index}\n\`\`\``, reasoning: '', status: 'complete', createdAt: index }
+    : { id: `m${index}`, role: 'user', content: `问题 ${index}`, status: 'complete', createdAt: index })
+  const page = await open('', { [storedChatKey]: JSON.stringify(state) }, () => {
+    window.__markdownRenders = 0
+    let lastCommit = 0
+    window.__REACT_DEVTOOLS_GLOBAL_HOOK__ = { supportsFiber: true, renderers: new Map(), inject: () => 1, onScheduleFiberRoot() {}, onCommitFiberUnmount() {}, onPostCommitFiberRoot() {},
+      onCommitFiberRoot(_id, root) {
+        const stack = [root.current]
+        while (stack.length) {
+          const fiber = stack.pop()
+          if (typeof fiber.type === 'function' && fiber.type.name === 'Markdown' && fiber.actualStartTime > lastCommit) window.__markdownRenders++
+          if (fiber.sibling) stack.push(fiber.sibling)
+          if (fiber.child) stack.push(fiber.child)
+        }
+        lastCommit = performance.now()
+      } }
+  })
+  try {
+    await page.getByTestId('chat-message-m39').waitFor()
+    assert.ok(await page.evaluate(() => window.__markdownRenders) >= 40, 'the probe sees the rows render when they mount')
+    const before = await page.evaluate(() => window.__markdownRenders)
+    await page.getByTestId('chat-composer-input').pressSequentially('打字不卡')
+    assert.equal(await page.getByTestId('chat-composer-input').inputValue(), '打字不卡')
+    assert.equal(await page.evaluate(() => window.__markdownRenders) - before, 0)
   } finally { await page.close() }
 })
