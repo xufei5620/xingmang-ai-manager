@@ -106,11 +106,11 @@ Windows x64 WorkBuddy 在受信任的 winget 缺失，或安装器启动前遇�
   "inferenceGatewayApiKey": "<用户选择的 Key>",
   "inferenceGatewayAuthScheme": "bearer",
   "inferenceCredentialKind": "static",
-  "inferenceModels": ["<所选 Claude 模型 ID>"]
+  "inferenceModels": ["<所选 Claude 模型 ID>", "<当前 Key 可用的其他 Claude 模型 ID>"]
 }
 ```
 
-当前界面使用 `bearer`；底层模块也验证并支持官方的 `x-api-key` 选项。显式选择 `static` 凭据，避免保留的 helper/SSO 配置接管本次 Key。模型列表使用所选完整 ID；不根据名称推断模型能力。
+当前界面使用 `bearer`；底层模块也验证并支持官方的 `x-api-key` 选项。显式选择 `static` 凭据，避免保留的 helper/SSO 配置接管本次 Key。模型列表以所选完整 ID 打头，后面是当前 Key 可用的其他 `claude-*` 型号（最多共 20 个），Claude Desktop 的型号菜单就列这些；只写一个时菜单里只剩它，客户换不了型号。别家型号不写，也不根据名称推断模型能力。
 
 ### 开发模式与本地第三方推理
 
