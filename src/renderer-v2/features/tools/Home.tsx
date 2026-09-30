@@ -324,6 +324,8 @@ export function Home(props: HomeProps) {
     // 账号还在恢复时来源同样没判定（见 ownershipAwaitingAccount），等恢复完再给。
     const switchTarget = configUnavailable || tool.error || ownershipPending ? null : accountSwitchTarget(tool)
     const blocked = tool.versionAdvice?.blockedReason ?? null
+    // 桌面端没有推荐版本可换，已知打不开的那一版只能靠这行小字说清楚（第十九批 7）。
+    const desktopKnownIssue = tool.id === 'codexDesktop' ? blocked : null
     // 原生/其他来源装的 CLI 不走本工具的 npm 通道，不给 npm 更新/回滚按钮，
     // 该更新时改用一句被动提示，避免在 npm 全局目录另装一份并存。
     const externalManaged = isExternallyManagedInstall(tool.status)
@@ -337,7 +339,7 @@ export function Home(props: HomeProps) {
       icon={lastWorkspace ? undefined : tool.status.installed && !bootstrapBusy ? ArrowUpRight : undefined}
       onClick={primary} testId={`tool-${tool.id}-primary`}>{primaryLabel}</Button>
     return <ToolRow key={tool.id} tool={tool.id} status={status}
-      detail={job?.label ?? tool.error ?? (status === 'configChanged' ? configChangedDetail : status === 'codexShadowed' ? codexShadowedDetail : status === 'cliHooksStale' ? hooksDetail : status === 'ccSwitch' && ccSwitch ? ccSwitchDetails[ccSwitch] : foreignKey && status !== 'ccSwitch' ? foreignKeyDetails[foreignKey] : elevationHint ?? undefined)}
+      detail={job?.label ?? tool.error ?? (status === 'configChanged' ? configChangedDetail : status === 'codexShadowed' ? codexShadowedDetail : status === 'cliHooksStale' ? hooksDetail : status === 'ccSwitch' && ccSwitch ? ccSwitchDetails[ccSwitch] : foreignKey && status !== 'ccSwitch' ? foreignKeyDetails[foreignKey] : elevationHint ?? desktopKnownIssue ?? undefined)}
       version={tool.status.installed ? versionSubtitle(tool) ?? '版本暂未识别' : undefined}
       model={tool.status.installed ? tool.source === 'official' ? '官方账号' : tool.model || undefined : undefined}
       progress={job?.percent}

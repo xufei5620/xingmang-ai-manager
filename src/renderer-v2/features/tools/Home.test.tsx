@@ -479,6 +479,21 @@ describe('renderer-v2 home missing runtime guidance on macOS', () => {
     expect(markup).toContain('data-testid="tool-codexDesktop-primary"')
   })
 
+  it('says on the Codex desktop row that the installed version is known not to start', () => {
+    const base = runtimeSnapshot('windows', {})
+    const brokenDesktop = {
+      ...base,
+      platform: { ...base.platform, codexDesktop: { ...base.platform.codexDesktop, launch: true, install: 'managed' } },
+      system: {
+        ...base.system,
+        desktopApps: { codex: { installed: true, detectionFailed: false, version: '26.924.2738.0', appVersion: '26.924.2738', path: 'C:\\fixture' } },
+      },
+    } as unknown as ToolboxSnapshot
+    const markup = render({}, undefined, { snapshot: brokenDesktop })
+    expect(markup).toContain('这一版（26.924.2738.0）在一些电脑上打不开')
+    expect(markup).toContain('急用先用 Codex 命令行版')
+  })
+
   it('keeps the elevation notice off macOS, where nothing here elevates', () => {
     const markup = render({}, undefined, { snapshot: runtimeSnapshot('macos', { node: true }) })
     expect(markup).not.toContain('data-testid="home-runtime-node-elevation"')

@@ -702,6 +702,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     else if (action === 'repair') void perform('重新写入 Key', () => rewriteAccountKeys())
     else if (action === 'replaceNode') setNodeReplace(failure?.retry ? { retry: failure.retry } : {})
     else if (action === 'openStore') void perform('打开微软商店', openCodexDesktopStore)
+    else if (action === 'useCodexCli') switchToCodexCli()
     else setHelp(true)
   }, [navigate, openCodexDesktopStore, operationError, perform, rewriteAccountKeys])
   // 引导里「改用」或安装失败时的出口：和错误框同一张表，只是没有「再试一次」
@@ -716,8 +717,16 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     else if (action === 'relogin') setAuth('login')
     else if (action === 'repair') void perform('重新写入 Key', () => rewriteAccountKeys())
     else if (action === 'openStore') void perform('打开微软商店', openCodexDesktopStore)
+    else if (action === 'useCodexCli') switchToCodexCli()
     else setHelp(true)
   }, [navigate, openCodexDesktopStore, perform, rewriteAccountKeys])
+  // Codex 桌面端这一版已知打不开时的「改用 Codex 命令行版」：回到首页 Codex 那一行；
+  // 还没装就直接开始装，装好了由客户自己点「打开」（第十九批 7）。
+  function switchToCodexCli() {
+    navigate('home')
+    if (toolbox.snapshot?.system.clis.codex.installed) toast.show('Codex 命令行版在首页，点它那一行的「打开」就能用。', 'neutral')
+    else void perform('安装工具', () => install('codex'), 'codex')
+  }
   async function install(id: ToolId, version?: string): Promise<ToolInstallOutcome> {
     const state = toolbox.snapshot
     if (!state) throw new Error('请先完成工具检测')

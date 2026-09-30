@@ -1,9 +1,10 @@
 import { isCodexDesktopInstallFailureMessage, isCodexDesktopNoStoreInstallFailure, isCodexDesktopUnsupportedInstallFailure } from '../../electron/codex-desktop-install-failure'
+import { codexDesktopKnownIssueMarker } from '../../electron/codex-desktop-known-issues'
 import { classifyNetworkFailure, networkFailureReasonForMessage, toolCertificateFailureForMessage } from '../../electron/network-failure'
 import { errors } from './registry/errors'
 
 export type OperationErrorKey = keyof typeof errors
-export type OperationActionId = 'retry' | 'log' | 'support' | 'relogin' | 'recharge' | 'network' | 'repair' | 'copyPath' | 'backups' | 'replaceNode' | 'openStore'
+export type OperationActionId = 'retry' | 'log' | 'support' | 'relogin' | 'recharge' | 'network' | 'repair' | 'copyPath' | 'backups' | 'replaceNode' | 'openStore' | 'useCodexCli'
 export interface OperationAction { id: OperationActionId; label: string }
 export interface OperationErrorHint {
   key: Exclude<OperationErrorKey, 'unknown'>
@@ -28,6 +29,9 @@ const rules: Array<{ key: OperationErrorHint['key']; match: (message: string) =>
   // codexDesktopNotStartedPrefix，两边字面量要一致）。那句话后半截已经写好下一步，
   // 这里只给按钮；排在前面是因为它会提到「用户账户控制」「Administrator」，不能被
   // 下面的 permission 抢走、把客户送去看安装目录。
+  // 同一句里带着「这一版已知打不开」（codex-desktop-known-issues.ts 的 marker）时，
+  // 重试和找客服都救不了它，要多给一条「改用 Codex 命令行版」的路，所以排在它前面。
+  { key: 'codexDesktopKnownIssue', match: (message) => /Codex 桌面端没有打开/.test(message) && message.includes(codexDesktopKnownIssueMarker) },
   { key: 'codexDesktopNotStarted', match: (message) => /Codex 桌面端没有打开/.test(message) },
   // Codex 桌面端装不上 / 更新不了（主进程 codex-desktop-install-failure.ts 写好的整句，
   // 开头直接取那边的常量）。那句话后半截已经说了是哪一种原因，这里只配按钮，其中
@@ -160,6 +164,8 @@ const actionIds: Record<string, OperationActionId | undefined> = {
   // 只有 Codex 桌面端装不上那一类会出这颗，而那句话只有 Windows 的安装路径写得出来，
   // Mac 上自然不会出现。
   去微软商店装: 'openStore',
+  // 只有 Codex 桌面端装着已知打不开的那一版时才出这颗（第十九批 7）。
+  '改用 Codex 命令行版': 'useCodexCli',
 }
 
 /**
