@@ -897,6 +897,21 @@ if (!hasSingleInstanceLock) {
       packaged: app.isPackaged,
     })
     markRuntimeLoggingActive()
+    // Hooked the moment the log exists rather than after the startup dialogs:
+    // from here on the module-level monitor stops writing the startup log, so
+    // anything thrown in between would otherwise reach neither file.
+    const onUncaughtException = (error: Error) => {
+      runtimeLog.exception('main', 'uncaught.exception', error)
+    }
+    const onUnhandledRejection = (reason: unknown) => {
+      runtimeLog.exception('main', 'unhandled.rejection', reason)
+      crashReporter.report({ mechanism: 'unhandledRejection', source: 'main', error: reason })
+    }
+    reportCrashSendFailure = (error) => {
+      runtimeLog.exception('telemetry', 'crash-report.send.failed', error)
+    }
+    process.on('uncaughtExceptionMonitor', onUncaughtException)
+    process.on('unhandledRejection', onUnhandledRejection)
     // desktop-entry registers the platform handlers before this store exists,
     // so their audit entries buffer in the bridge until it is handed over.
     attachPlatformAuditLog((level, source, event, message, detail) => {
@@ -965,16 +980,6 @@ if (!hasSingleInstanceLock) {
       }
       runtimeLog.log('warn', 'main', 'app.install-location.continued', '用户选择从当前位置继续运行')
     }
-    const onUncaughtException = (error: Error) => {
-      runtimeLog.exception('main', 'uncaught.exception', error)
-    }
-    const onUnhandledRejection = (reason: unknown) => {
-      runtimeLog.exception('main', 'unhandled.rejection', reason)
-      crashReporter.report({ mechanism: 'unhandledRejection', source: 'main', error: reason })
-    }
-    reportCrashSendFailure = (error) => {
-      runtimeLog.exception('telemetry', 'crash-report.send.failed', error)
-    }
     if (process.env[crashReportSelfTestEnvironmentKey] === '1') {
       runtimeLog.log('warn', 'telemetry', 'crash-report.self-test', '崩溃上报自检已触发')
       crashReporter.report({
@@ -984,8 +989,6 @@ if (!hasSingleInstanceLock) {
         context: '由 XINGMANG_CRASH_REPORT_TEST=1 触发',
       })
     }
-    process.on('uncaughtExceptionMonitor', onUncaughtException)
-    process.on('unhandledRejection', onUnhandledRejection)
 
     // Overlap the migration's asynchronous marker write with the Windows probe.
     // Both operations still complete before services and the window are created.
@@ -1398,6 +1401,7 @@ if (!hasSingleInstanceLock) {
         : undefined,
       prepareInstallQuit: () => updateQuitHandoff?.prepare(),
       installQuitAborted: () => { updateQuitHandoff?.abort() },
+      reportBackgroundError: (error) => runtimeLog.exception('updater', 'download.background.failed', error),
       retryWithoutProxy: async () => {
         await autoUpdater.netSession.setProxy({ mode: 'direct' })
       },

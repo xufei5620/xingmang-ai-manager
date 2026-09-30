@@ -210,6 +210,60 @@ describe('updater service', () => {
     expect(service.getState().phase).toBe('downloaded')
   })
 
+  it('hands a late background download failure to the host instead of leaving it unhandled', async () => {
+    const client = new FakeUpdater()
+    const check: { resolve: (() => void) | null } = { resolve: null }
+    client.checkForUpdates.mockImplementationOnce(() => new Promise<void>((resolve) => {
+      check.resolve = resolve
+    }))
+    const reportBackgroundError = vi.fn()
+    const service = createUpdaterService(client, {
+      currentVersion: '1.0.0',
+      isPackaged: true,
+      startupCheckTimeoutMs: 10,
+      reportBackgroundError,
+    })
+    const listenerFailure = new Error('listener failed')
+    service.subscribe((snapshot) => {
+      if (snapshot.phase === 'downloading') throw listenerFailure
+    })
+    const unhandled = vi.fn()
+    process.on('unhandledRejection', unhandled)
+    try {
+      await expect(service.startup()).resolves.toMatchObject({ error: { code: 'STARTUP_UPDATE_TIMEOUT' } })
+      client.emit('update-available', updateInfo('1.2.0'))
+      check.resolve?.()
+      await new Promise((resolve) => setTimeout(resolve, 10))
+      expect(reportBackgroundError).toHaveBeenCalledWith(listenerFailure)
+      expect(unhandled).not.toHaveBeenCalled()
+    } finally {
+      process.off('unhandledRejection', unhandled)
+      service.dispose()
+    }
+  })
+
+  it('hands a development-mode background download failure to the host', async () => {
+    const client = new FakeUpdater()
+    client.checkForUpdates.mockImplementationOnce(async () => {
+      client.emit('update-available', updateInfo('1.2.0'))
+    })
+    const reportBackgroundError = vi.fn()
+    const service = createUpdaterService(client, {
+      currentVersion: '1.0.0',
+      isPackaged: false,
+      enableDevelopmentUpdates: true,
+      reportBackgroundError,
+    })
+    const listenerFailure = new Error('listener failed')
+    service.subscribe((snapshot) => {
+      if (snapshot.phase === 'downloading') throw listenerFailure
+    })
+    await expect(service.startup()).resolves.toMatchObject({ phase: 'available' })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(reportBackgroundError).toHaveBeenCalledWith(listenerFailure)
+    service.dispose()
+  })
+
   it('preserves an available event that arrives before the check promise settles', async () => {
     vi.useFakeTimers()
     try {
