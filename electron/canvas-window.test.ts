@@ -431,6 +431,29 @@ describe('createCanvasWindowController', () => {
     expect(externalShell.openExternal).toHaveBeenCalledWith('https://docs.canvas.best')
   })
 
+  it('logs a failed browser launch from a popup or navigation instead of leaving it unhandled', async () => {
+    const failure = new Error('no default browser')
+    const externalShell = { openExternal: vi.fn(async () => { throw failure }), openPath: vi.fn(async () => undefined) }
+    const runtimeLog = { log: vi.fn(), exception: vi.fn() }
+    const controller = createCanvasWindowController(controllerOptions({ externalShell, runtimeLog: runtimeLog as never }))
+    await controller.open()
+    const webContents = electronMocks.latestWebContents!
+    const openHandler = (webContents.setWindowOpenHandler as ReturnType<typeof vi.fn>).mock.calls[0][0] as (
+      details: { url: string },
+    ) => { action: string }
+    const navigate = (webContents.on as ReturnType<typeof vi.fn>).mock.calls
+      .find(([event]) => event === 'will-navigate')![1] as (event: { preventDefault: () => void }, url: string) => void
+
+    expect(openHandler({ url: 'https://docs.canvas.best' })).toEqual({ action: 'deny' })
+    navigate({ preventDefault: vi.fn() }, 'https://docs.canvas.best')
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(externalShell.openExternal).toHaveBeenCalledTimes(2)
+    expect(runtimeLog.exception).toHaveBeenCalledTimes(2)
+    expect(runtimeLog.exception).toHaveBeenCalledWith('canvas', 'external.open.failed', failure)
+    controller.dispose()
+  })
+
   it('rejects a URL that is not an exact allowlist match (I12) -- subdomain and path confusion both fail', async () => {
     const controller = createCanvasWindowController(controllerOptions())
     await controller.open()

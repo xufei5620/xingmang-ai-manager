@@ -23,9 +23,16 @@ export const codexDesktopInstallFailedPrefix = 'Codex 桌面端没装上'
  */
 export const codexDesktopTechnicalWords = /SHA|MSIX|Appx|Content-Type|Content-Length|winget|msstore|0x[0-9a-f]{4,}|schema|HTTP \d{3}|Location/i
 
-export type CodexDesktopInstallFailureReason = 'blocked' | 'damaged' | 'unreachable' | 'unavailable' | 'unknown'
+export type CodexDesktopInstallFailureReason = 'unsupported' | 'blocked' | 'damaged' | 'unreachable' | 'unavailable' | 'unknown'
+
+/**
+ * 这台电脑根本没有微软商店（LTSC、精简版、公司策略关掉了）时，失败句里代替
+ *「微软商店这次没装上」的那半句。渲染层按它认出这一类、不再给「去微软商店装」。
+ */
+export const codexDesktopNoStoreNotice = '这台电脑没有微软商店'
 
 export const codexDesktopInstallFailureReasons: Readonly<Record<CodexDesktopInstallFailureReason, string>> = {
+  unsupported: '这台电脑的 Windows 版本太旧，装不了 Codex 桌面端。可以先用 Codex CLI，或者把 Windows 更新到最新。',
   blocked: '这台电脑不让装（Windows 拒绝了这次安装）。可能留下了装到一半的程序，点「重试」会重新装一遍。',
   damaged: '下载下来的安装包不完整或被改过，已经删掉了。',
   unreachable: '国内下载线路这会儿连不上。',
@@ -40,6 +47,10 @@ export const codexDesktopInstallFailureReasons: Readonly<Record<CodexDesktopInst
  * 不认「校验」两个字。
  */
 const rules: ReadonlyArray<{ reason: Exclude<CodexDesktopInstallFailureReason, 'unknown'>; test: RegExp }> = [
+  // 系统版本低于安装包要求时 Windows 报 0x80073CFD（ERROR_INSTALL_PREREQUISITE_FAILED），
+  // 原话里写着要求的 OS 版本。它也在 blocked 那一族错误码里，但「重试」永远没用，
+  // 所以排在 blocked 前面单独认。
+  { reason: 'unsupported', test: /0x80073cfd|requires OS version|OS 版本[^。；]{0,40}(或更高|以上)/i },
   { reason: 'blocked', test: /Add-AppxPackage|管理员安装失败|应用部署|0x80073[cd][0-9a-f]{2}|授权使用了不同的 Windows 账号|安装命令完成后仍未检测到/i },
   { reason: 'damaged', test: /SHA-256|Content-Length|Content-Type|不是 MSIX|AppxManifest|官方安装包|不匹配|字节数|下载不完整|超过声明|大小无效|安全上限|签名|身份|已损坏|元数据|发生变化|与[^。；]{0,12}清单版本[^。；]{0,24}不一致/i },
   { reason: 'unreachable', test: /HTTP \d{3}|超时|连接|连不上|本次不可用|未返回|重定向|fetch failed|network|socket|ETIMEDOUT|ECONN|ENOTFOUND|EAI_AGAIN|ENETUNREACH|ERR_[A-Z_]+/i },
@@ -61,6 +72,8 @@ export function isPlainCodexDesktopInstallMessage(message: string): boolean {
 export interface CodexDesktopInstallFailureContext {
   /** 这一次先试过微软商店、没装上。 */
   storeTried: boolean
+  /** 这台电脑没有微软商店，这次直接走的国内线路。缺省 = 不知道或有商店。 */
+  storeUnavailable?: boolean
   /** 本机已经装着一版，这次是更新。 */
   updating: boolean
 }
@@ -69,7 +82,9 @@ export function buildCodexDesktopInstallFailureMessage(
   reason: CodexDesktopInstallFailureReason,
   context: CodexDesktopInstallFailureContext,
 ): string {
-  const store = context.storeTried ? '微软商店这次没装上，' : ''
+  const store = context.storeUnavailable
+    ? `${codexDesktopNoStoreNotice}，`
+    : context.storeTried ? '微软商店这次没装上，' : ''
   // Windows 拒绝安装时旧版本可能已经被动过，不能说「照常能用」。
   const unaffected = context.updating && reason !== 'blocked' ? '原来那一版照常能用。' : ''
   return `${codexDesktopInstallFailedPrefix}：${store}${codexDesktopInstallFailureReasons[reason]}${unaffected}`
@@ -77,4 +92,14 @@ export function buildCodexDesktopInstallFailureMessage(
 
 export function isCodexDesktopInstallFailureMessage(message: string): boolean {
   return message.includes(`${codexDesktopInstallFailedPrefix}：`)
+}
+
+/** 没有微软商店的电脑上装不上：那颗「去微软商店装」按了也打不开。 */
+export function isCodexDesktopNoStoreInstallFailure(message: string): boolean {
+  return isCodexDesktopInstallFailureMessage(message) && message.includes(`${codexDesktopNoStoreNotice}，`)
+}
+
+/** Windows 太旧装不了：重试、去商店都没用。 */
+export function isCodexDesktopUnsupportedInstallFailure(message: string): boolean {
+  return isCodexDesktopInstallFailureMessage(message) && message.includes(codexDesktopInstallFailureReasons.unsupported)
 }

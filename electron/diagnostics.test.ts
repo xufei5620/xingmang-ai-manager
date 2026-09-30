@@ -2015,6 +2015,41 @@ describe('CERTIFICATE_TRUST', () => {
     input.platform = 'darwin'
     expect(await certificateItem(input)).toMatchObject({ details: { verdict: 'systemTrusted' } })
   })
+
+  it('offers the user-wide switch on Windows only when a company certificate was found', async () => {
+    const { input } = withProbe({ plain: 'cert', system: 'ok' })
+    input.platform = 'win32'
+    const inspect = vi.fn(() => 'available' as const)
+    input.inspectUserWideCertificateTrust = inspect
+    expect(await certificateItem(input)).toMatchObject({
+      state: 'pass',
+      summary: expect.stringContaining('可以点「让这台电脑上所有终端都信任」'),
+      details: { verdict: 'systemTrusted', userWide: 'available' },
+    })
+
+    input.inspectUserWideCertificateTrust = () => 'applied'
+    expect(await certificateItem(input)).toMatchObject({
+      summary: expect.stringContaining('你自己开的终端也已经设好'),
+      details: { userWide: 'applied' },
+    })
+
+    const direct = withProbe({ plain: 'ok', system: 'ok' })
+    direct.input.platform = 'win32'
+    const unused = vi.fn(() => 'available' as const)
+    direct.input.inspectUserWideCertificateTrust = unused
+    const item = await certificateItem(direct.input)
+    expect(item?.details).not.toHaveProperty('userWide')
+    expect(unused).not.toHaveBeenCalled()
+  })
+
+  it('does not mention the user-wide switch on macOS', async () => {
+    const { input } = withProbe({ plain: 'cert', system: 'ok' })
+    input.platform = 'darwin'
+    input.inspectUserWideCertificateTrust = () => 'available'
+    const item = await certificateItem(input)
+    expect(item?.details).not.toHaveProperty('userWide')
+    expect(item?.summary).not.toContain('所有终端')
+  })
 })
 
 describe('operatingSystemSummary', () => {
