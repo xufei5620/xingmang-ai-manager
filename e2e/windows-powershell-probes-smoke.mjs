@@ -209,6 +209,46 @@ async function reportStoreAppLaunchProductionPath() {
   console.log(context.userSid ? `info ${line}` : `::warning::${line}`)
 }
 
+// Temporary evidence: which part of the trusted environment makes the same
+// script take seconds instead of a quarter of a second. Prints names only.
+async function bisectTrustedEnvironmentSlowness() {
+  const trusted = trustedCommandEnvironment()
+  const lower = (env) => new Map(Object.entries(env).map(([key, value]) => [key.toLowerCase(), [key, value]]))
+  const base = lower(process.env)
+  const narrowed = lower(trusted)
+  const removed = [...base.keys()].filter((key) => !narrowed.has(key))
+  const changed = [...narrowed.keys()].filter((key) => base.has(key) && base.get(key)[1] !== narrowed.get(key)[1])
+  const added = [...narrowed.keys()].filter((key) => !base.has(key))
+  console.log(`info trusted environment removes: ${removed.join(', ') || '-'}`)
+  console.log(`info trusted environment changes: ${changed.join(', ') || '-'}`)
+  console.log(`info trusted environment adds: ${added.join(', ') || '-'}`)
+  function withKey(env, name, value) {
+    const next = Object.fromEntries(Object.entries(env).filter(([key]) => key.toLowerCase() !== name.toLowerCase()))
+    if (value !== undefined) next[name] = value
+    return next
+  }
+  const inherited = (name) => base.get(name.toLowerCase())?.[1]
+  const variants = [
+    ['inherited', process.env],
+    ['trusted', trusted],
+    ['trusted + inherited PSModulePath', withKey(trusted, 'PSModulePath', inherited('psmodulepath'))],
+    ['trusted without PSModulePath', withKey(trusted, 'PSModulePath', undefined)],
+    ['trusted + inherited PATH', withKey(trusted, 'Path', inherited('path'))],
+    ['inherited + trusted PSModulePath', withKey(process.env, 'PSModulePath', trusted.PSModulePath)],
+    ['inherited + trusted PATH', withKey(process.env, 'Path', trusted.PATH)],
+    ['trusted, second run', trusted],
+  ]
+  for (const [label, env] of variants) {
+    const startedAt = Date.now()
+    try {
+      const output = await runPowerShell(['-Command', buildWindowsStoreAppLaunchContextScript()], env)
+      console.log(`info env variant "${label}": sid=${parseWindowsStoreAppLaunchContext(output).userSid ? 'yes' : 'none'} (${Date.now() - startedAt}ms)`)
+    } catch (error) {
+      console.log(`info env variant "${label}": failed after ${Date.now() - startedAt}ms: ${String(error?.message ?? error).split('\n')[0]}`)
+    }
+  }
+}
+
 const failures = []
 for (const [name, check] of checks) {
   const startedAt = Date.now()
@@ -221,6 +261,7 @@ for (const [name, check] of checks) {
   }
 }
 await reportStoreAppLaunchProductionPath()
+await bisectTrustedEnvironmentSlowness()
 if (failures.length) {
   console.error(`${failures.length} of ${checks.length} PowerShell probe checks failed`)
   process.exit(1)
