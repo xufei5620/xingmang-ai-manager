@@ -185,7 +185,7 @@ export interface ProxyVariableScopes {
 
 export type PowerShellRunner = (script: string, env: NodeJS.ProcessEnv) => Promise<string>
 
-async function runPowerShell(script: string, env: NodeJS.ProcessEnv): Promise<string> {
+export async function runPowerShell(script: string, env: NodeJS.ProcessEnv): Promise<string> {
   const { stdout } = await execFileAsync(resolveWindowsPowerShellExecutable(), [
     '-NoLogo',
     '-NoProfile',

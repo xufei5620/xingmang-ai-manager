@@ -128,6 +128,7 @@ import { privacyPolicyUrl, relaySiteExternalUrls, relaySites, resolveRelaySite, 
 import { createPaymentWindowController } from './payment-window'
 import { createPaymentOrderStatusReader } from './payment-status-reader'
 import {
+  clearableEnvironmentOverrides,
   createDiagnosticsExport,
   redactDiagnosticText,
   diagnosticsScanReuseMs,
@@ -137,6 +138,7 @@ import {
   type DiagnosticsRunOptions,
 } from './diagnostics'
 import { buildConnectionProbe, runConnectionCheck } from './connection-check'
+import { clearUserProviderOverrides, setAsideCodexDotenv, type DiagnosticFixKind } from './diagnostic-fixes'
 import { createCodexResponsesProbeService } from './codex-responses-probe'
 import type { ExternalToolId } from './external-tool-config'
 import { registerIpcHandlers, type AppWindowMode, type IpcRegistrationOptions } from './ipc'
@@ -1317,6 +1319,15 @@ if (!hasSingleInstanceLock) {
           inspectUserWideCertificateTrust: () => inspectUserWideCertificateTrust({ executionMode: windowsCliExecutionMode }),
         })
         return latestDiagnostics
+      },
+      // 检查页两颗一键处理。要删哪几项在点的那一刻按当前环境和当前站点重算，
+      // 不信渲染层给的任何名字或路径（I5）。
+      fix: async (kind: DiagnosticFixKind) => {
+        if (kind === 'set-aside-codex-dotenv') return setAsideCodexDotenv(codexContext.codexHome)
+        const site = resolveRelaySite(systemService.readStoredConfig().relaySiteId)
+        return clearUserProviderOverrides({
+          names: clearableEnvironmentOverrides(process.env, site.providerBaseUrls, codexContext.userHome),
+        })
       },
       // 自检跟着用户当前所在的站点走，探测和对账读同一个 RelaySite ——
       // 与 system-service.ts 的 inspectNativeProviderConfig 同参，否则换过

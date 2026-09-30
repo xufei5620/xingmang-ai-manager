@@ -452,8 +452,19 @@ function ProviderFilter({
     />
   )
 }
+/**
+ * JSON.parse 的报错是一句英文，新手最常见的是把 Windows 路径直接贴进去（`C:\Users` 里的
+ * 单个反斜杠在 JSON 里不合法）。换成中文，并指向不用手填的那条路。
+ */
+function parseJsonField(value: string, fallback: string, label: string): unknown {
+  try {
+    return JSON.parse(value || fallback)
+  } catch {
+    throw new Error(`${label}的格式不对。填文件夹时请用上面的「选择文件夹」，软件会替你填好；手填路径时每个 \\ 要写成两个。`)
+  }
+}
 export function parseCommandArguments(value: string): string[] {
-  const result: unknown = JSON.parse(value || '[]')
+  const result: unknown = parseJsonField(value, '[]', '参数')
   if (
     !Array.isArray(result) ||
     !result.every((item): item is string => typeof item === 'string')
@@ -464,7 +475,7 @@ export function parseCommandArguments(value: string): string[] {
 export function parseEnvironmentVariables(
   value: string,
 ): Record<string, string> {
-  const result: unknown = JSON.parse(value || '{}')
+  const result: unknown = parseJsonField(value, '{}', '环境变量')
   if (
     !result ||
     typeof result !== 'object' ||
@@ -524,6 +535,23 @@ export function unresolvedInstallPlaceholders(
     for (const match of value.matchAll(/\{\{[A-Za-z][A-Za-z0-9_]*\}\}/g))
       found.add(match[0])
   return [...found]
+}
+
+/**
+ * 把精选条目里的 {{directory}} 换成用户选好的文件夹。换的是解析之后的字符串，不是
+ * JSON 文本，所以路径里的反斜杠不用转义（新手引导梳理 9-25 第 3 条）。没填的原样留着，
+ * 由 unresolvedInstallPlaceholders 拦下来。
+ */
+export function fillCuratedPlaceholders(
+  args: readonly string[],
+  env: Record<string, string>,
+  values: Record<string, string>,
+): { args: string[]; env: Record<string, string> } {
+  const fill = (text: string) => text.replace(/\{\{([A-Za-z][A-Za-z0-9_]*)\}\}/g, (match, key: string) => values[key]?.trim() || match)
+  return {
+    args: args.map(fill),
+    env: Object.fromEntries(Object.entries(env).map(([name, value]) => [name, fill(value)])),
+  }
 }
 
 /** 占位符可能落在参数里（本地文件的目录），也可能落在环境变量里（记忆的存放位置）。 */
@@ -1230,6 +1258,7 @@ export function ExtensionsPage({
   // 待确认的精选条目，以及已经把表单填好、等用户补上路径的那一条。
   const [curated, setCurated] = useState<CuratedExtension | null>(null)
   const [curatedForm, setCuratedForm] = useState<CuratedExtension | null>(null)
+  const [curatedValues, setCuratedValues] = useState<Record<string, string>>({})
   const curatedItems = useMemo(() => curatedItemsFor(kind, provider), [kind, provider])
   const snapshot = resource.data?.snapshot
   const all = extensionItemsForView(
@@ -1298,6 +1327,7 @@ export function ExtensionsPage({
     setOauthClient('')
     setOauthResource('')
     setCuratedForm(null)
+    setCuratedValues({})
     setForm('add')
     operation.clear()
   }
@@ -1366,6 +1396,9 @@ export function ExtensionsPage({
                   env: parseEnvironmentVariables(environment),
                 }
           if (mcp.type === 'stdio') {
+            const filled = fillCuratedPlaceholders(mcp.args, mcp.env, curatedValues)
+            mcp.args = filled.args
+            mcp.env = filled.env
             const pending = unresolvedInstallPlaceholders(mcp.args, mcp.env)
             if (pending.length)
               throw new Error(
@@ -1910,10 +1943,24 @@ export function ExtensionsPage({
         {curatedForm?.inputs.map((input) => (
           <Notice
             key={input.key}
-            tone="warn"
-            title={`还缺一样：${input.label}`}
-            body={`请把下面「${curatedPlaceholderField(curatedForm, input.key)}」里的 {{${input.key}}} 换成${input.label}的完整路径。${input.hint}`}
+            tone={curatedValues[input.key]?.trim() ? 'ok' : 'warn'}
+            title={curatedValues[input.key]?.trim() ? `${input.label}：${curatedValues[input.key]}` : `还缺一样：${input.label}`}
+            body={`点「选择文件夹」挑一个，软件会替你填进下面的「${curatedPlaceholderField(curatedForm, input.key)}」，不用手改。${input.hint}`}
             testId={`curated-input-${input.key}`}
+            actions={
+              <Button
+                size="sm"
+                icon={FolderOpen}
+                disabled={Boolean(operation.busy)}
+                onClick={() => void operation.execute('choose-directory', async () => {
+                  const chosen = await api.chooseExtensionDirectory()
+                  if (chosen) setCuratedValues((values) => ({ ...values, [input.key]: chosen }))
+                }, () => null)}
+                testId={`curated-choose-${input.key}`}
+              >
+                选择文件夹
+              </Button>
+            }
           />
         ))}
         {addFormRuntimeNotice && (

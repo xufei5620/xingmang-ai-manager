@@ -4423,8 +4423,9 @@ test('tutorial actions land on the account tab or settings group the step descri
   } finally { await page.close() }
 })
 
-// 同一个毛病的另一头：检查页网络项的「去处理」以前只在设置页第一次打开时落到「网络」。
-test('the health network fix lands on the network settings group even when settings was already open', async () => {
+// 检查页网络项以前的「去处理」跳到「设置 → 网络」，那里没有能处理它的东西、「去检查」又跳回来，
+// 等于绕一圈（新手引导梳理 9-25 第 2 条）。现在这一行只给结论，不再带人去设置页兜圈。
+test('the health network row no longer sends the user around through settings', async () => {
   const page = await open()
   try {
     await page.evaluate(() => {
@@ -4432,12 +4433,9 @@ test('the health network fix lands on the network settings group even when setti
         counts: { pass: 0, warn: 0, fail: 1, error: 0 },
         items: [{ code: 'XINGMANG_NETWORK', title: '星芒服务连接', state: 'fail', summary: '连不上星芒服务', durationMs: 1 }] })
     })
-    await page.getByTestId('nav-settings').click()
-    await page.getByTestId('page-settings').getByRole('tab', { name: '关于', exact: true }).click()
     await page.getByTestId('nav-health').click()
-    await page.getByTestId('health-fix-XINGMANG_NETWORK').click()
-    await expect(page.getByTestId('page-settings')).toBeVisible()
-    await expect(page.getByTestId('page-settings').getByRole('tab', { name: '网络', exact: true })).toHaveAttribute('aria-selected', 'true')
+    await expect(page.getByTestId('page-health').getByText('连不上星芒服务')).toBeVisible()
+    await expect(page.getByTestId('health-fix-XINGMANG_NETWORK')).toHaveCount(0)
     assert.deepEqual(await page.evaluate(() => window.v2Test.errors), [])
   } finally { await page.close() }
 })

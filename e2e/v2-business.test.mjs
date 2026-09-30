@@ -787,7 +787,8 @@ test('a curated entry that needs a folder prefills the form instead of installin
     await page.getByTestId('curated-confirm-submit').click()
     const notice = page.getByTestId('curated-input-directory')
     await notice.waitFor()
-    await notice.getByText(/「参数」里的 \{\{directory\}\}/).waitFor()
+    await notice.getByText(/点「选择文件夹」挑一个/).waitFor()
+    await notice.getByTestId('curated-choose-directory').waitFor()
     assert.equal(
       (await calls(page)).some((call) => call.name === 'extension'),
       false,
