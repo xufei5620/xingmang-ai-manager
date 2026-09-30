@@ -267,6 +267,14 @@ export function cliHooksNeedRepair(config: Pick<ProviderConfigSummary, 'cliHooks
   return config.cliHooksStale === true
 }
 
+/**
+ * 这次打开软件时，提醒设置指向旧位置已经替用户改好了（主进程 cliHooksAutoRepaired）。
+ * 首页只在工具行上轻轻说一句，不改状态、不给按钮。
+ */
+export function cliHooksWereAutoRepaired(config: Pick<ProviderConfigSummary, 'cliHooksAutoRepaired'>): boolean {
+  return config.cliHooksAutoRepaired === true
+}
+
 /** 修好那一处之后能不能直接打开：「打开」前先修只在修完就能用时替用户做。 */
 export function readyOnceRepaired(
   config: ProviderConfigSummary,

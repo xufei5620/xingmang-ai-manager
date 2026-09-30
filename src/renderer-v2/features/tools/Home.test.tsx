@@ -600,6 +600,23 @@ describe('renderer-v2 home missing runtime guidance on macOS', () => {
       expect(markup).not.toContain('data-testid="tool-claude-repair-hooks"')
     })
 
+    // 第十八批 1b：打开软件时已经替客户改好了，只在工具行上轻轻说一句，不改状态、不给按钮。
+    it('mentions quietly that the reminder settings were fixed on startup', () => {
+      const base = snapshot({ claude: cliStatus, codex: cliStatus, grok: cliStatus, gemini: cliStatus })
+      const repaired = {
+        ...base,
+        config: {
+          ...base.config,
+          providers: { ...base.config.providers, claude: { ...providerConfig, configurationOwnership: 'account', cliHooksStale: false, cliHooksAutoRepaired: true } },
+        },
+      } as unknown as ToolboxSnapshot
+      const markup = render({}, undefined, { snapshot: repaired, onRepairHooks: () => undefined })
+      expect(markup).toContain('提醒设置指向了旧位置，打开软件时已经自动改好，原来的设置在「备份」里')
+      expect(markup).not.toContain('提醒设置要修')
+      expect(markup).not.toContain('data-testid="tool-claude-repair-hooks"')
+      expect(markup).toMatch(/data-testid="tool-claude-primary"[^>]*>(?:<[^>]+>)*打开/)
+    })
+
     // 客户自己装了 Git 或 PowerShell 7，Windows 版 Grok 换了命令行，写下去的那种写法跑不起来了。
     it('says Grok switched its command line when that is why the hooks need fixing', () => {
       const base = snapshot({ claude: cliStatus, codex: cliStatus, grok: cliStatus, gemini: cliStatus })

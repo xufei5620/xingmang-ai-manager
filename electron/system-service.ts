@@ -881,6 +881,11 @@ export interface SystemService {
    * （这台电脑写不出来就收回），写完再查一遍；还是旧的就抛中文原因。可选 = 旧实现不提供。
    */
   repairCliHooks?(provider: ProviderId): Promise<ReturnType<typeof saveProviderConfig>>
+  /**
+   * 开机后读配置前：本账号写的、指向旧位置的钩子与状态行不等客户点就改好，每家这次启动只试一次。
+   * 返回这一次改好了哪几家。可选 = 旧实现不提供。
+   */
+  autoRepairStaleCliHooks?(): Promise<ProviderId[]>
   /** 备份恢复成功之后调用；`isAccountKey` 判断一把 Key 是不是当前账号由本软件签发的。 */
   adoptRestoredConfig(provider: ProviderId, isAccountKey: (apiKey: string) => boolean): Promise<void>
   scanSystem(forceRefresh?: boolean): Promise<SystemSnapshot>
@@ -2330,6 +2335,24 @@ export function cliHooksSummaryFields(
 }
 
 /**
+ * 开机发现的旧钩子要不要不等客户点就改掉（第十八批 1b，yoyo 2026-09-30 同意）：只改本账号写的、
+ * 这次启动还没试过的那份。别处来的配置、被改过的配置不自动动，首页照旧给「修好它」；
+ * 试过一次没修好的也不再反复试，免得每次读配置都去改文件。
+ */
+export function shouldAutoRepairCliHooks(input: {
+  stale: boolean
+  ownership: ToolConfigOwnership
+  attempted: boolean
+}): boolean {
+  return input.stale && !input.attempted && input.ownership === 'account'
+}
+
+/** 这次启动替用户改好了、而且现在确实不再指向旧位置，才带这个字段；旧快照和测试夹具不用跟着改。 */
+export function cliHooksAutoRepairedField(autoRepaired: boolean, stale: boolean): { cliHooksAutoRepaired?: true } {
+  return autoRepaired && !stale ? { cliHooksAutoRepaired: true } : {}
+}
+
+/**
  * 客户点了「换成新版 Node.js」（公司电脑的证书要 22.19 / 24.6 以上才认）时，已经装着的
  * Node.js 即使够装工具也要照样换。只在 Windows 上换：那边装的是官方安装包，会接替
  * Program Files 里原来那份；Mac 上本软件代下的那份排在 PATH 最后，客户自己的旧版
@@ -2357,6 +2380,11 @@ export function createSystemService(
   const platform = serviceOptions.platform ?? process.platform
   const providerRoots = serviceOptions.providerRoots ?? defaultProviderConfigRoots()
   const runtimeLog = serviceOptions.runtimeLog
+  // 这次启动替用户改过的钩子（第十八批 1b）：试过的不再试，改好的让首页说一句。只在内存里，重开软件从头算。
+  const autoRepairAttemptedCliHooks = new Set<ProviderId>()
+  const autoRepairCheckedOwners = new Set<string>()
+  const autoRepairedCliHooks = new Set<ProviderId>()
+  let autoRepairQueue: Promise<unknown> = Promise.resolve()
   const configOwnership = new ToolConfigOwnershipStore(path.join(serviceOptions.managerDataDirectory ?? store.dataDirectory, 'tool-config-ownership'))
   const externalOwnership = new ExternalClientOwnershipStore(path.join(serviceOptions.managerDataDirectory ?? store.dataDirectory, 'external-client-ownership'))
   const projectInstructionsState = new ProjectInstructionsStateStore(path.join(serviceOptions.managerDataDirectory ?? store.dataDirectory, 'project-instructions'))
@@ -5321,13 +5349,15 @@ export function createSystemService(
       providers: Object.fromEntries(
         providerIds.map((id) => {
           const current = inspectNativeProviderConfig(id)
+          const hooks = previewOnboarding ? null : managedCliHooksState(id)
           return [id, {
             ...toNativeConfigSummary(current),
             configurationOwnership: configOwnership.read(id, current, owner),
             configurationAccountMatched: Boolean(owner) && current.hasApiKey && current.matchesRelay
               && cachedKeys.some((entry) => entry.provider === id && entry.key === current.apiKey),
             ...ccSwitchLeftoverField(resolveCcSwitchLeftover(current, ccSwitchInstalled)),
-            ...cliHooksSummaryFields(previewOnboarding ? null : managedCliHooksState(id)),
+            ...cliHooksSummaryFields(hooks),
+            ...cliHooksAutoRepairedField(!previewOnboarding && autoRepairedCliHooks.has(id), hooks?.stale === true),
           }]
         }),
       ) as Record<ProviderId, NativeConfigSummary>,
@@ -5496,6 +5526,52 @@ export function createSystemService(
       })
       return result
     })
+  }
+
+  /**
+   * 开机后第一次读配置时，把本账号写的、指向旧位置的钩子和状态行直接改好（卸载后换文件夹重装、
+   * 挪了软件、换装了 Node.js 之后），不用客户去首页点「修好它」。每个账号只查一遍、每家只试一次；
+   * 修不好只记日志，首页照旧给「修好它」。串成一条队，同时来的几次读配置不会一起改同一份文件。
+   */
+  function autoRepairStaleCliHooks(): Promise<ProviderId[]> {
+    const run = autoRepairQueue.then(repairStaleAccountCliHooks, repairStaleAccountCliHooks)
+    autoRepairQueue = run.catch(() => [])
+    return run
+  }
+
+  async function repairStaleAccountCliHooks(): Promise<ProviderId[]> {
+    const owner = serviceOptions.getExternalClientAccountId?.() ?? null
+    // 每个账号这次启动只查一遍：读配置很频繁，不能每次都去翻四家的文件（Windows 上还要读注册表）。
+    // Grok 换了命令行这种开着软件时才发生的事，交给打开 Grok 前那一道（repairGrokHooksBeforeLaunch）。
+    if (!owner || autoRepairCheckedOwners.has(owner)) return []
+    autoRepairCheckedOwners.add(owner)
+    const repaired: ProviderId[] = []
+    for (const provider of providerIds) {
+      let due = false
+      try {
+        due = shouldAutoRepairCliHooks({
+          stale: managedCliHooksState(provider).stale,
+          ownership: configOwnership.read(provider, inspectNativeProviderConfig(provider), owner),
+          attempted: autoRepairAttemptedCliHooks.has(provider),
+        })
+      } catch {
+        due = false
+      }
+      if (!due) continue
+      autoRepairAttemptedCliHooks.add(provider)
+      try {
+        await repairCliHooks(provider)
+        autoRepairedCliHooks.add(provider)
+        repaired.push(provider)
+        runtimeLog?.log('info', 'config', 'cli-hooks.auto-repaired', '打开软件时把指向旧位置的提醒设置改好了', { provider })
+      } catch (error) {
+        runtimeLog?.log('warn', 'config', 'cli-hooks.auto-repair-failed', '打开软件时没能改好提醒设置，首页留着「修好它」', {
+          provider,
+          reason: credentialFailureReason(error),
+        })
+      }
+    }
+    return repaired
   }
 
   async function saveConfig(
@@ -5703,6 +5779,7 @@ export function createSystemService(
     revealApiKey,
     saveConfig,
     repairCliHooks,
+    autoRepairStaleCliHooks,
     switchToOfficialAccount,
     setOfficialSourcePreference,
     restoreOfficialCredentials,

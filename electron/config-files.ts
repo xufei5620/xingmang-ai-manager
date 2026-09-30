@@ -105,6 +105,11 @@ export interface NativeConfigSummary extends Omit<NativeConfigInspection, 'apiKe
    * 命令行，我们写下去的那种写法在新命令行里跑不起来。为真时 cliHooksStale 也为真，只多一句说明。
    */
   cliHooksShellChanged?: boolean
+  /**
+   * 这次打开软件时发现上面那种情况，已经替用户改好了（先备份再改，改完查过）。首页据此轻轻说一句。
+   * 缺省 = 这次没自动改过。
+   */
+  cliHooksAutoRepaired?: boolean
 }
 
 export function apiKeyPreview(apiKey: string): string | null {
