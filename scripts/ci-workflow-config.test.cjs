@@ -85,9 +85,9 @@ test('the common test suite excludes Darwin filesystem and signing fixtures', ()
 test('browser-backed tests install Chromium first on every job that runs npm test', () => {
   for (const [jobName, testCommand, installCommand] of [
     ['macos-test', 'npm test', 'npx --no-install playwright install chromium'],
-    // Linux-only: --with-deps also apt-installs the shared libraries Chromium
-    // links against, which (unlike Windows/macOS) a bare runner image lacks.
-    ['linux-test', 'npm test', 'npx --no-install playwright install --with-deps chromium'],
+    // Linux also needs Chromium's apt libraries; that half is its own bounded
+    // step, pinned by the test below.
+    ['linux-test', 'npm test', 'npx --no-install playwright install chromium'],
   ]) {
     const commands = runSteps(jobName)
     const installIndex = commands.indexOf(installCommand)
@@ -108,6 +108,41 @@ test('browser-backed tests install Chromium first on every job that runs npm tes
   assert.notEqual(installIndex, -1, 'the Windows shards must install Chromium')
   assert.notEqual(shardStepIndex(), -1, 'the Windows shards must run their matrix command')
   assert.ok(installIndex < shardStepIndex(), 'Chromium must be installed before any shard runs')
+})
+
+// #653 lost two whole linux-test runs to `playwright install --with-deps`
+// sitting in a wedged `apt-get update` until the 30-minute job cap cancelled
+// it. The apt half now carries its own bound, and each attempt a shorter one,
+// so a bad mirror ends in a retry and then a named failure.
+test('the Linux job bounds and retries the apt install of Chromium system libraries', () => {
+  const job = workflow.jobs['linux-test']
+  const steps = job.steps
+  const commands = runSteps('linux-test')
+
+  assert.equal(commands.some((command) => /--with-deps/.test(command)), false,
+    'the apt install must not ride along with the unbounded browser download')
+
+  const depsIndex = steps.findIndex((step) => /playwright install-deps chromium/.test(String(step.run || '')))
+  assert.notEqual(depsIndex, -1, 'linux-test must install Chromium system libraries')
+  assert.ok(depsIndex < steps.findIndex((step) => step.run === 'npm test'),
+    'system libraries must be installed before npm test')
+
+  const depsStep = steps[depsIndex]
+  const script = String(depsStep.run)
+  assert.equal(typeof depsStep['timeout-minutes'], 'number', 'the apt step must carry its own bound')
+  assert.ok(depsStep['timeout-minutes'] <= 10, 'a wedged mirror must not eat a third of the job')
+  assert.ok(depsStep['timeout-minutes'] < job['timeout-minutes'])
+
+  const attempt = script.match(/timeout --kill-after=\d+s (\d+)m npx --no-install playwright install-deps chromium/)
+  assert.ok(attempt, 'each attempt must be killed from outside apt, which never gives up on its own')
+  const attempts = script.match(/for attempt in ([\d ]+); do/)
+  assert.ok(attempts, 'the apt install must retry')
+  const attemptCount = attempts[1].trim().split(/\s+/).length
+  assert.equal(attemptCount, 2, 'one retry, matching the project rule of at most one re-run')
+  // Leave room for the kill-after grace and dpkg recovery between attempts.
+  assert.ok(Number(attempt[1]) * attemptCount < depsStep['timeout-minutes'],
+    'both bounded attempts must fit inside the step bound')
+  assert.match(script, /Acquire::https?::Timeout/)
 })
 
 test('the Windows job enables unprivileged symlink creation before security tests', () => {
