@@ -29,6 +29,8 @@ const valueImportable = [
   'electron/codex-desktop-install-failure',
   'electron/codex-desktop-known-issues',
   'electron/cli-model-defaults',
+  // 更新因磁盘空间不够没下时那句话，系统通知与首页气泡、更新页共用一份（第二十二批 2）。
+  'electron/disk-space-copy',
   'electron/external-url-blocked',
   'electron/git-runtime',
   'electron/ipc-contract',

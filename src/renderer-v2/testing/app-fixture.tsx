@@ -301,6 +301,7 @@ const methods = {
     if (query.has('updateCheckFail')) throw new Error('更新服务器暂时连不上')
     return { phase: 'idle' as const, currentVersion: '0.1.31', availableVersion: null, releaseName: null, releaseNotesText: null, checkedAt: new Date().toISOString(), progress: null, error: null, development: true }
   },
+  downloadUpdate: async () => ({ phase: 'downloading' as const, currentVersion: '0.1.31', availableVersion: '0.1.32', releaseName: null, releaseNotesText: null, checkedAt: new Date().toISOString(), progress: null, error: null, development: true }),
   runDiagnostics: async () => {
     if (query.has('diagnosticsFail')) throw new Error('本机环境检查没有跑完')
     const fail = Number(query.get('diagnosticIssues') ?? 0)

@@ -1,6 +1,6 @@
 import type { PageId } from './pages';
 import { accelerationExpiryWarningSeconds, accelerationTrialSeconds } from '../../../electron/acceleration-contract';
-import { macDesktopTutorialTopic, macRuntimeTutorialTopic, type accountTabs, type settingsGroups } from './business';
+import { macDesktopTutorialTopic, macRuntimeTutorialTopic, updatesTutorialTopic, type accountTabs, type settingsGroups } from './business';
 import { errors } from './errors';
 import { statuses } from './status';
 import { firstRunHints } from './tools';
@@ -49,6 +49,11 @@ export interface TutorialTopic {
 // 只能提前告诉客户该怎么点：点「拒绝」看上去像被退出登录，客户会以为更新坏了。
 export const macKeychainTutorialTitle = 'Mac 更新后弹出钥匙串密码框？';
 export const macKeychainTutorialDetail = 'Mac 上换新版本后第一次打开，系统可能提示「星芒AI管理工具」想使用钥匙串里「xingmang-ai-manager Safe Storage」的信息。这是工具箱在读你本机保存的登录信息：输入这台 Mac 的开机密码，点「始终允许」就好，换新版本后一般只问这一次。点了「拒绝」会像退出了登录，下次打开还会再问。Windows 不会出现这个提示。';
+
+// 更新页「磁盘空间不够」那条提示的「怎么清理」落在这里。只讲点哪里、删什么，不出现
+// 缓存、临时目录这类词；删之前先看清楚是什么，别让客户把项目文件清掉。
+export const updateDiskCleanupTitle = '电脑磁盘快满了，更新下不下来？';
+export const updateDiskCleanupDetail = 'Windows：打开「设置 → 系统 → 存储」，点「临时文件」，勾上「回收站」「临时文件」「Windows 更新清理」后点「删除文件」；再把「下载」「桌面」里用不着的大文件挪到别的盘或 U 盘。Mac：点左上角苹果标志 →「系统设置 → 通用 → 储存空间」，按建议清理，并清空废纸篓。自己的项目文件夹别删。清出空间后，自动更新开着会自己下载，关着就回到更新页点「下载更新」。';
 
 export const tutorialTopics: readonly TutorialTopic[] = [
   {
@@ -767,12 +772,12 @@ export const tutorialTopics: readonly TutorialTopic[] = [
     ],
   },
   {
-    id: 'safety',
+    id: updatesTutorialTopic,
     title: '备份、更新与数据',
     lead: '改配置前留备份，更新前保存工作，项目文件另外保管。',
     category: 'advanced',
     minutes: 3,
-    keywords: ['备份', '恢复', '更新', '自动更新', '退回', '授权', '重置', '数据', '隐私', '卸载', '版本', 'Mac', '钥匙串', '开机密码', '始终允许'],
+    keywords: ['备份', '恢复', '更新', '自动更新', '退回', '授权', '重置', '数据', '隐私', '卸载', '版本', 'Mac', '钥匙串', '开机密码', '始终允许', 'C 盘', '磁盘满', '空间不够', '清理'],
     steps: [
       {
         title: '先备份工具配置',
@@ -795,6 +800,7 @@ export const tutorialTopics: readonly TutorialTopic[] = [
           { title: '自动装没装上？', detail: '比如授权窗口点了「否」：下次打开会告诉你上次没装上、为什么，点「重新安装」再装一次就行，不会每次打开都自己弹授权窗口。' },
           { title: 'AI 工具更新后用着不对劲？', detail: '通过星芒更新过的 Claude Code、Codex CLI、Gemini CLI，首页这个工具的「…」里有「退回更新前的版本」，确认后装回原来那一版；更新 14 天后这一项会自动消失。' },
           { title: '更新失败怎么办？', detail: '看提示里写的原因（磁盘满了、被安全软件拦了、安装包坏了），处理后点提示里的按钮重试。工具箱的版本和 Codex 等工具的版本是两回事，不要混在一起。' },
+          { title: updateDiskCleanupTitle, detail: updateDiskCleanupDetail },
           { title: macKeychainTutorialTitle, detail: macKeychainTutorialDetail },
         ],
         action: '打开工具箱更新',

@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events'
 import { describe, expect, it, vi } from 'vitest'
 import { updateNetworkFailureMessages } from './network-failure'
-import { createUpdaterService, decideUpdateOffer, describeUnrecognizedUpdateFailure, isOlderVersion, resolveRequiredVersion, type UpdateClient, type UpdaterService } from './updater'
+import { createUpdaterService, decideUpdateOffer, describeUnrecognizedUpdateFailure, isOlderVersion, requiredUpdateDiskBytes, resolveRequiredVersion, resolveUpdateDiskShortfall, resolveUpdatePackageBytes, updateDiskFallbackBytes, updateDiskMinimumBytes, type UpdateClient, type UpdaterService } from './updater'
 
 class FakeUpdater extends EventEmitter implements UpdateClient {
   autoDownload = true
@@ -1851,5 +1851,101 @@ describe('describeUnrecognizedUpdateFailure', () => {
     for (const source of ['ENOSPC', 'EACCES: permission denied', 'ENOENT', 'weird']) {
       expect(describeUnrecognizedUpdateFailure(source)).not.toMatch(/[A-Za-z]/)
     }
+  })
+})
+
+describe('disk space before downloading an update', () => {
+  const MB = 1024 ** 2
+  const sizedInfo = (size: number) => ({ ...updateInfo(), files: [{ url: 'setup.exe', sha512: 'x', size }] })
+
+  it('estimates the space from the largest package in the manifest', () => {
+    expect(resolveUpdatePackageBytes(sizedInfo(150 * MB))).toBe(150 * MB)
+    expect(resolveUpdatePackageBytes({ files: [{ url: 'a.zip', sha512: 'x', size: 90 * MB }, { url: 'a.dmg', sha512: 'y', size: 120 * MB }] })).toBe(120 * MB)
+    expect(resolveUpdatePackageBytes({ files: [{ url: 'a.exe', sha512: 'x' }] })).toBeNull()
+    expect(resolveUpdatePackageBytes(null)).toBeNull()
+    expect(requiredUpdateDiskBytes(200 * MB)).toBe(600 * MB)
+    expect(requiredUpdateDiskBytes(50 * MB)).toBe(updateDiskMinimumBytes)
+    expect(requiredUpdateDiskBytes(null)).toBe(updateDiskFallbackBytes)
+  })
+
+  it('lets the download through when the free space cannot be read', () => {
+    expect(resolveUpdateDiskShortfall(null, 600 * MB)).toBeNull()
+    expect(resolveUpdateDiskShortfall(Number.NaN, 600 * MB)).toBeNull()
+    expect(resolveUpdateDiskShortfall(600 * MB, 600 * MB)).toBeNull()
+    expect(resolveUpdateDiskShortfall(380 * MB, 600 * MB)).toEqual({ neededBytes: 600 * MB, freeBytes: 380 * MB })
+  })
+
+  it('keeps the release offered and skips the scheduled download while the disk is too full', async () => {
+    const client = new FakeUpdater()
+    client.checkForUpdates.mockImplementation(async () => { client.emit('update-available', sizedInfo(200 * MB)) })
+    let freeBytes = 380 * MB
+    const skipped = vi.fn()
+    const service = createUpdaterService(client, {
+      currentVersion: '1.0.0',
+      isPackaged: true,
+      readAutoUpdate: () => true,
+      readFreeDiskBytes: async () => freeBytes,
+      diskShortfallSkipped: skipped,
+    })
+    const blocked = await service.scheduledCheck()
+    expect(blocked).toMatchObject({ phase: 'available', error: null, failedStep: null, diskShortfall: { neededBytes: 600 * MB, freeBytes: 380 * MB } })
+    expect(client.downloadUpdate).not.toHaveBeenCalled()
+    expect(skipped).toHaveBeenCalledWith({ neededBytes: 600 * MB, freeBytes: 380 * MB }, '1.1.0')
+
+    // 下一轮定时检查：空间清出来了，照常自己下，不用用户再点。
+    freeBytes = 2048 * MB
+    const resumed = await service.scheduledCheck()
+    expect(client.downloadUpdate).toHaveBeenCalledOnce()
+    expect(resumed.diskShortfall).toBeNull()
+    service.dispose()
+  })
+
+  it('downloads anyway when the user insists', async () => {
+    const client = new FakeUpdater()
+    client.checkForUpdates.mockImplementation(async () => { client.emit('update-available', sizedInfo(200 * MB)) })
+    const service = createUpdaterService(client, {
+      currentVersion: '1.0.0',
+      isPackaged: true,
+      readAutoUpdate: () => false,
+      readFreeDiskBytes: async () => 100 * MB,
+    })
+    await service.check()
+    await expect(service.download()).resolves.toMatchObject({ phase: 'available', diskShortfall: { freeBytes: 100 * MB } })
+    expect(client.downloadUpdate).not.toHaveBeenCalled()
+    await service.download({ ignoreDiskSpace: true })
+    expect(client.downloadUpdate).toHaveBeenCalledOnce()
+    expect(service.getState().diskShortfall).toBeNull()
+    service.dispose()
+  })
+
+  it('downloads as before when reading the disk throws', async () => {
+    const client = new FakeUpdater()
+    client.checkForUpdates.mockImplementation(async () => { client.emit('update-available', sizedInfo(200 * MB)) })
+    const service = createUpdaterService(client, {
+      currentVersion: '1.0.0',
+      isPackaged: true,
+      readAutoUpdate: () => true,
+      readFreeDiskBytes: async () => { throw new Error('statfs failed') },
+    })
+    await service.scheduledCheck()
+    expect(client.downloadUpdate).toHaveBeenCalledOnce()
+    service.dispose()
+  })
+
+  it('clears the shortfall once the phase moves on', async () => {
+    const client = new FakeUpdater()
+    client.checkForUpdates.mockImplementation(async () => { client.emit('update-available', sizedInfo(200 * MB)) })
+    const service = createUpdaterService(client, {
+      currentVersion: '1.0.0',
+      isPackaged: true,
+      readAutoUpdate: () => false,
+      readFreeDiskBytes: async () => 100 * MB,
+    })
+    await service.check()
+    await service.download()
+    expect(service.getState().diskShortfall).not.toBeNull()
+    client.emit('error', new Error('boom'))
+    expect(service.getState()).toMatchObject({ phase: 'error', diskShortfall: null })
+    service.dispose()
   })
 })

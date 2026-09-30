@@ -30,7 +30,7 @@ import { RestartReminder, RuntimeRestartDialog } from './features/tools/RuntimeR
 import { guideJobProgress, installedToolSyncLabel, useToolbox } from './features/tools/useToolbox'
 import { ManualUninstallDialog, type ManualUninstallState } from './features/tools/ManualUninstall'
 import { operationLogPage, type OperationActionId } from './operation-error'
-import { accountTabs, macDesktopTutorialTopic, settingsGroups, autoUpdateBubbleBody, updateBubbleTitle, updateFailureLabel } from './registry/business'
+import { accountTabs, macDesktopTutorialTopic, settingsGroups, autoUpdateBubbleBody, updateBubbleTitle, updateDiskShortfallText, updateFailureLabel, updatesTutorialTopic } from './registry/business'
 import { tools } from './registry/tools'
 import { clientConnections } from './registry/clients'
 import type { PageId } from './registry/pages'
@@ -1230,7 +1230,8 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   useEffect(() => {
     if (workspaceVisible && page === 'home' && tourReplayPending(scope)) setTourOpen(true)
   }, [workspaceVisible, page, scope])
-  const updateKey = update ? `${update.phase}:${update.availableVersion}:${update.error?.code ?? ''}` : ''
+  // 空间不够是另一句话：之前关掉的「有新版本」不该连它一起盖住。
+  const updateKey = update ? `${update.phase}:${update.availableVersion}:${update.error?.code ?? ''}${update.diskShortfall ? ':disk' : ''}` : ''
   // 维护提示来自更新目录上的状态文件，没登录也收得到。角落那条可以关，关掉的
   // 是这一句话；发布者换了说法（比如改了预计恢复时间）会再出现一次。
   const maintenance = update?.serviceMaintenance ?? null
@@ -1240,6 +1241,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   // 这台电脑的更新通道不支持自动更新时不显示，免得勾了没用。
   const autoUpdateToggle = Boolean(update?.autoUpdateSupported && settings && !update.error && !update.rollback)
   const autoUpdateOn = autoUpdateToggle && settings?.autoUpdate !== false
+  const updateDiskText = updateDiskShortfallText(update, autoUpdateOn)
   const accountBootstrapBusy = Boolean(accountBootstrap?.scope === scope && !accountBootstrap.result && !accountBootstrap.error)
   // Account switches can happen while the chat route is active. The retained
   // chat host deliberately keeps its previous scope in state, but rendering
@@ -1270,9 +1272,9 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
           banner={<><RestartReminder restart={toolsApi.restartWindows} />{session.authenticated && <AnnouncementCenter key={scope} scope={scope} read={app.announcement} refreshTick={balanceState.updatedAt} markRemoteRead={app.markAnnouncementRead} syncLocalReads={app.syncLocalNoticeReads} open={announcementOpen} onClose={() => setAnnouncementOpen(false)} onOpen={() => setAnnouncementOpen(true)} onUnread={setUnread} openExternal={app.openExternal} noticeUrl={relaySite.websiteUrl} notify={notifyAnnouncement}
             promoVisible={page === 'home'} onTopUp={accountSupports(session, 'supportsBilling') ? (amount) => navigate('account', 'recharge', amount) : undefined}
             readTopupOffers={accountSupports(session, 'supportsBilling') ? () => native.getAccountTopupInfo() : undefined} />}</>}
-          notification={showUpdate && <Notice tone={update.error ? 'bad' : 'accent'} title={update.error ? updateFailureLabel(update.failedStep).title : updateBubbleTitle(update)}
-            body={update.error?.message ?? autoUpdateBubbleBody(update.phase, autoUpdateOn)} progress={update.progress?.percent} onDismiss={() => setDismissedUpdate(updateKey)}
-            actions={<><Button size="sm" onClick={() => navigate('updates')}>查看更新</Button>
+          notification={showUpdate && <Notice tone={update.error ? 'bad' : updateDiskText ? 'warn' : 'accent'} title={update.error ? updateFailureLabel(update.failedStep).title : updateBubbleTitle(update)}
+            body={update.error?.message ?? updateDiskText ?? autoUpdateBubbleBody(update.phase, autoUpdateOn)} progress={update.progress?.percent} onDismiss={() => setDismissedUpdate(updateKey)}
+            actions={<>{updateDiskText && <Button size="sm" onClick={() => navigate('tutorial', updatesTutorialTopic)}>怎么清理</Button>}<Button size="sm" onClick={() => navigate('updates')}>查看更新</Button>
               {autoUpdateToggle && <Switch testId="update-auto-toggle" label="自动更新" checked={autoUpdateOn} onChange={(autoUpdate) => void perform('保存自动更新', async () => setSettings(await app.savePreferences({ version: 2, autoUpdate })))} />}</>} />}
           adapter={{ navigate, searchTutorial, accountTabVisible: (tab) => !session.authenticated || visibleAccountTab(tab, session), refreshNetwork: () => { void networkLocation.refresh() }, openAccount: () => navigate('account'), switchAccount: () => setSwitcher(true), topUp: () => navigate('account', accountSupports(session, 'supportsBilling') ? 'recharge' : 'overview'), refreshBalance: () => { void balanceStore.refresh('manual') },
             redeemAccelerationCode: async (code) => {

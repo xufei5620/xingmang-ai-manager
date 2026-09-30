@@ -1,4 +1,5 @@
 import { Notification, type NotificationConstructorOptions } from 'electron'
+import { describeUpdateDiskShortfall } from './disk-space-copy'
 import type { UpdateSnapshot } from './updater'
 
 export interface DesktopNotificationCapability {
@@ -57,10 +58,20 @@ export interface DesktopNotificationController {
   dispose(): void
 }
 
-export function updateDesktopNotification(snapshot: UpdateSnapshot, autoUpdate = false): { key: string; version: string; stage: 'available' | 'downloaded'; title: string; body: string } | null {
+export function updateDesktopNotification(snapshot: UpdateSnapshot, autoUpdate = false): { key: string; version: string; stage: 'available' | 'downloaded' | 'disk'; title: string; body: string } | null {
   if ((snapshot.phase !== 'available' && snapshot.phase !== 'downloaded') || snapshot.error) return null
   const version = snapshot.availableVersion?.trim()
   if (!version || version === snapshot.currentVersion || !/^[a-z0-9][a-z0-9.+_-]{0,79}$/i.test(version)) return null
+  // 每个版本只说一次：之后每 3 小时量一次盘，还是不够也不再弹，免得成了骚扰。
+  if (snapshot.phase === 'available' && snapshot.diskShortfall) {
+    return {
+      key: `${version}:disk`,
+      version,
+      stage: 'disk',
+      title: '星芒AI更新先不下载',
+      body: describeUpdateDiskShortfall(snapshot.diskShortfall, autoUpdate),
+    }
+  }
   return {
     key: `${version}:${snapshot.phase}`,
     version,
@@ -114,10 +125,13 @@ export function createDesktopNotificationController(
       if (!update) return 'ignored'
       if (!getDesktopNotificationCapability(runtime).supported) return 'unsupported'
       if (seen.has(update.key)) return 'duplicate'
-      if (update.stage === 'downloaded') close(`${update.version}:available`)
+      // 前一条「正在后台下载」在量完盘之前就弹了，这时它已经不对，收掉。
+      if (update.stage === 'downloaded' || update.stage === 'disk') close(`${update.version}:available`)
       while (active.size >= 4) close(active.keys().next().value!)
       const notification = runtime.create({ title: update.title, body: update.body, silent: true, urgency: 'normal', ...(options.iconPath ? { icon: options.iconPath } : {}) })
-      const addedKeys = [update.key, ...(update.stage === 'downloaded' ? [`${update.version}:available`] : [])].filter(remember)
+      // 空间不够那条之后，每 3 小时重新检查都会先回到「有新版本」再量盘，别让那句
+      //「正在后台下载」跟着再弹一次。
+      const addedKeys = [update.key, ...(update.stage !== 'available' ? [`${update.version}:available`] : [])].filter(remember)
       active.set(update.key, { notification, addedKeys })
       notification.on('click', () => {
         if (disposed) return

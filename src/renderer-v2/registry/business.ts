@@ -1,4 +1,5 @@
 import type { UpdateFailedStep, UpdateSnapshot } from '../../../electron/ipc-contract'
+import { describeUpdateDiskShortfall } from '../../../electron/disk-space-copy'
 /**
  * 教程里讲「Mac 上怎么自己装桌面端」的那一章。首页那几行点不动的「安装」要直接跳到
  * 这一章而不是教程首页，所以 id 放在注册表里由两边共用：教程页写章节、App 写跳转，
@@ -7,6 +8,8 @@ import type { UpdateFailedStep, UpdateSnapshot } from '../../../electron/ipc-con
 export const macDesktopTutorialTopic = 'mac-desktop-apps'
 /** 同理：教程里讲「Mac 上怎么自己装 Node.js 和 Python」的那一章。 */
 export const macRuntimeTutorialTopic = 'runtime-mac'
+/** 同理：「备份、更新与数据」那一章，里面有「磁盘快满了、更新下不下来怎么办」。 */
+export const updatesTutorialTopic = 'safety'
 // keywords 是顶部搜索用的常用说法：小白搜「余额」「Key」「开机」时也要能找到对应的分页，
 // 界面上不显示。
 export const accountTabs = [
@@ -68,7 +71,7 @@ export function updateFailureLabel(step: UpdateFailedStep | null | undefined) {
  * 本机旧（退回上一个好版本）时，照常说「发现新版本」就是在骗人。这几句也只在这里
  * 定义一次，更新页与首页气泡读同一份。
  */
-type UpdateOfferState = Pick<UpdateSnapshot, 'phase' | 'currentVersion' | 'availableVersion' | 'rollback' | 'currentVersionWithdrawn'>
+type UpdateOfferState = Pick<UpdateSnapshot, 'phase' | 'currentVersion' | 'availableVersion' | 'rollback' | 'currentVersionWithdrawn' | 'diskShortfall'>
 export function updateCardTitle(update: UpdateOfferState): string {
   if (update.rollback && update.phase === 'available') return '建议退回稳定版本'
   if (update.currentVersionWithdrawn && (update.phase === 'not-available' || update.phase === 'idle')) return '这个版本有已知问题'
@@ -77,6 +80,7 @@ export function updateCardTitle(update: UpdateOfferState): string {
 export function updateBubbleTitle(update: UpdateOfferState): string {
   if (update.phase === 'downloaded') return '更新已下载'
   if (update.phase === 'downloading') return '正在下载更新'
+  if (update.phase === 'available' && update.diskShortfall) return '新版本先不下载'
   if (update.phase === 'available') return update.rollback ? `建议退回 ${update.availableVersion}` : `新版本 ${update.availableVersion} 可以安装`
   return '这个版本有已知问题'
 }
@@ -85,6 +89,14 @@ export function autoUpdateBubbleBody(phase: UpdateOfferState['phase'], autoUpdat
   if (!autoUpdate) return '查看更新内容和安装状态。';
   if (phase === 'downloaded') return '已经下好了，关掉软件或下次打开时自动装上，不打断你现在用。';
   return '正在后台下载，下好后关掉软件或下次打开时自动装上。';
+}
+/**
+ * 磁盘空间不够、这一轮没下更新时的那句。和系统通知读同一份说法（disk-space-copy.ts）；
+ * 没有缺口时返回 null，调用方照旧用原来的说法。
+ */
+export function updateDiskShortfallText(update: Pick<UpdateSnapshot, 'phase' | 'diskShortfall'> | null | undefined, autoUpdate: boolean): string | null {
+  if (update?.phase !== 'available' || !update.diskShortfall) return null
+  return describeUpdateDiskShortfall(update.diskShortfall, autoUpdate)
 }
 // 更新页顶上那句。自动更新开着时软件确实会在退出或下次打开时自己装，再写「不会自己
 // 重启」就是在说反话。
