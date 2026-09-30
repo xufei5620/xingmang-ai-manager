@@ -65,6 +65,7 @@ import {
   type CodexDesktopWindowsProbes,
 } from './codex-desktop-service'
 import { parseWindowsStoreAppLaunchContext } from './windows-store-app-launch'
+import { codexDesktopKnownIssueMarker } from './codex-desktop-known-issues'
 
 // Windows CI 上六个作业共用一台机器，Defender 在场时 PowerShell 冷启一次可以
 // 超过一分钟；起作用的是 execFile 这一层的预算，不是 vitest 的用例超时。
@@ -192,6 +193,32 @@ describe('Codex Desktop AppModel launch diagnostics', () => {
       { waitedSeconds: 45, processSeen: false },
     )
     expect(message).toContain('「Administrator」账户')
+  })
+
+  it('names the known-broken version and points to the command-line Codex instead of the start-menu check', () => {
+    const context = { userSid: null, isBuiltInAdministrator: false, uacEnabled: null, filterAdministratorToken: null }
+    const message = describeCodexDesktopLaunchFailure(context, { waitedSeconds: 51, processSeen: false }, '26.924.2738.0')
+    expect(message.startsWith(codexDesktopNotStartedPrefix)).toBe(true)
+    expect(message).toContain('等了 51 秒，Codex 没有启动起来')
+    expect(message).toContain('你装的这一版（26.924.2738.0）')
+    expect(message).toContain(codexDesktopKnownIssueMarker)
+    expect(message).toContain('「改用 Codex 命令行版」')
+    expect(message).not.toContain('开始菜单里搜「Codex」')
+    expect(message).not.toMatch(/wsreset|AppModel|AppX|Appx|UAC|0x[0-9A-F]{8}|SID|Microsoft Store/i)
+
+    const noOutcome = describeCodexDesktopLaunchFailure(context, undefined, '26.924.2738.0')
+    expect(noOutcome).toContain('等了将近一分钟')
+    expect(noOutcome).toContain(codexDesktopKnownIssueMarker)
+
+    const admin = describeCodexDesktopLaunchFailure(
+      { userSid: 'S-1-5-21-1-2-3-500', isBuiltInAdministrator: true, uacEnabled: false, filterAdministratorToken: false },
+      { waitedSeconds: 45, processSeen: false },
+      '26.924.2738.0',
+    )
+    expect(admin).toContain('「Administrator」账户')
+    expect(admin).not.toContain(codexDesktopKnownIssueMarker)
+
+    expect(describeCodexDesktopLaunchFailure(context, { waitedSeconds: 45, processSeen: false }, null)).not.toContain(codexDesktopKnownIssueMarker)
   })
 
   it('describes the launch wait in plain words and adds the start-menu hint after twenty seconds', () => {

@@ -943,6 +943,31 @@ test('home reuses the recent list instead of rescanning session folders on every
   } finally { await page.close() }
 })
 
+test('home shows the last usage right away instead of asking the account backend on every visit', async () => {
+  const page = await open('allInstalled=1')
+  const usageReads = () => page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'getAccountUsage').length)
+  const usageLine = page.locator('.v2-balance-usage p')
+  try {
+    await expect(usageLine).toContainText('约还能用')
+    // 本月、最近 7 天各一次；开发模式的 StrictMode 挂载两遍也只落到这一次。
+    assert.equal(await usageReads(), 2)
+
+    // 首页离开就卸载，以前每回来一次就再查两次、那一栏先显示「正在读取用量」。
+    await page.evaluate(() => {
+      window.__usageBlank = false
+      new MutationObserver(() => {
+        if (document.querySelector('.v2-balance-usage p')?.textContent?.includes('正在读取用量')) window.__usageBlank = true
+      }).observe(document.body, { childList: true, subtree: true, characterData: true })
+    })
+    await page.getByTestId('nav-sessions').click()
+    await page.getByTestId('nav-home').click()
+    await expect(usageLine).toContainText('约还能用')
+    assert.equal(await page.evaluate(() => window.__usageBlank), false)
+    assert.equal(await usageReads(), 2)
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('archiving a session on the sessions page refreshes the home recent card right away', async () => {
   const page = await open('allInstalled=1&recentWorkspaces=1&sessionArchive=1')
   const homeReads = () => page.evaluate(() => window.v2Test.calls
@@ -1020,6 +1045,22 @@ test('a new user can open a CLI in a folder the app creates, without the directo
     await page.getByTestId('tool-row-codexDesktop').getByRole('button', { name: '更多操作' }).click()
     assert.equal(await page.getByTestId('tool-codexDesktop-new-workspace').count(), 0)
     await page.keyboard.press('Escape')
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('a folder picked for one CLI opens the others there without asking again', async () => {
+  const page = await open('launchRemembers=1')
+  try {
+    await page.getByTestId('tool-codex-primary').click()
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'launchCli'))
+    const claude = page.getByTestId('tool-claude-primary')
+    await page.waitForFunction(() => document.querySelector('[data-testid="tool-claude-primary"]')?.textContent?.includes('打开 Selected P'))
+    await claude.click()
+    await page.waitForFunction(() => window.v2Test.calls.filter((entry) => entry.method === 'launchCli').length === 2)
+    const calls = await page.evaluate(() => window.v2Test.calls)
+    assert.equal(calls.filter((entry) => entry.method === 'chooseWorkspace').length, 1)
+    assert.deepEqual(calls.filter((entry) => entry.method === 'launchCli').map((entry) => entry.args.slice(0, 2)), [['codex', 'C:\\Selected Project'], ['claude', 'C:\\Selected Project']])
     await clean(page)
   } finally { await page.close() }
 })

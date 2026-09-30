@@ -192,7 +192,11 @@ export function buildSubscriptionPaymentInput(
 export function paymentTerminalPresentation(
   status: AccountPaymentWindowTerminalEvent['status'],
   confirming = false,
+  kind: 'topup' | 'subscription' = 'topup',
 ): { tone: 'neutral' | 'warn' | 'bad' | 'ok'; title: string; body: string } {
+  if (status === 'success' && kind === 'subscription') return {
+    tone: 'ok', title: '订阅已开通', body: '服务端已确认付款，支付窗口已关闭，正在刷新订阅。',
+  }
   if (status === 'success') return {
     tone: 'ok', title: '充值成功', body: '服务端已确认到账，余额已更新。',
   }
@@ -231,12 +235,35 @@ export function paymentTerminalPresentation(
 }
 
 /** 提示正文：订单号跟在后面；后台还在确认时订单号放在下面那行「正在确认…」里。 */
-export function paymentTerminalBody(event: AccountPaymentWindowTerminalEvent): string {
-  const presentation = paymentTerminalPresentation(event.status, event.confirming)
+export function paymentTerminalBody(event: AccountPaymentWindowTerminalEvent, kind: 'topup' | 'subscription' = 'topup'): string {
+  const presentation = paymentTerminalPresentation(event.status, event.confirming, kind)
   if (!event.tradeNo) return presentation.body
+  if (event.status === 'success' && kind === 'subscription') return `订单 ${event.tradeNo} 已付款，订阅已开通，正在刷新订阅。`
   if (event.status === 'success') return `订单 ${event.tradeNo} 已到账，余额已更新。`
   if (event.status === 'closed' && event.confirming) return presentation.body
   return `${presentation.body} 订单号 ${event.tradeNo}。`
+}
+
+/**
+ * 订阅开通后，工具那边换没换过去的一句话。星芒账号的订阅不看 Key 在哪个分组，
+ * 请求按「扣费偏好」自动先扣订阅，不用换；历史账号的订阅只对订阅分组里的 Key
+ * 生效，要把用得上的工具换一把 Key（switched 就是换好的那几个工具的名字）。
+ */
+export function subscriptionToolsNotice(
+  input: { followsPreference: true } | { followsPreference: false; switched: readonly string[] } | { followsPreference: false; error: string },
+): { tone: 'ok' | 'warn'; title: string; body: string } {
+  if (input.followsPreference) return {
+    tone: 'ok', title: '工具不用重新设置', body: '工具发出的请求会按「扣费偏好」先用订阅额度。',
+  }
+  if ('error' in input) return {
+    tone: 'warn', title: '订阅已开通，工具还没换过去', body: `${input.error} 可以到「检查」页点「重新写入 Key」再试一次。`,
+  }
+  if (input.switched.length) return {
+    tone: 'ok', title: '工具已改用订阅额度', body: `${input.switched.join('、')} 已换成用这份订阅，不用重新打开设置。`,
+  }
+  return {
+    tone: 'ok', title: '工具不用重新设置', body: '这份订阅对应的工具装好、登录后会自动用订阅额度。',
+  }
 }
 
 export function validateTopupAmount(value: number, minimum: number): number {
@@ -363,6 +390,8 @@ export function AccountPage({
   onConfigureTool,
   onToolConfigSaved,
   toolConfigConfirmed,
+  onSubscriptionActivated,
+  onSubscriptionPurchased,
   onOpenHelp,
 }: {
   api: V2Bridge
@@ -383,6 +412,10 @@ export function AccountPage({
   onToolConfigSaved?: () => void
   /** 某个工具的设置已保存并读回；每次加一。缺省 = 没有这个信号（旧行为）。 */
   toolConfigConfirmed?: ToolConfigConfirmation | null
+  /** 订阅开通后把用得上它的工具换过去，返回换好的工具；缺省 = 不换（旧行为）。 */
+  onSubscriptionActivated?: () => Promise<Provider[]>
+  /** 订阅开通后让首页、侧栏那行订阅马上重读；缺省 = 等它自己几分钟后再读。 */
+  onSubscriptionPurchased?: () => void
   /** 打开「联系客服」；缺省 = 不给这个按钮。 */
   onOpenHelp?: () => void
 }) {
@@ -592,6 +625,8 @@ export function AccountPage({
                       session={account.session}
                       changed={changed}
                       refresh={refreshAccount}
+                      subscriptionActivated={onSubscriptionActivated}
+                      subscriptionPurchased={onSubscriptionPurchased}
                       openOrders={openOrders}
                       openHelp={onOpenHelp}
                       presetAmount={rechargeAmount}
@@ -2015,6 +2050,8 @@ function AccountRecharge({
   session,
   changed,
   refresh,
+  subscriptionActivated,
+  subscriptionPurchased,
   openOrders,
   openHelp,
   presetAmount,
@@ -2025,6 +2062,8 @@ function AccountRecharge({
   session: AccountSessionState
   changed: () => void
   refresh: () => void
+  subscriptionActivated?: () => Promise<Provider[]>
+  subscriptionPurchased?: () => void
   openOrders?: (order: string | null) => void
   openHelp?: () => void
   presetAmount?: number
@@ -2063,29 +2102,50 @@ function AccountRecharge({
     expiresAt: string | null
   } | null>(null)
   const [paymentTerminal, setPaymentTerminal] =
-    useState<AccountPaymentWindowTerminalEvent | null>(null)
+    useState<(AccountPaymentWindowTerminalEvent & { kind: 'topup' | 'subscription' }) | null>(null)
+  const [subscriptionTools, setSubscriptionTools] = useState<ReturnType<typeof subscriptionToolsNotice> | null>(null)
+  // 订阅开通（在线付款到账、兑换码兑成订阅）之后调一次。星芒账号不用换工具，只说一句；
+  // 历史账号把用得上这份订阅的工具换一把放在订阅分组里的 Key。
+  function applySubscriptionToTools() {
+    subscriptionPurchased?.()
+    if (accountSupports(session, 'supportsSubscriptionPreference')) {
+      setSubscriptionTools(subscriptionToolsNotice({ followsPreference: true }))
+      return
+    }
+    if (!subscriptionActivated) return
+    setSubscriptionTools({ tone: 'ok', title: '正在把工具换成订阅额度', body: '换好之前工具照常能用。' })
+    subscriptionActivated().then(
+      (switched) => setSubscriptionTools(subscriptionToolsNotice({ followsPreference: false, switched: switched.map(keyToolName) })),
+      (error: unknown) => setSubscriptionTools(subscriptionToolsNotice({ followsPreference: false, error: errorMessage(error, '工具这次没有换成功。') })),
+    )
+  }
+  const applySubscriptionRef = useRef(applySubscriptionToTools)
+  applySubscriptionRef.current = applySubscriptionToTools
   const paymentRef = useRef(payment)
   const openingPayment = useRef<AccountPaymentWindowTerminalEvent[] | null>(null)
   // 窗口关了、主进程还在后台确认的那笔订单号。结果晚到时即使提示已经收起，也要把结果摆出来。
-  const followUpTradeNo = useRef<string | null>(null)
+  const followUp = useRef<{ tradeNo: string; kind: 'topup' | 'subscription' } | null>(null)
   const acceptPaymentTerminal = (event: AccountPaymentWindowTerminalEvent) => {
     const current = paymentRef.current
     if (!current) {
-      if (!event.tradeNo || event.tradeNo !== followUpTradeNo.current || event.status === 'closed') return
-      followUpTradeNo.current = null
-      setPaymentTerminal(event)
+      const pending = followUp.current
+      if (!pending || !event.tradeNo || event.tradeNo !== pending.tradeNo || event.status === 'closed') return
+      followUp.current = null
+      setPaymentTerminal({ ...event, kind: pending.kind })
       changed()
       void resource.reload()
+      if (event.status === 'success' && pending.kind === 'subscription') applySubscriptionRef.current()
       return
     }
     if (event.status === 'success' && (!event.tradeNo || event.tradeNo !== current.tradeNo)) return
     if (event.tradeNo && current.tradeNo && event.tradeNo !== current.tradeNo) return
     paymentRef.current = null
-    followUpTradeNo.current = event.status === 'closed' && event.confirming ? event.tradeNo : null
+    followUp.current = event.status === 'closed' && event.confirming && event.tradeNo ? { tradeNo: event.tradeNo, kind: current.kind } : null
     setPayment(null)
-    setPaymentTerminal(event)
+    setPaymentTerminal({ ...event, kind: current.kind })
     changed()
     void resource.reload()
+    if (event.status === 'success' && current.kind === 'subscription') applySubscriptionRef.current()
   }
   // 支付回调是一次性事件：退订与重订之间到达的那一条没有人接，订单就此丢在
   // 「等待支付结果」上。`changed` 由 AccountPage 每次渲染新建，再上一层 App.tsx 传的
@@ -2098,8 +2158,9 @@ function AccountRecharge({
     const buffered = openingPayment.current ?? []
     openingPayment.current = null
     paymentRef.current = result
-    followUpTradeNo.current = null
+    followUp.current = null
     setPaymentTerminal(null)
+    setSubscriptionTools(null)
     setPayment(result)
     for (const event of buffered) acceptPaymentTerminal(event)
   }
@@ -2184,6 +2245,7 @@ function AccountRecharge({
         setPurchase(null)
         await resource.reload()
         changed()
+        if (purchaseMethod === 'balance') applySubscriptionToTools()
       },
       purchaseMethod === 'balance'
         ? '订阅购买完成'
@@ -2292,16 +2354,18 @@ function AccountRecharge({
       </div>
       {(payment || paymentTerminal) && (
         <Notice
-          tone={paymentTerminal ? paymentTerminalPresentation(paymentTerminal.status, paymentTerminal.confirming).tone : 'neutral'}
-          title={paymentTerminal ? paymentTerminalPresentation(paymentTerminal.status, paymentTerminal.confirming).title : '等待支付结果'}
+          tone={paymentTerminal ? paymentTerminalPresentation(paymentTerminal.status, paymentTerminal.confirming, paymentTerminal.kind).tone : 'neutral'}
+          title={paymentTerminal ? paymentTerminalPresentation(paymentTerminal.status, paymentTerminal.confirming, paymentTerminal.kind).title : '等待支付结果'}
           body={paymentTerminal
             ? <>
-              {paymentTerminalBody(paymentTerminal)}
+              {paymentTerminalBody(paymentTerminal, paymentTerminal.kind)}
               {paymentTerminal.status === 'closed' && paymentTerminal.confirming && paymentTerminal.tradeNo && (
                 <small className="v2-business-payment-confirming">正在确认订单 {paymentTerminal.tradeNo} 是否到账…</small>
               )}
             </>
-            : `${payment?.kind === 'subscription' ? '订阅订单' : '订单'} ${payment?.tradeNo || '待生成'}。到账后将自动关闭支付窗口并刷新余额。`}
+            : payment?.kind === 'subscription'
+              ? `订阅订单 ${payment.tradeNo || '待生成'}。付款后会自动关闭支付窗口并刷新订阅。`
+              : `订单 ${payment?.tradeNo || '待生成'}。到账后将自动关闭支付窗口并刷新余额。`}
           testId="account-payment-notice"
           actions={
             <>
@@ -2351,6 +2415,14 @@ function AccountRecharge({
               )}
             </>
           }
+        />
+      )}
+      {subscriptionTools && (
+        <Notice
+          tone={subscriptionTools.tone}
+          title={subscriptionTools.title}
+          body={subscriptionTools.body}
+          actions={<Button size="sm" onClick={() => setSubscriptionTools(null)}>收起提示</Button>}
         />
       )}
       <Card title="我的订阅">
@@ -2502,6 +2574,7 @@ function AccountRecharge({
                     setRedeemOpen(false)
                     changed()
                     await resource.reload()
+                    if (result.type === 'subscription') applySubscriptionToTools()
                   },
                   '兑换码已兑换',
                 )

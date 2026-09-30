@@ -83,6 +83,7 @@ import {
   isPlainCodexDesktopInstallMessage,
   type CodexDesktopInstallFailureReason,
 } from './codex-desktop-install-failure'
+import { codexDesktopKnownIssueLaunchSentence, resolveCodexDesktopKnownIssue } from './codex-desktop-known-issues'
 import {
   inspectWindowsStoreAppLaunchContext,
   inspectWindowsStoreAvailability,
@@ -186,6 +187,7 @@ export interface CodexDesktopLaunchWaitOutcome {
 export function describeCodexDesktopLaunchFailure(
   context: CodexDesktopWindowsLaunchContext,
   outcome?: CodexDesktopLaunchWaitOutcome,
+  knownIssueVersion?: string | null,
 ): string {
   const block = resolveStoreAppLaunchBlock(context)
   if (block === 'builtInAdministrator') {
@@ -195,6 +197,14 @@ export function describeCodexDesktopLaunchFailure(
   if (block === 'uacDisabled') {
     return `${codexDesktopNotStartedPrefix}：这台电脑关掉了 Windows 的「用户账户控制」，`
       + 'Windows 在这种设置下常常打不开从应用商店装的软件。请联系客服，帮你把它打开后再试。'
+  }
+  // 装着的正是已知打不开的那一版：不用再叫客户去开始菜单自己分辨是谁的问题，
+  // 直接说清楚，并给命令行版这条路（第十九批 7）。账户设置那两种更具体，先说它们。
+  if (knownIssueVersion) {
+    const waited = outcome
+      ? `等了 ${outcome.waitedSeconds} 秒，${outcome.processSeen ? 'Codex 已经启动，但它的窗口一直没出来' : 'Codex 没有启动起来'}。`
+      : '等了将近一分钟，没有等到它的窗口。'
+    return `${codexDesktopNotStartedPrefix}：${waited}${codexDesktopKnownIssueLaunchSentence(knownIssueVersion)}`
   }
   if (!outcome) {
     return `${codexDesktopNotStartedPrefix}：等了将近一分钟，没有等到它的窗口。`
@@ -3222,6 +3232,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
       throw new Error(describeCodexDesktopLaunchFailure(
         launchContext,
         waitedSeconds === undefined ? undefined : { waitedSeconds, processSeen: activationProcessId !== null },
+        resolveCodexDesktopKnownIssue([desktopApp.version, desktopApp.appVersion]),
       ))
     }
     if (cdpPort !== null) {
