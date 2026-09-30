@@ -442,22 +442,15 @@ jobs:
       - name: Install Chromium's system libraries
         # Hosted Windows/macOS runners ship the libraries Chromium links
         # against; ubuntu-latest needs them (and the CJK fonts the renderer
-        # tests lay text out with) from apt. Each attempt is bounded well
-        # under this step's cap, so a wedged mirror costs one retry on a
-        # fresh apt run and then a named failure, not the whole job.
-        timeout-minutes: 10
+        # tests lay text out with) from apt. The script bounds each attempt,
+        # clears whatever apt left running and waits out the dpkg locks
+        # before its one retry (#695 lost both attempts to a surviving
+        # apt-get); this cap is the backstop over its own budget.
+        timeout-minutes: 13
         run: |
           printf '%s\n' 'Acquire::Retries "3";' 'Acquire::http::Timeout "30";' 'Acquire::https::Timeout "30";' \
             | sudo tee /etc/apt/apt.conf.d/99ci-network-timeouts > /dev/null
-          for attempt in 1 2; do
-            if timeout --kill-after=30s 4m npx --no-install playwright install-deps chromium; then
-              exit 0
-            fi
-            echo "::warning::Chromium system library install attempt $attempt did not finish within 4 minutes"
-            sudo dpkg --configure -a || true
-          done
-          echo "::error::apt could not install Chromium's system libraries after 2 bounded attempts"
-          exit 1
+          bash scripts/ci-install-chromium-deps.sh
       - run: npm run typecheck
       - run: npm test
       # The renderer v2 browser suites are plain Chromium, so they need no
