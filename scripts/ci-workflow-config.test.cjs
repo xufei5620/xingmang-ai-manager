@@ -486,6 +486,31 @@ test('the Windows packaging job runs every smoke that has no other home', () => 
   }
 })
 
+test('real PowerShell runs once in the packaging job, never in the unit test shards', () => {
+  const commands = runSteps('windows-package')
+  const packageSteps = workflow.jobs['windows-package'].steps
+  const smoke = 'node e2e/windows-powershell-probes-smoke.mjs'
+  const index = commands.indexOf(smoke)
+  assert.notEqual(index, -1, `${smoke} must run somewhere in CI`)
+  assert.ok(index > commands.indexOf('npm run compile'), `${smoke} drives the compiled probe scripts`)
+  assert.ok(packageSteps.find((entry) => entry.run === smoke)['timeout-minutes'] > 0, `${smoke} must carry its own step bound`)
+
+  // A cold Windows PowerShell start on a busy runner kept outlasting the unit
+  // test budgets (#458, #514, #517, #523 and the probes this smoke took over).
+  // Unit tests check the generated script text instead; a test that starts
+  // powershell.exe itself belongs in the smoke above.
+  const startsPowerShell = /(?:execFileSync|execFile|spawnSync|spawn|runCommand)\(\s*(?:\{\s*executable:\s*)?(?:windowsPowerShellExecutable|resolveWindowsPowerShellExecutable)\(\)/
+  const offenders = []
+  for (const directory of ['electron', 'src']) {
+    for (const entry of fs.readdirSync(path.join(root, directory), { recursive: true })) {
+      const relative = path.join(directory, String(entry))
+      if (!/\.test\.tsx?$/.test(relative)) continue
+      if (startsPowerShell.test(fs.readFileSync(path.join(root, relative), 'utf8'))) offenders.push(relative)
+    }
+  }
+  assert.deepEqual(offenders, [])
+})
+
 // T-G5: these two were the last never-wired smokes. The first used to pin CI to
 // an expectation the product contradicted at the time — it read the zoom floor
 // off window-preferences.ts (then 0.8) while the window that actually receives
