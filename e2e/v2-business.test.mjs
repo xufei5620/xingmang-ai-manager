@@ -1099,6 +1099,20 @@ test('recharge presets show the configured bonus and the quote dialog spells it 
   }
 })
 
+test('a tier picked on the home activity card arrives preselected on the recharge page', async () => {
+  const page = await fixture('page=account&accountTab=recharge&rechargeAmount=20&topupBonus=1')
+  try {
+    await page.getByTestId('account-recharge-bonus').waitFor()
+    assert.equal(await page.getByLabel('自定义金额').inputValue(), '20')
+    assert.equal(
+      await page.getByTestId('account-recharge-bonus').textContent(),
+      '到账 20，其中活动赠送 4（多送 25%）。',
+    )
+  } finally {
+    await page.close()
+  }
+})
+
 test('changing the recharge channel invalidates the previous quote', async () => {
   const page = await fixture('page=account&multiPayment=1')
   try {

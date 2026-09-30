@@ -1124,6 +1124,7 @@ const renderFixture = (paymentReturn?: {
                   typeof BusinessPage
                 >[0]['accountTab']) ?? undefined)
           }
+          accountRechargeAmount={query.has('rechargeAmount') ? Number(query.get('rechargeAmount')) : undefined}
           paymentReturn={paymentReturn}
           navigate={(next) => record('navigate', next)}
           openLogin={() => record('login')}

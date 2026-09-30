@@ -103,6 +103,35 @@ function applyRollout(current, input) {
   return { version: plainVersion(match[1]), percent }
 }
 
+function compareVersions(left, right) {
+  const a = left.split('.').map(Number)
+  const b = right.split('.').map(Number)
+  for (let index = 0; index < 3; index += 1) {
+    if (a[index] !== b[index]) return a[index] < b[index] ? -1 : 1
+  }
+  return 0
+}
+
+/**
+ * 「0.2.12」= 低于 0.2.12 的客户端必须先更新；none = 取消。
+ *
+ * 最低版本会把人挡在门外，所以不许高于线上正在发的版本（两个平台各看一份更新清单）：
+ * 定高了，低于它的人找不到可装的新版本。客户端遇到这种情况也会放行，这里是第一道闸。
+ */
+function applyMinimumVersion(current, input, publishedVersions = []) {
+  const raw = String(input ?? '').trim()
+  if (!raw) return current
+  if (raw.toLowerCase() === 'none') return undefined
+  const version = plainVersion(raw)
+  const published = publishedVersions.map((entry) => plainVersion(entry))
+  if (published.length === 0) throw new StatusInputError('读不到线上的更新清单，不知道现在发的是哪个版本，为免把客户挡在门外，这次不设最低版本')
+  const newest = published.filter((entry) => compareVersions(version, entry) > 0)
+  if (newest.length) {
+    throw new StatusInputError(`最低版本 ${version} 比线上正在发的 ${published.join('、')} 还高：低于它的客户找不到可装的新版本。请先发布 ${version}，再设最低版本`)
+  }
+  return version
+}
+
 /**
  * maintenance: 'on' | 'off' | 'keep'。message / until 只在打开维护时有意义；
  * 关掉维护时整段删掉，下次打开从干净的一段开始。
@@ -129,6 +158,10 @@ function applyStatusChanges(current, changes, now = new Date()) {
   const rollout = applyRollout(next.rollout, changes.rollout)
   if (rollout === undefined) delete next.rollout
   else next.rollout = rollout
+  const publishedVersions = String(changes['published-versions'] ?? '').split(/\s+/).filter(Boolean)
+  const minimumVersion = applyMinimumVersion(next.minimumVersion, changes['minimum-version'], publishedVersions)
+  if (minimumVersion === undefined) delete next.minimumVersion
+  else next.minimumVersion = minimumVersion
   next.updatedAt = now.toISOString()
   const text = `${JSON.stringify(next, null, 2)}\n`
   if (Buffer.byteLength(text) > MAX_STATUS_BYTES) throw new StatusInputError('状态文件超过 16 KB，客户端会拒绝读取')
@@ -141,6 +174,7 @@ function describeStatus(status) {
   lines.push(maintenance ? `维护：打开${maintenance.message ? `，说明「${maintenance.message}」` : ''}${maintenance.until ? `，${maintenance.until} 自动结束` : ''}` : '维护：关闭')
   lines.push(Array.isArray(status.badVersions) && status.badVersions.length ? `撤回的版本：${status.badVersions.join('、')}` : '撤回的版本：无')
   lines.push(isRecord(status.rollout) ? `分批放量：${status.rollout.version} 先给 ${status.rollout.percent}% 的电脑` : '分批放量：无（新版本全部放开）')
+  lines.push(typeof status.minimumVersion === 'string' ? `最低版本：${status.minimumVersion}（更低的必须先更新，只有 0.2.11 及以后的客户端认）` : '最低版本：无')
   return lines
 }
 
@@ -159,7 +193,7 @@ function parseArguments(argv) {
 
 function main(argv) {
   const options = parseArguments(argv)
-  if (!options.current || !options.output) throw new StatusInputError('用法：service-status.cjs --current <file> --output <file> [--maintenance on|off|keep] [--message …] [--until …] [--bad-versions …] [--rollout …]')
+  if (!options.current || !options.output) throw new StatusInputError('用法：service-status.cjs --current <file> --output <file> [--maintenance on|off|keep] [--message …] [--until …] [--bad-versions …] [--rollout …] [--minimum-version …] [--published-versions …]')
   // 工作流只在线上返回 404 时删掉这个文件；文件在就必须读得懂。
   const currentText = fs.existsSync(options.current) ? fs.readFileSync(options.current, 'utf8') : null
   const next = applyStatusChanges(parseCurrentStatus(currentText), options)
@@ -176,4 +210,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { StatusInputError, applyBadVersions, applyRollout, applyStatusChanges, describeStatus, normalizeMessage, normalizeUntil, parseCurrentStatus }
+module.exports = { StatusInputError, applyBadVersions, applyMinimumVersion, applyRollout, applyStatusChanges, describeStatus, normalizeMessage, normalizeUntil, parseCurrentStatus }
