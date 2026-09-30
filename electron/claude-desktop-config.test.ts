@@ -3,7 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
-  buildClaudeDesktopGatewayConfig, createClaudeDesktopConfigService,
+  buildClaudeDesktopGatewayConfig, buildClaudeDesktopModelList, createClaudeDesktopConfigService,
   type ClaudeDesktopGatewayInput, type ClaudeDesktopConfigOptions,
 } from './claude-desktop-config'
 
@@ -217,6 +217,16 @@ describe('Claude Desktop in-app third-party configuration', () => {
     const previous = snapshot([f.metadataPath, gatewayPath])
     expect(await f.service.inspectConnection(input.baseUrl, () => true)).toMatchObject({ configured: false, configurationReady: false, configurationSource: 'other' })
     expectSnapshot(previous)
+  })
+
+  it('lists every Claude model the key can use with the selected one first', () => {
+    const available = ['gpt-6', 'claude-sonnet-5', ' claude-opus-5-5 ', 'claude-fable-5', 'claude-sonnet-5', 'gemini-3-pro']
+    expect(buildClaudeDesktopModelList(available, 'claude-fable-5')).toEqual(['claude-fable-5', 'claude-opus-5-5', 'claude-sonnet-5'])
+    expect(buildClaudeDesktopModelList(['gpt-6'], 'claude-fable-5')).toEqual(['claude-fable-5'])
+    const many = Array.from({ length: 30 }, (_, index) => `claude-model-${String(index).padStart(2, '0')}`)
+    const list = buildClaudeDesktopModelList(many, 'claude-model-29')
+    expect(list).toHaveLength(20)
+    expect(list[0]).toBe('claude-model-29')
   })
 
   it('keeps the documented flat gateway keys and exact model IDs', () => {
