@@ -173,6 +173,7 @@ import { verifyUpdatePackageDigest } from './update-package-digest'
 import { installStrictUpdateCodeSignatureVerifier } from './update-signature'
 import { createUpdaterService } from './updater'
 import { createLastRunVersionStore, hasPriorRunRecord, readBundledReleaseNotes, resolveInstalledRelease } from './installed-release'
+import { appReleaseDownloadUrl } from './app-download-page'
 import { createServiceStatusMonitor, locateServiceStatusUrl, readServiceStatus } from './service-status'
 import { resolveWindowsCliExecutionModeDetailed } from './windows-elevation'
 import { ensureDirectoryOnWindowsUserPath } from './windows-cli-shell-access'
@@ -203,6 +204,8 @@ const nonSiteExternalUrlAllowlist = [
   'https://chatgpt.com/download/',
   // Codex 桌面端装不上时错误框里的「去微软商店装」（第十九批 5）。
   codexDesktopStoreUrl,
+  // 「必须更新」那层提示里自动更新走不通时的「打开下载页」。
+  appReleaseDownloadUrl,
 ] as const
 
 // Every relay site's own destinations (marketing and keys pages) is derived

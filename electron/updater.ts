@@ -90,6 +90,11 @@ export interface UpdateSnapshot {
   currentVersionWithdrawn?: boolean
   /** 找到的「新版本」其实比本机旧：这是一次退回，不是升级，界面要换个说法。 */
   rollback?: boolean
+  /**
+   * 状态文件定了最低版本、而本机低于它时，这里是那个最低版本；否则 null。界面据此
+   * 盖一层「更新后才能继续用」（见 required-update.ts）。可选＝旧快照，不拦。
+   */
+  requiredVersion?: string | null
 }
 
 export interface UpdateCheckOptions {
@@ -235,6 +240,15 @@ export function isOlderVersion(candidate: string, current: string): boolean {
     if (left[index] !== right[index]) return left[index] < right[index]
   }
   return false
+}
+
+/**
+ * 本机低于状态文件里的最低版本时返回那个最低版本，否则 null。任何一边的版本号认不出
+ * 都当作不低于：这一项会把人挡在门外，拿不准就不拦。
+ */
+export function resolveRequiredVersion(currentVersion: string, minimumVersion: string | null | undefined): string | null {
+  if (!minimumVersion || !versionParts(minimumVersion) || !versionParts(currentVersion)) return null
+  return isOlderVersion(currentVersion, minimumVersion) ? minimumVersion : null
 }
 
 /**
@@ -500,6 +514,7 @@ export function createUpdaterService(
     serviceMaintenance: null,
     currentVersionWithdrawn: false,
     rollback: false,
+    requiredVersion: null,
   }
 
   client.autoDownload = false
@@ -524,7 +539,8 @@ export function createUpdaterService(
       currentVersion: runtime.currentVersion,
       badVersions: serviceStatus?.badVersions ?? [],
       rollout: serviceStatus?.rollout ?? null,
-      manual: manualCheck,
+      // 被要求必须更新的电脑不受分批放量限制：放量挡住它，它就只能停在要淘汰的版本上。
+      manual: manualCheck || Boolean(snapshot.requiredVersion),
     })
     if (!decision.offer) return false
     if (!defaultRolloutCheck) return true
@@ -581,7 +597,18 @@ export function createUpdaterService(
     }
     const withdrawn = isWithdrawn(runtime.currentVersion)
     if (withdrawn !== (snapshot.currentVersionWithdrawn === true)) patch.currentVersionWithdrawn = withdrawn
+    // 开发态装不了更新，拦下来只会把人困住。
+    const required = enabled && !development ? resolveRequiredVersion(runtime.currentVersion, status?.minimumVersion) : null
+    const previouslyRequired = snapshot.requiredVersion ?? null
+    if (required !== previouslyRequired) patch.requiredVersion = required
     if (Object.keys(patch).length) emit(patch)
+    // 最低版本是软件开着时才定下的：上一次检查可能已经说过「没有新版本」，界面据此不拦。
+    // 刚变成「必须更新」时补查一次，免得要等到三小时后的例行检查。
+    if (
+      required
+      && required !== previouslyRequired
+      && (snapshot.phase === 'idle' || snapshot.phase === 'not-available' || snapshot.phase === 'error')
+    ) void check().catch(() => undefined)
     if (
       !installRequested
       && isWithdrawn(snapshot.availableVersion)

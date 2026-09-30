@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events'
 import { describe, expect, it, vi } from 'vitest'
 import { updateNetworkFailureMessages } from './network-failure'
-import { createUpdaterService, decideUpdateOffer, describeUnrecognizedUpdateFailure, isOlderVersion, type UpdateClient, type UpdaterService } from './updater'
+import { createUpdaterService, decideUpdateOffer, describeUnrecognizedUpdateFailure, isOlderVersion, resolveRequiredVersion, type UpdateClient, type UpdaterService } from './updater'
 
 class FakeUpdater extends EventEmitter implements UpdateClient {
   autoDownload = true
@@ -1042,6 +1042,69 @@ describe('service status from the update feed', () => {
       serviceMaintenance: { message: null },
     })
     service.dispose()
+  })
+})
+
+describe('minimum version from the update feed', () => {
+  it('requires an update only when this version is readably older than the minimum', () => {
+    expect(resolveRequiredVersion('0.2.12', '0.2.13')).toBe('0.2.13')
+    expect(resolveRequiredVersion('0.2.13', '0.2.13')).toBeNull()
+    expect(resolveRequiredVersion('0.3.0', '0.2.13')).toBeNull()
+    expect(resolveRequiredVersion('0.2.12', null)).toBeNull()
+    expect(resolveRequiredVersion('0.2.12', 'latest')).toBeNull()
+    expect(resolveRequiredVersion('dev', '0.2.13')).toBeNull()
+  })
+
+  it('marks the snapshot and checks at once when the minimum appears after a quiet check', async () => {
+    const client = new FakeUpdater()
+    client.checkForUpdates.mockImplementation(async () => {
+      client.emit('update-not-available', updateInfo('1.0.0'))
+    })
+    const service = createUpdaterService(client, { currentVersion: '1.0.0', isPackaged: true })
+    await service.check()
+    expect(client.checkForUpdates).toHaveBeenCalledTimes(1)
+    expect(service.getState().requiredVersion).toBeNull()
+
+    client.checkForUpdates.mockImplementationOnce(async () => {
+      client.emit('update-available', updateInfo('1.1.0'))
+    })
+    service.setServiceStatus({ maintenance: null, minimumVersion: '1.1.0' })
+    service.setServiceStatus({ maintenance: null, minimumVersion: '1.1.0' })
+    await vi.waitFor(() => expect(service.getState().phase).toBe('available'))
+    expect(client.checkForUpdates).toHaveBeenCalledTimes(2)
+    expect(service.getState()).toMatchObject({ requiredVersion: '1.1.0', availableVersion: '1.1.0' })
+
+    service.setServiceStatus(null)
+    expect(service.getState().requiredVersion).toBeNull()
+    service.dispose()
+  })
+
+  it('lets a machine below the minimum past a staged rollout', async () => {
+    const client = new FakeUpdater()
+    client.isUserWithinRollout = async (info: { stagingPercentage?: number }) => (info.stagingPercentage ?? 100) >= 50
+    const offered: boolean[] = []
+    let status = { maintenance: null, rollout: { version: '1.1.0', percent: 0 }, minimumVersion: null as string | null }
+    const service = createUpdaterService(client, { currentVersion: '1.0.0', isPackaged: true, refreshServiceStatus: async () => status })
+    client.checkForUpdates.mockImplementation(async () => {
+      offered.push(await client.isUserWithinRollout!(updateInfo('1.1.0')))
+      client.emit('update-not-available', updateInfo('1.0.0'))
+    })
+    await service.check()
+    status = { ...status, minimumVersion: '1.1.0' }
+    await service.check()
+    expect(offered).toEqual([false, true])
+    service.dispose()
+  })
+
+  it('never requires an update where none can be installed', () => {
+    const development = createUpdaterService(new FakeUpdater(), { currentVersion: '1.0.0', isPackaged: false, enableDevelopmentUpdates: true })
+    development.setServiceStatus({ maintenance: null, minimumVersion: '1.1.0' })
+    expect(development.getState().requiredVersion).toBeNull()
+    development.dispose()
+    const local = createUpdaterService(new FakeUpdater(), { currentVersion: '1.0.0', isPackaged: true, localBuild: true })
+    local.setServiceStatus({ maintenance: null, minimumVersion: '1.1.0' })
+    expect(local.getState().requiredVersion).toBeNull()
+    local.dispose()
   })
 })
 
