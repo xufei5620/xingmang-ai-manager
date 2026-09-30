@@ -55,14 +55,14 @@ import { canReplaceNode, describeNodeReplaceOutcome } from './features/tools/nod
 import { StartupNotices } from './features/app/StartupNotices'
 import { RequiredUpdateGate } from './features/app/RequiredUpdateGate'
 import { MaintenanceNotice, maintenanceNoticeKey } from './features/app/MaintenanceNotice'
-import { crashReportingNotice, displayCompatNotice, displayRelaunchNotice, settingsSaveNotice, startupCheckFailure, startupCheckLogContext, startupDiagnosticsIssues, updatedNotice, vaultRecoveredNotice, withStartupNotice, withoutStartupNotice, type StartupCheckId, type StartupNotice } from './features/app/startup-notice'
+import { crashReportingNotice, displayCompatNotice, displayRelaunchNotice, settingsSaveNotice, startupCheckFailure, startupCheckLogContext, startupDiagnosticsIssues, unexpectedExitNotice, updatedNotice, vaultRecoveredNotice, withStartupNotice, withoutStartupNotice, type StartupCheckId, type StartupNotice } from './features/app/startup-notice'
 import { readLocalPreference, writeLocalPreference } from './features/app/preferences'
 import { currentWindowOs, windowOsFor } from './features/app/window-os'
 import { nextUiScale, uiScaleShortcutFor, type UiScaleShortcut } from './features/app/ui-scale-shortcut'
 import { rememberTourPending, rememberTourSeen, tourReplayPending } from './features/shell/tour-state'
 import { onboardingPreviewEnabled } from './features/app/dev-preview'
 import { deepLinkReadErrorText, supportQrFallbackText } from './features/app/fallback-messages'
-import { SupportIdentity, buildLastFailureLine, buildSupportIdentityLine, type SupportFailure } from './features/app/SupportIdentity'
+import { SupportIdentity, buildLastFailureLine, buildSupportBundle, buildSupportIdentityLine, type SupportFailure } from './features/app/SupportIdentity'
 import { KeyRewriteSkippedError, bootstrapAccountTools, skippedNamedProviders, describeAccountBootstrapFailure, describeAccountBootstrapResult, type AccountBootstrapLogLine, type AccountBootstrapMode, type AccountBootstrapProgress, type AccountBootstrapResult } from './features/tools/account-bootstrap'
 import { rewritableKeyProviders } from './features/tools/connection-check'
 import { applyManualSourceMarker, getSourceMarkerStorage } from './features/tools/source-marker'
@@ -267,9 +267,9 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     openNetworkSettings,
     dismissProxyBypassNotice,
   }), [offline, onlineCause, proxyBypassNotice, onlineChecking, recheckOnline, openNetworkSettings, dismissProxyBypassNotice])
-  // 换账号等于换了一整套上下文：首页那份「最近」缓存（60 秒）必须当场作废，
-  // 否则切过去的头一眼看到的还是上一个账号在的时候读到的列表。
-  useLayoutEffect(() => { accountEpoch.current++; cancelPendingLaunchDialogs(); setAccountReadError(null); refreshRecent() }, [scope, session.authenticated, refreshRecent])
+  // 换账号等于换了一整套上下文：首页那份「最近」和余额卡用量两份缓存（各 60 秒）
+  // 必须当场作废，否则切过去的头一眼看到的还是上一个账号在的时候读到的东西。
+  useLayoutEffect(() => { accountEpoch.current++; cancelPendingLaunchDialogs(); setAccountReadError(null); refreshRecent(); toolsApi.invalidateBalanceUsage() }, [scope, session.authenticated, refreshRecent, toolsApi])
   const siteId = accountSiteId(session)
   const relaySite = resolveRelaySite(siteId)
   const supportUrl = resolveSupportServiceUrl(session)
@@ -312,6 +312,12 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       if (settingsSave) noteStartupCheck(settingsSave)
       const displayCompat = displayCompatNotice(result.capabilities)
       if (displayCompat) noteStartupCheck(displayCompat)
+      const unexpectedExit = unexpectedExitNotice(result.capabilities)
+      if (unexpectedExit) {
+        noteStartupCheck(unexpectedExit)
+        // 帮助框的「最近一次出错」也记上这一次：他没点卡片、直接去找客服时同样带得上。
+        if (unexpectedExit.action && 'supportFailure' in unexpectedExit.action) setLastFailure(unexpectedExit.action.supportFailure)
+      }
       if (result.settings.checkUpdatesOnStartup && result.update.phase !== 'disabled') {
         void app.startupUpdate().then((checked) => { if (current) setUpdate(checked) }).catch((cause) => {
           if (current) noteStartupCheck(startupCheckFailure('update', errorMessage(cause, '更新检查没有完成')))
@@ -696,6 +702,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     else if (action === 'repair') void perform('重新写入 Key', () => rewriteAccountKeys())
     else if (action === 'replaceNode') setNodeReplace(failure?.retry ? { retry: failure.retry } : {})
     else if (action === 'openStore') void perform('打开微软商店', openCodexDesktopStore)
+    else if (action === 'useCodexCli') switchToCodexCli()
     else setHelp(true)
   }, [navigate, openCodexDesktopStore, operationError, perform, rewriteAccountKeys])
   // 引导里「改用」或安装失败时的出口：和错误框同一张表，只是没有「再试一次」
@@ -710,8 +717,16 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     else if (action === 'relogin') setAuth('login')
     else if (action === 'repair') void perform('重新写入 Key', () => rewriteAccountKeys())
     else if (action === 'openStore') void perform('打开微软商店', openCodexDesktopStore)
+    else if (action === 'useCodexCli') switchToCodexCli()
     else setHelp(true)
   }, [navigate, openCodexDesktopStore, perform, rewriteAccountKeys])
+  // Codex 桌面端这一版已知打不开时的「改用 Codex 命令行版」：回到首页 Codex 那一行；
+  // 还没装就直接开始装，装好了由客户自己点「打开」（第十九批 7）。
+  function switchToCodexCli() {
+    navigate('home')
+    if (toolbox.snapshot?.system.clis.codex.installed) toast.show('Codex 命令行版在首页，点它那一行的「打开」就能用。', 'neutral')
+    else void perform('安装工具', () => install('codex'), 'codex')
+  }
   async function install(id: ToolId, version?: string): Promise<ToolInstallOutcome> {
     const state = toolbox.snapshot
     if (!state) throw new Error('请先完成工具检测')
@@ -939,8 +954,16 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       const waitLabel = launchWaitLabel(toolbox.jobs, (key) => tools.find((tool) => tool.id === key)?.name ?? clientConnections.find((client) => client.id === key)?.name)
       const started = await toolbox.run(`launch:${id}`, waitLabel, async () => {
         if (!launchIsCurrent(epoch)) return
-        const warning = launchWarning(await toolsApi.launch(id, workspace, mode))
+        const result = await toolsApi.launch(id, workspace, mode)
+        const warning = launchWarning(result)
         if (launchIsCurrent(epoch) && warning) toast.show(warning, 'warn')
+        // 刚选的文件夹主进程已经记下，随打开结果带回来；首页按钮马上写「打开 它」，其余工具也不再问。
+        if (launchIsCurrent(epoch) && result && 'rememberedWorkspace' in result) {
+          const rememberedWorkspace = result.rememberedWorkspace ?? undefined
+          toolbox.setSnapshot((current) => current && current.config.rememberedWorkspace !== rememberedWorkspace
+            ? { ...current, config: { ...current.config, rememberedWorkspace } }
+            : current)
+        }
       })
       return launchIsCurrent(epoch) && started
     } catch (cause) {
@@ -1251,7 +1274,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
                   onContactSupport={() => setHelp(true)} onRelaunch={() => void perform('重开软件', async () => { await app.relaunch() })} />
               </Suspense>
             </div>}
-            {page === 'home' ? <Home api={toolsApi} supportsUsage={accountSupports(session, 'supportsUsage')} supportsBilling={accountSupports(session, 'supportsBilling')} snapshot={toolbox.snapshot} loading={toolbox.loading} error={toolbox.error} failures={toolbox.failures} account={session.account} balance={balance} subscription={subscription} jobs={toolbox.jobs} bootstrap={accountBootstrap?.scope === scope ? accountBootstrap : null}
+            {page === 'home' ? <Home api={toolsApi} accountScope={scope} supportsUsage={accountSupports(session, 'supportsUsage')} supportsBilling={accountSupports(session, 'supportsBilling')} snapshot={toolbox.snapshot} loading={toolbox.loading} error={toolbox.error} failures={toolbox.failures} account={session.account} balance={balance} subscription={subscription} jobs={toolbox.jobs} bootstrap={accountBootstrap?.scope === scope ? accountBootstrap : null}
               externalClients={toolbox.externalClients} externalLoading={toolbox.externalLoading} externalError={toolbox.externalError} recentRevision={recentRevision}
               onScan={() => { refreshRecent(); void toolbox.refresh(true).catch(() => undefined); void toolbox.refreshExternal(true).catch(() => undefined) }} onInstall={(id, version) => void perform('安装工具', () => install(id, version), id)} onCancelInstall={(id) => void perform('取消安装', () => cancelInstall(id))} onLaunch={requestLaunch} onLaunchInNewFolder={(id) => requestLaunch(id, undefined, 'new', true)} onConfigure={openToolConfig} onUninstall={requestUninstall} onRevert={requestRevert}
               onRewriteKey={(id) => void perform('重新写入 Key', () => rewriteAccountKeys([providerFor(id)]), id)} onKeepConfig={(id) => void perform('保留当前配置', () => keepCurrentToolConfig(id))}
@@ -1320,6 +1343,14 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     <StartupNotices notices={startupNotices} onDismiss={dismissStartupNotice}
       leading={maintenance && maintenanceKey !== dismissedMaintenance ? <MaintenanceNotice maintenance={maintenance} onDismiss={() => setDismissedMaintenance(maintenanceKey)} /> : undefined}
       onOpen={(id, action) => {
+        if ('supportFailure' in action) {
+          // 复制上了才收起卡片；没复制上就打开帮助框，那里的文字能手动选中复制。
+          const text = buildSupportBundle(supportInput, action.supportFailure)
+          const copied = navigator.clipboard?.writeText ? navigator.clipboard.writeText(text) : Promise.reject(new Error('clipboard unavailable'))
+          void copied.then(() => { dismissStartupNotice(id); toast.show('已复制，发给客服就行', 'ok') },
+            () => { setHelp(true); toast.show('没复制上，请在「帮助与客服」里手动选中文字复制。', 'warn') })
+          return
+        }
         dismissStartupNotice(id)
         if ('login' in action) setAuth('login')
         else if ('page' in action) navigate(action.page)

@@ -228,6 +228,25 @@ describe('renderer-v2 home launch button without a remembered directory (N7)', (
   })
 })
 
+// 这个工具还没有会话记录时，用上次在本软件里选过的文件夹，四个工具只问一次。
+describe('renderer-v2 home launch button with a folder picked earlier', () => {
+  function withRemembered(rememberedWorkspace: string): string {
+    const base = snapshot({ claude: cliStatus, codex: cliStatus, grok: cliStatus, gemini: cliStatus })
+    return render({}, undefined, { snapshot: { ...base, config: { ...base.config, rememberedWorkspace } } as ToolboxSnapshot })
+  }
+
+  it('names that folder on the button instead of asking again', () => {
+    const markup = withRemembered('D:\\projects\\my-project')
+    expect(markup).toMatch(/data-testid="tool-claude-primary"[^>]*>(?:<[^>]+>)*打开 my-project/)
+    expect(markup).toContain('title="在 D:\\projects\\my-project 打开"')
+  })
+
+  it('keeps the dropdown for picking another folder or starting a new one', () => {
+    const markup = withRemembered('D:\\projects\\my-project')
+    expect(markup).toContain('data-testid="tool-claude-workspaces"')
+  })
+})
+
 // 官方安装器/其他来源装的 CLI：如实标源，且不给 npm 更新按钮，改用被动提示。
 describe('renderer-v2 home native install source', () => {
   const nativeClaude = { ...cliStatus, installSource: 'native', updateAvailable: true, latestVersion: '9.9.9' }
@@ -477,6 +496,21 @@ describe('renderer-v2 home missing runtime guidance on macOS', () => {
     expect(markup).not.toContain('安装时需要管理员授权')
     // 只提醒，不拦：「安装」照样在
     expect(markup).toContain('data-testid="tool-codexDesktop-primary"')
+  })
+
+  it('says on the Codex desktop row that the installed version is known not to start', () => {
+    const base = runtimeSnapshot('windows', {})
+    const brokenDesktop = {
+      ...base,
+      platform: { ...base.platform, codexDesktop: { ...base.platform.codexDesktop, launch: true, install: 'managed' } },
+      system: {
+        ...base.system,
+        desktopApps: { codex: { installed: true, detectionFailed: false, version: '26.924.2738.0', appVersion: '26.924.2738', path: 'C:\\fixture' } },
+      },
+    } as unknown as ToolboxSnapshot
+    const markup = render({}, undefined, { snapshot: brokenDesktop })
+    expect(markup).toContain('这一版（26.924.2738.0）在一些电脑上打不开')
+    expect(markup).toContain('急用先用 Codex 命令行版')
   })
 
   it('keeps the elevation notice off macOS, where nothing here elevates', () => {

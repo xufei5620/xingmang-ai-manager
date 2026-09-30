@@ -94,7 +94,7 @@ import {
   ensureProjectInstructions,
   readProjectInstructionsTemplate,
 } from './project-instructions'
-import { classifyWorkspace, sensitiveWorkspaceLabel } from './workspace-guard'
+import { classifyWorkspace, resolveRememberedWorkspace, sensitiveWorkspaceLabel } from './workspace-guard'
 import {
   describeOverride,
   inspectWorkspaceConfigOverrides,
@@ -497,6 +497,11 @@ export interface CliLaunchResult {
    * 没有启动。界面据此不说「已打开」。缺省 = 打开了，老调用方照旧。
    */
   declined?: boolean
+  /**
+   * 打开后「上次选的文件夹」是哪个（同 AppConfigSummary.rememberedWorkspace，null = 没有）。
+   * 首页据此直接换按钮，不必为这一个字段再读一遍整份配置。缺省 = 没带，界面照旧。
+   */
+  rememberedWorkspace?: string | null
 }
 
 export type ToolUninstallResult =
@@ -542,6 +547,11 @@ export interface ConfigSavePayload {
 
 export interface AppConfigSummary {
   workspace: string
+  /**
+   * 首页「打开」在这个工具还没有会话记录时直接用的文件夹：用户上次在本软件里选过、
+   * 且不是主目录或其他敏感目录的那个（resolveRememberedWorkspace）。缺省 = 没有，照旧弹选择器。
+   */
+  rememberedWorkspace?: string
   providers: Record<ProviderId, NativeConfigSummary>
   /**
    * 账号还在恢复时读到的配置：「是不是当前账号写的」这一问还答不上来，
@@ -4949,7 +4959,10 @@ export function createSystemService(
   ): Promise<CliLaunchResult> {
     return installationQueue.enqueue(
       buildCliLaunchQueueKey(provider, workspace, mode, resumeSessionId),
-      () => launchProviderOperation(provider, workspace, mode, resumeSessionId),
+      async () => ({
+        ...await launchProviderOperation(provider, workspace, mode, resumeSessionId),
+        rememberedWorkspace: rememberedWorkspaceFor(store.read().workspace),
+      }),
     )
   }
 
@@ -5345,12 +5358,22 @@ export function createSystemService(
     return task
   }
 
+  function rememberedWorkspaceFor(workspace: string): string | null {
+    return resolveRememberedWorkspace(workspace, {
+      platform,
+      home: providerRoots.userHome,
+      defaultWorkspace: os.homedir(),
+    })
+  }
+
   function buildConfigSummary(previewOnboarding: boolean, cachedKeys: readonly StoredManagedCliKey[] = []): AppConfigSummary {
     const stored = store.read()
     const owner = serviceOptions.getExternalClientAccountId?.() ?? null
     const ccSwitchInstalled = inspectCcSwitchInstalled(providerRoots.userHome)
+    const rememberedWorkspace = rememberedWorkspaceFor(stored.workspace)
     const result = {
       workspace: stored.workspace,
+      ...(rememberedWorkspace ? { rememberedWorkspace } : {}),
       providers: Object.fromEntries(
         providerIds.map((id) => {
           const current = inspectNativeProviderConfig(id)

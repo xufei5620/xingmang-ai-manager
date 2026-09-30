@@ -6,7 +6,7 @@ import { useSharedAccountBalance } from '../app/balance-context'
 import { balanceStatusText } from '../shell/balance-status'
 import { BrandIcon, Button, Card, Dialog, Empty, ListRow, Menu, PageHead, Pill, Progress, ToolRow, useToast } from '../../ui'
 import { accountSwitchTarget, balanceTier, cliHooksNeedRepair, cliHooksWereAutoRepaired, codexNeedsRepair, readyOnceRepaired, subscriptionWarning, canUninstallTool, ccSwitchLeftoverFor, foreignKeyKind, switchAccountLabel, configDirectoryMenuItem, externalInstallHint, greeting, isExternallyManagedInstall, needsManualInstall, ownershipAwaitingAccount, presentTools, providerFor, recommendedVersionVerb, revertVersion, rollbackVersion, toolUpdateOffer, updateButtonHint, versionSubtitle, type ToolboxSnapshot, type ToolId, type ToolPresentation } from './model'
-import type { ToolboxPartitionFailure, ToolsApi } from './api'
+import type { BalanceUsage, ToolboxPartitionFailure, ToolsApi } from './api'
 import type { ToolJob } from './useToolbox'
 import type { AccountBootstrapProgress, AccountBootstrapResult } from './account-bootstrap'
 import type { PageId } from '../../registry/pages'
@@ -16,7 +16,7 @@ import { FirstRunSteps } from './FirstRun'
 import { isAccountNotEnabledFailure, keySyncFailureReason, keySyncFailureText } from './key-sync-failure'
 import { dismissFirstRun, getFirstRunStorage, readFirstRunDismissals } from './first-run-dismissal'
 import { formatRecentTime, recentResumeHint, recentSessionSubtitle } from './recent-display'
-import { latestSessionIdsByWorkspace, newWorkspaceLabel, recentWorkspaces, resumeLaunchChoice, workspaceButtonLabel, workspaceChoices, type CliLaunchChoice } from './recent-workspaces'
+import { latestSessionIdsByWorkspace, launchWorkspaces, newWorkspaceLabel, resumeLaunchChoice, workspaceButtonLabel, workspaceChoices, type CliLaunchChoice } from './recent-workspaces'
 import { errorMessage } from '../../business-common'
 import { subscriptionSummaryText, type UsableSubscription } from '../../../../electron/subscription-summary'
 import { isNetworkFailureText } from './online-resync'
@@ -34,6 +34,11 @@ export interface HomeProps {
   /** 单块读失败的原因；缺省 = 三块都读到了（旧行为）。 */
   failures?: ToolboxPartitionFailure[]
   account: AccountProfile | null
+  /**
+   * 当前账号的作用域（App 的 scope）。用量缓存按它认账号：有它时回首页先摆上一次的
+   * 用量、后台再刷新；省略 = 每次都先空着等查询回来（旧行为）。
+   */
+  accountScope?: string
   supportsUsage?: boolean
   supportsBilling?: boolean
   balance: AccountBalance | null
@@ -161,6 +166,10 @@ export function lowBalanceText(dollars: number) {
   return dollars <= 0 ? '当前账号余额是 $0，充值后 AI 工具才能用。付完马上生效，不用重新设置。' : `余额只剩 $${dollars.toFixed(2)}，充值后可继续使用。`
 }
 
+function cachedUsage(api: ToolsApi, scope: string | undefined): BalanceUsage | null {
+  return scope === undefined ? null : api.peekBalanceUsage(scope)
+}
+
 function bootstrapErrorText(error: string) {
   return isNetworkFailureText(error) ? offlineBootstrapNotice : `账号 Key 初始化没有完成：${keySyncFailureReason(error)}`
 }
@@ -174,7 +183,7 @@ export function Home(props: HomeProps) {
   const [recent, setRecent] = useState<MultiProviderSessionPage | null>(null)
   const [recentError, setRecentError] = useState('')
   const [recentAttempt, setRecentAttempt] = useState(0)
-  const [usage, setUsage] = useState<Awaited<ReturnType<ToolsApi['balanceUsage']>> | null>(null)
+  const [usage, setUsage] = useState<BalanceUsage | null>(() => cachedUsage(props.api, props.accountScope))
   const [usageError, setUsageError] = useState('')
   const [officialOpen, setOfficialOpen] = useState(false)
   const [official, setOfficial] = useState<OfficialChatGptAccount | null>(null)
@@ -186,10 +195,13 @@ export function Home(props: HomeProps) {
   useEffect(() => { active.current = true; return () => { active.current = false } }, [])
   useEffect(() => {
     let current = true
-    setUsage(null); setUsageError('')
-    if (account && props.supportsUsage !== false) void props.api.balanceUsage().then((value) => { if (current) setUsage(value) }).catch(() => { if (current) setUsageError('用量暂未读到') })
+    // 先摆上一次查到的（一分钟内就是它本身，不会再发请求），查回来再换；刷新失败时
+    // 手上已经有数就留着它，没有才说读不到。
+    const cached = cachedUsage(props.api, props.accountScope)
+    setUsage(cached); setUsageError('')
+    if (account && props.supportsUsage !== false) void props.api.balanceUsage(props.accountScope).then((value) => { if (current) setUsage(value) }).catch(() => { if (current && !cached) setUsageError('用量暂未读到') })
     return () => { current = false }
-  }, [account?.userId, props.api, props.supportsUsage])
+  }, [account?.userId, props.accountScope, props.api, props.supportsUsage])
   /**
    * 「最近」那三行的「打开文件夹」。只传会话 id，路径由主进程从记录里取并校验。
    * 失败（文件夹刚被删掉、盘符掉了）只提示一句，不动这份列表：它 60 秒后自己
@@ -300,10 +312,11 @@ export function Home(props: HomeProps) {
         : tool.configured ? 'ready' : notEnabled ? 'notEnabled' : 'unconfigured'
     // 「打开」以前每次都要重新选一遍目录。会话记录里本来就存着用过的目录，
     // 拿它当主按钮的默认值，旁边的下拉再给最近几个和原来的选择器（N7）。
+    // 这个工具还没有记录时用上次在本软件里选过的文件夹，四个工具只问一次。
     // Codex 桌面端自己管工作区，不走这条路。
     const opensWorkspace = !configUnavailable && !tool.error && tool.status.installed
       && openable && tool.id !== 'codexDesktop'
-    const workspaces = opensWorkspace ? recentWorkspaces(recent?.items ?? [], tool.provider) : []
+    const workspaces = opensWorkspace ? launchWorkspaces(recent?.items ?? [], tool.provider, snapshot?.config.rememberedWorkspace) : []
     // 正在跑的那一行按钮写的是「打开中」「安装中」，这时不给下拉，但外面那层还在，
     // 按钮列的宽度就不会跟着一起跳。
     const lastWorkspace = job ? null : workspaces[0] ?? null
@@ -327,6 +340,8 @@ export function Home(props: HomeProps) {
     // 账号还在恢复时来源同样没判定（见 ownershipAwaitingAccount），等恢复完再给。
     const switchTarget = configUnavailable || tool.error || ownershipPending ? null : accountSwitchTarget(tool)
     const blocked = tool.versionAdvice?.blockedReason ?? null
+    // 桌面端没有推荐版本可换，已知打不开的那一版只能靠这行小字说清楚（第十九批 7）。
+    const desktopKnownIssue = tool.id === 'codexDesktop' ? blocked : null
     // 原生/其他来源装的 CLI 不走本工具的 npm 通道，不给 npm 更新/回滚按钮，
     // 该更新时改用一句被动提示，避免在 npm 全局目录另装一份并存。
     const externalManaged = isExternallyManagedInstall(tool.status)
@@ -340,7 +355,7 @@ export function Home(props: HomeProps) {
       icon={lastWorkspace ? undefined : tool.status.installed && !bootstrapBusy ? ArrowUpRight : undefined}
       onClick={primary} testId={`tool-${tool.id}-primary`}>{primaryLabel}</Button>
     return <ToolRow key={tool.id} tool={tool.id} status={status}
-      detail={job?.label ?? tool.error ?? (status === 'configChanged' ? configChangedDetail : status === 'codexShadowed' ? codexShadowedDetail : status === 'cliHooksStale' ? hooksDetail : status === 'ccSwitch' && ccSwitch ? ccSwitchDetails[ccSwitch] : foreignKey && status !== 'ccSwitch' ? foreignKeyDetails[foreignKey] : status === 'ready' && hooksAutoRepaired ? cliHooksAutoRepairedDetail : elevationHint ?? undefined)}
+      detail={job?.label ?? tool.error ?? (status === 'configChanged' ? configChangedDetail : status === 'codexShadowed' ? codexShadowedDetail : status === 'cliHooksStale' ? hooksDetail : status === 'ccSwitch' && ccSwitch ? ccSwitchDetails[ccSwitch] : foreignKey && status !== 'ccSwitch' ? foreignKeyDetails[foreignKey] : status === 'ready' && hooksAutoRepaired ? cliHooksAutoRepairedDetail : elevationHint ?? desktopKnownIssue ?? undefined)}
       version={tool.status.installed ? versionSubtitle(tool) ?? '版本暂未识别' : undefined}
       model={tool.status.installed ? tool.source === 'official' ? '官方账号' : tool.model || undefined : undefined}
       progress={job?.percent}

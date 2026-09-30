@@ -142,6 +142,29 @@ export function classifyWorkspace(workspace: string, context: WorkspaceGuardCont
   return null
 }
 
+/**
+ * 首页「打开」拿来直接用、不再弹选择器的那个「上次选的文件夹」。存下来的 workspace
+ * 从没选过时是主目录（defaultAppSettings），所以主目录本身、以及任何敏感目录一律
+ * 不算记住——这些地方宁可再问一次，也不能不声不响地让 AI 在里面干活。主目录读不到
+ * 时认不出主目录，同样不给。
+ */
+export function resolveRememberedWorkspace(
+  workspace: string,
+  context: WorkspaceGuardContext & { defaultWorkspace: string },
+): string | null {
+  const impl = context.platform === 'win32' ? path.win32 : path.posix
+  if (typeof workspace !== 'string' || workspace.trim() === '' || !impl.isAbsolute(workspace)) return null
+  if (!usableHome(context.home, impl)) return null
+  const caseInsensitive = context.platform === 'win32' || context.platform === 'darwin'
+  if (
+    context.defaultWorkspace.trim() !== ''
+    && samePath(normalizeDirectory(workspace, impl), normalizeDirectory(context.defaultWorkspace, impl), caseInsensitive)
+  ) return null
+  if (classifyWorkspace(workspace, context)) return null
+  if (classifyWorkspace(workspace, { platform: context.platform, home: context.defaultWorkspace })) return null
+  return workspace
+}
+
 function isSystemFolder(name: string, platform: NodeJS.Platform): boolean {
   if (platform === 'win32') return windowsSystemFolders.some((folder) => samePath(name, folder, true))
   if (platform === 'darwin') return darwinSystemFolders.some((folder) => samePath(name, folder, true))
