@@ -184,6 +184,7 @@ import {
 import { buildStartupFailureDialog, classifyStorageFailure, dataDriveLetter } from './startup-failure'
 import { installMainWindowFrameNavigationGuard } from './platform/frame-navigation'
 import { codexDesktopStoreUrl } from './codex-desktop-install-failure'
+import { inspectUserWideCertificateTrust, trustCertificatesForUserTerminals } from './user-certificate-trust'
 
 guardProcessOutputStreams()
 
@@ -1276,6 +1277,7 @@ if (!hasSingleInstanceLock) {
           readClaudeConfigOwnership: () => systemService.getConfig(false).providers.claude.configurationOwnership ?? null,
           // 「项目文件夹里的设置」看的是用户最近一次选的项目文件夹，每次检查现读。
           workspace: systemService.readStoredConfig().workspace,
+          inspectUserWideCertificateTrust: () => inspectUserWideCertificateTrust({ executionMode: windowsCliExecutionMode }),
         })
         return latestDiagnostics
       },
@@ -1313,6 +1315,15 @@ if (!hasSingleInstanceLock) {
           ...rootedOptions.diagnosticExport,
           sensitiveValues: sensitiveKeyValues(),
         })
+      },
+      // 只在最近一次检查确实查出公司证书、且这条还没设过时才写：按钮是检查页给的，
+      // 主进程这里再对一次，不因为一条来路不明的调用就去改客户的电脑设置。
+      trustCertificatesUserWide: async () => {
+        const item = latestDiagnostics?.items.find((entry) => entry.code === 'CERTIFICATE_TRUST')
+        if (item?.details?.userWide !== 'available') throw new Error('这台电脑现在不需要这项设置，请先点「重新检测」')
+        const result = await trustCertificatesForUserTerminals({ executionMode: windowsCliExecutionMode })
+        runtimeLog.log('info', 'diagnostics', 'certificate.user-wide.trusted', '当前 Windows 账号的终端已设为信任这台电脑的证书', { result })
+        return result
       },
     }
     if (process.platform === 'win32') {
