@@ -999,7 +999,7 @@ export const tutorialTopics: readonly TutorialTopic[] = [
         expected: '工具使用正确的配置，文件任务在选定的项目内进行。',
         extra: [
           { title: statuses.tool.configChanged[0], detail: '其他程序或手工操作改过配置，当前账号的 Key 可能已不在里面。要用星芒配置就重新写入 Key；如果这是你有意做的修改，在「…」中选择「就用现在这份」。' },
-          { title: statuses.tool.codexShadowed[0], detail: '以前的 Codex 设置里有一处 Codex 自己认不出，看着连好了，打开却会报 Key 无效。点工具行上的「修好它」，或者直接点「打开」，软件会先备份原来的设置（在「备份」里能找回），再改好。Codex CLI 和 Codex 桌面端共用一份设置，会一起改。' },
+          { title: statuses.tool.codexShadowed[0], detail: '以前的 Codex 设置里有一处 Codex 自己认不出，看着连好了，打开却会报 Key 无效。登录或打开软件时一般会自动改好；没改好的，点工具行上的「修好它」，或者直接点「打开」，软件会先备份原来的设置（在「备份」里能找回），再改好。Codex CLI 和 Codex 桌面端共用一份设置，会一起改。' },
           { title: statuses.tool.cliHooksStale[0], detail: '软件写进工具里的提醒设置（做完、出错时弹通知，干活时不让电脑睡着）还指着以前的位置，常见于卸载后换了文件夹重装、挪过软件或重新装过 Node.js。工具照样能用，只是每次都多报一行错。点工具行上的「修好它」，软件会先备份原来的设置（在「备份」里能找回），再只改这几行。' },
           { title: statuses.tool.otherSiteKey[0], detail: '这个工具里的 Key 不是当前账号的，在这里打不开。点工具行上的「改用（你的账号名）」就能用，改之前会先备份原来的设置（在「备份」里能找回）。Codex CLI 和 Codex 桌面端共用一份设置，会一起改。' },
           { title: statuses.tool.otherAccountKey[0], detail: '工具能用，但认不出这把 Key 是当前账号的，用量可能算到别的账号上（常见于在同一台电脑上换了账号登录）。点「改用（你的账号名）」换成你自己的，改之前会先备份。' },

@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AppSettingsStore } from './app-settings'
 import { providerBaseUrls, providerIds } from './catalog'
 import { inspectProviderConfig, providerConfigPaths, saveProviderConfig } from './config-files'
-import { createSystemService, planRestoredConfigOwnership } from './system-service'
+import { createSystemService, permitsShadowedCodexRepair, planRestoredConfigOwnership } from './system-service'
 import { ToolConfigOwnershipStore } from './tool-config-ownership'
 
 const directories: string[] = []
@@ -370,5 +370,52 @@ describe('planRestoredConfigOwnership', () => {
 
   it('writes nothing when the restored config holds no key', () => {
     expect(planRestoredConfigOwnership({ ...base, hasApiKey: false })).toBeNull()
+  })
+})
+
+describe('automatic repair of a Codex config written under a built-in provider name', () => {
+  function shadowedFixture(key: string) {
+    const f = fixture()
+    fs.mkdirSync(f.roots.codexHome, { recursive: true })
+    fs.writeFileSync(path.join(f.roots.codexHome, 'config.toml'),
+      'model_provider = "openai"\nmodel = "fixture-model"\n[model_providers.openai]\nbase_url = "https://xm.solov.cc/v1"\n')
+    fs.writeFileSync(path.join(f.roots.codexHome, 'auth.json'), JSON.stringify({ OPENAI_API_KEY: key, auth_mode: 'apikey' }))
+    return f
+  }
+
+  it('rewrites an unowned shadowed config that already holds the account key, and records it as the account\'s', async () => {
+    const f = shadowedFixture('sk-account-key')
+    const service = f.makeService()
+    expect(service.getConfig(false).providers.codex).toMatchObject({ configurationOwnership: 'unknown', codexProviderShadowed: true })
+    await service.saveConfig({ ...f.payload, apiKey: 'sk-account-key' }, false, undefined, { source: 'account', automatic: true })
+    expect(f.current()).toMatchObject({ codexProviderName: 'XingmangAI', codexProviderShadowed: false, apiKey: 'sk-account-key', matchesRelay: true })
+    expect(f.makeService().getConfig(false).providers.codex.configurationOwnership).toBe('account')
+  })
+
+  it('still refuses when the shadowed config holds a different key', async () => {
+    const f = shadowedFixture('sk-someone-else')
+    await expect(f.makeService().saveConfig({ ...f.payload, apiKey: 'sk-account-key' }, false, undefined, { source: 'account', automatic: true })).rejects.toThrow('来源未经确认')
+    expect(f.current()).toMatchObject({ codexProviderName: 'openai', apiKey: 'sk-someone-else' })
+    expect(f.fetch).not.toHaveBeenCalled()
+  })
+})
+
+describe('permitsShadowedCodexRepair', () => {
+  const before = { hasApiKey: true, matchesRelay: true, apiKey: 'sk-account', codexProviderShadowed: true }
+
+  it('permits only an unowned shadowed Codex config on our site holding the key being written', () => {
+    expect(permitsShadowedCodexRepair('codex', before, 'unknown', ' sk-account ')).toBe(true)
+  })
+
+  it.each([
+    ['another tool', { provider: 'claude' as const }],
+    ['an edited config', { ownership: 'changed' as const }],
+    ['a manual config', { ownership: 'manual' as const }],
+    ['a config Codex reads fine', { before: { codexProviderShadowed: false } }],
+    ['another site', { before: { matchesRelay: false } }],
+    ['a different key', { key: 'sk-other' }],
+    ['an empty key', { key: '  ' }],
+  ])('refuses %s', (_label, change: { provider?: 'claude'; ownership?: 'changed' | 'manual'; before?: Partial<typeof before>; key?: string }) => {
+    expect(permitsShadowedCodexRepair(change.provider ?? 'codex', { ...before, ...change.before }, change.ownership ?? 'unknown', change.key ?? 'sk-account')).toBe(false)
   })
 })
