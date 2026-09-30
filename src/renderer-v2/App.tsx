@@ -1241,7 +1241,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
             {renderedChatScope === scope && <div className="v2-chat-host" hidden={page !== 'chat'}><Suspense fallback={pageLoading}><ChatPage bridge={native} accountScope={scope} active={page === 'chat'} onOpenAccount={(tab) => navigate('account', visibleAccountTab(tab, session) ? tab : 'overview')} /></Suspense></div>}
             {visitedPages.acceleration === scope && <div data-testid="page-acceleration" hidden={page !== 'acceleration'} inert={page !== 'acceleration'}>
               <Suspense fallback={pageLoading}>
-                <AccelerationPage connection={acceleration} scope={session.authenticated ? scope : null}
+                <AccelerationPage connection={acceleration} scope={session.authenticated ? scope : null} live={page === 'acceleration'}
                   onLogin={() => setAuth('login')} onHelp={() => setAccelerationHelp(true)} onViewLog={() => navigate('feedback')} preview={accelerationPreview}
                   onContactSupport={() => setHelp(true)} onRelaunch={() => void perform('重开软件', async () => { await app.relaunch() })} />
               </Suspense>
