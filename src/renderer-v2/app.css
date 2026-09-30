@@ -90,6 +90,13 @@
 .v2-announcement-banner { display: flex; align-items: center; gap: 10px; height: 36px; flex: none; padding: 0 14px; border-bottom: 1px solid var(--line); color: var(--text-2); background: var(--panel-2); font-size: var(--font-small-compact); }
 .v2-offline-banner { display: flex; align-items: center; gap: 10px; min-height: 36px; flex: none; padding: 4px 14px; border-bottom: 1px solid var(--line); color: var(--warn); background: var(--panel-2); font-size: var(--font-small-compact); }
 .v2-offline-banner > span { flex: 1; color: var(--text-2); }
+.v2-promo-card { display: flex; align-items: flex-start; gap: 14px; flex: none; margin: 14px 32px 0; padding: 16px 18px; border: 1px solid var(--accent); border-radius: var(--radius-card); background: var(--accent-soft); color: var(--text); }
+.v2-promo-card-icon { display: grid; place-items: center; flex: none; width: 36px; height: 36px; border-radius: 50%; background: var(--accent); color: var(--bg); }
+.v2-promo-card-body { display: grid; gap: 6px; min-width: 0; flex: 1; }
+.v2-promo-card-eyebrow { margin: 0; color: var(--accent); font-size: var(--font-small-compact); font-weight: 600; }
+.v2-promo-card-title { margin: 0; font-size: var(--font-body); color: var(--text); overflow-wrap: anywhere; }
+.v2-promo-card-text { margin: 0; color: var(--text-2); font-size: var(--font-small); line-height: 1.6; overflow-wrap: anywhere; }
+.v2-promo-card-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
 .v2-announcement-banner > span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .v2-announcement-content, .v2-announcement-rich { display: grid; gap: 10px; max-height: min(62vh, 560px); overflow: auto; padding-right: 4px; color: var(--text); line-height: 1.7; overflow-wrap: anywhere; }
 .v2-announcement-content > *, .v2-announcement-rich > * { min-width: 0; }

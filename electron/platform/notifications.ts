@@ -94,6 +94,19 @@ const chatMessages = {
   image: { title: '图片生成好了', body: '回到星芒的「聊天」查看。' },
 } as const satisfies Record<string, NotificationMessage>
 
+// 充值活动也借「公告」这一类的偏好开关，说法换成活动自己的。编号前缀由首页的活动卡片写死
+// （promo: 活动开始，promo-daily: 每天第一次提醒）。活动的标题和正文不进通知：点开回到首页看卡片。
+const promoMessages = {
+  arrival: { title: '有新的充值活动', body: '当前账号有一个充值活动，回到星芒首页看看，点「去充值」就能参加。' },
+  daily: { title: '充值活动还在进行', body: '当前账号的充值活动还没结束，回到星芒首页看看。' },
+} as const satisfies Record<string, NotificationMessage>
+
+function promoNoticeKind(eventKey: string): keyof typeof promoMessages | null {
+  if (eventKey.startsWith('promo:')) return 'arrival'
+  if (eventKey.startsWith('promo-daily:')) return 'daily'
+  return null
+}
+
 function chatNoticeKind(eventKey: string): keyof typeof chatMessages | null {
   if (eventKey.startsWith('chat:')) return 'chat'
   if (eventKey.startsWith('image:')) return 'image'
@@ -113,7 +126,7 @@ export function resolveNotificationTarget(
     case 'cliUpdate':
       return 'home'
     case 'announcement':
-      return 'announcement'
+      return promoNoticeKind(eventKey) ? 'home' : 'announcement'
     case 'spend':
       return 'usage'
     case 'test':
@@ -129,7 +142,9 @@ export function buildActivityNotificationMessage(
   if (kind === 'install' && detail && 'tool' in detail) return buildInstallNotificationMessage(detail)
   if (kind === 'spend' && detail && 'cents' in detail) return buildSpendNotificationMessage(detail)
   const chat = kind === 'task' ? chatNoticeKind(eventKey) : null
-  return chat ? chatMessages[chat] : messages[kind]
+  if (chat) return chatMessages[chat]
+  const promo = kind === 'announcement' ? promoNoticeKind(eventKey) : null
+  return promo ? promoMessages[promo] : messages[kind]
 }
 
 // 金额按美元两位小数写，同余额的写法；倍数只给整数，「大约」已经说明是估的。
