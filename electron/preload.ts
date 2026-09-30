@@ -58,6 +58,7 @@ const ipcInvokeChannels = {
   setWindowTheme: 'window:set-theme',
   getWindowCapabilities: 'window:get-capabilities',
   relaunchApp: 'window:relaunch',
+  uninstallApp: 'window:uninstall-app',
   takeExternalDeepLink: 'navigation:take-deep-link',
   replyWindowClose: 'window:close-report',
   openExternal: 'external:open',
@@ -198,6 +199,7 @@ const ipcInvokeChannels = {
   checkExternalClientConnection: 'diagnostics:check-external-connection',
   getAccountKeyOptions: 'account:get-key-options',
   clearStaleProxySettings: 'diagnostics:clear-stale-proxy',
+  trustCertificatesUserWide: 'diagnostics:trust-certificates-user-wide',
   openDiagnosticFolder: 'diagnostics:open-folder',
 } as const satisfies {
   [Method in keyof XingmangInvokeContract]: XingmangInvokeContract[Method]['channel']
@@ -297,6 +299,7 @@ const xingmangApi: XingmangApi = {
   setWindowTheme: (theme) => invoke('setWindowTheme', theme),
   getWindowCapabilities: () => invoke('getWindowCapabilities'),
   relaunchApp: () => invoke('relaunchApp'),
+  uninstallApp: (request) => invoke('uninstallApp', request),
   takeExternalDeepLink: () => invoke('takeExternalDeepLink'),
   replyWindowClose: (requestId, report) => invoke('replyWindowClose', requestId, report),
   openExternal: (url) => invoke('openExternal', url),
@@ -443,6 +446,7 @@ const xingmangApi: XingmangApi = {
   checkExternalClientConnection: (tool) => invoke('checkExternalClientConnection', tool),
   getAccountKeyOptions: (provider) => invoke('getAccountKeyOptions', provider),
   clearStaleProxySettings: () => invoke('clearStaleProxySettings'),
+  trustCertificatesUserWide: () => invoke('trustCertificatesUserWide'),
   openDiagnosticFolder: (target) => invoke('openDiagnosticFolder', target),
   onAccountSessionChanged: (listener) => subscribe('onAccountSessionChanged', listener),
   onExternalClientInstallProgress: (listener) => subscribe('onExternalClientInstallProgress', listener),

@@ -25,6 +25,8 @@ export const errors = {
   unsafeStorage: { title: '这台电脑无法安全保存密码', body: '只保留本次登录。', actions: ['知道了'] },
   noTray: { title: '关闭窗口会直接退出', body: '', actions: ['安装扩展'] },
   toolNotEnabled: { title: '这个账号还没开通这个工具', body: '原来的设置没有动。找客服开通后再试一次。', actions: ['找客服'] },
+  codexDesktopTooOld: { title: '这台电脑装不了 Codex 桌面端', body: '可以先用 Codex CLI；把 Windows 更新到最新后，再回星芒装桌面端。', actions: ['查看日志', '找客服'] },
+  codexDesktopInstallNoStore: { title: '没能装好 Codex 桌面端', body: '这台电脑没有微软商店，星芒已经直接用国内线路装了。先点「重试」；还不行就点「找客服」，把下面这句话发给客服。', actions: ['重试', '查看日志', '找客服'] },
   codexDesktopInstallFailed: { title: '没能装好 Codex 桌面端', body: '先点「重试」；还不行就点「去微软商店装」，在商店里点「获取」装好，再回星芒点「重新检测」。', actions: ['重试', '去微软商店装', '查看日志', '找客服'] },
   codexDesktopNotStarted: { title: 'Codex 没能打开', body: '先点「重试」；还不行就点「重置 Codex」，重置完会自动再打开一次；还是不行就点「找客服」，把下面这句话发给客服。', actions: ['重试', '重置 Codex', '找客服'] },
   pluginCatalogStuck: { title: '插件目录暂时改不动', body: '重启电脑后再试一次；还不行请联系客服。', actions: ['重试', '找客服'] },

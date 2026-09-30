@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { SystemSnapshot } from '../../../../electron/ipc-contract'
-import { cliInstallStageLabel, cliRuntimeBlockMessage, nodeRuntimeReady, planCliInstall, runtimeStageFailureMessage } from './runtime-readiness'
+import { platformCapabilitiesFor } from '../../../../electron/platform-capabilities'
+import { cliInstallStageLabel, cliNeedsNodeRuntime, cliRuntimeBlockMessage, nodeRuntimeReady, planCliInstall, runtimeStageFailureMessage } from './runtime-readiness'
 
 const base = { installed: true, version: '1.0.0', path: null, installDirectory: null }
 
@@ -72,11 +73,30 @@ describe('planCliInstall', () => {
     expect(planCliInstall({ runtime: failedProbe, needsPython: false, ...managed })).toEqual({ prepare: [], blocked: null })
   })
 
+  it('skips Node for a tool that does not need it, without skipping Python', () => {
+    expect(planCliInstall({ runtime: missingNode, needsNode: false, needsPython: false, ...managed })).toEqual({ prepare: [], blocked: null })
+    expect(planCliInstall({ runtime: missingNode, needsNode: false, needsPython: false, ...external })).toEqual({ prepare: [], blocked: null })
+    const bare = { ...missingNode, python: { ...missingNode.python, installed: false, version: null } }
+    expect(planCliInstall({ runtime: bare, needsNode: false, needsPython: true, ...managed })).toEqual({ prepare: ['python'], blocked: null })
+    expect(planCliInstall({ runtime: missingNode, needsNode: true, needsPython: false, ...managed })).toEqual({ prepare: ['node'], blocked: null })
+  })
+
   it('still blocks where the app cannot install the runtime, and says which step', () => {
     expect(planCliInstall({ runtime: missingNode, needsPython: false, ...external })).toEqual({ prepare: [], blocked: '请先准备 Node.js 运行环境，再安装命令行工具。' })
     expect(planCliInstall({ runtime: missingNode, needsPython: false, nodeInstall: undefined, pythonInstall: undefined }).blocked).toContain('Node.js')
     const noPython = { ...runtime({}), python: { ...runtime({}).python, installed: false } }
     expect(planCliInstall({ runtime: noPython, needsPython: true, ...external }).blocked).toContain('Python')
+  })
+})
+
+describe('cliNeedsNodeRuntime', () => {
+  it('reads the platform table and treats a missing table as needing Node', () => {
+    const windows = platformCapabilitiesFor('win32', 'x64')
+    expect(cliNeedsNodeRuntime(windows, 'grok')).toBe(false)
+    expect(cliNeedsNodeRuntime(windows, 'claude')).toBe(true)
+    expect(cliNeedsNodeRuntime(platformCapabilitiesFor('darwin', 'arm64'), 'grok')).toBe(true)
+    expect(cliNeedsNodeRuntime({}, 'grok')).toBe(true)
+    expect(cliNeedsNodeRuntime(null, 'grok')).toBe(true)
   })
 })
 

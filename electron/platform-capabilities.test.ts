@@ -15,6 +15,12 @@ describe('platformCapabilitiesFor', () => {
         gemini: 'managed',
         grok: 'managed',
       },
+      cliNeedsNodeRuntime: {
+        claude: true,
+        codex: true,
+        gemini: true,
+        grok: false,
+      },
       codexDesktop: {
         install: 'managed',
         launch: true,
@@ -38,6 +44,12 @@ describe('platformCapabilitiesFor', () => {
         codex: 'managed',
         gemini: 'managed',
         grok: 'managed',
+      },
+      cliNeedsNodeRuntime: {
+        claude: true,
+        codex: true,
+        gemini: true,
+        grok: true,
       },
       codexDesktop: {
         install: 'external',
@@ -64,6 +76,12 @@ describe('platformCapabilitiesFor', () => {
         gemini: 'managed',
         grok: 'external',
       },
+      cliNeedsNodeRuntime: {
+        claude: true,
+        codex: true,
+        gemini: true,
+        grok: true,
+      },
       codexDesktop: {
         install: 'external',
         launch: false,
@@ -85,6 +103,12 @@ describe('platformCapabilitiesFor', () => {
         codex: 'managed',
         gemini: 'managed',
         grok: 'external',
+      },
+      cliNeedsNodeRuntime: {
+        claude: true,
+        codex: true,
+        gemini: true,
+        grok: true,
       },
       codexDesktop: {
         install: 'external',
