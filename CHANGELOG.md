@@ -18,6 +18,12 @@
 
 ## 0.2.11 - 2026-09-29
 
+- Windows 的 renderer-v2 浏览器分片拆成两片：`test:v2:browser:fixture`（共用默认 Vite 依赖缓存的
+  browser-check 与最后的 app-check.mjs，顺序不变，上限仍 18 分钟）和 `test:v2:browser:e2e`（两份
+  自带 cacheDir 的 e2e 套件，上限 10 分钟）。原来整片在 #712 上跑了 17 分 18 秒，在 #714 上两次
+  撞满 18 分钟（超时前用例全过）。不跳过测试、不调上限；`ci-workflow-config.test.cjs` 钉住两片之和
+  等于 `test:v2:browser`、fixture 片保持原顺序且 app-check 最后、离开的套件必须自带 cacheDir。
+
 - 接手 #667：新增 `xingmang-image` stdio MCP（`bundled-skills/xingmang-ai/scripts/mcp-server.mjs`），支持文生图与改图（`/v1/images/edits`，原图只收绝对路径下的单链接 PNG/JPEG/WebP，按内容判定类型），先用 Codex Key、被拒再换生图分组 Key，上游报错里的 Key 打码。
 - 登记改为直接写各家配置（`config-files.ts` 的 `syncXingmangImageMcpConfigs`），不再依赖 `codex mcp add`：Codex/Grok 写 `config.toml`（`tool_timeout_sec = 300`，Codex 只对这一个工具写 `approval_mode = "approve"`），Claude Code 写 `~/.claude.json` 并在 `settings.json` 的 `permissions.allow` 只加这一个工具，Gemini 写 `settings.json`（`timeout` + `trust`）。只写已存在的配置目录；同名但不是本软件写的条目不动；Node 换了位置会自动改指。
 - 修掉 #667 原提交里 `test:scripts` 丢掉的 `publish-dl-landing` 与 `dl-landing-install-guide` 两个测试，以及只在 Windows 上成立的路径断言。
