@@ -121,7 +121,10 @@ import { buildFeedbackEnvironmentLines, buildFeedbackRuntimeLines, pickFeedbackR
 import { managedCliRoot } from './managed-cli-paths'
 import { buildFeedbackSelfCheckLines, type FeedbackConnectionRecord } from './feedback-self-check'
 import { rootedMainServiceOptions } from './main-service-options'
-import { buildMacosInstallLocationNotice, inspectMacosInstallLocation } from './macos-install-location'
+import {
+  buildMacosInstallLocationNotice, buildMacosMoveFailureNotice, inspectMacosInstallLocation,
+  moveMacosAppToApplications, type MacosInstallLocationChoice, type MacosInstallLocationNotice,
+} from './macos-install-location'
 import { privacyPolicyUrl, relaySiteExternalUrls, relaySites, resolveRelaySite, sub2ApiSupportServiceUrl, supportServiceUrl, userAgreementUrl } from './relay-sites'
 import { createPaymentWindowController } from './payment-window'
 import { createPaymentOrderStatusReader } from './payment-status-reader'
@@ -137,7 +140,9 @@ import {
 import { buildConnectionProbe, runConnectionCheck } from './connection-check'
 import { createCodexResponsesProbeService } from './codex-responses-probe'
 import type { ExternalToolId } from './external-tool-config'
-import { registerIpcHandlers, type AppWindowMode } from './ipc'
+import { registerIpcHandlers, type AppWindowMode, type IpcRegistrationOptions } from './ipc'
+import { removeMacLoginItem, removeMacManagedTools, runMacUninstall } from './macos-uninstall'
+import { clearLoginAndChatRecords, removeCliHooksFromConfigs } from './uninstall-cleanup'
 import {
   installXingmangAiSkillFiles,
   resolveXingmangAiBundledSkillRoot,
@@ -147,7 +152,7 @@ import { cliHookEventsDirectory, resolveCliHookScriptPath } from './cli-hooks'
 import { createCliHookEventMonitor } from './cli-hook-events'
 import { createCliKeepAwake } from './cli-keep-awake'
 import { resolveProjectInstructionsTemplatePath } from './project-instructions'
-import { ipcEventChannels, type AccountBalance, type AccountSubscriptionSelf, type SettingsSaveIssue, type UnexpectedExitNotice } from './ipc-contract'
+import { ipcEventChannels, type AccountBalance, type AccountSubscriptionSelf, type AppUninstallRequest, type SettingsSaveIssue, type UnexpectedExitNotice } from './ipc-contract'
 import {
   shouldUseManualUninstallVisualFixture,
   withManualUninstallVisualFixture,
@@ -174,6 +179,7 @@ import { verifyUpdatePackageDigest } from './update-package-digest'
 import { installStrictUpdateCodeSignatureVerifier } from './update-signature'
 import { createUpdaterService } from './updater'
 import { createLastRunVersionStore, hasPriorRunRecord, readBundledReleaseNotes, resolveInstalledRelease } from './installed-release'
+import { appReleaseDownloadUrl } from './app-download-page'
 import { createServiceStatusMonitor, locateServiceStatusUrl, readServiceStatus } from './service-status'
 import { resolveWindowsCliExecutionModeDetailed } from './windows-elevation'
 import { ensureDirectoryOnWindowsUserPath } from './windows-cli-shell-access'
@@ -185,6 +191,7 @@ import {
 import { buildStartupFailureDialog, classifyStorageFailure, dataDriveLetter } from './startup-failure'
 import { installMainWindowFrameNavigationGuard } from './platform/frame-navigation'
 import { codexDesktopStoreUrl } from './codex-desktop-install-failure'
+import { inspectUserWideCertificateTrust, trustCertificatesForUserTerminals } from './user-certificate-trust'
 
 guardProcessOutputStreams()
 
@@ -204,6 +211,8 @@ const nonSiteExternalUrlAllowlist = [
   'https://chatgpt.com/download/',
   // Codex 桌面端装不上时错误框里的「去微软商店装」（第十九批 5）。
   codexDesktopStoreUrl,
+  // 「必须更新」那层提示里自动更新走不通时的「打开下载页」。
+  appReleaseDownloadUrl,
 ] as const
 
 // Every relay site's own destinations (marketing and keys pages) is derived
@@ -606,6 +615,20 @@ if (app.isPackaged && hasDisallowedPackagedDebugSwitch(process.argv)) {
   process.exit(1)
 }
 
+// cancelId 指向的按钮也在 choices 里，所以按 Esc 和点那颗按钮走同一条路。
+function askMacosInstallLocation(notice: MacosInstallLocationNotice): MacosInstallLocationChoice {
+  const answer = dialog.showMessageBoxSync({
+    type: 'warning',
+    title: notice.title,
+    message: notice.message,
+    detail: notice.detail,
+    buttons: [...notice.buttons],
+    defaultId: notice.defaultId,
+    cancelId: notice.cancelId,
+  })
+  return notice.choices[answer] ?? 'quit'
+}
+
 /** Resolved once, up front, so recording a failure never depends on a step that
  *  might itself be the thing that failed. */
 function startupLogLocation(): { userDataDirectory: string | null } {
@@ -898,6 +921,21 @@ if (!hasSingleInstanceLock) {
       packaged: app.isPackaged,
     })
     markRuntimeLoggingActive()
+    // Hooked the moment the log exists rather than after the startup dialogs:
+    // from here on the module-level monitor stops writing the startup log, so
+    // anything thrown in between would otherwise reach neither file.
+    const onUncaughtException = (error: Error) => {
+      runtimeLog.exception('main', 'uncaught.exception', error)
+    }
+    const onUnhandledRejection = (reason: unknown) => {
+      runtimeLog.exception('main', 'unhandled.rejection', reason)
+      crashReporter.report({ mechanism: 'unhandledRejection', source: 'main', error: reason })
+    }
+    reportCrashSendFailure = (error) => {
+      runtimeLog.exception('telemetry', 'crash-report.send.failed', error)
+    }
+    process.on('uncaughtExceptionMonitor', onUncaughtException)
+    process.on('unhandledRejection', onUnhandledRejection)
     // 上次是不是意外退出的：读完就记成「说过了」，这次启动里一直挂在窗口能力上，界面据此说一句。
     let unexpectedExit: UnexpectedExitNotice | null = null
     try {
@@ -963,31 +1001,33 @@ if (!hasSingleInstanceLock) {
         location: installLocation,
         appPath: app.getAppPath(),
       })
-      const answer = dialog.showMessageBoxSync({
-        type: 'warning',
-        title: notice.title,
-        message: notice.message,
-        detail: notice.detail,
-        buttons: [...notice.buttons],
-        defaultId: notice.defaultId,
-        cancelId: notice.cancelId,
-      })
-      if (answer === notice.cancelId) {
+      const choice = askMacosInstallLocation(notice)
+      let proceed = choice === 'continue'
+      if (choice === 'move') {
+        const outcome = moveMacosAppToApplications((options) => app.moveToApplicationsFolder(options))
+        if (outcome.kind === 'moved') {
+          // Electron 已经复制好，正在退出并从「应用程序」里重新打开，这一份不能再往下启动。
+          runtimeLog.log('info', 'main', 'app.install-location.moved', '已移到「应用程序」，正在重新打开', {
+            location: installLocation,
+            conflict: outcome.conflict,
+          })
+          return
+        }
+        if (outcome.kind === 'failed') {
+          runtimeLog.exception('main', 'app.install-location.move-failed', outcome.error)
+        } else {
+          runtimeLog.log('warn', 'main', 'app.install-location.move-cancelled', '移到「应用程序」时取消了授权', {
+            conflict: outcome.conflict,
+          })
+        }
+        proceed = askMacosInstallLocation(buildMacosMoveFailureNotice(installLocation, outcome)) === 'continue'
+      }
+      if (!proceed) {
         runtimeLog.log('info', 'main', 'app.install-location.quit', '用户选择退出以移动程序位置')
         app.quit()
         return
       }
       runtimeLog.log('warn', 'main', 'app.install-location.continued', '用户选择从当前位置继续运行')
-    }
-    const onUncaughtException = (error: Error) => {
-      runtimeLog.exception('main', 'uncaught.exception', error)
-    }
-    const onUnhandledRejection = (reason: unknown) => {
-      runtimeLog.exception('main', 'unhandled.rejection', reason)
-      crashReporter.report({ mechanism: 'unhandledRejection', source: 'main', error: reason })
-    }
-    reportCrashSendFailure = (error) => {
-      runtimeLog.exception('telemetry', 'crash-report.send.failed', error)
     }
     if (process.env[crashReportSelfTestEnvironmentKey] === '1') {
       runtimeLog.log('warn', 'telemetry', 'crash-report.self-test', '崩溃上报自检已触发')
@@ -998,8 +1038,6 @@ if (!hasSingleInstanceLock) {
         context: '由 XINGMANG_CRASH_REPORT_TEST=1 触发',
       })
     }
-    process.on('uncaughtExceptionMonitor', onUncaughtException)
-    process.on('unhandledRejection', onUnhandledRejection)
 
     // Overlap the migration's asynchronous marker write with the Windows probe.
     // Both operations still complete before services and the window are created.
@@ -1290,6 +1328,7 @@ if (!hasSingleInstanceLock) {
           readClaudeConfigOwnership: () => systemService.getConfig(false).providers.claude.configurationOwnership ?? null,
           // 「项目文件夹里的设置」看的是用户最近一次选的项目文件夹，每次检查现读。
           workspace: systemService.readStoredConfig().workspace,
+          inspectUserWideCertificateTrust: () => inspectUserWideCertificateTrust({ executionMode: windowsCliExecutionMode }),
         })
         return latestDiagnostics
       },
@@ -1327,6 +1366,15 @@ if (!hasSingleInstanceLock) {
           ...rootedOptions.diagnosticExport,
           sensitiveValues: sensitiveKeyValues(),
         })
+      },
+      // 只在最近一次检查确实查出公司证书、且这条还没设过时才写：按钮是检查页给的，
+      // 主进程这里再对一次，不因为一条来路不明的调用就去改客户的电脑设置。
+      trustCertificatesUserWide: async () => {
+        const item = latestDiagnostics?.items.find((entry) => entry.code === 'CERTIFICATE_TRUST')
+        if (item?.details?.userWide !== 'available') throw new Error('这台电脑现在不需要这项设置，请先点「重新检测」')
+        const result = await trustCertificatesForUserTerminals({ executionMode: windowsCliExecutionMode })
+        runtimeLog.log('info', 'diagnostics', 'certificate.user-wide.trusted', '当前 Windows 账号的终端已设为信任这台电脑的证书', { result })
+        return result
       },
     }
     if (process.platform === 'win32') {
@@ -1370,6 +1418,7 @@ if (!hasSingleInstanceLock) {
     let updateQuitHandoff: { prepare(): Promise<void> | undefined; abort(): void } | null = null
     // 退出流程（窗口生命周期）在 IPC 注册之后才建好，先占个位。
     let requestRelaunch: (() => Promise<boolean>) | null = null
+    let requestMacUninstall: NonNullable<IpcRegistrationOptions['uninstallApp']> | null = null
     // 自动更新的落盘记录（见 auto-update-install.ts）。要在更新服务之前读好：下载完成
     // 那一刻就要用它认出「上次自动装过却没装上」的版本。
     const pendingUpdateStore = createPendingUpdateStore({ filePath: path.join(managerDataDirectory, 'pending-update.json') })
@@ -1412,6 +1461,7 @@ if (!hasSingleInstanceLock) {
         : undefined,
       prepareInstallQuit: () => updateQuitHandoff?.prepare(),
       installQuitAborted: () => { updateQuitHandoff?.abort() },
+      reportBackgroundError: (error) => runtimeLog.exception('updater', 'download.background.failed', error),
       retryWithoutProxy: async () => {
         await autoUpdater.netSession.setProxy({ mode: 'direct' })
       },
@@ -1726,6 +1776,10 @@ if (!hasSingleInstanceLock) {
       const realm = accounts.getSiteId() === 'solov-api' ? 'api-account' : 'xm-account'
       return `${realm}:${state.authenticated && state.account ? state.account.userId : 'guest'}`
     }
+    runtimeLog.attachAccountDescriber(() => {
+      const state = accountService.getSessionState()
+      return { authenticated: state.authenticated && Boolean(state.account), userId: state.account?.userId }
+    })
     readExternalClientAccountId = () => {
       const state = accountService.getSessionState()
       return state.authenticated && state.account ? JSON.stringify([accounts.getSiteId(), state.account.userId]) : null
@@ -2547,6 +2601,13 @@ if (!hasSingleInstanceLock) {
         ...(unexpectedExit ? { unexpectedExit } : {}),
       }),
       relaunchApp: () => requestRelaunch?.() ?? Promise.resolve(false),
+      ...(process.platform === 'darwin'
+        ? {
+            uninstallApp: (request: AppUninstallRequest, backupCliConfigs: () => Promise<void>) => (
+              requestMacUninstall?.(request, backupCliConfigs) ?? Promise.reject(new Error('星芒还没准备好，稍后再试'))
+            ),
+          }
+        : {}),
       bypassBrokenProxy: () => proxyBypass.tryBypass(),
       // 固定地址、不经渲染层：系统设置页和系统自己检测门户用的那个网址。普通权限
       // 运行时直接交给系统打开（同 ms-windows-store 那一条）；按管理员身份处理时不替
@@ -2863,6 +2924,46 @@ if (!hasSingleInstanceLock) {
     if (simulateUnexpectedExit) {
       runtimeLog.log('warn', 'main', 'app.unexpected-exit.simulate', '已设置模拟意外退出，30 秒后触发')
       setTimeout(() => { throw new Error('模拟的主进程意外退出（XINGMANG_SIMULATE_MAIN_CRASH）') }, 30_000).unref()
+    }
+    // Mac 上「卸载星芒」：退出前的清理和「重启并安装」同一条（断开加速、还原系统代理、
+    // 聊天记录写完盘），在挪程序之前跑；跑完才清登录记录，否则会被写回来。
+    requestMacUninstall = (request, backupCliConfigs) => {
+      const report = (line: string) => runtimeLog.log('warn', 'maintenance', 'app.uninstall.step-failed', line)
+      return runMacUninstall({
+        platform: process.platform,
+        packaged: app.isPackaged,
+        appPath: app.getAppPath(),
+        executablePath: process.execPath,
+        installationBusy: () => {
+          const queue = systemService.inspectInstallationQueue()
+          return queue.activeKey !== null || queue.pendingKeys.length > 0
+        },
+        backupCliConfigs,
+        removeCliHooks: () => removeCliHooksFromConfigs(rootedOptions.system.providerRoots, report),
+        removeLoginItem: () => removeMacLoginItem(app),
+        removeManagedTools: () => removeMacManagedTools(undefined, report),
+        trashItem: (target) => shell.trashItem(target),
+        prepareQuit: async () => { await lifecycle.prepareUpdateQuit() },
+        abortQuit: () => { lifecycle.abortUpdateQuit() },
+        clearLoginRecords: async () => {
+          // 界面的本地存储由 Chromium 开着，先让它自己清，免得退出时把刚删的写回来。
+          await session.defaultSession.clearStorageData({ storages: ['localstorage'] }).catch(() => undefined)
+          return clearLoginAndChatRecords(managerDataDirectory, report)
+        },
+        quit: () => {
+          relaunchRequested = false
+          const forceExitTimer = setTimeout(() => app.exit(0), 2_000)
+          forceExitTimer.unref()
+          try { canvasController.dispose() } catch (cause) { runtimeLog.exception('canvas', 'shutdown.failed', cause) }
+          try { paymentWindow.destroy() } catch (cause) { runtimeLog.exception('payment', 'shutdown.failed', cause) }
+          for (const window of BrowserWindow.getAllWindows()) {
+            if (!window.isDestroyed()) window.webContents.on('will-prevent-unload', (event) => event.preventDefault())
+          }
+          // 先让这次调用的结果回到界面，再退。
+          setTimeout(() => app.quit(), 0)
+        },
+        report,
+      }, request)
     }
     // 更新页「重启并安装」和 Mac 下载完自动安装都会让安装器发起退出：先把退出前
     // 的清理跑完（断开加速、还原系统代理，安装器会结束安装目录下的所有进程），

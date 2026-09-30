@@ -5,6 +5,8 @@ import type { ExternalDeepLink } from './external-deep-links'
 import type { SavedAccountSummary } from './saved-accounts'
 import type { StaleProxyClearResult } from './stale-proxy-environment'
 export type { StaleProxyClearResult } from './stale-proxy-environment'
+import type { UserWideCertificateTrustResult } from './user-certificate-trust'
+export type { UserWideCertificateTrustResult } from './user-certificate-trust'
 import type {
   ConfigBackupPreview as StoredConfigBackupPreview,
   ConfigBackupReason,
@@ -219,6 +221,20 @@ export interface UnexpectedExitNotice {
   relaunched: boolean
   /** 最近几次退出，时间为毫秒时间戳，error 已在主进程打码。 */
   exits: Array<{ at: number; error: string }>
+}
+/** 设置里「卸载星芒」（目前只有 Mac）。两项都默认不勾。 */
+export interface AppUninstallRequest {
+  /** 同时清除登录记录和聊天记录（和 Windows 卸载页那一项同一口径）。 */
+  clearLoginRecords: boolean
+  /** 连同星芒替你装的命令行工具一起删。 */
+  removeManagedTools: boolean
+}
+export type AppUninstallLeftover = 'cli-hooks' | 'login-item' | 'tools' | 'records'
+export interface AppUninstallResult {
+  /** true = 已移到废纸篓、正在退出；false = 程序还在，界面提示他自己拖。 */
+  trashed: boolean
+  /** 没收拾干净的几样，界面据此多说一句。 */
+  leftovers: AppUninstallLeftover[]
 }
 export interface SettingsSaveIssue {
   kind: 'disk-full' | 'blocked' | 'other'
@@ -812,6 +828,8 @@ export interface XingmangInvokeContract {
   getWindowCapabilities: IpcInvokeDefinition<'window:get-capabilities', [], WindowCapabilities>
   /** 重开软件（显示方式要重开才生效）。true = 已经开始退出；用户在退出确认里点了返回则是 false。 */
   relaunchApp: IpcInvokeDefinition<'window:relaunch', [], boolean>
+  /** Mac 上卸载星芒：收回写进工具里的提醒设置，再把星芒移到废纸篓并退出。 */
+  uninstallApp: IpcInvokeDefinition<'window:uninstall-app', [request: AppUninstallRequest], AppUninstallResult>
   takeExternalDeepLink: IpcInvokeDefinition<'navigation:take-deep-link', [], ExternalDeepLink | null>
   replyWindowClose: IpcInvokeDefinition<'window:close-report', [requestId: string, report: WindowCloseReport], boolean>
   openExternal: IpcInvokeDefinition<'external:open', [url: string], boolean>
@@ -1144,6 +1162,12 @@ export interface XingmangInvokeContract {
    */
   clearStaleProxySettings: IpcInvokeDefinition<'diagnostics:clear-stale-proxy', [], StaleProxyClearResult>
   /**
+   * 检查页「让这台电脑上所有终端都信任」：把 Node.js 也信任这台电脑证书库的那一条
+   * 写进当前 Windows 账号的设置。没有入参；只在最近一次检查查出公司证书、且这条还没
+   * 设过时主进程才写（user-certificate-trust.ts）。
+   */
+  trustCertificatesUserWide: IpcInvokeDefinition<'diagnostics:trust-certificates-user-wide', [], UserWideCertificateTrustResult>
+  /**
    * 检查页「打开文件夹」：「文档」不让写时，新项目或 AI 作品改放的那个文件夹。
    * 入参只是「哪一个」，路径由主进程自己算（I5）。返回 false = 没打开。
    */
@@ -1250,6 +1274,7 @@ export const ipcInvokeChannels = {
   setWindowTheme: 'window:set-theme',
   getWindowCapabilities: 'window:get-capabilities',
   relaunchApp: 'window:relaunch',
+  uninstallApp: 'window:uninstall-app',
   takeExternalDeepLink: 'navigation:take-deep-link',
   replyWindowClose: 'window:close-report',
   openExternal: 'external:open',
@@ -1390,6 +1415,7 @@ export const ipcInvokeChannels = {
   checkExternalClientConnection: 'diagnostics:check-external-connection',
   getAccountKeyOptions: 'account:get-key-options',
   clearStaleProxySettings: 'diagnostics:clear-stale-proxy',
+  trustCertificatesUserWide: 'diagnostics:trust-certificates-user-wide',
   openDiagnosticFolder: 'diagnostics:open-folder',
 } as const satisfies {
   [Method in keyof XingmangInvokeContract]: XingmangInvokeContract[Method]['channel']

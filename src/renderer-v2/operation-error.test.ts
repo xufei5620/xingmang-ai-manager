@@ -17,6 +17,8 @@ const catalogCoverage: Record<OperationErrorKey, { sample: string } | { unreacha
   codexDesktopNotStarted: { sample: 'Codex 桌面端没有打开：等了将近一分钟，没有等到它的窗口。先关掉所有 Codex 窗口，再点「重试」；还是不行，就在开始菜单里搜「Codex」直接点开，也打不开的话请联系客服。' },
   // 主进程 codex-desktop-install-failure.ts 的 buildCodexDesktopInstallFailureMessage。
   codexDesktopInstallFailed: { sample: 'Codex 桌面端没装上：微软商店这次没装上，国内下载线路这会儿连不上。' },
+  codexDesktopInstallNoStore: { sample: 'Codex 桌面端没装上：这台电脑没有微软商店，国内下载线路这会儿连不上。' },
+  codexDesktopTooOld: { sample: 'Codex 桌面端没装上：微软商店这次没装上，这台电脑的 Windows 版本太旧，装不了 Codex 桌面端。可以先用 Codex CLI，或者把 Windows 更新到最新。' },
   keyInvalid: { sample: '模型查询失败，服务返回 403：令牌已失效' },
   noBalance: { sample: '账号余额或 API Key 额度不足，请充值后重试' },
   tooManyRequests: { sample: '星芒服务返回 429 Too Many Requests' },
@@ -180,6 +182,7 @@ describe('renderer-v2 operation error classification', () => {
   it('gives every Codex Desktop install failure a retry, the Microsoft Store, the log and support', () => {
     // 这几句里有「连不上」「Windows 拒绝了这次安装」，不能被 timeout、permission 抢走。
     for (const reason of Object.keys(codexDesktopInstallFailureReasons) as CodexDesktopInstallFailureReason[]) {
+      if (reason === 'unsupported') continue
       for (const storeTried of [true, false]) {
         const message = buildCodexDesktopInstallFailureMessage(reason, { storeTried, updating: storeTried })
         const hint = presentOperationError(message)
@@ -193,6 +196,27 @@ describe('renderer-v2 operation error classification', () => {
         // 「查看日志」要落到运行日志：原话（SHA-256、退出码）只记在那里。
         expect(operationLogPage({ message, tool: 'codexDesktop' })).toBe('feedback')
       }
+    }
+  })
+
+  it('offers no Microsoft Store button on a computer that has no store', () => {
+    for (const reason of Object.keys(codexDesktopInstallFailureReasons) as CodexDesktopInstallFailureReason[]) {
+      if (reason === 'unsupported') continue
+      const message = buildCodexDesktopInstallFailureMessage(reason, { storeTried: false, storeUnavailable: true, updating: false })
+      const hint = presentOperationError(message)
+      expect([message, hint?.key]).toEqual([message, 'codexDesktopInstallNoStore'])
+      expect(hint?.actions.map((action) => action.id)).toEqual(['retry', 'log', 'support'])
+      expect(JSON.stringify(hint)).not.toContain('去微软商店装')
+      expect(operationLogPage({ message, tool: 'codexDesktop' })).toBe('feedback')
+    }
+  })
+
+  it('offers neither a retry nor the store when Windows is too old for Codex Desktop', () => {
+    for (const [storeTried, storeUnavailable] of [[true, false], [false, true], [false, false]]) {
+      const message = buildCodexDesktopInstallFailureMessage('unsupported', { storeTried, storeUnavailable, updating: false })
+      const hint = presentOperationError(message)
+      expect([message, hint?.key]).toEqual([message, 'codexDesktopTooOld'])
+      expect(hint?.actions.map((action) => action.id)).toEqual(['log', 'support'])
     }
   })
 

@@ -193,6 +193,57 @@ describe('git-runtime-install', () => {
     expect(path.basename(deps.plans[0].executable)).toMatch(/^official-/)
   })
 
+  it('picks a dropped mirror download up where it stopped instead of switching sources', async () => {
+    const body = installerBytes(4)
+    const cut = 5 * 1024 * 1024
+    const [mirror] = gitRuntimeDownloadSources('mainland-china', 'x64')
+    const ranges: Array<string | null> = []
+    const fetch = vi.fn(async (url: string, init?: RequestInit) => {
+      const range = new Headers(init?.headers).get('range')
+      ranges.push(range)
+      if (range) {
+        const response = new Response(new Uint8Array(body.subarray(cut)), {
+          status: 206,
+          headers: { 'content-range': `bytes ${cut}-${body.byteLength - 1}/${body.byteLength}` },
+        })
+        Object.defineProperty(response, 'url', { value: url })
+        return response
+      }
+      let sent = false
+      const response = new Response(new ReadableStream<Uint8Array>({
+        pull(controller) {
+          if (sent) {
+            controller.error(new TypeError('fetch failed'))
+            return
+          }
+          sent = true
+          controller.enqueue(new Uint8Array(body.subarray(0, cut)))
+        },
+      }), { status: 200, headers: { 'content-length': String(body.byteLength), etag: '"git"' } })
+      Object.defineProperty(response, 'url', { value: url })
+      return response
+    })
+    const digest = createHash('sha256').update(body).digest('hex')
+    const deps = dependencies({
+      fetch: fetch as unknown as typeof globalThis.fetch,
+      expectedSha256: () => digest,
+      waitBeforeResume: async () => undefined,
+    })
+    const events: GitRuntimeInstallProgress[] = []
+
+    const result = await installGitRuntimeWith('x64', {
+      networkRegion: 'mainland-china',
+      temporaryDirectoryMode: 'same-user',
+      environment: userEnvironment,
+      onProgress: (event) => events.push(event),
+    }, deps)
+
+    expect(result.source).toBe('npmmirror')
+    expect(fetch.mock.calls.every(([url]) => url === mirror.url)).toBe(true)
+    expect(ranges).toEqual([null, `bytes=${cut}-`])
+    expect(events.some((event) => event.message === '网络断了一下，正在从国内镜像接着下载 Git')).toBe(true)
+  })
+
   it('reports both sources in plain words when neither works', async () => {
     const fetch = vi.fn(async (url: string) => streamResponse(Buffer.alloc(0), url, 404))
     const deps = dependencies({ fetch: fetch as unknown as typeof globalThis.fetch })
