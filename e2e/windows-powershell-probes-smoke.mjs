@@ -37,6 +37,7 @@ const {
   buildWindowsStoreAppLaunchContextScript,
   buildWindowsStoreAvailabilityScript,
   inspectWindowsStoreAppLaunchContext,
+  inspectWindowsStoreAvailability,
   parseWindowsStoreAppLaunchContext,
   parseWindowsStoreAvailability,
 } = compiled('windows-store-app-launch')
@@ -190,23 +191,31 @@ checks.push(['store availability probe answers without throwing', async () => {
   console.log(`info store availability on this runner: ${available}`)
 }])
 
-// Not a check: evidence for why the standalone probe used to run out its whole
-// budget on CI (the old unit test failed there with an empty SID at ~90s) while
-// the same statements inside the Codex merged probe answer in about a second.
-// The same script is run once more under the environment the app gives it, and
-// once through the shipped function itself; both only print what they saw.
-async function reportStoreAppLaunchProductionPath() {
-  const trustedStartedAt = Date.now()
+// The shipped functions, in the environment the app gives them. Under
+// trustedCommandEnvironment() command autoloading used to cost about 22 s per
+// process on this runner (#714), so the account probe ran past its own 10 s
+// limit and the home screen silently lost the "this account cannot open store
+// apps" warning. The account probe is a real check at its shipped limit; the
+// other two only print their timing. The Codex merged probe still took 23 s of
+// its 24 s budget here even with the common modules imported up front, so it
+// was left unchanged; its number is printed for that follow-up.
+checks.push(['store app launch probe answers inside its own limit under the trusted environment', async () => {
+  const context = await inspectWindowsStoreAppLaunchContext()
+  assert.match(context.userSid ?? '', /^S-1-5-/)
+}])
+
+async function reportTrustedEnvironmentTimings() {
+  const availabilityStartedAt = Date.now()
+  const available = await inspectWindowsStoreAvailability({ timeoutMs: probeBudgetMs })
+  console.log(`info inspectWindowsStoreAvailability under the trusted environment: ${available} (${Date.now() - availabilityStartedAt}ms)`)
+  const combinedStartedAt = Date.now()
   try {
-    const output = await runPowerShell(['-Command', buildWindowsStoreAppLaunchContextScript()], trustedCommandEnvironment())
-    console.log(`info store app launch script under the trusted environment: sid=${parseWindowsStoreAppLaunchContext(output).userSid ?? 'none'} (${Date.now() - trustedStartedAt}ms)`)
+    const output = await runPowerShell(['-Command', buildCodexDesktopCombinedProbeScript()], trustedCommandEnvironment())
+    const probe = parseCodexDesktopCombinedProbeJson(output)
+    console.log(`info Codex merged probe under the trusted environment: package=${probe.packageProbe.value ? 'yes' : 'none'} (${Date.now() - combinedStartedAt}ms)`)
   } catch (error) {
-    console.log(`::warning::store app launch script under the trusted environment failed after ${Date.now() - trustedStartedAt}ms: ${String(error?.message ?? error).split('\n')[0]}`)
+    console.log(`::warning::Codex merged probe under the trusted environment failed after ${Date.now() - combinedStartedAt}ms: ${String(error?.message ?? error).split('\n')[0]}`)
   }
-  const shippedStartedAt = Date.now()
-  const context = await inspectWindowsStoreAppLaunchContext({ timeoutMs: probeBudgetMs })
-  const line = `inspectWindowsStoreAppLaunchContext: sid=${context.userSid ?? 'none'} (${Date.now() - shippedStartedAt}ms)`
-  console.log(context.userSid ? `info ${line}` : `::warning::${line}`)
 }
 
 const failures = []
@@ -220,7 +229,7 @@ for (const [name, check] of checks) {
     console.error(`FAIL ${name} (${Date.now() - startedAt}ms)\n${error?.stack ?? error}`)
   }
 }
-await reportStoreAppLaunchProductionPath()
+await reportTrustedEnvironmentTimings()
 if (failures.length) {
   console.error(`${failures.length} of ${checks.length} PowerShell probe checks failed`)
   process.exit(1)
