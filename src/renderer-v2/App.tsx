@@ -4,6 +4,7 @@ import { flushSync } from 'react-dom'
 import QRCode from 'qrcode'
 import type { AccountSessionState, AccountSourceSwitchResult, AccountSourceTarget, AppSettingsV2, ExternalDeepLink, ExternalToolId, LegalDocumentKind, NetworkSettingsKind, PlatformCapabilities, ProviderId, UpdateSnapshot, XingmangApi } from '../../electron/ipc-contract'
 import { resolveRelaySite, resolveSupportServiceUrl } from '../../electron/relay-sites'
+import { appReleaseDownloadUrl } from '../../electron/app-download-page'
 import { offersCodexDesktopRestart } from '../../electron/running-tools'
 import { codexDesktopStoreUrl } from '../../electron/codex-desktop-install-failure'
 import { Shell as AppFrame } from './features/shell/Shell'
@@ -52,6 +53,7 @@ import { OperationErrorDialog, supportFailureOf, type OperationFailure } from '.
 import { NodeReplaceDialog } from './features/tools/NodeReplaceDialog'
 import { canReplaceNode, describeNodeReplaceOutcome } from './features/tools/node-replace'
 import { StartupNotices } from './features/app/StartupNotices'
+import { RequiredUpdateGate } from './features/app/RequiredUpdateGate'
 import { MaintenanceNotice, maintenanceNoticeKey } from './features/app/MaintenanceNotice'
 import { crashReportingNotice, displayCompatNotice, displayRelaunchNotice, settingsSaveNotice, startupCheckFailure, startupCheckLogContext, startupDiagnosticsIssues, updatedNotice, vaultRecoveredNotice, withStartupNotice, withoutStartupNotice, type StartupCheckId, type StartupNotice } from './features/app/startup-notice'
 import { readLocalPreference, writeLocalPreference } from './features/app/preferences'
@@ -1297,6 +1299,10 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
         <SupportIdentity line={supportIdentity} lastFailure={lastFailureLine} onCopy={() => { void navigator.clipboard.writeText(lastFailureLine ? `${supportIdentity}\n${lastFailureLine}` : supportIdentity).then(() => toast.show('已复制，发给客服就行', 'ok'), () => toast.show('没复制上，请手动选中这行文字复制。', 'warn')) }} />
         {qrFallback && <p role="alert" data-testid="support-qr-fallback">{qrFallback}</p>}<Button onClick={() => void perform('打开帮助', () => app.openExternal(supportUrl))}>在浏览器打开</Button><Button onClick={() => { setHelp(false); navigate('feedback') }}>去反馈页</Button></div>
     </Dialog>}
+    <RequiredUpdateGate update={update} windows={os === 'win'} actions={{
+      check: () => native.checkForUpdates(), download: () => native.downloadUpdate(), install: () => native.installUpdate(),
+      openDownloadPage: () => void perform('打开下载页', () => app.openExternal(appReleaseDownloadUrl)), contactSupport: () => setHelp(true),
+    }} />
     <StartupNotices notices={startupNotices} onDismiss={dismissStartupNotice}
       leading={maintenance && maintenanceKey !== dismissedMaintenance ? <MaintenanceNotice maintenance={maintenance} onDismiss={() => setDismissedMaintenance(maintenanceKey)} /> : undefined}
       onOpen={(id, action) => {
