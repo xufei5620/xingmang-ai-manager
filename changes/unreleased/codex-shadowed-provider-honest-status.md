@@ -6,5 +6,5 @@
 ## 开发
 
 - 接 #619/#641 的尾巴（第十七批候选 1）：`inspectProviderConfig` 给 Codex 新增 `codexProviderName` 与 `codexProviderShadowed`（活动名是保留名、那张表的地址属已登记站点）。`actualBaseUrl` / `matchesRelay` 不变，切回官方、删中转表、启动门禁照旧。
-- 渲染层 `connectionReady` 遇到 shadowed 返回假，`sourceFor` 不变（「切回官方账号」菜单项保留）；首页状态 `codexShadowed` + 「修好它」走 `config:switch-account-source`（备份、写入、自检、失败回滚）；`launch` 在修完就能用时先修再打开。开机恢复账号对有归属记录的配置会自然重写；没有归属记录的不自动改（待定）。
+- 渲染层 `connectionReady` 遇到 shadowed 返回假，`sourceFor` 不变（「切回官方账号」菜单项保留）；首页状态 `codexShadowed` + 「修好它」走 `config:switch-account-source`（备份、写入、自检、失败回滚）；`launch` 在修完就能用时先修再打开。开机恢复账号对有归属记录的配置会自然重写；没有归属记录的见 `codex-shadowed-autofix.md`。
 - 连接自检在配置层拦下 shadowed（`config` 层，不发请求）；反馈报告的 Codex 行带上连接名。

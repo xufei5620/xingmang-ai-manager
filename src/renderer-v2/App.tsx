@@ -355,6 +355,9 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
         // 只重读配置，不再把整轮环境探测走第二遍：跟着 Key 变的只有配置状态，
         // 已装/版本/桌面端是首屏那遍刚探完的（见 useToolbox.refreshConfig）。
         await toolbox.refreshConfig().catch(() => undefined)
+        // 开机那一轮替客户修好了 Codex 认不出的老配置：没人点过按钮，轻轻说一句改了什么、
+        // 原样在哪找回。点名重写的那一档由调用方自己报结果，这里不重复。
+        if (mode !== 'rewrite' && result.repairedShadowed?.length) toast.show('已修好 Codex 的连接设置，原来的设置在「备份」里。', 'ok')
       } catch (cause) {
         outcome.error = errorMessage(cause, '账号 Key 初始化没有完成')
         logAccountBootstrap(describeAccountBootstrapFailure(mode, outcome.error))
@@ -373,7 +376,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     }
     onlineResync.current = noteBootstrapOutcome(onlineResync.current, bootstrapScope, outcome)
     return outcome
-  }, [native, settings, toolbox.refreshConfig, siteId])
+  }, [native, settings, toast.show, toolbox.refreshConfig, siteId])
   /**
    * 「重新写入 Key」与「Key 失效」的「一键修复」共用的入口：跑的就是装完工具后
    * 那条同样的重写流程（syncAfterToolInstalled 里的这一行），只是限定到指定的工具。
