@@ -86,6 +86,12 @@ describe('unexpected exit record', () => {
     expect(takeUnexpectedExitNotice(recordPath, now + 2 * minute)).toBeNull()
   })
 
+  it('records a stop without relaunch when relaunching is not allowed here', () => {
+    const recordPath = unexpectedExitRecordPath(dataDirectory())
+    expect(recordUnexpectedExit(recordPath, { now, error: 'Error: dev', allowRelaunch: false })).toEqual({ relaunch: false })
+    expect(takeUnexpectedExitNotice(recordPath, now + minute)?.relaunched).toBe(false)
+  })
+
   it('forgets exits older than ten minutes once they have been shown', () => {
     const recordPath = unexpectedExitRecordPath(dataDirectory())
     recordUnexpectedExit(recordPath, { now, error: 'Error: old' })

@@ -106,10 +106,10 @@ export function buildUnexpectedExitRelaunchArgs(args: readonly string[], windowV
  * a record that cannot be read or written means the loop guard cannot work,
  * so the caller must treat a throw as "do not relaunch".
  */
-export function recordUnexpectedExit(recordPath: string, input: { now: number; error: string }): { relaunch: boolean } {
+export function recordUnexpectedExit(recordPath: string, input: { now: number; error: string; allowRelaunch?: boolean }): { relaunch: boolean } {
   const content = readSafeUtf8FileSync(recordPath, fileLabel, maximumBytes)
   const entries = content === null ? [] : parseUnexpectedExitEntries(content, input.now)
-  const relaunch = shouldRelaunchAfterUnexpectedExit(entries, input.now)
+  const relaunch = input.allowRelaunch !== false && shouldRelaunchAfterUnexpectedExit(entries, input.now)
   const entry: UnexpectedExitEntry = { at: input.now, error: input.error, relaunched: relaunch, notified: false }
   ensureSafeDataDirectory(path.dirname(recordPath), fileLabel)
   if (entries.length >= maximumEntries || (content !== null && Buffer.byteLength(content) > maximumBytes / 2)) {

@@ -2817,6 +2817,7 @@ if (!hasSingleInstanceLock) {
     // 运行中没人接住的异常：不让 Electron 弹那个英文框、带着坏状态接着跑，而是记一笔、
     // 收拾好加速和聊天记录后退出，10 分钟内头一次就自动重开（见 unexpected-exit.ts）。
     // 注册了自己的 uncaughtException 监听，Electron 自带的那个弹框就不再出现。
+    const simulateUnexpectedExit = process.env.XINGMANG_SIMULATE_MAIN_CRASH === '1'
     let unexpectedExitStarted = false
     let appWillQuit = false
     app.once('will-quit', () => { appWillQuit = true })
@@ -2830,18 +2831,22 @@ if (!hasSingleInstanceLock) {
         relaunch = recordUnexpectedExit(unexpectedExitRecordPath(managerDataDirectory), {
           now: Date.now(),
           error: describeUnexpectedExitError(error, os.homedir()),
+          // 开发态和自动化冒烟里不重开：测试框架看得到退出就够了，再拉起一个进程只会留下没人管的窗口。
+          // 设了模拟开关的开发态照样重开，方便不打包也能演一遍。
+          allowRelaunch: app.isPackaged || simulateUnexpectedExit,
         }).relaunch
       } catch (cause) {
         runtimeLog.exception('main', 'app.unexpected-exit.record-failed', cause)
       }
       runtimeLog.log('error', 'main', relaunch ? 'app.unexpected-exit.relaunched' : 'app.unexpected-exit.suppressed',
-        relaunch ? '主进程意外出错，退出后自动重开' : '主进程意外出错，10 分钟内已重开过，这次不再重开', { windowVisible })
+        relaunch ? '主进程意外出错，退出后自动重开' : '主进程意外出错，这次不自动重开（10 分钟内已重开过，或不是打包版）', { windowVisible })
       // 开着加速时系统代理指着本机端口，不断开就退，整台电脑上不了网；错误报告也等它发完。
       // 限时 3 秒：坏掉的状态可能让这些永远等不完。
+      // 每一步都包进 then：坏掉的状态下哪一步同步抛错，也不能拦住后面的退出。
       const settle = Promise.allSettled([
-        crashReporter.flush(),
-        acceleration?.stopAll(),
-        chatHistoryStore.idle(),
+        Promise.resolve().then(() => crashReporter.flush()),
+        Promise.resolve().then(() => acceleration?.stopAll()),
+        Promise.resolve().then(() => chatHistoryStore.idle()),
       ]).then(() => runtimeLog.idle())
       void Promise.race([settle, new Promise((resolve) => { setTimeout(resolve, 3_000).unref() })]).finally(() => {
         try {
@@ -2855,7 +2860,7 @@ if (!hasSingleInstanceLock) {
     app.once('will-quit', () => { process.off('uncaughtException', onUnexpectedException) })
     // 真机上演「意外退出」用：打包版也认，设了它启动 30 秒后主进程抛一次没人接的异常。
     // 重开出来的进程带着同一个环境变量，会再退一次，正好演「10 分钟内第二次不再重开」。
-    if (process.env.XINGMANG_SIMULATE_MAIN_CRASH === '1') {
+    if (simulateUnexpectedExit) {
       runtimeLog.log('warn', 'main', 'app.unexpected-exit.simulate', '已设置模拟意外退出，30 秒后触发')
       setTimeout(() => { throw new Error('模拟的主进程意外退出（XINGMANG_SIMULATE_MAIN_CRASH）') }, 30_000).unref()
     }
