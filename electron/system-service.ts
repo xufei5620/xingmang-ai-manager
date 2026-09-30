@@ -79,6 +79,9 @@ import {
   restoreClaudeConsoleKey,
   rewriteManagedCliHooks,
   saveProviderConfig,
+  fillRelayTemplateDefaults,
+  relayTemplateDefaultsPending,
+  relayTemplateRevision,
   switchProviderToOfficialAccount,
   trustCodexWorkspace,
   trustManagedWorkspace,
@@ -151,7 +154,7 @@ import {
   type InstallCancellationOutcome,
 } from './install-cancellation'
 import { inspectCcSwitchInstalled, resolveCcSwitchLeftover, type CcSwitchLeftover } from './cc-switch-leftover'
-import { ToolConfigOwnershipStore, toolConfigIdentity, type ToolConfigOwnership } from './tool-config-ownership'
+import { ToolConfigOwnershipStore, toolConfigIdentity, type ToolConfigOwnership, type ToolTemplateFillResult } from './tool-config-ownership'
 import type { StoredManagedCliKey } from './managed-cli-key-store'
 import { ExternalClientOwnershipStore } from './external-client-ownership'
 import {
@@ -928,6 +931,8 @@ export interface SystemService {
   inspectRunningTools?(providers: readonly ProviderId[]): Promise<RunningToolsReport>
   /** 打开工具前核对当前账号能用的模型（一天一次）；可选 = 旧实现不提供，调用方直接打开。 */
   checkToolModels?(provider: ProviderId): Promise<ToolModelCheck>
+  /** 开机恢复账号后给落后于模板的配置补缺省项；可选 = 旧实现不提供，调用方当什么都没补。 */
+  fillToolTemplateDefaults?(backup?: (provider: ProviderId) => void): Promise<ToolTemplateFillResult>
   fetchAvailableModels(apiKey: string, options?: { bypassCache?: boolean }): Promise<string[]>
   configureExternalTool(tool: ExternalToolId, options: ExternalToolConfigOptions, assertBeforeWrite?: () => void): Promise<ExternalClientConfigResult>
   scanExternalClients(force?: boolean): Promise<ExternalClientStatus[]>
@@ -5560,7 +5565,8 @@ export function createSystemService(
         if (movedConsoleKey) throw withCredentialUndo(error, restoreOfficialCredentialsNow, '原来登录留下的官方 Key 暂时收在一边，切回官方账号时会放回')
         throw error
       }
-      await configOwnership.write(payload.provider, inspectNativeProviderConfig(payload.provider), source, owner)
+      // 整份模板刚按当前版本写过一遍，记下版本号，开机补缺省项那条路就不会再来一次。
+      await configOwnership.write(payload.provider, inspectNativeProviderConfig(payload.provider), source, owner, relayTemplateRevision)
       assertOwner()
       await store.setOfficialProvider(payload.provider, false)
       if (payload.provider === 'codex') await applyXingmangAiSkillForCodexAccount(false)
@@ -5592,6 +5598,66 @@ export function createSystemService(
     },
     log: (level, event, message, detail) => runtimeLog?.log(level, 'config', event, message, detail),
   })
+
+  /**
+   * 老客户的配置不跟着模板升级（第十七批第 2 条）：开机恢复账号只核对连没连上，一个字
+   * 不写。这里对「来源确认是当前账号、记录的模板版本落后」的配置补一次缺省项
+   * （fillRelayTemplateDefaults：只补缺的，用户写过的一律不动）。官方账号、手填、来源
+   * 没确认、被改动过的都不碰；工具开着或看不出开没开的这次跳过，下次开机再来。失败只
+   * 记日志，不打扰用户，版本号不前进，下次再试。
+   */
+  async function fillToolTemplateDefaults(backup?: (provider: ProviderId) => void): Promise<ToolTemplateFillResult> {
+    const filled: ProviderId[] = []
+    const owner = serviceOptions.getExternalClientAccountId?.() ?? null
+    if (!owner) return { filled }
+    function outdated(provider: ProviderId): boolean {
+      if (store.read().officialProviders?.includes(provider)) return false
+      const config = inspectNativeProviderConfig(provider)
+      if (!config.hasApiKey || !config.matchesRelay) return false
+      if (configOwnership.read(provider, config, owner) !== 'account') return false
+      const revision = configOwnership.templateRevision(provider, config)
+      return revision !== null && revision < relayTemplateRevision
+    }
+    const due = providerIds.filter(outdated)
+    if (!due.length) return { filled }
+    let report: RunningToolsReport
+    try {
+      report = await inspectRunningTools(due)
+    } catch {
+      return { filled }
+    }
+    for (const provider of due) {
+      const busy = report.running.includes(provider) || report.unknown.includes(provider)
+        || (provider === 'codex' && report.codexDesktopRunning !== false)
+      if (busy) {
+        runtimeLog?.log('info', 'config', 'template-defaults.deferred', '工具可能正开着，这次先不补设置', { provider })
+        continue
+      }
+      try {
+        const wrote = await serializeConfigWrite(async () => {
+          // 排队期间账号、配置都可能变了：进锁以后按同一套条件再判一次。
+          if ((serviceOptions.getExternalClientAccountId?.() ?? null) !== owner || !outdated(provider)) return false
+          const site = resolveRelaySite(serviceOptions.getRelaySiteId?.() ?? store.read().relaySiteId)
+          // 已经齐了（多半是新模板写的，只是记录里还没有版本号）就只记版本号，不留备份。
+          // 真要补才先做一份与保存配置同样的整套备份，「备份」页里能找回补之前的样子；
+          // 备份不成就不补。
+          const pending = relayTemplateDefaultsPending(provider, providerRoots, site.providerBaseUrls)
+          if (pending) backup?.(provider)
+          const result = pending ? fillRelayTemplateDefaults(provider, providerRoots, site.providerBaseUrls) : null
+          // 补的都是指纹之外的键，来源记录照旧是当前账号，只把版本号往前挪。
+          await configOwnership.write(provider, inspectNativeProviderConfig(provider), 'account', owner, relayTemplateRevision)
+          return result !== null
+        })
+        if (wrote) {
+          filled.push(provider)
+          runtimeLog?.log('info', 'config', 'template-defaults.filled', '已按新版模板给工具补齐设置', { provider })
+        }
+      } catch (error) {
+        runtimeLog?.log('warn', 'config', 'template-defaults.failed', '给工具补齐设置没有完成，下次开机再试', { provider, reason: credentialFailureReason(error) })
+      }
+    }
+    return { filled }
+  }
 
   function credentialFailureReason(error: unknown): string {
     return redactHomeDirectory(error instanceof Error ? error.message : String(error), providerRoots.userHome)
@@ -5736,6 +5802,7 @@ export function createSystemService(
     launchCodexDesktop,
     inspectRunningTools,
     checkToolModels: (provider: ProviderId) => toolModelChecker.check(provider),
+    fillToolTemplateDefaults,
     fetchAvailableModels,
     configureExternalTool,
     scanExternalClients,

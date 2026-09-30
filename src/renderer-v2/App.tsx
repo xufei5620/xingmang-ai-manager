@@ -53,7 +53,7 @@ import { NodeReplaceDialog } from './features/tools/NodeReplaceDialog'
 import { canReplaceNode, describeNodeReplaceOutcome } from './features/tools/node-replace'
 import { StartupNotices } from './features/app/StartupNotices'
 import { MaintenanceNotice, maintenanceNoticeKey } from './features/app/MaintenanceNotice'
-import { crashReportingNotice, displayCompatNotice, displayRelaunchNotice, settingsSaveNotice, startupCheckFailure, startupCheckLogContext, startupDiagnosticsIssues, updatedNotice, vaultRecoveredNotice, withStartupNotice, withoutStartupNotice, type StartupCheckId, type StartupNotice } from './features/app/startup-notice'
+import { crashReportingNotice, displayCompatNotice, displayRelaunchNotice, settingsSaveNotice, toolTemplateFilledNotice, startupCheckFailure, startupCheckLogContext, startupDiagnosticsIssues, updatedNotice, vaultRecoveredNotice, withStartupNotice, withoutStartupNotice, type StartupCheckId, type StartupNotice } from './features/app/startup-notice'
 import { readLocalPreference, writeLocalPreference } from './features/app/preferences'
 import { currentWindowOs, windowOsFor } from './features/app/window-os'
 import { nextUiScale, uiScaleShortcutFor, type UiScaleShortcut } from './features/app/ui-scale-shortcut'
@@ -347,6 +347,15 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
         const result = await bootstrapAccountTools(native, userId, updateProgress, mode, onlyProviders)
         outcome.result = result
         logAccountBootstrap(describeAccountBootstrapResult(mode, result))
+        // 开机恢复只核对连没连上、一个字不写，老客户因此拿不到后来加进模板的设置。
+        // 这里让主进程给当前账号写过、版本落后的配置补一次缺省项；补不成只进日志，
+        // 真补了才在角落说一句。
+        if (mode === 'restore') {
+          void Promise.resolve().then(() => native.fillToolTemplateDefaults()).then((filled) => {
+            const notice = toolTemplateFilledNotice(filled.filled)
+            if (notice) noteStartupCheck(notice)
+          }).catch(() => undefined)
+        }
         if (!mounted.current || epoch !== bootstrapEpoch.current) return
         setAccountBootstrap((current) => current && current.scope === bootstrapScope
           ? { ...current, phase: 'verifying', label: result.failed.length ? 'Key 同步完成，部分工具待处理' : 'Key 已写入，正在刷新工具状态', percent: 100, result }
@@ -373,7 +382,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     }
     onlineResync.current = noteBootstrapOutcome(onlineResync.current, bootstrapScope, outcome)
     return outcome
-  }, [native, settings, toolbox.refreshConfig, siteId])
+  }, [native, settings, toolbox.refreshConfig, siteId, noteStartupCheck])
   /**
    * 「重新写入 Key」与「Key 失效」的「一键修复」共用的入口：跑的就是装完工具后
    * 那条同样的重写流程（syncAfterToolInstalled 里的这一行），只是限定到指定的工具。

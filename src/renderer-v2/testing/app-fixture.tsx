@@ -551,6 +551,8 @@ const methods = {
   checkToolModels: async (provider: ProviderId) => query.has('modelGone') && provider === 'claude' && config.providers.claude.model !== 'claude-opus-5-5'
     ? { status: 'unavailable' as const, model: config.providers.claude.model, replacement: 'claude-opus-5-5' }
     : { status: 'skipped' as const },
+  // templateFilled：开机恢复账号后给老配置补齐了新版设置，角落该说一句。
+  fillToolTemplateDefaults: async () => ({ filled: query.has('templateFilled') ? ['codex', 'claude'] as ProviderId[] : [] }),
   getAccountUsableGroups: async () => [{ name: session.siteId === 'solov-api' ? 'Codex_pro' : 'GPT-中转/订阅', description: 'Codex', ratio: 1 }],
   createAccountKey: async () => undefined,
   changeAccountPassword: async () => {

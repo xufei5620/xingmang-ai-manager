@@ -2052,11 +2052,30 @@ test('the first launch after an update says which version it is on and lists the
   } finally { await page.close() }
 })
 
+// 老客户开机恢复账号后，主进程给落后于模板的配置补了缺省项：角落说一次补了哪几个工具、
+// 什么没动、原来的在哪，只有一颗「知道了」。什么都没补时一句话也不说。
+test('a restored login that filled newer tool settings says so once in the corner', async () => {
+  const page = await open('templateFilled=1')
+  try {
+    await page.getByTestId('page-home').waitFor()
+    const notice = page.getByTestId('startup-notice-template-filled')
+    await notice.waitFor()
+    await notice.getByText('已把工具设置补齐到最新', { exact: true }).waitFor()
+    assert.match(await notice.textContent(), /Claude Code、Codex/)
+    assert.equal(await page.getByRole('dialog').count(), 0)
+    assert.equal(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'fillToolTemplateDefaults').length), 1)
+    await notice.getByRole('button', { name: '知道了', exact: true }).click()
+    await expect.poll(() => page.getByTestId('startup-notice-template-filled').count()).toBe(0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('an ordinary launch says nothing about updates', async () => {
   const page = await open()
   try {
     await page.getByTestId('page-home').waitFor()
     assert.equal(await page.getByTestId('startup-notice-updated').count(), 0)
+    assert.equal(await page.getByTestId('startup-notice-template-filled').count(), 0)
     await clean(page)
   } finally { await page.close() }
 })

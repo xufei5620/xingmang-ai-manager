@@ -4,7 +4,7 @@ import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AppSettingsStore } from './app-settings'
 import { providerBaseUrls, providerIds } from './catalog'
-import { inspectProviderConfig, providerConfigPaths, saveProviderConfig } from './config-files'
+import { codexConfigSnapshotPaths, inspectProviderConfig, providerConfigPaths, relayTemplateRevision, saveProviderConfig } from './config-files'
 import { createSystemService, planRestoredConfigOwnership } from './system-service'
 import { ToolConfigOwnershipStore } from './tool-config-ownership'
 
@@ -370,5 +370,98 @@ describe('planRestoredConfigOwnership', () => {
 
   it('writes nothing when the restored config holds no key', () => {
     expect(planRestoredConfigOwnership({ ...base, hasApiKey: false })).toBeNull()
+  })
+})
+
+describe('filling template defaults into older account configs at startup', () => {
+  function makeOlder(f: ReturnType<typeof fixture>) {
+    const record = JSON.parse(fs.readFileSync(f.ownerFile(), 'utf8'))
+    delete record.templateRevision
+    fs.writeFileSync(f.ownerFile(), JSON.stringify(record), 'utf8')
+    const configPath = codexConfigSnapshotPaths(f.roots).active
+    const text = fs.readFileSync(configPath, 'utf8').replace('check_for_update_on_startup = false\n', '')
+    fs.writeFileSync(configPath, text, 'utf8')
+    return configPath
+  }
+
+  it('records the template revision whenever a full config is saved', async () => {
+    const f = fixture()
+    await f.makeService().saveConfig(f.payload, false, undefined, { source: 'account', automatic: false })
+    expect(JSON.parse(fs.readFileSync(f.ownerFile(), 'utf8')).templateRevision).toBe(relayTemplateRevision)
+    expect(f.ownership.templateRevision('codex', f.current())).toBe(relayTemplateRevision)
+  })
+
+  it('fills an older current-account config once, after a backup, and keeps it owned by the account', async () => {
+    const f = fixture()
+    const service = f.makeService()
+    await service.saveConfig(f.payload, false, undefined, { source: 'account', automatic: false })
+    const configPath = makeOlder(f)
+    expect(f.ownership.templateRevision('codex', f.current())).toBe(0)
+    const backups: string[] = []
+
+    const result = await service.fillToolTemplateDefaults!((provider) => { backups.push(provider) })
+
+    expect(result.filled).toEqual(['codex'])
+    expect(backups).toEqual(['codex'])
+    expect(fs.readFileSync(configPath, 'utf8')).toContain('check_for_update_on_startup = false')
+    expect(service.getConfig(false).providers.codex.configurationOwnership).toBe('account')
+    expect(f.ownership.templateRevision('codex', f.current())).toBe(relayTemplateRevision)
+    expect(await service.fillToolTemplateDefaults!(() => { backups.push('again') })).toEqual({ filled: [] })
+    expect(backups).toEqual(['codex'])
+  })
+
+  it('only moves the revision forward when an older record already has every key', async () => {
+    const f = fixture()
+    const service = f.makeService()
+    await service.saveConfig(f.payload, false, undefined, { source: 'account', automatic: false })
+    const record = JSON.parse(fs.readFileSync(f.ownerFile(), 'utf8'))
+    delete record.templateRevision
+    fs.writeFileSync(f.ownerFile(), JSON.stringify(record), 'utf8')
+    const before = fs.readFileSync(codexConfigSnapshotPaths(f.roots).active, 'utf8')
+    const backups: string[] = []
+
+    expect(await service.fillToolTemplateDefaults!((provider) => { backups.push(provider) })).toEqual({ filled: [] })
+
+    expect(backups).toEqual([])
+    expect(fs.readFileSync(codexConfigSnapshotPaths(f.roots).active, 'utf8')).toBe(before)
+    expect(f.ownership.templateRevision('codex', f.current())).toBe(relayTemplateRevision)
+  })
+
+  it.each([
+    ['manually entered', async (f: ReturnType<typeof fixture>) => { await f.makeService().saveConfig(f.payload, false) }],
+    ['unconfirmed', async (f: ReturnType<typeof fixture>) => { saveProviderConfig('codex', f.payload.apiKey, f.payload.model, 'merge', f.roots, {}, providerBaseUrls) }],
+  ] as const)('never touches a %s config', async (_label, setup) => {
+    const f = fixture()
+    await setup(f)
+    const configPath = codexConfigSnapshotPaths(f.roots).active
+    fs.writeFileSync(configPath, fs.readFileSync(configPath, 'utf8').replace('check_for_update_on_startup = false\n', ''), 'utf8')
+    const before = fs.readFileSync(configPath, 'utf8')
+
+    expect(await f.makeService().fillToolTemplateDefaults!(() => undefined)).toEqual({ filled: [] })
+    expect(fs.readFileSync(configPath, 'utf8')).toBe(before)
+  })
+
+  it('does not fill anything while signed out', async () => {
+    const f = fixture()
+    const service = f.makeService()
+    await service.saveConfig(f.payload, false, undefined, { source: 'account', automatic: false })
+    const configPath = makeOlder(f)
+    const before = fs.readFileSync(configPath, 'utf8')
+    f.setOwner(null)
+    expect(await service.fillToolTemplateDefaults!(() => undefined)).toEqual({ filled: [] })
+    expect(fs.readFileSync(configPath, 'utf8')).toBe(before)
+  })
+
+  it('leaves the revision behind when the backup fails so the next start tries again', async () => {
+    const f = fixture()
+    const service = f.makeService()
+    await service.saveConfig(f.payload, false, undefined, { source: 'account', automatic: false })
+    const configPath = makeOlder(f)
+    const before = fs.readFileSync(configPath, 'utf8')
+
+    expect(await service.fillToolTemplateDefaults!(() => { throw new Error('备份失败') })).toEqual({ filled: [] })
+
+    expect(fs.readFileSync(configPath, 'utf8')).toBe(before)
+    expect(f.ownership.templateRevision('codex', f.current())).toBe(0)
   })
 })

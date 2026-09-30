@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { crashReportingNotice, displayCompatNotice, displayRelaunchNotice, settingsSaveNotice, startupCheckFailure, startupCheckLogContext, releaseNoteHeadline, startupDiagnosticsIssues, updatedNotice, vaultRecoveredNotice, withStartupNotice, withoutStartupNotice } from './startup-notice'
+import { toolTemplateFilledNotice, crashReportingNotice, displayCompatNotice, displayRelaunchNotice, settingsSaveNotice, startupCheckFailure, startupCheckLogContext, releaseNoteHeadline, startupDiagnosticsIssues, updatedNotice, vaultRecoveredNotice, withStartupNotice, withoutStartupNotice } from './startup-notice'
 
 describe('startup check notices', () => {
   it('keeps the backend sentence as the body so support still sees the original wording', () => {
@@ -184,5 +184,19 @@ describe('crashReportingNotice', () => {
     expect(crashReportingNotice(null, true)).toBeNull()
     expect(crashReportingNotice({ crashReportingNoticeShown: true }, true)).toBeNull()
     expect(crashReportingNotice({ crashReporting: false }, true)).toBeNull()
+  })
+})
+
+describe('toolTemplateFilledNotice', () => {
+  it('stays silent when no tool was filled', () => {
+    expect(toolTemplateFilledNotice([])).toBeNull()
+  })
+
+  it('names the filled tools in display order and only offers a dismiss button', () => {
+    const notice = toolTemplateFilledNotice(['grok', 'codex', 'claude'])
+    expect(notice).toMatchObject({ id: 'template-filled', failure: false, tone: 'ok', action: { label: '知道了', dismiss: true } })
+    expect(notice?.body).toContain('Claude Code、Codex、Grok CLI')
+    expect(notice?.body).toContain('「备份」页')
+    expect(notice?.secondaryAction).toBeUndefined()
   })
 })

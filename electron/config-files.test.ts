@@ -23,6 +23,8 @@ import {
   ensureCodexPermissionDefaultsInConfigText,
   ensureGeminiContextFilenamesInSettingsText,
   ensureGeminiProjectContextFiles,
+  fillRelayTemplateDefaults,
+  relayTemplateDefaultsPending,
   inspectManagedCliHookTargets,
   inspectOfficialLogin,
   inspectProviderConfig,
@@ -2977,5 +2979,161 @@ describe('hooks and status line pointing at an old location', () => {
     }
     const grok = TOML.parse(fs.readFileSync(providerConfigPaths('grok', roots)[0], 'utf8')) as unknown as GrokConfigShape
     expect(grok.compat).toEqual({ claude: { hooks: false } })
+  })
+})
+
+describe('bringing an older account config up to the current template', () => {
+  function writeFile(filePath: string, content: string) {
+    fs.mkdirSync(path.dirname(filePath), { recursive: true })
+    fs.writeFileSync(filePath, content)
+  }
+
+  it('fills only the Codex keys an older template never wrote and keeps what the user set', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const configPath = codexConfigSnapshotPaths(roots).active
+    writeFile(configPath, [
+      'model_provider = "XingmangAI"',
+      'model = "gpt-5.5"',
+      'approval_policy = "never"',
+      'disable_response_storage = true',
+      '',
+      '[model_providers.XingmangAI]',
+      'name = "XingmangAI"',
+      `base_url = "${providerBaseUrls.codex}"`,
+      'wire_api = "responses"',
+      '',
+      '[features]',
+      'prevent_idle_sleep = false',
+      '',
+    ].join('\n'))
+
+    expect(relayTemplateDefaultsPending('codex', roots, providerBaseUrls, 'win32')).toBe(true)
+    const result = fillRelayTemplateDefaults('codex', roots, providerBaseUrls, {}, 'win32')
+
+    expect(result?.backups).toHaveLength(1)
+    const parsed = TOML.parse(fs.readFileSync(configPath, 'utf8'))
+    expect(parsed.approval_policy).toBe('never')
+    expect(parsed.sandbox_mode).toBe('workspace-write')
+    expect(parsed.check_for_update_on_startup).toBe(false)
+    expect(parsed.disable_response_storage).toBeUndefined()
+    expect(asRecord(parsed.analytics)?.enabled).toBe(false)
+    expect(asRecord(parsed.features)?.prevent_idle_sleep).toBe(false)
+    expect(asRecord(parsed.features)?.daemon_auto_start).toBe(false)
+    expect(asRecord(parsed.windows)?.sandbox).toBe('unelevated')
+    expect(parsed.model).toBe('gpt-5.5')
+    expect(fs.readFileSync(codexConfigSnapshotPaths(roots).relay, 'utf8')).toBe(fs.readFileSync(configPath, 'utf8'))
+    expect(relayTemplateDefaultsPending('codex', roots, providerBaseUrls, 'win32')).toBe(false)
+  })
+
+  it('writes nothing when the config already has every template key', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    for (const provider of ['codex', 'claude', 'gemini', 'grok'] as const) {
+      saveProviderConfig(provider, 'sk-fixture', testModels[provider], 'reset', roots, {}, providerBaseUrls)
+    }
+    const before = directoryFileSnapshot(path.join(home, '.claude'))
+    for (const provider of ['codex', 'claude', 'gemini', 'grok'] as const) {
+      expect(relayTemplateDefaultsPending(provider, roots, providerBaseUrls, process.platform)).toBe(false)
+      expect(fillRelayTemplateDefaults(provider, roots, providerBaseUrls)).toBeNull()
+    }
+    expect(directoryFileSnapshot(path.join(home, '.claude'))).toEqual(before)
+  })
+
+  it('leaves configs that do not point at the current account alone', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const codexPath = codexConfigSnapshotPaths(roots).active
+    writeFile(codexPath, 'model = "gpt-5.5"\n')
+    const claudePath = providerConfigPaths('claude', roots)[0]
+    writeFile(claudePath, JSON.stringify({ env: { ANTHROPIC_BASE_URL: 'https://api.anthropic.com' } }))
+    const grokPath = providerConfigPaths('grok', roots)[0]
+    writeFile(grokPath, '[models]\ndefault = "mine"\n\n[model.mine]\nbase_url = "https://api.x.ai/v1"\n')
+
+    for (const provider of ['codex', 'claude', 'gemini', 'grok'] as const) {
+      expect(fillRelayTemplateDefaults(provider, roots, providerBaseUrls)).toBeNull()
+    }
+    expect(fs.readFileSync(codexPath, 'utf8')).toBe('model = "gpt-5.5"\n')
+    expect(fs.readFileSync(claudePath, 'utf8')).toBe(JSON.stringify({ env: { ANTHROPIC_BASE_URL: 'https://api.anthropic.com' } }))
+  })
+
+  it('fills Claude Code defaults without touching values the user chose', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const settingsPath = providerConfigPaths('claude', roots)[0]
+    writeFile(settingsPath, JSON.stringify({
+      env: { ANTHROPIC_AUTH_TOKEN: 'sk-fixture', ANTHROPIC_BASE_URL: providerBaseUrls.claude },
+      permissions: { deny: ['Bash(rm:*)'] },
+      skipWebFetchPreflight: false,
+      language: 'English',
+      model: 'claude-opus-4-6',
+    }))
+
+    fillRelayTemplateDefaults('claude', roots, providerBaseUrls)
+
+    const parsed = JSON.parse(fs.readFileSync(settingsPath, 'utf8'))
+    expect(parsed.env).toEqual({ ANTHROPIC_AUTH_TOKEN: 'sk-fixture', ANTHROPIC_BASE_URL: providerBaseUrls.claude, DISABLE_AUTOUPDATER: '1' })
+    expect(parsed.permissions.deny).toEqual(['Bash(rm:*)', 'Artifact', 'DesignSync'])
+    expect(parsed.skipWebFetchPreflight).toBe(false)
+    expect(parsed.language).toBe('English')
+    expect(parsed.cleanupPeriodDays).toBe(365)
+    expect(parsed.model).toBe('claude-opus-4-6')
+  })
+
+  it('fills Gemini defaults and adds the helper model mapping only when none is there', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const [settingsPath, envPath] = providerConfigPaths('gemini', roots)
+    writeFile(envPath, `GOOGLE_GEMINI_BASE_URL=${providerBaseUrls.gemini}\nGEMINI_API_KEY=sk-fixture\nGEMINI_MODEL=gemini-3.5-flash\n`)
+    writeFile(settingsPath, JSON.stringify({
+      security: { auth: { selectedType: 'gemini-api-key' } },
+      general: { enableAutoUpdate: true },
+      privacy: { usageStatisticsEnabled: true },
+    }))
+
+    fillRelayTemplateDefaults('gemini', roots, providerBaseUrls)
+
+    const parsed = JSON.parse(fs.readFileSync(settingsPath, 'utf8'))
+    expect(parsed.general.enableAutoUpdate).toBe(true)
+    expect(parsed.general.enableAutoUpdateNotification).toBe(false)
+    expect(parsed.general.sessionRetention).toEqual({ maxAge: '365d' })
+    expect(parsed.privacy.usageStatisticsEnabled).toBe(true)
+    expect(parsed.modelConfigs.customOverrides.length).toBeGreaterThan(0)
+    expect(parsed.modelConfigs.customOverrides.every((entry: { modelConfig: { model: string } }) => entry.modelConfig.model === 'gemini-3.5-flash')).toBe(true)
+  })
+
+  it('skips Gemini when it is signed in with a Google account', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const [settingsPath, envPath] = providerConfigPaths('gemini', roots)
+    writeFile(envPath, `GOOGLE_GEMINI_BASE_URL=${providerBaseUrls.gemini}\n`)
+    writeFile(settingsPath, JSON.stringify({ security: { auth: { selectedType: 'oauth-personal' } } }))
+    expect(fillRelayTemplateDefaults('gemini', roots, providerBaseUrls)).toBeNull()
+  })
+
+  it('points Grok image tools at the current account only when the user never set them', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const configPath = providerConfigPaths('grok', roots)[0]
+    writeFile(configPath, [
+      '[models]',
+      'default = "grok"',
+      'session_summary = "grok-4.6"',
+      '',
+      '[model.grok]',
+      'model = "grok-4.5"',
+      `base_url = "${providerBaseUrls.grok}"`,
+      'api_key = "sk-fixture"',
+      '',
+    ].join('\n'))
+
+    fillRelayTemplateDefaults('grok', roots, providerBaseUrls)
+
+    const parsed = TOML.parse(fs.readFileSync(configPath, 'utf8'))
+    expect(asRecord(parsed.cli)?.auto_update).toBe(false)
+    expect(asRecord(parsed.endpoints)?.xai_api_base_url).toBe(providerBaseUrls.grok)
+    expect(asRecord(parsed.models)?.session_summary).toBe('grok-4.6')
+    expect(asRecord(parsed.models)?.image_description).toBe('grok')
+    expect(asRecord(parsed.models)?.allowed_models).toEqual(['grok'])
   })
 })

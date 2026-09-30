@@ -1,5 +1,6 @@
-import type { AppSettingsV2, InstalledRelease, SettingsSaveIssue, WindowCapabilities } from '../../../../electron/ipc-contract'
+import type { AppSettingsV2, InstalledRelease, ProviderId, SettingsSaveIssue, WindowCapabilities } from '../../../../electron/ipc-contract'
 import type { PageId } from '../../registry/pages'
+import { tools } from '../../registry/tools'
 import type { Tone } from '../../ui'
 
 /**
@@ -8,12 +9,12 @@ import type { Tone } from '../../ui'
  * （CI 的原生冒烟正是这样被挡住的）。用户自己点「检查更新」「运行检查」时
  * 走的是各页面自己的失败提示，不经过这里，照常报错。
  */
-export type StartupCheckId = 'update' | 'diagnostics' | 'appearance' | 'vault-recovered' | 'updated' | 'settings-save' | 'display-compat' | 'display-relaunch' | 'crash-reporting'
+export type StartupCheckId = 'update' | 'diagnostics' | 'appearance' | 'vault-recovered' | 'updated' | 'settings-save' | 'display-compat' | 'display-relaunch' | 'crash-reporting' | 'template-filled'
 /**
  * `vault-recovered`、`updated`、`settings-save`、两条显示方式的提示与错误报告告知不是应用
  * 跑出来的检查，是一次性要告诉用户的事，没有「失败」这一面。
  */
-export type StartupCheckFailureId = Exclude<StartupCheckId, 'vault-recovered' | 'updated' | 'settings-save' | 'display-compat' | 'display-relaunch' | 'crash-reporting'>
+export type StartupCheckFailureId = Exclude<StartupCheckId, 'vault-recovered' | 'updated' | 'settings-save' | 'display-compat' | 'display-relaunch' | 'crash-reporting' | 'template-filled'>
 
 /**
  * 有的提示要把人带到某一页，有的要直接把登录弹出来（账号页在未登录时才等价于登录），
@@ -213,6 +214,26 @@ export function crashReportingNotice(settings: Pick<AppSettingsV2, 'crashReporti
     body: '软件出错时，会自动把一份错误报告发到海外的错误收集服务，帮我们更快修好问题。报告里不含你的账号、密钥、文件路径和聊天内容。以后想改，可以在「设置」的「隐私与数据」里关掉。',
     action: { label: '知道了', crashReporting: 'keep' },
     secondaryAction: { label: '不想发送', crashReporting: 'off' },
+  }
+}
+
+/**
+ * 开机时给老配置补齐了新版设置（主进程 fillToolTemplateDefaults）。客户什么都没点，工具
+ * 设置却变了，得说一句是什么、不影响什么、原来的在哪；只说一次，一颗「知道了」。没补任何
+ * 工具时返回 null。
+ */
+export function toolTemplateFilledNotice(filled: readonly ProviderId[]): StartupNotice | null {
+  // Codex 的这份设置命令行和桌面端共用，只说「Codex」。
+  const names = tools.filter((tool) => tool.id !== 'codexDesktop' && filled.includes(tool.id))
+    .map((tool) => tool.id === 'codex' ? 'Codex' : tool.name)
+  if (names.length === 0) return null
+  return {
+    id: 'template-filled',
+    failure: false,
+    tone: 'ok',
+    title: '已把工具设置补齐到最新',
+    body: `已按新版本补上了 ${names.join('、')} 的几项设置，用起来更顺、更少卡顿。你的账号、密钥、对话和自己改过的设置都没动，改之前的样子在「备份」页可以找回。`,
+    action: { label: '知道了', dismiss: true },
   }
 }
 
