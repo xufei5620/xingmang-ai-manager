@@ -130,7 +130,7 @@ export const tutorialTopics: readonly TutorialTopic[] = [
         detail: '安装由工具箱完成，不用先装 Node.js 或 Python。',
         bullets: ['点一次「安装」，等待下载和安装进度结束。', '出现版本号后再看账号连接状态。'],
         expected: 'Codex 桌面端显示版本号。',
-        extra: [{ title: '安装报错或要求去微软商店？', detail: '按错误提示完成商店安装后回来「重新检测」。下载失败先看具体原因；「更多」→「安装卸载」可查看安装日志。' }],
+        extra: [{ title: '安装报错，或者电脑上没有微软商店？', detail: '电脑没有微软商店也能装，星芒会直接用国内线路；装不上时按错误框里的按钮走，装好后回来「重新检测」。「更多」→「安装卸载」可查看安装日志。' }],
         action: '去首页安装桌面端',
         page: 'home',
       },

@@ -142,6 +142,8 @@ import type {
   RendererLogLevel,
   ToolModelCheck,
   WindowCapabilities,
+  AppUninstallRequest,
+  AppUninstallResult,
 } from './ipc-contract'
 import { isDiagnosticFolderTarget, type DiagnosticFolderTarget, type DiagnosticsReport, type DiagnosticsRunOptions } from './diagnostics'
 import { isCappedKeyUsedUp, withKeyQuotaExhausted, type ConnectionCheckResult, type ConnectionProbeReport } from './connection-check'
@@ -150,6 +152,7 @@ import { createExternalShellLauncher, type ExternalShellLauncher } from './syste
 import { isNetworkSettingsKind, type NetworkSettingsKind, type ProxyBypassOutcome } from './proxy-bypass'
 import { platformCapabilitiesFor } from './platform-capabilities'
 import { clearStaleUserProxyVariables, type StaleProxyClearResult } from './stale-proxy-environment'
+import type { UserWideCertificateTrustResult } from './user-certificate-trust'
 import { validatePaymentForm, validatePaymentQrCode, validatePaymentUrl, type PaymentWindowController } from './payment-window'
 import type { AccountStartupGate } from './account-startup-gate'
 import { parseAiChatHistoryScope, parseAiChatHistoryWrite, type AiChatHistoryStore } from './ai-chat-history-store'
@@ -190,6 +193,8 @@ export interface IpcRegistrationOptions {
     exportLatest(): string
     /** 检查页「清掉这条旧设置」；缺省 = stale-proxy-environment.ts 的真实现。 */
     clearStaleProxy?(): Promise<StaleProxyClearResult>
+    /** 检查页「让这台电脑上所有终端都信任」；宿主不给就是这台电脑上不提供。 */
+    trustCertificatesUserWide?(): Promise<UserWideCertificateTrustResult>
   }
   runtimeLog: RuntimeLogStore
   extensionService: CodexExtensionService
@@ -236,6 +241,11 @@ export interface IpcRegistrationOptions {
   bypassBrokenProxy?(): Promise<ProxyBypassOutcome>
   openNetworkSettings?(kind: NetworkSettingsKind): Promise<boolean>
   relaunchApp?(): Promise<boolean>
+  /**
+   * Mac 上「卸载星芒」。backupCliConfigs 由这里给：备份要用本模块里的账号上下文，和
+   * 「修好它」同一份。不传 = 这台电脑不支持在星芒里卸载。
+   */
+  uninstallApp?(request: AppUninstallRequest, backupCliConfigs: () => Promise<void>): Promise<AppUninstallResult>
   takeExternalDeepLink?(target: WebContents): ExternalDeepLink | null
   /** `update` is the parsed request, so a hook can tell which fields the user just changed. */
   onSettingsChanged?(update: AppSettingsUpdate): void
@@ -329,6 +339,14 @@ function stringArray(value: unknown, label: string, maximumItems = 128): string[
   if (value === undefined) return []
   if (!Array.isArray(value) || value.length > maximumItems) throw new Error(`${label}格式错误`)
   return value.map((entry) => requiredString(entry, label))
+}
+
+export function parseAppUninstallRequest(value: unknown): AppUninstallRequest {
+  if (!isRecord(value)) throw new Error('卸载选项格式错误')
+  return {
+    clearLoginRecords: optionalBoolean(value.clearLoginRecords, '卸载选项') ?? false,
+    removeManagedTools: optionalBoolean(value.removeManagedTools, '卸载选项') ?? false,
+  }
 }
 
 export function parseDiagnosticsRunOptions(value: unknown): DiagnosticsRunOptions {
@@ -1337,6 +1355,7 @@ const ipcOperationLabels: Readonly<Record<string, string>> = {
   'diagnostics:check-external-connection': '客户端连接自检',
   'diagnostics:export': '诊断报告导出',
   'diagnostics:clear-stale-proxy': '清掉旧的代理设置',
+  'diagnostics:trust-certificates-user-wide': '让所有终端信任证书',
   'diagnostics:open-folder': '检查页打开文件夹',
   'runtime-logs:list': '运行日志读取',
   'runtime-logs:copy-feedback': '脱敏反馈文本复制',
@@ -2499,6 +2518,23 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   })
   registerTrustedHandler('window:get-capabilities', () => options.getWindowCapabilities?.() ?? { tray: false, notifications: false })
   registerTrustedHandler('window:relaunch', () => options.relaunchApp?.() ?? false)
+  registerTrustedHandler('window:uninstall-app', async (_event, raw: unknown) => {
+    const request = parseAppUninstallRequest(raw)
+    if (!options.uninstallApp) throw new Error('这台电脑上请用系统自带的方式卸载星芒')
+    options.runtimeLog.log('info', 'maintenance', 'app.uninstall.started', '开始卸载星芒', { ...request })
+    const result = await options.uninstallApp(request, async () => {
+      const context = await readBackupAccountContext()
+      for (const provider of providerIds) {
+        // 没配过的工具没有东西可备份，一家失败不耽误下一家。
+        try { options.backupStore.create(provider, 'pre-save', undefined, context) } catch { /* 见上 */ }
+      }
+    })
+    options.runtimeLog.log(result.trashed ? 'info' : 'warn', 'maintenance', 'app.uninstall.finished', result.trashed ? '星芒已移到废纸篓，正在退出' : '星芒没能移到废纸篓', {
+      trashed: result.trashed,
+      leftovers: result.leftovers.join(','),
+    })
+    return result
+  })
   registerTrustedHandler('navigation:take-deep-link', (event) => options.takeExternalDeepLink?.(event.sender) ?? null)
   registerTrustedHandler('window:close-report', (event, requestId: unknown, report: unknown) => (
     options.replyWindowClose?.(event.sender, requiredString(requestId, '退出请求标识', 64), parseWindowCloseReport(report)) ?? false
@@ -3638,6 +3674,11 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   registerTrustedHandler('diagnostics:clear-stale-proxy', () => {
     const clear = options.diagnosticsService.clearStaleProxy ?? (() => clearStaleUserProxyVariables())
     return clear()
+  })
+  registerTrustedHandler('diagnostics:trust-certificates-user-wide', () => {
+    const trust = options.diagnosticsService.trustCertificatesUserWide
+    if (!trust) throw new Error('这台电脑上不能在这里设置')
+    return trust()
   })
   registerTrustedHandler('diagnostics:open-folder', async (_event, rawTarget: unknown) => {
     if (!isDiagnosticFolderTarget(rawTarget)) throw new Error('不认识要打开的文件夹')

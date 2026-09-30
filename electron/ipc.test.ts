@@ -56,7 +56,7 @@ vi.mock('electron', () => ({
   clipboard: { writeText: electronMocks.writeText, readText: electronMocks.readText, clear: electronMocks.clearClipboard },
 }))
 
-import { accelerationStateLogKey, parseDiagnosticsRunOptions, parseNodeRuntimeInstallRequest, parseRunningToolsProviders, registerIpcHandlers } from './ipc'
+import { accelerationStateLogKey, parseAppUninstallRequest, parseDiagnosticsRunOptions, parseNodeRuntimeInstallRequest, parseRunningToolsProviders, registerIpcHandlers } from './ipc'
 
 const stubStoredConfig: AppSettings = {
   version: 2,
@@ -1996,6 +1996,36 @@ describe('registerIpcHandlers', () => {
 
     autoRepairStaleCliHooks.mockRejectedValueOnce(new Error('disk full'))
     await expect(electronMocks.handlers.get('config:get')!(trustedEvent())).resolves.toEqual({ providers: {} })
+  })
+
+  it('passes the Mac uninstall request through with a per-tool backup and rejects anything else', async () => {
+    const create = vi.fn((provider: string) => {
+      if (provider === 'codex') throw new Error('没有配置')
+      return { id: `backup-${provider}` }
+    })
+    const uninstallApp = vi.fn(async (_request: unknown, backup: () => Promise<void>) => {
+      await backup()
+      return { trashed: true, leftovers: [] }
+    })
+    register(undefined, undefined, undefined, undefined, undefined, undefined, {}, {
+      backupStore: { list: vi.fn(), create, inspect: vi.fn(), restore: vi.fn() } as never,
+      uninstallApp,
+    })
+    const handler = electronMocks.handlers.get('window:uninstall-app')!
+    await expect(handler(trustedEvent(), { clearLoginRecords: true })).resolves.toEqual({ trashed: true, leftovers: [] })
+    expect(uninstallApp.mock.calls[0][0]).toEqual({ clearLoginRecords: true, removeManagedTools: false })
+    // 一家没配过不耽误其余几家的备份。
+    expect(create.mock.calls.map((call) => call[0])).toEqual([...providerIds])
+    await expect(handler(trustedEvent(), { clearLoginRecords: 'yes' })).rejects.toThrow('卸载选项格式错误')
+    await expect(handler(trustedEvent(), null)).rejects.toThrow('卸载选项格式错误')
+    expect(parseAppUninstallRequest({})).toEqual({ clearLoginRecords: false, removeManagedTools: false })
+    expect(uninstallApp).toHaveBeenCalledTimes(1)
+  })
+
+  it('refuses the in-app uninstall where the host does not offer one', async () => {
+    register()
+    const handler = electronMocks.handlers.get('window:uninstall-app')!
+    await expect(handler(trustedEvent(), { clearLoginRecords: false, removeManagedTools: false })).rejects.toThrow('这台电脑上请用系统自带的方式卸载星芒')
   })
 
   it('passes the startup check\'s scan-reuse request through to diagnostics and rejects anything else', async () => {

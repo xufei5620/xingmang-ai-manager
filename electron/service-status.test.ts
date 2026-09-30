@@ -90,7 +90,7 @@ describe('parseServiceStatus', () => {
 
   it('never throws on malformed content', () => {
     for (const text of ['', 'not json', '[]', 'null', '"x"', '{"maintenance": []}', '\uFEFF{}']) {
-      expect(parseServiceStatus(text, now)).toEqual({ maintenance: null, badVersions: [], rollout: null })
+      expect(parseServiceStatus(text, now)).toEqual({ maintenance: null, badVersions: [], rollout: null, minimumVersion: null })
     }
     expect(parseServiceStatus('\uFEFF{"maintenance":{"active":true}}', now).maintenance).toEqual({ message: null })
   })
@@ -104,9 +104,17 @@ describe('parseServiceStatus', () => {
       maintenance: null,
       badVersions: ['0.2.10', '0.2.11'],
       rollout: { version: '0.2.12', percent: 100 },
+      minimumVersion: null,
     })
     expect(parseServiceStatus(JSON.stringify({ badVersions: '0.2.10', rollout: { version: '0.2.12', percent: '20' } }), now))
-      .toEqual({ maintenance: null, badVersions: [], rollout: null })
+      .toEqual({ maintenance: null, badVersions: [], rollout: null, minimumVersion: null })
+  })
+
+  it('reads a minimum version and treats anything it cannot read as no minimum', () => {
+    expect(parseServiceStatus(JSON.stringify({ minimumVersion: 'v0.2.12' }), now).minimumVersion).toBe('0.2.12')
+    for (const minimumVersion of ['0.2', '0.2.12-beta', 'latest', 12, null, true, ['0.2.12'], '']) {
+      expect(parseServiceStatus(JSON.stringify({ minimumVersion }), now).minimumVersion).toBeNull()
+    }
   })
 })
 

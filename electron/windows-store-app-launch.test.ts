@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import {
   buildWindowsStoreAppLaunchContextScript,
+  buildWindowsStoreAvailabilityScript,
   describeStoreAppLaunchBlock,
   inspectWindowsStoreAppLaunchContext,
+  inspectWindowsStoreAvailability,
+  parseWindowsStoreAvailability,
   readWindowsStoreAppLaunchContext,
   resolveStoreAppLaunchBlock,
 } from './windows-store-app-launch'
@@ -67,5 +70,37 @@ describe('windows store app launch context', () => {
   it.runIf(process.platform === 'win32')('reads the current account on Windows', async () => {
     const context = await inspectWindowsStoreAppLaunchContext({ timeoutMs: powerShellStartupTimeoutMs })
     expect(context.userSid ?? '').toMatch(/^S-1-\d+(?:-\d+)+$/)
+  }, powerShellStartupTimeoutMs * 2)
+})
+
+describe('windows store availability', () => {
+  it('turns the store route off only on a definite answer', () => {
+    expect(parseWindowsStoreAvailability('{"installed":false,"removedByPolicy":false}')).toBe(false)
+    expect(parseWindowsStoreAvailability('{"installed":true,"removedByPolicy":false}')).toBe(true)
+    // 公司策略关掉商店时应用可能还在，但打不开，也装不了东西。
+    expect(parseWindowsStoreAvailability('{"installed":true,"removedByPolicy":true}')).toBe(false)
+    expect(parseWindowsStoreAvailability('WARNING: something\r\n{"installed":false,"removedByPolicy":false}\r\n')).toBe(false)
+  })
+
+  it('keeps the store-first route when the probe could not tell', () => {
+    for (const output of ['', 'garbage', '{"installed":null,"removedByPolicy":false}', '[1]', '{"installed":"maybe"}', '{broken}']) {
+      expect([output, parseWindowsStoreAvailability(output)]).toEqual([output, null])
+    }
+  })
+
+  it('only reads the package list and the store policy keys', () => {
+    const script = buildWindowsStoreAvailabilityScript()
+    expect(script).toContain('Get-AppxPackage -Name "Microsoft.WindowsStore" -ErrorAction Stop')
+    expect(script).toContain('RemoveWindowsStore')
+    expect(script).not.toMatch(/Set-ItemProperty|Remove-|New-Item|Add-AppxPackage|Start-Process/i)
+  })
+
+  it('answers unknown off Windows without starting a process', async () => {
+    await expect(inspectWindowsStoreAvailability({ platform: 'linux' })).resolves.toBeNull()
+  })
+
+  it.runIf(process.platform === 'win32')('answers without throwing on Windows', async () => {
+    const available = await inspectWindowsStoreAvailability({ timeoutMs: powerShellStartupTimeoutMs })
+    expect([true, false, null]).toContain(available)
   }, powerShellStartupTimeoutMs * 2)
 })
