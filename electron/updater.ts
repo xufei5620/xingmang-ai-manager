@@ -201,6 +201,12 @@ export interface UpdaterRuntime {
    */
   readAutoUpdate?: () => boolean
   /**
+   * 后台下载（启动检查超时后补下、开发环境不等下载）没人 await，被拒绝时交给这里记日志。
+   * 真正的下载失败 download() 自己会发 error 快照给界面；走到这里的多半是状态已被别处推进。
+   * 不传＝静默丢弃（只为测试夹具保持旧签名）。
+   */
+  reportBackgroundError?: (error: unknown) => void
+  /**
    * Recomputes the downloaded package digest and compares it with the manifest
    * value. Resolving false means a mismatch; throwing means the comparison could
    * not be made. Both outcomes reject the package.
@@ -896,6 +902,10 @@ export function createUpdaterService(
     return cloneSnapshot(snapshot)
   }
 
+  function downloadInBackground(): void {
+    download().catch((error: unknown) => runtime.reportBackgroundError?.(error))
+  }
+
   return {
     getState: () => cloneSnapshot(snapshot),
     startup() {
@@ -920,7 +930,7 @@ export function createUpdaterService(
             const eventSnapshot = cloneSnapshot(snapshot)
             if (eventSnapshot.phase === 'available' && autoDownload()) {
               if (development) {
-                void download()
+                downloadInBackground()
                 return eventSnapshot
               }
               return download()
@@ -931,8 +941,8 @@ export function createUpdaterService(
           // alive so a slow network can still download the discovered release.
           if (autoDownload()) {
             void checkPromise.then((lateSnapshot) => {
-              if (lateSnapshot.phase === 'available') void download()
-            })
+              if (lateSnapshot.phase === 'available') downloadInBackground()
+            }, (error: unknown) => runtime.reportBackgroundError?.(error))
           }
           emit({
             phase: 'error',
@@ -948,7 +958,7 @@ export function createUpdaterService(
         }
         if (checked.value.phase !== 'available' || !autoDownload()) return checked.value
         if (development) {
-          void download()
+          downloadInBackground()
           return checked.value
         }
         return download()
