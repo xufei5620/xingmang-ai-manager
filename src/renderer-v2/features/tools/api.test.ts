@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { providerIds, type XingmangApi } from '../../../../electron/ipc-contract'
-import { createToolsApi, recentSessionsTtlMs, withConfigFailure, withToolboxConfig } from './api'
+import { balanceUsageTtlMs, createToolsApi, recentSessionsTtlMs, withConfigFailure, withToolboxConfig } from './api'
 
 describe('home balance usage queries', () => {
   it.each(['solov', 'solov-api'] as const)('keeps the %s date contract when loading month/week usage', async (siteId) => {
@@ -23,6 +23,75 @@ describe('home balance usage queries', () => {
         expect(query).not.toHaveProperty('startDate')
       }
     }
+  })
+})
+
+function usageBridge(userId = 7) {
+  const session = { authenticated: true, siteId: 'solov', account: { userId } }
+  const getAccountUsage = vi.fn(async () => ({ stats: { quota: 3 } }))
+  const bridge = { getAccountSession: async () => session, getAccountUsage } as unknown as XingmangApi
+  return { bridge, session, getAccountUsage }
+}
+
+describe('home balance usage cache', () => {
+  it('reuses the last usage for a minute instead of asking the account backend again', async () => {
+    vi.useFakeTimers()
+    try {
+      const { bridge, getAccountUsage } = usageBridge()
+      const api = createToolsApi(bridge)
+      await api.balanceUsage('xm-account:7')
+      vi.advanceTimersByTime(balanceUsageTtlMs - 1)
+      await api.balanceUsage('xm-account:7')
+      expect(getAccountUsage).toHaveBeenCalledTimes(2)
+      vi.advanceTimersByTime(1)
+      await api.balanceUsage('xm-account:7')
+      expect(getAccountUsage).toHaveBeenCalledTimes(4)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('shares one query between callers that ask at the same moment', async () => {
+    const { bridge, getAccountUsage } = usageBridge()
+    const api = createToolsApi(bridge)
+    await Promise.all([api.balanceUsage('xm-account:7'), api.balanceUsage('xm-account:7')])
+    expect(getAccountUsage).toHaveBeenCalledTimes(2)
+  })
+
+  it('peeks at the stale usage so the home page can show it while it refreshes', async () => {
+    vi.useFakeTimers()
+    try {
+      const { bridge } = usageBridge()
+      const api = createToolsApi(bridge)
+      expect(api.peekBalanceUsage('xm-account:7')).toBeNull()
+      await api.balanceUsage('xm-account:7')
+      vi.advanceTimersByTime(balanceUsageTtlMs * 10)
+      expect(api.peekBalanceUsage('xm-account:7')).toEqual({ monthQuota: 3, weekQuota: 3 })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('never hands one account the usage another account read', async () => {
+    const { bridge, session, getAccountUsage } = usageBridge(7)
+    const api = createToolsApi(bridge)
+    await api.balanceUsage('xm-account:7')
+    expect(api.peekBalanceUsage('xm-account:8')).toBeNull()
+    session.account.userId = 8
+    expect(await api.balanceUsage('xm-account:8')).toEqual({ monthQuota: 3, weekQuota: 3 })
+    expect(getAccountUsage).toHaveBeenCalledTimes(4)
+    expect(api.peekBalanceUsage('xm-account:8')).not.toBeNull()
+    expect(api.peekBalanceUsage('xm-account:7')).toBeNull()
+  })
+
+  it('asks again right after the cache is invalidated', async () => {
+    const { bridge, getAccountUsage } = usageBridge()
+    const api = createToolsApi(bridge)
+    await api.balanceUsage('xm-account:7')
+    api.invalidateBalanceUsage()
+    expect(api.peekBalanceUsage('xm-account:7')).toBeNull()
+    await api.balanceUsage('xm-account:7')
+    expect(getAccountUsage).toHaveBeenCalledTimes(4)
   })
 })
 
