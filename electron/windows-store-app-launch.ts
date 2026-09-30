@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { trustedCommandEnvironment } from './command-runner'
-import { resolveWindowsPowerShellExecutable } from './windows-elevation'
+import { powerShellLiteral, resolveWindowsPowerShellExecutable } from './windows-elevation'
 
 const execFileAsync = promisify(execFile)
 
@@ -82,6 +82,23 @@ export function resolveStoreAppLaunchBlock(context: WindowsStoreAppLaunchContext
 }
 
 /**
+ * Loads the named modules up front so the script never relies on command
+ * autoloading.
+ *
+ * trustedCommandEnvironment() narrows PSModulePath to System32 and drops
+ * PSModuleAnalysisCachePath. In that environment the first cmdlet that has to
+ * be autoloaded (even Write-Output) made Windows PowerShell rebuild its module
+ * analysis over every System32 module: 22 s per process on the CI runner,
+ * against 0.3 s once the modules are imported by name (#714). Importing by
+ * name still resolves only through the narrowed PSModulePath, so nothing is
+ * trusted that was not before. A module that fails to load falls back to
+ * autoloading, which is the old behaviour.
+ */
+export function buildPowerShellModuleImportStatement(modules: readonly string[]): string {
+  return `Import-Module -Name ${modules.map(powerShellLiteral).join(', ')} -ErrorAction SilentlyContinue`
+}
+
+/**
  * PowerShell statements that leave the context in `$storeAppLaunchContext`.
  * Only reads the current identity and one HKLM policy key; never writes. The
  * Codex Desktop combined probe embeds the same statements so the home screen
@@ -102,6 +119,7 @@ export function windowsStoreAppLaunchContextStatements(): string[] {
 export function buildWindowsStoreAppLaunchContextScript(): string {
   return [
     '$ErrorActionPreference = "SilentlyContinue"',
+    buildPowerShellModuleImportStatement(['Microsoft.PowerShell.Management', 'Microsoft.PowerShell.Utility']),
     ...windowsStoreAppLaunchContextStatements(),
     '$storeAppLaunchContext | ConvertTo-Json -Compress',
   ].join('\n')
@@ -183,6 +201,7 @@ export function parseWindowsStoreAvailability(output: string): boolean | null {
 export function buildWindowsStoreAvailabilityScript(): string {
   return [
     '$ErrorActionPreference = "SilentlyContinue"',
+    buildPowerShellModuleImportStatement(['Microsoft.PowerShell.Management', 'Microsoft.PowerShell.Utility', 'Appx']),
     '$storeInstalled = $null',
     'try { $storeInstalled = [bool](@(Get-AppxPackage -Name "Microsoft.WindowsStore" -ErrorAction Stop).Count -gt 0) } catch { $storeInstalled = $null }',
     '$storeRemovedByPolicy = $false',

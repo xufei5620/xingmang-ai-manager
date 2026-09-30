@@ -37,6 +37,7 @@ const {
   buildWindowsStoreAppLaunchContextScript,
   buildWindowsStoreAvailabilityScript,
   inspectWindowsStoreAppLaunchContext,
+  inspectWindowsStoreAvailability,
   parseWindowsStoreAppLaunchContext,
   parseWindowsStoreAvailability,
 } = compiled('windows-store-app-launch')
@@ -190,81 +191,28 @@ checks.push(['store availability probe answers without throwing', async () => {
   console.log(`info store availability on this runner: ${available}`)
 }])
 
-// Not a check: evidence for why the standalone probe used to run out its whole
-// budget on CI (the old unit test failed there with an empty SID at ~90s) while
-// the same statements inside the Codex merged probe answer in about a second.
-// The same script is run once more under the environment the app gives it, and
-// once through the shipped function itself; both only print what they saw.
-async function reportStoreAppLaunchProductionPath() {
-  const trustedStartedAt = Date.now()
-  try {
-    const output = await runPowerShell(['-Command', buildWindowsStoreAppLaunchContextScript()], trustedCommandEnvironment())
-    console.log(`info store app launch script under the trusted environment: sid=${parseWindowsStoreAppLaunchContext(output).userSid ?? 'none'} (${Date.now() - trustedStartedAt}ms)`)
-  } catch (error) {
-    console.log(`::warning::store app launch script under the trusted environment failed after ${Date.now() - trustedStartedAt}ms: ${String(error?.message ?? error).split('\n')[0]}`)
-  }
-  const shippedStartedAt = Date.now()
-  const context = await inspectWindowsStoreAppLaunchContext({ timeoutMs: probeBudgetMs })
-  const line = `inspectWindowsStoreAppLaunchContext: sid=${context.userSid ?? 'none'} (${Date.now() - shippedStartedAt}ms)`
-  console.log(context.userSid ? `info ${line}` : `::warning::${line}`)
-}
+// The shipped functions, in the environment the app gives them. Under
+// trustedCommandEnvironment() command autoloading used to cost about 22 s per
+// process on this runner (#714), so the account probe ran past its own 10 s
+// limit and the home screen silently lost the "this account cannot open store
+// apps" warning. The account probe is a real check at its shipped limit; the
+// other two only print their timing, for the next person reading this log.
+checks.push(['store app launch probe answers inside its own limit under the trusted environment', async () => {
+  const context = await inspectWindowsStoreAppLaunchContext()
+  assert.match(context.userSid ?? '', /^S-1-5-/)
+}])
 
-// Temporary evidence: which part of the trusted environment makes the same
-// script take seconds instead of a quarter of a second. Prints names only.
-async function bisectTrustedEnvironmentSlowness() {
-  const trusted = trustedCommandEnvironment()
-  const lower = (env) => new Map(Object.entries(env).map(([key, value]) => [key.toLowerCase(), [key, value]]))
-  const base = lower(process.env)
-  const narrowed = lower(trusted)
-  const removed = [...base.keys()].filter((key) => !narrowed.has(key))
-  const changed = [...narrowed.keys()].filter((key) => base.has(key) && base.get(key)[1] !== narrowed.get(key)[1])
-  const added = [...narrowed.keys()].filter((key) => !base.has(key))
-  console.log(`info trusted environment removes: ${removed.join(', ') || '-'}`)
-  console.log(`info trusted environment changes: ${changed.join(', ') || '-'}`)
-  console.log(`info trusted environment adds: ${added.join(', ') || '-'}`)
-  function withKey(env, name, value) {
-    const next = Object.fromEntries(Object.entries(env).filter(([key]) => key.toLowerCase() !== name.toLowerCase()))
-    if (value !== undefined) next[name] = value
-    return next
-  }
-  const inherited = (name) => base.get(name.toLowerCase())?.[1]
-  console.log(`info inherited PSModulePath: ${inherited('psmodulepath')}`)
-  console.log(`info trusted PSModulePath: ${trusted.PSModulePath}`)
-  console.log(`info inherited PSModuleAnalysisCachePath: ${inherited('psmoduleanalysiscachepath')}`)
-  const variants = [
-    ['inherited', process.env],
-    ['trusted', trusted],
-    ['trusted + inherited PSModulePath', withKey(trusted, 'PSModulePath', inherited('psmodulepath'))],
-    ['trusted + inherited PSModuleAnalysisCachePath', withKey(trusted, 'PSModuleAnalysisCachePath', inherited('psmoduleanalysiscachepath'))],
-    ['inherited + trusted PSModulePath', withKey(process.env, 'PSModulePath', trusted.PSModulePath)],
-    ['inherited without PSModuleAnalysisCachePath', withKey(process.env, 'PSModuleAnalysisCachePath', undefined)],
-  ]
-  const script = buildWindowsStoreAppLaunchContextScript()
-  const scripts = [
-    ['nothing but startup', 'Write-Output 1'],
-    ['identity only', '[System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value'],
-    ['Get-ItemProperty only', '$p = Get-ItemProperty -LiteralPath "HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System" -ErrorAction SilentlyContinue; Write-Output 1'],
-    ['ConvertTo-Json only', '@{ a = 1 } | ConvertTo-Json -Compress'],
-    ['explicit Import-Module first', 'Import-Module Microsoft.PowerShell.Management, Microsoft.PowerShell.Utility\n' + script],
-    ['autoloading off, explicit Import-Module', '$PSModuleAutoLoadingPreference = "None"\nImport-Module Microsoft.PowerShell.Management, Microsoft.PowerShell.Utility\n' + script],
-  ]
-  for (const [label, body] of scripts) {
-    const startedAt = Date.now()
-    try {
-      const output = await runPowerShell(['-Command', body], trusted)
-      console.log(`info trusted script "${label}": ${JSON.stringify(output.trim().slice(0, 80))} (${Date.now() - startedAt}ms)`)
-    } catch (error) {
-      console.log(`info trusted script "${label}": failed after ${Date.now() - startedAt}ms: ${String(error?.message ?? error).split('\n')[0]}`)
-    }
-  }
-  for (const [label, env] of variants) {
-    const startedAt = Date.now()
-    try {
-      const output = await runPowerShell(['-Command', script], env)
-      console.log(`info env variant "${label}": sid=${parseWindowsStoreAppLaunchContext(output).userSid ? 'yes' : 'none'} (${Date.now() - startedAt}ms)`)
-    } catch (error) {
-      console.log(`info env variant "${label}": failed after ${Date.now() - startedAt}ms: ${String(error?.message ?? error).split('\n')[0]}`)
-    }
+async function reportTrustedEnvironmentTimings() {
+  const availabilityStartedAt = Date.now()
+  const available = await inspectWindowsStoreAvailability({ timeoutMs: probeBudgetMs })
+  console.log(`info inspectWindowsStoreAvailability under the trusted environment: ${available} (${Date.now() - availabilityStartedAt}ms)`)
+  const combinedStartedAt = Date.now()
+  try {
+    const output = await runPowerShell(['-Command', buildCodexDesktopCombinedProbeScript()], trustedCommandEnvironment())
+    const probe = parseCodexDesktopCombinedProbeJson(output)
+    console.log(`info Codex merged probe under the trusted environment: package=${probe.packageProbe.value ? 'yes' : 'none'} (${Date.now() - combinedStartedAt}ms)`)
+  } catch (error) {
+    console.log(`::warning::Codex merged probe under the trusted environment failed after ${Date.now() - combinedStartedAt}ms: ${String(error?.message ?? error).split('\n')[0]}`)
   }
 }
 
@@ -279,12 +227,7 @@ for (const [name, check] of checks) {
     console.error(`FAIL ${name} (${Date.now() - startedAt}ms)\n${error?.stack ?? error}`)
   }
 }
-await reportStoreAppLaunchProductionPath()
-try {
-  await bisectTrustedEnvironmentSlowness()
-} catch (error) {
-  console.log(`info environment bisect stopped: ${error?.stack ?? error}`)
-}
+await reportTrustedEnvironmentTimings()
 if (failures.length) {
   console.error(`${failures.length} of ${checks.length} PowerShell probe checks failed`)
   process.exit(1)
