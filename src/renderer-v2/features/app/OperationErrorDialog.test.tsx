@@ -16,6 +16,16 @@ describe('renderer-v2 operation error dialog', () => {
     expect(markup).toContain('operation-error-log')
   })
 
+  it('draws 重置 Codex beside retry when the Codex window never appeared', () => {
+    const raw = 'Codex 桌面端没有打开：等了 45 秒，Codex 没有启动起来。先关掉所有 Codex 窗口，再点「重试」。'
+    const markup = renderToStaticMarkup(
+      <OperationErrorDialog failure={{ message: raw, retry: () => undefined }} onClose={() => undefined} onAction={() => undefined} />,
+    )
+    expect(markup).toContain('operation-error-retry')
+    expect(markup).toContain('operation-error-resetCodexDesktop')
+    expect(markup).toContain('重置 Codex')
+  })
+
   it('gives an unrecognised failure the fallback buttons instead of only 返回', () => {
     const raw = 'spawn ENOSYS'
     const markup = renderToStaticMarkup(

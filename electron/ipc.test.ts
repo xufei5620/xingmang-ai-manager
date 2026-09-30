@@ -97,6 +97,7 @@ function serviceStub(): SystemService {
     installCodexDesktop: vi.fn() as never,
     cancelCodexDesktopInstall: vi.fn(() => ({ cancelled: true, reason: null })) as never,
     uninstallCodexDesktop: vi.fn() as never,
+    resetCodexDesktop: vi.fn() as never,
     inspectCodexDesktopUpdate: vi.fn() as never,
     launchProvider: vi.fn() as never,
     inspectCodexDesktop: vi.fn() as never,

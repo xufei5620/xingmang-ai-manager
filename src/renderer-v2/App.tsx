@@ -668,6 +668,15 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   const openCodexDesktopStore = useCallback(async () => {
     if (!await app.openExternal(codexDesktopStoreUrl)) throw new Error('没能打开微软商店。请在开始菜单里打开「Microsoft Store」，搜索「Codex」装好，再回星芒点「重新检测」。')
   }, [app])
+  // 错误框里的「重置 Codex」：清掉的是 Codex 桌面端自己的登录和缓存，先问一句再动手；
+  // 重置完接着把刚才没打开的那一次再跑一遍，客户不用再回首页点「打开」。
+  const requestCodexDesktopReset = useCallback((retry?: () => void) => {
+    setConfirmation({ title: '重置 Codex 桌面端？', body: 'Codex 桌面端里的登录状态和缓存会被清掉，星芒写好的连接设置不受影响。重置完会自动再打开一次。', label: '重置', danger: true, tool: 'codexDesktop', work: async () => {
+      await toolsApi.resetCodexDesktop()
+      if (retry) retry()
+      else toast.show('Codex 桌面端已经重置，回首页点「打开」试试。', 'ok')
+    } })
+  }, [toast, toolsApi])
   const runOperationAction = useCallback((action: OperationActionId) => {
     const failure = operationError
     setOperationError(null)
@@ -682,8 +691,9 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     else if (action === 'repair') void perform('重新写入 Key', () => rewriteAccountKeys())
     else if (action === 'replaceNode') setNodeReplace(failure?.retry ? { retry: failure.retry } : {})
     else if (action === 'openStore') void perform('打开微软商店', openCodexDesktopStore)
+    else if (action === 'resetCodexDesktop') requestCodexDesktopReset(failure?.retry)
     else setHelp(true)
-  }, [navigate, openCodexDesktopStore, operationError, perform, rewriteAccountKeys])
+  }, [navigate, openCodexDesktopStore, operationError, perform, requestCodexDesktopReset, rewriteAccountKeys])
   // 引导里「改用」或安装失败时的出口：和错误框同一张表，只是没有「再试一次」
   //（引导自己有）。去充值、去备份页会离开引导，进度照旧留着；换 Node.js 不离开，
   // 换完接着重跑引导里失败的那一步。
@@ -696,8 +706,9 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     else if (action === 'relogin') setAuth('login')
     else if (action === 'repair') void perform('重新写入 Key', () => rewriteAccountKeys())
     else if (action === 'openStore') void perform('打开微软商店', openCodexDesktopStore)
+    else if (action === 'resetCodexDesktop') requestCodexDesktopReset(retry)
     else setHelp(true)
-  }, [navigate, openCodexDesktopStore, perform, rewriteAccountKeys])
+  }, [navigate, openCodexDesktopStore, perform, requestCodexDesktopReset, rewriteAccountKeys])
   async function install(id: ToolId, version?: string): Promise<ToolInstallOutcome> {
     const state = toolbox.snapshot
     if (!state) throw new Error('请先完成工具检测')
