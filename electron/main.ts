@@ -120,7 +120,10 @@ import { buildFeedbackEnvironmentLines, buildFeedbackRuntimeLines, pickFeedbackR
 import { managedCliRoot } from './managed-cli-paths'
 import { buildFeedbackSelfCheckLines, type FeedbackConnectionRecord } from './feedback-self-check'
 import { rootedMainServiceOptions } from './main-service-options'
-import { buildMacosInstallLocationNotice, inspectMacosInstallLocation } from './macos-install-location'
+import {
+  buildMacosInstallLocationNotice, buildMacosMoveFailureNotice, inspectMacosInstallLocation,
+  moveMacosAppToApplications, type MacosInstallLocationChoice, type MacosInstallLocationNotice,
+} from './macos-install-location'
 import { privacyPolicyUrl, relaySiteExternalUrls, relaySites, resolveRelaySite, sub2ApiSupportServiceUrl, supportServiceUrl, userAgreementUrl } from './relay-sites'
 import { createPaymentWindowController } from './payment-window'
 import { createPaymentOrderStatusReader } from './payment-status-reader'
@@ -605,6 +608,20 @@ if (app.isPackaged && hasDisallowedPackagedDebugSwitch(process.argv)) {
   process.exit(1)
 }
 
+// cancelId 指向的按钮也在 choices 里，所以按 Esc 和点那颗按钮走同一条路。
+function askMacosInstallLocation(notice: MacosInstallLocationNotice): MacosInstallLocationChoice {
+  const answer = dialog.showMessageBoxSync({
+    type: 'warning',
+    title: notice.title,
+    message: notice.message,
+    detail: notice.detail,
+    buttons: [...notice.buttons],
+    defaultId: notice.defaultId,
+    cancelId: notice.cancelId,
+  })
+  return notice.choices[answer] ?? 'quit'
+}
+
 /** Resolved once, up front, so recording a failure never depends on a step that
  *  might itself be the thing that failed. */
 function startupLogLocation(): { userDataDirectory: string | null } {
@@ -949,16 +966,28 @@ if (!hasSingleInstanceLock) {
         location: installLocation,
         appPath: app.getAppPath(),
       })
-      const answer = dialog.showMessageBoxSync({
-        type: 'warning',
-        title: notice.title,
-        message: notice.message,
-        detail: notice.detail,
-        buttons: [...notice.buttons],
-        defaultId: notice.defaultId,
-        cancelId: notice.cancelId,
-      })
-      if (answer === notice.cancelId) {
+      const choice = askMacosInstallLocation(notice)
+      let proceed = choice === 'continue'
+      if (choice === 'move') {
+        const outcome = moveMacosAppToApplications((options) => app.moveToApplicationsFolder(options))
+        if (outcome.kind === 'moved') {
+          // Electron 已经复制好，正在退出并从「应用程序」里重新打开，这一份不能再往下启动。
+          runtimeLog.log('info', 'main', 'app.install-location.moved', '已移到「应用程序」，正在重新打开', {
+            location: installLocation,
+            conflict: outcome.conflict,
+          })
+          return
+        }
+        if (outcome.kind === 'failed') {
+          runtimeLog.exception('main', 'app.install-location.move-failed', outcome.error)
+        } else {
+          runtimeLog.log('warn', 'main', 'app.install-location.move-cancelled', '移到「应用程序」时取消了授权', {
+            conflict: outcome.conflict,
+          })
+        }
+        proceed = askMacosInstallLocation(buildMacosMoveFailureNotice(installLocation, outcome)) === 'continue'
+      }
+      if (!proceed) {
         runtimeLog.log('info', 'main', 'app.install-location.quit', '用户选择退出以移动程序位置')
         app.quit()
         return
