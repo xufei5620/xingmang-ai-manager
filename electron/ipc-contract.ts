@@ -788,6 +788,8 @@ export interface XingmangInvokeContract {
   /** 中止正在进行的安装或更新;已经开始装 MSIX 时会被拒绝并给出原因。 */
   cancelCodexDesktopInstall: IpcInvokeDefinition<'desktop:cancel-install-codex', [], InstallCancelResult>
   uninstallCodexDesktop: IpcInvokeDefinition<'desktop:uninstall-codex', [], ToolUninstallResult>
+  /** Codex 桌面端打不开时的「重置 Codex」：只清它自己的应用数据，星芒写的连接设置不动。 */
+  resetCodexDesktop: IpcInvokeDefinition<'desktop:reset-codex', [], void>
   checkCodexDesktopUpdate: IpcInvokeDefinition<'desktop:check-update-codex', [], DesktopAppStatus>
   /**
    * mode 省略 = 开新对话(旧行为);resumeLast 由主进程按工具映射成固定参数。
@@ -1273,6 +1275,7 @@ export const ipcInvokeChannels = {
   installCodexDesktop: 'desktop:install-codex',
   cancelCodexDesktopInstall: 'desktop:cancel-install-codex',
   uninstallCodexDesktop: 'desktop:uninstall-codex',
+  resetCodexDesktop: 'desktop:reset-codex',
   checkCodexDesktopUpdate: 'desktop:check-update-codex',
   launchCli: 'cli:launch',
   getCodexDesktopStatus: 'desktop:codex-status',
