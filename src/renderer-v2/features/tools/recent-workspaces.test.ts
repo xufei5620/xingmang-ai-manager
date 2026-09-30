@@ -3,6 +3,7 @@ import type { MultiProviderSessionPage } from '../../../../electron/ipc-contract
 import {
   isMissingWorkspace,
   latestSessionIdsByWorkspace,
+  launchWorkspaces,
   recentWorkspaces,
   resumeLaunchChoice,
   workspaceButtonLabel,
@@ -21,6 +22,28 @@ function session(overrides: Partial<SessionSummary>): SessionSummary {
     ...overrides,
   } as SessionSummary
 }
+
+describe('launchWorkspaces', () => {
+  it('prefers the tool\'s own session history', () => {
+    const items = launchWorkspaces([
+      session({ id: 'a', provider: 'claude', cwd: 'C:\\work\\alpha' }),
+    ], 'claude', 'D:\\picked\\beta')
+    expect(items).toEqual([{ path: 'C:\\work\\alpha', name: 'alpha' }])
+  })
+
+  it('falls back to the folder picked earlier when the tool has no sessions', () => {
+    const items = launchWorkspaces([
+      session({ id: 'a', provider: 'codex', cwd: 'C:\\work\\alpha' }),
+    ], 'claude', 'D:\\picked\\beta')
+    expect(items).toEqual([{ path: 'D:\\picked\\beta', name: 'beta' }])
+  })
+
+  it('returns nothing when there is neither history nor a remembered folder', () => {
+    expect(launchWorkspaces([], 'claude')).toEqual([])
+    expect(launchWorkspaces([], 'claude', '   ')).toEqual([])
+    expect(launchWorkspaces([], 'claude', null)).toEqual([])
+  })
+})
 
 describe('recentWorkspaces', () => {
   it('keeps only the requested provider', () => {

@@ -954,8 +954,16 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       const waitLabel = launchWaitLabel(toolbox.jobs, (key) => tools.find((tool) => tool.id === key)?.name ?? clientConnections.find((client) => client.id === key)?.name)
       const started = await toolbox.run(`launch:${id}`, waitLabel, async () => {
         if (!launchIsCurrent(epoch)) return
-        const warning = launchWarning(await toolsApi.launch(id, workspace, mode))
+        const result = await toolsApi.launch(id, workspace, mode)
+        const warning = launchWarning(result)
         if (launchIsCurrent(epoch) && warning) toast.show(warning, 'warn')
+        // 刚选的文件夹主进程已经记下，随打开结果带回来；首页按钮马上写「打开 它」，其余工具也不再问。
+        if (launchIsCurrent(epoch) && result && 'rememberedWorkspace' in result) {
+          const rememberedWorkspace = result.rememberedWorkspace ?? undefined
+          toolbox.setSnapshot((current) => current && current.config.rememberedWorkspace !== rememberedWorkspace
+            ? { ...current, config: { ...current.config, rememberedWorkspace } }
+            : current)
+        }
       })
       return launchIsCurrent(epoch) && started
     } catch (cause) {
