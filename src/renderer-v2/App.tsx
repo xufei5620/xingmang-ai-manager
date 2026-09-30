@@ -221,7 +221,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   const { store: balanceStore, snapshot: balanceState } = useAccountBalanceStore(native, session.authenticated ? scope : null)
   const balance = balanceState.balance
   // 买了订阅的客户钱包常是 0，请求扣的却是订阅：有能用的订阅时不再按钱包喊「余额不足」。
-  const subscription = useUsableSubscription(native, session.authenticated && accountSupports(session, 'supportsSubscriptions') ? scope : null, balanceState)
+  const { subscription, refresh: refreshSubscription } = useUsableSubscription(native, session.authenticated && accountSupports(session, 'supportsSubscriptions') ? scope : null, balanceState)
   const browserOnline = useBrowserOnline()
   const offline = isOffline({ browserOnline, networkFailures: session.authenticated ? balanceState.networkFailures : 0 })
   const [onlineChecking, setOnlineChecking] = useState(false)
@@ -397,6 +397,16 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     const skipped = skippedNamedProviders(outcome?.result, providers)
     if (skipped.length) throw new KeyRewriteSkippedError(skipped)
     return true
+  }, [runAccountBootstrap, session.account, session.authenticated])
+  /**
+   * 订阅开通之后把用得上它的工具换过去。走的是开机恢复那一档：主进程这一轮发现哪家
+   * 工具的 Key 换进了订阅分组，就只改写那几家，其余已连好的工具不碰。
+   */
+  const applySubscriptionToTools = useCallback(async (): Promise<ProviderId[]> => {
+    if (!session.authenticated || !session.account) return []
+    const outcome = await runAccountBootstrap(session.account.userId, 'restore', true)
+    if (outcome?.error) throw new Error(outcome.error)
+    return outcome?.result?.regrouped ?? []
   }, [runAccountBootstrap, session.account, session.authenticated])
   /**
    * 首页「就用现在这份」：用户自己改过配置又不想被提醒时，把这个工具记成手动来源。
@@ -1265,7 +1275,8 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
                     if (mounted.current) toast.show(errorMessage(cause, '工具已安装，但最新状态没有读到。请回到首页重新检测。'), 'warn')
                   })}
                   installTool={install} cancelToolInstall={(tool) => toolbox.cancel(tool)}
-                  onRewriteKey={(provider) => rewriteAccountKeys([provider])} rewritableKeys={rewritableKeys} />
+                  onRewriteKey={(provider) => rewriteAccountKeys([provider])} rewritableKeys={rewritableKeys}
+                  onSubscriptionActivated={applySubscriptionToTools} onSubscriptionPurchased={() => void refreshSubscription()} />
               </Suspense>
             </div>)}
           </div>
