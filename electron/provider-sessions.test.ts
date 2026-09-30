@@ -162,7 +162,7 @@ function codexReader(items = [codexSummary()], writable = true): CodexSessionRea
       operationJournalPath: 'C:/operations.jsonl',
       permanentDeleteAllowed: false as const,
     })),
-    list: vi.fn((query = {}) => {
+    list: vi.fn(async (query = {}) => {
       const pageSize = query.pageSize ?? 20
       const page = query.page ?? 1
       return {
@@ -421,7 +421,7 @@ describe('ProviderSessionsService', () => {
     fs.symlinkSync(outside, linkedRoot, 'junction')
 
     const sessions = service(data, codexReader([]), { claudeProjectsRoot: linkedRoot })
-    expect(sessions.capabilities().claude).toMatchObject({ available: false, readable: false })
+    expect((await sessions.capabilities()).claude).toMatchObject({ available: false, readable: false })
     const page = await sessions.list({ provider: 'claude' })
     expect(page.items).toEqual([])
     expect(page.capabilities.claude).toMatchObject({ available: false, readable: false })
@@ -730,7 +730,7 @@ describe('ProviderSessionsService.delete', () => {
     expect(capabilities.gemini.operations.delete).toBe(true)
     expect(capabilities.grok.operations.delete).toBe(true)
     expect(capabilities.codex.operations.delete).toBe(true)
-    expect(service(data, codexReader([codexSummary()], false)).capabilities().codex.operations.delete).toBe(false)
+    expect((await service(data, codexReader([codexSummary()], false)).capabilities()).codex.operations.delete).toBe(false)
   })
 
   it('removes a claude transcript and its companion folder but nothing else', async () => {
@@ -846,7 +846,7 @@ describe('ProviderSessionsService.delete', () => {
 
     expect(result.deletedFiles).toBe(1)
     expect(fs.existsSync(path.join(data.codexHome, 'sessions', `${id}.jsonl`))).toBe(false)
-    expect(codex.list().total).toBe(0)
+    expect((await codex.list()).total).toBe(0)
     expect(fs.existsSync(path.join(data.root, 'manager', 'backups'))).toBe(false)
   })
 
@@ -858,7 +858,7 @@ describe('ProviderSessionsService.delete', () => {
     const codex = new CodexSessionsService({ codexHome: data.codexHome, managerDataDirectory: path.join(data.root, 'manager') })
 
     await expect(codex.delete(id)).resolves.toEqual({ sessionId: id, deletedFiles: 0 })
-    expect(codex.list().total).toBe(0)
+    expect((await codex.list()).total).toBe(0)
   })
 
   it('refuses a codex rollout that points outside CODEX_HOME and keeps the row', async () => {
@@ -874,6 +874,6 @@ describe('ProviderSessionsService.delete', () => {
 
     await expect(codex.delete(id)).rejects.toThrow('不在 CODEX_HOME 内')
     expect(fs.readFileSync(outside, 'utf8')).toBe('keep')
-    expect(codex.list().total).toBe(1)
+    expect((await codex.list()).total).toBe(1)
   })
 })
