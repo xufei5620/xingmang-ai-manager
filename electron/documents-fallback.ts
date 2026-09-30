@@ -7,6 +7,7 @@ import {
   resolveStarterWorkspaceParent,
   type StarterWorkspaceLocationContext,
 } from './starter-workspace'
+import type { SensitiveWorkspaceKind } from './workspace-guard'
 
 /**
  * 「文档」写不进去时，新项目和 AI 作品改放到用户主目录下（和云盘那条退路同一个地方）。
@@ -46,6 +47,102 @@ export function probeDirectoryWritableSync(directory: string, randomBytes: (size
     } catch {
       // 删不掉只会留一个几字节的空文件，不值得为它让试写算失败。
     }
+  }
+}
+
+/** 同 probeDirectoryWritableSync，异步版：打开工具那一路在主线程上，慢盘、网络盘不能卡住窗口。 */
+export async function probeDirectoryWritable(directory: string, randomBytes: (size: number) => Buffer = nodeRandomBytes): Promise<void> {
+  const probePath = path.join(directory, `.write-check-${randomBytes(16).toString('hex')}.tmp`)
+  const handle = await fs.promises.open(probePath, 'wx', 0o600)
+  try {
+    await handle.writeFile('ok')
+  } finally {
+    await handle.close()
+    await fs.promises.rm(probePath, { force: true }).catch(() => {
+      // 同上：删不掉只留一个几字节的文件。
+    })
+  }
+}
+
+export type WorkspaceWritability = 'writable' | 'denied' | 'unknown'
+
+/**
+ * 打开工具前要不要先试写一下选中的文件夹。只在 Windows：受控文件夹访问和安全软件的
+ * 文档保护是 Windows 上的事，Mac 的文稿权限走系统询问那一套（终端启动脚本里已有中文说明）。
+ * 系统目录、盘根、主目录这类本来就不该写的，选的时候已经提醒过，不再多问一句。
+ */
+export function shouldCheckWorkspaceWritable(sensitivity: SensitiveWorkspaceKind | null, platform: NodeJS.Platform): boolean {
+  if (platform !== 'win32') return false
+  return sensitivity === null || sensitivity === 'desktop' || sensitivity === 'documents' || sensitivity === 'downloads'
+}
+
+export interface InspectWorkspaceWritableOptions {
+  probe?: (directory: string) => Promise<void>
+  timeoutMs?: number
+}
+
+/**
+ * 试写一次。只有「不让写」（权限类）才算 denied；文件夹不见了、磁盘满、试写超时都算
+ * unknown，照原来直接打开，由各自已有的提示接手——多了这一步不能让以前打得开的打不开。
+ */
+export async function inspectWorkspaceWritable(
+  workspace: string,
+  options: InspectWorkspaceWritableOptions = {},
+): Promise<WorkspaceWritability> {
+  const probe = options.probe ?? probeDirectoryWritable
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const timeout = new Promise<WorkspaceWritability>((resolve) => {
+    timer = setTimeout(() => resolve('unknown'), options.timeoutMs ?? 3000)
+  })
+  const attempt = probe(workspace).then(
+    (): WorkspaceWritability => 'writable',
+    (error: unknown): WorkspaceWritability => (isWritePermissionError(error) ? 'denied' : 'unknown'),
+  )
+  try {
+    return await Promise.race([attempt, timeout])
+  } finally {
+    if (timer !== undefined) clearTimeout(timer)
+  }
+}
+
+export interface WorkspaceNotWritablePrompt {
+  title: string
+  message: string
+  detail: string
+  buttons: readonly string[]
+  /** 「换到能写的位置」；接着上次的对话换了文件夹就接不上，那时没有这一项。 */
+  createIndex: number | null
+  continueIndex: number
+  cancelIndex: number
+  defaultIndex: number
+}
+
+/** 打开前试写失败时的那一问。「照常打开」一直留着：只是提醒，不拦死。 */
+export function buildWorkspaceNotWritablePrompt(options: { allowCreate: boolean }): WorkspaceNotWritablePrompt {
+  const cause = '常见原因是 Windows 安全中心的「受控文件夹访问」或安全软件的「文档保护」开着。'
+  const base = {
+    title: '这个文件夹不让写入',
+    message: '这个文件夹现在不让程序写入，AI 打开后改不了里面的文件。',
+  }
+  if (!options.allowCreate) {
+    return {
+      ...base,
+      detail: `${cause}接着上次的对话只能在原来的文件夹里打开。`,
+      buttons: ['先不打开', '照常打开'],
+      createIndex: null,
+      continueIndex: 1,
+      cancelIndex: 0,
+      defaultIndex: 1,
+    }
+  }
+  return {
+    ...base,
+    detail: `${cause}「换到能写的位置」会新建一个项目文件夹并在那里打开，原来的文件还在原来的位置。`,
+    buttons: ['换到能写的位置', '照常打开', '先不打开'],
+    createIndex: 0,
+    continueIndex: 1,
+    cancelIndex: 2,
+    defaultIndex: 0,
   }
 }
 
