@@ -4,10 +4,14 @@ import os from 'node:os'
 import path from 'node:path'
 import {
   buildDocumentsFallbackPrompt,
+  buildWorkspaceNotWritablePrompt,
   createStarterWorkspaceWithFallback,
   inspectDocumentsWritability,
+  inspectWorkspaceWritable,
   isWritePermissionError,
+  probeDirectoryWritable,
   probeDirectoryWritableSync,
+  shouldCheckWorkspaceWritable,
 } from './documents-fallback'
 import { createStarterWorkspace, type StarterWorkspaceLocationContext } from './starter-workspace'
 
@@ -55,6 +59,97 @@ describe('probeDirectoryWritableSync', () => {
 
     expect(() => probeDirectoryWritableSync(directory, () => bytes)).toThrow(/EEXIST/)
     expect(fs.readFileSync(target, 'utf8')).toBe('keep')
+  })
+})
+
+describe('probeDirectoryWritable', () => {
+  let directory: string
+
+  beforeEach(() => {
+    directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-workspace-probe-'))
+  })
+
+  afterEach(() => {
+    fs.rmSync(directory, { recursive: true, force: true })
+  })
+
+  it('writes a file and leaves nothing behind', async () => {
+    await probeDirectoryWritable(directory)
+
+    expect(fs.readdirSync(directory)).toEqual([])
+  })
+
+  it.runIf(process.platform !== 'win32')('never follows a planted link at the probe name', async () => {
+    const target = path.join(directory, 'target')
+    fs.writeFileSync(target, 'keep')
+    const bytes = Buffer.alloc(16, 2)
+    fs.symlinkSync(target, path.join(directory, `.write-check-${bytes.toString('hex')}.tmp`))
+
+    await expect(probeDirectoryWritable(directory, () => bytes)).rejects.toThrow(/EEXIST/)
+    expect(fs.readFileSync(target, 'utf8')).toBe('keep')
+  })
+})
+
+describe('shouldCheckWorkspaceWritable', () => {
+  it('only checks on Windows', () => {
+    expect(shouldCheckWorkspaceWritable(null, 'win32')).toBe(true)
+    expect(shouldCheckWorkspaceWritable(null, 'darwin')).toBe(false)
+    expect(shouldCheckWorkspaceWritable(null, 'linux')).toBe(false)
+  })
+
+  it('checks the folders controlled folder access guards but not ones the user was already warned about', () => {
+    expect(shouldCheckWorkspaceWritable('documents', 'win32')).toBe(true)
+    expect(shouldCheckWorkspaceWritable('desktop', 'win32')).toBe(true)
+    expect(shouldCheckWorkspaceWritable('downloads', 'win32')).toBe(true)
+    expect(shouldCheckWorkspaceWritable('drive-root', 'win32')).toBe(false)
+    expect(shouldCheckWorkspaceWritable('home', 'win32')).toBe(false)
+    expect(shouldCheckWorkspaceWritable('system', 'win32')).toBe(false)
+    expect(shouldCheckWorkspaceWritable('provider-config', 'win32')).toBe(false)
+  })
+})
+
+describe('inspectWorkspaceWritable', () => {
+  it('reports a folder that takes the probe as writable', async () => {
+    await expect(inspectWorkspaceWritable('C:\\work', { probe: async () => undefined })).resolves.toBe('writable')
+  })
+
+  it('reports permission errors as denied', async () => {
+    await expect(inspectWorkspaceWritable('C:\\work', { probe: async () => { throw systemError('EPERM') } })).resolves.toBe('denied')
+    await expect(inspectWorkspaceWritable('C:\\work', { probe: async () => { throw systemError('EACCES') } })).resolves.toBe('denied')
+  })
+
+  it('does not blame permissions for a missing folder or a full disk', async () => {
+    await expect(inspectWorkspaceWritable('C:\\work', { probe: async () => { throw systemError('ENOENT') } })).resolves.toBe('unknown')
+    await expect(inspectWorkspaceWritable('C:\\work', { probe: async () => { throw systemError('ENOSPC') } })).resolves.toBe('unknown')
+  })
+
+  it('gives up on a probe that hangs instead of holding the launch', async () => {
+    await expect(inspectWorkspaceWritable('\\\\server\\share', {
+      probe: () => new Promise<void>(() => undefined),
+      timeoutMs: 10,
+    })).resolves.toBe('unknown')
+  })
+})
+
+describe('buildWorkspaceNotWritablePrompt', () => {
+  it('offers a writable place by default and keeps a way to open anyway', () => {
+    const prompt = buildWorkspaceNotWritablePrompt({ allowCreate: true })
+
+    expect(prompt.buttons).toEqual(['换到能写的位置', '照常打开', '先不打开'])
+    expect(prompt.createIndex).toBe(0)
+    expect(prompt.defaultIndex).toBe(0)
+    expect(prompt.buttons[prompt.continueIndex]).toBe('照常打开')
+    expect(prompt.buttons[prompt.cancelIndex]).toBe('先不打开')
+    expect(prompt.detail).toContain('受控文件夹访问')
+    expect(prompt.detail).toContain('原来的文件还在原来的位置')
+  })
+
+  it('does not offer another folder when resuming a conversation', () => {
+    const prompt = buildWorkspaceNotWritablePrompt({ allowCreate: false })
+
+    expect(prompt.buttons).toEqual(['先不打开', '照常打开'])
+    expect(prompt.createIndex).toBeNull()
+    expect(prompt.buttons[prompt.defaultIndex]).toBe('照常打开')
   })
 })
 
