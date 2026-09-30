@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { accelerationBonusCode, accelerationBonusSeconds, accelerationConflictNotice, accelerationTrialSeconds } from '../../../../electron/acceleration-contract'
 import type { AccelerationApi, AccelerationClient, AccelerationMode, AccelerationPreference, AccelerationPreferenceUpdate, AccelerationRedemptionResult, AccelerationState } from './api'
 import { createAccelerationApi } from './api'
-import { createAccelerationController, type AccelerationController } from './controller'
+import { createAccelerationController, createClockFreeSnapshotReader, sameAccelerationSnapshotIgnoringClock, type AccelerationController, type AccelerationSnapshot } from './controller'
 
 function state(overrides: Partial<AccelerationState> = {}): AccelerationState {
   return {
@@ -548,5 +548,64 @@ describe('acceleration mode memory', () => {
     controller.setMode('tun')
     await Promise.resolve()
     expect(controller.getSnapshot()).toMatchObject({ mode: 'tun', error: null })
+  })
+})
+
+describe('clock-free acceleration snapshot', () => {
+  function snapshot(overrides: Partial<AccelerationState> = {}, rest: Partial<AccelerationSnapshot> = {}): AccelerationSnapshot {
+    return { state: state({ phase: 'active', connectedAt: 'session:1', supportedModes: ['system-proxy', 'tun'], line: { id: 'sg', name: '新加坡', region: 'SG', latencyMs: 40 }, ...overrides }), busy: false, error: null, mode: 'system-proxy', ...rest }
+  }
+
+  it('treats a countdown step or a recalibrated read of the same session as unchanged', () => {
+    const before = snapshot()
+    expect(sameAccelerationSnapshotIgnoringClock(before, snapshot({ remainingSeconds: 1190, sessionSeconds: 10, measuredAt: '2026-09-14T00:00:10Z' }))).toBe(true)
+  })
+
+  it('reports every change the shell can see', () => {
+    const before = snapshot()
+    expect(sameAccelerationSnapshotIgnoringClock(before, snapshot({ phase: 'stopping' }))).toBe(false)
+    expect(sameAccelerationSnapshotIgnoringClock(before, snapshot({ connectedAt: 'session:2' }))).toBe(false)
+    expect(sameAccelerationSnapshotIgnoringClock(before, snapshot({ supportedModes: ['system-proxy'] }))).toBe(false)
+    expect(sameAccelerationSnapshotIgnoringClock(before, snapshot({ line: { id: 'jp', name: '日本', region: 'JP', latencyMs: 40 } }))).toBe(false)
+    expect(sameAccelerationSnapshotIgnoringClock(before, snapshot({ autoStartedBy: 'codex-desktop' }))).toBe(false)
+    expect(sameAccelerationSnapshotIgnoringClock(before, snapshot({}, { busy: true }))).toBe(false)
+    expect(sameAccelerationSnapshotIgnoringClock(before, snapshot({}, { error: '失败' }))).toBe(false)
+    expect(sameAccelerationSnapshotIgnoringClock(before, { ...before, state: null })).toBe(false)
+  })
+
+  it('keeps handing back the same object until something besides the clock changes', () => {
+    let current = snapshot()
+    const read = createClockFreeSnapshotReader(() => current)
+    const first = read()
+    current = snapshot({ remainingSeconds: 1199, sessionSeconds: 1 })
+    expect(read()).toBe(first)
+    current = snapshot({ phase: 'stopping', remainingSeconds: 1198, sessionSeconds: 2 })
+    expect(read()).toBe(current)
+  })
+
+  it('stops publishing a new clock-free snapshot on every tick of a running session', async () => {
+    vi.useFakeTimers()
+    let monotonic = 0
+    const active = state({ phase: 'active', connectedAt: 'session:1' })
+    const controller = createAccelerationController({
+      getAccelerationState: vi.fn<AccelerationApi['getAccelerationState']>().mockResolvedValue(active),
+      startAcceleration: vi.fn<AccelerationApi['startAcceleration']>(),
+      stopAcceleration: vi.fn<AccelerationApi['stopAcceleration']>(),
+    }, { now: () => monotonic })
+    try {
+      const read = createClockFreeSnapshotReader(controller.getSnapshot)
+      controller.setScope(active.scope)
+      await controller.refresh()
+      const settled = read()
+      const live = controller.getSnapshot()
+      monotonic += 3000
+      await vi.advanceTimersByTimeAsync(3000)
+      expect(controller.getSnapshot()).not.toBe(live)
+      expect(controller.getSnapshot().state?.remainingSeconds).toBe(accelerationTrialSeconds - 3)
+      expect(read()).toBe(settled)
+    } finally {
+      controller.dispose()
+      vi.useRealTimers()
+    }
   })
 })
