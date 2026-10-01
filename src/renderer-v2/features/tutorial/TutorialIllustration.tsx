@@ -11,9 +11,9 @@ const illustrationDescriptions: Record<TutorialIllustrationId, { title: string; 
   'desktop-project': { title: '处理文件时，选择本地项目', description: '需要处理本地文件时，在 Codex 桌面端里选择项目文件夹，再输入具体任务，等待并阅读回复。简单提问可以直接新建对话。示例问题要求先说明项目内容，不修改文件；图中回复仅为示意。', hint: '先用练习项目熟悉操作；允许改文件前，先看清它准备做什么。' },
   home: { title: '先认识三个常用入口', description: '首页工具区用于安装、配置和打开工具；左侧聊天可以直接提问；左下角账号入口用于登录和查看余额。', hint: '首页管工具，聊天直接用，左下角管账号。' },
   account: { title: '先登录自己的星芒账号', description: '点击工具箱左下角的未登录账号区域，按提示登录。完成后，左下角会显示自己的账号昵称，先确认登录的是自己准备使用的账号。图中不包含真实账号。', hint: '左下角出现自己的账号昵称，就完成这一步了。' },
-  install: { title: '找到工具，点击安装', description: '在首页找到想使用的工具，点击它右侧的安装。CLI 需要的运行环境可在首页右侧运行环境区域检查。', hint: '先装一个需要的工具，不必一次全部安装。' },
+  install: { title: '找到工具，点击安装', description: '在首页找到想使用的工具，点击它右侧的安装。缺的 Node.js 会自动准备好，首页「运行环境」那张卡里能看到装好了没有。', hint: '先装一个需要的工具，不必一次全部安装。' },
   config: { title: '确认来源、密钥和模型', description: '配置窗口内选择星芒账号，确认访问密钥与默认模型，然后点击保存配置；其他自定义设置会保留。', hint: '点「保存配置」即可，其他自定义设置会保留。' },
-  launch: { title: '在自己的文件夹里开始', description: '点击工具行的打开，按提示选择工作文件夹。CLI 会在这个文件夹打开，随后在工具窗口中输入自己的任务。', hint: '先用测试文件夹练习，再让 AI 处理正式项目。' },
+  launch: { title: '在自己的文件夹里开始', description: '点击工具行的打开，按提示选择工作文件夹。工具会在这个文件夹打开，随后在工具窗口中输入自己的任务。', hint: '先用测试文件夹练习，再让 AI 处理正式项目。' },
   chat: { title: '不打开终端，也能直接提问', description: '左侧选择聊天，在输入框上方选择文本对话、分组和模型，输入具体问题，再点击输入框右侧的发送消息。', hint: '先确认分组和模型，再描述你希望完成的事。' },
   canvas: { title: '把提示词连到图像节点', description: '在画布中添加提示词和图像节点，连接两个节点，检查生成配置，再运行此节点。图中未执行生成。', hint: '连接节点后再运行；保存工作流不等于生成图片。' },
   acceleration: { title: '选线路，再开始加速', description: '在游戏加速页面选择加速线路，可以选智能分配，再点击开始加速；加速只改这台电脑的系统代理，连接后要换线路须先停止加速。不使用时点击停止加速。', hint: '连接后才计时；用完点击「停止加速」。' },
@@ -107,7 +107,7 @@ function Diagram({ kind }: { kind: TutorialIllustrationId }) {
       return <div className="tutorial-illustration-install">
         <div className="tutorial-illustration-row"><span><Marker>1</Marker>首页 · 还可以装</span><span className="tutorial-illustration-muted">按需选择</span></div>
         <div className="tutorial-illustration-tool tutorial-illustration-highlight"><Terminal size={24} /><div className="tutorial-illustration-grow"><strong>Claude Code</strong><small>在终端里和 AI 一起写代码</small></div><Control primary><Download size={15} />安装</Control><Marker>2</Marker></div>
-        <div className="tutorial-illustration-row tutorial-illustration-runtime"><Settings2 size={16} /><span>运行环境</span><span className="tutorial-illustration-muted">Node.js · npm · Python</span><ArrowRight size={16} /><span>缺什么，再准备什么</span></div>
+        <div className="tutorial-illustration-row tutorial-illustration-runtime"><Settings2 size={16} /><span>运行环境</span><span className="tutorial-illustration-muted">Node.js · Python</span><ArrowRight size={16} /><span>缺什么，再准备什么</span></div>
       </div>
     case 'config':
       return <div className="tutorial-illustration-config">
@@ -118,7 +118,7 @@ function Diagram({ kind }: { kind: TutorialIllustrationId }) {
       </div>
     case 'launch':
       return <div className="tutorial-illustration-launch">
-        <div className="tutorial-illustration-row"><strong>CLI 工具 · 首页</strong><Control primary>打开<ArrowUpRight size={14} /></Control></div>
+        <div className="tutorial-illustration-row"><strong>命令行工具 · 首页</strong><Control primary>打开<ArrowUpRight size={14} /></Control></div>
         <div className="tutorial-illustration-flow"><div className="tutorial-illustration-folder"><FolderOpen size={32} /><strong>我的练习项目</strong><span><Marker>1</Marker>选择文件夹</span></div><ArrowRight className="tutorial-illustration-arrow" size={22} /><div className="tutorial-illustration-terminal"><span><Terminal size={15} />工具窗口</span><p>请先看看这个项目，<br />告诉我它是做什么的。</p><small><Marker>2</Marker>输入任务，开始对话</small></div></div>
       </div>
     case 'chat':
