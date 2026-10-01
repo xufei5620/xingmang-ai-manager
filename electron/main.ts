@@ -1335,6 +1335,9 @@ if (!hasSingleInstanceLock) {
           // a settings change is reflected on the very next diagnostics run.
           relaySite: resolveRelaySite(systemService.readStoredConfig().relaySiteId),
           inspectAccelerationActive: accelerationRunning,
+          // 「电脑里的代理设置」顺带看账号请求走不走系统代理：账号请求用的就是
+          // defaultSession 的 net.fetch，问它本身最准，也不用另起命令读系统设置。
+          resolveAppProxy: (url) => session.defaultSession.resolveProxy(url),
           // 「Claude 命令确认方式」要分清 bypassPermissions 是我们写的还是别人写的。
           // 来源的判定要比对当前登录账号，只有 system-service 那边算得出来。
           readClaudeConfigOwnership: () => systemService.getConfig(false).providers.claude.configurationOwnership ?? null,

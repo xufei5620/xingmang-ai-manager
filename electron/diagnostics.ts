@@ -14,6 +14,7 @@ import {
   trustedCommandEnvironment,
 } from './command-runner'
 import { defaultProviderConfigRoots, type IgnoredCodexHome, type ProviderConfigRoots } from './codex-home'
+import { isLoopbackDownloadProxy, parseChromiumProxyResult } from './download-proxy'
 import { inspectProviderConfig, type NativeConfigInspection } from './config-files'
 import {
   formatFreeSpace,
@@ -190,6 +191,13 @@ export interface DiagnosticsDependencies {
   readProxyScopes?: () => Promise<ProxyVariableScopes | null>
   /** 试连代理设置指向的本机端口；缺省 = 真的去连。 */
   probeLoopbackProxy?: LoopbackProbe
+  /**
+   * 「电脑里的代理设置」一项另看星芒自己连账号服务走不走代理：宿主交给 Electron 的
+   * `session.resolveProxy`，答案就是账号请求（net.fetch）真正走的那条路，系统设置
+   * 里勾的 HTTP / HTTPS / SOCKS / 自动代理配置都已经算进去，不起任何外部命令。
+   * 缺省 = 不看（旧行为）。
+   */
+  resolveAppProxy?: (url: string) => Promise<string>
   /**
    * 「安全证书」一项用电脑上的 Node.js 做一次 TLS 握手（certificate-trust-probe.ts）。
    * 缺省 = 真的起 `node -e`；测试用它造「公司证书」「Node 太旧」这些情况。
@@ -879,6 +887,82 @@ export async function windowsProxySettingsOutcome(
     state: 'pass',
     summary: `电脑里设了代理（本机 ${findings[0].target?.port} 端口），工具会通过它联网。`,
     details,
+  }
+}
+
+/** Windows 以外只列环境变量的名字和来源，不探端口（旧行为）。 */
+function otherProxySettingsOutcome(
+  variables: readonly ProxyVariableSummary[],
+): Omit<DiagnosticItem, 'code' | 'title' | 'durationMs'> {
+  const unique = [...new Map(variables.map((item) => [`${item.name}:${item.source}`, item])).values()]
+    .sort((left, right) => left.name.localeCompare(right.name) || left.source.localeCompare(right.source))
+  return {
+    state: unique.length ? 'warn' : 'pass',
+    summary: unique.length ? `电脑里另外设了 ${unique.length} 处代理，详情里能看到` : '没有另外设过代理',
+    details: Object.fromEntries(unique.map((item, index) => [`variable${index + 1}`, `${item.name} (${item.source})`])),
+  }
+}
+
+/** 系统代理只是一句附加说明，读不出来就当没有，不拖慢整项检查。 */
+const appProxyResolveTimeoutMs = 3_000
+
+export type AppProxyRoute =
+  | { reach: 'open' | 'closed'; port: number }
+  | { reach: 'remote' }
+
+/**
+ * 客户开着别的代理软件或 VPN 时，它通常改的是系统设置里的代理，而不是那几个环境
+ * 变量；星芒的账号、余额请求跟着系统代理走，于是全部超时，可这一项此前只看环境
+ * 变量，照样报「正常」（2026-10-01 客户 Mac 报障）。这里问 Chromium 这一个地址
+ * 实际走哪条路，DIRECT 或认不出的写法都按没有代理处理，和以前一样。
+ */
+export async function inspectAppProxyRoute(
+  resolve: (url: string) => Promise<string>,
+  url: string,
+  probe: LoopbackProbe,
+): Promise<AppProxyRoute | null> {
+  let timer: NodeJS.Timeout | undefined
+  const timeout = new Promise<null>((done) => {
+    timer = setTimeout(() => done(null), appProxyResolveTimeoutMs)
+    timer.unref()
+  })
+  try {
+    const resolved = await Promise.race([resolve(url).catch(() => null), timeout])
+    const endpoint = parseChromiumProxyResult(resolved)
+    if (!endpoint) return null
+    if (!isLoopbackDownloadProxy(endpoint)) return { reach: 'remote' }
+    const host = endpoint.host.replace(/^\[(.*)\]$/, '$1').toLowerCase()
+    const open = await probe({ host, port: endpoint.port }).catch(() => false)
+    return { reach: open ? 'open' : 'closed', port: endpoint.port }
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+/**
+ * 把系统代理并进「电脑里的代理设置」这一项。只写本机端口或「别的机器」，不写代理
+ * 地址：和环境变量那半边同一个口径，报告会被导出发给客服。
+ */
+export function withAppProxyRoute(
+  outcome: Omit<DiagnosticItem, 'code' | 'title' | 'durationMs'>,
+  route: AppProxyRoute | null,
+): Omit<DiagnosticItem, 'code' | 'title' | 'durationMs'> {
+  if (!route) return outcome
+  const sentence = route.reach === 'remote'
+    ? '电脑里开着代理（用的是别的机器上的代理），星芒会跟着它走；连不上账号时先关掉这个代理再试。'
+    : route.reach === 'closed'
+      ? `电脑里开着代理（本机 ${route.port} 端口），但它现在没开，星芒会连不上账号。打开对应的代理软件，或者在系统设置里把代理关掉再试。`
+      : `电脑里开着代理（本机 ${route.port} 端口），星芒会跟着它走；连不上账号时先退出代理软件再试。`
+  const details = outcome.details ?? {}
+  const variablesFound = Object.keys(details).length > 0
+  return {
+    ...outcome,
+    state: outcome.state === 'pass' ? 'warn' : outcome.state,
+    summary: variablesFound ? `${sentence}另外，${outcome.summary}` : sentence,
+    details: {
+      ...details,
+      systemProxy: route.reach === 'remote' ? '别的机器' : `本机 ${route.port} 端口（${route.reach === 'open' ? '开着' : '没开'}）`,
+    },
   }
 }
 
@@ -1681,6 +1765,13 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
   const fetchImpl = dependencies.fetch ?? globalThis.fetch
   const paths = dependencies.clashConfigPaths ?? clashCandidates(userHome, env)
   const inspectProxy = dependencies.inspectProxyVariables ?? ((signal) => defaultProxyVariables(env))
+  async function inspectAppProxyRouteUnlessAccelerating(): Promise<AppProxyRoute | null> {
+    const resolve = dependencies.resolveAppProxy
+    if (!resolve) return null
+    // 加速开着时系统代理就是星芒自己设的那个，不算「别的程序开着代理」。
+    if (await dependencies.inspectAccelerationActive?.().catch(() => false)) return null
+    return inspectAppProxyRoute(resolve, relaySite.accountBaseUrl ?? relayStatusProbeUrl(relaySite), dependencies.probeLoopbackProxy ?? probeLoopbackProxy)
+  }
   const probeDiskSpace = dependencies.readDiskSpace ?? readDiskSpace
   const probeAiOutput = dependencies.probeAiOutput
   const diskSpaceTargets = resolveDiskSpaceTargets(env, platform, dependencies.userDataDirectory)
@@ -2241,26 +2332,21 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
         }
       },
     },
-    platform === 'win32' ? {
-      code: 'PROXY_ENVIRONMENT',
-      title: '电脑里的代理设置',
-      run: () => windowsProxySettingsOutcome(
-        env,
-        dependencies.probeLoopbackProxy ?? probeLoopbackProxy,
-        dependencies.readProxyScopes ?? (() => readWindowsProxyScopes()),
-      ),
-    } : {
+    {
       code: 'PROXY_ENVIRONMENT',
       title: '电脑里的代理设置',
       run: async (signal) => {
-        const variables = await inspectProxy(signal)
-        const unique = [...new Map(variables.map((item) => [`${item.name}:${item.source}`, item])).values()]
-          .sort((left, right) => left.name.localeCompare(right.name) || left.source.localeCompare(right.source))
-        return {
-          state: unique.length ? 'warn' : 'pass',
-          summary: unique.length ? `电脑里另外设了 ${unique.length} 处代理，详情里能看到` : '没有另外设过代理',
-          details: Object.fromEntries(unique.map((item, index) => [`variable${index + 1}`, `${item.name} (${item.source})`])),
-        }
+        const [variables, route] = await Promise.all([
+          platform === 'win32'
+            ? windowsProxySettingsOutcome(
+              env,
+              dependencies.probeLoopbackProxy ?? probeLoopbackProxy,
+              dependencies.readProxyScopes ?? (() => readWindowsProxyScopes()),
+            )
+            : otherProxySettingsOutcome(await inspectProxy(signal)),
+          inspectAppProxyRouteUnlessAccelerating(),
+        ])
+        return withAppProxyRoute(variables, route)
       },
     },
     {
