@@ -88,4 +88,11 @@ describe('tutorial wording that follows the current app', () => {
   it('never teaches the acceleration mode switch that is not open to customers', () => {
     expect(JSON.stringify(tutorialTopics)).not.toMatch(/TUN/i);
   });
+
+  it('keeps npm and the bare word CLI out of what customers read', () => {
+    // keywords only feed the search box, so customers who type「npm」or「CLI」still land on the right chapter.
+    const visible = JSON.stringify(tutorialTopics.map(({ keywords: _keywords, ...topic }) => topic));
+    expect(visible).not.toMatch(/npm/i);
+    expect(visible.replace(/(Codex|Gemini|Grok) CLI/g, '')).not.toMatch(/CLI/);
+  });
 });
