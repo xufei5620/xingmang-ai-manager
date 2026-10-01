@@ -129,7 +129,7 @@ import type { AiAssetStore } from './ai-asset-store'
 import type { AiChatService } from './ai-chat-service'
 import type { AiImageService } from './ai-image-service'
 import type { ChatCredentialCoordinator } from './chat-credential-coordinator'
-import { clearXingmangAiSkillSecrets, syncXingmangAiSkill } from './xingmang-ai-skill'
+import { clearXingmangAiSkillSecrets, describeImageMcpWarnings, syncXingmangAiSkill } from './xingmang-ai-skill'
 import type {
   AccountKeyCliConfigurationInput,
   AccountSessionState,
@@ -3250,7 +3250,10 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
       for (const warning of skill.directoryWarnings ?? []) {
         options.runtimeLog.log('warn', 'account', 'xingmang-ai-skill.sync', warning)
       }
-      if (skill.ready) return summary
+      // 技能写进去了、画图工具却没登记上，以前只进日志：客户说「画一张」AI 不会，首页一个字没有。
+      // 这里换成一句人话交给首页，那张提示自带「重新同步」，点了就整轮再登记一次。
+      const imageMcpWarning = describeImageMcpWarnings(skill.imageMcpWarnings ?? [])
+      if (skill.ready) return imageMcpWarning ? { ...summary, imageMcpWarning } : summary
       const imageSkillWarning = skill.reason || '星芒AI 生图 Key 未完成初始化'
       options.runtimeLog.log('warn', 'account', 'xingmang-ai-skill.sync', imageSkillWarning)
       return { ...summary, imageSkillWarning }

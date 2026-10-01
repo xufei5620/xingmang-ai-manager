@@ -19,7 +19,7 @@ import { managedCliKeyProfiles, providerIds } from './catalog'
 import { managedKeyQuotaExhaustedMessage } from './account-key-quota'
 import { createManagedKeyReplacementStore, managedKeyReplacementUnreadableRevokeMessage, type ManagedKeyReplacementStore } from './managed-key-replacement-store'
 import { externalUrlBlockedErrorName, isExternalUrlBlockedError } from './external-url-blocked'
-import { resolveXingmangAiBundledSkillRoot } from './xingmang-ai-skill'
+import { XINGMANG_IMAGE_MCP_NO_NODE_WARNING, resolveXingmangAiBundledSkillRoot } from './xingmang-ai-skill'
 
 const electronMocks = vi.hoisted(() => ({
   handlers: new Map<string, (...args: unknown[]) => unknown>(),
@@ -1101,6 +1101,54 @@ describe('registerIpcHandlers', () => {
       expect(JSON.stringify(summary)).not.toContain('sk-ipc-must-not-return-this-secret-key')
       const configPath = path.join(userHome, '.agents', 'skills', '星芒AI', 'config.json')
       expect(fs.readFileSync(configPath, 'utf8')).toContain('sk-ipc-must-not-return-this-secret-key')
+    } finally {
+      fs.rmSync(userHome, { recursive: true, force: true })
+    }
+  })
+
+  it('hands a plain-language notice to the renderer when the image tool could not be registered', async () => {
+    const userHome = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-ai-skill-ipc-'))
+    const accountService = accountServiceStub()
+    vi.mocked(accountService.getSessionState).mockReturnValue({
+      authenticated: true,
+      account: { userId: 9 },
+    } as never)
+    vi.mocked(accountService.listUsableGroups).mockResolvedValue([
+      { name: '图片模型-中转/订阅', description: '', ratio: 1 },
+    ])
+    vi.mocked(accountService.provisionCliKey).mockImplementation(async (input) => ({
+      id: 7,
+      name: input?.name ?? 'key',
+      key: 'sk-ipc-image-key-1234567890',
+    }))
+    const syncImageMcp = vi.fn(async () => [XINGMANG_IMAGE_MCP_NO_NODE_WARNING])
+    const { runtimeLog } = register(
+      serviceStub(),
+      'C:\\app-data\\logs',
+      undefined,
+      accountService,
+      undefined,
+      {
+        read: vi.fn(async () => []),
+        save: vi.fn(),
+        remove: vi.fn(),
+        captureRevision: vi.fn(() => 1),
+      },
+      {
+        xingmangAiSkill: {
+          bundledRoot: resolveXingmangAiBundledSkillRoot(path.resolve(__dirname, '..')),
+          userHome,
+          syncImageMcp,
+        },
+      },
+    )
+
+    try {
+      const summary = await electronMocks.handlers.get('account:sync-managed-cli-keys')!(trustedEvent()) as { imageMcpWarning?: string; imageSkillWarning?: string }
+      expect(summary.imageMcpWarning).toContain('运行环境')
+      expect(summary.imageMcpWarning).not.toContain('Node.js')
+      expect(summary.imageSkillWarning).toBeUndefined()
+      expect(runtimeLog.log).toHaveBeenCalledWith('warn', 'account', 'xingmang-ai-skill.sync', `星芒画图工具未登记：${XINGMANG_IMAGE_MCP_NO_NODE_WARNING}`)
     } finally {
       fs.rmSync(userHome, { recursive: true, force: true })
     }

@@ -217,6 +217,24 @@ describe('account managed Key bootstrap', () => {
     ).resolves.toMatchObject({ networkBlocked: false })
   })
 
+  it('puts an unregistered image tool on the home banner without treating it as a network failure', async () => {
+    const current = config()
+    const notice = '星芒画图还没装进 Claude Code：它的设置这会儿写不进去。先关掉正在用的 AI 工具，再点「重新同步」。'
+    const api: AccountBootstrapBridge = {
+      getAccountSession: vi.fn(async () => ({ authenticated: true, account: { userId: 17, username: 'member', quota: 0, usedQuota: 0, group: 'default', role: 1 } })),
+      syncManagedCliKeys: vi.fn(async () => ({ ready: [], failed: [], imageMcpWarning: notice })),
+      scanSystem: vi.fn(async () => system([])),
+      getSettings: vi.fn(async () => settings),
+      getConfig: vi.fn(async () => structuredClone(current)),
+      configureManagedCliKeys: vi.fn(async () => ({ configured: [], failed: [] })),
+    }
+
+    const result = await bootstrapAccountTools(api, 17, undefined, 'restore', undefined, memoryStorage())
+
+    expect(result.warnings).toEqual([notice])
+    expect(result.networkBlocked).toBe(false)
+  })
+
   it('keeps key sync failures of tools that are not installed off the home banner', async () => {
     const current = config()
     const api: AccountBootstrapBridge = {

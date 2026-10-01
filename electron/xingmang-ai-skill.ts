@@ -3,7 +3,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import * as TOML from '@iarna/toml'
 import { IMAGE_SKILL_GROUP_NAMES } from './ai-chat-protocol'
-import { managedCliKeyProfiles } from './catalog'
+import { cliCatalog, managedCliKeyProfiles, providerIds } from './catalog'
 import type { RelayBackendClient } from './relay-backend'
 import {
   ensureSafeDataDirectory,
@@ -66,7 +66,17 @@ export interface XingmangAiSkillSyncResult {
   configured?: number
   reason?: string
   directoryWarnings?: string[]
+  /**
+   * 星芒画图没登记上的原始原因（不带「星芒画图工具未登记」前缀，也已并在 directoryWarnings 里进日志）。
+   * 单独留一份，是让界面能换成客户看得懂的一句话；缺省 = 登记成功或这次没登记。
+   */
+  imageMcpWarnings?: string[]
 }
+
+/** main.ts 找不到 node 时 syncImageMcp 返回的那一句；没装好运行环境再重试也没用，界面也要换一种说法。 */
+export const XINGMANG_IMAGE_MCP_NO_NODE_WARNING = '这台电脑上没有找到 Node.js'
+
+const IMAGE_MCP_RETRY_DELAY_MS = 1500
 
 type SkillAccountService = Pick<RelayBackendClient, 'getSessionState' | 'listUsableGroups' | 'provisionCliKey'>
 
@@ -82,6 +92,8 @@ export interface XingmangAiSkillSyncOptions {
    * config and the bundled server script. Returns warnings to surface in the log.
    */
   syncImageMcp?: (input: { skillDirectory: string; officialCodex: boolean }) => Promise<string[]>
+  /** 第一次登记失败后隔多久自动再试一次；缺省 1.5 秒，测试传 0。 */
+  imageMcpRetryDelayMs?: number
 }
 
 export interface XingmangAiSkillInstallOptions {
@@ -601,16 +613,22 @@ export async function syncXingmangAiSkill(
     }
   }
   // 工具读的 config.json 必须是这次真写成功的那一份，所以只从刚写过的目录里挑。
+  let imageMcpWarnings: string[] = []
   if (options.syncImageMcp && mcpDirectory) {
-    try {
-      const mcpWarnings = await options.syncImageMcp({
+    imageMcpWarnings = await registerImageMcp(options.syncImageMcp, {
+      skillDirectory: mcpDirectory,
+      officialCodex: options.officialCodex === true,
+    })
+    // 配置文件被正在运行的工具占着、杀毒软件刚好在扫，隔一会儿往往就好了；
+    // 先替客户自己再试一次，还不行才去界面上说。没装运行环境的那种再试也一样，不白等。
+    if (imageMcpWarnings.length && !imageMcpWarnings.includes(XINGMANG_IMAGE_MCP_NO_NODE_WARNING)) {
+      await delay(options.imageMcpRetryDelayMs ?? IMAGE_MCP_RETRY_DELAY_MS)
+      imageMcpWarnings = await registerImageMcp(options.syncImageMcp, {
         skillDirectory: mcpDirectory,
         officialCodex: options.officialCodex === true,
       })
-      warnings.push(...mcpWarnings.map((warning) => `星芒画图工具未登记：${warning}`))
-    } catch (error) {
-      warnings.push(`星芒画图工具未登记：${directoryFailureMessage(error)}`)
     }
+    warnings.push(...imageMcpWarnings.map((warning) => `星芒画图工具未登记：${warning}`))
   }
   return {
     ready: true,
@@ -618,7 +636,37 @@ export async function syncXingmangAiSkill(
     installed,
     configured,
     ...(warnings.length ? { directoryWarnings: warnings } : {}),
+    ...(imageMcpWarnings.length ? { imageMcpWarnings } : {}),
   }
+}
+
+async function registerImageMcp(
+  syncImageMcp: NonNullable<XingmangAiSkillSyncOptions['syncImageMcp']>,
+  input: { skillDirectory: string; officialCodex: boolean },
+): Promise<string[]> {
+  try {
+    return await syncImageMcp(input)
+  } catch (error) {
+    return [directoryFailureMessage(error)]
+  }
+}
+
+function delay(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, Math.max(0, milliseconds)))
+}
+
+/**
+ * 把画图工具没登记上的原因换成首页能直接显示的一句话：不出现文件名、路径和报错原文，
+ * 只说哪几个工具里还没有、客户点哪里能补上。原文照旧进日志。
+ */
+export function describeImageMcpWarnings(warnings: readonly string[]): string | undefined {
+  if (!warnings.length) return undefined
+  if (warnings.includes(XINGMANG_IMAGE_MCP_NO_NODE_WARNING)) {
+    return '星芒画图还没装进 AI 工具：这台电脑还缺运行环境。到首页「运行环境」装好后，点「重新同步」就能用。'
+  }
+  const tools = providerIds.filter((provider) => warnings.some((warning) => warning.startsWith(`${provider}：`)))
+  const where = tools.length ? tools.map((provider) => cliCatalog[provider].name).join('、') : 'AI 工具'
+  return `星芒画图还没装进 ${where}：它的设置这会儿写不进去。先关掉正在用的 AI 工具，再点「重新同步」。`
 }
 
 export async function clearXingmangAiSkillSecrets(userHome: string): Promise<number> {

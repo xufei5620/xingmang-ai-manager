@@ -393,6 +393,9 @@ export async function bootstrapAccountTools(
     ...(synchronized?.imageSkillWarning
       ? [synchronized.imageSkillWarning]
       : []),
+    ...(synchronized?.imageMcpWarning
+      ? [synchronized.imageMcpWarning]
+      : []),
     ...(synchronized?.failed ?? [])
       .filter(
         (entry) =>
