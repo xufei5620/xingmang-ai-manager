@@ -85,7 +85,9 @@ describe('isZshLoginShell', () => {
   })
 })
 
-describe('ensureMacosShellProfile', () => {
+// Writes a real ~/.zprofile under a POSIX home; the code only ever runs on macOS,
+// and a Windows temp directory is not a POSIX absolute path.
+describe.runIf(process.platform !== 'win32')('ensureMacosShellProfile', () => {
   it('creates ~/.zprofile with the block and records that it did', async () => {
     const home = homeDirectory()
 
