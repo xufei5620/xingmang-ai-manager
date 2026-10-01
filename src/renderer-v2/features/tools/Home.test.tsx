@@ -950,3 +950,13 @@ describe('renderer-v2 home runtime card', () => {
     expect(markup).not.toContain('少了装工具用的组件')
   })
 })
+
+describe('Home balance card while a saved login is being restored', () => {
+  it('does not ask the user to sign in when the login is still on this computer', () => {
+    // 开机恢复联不上时登录还在，「登录后查看用量」会让人以为掉线了要重新登录。
+    const restoring = render({}, undefined, { accountRestoring: true })
+    expect(restoring).toContain('登录恢复后自动显示用量')
+    expect(restoring).not.toContain('登录后查看用量')
+    expect(render({})).toContain('登录后查看用量')
+  })
+})

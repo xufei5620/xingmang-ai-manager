@@ -89,6 +89,7 @@ import { findExecutable, runWithTrustedWindowsProcessEnvironment } from './comma
 import { CodexExtensionService } from './codex-extensions'
 import { CodexSessionsService } from './codex-sessions'
 import { createNewApiClient, type NewApiRetryOffProxyFailure } from './new-api-client'
+import { buildAccountIdentity, createAccountIdentityTracker } from './account-identity-tracker'
 import { createRealmAccountService, type RealmAccountClientHandle, type RealmAccountSiteId } from './realm-account-service'
 import { createFileRealmAccountVault } from './realm-account-vault-file'
 import { createVaultRecoveryNotifier } from './vault-recovery-notice'
@@ -1732,7 +1733,7 @@ if (!hasSingleInstanceLock) {
         },
       }),
     })
-    let publishedAccountIdentity = ''
+    const accountIdentity = createAccountIdentityTracker()
     let acceleration: ReturnType<typeof createAccelerationService> | undefined
     async function accelerationRunning(): Promise<boolean> {
       const scope = readAccelerationAccountScope()
@@ -1814,13 +1815,14 @@ if (!hasSingleInstanceLock) {
           previous.canvasRuns.whenIdle()] : [])])
       },
       onChanged: (siteId, state) => {
-        void acceleration?.onAccountChanged().catch((error) => runtimeLog.exception('network', 'acceleration.account-change.failed', error))
-        const identity = `${siteId}:${state.account?.userId ?? 'guest'}:${accounts.client.getSessionRevision!()}`
+        const identity = buildAccountIdentity(siteId, state.account?.userId, accounts.client.getSessionRevision!())
         for (const window of BrowserWindow.getAllWindows()) {
           if (!window.isDestroyed()) window.webContents.send(ipcEventChannels.onAccountSessionChanged, state)
         }
-        if (publishedAccountIdentity === identity) return
-        publishedAccountIdentity = identity
+        if (!accountIdentity.advance(identity)) return
+        // 只在换了人时才让加速作废在路上的请求：续期换凭据、付款后刷新也会走到这里，
+        // 那时推进加速的代数会让正在查的状态报「账号已变更」，查询途中还会把正在跑的加速停掉。
+        void acceleration?.onAccountChanged().catch((error) => runtimeLog.exception('network', 'acceleration.account-change.failed', error))
         for (const business of businesses.values()) {
           business.chatService.cancelAll()
           business.imageService.cancelAll()

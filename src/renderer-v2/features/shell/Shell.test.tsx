@@ -53,3 +53,22 @@ describe('renderer-v2 sidebar account source', () => {
     expect(render()).toContain('<small>星芒账号</small>')
   })
 })
+
+describe('renderer-v2 status bar account label', () => {
+  function statusbar(account: { signedIn: boolean; displayName?: string; email?: string }): string {
+    const markup = renderToStaticMarkup(createElement(Shell, { activePage: 'home', platform: 'mac', account, adapter: {}, children: null }))
+    return markup.slice(markup.indexOf('data-testid="shell-statusbar"'))
+  }
+
+  it('says the same thing as the sidebar card while a saved login waits for a retry', () => {
+    // 开机恢复联不上时左下角写「暂时连不上，登录还在」，状态栏不能同时写「未登录」。
+    const markup = statusbar({ signedIn: false, displayName: '暂时连不上，登录还在', email: '稍后自动重试，不用重新登录' })
+    expect(markup).toContain('暂时连不上，登录还在')
+    expect(markup).not.toContain('未登录')
+  })
+
+  it('keeps 未登录 and 已登录 for the plain states', () => {
+    expect(statusbar({ signedIn: false })).toContain('未登录')
+    expect(statusbar({ signedIn: true, displayName: '星芒用户' })).toContain('已登录 星芒用户')
+  })
+})
