@@ -132,8 +132,9 @@ interface Session {
 
 /**
  * 下载临时加速是否计入免费时长。按「不计入」：这次加速是软件为了把包下下来
- * 自己发起的，不是用户点的，把它算进那 20 分钟等于替用户花钱。额度本身仍然
- * 是门槛——用完的账号不再起临时线路——所以这不是一条无限免费的路。
+ * 自己发起的，不是用户点的，把它算进那 20 分钟等于替用户花钱。免费时长用完的
+ * 账号照样起（yoyo 2026-10-01 定）：线路只给本软件的下载用，不改系统代理，
+ * 下载一完就收，替他把工具装上比守住这几分钟更要紧。
  * 改成 true 即可按会话计费（届时 startDownloadRoute 要像 startAcceleration
  * 一样写 startedAt，stopDownloadRoute 要结算 usedMs）。
  */
@@ -707,9 +708,7 @@ export function createAccelerationDevelopmentBackend(options: AccelerationDevelo
         downloadRoute = null
         downloadHolders = 0
         try { if (probeNeedsCleanup) await stopSession() } catch { return { status: 'unavailable' } }
-        // 下载不计费（见 downloadRouteBillsFreeAllowance），但额度仍是门槛：
-        // 用完的账号不再起临时线路，免得这里变成一条绕开时长的免费通道。
-        if (usage(scope).usedMs >= accountTotalMs(usage(scope))) return { status: 'unavailable' }
+        // 下载不计费，也不看免费时长还剩多少（见 downloadRouteBillsFreeAllowance）。
         try {
           const result = await options.runtime.start()
           if (!Number.isInteger(result.proxyPort) || result.proxyPort < 1 || result.proxyPort > 65_535

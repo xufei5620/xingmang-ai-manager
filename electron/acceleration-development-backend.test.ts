@@ -1124,14 +1124,20 @@ describe('download-only acceleration route', () => {
     expect(test.runtime.stop).toHaveBeenCalledTimes(1)
   })
 
-  it('refuses once the account has spent its allowance', async () => {
+  it('still starts once the account has spent its allowance, without touching the ledger', async () => {
     const test = await setup()
     await test.backend.startAcceleration(scope, 'system-proxy')
     await test.advance(accelerationTrialSeconds * 1000)
     expect((await test.backend.getAccelerationState(scope)).phase).toBe('exhausted')
+    const ledger = await fs.readFile(test.ledgerPath, 'utf8')
     test.runtime.start.mockClear()
-    expect(await test.backend.startDownloadRoute(scope)).toEqual({ status: 'unavailable' })
-    expect(test.runtime.start).not.toHaveBeenCalled()
+    expect(await test.backend.startDownloadRoute(scope)).toMatchObject({ status: 'ready' })
+    expect(test.runtime.start).toHaveBeenCalledTimes(1)
+    test.elapse(120_000)
+    await test.backend.stopDownloadRoute()
+    // 用完了就是用完了：下载既不倒扣也不补回，加速页照旧显示用完。
+    expect(await fs.readFile(test.ledgerPath, 'utf8')).toBe(ledger)
+    expect((await test.backend.getAccelerationState(scope)).phase).toBe('exhausted')
   })
 
   it('leaves a running game session alone', async () => {
