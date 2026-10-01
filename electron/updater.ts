@@ -116,6 +116,20 @@ export interface UpdateSnapshot {
    * 盖一层「更新后才能继续用」（见 required-update.ts）。可选＝旧快照，不拦。
    */
   requiredVersion?: string | null
+  /**
+   * 开机自动装上次下好的版本前那几秒的预告。系统通知在专注助手、关了通知权限的电脑上
+   * 会被静默吞掉，窗口里得同时摆一张卡，不然用户看到的就是窗口自己关掉、凭空弹授权窗。
+   * 只在 phase 为 downloaded 时有值，阶段一变就清掉。可选＝旧快照，界面照旧不显示。
+   */
+  launchInstallNotice?: LaunchInstallNotice | null
+}
+
+export interface LaunchInstallNotice {
+  version: string
+  title: string
+  body: string
+  /** 预计开始安装的时刻（毫秒时间戳），界面据此倒数。 */
+  installAt: number
 }
 
 export interface UpdateCheckOptions {
@@ -167,6 +181,8 @@ export interface UpdaterService {
   install(): { accepted: true }
   /** 更新目录上的状态文件读到了新内容（null = 读不到，当没有）。 */
   setServiceStatus(status: ServiceStatus | null): void
+  /** 开机自动装前的预告摆出来（或收回，null）。 */
+  setLaunchInstallNotice(notice: LaunchInstallNotice | null): void
   subscribe(listener: (snapshot: UpdateSnapshot) => void): () => void
   dispose(): void
 }
@@ -532,6 +548,7 @@ function cloneSnapshot(snapshot: UpdateSnapshot): UpdateSnapshot {
     diskShortfall: snapshot.diskShortfall ? { ...snapshot.diskShortfall } : null,
     installedRelease: cloneInstalledRelease(snapshot.installedRelease),
     serviceMaintenance: snapshot.serviceMaintenance ? { ...snapshot.serviceMaintenance } : null,
+    launchInstallNotice: snapshot.launchInstallNotice ? { ...snapshot.launchInstallNotice } : null,
   }
 }
 
@@ -594,6 +611,7 @@ export function createUpdaterService(
     rollback: false,
     diskShortfall: null,
     requiredVersion: null,
+    launchInstallNotice: null,
   }
 
   client.autoDownload = false
@@ -641,7 +659,12 @@ export function createUpdaterService(
     const diskShortfall = phase !== 'available'
       ? null
       : patch.diskShortfall !== undefined ? patch.diskShortfall : snapshot.diskShortfall ?? null
-    snapshot = { ...snapshot, ...patch, failedStep, diskShortfall }
+    // 开机装的预告同理：它说的是「这个下好的版本马上装」，离开 downloaded（被撤回、
+    // 重新检查）或者安装器没起来报了错，就不该再挂着倒数。
+    const launchInstallNotice = phase !== 'downloaded' || (patch.error !== undefined && patch.error !== null)
+      ? null
+      : patch.launchInstallNotice !== undefined ? patch.launchInstallNotice : snapshot.launchInstallNotice ?? null
+    snapshot = { ...snapshot, ...patch, failedStep, diskShortfall, launchInstallNotice }
     const value = cloneSnapshot(snapshot)
     for (const listener of listeners) listener(value)
   }
@@ -1127,6 +1150,12 @@ export function createUpdaterService(
     setServiceStatus(status) {
       if (disposed) return
       applyServiceStatus(status)
+    },
+    setLaunchInstallNotice(notice) {
+      if (disposed) return
+      if (notice && (snapshot.phase !== 'downloaded' || notice.version !== snapshot.availableVersion)) return
+      if (!notice && !snapshot.launchInstallNotice) return
+      emit({ launchInstallNotice: notice ? { ...notice } : null })
     },
     subscribe(listener) {
       listeners.add(listener)

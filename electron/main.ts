@@ -1679,18 +1679,23 @@ if (!hasSingleInstanceLock) {
       // 先把「试过了」写稳再装：安装器起不来时，下次打开不会再试同一个版本。装之前先发
       // 一条系统通知、等几秒：窗口刚出来就自己关掉、再凭空弹出授权窗口，看着像闪退中毒。
       void pendingUpdateStore.write(pendingUpdateRecord).then(async () => {
-        desktopNotifications.announce(buildAutoInstallNotice(version, 'launch', process.platform))
+        const notice = buildAutoInstallNotice(version, 'launch', process.platform)
+        desktopNotifications.announce(notice)
+        // 系统通知在专注助手、关了通知的电脑上会被静默吞掉，窗口里同时摆一张同样说法的卡。
+        updaterService.setLaunchInstallNotice({ version, ...notice, installAt: Date.now() + LAUNCH_INSTALL_NOTICE_MS })
         await new Promise((resolve) => { setTimeout(resolve, LAUNCH_INSTALL_NOTICE_MS).unref() })
         // 等的这几秒里用户可能关了自动更新、开始装工具，或者这个版本被撤回了。
         const still = updaterService.autoUpdateEnabled()
           && resolveInstallableUpdateOnQuit(updaterService.getState())?.version === version
           && resolveInterruptibleInstallTask(systemService.inspectInstallationQueue()) === null
         if (!still) {
+          updaterService.setLaunchInstallNotice(null)
           runtimeLog.log('info', 'updater', 'install.on-launch.skipped', `启动时自动安装 ${version} 前情况变了，留到退出时再装`)
           return
         }
         updaterService.install()
       }).catch((cause: unknown) => {
+        updaterService.setLaunchInstallNotice(null)
         runtimeLog.exception('updater', 'install.on-launch.failed', cause)
       })
     })

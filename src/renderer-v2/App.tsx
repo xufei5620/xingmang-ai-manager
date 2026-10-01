@@ -56,6 +56,7 @@ import { StartupNotices } from './features/app/StartupNotices'
 import { redownloadUpdate, requestUpdateInstallConfirm, retryFailedUpdateStep, updateFailureTone } from './features/app/update-retry'
 import { RequiredUpdateGate } from './features/app/RequiredUpdateGate'
 import { MaintenanceNotice, maintenanceNoticeKey } from './features/app/MaintenanceNotice'
+import { LaunchInstallNotice } from './features/app/LaunchInstallNotice'
 import { crashReportingNotice, displayCompatNotice, displayRelaunchNotice, settingsSaveNotice, toolTemplateFilledNotice, startupCheckFailure, startupCheckLogContext, startupDiagnosticsIssues, unexpectedExitNotice, updatedNotice, vaultRecoveredNotice, withStartupNotice, withoutStartupNotice, type StartupCheckId, type StartupNotice } from './features/app/startup-notice'
 import { readLocalPreference, writeLocalPreference } from './features/app/preferences'
 import { currentWindowOs, windowOsFor } from './features/app/window-os'
@@ -1246,6 +1247,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   // 维护提示来自更新目录上的状态文件，没登录也收得到。角落那条可以关，关掉的
   // 是这一句话；发布者换了说法（比如改了预计恢复时间）会再出现一次。
   const maintenance = update?.serviceMaintenance ?? null
+  const launchInstall = update?.launchInstallNotice ?? null
   const maintenanceKey = maintenanceNoticeKey(maintenance)
   const showUpdate = update && (update.error || update.currentVersionWithdrawn || ['available', 'downloading', 'downloaded'].includes(update.phase)) && dismissedUpdate !== updateKey
   // 「自动更新」勾选跟着提示气泡走：用户第一次看到「有新版本」时就能看到它、改它。
@@ -1386,7 +1388,10 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       openDownloadPage: () => void perform('打开下载页', () => app.openExternal(appReleaseDownloadUrl)), contactSupport: () => setHelp(true),
     }} />
     <StartupNotices notices={startupNotices} onDismiss={dismissStartupNotice}
-      leading={maintenance && maintenanceKey !== dismissedMaintenance ? <MaintenanceNotice maintenance={maintenance} onDismiss={() => setDismissedMaintenance(maintenanceKey)} /> : undefined}
+      leading={launchInstall || (maintenance && maintenanceKey !== dismissedMaintenance) ? <>
+        {launchInstall && <LaunchInstallNotice key={launchInstall.installAt} notice={launchInstall} />}
+        {maintenance && maintenanceKey !== dismissedMaintenance && <MaintenanceNotice maintenance={maintenance} onDismiss={() => setDismissedMaintenance(maintenanceKey)} />}
+      </> : undefined}
       onOpen={(id, action) => {
         if ('supportFailure' in action) {
           // 复制上了才收起卡片；没复制上就打开帮助框，那里的文字能手动选中复制。
