@@ -81,9 +81,13 @@ button, input, select, textarea { font: inherit; }
 .v2-dot.is-warn { background: var(--warn); }
 .v2-notification { position: absolute; right: 20px; bottom: 46px; width: 420px; z-index: 18; }
 /* 启动期后台检查的提示停在右上角，避开右下角的更新通知；容器不吃指针事件，
-   提示自己才吃，否则这条「不挡路」的提示会挡住它上面那一片界面。 */
-.v2-startup-notices { position: fixed; top: 64px; right: 20px; width: 380px; max-width: calc(100vw - 40px); z-index: 30; display: grid; gap: 8px; pointer-events: none; }
-.v2-startup-notices > * { pointer-events: auto; }
+   只有卡片那一摞和「还有 N 条」才吃，否则这条「不挡路」的提示会挡住它上面那一片界面。
+   卡片区有高度上限、超出就在区内滚：小屏或「大字」下展开全部时，最后一张的按钮也够得着；
+   上限留出顶栏（64px）、底部状态栏和「还有 N 条」那一行。 */
+.v2-startup-notices { position: fixed; top: 64px; right: 20px; width: 380px; max-width: calc(100vw - 40px); max-height: calc(100vh - 120px); z-index: 30; display: grid; grid-template-rows: minmax(0, 1fr) auto; gap: 8px; pointer-events: none; }
+/* 卡片带投影：滚动区往外多留一圈再用负边距抵回去，投影才不会被裁成一刀齐。 */
+.v2-startup-notices-list { display: grid; gap: 8px; align-content: start; min-height: 0; margin: -4px -12px -14px; padding: 4px 12px 14px; overflow-y: auto; overscroll-behavior: contain; pointer-events: auto; }
+.v2-startup-notices > button { justify-self: end; pointer-events: auto; }
 .v2-startup-notice-items { margin: 6px 0 0; padding-left: 1.2em; }
 .v2-startup-notice-items li + li { margin-top: 2px; }
 .v2-command-results { display: grid; max-height: 340px; overflow: auto; margin-top: 12px; }
