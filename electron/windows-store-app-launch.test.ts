@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { scanPowerShell, unbalancedBracket } from './powershell-script-scan.test-support'
+import { buildPowerShellModuleImportStatement } from './powershell-module-imports'
 import {
-  buildPowerShellModuleImportStatement,
   buildWindowsStoreAppLaunchContextScript,
   buildWindowsStoreAvailabilityScript,
   describeStoreAppLaunchBlock,

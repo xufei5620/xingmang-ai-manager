@@ -11,6 +11,7 @@ import {
 } from './command-runner'
 import { cliExitHintLines } from './cli-exit-hint'
 import { resolveWindowsMachinePaths, type WindowsMachinePaths } from './windows-machine-paths'
+import { buildPowerShellModuleImportStatement } from './powershell-module-imports'
 
 const execFileAsync = promisify(execFile)
 
@@ -571,6 +572,11 @@ function windowsCliExitHint(lines: readonly string[], color: 'Cyan' | 'Yellow'):
   return ["Write-Host ''", ...lines.map((line) => `Write-Host ${powerShellLiteral(line)} -ForegroundColor ${color}`)].join('; ')
 }
 
+export const cliTerminalScriptModules = ['Microsoft.PowerShell.Management', 'Microsoft.PowerShell.Utility'] as const
+// The broker gets 10 s to hand back the terminal's process id (launchCliPowerShell).
+export const cliLaunchBrokerModules = ['Microsoft.PowerShell.Management'] as const
+export const cliLaunchBrokerTimeoutMs = 10_000
+
 export function buildCliLaunchPlan(
   request: WindowsCliLaunchRequest,
   resolvedPowerShellExecutable = windowsPowerShellExecutable(),
@@ -593,6 +599,10 @@ export function buildCliLaunchPlan(
     // 引入一次 PATH 查找系统可执行文件（I14）。设不上只是继续乱码，不能因此让
     // 用户点「打开」后 CLI 根本起不来，所以整句吞掉异常。
     'try { $OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); [Console]::InputEncoding = [System.Text.UTF8Encoding]::new($false) } catch { }',
+    // 以管理员身份打开时这个窗口的基底是 trustedCommandEnvironment，下面的 Remove-Item /
+    // Set-Location / Write-Host 留给 PowerShell 自己找模块，要先把系统模块整个扫一遍
+    // （CI 上 20 多秒），工具迟迟不出来。先按名字导入。
+    buildPowerShellModuleImportStatement(cliTerminalScriptModules),
     `$Host.UI.RawUI.WindowTitle = ${powerShellLiteral(title)}`,
     `$env:TERM = 'xterm-256color'`,
     `$env:COLORTERM = 'truecolor'`,
@@ -617,6 +627,7 @@ export function buildCliLaunchPlan(
     terminalEncodedCommand,
   ]
   const brokerScript = [
+    buildPowerShellModuleImportStatement(cliLaunchBrokerModules),
     '$ErrorActionPreference = "Stop"',
     `$process = Start-Process -FilePath ${powerShellLiteral(powershellExecutable)} -ArgumentList @(${terminalArguments.map(powerShellLiteral).join(', ')}) -WorkingDirectory ${powerShellLiteral(workspace)} -WindowStyle Normal -PassThru`,
     '[Console]::Out.WriteLine($process.Id)',
@@ -752,7 +763,7 @@ export async function launchCliPowerShell(
       cwd: plan.cwd,
       env: request.env ?? process.env,
       windowsHide: plan.windowsHide,
-      timeout: 10_000,
+      timeout: cliLaunchBrokerTimeoutMs,
       maxBuffer: 64 * 1024,
       encoding: 'utf8',
     })

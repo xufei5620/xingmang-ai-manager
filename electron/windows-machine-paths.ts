@@ -1,6 +1,7 @@
 import { execFileSync, spawn } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
+import { buildPowerShellModuleImportStatement } from './powershell-module-imports'
 
 const SYSTEM_ROOT_DEVICE_PATH = '\\\\?\\GLOBALROOT\\SystemRoot'
 
@@ -385,13 +386,28 @@ export function validateWindowsMachineAclSnapshot(value: unknown): value is Wind
   })
 }
 
+/**
+ * The ACL probes below run with PSModulePath narrowed to System32 and no module
+ * analysis cache, the same shape as trustedCommandEnvironment(): a cmdlet left
+ * to autoloading there costs the whole System32 module scan (20 s and more on
+ * the CI runner, see buildPowerShellModuleImportStatement), against 8 s for
+ * the Program Files probe. A timeout there is cached as "not trusted", so a
+ * trusted-only run refuses Node.js or Git under Program Files for a while and
+ * the check page shows no version for them. Get-Acl
+ * is called module-qualified, which loads Security by name already.
+ */
+export const windowsAclProbeModules = [
+  'Microsoft.PowerShell.Management',
+  'Microsoft.PowerShell.Utility',
+] as const
+
 interface ProgramFilesAclProbe {
   file: string
   args: string[]
   env: NodeJS.ProcessEnv
 }
 
-function programFilesAclProbe(
+export function buildProgramFilesAclProbe(
   candidate: string,
   root: string,
   machinePaths: WindowsMachinePaths,
@@ -403,6 +419,7 @@ function programFilesAclProbe(
     'powershell.exe',
   )
   const script = [
+    buildPowerShellModuleImportStatement(windowsAclProbeModules),
     "$ErrorActionPreference = 'Stop'",
     '$target = [IO.Path]::GetFullPath($env:XINGMANG_TRUST_TARGET)',
     '$root = [IO.Path]::GetFullPath($env:XINGMANG_TRUST_ROOT).TrimEnd("\\")',
@@ -454,7 +471,7 @@ function programFilesAclProbe(
   }
 }
 
-const programFilesAclTimeoutMs = 8_000
+export const programFilesAclTimeoutMs = 8_000
 const programFilesAclMaxBytes = 512 * 1024
 
 /** Shared owner/reparse probe: trusted-temp.ts reuses it for ProgramData managed
@@ -464,7 +481,7 @@ export function inspectProgramFilesAcl(
   root: string,
   machinePaths: WindowsMachinePaths,
 ): unknown {
-  const probe = programFilesAclProbe(candidate, root, machinePaths)
+  const probe = buildProgramFilesAclProbe(candidate, root, machinePaths)
   const output = execFileSync(probe.file, probe.args, {
     encoding: 'utf8',
     env: probe.env,
@@ -490,7 +507,7 @@ export function inspectProgramFilesAclAsync(
   root: string,
   machinePaths: WindowsMachinePaths,
 ): Promise<unknown> {
-  const probe = programFilesAclProbe(candidate, root, machinePaths)
+  const probe = buildProgramFilesAclProbe(candidate, root, machinePaths)
   return new Promise((resolve, reject) => {
     const child = spawn(probe.file, probe.args, {
       env: probe.env,
@@ -529,6 +546,33 @@ export function inspectProgramFilesAclAsync(
   })
 }
 
+export function buildWindowsDirectoryTreeAclScript(): string {
+  return [
+    buildPowerShellModuleImportStatement(windowsAclProbeModules),
+    "$ErrorActionPreference = 'Stop'",
+    '$root = [IO.Path]::GetFullPath($env:XINGMANG_TRUST_ROOT)',
+    '$identity = [Security.Principal.WindowsIdentity]::GetCurrent()',
+    '$tokenSids = @($identity.User.Value) + @($identity.Groups | ForEach-Object { $_.Value })',
+    '$writeMask = [long](2 -bor 4 -bor 16 -bor 64 -bor 256 -bor 65536 -bor 262144 -bor 524288)',
+    '$items = @(Get-Item -LiteralPath $root -Force) + @(Get-ChildItem -LiteralPath $root -Force -Recurse -Depth 2 -Directory)',
+    'if ($items.Count -gt 512) { throw "受保护目录树条目数超过上限，拒绝采信: $root" }',
+    '$entries = @()',
+    'foreach ($item in $items) {',
+    '  $acl = Microsoft.PowerShell.Security\\Get-Acl -LiteralPath $item.FullName',
+    '  try { $ownerSid = ([Security.Principal.NTAccount]$acl.Owner).Translate([Security.Principal.SecurityIdentifier]).Value } catch { $ownerSid = [string]$acl.Owner }',
+    '  $writeSids = @()',
+    '  foreach ($rule in @($acl.Access)) {',
+    '    if ([string]$rule.AccessControlType -ne "Allow" -or (([long]$rule.FileSystemRights -band $writeMask) -eq 0)) { continue }',
+    '    try { $writeSids += $rule.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value } catch { $writeSids += [string]$rule.IdentityReference }',
+    '  }',
+    '  $entries += [pscustomobject]@{ ownerSid = $ownerSid; reparsePoint = [bool]($item.Attributes -band [IO.FileAttributes]::ReparsePoint); allowWriteSids = @($writeSids) }',
+    '}',
+    '[pscustomobject]@{ tokenSids = @($tokenSids); entries = @($entries) } | ConvertTo-Json -Compress -Depth 5',
+  ].join('\n')
+}
+
+export const windowsDirectoryTreeAclTimeoutMs = 20_000
+
 /** Owner/ACL probe for preexisting ProgramData managed roots.
  * Registration short-circuits later per-directory checks, so a root whose top
  * level looks trusted could smuggle attacker-owned descendants past hardening
@@ -552,27 +596,7 @@ export function inspectWindowsDirectoryTreeAcl(
     'v1.0',
     'powershell.exe',
   )
-  const script = [
-    "$ErrorActionPreference = 'Stop'",
-    '$root = [IO.Path]::GetFullPath($env:XINGMANG_TRUST_ROOT)',
-    '$identity = [Security.Principal.WindowsIdentity]::GetCurrent()',
-    '$tokenSids = @($identity.User.Value) + @($identity.Groups | ForEach-Object { $_.Value })',
-    '$writeMask = [long](2 -bor 4 -bor 16 -bor 64 -bor 256 -bor 65536 -bor 262144 -bor 524288)',
-    '$items = @(Get-Item -LiteralPath $root -Force) + @(Get-ChildItem -LiteralPath $root -Force -Recurse -Depth 2 -Directory)',
-    'if ($items.Count -gt 512) { throw "受保护目录树条目数超过上限，拒绝采信: $root" }',
-    '$entries = @()',
-    'foreach ($item in $items) {',
-    '  $acl = Microsoft.PowerShell.Security\\Get-Acl -LiteralPath $item.FullName',
-    '  try { $ownerSid = ([Security.Principal.NTAccount]$acl.Owner).Translate([Security.Principal.SecurityIdentifier]).Value } catch { $ownerSid = [string]$acl.Owner }',
-    '  $writeSids = @()',
-    '  foreach ($rule in @($acl.Access)) {',
-    '    if ([string]$rule.AccessControlType -ne "Allow" -or (([long]$rule.FileSystemRights -band $writeMask) -eq 0)) { continue }',
-    '    try { $writeSids += $rule.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value } catch { $writeSids += [string]$rule.IdentityReference }',
-    '  }',
-    '  $entries += [pscustomobject]@{ ownerSid = $ownerSid; reparsePoint = [bool]($item.Attributes -band [IO.FileAttributes]::ReparsePoint); allowWriteSids = @($writeSids) }',
-    '}',
-    '[pscustomobject]@{ tokenSids = @($tokenSids); entries = @($entries) } | ConvertTo-Json -Compress -Depth 5',
-  ].join('\n')
+  const script = buildWindowsDirectoryTreeAclScript()
   const output = execFileSync(powershell, [
     '-NoLogo',
     '-NoProfile',
@@ -594,7 +618,7 @@ export function inspectWindowsDirectoryTreeAcl(
       XINGMANG_TRUST_ROOT: root,
     },
     windowsHide: true,
-    timeout: 20_000,
+    timeout: windowsDirectoryTreeAclTimeoutMs,
     maxBuffer: 1024 * 1024,
     stdio: ['ignore', 'pipe', 'ignore'],
   })

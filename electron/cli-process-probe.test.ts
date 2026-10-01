@@ -17,6 +17,7 @@ import {
   parseDarwinCliProcessProbeOutput,
   parseWindowsCliProcessProbeOutput,
   probeRunningCliProcesses,
+  windowsCliProcessProbeModules,
   type CliProcessProbe,
 } from './cli-process-probe'
 import { scanPowerShell, unbalancedBracket } from './powershell-script-scan.test-support'
@@ -295,8 +296,9 @@ describe('cli process probe', () => {
     const scan = scanPowerShell(buildWindowsCliProcessProbeScript())
     expect(scan.unterminated).toBe(false)
     expect(unbalancedBracket(scan.code)).toBeNull()
-    // No path is ever spliced into the text: the only literal is the empty-result JSON.
-    expect(scan.literals).toEqual(['[]'])
+    // No path is ever spliced into the text: the only literals are the module names and the
+    // empty-result JSON.
+    expect(scan.literals).toEqual([...windowsCliProcessProbeModules, '[]'])
     expect(scan.code).toContain(`$root = [string]$env:${cliProcessRootEnvironmentVariable}`)
     expect(scan.code).toContain("if (-not $root) { ''; exit 0 }")
     // A native CLI is its own image; a node-hosted one carries its entry script on the command

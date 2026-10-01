@@ -1,7 +1,8 @@
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { trustedCommandEnvironment } from './command-runner'
-import { powerShellLiteral, resolveWindowsPowerShellExecutable } from './windows-elevation'
+import { buildPowerShellModuleImportStatement } from './powershell-module-imports'
+import { resolveWindowsPowerShellExecutable } from './windows-elevation'
 
 const execFileAsync = promisify(execFile)
 
@@ -79,23 +80,6 @@ export function resolveStoreAppLaunchBlock(context: WindowsStoreAppLaunchContext
   if (context.isBuiltInAdministrator && context.filterAdministratorToken !== true) return 'builtInAdministrator'
   if (context.uacEnabled === false) return 'uacDisabled'
   return null
-}
-
-/**
- * Loads the named modules up front so the script never relies on command
- * autoloading.
- *
- * trustedCommandEnvironment() narrows PSModulePath to System32 and drops
- * PSModuleAnalysisCachePath. In that environment the first cmdlet that has to
- * be autoloaded (even Write-Output) made Windows PowerShell rebuild its module
- * analysis over every System32 module: 22 s per process on the CI runner,
- * against 0.3 s once the modules are imported by name (#714). Importing by
- * name still resolves only through the narrowed PSModulePath, so nothing is
- * trusted that was not before. A module that fails to load falls back to
- * autoloading, which is the old behaviour.
- */
-export function buildPowerShellModuleImportStatement(modules: readonly string[]): string {
-  return `Import-Module -Name ${modules.map(powerShellLiteral).join(', ')} -ErrorAction SilentlyContinue`
 }
 
 /**

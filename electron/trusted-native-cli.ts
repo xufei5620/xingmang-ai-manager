@@ -10,6 +10,7 @@ import {
   managedProductRoot,
 } from './managed-cli-paths'
 import { ensureTrustedDirectory } from './trusted-temp'
+import { authenticodeSignatureModules, buildPowerShellModuleImportStatement } from './powershell-module-imports'
 import { resolveWindowsPowerShellExecutable } from './windows-elevation'
 
 export interface NativeCliSignature {
@@ -55,20 +56,27 @@ export function validateNativeCliSignature(
   }
 }
 
+// Imported by name first: under trustedCommandEnvironment() an autoloaded
+// cmdlet costs the whole System32 module scan (see
+// buildPowerShellModuleImportStatement) out of the 20 s this check gets.
+export const nativeCliSignatureScript = [
+  '$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)',
+  buildPowerShellModuleImportStatement(authenticodeSignatureModules),
+  '$ErrorActionPreference = "Stop"',
+  '$signature = Get-AuthenticodeSignature -LiteralPath $env:XINGMANG_NATIVE_CLI',
+  '[pscustomobject]@{ Status = [string]$signature.Status; Subject = [string]$signature.SignerCertificate.Subject } | ConvertTo-Json -Compress',
+].join('; ')
+
+export const nativeCliSignatureTimeoutMs = 20_000
+
 async function inspectSignature(filePath: string): Promise<NativeCliSignature> {
-  const script = [
-    '$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)',
-    '$ErrorActionPreference = "Stop"',
-    '$signature = Get-AuthenticodeSignature -LiteralPath $env:XINGMANG_NATIVE_CLI',
-    '[pscustomobject]@{ Status = [string]$signature.Status; Subject = [string]$signature.SignerCertificate.Subject } | ConvertTo-Json -Compress',
-  ].join('; ')
   const result = await runCommand({
     executable: resolveWindowsPowerShellExecutable(),
-    argv: ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script],
+    argv: ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', nativeCliSignatureScript],
   }, {
     env: { ...trustedCommandEnvironment(), XINGMANG_NATIVE_CLI: filePath },
     trustedOnly: true,
-    timeoutMs: 20_000,
+    timeoutMs: nativeCliSignatureTimeoutMs,
     maxOutputBytes: 64 * 1024,
   })
   try {

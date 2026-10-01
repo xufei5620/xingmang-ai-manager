@@ -252,8 +252,10 @@ jobs:
       # compiled scripts still run and still print what the parsers read.
       - name: Run the PowerShell probes against this runner once
         # Each probe carries its own bound and the script prints how long each
-        # took; this is the backstop for a hang that outlives them.
-        timeout-minutes: 6
+        # took; this is the backstop for a hang that outlives them. Raised from
+        # 6 when every trusted-environment probe joined it: about forty
+        # PowerShell starts, each a few seconds cold on this runner.
+        timeout-minutes: 12
         run: node e2e/windows-powershell-probes-smoke.mjs
       - run: npm run build:win:ci
       - run: node scripts/verify-packaged-hardening.cjs release/win-unpacked

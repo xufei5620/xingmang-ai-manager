@@ -3,6 +3,7 @@ import path from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { spawn } from 'node:child_process'
 import { runCommand, trustedCommandEnvironment } from '../command-runner'
+import { buildPowerShellModuleImportStatement } from '../powershell-module-imports'
 import { resolveWindowsPowerShellExecutable } from '../windows-elevation'
 import { platformCapabilitiesFor } from '../platform-capabilities'
 import {
@@ -60,10 +61,20 @@ const uuidPattern = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-
 
 // The payload is data in a dedicated environment variable, never PowerShell
 // source. WinInet owns Connections binary layouts, PAC flags and notifications.
-const proxyScript = String.raw`
+//
+// Under trustedCommandEnvironment() a cmdlet left to autoloading costs the
+// whole System32 module scan (20 s and more on the CI runner, see
+// buildPowerShellModuleImportStatement), on top of compiling the interop type,
+// against a 15 s limit; so the one module it calls into is imported by name.
+export const windowsSystemProxyModules = ['Microsoft.PowerShell.Utility'] as const
+
+export const windowsSystemProxyCommandTimeoutMs = 15_000
+
+export const windowsSystemProxyScript = String.raw`
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
+${buildPowerShellModuleImportStatement(windowsSystemProxyModules)}
 $r = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($env:XINGMANG_SYSTEM_PROXY_REQUEST)) | ConvertFrom-Json
 Add-Type -TypeDefinition @'
 using System;
@@ -360,9 +371,9 @@ export function createWindowsSystemProxy(options: WindowsSystemProxyOptions): {
   async function invoke(request: Record<string, unknown>): Promise<Record<string, unknown>> {
     try {
       const encoded = Buffer.from(JSON.stringify(request), 'utf8').toString('base64')
-      const result = await execute({ executable: executable(), argv: ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(proxyScript, 'utf16le').toString('base64')] }, {
+      const result = await execute({ executable: executable(), argv: ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(windowsSystemProxyScript, 'utf16le').toString('base64')] }, {
         env: { ...environment(), [requestEnvironmentKey]: encoded }, trustedOnly: true,
-        windowsHide: true, timeoutMs: options.commandTimeoutMs ?? 15_000, maxOutputBytes: maximumJournalBytes, sensitiveValues: [encoded],
+        windowsHide: true, timeoutMs: options.commandTimeoutMs ?? windowsSystemProxyCommandTimeoutMs, maxOutputBytes: maximumJournalBytes, sensitiveValues: [encoded],
       })
       const value: unknown = JSON.parse(result.stdout)
       if (!isRecord(value)) throw new Error('invalid response')

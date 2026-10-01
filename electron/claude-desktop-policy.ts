@@ -2,6 +2,8 @@ import os from 'node:os'
 import path from 'node:path'
 import { runCommand, trustedCommandEnvironment } from './command-runner'
 import { readBoundedFile } from './bounded-file'
+import { claudeDesktopPowerShellModules, claudeDesktopPowerShellTimeoutMs } from './claude-desktop-manifest'
+import { buildPowerShellModuleImportStatement } from './powershell-module-imports'
 import { resolveWindowsPowerShellExecutable } from './windows-elevation'
 
 const maximumBytes = 512 * 1024
@@ -39,9 +41,11 @@ export interface ClaudeDesktopPolicyOptions {
 }
 
 // Only names/kinds leave PowerShell. Registry values may contain API keys.
-const readPolicyScript = String.raw`
+// The module import is there for the same reason as in the manifest reader.
+export const claudeDesktopPolicyReadScript = String.raw`
 $ErrorActionPreference='Stop'
 [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)
+${buildPowerShellModuleImportStatement(claudeDesktopPowerShellModules)}
 function Read-Hive($hive) {
   $root=[Microsoft.Win32.RegistryKey]::OpenBaseKey($hive,[Microsoft.Win32.RegistryView]::Registry64)
   $key=$null
@@ -71,8 +75,8 @@ async function readWindowsPolicy(options: ClaudeDesktopPolicyOptions): Promise<C
   try {
     const result = await (options.execute ?? runCommand)({
       executable: (options.resolvePowerShell ?? resolveWindowsPowerShellExecutable)(),
-      argv: ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(readPolicyScript, 'utf16le').toString('base64')],
-    }, { env: trustedCommandEnvironment(), trustedOnly: true, windowsHide: true, timeoutMs: 15000, maxOutputBytes: maximumBytes })
+      argv: ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(claudeDesktopPolicyReadScript, 'utf16le').toString('base64')],
+    }, { env: trustedCommandEnvironment(), trustedOnly: true, windowsHide: true, timeoutMs: claudeDesktopPowerShellTimeoutMs, maxOutputBytes: maximumBytes })
     const value: unknown = JSON.parse(result.stdout.replace(/^\uFEFF/, ''))
     if (!value || typeof value !== 'object') throw new Error('invalid-policy')
     const record = value as Record<string, unknown>

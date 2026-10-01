@@ -18,6 +18,7 @@ import {
 import { downloadWithResume } from './download-retry'
 import { sameLocalPathIdentity } from './path-identity'
 import { createTrustedTemporaryDirectory } from './trusted-temp'
+import { authenticodeSignatureModules, buildPowerShellPinnedModuleImportStatement } from './powershell-module-imports'
 import { windowsPowerShellExecutable } from './windows-elevation'
 import { resolveWindowsMachinePaths, type WindowsMachinePaths } from './windows-machine-paths'
 
@@ -105,21 +106,21 @@ function encodedPowerShellCommand(script: string): string {
   return Buffer.from(script, 'utf16le').toString('base64')
 }
 
-const signatureScript = [
+export const pythonInstallerSignatureScript = [
   '$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)',
   "$ErrorActionPreference = 'Stop'",
   "$ProgressPreference = 'SilentlyContinue'",
-  "Import-Module -Name (Join-Path $PSHOME 'Modules\\Microsoft.PowerShell.Security\\Microsoft.PowerShell.Security.psd1') -Force -ErrorAction Stop",
+  buildPowerShellPinnedModuleImportStatement(authenticodeSignatureModules),
   '$signature = Get-AuthenticodeSignature -LiteralPath $env:XINGMANG_PYTHON_FILE_PATH -ErrorAction Stop',
   "$subject = if ($null -ne $signature.SignerCertificate) { $signature.SignerCertificate.Subject } else { '' }",
   '[PSCustomObject]@{ status = [string]$signature.Status; subject = [string]$subject } | ConvertTo-Json -Compress',
 ].join('; ')
 
-const installedRuntimeInspectionScript = [
+export const installedPythonInspectionScript = [
   '$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)',
   '$ErrorActionPreference = "Stop"',
   "$ProgressPreference = 'SilentlyContinue'",
-  "Import-Module -Name (Join-Path $PSHOME 'Modules\\Microsoft.PowerShell.Security\\Microsoft.PowerShell.Security.psd1') -Force -ErrorAction Stop",
+  buildPowerShellPinnedModuleImportStatement(authenticodeSignatureModules),
   '$signature = Get-AuthenticodeSignature -LiteralPath $env:XINGMANG_PYTHON_FILE_PATH -ErrorAction Stop',
   "$subject = if ($null -ne $signature.SignerCertificate) { $signature.SignerCertificate.Subject } else { '' }",
   '$version = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($env:XINGMANG_PYTHON_FILE_PATH).ProductVersion',
@@ -315,7 +316,7 @@ export function buildPythonRuntimeInstallPlan(
         '-ExecutionPolicy',
         'Bypass',
         '-EncodedCommand',
-        encodedPowerShellCommand(signatureScript),
+        encodedPowerShellCommand(pythonInstallerSignatureScript),
       ],
       timeoutMs: 60_000,
       acceptedExitCodes: [0],
@@ -518,7 +519,7 @@ export async function inspectInstalledPythonRuntime(
       '-ExecutionPolicy',
       'Bypass',
       '-EncodedCommand',
-      encodedPowerShellCommand(installedRuntimeInspectionScript),
+      encodedPowerShellCommand(installedPythonInspectionScript),
     ],
     timeoutMs: 60_000,
     acceptedExitCodes: [0],

@@ -2,6 +2,7 @@ import { execFile } from 'node:child_process'
 import net from 'node:net'
 import { promisify } from 'node:util'
 import { trustedCommandEnvironment } from './command-runner'
+import { buildPowerShellModuleImportStatement } from './powershell-module-imports'
 import { resolveWindowsPowerShellExecutable } from './windows-elevation'
 
 const execFileAsync = promisify(execFile)
@@ -195,7 +196,7 @@ export async function runPowerShell(script: string, env: NodeJS.ProcessEnv): Pro
   ], {
     env,
     windowsHide: true,
-    timeout: 8_000,
+    timeout: windowsProxyPowerShellTimeoutMs,
     maxBuffer: 64 * 1024,
   })
   return stdout
@@ -203,10 +204,18 @@ export async function runPowerShell(script: string, env: NodeJS.ProcessEnv): Pro
 
 const powerShellNameList = staleProxyVariableNames.map((name) => `"${name}"`).join(',')
 
+// 读代理设置这条跑在 trustedCommandEnvironment() 下：ConvertTo-Json 要是留给 PowerShell
+// 自己去找模块，就得把系统模块整个扫一遍（CI 上 20 多秒），超过这里的 8 秒，检查页
+// 就读不到代理设置。所以先按名字导入。清除那两条脚本不调任何命令，不用导入。
+export const readProxyScopesModules = ['Microsoft.PowerShell.Utility'] as const
+
+export const windowsProxyPowerShellTimeoutMs = 8_000
+
 export function buildReadProxyScopesScript(): string {
   return [
     '$ErrorActionPreference = "Stop"',
     '$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)',
+    buildPowerShellModuleImportStatement(readProxyScopesModules),
     `$names = @(${powerShellNameList})`,
     '$user = @{}',
     '$machine = @{}',
