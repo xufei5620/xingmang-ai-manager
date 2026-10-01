@@ -17,6 +17,8 @@ import {
 } from './codex-desktop-cdp'
 
 const codexProcessId = 4321
+// What execFile puts in the message when it stops the owner lookup at its limit.
+const powerShellCommandLine = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand JABFAHIAcgBvAHIA'
 const codexPortOwner = {
   expectedProcessId: codexProcessId,
   resolvePortOwnerProcessIds: async () => [codexProcessId],
@@ -635,6 +637,80 @@ describe('Codex Desktop CDP debugging port ownership', () => {
     })
     expect(result).toEqual({ injectedTargets: 1, attempts: 3 })
     expect(lookups).toBe(3)
+  })
+
+  it('asks again when an owner lookup fails or runs out of time instead of giving up on the language', async () => {
+    const { socket } = mockCdpSocket()
+    let lookups = 0
+    const result = await injectCodexDesktopChineseLocale(9222, {
+      expectedProcessId: 4321,
+      resolvePortOwnerProcessIds: async () => {
+        lookups += 1
+        if (lookups === 1) throw new Error(`Command failed: ${powerShellCommandLine}`)
+        return [4321]
+      },
+      fetch: async () => {
+        // Nothing reaches the port before an answered lookup names Codex.
+        expect(lookups).toBe(2)
+        return new Response(JSON.stringify([target()]))
+      },
+      createWebSocket: () => socket,
+      delay: async () => undefined,
+    })
+    expect(result).toEqual({ injectedTargets: 1, attempts: 2 })
+  })
+
+  it('stops after three unanswered lookups in a row without touching the port or quoting the command', async () => {
+    let lookups = 0
+    let discoveries = 0
+    await expect(injectCodexDesktopChineseLocale(9222, {
+      expectedProcessId: 4321,
+      resolvePortOwnerProcessIds: async () => {
+        lookups += 1
+        throw new Error(`Command failed: ${powerShellCommandLine}`)
+      },
+      fetch: async () => { discoveries += 1; return new Response(JSON.stringify([target()])) },
+      delay: async () => undefined,
+    })).rejects.toThrow(/^这次没能确认 Codex 已经准备好$/)
+    expect(lookups).toBe(3)
+    expect(discoveries).toBe(0)
+  })
+
+  it('counts only unanswered lookups in a row, so an answer in between keeps the retries going', async () => {
+    const { socket } = mockCdpSocket()
+    const answers: Array<number[] | null> = [null, null, [], null, null, [4321]]
+    let lookups = 0
+    const result = await injectCodexDesktopChineseLocale(9222, {
+      expectedProcessId: 4321,
+      resolvePortOwnerProcessIds: async () => {
+        const answer = answers[lookups]
+        lookups += 1
+        if (!answer) throw new Error(`Command failed: ${powerShellCommandLine}`)
+        return answer
+      },
+      fetch: async () => new Response(JSON.stringify([target()])),
+      createWebSocket: () => socket,
+      delay: async () => undefined,
+    })
+    expect(result).toEqual({ injectedTargets: 1, attempts: 6 })
+    expect(lookups).toBe(6)
+  })
+
+  it('still refuses a port another process holds even after lookups failed', async () => {
+    let lookups = 0
+    let discoveries = 0
+    await expect(injectCodexDesktopChineseLocale(9222, {
+      expectedProcessId: 4321,
+      resolvePortOwnerProcessIds: async () => {
+        lookups += 1
+        if (lookups === 1) throw new Error(`Command failed: ${powerShellCommandLine}`)
+        return [7788]
+      },
+      fetch: async () => { discoveries += 1; return new Response(JSON.stringify([target()])) },
+      delay: async () => undefined,
+    })).rejects.toThrow('被其他进程占用')
+    expect(lookups).toBe(2)
+    expect(discoveries).toBe(0)
   })
 
   it('reuses a confirmed owner across the attempts of one bounded discovery', async () => {
