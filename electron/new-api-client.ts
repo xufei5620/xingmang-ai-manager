@@ -120,6 +120,19 @@ export interface NewApiClientOptions {
   // after refresh rotates its cookie, including restore candidates whose
   // subsequent /self validation can fail. This must never activate a user.
   onCredentialRotation?: (persistable: NewApiPersistableSession) => void | Promise<void>
+  // Main process only. Asked once after a request fails at the network layer
+  // (timeout, proxy, connection failure): resolve true when the host has just
+  // taken the session off a system proxy that stopped forwarding, so the same
+  // request is worth one more try. The host owns the proxy decision; this
+  // client only decides which failures may be replayed safely.
+  retryOffProxy?: (failure: NewApiRetryOffProxyFailure) => Promise<boolean>
+}
+
+export interface NewApiRetryOffProxyFailure {
+  reason: NetworkFailureReason
+  method: 'GET' | 'POST' | 'PUT' | 'DELETE'
+  /** Date.now() when the failed attempt was sent. */
+  startedAt: number
 }
 
 export interface NewApiAccountStatus {
@@ -1033,6 +1046,7 @@ interface RequestContext {
   timeoutMs: number
   maxResponseBytes: number
   origin: string
+  retryOffProxy?: (failure: NewApiRetryOffProxyFailure) => Promise<boolean>
 }
 
 interface PerformRequestInit {
@@ -1120,7 +1134,40 @@ function buildAuthHeaders(session: InternalSession): Record<string, string> {
   }
 }
 
+// 只有这几类失败可能是「系统代理活着但不转发」：超时、代理本身连不上、连接被断。
+// 证书、门户拦截、解析不出地址、服务不可用都与走不走代理无关，改直连也不会好，
+// 而 tls 那一类更不能拿换线路去「绕」。
+const proxyRetryReasons: ReadonlySet<NetworkFailureReason> = new Set(['timeout', 'proxy', 'refused'])
+
+// A GET can always be replayed. Anything else is replayed only when the proxy
+// itself refused the tunnel, i.e. the request provably never reached the
+// service: after a timeout or a reset mid-flight a login, a key creation or a
+// payment may already have happened, and sending it again could do it twice.
+// Those still flip the session to direct, so the user's next attempt goes
+// through.
+function mayReplayOffProxy(method: PerformRequestInit['method'], reason: NetworkFailureReason): boolean {
+  return method === 'GET' || reason === 'proxy'
+}
+
 async function performRequest(
+  ctx: RequestContext,
+  pathName: string,
+  init: PerformRequestInit,
+  label: string,
+): Promise<NewApiRawResponse> {
+  const startedAt = Date.now()
+  try {
+    return await performRequestOnce(ctx, pathName, init, label)
+  } catch (error) {
+    if (!ctx.retryOffProxy || !(error instanceof NewApiNetworkError) || !proxyRetryReasons.has(error.reason)) throw error
+    const reason = error.reason
+    const direct = await ctx.retryOffProxy({ reason, method: init.method, startedAt }).catch(() => false)
+    if (!direct || !mayReplayOffProxy(init.method, reason)) throw error
+    return performRequestOnce(ctx, pathName, init, label)
+  }
+}
+
+async function performRequestOnce(
   ctx: RequestContext,
   pathName: string,
   init: PerformRequestInit,
@@ -2456,6 +2503,7 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
     timeoutMs,
     maxResponseBytes,
     origin,
+    retryOffProxy: options.retryOffProxy,
   }
 
   const legalDocumentCache = new Map<NewApiLegalDocumentKind, { expiresAt: number; value: NewApiLegalDocument }>()

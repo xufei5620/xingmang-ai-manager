@@ -88,7 +88,7 @@ import { runCodexContextLimitsMigration } from './codex-config-migration'
 import { findExecutable, runWithTrustedWindowsProcessEnvironment } from './command-runner'
 import { CodexExtensionService } from './codex-extensions'
 import { CodexSessionsService } from './codex-sessions'
-import { createNewApiClient } from './new-api-client'
+import { createNewApiClient, type NewApiRetryOffProxyFailure } from './new-api-client'
 import { createRealmAccountService, type RealmAccountClientHandle, type RealmAccountSiteId } from './realm-account-service'
 import { createFileRealmAccountVault } from './realm-account-vault-file'
 import { createVaultRecoveryNotifier } from './vault-recovery-notice'
@@ -1740,6 +1740,10 @@ if (!hasSingleInstanceLock) {
       const { phase } = await acceleration.getAccelerationState(scope)
       return phase === 'active' || phase === 'connecting' || phase === 'stopping'
     }
+    // 系统代理活着却不转发时（代理软件换了线路、规则把账号服务挡了），账号请求只会
+    // 一直超时。客户端在网络层失败后来问这一句；直连兜底本身建得比账号服务晚，
+    // 在那之前一律按「不重发」处理。
+    let recoverAccountRequestOffProxy: ((failure: NewApiRetryOffProxyFailure) => Promise<boolean>) | null = null
     const accounts = createRealmAccountService({
       vault,
       createClient: (siteId, onSessionChange): RealmAccountClientHandle => {
@@ -1754,6 +1758,7 @@ if (!hasSingleInstanceLock) {
             credential: { kind: 'new-api', cookies: persisted.cookies } }) : null
         }
         client = createNewApiClient({ baseUrl: 'https://xm.solov.cc', fetchImpl: relayFetch,
+          retryOffProxy: (failure) => recoverAccountRequestOffProxy ? recoverAccountRequestOffProxy(failure) : Promise.resolve(false),
           onCredentialRotation: async (persisted) => {
             const revision = client.getSessionRevision()
             const owner = { realmId: 'xm-account' as const, userId: String(persisted.userId) }
@@ -2593,6 +2598,16 @@ if (!hasSingleInstanceLock) {
       log: (level, event, message, detail) => runtimeLog.log(level, 'network', event, message, detail),
     })
     attachProxyBypassState(() => proxyBypass.active())
+    recoverAccountRequestOffProxy = async (failure) => {
+      const direct = await proxyBypass.recoverFailedRequest(failure.startedAt)
+      if (direct) {
+        runtimeLog.log('info', 'network', 'proxy-bypass.account-retry', '账号请求经系统代理没走通，已改直接联网', {
+          reason: failure.reason,
+          method: failure.method,
+        })
+      }
+      return direct
+    }
     const chatHistoryStore = createAiChatHistoryStore({ root: path.join(managerDataDirectory, 'chat-history') })
     const unregisterIpcHandlers = registerIpcHandlers({
       acceleration,

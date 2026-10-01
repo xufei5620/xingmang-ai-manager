@@ -3655,3 +3655,80 @@ describe('shared public status reads', () => {
     expect(paths(fetchImpl, start).filter((path) => path === '/api/status')).toHaveLength(2)
   })
 })
+
+describe('createNewApiClient retry off a broken system proxy', () => {
+  function timedOut(): Promise<Response> {
+    return Promise.reject(new DOMException('aborted', 'AbortError'))
+  }
+
+  it('sends a read once more after the host switches to direct when the proxy is alive but not forwarding', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>().mockImplementationOnce(timedOut).mockResolvedValueOnce(statusResponse())
+    const retryOffProxy = vi.fn(async () => true)
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl, retryOffProxy })
+    await expect(client.getStatus()).resolves.toBeTruthy()
+    expect(fetchImpl).toHaveBeenCalledTimes(2)
+    expect(retryOffProxy).toHaveBeenCalledTimes(1)
+    expect(retryOffProxy).toHaveBeenCalledWith(expect.objectContaining({ reason: 'timeout', method: 'GET', startedAt: expect.any(Number) }))
+  })
+
+  it('reports the original failure without a second request when no proxy is in the way', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>().mockImplementation(timedOut)
+    const retryOffProxy = vi.fn(async () => false)
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl, retryOffProxy })
+    await expect(client.getStatus()).rejects.toMatchObject({ reason: 'timeout' })
+    expect(fetchImpl).toHaveBeenCalledTimes(1)
+    expect(retryOffProxy).toHaveBeenCalledTimes(1)
+  })
+
+  it('reports the direct attempt\'s failure when going direct does not help either, and tries only once', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+      .mockRejectedValueOnce(new Error('net::ERR_PROXY_CONNECTION_FAILED'))
+      .mockRejectedValueOnce(new Error('net::ERR_CONNECTION_RESET'))
+    const retryOffProxy = vi.fn(async () => true)
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl, retryOffProxy })
+    const error = await client.getStatus().catch((cause: unknown) => cause)
+    expect(error).toBeInstanceOf(NewApiNetworkError)
+    expect(error).toMatchObject({ reason: 'refused' })
+    expect(fetchImpl).toHaveBeenCalledTimes(2)
+    expect(retryOffProxy).toHaveBeenCalledTimes(1)
+  })
+
+  it('treats a throwing host hook as no retry', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>().mockImplementation(timedOut)
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl, retryOffProxy: async () => { throw new Error('session gone') } })
+    await expect(client.getStatus()).rejects.toMatchObject({ reason: 'timeout' })
+    expect(fetchImpl).toHaveBeenCalledTimes(1)
+  })
+
+  it.each([
+    ['certificate', new Error('net::ERR_CERT_AUTHORITY_INVALID')],
+    ['name resolution', new Error('net::ERR_NAME_NOT_RESOLVED')],
+    ['unrecognised', new Error('本地安全存储不可用')],
+  ])('never asks to leave the proxy over a %s failure', async (_label, failure) => {
+    const fetchImpl = vi.fn<NewApiFetch>().mockRejectedValue(failure)
+    const retryOffProxy = vi.fn(async () => true)
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl, retryOffProxy })
+    await expect(client.getStatus()).rejects.toBeTruthy()
+    expect(retryOffProxy).not.toHaveBeenCalled()
+    expect(fetchImpl).toHaveBeenCalledTimes(1)
+  })
+
+  it('switches to direct but does not replay a login that timed out, since it may already have reached the service', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>().mockImplementationOnce(timedOut).mockResolvedValueOnce(loginResponse())
+    const retryOffProxy = vi.fn(async () => true)
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl, retryOffProxy })
+    await expect(client.login({ username: 'tester', password: 'x' })).rejects.toMatchObject({ reason: 'timeout' })
+    expect(retryOffProxy).toHaveBeenCalledWith(expect.objectContaining({ reason: 'timeout', method: 'POST' }))
+    expect(fetchImpl).toHaveBeenCalledTimes(1)
+  })
+
+  it('replays a login the proxy refused outright, because it never left this machine', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+      .mockRejectedValueOnce(new Error('net::ERR_PROXY_CONNECTION_FAILED'))
+      .mockResolvedValueOnce(loginResponse())
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl, retryOffProxy: async () => true })
+    await client.login({ username: 'tester', password: 'correct horse battery staple' })
+    expect(client.isAuthenticated()).toBe(true)
+    expect(fetchImpl).toHaveBeenCalledTimes(2)
+  })
+})
