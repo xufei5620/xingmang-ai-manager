@@ -16,6 +16,45 @@
 > **0.1.14 ~ 0.1.20 没有条目**：这些版本号在本仓 `main` 的 `package.json` 历史里从未出现过
 > （0.1.13 直接跳到 0.1.21），只有 `release-notes.md` 留下了 0.1.20 的用户条目。
 
+## 0.2.13 - 2026-10-01
+
+- `main.ts` 的账号 `onChanged` 改为身份（站点 + 用户 + 会话代数）真的变了才调 `acceleration.onAccountChanged()`；此前任何登录态变化都会推进加速代数，在途的 get-state 报「账号已变更」并顺带停掉正在跑的加速。身份比较抽到 `account-identity-tracker.ts`，补单测。
+- 修稳 `electron/acceleration-development-host.test.ts` 的「proxy recovery retries」一组：等待真实
+  lstat 的那几处原来最多等 200 轮 setImmediate 就往下走，CI 忙时下一次推进假时钟发生在重试定时器
+  排上之前，最后一次重试永远不触发（10-1 #730、#734 各红一次）。改成等到那一步真的发生，
+  只保留「确认不再发生什么」那几处的有界等待；被测代码不变。
+- `new-api-client.ts` 的 `performRequest` 在超时 / 代理连不上 / 连接被断（network-failure 的 timeout、proxy、refused）后问一次宿主 `retryOffProxy`；宿主在 `main.ts` 接到 `proxy-bypass.ts` 新增的 `recoverFailedRequest`，复用 #578 的直连兜底（系统代理不是 DIRECT、星芒加速没开、探测通了才改，本次运行保持直连，不落盘），并记 INFO `network/proxy-bypass.account-retry`。以前这个兜底只在渲染层判成「代理」类且已登录时触发，客户「代理活着但不转发」报的是超时、开机恢复登录又是未登录态，都碰不到它。
+- GET 直连重发一次；登录、建 Key、付款等非 GET 只在代理本身拒绝隧道（请求确定没出本机）时重发，超时 / 连接被断只切直连不重发，防止重复提交。直连也不通后，请求触发的自动尝试停 5 分钟，「重新检测」不受限。不碰证书校验；`sub2api-relay-backend.ts` 未改。
+- `Shell.tsx` 状态栏未登录时沿用 `account.displayName`（恢复中 / 联不上等重试时 App 放的是「正在恢复登录」「暂时连不上，登录还在」）；`Home.tsx` 新增可选 `accountRestoring`，App 按 `sessionRestoring` 传入。
+- `provider-sessions.ts` 新增 `codexSessionTitle`：Codex Automation 的标题（「Automation: 名字 Automation ID: …」整段任务说明）只留任务名，其余标题折成一行、限 160 字；首页「最近」标题加单行省略号。
+- `inspectCliUpdate`（electron/system-service.ts）同 #729：只用 `findInstalledExecutable('npm')` 查 npm 路径，不再走 `inspectTool('npm')` 多起一个 `npm --version` 子进程；路径仍每次现查、不缓存。找不到 npm 时传下去的仍是 `null`，结果与之前一致。
+- Claude Desktop 第三方推理配置的 `inferenceModels` 改回只写所选的一个型号（0.2.8 的做法），撤回 #685 的
+  `buildClaudeDesktopModelList`。0.2.12 起写入当前 Key 可用的全部 `claude-*` 型号（最多 20 个），客户 Mac 上
+  Claude Desktop 提示型号被拒、对话无回复，换回 0.2.8 后恢复。代价是 Desktop 型号菜单只剩所选的一个。
+- 新增 `electron/cli-native-package.ts`：按包自己的 `optionalDependencies` 找本平台的原生包（Claude Code 的 `-darwin-arm64` 等、Codex 的别名包），装完在暂存前缀里核对它真的在，缺了就记 `cli.install.native-package-missing` 并让这个源失败、换下一个源；非托管安装在最终校验时再查一次。根因：npm 下载可选依赖失败时静默跳过、退出码仍为 0，原来只核对版本号（10-1 客户 Mac 两步都只 `added 1 package`）。npm 11.19 的 allowScripts 提示只是警告，postinstall 照常执行，不是原因。
+- `codex-desktop-cdp.ts` 的 `injectCodexDesktopChineseLocale`：调试端口归属查询（`Get-NetTCPConnection`，限时 10 秒）抛错或超时，不再把整次注入带出循环，改按「这一轮没法确认」处理：这一轮什么都不发（同端口未绑定），在原 20 秒窗口里下一轮再查；连续 3 次答不上才停，免得 PowerShell 起不来的机器每半秒起一个进程；端口归别的进程照旧立刻取消。停下时报 `这次没能确认 Codex 已经准备好`，不再把 execFile 的 `Command failed: …powershell.exe … -EncodedCommand …` 原样带进「未确认中文界面生效」提示。
+- 起因：2026-10-01 PR #745 那轮 Windows 打包冒烟里这项查询 10 秒没答上（同一分钟其它无关检查也慢 2 到 15 倍，重跑 1.5 秒）。当天 52 轮打包里它中位 1.7 秒、最慢的非失败轮 7.6 秒，是 33 项探测里离上限最近的两项之一；第一次查要冷启动网络连接表，在 App 里又正赶上 Codex 自己启动。与 #743 无关。
+- `diagnostics.ts` 的 `PROXY_ENVIRONMENT` 新增 `resolveAppProxy` 依赖：宿主交给 `session.defaultSession.resolveProxy(accountBaseUrl)`，即账号请求（net.fetch）真正走的路由，已含系统设置里的 HTTP / HTTPS / SOCKS / PAC，不起外部命令、不读注册表；解析复用 `download-proxy.ts` 的 `parseChromiumProxyResult`，本机端口复用 `probeLoopbackProxy` 试连。加速开着时不看（那是星芒自己设的）。详情只写本机端口或「别的机器」，不写地址（I13）。起因：2026-10-01 客户 Mac 开着别的代理，账号请求全超时，自检却报「没有另外设过代理」。
+- 开机自动装前的 5 秒预告不再只靠系统通知（第二十四批 ⑥）：`UpdateSnapshot` 加可选 `launchInstallNotice`（版本、标题、正文、预计开装时刻），`UpdaterService.setLaunchInstallNotice` 写入；`main.ts` 发系统通知的同时写进快照，情况变了或出错时收回。快照离开 `downloaded` 或安装器报错时在 `emit` 里统一清掉。渲染层 `features/app/LaunchInstallNotice.tsx` 经 `StartupNotices` 的 `leading` 插槽放在开机角落，带倒数、不可关。自动装开关与 5 秒时长不变，没加 IPC 通道。
+- 新增 `electron/macos-shell-profile.ts`：Mac 上装完 / 更新 CLI 后往当前用户的 `~/.zprofile` 末尾追加一段带标记的 PATH 设置（托管 npm bin、`~/.grok/bin`、星芒代下的 Node，全部追加在原 PATH 之后，`case` 防重复），已有标记就不动；只追加不重写，经 `readSafeUtf8File` / `appendSafeUtf8File`，`~/.zprofile` 是符号链接或多链接时拒绝并只记日志（I8）；登录 shell 不是 zsh 的不写（建 `~/.bash_profile` 会让 bash 不再读 `~/.profile`）。
+- 打开软件后的第一轮检测：Mac 上检测到星芒托管目录里的安装且从没处理过时补一次，处理过就在产品目录留 `terminal-commands-added` 记录，客户自己删掉那段后不会每次开软件又加回来；装、修复、更新工具时照常再确认。
+- 卸载工具时不删这段：指向不存在目录的 PATH 项无害，重装后直接可用，也和 Windows 卸载托管工具不改 PATH 一致。
+- `createCliTerminalAccess` 加 `ensureShellProfile`，`system-service.ts` 新选项 `ensureMacosShellProfile` 只由 `main.ts` 在 darwin 接真实现；失败只记 `cli.shell-profile.failed`，不影响安装结果。
+- `codex-desktop-acceleration.ts` 去掉 `onAutoConnected` 回调，主进程不再发 `accelerationAutoStarted` 通知，该通知种类一并删除；测试用 `@ts-expect-error` 钉住这个口子不再出现（yoyo 2026-10-01 定「悄悄连」）。
+- `acceleration-interruption-notice.ts` 记下会话是否 `autoStartedBy`：自动连的会话意外断开且网络已改回（restored）只记 `acceleration.interrupted.quiet` 日志；unrestored 照旧提醒。
+- `system-service.ts` 的 Python 安装包进 `withDownloadAcceleration`，并把 `downloadFetch` 注入 `python-runtime.ts`（原来用 Node 自带 fetch，不认下载专用线路，也不读系统代理）。
+- `codexPluginCatalogNetworkMessage` 去掉「打开加速后再点」：插件目录下载早已自动借下载专用线路。
+- 教程「为什么有时会自动连接？」与通知设置说明同步到现状（原文还停在「开始计时、关掉不会断开」）。
+- 强制更新门（`required-update.ts` / `RequiredUpdateGate.tsx`）的失败标题与重试按钮改读 `registry/business.ts` 的 `updateFailureLabel`，和更新页、首页气泡同一份；原因句过 `userFacingErrorMessage`。开机检查超时那句（「不影响现在使用」）只在门里按 `STARTUP_UPDATE_TIMEOUT` 换说法，气泡和更新页不变。
+- `electron/updater.ts` 的原因句改成三处都成立的说法：兜底句不再提「查看日志」，安装器没起来的看门狗不再说「软件照常能用，到「更新」页」，清单缺失、服务器回网页、安装包校验四条去掉 latest.yml / SHA-512 等词，原话挪进 `error.detail`（照旧进 runtime.jsonl）。
+- `StartupNotices.tsx`：同时最多摊开 `STARTUP_NOTICE_VISIBLE_LIMIT`（2）张；`leading` 改成数组，开机安装倒数卡（#733）和维护提示始终摊开、不可折叠，各占一个位置；`orderStartupNotices` 按无缺省的 `Record<StartupCheckId, number>` 排先后（要选的 → 出事的 → 有空看的 → 纯告知），同档保持先来后到，新增提示类型时编译器会要求给它排位；多出来的折进「还有 N 条提示」按钮（`startup-notices-toggle`，带 `aria-expanded`）。
+- `shell.css`：`.v2-startup-notices` 加 `max-height: calc(100vh - 120px)`，卡片摞放进 `.v2-startup-notices-list` 在区内滚动；容器仍不吃指针事件，只有卡片区和折叠按钮吃。提示类型定义（`startup-notice.ts`）没动。
+- `realm-account-service.ts` 开机恢复（restoreActive 的非 stalled 分支）第一次超时（`RealmAccountError('TIMEOUT')` 或 `NewApiNetworkError('timeout')`）后隔 `startupRetryDelayMs`（缺省 3 秒）再试一次，两次都超时才 markStalled 交给 30 秒那一轮；联不上、维护等其他失败不快速重试。仍在同一个 transition 的 30 秒 prepare 期限里。起因：A014 反馈报告里历史账号站点约四次请求就有一次超 10 秒，开机恢复撞上就要挂 30 秒「暂时连不上」。
+- 接 #728：`src/renderer-v2/registry/tutorials.ts` Mac 运行环境章 Homebrew 一步补上打开终端的方法，「不知道 Homebrew 是什么」改大白话。防残留测试扩到教程示意图：新增 `features/tutorial/TutorialIllustration.test.tsx`，逐张渲染全部示意图（含读屏文字），不许出现 npm、PATH、TOML、环境变量与泛指的 CLI，图片清单用 `Record<TutorialIllustrationId, true>` 钉住、新增示意图漏测是编译错；`tutorials.test.ts` 的可见文案检查加上 PATH、TOML。第二十四批候选 ⑨ 收尾，只改文案与测试。
+- `electron/updater.ts`：`download-progress` 时记最近 10 秒的进度样本（`recordDownloadProgressSample`，已下载量变少即视为重新开始、清空样本），样本跨度满 3 秒才给 `progress.averageBytesPerSecond` 与 `progress.secondsRemaining`；两个字段可选，缺省＝只显示已下载/共多少。原样转发的 `bytesPerSecond` 不变（legacy 仍读它）。
+- `src/renderer-v2/registry/business.ts` 新增 `updateDownloadDetail` / `formatDownloadBytes` / `formatDownloadRemaining`，剩余时间按 10 秒、分钟粗取整，免得每秒跳数字；更新页（`pages-maintenance.tsx`）与强制更新门（`required-update.ts` 的 `progressDetail`、`RequiredUpdateGate.tsx`）读同一份。
+- `acceleration-development-backend.ts` 的 `startDownloadRoute` 去掉「免费时长用完就返回 unavailable」的门槛（yoyo 2026-10-01 回「放开」）；仍不写免费时长账本，加速页照旧显示用完。测试改钉「用完后照样起、账本不变」。
+
 ## 0.2.12 - 2026-10-01
 
 - Codex 桌面端自动加速的退出守护：连续三次确认桌面端在跑后，探活间隔从 1 分钟放宽到 3 分钟，
