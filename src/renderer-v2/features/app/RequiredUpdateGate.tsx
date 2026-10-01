@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import { BookOpen, Download } from 'lucide-react'
 import type { UpdateDownloadOptions, UpdateSnapshot } from '../../../../electron/ipc-contract'
+import { userFacingErrorMessage } from '../../business-common'
 import { updateDiskShortfallText } from '../../registry/business'
 import { updateDiskCleanupSteps } from '../../registry/tutorials'
 import { Button, Progress } from '../../ui'
@@ -103,7 +104,10 @@ export function RequiredUpdateGate({ update, windows, actions }: {
           {cleanupOpen && <p data-testid="required-update-disk-cleanup">{updateDiskCleanupSteps}</p>}
           <Button size="sm" icon={BookOpen} testId="required-update-disk-help" onClick={() => setCleanupOpen((open) => !open)}>{cleanupOpen ? '收起' : '怎么清理'}</Button>
         </div>}
-        {gate.failure && <p role="alert" data-testid="required-update-failure">更新没有完成：{gate.failure} 可以点「重试」；还是不行的话，点「打开下载页」下载适合这台电脑的安装包，装好后打开就行。</p>}
+        {gate.failure && <div role="alert" data-testid="required-update-failure">
+          <p><strong>{gate.failureTitle}。</strong>{userFacingErrorMessage(gate.failure)}</p>
+          <p>试了还是不行，点「打开下载页」下载适合这台电脑的安装包，装好后打开就行。</p>
+        </div>}
       </div>
       <footer>
         <Button variant="ghost" testId="required-update-support" onClick={actions.contactSupport}>联系客服</Button>

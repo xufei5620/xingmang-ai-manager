@@ -1,4 +1,5 @@
 import type { UpdateDiskShortfall, UpdateSnapshot } from '../../../../electron/ipc-contract'
+import { updateFailureLabel } from '../../registry/business'
 
 /** 「必须更新」那层提示上，主按钮点下去要做的事。 */
 export type RequiredUpdateAction = 'check' | 'download' | 'install'
@@ -13,6 +14,8 @@ export interface RequiredUpdateGateState {
   percent: number | null
   /** 上一步失败时给用户看的那句话；这时才出现「打开下载页」。 */
   failure: string | null
+  /** 失败那段的标题，和更新页、首页气泡同一份（「检查更新失败」「下载更新失败」…）。 */
+  failureTitle: string | null
   /**
    * 量过磁盘、空间不够，更新器这一轮没下载（它不报错，只在快照上挂这个缺口）。门里
    * 要说清为什么没动、清出空间再点；没有缺口时为 null。
@@ -40,6 +43,7 @@ export function requiredUpdateGate(update: GateSnapshot | null | undefined, inst
     availableVersion: update.availableVersion ?? null,
     percent: null,
     failure: null,
+    failureTitle: null,
     diskShortfall: null,
   }
   switch (update.phase) {
@@ -59,15 +63,29 @@ export function requiredUpdateGate(update: GateSnapshot | null | undefined, inst
       return { ...base, action: null, label: `正在下载 ${percent}%`, percent }
     }
     case 'downloaded':
-      if (update.error) return { ...base, action: 'install', label: '重试', failure: update.error.message }
+      if (update.error) return { ...base, action: 'install', ...gateFailure(update) }
       return installing
         ? { ...base, action: null, label: '正在重启安装…' }
         : { ...base, action: 'install', label: '立即更新' }
     case 'error':
       // 检查或下载失败后，electron-updater 已经不在「可下载」状态：从检查重新来，找到后
       // 那层提示会接着自动下载。
-      return { ...base, action: 'check', label: '重试', failure: update.error?.message ?? '更新没有完成' }
+      return { ...base, action: 'check', ...gateFailure(update) }
   }
+}
+
+/**
+ * 失败时门里的标题、按钮和原因与更新页、首页气泡说同一套话：标题和按钮都读
+ * updateFailureLabel，原因句是主进程那一句。主进程的原因句只说「发生了什么、点哪颗
+ * 三处都有的按钮」，唯一要在门里改口的是开机检查超时——那句安慰客户「不影响现在使用」，
+ * 可门正把他挡在外面。
+ */
+function gateFailure(update: GateSnapshot): Pick<RequiredUpdateGateState, 'label' | 'failure' | 'failureTitle'> {
+  const labels = updateFailureLabel(update.failedStep)
+  const failure = update.error?.code === 'STARTUP_UPDATE_TIMEOUT'
+    ? '网络有点慢，这次没来得及查完有没有新版本。点「重试」再查一次。'
+    : update.error?.message || '更新没有完成，没认出是哪一类问题，原因已经记下来了。再试一次；还不行请找客服。'
+  return { label: labels.retry, failure, failureTitle: labels.title }
 }
 
 /** 主按钮点过之后，状态走到下一步要不要替用户接着做（下载完接着装）。 */

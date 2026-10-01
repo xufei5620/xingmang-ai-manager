@@ -585,12 +585,13 @@ describe('updater service', () => {
       phase: 'error',
       error: {
         code: 'UPDATE_ERROR',
-        message: '更新服务器返回了网页而不是 latest.yml，请检查静态更新目录配置',
+        message: '更新服务器这会儿返回的内容不对，不是你这边的问题。稍后再试；还不行请找客服。',
+        detail: '更新服务器返回了网页而不是 latest.yml',
       },
     })
   })
 
-  it('names the macOS channel file when the update route returns HTML', async () => {
+  it('names the macOS channel file for support when the update route returns HTML', async () => {
     const client = new FakeUpdater()
     client.checkForUpdates.mockRejectedValueOnce(new Error(
       'YAMLException: unexpected token "<" while parsing <!doctype html>',
@@ -603,9 +604,9 @@ describe('updater service', () => {
 
     await service.check()
 
-    expect(service.getState().error?.message).toBe(
-      '更新服务器返回了网页而不是 latest-mac.yml，请检查静态更新目录配置',
-    )
+    expect(service.getState().error?.detail).toBe('更新服务器返回了网页而不是 latest-mac.yml')
+    // 文件名、「静态更新目录」是给发布那头看的，客户在三处失败提示里都只看到人话。
+    expect(service.getState().error?.message).not.toMatch(/[A-Za-z]/)
   })
 
   it('turns a missing macOS channel manifest into actionable publisher guidance', async () => {
@@ -626,7 +627,8 @@ describe('updater service', () => {
       phase: 'error',
       error: {
         code: 'ERR_UPDATER_CHANNEL_FILE_NOT_FOUND',
-        message: '更新服务器尚未发布 macOS 更新清单 latest-mac.yml，请联系发布者补齐更新文件',
+        message: '更新服务器上这一版的更新文件还没放好，不是你这边的问题。稍后再试；急着用请找客服。',
+        detail: '更新服务器缺少更新清单 latest-mac.yml',
       },
     })
   })
@@ -648,7 +650,8 @@ describe('updater service', () => {
       phase: 'error',
       error: {
         code: 'UPDATE_ERROR',
-        message: '更新服务器尚未发布 macOS 更新清单 latest-mac.yml，请联系发布者补齐更新文件',
+        message: '更新服务器上这一版的更新文件还没放好，不是你这边的问题。稍后再试；急着用请找客服。',
+        detail: '更新服务器缺少更新清单 latest-mac.yml',
       },
     })
   })
@@ -802,8 +805,10 @@ describe('updater service', () => {
       expect(client.quitAndInstall).toHaveBeenCalledTimes(1)
       expect(service.getState()).toMatchObject({
         phase: 'downloaded',
-        error: { code: 'UPDATE_INSTALL_LAUNCH_TIMEOUT' },
+        error: { code: 'UPDATE_INSTALL_LAUNCH_TIMEOUT', message: expect.stringContaining('点「重新安装」') },
       })
+      // 强制更新那道门里软件用不了、也没有更新页，这句不许再把人往那儿指。
+      expect(service.getState().error?.message).not.toMatch(/照常能用|「更新」页/)
       expect(service.install()).toEqual({ accepted: true })
       expect(client.quitAndInstall).toHaveBeenCalledTimes(2)
       service.dispose()
@@ -1412,7 +1417,8 @@ describe('downloaded package digest verification', () => {
 
     client.emit('update-downloaded', downloadedInfo())
     await vi.waitFor(() => expect(service.getState().phase).toBe('error'))
-    expect(service.getState().error).toMatchObject({ code: 'UPDATE_PACKAGE_DIGEST_MISMATCH' })
+    expect(service.getState().error).toMatchObject({ code: 'UPDATE_PACKAGE_DIGEST_MISMATCH', detail: expect.stringContaining('SHA-512') })
+    expect(service.getState().error?.message).not.toMatch(/[A-Za-z]/)
     await new Promise((resolve) => setTimeout(resolve, 350))
     expect(client.quitAndInstall).not.toHaveBeenCalled()
     expect(() => service.install()).toThrow('尚未下载')
@@ -1436,7 +1442,8 @@ describe('downloaded package digest verification', () => {
       sha512: '',
     }))
     await vi.waitFor(() => expect(service.getState().phase).toBe('error'))
-    expect(service.getState().error).toMatchObject({ code: 'UPDATE_PACKAGE_DIGEST_MISSING' })
+    expect(service.getState().error).toMatchObject({ code: 'UPDATE_PACKAGE_DIGEST_MISSING', detail: expect.stringContaining('SHA-512') })
+    expect(service.getState().error?.message).not.toMatch(/[A-Za-z]/)
     expect(verifyPackageDigest).not.toHaveBeenCalled()
     service.dispose()
   })
@@ -1467,7 +1474,8 @@ describe('downloaded package digest verification', () => {
     await vi.waitFor(() => expect(service.getState().phase).toBe('error'))
     expect(service.getState().error).toMatchObject({
       code: 'UPDATE_PACKAGE_DIGEST_FAILED',
-      message: expect.stringContaining('更新安装包存在多个硬链接'),
+      message: expect.stringContaining('重新下载'),
+      detail: expect.stringContaining('更新安装包存在多个硬链接'),
     })
     service.dispose()
   })
@@ -1604,7 +1612,7 @@ describe('downloaded package digest verification', () => {
     }))
     expect(service.getState()).toMatchObject({
       failedStep: 'check',
-      error: { message: expect.stringContaining('尚未发布更新清单') },
+      error: { message: expect.stringContaining('更新文件还没放好'), detail: '更新服务器缺少更新清单 latest.yml' },
     })
     service.dispose()
   })
@@ -1763,7 +1771,8 @@ describe('plain-language install failures', () => {
       await vi.advanceTimersByTimeAsync(25)
       const message = service.getState().error?.message ?? ''
       expect(message).toContain('授权窗口')
-      expect(message).toContain('「更新」页')
+      // 这句在强制更新门里也会出现，门里没有更新页：只点三处都有的「重新安装」。
+      expect(message).not.toContain('「更新」页')
       expect(message).toContain('「重新安装」')
       expect(message).not.toContain('检查更新')
       service.dispose()
@@ -1839,7 +1848,9 @@ describe('describeUnrecognizedUpdateFailure', () => {
     expect(describeUnrecognizedUpdateFailure('EPERM: operation not permitted, rename')).toContain('安全软件')
     expect(describeUnrecognizedUpdateFailure('EBUSY: resource busy or locked')).toContain('被占用')
     expect(describeUnrecognizedUpdateFailure('sha512 checksum mismatch')).toContain('重新下载')
-    expect(describeUnrecognizedUpdateFailure('Something odd happened')).toContain('查看日志')
+    // 更新页、首页气泡、强制更新门三处都会显示这句；门和气泡里没有「查看日志」按钮。
+    expect(describeUnrecognizedUpdateFailure('Something odd happened')).toContain('找客服')
+    expect(describeUnrecognizedUpdateFailure('Something odd happened')).not.toContain('查看日志')
   })
 
   it('keeps messages that are already Chinese and empty input as they are', () => {
