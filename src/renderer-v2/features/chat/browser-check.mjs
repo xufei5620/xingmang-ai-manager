@@ -563,7 +563,7 @@ test('removing the selected group preserves selection/history and prevents send 
   } finally { await page.close() }
 })
 
-test('focus, reactivation and visible foreground polling refresh groups without repeating preparation', async () => {
+test('focus and reactivation refresh groups without polling or repeating preparation', async () => {
   const page = await open()
   try {
     await ready(page)
@@ -581,9 +581,9 @@ test('focus, reactivation and visible foreground polling refresh groups without 
     assert.equal((await calls(page, 'groups')).length, inactive)
     await page.evaluate(() => { window.chatHarness.setGroups(['group-a', 'reactivated-group']); window.chatHarness.setActive(true) })
     await page.waitForFunction(() => [...document.querySelector('[data-testid="chat-group"]').options].some((option) => option.value === 'reactivated-group'))
-    await page.evaluate(() => window.chatHarness.setGroups(['group-a', 'polled-group']))
-    await page.clock.fastForward(31000)
-    await page.waitForFunction(() => [...document.querySelector('[data-testid="chat-group"]').options].some((option) => option.value === 'polled-group'))
+    const reactivated = (await calls(page, 'groups')).length
+    await page.clock.fastForward(10 * 60_000)
+    assert.equal((await calls(page, 'groups')).length, reactivated, 'a visible, focused chat page must not poll the group list')
     await page.evaluate(() => { Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' }); document.dispatchEvent(new Event('visibilitychange')) })
     const hidden = (await calls(page, 'groups')).length
     await page.clock.fastForward(31000)
