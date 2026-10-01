@@ -2034,3 +2034,50 @@ describe('download progress smoothing', () => {
     }
   })
 })
+
+describe('launch install notice', () => {
+  const notice = { version: '1.1.0', title: '星芒AI马上更新', body: '几秒后开始安装', installAt: 5_000 }
+
+  it('carries the notice only while that version waits downloaded', () => {
+    const client = new FakeUpdater()
+    const service = createUpdaterService(client, { currentVersion: '1.0.0', isPackaged: true })
+    service.setLaunchInstallNotice(notice)
+    expect(service.getState().launchInstallNotice).toBeNull()
+
+    client.emit('update-downloaded', updateInfo('1.1.0'))
+    service.setLaunchInstallNotice({ ...notice, version: '1.2.0' })
+    expect(service.getState().launchInstallNotice).toBeNull()
+    service.setLaunchInstallNotice(notice)
+    expect(service.getState().launchInstallNotice).toEqual(notice)
+    service.setLaunchInstallNotice(null)
+    expect(service.getState().launchInstallNotice).toBeNull()
+    service.dispose()
+  })
+
+  it('drops the notice when the installer fails to start', async () => {
+    const client = new FakeUpdater()
+    const service = createUpdaterService(client, {
+      currentVersion: '1.0.0',
+      isPackaged: true,
+      unsignedChannel: true,
+      prepareInstallQuit: () => Promise.reject(new Error('窗口已关闭，无法安装更新')),
+      installQuitAborted: vi.fn(),
+    })
+    client.emit('update-downloaded', updateInfo('1.1.0'))
+    service.setLaunchInstallNotice(notice)
+    service.install()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(service.getState()).toMatchObject({ phase: 'downloaded', failedStep: 'install', launchInstallNotice: null })
+    service.dispose()
+  })
+
+  it('drops the notice when a new check moves the phase away from downloaded', () => {
+    const client = new FakeUpdater()
+    const service = createUpdaterService(client, { currentVersion: '1.0.0', isPackaged: true })
+    client.emit('update-downloaded', updateInfo('1.1.0'))
+    service.setLaunchInstallNotice(notice)
+    client.emit('checking-for-update')
+    expect(service.getState().launchInstallNotice).toBeNull()
+    service.dispose()
+  })
+})
