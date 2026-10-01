@@ -116,6 +116,20 @@ export interface UpdateSnapshot {
    * 盖一层「更新后才能继续用」（见 required-update.ts）。可选＝旧快照，不拦。
    */
   requiredVersion?: string | null
+  /**
+   * 开机自动装上次下好的版本前那几秒的预告。系统通知在专注助手、关了通知权限的电脑上
+   * 会被静默吞掉，窗口里得同时摆一张卡，不然用户看到的就是窗口自己关掉、凭空弹授权窗。
+   * 只在 phase 为 downloaded 时有值，阶段一变就清掉。可选＝旧快照，界面照旧不显示。
+   */
+  launchInstallNotice?: LaunchInstallNotice | null
+}
+
+export interface LaunchInstallNotice {
+  version: string
+  title: string
+  body: string
+  /** 预计开始安装的时刻（毫秒时间戳），界面据此倒数。 */
+  installAt: number
 }
 
 export interface UpdateCheckOptions {
@@ -167,6 +181,8 @@ export interface UpdaterService {
   install(): { accepted: true }
   /** 更新目录上的状态文件读到了新内容（null = 读不到，当没有）。 */
   setServiceStatus(status: ServiceStatus | null): void
+  /** 开机自动装前的预告摆出来（或收回，null）。 */
+  setLaunchInstallNotice(notice: LaunchInstallNotice | null): void
   subscribe(listener: (snapshot: UpdateSnapshot) => void): () => void
   dispose(): void
 }
@@ -489,14 +505,18 @@ function safeError(error: unknown, platform: NodeJS.Platform): { code: string; m
       && (platform === 'darwin' || platform === 'win32')
       && hasChannelManifestUrl(description, channelFile)
     )
+  // 这两种是发布那头的事，客户什么也改不了；清单文件名只进 detail 给客服看。
   const message = missingChannelManifest
-    ? platform === 'darwin'
-      ? `更新服务器尚未发布 macOS 更新清单 ${channelFile}，请联系发布者补齐更新文件`
-      : `更新服务器尚未发布更新清单 ${channelFile}，请联系发布者补齐更新文件`
+    ? '更新服务器上这一版的更新文件还没放好，不是你这边的问题。稍后再试；急着用请找客服。'
     : /<!doctype\s+html|<html|text\/html|unexpected\s+token\s+["']?</i.test(source)
-      ? `更新服务器返回了网页而不是 ${channelFile}，请检查静态更新目录配置`
+      ? '更新服务器这会儿返回的内容不对，不是你这边的问题。稍后再试；还不行请找客服。'
       : null
-  if (message) return { code, message }
+  if (message) {
+    const detail = missingChannelManifest
+      ? `更新服务器缺少更新清单 ${channelFile}`
+      : `更新服务器返回了网页而不是 ${channelFile}`
+    return { code, message, detail }
+  }
   const translated = describeUnrecognizedUpdateFailure(redacted)
   return translated === redacted
     ? { code, message: translated || '更新操作失败' }
@@ -517,7 +537,9 @@ export function describeUnrecognizedUpdateFailure(source: string): string {
   if (/\bENOENT\b|no such file|sha512|checksum/i.test(source)) {
     return '下载好的安装包不完整或被删掉了，常见是安全软件拦了。重新下载一次就好。'
   }
-  return '更新没有完成，详细原因已经记进日志，点「查看日志」可以发给客服。'
+  // 这句会出现在更新页、首页气泡和强制更新那道门三处，三处的按钮不一样（门里没有
+  // 「查看日志」，气泡里也没有），所以只说发生了什么、哪三处都做得到的下一步。
+  return '更新没有完成，没认出是哪一类问题，原因已经记下来了。再试一次；还不行请找客服。'
 }
 
 function cloneInstalledRelease(release: InstalledRelease | null | undefined): InstalledRelease | null {
@@ -532,6 +554,7 @@ function cloneSnapshot(snapshot: UpdateSnapshot): UpdateSnapshot {
     diskShortfall: snapshot.diskShortfall ? { ...snapshot.diskShortfall } : null,
     installedRelease: cloneInstalledRelease(snapshot.installedRelease),
     serviceMaintenance: snapshot.serviceMaintenance ? { ...snapshot.serviceMaintenance } : null,
+    launchInstallNotice: snapshot.launchInstallNotice ? { ...snapshot.launchInstallNotice } : null,
   }
 }
 
@@ -594,6 +617,7 @@ export function createUpdaterService(
     rollback: false,
     diskShortfall: null,
     requiredVersion: null,
+    launchInstallNotice: null,
   }
 
   client.autoDownload = false
@@ -641,7 +665,12 @@ export function createUpdaterService(
     const diskShortfall = phase !== 'available'
       ? null
       : patch.diskShortfall !== undefined ? patch.diskShortfall : snapshot.diskShortfall ?? null
-    snapshot = { ...snapshot, ...patch, failedStep, diskShortfall }
+    // 开机装的预告同理：它说的是「这个下好的版本马上装」，离开 downloaded（被撤回、
+    // 重新检查）或者安装器没起来报了错，就不该再挂着倒数。
+    const launchInstallNotice = phase !== 'downloaded' || (patch.error !== undefined && patch.error !== null)
+      ? null
+      : patch.launchInstallNotice !== undefined ? patch.launchInstallNotice : snapshot.launchInstallNotice ?? null
+    snapshot = { ...snapshot, ...patch, failedStep, diskShortfall, launchInstallNotice }
     const value = cloneSnapshot(snapshot)
     for (const listener of listeners) listener(value)
   }
@@ -778,8 +807,8 @@ export function createUpdaterService(
       reportInstallFailure({
         code: 'UPDATE_INSTALL_LAUNCH_TIMEOUT',
         message: platform === 'win32'
-          ? '新版本没装上：安装程序没起来，可能是 Windows 的授权窗口被关掉了。软件照常能用，到「更新」页点「重新安装」再试一次，授权窗口弹出来时点「是」。'
-          : '新版本没装上：安装程序没起来。软件照常能用，到「更新」页点「重新安装」再试一次。',
+          ? '新版本没装上：安装程序没起来，可能是 Windows 的授权窗口被关掉了。点「重新安装」再试一次，授权窗口弹出来时点「是」。'
+          : '新版本没装上：安装程序没起来。点「重新安装」再试一次。',
       })
     }, installLaunchTimeoutMs)
     installWatchdogTimer.unref?.()
@@ -804,14 +833,14 @@ export function createUpdaterService(
   }
 
   // 安装包校验不过时要重来的是下载，不是安装：本地这一份已经不可信了。
-  const rejectDownloadedUpdate = (code: string, message: string) => {
+  const rejectDownloadedUpdate = (code: string, message: string, detail?: string) => {
     clearInstallWatchdog()
     installRequested = false
     emit({
       phase: 'error',
       checkedAt: now().toISOString(),
       progress: null,
-      error: { code, message },
+      error: detail ? { code, message, detail } : { code, message },
       failedStep: 'download',
     })
   }
@@ -822,7 +851,7 @@ export function createUpdaterService(
     if (!downloadedFile) {
       rejectDownloadedUpdate(
         'UPDATE_PACKAGE_PATH_MISSING',
-        '更新程序没有给出安装包位置，无法校验安装包完整性，已阻止安装',
+        '下载好的安装包找不到了，为了安全没有安装。点「重新下载」再试一次。',
       )
       return
     }
@@ -830,7 +859,8 @@ export function createUpdaterService(
     if (!expected) {
       rejectDownloadedUpdate(
         'UPDATE_PACKAGE_DIGEST_MISSING',
-        '更新清单没有提供本安装包的 SHA-512 校验值，已阻止安装，请联系发布者补齐更新文件',
+        '更新服务器没给这个安装包的核对信息，为了安全没有安装。不是你这边的问题，稍后再试；急着用请找客服。',
+        '更新清单没有提供本安装包的 SHA-512 校验值',
       )
       return
     }
@@ -841,7 +871,8 @@ export function createUpdaterService(
       if (disposed) return
       rejectDownloadedUpdate(
         'UPDATE_PACKAGE_DIGEST_FAILED',
-        `安装包完整性校验没有完成，已阻止安装：${digestFailureDetail(error)}`,
+        '下载好的安装包没能核对完，为了安全没有安装。点「重新下载」再试一次。',
+        `安装包完整性校验没有完成：${digestFailureDetail(error)}`,
       )
       return
     }
@@ -849,7 +880,8 @@ export function createUpdaterService(
     if (!matched) {
       rejectDownloadedUpdate(
         'UPDATE_PACKAGE_DIGEST_MISMATCH',
-        '安装包与更新清单的 SHA-512 不一致，已阻止安装。请重新下载，若仍不一致请联系发布者',
+        '下载好的安装包和服务器上的对不上，可能是没下完整，为了安全没有安装。点「重新下载」再试一次；还不对请找客服。',
+        '安装包与更新清单的 SHA-512 不一致',
       )
       return
     }
@@ -1127,6 +1159,12 @@ export function createUpdaterService(
     setServiceStatus(status) {
       if (disposed) return
       applyServiceStatus(status)
+    },
+    setLaunchInstallNotice(notice) {
+      if (disposed) return
+      if (notice && (snapshot.phase !== 'downloaded' || notice.version !== snapshot.availableVersion)) return
+      if (!notice && !snapshot.launchInstallNotice) return
+      emit({ launchInstallNotice: notice ? { ...notice } : null })
     },
     subscribe(listener) {
       listeners.add(listener)
