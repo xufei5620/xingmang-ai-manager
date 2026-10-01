@@ -193,6 +193,68 @@ checks.push(['store availability probe answers without throwing', async () => {
   console.log(`info store availability on this runner: ${available}`)
 }])
 
+// The single Codex desktop probes, each under the trusted environment and held
+// to the limit the app gives it (8 s). They import their modules up front for
+// the same reason as the merged probe (#714, #716): one autoloaded cmdlet
+// costs about 22 s here, and a timeout reads as "not installed", "no window"
+// or "could not look". Install, update, uninstall and reset all start with the
+// package probe, so on such a machine none of them would get past it.
+const {
+  buildCodexDesktopPackageProbeScript,
+  buildCodexDesktopStartAppProbeScript,
+  codexDesktopSingleProbeTimeoutMs,
+} = compiled('codex-desktop-service')
+
+const codexSingleProbes = [
+  ['start menu', buildCodexDesktopStartAppProbeScript],
+  ['scan process list', () => buildCodexDesktopProcessProbeScript('roots')],
+  ['session process list', buildCodexDesktopSessionProcessProbeScript],
+  ['package', buildCodexDesktopPackageProbeScript],
+]
+
+for (const [name, build] of codexSingleProbes) {
+  checks.push([`Codex ${name} probe answers inside its own limit under the trusted environment`, async () => {
+    const startedAt = Date.now()
+    const output = await runPowerShell(['-Command', build()], trustedCommandEnvironment())
+    const elapsed = Date.now() - startedAt
+    if (output.trim()) assert.doesNotThrow(() => JSON.parse(output.trim()))
+    console.log(`info Codex ${name} probe under the trusted environment: ${elapsed}ms`)
+    assert.ok(elapsed < codexDesktopSingleProbeTimeoutMs, `took ${elapsed}ms, the app gives it ${codexDesktopSingleProbeTimeoutMs}ms`)
+  }])
+}
+
+// Autoloading switched off right after the imports: a cmdlet whose module a
+// probe forgot fails by name instead of silently costing 22 s. Only printed,
+// so it names the culprit if one of the checks above goes red again.
+function runPowerShellCollecting(script, env) {
+  return new Promise((resolve) => {
+    const child = execFile(powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script], {
+      env, encoding: 'utf8', windowsHide: true, maxBuffer: 1024 * 1024, timeout: probeBudgetMs,
+    }, (error, stdout, stderr) => resolve({ error, stdout, stderr }))
+    child.stdin?.end()
+  })
+}
+
+async function reportCodexSingleProbesWithoutAutoloading() {
+  for (const [name, build] of codexSingleProbes) {
+    const script = build().replace(/(Import-Module [^\n;]*)/, "$1; $PSModuleAutoLoadingPreference = 'None'")
+    const startedAt = Date.now()
+    const { error, stdout, stderr } = await runPowerShellCollecting(script, trustedCommandEnvironment())
+    const missing = [...new Set([...String(stderr).matchAll(/(?:The term '|无法将“)([A-Za-z]+-[A-Za-z]+)/g)].map((match) => match[1]))]
+    const notFound = /CommandNotFoundException/.test(String(stderr))
+    // The package probe catches its own failure and answers with a plain
+    // sentence instead, so a missing Get-AppxPackage only shows up there.
+    let reported = null
+    try { reported = JSON.parse(String(stdout).trim())?.error ?? null } catch {}
+    const outcome = missing.length
+      ? `missing ${missing.join(', ')}`
+      : notFound ? 'a command was not found (see stderr)'
+        : reported ? `the probe reported an error: ${reported}`
+          : error ? `failed: ${String(error.message).split('\n')[0]}` : 'no missing command'
+    console.log(`${missing.length || notFound || reported ? '::warning::' : 'info '}Codex ${name} probe with autoloading off: ${outcome} (${Date.now() - startedAt}ms)`)
+  }
+}
+
 // The shipped functions, in the environment the app gives them. Under
 // trustedCommandEnvironment() command autoloading used to cost about 22 s per
 // process on this runner (#714): the account probe ran past its own 10 s limit
@@ -253,6 +315,7 @@ for (const [name, check] of checks) {
   }
 }
 await reportTrustedEnvironmentTimings()
+await reportCodexSingleProbesWithoutAutoloading()
 if (failures.length) {
   console.error(`${failures.length} of ${checks.length} PowerShell probe checks failed`)
   process.exit(1)
