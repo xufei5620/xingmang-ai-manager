@@ -53,6 +53,7 @@
 - 接 #728：`src/renderer-v2/registry/tutorials.ts` Mac 运行环境章 Homebrew 一步补上打开终端的方法，「不知道 Homebrew 是什么」改大白话。防残留测试扩到教程示意图：新增 `features/tutorial/TutorialIllustration.test.tsx`，逐张渲染全部示意图（含读屏文字），不许出现 npm、PATH、TOML、环境变量与泛指的 CLI，图片清单用 `Record<TutorialIllustrationId, true>` 钉住、新增示意图漏测是编译错；`tutorials.test.ts` 的可见文案检查加上 PATH、TOML。第二十四批候选 ⑨ 收尾，只改文案与测试。
 - `electron/updater.ts`：`download-progress` 时记最近 10 秒的进度样本（`recordDownloadProgressSample`，已下载量变少即视为重新开始、清空样本），样本跨度满 3 秒才给 `progress.averageBytesPerSecond` 与 `progress.secondsRemaining`；两个字段可选，缺省＝只显示已下载/共多少。原样转发的 `bytesPerSecond` 不变（legacy 仍读它）。
 - `src/renderer-v2/registry/business.ts` 新增 `updateDownloadDetail` / `formatDownloadBytes` / `formatDownloadRemaining`，剩余时间按 10 秒、分钟粗取整，免得每秒跳数字；更新页（`pages-maintenance.tsx`）与强制更新门（`required-update.ts` 的 `progressDetail`、`RequiredUpdateGate.tsx`）读同一份。
+- `acceleration-development-backend.ts` 的 `startDownloadRoute` 去掉「免费时长用完就返回 unavailable」的门槛（yoyo 2026-10-01 回「放开」）；仍不写免费时长账本，加速页照旧显示用完。测试改钉「用完后照样起、账本不变」。
 
 ## 0.2.12 - 2026-10-01
 
