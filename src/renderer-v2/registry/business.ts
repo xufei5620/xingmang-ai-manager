@@ -98,6 +98,50 @@ export function updateDiskShortfallText(update: Pick<UpdateSnapshot, 'phase' | '
   if (update?.phase !== 'available' || !update.diskShortfall) return null
   return describeUpdateDiskShortfall(update.diskShortfall, autoUpdate)
 }
+/** 下载量与速度用的大小：上 GB 与 10 MB 以下写一位小数（整数不带 .0），不到 1 MB 写 KB。*/
+export function formatDownloadBytes(bytes: number): string {
+  const safe = Number.isFinite(bytes) ? Math.max(0, bytes) : 0;
+  if (safe >= 1024 ** 3) return `${oneDecimal(safe / 1024 ** 3)} GB`;
+  const megabytes = safe / 1024 ** 2;
+  if (megabytes >= 10) return `${Math.round(megabytes)} MB`;
+  if (megabytes >= 1) return `${oneDecimal(megabytes)} MB`;
+  if (safe === 0) return '0 KB';
+  return `${Math.max(1, Math.round(safe / 1024))} KB`;
+}
+function oneDecimal(value: number): string {
+  return value.toFixed(1).replace(/\.0$/, '');
+}
+/**
+ * 还要多久。故意说得粗：一分钟以内按 10 秒取整，一小时以内按分钟往上取，免得数字
+ * 每秒都在变；几秒就好的直接说「马上就好」。
+ */
+export function formatDownloadRemaining(seconds: number): string {
+  if (seconds <= 10) return '马上就好';
+  if (seconds < 60) return `大约还要 ${Math.min(50, Math.ceil(seconds / 10) * 10)} 秒`;
+  const minutes = Math.ceil(seconds / 60);
+  if (minutes < 60) return `大约还要 ${minutes} 分钟`;
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  return rest ? `大约还要 ${hours} 小时 ${rest} 分钟` : `大约还要 ${hours} 小时`;
+}
+/**
+ * 进度条下面那行：「已下载 38 MB / 共 112 MB · 每秒 1.8 MB · 大约还要 1 分钟」。
+ * 速度和剩余时间用主进程算好的近 10 秒平均值；刚开始、或者速度算不出来时只说下了多少，
+ * 不知道总大小时连「共多少」也不说。更新页和强制更新那道门读同一份。
+ */
+export function updateDownloadDetail(progress: UpdateSnapshot['progress'] | null | undefined): string | null {
+  if (!progress) return null;
+  const transferred = Math.max(0, progress.transferred || 0);
+  const total = Math.max(0, progress.total || 0);
+  const parts = [total > 0 ? `已下载 ${formatDownloadBytes(Math.min(transferred, total))} / 共 ${formatDownloadBytes(total)}` : `已下载 ${formatDownloadBytes(transferred)}`];
+  const rate = progress.averageBytesPerSecond;
+  if (rate && rate > 0 && (total <= 0 || transferred < total)) {
+    parts.push(`每秒 ${formatDownloadBytes(rate)}`);
+    const remaining = progress.secondsRemaining;
+    if (typeof remaining === 'number' && remaining > 0) parts.push(formatDownloadRemaining(remaining));
+  }
+  return parts.join(' · ');
+}
 // 更新页顶上那句。自动更新开着时软件确实会在退出或下次打开时自己装，再写「不会自己
 // 重启」就是在说反话。
 export function updatesPageLead(autoUpdate: boolean): string {

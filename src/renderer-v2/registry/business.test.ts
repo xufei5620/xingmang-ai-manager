@@ -7,6 +7,8 @@ import {
   updateBubbleTitle,
   updateCardTitle,
   updateDiskShortfallText,
+  updateDownloadDetail,
+  formatDownloadRemaining,
   updateFailureFallback,
   updateFailureLabel,
   updateFailureLabels,
@@ -135,5 +137,35 @@ describe('renderer-v2 update disk shortfall wording', () => {
     expect(updateDiskShortfallText({ ...blocked, diskShortfall: null }, true)).toBeNull();
     expect(updateDiskShortfallText({ ...blocked, phase: 'downloading' }, true)).toBeNull();
     expect(updateDiskShortfallText(null, true)).toBeNull();
+  });
+});
+
+describe('update download detail', () => {
+  const mb = 1024 ** 2;
+  it('shows how much is done, how fast, and how long is left', () => {
+    expect(updateDownloadDetail({ percent: 34, bytesPerSecond: 1, transferred: 38 * mb, total: 112 * mb, averageBytesPerSecond: 1.8 * mb, secondsRemaining: 42 }))
+      .toBe('已下载 38 MB / 共 112 MB · 每秒 1.8 MB · 大约还要 50 秒');
+  });
+  it('only shows the amount while the speed is still unknown', () => {
+    expect(updateDownloadDetail({ percent: 0, bytesPerSecond: 0, transferred: 0, total: 112 * mb, averageBytesPerSecond: null, secondsRemaining: null }))
+      .toBe('已下载 0 KB / 共 112 MB');
+    // 旧快照没有平均速度字段：不拿 electron-updater 那个乱跳的瞬时值顶上。
+    expect(updateDownloadDetail({ percent: 50, bytesPerSecond: 3 * mb, transferred: 5.5 * mb, total: 11 * mb }))
+      .toBe('已下载 5.5 MB / 共 11 MB');
+  });
+  it('drops the total when the feed did not say how big the package is', () => {
+    expect(updateDownloadDetail({ percent: 0, bytesPerSecond: 0, transferred: 1.2 * 1024 ** 3, total: 0, averageBytesPerSecond: 512 * 1024, secondsRemaining: null }))
+      .toBe('已下载 1.2 GB · 每秒 512 KB');
+  });
+  it('has nothing to say without progress', () => {
+    expect(updateDownloadDetail(null)).toBeNull();
+  });
+  it('rounds the remaining time coarsely so it does not tick every second', () => {
+    expect(formatDownloadRemaining(5)).toBe('马上就好');
+    expect(formatDownloadRemaining(11)).toBe('大约还要 20 秒');
+    expect(formatDownloadRemaining(59)).toBe('大约还要 50 秒');
+    expect(formatDownloadRemaining(61)).toBe('大约还要 2 分钟');
+    expect(formatDownloadRemaining(3600)).toBe('大约还要 1 小时');
+    expect(formatDownloadRemaining(4800)).toBe('大约还要 1 小时 20 分钟');
   });
 });

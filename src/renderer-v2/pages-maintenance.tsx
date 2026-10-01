@@ -72,6 +72,7 @@ import {
   updateFailureLabel,
   updateCardTitle,
   updateDiskShortfallText,
+  updateDownloadDetail,
   updateInstallNote,
   updatesPageLead,
   withdrawnVersionAdvice,
@@ -1294,6 +1295,11 @@ export function UpdatesPage({
               value={update.progress.percent}
               label={`${update.progress.percent.toFixed(0)}%`}
             />
+          )}
+          {update?.progress && (
+            <p className="v2-update-progress-detail" data-testid="updates-progress-detail">
+              {updateDownloadDetail(update.progress)}
+            </p>
           )}
           {diskShortfallText && (
             <Notice

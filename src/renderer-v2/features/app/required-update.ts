@@ -1,5 +1,5 @@
 import type { UpdateDiskShortfall, UpdateSnapshot } from '../../../../electron/ipc-contract'
-import { updateFailureLabel } from '../../registry/business'
+import { updateDownloadDetail, updateFailureLabel } from '../../registry/business'
 
 /** 「必须更新」那层提示上，主按钮点下去要做的事。 */
 export type RequiredUpdateAction = 'check' | 'download' | 'install'
@@ -12,6 +12,8 @@ export interface RequiredUpdateGateState {
   action: RequiredUpdateAction | null
   label: string
   percent: number | null
+  /** 下载时进度条下面那行「已下载多少 / 共多少 · 多快 · 还要多久」；不在下载时为 null。*/
+  progressDetail: string | null
   /** 上一步失败时给用户看的那句话；这时才出现「打开下载页」。 */
   failure: string | null
   /** 失败那段的标题，和更新页、首页气泡同一份（「检查更新失败」「下载更新失败」…）。 */
@@ -42,6 +44,7 @@ export function requiredUpdateGate(update: GateSnapshot | null | undefined, inst
     currentVersion: update.currentVersion,
     availableVersion: update.availableVersion ?? null,
     percent: null,
+    progressDetail: null,
     failure: null,
     failureTitle: null,
     diskShortfall: null,
@@ -60,7 +63,7 @@ export function requiredUpdateGate(update: GateSnapshot | null | undefined, inst
       return { ...base, action: 'download', label: '立即更新' }
     case 'downloading': {
       const percent = Math.round(Math.min(100, Math.max(0, update.progress?.percent ?? 0)))
-      return { ...base, action: null, label: `正在下载 ${percent}%`, percent }
+      return { ...base, action: null, label: `正在下载 ${percent}%`, percent, progressDetail: updateDownloadDetail(update.progress) }
     }
     case 'downloaded':
       if (update.error) return { ...base, action: 'install', ...gateFailure(update) }

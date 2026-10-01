@@ -63,6 +63,14 @@ export interface UpdateSnapshot {
     bytesPerSecond: number
     transferred: number
     total: number
+    /**
+     * 最近一段时间的平均速度（字节/秒），界面上写「每秒多快」用这个，不用上面那个
+     * electron-updater 原样给的瞬时值——那个一秒一跳，客户看着乱。下载刚开始、样本
+     * 还不够算的时候是 null；可选是为了兼容旧快照，缺省＝只显示已下载多少。
+     */
+    averageBytesPerSecond?: number | null
+    /** 按上面的平均速度估的剩余秒数；算不出来（刚开始、不知道总大小、速度为 0）时为 null。*/
+    secondsRemaining?: number | null
   } | null
   /**
    * `message` 是给用户看的中文；认不出的英文原话脱敏后放在可选的 `detail` 里，只为
@@ -316,6 +324,54 @@ export function resolveUpdateDiskShortfall(
   if (freeBytes === null || !Number.isFinite(freeBytes)) return null
   if (freeBytes >= neededBytes) return null
   return { neededBytes, freeBytes: Math.max(0, Math.floor(freeBytes)) }
+}
+
+export interface DownloadProgressSample {
+  at: number
+  transferred: number
+}
+
+/** 算平均速度看最近多久：太短数字乱跳，太长换线路以后半天才跟上。*/
+export const downloadRateWindowMs = 10_000
+/** 样本跨度不到这么久就先不报速度：刚开始那一两秒的数字没有参考价值。*/
+export const downloadRateMinimumSpanMs = 3_000
+
+/**
+ * 记一个进度样本，返回新的样本表。已下载的量变少了说明重新开始了（换线路、重下），
+ * 旧样本作废；超出窗口的丢掉，但留最早那一个在窗口边上，好让跨度撑满整个窗口。
+ */
+export function recordDownloadProgressSample(
+  samples: readonly DownloadProgressSample[],
+  sample: DownloadProgressSample,
+): DownloadProgressSample[] {
+  const last = samples.at(-1)
+  if (last && (sample.transferred < last.transferred || sample.at < last.at)) return [sample]
+  const next = [...samples, sample]
+  const cutoff = sample.at - downloadRateWindowMs
+  let first = 0
+  while (first < next.length - 1 && next[first + 1].at <= cutoff) first += 1
+  return next.slice(first)
+}
+
+/** 样本表首尾之间的平均速度（字节/秒）；跨度不够或者没在动时返回 null。*/
+export function resolveAverageDownloadRate(samples: readonly DownloadProgressSample[]): number | null {
+  if (samples.length < 2) return null
+  const first = samples[0]
+  const last = samples[samples.length - 1]
+  const span = last.at - first.at
+  if (span < downloadRateMinimumSpanMs) return null
+  const rate = (last.transferred - first.transferred) / (span / 1000)
+  return rate > 0 ? rate : null
+}
+
+/** 还要多少秒；不知道总大小、已经下完、速度算不出来时返回 null。*/
+export function resolveDownloadSecondsRemaining(
+  rate: number | null,
+  transferred: number,
+  total: number,
+): number | null {
+  if (!rate || rate <= 0 || total <= 0 || transferred >= total) return null
+  return Math.ceil((total - transferred) / rate)
 }
 
 function versionParts(version: string): number[] | null {
@@ -597,6 +653,7 @@ export function createUpdaterService(
   let serviceStatus: ServiceStatus | null = null
   let manualCheck = false
   let lastProgressPercent = -1
+  let progressSamples: DownloadProgressSample[] = []
   let offeredPackageBytes: number | null = null
   let snapshot: UpdateSnapshot = {
     phase: enabled ? 'idle' : 'disabled',
@@ -911,6 +968,10 @@ export function createUpdaterService(
     'download-progress': (progress: ProgressInfo) => {
       const timestamp = Date.now()
       const percent = Math.max(0, Math.min(100, Number(progress.percent) || 0))
+      const transferred = Math.max(0, Number(progress.transferred) || 0)
+      const total = Math.max(0, Number(progress.total) || 0)
+      // 样本在节流之前记：被节流掉的那几次也是真实的进度，算速度用得上。
+      progressSamples = recordDownloadProgressSample(progressSamples, { at: timestamp, transferred })
       if (
         percent < 100
         && timestamp - lastProgressAt < 100
@@ -918,13 +979,16 @@ export function createUpdaterService(
       ) return
       lastProgressAt = timestamp
       lastProgressPercent = percent
+      const averageRate = resolveAverageDownloadRate(progressSamples)
       emit({
         phase: 'downloading',
         progress: {
           percent,
           bytesPerSecond: Math.max(0, Number(progress.bytesPerSecond) || 0),
-          transferred: Math.max(0, Number(progress.transferred) || 0),
-          total: Math.max(0, Number(progress.total) || 0),
+          transferred,
+          total,
+          averageBytesPerSecond: averageRate,
+          secondsRemaining: resolveDownloadSecondsRemaining(averageRate, transferred, total),
         },
         error: null,
       })
@@ -1051,6 +1115,7 @@ export function createUpdaterService(
         return cloneSnapshot(snapshot)
       }
     }
+    progressSamples = []
     emit({ phase: 'downloading', progress: null, error: null })
     try {
       await client.downloadUpdate()
@@ -1058,6 +1123,7 @@ export function createUpdaterService(
       if (retryWithoutProxy && isProxyConnectionFailure(error)) {
         try {
           await retryOffProxy(async () => {
+            progressSamples = []
             emit({ phase: 'downloading', error: null, progress: null })
             await client.downloadUpdate()
           })
