@@ -85,6 +85,7 @@ import {
 } from './codex-desktop-install-failure'
 import { codexDesktopKnownIssueLaunchSentence, resolveCodexDesktopKnownIssue } from './codex-desktop-known-issues'
 import {
+  buildPowerShellModuleImportStatement,
   inspectWindowsStoreAppLaunchContext,
   inspectWindowsStoreAvailability,
   readWindowsStoreAppLaunchContext,
@@ -222,6 +223,29 @@ export function describeCodexDesktopLaunchFailure(
 }
 
 // 一键重置做不成时，客户自己在系统设置里点的是同一个按钮。
+/**
+ * The modules each PowerShell script in this file calls into. Every one of
+ * them runs under trustedCommandEnvironment(), where a single cmdlet left to
+ * command autoloading costs the whole module analysis (about 22 s on the CI
+ * runner, see buildPowerShellModuleImportStatement). Most of these probes get
+ * 8 s, so one missing import is a timeout, and a timeout reads as "not found"
+ * or "could not look". The unit tests map every cmdlet in each script to one
+ * of these names, so a new cmdlet cannot slip in without its module.
+ */
+export const codexDesktopStartAppProbeModules = ['Microsoft.PowerShell.Utility', 'StartLayout'] as const
+export const codexDesktopProcessProbeModules = ['Microsoft.PowerShell.Utility', 'CimCmdlets'] as const
+export const codexDesktopPackageProbeModules = ['Microsoft.PowerShell.Utility', 'Appx'] as const
+export const codexDesktopAppxCommandModules = ['Appx'] as const
+export const codexDesktopPackageInspectionModules = ['Microsoft.PowerShell.Utility'] as const
+
+/**
+ * The limit for the probes that run on their own: start menu, the scan and
+ * launch process lists, and the Appx package query before an install, update,
+ * uninstall or reset. Exported so the packaged-job smoke holds each probe to
+ * the limit the app actually gives it.
+ */
+export const codexDesktopSingleProbeTimeoutMs = 8_000
+
 const codexDesktopResetManualHint = '没能自动重置 Codex 桌面端。可以自己重置：打开 Windows「设置 → 应用 → 已安装的应用」，'
   + '找到 Codex，点右边的「…」→「高级选项」→「重置」，再回星芒打开。'
 
@@ -235,8 +259,18 @@ const codexDesktopResetManualHint = '没能自动重置 Codex 桌面端。可以
 export function buildCodexDesktopResetScript(packageFullName: string): string {
   return [
     '$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)',
+    buildPowerShellModuleImportStatement(codexDesktopAppxCommandModules),
     '$ErrorActionPreference = "Stop"',
     `Reset-AppxPackage -Package ${powerShellLiteral(packageFullName)}`,
+  ].join('; ')
+}
+
+export function buildCodexDesktopUninstallScript(packageFullName: string): string {
+  return [
+    '$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)',
+    buildPowerShellModuleImportStatement(codexDesktopAppxCommandModules),
+    '$ErrorActionPreference = "Stop"',
+    `Remove-AppxPackage -Package ${powerShellLiteral(packageFullName)} -ErrorAction Stop`,
   ].join('; ')
 }
 
@@ -1143,6 +1177,7 @@ export async function downloadCodexDesktopPackageFromCandidates(
 export function buildCodexDesktopPackageInspectionScript(packagePath: string): string {
   return [
     '$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)',
+    buildPowerShellModuleImportStatement(codexDesktopPackageInspectionModules),
     '$ErrorActionPreference = \'Stop\'',
     'Add-Type -AssemblyName System.IO.Compression.FileSystem',
     `$archive = [System.IO.Compression.ZipFile]::OpenRead(${powerShellLiteral(packagePath)})`,
@@ -1248,12 +1283,17 @@ function codexDesktopStartAppsQuery(): string {
   return "@(Get-StartApps | Where-Object { $_.AppID -like 'OpenAI.Codex*!App' } | Select-Object Name, AppID)"
 }
 
-export async function findCodexDesktopStartApp(): Promise<StartAppEntry | null> {
-  const script = [
+export function buildCodexDesktopStartAppProbeScript(): string {
+  return [
     codexDesktopProbeScriptHeader,
+    buildPowerShellModuleImportStatement(codexDesktopStartAppProbeModules),
     `$apps = ${codexDesktopStartAppsQuery()}`,
     '$apps | ConvertTo-Json -Compress',
   ].join('\n')
+}
+
+export async function findCodexDesktopStartApp(): Promise<StartAppEntry | null> {
+  const script = buildCodexDesktopStartAppProbeScript()
 
   try {
     const { stdout } = await execFileAsync(resolveWindowsPowerShellExecutable(), [
@@ -1265,7 +1305,7 @@ export async function findCodexDesktopStartApp(): Promise<StartAppEntry | null> 
     ], {
       env: trustedCommandEnvironment(),
       windowsHide: true,
-      timeout: 8_000,
+      timeout: codexDesktopSingleProbeTimeoutMs,
       maxBuffer: 1024 * 1024,
     })
     return selectCodexDesktopApp(parseStartAppsJson(stdout))
@@ -1344,6 +1384,7 @@ export function buildCodexDesktopProcessProbeScript(
 ): string {
   return [
     codexDesktopProbeScriptHeader,
+    buildPowerShellModuleImportStatement(codexDesktopProcessProbeModules),
     `$items = ${codexDesktopProcessQuery(scope, processIds)}`,
     '$items | ConvertTo-Json -Compress',
   ].join('; ')
@@ -1356,7 +1397,7 @@ export async function collectCodexDesktopProcesses(
 ): Promise<WindowsProcessEntry[]> {
   const script = buildCodexDesktopProcessProbeScript(scope, options.processIds)
   try {
-    return parseWindowsProcessesJson(await runProbe(script, scope === 'roots' ? 8_000 : 60_000))
+    return parseWindowsProcessesJson(await runProbe(script, scope === 'roots' ? codexDesktopSingleProbeTimeoutMs : 60_000))
   } catch {
     if (options.strict) throw new Error(codexDesktopProcessCheckFailedMessage)
     return []
@@ -1419,6 +1460,7 @@ function codexDesktopSessionProcessQuery(): string {
 export function buildCodexDesktopSessionProcessProbeScript(): string {
   return [
     codexDesktopProbeScriptHeader,
+    buildPowerShellModuleImportStatement(codexDesktopProcessProbeModules),
     `$items = ${codexDesktopSessionProcessQuery()}`,
     '$items | ConvertTo-Json -Compress',
   ].join('; ')
@@ -1472,7 +1514,7 @@ export async function probeCodexDesktopRunning(platform: NodeJS.Platform = proce
     ], {
       env: trustedCommandEnvironment(),
       windowsHide: true,
-      timeout: 8_000,
+      timeout: codexDesktopSingleProbeTimeoutMs,
       maxBuffer: 1024 * 1024,
     }))
   } catch {
@@ -1501,7 +1543,7 @@ async function listCodexDesktopSessionProcessIds(packageFamilyName: string | nul
     ], {
       env: trustedCommandEnvironment(),
       windowsHide: true,
-      timeout: 8_000,
+      timeout: codexDesktopSingleProbeTimeoutMs,
       maxBuffer: 1024 * 1024,
     })
     return parseCodexDesktopSessionProcessIds(stdout, packageFamilyName)
@@ -1549,6 +1591,7 @@ function codexDesktopPackageProbeStatements(): string[] {
 export function buildCodexDesktopPackageProbeScript(): string {
   return [
     codexDesktopProbeScriptHeader,
+    buildPowerShellModuleImportStatement(codexDesktopPackageProbeModules),
     '$ErrorActionPreference = "Stop"',
     ...codexDesktopPackageProbeStatements(),
     '$packageProbe | ConvertTo-Json -Compress',
@@ -1564,9 +1607,26 @@ export function buildCodexDesktopPackageProbeScript(): string {
  * processes used to give for free, and the install-state logic downstream
  * depends on telling "no package" apart from "could not look".
  */
+/**
+ * Every module the merged probe calls into. Runs under trustedCommandEnvironment(),
+ * where one autoloaded cmdlet costs a full module analysis (about 22 s on the CI
+ * runner, see buildPowerShellModuleImportStatement). The first attempt in #714
+ * imported every module here except Appx and saw no gain, because
+ * Get-AppxPackage alone still paid the whole autoload. The unit test maps each
+ * cmdlet in the script to one of these names so a new one cannot slip past.
+ */
+export const codexDesktopCombinedProbeModules = [
+  'Microsoft.PowerShell.Management',
+  'Microsoft.PowerShell.Utility',
+  'CimCmdlets',
+  'StartLayout',
+  'Appx',
+] as const
+
 export function buildCodexDesktopCombinedProbeScript(): string {
   return [
     codexDesktopProbeScriptHeader,
+    buildPowerShellModuleImportStatement(codexDesktopCombinedProbeModules),
     '$startApps = $null',
     '$startAppsError = $null',
     `try { $startApps = ${codexDesktopStartAppsQuery()} } catch { $startAppsError = $_.Exception.Message }`,
@@ -1683,7 +1743,7 @@ export function buildCodexDesktopCombinedProbeFailure(reason: unknown): CodexDes
  * 比任何单段都慢。取三段旧预算之和，谁都不比合并前更紧 —— 宁可极端情况下多
  * 等，也不要把装好的 Codex 桌面端误判成没装。
  */
-const codexDesktopCombinedProbeTimeoutMs = 24_000
+export const codexDesktopCombinedProbeTimeoutMs = 24_000
 
 async function runCodexDesktopCombinedProbe(): Promise<CodexDesktopCombinedProbe> {
   try {
@@ -1718,7 +1778,7 @@ export async function inspectCodexDesktopPackage(): Promise<CodexDesktopPackageP
     ], {
       env: trustedCommandEnvironment(),
       windowsHide: true,
-      timeout: 8_000,
+      timeout: codexDesktopSingleProbeTimeoutMs,
       maxBuffer: 1024 * 1024,
     })
     return parseCodexDesktopPackageProbeJson(stdout)
@@ -2957,17 +3017,12 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
       if (targetProcesses.length) {
         await terminateCodexDesktopProcesses(targetProcesses, installedPackage.packageFamilyName)
       }
-      const script = [
-        '$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)',
-        '$ErrorActionPreference = "Stop"',
-        `Remove-AppxPackage -Package ${powerShellLiteral(installedPackage.packageFullName)} -ErrorAction Stop`,
-      ].join('; ')
       await execFileAsync(resolveWindowsPowerShellExecutable(), [
         '-NoLogo',
         '-NoProfile',
         '-NonInteractive',
         '-Command',
-        script,
+        buildCodexDesktopUninstallScript(installedPackage.packageFullName),
       ], {
         env: trustedCommandEnvironment(),
         windowsHide: true,

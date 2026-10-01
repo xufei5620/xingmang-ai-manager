@@ -18,6 +18,26 @@
 
 ## 0.2.11 - 2026-09-29
 
+- 跟 #716 同一个根因、同一个修法，补到 `codex-desktop-service.ts` 里其余的 PowerShell 脚本：开始菜单探测、
+  扫描和关闭用的进程列表、「打开」与加速用的会话进程列表、Appx 包探测（各 8 秒上限），以及安装包检查
+  （90 秒）、卸载、重置（各 2 分钟）。它们都跑在 `trustedCommandEnvironment()` 下，任一条命令走自动加载
+  就要约 22 秒；Appx 包探测是安装、更新、卸载、重置的第一步，超时会直接报「读不到安装信息」。
+- 每个脚本开头按名字导入自己用到的模块（导出的 `codexDesktop*Modules` 常量），没放宽环境、没调上限；
+  导入失败退回自动加载即旧行为。开始菜单与卸载脚本抽成 `buildCodexDesktopStartAppProbeScript` /
+  `buildCodexDesktopUninstallScript` 以便单测；8 秒上限收成 `codexDesktopSingleProbeTimeoutMs`。
+- 单元测试把这八个脚本里的每条命令对到模块，并逐个去掉一个导入确认会红；打包作业冒烟里四条单独探测
+  在收紧环境下按 8 秒上限做真检查，另把自动加载关掉各跑一遍，漏导入的命令按名字打印出来。
+- Codex 桌面端合并探测（开始菜单 + 进程 + Appx 三段一条脚本）在 `trustedCommandEnvironment()`
+  下要 23～29 秒，上限 24 秒：CI runner 上 #714 之后的打包作业实测 29.1 秒，正式代码里会超时。
+  原因同 #714：收紧环境下任一条 cmdlet 走自动加载就要重建整份模块分析（约 22 秒）。#714 试过先导入
+  Management / Utility / CimCmdlets / StartLayout 四个模块不见快，漏的是 `Get-AppxPackage` 所在的
+  `Appx`——只要还有一个模块靠自动加载，代价就一分不少。
+- 修法：`buildCodexDesktopCombinedProbeScript` 开头按名字导入 `codexDesktopCombinedProbeModules`
+  五个模块（含 Appx）。仍只经收紧后的 PSModulePath 解析，没放宽环境变量，也没调大 24 秒上限；
+  导入失败退回自动加载即旧行为。
+- 单元测试把脚本里出现的每条 cmdlet 对到模块名，新加 cmdlet 忘了导入会红；打包作业冒烟里合并探测
+  在收紧环境、按它自己的 24 秒上限变成真检查，另把自动加载关掉再跑一遍，漏导入的命令会按名字报出来。
+
 - Windows 的 renderer-v2 浏览器分片拆成两片：`test:v2:browser:fixture`（共用默认 Vite 依赖缓存的
   browser-check 与最后的 app-check.mjs，顺序不变，上限仍 18 分钟）和 `test:v2:browser:e2e`（两份
   自带 cacheDir 的 e2e 套件，上限 10 分钟）。原来整片在 #712 上跑了 17 分 18 秒，在 #714 上两次

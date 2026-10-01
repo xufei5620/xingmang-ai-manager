@@ -26,6 +26,8 @@ const {
   buildCodexDesktopCombinedProbeScript,
   buildCodexDesktopProcessProbeScript,
   buildCodexDesktopSessionProcessProbeScript,
+  codexDesktopCombinedProbeModules,
+  codexDesktopCombinedProbeTimeoutMs,
   parseCodexDesktopCombinedProbeJson,
   parseCodexDesktopSessionProcessIds,
 } = compiled('codex-desktop-service')
@@ -191,31 +193,114 @@ checks.push(['store availability probe answers without throwing', async () => {
   console.log(`info store availability on this runner: ${available}`)
 }])
 
+// The single Codex desktop probes, each under the trusted environment and held
+// to the limit the app gives it (8 s). They import their modules up front for
+// the same reason as the merged probe (#714, #716): one autoloaded cmdlet
+// costs about 22 s here, and a timeout reads as "not installed", "no window"
+// or "could not look". Install, update, uninstall and reset all start with the
+// package probe, so on such a machine none of them would get past it.
+const {
+  buildCodexDesktopPackageProbeScript,
+  buildCodexDesktopStartAppProbeScript,
+  codexDesktopSingleProbeTimeoutMs,
+} = compiled('codex-desktop-service')
+
+const codexSingleProbes = [
+  ['start menu', buildCodexDesktopStartAppProbeScript],
+  ['scan process list', () => buildCodexDesktopProcessProbeScript('roots')],
+  ['session process list', buildCodexDesktopSessionProcessProbeScript],
+  ['package', buildCodexDesktopPackageProbeScript],
+]
+
+for (const [name, build] of codexSingleProbes) {
+  checks.push([`Codex ${name} probe answers inside its own limit under the trusted environment`, async () => {
+    const startedAt = Date.now()
+    const output = await runPowerShell(['-Command', build()], trustedCommandEnvironment())
+    const elapsed = Date.now() - startedAt
+    if (output.trim()) assert.doesNotThrow(() => JSON.parse(output.trim()))
+    console.log(`info Codex ${name} probe under the trusted environment: ${elapsed}ms`)
+    assert.ok(elapsed < codexDesktopSingleProbeTimeoutMs, `took ${elapsed}ms, the app gives it ${codexDesktopSingleProbeTimeoutMs}ms`)
+  }])
+}
+
+// Autoloading switched off right after the imports: a cmdlet whose module a
+// probe forgot fails by name instead of silently costing 22 s. Only printed,
+// so it names the culprit if one of the checks above goes red again.
+function runPowerShellCollecting(script, env) {
+  return new Promise((resolve) => {
+    const child = execFile(powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script], {
+      env, encoding: 'utf8', windowsHide: true, maxBuffer: 1024 * 1024, timeout: probeBudgetMs,
+    }, (error, stdout, stderr) => resolve({ error, stdout, stderr }))
+    child.stdin?.end()
+  })
+}
+
+async function reportCodexSingleProbesWithoutAutoloading() {
+  for (const [name, build] of codexSingleProbes) {
+    const script = build().replace(/(Import-Module [^\n;]*)/, "$1; $PSModuleAutoLoadingPreference = 'None'")
+    const startedAt = Date.now()
+    const { error, stdout, stderr } = await runPowerShellCollecting(script, trustedCommandEnvironment())
+    const missing = [...new Set([...String(stderr).matchAll(/(?:The term '|无法将“)([A-Za-z]+-[A-Za-z]+)/g)].map((match) => match[1]))]
+    const notFound = /CommandNotFoundException/.test(String(stderr))
+    // The package probe catches its own failure and answers with a plain
+    // sentence instead, so a missing Get-AppxPackage only shows up there.
+    let reported = null
+    try { reported = JSON.parse(String(stdout).trim())?.error ?? null } catch {}
+    const outcome = missing.length
+      ? `missing ${missing.join(', ')}`
+      : notFound ? 'a command was not found (see stderr)'
+        : reported ? `the probe reported an error: ${reported}`
+          : error ? `failed: ${String(error.message).split('\n')[0]}` : 'no missing command'
+    console.log(`${missing.length || notFound || reported ? '::warning::' : 'info '}Codex ${name} probe with autoloading off: ${outcome} (${Date.now() - startedAt}ms)`)
+  }
+}
+
 // The shipped functions, in the environment the app gives them. Under
 // trustedCommandEnvironment() command autoloading used to cost about 22 s per
-// process on this runner (#714), so the account probe ran past its own 10 s
-// limit and the home screen silently lost the "this account cannot open store
-// apps" warning. The account probe is a real check at its shipped limit; the
-// other two only print their timing. The Codex merged probe still took 23 s of
-// its 24 s budget here even with the common modules imported up front, so it
-// was left unchanged; its number is printed for that follow-up.
+// process on this runner (#714): the account probe ran past its own 10 s limit
+// and the home screen silently lost the "this account cannot open store apps"
+// warning, and the Codex merged probe took 23~29 s of its 24 s budget, so a
+// scan on a slow machine reported Codex desktop as unreadable. Both are real
+// checks at their shipped limits; store availability only prints its timing.
 checks.push(['store app launch probe answers inside its own limit under the trusted environment', async () => {
   const context = await inspectWindowsStoreAppLaunchContext()
   assert.match(context.userSid ?? '', /^S-1-5-/)
 }])
 
+checks.push(['Codex merged probe answers inside its own limit under the trusted environment', async () => {
+  const startedAt = Date.now()
+  const output = await runPowerShell(['-Command', buildCodexDesktopCombinedProbeScript()], trustedCommandEnvironment())
+  const elapsed = Date.now() - startedAt
+  const parsed = JSON.parse(output.trim())
+  assert.match(String(parsed.storeAppLaunch?.sid ?? ''), /^S-1-\d+(?:-\d+)+$/)
+  console.log(`info Codex merged probe under the trusted environment: package=${parsed.package?.packages?.length ? 'yes' : 'none'}, startAppsError=${parsed.startAppsError ?? 'none'}, processesError=${parsed.processesError ?? 'none'}, packageError=${parsed.packageError ?? 'none'} (${elapsed}ms)`)
+  assert.ok(elapsed < codexDesktopCombinedProbeTimeoutMs, `took ${elapsed}ms, the app gives it ${codexDesktopCombinedProbeTimeoutMs}ms`)
+}])
+
+// With autoloading switched off after the imports, any cmdlet whose module the
+// script forgot to import fails by name instead of silently costing 22 s. Only
+// printed: it names the culprit if the check above ever goes red again.
+async function reportUnimportedCommands() {
+  const script = buildCodexDesktopCombinedProbeScript().replace(
+    /^(Import-Module .*)$/m,
+    "$1\n$PSModuleAutoLoadingPreference = 'None'",
+  )
+  const startedAt = Date.now()
+  try {
+    const output = await runPowerShell(['-Command', script], trustedCommandEnvironment())
+    const parsed = JSON.parse(output.trim())
+    const errors = [parsed.startAppsError, parsed.processesError, parsed.packageError].filter(Boolean)
+    console.log(`info Codex merged probe with autoloading off (modules ${codexDesktopCombinedProbeModules.join(', ')}): ${errors.length ? errors.join(' | ') : 'no missing command'} (${Date.now() - startedAt}ms)`)
+  } catch (error) {
+    console.log(`::warning::Codex merged probe with autoloading off failed after ${Date.now() - startedAt}ms: ${String(error?.message ?? error).split('\n')[0]}`)
+  }
+}
+
 async function reportTrustedEnvironmentTimings() {
   const availabilityStartedAt = Date.now()
   const available = await inspectWindowsStoreAvailability({ timeoutMs: probeBudgetMs })
   console.log(`info inspectWindowsStoreAvailability under the trusted environment: ${available} (${Date.now() - availabilityStartedAt}ms)`)
-  const combinedStartedAt = Date.now()
-  try {
-    const output = await runPowerShell(['-Command', buildCodexDesktopCombinedProbeScript()], trustedCommandEnvironment())
-    const probe = parseCodexDesktopCombinedProbeJson(output)
-    console.log(`info Codex merged probe under the trusted environment: package=${probe.packageProbe.value ? 'yes' : 'none'} (${Date.now() - combinedStartedAt}ms)`)
-  } catch (error) {
-    console.log(`::warning::Codex merged probe under the trusted environment failed after ${Date.now() - combinedStartedAt}ms: ${String(error?.message ?? error).split('\n')[0]}`)
-  }
+  await reportUnimportedCommands()
 }
 
 const failures = []
@@ -230,6 +315,7 @@ for (const [name, check] of checks) {
   }
 }
 await reportTrustedEnvironmentTimings()
+await reportCodexSingleProbesWithoutAutoloading()
 if (failures.length) {
   console.error(`${failures.length} of ${checks.length} PowerShell probe checks failed`)
   process.exit(1)
