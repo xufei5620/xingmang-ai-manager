@@ -60,7 +60,7 @@ import { resolveInstallableUpdateOnQuit, resolveInterruptibleInstallTask } from 
 import { LAUNCH_INSTALL_NOTICE_MS, QUIT_INSTALL_NOTICE_MS, buildAutoInstallNotice, createPendingUpdateStore, decideLaunchInstall, decideQuitInstall, previousAutoInstallFailureMessage, resolveDownloadedVersionToRecord, resolvePreviousAutoInstallFailure } from './auto-update-install'
 import { createWindowResponsivenessGuard } from './window-responsiveness'
 import { createRendererCrashRecovery } from './renderer-crash-recovery'
-import { createApplicationTray, traySubscriptionLabel, type ApplicationTrayController } from './application-tray'
+import { createApplicationTray, resolveTrayUpdateEntry, traySubscriptionLabel, type ApplicationTrayController } from './application-tray'
 import { createTrayAccelerationCoordinator, type TrayAccelerationCoordinator } from './tray-acceleration'
 import { createExternalDeepLinkInbox } from './external-deep-links'
 import { createDesktopNotificationController } from './desktop-notifications'
@@ -3056,8 +3056,7 @@ if (!hasSingleInstanceLock) {
             ...(latestTraySystem?.desktopApps.codex.installed ? [{ id: 'codexDesktop', label: 'Codex 桌面端' }] : []),
             ...providerIds.filter((id) => latestTraySystem?.clis[id].installed).map((id) => ({ id, label: id === 'claude' ? 'Claude Code' : id === 'codex' ? 'Codex CLI' : id === 'gemini' ? 'Gemini CLI' : 'Grok CLI' })),
           ],
-          updateAvailable: updaterService.getState().phase === 'available',
-          updateVersion: updaterService.getState().availableVersion,
+          update: resolveTrayUpdateEntry(updaterService.getState()),
           acceleration: trayAcceleration?.entry() ?? null,
         }
       },
@@ -3065,6 +3064,8 @@ if (!hasSingleInstanceLock) {
       onNavigate: (target) => mainWindow.webContents.send(ipcEventChannels.onNavigate, target),
       onLaunchTool: (id) => { showMainWindow(); mainWindow.webContents.send(ipcEventChannels.onLaunchTool, id) },
       onAccelerationToggle: () => trayAcceleration?.toggle(),
+      // 与更新页「确认重启安装」、IPC update:install 同一条路，退出交接与安装闸都在 install() 里。
+      onInstallUpdate: () => { updaterService.install() },
       // 主窗口缩到托盘之后渲染层那边的加速轮询是停的，菜单弹出来这一刻是唯一
       // 能把剩余时长读新的时机；读一次，不起定时器。
       onMenuOpen: () => { trayAcceleration?.refresh() },
