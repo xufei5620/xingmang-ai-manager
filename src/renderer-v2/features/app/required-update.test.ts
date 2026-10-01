@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { UpdateSnapshot } from '../../../../electron/ipc-contract'
+import { updateFailureFallback, updateFailureLabels } from '../../registry/business'
 import { requiredUpdateFollowUp, requiredUpdateGate } from './required-update'
 
 function snapshot(patch: Partial<UpdateSnapshot> = {}): UpdateSnapshot {
@@ -48,9 +49,33 @@ describe('requiredUpdateGate', () => {
 
   it('turns a failure into a retry with the reason', () => {
     expect(requiredUpdateGate(snapshot({ phase: 'error', failedStep: 'download', error: { code: 'X', message: '网络断了' } })))
-      .toMatchObject({ action: 'check', label: '重试', failure: '网络断了' })
+      .toMatchObject({ action: 'check', label: '重新下载', failure: '网络断了', failureTitle: '下载更新失败' })
     expect(requiredUpdateGate(snapshot({ phase: 'downloaded', failedStep: 'install', error: { code: 'X', message: '没能启动安装' } }), true))
-      .toMatchObject({ action: 'install', label: '重试', failure: '没能启动安装' })
+      .toMatchObject({ action: 'install', label: '重新安装', failure: '没能启动安装', failureTitle: '安装更新失败' })
+  })
+
+  it('titles and labels a failure exactly like the updates page and the home bubble', () => {
+    // 原因句里说「点「重新安装」」「点「重新下载」」，门里的按钮就得叫这个名字。
+    for (const step of ['check', 'download', 'install'] as const) {
+      const gate = requiredUpdateGate(snapshot({ phase: step === 'install' ? 'downloaded' : 'error', failedStep: step, error: { code: 'X', message: '原因' } }))
+      expect(gate).toMatchObject({ label: updateFailureLabels[step].retry, failureTitle: updateFailureLabels[step].title })
+    }
+    // 旧快照没有 failedStep：和另外两处一样走兜底，不编一个步骤名。
+    expect(requiredUpdateGate(snapshot({ phase: 'error', error: { code: 'X', message: '原因' } })))
+      .toMatchObject({ label: updateFailureFallback.retry, failureTitle: updateFailureFallback.title })
+  })
+
+  it('does not promise the app keeps working when the startup check times out behind the gate', () => {
+    const gate = requiredUpdateGate(snapshot({ phase: 'error', failedStep: 'check', error: { code: 'STARTUP_UPDATE_TIMEOUT', message: '网络有点慢，这次没来得及查完有没有新版本。星芒会在后台接着查，不影响现在使用。' } }))
+    expect(gate).toMatchObject({ action: 'check', label: '重试' })
+    expect(gate?.failure).toContain('点「重试」')
+    expect(gate?.failure).not.toContain('不影响现在使用')
+  })
+
+  it('falls back to a plain sentence when a failure carries no message', () => {
+    const gate = requiredUpdateGate(snapshot({ phase: 'error', failedStep: 'check', error: { code: 'X', message: '' } }))
+    expect(gate?.failure).toContain('找客服')
+    expect(gate?.failure).not.toContain('查看日志')
   })
 
   it('explains a disk shortfall instead of offering a button that silently does nothing', () => {

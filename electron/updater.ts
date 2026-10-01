@@ -545,14 +545,18 @@ function safeError(error: unknown, platform: NodeJS.Platform): { code: string; m
       && (platform === 'darwin' || platform === 'win32')
       && hasChannelManifestUrl(description, channelFile)
     )
+  // 这两种是发布那头的事，客户什么也改不了；清单文件名只进 detail 给客服看。
   const message = missingChannelManifest
-    ? platform === 'darwin'
-      ? `更新服务器尚未发布 macOS 更新清单 ${channelFile}，请联系发布者补齐更新文件`
-      : `更新服务器尚未发布更新清单 ${channelFile}，请联系发布者补齐更新文件`
+    ? '更新服务器上这一版的更新文件还没放好，不是你这边的问题。稍后再试；急着用请找客服。'
     : /<!doctype\s+html|<html|text\/html|unexpected\s+token\s+["']?</i.test(source)
-      ? `更新服务器返回了网页而不是 ${channelFile}，请检查静态更新目录配置`
+      ? '更新服务器这会儿返回的内容不对，不是你这边的问题。稍后再试；还不行请找客服。'
       : null
-  if (message) return { code, message }
+  if (message) {
+    const detail = missingChannelManifest
+      ? `更新服务器缺少更新清单 ${channelFile}`
+      : `更新服务器返回了网页而不是 ${channelFile}`
+    return { code, message, detail }
+  }
   const translated = describeUnrecognizedUpdateFailure(redacted)
   return translated === redacted
     ? { code, message: translated || '更新操作失败' }
@@ -573,7 +577,9 @@ export function describeUnrecognizedUpdateFailure(source: string): string {
   if (/\bENOENT\b|no such file|sha512|checksum/i.test(source)) {
     return '下载好的安装包不完整或被删掉了，常见是安全软件拦了。重新下载一次就好。'
   }
-  return '更新没有完成，详细原因已经记进日志，点「查看日志」可以发给客服。'
+  // 这句会出现在更新页、首页气泡和强制更新那道门三处，三处的按钮不一样（门里没有
+  // 「查看日志」，气泡里也没有），所以只说发生了什么、哪三处都做得到的下一步。
+  return '更新没有完成，没认出是哪一类问题，原因已经记下来了。再试一次；还不行请找客服。'
 }
 
 function cloneInstalledRelease(release: InstalledRelease | null | undefined): InstalledRelease | null {
@@ -835,8 +841,8 @@ export function createUpdaterService(
       reportInstallFailure({
         code: 'UPDATE_INSTALL_LAUNCH_TIMEOUT',
         message: platform === 'win32'
-          ? '新版本没装上：安装程序没起来，可能是 Windows 的授权窗口被关掉了。软件照常能用，到「更新」页点「重新安装」再试一次，授权窗口弹出来时点「是」。'
-          : '新版本没装上：安装程序没起来。软件照常能用，到「更新」页点「重新安装」再试一次。',
+          ? '新版本没装上：安装程序没起来，可能是 Windows 的授权窗口被关掉了。点「重新安装」再试一次，授权窗口弹出来时点「是」。'
+          : '新版本没装上：安装程序没起来。点「重新安装」再试一次。',
       })
     }, installLaunchTimeoutMs)
     installWatchdogTimer.unref?.()
@@ -861,14 +867,14 @@ export function createUpdaterService(
   }
 
   // 安装包校验不过时要重来的是下载，不是安装：本地这一份已经不可信了。
-  const rejectDownloadedUpdate = (code: string, message: string) => {
+  const rejectDownloadedUpdate = (code: string, message: string, detail?: string) => {
     clearInstallWatchdog()
     installRequested = false
     emit({
       phase: 'error',
       checkedAt: now().toISOString(),
       progress: null,
-      error: { code, message },
+      error: detail ? { code, message, detail } : { code, message },
       failedStep: 'download',
     })
   }
@@ -879,7 +885,7 @@ export function createUpdaterService(
     if (!downloadedFile) {
       rejectDownloadedUpdate(
         'UPDATE_PACKAGE_PATH_MISSING',
-        '更新程序没有给出安装包位置，无法校验安装包完整性，已阻止安装',
+        '下载好的安装包找不到了，为了安全没有安装。点「重新下载」再试一次。',
       )
       return
     }
@@ -887,7 +893,8 @@ export function createUpdaterService(
     if (!expected) {
       rejectDownloadedUpdate(
         'UPDATE_PACKAGE_DIGEST_MISSING',
-        '更新清单没有提供本安装包的 SHA-512 校验值，已阻止安装，请联系发布者补齐更新文件',
+        '更新服务器没给这个安装包的核对信息，为了安全没有安装。不是你这边的问题，稍后再试；急着用请找客服。',
+        '更新清单没有提供本安装包的 SHA-512 校验值',
       )
       return
     }
@@ -898,7 +905,8 @@ export function createUpdaterService(
       if (disposed) return
       rejectDownloadedUpdate(
         'UPDATE_PACKAGE_DIGEST_FAILED',
-        `安装包完整性校验没有完成，已阻止安装：${digestFailureDetail(error)}`,
+        '下载好的安装包没能核对完，为了安全没有安装。点「重新下载」再试一次。',
+        `安装包完整性校验没有完成：${digestFailureDetail(error)}`,
       )
       return
     }
@@ -906,7 +914,8 @@ export function createUpdaterService(
     if (!matched) {
       rejectDownloadedUpdate(
         'UPDATE_PACKAGE_DIGEST_MISMATCH',
-        '安装包与更新清单的 SHA-512 不一致，已阻止安装。请重新下载，若仍不一致请联系发布者',
+        '下载好的安装包和服务器上的对不上，可能是没下完整，为了安全没有安装。点「重新下载」再试一次；还不对请找客服。',
+        '安装包与更新清单的 SHA-512 不一致',
       )
       return
     }
