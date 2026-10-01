@@ -3107,9 +3107,11 @@ export function createSystemService(
     forceRefresh = false,
   ): Promise<CliStatus> {
     if (forceRefresh) invalidateCliUpdateCache(provider)
-    const npm = await inspectTool('npm')
-    const npmGlobalRoot = await resolveNpmGlobalRoot(npm.path, commandEnvironment())
-    const { status } = await inspectCliTool(provider, npm.path, npmGlobalRoot)
+    // 同「打开」那条路（launchProviderOperation）：检查更新只用得上 npm 在哪，
+    // 用不上它的版本号，别为此多起一次 `npm --version`。路径照旧每次现查，不缓存。
+    const npmPath = await findInstalledExecutable('npm')
+    const npmGlobalRoot = await resolveNpmGlobalRoot(npmPath, commandEnvironment())
+    const { status } = await inspectCliTool(provider, npmPath, npmGlobalRoot)
     const networkRegion = provider !== 'grok' && status.installed
       ? await inspectNetworkRegion()
       : 'unknown'
