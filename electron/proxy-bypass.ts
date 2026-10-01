@@ -29,14 +29,29 @@ export interface ProxyBypassDependencies {
   /** 在已改直连的会话上发一次请求；服务真的回了话才算通。 */
   probe(url: string): Promise<boolean>
   accelerationActive(): Promise<boolean>
+  /** 测试注入用；缺省 Date.now。 */
+  now?(): number
   log?(level: 'info' | 'warn', event: string, message: string, detail?: Record<string, unknown>): void
 }
 
 export interface ProxyBypass {
   tryBypass(): Promise<ProxyBypassOutcome>
+  /**
+   * 账号请求在网络层失败后问一句：要不要改直连再发一次。startedAt 是那次请求
+   * 发出的时刻。返回 true 表示会话现在是直连、且那次请求还是走代理发出去的，
+   * 值得重发；false 表示别重发，按原错误报。
+   */
+  recoverFailedRequest(startedAt: number): Promise<boolean>
   /** 本次运行是否已经改成直连。 */
   active(): boolean
 }
+
+/**
+ * 直连也不通之后，请求失败自己触发的那种尝试先停这么久：每次失败都把会话切到
+ * 直连探一下再切回来，会让同一时刻别的请求也跟着来回换线路。用户点「重新检测」
+ * 走的是 tryBypass，不受这个限制。
+ */
+export const automaticBypassCooldownMs = 5 * 60_000
 
 function firstRoute(value: string): string {
   return value.slice(0, 2048).split(';', 1)[0].trim().toUpperCase()
@@ -44,7 +59,10 @@ function firstRoute(value: string): string {
 
 export function createProxyBypass(dependencies: ProxyBypassDependencies): ProxyBypass {
   let active = false
+  let activatedAt = 0
+  let unreachableAt: number | null = null
   let pending: Promise<ProxyBypassOutcome> | null = null
+  const now = dependencies.now ?? Date.now
 
   async function attempt(): Promise<ProxyBypassOutcome> {
     const url = dependencies.probeUrl()
@@ -58,20 +76,32 @@ export function createProxyBypass(dependencies: ProxyBypassDependencies): ProxyB
     const reachable = await dependencies.probe(url).catch(() => false)
     if (reachable) {
       active = true
+      activatedAt = now()
+      unreachableAt = null
       dependencies.log?.('info', 'proxy-bypass.direct', '系统代理连不上，本次运行改为直接联网')
       return 'direct'
     }
     await dependencies.setProxy('system')
+    unreachableAt = now()
     dependencies.log?.('warn', 'proxy-bypass.unreachable', '系统代理连不上，直接联网也不通，已改回跟随系统代理')
     return 'unreachable'
   }
 
+  function tryBypass(): Promise<ProxyBypassOutcome> {
+    if (active) return Promise.resolve('direct')
+    // 横幅和「重新检测」可能前后脚各点一次：同一时刻只试一次，不来回切代理。
+    if (!pending) pending = attempt().finally(() => { pending = null })
+    return pending
+  }
+
   return {
-    async tryBypass() {
-      if (active) return 'direct'
-      // 横幅和「重新检测」可能前后脚各点一次：同一时刻只试一次，不来回切代理。
-      if (!pending) pending = attempt().finally(() => { pending = null })
-      return pending
+    tryBypass,
+    async recoverFailedRequest(startedAt) {
+      // 已经直连了还失败：要是那次请求是改直连之前发出的（几个请求一起卡在代理上，
+      // 另一个先把会话切了），重发一次就走直连；之后发出的本来就是直连，重发没用。
+      if (active) return startedAt < activatedAt
+      if (unreachableAt !== null && now() - unreachableAt < automaticBypassCooldownMs) return false
+      return await tryBypass() === 'direct'
     },
     active: () => active,
   }

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { createProxyBypass, isNetworkSettingsKind, networkSettingsTarget, probeDirectConnection, type ProxyBypassDependencies } from './proxy-bypass'
+import { automaticBypassCooldownMs, createProxyBypass, isNetworkSettingsKind, networkSettingsTarget, probeDirectConnection, type ProxyBypassDependencies } from './proxy-bypass'
 
 const probeUrl = 'https://relay.example/api/status'
 
@@ -111,5 +111,51 @@ describe('network settings targets', () => {
     expect(networkSettingsTarget('darwin', 'proxy')).toBe('x-apple.systempreferences:com.apple.preference.network')
     expect(networkSettingsTarget('darwin', 'captive-portal')).toBe('http://captive.apple.com/')
     expect(networkSettingsTarget('linux', 'proxy')).toBeNull()
+  })
+})
+
+describe('proxy bypass after a failed account request', () => {
+  it('asks for a retry once direct works, and only for requests sent before the switch', async () => {
+    let clock = 1_000
+    const { deps, modes } = dependencies({ now: () => clock })
+    const bypass = createProxyBypass(deps)
+    expect(await bypass.recoverFailedRequest(900)).toBe(true)
+    expect(modes).toEqual(['direct'])
+    // Another request that was stuck on the proxy at the same time is worth resending.
+    expect(await bypass.recoverFailedRequest(950)).toBe(true)
+    // One sent after the switch already went direct; resending would not change anything.
+    clock = 2_000
+    expect(await bypass.recoverFailedRequest(1_500)).toBe(false)
+    expect(modes).toEqual(['direct'])
+  })
+
+  it('does not retry when no proxy is in use', async () => {
+    const { deps, modes } = dependencies({ resolveProxy: async () => 'DIRECT' })
+    expect(await createProxyBypass(deps).recoverFailedRequest(0)).toBe(false)
+    expect(modes).toEqual([])
+  })
+
+  it('does not retry while acceleration owns the proxy', async () => {
+    const { deps, modes } = dependencies({ accelerationActive: async () => true })
+    expect(await createProxyBypass(deps).recoverFailedRequest(0)).toBe(false)
+    expect(modes).toEqual([])
+  })
+
+  it('backs off after direct failed too, but still lets the user recheck by hand', async () => {
+    let clock = 10_000
+    const probe = vi.fn(async () => false)
+    const { deps, modes } = dependencies({ probe, now: () => clock })
+    const bypass = createProxyBypass(deps)
+    expect(await bypass.recoverFailedRequest(9_000)).toBe(false)
+    expect(modes).toEqual(['direct', 'system'])
+    clock += automaticBypassCooldownMs - 1
+    expect(await bypass.recoverFailedRequest(clock - 100)).toBe(false)
+    expect(probe).toHaveBeenCalledTimes(1)
+    expect(await bypass.tryBypass()).toBe('unreachable')
+    expect(probe).toHaveBeenCalledTimes(2)
+    clock += automaticBypassCooldownMs
+    probe.mockResolvedValueOnce(true)
+    expect(await bypass.recoverFailedRequest(clock - 100)).toBe(true)
+    expect(bypass.active()).toBe(true)
   })
 })
