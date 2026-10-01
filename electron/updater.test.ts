@@ -178,7 +178,7 @@ describe('updater service', () => {
       phase: 'error',
       error: {
         code: 'STARTUP_UPDATE_TIMEOUT',
-        message: '启动更新检查超时，已继续打开主程序',
+        message: '网络有点慢，这次没来得及查完有没有新版本。星芒会在后台接着查，不影响现在使用。',
       },
     })
     expect(client.downloadUpdate).not.toHaveBeenCalled()
