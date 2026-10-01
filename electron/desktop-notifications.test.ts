@@ -165,6 +165,23 @@ describe('auto-update wording', () => {
     expect(downloaded.body).not.toContain('重启安装')
   })
 
+  it('says how much disk space is missing once per version and retracts the stale downloading note', () => {
+    const MB = 1024 ** 2
+    const shortfall = { neededBytes: 600 * MB, freeBytes: 380 * MB }
+    const disk = updateDesktopNotification(update({ diskShortfall: shortfall }), true)!
+    expect(disk).toMatchObject({ key: '0.2.0:disk', stage: 'disk', title: '星芒AI更新先不下载' })
+    expect(disk.body).toBe('新版本先不下载：电脑磁盘只剩 380 MB，装更新大约要 600 MB，还要再清出 220 MB。清出来以后会自动下载，不用你再点。')
+    expect(updateDesktopNotification(update({ diskShortfall: shortfall }), false)!.body).toContain('现在下载多半会失败')
+
+    const { controller, notifications } = fixture({ readAutoUpdate: () => true })
+    expect(controller.handleUpdate(update())).toBe('requested')
+    expect(controller.handleUpdate(update({ diskShortfall: shortfall }))).toBe('requested')
+    expect(notifications[0].close).toHaveBeenCalledOnce()
+    // 3 小时后的下一轮：先回到「有新版本」，再量盘还是不够，两句都不再弹。
+    expect(controller.handleUpdate(update())).toBe('duplicate')
+    expect(controller.handleUpdate(update({ diskShortfall: shortfall }))).toBe('duplicate')
+  })
+
   it('keeps the old wording when auto-update is off or cannot be read', () => {
     expect(updateDesktopNotification(update({ phase: 'downloaded' }))!.body).toBe('版本 0.2.0 已下载，可在更新页面重启安装。')
     const { controller, runtime } = fixture({ readAutoUpdate: () => { throw new Error('settings unreadable') } })

@@ -292,6 +292,7 @@ const methods = {
   getAccountUsage: async () => ({ page: 1, pageSize: 1, total: 0, records: [], stats: { quota: 1_000_000, rpm: 0, tpm: 0 } }),
   getWindowCapabilities: async () => ({ tray: true, notifications: true, ...(query.has('lowEnd') ? { lowEndDevice: true } : {}), ...(query.has('displayCompat') && settings.hardwareAcceleration === undefined ? { displayCompat: 'auto' as const } : {}) }),
   relaunchApp: async () => true,
+  uninstallApp: async () => ({ trashed: true, leftovers: [] }),
   getUpdateState: async () => ({ phase: query.has('startupUpdate') || query.has('updateCheckFail') ? 'idle' : 'disabled', currentVersion: '0.1.31', availableVersion: null, releaseName: null, releaseNotesText: null, checkedAt: null, progress: null, error: null, development: true, ...(query.has('justUpdated') ? { installedRelease: { justUpdated: true, previousVersion: '0.1.30', notes: ['更新装完第一次打开会告诉你已经更新到哪一版。', '更新页能看到当前这一版改了什么。'] } } : {}) }),
   runStartupUpdate: async () => { throw new Error('本地更新源暂时不可用') },
   // 用户自己点「检查更新」时失败的那一条，与启动时自动跑的那一条分开：前者仍要
@@ -300,6 +301,7 @@ const methods = {
     if (query.has('updateCheckFail')) throw new Error('更新服务器暂时连不上')
     return { phase: 'idle' as const, currentVersion: '0.1.31', availableVersion: null, releaseName: null, releaseNotesText: null, checkedAt: new Date().toISOString(), progress: null, error: null, development: true }
   },
+  downloadUpdate: async () => ({ phase: 'downloading' as const, currentVersion: '0.1.31', availableVersion: '0.1.32', releaseName: null, releaseNotesText: null, checkedAt: new Date().toISOString(), progress: null, error: null, development: true }),
   runDiagnostics: async () => {
     if (query.has('diagnosticsFail')) throw new Error('本机环境检查没有跑完')
     const fail = Number(query.get('diagnosticIssues') ?? 0)
@@ -423,6 +425,9 @@ const methods = {
     if (query.has('deepLinkFail')) throw new Error('回跳参数已过期')
     return null
   },
+  // 首页活动卡片按它列档位：110 付 100、240 付 200、4000 付 2000。
+  getAccountTopupInfo: async () => ({ onlineTopupEnabled: true, stripeTopupEnabled: false, creemTopupEnabled: false, waffoPancakeTopupEnabled: false, redemptionEnabled: true, paymentComplianceConfirmed: true, paymentComplianceTermsVersion: '1',
+    paymentMethods: [], minTopup: 1, amountOptions: [10, 110, 240, 4000], discounts: { 110: 100 / 110, 240: 200 / 240, 4000: 0.5 }, topupLink: null }),
   getAccountNotice: async () => {
     if (noticeOverride) return noticeOverride
     if (query.has('noticeTimeline')) return { id: 'newapi-timeline-fixture', text: query.has('noticeCollection') ? collectionFixture : '', bulletins: timelineFixture() }
@@ -473,7 +478,7 @@ const methods = {
   listBackups: async () => [],
   exportDiagnostics: async () => ({ outputPath: 'C:\\Fixture\\xingmang-diagnostics.txt' }),
   revealExportedFile: async () => true,
-  launchCli: async () => query.has('launchPending') ? new Promise<{}>((resolve) => { releaseLaunch = () => resolve({}) }) : query.has('launchOverride') ? { configOverrideNotice: '这个项目文件夹里有自己的设置，会让 Claude Code 不用当前账号，余额和用量会对不上。不是你有意这样设的话，换一个文件夹打开就好。' } : {},
+  launchCli: async () => query.has('launchRemembers') ? { rememberedWorkspace: config.workspace } : query.has('launchPending') ? new Promise<{}>((resolve) => { releaseLaunch = () => resolve({}) }) : query.has('launchOverride') ? { configOverrideNotice: '这个项目文件夹里有自己的设置，会让 Claude Code 不用当前账号，余额和用量会对不上。不是你有意这样设的话，换一个文件夹打开就好。' } : {},
   launchCodexDesktop: async () => ({ restarted: false, status: system.desktopApps.codex, ...(query.has('localeLaunchWarning') ? { chineseLocale: { status: 'failed' as const, message: 'Codex 已打开，但未确认中文界面生效，请在配置中再次启用。' } } : {}) }),
   inspectCodexDesktopLocale: async () => ({ installed: true, version: 'fixture', running: true, configPath: 'C:\\Fixture\\config.toml', configuredLocale: 'zh-CN', effectiveLocale: 'zh-CN', chineseResources: { available: true, frontendChunk: true, menuLocale: true, pakLocale: true, resourceRoot: 'C:\\Fixture' }, needsRestart: true, error: null }),
   setCodexDesktopLocale: async (locale) => {

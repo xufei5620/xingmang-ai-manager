@@ -103,18 +103,24 @@ jobs:
           - shard: renderer-v2
             command: npm run test:v2:vitest
             timeout: 10
-          # Deliberately NOT split further, even though app-check.mjs is half
-          # of it on its own. Every file here builds a Vite dev server with the
-          # same `configFile: false` root, so they share one on-disk
-          # node_modules/.vite dependency cache and the earlier files warm it
-          # for the later ones — app-check.mjs runs last and inherits all of
-          # it. Splitting them across runners gave app-check a cold cache, and
-          # a mid-run re-optimisation then blew the 90s fixture mount budget on
-          # the NewAPI announcement-collection test (run 35420361508). The
-          # suite is ~10 minutes whole, which still clears the target.
+          # Split along the one seam that does not touch the shared Vite
+          # dependency cache. The configFile:false browser-checks build their
+          # dev servers on one root and share node_modules/.vite, and the
+          # earlier files warm it for app-check.mjs, which runs last and is
+          # half the suite on its own. Splitting *those* across runners gave
+          # app-check a cold cache, and a mid-run re-optimisation then blew
+          # the 90s fixture mount budget on the NewAPI announcement-collection
+          # test (run 35420361508) — so they stay together, in their order.
+          # The two e2e suites load vite.config.ts with a cacheDir of their
+          # own, never read or warm that cache, and run on their own runner.
+          # The whole suite had grown to 17m18s on #712 and ran out its 18
+          # minutes twice on #714 with every test up to that point passing.
           - shard: renderer-v2-browser
-            command: npm run test:v2:browser
+            command: npm run test:v2:browser:fixture
             timeout: 18
+          - shard: renderer-v2-e2e
+            command: npm run test:v2:browser:e2e
+            timeout: 10
     name: windows-test (${{ matrix.shard }})
     steps:
       - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
@@ -238,6 +244,17 @@ jobs:
         # fifteen seconds.
         timeout-minutes: 5
         run: node e2e/renderer-v2-native-close-race.mjs
+      # The one place the main process's PowerShell probes run for real. They
+      # used to run inside the vitest shards, where a cold PowerShell start on a
+      # busy runner could use up the whole budget, return nothing and fail an
+      # unrelated pull request. The unit tests now check the generated scripts
+      # and the parsers without starting a process; this step proves the
+      # compiled scripts still run and still print what the parsers read.
+      - name: Run the PowerShell probes against this runner once
+        # Each probe carries its own bound and the script prints how long each
+        # took; this is the backstop for a hang that outlives them.
+        timeout-minutes: 6
+        run: node e2e/windows-powershell-probes-smoke.mjs
       - run: npm run build:win:ci
       - run: node scripts/verify-packaged-hardening.cjs release/win-unpacked
       - run: node e2e/packaged-hardening-smoke.mjs "release/win-unpacked/星芒AI管理工具.exe"
@@ -442,22 +459,15 @@ jobs:
       - name: Install Chromium's system libraries
         # Hosted Windows/macOS runners ship the libraries Chromium links
         # against; ubuntu-latest needs them (and the CJK fonts the renderer
-        # tests lay text out with) from apt. Each attempt is bounded well
-        # under this step's cap, so a wedged mirror costs one retry on a
-        # fresh apt run and then a named failure, not the whole job.
-        timeout-minutes: 10
+        # tests lay text out with) from apt. The script bounds each attempt,
+        # clears whatever apt left running and waits out the dpkg locks
+        # before its one retry (#695 lost both attempts to a surviving
+        # apt-get); this cap is the backstop over its own budget.
+        timeout-minutes: 13
         run: |
           printf '%s\n' 'Acquire::Retries "3";' 'Acquire::http::Timeout "30";' 'Acquire::https::Timeout "30";' \
             | sudo tee /etc/apt/apt.conf.d/99ci-network-timeouts > /dev/null
-          for attempt in 1 2; do
-            if timeout --kill-after=30s 4m npx --no-install playwright install-deps chromium; then
-              exit 0
-            fi
-            echo "::warning::Chromium system library install attempt $attempt did not finish within 4 minutes"
-            sudo dpkg --configure -a || true
-          done
-          echo "::error::apt could not install Chromium's system libraries after 2 bounded attempts"
-          exit 1
+          bash scripts/ci-install-chromium-deps.sh
       - run: npm run typecheck
       - run: npm test
       # The renderer v2 browser suites are plain Chromium, so they need no

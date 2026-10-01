@@ -10,6 +10,8 @@ export interface PlatformCapabilities {
   readonly nodeRuntimeInstall: InstallManagement
   readonly pythonRuntimeInstall: InstallManagement
   readonly cliInstall: Readonly<Record<ProviderId, InstallManagement>>
+  /** 缺省 = 每家都要 Node.js（旧行为）。 */
+  readonly cliNeedsNodeRuntime?: Readonly<Record<ProviderId, boolean>>
   readonly codexDesktop: Readonly<{
     install: InstallManagement
     launch: boolean
@@ -44,6 +46,15 @@ export function platformCapabilitiesFor(
       codex: 'managed',
       gemini: 'managed',
       grok: windows || macos ? 'managed' : 'external',
+    }),
+    // Windows 版 Grok 是 xAI 签名的独立程序，装和跑都不经过 npm（system-service.ts 的
+    // grokInstallStrategyFor → windows-native）；Mac 仍从 npm 包取，照旧要 Node.js。
+    // 没有 Node.js 时只是少了做完提醒那几条钩子，配置照写（resolveCliHookInvocation）。
+    cliNeedsNodeRuntime: Object.freeze({
+      claude: true,
+      codex: true,
+      gemini: true,
+      grok: !windows,
     }),
     codexDesktop: Object.freeze({
       install: windows ? 'managed' : 'external',

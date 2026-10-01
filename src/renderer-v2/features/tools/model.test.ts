@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { ProviderConfigSummary, ProviderId } from '../../../../electron/ipc-contract'
-import { accountSwitchTarget, canUninstallTool, ccSwitchLeftoverFor, codexNeedsRepair, readyOnceRepaired, foreignKeyKind, switchAccountLabel, codexDesktopUpdateKind, configDirectoryMenuItem, connectionReady, externalInstallHint, isExternallyManagedInstall, presentTools, providerFor, recommendedVersionVerb, revertVersion, rollbackVersion, sourceFor, subscriptionWarning, toolAvailability, toolInstallDirectory, toolUpdateOffer, updateCheckFailure, updateButtonHint, versionSubtitle, type ToolboxSnapshot, type ToolPresentation } from './model'
+import { accountSwitchTarget, canUninstallTool, ccSwitchLeftoverFor, codexNeedsRepair, readyOnceRepaired, foreignKeyKind, switchAccountLabel, codexDesktopUpdateKind, codexDesktopVersionAdvice, configDirectoryMenuItem, connectionReady, externalInstallHint, isExternallyManagedInstall, presentTools, providerFor, recommendedVersionVerb, revertVersion, rollbackVersion, sourceFor, subscriptionWarning, toolAvailability, toolInstallDirectory, toolUpdateOffer, updateCheckFailure, updateButtonHint, versionSubtitle, type ToolboxSnapshot, type ToolPresentation } from './model'
 import {
   writeManualSourceMarker,
   type SourceMarkerStorage,
@@ -276,7 +276,7 @@ describe('renderer tool source', () => {
     expect(codexDesktopUpdateKind({ mirrorUpdateAvailable: true })).toBe('unknown')
   })
 
-  it('carries each CLI version advice through and never attaches one to the desktop app', () => {
+  it('carries each CLI version advice through and never gives the desktop app a CLI advice', () => {
     const providers = Object.fromEntries((['claude', 'codex', 'grok', 'gemini'] as const).map((provider) => [provider, relayConfig()]))
     const status = { installed: true, version: '2.1.276', path: '/fixture' }
     const advice = { recommendedVersion: '2.1.277', blockedReason: '每次请求都 400', onRecommended: false, pinned: true, rollbackAvailable: true }
@@ -290,6 +290,25 @@ describe('renderer tool source', () => {
     expect(rows.find((row) => row.id === 'claude')?.versionAdvice).toEqual(advice)
     expect(rows.find((row) => row.id === 'codex')?.versionAdvice).toBeNull()
     expect(rows.find((row) => row.id === 'codexDesktop')?.versionAdvice).toBeNull()
+  })
+
+  it('marks the desktop version that is known not to start, without a version to switch to', () => {
+    const providers = Object.fromEntries((['claude', 'codex', 'grok', 'gemini'] as const).map((provider) => [provider, relayConfig()]))
+    const cli = { installed: true, version: '0.156.1', path: '/fixture' }
+    const snapshot = { config: { providers }, platform: { codexDesktop: { launch: true } },
+      system: {
+        clis: { claude: cli, codex: cli, grok: cli, gemini: cli },
+        desktopApps: { codex: { installed: true, version: '26.924.2738.0', appVersion: '26.924.2738', path: '/fixture' } },
+      },
+    } as unknown as ToolboxSnapshot
+    const desktop = presentTools(snapshot, memoryStorage()).find((row) => row.id === 'codexDesktop')
+    expect(desktop?.versionAdvice?.blockedReason).toContain('这一版（26.924.2738.0）在一些电脑上打不开')
+    expect(desktop?.versionAdvice?.recommendedVersion).toBeNull()
+    expect(desktop && rollbackVersion(desktop)).toBeNull()
+    expect(desktop && versionSubtitle(desktop)).toBe('26.924.2738')
+
+    expect(codexDesktopVersionAdvice({ installed: true, version: '26.925.100.0', appVersion: null })).toBeNull()
+    expect(codexDesktopVersionAdvice({ installed: false, version: '26.924.2738.0', appVersion: null })).toBeNull()
   })
 })
 

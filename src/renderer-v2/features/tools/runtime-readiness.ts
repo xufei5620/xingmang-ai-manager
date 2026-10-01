@@ -1,4 +1,4 @@
-import type { PlatformCapabilities, SystemSnapshot } from '../../../../electron/ipc-contract'
+import type { PlatformCapabilities, ProviderId, SystemSnapshot } from '../../../../electron/ipc-contract'
 import { minimumSupportedNodeVersion } from '../../../../electron/versions'
 
 type RuntimeSnapshot = SystemSnapshot['runtime']
@@ -39,6 +39,15 @@ export function pythonRuntimeReady(runtime: RuntimeSnapshot): boolean {
 
 export type InstallRuntimeId = 'node' | 'python'
 
+/**
+ * Windows 版 Grok 是独立程序，不用 Node.js（platform-capabilities 的 cliNeedsNodeRuntime）。
+ * 以前只想装 Grok 的客户也得先等一遍 Node.js 和一次系统管理员确认（第十八批 8）。
+ * 主进程没报这张表（旧版本）时按「要」处理，就是原来的行为。
+ */
+export function cliNeedsNodeRuntime(platform: Pick<PlatformCapabilities, 'cliNeedsNodeRuntime'> | null | undefined, provider: ProviderId): boolean {
+  return platform?.cliNeedsNodeRuntime?.[provider] ?? true
+}
+
 export interface CliInstallPlan {
   /** 装工具之前要先代装的运行环境，按顺序跑。 */
   prepare: InstallRuntimeId[]
@@ -55,12 +64,14 @@ export interface CliInstallPlan {
  */
 export function planCliInstall(input: {
   runtime: RuntimeSnapshot
+  /** 缺省 = 要（旧行为）。 */
+  needsNode?: boolean
   needsPython: boolean
   nodeInstall: InstallManagement | undefined
   pythonInstall: InstallManagement | undefined
 }): CliInstallPlan {
   const prepare: InstallRuntimeId[] = []
-  if (!nodeRuntimeReady(input.runtime)) {
+  if (input.needsNode !== false && !nodeRuntimeReady(input.runtime)) {
     if (input.nodeInstall !== 'managed') return { prepare: [], blocked: cliRuntimeBlockMessage(input.runtime) }
     prepare.push('node')
   }

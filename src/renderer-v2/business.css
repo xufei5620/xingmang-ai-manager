@@ -551,3 +551,15 @@
   margin-top: 4px;
   color: var(--text-2);
 }
+/* 后台给某一档配了充值优惠时，快捷金额按钮上挂「送 X%」，金额下面说清送多少、到账多少。 */
+.v2-business-topup-bonus {
+  margin-left: 6px;
+  color: var(--ok);
+  font-size: 12px;
+  font-weight: 500;
+}
+.v2-business-topup-bonus-note {
+  margin: 6px 0 10px;
+  color: var(--ok);
+  font-size: 13px;
+}

@@ -90,6 +90,7 @@ function createFixture(options: {
     installCodexDesktop: vi.fn(),
     cancelCodexDesktopInstall: vi.fn(() => ({ cancelled: true, reason: null })),
     uninstallCodexDesktop: vi.fn(),
+    resetCodexDesktop: vi.fn(),
   })
   const store = new AppSettingsStore(path.join(root, 'settings.json'), root)
   const service = createSystemService(store, {

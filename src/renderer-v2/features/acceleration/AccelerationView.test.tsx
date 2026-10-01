@@ -13,8 +13,8 @@ function state(overrides: Partial<AccelerationState> = {}): AccelerationState {
 
 function render(current: AccelerationState | null, extra: { error?: string; onViewLog?(): void; rememberedLine?: boolean; lines?: AccelerationLine[]; selectedLineId?: string; bundleCheck?: 'checking' | 'damaged' | 'repaired' | null } = {}) {
   return renderToStaticMarkup(<AccelerationView
-    state={current} mode="system-proxy" busy={false} signedIn error={extra.error ?? null}
-    onModeChange={() => undefined} onStart={() => undefined} onStartAnyway={() => undefined}
+    state={current} busy={false} signedIn error={extra.error ?? null}
+    onStart={() => undefined} onStartAnyway={() => undefined}
     onStop={() => undefined} onRefresh={() => undefined} onLogin={() => undefined} onHelp={() => undefined}
     onViewLog={extra.onViewLog} lines={extra.lines ?? []} selectedLineId={extra.selectedLineId ?? null}
     rememberedLine={extra.rememberedLine} linesBusy={false} linesError={null}
@@ -22,6 +22,18 @@ function render(current: AccelerationState | null, extra: { error?: string; onVi
     bundleCheck={extra.bundleCheck} onRecheckBundle={() => undefined} onContactSupport={() => undefined} onRelaunch={() => undefined}
   />)
 }
+
+// 第二十一批 6：加速只走系统代理，那颗从没开放过的模式开关连同「标准模式」字样一起拿掉，
+// 连上以后也不能再冒出来（状态里仍可能带 mode 字段）。
+describe('acceleration mode switch', () => {
+  it('shows no mode switch before or after connecting', () => {
+    for (const current of [state(), state({ phase: 'active' })]) {
+      const markup = render(current)
+      expect(markup).not.toContain('acceleration-mode-toggle')
+      expect(markup).not.toMatch(/TUN|标准模式|增强模式|暂未开放/)
+    }
+  })
+})
 
 const rememberedLine: AccelerationLine = { id: 'hk-02', name: '香港线路', region: 'HK', latencyMs: 31 }
 

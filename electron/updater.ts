@@ -23,6 +23,22 @@ export type UpdatePhase =
 export type UpdateFailedStep = 'check' | 'download' | 'install'
 
 /**
+ * 下载前量出来的空间缺口。不是错误：新版本照旧摆在那里（phase 仍是 available），
+ * 只是这一轮没下。放进 `error` 会让界面喊「下载更新失败」，可一个字节都还没下。
+ */
+export interface UpdateDiskShortfall {
+  /** 装这次更新估计要空出来的字节数。*/
+  neededBytes: number
+  /** 下载目录所在盘此刻剩下的字节数。*/
+  freeBytes: number
+}
+
+export interface UpdateDownloadOptions {
+  /** 用户看过「空间可能不够」后仍坚持要下：跳过这一次的空间预检。*/
+  ignoreDiskSpace?: boolean
+}
+
+/**
  * 定义在这里而不是 installed-release.ts：这个类型经 ipc-contract.ts 进渲染层的
  * 程序图，而那个模块要读文件（node:fs），不能被拖进去（AGENTS.md T9）。
  */
@@ -90,6 +106,16 @@ export interface UpdateSnapshot {
   currentVersionWithdrawn?: boolean
   /** 找到的「新版本」其实比本机旧：这是一次退回，不是升级，界面要换个说法。 */
   rollback?: boolean
+  /**
+   * 这一轮因为磁盘空间不够没有下载。只在 phase 为 available 时有值，阶段一变就清掉。
+   * 可选＝旧快照，界面照旧。
+   */
+  diskShortfall?: UpdateDiskShortfall | null
+  /**
+   * 状态文件定了最低版本、而本机低于它时，这里是那个最低版本；否则 null。界面据此
+   * 盖一层「更新后才能继续用」（见 required-update.ts）。可选＝旧快照，不拦。
+   */
+  requiredVersion?: string | null
 }
 
 export interface UpdateCheckOptions {
@@ -137,7 +163,7 @@ export interface UpdaterService {
   autoUpdateChanged(): Promise<UpdateSnapshot>
   /** 自动更新此刻是否生效（开关开着，且这个更新通道允许自动下载）。 */
   autoUpdateEnabled(): boolean
-  download(): Promise<UpdateSnapshot>
+  download(options?: UpdateDownloadOptions): Promise<UpdateSnapshot>
   install(): { accepted: true }
   /** 更新目录上的状态文件读到了新内容（null = 读不到，当没有）。 */
   setServiceStatus(status: ServiceStatus | null): void
@@ -201,6 +227,12 @@ export interface UpdaterRuntime {
    */
   readAutoUpdate?: () => boolean
   /**
+   * 后台下载（启动检查超时后补下、开发环境不等下载）没人 await，被拒绝时交给这里记日志。
+   * 真正的下载失败 download() 自己会发 error 快照给界面；走到这里的多半是状态已被别处推进。
+   * 不传＝静默丢弃（只为测试夹具保持旧签名）。
+   */
+  reportBackgroundError?: (error: unknown) => void
+  /**
    * Recomputes the downloaded package digest and compares it with the manifest
    * value. Resolving false means a mismatch; throwing means the comparison could
    * not be made. Both outcomes reject the package.
@@ -219,6 +251,55 @@ export interface UpdaterRuntime {
    * 照常。不传＝旧行为。
    */
   previousAutoInstallFailure?: (version: string) => string | null
+  /**
+   * 下载前读更新包落地那块盘的剩余字节数。读不到返回 null，照常下载（宁可让一次下载
+   * 自己失败，也不因一个查不到的数字把更新拦死）。不传＝旧行为，不做预检。
+   */
+  readFreeDiskBytes?: () => Promise<number | null>
+  /** 这一轮因为空间不够没下。宿主拿去记一条日志。*/
+  diskShortfallSkipped?: (shortfall: UpdateDiskShortfall, version: string | null) => void
+}
+
+/**
+ * 没有 size 时的兜底：星芒的安装包一两百 MB，装的时候还要解开一份。宁可高估一点：
+ * 高估的代价是空间将将够时晚一轮下载，低估的代价是下到一半报「磁盘满」。
+ */
+export const updateDiskFallbackBytes = 600 * 1024 ** 2
+/** 算出来再小也不低于这个数：安装器解包、写日志、系统自己也要喘口气。*/
+export const updateDiskMinimumBytes = 300 * 1024 ** 2
+
+/**
+ * 更新清单里安装包的大小（electron-builder 写进 latest.yml 的 files[].size）。
+ * 同一份清单里 Windows 只有一个安装包、Mac 有 zip 和 dmg，取最大的那个——
+ * 下的是哪个由 electron-updater 决定，按最大的估不会少算。
+ */
+export function resolveUpdatePackageBytes(info: Pick<UpdateInfo, 'files'> | null | undefined): number | null {
+  const files = Array.isArray(info?.files) ? info.files : []
+  let largest = 0
+  for (const entry of files) {
+    const size = Number((entry as { size?: unknown }).size)
+    if (Number.isFinite(size) && size > largest) largest = size
+  }
+  return largest > 0 ? Math.floor(largest) : null
+}
+
+/**
+ * 装一次更新要空出来的空间：安装包本身一份，装的时候解开来至少还要两份（Windows 的
+ * 安装器先解到临时目录再覆盖，Mac 先解压 zip 再替换应用）。系数是估的，不是量的。
+ */
+export function requiredUpdateDiskBytes(packageBytes: number | null): number {
+  if (!packageBytes || packageBytes <= 0) return updateDiskFallbackBytes
+  return Math.max(updateDiskMinimumBytes, packageBytes * 3)
+}
+
+/** 读不到空间（null）一律放行；够就放行；不够才给出缺口。*/
+export function resolveUpdateDiskShortfall(
+  freeBytes: number | null,
+  neededBytes: number,
+): UpdateDiskShortfall | null {
+  if (freeBytes === null || !Number.isFinite(freeBytes)) return null
+  if (freeBytes >= neededBytes) return null
+  return { neededBytes, freeBytes: Math.max(0, Math.floor(freeBytes)) }
 }
 
 function versionParts(version: string): number[] | null {
@@ -235,6 +316,15 @@ export function isOlderVersion(candidate: string, current: string): boolean {
     if (left[index] !== right[index]) return left[index] < right[index]
   }
   return false
+}
+
+/**
+ * 本机低于状态文件里的最低版本时返回那个最低版本，否则 null。任何一边的版本号认不出
+ * 都当作不低于：这一项会把人挡在门外，拿不准就不拦。
+ */
+export function resolveRequiredVersion(currentVersion: string, minimumVersion: string | null | undefined): string | null {
+  if (!minimumVersion || !versionParts(minimumVersion) || !versionParts(currentVersion)) return null
+  return isOlderVersion(currentVersion, minimumVersion) ? minimumVersion : null
 }
 
 /**
@@ -439,6 +529,7 @@ function cloneSnapshot(snapshot: UpdateSnapshot): UpdateSnapshot {
     ...snapshot,
     progress: snapshot.progress ? { ...snapshot.progress } : null,
     error: snapshot.error ? { ...snapshot.error } : null,
+    diskShortfall: snapshot.diskShortfall ? { ...snapshot.diskShortfall } : null,
     installedRelease: cloneInstalledRelease(snapshot.installedRelease),
     serviceMaintenance: snapshot.serviceMaintenance ? { ...snapshot.serviceMaintenance } : null,
   }
@@ -483,6 +574,7 @@ export function createUpdaterService(
   let serviceStatus: ServiceStatus | null = null
   let manualCheck = false
   let lastProgressPercent = -1
+  let offeredPackageBytes: number | null = null
   let snapshot: UpdateSnapshot = {
     phase: enabled ? 'idle' : 'disabled',
     currentVersion: runtime.currentVersion,
@@ -500,6 +592,8 @@ export function createUpdaterService(
     serviceMaintenance: null,
     currentVersionWithdrawn: false,
     rollback: false,
+    diskShortfall: null,
+    requiredVersion: null,
   }
 
   client.autoDownload = false
@@ -524,7 +618,8 @@ export function createUpdaterService(
       currentVersion: runtime.currentVersion,
       badVersions: serviceStatus?.badVersions ?? [],
       rollout: serviceStatus?.rollout ?? null,
-      manual: manualCheck,
+      // 被要求必须更新的电脑不受分批放量限制：放量挡住它，它就只能停在要淘汰的版本上。
+      manual: manualCheck || Boolean(snapshot.requiredVersion),
     })
     if (!decision.offer) return false
     if (!defaultRolloutCheck) return true
@@ -540,7 +635,13 @@ export function createUpdaterService(
     const failedStep = patch.failedStep !== undefined
       ? patch.failedStep
       : patch.error === null ? null : snapshot.failedStep
-    snapshot = { ...snapshot, ...patch, failedStep }
+    // 空间缺口同理：它只描述「这个版本摆着、这一轮没下」，阶段一离开 available
+    // （开始下、重新检查、出错、被撤回）就不再成立。
+    const phase = patch.phase ?? snapshot.phase
+    const diskShortfall = phase !== 'available'
+      ? null
+      : patch.diskShortfall !== undefined ? patch.diskShortfall : snapshot.diskShortfall ?? null
+    snapshot = { ...snapshot, ...patch, failedStep, diskShortfall }
     const value = cloneSnapshot(snapshot)
     for (const listener of listeners) listener(value)
   }
@@ -581,7 +682,18 @@ export function createUpdaterService(
     }
     const withdrawn = isWithdrawn(runtime.currentVersion)
     if (withdrawn !== (snapshot.currentVersionWithdrawn === true)) patch.currentVersionWithdrawn = withdrawn
+    // 开发态装不了更新，拦下来只会把人困住。
+    const required = enabled && !development ? resolveRequiredVersion(runtime.currentVersion, status?.minimumVersion) : null
+    const previouslyRequired = snapshot.requiredVersion ?? null
+    if (required !== previouslyRequired) patch.requiredVersion = required
     if (Object.keys(patch).length) emit(patch)
+    // 最低版本是软件开着时才定下的：上一次检查可能已经说过「没有新版本」，界面据此不拦。
+    // 刚变成「必须更新」时补查一次，免得要等到三小时后的例行检查。
+    if (
+      required
+      && required !== previouslyRequired
+      && (snapshot.phase === 'idle' || snapshot.phase === 'not-available' || snapshot.phase === 'error')
+    ) void check().catch(() => undefined)
     if (
       !installRequested
       && isWithdrawn(snapshot.availableVersion)
@@ -747,7 +859,10 @@ export function createUpdaterService(
   const eventHandlers: Record<UpdateEventName, (...args: any[]) => void> = {
     'checking-for-update': () => emit({ phase: 'checking', progress: null, error: null }),
     'update-not-available': (info: UpdateInfo) => applyInfo('not-available', info),
-    'update-available': (info: UpdateInfo) => applyInfo('available', info),
+    'update-available': (info: UpdateInfo) => {
+      offeredPackageBytes = resolveUpdatePackageBytes(info)
+      applyInfo('available', info, { diskShortfall: null })
+    },
     'update-downloaded': (event: DownloadedUpdateEvent) => {
       if (disposed) return
       if (!verifyPackageDigest) {
@@ -872,10 +987,38 @@ export function createUpdaterService(
     return cloneSnapshot(snapshot)
   }
 
-  const download = async (): Promise<UpdateSnapshot> => {
+  // 下载前先量一下盘。量不出来就当够：这一步只为省掉注定失败的下载，不能自己
+  // 变成更新下不来的原因。
+  const measureShortfall = async (): Promise<UpdateDiskShortfall | null> => {
+    if (!runtime.readFreeDiskBytes) return null
+    let freeBytes: number | null
+    try {
+      freeBytes = await runtime.readFreeDiskBytes()
+    } catch {
+      return null
+    }
+    return resolveUpdateDiskShortfall(freeBytes, requiredUpdateDiskBytes(offeredPackageBytes))
+  }
+
+  const download = async (options: UpdateDownloadOptions = {}): Promise<UpdateSnapshot> => {
     requireEnabled()
     if (snapshot.phase === 'downloading') return cloneSnapshot(snapshot)
     if (snapshot.phase !== 'available') throw new Error('当前没有可下载的新版本')
+    if (options.ignoreDiskSpace !== true) {
+      const shortfall = await measureShortfall()
+      if (disposed) return cloneSnapshot(snapshot)
+      // 量盘是异步的，这段时间里阶段可能已经变了（另一处已经开始下、版本被撤回）。
+      if (snapshot.phase !== 'available') return cloneSnapshot(snapshot)
+      if (shortfall) {
+        emit({ diskShortfall: shortfall, progress: null, error: null })
+        try {
+          runtime.diskShortfallSkipped?.(shortfall, snapshot.availableVersion)
+        } catch {
+          // 记日志失败不影响给用户的那句话。
+        }
+        return cloneSnapshot(snapshot)
+      }
+    }
     emit({ phase: 'downloading', progress: null, error: null })
     try {
       await client.downloadUpdate()
@@ -894,6 +1037,10 @@ export function createUpdaterService(
       }
     }
     return cloneSnapshot(snapshot)
+  }
+
+  function downloadInBackground(): void {
+    download().catch((error: unknown) => runtime.reportBackgroundError?.(error))
   }
 
   return {
@@ -920,7 +1067,7 @@ export function createUpdaterService(
             const eventSnapshot = cloneSnapshot(snapshot)
             if (eventSnapshot.phase === 'available' && autoDownload()) {
               if (development) {
-                void download()
+                downloadInBackground()
                 return eventSnapshot
               }
               return download()
@@ -931,8 +1078,8 @@ export function createUpdaterService(
           // alive so a slow network can still download the discovered release.
           if (autoDownload()) {
             void checkPromise.then((lateSnapshot) => {
-              if (lateSnapshot.phase === 'available') void download()
-            })
+              if (lateSnapshot.phase === 'available') downloadInBackground()
+            }, (error: unknown) => runtime.reportBackgroundError?.(error))
           }
           emit({
             phase: 'error',
@@ -948,7 +1095,7 @@ export function createUpdaterService(
         }
         if (checked.value.phase !== 'available' || !autoDownload()) return checked.value
         if (development) {
-          void download()
+          downloadInBackground()
           return checked.value
         }
         return download()

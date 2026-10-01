@@ -51,12 +51,12 @@ describe('codex desktop acceleration decision', () => {
     expect(codexDesktopAccelerationDecision(stateOf('stopping'))).toBe('already-connected')
   })
 
-  it('connects only when an idle account still has allowance', () => {
+  it('connects an idle account even when its free allowance is used up', () => {
     expect(codexDesktopAccelerationDecision(stateOf('idle'))).toBe('connect')
     expect(codexDesktopAccelerationDecision(stateOf('error'))).toBe('connect')
-    expect(codexDesktopAccelerationDecision(stateOf('exhausted', 0))).toBe('exhausted')
-    expect(codexDesktopAccelerationDecision(stateOf('idle', 0))).toBe('exhausted')
-    expect(codexDesktopAccelerationDecision(stateOf('idle', null))).toBe('exhausted')
+    // 自动连的不扣时长，时长用完也照样连（yoyo 2026-09-30 定）。
+    expect(codexDesktopAccelerationDecision(stateOf('exhausted', 0))).toBe('connect')
+    expect(codexDesktopAccelerationDecision(stateOf('idle', 0))).toBe('connect')
     expect(codexDesktopAccelerationDecision(stateOf('unavailable', null))).toBe('unavailable')
   })
 })
@@ -102,16 +102,15 @@ describe('codex desktop acceleration coordinator', () => {
     expect(connect).not.toHaveBeenCalled()
   })
 
-  it('skips without an account, without allowance and without a working component', async () => {
+  it('skips without an account and without a working component, but not without allowance', async () => {
     const withoutAccount = setup({ accountScope: null })
     await expect(withoutAccount.coordinator.ensureConnected())
       .resolves.toEqual({ status: 'skipped', reason: 'no-account' })
     expect(withoutAccount.readState).not.toHaveBeenCalled()
 
     const exhausted = setup({ read: async () => stateOf('exhausted', 0) })
-    await expect(exhausted.coordinator.ensureConnected())
-      .resolves.toEqual({ status: 'skipped', reason: 'exhausted' })
-    expect(exhausted.connect).not.toHaveBeenCalled()
+    await expect(exhausted.coordinator.ensureConnected()).resolves.toEqual({ status: 'connected' })
+    expect(exhausted.connect).toHaveBeenCalledOnce()
 
     const unavailable = setup({ read: async () => stateOf('unavailable', null) })
     await expect(unavailable.coordinator.ensureConnected())
@@ -158,5 +157,111 @@ describe('codex desktop acceleration coordinator', () => {
     resolveConnect(stateOf('active'))
     await expect(first).resolves.toEqual({ status: 'connected' })
     expect(connect).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('codex desktop acceleration exit watch', () => {
+  const automatic: AccelerationState = { ...stateOf('active'), autoStartedBy: 'codex-desktop' }
+
+  function watchSetup(options: {
+    running: Array<boolean | null>
+    connected?: AccelerationState
+  }) {
+    const timers: Array<() => void> = []
+    const answers = [...options.running]
+    const isDesktopRunning = vi.fn(async () => (answers.length > 1 ? answers.shift()! : answers[0]))
+    const disconnect = vi.fn(async () => stateOf('idle'))
+    // 第一次读状态是「打开」前那一次，之后每一次都是定时检查读到的。
+    let current: AccelerationState = stateOf('idle')
+    const readState = vi.fn(async () => current)
+    const log = vi.fn()
+    const coordinator = createCodexDesktopAccelerationCoordinator({
+      getAccountScope: () => scope,
+      readState,
+      connect: async () => {
+        current = options.connected ?? automatic
+        return current
+      },
+      isDesktopRunning,
+      disconnect,
+      schedule: (callback) => {
+        timers.push(callback)
+        return () => { timers.splice(timers.indexOf(callback), 1) }
+      },
+      log,
+    })
+    async function tick() {
+      const callback = timers.shift()
+      if (!callback) throw new Error('no watch scheduled')
+      const probes = isDesktopRunning.mock.calls.length
+      const reads = readState.mock.calls.length
+      callback()
+      await vi.waitFor(() => { expect(readState.mock.calls.length).toBeGreaterThan(reads) })
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      return isDesktopRunning.mock.calls.length > probes
+    }
+    return {
+      coordinator, isDesktopRunning, disconnect, timers, tick, log,
+      setState: (state: AccelerationState) => { current = state },
+    }
+  }
+
+  it('disconnects the automatic session after the desktop app has been gone twice in a row', async () => {
+    const h = watchSetup({ running: [true, false, false] })
+    await h.coordinator.ensureConnected()
+    expect(h.timers).toHaveLength(1)
+    await h.tick()
+    await h.tick()
+    expect(h.disconnect).not.toHaveBeenCalled()
+    await h.tick()
+    await vi.waitFor(() => { expect(h.disconnect).toHaveBeenCalledExactlyOnceWith(scope) })
+    expect(h.timers).toHaveLength(0)
+    await vi.waitFor(() => {
+      expect(h.log).toHaveBeenCalledWith('info', 'acceleration.codex-desktop.disconnected', expect.any(String), { cause: 'desktop-exited' })
+    })
+  })
+
+  it('keeps the session while the desktop app runs and forgives a single miss', async () => {
+    const h = watchSetup({ running: [false, true, false, true] })
+    await h.coordinator.ensureConnected()
+    for (let index = 0; index < 4; index += 1) await h.tick()
+    expect(h.disconnect).not.toHaveBeenCalled()
+    expect(h.timers).toHaveLength(1)
+  })
+
+  it('does not treat an unreadable probe as an exit, but gives up after ten in a row', async () => {
+    const h = watchSetup({ running: [null] })
+    await h.coordinator.ensureConnected()
+    for (let index = 0; index < 9; index += 1) await h.tick()
+    expect(h.disconnect).not.toHaveBeenCalled()
+    await h.tick()
+    await vi.waitFor(() => { expect(h.disconnect).toHaveBeenCalledOnce() })
+  })
+
+  it('stops watching once the user has taken the connection over', async () => {
+    const h = watchSetup({ running: [false] })
+    await h.coordinator.ensureConnected()
+    // 用户自己停了再连：同一个账号，但已经不是自动连的那一次。
+    h.setState({ ...stateOf('active'), connectedAt: '2026-09-22T11:30:00.000Z' })
+    expect(await h.tick()).toBe(false)
+    expect(h.timers).toHaveLength(0)
+    expect(h.disconnect).not.toHaveBeenCalled()
+  })
+
+  it('picks the watch back up when the desktop app is opened again on the same session', async () => {
+    const h = watchSetup({ running: [true] })
+    await h.coordinator.ensureConnected()
+    h.coordinator.dispose()
+    expect(h.timers).toHaveLength(0)
+    const again = watchSetup({ running: [true] })
+    again.setState(automatic)
+    await expect(again.coordinator.ensureConnected()).resolves.toEqual({ status: 'already-connected' })
+    expect(again.timers).toHaveLength(1)
+  })
+
+  it('never watches a session the user started', async () => {
+    const h = watchSetup({ running: [false], connected: stateOf('active') })
+    await h.coordinator.ensureConnected()
+    expect(h.timers).toHaveLength(0)
   })
 })

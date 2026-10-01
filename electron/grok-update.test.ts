@@ -3,6 +3,7 @@ import {
   fetchGrokStableVersion,
   grokStableVersionUrls,
   parseGrokStableVersion,
+  resolveGrokInstallVersion,
   type GrokVersionFetch,
 } from './grok-update'
 
@@ -24,6 +25,22 @@ describe('Grok official stable version feed', () => {
     expect(parseGrokStableVersion('0.2.113-rc.1')).toBe('0.2.113-rc.1')
     expect(parseGrokStableVersion('{"version":"0.2.112"}')).toBeNull()
     expect(parseGrokStableVersion('0.2.112 latest')).toBeNull()
+  })
+
+  it('installs a named version at or below the stable channel and never above it', () => {
+    expect(resolveGrokInstallVersion(undefined, '1.0.44')).toBe('1.0.44')
+    expect(resolveGrokInstallVersion('latest', '1.0.44')).toBe('1.0.44')
+    expect(resolveGrokInstallVersion('1.0.44', '1.0.44')).toBe('1.0.44')
+    expect(resolveGrokInstallVersion('1.0.41', '1.0.44')).toBe('1.0.41')
+    expect(resolveGrokInstallVersion('1.0.45', '1.0.44')).toBe('1.0.44')
+  })
+
+  it('rejects named Grok versions that could slip under the stable ceiling or reach a URL', () => {
+    // A prerelease sorts before its release, so 1.0.44-x would pass a plain
+    // "not newer than stable" check without ever having been on that channel.
+    expect(() => resolveGrokInstallVersion('1.0.44-rc.1', '1.0.44')).toThrow('版本号无效')
+    expect(() => resolveGrokInstallVersion('1.0.44/../evil', '1.0.44')).toThrow('版本号无效')
+    expect(() => resolveGrokInstallVersion('v1.0.44', '1.0.44')).toThrow('版本号无效')
   })
 
   it('uses the xAI stable endpoint when it succeeds', async () => {

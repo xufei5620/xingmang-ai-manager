@@ -1,9 +1,10 @@
-import { isCodexDesktopInstallFailureMessage } from '../../electron/codex-desktop-install-failure'
+import { isCodexDesktopInstallFailureMessage, isCodexDesktopNoStoreInstallFailure, isCodexDesktopUnsupportedInstallFailure } from '../../electron/codex-desktop-install-failure'
+import { codexDesktopKnownIssueMarker } from '../../electron/codex-desktop-known-issues'
 import { classifyNetworkFailure, networkFailureReasonForMessage, toolCertificateFailureForMessage } from '../../electron/network-failure'
 import { errors } from './registry/errors'
 
 export type OperationErrorKey = keyof typeof errors
-export type OperationActionId = 'retry' | 'log' | 'support' | 'relogin' | 'recharge' | 'network' | 'repair' | 'copyPath' | 'backups' | 'replaceNode' | 'openStore'
+export type OperationActionId = 'retry' | 'log' | 'support' | 'relogin' | 'recharge' | 'network' | 'repair' | 'copyPath' | 'backups' | 'replaceNode' | 'openStore' | 'resetCodexDesktop' | 'useCodexCli'
 export interface OperationAction { id: OperationActionId; label: string }
 export interface OperationErrorHint {
   key: Exclude<OperationErrorKey, 'unknown'>
@@ -28,11 +29,18 @@ const rules: Array<{ key: OperationErrorHint['key']; match: (message: string) =>
   // codexDesktopNotStartedPrefix，两边字面量要一致）。那句话后半截已经写好下一步，
   // 这里只给按钮；排在前面是因为它会提到「用户账户控制」「Administrator」，不能被
   // 下面的 permission 抢走、把客户送去看安装目录。
+  // 同一句里带着「这一版已知打不开」（codex-desktop-known-issues.ts 的 marker）时，
+  // 重试和找客服都救不了它，要多给一条「改用 Codex 命令行版」的路，所以排在它前面。
+  { key: 'codexDesktopKnownIssue', match: (message) => /Codex 桌面端没有打开/.test(message) && message.includes(codexDesktopKnownIssueMarker) },
   { key: 'codexDesktopNotStarted', match: (message) => /Codex 桌面端没有打开/.test(message) },
   // Codex 桌面端装不上 / 更新不了（主进程 codex-desktop-install-failure.ts 写好的整句，
   // 开头直接取那边的常量）。那句话后半截已经说了是哪一种原因，这里只配按钮，其中
   //「去微软商店装」是这一类才有的出口。排在前面是因为它会说到「连不上」「Windows
   // 拒绝了这次安装」，不能被下面的 timeout、permission 抢走。
+  // 同一类里两种不给「去微软商店装」的：Windows 太旧（商店里的那一版同样装不上，
+  // 重试也没用），和这台电脑压根没有微软商店（按钮按了打不开，第二十一批 2）。
+  { key: 'codexDesktopTooOld', match: (message) => isCodexDesktopUnsupportedInstallFailure(message) },
+  { key: 'codexDesktopInstallNoStore', match: (message) => isCodexDesktopNoStoreInstallFailure(message) },
   { key: 'codexDesktopInstallFailed', match: (message) => isCodexDesktopInstallFailureMessage(message) },
   // Codex 插件目录的旧备份自动清不掉（主进程 codex-plugin-catalog.ts 的
   // codexPluginCatalogBackupStuckMessage）。以前这句带着文件夹路径叫客户自己去挪，
@@ -156,6 +164,10 @@ const actionIds: Record<string, OperationActionId | undefined> = {
   // 只有 Codex 桌面端装不上那一类会出这颗，而那句话只有 Windows 的安装路径写得出来，
   // Mac 上自然不会出现。
   去微软商店装: 'openStore',
+  // Codex 桌面端打不开时的出口，和 Windows 设置里「高级选项 → 重置」是同一件事。
+  '重置 Codex': 'resetCodexDesktop',
+  // 只有 Codex 桌面端装着已知打不开的那一版时才出这颗（第十九批 7）。
+  '改用 Codex 命令行版': 'useCodexCli',
 }
 
 /**
@@ -210,6 +222,17 @@ export function operationLogPage(failure: { message: string; detail?: string | u
   return installLogKeys.has(resolved) ? 'maintenance' : 'feedback'
 }
 
+/**
+ * 系统自带的 Administrator 账户、关掉了「用户账户控制」的电脑，是 Windows 不让打开
+ * 商店装的软件（主进程 describeCodexDesktopLaunchFailure 的前两种说法），重置 Codex
+ * 自己的数据改变不了这一点，所以这两种不给「重置 Codex」。
+ */
+function codexDesktopBlockedByAccount(message: string): boolean {
+  return /Administrator|用户账户控制/.test(message)
+}
+
+const codexDesktopBlockedBody = '先照下面这句话做；还不行就点「找客服」，把这句话发给客服。'
+
 export function presentOperationError(message: string): OperationErrorHint | null {
   const text = message.trim()
   if (!text) return null
@@ -221,6 +244,9 @@ export function presentOperationError(message: string): OperationErrorHint | nul
   // account layer reuses this wording). Repeating it as a heading above the
   // very same line reads as a bug, so leave those untouched.
   if (text.includes(entry.title)) return null
+  if (key === 'codexDesktopNotStarted' && codexDesktopBlockedByAccount(text)) {
+    return { key, title: entry.title, body: codexDesktopBlockedBody, actions: honourableActions(entry.actions).filter((action) => action.id !== 'resetCodexDesktop') }
+  }
   const actions = honourableActions(entry.actions)
   return {
     key,

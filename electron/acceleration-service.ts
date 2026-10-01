@@ -22,7 +22,13 @@ export interface AccelerationService extends AccelerationApi, AccelerationPrefer
 
 interface AccelerationServiceOptions {
   getAccountScope: () => string | null
-  backend?: AccelerationApi
+  /**
+   * `startAutomaticAcceleration` 是软件替用户连的那种：不扣免费时长。没有它的后端
+   * （测试替身）退回普通连接，也就是旧行为。
+   */
+  backend?: AccelerationApi & {
+    startAutomaticAcceleration?(scope: string, mode: AccelerationMode, lineId?: string): Promise<AccelerationState>
+  }
   /**
    * 每产出一个状态就通知一次。托盘那一行（tray-acceleration.ts）靠它跟上加速页
    * 上的连接与断开，不必另起一套轮询；回调抛错不许影响本次请求的结果。
@@ -159,7 +165,10 @@ function projectState(value: unknown, scope: string): AccelerationState {
   if (value.supportedModes !== undefined && (!Array.isArray(value.supportedModes) || !value.supportedModes.length
     || value.supportedModes.length > 2 || new Set(value.supportedModes).size !== value.supportedModes.length
     || value.supportedModes.some((mode) => mode !== 'system-proxy' && mode !== 'tun'))) throw new Error(INVALID_RESPONSE)
-  if (phase === 'active' && (value.connectedAt === null || value.remainingSeconds === null || value.remainingSeconds === 0)) {
+  if (value.autoStartedBy !== undefined && (value.autoStartedBy !== 'codex-desktop' || !isRunning(phase))) throw new Error(INVALID_RESPONSE)
+  // 软件替用户连的会话不扣时长，免费时长用完（0）也照样连着。
+  if (phase === 'active' && (value.connectedAt === null || value.remainingSeconds === null
+    || (value.remainingSeconds === 0 && value.autoStartedBy === undefined))) {
     throw new Error(INVALID_RESPONSE)
   }
   if (phase === 'exhausted' && value.remainingSeconds !== 0) throw new Error(INVALID_RESPONSE)
@@ -180,6 +189,7 @@ function projectState(value: unknown, scope: string): AccelerationState {
     ...(value.entitlementSource === 'server' || value.entitlementSource === 'local-device' || value.entitlementSource === 'local-development' ? { entitlementSource: value.entitlementSource } : {}),
     ...(Array.isArray(value.supportedModes) ? { supportedModes: [...value.supportedModes] as AccelerationMode[] } : {}),
     ...(Array.isArray(value.conflicts) ? { conflicts: [...value.conflicts] as AccelerationConflictKind[] } : {}),
+    ...(value.autoStartedBy === 'codex-desktop' ? { autoStartedBy: value.autoStartedBy } : {}),
     scope, phase, mode: value.mode, totalSeconds: value.totalSeconds, remainingSeconds: value.remainingSeconds,
     sessionSeconds: value.sessionSeconds, measuredAt: value.measuredAt, connectedAt: value.connectedAt, line, error: value.error,
   }
@@ -298,7 +308,9 @@ export function createAccelerationService(options: AccelerationServiceOptions): 
         let raw: unknown
         if (operation === 'start') {
           assertMode(mode)
-          raw = await backend.startAcceleration(scope, mode, lineId, ignoreConflicts)
+          raw = origin && backend.startAutomaticAcceleration
+            ? await backend.startAutomaticAcceleration(scope, mode, lineId)
+            : await backend.startAcceleration(scope, mode, lineId, ignoreConflicts)
         } else if (operation === 'get') raw = await backend.getAccelerationState(scope)
         else raw = await backend.stopAcceleration(scope)
         state = projectState(raw, scope)

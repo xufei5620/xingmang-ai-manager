@@ -39,6 +39,7 @@ export const XINGMANG_AI_BUNDLED_FILES = [
   'SKILL.md',
   'references.md',
   path.join('scripts', 'generate.mjs'),
+  path.join('scripts', 'mcp-server.mjs'),
 ] as const
 
 export interface XingmangAiSkillConfig {
@@ -76,6 +77,11 @@ export interface XingmangAiSkillSyncOptions {
   baseUrl?: string
   officialCodex?: boolean
   codexHome?: string
+  /**
+   * Registers the 星芒画图 MCP tool once a skill directory holds both the fresh
+   * config and the bundled server script. Returns warnings to surface in the log.
+   */
+  syncImageMcp?: (input: { skillDirectory: string; officialCodex: boolean }) => Promise<string[]>
 }
 
 export interface XingmangAiSkillInstallOptions {
@@ -572,10 +578,14 @@ export async function syncXingmangAiSkill(
   }
 
   let configured = 0
+  let mcpDirectory: string | null = null
   for (const directory of skillDirectoriesForConfig(options.userHome)) {
     try {
       await writeSkillConfig(directory, config)
       configured += 1
+      if (!mcpDirectory && bundledSkillFileExists(path.join(directory, 'scripts', 'mcp-server.mjs'))) {
+        mcpDirectory = directory
+      }
     } catch (error) {
       warnings.push(directoryFailureMessage(error))
     }
@@ -588,6 +598,18 @@ export async function syncXingmangAiSkill(
       configured,
       reason: warnings[0] || '星芒AI Skill 配置未能写入本机',
       ...(warnings.length ? { directoryWarnings: warnings } : {}),
+    }
+  }
+  // 工具读的 config.json 必须是这次真写成功的那一份，所以只从刚写过的目录里挑。
+  if (options.syncImageMcp && mcpDirectory) {
+    try {
+      const mcpWarnings = await options.syncImageMcp({
+        skillDirectory: mcpDirectory,
+        officialCodex: options.officialCodex === true,
+      })
+      warnings.push(...mcpWarnings.map((warning) => `星芒画图工具未登记：${warning}`))
+    } catch (error) {
+      warnings.push(`星芒画图工具未登记：${directoryFailureMessage(error)}`)
     }
   }
   return {

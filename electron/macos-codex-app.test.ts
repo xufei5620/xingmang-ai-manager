@@ -8,6 +8,7 @@ import {
   commandTimeoutMs,
   deepVerificationTimeoutMs,
   inspectMacosCodexApp,
+  probeMacosCodexRunning,
   resetMacosCodexAppVerificationCache,
   resolveSystemCommandTimeoutMs,
   runSystemCommand,
@@ -1042,5 +1043,14 @@ describe('inspectMacosCodexApp', () => {
     await expect(scan()).resolves.toMatchObject({ app: { version: '26.727.51351' } })
 
     expect(codesignCalls).toBe(2)
+  })
+})
+
+describe('macOS Codex running probe', () => {
+  it('answers yes, no, or unknown instead of folding failures into not running', async () => {
+    await expect(probeMacosCodexRunning(async () => 'true\n')).resolves.toBe(true)
+    await expect(probeMacosCodexRunning(async () => 'false\n')).resolves.toBe(false)
+    await expect(probeMacosCodexRunning(async () => 'execution error')).resolves.toBeNull()
+    await expect(probeMacosCodexRunning(async () => { throw new Error('osascript timed out') })).resolves.toBeNull()
   })
 })

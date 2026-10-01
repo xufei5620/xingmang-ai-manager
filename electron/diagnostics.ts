@@ -60,6 +60,7 @@ import {
 import { resolveCliCommand, resolveCliInstallation } from './tool-installation'
 import type { ToolConfigOwnership } from './tool-config-ownership'
 import type { SystemSnapshot } from './system-service'
+import type { UserWideCertificateTrustState } from './user-certificate-trust'
 import {
   inspectWindowsExecutableMachine,
   type WindowsExecutableMachine,
@@ -193,6 +194,11 @@ export interface DiagnosticsDependencies {
    * 缺省 = 真的起 `node -e`；测试用它造「公司证书」「Node 太旧」这些情况。
    */
   probeNodeTls?: (input: NodeTlsProbeInput, signal: AbortSignal) => Promise<NodeTlsProbeResult>
+  /**
+   * 「安全证书」查出公司证书时，客户自己开的终端是不是也已经信任它
+   * （user-certificate-trust.ts）。宿主给了才在 Windows 上多一颗按钮；缺省 = 不提。
+   */
+  inspectUserWideCertificateTrust?: () => UserWideCertificateTrustState
   /**
    * 软件数据目录（Electron 的 userData）。诊断自己算不出它在哪，宿主给了才把它
    * 算进「磁盘空间」这一项；不给就只看 CLI 落点。
@@ -873,6 +879,7 @@ interface EnvironmentOverrideVariable {
 interface EnvironmentOverrideMatch {
   name: string
   provider: ProviderId
+  kind: EnvironmentOverrideKind
   /** false = 用户确实设了它，但它指的就是当前账号，不会把请求带去别处。 */
   overriding: boolean
   /** overriding 且这个变量会让 CLI 连不上当前账号（见 breaksAccount）。 */
@@ -957,11 +964,36 @@ function collectEnvironmentOverrides(
     matches.push({
       name: variable.name,
       provider: variable.provider,
+      kind: variable.kind,
       overriding,
       breaking: overriding && variable.breaksAccount,
     })
   }
   return matches
+}
+
+/**
+ * 检查页「删掉这几项设置」能替用户删的那几个名字：盖过当前账号的地址、密钥、模型。
+ * 指向别的文件夹的那两个（CLAUDE_CONFIG_DIR、CODEX_HOME）不删：它们指着用户自己的
+ * 一整份配置，删了等于把他原来的设置、记录换了个地方，这个得他自己决定。
+ */
+export function clearableEnvironmentOverrides(
+  env: NodeJS.ProcessEnv,
+  providerBaseUrls: RelaySite['providerBaseUrls'],
+  userHome: string,
+): string[] {
+  return collectEnvironmentOverrides(env, providerBaseUrls, userHome)
+    .filter((match) => match.overriding && match.kind !== 'directory')
+    .map((match) => match.name)
+}
+
+/** 名单外的名字一律不碰；清除脚本那一侧再对照一遍。 */
+export const environmentOverrideNames: readonly string[] = ENVIRONMENT_OVERRIDE_VARIABLES.map((variable) => variable.name)
+
+/** Windows 上有能删的，就在结论里挂上「删掉这几项设置」（details.fix，详情抽屉不显示它）。 */
+function withEnvironmentOverrideFix(outcome: CheckOutcome, clearable: boolean): CheckOutcome {
+  if (!clearable || outcome.state === 'pass') return outcome
+  return { ...outcome, details: { ...outcome.details, fix: 'clear-user-overrides' } }
 }
 
 function namesOf(matches: readonly EnvironmentOverrideMatch[]): string {
@@ -1199,21 +1231,37 @@ export function certificateTrustOutcome(input: {
   defaultRoots: NodeTlsProbeResult['outcome'] | null
   systemRoots: NodeTlsProbeResult['outcome'] | null
   elevated: boolean
+  /** 只在 systemTrusted 时有意义；缺省 = 不提客户自己开的窗口。 */
+  userWide?: UserWideCertificateTrustState
 }): CheckOutcome {
   const state: DiagnosticState = input.verdict === 'outdatedNode' || input.verdict === 'untrusted'
     ? 'fail'
     : input.verdict === 'elevated' ? 'warn' : 'pass'
+  const userWide = input.verdict === 'systemTrusted' ? input.userWide : undefined
   return {
     state,
-    summary: certificateTrustSummaries[input.verdict],
+    summary: input.verdict === 'systemTrusted'
+      ? systemTrustedSummary(userWide)
+      : certificateTrustSummaries[input.verdict],
     details: {
       verdict: input.verdict,
       nodeVersion: input.nodeVersion,
       defaultRoots: input.defaultRoots,
       systemRoots: input.systemRoots,
       elevated: input.elevated,
+      ...(userWide ? { userWide } : {}),
     },
   }
+}
+
+// 客户自己开的终端、VS Code 里的 Gemini 拿不到星芒给工具加的那一条（第十八批 7）。
+function systemTrustedSummary(userWide: UserWideCertificateTrustState | undefined): string {
+  const base = certificateTrustSummaries.systemTrusted
+  if (userWide === 'available') {
+    return `${base}你自己开的终端、VS Code 里的 Gemini 还不认它，可以点「让这台电脑上所有终端都信任」。`
+  }
+  if (userWide === 'applied') return `${base}你自己开的终端也已经设好，新开的终端就能用。`
+  return base
 }
 
 /**
@@ -1971,16 +2019,21 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
           probe({ nodePath: node.path, ...target, useSystemRoots: true }, signal),
         ])
         const nodeVersion = withoutSwitch.version ?? withSwitch.version ?? node.version
+        const verdict = certificateTrustVerdict({
+          defaultRoots: withoutSwitch.outcome,
+          systemRoots: withSwitch.outcome,
+          nodeVersion,
+        })
+        const userWide = verdict === 'systemTrusted' && platform === 'win32'
+          ? dependencies.inspectUserWideCertificateTrust?.()
+          : undefined
         return certificateTrustOutcome({
-          verdict: certificateTrustVerdict({
-            defaultRoots: withoutSwitch.outcome,
-            systemRoots: withSwitch.outcome,
-            nodeVersion,
-          }),
+          verdict,
           nodeVersion,
           defaultRoots: withoutSwitch.outcome,
           systemRoots: withSwitch.outcome,
           elevated: false,
+          userWide,
         })
       },
     },
@@ -2194,7 +2247,10 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
       code: 'PROVIDER_ENVIRONMENT_OVERRIDE',
       title: '电脑里另外设过的工具地址或密钥',
       run: () => withIgnoredCodexHome(
-        environmentOverrideOutcome(collectEnvironmentOverrides(env, relaySite.providerBaseUrls, userHome)),
+        withEnvironmentOverrideFix(
+          environmentOverrideOutcome(collectEnvironmentOverrides(env, relaySite.providerBaseUrls, userHome)),
+          platform === 'win32' && clearableEnvironmentOverrides(env, relaySite.providerBaseUrls, userHome).length > 0,
+        ),
         inspectIgnoredCodexHome(dependencies.ignoredCodexHome, providerRoots, providerInspections.get('codex')),
       ),
     },
@@ -2209,10 +2265,13 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
       run: () => {
         const envPath = path.join(codexHome, '.env')
         const exists = fs.existsSync(envPath)
+        const details: Record<string, boolean | number | string | null> = { exists, path: pathForDisplay(envPath, displayRoots) }
+        // 有这份文件时给「挪开这份设置」：改个名留在原处，不删（diagnostic-fixes.ts）。
+        if (exists) details.fix = 'set-aside-codex-dotenv'
         return {
           state: exists ? 'warn' : 'pass',
           summary: exists ? 'Codex 文件夹里有一份额外设置，可能盖过当前账号的连接' : 'Codex 文件夹里没有额外设置',
-          details: { exists, path: pathForDisplay(envPath, displayRoots) },
+          details,
         }
       },
     },

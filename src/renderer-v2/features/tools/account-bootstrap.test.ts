@@ -431,13 +431,82 @@ describe('account managed Key bootstrap', () => {
     expect(accountBootstrapPlan(system(['claude']), current, settings, 'restore').targets).toEqual(['claude'])
   })
 
-  it('repairs an owned Codex config that Codex ignores on session restore, but not an unowned one', () => {
+  it('rewrites a verified config on restore only when its key just moved to another group', () => {
+    const current = config()
+    current.providers.claude = { ...current.providers.claude, exists: true, hasApiKey: true, matchesRelay: true, actualBaseUrl: current.providers.claude.baseUrl, model: 'claude-model', configurationOwnership: 'account' }
+    current.providers.codex = { ...current.providers.codex, exists: true, hasApiKey: true, matchesRelay: true, actualBaseUrl: current.providers.codex.baseUrl, model: 'codex-model', configurationOwnership: 'account' }
+    const plan = accountBootstrapPlan(system(['claude', 'codex']), current, settings, 'restore', undefined, ['claude'])
+    expect(plan.targets).toEqual(['claude'])
+    expect(plan.preferredModels).toEqual({ claude: 'claude-model' })
+    expect(plan.skipped).toEqual(expect.arrayContaining([expect.objectContaining({ provider: 'codex', reason: 'configured' })]))
+  })
+
+  it('repairs an owned Codex config that Codex ignores on session restore', () => {
     const current = config()
     current.providers.codex = { ...current.providers.codex, exists: true, hasApiKey: true, matchesRelay: true, actualBaseUrl: current.providers.codex.baseUrl, model: 'gpt-model', configurationOwnership: 'account', codexProviderShadowed: true }
     expect(accountBootstrapPlan(system(['codex']), current, settings, 'restore').targets).toEqual(['codex'])
-    // 没有归属记录的老配置要老板点头才自动改，这次照旧只在首页给按钮。
-    current.providers.codex = { ...current.providers.codex, configurationOwnership: 'unknown', configurationAccountMatched: true }
-    expect(accountBootstrapPlan(system(['codex']), current, settings, 'restore').targets).toEqual([])
+  })
+
+  it.each(['login', 'restore'] as const)('repairs an unowned Codex config that Codex ignores during %s when it holds the cached account key', (mode) => {
+    const current = config()
+    current.providers.codex = { ...current.providers.codex, exists: true, hasApiKey: true, matchesRelay: true, actualBaseUrl: current.providers.codex.baseUrl, model: 'gpt-model',
+      configurationOwnership: 'unknown', configurationAccountMatched: true, codexProviderShadowed: true }
+    const plan = accountBootstrapPlan(system(['codex']), current, settings, mode, null)
+    expect(plan.targets).toEqual(['codex'])
+    expect(plan.shadowRepairs).toEqual(['codex'])
+    expect(plan.preferredModels).toMatchObject({ codex: 'gpt-model' })
+  })
+
+  it.each([
+    ['the key is not the cached account key', { configurationOwnership: 'unknown' as const, configurationAccountMatched: false }, 'unknown'],
+    ['the user edited a config we wrote', { configurationOwnership: 'changed' as const, configurationAccountMatched: false }, 'changed'],
+    ['the user chose to keep a manual key', { configurationOwnership: 'manual' as const, configurationAccountMatched: true }, 'manual'],
+  ])('leaves a Codex config that Codex ignores for the repair button when %s', (_label, fields, reason) => {
+    const current = config()
+    current.providers.codex = { ...current.providers.codex, exists: true, hasApiKey: true, matchesRelay: true, actualBaseUrl: current.providers.codex.baseUrl, model: 'gpt-model',
+      codexProviderShadowed: true, ...fields }
+    const plan = accountBootstrapPlan(system(['codex']), current, settings, 'restore', null)
+    expect(plan.targets).toEqual([])
+    expect(plan.shadowRepairs).toBeUndefined()
+    expect(plan.skipped).toContainEqual(expect.objectContaining({ provider: 'codex', reason }))
+  })
+
+  it('does not treat an unowned matched Codex config as a repair when Codex reads it fine', () => {
+    const current = config()
+    current.providers.codex = { ...current.providers.codex, exists: true, hasApiKey: true, matchesRelay: true, actualBaseUrl: current.providers.codex.baseUrl, model: 'gpt-model',
+      configurationOwnership: 'unknown', configurationAccountMatched: true, codexProviderShadowed: false }
+    const plan = accountBootstrapPlan(system(['codex']), current, settings, 'restore', null)
+    expect(plan.targets).toEqual([])
+    expect(plan.shadowRepairs).toBeUndefined()
+  })
+
+  it('reports the Codex config it repaired without anyone clicking, and only once the readback is clean', async () => {
+    const current = config()
+    current.providers.codex = { ...current.providers.codex, exists: true, hasApiKey: true, matchesRelay: true, actualBaseUrl: current.providers.codex.baseUrl, model: 'gpt-model',
+      configurationOwnership: 'unknown', configurationAccountMatched: true, codexProviderShadowed: true }
+    const configure = vi.fn<AccountBootstrapBridge['configureManagedCliKeys']>(async (input) => {
+      for (const provider of input.providers) current.providers[provider] = { ...current.providers[provider], configurationOwnership: 'account' as const, codexProviderShadowed: false }
+      return { configured: [...input.providers], failed: [] }
+    })
+    const api: AccountBootstrapBridge = {
+      getAccountSession: vi.fn(async () => ({ authenticated: true, account: { userId: 17, username: 'member', quota: 0, usedQuota: 0, group: 'default', role: 1 } })),
+      syncManagedCliKeys: vi.fn(async () => ({ ready: [{ provider: 'codex' as ProviderId, group: 'group', name: 'codex' }], failed: [] })),
+      scanSystem: vi.fn(async () => system(['codex'])),
+      getSettings: vi.fn(async () => settings),
+      getConfig: vi.fn(async () => structuredClone(current)),
+      configureManagedCliKeys: configure,
+    }
+    const result = await bootstrapAccountTools(api, 17, undefined, 'restore', undefined, memoryStorage())
+    expect(result.configured).toEqual(['codex'])
+    expect(result.repairedShadowed).toEqual(['codex'])
+    // 自动那条路不带 explicit：主进程只凭同一组条件放行，不是靠「用户点名」穿闸。
+    expect(configure).toHaveBeenCalledWith(expect.not.objectContaining({ intent: 'explicit' }))
+    expect(describeAccountBootstrapResult('restore', result).message).toContain('顺手修好 Codex')
+
+    current.providers.codex = { ...current.providers.codex, configurationOwnership: 'unknown', codexProviderShadowed: true }
+    configure.mockImplementationOnce(async (input) => ({ configured: [], failed: input.providers.map((provider) => ({ provider, message: '已有工具配置的来源未经确认，已保留原配置；请在工具配置中明确选择账号密钥' })) }))
+    const refused = await bootstrapAccountTools(api, 17, undefined, 'restore', undefined, memoryStorage())
+    expect(refused.repairedShadowed).toBeUndefined()
   })
 
   it.each(['login', 'restore'] as const)('does not rewrite read-only matched keys during %s, even when their model or Gemini auth mode is incomplete', (mode) => {

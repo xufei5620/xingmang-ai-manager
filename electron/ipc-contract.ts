@@ -4,7 +4,11 @@ import type { AiChatStreamErrorCode as MainAiChatStreamErrorCode } from './ai-ch
 import type { ExternalDeepLink } from './external-deep-links'
 import type { SavedAccountSummary } from './saved-accounts'
 import type { StaleProxyClearResult } from './stale-proxy-environment'
+import type { DiagnosticFixKind, DiagnosticFixResult } from './diagnostic-fixes'
 export type { StaleProxyClearResult } from './stale-proxy-environment'
+import type { UserWideCertificateTrustResult } from './user-certificate-trust'
+export type { UserWideCertificateTrustResult } from './user-certificate-trust'
+export type { DiagnosticFixKind, DiagnosticFixResult } from './diagnostic-fixes'
 import type {
   ConfigBackupPreview as StoredConfigBackupPreview,
   ConfigBackupReason,
@@ -112,6 +116,8 @@ import type {
 } from './system-service'
 import type {
   InstalledRelease as MainInstalledRelease,
+  UpdateDiskShortfall as MainUpdateDiskShortfall,
+  UpdateDownloadOptions as MainUpdateDownloadOptions,
   UpdateFailedStep as MainUpdateFailedStep,
   UpdatePhase as MainUpdatePhase,
   UpdateSnapshot as MainUpdateSnapshot,
@@ -213,6 +219,28 @@ export interface WindowCapabilities {
   settingsSaveIssue?: SettingsSaveIssue
   // 显卡接连崩溃后，这次启动自动改用了兼容方式显示、用户还没选以后怎么办。缺省 = 没出事。
   displayCompat?: 'auto'
+  // 上次主进程意外退出（没接住的异常），这次打开要说一句。缺省 = 没出事。
+  unexpectedExit?: UnexpectedExitNotice
+}
+export interface UnexpectedExitNotice {
+  /** 最近那次退出后是否自动重开了；10 分钟内第二次就不再重开。 */
+  relaunched: boolean
+  /** 最近几次退出，时间为毫秒时间戳，error 已在主进程打码。 */
+  exits: Array<{ at: number; error: string }>
+}
+/** 设置里「卸载星芒」（目前只有 Mac）。两项都默认不勾。 */
+export interface AppUninstallRequest {
+  /** 同时清除登录记录和聊天记录（和 Windows 卸载页那一项同一口径）。 */
+  clearLoginRecords: boolean
+  /** 连同星芒替你装的命令行工具一起删。 */
+  removeManagedTools: boolean
+}
+export type AppUninstallLeftover = 'cli-hooks' | 'login-item' | 'tools' | 'records'
+export interface AppUninstallResult {
+  /** true = 已移到废纸篓、正在退出；false = 程序还在，界面提示他自己拖。 */
+  trashed: boolean
+  /** 没收拾干净的几样，界面据此多说一句。 */
+  leftovers: AppUninstallLeftover[]
 }
 export interface SettingsSaveIssue {
   kind: 'disk-full' | 'blocked' | 'other'
@@ -227,6 +255,8 @@ export interface FeedbackReportCopyResult { entries: number; regenerated?: Feedb
 export interface FeedbackReportExportResult { outputPath: string; regenerated?: FeedbackReportPreview }
 export type UpdatePhase = MainUpdatePhase
 export type UpdateFailedStep = MainUpdateFailedStep
+export type UpdateDiskShortfall = MainUpdateDiskShortfall
+export type UpdateDownloadOptions = MainUpdateDownloadOptions
 export type InstalledRelease = MainInstalledRelease
 export type UpdateSnapshot = MainUpdateSnapshot
 export type SessionArchiveFilter = CodexSessionArchiveFilter
@@ -769,6 +799,8 @@ export interface XingmangInvokeContract {
   /** 中止正在进行的安装或更新;已经开始装 MSIX 时会被拒绝并给出原因。 */
   cancelCodexDesktopInstall: IpcInvokeDefinition<'desktop:cancel-install-codex', [], InstallCancelResult>
   uninstallCodexDesktop: IpcInvokeDefinition<'desktop:uninstall-codex', [], ToolUninstallResult>
+  /** Codex 桌面端打不开时的「重置 Codex」：只清它自己的应用数据，星芒写的连接设置不动。 */
+  resetCodexDesktop: IpcInvokeDefinition<'desktop:reset-codex', [], void>
   checkCodexDesktopUpdate: IpcInvokeDefinition<'desktop:check-update-codex', [], DesktopAppStatus>
   /**
    * mode 省略 = 开新对话(旧行为);resumeLast 由主进程按工具映射成固定参数。
@@ -811,6 +843,8 @@ export interface XingmangInvokeContract {
   getWindowCapabilities: IpcInvokeDefinition<'window:get-capabilities', [], WindowCapabilities>
   /** 重开软件（显示方式要重开才生效）。true = 已经开始退出；用户在退出确认里点了返回则是 false。 */
   relaunchApp: IpcInvokeDefinition<'window:relaunch', [], boolean>
+  /** Mac 上卸载星芒：收回写进工具里的提醒设置，再把星芒移到废纸篓并退出。 */
+  uninstallApp: IpcInvokeDefinition<'window:uninstall-app', [request: AppUninstallRequest], AppUninstallResult>
   takeExternalDeepLink: IpcInvokeDefinition<'navigation:take-deep-link', [], ExternalDeepLink | null>
   replyWindowClose: IpcInvokeDefinition<'window:close-report', [requestId: string, report: WindowCloseReport], boolean>
   openExternal: IpcInvokeDefinition<'external:open', [url: string], boolean>
@@ -821,7 +855,7 @@ export interface XingmangInvokeContract {
   getUpdateState: IpcInvokeDefinition<'update:get-state', [], UpdateSnapshot>
   runStartupUpdate: IpcInvokeDefinition<'update:startup', [], UpdateSnapshot>
   checkForUpdates: IpcInvokeDefinition<'update:check', [], UpdateSnapshot>
-  downloadUpdate: IpcInvokeDefinition<'update:download', [], UpdateSnapshot>
+  downloadUpdate: IpcInvokeDefinition<'update:download', [options?: UpdateDownloadOptions], UpdateSnapshot>
   installUpdate: IpcInvokeDefinition<'update:install', [], { accepted: true }>
   listSessions: IpcInvokeDefinition<'sessions:list', [query: SessionListQuery], SessionPageResult>
   getSessionDetail: IpcInvokeDefinition<'sessions:detail', [sessionId: string], SessionDetailResult>
@@ -1143,10 +1177,27 @@ export interface XingmangInvokeContract {
    */
   clearStaleProxySettings: IpcInvokeDefinition<'diagnostics:clear-stale-proxy', [], StaleProxyClearResult>
   /**
+   * 检查页「让这台电脑上所有终端都信任」：把 Node.js 也信任这台电脑证书库的那一条
+   * 写进当前 Windows 账号的设置。没有入参；只在最近一次检查查出公司证书、且这条还没
+   * 设过时主进程才写（user-certificate-trust.ts）。
+   */
+  trustCertificatesUserWide: IpcInvokeDefinition<'diagnostics:trust-certificates-user-wide', [], UserWideCertificateTrustResult>
+  /**
    * 检查页「打开文件夹」：「文档」不让写时，新项目或 AI 作品改放的那个文件夹。
    * 入参只是「哪一个」，路径由主进程自己算（I5）。返回 false = 没打开。
    */
   openDiagnosticFolder: IpcInvokeDefinition<'diagnostics:open-folder', [target: DiagnosticFolderTarget], boolean>
+  /**
+   * 检查页里两颗「点这里就好」：挪开 Codex 文件夹里那份额外设置，或删掉当前 Windows
+   * 账号下盖过当前账号的工具地址、密钥。入参只是「哪一种」，要动的文件和名字由主进程
+   * 在点的那一刻自己算（I5）。
+   */
+  fixDiagnostic: IpcInvokeDefinition<'diagnostics:fix', [kind: DiagnosticFixKind], DiagnosticFixResult>
+  /**
+   * 外接工具精选里「允许 AI 读写的文件夹」那一项的「选择文件夹」：弹原生选择框，
+   * 返回用户选的文件夹，取消返回 null。选到的路径照旧随添加请求过主进程的参数校验。
+   */
+  chooseExtensionDirectory: IpcInvokeDefinition<'extensions:choose-directory', [], string | null>
 }
 
 export interface XingmangEventContract {
@@ -1236,6 +1287,7 @@ export const ipcInvokeChannels = {
   installCodexDesktop: 'desktop:install-codex',
   cancelCodexDesktopInstall: 'desktop:cancel-install-codex',
   uninstallCodexDesktop: 'desktop:uninstall-codex',
+  resetCodexDesktop: 'desktop:reset-codex',
   checkCodexDesktopUpdate: 'desktop:check-update-codex',
   launchCli: 'cli:launch',
   getCodexDesktopStatus: 'desktop:codex-status',
@@ -1250,6 +1302,7 @@ export const ipcInvokeChannels = {
   setWindowTheme: 'window:set-theme',
   getWindowCapabilities: 'window:get-capabilities',
   relaunchApp: 'window:relaunch',
+  uninstallApp: 'window:uninstall-app',
   takeExternalDeepLink: 'navigation:take-deep-link',
   replyWindowClose: 'window:close-report',
   openExternal: 'external:open',
@@ -1390,7 +1443,10 @@ export const ipcInvokeChannels = {
   checkExternalClientConnection: 'diagnostics:check-external-connection',
   getAccountKeyOptions: 'account:get-key-options',
   clearStaleProxySettings: 'diagnostics:clear-stale-proxy',
+  trustCertificatesUserWide: 'diagnostics:trust-certificates-user-wide',
   openDiagnosticFolder: 'diagnostics:open-folder',
+  fixDiagnostic: 'diagnostics:fix',
+  chooseExtensionDirectory: 'extensions:choose-directory',
 } as const satisfies {
   [Method in keyof XingmangInvokeContract]: XingmangInvokeContract[Method]['channel']
 }

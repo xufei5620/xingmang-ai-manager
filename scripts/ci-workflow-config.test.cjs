@@ -122,27 +122,28 @@ test('the Linux job bounds and retries the apt install of Chromium system librar
   assert.equal(commands.some((command) => /--with-deps/.test(command)), false,
     'the apt install must not ride along with the unbounded browser download')
 
-  const depsIndex = steps.findIndex((step) => /playwright install-deps chromium/.test(String(step.run || '')))
+  const depsIndex = steps.findIndex((step) => /scripts\/ci-install-chromium-deps\.sh/.test(String(step.run || '')))
   assert.notEqual(depsIndex, -1, 'linux-test must install Chromium system libraries')
   assert.ok(depsIndex < steps.findIndex((step) => step.run === 'npm test'),
     'system libraries must be installed before npm test')
 
   const depsStep = steps[depsIndex]
-  const script = String(depsStep.run)
   assert.equal(typeof depsStep['timeout-minutes'], 'number', 'the apt step must carry its own bound')
-  assert.ok(depsStep['timeout-minutes'] <= 10, 'a wedged mirror must not eat a third of the job')
+  assert.ok(depsStep['timeout-minutes'] <= 13, 'a wedged mirror must not eat the time the tests need')
   assert.ok(depsStep['timeout-minutes'] < job['timeout-minutes'])
+  assert.match(String(depsStep.run), /Acquire::https?::Timeout/)
 
-  const attempt = script.match(/timeout --kill-after=\d+s (\d+)m npx --no-install playwright install-deps chromium/)
-  assert.ok(attempt, 'each attempt must be killed from outside apt, which never gives up on its own')
-  const attempts = script.match(/for attempt in ([\d ]+); do/)
-  assert.ok(attempts, 'the apt install must retry')
-  const attemptCount = attempts[1].trim().split(/\s+/).length
-  assert.equal(attemptCount, 2, 'one retry, matching the project rule of at most one re-run')
-  // Leave room for the kill-after grace and dpkg recovery between attempts.
-  assert.ok(Number(attempt[1]) * attemptCount < depsStep['timeout-minutes'],
-    'both bounded attempts must fit inside the step bound')
-  assert.match(script, /Acquire::https?::Timeout/)
+  // The script's own worst case — every attempt, each one's kill grace, and the
+  // lock wait between them — has to fit under the step cap, or the cap fires
+  // mid-retry and the job reports a cancellation instead of a named failure.
+  const installer = fs.readFileSync(path.join(root, 'scripts', 'ci-install-chromium-deps.sh'), 'utf8')
+  const attempts = installer.match(/CI_APT_ATTEMPT_SECONDS:-([\d ]+)\}/)[1].trim().split(/\s+/).map(Number)
+  const lockWait = Number(installer.match(/CI_APT_LOCK_WAIT_SECONDS:-(\d+)\}/)[1])
+  const killGrace = Number(installer.match(/timeout --kill-after=(\d+)s/)[1])
+  assert.equal(attempts.length, 2, 'one retry, matching the project rule of at most one re-run')
+  const worstCaseSeconds = attempts.reduce((sum, limit) => sum + limit + killGrace, 0) + lockWait
+  assert.ok(worstCaseSeconds + 60 < depsStep['timeout-minutes'] * 60,
+    `the installer's ${worstCaseSeconds}s worst case must fit inside the step bound with a minute to spare`)
 })
 
 test('the Windows job enables unprivileged symlink creation before security tests', () => {
@@ -235,17 +236,32 @@ test('splitting the Windows job did not drop a suite it used to run', () => {
   assert.equal(scripts['test:vitest:1'], 'npm run test:vitest -- --shard=1/2')
   assert.equal(scripts['test:vitest:2'], 'npm run test:vitest -- --shard=2/2')
 
-  // test:v2:browser is dispatched whole, and must stay that way. Its files each
-  // build a Vite dev server on the same `configFile: false` root, so they share
-  // one on-disk node_modules/.vite dependency cache that the earlier files warm
-  // for the later ones. Split across runners, app-check.mjs — which runs last
-  // and benefits most — got a cold cache and blew its 90s fixture mount budget
-  // on a mid-run re-optimisation.
-  assert.ok(shardCommands.includes('npm run test:v2:browser'), 'the matrix must dispatch test:v2:browser whole')
-  assert.equal(scripts['test:v2:browser:1'], undefined, 'test:v2:browser must not be split across runners')
-  assert.match(scripts['test:v2:browser'], /--test-concurrency=1/, 'the browser suites must stay serialised')
-  assert.ok(scripts['test:v2:browser'].split(/\s+/).filter((token) => /\.mjs$/.test(token)).length > 0,
-    'test:v2:browser must still name its suites')
+  // test:v2:browser is dispatched as two runners, split only along the seam
+  // that leaves the shared Vite dependency cache alone. Its configFile:false
+  // files each build a dev server on the same root and share one on-disk
+  // node_modules/.vite cache that the earlier files warm for the later ones.
+  // Split across runners, app-check.mjs — which runs last and benefits most —
+  // got a cold cache and blew its 90s fixture mount budget on a mid-run
+  // re-optimisation. So those stay on one runner in their original order, and
+  // only suites that bring a cacheDir of their own may leave.
+  const suites = (script) => scripts[script].split(/\s+/).filter((token) => /\.mjs$/.test(token))
+  for (const script of ['test:v2:browser', 'test:v2:browser:fixture', 'test:v2:browser:e2e']) {
+    assert.match(scripts[script], /^node --test --test-concurrency=1 /, `${script} must stay serialised`)
+    assert.ok(suites(script).length > 0, `${script} must still name its suites`)
+  }
+  assert.ok(shardCommands.includes('npm run test:v2:browser:fixture'), 'the matrix must dispatch test:v2:browser:fixture')
+  assert.ok(shardCommands.includes('npm run test:v2:browser:e2e'), 'the matrix must dispatch test:v2:browser:e2e')
+  assert.ok(!shardCommands.includes('npm run test:v2:browser'), 'test:v2:browser must not also run whole in CI')
+  const whole = suites('test:v2:browser')
+  const fixture = suites('test:v2:browser:fixture')
+  const e2e = suites('test:v2:browser:e2e')
+  assert.deepEqual([...fixture, ...e2e].sort(), [...whole].sort(), 'the two runners must add up to exactly test:v2:browser')
+  assert.deepEqual(fixture, whole.filter((file) => fixture.includes(file)), 'the fixture runner must keep the original order')
+  assert.equal(fixture.at(-1), 'src/renderer-v2/testing/app-check.mjs', 'app-check.mjs must run last, after the files that warm its cache')
+  for (const file of e2e) {
+    assert.match(fs.readFileSync(path.join(root, file), 'utf8'), /cacheDir: 'node_modules\/\.vite-[\w-]+'/,
+      `${file} may only leave the fixture runner because it brings its own Vite cacheDir`)
+  }
 
   // T-B6: the matrix has to cover exactly the leaves `npm test` runs, so a
   // leaf added later that no shard dispatches fails here instead of silently
@@ -484,6 +500,34 @@ test('the Windows packaging job runs every smoke that has no other home', () => 
     // consume the whole job cap and report nothing about which step hung.
     assert.ok(step['timeout-minutes'] > 0, `${smoke} must carry its own step bound`)
   }
+})
+
+test('real PowerShell runs once in the packaging job, never in the unit test shards', () => {
+  const commands = runSteps('windows-package')
+  const packageSteps = workflow.jobs['windows-package'].steps
+  const smoke = 'node e2e/windows-powershell-probes-smoke.mjs'
+  const index = commands.indexOf(smoke)
+  assert.notEqual(index, -1, `${smoke} must run somewhere in CI`)
+  assert.ok(index > commands.indexOf('npm run compile'), `${smoke} drives the compiled probe scripts`)
+  assert.ok(packageSteps.find((entry) => entry.run === smoke)['timeout-minutes'] > 0, `${smoke} must carry its own step bound`)
+
+  // A cold Windows PowerShell start on a busy runner kept outlasting the unit
+  // test budgets (#458, #514, #517, #523 and the probes this smoke took over).
+  // Unit tests check the generated script text instead; a test that starts
+  // powershell.exe itself belongs in the smoke above.
+  const startsPowerShell = /(?:execFileSync|execFile|spawnSync|spawn|runCommand)\(\s*(?:\{\s*executable:\s*)?(?:windowsPowerShellExecutable|resolveWindowsPowerShellExecutable)\(\)/
+  const offenders = []
+  for (const directory of ['electron', 'src']) {
+    for (const entry of fs.readdirSync(path.join(root, directory), { recursive: true })) {
+      const relative = path.join(directory, String(entry))
+      if (!/\.test\.tsx?$/.test(relative)) continue
+      const source = fs.readFileSync(path.join(root, relative), 'utf8')
+      // The cold-start budget only ever existed for tests that ran a probe for
+      // real through the shipped function, which the pattern above cannot see.
+      if (startsPowerShell.test(source) || source.includes('XINGMANG_POWERSHELL_TEST_TIMEOUT_MS')) offenders.push(relative)
+    }
+  }
+  assert.deepEqual(offenders, [])
 })
 
 // T-G5: these two were the last never-wired smokes. The first used to pin CI to

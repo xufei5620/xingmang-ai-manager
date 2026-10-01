@@ -9,7 +9,7 @@ import {
   type XingmangApi,
 } from '../../../../electron/ipc-contract'
 import { tools } from '../../registry/tools'
-import { connectionReady, sourceFor } from './model'
+import { codexNeedsRepair, connectionReady, sourceFor } from './model'
 import { userFacingErrorMessage } from '../../business-common'
 import { networkBlockedFailures } from './online-resync'
 import { keySyncFailureText } from './key-sync-failure'
@@ -64,6 +64,8 @@ export interface AccountBootstrapPlan {
   targets: ProviderId[]
   skipped: AccountBootstrapSkip[]
   preferredModels: Partial<Record<ProviderId, string>>
+  /** targets 里那几个 Codex 认不出连接设置、没有归属记录也照样自动修的工具（第十七批 1b）。 */
+  shadowRepairs?: ProviderId[]
 }
 
 export interface AccountBootstrapResult {
@@ -79,6 +81,10 @@ export interface AccountBootstrapResult {
    * 分辨哪条是网络问题就只能猜。
    */
   networkBlocked: boolean
+  /** 这一轮顺手修好的「Codex 认不出」的配置，首页据此轻轻说一句。缺省 = 没有。 */
+  repairedShadowed?: ProviderId[]
+  /** 这一轮因为 Key 换了分组（买了订阅、订阅到期）而改写的工具；缺省 = 没有。 */
+  regrouped?: ProviderId[]
 }
 
 export type AccountBootstrapBridge = Pick<
@@ -120,11 +126,13 @@ export function accountBootstrapPlan(
   settings: AppSettingsV2,
   mode: AccountBootstrapMode = 'login',
   storage: SourceMarkerStorage | null = getSourceMarkerStorage(),
+  regrouped: readonly ProviderId[] = [],
 ): AccountBootstrapPlan {
   const explicitOfficial = new Set(settings.officialProviders ?? [])
   const targets: ProviderId[] = []
   const skipped: AccountBootstrapSkip[] = []
   const preferredModels: Partial<Record<ProviderId, string>> = {}
+  const shadowRepairs: ProviderId[] = []
 
   for (const provider of providerIds) {
     const local = installedState(system, provider)
@@ -191,6 +199,17 @@ export function accountBootstrapPlan(
       if (changedModel) preferredModels[provider] = changedModel
       continue
     }
+    // 老配置把当前账号的服务写在 Codex 的内置名下：Codex 不认，打开就 401。地址是当前站、
+    // Key 正是当前账号缓存里那把时，没有归属记录也替客户修，不用他点（yoyo 9-30 同意）。
+    // 主进程 saveConfig 会再核一遍同样的条件（permitsShadowedCodexRepair），这里只是规划。
+    if (source === 'account' && current.configurationOwnership === 'unknown'
+      && current.configurationAccountMatched === true && codexNeedsRepair(current, provider)) {
+      targets.push(provider)
+      shadowRepairs.push(provider)
+      const shadowedModel = current.model.trim()
+      if (shadowedModel) preferredModels[provider] = shadowedModel
+      continue
+    }
     if (source === 'account' && current.configurationOwnership !== 'account') {
       // Matching a cached account key restores its badge, not permission to rewrite it.
       const ready = connectionReady(current, provider, storage)
@@ -201,7 +220,9 @@ export function accountBootstrapPlan(
       })
       continue
     }
-    if (source === 'account' && mode === 'restore' && connectionReady(current, provider, storage)) {
+    // 已连好的工具开机时不重写，除非它的 Key 刚换了分组：买了订阅（或订阅到期），
+    // 配置里那把旧 Key 扣的已经不是该扣的额度了。
+    if (source === 'account' && mode === 'restore' && connectionReady(current, provider, storage) && !regrouped.includes(provider)) {
       skipped.push({
         provider,
         reason: 'configured',
@@ -215,7 +236,7 @@ export function accountBootstrapPlan(
     if (model) preferredModels[provider] = model
   }
 
-  return { targets, skipped, preferredModels }
+  return { targets, skipped, preferredModels, ...(shadowRepairs.length ? { shadowRepairs } : {}) }
 }
 
 /**
@@ -301,7 +322,7 @@ export async function bootstrapAccountTools(
     api.getSettings(),
   ])
   await assertAccount(api, expectedUserId, expectedSiteId)
-  const planned = accountBootstrapPlan(system, config, settings, mode, storage)
+  const planned = accountBootstrapPlan(system, config, settings, mode, storage, synchronized?.regrouped ?? [])
   const permitted = onlyProviders ? new Set(onlyProviders) : null
   const plan = permitted
     ? { ...planned, targets: planned.targets.filter((provider) => permitted.has(provider)) }
@@ -391,6 +412,7 @@ export async function bootstrapAccountTools(
     ...failed.map((entry) => entry.message),
   ]
 
+  const repairedShadowed = configured.filter((provider) => plan.shadowRepairs?.includes(provider))
   return {
     readyKeys,
     configured,
@@ -398,6 +420,10 @@ export async function bootstrapAccountTools(
     skipped: plan.skipped,
     warnings,
     networkBlocked: networkBlockedFailures(failureSignals),
+    ...(repairedShadowed.length ? { repairedShadowed } : {}),
+    ...(synchronized?.regrouped?.length
+      ? { regrouped: configured.filter((provider) => synchronized?.regrouped?.includes(provider)) }
+      : {}),
   }
 }
 
@@ -441,6 +467,7 @@ export function describeAccountBootstrapResult(
   if (result.skipped.length) {
     parts.push(`跳过 ${result.skipped.map((entry) => `${nameOf(entry.provider)}（${skipReasonLabels[entry.reason]}）`).join('、')}`)
   }
+  if (result.repairedShadowed?.length) parts.push(`顺手修好 ${result.repairedShadowed.map(nameOf).join('、')} 认不出的连接设置`)
   if (result.networkBlocked) parts.push('被网络拦住，联网后会自动补跑')
   return {
     level: result.failed.length || result.networkBlocked ? 'warn' : 'info',
