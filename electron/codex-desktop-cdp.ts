@@ -371,13 +371,20 @@ export const codexDesktopCdpPortOwnerModules = ['NetTCPIP'] as const
 export const codexDesktopActivationModules = ['Microsoft.PowerShell.Utility'] as const
 export const codexDesktopCdpCommandTimeoutMs = 10_000
 
+// With no listener Get-NetTCPConnection reports "no MSFT_NetTCPConnection
+// objects found" as a non-terminating error, and powershell.exe then exits 1
+// even though the error is silenced. That made the normal "Codex has not bound
+// the port yet" state reject instead of reading as unbound, which aborted the
+// whole injection on its first check. A real failure (the command missing,
+// a terminating error) still stops the script under 'Stop' before the exit.
 export const codexDesktopCdpPortOwnerScript = String.raw`$ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 $OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 ${buildPowerShellModuleImportStatement(codexDesktopCdpPortOwnerModules)}
 $port = [int]$env:XINGMANG_CODEX_CDP_PORT
 Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue |
-  ForEach-Object { [string]$_.OwningProcess }`
+  ForEach-Object { [string]$_.OwningProcess }
+exit 0`
 
 export function parseCodexDesktopCdpPortOwners(output: string): number[] {
   const owners: number[] = []

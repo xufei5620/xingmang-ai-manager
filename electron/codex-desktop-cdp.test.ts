@@ -4,6 +4,7 @@ import {
   buildCodexDesktopCdpArguments,
   classifyCodexDesktopCdpPortOwnership,
   codexChineseRuntimeScript,
+  codexDesktopCdpPortOwnerScript,
   filterCodexDesktopCdpTargets,
   injectCodexDesktopChineseLocale,
   parseCodexDesktopCdpPortOwners,
@@ -568,6 +569,12 @@ describe('Codex Desktop CDP debugging port ownership', () => {
   it('reads every listening owner reported for the port and ignores non-numeric output', () => {
     expect(parseCodexDesktopCdpPortOwners('\r\n4321\r\n4321\r\n7788\r\n')).toEqual([4321, 7788])
     expect(parseCodexDesktopCdpPortOwners('Get-NetTCPConnection : 找不到对象\n0\n-1\n')).toEqual([])
+  })
+
+  it('ends the owner query with a clean exit so an empty listener table is not a failure', () => {
+    const lines = codexDesktopCdpPortOwnerScript.trim().split('\n')
+    expect(lines.at(-1)).toBe('exit 0')
+    expect(codexDesktopCdpPortOwnerScript).toContain("$ErrorActionPreference = 'Stop'")
   })
 
   it('treats an empty listener table as a port Codex has not bound yet', () => {
