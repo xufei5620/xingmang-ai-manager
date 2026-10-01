@@ -5,7 +5,7 @@ import {
 import type { RealmAccountVault, RealmLoginHintSummary } from './realm-account-vault'
 import type { RelayBackendCapabilities, RelayBackendClient } from './relay-backend'
 import {
-  NewApiTwoFactorExpiredError, NewApiTwoFactorRequiredError,
+  NewApiNetworkError, NewApiTwoFactorExpiredError, NewApiTwoFactorRequiredError,
   type NewApiLoginInput, type NewApiLoginResult, type NewApiPersistableSession, type NewApiSessionState,
 } from './new-api-client'
 import { savedAccountId, type SavedAccountSummary } from './saved-accounts'
@@ -39,6 +39,8 @@ export interface RealmAccountServiceOptions {
   /** Drain the host's real work before preparing a different identity. */
   quiesce(): Promise<void>
   prepareTimeoutMs?: number
+  /** 开机恢复第一次超时后，隔多久悄悄再试一次。缺省 3 秒；0 = 立即再试。 */
+  startupRetryDelayMs?: number
   onChanged?(siteId: RealmAccountSiteId, session: RealmAccountSessionState): void
   legacy?: {
     list(): Promise<SavedAccountSummary[]>
@@ -85,6 +87,12 @@ function restoreMayRecover(error: unknown): boolean {
   return !(error instanceof RealmAccountError && ['INVALID', 'PROTOCOL', 'STORAGE', 'ACCOUNT_LIMIT', 'UNSUPPORTED'].includes(error.code))
 }
 
+// 只认「等满了没回话」：联不上、维护这些几秒内不会好，照旧交给 30 秒那一轮。
+function restoreTimedOut(error: unknown): boolean {
+  if (error instanceof RealmAccountError) return error.code === 'TIMEOUT'
+  return error instanceof NewApiNetworkError && error.reason === 'timeout'
+}
+
 /** Promote the authenticated client itself: rotating cookies are never restored twice. */
 export function createRealmAccountService(options: RealmAccountServiceOptions): RealmAccountService {
   let active: RuntimeHandle
@@ -101,6 +109,8 @@ export function createRealmAccountService(options: RealmAccountServiceOptions): 
   let twoFactor: { siteId: RealmAccountSiteId; identifier: string; flowToken: string; expiresAt: number } | null = null
   const prepareTimeoutMs = options.prepareTimeoutMs ?? 30000
   if (!Number.isSafeInteger(prepareTimeoutMs) || prepareTimeoutMs < 1 || prepareTimeoutMs > 120000) throw new RealmAccountError('INVALID')
+  const startupRetryDelayMs = options.startupRetryDelayMs ?? 3000
+  if (!Number.isSafeInteger(startupRetryDelayMs) || startupRetryDelayMs < 0 || startupRetryDelayMs > 10000) throw new RealmAccountError('INVALID')
   const publicClients = new Map<RealmAccountSiteId, RelayBackendClient>()
   const publicMethods = new Set<keyof RelayBackendClient>([
     'getLegalDocument', 'sendEmailVerification', 'register',
@@ -393,7 +403,7 @@ export function createRealmAccountService(options: RealmAccountServiceOptions): 
       const owner = Number.isSafeInteger(userId) && userId > 0 ? { siteId: site(accountRealms[saved.realmId].siteId), userId } : null
       restoring = owner
       try {
-        try { if (await restore(saved)) return true } catch (error) {
+        try { if (await restoreAllowingOneTimeout(saved)) return true } catch (error) {
           // 只有服务明确说登录失效（401）才清掉本机登录。联不上、维护、超时都不是
           // 凭据的问题：登录留着，记下来等重试，界面也不按「没登录」处理。
           if (!(error instanceof RealmAccountError) || error.code !== 'UNAUTHORIZED') {
@@ -408,6 +418,17 @@ export function createRealmAccountService(options: RealmAccountServiceOptions): 
         return false
       } finally { restoring = null }
     })
+  }
+  // 线路差的电脑上，账号服务偶尔有一次请求十秒没回、下一次又好了（A014 实测两个半
+  // 小时里约四次撞一次）。开机恢复只发一两次请求，撞上就要挂「暂时连不上」等 30 秒。
+  // 所以第一次超时先隔几秒再试一次，这段时间界面照旧是「正在恢复登录」；两次都超时
+  // 才按联不上处理。仍在同一个 transition 的 prepare 期限里，不会无限拖长。
+  async function restoreAllowingOneTimeout(saved: RealmSavedAccount): Promise<boolean> {
+    try { return await restore(saved) } catch (error) {
+      if (!restoreTimedOut(error)) throw error
+      await new Promise<void>((resolve) => { setTimeout(resolve, startupRetryDelayMs) })
+      return restore(saved)
+    }
   }
   // 「暂时连不上，登录还在」之后的自动重试（全面检测 Q9）。以前每次重试都走一遍
   // transition：先推 revision、再占 busy，网络那一段（超时时十几秒）里读工具配置、

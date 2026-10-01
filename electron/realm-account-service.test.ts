@@ -4,7 +4,7 @@ import { createRealmAccountVault, type RealmVaultStorage } from './realm-account
 import { parseRealmSavedAccount, RealmAccountError, type RealmSavedAccount } from './realm-account'
 import type { RelayBackendCapabilities, RelayBackendClient } from './relay-backend'
 import type { NewApiLoginInput, NewApiSessionState } from './new-api-client'
-import { NewApiLoginRejectedError, NewApiTwoFactorExpiredError, NewApiTwoFactorRequiredError } from './new-api-client'
+import { NewApiLoginRejectedError, NewApiNetworkError, NewApiTwoFactorExpiredError, NewApiTwoFactorRequiredError } from './new-api-client'
 import { savedAccountId } from './saved-accounts'
 
 function deferred<T>() {
@@ -468,6 +468,59 @@ describe('realm account service', () => {
       expect(onChanged.mock.lastCall?.[1]).toMatchObject({ authenticated: outcome === 'restored' })
       if (outcome === 'expired') expect(await f.vault.active()).toBeNull()
     }
+  })
+  // A014：线路差时偶尔一次请求十秒没回，下一次又好了。开机先悄悄再试一次，不挂「暂时连不上」。
+  for (const timeout of [new RealmAccountError('TIMEOUT'), new NewApiNetworkError('timeout')]) {
+    it(`retries a startup restore once after ${timeout.name} before marking it as retrying`, async () => {
+      const f = fixture()
+      await f.vault.activate(saved('solov-api', '42'))
+      const onChanged = vi.fn()
+      const failures: Error[] = [timeout]
+      const restarted = createRealmAccountService({ ...f.options, onChanged, startupRetryDelayMs: 0, createClient: (siteId, callback) => {
+        const result = f.options.createClient(siteId, callback)
+        // 账号服务一建好就先给「solov」建一个空句柄，只有恢复用的候选句柄才吃掉这次失败。
+        if (siteId === 'solov-api') f.clients[f.clients.length - 1].restoreError = failures.shift() ?? null
+        return result
+      } })
+      const before = f.clients.length
+      await expect(restarted.restoreActive()).resolves.toBe(true)
+      expect(f.clients.slice(before).filter((entry) => entry.restore.mock.calls.length > 0)).toHaveLength(2)
+      expect(restarted.stalledAccount()).toBeNull()
+      expect(restarted.client.getSessionState()).toMatchObject({ authenticated: true })
+      expect(onChanged.mock.calls.every(([, state]) => !state.restoring)).toBe(true)
+    })
+  }
+  it('marks the startup restore as retrying when the quick retry also times out', async () => {
+    const f = fixture()
+    await f.vault.activate(saved('solov-api', '42'))
+    const restarted = createRealmAccountService({ ...f.options, startupRetryDelayMs: 0, createClient: (siteId, callback) => {
+      const result = f.options.createClient(siteId, callback)
+      f.clients[f.clients.length - 1].restoreError = new RealmAccountError('TIMEOUT')
+      return result
+    } })
+    const before = f.clients.length
+    await expect(restarted.restoreActive()).rejects.toMatchObject({ code: 'TIMEOUT' })
+    expect(f.clients.slice(before).filter((entry) => entry.restore.mock.calls.length > 0)).toHaveLength(2)
+    expect(restarted.stalledAccount()).toEqual({ siteId: 'solov-api', userId: 42 })
+    expect((await f.vault.active())?.realmId).toBe('api-account')
+  })
+  it('does not quick-retry a startup restore that failed for a reason other than a timeout', async () => {
+    const f = fixture()
+    await f.vault.activate(saved('solov-api', '42'))
+    const restarted = createRealmAccountService({ ...f.options, startupRetryDelayMs: 0, createClient: (siteId, callback) => {
+      const result = f.options.createClient(siteId, callback)
+      f.clients[f.clients.length - 1].restoreError = new RealmAccountError('UNAVAILABLE')
+      return result
+    } })
+    const before = f.clients.length
+    await expect(restarted.restoreActive()).rejects.toMatchObject({ code: 'UNAVAILABLE' })
+    expect(f.clients.slice(before).filter((entry) => entry.restore.mock.calls.length > 0)).toHaveLength(1)
+    expect(restarted.stalledAccount()).toEqual({ siteId: 'solov-api', userId: 42 })
+  })
+  it('rejects an out-of-range startup retry delay', () => {
+    const f = fixture()
+    expect(() => createRealmAccountService({ ...f.options, startupRetryDelayMs: -1 })).toThrow(RealmAccountError)
+    expect(() => createRealmAccountService({ ...f.options, startupRetryDelayMs: 10001 })).toThrow(RealmAccountError)
   })
   // 全面检测 Q9：等重试的那段网络请求不占账号锁，工具页的读取、打开、保存照常。
   for (const interrupt of ['none', 'login'] as const) {
