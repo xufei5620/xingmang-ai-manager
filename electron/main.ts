@@ -89,6 +89,7 @@ import { findExecutable, runWithTrustedWindowsProcessEnvironment } from './comma
 import { CodexExtensionService } from './codex-extensions'
 import { CodexSessionsService } from './codex-sessions'
 import { createNewApiClient } from './new-api-client'
+import { buildAccountIdentity, createAccountIdentityTracker } from './account-identity-tracker'
 import { createRealmAccountService, type RealmAccountClientHandle, type RealmAccountSiteId } from './realm-account-service'
 import { createFileRealmAccountVault } from './realm-account-vault-file'
 import { createVaultRecoveryNotifier } from './vault-recovery-notice'
@@ -1339,6 +1340,9 @@ if (!hasSingleInstanceLock) {
           // a settings change is reflected on the very next diagnostics run.
           relaySite: resolveRelaySite(systemService.readStoredConfig().relaySiteId),
           inspectAccelerationActive: accelerationRunning,
+          // 「电脑里的代理设置」顺带看账号请求走不走系统代理：账号请求用的就是
+          // defaultSession 的 net.fetch，问它本身最准，也不用另起命令读系统设置。
+          resolveAppProxy: (url) => session.defaultSession.resolveProxy(url),
           // 「Claude 命令确认方式」要分清 bypassPermissions 是我们写的还是别人写的。
           // 来源的判定要比对当前登录账号，只有 system-service 那边算得出来。
           readClaudeConfigOwnership: () => systemService.getConfig(false).providers.claude.configurationOwnership ?? null,
@@ -1736,7 +1740,7 @@ if (!hasSingleInstanceLock) {
         },
       }),
     })
-    let publishedAccountIdentity = ''
+    const accountIdentity = createAccountIdentityTracker()
     let acceleration: ReturnType<typeof createAccelerationService> | undefined
     async function accelerationRunning(): Promise<boolean> {
       const scope = readAccelerationAccountScope()
@@ -1791,13 +1795,14 @@ if (!hasSingleInstanceLock) {
           previous.canvasRuns.whenIdle()] : [])])
       },
       onChanged: (siteId, state) => {
-        void acceleration?.onAccountChanged().catch((error) => runtimeLog.exception('network', 'acceleration.account-change.failed', error))
-        const identity = `${siteId}:${state.account?.userId ?? 'guest'}:${accounts.client.getSessionRevision!()}`
+        const identity = buildAccountIdentity(siteId, state.account?.userId, accounts.client.getSessionRevision!())
         for (const window of BrowserWindow.getAllWindows()) {
           if (!window.isDestroyed()) window.webContents.send(ipcEventChannels.onAccountSessionChanged, state)
         }
-        if (publishedAccountIdentity === identity) return
-        publishedAccountIdentity = identity
+        if (!accountIdentity.advance(identity)) return
+        // 只在换了人时才让加速作废在路上的请求：续期换凭据、付款后刷新也会走到这里，
+        // 那时推进加速的代数会让正在查的状态报「账号已变更」，查询途中还会把正在跑的加速停掉。
+        void acceleration?.onAccountChanged().catch((error) => runtimeLog.exception('network', 'acceleration.account-change.failed', error))
         for (const business of businesses.values()) {
           business.chatService.cancelAll()
           business.imageService.cancelAll()

@@ -20,6 +20,8 @@ import {
   relayStatusProbeUrl,
   runDiagnostics,
   windowsProxySettingsOutcome,
+  withAppProxyRoute,
+  inspectAppProxyRoute,
   type DiagnosticsScanSnapshot,
   type DiagnosticToolId,
   type DiagnosticsDependencies,
@@ -2139,6 +2141,110 @@ describe('windowsProxySettingsOutcome', () => {
       state: 'warn',
       summary: '电脑里设了代理，工具会通过它联网。如果工具连不上，先确认这个代理能用。',
       details: { HTTPS_PROXY: '别的机器' },
+    })
+  })
+})
+
+describe('inspectAppProxyRoute', () => {
+  const url = 'https://xm.solov.cc'
+
+  it('treats a direct route or an unreadable answer as no proxy', async () => {
+    expect(await inspectAppProxyRoute(async () => 'DIRECT', url, async () => true)).toBeNull()
+    expect(await inspectAppProxyRoute(async () => { throw new Error('resolve failed') }, url, async () => true)).toBeNull()
+  })
+
+  it('asks for the account address and probes a local proxy port', async () => {
+    const resolve = vi.fn(async () => 'PROXY 127.0.0.1:7890;DIRECT')
+    const probe = vi.fn(async () => true)
+    expect(await inspectAppProxyRoute(resolve, url, probe)).toEqual({ reach: 'open', port: 7890 })
+    expect(resolve).toHaveBeenCalledWith(url)
+    expect(probe).toHaveBeenCalledWith({ host: '127.0.0.1', port: 7890 })
+  })
+
+  it('reports a local SOCKS proxy that is not running', async () => {
+    expect(await inspectAppProxyRoute(async () => 'SOCKS5 localhost:1080', url, async () => false))
+      .toEqual({ reach: 'closed', port: 1080 })
+  })
+
+  it('does not probe or echo a proxy on another machine', async () => {
+    const probe = vi.fn(async () => true)
+    expect(await inspectAppProxyRoute(async () => 'PROXY proxy.corp.example:8080', url, probe)).toEqual({ reach: 'remote' })
+    expect(probe).not.toHaveBeenCalled()
+  })
+})
+
+describe('withAppProxyRoute', () => {
+  it('keeps the outcome unchanged when the app connects directly', () => {
+    const outcome = { state: 'pass' as const, summary: '没有另外设过代理', details: {} }
+    expect(withAppProxyRoute(outcome, null)).toBe(outcome)
+  })
+
+  it('turns a clean result into a warning when the system proxy is on', () => {
+    expect(withAppProxyRoute({ state: 'pass', summary: '没有另外设过代理', details: {} }, { reach: 'open', port: 7890 })).toEqual({
+      state: 'warn',
+      summary: '电脑里开着代理（本机 7890 端口），星芒会跟着它走；连不上账号时先退出代理软件再试。',
+      details: { systemProxy: '本机 7890 端口（开着）' },
+    })
+  })
+
+  it('says a local system proxy that is not running will block the account', () => {
+    const outcome = withAppProxyRoute({ state: 'pass', summary: '电脑里没有设代理，工具直接联网' }, { reach: 'closed', port: 7890 })
+    expect(outcome.state).toBe('warn')
+    expect(outcome.summary).toBe('电脑里开着代理（本机 7890 端口），但它现在没开，星芒会连不上账号。打开对应的代理软件，或者在系统设置里把代理关掉再试。')
+  })
+
+  it('keeps the variable findings and the clear button next to the system proxy', () => {
+    const outcome = withAppProxyRoute({
+      state: 'warn',
+      summary: '电脑里设了代理，工具会通过它联网。如果工具连不上，先确认这个代理能用。',
+      details: { HTTPS_PROXY: '别的机器', fix: 'clear-user-proxy' },
+    }, { reach: 'remote' })
+    expect(outcome).toEqual({
+      state: 'warn',
+      summary: '电脑里开着代理（用的是别的机器上的代理），星芒会跟着它走；连不上账号时先关掉这个代理再试。'
+        + '另外，电脑里设了代理，工具会通过它联网。如果工具连不上，先确认这个代理能用。',
+      details: { HTTPS_PROXY: '别的机器', fix: 'clear-user-proxy', systemProxy: '别的机器' },
+    })
+  })
+})
+
+describe('diagnostics system proxy', () => {
+  function proxyItem(report: Awaited<ReturnType<typeof runDiagnostics>>) {
+    return report.items.find((item) => item.code === 'PROXY_ENVIRONMENT')
+  }
+
+  it('warns on macOS when the system settings route the account through a proxy', async () => {
+    const input = dependencies(temporaryHome())
+    input.platform = 'darwin'
+    input.resolveAppProxy = async () => 'PROXY 127.0.0.1:7897'
+    input.probeLoopbackProxy = async () => true
+    expect(proxyItem(await runDiagnostics(input))).toMatchObject({
+      title: '电脑里的代理设置',
+      state: 'warn',
+      summary: '电脑里开着代理（本机 7897 端口），星芒会跟着它走；连不上账号时先退出代理软件再试。',
+      details: { systemProxy: '本机 7897 端口（开着）' },
+    })
+  })
+
+  it('does not count the acceleration proxy as another program', async () => {
+    const input = dependencies(temporaryHome())
+    input.platform = 'darwin'
+    const resolveAppProxy = vi.fn(async () => 'PROXY 127.0.0.1:7897')
+    input.resolveAppProxy = resolveAppProxy
+    input.inspectAccelerationActive = async () => true
+    expect(proxyItem(await runDiagnostics(input))).toMatchObject({ state: 'pass', summary: '没有另外设过代理' })
+    expect(resolveAppProxy).not.toHaveBeenCalled()
+  })
+
+  it('checks the system proxy on Windows too', async () => {
+    const input = dependencies(temporaryHome())
+    input.platform = 'win32'
+    input.readProxyScopes = async () => null
+    input.resolveAppProxy = async () => 'PROXY 127.0.0.1:10809'
+    input.probeLoopbackProxy = async () => false
+    expect(proxyItem(await runDiagnostics(input))).toMatchObject({
+      state: 'warn',
+      details: { systemProxy: '本机 10809 端口（没开）' },
     })
   })
 })
