@@ -4870,9 +4870,12 @@ export function createSystemService(
       if (nativeConfig.baseUrl) providerEnv.GOOGLE_GEMINI_BASE_URL = nativeConfig.baseUrl
       if (nativeConfig.model) providerEnv.GEMINI_MODEL = geminiCliCompatibleModel(nativeConfig.model)
     }
-    const npmTool = await inspectTool('npm')
-    const npmGlobalRoot = await resolveNpmGlobalRoot(npmTool.path, commandEnvironment())
-    const { status: installedStatus, installation } = await inspectCliTool(provider, npmTool.path, npmGlobalRoot)
+    // 打开只用得上 npm 在哪，用不上它的版本号；inspectTool 会多起一次 `npm --version`
+    // （Windows 上是 .cmd 再套 node，还要过一遍杀毒），每点一次「打开」都白等那一下。
+    // 路径照旧每次现查，不缓存，刚装 / 卸 / 换过 Node 也不会拿到旧答案。
+    const npmPath = await findInstalledExecutable('npm')
+    const npmGlobalRoot = await resolveNpmGlobalRoot(npmPath, commandEnvironment())
+    const { status: installedStatus, installation } = await inspectCliTool(provider, npmPath, npmGlobalRoot)
     if (!installation) throw new Error(`未检测到 ${definition.name}，请先安装`)
 
     if (platform === 'win32') {

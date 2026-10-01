@@ -4789,6 +4789,40 @@ describe('trusting the workspace the user picked before opening a CLI', () => {
     expect(JSON.stringify(log.mock.calls)).not.toContain('elsewhere.example')
   })
 
+  it('looks up where npm is without running npm --version', async () => {
+    const userHome = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-launch-npm-'))
+    temporaryDirectories.push(userHome)
+    const workspace = path.join(userHome, 'project')
+    fs.mkdirSync(workspace)
+    const npmPath = path.join(userHome, 'bin', 'npm')
+    const runCommand = vi.fn<typeof productionRunCommand>(async (spec: { executable: string; argv: readonly string[] }) => ({
+      executable: spec.executable,
+      argv: [...spec.argv],
+      exitCode: 0,
+      signal: null,
+      stdout: '10.9.0\n',
+      stderr: '',
+      outputBytes: 7,
+      durationMs: 1,
+    }))
+    const resolveCliInstallation = vi.fn(async () => null)
+    const service = createService({
+      platform: 'linux',
+      providerRoots: { userHome, codexHome: path.join(userHome, '.codex') },
+      resolveCliInstallation,
+      findExecutable: vi.fn(async (command: string) => command === 'npm' ? npmPath : null),
+      runCommand,
+    })
+
+    await expect(service.launchProvider('claude', workspace)).rejects.toThrow('未检测到 Claude Code')
+
+    expect(resolveCliInstallation).toHaveBeenCalledWith('claude', expect.objectContaining({ npmExecutable: npmPath }))
+    expect(runCommand).not.toHaveBeenCalledWith(
+      expect.objectContaining({ executable: npmPath, argv: ['--version'] }),
+      expect.anything(),
+    )
+  })
+
   it('opens the tool anyway when the trust file cannot be written', async () => {
     const userHome = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-launch-trust-broken-'))
     temporaryDirectories.push(userHome)
