@@ -4,6 +4,7 @@ import {
   buildCodexDesktopCdpArguments,
   classifyCodexDesktopCdpPortOwnership,
   codexChineseRuntimeScript,
+  codexDesktopCdpPortOwnerModules,
   codexDesktopCdpPortOwnerScript,
   filterCodexDesktopCdpTargets,
   injectCodexDesktopChineseLocale,
@@ -575,6 +576,16 @@ describe('Codex Desktop CDP debugging port ownership', () => {
     const lines = codexDesktopCdpPortOwnerScript.trim().split('\n')
     expect(lines.at(-1)).toBe('exit 0')
     expect(codexDesktopCdpPortOwnerScript).toContain("$ErrorActionPreference = 'Stop'")
+  })
+
+  it('imports Utility and then NetTCPIP by name before querying the port', () => {
+    // The list names only NetTCPIP; the import statement puts Utility in front of it.
+    expect(codexDesktopCdpPortOwnerModules).toEqual(['NetTCPIP'])
+    const importAt = codexDesktopCdpPortOwnerScript.indexOf(
+      "Import-Module -Name 'Microsoft.PowerShell.Utility', 'NetTCPIP' -ErrorAction SilentlyContinue",
+    )
+    expect(importAt).toBeGreaterThan(0)
+    expect(codexDesktopCdpPortOwnerScript.indexOf('Get-NetTCPConnection')).toBeGreaterThan(importAt)
   })
 
   it('treats an empty listener table as a port Codex has not bound yet', () => {
