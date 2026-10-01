@@ -38,6 +38,7 @@ import {
   buildCliStatus,
   cliHooksAutoRepairedField,
   cliHooksSummaryFields,
+  grokCliHooksMissing,
   shouldAutoRepairCliHooks,
   externalCliInstallRefusal,
   buildCliMaintenancePlan,
@@ -3496,6 +3497,33 @@ describe('cliHooksSummaryFields', () => {
     expect(cliHooksSummaryFields({ stale: false, shellChanged: false })).toEqual({ cliHooksStale: false })
     expect(cliHooksSummaryFields({ stale: true, shellChanged: false })).toEqual({ cliHooksStale: true })
     expect(cliHooksSummaryFields({ stale: true, shellChanged: true })).toEqual({ cliHooksStale: true, cliHooksShellChanged: true })
+  })
+
+  it('reports missing hooks only when nothing needs repairing first', () => {
+    expect(cliHooksSummaryFields({ stale: false, shellChanged: false, missing: true })).toEqual({ cliHooksStale: false, cliHooksMissing: true })
+    expect(cliHooksSummaryFields({ stale: true, shellChanged: false, missing: true })).toEqual({ cliHooksStale: true })
+    expect(cliHooksSummaryFields({ stale: false, shellChanged: false, missing: false })).toEqual({ cliHooksStale: false })
+  })
+})
+
+describe('grokCliHooksMissing', () => {
+  const base = { platform: 'win32' as const, provider: 'grok' as const, managedTargets: 0, relayConfigured: true, shell: 'powershell' as const }
+
+  it('flags a Windows Grok relay config that has none of our hooks', () => {
+    expect(grokCliHooksMissing(base)).toBe(true)
+    expect(grokCliHooksMissing({ ...base, shell: 'bash' })).toBe(true)
+  })
+
+  it('ignores configs that already have hooks, are not ours, or other tools and platforms', () => {
+    expect(grokCliHooksMissing({ ...base, managedTargets: 6 })).toBe(false)
+    expect(grokCliHooksMissing({ ...base, relayConfigured: false })).toBe(false)
+    expect(grokCliHooksMissing({ ...base, provider: 'claude' })).toBe(false)
+    expect(grokCliHooksMissing({ ...base, platform: 'darwin' })).toBe(false)
+  })
+
+  it('does not treat a cmd shell as missing because hooks are never written there', () => {
+    expect(grokCliHooksMissing({ ...base, shell: 'cmd' })).toBe(false)
+    expect(grokCliHooksMissing({ ...base, shell: null })).toBe(false)
   })
 })
 
