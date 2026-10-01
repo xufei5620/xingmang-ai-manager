@@ -134,17 +134,16 @@ export function useChatController(api: ChatApi, scope: string, initial: LoadedCh
   }, [api, scope])
   useEffect(() => {
     if (!active) return
+    // 分组列表很少变，这里不再定时拉：以前开着聊天页每 30 秒拉一次，是余额那条定时线的两倍频。
+    // 进入聊天页、切回窗口、点开分组下拉框、点「刷新」和「重试」时各拉一次；分组被撤销时
+    // 发消息前主进程准备分组那一步还会再核对一次，所以不靠轮询兜底。
     const refreshVisible = () => {
       if (document.visibilityState === 'visible') void refreshActions.current.refreshGroups()
     }
     refreshVisible()
     window.addEventListener('focus', refreshVisible)
     document.addEventListener('visibilitychange', refreshVisible)
-    const timer = window.setInterval(() => {
-      if (document.visibilityState === 'visible' && document.hasFocus()) void refreshActions.current.refreshGroups()
-    }, 30000)
     return () => {
-      window.clearInterval(timer)
       window.removeEventListener('focus', refreshVisible)
       document.removeEventListener('visibilitychange', refreshVisible)
     }
