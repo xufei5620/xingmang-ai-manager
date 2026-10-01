@@ -1160,13 +1160,6 @@ if (!hasSingleInstanceLock) {
       disconnect: (scope) => acceleration
         ? acceleration.stopAcceleration(scope)
         : Promise.reject(new Error('加速服务尚未就绪。')),
-      // 连上之后不会自动断开（那是之前定过的），所以连上的那一刻必须让用户知道：
-      // 加速开着、在计免费时长、在哪里能断开。同一次连接只提醒一次。
-      onAutoConnected: (state) => hostNotifier()({
-        event: 'accelerationAutoStarted',
-        eventKey: `${state.scope}:${state.connectedAt ?? state.measuredAt}`,
-        onClick: showAccelerationPage,
-      }),
       log: (level, event, message, detail) => runtimeLog.log(level, 'network', event, message, detail),
     })
     // CLI 产物下载以前走 Node 自带的网络栈，它不读系统代理，所以开着加速也

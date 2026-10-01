@@ -144,6 +144,27 @@ describe('acceleration interruption notice', () => {
     expect(h.live()).toHaveLength(0)
   })
 
+  it('stays quiet about an automatic session that dropped once the network is back', async () => {
+    const auto = { autoStartedBy: 'codex-desktop' as const, remainingSeconds: 0 }
+    const h = fixture([state('error'), state('idle')])
+    h.notice.observe(state('active', auto))
+    h.notice.runtimeExited()
+    await h.fire()
+    expect(h.notices).toEqual([])
+    expect(h.live()).toHaveLength(0)
+    // 同一次会话再报一次也不补发。
+    h.notice.helperExited(true)
+    expect(h.live()).toHaveLength(0)
+  })
+
+  it('still warns about an automatic session when the network may be down', async () => {
+    const auto = { autoStartedBy: 'codex-desktop' as const, remainingSeconds: 0 }
+    const h = fixture([new Error('本机加速进程初始化未完成。')])
+    h.notice.observe(state('active', auto))
+    h.notice.helperExited(false)
+    expect(h.notices).toEqual([{ outcome: 'unrestored', key }])
+  })
+
   it('reminds once per connection even if both the core and the helper report it', async () => {
     const h = fixture([state('error'), state('idle')])
     h.notice.observe(state('active'))

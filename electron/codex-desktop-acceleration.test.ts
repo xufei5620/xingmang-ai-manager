@@ -27,7 +27,6 @@ function setup(options: {
   read?: (scope: string) => Promise<AccelerationState>
   connect?: (scope: string) => Promise<AccelerationState>
   timeoutMs?: number
-  onAutoConnected?: (state: AccelerationState) => void
 } = {}) {
   const readState = vi.fn(options.read ?? (async () => stateOf('idle')))
   const connect = vi.fn(options.connect ?? (async () => stateOf('active')))
@@ -37,7 +36,6 @@ function setup(options: {
     readState,
     connect,
     ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
-    ...(options.onAutoConnected ? { onAutoConnected: options.onAutoConnected } : {}),
     log,
   })
   return { coordinator, readState, connect, log }
@@ -70,25 +68,18 @@ describe('codex desktop acceleration coordinator', () => {
     expect(log).toHaveBeenCalledWith('info', 'acceleration.codex-desktop.connected', expect.any(String), undefined)
   })
 
-  it('tells the host once it actually connected, so the user learns acceleration is on', async () => {
-    const onAutoConnected = vi.fn()
-    const { coordinator } = setup({ onAutoConnected })
-    await coordinator.ensureConnected()
-    expect(onAutoConnected).toHaveBeenCalledExactlyOnceWith(stateOf('active'))
-  })
-
-  it('does not announce a session it did not start or one that is still coming up', async () => {
-    const onAutoConnected = vi.fn()
-    await setup({ onAutoConnected, read: async () => stateOf('active') }).coordinator.ensureConnected()
-    await setup({ onAutoConnected, connect: async () => stateOf('connecting') }).coordinator.ensureConnected()
-    await setup({ onAutoConnected, connect: async () => stateOf('error') }).coordinator.ensureConnected()
-    expect(onAutoConnected).not.toHaveBeenCalled()
-  })
-
-  it('still opens the desktop app when the announcement fails', async () => {
-    const { coordinator, log } = setup({ onAutoConnected: () => { throw new Error('系统通知没有显示。') } })
+  it('connects quietly: there is no hook to announce the connection to the user', async () => {
+    // yoyo 2026-10-01 定「悄悄连」：自动连上不弹通知，只记日志。钉住没有这个口子，
+    // 免得以后有人在宿主那边又接回一条系统通知。
+    const coordinator = createCodexDesktopAccelerationCoordinator({
+      getAccountScope: () => scope,
+      readState: async () => stateOf('idle'),
+      connect: async () => stateOf('active'),
+      // @ts-expect-error onAutoConnected was removed on purpose.
+      onAutoConnected: () => undefined,
+    })
     await expect(coordinator.ensureConnected()).resolves.toEqual({ status: 'connected' })
-    expect(log).toHaveBeenCalledWith('warn', 'acceleration.codex-desktop.notify.failed', expect.any(String), expect.any(Object))
+    coordinator.dispose()
   })
 
   it('accepts a connection that is still coming up', async () => {

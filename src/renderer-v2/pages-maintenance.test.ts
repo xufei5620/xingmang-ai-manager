@@ -119,9 +119,12 @@ describe('tutorial topics', () => {
     expect(text).not.toContain('口令')
     // 托盘菜单（#326）是主窗口缩起来时唯一的开关入口。
     expect(text).toContain('托盘')
-    // 两处「自己连」的口径相反：下载那条不计时，Codex 桌面端那条计时且不自动断。
+    // 两处「自己连」：下载那条不改网络设置；Codex 桌面端那条悄悄连、不弹通知、关掉就断
+    // （#707 起不扣时长，yoyo 2026-10-01 定「悄悄连」）。
     expect(text).toContain('不计入免费时长')
-    expect(text).toContain('不会自动断开')
+    expect(text).toContain('不弹通知')
+    expect(text).toContain('关掉 Codex 后会自动断开')
+    expect(text).not.toContain('不会自动断开')
     expect(text).toContain('加速服务暂不可用')
   })
 
