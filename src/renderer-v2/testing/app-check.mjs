@@ -2112,6 +2112,33 @@ test('a restored login that filled newer tool settings says so once in the corne
   } finally { await page.close() }
 })
 
+// 升级后第一次开机几张卡一起来：角落最多摊开两张，要选的排最前，其余折成「还有 N 条提示」，
+// 点开能看全、能收起；关掉一张后放得下了，那一行自己消失。
+test('the startup corner shows two cards at most and folds the rest into one line', async () => {
+  const page = await open('justUpdated=1&templateFilled=1&displayCompat=1')
+  try {
+    await page.getByTestId('page-home').waitFor()
+    await page.getByTestId('startup-notice-display-compat').waitFor()
+    const toggle = page.getByTestId('startup-notices-toggle')
+    await expect.poll(() => toggle.textContent()).toBe('还有 1 条提示')
+    // 「已更新」和「设置已补齐」同一档，谁先到谁摊开；只认定其中正好一张被折起来。
+    const hiddenId = await page.getByTestId('startup-notice-updated').count() ? 'template-filled' : 'updated'
+    assert.equal(await page.getByTestId(`startup-notice-${hiddenId}`).count(), 0)
+    assert.equal(await page.getByTestId('startup-notices').locator('.xm-notice').count(), 2)
+    await toggle.click()
+    await page.getByTestId(`startup-notice-${hiddenId}`).waitFor()
+    assert.equal(await toggle.textContent(), '收起')
+    await toggle.click()
+    await expect.poll(() => page.getByTestId(`startup-notice-${hiddenId}`).count()).toBe(0)
+    await page.getByTestId('startup-notice-display-compat-primary').click()
+    await expect.poll(() => page.getByTestId('startup-notice-display-compat').count()).toBe(0)
+    await page.getByTestId('startup-notice-updated').waitFor()
+    await page.getByTestId('startup-notice-template-filled').waitFor()
+    assert.equal(await toggle.count(), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('an ordinary launch says nothing about updates', async () => {
   const page = await open()
   try {

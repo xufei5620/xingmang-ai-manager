@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { StartupNotices } from './StartupNotices'
-import { displayCompatNotice, startupCheckFailure, startupDiagnosticsIssues, unexpectedExitNotice, updatedNotice, vaultRecoveredNotice } from './startup-notice'
+import { orderStartupNotices, StartupNotices } from './StartupNotices'
+import { crashReportingNotice, displayCompatNotice, startupCheckFailure, startupDiagnosticsIssues, toolTemplateFilledNotice, unexpectedExitNotice, updatedNotice, vaultRecoveredNotice } from './startup-notice'
 
 function render(notices: Parameters<typeof StartupNotices>[0]['notices']) {
   return renderToStaticMarkup(<StartupNotices notices={notices} onDismiss={() => undefined} onOpen={() => undefined} />)
@@ -76,5 +76,47 @@ describe('StartupNotices', () => {
     expect(markup).toContain('一直用兼容方式')
     expect(markup).toContain('恢复原来的方式')
     expect(markup).not.toContain('aria-label="关闭"')
+  })
+
+  it('shows at most two cards and folds the rest into one line', () => {
+    const markup = render([
+      updatedNotice('0.2.12', { justUpdated: true, previousVersion: '0.2.11', notes: ['第一件事'] })!,
+      toolTemplateFilledNotice(['codex'])!,
+      startupDiagnosticsIssues({ warn: 0, fail: 1, error: 0 })!,
+      displayCompatNotice({ displayCompat: 'auto' })!,
+    ])
+    expect(markup).toContain('startup-notice-display-compat')
+    expect(markup).toContain('startup-notice-diagnostics')
+    expect(markup).not.toContain('startup-notice-updated')
+    expect(markup).not.toContain('startup-notice-template-filled')
+    expect(markup).toContain('还有 2 条提示')
+    expect(markup).toContain('aria-expanded="false"')
+  })
+
+  it('counts the maintenance notice against the two visible cards', () => {
+    const markup = renderToStaticMarkup(<StartupNotices notices={[startupCheckFailure('update', 'A'), vaultRecoveredNotice()]}
+      leading={<div data-testid="maintenance" />} onDismiss={() => undefined} onOpen={() => undefined} />)
+    expect(markup).toContain('data-testid="maintenance"')
+    expect(markup).toContain('startup-notice-vault-recovered')
+    expect(markup).not.toContain('startup-notice-update"')
+    expect(markup).toContain('还有 1 条提示')
+  })
+
+  it('has no fold line when everything fits', () => {
+    const markup = render([startupCheckFailure('update', 'A'), vaultRecoveredNotice()])
+    expect(markup).not.toContain('startup-notices-toggle')
+  })
+
+  it('puts choices first, then trouble, then things to look at, then plain news, keeping arrival order within a group', () => {
+    const crash = crashReportingNotice({ crashReporting: true, crashReportingNoticeShown: false }, true)!
+    const ordered = orderStartupNotices([
+      updatedNotice('0.2.12', { justUpdated: true, previousVersion: '0.2.11', notes: [] })!,
+      startupCheckFailure('update', 'A'),
+      startupDiagnosticsIssues({ warn: 0, fail: 1, error: 0 })!,
+      vaultRecoveredNotice(),
+      crash,
+      displayCompatNotice({ displayCompat: 'auto' })!,
+    ])
+    expect(ordered.map((notice) => notice.id)).toEqual(['crash-reporting', 'display-compat', 'vault-recovered', 'update', 'diagnostics', 'updated'])
   })
 })
