@@ -2095,6 +2095,7 @@ describe('Codex Desktop PowerShell scripts import their modules', () => {
     'Select-Object': 'Microsoft.PowerShell.Utility',
     'ConvertTo-Json': 'Microsoft.PowerShell.Utility',
     'Add-Type': 'Microsoft.PowerShell.Utility',
+    'Get-ItemProperty': 'Microsoft.PowerShell.Management',
     'Get-CimInstance': 'CimCmdlets',
     'Invoke-CimMethod': 'CimCmdlets',
     'Get-StartApps': 'StartLayout',
@@ -2104,6 +2105,7 @@ describe('Codex Desktop PowerShell scripts import their modules', () => {
   }
   const packageFullName = 'OpenAI.Codex_26.715.0.0_x64__2p2nqsd0c76g0'
   const scripts: Array<[string, string, readonly string[]]> = [
+    ['merged scan probe', buildCodexDesktopCombinedProbeScript(), codexDesktopCombinedProbeModules],
     ['start menu probe', buildCodexDesktopStartAppProbeScript(), codexDesktopStartAppProbeModules],
     ['scan process probe', buildCodexDesktopProcessProbeScript('roots'), codexDesktopProcessProbeModules],
     ['close process probe', buildCodexDesktopProcessProbeScript('all', new Set([101, 102])), codexDesktopProcessProbeModules],
