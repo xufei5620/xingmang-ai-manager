@@ -16,7 +16,73 @@
 > **0.1.14 ~ 0.1.20 没有条目**：这些版本号在本仓 `main` 的 `package.json` 历史里从未出现过
 > （0.1.13 直接跳到 0.1.21），只有 `release-notes.md` 留下了 0.1.20 的用户条目。
 
-## 0.2.11 - 2026-09-29
+## 0.2.12 - 2026-10-01
+
+- Codex 桌面端自动加速的退出守护：连续三次确认桌面端在跑后，探活间隔从 1 分钟放宽到 3 分钟，
+  查到不在或查不出来立即退回 1 分钟（`codex-desktop-acceleration.ts`）。Windows 上每次探活要起
+  一个 PowerShell，人一直开着桌面端时次数降到约三分之一；代价是关掉后最多晚约两分钟断开。
+  守护本身已在 #707 改成只查进程的轻量探测，这次只调频率。
+- `useChatController.ts` 去掉聊天页激活时每 30 秒的 `listGroups` 定时器（第二十四批 7），只在进入页面、窗口获得焦点/变为可见、点开分组下拉框、手动刷新与重试时拉；分组被撤销由发消息前 `chat-credential-coordinator.ts` 的 `resolveOperation` 核对兜底。`balance-store.ts` 重新是唯一定时拉服务端数据的地方。浏览器回归改成断言可见且有焦点时 10 分钟内不再轮询。
+- `codex-desktop-cdp` 的调试端口归属查询：开头按名字导入 Utility、NetTCPIP（收紧环境下靠自动加载要整套扫描，
+  CI 上跑满 10 秒上限），末尾补 `exit 0`（端口还没人监听时 `Get-NetTCPConnection` 的「找不到对象」被
+  `SilentlyContinue` 压住，但 powershell.exe 仍以 1 退出，「尚未就绪」变成整次中文增强中止）。真错误在
+  `$ErrorActionPreference = 'Stop'` 下仍先于 `exit 0` 退出。问题自 #179 起就有。
+- #695 之后 Windows 版 Grok 不装 Node.js，钩子脚本 `xingmang-hook.cjs` 找不到 node 就不写，Grok 缺做完通知和防睡，装了 Node 也不会补。`config-files.ts` 的 `ManagedCliHookRewrite` 加可选 `addIfMissing`（只给 Grok，推到 cmd 不写）；`system-service.ts` 新增纯函数 `grokCliHooksMissing` 与 `addMissingGrokHooks`，在装好运行环境后、打开 Grok 前、每次启动（本账号那份）各补一次，配置快照多带 `cliHooksMissing`，首页 Grok 行给「补上」（没运行环境先准备它，有了就走「修好它」同一条路，`repairCliHooks` 对 Grok 一并补）。没做「不依赖 Node」的原生写法：RunAsNode fuse 关着，改写成 PowerShell / sh 两套脚本要各自在真机核，改动面和风险都更大。
+- `syncXingmangAiSkill` 新增 `imageMcpWarnings`（不带前缀的原因）和 `imageMcpRetryDelayMs`；画图 MCP 登记失败先自动重试一次（缺 Node 不重试）。`account:sync-managed-cli-keys` 在技能就绪时也把 `describeImageMcpWarnings` 生成的人话放进新字段 `imageMcpWarning`，renderer-v2 的 `account-bootstrap.ts` 并入首页警告（自带「重新同步」）。用新字段而不复用 `imageSkillWarning`，是为了不改冻结的 legacy 界面行为（它对 `imageSkillWarning` 弹错误 toast）。第二十四批候选第 4 条。
+- `launchProviderOperation`（electron/system-service.ts）打开 CLI 前只用 `findInstalledExecutable('npm')` 查 npm 路径，不再走 `inspectTool('npm')` 多起一个 `npm --version` 子进程；路径仍每次现查、不缓存，装 / 卸 / 换 Node 后不会拿到旧答案。第二十五批候选 ④。
+- `src/renderer-v2/features/shell/promo-announcements.ts`：`resolvePromoKind` 不再只看标题含「充值 / 邀请」。
+  标题须带一个好处类的字（活动、送、赠、优惠、折、礼、返、福利…）才算活动；带维护、暂停、故障、延迟、
+  调整、取消等字的一律不算，排除优先。`isRechargePromoTitle` 改为同一判定。大卡片、系统通知、每日提醒、
+  红点、活动条都从 `activePromos` 走，一处改全跟上。
+- 截止时间：引导词加「有效期」「即日起」；引导词后跟区间时取后一个日期；「10月1日-7日」后半段借前半段的
+  月份（后一天须更大、必须带「日 / 号」，免得把「-7折」认成日期）；日期在前的「X日前 / 之前 / 截止 / 结束 / 止」
+  放在最后认，避免把「10月10日前到账」当成活动结束。认不出来仍按发布后 7 天兜底，120 天上限不变。
+- 修 #698 强制更新门与 #683 下载前量盘没接上：`updater.ts` 的 `download()` 量盘不够时只挂
+  `diskShortfall`、不抛错，门却照旧给「立即更新」，点了没有任何变化。`required-update.ts` 读
+  `diskShortfall`（按钮改「空间够了，再试一次」，不自动接着下）；`RequiredUpdateGate.tsx` 复用
+  更新页的缺口说法、清理步骤与「仍要下载」（`ignoreDiskSpace`）；清理步骤从
+  `registry/tutorials.ts` 拆出 `updateDiskCleanupSteps`，门里不说「回到更新页」。
+- 配置模板加版本号 `relayTemplateRevision`（`electron/config-files.ts`），记进工具配置来源记录的 `templateRevision`；完整保存时记当前版本。新增 `fillRelayTemplateDefaults` / `relayTemplateDefaultsPending`：只补缺省键，配置不指向当前账号服务就不动，写入沿用 `executeFilePlans` 两阶段提交与 `.bak`。
+- 新通道 `config:fill-template-defaults`（ipc-contract / preload / ipc 三处同序，紧跟 `tools:check-models`）：主进程只处理来源为 `account`、版本落后的配置，先 `inspectRunningTools` 跳过开着或看不出的工具，补之前建一份 `pre-save` 备份，已经齐了只抬版本号不留备份；失败记 `template-defaults.failed` 日志、版本号不前进。
+- renderer-v2 在 `restore` 模式的账号恢复结束后调用，真补了才出角落卡片（`startup-notice` 新 id `template-filled`）。加项规矩写在 `docs/CLI-VERIFIED-VERSIONS.md`「老客户的配置怎么跟上这张表」。
+- 新增 `src/renderer-v2/features/account/topup-tier.ts`：`describeTopupTier` 把档位、服务端试算的实付和赠送规则换成卡片三行；`useTopupQuotes` 逐档串行调用 `account:quote-topup`（最多 16 档，自定义金额停止输入 500ms 后再算）。充值信息一重新加载，旧结果整批作废；试算失败时只隐藏实付，不报错。易支付渠道的实付标 ¥，其余渠道不标币种。
+- 两种账号的档位含义不同。new-api 档位是到账额度，赠送读 `discount`。Sub2API 档位是实付金额，到账 = 档位 × `balance_recharge_multiplier`。`NewApiTopupInfo` 新增可选字段 `creditMultiplier`，只由 `sub2api-relay-backend.ts` 的 `parseTopupInfo` 填写，非有限正数一律按 1 处理，和 Sub2API 自己的页面一致。
+- 新增 `features/account/payment-method-label.ts`：后台没填显示名、接口只回渠道代码时，换成中文渠道名。没有新增 IPC 通道。
+- `electron/application-tray.ts`：托盘快照的 `updateAvailable` / `updateVersion` 换成 `update: TrayUpdateEntry`，由新纯函数
+  `resolveTrayUpdateEntry(UpdateSnapshot)` 按阶段给出 available（含 `diskShortfall` 时「等电脑腾出空间」）/ downloading /
+  downloaded / failed。原来只认 `phase === 'available'`，自动下载开着时这个阶段只停几秒，常驻托盘的人几乎看不到。
+- downloaded 那一项点击走新增的可选 `onInstallUpdate`，`main.ts` 接到 `updaterService.install()`——和更新页「确认重启安装」、
+  IPC `update:install` 是同一条路，退出交接、安装闸、强制更新与 Windows 提权逻辑都不变，也不改自动安装默认值。
+  带错误的 downloaded（安装器起过又失败，安装闸已关）与下载失败归为 failed，只打开更新页；检查失败不显示版本。
+- 第二十四批候选 ⑩。
+- #714 / #716 / #718 同一个根因的收尾：全仓所有在 `trustedCommandEnvironment()`（或同样把 PSModulePath
+  收窄到 System32 的 `windows-machine-paths` ACL 探测）下跑、又调用了引擎核心以外命令的 PowerShell 脚本，
+  开头都按名字导入自己用到的模块。涉及 `cli-process-probe`、`diagnostics`（检查页 Codex 桌面端）、
+  `codex-desktop-cdp`（端口探测、激活）、`external-client-runtime`、`uninstall-cleanup`、
+  `claude-desktop-manifest` / `-policy`、`stale-proxy-environment`、`platform/windows-system-proxy`、
+  `node-runtime`（待重启、App Installer、两条签名核对）、`python-runtime`、`workbuddy-installer`、
+  `trusted-native-cli`、`trusted-temp`（受保护目录 ACL 回读）、`windows-machine-paths`（两条 ACL 探测）、
+  `windows-elevation`（打开工具的中转脚本与终端脚本）。没放宽环境、没调任何上限。
+- 签名核对原本用 `Join-Path $PSHOME ...` 导入 Security，而 `Join-Path` 本身就在 Management 模块里，
+  这一句就会触发整套扫描；改成字符串拼路径（`buildPowerShellPinnedModuleImportStatement`），保留
+  `-Force -ErrorAction Stop`，并把 ConvertTo-Json 所在的 Utility 一起按同样方式导入。
+- `buildPowerShellModuleImportStatement` 挪进新的叶子模块 `powershell-module-imports.ts`（`windows-machine-paths`
+  也要用，放在 `windows-elevation` 会成环），模块名只认字母数字和点，其余直接拒绝。它现在总把
+  `Microsoft.PowerShell.Utility` 排在第一个（没写也补上）：CI 上实测 Utility 还没加载时，导入
+  CimCmdlets / Appx / NetTCPIP / StartLayout 这一句本身就要二十多秒（关掉自动加载也一样），Utility
+  在前则约 0.5 秒。
+- 新增 `powershell-module-imports.test.ts`：二十多条脚本逐条把命令对到模块、逐个去掉一个导入确认会红、
+  不多导；另钉住四条不调命令的脚本保持不调。打包作业冒烟里这些探测按各自上限在收紧环境下做真检查并打印
+  耗时，另关掉自动加载各跑一遍，漏导入的命令按名字打印；该步骤上限 6 → 12 分钟。
+- 没动的：`windows-elevation` 的 Add-Type 令牌探测（提速清单 A1）、Codex Appx / Node.js 的提权安装中转
+  （15 分钟或不限时，提权子进程环境另算）、`knownFoldersFromWindows`（PSModulePath 为空的兜底路径）。
+- `src/renderer-v2/registry/tutorials.ts` 进阶章与 Mac 运行环境章泛指的「CLI」改「命令行工具」（Codex CLI 等产品名保留），删去 npm 字样与过时句；顺手改正下载章里引用的旧章名「Mac 上装 Node.js 和 Python」。`TutorialIllustration.tsx` 安装示意图运行环境一行去掉 npm，两段说明与启动示意图里的「CLI」改成大白话。`tutorials.test.ts` 新增断言：教程可见文案（keywords 除外，搜索仍可用）不含 npm 与泛指的 CLI。第二十四批候选 ⑨，只改文案。
+- 新增 `src/renderer-v2/features/app/update-retry.ts`：`retryFailedUpdateStep`（按 `failedStep` 分派：check 重查、download/旧快照先查再下、
+  install 回确认框）与 `redownloadUpdate` 原来写在 `UpdatesPage` 里，现在更新页与首页气泡共用这一份，不各算一遍。
+  气泡点「重新安装」经 `requestUpdateInstallConfirm` 跳到更新页并弹同一个「重启并安装更新？」确认框（更新页隐藏不卸载，所以既留待取请求也通知已挂着的页面），不在气泡里直接重启。
+- 首页气泡正文改用 `userFacingErrorMessage`（与更新页一致，去控制字符、路径脱敏）。
+- `electron/updater.ts` 开机 8 秒超时的 `STARTUP_UPDATE_TIMEOUT` 文案改成客户能读懂的话；`updateFailureTone` 让这一种用 warn 色（真正的请求仍在后台跑，晚到的结果会清掉错误）。
+- 第二十五批候选 ②⑧。候选 ①（网络类 / 开机超时 / 定时检查失败不弹气泡）未做，待拍板后在 `update-retry.ts` 加判断即可。
 
 - 跟 #716 同一个根因、同一个修法，补到 `codex-desktop-service.ts` 里其余的 PowerShell 脚本：开始菜单探测、
   扫描和关闭用的进程列表、「打开」与加速用的会话进程列表、Appx 包探测（各 8 秒上限），以及安装包检查

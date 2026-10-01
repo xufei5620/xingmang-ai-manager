@@ -1,6 +1,6 @@
 {
   "name": "xingmang-ai-manager",
-  "version": "0.2.11",
+  "version": "0.2.12",
   "private": true,
   "workspaces": [
     "tooling/legacy-renderer"
