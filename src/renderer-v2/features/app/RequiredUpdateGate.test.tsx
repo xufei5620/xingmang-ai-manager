@@ -45,6 +45,14 @@ describe('RequiredUpdateGate', () => {
     expect(html).not.toContain('required-update-download-page')
   })
 
+  it('shows how much has downloaded, how fast, and how long is left under the progress bar', () => {
+    const progress = { percent: 50, bytesPerSecond: 1, transferred: 50 * 1024 ** 2, total: 100 * 1024 ** 2, averageBytesPerSecond: 2 * 1024 ** 2, secondsRemaining: 150 }
+    const html = renderToStaticMarkup(<RequiredUpdateGate update={snapshot({ phase: 'downloading', progress })} windows actions={actions} />)
+    expect(html).toContain('data-testid="required-update-progress"')
+    expect(html).toContain('已下载 50 MB / 共 100 MB · 每秒 2 MB · 大约还要 3 分钟')
+    expect(renderToStaticMarkup(<RequiredUpdateGate update={snapshot()} windows actions={actions} />)).not.toContain('required-update-progress-detail')
+  })
+
   it('adds the download page only after a failure, and skips the Windows prompt hint on a Mac', () => {
     const html = renderToStaticMarkup(<RequiredUpdateGate update={snapshot({ phase: 'error', error: { code: 'X', message: '网络断了' } })} windows={false} actions={actions} />)
     expect(html).toContain('更新没有完成：网络断了')

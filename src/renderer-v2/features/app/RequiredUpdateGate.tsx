@@ -96,6 +96,7 @@ export function RequiredUpdateGate({ update, windows, actions }: {
         {windows && <p>装的时候如果弹出「是否允许更改」，点「是」。</p>}
         <p data-testid="required-update-versions">现在是 {gate.currentVersion}{gate.availableVersion ? `，将更新到 ${gate.availableVersion}` : ''}</p>
         {gate.percent !== null && <Progress value={gate.percent} label="下载进度" testId="required-update-progress" />}
+        {gate.progressDetail && <p className="v2-update-progress-detail" data-testid="required-update-progress-detail">{gate.progressDetail}</p>}
         {shortfallText && <div role="alert" data-testid="required-update-disk">
           <p><strong>磁盘空间不够，新版本还没开始下载。</strong>{shortfallText}</p>
           <p>先清出一些空间，再点「空间够了，再试一次」。</p>

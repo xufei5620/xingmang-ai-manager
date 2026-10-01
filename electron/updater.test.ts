@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events'
 import { describe, expect, it, vi } from 'vitest'
 import { updateNetworkFailureMessages } from './network-failure'
-import { createUpdaterService, decideUpdateOffer, describeUnrecognizedUpdateFailure, isOlderVersion, requiredUpdateDiskBytes, resolveRequiredVersion, resolveUpdateDiskShortfall, resolveUpdatePackageBytes, updateDiskFallbackBytes, updateDiskMinimumBytes, type UpdateClient, type UpdaterService } from './updater'
+import { createUpdaterService, decideUpdateOffer, downloadRateWindowMs, recordDownloadProgressSample, resolveAverageDownloadRate, resolveDownloadSecondsRemaining, describeUnrecognizedUpdateFailure, isOlderVersion, requiredUpdateDiskBytes, resolveRequiredVersion, resolveUpdateDiskShortfall, resolveUpdatePackageBytes, updateDiskFallbackBytes, updateDiskMinimumBytes, type UpdateClient, type UpdaterService } from './updater'
 
 class FakeUpdater extends EventEmitter implements UpdateClient {
   autoDownload = true
@@ -1947,5 +1947,79 @@ describe('disk space before downloading an update', () => {
     client.emit('error', new Error('boom'))
     expect(service.getState()).toMatchObject({ phase: 'error', diskShortfall: null })
     service.dispose()
+  })
+})
+
+describe('download progress smoothing', () => {
+  it('waits for a few seconds of samples before reporting a speed', () => {
+    let samples = recordDownloadProgressSample([], { at: 0, transferred: 0 })
+    samples = recordDownloadProgressSample(samples, { at: 1_000, transferred: 2_000_000 })
+    expect(resolveAverageDownloadRate(samples)).toBeNull()
+    samples = recordDownloadProgressSample(samples, { at: 3_000, transferred: 3_000_000 })
+    expect(resolveAverageDownloadRate(samples)).toBe(1_000_000)
+  })
+
+  it('averages over the recent window instead of jumping with each burst', () => {
+    let samples: ReturnType<typeof recordDownloadProgressSample> = []
+    for (let second = 0; second <= 20; second += 1) {
+      // 一秒快一秒慢，平均每秒 1 MB。
+      const transferred = second * 1_000_000 + (second % 2 ? 400_000 : 0)
+      samples = recordDownloadProgressSample(samples, { at: second * 1_000, transferred })
+    }
+    expect(samples[0].at).toBe(20_000 - downloadRateWindowMs)
+    expect(resolveAverageDownloadRate(samples)).toBe(1_000_000)
+  })
+
+  it('starts over when the download restarts from a smaller amount', () => {
+    let samples = recordDownloadProgressSample([], { at: 0, transferred: 0 })
+    samples = recordDownloadProgressSample(samples, { at: 5_000, transferred: 5_000_000 })
+    samples = recordDownloadProgressSample(samples, { at: 6_000, transferred: 100 })
+    expect(samples).toEqual([{ at: 6_000, transferred: 100 }])
+    expect(resolveAverageDownloadRate(samples)).toBeNull()
+  })
+
+  it('reports no speed while nothing is moving', () => {
+    let samples = recordDownloadProgressSample([], { at: 0, transferred: 500 })
+    samples = recordDownloadProgressSample(samples, { at: 5_000, transferred: 500 })
+    expect(resolveAverageDownloadRate(samples)).toBeNull()
+  })
+
+  it('estimates the remaining seconds only when it knows the total and the speed', () => {
+    expect(resolveDownloadSecondsRemaining(1_000, 1_000, 41_500)).toBe(41)
+    expect(resolveDownloadSecondsRemaining(null, 1_000, 41_000)).toBeNull()
+    expect(resolveDownloadSecondsRemaining(1_000, 1_000, 0)).toBeNull()
+    expect(resolveDownloadSecondsRemaining(1_000, 41_000, 41_000)).toBeNull()
+  })
+
+  it('publishes the smoothed speed and remaining time on the update snapshot', async () => {
+    vi.useFakeTimers()
+    try {
+      vi.setSystemTime(0)
+      const client = new FakeUpdater()
+      const service = createUpdaterService(client, { currentVersion: '1.0.0', isPackaged: true })
+      const checking = service.check()
+      client.emit('update-available', updateInfo())
+      await checking
+      let finish: () => void = () => undefined
+      client.downloadUpdate.mockImplementationOnce(() => new Promise<void>((resolve) => { finish = resolve }))
+      const downloading = service.download()
+      const total = 100_000_000
+      client.emit('download-progress', { percent: 0, bytesPerSecond: 0, transferred: 0, total, delta: 0 })
+      expect(service.getState().progress).toMatchObject({ transferred: 0, total, averageBytesPerSecond: null, secondsRemaining: null })
+      for (let second = 1; second <= 4; second += 1) {
+        vi.setSystemTime(second * 1_000)
+        client.emit('download-progress', { percent: second * 2, bytesPerSecond: 9_999_999, transferred: second * 2_000_000, total, delta: 2_000_000 })
+      }
+      expect(service.getState().progress).toMatchObject({
+        transferred: 8_000_000,
+        bytesPerSecond: 9_999_999,
+        averageBytesPerSecond: 2_000_000,
+        secondsRemaining: 46,
+      })
+      finish()
+      await downloading
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
