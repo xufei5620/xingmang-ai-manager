@@ -1607,9 +1607,26 @@ export function buildCodexDesktopPackageProbeScript(): string {
  * processes used to give for free, and the install-state logic downstream
  * depends on telling "no package" apart from "could not look".
  */
+/**
+ * Every module the merged probe calls into. Runs under trustedCommandEnvironment(),
+ * where one autoloaded cmdlet costs a full module analysis (about 22 s on the CI
+ * runner, see buildPowerShellModuleImportStatement). The first attempt in #714
+ * imported every module here except Appx and saw no gain, because
+ * Get-AppxPackage alone still paid the whole autoload. The unit test maps each
+ * cmdlet in the script to one of these names so a new one cannot slip past.
+ */
+export const codexDesktopCombinedProbeModules = [
+  'Microsoft.PowerShell.Management',
+  'Microsoft.PowerShell.Utility',
+  'CimCmdlets',
+  'StartLayout',
+  'Appx',
+] as const
+
 export function buildCodexDesktopCombinedProbeScript(): string {
   return [
     codexDesktopProbeScriptHeader,
+    buildPowerShellModuleImportStatement(codexDesktopCombinedProbeModules),
     '$startApps = $null',
     '$startAppsError = $null',
     `try { $startApps = ${codexDesktopStartAppsQuery()} } catch { $startAppsError = $_.Exception.Message }`,
@@ -1726,7 +1743,7 @@ export function buildCodexDesktopCombinedProbeFailure(reason: unknown): CodexDes
  * 比任何单段都慢。取三段旧预算之和，谁都不比合并前更紧 —— 宁可极端情况下多
  * 等，也不要把装好的 Codex 桌面端误判成没装。
  */
-const codexDesktopCombinedProbeTimeoutMs = 24_000
+export const codexDesktopCombinedProbeTimeoutMs = 24_000
 
 async function runCodexDesktopCombinedProbe(): Promise<CodexDesktopCombinedProbe> {
   try {
