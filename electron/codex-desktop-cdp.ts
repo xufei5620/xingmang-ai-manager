@@ -14,6 +14,9 @@ const cdpCommandTimeoutMs = 5_000
 const cdpDiscoveryAttempts = 30
 const cdpDiscoveryDeadlineMs = 20_000
 const cdpPortOwnershipRevalidateMs = 5_000
+const cdpPortOwnerLookupFailureLimit = 3
+// 进了用户看到的「未确认中文界面生效」提示，不带命令原文，也不说技术词。
+const cdpPortOwnerUnconfirmedMessage = '这次没能确认 Codex 已经准备好'
 
 /**
  * This is deliberately a small, mechanism-level patch. It does not replace
@@ -805,9 +808,21 @@ export async function injectCodexDesktopChineseLocale(
   let ownershipVerifiedAt = 0
   // Re-reading the TCP table costs a PowerShell start, so a confirmation is
   // reused for a short while instead of running on every discovery attempt.
-  const inspectPortOwnership = async (): Promise<CodexDesktopCdpPortOwnership> => {
+  // null means the lookup itself failed or ran out of time. That says nothing
+  // about who holds the port, so the round sends nothing, exactly as for an
+  // unbound port, and the next round asks again inside the same deadline.
+  // 慢电脑上第一次查要冷启动网络连接表，又正赶上 Codex 自己在启动，10 秒限时可能
+  // 被吃完（2026-10-01 打包冒烟实测到 10 秒以上）；以前这一下就让切中文整步放弃，
+  // 提示里还冒出整串 PowerShell 命令。
+  const inspectPortOwnership = async (): Promise<CodexDesktopCdpPortOwnership | null> => {
     if (ownershipVerifiedAt && Date.now() - ownershipVerifiedAt < cdpPortOwnershipRevalidateMs) return 'owned'
-    const ownership = classifyCodexDesktopCdpPortOwnership(await resolvePortOwnerProcessIds(port), expectedProcessId)
+    let owners: number[]
+    try {
+      owners = await resolvePortOwnerProcessIds(port)
+    } catch {
+      return null
+    }
+    const ownership = classifyCodexDesktopCdpPortOwnership(owners, expectedProcessId)
     if (ownership === 'foreign') {
       throw new Error(`Codex Desktop 调试端口 ${port} 被其他进程占用，已取消中文增强`)
     }
@@ -815,6 +830,7 @@ export async function injectCodexDesktopChineseLocale(
     return ownership
   }
   let lastError: unknown = null
+  let unansweredLookups = 0
   let injectedTargets = 0
   const sessions = new Map<string, CdpInjectionSession>()
   const reloadStates = new Map<string, { attempted: boolean; previousDocument: number | null }>()
@@ -824,7 +840,19 @@ export async function injectCodexDesktopChineseLocale(
     for (let attempt = 1; attempt <= cdpDiscoveryAttempts && Date.now() < deadline; attempt += 1) {
       // A squatted port must abort the whole injection: retrying would only
       // keep handing the payload to whoever answers on it.
-      if (await inspectPortOwnership() === 'unbound') {
+      const ownership = await inspectPortOwnership()
+      if (ownership === null) {
+        unansweredLookups += 1
+        lastError = new Error(cdpPortOwnerUnconfirmedMessage)
+        // A lookup that can never work here (PowerShell blocked, the module
+        // missing) must not start another process every half second until the
+        // deadline; a slow one gets its retries.
+        if (unansweredLookups >= cdpPortOwnerLookupFailureLimit) break
+        await delay(500)
+        continue
+      }
+      unansweredLookups = 0
+      if (ownership === 'unbound') {
         lastError = new Error('Codex Desktop 调试端口尚未就绪')
         await delay(500)
         continue
@@ -877,5 +905,8 @@ export async function injectCodexDesktopChineseLocale(
   }
   const detail = lastError instanceof Error ? `：${lastError.message}` : ''
   if (rendererFound) throw new Error(`Codex Desktop 页面已启动，但未确认中文配置生效${detail}`)
+  // No page was looked for after the last lookup failed, so "no page found"
+  // would be the wrong reason to give.
+  if (unansweredLookups) throw new Error(cdpPortOwnerUnconfirmedMessage)
   throw new Error(`Codex Desktop 启动后未找到可注入的页面${detail}`)
 }
