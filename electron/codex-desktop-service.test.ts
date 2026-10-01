@@ -33,6 +33,13 @@ import {
   describeCodexDesktopLaunchFailure,
   describeCodexDesktopLaunchWait,
   buildCodexDesktopResetScript,
+  buildCodexDesktopStartAppProbeScript,
+  buildCodexDesktopUninstallScript,
+  codexDesktopAppxCommandModules,
+  codexDesktopPackageInspectionModules,
+  codexDesktopPackageProbeModules,
+  codexDesktopProcessProbeModules,
+  codexDesktopStartAppProbeModules,
   describeCodexDesktopResetFailure,
   startCodexDesktopLaunchHeartbeat,
   codexDesktopLaunchHeartbeatIntervalMs,
@@ -2043,5 +2050,76 @@ describe('Codex Desktop Microsoft Store install', () => {
     expect(shouldTryCodexDesktopStoreUpdate('26.900.1.0', '26.917.9434.0')).toBe(true)
     expect(shouldTryCodexDesktopStoreUpdate('26.917.9434.0', '26.917.9434.0')).toBe(false)
     expect(shouldTryCodexDesktopStoreUpdate('26.917.9434.0', null)).toBe(true)
+  })
+})
+
+describe('Codex Desktop PowerShell scripts import their modules', () => {
+  // Under trustedCommandEnvironment() one cmdlet left to autoloading costs the
+  // whole module analysis, about 22 s against an 8 s limit for most of these
+  // (#714, #716). So every cmdlet must belong to a module imported by name
+  // before it runs. Core cmdlets are always loaded and need no import.
+  const cmdletModules: Record<string, string | null> = {
+    'Where-Object': null,
+    'ForEach-Object': null,
+    'Import-Module': null,
+    'Select-Object': 'Microsoft.PowerShell.Utility',
+    'ConvertTo-Json': 'Microsoft.PowerShell.Utility',
+    'Add-Type': 'Microsoft.PowerShell.Utility',
+    'Get-CimInstance': 'CimCmdlets',
+    'Invoke-CimMethod': 'CimCmdlets',
+    'Get-StartApps': 'StartLayout',
+    'Get-AppxPackage': 'Appx',
+    'Remove-AppxPackage': 'Appx',
+    'Reset-AppxPackage': 'Appx',
+  }
+  const packageFullName = 'OpenAI.Codex_26.715.0.0_x64__2p2nqsd0c76g0'
+  const scripts: Array<[string, string, readonly string[]]> = [
+    ['start menu probe', buildCodexDesktopStartAppProbeScript(), codexDesktopStartAppProbeModules],
+    ['scan process probe', buildCodexDesktopProcessProbeScript('roots'), codexDesktopProcessProbeModules],
+    ['close process probe', buildCodexDesktopProcessProbeScript('all', new Set([101, 102])), codexDesktopProcessProbeModules],
+    ['session process probe', buildCodexDesktopSessionProcessProbeScript(), codexDesktopProcessProbeModules],
+    ['package probe', buildCodexDesktopPackageProbeScript(), codexDesktopPackageProbeModules],
+    ['package file inspection', buildCodexDesktopPackageInspectionScript('C:\\Temp\\codex.msix'), codexDesktopPackageInspectionModules],
+    ['uninstall', buildCodexDesktopUninstallScript(packageFullName), codexDesktopAppxCommandModules],
+    ['reset', buildCodexDesktopResetScript(packageFullName), codexDesktopAppxCommandModules],
+  ]
+
+  function importStatement(modules: readonly string[]): string {
+    return `Import-Module -Name ${modules.map((name) => `'${name}'`).join(', ')} -ErrorAction SilentlyContinue`
+  }
+
+  /** Cmdlets that would still be autoloaded: unknown, unimported, or used before the import. */
+  function unimportedCmdlets(script: string, modules: readonly string[]): string[] {
+    const importAt = script.indexOf(importStatement(modules))
+    const used = [...new Set(script.match(/\b[A-Z][A-Za-z]+-[A-Z][A-Za-z]+\b/g) ?? [])]
+    return used.filter((cmdlet) => {
+      if (!(cmdlet in cmdletModules)) return true
+      const module = cmdletModules[cmdlet]
+      if (!module) return false
+      return importAt < 0 || !modules.includes(module) || script.indexOf(cmdlet) < importAt
+    })
+  }
+
+  it.each(scripts)('imports the module of every cmdlet the %s calls before the first one runs', (_name, script, modules) => {
+    expect(unimportedCmdlets(script, modules)).toEqual([])
+    expect(script.indexOf(importStatement(modules))).toBeGreaterThan(0)
+  })
+
+  it.each(scripts)('notices when the %s loses any one of its imports', (_name, script, modules) => {
+    for (const module of modules) {
+      const remaining = modules.filter((name) => name !== module)
+      const weakened = script.replace(importStatement(modules), importStatement(remaining))
+      expect(weakened).not.toBe(script)
+      expect(unimportedCmdlets(weakened, remaining), `${module} dropped`).not.toEqual([])
+    }
+  })
+
+  it('imports nothing a script does not call', () => {
+    for (const [name, script, modules] of scripts) {
+      const needed = new Set(Object.entries(cmdletModules)
+        .filter(([cmdlet, module]) => module && script.includes(cmdlet))
+        .map(([, module]) => module))
+      expect([...modules].sort(), name).toEqual([...needed].sort())
+    }
   })
 })
