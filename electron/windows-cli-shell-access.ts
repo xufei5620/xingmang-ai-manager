@@ -245,6 +245,12 @@ export interface CliTerminalAccessOptions {
   isManaged: (installation: CliTerminalAccessTarget['installation']) => boolean
   /** Absent = never touch PATH (tests and hosts other than the desktop app). */
   ensureUserPath?: (directory: string) => Promise<UserPathOutcome>
+  /**
+   * macOS counterpart of `ensureUserPath`: makes the user's own terminal find
+   * the CLIs. Absent = never touch the shell profile. The outcome string only
+   * goes to the log.
+   */
+  ensureShellProfile?: (reason: 'install' | 'startup') => Promise<string>
   log?: (level: 'info' | 'warn', event: string, message: string, detail: Record<string, unknown>) => void
   /** Error text for the log; the caller redacts home directories and secrets. */
   describeError?: (error: unknown) => string
@@ -260,7 +266,9 @@ export interface CliTerminalAccess {
 /**
  * Everything the service does so a user's own terminal can run a CLI by name,
  * kept out of the scan so it can be exercised on a real Windows file system
- * without the rest of the machine probes.
+ * without the rest of the machine probes. On macOS the whole job is the shell
+ * profile (macos-shell-profile.ts): npm writes no `.ps1` there, and the
+ * directories it adds are fixed, so which CLI triggered it does not matter.
  */
 export function createCliTerminalAccess(options: CliTerminalAccessOptions): CliTerminalAccess {
   const describe = options.describeError ?? ((error: unknown) => error instanceof Error ? error.message : String(error))
@@ -268,9 +276,41 @@ export function createCliTerminalAccess(options: CliTerminalAccessOptions): CliT
   // prefix, and two installs finishing together must not both append it.
   const userPathChecks = new Map<string, Promise<void>>()
   let swept = false
+  let shellProfileCheck: Promise<void> | null = null
+
+  // The profile block names fixed directories rather than this install's, so
+  // one check per session covers all four CLIs.
+  function checkShellProfile(provider: ProviderId, reason: 'install' | 'startup'): void {
+    const ensureShellProfile = options.ensureShellProfile
+    if (!ensureShellProfile || shellProfileCheck) return
+    shellProfileCheck = ensureShellProfile(reason).then((outcome) => {
+      options.log?.('info', 'cli.shell-profile.checked', outcome === 'added'
+        ? '已让新开的终端可以直接敲工具名'
+        : '终端启动设置无需改动', { provider, reason, outcome })
+    }, (error: unknown) => {
+      // Forget the failure so the next install tries again.
+      shellProfileCheck = null
+      options.log?.('warn', 'cli.shell-profile.failed', '没能让终端直接敲工具名，从星芒首页「打开」不受影响', {
+        provider,
+        reason,
+        error: describe(error),
+      })
+    })
+  }
 
   async function prepare(target: CliTerminalAccessTarget, reason: 'install' | 'startup'): Promise<void> {
     const { provider, installation } = target
+    if (options.platform === 'darwin') {
+      // At startup only an install the app itself made counts: someone who
+      // brought their own CLI has no use for the app's directories on PATH.
+      if (reason === 'startup') {
+        let managed = false
+        try { managed = options.isManaged(installation) } catch { managed = false }
+        if (!managed) return
+      }
+      checkShellProfile(provider, reason)
+      return
+    }
     let managed = false
     if (options.platform === 'win32' && options.executionMode === 'trusted-only') {
       try { managed = options.isManaged(installation) } catch { managed = false }
@@ -323,7 +363,7 @@ export function createCliTerminalAccess(options: CliTerminalAccessOptions): CliT
   }
 
   async function sweepOnce(targets: readonly CliTerminalAccessTarget[]): Promise<void> {
-    if (swept || options.platform !== 'win32') return
+    if (swept || (options.platform !== 'win32' && options.platform !== 'darwin')) return
     swept = true
     await Promise.all(targets.map((target) => prepare(target, 'startup')))
   }

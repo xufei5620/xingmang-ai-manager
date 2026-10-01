@@ -190,6 +190,7 @@ import { appReleaseDownloadUrl } from './app-download-page'
 import { createServiceStatusMonitor, locateServiceStatusUrl, readServiceStatus } from './service-status'
 import { resolveWindowsCliExecutionModeDetailed } from './windows-elevation'
 import { ensureDirectoryOnWindowsUserPath } from './windows-cli-shell-access'
+import { ensureMacosShellProfile } from './macos-shell-profile'
 import {
   applyWindowTheme,
   buildMacApplicationMenuTemplate,
@@ -1191,6 +1192,9 @@ if (!hasSingleInstanceLock) {
       sweepInstallLeftovers,
       ...(process.platform === 'win32'
         ? { ensureWindowsUserPath: (directory: string) => ensureDirectoryOnWindowsUserPath(directory) }
+        : {}),
+      ...(process.platform === 'darwin'
+        ? { ensureMacosShellProfile: (reason: 'install' | 'startup') => ensureMacosShellProfile({ reason }) }
         : {}),
       projectInstructionsTemplatePath: resolveProjectInstructionsTemplatePath(app.getAppPath(), {
         packaged: app.isPackaged,

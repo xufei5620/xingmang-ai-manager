@@ -178,6 +178,7 @@ import {
   type WindowsProcessorArchitecture,
 } from './windows-processor'
 import { createCliTerminalAccess, type UserPathOutcome } from './windows-cli-shell-access'
+import type { MacosShellProfileOutcome } from './macos-shell-profile'
 import { createManagedNpmCache, ensureManagedNpmLayout, type ManagedNpmLayout } from './managed-cli'
 import { managedCliRoot, managedNativeProviderRoot, managedNpmPrefix } from './managed-cli-paths'
 import {
@@ -2248,6 +2249,11 @@ export interface SystemServiceOptions {
    */
   ensureWindowsUserPath?: (directory: string) => Promise<UserPathOutcome>
   /**
+   * Mac 上对应的那一步：往当前用户的 ~/.zprofile 补几行，让自己开的终端也能直接敲
+   * 工具名。缺省 = 不改（测试与旧行为），只有 main.ts 接真实现。
+   */
+  ensureMacosShellProfile?: (reason: 'install' | 'startup') => Promise<MacosShellProfileOutcome>
+  /**
    * 真正去删安装残留的那一步。缺省 = 不清（测试与旧行为），只有 main.ts 接真实现，
    * 免得单测装一次工具就去扫开发机的临时目录。
    */
@@ -3220,7 +3226,8 @@ export function createSystemService(
     )
     const cliResults: ToolStatus[] = cliProbes.map(buildCliToolStatusFromSettled)
     // 老版本装的工具旁边还留着 .ps1 启动文件；每次打开软件后的第一轮检测顺手清掉，
-    // 只动文件、不起 PowerShell，也不等它。
+    // 只动文件、不起 PowerShell，也不等它。Mac 上这一轮给以前装过、还没补终端设置的
+    // 电脑补一次（只补一次，见 macos-shell-profile.ts）。
     void cliTerminalAccess.sweepOnce(providerIds.flatMap((provider, index) => {
       const probe = cliProbes[index]
       return probe.status === 'fulfilled' && probe.value.installation
@@ -4550,6 +4557,7 @@ export function createSystemService(
     executionMode: windowsExecutionMode,
     isManaged: isManagedNpmInstallation,
     ensureUserPath: serviceOptions.ensureWindowsUserPath,
+    ensureShellProfile: serviceOptions.ensureMacosShellProfile,
     log: (level, event, message, detail) => runtimeLog?.log(level, 'install', event, message, detail),
     describeError: (error) => redactHomeDirectory(
       redactCommandText(error instanceof Error ? error.message : String(error)),

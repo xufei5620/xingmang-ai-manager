@@ -456,20 +456,68 @@ describe('createCliTerminalAccess', () => {
     expect(fs.existsSync(path.join(prefix, 'claude.ps1'))).toBe(true)
   })
 
-  it('does nothing on macOS', async () => {
+  it('touches no shim or PATH on macOS and checks the shell profile once per session instead', async () => {
     const prefix = npmPrefixWithShims('claude')
     const ensureUserPath = vi.fn(async () => 'added' as const)
+    const ensureShellProfile = vi.fn(async () => 'added')
     const access = createCliTerminalAccess({
       platform: 'darwin',
       executionMode: 'same-user',
       isManaged: () => false,
       ensureUserPath,
+      ensureShellProfile,
     })
 
     await access.sweepOnce([{ provider: 'claude', installation: npmInstall(prefix) }])
+    expect(ensureShellProfile).not.toHaveBeenCalled()
+
     await access.prepare({ provider: 'claude', installation: npmInstall(prefix) }, 'install')
+    await access.prepare({ provider: 'codex', installation: npmInstall(prefix) }, 'install')
 
     expect(fs.existsSync(path.join(prefix, 'claude.ps1'))).toBe(true)
     expect(ensureUserPath).not.toHaveBeenCalled()
+    expect(ensureShellProfile).toHaveBeenCalledTimes(1)
+    expect(ensureShellProfile).toHaveBeenCalledWith('install')
+  })
+
+  it('on macOS checks the shell profile at startup only for an install the app made', async () => {
+    const prefix = binDirectory()
+    const ensureShellProfile = vi.fn(async () => 'present')
+    const access = createCliTerminalAccess({
+      platform: 'darwin',
+      executionMode: 'same-user',
+      isManaged: (installation) => installation.npmPrefix === prefix,
+      ensureShellProfile,
+    })
+
+    await access.sweepOnce([
+      { provider: 'claude', installation: npmInstall('/opt/homebrew') },
+      { provider: 'codex', installation: npmInstall(prefix) },
+    ])
+
+    expect(ensureShellProfile).toHaveBeenCalledTimes(1)
+    expect(ensureShellProfile).toHaveBeenCalledWith('startup')
+  })
+
+  it('on macOS tries the shell profile again on the next install after a failure', async () => {
+    const ensureShellProfile = vi.fn()
+      .mockRejectedValueOnce(new Error('终端启动设置必须是单链接普通文件'))
+      .mockResolvedValueOnce('added')
+    const log = vi.fn()
+    const access = createCliTerminalAccess({
+      platform: 'darwin',
+      executionMode: 'same-user',
+      isManaged: () => true,
+      ensureShellProfile,
+      log,
+    })
+    const target = { provider: 'claude' as const, installation: npmInstall('/Users/ann/Library/Application Support/XingMangAI/Cli/npm') }
+
+    await expect(access.prepare(target, 'install')).resolves.toBeUndefined()
+    await vi.waitFor(() => expect(log).toHaveBeenCalledWith('warn', 'cli.shell-profile.failed', expect.any(String), expect.objectContaining({ error: '终端启动设置必须是单链接普通文件' })))
+    await access.prepare(target, 'install')
+
+    await vi.waitFor(() => expect(log).toHaveBeenCalledWith('info', 'cli.shell-profile.checked', expect.any(String), expect.objectContaining({ outcome: 'added' })))
+    expect(ensureShellProfile).toHaveBeenCalledTimes(2)
   })
 })
