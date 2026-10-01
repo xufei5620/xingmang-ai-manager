@@ -95,7 +95,7 @@ describe('StartupNotices', () => {
 
   it('counts the maintenance notice against the two visible cards', () => {
     const markup = renderToStaticMarkup(<StartupNotices notices={[startupCheckFailure('update', 'A'), vaultRecoveredNotice()]}
-      leading={<div data-testid="maintenance" />} onDismiss={() => undefined} onOpen={() => undefined} />)
+      leading={[<div key="maintenance" data-testid="maintenance" />]} onDismiss={() => undefined} onOpen={() => undefined} />)
     expect(markup).toContain('data-testid="maintenance"')
     expect(markup).toContain('startup-notice-vault-recovered')
     expect(markup).not.toContain('startup-notice-update"')
@@ -118,5 +118,19 @@ describe('StartupNotices', () => {
       displayCompatNotice({ displayCompat: 'auto' })!,
     ])
     expect(ordered.map((notice) => notice.id)).toEqual(['crash-reporting', 'display-compat', 'vault-recovered', 'update', 'diagnostics', 'updated'])
+  })
+
+  it('keeps both pinned cards visible and folds every startup notice when they fill the corner', () => {
+    const markup = renderToStaticMarkup(<StartupNotices notices={[vaultRecoveredNotice()]}
+      leading={[<div key="launch" data-testid="launch-install" />, <div key="maintenance" data-testid="maintenance" />]}
+      onDismiss={() => undefined} onOpen={() => undefined} />)
+    expect(markup).toContain('data-testid="launch-install"')
+    expect(markup).toContain('data-testid="maintenance"')
+    expect(markup).not.toContain('startup-notice-vault-recovered')
+    expect(markup).toContain('还有 1 条提示')
+  })
+
+  it('renders nothing when there are no notices and no pinned cards', () => {
+    expect(renderToStaticMarkup(<StartupNotices notices={[]} leading={[]} onDismiss={() => undefined} onOpen={() => undefined} />)).toBe('')
   })
 })

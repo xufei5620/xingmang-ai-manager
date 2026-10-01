@@ -1388,10 +1388,10 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       openDownloadPage: () => void perform('打开下载页', () => app.openExternal(appReleaseDownloadUrl)), contactSupport: () => setHelp(true),
     }} />
     <StartupNotices notices={startupNotices} onDismiss={dismissStartupNotice}
-      leading={launchInstall || (maintenance && maintenanceKey !== dismissedMaintenance) ? <>
-        {launchInstall && <LaunchInstallNotice key={launchInstall.installAt} notice={launchInstall} />}
-        {maintenance && maintenanceKey !== dismissedMaintenance && <MaintenanceNotice maintenance={maintenance} onDismiss={() => setDismissedMaintenance(maintenanceKey)} />}
-      </> : undefined}
+      leading={[
+        ...(launchInstall ? [<LaunchInstallNotice key={`launch-install-${launchInstall.installAt}`} notice={launchInstall} />] : []),
+        ...(maintenance && maintenanceKey !== dismissedMaintenance ? [<MaintenanceNotice key="maintenance" maintenance={maintenance} onDismiss={() => setDismissedMaintenance(maintenanceKey)} />] : []),
+      ]}
       onOpen={(id, action) => {
         if ('supportFailure' in action) {
           // 复制上了才收起卡片；没复制上就打开帮助框，那里的文字能手动选中复制。

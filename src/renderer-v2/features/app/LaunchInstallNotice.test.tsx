@@ -26,7 +26,7 @@ describe('LaunchInstallNotice', () => {
 
   it('renders the same wording as the system notification in the startup corner, without a dismiss button', () => {
     const markup = renderToStaticMarkup(<StartupNotices notices={[]} onDismiss={() => undefined} onOpen={() => undefined}
-      leading={<LaunchInstallNotice notice={notice} now={() => 5_000} />} />)
+      leading={[<LaunchInstallNotice key="launch" notice={notice} now={() => 5_000} />]} />)
     expect(markup).toContain('data-testid="startup-notices"')
     expect(markup).toContain('data-testid="launch-install-notice"')
     expect(markup).toContain('星芒AI马上更新')

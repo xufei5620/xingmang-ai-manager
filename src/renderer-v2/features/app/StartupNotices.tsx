@@ -43,19 +43,23 @@ export function StartupNotices({ notices, onDismiss, onOpen, leading }: {
   notices: readonly StartupNotice[]
   onDismiss(id: StartupCheckId): void
   onOpen(id: StartupCheckId, action: StartupNoticeAction): void
-  /** 排在最前的一条（维护提示）：它和启动检查一样不该挡路，所以共用这个角落。 */
-  leading?: ReactNode
+  /**
+   * 排在最前、始终摊开的几张（开机安装倒数、维护提示）：它们和启动检查一样不该挡路，
+   * 所以共用这个角落；倒数卡关不掉也不能被折起来，所以不参与折叠，只按实际张数占位。
+   */
+  leading?: readonly ReactNode[]
 }) {
   const [expanded, setExpanded] = useState(false)
-  if (!notices.length && !leading) return null
+  const pinned = leading ?? []
+  if (!notices.length && !pinned.length) return null
   const ordered = orderStartupNotices(notices)
-  // 维护提示也占一个位置：它和卡片挤的是同一块屏幕。
-  const room = Math.max(0, STARTUP_NOTICE_VISIBLE_LIMIT - (leading ? 1 : 0))
+  // 最前面那几张也各占一个位置：它们和卡片挤的是同一块屏幕。
+  const room = Math.max(0, STARTUP_NOTICE_VISIBLE_LIMIT - pinned.length)
   const hidden = Math.max(0, ordered.length - room)
   const shown = expanded || hidden === 0 ? ordered : ordered.slice(0, room)
   return <div className="v2-startup-notices" data-testid="startup-notices">
     <div className="v2-startup-notices-list" data-testid="startup-notices-list">
-      {leading}
+      {pinned}
       {shown.map((notice) => {
         const action = notice.action
         const secondary = notice.secondaryAction
