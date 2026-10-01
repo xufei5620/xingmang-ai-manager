@@ -278,6 +278,23 @@ Codex 那时 `recommended` 是 `null`，也就是那两天点过「更新」的�
   2026-09-24 补测：CC Switch 另写的 `ANTHROPIC_DEFAULT_FABLE_MODEL` 让 `--model fable` 直接请求它指定的
   别家型号名；`CLAUDE_CODE_SUBAGENT_MODEL` 在二进制里有读取点、指定子任务型号，这一项没单独跑。两项已并进收起清单。
 
+### 老客户的配置怎么跟上这张表
+
+这张表里的项只在「保存配置」那几条路上落盘（保存、改用当前账号、重新写入 Key、第一次登录），
+开机恢复账号只核对连没连上、一个字不写。所以 `config-files.ts` 有一个整数
+`relayTemplateRevision`，它记在工具配置来源记录（`tool-config-ownership.ts` 的 `templateRevision`）里：
+
+- 每次完整保存都记下当前版本号。
+- 开机恢复账号后，渲染层调 `config:fill-template-defaults`：对来源确认是当前账号、版本号落后的配置，
+  由 `fillRelayTemplateDefaults` **只补缺省的键**（用户写过的值哪怕是 `false` 也不动，不碰 Key、
+  地址、型号、钩子、状态行），补之前在「备份」页留一份整套备份，写入走两阶段 + `.bak`；工具开着或
+  看不出开没开的这次跳过；失败只记日志、版本号不前进。首页角落说一次补了哪几个工具。
+- 官方账号、手填、来源没确认、被改动过的配置一律不碰。
+
+**规矩：往 `fillCodex/Claude/Gemini/GrokRelayTemplateDefaults` 里加了新的一项，就把
+`relayTemplateRevision` 加一**，否则老客户拿不到。只在保存路径里加、不进补缺清单的项（比如跟着
+Key 走的型号菜单）不用抬。
+
 ## 站点维度
 
 `VerifiedCliRelease.verifiedSites` 与 `BlockedCliVersionRange.sites` 记录条目对应哪些中转站点（`relay-sites.ts` 的 `RelaySite.id`）。

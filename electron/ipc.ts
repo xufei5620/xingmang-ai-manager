@@ -147,6 +147,7 @@ import type {
   RendererErrorPayload,
   RendererLogLevel,
   ToolModelCheck,
+  ToolTemplateFillResult,
   WindowCapabilities,
   AppUninstallRequest,
   AppUninstallResult,
@@ -1341,6 +1342,7 @@ const ipcOperationLabels: Readonly<Record<string, string>> = {
   'desktop:codex-status': 'Codex 桌面端运行状态检测',
   'tools:inspect-running': '换账号后检查哪些工具还开着',
   'tools:check-models': '打开工具前核对当前账号能用的模型',
+  'config:fill-template-defaults': '开机给工具配置补齐新版设置',
   'desktop:codex-locale-status': 'Codex Desktop 中文资源检测',
   'desktop:codex-permissions-status': 'Codex Desktop 工作区权限检测',
   'desktop:trust-workspace': 'Codex Desktop 工作区信任设置',
@@ -2167,6 +2169,11 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     if (!isProviderId(provider)) throw new Error('未知的 CLI 类型')
     if (!service.checkToolModels) return { status: 'skipped' }
     return service.checkToolModels(provider)
+  })
+  registerTrustedHandler('config:fill-template-defaults', async (): Promise<ToolTemplateFillResult> => {
+    if (!service.fillToolTemplateDefaults) return { filled: [] }
+    const context = await readBackupAccountContext()
+    return service.fillToolTemplateDefaults((provider) => { options.backupStore.create(provider, 'pre-save', undefined, context) })
   })
   function documentsDirectory(): string | null {
     if (!options.documentsDirectory) return path.join(os.homedir(), 'Documents')

@@ -90,6 +90,8 @@ export type { NetworkSettingsKind, ProxyBypassOutcome } from './proxy-bypass'
 export type { RunningToolsReport } from './running-tools'
 import type { ToolModelCheck } from './tool-model-check'
 export type { ToolModelCheck } from './tool-model-check'
+import type { ToolTemplateFillResult } from './tool-config-ownership'
+export type { ToolTemplateFillResult } from './tool-config-ownership'
 import type {
   ConnectionCheckLayer as MainConnectionCheckLayer,
   ConnectionCheckResult as MainConnectionCheckResult,
@@ -771,6 +773,11 @@ export interface XingmangInvokeContract {
    * 悄悄刷新；默认模型用不了时只报回来，换不换由用户点。核对不成一律 skipped，不抛错。
    */
   checkToolModels: IpcInvokeDefinition<'tools:check-models', [provider: ProviderId], ToolModelCheck>
+  /**
+   * 开机恢复账号后，给当前账号写过、但模板版本落后的工具配置补缺省项（用户写过的值不动）。
+   * 失败只进日志，不抛错；返回真的改了文件的工具，首页据此说一次。
+   */
+  fillToolTemplateDefaults: IpcInvokeDefinition<'config:fill-template-defaults', [], ToolTemplateFillResult>
   listModels: IpcInvokeDefinition<'models:list', [apiKey: string], string[]>
   listConfiguredModels: IpcInvokeDefinition<'models:list-configured', [provider: ProviderId], string[]>
   /** options 省略 = 弹目录选择器；createStarter = 不弹选择器，直接替用户新建一个项目文件夹。 */
@@ -1265,6 +1272,7 @@ export const ipcInvokeChannels = {
   repairCliHooks: 'config:repair-cli-hooks',
   inspectRunningTools: 'tools:inspect-running',
   checkToolModels: 'tools:check-models',
+  fillToolTemplateDefaults: 'config:fill-template-defaults',
   chooseWorkspace: 'workspace:choose',
   getRepositoryContext: 'repository:get-context',
   installNodeRuntime: 'runtime:install-node',

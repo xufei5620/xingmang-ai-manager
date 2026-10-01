@@ -2564,6 +2564,169 @@ export function saveProviderConfig(
   return executeFilePlans(plans, hooks, providerRoot)
 }
 
+// 模板改进只在「保存配置」那几条路上落盘，而老客户开机走的是恢复账号、一个字不写，
+// 于是 0.2.7 之后加进模板的那些项（Codex 关统计、Windows 沙箱不弹管理员框、Claude Code
+// 读网页不问官方、Gemini 不自己升级、Grok 出图走当前账号……）他们一项都没拿到。
+//
+// 这个号记在工具配置来源记录里（tool-config-ownership.ts）：记录落后于它、来源又确认是
+// 当前账号的配置，开机时由 fillRelayTemplateDefaults 补一次缺省项。往下面那几个
+// fill*RelayTemplateDefaults 里加了新的一项，就把这个号加一，否则老客户拿不到。
+export const relayTemplateRevision = 1
+
+/** 键缺省时建一张表；已经是表就用它；是别的东西（用户写坏了或另有用途）返回 null，一字不动。 */
+function fillableRecord(parent: Record<string, unknown>, key: string): Record<string, unknown> | null {
+  if (parent[key] === undefined) parent[key] = {}
+  const current = parent[key]
+  return isJsonRecord(current) ? current : null
+}
+
+function fillCodexRelayTemplateDefaults(parsed: Record<string, unknown>, platform: NodeJS.Platform): void {
+  if (parsed.check_for_update_on_startup === undefined) parsed.check_for_update_on_startup = false
+  if (parsed.approval_policy === undefined) parsed.approval_policy = 'on-request'
+  if (parsed.sandbox_mode === undefined) parsed.sandbox_mode = 'workspace-write'
+  if (parsed.analytics === undefined || isJsonRecord(parsed.analytics)) disableCodexRelayAnalytics(parsed)
+  dropDeprecatedCodexConfigKeys(parsed)
+  applyCodexRelayMachineDefaults(parsed, platform)
+}
+
+function fillClaudeRelayTemplateDefaults(parsed: Record<string, unknown>): void {
+  const env = fillableRecord(parsed, 'env')
+  if (env && env.DISABLE_AUTOUPDATER === undefined) disableClaudeSelfUpdate(env)
+  const permissions = fillableRecord(parsed, 'permissions')
+  if (permissions && (permissions.deny === undefined || Array.isArray(permissions.deny))) denyClaudeRelayTool(permissions)
+  if (parsed.skipWebFetchPreflight === undefined) skipClaudeWebFetchPreflight(parsed)
+  ensureClaudeResponseLanguage(parsed)
+  extendClaudeSessionRetention(parsed)
+}
+
+function fillGeminiRelayTemplateDefaults(parsed: Record<string, unknown>, model: string): void {
+  const general = fillableRecord(parsed, 'general')
+  if (general) {
+    if (general.enableAutoUpdate === undefined) general.enableAutoUpdate = false
+    if (general.enableAutoUpdateNotification === undefined) general.enableAutoUpdateNotification = false
+    extendGeminiSessionRetention(parsed)
+  }
+  if (parsed.privacy === undefined || isJsonRecord(parsed.privacy)) disableGeminiRelayUsageStatistics(parsed)
+  // 已经有本软件写的那种改写就整段不动：那一组按写入时的型号生成，型号和名单都由保存配置
+  // 那条路负责刷新，这里只给从来没有过这一段的老配置补上。
+  const modelConfigs = parsed.modelConfigs
+  if (!model || (modelConfigs !== undefined && !isJsonRecord(modelConfigs))) return
+  const overrides = isJsonRecord(modelConfigs) ? modelConfigs.customOverrides : undefined
+  if (overrides !== undefined && !Array.isArray(overrides)) return
+  if (Array.isArray(overrides) && overrides.some(isGeminiRelayModelOverride)) return
+  applyGeminiRelayModelOverrides(parsed, model)
+}
+
+function fillGrokRelayTemplateDefaults(parsed: Record<string, unknown>, relayBaseUrl: string, relayModelName: string): void {
+  const cli = fillableRecord(parsed, 'cli')
+  if (cli && cli.auto_update === undefined) disableGrokSelfUpdate(parsed)
+  const endpoints = fillableRecord(parsed, 'endpoints')
+  if (endpoints && endpoints.xai_api_base_url === undefined) pointGrokXaiApiAtRelay(parsed, relayBaseUrl)
+  if (isJsonRecord(parsed.models)) pinGrokModelsToRelay(parsed, relayModelName)
+}
+
+/** 空表是 fillableRecord 为了看一眼建出来的，没往里补东西就拿掉，免得凭空多一张表。 */
+function dropEmptyCreatedTables(parsed: Record<string, unknown>, before: Record<string, unknown>): void {
+  for (const [key, value] of Object.entries(parsed)) {
+    if (before[key] === undefined && isJsonRecord(value) && Object.keys(value).length === 0) delete parsed[key]
+  }
+}
+
+function relayTemplateDefaultsPlans(
+  provider: ProviderId,
+  roots: ProviderConfigRoots,
+  siteBaseUrls: Record<ProviderId, string>,
+  platform: NodeJS.Platform,
+): FilePlan[] {
+  const paths = providerConfigPaths(provider, roots)
+  switch (provider) {
+    case 'codex': {
+      const snapshots = codexConfigSnapshotPaths(roots)
+      const text = requireConfigText(snapshots.active, '现有 Codex config.toml')
+      if (text === null) return []
+      const parsed = requireToml(snapshots.active, '现有 Codex config.toml')
+      if (classifyCodexConfigProfile(parsed, siteBaseUrls.codex) !== 'relay') return []
+      const before = cloneTomlRecord(parsed)
+      fillCodexRelayTemplateDefaults(parsed, platform)
+      dropEmptyCreatedTables(parsed, before)
+      if (JSON.stringify(parsed) === JSON.stringify(before)) return []
+      const content = tomlContent(parsed)
+      return [{ path: snapshots.relay, content }, { path: snapshots.active, content }]
+    }
+    case 'claude': {
+      if (requireConfigText(paths[0], '现有 Claude settings.json') === null) return []
+      const parsed = requireJson(paths[0], '现有 Claude settings.json')
+      if (normalizeUrl(nestedString(parsed, ['env', 'ANTHROPIC_BASE_URL'])) !== normalizeUrl(siteBaseUrls.claude)) return []
+      const before = structuredClone(parsed)
+      fillClaudeRelayTemplateDefaults(parsed)
+      dropEmptyCreatedTables(parsed, before)
+      if (JSON.stringify(parsed) === JSON.stringify(before)) return []
+      return [{ path: paths[0], content: jsonContent(parsed) }]
+    }
+    case 'gemini': {
+      const { parsed, original } = requireGeminiJson(paths[0], '现有 Gemini settings.json')
+      if (original === null) return []
+      if (nestedString(parsed, ['security', 'auth', 'selectedType']) !== 'gemini-api-key') return []
+      if (normalizeUrl(readEnvValue(paths[1], 'GOOGLE_GEMINI_BASE_URL')) !== normalizeUrl(siteBaseUrls.gemini)) return []
+      const before = structuredClone(parsed)
+      fillGeminiRelayTemplateDefaults(parsed, geminiCliCompatibleModel(readEnvValue(paths[1], 'GEMINI_MODEL')))
+      dropEmptyCreatedTables(parsed, before)
+      if (JSON.stringify(parsed) === JSON.stringify(before)) return []
+      return [{ path: paths[0], content: geminiJsonContent(original, parsed) }]
+    }
+    case 'grok': {
+      if (requireConfigText(paths[0], '现有 Grok config.toml') === null) return []
+      const parsed = requireToml(paths[0], '现有 Grok config.toml')
+      const defaultModel = nestedString(parsed, ['models', 'default'])
+      const tables = parsed.model
+      const table = defaultModel && isJsonRecord(tables) ? tables[defaultModel] : null
+      const tableBaseUrl = isJsonRecord(table) && typeof table.base_url === 'string' ? table.base_url : ''
+      if (!tableBaseUrl || normalizeUrl(tableBaseUrl) !== normalizeUrl(siteBaseUrls.grok)) return []
+      const before = cloneTomlRecord(parsed)
+      fillGrokRelayTemplateDefaults(parsed, siteBaseUrls.grok, defaultModel)
+      dropEmptyCreatedTables(parsed, before)
+      if (JSON.stringify(parsed) === JSON.stringify(before)) return []
+      return [{ path: paths[0], content: tomlContent(parsed) }]
+    }
+  }
+}
+
+/** 这份配置还缺不缺模板里的项。只读；不是指向当前账号服务的配置一律算「不缺」。 */
+export function relayTemplateDefaultsPending(
+  provider: ProviderId,
+  rootsInput: ProviderConfigRoots,
+  siteBaseUrlsInput: Record<ProviderId, string>,
+  platform: NodeJS.Platform = process.platform,
+): boolean {
+  const roots = normalizeProviderConfigRoots(rootsInput)
+  const providerRoot = providerConfigRoot(provider, roots)
+  for (const filePath of providerConfigPaths(provider, roots)) assertSafeConfigPath(filePath, providerRoot, 'file')
+  return relayTemplateDefaultsPlans(provider, roots, siteBaseUrlsInput, platform).length > 0
+}
+
+/**
+ * 给一份「当前账号的」配置只补模板里缺的那几项：键缺省才写，用户写过的值（哪怕写的是
+ * false）一律不动，Key、服务地址、型号、钩子、状态行这些也都不碰。配置不是指向当前
+ * 账号服务的（切回了官方、换了别家）就什么都不做。写入与保存配置同一套两阶段提交、
+ * 留 .bak、失败回滚（I9）。返回 null = 这份配置已经齐了，没写任何文件。
+ */
+export function fillRelayTemplateDefaults(
+  provider: ProviderId,
+  rootsInput: ProviderConfigRoots,
+  siteBaseUrlsInput: Record<ProviderId, string>,
+  hooks: NativeConfigWriteHooks = {},
+  platform: NodeJS.Platform = process.platform,
+): NativeConfigSaveResult | null {
+  const roots = normalizeProviderConfigRoots(rootsInput)
+  const providerRoot = providerConfigRoot(provider, roots)
+  for (const filePath of providerConfigPaths(provider, roots)) assertSafeConfigPath(filePath, providerRoot, 'file')
+  const plans = relayTemplateDefaultsPlans(provider, roots, siteBaseUrlsInput, platform)
+  if (plans.length === 0) return null
+  assertNoReparseComponents(path.dirname(providerRoot), 'Provider 配置根目录')
+  ensureSafeDataDirectory(providerRoot, 'Provider 配置根目录')
+  return executeFilePlans(plans, hooks, providerRoot)
+}
+
 export function inspectCodexWorkspacePermissions(
   rootsInput: ProviderConfigRoots = defaultProviderConfigRoots(),
   workspace: string,

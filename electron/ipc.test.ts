@@ -1761,6 +1761,29 @@ describe('registerIpcHandlers', () => {
     await expect(handler(trustedEvent(), '../codex')).rejects.toThrow('未知的 CLI 类型')
   })
 
+  it('backs up each tool before filling template defaults and reports what was filled', async () => {
+    const service = serviceStub()
+    service.fillToolTemplateDefaults = vi.fn(async (backup?: (provider: 'codex') => void) => {
+      backup?.('codex')
+      return { filled: ['codex' as const] }
+    })
+    const create = vi.fn(() => ({ id: 'backup-1' }))
+    register(service, undefined, undefined, undefined, undefined, undefined, {}, {
+      backupStore: { list: vi.fn(), create, inspect: vi.fn(), restore: vi.fn() } as never,
+    })
+    const handler = electronMocks.handlers.get(ipcInvokeChannels.fillToolTemplateDefaults)!
+
+    await expect(handler(trustedEvent())).resolves.toEqual({ filled: ['codex'] })
+    expect(create).toHaveBeenCalledWith('codex', 'pre-save', undefined, null)
+  })
+
+  it('fills nothing when the service cannot fill template defaults', async () => {
+    register()
+    const handler = electronMocks.handlers.get(ipcInvokeChannels.fillToolTemplateDefaults)!
+
+    await expect(handler(trustedEvent())).resolves.toEqual({ filled: [] })
+  })
+
   it('skips the model check when the service cannot do it', async () => {
     register()
     const handler = electronMocks.handlers.get(ipcInvokeChannels.checkToolModels)!
