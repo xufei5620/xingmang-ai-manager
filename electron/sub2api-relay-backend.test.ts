@@ -506,7 +506,7 @@ describe('Sub2API RelayBackend adapter', () => {
     await f.client.login(loginInput)
     const usage = await f.client.getUsage({ page: 2, pageSize: 10, modelName: 'gpt-5.6-sol' })
     expect(usage).toMatchObject({ page: 2, total: 12, records: [{ quota: 0.12, modelName: 'gpt-5.6-sol', group: 'Codex_pro' }] })
-    expect(await f.client.getTopupInfo()).toMatchObject({ minTopup: 5, paymentMethods: [{ type: 'alipay', name: '支付宝' }] })
+    expect(await f.client.getTopupInfo()).toMatchObject({ minTopup: 5, paymentMethods: [{ type: 'alipay', name: '支付宝' }], creditMultiplier: 1 })
     expect(await f.client.listTopupOrders()).toMatchObject({ orders: [{ tradeNo: 'trade-3', money: 70, status: 'success' }] })
     expect(await f.client.listSubscriptionPlans()).toMatchObject([{ title: '月度订阅', durationValue: 30 }])
     expect(await f.client.getSubscriptionSelf()).toMatchObject({ activeSubscriptions: [{ id: 5, amountUsed: null,
@@ -552,6 +552,7 @@ describe('Sub2API RelayBackend adapter', () => {
     }
     await f.client.login(loginInput)
     await expect(f.client.quoteTopupAmount({ amount: 10 })).resolves.toEqual({ amount: 10, payableAmount: 10.2 })
+    expect((await f.client.getTopupInfo()).creditMultiplier).toBe(1.5)
     await expect(f.client.createTopupPayment({ amount: 10, paymentMethod: 'alipay' })).resolves.toMatchObject({ kind: 'qrcode', code: 'weixin://wxpay/bizpayurl?pr=test', tradeNo: 'trade-qr', amount: 10.2 })
     expect(f.calls.filter(({ url, init }) => url.pathname.endsWith('/payment/orders') && init.method === 'POST').map(({ body }) => body))
       .toEqual([{ amount: 10, payment_type: 'alipay', order_type: 'balance', is_mobile: false }])
