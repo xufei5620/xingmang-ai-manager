@@ -49,6 +49,17 @@ describe('requiredUpdateGate', () => {
     expect(requiredUpdateGate(snapshot({ phase: 'downloaded', failedStep: 'install', error: { code: 'X', message: '没能启动安装' } }), true))
       .toMatchObject({ action: 'install', label: '重试', failure: '没能启动安装' })
   })
+
+  it('explains a disk shortfall instead of offering a button that silently does nothing', () => {
+    // 主进程量盘不够时不抛错，阶段停在 available：门要带上缺口，按钮换成「再试一次」。
+    const diskShortfall = { neededBytes: 1800 * 1024 ** 2, freeBytes: 1200 * 1024 ** 2 }
+    expect(requiredUpdateGate(snapshot({ diskShortfall })))
+      .toMatchObject({ action: 'download', label: '空间够了，再试一次', diskShortfall, failure: null })
+    expect(requiredUpdateGate(snapshot())).toMatchObject({ label: '立即更新', diskShortfall: null })
+    // 清出空间、开始下载后，缺口随阶段一起清掉，门回到正常的进度条。
+    expect(requiredUpdateGate(snapshot({ phase: 'downloading', diskShortfall: null })))
+      .toMatchObject({ action: null, diskShortfall: null })
+  })
 })
 
 describe('requiredUpdateFollowUp', () => {
@@ -58,5 +69,9 @@ describe('requiredUpdateFollowUp', () => {
     expect(requiredUpdateFollowUp(snapshot({ phase: 'downloaded', error: { code: 'X', message: 'x' } }))).toBeNull()
     expect(requiredUpdateFollowUp(snapshot({ phase: 'downloading' }))).toBeNull()
     expect(requiredUpdateFollowUp(null)).toBeNull()
+  })
+
+  it('does not keep re-measuring the disk on its own after a shortfall', () => {
+    expect(requiredUpdateFollowUp(snapshot({ diskShortfall: { neededBytes: 2, freeBytes: 1 } }))).toBeNull()
   })
 })

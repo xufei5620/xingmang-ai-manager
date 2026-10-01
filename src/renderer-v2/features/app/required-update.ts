@@ -1,4 +1,4 @@
-import type { UpdateSnapshot } from '../../../../electron/ipc-contract'
+import type { UpdateDiskShortfall, UpdateSnapshot } from '../../../../electron/ipc-contract'
 
 /** 「必须更新」那层提示上，主按钮点下去要做的事。 */
 export type RequiredUpdateAction = 'check' | 'download' | 'install'
@@ -13,9 +13,14 @@ export interface RequiredUpdateGateState {
   percent: number | null
   /** 上一步失败时给用户看的那句话；这时才出现「打开下载页」。 */
   failure: string | null
+  /**
+   * 量过磁盘、空间不够，更新器这一轮没下载（它不报错，只在快照上挂这个缺口）。门里
+   * 要说清为什么没动、清出空间再点；没有缺口时为 null。
+   */
+  diskShortfall: UpdateDiskShortfall | null
 }
 
-type GateSnapshot = Pick<UpdateSnapshot, 'phase' | 'currentVersion' | 'availableVersion' | 'error' | 'failedStep' | 'development' | 'rollback' | 'progress' | 'requiredVersion'>
+type GateSnapshot = Pick<UpdateSnapshot, 'phase' | 'currentVersion' | 'availableVersion' | 'error' | 'failedStep' | 'development' | 'rollback' | 'progress' | 'requiredVersion' | 'diskShortfall'>
 
 /**
  * 状态文件说本机低于最低版本时，那层关不掉的提示该长什么样；不该拦时返回 null。
@@ -35,6 +40,7 @@ export function requiredUpdateGate(update: GateSnapshot | null | undefined, inst
     availableVersion: update.availableVersion ?? null,
     percent: null,
     failure: null,
+    diskShortfall: null,
   }
   switch (update.phase) {
     case 'checking':
@@ -42,6 +48,10 @@ export function requiredUpdateGate(update: GateSnapshot | null | undefined, inst
     case 'idle':
       return { ...base, action: 'check', label: '立即更新' }
     case 'available':
+      // 主进程量盘发现不够时直接返回、阶段仍是 available，按钮照旧写「立即更新」的话，
+      // 点下去什么都不发生，客户会被锁在门外还不知道为什么。
+      if (update.diskShortfall) return { ...base, action: 'download', label: '空间够了，再试一次', diskShortfall: update.diskShortfall }
+      return { ...base, action: 'download', label: '立即更新' }
     case 'cancelled':
       return { ...base, action: 'download', label: '立即更新' }
     case 'downloading': {
@@ -63,7 +73,8 @@ export function requiredUpdateGate(update: GateSnapshot | null | undefined, inst
 /** 主按钮点过之后，状态走到下一步要不要替用户接着做（下载完接着装）。 */
 export function requiredUpdateFollowUp(update: GateSnapshot | null | undefined): Exclude<RequiredUpdateAction, 'check'> | null {
   if (!update || update.error) return null
-  if (update.phase === 'available') return 'download'
+  // 空间不够时不替他接着点：再量一次结果多半一样，等他清出空间自己点「再试一次」。
+  if (update.phase === 'available') return update.diskShortfall ? null : 'download'
   if (update.phase === 'downloaded') return 'install'
   return null
 }
