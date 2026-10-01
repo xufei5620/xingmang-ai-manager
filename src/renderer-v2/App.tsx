@@ -38,7 +38,7 @@ import type { ToolInstallOutcome } from './pages-maintenance'
 import type { ToolConfigConfirmation } from './pages-account'
 import { BalanceTierProvider, Button, Confirm, Dialog, Notice, Switch, ToastProvider, useToast, useReducedMotion } from './ui'
 import { bridge as getBridge } from './bridge'
-import { errorMessage, operationFailureFrom, pendingBusinessOperations } from './business-common'
+import { errorMessage, operationFailureFrom, pendingBusinessOperations, userFacingErrorMessage } from './business-common'
 import { SavedAccounts } from './SavedAccounts'
 import { accountSwitchNeedsAttention } from './account-switch-sync'
 import { accountSources } from './features/auth/state'
@@ -53,6 +53,7 @@ import { OperationErrorDialog, supportFailureOf, type OperationFailure } from '.
 import { NodeReplaceDialog } from './features/tools/NodeReplaceDialog'
 import { canReplaceNode, describeNodeReplaceOutcome } from './features/tools/node-replace'
 import { StartupNotices } from './features/app/StartupNotices'
+import { redownloadUpdate, requestUpdateInstallConfirm, retryFailedUpdateStep, updateFailureTone } from './features/app/update-retry'
 import { RequiredUpdateGate } from './features/app/RequiredUpdateGate'
 import { MaintenanceNotice, maintenanceNoticeKey } from './features/app/MaintenanceNotice'
 import { crashReportingNotice, displayCompatNotice, displayRelaunchNotice, settingsSaveNotice, startupCheckFailure, startupCheckLogContext, startupDiagnosticsIssues, unexpectedExitNotice, updatedNotice, vaultRecoveredNotice, withStartupNotice, withoutStartupNotice, type StartupCheckId, type StartupNotice } from './features/app/startup-notice'
@@ -171,6 +172,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   const [chineseDialog, setChineseDialog] = useState(false)
   const chineseDecline = useRef<HTMLButtonElement>(null)
   const [dismissedUpdate, setDismissedUpdate] = useState('')
+  const [updateRetrying, setUpdateRetrying] = useState(false)
   const [operationError, setOperationError] = useState<OperationFailure | null>(null)
   // 帮助框「最近一次出错」：错误框关掉以后客户才想起来找客服，那时错误已经不在屏上了。
   const [lastFailure, setLastFailure] = useState<SupportFailure | null>(null)
@@ -1242,6 +1244,17 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   const autoUpdateToggle = Boolean(update?.autoUpdateSupported && settings && !update.error && !update.rollback)
   const autoUpdateOn = autoUpdateToggle && settings?.autoUpdate !== false
   const updateDiskText = updateDiskShortfallText(update, autoUpdateOn)
+  // 气泡上的重试与更新页的重试是同一套（update-retry.ts）：检查失败重新查，下载失败
+  // 重新查再下，安装失败跳到更新页的「重启并安装」确认框。
+  const runUpdateRetry = (work: () => Promise<UpdateSnapshot>) => {
+    setUpdateRetrying(true)
+    void perform('重试更新', async () => setUpdate(await work())).finally(() => setUpdateRetrying(false))
+  }
+  const retryUpdate = () => retryFailedUpdateStep(update?.failedStep, {
+    check: () => runUpdateRetry(() => native.checkForUpdates()),
+    redownload: () => runUpdateRetry(() => redownloadUpdate(native)),
+    confirmInstall: () => { navigate('updates'); requestUpdateInstallConfirm() },
+  })
   const accountBootstrapBusy = Boolean(accountBootstrap?.scope === scope && !accountBootstrap.result && !accountBootstrap.error)
   // Account switches can happen while the chat route is active. The retained
   // chat host deliberately keeps its previous scope in state, but rendering
@@ -1272,9 +1285,10 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
           banner={<><RestartReminder restart={toolsApi.restartWindows} />{session.authenticated && <AnnouncementCenter key={scope} scope={scope} read={app.announcement} refreshTick={balanceState.updatedAt} markRemoteRead={app.markAnnouncementRead} syncLocalReads={app.syncLocalNoticeReads} open={announcementOpen} onClose={() => setAnnouncementOpen(false)} onOpen={() => setAnnouncementOpen(true)} onUnread={setUnread} openExternal={app.openExternal} noticeUrl={relaySite.websiteUrl} notify={notifyAnnouncement}
             promoVisible={page === 'home'} onTopUp={accountSupports(session, 'supportsBilling') ? (amount) => navigate('account', 'recharge', amount) : undefined}
             readTopupOffers={accountSupports(session, 'supportsBilling') ? () => native.getAccountTopupInfo() : undefined} />}</>}
-          notification={showUpdate && <Notice tone={update.error ? 'bad' : updateDiskText ? 'warn' : 'accent'} title={update.error ? updateFailureLabel(update.failedStep).title : updateBubbleTitle(update)}
-            body={update.error?.message ?? updateDiskText ?? autoUpdateBubbleBody(update.phase, autoUpdateOn)} progress={update.progress?.percent} onDismiss={() => setDismissedUpdate(updateKey)}
-            actions={<>{updateDiskText && <Button size="sm" onClick={() => navigate('tutorial', updatesTutorialTopic)}>怎么清理</Button>}<Button size="sm" onClick={() => navigate('updates')}>查看更新</Button>
+          notification={showUpdate && <Notice tone={update.error ? updateFailureTone(update) : updateDiskText ? 'warn' : 'accent'} title={update.error ? updateFailureLabel(update.failedStep).title : updateBubbleTitle(update)}
+            body={update.error ? userFacingErrorMessage(update.error) : updateDiskText ?? autoUpdateBubbleBody(update.phase, autoUpdateOn)} progress={update.progress?.percent} onDismiss={() => setDismissedUpdate(updateKey)}
+            actions={<>{update.error && <Button size="sm" variant="primary" testId="update-bubble-retry" loading={updateRetrying} onClick={retryUpdate}>{updateFailureLabel(update.failedStep).retry}</Button>}
+              {updateDiskText && <Button size="sm" onClick={() => navigate('tutorial', updatesTutorialTopic)}>怎么清理</Button>}<Button size="sm" onClick={() => navigate('updates')}>查看更新</Button>
               {autoUpdateToggle && <Switch testId="update-auto-toggle" label="自动更新" checked={autoUpdateOn} onChange={(autoUpdate) => void perform('保存自动更新', async () => setSettings(await app.savePreferences({ version: 2, autoUpdate })))} />}</>} />}
           adapter={{ navigate, searchTutorial, accountTabVisible: (tab) => !session.authenticated || visibleAccountTab(tab, session), refreshNetwork: () => { void networkLocation.refresh() }, openAccount: () => navigate('account'), switchAccount: () => setSwitcher(true), topUp: () => navigate('account', accountSupports(session, 'supportsBilling') ? 'recharge' : 'overview'), refreshBalance: () => { void balanceStore.refresh('manual') },
             redeemAccelerationCode: async (code) => {

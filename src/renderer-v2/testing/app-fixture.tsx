@@ -299,6 +299,7 @@ const methods = {
   // 在更新页上报错，后者只挂一条可关掉的提示。
   checkForUpdates: async () => {
     if (query.has('updateCheckFail')) throw new Error('更新服务器暂时连不上')
+    if (query.has('updateRetryAvailable')) return { phase: 'available' as const, currentVersion: '0.1.31', availableVersion: '0.1.32', releaseName: null, releaseNotesText: null, checkedAt: new Date().toISOString(), progress: null, error: null, development: true }
     return { phase: 'idle' as const, currentVersion: '0.1.31', availableVersion: null, releaseName: null, releaseNotesText: null, checkedAt: new Date().toISOString(), progress: null, error: null, development: true }
   },
   downloadUpdate: async () => ({ phase: 'downloading' as const, currentVersion: '0.1.31', availableVersion: '0.1.32', releaseName: null, releaseNotesText: null, checkedAt: new Date().toISOString(), progress: null, error: null, development: true }),

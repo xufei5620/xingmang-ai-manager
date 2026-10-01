@@ -95,6 +95,7 @@ import {
 } from './features/app/certificate-trust'
 import { diagnosticFolderTarget, diagnosticFolderUnavailableMessage } from './features/app/diagnostic-folder'
 import { takeSettingsGroup } from './features/app/settings-group-intent'
+import { redownloadUpdate, retryFailedUpdateStep, subscribeUpdateInstallConfirm, takeUpdateInstallConfirm } from './features/app/update-retry'
 import { diagnosticFixConfirm, diagnosticFixKind, diagnosticFixLabel, diagnosticFixLabels, diagnosticFixMessage } from './features/app/diagnostic-fix'
 import { parseImportedConversations } from './features/chat/storage'
 import type { ChatTransfer } from './features/chat/transfer'
@@ -1197,26 +1198,20 @@ export function UpdatesPage({
       '',
     )
   const diskShortfallText = updateDiskShortfallText(update, autoUpdateOn)
-  // A rejected package leaves the updater in the error phase, where downloadUpdate
-  // alone would fail: the retry has to re-check before it has anything to fetch.
   const redownload = () =>
     void operation.execute(
       'download',
-      async () => {
-        const checked = await api.checkForUpdates()
-        resource.setData(checked.phase === 'available' ? await api.downloadUpdate() : checked)
-      },
+      async () => resource.setData(await redownloadUpdate(api)),
       '',
     )
-  // 失败在哪一步，重试就从哪一步接着走：检查失败重新检查，安装失败直接回到那个
-  // 重启确认框（安装包已经下好并校验过，不必再下一遍）。
+  // 失败在哪一步，重试就从哪一步接着走；首页气泡走的是同一套（update-retry.ts）。
   const failure = updateFailureLabel(update?.failedStep)
   const releaseNotes = releaseNotesSection(update)
-  const retryFailedStep = () => {
-    if (update?.failedStep === 'check') { check(); return }
-    if (update?.failedStep === 'install') { setConfirm(true); return }
-    redownload()
-  }
+  const retryFailedStep = () => retryFailedUpdateStep(update?.failedStep, { check, redownload, confirmInstall: () => setConfirm(true) })
+  // 首页气泡上点了「重新安装」：跳过来直接弹确认框。
+  useEffect(() => subscribeUpdateInstallConfirm(() => {
+    if (takeUpdateInstallConfirm()) setConfirm(true)
+  }), [])
   const action =
     update?.phase === 'available' || update?.phase === 'cancelled' ? (
       <Button variant="primary" icon={Download} onClick={download}>

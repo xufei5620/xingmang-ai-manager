@@ -2153,6 +2153,47 @@ test('the updates page names the step that failed and offers that step again', a
   } finally { await page.close() }
 })
 
+// 首页气泡说「下载更新失败」却只给「查看更新」，客户得换页再找按钮。气泡上直接
+// 给那一步的重试，走的和更新页同一套：下载失败先重新查再下，安装失败落到更新页的
+// 重启确认框，检查失败重新查。
+test('the update failure bubble retries the failed step without a detour', async () => {
+  const page = await open('updateRetryAvailable=1')
+  try {
+    await page.getByTestId('page-home').waitFor()
+    const emit = (step, phase, code, message) => page.evaluate((value) => window.v2Test.emit('onUpdateState', {
+      phase: value.phase, currentVersion: '0.1.31', availableVersion: '0.1.32', releaseName: null, releaseNotesText: null,
+      checkedAt: new Date().toISOString(), progress: null, failedStep: value.step,
+      error: { code: value.code, message: value.message }, development: true,
+    }), { step, phase, code, message })
+    const calls = (method) => page.evaluate((name) => window.v2Test.calls.filter((entry) => entry.method === name).length, method)
+
+    await emit('download', 'error', 'ETIMEDOUT', '连接更新服务器超时，请检查网络后再试。')
+    const bubble = page.getByRole('alert').filter({ hasText: '下载更新失败' })
+    await bubble.waitFor()
+    await bubble.getByRole('button', { name: '重新下载', exact: true }).click()
+    await expect.poll(() => calls('downloadUpdate')).toBe(1)
+    assert.equal(await calls('checkForUpdates'), 1)
+
+    // 开机检查超时不算真的失败：用提醒色，说的是大白话，按钮是重新查。
+    await emit('check', 'error', 'STARTUP_UPDATE_TIMEOUT', '网络有点慢，这次没来得及查完有没有新版本。星芒会在后台接着查，不影响现在使用。')
+    const slow = page.locator('.xm-notice').filter({ hasText: '网络有点慢' })
+    await slow.waitFor()
+    assert.match(await slow.getAttribute('class'), /xm-tone-warn/)
+    assert.equal(await page.getByRole('alert').filter({ hasText: '网络有点慢' }).count(), 0)
+    await slow.getByRole('button', { name: '重试', exact: true }).click()
+    await expect.poll(() => calls('checkForUpdates')).toBe(2)
+    assert.equal(await calls('downloadUpdate'), 1)
+
+    await emit('install', 'downloaded', 'UPDATE_ERROR', '更新程序未能启动，已继续打开主程序；可在“检查更新”页重试安装')
+    const install = page.getByRole('alert').filter({ hasText: '安装更新失败' })
+    await install.getByRole('button', { name: '重新安装', exact: true }).click()
+    await page.getByTestId('page-updates').waitFor()
+    await page.getByRole('dialog', { name: '重启并安装更新？' }).waitFor()
+    assert.equal(await calls('installUpdate'), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
 // 磁盘快满时新版本先不下：更新页和首页气泡都说清差多少，「怎么清理」就地展开步骤，
 //「仍要下载」跳过这一次的空间预检。
 test('the updates page explains a full disk and still lets the user download', async () => {
