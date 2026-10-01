@@ -1,6 +1,7 @@
 import { Menu, Tray, nativeImage, type MenuItemConstructorOptions, type NativeImage } from 'electron'
 import type { TrayAccelerationEntry } from './tray-acceleration'
 import type { NewApiSubscriptionSelf } from './new-api-client'
+import type { UpdateSnapshot } from './updater'
 import { resolveUsableSubscription, subscriptionSummaryText } from './subscription-summary'
 
 export interface ApplicationTraySnapshot {
@@ -9,10 +10,68 @@ export interface ApplicationTraySnapshot {
   /** 「剩余 USD 12.30 · 10 月 3 日到期」；没有能用的订阅时缺省，菜单就不多这一行。 */
   subscriptionLabel?: string | null
   installedTools: readonly { id: string; label: string; enabled?: boolean }[]
-  updateAvailable?: boolean
-  updateVersion?: string | null
+  /** 缺省或 null：软件不知道有新版本，菜单里只有一项普通的「软件更新」。 */
+  update?: TrayUpdateEntry | null
   /** 缺省表示这个构建没有接加速，菜单里就不出现这两行。 */
   acceleration?: TrayAccelerationEntry | null
+}
+
+/**
+ * 托盘上那一项更新跟着「软件知不知道有新版本」走，而不是只认 `available`：自动下载
+ * 开着时 `available` 只停留几秒就进了 `downloading`，常驻托盘的人几乎看不到它。
+ */
+export type TrayUpdateEntry =
+  | { kind: 'available'; version: string | null; waitingForDisk: boolean }
+  | { kind: 'downloading'; version: string | null }
+  | { kind: 'downloaded'; version: string | null }
+  | { kind: 'failed'; version: string | null }
+
+export function resolveTrayUpdateEntry(
+  snapshot: Pick<UpdateSnapshot, 'phase' | 'availableVersion' | 'error' | 'failedStep' | 'diskShortfall'>,
+): TrayUpdateEntry | null {
+  const version = snapshot.availableVersion
+  switch (snapshot.phase) {
+    case 'available':
+      return { kind: 'available', version, waitingForDisk: Boolean(snapshot.diskShortfall) }
+    case 'downloading':
+      return { kind: 'downloading', version }
+    case 'downloaded':
+      // 带错误的 downloaded 是安装器起过一次又失败了：updater 的安装闸已经关上，
+      // 再点「重启安装」会什么都不发生，只能带他去更新页看原因。
+      return snapshot.error ? { kind: 'failed', version } : { kind: 'downloaded', version }
+    case 'error':
+      // 只有下载失败时 availableVersion 才确定还是那个要装的版本；检查失败时它可能是上一轮留下的。
+      return snapshot.failedStep === 'download' && version ? { kind: 'failed', version } : null
+    default:
+      return null
+  }
+}
+
+function updateItem(
+  entry: TrayUpdateEntry | null | undefined,
+  install: TrayAction | undefined,
+  navigate: (target: TrayNavigationTarget) => void,
+  run: (action: TrayAction) => void,
+): MenuItemConstructorOptions {
+  const openPage = () => navigate('updates')
+  if (!entry) return { label: '软件更新', click: openPage }
+  const version = menuLabel(entry.version, '')
+  const named = version ? `新版本 ${version} ` : '新版本'
+  switch (entry.kind) {
+    case 'available':
+      return entry.waitingForDisk
+        ? { label: `软件更新：${named}等电脑腾出空间再下载`, click: openPage }
+        : { label: `软件更新：有${named}`.trimEnd(), click: openPage }
+    case 'downloading':
+      return { label: `软件更新：正在下载${named}`.trimEnd(), click: openPage }
+    case 'downloaded':
+      // 和更新页「确认重启安装」走同一条 install()，不另开安装路径；没接安装动作时退回更新页。
+      return install
+        ? { label: `重启并安装${named}`.trimEnd(), click: () => run(install) }
+        : { label: `软件更新：${named}已下载好`, click: openPage }
+    case 'failed':
+      return { label: `软件更新：${named}没更新成功，点开看看`, click: openPage }
+  }
 }
 
 export type TrayNavigationTarget = 'topup' | 'updates' | 'settings'
@@ -31,6 +90,8 @@ export interface ApplicationTrayOptions {
   onNavigate(target: TrayNavigationTarget): unknown | Promise<unknown>
   /** 菜单里那一项加速动作；缺省时那一项永远置灰。 */
   onAccelerationToggle?: TrayAction
+  /** 新版本已下载好时托盘里那一项「重启并安装」；缺省时那一项改为打开更新页。 */
+  onInstallUpdate?: TrayAction
   /** 用户刚打开托盘菜单：用来现读一次会过期的状态，不是定时轮询。 */
   onMenuOpen?: TrayAction
   onQuit: TrayAction
@@ -91,6 +152,7 @@ function copySnapshot(snapshot: ApplicationTraySnapshot): ApplicationTraySnapsho
     ...snapshot,
     installedTools: snapshot.installedTools.map((tool) => ({ ...tool })),
     ...(snapshot.acceleration ? { acceleration: { ...snapshot.acceleration } } : {}),
+    ...(snapshot.update ? { update: { ...snapshot.update } } : {}),
   }
 }
 
@@ -117,7 +179,7 @@ function accelerationItems(
 
 export function buildApplicationTrayMenu(
   snapshot: ApplicationTraySnapshot,
-  actions: Pick<ApplicationTrayOptions, 'onOpen' | 'onLaunchTool' | 'onNavigate' | 'onQuit' | 'onAccelerationToggle'>,
+  actions: Pick<ApplicationTrayOptions, 'onOpen' | 'onLaunchTool' | 'onNavigate' | 'onQuit' | 'onAccelerationToggle' | 'onInstallUpdate'>,
   run: (action: TrayAction) => void,
   appName = '星芒AI管理工具',
 ): MenuItemConstructorOptions[] {
@@ -141,12 +203,7 @@ export function buildApplicationTrayMenu(
     },
     ...accelerationItems(snapshot.acceleration, actions.onAccelerationToggle, run),
     { label: '充值', click: () => navigate('topup') },
-    {
-      label: snapshot.updateAvailable
-        ? `软件更新：${menuLabel(snapshot.updateVersion, '有可用更新')}`
-        : '软件更新',
-      click: () => navigate('updates'),
-    },
+    updateItem(snapshot.update, actions.onInstallUpdate, navigate, run),
     { label: '设置', click: () => navigate('settings') },
     { type: 'separator' },
     { label: '退出', click: () => run(actions.onQuit) },
