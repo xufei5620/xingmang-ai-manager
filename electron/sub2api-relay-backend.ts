@@ -134,7 +134,12 @@ function parseTopupInfo(payload: unknown): NewApiTopupInfo {
   const p = record(payload); const methods = record(p.methods); const paymentMethods = Object.entries(methods).filter(([, value]) => record(value).available !== false).map(([type, value]) => { const x = record(value); return { name: str(x.display_name, type), type, provider: 'epay' as const, color: null, icon: null, minTopup: num(x.single_min) } })
   const rawOptions = Array.isArray(p.amount_options) ? p.amount_options.filter((v): v is number => typeof v === 'number' && Number.isFinite(v) && v > 0) : []
   const amountOptions = rawOptions.length ? rawOptions.slice(0, 12) : [10, 20, 50, 100, 200, 500, 1000, 2000, 5000]
-  return { onlineTopupEnabled: Boolean(p.payment_enabled ?? paymentMethods.length), stripeTopupEnabled: false, creemTopupEnabled: false, waffoPancakeTopupEnabled: false, redemptionEnabled: true, paymentComplianceConfirmed: true, paymentComplianceTermsVersion: null, paymentMethods, minTopup: num(p.global_min ?? p.min_amount), amountOptions, discounts: {}, topupLink: null }
+  return { onlineTopupEnabled: Boolean(p.payment_enabled ?? paymentMethods.length), stripeTopupEnabled: false, creemTopupEnabled: false, waffoPancakeTopupEnabled: false, redemptionEnabled: true, paymentComplianceConfirmed: true, paymentComplianceTermsVersion: null, paymentMethods, minTopup: num(p.global_min ?? p.min_amount), amountOptions, discounts: {}, creditMultiplier: creditMultiplier(p.balance_recharge_multiplier), topupLink: null }
+}
+// Sub2API credits amount × balance_recharge_multiplier for every tier (no per-tier
+// bonus). Mirror its own page: anything not a finite positive number counts as 1.
+function creditMultiplier(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 && value <= 100 ? value : 1
 }
 // 充值和订阅走同一张下单接口，回来的也是同一种支付信息。
 function orderCheckout(payload: Record<string, unknown>, requestedAmount: number): Extract<NewApiSubscriptionCheckout, { kind: 'url' | 'qrcode' }> {

@@ -296,6 +296,9 @@ export interface NewApiTopupInfo {
   minTopup: number
   amountOptions: number[]
   discounts: Record<string, number>
+  // Set only by accounts whose tiers are the amount paid: the balance credited is
+  // amount × creditMultiplier. Absent = the tier is the amount credited (new-api).
+  creditMultiplier?: number
   topupLink: string | null
 }
 

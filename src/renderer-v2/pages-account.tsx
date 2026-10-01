@@ -78,6 +78,8 @@ import { useSharedAccountBalance } from './features/app/balance-context'
 import { balanceStatusText } from './features/shell/balance-status'
 import { UsageDetails } from './features/account/UsageDetails'
 import { buildTopupBonus } from './features/account/topup-bonus'
+import { paymentMethodLabel } from './features/account/payment-method-label'
+import { describeTopupTier, isQuotableAmount, useTopupQuotes } from './features/account/topup-tier'
 import { ToolKeyLimits } from './features/account/ToolKeyLimits'
 import { ToolUsage } from './features/account/ToolUsage'
 import type { LoginTarget } from './features/auth/api'
@@ -362,12 +364,12 @@ function PaymentOptions({
             size={28}
           />
           <span>
-            <strong>{method.name}</strong>
+            <strong>{paymentMethodLabel(method)}</strong>
             <small>支付金额以渠道页面为准</small>
           </span>
           <Input
             type="radio"
-            aria-label={method.name}
+            aria-label={paymentMethodLabel(method)}
             name="account-payment"
             value={method.type}
             checked={value === method.type}
@@ -2216,7 +2218,25 @@ function AccountRecharge({
     resource.data?.info.minTopup ?? 1,
     paymentMethod?.minTopup ?? 0,
   )
-  const amountBonus = buildTopupBonus(Number(amount), resource.data?.info.discounts)
+  const presetAmounts = resource.data?.info.amountOptions ?? [10, 20, 50, 100, 200, 500, 1000, 2000, 5000]
+  const customAmount = isQuotableAmount(Number(amount), topupMinimum) ? Number(amount) : null
+  const tierQuotes = useTopupQuotes({
+    quote: async (value) => (await api.quoteAccountTopupAmount({ amount: value })).payableAmount,
+    presets: presetAmounts,
+    custom: customAmount,
+    enabled: Boolean(resource.data && paymentMethod) && !offline,
+    resetKey: resource.data,
+  })
+  function tierView(value: number) {
+    return describeTopupTier({
+      amount: value,
+      quote: tierQuotes.get(value),
+      discounts: resource.data?.info.discounts,
+      provider: paymentMethod?.provider,
+      creditMultiplier: resource.data?.info.creditMultiplier,
+    })
+  }
+  const customTier = customAmount === null ? null : tierView(customAmount)
   const quoteBonus = quote ? buildTopupBonus(quote.amount, resource.data?.info.discounts) : null
   const quoteTopup = () =>
     void operation.execute(
@@ -2291,18 +2311,22 @@ function AccountRecharge({
         >
           <div className="v2-business-suggestions-label">快捷金额</div>
           <div className="v2-business-suggestions">
-            {(resource.data?.info.amountOptions ?? [10, 20, 50, 100, 200, 500, 1000, 2000, 5000]).map((value) => {
-              const optionBonus = buildTopupBonus(value, resource.data?.info.discounts)
+            {presetAmounts.map((value) => {
+              const tier = tierView(value)
+              const selected = Number(amount) === value
               return (
-                <Button
-                  size="sm"
+                <button
+                  type="button"
                   key={value}
-                  aria-label={optionBonus ? `${value}，送 ${optionBonus.percent}%` : undefined}
+                  className={`v2-business-tier${selected ? ' is-selected' : ''}`}
+                  aria-label={tier.label}
+                  aria-pressed={selected}
                   onClick={() => { setAmount(String(value)); setQuote(null) }}
                 >
-                  {value}
-                  {optionBonus && <span className="v2-business-topup-bonus">送 {optionBonus.percent}%</span>}
-                </Button>
+                  <span className="v2-business-tier-credited">到账 {tier.credited}</span>
+                  {tier.paid !== null && <span className="v2-business-tier-paid">实付 {tier.paid}</span>}
+                  <span className={`v2-business-tier-bonus${tier.hasBonus ? ' has-bonus' : ''}`}>{tier.bonus}</span>
+                </button>
               )
             })}
           </div>
@@ -2318,9 +2342,11 @@ function AccountRecharge({
               setQuote(null)
             }}
           />
-          {amountBonus && (
-            <p className="v2-business-topup-bonus-note" data-testid="account-recharge-bonus">
-              到账 {Number(amount)}，其中活动赠送 {amountBonus.bonus}（多送 {amountBonus.percent}%）。
+          {customTier && (
+            <p className="v2-business-tier-note" data-testid="account-recharge-breakdown">
+              <span>到账 <strong>{customTier.credited}</strong></span>
+              {customTier.paid !== null && <span>实付 <strong>{customTier.paid}</strong></span>}
+              <span className={customTier.hasBonus ? 'has-bonus' : undefined}>{customTier.bonus}</span>
             </p>
           )}
           <PaymentOptions
@@ -2575,7 +2601,7 @@ function AccountRecharge({
           应付金额：{quote?.payableAmount.toFixed(2)}
           （支付渠道币种以支付页面为准）
         </p>
-        <p>支付方式：{paymentMethod?.name}</p>
+        <p>支付方式：{paymentMethod ? paymentMethodLabel(paymentMethod) : ''}</p>
         <ResultNotice error={operation.error} />
       </Dialog>
       <Dialog

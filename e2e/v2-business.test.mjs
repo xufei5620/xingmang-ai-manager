@@ -1074,19 +1074,23 @@ test('the payment terminal listener survives re-renders and still resolves a pen
   }
 })
 
-test('recharge presets show the configured bonus and the quote dialog spells it out', async () => {
+test('recharge presets show credited, paid and bonus, and the quote dialog spells the bonus out', async () => {
   const page = await fixture('page=account&topupBonus=1')
   try {
     await page.getByRole('tab', { name: '充值与订阅', exact: true }).click()
-    assert.equal(await page.getByRole('button', { name: '10', exact: true }).count(), 1)
-    await page.getByRole('button', { name: '20，送 25%', exact: true }).click()
-    assert.equal(
-      await page.getByTestId('account-recharge-bonus').textContent(),
-      '到账 20，其中活动赠送 4（多送 25%）。',
-    )
-    await page.getByRole('button', { name: '10', exact: true }).click()
-    assert.equal(await page.getByTestId('account-recharge-bonus').count(), 0)
-    await page.getByRole('button', { name: '20，送 25%', exact: true }).click()
+    const plain = page.getByRole('button', { name: '到账 $10，实付 10.00，无赠送', exact: true })
+    const bonus = page.getByRole('button', { name: '到账 $20，实付 16.00，送 25%', exact: true })
+    await plain.waitFor()
+    await bonus.click()
+    assert.equal(await bonus.getAttribute('aria-pressed'), 'true')
+    const breakdown = page.getByTestId('account-recharge-breakdown')
+    assert.equal(await breakdown.innerText().then((text) => text.replace(/\s+/g, ' ')), '到账 $20 实付 16.00 送 25%')
+    await plain.click()
+    assert.equal(await breakdown.innerText().then((text) => text.replace(/\s+/g, ' ')), '到账 $10 实付 10.00 无赠送')
+    await page.getByLabel('自定义金额').fill('37')
+    await breakdown.getByText('实付 37.00', { exact: false }).waitFor()
+    assert.equal(await breakdown.innerText().then((text) => text.replace(/\s+/g, ' ')), '到账 $37 实付 37.00 无赠送')
+    await bonus.click()
     await page.getByTestId('account-recharge-submit').click()
     const quote = page.getByRole('dialog', { name: '确认充值报价' })
     await quote.waitFor()
@@ -1103,11 +1107,13 @@ test('recharge presets show the configured bonus and the quote dialog spells it 
 test('a tier picked on the home activity card arrives preselected on the recharge page', async () => {
   const page = await fixture('page=account&accountTab=recharge&rechargeAmount=20&topupBonus=1')
   try {
-    await page.getByTestId('account-recharge-bonus').waitFor()
+    const breakdown = page.getByTestId('account-recharge-breakdown')
+    await breakdown.getByText('实付 16.00', { exact: false }).waitFor()
     assert.equal(await page.getByLabel('自定义金额').inputValue(), '20')
+    assert.equal(await breakdown.innerText().then((text) => text.replace(/\s+/g, ' ')), '到账 $20 实付 16.00 送 25%')
     assert.equal(
-      await page.getByTestId('account-recharge-bonus').textContent(),
-      '到账 20，其中活动赠送 4（多送 25%）。',
+      await page.getByRole('button', { name: '到账 $20，实付 16.00，送 25%', exact: true }).getAttribute('aria-pressed'),
+      'true',
     )
   } finally {
     await page.close()
