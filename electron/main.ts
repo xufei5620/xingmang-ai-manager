@@ -1740,10 +1740,32 @@ if (!hasSingleInstanceLock) {
       const { phase } = await acceleration.getAccelerationState(scope)
       return phase === 'active' || phase === 'connecting' || phase === 'stopping'
     }
+    // 系统代理指着一个已经关掉的代理软件时，星芒自己改走直连（更新那条路早就这么做）。
+    // 只动 defaultSession，不落盘；装工具时给子进程的代理也按它 resolveProxy，一起跟着直连。
+    const proxyBypass = createProxyBypass({
+      probeUrl: () => {
+        try { return relayStatusProbeUrl(resolveRelaySite(systemService.readStoredConfig().relaySiteId)) }
+        catch { return null }
+      },
+      resolveProxy: (url) => session.defaultSession.resolveProxy(url),
+      setProxy: (mode) => session.defaultSession.setProxy({ mode }),
+      probe: (url) => probeDirectConnection((input, init) => net.fetch(input, init), url),
+      accelerationActive: accelerationRunning,
+      log: (level, event, message, detail) => runtimeLog.log(level, 'network', event, message, detail),
+    })
     // 系统代理活着却不转发时（代理软件换了线路、规则把账号服务挡了），账号请求只会
-    // 一直超时。客户端在网络层失败后来问这一句；直连兜底本身建得比账号服务晚，
-    // 在那之前一律按「不重发」处理。
-    let recoverAccountRequestOffProxy: ((failure: NewApiRetryOffProxyFailure) => Promise<boolean>) | null = null
+    // 一直超时。客户端在网络层失败后来问这一句，和登没登录无关；所以兜底必须建在
+    // 账号服务之前，开机恢复登录的头一个请求就用得上。
+    async function recoverAccountRequestOffProxy(failure: NewApiRetryOffProxyFailure): Promise<boolean> {
+      const direct = await proxyBypass.recoverFailedRequest(failure.startedAt)
+      if (direct) {
+        runtimeLog.log('info', 'network', 'proxy-bypass.account-retry', '账号请求经系统代理没走通，已改直接联网', {
+          reason: failure.reason,
+          method: failure.method,
+        })
+      }
+      return direct
+    }
     const accounts = createRealmAccountService({
       vault,
       createClient: (siteId, onSessionChange): RealmAccountClientHandle => {
@@ -1758,7 +1780,7 @@ if (!hasSingleInstanceLock) {
             credential: { kind: 'new-api', cookies: persisted.cookies } }) : null
         }
         client = createNewApiClient({ baseUrl: 'https://xm.solov.cc', fetchImpl: relayFetch,
-          retryOffProxy: (failure) => recoverAccountRequestOffProxy ? recoverAccountRequestOffProxy(failure) : Promise.resolve(false),
+          retryOffProxy: recoverAccountRequestOffProxy,
           onCredentialRotation: async (persisted) => {
             const revision = client.getSessionRevision()
             const owner = { realmId: 'xm-account' as const, userId: String(persisted.userId) }
@@ -2584,30 +2606,7 @@ if (!hasSingleInstanceLock) {
         powerMonitor.off('resume', onResume)
       })
     }
-    // 系统代理指着一个已经关掉的代理软件时，星芒自己改走直连（更新那条路早就这么做）。
-    // 只动 defaultSession，不落盘；装工具时给子进程的代理也按它 resolveProxy，一起跟着直连。
-    const proxyBypass = createProxyBypass({
-      probeUrl: () => {
-        try { return relayStatusProbeUrl(resolveRelaySite(systemService.readStoredConfig().relaySiteId)) }
-        catch { return null }
-      },
-      resolveProxy: (url) => session.defaultSession.resolveProxy(url),
-      setProxy: (mode) => session.defaultSession.setProxy({ mode }),
-      probe: (url) => probeDirectConnection((input, init) => net.fetch(input, init), url),
-      accelerationActive: accelerationRunning,
-      log: (level, event, message, detail) => runtimeLog.log(level, 'network', event, message, detail),
-    })
     attachProxyBypassState(() => proxyBypass.active())
-    recoverAccountRequestOffProxy = async (failure) => {
-      const direct = await proxyBypass.recoverFailedRequest(failure.startedAt)
-      if (direct) {
-        runtimeLog.log('info', 'network', 'proxy-bypass.account-retry', '账号请求经系统代理没走通，已改直接联网', {
-          reason: failure.reason,
-          method: failure.method,
-        })
-      }
-      return direct
-    }
     const chatHistoryStore = createAiChatHistoryStore({ root: path.join(managerDataDirectory, 'chat-history') })
     const unregisterIpcHandlers = registerIpcHandlers({
       acceleration,
