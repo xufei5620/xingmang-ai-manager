@@ -13,10 +13,12 @@ import {
   XINGMANG_AI_DEFAULT_BASE_URL,
   XINGMANG_AI_SKILL_DIRECTORY,
   XINGMANG_AI_SKILL_KEY_NAME,
+  XINGMANG_IMAGE_MCP_NO_NODE_WARNING,
   applyXingmangAiSkillEnabledFlag,
   assertBundledXingmangAiSkill,
   buildXingmangAiSkillConfig,
   clearXingmangAiSkillSecrets,
+  describeImageMcpWarnings,
   parseXingmangAiSkillConfig,
   publicXingmangAiSkillConfig,
   installXingmangAiSkillFiles,
@@ -291,12 +293,38 @@ describe('xingmang-ai-skill', () => {
     const { accountService } = loggedInAccount()
     const syncImageMcp = vi.fn(async (_input: { skillDirectory: string; officialCodex: boolean }) => ['grok：配置读不懂'])
 
-    const result = await syncXingmangAiSkill({ accountService, bundledRoot, userHome, syncImageMcp })
+    const result = await syncXingmangAiSkill({ accountService, bundledRoot, userHome, syncImageMcp, imageMcpRetryDelayMs: 0 })
 
     const shared = resolveXingmangAiSkillDirectories(userHome)[0]
     expect(syncImageMcp).toHaveBeenCalledWith({ skillDirectory: shared, officialCodex: false })
     expect(await readFile(path.join(shared, 'scripts', 'mcp-server.mjs'), 'utf8')).toContain('generate_image')
     expect(result.directoryWarnings).toEqual(['星芒画图工具未登记：grok：配置读不懂'])
+    expect(result.imageMcpWarnings).toEqual(['grok：配置读不懂'])
+    expect(result.ready).toBe(true)
+  })
+
+  it('retries the image tool registration once before reporting it', async () => {
+    const userHome = await temporaryHome()
+    const { accountService } = loggedInAccount()
+    const syncImageMcp = vi.fn(async (_input: { skillDirectory: string; officialCodex: boolean }) => [] as string[])
+    syncImageMcp.mockRejectedValueOnce(new Error('EBUSY: resource busy or locked'))
+
+    const result = await syncXingmangAiSkill({ accountService, bundledRoot, userHome, syncImageMcp, imageMcpRetryDelayMs: 0 })
+
+    expect(syncImageMcp).toHaveBeenCalledTimes(2)
+    expect(result.directoryWarnings).toBeUndefined()
+    expect(result.imageMcpWarnings).toBeUndefined()
+  })
+
+  it('does not retry the image tool registration when the runtime is missing', async () => {
+    const userHome = await temporaryHome()
+    const { accountService } = loggedInAccount()
+    const syncImageMcp = vi.fn(async (_input: { skillDirectory: string; officialCodex: boolean }) => [XINGMANG_IMAGE_MCP_NO_NODE_WARNING])
+
+    const result = await syncXingmangAiSkill({ accountService, bundledRoot, userHome, syncImageMcp, imageMcpRetryDelayMs: 0 })
+
+    expect(syncImageMcp).toHaveBeenCalledTimes(1)
+    expect(result.imageMcpWarnings).toEqual([XINGMANG_IMAGE_MCP_NO_NODE_WARNING])
   })
 
   it('still writes the Codex key when the account has no image group', async () => {
@@ -513,5 +541,32 @@ describe('xingmang-ai-skill', () => {
       { path: otherPath, enabled: true },
       { path: skillPath, enabled: false },
     ])
+  })
+})
+
+describe('describeImageMcpWarnings', () => {
+  it('stays silent when the image tool registered everywhere', () => {
+    expect(describeImageMcpWarnings([])).toBeUndefined()
+  })
+
+  it('points a machine without the runtime at the runtime card', () => {
+    const text = describeImageMcpWarnings([XINGMANG_IMAGE_MCP_NO_NODE_WARNING])
+    expect(text).toContain('运行环境')
+    expect(text).toContain('重新同步')
+    expect(text).not.toContain('Node.js')
+  })
+
+  it('names the tools that missed it without leaking the raw error', () => {
+    const text = describeImageMcpWarnings([
+      'claude：EBUSY: resource busy or locked, open \'C:\\Users\\peaker\\.claude.json\'',
+      'grok：配置读不懂',
+    ])
+    expect(text).toContain('Claude Code、Grok CLI')
+    expect(text).toContain('重新同步')
+    expect(text).not.toMatch(/EBUSY|\.claude\.json|peaker|TOML/)
+  })
+
+  it('falls back to a generic sentence when no tool is named', () => {
+    expect(describeImageMcpWarnings(['写入失败'])).toContain('星芒画图还没装进 AI 工具')
   })
 })

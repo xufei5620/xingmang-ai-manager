@@ -33,6 +33,8 @@ export interface ManagedCliKeySyncSummary {
   regrouped?: ProviderId[]
   storageWarning?: string
   imageSkillWarning?: string
+  /** 技能已写好、但星芒画图没登记进某些工具时给首页的一句话（已是客户能看懂的文案）；缺省 = 没问题。 */
+  imageMcpWarning?: string
 }
 
 export interface ManagedCliConfigurationOutcome {

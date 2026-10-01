@@ -148,6 +148,7 @@ import { clearLoginAndChatRecords, removeCliHooksFromConfigs } from './uninstall
 import {
   installXingmangAiSkillFiles,
   resolveXingmangAiBundledSkillRoot,
+  XINGMANG_IMAGE_MCP_NO_NODE_WARNING,
 } from './xingmang-ai-skill'
 import { buildXingmangImageMcpInvocation } from './xingmang-ai-mcp'
 import { resolveClaudeStatusLineScriptPath } from './claude-status-line'
@@ -2706,7 +2707,7 @@ if (!hasSingleInstanceLock) {
         userHome: os.homedir(),
         syncImageMcp: async (input) => {
           const nodeExecutable = await findExecutable('node', { env: process.env })
-          if (!nodeExecutable) return ['这台电脑上没有找到 Node.js']
+          if (!nodeExecutable) return [XINGMANG_IMAGE_MCP_NO_NODE_WARNING]
           const invocation = buildXingmangImageMcpInvocation(nodeExecutable, input.skillDirectory)
           return syncXingmangImageMcpConfigs(rootedOptions.system.providerRoots, invocation, {
             codex: !input.officialCodex,
