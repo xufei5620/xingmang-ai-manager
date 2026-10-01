@@ -273,7 +273,7 @@ export function Shell({ activePage, account, platform, adapter, environment, bal
             title={networkRefreshing ? '正在检测当前网络出口' : `${network?.error ?? networkLocationLabel(network)}；点击刷新网络位置`}
             onClick={adapter.refreshNetwork}>
             <Globe size={14} aria-hidden="true" /><span aria-live="polite">{networkRefreshing ? '正在检测网络位置…' : networkLocationLabel(network)}</span>
-          </button><button type="button" onClick={adapter.openAccount}><i className="v2-dot" />{account.signedIn ? `已登录 ${account.displayName}` : '未登录'}</button>
+          </button><button type="button" onClick={adapter.openAccount}><i className="v2-dot" />{account.signedIn ? `已登录 ${account.displayName}` : account.displayName ?? '未登录'}</button>
           {(balance || account.balance) && <button type="button" onClick={adapter.topUp} title={account.subscription ? `${account.subscription}；${balanceStatus}` : balanceStatus} data-testid="statusbar-balance">余额 {balance ?? account.balance}{account.balanceLoading && <RefreshCw size={12} className="xm-spin" aria-label="正在刷新余额" />}{account.balanceError && !account.balanceLoading && <span className="v2-balance-error">{balanceFailureLabel(offline)}</span>}</button>}{installedCount !== undefined && <span>{installedCount} 个工具已装</span>}
           <button type="button" className="v2-status-version" onClick={adapter.openUpdates}>{version ? `v${version}` : '版本读取中'}</button>
         </footer>

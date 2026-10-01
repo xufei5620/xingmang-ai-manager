@@ -733,12 +733,26 @@ function finalizeExternalSummary(
   }
 }
 
+/**
+ * Codex 把会话标题原样存成第一句话。定时任务（Codex 的 Automation）那一句是整段任务说明：
+ * 「Automation: 每日制作头像 Automation ID: … Automation memory: … Last run: …」再接几百字的
+ * 指令，原样上屏会把首页「最近」那张卡撑破。定时任务只留任务名；其余标题收成一行、限长。
+ */
+export function codexSessionTitle(title: string, sessionId: string): string {
+  const automation = /^\s*Automation:\s*(.+?)\s+Automation ID:/s.exec(title)
+  if (automation) {
+    const name = cleanText(automation[1], 60)
+    if (name) return `定时任务：${name}`
+  }
+  return cleanText(title) || sessionId
+}
+
 function codexSummary(summary: CodexSessionPage['items'][number], readonly: boolean): ProviderSessionSummary {
   return {
     id: `codex:${summary.id}`,
     provider: 'codex',
     nativeId: summary.id,
-    title: summary.title,
+    title: codexSessionTitle(summary.title, summary.id),
     cwd: summary.cwd,
     model: summary.model,
     archived: summary.archived,

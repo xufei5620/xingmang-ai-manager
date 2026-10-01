@@ -32,6 +32,8 @@
 [data-testid='home-suggestions'] .xm-row-icon { width: 16px; height: 18px; background: transparent; }
 [data-testid='home-suggestions'] .xm-row-icon svg { width: 14px; height: 14px; }
 [data-testid='home-suggestions'] .xm-row-title { font-weight: 400; font-size: var(--font-small); }
+/* 首页「最近」一条只占一行：标题再长也截成省略号，完整内容放在悬停提示里。 */
+.v2-recent-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .v2-balance-body { padding: 20px 16px 16px; }
 .v2-balance-body strong { font: 500 28px var(--mono); }
 .v2-balance-body small { margin-left: 6px; color: var(--text-3); font-size: var(--font-micro); }

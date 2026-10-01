@@ -34,6 +34,8 @@ export interface HomeProps {
   /** 单块读失败的原因；缺省 = 三块都读到了（旧行为）。 */
   failures?: ToolboxPartitionFailure[]
   account: AccountProfile | null
+  /** 开机恢复上次的登录还没结束（含联不上、等重试）：登录还在，不能叫人「登录后查看」。缺省 = 没在恢复。 */
+  accountRestoring?: boolean
   /**
    * 当前账号的作用域（App 的 scope）。用量缓存按它认账号：有它时回首页先摆上一次的
    * 用量、后台再刷新；省略 = 每次都先空着等查询回来（旧行为）。
@@ -499,7 +501,7 @@ export function Home(props: HomeProps) {
           {recentError ? <Empty icon={History} title="记录暂时没有读到" description={recentError} action={<Button onClick={() => setRecentAttempt((value) => value + 1)}>重新加载</Button>} />
             : !recent ? <div className="v2-loading-inline" role="status">正在读取最近记录</div>
               : recent.items.length ? recent.items.slice(0, 3).map((session) => <ListRow key={session.id} leading={<BrandIcon tool={session.provider} size={18} />}
-                testId={`home-recent-row-${session.id}`} title={session.title}
+                testId={`home-recent-row-${session.id}`} title={<span className="v2-recent-title" title={session.title}>{session.title}</span>}
                 desc={<span title={session.cwd || undefined}>{recentSessionSubtitle(session)}</span>} meta={formatRecentTime(session.updatedAt, Date.now())}
                 badge={session.cwdExists === false ? <Pill tone="warn" testId={`home-recent-missing-${session.id}`}>文件夹已不存在</Pill> : undefined}
                 actions={<>
@@ -541,7 +543,7 @@ export function Home(props: HomeProps) {
           <div className={`v2-balance-body tone-${tier}`}><div title={balanceHint}><strong data-testid="home-balance">{dollars === null ? '暂未读到' : `$${dollars.toFixed(2)}`}</strong><small>可用余额 · 美元</small>{balanceStore && account && <Button variant="ghost" size="xs" icon={RefreshCw} loading={balanceState.loading} aria-label="刷新账户余额" title={balanceHint} onClick={() => void balanceStore.refresh('manual')} testId="home-balance-refresh" />}</div>
             {balanceState.error && <p className="v2-balance-error" role="status" title={balanceState.error}>更新失败，{balance ? '显示上次余额' : '请重试'}</p>}
             <div className="v2-balance-usage">{monthUsed !== null && dollars !== null && <Progress tone={tier === 'neutral' ? 'neutral' : tier} value={monthUsed + dollars > 0 ? monthUsed / (monthUsed + dollars) * 100 : 0} label={`本月已用 $${monthUsed.toFixed(2)}`} />}
-              <p>{subscriptionLine ? <span data-testid="home-subscription">{subscriptionLine}</span> : props.supportsUsage === false ? '请在官方网站查看消费记录。' : usageError || (remainingDays !== null ? `按最近 7 天用量约还能用 ${remainingDays} 天${remainingDays < 7 ? '，建议提前充值' : ''}。` : usage ? '最近 7 天暂无用量' : account ? '正在读取用量' : '登录后查看用量')}</p></div>
+              <p>{subscriptionLine ? <span data-testid="home-subscription">{subscriptionLine}</span> : props.supportsUsage === false ? '请在官方网站查看消费记录。' : usageError || (remainingDays !== null ? `按最近 7 天用量约还能用 ${remainingDays} 天${remainingDays < 7 ? '，建议提前充值' : ''}。` : usage ? '最近 7 天暂无用量' : account ? '正在读取用量' : props.accountRestoring ? '登录恢复后自动显示用量' : '登录后查看用量')}</p></div>
             <div className="v2-balance-actions">{props.supportsBilling !== false && <Button variant="balance" size="sm" icon={Zap} onClick={() => props.onNavigate('account', 'recharge')}>充值</Button>}{props.supportsUsage !== false && <Button variant="ghost" size="sm" onClick={() => props.onNavigate('account', 'dashboard')}>用量看板</Button>}</div>
           </div>
         </Card>
