@@ -47,9 +47,21 @@ describe('RequiredUpdateGate', () => {
 
   it('adds the download page only after a failure, and skips the Windows prompt hint on a Mac', () => {
     const html = renderToStaticMarkup(<RequiredUpdateGate update={snapshot({ phase: 'error', error: { code: 'X', message: '网络断了' } })} windows={false} actions={actions} />)
-    expect(html).toContain('更新没有完成：网络断了')
+    expect(html).toContain('更新没有完成。</strong>网络断了')
+    expect(html).not.toContain('更新没有完成：')
     expect(html).toContain('data-testid="required-update-download-page"')
     expect(html).not.toContain('是否允许更改')
+  })
+
+  it('names only the buttons the gate actually has when an install did not start', () => {
+    const message = '新版本没装上：安装程序没起来，可能是 Windows 的授权窗口被关掉了。点「重新安装」再试一次，授权窗口弹出来时点「是」。'
+    const html = renderToStaticMarkup(<RequiredUpdateGate update={snapshot({ phase: 'downloaded', failedStep: 'install', error: { code: 'UPDATE_INSTALL_LAUNCH_TIMEOUT', message } })} windows actions={actions} />)
+    expect(html).toContain('安装更新失败。</strong>新版本没装上')
+    // 原因句说「点「重新安装」」，门的主按钮就叫「重新安装」。
+    expect(html).toMatch(/data-testid="required-update-start"[^>]*>(?:<[^>]+>)*重新安装/)
+    // 门里没有「查看日志」，也到不了更新页。
+    expect(html).not.toContain('查看日志')
+    expect(html).not.toContain('「更新」页')
   })
 
   it('tells the user the disk is full, how much to free, and offers a retry and a download-anyway', () => {
