@@ -14,6 +14,7 @@ import { resolveSystemWingetExecutable, type SystemWingetResolution } from './no
 import { sameLocalPathIdentity } from './path-identity'
 import { assertNoReparseComponents } from './safe-local-data'
 import { resolveWindowsExplorerExecutable } from './system-shell'
+import { buildPowerShellModuleImportStatement } from './powershell-module-imports'
 import { encodeWindowsPowerShellCommand, resolveWindowsPowerShellExecutable, type WindowsCliExecutionMode } from './windows-elevation'
 import { pathWithinWindowsRoot, resolveWindowsMachinePaths, type WindowsMachinePaths } from './windows-machine-paths'
 import { installWorkBuddyFromOfficial } from './workbuddy-installer'
@@ -152,10 +153,25 @@ export async function verifyExternalClientPath(candidate: string, kind: 'file' |
 // The list is passed as base64 JSON so no path or subject text ever becomes
 // PowerShell source. A same-user attacker can forge those timestamps, so install
 // and launch never pass this list: anything that acts on the file verifies anew.
+//
+// The script runs under trustedCommandEnvironment(), where one cmdlet left to
+// autoloading costs the whole System32 module scan (20 s and more on the CI
+// runner, see buildPowerShellModuleImportStatement) against a 15 s limit, so it
+// imports every module it calls before the first call.
+export const windowsExternalClientInventoryModules = [
+  'Microsoft.PowerShell.Utility',
+  'Appx',
+  'Microsoft.PowerShell.Management',
+  'Microsoft.PowerShell.Security',
+] as const
+
+export const externalClientSystemCommandTimeoutMs = 15_000
+
 export function windowsExternalClientInventoryScript(knownSignatures: readonly KnownExternalClientSignature[] = []): string {
   const known = Buffer.from(JSON.stringify(knownSignatures.map(({ path: file, stamp, status, subject }) => ({ path: file, stamp, status, subject }))), 'utf8').toString('base64')
   return String.raw`
 $OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+${buildPowerShellModuleImportStatement(windowsExternalClientInventoryModules)}
 $ErrorActionPreference = 'Stop'
 $knownSignatures = @{}
 # Windows PowerShell 5.1 emits a JSON array as one pipeline object; assigning it
@@ -283,7 +299,7 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
   const knownSignatures = new Map<string, KnownExternalClientSignature>()
 
   const environment = () => trustedCommandEnvironment(options.env, platform === 'win32' ? resolveMachinePaths() : undefined, platform)
-  const systemOptions = (): RunCommandOptions => ({ env: environment(), trustedOnly: true, timeoutMs: 15_000, maxOutputBytes: maximumProbeBytes, windowsHide: true })
+  const systemOptions = (): RunCommandOptions => ({ env: environment(), trustedOnly: true, timeoutMs: externalClientSystemCommandTimeoutMs, maxOutputBytes: maximumProbeBytes, windowsHide: true })
   const noInstallHint = (tool: ExternalToolId): string | null => {
     if (platform === 'win32') return architecture === 'x64' || (architecture === 'arm64' && tool !== 'workbuddy') ? null : '当前处理器架构没有可用的官方 Windows 安装包'
     if (platform === 'darwin') return 'macOS 请先从客户端官网下载并将应用移入 Applications，然后重新检测'

@@ -14,6 +14,7 @@ import { execFile } from 'node:child_process'
 import path from 'node:path'
 import { promisify } from 'node:util'
 import { trustedCommandEnvironment } from './command-runner'
+import { buildPowerShellModuleImportStatement } from './powershell-module-imports'
 import { resolveWindowsPowerShellExecutable } from './windows-elevation'
 
 const execFileAsync = promisify(execFile)
@@ -33,16 +34,26 @@ export interface CliProcessProbe {
 
 export const cliProcessRootEnvironmentVariable = 'XINGMANG_CLI_PROCESS_ROOT'
 
+export const windowsCliProcessProbeModules = ['Microsoft.PowerShell.Utility', 'CimCmdlets'] as const
+
+/** What the probe gets before an install or update goes ahead without the running-tool check. */
+export const cliProcessProbeTimeoutMs = 8_000
+
 /**
  * The probed directory is handed over through the environment rather than
  * spliced into the script: a path is attacker-influenced data (the user picks
  * where npm lives) and PowerShell string literals have their own escaping
  * rules. `.StartsWith`/`.IndexOf` are ordinal .NET calls, so no part of the
  * path is ever parsed as a pattern either (I1).
+ *
+ * The modules are imported by name first: under trustedCommandEnvironment()
+ * an autoloaded Get-CimInstance costs the whole module scan, longer than the
+ * 8 s this probe gets (see buildPowerShellModuleImportStatement).
  */
 export function buildWindowsCliProcessProbeScript(): string {
   return [
     '$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)',
+    buildPowerShellModuleImportStatement(windowsCliProcessProbeModules),
     '$ErrorActionPreference = "SilentlyContinue"',
     `$root = [string]$env:${cliProcessRootEnvironmentVariable}`,
     "if (-not $root) { '[]'; exit 0 }",
@@ -197,7 +208,7 @@ export async function probeRunningCliProcesses(
     return { status: 'unsupported', processes: [], detail: `当前平台不做进程检测：${platform}` }
   }
   const runProbe = options.runProbe ?? runDefaultProbe
-  const timeoutMs = options.timeoutMs ?? 8_000
+  const timeoutMs = options.timeoutMs ?? cliProcessProbeTimeoutMs
   try {
     if (platform === 'win32') {
       const stdout = await runProbe(

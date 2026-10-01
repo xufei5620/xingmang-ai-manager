@@ -19,6 +19,7 @@ import {
   resolveWindowsMachinePaths,
   type WindowsMachinePaths,
 } from './windows-machine-paths'
+import { authenticodeSignatureModules, buildPowerShellModuleImportStatement, buildPowerShellPinnedModuleImportStatement } from './powershell-module-imports'
 import {
   encodeWindowsPowerShellCommand,
   inspectWindowsElevationCapability,
@@ -163,8 +164,16 @@ const appInstallerPackageFamily = 'Microsoft.DesktopAppInstaller_8wekyb3d8bbwe'
 const maximumNodeRedirects = 2
 const nodeRedirectStatuses = new Set([301, 302, 303, 307, 308])
 
-const windowsRestartStatusScript = [
+// The two probes below get 10 s each under trustedCommandEnvironment(), where a
+// cmdlet left to autoloading costs the whole System32 module scan (see
+// buildPowerShellModuleImportStatement); they import their modules by name.
+export const windowsRestartStatusModules = ['Microsoft.PowerShell.Utility', 'Microsoft.PowerShell.Management'] as const
+export const appInstallerQueryModules = ['Microsoft.PowerShell.Utility', 'Appx'] as const
+export const nodeRuntimeWindowsProbeTimeoutMs = 10_000
+
+export const windowsRestartStatusScript = [
   '$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)',
+  buildPowerShellModuleImportStatement(windowsRestartStatusModules),
   "$ErrorActionPreference = 'Stop'",
   '$reasons = [System.Collections.Generic.List[string]]::new()',
   "$componentServicing = 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Component Based Servicing\\RebootPending'",
@@ -187,21 +196,21 @@ const sources: Record<Exclude<NodeRuntimeSource, 'winget'>, NodeRuntimeDownloadS
   },
 }
 
-const signatureScript = [
+export const nodeInstallerSignatureScript = [
   '$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)',
   "$ErrorActionPreference = 'Stop'",
   "$ProgressPreference = 'SilentlyContinue'",
-  "Import-Module -Name (Join-Path $PSHOME 'Modules\\Microsoft.PowerShell.Security\\Microsoft.PowerShell.Security.psd1') -Force -ErrorAction Stop",
+  buildPowerShellPinnedModuleImportStatement(authenticodeSignatureModules),
   "$signature = Get-AuthenticodeSignature -LiteralPath $env:XINGMANG_NODE_MSI_PATH -ErrorAction Stop",
   "$subject = if ($null -ne $signature.SignerCertificate) { $signature.SignerCertificate.Subject } else { '' }",
   '[PSCustomObject]@{ status = [string]$signature.Status; subject = [string]$subject } | ConvertTo-Json -Compress',
 ].join('; ')
 
-const installedNodeSignatureScript = [
+export const installedNodeSignatureScript = [
   '$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)',
   "$ErrorActionPreference = 'Stop'",
   "$ProgressPreference = 'SilentlyContinue'",
-  "Import-Module -Name (Join-Path $PSHOME 'Modules\\Microsoft.PowerShell.Security\\Microsoft.PowerShell.Security.psd1') -Force -ErrorAction Stop",
+  buildPowerShellPinnedModuleImportStatement(authenticodeSignatureModules),
   "$signature = Get-AuthenticodeSignature -LiteralPath $env:XINGMANG_NODE_EXE_PATH -ErrorAction Stop",
   "$subject = if ($null -ne $signature.SignerCertificate) { $signature.SignerCertificate.Subject } else { '' }",
   '[PSCustomObject]@{ status = [string]$signature.Status; subject = [string]$subject } | ConvertTo-Json -Compress',
@@ -211,10 +220,11 @@ function encodedPowerShellCommand(script: string): string {
   return Buffer.from(script, 'utf16le').toString('base64')
 }
 
-const appInstallerQueryScript = [
+export const appInstallerQueryScript = [
   "$ErrorActionPreference = 'Stop'",
   "$ProgressPreference = 'SilentlyContinue'",
   '$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)',
+  buildPowerShellModuleImportStatement(appInstallerQueryModules),
   `$packages = @(Get-AppxPackage -Name '${appInstallerPackageName}' -ErrorAction Stop | Sort-Object Version -Descending)`,
   'if ($packages.Count -eq 0) {',
   '  try {',
@@ -291,7 +301,7 @@ export async function inspectWindowsRestartRequired(signal?: AbortSignal): Promi
   }, {
     env: trustedCommandEnvironment(process.env, machinePaths, 'win32'),
     trustedOnly: true,
-    timeoutMs: 10_000,
+    timeoutMs: nodeRuntimeWindowsProbeTimeoutMs,
     maxOutputBytes: 64 * 1024,
     signal,
   })
@@ -337,7 +347,7 @@ export async function resolveSystemWingetExecutable(
     }, {
       trustedOnly: true,
       machinePaths,
-      timeoutMs: 10_000,
+      timeoutMs: nodeRuntimeWindowsProbeTimeoutMs,
       maxOutputBytes: 128 * 1024,
       signal,
     })
@@ -678,7 +688,7 @@ export function buildNodeRuntimeInstallPlan(
         '-ExecutionPolicy',
         'Bypass',
         '-EncodedCommand',
-        encodedPowerShellCommand(signatureScript),
+        encodedPowerShellCommand(nodeInstallerSignatureScript),
       ],
       timeoutMs: 60_000,
       acceptedExitCodes: [0],

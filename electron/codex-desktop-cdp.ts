@@ -2,8 +2,8 @@ import { execFile } from 'node:child_process'
 import net from 'node:net'
 import { promisify } from 'node:util'
 import { trustedCommandEnvironment } from './command-runner'
+import { buildPowerShellModuleImportStatement } from './powershell-module-imports'
 import { resolveWindowsPowerShellExecutable } from './windows-elevation'
-import { buildPowerShellModuleImportStatement } from './windows-store-app-launch'
 
 const execFileAsync = promisify(execFile)
 
@@ -361,10 +361,15 @@ export function getAvailableLoopbackPort(): Promise<number> {
 
 export type CodexDesktopCdpPortOwnership = 'unbound' | 'owned' | 'foreign'
 
-// Utility goes first: importing NetTCPIP while Utility is not loaded set off
-// the same System32 module scan as autoloading (#714), and either one ran the
-// query past its 10 s limit on the CI runner.
-export const codexDesktopCdpPortOwnerModules = ['Microsoft.PowerShell.Utility', 'NetTCPIP'] as const
+/**
+ * Both scripts below run under trustedCommandEnvironment(), where a cmdlet left
+ * to autoloading costs the whole System32 module scan (20 s and more on the CI
+ * runner, see buildPowerShellModuleImportStatement) against a 10 s limit. The
+ * port probe repeats while Codex starts, so each slow round is a lost round.
+ */
+export const codexDesktopCdpPortOwnerModules = ['NetTCPIP'] as const
+export const codexDesktopActivationModules = ['Microsoft.PowerShell.Utility'] as const
+export const codexDesktopCdpCommandTimeoutMs = 10_000
 
 // With no listener Get-NetTCPConnection reports "no MSFT_NetTCPConnection
 // objects found" as a non-terminating error, and powershell.exe then exits 1
@@ -423,7 +428,7 @@ export async function resolveCodexDesktopCdpPortOwners(
       XINGMANG_CODEX_CDP_PORT: String(port),
     },
     windowsHide: true,
-    timeout: 10_000,
+    timeout: codexDesktopCdpCommandTimeoutMs,
     maxBuffer: 256 * 1024,
   })
   return parseCodexDesktopCdpPortOwners(stdout)
@@ -433,9 +438,10 @@ function encodePowerShellCommand(script: string): string {
   return Buffer.from(script, 'utf16le').toString('base64')
 }
 
-const appActivationScript = String.raw`$ErrorActionPreference = 'Stop'
+export const codexDesktopActivationScript = String.raw`$ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 $OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+${buildPowerShellModuleImportStatement(codexDesktopActivationModules)}
 Add-Type -TypeDefinition @'
 using System;
 using System.Runtime.InteropServices;
@@ -505,7 +511,7 @@ export async function activateCodexDesktop(
       '-NoProfile',
       '-NonInteractive',
       '-EncodedCommand',
-      encodePowerShellCommand(appActivationScript),
+      encodePowerShellCommand(codexDesktopActivationScript),
     ], {
       env: {
         ...trustedCommandEnvironment(baseEnv),
@@ -513,7 +519,7 @@ export async function activateCodexDesktop(
         XINGMANG_CODEX_ARGS: argumentsValue,
       },
       windowsHide: true,
-      timeout: 10_000,
+      timeout: codexDesktopCdpCommandTimeoutMs,
       maxBuffer: 256 * 1024,
     })
     return parseCodexDesktopActivationProcessId(stdout)

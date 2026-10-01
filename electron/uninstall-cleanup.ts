@@ -14,6 +14,7 @@ import { removeWindowsLoginItem } from './platform/system-service'
 import { createWindowsSystemProxy } from './platform/windows-system-proxy'
 import { assertNoReparseComponents, removeSafeDataFile } from './safe-local-data'
 import { uninstallClearLoginArgument } from './uninstall-cleanup-entry'
+import { buildPowerShellModuleImportStatement } from './powershell-module-imports'
 import { resolveWindowsPowerShellExecutable } from './windows-elevation'
 import { resolveWindowsMachinePaths } from './windows-machine-paths'
 
@@ -198,7 +199,13 @@ export type UninstallAccountMatch = 'same' | 'other' | 'unknown'
 // Over-the-shoulder UAC runs the uninstaller as the approving administrator
 // but in the signed-in user's session, so the two SIDs differ exactly then.
 // Only SIDs are compared: account names are localized and can be renamed.
-const uninstallAccountProbeScript = [
+// CimCmdlets is imported by name: under trustedCommandEnvironment() an
+// autoloaded Get-CimInstance costs the whole System32 module scan (see
+// buildPowerShellModuleImportStatement), and the uninstaller waits for it.
+export const uninstallAccountProbeModules = ['CimCmdlets'] as const
+
+export const uninstallAccountProbeScript = [
+  buildPowerShellModuleImportStatement(uninstallAccountProbeModules),
   "$ErrorActionPreference='Stop'",
   '$session=[Diagnostics.Process]::GetCurrentProcess().SessionId',
   "'process=' + [Security.Principal.WindowsIdentity]::GetCurrent().User.Value",

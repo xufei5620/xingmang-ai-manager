@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
+import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
@@ -255,6 +257,179 @@ async function reportCodexSingleProbesWithoutAutoloading() {
   }
 }
 
+// The other probes the main process runs under the trusted environment (#714,
+// #716, #718 and the follow-up that imported modules in all of them). Each is
+// held to the limit the app gives it; the ones that would launch something
+// (Codex activation, the CLI terminal) or need an elevated, admin-owned
+// directory (the protected ACL read-back) are left to the unit tests. Every
+// result is printed with its time so a slow runner shows up by name.
+const { probeRunningCliProcesses, cliProcessProbeTimeoutMs } = compiled('cli-process-probe')
+const { buildDiagnosticsCodexDesktopProbeScript, diagnosticsCodexDesktopProbeTimeoutMs } = compiled('diagnostics')
+const { resolveCodexDesktopCdpPortOwners, codexDesktopCdpCommandTimeoutMs } = compiled('codex-desktop-cdp')
+const { externalClientSystemCommandTimeoutMs } = compiled('external-client-runtime')
+const { uninstallAccountProbeScript } = compiled('uninstall-cleanup')
+const { buildClaudeDesktopManifestInspectionScript, claudeDesktopPowerShellTimeoutMs } = compiled('claude-desktop-manifest')
+const { claudeDesktopPolicyReadScript } = compiled('claude-desktop-policy')
+const { buildReadProxyScopesScript, readWindowsProxyScopes, windowsProxyPowerShellTimeoutMs } = compiled('stale-proxy-environment')
+const { windowsSystemProxyScript, windowsSystemProxyCommandTimeoutMs } = compiled('platform/windows-system-proxy')
+const {
+  appInstallerQueryScript,
+  inspectWindowsRestartRequired,
+  installedNodeSignatureScript,
+  nodeInstallerSignatureScript,
+  nodeRuntimeWindowsProbeTimeoutMs,
+  windowsRestartStatusScript,
+} = compiled('node-runtime')
+const { installedPythonInspectionScript, pythonInstallerSignatureScript } = compiled('python-runtime')
+const { workBuddyInstallerSignatureScript } = compiled('workbuddy-installer')
+const { nativeCliSignatureScript, nativeCliSignatureTimeoutMs } = compiled('trusted-native-cli')
+const {
+  inspectProgramFilesAclAsync,
+  inspectWindowsDirectoryTreeAcl,
+  programFilesAclTimeoutMs,
+  resolveWindowsMachinePaths,
+  windowsDirectoryTreeAclTimeoutMs,
+} = compiled('windows-machine-paths')
+
+// The installer and signature checks get a minute (the uninstall probe 90 s);
+// they are held to that, which mostly proves they still run and parse.
+const signatureCheckTimeoutMs = 60_000
+const machinePaths = resolveWindowsMachinePaths()
+const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-probe-smoke-'))
+fs.mkdirSync(path.join(scratch, 'tree', 'nested'), { recursive: true })
+const manifestPath = path.join(scratch, 'AppxManifest.xml')
+fs.writeFileSync(manifestPath, '<?xml version="1.0" encoding="utf-8"?><Package xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"><Identity Name="Claude" Version="1.0.0.0" ProcessorArchitecture="x64" Publisher="CN=Test"/></Package>')
+const systemProxyRequest = Buffer.from(JSON.stringify({ operation: 'owner', pid: process.pid }), 'utf8').toString('base64')
+const programFilesCandidate = path.join(machinePaths.programFiles, 'Common Files')
+
+function trustedEnv(extra = {}) {
+  return { ...trustedCommandEnvironment(), ...extra }
+}
+
+// [name, limit, run]; run returns a short description for the log.
+const trustedProbes = [
+  ['running CLI process', cliProcessProbeTimeoutMs, async () => {
+    const probe = await probeRunningCliProcesses(repo)
+    assert.equal(probe.status, 'checked', probe.detail)
+    return `${probe.processes.length} process(es)`
+  }],
+  ['check page Codex desktop', diagnosticsCodexDesktopProbeTimeoutMs, async () => {
+    const parsed = JSON.parse((await runPowerShell(['-Command', buildDiagnosticsCodexDesktopProbeScript()], trustedEnv())).trim())
+    return `installed=${Boolean(parsed.AppID)}, running=${parsed.Running}`
+  }],
+  ['Codex debugging port owner', codexDesktopCdpCommandTimeoutMs, async () => {
+    const owners = await resolveCodexDesktopCdpPortOwners(1)
+    return `${owners.length} listener(s)`
+  }],
+  ['external client inventory', externalClientSystemCommandTimeoutMs, async () => {
+    const parsed = JSON.parse((await runPowerShell(['-EncodedCommand', encodeWindowsPowerShellCommand(windowsExternalClientInventoryScript())], trustedEnv())).trim())
+    assert.ok(Array.isArray(parsed.clients))
+    return `${parsed.clients.length} client(s), errors=${JSON.stringify(parsed.errors)}`
+  }],
+  ['uninstall desktop account', 90_000, async () => {
+    const output = await runPowerShell(['-Command', uninstallAccountProbeScript], trustedEnv())
+    assert.match(output, /^process=S-1-/m)
+    return output.match(/^desktop=/m) ? 'desktop owner found' : 'no desktop owner in this session'
+  }],
+  ['Claude desktop manifest', claudeDesktopPowerShellTimeoutMs, async () => {
+    const script = buildClaudeDesktopManifestInspectionScript(manifestPath, '1.0.0.0', 'x64')
+    const parsed = JSON.parse((await runPowerShell(['-EncodedCommand', encodeWindowsPowerShellCommand(script)], trustedEnv())).trim())
+    assert.equal(parsed.globalMode, 'enabled')
+    return `globalMode=${parsed.globalMode}`
+  }],
+  ['Claude desktop policy', claudeDesktopPowerShellTimeoutMs, async () => {
+    const parsed = JSON.parse((await runPowerShell(['-EncodedCommand', encodeWindowsPowerShellCommand(claudeDesktopPolicyReadScript)], trustedEnv())).trim())
+    return `${(parsed.machine ?? []).length + (parsed.user ?? []).length} policy value(s)`
+  }],
+  ['proxy settings', windowsProxyPowerShellTimeoutMs, async () => {
+    const scopes = await readWindowsProxyScopes()
+    return `user=${Object.keys(scopes.user).length}, machine=${Object.keys(scopes.machine).length}`
+  }],
+  ['system proxy owner lookup', windowsSystemProxyCommandTimeoutMs, async () => {
+    const parsed = JSON.parse((await runPowerShell(['-EncodedCommand', encodeWindowsPowerShellCommand(windowsSystemProxyScript)], trustedEnv({ XINGMANG_SYSTEM_PROXY_REQUEST: systemProxyRequest }))).trim())
+    assert.match(String(parsed.startedAt), /^\d+$/)
+    return 'owner found'
+  }],
+  ['pending restart', nodeRuntimeWindowsProbeTimeoutMs, async () => {
+    const status = await inspectWindowsRestartRequired()
+    return `required=${status.required}`
+  }],
+  ['App Installer package', nodeRuntimeWindowsProbeTimeoutMs, async () => {
+    const output = await runPowerShell(['-EncodedCommand', encodeWindowsPowerShellCommand(appInstallerQueryScript)], trustedEnv())
+    return output.trim() ? 'found' : 'not installed'
+  }],
+  ['Node.js installer signature', signatureCheckTimeoutMs, async () => signatureStatus(nodeInstallerSignatureScript, { XINGMANG_NODE_MSI_PATH: process.execPath })],
+  ['installed Node.js signature', signatureCheckTimeoutMs, async () => signatureStatus(installedNodeSignatureScript, { XINGMANG_NODE_EXE_PATH: process.execPath })],
+  ['Python installer signature', signatureCheckTimeoutMs, async () => signatureStatus(pythonInstallerSignatureScript, { XINGMANG_PYTHON_FILE_PATH: process.execPath })],
+  ['installed Python check', signatureCheckTimeoutMs, async () => signatureStatus(installedPythonInspectionScript, { XINGMANG_PYTHON_FILE_PATH: process.execPath })],
+  ['WorkBuddy installer signature', signatureCheckTimeoutMs, async () => signatureStatus(workBuddyInstallerSignatureScript, { XINGMANG_WORKBUDDY_INSTALLER: process.execPath })],
+  ['native CLI signature', nativeCliSignatureTimeoutMs, async () => {
+    const parsed = JSON.parse((await runPowerShell(['-Command', nativeCliSignatureScript], trustedEnv({ XINGMANG_NATIVE_CLI: process.execPath }))).trim())
+    assert.ok(parsed.Status)
+    return `status=${parsed.Status}`
+  }],
+  ['Program Files ACL', programFilesAclTimeoutMs, async () => {
+    const snapshot = await inspectProgramFilesAclAsync(programFilesCandidate, machinePaths.programFiles, machinePaths)
+    assert.ok(Array.isArray(snapshot.entries))
+    return `${snapshot.entries.length} level(s)`
+  }],
+  ['managed directory tree ACL', windowsDirectoryTreeAclTimeoutMs, async () => {
+    const snapshot = inspectWindowsDirectoryTreeAcl(path.join(scratch, 'tree'), machinePaths)
+    assert.ok(Array.isArray(snapshot.entries))
+    return `${snapshot.entries.length} entr(ies)`
+  }],
+]
+
+async function signatureStatus(script, extra) {
+  const parsed = JSON.parse((await runPowerShell(['-EncodedCommand', encodeWindowsPowerShellCommand(script)], trustedEnv(extra))).trim())
+  assert.ok(parsed.status)
+  return `status=${parsed.status}`
+}
+
+for (const [name, limit, run] of trustedProbes) {
+  checks.push([`${name} probe answers inside its own limit under the trusted environment`, async () => {
+    const startedAt = Date.now()
+    const outcome = await run()
+    const elapsed = Date.now() - startedAt
+    console.log(`info ${name} probe under the trusted environment: ${outcome} (${elapsed}ms of ${limit}ms)`)
+    assert.ok(elapsed < limit, `took ${elapsed}ms, the app gives it ${limit}ms`)
+  }])
+}
+
+// The same probes with autoloading switched off right after their imports, so
+// a forgotten module is named instead of costing the whole scan. Printed only.
+// The two ACL probes are left out: they call Microsoft.PowerShell.Security\Get-Acl
+// module-qualified, which loads that module by name and is fast, but is refused
+// outright once autoloading is 'None', so they would only ever warn here.
+const trustedProbeScripts = [
+  ['check page Codex desktop', buildDiagnosticsCodexDesktopProbeScript(), {}],
+  ['external client inventory', windowsExternalClientInventoryScript(), {}],
+  ['uninstall desktop account', uninstallAccountProbeScript, {}],
+  ['Claude desktop manifest', buildClaudeDesktopManifestInspectionScript(manifestPath, '1.0.0.0', 'x64'), {}],
+  ['Claude desktop policy', claudeDesktopPolicyReadScript, {}],
+  ['proxy settings', buildReadProxyScopesScript(), {}],
+  ['system proxy owner lookup', windowsSystemProxyScript, { XINGMANG_SYSTEM_PROXY_REQUEST: systemProxyRequest }],
+  ['pending restart', windowsRestartStatusScript, {}],
+  ['App Installer package', appInstallerQueryScript, {}],
+  ['Node.js installer signature', nodeInstallerSignatureScript, { XINGMANG_NODE_MSI_PATH: process.execPath }],
+  ['native CLI signature', nativeCliSignatureScript, { XINGMANG_NATIVE_CLI: process.execPath }],
+]
+
+async function reportTrustedProbesWithoutAutoloading() {
+  for (const [name, script, extra] of trustedProbeScripts) {
+    const silenced = script.replace(/(Import-Module [^\n;]*)/, "$1; $PSModuleAutoLoadingPreference = 'None'")
+    const startedAt = Date.now()
+    const { error, stderr } = await runPowerShellCollecting(silenced, trustedEnv(extra))
+    const missing = [...new Set([...String(stderr).matchAll(/(?:The term '|无法将“)([A-Za-z]+-[A-Za-z]+)/g)].map((match) => match[1]))]
+    const notFound = /CommandNotFoundException/.test(String(stderr))
+    const outcome = missing.length
+      ? `missing ${missing.join(', ')}`
+      : notFound ? 'a command was not found (see stderr)'
+        : error ? `failed: ${String(error.message).split('\n')[0]}` : 'no missing command'
+    console.log(`${missing.length || notFound ? '::warning::' : 'info '}${name} probe with autoloading off: ${outcome} (${Date.now() - startedAt}ms)`)
+  }
+}
+
 // The shipped functions, in the environment the app gives them. Under
 // trustedCommandEnvironment() command autoloading used to cost about 22 s per
 // process on this runner (#714): the account probe ran past its own 10 s limit
@@ -316,6 +491,8 @@ for (const [name, check] of checks) {
 }
 await reportTrustedEnvironmentTimings()
 await reportCodexSingleProbesWithoutAutoloading()
+await reportTrustedProbesWithoutAutoloading()
+fs.rmSync(scratch, { recursive: true, force: true })
 if (failures.length) {
   console.error(`${failures.length} of ${checks.length} PowerShell probe checks failed`)
   process.exit(1)

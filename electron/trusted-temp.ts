@@ -6,6 +6,7 @@ import { promisify } from 'node:util'
 import { trustedCommandEnvironment } from './command-runner'
 import { windowsSystemExecutable } from './command-runner'
 import { sameLocalPathIdentity } from './path-identity'
+import { buildPowerShellModuleImportStatement } from './powershell-module-imports'
 import {
   inspectCurrentWindowsProcessAdministrator,
   resolveWindowsPowerShellExecutable,
@@ -191,6 +192,56 @@ export function windowsAclHardeningArguments(directory: string): string[] {
   ]
 }
 
+// The ACL read-back runs elevated under trustedCommandEnvironment(). Get-Acl is
+// module-qualified, which loads Security by name, but Get-Item, Get-ChildItem
+// and ConvertTo-Json were left to autoloading, which there costs the whole
+// System32 module scan (20 s and more on the CI runner, see
+// buildPowerShellModuleImportStatement) against a 15 s limit.
+export const protectedDirectoryAclModules = [
+  'Microsoft.PowerShell.Utility',
+  'Microsoft.PowerShell.Management',
+] as const
+
+export const protectedDirectoryAclTimeoutMs = 15_000
+
+export function buildProtectedDirectoryAclScript(): string {
+  return [
+    buildPowerShellModuleImportStatement(protectedDirectoryAclModules),
+    '$ErrorActionPreference = "Stop"',
+    '$trusted = @("S-1-5-18", "S-1-5-32-544")',
+    `$dangerousMask = [long]${dangerousWriteRights}`,
+    '$target = Get-Item -LiteralPath $env:XINGMANG_ACL_TARGET -Force',
+    '$items = @($target) + @(Get-ChildItem -LiteralPath $target.FullName -Force -Recurse)',
+    '$rootSnapshot = $null',
+    'foreach ($item in $items) {',
+    '  $acl = Microsoft.PowerShell.Security\\Get-Acl -LiteralPath $item.FullName',
+    '  $rules = @($acl.Access | ForEach-Object {',
+    '    $sid = $_.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value',
+    '    [pscustomobject]@{ identity = $sid; type = [string]$_.AccessControlType; rights = [long]$_.FileSystemRights }',
+    '  })',
+    '  $owner = $acl.Owner',
+    '  try { $owner = ([Security.Principal.NTAccount]$acl.Owner).Translate([Security.Principal.SecurityIdentifier]).Value } catch {}',
+    // 只有根断继承；子项按设计继承根的 ACL，要求它们各自 protected 会把正常
+    // 的继承状态判成失败。子项的实际权限仍由下面两项检查覆盖。
+    '  if ($item.FullName -eq $target.FullName -and -not $acl.AreAccessRulesProtected) { throw "受保护目录仍在继承上级 ACL: $($item.FullName)" }',
+    '  if ($trusted -notcontains [string]$owner) { throw "受保护目录子项所有者不可信: $($item.FullName)" }',
+    '  foreach ($rule in $rules) {',
+    '    if ($rule.type -eq "Allow" -and (($rule.rights -band $dangerousMask) -ne 0) -and ($trusted -notcontains $rule.identity)) {',
+    '      throw "受保护目录子项仍允许非管理员身份写入: $($item.FullName)"',
+    '    }',
+    '  }',
+    '  foreach ($required in $trusted) {',
+    '    $writable = @($rules | Where-Object { $_.type -eq "Allow" -and $_.identity -eq $required -and (($_.rights -band $dangerousMask) -eq $dangerousMask) }).Count -gt 0',
+    '    if (-not $writable) { throw "受保护目录子项缺少完整管理权限: $($item.FullName)" }',
+    '  }',
+    '  if ($item.FullName -eq $target.FullName) {',
+    '    $rootSnapshot = [pscustomobject]@{ protected = [bool]$acl.AreAccessRulesProtected; owner = [string]$owner; rules = $rules }',
+    '  }',
+    '}',
+    '$rootSnapshot | ConvertTo-Json -Compress -Depth 4',
+  ].join('; ')
+}
+
 async function currentProcessIsAdministrator(
   env: NodeJS.ProcessEnv,
   machinePaths: WindowsMachinePaths,
@@ -257,40 +308,7 @@ export async function protectWindowsDirectory(
     maxBuffer: 1024 * 1024,
   })
 
-  const aclScript = [
-    '$ErrorActionPreference = "Stop"',
-    '$trusted = @("S-1-5-18", "S-1-5-32-544")',
-    `$dangerousMask = [long]${dangerousWriteRights}`,
-    '$target = Get-Item -LiteralPath $env:XINGMANG_ACL_TARGET -Force',
-    '$items = @($target) + @(Get-ChildItem -LiteralPath $target.FullName -Force -Recurse)',
-    '$rootSnapshot = $null',
-    'foreach ($item in $items) {',
-    '  $acl = Microsoft.PowerShell.Security\\Get-Acl -LiteralPath $item.FullName',
-    '  $rules = @($acl.Access | ForEach-Object {',
-    '    $sid = $_.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value',
-    '    [pscustomobject]@{ identity = $sid; type = [string]$_.AccessControlType; rights = [long]$_.FileSystemRights }',
-    '  })',
-    '  $owner = $acl.Owner',
-    '  try { $owner = ([Security.Principal.NTAccount]$acl.Owner).Translate([Security.Principal.SecurityIdentifier]).Value } catch {}',
-    // 只有根断继承；子项按设计继承根的 ACL，要求它们各自 protected 会把正常
-    // 的继承状态判成失败。子项的实际权限仍由下面两项检查覆盖。
-    '  if ($item.FullName -eq $target.FullName -and -not $acl.AreAccessRulesProtected) { throw "受保护目录仍在继承上级 ACL: $($item.FullName)" }',
-    '  if ($trusted -notcontains [string]$owner) { throw "受保护目录子项所有者不可信: $($item.FullName)" }',
-    '  foreach ($rule in $rules) {',
-    '    if ($rule.type -eq "Allow" -and (($rule.rights -band $dangerousMask) -ne 0) -and ($trusted -notcontains $rule.identity)) {',
-    '      throw "受保护目录子项仍允许非管理员身份写入: $($item.FullName)"',
-    '    }',
-    '  }',
-    '  foreach ($required in $trusted) {',
-    '    $writable = @($rules | Where-Object { $_.type -eq "Allow" -and $_.identity -eq $required -and (($_.rights -band $dangerousMask) -eq $dangerousMask) }).Count -gt 0',
-    '    if (-not $writable) { throw "受保护目录子项缺少完整管理权限: $($item.FullName)" }',
-    '  }',
-    '  if ($item.FullName -eq $target.FullName) {',
-    '    $rootSnapshot = [pscustomobject]@{ protected = [bool]$acl.AreAccessRulesProtected; owner = [string]$owner; rules = $rules }',
-    '  }',
-    '}',
-    '$rootSnapshot | ConvertTo-Json -Compress -Depth 4',
-  ].join('; ')
+  const aclScript = buildProtectedDirectoryAclScript()
   const { stdout } = await execFileAsync(
     resolveWindowsPowerShellExecutable({ env, machinePaths }),
     ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', aclScript],
@@ -300,7 +318,7 @@ export async function protectWindowsDirectory(
         XINGMANG_ACL_TARGET: directory,
       },
       windowsHide: true,
-      timeout: 15_000,
+      timeout: protectedDirectoryAclTimeoutMs,
       maxBuffer: 256 * 1024,
     },
   )

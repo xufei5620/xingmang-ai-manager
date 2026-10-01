@@ -579,7 +579,8 @@ describe('Codex Desktop CDP debugging port ownership', () => {
   })
 
   it('imports Utility and then NetTCPIP by name before querying the port', () => {
-    expect(codexDesktopCdpPortOwnerModules).toEqual(['Microsoft.PowerShell.Utility', 'NetTCPIP'])
+    // The list names only NetTCPIP; the import statement puts Utility in front of it.
+    expect(codexDesktopCdpPortOwnerModules).toEqual(['NetTCPIP'])
     const importAt = codexDesktopCdpPortOwnerScript.indexOf(
       "Import-Module -Name 'Microsoft.PowerShell.Utility', 'NetTCPIP' -ErrorAction SilentlyContinue",
     )

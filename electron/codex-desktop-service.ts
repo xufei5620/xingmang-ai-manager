@@ -70,6 +70,7 @@ import type {
   UpdateSource,
   VersionUpdateStatus,
 } from './system-service'
+import { buildPowerShellModuleImportStatement } from './powershell-module-imports'
 import { powerShellLiteral, resolveWindowsPowerShellExecutable } from './windows-elevation'
 import { resolveWindowsMachinePaths } from './windows-machine-paths'
 import { repairCodexDesktopGlobalState } from './codex-desktop-state'
@@ -85,7 +86,6 @@ import {
 } from './codex-desktop-install-failure'
 import { codexDesktopKnownIssueLaunchSentence, resolveCodexDesktopKnownIssue } from './codex-desktop-known-issues'
 import {
-  buildPowerShellModuleImportStatement,
   inspectWindowsStoreAppLaunchContext,
   inspectWindowsStoreAvailability,
   readWindowsStoreAppLaunchContext,
@@ -1616,8 +1616,8 @@ export function buildCodexDesktopPackageProbeScript(): string {
  * cmdlet in the script to one of these names so a new one cannot slip past.
  */
 export const codexDesktopCombinedProbeModules = [
-  'Microsoft.PowerShell.Management',
   'Microsoft.PowerShell.Utility',
+  'Microsoft.PowerShell.Management',
   'CimCmdlets',
   'StartLayout',
   'Appx',

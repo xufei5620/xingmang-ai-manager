@@ -9,6 +9,7 @@ import { parseAuthenticodeSignature } from './node-runtime'
 import { sameLocalPathIdentity } from './path-identity'
 import { assertNoReparseComponents } from './safe-local-data'
 import { createTrustedTemporaryDirectory } from './trusted-temp'
+import { authenticodeSignatureModules, buildPowerShellPinnedModuleImportStatement } from './powershell-module-imports'
 import { encodeWindowsPowerShellCommand, resolveWindowsPowerShellExecutable, type WindowsCliExecutionMode } from './windows-elevation'
 import { resolveWindowsMachinePaths, type WindowsMachinePaths } from './windows-machine-paths'
 
@@ -35,11 +36,11 @@ class WorkBuddyInstallerError extends Error {
   }
 }
 const publisherPattern = /(?:^|,\s*)(?:CN|O)="?Tencent Technology \(Shenzhen\) Company Limited"?(?:,|$)/i
-const signatureScript = [
+export const workBuddyInstallerSignatureScript = [
   '$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)',
   "$ErrorActionPreference = 'Stop'",
   "$ProgressPreference = 'SilentlyContinue'",
-  "Import-Module -Name (Join-Path $PSHOME 'Modules\\Microsoft.PowerShell.Security\\Microsoft.PowerShell.Security.psd1') -Force -ErrorAction Stop",
+  buildPowerShellPinnedModuleImportStatement(authenticodeSignatureModules),
   '$signature = Get-AuthenticodeSignature -LiteralPath $env:XINGMANG_WORKBUDDY_INSTALLER -ErrorAction Stop',
   '[pscustomobject]@{ status = [string]$signature.Status; subject = [string]$signature.SignerCertificate.Subject } | ConvertTo-Json -Compress',
 ].join('; ')
@@ -212,7 +213,7 @@ export async function installWorkBuddyFromOfficial(options: WorkBuddyOfficialIns
     const shared = { env, cwd: directory, trustedOnly: mode === 'trusted-only', trustedPaths: [filePath], machinePaths, signal: options.signal, windowsHide: true, acceptedExitCodes: [0] }
     const result = await execute({
       executable: options.resolvePowerShellExecutable?.() ?? resolveWindowsPowerShellExecutable({ machinePaths }),
-      argv: ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', encodeWindowsPowerShellCommand(signatureScript)],
+      argv: ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', encodeWindowsPowerShellCommand(workBuddyInstallerSignatureScript)],
     }, { ...shared, timeoutMs: 60_000, maxOutputBytes: 64 * 1024 })
     const signature = parseAuthenticodeSignature(cleanCommandOutput(result.stdout))
     if (!signature || signature.status.toLowerCase() !== 'valid' || !publisherPattern.test(signature.subject)) throw new WorkBuddyInstallerError('WorkBuddy 安装包数字签名无效或发布者不是腾讯官方')

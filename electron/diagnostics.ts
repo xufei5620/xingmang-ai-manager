@@ -66,6 +66,7 @@ import {
   type WindowsExecutableMachine,
   type WindowsProcessorArchitecture,
 } from './windows-processor'
+import { buildPowerShellModuleImportStatement } from './powershell-module-imports'
 import {
   describeWindowsExecutionProbeFailure,
   inspectCurrentWindowsProcessHighIntegrity,
@@ -763,9 +764,23 @@ async function defaultInspectPowerShell(
   }
 }
 
-async function defaultInspectCodexDesktop(signal: AbortSignal): Promise<DiagnosticToolStatus> {
-  if (process.platform !== 'win32') return { installed: false, version: null, path: null, running: false }
-  const script = [
+/**
+ * 检查页「Codex 桌面端」那一项单独跑时的脚本。跑在 trustedCommandEnvironment() 下，
+ * 有一条命令要 PowerShell 自己去找模块就得把系统模块整个扫一遍（CI 上 20 多秒），
+ * 远超这一项的 6 秒，检查页就报「读不到」；所以开头先按名字导入用到的模块。
+ */
+export const diagnosticsCodexDesktopProbeModules = [
+  'Microsoft.PowerShell.Utility',
+  'Appx',
+  'Microsoft.PowerShell.Management',
+  'StartLayout',
+] as const
+
+export const diagnosticsCodexDesktopProbeTimeoutMs = 6_000
+
+export function buildDiagnosticsCodexDesktopProbeScript(): string {
+  return [
+    buildPowerShellModuleImportStatement(diagnosticsCodexDesktopProbeModules),
     '$app=@(Get-StartApps | Where-Object { $_.AppID -like "OpenAI.Codex*!App" } | Select-Object -First 1 Name,AppID)',
     // AppX registration is per user. Do not fall back to Get-AppxPackage
     // -AllUsers: a normal account is commonly denied that query, and an
@@ -775,13 +790,18 @@ async function defaultInspectCodexDesktop(signal: AbortSignal): Promise<Diagnost
     '$running=@(Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.ProcessName -like "Codex*" }).Count -gt 0',
     '[pscustomobject]@{Name=$app.Name;AppID=$app.AppID;Running=$running}|ConvertTo-Json -Compress',
   ].join(';')
+}
+
+async function defaultInspectCodexDesktop(signal: AbortSignal): Promise<DiagnosticToolStatus> {
+  if (process.platform !== 'win32') return { installed: false, version: null, path: null, running: false }
+  const script = buildDiagnosticsCodexDesktopProbeScript()
   const result = await runCommand({
     executable: resolveWindowsPowerShellExecutable(),
     argv: ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script],
   }, {
     env: trustedCommandEnvironment(),
     trustedOnly: true,
-    timeoutMs: 6_000,
+    timeoutMs: diagnosticsCodexDesktopProbeTimeoutMs,
     maxOutputBytes: 64 * 1024,
     signal,
   })
