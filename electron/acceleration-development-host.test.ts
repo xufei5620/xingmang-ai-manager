@@ -631,12 +631,19 @@ describe('development acceleration worker host', () => {
   })
 
   describe('proxy recovery retries', () => {
-    // setImmediate is not faked, so this lets real lstat calls settle while the
-    // retry delays stay under the test's control.
-    async function settle(condition: () => boolean = () => false) {
-      for (let round = 0; round < 200 && !condition(); round += 1) {
-        await new Promise<void>((resolve) => setImmediate(resolve))
-      }
+    // setImmediate is not faked, so this lets real lstat calls finish while the
+    // retry delays stay under the test's control. The host only reaches each
+    // step, and schedules the next retry delay, after a real lstat has come
+    // back, so waiting for that step must not give up after a fixed number of
+    // turns: on a busy runner a capped wait fell through, the next advance ran
+    // before that timer existed, and the last attempt never fired. A real hang
+    // still fails on the test timeout.
+    async function until(condition: () => boolean) {
+      while (!condition()) await new Promise<void>((resolve) => setImmediate(resolve))
+    }
+    // Only for checking that nothing more happens; it asserts no state of its own.
+    async function settle() {
+      for (let round = 0; round < 200; round += 1) await new Promise<void>((resolve) => setImmediate(resolve))
     }
     async function withJournal(run: (directory: string) => Promise<void>) {
       const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'xm-acceleration-retry-test-'))
@@ -656,7 +663,7 @@ describe('development acceleration worker host', () => {
         await expect(host.recover()).rejects.toThrow(/^本机加速进程启动失败。$/)
         expect(mocks.fork).toHaveBeenCalledOnce()
         await vi.advanceTimersByTimeAsync(accelerationProxyRecoveryRetryDelaysMs[0])
-        await settle(() => onProxyRecoveryRetry.mock.calls.length > 0)
+        await until(() => onProxyRecoveryRetry.mock.calls.length > 0)
         expect(mocks.fork).toHaveBeenCalledTimes(2)
         expect(worker.sent.map((message) => message.operation)).toEqual(['init'])
         expect(onProxyRecoveryRetry.mock.calls).toEqual([[1, true]])
@@ -677,12 +684,12 @@ describe('development acceleration worker host', () => {
         mocks.fork.mockReturnValueOnce(crashed).mockReturnValueOnce(healthy)
         const host = createAccelerationDevelopmentHost({ config, dataDirectory: directory, onProxyRecoveryRetry })
         const recovery = host.recover()
-        await settle(() => crashed.sent.length > 0)
+        await until(() => crashed.sent.length > 0)
         crashed.connected = false
         crashed.emit('exit', null)
         await expect(recovery).rejects.toThrow(/^本机加速进程初始化未完成。$/)
         await vi.advanceTimersByTimeAsync(accelerationProxyRecoveryRetryDelaysMs[0])
-        await settle(() => onProxyRecoveryRetry.mock.calls.length > 0)
+        await until(() => onProxyRecoveryRetry.mock.calls.length > 0)
         expect(mocks.fork).toHaveBeenCalledTimes(2)
         expect(onProxyRecoveryRetry.mock.calls).toEqual([[1, true]])
         await host.dispose()
@@ -697,20 +704,20 @@ describe('development acceleration worker host', () => {
         mocks.fork.mockReturnValueOnce(failing)
         const host = createAccelerationDevelopmentHost({ config, dataDirectory: directory, onProxyRecoveryRetry })
         const recovery = host.recover()
-        await settle(() => failing.sent.length > 0)
+        await until(() => failing.sent.length > 0)
         failing.respond(1, false)
         await expect(recovery).rejects.toThrow(/^本机加速进程初始化未完成。$/)
         expect(failing.disconnect).toHaveBeenCalledOnce()
         // It has not exited yet: the retry counts as failed and forks nothing.
         await vi.advanceTimersByTimeAsync(accelerationProxyRecoveryRetryDelaysMs[0])
-        await settle(() => onProxyRecoveryRetry.mock.calls.length > 0)
+        await until(() => onProxyRecoveryRetry.mock.calls.length > 0)
         expect(onProxyRecoveryRetry.mock.calls).toEqual([[1, false]])
         expect(mocks.fork).toHaveBeenCalledOnce()
         const healthy = new FakeWorker()
         mocks.fork.mockReturnValueOnce(healthy)
         failing.emit('exit', 0)
         await vi.advanceTimersByTimeAsync(accelerationProxyRecoveryRetryDelaysMs[1])
-        await settle(() => onProxyRecoveryRetry.mock.calls.length > 1)
+        await until(() => onProxyRecoveryRetry.mock.calls.length > 1)
         expect(onProxyRecoveryRetry.mock.calls).toEqual([[1, false], [2, true]])
         expect(mocks.fork).toHaveBeenCalledTimes(2)
         await host.dispose()
@@ -725,7 +732,7 @@ describe('development acceleration worker host', () => {
         await expect(host.recover()).rejects.toThrow(/^本机加速进程启动失败。$/)
         for (const [index, delayMs] of accelerationProxyRecoveryRetryDelaysMs.entries()) {
           await vi.advanceTimersByTimeAsync(delayMs)
-          await settle(() => onProxyRecoveryRetry.mock.calls.length > index)
+          await until(() => onProxyRecoveryRetry.mock.calls.length > index)
         }
         const attempts = accelerationProxyRecoveryRetryDelaysMs.length
         expect(onProxyRecoveryRetry.mock.calls).toEqual(Array.from({ length: attempts }, (_, index) => [index + 1, false]))
@@ -782,18 +789,18 @@ describe('development acceleration worker host', () => {
         mocks.fork.mockReturnValueOnce(first).mockReturnValueOnce(second).mockReturnValueOnce(third)
         const host = createAccelerationDevelopmentHost({ config, dataDirectory: directory, onHelperExited, onProxyRecoveryRetry })
         const start = host.startAcceleration('xm-account:1', 'system-proxy')
-        await settle(() => first.sent.length > 1)
+        await until(() => first.sent.length > 1)
         first.respond(2, true, { phase: 'active' })
         await start
         first.connected = false
         first.emit('exit', null)
-        await settle(() => second.sent.length > 0)
+        await until(() => second.sent.length > 0)
         second.respond(3, false)
-        await settle(() => onHelperExited.mock.calls.length > 0)
+        await until(() => onHelperExited.mock.calls.length > 0)
         expect(onHelperExited.mock.calls).toEqual([[false]])
         second.emit('exit', 0)
         await vi.advanceTimersByTimeAsync(accelerationProxyRecoveryRetryDelaysMs[0])
-        await settle(() => onProxyRecoveryRetry.mock.calls.length > 0)
+        await until(() => onProxyRecoveryRetry.mock.calls.length > 0)
         expect(onProxyRecoveryRetry.mock.calls).toEqual([[1, true]])
         expect(third.sent.map((message) => message.operation)).toEqual(['init'])
         await host.dispose()
