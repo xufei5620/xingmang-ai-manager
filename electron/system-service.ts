@@ -248,7 +248,7 @@ import type { StoreAppLaunchBlock } from './windows-store-app-launch'
 import { createExternalClientRuntime } from './external-client-runtime'
 import { inspectExternalToolConnection, resolveExternalToolProbeCredential, type ExternalToolProbeCredential } from './external-tool-config'
 import { runExternalClientCheck, type ExternalClientCheckResult } from './external-client-connection'
-import { buildClaudeDesktopModelList, createClaudeDesktopConfigService } from './claude-desktop-config'
+import { createClaudeDesktopConfigService } from './claude-desktop-config'
 import { resolveClaudeDesktopPaths } from './claude-desktop-paths'
 import { inspectClaudeDesktopStoreVirtualization } from './claude-desktop-manifest'
 import { assertClaudeDesktopUnmanaged } from './claude-desktop-policy'
@@ -5426,8 +5426,9 @@ export function createSystemService(
         assertContext()
         if (!status?.installed) throw new Error('请先安装 Claude Desktop，再保存第三方推理配置')
         const gateway = await claudeDesktopConfig(status, assertContext)
-        const input = { baseUrl: activeSite.providerBaseUrls.claude, apiKey, authScheme: 'bearer' as const,
-          models: buildClaudeDesktopModelList(models, model) }
+        // 只写客户选中的那一个型号。0.2.12 曾把当前 Key 能用的全部 claude-* 型号都写进去（#685），
+        // 客户 Mac 上 Claude Desktop 随即提示型号被拒、发消息没回复，退回只写一个（0.2.8 的做法）就好了。
+        const input = { baseUrl: activeSite.providerBaseUrls.claude, apiKey, authScheme: 'bearer' as const, models: [model] }
         const result = await gateway.saveGateway(input)
         assertContext()
         if (owner) await externalOwnership.write(tool, owner, activeSite.providerBaseUrls.claude, apiKey)
