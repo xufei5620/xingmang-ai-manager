@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { accountTabs, settingsGroups, updateFailureLabels, updateLabels, updatesTutorialTopic } from './business';
+import { accountTabs, macRuntimeTutorialTopic, settingsGroups, updateFailureLabels, updateLabels, updatesTutorialTopic } from './business';
 import { macKeychainTutorialTitle, tutorialTopics, updateDiskCleanupDetail, updateDiskCleanupTitle, type TutorialStep } from './tutorials';
 
 function step(topicId: string, action: string): TutorialStep {
@@ -92,7 +92,12 @@ describe('tutorial wording that follows the current app', () => {
   it('keeps npm and the bare word CLI out of what customers read', () => {
     // keywords only feed the search box, so customers who type「npm」or「CLI」still land on the right chapter.
     const visible = JSON.stringify(tutorialTopics.map(({ keywords: _keywords, ...topic }) => topic));
-    expect(visible).not.toMatch(/npm/i);
+    expect(visible).not.toMatch(/npm|PATH|TOML/i);
     expect(visible.replace(/(Codex|Gemini|Grok) CLI/g, '')).not.toMatch(/CLI/);
+  });
+
+  it('tells Mac users where to find Terminal before asking them to paste a command', () => {
+    const homebrew = tutorialTopics.find((topic) => topic.id === macRuntimeTutorialTopic)?.steps.find((entry) => entry.where === 'Mac 终端 → 安装命令');
+    expect(homebrew?.bullets?.[0]).toContain('Command + 空格');
   });
 });
