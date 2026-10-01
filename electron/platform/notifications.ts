@@ -32,7 +32,6 @@ export type PlatformHostNotification =
   | 'accelerationExhausted'
   | 'accelerationInterrupted'
   | 'accelerationInterruptedUnrestored'
-  | 'accelerationAutoStarted'
   | 'hiddenToTray'
   | 'hiddenToMenuBar'
   | 'paymentSettled'
@@ -231,12 +230,6 @@ const hostMessages: Record<
     kind: 'acceleration',
     title: '加速意外断开了',
     body: '网络可能暂时连不上，点这里回到加速页，星芒会再试着恢复。',
-  },
-  // 系统的网络设置被软件改过，要让他知道：开着、不扣时长、什么时候断。
-  accelerationAutoStarted: {
-    kind: 'acceleration',
-    title: '已为 Codex 桌面端连上加速',
-    body: '打开桌面端时自动连上的，不扣免费加速时长，关掉桌面端后会自动断开。',
   },
   // Windows 11 默认把新托盘图标收进任务栏右边的 ^ 里，小白找不到窗口会以为软件没了。
   hiddenToTray: {

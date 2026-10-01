@@ -765,7 +765,7 @@ const apiMethods = {
     record('ensure-marketplace', provider)
     codexCatalogAttempts += 1
     if (query.has('codexCatalogOffline') && codexCatalogAttempts === 1)
-      throw new Error('插件目录要从国外的网站下载，当前网络连不上或太慢。打开加速后再点一次「下载插件目录」，或者换个网络再试。')
+      throw new Error('插件目录要从国外的网站下载，当前网络连不上或太慢。请稍后再点一次「下载插件目录」，或者换个网络再试。')
     codexCatalogReady = true
     return api.listProviderExtensions(provider)
   },

@@ -17,8 +17,9 @@
  * - 桌面端退出后断开。不扣时长的线路一直开着就是白送不限时的加速，所以连上后
  *   定时问一次桌面端还在不在（isDesktopRunning），连续两次确认不在了就断开。
  *   只断自己连的那一次：用户停过、重连过，那条线路就归他了，不再管。
- * - 连上的那一刻要告诉他（onAutoConnected，宿主发一条系统通知），否则他不知道
- *   系统的网络设置被改过。
+ * - 悄悄地连。yoyo 2026-10-01 定：打开桌面端时加速只是「在后台顺手连一下」，不弹
+ *   通知、不切页面、不抢焦点；连上、跳过、失败都只记日志。加速页和托盘照实显示
+ *   「已自动连接 · 不扣时长」，他想看、想断随时能在那里找到。
  *
  * 不含任何 Electron 依赖：读状态、连接、断开与问桌面端都由宿主注入。
  */
@@ -46,8 +47,6 @@ export interface CodexDesktopAccelerationOptions {
   readState(scope: string): Promise<AccelerationState>
   /** 第二个参数是刚读到的那一份状态：宿主据此判断记住的模式当前支不支持。 */
   connect(scope: string, state: AccelerationState): Promise<AccelerationState>
-  /** 这次确实是本模块替用户连上的（已经连着的不算）。回调抛错不影响打开。 */
-  onAutoConnected?(state: AccelerationState): void
   /**
    * 桌面端还在不在跑：true / false / null（查不出来）。与 disconnect 一起给了
    * 才会在桌面端退出后断开自动连上的加速；缺省 = 旧行为，连上后不管。
@@ -253,12 +252,8 @@ export function createCodexDesktopAccelerationCoordinator(
       return skip('connect-failed', '打开 Codex 桌面端前自动连接加速未成功，已照常打开', { phase: connected.phase })
     }
     log('info', 'acceleration.codex-desktop.connected', '已为打开 Codex 桌面端自动连接加速，不扣免费时长，桌面端退出后自动断开')
-    // connecting 还不算连上：会话没有 connectedAt，通知也就没有稳定的去重编号。
-    if (connected.phase === 'active') {
-      watchSession(connected)
-      try { options.onAutoConnected?.(connected) }
-      catch (error) { log('warn', 'acceleration.codex-desktop.notify.failed', '自动连接加速的提醒没有发出', failureDetail(error)) }
-    }
+    // connecting 还不算连上：会话没有 connectedAt，没法认出桌面端退出时要断的是哪一次。
+    if (connected.phase === 'active') watchSession(connected)
     return { status: 'connected' }
   }
 

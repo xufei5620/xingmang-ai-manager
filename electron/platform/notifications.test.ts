@@ -131,16 +131,6 @@ describe('acceleration reminders sent by the main process', () => {
     h.preferences.acceleration = false
     expect(h.controller.notifyHost('accelerationInterrupted', 'xm-account:1:t2')).toBe('disabled')
   })
-  it('says an automatic connection is on, is free of charge and when it turns itself off', () => {
-    const h = setup()
-    expect(h.controller.notifyHost('accelerationAutoStarted', 'xm-account:1:t0')).toBe('requested')
-    expect(h.runtime.create).toHaveBeenLastCalledWith({
-      title: '已为 Codex 桌面端连上加速',
-      body: '打开桌面端时自动连上的，不扣免费加速时长，关掉桌面端后会自动断开。',
-      silent: true,
-    })
-    expect(h.controller.notifyHost('accelerationAutoStarted', 'xm-account:1:t0')).toBe('duplicate')
-  })
   it('says where the window went under the master switch alone, once per key', () => {
     const h = setup()
     for (const kind of Object.keys(h.preferences) as Array<keyof typeof h.preferences>) h.preferences[kind] = false
@@ -182,8 +172,7 @@ describe('acceleration reminders sent by the main process', () => {
     h.controller.notifyHost('accelerationExhausted', 'xm-account:1:t0')
     h.controller.notifyHost('accelerationInterrupted', 'xm-account:1:t0')
     h.controller.notifyHost('accelerationInterruptedUnrestored', 'xm-account:1:t0')
-    h.controller.notifyHost('accelerationAutoStarted', 'xm-account:1:t0')
-    expect(h.runtime.create).toHaveBeenCalledTimes(5)
+    expect(h.runtime.create).toHaveBeenCalledTimes(4)
     for (const call of (h.runtime.create as ReturnType<typeof vi.fn>).mock.calls) {
       expect(`${call[0].title} ${call[0].body}`).not.toMatch(/solov|sub2api|new-api|充值|购买|续费|内核|进程|代理|mihomo/i)
     }
