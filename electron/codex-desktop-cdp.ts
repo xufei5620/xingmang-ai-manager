@@ -3,6 +3,7 @@ import net from 'node:net'
 import { promisify } from 'node:util'
 import { trustedCommandEnvironment } from './command-runner'
 import { resolveWindowsPowerShellExecutable } from './windows-elevation'
+import { buildPowerShellModuleImportStatement } from './windows-store-app-launch'
 
 const execFileAsync = promisify(execFile)
 
@@ -360,12 +361,25 @@ export function getAvailableLoopbackPort(): Promise<number> {
 
 export type CodexDesktopCdpPortOwnership = 'unbound' | 'owned' | 'foreign'
 
-const cdpPortOwnerScript = String.raw`$ErrorActionPreference = 'Stop'
+// Utility goes first: importing NetTCPIP while Utility is not loaded set off
+// the same System32 module scan as autoloading (#714), and either one ran the
+// query past its 10 s limit on the CI runner.
+export const codexDesktopCdpPortOwnerModules = ['Microsoft.PowerShell.Utility', 'NetTCPIP'] as const
+
+// With no listener Get-NetTCPConnection reports "no MSFT_NetTCPConnection
+// objects found" as a non-terminating error, and powershell.exe then exits 1
+// even though the error is silenced. That made the normal "Codex has not bound
+// the port yet" state reject instead of reading as unbound, which aborted the
+// whole injection on its first check. A real failure (the command missing,
+// a terminating error) still stops the script under 'Stop' before the exit.
+export const codexDesktopCdpPortOwnerScript = String.raw`$ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 $OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+${buildPowerShellModuleImportStatement(codexDesktopCdpPortOwnerModules)}
 $port = [int]$env:XINGMANG_CODEX_CDP_PORT
 Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue |
-  ForEach-Object { [string]$_.OwningProcess }`
+  ForEach-Object { [string]$_.OwningProcess }
+exit 0`
 
 export function parseCodexDesktopCdpPortOwners(output: string): number[] {
   const owners: number[] = []
@@ -402,7 +416,7 @@ export async function resolveCodexDesktopCdpPortOwners(
     '-NoProfile',
     '-NonInteractive',
     '-EncodedCommand',
-    encodePowerShellCommand(cdpPortOwnerScript),
+    encodePowerShellCommand(codexDesktopCdpPortOwnerScript),
   ], {
     env: {
       ...trustedCommandEnvironment(baseEnv),
