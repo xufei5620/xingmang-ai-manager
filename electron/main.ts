@@ -88,7 +88,8 @@ import { runCodexContextLimitsMigration } from './codex-config-migration'
 import { findExecutable, runWithTrustedWindowsProcessEnvironment } from './command-runner'
 import { CodexExtensionService } from './codex-extensions'
 import { CodexSessionsService } from './codex-sessions'
-import { createNewApiClient } from './new-api-client'
+import { createNewApiClient, type NewApiRetryOffProxyFailure } from './new-api-client'
+import { buildAccountIdentity, createAccountIdentityTracker } from './account-identity-tracker'
 import { createRealmAccountService, type RealmAccountClientHandle, type RealmAccountSiteId } from './realm-account-service'
 import { createFileRealmAccountVault } from './realm-account-vault-file'
 import { createVaultRecoveryNotifier } from './vault-recovery-notice'
@@ -1335,6 +1336,9 @@ if (!hasSingleInstanceLock) {
           // a settings change is reflected on the very next diagnostics run.
           relaySite: resolveRelaySite(systemService.readStoredConfig().relaySiteId),
           inspectAccelerationActive: accelerationRunning,
+          // 「电脑里的代理设置」顺带看账号请求走不走系统代理：账号请求用的就是
+          // defaultSession 的 net.fetch，问它本身最准，也不用另起命令读系统设置。
+          resolveAppProxy: (url) => session.defaultSession.resolveProxy(url),
           // 「Claude 命令确认方式」要分清 bypassPermissions 是我们写的还是别人写的。
           // 来源的判定要比对当前登录账号，只有 system-service 那边算得出来。
           readClaudeConfigOwnership: () => systemService.getConfig(false).providers.claude.configurationOwnership ?? null,
@@ -1732,13 +1736,39 @@ if (!hasSingleInstanceLock) {
         },
       }),
     })
-    let publishedAccountIdentity = ''
+    const accountIdentity = createAccountIdentityTracker()
     let acceleration: ReturnType<typeof createAccelerationService> | undefined
     async function accelerationRunning(): Promise<boolean> {
       const scope = readAccelerationAccountScope()
       if (!scope || !acceleration) return false
       const { phase } = await acceleration.getAccelerationState(scope)
       return phase === 'active' || phase === 'connecting' || phase === 'stopping'
+    }
+    // 系统代理指着一个已经关掉的代理软件时，星芒自己改走直连（更新那条路早就这么做）。
+    // 只动 defaultSession，不落盘；装工具时给子进程的代理也按它 resolveProxy，一起跟着直连。
+    const proxyBypass = createProxyBypass({
+      probeUrl: () => {
+        try { return relayStatusProbeUrl(resolveRelaySite(systemService.readStoredConfig().relaySiteId)) }
+        catch { return null }
+      },
+      resolveProxy: (url) => session.defaultSession.resolveProxy(url),
+      setProxy: (mode) => session.defaultSession.setProxy({ mode }),
+      probe: (url) => probeDirectConnection((input, init) => net.fetch(input, init), url),
+      accelerationActive: accelerationRunning,
+      log: (level, event, message, detail) => runtimeLog.log(level, 'network', event, message, detail),
+    })
+    // 系统代理活着却不转发时（代理软件换了线路、规则把账号服务挡了），账号请求只会
+    // 一直超时。客户端在网络层失败后来问这一句，和登没登录无关；所以兜底必须建在
+    // 账号服务之前，开机恢复登录的头一个请求就用得上。
+    async function recoverAccountRequestOffProxy(failure: NewApiRetryOffProxyFailure): Promise<boolean> {
+      const direct = await proxyBypass.recoverFailedRequest(failure.startedAt)
+      if (direct) {
+        runtimeLog.log('info', 'network', 'proxy-bypass.account-retry', '账号请求经系统代理没走通，已改直接联网', {
+          reason: failure.reason,
+          method: failure.method,
+        })
+      }
+      return direct
     }
     const accounts = createRealmAccountService({
       vault,
@@ -1754,6 +1784,7 @@ if (!hasSingleInstanceLock) {
             credential: { kind: 'new-api', cookies: persisted.cookies } }) : null
         }
         client = createNewApiClient({ baseUrl: 'https://xm.solov.cc', fetchImpl: relayFetch,
+          retryOffProxy: recoverAccountRequestOffProxy,
           onCredentialRotation: async (persisted) => {
             const revision = client.getSessionRevision()
             const owner = { realmId: 'xm-account' as const, userId: String(persisted.userId) }
@@ -1787,13 +1818,14 @@ if (!hasSingleInstanceLock) {
           previous.canvasRuns.whenIdle()] : [])])
       },
       onChanged: (siteId, state) => {
-        void acceleration?.onAccountChanged().catch((error) => runtimeLog.exception('network', 'acceleration.account-change.failed', error))
-        const identity = `${siteId}:${state.account?.userId ?? 'guest'}:${accounts.client.getSessionRevision!()}`
+        const identity = buildAccountIdentity(siteId, state.account?.userId, accounts.client.getSessionRevision!())
         for (const window of BrowserWindow.getAllWindows()) {
           if (!window.isDestroyed()) window.webContents.send(ipcEventChannels.onAccountSessionChanged, state)
         }
-        if (publishedAccountIdentity === identity) return
-        publishedAccountIdentity = identity
+        if (!accountIdentity.advance(identity)) return
+        // 只在换了人时才让加速作废在路上的请求：续期换凭据、付款后刷新也会走到这里，
+        // 那时推进加速的代数会让正在查的状态报「账号已变更」，查询途中还会把正在跑的加速停掉。
+        void acceleration?.onAccountChanged().catch((error) => runtimeLog.exception('network', 'acceleration.account-change.failed', error))
         for (const business of businesses.values()) {
           business.chatService.cancelAll()
           business.imageService.cancelAll()
@@ -2579,19 +2611,6 @@ if (!hasSingleInstanceLock) {
         powerMonitor.off('resume', onResume)
       })
     }
-    // 系统代理指着一个已经关掉的代理软件时，星芒自己改走直连（更新那条路早就这么做）。
-    // 只动 defaultSession，不落盘；装工具时给子进程的代理也按它 resolveProxy，一起跟着直连。
-    const proxyBypass = createProxyBypass({
-      probeUrl: () => {
-        try { return relayStatusProbeUrl(resolveRelaySite(systemService.readStoredConfig().relaySiteId)) }
-        catch { return null }
-      },
-      resolveProxy: (url) => session.defaultSession.resolveProxy(url),
-      setProxy: (mode) => session.defaultSession.setProxy({ mode }),
-      probe: (url) => probeDirectConnection((input, init) => net.fetch(input, init), url),
-      accelerationActive: accelerationRunning,
-      log: (level, event, message, detail) => runtimeLog.log(level, 'network', event, message, detail),
-    })
     attachProxyBypassState(() => proxyBypass.active())
     const chatHistoryStore = createAiChatHistoryStore({ root: path.join(managerDataDirectory, 'chat-history') })
     const unregisterIpcHandlers = registerIpcHandlers({

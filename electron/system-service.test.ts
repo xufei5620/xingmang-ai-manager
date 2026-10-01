@@ -2482,6 +2482,119 @@ describe.runIf(process.platform === 'linux')('Same-user npm install prefix', () 
       .toEqual(['version', 'download', 'verify', 'install', 'final-check'])
     expect(progress.filter((event) => event.state !== 'success' && !event.stage)).toEqual([])
   })
+
+  it('fails the install when npm silently skipped the platform build', async () => {
+    const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-same-user-native-'))
+    temporaryDirectories.push(temporaryRoot)
+    const root = fs.realpathSync(temporaryRoot)
+    const homeDirectory = path.join(root, 'home')
+    const userPrefix = path.join(root, 'npm-global')
+    const runtimeBin = path.join(root, 'runtime-bin')
+    fs.mkdirSync(homeDirectory, { recursive: true })
+    fs.mkdirSync(path.join(userPrefix, 'bin'), { recursive: true })
+    fs.mkdirSync(runtimeBin, { recursive: true })
+    fs.writeFileSync(path.join(homeDirectory, '.npmrc'), `prefix=${userPrefix}\n`)
+    const npmExecutable = path.join(runtimeBin, 'npm')
+    fs.writeFileSync(npmExecutable, '#!/bin/sh\nexit 0\n')
+    fs.chmodSync(npmExecutable, 0o700)
+    vi.stubEnv('HOME', homeDirectory)
+    vi.stubEnv('PATH', `${runtimeBin}${path.delimiter}${path.join(userPrefix, 'bin')}`)
+    vi.stubEnv('npm_config_prefix', undefined)
+    vi.stubEnv('npm_config_userconfig', undefined)
+
+    const expectedVersion = recommendedCodexVersion()
+    const integrity = `sha512-${Buffer.alloc(64, 0x32).toString('base64')}`
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request) => {
+      const url = String(input)
+      if (url.includes('cloudflare.com/cdn-cgi/trace')) {
+        return new Response('ip=203.0.113.8\nloc=US\n', { status: 200 })
+      }
+      if (url === npmPackageVersionUrl('https://registry.npmjs.org', '@openai/codex', expectedVersion)) {
+        return new Response(JSON.stringify({
+          name: '@openai/codex',
+          version: expectedVersion,
+          dist: { integrity },
+        }), { status: 200 })
+      }
+      throw new Error(`Unexpected fetch: ${url}`)
+    }))
+
+    const packageRoot = path.join(userPrefix, 'lib', 'node_modules', '@openai', 'codex')
+    let globalInstalls = 0
+    const runCommand = vi.fn(async (
+      spec: { executable: string; argv: readonly string[] },
+      options: { cwd?: string } = {},
+    ) => {
+      if (spec.executable !== npmExecutable) throw new Error(`Unexpected command: ${spec.executable}`)
+      if (spec.argv.includes('--package-lock-only')) {
+        const cwd = options.cwd
+        if (!cwd) throw new Error('Fake npm requires cwd')
+        const manifest = JSON.parse(fs.readFileSync(path.join(cwd, 'package.json'), 'utf8')) as {
+          name: string
+          version: string
+          dependencies: Record<string, string>
+        }
+        const [[packageName, version]] = Object.entries(manifest.dependencies)
+        fs.writeFileSync(path.join(cwd, 'package-lock.json'), JSON.stringify({
+          name: manifest.name,
+          version: manifest.version,
+          lockfileVersion: 3,
+          packages: {
+            '': { dependencies: manifest.dependencies },
+            [`node_modules/${packageName}`]: { version, integrity },
+          },
+        }))
+      } else if (spec.argv[0] === 'install' && spec.argv.includes('--global')) {
+        // npm exits 0 after dropping an optional dependency whose download failed.
+        globalInstalls += 1
+        fs.mkdirSync(packageRoot, { recursive: true })
+        fs.writeFileSync(path.join(packageRoot, 'package.json'), JSON.stringify({
+          name: '@openai/codex',
+          version: expectedVersion,
+          optionalDependencies: { '@openai/codex-linux-x64': `npm:@openai/codex@${expectedVersion}-linux-x64` },
+        }))
+      }
+      return {
+        executable: spec.executable,
+        argv: [...spec.argv],
+        exitCode: 0,
+        signal: null,
+        stdout: '',
+        stderr: '',
+        outputBytes: 0,
+        durationMs: 1,
+      }
+    })
+    const resolveCliInstallation = vi.fn<typeof resolveCliInstallationForTest>(async () => globalInstalls > 0
+      ? {
+          commandPath: path.join(userPrefix, 'bin', 'codex'),
+          installDirectory: packageRoot,
+          packageRoot,
+          npmPrefix: userPrefix,
+          packageVersion: expectedVersion,
+          source: 'npm',
+        }
+      : null)
+    const target = { isDestroyed: () => false, send: vi.fn() }
+    const service = createSystemService(
+      new AppSettingsStore(path.join(root, 'settings.json'), root),
+      { platform: 'linux', runCommand, resolveCliInstallation },
+    )
+
+    await expect(service.installCli('codex', target)).rejects.toThrow('Codex CLI 的主程序没有下载完整')
+    expect(target.send).not.toHaveBeenCalledWith(
+      'cli:install-progress',
+      expect.objectContaining({ state: 'success' }),
+    )
+
+    fs.mkdirSync(path.join(packageRoot, 'node_modules', '@openai', 'codex-linux-x64'), { recursive: true })
+    fs.writeFileSync(path.join(packageRoot, 'node_modules', '@openai', 'codex-linux-x64', 'package.json'), '{}')
+    await service.installCli('codex', target)
+    expect(target.send).toHaveBeenCalledWith(
+      'cli:install-progress',
+      expect.objectContaining({ state: 'success' }),
+    )
+  })
 })
 
 describe('Python runtime installation', () => {

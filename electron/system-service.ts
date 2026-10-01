@@ -201,6 +201,7 @@ import {
 import { fetchGrokStableVersion, resolveGrokInstallVersion } from './grok-update'
 import { createNetworkLocationCache, reloadNetworkProxyConfiguration } from './network-location-cache'
 import { readBoundedUtf8File } from './bounded-file'
+import { cliNativePackageMissingMessage, findMissingCliNativePackage } from './cli-native-package'
 import { readBoundedResponseText } from './bounded-response'
 import { launchMacosTerminal, type MacosTerminalLaunchPlan } from './macos-platform'
 import { relayApiProbeBaseUrl, resolveRelaySite } from './relay-sites'
@@ -248,7 +249,7 @@ import type { StoreAppLaunchBlock } from './windows-store-app-launch'
 import { createExternalClientRuntime } from './external-client-runtime'
 import { inspectExternalToolConnection, resolveExternalToolProbeCredential, type ExternalToolProbeCredential } from './external-tool-config'
 import { runExternalClientCheck, type ExternalClientCheckResult } from './external-client-connection'
-import { buildClaudeDesktopModelList, createClaudeDesktopConfigService } from './claude-desktop-config'
+import { createClaudeDesktopConfigService } from './claude-desktop-config'
 import { resolveClaudeDesktopPaths } from './claude-desktop-paths'
 import { inspectClaudeDesktopStoreVirtualization } from './claude-desktop-manifest'
 import { assertClaudeDesktopUnmanaged } from './claude-desktop-policy'
@@ -4110,6 +4111,18 @@ export function createSystemService(
           },
         })
       }
+      const assertCliNativePackageInstalled = async (packageRoot: string) => {
+        const missing = await findMissingCliNativePackage(packageRoot, definition.packageName, platform)
+        if (!missing) return
+        runtimeLog?.log(
+          'warn',
+          'install',
+          'cli.install.native-package-missing',
+          `${definition.name} 的平台主程序包 ${missing} 没有装上（npm 跳过了下载失败的可选依赖）`,
+          { provider },
+        )
+        throw new Error(cliNativePackageMissingMessage(definition.name))
+      }
       const createResolutionManifest = async (directory: string) => {
         await fs.promises.mkdir(directory, { recursive: true })
         const manifestPath = path.join(directory, 'package.json')
@@ -4269,6 +4282,14 @@ export function createSystemService(
             })
           } else {
             await lifecycle()
+            // 在这一个源里就查：缺了就记成这个源失败，接着换下一个源再下一次，
+            // 而不是带着装不全的程序走到替换托管目录那一步。
+            const stagedPrefix = attemptPrefix ?? sameUserNpmPrefix?.prefix ?? null
+            if (stagedPrefix) {
+              await assertCliNativePackageInstalled(
+                managedCliPackageDirectory(stagedPrefix, definition.packageName, platform),
+              )
+            }
           }
           installPrefix = attemptPrefix
           installed = true
@@ -4355,6 +4376,9 @@ export function createSystemService(
       } else if (provider !== 'grok' || grokInstallStrategy !== 'darwin-official-npm') {
         const npmGlobalRoot = await resolveNpmGlobalRoot(npmExecutable, commandEnvironment())
         verification = await inspectCliTool(provider, npmExecutable, npmGlobalRoot)
+        if (verification.installation?.source === 'npm' && verification.installation.packageRoot) {
+          await assertCliNativePackageInstalled(verification.installation.packageRoot)
+        }
       }
       const darwinGrokVerified = provider === 'grok' && grokInstallStrategy === 'darwin-official-npm'
       if (!darwinGrokVerified && (
@@ -5426,8 +5450,9 @@ export function createSystemService(
         assertContext()
         if (!status?.installed) throw new Error('请先安装 Claude Desktop，再保存第三方推理配置')
         const gateway = await claudeDesktopConfig(status, assertContext)
-        const input = { baseUrl: activeSite.providerBaseUrls.claude, apiKey, authScheme: 'bearer' as const,
-          models: buildClaudeDesktopModelList(models, model) }
+        // 只写客户选中的那一个型号。0.2.12 曾把当前 Key 能用的全部 claude-* 型号都写进去（#685），
+        // 客户 Mac 上 Claude Desktop 随即提示型号被拒、发消息没回复，退回只写一个（0.2.8 的做法）就好了。
+        const input = { baseUrl: activeSite.providerBaseUrls.claude, apiKey, authScheme: 'bearer' as const, models: [model] }
         const result = await gateway.saveGateway(input)
         assertContext()
         if (owner) await externalOwnership.write(tool, owner, activeSite.providerBaseUrls.claude, apiKey)
