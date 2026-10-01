@@ -19,6 +19,7 @@ import {
   applyCodexCliNotify,
   applyGeminiCliHooks,
   applyGrokCliHooks,
+  grokCliHookCommand,
   removeClaudeCliHooks,
   removeCodexCliNotify,
   removeGeminiCliHooks,
@@ -111,6 +112,11 @@ export interface NativeConfigSummary extends Omit<NativeConfigInspection, 'apiKe
    * 命令行，我们写下去的那种写法在新命令行里跑不起来。为真时 cliHooksStale 也为真，只多一句说明。
    */
   cliHooksShellChanged?: boolean
+  /**
+   * 只给 Windows 上的 Grok：配置是本软件写的，但做完提醒、防睡那几条钩子一条都没有——只装 Grok
+   * 时电脑上还没有运行环境，钩子写不出来。首页据此说一句缺什么、给「补上」。缺省 = 不缺。
+   */
+  cliHooksMissing?: boolean
   /**
    * 这次打开软件时发现上面那种情况，已经替用户改好了（先备份再改，改完查过）。首页据此轻轻说一句。
    * 缺省 = 这次没自动改过。
@@ -2671,6 +2677,11 @@ export interface ManagedCliHookRewrite {
   cliHook?: CliHookInvocation
   /** 同上，只给 Claude Code。 */
   claudeStatusLineCommand?: string
+  /**
+   * 只给 Grok：原来一条都没写（Windows 上只装 Grok 时没有运行环境）也按 cliHook 补上。
+   * 缺省 = 旧行为，没写过的不补。
+   */
+  addIfMissing?: boolean
 }
 
 /**
@@ -2719,7 +2730,11 @@ function managedCliHookPlan(
     case 'grok': {
       if (requireConfigText(configPath, '现有 Grok config.toml') === null) return null
       const parsed = requireToml(configPath, '现有 Grok config.toml')
-      if (managedCliHookTargets('grok', parsed).length === 0) return null
+      if (managedCliHookTargets('grok', parsed).length === 0) {
+        // 只装 Grok、当时没有运行环境，钩子一条没写；后来有了就补上（addIfMissing）。
+        // 补不出来（推到 cmd）就别动文件，免得每次都白白多一份备份。
+        if (!rewrite?.addIfMissing || !rewrite.cliHook || grokCliHookCommand(rewrite.cliHook) === null) return null
+      }
       removeGrokCliHooks(parsed)
       if (rewrite?.cliHook) applyGrokCliHooks(parsed, rewrite.cliHook)
       return { path: configPath, content: tomlContent(parsed) }

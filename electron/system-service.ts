@@ -55,7 +55,7 @@ import {
   resolveSameUserNpmPrefix,
 } from './npm-user-prefix'
 import { buildClaudeStatusLineCommand } from './claude-status-line'
-import { buildCliHookInvocation, cliHookEventsDirectory, cliHookTargetsStale, grokCliHookShellChanged, resolveGrokWindowsShell, type CliHookInvocation, type GrokWindowsShell } from './cli-hooks'
+import { buildCliHookInvocation, cliHookEventsDirectory, cliHookTargetsStale, grokCliHookCommand, grokCliHookShellChanged, resolveGrokWindowsShell, type CliHookInvocation, type GrokWindowsShell } from './cli-hooks'
 import { readWindowsLivePath, withAppendedWindowsPath } from './windows-live-path'
 import { isCodexDesktopExecutable } from './codex-desktop'
 import {
@@ -2360,10 +2360,27 @@ export function ccSwitchLeftoverField(leftover: CcSwitchLeftover | null): { ccSw
 
 /** 首页「提醒设置要修」那两项；「换了命令行」只在真换了时才带，旧快照和测试夹具不用跟着改。null = 引导预览，一律不报。 */
 export function cliHooksSummaryFields(
-  state: { stale: boolean; shellChanged: boolean } | null,
-): { cliHooksStale: boolean; cliHooksShellChanged?: true } {
+  state: { stale: boolean; shellChanged: boolean; missing?: boolean } | null,
+): { cliHooksStale: boolean; cliHooksShellChanged?: true; cliHooksMissing?: true } {
   if (!state) return { cliHooksStale: false }
-  return state.shellChanged ? { cliHooksStale: true, cliHooksShellChanged: true } : { cliHooksStale: state.stale }
+  if (state.shellChanged) return { cliHooksStale: true, cliHooksShellChanged: true }
+  return !state.stale && state.missing ? { cliHooksStale: false, cliHooksMissing: true } : { cliHooksStale: state.stale }
+}
+
+/**
+ * Windows 上只装 Grok 时不装运行环境（#695），那时钩子写不出来，配置照写，Grok 于是少了做完提醒和
+ * 防睡两项。只认本软件替当前账号写的那份（连着星芒、有 Key）；推到 cmd 本来就不写，不算缺。
+ * Mac 上的 Grok 从 npm 装，没有运行环境装不上，不会走到这里。
+ */
+export function grokCliHooksMissing(input: {
+  platform: NodeJS.Platform
+  provider: ProviderId
+  managedTargets: number
+  relayConfigured: boolean
+  shell: GrokWindowsShell | null
+}): boolean {
+  return input.platform === 'win32' && input.provider === 'grok' && input.managedTargets === 0
+    && input.relayConfigured && input.shell !== null && input.shell !== 'cmd'
 }
 
 /**
@@ -3401,6 +3418,11 @@ export function createSystemService(
   ): Promise<NodeRuntimeInstallResult> {
     return installationQueue.enqueue('runtime:node',
       () => withDownloadAcceleration(null, () => installNodeRuntimeOperation(target, request)))
+      .then(async (result) => {
+        // 等补完再回，首页随后那次刷新就不再显示「补上」。它自己兜住所有错误，不影响装运行环境的结果。
+        if (platform === 'win32') await addMissingGrokHooks('runtime-installed')
+        return result
+      })
   }
 
   async function restartWindows(): Promise<void> {
@@ -3560,6 +3582,34 @@ export function createSystemService(
       runtimeLog?.log('info', 'config', 'grok-hooks.rewritten', '装好 Git 后按新的命令行重写了 Grok 的钩子', { shell: cliHook.grokWindowsShell ?? null })
     } catch (error) {
       runtimeLog?.log('warn', 'config', 'grok-hooks.rewrite-failed', '装好 Git 后重写 Grok 钩子没成功', { reason: credentialFailureReason(error) })
+    }
+  }
+
+  /**
+   * Windows 上只装 Grok 时没有运行环境，做完提醒和防睡的钩子写不出来（#695）。等这台电脑有了运行环境
+   * （星芒装的、客户自己装的都算），就把那几条补上：装好运行环境后、打开 Grok 前、每次启动各看一眼。
+   * 只补本软件替当前账号写的那份，其余设置一个字不动，写之前照旧备份。补不上只记日志，下次再看。
+   */
+  async function addMissingGrokHooks(trigger: 'runtime-installed' | 'before-launch' | 'startup'): Promise<boolean> {
+    if (platform !== 'win32') return false
+    try {
+      await refreshWindowsLivePath()
+      if (!managedCliHooksState('grok').missing) return false
+      const owner = serviceOptions.getExternalClientAccountId?.() ?? null
+      if (!owner || configOwnership.read('grok', inspectNativeProviderConfig('grok'), owner) !== 'account') return false
+      const cliHook = await resolveCliHookInvocation()
+      // 还是找不到运行环境：首页那句「缺什么」留着，不写文件。
+      if (!cliHook || grokCliHookCommand(cliHook) === null) return false
+      await serializeConfigWrite(async () => {
+        rewriteManagedCliHooks('grok', providerRoots, { cliHook, addIfMissing: true })
+      })
+      const added = !managedCliHooksState('grok').missing
+      runtimeLog?.log(added ? 'info' : 'warn', 'config', added ? 'grok-hooks.added' : 'grok-hooks.add-incomplete',
+        added ? '有了运行环境，给 Grok 补上了做完提醒和防睡' : '给 Grok 补做完提醒和防睡没补上', { trigger, shell: cliHook.grokWindowsShell ?? null })
+      return added
+    } catch (error) {
+      runtimeLog?.log('warn', 'config', 'grok-hooks.add-failed', '给 Grok 补做完提醒和防睡没成功', { trigger, reason: credentialFailureReason(error) })
+      return false
     }
   }
 
@@ -5540,15 +5590,31 @@ export function createSystemService(
     return resolveGrokWindowsShell(withAppendedWindowsPath(process.env, windowsLivePath), (candidate) => fs.existsSync(candidate))
   }
 
-  /** 本软件写进这家配置的钩子、状态行要不要重写：指向旧位置（cliHookTargetsStale），或 Windows 上 Grok 换了 shell。读不出来按不用算。 */
-  function managedCliHooksState(provider: ProviderId): { stale: boolean; shellChanged: boolean } {
+  /**
+   * 本软件写进这家配置的钩子、状态行要不要重写：指向旧位置（cliHookTargetsStale），或 Windows 上 Grok 换了 shell；
+   * 以及 Windows 上只装 Grok 时一条都没写上（grokCliHooksMissing）。读不出来按不用算。
+   */
+  function managedCliHooksState(provider: ProviderId): { stale: boolean; shellChanged: boolean; missing: boolean } {
     try {
       const targets = inspectManagedCliHookTargets(provider, providerRoots)
-      const shellChanged = provider === 'grok' && platform === 'win32' && grokCliHookShellChanged(targets, expectedGrokWindowsShell())
+      const windowsGrok = provider === 'grok' && platform === 'win32'
+      const shell = windowsGrok ? expectedGrokWindowsShell() : null
+      const shellChanged = shell !== null && grokCliHookShellChanged(targets, shell)
       const moved = cliHookTargetsStale(targets, [serviceOptions.cliHookScriptPath, serviceOptions.claudeStatusLineScriptPath])
-      return { stale: moved || shellChanged, shellChanged }
+      let missing = false
+      if (windowsGrok && targets.length === 0) {
+        const current = inspectNativeProviderConfig(provider)
+        missing = grokCliHooksMissing({
+          platform,
+          provider,
+          managedTargets: targets.length,
+          relayConfigured: current.hasApiKey && current.matchesRelay,
+          shell,
+        })
+      }
+      return { stale: moved || shellChanged, shellChanged, missing }
     } catch {
-      return { stale: false, shellChanged: false }
+      return { stale: false, shellChanged: false, missing: false }
     }
   }
 
@@ -5564,6 +5630,10 @@ export function createSystemService(
   async function repairGrokHooksBeforeLaunch(): Promise<void> {
     await refreshWindowsLivePath()
     const state = managedCliHooksState('grok')
+    if (state.missing) {
+      await addMissingGrokHooks('before-launch')
+      return
+    }
     if (!state.stale) return
     const shell = platform === 'win32' ? expectedGrokWindowsShell() : null
     try {
@@ -5585,8 +5655,11 @@ export function createSystemService(
     const cliHook = await resolveCliHookInvocation()
     const claudeStatusLineCommand = await resolveClaudeStatusLineCommand(provider)
     return serializeConfigWrite(async () => {
-      const result = rewriteManagedCliHooks(provider, providerRoots, { cliHook, claudeStatusLineCommand })
-      if (cliHooksStale(provider)) throw new Error('提醒设置没修好，原来的设置已备份，可以在「备份」里找回')
+      // 首页「补上」也走这里：Grok 一条没写过的，这次一并补上。
+      const result = rewriteManagedCliHooks(provider, providerRoots, { cliHook, claudeStatusLineCommand, addIfMissing: provider === 'grok' })
+      const after = managedCliHooksState(provider)
+      if (after.stale) throw new Error('提醒设置没修好，原来的设置已备份，可以在「备份」里找回')
+      if (cliHook && after.missing) throw new Error('做完提醒和防睡还没补上，先点首页的「补上」准备好运行环境再试')
       runtimeLog?.log('info', 'config', 'cli-hooks.repaired', '已把工具里的提醒设置改到这次安装的位置', {
         provider,
         rewritten: Boolean(cliHook),
@@ -5614,6 +5687,10 @@ export function createSystemService(
     autoRepairCheckedOwners.add(owner)
     const repaired: ProviderId[] = []
     for (const provider of providerIds) {
+      if (provider === 'grok' && platform === 'win32') {
+        // 只装 Grok 时缺的那几条：这台电脑后来有了运行环境就补上（addMissingGrokHooks 自己看归属）。
+        if (await addMissingGrokHooks('startup')) repaired.push(provider)
+      }
       let due = false
       try {
         due = shouldAutoRepairCliHooks({

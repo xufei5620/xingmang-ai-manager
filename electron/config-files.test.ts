@@ -2967,6 +2967,31 @@ describe('hooks and status line pointing at an old location', () => {
     }
   })
 
+  it('adds the Grok hooks to a config saved without them only when asked, and keeps the key', () => {
+    const roots = providerRoots(temporaryHome())
+    const [configPath] = providerConfigPaths('grok', roots)
+    saveProviderConfig('grok', 'sk-relay', testModels.grok, 'reset', roots, {}, providerBaseUrls)
+    const before = fs.readFileSync(configPath, 'utf8')
+    const posixHook = { ...moved, platform: 'linux' as const }
+
+    expect(rewriteManagedCliHooks('grok', roots, { cliHook: posixHook })).toEqual({ backups: [], files: [] })
+    expect(rewriteManagedCliHooks('grok', roots, { addIfMissing: true })).toEqual({ backups: [], files: [] })
+    expect(rewriteManagedCliHooks('grok', roots, { cliHook: { ...moved, platform: 'win32', grokWindowsShell: 'cmd' }, addIfMissing: true }))
+      .toEqual({ backups: [], files: [] })
+    expect(fs.readFileSync(configPath, 'utf8')).toBe(before)
+
+    const result = rewriteManagedCliHooks('grok', roots, { cliHook: posixHook, addIfMissing: true })
+    expect(result.backups).toHaveLength(1)
+    expect(inspectManagedCliHookTargets('grok', roots)).toHaveLength(6)
+    expect(inspectProviderConfig('grok', roots).apiKey).toBe('sk-relay')
+
+    const powerShell = { ...moved, platform: 'win32' as const, grokWindowsShell: 'powershell' as const }
+    rewriteManagedCliHooks('grok', roots, { cliHook: powerShell, addIfMissing: true })
+    const rewritten = TOML.parse(fs.readFileSync(configPath, 'utf8')) as unknown as GrokConfigShape
+    expect(rewritten.hooks.Stop).toHaveLength(1)
+    expect(rewritten.hooks.Stop[0].hooks[0].command.startsWith('& ')).toBe(true)
+  })
+
   it('removes our hooks, status line and notify on uninstall but keeps the keys and user settings', () => {
     const roots = providerRoots(temporaryHome())
     writeAll(roots)

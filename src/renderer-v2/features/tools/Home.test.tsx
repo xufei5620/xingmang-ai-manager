@@ -666,6 +666,35 @@ describe('renderer-v2 home missing runtime guidance on macOS', () => {
       expect(markup).not.toContain('工具里的提醒设置指向了旧位置')
       expect(markup).toContain('data-testid="tool-grok-repair-hooks"')
     })
+
+    // Windows 上只装 Grok 时没有运行环境，做完提醒和防睡写不上：说缺什么，给「补上」，Grok 照样能打开。
+    function missingSnapshot(nodeInstalled: boolean): ToolboxSnapshot {
+      const base = snapshot({ claude: cliStatus, codex: cliStatus, grok: cliStatus, gemini: cliStatus })
+      return {
+        ...base,
+        system: { ...base.system, runtime: { ...base.system.runtime, node: { installed: nodeInstalled, version: nodeInstalled ? '24.6.0' : null, detectionFailed: false } } },
+        config: {
+          ...base.config,
+          providers: { ...base.config.providers, grok: { ...providerConfig, configurationOwnership: 'account', cliHooksStale: false, cliHooksMissing: true } },
+        },
+      } as unknown as ToolboxSnapshot
+    }
+
+    it('says which two things Grok is missing and offers to add them without technical words', () => {
+      const markup = render({}, undefined, { snapshot: missingSnapshot(false), onRepairHooks: () => undefined })
+      expect(markup).toContain('做完、出错时的提醒和干活时不让电脑睡着这两项还没开，点「补上」准备好运行环境就有')
+      expect(markup).toContain('data-testid="tool-grok-add-hooks"')
+      expect(markup).not.toContain('data-testid="tool-grok-repair-hooks"')
+      expect(markup).not.toContain('提醒设置要修')
+      expect(markup).toMatch(/data-testid="tool-grok-primary"[^>]*>(?:<[^>]+>)*打开/)
+      expect(markup).not.toContain('data-testid="tool-claude-add-hooks"')
+    })
+
+    it('offers to add them straight away once the computer already has what they need', () => {
+      const markup = render({}, undefined, { snapshot: missingSnapshot(true), onRepairHooks: () => undefined })
+      expect(markup).toContain('做完、出错时的提醒和干活时不让电脑睡着这两项还没开，点「补上」就有')
+      expect(markup).toContain('data-testid="tool-grok-add-hooks"')
+    })
   })
 
   // 以前用 CC Switch 配过的电脑：登录后软件不改来源没确认的配置，工具还连着以前那家，

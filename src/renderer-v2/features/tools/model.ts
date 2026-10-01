@@ -276,6 +276,14 @@ export function cliHooksWereAutoRepaired(config: Pick<ProviderConfigSummary, 'cl
   return config.cliHooksAutoRepaired === true
 }
 
+/**
+ * Windows 上只装 Grok 时电脑上还没有运行环境，做完提醒和防睡那几条写不出来（主进程 cliHooksMissing）。
+ * Grok 照样能用，首页只说一句缺什么、给「补上」。
+ */
+export function cliHooksMissing(config: Pick<ProviderConfigSummary, 'cliHooksMissing'>): boolean {
+  return config.cliHooksMissing === true
+}
+
 /** 修好那一处之后能不能直接打开：「打开」前先修只在修完就能用时替用户做。 */
 export function readyOnceRepaired(
   config: ProviderConfigSummary,
