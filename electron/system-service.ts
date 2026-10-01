@@ -3482,13 +3482,16 @@ export function createSystemService(
         }
         return result
       }
-      return await installPythonRuntimeForService({
+      // 商店装不上时退到 python.org 下载，那是国外的站：和装 Node.js、Git 一样借一条
+      // 下载专用线路（不改系统代理），所以 fetch 也要换成认这条线路的那一个。
+      return await withDownloadAcceleration(null, () => installPythonRuntimeForService({
         architecture: process.arch,
         temporaryDirectoryMode: windowsExecutionMode,
         onProgress: (progress) => {
           if (!target.isDestroyed()) target.send('runtime:python-install-progress', progress)
         },
-      })
+        dependencies: { fetch: downloadFetch },
+      }))
     } finally {
       pythonRuntimeInstalling = false
     }

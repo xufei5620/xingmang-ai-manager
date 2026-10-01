@@ -59,7 +59,7 @@ export const CODEX_PLUGIN_CATALOG_TIMEOUT_MS = 5 * 60_000
 const unknownCatalogVersion = 'export-backup'
 
 export const codexPluginCatalogNetworkMessage =
-  '插件目录要从国外的网站下载，当前网络连不上或太慢。打开加速后再点一次「下载插件目录」，或者换个网络再试。'
+  '插件目录要从国外的网站下载，当前网络连不上或太慢。请稍后再点一次「下载插件目录」，或者换个网络再试。'
 const incompleteCatalogMessage = '下载到的插件目录不完整，请再点一次「下载插件目录」。'
 /** 渲染层 operation-error.ts 按这句归到「插件目录暂时改不动」，改字时两边一起改。 */
 export const codexPluginCatalogBackupStuckMessage = 'Codex 插件目录里的旧备份清不掉，这次没有改动'

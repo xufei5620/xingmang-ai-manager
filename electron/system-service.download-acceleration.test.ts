@@ -189,3 +189,47 @@ describe('installing a CLI with download acceleration', () => {
     expect(probe).not.toHaveBeenCalled()
   })
 })
+
+describe('installing Python with download acceleration', () => {
+  it.runIf(process.platform === 'win32')('holds a download route and hands the installer the fetch that uses it', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-python-download-acceleration-'))
+    temporaryDirectories.push(directory)
+    const release = vi.fn(async () => {})
+    const acquire = vi.fn(async (): Promise<DownloadAccelerationLease> => ({
+      endpoint: { scheme: 'http', host: '127.0.0.1', port: 7890 },
+      accelerated: true,
+      release,
+    }))
+    const downloadFetch = vi.fn() as unknown as typeof fetch
+    const installPythonRuntime = vi.fn(async () => {
+      // 下载那一刻线路必须还握在手里。
+      expect(release).not.toHaveBeenCalled()
+      return {
+        installed: true as const,
+        action: 'installed' as const,
+        method: 'exe' as const,
+        source: 'python-org' as const,
+        version: 'Python 3.12',
+        architecture: 'x64' as const,
+        pathRefreshRequired: true,
+      }
+    })
+    const service = createSystemService(
+      new AppSettingsStore(path.join(directory, 'settings.json'), directory),
+      {
+        platform: 'win32',
+        windowsExecutionMode: 'same-user',
+        findExecutable: async () => null,
+        acquireDownloadAcceleration: acquire,
+        downloadFetch,
+        installPythonRuntime,
+        inspectInstalledPythonRuntime: async () => { throw new Error('Python 3.12 fixed install not found') },
+      },
+    )
+
+    await service.installPythonRuntime({ isDestroyed: () => false, send: vi.fn() })
+    expect(acquire).toHaveBeenCalledTimes(1)
+    expect(installPythonRuntime).toHaveBeenCalledWith(expect.objectContaining({ dependencies: { fetch: downloadFetch } }))
+    expect(release).toHaveBeenCalledTimes(1)
+  })
+})
