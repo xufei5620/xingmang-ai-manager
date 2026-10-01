@@ -73,22 +73,6 @@ export function buildClaudeDesktopGatewayConfig(input: ClaudeDesktopGatewayInput
   }
 }
 
-// 只写选中的那一个型号时，Claude Desktop 的型号菜单里就只剩它一个，客户换不了型号。
-// 当前 Key 能用的 Claude 型号都写进去，选中的放第一个：检测结果按第一个显示（firstModel）。
-// 别家型号不写：Claude Desktop 只走 Anthropic Messages 协议，列出来也是选了就报错。
-const maximumDesktopModels = 20
-
-/**
- * 给 Claude Desktop 的型号菜单挑型号：选中的永远在第一个，其余是当前 Key 可用的
- * Claude 系列型号（按名字排序、去重），一共最多 maximumDesktopModels 个。
- */
-export function buildClaudeDesktopModelList(availableModels: readonly string[], selectedModel: string): string[] {
-  const others = [...new Set(availableModels.map((model) => model.trim()))]
-    .filter((model) => /^claude-/i.test(model) && model !== selectedModel)
-    .sort((left, right) => left.localeCompare(right))
-  return [selectedModel, ...others].slice(0, maximumDesktopModels)
-}
-
 function object(value: unknown): JsonObject {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`${label}必须是 JSON 对象`)
   return value as JsonObject
