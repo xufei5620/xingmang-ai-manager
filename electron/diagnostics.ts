@@ -770,9 +770,9 @@ async function defaultInspectPowerShell(
  * 远超这一项的 6 秒，检查页就报「读不到」；所以开头先按名字导入用到的模块。
  */
 export const diagnosticsCodexDesktopProbeModules = [
+  'Microsoft.PowerShell.Utility',
   'Appx',
   'Microsoft.PowerShell.Management',
-  'Microsoft.PowerShell.Utility',
   'StartLayout',
 ] as const
 

@@ -89,7 +89,7 @@ describe('windows store app launch context', () => {
 describe('powershell module import statement', () => {
   it('imports every module by quoted name before the first cmdlet runs', () => {
     expect(buildPowerShellModuleImportStatement(['Microsoft.PowerShell.Management', 'Appx']))
-      .toBe("Import-Module -Name 'Microsoft.PowerShell.Management', 'Appx' -ErrorAction SilentlyContinue")
+      .toBe("Import-Module -Name 'Microsoft.PowerShell.Utility', 'Microsoft.PowerShell.Management', 'Appx' -ErrorAction SilentlyContinue")
     // 收紧环境下自动加载要 20 多秒：第一条 cmdlet 之前必须已经按名字导入（#714）。
     for (const script of [buildWindowsStoreAppLaunchContextScript(), buildWindowsStoreAvailabilityScript()]) {
       const lines = script.split('\n')
@@ -97,7 +97,7 @@ describe('powershell module import statement', () => {
       const firstCmdlet = lines.findIndex((line) => /Get-ItemProperty|Get-AppxPackage|ConvertTo-Json/.test(line))
       expect(importLine).toBeGreaterThanOrEqual(0)
       expect(importLine).toBeLessThan(firstCmdlet)
-      expect(lines[importLine]).toContain("'Microsoft.PowerShell.Management', 'Microsoft.PowerShell.Utility'")
+      expect(lines[importLine]).toContain("'Microsoft.PowerShell.Utility', 'Microsoft.PowerShell.Management'")
     }
     expect(buildWindowsStoreAvailabilityScript()).toContain("'Appx' -ErrorAction SilentlyContinue")
   })

@@ -572,7 +572,7 @@ function windowsCliExitHint(lines: readonly string[], color: 'Cyan' | 'Yellow'):
   return ["Write-Host ''", ...lines.map((line) => `Write-Host ${powerShellLiteral(line)} -ForegroundColor ${color}`)].join('; ')
 }
 
-export const cliTerminalScriptModules = ['Microsoft.PowerShell.Management', 'Microsoft.PowerShell.Utility'] as const
+export const cliTerminalScriptModules = ['Microsoft.PowerShell.Utility', 'Microsoft.PowerShell.Management'] as const
 // The broker gets 10 s to hand back the terminal's process id (launchCliPowerShell).
 export const cliLaunchBrokerModules = ['Microsoft.PowerShell.Management'] as const
 export const cliLaunchBrokerTimeoutMs = 10_000

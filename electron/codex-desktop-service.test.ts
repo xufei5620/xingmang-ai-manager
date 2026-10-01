@@ -74,6 +74,7 @@ import {
 } from './codex-desktop-service'
 import { parseWindowsStoreAppLaunchContext } from './windows-store-app-launch'
 import { codexDesktopKnownIssueMarker } from './codex-desktop-known-issues'
+import { buildPowerShellModuleImportStatement } from './powershell-module-imports'
 
 const temporaryDirectories: string[] = []
 
@@ -1519,7 +1520,7 @@ describe('Codex Desktop Appx probe script', () => {
       const module = cmdletModules[cmdlet]
       if (module) expect(codexDesktopCombinedProbeModules).toContain(module)
     }
-    const importAt = combined.indexOf(`Import-Module -Name ${codexDesktopCombinedProbeModules.map((name) => `'${name}'`).join(', ')} -ErrorAction SilentlyContinue`)
+    const importAt = combined.indexOf(buildPowerShellModuleImportStatement(codexDesktopCombinedProbeModules))
     expect(importAt).toBeGreaterThan(0)
     for (const cmdlet of used.filter((name) => cmdletModules[name])) {
       expect(combined.indexOf(cmdlet)).toBeGreaterThan(importAt)
@@ -2117,7 +2118,7 @@ describe('Codex Desktop PowerShell scripts import their modules', () => {
   ]
 
   function importStatement(modules: readonly string[]): string {
-    return `Import-Module -Name ${modules.map((name) => `'${name}'`).join(', ')} -ErrorAction SilentlyContinue`
+    return buildPowerShellModuleImportStatement(modules)
   }
 
   /** Cmdlets that would still be autoloaded: unknown, unimported, or used before the import. */
@@ -2138,7 +2139,8 @@ describe('Codex Desktop PowerShell scripts import their modules', () => {
   })
 
   it.each(scripts)('notices when the %s loses any one of its imports', (_name, script, modules) => {
-    for (const module of modules) {
+    // Utility is imported whatever the list says, so it cannot be lost.
+    for (const module of modules.filter((name) => name !== 'Microsoft.PowerShell.Utility')) {
       const remaining = modules.filter((name) => name !== module)
       const weakened = script.replace(importStatement(modules), importStatement(remaining))
       expect(weakened).not.toBe(script)

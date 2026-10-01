@@ -159,10 +159,10 @@ export async function verifyExternalClientPath(candidate: string, kind: 'file' |
 // runner, see buildPowerShellModuleImportStatement) against a 15 s limit, so it
 // imports every module it calls before the first call.
 export const windowsExternalClientInventoryModules = [
+  'Microsoft.PowerShell.Utility',
   'Appx',
   'Microsoft.PowerShell.Management',
   'Microsoft.PowerShell.Security',
-  'Microsoft.PowerShell.Utility',
 ] as const
 
 export const externalClientSystemCommandTimeoutMs = 15_000

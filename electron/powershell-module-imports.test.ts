@@ -107,9 +107,16 @@ const scripts: Array<[string, string, readonly string[], PowerShellImportForm]> 
 describe('PowerShell module import statements', () => {
   it('imports by name, and refuses anything that is not a plain module name', () => {
     expect(buildPowerShellModuleImportStatement(['CimCmdlets', 'Microsoft.PowerShell.Utility']))
-      .toBe("Import-Module -Name 'CimCmdlets', 'Microsoft.PowerShell.Utility' -ErrorAction SilentlyContinue")
+      .toBe("Import-Module -Name 'Microsoft.PowerShell.Utility', 'CimCmdlets' -ErrorAction SilentlyContinue")
     expect(() => buildPowerShellModuleImportStatement(["Appx'; calc; '"])).toThrow()
     expect(() => buildPowerShellPinnedModuleImportStatement(['..\\Appx'])).toThrow()
+  })
+
+  it('loads Utility before any other module, whether or not the script asked for it', () => {
+    expect(buildPowerShellModuleImportStatement(['NetTCPIP']))
+      .toBe("Import-Module -Name 'Microsoft.PowerShell.Utility', 'NetTCPIP' -ErrorAction SilentlyContinue")
+    expect(buildPowerShellModuleImportStatement(['Appx', 'Microsoft.PowerShell.Utility', 'StartLayout']))
+      .toBe("Import-Module -Name 'Microsoft.PowerShell.Utility', 'Appx', 'StartLayout' -ErrorAction SilentlyContinue")
   })
 
   it('pins a module to $PSHOME without calling Join-Path', () => {
@@ -132,7 +139,8 @@ describe('PowerShell scripts under the trusted environment import their modules'
   })
 
   it.each(scripts)('notices when the %s loses any one of its imports', (_name, script, modules, form) => {
-    for (const module of modules) {
+    // By name, Utility is imported whatever the list says, so it cannot be lost.
+    for (const module of modules.filter((name) => form === 'pinned' || name !== 'Microsoft.PowerShell.Utility')) {
       const weakened = withoutImportedModule(script, modules, module, form)
       expect(weakened, `${module} dropped`).not.toBe(script)
       expect(unimportedCmdlets(weakened, modules.filter((name) => name !== module), form), `${module} dropped`).not.toEqual([])

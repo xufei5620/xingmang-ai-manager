@@ -284,8 +284,6 @@ const { installedPythonInspectionScript, pythonInstallerSignatureScript } = comp
 const { workBuddyInstallerSignatureScript } = compiled('workbuddy-installer')
 const { nativeCliSignatureScript, nativeCliSignatureTimeoutMs } = compiled('trusted-native-cli')
 const {
-  buildProgramFilesAclProbe,
-  buildWindowsDirectoryTreeAclScript,
   inspectProgramFilesAclAsync,
   inspectWindowsDirectoryTreeAcl,
   programFilesAclTimeoutMs,
@@ -400,6 +398,9 @@ for (const [name, limit, run] of trustedProbes) {
 
 // The same probes with autoloading switched off right after their imports, so
 // a forgotten module is named instead of costing the whole scan. Printed only.
+// The two ACL probes are left out: they call Microsoft.PowerShell.Security\Get-Acl
+// module-qualified, which loads that module by name and is fast, but is refused
+// outright once autoloading is 'None', so they would only ever warn here.
 const trustedProbeScripts = [
   ['check page Codex desktop', buildDiagnosticsCodexDesktopProbeScript(), {}],
   ['external client inventory', windowsExternalClientInventoryScript(), {}],
@@ -412,8 +413,6 @@ const trustedProbeScripts = [
   ['App Installer package', appInstallerQueryScript, {}],
   ['Node.js installer signature', nodeInstallerSignatureScript, { XINGMANG_NODE_MSI_PATH: process.execPath }],
   ['native CLI signature', nativeCliSignatureScript, { XINGMANG_NATIVE_CLI: process.execPath }],
-  ['Program Files ACL', Buffer.from(buildProgramFilesAclProbe(programFilesCandidate, machinePaths.programFiles, machinePaths).args.at(-1), 'base64').toString('utf16le'), { XINGMANG_TRUST_TARGET: programFilesCandidate, XINGMANG_TRUST_ROOT: machinePaths.programFiles }],
-  ['managed directory tree ACL', buildWindowsDirectoryTreeAclScript(), { XINGMANG_TRUST_ROOT: path.join(scratch, 'tree') }],
 ]
 
 async function reportTrustedProbesWithoutAutoloading() {

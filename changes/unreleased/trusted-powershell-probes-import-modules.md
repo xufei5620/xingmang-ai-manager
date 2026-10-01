@@ -17,7 +17,10 @@
   这一句就会触发整套扫描；改成字符串拼路径（`buildPowerShellPinnedModuleImportStatement`），保留
   `-Force -ErrorAction Stop`，并把 ConvertTo-Json 所在的 Utility 一起按同样方式导入。
 - `buildPowerShellModuleImportStatement` 挪进新的叶子模块 `powershell-module-imports.ts`（`windows-machine-paths`
-  也要用，放在 `windows-elevation` 会成环），模块名只认字母数字和点，其余直接拒绝。
+  也要用，放在 `windows-elevation` 会成环），模块名只认字母数字和点，其余直接拒绝。它现在总把
+  `Microsoft.PowerShell.Utility` 排在第一个（没写也补上）：CI 上实测 Utility 还没加载时，导入
+  CimCmdlets / Appx / NetTCPIP / StartLayout 这一句本身就要二十多秒（关掉自动加载也一样），Utility
+  在前则约 0.5 秒。
 - 新增 `powershell-module-imports.test.ts`：二十多条脚本逐条把命令对到模块、逐个去掉一个导入确认会红、
   不多导；另钉住四条不调命令的脚本保持不调。打包作业冒烟里这些探测按各自上限在收紧环境下做真检查并打印
   耗时，另关掉自动加载各跑一遍，漏导入的命令按名字打印；该步骤上限 6 → 12 分钟。

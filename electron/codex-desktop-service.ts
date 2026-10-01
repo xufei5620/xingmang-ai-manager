@@ -1616,8 +1616,8 @@ export function buildCodexDesktopPackageProbeScript(): string {
  * cmdlet in the script to one of these names so a new one cannot slip past.
  */
 export const codexDesktopCombinedProbeModules = [
-  'Microsoft.PowerShell.Management',
   'Microsoft.PowerShell.Utility',
+  'Microsoft.PowerShell.Management',
   'CimCmdlets',
   'StartLayout',
   'Appx',

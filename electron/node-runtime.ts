@@ -167,8 +167,8 @@ const nodeRedirectStatuses = new Set([301, 302, 303, 307, 308])
 // The two probes below get 10 s each under trustedCommandEnvironment(), where a
 // cmdlet left to autoloading costs the whole System32 module scan (see
 // buildPowerShellModuleImportStatement); they import their modules by name.
-export const windowsRestartStatusModules = ['Microsoft.PowerShell.Management', 'Microsoft.PowerShell.Utility'] as const
-export const appInstallerQueryModules = ['Appx', 'Microsoft.PowerShell.Utility'] as const
+export const windowsRestartStatusModules = ['Microsoft.PowerShell.Utility', 'Microsoft.PowerShell.Management'] as const
+export const appInstallerQueryModules = ['Microsoft.PowerShell.Utility', 'Appx'] as const
 export const nodeRuntimeWindowsProbeTimeoutMs = 10_000
 
 export const windowsRestartStatusScript = [

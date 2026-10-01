@@ -34,7 +34,7 @@ export interface CliProcessProbe {
 
 export const cliProcessRootEnvironmentVariable = 'XINGMANG_CLI_PROCESS_ROOT'
 
-export const windowsCliProcessProbeModules = ['CimCmdlets', 'Microsoft.PowerShell.Utility'] as const
+export const windowsCliProcessProbeModules = ['Microsoft.PowerShell.Utility', 'CimCmdlets'] as const
 
 /** What the probe gets before an install or update goes ahead without the running-tool check. */
 export const cliProcessProbeTimeoutMs = 8_000

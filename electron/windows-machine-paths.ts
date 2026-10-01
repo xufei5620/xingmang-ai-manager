@@ -397,8 +397,8 @@ export function validateWindowsMachineAclSnapshot(value: unknown): value is Wind
  * is called module-qualified, which loads Security by name already.
  */
 export const windowsAclProbeModules = [
-  'Microsoft.PowerShell.Management',
   'Microsoft.PowerShell.Utility',
+  'Microsoft.PowerShell.Management',
 ] as const
 
 interface ProgramFilesAclProbe {

@@ -1,6 +1,8 @@
 // Leaf module on purpose: windows-machine-paths, which windows-elevation itself
 // depends on, builds probe scripts with these too.
 
+const powerShellUtilityModule = 'Microsoft.PowerShell.Utility'
+
 /**
  * The names here are fixed module names written in this repository, never
  * data; anything else is refused rather than quoted.
@@ -22,9 +24,17 @@ function moduleNameLiteral(name: string): string {
  * name still resolves only through the narrowed PSModulePath, so nothing is
  * trusted that was not before. A module that fails to load falls back to
  * autoloading, which is the old behaviour.
+ *
+ * Microsoft.PowerShell.Utility always goes first, even for a script that calls
+ * nothing from it. Importing CimCmdlets, Appx, NetTCPIP or StartLayout while
+ * Utility is not loaded yet set off the same scan by itself, with command
+ * autoloading switched off and every cmdlet accounted for: on the CI runner
+ * 'Appx', 'Microsoft.PowerShell.Utility' took 27 s and 'CimCmdlets' alone 24 s,
+ * against 0.5 s with Utility first.
  */
 export function buildPowerShellModuleImportStatement(modules: readonly string[]): string {
-  return `Import-Module -Name ${modules.map(moduleNameLiteral).join(', ')} -ErrorAction SilentlyContinue`
+  const ordered = [powerShellUtilityModule, ...modules.filter((name) => name !== powerShellUtilityModule)]
+  return `Import-Module -Name ${ordered.map(moduleNameLiteral).join(', ')} -ErrorAction SilentlyContinue`
 }
 
 /**

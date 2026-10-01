@@ -198,8 +198,8 @@ export function windowsAclHardeningArguments(directory: string): string[] {
 // System32 module scan (20 s and more on the CI runner, see
 // buildPowerShellModuleImportStatement) against a 15 s limit.
 export const protectedDirectoryAclModules = [
-  'Microsoft.PowerShell.Management',
   'Microsoft.PowerShell.Utility',
+  'Microsoft.PowerShell.Management',
 ] as const
 
 export const protectedDirectoryAclTimeoutMs = 15_000
