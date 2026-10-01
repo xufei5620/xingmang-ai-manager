@@ -201,6 +201,7 @@ import {
 import { fetchGrokStableVersion, resolveGrokInstallVersion } from './grok-update'
 import { createNetworkLocationCache, reloadNetworkProxyConfiguration } from './network-location-cache'
 import { readBoundedUtf8File } from './bounded-file'
+import { cliNativePackageMissingMessage, findMissingCliNativePackage } from './cli-native-package'
 import { readBoundedResponseText } from './bounded-response'
 import { launchMacosTerminal, type MacosTerminalLaunchPlan } from './macos-platform'
 import { relayApiProbeBaseUrl, resolveRelaySite } from './relay-sites'
@@ -4110,6 +4111,18 @@ export function createSystemService(
           },
         })
       }
+      const assertCliNativePackageInstalled = async (packageRoot: string) => {
+        const missing = await findMissingCliNativePackage(packageRoot, definition.packageName, platform)
+        if (!missing) return
+        runtimeLog?.log(
+          'warn',
+          'install',
+          'cli.install.native-package-missing',
+          `${definition.name} 的平台主程序包 ${missing} 没有装上（npm 跳过了下载失败的可选依赖）`,
+          { provider },
+        )
+        throw new Error(cliNativePackageMissingMessage(definition.name))
+      }
       const createResolutionManifest = async (directory: string) => {
         await fs.promises.mkdir(directory, { recursive: true })
         const manifestPath = path.join(directory, 'package.json')
@@ -4269,6 +4282,14 @@ export function createSystemService(
             })
           } else {
             await lifecycle()
+            // 在这一个源里就查：缺了就记成这个源失败，接着换下一个源再下一次，
+            // 而不是带着装不全的程序走到替换托管目录那一步。
+            const stagedPrefix = attemptPrefix ?? sameUserNpmPrefix?.prefix ?? null
+            if (stagedPrefix) {
+              await assertCliNativePackageInstalled(
+                managedCliPackageDirectory(stagedPrefix, definition.packageName, platform),
+              )
+            }
           }
           installPrefix = attemptPrefix
           installed = true
@@ -4355,6 +4376,9 @@ export function createSystemService(
       } else if (provider !== 'grok' || grokInstallStrategy !== 'darwin-official-npm') {
         const npmGlobalRoot = await resolveNpmGlobalRoot(npmExecutable, commandEnvironment())
         verification = await inspectCliTool(provider, npmExecutable, npmGlobalRoot)
+        if (verification.installation?.source === 'npm' && verification.installation.packageRoot) {
+          await assertCliNativePackageInstalled(verification.installation.packageRoot)
+        }
       }
       const darwinGrokVerified = provider === 'grok' && grokInstallStrategy === 'darwin-official-npm'
       if (!darwinGrokVerified && (
