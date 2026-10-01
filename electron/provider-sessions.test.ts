@@ -9,7 +9,7 @@ import type {
   CodexSessionReader,
   ProviderSessionSummary,
 } from './provider-sessions'
-import { annotateWorkspaceExistence, ProviderSessionsService } from './provider-sessions'
+import { annotateWorkspaceExistence, codexSessionTitle, ProviderSessionsService } from './provider-sessions'
 
 function summary(overrides: Partial<ProviderSessionSummary> = {}): ProviderSessionSummary {
   return {
@@ -875,5 +875,29 @@ describe('ProviderSessionsService.delete', () => {
     await expect(codex.delete(id)).rejects.toThrow('不在 CODEX_HOME 内')
     expect(fs.readFileSync(outside, 'utf8')).toBe('keep')
     expect((await codex.list()).total).toBe(1)
+  })
+})
+
+describe('codexSessionTitle', () => {
+  it('keeps only the task name of a Codex automation run', () => {
+    const prompt = [
+      'Automation: 每日制作头像',
+      'Automation ID: automation',
+      'Automation memory: $CODEX_HOME/automations/automation/memory.md',
+      'Last run: 2026-09-29T16:02:10.585Z (1790697730585)',
+      '每天北京时间凌晨零点，在“头像制作”项目中运行项目内 `.agents/skills/daily-avatar/SKILL.md` 里的流程。',
+    ].join('\n')
+    expect(codexSessionTitle(prompt, 'id-1')).toBe('定时任务：每日制作头像')
+  })
+
+  it('folds any other title onto one bounded line', () => {
+    expect(codexSessionTitle('  修一下\n登录页\t的样式 ', 'id-1')).toBe('修一下 登录页 的样式')
+    const long = codexSessionTitle('字'.repeat(400), 'id-1')
+    expect(long.length).toBe(161)
+    expect(long.endsWith('…')).toBe(true)
+  })
+
+  it('falls back to the session id when the title is blank', () => {
+    expect(codexSessionTitle(' \n ', 'id-1')).toBe('id-1')
   })
 })
