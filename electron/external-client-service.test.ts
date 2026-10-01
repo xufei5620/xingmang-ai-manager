@@ -496,13 +496,13 @@ describe('external client system-service integration', () => {
     for (const [file, content] of snapshots) expect(fs.readFileSync(file, 'utf8')).toBe(content)
   })
 
-  it('offers Claude Desktop every Claude model of the key with the selected one first', async () => {
+  it('writes only the selected model for Claude Desktop even when the key lists more Claude models', async () => {
     const f = fixture()
     f.relayFetch.mockImplementationOnce(async () => Response.json({
       data: [{ id: 'claude-opus-5-5' }, { id: selectedModel }, { id: 'gpt-5.4' }, { id: 'claude-fable-5' }],
     }))
     const result = await f.service.configureExternalTool('claudeDesktop', { apiKey: selectedKey, model: selectedModel })
-    expect(JSON.parse(fs.readFileSync(result.path, 'utf8')).inferenceModels).toEqual([selectedModel, 'claude-fable-5', 'claude-opus-5-5'])
+    expect(JSON.parse(fs.readFileSync(result.path, 'utf8')).inferenceModels).toEqual([selectedModel])
     expect(result.model).toBe(selectedModel)
   })
 
