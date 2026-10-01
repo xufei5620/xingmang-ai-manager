@@ -3,8 +3,10 @@ import { timelineFreshWindowMs, type TimelineMeta } from './newapi-announcements
 import { buildTopupBonus } from '../account/topup-bonus'
 
 // 账号服务的公告只有「正文、附加说明、发布时间、类型」四样，没有「活动类型」「结束时间」
-// 「按钮链接」。先用约定顶上：标题里带「充值」就是充值活动；正文或附加说明里写
-//「截止：10月7日」或「10月1日-10月7日」就当结束时间；没写的按发布后 7 天算。
+// 「按钮链接」。先用约定顶上：标题里带「充值」、又带「送 / 赠 / 优惠 / 活动」这类字的才是
+// 充值活动；「充值通道维护」「充值到账延迟说明」这种只是提到充值的通知不算，不然出事的时候
+// 首页反而挂一张促销卡、弹「有新的充值活动」。正文或附加说明里写「截止：10月7日」
+//「即日起至10月7日」「10月7日前」「10月1日-7日」之类就当结束时间；没写的按发布后 7 天算。
 // 没有发布时间的旧式系统公告永远不会变成活动卡片，后台里没清掉的旧公告不会跟着变显眼。
 // 标题带「邀请」的（邀请有礼）也算活动：不单独挂大卡片，但和充值活动一起进顶部活动条，
 // 截止时间同样从文字里找，没写按发布后 7 天。
@@ -20,19 +22,42 @@ const yearRolloverSlackMs = 31 * dayMs
 const maximumPromoSpanMs = 120 * dayMs
 const maximumScannedLength = 4_000
 
-export function isRechargePromoTitle(title: string): boolean {
-  return title.replace(/\s+/g, '').includes('充值')
+// 标题里有这些字的是在说服务出了状况或规则变了，就算同时带「活动」「优惠」也不挂活动卡片：
+//「充值活动暂停」「充值优惠调整」挂成促销卡只会让客户以为还能领。
+const notPromoTitleWords = ['维护', '暂停', '停止', '故障', '异常', '延迟', '关闭', '下线', '取消', '调整', '变更', '已结束', '提前结束']
+// 活动标题总会说清给什么好处；只有「充值」「邀请」两个字的（「充值说明」「邀请码使用说明」）是普通公告。
+const promoTitleWords = ['活动', '送', '赠', '优惠', '折', '礼', '返', '福利', '特惠', '奖励', '红包', '限时', '双倍', '翻倍', '加码']
+
+function isPromoTitle(compact: string): boolean {
+  if (notPromoTitleWords.some((word) => compact.includes(word))) return false
+  return promoTitleWords.some((word) => compact.includes(word))
 }
 
-/** 标题里带「充值」的是充值活动，否则带「邀请」的是邀请活动，都不带的不是活动。 */
+export function isRechargePromoTitle(title: string): boolean {
+  return resolvePromoKind(title) === 'recharge'
+}
+
+/** 标题带「充值」的活动是充值活动，否则带「邀请」的活动是邀请活动；只是提到充值、邀请的普通公告不是活动。 */
 export function resolvePromoKind(title: string): PromoKind | null {
-  if (isRechargePromoTitle(title)) return 'recharge'
-  return title.replace(/\s+/g, '').includes('邀请') ? 'invite' : null
+  const compact = title.replace(/\s+/g, '')
+  if (!isPromoTitle(compact)) return null
+  if (compact.includes('充值')) return 'recharge'
+  return compact.includes('邀请') ? 'invite' : null
 }
 
 const datePattern = String.raw`(?:(\d{4})\s*[-/.年]\s*)?(\d{1,2})\s*[-/.月]\s*(\d{1,2})\s*[日号]?(?:\s*(\d{1,2})\s*[:：点]\s*(\d{2})?)?`
-const deadlinePattern = new RegExp(String.raw`(?:截止|截至|结束|到期)[^\d\n]{0,8}` + datePattern)
-const rangePattern = new RegExp(datePattern + String.raw`[^\d\n]{0,3}?(?:-|~|～|—|–|至|到)\s*` + datePattern)
+// 「即日起至」「有效期至」里的「至」不是「截至」，引导词要单列，不然整句认不出、按 7 天猜。
+const deadlinePattern = new RegExp(String.raw`(?:截止|截至|结束|到期|有效期|即日起)[^\d\n]{0,8}` + datePattern)
+const rangeSeparator = String.raw`[^\d\n]{0,3}?(?:-|~|～|—|–|至|到)\s*`
+const rangePattern = new RegExp(datePattern + rangeSeparator + datePattern)
+// 「10月1日-7日」：后半段省了月份，借前半段的。后半段必须带「日 / 号」，免得把「-7折」当成日期。
+const dayOnlyPattern = String.raw`(\d{1,2})\s*[日号](?:\s*(\d{1,2})\s*[:：点]\s*(\d{2})?)?`
+const sameMonthRangePattern = new RegExp(String.raw`(?:(\d{4})\s*[-/.年]\s*)?(\d{1,2})\s*[-/.月]\s*(\d{1,2})\s*[日号]?` + rangeSeparator + dayOnlyPattern)
+// 「有效期：10月1日-10月7日」：引导词后面跟的是区间时，结束的是后一个日期。
+const rangeTailPattern = new RegExp('^' + rangeSeparator + datePattern)
+const dayOnlyTailPattern = new RegExp('^' + rangeSeparator + dayOnlyPattern)
+// 日期写在前、截止的字写在后：「10月7日前充值」「10月7日 20:00 之前」「10月7日截止」「10月7日止」。
+const trailingDeadlinePattern = new RegExp(datePattern + String.raw`\s*(?:之前|以前|前|截止|截至|结束|止)`)
 
 function plain(text: string): string {
   return text.slice(0, maximumScannedLength).replace(/<[^>]+>/g, ' ').replace(/\*\*|__|`/g, '')
@@ -59,14 +84,30 @@ function toLocalEnd(parts: Array<string | undefined>, publishedAt: number): numb
   return sameYear < publishedAt - yearRolloverSlackMs ? build(publishedYear + 1) : sameYear
 }
 
+// 引导词在前的截止优先，其次是区间的后一个日期，最后才是「X 日前 / X 日截止」：「10月1日-10月7日，10月10日前到账」
+// 里的 10月10日不是活动结束。
+function resolveDeadlineParts(source: string): Array<string | undefined> | null {
+  const deadline = deadlinePattern.exec(source)
+  if (deadline) {
+    const rest = source.slice(deadline.index + deadline[0].length)
+    const tail = rangeTailPattern.exec(rest)
+    if (tail) return tail.slice(1, 6)
+    const dayTail = dayOnlyTailPattern.exec(rest)
+    if (dayTail && Number(dayTail[1]) > Number(deadline[3])) return [deadline[1], deadline[2], dayTail[1], dayTail[2], dayTail[3]]
+    return deadline.slice(1, 6)
+  }
+  const range = rangePattern.exec(source)
+  if (range) return range.slice(6, 11)
+  const sameMonth = sameMonthRangePattern.exec(source)
+  if (sameMonth && Number(sameMonth[4]) > Number(sameMonth[3])) return [sameMonth[1], sameMonth[2], sameMonth[4], sameMonth[5], sameMonth[6]]
+  const trailing = trailingDeadlinePattern.exec(source)
+  return trailing ? trailing.slice(1, 6) : null
+}
+
 /** 从正文和附加说明里找活动结束时间，按本机时区；只写日期的算到当天 23:59:59。找不到返回 null。 */
 export function resolvePromoEndsAt(text: string, publishedAt: number): number | null {
-  const source = plain(text)
-  const deadline = deadlinePattern.exec(source)
-  const range = deadline ? null : rangePattern.exec(source)
-  const parts = deadline ? deadline.slice(1, 6) : range ? range.slice(6, 11) : null
+  const parts = resolveDeadlineParts(plain(text))
   if (!parts) return null
-  // 区间只写了「10月1日-7日」时，后半段没有月份；这种格式不猜，按没写处理。
   const endsAt = toLocalEnd(parts, publishedAt)
   if (endsAt === null || endsAt <= publishedAt || endsAt - publishedAt > maximumPromoSpanMs) return null
   return endsAt

@@ -17,11 +17,46 @@ describe('recharge promo announcements', () => {
     expect(isRechargePromoTitle('系统维护通知')).toBe(false)
   })
 
+  it('keeps notices that only mention 充值 out of the promo card', () => {
+    expect(resolvePromoKind('国庆充值活动：充 100 送 20')).toBe('recharge')
+    expect(resolvePromoKind('充值限时优惠')).toBe('recharge')
+    expect(resolvePromoKind('充值通道维护通知')).toBeNull()
+    expect(resolvePromoKind('充值到账延迟说明')).toBeNull()
+    expect(resolvePromoKind('充值功能升级公告')).toBeNull()
+    expect(resolvePromoKind('国庆期间充值客服安排')).toBeNull()
+    expect(resolvePromoKind('充值活动暂停通知')).toBeNull()
+    expect(resolvePromoKind('充值优惠调整说明')).toBeNull()
+    expect(resolvePromoKind('邀请码使用说明')).toBeNull()
+    const now = new Date(2026, 8, 29, 12, 0).getTime()
+    const entries = [entry('充值通道维护通知', '截止 10月7日'), entry('充值到账延迟说明', '部分订单到账会慢一些'), entry('国庆充值送 20%', '截止 10月7日')]
+    expect(activePromos(entries, now).map((item) => item.title)).toEqual(['国庆充值送 20%'])
+  })
+
   it('reads the deadline from 截止 lines and from date ranges in local time', () => {
     expect(resolvePromoEndsAt('活动截止：2026-10-07 23:00', published)).toBe(new Date(2026, 9, 7, 23, 0).getTime())
     expect(resolvePromoEndsAt('截止 10月7日', published)).toBe(new Date(2026, 9, 7, 23, 59, 59).getTime())
     expect(resolvePromoEndsAt('活动时间：10月1日-10月7日', published)).toBe(new Date(2026, 9, 7, 23, 59, 59).getTime())
     expect(resolvePromoEndsAt('活动时间 2026年10月1日 至 2026年10月8日 12:00', published)).toBe(new Date(2026, 9, 8, 12, 0).getTime())
+  })
+
+  it('reads deadlines written as 即日起至, 有效期至, X日前 and same-month ranges', () => {
+    const october7 = new Date(2026, 9, 7, 23, 59, 59).getTime()
+    expect(resolvePromoEndsAt('即日起至10月7日，充值满 100 送 20', published)).toBe(october7)
+    expect(resolvePromoEndsAt('有效期至 2026年10月7日', published)).toBe(october7)
+    expect(resolvePromoEndsAt('有效期：10月1日-10月7日', published)).toBe(october7)
+    expect(resolvePromoEndsAt('有效期：10月1日-7日', published)).toBe(october7)
+    expect(resolvePromoEndsAt('10月7日前充值，每笔多送 20%', published)).toBe(october7)
+    expect(resolvePromoEndsAt('10月7日 20:00 之前到账的都算', published)).toBe(new Date(2026, 9, 7, 20, 0).getTime())
+    expect(resolvePromoEndsAt('10月1日开始，10月7日结束', published)).toBe(october7)
+    expect(resolvePromoEndsAt('活动时间：10月1日-7日', published)).toBe(october7)
+    // 写明的区间优先于后面顺带提到的「X 日前」。
+    expect(resolvePromoEndsAt('活动时间：10月1日-10月7日；10月10日前到账', published)).toBe(october7)
+  })
+
+  it('does not mistake discounts or backwards same-month ranges for deadlines', () => {
+    expect(resolvePromoEndsAt('即日起，充值满 100 送 20', published)).toBeNull()
+    expect(resolvePromoEndsAt('10月1日-7折', published)).toBeNull()
+    expect(resolvePromoEndsAt('活动时间：10月7日-1日', published)).toBeNull()
   })
 
   it('rolls a month-day deadline into next year only when it falls well before publishing', () => {
