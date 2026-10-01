@@ -51,4 +51,25 @@ describe('RequiredUpdateGate', () => {
     expect(html).toContain('data-testid="required-update-download-page"')
     expect(html).not.toContain('是否允许更改')
   })
+
+  it('tells the user the disk is full, how much to free, and offers a retry and a download-anyway', () => {
+    const html = renderToStaticMarkup(<RequiredUpdateGate update={snapshot({ diskShortfall: { neededBytes: 1800 * 1024 ** 2, freeBytes: 1200 * 1024 ** 2 } })} windows actions={actions} />)
+    expect(html).toContain('data-testid="required-update-disk"')
+    expect(html).toContain('磁盘空间不够，新版本还没开始下载。')
+    expect(html).toContain('电脑磁盘只剩 1.2 GB，装更新大约要 1.8 GB，还要再清出 600 MB')
+    expect(html).toContain('data-testid="required-update-disk-help"')
+    expect(html).toContain('怎么清理')
+    expect(html).toContain('data-testid="required-update-download-anyway"')
+    expect(html).toContain('空间够了，再试一次')
+    // 门里进不了更新页，不许叫他「回到更新页」，也不许说「会自动下载」让他干等。
+    expect(html).not.toContain('回到更新页')
+    expect(html).not.toContain('会自动下载')
+    expect(html).not.toContain('required-update-download-page')
+  })
+
+  it('keeps the disk notice out of the normal gate', () => {
+    const html = renderToStaticMarkup(<RequiredUpdateGate update={snapshot()} windows actions={actions} />)
+    expect(html).not.toContain('required-update-disk')
+    expect(html).not.toContain('required-update-download-anyway')
+  })
 })

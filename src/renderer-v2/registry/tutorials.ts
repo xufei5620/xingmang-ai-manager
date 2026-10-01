@@ -53,7 +53,9 @@ export const macKeychainTutorialDetail = 'Mac 上换新版本后第一次打开�
 // 更新页「磁盘空间不够」那条提示的「怎么清理」落在这里。只讲点哪里、删什么，不出现
 // 缓存、临时目录这类词；删之前先看清楚是什么，别让客户把项目文件清掉。
 export const updateDiskCleanupTitle = '电脑磁盘快满了，更新下不下来？';
-export const updateDiskCleanupDetail = 'Windows：打开「设置 → 系统 → 存储」，点「临时文件」，勾上「回收站」「临时文件」「Windows 更新清理」后点「删除文件」；再把「下载」「桌面」里用不着的大文件挪到别的盘或 U 盘。Mac：点左上角苹果标志 →「系统设置 → 通用 → 储存空间」，按建议清理，并清空废纸篓。自己的项目文件夹别删。清出空间后，自动更新开着会自己下载，关着就回到更新页点「下载更新」。';
+// 清理步骤单独导出：「必须更新」那层门里也用它，但门里进不了更新页，收尾那句换成门自己的按钮。
+export const updateDiskCleanupSteps = 'Windows：打开「设置 → 系统 → 存储」，点「临时文件」，勾上「回收站」「临时文件」「Windows 更新清理」后点「删除文件」；再把「下载」「桌面」里用不着的大文件挪到别的盘或 U 盘。Mac：点左上角苹果标志 →「系统设置 → 通用 → 储存空间」，按建议清理，并清空废纸篓。自己的项目文件夹别删。';
+export const updateDiskCleanupDetail = `${updateDiskCleanupSteps}清出空间后，自动更新开着会自己下载，关着就回到更新页点「下载更新」。`;
 
 export const tutorialTopics: readonly TutorialTopic[] = [
   {

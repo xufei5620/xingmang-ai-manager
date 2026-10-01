@@ -2181,6 +2181,38 @@ test('the updates page explains a full disk and still lets the user download', a
   } finally { await page.close() }
 })
 
+// 必须更新的门碰上磁盘不够：主进程不下载也不报错，门要说清差多少、给清理步骤，
+//「空间够了，再试一次」重新量盘，「仍要下载」跳过预检，和更新页一样。
+test('the required-update gate explains a full disk and lets the user retry', async () => {
+  const page = await open('')
+  try {
+    const shortState = {
+      phase: 'available', currentVersion: '0.1.31', availableVersion: '0.1.32', releaseName: null, releaseNotesText: null,
+      checkedAt: new Date().toISOString(), progress: null, error: null, failedStep: null, development: false, requiredVersion: '0.1.32',
+      diskShortfall: { neededBytes: 600 * 1024 ** 2, freeBytes: 380 * 1024 ** 2 },
+    }
+    await page.evaluate((state) => window.v2Test.emit('onUpdateState', state), shortState)
+    const gate = page.getByTestId('required-update-gate')
+    const notice = gate.getByTestId('required-update-disk')
+    await notice.waitFor()
+    await notice.getByText('还要再清出 220 MB', { exact: false }).waitFor()
+    await notice.getByRole('button', { name: '怎么清理', exact: true }).click()
+    await notice.getByTestId('required-update-disk-cleanup').waitFor()
+    await gate.getByRole('button', { name: '空间够了，再试一次', exact: true }).click()
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'downloadUpdate'))
+    const first = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'downloadUpdate'))
+    assert.notDeepEqual(first.at(-1).args, [{ ignoreDiskSpace: true }])
+    // 量完还是不够：快照不变，门要多说一句，按钮仍然能点，不会卡在转圈。
+    await page.evaluate((state) => window.v2Test.emit('onUpdateState', state), shortState)
+    await notice.getByTestId('required-update-disk-still').waitFor()
+    await gate.getByRole('button', { name: '仍要下载', exact: true }).click()
+    await page.waitForFunction(() => window.v2Test.calls.filter((entry) => entry.method === 'downloadUpdate').length >= 2)
+    const calls = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'downloadUpdate'))
+    assert.deepEqual(calls.at(-1).args, [{ ignoreDiskSpace: true }])
+    await clean(page)
+  } finally { await page.close() }
+})
+
 // Mac 自签包每换一版，第一次读登录信息都会弹「登录」钥匙串密码框；重启确认框里
 // 先打招呼，Windows 没有这回事，不许多这一句。
 test('the restart-to-install dialog warns about the keychain prompt on Mac and the consent window on Windows', async () => {

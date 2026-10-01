@@ -1359,7 +1359,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
         {qrFallback && <p role="alert" data-testid="support-qr-fallback">{qrFallback}</p>}<Button onClick={() => void perform('打开帮助', () => app.openExternal(supportUrl))}>在浏览器打开</Button><Button onClick={() => { setHelp(false); navigate('feedback') }}>去反馈页</Button></div>
     </Dialog>}
     <RequiredUpdateGate update={update} windows={os === 'win'} actions={{
-      check: () => native.checkForUpdates(), download: () => native.downloadUpdate(), install: () => native.installUpdate(),
+      check: () => native.checkForUpdates(), download: (options) => native.downloadUpdate(options), install: () => native.installUpdate(),
       openDownloadPage: () => void perform('打开下载页', () => app.openExternal(appReleaseDownloadUrl)), contactSupport: () => setHelp(true),
     }} />
     <StartupNotices notices={startupNotices} onDismiss={dismissStartupNotice}
