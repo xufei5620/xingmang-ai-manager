@@ -4747,6 +4747,67 @@ describe('scan probe degradation', () => {
   })
 })
 
+describe('checking a single CLI for updates', () => {
+  function versionProbeRunner() {
+    return vi.fn<typeof productionRunCommand>(async (spec: { executable: string; argv: readonly string[] }) => ({
+      executable: spec.executable,
+      argv: [...spec.argv],
+      exitCode: 0,
+      signal: null,
+      stdout: '10.9.0\n',
+      stderr: '',
+      outputBytes: 7,
+      durationMs: 1,
+    }))
+  }
+
+  it('looks up where npm is without running npm --version', async () => {
+    const userHome = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-update-npm-'))
+    temporaryDirectories.push(userHome)
+    const npmPath = path.join(userHome, 'bin', 'npm')
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('no network in tests') }))
+    const runCommand = versionProbeRunner()
+    const resolveCliInstallation = vi.fn(async () => null)
+    const service = createService({
+      platform: 'linux',
+      providerRoots: { userHome, codexHome: path.join(userHome, '.codex') },
+      resolveCliInstallation,
+      findExecutable: vi.fn(async (command: string) => command === 'npm' ? npmPath : null),
+      runCommand,
+    })
+
+    const status = await service.inspectCliUpdate('claude', false)
+
+    expect(status.installed).toBe(false)
+    expect(resolveCliInstallation).toHaveBeenCalledWith('claude', expect.objectContaining({ npmExecutable: npmPath }))
+    expect(runCommand).not.toHaveBeenCalledWith(
+      expect.objectContaining({ executable: npmPath, argv: ['--version'] }),
+      expect.anything(),
+    )
+  })
+
+  it('still reports the CLI as missing when npm itself cannot be found', async () => {
+    const userHome = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-update-no-npm-'))
+    temporaryDirectories.push(userHome)
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('no network in tests') }))
+    const runCommand = versionProbeRunner()
+    const resolveCliInstallation = vi.fn(async () => null)
+    const service = createService({
+      platform: 'linux',
+      providerRoots: { userHome, codexHome: path.join(userHome, '.codex') },
+      resolveCliInstallation,
+      findExecutable: vi.fn(async () => null),
+      runCommand,
+    })
+
+    const status = await service.inspectCliUpdate('claude', false)
+
+    expect(status.installed).toBe(false)
+    expect(resolveCliInstallation).toHaveBeenCalledWith('claude', expect.objectContaining({ npmExecutable: null }))
+    expect(runCommand).not.toHaveBeenCalled()
+  })
+})
+
 describe('trusting the workspace the user picked before opening a CLI', () => {
   function launchService(userHome: string, provider: ProviderId, runtimeLog?: SystemServiceOptions['runtimeLog']) {
     return createService({
