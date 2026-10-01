@@ -56,6 +56,12 @@ export interface CodexDesktopAccelerationOptions {
   disconnect?(scope: string): Promise<AccelerationState>
   /** 多久问一次桌面端还在不在。缺省一分钟：Windows 上每问一次要起一个 PowerShell。 */
   watchIntervalMs?: number
+  /**
+   * 连续几次都确认桌面端在跑之后，改成多久问一次。缺省三分钟：人正开着桌面端写东西
+   * 的那几个小时里，每分钟起一个 PowerShell（杀毒软件跟着扫一遍）纯属浪费；一旦
+   * 查到不在或查不出来，立刻退回 watchIntervalMs。
+   */
+  relaxedWatchIntervalMs?: number
   schedule?(callback: () => void, milliseconds: number): () => void
   /**
    * 连线路要校验随包资源、拉起内核、再探一次节点，实测几秒。预算给 15 秒：
@@ -81,6 +87,12 @@ const desktopGoneConfirmations = 2
  * 不扣时长的线路永远开着；按一分钟一次算，是十分钟。
  */
 const desktopUnknownLimit = 10
+/**
+ * 连续这么多次确认桌面端在跑，才放宽检查间隔。刚连上的头几分钟最可能是「打开看一眼
+ * 就关」，那段时间照旧每分钟问，关了能及时断开。放宽之后最坏情况是关掉后约
+ * 三分钟才查到第一次「不在」，再隔一分钟确认，比原来晚两分钟左右断开。
+ */
+const desktopSteadyBeforeRelaxing = 3
 
 /**
  * 只看状态决定要不要连，好让这条判断能脱离宿主单测。`stopping` 归入「不动」：
@@ -116,6 +128,7 @@ export function createCodexDesktopAccelerationCoordinator(
 ): CodexDesktopAccelerationCoordinator {
   const timeoutMs = options.timeoutMs ?? 15_000
   const watchIntervalMs = options.watchIntervalMs ?? 60_000
+  const relaxedWatchIntervalMs = Math.max(options.relaxedWatchIntervalMs ?? 180_000, watchIntervalMs)
   const schedule = options.schedule ?? ((callback: () => void, milliseconds: number) => {
     const timer = setTimeout(callback, milliseconds)
     timer.unref?.()
@@ -123,7 +136,15 @@ export function createCodexDesktopAccelerationCoordinator(
   })
   // 连续点两次「打开」不能变成两次连接请求：第二次跟着第一次的结果走。
   let inFlight: Promise<CodexDesktopAccelerationOutcome> | null = null
-  interface Watch { scope: string; connectedAt: string; gone: number; unknown: number; cancel: (() => void) | null }
+  interface Watch {
+    scope: string
+    connectedAt: string
+    gone: number
+    unknown: number
+    /** 连续确认在跑的次数，决定下一次隔多久问。 */
+    steady: number
+    cancel: (() => void) | null
+  }
   let watch: Watch | null = null
   let disposed = false
 
@@ -143,7 +164,7 @@ export function createCodexDesktopAccelerationCoordinator(
     if (state.phase !== 'active' || !state.autoStartedBy || !state.connectedAt) return
     if (watch && watch.scope === state.scope && watch.connectedAt === state.connectedAt) return
     stopWatching()
-    const current: Watch = { scope: state.scope, connectedAt: state.connectedAt, gone: 0, unknown: 0, cancel: null }
+    const current: Watch = { scope: state.scope, connectedAt: state.connectedAt, gone: 0, unknown: 0, steady: 0, cancel: null }
     watch = current
     next(current)
   }
@@ -153,7 +174,7 @@ export function createCodexDesktopAccelerationCoordinator(
     current.cancel = schedule(() => {
       current.cancel = null
       void check(current).catch(() => undefined)
-    }, watchIntervalMs)
+    }, current.steady >= desktopSteadyBeforeRelaxing ? relaxedWatchIntervalMs : watchIntervalMs)
   }
 
   async function check(current: Watch): Promise<void> {
@@ -175,8 +196,12 @@ export function createCodexDesktopAccelerationCoordinator(
     if (running === true) {
       current.gone = 0
       current.unknown = 0
-    } else if (running === false) current.gone += 1
-    else current.unknown += 1
+      current.steady += 1
+    } else {
+      current.steady = 0
+      if (running === false) current.gone += 1
+      else current.unknown += 1
+    }
     if (current.gone < desktopGoneConfirmations && current.unknown < desktopUnknownLimit) {
       next(current)
       return

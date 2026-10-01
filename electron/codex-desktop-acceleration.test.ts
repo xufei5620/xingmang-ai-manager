@@ -168,6 +168,7 @@ describe('codex desktop acceleration exit watch', () => {
     connected?: AccelerationState
   }) {
     const timers: Array<() => void> = []
+    const delays: number[] = []
     const answers = [...options.running]
     const isDesktopRunning = vi.fn(async () => (answers.length > 1 ? answers.shift()! : answers[0]))
     const disconnect = vi.fn(async () => stateOf('idle'))
@@ -184,8 +185,9 @@ describe('codex desktop acceleration exit watch', () => {
       },
       isDesktopRunning,
       disconnect,
-      schedule: (callback) => {
+      schedule: (callback, milliseconds) => {
         timers.push(callback)
+        delays.push(milliseconds)
         return () => { timers.splice(timers.indexOf(callback), 1) }
       },
       log,
@@ -201,7 +203,7 @@ describe('codex desktop acceleration exit watch', () => {
       return isDesktopRunning.mock.calls.length > probes
     }
     return {
-      coordinator, isDesktopRunning, disconnect, timers, tick, log,
+      coordinator, isDesktopRunning, disconnect, timers, delays, tick, log,
       setState: (state: AccelerationState) => { current = state },
     }
   }
@@ -236,6 +238,24 @@ describe('codex desktop acceleration exit watch', () => {
     expect(h.disconnect).not.toHaveBeenCalled()
     await h.tick()
     await vi.waitFor(() => { expect(h.disconnect).toHaveBeenCalledOnce() })
+  })
+
+  it('asks less often while the desktop app keeps running and snaps back on the first miss', async () => {
+    const h = watchSetup({ running: [true, true, true, true, false, null, true] })
+    await h.coordinator.ensureConnected()
+    for (let index = 0; index < 7; index += 1) await h.tick()
+    // 打开后第一次 + 每次检查之后各排一次：头三次确认在跑之前保持一分钟，
+    // 之后放宽到三分钟；查到不在、查不出来都立刻退回一分钟，在跑也要重新攒三次。
+    expect(h.delays).toEqual([60_000, 60_000, 60_000, 180_000, 180_000, 60_000, 60_000, 60_000])
+    expect(h.disconnect).not.toHaveBeenCalled()
+  })
+
+  it('still disconnects after two misses once the interval has been relaxed', async () => {
+    const h = watchSetup({ running: [true, true, true, false, false] })
+    await h.coordinator.ensureConnected()
+    for (let index = 0; index < 5; index += 1) await h.tick()
+    await vi.waitFor(() => { expect(h.disconnect).toHaveBeenCalledExactlyOnceWith(scope) })
+    expect(h.delays).toEqual([60_000, 60_000, 60_000, 180_000, 60_000])
   })
 
   it('stops watching once the user has taken the connection over', async () => {
