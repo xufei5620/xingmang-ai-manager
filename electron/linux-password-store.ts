@@ -57,11 +57,16 @@ function hasKdeHint(env: LinuxPasswordStoreInput['env']): boolean {
     || env.KDE_SESSION_VERSION !== undefined
 }
 
-/** The session bus searches these for activation files (D-Bus spec, standard_session_servicedirs). */
+/**
+ * The session bus searches these for activation files (D-Bus spec, standard_session_servicedirs).
+ * They are Linux paths whatever host evaluates them, so they go through path.posix: the
+ * platform `path` on a Windows test runner would rewrite them with backslashes and reject
+ * `/usr/share` as not absolute.
+ */
 export function secretServiceActivationFiles(env: LinuxPasswordStoreInput['env']): string[] {
   const dataDirectories = (env.XDG_DATA_DIRS || '/usr/local/share:/usr/share').split(':')
-  const directories = [...dataDirectories, '/usr/share'].filter((directory) => path.isAbsolute(directory))
-  return [...new Set(directories.map((directory) => path.join(directory, 'dbus-1', 'services', 'org.freedesktop.secrets.service')))]
+  const directories = [...dataDirectories, '/usr/share'].filter((directory) => path.posix.isAbsolute(directory))
+  return [...new Set(directories.map((directory) => path.posix.join(directory, 'dbus-1', 'services', 'org.freedesktop.secrets.service')))]
 }
 
 export function resolveLinuxPasswordStore(input: LinuxPasswordStoreInput): LinuxPasswordStore | null {
