@@ -377,10 +377,10 @@ function createRuntimeDependencies(common) {
     downloadResource: common.downloadResource,
     inspectWindowsFile,
     validatePackageMagic,
-    createWorkDirectory: async function () { return fs.mkdtemp(path.join(os.tmpdir(), 'xingmang-official-cos-')) },
+    createWorkDirectory: async function () { return fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), 'xingmang-official-cos-')) },
     removeWorkDirectory: async function (directory) {
       const resolved = path.resolve(directory)
-      const temporaryRoot = path.resolve(os.tmpdir())
+      const temporaryRoot = await fs.realpath(os.tmpdir())
       if (path.dirname(resolved) !== temporaryRoot || !path.basename(resolved).startsWith('xingmang-official-cos-')) throw new Error('拒绝删除临时同步目录以外的路径')
       await fs.rm(resolved, { recursive: true, force: true })
     },

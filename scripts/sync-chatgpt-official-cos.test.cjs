@@ -4,13 +4,63 @@ const { createHash } = require('node:crypto')
 const fs = require('node:fs/promises')
 const path = require('node:path')
 const os = require('node:os')
+const { hashFile, readBoundedRegularFile } = require('./cos-sync-utils.cjs')
 const {
   OFFICIAL_HOST, WINDOWS_METADATA_URL, WINDOWS_PUBLISHER, SOURCES, LICENSE_SOURCE,
   LATEST_KEY, MAX_PACKAGE_BYTES, WINDOWS_INSPECTION_SCRIPT, parsePlatforms,
   compareWindowsVersions, validateWindowsMetadata, validateHead, parseMacAppcast,
   validateWindowsInspection, sanitizedWindowsEnvironment, synchronizeOfficialChatgpt,
-  validatePackageMagic,
+  validatePackageMagic, createRuntimeDependencies,
 } = require('./sync-chatgpt-official-cos.cjs')
+
+test('runtime temp aliases resolve to safe files and cleanup preserves neighboring directories', async function () {
+  const temporaryBase = await fs.realpath(os.tmpdir())
+  const root = await fs.mkdtemp(path.join(temporaryBase, 'official-temp-alias-test-'))
+  const real = path.join(root, 'real')
+  const alias = path.join(root, 'alias')
+  const environmentKey = process.platform === 'win32' ? 'TEMP' : 'TMPDIR'
+  const previous = process.env[environmentKey]
+  try {
+    await fs.mkdir(real)
+    await fs.symlink(real, alias, process.platform === 'win32' ? 'junction' : 'dir')
+    process.env[environmentKey] = alias
+    assert.equal(os.tmpdir(), alias)
+    const runtime = createRuntimeDependencies({})
+    const directory = await runtime.createWorkDirectory()
+    assert.equal(path.dirname(directory), await fs.realpath(alias))
+    assert.match(path.basename(directory), /^xingmang-official-cos-/)
+    const filePath = path.join(directory, 'verified-package.msix')
+    const payload = Buffer.from('official package fixture')
+    await fs.writeFile(filePath, payload)
+    assert.deepEqual(await readBoundedRegularFile(filePath), payload)
+    const hash = await hashFile(filePath)
+    assert.equal(hash.bytes, payload.length)
+    assert.equal(hash.sha256, createHash('sha256').update(payload).digest('hex'))
+
+    const sibling = await runtime.createWorkDirectory()
+    const siblingFile = path.join(sibling, 'keep.txt')
+    await fs.writeFile(siblingFile, 'other run')
+    const unrelated = path.join(real, 'unrelated')
+    const outside = path.join(root, 'xingmang-official-cos-outside')
+    await fs.mkdir(unrelated)
+    await fs.mkdir(outside)
+    await assert.rejects(runtime.removeWorkDirectory(unrelated), /拒绝删除/)
+    await assert.rejects(runtime.removeWorkDirectory(outside), /拒绝删除/)
+    await runtime.removeWorkDirectory(directory)
+    await assert.rejects(fs.access(directory), { code: 'ENOENT' })
+    assert.equal(await fs.readFile(siblingFile, 'utf8'), 'other run')
+    assert.equal((await fs.stat(unrelated)).isDirectory(), true)
+    assert.equal((await fs.stat(outside)).isDirectory(), true)
+    await runtime.removeWorkDirectory(sibling)
+  } finally {
+    if (previous === undefined) delete process.env[environmentKey]
+    else process.env[environmentKey] = previous
+    if (path.dirname(root) !== temporaryBase || !path.basename(root).startsWith('official-temp-alias-test-')) {
+      throw new Error('Unexpected temp-alias cleanup target')
+    }
+    await fs.rm(root, { recursive: true, force: true })
+  }
+})
 
 function clone(value) {
   return value === null || value === undefined ? value : JSON.parse(JSON.stringify(value))

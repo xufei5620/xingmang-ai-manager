@@ -82,7 +82,7 @@ function memoryCos({ lostPut = false, corruptGet = false, privateGet = false } =
 }
 
 async function fixture(t, contents = 'installer contents') {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'xingmang-cos-sync-'))
+  const directory = await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), 'xingmang-cos-sync-'))
   t.after(() => fs.rm(directory, { recursive: true, force: true }))
   const filePath = path.join(directory, 'installer.msix')
   await fs.writeFile(filePath, contents)

@@ -1624,6 +1624,7 @@ test('Key bootstrap progress locks the guide until the account operation settles
     await page.evaluate(() => window.v2Test.releaseBootstrap())
     await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'configureManagedCliKeys'))
     await page.getByTestId('guide-route-claude').waitFor({ state: 'visible' })
+    await page.waitForFunction(() => document.querySelector('[data-testid="start-guide"]')?.getAttribute('data-busy') === 'false')
     assert.equal(await page.getByTestId('guide-route-claude').isDisabled(), false)
     await clean(page)
   } finally { await page.close() }
@@ -2360,7 +2361,7 @@ test('on Linux the updates page hands installing to the system installer and exp
     await manual.getByRole('button', { name: '打开下载页', exact: true }).click()
     await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'openExternal'))
     const opened = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'openExternal').at(-1).args)
-    assert.deepEqual(opened, ['https://github.com/xufei5620/xingmang-ai-manager/releases/latest'])
+    assert.deepEqual(opened, ['https://docs-new.solov.cc/guide/manager#download-installers'])
     await clean(page)
   } finally { await page.close() }
 })

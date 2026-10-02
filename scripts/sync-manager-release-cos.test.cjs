@@ -31,7 +31,7 @@ function blockmap() {
 }
 
 function fixture(t, { platforms = ['windows'], version = VERSION, payload = 'release payload' } = {}) {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-manager-cos-'))
+  const directory = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'xingmang-manager-cos-'))
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   const descriptors = [...buildAllowedArtifacts(version).values()].filter((file) => platforms.includes(file.platform))
   for (const file of descriptors.filter((entry) => entry.kind !== 'manifest')) {
