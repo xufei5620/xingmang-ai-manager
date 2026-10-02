@@ -1,20 +1,23 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { CommandRunnerError, type CommandResult } from './command-runner'
 import {
   fetchMacosDesktopResource,
   installMacosDesktopApp,
   isMacosVersionBelow,
   macosDesktopAppInstallable,
-  MacosDesktopInstallFailure,
+  MacosDesktopInstallError,
   type InstallMacosDesktopAppOptions,
   type MacosDesktopAppProcess,
 } from './macos-desktop-app-installer'
 import {
   isMacosDesktopInstallFailure,
   isMacosDesktopSystemTooOld,
+  macosDesktopDiskFullMessage,
+  macosDesktopInstallErrorName,
+  macosDesktopNameTakenMessage,
   macosDesktopNotOfficialMessage,
 } from './macos-desktop-install-failure'
 import { managedProductRoot } from './managed-cli-paths'
@@ -71,16 +74,22 @@ interface FakeProcessOptions {
   minimumSystemVersion?: string
   systemVersion?: string
   rejectExecutable?: string
+  /** What the rejected command printed on stderr. */
+  rejectStderr?: string
+  /** ditto copies part of the bundle, then exits with this on stderr. */
+  dittoBreaksWith?: string
+  /** Someone puts an app of the same name in place while ditto is copying. */
+  nameAppearsDuringCopy?: boolean
 }
 
 function result(plan: MacosDesktopAppProcess, stdout = ''): CommandResult {
   return { executable: plan.executable, argv: [...plan.argv], exitCode: 0, signal: null, stdout, stderr: '', outputBytes: stdout.length, durationMs: 1 }
 }
 
-function rejection(plan: MacosDesktopAppProcess): CommandRunnerError {
+function rejection(plan: MacosDesktopAppProcess, stderr = ''): CommandRunnerError {
   return new CommandRunnerError(`${plan.executable} rejected`, {
     code: 'EXIT_NON_ZERO', executable: plan.executable, argv: [...plan.argv], exitCode: 1, signal: null,
-    stdout: '', stderr: '', outputBytes: 0, maxOutputBytes: 1, durationMs: 1,
+    stdout: '', stderr, outputBytes: 0, maxOutputBytes: 1, durationMs: 1,
   })
 }
 
@@ -88,7 +97,7 @@ function fakeProcesses(options: FakeProcessOptions = {}) {
   const plans: MacosDesktopAppProcess[] = []
   async function runProcess(plan: MacosDesktopAppProcess): Promise<CommandResult> {
     plans.push(plan)
-    if (plan.executable === options.rejectExecutable) throw rejection(plan)
+    if (plan.executable === options.rejectExecutable) throw rejection(plan, options.rejectStderr)
     if (plan.executable === '/usr/bin/tar') {
       const destination = plan.argv[3]
       fs.mkdirSync(path.join(destination, 'OpenCode.app', 'Contents', 'MacOS'), { recursive: true })
@@ -104,6 +113,18 @@ function fakeProcesses(options: FakeProcessOptions = {}) {
       }))
     }
     if (plan.executable === '/usr/bin/sw_vers') return result(plan, `${options.systemVersion ?? '15.1'}\n`)
+    if (plan.executable === '/usr/bin/ditto') {
+      const [from, to] = plan.argv
+      if (options.dittoBreaksWith) {
+        fs.mkdirSync(path.join(to, 'Contents'), { recursive: true })
+        throw rejection(plan, options.dittoBreaksWith)
+      }
+      fs.cpSync(from, to, { recursive: true })
+      if (options.nameAppearsDuringCopy) {
+        fs.mkdirSync(path.join(path.dirname(to), 'OpenCode.app'))
+        fs.writeFileSync(path.join(path.dirname(to), 'OpenCode.app', 'mine'), 'customer')
+      }
+    }
     return result(plan)
   }
   return { runProcess, plans }
@@ -118,6 +139,7 @@ function temporaryDirectory(label: string): string {
 }
 
 afterEach(() => {
+  vi.restoreAllMocks()
   for (const directory of temporaryDirectories.splice(0)) fs.rmSync(directory, { recursive: true, force: true })
 })
 
@@ -142,10 +164,23 @@ function setup(network: FakeNetworkOptions = {}, processes: FakeProcessOptions =
   return { home, applications, options, progress, requested: fakeNet.requested, plans: fakeRun.plans }
 }
 
-async function failure(promise: Promise<unknown>): Promise<MacosDesktopInstallFailure> {
+async function failure(promise: Promise<unknown>): Promise<MacosDesktopInstallError> {
   const error = await promise.then(() => null, (reason: unknown) => reason)
-  expect(error).toBeInstanceOf(MacosDesktopInstallFailure)
-  return error as MacosDesktopInstallFailure
+  expect(error).toBeInstanceOf(MacosDesktopInstallError)
+  // The renderer strips this name from the IPC rejection (operation-error.test.ts checks it).
+  expect((error as MacosDesktopInstallError).name).toBe(macosDesktopInstallErrorName)
+  return error as MacosDesktopInstallError
+}
+
+/** The staged copy sits on the home volume and Applications on another one. */
+function onAnotherVolume(): void {
+  const rename = fs.promises.rename
+  vi.spyOn(fs.promises, 'rename').mockImplementation(async (from, to) => {
+    if (String(from).includes('/DesktopApps/')) {
+      throw Object.assign(new Error('EXDEV: cross-device link not permitted, rename'), { code: 'EXDEV' })
+    }
+    return rename(from, to)
+  })
 }
 
 function stagingLeftovers(home: string): string[] {
@@ -262,13 +297,88 @@ describe('macOS desktop app installer', () => {
   })
 
   it.skipIf(process.platform === 'win32')('deletes a package whose signature or Gatekeeper verdict is not the official one', async () => {
-    for (const rejectExecutable of ['/usr/bin/codesign', '/usr/sbin/spctl', '/usr/bin/tar']) {
+    for (const rejectExecutable of ['/usr/bin/codesign', '/usr/sbin/spctl']) {
       const f = setup({}, { rejectExecutable })
       const error = await failure(installMacosDesktopApp(f.options))
       expect(error.message).toBe(macosDesktopNotOfficialMessage)
       expect(fs.readdirSync(f.applications)).toEqual([])
       expect(stagingLeftovers(f.home)).toEqual([])
     }
+  })
+
+  it.skipIf(process.platform === 'win32')('reports an archive that will not unpack as a failed install, not as a fake package', async () => {
+    const f = setup({}, { rejectExecutable: '/usr/bin/tar', rejectStderr: 'tar: Error opening archive: Unrecognized archive format' })
+    const error = await failure(installMacosDesktopApp(f.options))
+    expect(error.message).toBe('OpenCode 没装好，请再点一次「安装」。')
+    expect(error.detail).toContain('/usr/bin/tar')
+    expect(f.plans.some((plan) => plan.executable === '/usr/bin/codesign')).toBe(false)
+    expect(fs.readdirSync(f.applications)).toEqual([])
+    expect(stagingLeftovers(f.home)).toEqual([])
+  })
+
+  it.skipIf(process.platform === 'win32')('says the disk is full instead of blaming the network or the package', async () => {
+    const unpacking = setup({}, { rejectExecutable: '/usr/bin/tar', rejectStderr: 'tar: OpenCode.app/Contents/Frameworks/a: Write failed: No space left on device' })
+    const unpacked = await failure(installMacosDesktopApp(unpacking.options))
+    expect(unpacked.message).toBe('OpenCode 安装失败：安装目录所在磁盘空间不足，请先清理磁盘再试')
+    expect(isMacosDesktopInstallFailure(unpacked.message)).toBe(false)
+    expect(stagingLeftovers(unpacking.home)).toEqual([])
+
+    // Running out of room halfway through the download used to read as a network problem.
+    const downloading = setup()
+    const open = fs.promises.open
+    vi.spyOn(fs.promises, 'open').mockImplementation(async (file, flags, mode) => {
+      const handle = await open(file, flags, mode)
+      if (String(file).endsWith('package.tar.gz')) {
+        vi.spyOn(handle, 'write').mockRejectedValue(Object.assign(new Error('ENOSPC: no space left on device, write'), { code: 'ENOSPC' }))
+      }
+      return handle
+    })
+    const downloaded = await failure(installMacosDesktopApp(downloading.options))
+    expect(downloaded.message).toBe(macosDesktopDiskFullMessage('OpenCode'))
+    expect(downloaded.detail).toContain('ENOSPC')
+    expect(fs.readdirSync(downloading.applications)).toEqual([])
+    expect(stagingLeftovers(downloading.home)).toEqual([])
+  })
+
+  it.skipIf(process.platform === 'win32')('copies across volumes under a hidden name and only then renames it into place', async () => {
+    const f = setup()
+    onAnotherVolume()
+    const installed = await installMacosDesktopApp(f.options)
+    expect(installed.path).toBe(path.posix.join(f.applications, 'OpenCode.app'))
+    expect(fs.readFileSync(path.join(f.applications, 'OpenCode.app', 'Contents', 'MacOS', 'OpenCode'), 'utf8')).toBe('binary')
+    const ditto = f.plans.find((plan) => plan.executable === '/usr/bin/ditto')
+    expect(ditto?.argv[0]).toMatch(/\/extract\/OpenCode\.app$/)
+    expect(path.posix.dirname(ditto?.argv[1] ?? '')).toBe(f.applications)
+    expect(path.posix.basename(ditto?.argv[1] ?? '')).toMatch(/^\.OpenCode\.app\.xingmang-[0-9a-f]{12}$/)
+    expect(fs.readdirSync(f.applications)).toEqual(['OpenCode.app'])
+    expect(stagingLeftovers(f.home)).toEqual([])
+  })
+
+  it.skipIf(process.platform === 'win32')('removes a half-made copy when copying across volumes fails', async () => {
+    const f = setup({}, { dittoBreaksWith: 'ditto: OpenCode.app/Contents/Frameworks/a: No space left on device' })
+    onAnotherVolume()
+    const error = await failure(installMacosDesktopApp(f.options))
+    expect(error.message).toBe(macosDesktopDiskFullMessage('OpenCode'))
+    expect(fs.readdirSync(f.applications)).toEqual([])
+    expect(stagingLeftovers(f.home)).toEqual([])
+  })
+
+  it.skipIf(process.platform === 'win32')('never replaces an app of the same name that appeared while the copy was being made', async () => {
+    const f = setup({}, { nameAppearsDuringCopy: true })
+    onAnotherVolume()
+    const error = await failure(installMacosDesktopApp(f.options))
+    expect(error.message).toBe(macosDesktopNameTakenMessage('OpenCode'))
+    expect(fs.readdirSync(f.applications)).toEqual(['OpenCode.app'])
+    expect(fs.readFileSync(path.join(f.applications, 'OpenCode.app', 'mine'), 'utf8')).toBe('customer')
+  })
+
+  it.skipIf(process.platform === 'win32')('clears the hidden copy an interrupted install left in Applications, and nothing else', async () => {
+    const f = setup()
+    fs.mkdirSync(path.join(f.applications, '.OpenCode.app.xingmang-0123456789ab', 'Contents'), { recursive: true })
+    fs.mkdirSync(path.join(f.applications, '.OpenCode.app.xingmang-mine'))
+    fs.mkdirSync(path.join(f.applications, 'Other.app'))
+    await installMacosDesktopApp(f.options)
+    expect(fs.readdirSync(f.applications).sort()).toEqual(['.OpenCode.app.xingmang-mine', 'OpenCode.app', 'Other.app'])
   })
 
   it.skipIf(process.platform === 'win32')('refuses an archive that is not exactly one bundle with the official identifier', async () => {

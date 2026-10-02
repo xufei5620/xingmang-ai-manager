@@ -7,7 +7,9 @@ import { downloadWithResume } from './download-retry'
 import type { ExternalToolId } from './external-tool-config'
 import { darwinDeveloperIdVerificationArgv } from './macos-code-signing'
 import {
+  macosDesktopDiskFullMessage,
   macosDesktopDownloadFailedMessage,
+  macosDesktopInstallErrorName,
   macosDesktopInstallFailedMessage,
   macosDesktopNameTakenMessage,
   macosDesktopNotOfficialMessage,
@@ -99,14 +101,14 @@ export interface MacosDesktopAppInstallResult {
 /**
  * 装不成时抛给界面的错误。message 是 macos-desktop-install-failure.ts 里那几句大白话；
  * detail 是原因原话，作为自有字段挂着，ipc.ts 记失败时会把它写进 runtime.jsonl
- * （同 CodexDesktopInstallFailure）。
+ * （同 CodexDesktopInstallFailure）。类名为什么以 Error 结尾见 macosDesktopInstallErrorName。
  */
-export class MacosDesktopInstallFailure extends Error {
+export class MacosDesktopInstallError extends Error {
   readonly detail: string
 
   constructor(message: string, detail: string, cause?: unknown) {
     super(message, { cause })
-    this.name = 'MacosDesktopInstallFailure'
+    this.name = macosDesktopInstallErrorName
     this.detail = detail
   }
 }
@@ -227,7 +229,7 @@ async function fetchFeed(tool: ExternalToolId, source: MacosDesktopAppSource, fe
   try {
     return JSON.parse(text) as unknown
   } catch {
-    throw new MacosDesktopInstallFailure(macosDesktopInstallFailedMessage(source.name), '官方版本信息不是有效的 JSON')
+    throw new MacosDesktopInstallError(macosDesktopInstallFailedMessage(source.name), '官方版本信息不是有效的 JSON')
   }
 }
 
@@ -301,6 +303,12 @@ function rejectedByCheck(error: unknown): boolean {
   return error instanceof CommandRunnerError && error.code === 'EXIT_NON_ZERO'
 }
 
+/** 盘写满了：Node 自己报的 ENOSPC，或者 tar、ditto 在 stderr 里说的同一件事。 */
+function isDiskFull(error: unknown): boolean {
+  if (error instanceof CommandRunnerError) return /No space left on device/i.test(error.stderr)
+  return (error as NodeJS.ErrnoException | null)?.code === 'ENOSPC'
+}
+
 async function verifyExtractedBundle(
   source: MacosDesktopAppSource,
   extractDirectory: string,
@@ -309,12 +317,12 @@ async function verifyExtractedBundle(
 ): Promise<string> {
   const entries = await fs.promises.readdir(extractDirectory)
   if (entries.length !== 1 || entries[0] !== bundleName) {
-    throw new MacosDesktopInstallFailure(macosDesktopNotOfficialMessage, `压缩包内容不是单独一个 ${bundleName}：${entries.slice(0, 5).join('、')}`)
+    throw new MacosDesktopInstallError(macosDesktopNotOfficialMessage, `压缩包内容不是单独一个 ${bundleName}：${entries.slice(0, 5).join('、')}`)
   }
   const bundle = path.posix.join(extractDirectory, bundleName)
   const stats = await fs.promises.lstat(bundle)
   if (!stats.isDirectory() || stats.isSymbolicLink()) {
-    throw new MacosDesktopInstallFailure(macosDesktopNotOfficialMessage, `压缩包里的 ${bundleName} 不是普通目录`)
+    throw new MacosDesktopInstallError(macosDesktopNotOfficialMessage, `压缩包里的 ${bundleName} 不是普通目录`)
   }
 
   const info = await runProcess({
@@ -326,15 +334,15 @@ async function verifyExtractedBundle(
   try {
     plist = JSON.parse(info.stdout) as unknown
   } catch {
-    throw new MacosDesktopInstallFailure(macosDesktopNotOfficialMessage, 'Info.plist 读不出来')
+    throw new MacosDesktopInstallError(macosDesktopNotOfficialMessage, 'Info.plist 读不出来')
   }
   if (!isRecord(plist) || plist.CFBundleIdentifier !== source.bundleIdentifier) {
-    throw new MacosDesktopInstallFailure(macosDesktopNotOfficialMessage, `bundle identifier 不是 ${source.bundleIdentifier}`)
+    throw new MacosDesktopInstallError(macosDesktopNotOfficialMessage, `bundle identifier 不是 ${source.bundleIdentifier}`)
   }
   if (typeof plist.LSMinimumSystemVersion === 'string') {
     const system = await runProcess({ executable: '/usr/bin/sw_vers', argv: ['-productVersion'], timeoutMs: probeTimeoutMs })
     if (isMacosVersionBelow(system.stdout, plist.LSMinimumSystemVersion)) {
-      throw new MacosDesktopInstallFailure(
+      throw new MacosDesktopInstallError(
         macosDesktopSystemTooOldMessage(source.name, plist.LSMinimumSystemVersion),
         `这台 Mac 是 macOS ${system.stdout.trim()}，应用要求 ${plist.LSMinimumSystemVersion} 以上`,
       )
@@ -348,16 +356,34 @@ async function verifyExtractedBundle(
       timeoutMs: signatureTimeoutMs,
     })
   } catch (error) {
-    if (rejectedByCheck(error)) throw new MacosDesktopInstallFailure(macosDesktopNotOfficialMessage, `签名不是 ${source.teamIdentifier} 团队的 Developer ID`, error)
+    if (rejectedByCheck(error)) throw new MacosDesktopInstallError(macosDesktopNotOfficialMessage, `签名不是 ${source.teamIdentifier} 团队的 Developer ID`, error)
     throw error
   }
   try {
     await runProcess({ executable: '/usr/sbin/spctl', argv: ['--assess', '--type', 'execute', bundle], timeoutMs: gatekeeperTimeoutMs })
   } catch (error) {
-    if (rejectedByCheck(error)) throw new MacosDesktopInstallFailure(macosDesktopNotOfficialMessage, 'Gatekeeper 没有放行（没有公证或签名已被吊销）', error)
+    if (rejectedByCheck(error)) throw new MacosDesktopInstallError(macosDesktopNotOfficialMessage, 'Gatekeeper 没有放行（没有公证或签名已被吊销）', error)
     throw error
   }
   return bundle
+}
+
+/** 跨卷时先拷到「应用程序」里这个隐藏名字下（后面接 12 位十六进制），拷完再改名。 */
+function copyNamePrefix(destination: string): string {
+  return `.${path.posix.basename(destination)}.xingmang-`
+}
+
+/**
+ * 上次跨卷拷到一半就被关掉（关机、强退）留下的隐藏副本：几百 MB，访达里看不见，也没有
+ * 别的地方会清它。只认 placeBundle 自己起的那种名字，客户的东西碰不到。
+ */
+async function removeInterruptedCopies(destination: string): Promise<void> {
+  const directory = path.posix.dirname(destination)
+  const prefix = copyNamePrefix(destination)
+  for (const entry of await fs.promises.readdir(directory)) {
+    if (!entry.startsWith(prefix) || !/^[0-9a-f]{12}$/.test(entry.slice(prefix.length))) continue
+    await fs.promises.rm(path.posix.join(directory, entry), { recursive: true, force: true })
+  }
 }
 
 async function placeBundle(
@@ -366,7 +392,7 @@ async function placeBundle(
   destination: string,
   runProcess: InstallMacosDesktopAppOptions['runProcess'],
 ): Promise<void> {
-  const nameTaken = () => new MacosDesktopInstallFailure(macosDesktopNameTakenMessage(source.applicationName), `${destination} 在下载期间出现了`)
+  const nameTaken = () => new MacosDesktopInstallError(macosDesktopNameTakenMessage(source.applicationName), `${destination} 在安装过程中出现了`)
   // rename 会把一个空目录直接顶掉，所以动手前再看一次：客户的东西一律不覆盖。
   if (await lstatOrNull(destination)) throw nameTaken()
   try {
@@ -377,7 +403,7 @@ async function placeBundle(
   }
   // 用户目录放在另一块盘上时 rename 过不去：先整个拷到旁边一个临时名字再改名，
   // 「应用程序」里任何时候都不会出现拷了一半的应用。
-  const temporary = path.posix.join(path.posix.dirname(destination), `.${path.posix.basename(destination)}.xingmang-${randomBytes(6).toString('hex')}`)
+  const temporary = path.posix.join(path.posix.dirname(destination), `${copyNamePrefix(destination)}${randomBytes(6).toString('hex')}`)
   try {
     await runProcess({ executable: '/usr/bin/ditto', argv: [bundle, temporary], timeoutMs: copyTimeoutMs })
     if (await lstatOrNull(destination)) throw nameTaken()
@@ -404,14 +430,15 @@ export async function installMacosDesktopApp(options: InstallMacosDesktopAppOpti
     const destination = path.posix.join(applications, bundleName)
     // 首页认得出的那份早就让安装提前结束了；走到这里还占着名字的，是认不出来的那份。
     if (await lstatOrNull(destination)) {
-      throw new MacosDesktopInstallFailure(macosDesktopNameTakenMessage(source.applicationName), `${destination} 已存在，但不是能核对的官方原版`)
+      throw new MacosDesktopInstallError(macosDesktopNameTakenMessage(source.applicationName), `${destination} 已存在，但不是能核对的官方原版`)
     }
+    await removeInterruptedCopies(destination)
     staging = await createStagingDirectory(options.environment)
 
     stage = 'download'
     const release = source.selectRelease(await fetchFeed(options.tool, source, options.fetch), architecture)
     if (!release) {
-      throw new MacosDesktopInstallFailure(macosDesktopInstallFailedMessage(source.name), '官方版本信息里没有这台 Mac 能用的安装包')
+      throw new MacosDesktopInstallError(macosDesktopInstallFailedMessage(source.name), '官方版本信息里没有这台 Mac 能用的安装包')
     }
     const archive = path.posix.join(staging, 'package.tar.gz')
     const downloading = `正在下载 ${source.name} ${release.version}`
@@ -449,15 +476,13 @@ export async function installMacosDesktopApp(options: InstallMacosDesktopAppOpti
     report('checking', '正在检查下载下来的安装包是不是完整的官方版')
     const extractDirectory = path.posix.join(staging, 'extract')
     await fs.promises.mkdir(extractDirectory, { mode: 0o700 })
-    try {
-      // /usr/bin/tar is bsdtar under SIP. By default it strips a leading "/", refuses
-      // entries containing ".." and will not extract through a symlink, so the archive
-      // cannot write outside the staging directory before its signature is checked.
-      await options.runProcess({ executable: '/usr/bin/tar', argv: ['-xzf', archive, '-C', extractDirectory], timeoutMs: extractTimeoutMs })
-    } catch (error) {
-      if (rejectedByCheck(error)) throw new MacosDesktopInstallFailure(macosDesktopNotOfficialMessage, '安装包解不开', error)
-      throw error
-    }
+    // /usr/bin/tar is bsdtar under SIP. By default it strips a leading "/", refuses
+    // entries containing ".." and will not extract through a symlink, so the archive
+    // cannot write outside the staging directory before its signature is checked.
+    // A failed extraction says nothing about who made the archive (a read error or a
+    // full disk looks the same), so it is reported as a failed install, not as an
+    // unofficial package: a swapped archive that does unpack still meets the checks below.
+    await options.runProcess({ executable: '/usr/bin/tar', argv: ['-xzf', archive, '-C', extractDirectory], timeoutMs: extractTimeoutMs })
     const bundle = await verifyExtractedBundle(source, extractDirectory, bundleName, options.runProcess)
 
     stage = 'place'
@@ -465,10 +490,12 @@ export async function installMacosDesktopApp(options: InstallMacosDesktopAppOpti
     await placeBundle(source, bundle, destination, options.runProcess)
     return { version: release.version, path: destination }
   } catch (error) {
-    if (error instanceof MacosDesktopInstallFailure) throw error
+    if (error instanceof MacosDesktopInstallError) throw error
     const detail = error instanceof Error ? error.message : String(error)
-    const message = stage === 'download' ? macosDesktopDownloadFailedMessage(source.name) : macosDesktopInstallFailedMessage(source.name)
-    throw new MacosDesktopInstallFailure(message, detail, error)
+    // 盘满了就照直说：「检查网络」「再点一次」都救不了一块写满的磁盘。
+    const message = isDiskFull(error) ? macosDesktopDiskFullMessage(source.name)
+      : stage === 'download' ? macosDesktopDownloadFailedMessage(source.name) : macosDesktopInstallFailedMessage(source.name)
+    throw new MacosDesktopInstallError(message, detail, error)
   } finally {
     if (staging) await fs.promises.rm(staging, { recursive: true, force: true }).catch(() => undefined)
   }

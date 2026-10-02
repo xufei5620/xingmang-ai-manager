@@ -5,9 +5,10 @@ import { errors } from './registry/errors'
 import { codexDesktopKnownIssueLaunchSentence } from '../../electron/codex-desktop-known-issues'
 import { buildCodexDesktopInstallFailureMessage, codexDesktopInstallFailureReasons, type CodexDesktopInstallFailureReason } from '../../electron/codex-desktop-install-failure'
 import {
-  macosDesktopDownloadFailedMessage, macosDesktopInstallFailedMessage, macosDesktopNameTakenMessage,
-  macosDesktopNotOfficialMessage, macosDesktopSystemTooOldMessage,
+  macosDesktopDiskFullMessage, macosDesktopDownloadFailedMessage, macosDesktopInstallErrorName, macosDesktopInstallFailedMessage,
+  macosDesktopNameTakenMessage, macosDesktopNotOfficialMessage, macosDesktopSystemTooOldMessage,
 } from '../../electron/macos-desktop-install-failure'
+import { operationFailureFrom } from './business-common'
 
 /**
  * 目录里的 16 条都要有交代：要么给出一句真的会到达渲染层的后端原话，要么写明
@@ -275,8 +276,18 @@ describe('renderer-v2 operation error classification', () => {
       // 原因原话只记在运行日志里。
       expect(operationLogPage({ message })).toBe('feedback')
     }
-    // 磁盘不够还是「磁盘空间不够」那一类，不归到这里。
+    // 磁盘不够还是「磁盘空间不够」那一类，不归到这里：装之前查出来的、装到一半写满的都一样。
     expect(classifyOperationError('OpenCode 安装失败：安装目录所在磁盘空间不足，只剩 300 MB，至少需要 1 GB，请先清理磁盘再试')).toBe('diskFull')
+    expect(classifyOperationError(macosDesktopDiskFullMessage('OpenCode'))).toBe('diskFull')
+  })
+
+  it('puts a failed Mac desktop install on screen without the class name Electron adds to the rejection', () => {
+    // Electron 把主进程的拒绝写成「Error invoking remote method '通道': 类名: 原话」。
+    const message = macosDesktopDownloadFailedMessage('OpenCode')
+    const rejected = new Error(`Error invoking remote method 'external-clients:install': ${macosDesktopInstallErrorName}: ${message}`)
+    const failure = operationFailureFrom(rejected, '安装客户端')
+    expect(failure).toEqual({ message })
+    expect(presentOperationError(failure.message)?.key).toBe('macDesktopInstallFailed')
   })
 
   it('offers neither a retry nor the install guide when the Mac is too old for the app', () => {

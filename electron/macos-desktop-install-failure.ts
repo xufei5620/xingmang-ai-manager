@@ -8,6 +8,13 @@
  * 这个模块同时给主进程和渲染层用，所以和 network-failure.ts 一样不许引 Node（I6）。
  */
 
+/**
+ * 主进程抛出的错误类名。Electron 把 IPC 拒绝写成「Error invoking remote method '通道':
+ * 类名: 原话」，渲染层（business-common.tsx 的 ipcPrefixPattern）只剥以 Error 结尾的
+ * 类名，换成别的结尾，类名就会跟着那句话一起出现在错误框里。
+ */
+export const macosDesktopInstallErrorName = 'MacosDesktopInstallError'
+
 export function macosDesktopDownloadFailedMessage(name: string): string {
   return `${name} 没下载下来，请检查网络后再点一次「安装」。`
 }
@@ -25,6 +32,15 @@ export function macosDesktopNameTakenMessage(applicationName: string): string {
 
 export function macosDesktopInstallFailedMessage(name: string): string {
   return `${name} 没装好，请再点一次「安装」。`
+}
+
+/**
+ * 装到一半磁盘写满了（装之前已经查过空间，很少见）。和装之前就查出来的那句
+ * （disk-space.ts 的 describeInsufficientDiskSpace）同一个说法，只是量不到还剩多少；
+ * 渲染层按「磁盘空间不足」归到「磁盘空间不够」，不配「看安装指南」：自己下载也一样放不下。
+ */
+export function macosDesktopDiskFullMessage(name: string): string {
+  return `${name} 安装失败：安装目录所在磁盘空间不足，请先清理磁盘再试`
 }
 
 export function isMacosDesktopSystemTooOld(message: string): boolean {
