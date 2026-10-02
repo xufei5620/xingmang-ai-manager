@@ -26,6 +26,7 @@
 - `electron/linux-autostart.ts` — Linux 的开机自动启动：写 XDG autostart 里的 .desktop 文件，读写走 safe-local-data（Linux 版拆分 ⑩）
 - `electron/linux-ime.ts` — Wayland 会话下给 Chromium 开文字输入协议的启动开关，中文输入法才收得到输入（Linux 版拆分 ⑩）
 - `electron/linux-os-release.ts` — 读 `/etc/os-release` 得到发行版名字，给检查页、复制给客服和启动日志（Linux 版拆分 ⑩）
+- `electron/linux-grok.ts` — Grok 的 Linux 安装核对与卸载：没有 codesign，改为和 npm 官方锁校验过的平台包逐字节对账，再核版本；链接快照与回滚复用 `macos-grok.ts`（Linux 版拆分 ③）
 
 ## `electron/` 主进程
 

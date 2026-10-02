@@ -10,7 +10,7 @@ import { runtimeDisplayName, type ManagedRuntimeId, type RuntimeInstallGuide } f
  * 剪贴板失败也要有回音，理由同 FirstRun.tsx：打包版里 navigator.clipboard 仍可能
  * 被系统拒绝，按了没反应会让人以为软件坏了。
  */
-export function RuntimeInstallHint({ runtime, guide, tutorialNote = true }: { runtime: ManagedRuntimeId; guide: RuntimeInstallGuide; tutorialNote?: boolean }) {
+export function RuntimeInstallHint({ runtime, guide }: { runtime: ManagedRuntimeId; guide: RuntimeInstallGuide }) {
   const [copied, setCopied] = useState(false)
   const [failed, setFailed] = useState(false)
   const command = guide.command
@@ -28,7 +28,6 @@ export function RuntimeInstallHint({ runtime, guide, tutorialNote = true }: { ru
     </div>}
     {copied && <p className="v2-runtime-guide-note" role="status">命令已复制，粘到「终端」里回车即可</p>}
     {failed && <p className="v2-runtime-guide-note" role="status">没能写进剪贴板，手动选中上面的命令复制就行</p>}
-    {/* Linux 的教程里没有这一章，步骤全在这里了。 */}
-    {tutorialNote && <p className="v2-runtime-guide-note">装 {runtimeDisplayName(runtime)} 的完整步骤在教程里也有一份。</p>}
+    {!guide.noTutorial && <p className="v2-runtime-guide-note">装 {runtimeDisplayName(runtime)} 的完整步骤在教程里也有一份。</p>}
   </div>
 }

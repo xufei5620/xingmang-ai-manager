@@ -14,6 +14,8 @@ export interface PlatformCapabilities {
   readonly cliNeedsNodeRuntime?: Readonly<Record<ProviderId, boolean>>
   /** 游戏加速（加速页、托盘那一行、兑换加速时长）。缺省 = 有（旧行为）。 */
   readonly acceleration?: boolean
+  /** 缺省 = 按渲染层注册表的 requires 判断，Gemini 要 Python（旧行为）。 */
+  readonly cliNeedsPythonRuntime?: Readonly<Record<ProviderId, boolean>>
   readonly codexDesktop: Readonly<{
     install: InstallManagement
     launch: boolean
@@ -35,6 +37,7 @@ export function platformCapabilitiesFor(
   const family = platformFamily(platform)
   const windows = family === 'windows'
   const macos = family === 'macos'
+  const linux = family === 'linux'
   return Object.freeze({
     platform: family,
     architecture,
@@ -44,14 +47,15 @@ export function platformCapabilitiesFor(
     // 让客户自己装就是卡死。Python 仍归客户自己装。
     nodeRuntimeInstall: 'managed',
     pythonRuntimeInstall: windows ? 'managed' : 'external',
+    // Linux 上 Grok 和 macOS 一样从 npm 包装（Linux 版拆分 ③，linux-grok.ts）。
     cliInstall: Object.freeze({
       claude: 'managed',
       codex: 'managed',
       gemini: 'managed',
-      grok: windows || macos ? 'managed' : 'external',
+      grok: 'managed',
     }),
     // Windows 版 Grok 是 xAI 签名的独立程序，装和跑都不经过 npm（system-service.ts 的
-    // grokInstallStrategyFor → windows-native）；Mac 仍从 npm 包取，照旧要 Node.js。
+    // grokInstallStrategyFor → windows-native）；Mac 和 Linux 从 npm 包取，照旧要 Node.js。
     // 没有 Node.js 时只是少了做完提醒那几条钩子，配置照写（resolveCliHookInvocation）。
     cliNeedsNodeRuntime: Object.freeze({
       claude: true,
@@ -62,6 +66,14 @@ export function platformCapabilitiesFor(
     // Linux 第一版不带加速：安装包里没有加速内核，页面开着只会一直「线路准备中」。
     // 等 Linux 加速（拆分 ⑫）落地再打开。
     acceleration: windows || macos,
+    // Gemini 要 Python 只是为了在没有预编译包时现场编译一个可选组件，那一步还得有编译器；
+    // Linux 上缺了它照样能装能用，不该拦着（Linux 版拆分 ③）。Windows 和 Mac 不变。
+    cliNeedsPythonRuntime: Object.freeze({
+      claude: false,
+      codex: false,
+      gemini: !linux,
+      grok: false,
+    }),
     codexDesktop: Object.freeze({
       install: windows ? 'managed' : 'external',
       launch: windows || macos,

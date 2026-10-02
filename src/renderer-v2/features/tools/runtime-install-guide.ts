@@ -26,14 +26,13 @@ export interface RuntimeInstallGuide {
   readonly steps: readonly string[]
   /** 可复制的一条命令；没有推荐命令的平台是 null。 */
   readonly command: string | null
+  /** 教程里没有这个平台的装法章节（Linux）；缺省 = 有，首页给「看教程」。 */
+  readonly noTutorial?: boolean
 }
 
 export function runtimeDisplayName(runtime: ManagedRuntimeId): string {
   return runtime === 'node' ? 'Node.js' : 'Python'
 }
-
-/** Linux 上装 Python 的那一条命令。Linux 只出 deb，装得上星芒的系统都用 apt。 */
-export const runtimeLinuxPythonCommand = 'sudo apt install -y python3'
 
 /** Homebrew 那一条命令，教程页与首页必须是同一个字符串，测试据此钉住。 */
 export function runtimeHomebrewCommand(runtime: ManagedRuntimeId): string {
@@ -49,6 +48,22 @@ export function runtimeButtonLabel(runtime: ManagedRuntimeId, management: Instal
   if (management === 'external') return `去官网下载 ${runtimeDisplayName(runtime)}${optional}`
   return runtime === 'node' ? '准备 Node.js' : '装 Python（可选环境）'
 }
+
+/**
+ * Linux 上 Python 那颗「去官网下载」不给：python.org 给 Linux 的只有源码包，客户装不上；
+ * 而且 Linux 上四个命令行工具都用不到它（platform-capabilities 的 cliNeedsPythonRuntime，
+ * Linux 版拆分 ③），装法写在首页那段说明里。Windows、Mac 照旧。
+ */
+export function runtimeInstallButtonShown(
+  runtime: ManagedRuntimeId,
+  platform: PlatformFamily | undefined,
+  management: InstallManagement | undefined,
+): boolean {
+  return !(runtime === 'python' && platform === 'linux' && management === 'external')
+}
+
+/** Linux 版只出 deb 包，能装上它的系统都有 apt。 */
+export const linuxPythonInstallCommand = 'sudo apt install python3'
 
 function whyNeeded(runtime: ManagedRuntimeId): string {
   return runtime === 'node'
@@ -102,15 +117,15 @@ export function runtimeInstallGuide(
       command: runtimeHomebrewCommand(runtime),
     }
   }
-  // Linux 的 Python 官网只有源码包，「去官网下载」对客户是死路；给一条能照抄的命令。
   if (platform === 'linux' && runtime === 'python') {
     return {
-      summary: '这台电脑上没有找到 Python（Gemini CLI 要用到它）。星芒不会替你装它，照下面做一次就好。',
+      summary: '这台电脑上没有找到 Python。四个命令行工具都用不到它，不装也没关系。',
       steps: [
-        '在应用菜单里搜「终端」并打开，粘贴下面这条命令回车；提示输密码时输开机密码（屏幕上不显示，输完回车）。',
+        '要装的话：打开「终端」，粘贴下面这条命令回车，按提示输入开机密码，等它跑完。',
         verifyStep(runtime),
       ],
-      command: runtimeLinuxPythonCommand,
+      command: linuxPythonInstallCommand,
+      noTutorial: true,
     }
   }
   return {
