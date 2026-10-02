@@ -103,9 +103,6 @@ export function AccelerationView({ state, busy, signedIn, error, preview, onStar
   const notice = conflicts.length ? null : error || state?.error
   const stopRetry = phase === 'stopping' && Boolean(notice) && !busy
   const active = phase === 'active'
-  // 软件替他连上的（打开 Codex 桌面端时）：不扣时长、关掉桌面端就断开，这里要说清楚。
-  // 额度圈下面那行也不能照普通连接写「正在计时」：数字不动，旁边又说不扣时长，两句打架。
-  const autoStarted = active && state?.autoStartedBy === 'codex-desktop'
   const transitioning = phase === 'connecting' || (phase === 'stopping' && !stopRetry)
   const unavailable = phase === 'unavailable'
   // 本机加速文件坏了：等多久都不会好，与「线路准备中」分开说。
@@ -143,7 +140,7 @@ export function AccelerationView({ state, busy, signedIn, error, preview, onStar
   const phaseLabel = bundleDamaged ? '加速文件损坏' : describePhase(phase, signedIn)
   const actionLabel = !signedIn ? '登录领取免费体验' : stopRetry ? '重试停止' : active ? '停止加速' : phase === 'connecting' ? '正在连接…' : phase === 'stopping' ? '正在停止…' : exhausted ? '免费体验已用完' : bundleDamaged ? '暂时开不了加速' : unavailable ? '线路准备中' : !state ? '正在读取状态…' : '开始加速'
   const actionDisabled = signedIn && (busy || transitioning || unavailable || exhausted || !state)
-  const quotaNote = !signedIn ? '每个账号可领取 20 分钟免费体验' : autoStarted ? '自动连接不扣免费时长，剩余额度原样保留' : active ? '按实际连接时长计时，停止后保留剩余额度' : exhausted ? '感谢体验，了解后续服务请联系帮助与客服' : bundleDamaged ? '修好之前不计时' : unavailable ? '服务准备完成后即可开启，当前不消耗时长' : '连接成功才计时，随时停止，剩余下次继续'
+  const quotaNote = !signedIn ? '每个账号可领取 20 分钟免费体验' : active ? '按实际连接时长计时，停止后保留剩余额度' : exhausted ? '感谢体验，了解后续服务请联系帮助与客服' : bundleDamaged ? '修好之前不计时' : unavailable ? '服务准备完成后即可开启，当前不消耗时长' : '连接成功才计时，随时停止，剩余下次继续'
 
   return <section className="acceleration-page" data-testid="acceleration-page" data-phase={phase ?? 'loading'} data-motion={visible ? 'running' : 'paused'}>
     <header className="acceleration-heading">
@@ -154,7 +151,7 @@ export function AccelerationView({ state, busy, signedIn, error, preview, onStar
     <div className="acceleration-workbench">
       <section className="acceleration-stage" aria-label="网络连接状态">
         <div className="acceleration-stage-top"><span className="acceleration-eyebrow"><Globe2 size={15} aria-hidden="true" /> GAME CONNECT</span></div>
-        <div className="acceleration-stage-title"><h2>连接热爱，准备开局。</h2><p>{autoStarted ? <span data-testid="acceleration-auto-started">打开 Codex 桌面端时自动连上的，不扣免费时长，关掉桌面端后会自动断开。</span> : active ? '加速连接已就绪，返回游戏继续体验。' : '从这里出发，连接你的游戏世界。'}</p></div>
+        <div className="acceleration-stage-title"><h2>连接热爱，准备开局。</h2><p>{active ? '加速连接已就绪，返回游戏继续体验。' : '从这里出发，连接你的游戏世界。'}</p></div>
         <div className="acceleration-orb"><Globe /></div>
         <div className="acceleration-route-info">
           <div className="acceleration-route-icon"><Route size={18} aria-hidden="true" /></div>
@@ -177,7 +174,7 @@ export function AccelerationView({ state, busy, signedIn, error, preview, onStar
         <div className="acceleration-console-top"><span><Zap size={15} aria-hidden="true" />{localDevelopment ? '本机测试额度' : '免费体验'}</span><span className="acceleration-quota-badge">{totalMinutes} 分钟</span></div>
         <div className="acceleration-quota">
           <svg className="acceleration-quota-ring" viewBox="0 0 220 220" aria-hidden="true"><circle className="acceleration-quota-track" cx="110" cy="110" r="96" /><circle className="acceleration-quota-ticks" cx="110" cy="110" r="85" /><circle className="acceleration-quota-progress" cx="110" cy="110" r="96" pathLength="100" strokeDasharray={`${ratio * 100} 100`} transform="rotate(-90 110 110)" /></svg>
-          <div className="acceleration-quota-label"><span>{!signedIn ? '登录领取时长' : remaining === null ? '剩余额度待确认' : localDevelopment ? '剩余测试时长' : '剩余免费时长'}</span><strong data-testid="acceleration-quota-remaining" aria-label={`剩余${localDevelopment ? '测试' : '免费'}时长 ${formatDuration(remaining, true)}`}>{formatDuration(remaining, true)}</strong><small>{autoStarted ? <><Pause size={12} aria-hidden="true" />自动连接不计时</> : active ? <><span className="acceleration-status-dot" />正在计时</> : <><Pause size={12} aria-hidden="true" />{remaining === null ? '尚未开始计时' : exhausted ? '额度已用完' : '未计时'}</>}</small></div>
+          <div className="acceleration-quota-label"><span>{!signedIn ? '登录领取时长' : remaining === null ? '剩余额度待确认' : localDevelopment ? '剩余测试时长' : '剩余免费时长'}</span><strong data-testid="acceleration-quota-remaining" aria-label={`剩余${localDevelopment ? '测试' : '免费'}时长 ${formatDuration(remaining, true)}`}>{formatDuration(remaining, true)}</strong><small>{active ? <><span className="acceleration-status-dot" />正在计时</> : <><Pause size={12} aria-hidden="true" />{remaining === null ? '尚未开始计时' : exhausted ? '额度已用完' : '未计时'}</>}</small></div>
         </div>
         <div className="acceleration-primary-action"><Button variant={active || stopRetry ? 'secondary' : 'primary'} icon={active || stopRetry ? Pause : Power} loading={signedIn && (busy || transitioning)} disabled={actionDisabled} onClick={!signedIn ? onLogin : active || stopRetry ? onStop : onStart} testId={active || stopRetry ? 'acceleration-session-stop' : 'acceleration-session-start'}>{actionLabel}</Button></div>
         <p className="acceleration-quota-note">{quotaNote}</p>

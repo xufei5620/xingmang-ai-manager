@@ -24,7 +24,7 @@ import { AnnouncementReadStore } from './announcement-read-store'
 import { createAccelerationExpiryNotice, type AccelerationExpiryNotice } from './acceleration-expiry-notice'
 import { createAccelerationInterruptionNotice, type AccelerationInterruptionNotice } from './acceleration-interruption-notice'
 import { createAccelerationPower } from './acceleration-power'
-import { createAccelerationService } from './acceleration-service'
+import { createAccelerationService, createUserAccelerationApi, userAccelerationState } from './acceleration-service'
 import { accelerationConflictDescriptions, accelerationFailureMessages, type AccelerationBundleCheck, type AccelerationMode, type AccelerationState } from './acceleration-contract'
 import { accelerationStartRequest, createAccelerationPreferenceStore, defaultAccelerationPreference } from './acceleration-preference-store'
 import { accelerationStartFailureDescriptions, createAccelerationDevelopmentHost, readAccelerationDevelopmentConfig, type AccelerationDevelopmentHost } from './acceleration-development-host'
@@ -1230,11 +1230,19 @@ if (!hasSingleInstanceLock) {
         if (!acceleration) throw new Error('加速服务尚未就绪。')
         return acceleration.startAutomaticAcceleration(scope, 'codex-desktop', ...await accelerationStartArguments(scope, state))
       },
-      // 自动连的不扣免费时长，所以桌面端一关就断开，否则就是一条白送的不限时线路。
+      // 自动连的不扣免费时长，所以用完就断开，否则就是一条白送的不限时线路。
       isDesktopRunning: () => probeCodexDesktopRunning(),
-      disconnect: (scope) => acceleration
-        ? acceleration.stopAcceleration(scope)
+      disconnect: (scope, connectedAt) => acceleration
+        ? acceleration.stopAutomaticAcceleration(scope, connectedAt)
         : Promise.reject(new Error('加速服务尚未就绪。')),
+      // 桌面端用的是星芒的 Key：它要加速只为启动时拉中文界面那份配置，之后连着只会
+      // 让整台电脑白白绕道（yoyo 2026-10-02）。登 ChatGPT 账号的一直要连 chatgpt.com，
+      // 认不准（读不出、连接名被官方保留名顶掉）也按这种算，等桌面端退出再断。
+      onlyNeededAtStartup: () => {
+        const codex = inspectProviderConfig('codex', rootedOptions.system.providerRoots,
+          resolveRelaySite(systemService.readStoredConfig().relaySiteId).providerBaseUrls)
+        return codex.matchesRelay && codex.codexAuthMode === 'apikey' && codex.codexProviderShadowed !== true
+      },
       log: (level, event, message, detail) => runtimeLog.log(level, 'network', event, message, detail),
     })
     // CLI 产物下载以前走 Node 自带的网络栈，它不读系统代理，所以开着加速也
@@ -2695,27 +2703,24 @@ if (!hasSingleInstanceLock) {
       } } } : {}),
       getAccountScope: () => readAccelerationAccountScope(),
       onState: (state) => {
-        trayAcceleration?.observe(state)
+        // 托盘与加速页同一口径：软件替他在后台连的那一次不显示（userAccelerationState）。
+        trayAcceleration?.observe(userAccelerationState(state))
         accelerationExpiry?.observe(state)
         accelerationInterruption?.observe(state)
         codexDesktopAcceleration.observe(state)
       },
     })
+    // 加速页（IPC）和托盘看到的那一套：软件替他在后台连的那一次（打开 Codex 桌面端
+    // 时）在这里看不见，也停不掉（yoyo 2026-10-02）。主进程别的观察者读的仍是 acceleration。
+    const userAcceleration = createUserAccelerationApi(acceleration)
     // 托盘上的连接与断开走的就是加速页那条路，线路与模式也用他在加速页上选过并
     // 落了盘的那一套，与打开 Codex 桌面端时自动连接同一口径。没有加速的平台（Linux
     // 第一版）托盘上就不放这一行，不然只会一直「正在读取状态」。
     trayAcceleration = platformCapabilitiesFor().acceleration === false ? null : createTrayAccelerationCoordinator({
       getAccountScope: () => readAccelerationAccountScope(),
-      readState: (scope) => acceleration
-        ? acceleration.getAccelerationState(scope)
-        : Promise.reject(new Error('加速服务尚未就绪。')),
-      connect: async (scope, state) => {
-        if (!acceleration) throw new Error('加速服务尚未就绪。')
-        return acceleration.startAcceleration(scope, ...await accelerationStartArguments(scope, state))
-      },
-      disconnect: (scope) => acceleration
-        ? acceleration.stopAcceleration(scope)
-        : Promise.reject(new Error('加速服务尚未就绪。')),
+      readState: (scope) => userAcceleration.getAccelerationState(scope),
+      connect: async (scope, state) => userAcceleration.startAcceleration(scope, ...await accelerationStartArguments(scope, state)),
+      disconnect: (scope) => userAcceleration.stopAcceleration(scope),
       onChanged: () => applicationTray?.updateSnapshot(),
       log: (level, event, message, detail) => runtimeLog.log(level, 'network', event, message, detail),
     })
@@ -2743,7 +2748,7 @@ if (!hasSingleInstanceLock) {
     attachProxyBypassState(() => proxyBypass.active())
     const chatHistoryStore = createAiChatHistoryStore({ root: path.join(managerDataDirectory, 'chat-history') })
     const unregisterIpcHandlers = registerIpcHandlers({
-      acceleration,
+      acceleration: userAcceleration,
       realmAccounts: accounts,
       accountWork,
       accountCredentialsForSite: (siteId) => ensureBusiness(siteId).accountCredentialStore,

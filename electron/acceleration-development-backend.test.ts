@@ -635,16 +635,55 @@ describe('automatic acceleration started for the Codex desktop app', () => {
     expect((await restarted.backend.getAccelerationState(scope)).remainingSeconds).toBe(accelerationTrialSeconds)
   })
 
-  it('keeps the automatic session when the user presses start on it, and bills the next manual one', async () => {
+  // 加速页上看不见后台那一次（yoyo 2026-10-02），他点「开始加速」就是要一次他自己的。
+  it('replaces the automatic session with a billed one of the user\'s own when they press start', async () => {
     const test = await setup()
     await test.backend.startAutomaticAcceleration(scope, 'system-proxy')
-    expect((await test.backend.startAcceleration(scope, 'system-proxy')).autoStartedBy).toBe('codex-desktop')
-    expect(test.runtime.start).toHaveBeenCalledOnce()
-    await test.backend.stopAcceleration(scope)
-    await test.backend.startAcceleration(scope, 'system-proxy')
+    const started = await test.backend.startAcceleration(scope, 'system-proxy')
+    expect(started).toMatchObject({ phase: 'active', remainingSeconds: accelerationTrialSeconds })
+    expect(started.autoStartedBy).toBeUndefined()
+    expect(test.events.slice(-4)).toEqual(['proxy:restore', 'runtime:stop', 'runtime:start', 'proxy:enable'])
+    expect(test.scheduled.size).toBe(1)
     test.elapse(30_000)
     const stopped = await test.backend.stopAcceleration(scope)
     expect(stopped.remainingSeconds).toBe(accelerationTrialSeconds - 30)
+    expect(await usedMs(test)).toBe(30_000)
+  })
+
+  it('leaves the automatic session running when an account with no time left presses start', async () => {
+    const test = await setup()
+    await fs.writeFile(test.ledgerPath, JSON.stringify({ version: 2, accounts: { [scope]: { usedMs: accelerationTrialSeconds * 1000, startedAt: null } } }))
+    await test.backend.startAutomaticAcceleration(scope, 'system-proxy')
+    const events = test.events.length
+    expect(await test.backend.startAcceleration(scope, 'system-proxy')).toMatchObject({ phase: 'active', autoStartedBy: 'codex-desktop' })
+    expect(test.events.slice(events)).toEqual([])
+  })
+
+  it('refuses to connect over another proxy without leaving the conflict on the acceleration page', async () => {
+    const test = await setup(undefined, undefined, undefined, async () => ['system-proxy'])
+    const refused = await test.backend.startAutomaticAcceleration(scope, 'system-proxy')
+    expect(refused).toMatchObject({ phase: 'idle', error: null })
+    expect(refused.conflicts).toBeUndefined()
+    expect(test.runtime.start).not.toHaveBeenCalled()
+    // 他自己点的那一次照旧把冲突留在加速页上，等他「仍然连接」。
+    expect(await test.backend.startAcceleration(scope, 'system-proxy')).toMatchObject({ phase: 'error', conflicts: ['system-proxy'] })
+  })
+
+  it('records no failure on the acceleration page for an automatic session that failed or dropped', async () => {
+    const test = await setup()
+    test.runtime.start.mockRejectedValueOnce(new Error('core failed'))
+    expect(await test.backend.startAutomaticAcceleration(scope, 'system-proxy')).toMatchObject({ phase: 'idle', error: null })
+    await test.backend.startAutomaticAcceleration(scope, 'system-proxy')
+    test.setRunning(false)
+    expect(await test.backend.getAccelerationState(scope)).toMatchObject({ phase: 'idle', error: null })
+    await test.backend.startAutomaticAcceleration(scope, 'system-proxy')
+    test.setRunning(false)
+    await test.backend.notifyRuntimeExit()
+    expect(await test.backend.getAccelerationState(scope)).toMatchObject({ phase: 'idle', error: null })
+    // 他自己连的那一次断了照旧要说。
+    await test.backend.startAcceleration(scope, 'system-proxy')
+    test.setRunning(false)
+    expect(await test.backend.getAccelerationState(scope)).toMatchObject({ phase: 'error' })
   })
 })
 

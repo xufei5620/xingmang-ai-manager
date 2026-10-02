@@ -4,23 +4,28 @@
  * 桌面端是另一个独立进程，不在本软件的网络栈里，所以它唯一能跟着走的是**系统
  * 代理**——下载专用线路（download-acceleration.ts）那种「只开本机回环端口、
  * 不动系统代理」的用法对它一点作用都没有。这里走的因此是与用户亲手点「连接」
- * 几乎相同的那条路（acceleration-service 的 startAutomaticAcceleration），加速页
- * 上的状态一并照旧，线路与模式也用他在加速页上选过并落了盘的那一套
- * （acceleration-preference-store.ts），没选过才是「智能分配 + 标准模式」。
- * 唯一的不同是计费：这次连接不是他点的，不扣免费时长，时长用完了也照样连
- * （yoyo 2026-09-30 定）。
+ * 几乎相同的那条路（acceleration-service 的 startAutomaticAcceleration），线路与
+ * 模式也用他在加速页上选过并落了盘的那一套（acceleration-preference-store.ts），
+ * 没选过才是「智能分配 + 标准模式」。不同的是计费：这次连接不是他点的，不扣免费
+ * 时长，时长用完了也照样连（yoyo 2026-09-30 定）。
  *
- * 四条硬约束：
+ * 五条硬约束：
  * - 已经连着、正在连、正在停的，一律不动。那条线路归用户，不许替他重连或改线。
  * - 连不上就照常打开。加速是加分项，不能变成「打开」的前置条件，所以这里的每
  *   一处失败都收敛成一句日志，绝不抛给调用方。
- * - 桌面端退出后断开。不扣时长的线路一直开着就是白送不限时的加速，所以连上后
- *   定时问一次桌面端还在不在（isDesktopRunning），连续两次确认不在了就断开。
- *   只断自己连的那一次：用户停过、重连过，那条线路就归他了，不再管。「打开」那一刻
- *   没等到、后来才连上的那一次也算自己连的，照样盯着（见 followLateConnection）。
+ * - 用完就断。不扣时长的线路一直开着就是白送不限时的加速，还让整台电脑都绕道走
+ *   加速（yoyo 2026-10-02：自动连的加速结束后要断开）。连上后定时问一次桌面端还在
+ *   不在（isDesktopRunning）：桌面端用的是星芒的 Key，中文界面那份配置只在启动时
+ *   拉一次，确认它起来了（约两分钟）就断（onlyNeededAtStartup）；登 ChatGPT 账号的
+ *   一直要连 chatgpt.com，断早了发不出消息、启动时还会卡在「无法加载组织设置」，
+ *   就等连续两次确认它不在了再断。只断自己连的那一次：用户停过、重连过、自己点了
+ *   「开始加速」，那条线路就归他了，不再管。「打开」那一刻没等到、后来才连上的那一次
+ *   也算自己连的，照样盯着（见 followLateConnection）。
  * - 悄悄地连。yoyo 2026-10-01 定：打开桌面端时加速只是「在后台顺手连一下」，不弹
- *   通知、不切页面、不抢焦点；连上、跳过、失败都只记日志。加速页和托盘照实显示
- *   「已自动连接 · 不扣时长」，他想看、想断随时能在那里找到。
+ *   通知、不切页面、不抢焦点；连上、跳过、失败都只记日志。
+ * - 不在加速页和托盘上出现。yoyo 2026-10-02 定：自动连的加速「不在游戏加速那边
+ *   体现」。那边看到的状态由 acceleration-service 的 userAccelerationState 换过，
+ *   这里读的、收到的仍是真实状态。
  *
  * 不含任何 Electron 依赖：读状态、连接、断开与问桌面端都由宿主注入。
  */
@@ -50,10 +55,21 @@ export interface CodexDesktopAccelerationOptions {
   connect(scope: string, state: AccelerationState): Promise<AccelerationState>
   /**
    * 桌面端还在不在跑：true / false / null（查不出来）。与 disconnect 一起给了
-   * 才会在桌面端退出后断开自动连上的加速；缺省 = 旧行为，连上后不管。
+   * 才会在桌面端起来后或退出后断开自动连上的加速；缺省 = 旧行为，连上后不管。
    */
   isDesktopRunning?(): Promise<boolean | null>
-  disconnect?(scope: string): Promise<AccelerationState>
+  /**
+   * 只断 connectedAt 认得的那一次；连着的已经换成用户自己开的，就原样返回它
+   * （acceleration-service 的 stopAutomaticAcceleration）。
+   */
+  disconnect?(scope: string, connectedAt: string): Promise<AccelerationState>
+  /**
+   * 桌面端是不是只在启动那一下要加速：true = 它用的是星芒的 Key，确认它起来之后
+   * 就断开；false、抛错 = 还要一直连着（ChatGPT 账号、没登录、读不出配置），等它
+   * 退出再断。缺省 = 旧行为，等它退出。每次确认它在跑时都问一次，中途换了登录方式
+   * 也跟得上。
+   */
+  onlyNeededAtStartup?(): boolean | Promise<boolean>
   /** 多久问一次桌面端还在不在。缺省一分钟：Windows 上每问一次要起一个 PowerShell。 */
   watchIntervalMs?: number
   /**
@@ -87,6 +103,11 @@ export interface CodexDesktopAccelerationCoordinator {
 
 /** 连续这么多次确认桌面端不在了才断开：刚关又开、进程交接的那一下不算。 */
 const desktopGoneConfirmations = 2
+/**
+ * 连续这么多次确认桌面端在跑，就算它已经起来了：按一分钟一次算，是打开后约两分钟。
+ * 中文界面那份配置在冷启动的头几秒就拉完了，多出来的是给慢电脑留的余量。
+ */
+const desktopStartupConfirmations = 2
 /**
  * 连续这么多次查不出来，也按不在了处理。查询坏掉的电脑上宁可断开，也不能让
  * 不扣时长的线路永远开着；按一分钟一次算，是十分钟。
@@ -187,7 +208,7 @@ export function createCodexDesktopAccelerationCoordinator(
     void connecting.then((late) => {
       if (!watchSession(late)) return
       log('info', 'acceleration.codex-desktop.connected',
-        '打开 Codex 桌面端时没等到的那次自动连接后来连上了，桌面端退出后自动断开', { late: true })
+        '打开 Codex 桌面端时没等到的那次自动连接后来连上了，用完自动断开', { late: true })
     }, () => undefined).catch(() => undefined)
   }
 
@@ -221,27 +242,44 @@ export function createCodexDesktopAccelerationCoordinator(
     try { running = await options.isDesktopRunning!() }
     catch { running = null }
     if (watch !== current) return
+    let cause: 'desktop-started' | 'desktop-exited' | 'desktop-unknown' | null = null
     if (running === true) {
       current.gone = 0
       current.unknown = 0
       current.steady += 1
+      if (current.steady >= desktopStartupConfirmations && await neededOnlyAtStartup()) cause = 'desktop-started'
+      if (watch !== current) return
     } else {
       current.steady = 0
       if (running === false) current.gone += 1
       else current.unknown += 1
+      if (current.gone >= desktopGoneConfirmations) cause = 'desktop-exited'
+      else if (current.unknown >= desktopUnknownLimit) cause = 'desktop-unknown'
     }
-    if (current.gone < desktopGoneConfirmations && current.unknown < desktopUnknownLimit) {
+    if (!cause) {
       next(current)
       return
     }
     stopWatching()
-    const detail = { cause: current.gone >= desktopGoneConfirmations ? 'desktop-exited' : 'desktop-unknown' }
+    const started = cause === 'desktop-started'
+    const what = started ? 'Codex 桌面端已经打开好了' : 'Codex 桌面端已退出'
     try {
-      await options.disconnect!(current.scope)
-      log('info', 'acceleration.codex-desktop.disconnected', 'Codex 桌面端已退出，已断开打开它时自动连上的加速', detail)
+      const after = await options.disconnect!(current.scope, current.connectedAt)
+      if (after.phase === 'active' && !after.autoStartedBy) {
+        log('info', 'acceleration.codex-desktop.handed-over', `${what}，自动连上的那一次已换成用户自己开的加速，未断开`, { cause })
+      } else {
+        log('info', 'acceleration.codex-desktop.disconnected', `${what}，已断开打开它时自动连上的加速`, { cause })
+      }
     } catch (error) {
-      log('warn', 'acceleration.codex-desktop.disconnect.failed', 'Codex 桌面端已退出，但自动连上的加速没能断开', { ...detail, ...failureDetail(error) })
+      log('warn', 'acceleration.codex-desktop.disconnect.failed', `${what}，但自动连上的加速没能断开`, { cause, ...failureDetail(error) })
     }
+  }
+
+  /** 查不出来按「还要一直连着」：断早了 ChatGPT 账号的客户会发不出消息。 */
+  async function neededOnlyAtStartup(): Promise<boolean> {
+    if (!options.onlyNeededAtStartup) return false
+    try { return await options.onlyNeededAtStartup() === true }
+    catch { return false }
   }
 
   function skip(reason: CodexDesktopAccelerationSkipReason, message: string, detail?: Record<string, unknown>): CodexDesktopAccelerationOutcome {
@@ -282,7 +320,7 @@ export function createCodexDesktopAccelerationCoordinator(
     if (connected.phase !== 'active' && connected.phase !== 'connecting') {
       return skip('connect-failed', '打开 Codex 桌面端前自动连接加速未成功，已照常打开', { phase: connected.phase })
     }
-    log('info', 'acceleration.codex-desktop.connected', '已为打开 Codex 桌面端自动连接加速，不扣免费时长，桌面端退出后自动断开')
+    log('info', 'acceleration.codex-desktop.connected', '已为打开 Codex 桌面端自动连接加速，不扣免费时长，用完自动断开')
     // connecting 还不算连上：会话没有 connectedAt，没法认出桌面端退出时要断的是哪一次。
     if (connected.phase === 'active') watchSession(connected)
     return { status: 'connected' }

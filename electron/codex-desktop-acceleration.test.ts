@@ -160,12 +160,14 @@ describe('codex desktop acceleration exit watch', () => {
     /** 给了就等它落定才连上：模拟「打开」等不及、连接在后台才连完的慢电脑。 */
     connectGate?: Promise<void>
     timeoutMs?: number
+    onlyNeededAtStartup?: () => boolean | Promise<boolean>
+    disconnected?: AccelerationState
   }) {
     const timers: Array<() => void> = []
     const delays: number[] = []
     const answers = [...options.running]
     const isDesktopRunning = vi.fn(async () => (answers.length > 1 ? answers.shift()! : answers[0]))
-    const disconnect = vi.fn(async () => stateOf('idle'))
+    const disconnect = vi.fn(async (_scope: string, _connectedAt: string) => options.disconnected ?? stateOf('idle'))
     // 第一次读状态是「打开」前那一次，之后每一次都是定时检查读到的。
     let current: AccelerationState = stateOf('idle')
     const readState = vi.fn(async () => current)
@@ -181,6 +183,7 @@ describe('codex desktop acceleration exit watch', () => {
       },
       isDesktopRunning,
       disconnect,
+      ...(options.onlyNeededAtStartup ? { onlyNeededAtStartup: options.onlyNeededAtStartup } : {}),
       ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
       schedule: (callback, milliseconds) => {
         timers.push(callback)
@@ -214,11 +217,71 @@ describe('codex desktop acceleration exit watch', () => {
     await h.tick()
     expect(h.disconnect).not.toHaveBeenCalled()
     await h.tick()
-    await vi.waitFor(() => { expect(h.disconnect).toHaveBeenCalledExactlyOnceWith(scope) })
+    await vi.waitFor(() => { expect(h.disconnect).toHaveBeenCalledExactlyOnceWith(scope, automatic.connectedAt) })
     expect(h.timers).toHaveLength(0)
     await vi.waitFor(() => {
       expect(h.log).toHaveBeenCalledWith('info', 'acceleration.codex-desktop.disconnected', expect.any(String), { cause: 'desktop-exited' })
     })
+  })
+
+  // yoyo 2026-10-02：自动连的加速用完就断。用星芒 Key 的桌面端只在启动时要它。
+  it('disconnects once a desktop app on a Xingmang key has been seen running twice', async () => {
+    const onlyNeededAtStartup = vi.fn(() => true)
+    const h = watchSetup({ running: [true, true], onlyNeededAtStartup })
+    await h.coordinator.ensureConnected()
+    await h.tick()
+    expect(h.disconnect).not.toHaveBeenCalled()
+    expect(onlyNeededAtStartup).not.toHaveBeenCalled()
+    await h.tick()
+    await vi.waitFor(() => { expect(h.disconnect).toHaveBeenCalledExactlyOnceWith(scope, automatic.connectedAt) })
+    expect(h.timers).toHaveLength(0)
+    expect(h.delays).toEqual([60_000, 60_000])
+    await vi.waitFor(() => {
+      expect(h.log).toHaveBeenCalledWith('info', 'acceleration.codex-desktop.disconnected', expect.stringContaining('已经打开好了'), { cause: 'desktop-started' })
+    })
+  })
+
+  it('keeps the session until exit when the desktop app needs it throughout, and asks again each time', async () => {
+    // ChatGPT 账号一直要连 chatgpt.com；读不出配置也按这种算。中途改成星芒 Key 的，下一次检查就断。
+    const answers: Array<boolean | Error> = [false, new Error('unreadable'), false, true]
+    const onlyNeededAtStartup = vi.fn(async () => {
+      const answer = answers.shift()!
+      if (answer instanceof Error) throw answer
+      return answer
+    })
+    const h = watchSetup({ running: [true], onlyNeededAtStartup })
+    await h.coordinator.ensureConnected()
+    for (let index = 0; index < 4; index += 1) await h.tick()
+    expect(h.disconnect).not.toHaveBeenCalled()
+    expect(onlyNeededAtStartup).toHaveBeenCalledTimes(3)
+    await h.tick()
+    await vi.waitFor(() => { expect(h.disconnect).toHaveBeenCalledOnce() })
+  })
+
+  it('needs two running checks in a row before treating the desktop app as started', async () => {
+    const onlyNeededAtStartup = vi.fn(() => true)
+    const h = watchSetup({ running: [true, null, true, false, false], onlyNeededAtStartup })
+    await h.coordinator.ensureConnected()
+    for (let index = 0; index < 3; index += 1) await h.tick()
+    expect(h.disconnect).not.toHaveBeenCalled()
+    await h.tick()
+    await h.tick()
+    await vi.waitFor(() => {
+      expect(h.log).toHaveBeenCalledWith('info', 'acceleration.codex-desktop.disconnected', expect.any(String), { cause: 'desktop-exited' })
+    })
+  })
+
+  it('says so when the user had already made the connection their own', async () => {
+    // 到点要断的那一刻他刚点了「开始加速」：服务按 connectedAt 认，不断他的。
+    const h = watchSetup({ running: [true, true], onlyNeededAtStartup: () => true,
+      disconnected: { ...stateOf('active'), connectedAt: '2026-09-22T11:01:00.000Z' } })
+    await h.coordinator.ensureConnected()
+    await h.tick()
+    await h.tick()
+    await vi.waitFor(() => {
+      expect(h.log).toHaveBeenCalledWith('info', 'acceleration.codex-desktop.handed-over', expect.any(String), { cause: 'desktop-started' })
+    })
+    expect(h.log).not.toHaveBeenCalledWith('info', 'acceleration.codex-desktop.disconnected', expect.any(String), expect.anything())
   })
 
   it('keeps the session while the desktop app runs and forgives a single miss', async () => {
@@ -252,7 +315,7 @@ describe('codex desktop acceleration exit watch', () => {
     const h = watchSetup({ running: [true, true, true, false, false] })
     await h.coordinator.ensureConnected()
     for (let index = 0; index < 5; index += 1) await h.tick()
-    await vi.waitFor(() => { expect(h.disconnect).toHaveBeenCalledExactlyOnceWith(scope) })
+    await vi.waitFor(() => { expect(h.disconnect).toHaveBeenCalledExactlyOnceWith(scope, automatic.connectedAt) })
     expect(h.delays).toEqual([60_000, 60_000, 60_000, 180_000, 60_000])
   })
 
@@ -296,7 +359,7 @@ describe('codex desktop acceleration exit watch', () => {
     expect(h.log).toHaveBeenCalledWith('info', 'acceleration.codex-desktop.connected', expect.any(String), { late: true })
     await h.tick()
     await h.tick()
-    await vi.waitFor(() => { expect(h.disconnect).toHaveBeenCalledExactlyOnceWith(scope) })
+    await vi.waitFor(() => { expect(h.disconnect).toHaveBeenCalledExactlyOnceWith(scope, automatic.connectedAt) })
   })
 
   it('leaves a late connection alone when it is not the automatic one', async () => {
@@ -320,7 +383,7 @@ describe('codex desktop acceleration exit watch', () => {
     expect(h.timers).toHaveLength(1)
     await h.tick()
     await h.tick()
-    await vi.waitFor(() => { expect(h.disconnect).toHaveBeenCalledExactlyOnceWith(scope) })
+    await vi.waitFor(() => { expect(h.disconnect).toHaveBeenCalledExactlyOnceWith(scope, automatic.connectedAt) })
   })
 
   it('stops watching once the account has changed instead of retrying the old account forever', async () => {

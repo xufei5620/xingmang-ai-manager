@@ -168,7 +168,7 @@ export function createAccelerationExpiryNotice(options: AccelerationExpiryNotice
   return {
     observe(state) {
       if (disposed) return
-      // 软件替他连的那种不扣时长，也就不会用完；什么时候断由桌面端退出决定。
+      // 软件替他连的那种不扣时长，也就不会用完；什么时候断由 codex-desktop-acceleration.ts 决定。
       if (state.autoStartedBy) {
         tracked = null
         clearTimer()
