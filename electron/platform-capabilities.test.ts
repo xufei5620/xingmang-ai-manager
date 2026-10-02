@@ -63,12 +63,12 @@ describe('platformCapabilitiesFor', () => {
     expect(Object.isFrozen(capabilities.codexDesktop)).toBe(true)
   })
 
-  it('returns the exact externally managed Linux policy', () => {
+  it('returns the exact Linux policy, with Node.js prepared by the app', () => {
     expect(platformCapabilitiesFor('linux', 'x64')).toEqual({
       platform: 'linux',
       architecture: 'x64',
       isMac: false,
-      nodeRuntimeInstall: 'external',
+      nodeRuntimeInstall: 'managed',
       pythonRuntimeInstall: 'external',
       cliInstall: {
         claude: 'managed',
@@ -91,12 +91,14 @@ describe('platformCapabilitiesFor', () => {
     })
   })
 
-  it('normalizes an unknown Node platform to the fail-closed Linux policy', () => {
+  it('normalizes an unknown Node platform to the Linux policy', () => {
     expect(platformCapabilitiesFor('plan9', 'riscv64')).toEqual({
       platform: 'linux',
       architecture: 'riscv64',
       isMac: false,
-      nodeRuntimeInstall: 'external',
+      // The installer itself refuses chips Node.js has no official build for
+      // (linux-node-runtime.ts), with a sentence that says so.
+      nodeRuntimeInstall: 'managed',
       pythonRuntimeInstall: 'external',
       cliInstall: {
         claude: 'managed',

@@ -12,6 +12,11 @@
 - `electron/platform-capabilities.ts` — 跨平台能力探测的统一抽象
 - `src/platform-presentation.ts` — 渲染层的平台差异表达
 
+## Linux 相关模块
+
+- `electron/linux-node-runtime.ts` — Linux 上代下 Node.js：钉版本与每个架构的 SHA-256，只用 root 所有的系统 tar 解进 `${XDG_DATA_HOME:-~/.local/share}/XingMangAI`，核对后原子替换（Linux 版拆分 ②）
+- `electron/linux-platform.ts` — Linux 上找 node / npm / CLI 的目录顺序（本软件的 Node.js 排在继承 PATH 前面，和 macOS 相反）
+
 **改跨平台代码前先读 `platform-capabilities.ts`**，它是判断"当前平台支持什么"的单一入口。
 
 ## `electron/` 主进程

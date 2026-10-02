@@ -5,6 +5,7 @@ import { StringDecoder } from 'node:string_decoder'
 import { promisify } from 'node:util'
 import { isDarwinForeignWritablePath } from './darwin-path-trust'
 import { darwinCommandPathCandidates } from './macos-platform'
+import { linuxCommandPathCandidates } from './linux-platform'
 import { managedNativeProviderRoot, managedNodeRuntimeBinDirectory, managedNpmBinDirectory } from './managed-cli-paths'
 import { isRegisteredTrustedManagedWindowsPath } from './managed-path-trust'
 import { redactSecretPatterns } from './redaction-patterns'
@@ -542,12 +543,14 @@ export function commandEnvironment(
   const existingPath = baseEnv.PATH ?? baseEnv.Path ?? baseEnv.path ?? ''
   const candidates = process.platform === 'darwin'
     ? darwinCommandPathCandidates(baseEnv, additionalPaths)
-    : [
-        ...additionalPaths,
-        ...defaultCommandPaths(baseEnv),
-        ...existingPath.split(path.delimiter),
-        ...fallbackCommandPaths(baseEnv),
-      ]
+    : process.platform !== 'win32'
+      ? linuxCommandPathCandidates(baseEnv, additionalPaths)
+      : [
+          ...additionalPaths,
+          ...defaultCommandPaths(baseEnv),
+          ...existingPath.split(path.delimiter),
+          ...fallbackCommandPaths(baseEnv),
+        ]
   const seen = new Set<string>()
   const entries: string[] = []
   for (const candidate of candidates) {

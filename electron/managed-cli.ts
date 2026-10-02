@@ -94,9 +94,6 @@ export async function ensureManagedNpmLayout(
   options: ManagedNpmLayoutOptions = {},
 ): Promise<ManagedNpmLayout> {
   const platform = options.platform ?? process.platform
-  if (platform !== 'win32' && platform !== 'darwin') {
-    throw new Error('托管 npm 安装目录目前仅支持 Windows 和 macOS')
-  }
   const env = options.env ?? process.env
   const directoryOptions = {
     platform,
