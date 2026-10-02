@@ -88,7 +88,7 @@ test('a malformed Linux marker is refused instead of guessed', () => {
   assert.match(result.stderr, /XINGMANG_LINUX_PACKAGE 只接受精确的 0 或 1/)
 })
 
-test('beforePack only lets a marked, local Linux build through', () => {
+test('beforePack only lets a marked Linux build through, local or unsigned release', () => {
   const linuxLocal = runBeforePack('linux', { XINGMANG_LINUX_PACKAGE: '1', XINGMANG_LOCAL_BUILD: '1' })
   assert.equal(linuxLocal.status, 0, linuxLocal.stderr)
 
@@ -104,12 +104,16 @@ test('beforePack only lets a marked, local Linux build through', () => {
     assert.match(marked.stderr, /只用于 Linux 安装包/)
   }
 
-  // No latest-linux.yml is published anywhere yet, so a Linux package with a
-  // live updater would only ever report that the update server is broken.
-  for (const mode of [{ XINGMANG_UNSIGNED_RELEASE: '1' }, { XINGMANG_RELEASE: '1' }]) {
-    const release = runBeforePack('linux', { XINGMANG_LINUX_PACKAGE: '1', ...mode })
-    assert.notEqual(release.status, 0, JSON.stringify(mode))
-    assert.match(release.stderr, /还没有接入发布通道/)
+  // The release package (npm run release:package:linux) is the unsigned
+  // release mode with the updater on.
+  const unsignedRelease = runBeforePack('linux', { XINGMANG_LINUX_PACKAGE: '1', XINGMANG_UNSIGNED_RELEASE: '1', XINGMANG_LOCAL_BUILD: '0' })
+  assert.equal(unsignedRelease.status, 0, unsignedRelease.stderr)
+
+  // The two signed release modes promise a signature a deb never carries.
+  for (const mode of [{ XINGMANG_RELEASE: '1' }, { XINGMANG_MAC_FREE_RELEASE: '1', CSC_NAME: 'XingMang Test Identity' }]) {
+    const signedRelease = runBeforePack('linux', { XINGMANG_LINUX_PACKAGE: '1', ...mode })
+    assert.notEqual(signedRelease.status, 0, JSON.stringify(mode))
+    assert.match(signedRelease.stderr, /没有代码签名，发布只能走 npm run release:package:linux/)
   }
 })
 

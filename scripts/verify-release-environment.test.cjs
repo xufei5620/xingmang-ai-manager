@@ -6,6 +6,7 @@ const test = require('node:test')
 const {
   assertReleaseNotesVersionIsPublishable,
   assertRemoteVersionIsPublishable,
+  parsePreflightArguments,
   readReleaseNotesVersion,
 } = require('./verify-release-environment.cjs')
 
@@ -75,4 +76,18 @@ test('a public release refuses an update feed that is not older than the build',
   assert.throws(() => assertRemoteVersionIsPublishable(publicRelease, feed, '0.2.6'))
   assert.equal(assertRemoteVersionIsPublishable(publicRelease, { missing: true }, '0.2.6'), false)
   assert.equal(assertRemoteVersionIsPublishable(localBuild, feed, '0.2.6'), false)
+})
+
+test('the preflight compares the Windows manifest unless a Linux architecture is named', () => {
+  // release:build 与 release:build:unsigned 一直不带参数调它，那条路不能变。
+  assert.deepEqual(parsePreflightArguments([]), { platform: 'windows', metadataFile: 'latest.yml' })
+  // Linux 每个架构只比它自己那份：先发 Windows、之后在同一个 commit 上补发 Linux 时，
+  // 拿 latest.yml 来比会把补发当成「同版本已发布」拦下。
+  assert.deepEqual(parsePreflightArguments(['--platform', 'linux', '--arch', 'x64']), { platform: 'linux', arch: 'x64', metadataFile: 'latest-linux.yml' })
+  assert.deepEqual(parsePreflightArguments(['--platform', 'linux', '--arch', 'arm64']), { platform: 'linux', arch: 'arm64', metadataFile: 'latest-linux-arm64.yml' })
+  const invalid = (error) => error.code === 'PREFLIGHT_PLATFORM_INVALID'
+  assert.throws(() => parsePreflightArguments(['--platform', 'linux']), invalid)
+  assert.throws(() => parsePreflightArguments(['--platform', 'linux', '--arch', 'ia32']), invalid)
+  // macOS 出包走 dist:mac:free，从不调这道前置检查；认不出的平台照样拒绝，不猜。
+  assert.throws(() => parsePreflightArguments(['--platform', 'macos']), invalid)
 })

@@ -126,11 +126,13 @@ function assertLinuxPackageMode(electronPlatformName) {
   if (electronPlatformName !== 'linux' && linuxPackageMode) {
     throw new Error(`XINGMANG_LINUX_PACKAGE=1 只用于 Linux 安装包，不能用来构建 ${electronPlatformName}。`)
   }
-  // No Linux update feed, verifier or publish step exists yet (docs/LINUX.md).
-  // A Linux build in any update-enabled mode would ship an updater that looks
-  // for latest-linux.yml nobody publishes, so only local test packages exist.
-  if (electronPlatformName === 'linux' && updateEnabledMode) {
-    throw new Error('Linux 安装包还没有接入发布通道，现在只能出本地测试包（XINGMANG_LOCAL_BUILD=1）。')
+  // Linux has no code signature, so its only release channel is the unsigned
+  // one (npm run release:package:linux, docs/LINUX.md). XINGMANG_RELEASE=1
+  // promises a Windows Authenticode signature and XINGMANG_MAC_FREE_RELEASE=1 a
+  // self-signed Mac identity; a deb built under either would ship an updater
+  // whose metadata claims a check the package can never pass.
+  if (electronPlatformName === 'linux' && publicReleaseMode) {
+    throw new Error('Linux 安装包没有代码签名，发布只能走 npm run release:package:linux（XINGMANG_UNSIGNED_RELEASE=1）。')
   }
 }
 
