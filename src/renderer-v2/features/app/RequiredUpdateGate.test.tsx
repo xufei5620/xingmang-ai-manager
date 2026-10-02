@@ -45,6 +45,15 @@ describe('RequiredUpdateGate', () => {
     expect(html).not.toContain('required-update-download-page')
   })
 
+  it('tells Linux users the app closes and the system installer asks for the login password', () => {
+    const html = renderToStaticMarkup(<RequiredUpdateGate update={snapshot({ installMethod: 'system-installer' })} windows={false} actions={actions} />)
+    expect(html).toContain('data-testid="required-update-system-installer"')
+    expect(html).toContain('输入开机密码')
+    expect(html).not.toContain('中间会重启一次')
+    expect(html).not.toContain('是否允许更改')
+    expect(renderToStaticMarkup(<RequiredUpdateGate update={snapshot()} windows actions={actions} />)).not.toContain('required-update-system-installer')
+  })
+
   it('shows how much has downloaded, how fast, and how long is left under the progress bar', () => {
     const progress = { percent: 50, bytesPerSecond: 1, transferred: 50 * 1024 ** 2, total: 100 * 1024 ** 2, averageBytesPerSecond: 2 * 1024 ** 2, secondsRemaining: 150 }
     const html = renderToStaticMarkup(<RequiredUpdateGate update={snapshot({ phase: 'downloading', progress })} windows actions={actions} />)

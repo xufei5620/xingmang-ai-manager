@@ -48,6 +48,15 @@ describe('desktop update notification content', () => {
     expect(notification.title).toBe('星芒AI有可用更新')
     expect(notification.body).toBe('版本 0.2.0 已可下载。')
   })
+
+  it('asks Linux users to click install because nothing installs on its own there', () => {
+    const linux = { installMethod: 'system-installer' as const }
+    expect(updateDesktopNotification(update({ ...linux, phase: 'downloaded' }), true)?.body).toBe('新版 0.2.0 已经下好，到更新页点「安装新版本」就能装上。')
+    expect(updateDesktopNotification(update({ ...linux, phase: 'downloaded' }), false)?.body).toBe('新版 0.2.0 已经下好，到更新页点「安装新版本」就能装上。')
+    expect(updateDesktopNotification(update(linux), true)?.body).toBe('新版 0.2.0 正在后台下载，下好后到更新页点「安装新版本」。')
+    expect(updateDesktopNotification(update(linux), false)?.body).toBe('版本 0.2.0 已可下载。')
+    expect(updateDesktopNotification(update({ phase: 'downloaded' }), true)?.body).toContain('关掉软件或下次打开时自动装上')
+  })
 })
 
 describe('desktop notification lifecycle', () => {

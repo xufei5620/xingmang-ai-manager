@@ -13,6 +13,7 @@ import {
   updateFailureLabel,
   updateFailureLabels,
   updateInstallNote,
+  updateInstallActionLabel,
   updatesPageLead,
   withdrawnVersionAdvice,
 } from './business';
@@ -167,5 +168,22 @@ describe('update download detail', () => {
     expect(formatDownloadRemaining(61)).toBe('大约还要 2 分钟');
     expect(formatDownloadRemaining(3600)).toBe('大约还要 1 小时');
     expect(formatDownloadRemaining(4800)).toBe('大约还要 1 小时 20 分钟');
+  });
+});
+
+describe('renderer-v2 wording when the system installer takes over (Linux)', () => {
+  it('never promises that the update installs itself or that the app restarts', () => {
+    const linux = 'system-installer' as const;
+    expect(autoUpdateBubbleBody('downloaded', true, linux)).toBe('已经下好了，到更新页点「安装新版本」就能装上。');
+    expect(autoUpdateBubbleBody('downloaded', false, linux)).toBe('已经下好了，到更新页点「安装新版本」就能装上。');
+    expect(autoUpdateBubbleBody('downloading', true, linux)).toBe('正在后台下载，下好后到更新页点「安装新版本」。');
+    expect(updatesPageLead(true, linux)).toContain('输入开机密码');
+    expect(updatesPageLead(true, linux)).not.toContain('自动装上');
+    expect(updatesPageLead(false, linux)).toBe(updatesPageLead(false));
+    expect(updateInstallActionLabel(linux)).toBe('安装新版本');
+    expect(updateInstallActionLabel(undefined)).toBe('重启安装');
+    const rollback = { phase: 'available', currentVersion: '0.2.10', availableVersion: '0.2.9', rollback: true, currentVersionWithdrawn: true } as const;
+    expect(withdrawnVersionAdvice({ ...rollback, installMethod: linux })).toContain('再点「安装新版本」');
+    expect(withdrawnVersionAdvice(rollback)).toContain('再点「重启安装」');
   });
 });
