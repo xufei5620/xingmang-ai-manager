@@ -85,6 +85,7 @@ import { createAiAssetProtocolHandler } from './ai-asset-protocol'
 import { createChatAttachmentService, type ChatImageCodec } from './ai-chat-attachments'
 import { resolveCodexHomeContext } from './codex-home'
 import { runCodexContextLimitsMigration } from './codex-config-migration'
+import { runClaudeDesktopModelRepair } from './claude-desktop-model-repair'
 import { findExecutable, runWithTrustedWindowsProcessEnvironment } from './command-runner'
 import { CodexExtensionService } from './codex-extensions'
 import { CodexSessionsService } from './codex-sessions'
@@ -1102,6 +1103,37 @@ if (!hasSingleInstanceLock) {
         detail: windowsCliExecution.probeFailure.detail,
         elapsedMs: windowsCliExecution.elapsedMs,
       })
+    }
+    // 0.2.12 给 Claude Desktop 写进了一串型号，客户那边发消息没有回复；改回只剩选中的那一个，
+    // 只做一次（claude-desktop-model-repair.ts）。放在联接策略定下之后，和「保存配置」认同一套
+    // 目录规则；只读写几个小文件、不起进程，开窗前做完，界面才赶得上说一句。
+    let claudeDesktopRepaired = false
+    try {
+      const repair = await runClaudeDesktopModelRepair(managerDataDirectory, {
+        platform: process.platform,
+        userHome: rootedOptions.system.providerRoots.userHome,
+        relayBaseUrls: relaySites.map((site) => site.providerBaseUrls.claude),
+      })
+      claudeDesktopRepaired = repair.repaired > 0
+      if (repair.repaired) {
+        runtimeLog.log('info', 'config', 'claude-desktop.models.repaired', '已把 Claude Desktop 配置里 0.2.12 写进去的一串型号改回选中的那一个', {
+          repaired: repair.repaired,
+          backups: repair.backups,
+        })
+      }
+      if (repair.unrecognized.length) {
+        runtimeLog.log('info', 'config', 'claude-desktop.models.unrecognized', 'Claude Desktop 配置认不准是不是 0.2.12 写的，没动', {
+          reasons: repair.unrecognized,
+        })
+      }
+      if (repair.failures.length) {
+        runtimeLog.log('warn', 'config', 'claude-desktop.models.repair-failed', 'Claude Desktop 配置这次没改成，下次打开再试', {
+          failures: repair.failures,
+        })
+      }
+    } catch (error) {
+      // 修不成也不能挡住软件打开；记录读不出来时一个字不改。
+      runtimeLog.exception('config', 'claude-desktop.models.repair-failed', error)
     }
     let readAccountSiteId: () => string = () => 'solov'
     let readExternalClientAccountId: () => string | null = () => null
@@ -2666,6 +2698,7 @@ if (!hasSingleInstanceLock) {
         ...(settingsSaveIssue ? { settingsSaveIssue } : {}),
         ...(displayCompatPending ? { displayCompat: 'auto' as const } : {}),
         ...(unexpectedExit ? { unexpectedExit } : {}),
+        ...(claudeDesktopRepaired ? { claudeDesktopRepaired: true as const } : {}),
       }),
       relaunchApp: () => requestRelaunch?.() ?? Promise.resolve(false),
       ...(process.platform === 'darwin'
