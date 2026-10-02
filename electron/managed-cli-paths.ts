@@ -7,6 +7,7 @@ const CLI_DIRECTORY = 'Cli'
 const NPM_PREFIX_DIRECTORY = 'npm'
 const NPM_CACHE_DIRECTORY = 'npm-cache'
 const NATIVE_DIRECTORY = 'native'
+const LAUNCHER_DIRECTORY = 'launchers'
 const RUNTIME_DIRECTORY = 'Runtime'
 const NODE_RUNTIME_DIRECTORY = 'node'
 
@@ -97,6 +98,19 @@ export function managedNpmBinDirectory(
 ): string {
   const prefix = managedNpmPrefix(env, platform, machinePaths)
   return platform === 'win32' ? prefix : path.posix.join(prefix, 'bin')
+}
+
+/**
+ * Linux 上客户自己开的终端敲 claude / codex / gemini / grok 时走的小启动器放在这里
+ * （Linux 版拆分 ④，linux-shell-profile.ts）。终端启动文件里加的那一行只指这个目录。
+ */
+export function managedTerminalLauncherDirectory(
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+  machinePaths?: WindowsMachinePaths,
+): string {
+  const root = managedCliRoot(env, platform, machinePaths)
+  return pathApi(platform).join(root, LAUNCHER_DIRECTORY)
 }
 
 export function managedNativeRoot(

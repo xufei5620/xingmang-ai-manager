@@ -251,9 +251,22 @@ export interface CliTerminalAccessOptions {
    * goes to the log.
    */
   ensureShellProfile?: (reason: 'install' | 'startup') => Promise<string>
+  /**
+   * Linux counterpart (linux-shell-profile.ts): keeps one launcher per CLI the
+   * app installed and the marked lines in the shell startup files in step with
+   * what is installed, and takes the lines out again after the last uninstall.
+   * Absent = never touch either.
+   */
+  syncTerminalCommands?: (reason: 'install' | 'startup' | 'uninstall') => Promise<TerminalCommandsSyncResult>
   log?: (level: 'info' | 'warn', event: string, message: string, detail: Record<string, unknown>) => void
   /** Error text for the log; the caller redacts home directories and secrets. */
   describeError?: (error: unknown) => string
+}
+
+export interface TerminalCommandsSyncResult {
+  outcome: string
+  /** Files that could not be changed safely, named for the log without the home directory. */
+  skipped: readonly string[]
 }
 
 export interface CliTerminalAccess {
@@ -261,6 +274,8 @@ export interface CliTerminalAccess {
   prepare(target: CliTerminalAccessTarget, reason: 'install' | 'startup'): Promise<void>
   /** The first call sweeps every detected install; later calls do nothing. */
   sweepOnce(targets: readonly CliTerminalAccessTarget[]): Promise<void>
+  /** After a CLI was uninstalled. Only Linux has anything to undo; never throws. */
+  release(provider: ProviderId): Promise<void>
 }
 
 /**
@@ -269,6 +284,8 @@ export interface CliTerminalAccess {
  * without the rest of the machine probes. On macOS the whole job is the shell
  * profile (macos-shell-profile.ts): npm writes no `.ps1` there, and the
  * directories it adds are fixed, so which CLI triggered it does not matter.
+ * Linux (linux-shell-profile.ts) adds a launcher per installed CLI on top, so
+ * there every install and uninstall syncs again instead of once per session.
  */
 export function createCliTerminalAccess(options: CliTerminalAccessOptions): CliTerminalAccess {
   const describe = options.describeError ?? ((error: unknown) => error instanceof Error ? error.message : String(error))
@@ -277,6 +294,43 @@ export function createCliTerminalAccess(options: CliTerminalAccessOptions): CliT
   const userPathChecks = new Map<string, Promise<void>>()
   let swept = false
   let shellProfileCheck: Promise<void> | null = null
+  // Linux runs every sync, one after another: each install or uninstall changes
+  // which launchers should exist, and two of them must not append to the same
+  // startup file at once.
+  let terminalCommandsQueue: Promise<void> = Promise.resolve()
+  const linux = options.platform !== 'win32' && options.platform !== 'darwin'
+
+  function isManagedSafely(installation: CliTerminalAccessTarget['installation']): boolean {
+    try { return options.isManaged(installation) } catch { return false }
+  }
+
+  // Not awaited by the caller, like the macOS check: a slow home folder must not
+  // hold back the "installed" message.
+  function syncTerminalCommands(provider: ProviderId, reason: 'install' | 'startup' | 'uninstall'): void {
+    const sync = options.syncTerminalCommands
+    if (!sync) return
+    terminalCommandsQueue = terminalCommandsQueue.then(() => sync(reason)).then((result) => {
+      options.log?.('info', result.outcome === 'removed' ? 'cli.shell-profile.removed' : 'cli.shell-profile.checked',
+        result.outcome === 'added'
+          ? '已让新开的终端可以直接敲工具名'
+          : result.outcome === 'removed'
+            ? '星芒装的工具都卸掉了，终端启动设置里加的那几行已去掉'
+            : '终端启动设置无需改动', { provider, reason, outcome: result.outcome })
+      if (result.skipped.length) {
+        options.log?.('warn', 'cli.shell-profile.skipped', '有的终端启动设置没能改，从星芒首页「打开」不受影响', {
+          provider,
+          reason,
+          skipped: [...result.skipped],
+        })
+      }
+    }, (error: unknown) => {
+      options.log?.('warn', 'cli.shell-profile.failed', '没能让终端直接敲工具名，从星芒首页「打开」不受影响', {
+        provider,
+        reason,
+        error: describe(error),
+      })
+    })
+  }
 
   // The profile block names fixed directories rather than this install's, so
   // one check per session covers all four CLIs.
@@ -300,6 +354,13 @@ export function createCliTerminalAccess(options: CliTerminalAccessOptions): CliT
 
   async function prepare(target: CliTerminalAccessTarget, reason: 'install' | 'startup'): Promise<void> {
     const { provider, installation } = target
+    if (linux) {
+      // Same rule as macOS at startup (Grok as in sweepOnce); after an install the
+      // sync itself looks at what the app installed, whichever CLI triggered it.
+      if (reason === 'startup' && provider !== 'grok' && !isManagedSafely(installation)) return
+      syncTerminalCommands(provider, reason)
+      return
+    }
     if (options.platform === 'darwin') {
       // At startup only an install the app itself made counts: someone who
       // brought their own CLI has no use for the app's directories on PATH.
@@ -363,10 +424,22 @@ export function createCliTerminalAccess(options: CliTerminalAccessOptions): CliT
   }
 
   async function sweepOnce(targets: readonly CliTerminalAccessTarget[]): Promise<void> {
-    if (swept || (options.platform !== 'win32' && options.platform !== 'darwin')) return
+    if (swept) return
     swept = true
+    if (linux) {
+      // One sync covers all four CLIs, so the first install of ours is enough to trigger it.
+      // Grok never lives in the app's npm folder on Linux (it goes to ~/.grok/bin), so
+      // any Grok install triggers it and the sync tells whether that one is ours.
+      const managed = targets.find((target) => target.provider === 'grok' || isManagedSafely(target.installation))
+      if (managed) syncTerminalCommands(managed.provider, 'startup')
+      return
+    }
     await Promise.all(targets.map((target) => prepare(target, 'startup')))
   }
 
-  return { prepare, sweepOnce }
+  async function release(provider: ProviderId): Promise<void> {
+    if (linux) syncTerminalCommands(provider, 'uninstall')
+  }
+
+  return { prepare, sweepOnce, release }
 }

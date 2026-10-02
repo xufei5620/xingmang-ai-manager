@@ -49,6 +49,20 @@ describe('Linux command path candidates', () => {
     expect(candidates.filter(Boolean)).toEqual(['/usr/bin', '/usr/local/bin', '/usr/bin', '/bin', '/snap/bin'])
   })
 
+  it('drops the terminal launcher folder from the inherited PATH so a launcher never passes for an install', () => {
+    const candidates = linuxCommandPathCandidates({
+      PATH: '/usr/bin:/home/a/.local/share/XingMangAI/Cli/launchers:/opt/x:/home/a/.local/share/XingMangAI/Cli/launchers/',
+    }, [], '/home/a')
+    expect(candidates.some((entry) => entry.includes('launchers'))).toBe(false)
+    expect(candidates).toContain('/opt/x')
+
+    const custom = linuxCommandPathCandidates({ PATH: '/data/a/XingMangAI/Cli/launchers:/usr/bin', XDG_DATA_HOME: '/data/a' }, [], '/home/a')
+    expect(custom.some((entry) => entry.includes('launchers'))).toBe(false)
+    // Only the app's own folder is dropped, not one that merely looks like it.
+    const other = linuxCommandPathCandidates({ PATH: '/home/b/.local/share/XingMangAI/Cli/launchers' }, [], '/home/a')
+    expect(other).toContain('/home/b/.local/share/XingMangAI/Cli/launchers')
+  })
+
   it('still yields the system directories when there is no usable home directory', () => {
     const candidates = linuxCommandPathCandidates({ PATH: '' }, [], 'relative/home')
     expect(candidates.filter(Boolean)).toEqual(['/usr/local/bin', '/usr/bin', '/bin', '/snap/bin'])
