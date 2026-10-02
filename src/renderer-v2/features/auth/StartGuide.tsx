@@ -1,10 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
 import { ArrowLeft, ArrowRight, Check, CircleCheck, Copy, Download, FolderOpen, FolderPlus, KeyRound, LogIn, MessageSquare, RefreshCw, Settings, Terminal, Zap } from 'lucide-react'
-import type { AccountSourceSwitchResult, ProviderConfigSummary, ProviderId, StoreAppLaunchBlock } from '../../../../electron/ipc-contract'
+import type { AccountSourceSwitchResult, ProviderConfigSummary, ProviderId } from '../../../../electron/ipc-contract'
 import { BrandIcon, Button, Card, Logo, Pill, Progress } from '../../ui'
 import { guideRecommendedTool, officialAccountNames, officialAccountNotes, tools as toolRegistry } from '../../registry/tools'
 import { FirstRunSteps } from '../tools/FirstRun'
-import { storeAppLaunchNotice } from '../tools/elevation-notice'
 import { switchAccountLabel, type ToolUpdateOffer } from '../tools/model'
 import { matchNetworkFailureMessage } from '../../../../electron/network-failure'
 import { classifyOperationError, presentOperationError, type OperationAction, type OperationActionId } from '../../operation-error'
@@ -49,8 +48,6 @@ export interface GuideToolState {
    * 替当前账号写过、之后在软件之外被改动过。缺省 = 按 otherSite 处理（旧行为：拦住）。
    */
   keyState?: 'otherSite' | 'otherAccount' | 'changed'
-  /** 只有 Codex 桌面端会带：这个 Windows 账户多半打不开商店应用，装之前先说一句（第十九批 6）。 */
-  storeAppLaunchBlock?: StoreAppLaunchBlock
 }
 export interface StartGuideProps {
   platform: 'win' | 'mac' | 'linux'
@@ -325,8 +322,6 @@ function ScopedStartGuide({ platform, tools, signedIn, busy = false, progress, o
   // 装着的版本旧了（或有已知问题）只是一句建议加一颗按钮，「下一步」照常能点（Q50）。
   // 只在工具和运行环境都齐了时才提：没齐的时候先要做的是把它们准备好。
   const update = readiness.prepared && tool?.update ? tool.update : null
-  // 只提醒，不拦「安装」：这种账户装不装得上没核过，装得上、打不开是推测。
-  const storeAppNotice = route === 'codexDesktop' && tool && !tool.installed ? storeAppLaunchNotice(tool.storeAppLaunchBlock) : null
   const updateLabel = update?.newer === false ? '换成推荐版本' : '更新'
   const oneButton = Boolean(tool && !tool.installed && route !== 'codexDesktop' && (!guideNeedsNodeRuntime(route, tool) || tool.runtimeReady || tool.runtimeAutoPrepare) && (route !== 'gemini' || tool.pythonReady || tool.pythonAutoPrepare))
   const currentStep = steps.findIndex((item) => item.id === step)
@@ -473,7 +468,7 @@ function ScopedStartGuide({ platform, tools, signedIn, busy = false, progress, o
             {!tool || tool.detectionError ? <p className="auth-error" role="alert">暂时无法确认工具是否已安装，请重新检测。</p> : <div className="auth-guide-checklist">
               {guideNeedsNodeRuntime(route, tool) && <div className="auth-guide-check-row"><Terminal size={20} aria-hidden="true" /><div><strong>运行环境</strong><p>{tool.runtimeReady ? '运行环境已就绪' : oneButton ? '点「安装」时会一并装好' : platform === 'win' ? '命令行工具需要运行环境' : '在应用外安装完成后回来重新检测'}</p></div><Pill tone={tool.runtimeReady ? 'ok' : oneButton ? 'neutral' : 'warn'}>{tool.runtimeReady ? '已就绪' : oneButton ? '自动准备' : '待准备'}</Pill>{!tool.runtimeReady && !oneButton && onInstallRuntime && <Button icon={Download} disabled={locked} onClick={() => void run('准备环境', onInstallRuntime)} testId="guide-node">{platform === 'win' ? '一键安装' : '安装指南'}</Button>}</div>}
               {route === 'gemini' && <div className="auth-guide-check-row" data-testid="guide-python-step"><BrandIcon tool="python" size={26} /><div><strong>Python</strong><p>{tool.pythonReady ? 'Python 已就绪' : oneButton ? '点「安装」时会一并装好' : !tool.runtimeReady ? '先准备运行环境，再继续这一步' : platform === 'win' ? 'Gemini 的准备清单包含 Python 环境' : '在应用外安装 Python 后回来重新检测'}</p></div><Pill tone={tool.pythonReady ? 'ok' : oneButton ? 'neutral' : 'warn'}>{tool.pythonReady ? '已就绪' : oneButton ? '自动准备' : '待准备'}</Pill>{!tool.pythonReady && !oneButton && onInstallPython && <Button icon={Download} disabled={locked || !tool.runtimeReady} onClick={() => void run('准备 Python', onInstallPython)} testId="guide-python">{platform === 'win' ? '一键安装' : '安装指南'}</Button>}</div>}
-              <div className="auth-guide-check-row"><BrandIcon tool={route} size={26} /><div><strong>{name}</strong><p>{tool.installed ? `已找到${tool.version ? ` v${tool.version}` : ''}${update?.target ? `，${update.newer ? '新版' : '推荐版本'}是 ${update.target}` : ''}` : '尚未检测到安装'}</p>{storeAppNotice && <p className="auth-hint" data-testid="guide-store-app-notice">{storeAppNotice}</p>}</div><Pill tone={tool.installed && !update ? 'ok' : 'warn'} testId="guide-tool-status">{!tool.installed ? '未安装' : update ? update.knownIssue ? '有已知问题' : '可更新' : '已安装'}</Pill>{update && !update.manualHint && <Button icon={Download} disabled={locked} onClick={updateTool} testId="guide-update">{updateLabel}</Button>}{!tool.installed && tool.supported !== false && tool.installMode !== 'unavailable' && <Button icon={Download} disabled={locked || (!oneButton && ((guideNeedsNodeRuntime(route, tool) && !tool.runtimeReady) || (route === 'gemini' && !tool.pythonReady)))} onClick={install} testId="guide-install">{tool.installMode === 'external' ? '安装指南' : '安装'}</Button>}</div>
+              <div className="auth-guide-check-row"><BrandIcon tool={route} size={26} /><div><strong>{name}</strong><p>{tool.installed ? `已找到${tool.version ? ` v${tool.version}` : ''}${update?.target ? `，${update.newer ? '新版' : '推荐版本'}是 ${update.target}` : ''}` : '尚未检测到安装'}</p></div><Pill tone={tool.installed && !update ? 'ok' : 'warn'} testId="guide-tool-status">{!tool.installed ? '未安装' : update ? update.knownIssue ? '有已知问题' : '可更新' : '已安装'}</Pill>{update && !update.manualHint && <Button icon={Download} disabled={locked} onClick={updateTool} testId="guide-update">{updateLabel}</Button>}{!tool.installed && tool.supported !== false && tool.installMode !== 'unavailable' && <Button icon={Download} disabled={locked || (!oneButton && ((guideNeedsNodeRuntime(route, tool) && !tool.runtimeReady) || (route === 'gemini' && !tool.pythonReady)))} onClick={install} testId="guide-install">{tool.installMode === 'external' ? '安装指南' : '安装'}</Button>}</div>
               {update?.manualHint && <p className="auth-hint" data-testid="guide-update-manual">{update.manualHint}</p>}
               {(tool.supported === false || tool.installMode === 'unavailable') && <p className="auth-error">当前平台暂不支持这个工具，请返回选择其他开始方式。</p>}
             </div>}
