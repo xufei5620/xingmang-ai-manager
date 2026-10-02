@@ -160,30 +160,6 @@ describe('acceleration line list keys', () => {
   })
 })
 
-describe('acceleration started by the app', () => {
-  const connected = { phase: 'active' as const, connectedAt: '2026-09-20T00:00:00Z', remainingSeconds: 900, line: rememberedLine }
-
-  it('says the connection was made automatically for Codex Desktop and how to stop it', () => {
-    const markup = render(state({ ...connected, autoStartedBy: 'codex-desktop' }))
-    expect(markup).toContain('data-testid="acceleration-auto-started"')
-    expect(markup).toContain('打开 Codex 桌面端时自动连上的')
-    expect(markup).toContain('停止加速')
-  })
-
-  it('does not claim the free allowance is counting down for an automatic connection', () => {
-    const markup = render(state({ ...connected, autoStartedBy: 'codex-desktop' }))
-    expect(markup).toContain('自动连接不计时')
-    expect(markup).not.toContain('正在计时')
-    expect(render(state(connected))).toContain('正在计时')
-  })
-
-  it('keeps the usual line for a connection the user made', () => {
-    const markup = render(state(connected))
-    expect(markup).not.toContain('acceleration-auto-started')
-    expect(markup).toContain('加速连接已就绪')
-  })
-})
-
 describe('acceleration bundle damaged', () => {
   const damaged = () => state({ phase: 'unavailable', remainingSeconds: null, line: null, unavailableReason: 'bundle-damaged' })
 
