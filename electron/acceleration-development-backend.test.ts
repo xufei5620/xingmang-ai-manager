@@ -669,6 +669,16 @@ describe('automatic acceleration started for the Codex desktop app', () => {
     expect(await test.backend.startAcceleration(scope, 'system-proxy')).toMatchObject({ phase: 'error', conflicts: ['system-proxy'] })
   })
 
+  it('keeps the background session\'s length out of the last-session figure on the acceleration page', async () => {
+    const test = await setup()
+    await test.backend.startAcceleration(scope, 'system-proxy')
+    test.elapse(30_000)
+    expect((await test.backend.stopAcceleration(scope)).sessionSeconds).toBe(30)
+    await test.backend.startAutomaticAcceleration(scope, 'system-proxy')
+    test.elapse(120_000)
+    expect(await test.backend.stopAcceleration(scope)).toMatchObject({ phase: 'idle', sessionSeconds: 30 })
+  })
+
   it('records no failure on the acceleration page for an automatic session that failed or dropped', async () => {
     const test = await setup()
     test.runtime.start.mockRejectedValueOnce(new Error('core failed'))

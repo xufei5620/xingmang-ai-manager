@@ -184,7 +184,7 @@ import {
   type DownloadProxyEndpoint,
 } from './download-proxy'
 import { createDownloadAccelerationCoordinator } from './download-acceleration'
-import { createCodexDesktopAccelerationCoordinator } from './codex-desktop-acceleration'
+import { codexDesktopNeedsAccelerationOnlyAtStartup, createCodexDesktopAccelerationCoordinator } from './codex-desktop-acceleration'
 import { probeCodexDesktopRunning } from './codex-desktop-service'
 import {
   createSystemService,
@@ -1237,12 +1237,9 @@ if (!hasSingleInstanceLock) {
         : Promise.reject(new Error('加速服务尚未就绪。')),
       // 桌面端用的是星芒的 Key：它要加速只为启动时拉中文界面那份配置，之后连着只会
       // 让整台电脑白白绕道（yoyo 2026-10-02）。登 ChatGPT 账号的一直要连 chatgpt.com，
-      // 认不准（读不出、连接名被官方保留名顶掉）也按这种算，等桌面端退出再断。
-      onlyNeededAtStartup: () => {
-        const codex = inspectProviderConfig('codex', rootedOptions.system.providerRoots,
-          resolveRelaySite(systemService.readStoredConfig().relaySiteId).providerBaseUrls)
-        return codex.matchesRelay && codex.codexAuthMode === 'apikey' && codex.codexProviderShadowed !== true
-      },
+      // 认不准的也按这种算，等桌面端退出再断。读配置抛错由守护按「一直要」处理。
+      onlyNeededAtStartup: () => codexDesktopNeedsAccelerationOnlyAtStartup(inspectProviderConfig('codex',
+        rootedOptions.system.providerRoots, resolveRelaySite(systemService.readStoredConfig().relaySiteId).providerBaseUrls)),
       log: (level, event, message, detail) => runtimeLog.log(level, 'network', event, message, detail),
     })
     // CLI 产物下载以前走 Node 自带的网络栈，它不读系统代理，所以开着加速也

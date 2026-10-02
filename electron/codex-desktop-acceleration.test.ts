@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import type { AccelerationPhase, AccelerationState } from './acceleration-contract'
 import {
   codexDesktopAccelerationDecision,
+  codexDesktopNeedsAccelerationOnlyAtStartup,
   createCodexDesktopAccelerationCoordinator,
 } from './codex-desktop-acceleration'
 
@@ -271,6 +272,19 @@ describe('codex desktop acceleration exit watch', () => {
     })
   })
 
+  it('starts counting the startup again when the desktop app is opened again on the same session', async () => {
+    // 「帮我重开」切中文、关了马上再开：桌面端又要在启动时拉一次中文界面那份配置。
+    const h = watchSetup({ running: [true], onlyNeededAtStartup: () => true })
+    await h.coordinator.ensureConnected()
+    await h.tick()
+    await expect(h.coordinator.ensureConnected()).resolves.toEqual({ status: 'already-connected' })
+    expect(h.timers).toHaveLength(1)
+    await h.tick()
+    expect(h.disconnect).not.toHaveBeenCalled()
+    await h.tick()
+    await vi.waitFor(() => { expect(h.disconnect).toHaveBeenCalledOnce() })
+  })
+
   it('says so when the user had already made the connection their own', async () => {
     // 到点要断的那一刻他刚点了「开始加速」：服务按 connectedAt 认，不断他的。
     const h = watchSetup({ running: [true, true], onlyNeededAtStartup: () => true,
@@ -410,5 +424,19 @@ describe('codex desktop acceleration exit watch', () => {
     h.coordinator.dispose()
     h.coordinator.observe(automatic)
     expect(h.timers).toHaveLength(0)
+  })
+})
+
+describe('codexDesktopNeedsAccelerationOnlyAtStartup', () => {
+  it('lets go after startup only for a desktop app on this site\'s key', () => {
+    const relayKey = { matchesRelay: true, codexAuthMode: 'apikey' as const, codexProviderShadowed: false }
+    expect(codexDesktopNeedsAccelerationOnlyAtStartup(relayKey)).toBe(true)
+    expect(codexDesktopNeedsAccelerationOnlyAtStartup({ ...relayKey, codexProviderShadowed: undefined })).toBe(true)
+    // ChatGPT 登录、没登录、指向别处、连接名被官方保留名顶掉：都要一直连着。
+    expect(codexDesktopNeedsAccelerationOnlyAtStartup({ ...relayKey, codexAuthMode: 'chatgpt' })).toBe(false)
+    expect(codexDesktopNeedsAccelerationOnlyAtStartup({ ...relayKey, codexAuthMode: null })).toBe(false)
+    expect(codexDesktopNeedsAccelerationOnlyAtStartup({ ...relayKey, codexAuthMode: undefined })).toBe(false)
+    expect(codexDesktopNeedsAccelerationOnlyAtStartup({ ...relayKey, matchesRelay: false })).toBe(false)
+    expect(codexDesktopNeedsAccelerationOnlyAtStartup({ ...relayKey, codexProviderShadowed: true })).toBe(false)
   })
 })

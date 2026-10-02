@@ -507,7 +507,8 @@ export function createAccelerationDevelopmentBackend(options: AccelerationDevelo
         await stopStage('ledger-write', () => saveAccount(current.scope,
           { usedMs: Math.min(totalMs, usage(current.scope).usedMs + spent), startedAt: null }))
       }
-      lastSessionSeconds.set(current.scope, Math.min(totalMs / 1000, Math.floor(elapsed(current) / 1000)))
+      // 加速页上那句「本次连接」只说他自己连的那一次：后台那次他看不见，时长也不该冒出来。
+      if (current.billed) lastSessionSeconds.set(current.scope, Math.min(totalMs / 1000, Math.floor(elapsed(current) / 1000)))
       lastErrors.delete(current.scope)
       lastConflicts.delete(current.scope)
       session = null

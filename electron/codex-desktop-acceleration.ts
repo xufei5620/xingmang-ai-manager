@@ -30,6 +30,7 @@
  * 不含任何 Electron 依赖：读状态、连接、断开与问桌面端都由宿主注入。
  */
 import type { AccelerationState } from './acceleration-contract'
+import type { NativeConfigInspection } from './config-files'
 
 export type CodexDesktopAccelerationSkipReason =
   /** 没登录，拿不到账号口径，也就没有额度可用。 */
@@ -121,6 +122,17 @@ const desktopUnknownLimit = 10
 const desktopSteadyBeforeRelaxing = 3
 
 /**
+ * 桌面端是不是只在启动那一下要加速：Codex 配置指向当前站点、用的是 Key（不是 ChatGPT
+ * 登录），连接名也没被官方保留名顶掉。认不准一律按「还要一直连着」，断早了 ChatGPT 账号
+ * 的客户会发不出消息。
+ */
+export function codexDesktopNeedsAccelerationOnlyAtStartup(
+  codex: Pick<NativeConfigInspection, 'matchesRelay' | 'codexAuthMode' | 'codexProviderShadowed'>,
+): boolean {
+  return codex.matchesRelay && codex.codexAuthMode === 'apikey' && codex.codexProviderShadowed !== true
+}
+
+/**
  * 只看状态决定要不要连，好让这条判断能脱离宿主单测。`stopping` 归入「不动」：
  * 用户刚点了停止，这时候连回去等于跟他抢。免费时长用完（exhausted）照样连：
  * 这次连接不扣时长。
@@ -186,12 +198,24 @@ export function createCodexDesktopAccelerationCoordinator(
 
   /**
    * 只盯本模块自己连上的那一次会话；同一次会话已经在盯就不重来。返回这次会话
-   * 现在有没有人盯着。
+   * 现在有没有人盯着。`relaunched`：桌面端又被打开了一次（「帮我重开」切中文、关了
+   * 马上再开），它又要在启动时拉一次中文界面那份配置，「确认起来了」得从头数。
+   * 原来接着数，重开的那一下可能刚好撞上第二次确认，几秒后就断，中文又拉不到。
    */
-  function watchSession(state: AccelerationState): boolean {
+  function watchSession(state: AccelerationState, relaunched = false): boolean {
     if (disposed || !options.isDesktopRunning || !options.disconnect) return false
     if (state.phase !== 'active' || !state.autoStartedBy || !state.connectedAt) return false
-    if (watch && watch.scope === state.scope && watch.connectedAt === state.connectedAt) return true
+    if (watch && watch.scope === state.scope && watch.connectedAt === state.connectedAt) {
+      if (relaunched) {
+        watch.cancel?.()
+        watch.cancel = null
+        watch.gone = 0
+        watch.unknown = 0
+        watch.steady = 0
+        next(watch)
+      }
+      return true
+    }
     stopWatching()
     const current: Watch = { scope: state.scope, connectedAt: state.connectedAt, gone: 0, unknown: 0, steady: 0, cancel: null }
     watch = current
@@ -299,7 +323,7 @@ export function createCodexDesktopAccelerationCoordinator(
     if (decision === 'already-connected') {
       log('info', 'acceleration.codex-desktop.reused', '打开 Codex 桌面端时加速已在运行，未改动现有连接')
       // 上次打开时自动连上的那一次还开着：接着盯（重启本模块之后也能接上）。
-      watchSession(state)
+      watchSession(state, true)
       return { status: 'already-connected' }
     }
     if (decision === 'unavailable') {
