@@ -156,19 +156,12 @@ describe('renderer-v2 start guide first run', () => {
     expect(guideCanSkipConnect('gemini', guideTool({ id: 'gemini', pythonReady: false, pythonNotNeeded: false }), true)).toBe(false)
   })
 
-  it('warns before installing the Codex desktop app on an account that cannot open store apps', () => {
+  // 0.2.12～0.2.13 在这里按 Windows 账户类型提醒「装完可能打不开」，是误报，已撤掉。
+  it('lets the Codex desktop app install without an account warning', () => {
     stubResumedGuide('codexDesktop', 'prepare')
-    const markup = render([guideTool({ id: 'codexDesktop', installed: false, configured: false, source: 'none', installMode: 'managed', storeAppLaunchBlock: 'builtInAdministrator' })])
-    expect(markup).toContain('data-testid="guide-store-app-notice"')
-    expect(markup).toContain('「Administrator」账户')
-    // 只提醒，不拦：「安装」照样能点
+    const markup = render([guideTool({ id: 'codexDesktop', installed: false, configured: false, source: 'none', installMode: 'managed' })])
+    expect(markup).not.toMatch(/Administrator|用户账户控制|可能打不开/)
     expect(markup).toMatch(/<button[^>]*data-testid="guide-install"(?![^>]*disabled)/)
-  })
-
-  it('says nothing extra for an ordinary account or once the desktop app is installed', () => {
-    stubResumedGuide('codexDesktop', 'prepare')
-    expect(render([guideTool({ id: 'codexDesktop', installed: false, configured: false, source: 'none', installMode: 'managed' })])).not.toContain('data-testid="guide-store-app-notice"')
-    expect(render([guideTool({ id: 'codexDesktop', storeAppLaunchBlock: 'uacDisabled' })])).not.toContain('data-testid="guide-store-app-notice"')
   })
 
   // 工具已经装了、Node 却太旧：这时没有「安装」可点，运行环境那一行必须留着自己的按钮。

@@ -83,7 +83,7 @@ import { tools } from './registry/tools'
 import { updateDiskCleanupDetail } from './registry/tutorials'
 import { clientConnections } from './registry/clients'
 import { canUninstallTool, externalInstallHint, isExternallyManagedInstall } from './features/tools/model'
-import { elevatedInstallNotice, storeAppLaunchNotice } from './features/tools/elevation-notice'
+import { elevatedInstallNotice } from './features/tools/elevation-notice'
 import { ToolStatusMeta, ToolStatusReason } from './features/tools/ToolStatusMeta'
 import { connectionCheckView } from './features/tools/connection-check'
 import { accountScope, sessionRestoring } from './account-context'
@@ -1660,8 +1660,7 @@ export function MaintenancePage({
                   lead={withElevationNotice(
                     tool.vendor,
                     externalHint ?? (id === 'codexDesktop' && !status?.installed && !rescan
-                      ? storeAppLaunchNotice(snapshot?.desktopApps.codex.storeAppLaunchBlock)
-                        ?? elevatedInstallNotice('codexDesktop', capability?.platform, capability?.codexDesktop.install)
+                      ? elevatedInstallNotice('codexDesktop', capability?.platform, capability?.codexDesktop.install)
                       : null),
                   )}
                   status={status}
