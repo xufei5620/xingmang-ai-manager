@@ -1,4 +1,4 @@
-// 终端里的 AI 工具退出后打给用户看的两行中文（Windows 与 macOS 共用一份）。
+// 终端里的 AI 工具退出后打给用户看的两行中文（Windows、macOS 与 Linux 共用一份）。
 // 各家 CLI 的退出码含义不一，非零只说「可能是意外退出」，不下结论。
 export const cliExitHintLines = {
   normal: ['AI 工具已经退出了。', '想接着聊，回星芒点「接着聊」；这个窗口可以直接关掉。'],
@@ -18,3 +18,13 @@ export const macosFolderAccessHintLines = {
     '打开「系统设置 → 隐私与安全性 → 文件和文件夹」，在「终端」下面把项目所在的那一项（「文稿」「桌面」或「下载」）打开，再回星芒点「打开」。',
   ],
 } as const
+
+// Linux 的命令窗口在启动脚本跑完时会跟着关掉（各家终端默认如此），上面那两行一闪就没了，
+// 所以最后停一下，等用户按回车再关。不像 Windows 那样留一个命令提示符：小白会往里打中文。
+export const cliCloseWindowPrompt = '按回车键关闭这个窗口。'
+
+// Linux 上命令窗口进不去项目文件夹时（被移走、删掉，或当前账号没权限），替掉 sh 那句英文。
+export const linuxFolderAccessHintLines = [
+  '进不去这个文件夹：它可能被移走或删掉了，也可能是当前账号没有权限打开它。',
+  '回星芒重新选一个文件夹，再点「打开」。',
+] as const

@@ -24,6 +24,7 @@ import { codexAuthSnapshotPaths, codexConfigSnapshotPaths, inspectProviderConfig
 import type { MacosCodexAppInspection } from './macos-codex-app'
 import { managedCliPackageDirectory } from './cli-process-probe'
 import { managedNpmCacheRoot, managedNpmPrefix } from './managed-cli-paths'
+import { LinuxTerminalLaunchError, linuxTerminalFailureMessages } from './linux-terminal'
 import type { installMacGitRuntime as installMacGitRuntimeType } from './macos-git-install'
 import {
   resolveCliCommand as resolveVerifiedToolCommand,
@@ -5087,6 +5088,101 @@ describe('trusting the workspace the user picked before opening a CLI', () => {
     await expect(launchService(userHome, 'claude').launchProvider('claude', workspace))
       .rejects.toThrow('未检测到 Claude Code')
     expect(fs.readFileSync(path.join(userHome, '.claude.json'), 'utf8')).toBe('{"projects":')
+  })
+})
+
+describe('opening a CLI on Linux', () => {
+  function linuxLaunchService(userHome: string, launchLinuxTerminal: NonNullable<SystemServiceOptions['launchLinuxTerminal']>, runtimeLog?: SystemServiceOptions['runtimeLog']) {
+    return createService({
+      platform: 'linux',
+      ...(runtimeLog ? { runtimeLog } : {}),
+      providerRoots: { userHome, codexHome: path.join(userHome, '.codex') },
+      inspectProviderConfig: vi.fn(() => ({
+        baseUrl: 'https://xm.solov.cc',
+        actualBaseUrl: 'https://xm.solov.cc',
+        exists: true,
+        hasApiKey: true,
+        matchesRelay: true,
+        apiKey: 'sk-test-key',
+        model: 'claude-opus-4-6',
+        dataDirectory: path.join(userHome, '.claude'),
+        dataDirectoryExists: true,
+        files: [],
+        updatedAt: '2026-10-02T00:00:00.000Z',
+      })),
+      resolveCliInstallation: vi.fn(async () => ({
+        commandPath: '/opt/xm/npm/bin/claude',
+        installDirectory: '/opt/xm/npm/lib/node_modules/@anthropic-ai/claude-code',
+        packageRoot: '/opt/xm/npm/lib/node_modules/@anthropic-ai/claude-code',
+        npmPrefix: '/opt/xm/npm',
+        packageVersion: '2.1.283',
+        source: 'npm' as const,
+      })),
+      resolveCliCommand: vi.fn(async () => ({ executable: '/opt/xm/npm/bin/claude', argv: [] })),
+      findExecutable: vi.fn(async () => null),
+      probeLoopbackProxy: async () => true,
+      launchLinuxTerminal,
+    })
+  }
+
+  function project(prefix: string): { userHome: string; workspace: string } {
+    const userHome = fs.mkdtempSync(path.join(os.tmpdir(), prefix))
+    temporaryDirectories.push(userHome)
+    const workspace = path.join(userHome, 'project')
+    fs.mkdirSync(workspace)
+    return { userHome, workspace }
+  }
+
+  it.runIf(process.platform !== 'win32')('hands the resolved tool, the folder and a titled window to the Linux launcher', async () => {
+    const { userHome, workspace } = project('xingmang-linux-open-')
+    const launchLinuxTerminal = vi.fn<NonNullable<SystemServiceOptions['launchLinuxTerminal']>>(async () => ({
+      terminal: { id: 'gnome-terminal', label: 'GNOME 终端', executable: '/usr/bin/gnome-terminal' },
+      attempts: [],
+    }))
+    const log = vi.fn()
+
+    await expect(linuxLaunchService(userHome, launchLinuxTerminal, { log }).launchProvider('claude', workspace)).resolves.toBeDefined()
+
+    expect(launchLinuxTerminal).toHaveBeenCalledTimes(1)
+    const plan = launchLinuxTerminal.mock.calls[0]?.[0]
+    expect(plan).toMatchObject({ executable: '/opt/xm/npm/bin/claude', workspace, title: 'Claude Code · 星芒AI' })
+    expect(plan?.env).toMatchObject({ FORCE_COLOR: '3', NODE_USE_SYSTEM_CA: expect.any(String) })
+    expect(log).toHaveBeenCalledWith('info', 'system', 'terminal.opened', expect.stringContaining('GNOME 终端'), expect.objectContaining({ terminal: 'gnome-terminal' }))
+  })
+
+  it.runIf(process.platform !== 'win32')('says which tool did not open, and logs the terminals it tried with the home folder hidden', async () => {
+    const { userHome, workspace } = project('xingmang-linux-open-fail-')
+    const launchLinuxTerminal = vi.fn<NonNullable<SystemServiceOptions['launchLinuxTerminal']>>(async () => {
+      throw new LinuxTerminalLaunchError(linuxTerminalFailureMessages.notStarted, [
+        { terminal: 'kitty', executable: path.join(userHome, '.local', 'bin', 'kitty'), outcome: 'exited', detail: '1' },
+      ])
+    })
+    const log = vi.fn()
+
+    await expect(linuxLaunchService(userHome, launchLinuxTerminal, { log }).launchProvider('claude', workspace))
+      .rejects.toThrow(`未能打开 Claude Code：${linuxTerminalFailureMessages.notStarted}`)
+
+    const entry = log.mock.calls.find((call) => call[2] === 'terminal.failed')
+    expect(entry?.slice(0, 3)).toEqual(['warn', 'system', 'terminal.failed'])
+    expect(JSON.stringify(entry?.[4])).toContain('kitty')
+    expect(JSON.stringify(entry?.[4])).not.toContain(userHome)
+  })
+
+  it.runIf(process.platform !== 'win32')('keeps the system error behind an unusable temporary folder in the log only, with the home folder hidden', async () => {
+    const { userHome, workspace } = project('xingmang-linux-open-tmp-')
+    const reason = `EACCES: permission denied, mkdtemp '${path.join(userHome, '.cache', 'xingmang-terminal-1-')}XXXXXX'`
+    const launchLinuxTerminal = vi.fn<NonNullable<SystemServiceOptions['launchLinuxTerminal']>>(async () => {
+      throw new LinuxTerminalLaunchError(linuxTerminalFailureMessages.noLauncherDirectory, [], reason)
+    })
+    const log = vi.fn()
+
+    const failure = linuxLaunchService(userHome, launchLinuxTerminal, { log }).launchProvider('claude', workspace)
+    await expect(failure).rejects.toThrow(`未能打开 Claude Code：${linuxTerminalFailureMessages.noLauncherDirectory}`)
+    await expect(failure).rejects.not.toThrow('EACCES')
+
+    const entry = log.mock.calls.find((call) => call[2] === 'terminal.failed')
+    expect(JSON.stringify(entry?.[4])).toContain('EACCES')
+    expect(JSON.stringify(entry?.[4])).not.toContain(userHome)
   })
 })
 
