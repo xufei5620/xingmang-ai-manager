@@ -1,0 +1,44 @@
+# 首次配置 COS 时导入已发布的 GitHub 安装包；不重建、不重新发布，也不接触 R2 更新源。
+name: sync-published-manager-cos
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 正式 v0.x.x 标签；留空导入当前最新正式版本
+        type: string
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+# 与发布、回滚、维护工作流串行，防止星芒 COS latest 索引交错写入。
+concurrency:
+  group: update-feed
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    if: ${{ github.repository == 'xufei5620/xingmang-ai-manager' && github.ref == 'refs/heads/main' && vars.XINGMANG_COS_SYNC_ENABLED == 'true' }}
+    runs-on: ubuntu-latest
+    environment: cos-sync
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+
+      - name: Install locked script dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Import verified GitHub release installers to Tencent COS
+        env:
+          COS_BUCKET: ${{ vars.COS_BUCKET || 'xingmang-downloads-1342302199' }}
+          COS_REGION: ${{ vars.COS_REGION || 'ap-shanghai' }}
+          COS_SECRET_ID: ${{ secrets.COS_SECRET_ID }}
+          COS_SECRET_KEY: ${{ secrets.COS_SECRET_KEY }}
+          MANAGER_RELEASE_TAG: ${{ inputs.tag || '' }}
+        run: node scripts/sync-published-manager-cos.cjs

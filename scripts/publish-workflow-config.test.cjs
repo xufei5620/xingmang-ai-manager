@@ -20,9 +20,11 @@ const allJobs = Object.values(workflow.jobs)
 const { UPDATE_MANIFEST_NAMES } = require('./update-release-utils.cjs')
 const MANIFEST_LOOP = `for manifest in ${UPDATE_MANIFEST_NAMES.join(' ')}; do`
 
-// 产品所有者 2026-09-20 已经按这八个名字在 release 环境里建 secret 了。工作流读的
-// 名字与他建的名字必须字字相同，否则表现是一条看不出原因的 403 或一个空取值。
+// 已有发布凭据保留；COS 两个可选凭据只在打开镜像开关后使用。
+// 名字与发布配置文档必须字字相同，否则只会得到 403 或空取值。
 const RELEASE_SECRET_NAMES = [
+  'COS_SECRET_ID',
+  'COS_SECRET_KEY',
   'CSC_NAME',
   'R2_ACCESS_KEY_ID',
   'R2_ACCOUNT_ID',
@@ -99,6 +101,26 @@ test('uploading is gated on the release environment, which is where the owner ap
 
 test('the workflow reads exactly the secrets the owner was told to create', () => {
   assert.deepEqual(referencedSecretNames(), RELEASE_SECRET_NAMES)
+})
+
+test('COS synchronization runs explicitly after the release and keeps its credentials in one opt-in step', () => {
+  const index = stepIndex(publishJob, /Synchronize the successful release to Tencent COS/)
+  const release = stepIndex(publishJob, /Tag the commit that shipped and create the GitHub Release/)
+  assert.ok(index > release)
+  assert.equal(publishJob.steps[index].if, "${{ vars.XINGMANG_COS_SYNC_ENABLED == 'true' }}")
+  assert.equal(publishJob.steps[index].run, 'node scripts/sync-manager-release-cos.cjs --directory release-artifacts --version "$PACKAGE_VERSION"')
+  assert.deepEqual(publishJob.steps[index].env, {
+    COS_BUCKET: "${{ vars.COS_BUCKET || 'xingmang-downloads-1342302199' }}",
+    COS_REGION: "${{ vars.COS_REGION || 'ap-shanghai' }}",
+    COS_SECRET_ID: '${{ secrets.COS_SECRET_ID }}',
+    COS_SECRET_KEY: '${{ secrets.COS_SECRET_KEY }}',
+  })
+  const readers = allJobs.flatMap((job) => job.steps)
+    .filter((step) => /secrets\.COS_SECRET_(?:ID|KEY)/.test(YAML.stringify(step)))
+  assert.deepEqual(readers, [publishJob.steps[index]])
+  assert.equal(publishJob.env.COS_SECRET_ID, undefined)
+  assert.equal(publishJob.env.COS_SECRET_KEY, undefined)
+  assert.equal(workflow.on.release, undefined)
 })
 
 test('the Windows build job holds no credentials at all', () => {

@@ -775,3 +775,15 @@ jobs:
               --notes-file "$RUNNER_TEMP/release-section.md" \
               "${assets[@]}"
           fi
+
+      # GITHUB_TOKEN 创建的 Release 不会再触发 release:published 工作流。
+      # 在已获 release 环境批准的本次发布中显式同步，补发平台和重跑也走同一路径。
+      # 默认不开启；COS 只新增下载镜像，现有 R2 更新与回滚地址保持不变。
+      - name: Synchronize the successful release to Tencent COS
+        if: ${{ vars.XINGMANG_COS_SYNC_ENABLED == 'true' }}
+        env:
+          COS_BUCKET: ${{ vars.COS_BUCKET || 'xingmang-downloads-1342302199' }}
+          COS_REGION: ${{ vars.COS_REGION || 'ap-shanghai' }}
+          COS_SECRET_ID: ${{ secrets.COS_SECRET_ID }}
+          COS_SECRET_KEY: ${{ secrets.COS_SECRET_KEY }}
+        run: node scripts/sync-manager-release-cos.cjs --directory release-artifacts --version "$PACKAGE_VERSION"

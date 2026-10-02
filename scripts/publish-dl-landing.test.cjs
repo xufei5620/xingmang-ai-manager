@@ -3,6 +3,38 @@ const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
 const test = require('node:test')
+const { Console } = require('node:console')
+const { createRequire } = require('node:module')
+const { Writable } = require('node:stream')
+const { compileFunction } = require('node:vm')
+
+function loadPublisherWithCapturedOutput() {
+  const filePath = path.join(__dirname, 'publish-dl-landing.cjs')
+  const output = []
+  const sink = new Writable({
+    write(chunk, encoding, callback) {
+      output.push(chunk.toString('utf8'))
+      callback()
+    },
+  })
+  const isolatedProcess = Object.create(process)
+  Object.defineProperties(isolatedProcess, {
+    stdout: { value: sink },
+    stderr: { value: sink },
+  })
+  const isolatedModule = { exports: {} }
+  // Node 22 mixes ordinary CJK stdout with its V8 test-report pipe (#64706).
+  // Capture this fixture's output in a private scope, without muting errors or
+  // changing production logging. Same-realm compilation preserves deep equality.
+  const execute = compileFunction(fs.readFileSync(filePath, 'utf8'),
+    ['exports', 'require', 'module', '__filename', '__dirname', 'process', 'console'],
+    { filename: filePath })
+  execute(isolatedModule.exports, createRequire(filePath), isolatedModule, filePath,
+    __dirname, isolatedProcess, new Console({ stdout: sink, stderr: sink }))
+  return { exports: isolatedModule.exports, readOutput: () => output.join('') }
+}
+
+const publisher = loadPublisherWithCapturedOutput()
 const {
   assertSafeVersion,
   installerFileNames,
@@ -25,7 +57,7 @@ const {
   assertExpectedChecksums,
   verifyUploadCandidates,
   fileSha256,
-} = require('./publish-dl-landing.cjs')
+} = publisher.exports
 
 // Every test supplies the origin explicitly. The script has no built-in defaults, and an
 // empty `sources` would otherwise let a developer's own dl-landing.config.json leak in and
@@ -235,6 +267,7 @@ test('does not scp until --yes and writes the local manifest only after a succes
   const names = installerFileNames('0.1.22')
   const commands = []
   const verified = []
+  const outputStart = publisher.readOutput().length
   try {
     fs.mkdirSync(path.join(directory, 'dl-landing'), { recursive: true })
     fs.writeFileSync(path.join(directory, names.win), 'exe')
@@ -309,6 +342,11 @@ test('does not scp until --yes and writes the local manifest only after a succes
       JSON.parse(fs.readFileSync(path.join(directory, 'dl-landing', 'latest.json'), 'utf8')),
       buildLatestManifest('0.1.22'),
     )
+    const capturedOutput = publisher.readOutput().slice(outputStart)
+    assert.match(capturedOutput, /SHA256=[a-f0-9]{64}/)
+    assert.ok(capturedOutput.includes('未上传。确认无误后加上 --yes。'))
+    assert.ok(capturedOutput.includes('源站 latest.json：\n{"version":"0.1.22"}\n'))
+    assert.ok(capturedOutput.includes('上传完成。落地页注册成功后会读这份清单。'))
   } finally {
     fs.rmSync(directory, { recursive: true, force: true })
   }

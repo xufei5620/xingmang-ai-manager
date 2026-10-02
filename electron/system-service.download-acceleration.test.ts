@@ -108,6 +108,8 @@ function createInstallFixture(options: {
     windowsExecutionMode: 'same-user',
     runCommand: runCommand as unknown as SystemServiceOptions['runCommand'],
     findExecutable: vi.fn(async (command: string) => command === 'npm' ? npmExecutable : null),
+    // 宿主已有的原生 CLI 会提前拒绝 npm 安装，让下载代理断言无法触达。
+    resolveCliInstallation: vi.fn(async () => null),
     resolveSubprocessProxyEnvironment: async () => options.subprocessProxy ?? { HTTPS_PROXY: 'http://127.0.0.1:7890' },
     acquireDownloadAcceleration: acquire,
     probeLoopbackProxy: options.probeLoopbackProxy,
