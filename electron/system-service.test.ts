@@ -721,10 +721,13 @@ describe('createSystemService', () => {
 
     expect(await f.service.fillToolTemplateDefaults!((provider) => { backups.push({ provider, slugs: f.catalogSlugs() }) })).toEqual({ filled: [] })
 
-    await vi.waitFor(() => expect(f.catalogSlugs()).toEqual(['gpt-6-astra', 'gpt-6.1-sol', 'gpt-5.5']))
+    // 名单落盘之后来源记录还要再写一次才改回「账号」，两样都到位才算这次同步做完。
+    await vi.waitFor(() => {
+      expect(f.catalogSlugs()).toEqual(['gpt-6-astra', 'gpt-6.1-sol', 'gpt-5.5'])
+      expect(f.service.getConfig(false).providers.codex.configurationOwnership).toBe('account')
+    })
     expect(backups).toEqual([{ provider: 'codex', slugs: ['gpt-6.1-sol', 'gpt-5.5'] }])
     expect(f.running).toHaveBeenCalledWith(['codex'])
-    expect(f.service.getConfig(false).providers.codex.configurationOwnership).toBe('account')
   })
 
   it('refreshes the Claude Code menu before a launch and keeps the account as the source of the config', async () => {
