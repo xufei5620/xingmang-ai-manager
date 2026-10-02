@@ -557,6 +557,43 @@ describe('realm account service', () => {
       expect((await f.vault.active())?.realmId).toBe('api-account')
     })
   }
+  it('signs out a startup restore whose re-read credential is rejected as well', async () => {
+    const f = fixture()
+    const original = saved('solov-api', '42')
+    await f.vault.activate(original)
+    const rotated = parseRealmSavedAccount({ ...original, credential: { kind: 'sub2api',
+      accessToken: 'test-rotated-access', refreshToken: 'test-rotated-refresh', expiresAt: null } })
+    const presented: unknown[] = []
+    const restarted = createRealmAccountService({ ...f.options, startupRetryDelayMs: 0, createClient: (id, callback) => {
+      const result = f.options.createClient(id, callback)
+      return { ...result, restore: async (value) => {
+        presented.push(value.credential)
+        if (presented.length > 1) return false
+        await f.vault.updateSession(rotated)
+        throw new RealmAccountError('TIMEOUT')
+      } }
+    } })
+    // 换来的那份也被拒（比如这期间在别处改了密码），才是真失效，照旧清掉。
+    await expect(restarted.restoreActive()).resolves.toBe(false)
+    expect(presented).toEqual([original.credential, rotated.credential])
+    expect(restarted.stalledAccount()).toBeNull()
+    expect(await f.vault.active()).toBeNull()
+  })
+  // 星芒账号每次恢复都先续期：剩下的期限掐断重试里的续期，换来的令牌就没落库。
+  it('leaves a timed-out startup restore retrying when too little of the restore budget is left', async () => {
+    const f = fixture()
+    await f.vault.activate(saved('solov', '42'))
+    const restarted = createRealmAccountService({ ...f.options, prepareTimeoutMs: 5000, startupRetryDelayMs: 0, createClient: (siteId, callback) => {
+      const result = f.options.createClient(siteId, callback)
+      f.clients[f.clients.length - 1].restoreError = new NewApiNetworkError('timeout')
+      return result
+    } })
+    const before = f.clients.length
+    await expect(restarted.restoreActive()).rejects.toBeInstanceOf(NewApiNetworkError)
+    expect(f.clients.slice(before).filter((entry) => entry.restore.mock.calls.length > 0)).toHaveLength(1)
+    expect(restarted.stalledAccount()).toEqual({ siteId: 'solov', userId: 42 })
+    expect((await f.vault.active())?.realmId).toBe('xm-account')
+  })
   it('does not quick-retry a startup restore that failed for a reason other than a timeout', async () => {
     const f = fixture()
     await f.vault.activate(saved('solov-api', '42'))

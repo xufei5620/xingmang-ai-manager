@@ -96,6 +96,9 @@ function restoreTimedOut(error: unknown): boolean {
   return error instanceof NewApiNetworkError && error.reason === 'timeout'
 }
 
+// 两个账号客户端单个请求最多等 10 秒，再留 2 秒给换来的令牌落库（见 restoreAllowingOneTimeout）。
+const startupRetryMinimumBudgetMs = 12000
+
 /** Promote the authenticated client itself: rotating cookies are never restored twice. */
 export function createRealmAccountService(options: RealmAccountServiceOptions): RealmAccountService {
   let active: RuntimeHandle
@@ -432,10 +435,16 @@ export function createRealmAccountService(options: RealmAccountServiceOptions): 
   // 账号库，超时的是紧接着那个请求。再拿出发前读的那份去试只会被当成登录失效，把
   // 库里刚存好的新令牌连同账号一起删掉。所以重试前从库里取这个账号最新的一份；
   // 取不到就按第一次的超时交给 30 秒那一轮，那一轮会重新读库。
+  //
+  // 重试本身也会续期（星芒账号每次恢复都先续期），续期请求一到服务端旧令牌就作废，
+  // 换来的新令牌要等回话到了才落库。重试要是被剩下的期限从半路掐断，候选句柄当场
+  // 作废、回话没人接，库里只剩作废的那份，30 秒后那一轮照样把账号当失效删掉。所以
+  // 剩下的期限不够一个请求跑完就不快速重试，直接交给 30 秒那一轮，它有自己的整段期限。
   async function restoreAllowingOneTimeout(saved: RealmSavedAccount): Promise<boolean> {
     try { return await restore(saved) } catch (error) {
       if (!restoreTimedOut(error)) throw error
       await new Promise<void>((resolve) => { setTimeout(resolve, startupRetryDelayMs) })
+      if (prepareDeadline - Date.now() < startupRetryMinimumBudgetMs) throw error
       const latest = await options.vault.get(saved).catch(() => null)
       if (!latest) throw error
       return restore(latest)
