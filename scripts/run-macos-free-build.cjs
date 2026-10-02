@@ -44,6 +44,8 @@ const BUILD_MODE_ENVIRONMENT_NAMES = new Set([
   'XINGMANG_SIGNING_PUBLISHER',
   // 调试用的放行开关：继承进来会让一次发布构建以为自己被允许跳过签名要求。
   'XINGMANG_ALLOW_UNSIGNED_RELEASE',
+  // Linux 打包标记会把 productName 换成英文名；残留到 macOS 构建里，beforePack 会拒绝。
+  'XINGMANG_LINUX_PACKAGE',
 ])
 
 function normalizeFingerprint(value, byteLength = 32) {

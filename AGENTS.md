@@ -28,7 +28,7 @@
 - **星芒账号**：对接 `xm.solov.cc`（第三方开源 QuantumNous/new-api 的生产实例）——注册/登录/找回密码/余额/用量/Key 管理/充值外链，登录后自动签发 CLI Key 并写进 CLI 配置。
 - **无限画布 + AI 工作区**：本仓自研的节点式工作流编辑器（`canvas-v2/`，@xyflow/react 底座），在独立隔离窗口运行；AI 聊天与图像生成走主进程，与 CLI 共用同一账号额度。
 
-**技术栈**：Electron 43 + React 19（旧回滚界面隔离保留 React 18）+ TypeScript 5.7 + Vite 8 + vitest。**桌面端自身没有后端**；线上资产 = 静态更新目录 + 账号后端 `xm.solov.cc`（new-api 生产实例，实测 v1.0.0-rc.24，端点事实见 `docs/RECON-new-api.md`）。⚠️ **自动化测试绝不对生产实例发真实请求，一律 mock**。Windows 与 macOS 双平台。
+**技术栈**：Electron 43 + React 19（旧回滚界面隔离保留 React 18）+ TypeScript 5.7 + Vite 8 + vitest。**桌面端自身没有后端**；线上资产 = 静态更新目录 + 账号后端 `xm.solov.cc`（new-api 生产实例，实测 v1.0.0-rc.24，端点事实见 `docs/RECON-new-api.md`）。⚠️ **自动化测试绝不对生产实例发真实请求，一律 mock**。Windows 与 macOS 双平台；Linux（只出 deb）已能打包并在 CI 里真装真开，客户侧功能还在做、尚未发布，见 `docs/LINUX.md`。
 
 ---
 
@@ -60,6 +60,7 @@ npm run dev         # 默认启动 renderer-v2；内部先构建 canvas-v2 + 全
 npm run dev:legacy  # 显式启动 React 18 旧回滚界面（已冻结，只为回滚保留）
 npm start           # 直接跑已编译产物（需先 compile），免 dev server
 npm run build:mac:dir   # macOS 本机 ad-hoc 签名解包应用
+npm run build:linux     # Linux 本地测试 deb（x64 + arm64，更新器关着；只能在 Linux 上跑）
 ```
 
 **提交前必须两条都过**：`npm run typecheck` 和 `npm test`。动了 renderer-v2 的再加 `npm run check:v2` 和 `npm run test:v2`。
@@ -289,6 +290,7 @@ yoyo 2026-09-19 就 `R-S12` 拍板：legacy 回滚版**保留但冻结**（三�
 | 改画布 / AI 工作区 | `docs/RECON-canvas.md`、`docs/CANVAS-V2-PLAN.md`、`docs/AI-CHAT.md`、`docs/CANVAS-THIRD-PARTY.md`（**必读**；2026-08-12 起执行搬进主进程，早于该日期的描述以代码为准） |
 | 改界面（renderer-v2） | `docs/UI-V3.1.1-V2-REBUILD.md` 与 `ui-spec/`（见第 10 节） |
 | 改 macOS 相关 | `.claude/rules/macos-platform.md`（自动加载）、`docs/MACOS_DEVELOPMENT.md`、`docs/MACOS_FREE_DISTRIBUTION.md` |
+| 改 Linux 相关 | `docs/LINUX.md` |
 | 发版 | `docs/RELEASING.md` |
 | 排查测试基线 | `docs/TEST-BASELINE.md` |
 | 了解产品背景与优先级 | `docs/ROADMAP.md`、`README.md` |
