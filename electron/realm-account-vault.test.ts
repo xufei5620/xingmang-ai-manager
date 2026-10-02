@@ -5,7 +5,7 @@ import {
   parseRealmSavedAccount, realmAccountSummary, realmForExplicitSite, realmOwnerKey, RealmAccountError,
   type AccountRealmId, type RealmSavedAccount,
 } from './realm-account'
-import { createRealmAccountVault, migrateLegacySavedAccount, realmStorageScope, type RealmVaultStorage } from './realm-account-vault'
+import { createRealmAccountVault, createSessionRealmAccountVault, migrateLegacySavedAccount, realmStorageScope, type RealmVaultStorage } from './realm-account-vault'
 
 function account(realmId: AccountRealmId = 'xm-account', userId = '7'): RealmSavedAccount {
   return parseRealmSavedAccount({ version: 2, realmId, userId, username: `user-${userId}`,
@@ -147,5 +147,37 @@ describe('realm account contracts and encrypted vault', () => {
     assert.equal((await example.vault.list()).length, 1)
     await example.vault.forget(account())
     assert.equal((await example.vault.list()).length, 0)
+  })
+})
+
+describe('session-only realm account vault (Linux without a keyring)', () => {
+  it('says it is session-only, which the durable vault never does', () => {
+    assert.equal(createSessionRealmAccountVault().sessionOnly, true)
+    assert.equal(storageFixture().vault.sessionOnly, undefined)
+  })
+  it('keeps accounts, the active pointer and login hints for this run', async () => {
+    const vault = createSessionRealmAccountVault()
+    await vault.activate(account(), 'User-7@Example.test')
+    await vault.activate(account('api-account', '8'))
+    assert.equal((await vault.list()).length, 2)
+    assert.equal((await vault.active())?.realmId, 'api-account')
+    assert.equal(await vault.preferredLoginSite('user-7@example.test'), 'solov')
+    await vault.signOut()
+    assert.equal(await vault.active(), null)
+    assert.deepEqual((await vault.get(account()))?.credential, account().credential)
+  })
+  it('enforces the same account limit as the durable vault', async () => {
+    const vault = createSessionRealmAccountVault()
+    for (let i = 1; i <= 16; i += 1) await vault.activate(account('xm-account', String(i)))
+    await assert.rejects(vault.activate(account('api-account')), hasCode('ACCOUNT_LIMIT'))
+  })
+  it('starts empty on every launch, so nothing outlives the process', async () => {
+    const first = createSessionRealmAccountVault()
+    await first.activate(account())
+    const next = createSessionRealmAccountVault()
+    assert.equal(await next.active(), null)
+    assert.deepEqual(await next.list(), [])
+    assert.equal(await next.hasMigratedLegacy(), false)
+    assert.equal(await next.recoverUnreadable(), false)
   })
 })

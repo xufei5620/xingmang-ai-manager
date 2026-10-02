@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { createRealmAccountService, type RealmAccountServiceOptions, type RealmAccountSiteId } from './realm-account-service'
-import { createRealmAccountVault, type RealmVaultStorage } from './realm-account-vault'
+import { createRealmAccountVault, createSessionRealmAccountVault, type RealmVaultStorage } from './realm-account-vault'
 import { parseRealmSavedAccount, RealmAccountError, type RealmSavedAccount } from './realm-account'
 import type { RelayBackendCapabilities, RelayBackendClient } from './relay-backend'
 import type { NewApiLoginInput, NewApiSessionState } from './new-api-client'
@@ -1161,5 +1161,41 @@ describe('realm account re-login of the same account (#476)', () => {
     await expect(f.service.login({ ...login, password: 'bad' })).rejects.toMatchObject({ code: 'UNAUTHORIZED' })
     expect(liveSignOuts(f)).toEqual([])
     expect(savedSignOuts(f)).toEqual([])
+  })
+})
+
+describe('realm account session-only login (Linux without a keyring)', () => {
+  it('signs in and tells the renderer the login will not be remembered', async () => {
+    const f = fixture({ vault: createSessionRealmAccountVault() })
+    expect(f.service.client.getSessionState()).toMatchObject({ authenticated: false, sessionOnly: true })
+    const result = await f.service.login(login)
+    expect(result).toMatchObject({ siteId: 'solov', sessionOnly: true })
+    expect(f.service.client.getSessionState()).toMatchObject({ authenticated: true, sessionOnly: true })
+    await expect(f.service.client.getBalance()).resolves.toEqual({ quota: 100 })
+    // The durable fixture is never written; the session vault has no file at all.
+    expect(f.content()).toBeNull()
+  })
+  it('switches between this run\'s accounts and signs out without a keyring', async () => {
+    const f = fixture({ vault: createSessionRealmAccountVault() })
+    await f.service.login(login)
+    await f.service.login({ ...login, siteId: 'solov-api' })
+    const summaries = await f.service.listSavedAccounts()
+    expect(summaries).toHaveLength(2)
+    expect((await f.service.switchSavedAccount(summaries[0].id)).siteId).toBe('solov')
+    await f.service.logout()
+    expect(f.service.client.getSessionState().authenticated).toBe(false)
+  })
+  it('starts the next launch signed out', async () => {
+    const f = fixture({ vault: createSessionRealmAccountVault() })
+    await f.service.login(login)
+    const restarted = createRealmAccountService({ ...f.options, vault: createSessionRealmAccountVault() })
+    expect(await restarted.restoreActive()).toBe(false)
+    expect(await restarted.listSavedAccounts()).toEqual([])
+  })
+  it('never marks a durable login as session-only', async () => {
+    const f = fixture()
+    expect(f.service.client.getSessionState()).not.toHaveProperty('sessionOnly')
+    expect(await f.service.login(login)).not.toHaveProperty('sessionOnly')
+    expect(f.service.client.getSessionState()).not.toHaveProperty('sessionOnly')
   })
 })
