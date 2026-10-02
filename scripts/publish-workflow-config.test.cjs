@@ -273,7 +273,7 @@ test('a single-platform publish does not silently skip the publish job', () => {
   assert.match(String(publishJob.if), /windows-build\.result != 'failure'/)
   assert.match(String(publishJob.if), /macos-build\.result != 'failure'/)
   assert.match(String(publishJob.if), /== 'success'/)
-  assert.deepEqual(workflow.on.workflow_dispatch.inputs.platforms.options, ['all', 'windows', 'macos', 'linux'])
+  assert.deepEqual(workflow.on.workflow_dispatch.inputs.platforms.options, ['all', 'both', 'windows', 'macos', 'linux'])
   assert.equal(workflow.on.workflow_dispatch.inputs.platforms.default, 'all')
 })
 
@@ -299,6 +299,8 @@ test('each platform choice builds exactly its own jobs', () => {
   // Windows 和 Mac 一起出一遍，Mac 那一半还要等一次批准。
   const expected = {
     all: ['windows-build', 'macos-build', 'linux-checks'],
+    // 加 Linux 之前的默认值：照老习惯选它，还是原来的 Windows 与 macOS，不碰 Linux。
+    both: ['windows-build', 'macos-build'],
     windows: ['windows-build'],
     macos: ['macos-build'],
     linux: ['linux-checks'],
@@ -347,7 +349,9 @@ test('Linux only reaches customers once the repository switch is on', () => {
   assert.equal(publishes(linuxOk, on, 'linux'), true)
   assert.equal(publishes(linuxChecksRed, on, 'linux'), false)
   assert.equal(publishes(linuxBuildTimedOut, on, 'linux'), false)
-  // 只发 Windows 或 macOS 时 Linux 两个作业都是 skipped，不算失败。
+  // 只发 Windows 或 macOS（含老的 both）时 Linux 两个作业都是 skipped，不算失败。
+  assert.equal(publishes(ok, on, 'both'), true)
+  assert.equal(publishes(ok, {}, 'both'), true)
   assert.equal(publishes({ 'windows-build': 'success' }, on, 'windows'), true)
   assert.equal(publishes({ 'macos-build': 'success' }, on, 'macos'), true)
   // GitHub 比较字符串不分大小写，文档照这个写：TRUE 也算打开。
@@ -634,6 +638,26 @@ test('with Linux on, both debs are uploaded and checked byte for byte before any
   // 清单不在这一步传：它们只能由最后那一步动。
   assert.doesNotMatch(run.log, /latest/)
   assert.match(run.verified.stdout, /已逐字节复核 4 个产物/)
+
+  // 开关关着时产物里没有 Linux 的东西，这两步和加 Linux 之前一样：只传、只核 Windows
+  // 与 macOS 的文件。
+  const withoutLinux = runUploadAndVerify({
+    'XingMang-AI-Manager-0.2.11-Setup.exe': 'installer',
+    'XingMang-AI-Manager-0.2.11-Setup.exe.blockmap': 'blockmap',
+    'XingMang-AI-Manager-0.2.11-Apple-Silicon-arm64.dmg': 'image',
+    'XingMang-AI-Manager-0.2.11-Apple-Silicon-arm64.zip': 'zip',
+    'latest.yml': 'manifest',
+    'latest-mac.yml': 'manifest',
+  })
+  assert.equal(withoutLinux.uploaded.status, 0, withoutLinux.uploaded.stderr)
+  assert.equal(withoutLinux.verified.status, 0, withoutLinux.verified.stdout + withoutLinux.verified.stderr)
+  assert.deepEqual(withoutLinux.log.trim().split('\n').sort(), [
+    'XingMang-AI-Manager-0.2.11-Apple-Silicon-arm64.dmg application/x-apple-diskimage',
+    'XingMang-AI-Manager-0.2.11-Apple-Silicon-arm64.zip application/zip',
+    'XingMang-AI-Manager-0.2.11-Setup.exe application/vnd.microsoft.portable-executable',
+    'XingMang-AI-Manager-0.2.11-Setup.exe.blockmap application/octet-stream',
+  ])
+  assert.match(withoutLinux.verified.stdout, /已逐字节复核 4 个产物/)
 })
 
 test('the publish guard runs before the first upload', () => {

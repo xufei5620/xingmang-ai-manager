@@ -278,7 +278,7 @@ git push origin v0.2.6
 工作流在 Actions 页面选 **publish-release**，点 Run workflow，填两项：
 
 - **要发布的版本号**：必须与 `package.json` 完全一致，对不上直接失败（防误发）。
-- **这次发布哪些平台的包**：`all`（默认，Windows、macOS、Linux）/ `windows` / `macos` / `linux`。
+- **这次发布哪些平台的包**：`all`（默认，Windows、macOS、Linux）/ `both`（和原来一样，只有 Windows 与 macOS）/ `windows` / `macos` / `linux`。
 
 然后它会：出 Windows 包（走 `release:build:unsigned` 的完整发布门禁，带私有加速线路）→ 出 macOS 双架构包（用已发布的那张签名证书，见 2.2）→ 出 Linux 的 x64 与 arm64 两个 deb（见下面「Linux 开关」）→ **先传安装包与 blockmap → 逐字节复核能从客户会用的地址下载下来 → 最后才覆盖 `latest.yml` / `latest-mac.yml`（以及 Linux 的两份清单）** → 每个平台各跑一次 `update:verify-feed` → 给出包的 commit 打 tag、建 GitHub Release。
 

@@ -55,12 +55,15 @@ on:
         required: true
         type: string
       platforms:
-        description: '这次发布哪些平台的包（all 是全部；Linux 开关没打开时只出包、不上传）'
+        description: '这次发布哪些平台的包（all 是全部；both 和原来一样只有 Windows 与 macOS；Linux 开关没打开时只出包、不上传）'
         required: true
         default: all
         type: choice
+        # both 是加 Linux 之前的默认值，留着它，照老习惯选 both 还是原来那样只发
+        # Windows 与 macOS，不会碰 Linux。
         options:
           - all
+          - both
           - windows
           - macos
           - linux
@@ -75,7 +78,7 @@ concurrency:
 
 jobs:
   windows-build:
-    if: ${{ inputs.platforms == 'all' || inputs.platforms == 'windows' }}
+    if: ${{ inputs.platforms == 'all' || inputs.platforms == 'both' || inputs.platforms == 'windows' }}
     runs-on: windows-latest
     # 这个作业不读任何 secret，也不挂 environment：它只是出包。凭据集中在 publish
     # 作业里，那里才有需要保护的东西。
@@ -139,7 +142,7 @@ jobs:
 
 
   macos-build:
-    if: ${{ inputs.platforms == 'all' || inputs.platforms == 'macos' }}
+    if: ${{ inputs.platforms == 'all' || inputs.platforms == 'both' || inputs.platforms == 'macos' }}
     runs-on: macos-15
     # 这个作业要读发布证书的 .p12，所以也挂 release 环境，也就同样停下来等批准。
     # 批准它放行的只是「用真证书出一份包」，产物仍然只进 Actions artifact。
