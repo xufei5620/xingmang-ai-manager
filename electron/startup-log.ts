@@ -25,10 +25,43 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
-/** Replaces the user's home directory with `%USERPROFILE%` in any spelling. */
-export function redactHomeDirectory(value: string, homeDirectory: string): string {
+/**
+ * Linux paths that carry an account name or uid outside the home directory itself:
+ * other homes, removable media mounted per user, and the per-user runtime directory
+ * (gvfs network shares live under it). /home is matched anywhere, like crash-report.ts
+ * does, which also covers the /var/home and /data/home roots of Silverblue and UOS; the
+ * generic /media segment only at a path start or under /run, so a package's own
+ * media/ folder survives.
+ */
+const linuxUserPathPatterns: ReadonlyArray<[RegExp, string]> = [
+  [/(\/home\/)[^/\s:"'\\]+/g, '$1%USER%'],
+  [/(^|[^A-Za-z0-9._@~/-]|\/run)(\/media\/)[^/\s:"'\\]+/g, '$1$2%USER%'],
+  [/(\/run\/user\/)\d+/g, '$1%UID%'],
+  // gvfs names a network share's mount point after its login: smb-share:server=x,user=alice.
+  [/(\/gvfs\/[^/\s"'\\]*?[:,]user=)[^,/\s"'\\]+/g, '$1%USER%'],
+]
+
+/** Applies only on Linux; the Windows and macOS output stays exactly what it was. */
+export function redactLinuxUserPaths(value: string): string {
+  let result = value
+  for (const [pattern, replacement] of linuxUserPathPatterns) result = result.replace(pattern, replacement)
+  return result
+}
+
+/**
+ * Replaces the user's home directory in any spelling: with `%USERPROFILE%` on Windows and
+ * macOS, and with `~` on Linux, where the Windows name only confuses support. On Linux
+ * the match also has to end at a path boundary, so home /home/al does not turn
+ * /home/alice into a mangled half-name, and the other per-user paths go too.
+ */
+export function redactHomeDirectory(
+  value: string,
+  homeDirectory: string,
+  platform: NodeJS.Platform = process.platform,
+): string {
   const home = homeDirectory.trim()
-  if (!home) return value
+  const linux = platform !== 'win32' && platform !== 'darwin'
+  if (!home) return linux ? redactLinuxUserPaths(value) : value
   const candidates = new Set([
     home,
     path.resolve(home),
@@ -37,14 +70,17 @@ export function redactHomeDirectory(value: string, homeDirectory: string): strin
     JSON.stringify(home).slice(1, -1),
   ])
   const caseInsensitive = /^[A-Za-z]:[\\/]/.test(home) || home.startsWith('\\\\')
+  const posixHome = linux && !caseInsensitive
+  const label = posixHome ? '~' : '%USERPROFILE%'
+  const boundary = posixHome ? '(?![A-Za-z0-9._-])' : ''
   let result = value
   for (const candidate of [...candidates].filter(Boolean).sort((left, right) => right.length - left.length)) {
     result = result.replace(
-      new RegExp(escapeRegExp(candidate), caseInsensitive ? 'gi' : 'g'),
-      '%USERPROFILE%',
+      new RegExp(`${escapeRegExp(candidate)}${boundary}`, caseInsensitive ? 'gi' : 'g'),
+      label,
     )
   }
-  return result
+  return linux ? redactLinuxUserPaths(result) : result
 }
 
 /**

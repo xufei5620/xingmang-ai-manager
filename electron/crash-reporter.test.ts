@@ -182,6 +182,9 @@ describe('createCrashReporter', () => {
     const body = String(harness.calls[0].init.body)
     expect(body).not.toContain('sk-abcdef123456')
     expect(body).not.toContain('yoyo')
-    expect(body).toContain('%USERPROFILE%')
+    // The label follows the platform the reporter runs on: Linux writes the home
+    // directory as ~ (startup-log.ts), Windows and macOS keep %USERPROFILE%.
+    const linuxHost = process.platform !== 'win32' && process.platform !== 'darwin'
+    expect(body).toContain(linuxHost ? '~/.claude/settings.json' : '%USERPROFILE%')
   })
 })

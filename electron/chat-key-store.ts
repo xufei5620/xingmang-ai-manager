@@ -1,6 +1,6 @@
 import path from 'node:path'
 import type { SafeStorageLike } from './account-session-store'
-import { inspectSafeStorageBackend, safeStoragePlaintextMessage } from './safe-storage-backend'
+import { inspectSafeStorageBackend, safeStoragePlaintextMessage, type CredentialPersistence } from './safe-storage-backend'
 import {
   ensureSafeDataDirectory,
   readSafeUtf8File,
@@ -135,10 +135,14 @@ export class ChatKeyStore {
   private readonly invalidatedAccounts = new Map<number, number>()
   private readonly invalidatedGroups = new Map<string, number>()
   private readonly invalidatedKeys = new Map<string, number>()
+  // Session-only: the record this store would have written. The cache still
+  // matters there -- without it every chat request signs a fresh server key.
+  private sessionRecord: PersistedChatKeys | null = null
 
   constructor(
     private readonly filePath: string,
     private readonly storage: SafeStorageLike,
+    private readonly persistence: CredentialPersistence = 'durable',
   ) {}
 
   async read(userId: number): Promise<StoredChatKey[]> {
@@ -236,6 +240,7 @@ export class ChatKeyStore {
   }
 
   private async readRecord(): Promise<PersistedChatKeys | null> {
+    if (this.persistence === 'session-only') return this.sessionRecord && structuredClone(this.sessionRecord)
     const content = await readSafeUtf8File(this.filePath, FILE_LABEL, MAX_FILE_BYTES)
     if (content === null) return null
     const record = decodePersistedChatKeys(content, this.storage)
@@ -248,6 +253,7 @@ export class ChatKeyStore {
   }
 
   private assertEncryptionAvailable(): void {
+    if (this.persistence === 'session-only') return
     const backend = inspectSafeStorageBackend(this.storage)
     if (backend === 'unavailable') {
       throw new Error('系统安全存储不可用，无法持久化 AI 聊天分组 API Key')
@@ -288,6 +294,11 @@ export class ChatKeyStore {
   }
 
   private async writeRecord(record: PersistedChatKeys): Promise<void> {
+    if (this.persistence === 'session-only') {
+      if (!isPersistedChatKeys(record)) throw new Error('AI 聊天分组 API Key 格式错误')
+      this.sessionRecord = structuredClone(record)
+      return
+    }
     ensureSafeDataDirectory(path.dirname(this.filePath), FILE_LABEL)
     await writeAtomicSafeUtf8File(
       this.filePath,
