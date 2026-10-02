@@ -170,6 +170,13 @@ describe('acceleration started by the app', () => {
     expect(markup).toContain('停止加速')
   })
 
+  it('does not claim the free allowance is counting down for an automatic connection', () => {
+    const markup = render(state({ ...connected, autoStartedBy: 'codex-desktop' }))
+    expect(markup).toContain('自动连接不计时')
+    expect(markup).not.toContain('正在计时')
+    expect(render(state(connected))).toContain('正在计时')
+  })
+
   it('keeps the usual line for a connection the user made', () => {
     const markup = render(state(connected))
     expect(markup).not.toContain('acceleration-auto-started')

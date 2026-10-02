@@ -157,6 +157,9 @@ describe('codex desktop acceleration exit watch', () => {
   function watchSetup(options: {
     running: Array<boolean | null>
     connected?: AccelerationState
+    /** 给了就等它落定才连上：模拟「打开」等不及、连接在后台才连完的慢电脑。 */
+    connectGate?: Promise<void>
+    timeoutMs?: number
   }) {
     const timers: Array<() => void> = []
     const delays: number[] = []
@@ -167,15 +170,18 @@ describe('codex desktop acceleration exit watch', () => {
     let current: AccelerationState = stateOf('idle')
     const readState = vi.fn(async () => current)
     const log = vi.fn()
+    let accountScope: string | null = scope
     const coordinator = createCodexDesktopAccelerationCoordinator({
-      getAccountScope: () => scope,
+      getAccountScope: () => accountScope,
       readState,
       connect: async () => {
+        await options.connectGate
         current = options.connected ?? automatic
         return current
       },
       isDesktopRunning,
       disconnect,
+      ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
       schedule: (callback, milliseconds) => {
         timers.push(callback)
         delays.push(milliseconds)
@@ -194,8 +200,9 @@ describe('codex desktop acceleration exit watch', () => {
       return isDesktopRunning.mock.calls.length > probes
     }
     return {
-      coordinator, isDesktopRunning, disconnect, timers, delays, tick, log,
+      coordinator, isDesktopRunning, disconnect, timers, delays, tick, log, readState,
       setState: (state: AccelerationState) => { current = state },
+      setAccountScope: (next: string | null) => { accountScope = next },
     }
   }
 
@@ -273,6 +280,72 @@ describe('codex desktop acceleration exit watch', () => {
   it('never watches a session the user started', async () => {
     const h = watchSetup({ running: [false], connected: stateOf('active') })
     await h.coordinator.ensureConnected()
+    expect(h.timers).toHaveLength(0)
+  })
+
+  it('still disconnects a connection that finished after the launch stopped waiting for it', async () => {
+    // 2026-10-02 A014：连接超过 15 秒，「打开」按超时照常往下走，连接却在后台连完了，
+    // 之后没人盯，一条不扣时长的线路一直开到退出星芒。
+    let release!: () => void
+    const connectGate = new Promise<void>((resolve) => { release = resolve })
+    const h = watchSetup({ running: [false, false], connectGate, timeoutMs: 5 })
+    await expect(h.coordinator.ensureConnected()).resolves.toEqual({ status: 'skipped', reason: 'timeout' })
+    expect(h.timers).toHaveLength(0)
+    release()
+    await vi.waitFor(() => { expect(h.timers).toHaveLength(1) })
+    expect(h.log).toHaveBeenCalledWith('info', 'acceleration.codex-desktop.connected', expect.any(String), { late: true })
+    await h.tick()
+    await h.tick()
+    await vi.waitFor(() => { expect(h.disconnect).toHaveBeenCalledExactlyOnceWith(scope) })
+  })
+
+  it('leaves a late connection alone when it is not the automatic one', async () => {
+    let release!: () => void
+    const connectGate = new Promise<void>((resolve) => { release = resolve })
+    const h = watchSetup({ running: [false], connected: stateOf('active'), connectGate, timeoutMs: 5 })
+    await expect(h.coordinator.ensureConnected()).resolves.toEqual({ status: 'skipped', reason: 'timeout' })
+    release()
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    expect(h.timers).toHaveLength(0)
+    expect(h.log).not.toHaveBeenCalledWith('info', 'acceleration.codex-desktop.connected', expect.any(String), { late: true })
+  })
+
+  it('picks up an automatic session it sees in a state update even without an open click', async () => {
+    const h = watchSetup({ running: [false, false] })
+    h.setState(automatic)
+    h.coordinator.observe(automatic)
+    expect(h.timers).toHaveLength(1)
+    // 同一次会话反复路过只盯一份。
+    h.coordinator.observe({ ...automatic, measuredAt: '2026-09-22T11:05:00.000Z' })
+    expect(h.timers).toHaveLength(1)
+    await h.tick()
+    await h.tick()
+    await vi.waitFor(() => { expect(h.disconnect).toHaveBeenCalledExactlyOnceWith(scope) })
+  })
+
+  it('stops watching once the account has changed instead of retrying the old account forever', async () => {
+    // 换账号后加速服务对旧账号的读状态一律拒绝；原来落进 catch 每分钟重排一次，停不下来。
+    const h = watchSetup({ running: [true] })
+    await h.coordinator.ensureConnected()
+    expect(h.timers).toHaveLength(1)
+    h.setAccountScope('xm-account:8')
+    const reads = h.readState.mock.calls.length
+    h.timers.shift()!()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(h.readState.mock.calls.length).toBe(reads)
+    expect(h.timers).toHaveLength(0)
+    expect(h.isDesktopRunning).not.toHaveBeenCalled()
+    expect(h.disconnect).not.toHaveBeenCalled()
+  })
+
+  it('ignores state updates that are not an unattended automatic session of this account', () => {
+    const h = watchSetup({ running: [false] })
+    h.coordinator.observe(stateOf('active'))
+    h.coordinator.observe({ ...automatic, scope: 'xm-account:8' })
+    h.coordinator.observe({ ...stateOf('idle'), connectedAt: null })
+    expect(h.timers).toHaveLength(0)
+    h.coordinator.dispose()
+    h.coordinator.observe(automatic)
     expect(h.timers).toHaveLength(0)
   })
 })
